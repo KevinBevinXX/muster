@@ -768,6 +768,19 @@ func (a *Adapter) StreamLogs(ctx context.Context, ag agents.Agent, emit func(str
 	return a.driver.StreamLogs(ctx, agents.RefOf(ag), emit)
 }
 
+// AttachTerminal attaches a terminal to the agent's live session: the kind's
+// attach command (agents.TerminalCommand — ErrNoTerminal for a kind without
+// one) run on a pty through provision.ExecTTY, which refuses a driver that
+// cannot exec. readOnly is passed straight to the command; there is no default
+// here for a caller to inherit.
+func (a *Adapter) AttachTerminal(ctx context.Context, ag agents.Agent, readOnly bool, stdin io.Reader, stdout io.Writer, resize <-chan provision.TermSize) error {
+	cmd, err := agents.TerminalCommand(ag.Kind, readOnly)
+	if err != nil {
+		return err
+	}
+	return provision.ExecTTY(ctx, a.driver, agents.RefOf(ag), cmd, stdin, stdout, resize)
+}
+
 // ReapplyProfiles re-renders the agent's spec from its current row and
 // reconciles the live instance to it, which rolls the instance.
 //

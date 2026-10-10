@@ -600,6 +600,51 @@ func TestExecHelperChecksTheCapabilityNotJustTheAssertion(t *testing.T) {
 	}
 }
 
+// fakeTTYExecer declares (or declines) Exec and records terminal calls.
+type fakeTTYExecer struct {
+	*provision.Noop
+	caps  provision.Capabilities
+	calls int
+}
+
+func (f *fakeTTYExecer) Capabilities() provision.Capabilities { return f.caps }
+
+func (f *fakeTTYExecer) ExecTTY(context.Context, provision.Ref, []string, io.Reader, io.Writer, <-chan provision.TermSize) error {
+	f.calls++
+	return nil
+}
+
+// TestExecTTYHelperChecksTheCapabilityNotJustTheAssertion is Exec's test for
+// the terminal entry point: the same capability, refused in the same file.
+func TestExecTTYHelperChecksTheCapabilityNotJustTheAssertion(t *testing.T) {
+	ctx := context.Background()
+	ref := provision.Ref{Name: "subject"}
+
+	// The noop driver is not a TTYExecer: refused, not a panic.
+	if err := provision.ExecTTY(ctx, provision.MustNewNoop(), ref, []string{"true"}, nil, nil, nil); !errors.Is(err, provision.ErrUnsupported) {
+		t.Fatalf("want ErrUnsupported from the noop driver, got %v", err)
+	}
+
+	declined := &fakeTTYExecer{Noop: provision.MustNewNoop(), caps: provision.Capabilities{}}
+	if err := provision.ExecTTY(ctx, declined, ref, []string{"true"}, nil, nil, nil); !errors.Is(err, provision.ErrUnsupported) {
+		t.Fatalf("want ErrUnsupported for a TTYExecer declaring Exec false, got %v", err)
+	}
+	if declined.calls != 0 {
+		t.Fatal("the helper called through to a driver that declared it could not exec")
+	}
+
+	capable := &fakeTTYExecer{Noop: provision.MustNewNoop(), caps: provision.Capabilities{Exec: true}}
+	if err := provision.ExecTTY(ctx, capable, ref, nil, nil, nil, nil); !errors.Is(err, provision.ErrInvalidSpec) {
+		t.Fatalf("an empty command must be ErrInvalidSpec, got %v", err)
+	}
+	if err := provision.ExecTTY(ctx, capable, ref, []string{"true"}, nil, nil, nil); err != nil {
+		t.Fatalf("a capable TTYExecer must be called, got %v", err)
+	}
+	if capable.calls != 1 {
+		t.Fatalf("ExecTTY calls = %d, want 1", capable.calls)
+	}
+}
+
 func TestPolicyHasRules(t *testing.T) {
 	for raw, want := range map[string]bool{
 		``:                  false,

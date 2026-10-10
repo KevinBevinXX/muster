@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"io"
 	"net/http"
 
 	"github.com/ZacxDev/muster/internal/agents"
@@ -539,6 +540,20 @@ type Provisioner interface {
 	TailLogs(ctx context.Context, a agents.Agent, lines int64) (string, error)
 	// StreamLogs follows the agent's instance output, invoking emit per line.
 	StreamLogs(ctx context.Context, a agents.Agent, emit func(string)) error
+	// AttachTerminal attaches a terminal to the agent's live session until ctx
+	// ends or the session's client exits: what is written to stdin is typed,
+	// what the terminal shows arrives on stdout, and each size on resize is
+	// applied. readOnly attaches a client that cannot type.
+	//
+	// It refuses — agents.ErrNoTerminal for a kind with no session,
+	// provision.ErrUnsupported for a driver that cannot exec — rather than
+	// returning without having attached anything.
+	//
+	// ⚠ ON THE INTERFACE RATHER THAN TYPE-ASSERTED, for the reason
+	// KickoffUndeliverableReason below gives: an optional interface an adapter
+	// forgets yields ok=false with no trace, and the terminal route would then
+	// refuse every agent while every capability reported it could exec.
+	AttachTerminal(ctx context.Context, a agents.Agent, readOnly bool, stdin io.Reader, stdout io.Writer, resize <-chan provision.TermSize) error
 	// KickoffUndeliverableReason answers why this process cannot deliver an
 	// agent's FIRST TURN, and "" when it can. It must not create, write or
 	// provision anything: it is the question Dispatch answers by refusing, asked

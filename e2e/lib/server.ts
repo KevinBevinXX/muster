@@ -14,10 +14,13 @@ export function serverBinary(version: string): string {
   return path.join(binDir, `muster-server-${version}`);
 }
 
-export function buildServer(version: string): string {
+// tags are Go build tags. Only the terminal spec's binary has one (e2eterm),
+// and it is a separate binary so every other spec runs the shipped build.
+export function buildServer(version: string, tags: string[] = []): string {
   fs.mkdirSync(binDir, { recursive: true });
   const out = serverBinary(version);
-  execFileSync('go', ['build', '-ldflags', `-X github.com/ZacxDev/muster/internal/api.BuildVersion=${version}`, '-o', out, './cmd/muster-server'], {
+  const tagArgs = tags.length ? ['-tags', tags.join(',')] : [];
+  execFileSync('go', ['build', ...tagArgs, '-ldflags', `-X github.com/ZacxDev/muster/internal/api.BuildVersion=${version}`, '-o', out, './cmd/muster-server'], {
     cwd: repoRoot,
     stdio: 'inherit',
   });

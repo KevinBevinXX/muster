@@ -162,6 +162,12 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	mux.HandleFunc("GET /ui/agents/{name}/task", s.requireSession(s.handleAgentTaskModal))
 	mux.HandleFunc("GET /agents/{name}/logs/stream", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentLogsStream)))
 	mux.HandleFunc("GET /agents/{name}/ws", s.requireSession(s.requireGatewayProvisioner(s.handleAgentWS)))
+	// The claude-code agent's live terminal (terminal.go): the page, and the
+	// socket bridging it to a pty exec in the pod. requireSession ONLY — the
+	// hook token must not open a terminal — and the socket is lifecycle, not
+	// chat: it reaches the driver's exec, not the agent's gateway.
+	mux.HandleFunc("GET /agents/{name}/terminal", s.requireSession(s.handleAgentTerminalPage))
+	mux.HandleFunc("GET /agents/{name}/terminal/ws", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentTerminalWS)))
 }
 
 // handleAgentsContent serves the /ui/agents partial: cards (status reconciled

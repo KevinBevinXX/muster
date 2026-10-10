@@ -15,13 +15,13 @@ import (
 
 // TestExecIsGatedOnTheRESTConfig.
 //
-// 🔴 WHAT THIS FILE DOES *NOT* COVER, STATED SO NOBODY READS IT AS COVERAGE:
-// the exec stream itself. The exec subresource is a protocol upgrade against a
-// live apiserver and client-go's fake clientset does not serve it, so nothing
-// here proves a command actually runs in a pod. What is covered is the DECISION
-// around it — that the capability follows the configuration, that
-// provision.Exec refuses when it is off, and that the method returns a named
-// error instead of dereferencing a nil config.
+// This file covers the DECISION around exec — that the capability follows the
+// configuration, that provision.Exec refuses when it is off, and that the
+// method returns a named error instead of dereferencing a nil config. The
+// stream itself is exec_stream_test.go's, against an in-process endpoint that
+// speaks the exec subresource's SPDY protocol; that file's header says what it
+// still is not (an apiserver and a kubelet), so nothing here proves a command
+// runs in a real pod.
 func TestExecIsGatedOnTheRESTConfig(t *testing.T) {
 	eachMode(t, func(t *testing.T, m nsMode) { testExecIsGatedOnTheRESTConfig(t, m) })
 }

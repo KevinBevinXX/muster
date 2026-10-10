@@ -618,10 +618,19 @@ func testPolicyRefusedOrApplied(t *testing.T, h Harness) {
 func testExecRefusedWhenNotDeclared(t *testing.T, h Harness) {
 	p := h.New(t)
 	_, implements := p.(provision.Execer)
+	_, implementsTTY := p.(provision.TTYExecer)
 	if p.Capabilities().Exec {
 		if !implements {
 			t.Fatal("driver declares Capabilities.Exec but does not implement provision.Execer; " +
 				"every caller type-asserts, so this is a declaration with nothing behind it")
+		}
+		// The terminal is the same capability: a driver that declares Exec and
+		// cannot attach a terminal would answer the terminal route with a
+		// refusal that blames a capability it reports having.
+		if !implementsTTY {
+			t.Fatal("driver declares Capabilities.Exec but does not implement provision.TTYExecer; " +
+				"Exec covers both entry points (see Capabilities), so the terminal would be refused " +
+				"by a driver that reports it can exec")
 		}
 		return
 	}
@@ -629,6 +638,11 @@ func testExecRefusedWhenNotDeclared(t *testing.T, h Harness) {
 		[]string{"true"}, nil, nil, nil)
 	if !errors.Is(err, provision.ErrUnsupported) {
 		t.Fatalf("Exec against a driver that does not declare it must be ErrUnsupported, got %v", err)
+	}
+	err = provision.ExecTTY(context.Background(), p, provision.Ref{Name: "anything"},
+		[]string{"true"}, nil, nil, nil)
+	if !errors.Is(err, provision.ErrUnsupported) {
+		t.Fatalf("ExecTTY against a driver that does not declare Exec must be ErrUnsupported, got %v", err)
 	}
 }
 

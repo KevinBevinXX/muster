@@ -213,6 +213,31 @@ type Execer interface {
 	Exec(ctx context.Context, ref Ref, cmd []string, stdin io.Reader, stdout, stderr io.Writer) error
 }
 
+// TermSize is a terminal's size in character cells.
+type TermSize struct {
+	Cols, Rows uint16
+}
+
+// TTYExecer runs a command inside a live instance ON A TERMINAL: the command
+// gets a pseudo-terminal, its stdout and stderr arrive merged on stdout (that is
+// what a terminal is), and every size sent on resize is applied to it.
+// OPTIONAL and type-asserted, exactly like [Execer], and gated by the SAME
+// capability — Capabilities.Exec — through [ExecTTY]. A driver that declares
+// Exec must implement both; provisiontest.RunContract fails one that does not.
+//
+// ExecTTY returns when the command exits, when stdin reaches EOF and the
+// command exits because of it, or when ctx is cancelled — whichever is first.
+// 🔴 ctx CANCELLATION MUST END IT. A caller bridging a browser socket cancels
+// ctx when the socket closes, and a driver that kept the stream open after
+// that would leave a process attached in the instance and a goroutine in muster
+// for every closed tab.
+//
+// resize may be nil (the terminal keeps the driver's default size). The driver
+// stops reading it when ExecTTY returns; it never closes it.
+type TTYExecer interface {
+	ExecTTY(ctx context.Context, ref Ref, cmd []string, stdin io.Reader, stdout io.Writer, resize <-chan TermSize) error
+}
+
 // Policy is an authorisation grant attached to an instance's identity.
 //
 // The WORKFLOW around it — request, approve, apply, audit, revoke — is
@@ -316,6 +341,24 @@ func Exec(ctx context.Context, p Provisioner, ref Ref, cmd []string, stdin io.Re
 		return fmt.Errorf("%w: driver %q reports no exec capability", ErrUnsupported, p.Driver())
 	}
 	return execer.Exec(ctx, ref, cmd, stdin, stdout, stderr)
+}
+
+// ExecTTY runs a command inside an instance on a terminal, refusing when the
+// driver declares it cannot exec. It is [Exec]'s rule reached by a second entry
+// point — one capability, Capabilities.Exec, refused in this file and nowhere
+// else — so a caller cannot reach a terminal by asserting [TTYExecer] itself.
+func ExecTTY(ctx context.Context, p Provisioner, ref Ref, cmd []string, stdin io.Reader, stdout io.Writer, resize <-chan TermSize) error {
+	execer, ok := p.(TTYExecer)
+	if !ok {
+		return fmt.Errorf("%w: driver %q cannot attach a terminal", ErrUnsupported, p.Driver())
+	}
+	if !p.Capabilities().Exec {
+		return fmt.Errorf("%w: driver %q reports no exec capability, so it cannot attach a terminal", ErrUnsupported, p.Driver())
+	}
+	if len(cmd) == 0 {
+		return fmt.Errorf("%w: a terminal needs a command", ErrInvalidSpec)
+	}
+	return execer.ExecTTY(ctx, ref, cmd, stdin, stdout, resize)
 }
 
 // Fingerprint is a stable digest of the parts of a spec that, if changed, mean

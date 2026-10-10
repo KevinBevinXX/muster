@@ -259,8 +259,26 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 			),
 			g.If(agents.ResolveKind(v.Kind) != agents.KindClaudeCode, agentModelControl(v)),
 			g.If(agents.ResolveKind(v.Kind) == agents.KindClaudeCode,
-				Div(Class("flex items-center gap-2"), chip("kind", agents.KindLabel(v.Kind)+" · "+v.CCAccount))),
+				Div(Class("flex items-center gap-2"), chip("kind", agents.KindLabel(v.Kind)+" · "+v.CCAccount), terminalLink(v.Name))),
 		),
+	)
+}
+
+// terminalLink opens the agent's live terminal (terminal.go). Only a
+// claude-code agent has one, so only its header renders this.
+//
+// 🔴 hx-boost="false": the page is hx-boost'ed, and a boosted click would swap
+// the terminal page's BODY into this document without running the <head>
+// scripts it needs (xterm.js), leaving a dead terminal. A real navigation
+// loads them.
+func terminalLink(name string) g.Node {
+	return A(
+		ID("open-terminal"),
+		Href(AgentTerminalPath(name)),
+		hx("hx-boost", "false"),
+		Class("press ml-auto inline-flex min-h-[44px] items-center gap-1.5 rounded-lg bg-s2 px-3 text-sm font-semibold text-fg ring-1 ring-inset ring-line transition hover:bg-s3"),
+		g.Raw(`<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 17l6-6-6-6"/><path d="M12 19h8"/></svg>`),
+		g.Text("Terminal"),
 	)
 }
 
