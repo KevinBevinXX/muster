@@ -617,20 +617,9 @@ func testPolicyRefusedOrApplied(t *testing.T, h Harness) {
 // call site.
 func testExecRefusedWhenNotDeclared(t *testing.T, h Harness) {
 	p := h.New(t)
-	_, implements := p.(provision.Execer)
-	_, implementsTTY := p.(provision.TTYExecer)
 	if p.Capabilities().Exec {
-		if !implements {
-			t.Fatal("driver declares Capabilities.Exec but does not implement provision.Execer; " +
-				"every caller type-asserts, so this is a declaration with nothing behind it")
-		}
-		// The terminal is the same capability: a driver that declares Exec and
-		// cannot attach a terminal would answer the terminal route with a
-		// refusal that blames a capability it reports having.
-		if !implementsTTY {
-			t.Fatal("driver declares Capabilities.Exec but does not implement provision.TTYExecer; " +
-				"Exec covers both entry points (see Capabilities), so the terminal would be refused " +
-				"by a driver that reports it can exec")
+		if problem := execDeclarationProblem(p); problem != "" {
+			t.Fatal(problem)
 		}
 		return
 	}
@@ -644,6 +633,27 @@ func testExecRefusedWhenNotDeclared(t *testing.T, h Harness) {
 	if !errors.Is(err, provision.ErrUnsupported) {
 		t.Fatalf("ExecTTY against a driver that does not declare Exec must be ErrUnsupported, got %v", err)
 	}
+}
+
+// execDeclarationProblem is why a driver that declares Capabilities.Exec is
+// lying about it, or "" when it implements both entry points the capability
+// covers. It is a function rather than inline in the case so it can be shown
+// to fire on a driver that breaks it (contract_internal_test.go) — no driver
+// in this repository does, so the case alone could never go red.
+func execDeclarationProblem(p provision.Provisioner) string {
+	if _, ok := p.(provision.Execer); !ok {
+		return "driver declares Capabilities.Exec but does not implement provision.Execer; " +
+			"every caller type-asserts, so this is a declaration with nothing behind it"
+	}
+	// The terminal is the same capability: a driver that declares Exec and
+	// cannot attach a terminal would answer the terminal route with a refusal
+	// that blames a capability it reports having.
+	if _, ok := p.(provision.TTYExecer); !ok {
+		return "driver declares Capabilities.Exec but does not implement provision.TTYExecer; " +
+			"Exec covers both entry points (see Capabilities), so the terminal would be refused " +
+			"by a driver that reports it can exec"
+	}
+	return ""
 }
 
 // mustList wraps List with the one assertion every caller of it makes: an error

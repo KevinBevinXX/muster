@@ -251,6 +251,33 @@ func TestExecTTYStreamsThroughTheExecSubresource(t *testing.T) {
 	})
 }
 
+// TestExecTTYAsksForATerminal: the request itself asks for a TTY, with no
+// stderr stream (a TTY merges it) — checked with no resize queue, so nothing
+// about sizes stands in front of the assertion.
+func TestExecTTYAsksForATerminal(t *testing.T) {
+	srv := newExecServer(t)
+	d, ref, _ := execRig(t, nsModes[0], srv)
+	inR, inW := io.Pipe()
+	var out syncBuffer
+	done := make(chan error, 1)
+	go func() { done <- d.ExecTTY(context.Background(), ref, []string{"true"}, inR, &out, nil) }()
+	_, _ = inW.Write([]byte("x"))
+	_ = inW.Close()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ExecTTY did not return")
+	}
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if got := strings.Join(srv.query["tty"], ","); got != "true" {
+		t.Errorf("query tty=%q, want \"true\"", got)
+	}
+	if got := strings.Join(srv.query["stderr"], ","); got == "true" {
+		t.Errorf("query stderr=%q with a TTY", got)
+	}
+}
+
 // TestExecTTYEndsWhenTheContextIsCancelled: a container that never exits and a
 // stdin that never ends — only the context can end the call, and it must, and
 // the connection must actually close (a stream left open is a tmux client left
