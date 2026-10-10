@@ -83,7 +83,11 @@ func startAttachRig(t *testing.T, innerSock, session string, readOnly bool, env 
 		_ = k.Run()
 	})
 
-	cmd, err := agents.TerminalCommand(agents.KindClaudeCode, readOnly)
+	tag, err := agents.NewTerminalTag()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd, err := agents.TerminalCommand(agents.KindClaudeCode, readOnly, tag)
 	if err != nil {
 		t.Fatal(err)
 	}

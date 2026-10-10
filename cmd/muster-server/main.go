@@ -51,6 +51,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/agentkickoff"
+	"github.com/ZacxDev/muster/internal/agentprovision"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/api"
@@ -94,6 +95,13 @@ const (
 	// terminationGracePeriodSeconds — past that the kubelet SIGKILLs and nothing
 	// is recorded at all.
 	kickoffDrainTimeout = 10 * time.Second
+
+	// terminalDrainTimeout bounds the wait for open agent terminals to end and
+	// RELEASE their tmux clients (api.Server.EndTerminals). It runs CONCURRENTLY
+	// with the HTTP drain, so it adds nothing to the 25 s above while it is no
+	// longer than shutdownDrainTimeout. It is the release's own budget: a
+	// terminal ends at once on cancel, and the release is one short exec.
+	terminalDrainTimeout = agentprovision.TerminalReleaseTimeout
 )
 
 func main() {
@@ -454,10 +462,20 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 // — an HTTP handler, or the deliverer's card-change broadcast — so waiting for
 // fan-outs before either has stopped would wait on a set that is still growing.
 func (a *app) shutdown() {
+	// Terminals first and CONCURRENTLY with the HTTP drain: their sockets are
+	// hijacked, so Shutdown neither ends nor waits for them, and each one's
+	// release (a second exec into its pod) must run before the process exits or
+	// its tmux client stays attached in the pod.
+	terminalsEnded := make(chan bool, 1)
+	go func() { terminalsEnded <- a.srv.EndTerminals(terminalDrainTimeout) }()
 	drainCtx, cancel := context.WithTimeout(context.Background(), shutdownDrainTimeout)
 	defer cancel()
 	if err := a.http.Shutdown(drainCtx); err != nil {
 		a.logger.Printf("drain did not complete within %s: %v", shutdownDrainTimeout, err)
+	}
+	if !<-terminalsEnded {
+		a.logger.Printf("agent terminals did not finish releasing within %s; exiting anyway "+
+			"(their tmux clients may stay attached in the agents' pods until those restart)", terminalDrainTimeout)
 	}
 	// The deliverer registers fan-outs too (its card-change broadcast), so it is
 	// waited for BEFORE the fan-out set, for the same reason HTTP is.

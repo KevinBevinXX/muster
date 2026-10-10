@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -96,7 +97,7 @@ func (s *Server) handleAgentTerminalWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Refused BEFORE the upgrade, while a status code can still say why.
-	if _, err := agents.TerminalCommand(a.Kind, true); err != nil {
+	if err := agents.CheckTerminal(a.Kind); err != nil {
 		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
 	}
@@ -113,16 +114,94 @@ func (s *Server) handleAgentTerminalWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer c.CloseNow()
 
+	// Registered so a shutdown can end it: a hijacked connection is outside
+	// http.Server.Shutdown's reach, and a process that exits with a terminal
+	// open skips that terminal's release (Provisioner.AttachTerminal).
+	ctx, done, ok := s.terminals.add(r.Context())
+	if !ok {
+		_ = c.Close(websocket.StatusGoingAway, "muster is shutting down")
+		return
+	}
+	defer done()
+
 	mode := terminalModeInteractive
 	if readOnly {
 		mode = terminalModeReadOnly
 	}
 	s.logger.Printf("agents: terminal %s attached (%s)", a.Name, mode)
-	err = bridgeTerminal(r.Context(), s.logger, c, readOnly, initial, hasInitial,
+	err = bridgeTerminal(ctx, s.logger, c, readOnly, initial, hasInitial,
 		func(ctx context.Context, stdin io.Reader, stdout io.Writer, resize <-chan provision.TermSize) error {
 			return s.ext.Provisioner.AttachTerminal(ctx, a, readOnly, stdin, stdout, resize)
 		})
 	s.logger.Printf("agents: terminal %s detached: %v", a.Name, errOrNone(err))
+}
+
+// EndTerminals ends every live agent terminal, refuses new ones, and waits up
+// to timeout for their handlers to return — which is after each terminal's
+// release has run (Provisioner.AttachTerminal returns only then). It reports
+// whether they all did. Call during graceful shutdown.
+//
+// 🔴 WITHOUT IT A REDEPLOY LEAKS EVERY OPEN TERMINAL'S tmux CLIENT. A terminal's
+// socket is hijacked, so http.Server.Shutdown neither cancels nor waits for
+// it; the process would exit with the handler mid-bridge and the release that
+// ends the client in the agent's pod would never run.
+func (s *Server) EndTerminals(timeout time.Duration) bool {
+	return s.terminals.endAll(s.logger, timeout)
+}
+
+// terminalSet tracks live terminals. The zero value is ready to use.
+type terminalSet struct {
+	mu      sync.Mutex
+	closed  bool
+	next    uint64
+	cancels map[uint64]context.CancelFunc
+	wg      sync.WaitGroup
+}
+
+// add registers a terminal whose context is parent's, also cancelled by
+// endAll. ok is false once endAll has run; otherwise done must be called when
+// the terminal's handler returns.
+func (t *terminalSet) add(parent context.Context) (ctx context.Context, done func(), ok bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed {
+		return nil, nil, false
+	}
+	if t.cancels == nil {
+		t.cancels = map[uint64]context.CancelFunc{}
+	}
+	ctx, cancel := context.WithCancel(parent)
+	id := t.next
+	t.next++
+	t.cancels[id] = cancel
+	t.wg.Add(1)
+	return ctx, func() {
+		t.mu.Lock()
+		delete(t.cancels, id)
+		t.mu.Unlock()
+		cancel()
+		t.wg.Done()
+	}, true
+}
+
+func (t *terminalSet) endAll(logger *log.Logger, timeout time.Duration) bool {
+	t.mu.Lock()
+	t.closed = true
+	for _, cancel := range t.cancels {
+		cancel()
+	}
+	t.mu.Unlock()
+	finished := make(chan struct{})
+	safeGo(logger, "terminal drain", func() {
+		t.wg.Wait()
+		close(finished)
+	})
+	select {
+	case <-finished:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 func errOrNone(err error) string {
@@ -151,10 +230,16 @@ type attachFunc func(ctx context.Context, stdin io.Reader, stdout io.Writer, res
 //
 // 🔴 EVERY EXIT PATH ENDS THE OTHER SIDE, AND THAT IS THE TEARDOWN CONTRACT.
 // The browser closing (a closed tab, a lost phone) ends the read loop, which
-// cancels attach's context — the exec stream closes and tmux's client exits in
-// the pod, leaving the session itself running. attach returning (the client
-// exited, or the exec was refused) closes the socket. Nothing here outlives
-// the call: TestClosingTheTerminalSocketEndsTheExecAndLeaksNothing.
+// cancels attach's context; so do a failed keepalive and a shutdown
+// (EndTerminals). attach returning (the client exited, or the exec was
+// refused) closes the socket. Nothing here outlives the call:
+// TestClosingTheTerminalSocketEndsTheExecAndLeaksNothing.
+//
+// ⚠ CANCELLING attach's CONTEXT CLOSES THE EXEC STREAM, AND THAT DOES NOT END
+// tmux's CLIENT IN THE POD: the container runtime keeps an exec'd process
+// running after its stream is gone. Ending it is attach's own job
+// (Provisioner.AttachTerminal releases it before returning), so this function
+// waits for attach to return rather than abandoning it.
 func bridgeTerminal(parent context.Context, logger *log.Logger, c *websocket.Conn, readOnly bool, initial provision.TermSize, hasInitial bool, attach attachFunc) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()

@@ -55,6 +55,9 @@ type fakeTerminal struct {
 
 	refuse    error // returned at once, before any output
 	exitAfter bool  // write a banner, then return nil (the client exited)
+	// release, when set, is waited for after ctx ends and before returning —
+	// the adapter's release of the pod-side client happens in that interval.
+	release chan struct{}
 
 	mu     sync.Mutex
 	calls  []termCall
@@ -117,6 +120,9 @@ func (f *fakeTerminal) AttachTerminal(ctx context.Context, a agents.Agent, readO
 	for {
 		select {
 		case <-ctx.Done():
+			if f.release != nil {
+				<-f.release
+			}
 			return ctx.Err()
 		case sz := <-resize:
 			f.mu.Lock()
@@ -458,9 +464,11 @@ func TestATerminalWhoseClientExitsSaysSo(t *testing.T) {
 
 // TestClosingTheTerminalSocketEndsTheExecAndLeaksNothing: a browser that goes
 // away — abruptly, as a killed tab or a lost phone does, and politely — ends
-// the attach (its context is cancelled, so the exec stream and tmux's client in
-// the pod go with it), and after repeated attach/close cycles the process holds
-// no more goroutines than it did after one.
+// the attach (its context is cancelled, which closes the exec stream; ending
+// tmux's client in the pod is the adapter's release, tested in
+// internal/agentprovision and against real tmux in cmd/ccd), and after
+// repeated attach/close cycles the process holds no more goroutines than it
+// did after one.
 func TestClosingTheTerminalSocketEndsTheExecAndLeaksNothing(t *testing.T) {
 	ft := newFakeTerminal()
 	s, ts := terminalServer(t, ft)
@@ -502,4 +510,82 @@ func TestClosingTheTerminalSocketEndsTheExecAndLeaksNothing(t *testing.T) {
 	buf = buf[:runtime.Stack(buf, true)]
 	fmt.Fprintf(os.Stderr, "%s\n", buf)
 	t.Fatalf("goroutines grew from %d to %d over 6 attach/close cycles", baseline, n)
+}
+
+// TestEndTerminalsEndsALiveTerminalAndWaitsForItsRelease: a shutdown cancels
+// an open terminal — whose socket is hijacked, so http.Server.Shutdown would
+// neither end nor wait for it — and returns only once its attach has returned,
+// which is after the adapter's release. Then it refuses new terminals without
+// attaching anything.
+func TestEndTerminalsEndsALiveTerminalAndWaitsForItsRelease(t *testing.T) {
+	ft := newFakeTerminal()
+	ft.release = make(chan struct{})
+	s, ts := terminalServer(t, ft)
+	c, _, err := dialTerm(t, s, ts, "/agents/keen-wren/terminal/ws?mode=rw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	readUntil(t, c, "ready")
+
+	ended := make(chan bool, 1)
+	go func() { ended <- s.EndTerminals(5 * time.Second) }()
+	// The attach sees its context end and then "releases" until ft.release is
+	// closed: EndTerminals must still be waiting. (Had it not cancelled the
+	// terminal at all, it would time out below and report false.)
+	time.Sleep(200 * time.Millisecond)
+	select {
+	case <-ended:
+		t.Fatal("EndTerminals returned while the terminal was still releasing")
+	default:
+	}
+	close(ft.release)
+	select {
+	case ok := <-ended:
+		if !ok {
+			t.Fatal("EndTerminals reported a timeout for a terminal that ended")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("EndTerminals did not return after the terminal ended")
+	}
+	if _, _, _, active, ended := ft.snapshot(); active != 0 || ended != 1 {
+		t.Fatalf("after EndTerminals: active=%d ended=%d, want 0 and 1", active, ended)
+	}
+
+	callsBefore, _, _, _, _ := ft.snapshot()
+	c2, _, err := dialTerm(t, s, ts, "/agents/keen-wren/terminal/ws?mode=rw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c2.CloseNow()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, _, err := c2.Read(ctx); websocket.CloseStatus(err) != websocket.StatusGoingAway {
+		t.Fatalf("a terminal opened during shutdown: want close %v, got %v", websocket.StatusGoingAway, err)
+	}
+	if calls, _, _, _, _ := ft.snapshot(); len(calls) != len(callsBefore) {
+		t.Fatalf("a terminal opened during shutdown was attached: calls %v", calls)
+	}
+}
+
+// TestEndTerminalsGivesUpAtItsTimeout: a terminal whose release never finishes
+// does not hold the shutdown past its budget, and the result says so.
+func TestEndTerminalsGivesUpAtItsTimeout(t *testing.T) {
+	ft := newFakeTerminal()
+	ft.release = make(chan struct{})
+	defer close(ft.release)
+	s, ts := terminalServer(t, ft)
+	c, _, err := dialTerm(t, s, ts, "/agents/keen-wren/terminal/ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	readUntil(t, c, "ready")
+	start := time.Now()
+	if s.EndTerminals(150 * time.Millisecond) {
+		t.Fatal("EndTerminals reported success for a terminal still releasing")
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("EndTerminals took %s against a 150ms budget", d)
+	}
 }

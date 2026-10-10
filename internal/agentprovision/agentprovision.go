@@ -90,6 +90,7 @@
 package agentprovision
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -97,6 +98,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
@@ -773,12 +775,71 @@ func (a *Adapter) StreamLogs(ctx context.Context, ag agents.Agent, emit func(str
 // one) run on a pty through provision.ExecTTY, which refuses a driver that
 // cannot exec. readOnly is passed straight to the command; there is no default
 // here for a caller to inherit.
+//
+// 🔴 IT RETURNS ONLY AFTER THE ATTACH IS RELEASED, ON EVERY EXIT PATH. Ending
+// the exec stream does not end the process it started in the container — the
+// runtime keeps it and its pty, and tells it nothing — so every attach that may
+// have started is followed by releaseTerminal, a second exec that ends exactly
+// that attach's tmux client (agents.TerminalReleaseCommand). One place, after
+// ExecTTY returns, whatever made it return: the browser closing the socket, a
+// dropped connection the keepalive noticed, a mode switch (which is a close
+// and a new attach), a stream error, the client exiting on its own, or
+// muster's shutdown cancelling every terminal (api.Server.EndTerminals).
+// Only a refusal BEFORE any stream (terminalMayHaveStarted) skips it. A muster
+// that dies without running this (a crash, SIGKILL) leaves its clients
+// attached until the pod restarts; see agents.TerminalCommand on sizing.
 func (a *Adapter) AttachTerminal(ctx context.Context, ag agents.Agent, readOnly bool, stdin io.Reader, stdout io.Writer, resize <-chan provision.TermSize) error {
-	cmd, err := agents.TerminalCommand(ag.Kind, readOnly)
+	if err := agents.CheckTerminal(ag.Kind); err != nil {
+		return err
+	}
+	tag, err := agents.NewTerminalTag()
 	if err != nil {
 		return err
 	}
-	return provision.ExecTTY(ctx, a.driver, agents.RefOf(ag), cmd, stdin, stdout, resize)
+	cmd, err := agents.TerminalCommand(ag.Kind, readOnly, tag)
+	if err != nil {
+		return err
+	}
+	ref := agents.RefOf(ag)
+	err = provision.ExecTTY(ctx, a.driver, ref, cmd, stdin, stdout, resize)
+	if terminalMayHaveStarted(err) {
+		a.releaseTerminal(ctx, ref, tag)
+	}
+	return err
+}
+
+// TerminalReleaseTimeout bounds one terminal release. It is its own budget, on
+// a context DETACHED from the attach's: by the time a release runs, the
+// attach's context has usually just been cancelled — that is what ended it.
+const TerminalReleaseTimeout = 10 * time.Second
+
+// terminalMayHaveStarted is false only for a refusal that provably came before
+// any process could start: the driver cannot exec at all, the cluster refused
+// the exec (RBAC — ErrUnsupported), the command was invalid, or there is no
+// pod. Anything else — success, cancellation, a stream error — may have left a
+// client running.
+func terminalMayHaveStarted(err error) bool {
+	return !errors.Is(err, provision.ErrUnsupported) &&
+		!errors.Is(err, provision.ErrInvalidSpec) &&
+		!errors.Is(err, provision.ErrNotFound)
+}
+
+// releaseTerminal ends the attach tagged tag, logging what it found. Its
+// failure is logged, not returned: the caller's error is the attach's, and a
+// release that could not run (the pod is gone, the apiserver is unreachable)
+// has nothing the browser could act on.
+func (a *Adapter) releaseTerminal(ctx context.Context, ref provision.Ref, tag agents.TerminalTag) {
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), TerminalReleaseTimeout)
+	defer cancel()
+	var out bytes.Buffer
+	err := provision.Exec(rctx, a.driver, ref, agents.TerminalReleaseCommand(),
+		strings.NewReader(agents.TerminalReleaseInput(tag)), &out, &out)
+	if err != nil {
+		a.log.Printf("agents: terminal %s: release FAILED, its tmux client may still be attached: %v: %s",
+			ref.Name, err, strings.TrimSpace(out.String()))
+		return
+	}
+	a.log.Printf("agents: terminal %s: %s", ref.Name, strings.TrimSpace(out.String()))
 }
 
 // ReapplyProfiles re-renders the agent's spec from its current row and

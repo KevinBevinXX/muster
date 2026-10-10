@@ -229,8 +229,14 @@ type TermSize struct {
 // command exits because of it, or when ctx is cancelled — whichever is first.
 // 🔴 ctx CANCELLATION MUST END IT. A caller bridging a browser socket cancels
 // ctx when the socket closes, and a driver that kept the stream open after
-// that would leave a process attached in the instance and a goroutine in muster
-// for every closed tab.
+// that would leave a goroutine in muster for every closed tab.
+//
+// 🔴 ENDING THE STREAM DOES NOT END THE COMMAND. Measured on containerd (the
+// kubernetes driver, 2026-10-10): after the exec stream was cancelled the
+// command — a tmux client — was still running in the container, with its pty,
+// more than 60 s later; the runtime signals it nothing. A caller whose
+// command must not outlive the stream has to end it itself, with a second
+// exec (agentprovision's AttachTerminal does).
 //
 // resize may be nil (the terminal keeps the driver's default size). The driver
 // stops reading it when ExecTTY returns; it never closes it.
