@@ -94,6 +94,12 @@ func run(args []string) int {
 	}
 }
 
+// defaultTmuxTarget is the tmux SESSION ccd runs the CLI in when
+// CCD_TMUX_TARGET is unset. muster's terminal attaches to it by the same
+// variable and default (internal/agents.TerminalCommand); TestTheTerminalAttachesToCcdsSession pins
+// the two together.
+const defaultTmuxTarget = "cc"
+
 func envOr(name, def string) string {
 	if v := os.Getenv(name); v != "" {
 		return v
@@ -157,7 +163,7 @@ func serve() error {
 
 	term := tmuxTerminal{
 		bin: "tmux", socket: os.Getenv("CCD_TMUX_SOCKET"), conf: os.Getenv("CCD_TMUX_CONF"),
-		target: envOr("CCD_TMUX_TARGET", "cc"), enterDelay: 150 * time.Millisecond,
+		target: envOr("CCD_TMUX_TARGET", defaultTmuxTarget), enterDelay: 150 * time.Millisecond,
 	}
 	auth := newAuthTracker()
 	srv := newServer(serverConfig{

@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -263,6 +264,12 @@ func (stubProvisioner) TailLogs(context.Context, agents.Agent, int64) (string, e
 	return "", nil
 }
 func (stubProvisioner) StreamLogs(context.Context, agents.Agent, func(string)) error { return nil }
+
+// AttachTerminal REFUSES, as the interface requires of anything that attaches
+// nothing; the terminal route's own tests use a fixture that streams.
+func (stubProvisioner) AttachTerminal(context.Context, agents.Agent, bool, io.Reader, io.Writer, <-chan provision.TermSize) error {
+	return provision.ErrUnsupported
+}
 
 // ⚠ THE STUB REPORTS A KICKOFF AS DELIVERABLE, so the create handler's pre-flight
 // is a no-op for every fixture that does not override it. That is the right default

@@ -30,10 +30,17 @@ const sessionTTL = 30 * 24 * time.Hour
 // TerminalUIHosts and ChiefToken all gated the terminal-WRITE surface — a
 // free-form `send-keys` box onto an operator's real terminals. That surface is
 // on the permission router's side of the carve in its entirety: muster
-// registers no route that can reach a terminal, so a server that carried those
-// credentials would be holding the keys to a door it does not have. Do not add
-// them back "for parity"; a credential with no route is a credential that can
-// only ever be leaked.
+// registers no route that can reach an OPERATOR'S terminal, so a server that
+// carried those credentials would be holding the keys to a door it does not
+// have. Do not add them back "for parity"; a credential with no route is a
+// credential that can only ever be leaked.
+//
+// ⚠ muster DOES NOW HAVE ONE TERMINAL ROUTE, AND IT NEEDS NONE OF THEM. A
+// claude-code agent's live terminal (terminal.go, GET /agents/{name}/terminal
+// and its socket) attaches to that AGENT'S own tmux session inside its own pod.
+// It sits behind requireSession, the human tier, exactly as the agent chat
+// socket does, and the hook token does not open it
+// (TestTheTerminalSocketRefusesTheHookToken).
 //
 // HookToken protects the machine-called surface via a bearer token. It is
 // enforce-when-set: an empty HookToken leaves those endpoints open, a
@@ -154,8 +161,10 @@ const minUIPasswordLen = 12
 //
 // ⚠ THIS PARAGRAPH USED TO END "and — through requireArmedTerminalUI — a
 // free-form send-keys box", AND THE CLAUSE WAS INHERITED RATHER THAN TRUE. No
-// such wrapper and no terminal-write surface exists in this module: the terminal
-// routes stayed with the permission router in the carve. The reasoning is
+// such wrapper and no terminal-write surface onto the operator's terminals
+// exists in this module: those routes stayed with the permission router in the
+// carve. (An agent's own terminal is here now, behind this same tier; see
+// AuthConfig.) The reasoning is
 // unaffected — the transcripts and the approve/deny queue are on their own
 // enough to make an open LAN port unacceptable — but the example was evidence
 // for a hazard that is not on this side of the split, and evidence for the wrong
@@ -224,7 +233,8 @@ func (s *Server) hasValidSession(r *http.Request) bool {
 // and DO NOT PASS THROUGH HERE." Enumerated over this module: no
 // requireArmedTerminalUI is declared anywhere (its only occurrences were this
 // comment and the one above it), and no /ui/term/* route is registered — the
-// terminal surface stayed with the permission router in the carve. The lesson
+// operator-terminal surface stayed with the permission router in the carve
+// (the agent terminal in terminal.go is behind requireSession). The lesson
 // the paragraph carried is real and is why the sentence is REPLACED rather than
 // cut: gating requireSession is not the same as gating every browser surface,
 // and a route registered outside it answers 200 to an anonymous caller. What

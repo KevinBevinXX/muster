@@ -449,6 +449,14 @@ func agentRuntime(cfg config) (agentgateway.Runtime, error) {
 	}
 }
 
+// e2eFakeTerminal, when non-nil, wraps the noop driver with a scripted
+// terminal so the browser suite can drive the terminal page against a real
+// server without a cluster. It is set ONLY by e2eterm.go, which carries the
+// `e2eterm` build tag: the Dockerfile and every CI build but the e2e harness's
+// build without it, so a deployed binary cannot hold one.
+// TestTheDefaultBuildCarriesNoFakeTerminal pins the nil.
+var e2eFakeTerminal func(provision.Provisioner) provision.Provisioner
+
 // buildDriver builds the provisioning backend itself.
 func buildDriver(cfg config, logger *log.Logger) (provision.Provisioner, error) {
 	switch cfg.agentProvisioner() {
@@ -465,7 +473,17 @@ func buildDriver(cfg config, logger *log.Logger) (provision.Provisioner, error) 
 		// internal/provision/k8s, and only the branch below reaches it. A noop
 		// wired to satisfy a ledger would be exactly the "fake consumer" the
 		// ledger's own entry forbids.
-		return provision.NewNoop()
+		noop, err := provision.NewNoop()
+		if err != nil {
+			return nil, err
+		}
+		if e2eFakeTerminal != nil {
+			// Only a binary built with -tags e2eterm gets here; see e2eterm.go.
+			logger.Printf("🔴 E2E BUILD (-tags e2eterm): the noop driver carries a FAKE terminal. " +
+				"This binary is a browser-test fixture and must never be deployed.")
+			return e2eFakeTerminal(noop), nil
+		}
+		return noop, nil
 	case provisionerK8s:
 		return buildK8sDriver(cfg, logger)
 	default:

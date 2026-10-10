@@ -131,6 +131,7 @@ var provisionerDeps = []provisionerDep{
 		routes: []string{
 			"DELETE /agents/{id}",
 			"GET /agents/{name}/logs/stream",
+			"GET /agents/{name}/terminal/ws",
 			"POST /agents",
 			"POST /agents/{id}/start",
 			"POST /agents/{id}/stop",
@@ -144,6 +145,7 @@ var provisionerDeps = []provisionerDep{
 			"(*Server).handleAgentLogsStream",  // StreamLogs
 			"(*Server).handleAgentStart",       // Start
 			"(*Server).handleAgentStop",        // Stop
+			"(*Server).handleAgentTerminalWS",  // AttachTerminal
 			"(*Server).handleChiefProvision",   // Start
 		},
 	},

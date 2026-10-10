@@ -107,6 +107,18 @@ var standaloneDocuments = []documentRenderer{
 		},
 	},
 	{
+		// The claude-code agent's live terminal. Its "empty" state is the one a
+		// deployment without a provisioner serves: the reason is shown and no
+		// socket is opened.
+		fn: "AgentTerminalPage", label: "the agent terminal page (/agents/<name>/terminal)",
+		render: func(w io.Writer) error {
+			return AgentTerminalPage(AgentTerminalView{Name: "keen-wren", DisplayName: "#12 · **fix** the `chip` row"}).Render(w)
+		},
+		renderEmpty: func(w io.Writer) error {
+			return AgentTerminalPage(AgentTerminalView{Name: "keen-wren", Unavailable: "no provisioner wired"}).Render(w)
+		},
+	},
+	{
 		// A real document a reader can LAND on — a legacy deeplink to a dismissed
 		// task arrives here — so it owes the same contract as any other page.
 		fn: "TaskNotFoundPage", label: "the task 404 page (/tasks/<id>, dismissed)",

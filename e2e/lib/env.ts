@@ -27,6 +27,10 @@ export const port = Number(process.env.MUSTER_E2E_PORT ?? 18181);
 export const updatePort = port + 1;
 // The agent-kinds spec's own server (claude-code enabled over the noop driver).
 export const kindsPort = port + 2;
+// The terminal spec's own server: a binary built with `-tags e2eterm`, whose
+// noop driver plays a terminal (cmd/muster-server/e2eterm.go).
+export const termPort = port + 3;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
+export const versionTerm = 'e2e-term';

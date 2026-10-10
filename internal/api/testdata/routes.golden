@@ -39,6 +39,8 @@ GET /agent/task
 GET /agents
 GET /agents/{name}
 GET /agents/{name}/logs/stream
+GET /agents/{name}/terminal
+GET /agents/{name}/terminal/ws
 GET /agents/{name}/ws
 GET /api/agents
 GET /api/agents/{name}/messages

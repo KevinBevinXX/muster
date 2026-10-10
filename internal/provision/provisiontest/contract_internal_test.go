@@ -1,9 +1,13 @@
 package provisiontest
 
 import (
+	"context"
+	"io"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/ZacxDev/muster/internal/provision"
 )
 
 // TestTheContractSuiteMatchesWhatTheDocsClaimAboutIt pins the two numbers the
@@ -58,5 +62,36 @@ func TestTheContractSuiteMatchesWhatTheDocsClaimAboutIt(t *testing.T) {
 			"internal/provision/doc.go, provision.go's ErrNotManaged doc and README.md all state that " +
 			"this suite does NOT pin it and that it is pinned in the kubernetes driver instead. Fix " +
 			"the three documents in the same change.")
+	}
+}
+
+// execOnly declares Exec and implements only the non-terminal entry point.
+type execOnly struct{ *provision.Noop }
+
+func (execOnly) Capabilities() provision.Capabilities { return provision.Capabilities{Exec: true} }
+func (execOnly) Exec(context.Context, provision.Ref, []string, io.Reader, io.Writer, io.Writer) error {
+	return nil
+}
+
+// execAndTTY implements both.
+type execAndTTY struct{ execOnly }
+
+func (execAndTTY) ExecTTY(context.Context, provision.Ref, []string, io.Reader, io.Writer, <-chan provision.TermSize) error {
+	return nil
+}
+
+// TestTheExecDeclarationCheckFiresOnADriverWithoutATerminal: the contract's
+// "declares Exec ⇒ implements both" case, shown red on a driver that breaks it
+// and green on one that does not. No real driver breaks it, which is exactly
+// why it needs a fixture that does.
+func TestTheExecDeclarationCheckFiresOnADriverWithoutATerminal(t *testing.T) {
+	if got := execDeclarationProblem(execOnly{provision.MustNewNoop()}); !strings.Contains(got, "TTYExecer") {
+		t.Fatalf("a driver declaring Exec without ExecTTY must be named; got %q", got)
+	}
+	if got := execDeclarationProblem(execAndTTY{execOnly{provision.MustNewNoop()}}); got != "" {
+		t.Fatalf("control: a driver implementing both must pass; got %q", got)
+	}
+	if got := execDeclarationProblem(provision.MustNewNoop()); !strings.Contains(got, "provision.Execer") {
+		t.Fatalf("a driver implementing neither must be named for Execer first; got %q", got)
 	}
 }

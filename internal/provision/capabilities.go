@@ -53,7 +53,8 @@ func (i Isolation) String() string {
 // here is refused on somewhere, and each one's refusal is spelled in exactly
 // one place: Files, Secrets, Persistence, ResourceLimits and NetworkIsolation
 // in [CheckSpec]; Scale in [CheckSpec] and [CheckScale], which are one rule reached by two
-// entry points; Policy in [Grant]; Exec in [Exec]. A predicate open-coded per
+// entry points; Policy in [Grant]; Exec in [Exec] and [ExecTTY], one rule
+// reached by two entry points like Scale's. A predicate open-coded per
 // driver instead is a predicate that is wrong in all but one of them, in the
 // same direction, and nobody hears the disagreement.
 //
@@ -102,7 +103,7 @@ type Capabilities struct {
 	// Scale: replica counts other than 0 and 1.
 	Scale bool
 
-	// Exec: the driver implements Execer against a live instance.
+	// Exec: the driver implements Execer AND TTYExecer against a live instance.
 	Exec bool
 
 	// NetworkIsolation: the driver can confine an instance's network as
