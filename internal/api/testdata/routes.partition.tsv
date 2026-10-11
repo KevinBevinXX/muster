@@ -83,10 +83,15 @@
 #
 # THIS FILE'S OWN COUNTS (re-derived, not copied from the plan)
 #
-# counts: muster=82 router=66 shared=14 total=162
+# counts: muster=67 router=66 shared=14 total=147
 #
-#   muster + router + shared = 82 + 66 + 14 = 162
-#   muster's projected post-carve registration count = 82 + 14 = 96
+#   muster + router + shared = 67 + 66 + 14 = 147
+#   muster's projected post-carve registration count = 67 + 14 = 81
+#
+#   ⚠ THESE WERE 82 / 162 / 96 AT THE CARVE. The 15 privilege and runbook rows
+#   were deleted when those subsystems were removed (muster PR #49), so the
+#   manifest no longer lists routes that exist on neither side. The plan
+#   comparison below is about the carve-time counts and is left as written.
 #
 #   🔴 THIS PARTITION DISAGREES WITH THE PLAN'S, AND THE DISAGREEMENT CANNOT BE
 #   RECONCILED FROM THE PLAN. Normalised onto the plan's 174-route base by
@@ -120,14 +125,11 @@
 # below depends on it, but do not build on it.
 
 muster	agents.go:registerAgentRoutes	DELETE /agents/{id}
-muster	privilege.go:registerPrivilegeRoutes	DELETE /agents/{id}/grants/{profileId}
 router	layout.go:registerLayoutRoutes	DELETE /api/layout/panels/{id}
 router	layout.go:registerLayoutRoutes	DELETE /api/layout/views/{id}
 router	server.go:registerRoutes	DELETE /api/response/{id}
 muster	server.go:registerNotesRoutes	DELETE /api/tasks/{id}
 muster	server.go:registerNotesRoutes	DELETE /api/tasks/{id}/comments/{cid}
-muster	privilege.go:registerPrivilegeRoutes	DELETE /privileges/{id}
-muster	runbooks.go:registerRunbookRoutes	DELETE /runbooks/{id}
 muster	server.go:registerNotesRoutes	DELETE /tasks/{id}
 muster	server.go:registerNotesRoutes	DELETE /tasks/{id}/comments/{cid}
 muster	server.go:registerNotesRoutes	DELETE /tasks/{id}/tags/{tag}
@@ -208,10 +210,8 @@ router	newsession.go:registerLaunchRoutes	GET /tmux/launch
 muster	agents.go:registerAgentRoutes	GET /ui/agents
 muster	agents.go:registerAgentRoutes	GET /ui/agents/new
 muster	agents.go:registerAgentRoutes	GET /ui/agents/notes
-muster	agents.go:registerAgentRoutes	GET /ui/agents/profiles
 muster	agents.go:registerAgentRoutes	GET /ui/agents/repos
 muster	agents.go:registerAgentRoutes	GET /ui/agents/{id}/card
-muster	privilege.go:registerPrivilegeRoutes	GET /ui/agents/{id}/grants
 muster	agents.go:registerAgentRoutes	GET /ui/agents/{id}/recent
 muster	agents.go:registerAgentRoutes	GET /ui/agents/{id}/rename
 muster	agents.go:registerAgentRoutes	GET /ui/agents/{id}/status
@@ -223,12 +223,9 @@ muster	server.go:registerRoutes	GET /ui/chief/panel
 muster	server.go:registerRoutes	GET /ui/chief/threads/search
 router	layout_ui.go:registerLayoutUIRoutes	GET /ui/layout
 muster	agents.go:registerAgentRoutes	GET /ui/notifications
-muster	privilege.go:registerPrivilegeRoutes	GET /ui/privilege-requests
-muster	privilege.go:registerPrivilegeRoutes	GET /ui/privileges
 muster	github.go:registerGitHubRoutes	GET /ui/repos
 router	server.go:registerRoutes	GET /ui/requests
 router	server.go:registerRoutes	GET /ui/requests/quick
-muster	runbooks.go:registerRunbookRoutes	GET /ui/runbooks
 router	session_ui.go:registerSessionViewRoutes	GET /ui/session/{claudeSessionId}
 router	session_ui.go:registerSessionViewRoutes	GET /ui/session/{claudeSessionId}/raw
 router	suggest.go:registerSuggestRoutes	GET /ui/suggestions
@@ -246,11 +243,9 @@ router	layout.go:registerLayoutRoutes	PATCH /api/layout/panels/{id}/state
 muster	server.go:registerNotesRoutes	PATCH /api/tasks/{id}
 muster	server.go:registerNotesRoutes	PATCH /api/tasks/{id}/status
 muster	server.go:registerNotesRoutes	PATCH /tasks/{id}/status
-muster	server.go:registerAgentSelfServiceRoutes	POST /agent/privilege/request
 muster	server.go:registerAgentSelfServiceRoutes	POST /agent/task/comment
 muster	agents.go:registerAgentRoutes	POST /agents
 muster	agents.go:registerAgentRoutes	POST /agents/sessions/{sid}/read
-muster	privilege.go:registerPrivilegeRoutes	POST /agents/{id}/grants
 muster	agents.go:registerAgentRoutes	POST /agents/{id}/model
 muster	agents.go:registerAgentRoutes	POST /agents/{id}/name
 muster	agents.go:registerAgentRoutes	POST /agents/{id}/sessions
@@ -296,9 +291,6 @@ muster	server.go:registerRoutes	POST /chief/provision
 muster	github.go:registerGitHubRoutes	POST /github/disconnect
 shared	login.go:registerLoginRoutes	POST /login
 shared	login.go:registerLoginRoutes	POST /logout
-muster	privilege.go:registerPrivilegeRoutes	POST /privileges
-muster	runbooks.go:registerRunbookRoutes	POST /runbooks
-muster	runbooks.go:registerRunbookRoutes	POST /runbooks/{id}/dispatch
 muster	server.go:registerNotesRoutes	POST /tasks
 muster	server.go:registerNotesRoutes	POST /tasks/merge
 muster	server.go:registerNotesRoutes	POST /tasks/{id}/comments
@@ -308,8 +300,6 @@ router	attention.go:registerAttentionRoutes	POST /ui/attention/{id}/resolve
 router	server.go:registerRoutes	POST /ui/decision/{id}
 router	server.go:registerRoutes	POST /ui/dismiss/{id}
 router	layout_ui.go:registerLayoutUIRoutes	POST /ui/layout/views/{viewId}/panels/{id}/state/{state}
-muster	privilege.go:registerPrivilegeRoutes	POST /ui/privilege-requests/{id}/approve
-muster	privilege.go:registerPrivilegeRoutes	POST /ui/privilege-requests/{id}/deny
 router	suggest.go:registerSuggestRoutes	POST /ui/projects/auto-suggest
 router	suggest.go:registerSuggestRoutes	POST /ui/suggestions/{id}/dismiss
 router	suggest.go:registerSuggestRoutes	POST /ui/suggestions/{sessionID}/generate

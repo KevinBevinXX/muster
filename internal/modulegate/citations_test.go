@@ -86,7 +86,6 @@ import (
 var unportedCitations = map[string][]string{
 	"cmd/muster/task.go": {"TestTaskProvenanceHeadersMatchTheServer"},
 
-	"internal/api/agent.go": {"TestEveryCardClearerIsOnTheLedger"},
 	"internal/api/agents.go": {
 		"TestAFailedThreadListReadIsNEVERRenderedAsAnEmptyHistory",
 		"TestReservedAgentNamesAreNotPoolShaped",

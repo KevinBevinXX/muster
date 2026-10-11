@@ -12,7 +12,6 @@ import (
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/github"
-	"github.com/ZacxDev/muster/internal/privilege"
 	"github.com/ZacxDev/muster/internal/router"
 )
 
@@ -131,8 +130,8 @@ func TestTheRouterBannerNamesTheVariableThatIsActuallyMissing(t *testing.T) {
 			name: "all three set: configured",
 			cfg:  config{RouterURL: url, RouterToken: "t", RouterActor: "muster"},
 			wantLine: `permission router: CONFIGURED — ` + envRouterURL + `=` + url +
-				`, actor "muster" — session liveness, event publish, notifications, the ` +
-				`directory picker and agent checkpoints are live (the claude-code approval ` +
+				`, actor "muster" — session liveness, event publish, notifications and the ` +
+				`directory picker are live (the claude-code approval ` +
 				`relay is NOT: see the approval relay gate line)`,
 			// It is the only branch that may call itself CONFIGURED.
 			mustContain: []string{"CONFIGURED", url},
@@ -177,8 +176,8 @@ func TestTheRouterBannerNamesTheVariableThatIsActuallyMissing(t *testing.T) {
 			cfg:  config{Standalone: true},
 			wantLine: `permission router: NONE, DECLARED (` + envStandalone + `=1) — session ` +
 				`transcript links will all read "no transcript recorded", which is TRUE here ` +
-				`because nothing records transcripts. Notifications, the directory picker ` +
-				`and agent checkpoints degrade and say so where a human can see it`,
+				`because nothing records transcripts. Notifications and the directory picker ` +
+				`degrade and say so where a human can see it`,
 			mustContain: []string{envStandalone},
 			mustNotSay:  []string{envRouterToken + " is unset", "CONFIGURED"},
 		},
@@ -284,14 +283,6 @@ var bannerLedger = []string{
 	// for: the runtime it names decides the bearer derivation, and a wrong one is a
 	// 401 from inside a turn.
 	envAgentGateway,
-	// 🔴 THE PRIVILEGE TIER IS LEDGERED AND NOT EXEMPT, WHICH IS A DECISION AND NOT
-	// A DEFAULT. Its off-state is the one this banner's whole argument is about: with
-	// a privilege store wired it is a READINESS DEFECT — /readyz refuses and the pod
-	// never serves — and the refusal's only escape is this variable's name. A
-	// deployment in that state with nothing on the banner gives an operator a 503
-	// and no string to search for. The fully-off arm names it beside the other two;
-	// the default arm's three-way switch names it in every reachable state.
-	envAgentPrivApply,
 	// 🔴 LEDGERED, NOT EXEMPT, AND IT WAS EXEMPT IN A FIRST DRAFT. The port reaches
 	// the cluster at CREATE time and is read back from the Deployment's annotation
 	// (k8s.AnnotationPort, which is where that fact is stated),
@@ -494,11 +485,6 @@ type bannerStubGitHubStore struct{ github.Store }
 // presence is read.
 type bannerStubConnectorStore struct{ connectors.Store }
 
-// bannerStubPrivilegeStore stands in for a wired privilege store. Only its
-// presence is read (`ext.Privilege != nil`), same shape and same reason as
-// bannerStubGitHubStore.
-type bannerStubPrivilegeStore struct{ privilege.Store }
-
 // bannerProvisioner builds the REAL lifecycle adapter over the noop driver, for
 // the banner's wired arm.
 //
@@ -508,7 +494,7 @@ type bannerStubPrivilegeStore struct{ privilege.Store }
 // banner is describing), and cannot drift from what the binary actually assigns.
 func bannerProvisioner(t *testing.T, cfg config) api.Provisioner {
 	t.Helper()
-	p, _, _, err := buildAgentPlane(cfg, stubStore{}, log.New(&strings.Builder{}, "", 0))
+	p, _, err := buildAgentPlane(cfg, stubStore{}, log.New(&strings.Builder{}, "", 0))
 	if err != nil {
 		t.Fatalf("building the banner's provisioner fixture: %v", err)
 	}
@@ -519,32 +505,12 @@ func bannerProvisioner(t *testing.T, cfg config) api.Provisioner {
 	return p
 }
 
-// bannerPrivilegeApplier is the privilege half of the same fixture, built through
-// the real wiring for the same reason bannerProvisioner and bannerGateway are —
-// and with one reason of its own. The banner's WIRED arm type-asserts the field
-// for a Driver() method and falls back to the CONFIGURED name when the assertion
-// fails; a stub with no such method would take the fallback, so the line would
-// report the value an operator SET rather than the driver that got BUILT, and the
-// assertion would never be exercised by any test.
-func bannerPrivilegeApplier(t *testing.T, cfg config) api.PrivilegeApplier {
-	t.Helper()
-	_, _, priv, err := buildAgentPlane(cfg, stubStore{}, log.New(&strings.Builder{}, "", 0))
-	if err != nil {
-		t.Fatalf("building the banner's privilege-applier fixture: %v", err)
-	}
-	if priv == nil {
-		t.Fatalf("the banner fixture's config (%s=%v) produced no applier, so the privilege "+
-			"APPLY: WIRED arm would never be rendered", envAgentPrivApply, cfg.AgentPrivilegeApply)
-	}
-	return priv
-}
-
 // bannerGateway is the chat half of the same fixture, built through the real
 // wiring for the same reason bannerProvisioner is: a stub would let the banner's
 // WIRED arm render over a gateway the binary cannot actually construct.
 func bannerGateway(t *testing.T, cfg config) api.Gateway {
 	t.Helper()
-	_, gw, _, err := buildAgentPlane(cfg, stubStore{}, log.New(&strings.Builder{}, "", 0))
+	_, gw, err := buildAgentPlane(cfg, stubStore{}, log.New(&strings.Builder{}, "", 0))
 	if err != nil {
 		t.Fatalf("building the banner's gateway fixture: %v", err)
 	}
@@ -608,17 +574,6 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		AgentRuntimeConfig:  fixtureRuntimeConfigTemplate,
 		AgentRuntimeInstall: fixtureRuntimeInstallScript,
 
-		// 🔴 THE PRIVILEGE AXIS NEEDS THE CONFIG, THE APPLIER *AND* THE PRIVILEGE
-		// STORE — three things, where the other two tiers need two. The banner's
-		// privilege switch is deliberately SILENT when no privilege store is wired
-		// (TestTheHalfWiredProvisioningBannerReportsBothTiersSeparately has a control
-		// asserting exactly that: a line printed in every state is unconditional text
-		// rather than a report). So a fixture that armed the variable and wired the
-		// applier but left Privilege nil would render NO privilege line at all, and
-		// bannerLedger's both-directions check would fail on the ON side while looking
-		// like a banner bug.
-		AgentPrivilegeApply: true,
-
 		// The connector store: the key, the dedicated listener and the URL agents
 		// are told. The ON render also needs ext.Connectors (below), because the
 		// banner branches on the extension, as for GitHub.
@@ -627,12 +582,10 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		AgentConnectURL: "http://muster.example.test:18191",
 	}
 	onOut = renderBannerWithPool(t, on, api.Extensions{
-		Connectors:     bannerStubConnectorStore{},
-		GitHub:         bannerStubGitHubStore{},
-		Provisioner:    bannerProvisioner(t, on),
-		Gateway:        bannerGateway(t, on),
-		Privilege:      bannerStubPrivilegeStore{},
-		PrivilegeApply: bannerPrivilegeApplier(t, on),
+		Connectors:  bannerStubConnectorStore{},
+		GitHub:      bannerStubGitHubStore{},
+		Provisioner: bannerProvisioner(t, on),
+		Gateway:     bannerGateway(t, on),
 	}, &pgxpool.Pool{})
 	offOut = renderBannerWithPool(t, config{}, api.Extensions{}, nil)
 	return onOut, offOut
@@ -963,27 +916,5 @@ func TestTheHalfWiredProvisioningBannerReportsBothTiersSeparately(t *testing.T) 
 				"half: without it the card reads healthy and nothing points at the "+
 				"reason.\n  line: %s", want, chat)
 		}
-	}
-
-	// 🔴 AND THE ENTRY-2 READINESS DEFECT MUST BE ON THE BANNER TOO, because a pod
-	// that is running and NOT READY with nothing in its log is the worst of the
-	// three states. This is the readback of api.Extensions.defects' newest entry.
-	withPrivilege := renderBanner(t, cfg, api.Extensions{
-		Provisioner: bannerProvisioner(t, cfg),
-		Privilege:   bannerStubPrivilegeStore{},
-	})
-	applyLine := lineNaming(withPrivilege, "privilege APPLY")
-	if applyLine == "" {
-		t.Errorf("with a provisioner AND a privilege store wired and no applier, the banner "+
-			"says nothing — while /readyz refuses. A pod that is running and unready with "+
-			"no explanation in its own log is the state this banner exists to prevent.\n"+
-			"banner:\n%s", withPrivilege)
-	}
-
-	// CONTROL: without a privilege store there is no grant to lie about, and the
-	// line must NOT appear — otherwise it is unconditional text rather than a report.
-	if lineNaming(out, "privilege APPLY") != "" {
-		t.Errorf("the privilege-apply line appears with NO privilege store wired, so it "+
-			"reports nothing.\n  line: %s", lineNaming(out, "privilege APPLY"))
 	}
 }

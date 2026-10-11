@@ -53,16 +53,16 @@ func TestTheChatGatewaySatisfiesTheConsumerInterface(t *testing.T) {
 	}
 
 	// ⚠ ProfileReapplier IS ASSERTED ABSENT, AND IT IS NOT THE SAME KIND OF CLAIM AS
-	// THE ONE ABOVE. It is an OPTIONAL interface: the grant path type-asserts the
-	// *Provisioner* for it, so a Gateway that happened to satisfy it would never be
+	// THE ONE ABOVE. It is an OPTIONAL interface: the model-change path
+	// type-asserts the *Provisioner* for it, so a Gateway that happened to satisfy it would never be
 	// asked. This pins that the method is not drifting onto the wrong type — the
 	// mistake being guarded is a reapply implemented here, where the field that gets
 	// type-asserted can never reach it, which reads as done and is inert.
 	if _, ok := any(gw).(ProfileReapplier); ok {
 		t.Error("*agentgateway.Gateway satisfies api.ProfileReapplier.\n" +
-			"    Only Extensions.Provisioner is type-asserted for it (reapplyEnvAsync in " +
-			"privilege.go, the model-change roll in agents.go), so an implementation on the " +
-			"gateway is unreachable and a profile reapply would silently never happen.")
+			"    Only Extensions.Provisioner is type-asserted for it (the model-change " +
+			"roll in agents.go), so an implementation on the gateway is unreachable and " +
+			"a reapply would silently never happen.")
 	}
 }
 

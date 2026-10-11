@@ -49,7 +49,7 @@ func TestTheDelivererBuiltForTheServerBroadcastsItsCardChanges(t *testing.T) {
 		Status: agents.StatusProvisioning, PendingNote: "audit the retry budget", HooksToken: "tok-gadwall-91",
 		UpdatedAt: time.Now().Add(-agents.ProvisioningStuckTimeout - time.Hour),
 	}}
-	prov, gw, _, err := buildAgentPlane(cfg, store, logger)
+	prov, gw, err := buildAgentPlane(cfg, store, logger)
 	if err != nil || prov == nil || gw == nil {
 		t.Fatalf("buildAgentPlane: adapter=%v gateway=%v err=%v", prov != nil, gw != nil, err)
 	}

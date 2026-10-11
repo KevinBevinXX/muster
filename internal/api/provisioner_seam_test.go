@@ -136,10 +136,9 @@ var provisionerDeps = []provisionerDep{
 			"POST /agents/{id}/start",
 			"POST /agents/{id}/stop",
 			"POST /chief/provision",
-			"POST /runbooks/{id}/dispatch",
 		},
 		callers: []string{
-			"(*Server).createAndDispatchAgent", // Dispatch; reached from handleAgentCreate, handleChiefProvision, dispatchRunbook
+			"(*Server).createAndDispatchAgent", // Dispatch; reached from handleAgentCreate, handleChiefProvision
 			"(*Server).handleAgentCreate",      // KickoffUndeliverableReason, the synchronous pre-flight before the row
 			"(*Server).handleAgentDelete",      // Destroy
 			"(*Server).handleAgentLogsStream",  // StreamLogs
@@ -240,8 +239,6 @@ func provisionerServer(t *testing.T, prov Provisioner, gw Gateway) (*Server, htt
 	s.UseExtensions(Extensions{
 		Notes:           stubNotesStore{},
 		Agents:          stubAgentsStore{},
-		Privilege:       stubPrivilegeStore{},
-		Runbooks:        stubRunbooksStore{},
 		SessionLiveness: stubLiveness{},
 		Provisioner:     prov,
 		Gateway:         gw,

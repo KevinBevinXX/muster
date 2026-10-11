@@ -106,7 +106,7 @@ for (const vp of [
       const model = sheet.locator('#model-input');
       await expect(model).toBeVisible();
       // Claude Code: the whole gateway-only block leaves the screen — the
-      // model selector, the repository and the grants — and nothing submits.
+      // model selector and the repository — and nothing submits.
       await sheet.locator('[data-kind-option="claude-code"]').click();
       await expect(model).toBeHidden();
       await expect(sheet.locator('summary[aria-label="Advanced options"]')).toBeHidden();
@@ -121,7 +121,7 @@ for (const vp of [
       expect(sw).toBeLessThanOrEqual(cw);
     });
 
-    test('1b. the task-scoped dispatch confirm hides its Model/Repository/Privileges rows for Claude Code', async ({ page }) => {
+    test('1b. the task-scoped dispatch confirm hides its Model/Repository rows for Claude Code', async ({ page }) => {
       const ctx = await machine();
       const r = await ctx.post('/api/tasks', { data: { title: `polish ${vp.label} task-dispatch`, body: 'task-scoped dispatch' } });
       expect(r.status(), await r.text()).toBeLessThan(300);
@@ -137,7 +137,6 @@ for (const vp of [
       await sheet.locator('[data-kind-option="claude-code"]').click();
       await expect(modelRow).toBeHidden();
       await expect(sheet.locator('[data-dispatch-row]').filter({ hasText: 'Repository' })).toBeHidden();
-      await expect(sheet.locator('[data-dispatch-row]').filter({ hasText: 'Privileges' })).toBeHidden();
       await sheet.locator('[data-kind-option="gateway"]').click();
       await expect(modelRow).toBeVisible();
     });

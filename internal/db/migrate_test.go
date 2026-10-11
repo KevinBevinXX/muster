@@ -20,14 +20,14 @@ import (
 // only reason it can advise about `schema_migrations` at all is that it names
 // the table rather than calling the runner.
 
-// tablesThisSchemaMustHave is the set 0001 exists to create.
+// tablesThisSchemaMustHave is the public schema after every migration has
+// applied. (0005 dropped the five privilege and runbook tables 0001 created.)
 //
 // 🔴 A LEDGER, NOT A SPOT CHECK. It fails when the set GROWS or SHRINKS, so a
 // table quietly dropped from 0001 reddens here and a table added without a
 // decision does too. A "does `notes` exist" check would pass against a
 // migration that created one table and lost twelve.
 var tablesThisSchemaMustHave = []string{
-	"agent_privileges",
 	"agent_retired_names",
 	"agents",
 	"cc_account_marks",
@@ -40,10 +40,6 @@ var tablesThisSchemaMustHave = []string{
 	"note_attachments",
 	"note_comments",
 	"notes",
-	"privilege_profiles",
-	"privilege_requests",
-	"runbook_runs",
-	"runbooks",
 	"task_sessions",
 }
 

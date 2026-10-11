@@ -47,12 +47,8 @@ var wantMetrics = map[string][]string{
 	"muster_panics_total":                     {"source"},
 	"muster_agent_provision_total":            {"result"},
 	"muster_agent_provision_duration_seconds": {},
-	"muster_agent_rbac_teardown_total":        {"result"},
 	"muster_agent_kickoff_resend_total":       {"result"},
 	"muster_agent_kickoff_claim_total":        {"result"},
-	"muster_checkpoints_total":                {"outcome"},
-	"muster_checkpoint_wait_seconds":          {},
-	"muster_runbook_runs_total":               {},
 	"muster_tasks_created_total":              {"source"},
 	"muster_task_routing_tags_total":          {"namespace"},
 	"muster_task_session_links_total":         {"role"},
@@ -78,12 +74,10 @@ func gather(t *testing.T) map[string][]string {
 	BuildInfo.WithLabelValues("0.0.0-test")
 	Panics.WithLabelValues("test")
 	AgentProvision.WithLabelValues("ok")
-	AgentRBACTeardown.WithLabelValues("ok")
 	AgentKickoffResend.WithLabelValues("resent")
 	AgentKickoffClaim.WithLabelValues("won")
-	Checkpoints.WithLabelValues("resolved")
 	TasksCreated.WithLabelValues("api")
-	RoutingTags.WithLabelValues("runbook")
+	RoutingTags.WithLabelValues("gate")
 	TaskSessionLinks.WithLabelValues("read")
 	TaskSessionLinksSkipped.WithLabelValues("error")
 	ObserveHTTP("GET /api/tasks/{id}", "GET", 200, 0)

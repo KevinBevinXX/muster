@@ -83,11 +83,13 @@ const firstDiscriminator = 2
 //
 // 🔴 A DESTROYED AGENT'S NAME IS NEVER REISSUED, AND THE REFUSAL IS THE WHOLE
 // POINT OF THE LOOP RATHER THAN A TIDINESS RULE. The name is the provisioning
-// driver's Ref.Name, so it is what the per-instance namespace, the
-// ServiceAccount and a granted profile's cluster-scoped ClusterRole /
-// ClusterRoleBinding are all named after. Those policy objects are
-// cluster-scoped and outlive the agent row; a namesake gets the same
-// ServiceAccount and silently inherits access nobody granted it. The
+// driver's Ref.Name, so it is what the per-instance namespace and the
+// ServiceAccount are named after. A namesake reuses both: whatever a partial
+// Destroy left in that namespace, and anything bound to that ServiceAccount
+// name out of band (a hand-made RoleBinding, say), passes to it silently. (The
+// strongest version of this argument — muster's own granted ClusterRoleBindings
+// outliving the row — went away with the privilege subsystem; the namespace and
+// ServiceAccount reuse did not.) The
 // enforcement lives in the STORE — PGStore.NameExists consults the
 // agent_retired_names ledger that migration 0002's AFTER DELETE trigger fills —
 // because a check written here would only cover this one call path, while the
@@ -125,8 +127,8 @@ const firstDiscriminator = 2
 // THERE IS NONE ON THIS PATH. An earlier revision of this paragraph said "the
 // caller already owns a deadline (see agentprovision's opCtx)". That is false:
 // opCtx is never in this call path. BuildUniqueAgentName has exactly one caller,
-// internal/api's createAndDispatchAgent, reached from handleAgentCreate,
-// dispatchRunbook and handleChiefProvision — all three hand it `r.Context()`.
+// internal/api's createAndDispatchAgent, reached from handleAgentCreate and
+// handleChiefProvision — both hand it `r.Context()`.
 // cmd/muster-server sets only ReadHeaderTimeout on its http.Server: no
 // WriteTimeout, no http.TimeoutHandler, and no context.WithTimeout anywhere
 // between the handler and here. So `ctx` is done when the CLIENT DISCONNECTS,

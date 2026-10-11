@@ -73,31 +73,6 @@ func sampleTaskDetailView() TaskCardView {
 	return v
 }
 
-func samplePrivilegeRequests() []PrivilegeRequestView {
-	return []PrivilegeRequestView{
-		{ID: 11, AgentName: "worker-gamma", Profile: "kube-read", Reason: "needs to read pod logs", CreatedAt: fixedNow.Add(-6 * time.Minute)},
-		{ID: 12, AgentName: "worker-delta", Profile: "s3-write", Reason: "needs to upload artifacts", CreatedAt: fixedNow.Add(-25 * time.Minute)},
-	}
-}
-
-func sampleProfiles() []ProfileView {
-	return []ProfileView{
-		{ID: 21, Name: "kube-read", DisplayName: "Kube read", Description: "Read-only cluster access", Summary: "get/list/watch"},
-		{ID: 22, Name: "s3-write", DisplayName: "S3 write", Description: "Artifact bucket writes", Summary: "PutObject on audit-artifacts"},
-	}
-}
-
-func sampleRunbooks() []RunbookView {
-	return []RunbookView{
-		{ID: 31, Name: "deploy-muster", DisplayName: "Deploy muster", Description: "Build and roll out muster",
-			Summary: "build → push → rollout", Repo: "ZacxDev/muster", Runs: 14, LastRunAt: fixedNow.Add(-20 * time.Hour),
-			Params: []RunbookParam{{Name: "tag", Label: "Image tag", Description: "Tag to deploy", Required: true, Default: "latest"}}},
-		{ID: 32, Name: "audit-vetr", DisplayName: "Audit vetr", Description: "Run the vetr UX audit",
-			Summary: "crawl → axe → report", Repo: "ZacxDev/vetr", Runs: 2,
-			Params: []RunbookParam{{Name: "depth", Label: "Crawl depth", Enum: []string{"1", "2", "3"}, Default: "2"}}},
-	}
-}
-
 func sampleAgentCards() []AgentCardView {
 	noteID := int64(101)
 	return []AgentCardView{
@@ -120,7 +95,6 @@ func sampleNoteEditView() NoteEditView {
 	return NoteEditView{
 		Note:        sampleTasksView().Cards[0].Note,
 		Directories: []string{"/work/muster", "/work/vetr"},
-		Profiles:    []ProfileOption{{ID: 21, Name: "kube-read"}, {ID: 22, Name: "s3-write"}},
 		Vocabulary:  []notes.TagCount{{Tag: "backend", Count: 4}, {Tag: "ux", Count: 2}},
 	}
 }

@@ -91,8 +91,8 @@ test('the kind picker dispatches a Claude Code agent onto a pinned or pooled acc
   await expect(account).toBeVisible();
   await expect(account).toBeEnabled();
   await expect(model).toBeDisabled();
-  // Nothing in the claude-code image clones a repo and the pod mounts no
-  // ServiceAccount token, so the repo and grant fields are disabled too.
+  // Nothing in the claude-code image clones a repo, so the repo field is
+  // disabled too.
   await expect(sheet.locator('input[name="repo"]')).toBeDisabled();
   await expect(account.locator('option')).toHaveText(['Auto (least rate-limited)', 'alpha', 'beta']);
   await account.selectOption('beta');

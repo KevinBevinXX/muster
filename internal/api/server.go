@@ -58,12 +58,11 @@ import (
 // 🔴 THIS IS THE muster HALF OF A THIRTEEN-NAME BLOCK. The eight that are not
 // here — request created/resolved, auto-approve, suggestion, attention, tmux,
 // terminal-write and transcript — name changes to state this service does not
-// hold. A browser watching muster's /events sees these five and nothing else.
+// hold. A browser watching muster's /events sees these and nothing else.
+// (privilege.created was one of them until the privilege subsystem was removed.)
 const (
 	// EventTaskChanged nudges an open Tasks board to re-fetch a card.
 	EventTaskChanged = "task.changed"
-	// EventPrivilegeCreated announces a new privilege request.
-	EventPrivilegeCreated = "privilege.created"
 	// EventAgentChanged announces an agent status/identity change.
 	EventAgentChanged = "agent.changed"
 	// EventChatReply announces a persisted assistant turn.
@@ -96,16 +95,13 @@ type Server struct {
 	auth   AuthConfig
 	router RouterPort
 
-	// gatePort is the approval queue an agent checkpoint asks through. See gate.go.
-	gatePort GatePort
-
 	// approvals is the claude-code approval relay's in-memory ledger: which agent
 	// filed which request, and which agents report a blocked terminal. See
 	// approvals.go.
 	approvals approvalLedger
-	// approvalGatePort is the queue the approval relay files through. It is NOT
-	// gatePort: a standalone deployment may arm the relay without arming agent
-	// checkpoints or any router behaviour. See UseApprovalGate.
+	// approvalGatePort is the queue the approval relay files through: a
+	// standalone deployment may arm the relay without arming any router
+	// behaviour. See UseApprovalGate.
 	approvalGatePort GatePort
 
 	startedAt time.Time
@@ -134,14 +130,6 @@ type Server struct {
 	extDefects []string
 
 	ext Extensions
-
-	// --- privilege write serialisation ---
-	// profileLocks serialises the privilege write paths that touch one profile,
-	// which is what closes the grant-between-the-list-and-the-delete window.
-	// Owned by privilege.go; see lockProfile there for the whole argument,
-	// including why an IN-PROCESS lock is the right scope for this deployment.
-	profileLocksMu sync.Mutex
-	profileLocks   map[int64]*profileLock
 
 	// --- agent activity bookkeeping ---
 	activeAgentsMu  sync.Mutex
@@ -201,7 +189,7 @@ type LeaderGate interface {
 // implements it over HTTP; a test implements it in memory.
 //
 // ⚠ A nil RouterPort IS A SUPPORTED DEPLOYMENT. muster runs standalone — the
-// board, the agents, the runbooks and the privileges all work — and the four
+// board, the agents, the connectors and the repos all work — and the four
 // features below degrade, each saying so where a human can see it.
 type RouterPort interface {
 	SessionLivenessProbe
@@ -276,10 +264,6 @@ func (l *rateLimiter) allow(now time.Time, burst int, window time.Duration) bool
 
 // --- retention windows ------------------------------------------------------
 const (
-	// runRetention bounds runbook_runs (the dispatch audit trail).
-	runRetention = 90 * 24 * time.Hour
-	// privilegeRequestRetention bounds decided (non-pending) privilege requests.
-	privilegeRequestRetention = 30 * 24 * time.Hour
 	// chatRetention bounds chat_messages (the agent web-chat transcript).
 	chatRetention = 90 * 24 * time.Hour
 	// connectorAuditRetention bounds connector_audit (proxied requests and grant
@@ -332,12 +316,6 @@ func New(bus *sse.Broadcaster, authCfg AuthConfig, logger *log.Logger) *Server {
 //
 // ⚠ A nil port is the standalone deployment and is supported; see RouterPort.
 func (s *Server) UseRouter(r RouterPort) { s.router = r }
-
-// UseGate attaches the approval queue an agent checkpoint asks through.
-//
-// ⚠ A nil gate is supported and means NOBODY CAN BE ASKED, which resolves to
-// NOT APPROVED at every checkpoint — never to "proceed". See gate.go.
-func (s *Server) UseGate(g GatePort) { s.gatePort = g }
 
 // UseApprovalGate attaches the queue the claude-code approval relay
 // (approvals.go) files cards through, and nothing else uses. A nil gate is
@@ -447,8 +425,6 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerNotesRoutes(mux)
 	s.registerGitHubRoutes(mux)
 	s.registerAgentRoutes(mux)
-	s.registerPrivilegeRoutes(mux)
-	s.registerRunbookRoutes(mux)
 	s.registerAgentSelfServiceRoutes(mux)
 	s.registerConnectorRoutes(mux)
 	s.registerApprovalRoutes(mux)
@@ -456,13 +432,12 @@ func (s *Server) registerAll(mux Mux) {
 
 // registerAgentSelfServiceRoutes wires the agent callback API. These are
 // authenticated by the calling agent's unique hooks token (not a session), so an
-// agent pod can read/comment/advance its task and request privileges.
+// agent pod can read/comment/advance its task.
 func (s *Server) registerAgentSelfServiceRoutes(mux Mux) {
 	mux.HandleFunc("GET /agent/muster", s.requireAgentToken(s.handleAgentCLIDownload))
 	mux.HandleFunc("GET /agent/task", s.requireAgentToken(s.handleAgentTask))
 	mux.HandleFunc("POST /agent/task/comment", s.requireAgentToken(s.handleAgentTaskComment))
 	mux.HandleFunc("PATCH /agent/task/status", s.requireAgentToken(s.handleAgentTaskStatus))
-	mux.HandleFunc("POST /agent/privilege/request", s.requireAgentToken(s.handleAgentPrivilegeRequest))
 }
 
 // --- open handlers ----------------------------------------------------------
@@ -624,8 +599,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 // --- background loops -------------------------------------------------------
 
 // RunTaskRetention drives the daily retention sweep until ctx is cancelled:
-// each tick deletes runbook runs, resolved privilege requests and agent chat
-// messages older than their windows, then reaps idle tasks.
+// each tick deletes connector audit entries and agent chat messages older than
+// their windows, then reaps idle tasks.
 //
 // 🔴 A FOLLOWER SKIPS THE TICK AND CONTINUES — never `return`. A follower that
 // exited would be permanently sweep-less for the rest of the process's life and
@@ -646,9 +621,8 @@ func (s *Server) RunTaskRetention(ctx context.Context, interval time.Duration) {
 	}
 }
 
-// taskRetentionPass runs one retention sweep over muster's domains — runbook
-// runs, resolved privilege requests, agent chat messages — and then reaps idle
-// tasks.
+// taskRetentionPass runs one retention sweep over muster's domains — connector
+// audit entries, agent chat messages — and then reaps idle tasks.
 //
 // 🔴 THE SINGLE-SNAPSHOT PROPERTY IS PRESERVED WITHIN THIS PASS. It takes one
 // timestamp and keys every domain's cutoff on it. No cutoff here was ever
@@ -656,24 +630,10 @@ func (s *Server) RunTaskRetention(ctx context.Context, interval time.Duration) {
 // used for its own idle-window arithmetic, so the two services' clocks have
 // nothing to disagree about.
 //
-// Ordering is the original combined body's, unchanged: the three deletes, then
-// the reap.
+// Ordering: the deletes, then the reap. (Runbook runs and resolved privilege
+// requests were swept here too until both subsystems were removed.)
 func (s *Server) taskRetentionPass(ctx context.Context) {
 	now := s.now()
-	if s.ext.Runbooks != nil {
-		if n, err := s.ext.Runbooks.DeleteRunsOlderThan(ctx, now.Add(-runRetention)); err != nil {
-			s.logger.Printf("retention: delete old runbook runs: %v", err)
-		} else if n > 0 {
-			s.logger.Printf("retention: deleted %d runbook run(s) older than %s", n, runRetention)
-		}
-	}
-	if s.ext.Privilege != nil {
-		if n, err := s.ext.Privilege.DeleteResolvedRequestsOlderThan(ctx, now.Add(-privilegeRequestRetention)); err != nil {
-			s.logger.Printf("retention: delete old privilege requests: %v", err)
-		} else if n > 0 {
-			s.logger.Printf("retention: deleted %d resolved privilege request(s) older than %s", n, privilegeRequestRetention)
-		}
-	}
 	if s.ext.Connectors != nil {
 		if n, err := s.ext.Connectors.PruneAudit(ctx, now.Add(-connectorAuditRetention)); err != nil {
 			s.logger.Printf("retention: delete old connector audit entries: %v", err)

@@ -139,9 +139,8 @@ func TestAForgottenAgentNamespacePrefixIsAWiringDefect(t *testing.T) {
 
 	// The defect: agents creatable, driver present, prefix dropped.
 	got := Extensions{
-		Agents:         stubAgentsStore{},
-		Provisioner:    stubProvisioner{},
-		PrivilegeApply: stubPrivilegeApplier{},
+		Agents:      stubAgentsStore{},
+		Provisioner: stubProvisioner{},
 	}.defects()
 	if !containsSubstring(got, want) {
 		t.Errorf("Agents+Provisioner wired with an empty AgentNamespacePrefix reported defects "+
@@ -153,7 +152,6 @@ func TestAForgottenAgentNamespacePrefixIsAWiringDefect(t *testing.T) {
 	got = Extensions{
 		Agents:               stubAgentsStore{},
 		Provisioner:          stubProvisioner{},
-		PrivilegeApply:       stubPrivilegeApplier{},
 		AgentNamespacePrefix: "muster-agent-",
 	}.defects()
 	if containsSubstring(got, want) {

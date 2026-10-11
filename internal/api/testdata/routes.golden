@@ -28,13 +28,10 @@
 /connect/{connector}/{host}/{path...}
 DELETE /agent/approvals/{id}
 DELETE /agents/{id}
-DELETE /agents/{id}/grants/{profileId}
 DELETE /api/tasks/{id}
 DELETE /api/tasks/{id}/comments/{cid}
 DELETE /connector-grants/{id}
 DELETE /connectors/{name}
-DELETE /privileges/{id}
-DELETE /runbooks/{id}
 DELETE /tasks/{id}
 DELETE /tasks/{id}/comments/{cid}
 DELETE /tasks/{id}/tags/{tag}
@@ -69,10 +66,8 @@ GET /health
 GET /login
 GET /manifest.webmanifest
 GET /metrics
-GET /privileges
 GET /readyz
 GET /repos
-GET /runbooks
 GET /share
 GET /static/
 GET /sw.js
@@ -82,10 +77,8 @@ GET /tasks/{id}/attachments/{aid}
 GET /ui/agents
 GET /ui/agents/new
 GET /ui/agents/notes
-GET /ui/agents/profiles
 GET /ui/agents/repos
 GET /ui/agents/{id}/card
-GET /ui/agents/{id}/grants
 GET /ui/agents/{id}/recent
 GET /ui/agents/{id}/rename
 GET /ui/agents/{id}/status
@@ -98,10 +91,7 @@ GET /ui/connectors
 GET /ui/connectors/new
 GET /ui/connectors/{name}/rotate
 GET /ui/notifications
-GET /ui/privilege-requests
-GET /ui/privileges
 GET /ui/repos
-GET /ui/runbooks
 GET /ui/tags
 GET /ui/tasks
 GET /ui/tasks/new
@@ -116,11 +106,9 @@ PATCH /tasks/{id}/status
 POST /agent/approvals
 POST /agent/blocked
 POST /agent/connectors/{name}/request
-POST /agent/privilege/request
 POST /agent/task/comment
 POST /agents
 POST /agents/sessions/{sid}/read
-POST /agents/{id}/grants
 POST /agents/{id}/model
 POST /agents/{id}/name
 POST /agents/{id}/sessions
@@ -136,9 +124,6 @@ POST /github/disconnect
 POST /login
 POST /logout
 POST /mcp
-POST /privileges
-POST /runbooks
-POST /runbooks/{id}/dispatch
 POST /tasks
 POST /tasks/merge
 POST /tasks/{id}/comments
@@ -146,5 +131,3 @@ POST /tasks/{id}/edit
 POST /tasks/{id}/tags
 POST /ui/connector-requests/{id}/approve
 POST /ui/connector-requests/{id}/deny
-POST /ui/privilege-requests/{id}/approve
-POST /ui/privilege-requests/{id}/deny

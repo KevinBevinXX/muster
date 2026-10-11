@@ -47,9 +47,6 @@ const (
 	// still registered (AgentToolDefs) and agentSystemPrompt still instructs the
 	// worker to call it, so #430/#431 did NOT retire it.
 	writerAgentTool statusWriter = "agent_set_task_status"
-	// writerCheckpointStrand is the bookkeeping backstop that parks a task in
-	// ready_for_review when a checkpoint ended without a decision.
-	writerCheckpointStrand statusWriter = "checkpoint-strand"
 	// writerDispatchAdvance is the open→in_progress advance after a dispatch.
 	writerDispatchAdvance statusWriter = "dispatch-advance"
 	// writerTaskMerge retires the LOSER of a task merge to complete.

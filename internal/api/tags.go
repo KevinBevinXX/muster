@@ -20,7 +20,7 @@ import (
 //
 // Tags are a ROUTING KEY authored by BOTH machine producers and the human, so:
 //   - a routing tag must FAIL LOUD, never be a silently-ignored string
-//     (resolveTaskTags hard-validates `runbook:` against the runbook store),
+//     (resolveTaskTags validates every tag's grammar and refuses a bad one),
 //   - merges must not lose an update between the two author classes
 //     (AddTags/RemoveTags are single-statement set operations in the store),
 //   - Prometheus label cardinality must stay bounded (observeRoutingTags emits
@@ -35,12 +35,11 @@ func (e errTagValidation) Error() string { return e.err.Error() }
 // resolveTaskTags is the SINGLE validation entry point for every tag write path
 // (POST/PATCH /api/tasks, the session tag routes, the edit form). It normalizes
 // (lowercase / whitespace→'-' / dedupe / sort, dropping empties), validates the
-// grammar loudly, then HARD-validates reserved routing namespaces:
+// grammar loudly. Reserved routing namespaces:
 //
-//   - `runbook:<name>` must name a real runbook → unknown is an error (a routing
-//     tag that silently does nothing is the exact failure mode this feature has to
-//     avoid). When no runbook store is wired (in-memory mode) the check is SKIPPED
-//     rather than failing every runbook tag — there is nothing to validate against.
+//   - ⚠ `runbook:<name>` USED TO BE HARD-validated against the runbook store
+//     here. Runbooks are removed; `runbook:` is now a descriptive tag and a task
+//     still carrying one (written before the removal) saves like any other.
 //   - `initiative:<slug>` is deliberately NOT resolved: the initiatives store lives
 //     in a different cluster's Postgres, and making task creation depend on a
 //     cross-cluster DB would trade a real availability risk for a cosmetic check.
@@ -53,14 +52,6 @@ func (s *Server) resolveTaskTags(ctx context.Context, raw []string) ([]string, e
 	tags, err := notes.NormalizeAndValidate(raw)
 	if err != nil {
 		return nil, errTagValidation{err}
-	}
-	if name, ok := notes.RunbookName(tags); ok && s.ext.Runbooks != nil {
-		if _, err := s.ext.Runbooks.GetRunbookByName(ctx, name); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return nil, errTagValidation{errors.New("unknown runbook \"" + name + "\" in tag \"runbook:" + name + "\"")}
-			}
-			return nil, err
-		}
 	}
 	return tags, nil
 }

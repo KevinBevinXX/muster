@@ -82,23 +82,23 @@ func TestCardTagChipsRender(t *testing.T) {
 // TestRoutingChipsVisuallyDistinct asserts the two tag classes are rendered
 // distinguishably — a behaviour-bearing tag must not look like a plain label.
 func TestRoutingChipsVisuallyDistinct(t *testing.T) {
-	out := renderTagCard(t, notes.Note{ID: 1, Body: "x", Tags: []string{"bug", "runbook:deploy"}})
+	out := renderTagCard(t, notes.Note{ID: 1, Body: "x", Tags: []string{"bug", "initiative:launch"}})
 
 	if !strings.Contains(out, `data-tag-kind="routing"`) {
-		t.Fatalf("a runbook: chip must be marked routing; body=%s", out)
+		t.Fatalf("an initiative: chip must be marked routing; body=%s", out)
 	}
 	if !strings.Contains(out, `data-tag-kind="descriptive"`) {
 		t.Fatalf("a free-form chip must be marked descriptive; body=%s", out)
 	}
 
 	// And the STYLING must differ, not just the data attribute.
-	routingClass, _ := tagChipClass("runbook:deploy")
+	routingClass, _ := tagChipClass("initiative:launch")
 	descClass, _ := tagChipClass("bug")
 	if routingClass == descClass {
 		t.Fatal("routing and descriptive chips must have different styling")
 	}
 	// Each reserved namespace gets its own treatment + an explanatory title.
-	for _, tag := range []string{"runbook:deploy", "initiative:remix", "gate:blocked", "auto:dispatch"} {
+	for _, tag := range []string{"initiative:launch", "initiative:remix", "gate:blocked", "auto:dispatch"} {
 		cls, title := tagChipClass(tag)
 		if cls == descClass {
 			t.Errorf("%s must not be styled as a descriptive chip", tag)
@@ -240,7 +240,7 @@ func TestFilteredEmptyIsNotAllClear(t *testing.T) {
 // as removable chips carrying hidden `tag` inputs, plus the vocabulary datalist.
 func TestEditorRendersTagsAndDatalist(t *testing.T) {
 	v := NoteEditView{
-		Note:       notes.Note{ID: 7, Body: "x", Status: notes.StatusOpen, Tags: []string{"api", "runbook:deploy"}},
+		Note:       notes.Note{ID: 7, Body: "x", Status: notes.StatusOpen, Tags: []string{"api", "initiative:launch"}},
 		Vocabulary: []notes.TagCount{{Tag: "api", Count: 3}, {Tag: "bug", Count: 1}},
 	}
 	var b bytes.Buffer
@@ -254,9 +254,9 @@ func TestEditorRendersTagsAndDatalist(t *testing.T) {
 	}
 	for _, want := range []string{
 		`data-tag-chip="api"`,
-		`data-tag-chip="runbook:deploy"`,
+		`data-tag-chip="initiative:launch"`,
 		`<input type="hidden" name="tag" value="api">`,
-		`<input type="hidden" name="tag" value="runbook:deploy">`,
+		`<input type="hidden" name="tag" value="initiative:launch">`,
 		`data-tag-input`,
 		`<datalist id="task-tags-vocabulary">`,
 		`<option value="bug">`,
@@ -284,7 +284,7 @@ func TestEditorRendersTagsAndDatalist(t *testing.T) {
 // mirror of the refined server-side 409 rule.
 func TestEditorRoutingTagsLockedInProgress(t *testing.T) {
 	out := renderTagNode(t, tagEditor(
-		[]string{"api", "runbook:deploy"},
+		[]string{"api", "initiative:launch"},
 		[]notes.TagCount{{Tag: "api", Count: 1}},
 		true, // in progress
 	))
@@ -294,7 +294,7 @@ func TestEditorRoutingTagsLockedInProgress(t *testing.T) {
 	}
 	// The routing chip keeps its hidden input (so it survives the submit) but
 	// loses its × ; the descriptive one keeps both.
-	if !strings.Contains(out, `<input type="hidden" name="tag" value="runbook:deploy">`) {
+	if !strings.Contains(out, `<input type="hidden" name="tag" value="initiative:launch">`) {
 		t.Fatalf("a locked routing chip must still submit its value; body=%s", out)
 	}
 	if n := strings.Count(out, "data-tag-remove"); n != 1 {

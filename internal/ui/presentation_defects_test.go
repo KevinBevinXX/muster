@@ -378,25 +378,6 @@ func TestAnActiveExternalIDTagStillGetsAChip(t *testing.T) {
 
 // --- Defect 7: the runbook Run disclosure -------------------------------------
 
-// TestTheRunbookSummaryDrawsExactlyOneTriangle. A <summary> is
-// `display: list-item` with `list-style-type: disclosure-closed`, so the browser
-// draws its own marker; this one ALSO wrote a literal ▸, and the control rendered
-// "▸ ▸ Run".
-func TestTheRunbookSummaryDrawsExactlyOneTriangle(t *testing.T) {
-	html := renderString(t, runbookRunForm(RunbookView{ID: 4, Name: "deploy"}))
-	summary := between(html, "<summary", "</summary>")
-	if summary == "" {
-		t.Fatalf("no <summary> in the rendered run form:\n%s", html)
-	}
-	if n := strings.Count(summary, "▸"); n != 1 {
-		t.Errorf("the summary writes %d ▸ characters, want 1:\n%s", n, summary)
-	}
-	if !hasClass(classOf(summary), "list-none") {
-		t.Errorf("the summary does not set list-none, so the BROWSER draws a second marker beside "+
-			"the one in the markup (this rendered as \"▸ ▸ Run\"):\n%s", summary)
-	}
-}
-
 // --- Defect 8: raw markdown in an agent name ----------------------------------
 
 // TestBothSurfacesRenderAnAgentNameTheSameWay is the regression guard for the
@@ -513,7 +494,7 @@ func TestAnAgentNameCannotEmitMarkupOnEitherSurface(t *testing.T) {
 // silence.
 func TestEachLazyRegistryIsMountedExactlyOnce(t *testing.T) {
 	// Mounted on every shell regardless of Features.
-	always := []string{"/ui/runbooks", "/ui/privileges", "/ui/agents", "/ui/tasks"}
+	always := []string{"/ui/agents", "/ui/tasks"}
 	// Mounted only when its subsystem was built — the pair is (partial, the
 	// Features predicate that draws it).
 	gated := map[string]func(Features) bool{
@@ -556,40 +537,6 @@ func TestEachLazyRegistryIsMountedExactlyOnce(t *testing.T) {
 			}
 		}
 	})
-}
-
-// TestInListActionsTargetTheListTheyAreIn pins the fix's mechanism rather than
-// its absence: the buttons must resolve their target from their own POSITION, so
-// a second mount of the same partial cannot capture their response by owning an
-// id. Both lazy registries are covered — they had the identical defect, and
-// fixing only the one that was reported would leave the other half live.
-func TestInListActionsTargetTheListTheyAreIn(t *testing.T) {
-	cases := []struct {
-		name, id, html string
-		wantTargets    int
-	}{
-		{
-			name: "runbooks", id: "runbooks", wantTargets: 2, // delete + dispatch
-			html: renderString(t, Runbooks([]RunbookView{{ID: 4, Name: "deploy", Summary: "ship it"}})),
-		},
-		{
-			name: "privilege profiles", id: "privilege-profiles", wantTargets: 1, // delete
-			html: renderString(t, Profiles([]ProfileView{{ID: 7, Name: "read-only", Summary: "gets"}})),
-		},
-	}
-	for _, tc := range cases {
-		if !strings.Contains(tc.html, `id="`+tc.id+`"`) {
-			t.Errorf("%s: the section carries no id for its own swap to replace:\n%s", tc.name, tc.html)
-		}
-		if n := strings.Count(tc.html, `hx-target="closest section"`); n != tc.wantTargets {
-			t.Errorf("%s: want %d in-list action(s) targeting `closest section`, found %d:\n%s",
-				tc.name, tc.wantTargets, n, tc.html)
-		}
-		if strings.Contains(tc.html, `hx-target="#`+tc.id+`"`) {
-			t.Errorf("%s: an action still targets #%s by id — that is what let a second, hidden "+
-				"mount swallow the response:\n%s", tc.name, tc.id, tc.html)
-		}
-	}
 }
 
 // --- Defect 11: the empty chat transcript -------------------------------------

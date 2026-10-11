@@ -445,7 +445,8 @@ const HookUnarmedField = "unarmed"
 // 🔴 USE IT FOR A MACHINE WRITE THAT STEERS SOMETHING, NOT FOR A READ. The
 // distinction is the one the audit drew: reading an agent's transcript on an
 // unarmed LAN server is a disclosure; telling an agent what to do is arbitrary work
-// inside a devpod that carries a kubeconfig and a GitHub token. Leaving the second
+// inside an agent instance — a shell, its repository checkout and whatever
+// connectors it has been granted. Leaving the second
 // one open when a variable happens to be unset is a strictly worse trade than the
 // back-compat it would be inherited for.
 //

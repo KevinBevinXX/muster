@@ -139,10 +139,12 @@ func (s *PGStore) LastMessageByAgentIDs(ctx context.Context, ids []int64) (map[i
 // accepts any candidate this returns false for. Delete is a HARD delete, so
 // without the second clause a destroyed agent's name goes straight back into the
 // bounded pool in names.go and the next generated agent can be its namesake —
-// inheriting the per-instance namespace, ServiceAccount and cluster-scoped
-// ClusterRoleBinding that were NAMED after the dead one. See
-// internal/provision/k8s/driver.go's Destroy on why those objects outlive the
-// row, and migration 0002 for the trigger that fills the ledger this reads.
+// landing in the per-instance namespace and ServiceAccount NAMED after the dead
+// one. Destroy can leave objects behind (a partial teardown that keeps going, a
+// stranger's object it refuses to delete), and anything bound to that name out
+// of band — a hand-made RoleBinding naming the ServiceAccount, say — would pass
+// to the namesake silently. See migration 0002 for the trigger that fills the
+// ledger this reads.
 //
 // ⚠ THE LEDGER IS ONLY EVER READ HERE. Nothing refuses an INSERT of a retired
 // name, deliberately (migration 0002 says why: `chief` is provisioned with a

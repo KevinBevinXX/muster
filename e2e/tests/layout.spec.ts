@@ -4,7 +4,7 @@ import { Page } from '@playwright/test';
 // Phone-width layout at the narrowest common Android width (360px).
 test.use({ viewport: { width: 360, height: 740 }, hasTouch: true, isMobile: true });
 
-const pages = ['/tasks', '/agents', '/runbooks', '/privileges', '/tasks/1', '/tasks/999999', '/agents/docs-sweeper'];
+const pages = ['/tasks', '/agents', '/tasks/1', '/tasks/999999', '/agents/docs-sweeper'];
 
 async function settle(page: Page) {
   await page.waitForLoadState('networkidle').catch(() => undefined);

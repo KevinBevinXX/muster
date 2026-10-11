@@ -280,11 +280,11 @@ const KickoffRefusalSummary = "dispatch REFUSED and NOTHING was provisioned: thi
 // action=dispatch answers 4xx carrying this text." internal/api's handleAgentCreate
 // now asks [Adapter.KickoffUndeliverableReason] BEFORE the row is created and answers
 // 409 with [KickoffRefusalSummary], which is this string's own prefix.
-// ⚠ ONE CALLER IS STILL ASYNCHRONOUS AND THAT IS DELIBERATE: handleChiefProvision and
-// dispatchRunbook reach Dispatch through createAndDispatchAgent inside safeGo, so
-// their refusal is recorded on the row rather than returned. Neither has a
-// "Save for later" affordance to be sent to; the row they create can be brought up
-// with Start, which is the same escape by a different door.
+// ⚠ ONE CALLER IS STILL ASYNCHRONOUS AND THAT IS DELIBERATE: handleChiefProvision
+// reaches Dispatch through createAndDispatchAgent inside safeGo, so its refusal is
+// recorded on the row rather than returned. It has no "Save for later" affordance
+// to be sent to; the row it creates can be brought up with Start, which is the
+// same escape by a different door.
 const KickoffRefusalReason = KickoffRefusalSummary + " CAUSE: this deployment names no agent " +
 	"gateway, and a DELIVERED kickoff is a model turn sent through one. REMEDY: set " +
 	"MUSTER_AGENT_GATEWAY=hooks-sha256 together with MUSTER_AGENT_GATEWAY_MODEL (and the agent " +
@@ -925,9 +925,9 @@ func (a *Adapter) create(ctx context.Context, ag agents.Agent) (agents.Agent, er
 //
 // ⚠ THE WINDOW IS NARROWER THAN IT LOOKS, WHICH IS WHY IT IS DEFERRED RATHER THAN
 // DISMISSED. Two dispatch clicks do NOT collide: internal/api creates a NEW row per
-// click, so there is no shared row. The reachable path is a model change or a
-// privilege grant (both reach ReapplyProfiles) landing while the dispatch goroutine
-// for the same agent is still in flight.
+// click, so there is no shared row. The reachable path is a model change (which
+// reaches ReapplyProfiles) landing while the dispatch goroutine for the same agent
+// is still in flight.
 // TestDispatchCreatesTheInstanceAndMintsTheAgentsOwnToken covers the
 // single-threaded case only, and says so.
 //

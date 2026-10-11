@@ -66,23 +66,6 @@ var (
 		Buckets: []float64{1, 5, 15, 30, 60, 120, 300},
 	})
 
-	// AgentRBACTeardown counts cluster-scoped RBAC removals attempted when an
-	// agent is DESTROYED, by result:
-	//   ok            — the grant's ClusterRole/ClusterRoleBinding were deleted
-	//   failed        — the delete errored; the objects are ORPHANED
-	//   lookup_failed — the granted-profile list could not be read; unknown orphans
-	//   unwired       — no applier available; every granted profile is orphaned
-	//
-	// 🔴 ANYTHING OTHER THAN `ok` IS ALERTABLE, AND THE REASON IS NOT TIDINESS.
-	// Agent names are drawn from a bounded pool and are REISSUED, so an orphaned
-	// ClusterRoleBinding silently re-grants itself to the next agent that draws
-	// the same name — a privilege escalation that no code path performs and no
-	// audit of the grant table can see.
-	AgentRBACTeardown = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "muster_agent_rbac_teardown_total",
-		Help: "Cluster-scoped RBAC teardown outcomes on agent destroy (ok|failed|lookup_failed|unwired).",
-	}, []string{"result"})
-
 	// AgentKickoffResend counts kickoff recoveries after the container that
 	// received the message died (out-of-memory kill, eviction, node drain), by
 	// outcome:
@@ -129,28 +112,6 @@ var (
 		Name: "muster_agent_kickoff_claim_total",
 		Help: "Cross-process kickoff claim outcomes (won|lost|error|renew_lost|renew_error|shutdown_released|shutdown_release_failed|stale_swept).",
 	}, []string{"result"})
-
-	// Checkpoints counts runbook checkpoint outcomes.
-	Checkpoints = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "muster_checkpoints_total",
-		// "unavailable" is the outcome when the checkpoint could NOT BE FILED at
-		// all, so no human was ever asked. It is distinct from the four
-		// decision/non-decision exits because it means the card never existed.
-		Help: "Runbook checkpoint outcomes (resolved|timeout|expired|aborted|unavailable).",
-	}, []string{"outcome"})
-
-	CheckpointWait = promauto.NewHistogram(prometheus.HistogramOpts{
-		Name:    "muster_checkpoint_wait_seconds",
-		Help:    "Time an agent blocked at a checkpoint before it resolved.",
-		Buckets: []float64{1, 5, 15, 60, 300, 900, 3600},
-	})
-
-	// RunbookRuns counts successful runbook dispatches — how often the
-	// parameterized-dispatch loop is actually used.
-	RunbookRuns = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "muster_runbook_runs_total",
-		Help: "Successful runbook dispatches (an agent was created for a runbook run).",
-	})
 
 	// TasksCreated counts tasks created through the HTTP API, by their derived
 	// producer source.

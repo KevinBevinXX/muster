@@ -18,9 +18,7 @@ import (
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/notes"
-	"github.com/ZacxDev/muster/internal/privilege"
 	"github.com/ZacxDev/muster/internal/provision"
-	"github.com/ZacxDev/muster/internal/runbooks"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -54,10 +52,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		Notes:           stubNotesStore{},
 		Agents:          stubAgentsStore{},
 		GitHub:          stubGitHubStore{},
-		Privilege:       stubPrivilegeStore{},
-		Runbooks:        stubRunbooksStore{},
 		SessionLiveness: stubLiveness{},
-		PrivilegeApply:  stubPrivilegeApplier{},
 		TagAutoDispatch: true,
 		Provisioner:     stubProvisioner{},
 		// 🔴 BOTH, because this fixture's whole claim is "every dependency wired".
@@ -79,7 +74,6 @@ func fullyWiredServer(t *testing.T) *Server {
 		ConnectorPolicy: connectors.Policy{AllowLoopback: true},
 	})
 	s.UseRouter(stubRouter{})
-	s.UseGate(stubGate{})
 	return s
 }
 
@@ -253,13 +247,6 @@ func (stubGate) ReadGate(context.Context, string) (GateDecision, error) {
 }
 func (stubGate) ClearGate(context.Context, string) error { return nil }
 
-type stubPrivilegeApplier struct{}
-
-func (stubPrivilegeApplier) ApplyGrant(context.Context, string, string, privilege.Profile) error {
-	return nil
-}
-func (stubPrivilegeApplier) RemoveGrant(context.Context, string, string, string) error { return nil }
-
 type stubProvisioner struct{}
 
 func (stubProvisioner) Dispatch(int64, bool) error { return nil }
@@ -306,23 +293,19 @@ func (stubProvisioner) KickoffUndeliverableReason() string { return "" }
 // 150 methods; hand-writing them would be 150 places for a typo to become a
 // silently wrong fixture.
 type (
-	stubNotesStore     struct{ notes.Store }
-	stubAgentsStore    struct{ agents.Store }
-	stubGitHubStore    struct{ github.Store }
-	stubPrivilegeStore struct{ privilege.Store }
-	stubRunbooksStore  struct{ runbooks.Store }
+	stubNotesStore  struct{ notes.Store }
+	stubAgentsStore struct{ agents.Store }
+	stubGitHubStore struct{ github.Store }
 )
 
 // Compile-time proof each stub satisfies what Extensions asks for, and that the
 // two ports are satisfiable at all.
 var (
-	_ notes.Store     = stubNotesStore{}
-	_ agents.Store    = stubAgentsStore{}
-	_ github.Store    = stubGitHubStore{}
-	_ privilege.Store = stubPrivilegeStore{}
-	_ runbooks.Store  = stubRunbooksStore{}
-	_ RouterPort      = stubRouter{}
-	_ GatePort        = stubGate{}
+	_ notes.Store  = stubNotesStore{}
+	_ agents.Store = stubAgentsStore{}
+	_ github.Store = stubGitHubStore{}
+	_ RouterPort   = stubRouter{}
+	_ GatePort     = stubGate{}
 )
 
 // reflectValueOfExtensions reports, per field name, whether that field is at

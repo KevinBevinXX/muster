@@ -17,7 +17,6 @@ var allCaps = provision.Capabilities{
 	Isolation:      provision.IsolationNamespace,
 	Secrets:        true,
 	Files:          true,
-	Policy:         true,
 	Persistence:    true,
 	ResourceLimits: true,
 	Scale:          true,

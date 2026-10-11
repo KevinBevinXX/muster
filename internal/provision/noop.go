@@ -23,9 +23,8 @@ const DefaultNoopEndpointTemplate = "{{.Name}}.noop.invalid"
 // for this survives a round trip through me unchanged", and those six do — which
 // for NetworkIsolation is a statement about the RECORD and not about any
 // confinement: nothing runs here, so nothing is confined, and Isolation below
-// already says so. Policy and Exec do not —
-// there is no identity to authorise and no process to enter — so they are false
-// and the refusals in Grant and Exec have a real subject to fire on.
+// already says so. Exec does not — there is no process to enter — so it is
+// false and the refusal in Exec has a real subject to fire on.
 //
 // 🔴 Isolation IS IsolationNone AND THAT IS NOT A PLACEHOLDER. Nothing runs, so
 // nothing is isolated. An interface that warns on IsolationNone should warn
@@ -68,8 +67,8 @@ var DefaultNoopCapabilities = Capabilities{
 //     [ErrNotFound] and the nil is a claim about something.
 //  4. Its real contract was NINE THINGS WIDER than the declared one — seven
 //     setters wired by concrete type plus two type-asserted interfaces. The
-//     optional surface here is two type-asserted interfaces, both routed
-//     through [Grant] and [Exec] so the capability branch cannot be skipped.
+//     optional surface here is the exec interfaces, routed through [Exec] and
+//     [ExecTTY] so the capability branch cannot be skipped.
 //
 // # Blind mode
 //

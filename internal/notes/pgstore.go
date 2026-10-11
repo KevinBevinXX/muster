@@ -17,31 +17,26 @@ type PGStore struct{ pool *pgxpool.Pool }
 func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 
 // Create inserts a note (with its dispatch config) and returns it with its
-// generated ID and timestamps. grant_profiles is a BIGINT[] — pgx encodes a
-// []int64 natively; a nil slice stores as the column's '{}' default.
+// generated ID and timestamps.
 func (s *PGStore) Create(ctx context.Context, n Note) (Note, error) {
-	// pgx encodes a nil slice as SQL NULL, which the NOT NULL grant_profiles column
-	// rejects; normalize to a non-nil empty slice so a config-less task stores '{}'.
-	if n.GrantProfiles == nil {
-		n.GrantProfiles = []int64{}
-	}
-	// Same nil-slice hazard for tags (NOT NULL DEFAULT '{}'): normalize to a
-	// non-nil empty slice so a tagless task stores '{}' rather than failing on NULL.
+	// pgx encodes a nil slice as SQL NULL, which the NOT NULL DEFAULT '{}' tags
+	// column rejects: normalize to a non-nil empty slice so a tagless task stores
+	// '{}' rather than failing on NULL.
 	n.Tags = NormalizeTags(n.Tags)
 	// source_type / source_session_id are nullable (*string); a nil pointer encodes
 	// as SQL NULL (a pre-0017 / header-less task), which reads back as NULL.
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO notes (directory, title, body, model, repo, repo_branch, grant_profiles, tags, source_type, source_session_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		INSERT INTO notes (directory, title, body, model, repo, repo_branch, tags, source_type, source_session_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING `+noteCols,
-		n.Directory, n.Title, n.Body, n.Model, n.Repo, n.RepoBranch, n.GrantProfiles, n.Tags, n.SourceType, n.SourceSessionID).
+		n.Directory, n.Title, n.Body, n.Model, n.Repo, n.RepoBranch, n.Tags, n.SourceType, n.SourceSessionID).
 		Scan(scanNoteInto(&n)...)
 	return n, err
 }
 
 // noteCols is the SINGLE column list every full-note read uses, so Create/Get/
 // List/ListByTags can never drift out of sync with scanNoteInto's target order.
-const noteCols = `id, directory, title, body, status, model, repo, repo_branch, grant_profiles, tags, source_type, source_session_id, created_at, updated_at`
+const noteCols = `id, directory, title, body, status, model, repo, repo_branch, tags, source_type, source_session_id, created_at, updated_at`
 
 // liveOnly is the SINGLE soft-delete predicate, spelled once so no read or write
 // path can quietly opt out of it. It now covers BOTH soft-deleted tables — notes
@@ -106,7 +101,7 @@ func scanCommentInto(c *Comment) []any {
 func scanNoteInto(n *Note) []any {
 	return []any{
 		&n.ID, &n.Directory, &n.Title, &n.Body, &n.Status, &n.Model, &n.Repo, &n.RepoBranch,
-		&n.GrantProfiles, &n.Tags, &n.SourceType, &n.SourceSessionID, &n.CreatedAt, &n.UpdatedAt,
+		&n.Tags, &n.SourceType, &n.SourceSessionID, &n.CreatedAt, &n.UpdatedAt,
 	}
 }
 
@@ -410,7 +405,7 @@ func (s *PGStore) CountByStatus(ctx context.Context, status string) (int, error)
 // that grew three joins are separate regressions, each earned once already.
 func (s *PGStore) ListSummaries(ctx context.Context) ([]Note, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, directory, title, body, model, repo, repo_branch, grant_profiles, tags, updated_at
+		SELECT id, directory, title, body, model, repo, repo_branch, tags, updated_at
 		FROM notes WHERE `+liveOnly+` ORDER BY updated_at DESC`)
 	if err != nil {
 		return nil, err
@@ -419,7 +414,7 @@ func (s *PGStore) ListSummaries(ctx context.Context) ([]Note, error) {
 	out := make([]Note, 0)
 	for rows.Next() {
 		var n Note
-		if err := rows.Scan(&n.ID, &n.Directory, &n.Title, &n.Body, &n.Model, &n.Repo, &n.RepoBranch, &n.GrantProfiles, &n.Tags, &n.UpdatedAt); err != nil {
+		if err := rows.Scan(&n.ID, &n.Directory, &n.Title, &n.Body, &n.Model, &n.Repo, &n.RepoBranch, &n.Tags, &n.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, n)
@@ -573,10 +568,9 @@ func (s *PGStore) SetStatus(ctx context.Context, id int64, status string) (Note,
 // config, bumps updated_at, and returns the refreshed note. It builds the UPDATE
 // dynamically so ONLY the columns whose patch field is non-nil are touched —
 // status, source_type/source_session_id, and created_at are never in the SET list,
-// so an edit can never change a task's lifecycle status or provenance. A
-// provided-but-nil GrantProfiles normalizes to '{}' (the column is NOT NULL, like
-// Create). With no fields provided it still bumps updated_at (and validates the row
-// exists). An unknown id → pgx.ErrNoRows.
+// so an edit can never change a task's lifecycle status or provenance. With no
+// fields provided it still bumps updated_at (and validates the row exists). An
+// unknown id → pgx.ErrNoRows.
 func (s *PGStore) UpdateNote(ctx context.Context, id int64, patch NoteUpdate) (Note, error) {
 	sets := make([]string, 0, 6)
 	// $1 is always the id (the WHERE clause); provided columns bind $2, $3, …
@@ -594,7 +588,7 @@ func (s *PGStore) UpdateNote(ctx context.Context, id int64, patch NoteUpdate) (N
 	if patch.Tags != nil {
 		// REPLACE semantics. NormalizeTags is total and always returns a non-nil
 		// slice, so a provided-but-nil / cleared value stores '{}' rather than
-		// tripping the NOT NULL column (mirrors GrantProfiles below).
+		// tripping the NOT NULL column (mirrors Create).
 		add("tags", NormalizeTags(*patch.Tags))
 	}
 	if patch.Body != nil {
@@ -608,16 +602,6 @@ func (s *PGStore) UpdateNote(ctx context.Context, id int64, patch NoteUpdate) (N
 	}
 	if patch.RepoBranch != nil {
 		add("repo_branch", *patch.RepoBranch)
-	}
-	if patch.GrantProfiles != nil {
-		gp := *patch.GrantProfiles
-		if gp == nil {
-			// pgx encodes a nil slice as SQL NULL, which the NOT NULL grant_profiles
-			// column rejects; normalize to a non-nil empty slice so a cleared config
-			// stores '{}' (mirrors Create).
-			gp = []int64{}
-		}
-		add("grant_profiles", gp)
 	}
 	// updated_at is ALWAYS bumped (an edit is a change); status/provenance/created_at
 	// are deliberately absent from the SET list.

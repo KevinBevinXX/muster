@@ -24,7 +24,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
@@ -86,58 +85,8 @@ func internalForeignMeta(name string) metav1.ObjectMeta {
 	}}
 }
 
-// internalForeignClusterMeta is the same fixture for a cluster-scoped object,
-// which has no namespace of its own.
-func internalForeignClusterMeta(name string) metav1.ObjectMeta {
-	return metav1.ObjectMeta{Name: name, Labels: map[string]string{
-		"app.kubernetes.io/name":       "grafana",
-		"app.kubernetes.io/managed-by": "Helm",
-	}}
-}
-
-// The two policy shapes the RBAC ledger rows need: one that renders only
-// cluster-scoped objects, one that renders only namespaced ones. A policy
-// carrying both would reach the cluster half first, so the namespaced sites
-// would be unreachable behind it.
-var (
-	internalClusterPolicy = provision.Policy{
-		Name: "read-nodes",
-		Rules: internalRules(`{"clusterRules":[{"apiGroups":[""],"resources":["nodes"],` +
-			`"verbs":["get","list"]}]}`),
-	}
-	internalNamespacePolicy = provision.Policy{
-		Name: "read-configmaps",
-		Rules: internalRules(`{"namespaceRules":[{"apiGroups":[""],"resources":["configmaps"],` +
-			`"verbs":["get"]}]}`),
-	}
-)
-
-func internalRules(s string) []byte { return []byte(s) }
-
-// internalForeignClusterRole is a ClusterRole somebody else made, under the
-// deterministic name muster derives for (instance, policy). Its rule is
-// deliberately NOT the rule muster would write, so an overwrite is visible.
-func internalForeignClusterRole(instance, policy string) *rbacv1.ClusterRole {
-	return &rbacv1.ClusterRole{
-		ObjectMeta: internalForeignClusterMeta(PolicyObjectName(instance, policy)),
-		Rules: []rbacv1.PolicyRule{{
-			APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"*"},
-		}},
-	}
-}
-
-// internalGrantAfterCreate creates the instance — so its ServiceAccount is
-// genuinely muster's and Grant's identity check passes — and then grants.
-func internalGrantAfterCreate(d *Driver, name string, pol provision.Policy) error {
-	ctx := context.Background()
-	if err := d.Create(ctx, internalSpec(name)); err != nil {
-		return fmt.Errorf("premise: Create must succeed before the grant: %w", err)
-	}
-	return d.Grant(ctx, provision.Ref{Name: name}, pol)
-}
-
 // TestEveryWriteSiteRefusalKeepsItsTypeAndItsSentinels is the LEDGER of every
-// object kind apply, Grant and Destroy can refuse on.
+// object kind apply and Destroy can refuse on.
 //
 // 🔴 IT IS A SEAM GUARD, NOT A PER-SITE ONE. Each site was individually
 // reviewed and each refusal was individually correct where it was CONSTRUCTED;
@@ -149,14 +98,12 @@ func internalGrantAfterCreate(d *Driver, name string, pol provision.Policy) erro
 // all together is what makes a site added later visible: it either appears here
 // or the ledger is short.
 //
-// 🔴 THE LEDGER WAS SHORT, AND THAT IS WHY IT NOW COVERS THE RBAC PATH. Fixing
-// apply's five sites left policy.go's Grant out of the consolidation entirely:
-// at f373092 its ClusterRole and Role upserts still went through blind(), so a
-// permanent ownership refusal in the SECURITY-CRITICAL path arrived as
-// ErrBlind — measured with a foreign co-named ClusterRole in the way,
-// errors.Is(err, ErrBlind) true and errors.Is(err, ErrNotManaged) false. Two
-// more sites (the bindings) had no ownership check at all. The rows below are
-// the answer to "which write sites exist", and
+// 🔴 THE LEDGER WAS ONCE SHORT. Fixing apply's five sites left the (since
+// removed) policy grant path out of the consolidation entirely: at f373092 its
+// ClusterRole and Role upserts still went through blind(), so a permanent
+// ownership refusal arrived as ErrBlind. That path and its rows are gone with
+// the privilege subsystem. The rows below are the answer to "which write sites
+// exist", and
 // TestTheWriteHelperLedgerIsComplete is the answer to "are there sites this
 // table has never heard of".
 //
@@ -317,74 +264,6 @@ func TestEveryWriteSiteRefusalKeepsItsTypeAndItsSentinels(t *testing.T) {
 					newForeignDeployment("dz"), metav1.CreateOptions{})
 			},
 			act: func(d *Driver) error { return d.Destroy(ctx, provision.Ref{Name: "dz"}) },
-		},
-		// 🔴 THE RBAC HALF OF THE LEDGER. These four sites are in the path that
-		// GRANTS ACCESS, and at f373092 two of them reported a permanent
-		// ownership refusal as ErrBlind while the other two had no ownership
-		// check at all.
-		{
-			site: "Grant/serviceaccount",
-			kind: "serviceaccount",
-			seed: func(cs *fake.Clientset) {
-				cs.CoreV1().ServiceAccounts(internalNS).Create(ctx, //nolint:errcheck
-					&corev1.ServiceAccount{ObjectMeta: internalForeignMeta("gsa")}, metav1.CreateOptions{})
-			},
-			// No Create first: the instance's ServiceAccount is a stranger's, so
-			// Grant must refuse to bind a policy to somebody else's identity
-			// rather than treating the name's existence as the instance's.
-			act: func(d *Driver) error {
-				return d.Grant(ctx, provision.Ref{Name: "gsa"}, internalClusterPolicy)
-			},
-		},
-		{
-			site: "Grant/clusterrole",
-			kind: "clusterrole",
-			seed: func(cs *fake.Clientset) {
-				cs.RbacV1().ClusterRoles().Create(ctx, //nolint:errcheck
-					internalForeignClusterRole("gcr", internalClusterPolicy.Name), metav1.CreateOptions{})
-			},
-			act: func(d *Driver) error {
-				return internalGrantAfterCreate(d, "gcr", internalClusterPolicy)
-			},
-		},
-		{
-			site: "Grant/clusterrolebinding",
-			kind: "clusterrolebinding",
-			seed: func(cs *fake.Clientset) {
-				cs.RbacV1().ClusterRoleBindings().Create(ctx, //nolint:errcheck
-					&rbacv1.ClusterRoleBinding{ObjectMeta: internalForeignClusterMeta(
-						PolicyObjectName("gcb", internalClusterPolicy.Name))},
-					metav1.CreateOptions{})
-			},
-			act: func(d *Driver) error {
-				return internalGrantAfterCreate(d, "gcb", internalClusterPolicy)
-			},
-		},
-		{
-			site: "Grant/role",
-			kind: "role",
-			seed: func(cs *fake.Clientset) {
-				cs.RbacV1().Roles(internalNS).Create(ctx, //nolint:errcheck
-					&rbacv1.Role{ObjectMeta: internalForeignMeta(
-						PolicyObjectName("grl", internalNamespacePolicy.Name))},
-					metav1.CreateOptions{})
-			},
-			act: func(d *Driver) error {
-				return internalGrantAfterCreate(d, "grl", internalNamespacePolicy)
-			},
-		},
-		{
-			site: "Grant/rolebinding",
-			kind: "rolebinding",
-			seed: func(cs *fake.Clientset) {
-				cs.RbacV1().RoleBindings(internalNS).Create(ctx, //nolint:errcheck
-					&rbacv1.RoleBinding{ObjectMeta: internalForeignMeta(
-						PolicyObjectName("grb", internalNamespacePolicy.Name))},
-					metav1.CreateOptions{})
-			},
-			act: func(d *Driver) error {
-				return internalGrantAfterCreate(d, "grb", internalNamespacePolicy)
-			},
 		},
 	}
 
@@ -552,7 +431,7 @@ func TestApplyFailedKeysOnTheSentinelNotTheType(t *testing.T) {
 // function, asserted against a declared table.
 //
 // 🔴 IT EXISTS BECAUSE THE BEHAVIOURAL LEDGER CANNOT SEE A SITE NOBODY WROTE A
-// ROW FOR. That is not hypothetical: policy.go's Grant had two upserts wrapped
+// ROW FOR. That is not hypothetical: the since-removed policy Grant had two upserts wrapped
 // in blind() and two bindings with no ownership check at all, and it stayed that
 // way through two review rounds because every test asked "is this site right?"
 // and none asked "which sites are there?". apply's own comment said as much
@@ -571,7 +450,7 @@ func TestApplyFailedKeysOnTheSentinelNotTheType(t *testing.T) {
 // claims about them ("five upserts", "six kinds", "all six write sites") were
 // therefore unfalsifiable.
 func TestTheWriteHelperLedgerIsComplete(t *testing.T) {
-	// The census, hand-derived by reading driver.go and policy.go. Each row is
+	// The census, hand-derived by reading driver.go. Each row is
 	// helper -> enclosing function -> number of call sites.
 	want := map[string]map[string]int{
 		// blind() must only ever wrap a RAW client-go error. Every entry here
@@ -592,26 +471,23 @@ func TestTheWriteHelperLedgerIsComplete(t *testing.T) {
 			"podFor":              1,
 			"TailLogs":            1,
 			"StreamLogs":          1,
-			"Grant":               1,
-			"revokeAllPolicies":   4,
 		},
 		// Every write that CAN collide returns through applyFailed, which is
 		// what keeps a permanent refusal out of ErrBlind. Six object kinds in
 		// apply (ServiceAccount, ConfigMap, Secret, claim, Service, Deployment
-		// — the Secret site serves both Secrets, through the loop) and four in
-		// Grant (ClusterRole, ClusterRoleBinding, Role, RoleBinding).
+		// — the Secret site serves both Secrets, through the loop).
 		//
 		// The NetworkPolicy is the seventh kind apply writes and its site is in
 		// applyNetworkPolicy, which apply calls first. That function has TWO
 		// calls: the default arm, and the arm for a 403 from a namespace that is
 		// still terminating (a transient). Every OTHER 403 does not come through
 		// here — networkPolicyForbidden names the verb instead.
-		"applyFailed": {"apply": 6, "Grant": 4, "applyNetworkPolicy": 2},
+		"applyFailed": {"apply": 6, "applyNetworkPolicy": 2},
 		// The create-then-update-if-ours predicate.
-		"upsertOwned": {"apply": 4, "Grant": 2, "applyNetworkPolicy": 1},
-		// The create-only-if-ours predicate: a bound claim and two bindings,
-		// all three immutable in the fields that matter.
-		"createOwned": {"apply": 1, "Grant": 2},
+		"upsertOwned": {"apply": 4, "applyNetworkPolicy": 1},
+		// The create-only-if-ours predicate: a bound claim, immutable in the
+		// fields that matter.
+		"createOwned": {"apply": 1},
 		// Every by-name DELETE. A satellite is a logged skip, so these are the
 		// sites where a stranger's co-named object is left alone rather than
 		// destroyed.
@@ -619,7 +495,7 @@ func TestTheWriteHelperLedgerIsComplete(t *testing.T) {
 		// Destroy's two: the loop over the six satellites, and the NetworkPolicy,
 		// which is separate because it is deleted LAST and only when the driver
 		// is configured for isolation.
-		"deleteIfOwned": {"apply": 3, "Destroy": 2, "Revoke": 4},
+		"deleteIfOwned": {"apply": 3, "Destroy": 2},
 		// The predicate itself. Every by-name path that reads, writes or
 		// deletes reaches exactly one of these.
 		"owned": {
@@ -635,7 +511,6 @@ func TestTheWriteHelperLedgerIsComplete(t *testing.T) {
 			// exception to "the predicate lives in a helper", and it is why
 			// this row exists rather than being folded into upsertOwned.
 			"upsertService": 1,
-			"Grant":         1,
 		},
 	}
 

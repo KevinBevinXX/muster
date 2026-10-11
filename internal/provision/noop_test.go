@@ -142,25 +142,10 @@ func TestNoopTailLogsHonoursTheLineLimit(t *testing.T) {
 // widening would make those probes vacuous.
 func TestNoopCapabilitiesAreDeclaredHonestly(t *testing.T) {
 	caps := provision.MustNewNoop().Capabilities()
-	if caps.Policy {
-		t.Error("the noop driver must not claim Policy: there is no identity to authorise, and " +
-			"claiming it would remove the only driver in this repository on which Grant's refusal fires")
-	}
 	if caps.Exec {
 		t.Error("the noop driver must not claim Exec: there is no process to enter")
 	}
 	if caps.Isolation != provision.IsolationNone {
 		t.Errorf("the noop driver isolates nothing; Isolation is %v, want %v", caps.Isolation, provision.IsolationNone)
-	}
-}
-
-// TestNoopDoesNotImplementPolicyGranter is the compile-time half of the
-// previous test: Grant's first refusal branch (the type assertion) needs a
-// driver it actually fires on.
-func TestNoopDoesNotImplementPolicyGranter(t *testing.T) {
-	var p provision.Provisioner = provision.MustNewNoop()
-	if _, ok := p.(provision.PolicyGranter); ok {
-		t.Fatal("the noop driver implements PolicyGranter; Grant's type-assertion refusal is then " +
-			"unreachable from any driver in this repository and is untested")
 	}
 }

@@ -53,7 +53,7 @@ func (i Isolation) String() string {
 // here is refused on somewhere, and each one's refusal is spelled in exactly
 // one place: Files, Secrets, Persistence, ResourceLimits and NetworkIsolation
 // in [CheckSpec]; Scale in [CheckSpec] and [CheckScale], which are one rule reached by two
-// entry points; Policy in [Grant]; Exec in [Exec] and [ExecTTY], one rule
+// entry points; Exec in [Exec] and [ExecTTY], one rule
 // reached by two entry points like Scale's. A predicate open-coded per
 // driver instead is a predicate that is wrong in all but one of them, in the
 // same direction, and nobody hears the disagreement.
@@ -88,11 +88,6 @@ type Capabilities struct {
 
 	// Files: the driver can place Spec.Files natively.
 	Files bool
-
-	// Policy: the driver can attach an identity-scoped authorisation policy to
-	// an instance — cluster RBAC and its equivalents. See Grant for why a false
-	// here must produce a REFUSAL rather than a no-op.
-	Policy bool
 
 	// Persistence: storage that outlives the instance's process.
 	Persistence bool

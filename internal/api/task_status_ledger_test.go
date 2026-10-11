@@ -72,9 +72,6 @@ var expectedStatusWriterLedger = map[string][]string{
 	// therefore produces no request log line — the path the original incident
 	// could not distinguish, and the reason this seam exists at all.
 	"dispatchAgentTool": {"writerAgentTool"},
-	// The bookkeeping backstop that parks a task in ready_for_review when a
-	// checkpoint ended without a decision.
-	"strandCheckpointTask": {"writerCheckpointStrand"},
 }
 
 // TestEveryStatusWriterIsLabelled pins every caller of setNoteStatus to the
