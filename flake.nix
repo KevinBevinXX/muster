@@ -113,6 +113,17 @@
           # ⚠ WHEN A NEW EMBEDDED FILE TYPE APPEARS UNDER `internal/`, IT MUST BE
           # ADDED HERE. There is no glob doing it for you, deliberately — see the
           # `go.sum` note. The symptom is the message above.
+          #
+          # ⚠ THAT MESSAGE WAS MEASURED WHEN THE CHECK PHASE VETTED `./...`; IT
+          # NOW VETS ONLY `testPaths` (see `goCheckPhase`), SO THE SYMPTOM NOW
+          # APPEARS ONLY FOR A PACKAGE IN A DERIVATION'S BUILD OR TEST CLOSURE.
+          # `internal/ui` still is (`cmd/muster`'s tests import `internal/api` —
+          # read off `go list -deps -test`, not re-measured by dropping the row),
+          # so a dropped `.js` row should still fail the CLI's check phase;
+          # `internal/agentspec` is in neither closure, so a dropped `.sh` row no
+          # longer fails `nix build` at all — harmless to these artefacts, which
+          # do not contain that package, and the reason to re-check this filter
+          # when a derivation that does is added.
           || ((pkgs.lib.hasPrefix "cmd/" rel || pkgs.lib.hasPrefix "internal/" rel)
               && (pkgs.lib.hasSuffix ".go" rel || pkgs.lib.hasSuffix ".sql" rel
                   || pkgs.lib.hasSuffix ".sh" rel || pkgs.lib.hasSuffix ".js" rel))
@@ -202,8 +213,8 @@
       # nothing in the log to say the others never ran. The `ok` COUNT below is
       # the instrument that does not depend on that tell.
       #
-      # 🔴 `go vet ./...` COVERS THE WHOLE MODULE; `go test` COVERS A NAMED SET,
-      # AND THIS IS A NARROWING THAT HAS TO BE JUSTIFIED RATHER THAN INHERITED.
+      # 🔴 `go test` COVERS A NAMED SET, AND THIS IS A NARROWING THAT HAS TO BE
+      # JUSTIFIED RATHER THAN INHERITED.
       # `go test ./...` here is NOT the stronger option — it is a RED one, and
       # that was measured rather than supposed. Four packages fail inside the
       # sandbox for reasons that have nothing to do with the code under test:
@@ -221,7 +232,27 @@
       # structurally cannot run them. Carrying enough of the tree to satisfy them
       # would mean carrying essentially all of it, which is the filter's whole
       # point undone. So the rule here is: a derivation's check phase tests THE
-      # PACKAGES IT INSTALLS, and `go vet` reads everything else.
+      # PACKAGES IT INSTALLS.
+      #
+      # 🔴 AND `go vet` IS GIVEN THE SAME `testPaths`, NOT `./...` — THE
+      # WHOLE-MODULE VET IS THE CI `build` JOB'S, WHICH RUNS ON EVERY EVENT THIS
+      # DERIVATION'S `nix` JOB DOES. This phase used to vet `./...`, and that was
+      # the dominant cost of every nix build, measured rather than supposed.
+      # MEASURED at `a75b09b`, cold GOCACHE, 2 cores per build, three runs: the
+      # whole-module vet was 26–34 s of the CLI's 35–47 s check phase and
+      # 31–37 s of the migrator's 36–44 s, and both derivations paid it, in
+      # full, for the same module. Narrowed (two runs): 17–21 s and 5–8 s for
+      # the whole check phase, because vet now reads only packages the build
+      # and the tests here compile anyway.
+      #
+      # ⚠ WHAT THE NARROWING GIVES UP, so nobody reads a green nix build as a
+      # vetted module: a vet-only defect (a `Printf` format mismatch, say) in a
+      # package OUTSIDE `testPaths` — `internal/api`, the server — no longer
+      # fails `nix build`. It fails `go vet ./...` in the `build` job, which is
+      # where the module is vetted. It was also the nix-side witness for a
+      # missing `onlyGo` embed row in a package OUTSIDE these derivations'
+      # build and test closures (`internal/agentspec`'s `.sh`); the note at
+      # that filter row says what still catches which.
       #
       # 🔴 WHAT THIS PHASE STRUCTURALLY CANNOT SEE, so nobody reads a green nix
       # build as a green suite:
@@ -235,7 +266,7 @@
       goCheckPhase = testPaths: ''
         runHook preCheck
 
-        go vet ./...
+        go vet ${testPaths}
 
         # 🔴 A COUNT, NOT AN EXIT CODE. `go test` exits 0 when every package it
         # was given has no test files, so the status alone cannot tell "the suite
