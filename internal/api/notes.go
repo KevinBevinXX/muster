@@ -359,21 +359,13 @@ func (s *Server) handleNoteCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Optional dispatch config from the create form (mirrors handleAgentCreate's
-	// parse of the same field names): model + repo + repo_branch + the
-	// grant_profile checkbox multi-select → []int64.
-	var grantIDs []int64
-	for _, v := range r.Form["grant_profile"] {
-		if id, perr := strconv.ParseInt(strings.TrimSpace(v), 10, 64); perr == nil {
-			grantIDs = append(grantIDs, id)
-		}
-	}
+	// parse of the same field names): model + repo + repo_branch.
 	note, err := s.ext.Notes.Create(ctx, notes.Note{
-		Directory:     directory,
-		Body:          body,
-		Model:         strings.TrimSpace(r.FormValue("model")),
-		Repo:          strings.TrimSpace(r.FormValue("repo")),
-		RepoBranch:    strings.TrimSpace(r.FormValue("repo_branch")),
-		GrantProfiles: grantIDs,
+		Directory:  directory,
+		Body:       body,
+		Model:      strings.TrimSpace(r.FormValue("model")),
+		Repo:       strings.TrimSpace(r.FormValue("repo")),
+		RepoBranch: strings.TrimSpace(r.FormValue("repo_branch")),
 	})
 	if err != nil {
 		s.logger.Printf("notes: create: %v", err)
@@ -439,13 +431,16 @@ func (s *Server) handleAPITaskCreate(w http.ResponseWriter, r *http.Request) {
 		// Optional dispatch config (backward-compatible: a body without these still
 		// creates a config-less task). This is the contract repo-cos + the drafter
 		// fill so a produced Task dispatches pre-filled.
-		Model      string  `json:"model"`
-		Repo       string  `json:"repo"`
-		Branch     string  `json:"branch"`
-		Privileges []int64 `json:"privileges"`
+		Model  string `json:"model"`
+		Repo   string `json:"repo"`
+		Branch string `json:"branch"`
+		// ⚠ `privileges` WAS A FIELD HERE until the privilege subsystem was
+		// removed. The decoder does not refuse unknown keys, so a producer that
+		// still sends it gets its task created and the key ignored.
+		//
 		// Optional tags. Absent ⇒ '{}' (unchanged behaviour for every existing
-		// producer). An invalid tag or an unknown `runbook:` is a hard 400 naming
-		// the offending tag — a routing tag must never be silently ignored.
+		// producer). An invalid tag is a hard 400 naming the offending tag — a
+		// routing tag must never be silently ignored.
 		Tags []string `json:"tags"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -480,7 +475,6 @@ func (s *Server) handleAPITaskCreate(w http.ResponseWriter, r *http.Request) {
 		Model:           body.Model,
 		Repo:            body.Repo,
 		RepoBranch:      body.Branch,
-		GrantProfiles:   body.Privileges,
 		Tags:            tags,
 		SourceType:      storedSourceType(source),
 		SourceSessionID: nilIfEmpty(sessionID),
@@ -870,8 +864,8 @@ func capRunes(s string, n int) string {
 
 // handleAPITaskEdit handles PATCH /api/tasks/{id} (machine, hook-token-gated):
 // partially edit a durable Task's editable content + dispatch config. It mirrors
-// handleAPITaskCreate's JSON field names (directory/body/model/repo/branch/
-// privileges), but ALL are optional pointers so an absent key leaves that column
+// handleAPITaskCreate's JSON field names (directory/body/model/repo/branch),
+// but ALL are optional pointers so an absent key leaves that column
 // unchanged (vs a present key, which sets it). status / provenance / created_at in
 // the body are IGNORED (never mapped to the update). An in-progress task is
 // immutable → 409 (checked BEFORE any mutation). Unknown id → 404. On success it
@@ -889,12 +883,11 @@ func (s *Server) handleAPITaskEdit(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Directory *string `json:"directory"`
 		// Title (migration 0018): the display title, previously silently dropped.
-		Title      *string  `json:"title"`
-		Body       *string  `json:"body"`
-		Model      *string  `json:"model"`
-		Repo       *string  `json:"repo"`
-		Branch     *string  `json:"branch"`
-		Privileges *[]int64 `json:"privileges"`
+		Title  *string `json:"title"`
+		Body   *string `json:"body"`
+		Model  *string `json:"model"`
+		Repo   *string `json:"repo"`
+		Branch *string `json:"branch"`
 		// Tag edits. `tags` REPLACES the whole set; `addTags`/`removeTags` MERGE
 		// (set-union / set-difference) so two author classes can't lose each other's
 		// updates. Supplying `tags` together with either merge key is AMBIGUOUS →
@@ -929,7 +922,7 @@ func (s *Server) handleAPITaskEdit(w http.ResponseWriter, r *http.Request) {
 	// any other field, still 409s. tagOnlyEdit reports whether this PATCH touches
 	// nothing but tags.
 	tagOnly := body.Directory == nil && body.Title == nil && body.Body == nil && body.Model == nil &&
-		body.Repo == nil && body.Branch == nil && body.Privileges == nil
+		body.Repo == nil && body.Branch == nil
 	if cur.Status == notes.StatusInProgress {
 		touched := append(append([]string{}, body.AddTags...), body.RemoveTags...)
 		if body.Tags != nil {
@@ -1001,16 +994,13 @@ func (s *Server) handleAPITaskEdit(w http.ResponseWriter, r *http.Request) {
 		v := capRunes(*body.Branch, maxTaskFieldLen)
 		patch.RepoBranch = &v
 	}
-	if body.Privileges != nil {
-		patch.GrantProfiles = body.Privileges
-	}
 
 	// Validate the MERGE keys before any mutation, so an invalid addTags never
 	// half-applies alongside a valid field edit.
 	addTags, err := s.resolveTaskTags(r.Context(), body.AddTags)
 	if err == nil {
-		// removeTags only needs the grammar, not the runbook existence check: you
-		// must be able to remove a `runbook:` tag whose runbook was since deleted.
+		// removeTags only needs the grammar: a tag must always be removable,
+		// whatever it names.
 		var rerr error
 		if _, rerr = notes.NormalizeAndValidate(body.RemoveTags); rerr != nil {
 			err = errTagValidation{rerr}
@@ -1499,7 +1489,7 @@ func (s *Server) handleAPITaskStatus(w http.ResponseWriter, r *http.Request) {
 	// "for EVERY status writer" and was "the single site", and BOTH are false.
 	// Only ONE setNoteStatus caller is applyTaskStatus; the rest bypass it —
 	// advanceTaskToInProgress (agents.go), handleTaskMerge (merge.go), and
-	// handleAgentTaskStatus / dispatchAgentTool / strandCheckpointTask (agent.go).
+	// handleAgentTaskStatus / dispatchAgentTool (agent.go).
 	// Each of those broadcasts from its own handler, so the property holds by
 	// REPETITION, not by construction, exactly as the corrected comment in
 	// agents.go says. Restating it as a package-wide invariant is the same
@@ -1523,32 +1513,9 @@ func (s *Server) handleAPITaskStatus(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, s.apiTaskOne(r.Context(), note))
 }
 
-// taskProfileOptions loads the full grantable privilege-profile set (id + display
-// name) for the edit form's pre-checked checklist. Best-effort: no privilege store
-// (in-memory mode) or an error → empty (the checklist renders its muted note).
-func (s *Server) taskProfileOptions(ctx context.Context) []ui.ProfileOption {
-	opts := make([]ui.ProfileOption, 0)
-	if s.ext.Privilege == nil {
-		return opts
-	}
-	profs, err := s.ext.Privilege.ListProfiles(ctx)
-	if err != nil {
-		s.logger.Printf("notes: edit list profiles: %v", err)
-		return opts
-	}
-	for _, p := range profs {
-		name := p.DisplayName
-		if name == "" {
-			name = p.Name
-		}
-		opts = append(opts, ui.ProfileOption{ID: p.ID, Name: name})
-	}
-	return opts
-}
-
 // handleNoteEditModal serves GET /ui/tasks/{id}/edit: the edit-task form body,
 // pre-filled with the task's current editable values (directory/body/model/repo/
-// branch/privileges), loaded into #task-modal-body when the card's Edit button is
+// branch), loaded into #task-modal-body when the card's Edit button is
 // tapped. The in-progress guard is enforced on the POST (submit) — the card hides
 // the Edit affordance for an in-progress task, so this GET just renders the form.
 func (s *Server) handleNoteEditModal(w http.ResponseWriter, r *http.Request) {
@@ -1573,7 +1540,6 @@ func (s *Server) handleNoteEditModal(w http.ResponseWriter, r *http.Request) {
 		Note:              note,
 		Directories:       dirs,
 		DirectoriesFailed: dirsFailed,
-		Profiles:          s.taskProfileOptions(r.Context()),
 		// The tag input's <datalist> suggestions come from the live vocabulary, so
 		// the human reuses existing labels instead of minting near-duplicates.
 		Vocabulary: s.tagVocabulary(r.Context()),
@@ -1617,8 +1583,7 @@ func (s *Server) handleNoteEdit(w http.ResponseWriter, r *http.Request) {
 
 	// Tags: the modal's chip editor submits one hidden `tag` input per chip, so the
 	// form is a full REPLACE of the task's tag set (the human is looking at the
-	// whole set). Validated loudly — an invalid tag or an unknown `runbook:` is a
-	// 400 that htmx surfaces as an error toast, never a silent drop.
+	// whole set). Validated loudly — an invalid tag is a 400 that htmx surfaces as an error toast, never a silent drop.
 	tags, terr := s.resolveTaskTags(r.Context(), r.Form["tag"])
 	if terr != nil {
 		var ve errTagValidation
@@ -1642,24 +1607,15 @@ func (s *Server) handleNoteEdit(w http.ResponseWriter, r *http.Request) {
 	model := capRunes(strings.TrimSpace(r.FormValue("model")), maxTaskFieldLen)
 	repo := capRunes(strings.TrimSpace(r.FormValue("repo")), maxTaskFieldLen)
 	branch := capRunes(strings.TrimSpace(r.FormValue("repo_branch")), maxTaskFieldLen)
-	var grantIDs []int64
-	for _, v := range r.Form["grant_profile"] {
-		if pid, perr := strconv.ParseInt(strings.TrimSpace(v), 10, 64); perr == nil {
-			grantIDs = append(grantIDs, pid)
-		}
-	}
-
-	// The form submits every editable field → set them all (grantIDs nil clears the
-	// privileges; UpdateNote normalizes nil → '{}').
+	// The form submits every editable field → set them all.
 	updated, err := s.ext.Notes.UpdateNote(r.Context(), id, notes.NoteUpdate{
-		Directory:     &directory,
-		Title:         &title,
-		Body:          &body,
-		Model:         &model,
-		Repo:          &repo,
-		RepoBranch:    &branch,
-		GrantProfiles: &grantIDs,
-		Tags:          &tags,
+		Directory:  &directory,
+		Title:      &title,
+		Body:       &body,
+		Model:      &model,
+		Repo:       &repo,
+		RepoBranch: &branch,
+		Tags:       &tags,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

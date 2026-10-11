@@ -3,13 +3,17 @@ package api
 import (
 	"context"
 	"errors"
-	"time"
 )
 
 // ---------------------------------------------------------------------------
 // THE APPROVAL GATE, AS SEEN FROM THIS SIDE OF THE CARVE.
 //
-// An agent that reaches a checkpoint has to ask a human. muster has no approval
+// ⚠ ITS ONE CALLER NOW IS THE CLAUDE-CODE APPROVAL RELAY (approvals.go), through
+// its own gate (UseApprovalGate). The agent_checkpoint tool this file was written
+// for, and the router-wired gate it polled through, were removed: never invoked.
+// The paragraphs below describe the gate's contract, which the relay relies on.
+//
+// An agent that needs approval has to ask a human. muster has no approval
 // queue — the permission router owns it, and owning it is what that service IS
 // — so asking is a network call now, where it used to be a store write in the
 // same process.
@@ -79,7 +83,9 @@ type GatePort interface {
 	ClearGate(ctx context.Context, id string) error
 }
 
-// gateTypeCheckpoint is the request type an agent checkpoint is filed under.
+// gateTypeCheckpoint is the request type the claude-code approval relay
+// (approvals.go) files its cards under. (The agent_checkpoint tool that also
+// used it was removed: it was never invoked.)
 //
 // 🔴 IT IS A LITERAL HERE AND AN ALLOWLIST ENTRY ON THE ROUTER, AND THE
 // DUPLICATION IS DELIBERATE. The router's gate mints only allowlisted types and
@@ -90,109 +96,3 @@ const gateTypeCheckpoint = "checkpoint"
 
 // errNoGate is the refusal when no approval queue is reachable.
 var errNoGate = errors.New("this server has no approval queue, so no approval could be sought")
-
-// ⚠ THE POLL TUNING IS NOT DECLARED HERE. checkpointPollInterval,
-// checkpointMaxWait and checkpointMissesBeforeExpired live beside the checkpoint
-// tool in agent.go and are UNCHANGED from the in-process implementation — one
-// second, one hour, five consecutive misses. Re-declaring them here with fresh
-// numbers is the shape of change that reads as a port and lands as a behaviour
-// change: a shorter backstop silently turns approvals a human WOULD have given
-// into timeouts, and nothing in a diff of this file would say so.
-//
-// ⚠ WHAT THE MISS COUNTER NOW COUNTS IS GENUINELY DIFFERENT, AND THAT IS NOT
-// HIDDEN. In-process it counted "the request row was not found", a
-// database-level blip. Here it counts a failed HTTP read — DNS, connection,
-// status, decode. The tolerance value is kept; the population it tolerates is
-// wider, because there is more between this process and the answer than there
-// used to be.
-
-// gate returns the approval queue, or nil when none is configured.
-func (s *Server) gate() GatePort {
-	if s.gatePort == nil {
-		return nil
-	}
-	return s.gatePort
-}
-
-// mintGateRequest files a checkpoint card and returns its id.
-//
-// 🔴 THE TYPE ALLOWLIST IS THE ROUTER'S, NOT REPRODUCED HERE, AND THAT IS
-// DELIBERATE. Upstream the check lives inside the chokepoint so no caller can
-// perform half of it; re-implementing it on this side would create a second
-// spelling that can drift in the direction that OPENS the gate. This side sends
-// the type and lets the door refuse.
-func (s *Server) mintGateRequest(ctx context.Context, spec GateSpec) (string, error) {
-	g := s.gate()
-	if g == nil {
-		return "", errNoGate
-	}
-	return g.MintGate(ctx, spec)
-}
-
-// clearGateRequest removes a pending card. Best-effort by contract: a recorded
-// decision already cleared it, so this covers the timeout and abort paths.
-func (s *Server) clearGateRequest(ctx context.Context, id string) {
-	g := s.gate()
-	if g == nil {
-		return
-	}
-	if err := g.ClearGate(ctx, id); err != nil {
-		s.logger.Printf("gate: clearing card %s: %v", id, err)
-	}
-}
-
-// awaitCheckpointDecision blocks until the request is decided, reported gone,
-// the backstop elapses, or the context is cancelled, returning the decision and
-// a status string.
-//
-// The status distinguishes a real decision ("resolved") from every non-decision
-// exit, so the agent knows it was NOT approved and why.
-//
-// 🔴 A TRANSPORT ERROR IS TOLERATED FOR A FEW TICKS AND THEN BECOMES "expired",
-// AND THE TOLERANCE IS WHY THIS IS NOT A ONE-SHOT READ. A single failed poll is
-// indistinguishable from a router restart, a rolling deploy, or one dropped
-// packet — abandoning a live card on the first error would strand a checkpoint
-// a human is about to answer. Several CONSECUTIVE failures are a different
-// claim, and that is the one acted on. A successful read resets the counter,
-// which is what stops an intermittent link from accumulating its way to a false
-// expiry over half an hour.
-func (s *Server) awaitCheckpointDecision(ctx context.Context, id string) (GateDecision, string) {
-	g := s.gate()
-	if g == nil {
-		return GateDecision{}, "unavailable"
-	}
-	deadline := s.now().Add(checkpointMaxWait)
-	t := time.NewTicker(checkpointPollInterval)
-	defer t.Stop()
-	misses := 0
-	for {
-		dec, err := g.ReadGate(ctx, id)
-		switch {
-		case err != nil:
-			// Could be a real outage OR a transient blip. Only conclude after
-			// several consecutive misses; see this function's header.
-			s.logger.Printf("gate: reading card %s: %v", id, err)
-			if misses++; misses >= checkpointMissesBeforeExpired {
-				return GateDecision{}, "expired"
-			}
-		case dec.State == GateStateDecided:
-			return dec, "resolved"
-		case dec.State == GateStateGone:
-			// 🔴 `gone` IS CONCLUSIVE AND IS NOT A MISS. The router answers it for a
-			// card that was evicted, swept or deleted — no decision will ever arrive
-			// — so retrying would poll a dead id until the deadline and report
-			// "timeout", which names the wrong cause to whoever reads the log.
-			return GateDecision{}, "expired"
-		default:
-			misses = 0
-		}
-		if s.now().After(deadline) {
-			return GateDecision{}, "timeout"
-		}
-		select {
-		case <-ctx.Done():
-			return GateDecision{}, "aborted"
-		case <-t.C:
-		}
-	}
-}

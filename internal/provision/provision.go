@@ -41,10 +41,10 @@ var (
 	// unreachable": a refusal that will never resolve on its own presented as a
 	// transient fault, so a caller that retries never converges and a caller
 	// that alerts pages for an outage that is not happening. TWO MORE were
-	// found a round later, in that driver's Grant — the path that hands out
-	// cluster RBAC — because the fix consolidated apply's sites and nobody
-	// asked which OTHER paths wrote objects. A predicate corrected at some of
-	// its sites is wrong at the rest of them, in the same direction.
+	// found a round later, in that driver's (since removed) policy grant path,
+	// because the fix consolidated apply's sites and nobody asked which OTHER
+	// paths wrote objects. A predicate corrected at some of its sites is wrong
+	// at the rest of them, in the same direction.
 	//
 	// 🔴 A BY-NAME READ ALSO REPORTS ErrNotFound; A WRITE OR A TEARDOWN DOES
 	// NOT. Those are different questions with different right answers, and the
@@ -55,7 +55,7 @@ var (
 	//     "muster has no instance by that name" — ErrNotFound AND this.
 	//     Reporting it as an instance is how a status read describes somebody
 	//     else's Deployment as an agent.
-	//   - Update, Destroy and Grant were asked to ACT on X. "There is no such
+	//   - Update and Destroy were asked to ACT on X. "There is no such
 	//     instance" is not what happened — something else holds the name and
 	//     muster refused — so these report this sentinel ALONE. Reporting
 	//     ErrNotFound there is worse than imprecise: `if err != nil &&
@@ -86,7 +86,7 @@ var (
 	ErrDivergentSpec = errors.New("provision: instance exists with a different spec")
 
 	// ErrUnsupported — the driver cannot do what was asked and is REFUSING
-	// rather than doing part of it. Returned by CheckSpec, CheckScale and Grant.
+	// rather than doing part of it. Returned by CheckSpec, CheckScale and Exec.
 	ErrUnsupported = errors.New("provision: unsupported by this driver")
 
 	// ErrInvalidSpec — the spec is wrong regardless of driver.
@@ -113,8 +113,9 @@ type Provisioner interface {
 	// it, and the branches live in this package — Capabilities' own doc
 	// comment is the single authority on which capability is refused where.
 	// This line used to enumerate them as "CheckSpec and Grant", which omitted
-	// CheckScale and Exec; the enumeration exists once, there, because a stale
-	// copy of it reads exactly like a complete one.
+	// CheckScale and Exec (and Grant is gone with the policy capability); the
+	// enumeration exists once, there, because a stale copy of it reads exactly
+	// like a complete one.
 	Capabilities() Capabilities
 
 	// Create brings the instance into existence.
@@ -242,97 +243,6 @@ type TermSize struct {
 // stops reading it when ExecTTY returns; it never closes it.
 type TTYExecer interface {
 	ExecTTY(ctx context.Context, ref Ref, cmd []string, stdin io.Reader, stdout io.Writer, resize <-chan TermSize) error
-}
-
-// Policy is an authorisation grant attached to an instance's identity.
-//
-// The WORKFLOW around it — request, approve, apply, audit, revoke — is
-// provider-agnostic and belongs to muster. The RULES are not, which is why
-// Rules is opaque bytes interpreted only by a driver that declares
-// Capabilities.Policy.
-//
-// ⚠ A POLICY CARRIES RULES ONLY. It once also carried Env and Files — the
-// credential file or cluster config a grant places in the instance. Applying
-// either means rolling the instance's pod, which no driver here does from the
-// grant path, so every driver refused them and the fields could only ever be
-// set to be rejected. They come back with the driver that can roll a pod;
-// muster is not declaring that policy files are out of scope forever.
-type Policy struct {
-	// Name identifies the policy, and identifies the objects a driver created
-	// for it so Revoke can find them again.
-	Name string
-	// Rules is the driver-interpreted authorisation payload. Opaque here.
-	//
-	// 🔴 A DRIVER THAT CANNOT INTERPRET A NON-EMPTY Rules MUST REFUSE THE
-	// GRANT. See Grant.
-	Rules json.RawMessage
-}
-
-// HasRules reports whether the policy carries a driver-interpreted payload at
-// all. A `null` or empty JSON object is not one.
-func (p Policy) HasRules() bool {
-	s := strings.TrimSpace(string(p.Rules))
-	return s != "" && s != "null" && s != "{}" && s != "[]"
-}
-
-// PolicyGranter attaches and detaches policies. OPTIONAL, type-asserted.
-//
-// Grant must be idempotent: granting the same policy twice is one grant.
-// Revoke must succeed when the policy was never granted, for the same reason
-// Destroy does — an absent thing is the state the caller asked for.
-type PolicyGranter interface {
-	Grant(ctx context.Context, ref Ref, p Policy) error
-	Revoke(ctx context.Context, ref Ref, policyName string) error
-}
-
-// Grant applies a policy through p, REFUSING rather than silently ignoring when
-// the driver cannot honour it.
-//
-// 🔴 THIS FUNCTION IS A SECURITY CONTROL, NOT A CONVENIENCE WRAPPER, AND IT IS
-// WHY CALLERS MUST NOT TYPE-ASSERT PolicyGranter THEMSELVES. An interface that
-// shows "granted" for a policy nobody applied is worse than having no policy
-// feature: it reads as coverage, so nobody looks. Every path that grants goes
-// through here, and every refusal it returns carries a reason a user interface
-// can display verbatim and a machine endpoint can return as a 409.
-//
-// The two refusals:
-//
-//   - the driver does not implement PolicyGranter at all;
-//   - it implements it but reports Capabilities.Policy false, which is how a
-//     driver says "configured without the access needed to apply policy".
-//
-// ⚠ THERE WERE FOUR. Two more guarded Policy.Files against Capabilities.Files
-// and Capabilities.Secrets, and they went with those fields. They were worse
-// than redundant: the kubernetes driver reports Files true, so the guard here
-// PASSED and its own Grant then refused the identical policy — a second,
-// contradictory refusal open-coded in a driver, which is exactly what the
-// chokepoint above the function exists to prevent. Whatever replaces them when
-// policy files return must be spelled HERE, once, and must agree with what the
-// drivers actually do.
-func Grant(ctx context.Context, p Provisioner, ref Ref, pol Policy) error {
-	caps := p.Capabilities()
-	granter, ok := p.(PolicyGranter)
-	if !ok {
-		return fmt.Errorf("%w: driver %q cannot apply authorisation policy, so policy %q was NOT granted",
-			ErrUnsupported, p.Driver(), pol.Name)
-	}
-	if !caps.Policy {
-		return fmt.Errorf("%w: driver %q reports no policy capability, so policy %q was NOT granted",
-			ErrUnsupported, p.Driver(), pol.Name)
-	}
-	return granter.Grant(ctx, ref, pol)
-}
-
-// Revoke removes a policy through p. A driver that cannot grant cannot have
-// granted, so a revoke against one is a no-op rather than an error — the
-// asymmetry with Grant is deliberate: refusing to revoke leaves a caller with
-// no way to clean up after a driver swap.
-func Revoke(ctx context.Context, p Provisioner, ref Ref, policyName string) error {
-	granter, ok := p.(PolicyGranter)
-	if !ok || !p.Capabilities().Policy {
-		return nil
-	}
-	return granter.Revoke(ctx, ref, policyName)
 }
 
 // Exec runs a command inside an instance, refusing when the driver declares it

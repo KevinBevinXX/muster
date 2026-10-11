@@ -16,7 +16,6 @@ import (
 	"sort"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/ZacxDev/muster/internal/notes"
 )
@@ -429,157 +428,40 @@ func TestDirectoryReadDistinguishesFailureFromEmptiness(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 5. A CHECKPOINT THAT COULD NOT BE ANSWERED IS NOT AN APPROVAL.
-// ---------------------------------------------------------------------------
-
-type scriptedGate struct {
-	decisions []GateDecision
-	errs      []error
-	i         int
-	cleared   int
-}
-
-func (g *scriptedGate) MintGate(context.Context, GateSpec) (string, error) { return "card-1", nil }
-func (g *scriptedGate) ClearGate(context.Context, string) error            { g.cleared++; return nil }
-func (g *scriptedGate) ReadGate(context.Context, string) (GateDecision, error) {
-	i := g.i
-	g.i++
-	if i < len(g.errs) && g.errs[i] != nil {
-		return GateDecision{}, g.errs[i]
-	}
-	if i < len(g.decisions) {
-		return g.decisions[i], nil
-	}
-	return GateDecision{State: GateStatePending}, nil
-}
-
-// TestCheckpointRefusesEveryNonDecision drives awaitCheckpointDecision through
-// every exit and asserts only ONE of them can report a decision.
-//
-// 🔴 THE STATUSES ARE PAIRWISE DISTINCT AND NONE EQUALS "resolved" EXCEPT THE
-// DECIDED CASE. A test that only checked "resolved on approve" would pass with
-// every refusal branch deleted.
-func TestCheckpointRefusesEveryNonDecision(t *testing.T) {
-	boom := errors.New("transport")
-	cases := []struct {
-		name       string
-		gate       GatePort
-		wantStatus string
-		cancel     bool
-	}{
-		{
-			name:       "decided",
-			gate:       &scriptedGate{decisions: []GateDecision{{State: GateStateDecided, Response: "approve"}}},
-			wantStatus: "resolved",
-		},
-		{
-			name:       "gone is conclusive, not a retry",
-			gate:       &scriptedGate{decisions: []GateDecision{{State: GateStateGone}}},
-			wantStatus: "expired",
-		},
-		{
-			name:       "consecutive transport failures",
-			gate:       &scriptedGate{errs: []error{boom, boom, boom, boom, boom}},
-			wantStatus: "expired",
-		},
-		{
-			name:       "no gate at all",
-			gate:       nil,
-			wantStatus: "unavailable",
-		},
-		{
-			name:       "the caller went away",
-			gate:       &scriptedGate{},
-			wantStatus: "aborted",
-			cancel:     true,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			s := New(nil, AuthConfig{}, log.New(os.Stderr, "", 0))
-			if tc.gate != nil {
-				s.UseGate(tc.gate)
-			}
-			ctx, cancel := context.WithCancel(context.Background())
-			if tc.cancel {
-				cancel()
-			} else {
-				defer cancel()
-			}
-			dec, status := s.awaitCheckpointDecision(ctx, "card-1")
-			if status != tc.wantStatus {
-				t.Fatalf("status = %q, want %q", status, tc.wantStatus)
-			}
-			if status != "resolved" && dec.Response != "" {
-				t.Errorf("a NON-decision exit carried a response %q; an agent switching on "+
-					"`approved` would read it as consent", dec.Response)
-			}
-		})
-	}
-}
-
-// TestCheckpointDeadlineProducesTimeout pins the fifth exit, which the table
-// above cannot reach without waiting an hour.
-func TestCheckpointDeadlineProducesTimeout(t *testing.T) {
-	s := New(nil, AuthConfig{}, log.New(os.Stderr, "", 0))
-	s.UseGate(&scriptedGate{})
-	// Drive the clock past the backstop on the first read.
-	base := time.Now()
-	calls := 0
-	s.now = func() time.Time {
-		calls++
-		if calls == 1 {
-			return base
-		}
-		return base.Add(checkpointMaxWait).Add(time.Second)
-	}
-	_, status := s.awaitCheckpointDecision(context.Background(), "card-1")
-	if status != "timeout" {
-		t.Fatalf("status = %q, want %q", status, "timeout")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // 6. THE SERVICE WORKER MUST NOT OFFER A BUTTON THAT POSTS TO A 404.
 // ---------------------------------------------------------------------------
 
-// TestServiceWorkerOnlyDecidesPrivilegePushes reads the shipped worker.
+// TestServiceWorkerOffersNoDecisionButtons reads the shipped worker.
 //
 // 🔴 THE TEST IS ON THE SHIPPED FILE, NOT ON A COPY. web/static/sw.js is what
 // the browser runs; a test against a fixture would assert a claim about a file
 // nobody serves.
 //
 // ⚠ THIS IS A TEXT CHECK ON JAVASCRIPT AND IT SAYS SO. It cannot prove the
-// worker behaves; it proves the ONE predicate that decides whether Approve/Deny
-// is painted is the narrow spelling. The upstream worker uses the negative
-// spelling (`!== 'task'`) because it can decide two kinds of request; here that
-// would paint the buttons onto every unrecognised type, and each would POST an
-// id that is not a privilege request to the privilege route.
-func TestServiceWorkerOnlyDecidesPrivilegePushes(t *testing.T) {
+// worker behaves. It replaces a check that the Approve/Deny buttons were gated on
+// the privilege push type; with the privilege subsystem removed this service has
+// NO decision route at all, so the worker must render no action buttons and POST
+// to neither the privilege route nor the permission router's decision route.
+func TestServiceWorkerOffersNoDecisionButtons(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join("..", "..", "web", "static", "sw.js"))
 	if err != nil {
 		t.Fatalf("read the shipped service worker: %v", err)
 	}
 	src := string(b)
-	const want = "const isDecision = payload.type === 'privilege';"
-	if !strings.Contains(src, want) {
-		t.Errorf("the shipped service worker does not gate its action buttons on the "+
-			"privilege type.\nwant this line: %s\n\n"+
-			"A wider predicate paints Approve/Deny onto push types this service cannot "+
-			"decide, and each button POSTs to the privilege route with an id that is not "+
-			"a privilege request.", want)
+	// Positive control: this is the worker (it handles push and clicks), so the
+	// absences below are not a file this test failed to read.
+	for _, want := range []string{"addEventListener('push'", "addEventListener('notificationclick'", "actions: [],"} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("the shipped worker does not contain %q; this test is reading the wrong file "+
+				"or the push handler changed shape", want)
+		}
 	}
-	// The permission-router decision route must NOT appear: muster does not
-	// register it, so a fetch to it is a 404 that reads as a failed approval.
-	if strings.Contains(src, "/ui/decision/") {
-		t.Errorf("the service worker POSTs to /ui/decision/, which this service does not " +
-			"register. That branch belongs to the permission router.")
-	}
-	// Positive control: the route it SHOULD reach is present, so a clean result
-	// above is not simply a file this test failed to read.
-	if !strings.Contains(src, "/ui/privilege-requests/") {
-		t.Fatalf("the worker does not mention the privilege route at all; this test is " +
-			"reading the wrong file or an empty one")
+	for _, gone := range []string{"/ui/privilege-requests/", "/ui/decision/", "action: 'approve'", "action: 'deny'"} {
+		if strings.Contains(src, gone) {
+			t.Errorf("the service worker still contains %q — a decision button or a POST to a "+
+				"route this service does not register (a tap that 404s and reads as a failed "+
+				"approval)", gone)
+		}
 	}
 }
 

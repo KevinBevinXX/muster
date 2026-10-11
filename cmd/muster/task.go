@@ -220,14 +220,13 @@ func newTaskGetCmd(a *app) *cobra.Command {
 // fields are omitempty so a minimal create posts a minimal body — an absent key
 // keeps the server's pre-existing default, which is not the same as sending "".
 type taskCreateBody struct {
-	Directory  string   `json:"directory,omitempty"`
-	Title      string   `json:"title,omitempty"`
-	Body       string   `json:"body"`
-	Model      string   `json:"model,omitempty"`
-	Repo       string   `json:"repo,omitempty"`
-	Branch     string   `json:"branch,omitempty"`
-	Privileges []int64  `json:"privileges,omitempty"`
-	Tags       []string `json:"tags,omitempty"`
+	Directory string   `json:"directory,omitempty"`
+	Title     string   `json:"title,omitempty"`
+	Body      string   `json:"body"`
+	Model     string   `json:"model,omitempty"`
+	Repo      string   `json:"repo,omitempty"`
+	Branch    string   `json:"branch,omitempty"`
+	Tags      []string `json:"tags,omitempty"`
 }
 
 func newTaskCreateCmd(a *app) *cobra.Command {
@@ -274,7 +273,6 @@ func newTaskCreateCmd(a *app) *cobra.Command {
 	cmd.Flags().StringVar(&b.Repo, "repo", "", "dispatch repo")
 	cmd.Flags().StringVar(&b.Branch, "branch", "", "dispatch branch")
 	cmd.Flags().StringArrayVar(&b.Tags, "tag", nil, "tag (repeatable); an invalid tag is a hard 400")
-	cmd.Flags().Int64SliceVar(&b.Privileges, "privilege", nil, "privilege profile id (repeatable)")
 	return cmd
 }
 

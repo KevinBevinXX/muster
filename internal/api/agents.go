@@ -18,7 +18,6 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/notes"
-	"github.com/ZacxDev/muster/internal/privilege"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -131,8 +130,9 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	//     and refusing when the shared secret is absent is the least it should cost.
 	//
 	// ⚠ ITS GET TWIN STAYS enforce-when-set. Not an oversight: the read discloses a
-	// transcript, the write runs work inside a devpod that carries a kubeconfig and a
-	// GitHub token, and the read predates this change.
+	// transcript, the write runs arbitrary work inside an agent instance (a shell,
+	// its repository checkout, whatever connectors it has been granted), and the
+	// read predates this change.
 	//
 	// ⚠ REGISTERED AFTER THE PROVISIONER GATE, unlike its GET twin: the write
 	// reaches Provisioner.Chat, so on a provisioner-less deployment there is nothing
@@ -141,7 +141,6 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	mux.HandleFunc("GET /ui/agents/new", s.requireSession(s.handleAgentNewModal))
 	mux.HandleFunc("GET /ui/agents/repos", s.requireSession(s.handleAgentRepoOptions))
 	mux.HandleFunc("GET /ui/agents/notes", s.requireSession(s.handleAgentNoteOptions))
-	mux.HandleFunc("GET /ui/agents/profiles", s.requireSession(s.handleAgentProfileOptions))
 	mux.HandleFunc("GET /ui/agents/{id}/recent", s.requireSession(s.handleAgentRecent))
 	// Inline rename: the pencil swaps in the edit form; cancel re-fetches the card.
 	mux.HandleFunc("GET /ui/agents/{id}/rename", s.requireSession(s.handleAgentRenameForm))
@@ -208,7 +207,7 @@ func (s *Server) handleAgentsContent(w http.ResponseWriter, r *http.Request) {
 // once the modal opens, so the form never blocks on a slow upstream.
 //
 // When ?note=<id> is set (the Task-card Dispatch path) it loads the task and
-// renders the TASK-SCOPED confirm (fixed Model/Repository/Privileges rows
+// renders the TASK-SCOPED confirm (fixed Model/Repository rows
 // pre-filled from the task's dispatch config). A missing/failed load falls back
 // to the plain FAB form so the modal always renders something usable.
 func (s *Server) handleAgentNewModal(w http.ResponseWriter, r *http.Request) {
@@ -247,9 +246,8 @@ func (s *Server) kindChoices() ui.KindChoices {
 }
 
 // buildTaskDispatchView resolves a task's dispatch config into the task-scoped
-// modal view: the stored model/repo/branch/privileges, the grantable profile set
-// (for the editable picker + static name lookup), and — when the task has no
-// stored repo — a best-effort repo inference from its directory.
+// modal view: the stored model/repo/branch and — when the task has no stored
+// repo — a best-effort repo inference from its directory.
 func (s *Server) buildTaskDispatchView(ctx context.Context, n notes.Note) ui.TaskDispatchView {
 	// ui.TaskTitle, NOT n.Directory: a producer that sends the real `title` field
 	// (the capture extension since #244) would otherwise show its body's first
@@ -259,33 +257,17 @@ func (s *Server) buildTaskDispatchView(ctx context.Context, n notes.Note) ui.Tas
 		label = firstLine(n.Body)
 	}
 	v := ui.TaskDispatchView{
-		NoteID:      n.ID,
-		Label:       truncate(label, 80),
-		Model:       n.Model,
-		Repo:        n.Repo,
-		RepoBranch:  n.RepoBranch,
-		SelectedIDs: n.GrantProfiles,
+		NoteID:     n.ID,
+		Label:      truncate(label, 80),
+		Model:      n.Model,
+		Repo:       n.Repo,
+		RepoBranch: n.RepoBranch,
 	}
 	// Infer the repo from the task's directory when none is stored (best-effort;
 	// non-fatal): match the directory (or its last path segment) against a
 	// connected repo's full name / last segment.
 	if v.Repo == "" && n.Directory != "" {
 		v.Repo = s.inferRepoFromDirectory(ctx, n.Directory)
-	}
-	// The grantable profile set backs the editable picker and the static-row name
-	// lookup. Best-effort — no privilege store (in-memory mode) → empty.
-	if s.ext.Privilege != nil {
-		if profs, err := s.ext.Privilege.ListProfiles(ctx); err == nil {
-			for _, p := range profs {
-				name := p.DisplayName
-				if name == "" {
-					name = p.Name
-				}
-				v.Profiles = append(v.Profiles, ui.ProfileOption{ID: p.ID, Name: name})
-			}
-		} else {
-			s.logger.Printf("agents: task dispatch list profiles: %v", err)
-		}
 	}
 	return v
 }
@@ -375,30 +357,6 @@ func (s *Server) handleAgentNoteOptions(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.RenderNoteOptions(w, notesOpts); err != nil {
 		s.logger.Printf("agents: render note options: %v", err)
-	}
-}
-
-// handleAgentProfileOptions serves /ui/agents/profiles: the privilege-grant
-// checkboxes for the dispatch modal, swapped in over the skeleton. Empty (a muted
-// note) when there's no Privilege store (in-memory mode) or no profiles.
-func (s *Server) handleAgentProfileOptions(w http.ResponseWriter, r *http.Request) {
-	opts := make([]ui.ProfileOption, 0)
-	if s.ext.Privilege != nil {
-		if profs, err := s.ext.Privilege.ListProfiles(r.Context()); err != nil {
-			s.logger.Printf("agents: list profiles: %v", err)
-		} else {
-			for _, p := range profs {
-				name := p.DisplayName
-				if name == "" {
-					name = p.Name
-				}
-				opts = append(opts, ui.ProfileOption{ID: p.ID, Name: name})
-			}
-		}
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderProfileGrantOptions(w, opts); err != nil {
-		s.logger.Printf("agents: render profile options: %v", err)
 	}
 }
 
@@ -754,19 +712,10 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Privilege profiles to grant the new agent (checkboxes; least-privilege
-	// bundles applied before provision + live RBAC after — same path as runbooks).
-	var grantIDs []int64
-	for _, v := range r.Form["grant_profile"] {
-		if id, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
-			grantIDs = append(grantIDs, id)
-		}
-	}
-
 	if _, err := s.createAndDispatchAgent(ctx, dispatchParams{
 		Repo: repo, RepoBranch: branch, Model: model, NoteID: noteID, NoteText: noteText,
-		Kickoff: action == "dispatch", GrantProfileIDs: grantIDs,
-		Kind: kind, CCAccount: ccAccount,
+		Kickoff: action == "dispatch",
+		Kind:    kind, CCAccount: ccAccount,
 	}); err != nil {
 		s.logger.Printf("agents: create/dispatch: %v", err)
 		// A kind/account refusal is decided BEFORE the row exists and is the
@@ -902,11 +851,6 @@ type dispatchParams struct {
 	NoteText    string
 	NoteID      *int64
 	Kickoff     bool
-	// GrantProfileIDs are privilege profiles to attach to the new agent (a
-	// runbook ships its least-privilege bundle). They are recorded BEFORE
-	// provisioning so the profiles' env/kubeconfig is picked up at provision; the
-	// live RBAC is applied AFTER, once the namespace + ServiceAccount exist.
-	GrantProfileIDs []int64
 	// Kind is the agent kind to create ("" = agents.KindGateway). It must be one
 	// Extensions.Kinds enables.
 	Kind string
@@ -946,17 +890,12 @@ func (s *Server) resolveKindAccount(ctx context.Context, p dispatchParams) (kind
 	if p.Model != "" {
 		return "", "", fmt.Errorf("%w: %s", ErrDispatchRefused, claudeCodeNoModel)
 	}
-	// ⚠ A REPO AND PRIVILEGE GRANTS ARE REFUSED FOR THE SAME REASON AS A MODEL:
-	// each would be accepted and do nothing. Nothing in the claude-code image
-	// clones a declared repository, and the pod mounts no ServiceAccount token, so
-	// RBAC bound to it has no effect.
+	// ⚠ A REPO IS REFUSED FOR THE SAME REASON AS A MODEL: it would be accepted
+	// and do nothing. Nothing in the claude-code image clones a declared
+	// repository.
 	if p.Repo != "" || p.RepoBranch != "" {
 		return "", "", fmt.Errorf("%w: a %s agent cannot be given a repository yet (nothing in its image "+
 			"clones one); dispatch without a repo", ErrDispatchRefused, agents.KindClaudeCode)
-	}
-	if len(p.GrantProfileIDs) > 0 {
-		return "", "", fmt.Errorf("%w: a %s agent mounts no ServiceAccount token, so a privilege grant "+
-			"would have no effect; dispatch without one", ErrDispatchRefused, agents.KindClaudeCode)
 	}
 	if s.ext.Kinds == nil {
 		return "", "", fmt.Errorf("%w: no Claude account pool is configured", ErrDispatchRefused)
@@ -1005,7 +944,7 @@ func dispatchDisplayName(noteID int64, noteText string) string {
 
 // createAndDispatchAgent inserts an agent record and provisions it in the
 // background (kickoff sends the note as the first message). Shared by the human
-// dispatch form, the operator API, and runbook dispatch.
+// dispatch form and the chief provision.
 func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (agents.Agent, error) {
 	kind, account, err := s.resolveKindAccount(ctx, p)
 	if err != nil {
@@ -1065,48 +1004,12 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	// task's linked-agent chip + the agents list appear live (best-effort).
 	s.BroadcastAgentChanged(rec.Name)
 	safeGo(s.logger, "dispatch "+rec.Name, func() {
-		bg := context.Background()
-		// Record grants first (DB only) so the provisioner's profile provider
-		// folds their env/kubeconfig into the helm values at provision. Defer the
-		// live RBAC apply until the namespace/SA exist (after Dispatch).
-		rbacProfiles := s.recordGrantsBeforeDispatch(bg, rec, p.GrantProfileIDs)
 		if err := s.ext.Provisioner.Dispatch(rec.ID, p.Kickoff); err != nil {
 			s.logger.Printf("agents: dispatch %s: %v", rec.Name, err)
 			return
 		}
-		for _, prof := range rbacProfiles {
-			if err := s.ext.PrivilegeApply.ApplyGrant(bg, rec.Name, rec.Namespace, prof); err != nil {
-				s.logger.Printf("agents: runbook RBAC grant %s/%s: %v", rec.Name, prof.Name, err)
-			}
-		}
 	})
 	return rec, nil
-}
-
-// recordGrantsBeforeDispatch records each profile grant for a freshly-created
-// agent and returns the subset whose live RBAC must be applied once the agent's
-// namespace exists. No-op (nil) when there are no grants or the privilege store
-// is unset.
-func (s *Server) recordGrantsBeforeDispatch(ctx context.Context, rec agents.Agent, profileIDs []int64) []privilege.Profile {
-	if len(profileIDs) == 0 || s.ext.Privilege == nil {
-		return nil
-	}
-	var rbac []privilege.Profile
-	for _, pid := range profileIDs {
-		prof, err := s.ext.Privilege.GetProfile(ctx, pid)
-		if err != nil {
-			s.logger.Printf("agents: runbook grant lookup profile %d: %v", pid, err)
-			continue
-		}
-		if _, err := s.ext.Privilege.Grant(ctx, rec.ID, prof.ID, "runbook"); err != nil {
-			s.logger.Printf("agents: runbook grant profile %d to %s: %v", pid, rec.Name, err)
-			continue
-		}
-		if s.ext.PrivilegeApply != nil && prof.Spec.HasRBAC() {
-			rbac = append(rbac, prof)
-		}
-	}
-	return rbac
 }
 
 func (s *Server) handleAgentStart(w http.ResponseWriter, r *http.Request) {

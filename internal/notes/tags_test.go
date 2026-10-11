@@ -152,7 +152,9 @@ func TestParseTagAndIsRoutingTag(t *testing.T) {
 		val     string
 		routing bool
 	}{
-		{"runbook:deploy", NSRunbook, "deploy", true},
+		// runbook: was a routing namespace until runbooks were removed; a stale
+		// tag is now an ordinary descriptive label.
+		{"runbook:deploy", "runbook", "deploy", false},
 		{"initiative:remix", NSInitiative, "remix", true},
 		{"gate:needs-decision", NSGate, "needs-decision", true},
 		{"auto:dispatch", NSAuto, "dispatch", true},
@@ -177,7 +179,7 @@ func TestParseTagAndIsRoutingTag(t *testing.T) {
 // a deliberate code change (it also bounds the Prometheus label space).
 func TestRoutingNamespacesIsClosed(t *testing.T) {
 	got := RoutingNamespaces()
-	want := []string{NSAuto, NSGate, NSInitiative, NSRunbook} // sorted
+	want := []string{"auto", "gate", "initiative"} // sorted; literal, not the constants
 	if len(got) != len(want) {
 		t.Fatalf("RoutingNamespaces() = %q, want %q", got, want)
 	}
@@ -190,11 +192,10 @@ func TestRoutingNamespacesIsClosed(t *testing.T) {
 
 // TestRoutingHelpers covers the behaviour accessors the HTTP/UI layers rely on.
 func TestRoutingHelpers(t *testing.T) {
-	tags := []string{"bug", "gate:needs-decision", "runbook:deploy"}
+	// runbook:deploy is a STALE tag from before runbooks were removed: it must not
+	// count as routing.
+	tags := []string{"bug", "gate:needs-decision", "initiative:remix", "runbook:deploy"}
 
-	if name, ok := RunbookName(tags); !ok || name != "deploy" {
-		t.Fatalf("RunbookName = (%q,%v), want (deploy,true)", name, ok)
-	}
 	if reason, ok := GateReason(tags); !ok || reason != "needs-decision" {
 		t.Fatalf("GateReason = (%q,%v), want (needs-decision,true)", reason, ok)
 	}
@@ -204,8 +205,8 @@ func TestRoutingHelpers(t *testing.T) {
 	if IsGated([]string{"bug"}) {
 		t.Fatal("IsGated must be false with no gate: tag")
 	}
-	if got := RoutingTags(tags); len(got) != 2 {
-		t.Fatalf("RoutingTags = %q, want the two reserved-namespace tags", got)
+	if got := RoutingTags(tags); strings.Join(got, ",") != "gate:needs-decision,initiative:remix" {
+		t.Fatalf("RoutingTags = %q, want [gate:needs-decision initiative:remix]", got)
 	}
 }
 

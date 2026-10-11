@@ -20,8 +20,10 @@ could execute a line of them. Two gates now make that impossible to repeat —
 `TestTheServerListensAndServesHealth` binds a real port and drives a real
 request. Neither is sufficient alone; see `internal/modulegate`.
 
-What you get today: the task board, the agent surfaces, the runbooks, the
-privileges, the machine API, a session-authenticated web UI, and a CLI. What you
+What you get today: the task board, the agent surfaces, the connector store,
+the machine API, a session-authenticated web UI, and a CLI. (Runbooks and
+privilege profiles existed once; both were removed — privileges were superseded
+by connectors — and migration `0005` dropped their tables.) What you
 do **not** get: agent provisioning. Nothing in this module implements
 `api.Provisioner`, so every agent-control route is registered and refuses, and
 the server says so on every boot. The four seams that state is made of — what,
@@ -122,14 +124,18 @@ Two things to know before you wire it up:
 
 ## The schema
 
-One migration, `internal/db/migrations/0001_init.sql`, creating thirteen tables
-in four groups:
+Numbered migrations in `internal/db/migrations/`, applied in order at boot. The
+public schema they leave (pinned as a ledger by `internal/db/migrate_test.go`):
 
 - **tasks** — `notes`, `note_comments`, `note_attachments`, `task_sessions`
-- **agents** — `agents`, `chat_sessions`, `chat_messages`
-- **runbooks** — `runbooks`, `runbook_runs`
-- **privilege** — `privilege_profiles`, `agent_privileges`, `privilege_requests`
+- **agents** — `agents`, `chat_sessions`, `chat_messages`, `agent_retired_names`,
+  `cc_account_marks`
+- **connectors** — `connectors`, `connector_grants`, `connector_audit`
 - plus `github_connection`, a pinned singleton
+
+`0001` also creates the runbook and privilege tables (`runbooks`,
+`runbook_runs`, `privilege_profiles`, `agent_privileges`, `privilege_requests`)
+and `notes.grant_profiles`; `0005` drops them. `0001` is not edited.
 
 `notes` is the task table. The name is historical; it is kept because every id in
 it is a task number people cite, and renaming it would be a data migration that
@@ -145,7 +151,7 @@ Two properties worth knowing before you change it:
   Existing rows are meant to arrive by `pg_dump --data-only`, whose `COPY` path
   is exempt from the restriction.
 - ⚠ **Several columns are deliberately FK-free** — `task_sessions.session_id`,
-  `notes.source_session_id`, `runbook_runs.agent_id`. They name things in other
+  `notes.source_session_id`. They name things in other
   systems, or they are audit rows that must outlive their subjects. Adding a
   foreign key to one of them is not a cleanup.
 
@@ -263,7 +269,7 @@ Four rules define it. Each rule's main clause is pinned by a test in
 `provisiontest.RunContract` rather than by prose — with **one named exception**:
 rule 2's `ErrNotManaged` clause, which needs a shared backend to be expressible
 at all and is therefore pinned in the Kubernetes driver's own ownership tests
-instead. `RunContract` has 21 cases and none of them mentions `ErrNotManaged`.
+instead. `RunContract` has 20 cases and none of them mentions `ErrNotManaged`.
 The rules are stated in full in the package doc; in short:
 
 1. **A driver that cannot see its backend returns an error, never an empty
@@ -287,10 +293,8 @@ The rules are stated in full in the package doc; in short:
    comment is the authority on which one** — deliberately not copied here.
    There used to be a copy, it said "`CheckSpec` and `Grant` … are the only
    places", and it was wrong about `CheckScale` and `Exec`; a partial
-   enumeration of the guards reads exactly like a complete one. A policy a
-   driver cannot interpret is REFUSED — an interface reporting "granted" for a
-   policy nobody applied is worse than no policy feature, because it reads as
-   coverage.
+   enumeration of the guards reads exactly like a complete one. (`Grant`, and
+   the policy capability it guarded, were removed with the privilege subsystem.)
 
 `internal/provision/provisiontest` is the contract suite every driver must pass.
 It requires a working driver, a **blind** one and a **restricted** one, and it

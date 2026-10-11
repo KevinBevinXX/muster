@@ -16,7 +16,7 @@ import (
 // --- Task tag UI --------------------------------------------------------------
 //
 // Two visual classes, because they MEAN different things:
-//   - ROUTING chips (reserved namespaces: runbook:/initiative:/gate:/auto:) drive
+//   - ROUTING chips (reserved namespaces: initiative:/gate:/auto:) drive
 //     behaviour, so they are colour-coded and carry a title explaining the effect.
 //   - DESCRIPTIVE chips are pure labels: muted, uniform, no promise of behaviour.
 // Confusing the two is the main way a tags UI misleads, so the distinction is
@@ -36,9 +36,6 @@ func tagChipClass(tag string) (class, title string) {
 	case ns == notes.NSGate:
 		return base + "bg-st-error-bg font-medium text-st-error-fg ring-1 ring-inset ring-st-error-fg/40",
 			"Gated: not dispatchable — " + val
-	case ns == notes.NSRunbook:
-		return base + "bg-st-review-bg font-medium text-st-review-fg ring-1 ring-inset ring-st-review-fg/40",
-			"Routing: dispatch via the \"" + val + "\" runbook"
 	case ns == notes.NSInitiative:
 		return base + "bg-st-progress-bg font-medium text-st-progress-fg ring-1 ring-inset ring-st-progress-fg/40",
 			"Routing: initiative \"" + val + "\" (resolved by the initiatives ledger)"
@@ -435,7 +432,7 @@ func tagEditor(tags []string, vocab []notes.TagCount, inProgress bool) g.Node {
 	for _, t := range tags {
 		chips = append(chips, tagEditorChip(t, inProgress && notes.IsRoutingTag(t)))
 	}
-	hint := "Type a tag and press Enter. Reserved: runbook: initiative: gate: auto:"
+	hint := "Type a tag and press Enter. Reserved: initiative: gate: auto:"
 	if inProgress {
 		hint = "Task is in progress — descriptive tags only (routing tags are locked)."
 	}

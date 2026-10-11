@@ -41,7 +41,7 @@
 // RunContract: a foreign co-named object requires a SHARED backend, and Noop's
 // backend is its own map, so the case would be unfalsifiable for half the
 // drivers here — see [ErrNotManaged], which states that decision. It is pinned
-// in the kubernetes driver's own ownership tests instead. RunContract has 21
+// in the kubernetes driver's own ownership tests instead. RunContract has 20
 // cases and none of them mentions ErrNotManaged; a reader who trusted the old
 // wording would have believed a driver's compliance with that clause was
 // checked by the suite it passes.
@@ -78,10 +78,8 @@
 //     place, and [Capabilities]'s own doc comment is the AUTHORITY on which
 //     capability is refused where — this rule deliberately does not repeat the
 //     list, because the copy of it that used to be here named [CheckSpec] and
-//     [Grant] only, and a partial enumeration of the guards reads as a
-//     complete one. The security case is [Grant]: a policy a driver cannot
-//     interpret must be REFUSED, because an interface reporting "granted" for
-//     a policy nobody applied is worse than having no policy feature at all.
+//     a since-removed policy Grant only, and a partial enumeration of the
+//     guards reads as a complete one.
 //
 // # What is deliberately NOT here
 //

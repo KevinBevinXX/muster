@@ -165,7 +165,7 @@ func TestAClaudeCodeDeploymentWithNoDatabaseIsRefused(t *testing.T) {
 	if p, err := buildClaudePool(provisionerTestConfig(provisionerNoop), nil); p != nil || err != nil {
 		t.Fatalf("gateway-only: pool %v err %v, want neither", p, err)
 	}
-	if _, _, _, err := buildAgentPlaneWith(ccTestConfig(), stubStore{}, nil, log.New(&strings.Builder{}, "", 0)); err == nil {
+	if _, _, err := buildAgentPlaneWith(ccTestConfig(), stubStore{}, nil, log.New(&strings.Builder{}, "", 0)); err == nil {
 		t.Fatal("a claude-code agent plane was built with no account pool")
 	}
 }
@@ -180,7 +180,7 @@ func TestTheKindsBannerLineNamesAccountsNeverTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prov, _, _, err := buildAgentPlaneWith(cc, stubStore{}, pool, logger)
+	prov, _, err := buildAgentPlaneWith(cc, stubStore{}, pool, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +360,7 @@ func TestTheNetworkBannerLineSaysWhetherAgentsAreConfined(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		prov, _, _, err := buildAgentPlaneWith(build, stubStore{}, pool, logger)
+		prov, _, err := buildAgentPlaneWith(build, stubStore{}, pool, logger)
 		if err != nil {
 			t.Fatal(err)
 		}

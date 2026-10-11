@@ -204,13 +204,10 @@ var featuresAllOn = Features{GitHub: true}
 // listFragments is every LIST/CARD partial the shell lazy-loads over htmx rather
 // than rendering inline. They are unreachable from Page() at ANY fixture — every
 // panel ships a skeleton and hx-gets its rows — so a page-only sweep can never
-// see a task card, a privilege row, a profile, a runbook or an agent card.
+// see a task card or an agent card.
 func listFragments() []namedDoc {
 	return []namedDoc{
 		{"tasks-list", NotesCards(sampleTasksView())},
-		{"privilege-requests", PrivilegeRequests(samplePrivilegeRequests())},
-		{"profiles", Profiles(sampleProfiles())},
-		{"runbooks", Runbooks(sampleRunbooks())},
 		{"agents-cards", AgentsCards(sampleAgentCards())},
 		{"repos-connected", ReposConnected("octo-owner", sampleRepos())},
 		{"notes-edit-modal", NotesEditModalBody(sampleNoteEditView())},

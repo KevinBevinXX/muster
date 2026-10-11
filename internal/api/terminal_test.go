@@ -161,8 +161,6 @@ func terminalServer(t *testing.T, prov Provisioner) (*Server, *httptest.Server) 
 	s.UseExtensions(Extensions{
 		Notes:           stubNotesStore{},
 		Agents:          termAgents{},
-		Privilege:       stubPrivilegeStore{},
-		Runbooks:        stubRunbooksStore{},
 		SessionLiveness: stubLiveness{},
 		Provisioner:     prov,
 	})

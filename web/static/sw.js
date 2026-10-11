@@ -12,8 +12,7 @@
  *      is load-bearing rather than defensive.
  *   2. Handle Web Push: render a notification, and close stale ones on a
  *      "resolved" control message.
- *   3. Handle notification clicks: approve/deny a PRIVILEGE request directly
- *      from the worker, or focus/open the app at the relevant card.
+ *   3. Handle notification clicks: focus/open the app at the relevant card.
  *   4. Wait to be told. A new worker does NOT take over at install; it waits
  *      until the page's "Reload" (pwaScript) posts SKIP_WAITING, so an open
  *      page is never switched under its own inline scripts.
@@ -24,9 +23,9 @@
  * route partition manifest — muster does not register it and never will.
  * Carrying the branch across would give the worker a button that POSTs to a
  * 404: a tap that reports nothing, changes nothing, and reads as "the approval
- * did not go through" with no error anywhere. The privilege branch IS carried,
- * because `POST /ui/privilege-requests/{id}/{approve,deny}` is on muster's side
- * of that same manifest.
+ * did not go through" with no error anywhere. (A privilege-request decision
+ * branch was carried here until the privilege subsystem was removed; with it
+ * gone NO push this worker renders carries an action button.)
  *
  * ⚠ THE DECISION ROUTE'S PATH IS DELIBERATELY NOT SPELLED ANYWHERE IN THIS
  * FILE. A test asserts this file does not contain it, and a string check on
@@ -226,41 +225,25 @@ self.addEventListener('push', (event) => {
 
   const title = payload.title || 'muster';
   const tag = payload.tag || payload.id || 'muster';
-  // Always carry type + id on the notification data so notificationclick can
-  // route a privilege decision to
-  // POST /ui/privilege-requests/<id>/{approve,deny}. payload.data may
-  // add/override fields — a privilege push sets url:'/agents'; a task push sets
-  // url:'/tasks/<id>' in the common case (the server derives it from the task
+  // Always carry type + id on the notification data. payload.data may
+  // add/override fields — a task push sets url:'/tasks/<id>' in the common case (the server derives it from the task
   // id), falling back to '/tasks' when there is no id (the coalesced
   // N-tasks-created push) and to an explicit '/agents/<name>' for the
   // agent-ready push.
   const data = Object.assign({ type: payload.type, id: payload.id }, payload.data || {});
   if (!data.url) data.url = '/#' + (payload.id || '');
-  // Only a PRIVILEGE push carries Approve/Deny actions here. A "task" push is
-  // informational (task created / agent ready / ready for review): render title
-  // + body, no actions, and don't pin it — a body tap focuses/opens data.url.
-  //
-  // 🔴 THE TEST IS `type === 'privilege'`, NOT `type !== 'task'`. The negative
-  // spelling is what upstream uses, because upstream can decide two kinds of
-  // request; here it would paint Approve/Deny onto every push type this worker
-  // does not recognise — including any the router might one day send — and each
-  // of those buttons would POST to the privilege route with an id that is not a
-  // privilege request. Naming the one type that CAN be decided makes an
-  // unknown type render as a plain notification, which is the truthful one.
-  const isDecision = payload.type === 'privilege';
+  // Every push here is informational (task created / agent ready / ready for
+  // review / connector request): title + body, no action buttons, not pinned —
+  // a body tap focuses/opens data.url. This service has no decision route a
+  // button could POST to.
   const options = {
     body: payload.body || '',
     icon: '/static/icons/icon-192.png',
     badge: '/static/icons/badge-72.png',
     tag: tag,
     data: data,
-    requireInteraction: isDecision,
-    actions: isDecision
-      ? [
-          { action: 'approve', title: '✅ Approve' },
-          { action: 'deny', title: '❌ Deny' },
-        ]
-      : [],
+    requireInteraction: false,
+    actions: [],
   };
   event.waitUntil(self.registration.showNotification(title, options));
 });
@@ -279,16 +262,10 @@ self.addEventListener('notificationclick', (event) => {
   const id = data.id || note.tag;
   note.close();
 
-  // Action buttons: record the decision directly from the worker. We
-  // deliberately do not openWindow here so an approve/deny is a single tap with
-  // no app load.
-  if (event.action === 'approve' || event.action === 'deny') {
-    if (data.type === 'privilege') {
-      event.waitUntil(decidePrivilege(id, event.action));
-      return;
-    }
-    // Any other type reaching here has no decision endpoint on this service.
-    // Open the app rather than POSTing somewhere that would 404.
+  // An action button (only a notification shown by an OLDER worker build can
+  // still carry one) has no decision endpoint on this service. Open the app
+  // rather than POSTing somewhere that would 404.
+  if (event.action) {
     event.waitUntil(focusOrOpen(data.url || '/'));
     return;
   }
@@ -297,20 +274,6 @@ self.addEventListener('notificationclick', (event) => {
   const target = (data.url || '/#' + (id || '')).toString();
   event.waitUntil(focusOrOpen(target));
 });
-
-async function decidePrivilege(id, action) {
-  if (!id) return;
-  const path = action === 'approve' ? '/approve' : '/deny';
-  try {
-    await fetch('/ui/privilege-requests/' + encodeURIComponent(id) + path, {
-      method: 'POST',
-      credentials: 'include',
-    });
-  } catch (e) {
-    // Offline / failed: open the Agents tab so the user can decide there.
-    await focusOrOpen('/agents');
-  }
-}
 
 async function focusOrOpen(target) {
   const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });

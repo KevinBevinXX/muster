@@ -16,7 +16,7 @@ import (
 // 🔴 A COUNT IN PROSE IS UNFALSIFIABLE UNLESS SOMETHING READS IT. The provision
 // package doc and the README both say the four contract rules are pinned here
 // "with one named exception" — rule 2's ErrNotManaged carve-out — and both cite
-// "21 cases, none of which mentions ErrNotManaged". Those sentences were written
+// "20 cases, none of which mentions ErrNotManaged". Those sentences were written
 // after counting by hand, and a hand count is a claim about the moment it was
 // made: adding a case, or pinning the carve-out here after all, silently turns
 // both documents into confident false statements about their own test suite.
@@ -45,7 +45,7 @@ func TestTheContractSuiteMatchesWhatTheDocsClaimAboutIt(t *testing.T) {
 			"the suite: the %q shape must have changed", marker)
 	}
 
-	const wantCases = 21
+	const wantCases = 20
 	if n != wantCases {
 		t.Errorf("RunContract declares %d cases; internal/provision/doc.go and README.md both say %d. "+
 			"Update the code and BOTH documents together, or the docs become a false statement about "+

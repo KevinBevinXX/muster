@@ -453,108 +453,8 @@ func TestEndpointRendering(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
-// Grant / Revoke / Exec — the optional-interface branches
+// Exec — the optional-interface branch
 // --------------------------------------------------------------------------
-
-// fakeGranter is a driver that implements PolicyGranter, with its capability
-// declaration and its grant record under the test's control. It exists so the
-// three refusal branches in Grant can each be reached in isolation; the noop
-// driver deliberately does NOT implement PolicyGranter, which covers the first
-// branch and only the first.
-type fakeGranter struct {
-	*provision.Noop
-	caps    provision.Capabilities
-	granted []string
-	revoked []string
-}
-
-func (f *fakeGranter) Capabilities() provision.Capabilities { return f.caps }
-
-func (f *fakeGranter) Grant(_ context.Context, ref provision.Ref, p provision.Policy) error {
-	f.granted = append(f.granted, ref.Name+"/"+p.Name)
-	return nil
-}
-
-func (f *fakeGranter) Revoke(_ context.Context, ref provision.Ref, name string) error {
-	f.revoked = append(f.revoked, ref.Name+"/"+name)
-	return nil
-}
-
-func newFakeGranter(caps provision.Capabilities) *fakeGranter {
-	return &fakeGranter{Noop: provision.MustNewNoop(provision.NoopCapabilities(caps)), caps: caps}
-}
-
-// TestGrantRefusalBranches walks every way Grant can refuse, each reached in
-// isolation so a mutation that removes one branch cannot be killed by another.
-//
-// MUTATION MATRIX:
-//
-//	delete the PolicyGranter type assertion -> "driver is not a granter" RED
-//	delete the !caps.Policy branch          -> "granter without the capability" RED
-//	replace Grant's body with `return nil`  -> BOTH RED
-//
-// It had two more rows, for guards on Policy.Files against Capabilities.Files
-// and Capabilities.Secrets. Those fields and those guards are gone; a deleted
-// guard has no mutants, and keeping the rows would describe coverage of code
-// that does not exist.
-func TestGrantRefusalBranches(t *testing.T) {
-	ctx := context.Background()
-	ref := provision.Ref{Name: "subject"}
-	plain := provision.Policy{Name: "read-only", Rules: []byte(`{"verbs":["get"]}`)}
-
-	t.Run("driver is not a granter", func(t *testing.T) {
-		p := provision.MustNewNoop(provision.NoopCapabilities(provision.Capabilities{Policy: true, Files: true, Secrets: true}))
-		err := provision.Grant(ctx, p, ref, plain)
-		if !errors.Is(err, provision.ErrUnsupported) {
-			t.Fatalf("want ErrUnsupported, got %v", err)
-		}
-		if !strings.Contains(err.Error(), "cannot apply authorisation policy") {
-			t.Fatalf("message must name the reason, got %q", err)
-		}
-	})
-
-	t.Run("granter without the capability", func(t *testing.T) {
-		g := newFakeGranter(provision.Capabilities{Files: true, Secrets: true}) // Policy false
-		err := provision.Grant(ctx, g, ref, plain)
-		if !errors.Is(err, provision.ErrUnsupported) {
-			t.Fatalf("want ErrUnsupported, got %v", err)
-		}
-		if len(g.granted) != 0 {
-			t.Fatalf("the refusal still called through to the driver: %v", g.granted)
-		}
-	})
-
-	// 🔴 THE OTHER DIRECTION, AND IT IS NOT OPTIONAL. Without it a Grant that
-	// refused EVERYTHING would pass both cases above.
-	t.Run("a capable driver grants", func(t *testing.T) {
-		g := newFakeGranter(provision.Capabilities{Policy: true, Files: true, Secrets: true})
-		if err := provision.Grant(ctx, g, ref, plain); err != nil {
-			t.Fatalf("a capable granter must grant, got %v", err)
-		}
-		if len(g.granted) != 1 || g.granted[0] != "subject/read-only" {
-			t.Fatalf("grant record is %v", g.granted)
-		}
-	})
-}
-
-func TestRevokeIsAsymmetricOnPurpose(t *testing.T) {
-	ctx := context.Background()
-	ref := provision.Ref{Name: "subject"}
-
-	// A driver that cannot grant cannot have granted, so revoking is a no-op.
-	// Refusing here would leave a caller with no way to clean up after a driver
-	// swap.
-	if err := provision.Revoke(ctx, provision.MustNewNoop(), ref, "anything"); err != nil {
-		t.Fatalf("Revoke against a non-granter must be nil, got %v", err)
-	}
-	g := newFakeGranter(provision.Capabilities{Policy: true})
-	if err := provision.Revoke(ctx, g, ref, "read-only"); err != nil {
-		t.Fatalf("Revoke: %v", err)
-	}
-	if len(g.revoked) != 1 {
-		t.Fatalf("Revoke did not reach the driver: %v", g.revoked)
-	}
-}
 
 // fakeExecer declares Exec and records calls.
 type fakeExecer struct {
@@ -642,20 +542,5 @@ func TestExecTTYHelperChecksTheCapabilityNotJustTheAssertion(t *testing.T) {
 	}
 	if capable.calls != 1 {
 		t.Fatalf("ExecTTY calls = %d, want 1", capable.calls)
-	}
-}
-
-func TestPolicyHasRules(t *testing.T) {
-	for raw, want := range map[string]bool{
-		``:                  false,
-		`   `:               false,
-		`null`:              false,
-		`{}`:                false,
-		`[]`:                false,
-		`{"verbs":["get"]}`: true,
-	} {
-		if got := (provision.Policy{Rules: []byte(raw)}).HasRules(); got != want {
-			t.Errorf("HasRules(%q) = %t, want %t", raw, got, want)
-		}
 	}
 }

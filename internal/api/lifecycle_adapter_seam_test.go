@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"strings"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/agentprovision"
@@ -55,17 +54,16 @@ func TestTheLifecycleAdapterSatisfiesTheConsumerInterface(t *testing.T) {
 	var _ Provisioner = adapter
 
 	// 🔴 THE OPTIONAL ONE IS A TYPE ASSERTION, AND doc_seams.go ENTRY 3 IS ABOUT
-	// EXACTLY THIS. The grant path and the model-change path both type-assert the
-	// Provisioner for ProfileReapplier; an adapter without the method compiles,
+	// EXACTLY THIS. The model-change path type-asserts the Provisioner for
+	// ProfileReapplier; an adapter without the method compiles,
 	// wires, and takes the else branch for ever with no nil anywhere for a reader
 	// to notice. "It compiles" is not this test — a method added to the wrong type
 	// compiles just as well — so the assertion is performed.
 	if _, ok := any(adapter).(ProfileReapplier); !ok {
 		t.Errorf("*agentprovision.Adapter does NOT satisfy api.ProfileReapplier.\n" +
-			"    Two paths type-assert for it — reapplyEnvAsync (privilege.go) and the " +
-			"model-change roll (agents.go) — and a failed assertion is SILENT: both " +
-			"silently become no-ops, so a model change or a re-granted profile never " +
-			"reaches the running instance and nothing anywhere says so.\n" +
+			"    The model-change roll (agents.go) type-asserts for it, and a failed " +
+			"assertion is SILENT: it becomes a no-op, so a model change never reaches " +
+			"the running instance and nothing anywhere says so.\n" +
 			"    If dropping it is deliberate, invert this assertion and say why here; do " +
 			"not delete it. See cmd/muster-server/doc_seams.go entry 3.")
 	}
@@ -82,27 +80,17 @@ func TestTheLifecycleAdapterSatisfiesTheConsumerInterface(t *testing.T) {
 	}
 }
 
-// TestAWiredProvisionerWithNoPrivilegeApplierIsNotReady is the readiness half of
-// cmd/muster-server/doc_seams.go entry 2 falling due.
+// TestAWiredProvisionerIsReadyWithoutAnyPrivilegeWiring: the deployed shape —
+// a real lifecycle adapter, nothing privilege-related — is READY.
 //
-// 🔴 ENTRY 2 NAMED THE MOMENT ITS OWN ARGUMENT DIES, AND THIS IS THAT MOMENT. A
-// privilege store that RECORDS grants nobody applies was defensible only while no
-// agent pod could exist to hold one — "there is no surface on which a user is told
-// a privilege is live when it is not, because there is no live agent to hold it."
-// A wired Provisioner creates real instances, so the grant chip starts claiming a
-// permission the instance's ServiceAccount does not have.
-//
-// 🔴 IT DRIVES /readyz RATHER THAN CALLING defects(), for the reason
-// TestUncomposedNotesStoreIsNotReady states: a defect list nothing reads is not a
-// guard. The failure it defends against is silent by construction — every page
-// renders and nothing errors — so the readiness answer is the only observable that
-// separates the two states.
-//
-// ⚠ THE THREE CONTROLS ARE THE POINT OF THE TABLE, not padding. Without them this
-// would be "any missing dependency is a defect", which would make a
-// provisioner-less deployment permanently not-ready and a provisioner-only one
-// undeployable.
-func TestAWiredProvisionerWithNoPrivilegeApplierIsNotReady(t *testing.T) {
+// ⚠ IT REPLACES A TEST THAT ASSERTED THE OPPOSITE FOR ONE COMBINATION. Until the
+// privilege subsystem was removed, a wired Provisioner beside a wired privilege
+// store with no applier was a readiness defect (doc_seams.go entry 2). That
+// combination is no longer expressible, so what remains to pin is that removing
+// the applier did not leave a provisioner-wired server unready — which is the
+// state production deploys into the moment MUSTER_AGENT_PRIVILEGE_APPLY stops
+// being read.
+func TestAWiredProvisionerIsReadyWithoutAnyPrivilegeWiring(t *testing.T) {
 	adapter, err := agentprovision.New(agentprovision.Config{
 		Driver: provision.MustNewNoop(),
 		Store:  stubAgentsStore{},
@@ -116,41 +104,13 @@ func TestAWiredProvisionerWithNoPrivilegeApplierIsNotReady(t *testing.T) {
 		ext       Extensions
 		wantReady bool
 	}{
+		{name: "provisioner wired", ext: Extensions{Provisioner: adapter}, wantReady: true},
+		{name: "neither wired", ext: Extensions{}, wantReady: true},
 		{
-			name:      "provisioner wired, privilege store wired, no applier",
-			ext:       Extensions{Provisioner: adapter, Privilege: stubPrivilegeStore{}},
+			// POSITIVE CONTROL: the harness CAN observe not-ready. A notes store
+			// with no liveness probe is a standing defect.
+			name: "control: notes without liveness", ext: Extensions{Provisioner: adapter, Notes: stubNotesStore{}},
 			wantReady: false,
-		},
-		{
-			name: "provisioner wired, privilege store wired, applier wired",
-			ext: Extensions{
-				Provisioner:    adapter,
-				Privilege:      stubPrivilegeStore{},
-				PrivilegeApply: stubPrivilegeApplier{},
-			},
-			wantReady: true,
-		},
-		{
-			// CONTROL: no privilege store means no grant to render, so nothing can
-			// claim a permission. This is the combination a deployment that keeps
-			// privilege in another service is in, and it must stay deployable.
-			name:      "provisioner wired, no privilege store",
-			ext:       Extensions{Provisioner: adapter},
-			wantReady: true,
-		},
-		{
-			// CONTROL: the state every previous revision of the server binary was
-			// in. A grant recorded with no pod that could hold it lies about
-			// nothing, which is entry 2's whole original argument.
-			name:      "privilege store wired, no provisioner",
-			ext:       Extensions{Privilege: stubPrivilegeStore{}},
-			wantReady: true,
-		},
-		{
-			// CONTROL: neither. Nothing about agents is configured at all.
-			name:      "neither wired",
-			ext:       Extensions{},
-			wantReady: true,
 		},
 	}
 
@@ -164,15 +124,6 @@ func TestAWiredProvisionerWithNoPrivilegeApplierIsNotReady(t *testing.T) {
 			if gotReady != tc.wantReady {
 				t.Fatalf("/readyz answered %d (ready=%v), want ready=%v.\nbody: %s",
 					rec.Code, gotReady, tc.wantReady, rec.Body.String())
-			}
-			if !tc.wantReady {
-				// The refusal must NAME the fields, or an operator reading it cannot
-				// act on it — the same requirement the notes/liveness defect carries.
-				for _, want := range []string{"PrivilegeApply", "Provisioner"} {
-					if !strings.Contains(rec.Body.String(), want) {
-						t.Errorf("the refusal does not name %q.\nbody: %s", want, rec.Body.String())
-					}
-				}
 			}
 		})
 	}

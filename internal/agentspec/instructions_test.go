@@ -42,21 +42,12 @@ func TestTheInstructionsAndTheDaemonReferToEachOther(t *testing.T) {
 // TestTheInstructionsDoNotPromiseASelfServicePrivilegePath is the guard for the one
 // section deliberately DROPPED on the way across.
 //
-// 🔴 THE HAZARD IS A 2XX THAT CHANGES NOTHING. muster registers
-// /agent/privilege/request, and whether such a request is ever APPLIED depends on a
-// deployment-time switch: internal/agentprivilege exists, and cmd/muster-server
-// wires it only when MUSTER_AGENT_PRIVILEGE_APPLY is set — which it is not by
-// default. So on the default deployment a request recorded here is never applied.
-// Prose telling an agent to ask would earn it a success reply, no permissions, and
-// — worst of all — a reason to stop looking for the real blocker. The instruction
-// set must route that case to the blocked protocol instead.
-//
-// ⚠ THIS DOCSTRING ASSERTED A SUPERSEDED DECISION UNTIL THE ROUND-1 AUDIT OF THE
-// APPLIER'S OWN PULL REQUEST. It read "the privilege applier stayed with the
-// permission router by operator decision", as present fact, in a GREEN gate — while
-// the commit under review was landing the applier. The guard itself is unchanged and
-// still correct, because it was never about where the applier lived: it is about the
-// instruction being unconditional prose while the tier is conditional wiring.
+// 🔴 THE ROUTE NO LONGER EXISTS. The privilege subsystem was removed (superseded
+// by connectors), so /agent/privilege/request is a 404: prose telling an agent to
+// ask would earn it a failed request and a false lead. Before the removal the
+// hazard was worse — a 2xx that applied nothing on a deployment that had not armed
+// the applier. Either way the instruction set must route the case to the blocked
+// protocol (or, for an external platform, the connector tools) instead.
 func TestTheInstructionsDoNotPromiseASelfServicePrivilegePath(t *testing.T) {
 	// Each of these is a way the upstream section could come back. The route path is
 	// the decisive one; the others catch a reworded reintroduction.
@@ -67,13 +58,8 @@ func TestTheInstructionsDoNotPromiseASelfServicePrivilegePath(t *testing.T) {
 	} {
 		if strings.Contains(WorkerInstructions, forbidden) {
 			t.Errorf("the worker instructions contain %q, promising a self-service privilege path.\n"+
-				"On a deployment that has not set MUSTER_AGENT_PRIVILEGE_APPLY — the default — "+
-				"muster records such a request and applies NOTHING, so the agent gets a success "+
-				"that changes nothing and stops looking for the real blocker. Route this case to "+
-				"\"Blocked and cannot proceed\" instead. An applier now EXISTS "+
-				"(internal/agentprivilege), so the bar for restoring the section is no longer its "+
-				"existence: the prose has to be conditional on the tier being armed, or it lies "+
-				"to every agent on an unarmed deployment.", forbidden)
+				"The privilege subsystem is removed and that route answers 404. Route this case "+
+				"to \"Blocked and cannot proceed\" (or the connector tools) instead.", forbidden)
 		}
 	}
 

@@ -31,9 +31,9 @@ func gatewayOnlyBlock(html, end string) string {
 // TestEveryOpenRouterControlInTheDispatchFormsIsGatewayOnly pins WHICH controls
 // the kind toggle hides, in both dispatch forms: the model selector (the
 // OpenRouter-specific one — curated OpenRouter slugs and the live OpenRouter
-// search, data-combobox-remote="/api/openrouter/models"), the repository and the
-// privilege grants. The behavioural half — that they actually disappear on a
-// tap — is e2e/tests/claude-code-polish.spec.ts.
+// search, data-combobox-remote="/api/openrouter/models") and the repository.
+// The behavioural half — that they actually disappear on a tap — is
+// e2e/tests/claude-code-polish.spec.ts.
 func TestEveryOpenRouterControlInTheDispatchFormsIsGatewayOnly(t *testing.T) {
 	forms := map[string]string{
 		"FAB form":         renderNode(t, DispatchModalBodyFor(bothKinds)),

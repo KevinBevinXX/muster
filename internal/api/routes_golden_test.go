@@ -143,7 +143,7 @@ const manifestPath = "testdata/routes.partition.tsv"
 //	+ 14   rows it assigns to `shared` — the shell/infra surface BOTH projects
 //	       register, duplicated rather than moved, so muster registers them too
 //	----
-//	  96   projected post-carve registrations   (= routeFloorProjection)
+//	  96   projected post-carve registrations   (= routeFloorProjection at the carve; 81 now, see below)
 //	- 16   carve margin, ~17%: routes the carve is expected to drop or fold
 //	       rather than move (the manifest's own header flags a five-row block
 //	       it is least certain about, and two more rows whose fate the source
@@ -168,20 +168,29 @@ const manifestPath = "testdata/routes.partition.tsv"
 //	----
 //	  90   routeFloor
 //
-// 🔴 99, NOT THE 96 THE MANIFEST PROJECTS, AND THE THREE-ROUTE DIFFERENCE IS
-// ACCOUNTED FOR RATHER THAN ABSORBED. The manifest was derived from an upstream
-// golden that predates three routes muster registers deliberately:
-// `GET /api/directories` (the task-create picker, rebuilt across the seam) and
-// `GET /runbooks` + `GET /privileges` (the two document routes the nav links
-// to, which existed on neither side before). Every one of the manifest's 96
-// muster-and-shared rows IS registered, and no `router` row is — that
-// reconciliation is the migration's mechanical proof that nothing was dropped,
-// and it is in the pull request that landed this.
+// 🔴 99, NOT THE 96 THE MANIFEST PROJECTED, AND THE THREE-ROUTE DIFFERENCE WAS
+// ACCOUNTED FOR RATHER THAN ABSORBED: `GET /api/directories` (the task-create
+// picker, rebuilt across the seam) plus `GET /runbooks` and `GET /privileges`
+// (two document routes the nav linked to). Every one of the manifest's 96
+// muster-and-shared rows WAS registered, and no `router` row was — the
+// migration's mechanical proof that nothing was dropped.
 //
-// ⚠ routeFloorProjection STAYS AT 96 because it is checked against the
-// MANIFEST, not against the code. It is the manifest's own arithmetic and
-// changing it to 99 would break TestRoutePartitionManifestIsATotalPartition,
-// which is the guard that keeps the manifest a total partition.
+// ⚠ RE-DERIVED WHEN PRIVILEGES AND RUNBOOKS WERE REMOVED (PR #49). That removal
+// deleted 17 routes: the 15 the manifest listed (now deleted from it, so the
+// projection is 81) and the two document routes above. MEASURED after it:
+// RegisterRoutes registers **106** routes — connectors and the approval relay
+// had grown the table since the carve. The floor cannot follow the measurement
+// up, because TestRoutePartitionManifestIsATotalPartition requires it to sit
+// BELOW the manifest projection; it is the projection less the same ~10%
+// margin:
+//
+//	  81   manifest projection (67 muster + 14 shared)
+//	-  9   margin
+//	----
+//	  72   routeFloor
+//
+// routeFloorProjection is checked against the MANIFEST, not against the code,
+// by TestRoutePartitionManifestIsATotalPartition.
 //
 // Do not "fix" a red floor by lowering it to whatever number makes the run
 // green: that is the failure this whole comment exists to prevent, and it has
@@ -191,8 +200,8 @@ const manifestPath = "testdata/routes.partition.tsv"
 // red the gate from the first route to the eightieth.
 // ---------------------------------------------------------------------------
 const (
-	routeFloorProjection = 96
-	routeFloor           = 90
+	routeFloorProjection = 81
+	routeFloor           = 72
 )
 
 // muxRecorder implements Mux and records patterns instead of routing.

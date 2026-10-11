@@ -269,26 +269,6 @@ func TestTheRelayFailsClosedWithoutAQueue(t *testing.T) {
 	}
 }
 
-// 🔴 THE RELAY HAS ITS OWN GATE. The checkpoint gate (UseGate) is a router
-// feature; arming it must not arm the relay, and the relay must not reach for it.
-// The other direction — the relay's gate does not arm checkpoints — is the same
-// field separation seen from the checkpoint side.
-func TestTheRelayUsesOnlyItsOwnGate(t *testing.T) {
-	f := newRelayFixture(t, false)
-	checkpoint := &fakeGate{state: GateDecision{State: GateStatePending}}
-	f.srv.UseGate(checkpoint)
-	if w := f.call("POST", "/agent/approvals", relayBody, relayTokenA); w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("relay with only the checkpoint gate armed: %d, want 503", w.Code)
-	}
-	if len(checkpoint.minted) != 0 {
-		t.Fatalf("the relay filed through the checkpoint gate: %+v", checkpoint.minted)
-	}
-	g := newRelayFixture(t, true)
-	if g.srv.gate() != nil {
-		t.Fatal("arming the relay's gate armed the checkpoint gate")
-	}
-}
-
 // The outstanding cap, sequentially. The rate limit is lifted so it cannot be
 // what refuses (its burst is below the cap); TestAFileAndClearLoopIsRateLimited
 // covers the rate.

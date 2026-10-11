@@ -914,7 +914,7 @@ func TestAutosaveSuppressesFirstSnapshotOfPristineClone(t *testing.T) {
 // suppression. Seeding pushed_tree unconditionally from HEAD^{tree} would mark a
 // clean-but-locally-committed worktree as "already pushed" and skip forever —
 // losing precisely the committed-but-unpushed work the daemon exists to rescue
-// (the `strandCheckpointTask` scenario). Suppression must apply only when HEAD is
+// (an agent stopped mid-task after committing locally). Suppression must apply only when HEAD is
 // already on the remote.
 func TestAutosaveStillSnapshotsLocalCommits(t *testing.T) {
 	f := newAutosaveFixture(t)

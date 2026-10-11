@@ -8,8 +8,8 @@ import (
 
 // --- Tag grammar -------------------------------------------------------------
 //
-// Tags are a ROUTING KEY, not folders: a tag can drive behaviour (dispatch via a
-// runbook, block dispatch, join an initiative), so it must be validated and FAIL
+// Tags are a ROUTING KEY, not folders: a tag can drive behaviour (block
+// dispatch, join an initiative), so it must be validated and FAIL
 // LOUD rather than be a silently-ignored string. Normalization and validation are
 // PURE functions here in the domain package so every write path (machine API, UI
 // form, session route) shares one implementation and the store never accepts
@@ -34,10 +34,12 @@ const (
 // Reserved (routing) namespaces. These are a CLOSED Go allowlist on purpose:
 // adding one is a code change, because each carries behaviour. Any other
 // `namespace:value` prefix (e.g. `civitai:frontend`) is just a descriptive tag.
+//
+// ⚠ `runbook:` WAS ONE, AND IS NOT ANY MORE. Runbooks were removed (migration
+// 0005 dropped their tables), so `runbook:<name>` carries no behaviour and is now
+// an ordinary descriptive tag. Tasks written before the removal keep it as a
+// plain label — nothing validates it against a store, routes on it or counts it.
 const (
-	// NSRunbook — `runbook:<name>`: dispatch via this runbook template. HARD
-	// validated against the runbook store (unknown name → 400 / inline error).
-	NSRunbook = "runbook"
 	// NSInitiative — `initiative:<slug>`: joins the task to the initiatives ledger.
 	// SOFT validated (charset/length only): the initiatives store lives in a
 	// different cluster's Postgres, and making task creation depend on a
@@ -143,7 +145,6 @@ func IsExternalIDTag(tag string) bool {
 // metric is designed to keep out. Pinned by TestProjectTagIsNotRouting and
 // TestProjectValueNeverReachesAPrometheusLabel.
 var routingNamespaces = map[string]bool{
-	NSRunbook:    true,
 	NSInitiative: true,
 	NSGate:       true,
 	NSAuto:       true,
@@ -428,9 +429,6 @@ func TagValue(tags []string, namespace string) (string, bool) {
 	}
 	return "", false
 }
-
-// RunbookName returns the `runbook:<name>` target, if the task carries one.
-func RunbookName(tags []string) (string, bool) { return TagValue(tags, NSRunbook) }
 
 // ProjectName returns the `project:<slug>` the task belongs to, if any. There is
 // AT MOST one (ValidateTags rejects two), so "the first" is "the only".

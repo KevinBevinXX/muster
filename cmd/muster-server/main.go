@@ -1,5 +1,5 @@
 // Command muster-server is muster's HTTP service: the task board, the agent
-// surfaces, the runbooks, the privileges and the machine API, over the Postgres
+// surfaces, the connectors and the machine API, over the Postgres
 // database internal/db migrates.
 //
 // 🔴 IT EXISTS BECAUSE EVERYTHING BELOW IT DID NOT LINK INTO ANYTHING. Before
@@ -21,14 +21,11 @@
 // 🔴 EVERY api DEPENDENCY NOW HAS AN IMPLEMENTATION IN THIS MODULE, AND EACH IS
 // STILL OFF BY DEFAULT. This paragraph read "THREE api DEPENDENCIES ARE
 // DELIBERATELY LEFT NIL: Provisioner, PrivilegeApply and the ProfileReapplier a
-// provisioner may also satisfy. They have no implementation in this module and
-// wiring a fake one would be worse than wiring none." All three of those
-// sentences were true when written and none is now: internal/agentprovision
-// satisfies Provisioner AND ProfileReapplier, internal/agentgateway satisfies
-// Gateway, and internal/agentprivilege satisfies PrivilegeApplier. What survives
-// is the SHAPE of the argument — a fake is worse than a nil — and the defaults:
-// MUSTER_AGENT_PROVISIONER, MUSTER_AGENT_GATEWAY and MUSTER_AGENT_PRIVILEGE_APPLY
-// all ship off, so an unchanged deployment gets the same nils it always had. The
+// provisioner may also satisfy." internal/agentprovision now satisfies
+// Provisioner AND ProfileReapplier and internal/agentgateway satisfies Gateway;
+// PrivilegeApply was removed with the privilege subsystem. What survives is the
+// SHAPE of the argument — a fake is worse than a nil — and the defaults:
+// MUSTER_AGENT_PROVISIONER and MUSTER_AGENT_GATEWAY both ship off, so an unchanged deployment gets the same nils it always had. The
 // full statement — what, why, the closing condition and who checks it — is in
 // doc_seams.go, beside the code it affects, and the boot banner says which tiers
 // are in force out loud on every start.
@@ -62,9 +59,7 @@ import (
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/notes"
-	"github.com/ZacxDev/muster/internal/privilege"
 	"github.com/ZacxDev/muster/internal/router"
-	"github.com/ZacxDev/muster/internal/runbooks"
 	"github.com/ZacxDev/muster/internal/sse"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -230,8 +225,6 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// Unwrapping it here re-opens that blind spot for every writer at once.
 		ext.Notes = notes.WithStatusLogging(notes.NewPG(pool), logger)
 		ext.Agents = agents.NewPG(pool)
-		ext.Privilege = privilege.NewPG(pool)
-		ext.Runbooks = runbooks.NewPG(pool)
 
 		if len(cfg.ConnectorEncKey) > 0 {
 			cs, err := connectors.NewPG(pool, cfg.ConnectorEncKey)
@@ -284,7 +277,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		return nil, fmt.Errorf("claude account pool: %w", err)
 	}
 	ext.Kinds = kindSet{kinds: cfg.agentKinds(), pool: ccPool}
-	prov, gw, priv, err := buildAgentPlaneWith(cfg, ext.Agents, ccPool, logger)
+	prov, gw, err := buildAgentPlaneWith(cfg, ext.Agents, ccPool, logger)
 	if err != nil {
 		a.Close()
 		// "agent plane", not "agent provisioner": this call builds ALL THREE tiers,
@@ -299,17 +292,6 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if gw != nil {
 		ext.Gateway = gw
 	}
-	// 🔴 THE THIRD nil-CHECK INVERTS THE CONSEQUENCE OF THE FIRST TWO, WHICH IS WHY
-	// IT IS SPELLED OUT RATHER THAN LEFT TO READ AS MORE OF THE SAME. A typed nil
-	// in Provisioner or Gateway makes a wrapper STOP refusing; a typed nil here
-	// makes api.Extensions.defects stop FIRING — the `PrivilegeApply == nil`
-	// conjunct goes false — so /readyz would report ready for exactly the
-	// deployment that check exists to refuse, and the first grant would nil-deref
-	// inside a handler. Fail-closed becomes fail-open on one missing `if`, which is
-	// the opposite direction from the other two and the more dangerous one.
-	if priv != nil {
-		ext.PrivilegeApply = priv
-	}
 	ext.SessionLiveness = buildSessionLiveness(cfg, port, logger)
 	// 🔴 THE ZERO POLICY IS PRODUCTION'S. Only a binary built with the e2e tag
 	// sets this hook (e2econnect.go), so a deployable binary cannot be configured
@@ -322,10 +304,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	srv.UseExtensions(ext)
 	if port.Configured() {
 		srv.UseRouter(port)
-		srv.UseGate(port)
 	}
 	// The claude-code approval relay's gate: its OWN field, so a standalone
-	// deployment can arm it without UseRouter / UseGate / session liveness.
+	// deployment can arm it without UseRouter / session liveness.
 	if g := approvalGateFor(cfg); g != nil {
 		srv.UseApprovalGate(g)
 	}
@@ -383,7 +364,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 // sets these two variables like any other.
 //
 // 🔴 THE RESULT IS HANDED TO THE SERVER ONLY AS THE RELAY'S api.GatePort
-// (Server.UseApprovalGate). It is never passed to UseRouter, UseGate or
+// (Server.UseApprovalGate). It is never passed to UseRouter or
 // buildSessionLiveness, so the gate turns on no router behaviour —
 // TestTheApprovalGateDoesNotTurnOnRouterBehaviour pins that.
 //
@@ -633,7 +614,7 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	l := a.logger
 
 	if a.pool != nil {
-		l.Printf("persistence: Postgres (%s set); task, agent, privilege and runbook stores wired", envDatabase)
+		l.Printf("persistence: Postgres (%s set); task and agent stores wired", envDatabase)
 	} else {
 		l.Printf("persistence: NONE (%s unset) — every data surface is empty. This is not a "+
 			"supported deployment; config.validate refuses it in main()", envDatabase)
@@ -693,13 +674,13 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		// this process see my variable at all" returned nothing precisely when
 		// the answer was yes. Found by the both-directions ledger, not by review.
 		l.Printf("permission router: CONFIGURED — %s=%s, actor %q — session liveness, event "+
-			"publish, notifications, the directory picker and agent checkpoints are live (the "+
+			"publish, notifications and the directory picker are live (the "+
 			"claude-code approval relay is NOT: see the approval relay gate line)",
 			envRouterURL, a.cfg.RouterURL, a.cfg.RouterActor)
 	case a.cfg.Standalone:
 		l.Printf("permission router: NONE, DECLARED (%s=1) — session transcript links will all "+
 			"read \"no transcript recorded\", which is TRUE here because nothing records "+
-			"transcripts. Notifications, the directory picker and agent checkpoints degrade "+
+			"transcripts. Notifications and the directory picker degrade "+
 			"and say so where a human can see it", envStandalone)
 	// 🔴 THE PARTIAL CASE IS ITS OWN LINE, BECAUSE THE TWO-BRANCH VERSION NAMED
 	// THE WRONG VARIABLE. router.New returns nil when base, token OR actor is
@@ -733,7 +714,7 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	if approvalGateFor(a.cfg) != nil {
 		l.Printf("approval relay gate: DEDICATED — %s=%s (%s set), actor %q. Used ONLY by "+
 			"/agent/approvals to file and poll checkpoint cards; it turns on no router "+
-			"behaviour (session liveness, events, notifications, checkpoints are unchanged)",
+			"behaviour (session liveness, events, notifications are unchanged)",
 			envApprovalGateURL, a.cfg.ApprovalGateURL, envApprovalGateToken, a.cfg.RouterActor)
 	} else {
 		l.Printf("approval relay gate: NONE — %s/%s are unset, so /agent/approvals answers 503 "+
@@ -814,15 +795,14 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"start, stop, destroy, logs, chat) is registered and answers 503 at request time "+
 			"through api.requireLifecycleProvisioner or api.requireGatewayProvisioner, "+
 			"after its own auth check and with provisionerUnwired:true in the body. "+
-			"Privilege grants are RECORDED but not applied to any cluster (%s=%v, and there is "+
-			"no driver to apply them through). %s HAS NO EFFECT in this state — it is still "+
+			"%s HAS NO EFFECT in this state — it is still "+
 			"parsed and range-checked at boot, so a malformed value refuses to start, but "+
 			"nothing is provisioned so no Service carries a gateway port. The agent "+
 			"runtime-config bundle (%s, %s) is UNSET and must be: with no runtime named there "+
 			"is no credential derivation to complete it with, so boot refuses the pair. None "+
-			"of the five is a misconfiguration; see cmd/muster-server/doc_seams.go",
+			"of the four is a misconfiguration; see cmd/muster-server/doc_seams.go",
 			envAgentProvisioner, a.cfg.agentProvisioner(), envAgentGateway, a.cfg.agentGateway(),
-			envAgentPrivApply, a.cfg.AgentPrivilegeApply, envAgentGatewayPort,
+			envAgentGatewayPort,
 			envAgentRuntimeConfig, envAgentRuntimeInstall)
 	default:
 		// 🔴 THE GATEWAY PORT IS REPORTED ON THE *LIFECYCLE* LINE, NOT ONLY ON THE CHAT
@@ -1033,78 +1013,6 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 				a.cfg.agentGatewayPort(), agentspec.EnvGatewayToken, agentkickoff.DefaultInterval,
 				envAgentRuntimeConfig, len(a.cfg.AgentRuntimeConfig), agentspec.RuntimeConfigPath,
 				envAgentRuntimeInstall, len(a.cfg.AgentRuntimeInstall), agentspec.EnvGatewayBearer)
-		}
-		// 🔴 THIS IS doc_seams.go ENTRY 2'S ARGUMENT DYING ON SCHEDULE. A grant
-		// recorded and not applied was defensible only while no pod could exist to
-		// hold it. With lifecycle wired, one can — so the combination is a
-		// readiness DEFECT (api.Extensions.defects) and this line is the readback
-		// of the same condition on the banner.
-		//
-		// ⚠ THE REFUSAL IS NOW ESCAPABLE, AND THE LINE SAYS HOW. Until
-		// internal/agentprivilege existed this branch named a dead end: there was no
-		// applier to wire, so the only exits were unsetting the provisioner or
-		// unsetting the database. Naming the variable is the difference between a
-		// readiness refusal an operator can act on and one they work around by
-		// deleting the readiness probe.
-		//
-		// ⚠ IT HAS EXACTLY TWO ARMS AND IS SILENT FOR "no privilege store", WHICH IS A
-		// CONTROL SOMEBODY ELSE ALREADY WROTE. A three-armed version — a line in every
-		// state, so the variable is announced unconditionally — was tried first and
-		// reddened TestTheHalfWiredProvisioningBannerReportsBothTiersSeparately, whose
-		// control says the line must NOT appear without a privilege store "otherwise it
-		// is unconditional text rather than a report". That control is right: with no
-		// store there is no grant to claim, so there is no state to report. The
-		// both-directions obligation bannerLedger imposes is met by the fully-off arm
-		// above (which names this variable beside the other two) and by the WIRED arm
-		// below.
-		switch {
-		case ext.Privilege != nil && ext.PrivilegeApply == nil:
-			l.Printf("agent privilege APPLY: UNWIRED (%s unset) while a provisioner CAN create "+
-				"pods — this combination is a readiness defect (see api.Extensions.defects) and "+
-				"/readyz REFUSES it, because a granted chip over a ServiceAccount with none of "+
-				"the permissions is a page stating a falsehood. TWO WAYS OUT, NOT THREE: set "+
-				"%s=1 to apply grants through this driver (muster's own ServiceAccount then "+
-				"needs the rbac permissions enumerated in "+
-				"internal/provision/k8s.PolicyRBACPrerequisite — MORE than the `escalate` and "+
-				"`bind` verbs this line used to name on their own, which omit every ordinary "+
-				"verb the policy path calls), or unset %s. Leaving the privilege store unset is "+
-				"NOT a third way: nothing gates that store on a variable of its own, so it means "+
-				"running with no database and losing notes, agents, runbooks and GitHub with it",
-				envAgentPrivApply, envAgentPrivApply, envAgentProvisioner)
-		case ext.PrivilegeApply != nil:
-			// 🔴 IT REPORTS THE DRIVER'S OWN NAME RATHER THAN THE CONFIGURED ONE, for
-			// the reason the gateway line above does: the value an operator set and the
-			// object that got built are two different claims, and the banner is read to
-			// find out which one is in force.
-			driverName := a.cfg.agentProvisioner()
-			if d, ok := ext.PrivilegeApply.(interface{ Driver() string }); ok {
-				driverName = d.Driver()
-			}
-			l.Printf("agent privilege APPLY: WIRED %s=1 over the %s driver — a granted profile's "+
-				"clusterRules/namespaceRules are applied to the agent's ServiceAccount for real, "+
-				"live, with no pod restart. 🔴 WIRED IS NOT THE SAME AS PERMITTED: this path "+
-				"writes ClusterRoles, Roles and both kinds of binding, and needs the rbac "+
-				"`escalate` and `bind` verbs on top of those ordinary writes — the whole set is "+
-				"enumerated in internal/provision/k8s.PolicyRBACPrerequisite, and nothing in this "+
-				"module can check muster holds it. Without it each grant fails at apply time with "+
-				"a 403 that is RETURNED to the caller rather than swallowed. A driver that "+
-				"declares no policy capability (the %s driver declares none) refuses each grant "+
-				"instead, naming itself. 🔴 AND UNSETTING %s AGAIN IS AN OUTAGE, NOT A ROLLBACK: "+
-				"it re-enters the readiness defect above, so plan it as a two-variable change "+
-				"with %s or as an image rollback. TO DISARM THIS TIER WITHOUT AN OUTAGE, DELETE "+
-				"THE ClusterRoleBinding GRANTING THIS SERVER'S OWN ServiceAccount THAT rbac "+
-				"SET: nothing here checks the permissions before writing and the readiness "+
-				"check branches on nil-ness only, so the pod stays READY and serving while "+
-				"every grant fails with the apiserver's 403. It stops new escalation; it does "+
-				"NOT remove RBAC already applied, and revoking that afterwards needs the same "+
-				"permissions back — nor does agent DESTROY still work: its policy step 403s "+
-				"while the workload, its Service and any owned namespace go anyway, leaving an "+
-				"orphaned ClusterRoleBinding "+
-				"that internal/provision/k8s.Driver.Destroy's own comment calls a security bug "+
-				"waiting for a namesake, because the next agent to take that name inherits "+
-				"access nobody granted it, so pair this disarm with hand-removing those "+
-				"objects or destroy no agents until the binding is restored",
-				envAgentPrivApply, driverName, provisionerNoop, envAgentPrivApply, envAgentProvisioner)
 		}
 	}
 }

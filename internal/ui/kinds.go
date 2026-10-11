@@ -30,16 +30,16 @@ func (k KindChoices) offersClaudeCode() bool {
 
 // kindToggleScript shows the claude-code-only controls when that kind is
 // checked, and DISABLES the controls that do not apply — a disabled input is not
-// submitted. So a claude-code dispatch carries no `model`, `repo` or
-// `grant_profile` (the server refuses each: the CLI chooses its model, nothing in
-// the image clones a repo, and the pod mounts no ServiceAccount token) and a
+// submitted. So a claude-code dispatch carries no `model` or `repo` (the server
+// refuses each: the CLI chooses its model, and nothing in the image clones a
+// repo) and a
 // gateway dispatch carries no `cc_account` (refused for any other kind).
 //
 // 🔴 DISABLED WAS NOT ENOUGH, AND HIDING IS THE FIX FOR AN OPERATOR REPORT. The
 // model combobox (curated OpenRouter slugs plus a live OpenRouter search), the
-// repository picker and the privilege grants stayed ON SCREEN for a Claude Code
-// dispatch — greyed out under "Advanced", and on the task-scoped confirm as
-// fully-rendered "Model / Repository / Privileges" rows with live Edit buttons.
+// repository picker (and, then, the privilege grants) stayed ON SCREEN for a
+// Claude Code dispatch — greyed out under "Advanced", and on the task-scoped
+// confirm as fully-rendered rows with live Edit buttons.
 // Every control marked data-gateway-only (gatewayOnlyAttr) is now hidden while
 // Claude Code is picked, in BOTH dispatch forms; the disabling stays, because a
 // hidden input is still submitted and the disable is what keeps it off the wire.
@@ -47,11 +47,11 @@ const kindToggleScript = "var f=this.closest('form'),cc=!!f.querySelector('input
 	"this.querySelectorAll('[data-cc-only]').forEach(function(e){e.classList.toggle('hidden',!cc)});" +
 	"f.querySelectorAll('[" + gatewayOnlyAttr + "]').forEach(function(e){e.classList.toggle('hidden',cc)});" +
 	"var a=f.querySelector('select[name=cc_account]');if(a){a.disabled=!cc}" +
-	"f.querySelectorAll('input[name=model],input[name=repo],input[name=repo_branch],input[name=grant_profile]').forEach(function(e){e.disabled=cc});"
+	"f.querySelectorAll('input[name=model],input[name=repo],input[name=repo_branch]').forEach(function(e){e.disabled=cc});"
 
 // gatewayOnlyAttr marks a dispatch-form control that means nothing to a
-// claude-code agent — the model selector (OpenRouter-specific), the repository
-// and the privilege grants. kindToggleScript hides every one while Claude Code is
+// claude-code agent — the model selector (OpenRouter-specific) and the
+// repository. kindToggleScript hides every one while Claude Code is
 // picked. ONE spelling, shared by the attribute and the script's selector.
 const gatewayOnlyAttr = "data-gateway-only"
 

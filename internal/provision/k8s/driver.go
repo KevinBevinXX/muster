@@ -80,31 +80,6 @@ type Config struct {
 	//   "x" -> use class x.
 	WorkspaceStorageClass *string
 
-	// PolicyDisabled turns off Capabilities.Policy.
-	//
-	// ⚠ SET IT WHEN MUSTER'S OWN SERVICE ACCOUNT IS NOT PERMITTED TO WRITE RBAC.
-	// Without those permissions a grant fails at apply time with an error that
-	// looks like a bug; with this set, provision.Grant refuses up front with a
-	// reason a user interface can display.
-	//
-	// 🔴 "THOSE PERMISSIONS" IS MORE THAN THE RBAC `escalate` AND `bind` VERBS,
-	// WHICH IS ALL THIS COMMENT USED TO NAME. Those two are authorisation checks
-	// the apiserver layers ON TOP of an ordinary write, not substitutes for one,
-	// so the policy path also needs ordinary create/get/update/delete/list on all
-	// four rbac resource types. PolicyRBACPrerequisite enumerates the set once —
-	// 18 of its 22 (resource, verb) pairs derived from the call sites and guarded
-	// against them; nothing else in this module restates it.
-	//
-	// ⚠ THE REMAINING FOUR ARE ASSERTED RATHER THAN DERIVED, WHICH THIS SENTENCE
-	// USED TO ERASE: `escalate` and `bind` on `roles` and on `clusterroles` have no
-	// call site by construction (see PolicyEscalationVerbs), so the DERIVATION
-	// excludes them — though the same guard pins all four EXPLICITLY, and pins
-	// their ABSENCE on the two binding resources, so dropping one reddens. What
-	// stays untested is the CLAIM: they are a claim about what the apiserver
-	// checks, and no test in this module — all of which run against the fake
-	// clientset — can contradict THAT.
-	PolicyDisabled bool
-
 	// NetworkPolicy enables Capabilities.NetworkIsolation: with it set, a spec
 	// asking for [provision.Network] isolation gets a per-instance NetworkPolicy,
 	// written BEFORE the instance's Deployment.
@@ -133,9 +108,8 @@ type Driver struct {
 }
 
 var (
-	_ provision.Provisioner   = (*Driver)(nil)
-	_ provision.PolicyGranter = (*Driver)(nil)
-	_ provision.Execer        = (*Driver)(nil)
+	_ provision.Provisioner = (*Driver)(nil)
+	_ provision.Execer      = (*Driver)(nil)
 )
 
 // New builds the driver, validating the configuration up front so a bad
@@ -185,10 +159,8 @@ func (d *Driver) Driver() string { return "kubernetes" }
 //     nonPublicIPv4 EXCEPT THE CLUSTER'S DNS PODS (reachable on port 53, which
 //     is itself a channel) — so the cluster and the LAN WHERE THOSE ARE PRIVATE
 //     ADDRESSES, which is a property of the cluster and not something this
-//     driver checks (see that variable's ⚠). It does not keep data in. Neither
-//     does the RBAC
-//     that Policy true announces. And an instance whose spec declares no
-//     isolation gets no NetworkPolicy at all.
+//     driver checks (see that variable's ⚠). It does not keep data in. And an
+//     instance whose spec declares no isolation gets no NetworkPolicy at all.
 //   - IT RUNS NO SIDECARS. One container plus an init container. The chart this
 //     replaces could run three log tailers, and they were structurally
 //     invisible to that project's own log reads anyway.
@@ -206,7 +178,6 @@ func (d *Driver) Capabilities() provision.Capabilities {
 		Isolation:      isolation,
 		Secrets:        true,
 		Files:          true,
-		Policy:         !d.cfg.PolicyDisabled,
 		Persistence:    d.cfg.WorkspaceStorageClass != nil,
 		ResourceLimits: true,
 		Scale:          true,
@@ -251,8 +222,9 @@ func blind(op string, err error) error {
 }
 
 // applyFailed attributes a failure from an object upsert on a WRITE path —
-// apply's six kinds, the NetworkPolicy applyNetworkPolicy writes ahead of them,
-// AND Grant's RBAC objects.
+// apply's six kinds and the NetworkPolicy applyNetworkPolicy writes ahead of them.
+// (The policy-grant RBAC upserts that used to come through here too were
+// removed with the privilege subsystem.)
 //
 // 🔴 AN OWNERSHIP REFUSAL IS NOT UNREACHABILITY, AND THIS IS THE ONE PLACE THE
 // WRITE PATH DISTINGUISHES THEM. All five upserts in apply() used to wrap their
@@ -267,13 +239,13 @@ func blind(op string, err error) error {
 //
 // 🔴 THE HEDGE THIS COMMENT USED TO CARRY — "nothing stops a SIXTH site calling
 // blind() directly" — WAS ALREADY TRUE WHEN IT WAS WRITTEN, of the two upserts
-// in policy.go's Grant. Consolidating apply's five sites here left the
-// security-critical RBAC path out of the consolidation entirely, and a predicate
+// in the (since removed) policy grant path. Consolidating apply's five sites
+// here left that RBAC path out of the consolidation entirely, and a predicate
 // applied at some of its sites is wrong at the rest of them in the same
 // direction. Measured at f373092 with a foreign co-named ClusterRole in the way:
 // errors.Is(err, ErrBlind) true, errors.Is(err, ErrNotManaged) false. Every
-// write in this driver that can collide with a stranger's object now returns
-// through this function; policy.go has no blind() call on a collision path left.
+// write in this driver that can collide with a stranger's object returns
+// through this function.
 //
 // 🔴 IT KEYS ON THE SENTINEL, NOT ON THE CONCRETE TYPE, AND THAT IS THE WIDER
 // PREDICATE. errors.As(err, **notManagedError) would misroute any refusal that
@@ -475,18 +447,17 @@ func (d *Driver) upsertOwned(what, name, ns string, get func() (map[string]strin
 // refuses one this driver did not create.
 //
 // 🔴 IT IS THE CREATE-ONLY HALF OF upsertOwned, AND IT EXISTS BECAUSE THE SAME
-// EIGHT LINES WERE OPEN-CODED AT THREE SITES — apply's workspace claim and both
-// of Grant's role bindings — of which TWO WERE WRONG IN THE SAME DIRECTION: the
-// bindings treated AlreadyExists as success outright, so a Grant whose
-// ClusterRoleBinding was a stranger's co-named object reported the policy
-// applied while the subject and the RoleRef were somebody else's choice. That is
-// the "reports granted for a policy nobody applied" shape provision.Grant's own
-// doc calls worse than having no policy feature.
+// EIGHT LINES WERE OPEN-CODED AT THREE SITES — apply's workspace claim and the
+// two role bindings of the since-removed policy grant path — of which TWO WERE
+// WRONG IN THE SAME DIRECTION: the bindings treated AlreadyExists as success
+// outright, so a binding that was a stranger's co-named object was reported
+// applied while the subject and the RoleRef were somebody else's choice. Only
+// the workspace claim calls it now.
 //
 // An AlreadyExists over an object that IS ours is success, not an update: the
-// callers' objects are immutable in the fields that matter (a PVC's binding, a
-// binding's RoleRef) and their names are deterministic, so an existing one of
-// ours is already the object we want.
+// caller's object is immutable in the fields that matter (a PVC's binding) and
+// its name is deterministic, so an existing one of ours is already the object
+// we want.
 func (d *Driver) createOwned(what, name, ns string, get func() (map[string]string, error), create func() error) error {
 	err := create()
 	if !apierrors.IsAlreadyExists(err) {
@@ -508,22 +479,13 @@ func (d *Driver) createOwned(what, name, ns string, get func() (map[string]strin
 // an instance must not touch it.
 //
 // ⚠ EVERY CALLER OF THIS IS A SATELLITE OBJECT — a ConfigMap, a Secret, a
-// Service, a claim, a ServiceAccount, a NetworkPolicy, and the RBAC objects
-// Revoke removes — and
+// Service, a claim, a ServiceAccount and a NetworkPolicy — and
 // the quiet skip is right for those and WRONG for the instance's identity
 // anchors. The Deployment and the per-instance Namespace do not come through
 // here: a foreign one of those means the name is not muster's to operate on at
 // all, and both refuse loudly. See checkNamespaceOwned, which is where that
 // difference is argued (destroyNamespace used to call this, and used to be where
 // the argument lived).
-//
-// ⚠ IT IS ALSO WHAT MAKES Revoke AGREE WITH revokeAllPolicies. That function
-// enumerates policy objects by LABEL, so a stranger's co-named ClusterRole is
-// invisible to it and survives a teardown; Revoke resolves the same objects by
-// NAME, and before it came through here it deleted them unconditionally — a
-// stranger's ClusterRole and its cluster-wide binding, returning nil. Two
-// answers to one question, and the destructive one was in the method a caller
-// uses to withdraw a privilege.
 //
 // ⚠ WHAT IT DOES NOT CLAIM: atomicity. The labels are read immediately before
 // the delete, but nothing stops the object being replaced between the two
@@ -860,8 +822,7 @@ func (d *Driver) ensureNamespace(ctx context.Context, instance, ns string) error
 // 🔴 IT RUNS BEFORE THE FIRST DELETE, AND THAT ORDER IS THE FIX FOR A MEASURED
 // INCOHERENCE. The check used to live at the END of Destroy, so a foreign
 // namespace holding an instance whose own objects WERE muster's produced this:
-// the Deployment, the ServiceAccount, every satellite and every policy object
-// were removed, and then Destroy returned provision.ErrNotManaged — measured on
+// the Deployment, the ServiceAccount and every satellite were removed, and then Destroy returned provision.ErrNotManaged — measured on
 // three consecutive calls, with Get reporting ErrNotFound in between. A caller
 // looking at that cannot tell a refusal that changed nothing from one that tore
 // the instance down, and "Destroy until nil" never terminates. Checked first,
@@ -1125,20 +1086,6 @@ func (d *Driver) Destroy(ctx context.Context, ref provision.Ref) error {
 			func() error { return c.CoreV1().ServiceAccounts(ns).Delete(ctx, name, metav1.DeleteOptions{}) }},
 	} {
 		fail(o.what+" "+o.name, d.deleteIfOwned(o.what, o.name, o.get, o.del))
-	}
-
-	// 🔴 POLICY OBJECTS OUTLIVE WHAT POINTS AT THEM, AND THAT IS A SECURITY BUG
-	// WAITING FOR A NAMESAKE. A ClusterRole and its binding survive the
-	// namespace, the Deployment and the database row, with nothing left
-	// pointing at them; the namespaced Role and RoleBinding survive too
-	// wherever the namespace is not deleted. The next instance to take this
-	// name gets the same ServiceAccount — the dangling binding's exact
-	// subject — and silently inherits access nobody granted it.
-	if err := d.revokeAllPolicies(ctx, ref, ns); err != nil {
-		d.log.Printf("k8s: destroy %s: revoke policies: %v", ref.Name, err)
-		if firstErr == nil {
-			firstErr = err
-		}
 	}
 
 	// 🔴 THE NetworkPolicy GOES AFTER EVERYTHING IT CONFINES. The Deployment's

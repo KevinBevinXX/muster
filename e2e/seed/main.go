@@ -43,10 +43,10 @@ func run() error {
 	defer pool.Close()
 
 	// CASCADE empties every table that references these (comments, attachments,
-	// sessions, chat, runs, grants) without this file naming them — the notes
+	// sessions, chat, connector grants) without this file naming them — the notes
 	// package's ledger forbids spelling the comments table outside its store.
-	if _, err := pool.Exec(ctx, `TRUNCATE notes, agents, runbooks, privilege_profiles, privilege_requests,
-		connectors, connector_audit RESTART IDENTITY CASCADE`); err != nil {
+	if _, err := pool.Exec(ctx, `TRUNCATE notes, agents, connectors, connector_audit
+		RESTART IDENTITY CASCADE`); err != nil {
 		return fmt.Errorf("truncate: %w", err)
 	}
 

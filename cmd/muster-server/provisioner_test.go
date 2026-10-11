@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -105,7 +106,7 @@ func TestBuildingTheKubernetesProvisionerUsesTheRealDriver(t *testing.T) {
 func TestTheKubernetesBranchRefusesOutsideAClusterRatherThanFallingBack(t *testing.T) {
 	// This test process is not a pod: rest.InClusterConfig has no service-account
 	// token to read.
-	_, _, _, err := buildAgentPlane(provisionerTestConfig(provisionerK8s), stubStore{}, log.New(&strings.Builder{}, "", 0))
+	_, _, err := buildAgentPlane(provisionerTestConfig(provisionerK8s), stubStore{}, log.New(&strings.Builder{}, "", 0))
 	if err == nil {
 		t.Fatal("buildAgentPlane succeeded for the kubernetes driver outside a cluster, " +
 			"which means it fell back to some other credential source. A fallback " +
@@ -127,7 +128,7 @@ func TestTheKubernetesBranchRefusesOutsideAClusterRatherThanFallingBack(t *testi
 func TestTheNoopProvisionerWiresAnAdapterAndNoneWiresNothing(t *testing.T) {
 	logger := log.New(&strings.Builder{}, "", 0)
 
-	adapter, _, _, err := buildAgentPlane(provisionerTestConfig(provisionerNoop), stubStore{}, logger)
+	adapter, _, err := buildAgentPlane(provisionerTestConfig(provisionerNoop), stubStore{}, logger)
 	if err != nil {
 		t.Fatalf("buildAgentPlane(noop): %v", err)
 	}
@@ -138,7 +139,7 @@ func TestTheNoopProvisionerWiresAnAdapterAndNoneWiresNothing(t *testing.T) {
 		t.Errorf("adapter.Driver() = %q, want %q", got, "noop")
 	}
 
-	none, _, _, err := buildAgentPlane(provisionerTestConfig(provisionerNone), stubStore{}, logger)
+	none, _, err := buildAgentPlane(provisionerTestConfig(provisionerNone), stubStore{}, logger)
 	if err != nil {
 		t.Fatalf("buildAgentPlane(none): %v", err)
 	}
@@ -155,7 +156,7 @@ func TestTheNoopProvisionerWiresAnAdapterAndNoneWiresNothing(t *testing.T) {
 	// that never went through loadConfig — every wiring test builds one — so this is
 	// the shape a zero value actually reaches the wiring in, and a default that
 	// provisioned would create pods for a deployment that asked for nothing.
-	zero, _, _, err := buildAgentPlane(config{}, stubStore{}, logger)
+	zero, _, err := buildAgentPlane(config{}, stubStore{}, logger)
 	if err != nil {
 		t.Fatalf("buildAgentPlane over a zero-value config: %v", err)
 	}
@@ -168,7 +169,7 @@ func TestTheNoopProvisionerWiresAnAdapterAndNoneWiresNothing(t *testing.T) {
 
 	// A provisioner with no store could resolve no agent id, and would fail from a
 	// background goroutine whose only trace is a log line.
-	if _, _, _, err := buildAgentPlane(provisionerTestConfig(provisionerNoop), nil, logger); err == nil {
+	if _, _, err := buildAgentPlane(provisionerTestConfig(provisionerNoop), nil, logger); err == nil {
 		t.Error("buildAgentPlane accepted a nil agents store")
 	}
 }
@@ -447,5 +448,43 @@ func TestNewAppWiresTheConfiguredNamespacePrefixIntoTheApiLayer(t *testing.T) {
 			"defect this guard exists for: a row saying `devpod-<name>` while the cluster holds "+
 			"`muster-agent-<name>`.\n"+
 			"    If the wiring moved, move this assertion with it; do not delete it.", want)
+	}
+}
+
+// TestAStalePrivilegeApplyVariableChangesNothing: the live manifest still sets
+// MUSTER_AGENT_PRIVILEGE_APPLY=1 beside MUSTER_AGENT_PROVISIONER=kubernetes. The
+// privilege tier is removed, so the binary must load and validate that
+// environment, and the resulting config must be IDENTICAL to the one built
+// without the variable — it is ignored like any unknown MUSTER_* name.
+func TestAStalePrivilegeApplyVariableChangesNothing(t *testing.T) {
+	base := map[string]string{
+		envAgentProvisioner: provisionerK8s,
+		envAgentImageRepo:   "registry.example.test/muster/agent-runtime",
+		envAgentAPIURL:      "http://muster.example.test:8105",
+		envDatabase:         "postgres://unused",
+	}
+	load := func(extra map[string]string) config {
+		t.Helper()
+		cfg, err := loadConfig(func(n string) string {
+			if v, ok := extra[n]; ok {
+				return v
+			}
+			return base[n]
+		})
+		if err != nil {
+			t.Fatalf("loadConfig: %v", err)
+		}
+		if err := cfg.validate(); err != nil {
+			t.Fatalf("validate: %v", err)
+		}
+		return cfg
+	}
+	with := load(map[string]string{"MUSTER_AGENT_PRIVILEGE_APPLY": "1"})
+	without := load(nil)
+	if !reflect.DeepEqual(with, without) {
+		t.Fatalf("MUSTER_AGENT_PRIVILEGE_APPLY=1 changed the loaded config:\nwith:    %+v\nwithout: %+v", with, without)
+	}
+	if with.agentProvisioner() != provisionerK8s {
+		t.Fatalf("control: the provisioner did not load (%q); the comparison is over an empty config", with.agentProvisioner())
 	}
 }

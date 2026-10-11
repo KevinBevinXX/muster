@@ -99,9 +99,7 @@ type ComboOption struct {
 // AgentsPanel is the static shell for the Agents tab. The tab is OPERATOR-FIRST:
 // the operator (the privileged orchestrator you chat with) leads, with quick
 // chips under it that seed an operator conversation. The running-agents list
-// sits below. The raw forms (dispatch FAB aside, plus the privilege-profiles and
-// runbooks registries) live behind an "▸ Advanced" collapsible so they stay
-// available for power use without dominating mobile.
+// sits below. The dispatch form lives behind the FAB.
 //
 // Only the inner card list (#agents-list) and the operator slot poll/lazy-load;
 // the FAB and dispatch modal live in the shell (Page) so the 4s status refresh
@@ -112,8 +110,8 @@ func AgentsPanel(active bool) g.Node {
 		ID(panelID("agents")),
 		g.Attr("role", "tabpanel"),
 		// destructiveSwap=true — AND THE PANEL'S OWN hx-target IS NOT WHY. This
-		// element is never its own target (the inner #privilege-requests and
-		// #agents-list morph themselves). What destroys nodes inside it is wired
+		// element is never its own target (the inner #agents-list morphs
+		// itself). What destroys nodes inside it is wired
 		// INSIDE its body, one level down, and it was measured rather than argued:
 		//
 		//	agents.go cardStatusIcon    hx-target=this  innerHTML             load, every 10s
@@ -125,20 +123,9 @@ func AgentsPanel(active bool) g.Node {
 		// nodes inside itself every 10 seconds with nobody touching it. See panelClass.
 		Class(panelClass(active, true)),
 		// ⚠ THE OPERATOR FAB THAT USED TO SIT ON THIS TAB IS GONE (task #633): there
-		// is no operator chat page to open. The tab leads with time-sensitive
-		// privilege requests, then the running-agents list.
-		// Pending privilege requests (Phase 3.1): agents asking for elevated
-		// access. Lazy-loads its partial; refreshes on the SSE privilege event and
-		// a slow poll. Renders nothing when there are none. Kept above the fold
-		// because an approval is time-sensitive.
-		Div(
-			ID("privilege-requests"),
-			Class("mb-3 empty:mb-0"),
-			hx("hx-get", "/ui/privilege-requests"),
-			hx("hx-trigger", "load, sse:privilege.created from:body, every 15s"),
-			hx("hx-target", "#privilege-requests"),
-			hx("hx-swap", "morph:innerHTML"),
-		),
+		// is no operator chat page to open. The tab leads with the running-agents
+		// list. (The pending privilege-request queue that used to sit above it was
+		// removed with the privilege subsystem; connectors replaced it.)
 		// The running-agents list sits directly below the operator.
 		Div(
 			Class("mb-2 flex items-center gap-2"),
@@ -172,27 +159,8 @@ func AgentsPanel(active bool) g.Node {
 			// htmx:afterSettle up through here, and reacting to those would loop.
 			hx("hx-on::after-settle", agentsListAfterSettle),
 		),
-		// 🔴 THE "ADVANCED" DISCLOSURE THAT USED TO SIT HERE IS GONE, AND THE
-		// REASON IS A BUG RATHER THAN TIDINESS. It mounted a SECOND copy of the
-		// runbooks registry (#runbooks) and of the privilege-profiles registry
-		// (#privilege-profiles), each lazy-loading the same partial the top-level
-		// Runbooks and Privileges tabs already mount (#panel-runbooks,
-		// #panel-privileges). Every shell document therefore held two of each,
-		// both live: measured on /runbooks, a hidden #runbooks inside this panel
-		// and a visible #panel-runbooks, each with its own
-		// hx-delete="/runbooks/{id}" and hx-post="/runbooks/{id}/dispatch".
-		//
-		// 🔴 AND THE DUPLICATE WAS THE ONE THE BUTTONS TALKED TO. A runbook card's
-		// actions targeted `#runbooks` by id — so pressing Delete or Dispatch on
-		// the VISIBLE list swapped the response into the HIDDEN copy. The write
-		// happened, and the list the operator was looking at never changed: it
-		// reads as "the button does nothing". Those actions now target the section
-		// they are inside (see Runbooks in runbooks.go), which is a relationship
-		// rather than a global id, so a second mount could not capture them again.
-		//
-		// The disclosure carried nothing else of its own — it wrapped these two
-		// registries plus a sentence pointing at the + button — and both surfaces
-		// are reachable from the sidebar, so nothing was lost with it.
+		// ⚠ AN "ADVANCED" DISCLOSURE USED TO SIT HERE, mounting the runbook and
+		// privilege-profile registries a second time. Both subsystems are removed.
 		//
 		// FAB + modal are rendered at the body level by Page (shellFAB +
 		// agentModalShell) so fixed positioning is reliable and they survive the
@@ -486,8 +454,7 @@ func agentDeleteConfirm(ids string) g.Node {
 // the leak the gate exists for — see Agent.PendingNote's own comment and
 // api.TestAnOwedKickoffIsReportedWithoutTheNotesText.
 //
-// ⚠ ITS CLASSES ARE DELIBERATELY THE ONES internal/ui/privilege.go ALREADY
-// WRITES, down to the spelling. Every Tailwind class in this package is emitted
+// ⚠ ITS CLASSES WERE CHOSEN TO MATCH AN EXISTING PILL'S, down to the spelling. Every Tailwind class in this package is emitted
 // into the COMMITTED web/static/app.css, and `make css-check` rebuilds and refuses
 // a stale copy — reusing an existing pill's classes means this badge adds zero
 // bytes and the committed stylesheet needs no rebuild. A new colour here is not
@@ -799,7 +766,7 @@ func DispatchModalBodyFor(k KindChoices) g.Node {
 			hx("hx-on::after-request", dispatchCloseOnOwnSubmit),
 			Class("flex flex-col gap-3"),
 			// The "what to dispatch" (an existing task or an ad-hoc description) is the
-			// primary decision, so it stays visible. Model/Repository/Privileges are
+			// primary decision, so it stays visible. Model/Repository are
 			// tucked under a collapsed "Advanced" disclosure — they default to the
 			// cluster's MUSTER_AGENT_MODEL + last-used repo (localStorage recents)
 			// so a one-tap dispatch is sane without ever opening Advanced.
@@ -816,7 +783,6 @@ func DispatchModalBodyFor(k KindChoices) g.Node {
 			gatewayOnly(advancedDisclosure(
 				labelledField("Model", modelField()),
 				labelledField("Repository", lazyCombobox("repo", "Repository", "Search repos… (optional)", "repo", "/ui/agents/repos", "repos")),
-				labelledField("Grant privileges", lazyProfilePicker()),
 			)),
 			Div(
 				// Sticky as a ROW: both actions stay in view when Advanced pushes them
@@ -848,9 +814,9 @@ func DispatchModalBodyFor(k KindChoices) g.Node {
 					// double-submit guard at all. The task edit form's working idiom is
 					// hx-disabled-elt="find button[type='submit']" ON THE FORM (notes.go).
 					// That is the change to make here; it is simply not made yet, and it
-					// is untested against this form's three lazy children (the task and
-					// repo comboboxes and the profile picker each fire hx-get on `load`;
-					// the model field is seeded, not lazy).
+					// is untested against this form's two lazy children (the task and
+					// repo comboboxes each fire hx-get on `load`; the model field is
+					// seeded, not lazy).
 					g.Text("Dispatch"),
 				),
 				Button(
@@ -886,17 +852,13 @@ func dispatchCloseButton() g.Node {
 // TaskDispatchView is the resolved dispatch config for a Task-scoped dispatch
 // confirm (the from-card path). Every field is pre-resolved server-side so the
 // modal is a pre-filled confirm: Model/Repo/RepoBranch are the effective values
-// (empty = cluster default / none / repo default), SelectedIDs are the task's
-// pre-checked privilege profiles, and Profiles is the full grantable set (for the
-// editable picker + name lookup on the static row).
+// (empty = cluster default / none / repo default).
 type TaskDispatchView struct {
-	NoteID      int64
-	Label       string          // the task's first line / directory (header subtitle)
-	Model       string          // resolved OpenRouter slug ("" = cluster default)
-	Repo        string          // resolved repo full name ("" = none / not inferred)
-	RepoBranch  string          // resolved branch ("" = repo default, resolved server-side)
-	SelectedIDs []int64         // pre-checked privilege-profile ids
-	Profiles    []ProfileOption // all grantable profiles (editable picker + name lookup)
+	NoteID     int64
+	Label      string // the task's first line / directory (header subtitle)
+	Model      string // resolved OpenRouter slug ("" = cluster default)
+	Repo       string // resolved repo full name ("" = none / not inferred)
+	RepoBranch string // resolved branch ("" = repo default, resolved server-side)
 
 	// FromDetailPage switches the form's SWAP TARGET, and it is the difference
 	// between Dispatch working and Dispatch being inert.
@@ -931,11 +893,11 @@ func (v TaskDispatchView) dispatchTarget() (selector, swap string) {
 
 // DispatchModalTaskBody is the /ui/agents/new?note=<id> partial: a TASK-SCOPED
 // dispatch confirm. The task is known, so instead of the full form's "Existing
-// task" combobox + ad-hoc textarea, it shows three fixed rows — Model, Repository,
-// Privileges — each with the task's resolved value as static text plus an inline
+// task" combobox + ad-hoc textarea, it shows two fixed rows — Model and
+// Repository — each with the task's resolved value as static text plus an inline
 // "Edit" that reveals the corresponding editable control (pre-seeded to the
 // current value). The editable controls carry the same field names the dispatch
-// POST reads (model / repo / grant_profile), and — being present-but-hidden — they
+// POST reads (model / repo), and — being present-but-hidden — they
 // submit the resolved values even when never opened, so this is a one-tap confirm.
 // Overrides are THIS-DISPATCH-ONLY (never persisted back to the task). The task is
 // submitted via a hidden note_id; repo_branch rides along as a hidden field.
@@ -951,10 +913,6 @@ func DispatchModalTaskBody(v TaskDispatchView) g.Node {
 	repoStatic := v.Repo
 	if repoStatic == "" {
 		repoStatic = "none"
-	}
-	privStatic := selectedProfileNames(v.Profiles, v.SelectedIDs)
-	if privStatic == "" {
-		privStatic = "none"
 	}
 
 	return g.Group{
@@ -984,14 +942,13 @@ func DispatchModalTaskBody(v TaskDispatchView) g.Node {
 			Input(Type("hidden"), Name("repo_branch"), Value(v.RepoBranch)),
 			kindPicker(v.Kinds),
 			// Gateway-only, like the FAB form's Advanced block: the task's model,
-			// repository and grants are all refused for a claude-code dispatch, so
+			// and repository are both refused for a claude-code dispatch, so
 			// they leave the screen when Claude Code is picked (kindToggleScript).
 			gatewayOnly(
 				Class("flex flex-col gap-3"),
 				dispatchConfirmRow("Model", modelStatic, modelFieldFor(v.Model, "")),
 				dispatchConfirmRow("Repository", repoStatic,
 					lazyComboboxPreselect("repo", "Repository", "Search repos… (optional)", "repo", "/ui/agents/repos", "repos", v.Repo, v.Repo)),
-				dispatchConfirmRow("Privileges", privStatic, profileGrantChecklistChecked(v.Profiles, v.SelectedIDs)),
 			),
 			// Mobile-first action stack: a small secondary Cancel sits ABOVE the
 			// full-width primary Dispatch, so the thumb lands on Dispatch and Cancel
@@ -1055,27 +1012,6 @@ func dispatchConfirmRow(label, static string, editable g.Node) g.Node {
 			editable,
 		),
 	)
-}
-
-// selectedProfileNames renders the comma-joined display names of the selected
-// profile ids (for the static Privileges row); "" when none are selected.
-func selectedProfileNames(profiles []ProfileOption, ids []int64) string {
-	if len(ids) == 0 {
-		return ""
-	}
-	byID := make(map[int64]string, len(profiles))
-	for _, p := range profiles {
-		byID[p.ID] = p.Name
-	}
-	names := make([]string, 0, len(ids))
-	for _, id := range ids {
-		if n := byID[id]; n != "" {
-			names = append(names, n)
-		} else {
-			names = append(names, strconv.FormatInt(id, 10))
-		}
-	}
-	return strings.Join(names, ", ")
 }
 
 // comboOption renders one combobox <li> (data-value + data-label).
@@ -1422,22 +1358,6 @@ func lazyComboboxPreselect(fieldName, label, placeholder, hiddenName, optionsURL
 		),
 	)
 	return Div(wrapAttrs...)
-}
-
-// lazyProfilePicker is the dispatch-modal privilege-grant field: a checkbox list
-// of grantable profiles lazy-loaded from /ui/agents/profiles (skeleton until it
-// arrives), each <input name="grant_profile" value=id>. Like the repo/task lazy
-// fields it targets ITSELF (explicit hx-target) so it does NOT inherit the
-// dispatch form's hx-target="#agents-list".
-func lazyProfilePicker() g.Node {
-	return Div(
-		hx("hx-get", "/ui/agents/profiles"),
-		hx("hx-trigger", "load"),
-		hx("hx-target", "this"),
-		hx("hx-swap", "innerHTML"),
-		Class("max-h-40 overflow-auto rounded-lg bg-bg p-1 ring-1 ring-inset ring-line"),
-		comboboxSkeleton(),
-	)
 }
 
 func displayOr(a, b string) string {

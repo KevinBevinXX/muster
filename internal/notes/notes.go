@@ -99,18 +99,16 @@ type Note struct {
 	// doing so (refuseStaleCardSwap); this field must never be substituted there.
 	ActivityAt time.Time `json:"-"`
 	// Tags  are the task's routing key + labels: a normalized,
-	// de-duplicated, SORTED set. Reserved namespaces (runbook:/initiative:/gate:/
-	// auto:) are behaviour-bearing and validated; everything else is a descriptive
-	// label. Always '{}' (never NULL) in the DB; omitempty keeps the JSON shape
+	// de-duplicated, SORTED set. Routing namespaces (initiative:/gate:/auto:) are
+	// behaviour-bearing and validated; everything else is a descriptive label. Always '{}' (never NULL) in the DB; omitempty keeps the JSON shape
 	// unchanged for a tagless task, so existing producers see no contract change.
 	Tags []string `json:"tags,omitempty"`
 	// Dispatch config : a Task carries the agent-dispatch settings
 	// so dispatching from its card is a pre-filled confirm rather than a blank
 	// form. All optional (empty = "unset", resolved at dispatch time).
-	Model         string  `json:"model"`                   // OpenRouter slug; "" = cluster default
-	Repo          string  `json:"repo"`                    // owner/name; "" = none
-	RepoBranch    string  `json:"repoBranch"`              // explicit branch; "" = repo default
-	GrantProfiles []int64 `json:"grantProfiles,omitempty"` // privilege-profile ids to grant
+	Model      string `json:"model"`      // OpenRouter slug; "" = cluster default
+	Repo       string `json:"repo"`       // owner/name; "" = none
+	RepoBranch string `json:"repoBranch"` // explicit branch; "" = repo default
 	// Source provenance : WHERE the task came from, derived from the
 	// X-Muster-Source / X-Muster-Session-Id headers on POST /api/tasks. Both are
 	// NULLABLE — a nil pointer is a pre-0017 / header-less task (the omitempty tag
@@ -136,17 +134,14 @@ type Note struct {
 // distinguishable from "set to empty" (a non-nil pointer to ""). Only the
 // user-editable fields are represented: a task's Status, provenance
 // (SourceType/SourceSessionID), CreatedAt, and ID are NEVER editable through this
-// path (see the Store contract). A provided-but-nil GrantProfiles is normalized to
-// an empty slice before store (the grant_profiles column is NOT NULL), mirroring
-// Create.
+// path (see the Store contract).
 type NoteUpdate struct {
-	Directory     *string
-	Title         *string
-	Body          *string
-	Model         *string
-	Repo          *string
-	RepoBranch    *string
-	GrantProfiles *[]int64
+	Directory  *string
+	Title      *string
+	Body       *string
+	Model      *string
+	Repo       *string
+	RepoBranch *string
 	// Tags has REPLACE semantics (consistent with the other pointer fields): a
 	// non-nil pointer overwrites the whole set. Because tasks have TWO author
 	// classes (machine producers and the human), replace-only would create a

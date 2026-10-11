@@ -94,7 +94,7 @@ func (a ReconcileAction) String() string {
 // the first tick after deploy.
 //
 // ⚠ ONE CONSEQUENCE TO KNOW ABOUT, and it is intended: any DELIBERATE roll of a
-// kicked-off agent — re-applying a privilege grant, an image bump, a node drain
+// kicked-off agent — a model change, an image bump, a node drain
 // — also changes the instance ID and therefore re-sends the kickoff. That roll
 // has already killed whatever turn was running, so the choice is between
 // re-delivering the task and silently doing nothing. This picks the defined one,

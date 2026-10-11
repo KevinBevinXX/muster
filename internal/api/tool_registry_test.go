@@ -26,7 +26,7 @@ import (
 var (
 	mcpLedger         = []string{"connectors_list", "connector_request", "connector_status"}
 	gatewayOnlyLedger = []string{"agent_get_task", "agent_comment_task", "agent_set_task_status",
-		"agent_request_privilege", "agent_checkpoint", "agent_list_pull_requests"}
+		"agent_list_pull_requests"}
 )
 
 func normJSON(t *testing.T, v any) string {

@@ -123,7 +123,7 @@ func TestADispatchIsRefusedExactlyWhenNoGatewayIsNamed(t *testing.T) {
 	// MUSTER_AGENT_GATEWAY unset — still refused.
 	t.Run("no gateway named", func(t *testing.T) {
 		store := newDispatchRecorder()
-		prov, gw, _, err := buildAgentPlane(provisionerTestConfig(provisionerNoop), store, logger)
+		prov, gw, err := buildAgentPlane(provisionerTestConfig(provisionerNoop), store, logger)
 		if err != nil {
 			t.Fatalf("buildAgentPlane(noop, no gateway): %v", err)
 		}
@@ -168,7 +168,7 @@ func TestADispatchIsRefusedExactlyWhenNoGatewayIsNamed(t *testing.T) {
 	t.Run("a gateway is named: accepted, and a deliverer exists to pay it", func(t *testing.T) {
 		store := newDispatchRecorder()
 		cfg := gatewayTestConfig(provisionerNoop, gatewayHooksSHA256)
-		prov, gw, _, err := buildAgentPlane(cfg, store, logger)
+		prov, gw, err := buildAgentPlane(cfg, store, logger)
 		if err != nil {
 			t.Fatalf("buildAgentPlane(noop, %s): %v", gatewayHooksSHA256, err)
 		}
@@ -213,7 +213,7 @@ func TestADeliverableAdapterAlwaysComesWithARunningDeliverer(t *testing.T) {
 		{"a gateway", gatewayTestConfig(provisionerNoop, gatewayHooksSHA256)},
 	} {
 		store := newDispatchRecorder()
-		prov, gw, _, err := buildAgentPlane(c.cfg, store, logger)
+		prov, gw, err := buildAgentPlane(c.cfg, store, logger)
 		if err != nil || prov == nil {
 			t.Fatalf("%s: buildAgentPlane: adapter=%v err=%v", c.label, prov != nil, err)
 		}
@@ -234,7 +234,7 @@ func TestADeliverableAdapterAlwaysComesWithARunningDeliverer(t *testing.T) {
 	store := newDispatchRecorder()
 	store.listed = make(chan struct{}, 1)
 	cfg := gatewayTestConfig(provisionerNoop, gatewayHooksSHA256)
-	prov, gw, _, err := buildAgentPlane(cfg, store, logger)
+	prov, gw, err := buildAgentPlane(cfg, store, logger)
 	if err != nil {
 		t.Fatalf("buildAgentPlane: %v", err)
 	}

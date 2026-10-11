@@ -80,9 +80,8 @@ func TestPGStoreStatusAndComments(t *testing.T) {
 }
 
 // TestPGStoreDispatchConfigRoundTrips verifies the dispatch-config
-// columns (model / repo / repo_branch / grant_profiles) round-trip through
-// Create→Get→List, including the BIGINT[] privilege-profile ids. PG-gated like
-// the tests above.
+// columns (model / repo / repo_branch) round-trip through Create→Get→List.
+// PG-gated like the tests above.
 func TestPGStoreDispatchConfigRoundTrips(t *testing.T) {
 	dsn := dbtest.DSN(t)
 
@@ -101,12 +100,11 @@ func TestPGStoreDispatchConfigRoundTrips(t *testing.T) {
 	store := NewPG(pool)
 
 	n, err := store.Create(ctx, Note{
-		Directory:     "/work/orbit",
-		Body:          "dispatch config task",
-		Model:         "openrouter/anthropic/claude-sonnet-4.6",
-		Repo:          "acme/orbit",
-		RepoBranch:    "trunk",
-		GrantProfiles: []int64{3, 7},
+		Directory:  "/work/orbit",
+		Body:       "dispatch config task",
+		Model:      "openrouter/anthropic/claude-sonnet-4.6",
+		Repo:       "acme/orbit",
+		RepoBranch: "trunk",
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -119,9 +117,6 @@ func TestPGStoreDispatchConfigRoundTrips(t *testing.T) {
 		}
 		if got.Repo != "acme/orbit" || got.RepoBranch != "trunk" {
 			t.Fatalf("%s: repo/branch = %q/%q", label, got.Repo, got.RepoBranch)
-		}
-		if len(got.GrantProfiles) != 2 || got.GrantProfiles[0] != 3 || got.GrantProfiles[1] != 7 {
-			t.Fatalf("%s: grant_profiles = %v, want [3 7]", label, got.GrantProfiles)
 		}
 	}
 	// The Create RETURNING must round-trip the config…
@@ -166,14 +161,13 @@ func TestPGStoreDispatchConfigRoundTrips(t *testing.T) {
 	}
 	assertConfig("summaries", *fromSums)
 
-	// A config-less task defaults to empty config (no nil-scan surprises on the
-	// BIGINT[] '{}' default).
+	// A config-less task defaults to empty config.
 	bare, err := store.Create(ctx, Note{Directory: "/work/bare", Body: "no config"})
 	if err != nil {
 		t.Fatalf("create bare: %v", err)
 	}
 	defer store.Delete(ctx, bare.ID)
-	if bare.Model != "" || bare.Repo != "" || bare.RepoBranch != "" || len(bare.GrantProfiles) != 0 {
+	if bare.Model != "" || bare.Repo != "" || bare.RepoBranch != "" {
 		t.Fatalf("config-less task should have empty config, got %+v", bare)
 	}
 }
@@ -263,7 +257,7 @@ func TestPGStoreSourceProvenanceRoundTrips(t *testing.T) {
 
 // TestPGStoreUpdateNote verifies the partial-edit path (migration-less: all
 // columns already exist): a body-only patch changes ONLY the body and leaves the
-// title/model/repo/branch/grant_profiles intact; a full patch updates every
+// title/model/repo/branch intact; a full patch updates every
 // editable field; updated_at bumps; and — critically — status,
 // source_type/source_session_id, and created_at are NEVER changed by an edit. An
 // unknown id → pgx.ErrNoRows. PG-gated like the tests above.
@@ -291,7 +285,6 @@ func TestPGStoreUpdateNote(t *testing.T) {
 		Model:           "openrouter/anthropic/claude-sonnet-4.6",
 		Repo:            "acme/orbit",
 		RepoBranch:      "trunk",
-		GrantProfiles:   []int64{3, 7},
 		SourceType:      &src,
 		SourceSessionID: &sess,
 	})
@@ -326,9 +319,6 @@ func TestPGStoreUpdateNote(t *testing.T) {
 		got.Repo != "acme/orbit" || got.RepoBranch != "trunk" {
 		t.Errorf("body-only patch must leave dir/model/repo/branch intact, got %+v", got)
 	}
-	if len(got.GrantProfiles) != 2 || got.GrantProfiles[0] != 3 || got.GrantProfiles[1] != 7 {
-		t.Errorf("body-only patch must leave grant_profiles intact, got %v", got.GrantProfiles)
-	}
 	// The load-bearing immutables:
 	if got.Status != StatusReadyForReview {
 		t.Errorf("edit must NOT change status, got %q want %q", got.Status, StatusReadyForReview)
@@ -348,9 +338,8 @@ func TestPGStoreUpdateNote(t *testing.T) {
 
 	// ---- full patch: every editable field updates ----
 	dir2, body2, model2, repo2, branch2 := "/work/other", "full edit", "openrouter/x/y", "zacxdev/other", "feature"
-	prof2 := []int64{11}
 	full, err := store.UpdateNote(ctx, n.ID, NoteUpdate{
-		Directory: &dir2, Body: &body2, Model: &model2, Repo: &repo2, RepoBranch: &branch2, GrantProfiles: &prof2,
+		Directory: &dir2, Body: &body2, Model: &model2, Repo: &repo2, RepoBranch: &branch2,
 	})
 	if err != nil {
 		t.Fatalf("full update: %v", err)
@@ -358,9 +347,6 @@ func TestPGStoreUpdateNote(t *testing.T) {
 	if full.Directory != dir2 || full.Body != body2 || full.Model != model2 ||
 		full.Repo != repo2 || full.RepoBranch != branch2 {
 		t.Errorf("full patch must update every editable field, got %+v", full)
-	}
-	if len(full.GrantProfiles) != 1 || full.GrantProfiles[0] != 11 {
-		t.Errorf("full patch grant_profiles = %v, want [11]", full.GrantProfiles)
 	}
 	if full.Status != StatusReadyForReview {
 		t.Errorf("full patch must still not change status, got %q", full.Status)

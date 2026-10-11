@@ -29,39 +29,17 @@ package agentspec
 //     URL and the warning describes a hazard that cannot occur here. Carrying it
 //     would have been prose asserting a shape the code does not have.
 //
-//   - 🔴 THE "REQUEST ELEVATED ACCESS" SECTION IS DROPPED, AND THIS IS THE ONE
-//     OMISSION A REVIEWER SHOULD CHECK RATHER THAN WAVE THROUGH. Upstream it told
+//   - THE "REQUEST ELEVATED ACCESS" SECTION IS DROPPED, FOR GOOD. Upstream it told
 //     the agent to POST to /agent/privilege/request when it needed access it did
-//     not have. muster does register the route, so on a deployment that does not
-//     APPLY grants an agent following the upstream instruction would get a 2xx, a
-//     recorded request, and NOTHING APPLIED — a grant chip saying "granted" over a
-//     ServiceAccount with none of the permissions. That is precisely the silent
-//     falsehood muster's own seam doc forbids, and it is worse than the omission:
-//     an agent told to ask, and then answered with a success that changes nothing,
-//     stops looking for the real blocker.
-//
-//     🔴 THE DECISION THIS PARAGRAPH USED TO CITE HAS BEEN REVERSED, AND THE
-//     OMISSION SURVIVES IT FOR A NARROWER REASON. It said "the operator settled
-//     that the privilege domain — route, store AND the applier that turns a grant
-//     into real permissions — stays in the permission router, and that muster's
-//     privilege store is deliberately EMPTY: dark, not stale". That is no longer
-//     true: internal/agentprivilege applies a granted profile's RBAC through the
-//     provisioning driver, wired by cmd/muster-server behind
-//     MUSTER_AGENT_PRIVILEGE_APPLY. What is still true is that the tier is OFF by
-//     default, so on an unarmed deployment the 2xx-with-nothing-applied outcome
-//     above is exactly what an agent gets. Restoring the section therefore needs it
-//     written CONDITIONALLY — an agent on an unarmed deployment must not be told to
-//     ask — which is a change of its own, tracked as the closing condition on
-//     cmd/muster-server/doc_seams.go entry 2 rather than done here.
-//
-//     The capability is NOT silently lost. Everything the upstream privilege
-//     section covered is a case the "Blocked and cannot proceed" protocol below
-//     already handles — report it exactly, say where the work is, set the terminal
-//     status — and that protocol is strictly better here, because a human reading
-//     the blocker can grant the access out of band. The condition for bringing the
-//     section back is no longer "when a privilege applier lands in muster" — one
-//     has — but "when it can be written so an agent on an UNARMED deployment is not
-//     told to ask"; until then the honest instruction is the one below.
+//     not have. muster carried a privilege subsystem for a while but never
+//     restored this section (an agent on a deployment that did not APPLY grants
+//     would have been told to ask and answered with a success that changed
+//     nothing); the subsystem is now removed entirely, superseded by connectors,
+//     and the route no longer exists. Access to an external platform is requested
+//     through the connector tools; everything else the section covered is a case
+//     the "Blocked and cannot proceed" protocol below already handles — report it
+//     exactly, say where the work is, set the terminal status — so a human reading
+//     the blocker can grant the access out of band.
 
 // WorkerInstructions is the always-in-context guidance for a dispatched worker
 // agent: how to read its task, report progress, advance status, and — the half that

@@ -121,8 +121,6 @@ var pgBackedPackages = []string{
 	"internal/connectors",
 	"internal/db",
 	"internal/notes",
-	"internal/privilege",
-	"internal/runbooks",
 	// Added by the UI carve, and the decision behind it is worth one line
 	// because a RENDERING package taking a real database looks wrong at a
 	// glance. It takes exactly one: the reaper writes a task's idle flag

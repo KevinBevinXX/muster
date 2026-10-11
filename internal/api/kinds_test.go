@@ -114,7 +114,6 @@ func TestADispatchTheDeploymentCannotSatisfyIsRefusedBeforeTheRow(t *testing.T) 
 		{"pin on a gateway agent", stubKinds{}, url.Values{"cc_account": {"work"}}, "only be pinned"},
 		{"model on a claude-code agent", stubKinds{pick: "work"}, url.Values{"kind": {"claude-code"}, "model": {"openrouter/x/y"}}, "no per-agent model"},
 		{"repo on a claude-code agent", stubKinds{pick: "work"}, url.Values{"kind": {"claude-code"}, "repo": {"example-org/tide"}}, "cannot be given a repository"},
-		{"grant on a claude-code agent", stubKinds{pick: "work"}, url.Values{"kind": {"claude-code"}, "grant_profile": {"3"}}, "privilege grant"},
 		{"pool refuses", stubKinds{err: errors.New("ccpool: no usable Claude account: every account's current token failed")}, url.Values{"kind": {"claude-code"}}, "no usable Claude account"},
 	}
 	for _, c := range cases {

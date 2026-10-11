@@ -267,7 +267,7 @@ func (s *Server) handleTaskMerge(w http.ResponseWriter, r *http.Request) {
 	// earlier draft of this comment claimed. MEASURED: the session edit modal
 	// resubmits every field AND every chip, so `POST /tasks/{id}/edit` on an over-cap
 	// task answers 400 "too many tags: 21 (max 20)" and the WHOLE form is refused —
-	// title, body, model, repo, branch, privileges — naming a cap the operator never
+	// title, body, model, repo, branch — naming a cap the operator never
 	// exceeded. It is recoverable in-modal by removing a chip, and the task is
 	// `complete` and therefore behind the Done FILTER chip (it was the collapsed
 	// Done section before the board flattened), which is why this is

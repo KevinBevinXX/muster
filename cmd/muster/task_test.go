@@ -48,7 +48,7 @@ func TestTaskCreateBody(t *testing.T) {
 	got := h.runCLI("task", "create",
 		"--title", "a title", "--body", "the body", "--directory", "/tmp/x",
 		"--repo", "example-repo", "--branch", "main", "--model", "a-model",
-		"--tag", "auto:dispatch", "--privilege", "3", "--privilege", "5")
+		"--tag", "auto:dispatch")
 	if got.code != exitOK {
 		t.Fatalf("exit = %d, stderr=%q", got.code, got.stderr)
 	}
@@ -72,8 +72,9 @@ func TestTaskCreateBody(t *testing.T) {
 	if tags, _ := sent["tags"].([]any); len(tags) != 1 || tags[0] != "auto:dispatch" {
 		t.Fatalf("tags = %v", sent["tags"])
 	}
-	if privs, _ := sent["privileges"].([]any); len(privs) != 2 || privs[0].(float64) != 3 {
-		t.Fatalf("privileges = %v", sent["privileges"])
+	// The privilege subsystem is removed: the CLI no longer sends the key.
+	if _, ok := sent["privileges"]; ok {
+		t.Fatalf("body still carries privileges: %q", reqs[0].body)
 	}
 	var out map[string]any
 	if err := json.Unmarshal([]byte(got.stdout), &out); err != nil || out["id"].(float64) != 4242 {

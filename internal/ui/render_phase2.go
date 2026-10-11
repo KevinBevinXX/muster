@@ -60,13 +60,13 @@ func RenderAgentsCards(w io.Writer, list []AgentCardView) error {
 }
 
 // RenderDispatchModal writes the /ui/agents/new partial (the FAB dispatch form
-// body: Model, Repository, Existing task, Grant privileges, ad-hoc task).
+// body: Model, Repository, Existing task, ad-hoc task).
 func RenderDispatchModal(w io.Writer, k KindChoices) error {
 	return DispatchModalBodyFor(k).Render(w)
 }
 
 // RenderDispatchModalTask writes the /ui/agents/new?note=<id> partial: the
-// TASK-SCOPED dispatch confirm (fixed Model/Repository/Privileges rows pre-filled
+// TASK-SCOPED dispatch confirm (fixed Model/Repository rows pre-filled
 // from the task, each with an inline Edit override).
 func RenderDispatchModalTask(w io.Writer, v TaskDispatchView) error {
 	return DispatchModalTaskBody(v).Render(w)

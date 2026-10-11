@@ -1136,25 +1136,22 @@ func openChatButtonPrimary(name string) g.Node {
 }
 
 // taskConfigChip renders the compact dispatch-config chip for the collapsed card
-// header: "→ <model-short> · <repo-short> · 🔒", omitting any empty segment (🔒
-// appears only when privileges are set). Model is trimmed to its display label's
+// header: "→ <model-short> · <repo-short>", omitting any empty segment. Model is
+// trimmed to its display label's
 // last segment and repo to its last path segment to stay short. A task with NO
 // dispatch config renders nothing.
 func taskConfigChip(n notes.Note) g.Node {
 	model := strings.TrimSpace(n.Model)
 	repo := strings.TrimSpace(n.Repo)
-	if model == "" && repo == "" && len(n.GrantProfiles) == 0 {
+	if model == "" && repo == "" {
 		return g.Text("")
 	}
-	segs := make([]string, 0, 3)
+	segs := make([]string, 0, 2)
 	if model != "" {
 		segs = append(segs, path.Base(shortModelLabel(model)))
 	}
 	if repo != "" {
 		segs = append(segs, path.Base(repo))
-	}
-	if len(n.GrantProfiles) > 0 {
-		segs = append(segs, "🔒")
 	}
 	return Span(
 		Class("shrink-0 truncate rounded-md bg-s2 px-1.5 py-0.5 font-mono text-xs text-muted"),
@@ -1820,8 +1817,7 @@ func noteEditButton(n notes.Note) g.Node {
 }
 
 // NoteEditView carries everything the edit form needs pre-resolved server-side:
-// the task (its current values), the directory picker options, and the full
-// grantable profile set (for the pre-checked privilege checklist).
+// the task (its current values) and the directory picker options.
 type NoteEditView struct {
 	Note notes.Note
 	// Directories is the SEED set only (notes.DefaultDirectoryLimit most-recent
@@ -1833,14 +1829,13 @@ type NoteEditView struct {
 	// a picker that had been empty in production since it shipped stayed
 	// unnoticed. See directoryPickerFailed.
 	DirectoriesFailed bool
-	Profiles          []ProfileOption
 	// Vocabulary backs the tag input's <datalist> suggestions, so the human reuses
 	// existing labels instead of minting near-duplicates.
 	Vocabulary []notes.TagCount
 }
 
 // NotesEditModalBody is the /ui/tasks/{id}/edit partial: the EDIT-task form,
-// pre-filled with the task's current directory/body/model/repo/branch/privileges,
+// pre-filled with the task's current directory/body/model/repo/branch,
 // loaded into #task-modal-body when the card's Edit button is tapped. It posts
 // (urlencoded) to /tasks/{id}/edit, morphs the refreshed single card into
 // #task-{id}, and closes the modal on success. Only the EDITABLE fields appear —
@@ -1933,7 +1928,6 @@ func NotesEditModalBody(v NoteEditView) g.Node {
 					Class("w-full rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
 				),
 			),
-			labelledField("Grant privileges", profileGrantChecklistChecked(v.Profiles, n.GrantProfiles)),
 			// 🔴 NO hx-disabled-elt here. It carried `this` and was provably inert:
 			// htmx reads hx-disabled-elt from the element that ISSUES the request, and
 			// this request is issued by the FORM's submit event, so a button-level
@@ -1985,7 +1979,7 @@ func NotesModalBodyWith(directories []string, directoriesFailed bool, prefill st
 			Class("flex flex-col gap-3"),
 			// The task text is the ONE thing that matters for a quick capture — it is
 			// the sole visible field. Directory + the optional dispatch config
-			// (model/repo/privileges) live under a collapsed "Advanced" disclosure so
+			// (model/repo) live under a collapsed "Advanced" disclosure so
 			// the form is delightfully simple by default while power-use still works.
 			labelledField("Task",
 				Textarea(
@@ -1998,18 +1992,17 @@ func NotesModalBodyWith(directories []string, directoriesFailed bool, prefill st
 					g.If(prefill != "", g.Text(ClampComposeBody(prefill))),
 				),
 			),
-			// Advanced: directory + optional dispatch config (model/repo/privileges).
-			// A task can carry the model/repo/privileges it should dispatch with, so
+			// Advanced: directory + optional dispatch config (model/repo).
+			// A task can carry the model/repo it should dispatch with, so
 			// its Dispatch button becomes a pre-filled confirm. Reuses the exact
-			// dispatch-modal controls; their field names (directory / model / repo /
-			// grant_profile) match what handleNoteCreate parses. advancedDefaults JS
+			// dispatch-modal controls; their field names (directory / model / repo)
+			// match what handleNoteCreate parses. advancedDefaults JS
 			// pre-fills directory/model from localStorage recents (last-used) so a
 			// returning user's sane defaults ride along even while collapsed.
 			advancedDisclosure(
 				labelledField("Directory", directoryCombobox(directories, "", directoriesFailed)),
 				labelledField("Model", modelField()),
 				labelledField("Repository", lazyCombobox("repo", "Repository", "Search repos… (optional)", "repo", "/ui/agents/repos", "repos")),
-				labelledField("Grant privileges", lazyProfilePicker()),
 			),
 			// labelledFieldFor (not labelledField): the file input had NO associated
 			// label at all, which axe reports as a CRITICAL `label` violation — an
@@ -2176,8 +2169,8 @@ func labelledFieldFor(forID, label string, control g.Node) g.Node {
 	)
 }
 
-// advancedDisclosure wraps power-user fields (directory / model / repo /
-// privileges) in a collapsed native <details> so the default form is just the
+// advancedDisclosure wraps power-user fields (directory / model / repo) in a
+// collapsed native <details> so the default form is just the
 // essentials. No JS — the same disclosure primitive the auto-approve menu and
 // task cards use (boost-safe, keyboard/a11y-correct). data-advanced marks it for
 // the e2e state-machine assertions. Subtle styling so it never competes with the

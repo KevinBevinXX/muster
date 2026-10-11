@@ -90,36 +90,14 @@ type tab struct {
 // give muster a navigation bar that is mostly dead links, which is precisely the
 // "notional separate service" outcome the extraction exists to avoid.
 //
-// ⚠ SEAM — `runbooks` AND `privileges` HAVE NO DOCUMENT ROUTE YET, AND THAT IS
-// RECORDED HERE RATHER THAN HIDDEN BY DROPPING THEM.
-//
-//	WHAT: this shell links to /runbooks and /privileges, and it renders a
-//	  tabpanel for each that lazy-loads /ui/runbooks and /ui/privileges. The two
-//	  PARTIAL routes exist in the route partition manifest on muster's side; the
-//	  two DOCUMENT routes do not exist anywhere, upstream or here, because
-//	  upstream reaches both surfaces from inside other views rather than from its
-//	  nav.
-//	WHY NOT JUST DROP THEM: muster owns the runbook and privilege views outright
-//	  (internal/runbooks, internal/privilege and the renderers in this package).
-//	  A navigation that cannot reach a view muster serves makes the service
-//	  usable only by something that already knows its URLs — an API with a
-//	  decorative shell, not a standalone product.
-//	CLOSING CONDITION: the API carve registers `GET /runbooks` and
-//	  `GET /privileges` as shell routes on muster's side (the same shape as
-//	  `GET /tasks`, `GET /agents` and `GET /repos`, which route to the index
-//	  handler with the tab derived from the path), and both appear in muster's
-//	  regenerated routes.golden. If that carve instead decides these two surfaces
-//	  are not top-level, the remedy is to delete their entries from this slice —
-//	  which deletes the links, the panels and the headings together, because they
-//	  are all derived from it.
-//	WHO CHECKS IT: the reviewer of the API-carve pull request, reading muster's
-//	  regenerated routes.golden against this slice.
+// ⚠ `runbooks` AND `privileges` USED TO BE TABS HERE. Both subsystems were
+// removed (privileges superseded by connectors, runbooks unused); deleting their
+// entries from this slice removed the links, the panels, the headings and the
+// shell routes together, because they are all derived from it.
 var musterTabs = []tab{
 	{Key: "tasks", Label: "Tasks", Icon: "📋", Heading: "Tasks"},
 	{Key: "agents", Label: "Agents", Icon: "🧩", Heading: "Agents"},
 	{Key: "repos", Label: "Repos", Icon: "📦", Heading: "Repos"},
-	{Key: "runbooks", Label: "Runbooks", Icon: "📕", Heading: "Runbooks"},
-	{Key: "privileges", Label: "Privileges", Icon: "🔑", Heading: "Privileges"},
 	{Key: "connectors", Label: "Connectors", Icon: "🔌", Heading: "Connectors"},
 }
 
@@ -328,8 +306,6 @@ func shell(activeTab string, feat Features, extra g.Node) g.Node {
 							NotesPanel(activeTab == "tasks"),
 							AgentsPanel(activeTab == "agents"),
 							g.If(feat.GitHub, ReposPanel(activeTab == "repos")),
-							RunbooksPanel(activeTab == "runbooks"),
-							PrivilegesPanel(activeTab == "privileges"),
 							g.If(feat.Connectors, ConnectorsPanel(activeTab == "connectors")),
 						),
 					),
@@ -452,7 +428,7 @@ func shell(activeTab string, feat Features, extra g.Node) g.Node {
 // on a timer discards nodes inside its panel every ten seconds with nobody
 // touching the page.
 //
-// Read off muster's rendered subtrees, ALL FIVE PANELS ANSWER `true`:
+// Read off muster's rendered subtrees, ALL THREE PANELS ANSWER `true`:
 //
 //	#panel-tasks       morph at the panel level, BUT the delete confirm is
 //	                   `outerHTML swap:200ms` onto `#task-<id>`, inside it
@@ -461,8 +437,6 @@ func shell(activeTab string, feat Features, extra g.Node) g.Node {
 //	                   rename/delete confirms (`#agent-<id>`, outerHTML) all
 //	                   discard nodes inside it
 //	#panel-repos       the panel is its own target, innerHTML
-//	#panel-runbooks    the panel is its own target, innerHTML
-//	#panel-privileges  the panel is its own target, innerHTML
 //
 // ⚠ SO THE `false` BRANCH IS UNEXERCISED IN muster TODAY, AND THAT IS STATED
 // RATHER THAN HIDDEN BY DELETING THE PARAMETER. Upstream had exactly one
@@ -2214,7 +2188,7 @@ func resyncScript() g.Node {
   document.body.addEventListener('htmx:sseOpen', resync);
 
   // Surface htmx failures. htmx does NOT swap non-2xx responses, so without this
-  // every failed form/mutation (dispatch, note, runbook, grant, status, comment)
+  // every failed form/mutation (dispatch, note, status, comment)
   // would fail SILENTLY — modal frozen, no feedback. Show the server's error text
   // (or a generic message) as a toast so the user always knows.
   document.body.addEventListener('htmx:responseError', function (e) {
