@@ -173,6 +173,25 @@ func DecideReconcile(a Agent, inst *provision.Instance, now time.Time) (action R
 	return ActionNone, ""
 }
 
+// PromoteToRunning reports whether an agent STORED as `provisioning` should now
+// be stored as `running`: its live instance computes to running
+// ([ComputeStatus] — present, phase running, ready, not crash-looping). It is the
+// decision internal/agentstatus acts on; nothing else writes this transition.
+//
+// 🔴 IT DOES NOT WAIT FOR THE FIRST TURN. An agent whose kickoff is still owed
+// is promoted too, because that is what every view already shows for it — a
+// `running` dot plus the separate "kickoff owed" badge ([KickoffOwed]); a stored
+// status that kept saying `provisioning` for the same agent was the defect. The
+// owed turn's dwell bound is unaffected: DecideReconcile's ready-but-never-kicked
+// branch keys on updated_at, which the promotion moves once, by one tick.
+//
+// Only `provisioning` is promoted. `pending` is a row that was never dispatched,
+// `stopped` was put there by a Stop and `error` is sticky; none of them is this
+// function's to overrule.
+func PromoteToRunning(a Agent, inst *provision.Instance) bool {
+	return a.Status == StatusProvisioning && inst != nil && ComputeStatus(a, inst) == StatusRunning
+}
+
 // DescribeKickoffLoss renders WHY the recipient is judged gone, in the terms an
 // operator can act on. The backend's last-termination reason is the load-bearing
 // part: "OOMKilled" turns "the agent never started" into "the agent's memory
@@ -230,9 +249,15 @@ func KickoffErrorSuffix(a Agent) string {
 // and the winner re-reads the row under it, so two replicas ticking against one
 // database cannot both pay one turn.
 //
+// ✅ ActionPersistStatus'S ONE MISSING TRANSITION NOW HAS A DRIVER:
+// internal/agentstatus promotes provisioning → running (PromoteToRunning). It was
+// listed below as driverless, and the cost was measured: stored statuses stuck at
+// `provisioning` for hours behind ready instances, on every machine read. The
+// other recomputed transitions are still not persisted (views refine them live).
+//
 // ⚠ STILL WITHOUT A DRIVER, AND NAMED SO IT IS NOT AN OBJECT NOBODY CAN CLOSE:
 // everything this table decides for a KICKED-OFF row — ActionResendKickoff,
-// ActionErrorKickoffLost (and so DescribeKickoffLoss) — and ActionPersistStatus.
+// ActionErrorKickoffLost (and so DescribeKickoffLoss).
 // The deliverer excludes kicked-off rows by design: re-sending a task that was
 // already handed over is a costlier decision than paying a first turn nobody has
 // paid. So agents whose recipient dies after their first turn do NOT self-heal

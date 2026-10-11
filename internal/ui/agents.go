@@ -62,10 +62,23 @@ type AgentCardView struct {
 	// NoteID is the source task this agent was dispatched from (nil = none). When
 	// set, the card shows a "Task #<id>" badge linking to the Tasks tab.
 	NoteID *int64
-	// CreatedAt / UpdatedAt back the card's relative "age" + "last activity" times
-	// (rendered via the live <time data-ts> widget). Zero times render nothing.
+	// CreatedAt backs the card's relative "age". Zero renders nothing.
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	// LastActiveAt is agents.LastActivity for this agent — the time the Agents
+	// list is ORDERED by — and it is what the footer's "active … ago" prints, so
+	// the order and the label on screen are one number. Composed in internal/api's
+	// cardViewIndexed; a zero value (a minimal test view) falls back to UpdatedAt.
+	LastActiveAt time.Time
+}
+
+// lastActive is the card's "active" time: LastActiveAt, or UpdatedAt when the
+// view was built without one.
+func (a AgentCardView) lastActive() time.Time {
+	if a.LastActiveAt.IsZero() {
+		return a.UpdatedAt
+	}
+	return a.LastActiveAt
 }
 
 // NoteOption is a selectable existing note for the dispatch modal.
@@ -139,9 +152,25 @@ func AgentsPanel(active bool) g.Node {
 			// recent-log slot back to its skeleton (stranding it) and churned the list
 			// constantly; status now stays live via each card's own status-icon poll
 			// (cardStatusIcon), and the list re-renders on actual lifecycle changes.
-			hx("hx-trigger", "load, agents:changed from:body"),
+			//
+			// 🔴 THE TWO SSE EVENTS ARE WHAT MAKE THE ORDER LIVE, AND BEFORE THEM THE
+			// LIST HEARD NO SERVER EVENT AT ALL. `agents:changed` is only ever an
+			// HX-Trigger RESPONSE header — it fires in the tab that made the request
+			// (a rename, a model change). agent.changed (a status write, a kickoff
+			// stamp, the provisioning→running promotion) and chat.reply (a persisted
+			// turn, which moves agents.LastActivity) are SSE events, and nothing
+			// turned either into `agents:changed`: the Tasks board listened for
+			// sse:agent.changed, this list did not, so a list left open never
+			// re-ordered and never showed a status change it had not caused itself.
+			hx("hx-trigger", agentsListTrigger),
 			hx("hx-target", "#agents-list"),
 			hx("hx-swap", "morph:innerHTML"),
+			// Each card's lazy recent-log slot is re-fetched AFTER this list's morph
+			// has settled, never alongside it — see agentRecentSlot for how the old
+			// wiring stranded the slot once this list re-rendered on SSE. The guard
+			// scopes it to THIS element's swap: the slots' own innerHTML swaps bubble
+			// htmx:afterSettle up through here, and reacting to those would loop.
+			hx("hx-on::after-settle", agentsListAfterSettle),
 		),
 		// 🔴 THE "ADVANCED" DISCLOSURE THAT USED TO SIT HERE IS GONE, AND THE
 		// REASON IS A BUG RATHER THAN TIDINESS. It mounted a SECOND copy of the
@@ -322,11 +351,11 @@ func agentCard(a AgentCardView) g.Node {
 }
 
 // agentCardFooter renders the card's bottom meta row: age (CreatedAt) + last
-// activity (UpdatedAt) as live <time data-ts> widgets, plus a source-task badge
+// activity (agents.LastActivity, the list's sort key) as live <time data-ts> widgets, plus a source-task badge
 // when the agent was dispatched from a task. Renders nothing when there's no
 // timestamp and no source task (keeps test/minimal views clean).
 func agentCardFooter(a AgentCardView) g.Node {
-	if a.CreatedAt.IsZero() && a.UpdatedAt.IsZero() && a.NoteID == nil {
+	if a.CreatedAt.IsZero() && a.lastActive().IsZero() && a.NoteID == nil {
 		return g.Text("")
 	}
 	// Nil-guard the badge (g.If evaluates its node arg eagerly, so build it first).
@@ -341,10 +370,10 @@ func agentCardFooter(a AgentCardView) g.Node {
 			Span(Class("text-muted"), g.Text("age")),
 			cardTime(a.CreatedAt),
 		)),
-		g.If(!a.UpdatedAt.IsZero(), Span(
+		g.If(!a.lastActive().IsZero(), Span(
 			Class("inline-flex items-center gap-1"),
 			Span(Class("text-muted"), g.Text("active")),
-			cardTime(a.UpdatedAt),
+			cardTime(a.lastActive()),
 			Span(Class("text-muted"), g.Text("ago")),
 		)),
 		Span(Class("flex-1")),
@@ -631,16 +660,40 @@ func agentRecentSlot(a AgentCardView) g.Node {
 	return Div(
 		ID("agent-recent-"+ids),
 		hx("hx-get", "/ui/agents/"+ids+"/recent"),
-		// Loads on first render, and re-fetches only when the list actually changes
-		// (agents:changed) — NOT on a timer. The list no longer polls every 4s
-		// (which used to morph this slot back to its skeleton and strand it), so in
-		// steady state this fires once; on a lifecycle change it refreshes once.
-		hx("hx-trigger", "load, agents:changed from:body"),
+		// Loads on first render, and re-fetches when the list it sits in has
+		// re-rendered (agentsListAfterSettle fires recentRefreshEvent at it) — NOT
+		// on a timer, and NOT on the list's own trigger event.
+		//
+		// 🔴 IT USED TO LISTEN TO agents:changed DIRECTLY, AND THAT STRANDS IT ONCE
+		// THE LIST RE-RENDERS ON SSE. The list renders this slot as a SKELETON and
+		// morphs it in over the loaded lines; a retained node does not fire `load`
+		// again, and the SSE events the list now hears are not agents:changed — so
+		// the slot stayed a skeleton. MEASURED, not argued: with the old trigger
+		// e2e/tests/claude-code-polish.spec.ts's second server-driven re-render
+		// leaves the skeleton in place (red at both widths); with this one it does
+		// not. Refreshing after the list has SETTLED also orders the two requests,
+		// which the old shared trigger did not.
+		hx("hx-trigger", "load, "+recentRefreshEvent),
 		hx("hx-target", "this"),
 		hx("hx-swap", "innerHTML"),
 		recentSkeleton(),
 	)
 }
+
+// agentsListTrigger is #agents-list's hx-trigger: first load, a local
+// lifecycle action's HX-Trigger, and the two server events that change what the
+// list shows or how it is ordered. See AgentsPanel.
+const agentsListTrigger = "load, agents:changed from:body, sse:agent.changed from:body, sse:chat.reply from:body, muster:resync from:body"
+
+// recentRefreshEvent is what a card's recent-log slot re-fetches on; only
+// agentsListAfterSettle fires it.
+const recentRefreshEvent = "muster:recent-refresh"
+
+// agentsListAfterSettle re-fetches every recent-log slot once #agents-list's own
+// swap has settled (event.target===this excludes the slots' bubbling swaps). A
+// slot already mid-request (htmx-request — a NEW slot whose `load` has just
+// fired) is skipped, so a first render costs one fetch per card, not two.
+const agentsListAfterSettle = "if(event.target===this){this.querySelectorAll('[id^=\"agent-recent-\"]').forEach(function(e){if(!e.classList.contains('htmx-request')){htmx.trigger(e,'" + recentRefreshEvent + "')}})}"
 
 // recentSkeleton is the animated placeholder shown until an agent's recent-log
 // preview loads.
@@ -731,11 +784,13 @@ func DispatchModalBodyFor(k KindChoices) g.Node {
 				Class("w-full resize-y rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
 			)),
 			kindPicker(k),
-			advancedDisclosure(
+			// The whole disclosure is gateway-only: every field in it is one a
+			// claude-code dispatch is refused for (see kindToggleScript).
+			gatewayOnly(advancedDisclosure(
 				labelledField("Model", modelField()),
 				labelledField("Repository", lazyCombobox("repo", "Repository", "Search repos… (optional)", "repo", "/ui/agents/repos", "repos")),
 				labelledField("Grant privileges", lazyProfilePicker()),
-			),
+			)),
 			Div(
 				// Sticky as a ROW: both actions stay in view when Advanced pushes them
 				// below the sheet's fold (see TestEverySheetKeepsItsPrimaryActionInView).
@@ -901,10 +956,16 @@ func DispatchModalTaskBody(v TaskDispatchView) g.Node {
 			// field either — it resolves server-side when empty).
 			Input(Type("hidden"), Name("repo_branch"), Value(v.RepoBranch)),
 			kindPicker(v.Kinds),
-			dispatchConfirmRow("Model", modelStatic, modelFieldFor(v.Model, "")),
-			dispatchConfirmRow("Repository", repoStatic,
-				lazyComboboxPreselect("repo", "Repository", "Search repos… (optional)", "repo", "/ui/agents/repos", "repos", v.Repo, v.Repo)),
-			dispatchConfirmRow("Privileges", privStatic, profileGrantChecklistChecked(v.Profiles, v.SelectedIDs)),
+			// Gateway-only, like the FAB form's Advanced block: the task's model,
+			// repository and grants are all refused for a claude-code dispatch, so
+			// they leave the screen when Claude Code is picked (kindToggleScript).
+			gatewayOnly(
+				Class("flex flex-col gap-3"),
+				dispatchConfirmRow("Model", modelStatic, modelFieldFor(v.Model, "")),
+				dispatchConfirmRow("Repository", repoStatic,
+					lazyComboboxPreselect("repo", "Repository", "Search repos… (optional)", "repo", "/ui/agents/repos", "repos", v.Repo, v.Repo)),
+				dispatchConfirmRow("Privileges", privStatic, profileGrantChecklistChecked(v.Profiles, v.SelectedIDs)),
+			),
 			// Mobile-first action stack: a small secondary Cancel sits ABOVE the
 			// full-width primary Dispatch, so the thumb lands on Dispatch and Cancel
 			// is a deliberate, smaller reach.

@@ -34,10 +34,33 @@ func (k KindChoices) offersClaudeCode() bool {
 // `grant_profile` (the server refuses each: the CLI chooses its model, nothing in
 // the image clones a repo, and the pod mounts no ServiceAccount token) and a
 // gateway dispatch carries no `cc_account` (refused for any other kind).
+//
+// 🔴 DISABLED WAS NOT ENOUGH, AND HIDING IS THE FIX FOR AN OPERATOR REPORT. The
+// model combobox (curated OpenRouter slugs plus a live OpenRouter search), the
+// repository picker and the privilege grants stayed ON SCREEN for a Claude Code
+// dispatch — greyed out under "Advanced", and on the task-scoped confirm as
+// fully-rendered "Model / Repository / Privileges" rows with live Edit buttons.
+// Every control marked data-gateway-only (gatewayOnlyAttr) is now hidden while
+// Claude Code is picked, in BOTH dispatch forms; the disabling stays, because a
+// hidden input is still submitted and the disable is what keeps it off the wire.
 const kindToggleScript = "var f=this.closest('form'),cc=!!f.querySelector('input[name=kind][value=" + agents.KindClaudeCode + "]:checked');" +
 	"this.querySelectorAll('[data-cc-only]').forEach(function(e){e.classList.toggle('hidden',!cc)});" +
+	"f.querySelectorAll('[" + gatewayOnlyAttr + "]').forEach(function(e){e.classList.toggle('hidden',cc)});" +
 	"var a=f.querySelector('select[name=cc_account]');if(a){a.disabled=!cc}" +
 	"f.querySelectorAll('input[name=model],input[name=repo],input[name=repo_branch],input[name=grant_profile]').forEach(function(e){e.disabled=cc});"
+
+// gatewayOnlyAttr marks a dispatch-form control that means nothing to a
+// claude-code agent — the model selector (OpenRouter-specific), the repository
+// and the privilege grants. kindToggleScript hides every one while Claude Code is
+// picked. ONE spelling, shared by the attribute and the script's selector.
+const gatewayOnlyAttr = "data-gateway-only"
+
+// gatewayOnly wraps nodes in a container kindToggleScript hides for claude-code.
+// It renders VISIBLE: the first kind (agents.Kinds order) is the gateway kind,
+// which is what kindPicker checks by default.
+func gatewayOnly(nodes ...g.Node) g.Node {
+	return Div(append([]g.Node{g.Attr(gatewayOnlyAttr, "")}, nodes...)...)
+}
 
 // kindPicker is the dispatch form's "Agent kind" control: a segmented radio pair
 // sized for a thumb (44px rows, two columns that fit a 360px phone), plus the

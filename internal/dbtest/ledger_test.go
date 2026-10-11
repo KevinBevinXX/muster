@@ -104,6 +104,10 @@ var pgBackedPackages = []string{
 	// agents.DecideReconcile's retry branch — so only the real store can show the
 	// escalation firing at the dwell boundary.
 	"internal/agentkickoff",
+	// Added by the status promoter. Its guard IS the SQL: MarkRunning promotes
+	// only a row still `provisioning` at the updated_at the tick read, and only a
+	// real store can show a Stop or a Start landing mid-tick winning that race.
+	"internal/agentstatus",
 	"internal/agents",
 	"internal/ccpool",
 	"internal/db",

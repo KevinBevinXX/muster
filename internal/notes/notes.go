@@ -84,6 +84,20 @@ type Note struct {
 	Status    string    `json:"status"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
+	// ActivityAt is the board's ORDERING KEY for this task — the most recent of
+	// updated_at, its newest (non-reaper) comment, its linked agents' updated_at
+	// and its linked sessions' last_seen_at (PGStore's taskActivityExpr) — as
+	// ListPage computed it. It is set ONLY by ListPage; every other read leaves it
+	// zero, and [Note.LastActivity] falls back to UpdatedAt.
+	//
+	// 🔴 `json:"-"`: THE MACHINE TASK API'S SHAPE IS UNCHANGED. It exists so the
+	// board can PRINT the time it sorts by (a card that showed its creation age
+	// over an activity-ordered list read as unsorted); /api/tasks producers were
+	// promised nothing about it.
+	//
+	// 🔴 IT IS NOT THE CARD REVISION. data-card-rev reads UpdatedAt and must keep
+	// doing so (refuseStaleCardSwap); this field must never be substituted there.
+	ActivityAt time.Time `json:"-"`
 	// Tags  are the task's routing key + labels: a normalized,
 	// de-duplicated, SORTED set. Reserved namespaces (runbook:/initiative:/gate:/
 	// auto:) are behaviour-bearing and validated; everything else is a descriptive
@@ -516,4 +530,14 @@ type Store interface {
 	GetAttachment(ctx context.Context, id int64) (Attachment, error)
 	// ListAttachments returns a note's attachments WITHOUT Data (metadata only).
 	ListAttachments(ctx context.Context, noteID int64) ([]Attachment, error)
+}
+
+// LastActivity is the time the Tasks board orders this task by: ActivityAt when
+// the read computed it (ListPage), else UpdatedAt — which ActivityAt is never
+// older than, and which equals it the moment after any write to the task itself.
+func (n Note) LastActivity() time.Time {
+	if n.ActivityAt.After(n.UpdatedAt) {
+		return n.ActivityAt
+	}
+	return n.UpdatedAt
 }

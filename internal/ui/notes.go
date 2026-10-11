@@ -841,10 +841,16 @@ func noteCard(v TaskCardView) g.Node {
 			Div(
 				Class("flex items-start gap-2"),
 				textBlock,
-				// Task age: a live relative timestamp ('10s'/'30m'/'2h'/'3d') of when
-				// the task was created, kept fresh client-side by relTimeScript (same
-				// widget the request/agent cards use).
-				cardTime(n.CreatedAt),
+				// A live relative timestamp ('10s'/'30m'/'2h'/'3d'), kept fresh
+				// client-side by relTimeScript (same widget the agent cards use).
+				//
+				// 🔴 ON THE BOARD IT IS THE TIME THE BOARD IS ORDERED BY
+				// (notes.Note.LastActivity), NOT THE TASK'S AGE. It used to print
+				// CreatedAt over a list sorted by most recent activity, so a 3-day-old
+				// task an agent just worked sat above a 10-minute-old idle one with
+				// "3d" beside it — and the board read as unsorted. The detail page,
+				// which has no list to explain, keeps the creation age.
+				taskCardTime(n, v.Detail),
 				// Chevron: the "this card goes somewhere" affordance. Static now —
 				// it used to rotate as the disclosure opened.
 				g.If(!v.Detail, Span(
@@ -2189,5 +2195,24 @@ func advancedDisclosure(fields ...g.Node) g.Node {
 			Span(Class("text-xs opacity-70 transition group-open/adv:rotate-180"), g.Text("▾")),
 		),
 		Div(Class("flex flex-col gap-3 px-3 pb-3 pt-1"), g.Group(fields)),
+	)
+}
+
+// taskCardTime is a task card's header timestamp: on the BOARD, the task's last
+// activity (the board's sort key, labelled as such for a screen reader and on
+// hover); on the DETAIL page, its creation age. See the call site in noteCard.
+func taskCardTime(n notes.Note, detail bool) g.Node {
+	if detail {
+		return cardTime(n.CreatedAt)
+	}
+	t := n.LastActivity()
+	if t.IsZero() {
+		return g.Text("")
+	}
+	return Span(
+		g.Attr("data-task-activity", strconv.FormatInt(t.UnixMilli(), 10)),
+		g.Attr("aria-label", "last activity"),
+		Class("shrink-0 self-center"),
+		cardTime(t),
 	)
 }

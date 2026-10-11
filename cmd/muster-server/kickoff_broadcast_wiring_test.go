@@ -36,7 +36,9 @@ func (s *stuckRowStore) MarkKickoffStuck(context.Context, int64, time.Time, stri
 }
 
 // TestTheDelivererBuiltForTheServerBroadcastsItsCardChanges (PR #37 round 1, F4):
-// the Agents list re-renders only on agents:changed, so buildKickoffDeliverer must
+// the Agents list re-renders on sse:agent.changed (internal/ui's agentsListTrigger —
+// it did NOT until the UI-polish change, so this test's broadcast reached the
+// Tasks board only), so buildKickoffDeliverer must
 // hand the deliverer the broadcast it is given. Behavioural: a real deliverer from
 // the real noop plane ticks once, writes a stuck verdict, and the callback runs.
 func TestTheDelivererBuiltForTheServerBroadcastsItsCardChanges(t *testing.T) {

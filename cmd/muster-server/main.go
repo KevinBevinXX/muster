@@ -54,6 +54,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentprovision"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
+	"github.com/ZacxDev/muster/internal/agentstatus"
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/db"
@@ -141,6 +142,9 @@ type app struct {
 	// kickoff delivers dispatched agents' first turns; nil when no gateway is
 	// built. See buildKickoffDeliverer.
 	kickoff *agentkickoff.Deliverer
+	// status promotes provisioning agents to running once their instance is
+	// ready; nil when no provisioner is configured. See buildStatusPromoter.
+	status *agentstatus.Promoter
 }
 
 // buildApp wires the whole service from cfg WITHOUT binding a port.
@@ -320,6 +324,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		a.Close()
 		return nil, fmt.Errorf("kickoff deliverer: %w", err)
 	}
+	if a.status, err = buildStatusPromoter(cfg, ext.Agents, prov, srv.BroadcastAgentChanged, logger); err != nil {
+		a.Close()
+		return nil, fmt.Errorf("status promoter: %w", err)
+	}
 
 	a.http = &http.Server{
 		Addr:              net.JoinHostPort("", strconv.Itoa(cfg.Port)),
@@ -441,6 +449,12 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	// row under it, so replicas cannot both pay one turn.
 	if a.kickoff != nil {
 		go a.kickoff.Run(ctx, agentkickoff.DefaultInterval)
+	}
+	// Same reasoning, and it needs no leader either: each promotion is a write
+	// conditional on the row not having moved (agents.Store.MarkRunning), so two
+	// replicas promoting one row apply it once.
+	if a.status != nil {
+		go a.status.Run(ctx, agentstatus.DefaultInterval)
 	}
 	if a.pool == nil {
 		return

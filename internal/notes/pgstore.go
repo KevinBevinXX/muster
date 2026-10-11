@@ -166,11 +166,15 @@ var noteColsN = qualifyCols("n", noteCols)
 // never smaller than updated_at, and it equals it whenever nothing else has
 // happened.
 //
-// 🔴 IT IS NOT SELECTED, ONLY ORDERED BY. notes.updated_at is also the CARD
-// REVISION (rendered as data-card-rev, consumed by refuseStaleCardSwap),
-// and the one way to wedge a card permanently is to hand the renderer a
-// different number for it. Keeping the derived value out of the projection makes
-// that unrepresentable: there is no field for it to leak through.
+// 🔴 IT IS SELECTED INTO ITS OWN FIELD, Note.ActivityAt, AND NEVER INTO
+// UpdatedAt. notes.updated_at is also the CARD REVISION (rendered as
+// data-card-rev, consumed by refuseStaleCardSwap), and the one way to wedge a
+// card permanently is to hand the renderer a different number for it. This
+// comment used to say the value was deliberately NOT selected so there was no
+// field for it to leak through; it is selected now because the board card prints
+// it (a card showing its CREATION age over an activity-ordered list read as an
+// unsorted list), into a field whose name is not the revision and whose JSON tag
+// is "-". TestListPageActivityIsNotTheCardRevision pins the separation.
 const taskActivityExpr = `GREATEST(n.updated_at, cm.at, ag.at, sl.at)`
 
 // taskActivityOrder is the board's ordering, spelled once.
@@ -305,7 +309,7 @@ func (s *PGStore) ListPage(ctx context.Context, f ListFilter) (Page, error) {
 	// one query answers both "this page" and "how many matched" — which is what
 	// lets the show-more control say 50 of 293 without a second round trip, and
 	// what keeps the two numbers from disagreeing across a concurrent write.
-	q := `SELECT ` + noteColsN + `, COUNT(*) OVER () AS total_matching
+	q := `SELECT ` + noteColsN + `, ` + taskActivityExpr + ` AS activity_at, COUNT(*) OVER () AS total_matching
 		    FROM notes n` + activityJoins + `
 		   WHERE ` + strings.Join(where, " AND ") + `
 		ORDER BY ` + taskActivityOrder
@@ -323,7 +327,7 @@ func (s *PGStore) ListPage(ctx context.Context, f ListFilter) (Page, error) {
 	for rows.Next() {
 		var n Note
 		var rowTotal int64
-		if err := rows.Scan(append(scanNoteInto(&n), &rowTotal)...); err != nil {
+		if err := rows.Scan(append(scanNoteInto(&n), &n.ActivityAt, &rowTotal)...); err != nil {
 			return Page{}, err
 		}
 		total = rowTotal

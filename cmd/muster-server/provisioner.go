@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentprovision"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
+	"github.com/ZacxDev/muster/internal/agentstatus"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/provision"
 	k8sdriver "github.com/ZacxDev/muster/internal/provision/k8s"
@@ -346,6 +347,31 @@ func buildKickoffDeliverer(cfg config, store agents.Store, prov *agentprovision.
 		Store:           store,
 		Instances:       prov,
 		Gateway:         gw,
+		NamespacePrefix: cfg.AgentNamespacePrefix,
+		Logger:          logger,
+		OnChange:        onChange,
+	})
+}
+
+// buildStatusPromoter builds the loop that moves a stored `provisioning` status
+// to `running` once the agent's instance is ready (internal/agentstatus), or
+// (nil, nil) when no provisioner is configured — with no instances there is
+// nothing to be ready.
+//
+// 🔴 IT IS NOT GATED ON A GATEWAY, UNLIKE THE KICKOFF DELIVERER. Whether an
+// agent is running is true or false regardless of whether this process can
+// deliver it a first turn; gating it there would leave a gateway-less
+// deployment's statuses stuck exactly as they were.
+//
+// It takes the ADAPTER as its instance lister, as the deliverer does, so both see
+// exactly the instances the lifecycle routes see.
+func buildStatusPromoter(cfg config, store agents.Store, prov *agentprovision.Adapter, onChange func(string), logger *log.Logger) (*agentstatus.Promoter, error) {
+	if prov == nil {
+		return nil, nil
+	}
+	return agentstatus.New(agentstatus.Config{
+		Store:           store,
+		Instances:       prov,
 		NamespacePrefix: cfg.AgentNamespacePrefix,
 		Logger:          logger,
 		OnChange:        onChange,

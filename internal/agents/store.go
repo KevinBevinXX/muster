@@ -318,6 +318,18 @@ type Store interface {
 	// a delivery is past its own re-read and may be about to stamp. Pinned against
 	// real Postgres by agentkickoff's TestAStuckVerdictDoesNotOverwriteARowThatMoved.
 	MarkKickoffStuck(ctx context.Context, id int64, seenUpdatedAt time.Time, errMsg string) (bool, error)
+	// MarkRunning moves a row from `provisioning` to `running` ONLY if it is still
+	// the row the caller observed — status `provisioning` and updated_at exactly
+	// seenUpdatedAt — and reports whether the write applied. It clears
+	// error_message (a running agent has none) and leaves last_output alone.
+	//
+	// 🔴 CONDITIONAL FOR THE SAME REASON AS MarkKickoffStuck: the verdict ("its
+	// instance is ready") comes from a list read and a separate instance read, and
+	// the row can move in between — a Stop writes `stopped`, a Start or a
+	// re-dispatch writes `provisioning` again with a newer updated_at, an error
+	// writes `error`. Each of those must win over a promotion decided from the
+	// older snapshot. See [PromoteToRunning] and internal/agentstatus.
+	MarkRunning(ctx context.Context, id int64, seenUpdatedAt time.Time) (bool, error)
 	// ClearKickoffDelivery forgets which pod received the kickoff, which disables
 	// restart-detection for this agent until the next delivery re-stamps it.
 	//
