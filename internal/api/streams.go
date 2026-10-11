@@ -23,6 +23,10 @@ import (
 // turning the drain into an abort for the ordinary requests it exists to let
 // finish. A stream has no "finished" state to drain to, so ending it loses
 // nothing: the EventSource reconnects to whichever process answers next.
+//
+// It is a second registry beside terminalSet deliberately, not a missed reuse:
+// terminalSet.endAll also refuses new entries and waits for each release, and
+// a stream needs neither — sharing it would change how terminals shut down.
 func (s *Server) EndStreams() { s.streams.end() }
 
 // streamContext returns a context for an SSE handler's loop: parent's, also

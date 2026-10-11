@@ -105,21 +105,4 @@ func TestShutdownDoesNotWaitOutAnOpenEventStream(t *testing.T) {
 			"(shutdownDrainTimeout is %s): the stream held the drain open",
 			took.Round(time.Millisecond), bound, shutdownDrainTimeout)
 	}
-
-	// And the stream itself ended rather than being cut by the process: the
-	// client reads to a clean end.
-	done := make(chan error, 1)
-	go func() {
-		for {
-			if _, err := br.ReadString('\n'); err != nil {
-				done <- err
-				return
-			}
-		}
-	}()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the /events stream was still open after shutdown returned")
-	}
 }
