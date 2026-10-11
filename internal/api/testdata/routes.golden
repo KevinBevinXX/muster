@@ -131,6 +131,7 @@ POST /connectors/{name}/rotate
 POST /github/disconnect
 POST /login
 POST /logout
+POST /mcp
 POST /privileges
 POST /runbooks
 POST /runbooks/{id}/dispatch

@@ -23,7 +23,10 @@
 #      ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_USE_BEDROCK,
 #      CLAUDE_CODE_USE_VERTEX, ANTHROPIC_BASE_URL set to a FAKE value — before it
 #      seeds or starts anything;
-#   8. `ccd seed` removes `env` and `apiKeyHelper` planted in settings.json.
+#   8. `ccd seed` removes `env` and `apiKeyHelper` planted in settings.json;
+#   9. with muster's connector store offered (FAKE url and token), seed registers
+#      muster's MCP server and `seed --check` agrees; `ccd connect-git` against
+#      an unreachable muster fails fast and writes no git routing; curl is present.
 #
 # ⚠ IT NEEDS NO REAL CREDENTIAL AND MUST NEVER BE GIVEN ONE, AND IT SENDS NO TURN:
 # nothing here needs the provider's API. Without any token the CLI stops at its
@@ -138,4 +141,19 @@ s="$(cat "$CLAUDE_CONFIG_DIR/settings.json")"
 ccd seed --check --config-dir "$CLAUDE_CONFIG_DIR" --workspace "$CCD_WORKSPACE" \
   --settings-template /etc/ccd/settings.json || fail "re-seeded config has the wrong shape"
 echo "cc-smoke: seed removed env and apiKeyHelper"
+
+# 9. The connector store, offered with FAKE values (nothing listens on port 9).
+export MUSTER_CONNECT_URL=http://127.0.0.1:9 MUSTER_HOOK_TOKEN=smoke-agent-token-not-real
+ccd seed --config-dir "$CLAUDE_CONFIG_DIR" --workspace "$CCD_WORKSPACE" \
+  --settings-template /etc/ccd/settings.json 2>/tmp/seed.err || fail "seed with the store offered: $(cat /tmp/seed.err)"
+grep -q '"url": "http://127.0.0.1:9/mcp"' "$CLAUDE_CONFIG_DIR/.claude.json" \
+  || fail "seed did not register muster's MCP server: $(cat "$CLAUDE_CONFIG_DIR/.claude.json")"
+ccd seed --check --config-dir "$CLAUDE_CONFIG_DIR" --workspace "$CCD_WORKSPACE" \
+  --settings-template /etc/ccd/settings.json || fail "seed --check disagrees with the registered MCP server"
+rc=0; timeout 15 ccd connect-git --timeout 3s github >/tmp/cg.out 2>&1 || rc=$?
+[[ "$rc" == "1" ]] || fail "connect-git against an unreachable muster exited $rc, want 1: $(cat /tmp/cg.out)"
+if git config --global --get-regexp '^url\.' >/dev/null 2>&1; then fail "connect-git wrote git routing without a grant"; fi
+curl --version >/dev/null || fail "curl is missing"
+unset MUSTER_CONNECT_URL MUSTER_HOOK_TOKEN
+echo "cc-smoke: connector store wiring ok"
 echo "cc-smoke: PASS"

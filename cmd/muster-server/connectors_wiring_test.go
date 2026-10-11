@@ -37,16 +37,21 @@ func TestConnectorConfigurationIsRefusedAtBootWhenIncoherent(t *testing.T) {
 		env  map[string]string
 		want string
 	}{
-		"short key":         {map[string]string{envConnectorEncKey: base64.StdEncoding.EncodeToString([]byte("short"))}, envConnectorEncKey},
-		"key shared":        {map[string]string{envConnectorEncKey: connectorKey(2), envGitHubEncKey: connectorKey(2)}, "same key"},
-		"port without key":  {map[string]string{envConnectPort: "18191"}, envConnectPort},
-		"port is main port": {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "8105"}, "same as the main port"},
-		"bad port":          {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "0"}, envConnectPort},
-		"url without port":  {map[string]string{envConnectorEncKey: connectorKey(1), envAgentConnectURL: "http://muster.example.test:18191"}, envAgentConnectURL},
-		"url without key":   {map[string]string{envAgentConnectURL: "http://muster.example.test:18191"}, envAgentConnectURL},
-		"url with path":     {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "18191", envAgentConnectURL: "http://muster.example.test:18191/x"}, envAgentConnectURL},
-		"url with userinfo": {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "18191", envAgentConnectURL: "http://u:p@muster.example.test:18191"}, envAgentConnectURL},
-		"url not http":      {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "18191", envAgentConnectURL: "ftp://muster.example.test"}, envAgentConnectURL},
+		"short key":        {map[string]string{envConnectorEncKey: base64.StdEncoding.EncodeToString([]byte("short"))}, envConnectorEncKey},
+		"key shared":       {map[string]string{envConnectorEncKey: connectorKey(2), envGitHubEncKey: connectorKey(2)}, "same key"},
+		"port without key": {map[string]string{envConnectPort: "18191"}, envConnectPort},
+		"port is main port": {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "8105",
+			envAgentConnectURL: "http://muster.example.test:8105"}, "same as the main port"},
+		// The store on with no URL for agents: every agent-facing recipe would
+		// name an empty $MUSTER_CONNECT_URL.
+		"key without url":          {map[string]string{envConnectorEncKey: connectorKey(1)}, envAgentConnectURL},
+		"key and port without url": {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "18191"}, envAgentConnectURL},
+		"bad port":                 {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "0"}, envConnectPort},
+		"url without port":         {map[string]string{envConnectorEncKey: connectorKey(1), envAgentConnectURL: "http://muster.example.test:18191"}, envAgentConnectURL},
+		"url without key":          {map[string]string{envAgentConnectURL: "http://muster.example.test:18191"}, envAgentConnectURL},
+		"url with path":            {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "18191", envAgentConnectURL: "http://muster.example.test:18191/x"}, envAgentConnectURL},
+		"url with userinfo":        {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "18191", envAgentConnectURL: "http://u:p@muster.example.test:18191"}, envAgentConnectURL},
+		"url not http":             {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "18191", envAgentConnectURL: "ftp://muster.example.test"}, envAgentConnectURL},
 	} {
 		err := load(c.env)
 		if err == nil || !strings.Contains(err.Error(), c.want) {

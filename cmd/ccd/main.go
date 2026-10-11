@@ -58,6 +58,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -88,8 +89,10 @@ func run(args []string) int {
 		return runHook(args, os.Stdin, os.Stderr)
 	case "seed":
 		return runSeed(args, os.Stdout, os.Stderr)
+	case "connect-git":
+		return runConnectGit(args, os.Stdout, os.Stderr)
 	default:
-		fmt.Fprintf(os.Stderr, "ccd: unknown command %q (serve | hook <Event> | seed)\n", cmd)
+		fmt.Fprintf(os.Stderr, "ccd: unknown command %q (serve | hook <Event> | seed | connect-git [connector])\n", cmd)
 		return 2
 	}
 }
@@ -196,6 +199,12 @@ func serve() error {
 	// hook, sent as the CLI starts, is ccd's one readiness signal for turns; a TUI
 	// started before the hook listener exists would announce itself to nobody, and
 	// ccd would answer not_ready until the CLI next restarted.
+	// muster's connector store: keep git's routing in step with this agent's
+	// grants for as long as ccd runs (connect.go). Inert when the pod is not
+	// offered the store.
+	if base, tok := strings.TrimRight(os.Getenv(envConnectURL), "/"), os.Getenv(envAgentToken); base != "" && tok != "" {
+		go runGitRoutingLoop(ctx, base, tok, gitSyncInterval, log.Printf)
+	}
 	var supErr chan error // nil (never ready) unless ccd supervises the CLI
 	if srv.sup != nil {
 		supErr = make(chan error, 1)

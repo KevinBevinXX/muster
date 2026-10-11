@@ -41,7 +41,7 @@ const ConnectorsUnconfigured = "this server has no connector store: MUSTER_CONNE
 // is made of. cmd/muster-server's connect listener serves these and refuses
 // everything else, so the network allowance an isolated agent pod is given to
 // reach muster reaches this surface and no other route.
-var ConnectSurfacePrefixes = []string{"/connect/", "/agent/connectors"}
+var ConnectSurfacePrefixes = []string{"/connect/", "/agent/connectors", "/mcp"}
 
 // OnlyConnectSurface wraps h so it serves only ConnectSurfacePrefixes (and
 // /health, for a probe), answering 404 for every other path.
@@ -68,6 +68,9 @@ func (s *Server) registerConnectorRoutes(mux Mux) {
 	mux.HandleFunc("GET /agent/connectors", s.requireConnectorAgent(s.handleAgentConnectors))
 	mux.HandleFunc("GET /agent/connectors/{name}", s.requireConnectorAgent(s.handleAgentConnectorStatus))
 	mux.HandleFunc("POST /agent/connectors/{name}/request", s.requireConnectorAgent(s.handleAgentConnectorRequest))
+	// The same tools over MCP (mcp.go). POST only: GET /mcp answers 405, which
+	// MCP's streamable-HTTP transport reads as "no server-initiated stream".
+	mux.HandleFunc("POST /mcp", s.requireConnectorAgent(s.handleMCP))
 
 	// --- the operator ---
 	mux.HandleFunc("GET /ui/connectors", s.requireSession(s.handleConnectorsContent))
@@ -216,9 +219,17 @@ func ProxyUsage(name string, hosts []string) string {
 	if len(hosts) > 0 {
 		h = hosts[0]
 	}
-	return "Send requests to $MUSTER_CONNECT_URL/connect/" + name + "/" + h + "/<path> with header " +
-		"`Authorization: Bearer $MUSTER_HOOK_TOKEN`; muster replaces it with the credential. Allowed hosts: " +
-		strings.Join(hosts, ", ")
+	return ProxyRecipe(name, h) + " Allowed hosts: " + strings.Join(hosts, ", ")
+}
+
+// ProxyRecipe is THE sentence that tells an agent how to call a connector
+// through the proxy. Every place that teaches the recipe — a connector's usage
+// line, the MCP server's initialize instructions, the gateway agent's system
+// prompt — builds it here, so the URL shape and the header cannot drift apart
+// between them. Placeholders ("<connector>", "<host>") are fine arguments.
+func ProxyRecipe(connector, host string) string {
+	return "Send requests to $MUSTER_CONNECT_URL/connect/" + connector + "/" + host + "/<path> with header " +
+		"`Authorization: Bearer $MUSTER_HOOK_TOKEN`; muster replaces it with the credential."
 }
 
 func (s *Server) agentConnectorView(ctx context.Context, a agents.Agent, name string) (AgentConnectorView, error) {

@@ -255,12 +255,41 @@ func orEmptyJSON(s string) string {
 // carry their own schemas; this frames when to use them.
 const agentSystemPrompt = `You are a muster worker agent. You have native tools to read and update YOUR assigned task. Use them: call agent_get_task to read your task before starting; agent_set_task_status to set "in_progress" when you begin and "ready_for_review" when done (you CANNOT set "complete" — only the operator/human can); agent_comment_task to post progress notes; agent_request_privilege if you need access (e.g. Kubernetes) you don't have. If your task marks a step as a checkpoint, call agent_checkpoint with a summary BEFORE doing that step and WAIT — only proceed when it returns approved:true; if it is not approved, stop and set your task ready_for_review explaining why. Then do the work.`
 
-// AgentToolDefs returns the flat native function tools given to worker agents.
-func (s *Server) AgentToolDefs() []agents.ToolDef {
-	fn := func(name, desc string, params map[string]any) agents.ToolDef {
-		return agents.ToolDef{Type: "function", Name: name, Description: desc, Parameters: params}
+// agentTool is one entry of muster's ONE agent tool registry.
+//
+// 🔴 THERE IS ONE LIST AND ONE SWITCH. agentTools is the only place a tool is
+// DECLARED; dispatchAgentTool is the only place one is EXECUTED. Both transports
+// read them: the gateway kind gets [Server.AgentToolDefs] + [Server.AgentToolDispatch]
+// on its /v1/responses turns, and POST /mcp (mcp.go) lists and calls the subset
+// whose MCP flag is set. A tool added for one transport is therefore added for
+// the other by setting a flag, never by copying a definition.
+//
+// 🔴 MCP IS AN EXPLICIT, PER-TOOL OPT-IN, AND ONLY THE CONNECTOR TOOLS HAVE IT.
+// /mcp is served on the connect listener — the ONE muster port a claude-code
+// pod's network policy lets it reach — and that listener's contract is "the
+// connector surface and nothing else" (OnlyConnectSurface). The other tools stay
+// gateway-only on purpose: the task/status/comment/privilege/checkpoint tools
+// would hand a claude-code pod muster's task API through a door that was opened
+// for connectors only, agent_checkpoint blocks a request for up to an hour, and
+// agent_list_pull_requests spends muster's OWN server-side GitHub connection,
+// which would let a pod read through a credential it was never granted under the
+// per-agent connector model. TestTheMCPToolsAreTheRegistrysMCPSubset pins both
+// sets.
+type agentTool struct {
+	def agents.ToolDef
+	// mcp: also served over POST /mcp to claude-code agents. See above before
+	// setting it.
+	mcp bool
+}
+
+// agentTools is the registry. The connector tools are present only when the
+// connector store is configured, so an agent is never offered a tool that can
+// only answer "unconfigured".
+func (s *Server) agentTools() []agentTool {
+	fn := func(name, desc string, params map[string]any) agentTool {
+		return agentTool{def: agents.ToolDef{Type: "function", Name: name, Description: desc, Parameters: params}}
 	}
-	return []agents.ToolDef{
+	tools := []agentTool{
 		fn("agent_get_task", "Read your assigned task: its text, status, and comments.", objSchema(map[string]any{})),
 		fn("agent_comment_task", "Post a progress comment on your task.", objSchema(map[string]any{
 			"body": strProp("comment text"),
@@ -279,6 +308,34 @@ func (s *Server) AgentToolDefs() []agents.ToolDef {
 			"state": map[string]any{"type": "string", "description": "which PRs to list", "enum": []string{"open", "closed", "all"}},
 		})),
 	}
+	if s.ext.Connectors != nil {
+		for _, d := range connectorToolDefs() {
+			tools = append(tools, agentTool{def: d, mcp: true})
+		}
+	}
+	return tools
+}
+
+// AgentToolDefs returns the native function tools given to gateway agents: every
+// tool in the registry.
+func (s *Server) AgentToolDefs() []agents.ToolDef {
+	tools := s.agentTools()
+	defs := make([]agents.ToolDef, 0, len(tools))
+	for _, t := range tools {
+		defs = append(defs, t.def)
+	}
+	return defs
+}
+
+// MCPToolDefs returns the registry's MCP subset, in registry order.
+func (s *Server) MCPToolDefs() []agents.ToolDef {
+	var defs []agents.ToolDef
+	for _, t := range s.agentTools() {
+		if t.mcp {
+			defs = append(defs, t.def)
+		}
+	}
+	return defs
 }
 
 // AgentInstructions returns the worker's system prompt (used by the kickoff loop
@@ -300,10 +357,16 @@ func (s *Server) AgentInstructions(a agents.Agent) string {
 		// (NoteID) on a repo. Without this, agents complete the edit + tests and
 		// STOP — the change is trapped in the ephemeral workspace and the task never
 		// closes. This turns the loop into a reviewable artifact + a status report.
+		//
+		// 🔴 NO GITHUB CREDENTIAL IS IN THE POD. This text used to say "the git
+		// credential helper + GITHUB_TOKEN are already configured"; agentspec's
+		// buildSecrets emits no GITHUB_TOKEN (nor any GIT_CONFIG_* helper), so that
+		// was false for every agent this binary provisions. Pushing goes through the
+		// connector store's proxy when it is offered, and is otherwise reported as
+		// impossible rather than retried against a token that is not there.
 		if a.NoteID != nil {
 			b += "\n\nCLOSE THE LOOP when the task's change is complete and verified — do NOT just stop after editing/testing:" +
-				"\n1. Create a branch, commit your work, and `git push` it to this repo (the git credential helper + GITHUB_TOKEN are already configured — do NOT ask for a token)." +
-				"\n2. Open a pull request against the repo's default branch (use `gh pr create` if available, otherwise the GitHub REST API with $GITHUB_TOKEN)." +
+				s.pushSteps(a.Repo) +
 				"\n3. Call agent_comment_task with the PR URL, then agent_set_task_status{status:\"ready_for_review\"}." +
 				"\nOnly finish once the change is pushed, a PR is open, and the task is marked ready_for_review. If you genuinely cannot (e.g. no change is needed), comment on the task explaining why and set it ready_for_review."
 		}
@@ -314,9 +377,42 @@ func (s *Server) AgentInstructions(a agents.Agent) string {
 			b += "\n\nA kubeconfig is mounted at /root/.kube/config — run `kubectl` to inspect the cluster you've been granted access to (treat your access as read-only unless told otherwise)."
 		}
 	}
+	if s.ext.Connectors != nil {
+		b += "\n\nTo use an external platform's API (e.g. GitHub), ask for its connector with connector_request, wait with connector_status, then call it through muster's proxy: " +
+			ProxyRecipe("<connector>", "<host>") + " You never see the credential."
+	}
 	b += "\n\nWhen asked what you can do, describe ONLY these real capabilities: your task tools (above), reading/writing files + git + shell in your workspace" +
 		", and kubectl when a kubeconfig is mounted. Do NOT claim messaging (Signal/Telegram/WhatsApp/Discord), paired devices/cameras/location, image/video generation, web browsing, or calendar/email — you do not have those here."
 	return b
+}
+
+// pushSteps is steps 1-2 of the close-out protocol: how to push and open a PR.
+// With the connector store configured the agent goes through the `github`
+// connector; without it muster provides no GitHub credential at all.
+func (s *Server) pushSteps(repo string) string {
+	if s.ext.Connectors == nil {
+		return "\n1. Create a branch and commit your work, then `git push` it. muster provides no GitHub credential here — do NOT ask for a token; if the push is refused, name your branch in step 3 and explain." +
+			"\n2. If the push succeeded, open a pull request against the repo's default branch if this environment lets you."
+	}
+	return "\n1. Create a branch and commit your work. You hold no GitHub token — do NOT ask for one. Get the `github` connector: connector_request{name:\"github\", reason:\"push <branch> to " + repo + "\"}, then connector_status{name:\"github\", wait_seconds:50} until it is approved. Push through muster's proxy: " +
+		ProxyRecipe("github", "github.com") + " For git: `" + GitPushRecipe("github", "github.com/"+repo+".git") + " <branch>`." +
+		"\n2. Open a pull request against the repo's default branch through the same connector: POST $MUSTER_CONNECT_URL/connect/github/api.github.com/repos/" + repo + "/pulls with the same header."
+}
+
+// GitPushRecipe is the git command line (up to the refspec) that pushes through
+// a connector's proxy.
+//
+// 🔴 BOTH -c KEYS ARE SCOPED TO THE CONNECTOR'S PROXY URL, AND REDIRECTS ARE OFF.
+// An unscoped `http.extraHeader` goes to every URL git talks to, and git's
+// default redirect policy follows the first request's redirect carrying that
+// header to whatever host it names — measured. Scoped to
+// `$MUSTER_CONNECT_URL/connect/<connector>/` the token goes to the proxy only,
+// and `followRedirects=false` keeps git from following even a redirect the
+// proxy itself would never hand out (it answers 502 instead).
+func GitPushRecipe(connector, path string) string {
+	proxy := "$MUSTER_CONNECT_URL/connect/" + connector + "/"
+	return `git -c "http.` + proxy + `.extraHeader=X-Muster-Token: $MUSTER_HOOK_TOKEN" -c "http.` + proxy +
+		`.followRedirects=false" push ` + proxy + path
 }
 
 // AgentToolDispatch returns the dispatch closure executing a worker's tool calls
@@ -400,6 +496,19 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return s.runCheckpoint(ctx, a, strings.TrimSpace(in.Summary), strings.TrimSpace(in.Step))
 	case "agent_list_pull_requests":
 		return s.listAgentPullRequests(ctx, a, arguments)
+	case "connectors_list":
+		return s.toolConnectorsList(ctx, a)
+	case "connector_request":
+		var in struct{ Name, Reason string }
+		_ = arg(&in)
+		return s.toolConnectorRequest(ctx, a, in.Name, in.Reason)
+	case "connector_status":
+		var in struct {
+			Name        string `json:"name"`
+			WaitSeconds int    `json:"wait_seconds"`
+		}
+		_ = arg(&in)
+		return s.toolConnectorStatus(ctx, a, in.Name, in.WaitSeconds)
 	default:
 		return toolErr("unknown tool %q", name)
 	}

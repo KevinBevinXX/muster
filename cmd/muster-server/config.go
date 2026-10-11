@@ -821,12 +821,26 @@ func loadConfig(getenv func(string) string) (config, error) {
 //     would be handed a URL that answers 503, or isolated agents a network
 //     allowance to a port nothing serves the connector surface on.
 //   - a connect port without the store: a listener serving routes that all 503.
+//   - 🔴 the store WITHOUT the agent connect URL. Every agent-facing piece of
+//     the store (the connector tools, the gateway prompt's push recipe, a
+//     claude-code pod's MCP server and git routing) tells the agent to use
+//     $MUSTER_CONNECT_URL, and with no URL configured that variable is empty in
+//     every pod: agents would be offered tools and instructions that lead
+//     nowhere. Refusing here makes "the store is on" imply "agents can reach
+//     it", so the API server's one predicate (Extensions.Connectors != nil)
+//     stays true to what agents can actually do, with no second flag to keep in
+//     step with it.
 func (c config) validateConnectors() error {
 	if len(c.ConnectorEncKey) > 0 && len(c.GitHubEncKey) > 0 && string(c.ConnectorEncKey) == string(c.GitHubEncKey) {
 		return fmt.Errorf("%s is the same key as %s: generate a separate key for each store", envConnectorEncKey, envGitHubEncKey)
 	}
 	if c.ConnectPort != 0 && len(c.ConnectorEncKey) == 0 {
 		return fmt.Errorf("%s is set but %s is not: the connect listener would serve only refusals", envConnectPort, envConnectorEncKey)
+	}
+	if len(c.ConnectorEncKey) > 0 && c.AgentConnectURL == "" {
+		return fmt.Errorf("%s is set but %s is not: agents would be told to use a connector store they cannot "+
+			"reach. Set %s (with %s) to the connect listener's in-cluster URL, or unset %s",
+			envConnectorEncKey, envAgentConnectURL, envAgentConnectURL, envConnectPort, envConnectorEncKey)
 	}
 	if c.ConnectPort != 0 && c.ConnectPort == c.Port {
 		return fmt.Errorf("%s (%d) is the same as the main port: pick a separate port for the connect listener", envConnectPort, c.ConnectPort)

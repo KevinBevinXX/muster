@@ -21,6 +21,13 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /ccd ./cmd/ccd
 # experiments ran. Debian (not alpine) because the shipped binary is glibc-linked.
 FROM node:22-bookworm-slim
 
+# curl is for muster's connector proxy: an agent calls a platform's HTTP API as
+# `curl -H "Authorization: Bearer $MUSTER_HOOK_TOKEN" "$MUSTER_CONNECT_URL/connect/<connector>/<host>/<path>"`,
+# and muster replaces it with the credential (see cmd/ccd/connect.go). git goes
+# through the proxy by routing `ccd serve` keeps in step with the agent's grants
+# (`ccd connect-git` applies it at once). `gh` is NOT installed: it only speaks HTTPS to a
+# fixed host, so it cannot be pointed at the plain-HTTP in-cluster proxy.
+#
 # 🔴 PINNED. A floating CLI is a different program on every rebuild, and ccd parses
 # that program's transcript and hook payloads. Bump deliberately, re-record the
 # fixtures in cmd/ccd/testdata, and re-run the operator live check.
@@ -28,7 +35,7 @@ ARG CLAUDE_CODE_VERSION=2.1.296
 ENV CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION}
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tmux git ca-certificates procps \
+ && apt-get install -y --no-install-recommends tmux git ca-certificates procps curl \
  && rm -rf /var/lib/apt/lists/* \
  && npm install -g --no-audit --no-fund "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
  && npm cache clean --force \

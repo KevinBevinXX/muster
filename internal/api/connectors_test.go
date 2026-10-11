@@ -114,6 +114,7 @@ var agentRoutes = []struct{ method, path string }{
 	{"GET", "/agent/connectors"},
 	{"GET", "/agent/connectors/github"},
 	{"POST", "/agent/connectors/github/request"},
+	{"POST", "/mcp"},
 }
 
 // TestConnectorRoutesRefuseTheSharedHookToken: the operator's shared hook token
@@ -292,7 +293,7 @@ func TestTheConnectListenerServesOnlyTheConnectorSurface(t *testing.T) {
 	f.seedAgent(t, "surface-agent", "surface-agent-token-0123456789")
 	h := OnlyConnectSurface(f.h)
 	tok := map[string]string{"X-Muster-Token": "surface-agent-token-0123456789", "Cookie": sessionCookieFor(f.srv)}
-	for _, p := range []string{"/agent/connectors", "/agent/connectors/github", "/connect/github/api.github.com/x", "/health"} {
+	for _, p := range []string{"/agent/connectors", "/agent/connectors/github", "/connect/github/api.github.com/x", "/health", "/mcp"} {
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest("GET", p, nil)
 		for k, v := range tok {

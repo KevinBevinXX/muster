@@ -106,6 +106,10 @@ func seed(o seedOpts, stderr io.Writer) error {
 	proj["hasTrustDialogAccepted"] = true
 	projects[filepath.Clean(o.workspace)] = proj
 	st["projects"] = projects
+	// muster's MCP server (connect.go): registered when the pod is offered the
+	// connector store, removed when it is not — so a pod restarted without it
+	// does not keep a server entry that can only fail.
+	seedMCP(st, os.Getenv(envConnectURL), os.Getenv(envAgentToken))
 	if err := writeJSONAtomic(stPath, st); err != nil {
 		return err
 	}
@@ -201,6 +205,12 @@ func checkSeed(o seedOpts) error {
 	proj, _ := projects[filepath.Clean(o.workspace)].(map[string]any)
 	if proj == nil || proj["hasTrustDialogAccepted"] != true {
 		return fmt.Errorf(".claude.json: projects[%q].hasTrustDialogAccepted is not true (the trust dialog will block the TUI)", o.workspace)
+	}
+	servers, _ := st["mcpServers"].(map[string]any)
+	_, registered := servers[mcpServerName]
+	if offered := os.Getenv(envConnectURL) != "" && os.Getenv(envAgentToken) != ""; offered != registered {
+		return fmt.Errorf(".claude.json: muster's MCP server registered=%v but the connector store offered=%v (%s)",
+			registered, offered, envConnectURL)
 	}
 	tmpl, err := os.ReadFile(o.settingsTemplate)
 	if err != nil {

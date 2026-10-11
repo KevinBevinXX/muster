@@ -44,6 +44,8 @@ test.beforeAll(async () => {
   server = await startServer(versionTerm, connectorsPort, {
     MUSTER_CONNECTOR_ENCRYPTION_KEY: FAKE_KEY,
     MUSTER_CONNECT_PORT: String(connectPort),
+    // The store refuses to boot without the URL agents are told to use.
+    MUSTER_AGENT_CONNECT_URL: `http://127.0.0.1:${connectPort}`,
   });
 });
 test.afterAll(async () => {
