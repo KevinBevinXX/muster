@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"io"
 	"strconv"
 	"strings"
@@ -606,7 +607,7 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// it (harmless) or, worse, keep rendering it in the panel after the first
 			// message because the server no longer knew where it was answering.
 			hx("hx-get", "/ui/agents/"+v.Name+"/chat-log?session="+strconv.FormatInt(v.ActiveSessionID, 10)+chatLogSurfaceQuery(v.Surface)),
-			hx("hx-trigger", "sse:chat.reply from:body, task:changed from:body"),
+			hx("hx-trigger", chatLogTrigger(v.Name)),
 			hx("hx-target", "this"),
 			hx("hx-swap", "innerHTML"),
 			chatLogInner(v),
@@ -681,6 +682,42 @@ func agentChatPane(v AgentDetailView) g.Node {
 			),
 		),
 	)
+}
+
+// chatLogTrigger is #chat-log's hx-trigger: the events on which the transcript
+// re-fetches its partial from the server.
+//
+//   - sse:chat.reply — a turn was persisted (the kickoff turn included).
+//   - task:changed — the completion banner's Mark-complete button.
+//   - sse:agent.changed for THIS agent — its status moved.
+//
+// 🔴 THE agent.changed ARM IS WHAT CLEARS "Provisioning agent…" WHEN NO MESSAGE
+// EVER ARRIVES. The provisioning row and the empty state are both decided
+// server-side from the status (chatIsProvisioning), and before this arm the
+// only things that re-rendered them were a persisted message (chat.reply) or a
+// streamed delta (agentChatScript's hideProvisioning). An agent brought up with
+// no kickoff note — a Start of a saved agent, a claude-code agent — reaches
+// `running` with neither, so a page opened while it was provisioning showed the
+// row for ever and never showed "No messages yet". internal/agentstatus's
+// promoter broadcasts agent.changed on exactly that provisioning → running move
+// (api.Server.BroadcastAgentChanged), so re-fetching on it re-renders both from
+// the one predicate rather than a second copy of it in JS.
+//
+// ⚠ THE FILTER KEEPS IT TO THIS AGENT. agent.changed fires for every agent in the
+// fleet, with Data {"id":"<name>"} (api.Server.broadcast); unfiltered, every
+// other agent's churn would re-fetch this transcript. A refetch while a WS turn
+// is mid-stream is still cancelled by agentChatScript's htmx:beforeRequest guard,
+// which keys on the element, not the event.
+//
+// ⚠ IT IS ONLY AS LIVE AS THE BROADCASTS. A restart of an agent that was already
+// kicked off is NOT covered: agentprovision.Adapter.Start stores `running` for it
+// at once, the promoter (which only promotes stored `provisioning`) never fires,
+// and nothing broadcasts when its instance later becomes ready — so a page opened
+// in that window still holds the row until a message or a reload.
+func chatLogTrigger(agentName string) string {
+	quoted, _ := json.Marshal(agentName) // a string always marshals
+	return "sse:chat.reply from:body, task:changed from:body, " +
+		"sse:agent.changed[JSON.parse(detail.data).id===" + string(quoted) + "] from:body"
 }
 
 // sessionDrawer renders the previous-sessions UI as a slide-out RIGHT-side
@@ -926,10 +963,12 @@ func chatLogInner(v AgentDetailView) g.Node {
 		agentTaskBanner(v),
 		// Provisioning indicator: shown on first paint (and after a refresh) while the
 		// agent is still provisioning/pending, so a chat opened DURING provisioning
-		// isn't an empty void. It self-clears: once the kickoff persists its first
-		// message the chat.reply refresh re-renders this partial with status=running,
-		// so this node is simply absent (and agentChatScript also hides it on the
-		// first streamed delta as a belt-and-suspenders).
+		// isn't an empty void. It self-clears: when the agent's status moves (the
+		// agent.changed arm of chatLogTrigger) or the kickoff persists its first
+		// message (chat.reply), this partial re-renders with status=running, so this
+		// node is simply absent and the empty state takes its place when there is
+		// nothing to show (agentChatScript also hides it on the first streamed
+		// delta as a belt-and-suspenders).
 		chatProvisioningIndicator(v.Status),
 		// Working indicator: an animated "working…" row shown between send and the
 		// first server message, hidden again on done/error. The script toggles its

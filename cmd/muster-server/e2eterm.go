@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -25,6 +27,45 @@ func init() {
 }
 
 type fakeTerminalDriver struct{ provision.Provisioner }
+
+// MUSTER_E2E_HOLD_READY_DIR arms the second thing this fixture plays: an instance that
+// is NOT YET READY. The noop driver reports every running instance ready the
+// moment it exists, so no browser test could open an agent page while it was
+// provisioning. With this set, every running instance reports phase pending /
+// not ready UNTIL a file named after the instance exists in the directory —
+// the test releases it by creating that file, deterministically, when it wants
+// the instance to come up. Unset (the terminal spec), nothing is held.
+// e2e/tests/provisioning-indicator.spec.ts is the consumer; the name is
+// envE2EHoldReadyDir in config.go's const block. hold applies it to one
+// instance; List and Get are the two reads it has to cover.
+func (d fakeTerminalDriver) hold(inst provision.Instance) provision.Instance {
+	dir := os.Getenv(envE2EHoldReadyDir)
+	if dir == "" || !inst.Ready {
+		return inst
+	}
+	if _, err := os.Stat(filepath.Join(dir, inst.Ref.Name)); err == nil {
+		return inst // released
+	}
+	inst.Phase = provision.PhasePending
+	inst.Ready = false
+	return inst
+}
+
+func (d fakeTerminalDriver) List(ctx context.Context) ([]provision.Instance, error) {
+	insts, err := d.Provisioner.List(ctx)
+	for i := range insts {
+		insts[i] = d.hold(insts[i])
+	}
+	return insts, err
+}
+
+func (d fakeTerminalDriver) Get(ctx context.Context, ref provision.Ref) (provision.Instance, error) {
+	inst, err := d.Provisioner.Get(ctx, ref)
+	if err != nil {
+		return inst, err
+	}
+	return d.hold(inst), nil
+}
 
 func (d fakeTerminalDriver) Capabilities() provision.Capabilities {
 	c := d.Provisioner.Capabilities()

@@ -342,6 +342,9 @@ var bannerExempt = map[string]string{
 		"TestTheNetworkBannerLineSaysWhetherAgentsAreConfined renders both and pins them. There is no silent " +
 		"state: validateKinds refuses it unset when a policy would be written and set when none would be",
 	envAgentNetpolFromLabels: "the other half of the same selector; same line, same test and same boot refusals as " + envAgentNetpolFromNS,
+	envE2EHoldReadyDir: "a browser-test fixture read ONLY by a `-tags e2eterm` build's fake driver (e2eterm.go); the " +
+		"shipped binary has no reader, so it has no state to announce, and an e2e build already logs its own " +
+		"🔴 E2E BUILD line at boot",
 	envAgentGatewayModel: "the CHAT: WIRED line prints it beside the scheme, and there is no " +
 		"off-direction line to write: validate refuses a named gateway with no sentinel, so the " +
 		"only states that reach a banner are \"wired, and the value is on the line\" and \"no " +
