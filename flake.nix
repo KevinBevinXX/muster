@@ -96,45 +96,38 @@
           # row below gives: a glob is an allowlist that says something wider
           # than it means.
           || (rel == "go.sum")
-          # 🔴 `.sh` AND `.js` ARE HERE FOR THE SAME REASON `.sql` IS: THEY ARE
-          # `//go:embed`ED. `internal/agentspec/autosave.go` embeds `autosave.sh`
-          # and `internal/ui/components.go` embeds `js/*.js`. Measured with the
-          # filter carrying only `.go`/`.sql`: the BUILD phase passed (nothing
-          # `cmd/muster-migrate` imports reaches those packages) and the CHECK
-          # phase died with
+          # 🔴 `.js` IS HERE FOR THE SAME REASON `.sql` IS: IT IS `//go:embed`ED.
+          # `internal/ui/components.go` embeds `js/*.js`, and `cmd/muster`'s tests
+          # import `internal/api`, which imports `internal/ui` — so without this
+          # row the CLI's CHECK phase dies with
           #
-          #     internal/agentspec/autosave.go:19:12: pattern autosave.sh: no matching files found
-          #     internal/ui/components.go:2599:12: pattern js/filter-toggle.js: no matching files found
+          #     internal/ui/components.go:2607:12: pattern js/filter-toggle.js: no matching files found
           #
-          # — i.e. a filter row omitted here surfaces as a `go vet`/`go test`
-          # failure naming the embed, never naming the filter. That is the good
-          # direction and it is still a trap: the message points at the code.
+          # — i.e. a filter row omitted here surfaces as a compile failure naming
+          # the embed, never naming the filter. That is the good direction and it
+          # is still a trap: the message points at the code.
           #
-          # ⚠ WHEN A NEW EMBEDDED FILE TYPE APPEARS UNDER `internal/`, IT MUST BE
-          # ADDED HERE. There is no glob doing it for you, deliberately — see the
-          # `go.sum` note. The symptom is the message above.
+          # ⚠ `.sh` IS DELIBERATELY NOT CARRIED. `internal/agentspec/autosave.go`
+          # embeds `autosave.sh`, and no derivation here builds, vets or tests
+          # that package. The day one does, it fails to compile with
+          # `pattern autosave.sh: no matching files found` — add the suffix then.
           #
-          # ⚠ THAT MESSAGE WAS MEASURED WHEN THE CHECK PHASE VETTED `./...`; IT
-          # NOW VETS ONLY `testPaths` (see `goCheckPhase`), SO THE SYMPTOM NOW
-          # APPEARS ONLY FOR A PACKAGE IN A DERIVATION'S BUILD OR TEST CLOSURE.
-          # `internal/ui` still is (`cmd/muster`'s tests import `internal/api` —
-          # read off `go list -deps -test`, not re-measured by dropping the row),
-          # so a dropped `.js` row should still fail the CLI's check phase;
-          # `internal/agentspec` is in neither closure, so a dropped `.sh` row no
-          # longer fails `nix build` at all — harmless to these artefacts, which
-          # do not contain that package, and the reason to re-check this filter
-          # when a derivation that does is added.
+          # ⚠ WHEN A NEW EMBEDDED FILE TYPE APPEARS IN A PACKAGE A DERIVATION
+          # BUILDS OR TESTS, IT MUST BE ADDED HERE. There is no glob doing it for
+          # you, deliberately — see the `go.sum` note. The symptom is the message
+          # above.
           || ((pkgs.lib.hasPrefix "cmd/" rel || pkgs.lib.hasPrefix "internal/" rel)
               && (pkgs.lib.hasSuffix ".go" rel || pkgs.lib.hasSuffix ".sql" rel
-                  || pkgs.lib.hasSuffix ".sh" rel || pkgs.lib.hasSuffix ".js" rel))
+                  || pkgs.lib.hasSuffix ".js" rel))
           # 🔴 `testdata/` IS CARRIED WHOLE, AND IT IS THE ONE ROW HERE THAT IS
-          # NOT AN EXTENSION. The golden files under `internal/api/testdata/` and
-          # `internal/agentspec/testdata/` are read by the tests this derivation's
-          # `checkPhase` RUNS, so omitting them makes those tests fail inside the
-          # build. Their extensions (`.golden`, `.golden.json`, `.tsv`) are a set
-          # that will keep growing, and `testdata` is a directory name Go's own
-          # tooling defines — so the directory is the stable thing to name, not
-          # the suffixes.
+          # NOT AN EXTENSION. ONE file under it is read by a test a `checkPhase` here
+          # RUNS: `cmd/muster/one_service_test.go` opens
+          # `../../internal/api/testdata/routes.golden`, so without this row the
+          # CLI derivation fails in `TestEveryWiredRouteIsServedByThisProject` and
+          # `TestTheSkewProbeTargetIsObservedAndServed`. Every other `testdata/`
+          # directory it carries belongs to a package no derivation here tests.
+          # The row stays a directory rather than that one path: `testdata` is a
+          # name Go's own tooling defines, so it is the stable thing to name.
           #
           # ⚠ THIS IS THE ONE PLACE THE ALLOWLIST IS WIDER THAN A FILE LIST, so
           # it is the one place the header's hazard applies: a local dump dropped
@@ -234,25 +227,10 @@
       # point undone. So the rule here is: a derivation's check phase tests THE
       # PACKAGES IT INSTALLS.
       #
-      # 🔴 AND `go vet` IS GIVEN THE SAME `testPaths`, NOT `./...` — THE
-      # WHOLE-MODULE VET IS THE CI `build` JOB'S, WHICH RUNS ON EVERY EVENT THIS
-      # DERIVATION'S `nix` JOB DOES. This phase used to vet `./...`, and that was
-      # the dominant cost of every nix build, measured rather than supposed.
-      # MEASURED at `a75b09b`, cold GOCACHE, 2 cores per build, three runs: the
-      # whole-module vet was 26–34 s of the CLI's 35–47 s check phase and
-      # 31–37 s of the migrator's 36–44 s, and both derivations paid it, in
-      # full, for the same module. Narrowed (two runs): 17–21 s and 5–8 s for
-      # the whole check phase, because vet now reads only packages the build
-      # and the tests here compile anyway.
-      #
-      # ⚠ WHAT THE NARROWING GIVES UP, so nobody reads a green nix build as a
-      # vetted module: a vet-only defect (a `Printf` format mismatch, say) in a
-      # package OUTSIDE `testPaths` — `internal/api`, the server — no longer
-      # fails `nix build`. It fails `go vet ./...` in the `build` job, which is
-      # where the module is vetted. It was also the nix-side witness for a
-      # missing `onlyGo` embed row in a package OUTSIDE these derivations'
-      # build and test closures (`internal/agentspec`'s `.sh`); the note at
-      # that filter row says what still catches which.
+      # 🔴 AND `go vet` IS GIVEN THE SAME `testPaths`, NOT `./...`. A consumer
+      # pinning this flake gets the packages it installs vetted; the
+      # whole-module vet is the CI `build` job's. So a vet-only defect in a
+      # package outside `testPaths` does NOT fail `nix build`.
       #
       # 🔴 WHAT THIS PHASE STRUCTURALLY CANNOT SEE, so nobody reads a green nix
       # build as a green suite:
