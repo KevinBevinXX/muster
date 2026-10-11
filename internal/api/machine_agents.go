@@ -116,8 +116,9 @@ type agentJSON struct {
 	// note on LastActivityAt.
 	LastMessageAt *time.Time `json:"lastMessageAt"`
 	// LastActivityAt is the LIVENESS field: the newest durable event muster holds
-	// for this agent — max(LastMessageAt, UpdatedAt). Never null, so a consumer can
-	// always threshold on it.
+	// for this agent — max(LastMessageAt, UpdatedAt), computed by
+	// agents.LastActivity, which is also what the Agents list orders its cards by.
+	// Never null, so a consumer can always threshold on it.
 	//
 	// 🔴 WHY A STATUS FIELD IS NOT ENOUGH, and what this can and cannot detect.
 	//
@@ -181,7 +182,8 @@ func newAgentJSON(a agents.Agent, lastMsg time.Time) agentJSON {
 		KickoffAttempts: a.KickoffAttempts,
 		CreatedAt:       a.CreatedAt,
 		UpdatedAt:       a.UpdatedAt,
-		LastActivityAt:  a.UpdatedAt,
+		// agents.LastActivity is the one definition; the Agents list sorts by it.
+		LastActivityAt: agents.LastActivity(a, lastMsg),
 	}
 	if a.NoteID != nil {
 		id := *a.NoteID // copy: never alias the store's pointer into a response
@@ -190,9 +192,6 @@ func newAgentJSON(a agents.Agent, lastMsg time.Time) agentJSON {
 	if !lastMsg.IsZero() {
 		at := lastMsg
 		v.LastMessageAt = &at
-		if at.After(v.LastActivityAt) {
-			v.LastActivityAt = at
-		}
 	}
 	return v
 }

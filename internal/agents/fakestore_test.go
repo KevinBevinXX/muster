@@ -120,6 +120,12 @@ func (f *fakeStore) MarkKickoffStuck(context.Context, int64, time.Time, string) 
 	return false, errors.New("fakeStore: MarkKickoffStuck is not modelled")
 }
 
+// MarkRunning: same as MarkKickoffStuck — pinned against real Postgres in
+// internal/agentstatus.
+func (f *fakeStore) MarkRunning(context.Context, int64, time.Time) (bool, error) {
+	return false, errors.New("fakeStore: MarkRunning is not modelled")
+}
+
 func (f *fakeStore) SetKickedOff(ctx context.Context, id int64, v bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

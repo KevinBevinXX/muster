@@ -182,10 +182,18 @@ func (s *Server) handleAgentsContent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	instIdx := s.instanceIndex(ctx)
+	// 🔴 MOST RECENTLY ACTIVE FIRST, BY agents.LastActivity — the same definition
+	// GET /api/agents publishes as lastActivityAt. The store's own order
+	// (created_at DESC) is left alone because the machine read documents
+	// "newest-first as the store returns them" to its consumers; only this view
+	// re-orders. One batched transcript read serves both the order and the
+	// footer's "active … ago", so the two cannot disagree.
+	lastMsg := s.lastMessageByAgents(ctx, list)
+	agents.SortByLastActivity(list, lastMsg)
 
 	cards := make([]ui.AgentCardView, 0, len(list))
 	for _, a := range list {
-		cards = append(cards, s.cardViewIndexed(a, instIdx))
+		cards = append(cards, s.cardViewIndexed(a, instIdx, lastMsg[a.ID]))
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -556,7 +564,7 @@ func (s *Server) handleSessionRead(w http.ResponseWriter, r *http.Request) {
 // The status is reconciled against live instances through liveStatusIndexed, so
 // callers in a loop pass an index they fetched once; cardViewFor is the
 // single-agent spelling.
-func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Instance) ui.AgentCardView {
+func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Instance, lastMsg time.Time) ui.AgentCardView {
 	status := liveStatusIndexed(a, idx)
 	return ui.AgentCardView{
 		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName,
@@ -576,6 +584,7 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 		KickoffResendSafe: agents.KickoffResendSafe(a),
 		Namespace:         a.Namespace,
 		NoteID:            a.NoteID, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
+		LastActiveAt: agents.LastActivity(a, lastMsg),
 		// The recent-log preview lazy-loads via /ui/agents/{id}/recent (htmx) so
 		// the list path makes NO per-agent k8s call. Only running agents with a
 		// provisioner get a preview (others render none).
@@ -587,7 +596,7 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 // instance index itself. Used by the inline-rename re-render and the cancel/card
 // re-fetch. Do NOT use it in a loop — see liveStatus.
 func (s *Server) cardViewFor(ctx context.Context, a agents.Agent) ui.AgentCardView {
-	return s.cardViewIndexed(a, s.instanceIndex(ctx))
+	return s.cardViewIndexed(a, s.instanceIndex(ctx), s.lastMessageByAgents(ctx, []agents.Agent{a})[a.ID])
 }
 
 // handleAgentRenameForm serves GET /ui/agents/{id}/rename: the inline rename

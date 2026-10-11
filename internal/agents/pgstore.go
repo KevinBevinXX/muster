@@ -251,6 +251,23 @@ func (s *PGStore) MarkKickoffStuck(ctx context.Context, id int64, seenUpdatedAt 
 	return tag.RowsAffected() > 0, nil
 }
 
+// MarkRunning promotes a provisioning row the caller saw at seenUpdatedAt to
+// running (see the Store contract). updated_at is bumped: this IS a status
+// transition, and it is what moves agents.LastActivity for the Agents list.
+func (s *PGStore) MarkRunning(ctx context.Context, id int64, seenUpdatedAt time.Time) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE agents
+		   SET status=$2, error_message='', updated_at=now()
+		 WHERE id=$1
+		   AND status=$3
+		   AND updated_at=$4`,
+		id, StatusRunning, StatusProvisioning, seenUpdatedAt)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // ClearKickoffDelivery drops the recipient stamp (see the Store contract). The
 // attempt counter and the last send error are left alone — they are history.
 func (s *PGStore) ClearKickoffDelivery(ctx context.Context, id int64) error {

@@ -166,6 +166,9 @@ type Config struct {
 	// recorded post-stamp failure (the "kickoff failed" badge comes), and a stuck
 	// verdict (the card goes red). cmd/muster-server passes
 	// api.Server.BroadcastAgentChanged, which the Agents list re-renders on.
+	// ⚠ That clause was FALSE until the list's hx-trigger gained
+	// `sse:agent.changed` (internal/ui's agentsListTrigger): before it, only the
+	// Tasks board heard this broadcast, and an open Agents list showed none of it.
 	//
 	// 🔴 A PRE-SEND FAILURE DOES NOT CALL IT. It changes nothing a card shows (the row
 	// still reads "kickoff owed"), and it recurs every tick while the pod boots, so
@@ -345,9 +348,9 @@ func (d *Deliverer) Tick(ctx context.Context) error {
 			d.failStuck(a)
 		default:
 			// ActionNone / ActionPersistStatus: nothing owed THIS tick. Persisting a
-			// recomputed status is deliberately not taken: views refine the stored
-			// status live (agents.ComputeStatus), and a persist from an instance
-			// snapshot taken before the dispatch's Create would race it.
+			// recomputed status is not this package's job: internal/agentstatus
+			// promotes provisioning → running with a write conditional on the row
+			// not having moved, which is what makes a stale snapshot harmless.
 		}
 	}
 	return nil
