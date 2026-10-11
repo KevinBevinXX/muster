@@ -104,6 +104,10 @@ type Server struct {
 	// goroutine; see goNotify.
 	pushInFlight sync.WaitGroup
 
+	// terminals is every live agent terminal, so a shutdown can end them and
+	// wait for their releases. See EndTerminals.
+	terminals terminalSet
+
 	// loginRate throttles password attempts on the human tier.
 	loginRate rateLimiter
 

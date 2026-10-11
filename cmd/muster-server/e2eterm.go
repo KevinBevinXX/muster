@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/agents"
@@ -31,7 +32,14 @@ func (d fakeTerminalDriver) Capabilities() provision.Capabilities {
 	return c
 }
 
-func (fakeTerminalDriver) Exec(context.Context, provision.Ref, []string, io.Reader, io.Writer, io.Writer) error {
+// Exec answers only the terminal release the adapter sends after every attach
+// (agents.TerminalReleaseCommand): the played terminal holds no process, so
+// there is nothing to release.
+func (fakeTerminalDriver) Exec(_ context.Context, _ provision.Ref, cmd []string, _ io.Reader, stdout, _ io.Writer) error {
+	if slices.Equal(cmd, agents.TerminalReleaseCommand()) {
+		_, err := io.WriteString(stdout, "released 0 (e2e fake terminal)\n")
+		return err
+	}
 	return fmt.Errorf("%w: the e2e fake driver only plays a terminal", provision.ErrUnsupported)
 }
 

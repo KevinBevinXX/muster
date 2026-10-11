@@ -20,7 +20,11 @@ import (
 // attaches — read-only and interactive, on a named and on the default socket —
 // is the tmuxit suite's TestTmuxTerminalAttach* against real tmux.
 func TestTheTerminalAttachesToCcdsSession(t *testing.T) {
-	cmd, err := agents.TerminalCommand(agents.KindClaudeCode, true)
+	tag, err := agents.NewTerminalTag()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd, err := agents.TerminalCommand(agents.KindClaudeCode, true, tag)
 	if err != nil {
 		t.Fatal(err)
 	}
