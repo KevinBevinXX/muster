@@ -41,7 +41,11 @@ const ConnectorsUnconfigured = "this server has no connector store: MUSTER_CONNE
 // is made of. cmd/muster-server's connect listener serves these and refuses
 // everything else, so the network allowance an isolated agent pod is given to
 // reach muster reaches this surface and no other route.
-var ConnectSurfacePrefixes = []string{"/connect/", "/agent/connectors", "/mcp"}
+//
+// /agent/approvals and /agent/blocked are the claude-code pod's approval relay
+// (approvals.go): the pod's PermissionRequest hook reaches the operator's
+// approval queue THROUGH muster, so the pod holds no credential for that queue.
+var ConnectSurfacePrefixes = []string{"/connect/", "/agent/connectors", "/mcp", "/agent/approvals", "/agent/blocked"}
 
 // OnlyConnectSurface wraps h so it serves only ConnectSurfacePrefixes (and
 // /health, for a probe), answering 404 for every other path.
@@ -144,23 +148,39 @@ func (s *Server) requireConnectorAgent(next http.HandlerFunc) http.HandlerFunc {
 			})
 			return
 		}
-		token := connectorAgentToken(r)
-		if token == "" {
-			s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "missing agent token (X-Muster-Token)"})
-			return
-		}
-		if auth.ConstantTimeEqual(token, s.auth.HookToken) || auth.ConstantTimeEqual(token, s.auth.ServiceToken) {
-			s.logger.Printf("connectors: refused a shared machine token at %s %s", r.Method, r.URL.Path)
-			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": SharedTokenRefusal})
-			return
-		}
-		a, err := s.ext.Agents.GetByHooksToken(r.Context(), token)
-		if err != nil {
-			s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid agent token"})
+		a, ok := s.authenticateCallingAgent(w, r)
+		if !ok {
 			return
 		}
 		next(w, r.WithContext(context.WithValue(r.Context(), agentCtxKey{}, a)))
 	}
+}
+
+// authenticateCallingAgent resolves the CALLING agent from its own per-agent
+// token, writing the refusal and returning ok=false when it cannot. It is the
+// identity half of requireConnectorAgent, shared with the approval relay
+// (approvals.go), which must refuse exactly the same credentials.
+//
+// 🔴 THE SHARED HOOK AND SERVICE TOKENS ARE REFUSED BY NAME, BEFORE THE ROW
+// LOOKUP. See requireConnectorAgent. The caller must have checked that
+// s.ext.Agents is non-nil.
+func (s *Server) authenticateCallingAgent(w http.ResponseWriter, r *http.Request) (agents.Agent, bool) {
+	token := connectorAgentToken(r)
+	if token == "" {
+		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "missing agent token (X-Muster-Token)"})
+		return agents.Agent{}, false
+	}
+	if auth.ConstantTimeEqual(token, s.auth.HookToken) || auth.ConstantTimeEqual(token, s.auth.ServiceToken) {
+		s.logger.Printf("agent routes: refused a shared machine token at %s %s", r.Method, r.URL.Path)
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": SharedTokenRefusal})
+		return agents.Agent{}, false
+	}
+	a, err := s.ext.Agents.GetByHooksToken(r.Context(), token)
+	if err != nil {
+		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid agent token"})
+		return agents.Agent{}, false
+	}
+	return a, true
 }
 
 func callerOf(a agents.Agent) connectors.Caller {

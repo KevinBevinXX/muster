@@ -26,7 +26,9 @@
 #   8. `ccd seed` removes `env` and `apiKeyHelper` planted in settings.json;
 #   9. with muster's connector store offered (FAKE url and token), seed registers
 #      muster's MCP server and `seed --check` agrees; `ccd connect-git` against
-#      an unreachable muster fails fast and writes no git routing; curl is present.
+#      an unreachable muster fails fast and writes no git routing; curl is present;
+#  10. the seeded settings pin default permission mode and the approval hooks,
+#      and `ccd approve` with muster unreachable makes no decision (prints nothing).
 #
 # ⚠ IT NEEDS NO REAL CREDENTIAL AND MUST NEVER BE GIVEN ONE, AND IT SENDS NO TURN:
 # nothing here needs the provider's API. Without any token the CLI stops at its
@@ -154,6 +156,25 @@ rc=0; timeout 15 ccd connect-git --timeout 3s github >/tmp/cg.out 2>&1 || rc=$?
 [[ "$rc" == "1" ]] || fail "connect-git against an unreachable muster exited $rc, want 1: $(cat /tmp/cg.out)"
 if git config --global --get-regexp '^url\.' >/dev/null 2>&1; then fail "connect-git wrote git routing without a grant"; fi
 curl --version >/dev/null || fail "curl is missing"
-unset MUSTER_CONNECT_URL MUSTER_HOOK_TOKEN
 echo "cc-smoke: connector store wiring ok"
+
+# 10. Approvals: the seeded settings pin default permission mode (never auto,
+# never bypass) and route PermissionRequest to `ccd approve`; and with the relay
+# unreachable (port 9 above) `ccd approve` prints NOTHING and exits 0 — the CLI's
+# "no decision", i.e. the normal in-terminal prompt. Never an allow.
+node -e '
+  const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  const p = JSON.stringify(s.permissions);
+  const want = JSON.stringify({defaultMode: "default", disableAutoMode: "disable", disableBypassPermissionsMode: "disable"});
+  if (p !== want) { console.error("permissions " + p + " want " + want); process.exit(1); }
+  const h = s.hooks.PermissionRequest[0].hooks[0];
+  if (h.command !== "ccd approve") { console.error("PermissionRequest hook " + JSON.stringify(h)); process.exit(1); }
+  if (s.hooks.Notification[0].matcher !== "permission_prompt") { console.error("Notification matcher"); process.exit(1); }
+' "$CLAUDE_CONFIG_DIR/settings.json" || fail "seeded settings do not pin the permission posture / approval hook"
+rc=0
+out="$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"rm -rf x"},"permission_mode":"default"}' \
+  | timeout 30 ccd approve 2>/tmp/approve.err)" || rc=$?
+[[ "$rc" == "0" && -z "$out" ]] || fail "ccd approve with the relay unreachable: exit $rc stdout '$out', want 0 and nothing"
+echo "cc-smoke: approval hook seeded; relay unreachable -> no decision (terminal prompt)"
+unset MUSTER_CONNECT_URL MUSTER_HOOK_TOKEN
 echo "cc-smoke: PASS"

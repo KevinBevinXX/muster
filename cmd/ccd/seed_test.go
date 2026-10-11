@@ -35,33 +35,111 @@ func seedInto(t *testing.T, cfg, ws string) {
 	}
 }
 
-// 🔴 A LEDGER OF THE HOOKS THE IMAGE REGISTERS: exactly these events, each running
-// `ccd hook <Event>`. It fails when the set GROWS (a new event ccd would receive
-// unasked) or SHRINKS (dropping SessionStart leaves /healthz never ready; dropping
+// imageHooks is the LEDGER of the hooks the image registers: event -> matcher and
+// command. 🔴 It fails when the set GROWS (a new event ccd would receive unasked)
+// or SHRINKS (dropping SessionStart leaves /healthz never ready; dropping
 // SessionEnd leaves ccd pasting into a TUI that has exited; dropping StopFailure
-// leaves a failed turn waiting out the whole turn timeout).
+// leaves a failed turn waiting out the whole turn timeout; dropping
+// PermissionRequest silently stops routing prompts to the operator's phone;
+// dropping Notification or PostToolUse leaves the "awaiting approval" badge
+// never set or never cleared).
+var imageHooks = map[string]struct{ matcher, command string }{
+	"SessionStart":      {"", "ccd hook SessionStart"},
+	"SessionEnd":        {"", "ccd hook SessionEnd"},
+	"UserPromptSubmit":  {"", "ccd hook UserPromptSubmit"},
+	"Stop":              {"", "ccd hook Stop"},
+	"StopFailure":       {"", "ccd hook StopFailure"},
+	"PermissionRequest": {"", "ccd approve"},
+	"Notification":      {"permission_prompt", "ccd hook Notification"},
+	"PostToolUse":       {"", "ccd hook PostToolUse"},
+}
+
 func TestTheImageRegistersExactlyTheHooksCcdNeeds(t *testing.T) {
 	hooks, _ := readObj(t, imageSettingsTemplate)["hooks"].(map[string]any)
-	var events []string
+	var events, want []string
+	for ev := range imageHooks {
+		want = append(want, ev)
+	}
 	for ev, v := range hooks {
 		events = append(events, ev)
 		groups, _ := v.([]any)
 		if len(groups) != 1 {
 			t.Fatalf("%s: %d matcher groups, want 1", ev, len(groups))
 		}
-		hs, _ := groups[0].(map[string]any)["hooks"].([]any)
+		group := groups[0].(map[string]any)
+		hs, _ := group["hooks"].([]any)
 		if len(hs) != 1 {
 			t.Fatalf("%s: %d hooks, want 1", ev, len(hs))
 		}
 		h := hs[0].(map[string]any)
-		if h["type"] != "command" || h["command"] != "ccd hook "+ev {
-			t.Fatalf("%s: hook %v, want command `ccd hook %s`", ev, h, ev)
+		exp, known := imageHooks[ev]
+		if !known {
+			continue // reported by the set comparison below
+		}
+		if h["type"] != "command" || h["command"] != exp.command {
+			t.Fatalf("%s: hook %v, want command `%s`", ev, h, exp.command)
+		}
+		if m, _ := group["matcher"].(string); m != exp.matcher {
+			t.Fatalf("%s: matcher %q, want %q", ev, m, exp.matcher)
 		}
 	}
 	sort.Strings(events)
-	want := []string{"SessionEnd", "SessionStart", "Stop", "StopFailure", "UserPromptSubmit"}
+	sort.Strings(want)
 	if strings.Join(events, ",") != strings.Join(want, ",") {
 		t.Fatalf("registered events %v, want exactly %v", events, want)
+	}
+}
+
+// 🔴 THE PERMISSION POSTURE IS PINNED, WHOLE. The operator's decision for these
+// pods is "default permissions + approvals, never bypass". The pinned CLI makes
+// AUTO mode its own default ("auto mode on (shift+tab to cycle)" was measured in
+// a live pod whose settings named no mode at all), so silence here is not
+// default mode. defaultMode makes the starting mode explicit, disableAutoMode
+// removes auto from the cycle, disableBypassPermissionsMode removes bypass. The
+// whole object is compared so a removed OR an added key (an `allow` list, say)
+// fails.
+func TestTheImagePinsDefaultPermissionModeNeverAutoNeverBypass(t *testing.T) {
+	perms, ok := readObj(t, imageSettingsTemplate)["permissions"].(map[string]any)
+	if !ok {
+		t.Fatal("settings template has no `permissions` object: the CLI would start in its own default, which is auto mode")
+	}
+	got, _ := json.Marshal(perms)
+	const want = `{"defaultMode":"default","disableAutoMode":"disable","disableBypassPermissionsMode":"disable"}`
+	if string(got) != want {
+		t.Fatalf("permissions = %s\nwant          %s", got, want)
+	}
+}
+
+// The posture must survive a seed over a persisted settings.json that an
+// operator's /config (or the session) left in auto or bypass mode: the template's
+// top-level `permissions` replaces it wholesale.
+func TestSeedReimposesThePermissionPostureOverAPersistedAutoMode(t *testing.T) {
+	cfg, ws := t.TempDir(), filepath.Join(t.TempDir(), "ws")
+	prior := `{"permissions":{"defaultMode":"auto","allow":["Bash(*)"]},"model":"kept"}`
+	if err := os.WriteFile(filepath.Join(cfg, "settings.json"), []byte(prior), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seedInto(t, cfg, ws)
+	set := readObj(t, filepath.Join(cfg, "settings.json"))
+	got, _ := json.Marshal(set["permissions"])
+	if string(got) != `{"defaultMode":"default","disableAutoMode":"disable","disableBypassPermissionsMode":"disable"}` {
+		t.Fatalf("after seed, permissions = %s", got)
+	}
+	if set["model"] != "kept" {
+		t.Fatalf("seed dropped an unrelated key: %v", set)
+	}
+}
+
+// The supervisor never starts the CLI with a permission flag: the mode comes
+// from settings alone, so nothing on argv can widen it. ⚠ INVARIANT GUARD (the
+// argv never carried one), and it checks the fresh-start argv only.
+func TestTheSupervisorPassesNoPermissionFlag(t *testing.T) {
+	sup := newSupervisor(nil, "claude", t.TempDir(), t.TempDir())
+	argv, _ := sup.argv()
+	for _, a := range argv {
+		if strings.Contains(a, "permission") || strings.Contains(a, "dangerously") {
+			t.Fatalf("supervisor argv %v carries a permission flag", argv)
+		}
 	}
 }
 

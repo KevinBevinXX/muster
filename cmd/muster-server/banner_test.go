@@ -132,7 +132,8 @@ func TestTheRouterBannerNamesTheVariableThatIsActuallyMissing(t *testing.T) {
 			cfg:  config{RouterURL: url, RouterToken: "t", RouterActor: "muster"},
 			wantLine: `permission router: CONFIGURED — ` + envRouterURL + `=` + url +
 				`, actor "muster" — session liveness, event publish, notifications, the ` +
-				`directory picker and the approval gate are live`,
+				`directory picker and agent checkpoints are live (the claude-code approval ` +
+				`relay is NOT: see the approval relay gate line)`,
 			// It is the only branch that may call itself CONFIGURED.
 			mustContain: []string{"CONFIGURED", url},
 			// 🔴 "NOT CONFIGURED" AND "PARTIALLY" ARE THE MEASURED HOLE. Without
@@ -270,6 +271,11 @@ var bannerLedger = []string{
 	envHookToken,
 	envServiceToken,
 	envRouterURL,
+	// The approval relay's own gate: its off-state is "every claude-code prompt
+	// falls back to the terminal", which nothing else on the banner reveals when
+	// the router line says NONE by design (a standalone deployment).
+	envApprovalGateURL,
+	envApprovalGateToken,
 	envGitHubEncKey,
 	envAgentProvisioner,
 	// The chat tier is its own axis with its own two lines — the fully-off arm names
@@ -571,6 +577,9 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		RouterURL:     "https://router.example.invalid",
 		RouterToken:   "t",
 		RouterActor:   "muster",
+		// The relay's dedicated gate, so the ON render takes the DEDICATED arm.
+		ApprovalGateURL:   "https://gate.example.invalid",
+		ApprovalGateToken: "g",
 
 		// 🔴 THE PROVISIONER AXIS NEEDS BOTH THE CONFIG *AND* THE WIRED EXTENSION,
 		// because the banner branches on the extension and reports the config. A

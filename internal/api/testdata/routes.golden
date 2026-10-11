@@ -26,6 +26,7 @@
 # DELETED from this file is not only a server change; it can make a client verb
 # unreachable, and that test is where it surfaces.
 /connect/{connector}/{host}/{path...}
+DELETE /agent/approvals/{id}
 DELETE /agents/{id}
 DELETE /agents/{id}/grants/{profileId}
 DELETE /api/tasks/{id}
@@ -37,6 +38,7 @@ DELETE /runbooks/{id}
 DELETE /tasks/{id}
 DELETE /tasks/{id}/comments/{cid}
 DELETE /tasks/{id}/tags/{tag}
+GET /agent/approvals/{id}
 GET /agent/connectors
 GET /agent/connectors/{name}
 GET /agent/muster
@@ -111,6 +113,8 @@ PATCH /agent/task/status
 PATCH /api/tasks/{id}
 PATCH /api/tasks/{id}/status
 PATCH /tasks/{id}/status
+POST /agent/approvals
+POST /agent/blocked
 POST /agent/connectors/{name}/request
 POST /agent/privilege/request
 POST /agent/task/comment

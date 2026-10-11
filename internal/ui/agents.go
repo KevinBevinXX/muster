@@ -609,7 +609,34 @@ func statusIcon(status string) g.Node {
 // a status. It is the exported render entry for the live-status poll endpoint
 // (GET /ui/agents/{id}/status), reusing statusIcon so the polled icon matches the
 // first-paint icon in the agent-detail / operator header exactly.
-func RenderStatusIcon(w io.Writer, status string) error { return statusIcon(status).Render(w) }
+//
+// awaitingApproval adds the "awaiting approval" badge beside the dot: the agent's
+// terminal is blocked on a permission prompt, or it has a request open on the
+// operator's approval queue. 🔴 THE BADGE LIVES IN THIS POLLED RESPONSE ON
+// PURPOSE — it is a live state, so the 10s poll is what both shows and clears it.
+// It is the opposite of the owed-kickoff badge, which must sit OUTSIDE the
+// polling span because this endpoint never rendered it.
+func RenderStatusIcon(w io.Writer, status string, awaitingApproval bool) error {
+	if !awaitingApproval {
+		return statusIcon(status).Render(w)
+	}
+	return g.Group([]g.Node{statusIcon(status), AwaitingApprovalBadge()}).Render(w)
+}
+
+// AwaitingApprovalBadgeID is the data attribute the badge carries, so tests and
+// scripts find it by STATE, not by its wording.
+const AwaitingApprovalBadgeID = "awaiting-approval"
+
+// AwaitingApprovalBadge is the small pill shown while an agent waits on a human
+// to approve a tool call.
+func AwaitingApprovalBadge() g.Node {
+	return Span(
+		g.Attr("data-badge", AwaitingApprovalBadgeID),
+		g.Attr("title", "Blocked on a permission prompt: approve or deny it on your phone or in the agent's terminal"),
+		Class("ml-1.5 inline-flex items-center gap-1.5 whitespace-nowrap rounded-full bg-st-warning-bg px-2.5 py-1 text-xs font-semibold text-st-warning-fg ring-1 ring-inset ring-st-warning-fg/40"),
+		g.Text("awaiting approval"),
+	)
+}
 
 // cardStatusIcon wraps the compact status icon in a self-polling span so each
 // agent card keeps its status live (every 10s) on its own — without the list

@@ -23,6 +23,8 @@
 //	ccd [serve]          run the server (environment below)
 //	ccd hook <Event>     forward a hook payload from stdin to the server
 //	ccd seed [--check]   write (or verify) the CLI's onboarding/trust/hook config
+//	ccd approve          the PermissionRequest hook: route the prompt to the
+//	                     operator through muster's approval relay (approve.go)
 //
 // Environment (serve):
 //
@@ -91,8 +93,10 @@ func run(args []string) int {
 		return runSeed(args, os.Stdout, os.Stderr)
 	case "connect-git":
 		return runConnectGit(args, os.Stdout, os.Stderr)
+	case "approve":
+		return runApprove(args, os.Stdin, os.Stdout, os.Stderr)
 	default:
-		fmt.Fprintf(os.Stderr, "ccd: unknown command %q (serve | hook <Event> | seed | connect-git [connector])\n", cmd)
+		fmt.Fprintf(os.Stderr, "ccd: unknown command %q (serve | hook <Event> | seed | connect-git [connector] | approve)\n", cmd)
 		return 2
 	}
 }
@@ -174,6 +178,11 @@ func serve() error {
 		SubmitTimeout: durs[0], TurnTimeout: durs[1], HookLog: os.Getenv("CCD_HOOK_LOG"),
 		HasCredential: credentialVisible(configDir),
 	}, term, auth)
+	// The "awaiting approval" badge (blocked.go): set before the hook listener
+	// serves, so onHook never races its assignment.
+	if base, tok := strings.TrimRight(os.Getenv(envConnectURL), "/"), os.Getenv(envAgentToken); base != "" && tok != "" {
+		srv.blocked = newBlockedReporter(base, tok)
+	}
 	if os.Getenv("CCD_SUPERVISE") == "1" {
 		srv.sup = newSupervisor(term, envOr("CCD_CLAUDE_BIN", "claude"), configDir, workspace)
 		srv.inputPane = srv.sup.inputPane
@@ -204,6 +213,9 @@ func serve() error {
 	// offered the store.
 	if base, tok := strings.TrimRight(os.Getenv(envConnectURL), "/"), os.Getenv(envAgentToken); base != "" && tok != "" {
 		go runGitRoutingLoop(ctx, base, tok, gitSyncInterval, log.Printf)
+	}
+	if srv.blocked != nil {
+		go srv.blocked.run(ctx)
 	}
 	var supErr chan error // nil (never ready) unless ccd supervises the CLI
 	if srv.sup != nil {

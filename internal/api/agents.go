@@ -457,7 +457,7 @@ func (s *Server) handleAgentStatusIcon(w http.ResponseWriter, r *http.Request) {
 	}
 	status := s.liveStatus(ctx, a)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderStatusIcon(w, status); err != nil {
+	if err := ui.RenderStatusIcon(w, status, s.AwaitingApproval(a.ID)); err != nil {
 		s.logger.Printf("agents: render status %d: %v", id, err)
 	}
 }

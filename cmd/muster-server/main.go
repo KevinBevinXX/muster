@@ -324,6 +324,11 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		srv.UseRouter(port)
 		srv.UseGate(port)
 	}
+	// The claude-code approval relay's gate: its OWN field, so a standalone
+	// deployment can arm it without UseRouter / UseGate / session liveness.
+	if g := approvalGateFor(cfg); g != nil {
+		srv.UseApprovalGate(g)
+	}
 	if cfg.TaskReapAfter > 0 {
 		srv.SetTaskReapAfter(cfg.TaskReapAfter)
 	}
@@ -364,6 +369,37 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 
 	a.logBanner(ext, port)
 	return a, nil
+}
+
+// approvalGateFor builds the gate the claude-code approval relay files through:
+// a client for MUSTER_APPROVAL_GATE_URL + _TOKEN, asserting RouterActor, or nil
+// when they are unset (the relay then answers 503 and prompts fall back to the
+// agent's terminal).
+//
+// 🔴 THERE IS NO FALLBACK TO A CONFIGURED PERMISSION ROUTER'S CLIENT. One existed
+// and was deleted (#48 audit round 0): no deployment runs router mode, the
+// operator chose standalone, and a second source would be a second credential
+// path into the gate for no consumer. A router deployment that wants approvals
+// sets these two variables like any other.
+//
+// 🔴 THE RESULT IS HANDED TO THE SERVER ONLY AS THE RELAY'S api.GatePort
+// (Server.UseApprovalGate). It is never passed to UseRouter, UseGate or
+// buildSessionLiveness, so the gate turns on no router behaviour —
+// TestTheApprovalGateDoesNotTurnOnRouterBehaviour pins that.
+//
+// ⚠ A nil api.GatePort, never a typed nil: an unconfigured router.Port inside the
+// interface would make the relay call a client that answers ErrNotConfigured on
+// every request (a 502 per prompt) instead of the honest 503.
+func approvalGateFor(cfg config) api.GatePort {
+	if cfg.ApprovalGateURL == "" || cfg.ApprovalGateToken == "" {
+		return nil
+	}
+	if p := router.NewPort(router.Config{
+		BaseURL: cfg.ApprovalGateURL, Token: cfg.ApprovalGateToken, Actor: cfg.RouterActor,
+	}); p.Configured() {
+		return p
+	}
+	return nil
 }
 
 // buildSessionLiveness decides what answers "does this session still have a
@@ -657,7 +693,8 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		// this process see my variable at all" returned nothing precisely when
 		// the answer was yes. Found by the both-directions ledger, not by review.
 		l.Printf("permission router: CONFIGURED — %s=%s, actor %q — session liveness, event "+
-			"publish, notifications, the directory picker and the approval gate are live",
+			"publish, notifications, the directory picker and agent checkpoints are live (the "+
+			"claude-code approval relay is NOT: see the approval relay gate line)",
 			envRouterURL, a.cfg.RouterURL, a.cfg.RouterActor)
 	case a.cfg.Standalone:
 		l.Printf("permission router: NONE, DECLARED (%s=1) — session transcript links will all "+
@@ -688,6 +725,20 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("permission router: NONE, UNDECLARED — %s is unset and %s is not 1. This "+
 			"server will NOT report ready while a notes store is wired, on purpose: see "+
 			"/readyz for the reason", envRouterURL, envStandalone)
+	}
+
+	// The claude-code approval relay's gate, on its own line: it is configurable
+	// apart from the router (and beside MUSTER_STANDALONE), so "router: NONE" does
+	// not answer whether prompts reach the operator's phone.
+	if approvalGateFor(a.cfg) != nil {
+		l.Printf("approval relay gate: DEDICATED — %s=%s (%s set), actor %q. Used ONLY by "+
+			"/agent/approvals to file and poll checkpoint cards; it turns on no router "+
+			"behaviour (session liveness, events, notifications, checkpoints are unchanged)",
+			envApprovalGateURL, a.cfg.ApprovalGateURL, envApprovalGateToken, a.cfg.RouterActor)
+	} else {
+		l.Printf("approval relay gate: NONE — %s/%s are unset, so /agent/approvals answers 503 "+
+			"and every claude-code permission prompt falls back to the agent's own terminal "+
+			"(a configured permission router is NOT used for this)", envApprovalGateURL, envApprovalGateToken)
 	}
 
 	if ext.Connectors != nil {

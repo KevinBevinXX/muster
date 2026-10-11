@@ -99,6 +99,15 @@ type Server struct {
 	// gatePort is the approval queue an agent checkpoint asks through. See gate.go.
 	gatePort GatePort
 
+	// approvals is the claude-code approval relay's in-memory ledger: which agent
+	// filed which request, and which agents report a blocked terminal. See
+	// approvals.go.
+	approvals approvalLedger
+	// approvalGatePort is the queue the approval relay files through. It is NOT
+	// gatePort: a standalone deployment may arm the relay without arming agent
+	// checkpoints or any router behaviour. See UseApprovalGate.
+	approvalGatePort GatePort
+
 	startedAt time.Time
 	now       func() time.Time
 
@@ -330,6 +339,11 @@ func (s *Server) UseRouter(r RouterPort) { s.router = r }
 // NOT APPROVED at every checkpoint — never to "proceed". See gate.go.
 func (s *Server) UseGate(g GatePort) { s.gatePort = g }
 
+// UseApprovalGate attaches the queue the claude-code approval relay
+// (approvals.go) files cards through, and nothing else uses. A nil gate is
+// supported: the relay answers 503 and every prompt falls back to the terminal.
+func (s *Server) UseApprovalGate(g GatePort) { s.approvalGatePort = g }
+
 // SetTaskReapAfter overrides the idle window the stale-task sweep uses.
 func (s *Server) SetTaskReapAfter(d time.Duration) { s.taskReapAfter = d }
 
@@ -437,6 +451,7 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerRunbookRoutes(mux)
 	s.registerAgentSelfServiceRoutes(mux)
 	s.registerConnectorRoutes(mux)
+	s.registerApprovalRoutes(mux)
 }
 
 // registerAgentSelfServiceRoutes wires the agent callback API. These are

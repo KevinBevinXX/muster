@@ -1,4 +1,9 @@
 {
+  "permissions": {
+    "defaultMode": "default",
+    "disableAutoMode": "disable",
+    "disableBypassPermissionsMode": "disable"
+  },
   "hooks": {
     "SessionStart": [
       {"hooks": [{"type": "command", "command": "ccd hook SessionStart", "timeout": 10}]}
@@ -14,6 +19,15 @@
     ],
     "StopFailure": [
       {"hooks": [{"type": "command", "command": "ccd hook StopFailure", "timeout": 10}]}
+    ],
+    "PermissionRequest": [
+      {"hooks": [{"type": "command", "command": "ccd approve", "timeout": 180}]}
+    ],
+    "Notification": [
+      {"matcher": "permission_prompt", "hooks": [{"type": "command", "command": "ccd hook Notification", "timeout": 10}]}
+    ],
+    "PostToolUse": [
+      {"hooks": [{"type": "command", "command": "ccd hook PostToolUse", "timeout": 10}]}
     ]
   }
 }
