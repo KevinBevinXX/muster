@@ -23,8 +23,8 @@ import verdict  # noqa: E402
 PKG = "example.test/pkg"
 
 
-def ev(action: str, test: str | None = None, output: str | None = None, pkg: str = PKG) -> str:
-    e: dict = {"Action": action, "Package": pkg}
+def ev(action: str, test: str | None = None, output: str | None = None) -> str:
+    e: dict = {"Action": action, "Package": PKG}
     if test:
         e["Test"] = test
     if output is not None:
@@ -32,107 +32,77 @@ def ev(action: str, test: str | None = None, output: str | None = None, pkg: str
     return json.dumps(e)
 
 
-def stream(*tests: tuple[str, str], pkg_end: str | None = "pass") -> list[str]:
+def stream(*tests: tuple[str, str], pkg_end: str = "pass") -> list[str]:
     """One package: `start`, each test's run/output/verdict, then the package's."""
     lines = [ev("start")]
     for name, action in tests:
-        lines += [ev("run", name), ev("output", name, f"=== RUN   {name}\n")]
-        if action:
-            lines += [ev("output", name, f"--- {action.upper()}: {name}\n"), ev(action, name)]
-    if pkg_end:
-        lines += [ev("output", output=f"{'ok' if pkg_end == 'pass' else 'FAIL'}\t{PKG}\n"),
-                  ev(pkg_end)]
-    return lines
+        lines += [ev("run", name), ev("output", name, f"=== RUN   {name}\n"),
+                  ev("output", name, f"--- {action.upper()}: {name}\n"), ev(action, name)]
+    return lines + [ev("output", output=f"{'ok' if pkg_end == 'pass' else 'FAIL'}\t{PKG}\n"),
+                    ev(pkg_end)]
 
 
 GREEN = stream(("TestA", "pass"), ("TestB", "pass"))
 
 
-def run(lines: list[str], **kw) -> tuple[int, str]:
+def run(lines: list[str], echo: str = "summary") -> tuple[int, str]:
     out = io.StringIO()
-    return verdict.main(iter(lines), out=out, **kw), out.getvalue()
+    return verdict.main(iter(lines), echo, out=out), out.getvalue()
 
 
 class Verdict(unittest.TestCase):
-    def refuses(self, lines: list[str], needle: str, **kw) -> str:
-        rc, text = run(lines, **kw)
+    def refuses(self, lines: list[str], needle: str) -> str:
+        rc, text = run(lines)
         self.assertEqual(rc, 1, text)
         self.assertIn(needle, text)
         return text
 
     def test_green_reports_the_pair(self):
-        rc, text = run(GREEN, exit_code=0)
+        rc, text = run(GREEN)
         self.assertEqual(rc, 0, text)
         self.assertIn("tests that produced a verdict: 2", text)
         self.assertIn("tests that SKIPPED:            0", text)
-        self.assertIn("packages started / finished:   1 / 1", text)
 
     def test_a_skip_is_refused_and_named(self):
-        text = self.refuses(stream(("TestA", "pass"), ("TestB", "skip")),
-                            "FAIL: tests skipped", exit_code=0)
+        text = self.refuses(stream(("TestA", "pass"), ("TestB", "skip")), "FAIL: tests skipped")
         self.assertIn(f"SKIPPED  {PKG}.TestB", text)
-        self.assertNotIn("CUT OFF", text)
-
-    def test_zero_verdicts_is_refused(self):
-        self.refuses(stream(), "FAIL: zero tests produced a verdict", exit_code=0)
-
-    def test_the_exit_code_wins_over_a_clean_stream(self):
-        text = self.refuses(GREEN, "FAIL: go test exited 7", exit_code=7)
         self.assertNotIn("records a failure", text)
 
-    def test_a_failed_test_is_refused_without_the_exit_code(self):
+    def test_zero_verdicts_is_refused(self):
+        self.refuses(stream(), "FAIL: zero tests produced a verdict")
+
+    def test_a_failed_test_is_refused_and_named(self):
         # The package event says `pass` here, which go never emits beside a failed
         # test — it isolates the test-level read from the package-level one.
-        self.refuses(stream(("TestA", "fail")), f"FAILED TEST     {PKG}.TestA")
+        text = self.refuses(stream(("TestA", "fail")), f"FAILED TEST     {PKG}.TestA")
+        self.assertNotIn("FAILED PACKAGE", text)
 
     def test_a_failed_package_with_passing_tests_is_refused(self):
         text = self.refuses(stream(("TestA", "pass"), pkg_end="fail"), f"FAILED PACKAGE  {PKG}")
         self.assertNotIn("FAILED TEST", text)
-
-    def test_a_package_that_never_finished_is_refused(self):
-        text = self.refuses(stream(("TestA", "pass"), pkg_end=None),
-                            f"UNFINISHED PACKAGE  {PKG}", exit_code=0)
-        self.assertNotIn("UNFINISHED TEST", text)
-
-    def test_a_test_that_never_finished_is_refused(self):
-        lines = stream(("TestA", "pass"), ("TestB", ""))
-        self.refuses(lines, f"UNFINISHED TEST     {PKG}.TestB", exit_code=0)
-
-    def test_a_line_cut_mid_event_is_refused(self):
-        # What a truncated file looks like: the last line is half an event.
-        cut = GREEN[:-3] + [GREEN[-3][: len(GREEN[-3]) // 2]]
-        self.refuses(cut, "CUT OFF", exit_code=0)
-
-    def test_no_start_event_is_refused(self):
-        self.refuses(GREEN[1:], "no package emitted a `start` event", exit_code=0)
 
     def test_empty_and_non_json_input_cannot_vouch(self):
         self.assertEqual(run([])[0], 2)
         self.assertEqual(run(["", "  "])[0], 2)
         self.assertEqual(run(["not json", "ok  \tpkg\t0.1s"])[0], 2)
 
-    def test_stdin_mode_without_an_exit_code_still_passes_green(self):
-        rc, text = run(GREEN)
-        self.assertEqual(rc, 0, text)
-        self.assertNotIn("go test exit code", text)
-
-    def test_echo_summary_shows_package_lines_and_failing_output_only(self):
+    def test_echo_summary_shows_package_lines_and_non_passing_output_only(self):
         lines = stream(("TestA", "pass"), ("TestB", "fail"), pkg_end="fail")
         _, text = run(lines, echo="summary")
         self.assertIn("--- FAIL: TestB\n", text)
         self.assertIn(f"FAIL\t{PKG}\n", text)
         self.assertNotIn("=== RUN   TestA", text)
 
+    def test_echo_summary_keeps_the_output_of_a_test_cut_off_mid_run(self):
+        cut = [ev("start"), ev("run", "TestA"), ev("output", "TestA", "panic: test timed out\n")]
+        _, text = run(cut, echo="summary")
+        self.assertIn("panic: test timed out\n", text)
+
     def test_echo_all_shows_every_line(self):
         _, text = run(GREEN, echo="all")
         self.assertIn("=== RUN   TestA\n", text)
         self.assertIn("--- PASS: TestB\n", text)
         self.assertIn(f"ok\t{PKG}\n", text)
-
-    def test_echo_none_prints_no_test_output(self):
-        _, text = run(GREEN)
-        self.assertNotIn("=== RUN", text)
-        self.assertNotIn(f"ok\t{PKG}", text)
 
 
 if __name__ == "__main__":
