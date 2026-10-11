@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/privilege"
@@ -125,6 +126,14 @@ type Extensions struct {
 
 	// GitHubOAuth configures the OAuth web flow for connecting an account.
 	GitHubOAuth GitHubOAuthConfig
+
+	// Connectors is the secure connector store. nil means the feature is off
+	// (no MUSTER_CONNECTOR_ENCRYPTION_KEY): every connector route answers 503 and
+	// the tab is not drawn. See internal/connectors and connectors.go.
+	Connectors connectors.Store
+	// ConnectorPolicy is the proxy's upstream network policy. The zero value is
+	// production's strict one; see connectors.Policy.
+	ConnectorPolicy connectors.Policy
 }
 
 // GitHubOAuthConfig holds the OAuth App credentials + the public base URL used
@@ -160,6 +169,15 @@ func (s *Server) UseExtensions(ext Extensions) {
 	s.extDefects = ext.defects()
 	ext.Notes = withSessionLiveness(ext.Notes, ext.SessionLiveness)
 	s.ext = ext
+	s.connectProxy = nil
+	if ext.Connectors != nil {
+		s.connectProxy = &connectors.Proxy{
+			Store:            ext.Connectors,
+			Policy:           ext.ConnectorPolicy,
+			Logger:           s.logger,
+			OnGrantRequested: s.onConnectorRequested,
+		}
+	}
 }
 
 // defects lists wiring mistakes that must not be SERVED with, as opposed to

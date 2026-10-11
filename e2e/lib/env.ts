@@ -35,6 +35,15 @@ export const polishPort = port + 4;
 // The provisioning-indicator spec's own server: the e2eterm binary with its
 // readiness hold armed (MUSTER_E2E_HOLD_READY_DIR, cmd/muster-server/e2eterm.go).
 export const provPort = port + 5;
+// The connector spec's own server (the e2eterm binary, whose connector proxy may
+// reach a FAKE upstream on loopback), its dedicated connect listener, and the
+// fake upstream itself.
+export const connectorsPort = port + 6;
+export const connectPort = port + 7;
+export const fakeUpstreamPort = port + 8;
+// The seeded `docs-sweeper` agent's own token (e2e/seed). Invented, like every
+// value here.
+export const agentToken = 'e2e-agent-token-not-a-real-one';
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

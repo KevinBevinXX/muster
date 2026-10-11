@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -270,6 +271,60 @@ func (s *Server) requireSession(next http.HandlerFunc) http.HandlerFunc {
 		}
 		s.refuseUnauthenticated(w, r)
 	}
+}
+
+// CrossOriginRefusal is the error requireSameOrigin answers.
+const CrossOriginRefusal = "cross-origin request refused: this action must come from muster's own pages"
+
+// requireSameOrigin refuses a state-changing request whose Origin (or, when the
+// browser sent none, Referer) is not muster's own host (wsAllowedOrigins).
+//
+// 🔴 SameSite=Lax IS NOT A CSRF DEFENCE AGAINST A SIBLING SUBDOMAIN. "Site" is
+// the registrable domain, so a page on any sibling subdomain of the one muster
+// is served from is SAME-SITE: the browser attaches the session cookie to its
+// cross-origin POST. ORIGIN, unlike site, includes the full host, and browsers
+// send it on every cross-origin POST/PUT/PATCH/DELETE — htmx and fetch on
+// muster's own pages send it too.
+//
+// 🔴 A REQUEST WITH NEITHER HEADER IS REFUSED. Every browser this app targets
+// sends Origin on these methods, so a request carrying neither is not one of
+// muster's own pages; the Referer fallback exists only for a privacy setting
+// that strips Origin and keeps a same-origin Referer. A non-browser client of
+// these routes (there is none: they are the Connectors tab's buttons) would
+// have to send Origin itself.
+//
+// GET and HEAD pass: they change nothing (handleShare documents that rule).
+func (s *Server) requireSameOrigin(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet || r.Method == http.MethodHead || s.isSameOrigin(r) {
+			next(w, r)
+			return
+		}
+		s.logger.Printf("refused a cross-origin %s %s (Origin %q)", r.Method, r.URL.Path, r.Header.Get("Origin"))
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
+	}
+}
+
+// isSameOrigin reports whether r's Origin — or Referer when Origin is absent —
+// names one of muster's own hosts.
+func (s *Server) isSameOrigin(r *http.Request) bool {
+	src := strings.TrimSpace(r.Header.Get("Origin"))
+	if src == "" {
+		src = strings.TrimSpace(r.Header.Get("Referer"))
+	}
+	if src == "" || src == "null" {
+		return false
+	}
+	u, err := url.Parse(src)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return false
+	}
+	for _, h := range s.wsAllowedOrigins(r) {
+		if strings.EqualFold(u.Host, h) {
+			return true
+		}
+	}
+	return false
 }
 
 // refuseUnauthenticated writes the no-session refusal, choosing its shape from

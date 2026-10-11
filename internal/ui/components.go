@@ -120,6 +120,7 @@ var musterTabs = []tab{
 	{Key: "repos", Label: "Repos", Icon: "📦", Heading: "Repos"},
 	{Key: "runbooks", Label: "Runbooks", Icon: "📕", Heading: "Runbooks"},
 	{Key: "privileges", Label: "Privileges", Icon: "🔑", Heading: "Privileges"},
+	{Key: "connectors", Label: "Connectors", Icon: "🔌", Heading: "Connectors"},
 }
 
 // defaultTab is what an unknown or empty tab string clamps to, and what `/`
@@ -329,6 +330,7 @@ func shell(activeTab string, feat Features, extra g.Node) g.Node {
 							g.If(feat.GitHub, ReposPanel(activeTab == "repos")),
 							RunbooksPanel(activeTab == "runbooks"),
 							PrivilegesPanel(activeTab == "privileges"),
+							g.If(feat.Connectors, ConnectorsPanel(activeTab == "connectors")),
 						),
 					),
 					// Keep relative timestamps ('10s', '30m') live + format new cards.

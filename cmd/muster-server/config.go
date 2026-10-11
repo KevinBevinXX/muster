@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -62,6 +63,15 @@ const (
 	envPublicURL       = "MUSTER_PUBLIC_URL"
 	envGitHubClientID  = "GITHUB_CLIENT_ID"
 	envGitHubClientSec = "GITHUB_CLIENT_SECRET"
+
+	// The secure connector store (internal/connectors). The KEY turns it on; the
+	// connect PORT is a second listener serving ONLY the agent-facing connector
+	// surface (api.ConnectSurfacePrefixes), so the network allowance an isolated
+	// agent is given reaches nothing else; the agent URL is what agents are told
+	// (as MUSTER_CONNECT_URL) to reach that listener by.
+	envConnectorEncKey = "MUSTER_CONNECTOR_ENCRYPTION_KEY"
+	envConnectPort     = "MUSTER_CONNECT_PORT"
+	envAgentConnectURL = "MUSTER_AGENT_CONNECT_URL"
 
 	envFaroURL     = "MUSTER_FARO_URL"
 	envFaroKey     = "MUSTER_FARO_API_KEY"
@@ -263,6 +273,16 @@ type config struct {
 	PublicURL          string
 	GitHubClientID     string
 	GitHubClientSecret string
+
+	// ConnectorEncKey is the 32-byte AES key connector secrets are sealed with.
+	// Empty means the connector store is not built (the feature is off).
+	ConnectorEncKey []byte
+	// ConnectPort, when non-zero, binds a second listener serving only the
+	// agent-facing connector surface.
+	ConnectPort int
+	// AgentConnectURL is handed to every agent as MUSTER_CONNECT_URL, and is
+	// what makes a claude-code agent's network policy allow ConnectPort to muster.
+	AgentConnectURL string
 
 	FaroURL     string
 	FaroKey     string
@@ -771,7 +791,58 @@ func loadConfig(getenv func(string) string) (config, error) {
 		c.GitHubEncKey = key
 	}
 
+	if v := strings.TrimSpace(getenv(envConnectorEncKey)); v != "" {
+		key, err := decodeEncryptionKey(v)
+		if err != nil {
+			return config{}, fmt.Errorf("invalid %s: %w", envConnectorEncKey, err)
+		}
+		c.ConnectorEncKey = key
+	}
+	if v := strings.TrimSpace(getenv(envConnectPort)); v != "" {
+		p, err := strconv.Atoi(v)
+		if err != nil || p < 1 || p > 65535 {
+			return config{}, fmt.Errorf("invalid %s %q: must be an integer 1-65535", envConnectPort, v)
+		}
+		c.ConnectPort = p
+	}
+	c.AgentConnectURL = strings.TrimRight(strings.TrimSpace(getenv(envAgentConnectURL)), "/")
+
 	return c, nil
+}
+
+// validateConnectors refuses a connector configuration that could only fail
+// later, or that would quietly weaken a guarantee.
+//
+//   - the connector key equal to the GitHub key: one key protecting two
+//     unrelated stores means a leak of either is a leak of both. Generate two.
+//   - a connect port equal to the main port: the second listener could not bind,
+//     and "only the connector surface on this port" would be false anyway.
+//   - an agent connect URL without the store or without the connect port: agents
+//     would be handed a URL that answers 503, or isolated agents a network
+//     allowance to a port nothing serves the connector surface on.
+//   - a connect port without the store: a listener serving routes that all 503.
+func (c config) validateConnectors() error {
+	if len(c.ConnectorEncKey) > 0 && len(c.GitHubEncKey) > 0 && string(c.ConnectorEncKey) == string(c.GitHubEncKey) {
+		return fmt.Errorf("%s is the same key as %s: generate a separate key for each store", envConnectorEncKey, envGitHubEncKey)
+	}
+	if c.ConnectPort != 0 && len(c.ConnectorEncKey) == 0 {
+		return fmt.Errorf("%s is set but %s is not: the connect listener would serve only refusals", envConnectPort, envConnectorEncKey)
+	}
+	if c.ConnectPort != 0 && c.ConnectPort == c.Port {
+		return fmt.Errorf("%s (%d) is the same as the main port: pick a separate port for the connect listener", envConnectPort, c.ConnectPort)
+	}
+	if c.AgentConnectURL != "" {
+		if len(c.ConnectorEncKey) == 0 || c.ConnectPort == 0 {
+			return fmt.Errorf("%s is set but the connector store is not fully configured: it needs %s and %s",
+				envAgentConnectURL, envConnectorEncKey, envConnectPort)
+		}
+		u, err := url.Parse(c.AgentConnectURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil ||
+			(u.Path != "" && u.Path != "/") || u.RawQuery != "" {
+			return fmt.Errorf("invalid %s %q: want a base URL like http://muster.<namespace>.svc:<port>", envAgentConnectURL, c.AgentConnectURL)
+		}
+	}
+	return nil
 }
 
 // decodeEncryptionKey decodes the 32-byte AES key the GitHub token is encrypted
@@ -822,6 +893,9 @@ func (c config) validate() error {
 	if c.Standalone && c.RouterURL != "" {
 		return fmt.Errorf("%s=1 and %s are both set: they are contradictory claims about "+
 			"whether a permission router exists. Unset one", envStandalone, envRouterURL)
+	}
+	if err := c.validateConnectors(); err != nil {
+		return err
 	}
 	return c.validateProvisioner()
 }

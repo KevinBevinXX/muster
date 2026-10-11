@@ -46,6 +46,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/sse"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -69,6 +70,8 @@ const (
 	EventChatReply = "chat.reply"
 	// EventAgentStream carries ONE live event of an agent's kickoff turn.
 	EventAgentStream = "agent.stream"
+	// EventConnectorChanged announces a connector request, decision or change.
+	EventConnectorChanged = "connector.changed"
 )
 
 // agentStreamPayload is the JSON Data of an EventAgentStream SSE event: the agent
@@ -160,6 +163,10 @@ type Server struct {
 
 	// taskLeader is the cross-process singleton gate for the background loops.
 	taskLeader LeaderGate
+
+	// connectProxy is the connector proxy, built by UseExtensions when a
+	// connector store is wired. See connectors.go.
+	connectProxy *connectors.Proxy
 }
 
 // LeaderGate is the cross-process singleton gate the background loops consult.
@@ -266,6 +273,9 @@ const (
 	privilegeRequestRetention = 30 * 24 * time.Hour
 	// chatRetention bounds chat_messages (the agent web-chat transcript).
 	chatRetention = 90 * 24 * time.Hour
+	// connectorAuditRetention bounds connector_audit (proxied requests and grant
+	// decisions).
+	connectorAuditRetention = 90 * 24 * time.Hour
 
 	// defaultTaskReapAfter is how long a task may sit untouched before the
 	// sweep tags it stale.
@@ -426,6 +436,7 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerPrivilegeRoutes(mux)
 	s.registerRunbookRoutes(mux)
 	s.registerAgentSelfServiceRoutes(mux)
+	s.registerConnectorRoutes(mux)
 }
 
 // registerAgentSelfServiceRoutes wires the agent callback API. These are
@@ -470,7 +481,7 @@ func staticHandler() http.Handler {
 // build does not have, not one this caller may not see — every route stays
 // registered and answers for itself (see internal/api/routes.go and github.go).
 func (s *Server) shellFeatures() ui.Features {
-	return ui.Features{GitHub: s.ext.GitHub != nil}
+	return ui.Features{GitHub: s.ext.GitHub != nil, Connectors: s.ext.Connectors != nil}
 }
 
 // handleIndex serves the document shell. The active tab is derived from the
@@ -646,6 +657,13 @@ func (s *Server) taskRetentionPass(ctx context.Context) {
 			s.logger.Printf("retention: delete old privilege requests: %v", err)
 		} else if n > 0 {
 			s.logger.Printf("retention: deleted %d resolved privilege request(s) older than %s", n, privilegeRequestRetention)
+		}
+	}
+	if s.ext.Connectors != nil {
+		if n, err := s.ext.Connectors.PruneAudit(ctx, now.Add(-connectorAuditRetention)); err != nil {
+			s.logger.Printf("retention: delete old connector audit entries: %v", err)
+		} else if n > 0 {
+			s.logger.Printf("retention: deleted %d connector audit entr(ies) older than %s", n, connectorAuditRetention)
 		}
 	}
 	if s.ext.Agents != nil {

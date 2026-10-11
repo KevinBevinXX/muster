@@ -485,6 +485,16 @@ func Fingerprint(s Spec) string {
 		}
 		sort.Strings(ports)
 		w("network", strconv.FormatBool(n.Isolate), strings.Join(ports, "\x1f"))
+		// Its own line, written only when declared, so a spec that declares no
+		// controller egress keeps the fingerprint it had before the field existed.
+		if len(n.ControllerEgressTCPPorts) > 0 {
+			cports := make([]string, 0, len(n.ControllerEgressTCPPorts))
+			for _, p := range n.ControllerEgressTCPPorts {
+				cports = append(cports, strconv.Itoa(p))
+			}
+			sort.Strings(cports)
+			w("network-controller", strings.Join(cports, "\x1f"))
+		}
 	}
 
 	return hex.EncodeToString(h.Sum(nil))

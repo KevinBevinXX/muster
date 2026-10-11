@@ -260,6 +260,10 @@ const (
 	// client at a file muster did not write, which fails as "the store is
 	// unreachable" rather than as a configuration mistake. See cairn.go.
 	EnvCairnConfig = "CAIRN_CONFIG"
+	// EnvConnectURL is the base URL of muster's agent-facing connector surface
+	// (the proxy at /connect/… and /agent/connectors). Set only when the
+	// deployment configures one ([Config.ConnectURL]); not a secret.
+	EnvConnectURL = "MUSTER_CONNECT_URL"
 )
 
 // InstructionsFileName is the file [Options.Instructions] is written to, inside
@@ -326,6 +330,13 @@ type Config struct {
 	// the knob somebody set — and the only way this field holds a bad number is
 	// that somebody set it.
 	GatewayPort int
+	// ConnectURL, when set, is handed to every agent as [EnvConnectURL]: where
+	// muster's connector proxy is. Empty means the connector store is not offered.
+	ConnectURL string
+	// ConnectPort is the POD port of that surface on muster's own pods. A
+	// claude-code agent's network policy allows egress to it (and only it) when
+	// ConnectURL is set. Required with ConnectURL for that kind.
+	ConnectPort int
 	// WorkspacePath defaults to [DefaultWorkspacePath].
 	WorkspacePath string
 	// WorkspaceSize is the workspace volume size, e.g. "10Gi". Empty leaves the
@@ -649,6 +660,11 @@ func buildEnv(cfg Config, opts Options) ([]provision.EnvVar, error) {
 	if cfg.RuntimeConfig.Configured() {
 		env = append(env, provision.EnvVar{Name: EnvRuntimeConfig, Value: RuntimeConfigPath})
 	}
+	// Where the connector proxy is. Absent when not configured, so a deployment
+	// without the store builds byte-identical specs (and fingerprints).
+	if cfg.ConnectURL != "" {
+		env = append(env, provision.EnvVar{Name: EnvConnectURL, Value: cfg.ConnectURL})
+	}
 
 	// A collision check, not a merge. See Options.ExtraEnv.
 	//
@@ -679,6 +695,7 @@ func buildEnv(cfg Config, opts Options) ([]provision.EnvVar, error) {
 		EnvRuntimeConfig:     true,
 		EnvOpenRouterKey:     true,
 		EnvCairnConfig:       true,
+		EnvConnectURL:        true,
 		// Reserved so no caller can hand the Claude subscription token to a
 		// gateway-kind agent through ExtraEnv; see EnvClaudeOAuthToken.
 		EnvClaudeOAuthToken: true,

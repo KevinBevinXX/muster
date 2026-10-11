@@ -45,8 +45,8 @@ func run() error {
 	// CASCADE empties every table that references these (comments, attachments,
 	// sessions, chat, runs, grants) without this file naming them — the notes
 	// package's ledger forbids spelling the comments table outside its store.
-	if _, err := pool.Exec(ctx, `TRUNCATE notes, agents, runbooks, privilege_profiles, privilege_requests
-		RESTART IDENTITY CASCADE`); err != nil {
+	if _, err := pool.Exec(ctx, `TRUNCATE notes, agents, runbooks, privilege_profiles, privilege_requests,
+		connectors, connector_audit RESTART IDENTITY CASCADE`); err != nil {
 		return fmt.Errorf("truncate: %w", err)
 	}
 
@@ -79,7 +79,10 @@ func run() error {
 
 	as := agents.NewPG(pool)
 	for _, a := range []agents.Agent{
-		{Name: "docs-sweeper", Namespace: "agents", Repo: "example/site", Status: "running", KickedOff: true, NoteID: &first},
+		// The hooks token is the agent's OWN credential; the connector spec presents
+		// it as the agent (e2e/lib/env.ts agentToken). Invented.
+		{Name: "docs-sweeper", Namespace: "agents", Repo: "example/site", Status: "running", KickedOff: true, NoteID: &first,
+			HooksToken: "e2e-agent-token-not-a-real-one"},
 		{Name: "release-helper", Namespace: "agents", Repo: "example/api", Status: "error", KickedOff: true, KickoffError: "gateway timed out after 30s"},
 		{Name: "notes-tidy", Namespace: "agents", Status: "pending"},
 	} {

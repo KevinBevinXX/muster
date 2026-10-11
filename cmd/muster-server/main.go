@@ -57,6 +57,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentstatus"
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/ccpool"
+	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/metrics"
@@ -138,7 +139,10 @@ type app struct {
 	logger *log.Logger
 	srv    *api.Server
 	http   *http.Server
-	pool   *pgxpool.Pool
+	// connect is the second listener that serves ONLY the agent-facing connector
+	// surface (api.OnlyConnectSurface); nil unless MUSTER_CONNECT_PORT is set.
+	connect *http.Server
+	pool    *pgxpool.Pool
 	// kickoff delivers dispatched agents' first turns; nil when no gateway is
 	// built. See buildKickoffDeliverer.
 	kickoff *agentkickoff.Deliverer
@@ -229,6 +233,15 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.Privilege = privilege.NewPG(pool)
 		ext.Runbooks = runbooks.NewPG(pool)
 
+		if len(cfg.ConnectorEncKey) > 0 {
+			cs, err := connectors.NewPG(pool, cfg.ConnectorEncKey)
+			if err != nil {
+				a.Close()
+				return nil, fmt.Errorf("connector store: %w", err)
+			}
+			ext.Connectors = cs
+		}
+
 		if len(cfg.GitHubEncKey) > 0 {
 			gh, err := github.NewPG(pool, cfg.GitHubEncKey)
 			if err != nil {
@@ -298,6 +311,12 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.PrivilegeApply = priv
 	}
 	ext.SessionLiveness = buildSessionLiveness(cfg, port, logger)
+	// 🔴 THE ZERO POLICY IS PRODUCTION'S. Only a binary built with the e2e tag
+	// sets this hook (e2econnect.go), so a deployable binary cannot be configured
+	// to proxy to loopback or over plain HTTP — there is no variable for it.
+	if e2eConnectorPolicy != nil {
+		ext.ConnectorPolicy = *e2eConnectorPolicy
+	}
 
 	srv := api.New(bus, cfg.authConfig(), logger)
 	srv.UseExtensions(ext)
@@ -329,10 +348,18 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		return nil, fmt.Errorf("status promoter: %w", err)
 	}
 
+	handler := srv.Handler()
 	a.http = &http.Server{
 		Addr:              net.JoinHostPort("", strconv.Itoa(cfg.Port)),
-		Handler:           srv.Handler(),
+		Handler:           handler,
 		ReadHeaderTimeout: readHeaderTimeout,
+	}
+	if cfg.ConnectPort != 0 {
+		a.connect = &http.Server{
+			Addr:              net.JoinHostPort("", strconv.Itoa(cfg.ConnectPort)),
+			Handler:           api.OnlyConnectSurface(handler),
+			ReadHeaderTimeout: readHeaderTimeout,
+		}
 	}
 
 	a.logBanner(ext, port)
@@ -402,17 +429,30 @@ func (a *app) Run(ctx context.Context, ready func(net.Addr)) error {
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", a.http.Addr, err)
 	}
+	var connectLn net.Listener
+	if a.connect != nil {
+		if connectLn, err = net.Listen("tcp", a.connect.Addr); err != nil {
+			ln.Close()
+			return fmt.Errorf("listen %s (%s): %w", a.connect.Addr, envConnectPort, err)
+		}
+	}
 	if ready != nil {
 		ready(ln.Addr())
 	}
 
 	a.startBackgroundLoops(ctx)
 
-	serveErr := make(chan error, 1)
+	serveErr := make(chan error, 2)
 	go func() {
 		a.logger.Printf("muster %s listening on %s (auth tiers reported above)", api.BuildVersion, ln.Addr())
 		serveErr <- a.http.Serve(ln)
 	}()
+	if connectLn != nil {
+		go func() {
+			a.logger.Printf("muster connector surface listening on %s (only %v)", connectLn.Addr(), api.ConnectSurfacePrefixes)
+			serveErr <- a.connect.Serve(connectLn)
+		}()
+	}
 
 	select {
 	case err := <-serveErr:
@@ -486,6 +526,11 @@ func (a *app) shutdown() {
 	defer cancel()
 	if err := a.http.Shutdown(drainCtx); err != nil {
 		a.logger.Printf("drain did not complete within %s: %v", shutdownDrainTimeout, err)
+	}
+	if a.connect != nil {
+		if err := a.connect.Shutdown(drainCtx); err != nil {
+			a.logger.Printf("connect listener drain did not complete within %s: %v", shutdownDrainTimeout, err)
+		}
 	}
 	if !<-terminalsEnded {
 		a.logger.Printf("agent terminals did not finish releasing within %s; exiting anyway "+
@@ -643,6 +688,22 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("permission router: NONE, UNDECLARED — %s is unset and %s is not 1. This "+
 			"server will NOT report ready while a notes store is wired, on purpose: see "+
 			"/readyz for the reason", envRouterURL, envStandalone)
+	}
+
+	if ext.Connectors != nil {
+		listener := "no dedicated listener (" + envConnectPort + " unset): the connector routes are on the main port only"
+		if a.cfg.ConnectPort != 0 {
+			listener = fmt.Sprintf("%s=%d serves ONLY the agent-facing connector surface", envConnectPort, a.cfg.ConnectPort)
+		}
+		agentsTold := envAgentConnectURL + " is unset, so agents are not told where the proxy is and isolated agents get no network allowance to it"
+		if a.cfg.AgentConnectURL != "" {
+			agentsTold = fmt.Sprintf("%s=%s is handed to agents as MUSTER_CONNECT_URL", envAgentConnectURL, a.cfg.AgentConnectURL)
+		}
+		l.Printf("connector store: ENABLED — %s is set; secrets are sealed with AES-256-GCM and agents use them "+
+			"only through the proxy. %s; %s", envConnectorEncKey, listener, agentsTold)
+	} else {
+		l.Printf("connector store: DISABLED — %s is unset, so every connector route answers 503, the "+
+			"Connectors tab is hidden, and %s / %s have no effect", envConnectorEncKey, envConnectPort, envAgentConnectURL)
 	}
 
 	if ext.GitHub != nil {

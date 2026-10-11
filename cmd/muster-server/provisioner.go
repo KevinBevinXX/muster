@@ -671,6 +671,10 @@ func agentSpecConfig(cfg config) (agentspec.Config, error) {
 		CairnToken:       cfg.AgentCairnToken,
 		RuntimeConfig:    rc,
 		ClaudeCode:       claudeCodeSpecConfig(cfg),
+		// Both or neither: config.validateConnectors refuses a URL without the
+		// port, so a URL here always comes with the pod port its policy allows.
+		ConnectURL:  cfg.AgentConnectURL,
+		ConnectPort: cfg.ConnectPort,
 	}, nil
 }
 

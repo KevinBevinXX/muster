@@ -82,12 +82,24 @@ var ClaudeCodeSecurity = provision.Security{
 // GitHub". Nothing here names a host. A prompt-injected agent can still send
 // what it holds to any public HTTPS endpoint.
 //
-// ⚠ MUSTER ITSELF IS NOT REACHABLE FROM THE POD, although the spec still hands
-// it MUSTER_API_URL: that address is in-cluster, so it is on the wrong side of
-// this. Nothing in the image calls it today. The change that makes the pod call
-// muster (or the approval router) has to add that allowance deliberately.
+// ⚠ MUSTER ITSELF IS NOT REACHABLE FROM THE POD through this policy, although
+// the spec still hands it MUSTER_API_URL: that address is in-cluster, so it is on
+// the wrong side of this. The ONE deliberate allowance is the connector surface:
+// see claudeCodeNetworkFor, which adds egress to muster's connect port (and no
+// other) when the deployment offers the connector store.
 func ClaudeCodeNetwork() provision.Network {
 	return provision.Network{Isolate: true, PublicEgressTCPPorts: []int{ClaudeCodePublicEgressPort}}
+}
+
+// claudeCodeNetworkFor is ClaudeCodeNetwork plus, when the deployment offers the
+// connector store ([Config.ConnectURL]), egress to muster's connector port — the
+// one allowance that lets the pod reach muster, and only that surface of it.
+func claudeCodeNetworkFor(cfg Config) provision.Network {
+	n := ClaudeCodeNetwork()
+	if cfg.ConnectURL != "" {
+		n.ControllerEgressTCPPorts = []int{cfg.ConnectPort}
+	}
+	return n
 }
 
 // ClaudeCodePublicEgressPort is the one TCP port a claude-code agent may reach
@@ -155,6 +167,10 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		return provision.Spec{}, fmt.Errorf("agentspec: agent %q has no hooks token; ccd refuses to start "+
 			"without one (it derives the bearer muster sends from it)", a.Name)
 	}
+	if cfg.ConnectURL != "" && (cfg.ConnectPort < 1 || cfg.ConnectPort > 65535) {
+		return provision.Spec{}, fmt.Errorf("agentspec: Config.ConnectURL is set but Config.ConnectPort (%d) is not a "+
+			"port; a claude-code agent's network policy could not allow it to reach the connector surface", cfg.ConnectPort)
+	}
 
 	ref := provision.Ref{Name: a.Name, ID: a.ID}
 	if err := ref.Validate(); err != nil {
@@ -174,10 +190,7 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		// entrypoint's `ccd seed` creating the workspace as uid 1000 — and it
 		// worked. Overriding it here would be an unmeasured difference.
 		Runtime: provision.Runtime{Image: cc.Image},
-		Env: []provision.EnvVar{
-			{Name: EnvAPIURL, Value: cfg.APIBaseURL},
-			{Name: EnvGitTerminalPrompt, Value: "0"},
-		},
+		Env:     claudeCodeEnv(cfg),
 		// 🔴 THE ONLY PLACE EnvClaudeOAuthToken IS EVER WRITTEN.
 		Secrets: []provision.EnvVar{
 			{Name: EnvToken, Value: a.HooksToken},
@@ -189,11 +202,23 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		Ports:     []provision.Port{{Name: provision.DefaultPortName, Port: DefaultGatewayPort}},
 		Health:    provision.Health{HTTPGetPath: DefaultGatewayHealthPath, PortName: provision.DefaultPortName},
 		Security:  ClaudeCodeSecurity,
-		Network:   ClaudeCodeNetwork(),
+		Network:   claudeCodeNetworkFor(cfg),
 		Labels:    labels,
 	}
 	if err := spec.Validate(); err != nil {
 		return provision.Spec{}, fmt.Errorf("agentspec: built an invalid spec for agent %q: %w", a.Name, err)
 	}
 	return spec, nil
+}
+
+// claudeCodeEnv is the claude-code kind's plain environment.
+func claudeCodeEnv(cfg Config) []provision.EnvVar {
+	env := []provision.EnvVar{
+		{Name: EnvAPIURL, Value: cfg.APIBaseURL},
+		{Name: EnvGitTerminalPrompt, Value: "0"},
+	}
+	if cfg.ConnectURL != "" {
+		env = append(env, provision.EnvVar{Name: EnvConnectURL, Value: cfg.ConnectURL})
+	}
+	return env
 }

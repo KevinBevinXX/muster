@@ -25,15 +25,20 @@
 # listed here — the check that keeps its single base URL sufficient. So a route
 # DELETED from this file is not only a server change; it can make a client verb
 # unreachable, and that test is where it surfaces.
+/connect/{connector}/{host}/{path...}
 DELETE /agents/{id}
 DELETE /agents/{id}/grants/{profileId}
 DELETE /api/tasks/{id}
 DELETE /api/tasks/{id}/comments/{cid}
+DELETE /connector-grants/{id}
+DELETE /connectors/{name}
 DELETE /privileges/{id}
 DELETE /runbooks/{id}
 DELETE /tasks/{id}
 DELETE /tasks/{id}/comments/{cid}
 DELETE /tasks/{id}/tags/{tag}
+GET /agent/connectors
+GET /agent/connectors/{name}
 GET /agent/muster
 GET /agent/task
 GET /agents
@@ -53,6 +58,7 @@ GET /api/tasks
 GET /api/tasks/{id}
 GET /apple-touch-icon-precomposed.png
 GET /apple-touch-icon.png
+GET /connectors
 GET /events
 GET /favicon.ico
 GET /github/callback
@@ -85,6 +91,10 @@ GET /ui/agents/{name}/chat-log
 GET /ui/agents/{name}/task
 GET /ui/chief/panel
 GET /ui/chief/threads/search
+GET /ui/connector-requests
+GET /ui/connectors
+GET /ui/connectors/new
+GET /ui/connectors/{name}/rotate
 GET /ui/notifications
 GET /ui/privilege-requests
 GET /ui/privileges
@@ -101,6 +111,7 @@ PATCH /agent/task/status
 PATCH /api/tasks/{id}
 PATCH /api/tasks/{id}/status
 PATCH /tasks/{id}/status
+POST /agent/connectors/{name}/request
 POST /agent/privilege/request
 POST /agent/task/comment
 POST /agents
@@ -115,6 +126,8 @@ POST /api/agents/{name}/messages
 POST /api/tasks
 POST /api/tasks/{id}/comments
 POST /chief/provision
+POST /connectors
+POST /connectors/{name}/rotate
 POST /github/disconnect
 POST /login
 POST /logout
@@ -126,5 +139,7 @@ POST /tasks/merge
 POST /tasks/{id}/comments
 POST /tasks/{id}/edit
 POST /tasks/{id}/tags
+POST /ui/connector-requests/{id}/approve
+POST /ui/connector-requests/{id}/deny
 POST /ui/privilege-requests/{id}/approve
 POST /ui/privilege-requests/{id}/deny

@@ -347,10 +347,20 @@ type Network struct {
 	// an unconfined instance is an allow-list that allows nothing it was not
 	// already allowed, and reads like confinement.
 	PublicEgressTCPPorts []int
+	// ControllerEgressTCPPorts are the TCP ports the instance may reach on its
+	// CONTROLLER — muster's own pods, selected exactly as the inbound rule selects
+	// them. It exists for muster's agent-facing connector surface, which an
+	// isolated agent reaches on a dedicated port; nothing else of muster's is
+	// reachable through it.
+	//
+	// ⚠ SETTING IT WITHOUT Isolate IS REFUSED, for PublicEgressTCPPorts' reason.
+	ControllerEgressTCPPorts []int
 }
 
 // IsZero reports whether nothing is declared.
-func (n Network) IsZero() bool { return !n.Isolate && len(n.PublicEgressTCPPorts) == 0 }
+func (n Network) IsZero() bool {
+	return !n.Isolate && len(n.PublicEgressTCPPorts) == 0 && len(n.ControllerEgressTCPPorts) == 0
+}
 
 // Spec is the complete desired state of one instance.
 //
@@ -517,6 +527,20 @@ func (s Spec) Validate() error {
 			return fmt.Errorf("%w: network public egress port %d appears twice", ErrInvalidSpec, p)
 		}
 		egress[p] = true
+	}
+	if !s.Network.Isolate && len(s.Network.ControllerEgressTCPPorts) > 0 {
+		return fmt.Errorf("%w: network names controller egress ports %v without Isolate; on an unconfined "+
+			"instance that list restricts nothing and reads as if it did", ErrInvalidSpec, s.Network.ControllerEgressTCPPorts)
+	}
+	ctrl := map[int]bool{}
+	for _, p := range s.Network.ControllerEgressTCPPorts {
+		if p < 1 || p > 65535 {
+			return fmt.Errorf("%w: network controller egress port %d out of range", ErrInvalidSpec, p)
+		}
+		if ctrl[p] {
+			return fmt.Errorf("%w: network controller egress port %d appears twice", ErrInvalidSpec, p)
+		}
+		ctrl[p] = true
 	}
 	if s.Repo.URL != "" {
 		u, err := url.Parse(s.Repo.URL)

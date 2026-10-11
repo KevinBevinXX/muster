@@ -157,8 +157,9 @@ func copyLabels(in map[string]string) map[string]string {
 //     in ControllerNamespace. The two selectors are ONE peer, so they are ANDed:
 //     written as two peers they would be ORed, and would admit every pod in the
 //     controller's namespace plus every namespace's pods carrying those labels;
-//   - EGRESS: UDP and TCP 53 to the cluster's DNS pods, and each of the spec's
-//     PublicEgressTCPPorts to [publicIPv4] except [nonPublicIPv4].
+//   - EGRESS: UDP and TCP 53 to the cluster's DNS pods, each of the spec's
+//     PublicEgressTCPPorts to [publicIPv4] except [nonPublicIPv4], and each of its
+//     ControllerEgressTCPPorts to the controller's pods (the ingress peer).
 //
 // 🔴 BOTH policyTypes ARE ALWAYS LISTED, WHATEVER THE RULES. A policy that lists
 // only the types it happens to have rules for leaves the other direction
@@ -253,6 +254,30 @@ func (d *Driver) renderNetworkPolicy(spec provision.Spec, ns string) (*networkin
 					CIDR:   publicIPv4,
 					Except: append([]string(nil), nonPublicIPv4...),
 				},
+			}},
+			Ports: ports,
+		})
+	}
+
+	// Controller egress: the instance may open these ports on muster's own pods —
+	// the SAME one-peer selector the ingress rule uses (namespace AND pod labels),
+	// so it reaches muster and not its database or anything else in that
+	// namespace. No port, no rule, for the reason given above.
+	if len(spec.Network.ControllerEgressTCPPorts) > 0 {
+		ctrl := append([]int(nil), spec.Network.ControllerEgressTCPPorts...)
+		sort.Ints(ctrl)
+		ports := make([]networkingv1.NetworkPolicyPort, 0, len(ctrl))
+		for _, p := range ctrl {
+			port := intstr.FromInt32(int32(p))
+			proto := corev1.ProtocolTCP
+			ports = append(ports, networkingv1.NetworkPolicyPort{Protocol: &proto, Port: &port})
+		}
+		egress = append(egress, networkingv1.NetworkPolicyEgressRule{
+			To: []networkingv1.NetworkPolicyPeer{{
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{labelNamespaceName: cfg.ControllerNamespace},
+				},
+				PodSelector: &metav1.LabelSelector{MatchLabels: copyLabels(cfg.ControllerPodLabels)},
 			}},
 			Ports: ports,
 		})

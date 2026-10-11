@@ -13,7 +13,7 @@
 // same change.
 import fs from 'node:fs';
 
-const FLOOR = Number(process.env.E2E_PASS_FLOOR ?? 30);
+const FLOOR = Number(process.env.E2E_PASS_FLOOR ?? 31);
 const CAP = Number(process.env.E2E_SKIP_CAP ?? 0);
 const file = process.argv[2] ?? 'test-results/results.json';
 

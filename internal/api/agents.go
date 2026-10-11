@@ -1684,10 +1684,11 @@ func (s *Server) resolveSession(ctx context.Context, a agents.Agent, sessionPara
 	return s.ext.Agents.LatestOrCreateSession(ctx, a.ID, a.Name)
 }
 
-// wsAllowedOrigins returns the WebSocket Origin allowlist: the host the browser
+// wsAllowedOrigins returns muster's own origin hosts: the host the browser
 // connected to (r.Host) plus the configured public host (MUSTER_PUBLIC_URL,
 // for proxy setups that rewrite Host). This is the same-origin enforcement that
-// replaces the old OriginPatterns:["*"].
+// replaces the old OriginPatterns:["*"] on the WebSockets, and the ONE list
+// requireSameOrigin checks state-changing operator requests against.
 func (s *Server) wsAllowedOrigins(r *http.Request) []string {
 	out := make([]string, 0, 2)
 	if r.Host != "" {

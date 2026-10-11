@@ -109,7 +109,16 @@ var pgBackedPackages = []string{
 	// real store can show a Stop or a Start landing mid-tick winning that race.
 	"internal/agentstatus",
 	"internal/agents",
+	// Added by the connector store. Its doors (the shared-token refusal, the
+	// operator's enter-credential flow) resolve agents by token and write grants
+	// that FOREIGN-KEY to real agent rows, so the API tests run against the real
+	// stores rather than a fake that restates what its author believed.
+	"internal/api",
 	"internal/ccpool",
+	// Added by the connector store. "The stored row never contains the plaintext"
+	// and "the wrong key fails closed" are claims about what reaches Postgres, and
+	// the proxy's grant checks are SQL (the partial unique index) — only a real database can falsify either.
+	"internal/connectors",
 	"internal/db",
 	"internal/notes",
 	"internal/privilege",

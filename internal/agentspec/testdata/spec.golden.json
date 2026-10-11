@@ -136,7 +136,8 @@
   },
   "Network": {
     "Isolate": false,
-    "PublicEgressTCPPorts": null
+    "PublicEgressTCPPorts": null,
+    "ControllerEgressTCPPorts": null
   },
   "Endpoint": null,
   "Replicas": 0,

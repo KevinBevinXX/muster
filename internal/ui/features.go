@@ -30,6 +30,10 @@ type Features struct {
 	// built one. A caller that forgets to populate this draws LESS than it could,
 	// which is the safe direction: the opposite default draws a tab over nothing.
 	GitHub bool
+	// Connectors is true when the server holds a connector store (an encryption
+	// key is configured). False removes the Connectors tab and its panel, for the
+	// reason GitHub's false removes Repos: the store is built only with a key.
+	Connectors bool
 }
 
 // visibleTabs is the subset of musterTabs a document with these features may
@@ -45,6 +49,9 @@ func visibleTabs(f Features) []tab {
 	out := make([]tab, 0, len(musterTabs))
 	for _, t := range musterTabs {
 		if t.Key == "repos" && !f.GitHub {
+			continue
+		}
+		if t.Key == "connectors" && !f.Connectors {
 			continue
 		}
 		out = append(out, t)

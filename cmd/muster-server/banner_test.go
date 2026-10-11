@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/api"
+	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/privilege"
 	"github.com/ZacxDev/muster/internal/router"
@@ -309,6 +310,14 @@ var bannerLedger = []string{
 	// list, which is the gap that test exists to close.
 	envAgentRuntimeConfig,
 	envAgentRuntimeInstall,
+	// 🔴 THE CONNECTOR STORE'S THREE ARE LEDGERED: the key is the feature's on/off
+	// switch, and the port and the agent URL decide what an isolated agent can
+	// reach — a silent state for any of them is "the proxy is not where agents were
+	// told it is" with nothing in the log. One line names all three in each
+	// direction.
+	envConnectorEncKey,
+	envConnectPort,
+	envAgentConnectURL,
 }
 
 // bannerExempt is every environment variable config.go declares that logBanner
@@ -475,6 +484,10 @@ var bannerExempt = map[string]string{
 // loudly — which is the behaviour wanted if the banner ever starts reading it.
 type bannerStubGitHubStore struct{ github.Store }
 
+// bannerStubConnectorStore stands in for a wired connector store; only its
+// presence is read.
+type bannerStubConnectorStore struct{ connectors.Store }
+
 // bannerStubPrivilegeStore stands in for a wired privilege store. Only its
 // presence is read (`ext.Privilege != nil`), same shape and same reason as
 // bannerStubGitHubStore.
@@ -596,8 +609,16 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		// bannerLedger's both-directions check would fail on the ON side while looking
 		// like a banner bug.
 		AgentPrivilegeApply: true,
+
+		// The connector store: the key, the dedicated listener and the URL agents
+		// are told. The ON render also needs ext.Connectors (below), because the
+		// banner branches on the extension, as for GitHub.
+		ConnectorEncKey: make([]byte, 32),
+		ConnectPort:     18191,
+		AgentConnectURL: "http://muster.example.test:18191",
 	}
 	onOut = renderBannerWithPool(t, on, api.Extensions{
+		Connectors:     bannerStubConnectorStore{},
 		GitHub:         bannerStubGitHubStore{},
 		Provisioner:    bannerProvisioner(t, on),
 		Gateway:        bannerGateway(t, on),

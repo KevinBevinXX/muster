@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/privilege"
@@ -72,11 +73,19 @@ func fullyWiredServer(t *testing.T) *Server {
 		// the exact blindness that let the namespace defect ship. See
 		// Extensions.AgentNamespacePrefix.
 		AgentNamespacePrefix: "muster-agent-",
+		Connectors:           stubConnectorsStore{},
+		// NON-ZERO on purpose, for AgentNamespacePrefix's reason: the zero policy
+		// is production's, so a fixture holding it would not be "wired".
+		ConnectorPolicy: connectors.Policy{AllowLoopback: true},
 	})
 	s.UseRouter(stubRouter{})
 	s.UseGate(stubGate{})
 	return s
 }
+
+// stubConnectorsStore satisfies connectors.Store for registration only; any
+// method call panics, which is the point — registering must call none.
+type stubConnectorsStore struct{ connectors.Store }
 
 func recordFrom(register func(Mux)) []string {
 	rec := &muxRecorder{}
