@@ -141,6 +141,13 @@ const (
 	// Deployment's pod template.
 	envAgentNetpolFromNS     = "MUSTER_AGENT_NETPOL_FROM_NAMESPACE"
 	envAgentNetpolFromLabels = "MUSTER_AGENT_NETPOL_FROM_POD_LABELS"
+
+	// --- browser-test fixture (read ONLY by a `-tags e2eterm` build) ---
+	//
+	// A directory gating the e2e fake driver's readiness: with it set, every
+	// running instance reports not-ready until a file named after the instance
+	// exists in it. The shipped binary has no reader of it; see e2eterm.go.
+	envE2EHoldReadyDir = "MUSTER_E2E_HOLD_READY_DIR"
 )
 
 // The values MUSTER_AGENT_PROVISIONER accepts.

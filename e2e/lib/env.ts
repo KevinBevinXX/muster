@@ -32,6 +32,9 @@ export const kindsPort = port + 2;
 export const termPort = port + 3;
 // The UI-polish spec's own server (kinds enabled over the noop driver).
 export const polishPort = port + 4;
+// The provisioning-indicator spec's own server: the e2eterm binary with its
+// readiness hold armed (MUSTER_E2E_HOLD_READY_DIR, cmd/muster-server/e2eterm.go).
+export const provPort = port + 5;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
