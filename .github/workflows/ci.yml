@@ -123,27 +123,38 @@ jobs:
         env:
           DATABASE_URL: ${{ env.MUSTER_TEST_DATABASE_URL }}
 
-      - name: go test
-        run: go test -race -cover ./...
+      # The verdict below is an instrument, so its refusals are exercised first:
+      # one synthetic stream per refusal (skip, zero verdicts, exit code, failed
+      # test, failed package, cut-off stream). Milliseconds, and no database.
+      - name: verdict.py can refuse
+        run: python3 tests/verdict_test.py
 
       # 🔴 A COUNT, NOT AN EXIT CODE. `go test` exits 0 with skipped tests, so
-      # the exit status above cannot tell "everything ran" from "everything
-      # skipped". MUSTER_TEST_REQUIRE_DB should make a skip impossible — this
-      # step is the independent read that says whether it did, and it reports the
-      # PAIR (how many ran, how many skipped) rather than a reassuring silence.
+      # its exit status cannot tell "everything ran" from "everything skipped".
+      # MUSTER_TEST_REQUIRE_DB should make a skip impossible — verdict.py is the
+      # independent read that says whether it did, and it reports the PAIR (how
+      # many ran, how many skipped) rather than a reassuring silence.
       #
-      # ⚠ IT RE-RUNS `go test` WITH THE SAME FLAGS AS THE STEP ABOVE, ON PURPOSE.
-      # Identical flags mean Go's test cache answers, so this costs a few
-      # hundred milliseconds rather than a second full run — and the cached
-      # events carry the same pass/skip actions.
+      # 🔴 THE SUITE RUNS ONCE, AND THE VERDICT READS THAT RUN. This used to be
+      # two steps: `go test` for the status, then a `-json` re-run piped into
+      # verdict.py, on the claim that Go's test cache would answer the re-run in
+      # "a few hundred milliseconds". MEASURED FALSE on hosted runners: the
+      # re-run took 42 s here and 65 s in `ccd-tmux` (matching that suite's real
+      # time — the cache did not answer), and the verdict was a claim about a
+      # SECOND execution, not the one that set the status. Now the one `-json`
+      # run goes to a file, its exit code is kept, and verdict.py gets both: the
+      # exit code wins, the skip/empty/truncation refusals apply on top, and
+      # `--echo summary` re-renders the plain `go test` log (ok/coverage lines,
+      # build errors, the output of every failing test).
       #
-      # ⚠ `set -o pipefail` IS DELIBERATELY *NOT* SET. The pipeline's status is
-      # verdict.py's, which is what this step is asserting; the run's own exit
-      # code is already gated by the step above. With pipefail, a single failing
-      # test would kill this step before the skip accounting printed — hiding it
-      # exactly when it matters most.
-      - name: assert nothing skipped
-        run: go test -race -cover -json ./... | python3 tests/verdict.py
+      # ⚠ `|| rc=$?` IS LOAD-BEARING: Actions runs this under `bash -e`, so a
+      # failing run would otherwise end the step before the accounting printed —
+      # hiding it exactly when it matters most.
+      - name: go test, and assert nothing skipped (one run)
+        run: |
+          rc=0
+          go test -race -cover -json ./... > "$RUNNER_TEMP/go-test.json" || rc=$?
+          python3 tests/verdict.py --exit-code "$rc" --echo summary "$RUNNER_TEMP/go-test.json"
 
   # Local: make leakscan
   #
@@ -269,7 +280,7 @@ jobs:
   # able to pass without running it:
   #   - tmux is installed explicitly and its presence asserted before any test;
   #   - the suite itself FAILS (never skips) when tmux is missing;
-  #   - the verdict step counts the tests that produced a verdict, so a `-run`
+  #   - the verdict counts the tests that produced a verdict, so a `-run`
   #     pattern that matched nothing is a failure rather than a green "ok".
   ccd-tmux:
     name: ccd (real tmux)
@@ -295,17 +306,17 @@ jobs:
       # here. tmux 3.7c escapes ESC itself, which makes that test's no-marker
       # half vacuous on such a host; if the runner's tmux ever does the same,
       # this flag turns that into a failure instead of a silent pass.
-      - name: go test (tmuxit)
+      #
+      # ONE run, read by the verdict — see the `test` job for why the former
+      # re-run is gone (it cost 65 s here; the cache did not answer it).
+      # `--echo all` re-renders the `-v` log this step used to print.
+      - name: go test (tmuxit), and assert the tmux tests ran and none skipped
         env:
           CCD_TMUXIT_RAW_ESC: "1"
-        run: go test -tags tmuxit -race -run '^TestTmux' -v ./cmd/ccd/
-
-      # Same flags as the step above, so Go's test cache answers. `pipefail` is
-      # deliberately NOT set: the status is verdict.py's (see the `test` job).
-      - name: assert the tmux tests ran and none skipped
-        env:
-          CCD_TMUXIT_RAW_ESC: "1"
-        run: go test -tags tmuxit -race -run '^TestTmux' -json ./cmd/ccd/ | python3 tests/verdict.py
+        run: |
+          rc=0
+          go test -tags tmuxit -race -run '^TestTmux' -json ./cmd/ccd/ > "$RUNNER_TEMP/go-test.json" || rc=$?
+          python3 tests/verdict.py --exit-code "$rc" --echo all "$RUNNER_TEMP/go-test.json"
 
   # Local: docker build -f images/claude-code-agent/Dockerfile -t claude-code-agent . \
   #          && docker run --rm claude-code-agent cc-smoke
