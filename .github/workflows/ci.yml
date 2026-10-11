@@ -23,10 +23,23 @@ on:
     branches: [main]
   pull_request:
 
-# Superseded runs for the same PR (`refs/pull/N/merge`) or for `main` are cancelled.
+# 🔴 ONLY A PULL REQUEST'S RUNS CANCEL EACH OTHER; A PUSH TO `main` IS NEVER
+# CANCELLED OR DROPPED. A newer commit on a PR supersedes the older run of the
+# SAME PR (group `refs/pull/N/merge`), so that run is cancelled. A commit on
+# `main` is a distinct state of the trunk, and a cancelled run there is a commit
+# nobody ever got a verdict on — which happened under the previous
+# `ci-${{ github.ref }}` group, where a later push to `main` cancelled one.
+#
+# ⚠ SO A NON-PR RUN GETS A GROUP OF ITS OWN (`run_id`), NOT MERELY
+# `cancel-in-progress: false`. A concurrency group holds one running and ONE
+# pending run, and a newer pending run REPLACES (cancels) the older pending one
+# whatever `cancel-in-progress` says — three quick pushes to `main` sharing a
+# group would silently drop the middle one. A group nothing else can join has
+# no pending slot to lose. Pinned as an exact string by
+# TestCIConcurrencyCancelsOnlyPullRequestRuns (internal/modulegate).
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # Local: make build && make vet
