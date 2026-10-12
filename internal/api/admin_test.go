@@ -22,7 +22,7 @@ type memAccounts struct {
 	mu    sync.Mutex
 	audit []users.AuditEntry
 	rows  *memUsers // the disable path's rows
-	// bumpErr makes BumpSessionCutoff fail.
+	// bumpErr makes ResetCredentials fail.
 	bumpErr error
 }
 
@@ -62,7 +62,7 @@ func (m *memAccounts) SetDisabledAs(ctx context.Context, by *users.Actor, id int
 	}
 	return u, err
 }
-func (m *memAccounts) BumpSessionCutoff(_ context.Context, id int64) (time.Time, error) {
+func (m *memAccounts) ResetCredentials(_ context.Context, id int64) (time.Time, error) {
 	if m.bumpErr != nil {
 		return time.Time{}, m.bumpErr
 	}

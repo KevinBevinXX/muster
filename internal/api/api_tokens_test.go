@@ -471,3 +471,81 @@ func TestPersonalTokenLifecycleOverHTTP(t *testing.T) {
 		}
 	}
 }
+
+// TestAPasswordResetRevokesTheUsersAPITokens (review round 3): a password
+// reset is what someone does after a credential leaked, and a personal token
+// is a credential — so the reset revokes all of the user's tokens, and the
+// page the reset lands on says so. Literal strings, not the constants, so the
+// claim on the page is pinned as the user reads it.
+func TestAPasswordResetRevokesTheUsersAPITokens(t *testing.T) {
+	w := newInviteWorld(t)
+	tok := w.createInvite("")
+	do(w.edge, "POST", InvitePath, redeemForm(tok, "tokreset@invite.test", "", goodPW, goodPW))
+	sys := authz.System(context.Background())
+	var uid int64
+	if err := w.pool.QueryRow(sys, `SELECT id FROM users WHERE email = 'tokreset@invite.test'`).Scan(&uid); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = w.pool.Exec(authz.System(context.Background()), `DELETE FROM api_tokens WHERE user_id = $1`, uid)
+	})
+	ts := apitokens.NewPG(w.pool)
+	asUser := authz.WithPrincipal(context.Background(), authz.Principal{UserID: uid, Role: authz.RoleMember, Via: authz.ViaSession})
+	secret, _, err := ts.Create(asUser, "before-reset")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.Authenticate(sys, secret); err != nil {
+		t.Fatalf("CONTROL: the token before the reset: %v", err)
+	}
+	rec := do(w.edge, "POST", "/admin/users/"+strconv.FormatInt(uid, 10)+"/reset-link", url.Values{}, w.asAdmin())
+	m := regexp.MustCompile(regexp.QuoteMeta(invitePublic+ResetPath+"#") + `([A-Za-z0-9_-]+)`).FindStringSubmatch(rec.Body.String())
+	if rec.Code != 200 || m == nil {
+		t.Fatalf("reset link: %d", rec.Code)
+	}
+	const newPW = "a-brand-new-password-for-tokens"
+	r := do(w.edge, "POST", ResetPath, url.Values{"token": {m[1]}, "password": {newPW}, "password2": {newPW}})
+	if r.Code != http.StatusSeeOther {
+		t.Fatalf("reset: %d %s", r.Code, truncate(r.Body.String(), 300))
+	}
+	if _, err := ts.Authenticate(sys, secret); !errors.Is(err, apitokens.ErrBadToken) {
+		t.Fatalf("the user's API token after a password reset: %v; want it revoked", err)
+	}
+	if loc := r.Header().Get("Location"); loc != "/account?reset=1" {
+		t.Fatalf("a successful reset lands on %q; want the account page that says the tokens were revoked", loc)
+	}
+	ck := setCookies(r)
+	page := do(w.edge, "GET", "/account?reset=1", nil, withCookies(ck[accessCookieName].Value, ck[refreshCookieName].Value))
+	if page.Code != 200 || !strings.Contains(page.Body.String(), "Your API tokens were revoked") {
+		t.Fatalf("the reset's landing page: %d, does not say the API tokens were revoked\n%s", page.Code, truncate(page.Body.String(), 600))
+	}
+}
+
+// TestSignOutEverywhereSaysItKeepsAPITokens (review round 3): "Sign out
+// everywhere" ends GoTrue sessions and NOT personal tokens, and the page says
+// so beside the button — and, as the control, a token survives that sign-out.
+func TestSignOutEverywhereSaysItKeepsAPITokens(t *testing.T) {
+	w := newInviteWorld(t)
+	page := do(w.edge, "GET", "/account", nil, w.asAdmin())
+	body := page.Body.String()
+	i, j := strings.Index(body, "Sign out everywhere"), strings.Index(body, "API tokens are not affected")
+	if page.Code != 200 || i < 0 || j < 0 || j < i {
+		t.Fatalf("/account: %d; want the note \"API tokens are not affected\" after the Sign out everywhere button\n%s",
+			page.Code, truncate(body, 800))
+	}
+	t.Cleanup(func() {
+		_, _ = w.pool.Exec(authz.System(context.Background()), `DELETE FROM api_tokens WHERE user_id = 1`)
+	})
+	ts := apitokens.NewPG(w.pool)
+	secret, _, err := ts.Create(authz.Operator(context.Background()), "kept")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := do(w.edge, "POST", "/logout", url.Values{"scope": {"global"}}, w.asAdmin())
+	if r.Code != http.StatusSeeOther {
+		t.Fatalf("sign out everywhere: %d", r.Code)
+	}
+	if _, err := ts.Authenticate(authz.System(context.Background()), secret); err != nil {
+		t.Fatalf("a token after Sign out everywhere: %v; the page says tokens are not affected", err)
+	}
+}

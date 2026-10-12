@@ -84,6 +84,20 @@ const ClaimTTL = 24 * time.Hour
 // accountPath is the signed-in account page (sign out, sign out everywhere).
 const accountPath = "/account"
 
+// SignOutEverywhereTokenNote sits beside "Sign out everywhere": that button
+// ends GoTrue sessions only, and a person must not believe it ended their API
+// tokens (accounts PR 6).
+const SignOutEverywhereTokenNote = "API tokens are not affected — revoke them under API tokens below."
+
+// ResetDoneNote is what /account?reset=1 — where a successful password reset
+// lands — says: the reset revoked every personal API token (users.ResetCredentials).
+// ⚠ DISPLAY-ONLY: the query flag is not a fact the server checks, so a
+// hand-typed /account?reset=1 shows it too. It reaches nothing else.
+const ResetDoneNote = "Your password was reset. Your API tokens were revoked; create new ones under API tokens below."
+
+// accountResetDonePath is where a successful reset redirects.
+const accountResetDonePath = "/account?reset=1"
+
 // registerAccountRoutes wires the claim and account routes. Literal patterns,
 // for the reason registerLoginRoutes gives.
 func (s *Server) registerAccountRoutes(mux Mux) {
@@ -277,10 +291,16 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 	everywhere := ""
 	if s.auth.goTrueMode() {
 		everywhere = `<form method="POST" action="/logout"><input type="hidden" name="scope" value="global">
-<button type="submit" class="press min-h-[44px] w-full rounded-md bg-bg px-3 py-2 text-base font-semibold text-fg ring-1 ring-inset ring-edge">Sign out everywhere</button></form>`
+<button type="submit" class="press min-h-[44px] w-full rounded-md bg-bg px-3 py-2 text-base font-semibold text-fg ring-1 ring-inset ring-edge">Sign out everywhere</button></form>
+<p class="text-sm text-fg2">` + SignOutEverywhereTokenNote + `</p>`
+	}
+	resetNote := ""
+	if r.URL.Query().Get("reset") == "1" {
+		resetNote = `<p class="text-sm font-semibold text-fg" role="status">` + ResetDoneNote + `</p>`
 	}
 	writeAuthDocument(w, http.StatusOK, "Account", `<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Account</h1>
+`+resetNote+`
 <p class="text-sm text-fg2">Signed in as <span class="font-semibold text-fg">`+html.EscapeString(who)+`</span>.</p>
 <form method="POST" action="/logout">
 <button type="submit" class="press min-h-[44px] w-full rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Sign out</button></form>

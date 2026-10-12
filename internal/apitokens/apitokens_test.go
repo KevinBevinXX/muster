@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/authz"
@@ -359,5 +360,84 @@ func TestLastUsedIsStampedAndThrottled(t *testing.T) {
 	}
 	if third := read(); !third.After(*aged) {
 		t.Fatalf("a use after %v did not move last_used_at (%v → %v)", LastUsedGranularity, aged, third)
+	}
+}
+
+// TestAMintRacingADisableNeverSurvivesIt (review round 3). The window: a
+// disable has RUN its revoke statement but not committed, and a mint inserts
+// meanwhile — that token was not there to be revoked, so it came back on
+// re-enable. The test holds the real disable (users.SetDisabledAs) inside that
+// window by locking audit_log, which the disable writes to AFTER its revoke;
+// then starts a mint, releases, re-enables, and requires the minted token to
+// be refused — the mint failed, or its token is revoked — never live.
+func TestAMintRacingADisableNeverSurvivesIt(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	dsn := dbtest.DSN(t)
+	blocker, err := pgx.Connect(ctx, dsn) // the login role: may LOCK the table
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Close(ctx)
+	btx, err := blocker.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := btx.Exec(ctx, `LOCK TABLE audit_log IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	waiting := func() int {
+		var n int
+		if err := blocker.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	until := func(n int, what string) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for waiting() < n {
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for %s (%d lock waiter(s))", what, waiting())
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	us := users.NewPG(w.pool)
+	disabled := make(chan error, 1)
+	go func() {
+		_, err := us.SetDisabledAs(ctx, &users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, w.a, true)
+		disabled <- err
+	}()
+	until(1, "the disable to block on audit_log (its revoke has run)")
+	type minted struct {
+		tok string
+		err error
+	}
+	mintc := make(chan minted, 1)
+	go func() {
+		tok, _, err := w.s.Create(as(w.a, authz.RoleMember), "racer")
+		mintc <- minted{tok, err}
+	}()
+	until(2, "the mint to block")
+	if err := btx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-disabled; err != nil {
+		t.Fatalf("the disable: %v", err)
+	}
+	m := <-mintc
+	if _, err := us.SetDisabled(ctx, w.a, false); err != nil {
+		t.Fatal(err)
+	}
+	if m.err != nil {
+		if !errors.Is(m.err, ErrUserDisabled) {
+			t.Fatalf("the racing mint failed with %v; want ErrUserDisabled", m.err)
+		}
+		return
+	}
+	if _, err := w.s.Authenticate(sysCtx(), m.tok); !errors.Is(err, ErrBadToken) {
+		t.Fatalf("a token minted while a disable was in flight is LIVE after re-enable (%v); it must be refused or revoked", err)
 	}
 }

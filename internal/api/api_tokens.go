@@ -218,6 +218,10 @@ func (s *Server) handleAccountTokenCreate(w http.ResponseWriter, r *http.Request
 		s.renderAccountTokens(w, r, http.StatusBadRequest, "", err.Error())
 		return
 	}
+	if errors.Is(err, apitokens.ErrUserDisabled) {
+		s.renderAccountTokens(w, r, http.StatusForbidden, "", "This account is disabled, so it cannot create API tokens.")
+		return
+	}
 	if err != nil {
 		s.logger.Printf("api-token: create: %v", err)
 		s.renderAccountTokens(w, r, http.StatusInternalServerError, "", "The token could not be created.")

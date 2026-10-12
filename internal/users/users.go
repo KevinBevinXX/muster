@@ -24,6 +24,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -153,17 +154,35 @@ func (s *PGStore) SetDisabled(ctx context.Context, id int64, disabled bool) (Use
 	return s.SetDisabledAs(ctx, nil, id, disabled)
 }
 
-// BumpSessionCutoff moves user id's session cutoff to clock_timestamp() and
-// returns it: every token issued at or before it is refused from now on
-// (a password reset; TestAResetEndsOtherDevicesAccessTokensAtOnce).
-func (s *PGStore) BumpSessionCutoff(ctx context.Context, id int64) (time.Time, error) {
+// ResetCredentials is a password reset's database half: in ONE transaction it
+// moves user id's session cutoff to clock_timestamp() — every GoTrue token
+// issued at or before it is refused from now on
+// (TestAResetEndsOtherDevicesAccessTokensAtOnce) — and revokes every live
+// personal API token the user holds (accounts PR 6;
+// TestAPasswordResetRevokesTheUsersAPITokens). It returns the cutoff.
+//
+// ⚠ "SIGN OUT EVERYWHERE" IS NOT THIS: it ends GoTrue sessions only, and the
+// /account page says so next to its button.
+func (s *PGStore) ResetCredentials(ctx context.Context, id int64) (time.Time, error) {
+	ctx = sys(ctx)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
 	var t time.Time
-	err := s.pool.QueryRow(sys(ctx), `UPDATE users SET sessions_not_before = clock_timestamp() WHERE id = $1
+	err = tx.QueryRow(ctx, `UPDATE users SET sessions_not_before = clock_timestamp() WHERE id = $1
 		RETURNING sessions_not_before`, id).Scan(&t)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return t, ErrNotFound
 	}
-	return t, err
+	if err != nil {
+		return t, err
+	}
+	if err := revokeAPITokensTx(ctx, tx, id); err != nil {
+		return time.Time{}, err
+	}
+	return t, tx.Commit(ctx)
 }
 
 // SetDisabledAs is SetDisabled that, when by is non-nil, writes the
@@ -222,8 +241,37 @@ func (s *PGStore) SetDisabledAs(ctx context.Context, by *Actor, id int64, disabl
 // revokeAPITokensTx revokes every live personal API token (accounts PR 6) of
 // user id inside tx. EVERY disable path must call it in the disable's own
 // transaction — it is one helper so a second disable writer is one call.
+//
+// 🔴 IT TAKES LockCredentialsTx FIRST. apitokens.Create takes the same lock and
+// then re-reads disabled_at, so a mint racing a disable either commits before
+// this revoke (and is revoked by it) or waits for the disable to commit (and
+// is refused). Without the lock a token inserted after this UPDATE ran but
+// before the disable committed survived, and came back on re-enable.
 func revokeAPITokensTx(ctx context.Context, tx pgx.Tx, id int64) error {
+	if err := LockCredentialsTx(ctx, tx, id); err != nil {
+		return err
+	}
 	_, err := tx.Exec(ctx, `UPDATE api_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`, id)
+	return err
+}
+
+// credentialsLockClass is the first key of the per-user advisory lock that
+// serialises minting a personal API token against revoking them all. The
+// two-int form keeps it out of the migration lock's single-bigint keyspace.
+const credentialsLockClass int32 = 0x6d75746b // "mutk"
+
+// LockCredentialsTx takes user id's credentials lock for the rest of tx.
+//
+// ⚠ AN ADVISORY LOCK, NOT `SELECT … FROM users FOR SHARE`: apitokens.Create
+// runs as the USER, and under row-level security a locking read of the user's
+// own row returns NO row (0009 gives users no UPDATE policy, and FOR SHARE is
+// checked against UPDATE policies — measured: 0 rows). An advisory lock needs
+// no row and no policy.
+func LockCredentialsTx(ctx context.Context, tx pgx.Tx, id int64) error {
+	if id <= 0 || id > math.MaxInt32 {
+		return fmt.Errorf("users: credentials lock: user id %d out of range", id)
+	}
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, $2)`, credentialsLockClass, int32(id))
 	return err
 }
 

@@ -229,6 +229,13 @@ func CleanName(name string) (string, error) {
 
 // Create implements Store. The token row and its audit row are one
 // transaction: a token is never live without its "created" record.
+//
+// 🔴 IT TAKES THE OWNER'S CREDENTIALS LOCK, THEN RE-READS disabled_at, BEFORE
+// INSERTING. Every revoke-them-all path (a disable, a password reset) takes the
+// same lock (users.LockCredentialsTx), so a mint racing a disable either
+// commits first and is revoked by it, or waits for it and is refused
+// ErrUserDisabled — never a token inserted after the revoke ran that comes
+// back on re-enable (TestAMintRacingADisableNeverSurvivesIt).
 func (s *PGStore) Create(ctx context.Context, name string) (string, Token, error) {
 	p, err := user(ctx)
 	if err != nil {
@@ -243,6 +250,17 @@ func (s *PGStore) Create(ctx context.Context, name string) (string, Token, error
 	}
 	var t Token
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		if err := users.LockCredentialsTx(ctx, tx, p.UserID); err != nil {
+			return err
+		}
+		var disabled bool
+		// The user's own row: 0009's self_read policy shows it to its owner.
+		if err := tx.QueryRow(ctx, `SELECT disabled_at IS NOT NULL FROM users WHERE id = $1`, p.UserID).Scan(&disabled); err != nil {
+			return err
+		}
+		if disabled {
+			return ErrUserDisabled
+		}
 		var err error
 		t, err = scan(tx.QueryRow(ctx, `INSERT INTO api_tokens (user_id, name, token_hash)
 			VALUES ($1, $2, $3) RETURNING `+cols, p.UserID, name, Hash(tok)))

@@ -39,7 +39,7 @@ type AccountStore interface {
 		create func(context.Context) (string, error), undo func(sub string)) (users.User, error)
 	ListUsers(ctx context.Context) ([]users.User, error)
 	SetDisabledAs(ctx context.Context, by *users.Actor, id int64, disabled bool) (users.User, error)
-	BumpSessionCutoff(ctx context.Context, id int64) (time.Time, error)
+	ResetCredentials(ctx context.Context, id int64) (time.Time, error)
 	SetRole(ctx context.Context, by users.Actor, id int64, role authz.Role) (users.User, error)
 	Audit(ctx context.Context, by users.Actor, action, object string, detail map[string]any) error
 	Audited(ctx context.Context, by users.Actor, action, object string, detail map[string]any, fn func() error) error
