@@ -246,3 +246,32 @@ func TestForgetDeviceIsTheOwnersOnly(t *testing.T) {
 		t.Fatal("user 3's device went with user 2's logout")
 	}
 }
+
+// TestPreferencesAreOwnedAndDefaultOn: no row means nothing muted; SetMuted
+// keeps only known event names; one user's preferences are invisible to
+// another (row-level security) and Muted(owner) reads exactly that owner's.
+func TestPreferencesAreOwnedAndDefaultOn(t *testing.T) {
+	s, _, _ := pgStore(t)
+	ctx := context.Background()
+	if m, err := s.Muted(ctx, 2); err != nil || len(m) != 0 {
+		t.Fatalf("a user with no preferences: %v, %v (want nothing muted)", m, err)
+	}
+	if err := s.SetMuted(as(2), []string{EventComment, "bogus", EventCreated}); err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := s.Muted(ctx, 2); strings.Join(m, ",") != EventCreated+","+EventComment {
+		t.Fatalf("Muted(2) = %v", m)
+	}
+	if m, _ := s.MyMuted(as(3)); len(m) != 0 {
+		t.Fatalf("user 3 reads user 2's preferences: %v", m)
+	}
+	if m, _ := s.Muted(ctx, 3); len(m) != 0 {
+		t.Fatalf("Muted(3) = %v: the owner filter is not applied", m)
+	}
+	if err := s.SetMuted(as(2), nil); err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := s.MyMuted(as(2)); len(m) != 0 {
+		t.Fatalf("clearing left %v", m)
+	}
+}

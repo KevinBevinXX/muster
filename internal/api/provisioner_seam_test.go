@@ -24,6 +24,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/auth"
 	"github.com/ZacxDev/muster/internal/metrics"
+	"github.com/ZacxDev/muster/internal/push"
 )
 
 // ---------------------------------------------------------------------------
@@ -1254,8 +1255,8 @@ func TestAPanickingFanOutStillReleasesTheShutdownWait(t *testing.T) {
 	// pass on their increments rather than on this test's.
 	before := goroutinePanicCount()
 
-	s.goNotify(RouterNotification{Tag: "a-tag"}, nil)
-	s.mirrorToRouter(1, "an-event", "some-data") // user 1: admin with no users store
+	s.goNotify(1, push.EventReview, RouterNotification{Tag: "a-tag"}, nil) // user 1: admin with no users store
+	s.mirrorToRouter(1, "an-event", "some-data")                           // user 1: admin with no users store
 
 	done := make(chan struct{})
 	go func() {

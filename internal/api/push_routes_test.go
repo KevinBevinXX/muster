@@ -24,6 +24,7 @@ type memPush struct {
 	nextID  int64
 	forgot  []string // "owner:hash" ForgetDevice was called with
 	claimed []int64  // owners Claim was called for
+	muted   map[int64][]string
 }
 
 func (m *memPush) uid(ctx context.Context) int64 { return authz.MustFrom(ctx).UserID }
@@ -102,6 +103,24 @@ func (m *memPush) ForgetDevice(_ context.Context, owner int64, hash string) (boo
 	m.forgot = append(m.forgot, strconv.FormatInt(owner, 10)+":"+hash)
 	m.mu.Unlock()
 	return m.del(func(d push.Device) bool { return d.OwnerID == owner && push.EndpointHash(d.Sub.Endpoint) == hash }), nil
+}
+
+func (m *memPush) Muted(_ context.Context, owner int64) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string{}, m.muted[owner]...), nil
+}
+
+func (m *memPush) MyMuted(ctx context.Context) ([]string, error) { return m.Muted(ctx, m.uid(ctx)) }
+
+func (m *memPush) SetMuted(ctx context.Context, muted []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.muted == nil {
+		m.muted = map[int64][]string{}
+	}
+	m.muted[m.uid(ctx)] = muted
+	return nil
 }
 
 func (m *memPush) owners() map[string]int64 {

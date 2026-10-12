@@ -53,6 +53,9 @@ export const gotrueSecret = 'e2e-gotrue-jwt-secret-not-a-real-one-0123456789';
 export const invitesMainPort = port + 13;
 export const invitesBrowserPort = port + 14;
 export const invitesGotruePort = Number(process.env.MUSTER_E2E_INVITES_GOTRUE_PORT ?? port + 15);
+// muster-native Web Push: the push spec's own server, with a VAPID keypair
+// minted by the binary under test (`muster-server vapid generate`).
+export const pushPort = port + 16;
 // The seeded `docs-sweeper` agent's own token (e2e/seed). Invented, like every
 // value here.
 export const agentToken = 'e2e-agent-token-not-a-real-one';

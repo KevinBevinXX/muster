@@ -15,6 +15,7 @@ import (
 	"github.com/ZacxDev/muster/internal/auth"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -442,20 +443,20 @@ func (s *Server) handleAgentConnectorRequest(w http.ResponseWriter, r *http.Requ
 //
 // ctx is the requesting agent's request: its principal is the agent's owner,
 // who owns the grant (connector_grants.owner_id is the agent's) and is the one
-// who approves it — so the nudge reaches that owner's Connectors tab, and the
-// push goes to the operator's phone only when that owner is an admin
-// (routerServes).
+// who approves it — so the nudge reaches that owner's Connectors tab and the
+// push goes to that owner's own devices (and to the router's only when that
+// owner is an admin — goNotify / routerServes).
 func (s *Server) onConnectorRequested(ctx context.Context, g connectors.Grant) {
 	s.logger.Printf("connector request created id=%d agent=%q connector=%q", g.ID, g.AgentName, g.Connector)
 	s.broadcast(ctx, EventConnectorChanged, strconv.FormatInt(g.ID, 10))
-	if s.router == nil || !s.routerServes(requestOwner(ctx)) {
+	if !s.notifiable() {
 		return
 	}
 	body := g.Connector
 	if g.Reason != "" {
 		body += " — " + g.Reason
 	}
-	s.goNotify(RouterNotification{
+	s.goNotify(requestOwner(ctx), push.EventConnector, RouterNotification{
 		Type:  "connector",
 		ID:    strconv.FormatInt(g.ID, 10),
 		Title: "Connector request: " + g.AgentName,
@@ -463,7 +464,7 @@ func (s *Server) onConnectorRequested(ctx context.Context, g connectors.Grant) {
 		Tag:   "connector-" + strconv.FormatInt(g.ID, 10),
 		Data:  map[string]string{"url": "/connectors"},
 	}, func(n int) {
-		s.logger.Printf("push: delivered connector request id=%d to %d device(s)", g.ID, n)
+		s.logger.Printf("push: delivered connector request id=%d owner=%d to %d device(s)", g.ID, requestOwner(ctx), n)
 	})
 }
 

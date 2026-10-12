@@ -122,6 +122,7 @@ POST /account/credentials/claude
 POST /account/credentials/claude/{name}/delete
 POST /account/credentials/openrouter
 POST /account/credentials/openrouter/delete
+POST /account/push/preferences
 POST /account/push/test
 POST /account/push/{id}/remove
 POST /account/tokens

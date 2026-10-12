@@ -58,6 +58,11 @@ var accountsReset = []string{
 	// Personal API tokens (accounts PR 6) reference users, so they go BEFORE
 	// the members do; and the api-tokens spec asserts an empty token list.
 	`DELETE FROM api_tokens`,
+	// Web Push (migration 0013): every owner's devices and preferences — the
+	// push spec counts its own devices from empty, and a member's row would
+	// otherwise block the member's delete (push_subscriptions_owner_id_fkey).
+	`DELETE FROM push_subscriptions`,
+	`DELETE FROM push_preferences`,
 	`DELETE FROM users WHERE id <> 1`,
 	`UPDATE users SET gotrue_sub = NULL, email = NULL, disabled_at = NULL, role = 'admin' WHERE id = 1`,
 }
