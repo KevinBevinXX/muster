@@ -182,7 +182,9 @@ type Proxy struct {
 	// Every other proxied request is left alone. nil means never (a Proxy built
 	// directly, as tests do). The api package hands it the same signal
 	// api.Server.EndStreams cancels, so ending its own streams and the ones relayed
-	// here is ONE event, registered once per http.Server. See endOnShutdown.
+	// here is ONE event, fired by the one EndStreams call at the top of
+	// cmd/muster-server's shutdown, before either listener drains. See
+	// endOnShutdown.
 	StreamsEnd context.Context
 
 	transportOnce sync.Once
@@ -422,6 +424,14 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 	defer cancelOut()
 	var endedAtShutdown atomic.Bool
 	stopEnd := func() bool { return false }
+	// 🔴 DEFERRED, AND THROUGH A CLOSURE. A client going away (the normal end of
+	// an EventSource feed) or an upstream reset makes ReverseProxy panic with
+	// http.ErrAbortHandler, which unwinds past every plain statement after
+	// rp.ServeHTTP — a plain call left the registration on StreamsEnd, which
+	// lives as long as the process, one more per reconnect. The closure reads
+	// stopEnd at return time, after ModifyResponse has replaced it. Pinned by
+	// TestAnAbortedEventStreamLeavesNothingRegisteredOnStreamsEnd.
+	defer func() { stopEnd() }()
 
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
@@ -497,7 +507,6 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 		FlushInterval: -1,
 	}
 	rp.ServeHTTP(&trailerlessWriter{w: w}, r.WithContext(outCtx))
-	stopEnd()
 	if endedAtShutdown.Load() {
 		detail = "event stream ended at server shutdown"
 	}
@@ -604,6 +613,15 @@ func (t *trailerlessWriter) Flush() {
 // and a long-lived non-GET stream. Which platforms answer that way was not
 // surveyed; widening the set means naming an exchange whose truncation is as
 // harmless as an EventSource feed's.
+//
+// ⚠ AND ONE ENDED CLASS LOSES DATA, BY DECISION: a GET event stream that
+// carries FINITE answers. The original MCP HTTP+SSE transport delivers
+// tool-call responses on its GET stream, and some result-streaming APIs do
+// the same. Ending such a stream drops a response still in flight — bounded to
+// what would have arrived inside the drain window, which is all a drain could
+// have saved. The operator chose to end streams anyway; there is deliberately
+// NO grace period. The current MCP transport (Streamable HTTP) answers on the
+// POST, so it is drained, not ended.
 func endsAtShutdown(method string, h http.Header) bool {
 	if method != http.MethodGet {
 		return false
