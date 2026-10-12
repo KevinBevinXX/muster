@@ -54,6 +54,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		Agents:          stubAgentsStore{},
 		GitHub:          stubGitHubStore{},
 		Users:           stubUsers{},
+		APITokens:       stubAPITokens{},
 		SessionLiveness: stubLiveness{},
 		TagAutoDispatch: true,
 		Provisioner:     stubProvisioner{},

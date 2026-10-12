@@ -27,12 +27,23 @@ import (
 // only that user's rows. Its ROLE is read from users.role (3b; roleOf). With
 // one user every principal is still user 1, admin, and behaviour is unchanged.
 
-// machineUserID is who the SHARED machine tokens (hook, service) act as.
+// machineUserID is who the SHARED machine tokens (hook, service) act as:
+// MUSTER_MACHINE_USER_ID (AuthConfig.MachineUserID), default 1 — the operator.
 //
-// ⚠ A FIXED VALUE TODAY. The accounts plan (§5) makes it MUSTER_MACHINE_USER_ID
-// (default 1) once there is a second user to choose between; until then a
-// variable would be a knob with exactly one legal setting.
-func machineUserID() int64 { return authz.OperatorUserID }
+// ⚠ IT IS EVERY HOLDER OF THE SHARED SECRET, NOT A PERSON. The hook token is
+// one value on every hook script on both hosts, so whatever user this names,
+// every holder acts as. A person who wants their own identity on the machine
+// tier uses a PERSONAL token (api_tokens.go), which acts as its owner.
+//
+// ⚠ ZERO OR NEGATIVE MEANS THE DEFAULT, never "nobody": cmd/muster-server
+// refuses such a value at boot, so this only matters for a Server built in a
+// test without one.
+func (s *Server) machineUserID() int64 {
+	if s.auth.MachineUserID > 0 {
+		return s.auth.MachineUserID
+	}
+	return authz.OperatorUserID
+}
 
 // sessionUserID is who a valid browser session on r acts as. The password mode
 // has exactly one login, the operator's, so it is user 1 by construction; PR

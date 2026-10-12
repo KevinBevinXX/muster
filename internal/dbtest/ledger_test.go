@@ -114,6 +114,11 @@ var pgBackedPackages = []string{
 	// that FOREIGN-KEY to real agent rows, so the API tests run against the real
 	// stores rather than a fake that restates what its author believed.
 	"internal/api",
+	// Accounts PR 6, the personal API token store: "only the hash is stored",
+	// "another user (or the admin) cannot read, insert or revoke a token" and
+	// "a revoked token / a disabled owner stops authenticating" are claims
+	// about SQL and row-level security.
+	"internal/apitokens",
 	"internal/ccpool",
 	// Added by the connector store. "The stored row never contains the plaintext"
 	// and "the wrong key fails closed" are claims about what reaches Postgres, and

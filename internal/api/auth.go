@@ -77,6 +77,10 @@ type AuthConfig struct {
 	// Mode is MUSTER_AUTH_MODE. The zero value is AuthModePassword, so every
 	// existing construction keeps today's behaviour. See accounts.go.
 	Mode AuthMode
+	// MachineUserID is the user the SHARED machine credentials (HookToken,
+	// ServiceToken) act as: MUSTER_MACHINE_USER_ID, default (0 here) user 1.
+	// A personal API token never uses it — it acts as its owner.
+	MachineUserID int64
 	// PublicURL is where a person should sign in (MUSTER_PUBLIC_URL). It is
 	// named in the refusal the machine-token listener gives a browser in
 	// gotrue mode, and it is the base of the admin claim link.
@@ -409,6 +413,14 @@ func isDocumentNavigation(r *http.Request) bool {
 // warns at boot when the token is unset.
 func (s *Server) requireHookToken(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// A PERSONAL token (mst_…) is its own door, decided before anything about
+		// the shared secret: it acts as its owner, needs no MUSTER_HOOK_TOKEN, and
+		// a bad one is refused rather than falling through to the open
+		// enforce-when-set case (api_tokens.go).
+		if tok, ok := s.personalTokenFor(r); ok {
+			s.admitAPIToken(w, r, next, tok)
+			return
+		}
 		// ⚠ THE UNENFORCED CASE ACTS AS THE MACHINE USER TOO. It admitted
 		// everyone as the operator's own tier before principals existed; giving
 		// it a principal states that rather than changing it.
@@ -416,7 +428,7 @@ func (s *Server) requireHookToken(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if !s.auth.hookTokenEnforced() || auth.ConstantTimeEqual(hookTokenFromRequest(r), s.auth.HookToken) {
-			s.admit(w, r, next, s.principalFor(r.Context(), machineUserID(), authz.ViaHook))
+			s.admit(w, r, next, s.principalFor(r.Context(), s.machineUserID(), authz.ViaHook))
 			return
 		}
 		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid or missing hook token"})
@@ -509,6 +521,14 @@ const HookUnarmedField = "unarmed"
 // `queued:false` gives the approval gate (cmd/muster's refusedApproval).
 func (s *Server) requireArmedHookToken(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// A PERSONAL token (mst_…) is its own door, decided before anything about
+		// the shared secret: it acts as its owner, needs no MUSTER_HOOK_TOKEN, and
+		// a bad one is refused rather than falling through to the open
+		// enforce-when-set case (api_tokens.go).
+		if tok, ok := s.personalTokenFor(r); ok {
+			s.admitAPIToken(w, r, next, tok)
+			return
+		}
 		if reason := s.auth.HookArmingRefusal(); reason != "" {
 			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 				"error":          "this server does not serve the machine agent-steering write: " + reason,
@@ -517,7 +537,7 @@ func (s *Server) requireArmedHookToken(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if auth.ConstantTimeEqual(hookTokenFromRequest(r), s.auth.HookToken) {
-			s.admit(w, r, next, s.principalFor(r.Context(), machineUserID(), authz.ViaHook))
+			s.admit(w, r, next, s.principalFor(r.Context(), s.machineUserID(), authz.ViaHook))
 			return
 		}
 		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid or missing hook token"})
@@ -602,7 +622,7 @@ func (s *Server) admitAttributedService(w http.ResponseWriter, r *http.Request, 
 		s.logger.Printf(ServiceTierLogPrefix+"%s %s attributed to %q", r.Method, r.URL.Path, actor)
 	}
 	s.admit(w, r.WithContext(context.WithValue(r.Context(), serviceActorCtxKey{}, actor)), next,
-		s.principalFor(r.Context(), machineUserID(), authz.ViaService))
+		s.principalFor(r.Context(), s.machineUserID(), authz.ViaService))
 }
 
 // requireServiceToken gates the SERVICE-TO-SERVICE tier: a named sibling process
@@ -769,11 +789,19 @@ func (s *Server) requireServiceToken(next http.HandlerFunc) http.HandlerFunc {
 // stated in full.
 func (s *Server) requireHookOrServiceToken(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// A PERSONAL token (mst_…) is its own door, decided before anything about
+		// the shared secret: it acts as its owner, needs no MUSTER_HOOK_TOKEN, and
+		// a bad one is refused rather than falling through to the open
+		// enforce-when-set case (api_tokens.go).
+		if tok, ok := s.personalTokenFor(r); ok {
+			s.admitAPIToken(w, r, next, tok)
+			return
+		}
 		if s.refuseUnarmedHookInGoTrueMode(w) {
 			return
 		}
 		if !s.auth.hookTokenEnforced() {
-			s.admit(w, r, next, s.principalFor(r.Context(), machineUserID(), authz.ViaHook))
+			s.admit(w, r, next, s.principalFor(r.Context(), s.machineUserID(), authz.ViaHook))
 			return
 		}
 		token := hookTokenFromRequest(r)
@@ -782,7 +810,7 @@ func (s *Server) requireHookOrServiceToken(next http.HandlerFunc) http.HandlerFu
 			// secret is held by every hook script on both hosts and names nobody.
 			// (Unattributed means no ACTOR name; it still acts as the machine
 			// user, which is a different question.)
-			s.admit(w, r, next, s.principalFor(r.Context(), machineUserID(), authz.ViaHook))
+			s.admit(w, r, next, s.principalFor(r.Context(), s.machineUserID(), authz.ViaHook))
 			return
 		}
 		if token == "" {

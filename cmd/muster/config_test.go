@@ -71,8 +71,11 @@ func TestTheEnvVarNamesAreLiteral(t *testing.T) {
 	if envAPIURL != "MUSTER_API_URL" {
 		t.Errorf("envAPIURL = %q, want the literal %q", envAPIURL, "MUSTER_API_URL")
 	}
-	if envToken != "MUSTER_HOOK_TOKEN" {
-		t.Errorf("envToken = %q, want the literal %q", envToken, "MUSTER_HOOK_TOKEN")
+	if envToken != "MUSTER_TOKEN" {
+		t.Errorf("envToken = %q, want the literal %q", envToken, "MUSTER_TOKEN")
+	}
+	if envTokenAlias != "MUSTER_HOOK_TOKEN" {
+		t.Errorf("envTokenAlias = %q, want the literal %q", envTokenAlias, "MUSTER_HOOK_TOKEN")
 	}
 	// Behavioural half, over a literal map: the names are actually READ, not
 	// merely declared.
@@ -87,6 +90,38 @@ func TestTheEnvVarNamesAreLiteral(t *testing.T) {
 	}
 	if c.apiURL != "http://from-literal:9" || c.token != "literal-token" {
 		t.Fatalf("resolved %+v from literally-named variables", c)
+	}
+}
+
+// TestTheTokenAliasIsReadAndLosesToTheNewName: MUSTER_HOOK_TOKEN alone still
+// configures the client (every hook host and agent pod spells it so);
+// MUSTER_TOKEN beats it within a source; a higher source's alias still beats a
+// lower source's MUSTER_TOKEN. Literal names, for the reason above.
+func TestTheTokenAliasIsReadAndLosesToTheNewName(t *testing.T) {
+	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+	cases := []struct {
+		name string
+		file map[string]string
+		env  map[string]string
+		want string
+	}{
+		{"alias only (env)", nil, map[string]string{"MUSTER_HOOK_TOKEN": "hook"}, "hook"},
+		{"alias only (file)", map[string]string{"MUSTER_HOOK_TOKEN": "hook"}, nil, "hook"},
+		{"both in env", nil, map[string]string{"MUSTER_HOOK_TOKEN": "hook", "MUSTER_TOKEN": "personal"}, "personal"},
+		{"both in file", map[string]string{"MUSTER_TOKEN": "personal", "MUSTER_HOOK_TOKEN": "hook"}, nil, "personal"},
+		{"env alias beats file name", map[string]string{"MUSTER_TOKEN": "file"}, map[string]string{"MUSTER_HOOK_TOKEN": "env"}, "env"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := map[string]string{"MUSTER_API_URL": "http://x:1"}
+			for k, v := range c.env {
+				e[k] = v
+			}
+			got, err := resolveConfig("f", c.file, env(e), "", "")
+			if err != nil || got.token != c.want {
+				t.Fatalf("token = %q (%v); want %q", got.token, err, c.want)
+			}
+		})
 	}
 }
 

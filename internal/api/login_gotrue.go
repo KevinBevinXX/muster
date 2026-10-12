@@ -285,6 +285,7 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 <form method="POST" action="/logout">
 <button type="submit" class="press min-h-[44px] w-full rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Sign out</button></form>
 `+everywhere+`
+<a href="`+accountTokensPath+`" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">API tokens</a>
 <a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to muster</a>
 </section>`)
 }

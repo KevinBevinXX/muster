@@ -105,6 +105,9 @@ type Server struct {
 	// loginRate throttles password attempts on the human tier.
 	loginRate rateLimiter
 
+	// apiTokenGate is the personal-token failure limiter. See api_tokens.go.
+	apiTokenGate apiTokenGate
+
 	// gt is the GoTrue wiring (accounts PR 4); nil unless UseGoTrue was
 	// called. See accounts.go.
 	gt *gotrueState
@@ -396,6 +399,8 @@ func (s *Server) registerAll(mux Mux) {
 	// --- The human login tier: open by necessity, since it is how a caller
 	// stops being anonymous. ---
 	s.registerLoginRoutes(mux)
+	// Personal API tokens (accounts PR 6): /api/whoami, /api/tokens, /account/tokens.
+	s.registerAPITokenRoutes(mux)
 
 	// --- The SPA shell. Each tab is a real route (deep-linking + back/forward);
 	// they all serve the shell with the matching tab active, derived from the

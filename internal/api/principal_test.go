@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/apitokens"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
 )
@@ -31,7 +32,10 @@ const (
 	pHookToken    = "principal-test-hook-token-0123456789abcdef"
 	pServiceToken = "principal-test-service-token-0123456789abcd"
 	pPassword     = "principal-test-operator-password"
-	pAgentToken   = "principal-test-agent-own-token-0123456789"
+	// pAPIToken is shaped like a minted personal token (apitokens.ShapeOK) so
+	// it reaches the store; principalAPITokens resolves it to user 1.
+	pAPIToken   = "mst_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	pAgentToken = "principal-test-agent-own-token-0123456789"
 )
 
 // publicRoutes are served with no credential and therefore no Principal.
@@ -65,6 +69,9 @@ var publicRoutes = []string{
 var routeVias = map[authz.Via][]string{
 	authz.ViaSession: {
 		"GET /account",
+		"GET /account/tokens",
+		"POST /account/tokens",
+		"POST /account/tokens/{id}/revoke",
 		"DELETE /agents/{id}",
 		"GET /mirror/terminal",
 		"GET /mirror/terminal/ws",
@@ -150,10 +157,35 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/agents/{name}/messages",
 		"POST /api/tasks",
 		"POST /api/tasks/{id}/comments",
+		"GET /api/whoami",
 	},
 	authz.ViaService: {
 		"GET /api/tasks",
+		"GET /api/whoami",
 		"PATCH /api/tasks/{id}/status",
+	},
+	// A PERSONAL token (accounts PR 6) opens every hook-tier route (each
+	// hook-tier wrapper takes one first) plus the token API, acting as its
+	// owner — user 1 here, because principalAPITokens says so.
+	authz.ViaToken: {
+		"DELETE /api/tasks/{id}",
+		"DELETE /api/tasks/{id}/comments/{cid}",
+		"DELETE /api/tokens/{id}",
+		"GET /api/agents",
+		"GET /api/agents/{name}/messages",
+		"GET /api/projects",
+		"GET /api/sessions/{id}/tasks",
+		"GET /api/tags",
+		"GET /api/tasks",
+		"GET /api/tasks/{id}",
+		"GET /api/tokens",
+		"GET /api/whoami",
+		"PATCH /api/tasks/{id}",
+		"PATCH /api/tasks/{id}/status",
+		"POST /api/agents/{name}/messages",
+		"POST /api/tasks",
+		"POST /api/tasks/{id}/comments",
+		"POST /api/tokens",
 	},
 	authz.ViaAgent: {
 		"GET /agent/muster",
@@ -190,6 +222,16 @@ func (principalAgents) GetByHooksToken(_ context.Context, tok string) (agents.Ag
 
 type principalConnectors struct{ connectors.Store }
 
+// principalAPITokens resolves the one test personal token to user 1.
+type principalAPITokens struct{ apitokens.Store }
+
+func (principalAPITokens) Authenticate(_ context.Context, tok string) (apitokens.Token, error) {
+	if tok == pAPIToken {
+		return apitokens.Token{ID: 3, UserID: authz.OperatorUserID, Name: "principal-test"}, nil
+	}
+	return apitokens.Token{}, apitokens.ErrBadToken
+}
+
 // errProbeAbort stops a request at admit's hand-off, so no handler body runs:
 // the test observes the principal, not the handler's dependencies.
 var errProbeAbort = errors.New("principal probe: abort before the handler")
@@ -218,7 +260,7 @@ func newPrincipalTestServer(t *testing.T) (*Server, http.Handler, *[]authz.Princ
 func newPrincipalTestServerWith(t *testing.T, cfg AuthConfig) (*Server, http.Handler, *[]authz.Principal) {
 	t.Helper()
 	s := New(nil, cfg, log.New(io.Discard, "", 0))
-	s.UseExtensions(Extensions{Agents: principalAgents{}, Connectors: principalConnectors{}})
+	s.UseExtensions(Extensions{Agents: principalAgents{}, Connectors: principalConnectors{}, APITokens: principalAPITokens{}})
 	seen := &[]authz.Principal{}
 	s.principalProbe = func(r *http.Request) {
 		p, ok := authz.From(r.Context())
@@ -268,6 +310,8 @@ func credential(s *Server, req *http.Request, via authz.Via) {
 		req.Header.Set(ActorHeader, "principal-test-service")
 	case authz.ViaAgent, authz.ViaConnect, authz.ViaRelay:
 		req.Header.Set("X-Muster-Token", pAgentToken)
+	case authz.ViaToken:
+		req.Header.Set("Authorization", "Bearer "+pAPIToken)
 	}
 }
 
@@ -403,7 +447,7 @@ func TestAnUnarmedHookTierStillActsAsTheMachineUser(t *testing.T) {
 // prove nothing — a mislabelled route simply refuses and attaches nothing.)
 func TestPublicRoutesAreServedWithoutAPrincipal(t *testing.T) {
 	s, h, seen := newPrincipalTestServer(t)
-	doors := []authz.Via{authz.ViaSession, authz.ViaHook, authz.ViaService, authz.ViaAgent}
+	doors := []authz.Via{authz.ViaSession, authz.ViaHook, authz.ViaService, authz.ViaAgent, authz.ViaToken}
 	for _, pattern := range publicRoutes {
 		method, path := concretePath(pattern)
 		for _, via := range doors {

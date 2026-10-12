@@ -54,6 +54,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/agentstatus"
 	"github.com/ZacxDev/muster/internal/api"
+	"github.com/ZacxDev/muster/internal/apitokens"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/connectors"
@@ -246,6 +247,8 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// The request Principal's role comes from users.role (accounts PR 3b);
 		// without this store only user 1 would be admin, by fallback.
 		ext.Users = users.NewPG(pool)
+		// Personal API tokens (accounts PR 6): mst_… on the machine tier.
+		ext.APITokens = apitokens.NewPG(pool)
 
 		if len(cfg.ConnectorEncKey) > 0 {
 			cs, err := connectors.NewPG(pool, cfg.ConnectorEncKey)
@@ -1208,6 +1211,7 @@ func (c config) authConfig() api.AuthConfig {
 		SecureCookies: c.SecureCookies,
 		Mode:          api.AuthMode(c.AuthMode),
 		PublicURL:     c.PublicURL,
+		MachineUserID: c.MachineUserID,
 	}
 }
 

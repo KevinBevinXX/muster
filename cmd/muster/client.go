@@ -377,7 +377,9 @@ func classify(req request, resp *http.Response, body []byte) ([]byte, error) {
 				"unconfigured. Arm it by setting %s on the muster deployment (an empty or missing "+
 				"value produces this state), then re-run. Your own credential was not the problem "+
 				"and was not checked.",
-			req.method, req.path, serverError(body), envToken)
+			// envTokenAlias, NOT envToken: this names the SERVER's variable
+			// (MUSTER_HOOK_TOKEN on the deployment), which is not this client's.
+			req.method, req.path, serverError(body), envTokenAlias)
 
 	case resp.StatusCode >= 500:
 		return nil, failf(exitServerError, "%s %s: %d %s — %s", req.method, req.path, resp.StatusCode, http.StatusText(resp.StatusCode), serverError(body))

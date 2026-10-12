@@ -103,6 +103,10 @@ var (
 		// claim-link visitor — there is no principal to run as yet. One helper,
 		// so the whole package is this one site.
 		"internal/users.sys",
+		// Accounts PR 6: a personal API token's lookup by hash. Like
+		// agentByToken, it is how the request's user is LEARNED (api_tokens is
+		// under FORCE RLS); only the row's user_id is handed on.
+		"internal/api.(*Server).apiTokenUser",
 	}
 	// operatorLedger: work done as the OPERATOR (user 1) with no request —
 	// the boot-time GitHub connect of the operator's own static token, and the
@@ -126,6 +130,7 @@ var (
 	// admitLedger: every authentication wrapper.
 	admitLedger = []string{
 		"internal/api.(*Server).admitAttributedService", // requireServiceToken + the service branch of requireHookOrServiceToken
+		"internal/api.(*Server).admitAPIToken",          // personal tokens: the hook-tier wrappers + requireAPIToken (accounts PR 6)
 		"internal/api.(*Server).requireAgentToken",
 		"internal/api.(*Server).requireArmedHookToken",
 		"internal/api.(*Server).requireConnectorAgent",
@@ -141,7 +146,7 @@ var (
 	authzExports = []string{
 		"From", "MustFrom", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
 		"System", "Via", "ViaAgent", "ViaConnect", "ViaHook", "ViaOperator", "ViaRelay", "ViaService",
-		"ViaSession", "ViaSystem", "WithPrincipal",
+		"ViaSession", "ViaSystem", "ViaToken", "WithPrincipal",
 	}
 )
 

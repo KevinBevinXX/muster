@@ -123,6 +123,26 @@ Two things to know before you wire it up:
   changes nothing else — same command tree, same config, same service. It is
   there so a host whose tooling matches on a command line can keep matching.
 
+### Credentials: personal API tokens
+
+The CLI presents one credential, read from `MUSTER_TOKEN` (or its older name
+`MUSTER_HOOK_TOKEN`, which `MUSTER_TOKEN` beats within the same source) in
+`~/.muster/muster.env`, the environment, or `--token`.
+
+- **A personal API token** (`mst_…`) acts as **you** — your user id and role,
+  under row-level security — on every machine-tier route, including the LAN
+  machine port. Mint the first one in the browser at `/account/tokens` (it is
+  shown once; only its sha256 is stored), then `muster token create --name …`,
+  `muster token ls`, `muster token revoke <id>` manage the rest with it.
+  `muster whoami` says who a credential acts as. Revoking a token, or disabling
+  its user, refuses it on the very next request.
+- **The shared hook secret** (`MUSTER_HOOK_TOKEN` on the server) acts as the
+  server's **machine user**: `MUSTER_MACHINE_USER_ID`, a `users.id`, default
+  `1` (the operator). The same applies to `MUSTER_SERVICE_TOKEN`. Every holder
+  of the shared secret acts as that one user, so a person who wants their own
+  identity on the machine tier uses a personal token instead. `token …` refuses
+  the hook secret: minting a credential is a person's act.
+
 ## The schema
 
 Numbered migrations in `internal/db/migrations/`, applied in order at boot. The
