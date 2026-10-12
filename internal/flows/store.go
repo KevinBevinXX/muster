@@ -138,6 +138,13 @@ type Store interface {
 	Heartbeat(ctx context.Context, id int64, host string) (Job, error)
 	Report(ctx context.Context, id int64, host string, res Result) (Job, error)
 
+	// Agent requests (0014; requests.go): filed by an agent, decided by its
+	// owner in a browser session.
+	FileRequest(ctx context.Context, agentID, ownerID int64, agentName string, r Request, reason string) (FlowRequest, error)
+	RequestForAgent(ctx context.Context, agentID, id int64) (FlowRequest, error)
+	ListRequests(ctx context.Context, limit int) ([]FlowRequest, error)
+	DecideRequest(ctx context.Context, id int64, approve bool, by string) (FlowRequest, *Job, error)
+
 	AuthenticateRunner(ctx context.Context, token string) (RunnerToken, error)
 	CreateRunnerToken(ctx context.Context, host string) (string, RunnerToken, error)
 	ListRunnerTokens(ctx context.Context) ([]RunnerToken, error)
@@ -147,6 +154,16 @@ type Store interface {
 // PGStore is Store over Postgres (migration 0012).
 type PGStore struct {
 	pool *pgxpool.Pool
+	// denyWords are the deployment's infrastructure names an AGENT's free
+	// text may not carry (WithAgentDenyWords; requests.go).
+	denyWords []string
+}
+
+// WithAgentDenyWords sets the deployment's own infrastructure names that an
+// agent-composed message may not contain (MUSTER_FLOW_AGENT_DENY_WORDS).
+func (s *PGStore) WithAgentDenyWords(words []string) *PGStore {
+	s.denyWords = append([]string(nil), words...)
+	return s
 }
 
 // NewPG builds the Postgres store.
@@ -194,6 +211,21 @@ func (s *PGStore) Enqueue(ctx context.Context, r Request, via, by string) (Job, 
 		return Job{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	j, err := enqueueTx(ctx, tx, f, r, params, via, by)
+	if err != nil {
+		return Job{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Job{}, err
+	}
+	count(j.Flow, "enqueued")
+	return j, nil
+}
+
+// enqueueTx inserts one validated job inside tx, under the pending cap. It is
+// the ONE insert into flow_jobs: Enqueue (an owner's request) and an approved
+// agent request (DecideRequest) both go through it.
+func enqueueTx(ctx context.Context, tx pgx.Tx, f Flow, r Request, params []byte, via, by string) (Job, error) {
 	// The cap is per owner; serialise this owner's enqueues so two concurrent
 	// ones cannot both pass the count. The lock key is the owner id the row
 	// will carry (the column default), read back from the session setting.
@@ -208,19 +240,11 @@ func (s *PGStore) Enqueue(ctx context.Context, r Request, via, by string) (Job, 
 	if pending >= MaxPendingPerOwner {
 		return Job{}, fmt.Errorf("%w: %d queued or running (the limit is %d)", ErrPendingCap, pending, MaxPendingPerOwner)
 	}
-	j, err := scanJob(tx.QueryRow(ctx, `
+	return scanJob(tx.QueryRow(ctx, `
 		INSERT INTO flow_jobs (flow, class, host, instance, params, requested_via, requested_by, expires_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8))
 		RETURNING `+jobCols,
 		f.Name, string(f.Class), r.Host, r.Instance, params, via, truncateRunes(by, 100), r.TTL.Seconds()))
-	if err != nil {
-		return Job{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return Job{}, err
-	}
-	count(j.Flow, "enqueued")
-	return j, nil
 }
 
 // sweep applies the two time-driven transitions to the CALLER's rows (row-level

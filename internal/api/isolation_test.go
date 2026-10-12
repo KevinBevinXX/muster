@@ -272,12 +272,15 @@ var isolationClasses = map[string]routeClass{
 	"POST /flows/runner-tokens":             classList,
 	"POST /flows/jobs/{id}/cancel":          classParam,
 	"POST /flows/runner-tokens/{id}/revoke": classParam,
-	"GET /api/flows/jobs":                   classAPIToken,
-	"GET /api/flows/jobs/{id}":              classAPIToken,
-	"POST /api/flows/jobs":                  classAPIToken,
-	"POST /runner/flows/claim":              classRunner,
-	"POST /runner/flows/{id}/heartbeat":     classRunner,
-	"POST /runner/flows/{id}/result":        classRunner,
+	// An agent's request is decided by its owner only (PR 4).
+	"POST /flows/requests/{id}/approve": classParam,
+	"POST /flows/requests/{id}/deny":    classParam,
+	"GET /api/flows/jobs":               classAPIToken,
+	"GET /api/flows/jobs/{id}":          classAPIToken,
+	"POST /api/flows/jobs":              classAPIToken,
+	"POST /runner/flows/claim":          classRunner,
+	"POST /runner/flows/{id}/heartbeat": classRunner,
+	"POST /runner/flows/{id}/result":    classRunner,
 }
 
 // wantCanaryForA: list routes that render A's data to A. The negative control
@@ -416,6 +419,7 @@ type isoWorld struct {
 	flowHost     string
 	aJob, aJob2  flows.Job
 	aRunner2     flows.RunnerToken
+	aFlowReq     flows.FlowRequest // A's agent's pending browser-flow request (PR 4)
 }
 
 func newIsoWorld(t *testing.T) *isoWorld {
@@ -588,6 +592,12 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		must(err, "a flow job")
 	}
 
+	// A's agent asks for a flow (the canary in its reason and params): the
+	// object the approve/deny routes name.
+	w.aFlowReq, err = fs.FileRequest(ua, w.a.agent.ID, w.a.uid, w.a.agent.Name, flows.Request{Flow: "muse.poll",
+		Host: w.flowHost, Instance: "isoinst", Params: map[string]string{"thread": w.canary + " asked"}}, w.canary+" because")
+	must(err, "a flow request")
+
 	w.aIdentities = []string{w.a.agent.Name, agents.ChiefNameFor(w.a.uid), w.aSessionLink, w.aTag, w.aProject}
 	w.opInvite, err = users.NewPG(pool).CreateInvite(ctx, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession},
 		bytes.Repeat([]byte{byte(time.Now().UnixNano())}, 32), "", time.Now().Add(time.Hour))
@@ -595,14 +605,14 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	w.objA = isoObjs{ccAccount: w.objA.ccAccount, user: w.a.uid, invite: w.opInvite.ID, task: w.a.task.ID, agent: w.a.agent.ID, grant: w.aGrantID, comment: w.aComment.ID,
 		attach: w.aAttachment.ID, chat: w.aChatSession.ID, agentName: w.a.agent.Name, connName: w.aConnName,
 		tag: w.aTag, link: w.aSessionLink, mirrorHost: w.canary + "-host", mirrorSession: "main", token: w.aToken2.ID,
-		flowJob: w.aJob.ID, runnerTok: w.aRunner2.ID}
+		flowJob: w.aJob.ID, runnerTok: w.aRunner2.ID, flowReq: w.aFlowReq.ID}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
 	const ghostID = 9_000_000_000
 	w.ghost = isoObjs{user: ghostID, invite: ghostID, task: ghostID, agent: ghostID, grant: ghostID, comment: ghostID, attach: ghostID, chat: ghostID,
 		agentName: "ghost-agent" + w.suffix, connName: "ghostconn" + w.suffix, tag: "ghosttag", link: "ghost-sess-" + w.suffix,
 		mirrorHost: "ghost-host", mirrorSession: "main", ccAccount: "ghostacct", token: ghostID,
-		flowJob: ghostID, runnerTok: ghostID}
+		flowJob: ghostID, runnerTok: ghostID, flowReq: ghostID}
 
 	// The server, fully wired over the real stores.
 	w.bus = sse.New(64)
@@ -729,7 +739,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 			`DELETE FROM github_connection WHERE owner_id = ANY($1)`, `DELETE FROM user_credentials WHERE owner_id = ANY($1)`,
 			`DELETE FROM cc_account_marks WHERE owner_id = ANY($1)`,
 			`DELETE FROM api_tokens WHERE user_id = ANY($1)`, `DELETE FROM audit_log WHERE user_id = ANY($1)`,
-			`DELETE FROM flow_jobs WHERE owner_id = ANY($1)`, `DELETE FROM flow_runner_tokens WHERE owner_id = ANY($1)`,
+			`DELETE FROM flow_requests WHERE owner_id = ANY($1)`, `DELETE FROM flow_jobs WHERE owner_id = ANY($1)`, `DELETE FROM flow_runner_tokens WHERE owner_id = ANY($1)`,
 			`DELETE FROM users WHERE id = ANY($1)`,
 		} {
 			_, _ = pool.Exec(bg, q, ids)
@@ -832,7 +842,7 @@ type isoObjs struct {
 	user, invite                              int64
 	task, agent, grant, comment, attach, chat int64
 	token                                     int64 // a personal API token's id
-	flowJob, runnerTok                        int64 // a browser-flow job's id, a runner token's id
+	flowJob, runnerTok, flowReq               int64 // a browser-flow job's, runner token's and agent request's id
 	agentName, connName, tag, link            string
 	mirrorHost, mirrorSession                 string
 }
@@ -860,6 +870,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 	case strings.Contains(path, "/runner-tokens/{id}"):
 		// Before "tokens/{id}" below, which would otherwise match it.
 		id = strconv.FormatInt(o.runnerTok, 10)
+	case strings.Contains(path, "/flows/requests/{id}"):
+		id = strconv.FormatInt(o.flowReq, 10)
 	case strings.Contains(path, "flows/jobs/{id}") || strings.HasPrefix(path, "/runner/flows/{id}"):
 		id = strconv.FormatInt(o.flowJob, 10)
 	case strings.Contains(path, "tokens/{id}"):
@@ -944,7 +956,7 @@ func (w *isoWorld) snapshot() map[string]string {
 	out := map[string]string{}
 	for _, tbl := range []string{"notes", "note_comments", "note_attachments", "task_sessions", "agents",
 		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "github_connection", "mirror_tokens",
-		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens"} {
+		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens", "flow_requests"} {
 		var js string
 		if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t.id)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
 			// task_sessions/github_connection have no `id` ordering column in every

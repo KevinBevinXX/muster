@@ -20,6 +20,7 @@ import (
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/dbtest"
+	"github.com/ZacxDev/muster/internal/flows"
 )
 
 // The connector store's DOORS: who may reach the agent surface, who may reach
@@ -59,7 +60,7 @@ func newConnFixture(t *testing.T) *connFixture {
 	}
 	s := New(nil, AuthConfig{HookToken: connTestHookToken, ServiceToken: connTestServiceToken, UIPassword: connTestPassword},
 		log.New(io.Discard, "", 0))
-	s.UseExtensions(Extensions{Agents: agents.NewPG(pool), Connectors: store})
+	s.UseExtensions(Extensions{Agents: agents.NewPG(pool), Connectors: store, Flows: flows.NewPG(pool)})
 	return &connFixture{ctx: ctx, pool: pool, srv: s, h: s.Handler(), store: store}
 }
 

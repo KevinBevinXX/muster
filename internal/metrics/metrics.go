@@ -171,7 +171,8 @@ var (
 	// 🔴 CARDINALITY RULE: `flow` is a name from the COMPILED-IN catalogue
 	// (flows.Catalogue — two entries today, and an enqueue naming anything else
 	// is refused before it is counted), and `outcome` is the closed vocabulary
-	// enqueued|claimed|requeued|done|failed|needs_operator|expired|cancelled.
+	// enqueued|claimed|requeued|done|failed|needs_operator|expired|cancelled,
+	// plus an agent request's requested|approved|denied (migration 0014).
 	// A job id, host, instance or any parameter must NEVER become a label.
 	FlowJobs = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "muster_flow_jobs_total",

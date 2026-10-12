@@ -24,7 +24,8 @@ import (
 // is where that decision gets reviewed (agentTool's comment says why the
 // existing tools are gateway-only).
 var (
-	mcpLedger         = []string{"connectors_list", "connector_request", "connector_status"}
+	mcpLedger = []string{"connectors_list", "connector_request", "connector_status",
+		"browser_flow_request", "browser_flow_status"}
 	gatewayOnlyLedger = []string{"agent_get_task", "agent_comment_task", "agent_set_task_status",
 		"agent_list_pull_requests"}
 )

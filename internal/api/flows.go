@@ -56,6 +56,10 @@ func (s *Server) registerFlowRoutes(mux Mux) {
 	mux.HandleFunc("POST "+flowsPath+"/jobs", s.requireOperatorWrite(s.handleFlowEnqueueForm))
 	mux.HandleFunc("POST "+flowsPath+"/jobs/{id}/cancel", s.requireOperatorWrite(s.handleFlowCancelForm))
 	mux.HandleFunc("POST "+flowsPath+"/runner-tokens", s.requireOperatorWrite(s.handleRunnerTokenCreate))
+	// An agent's request (flow_tools.go) is decided HERE, by its owner, on the
+	// connector-request approve pattern (requireOperatorWrite).
+	mux.HandleFunc("POST "+flowsPath+"/requests/{id}/approve", s.requireOperatorWrite(s.handleFlowRequestApprove))
+	mux.HandleFunc("POST "+flowsPath+"/requests/{id}/deny", s.requireOperatorWrite(s.handleFlowRequestDeny))
 	mux.HandleFunc("POST "+flowsPath+"/runner-tokens/{id}/revoke", s.requireOperatorWrite(s.handleRunnerTokenRevoke))
 
 	mux.HandleFunc("POST "+flowsAPIPath, s.requireAPIToken(s.handleFlowEnqueueAPI))
@@ -362,6 +366,38 @@ func (s *Server) handleFlowCancelForm(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleFlowRequestApprove(w http.ResponseWriter, r *http.Request) {
+	s.decideFlowRequest(w, r, true)
+}
+
+func (s *Server) handleFlowRequestDeny(w http.ResponseWriter, r *http.Request) {
+	s.decideFlowRequest(w, r, false)
+}
+
+// decideFlowRequest approves (creating the job, in the deciding owner's queue)
+// or denies one of the session user's pending agent requests. Another owner's
+// request is "no such request" — row-level security does not show it.
+func (s *Server) decideFlowRequest(w http.ResponseWriter, r *http.Request, approve bool) {
+	id, ok := flowJobID(r)
+	var err error = flows.ErrNotFound
+	if ok && s.ext.Flows != nil {
+		_, _, err = s.ext.Flows.DecideRequest(r.Context(), id, approve, "the owner's browser session")
+	}
+	switch {
+	case err == nil:
+		http.Redirect(w, r, flowsPath, http.StatusSeeOther)
+	case errors.Is(err, flows.ErrNotFound):
+		s.renderFlowsPage(w, r, http.StatusNotFound, "", "No such request.")
+	case errors.Is(err, flows.ErrState):
+		s.renderFlowsPage(w, r, http.StatusConflict, "", "That request was already decided, or it expired.")
+	case errors.Is(err, flows.ErrInvalid), errors.Is(err, flows.ErrPendingCap):
+		s.renderFlowsPage(w, r, http.StatusBadRequest, "", err.Error())
+	default:
+		s.logger.Printf("flows: decide request %d: %v", id, err)
+		s.renderFlowsPage(w, r, http.StatusInternalServerError, "", "The request could not be decided.")
+	}
+}
+
 func (s *Server) handleRunnerTokenCreate(w http.ResponseWriter, r *http.Request) {
 	if s.ext.Flows == nil {
 		s.renderFlowsPage(w, r, http.StatusServiceUnavailable, "", "")
@@ -413,6 +449,7 @@ const (
 func (s *Server) renderFlowsPage(w http.ResponseWriter, r *http.Request, code int, minted, problem string) {
 	var jobs []flows.Job
 	var runners []flows.RunnerToken
+	var requests []flows.FlowRequest
 	if s.ext.Flows == nil {
 		problem = "This server has no database, so it cannot queue browser flows."
 	} else {
@@ -420,6 +457,10 @@ func (s *Server) renderFlowsPage(w http.ResponseWriter, r *http.Request, code in
 		if jobs, err = s.ext.Flows.List(r.Context(), 50); err != nil {
 			s.logger.Printf("flows: page list: %v", err)
 			problem = "The job list could not be read."
+		}
+		if requests, err = s.ext.Flows.ListRequests(r.Context(), 50); err != nil {
+			s.logger.Printf("flows: page requests: %v", err)
+			problem = "The request list could not be read."
 		}
 		if runners, err = s.ext.Flows.ListRunnerTokens(r.Context()); err != nil {
 			s.logger.Printf("flows: page runners: %v", err)
@@ -480,6 +521,43 @@ func (s *Server) renderFlowsPage(w http.ResponseWriter, r *http.Request, code in
 <input id="flow-ttl" name="ttl_minutes" inputmode="numeric" value="` + strconv.Itoa(int(flows.DefaultTTL/time.Minute)) + `" class="` + flowsInputClass + `">
 <button type="submit" class="` + flowsButtonClass + `">Queue flow</button>
 </form>
+`)
+
+	// Agent requests waiting on this owner: the FULL parameters are shown,
+	// because approving a muse.send sends exactly that text to a third party.
+	b.WriteString(`<h2 class="text-sm font-semibold text-fg">Agent requests</h2>
+<ul class="flex flex-col gap-2" data-testid="flow-requests">
+`)
+	shown := 0
+	for _, q := range requests {
+		if q.Status != flows.RequestPending {
+			continue
+		}
+		shown++
+		id := strconv.FormatInt(q.ID, 10)
+		b.WriteString(`<li class="` + flowsCardClass + `" data-flow-request-id="` + id + `">
+<span class="break-all text-sm font-semibold text-fg">` + esc(q.AgentName) + ` asks: ` + esc(q.Flow) + ` on ` + esc(q.Host) + `/` + esc(q.Instance) + `</span>
+`)
+		if q.Reason != "" {
+			b.WriteString(`<span class="whitespace-pre-wrap break-words text-xs text-fg2">reason: ` + esc(q.Reason) + `</span>
+`)
+		}
+		for _, k := range []string{"thread", "task", "text"} {
+			if v := q.Params[k]; v != "" {
+				b.WriteString(`<span class="whitespace-pre-wrap break-words text-xs text-fg2">` + esc(k) + `: ` + esc(v) + `</span>
+`)
+			}
+		}
+		b.WriteString(`<span class="text-xs text-fg2">expires ` + q.ExpiresAt.UTC().Format("2006-01-02 15:04") + ` UTC</span>
+<form method="POST" action="` + flowsPath + `/requests/` + id + `/approve"><button type="submit" class="` + flowsButtonClass + ` w-full">Approve and queue</button></form>
+<form method="POST" action="` + flowsPath + `/requests/` + id + `/deny"><button type="submit" class="` + flowsQuietButton + `">Deny</button></form>
+</li>
+`)
+	}
+	if shown == 0 {
+		b.WriteString(`<li class="text-sm text-fg2">No agent requests waiting.</li>`)
+	}
+	b.WriteString(`</ul>
 `)
 
 	// The jobs.

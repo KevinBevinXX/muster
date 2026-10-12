@@ -79,7 +79,7 @@ func TestTheMCPServerSpeaksTheToolProtocolAsTheCallingAgent(t *testing.T) {
 			t.Errorf("%s has no object input schema", tl.Name)
 		}
 	}
-	if strings.Join(names, ",") != "connectors_list,connector_request,connector_status" {
+	if strings.Join(names, ",") != "connectors_list,connector_request,connector_status,browser_flow_request,browser_flow_status" {
 		t.Fatalf("tools = %v", names)
 	}
 

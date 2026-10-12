@@ -172,6 +172,8 @@ var routeVias = map[authz.Via][]string{
 		"POST /flows/jobs/{id}/cancel",
 		"POST /flows/runner-tokens",
 		"POST /flows/runner-tokens/{id}/revoke",
+		"POST /flows/requests/{id}/approve",
+		"POST /flows/requests/{id}/deny",
 	},
 	authz.ViaHook: {
 		"DELETE /api/tasks/{id}",

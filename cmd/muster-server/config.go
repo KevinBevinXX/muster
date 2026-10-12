@@ -93,6 +93,11 @@ const (
 	// Off, GET /mirror/connect answers 404 and nothing mirrored is listed.
 	envMirror = "MUSTER_MIRROR"
 
+	// Browser flows: the deployment's own infrastructure names (comma-separated)
+	// that an AGENT's browser-flow text may not carry (internal/flows
+	// AgentTextRefusal). Configuration, not source: this repository is public.
+	envFlowAgentDenyWords = "MUSTER_FLOW_AGENT_DENY_WORDS"
+
 	envRouterURL   = "MUSTER_ROUTER_URL"
 	envRouterToken = "MUSTER_ROUTER_TOKEN"
 	envRouterActor = "MUSTER_ROUTER_ACTOR"
@@ -333,6 +338,9 @@ type config struct {
 
 	// Mirror turns the mirrored-sessions plugin on (MUSTER_MIRROR=1).
 	Mirror bool
+
+	// FlowAgentDenyWords is MUSTER_FLOW_AGENT_DENY_WORDS, split on commas.
+	FlowAgentDenyWords []string
 
 	RouterURL   string
 	RouterToken string
@@ -660,6 +668,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		FaroTracing:        envFlag(getenv, envFaroTracing),
 		TagAutoDispatch:    envFlag(getenv, envTagAutoDispatch),
 		Mirror:             envFlag(getenv, envMirror),
+		FlowAgentDenyWords: splitList(getenv(envFlowAgentDenyWords)),
 		RouterURL:          strings.TrimSpace(getenv(envRouterURL)),
 		RouterToken:        strings.TrimSpace(getenv(envRouterToken)),
 		RouterActor:        strings.TrimSpace(getenv(envRouterActor)),

@@ -85,6 +85,7 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO github_connection (login, scopes, token_ciphertext) VALUES ($1, 'repo', '\xde')`, func() []any { return []any{"octo-" + tag} }, nil},
 		{`INSERT INTO mirror_tokens (host, token_hash) VALUES ($1, $2)`, func() []any { return []any{"host-" + tag, "hash-" + tag} }, nil},
 		{`INSERT INTO flow_runner_tokens (host, token_hash) VALUES ($1, $2)`, func() []any { return []any{"host-" + tag, "flowhash-" + tag} }, nil},
+		{`INSERT INTO flow_requests (agent_id, agent_name, flow, host, instance, expires_at) VALUES ($1, 'a', 'muse.poll', 'laptop', 'personal', now() + interval '1 hour')`, func() []any { return []any{agent} }, nil},
 		{`INSERT INTO flow_jobs (flow, class, host, instance, requested_via, expires_at) VALUES ('muse.poll', 'read', $1, 'personal', 'session', now() + interval '1 hour')`, func() []any { return []any{"host-" + tag} }, nil},
 		{`INSERT INTO user_credentials (kind, name, secret_ciphertext, fingerprint) VALUES ('claude', $1, '\x00', 'fp')`, func() []any { return []any{"acct-" + tag} }, nil},
 		{`INSERT INTO cc_account_marks (account, rate_limited_detail) VALUES ($1, 'x')`, func() []any { return []any{"acct-" + tag} }, nil},
