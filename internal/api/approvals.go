@@ -41,13 +41,26 @@ import (
 //     other id answers 404, whoever filed it;
 //   - report that its terminal is blocked on a permission prompt
 //     (POST /agent/blocked), which only drives this agent's own badge.
-// There is no route that DECIDES. A decision exists only on the router's human
-// tier.
+// There is no route that DECIDES. A decision is made only on the router: by a
+// human on its human tier, or by an auto-approve window the operator opened there.
 //
-// ⚠ THE CARD IS A GATE TYPE (checkpoint), WHICH THE ROUTER EXEMPTS FROM EVERY
-// AUTO-APPROVAL PATH. That is deliberate: the operator's decision for these pods
-// is "default permissions + approvals, never bypass", and an auto-approve window
-// opened for a laptop project must not approve a pod's tool call.
+// ⚠ THE CARD FOLLOWS THE ROUTER'S AUTO-APPROVAL, SCOPED TO THE POD'S OWN PROJECT.
+// It is filed as the gate type `agent-permission` (gateTypeAgentPermission), which
+// the router treats like any other permission prompt: its auto-approve-ALL mode
+// approves it, and a per-project auto-approve window approves it ONLY when that
+// window's project equals the card's Project. muster forces that Project to
+// ApprovalCardHost(agent) = "muster-agent/<name>" — never a value the pod
+// sends, and never the bare agent name, which a laptop project could share —
+// and the router refuses to mint this type under any other project. So an
+// auto-approve window opened for a laptop project cannot approve a pod's tool
+// call. An auto-approved card is already decided when it is filed;
+// the pod's first poll reads `approve`. (It used to be a `checkpoint`, which the
+// router exempts from every auto-approval path; the operator's decision is
+// that a pod's prompts go through the router's auto-approve.)
+//
+// 🔴 DEPLOY ORDER: the router must know `agent-permission` BEFORE this ships.
+// An older router answers 400 for the type, the relay answers 502, and every
+// pod prompt falls back to the terminal (fail closed, but no phone approvals).
 //
 // ⚠ THE LEDGER IS IN MEMORY. A muster restart forgets which agent filed which
 // request; the pod's next poll then answers 404 and its hook falls back to the
@@ -71,12 +84,25 @@ const (
 	// token bucket holding approvalMintBurst cards, refilled one per
 	// approvalMintEvery. Every mint attempt spends a token (a failed one too), and
 	// every mint is one card plus one Web Push on the operator's phone, so this is
-	// what bounds a filing loop: 3 at once, then about one per 10s. A card a
-	// HUMAN approved or denied gives its token back (settleDecided), so an
-	// operator answering prompts back to back is not throttled; clears, "gone"
-	// and dismissals do not.
+	// what bounds a filing loop nobody answers: 3 at once, then about one per 10s.
+	// A card that was APPROVED OR DENIED — by a person or by the router's
+	// auto-approval — gives its token back (settleDecided), so an operator
+	// answering prompts back to back, or a pod under an auto-approve window, is
+	// not throttled; clears, "gone" and dismissals do not refund.
 	approvalMintBurst = 3
 	approvalMintEvery = 10 * time.Second
+	// approvalCeilingBurst and approvalCeilingEvery are the per-agent CEILING: a
+	// second token bucket that is NEVER refunded, whatever decided the card. The
+	// refund above lifts the mint rate for every approved or denied card, so while
+	// an auto-approve window covers a pod nothing else bounds a filing loop, and
+	// each card costs the router a stored row, events to every open client and one
+	// control push per subscribed device. 30 at once, then one per 2s (30 a
+	// minute sustained): a session's gated tool calls each follow a model turn, so a
+	// turn that fans out parallel calls stays inside the burst and a steady session
+	// does not sustain one card per 2s. A refused mint answers 429
+	// and the pod's hook shows the terminal prompt, like the mint rate.
+	approvalCeilingBurst = 30
+	approvalCeilingEvery = 2 * time.Second
 	// approvalGoneReads is how many CONSECUTIVE "gone" reads muster needs before it
 	// believes a card is gone. The router's store reports a card absent on ANY
 	// query error, not only when it is evicted, and its own in-process waiter
@@ -103,8 +129,10 @@ type approvalLedger struct {
 	// minting counts, per agent, mints in flight: reserved under mu before the
 	// network call so concurrent POSTs cannot all pass the outstanding cap.
 	minting map[int64]int
-	// buckets is the per-agent mint-rate token bucket.
+	// buckets is the per-agent mint-rate token bucket (refunded on approve/deny).
 	buckets map[int64]mintBucket
+	// ceilings is the per-agent ceiling bucket (never refunded).
+	ceilings map[int64]mintBucket
 	// burst and every override approvalMintBurst/approvalMintEvery when non-zero
 	// (tests isolate the outstanding cap from the rate limit with them).
 	burst int
@@ -123,11 +151,16 @@ type mintBucket struct {
 	at     time.Time
 }
 
-// takeMintTokenLocked spends one of agentID's mint tokens, reporting false when
-// the bucket is empty. Caller holds mu.
-// humanDecision reports whether a decided card's response is a human's approve
-// or deny. A dismissal ("ignore") or anything else is not.
-func humanDecision(response string) bool {
+// approveOrDeny reports whether a decided card's response is an approve or a
+// deny. A dismissal ("ignore") or anything else is not.
+//
+// ⚠ IT DOES NOT SAY WHO DECIDED. The router's gate read carries no actor, so a
+// human's approve and an auto-approval are the same answer here. The router does
+// write the comment "auto-approved" on the latter, and the relay passes comments
+// through to the pod unchanged (a human's deny reason is worth the agent
+// reading); nothing in muster branches on that text, because a comment is a
+// word any path can spell.
+func approveOrDeny(response string) bool {
 	switch strings.ToLower(strings.TrimSpace(response)) {
 	case "approve", "allow", "reject", "deny":
 		return true
@@ -135,17 +168,22 @@ func humanDecision(response string) bool {
 	return false
 }
 
-// settleDecided forgets a decided card and, when a HUMAN approved or denied it,
-// gives its mint token back. Both happen under one lock and only if the card was
-// still tracked, so a card refunds at most once however many polls see it.
+// settleDecided forgets a decided card and, when it was approved or denied,
+// gives its mint-rate token back. Both happen under one lock and only if the
+// card was still tracked, so a card refunds at most once however many polls see
+// it.
 //
-// 🔴 ONLY A HUMAN DECISION REFUNDS. The rate limit exists to bound a filing loop
-// (each mint is a card and a Web Push); a card a person answered is a human in
-// the loop, not a flood, and without the refund an operator approving prompts
-// faster than one per approvalMintEvery would push the 4th one to the terminal.
-// A clear (DELETE), a confirmed "gone" and a dismissal do NOT refund, so a
-// file-and-clear loop stays limited.
-func (s *Server) settleDecided(id string, agentID int64, human bool) {
+// 🔴 ONLY AN APPROVE OR A DENY REFUNDS, whether a person or the router's
+// auto-approval made it. Without the refund an operator answering prompts faster
+// than one per approvalMintEvery would push the 4th to the terminal, and so
+// would a pod working under an auto-approve window, which is the wait the window
+// exists to remove. A clear (DELETE), a confirmed "gone" and a dismissal do NOT
+// refund, so a file-and-clear loop stays limited to the mint rate.
+//
+// ⚠ SO THE MINT RATE DOES NOT BOUND A LOOP OF APPROVED CARDS; THE CEILING DOES
+// (approvalCeilingBurst/approvalCeilingEvery), and it is never refunded. An
+// auto-approved card is not free: see the ceiling's comment for what one costs.
+func (s *Server) settleDecided(id string, agentID int64, refund bool) {
 	l := &s.approvals
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -154,7 +192,7 @@ func (s *Server) settleDecided(id string, agentID int64, human bool) {
 		return
 	}
 	delete(l.owners, id)
-	if human {
+	if refund {
 		l.refundMintTokenLocked(agentID)
 	}
 }
@@ -177,6 +215,8 @@ func (l *approvalLedger) refundMintTokenLocked(agentID int64) {
 	l.buckets[agentID] = b
 }
 
+// takeMintTokenLocked spends one of agentID's mint-rate tokens, reporting false
+// when the bucket is empty. Caller holds mu.
 func (l *approvalLedger) takeMintTokenLocked(agentID int64, now time.Time) bool {
 	burst, every := approvalMintBurst, approvalMintEvery
 	if l.burst > 0 {
@@ -185,7 +225,19 @@ func (l *approvalLedger) takeMintTokenLocked(agentID int64, now time.Time) bool 
 	if l.every > 0 {
 		every = l.every
 	}
-	b, ok := l.buckets[agentID]
+	return takeToken(l.buckets, agentID, burst, every, now)
+}
+
+// takeCeilingTokenLocked spends one of agentID's ceiling tokens, reporting false
+// when the bucket is empty. Nothing gives one back. Caller holds mu.
+func (l *approvalLedger) takeCeilingTokenLocked(agentID int64, now time.Time) bool {
+	return takeToken(l.ceilings, agentID, approvalCeilingBurst, approvalCeilingEvery, now)
+}
+
+// takeToken refills agentID's bucket in m for the time since it was last
+// touched, then spends one token if there is one.
+func takeToken(m map[int64]mintBucket, agentID int64, burst int, every time.Duration, now time.Time) bool {
+	b, ok := m[agentID]
 	if !ok {
 		b = mintBucket{tokens: float64(burst), at: now}
 	}
@@ -195,11 +247,11 @@ func (l *approvalLedger) takeMintTokenLocked(agentID int64, now time.Time) bool 
 	}
 	b.at = now
 	if b.tokens < 1 {
-		l.buckets[agentID] = b
+		m[agentID] = b
 		return false
 	}
 	b.tokens--
-	l.buckets[agentID] = b
+	m[agentID] = b
 	return true
 }
 
@@ -219,6 +271,9 @@ func (l *approvalLedger) init() {
 	}
 	if l.buckets == nil {
 		l.buckets = map[int64]mintBucket{}
+	}
+	if l.ceilings == nil {
+		l.ceilings = map[int64]mintBucket{}
 	}
 }
 
@@ -292,8 +347,15 @@ type ApprovalRequest struct {
 	Context []string `json:"context"`
 }
 
-// ApprovalCardHost is the Host a relayed card carries: muster's, naming the
-// agent. The caller cannot choose it.
+// ApprovalCardHost is BOTH the Host and the Project a relayed card carries:
+// muster's, naming the agent. As the Project it is the only per-project
+// auto-approve window on the router that can approve the card.
+//
+// 🔴 IT IS NAMESPACED ("muster-agent/<name>"), NOT THE BARE AGENT NAME, AND THE
+// CALLER CANNOT CHOOSE IT. The router matches a window to a card by exact
+// Project. A bare name could equal a laptop project's name, and a pod-supplied
+// one could name any project with an open window; either would let a window
+// opened for something else approve this pod's tool call.
 func ApprovalCardHost(a agents.Agent) string { return "muster-agent/" + a.Name }
 
 func clip(s string, n int) string {
@@ -363,6 +425,16 @@ func (s *Server) handleApprovalCreate(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// The ceiling is asked FIRST, and a request it refuses spends no mint-rate
+	// token: otherwise a pod at its ceiling would also drain the mint rate, which
+	// refills five times slower, and stay refused long after the ceiling refilled.
+	if !l.takeCeilingTokenLocked(a.ID, now) {
+		l.mu.Unlock()
+		s.writeJSON(w, http.StatusTooManyRequests, map[string]any{
+			"error": "this agent has filed too many approval requests in a short time",
+		})
+		return
+	}
 	if !l.takeMintTokenLocked(a.ID, now) {
 		l.mu.Unlock()
 		s.writeJSON(w, http.StatusTooManyRequests, map[string]any{
@@ -382,11 +454,11 @@ func (s *Server) handleApprovalCreate(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	id, err := g.MintGate(ctx, GateSpec{
-		Type:    gateTypeCheckpoint,
+		Type:    gateTypeAgentPermission,
 		Tool:    tool,
 		Command: cmd,
 		Host:    ApprovalCardHost(a),
-		Project: a.Name,
+		Project: ApprovalCardHost(a),
 		Cwd:     clip(body.Cwd, 500),
 		Session: clip(body.Session, 200),
 		Context: ctxLines,
@@ -480,7 +552,7 @@ func (s *Server) handleApprovalGet(w http.ResponseWriter, r *http.Request) {
 	state := d.State
 	switch state {
 	case GateStateDecided:
-		s.settleDecided(id, a.ID, humanDecision(d.Response))
+		s.settleDecided(id, a.ID, approveOrDeny(d.Response))
 	case GateStateGone:
 		// 🔴 ONE "gone" IS NOT EVIDENCE. Until approvalGoneReads arrive in a row the
 		// card may still be on the operator's screen, so the agent is told to keep

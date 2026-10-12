@@ -727,7 +727,9 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	// not answer whether prompts reach the operator's phone.
 	if approvalGateFor(a.cfg) != nil {
 		l.Printf("approval relay gate: DEDICATED — %s=%s (%s set), actor %q. Used ONLY by "+
-			"/agent/approvals to file and poll checkpoint cards; it turns on no router "+
+			"/agent/approvals to file and poll agent-permission cards, which the router's "+
+			"auto-approve may decide (auto-approve-ALL, or a window on the pod's own "+
+			"project muster-agent/<name>); it turns on no router "+
 			"behaviour (session liveness, events, notifications are unchanged)",
 			envApprovalGateURL, a.cfg.ApprovalGateURL, envApprovalGateToken, a.cfg.RouterActor)
 	} else {

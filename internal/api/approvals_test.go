@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log"
@@ -186,7 +187,7 @@ func TestTheRelayRefusesSharedTokensAndStrangers(t *testing.T) {
 }
 
 // The card names the agent that asked; the caller cannot choose Host or
-// Project, and the type is the auto-approval-exempt gate type.
+// Project, and the type is the auto-approvable pod-permission gate type.
 func TestAFiledCardNamesTheAgentNotTheCallersClaim(t *testing.T) {
 	f := newRelayFixture(t, true)
 	w := f.call("POST", "/agent/approvals", relayBody, relayTokenA)
@@ -194,8 +195,8 @@ func TestAFiledCardNamesTheAgentNotTheCallersClaim(t *testing.T) {
 		t.Fatalf("file: %d %s", w.Code, w.Body)
 	}
 	got := f.gate.minted[0]
-	want := GateSpec{Type: "checkpoint", Tool: "Bash", Command: "rm -rf build", Host: "muster-agent/bold-hawk",
-		Project: "bold-hawk", Cwd: "/data/workspace", Session: "s1", Context: []string{"clean the build dir"}}
+	want := GateSpec{Type: "agent-permission", Tool: "Bash", Command: "rm -rf build", Host: "muster-agent/bold-hawk",
+		Project: "muster-agent/bold-hawk", Cwd: "/data/workspace", Session: "s1", Context: []string{"clean the build dir"}}
 	if got.Type != want.Type || got.Tool != want.Tool || got.Command != want.Command || got.Host != want.Host ||
 		got.Project != want.Project || got.Cwd != want.Cwd || got.Session != want.Session ||
 		strings.Join(got.Context, "|") != strings.Join(want.Context, "|") {
@@ -556,9 +557,9 @@ func TestAnOperatorAnsweringBackToBackIsNeverThrottled(t *testing.T) {
 	}
 }
 
-// No refund without a human decision: a clear, a confirmed gone and a dismissal
+// No refund without an approve or a deny: a clear, a confirmed gone and a dismissal
 // leave the filing loop limited to the burst at a frozen clock.
-func TestOnlyAHumanDecisionRefundsAMint(t *testing.T) {
+func TestOnlyAnApproveOrDenyRefundsAMint(t *testing.T) {
 	cases := map[string]func(f *relayFixture, t *testing.T) int{
 		"clear": func(f *relayFixture, t *testing.T) int {
 			w := f.call("POST", "/agent/approvals", relayBody, relayTokenA)
@@ -601,5 +602,120 @@ func TestAFailedMintSpendsAToken(t *testing.T) {
 	f.gate.mintErr = nil
 	if w := f.call("POST", "/agent/approvals", relayBody, relayTokenA); w.Code != http.StatusTooManyRequests {
 		t.Fatalf("after %d failed mints: %d, want 429 (failed mints spend tokens)", approvalMintBurst, w.Code)
+	}
+}
+
+// --- the relay honours the router's auto-approval ---------------------------
+//
+// ⚠ WHICH cards the router auto-approves (auto-approve-ALL; a window on the
+// card's own project; never a different project) is the ROUTER's rule and is
+// pinned in the router's own tests through its real door. Restating it in a fake
+// here would stay green if the real rule changed. What muster owns, and what is
+// pinned here: the card it files (type and forced project —
+// TestAFiledCardNamesTheAgentNotTheCallersClaim), relaying an already-decided
+// card on the first poll, and the two rate bounds.
+
+// autoApproved is what the router's gate read answers for a card its
+// auto-approval decided at mint.
+var autoApproved = GateDecision{State: GateStateDecided, Response: "approve", Comment: "auto-approved"}
+
+// fileAndPollOnce files one card as agent A and returns the POST status and,
+// when it was filed, the state and response of its FIRST poll, which is what
+// `ccd approve` acts on.
+func (f *relayFixture) fileAndPollOnce(t *testing.T) (code int, state, response string) {
+	t.Helper()
+	w := f.call("POST", "/agent/approvals", relayBody, relayTokenA)
+	if w.Code != http.StatusCreated {
+		return w.Code, "", ""
+	}
+	g := f.call("GET", "/agent/approvals/req-"+strconv.Itoa(f.gate.nextID), "", relayTokenA)
+	if g.Code != http.StatusOK {
+		t.Fatalf("poll: %d %s", g.Code, g.Body)
+	}
+	var out struct{ State, Response string }
+	if err := json.Unmarshal(g.Body.Bytes(), &out); err != nil {
+		t.Fatalf("poll body: %v (%s)", err, g.Body)
+	}
+	return w.Code, out.State, out.Response
+}
+
+// A card the router auto-approved at mint is read as approve by the pod's FIRST
+// poll, and the agent is not shown as awaiting approval afterwards.
+func TestAnAutoApprovedRequestIsApprovedOnThePodsFirstPoll(t *testing.T) {
+	f := newRelayFixture(t, true)
+	f.gate.state = autoApproved
+	if code, st, resp := f.fileAndPollOnce(t); code != http.StatusCreated || st != GateStateDecided || resp != "approve" {
+		t.Fatalf("first poll of an auto-approved card: %d state %q response %q, want 201 decided/approve", code, st, resp)
+	}
+	if f.srv.AwaitingApproval(relayAgentA.ID) {
+		t.Fatal("an auto-approved request still shows the agent as awaiting approval")
+	}
+}
+
+// A pod working under an auto-approve window is not pushed to the terminal by
+// the MINT RATE (3, then one per 10s): 20 prompts at a frozen clock all file.
+// 20 is a quick real session and sits below the ceiling.
+func TestAutoApprovedPromptsBackToBackAreNotThrottledByTheMintRate(t *testing.T) {
+	f := newRelayFixture(t, true)
+	f.gate.state = autoApproved
+	for i := 1; i <= 20; i++ {
+		if code, st, _ := f.fileAndPollOnce(t); code != http.StatusCreated || st != GateStateDecided {
+			t.Fatalf("prompt #%d at a frozen clock: %d state %q, want 201 decided", i, code, st)
+		}
+	}
+}
+
+// 🔴 THE CEILING BOUNDS A LOOP OF APPROVED CARDS. Every card here is approved, so
+// each refunds its mint-rate token and that limit never bites; the ceiling is
+// what stops the loop. Pinned as literals: 30 at a frozen clock, the 31st is
+// 429, and 2s later exactly one more files.
+func TestASustainedLoopOfApprovedCardsHitsTheCeiling(t *testing.T) {
+	f := newRelayFixture(t, true)
+	f.gate.state = autoApproved
+	filed := 0
+	for i := 0; i < 100; i++ {
+		code, _, _ := f.fileAndPollOnce(t)
+		if code == http.StatusCreated {
+			filed++
+			continue
+		}
+		if code != http.StatusTooManyRequests {
+			t.Fatalf("attempt #%d: %d, want 201 or 429", i+1, code)
+		}
+	}
+	if filed != 30 {
+		t.Fatalf("100 approved cards at a frozen clock: %d filed, want exactly 30 (the ceiling's burst)", filed)
+	}
+	if got := len(f.gate.minted); got != 30 {
+		t.Fatalf("the queue saw %d mints, want 30: a refused request must not reach it", got)
+	}
+	f.now = f.now.Add(2 * time.Second)
+	if code, _, _ := f.fileAndPollOnce(t); code != http.StatusCreated {
+		t.Fatalf("2s after the ceiling: %d, want 201 (one token refilled)", code)
+	}
+	if code, _, _ := f.fileAndPollOnce(t); code != http.StatusTooManyRequests {
+		t.Fatalf("a second request in the same instant: %d, want 429 (only one token refilled)", code)
+	}
+	// The ceiling is per agent: another agent is unaffected.
+	if w := f.call("POST", "/agent/approvals", relayBody, relayTokenB); w.Code != http.StatusCreated {
+		t.Fatalf("agent B while agent A is at its ceiling: %d, want 201", w.Code)
+	}
+}
+
+// A router that does not know the card's type answers 400 at its door; the relay
+// reports 502, tracks nothing, and the pod's hook shows the terminal prompt.
+// (This is what a muster deployed ahead of its router looks like.)
+func TestARouterThatRefusesTheCardTypeIsA502AndNothingIsTracked(t *testing.T) {
+	f := newRelayFixture(t, true)
+	f.gate.mintErr = errors.New("router: POST /api/gate: 400: that request type cannot be minted through the gate")
+	w := f.call("POST", "/agent/approvals", relayBody, relayTokenA)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("file against a router that refuses the type: %d %s, want 502", w.Code, w.Body)
+	}
+	if strings.Contains(w.Body.String(), "requestId") {
+		t.Fatalf("a refused mint answered a requestId: %s", w.Body)
+	}
+	if f.srv.AwaitingApproval(relayAgentA.ID) {
+		t.Fatal("a request that was never filed shows the agent as awaiting approval")
 	}
 }

@@ -17,7 +17,9 @@ import (
 
 // `ccd approve` is the claude-code pod's PermissionRequest hook: it files the
 // prompt with muster's approval relay (internal/api/approvals.go), which puts a
-// card on the operator's phone, and waits for the human's answer.
+// card on the operator's phone, and waits for the answer: a human's, or the
+// approval queue's own auto-approve when the operator has a window open that
+// covers this pod (then the first poll already reads "approve").
 //
 // 🔴 THE ONLY OUTPUT THAT ALLOWS A TOOL CALL IS approveAllow, AND IT IS PRINTED
 // ONLY FOR AN EXPLICIT "approve" READ FROM muster. Every other exit — no relay
