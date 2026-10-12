@@ -195,10 +195,11 @@ mechanism looks over-built and each part of it is there for a measured failure.
   `task-board-paging.spec.ts`) that were never carried into `e2e/tests/`.
 - **`nix build` tests only the packages the derivation installs, and this line
   used to overstate it.** It read "`nix build` runs the pure-Go tests only",
-  which was two claims too many. What a nix build runs is `go vet ./...` over the
-  whole module plus `go test` over a *named* package set — `cmd/muster` and
-  `internal/taskstatus` for the CLI, `cmd/muster-migrate` and `internal/db` for
-  the migrator. `go test ./...` there is not merely weaker, it is **red**: four
+  which was two claims too many. What a nix build runs is `go vet` and `go test`
+  over the same *named* package set — `cmd/muster` and `internal/taskstatus` for
+  the CLI, `cmd/muster-migrate` and `internal/db` for the migrator. The
+  whole-module `go vet ./...` is the CI `build` job's, not the nix build's.
+  `go test ./...` there is not merely weaker, it is **red**: four
   packages assert properties of the *repository* (`internal/agentspec` shells out
   to `git`; `internal/modulegate`, `internal/notes` and `internal/ui` read
   `Dockerfile`, `.dockerignore`, `tailwind.config.js`, `web/css/input.css` and the
