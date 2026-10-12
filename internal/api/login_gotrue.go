@@ -47,8 +47,26 @@ const (
 	loginFailureWindow  = 10 * time.Minute
 )
 
-// normaliseAccount is the key an email is throttled under.
+// normaliseAccount is the key an unknown email is throttled under.
 func normaliseAccount(email string) string { return strings.ToLower(strings.TrimSpace(email)) }
+
+// signinAccountFor resolves email for the limiter: a muster user (by id, in
+// the known table) or an unknown email. The lookup runs as System inside the
+// store (users.sys); a database error is returned, never guessed.
+func (g *gotrueState) signinAccountFor(ctx context.Context, email string) (signinAccount, error) {
+	key := normaliseAccount(email)
+	if key == "" {
+		return signinAccount{}, nil
+	}
+	uid, ok, err := g.Users.IDByEmail(ctx, key)
+	if err != nil {
+		return signinAccount{}, err
+	}
+	if ok {
+		return signinAccount{known: true, uid: uid}, nil
+	}
+	return signinAccount{email: key}, nil
+}
 
 // ClaimPath is the admin claim page. The token is NOT in the path: it rides
 // in the URL FRAGMENT (`/auth/claim#<token>`), which a browser never sends to
@@ -143,11 +161,19 @@ func (s *Server) handleGoTrueLoginSubmit(w http.ResponseWriter, r *http.Request)
 	}
 	next, email, password := r.FormValue("next"), strings.TrimSpace(r.FormValue("email")), r.FormValue("password")
 	ip := clientIP(r)
-	account := normaliseAccount(email)
+	// The account is resolved FIRST: a muster user is throttled in the known
+	// table (never evicted, never full), anything else in the evictable one
+	// (see signinLimiter).
+	acct, err := s.gt.signinAccountFor(r.Context(), email)
+	if err != nil {
+		s.logger.Printf("login: could not resolve the account: %v", err)
+		s.renderGoTrueLogin(w, http.StatusServiceUnavailable, next, email, "Sign-in is unavailable right now. Try again shortly.")
+		return
+	}
 	// Reserved BEFORE GoTrue is asked (see signinLimiter): the attempt counts
 	// as a failure until settle says otherwise, and a second attempt at the
 	// same account while this one is in flight is refused here.
-	ticket, ok := s.gt.signin.reserve(account, ip, s.gt.now())
+	ticket, ok := s.gt.signin.reserve(acct, ip, s.gt.now())
 	if !ok {
 		// 429, not 401: the credential was never judged.
 		s.renderGoTrueLogin(w, http.StatusTooManyRequests, next, email, "Too many attempts. Wait a few minutes and try again.")
@@ -375,7 +401,7 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := clientIP(r)
-	ticket, ok := s.gt.signin.reserve("", ip, s.gt.now())
+	ticket, ok := s.gt.signin.reserve(signinAccount{}, ip, s.gt.now())
 	if !ok {
 		s.renderNotice(w, http.StatusTooManyRequests, "Too many attempts", "Wait a few minutes and try again.")
 		return

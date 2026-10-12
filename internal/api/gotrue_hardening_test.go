@@ -116,110 +116,6 @@ func markIssued(f *gtFixture, rt string) {
 	f.s.gt.issued.add(hex.EncodeToString(sum[:]), f.fake.Now(), issuedWindow)
 }
 
-// TestAJunkRefreshFloodIsBoundedAndSparesTheVictim: a signed expired access
-// token with a NEW junk refresh token on every request (a per-token cap sees
-// each as fresh) reaches GoTrue at most failedRefreshLimit times per subject
-// per minute — and the victim's own browser, holding a refresh token muster
-// issued, keeps refreshing through the flood.
-func TestAJunkRefreshFloodIsBoundedAndSparesTheVictim(t *testing.T) {
-	f := newGoTrueFixture(t)
-	f.member("v@example.com", 7, authz.RoleMember)
-	f.fake.SetAccessTTL(60 * time.Second)
-	w := do(f.edge, "POST", "/login", url.Values{"email": {"v@example.com"}, "password": {"correct horse battery"}})
-	ck := setCookies(w)
-	if w.Code != http.StatusSeeOther || ck[accessCookieName] == nil {
-		t.Fatalf("victim sign-in: %d", w.Code)
-	}
-	vat, vrt := ck[accessCookieName].Value, ck[refreshCookieName].Value
-	f.fake.Advance(2 * time.Minute) // the victim's access token (and the attacker's copy) expires
-	before := f.fake.CountCalls("POST", "/token")
-	for i := 0; i < 200; i++ {
-		w := do(f.edge, "GET", "/account", nil, withCookies(vat, "junk-"+strconv.Itoa(i)), asXHR)
-		if i >= failedRefreshLimit && w.Code != http.StatusServiceUnavailable {
-			t.Fatalf("junk refresh %d past the cap: %d, want 503 without calling GoTrue", i, w.Code)
-		}
-	}
-	if n := f.fake.CountCalls("POST", "/token") - before; n > failedRefreshLimit || n == 0 {
-		t.Fatalf("200 junk refreshes for one subject reached GoTrue %d times, want 1..%d", n, failedRefreshLimit)
-	}
-	if w := do(f.edge, "GET", "/account", nil, withCookies(vat, vrt)); w.Code != http.StatusOK {
-		t.Fatalf("the victim's own refresh during the flood: %d, want 200", w.Code)
-	}
-	// The per-token map is bounded however many junk tokens arrive.
-	for i := 0; i < 3*boundedWindowCap; i++ {
-		f.s.gt.refreshPerToken.take("k"+strconv.Itoa(i), f.fake.Now(), time.Minute, refreshPerTokenLimit)
-	}
-	if n := f.s.gt.refreshPerToken.size(); n > boundedWindowCap {
-		t.Fatalf("the per-token map grew to %d (cap %d)", n, boundedWindowCap)
-	}
-}
-
-// TestChurnCannotEvictAVictimsBackoff is the auditor's churn probe: a victim
-// in backoff, then more than signinLimiterCap sign-ins at made-up emails. The
-// victim must still be blocked; a table full of protected records refuses a
-// NEW key rather than evict one; and a stale ticket cannot settle a newer
-// record of the same account.
-func TestChurnCannotEvictAVictimsBackoff(t *testing.T) {
-	var l signinLimiter
-	now := time.Unix(946684800, 0)
-	ipN := 0
-	fail := func(acct string) bool {
-		ipN++
-		tk, ok := l.reserve(acct, "ip"+strconv.Itoa(ipN), now)
-		if ok {
-			l.settle(tk, outcomeFailed)
-		}
-		return ok
-	}
-	for i := 0; i <= accountFreeFailures; i++ {
-		if !fail("victim@example.com") {
-			t.Fatalf("victim failure %d refused early", i+1)
-		}
-	}
-	if fail("victim@example.com") {
-		t.Fatal("control: the victim is not in backoff")
-	}
-	for i := 0; i < signinLimiterCap+1; i++ {
-		fail("made-up-" + strconv.Itoa(i) + "@example.com")
-	}
-	if fail("victim@example.com") {
-		t.Fatal("churn through more than the cap evicted the victim's backoff")
-	}
-
-	// A table full of PROTECTED records refuses a new key (fail closed).
-	var full signinLimiter
-	for i := 0; i < signinLimiterCap; i++ {
-		acct := "p" + strconv.Itoa(i)
-		for j := 0; j <= accountFreeFailures; j++ {
-			ipN++
-			tk, _ := full.reserve(acct, "ip"+strconv.Itoa(ipN), now)
-			full.settle(tk, outcomeFailed)
-		}
-	}
-	if _, ok := full.reserve("brand-new@example.com", "fresh-ip", now); ok {
-		t.Fatal("a full table of records in backoff evicted one to admit a new key")
-	}
-	if _, ok := full.reserve("brand-new@example.com", "fresh-ip", now.Add(accountBackoffMax+time.Second)); !ok {
-		t.Fatal("control: once the backoffs expired, a new key was still refused")
-	}
-
-	// Generation: a ticket for a record that is gone must not settle its
-	// replacement.
-	var g signinLimiter
-	stale, _ := g.reserve("x@example.com", "a", now)
-	g.mu.Lock()
-	g.accOrder.Remove(g.accounts["x@example.com"])
-	delete(g.accounts, "x@example.com")
-	g.mu.Unlock()
-	if _, ok := g.reserve("x@example.com", "b", now); !ok {
-		t.Fatal("control: the recreated record refused its first attempt")
-	}
-	g.settle(stale, outcomeUnjudged)
-	if _, ok := g.reserve("x@example.com", "c", now); ok {
-		t.Fatal("a stale ticket cleared the in-flight flag of the account's NEW record")
-	}
-}
-
 // TestARefreshForAnotherSubjectIsRefused: a muster_rt that belongs to someone
 // else, beside the victim's expired access token, must not sign the victim's
 // browser in as that someone.
@@ -502,46 +398,257 @@ func TestParallelSignInsAtOneAccountAreBounded(t *testing.T) {
 	}
 }
 
-// TestTheSignInLimiterIsBoundedAndRefundsUnjudgedAttempts: the limiter's maps
-// never exceed signinLimiterCap (oldest evicted), a success or an unjudged
-// attempt gives the address its slot back, and only a failure keeps it.
-func TestTheSignInLimiterIsBoundedAndRefundsUnjudgedAttempts(t *testing.T) {
-	var l signinLimiter
-	now := time.Unix(946684800, 0)
-	for i := 0; i < signinLimiterCap+500; i++ {
-		tk, ok := l.reserve("acct"+strconv.Itoa(i)+"@example.com", "ip"+strconv.Itoa(i), now)
-		if !ok {
-			t.Fatalf("reserve %d refused", i)
+// TestAJunkRefreshFloodIsBoundedAndSparesTheVictim: 200 PARALLEL requests,
+// each a signed expired access token with a NEW junk refresh token (a
+// per-token cap sees each as fresh), reach GoTrue at most failedRefreshLimit
+// times per subject per minute — the slot is reserved before the call and one
+// unexempted refresh per subject is in flight — while the victim's own
+// browser, holding a refresh token muster issued, keeps refreshing.
+func TestAJunkRefreshFloodIsBoundedAndSparesTheVictim(t *testing.T) {
+	f := newGoTrueFixture(t)
+	f.member("v@example.com", 7, authz.RoleMember)
+	f.fake.SetAccessTTL(60 * time.Second)
+	w := do(f.edge, "POST", "/login", url.Values{"email": {"v@example.com"}, "password": {"correct horse battery"}})
+	ck := setCookies(w)
+	if w.Code != http.StatusSeeOther || ck[accessCookieName] == nil {
+		t.Fatalf("victim sign-in: %d", w.Code)
+	}
+	vat, vrt := ck[accessCookieName].Value, ck[refreshCookieName].Value
+	f.fake.Advance(2 * time.Minute) // the victim's access token (and the attacker's copy) expires
+	f.fake.SetTokenDelay(20 * time.Millisecond)
+	before := f.fake.CountCalls("POST", "/token")
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	var victimCode int
+	for i := 0; i < 200; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			if i == 100 { // the victim's own request, in the middle of the flood
+				victimCode = do(f.edge, "GET", "/account", nil, withCookies(vat, vrt)).Code
+				return
+			}
+			do(f.edge, "GET", "/account", nil, withCookies(vat, "junk-"+strconv.Itoa(i)), asXHR)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	if victimCode != http.StatusOK {
+		t.Fatalf("the victim's own refresh during the flood: %d, want 200", victimCode)
+	}
+	// And a SEQUENTIAL tail: each junk refresh completes before the next, so
+	// only the counted failures (not the in-flight slot) can stop them.
+	f.fake.SetTokenDelay(0)
+	for i := 0; i < 3*failedRefreshLimit; i++ {
+		do(f.edge, "GET", "/account", nil, withCookies(vat, "tail-junk-"+strconv.Itoa(i)), asXHR)
+	}
+	// The victim's own refresh is one of the calls; the junk ones are bounded.
+	if n := f.fake.CountCalls("POST", "/token") - before; n > failedRefreshLimit+1 || n < 2 {
+		t.Fatalf("200 parallel + %d sequential junk refreshes for one subject reached GoTrue %d times, want 2..%d",
+			3*failedRefreshLimit, n, failedRefreshLimit+1)
+	}
+	// One unexempted refresh per subject in flight: a burst of 5 junk
+	// refreshes for a FRESH subject, GoTrue held open, reaches it once.
+	other := f.member("o@example.com", 8, authz.RoleMember)
+	oat, _, _ := f.fake.Mint(other)
+	f.fake.Advance(2 * time.Minute)
+	f.fake.SetTokenDelay(300 * time.Millisecond)
+	before = f.fake.CountCalls("POST", "/token")
+	var wg2 sync.WaitGroup
+	start2 := make(chan struct{})
+	for i := 0; i < 5; i++ {
+		wg2.Add(1)
+		go func(i int) {
+			defer wg2.Done()
+			<-start2
+			do(f.edge, "GET", "/account", nil, withCookies(oat, "burst-"+strconv.Itoa(i)), asXHR)
+		}(i)
+	}
+	close(start2)
+	wg2.Wait()
+	if n := f.fake.CountCalls("POST", "/token") - before; n != 1 {
+		t.Fatalf("a burst of 5 unexempted refreshes for one subject reached GoTrue %d times, want 1 (one in flight)", n)
+	}
+	// The per-token map is bounded however many junk tokens arrive.
+	for i := 0; i < 3*boundedWindowCap; i++ {
+		f.s.gt.refreshPerToken.take("k"+strconv.Itoa(i), f.fake.Now(), time.Minute, refreshPerTokenLimit)
+	}
+	if n := f.s.gt.refreshPerToken.size(); n > boundedWindowCap {
+		t.Fatalf("the per-token map grew to %d (cap %d)", n, boundedWindowCap)
+	}
+	for i := 0; i < 3*boundedWindowCap; i++ {
+		tk, ok := f.s.gt.failedRefreshes.reserve("s"+strconv.Itoa(i), f.fake.Now(), time.Minute, failedRefreshLimit)
+		if ok {
+			f.s.gt.failedRefreshes.release(tk, true)
 		}
-		l.settle(tk, outcomeFailed)
 	}
-	if a, ips := l.sizes(); a > signinLimiterCap || ips > signinLimiterCap {
-		t.Fatalf("limiter grew past its cap: %d accounts, %d addresses (cap %d)", a, ips, signinLimiterCap)
+	if n := f.s.gt.failedRefreshes.size(); n > boundedWindowCap {
+		t.Fatalf("the failed-refresh map grew to %d (cap %d)", n, boundedWindowCap)
 	}
-	// One address: failures keep their slot, unjudged/success give it back.
+}
+
+// TestAKnownAccountSurvivesAnyFlood: a muster user's backoff lives in the
+// known table, which no flood of other emails can evict — whether the backoff
+// is current or has expired (its failure count still doubles the next wait).
+// The unknown table stays bounded and never refuses for capacity.
+func TestAKnownAccountSurvivesAnyFlood(t *testing.T) {
+	l := signinLimiter{unknownCap: 256}
+	now := time.Unix(946684800, 0)
+	victim := signinAccount{known: true, uid: 7}
+	ipN := 0
+	fail := func(a signinAccount, at time.Time) bool {
+		ipN++
+		tk, ok := l.reserve(a, "ip"+strconv.Itoa(ipN), at)
+		if ok {
+			l.settle(tk, outcomeFailed)
+		}
+		return ok
+	}
+	for i := 0; i <= accountFreeFailures; i++ {
+		if !fail(victim, now) {
+			t.Fatalf("victim failure %d refused early", i+1)
+		}
+	}
+	flood := func(at time.Time) {
+		for i := 0; i < 3*256; i++ {
+			a := signinAccount{email: "made-up-" + strconv.Itoa(ipN) + "@example.com"}
+			for j := 0; j <= accountFreeFailures; j++ {
+				if !fail(a, at) && j < accountFreeFailures {
+					t.Fatalf("an unknown email was refused for capacity at attempt %d", j+1)
+				}
+			}
+		}
+	}
+	flood(now)
+	if fail(victim, now) {
+		t.Fatal("a flood of unknown emails evicted the known victim's CURRENT backoff")
+	}
+	// Past the backoff: the record is still there, so one more failure makes
+	// the next wait twice the first — the count was not reset by the flood.
+	later := now.Add(accountBackoffBase + time.Millisecond)
+	flood(later)
+	if !fail(victim, later) {
+		t.Fatal("control: the victim's expired backoff still refuses")
+	}
+	if fail(victim, later.Add(accountBackoffBase+time.Millisecond)) {
+		t.Fatal("after an expired backoff and a flood, the victim's next wait did not double — the flood reset its count")
+	}
+	k, u, _ := l.sizes()
+	if k != 1 || u > 256 {
+		t.Fatalf("tables: %d known (want 1), %d unknown (cap 256)", k, u)
+	}
+}
+
+// TestTheOperatorSignsInThroughABackoffFlood is the auditor's lockout probe
+// over HTTP: unknown emails pushed into backoff past the unknown table's cap,
+// with the operator signing in correctly throughout — 303 every time.
+func TestTheOperatorSignsInThroughABackoffFlood(t *testing.T) {
+	f := newGoTrueFixture(t)
+	f.member("op@example.com", 1, authz.RoleAdmin)
+	f.member("victim@example.com", 8, authz.RoleMember)
+	f.s.gt.signin.unknownCap = 256
+	ip := 0
+	next := func() string { ip++; return "198.51." + strconv.Itoa(ip/250) + "." + strconv.Itoa(ip%250+1) }
+	// A known member is put into backoff first; no flood may reset it.
+	for j := 0; j <= accountFreeFailures; j++ {
+		do(f.edge, "POST", "/login", url.Values{"email": {"victim@example.com"}, "password": {"wrong password!!"}}, fromIP(next()))
+	}
+	for i := 0; i < 256+64; i++ {
+		email := "flood" + strconv.Itoa(i) + "@example.com"
+		for j := 0; j <= accountFreeFailures; j++ {
+			do(f.edge, "POST", "/login", url.Values{"email": {email}, "password": {"wrong password!!"}}, fromIP(next()))
+		}
+		if i%40 == 0 {
+			w := do(f.edge, "POST", "/login", url.Values{"email": {"op@example.com"}, "password": {"correct horse battery"}}, fromIP(next()))
+			if w.Code != http.StatusSeeOther {
+				t.Fatalf("the operator's correct sign-in during the flood (after %d flood accounts): %d, want 303", i, w.Code)
+			}
+		}
+	}
+	if w := do(f.edge, "POST", "/login", url.Values{"email": {"op@example.com"}, "password": {"correct horse battery"}}, fromIP(next())); w.Code != http.StatusSeeOther {
+		t.Fatalf("the operator's correct sign-in after the flood: %d, want 303", w.Code)
+	}
+	if w := do(f.edge, "POST", "/login", url.Values{"email": {"victim@example.com"}, "password": {"correct horse battery"}}, fromIP(next())); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("a known member's backoff after a flood past the unknown cap: %d, want 429 (the flood reset it)", w.Code)
+	}
+}
+
+// TestTheSignInLimiterRefundsAndStaysBounded: success and unjudged attempts
+// give the address its slot back, failures keep it; one in flight per
+// account; the address table is bounded.
+func TestTheSignInLimiterRefundsAndStaysBounded(t *testing.T) {
+	now := time.Unix(946684800, 0)
 	var m signinLimiter
 	for i := 0; i < loginFailureLimit*3; i++ {
-		tk, ok := m.reserve("u"+strconv.Itoa(i), "203.0.113.1", now)
+		tk, ok := m.reserve(signinAccount{email: "u" + strconv.Itoa(i)}, "203.0.113.1", now)
 		if !ok {
 			t.Fatalf("an address with only refunded attempts was refused at %d", i)
 		}
 		m.settle(tk, []signinOutcome{outcomeSucceeded, outcomeUnjudged}[i%2])
 	}
 	for i := 0; i < loginFailureLimit; i++ {
-		tk, _ := m.reserve("f"+strconv.Itoa(i), "203.0.113.1", now)
+		tk, _ := m.reserve(signinAccount{email: "f" + strconv.Itoa(i)}, "203.0.113.1", now)
 		m.settle(tk, outcomeFailed)
 	}
-	if _, ok := m.reserve("another", "203.0.113.1", now); ok {
+	if _, ok := m.reserve(signinAccount{email: "another"}, "203.0.113.1", now); ok {
 		t.Fatal("an address with loginFailureLimit failures was not limited")
 	}
-	// One account: a second reservation while one is in flight is refused.
 	var a signinLimiter
-	tk, _ := a.reserve("x@example.com", "198.51.100.1", now)
-	if _, ok := a.reserve("x@example.com", "198.51.100.2", now); ok {
+	x := signinAccount{known: true, uid: 9}
+	tk, _ := a.reserve(x, "198.51.100.1", now)
+	if _, ok := a.reserve(x, "198.51.100.2", now); ok {
 		t.Fatal("two attempts at one account were in flight at once")
 	}
 	a.settle(tk, outcomeUnjudged)
-	if _, ok := a.reserve("x@example.com", "198.51.100.2", now); !ok {
+	if _, ok := a.reserve(x, "198.51.100.2", now); !ok {
 		t.Fatal("after the in-flight attempt settled, the account was still refused")
+	}
+	var b signinLimiter
+	for i := 0; i < signinIPCap+500; i++ {
+		tk, ok := b.reserve(signinAccount{}, "ip"+strconv.Itoa(i), now)
+		if ok {
+			b.settle(tk, outcomeFailed)
+		}
+	}
+	if _, _, ips := b.sizes(); ips > signinIPCap {
+		t.Fatalf("the address table grew to %d (cap %d)", ips, signinIPCap)
+	}
+}
+
+// TestJoinersOfARefreshAreNeverThrottled: the flight is registered BEFORE its
+// leader applies the throttles, so every request of a page load joins it —
+// even with the leader held between registering and calling GoTrue — and none
+// is answered 503 by the one-in-flight-per-subject guard.
+func TestJoinersOfARefreshAreNeverThrottled(t *testing.T) {
+	f := newGoTrueFixture(t)
+	sub := f.member("m@example.com", 7, authz.RoleMember)
+	f.fake.SetAccessTTL(60 * time.Second)
+	at, rt, _ := f.fake.Mint(sub) // not issued by this process: the guard applies
+	f.fake.Advance(2 * time.Minute)
+	f.s.gt.beforeAdmit = func() { time.Sleep(100 * time.Millisecond) }
+	var wg sync.WaitGroup
+	codes := make([]int, 8)
+	start := make(chan struct{})
+	for i := range codes {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			if i > 0 {
+				time.Sleep(20 * time.Millisecond) // arrive while the leader is held
+			}
+			codes[i] = do(f.edge, "GET", "/account", nil, withCookies(at, rt)).Code
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	for i, c := range codes {
+		if c != http.StatusOK {
+			t.Fatalf("request %d of one page load: %d, want 200 (a joiner was throttled)", i, c)
+		}
+	}
+	if n := f.fake.CountCalls("POST", "/token"); n != 1 {
+		t.Fatalf("one page load made %d refresh calls, want 1", n)
 	}
 }

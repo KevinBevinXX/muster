@@ -138,6 +138,21 @@ func (s *PGStore) SetDisabled(ctx context.Context, id int64, disabled bool) (Use
 	return scanUser(s.pool.QueryRow(sys(ctx), q, id))
 }
 
+// IDByEmail returns the id of the user whose email is email (case-folded), and
+// whether there is one. The sign-in limiter keys a KNOWN account's backoff on
+// this id (internal/api/signin_limiter.go).
+func (s *PGStore) IDByEmail(ctx context.Context, email string) (int64, bool, error) {
+	var id int64
+	err := s.pool.QueryRow(sys(ctx), `SELECT id FROM users WHERE lower(email) = lower($1)`, strings.TrimSpace(email)).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return id, true, nil
+}
+
 // DisabledAmong reports, for each of ids that exists, whether it is disabled,
 // in one query. An id with no row is absent from the result.
 func (s *PGStore) DisabledAmong(ctx context.Context, ids []int64) (map[int64]bool, error) {

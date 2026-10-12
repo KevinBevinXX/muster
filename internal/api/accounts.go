@@ -101,6 +101,8 @@ type UserStore interface {
 	BySub(ctx context.Context, sub string) (users.User, error)
 	ByID(ctx context.Context, id int64) (users.User, error)
 	SetDisabled(ctx context.Context, id int64, disabled bool) (users.User, error)
+	// IDByEmail resolves a sign-in email to a muster user id (case-folded).
+	IDByEmail(ctx context.Context, email string) (int64, bool, error)
 	// DisabledAmong reports, for each of ids that exists, whether it is
 	// disabled. One query: the disable sweep calls it every interval.
 	DisabledAmong(ctx context.Context, ids []int64) (map[int64]bool, error)
@@ -156,6 +158,11 @@ type gotrueState struct {
 	sweepOnce     sync.Once
 	logger        *log.Logger
 
+	// beforeAdmit, TEST-ONLY (nil in production), runs in a refresh leader
+	// between registering its flight and applying the throttles, so a test
+	// can hold that window open (TestJoinersOfARefreshAreNeverThrottled).
+	beforeAdmit func()
+
 	// signin is the sign-in throttle (signin_limiter.go): its own mutex, not
 	// mu, which every authenticated request takes.
 	signin signinLimiter
@@ -164,7 +171,7 @@ type gotrueState struct {
 	// counts FAILED refreshes per subject; issued is the set of refresh tokens
 	// this process handed out (their hashes), which pass the subject cap.
 	refreshPerToken boundedWindow
-	failedRefreshes boundedWindow
+	failedRefreshes refreshGuard
 	issued          boundedWindow
 }
 
@@ -372,7 +379,14 @@ func (g *gotrueState) forgetUserLocked(id int64) {
 
 // refresh exchanges rt, sharing one GoTrue call among every request that
 // presents the same token within refreshShareWindow.
-func (g *gotrueState) refresh(ctx context.Context, clientIP, rt string) (gotrue.Session, error) {
+//
+// admit runs in the LEADER only — the one request that will actually call
+// GoTrue — before the call: it applies the refresh throttles and returns a
+// release for the result, or ok=false, which answers every waiter with
+// errRefreshThrottled. Requests joining a flight are never throttled: they
+// cost GoTrue nothing, and a page load's parallel requests all join one.
+func (g *gotrueState) refresh(ctx context.Context, clientIP, rt string,
+	admit func() (release func(error), ok bool)) (gotrue.Session, error) {
 	sum := sha256.Sum256([]byte(rt))
 	key := hex.EncodeToString(sum[:])
 	now := g.now()
@@ -400,13 +414,23 @@ func (g *gotrueState) refresh(ctx context.Context, clientIP, rt string) (gotrue.
 	}
 	f := &refreshFlight{done: make(chan struct{}), at: now}
 	g.flights[key] = f
+	hold := g.beforeAdmit
 	g.mu.Unlock()
-	// Detached from the request: a client that hangs up mid-refresh must not
-	// leave the other waiters with a cancelled result for a token that GoTrue
-	// may already have rotated.
-	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-	f.sess, f.err = g.Client.Refresh(rctx, clientIP, rt)
-	cancel()
+	if hold != nil {
+		hold()
+	}
+	release, ok := admit()
+	if !ok {
+		f.err = errRefreshThrottled
+	} else {
+		// Detached from the request: a client that hangs up mid-refresh must
+		// not leave the other waiters with a cancelled result for a token that
+		// GoTrue may already have rotated.
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		f.sess, f.err = g.Client.Refresh(rctx, clientIP, rt)
+		cancel()
+		release(f.err)
+	}
 	if f.err != nil {
 		// A FAILED flight is shared only with the requests already waiting on
 		// it, never cached: a GoTrue blip must not stay the answer for 30 s.
@@ -521,14 +545,17 @@ func (s *Server) resolveGoTrueSession(r *http.Request) (gotrueSession, error) {
 	// muster call GoTrue at all (TestARefreshNeedsASignedExpiredAccessToken).
 	c, err := g.Verifier.Verify(at)
 	if errors.Is(err, gotrue.ErrExpired) && rt != "" {
-		// TWO refresh throttles, both checked BEFORE GoTrue is called.
+		// TWO refresh throttles, applied by the flight's LEADER only (the one
+		// request that calls GoTrue; joiners of a flight cost GoTrue nothing),
+		// and both RESERVED before the call — see refreshGuard for why a
+		// check-call-record cap let a parallel flood through.
 		//
 		// 🔴 PER SUBJECT, ONLY FAILURES COUNT, AND A TOKEN THIS PROCESS ISSUED
 		// IS EXEMPT. With a signed expired access token, a caller can attach a
 		// fresh junk refresh token to every request; a per-token cap alone
 		// bounds nothing (measured: every one of 500 requests a minute reached
 		// GoTrue). So failed refreshes are counted against the expired token's
-		// SUBJECT, and over failedRefreshLimit a refresh is answered 503
+		// SUBJECT (one in flight per subject), and over failedRefreshLimit a refresh is answered 503
 		// without calling GoTrue — unless the refresh token is one this process
 		// issued (issued), which is what the subject's real browser holds. The
 		// victim's own refresh therefore keeps working through a junk flood
@@ -537,22 +564,37 @@ func (s *Server) resolveGoTrueSession(r *http.Request) (gotrueSession, error) {
 		// window with its cookies kept.
 		//
 		// And per refresh token, a ceiling on calls (a replay of one token).
-		rtSum := sha256.Sum256([]byte(rt))
-		rtKey := hex.EncodeToString(rtSum[:])
-		now := g.now()
-		if g.issued.count(rtKey, now, issuedWindow) == 0 &&
-			g.failedRefreshes.count(c.Subject, now, time.Minute) >= failedRefreshLimit {
-			return sess, errRefreshThrottled
-		}
-		if !g.refreshPerToken.take(rtKey, now, time.Minute, refreshPerTokenLimit) {
-			return sess, errRefreshThrottled
-		}
 		expiredSub := c.Subject
-		fresh, rerr := g.refresh(r.Context(), clientIP(r), rt)
-		if rerr != nil {
-			if gotrue.IsClientError(rerr) {
-				g.failedRefreshes.add(expiredSub, now, time.Minute)
+		fresh, rerr := g.refresh(r.Context(), clientIP(r), rt, func() (func(error), bool) {
+			rtSum := sha256.Sum256([]byte(rt))
+			rtKey := hex.EncodeToString(rtSum[:])
+			now := g.now()
+			exempt := g.issued.count(rtKey, now, issuedWindow) > 0
+			var guard refreshTicket
+			if !exempt {
+				var ok bool
+				if guard, ok = g.failedRefreshes.reserve(expiredSub, now, time.Minute, failedRefreshLimit); !ok {
+					return nil, false
+				}
 			}
+			if !g.refreshPerToken.take(rtKey, now, time.Minute, refreshPerTokenLimit) {
+				if !exempt {
+					g.failedRefreshes.release(guard, false)
+				}
+				return nil, false
+			}
+			return func(rerr error) {
+				if exempt {
+					return
+				}
+				// The slot stands only when GoTrue judged the token bad;
+				// success, a 429 or no answer refunds it.
+				var ae *gotrue.APIError
+				judgedBad := errors.As(rerr, &ae) && ae.Status >= 400 && ae.Status < 500 && ae.Status != http.StatusTooManyRequests
+				g.failedRefreshes.release(guard, judgedBad)
+			}, true
+		})
+		if rerr != nil {
 			return sess, rerr
 		}
 		at = fresh.AccessToken

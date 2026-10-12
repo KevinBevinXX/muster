@@ -235,3 +235,21 @@ func TestDisabledAmongReadsEveryIDInOneQuery(t *testing.T) {
 		t.Fatal("a missing id is reported")
 	}
 }
+
+func TestIDByEmailIsCaseInsensitiveAndReportsAbsence(t *testing.T) {
+	s, pool := storeFor(t)
+	ctx := context.Background()
+	var id int64
+	if err := pool.QueryRow(authz.System(ctx), `INSERT INTO users (role, email) VALUES ('member', 'Ann@Example.com') RETURNING id`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range []string{"ann@example.com", " ANN@EXAMPLE.COM "} {
+		got, ok, err := s.IDByEmail(ctx, e)
+		if err != nil || !ok || got != id {
+			t.Fatalf("IDByEmail(%q) = %d %v %v, want %d", e, got, ok, err, id)
+		}
+	}
+	if _, ok, err := s.IDByEmail(ctx, "nobody@example.com"); err != nil || ok {
+		t.Fatalf("an unknown email: ok=%v err=%v", ok, err)
+	}
+}
