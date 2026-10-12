@@ -23,7 +23,8 @@ import (
 // tablesThisSchemaMustHave is the public schema after every migration has
 // applied. (0005 dropped the five privilege and runbook tables 0001 created;
 // 0006 added users, invites, api_tokens and audit_log; 0008 added mirror_tokens;
-// 0011 added user_credentials.)
+// 0011 added user_credentials; 0013 added push_subscriptions and
+// push_preferences.)
 //
 // 🔴 A LEDGER, NOT A SPOT CHECK. It fails when the set GROWS or SHRINKS, so a
 // table quietly dropped from 0001 reddens here and a table added without a
@@ -46,6 +47,8 @@ var tablesThisSchemaMustHave = []string{
 	"note_attachments",
 	"note_comments",
 	"notes",
+	"push_preferences",
+	"push_subscriptions",
 	"task_sessions",
 	"user_credentials",
 	"users",
@@ -75,6 +78,9 @@ var tablesWithNoIdentityColumn = []string{
 	// reason: one account, one record.
 	"cc_account_marks",
 	"github_connection",
+	// push_preferences is keyed by owner_id: one preference row per user
+	// (0013), for the github_connection reason.
+	"push_preferences",
 	"task_sessions",
 }
 

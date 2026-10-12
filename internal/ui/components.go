@@ -267,7 +267,7 @@ func shell(activeTab string, feat Features, extra g.Node) g.Node {
 					// desktop (lg+); full width on mobile (slide-out sidebar).
 					Div(
 						Class("lg:pl-72"),
-						header(),
+						header(feat.Push),
 						pushStatusMessage(),
 						Main(
 							// Width comes from contentWidth() — the SAME helper the header
@@ -348,7 +348,9 @@ func shell(activeTab string, feat Features, extra g.Node) g.Node {
 					// (pwa.go) — then the push-subscribe flow behind the "Enable"
 					// control, which uses the registration pwaScript made.
 					pwaChrome(),
-					pushScript(),
+					// Only when the server holds VAPID keys (Features.Push): with
+					// none, every route this script calls answers 503.
+					g.If(feat.Push, pushScript()),
 					// 🔴 THE CHIEF PANEL'S OPEN/WIDTH MEMORY, IN THE SHELL — NOT IN THE
 					// PANEL. #chief-panel-body is an `hx-swap: innerHTML` target, so a
 					// persistence script rendered inside it would be destroyed by the
@@ -656,13 +658,16 @@ func proseWidth() string {
 // header is the sticky top bar: hamburger, brand, and the push-notification
 // affordances.
 //
-// 🔴 IT TAKES NO ARGUMENTS, WHICH IS A NARROWING RATHER THAN A TIDY-UP.
-// Upstream's header carried a live pending-permission-request badge and the
-// auto-approve dropdown control; both read state that belongs to the permission
-// router and neither has a muster-side source. Keeping either as an empty
-// element would render an affordance that can never change — worse than absent,
-// because it reads as "zero" rather than "not applicable".
-func header() g.Node {
+// 🔴 ITS ONE ARGUMENT IS WHETHER PUSH EXISTS, AND THAT IS A NARROWING RATHER
+// THAN A TIDY-UP. Upstream's header carried a live pending-permission-request
+// badge and the auto-approve dropdown control; both read state that belongs to
+// the permission router and neither has a muster-side source. Keeping either as
+// an empty element would render an affordance that can never change — worse
+// than absent, because it reads as "zero" rather than "not applicable". The
+// push affordances follow the same rule: with no VAPID keys (push false) the
+// Enable button is not drawn, because tapping it would ask for the OS
+// permission and then fail on a 503.
+func header(push bool) g.Node {
 	return Header(
 		Class("sticky top-0 z-20 border-b border-line bg-bg/80 backdrop-blur supports-[backdrop-filter]:bg-bg/60"),
 		Div(
@@ -687,9 +692,9 @@ func header() g.Node {
 			// has not yet granted/subscribed. Tapping it drives the
 			// permission-request + pushManager.subscribe flow (needs a user
 			// gesture).
-			enableNotificationsButton(),
+			g.If(push, enableNotificationsButton()),
 			// Subtle "notifications on" indicator, shown once subscribed.
-			pushOnIndicator(),
+			g.If(push, pushOnIndicator()),
 		),
 	)
 }

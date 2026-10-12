@@ -196,6 +196,10 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		s.handleGoTrueLogout(w, r)
 		return
 	}
+	// This browser's push subscription goes with its session (push_routes.go).
+	if s.hasValidSession(r) {
+		s.forgetPushDevice(w, r, s.sessionUserID(r))
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",

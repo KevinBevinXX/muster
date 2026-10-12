@@ -113,6 +113,11 @@ type Extensions struct {
 	// GitHubOAuth configures the OAuth web flow for connecting an account.
 	GitHubOAuth GitHubOAuthConfig
 
+	// Push is muster's own Web Push (internal/push; push_routes.go). nil: no
+	// VAPID keys are configured — no Enable button is drawn, the key route
+	// answers 503, and nothing is ever sent.
+	Push PushService
+
 	// Credentials is the per-owner model-provider credential store behind
 	// Account → Credentials (internal/credentials). nil: none configured — the
 	// page says so, and every member then has no credential (never the

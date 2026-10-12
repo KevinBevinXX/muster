@@ -83,6 +83,13 @@ var routeVias = map[authz.Via][]string{
 		"GET /account/tokens",
 		"POST /account/tokens",
 		"POST /account/tokens/{id}/revoke",
+		// muster-native Web Push: the subscribe flow and the account page's
+		// Notifications section — the session tier only.
+		"GET /api/push/vapid-public-key",
+		"POST /api/push/subscribe",
+		"POST /api/push/unsubscribe",
+		"POST /account/push/test",
+		"POST /account/push/{id}/remove",
 		// The admin pages (accounts PR 5): requireAdmin is requireSession plus
 		// a role check AFTER the principal is attached.
 		"GET /admin/invites",

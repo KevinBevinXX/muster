@@ -270,6 +270,8 @@ func (s *Server) handleGoTrueLogout(w http.ResponseWriter, r *http.Request) {
 				s.logger.Printf("logout: GoTrue /logout failed for user %d: %v", sess.user.ID, err)
 			}
 			s.gt.revoke(sess.user.ID, sess.claims, scope)
+			// This browser's push subscription goes with its session.
+			s.forgetPushDevice(w, r, sess.user.ID)
 			s.logger.Printf("logout: user %d signed out (%s)", sess.user.ID, scope)
 		}
 	}
@@ -298,7 +300,7 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("reset") == "1" {
 		resetNote = `<p class="text-sm font-semibold text-fg" role="status">` + ResetDoneNote + `</p>`
 	}
-	writeAuthDocument(w, http.StatusOK, "Account", `<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+	writeAuthDocument(w, http.StatusOK, "Account", `<div class="flex flex-col gap-4"><section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Account</h1>
 `+resetNote+`
 <p class="text-sm text-fg2">Signed in as <span class="font-semibold text-fg">`+html.EscapeString(who)+`</span>.</p>
@@ -308,7 +310,8 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 <a href="/account/credentials" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Credentials (Claude, OpenRouter)</a>
 <a href="`+accountTokensPath+`" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">API tokens</a>
 <a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to muster</a>
-</section>`)
+</section>
+`+s.accountNotificationsSection(r)+`</div>`)
 }
 
 // --- the admin claim ------------------------------------------------------------

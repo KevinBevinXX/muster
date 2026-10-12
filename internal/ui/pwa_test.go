@@ -37,7 +37,7 @@ func TestEveryDocumentCarriesTheManifestAndTheWorker(t *testing.T) {
 // TestPWAScriptRegistersBeforeThePushScript: pushScript consumes the
 // registration pwaScript publishes, so the order on the shell is load-bearing.
 func TestPWAScriptRegistersBeforeThePushScript(t *testing.T) {
-	h := renderString(t, Page("tasks", Features{}))
+	h := renderString(t, Page("tasks", Features{Push: true}))
 	reg := strings.Index(h, "window.musterSWReady = registered;")
 	use := strings.Index(h, "var registered = window.musterSWReady;")
 	if reg < 0 || use < 0 {
@@ -102,5 +102,25 @@ func TestClampComposeBody(t *testing.T) {
 	got := ClampComposeBody(long)
 	if len(got) > composeMaxBytes || len(got) < composeMaxBytes-3 || !strings.HasPrefix(long, got) || strings.ToValidUTF8(got, "?") != got {
 		t.Errorf("clamp: len %d, prefix %v, valid %v", len(got), strings.HasPrefix(long, got), strings.ToValidUTF8(got, "?") == got)
+	}
+}
+
+// TestPushAffordancesFollowFeaturesPush: with no VAPID keys (Push false) the
+// shell draws no Enable button, no "on" pill and no subscribe script — tapping
+// Enable would ask for the OS permission and then fail on a 503 (the live
+// symptom before muster served push: "Could not load the notification key").
+// With keys, all three are drawn. The two renders differ in nothing else that
+// this test reads, so each absence is a fact about the flag.
+func TestPushAffordancesFollowFeaturesPush(t *testing.T) {
+	markers := []string{`id="enable-push"`, `id="push-on"`, "var registered = window.musterSWReady;", "/api/push/vapid-public-key"}
+	off := renderString(t, Page("tasks", Features{}))
+	on := renderString(t, Page("tasks", Features{Push: true}))
+	for _, m := range markers {
+		if strings.Contains(off, m) {
+			t.Errorf("Push=false still renders %q", m)
+		}
+		if !strings.Contains(on, m) {
+			t.Errorf("Push=true does not render %q (the positive control)", m)
+		}
 	}
 }

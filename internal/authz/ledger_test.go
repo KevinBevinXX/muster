@@ -113,6 +113,12 @@ var (
 		// agentByToken, it is how the request's user is LEARNED (api_tokens is
 		// under FORCE RLS); only the row's user_id is handed on.
 		"internal/api.(*Server).apiTokenUser",
+		// muster-native Web Push (migration 0013): the push store's one helper.
+		// A send runs from hooks and loops with no request; a CLAIM must see
+		// another user's row to move a shared device; a logout has already
+		// ended its session. Every query through it filters on an explicit owner
+		// (or a row handle carrying one) — see internal/push.Store.
+		"internal/push.sys",
 	}
 	// operatorLedger: work done as the OPERATOR (user 1) with no request —
 	// the boot-time GitHub connect of the operator's own static token, and the

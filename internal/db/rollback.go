@@ -44,6 +44,11 @@ const mirrorTokensMigrationVersion = 8
 // schema has user_credentials.
 const userCredentialsMigrationVersion = 11
 
+// pushSubscriptionsMigrationVersion is 0013: push_subscriptions and
+// push_preferences (muster-native Web Push), under the same row-level
+// security. Same treatment as 0008 and 0011.
+const pushSubscriptionsMigrationVersion = 13
+
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the
 // principal, the role and its grants — and 0008's for mirror_tokens when that
@@ -54,15 +59,18 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		return err
 	}
 	ctx = asMigrator(ctx)
-	var hasMirrorTokens, hasUserCredentials bool
+	var hasMirrorTokens, hasUserCredentials, hasPushSubscriptions bool
 	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.mirror_tokens') IS NOT NULL,
-		to_regclass('public.user_credentials') IS NOT NULL`).Scan(&hasMirrorTokens, &hasUserCredentials); err != nil {
+		to_regclass('public.user_credentials') IS NOT NULL,
+		to_regclass('public.push_subscriptions') IS NOT NULL`).Scan(&hasMirrorTokens, &hasUserCredentials,
+		&hasPushSubscriptions); err != nil {
 		return fmt.Errorf("rls on: %w", err)
 	}
 	applied := false
 	for _, m := range ms {
 		if m.version != rlsMigrationVersion && !(m.version == mirrorTokensMigrationVersion && hasMirrorTokens) &&
-			!(m.version == userCredentialsMigrationVersion && hasUserCredentials) {
+			!(m.version == userCredentialsMigrationVersion && hasUserCredentials) &&
+			!(m.version == pushSubscriptionsMigrationVersion && hasPushSubscriptions) {
 			continue
 		}
 		tx, err := pool.Begin(ctx)

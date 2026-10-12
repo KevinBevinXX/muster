@@ -189,6 +189,15 @@ const manifestPath = "testdata/routes.partition.tsv"
 //	----
 //	  72   routeFloor
 //
+// ⚠ RE-DERIVED AGAIN WHEN muster TOOK OVER WEB PUSH: the three /api/push/*
+// manifest rows moved router → muster, so the projection is 84 (70 + 14) and
+// the floor keeps the same margin:
+//
+//	  84   manifest projection (70 muster + 14 shared)
+//	-  9   margin
+//	----
+//	  75   routeFloor
+//
 // routeFloorProjection is checked against the MANIFEST, not against the code,
 // by TestRoutePartitionManifestIsATotalPartition.
 //
@@ -200,8 +209,8 @@ const manifestPath = "testdata/routes.partition.tsv"
 // red the gate from the first route to the eightieth.
 // ---------------------------------------------------------------------------
 const (
-	routeFloorProjection = 81
-	routeFloor           = 72
+	routeFloorProjection = 84
+	routeFloor           = 75
 )
 
 // muxRecorder implements Mux and records patterns instead of routing.
