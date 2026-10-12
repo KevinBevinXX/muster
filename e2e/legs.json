@@ -9,6 +9,7 @@
     "tests/provisioning-indicator.spec.ts": 20.4,
     "tests/update.spec.ts": 16.2,
     "tests/layout.spec.ts": 15.4,
+    "tests/agent-menu.spec.ts": 7.1,
     "tests/badge.spec.ts": 6.8,
     "tests/terminal.spec.ts": 6.3,
     "tests/theme.spec.ts": 2.9,
@@ -27,7 +28,8 @@
       "tests/terminal.spec.ts",
       "tests/kinds.spec.ts",
       "tests/connectors.spec.ts",
-      "tests/shortcuts.spec.ts"
+      "tests/shortcuts.spec.ts",
+      "tests/agent-menu.spec.ts"
     ],
     "2": [
       "tests/provisioning-indicator.spec.ts",
