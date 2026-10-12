@@ -39,7 +39,7 @@ test.beforeAll(async () => {
   execFileSync('docker', ['compose', '-f', compose, 'up', '-d', '--wait'], { env: composeEnv, stdio: 'inherit' });
   const health = await fetch(gotrueURL + '/health');
   expect(health.status, 'the real GoTrue is up').toBe(200);
-  expect(((await health.json()) as { version?: string }).version).toBe('v2.189.0');
+  expect(((await health.json()) as { version?: string }).version).toBe('v2.197.0');
   server = await startServer(versionA, gotrueMainPort, {
     MUSTER_AUTH_MODE: 'gotrue',
     MUSTER_GOTRUE_URL: gotrueURL,
