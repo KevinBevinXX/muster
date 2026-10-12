@@ -61,6 +61,33 @@ type AgentTerminalView struct {
 	// Unavailable, when set, is why this deployment cannot attach a terminal;
 	// the page says so instead of opening a socket that would be refused.
 	Unavailable string
+	// BackHref is where the back arrow goes ("" = the agent's own page). A
+	// mirrored session has no agent page — its terminal is its page — so it goes
+	// back to the list.
+	BackHref string
+	// Badge is a short label beside the title ("Mirrored · <host>"); "" = none.
+	Badge string
+	// WSPath is the socket the page opens, WITHOUT its query ("" = the agent's
+	// /agents/{name}/terminal/ws). A mirrored session's is
+	// /mirror/terminal/ws?host=…&session=…, and the page appends mode/cols/rows.
+	WSPath string
+	// ReadOnlyOnly removes the Interactive switch: the far side cannot be typed
+	// into (a mirrored host that did not advertise -interactive). The server
+	// refuses an interactive attach regardless; this keeps the page from
+	// offering one.
+	ReadOnlyOnly bool
+	// InteractiveNote, when set, is shown as the switch's tooltip and beside it
+	// while interactive: what typing into this terminal really reaches.
+	InteractiveNote string
+}
+
+// termModeDisplay is the switch's display utility: gone when the far side is
+// read-only-only.
+func termModeDisplay(readOnlyOnly bool) string {
+	if readOnlyOnly {
+		return "hidden"
+	}
+	return "inline-flex"
 }
 
 // AgentTerminalPath is the terminal page of an agent.
@@ -80,6 +107,10 @@ func AgentTerminalPath(name string) string { return "/agents/" + url.PathEscape(
 // and the server attaches read-only for anything but mode=rw.
 func AgentTerminalPage(v AgentTerminalView) g.Node {
 	title := displayOr(v.DisplayName, v.Name)
+	back := v.BackHref
+	if back == "" {
+		back = "/agents/" + url.PathEscape(v.Name)
+	}
 	return Doctype(
 		HTML(Class("dark"), Lang("en"),
 			Head(
@@ -101,14 +132,15 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 					Class("flex items-center gap-2 border-b border-line px-2 py-1.5"),
 					A(
 						ID("term-back"),
-						Href("/agents/"+url.PathEscape(v.Name)),
+						Href(back),
 						g.Attr("aria-label", "Back to the agent"),
 						Class("press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-fg2 transition hover:bg-s2"),
 						g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>`),
 					),
 					Div(
 						Class("min-w-0 flex-1"),
-						H1(Class("truncate text-sm font-semibold"), g.Text(markdownPlain(title))),
+						H1(Class("truncate text-sm font-semibold"), g.Text(markdownPlain(title)),
+							g.If(v.Badge != "", Span(g.Attr("data-term-badge", ""), Class("ml-2"), chip("kind", v.Badge)))),
 						P(ID("term-status"), Class("truncate text-xs text-muted"), g.Attr("aria-live", "polite"), g.Text("Not connected")),
 					),
 					// The switch. aria-checked is the INTERACTIVE state, so
@@ -120,7 +152,12 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 						g.Attr("aria-checked", "false"),
 						g.Attr("aria-label", "Interactive: let this page type into the session"),
 						g.If(v.Unavailable != "", g.Attr("disabled", "")),
-						Class("press inline-flex min-h-[44px] shrink-0 items-center gap-2 rounded-lg bg-s2 px-3 text-xs font-semibold text-fg ring-1 ring-inset ring-line transition aria-checked:bg-danger aria-checked:text-on-accent disabled:opacity-40"),
+						// ⚠ The `hidden` CLASS, not the attribute: an author display
+						// utility (inline-flex) beats the UA's [hidden] rule.
+						g.If(v.ReadOnlyOnly, g.Attr("hidden", "")),
+						g.If(v.InteractiveNote != "", g.Attr("title", v.InteractiveNote)),
+						g.If(v.InteractiveNote != "", g.Attr("data-interactive-note", v.InteractiveNote)),
+						Class(termModeDisplay(v.ReadOnlyOnly)+" press min-h-[44px] shrink-0 items-center gap-2 rounded-lg bg-s2 px-3 text-xs font-semibold text-fg ring-1 ring-inset ring-line transition aria-checked:bg-danger aria-checked:text-on-accent disabled:opacity-40"),
 						Span(ID("term-mode-label"), g.Text("Read-only")),
 					),
 				),
@@ -143,6 +180,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 					Div(
 						ID("term"),
 						g.Attr("data-agent", v.Name),
+						g.If(v.WSPath != "", g.Attr("data-ws", v.WSPath)),
 						g.If(v.Unavailable != "", g.Attr("data-unavailable", "")),
 						Class("h-full w-full"),
 					),
@@ -253,9 +291,11 @@ func agentTerminalScript() g.Node {
     if (ws) { ws.onclose = null; ws.onmessage = null; try { ws.close(); } catch (e) {} }
     clearError();
     try { fit.fit(); } catch (e) {}
+    var wsPath = host.getAttribute('data-ws');
+    var base = wsPath ? wsPath + (wsPath.indexOf('?') < 0 ? '?' : '&')
+      : '/agents/' + encodeURIComponent(agent) + '/terminal/ws?';
     var url = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host +
-      '/agents/' + encodeURIComponent(agent) + '/terminal/ws?mode=' + mode +
-      '&cols=' + term.cols + '&rows=' + term.rows;
+      base + 'mode=' + mode + '&cols=' + term.cols + '&rows=' + term.rows;
     setStatus('Connecting…');
     var sock = new WebSocket(url);
     sock.binaryType = 'arraybuffer';

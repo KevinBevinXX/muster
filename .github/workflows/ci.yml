@@ -208,7 +208,7 @@ jobs:
       - name: scan
         run: python3 tests/leakscan.py
 
-  # Local: nix build .#muster-cli .#muster-migrate --no-link -L
+  # Local: nix build .#muster-cli .#muster-migrate .#muster-mirror --no-link -L
   #
   # 🔴 THIS JOB EXISTS BECAUSE THE FLAKE WAS BROKEN FOR ITS ENTIRE LIFE AND
   # NOTHING NOTICED. Measured at 1bbef4d, the commit before this job: `nix build
@@ -248,7 +248,7 @@ jobs:
       # verb ledger against the binary it just installed, so this step is also
       # the artefact-level verb check — see tests/verb-ledger.sh.
       - name: build every package output
-        run: nix build --no-link --print-out-paths -L .#muster-cli .#muster-migrate
+        run: nix build --no-link --print-out-paths -L .#muster-cli .#muster-migrate .#muster-mirror
 
       - name: every flake output evaluates
         run: nix flake check -L
@@ -295,7 +295,10 @@ jobs:
       - name: css-check
         run: make css-check TAILWIND=./node_modules/.bin/tailwindcss
 
-  # Local: go test -tags tmuxit -race -run '^TestTmux' ./cmd/ccd/
+  # Local: go test -tags tmuxit -race -run '^TestTmux' ./cmd/ccd/ ./internal/mirror/ ./internal/mirrorhost/
+  #
+  # (internal/mirror and internal/mirrorhost: the mirrored-agents tunnel and
+  # muster-mirror's tmux backend against real tmux, on private sockets.)
   #
   # 🔴 cmd/ccd's REAL-TMUX SUITE: ccd pastes into a real tmux pane running a fake
   # CLI, the image's real hook template calls the real `ccd hook`, and the turn is
@@ -340,7 +343,7 @@ jobs:
           CCD_TMUXIT_RAW_ESC: "1"
         run: |
           set -o pipefail
-          go test -tags tmuxit -race -run '^TestTmux' -json ./cmd/ccd/ | python3 -u tests/verdict.py --echo all
+          go test -tags tmuxit -race -run '^TestTmux' -json ./cmd/ccd/ ./internal/mirror/ ./internal/mirrorhost/ | python3 -u tests/verdict.py --echo all
 
   # Local: docker build -f images/claude-code-agent/Dockerfile -t claude-code-agent . \
   #          && docker run --rm claude-code-agent cc-smoke

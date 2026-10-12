@@ -59,6 +59,12 @@ func RenderAgentsCards(w io.Writer, list []AgentCardView) error {
 	return AgentsCards(list).Render(w)
 }
 
+// RenderAgentsList writes the /ui/agents partial: the agent cards and, when the
+// mirror plugin is on, the viewer's mirrored sessions after them.
+func RenderAgentsList(w io.Writer, list []AgentCardView, mirrors []MirrorCardView) error {
+	return AgentsCardsWithMirrors(list, mirrors).Render(w)
+}
+
 // RenderDispatchModal writes the /ui/agents/new partial (the FAB dispatch form
 // body: Model, Repository, Existing task, ad-hoc task).
 func RenderDispatchModal(w io.Writer, k KindChoices) error {

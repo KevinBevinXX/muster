@@ -1,0 +1,182 @@
+package mirrorhost
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"sort"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/ZacxDev/muster/internal/mirror"
+)
+
+// Tmux is the real Backend: the host's own tmux server.
+type Tmux struct {
+	// Bin is the tmux binary ("" = "tmux" on PATH).
+	Bin string
+	// Socket is tmux's -L socket NAME; SocketPath its -S socket PATH. Both empty
+	// means tmux's default socket — the server an operator's plain `tmux` uses.
+	Socket     string
+	SocketPath string
+}
+
+func (t Tmux) bin() string {
+	if t.Bin != "" {
+		return t.Bin
+	}
+	return "tmux"
+}
+
+func (t Tmux) server() []string {
+	switch {
+	case t.SocketPath != "":
+		return []string{"-S", t.SocketPath}
+	case t.Socket != "":
+		return []string{"-L", t.Socket}
+	}
+	return nil
+}
+
+// tmuxEnv is this process's environment WITHOUT $TMUX and $TMUX_PANE, plus a
+// TERM the browser's terminal emulates.
+//
+// 🔴 $TMUX MUST GO. muster-mirror is often started from inside a tmux pane, and
+// a tmux client that inherits $TMUX refuses to attach ("sessions should be
+// nested with care") — every attach would fail with that line on screen. With
+// no -L/-S, $TMUX would also redirect `list-sessions` to whatever server it
+// names. $TMUX_TMPDIR is KEPT: it decides where the default socket lives, so it
+// is part of naming "the operator's default server".
+func tmuxEnv() []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "TMUX=") || strings.HasPrefix(kv, "TMUX_PANE=") || strings.HasPrefix(kv, "TERM=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return append(env, "TERM=xterm-256color")
+}
+
+// List is the server's session names, sorted. A host with no tmux server
+// running has no sessions — that is not an error.
+func (t Tmux) List(ctx context.Context) ([]string, error) {
+	cmd := exec.CommandContext(ctx, t.bin(), append(t.server(), "list-sessions", "-F", "#{session_name}")...)
+	cmd.Env = tmuxEnv()
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	if err := cmd.Run(); err != nil {
+		msg := errb.String()
+		if strings.Contains(msg, "no server running") || strings.Contains(msg, "error connecting to") {
+			return []string{}, nil
+		}
+		return nil, fmt.Errorf("tmux list-sessions: %v: %s", err, strings.TrimSpace(msg))
+	}
+	list := []string{}
+	for _, line := range strings.Split(out.String(), "\n") {
+		if line = strings.TrimRight(line, "\r"); line != "" {
+			list = append(list, line)
+		}
+	}
+	sort.Strings(list)
+	return list, nil
+}
+
+// AttachArgs is the tmux argv (after the binary) for attaching session.
+//
+//   - `-u`: the browser terminal is UTF-8 whatever this host's locale is.
+//   - `-r` for a read-only attach: tmux ignores the client's keys, the last of
+//     the three read-only layers (see mirror.Hub.Attach). In tmux >= 3.2 it also
+//     sets the client's ignore-size flag, so a read-only viewer does not resize
+//     a window another client is using.
+//   - `-t =<session>`: `=` is an EXACT match. A bare name is a prefix match, so
+//     `main` would attach `main2` when `main` had ended.
+//
+// The session is one argv element, never a shell word.
+func (t Tmux) AttachArgs(session string, readOnly bool) []string {
+	args := append(t.server(), "-u", "attach-session")
+	if readOnly {
+		args = append(args, "-r")
+	}
+	return append(args, "-t", "="+session)
+}
+
+// Attach runs `tmux attach-session` for session on a fresh pty.
+func (t Tmux) Attach(ctx context.Context, session string, readOnly bool, cols, rows uint16) (Terminal, error) {
+	if err := mirror.ValidSession(session); err != nil {
+		return nil, err
+	}
+	master, slave, err := openPTY()
+	if err != nil {
+		return nil, err
+	}
+	if cols == 0 || rows == 0 {
+		cols, rows = 80, 24
+	}
+	if err := setSize(master, cols, rows); err != nil {
+		_ = master.Close()
+		_ = slave.Close()
+		return nil, err
+	}
+	cmd := exec.Command(t.bin(), t.AttachArgs(session, readOnly)...)
+	cmd.Env = tmuxEnv()
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
+	cmd.SysProcAttr = ttyAttr()
+	if err := cmd.Start(); err != nil {
+		_ = master.Close()
+		_ = slave.Close()
+		return nil, fmt.Errorf("start tmux attach: %w", err)
+	}
+	_ = slave.Close()
+	pt := &ptyTerm{master: master, cmd: cmd, exited: make(chan struct{})}
+	go func() {
+		_ = cmd.Wait()
+		close(pt.exited)
+	}()
+	return pt, nil
+}
+
+// ptyTerm is one attached tmux client.
+type ptyTerm struct {
+	master *os.File
+	cmd    *exec.Cmd
+	exited chan struct{}
+	once   sync.Once
+}
+
+// Read is the client's screen. Linux reports the client's exit as EIO on the
+// master; that is the end of the stream, not an error.
+func (p *ptyTerm) Read(b []byte) (int, error) {
+	n, err := p.master.Read(b)
+	if err != nil && (errors.Is(err, syscall.EIO) || errors.Is(err, os.ErrClosed)) {
+		err = io.EOF
+	}
+	return n, err
+}
+
+func (p *ptyTerm) Write(b []byte) (int, error) { return p.master.Write(b) }
+
+func (p *ptyTerm) Resize(cols, rows uint16) error { return setSize(p.master, cols, rows) }
+
+// Close ends the client: SIGHUP (what a closed terminal sends; the client
+// detaches and exits), then SIGKILL if it has not exited within two seconds.
+// The tmux SESSION is never touched — only this client.
+func (p *ptyTerm) Close() error {
+	p.once.Do(func() {
+		_ = p.cmd.Process.Signal(syscall.SIGHUP)
+		_ = p.master.Close()
+		select {
+		case <-p.exited:
+		case <-time.After(2 * time.Second):
+			_ = p.cmd.Process.Kill()
+			<-p.exited
+		}
+	})
+	return nil
+}

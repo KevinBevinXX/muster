@@ -20,6 +20,7 @@
     "tests/share.spec.ts": 1.3,
     "tests/shortcuts.spec.ts": 0.9,
     "tests/sw.spec.ts": 0.8,
+    "tests/mirrored.spec.ts": 5.4,
     "tests/gotrue-login.spec.ts": 50.0
   },
   "legs": {
@@ -41,6 +42,7 @@
       "tests/installability.spec.ts",
       "tests/share.spec.ts",
       "tests/sw.spec.ts",
+      "tests/mirrored.spec.ts",
       "tests/gotrue-login.spec.ts"
     ]
   }

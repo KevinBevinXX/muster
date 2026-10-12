@@ -120,6 +120,11 @@ var pgBackedPackages = []string{
 	// the proxy's grant checks are SQL (the partial unique index) — only a real database can falsify either.
 	"internal/connectors",
 	"internal/db",
+	// Added by the mirrored-sessions plugin. "Only the token's hash is stored",
+	// "another user's principal cannot find, list or revoke a token" and "a
+	// revoked token stops authenticating" are claims about SQL and row-level
+	// security that only a real database can falsify.
+	"internal/mirror",
 	"internal/notes",
 	// Added by the UI carve, and the decision behind it is worth one line
 	// because a RENDERING package taking a real database looks wrong at a

@@ -197,7 +197,9 @@ func (s *Server) handleAgentsContent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderAgentsCards(w, cards); err != nil {
+	// The viewer's mirrored sessions (internal/mirror), after the agents: from
+	// the plugin's in-memory hub, scoped to this request's principal.
+	if err := ui.RenderAgentsList(w, cards, s.mirrorCards(ctx)); err != nil {
 		s.logger.Printf("agents: render: %v", err)
 	}
 }

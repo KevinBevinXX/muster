@@ -60,6 +60,7 @@ import (
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/gotrue"
 	"github.com/ZacxDev/muster/internal/metrics"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/router"
 	"github.com/ZacxDev/muster/internal/sse"
@@ -105,6 +106,11 @@ const (
 )
 
 func main() {
+	// `muster-server mirror …` is the operator's mirror-token admin, run where
+	// the server's DATABASE_URL is (e.g. `kubectl exec` into the muster pod).
+	if len(os.Args) > 1 && os.Args[1] == "mirror" {
+		os.Exit(runMirrorCLI(context.Background(), os.Args[2:], osGetenv, os.Stdout, os.Stderr))
+	}
 	logger := log.New(os.Stdout, "", log.LstdFlags|log.LUTC)
 
 	// One-shot account commands (`muster-server invite --claim-admin`,
@@ -312,10 +318,24 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.ConnectorPolicy = *e2eConnectorPolicy
 	}
 
+	// The mirrored-agents plugin: only with MUSTER_MIRROR=1 AND a database (its
+	// tokens and rows live there; config.validate already refuses a deployment
+	// with no database). Its agents-changed nudge is installed once srv exists.
+	var mirrorSvc *mirror.Service
+	if cfg.Mirror && a.pool != nil {
+		mirrorSvc = mirror.NewService(mirror.NewPG(a.pool), logger)
+		ext.Mirror = mirrorSvc
+	}
+
 	srv := api.New(bus, cfg.authConfig(), logger)
 	srv.UseExtensions(ext)
 	if cfg.goTrueConfigured() && a.pool != nil {
 		srv.UseGoTrue(goTrueAuth(cfg, a.pool))
+	}
+	if mirrorSvc != nil {
+		// No agent name: a mirrored session is not an agent. The nudge only makes
+		// open Agents views re-fetch, each scoped to its own principal.
+		mirrorSvc.SetNotify(func() { srv.BroadcastAgentChanged("") })
 	}
 	if port.Configured() {
 		srv.UseRouter(port)
@@ -804,6 +824,16 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	} else {
 		l.Printf("connector store: DISABLED — %s is unset, so every connector route answers 503, the "+
 			"Connectors tab is hidden, and %s / %s have no effect", envConnectorEncKey, envConnectPort, envAgentConnectURL)
+	}
+
+	if ext.Mirror != nil {
+		l.Printf("mirrored sessions: ENABLED (%s=1) — hosts running muster-mirror dial GET %s with a "+
+			"per-host mirror token (mint one with `muster-server mirror token create <host>`), and their "+
+			"tmux sessions are shown (in memory, to the token owner only) as Mirrored cards whose terminal attaches through that tunnel",
+			envMirror, mirror.ConnectPath)
+	} else {
+		l.Printf("mirrored sessions: OFF — %s is unset (or there is no database), so GET %s answers 404, "+
+			"no mirrored session is listed and the plugin's UI is not drawn", envMirror, mirror.ConnectPath)
 	}
 
 	if ext.GitHub != nil {

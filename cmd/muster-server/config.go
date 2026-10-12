@@ -89,6 +89,10 @@ const (
 	envTagAutoDispatch = "MUSTER_TAG_AUTODISPATCH"
 	envTaskReapAfter   = "MUSTER_TASK_REAP_AFTER"
 
+	// The optional MIRRORED-sessions plugin (internal/mirror): "1" turns it on.
+	// Off, GET /mirror/connect answers 404 and nothing mirrored is listed.
+	envMirror = "MUSTER_MIRROR"
+
 	envRouterURL   = "MUSTER_ROUTER_URL"
 	envRouterToken = "MUSTER_ROUTER_TOKEN"
 	envRouterActor = "MUSTER_ROUTER_ACTOR"
@@ -326,6 +330,9 @@ type config struct {
 
 	TagAutoDispatch bool
 	TaskReapAfter   time.Duration
+
+	// Mirror turns the mirrored-sessions plugin on (MUSTER_MIRROR=1).
+	Mirror bool
 
 	RouterURL   string
 	RouterToken string
@@ -652,6 +659,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		FaroKey:            strings.TrimSpace(getenv(envFaroKey)),
 		FaroTracing:        envFlag(getenv, envFaroTracing),
 		TagAutoDispatch:    envFlag(getenv, envTagAutoDispatch),
+		Mirror:             envFlag(getenv, envMirror),
 		RouterURL:          strings.TrimSpace(getenv(envRouterURL)),
 		RouterToken:        strings.TrimSpace(getenv(envRouterToken)),
 		RouterActor:        strings.TrimSpace(getenv(envRouterActor)),

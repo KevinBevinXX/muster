@@ -32,19 +32,31 @@ func RLSOff(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
+// mirrorTokensMigrationVersion is 0008: the mirror plugin's mirror_tokens, an
+// owned table under the same row-level security. RLSOff turns it off with the
+// rest and RLSOn re-applies its body (idempotent) — but only on a schema that
+// HAS the table, so RLSOn never creates it outside Migrate.
+const mirrorTokensMigrationVersion = 8
+
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the
-// principal, the role and its grants. It undoes RLSOff.
+// principal, the role and its grants — and 0008's for mirror_tokens when that
+// table exists. It undoes RLSOff.
 func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 	ms, err := loadMigrations()
 	if err != nil {
 		return err
 	}
+	ctx = asMigrator(ctx)
+	var hasMirrorTokens bool
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.mirror_tokens') IS NOT NULL`).Scan(&hasMirrorTokens); err != nil {
+		return fmt.Errorf("rls on: %w", err)
+	}
+	applied := false
 	for _, m := range ms {
-		if m.version != rlsMigrationVersion {
+		if m.version != rlsMigrationVersion && !(m.version == mirrorTokensMigrationVersion && hasMirrorTokens) {
 			continue
 		}
-		ctx = asMigrator(ctx)
 		tx, err := pool.Begin(ctx)
 		if err != nil {
 			return fmt.Errorf("rls on: begin: %w", err)
@@ -56,6 +68,9 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		if err := tx.Commit(ctx); err != nil {
 			return fmt.Errorf("rls on: commit: %w", err)
 		}
+		applied = applied || m.version == rlsMigrationVersion
+	}
+	if applied {
 		return nil
 	}
 	return fmt.Errorf("rls on: migration %04d is not embedded", rlsMigrationVersion)

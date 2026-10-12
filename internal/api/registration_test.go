@@ -72,10 +72,14 @@ func fullyWiredServer(t *testing.T) *Server {
 		// NON-ZERO on purpose, for AgentNamespacePrefix's reason: the zero policy
 		// is production's, so a fixture holding it would not be "wired".
 		ConnectorPolicy: connectors.Policy{AllowLoopback: true},
+		Mirror:          stubMirror{},
 	})
 	s.UseRouter(stubRouter{})
 	return s
 }
+
+// stubMirror satisfies Mirror for registration only; any method call panics.
+type stubMirror struct{ Mirror }
 
 // stubConnectorsStore satisfies connectors.Store for registration only; any
 // method call panics, which is the point — registering must call none.
