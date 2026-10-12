@@ -965,7 +965,8 @@ func accountLinks(feat Features) g.Node {
 	})
 }
 
-// pathForTab maps a tab key to its SPA route: requests→"/", else "/<tab>".
+// pathForTab maps a tab key to its SPA route, "/<tab>". ("/" also SERVES the
+// default tab — see defaultVisibleTab — but no link points at it.)
 // Mirrors appScript's JS pathForTab so the boosted sidebar <a> hrefs match the
 // routes the in-shell router pushes (deep-links + back/forward stay consistent).
 func pathForTab(key string) string { return "/" + normalizeTab(key) }
@@ -1038,8 +1039,9 @@ func sidebarTab(tab, label, icon string, active, current, hasPanels bool) g.Node
 // routing (each tab is a real path via history.pushState; back/forward + deep
 // links work), the per-tab floating action buttons, and the header badge's
 // quick-manage popover. No framework — minimal vanilla JS.
-// navRegistryJS emits the two JavaScript values the SPA router needs — the
-// ordered tab list and the tab→heading map — from musterTabs.
+// navRegistryJS emits the JavaScript values the SPA router needs — the ordered
+// tab list, the tab→heading map, the panel selector and the default tab — from
+// musterTabs.
 //
 // 🔴 THIS IS THE FOURTH CONSUMER OF THE REGISTRY, AND UPSTREAM'S HAND-WRITTEN
 // VERSION OF IT IS THE ONE THAT ROTS SILENTLY. A Go-side tab missing from the
@@ -1062,6 +1064,11 @@ func sidebarTab(tab, label, icon string, active, current, hasPanels bool) g.Node
 // one there makes every query it feeds shorter by an element that was never
 // there. Deriving all three from visibleTabs is what keeps the browser's model
 // of the shell equal to the shell.
+//
+// 🔴 DEFAULT_TAB IS THE FOURTH, AND IT IS THE ONE THAT WAS MISSING. It is the
+// tab `/` shows, and it comes from defaultVisibleTab — the same function the
+// shell clamps with — so it is always a member of TABS. See that function for
+// what a script-side default of its own cost.
 func navRegistryJS(feat Features) string {
 	visible := visibleTabs(feat)
 	keys := make([]string, 0, len(visible))
@@ -1075,9 +1082,11 @@ func navRegistryJS(feat Features) string {
 	keysJSON, _ := json.Marshal(keys)
 	headings, _ := json.Marshal(headingMap)
 	panels, _ := json.Marshal(strings.Join(sel, ", "))
+	def, _ := json.Marshal(defaultVisibleTab(feat))
 	return "  var TABS = " + string(keysJSON) + ";\n" +
 		"  var HEADINGS = " + string(headings) + ";\n" +
-		"  var PANEL_SELECTOR = " + string(panels) + ";\n"
+		"  var PANEL_SELECTOR = " + string(panels) + ";\n" +
+		"  var DEFAULT_TAB = " + string(def) + ";\n"
 }
 
 // panelID is the DOM id of a tab's tabpanel. It is a FUNCTION rather than a
@@ -1162,7 +1171,7 @@ func appScript(feat Features) g.Node {
   // instruction and wins.
   //
   // 🔴 IT IS SPELLED OUT HERE BECAUSE tabFromPath CANNOT ANSWER IT. tabFromPath('/')
-  // returns 'requests', by its own documented fallback — so a restore gated on
+  // returns DEFAULT_TAB, by its own documented fallback — so a restore gated on
   // !tabFromPath(location.pathname) never fires on '/'. (Measured: the first cut of
   // this feature was gated exactly that way and the tab half of it was entirely
   // dead; the one path that DID satisfy the gate was /operator, which carries no
@@ -1477,15 +1486,20 @@ func appScript(feat Features) g.Node {
   // tabFromPath maps a pathname to its tab, or to '' when this document is NOT
   // one of the tab pages (/operator, or any future non-tab route). The empty
   // string is load-bearing: it is what lets showForPath tell "highlight the
-  // Requests tab" apart from "the Requests link IS this page". Callers that
+  // default tab" apart from "the default tab's link IS this page". Callers that
   // only need the highlight substitute their own fallback.
+  //
+  // 🔴 '/' IS DEFAULT_TAB, WHICH THE SERVER EMITS (navRegistryJS) FROM THE TABS IT
+  // DREW. This line used to say 'requests' — the default of the product this was
+  // extracted from, and not a muster tab — so '/' mapped to '' and showForPath
+  // hid every panel. Do not spell a tab key here.
   function tabFromPath(p) {
-    var seg = (p || '/').split('/')[1] || 'requests';
+    var seg = (p || '/').split('/')[1] || DEFAULT_TAB;
     return TABS.indexOf(seg) >= 0 ? seg : '';
   }
 
   // showForPath reconciles the visible state with location.pathname. On a path
-  // that is not a tab page it still paints a tab (the 'requests' fallback, so
+  // that is not a tab page it still paints a tab (the DEFAULT_TAB fallback, so
   // the chrome looks the same as it always has) but passes isPage=false, so
   // show() marks NO link aria-current="page" — matching what Go renders for
   // that document (sidebar(activeTab, "", ...)). Before this split, /operator
@@ -1494,9 +1508,11 @@ func appScript(feat Features) g.Node {
   // page nor the highlight.
   function showForPath() {
     var t = tabFromPath(location.pathname);
-    show(t || 'requests', t !== '');
+    show(t || DEFAULT_TAB, t !== '');
   }
-  function pathForTab(t) { return t === 'requests' ? '/' : '/' + t; }
+  // Every tab's path is /<key>, as Go's pathForTab. '/' also SHOWS the default
+  // tab, but no tab's link points at it, so nothing here returns it.
+  function pathForTab(t) { return '/' + t; }
 
   // switchTab is the shared tab router used by the sidebar tabs, the segmented
   // [Requests | Tasks] control, AND the horizontal swipe — so all three drive the
@@ -1532,8 +1548,24 @@ func appScript(feat Features) g.Node {
   // only when a sidebar link actually points at the document being displayed.
   // The two are decoupled deliberately — the accent highlight is decoration,
   // aria-current="page" is an assertion about the URL. See showForPath.
+  //
+  // 🔴 IT CANNOT LEAVE EVERY PANEL HIDDEN, WHATEVER IT IS ASKED FOR. The toggle
+  // below hides each panel that is not the requested tab, so a tab with no panel in a
+  // document that HAS panels blanks the page — which is what an unknown tab
+  // clamping to a key outside TABS did on '/'. shownTab is the guard: the
+  // server's DEFAULT_TAB first, and if even that has no panel here, the first
+  // tab that does. On a document with no panels at all (agent detail) there is
+  // nothing to blank and the tab is only a sidebar highlight, so it is kept.
+  function shownTab(tab) {
+    if (TABS.indexOf(tab) < 0) tab = DEFAULT_TAB;
+    if (document.getElementById('panel-' + tab)) return tab;
+    for (var i = 0; i < TABS.length; i++) {
+      if (document.getElementById('panel-' + TABS[i])) return TABS[i];
+    }
+    return tab;
+  }
   function show(tab, isPage) {
-    if (TABS.indexOf(tab) < 0) tab = 'requests';
+    tab = shownTab(tab);
     var heading = document.getElementById('page-heading');
     if (heading && HEADINGS[tab]) heading.textContent = HEADINGS[tab];
     TABS.forEach(function (t) {
@@ -2133,8 +2165,7 @@ func appScript(feat Features) g.Node {
     // comment here claimed restoring first "would simply be overwritten" by
     // showForPath(); that is false in every case. switchTab replaceState's the
     // path BEFORE it calls show(), so a later showForPath() reads the restored
-    // tab back out of the URL and repaints the same one; and when the stored tab
-    // is 'requests', pathForTab is '/' and there is nothing to overwrite at all.
+    // tab back out of the URL and repaints the same one.
     // The order is kept because it is the one every test above was measured
     // against — not because a mechanism demands it. If you need to move it,
     // that is a real change: re-run the suite rather than trusting this note.

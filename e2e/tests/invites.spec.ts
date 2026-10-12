@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { request as pwRequest } from '@playwright/test';
-import { test, expect } from '../lib/fixtures';
+import { test, expect, expectShellShows, navTabKey } from '../lib/fixtures';
 import {
   dsn, e2eRoot, gotrueSecret, hookToken, invitesBrowserPort, invitesGotruePort, invitesMainPort, repoRoot, versionA,
 } from '../lib/env';
@@ -93,6 +93,12 @@ test('an admin invites a member by link; the member sees only its own (empty) bo
   await page.fill('#claim-password', adminPW);
   await page.fill('#claim-password2', adminPW);
   await Promise.all([page.waitForURL(browserURL + '/'), page.click('button[type=submit]')]);
+  // The claim lands on `/`, and `/` IS the board: asserted HERE, on the page
+  // the redirect produced, before any navigation. Every sign-in in this suite
+  // used to be followed immediately by goto('/tasks'), so nothing ever looked
+  // at `/` — and `/` rendered every panel and every FAB hidden.
+  await expectShellShows(page, 'tasks', 'Tasks', 'the admin, landing on / after the claim');
+  await expect(page.locator(`#task-${adminTask}`), 'the admin sees its own task on /').toBeVisible();
   await page.goto(browserURL + '/tasks');
   await expect(page.locator(`#task-${adminTask}`), 'CONTROL: the admin sees its own task').toBeVisible();
   await expect(page.locator('#sidebar-admin')).toHaveAttribute('href', '/admin/users');
@@ -124,6 +130,18 @@ test('an admin invites a member by link; the member sees only its own (empty) bo
   await mp.fill('#invite-password', memberPW);
   await mp.fill('#invite-password2', memberPW);
   await Promise.all([mp.waitForURL(browserURL + '/'), mp.getByRole('button', { name: 'Create account' }).click()]);
+  // The member's FIRST page is `/`, in a browser with no saved tab. It is the
+  // (empty) board with its New-task button — not a blank main area.
+  await expectShellShows(mp, 'tasks', 'Tasks', 'the member, landing on / after redeeming the invite');
+  await expect(mp.getByText('No tasks yet'), "the member's empty board is VISIBLE on /").toBeVisible();
+  await expect(mp.locator('#fab-tasks'), 'the New-task button is visible on /').toBeVisible();
+  // A tab saved by a build (or a product) whose default was another tab must
+  // not blank the page either: the saved value names no tab this shell has.
+  await mp.evaluate((k) => localStorage.setItem(k, 'requests'), navTabKey);
+  await mp.reload();
+  await expectShellShows(mp, 'tasks', 'Tasks', 'the member on / with a stale saved tab');
+  await expect(mp.getByText('No tasks yet')).toBeVisible();
+  await mp.evaluate((k) => localStorage.removeItem(k), navTabKey);
   const mcookies = await invitee.cookies(browserURL);
   expect(mcookies.find((c) => c.name === 'muster_at' && c.httpOnly && c.secure), 'the member is signed in').toBeTruthy();
 
@@ -264,6 +282,8 @@ test('an admin invites a member by link; the member sees only its own (empty) bo
   await mp.fill('#muster-email', memberEmail);
   await mp.fill('#muster-password', newPW);
   await Promise.all([mp.waitForURL(browserURL + '/'), mp.click('button[type=submit]')]);
+  await expectShellShows(mp, 'tasks', 'Tasks', 'the member, landing on / after signing in');
+  await expect(mp.locator('#fab-tasks')).toBeVisible();
   await mp.goto(browserURL + '/tasks');
   await expect(mp.locator('#fab-tasks')).toBeVisible();
 

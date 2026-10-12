@@ -24,7 +24,8 @@
     "tests/gotrue-login.spec.ts": 50.0,
     "tests/byo-credentials.spec.ts": 15.0,
     "tests/invites.spec.ts": 45.0,
-    "tests/api-tokens.spec.ts": 25.0
+    "tests/api-tokens.spec.ts": 25.0,
+    "tests/landing.spec.ts": 4.0
   },
   "legs": {
     "1": [
@@ -49,7 +50,8 @@
       "tests/share.spec.ts",
       "tests/sw.spec.ts",
       "tests/mirrored.spec.ts",
-      "tests/gotrue-login.spec.ts"
+      "tests/gotrue-login.spec.ts",
+      "tests/landing.spec.ts"
     ]
   }
 }

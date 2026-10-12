@@ -68,8 +68,36 @@ func visibleTabs(f Features) []tab {
 	return out
 }
 
+// defaultVisibleTab is the tab `/` serves in a document with these features:
+// defaultTab when this document draws it, otherwise the first tab it does draw.
+//
+// 🔴 THE DEFAULT IS A PROPERTY OF THE DOCUMENT, NOT A CONSTANT, AND THE BROWSER
+// IS TOLD IT RATHER THAN KEEPING ITS OWN. navRegistryJS emits this value as
+// DEFAULT_TAB. The script used to spell its own default — 'requests', the tab
+// the product this was extracted from opened on, which muster has never had —
+// so on `/` it resolved the path to a tab with no panel and hid every panel and
+// every FAB the server had just drawn correctly. A blank main area under a 200,
+// for anyone whose browser had not already saved a tab; it was first seen by a
+// freshly invited member. A default that is not one of the drawn tabs is the
+// whole defect, so it is derived from the drawn set here, once.
+//
+// It returns "" only for a document that draws no tab at all, which no
+// Features value produces today (tasks and agents are unconditional).
+func defaultVisibleTab(f Features) string {
+	visible := visibleTabs(f)
+	for _, vt := range visible {
+		if vt.Key == defaultTab {
+			return defaultTab
+		}
+	}
+	if len(visible) > 0 {
+		return visible[0].Key
+	}
+	return ""
+}
+
 // normalizeVisibleTab clamps an arbitrary tab string to one this document
-// actually draws, defaulting to defaultTab.
+// actually draws, defaulting to defaultVisibleTab.
 //
 // 🔴 IT IS WHAT MAKES A DEEP LINK TO A HIDDEN TAB LAND SOMEWHERE. Every tab is a
 // real route whether or not its subsystem was built, so /repos is served on a
@@ -83,5 +111,5 @@ func normalizeVisibleTab(t string, f Features) string {
 			return t
 		}
 	}
-	return defaultTab
+	return defaultVisibleTab(f)
 }
