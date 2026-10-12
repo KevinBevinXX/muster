@@ -177,7 +177,8 @@ type Proxy struct {
 	// request files a NEW pending grant, so the operator can be prompted.
 	OnGrantRequested func(Grant)
 	// StreamsEnd is the server's shutdown signal for streams: once it is done, a
-	// proxied EVENT STREAM in flight ends, and one that starts later ends at once.
+	// proxied GET EVENT STREAM in flight ends, and one that starts later ends at
+	// once (endsAtShutdown says which exchanges, and why only GET).
 	// Every other proxied request is left alone. nil means never (a Proxy built
 	// directly, as tests do). The api package hands it the same signal
 	// api.Server.EndStreams cancels, so ending its own streams and the ones relayed
@@ -463,7 +464,7 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 			// Decided on the upstream's own Content-Type, before the redactor
 			// touches any header; INSIDE the redactor's wrap, so the redactor sees
 			// a clean EOF and releases what it was holding back.
-			if p.StreamsEnd != nil && isEventStream(resp.Header) {
+			if p.StreamsEnd != nil && endsAtShutdown(r.Method, resp.Header) {
 				resp.Body = &endOnShutdown{ReadCloser: resp.Body, ended: &endedAtShutdown}
 				stopEnd = context.AfterFunc(p.StreamsEnd, func() {
 					endedAtShutdown.Store(true) // before the cancel, so the failed Read sees it
@@ -574,31 +575,44 @@ func (t *trailerlessWriter) Flush() {
 	}
 }
 
-// isEventStream reports whether an upstream response is a server-sent-event
-// stream — the one kind of proxied response shutdown ENDS rather than drains.
+// endsAtShutdown reports whether a proxied exchange is one shutdown ENDS rather
+// than drains: a GET answered with text/event-stream — an EventSource-style
+// feed. Every other proxied exchange is drained like any request.
 //
-// 🔴 THE TEST IS THE RESPONSE'S MEDIA TYPE, AND THE TWO OBVIOUS ALTERNATIVES
-// CANNOT TELL THE CASES APART HERE. The flush mode is FlushInterval -1 for every
-// proxied response, and ModifyResponse forces ContentLength -1 on every one too
-// (the redactor changes lengths), so neither marks a stream. An unknown-length
-// body is not a stream either: a git fetch's pack arrives exactly that way, is
-// finite, and truncating it breaks the clone — that is a request the drain
-// exists to let finish. text/event-stream is the only type whose contract has
-// no end and promises the client reconnects (EventSource, with Last-Event-ID),
-// so ending it loses nothing — the same reason api.Server.EndStreams may end
-// /events. The predicate is httputil.ReverseProxy's own for "this response is a
-// stream" (mime.ParseMediaType, parameters and case ignored), so the two agree.
+// 🔴 THE MEDIA TYPE IS NECESSARY BUT NOT SUFFICIENT; THE METHOD IS WHAT MAKES
+// ENDING IT HARMLESS. Ending a stream is safe only when it has no "finished"
+// state and its client resumes by reconnecting — which is what a GET
+// EventSource feed is (WHATWG EventSource reconnects, with Last-Event-ID), and
+// the same reason api.Server.EndStreams may end /events. A POST answered with
+// text/event-stream is a different thing: an LLM API call with stream:true, or
+// an MCP Streamable-HTTP tool-call response, is ONE finite answer streamed in
+// pieces, and it is not resumable. Ending it mid-body cuts a turn the upstream
+// may already have acted on — and because endOnShutdown reports the end as
+// io.EOF, the client would read a truncated answer as a COMPLETE one. So any
+// method but GET is drained, whatever it streams.
 //
-// ⚠ RESIDUAL: a long-lived response of any OTHER type (an ndjson watch, a
-// chunked long-poll) is still drained, and can still hold a shutdown to its
-// deadline. Which platforms answer that way was not surveyed; widening the set
-// means naming a type whose truncation is as harmless as an event stream's.
-func isEventStream(h http.Header) bool {
+// Why the media type rather than something else: the flush mode is
+// FlushInterval -1 for every proxied response, and ModifyResponse forces
+// ContentLength -1 on every one too (the redactor changes lengths), so neither
+// marks a stream. An unknown-length body is not a stream either: a git fetch's
+// pack arrives exactly that way, is finite, and truncating it breaks the
+// clone. The media-type test is httputil.ReverseProxy's own for "this response
+// is a stream" (mime.ParseMediaType, parameters and case ignored).
+//
+// ⚠ RESIDUALS, all drained and so all able to hold a shutdown to its deadline:
+// a long-lived GET of any OTHER type (an ndjson watch, a chunked long-poll),
+// and a long-lived non-GET stream. Which platforms answer that way was not
+// surveyed; widening the set means naming an exchange whose truncation is as
+// harmless as an EventSource feed's.
+func endsAtShutdown(method string, h http.Header) bool {
+	if method != http.MethodGet {
+		return false
+	}
 	mt, _, _ := mime.ParseMediaType(h.Get("Content-Type"))
 	return mt == "text/event-stream"
 }
 
-// endOnShutdown wraps an event stream's upstream body. Once ended is set (by
+// endOnShutdown wraps an ending exchange's upstream body (endsAtShutdown). Once ended is set (by
 // Proxy.StreamsEnd firing, which also cancels the upstream request), the read
 // error that cancellation causes is reported as io.EOF.
 //

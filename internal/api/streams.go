@@ -8,8 +8,8 @@ import (
 // EndStreams ends every server-sent-event stream this server serves — its own
 // handlers' and any text/event-stream relayed by the /connect/ proxy — and any
 // opened after it. It is idempotent and safe to call concurrently.
-// cmd/muster-server registers it with RegisterOnShutdown on BOTH of its
-// http.Servers (main and connect), so it runs the moment either drain begins.
+// cmd/muster-server calls it once at the top of its shutdown, before EITHER of
+// its http.Servers (main and connect) begins to drain.
 //
 // 🔴 WITHOUT IT EVERY SHUTDOWN WITH A BROWSER OPEN COST THE WHOLE DRAIN BUDGET.
 // http.Server.Shutdown closes idle connections and WAITS for active ones, and an
@@ -34,13 +34,15 @@ import (
 // component level: Shutdown ran to its 10 s deadline with one proxied stream
 // open, against 0 s with none. The proxy now holds the SAME signal
 // (connectors.Proxy.StreamsEnd, set in UseExtensions) and ends a relayed
-// response when it fires — but only one whose Content-Type is
-// text/event-stream, because the proxy also carries ordinary requests the
-// drain must let finish (a git fetch's pack among them); why the media type is
-// the test, and what it still does not end, is on connectors.isEventStream.
+// exchange when it fires — but only a GET answered with text/event-stream,
+// because the proxy also carries requests the drain must let finish: a git
+// fetch's pack, and a POST that streams one finite, unresumable answer as
+// text/event-stream (an LLM call, an MCP tool call). Why that pair is the test,
+// and what it still does not end, is on connectors.endsAtShutdown.
 // Pinned through buildApp + Run (not the built binary) by cmd/muster-server's
-// TestShutdownEndsAProxiedEventStreamOnBothListeners and
-// TestShutdownLetsAnOrdinaryProxiedRequestFinish.
+// TestShutdownEndsAProxiedEventStreamOnBothListeners,
+// TestShutdownLetsAnOrdinaryProxiedRequestFinish and
+// TestShutdownLetsAProxiedPOSTEventStreamFinish.
 //
 // It is a second registry beside terminalSet deliberately, not a missed reuse:
 // terminalSet.endAll also refuses new entries and waits for each release, and

@@ -105,12 +105,12 @@ func openEventStream(t *testing.T, base string, cfg config) *http.Response {
 //
 // 🔴 EVERY PAGE OPENS /events, SO THIS WAS EVERY SHUTDOWN WITH A TAB OPEN.
 // http.Server.Shutdown waits for active connections and an SSE stream is never
-// idle, so before api.EndStreams was registered with RegisterOnShutdown the
+// idle, so before shutdown() called api.EndStreams the
 // process sat out the whole drain budget and exited on the deadline. Red at
 // `a75b09b` (Run returns only after the 10 s deadline), green after.
 //
 // It drives buildApp + Run on a real port — the same path main() takes — so it
-// also fails if the RegisterOnShutdown wiring is removed while the api side
+// also fails if that call is removed while the api side
 // stays correct.
 //
 // ⚠ THE BOUND IS HALF THE DRAIN BUDGET, NOT A TIGHT TIMING. A correct shutdown

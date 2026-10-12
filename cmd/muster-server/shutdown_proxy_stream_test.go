@@ -23,8 +23,9 @@ import (
 )
 
 // The /connect/ half of the shutdown-stream contract (api.EndStreams): a proxied
-// EVENT STREAM ends when shutdown begins, on either listener, and an ordinary
-// proxied request is drained like any other.
+// GET EVENT STREAM ends when shutdown begins, on either listener, and every other
+// proxied exchange — an ordinary response, or a POST that streams its answer as
+// text/event-stream — is drained like any request (connectors.endsAtShutdown).
 //
 // These drive buildApp + Run over a real database (a grant and a credential are
 // rows) with a FAKE upstream on loopback. The connector policy is loosened the
@@ -39,9 +40,10 @@ const (
 	streamPadding = 4096
 )
 
-// proxyUpstream is the fake platform. /stream answers text/event-stream and
-// holds it open; /slow answers application/json, sends part of its body and
-// waits for release before finishing it. Every wait is bounded.
+// proxyUpstream is the fake platform. GET /stream answers text/event-stream and
+// holds it open; GET /slow answers application/json, and POST /turn answers
+// text/event-stream (an LLM-style streamed turn) — each of those two sends part
+// of its body and waits for release before finishing it. Every wait is bounded.
 type proxyUpstream struct {
 	srv       *httptest.Server
 	host      string // the connector's allowlisted host, port included
@@ -71,20 +73,24 @@ func newProxyUpstream(t *testing.T) *proxyUpstream {
 		case <-time.After(3 * shutdownDrainTimeout):
 		}
 	})
-	mux.HandleFunc("GET /slow", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, `{"part":"`+strings.Repeat("a", streamPadding)+`",`)
-		w.(http.Flusher).Flush()
-		u.slowIn <- struct{}{}
-		select {
-		case <-u.release:
-			u.slowCtxOK.Store(r.Context().Err() == nil)
-			_, _ = io.WriteString(w, `"rest":"finished"}`)
-		case <-r.Context().Done():
-		case <-time.After(3 * shutdownDrainTimeout):
+	held := func(contentType, head, tail string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", contentType)
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, head)
+			w.(http.Flusher).Flush()
+			u.slowIn <- struct{}{}
+			select {
+			case <-u.release:
+				u.slowCtxOK.Store(r.Context().Err() == nil)
+				_, _ = io.WriteString(w, tail)
+			case <-r.Context().Done():
+			case <-time.After(3 * shutdownDrainTimeout):
+			}
 		}
-	})
+	}
+	mux.HandleFunc("GET /slow", held("application/json", slowHead, slowTail))
+	mux.HandleFunc("POST /turn", held("text/event-stream", turnHead, turnTail))
 	u.srv = httptest.NewServer(mux)
 	t.Cleanup(u.srv.Close)
 	_, port, _ := net.SplitHostPort(u.srv.Listener.Addr().String())
@@ -92,10 +98,20 @@ func newProxyUpstream(t *testing.T) *proxyUpstream {
 	return u
 }
 
+// The held responses' two halves: the head is relayed before shutdown begins,
+// the tail only after the upstream is released. Each head is padded past the
+// redactor's hold-back so the proxy really has relayed part of the body.
+var (
+	slowHead = `{"part":"` + strings.Repeat("a", streamPadding) + `",`
+	slowTail = `"rest":"finished"}`
+	turnHead = "data: {\"delta\":\"" + strings.Repeat("t", streamPadding) + "\"}\n\n"
+	turnTail = "data: {\"delta\":\"end of turn\"}\n\ndata: [DONE]\n\n"
+)
+
 // proxyShutdownApp builds the app with a connector store, seeds an agent with an
 // APPROVED grant on a connector for the fake upstream, and returns the agent's
-// token and the connector's name.
-func proxyShutdownApp(t *testing.T, connectPort int, u *proxyUpstream) (a *app, token, connector string) {
+// token, the connector's name, and a store over the same database.
+func proxyShutdownApp(t *testing.T, connectPort int, u *proxyUpstream) (a *app, token, connector string, store *connectors.PGStore) {
 	t.Helper()
 	prev := e2eConnectorPolicy
 	e2eConnectorPolicy = &connectors.Policy{
@@ -145,7 +161,7 @@ func proxyShutdownApp(t *testing.T, connectPort int, u *proxyUpstream) (a *app, 
 	if _, err := store.DecideGrant(ctx, g.ID, true, "test-operator"); err != nil {
 		t.Fatalf("approve grant: %v", err)
 	}
-	return a, token, connector
+	return a, token, connector, store
 }
 
 // httpPanics is muster's recovered-handler-panic count.
@@ -159,7 +175,15 @@ func proxyShutdownApp(t *testing.T, connectPort int, u *proxyUpstream) (a *app, 
 func httpPanics() float64 { return testutil.ToFloat64(metrics.Panics.WithLabelValues("http")) }
 
 func proxyGet(base, token, connector, host, path string) (*http.Response, error) {
-	req, err := http.NewRequest(http.MethodGet, base+"/connect/"+connector+"/"+host+path, nil)
+	return proxyDo(http.MethodGet, base, token, connector, host, path)
+}
+
+func proxyDo(method, base, token, connector, host, path string) (*http.Response, error) {
+	var body io.Reader
+	if method == http.MethodPost {
+		body = strings.NewReader(`{"stream":true}`)
+	}
+	req, err := http.NewRequest(method, base+"/connect/"+connector+"/"+host+path, body)
 	if err != nil {
 		return nil, err
 	}
@@ -218,6 +242,11 @@ func openProxiedStream(t *testing.T, base, token, connector string, u *proxyUpst
 // and that each stream ends CLEANLY — as EOF, not as a ReverseProxy abort (see
 // httpPanics for why that is read from the panic counter).
 //
+// It is ALSO the proof that the connect listener's streams end: shutdown()
+// ends streams by one call before either server drains, and with that call
+// removed this test is red (the 10 s deadline) — there is no second mechanism
+// left to cover for it.
+//
 // 🔴 BEFORE THE FIX ONE SUCH STREAM COST EVERY SHUTDOWN THE WHOLE DRAIN BUDGET.
 // The proxy ran the upstream request on r.Context(), which Shutdown never
 // cancels, and EndStreams reached only package api's own handlers. Red on
@@ -225,7 +254,7 @@ func openProxiedStream(t *testing.T, base, token, connector string, u *proxyUpst
 func TestShutdownEndsAProxiedEventStreamOnBothListeners(t *testing.T) {
 	u := newProxyUpstream(t)
 	connectPort := freePort(t)
-	a, token, connector := proxyShutdownApp(t, connectPort, u)
+	a, token, connector, store := proxyShutdownApp(t, connectPort, u)
 	base, cancel, runErr := runBuiltForShutdown(t, a, nil)
 	connectBase := "http://127.0.0.1:" + strconv.Itoa(connectPort)
 
@@ -262,62 +291,26 @@ func TestShutdownEndsAProxiedEventStreamOnBothListeners(t *testing.T) {
 		t.Errorf("ending the proxied streams recorded %v handler panic(s), want 0: a stream ended at shutdown "+
 			"must end as EOF, not as a ReverseProxy abort", d)
 	}
-}
 
-// TestTheConnectListenersShutdownEndsAProxiedEventStreamByItself pins the
-// connect server's OWN RegisterOnShutdown(EndStreams): its Shutdown, called
-// alone, must end a proxied stream it is serving.
-//
-// It exists because the test above cannot see that registration: shutdown()
-// drains the main server first, which fires the shared signal before the
-// connect server's drain begins, so deleting the connect registration leaves
-// that test green. This one is red without it (the connect Shutdown runs to its
-// deadline), green with it.
-func TestTheConnectListenersShutdownEndsAProxiedEventStreamByItself(t *testing.T) {
-	u := newProxyUpstream(t)
-	a, token, connector := proxyShutdownApp(t, freePort(t), u)
-	if a.connect == nil {
-		t.Fatal("control: the connect listener was not built")
-	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	// The audit row of each stream says WHY it ended: an operator reading the
+	// connector audit must not see a 200 that looks like a stream the upstream
+	// closed. The rows are written before Serve returns, so Run's return orders
+	// them before this read.
+	ctx, cancelRead := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelRead()
+	rows, err := store.ListAudit(ctx, 500)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("list audit: %v", err)
 	}
-	served := make(chan error, 1)
-	go func() { served <- a.connect.Serve(ln) }()
-	t.Cleanup(func() { _ = a.connect.Close() })
-
-	ended := openProxiedStream(t, "http://"+ln.Addr().String(), token, connector, u)
-
-	drainCtx, cancel := context.WithTimeout(context.Background(), shutdownDrainTimeout)
-	defer cancel()
-	panicsBefore := httpPanics()
-	start := time.Now()
-	if err := a.connect.Shutdown(drainCtx); err != nil {
-		t.Fatalf("the connect listener's Shutdown alone returned %v after %s: its proxied stream held the drain",
-			err, time.Since(start).Round(time.Millisecond))
-	}
-	if took, bound := time.Since(start), shutdownDrainTimeout/2; took >= bound {
-		t.Fatalf("the connect listener's Shutdown alone took %s, want under %s", took.Round(time.Millisecond), bound)
-	}
-	select {
-	case err := <-ended:
-		if err != io.EOF {
-			t.Errorf("the proxied stream ended with %v, want io.EOF", err)
+	var details []string
+	for _, e := range rows {
+		if e.Kind == "proxy" && e.Connector == connector && e.Path == "/stream" {
+			details = append(details, e.Detail)
 		}
-	case <-time.After(10 * time.Second):
-		t.Error("the proxied stream had not ended after Shutdown returned")
 	}
-	if d := httpPanics() - panicsBefore; d != 0 {
-		t.Errorf("ending the proxied stream recorded %v handler panic(s), want 0", d)
-	}
-	select {
-	case err := <-served:
-		if !errors.Is(err, http.ErrServerClosed) {
-			t.Errorf("Serve returned %v, want ErrServerClosed", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Error("Serve had not returned after Shutdown")
+	const wantDetail = "event stream ended at server shutdown"
+	if len(details) != 2 || details[0] != wantDetail || details[1] != wantDetail {
+		t.Errorf("audit details for the two proxied streams = %q, want two rows of %q", details, wantDetail)
 	}
 }
 
@@ -330,13 +323,38 @@ func TestTheConnectListenersShutdownEndsAProxiedEventStreamByItself(t *testing.T
 // 🔴 THE MUTANT IT EXISTS FOR: cancelling every proxied request at shutdown (an
 // unconditional end, or an event-stream test that always says yes). That ends
 // streams just as promptly, so the test above stays green, while truncating a
-// git fetch mid-pack. Red on both, green at head.
+// git fetch mid-pack. Red on both, green at head; green at `289502c` too, where
+// it is an invariant guard.
 //
 // ⚠ NO SLEEP DECIDES THE OUTCOME. The upstream blocks until the test releases
 // it; every wait is bounded inside shutdownDrainTimeout.
 func TestShutdownLetsAnOrdinaryProxiedRequestFinish(t *testing.T) {
 	u := newProxyUpstream(t)
-	a, token, connector := proxyShutdownApp(t, 0, u)
+	a, token, connector, _ := proxyShutdownApp(t, 0, u)
+	assertProxiedExchangeIsDrained(t, a, token, connector, u, http.MethodGet, "/slow", slowHead+slowTail)
+}
+
+// TestShutdownLetsAProxiedPOSTEventStreamFinish pins that the METHOD gates the
+// end, not the media type alone: a POST answered with text/event-stream — an
+// LLM call with stream:true, an MCP tool call — is one finite, unresumable
+// answer, and it must be drained like any request.
+//
+// 🔴 RED ON `c19dc66`, which ended every proxied text/event-stream at
+// shutdown: the turn was cut mid-body, and because the end is reported as
+// io.EOF the client read a truncated answer as a COMPLETE one. Green after.
+func TestShutdownLetsAProxiedPOSTEventStreamFinish(t *testing.T) {
+	u := newProxyUpstream(t)
+	a, token, connector, _ := proxyShutdownApp(t, 0, u)
+	assertProxiedExchangeIsDrained(t, a, token, connector, u, http.MethodPost, "/turn", turnHead+turnTail)
+}
+
+// assertProxiedExchangeIsDrained runs the app, puts one held exchange in
+// flight with part of its body relayed, begins shutdown, and asserts the drain
+// holds, the upstream's context stays live, the WHOLE body arrives, and Run
+// returns promptly once it has.
+func assertProxiedExchangeIsDrained(t *testing.T, a *app, token, connector string, u *proxyUpstream, method, path, want string) {
+	t.Helper()
+	what := "the proxied " + method + " " + path
 	base, cancel, runErr := runBuiltForShutdown(t, a, nil)
 
 	type answer struct {
@@ -347,7 +365,7 @@ func TestShutdownLetsAnOrdinaryProxiedRequestFinish(t *testing.T) {
 	headers := make(chan struct{})
 	answered := make(chan answer, 1)
 	go func() {
-		resp, err := proxyGet(base, token, connector, u.host, "/slow")
+		resp, err := proxyDo(method, base, token, connector, u.host, path)
 		if err != nil {
 			close(headers)
 			answered <- answer{err: err}
@@ -361,37 +379,36 @@ func TestShutdownLetsAnOrdinaryProxiedRequestFinish(t *testing.T) {
 	select {
 	case <-u.slowIn:
 	case <-time.After(10 * time.Second):
-		t.Fatal("the ordinary proxied request never reached the upstream")
+		t.Fatal(what + " never reached the upstream")
 	}
 	select {
 	case <-headers:
 	case <-time.After(10 * time.Second):
-		t.Fatal("the proxy never relayed the ordinary response's head")
+		t.Fatal("the proxy never relayed the head of " + what)
 	}
 
-	cancel() // shutdown begins with an ordinary proxied response mid-body
+	cancel() // shutdown begins with the held response mid-body
 
 	const hold = shutdownDrainTimeout / 5
 	select {
 	case a := <-answered:
-		t.Fatalf("shutdown did not leave an ordinary proxied request alone: it ended (%d, %d bytes, err %v) "+
-			"before the upstream finished", a.status, len(a.body), a.err)
+		t.Fatalf("shutdown did not leave %s alone: it ended (%d, %d bytes, err %v) "+
+			"before the upstream finished", what, a.status, len(a.body), a.err)
 	case err := <-runErr:
-		t.Fatalf("Run returned (%v) while an ordinary proxied request was in flight; the drain did not wait for it", err)
+		t.Fatalf("Run returned (%v) while %s was in flight; the drain did not wait for it", err, what)
 	case <-time.After(hold):
 	}
 
 	close(u.release)
 	afterRelease := time.Now()
-	want := `{"part":"` + strings.Repeat("a", streamPadding) + `","rest":"finished"}`
 	select {
 	case a := <-answered:
 		if a.err != nil || a.status != http.StatusOK || a.body != want {
-			t.Fatalf("the ordinary proxied request answered %d with %d bytes (err %v), want 200 and the whole %d-byte body",
-				a.status, len(a.body), a.err, len(want))
+			t.Fatalf("%s answered %d with %d bytes (err %v), want 200 and the whole %d-byte body",
+				what, a.status, len(a.body), a.err, len(want))
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("the ordinary proxied request never answered after the upstream was released")
+		t.Fatal(what + " never answered after the upstream was released")
 	}
 	if !u.slowCtxOK.Load() {
 		t.Fatal("the upstream request's context was cancelled by the time it was released")
@@ -405,7 +422,7 @@ func TestShutdownLetsAnOrdinaryProxiedRequestFinish(t *testing.T) {
 		t.Fatalf("Run had not returned %s after shutdown began", 3*shutdownDrainTimeout)
 	}
 	if took, bound := time.Since(afterRelease), shutdownDrainTimeout/2; took >= bound {
-		t.Fatalf("Run returned %s after the ordinary proxied request finished, want under %s",
-			took.Round(time.Millisecond), bound)
+		t.Fatalf("Run returned %s after %s finished, want under %s",
+			took.Round(time.Millisecond), what, bound)
 	}
 }
