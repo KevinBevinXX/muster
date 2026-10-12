@@ -80,10 +80,14 @@ func fullyWiredServer(t *testing.T) *Server {
 		ConnectorPolicy: connectors.Policy{AllowLoopback: true},
 		Mirror:          stubMirror{},
 		Flows:           stubFlows{},
+		MirrorStepUp:    stubStepUp{},
 	})
 	s.UseRouter(stubRouter{})
 	return s
 }
+
+// stubStepUp satisfies StepUpGate for registration only; any call panics.
+type stubStepUp struct{ StepUpGate }
 
 // stubMirror satisfies Mirror for registration only; any method call panics.
 type stubMirror struct{ Mirror }

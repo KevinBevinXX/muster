@@ -79,6 +79,9 @@ type AgentTerminalView struct {
 	// InteractiveNote, when set, is shown as the switch's tooltip and beside it
 	// while interactive: what typing into this terminal really reaches.
 	InteractiveNote string
+	// RenderedHref, when set, draws the Rendered | Terminal switch: the session
+	// also has a rendered view (a mirrored Claude Code pane), one tap away.
+	RenderedHref string
 }
 
 // termModeDisplay is the switch's display utility: gone when the far side is
@@ -160,6 +163,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 						Class(termModeDisplay(v.ReadOnlyOnly)+" press min-h-[44px] shrink-0 items-center gap-2 rounded-lg bg-s2 px-3 text-xs font-semibold text-fg ring-1 ring-inset ring-line transition aria-checked:bg-danger aria-checked:text-on-accent disabled:opacity-40"),
 						Span(ID("term-mode-label"), g.Text("Read-only")),
 					),
+					g.If(v.RenderedHref != "", viewToggle(false, v.RenderedHref, "")),
 				),
 				Div(
 					ID("term-error"),

@@ -19,6 +19,19 @@ type MirrorCardView struct {
 	Session string
 	// Online: the host is connected and still lists the session.
 	Online bool
+	// Claude: the host reports Claude Code in the session's pane, so the card
+	// opens the RENDERED view by default (MirrorViewPath); otherwise it opens the
+	// terminal.
+	Claude bool
+}
+
+// MirrorCardHref is where a mirrored card opens: the rendered view for a
+// Claude Code pane, the terminal for anything else.
+func MirrorCardHref(m MirrorCardView) string {
+	if m.Claude {
+		return MirrorViewPath(m.Host, m.Session)
+	}
+	return MirrorTerminalPath(m.Host, m.Session)
 }
 
 // MirrorTerminalPath is a mirrored session's terminal page.
@@ -54,7 +67,7 @@ func mirrorCard(m MirrorCardView) g.Node {
 		g.Attr("data-mirror-card", ""),
 		Class("group relative overflow-hidden rounded-2xl border border-line bg-s1/70 shadow-lg shadow-black/20 ring-1 ring-line"),
 		A(
-			Href(MirrorTerminalPath(m.Host, m.Session)),
+			Href(MirrorCardHref(m)),
 			hx("hx-boost", "false"),
 			Class("flex flex-col gap-3 p-4"),
 			Div(
@@ -65,6 +78,7 @@ func mirrorCard(m MirrorCardView) g.Node {
 					g.Text(m.Session),
 				),
 				Span(g.Attr("data-mirror-badge", ""), chip("kind", "Mirrored · "+m.Host)),
+				g.If(m.Claude, Span(g.Attr("data-mirror-claude", ""), chip("kind", "Claude Code"))),
 				g.If(!m.Online, Span(
 					g.Attr("data-mirror-offline", ""),
 					g.Attr("title", "The host's muster-mirror is not connected, or the host no longer lists this tmux session"),

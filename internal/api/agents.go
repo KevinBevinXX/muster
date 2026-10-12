@@ -17,6 +17,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/provision"
@@ -1793,7 +1794,8 @@ func wsStreamEmit(ctx context.Context, c *websocket.Conn, srv *Server, agentName
 		case "thinking":
 			_ = wsWriteJSON(ctx, c, map[string]any{"type": "thinking", "content": ev.Text})
 		case "tool_call":
-			_ = wsWriteJSON(ctx, c, map[string]any{"type": "tool_call", "id": ev.ToolID, "name": ev.ToolName, "args": ev.ToolArgs})
+			_ = wsWriteJSON(ctx, c, map[string]any{"type": "tool_call", "id": ev.ToolID, "name": ev.ToolName, "args": ev.ToolArgs,
+				"target": cctranscript.ToolTarget(ev.ToolName, ev.ToolArgs)})
 		case "tool_result":
 			_ = wsWriteJSON(ctx, c, map[string]any{"type": "tool_result", "id": ev.ToolID, "name": ev.ToolName, "ok": ev.ToolOK, "output": ev.ToolOutput})
 		}

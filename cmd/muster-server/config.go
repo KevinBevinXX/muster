@@ -176,6 +176,9 @@ const (
 	// running instance reports not-ready until a file named after the instance
 	// exists in it. The shipped binary has no reader of it; see e2eterm.go.
 	envE2EHoldReadyDir = "MUSTER_E2E_HOLD_READY_DIR"
+	// A file whose existence makes the e2e build's rendered-view step-up gate
+	// answer FRESH. The shipped binary has no reader of it; see e2estepup.go.
+	envE2EStepUpFreshFile = "MUSTER_E2E_STEPUP_FRESH_FILE"
 )
 
 // The values MUSTER_AGENT_PROVISIONER accepts.

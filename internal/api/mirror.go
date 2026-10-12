@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"slices"
 
 	"github.com/coder/websocket"
 
@@ -44,6 +45,7 @@ func (s *Server) registerMirrorRoutes(mux Mux) {
 	// terminal). No provisioner is involved, so no provisioner wrapper.
 	mux.HandleFunc("GET /mirror/terminal", s.requireSession(s.handleMirrorTerminalPage))
 	mux.HandleFunc("GET /mirror/terminal/ws", s.requireSession(s.handleMirrorTerminalWS))
+	s.registerMirrorViewRoutes(mux)
 }
 
 func (s *Server) handleMirrorConnect(w http.ResponseWriter, r *http.Request) {
@@ -76,7 +78,7 @@ func (s *Server) mirrorCards(ctx context.Context) []ui.MirrorCardView {
 	var out []ui.MirrorCardView
 	for _, h := range s.ext.Mirror.Hosts(ctx) {
 		for _, sess := range h.Sessions {
-			out = append(out, ui.MirrorCardView{Host: h.Host, Session: sess, Online: h.Online})
+			out = append(out, ui.MirrorCardView{Host: h.Host, Session: sess, Online: h.Online, Claude: slices.Contains(h.Claude, sess)})
 		}
 	}
 	return out
@@ -105,6 +107,9 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		// attach, not what an interactive client does once attached.
 		InteractiveNote: "Interactive types into a tmux client on " + h.Host +
 			": from it you can switch to any tmux session there or open a shell on the host.",
+	}
+	if hasRenderedView(h, session) {
+		v.RenderedHref = ui.MirrorViewPath(h.Host, session)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.AgentTerminalPage(v).Render(w); err != nil {

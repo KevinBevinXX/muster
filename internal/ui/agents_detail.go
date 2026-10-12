@@ -11,6 +11,7 @@ import (
 	. "maragu.dev/gomponents/html"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/notes"
 )
 
@@ -33,6 +34,10 @@ type ChatLine struct {
 	ToolID   string
 	ToolName string
 	ToolOK   bool
+	// ToolTarget is a tool_call's one-line summary (the file, the command). ""
+	// derives it from Content (the args) with cctranscript.ToolTarget — what a
+	// persisted row does; the mirrored view sets it from the host's own reading.
+	ToolTarget string
 }
 
 // ChatSurface names WHERE a chat pane is being rendered.
@@ -869,20 +874,29 @@ func isSentinelReply(s string) bool {
 
 func chatLogInner(v AgentDetailView) g.Node {
 	msgs := make([]g.Node, 0, len(v.Messages)+2)
+	paired := map[int]bool{} // tool_result rows already drawn with their call
 	for i := 0; i < len(v.Messages); i++ {
 		m := v.Messages[i]
 		switch m.Kind {
 		case "tool_call":
-			// Pair with the immediately-following tool_result (same ToolID) so the
-			// call + result render as ONE collapsed chip, like the live stream.
+			// Pair with its tool_result (same ToolID) so the call + result render
+			// as ONE collapsed chip, like the live stream. The result is looked for
+			// AFTER the call, not only immediately after it: Claude Code issues
+			// parallel calls before any result (call A, call B, result A, result B),
+			// and a strictly-adjacent rule drew those as four chips.
 			var result *ChatLine
-			if i+1 < len(v.Messages) && v.Messages[i+1].Kind == "tool_result" && v.Messages[i+1].ToolID == m.ToolID {
-				r := v.Messages[i+1]
-				result = &r
-				i++
+			for j := i + 1; j < len(v.Messages) && m.ToolID != ""; j++ {
+				if r := v.Messages[j]; r.Kind == "tool_result" && r.ToolID == m.ToolID && !paired[j] {
+					paired[j] = true
+					result = &r
+					break
+				}
 			}
 			msgs = append(msgs, chatToolChip(m, result))
 		case "tool_result":
+			if paired[i] {
+				continue // drawn with its call
+			}
 			// Defensive: an unpaired result still renders as its own chip.
 			r := m
 			msgs = append(msgs, chatToolChip(ChatLine{Kind: "tool_call", ToolID: m.ToolID, ToolName: m.ToolName}, &r))
@@ -1129,24 +1143,39 @@ func agentTaskBanner(v AgentDetailView) g.Node {
 }
 
 func chatBubble(role, content string) g.Node {
+	return chatBubbleOf(role,
+		// data-md: rendered as markdown client-side (mdConvert in agentChatScript);
+		// g.Text keeps the raw text as a safe textContent fallback before JS runs.
+		g.Attr("data-md", ""),
+		g.Text(content),
+	)
+}
+
+// chatBubbleOf is the chat bubble's frame — a user's on the right, an
+// assistant's on the left — around body. The agent chat fills it with raw text
+// its script renders as markdown; the mirrored view with server-rendered
+// markdown (it has no chat script).
+func chatBubbleOf(role string, body ...g.Node) g.Node {
 	mine := role == "user"
 	tone := "bg-s2 text-fg self-start"
 	if mine {
 		tone = "bg-accent/15 text-fg self-end ring-1 ring-inset ring-accent/30"
 	}
-	return Div(
-		// data-md: rendered as markdown client-side (mdConvert in agentChatScript);
-		// g.Text keeps the raw text as a safe textContent fallback before JS runs.
-		g.Attr("data-md", ""),
-		Class("max-w-[85%] break-words rounded-2xl px-3 py-2 text-sm "+tone),
-		g.Text(content),
-	)
+	return Div(append([]g.Node{
+		g.Attr("data-bubble", role),
+		Class("max-w-[85%] break-words rounded-2xl px-3 py-2 text-sm " + tone),
+	}, body...)...)
 }
 
 // chatToolChip renders a persisted tool call (+ its result) as the SAME collapsed
-// chip the live stream shows: 🔧 name + a ✓/✗ status, expanding to the args and
-// result. call carries the args (Content), result (may be nil) the output + ok.
-func chatToolChip(call ChatLine, result *ChatLine) g.Node {
+// chip the live stream shows: ONE line — 🔧 name, its target (the file, the
+// command), a ✓/✗/… status — expanding to the args and result. call carries the
+// args (Content), result (may be nil) the output + ok.
+func chatToolChip(call ChatLine, result *ChatLine) g.Node { return toolChip(call, result, "") }
+
+// toolChip is chatToolChip with an element id (the mirrored view replaces a
+// running row in place when its result arrives).
+func toolChip(call ChatLine, result *ChatLine, id string) g.Node {
 	name := call.ToolName
 	if name == "" && result != nil {
 		name = result.ToolName
@@ -1154,12 +1183,16 @@ func chatToolChip(call ChatLine, result *ChatLine) g.Node {
 	if name == "" {
 		name = "tool"
 	}
-	status, statusClass := "…", "ml-auto text-muted"
+	target := call.ToolTarget
+	if target == "" {
+		target = cctranscript.ToolTarget(name, call.Content)
+	}
+	status, statusClass, state := "…", "ml-auto shrink-0 text-muted", "running"
 	if result != nil {
 		if result.ToolOK {
-			status, statusClass = "✓", "ml-auto font-semibold text-accent"
+			status, statusClass, state = "✓", "ml-auto shrink-0 font-semibold text-accent", "ok"
 		} else {
-			status, statusClass = "✗", "ml-auto font-semibold text-st-error-fg"
+			status, statusClass, state = "✗", "ml-auto shrink-0 font-semibold text-st-error-fg", "error"
 		}
 	}
 	body := []g.Node{}
@@ -1170,12 +1203,18 @@ func chatToolChip(call ChatLine, result *ChatLine) g.Node {
 		body = append(body, toolPre("result", result.Content))
 	}
 	return Details(
-		Class("max-w-[92%] self-start rounded-xl bg-bg/50 text-xs ring-1 ring-inset ring-line"),
+		g.If(id != "", ID(id)),
+		g.Attr("data-tool-row", ""),
+		g.Attr("data-tool-status", state),
+		Class("w-full max-w-[92%] min-w-0 self-start rounded-xl bg-bg/50 text-xs ring-1 ring-inset ring-line"),
 		Summary(
-			Class("flex cursor-pointer select-none items-center gap-2 px-3 py-2 font-medium text-fg2 hover:text-fg"),
-			Span(g.Text("🔧")),
-			Span(Class("font-mono text-st-review-fg"), g.Text(name)),
-			Span(Class(statusClass), g.Text(status)),
+			// min-h-[44px]: the row is a thumb target (the layout spec's rule for
+			// every visible summary).
+			Class("flex min-h-[44px] min-w-0 cursor-pointer select-none items-center gap-2 px-3 py-2 font-medium text-fg2 hover:text-fg"),
+			Span(Class("shrink-0"), g.Text("🔧")),
+			Span(Class("shrink-0 font-mono text-st-review-fg"), g.Text(name)),
+			g.If(target != "", Span(g.Attr("data-tool-target", ""), Class("min-w-0 truncate font-mono text-muted"), g.Text(target))),
+			Span(Class(statusClass), g.Attr("aria-label", "status: "+state), g.Text(status)),
 		),
 		Div(Class("flex flex-col gap-1 px-3 pb-2 pt-0"), g.Group(body)),
 	)
@@ -1494,7 +1533,7 @@ func agentChatScript(name string) g.Node {
   }
 
   // Render (or fetch) the collapsible tool chip for a tool_call id.
-  function toolChip(id, nm) {
+  function toolChip(id, nm, target) {
     if (tools[id]) return tools[id];
     ensureTurn();
     var d = document.createElement('details');
@@ -1502,9 +1541,14 @@ func agentChatScript(name string) g.Node {
     var s = document.createElement('summary');
     s.className = 'flex cursor-pointer select-none items-center gap-2 px-3 py-2 font-medium text-fg2 hover:text-fg';
     var icon = document.createElement('span'); icon.textContent = '🔧';
-    var nameEl = document.createElement('span'); nameEl.className = 'font-mono text-st-review-fg'; nameEl.textContent = nm || 'tool';
-    var stat = document.createElement('span'); stat.className = 'ml-auto text-muted'; stat.textContent = '…';
-    s.appendChild(icon); s.appendChild(nameEl); s.appendChild(stat);
+    var nameEl = document.createElement('span'); nameEl.className = 'shrink-0 font-mono text-st-review-fg'; nameEl.textContent = nm || 'tool';
+    var stat = document.createElement('span'); stat.className = 'ml-auto shrink-0 text-muted'; stat.textContent = '…';
+    s.appendChild(icon); s.appendChild(nameEl);
+    if (target) { var tg = document.createElement('span'); tg.className = 'min-w-0 truncate font-mono text-muted'; tg.setAttribute('data-tool-target', ''); tg.textContent = target; s.appendChild(tg); }
+    s.appendChild(stat);
+    s.className += ' min-h-[44px] min-w-0';
+    d.className += ' w-full max-w-[92%] min-w-0 self-start';
+    d.setAttribute('data-tool-row', ''); d.setAttribute('data-tool-status', 'running');
     var body = document.createElement('div'); body.className = 'flex flex-col gap-1 px-3 pb-2 pt-0';
     d.appendChild(s); d.appendChild(body);
     turn.appendChild(d);
@@ -1553,7 +1597,7 @@ func agentChatScript(name string) g.Node {
         scroll();
         break;
       case 'tool_call': {
-        var c = toolChip(msg.id, msg.name);
+        var c = toolChip(msg.id, msg.name, msg.target);
         if (!c.args && msg.args) { c.args = pre('args', clip(msg.args)); c.body.appendChild(c.args); }
         // Interleave: text streamed AFTER this tool call must render in a NEW bubble
         // below the chip, not merged into the pre-tool text bubble (which made tool
@@ -1565,7 +1609,8 @@ func agentChatScript(name string) g.Node {
       case 'tool_result': {
         var r = toolChip(msg.id, msg.name); // defensive: create if missing
         r.status.textContent = msg.ok ? '✓' : '✗';
-        r.status.className = 'ml-auto font-semibold ' + (msg.ok ? 'text-accent' : 'text-st-error-fg');
+        r.status.className = 'ml-auto shrink-0 font-semibold ' + (msg.ok ? 'text-accent' : 'text-st-error-fg');
+        r.details.setAttribute('data-tool-status', msg.ok ? 'ok' : 'error');
         if (r.result) r.result.remove();
         r.result = pre('result', clip(msg.output));
         r.body.appendChild(r.result);
