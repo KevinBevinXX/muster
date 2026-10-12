@@ -6,8 +6,10 @@
 // its sha256 is stored; the token itself is returned ONCE, by Create, and
 // nothing can read it back. It authenticates the machine tier (internal/api's
 // requireHookToken family) AS ITS OWNER — that user's id and role — which is
-// what lets a person run the CLI, or a script, against the LAN machine port
-// without the shared hook secret that acts as the machine user.
+// what lets a person run the CLI, or a script, against muster's machine routes
+// — on the LAN machine port AND on the browser (edge) listener, which is
+// internet-facing — without the shared hook secret that acts as the machine
+// user. Tokens are minted only from a signed-in browser session.
 //
 // 🔴 THE MANAGEMENT METHODS (Create, List, Revoke) RUN AS THE CALLER'S OWN
 // PRINCIPAL, AND THE DATABASE IS WHAT KEEPS THEM TO THE CALLER'S ROWS. Each

@@ -185,7 +185,6 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/agents/{name}/messages",
 		"POST /api/tasks",
 		"POST /api/tasks/{id}/comments",
-		"POST /api/tokens",
 	},
 	authz.ViaAgent: {
 		"GET /agent/muster",

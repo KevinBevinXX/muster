@@ -128,7 +128,6 @@ POST /agents/{id}/stop
 POST /api/agents/{name}/messages
 POST /api/tasks
 POST /api/tasks/{id}/comments
-POST /api/tokens
 POST /auth/claim
 POST /chief/provision
 POST /connectors

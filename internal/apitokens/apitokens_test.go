@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/dbtest"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 type world struct {
@@ -155,8 +156,10 @@ func TestAuthenticateResolvesTheOwnerAndRefusesRevokedAndDisabled(t *testing.T) 
 		t.Fatalf("an unknown token: %v", err)
 	}
 
-	// Disabled owner: refused, distinctly, and re-enabling restores it (nothing
-	// cached the refusal).
+	// The disabled FLAG is checked on every call too — the second wall behind
+	// the product's disable, which REVOKES (TestDisablingAUserRevokesItsTokensForGood).
+	// Set here by raw SQL, which revokes nothing, so clearing it again is
+	// fixture cleanup, not a product path.
 	if _, err := w.pool.Exec(sysCtx(), `UPDATE users SET disabled_at = now() WHERE id = $1`, w.a); err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +170,7 @@ func TestAuthenticateResolvesTheOwnerAndRefusesRevokedAndDisabled(t *testing.T) 
 		t.Fatal(err)
 	}
 	if _, err := w.s.Authenticate(sysCtx(), tokA); err != nil {
-		t.Fatalf("re-enabled: %v", err)
+		t.Fatalf("flag cleared by raw SQL: %v", err)
 	}
 
 	// Revoked: refused on the very next call.
@@ -197,6 +200,50 @@ func TestAuthenticateResolvesTheOwnerAndRefusesRevokedAndDisabled(t *testing.T) 
 	want := []string{"api_token.create " + Object(recA.ID) + " session", "api_token.revoke " + Object(recA.ID) + " session"}
 	if strings.Join(actions, "|") != strings.Join(want, "|") {
 		t.Fatalf("A's audit rows = %q; want %q", actions, want)
+	}
+}
+
+// TestDisablingAUserRevokesItsTokensForGood (review round 1): the product's
+// disable writer (users.SetDisabled, which every disable path goes through)
+// revokes the user's tokens in its own transaction, so RE-ENABLING the user
+// brings none of them back. Another user's token is untouched (control), and
+// a token minted after the re-enable works.
+func TestDisablingAUserRevokesItsTokensForGood(t *testing.T) {
+	w := newWorld(t)
+	tokA, _, err := w.s.Create(as(w.a, authz.RoleMember), "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokB, _, err := w.s.Create(as(w.b, authz.RoleMember), "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	us := users.NewPG(w.pool)
+	if _, err := us.SetDisabled(context.Background(), w.a, true); err != nil {
+		t.Fatal(err)
+	}
+	var live int
+	if err := w.pool.QueryRow(sysCtx(), `SELECT count(*) FROM api_tokens WHERE user_id = $1 AND revoked_at IS NULL`, w.a).Scan(&live); err != nil {
+		t.Fatal(err)
+	}
+	if live != 0 {
+		t.Fatalf("after the disable A has %d live token(s); want 0 (revoked with the disable)", live)
+	}
+	if _, err := us.SetDisabled(context.Background(), w.a, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.s.Authenticate(sysCtx(), tokA); !errors.Is(err, ErrBadToken) {
+		t.Fatalf("A's token after disable + RE-ENABLE: %v; want ErrBadToken (it must not come back)", err)
+	}
+	if got, err := w.s.Authenticate(sysCtx(), tokB); err != nil || got.UserID != w.b {
+		t.Fatalf("CONTROL: B's token after A's disable: %+v %v", got, err)
+	}
+	fresh, _, err := w.s.Create(as(w.a, authz.RoleMember), "after")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.s.Authenticate(sysCtx(), fresh); err != nil {
+		t.Fatalf("a token minted after the re-enable: %v", err)
 	}
 }
 

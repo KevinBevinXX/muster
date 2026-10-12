@@ -70,7 +70,6 @@ task create
 task get
 task ls
 task status
-token create
 token ls
 token revoke
 whoami"
@@ -80,7 +79,7 @@ whoami"
 # still fails until someone moves this literal deliberately. (tree_test.go pins
 # the identical number for the in-process tree; they are two reads of one
 # decision.)
-WANT_COUNT=16
+WANT_COUNT=15
 
 # FORBIDDEN is the other half of the split: verbs that belong to the upstream
 # CLI this one was extracted from and must NEVER appear here.

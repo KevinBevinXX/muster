@@ -130,12 +130,44 @@ func (s *PGStore) ByID(ctx context.Context, id int64) (User, error) {
 
 // SetDisabled sets (or clears) disabled_at and returns the updated row.
 // Disabling an already-disabled user keeps its original timestamp.
+//
+// 🔴 A DISABLE ALSO REVOKES EVERY PERSONAL API TOKEN THE USER HOLDS, in the
+// same transaction (revokeAPITokensTx). Without it, re-enabling the user
+// brought every old token back to life — including one that leaked, which is
+// often WHY the user was disabled. An enable revokes nothing and restores
+// nothing: the user mints new tokens.
 func (s *PGStore) SetDisabled(ctx context.Context, id int64, disabled bool) (User, error) {
-	q := `UPDATE users SET disabled_at = COALESCE(disabled_at, now()) WHERE id = $1 RETURNING ` + userCols
-	if !disabled {
-		q = `UPDATE users SET disabled_at = NULL WHERE id = $1 RETURNING ` + userCols
+	ctx = sys(ctx)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return User{}, err
 	}
-	return scanUser(s.pool.QueryRow(sys(ctx), q, id))
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := `UPDATE users SET disabled_at = NULL WHERE id = $1 RETURNING ` + userCols
+	if disabled {
+		q = `UPDATE users SET disabled_at = COALESCE(disabled_at, now()) WHERE id = $1 RETURNING ` + userCols
+	}
+	u, err := scanUser(tx.QueryRow(ctx, q, id))
+	if err != nil {
+		return User{}, err
+	}
+	if disabled {
+		if err := revokeAPITokensTx(ctx, tx, id); err != nil {
+			return User{}, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return User{}, err
+	}
+	return u, nil
+}
+
+// revokeAPITokensTx revokes every live personal API token (accounts PR 6) of
+// user id inside tx. EVERY disable path must call it in the disable's own
+// transaction — it is one helper so a second disable writer is one call.
+func revokeAPITokensTx(ctx context.Context, tx pgx.Tx, id int64) error {
+	_, err := tx.Exec(ctx, `UPDATE api_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`, id)
+	return err
 }
 
 // IDByEmail returns the id of the user whose email is email (case-folded), and

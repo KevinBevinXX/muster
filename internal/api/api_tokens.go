@@ -2,29 +2,31 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"html"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/apitokens"
-	"github.com/ZacxDev/muster/internal/auth"
 	"github.com/ZacxDev/muster/internal/authz"
 )
 
 // PERSONAL API TOKENS (accounts PR 6, plan §5).
 //
-// A user mints `mst_…` tokens at /account/tokens (the browser session tier) or
-// with `muster token create` (a token it already holds). A token authenticates
+// A user mints `mst_…` tokens at /account/tokens, and ONLY there: minting needs
+// a signed-in browser session. 🔴 A TOKEN CANNOT MINT A TOKEN — a leaked token
+// that could would mint a non-expiring child that outlives revoking the parent
+// (TestATokenCannotMintAToken). A token may list and revoke its owner's tokens
+// (/api/tokens). A token authenticates
 // the MACHINE tier — requireHookToken, requireArmedHookToken and
 // requireHookOrServiceToken all accept one — and the request then acts as the
 // token's OWNER, with the owner's role (roleOf), through authz.ViaToken. That
 // is the difference from the shared hook secret, which acts as the machine user
-// (user 1, the admin) whoever holds it. Tokens work on the LAN machine
-// port; that is what they are for.
+// (user 1, the admin) whoever holds it. Tokens are accepted on EVERY listener
+// that serves the machine routes — the LAN machine port AND the browser
+// (edge) listener, which faces the internet once the edge gate is bypassed —
+// so a token is an internet-usable credential, not a LAN-only one.
 //
 // 🔴 ONE DOOR, admitAPIToken, FOR EVERY WRAPPER THAT TAKES A TOKEN. The
 // refusals (malformed, unknown, revoked, disabled owner) and the principal
@@ -38,7 +40,7 @@ import (
 // gotrue session tier's DisableSweepInterval, which bounds how long an already
 // OPEN stream survives a disable. No route a token can open streams.
 
-// apiTokenRoutesPrefix is the token-management API (requireAPIToken).
+// apiTokensPath is the token-management API (list, revoke; requireAPIToken).
 const apiTokensPath = "/api/tokens"
 
 // accountTokensPath is the token page on the browser session tier.
@@ -49,11 +51,9 @@ func (s *Server) registerAPITokenRoutes(mux Mux) {
 	// and the token's own id and name; the hook/service tiers with the machine
 	// user.
 	mux.HandleFunc("GET /api/whoami", s.requireHookOrServiceToken(s.handleWhoAmI))
-	// Token management over the API: a PERSONAL token only. The shared hook
-	// secret mints nothing — it names no person, so a token it minted would be
-	// a credential nobody chose.
+	// Token management over the API: a PERSONAL token only, and list/revoke
+	// only — NO create (see the file header).
 	mux.HandleFunc("GET "+apiTokensPath, s.requireAPIToken(s.handleAPITokenList))
-	mux.HandleFunc("POST "+apiTokensPath, s.requireAPIToken(s.handleAPITokenCreate))
 	mux.HandleFunc("DELETE "+apiTokensPath+"/{id}", s.requireAPIToken(s.handleAPITokenRevoke))
 	// The browser page. requireSession serves it only on the browser listener
 	// in gotrue mode; the writes are requireOperatorWrite (same-origin).
@@ -78,18 +78,24 @@ func apiTokenFromContext(ctx context.Context) (apitokens.Token, bool) {
 // token, and false when it is anything else (so the wrapper carries on with
 // its own credentials).
 //
-// ⚠ THE HOOK SECRET IS CHECKED FIRST. A configured MUSTER_HOOK_TOKEN that
-// happened to begin `mst_` must keep meaning the hook tier; nothing generates
-// one that does, but the order makes the question moot.
+// ⚠ AN `mst_` VALUE IS A PERSONAL TOKEN OR NOTHING. The shared secrets are
+// kept out of that namespace at BOOT (AuthConfig.SharedSecretPrefixRefusal):
+// cmd/muster-server refuses an `mst_`-prefixed MUSTER_HOOK_TOKEN or
+// MUSTER_SERVICE_TOKEN, which this door would otherwise answer 401.
 func (s *Server) personalTokenFor(r *http.Request) (string, bool) {
 	tok := hookTokenFromRequest(r)
-	if !apitokens.LooksLike(tok) {
-		return "", false
+	return tok, apitokens.LooksLike(tok)
+}
+
+// SharedSecretPrefixRefusal reports why the shared machine secrets collide
+// with the personal-token namespace, or "".
+func (c AuthConfig) SharedSecretPrefixRefusal() string {
+	for _, v := range []struct{ name, val string }{{"MUSTER_HOOK_TOKEN", c.HookToken}, {"MUSTER_SERVICE_TOKEN", c.ServiceToken}} {
+		if apitokens.LooksLike(v.val) {
+			return v.name + " begins with " + apitokens.Prefix + ", the personal API token prefix: every request presenting it would be read as a personal token and refused. Generate a new random value."
+		}
 	}
-	if s.auth.hookTokenEnforced() && auth.ConstantTimeEqual(tok, s.auth.HookToken) {
-		return "", false
-	}
-	return tok, true
+	return ""
 }
 
 // requireAPIToken admits a PERSONAL token and nothing else. The token-
@@ -176,33 +182,6 @@ func (s *Server) handleAPITokenList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, list)
-}
-
-// createdToken is the one response that carries a token. Shown once.
-type createdToken struct {
-	apitokens.Token
-	Secret string `json:"token"`
-}
-
-func (s *Server) handleAPITokenCreate(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Name string `json:"name"`
-	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
-		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "body must be JSON: {\"name\": \"…\"}"})
-		return
-	}
-	tok, t, err := s.ext.APITokens.Create(r.Context(), body.Name)
-	if errors.Is(err, apitokens.ErrNameTooLong) {
-		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	}
-	if err != nil {
-		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	w.Header().Set("Cache-Control", "no-store")
-	s.writeJSON(w, http.StatusCreated, createdToken{Token: t, Secret: tok})
 }
 
 func (s *Server) handleAPITokenRevoke(w http.ResponseWriter, r *http.Request) {

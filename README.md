@@ -131,11 +131,13 @@ The CLI presents one credential, read from `MUSTER_TOKEN` (or its older name
 
 - **A personal API token** (`mst_…`) acts as **you** — your user id and role,
   under row-level security — on every machine-tier route, including the LAN
-  machine port. Mint the first one in the browser at `/account/tokens` (it is
-  shown once; only its sha256 is stored), then `muster token create --name …`,
-  `muster token ls`, `muster token revoke <id>` manage the rest with it.
-  `muster whoami` says who a credential acts as. Revoking a token, or disabling
-  its user, refuses it on the very next request.
+  machine port and the browser (edge) listener. Mint tokens in the browser at
+  `/account/tokens`, and only there (it is shown once; only its sha256 is
+  stored); a token cannot mint another. `muster token ls` and
+  `muster token revoke <id>` manage them, and `muster whoami` says who a
+  credential acts as. Revoking a token refuses it on the very next request;
+  disabling its user revokes all of that user's tokens, and re-enabling the
+  user brings none of them back.
 - **The shared hook secret** (`MUSTER_HOOK_TOKEN` on the server) acts as the
   admin, user 1, and so does `MUSTER_SERVICE_TOKEN`. Every holder
   of the shared secret acts as that one user, so a person who wants their own

@@ -985,6 +985,11 @@ func decodeEncryptionKey(v string) ([]byte, error) {
 // separate claims, and the boot test needs the first without the second. The
 // policy is HERE, it is tested, and main() applies it.
 func (c config) validate() error {
+	// Accounts PR 6: an `mst_` value on the machine tier is a personal API
+	// token or nothing, so neither shared secret may live in that namespace.
+	if reason := c.authConfig().SharedSecretPrefixRefusal(); reason != "" {
+		return errors.New(reason)
+	}
 	if c.Database == "" {
 		return fmt.Errorf("%s is not set: muster is its Postgres database, and a server "+
 			"started without one serves an EMPTY board that is indistinguishable from a "+

@@ -142,10 +142,12 @@ func TestAMalformedPersonalTokenNeverReachesTheStore(t *testing.T) {
 	}
 }
 
-// TestADisabledOwnersTokenIsRefusedAndNothingIsRemembered: refused while
-// disabled, admitted the moment it is re-enabled, and a lookup FAILURE is a
-// 503 that is not remembered either.
-func TestADisabledOwnersTokenIsRefusedAndNothingIsRemembered(t *testing.T) {
+// TestADisabledOwnersTokenIsRefusedAndAnOutageIsNotRemembered: a disabled
+// owner's token is refused; a lookup FAILURE is a 503 that the next request
+// does not inherit. (Re-enabling does NOT bring a token back — the disable
+// revoked it; that is TestDisablingAUserRevokesItsTokensForGood, over the
+// real stores. This fake only models the disabled flag.)
+func TestADisabledOwnersTokenIsRefusedAndAnOutageIsNotRemembered(t *testing.T) {
 	f := newFakeAPITokens()
 	tok := f.add(t, 7)
 	h := tokenTestServer(t, AuthConfig{HookToken: tokTestHook}, f)
@@ -154,9 +156,6 @@ func TestADisabledOwnersTokenIsRefusedAndNothingIsRemembered(t *testing.T) {
 		t.Fatalf("disabled owner: %d; want 401", code)
 	}
 	f.disabled[7] = false
-	if code, _ := whoami(t, h, tok, ""); code != 200 {
-		t.Fatalf("re-enabled owner: %d; want 200 (a disabled refusal must not be cached)", code)
-	}
 	f.err = errors.New("db down")
 	if code, _ := whoami(t, h, tok, ""); code != http.StatusServiceUnavailable {
 		t.Fatalf("lookup failure: %d; want 503", code)
@@ -194,11 +193,51 @@ func TestEveryHookTierWrapperTakesATokenEvenUnarmed(t *testing.T) {
 	}
 }
 
-// TestTheTokenAPITakesOnlyAPersonalToken: the hook secret mints nothing.
+// mintCountingTokens is a fake whose Create COUNTS, so a test can see that no
+// route minted anything.
+type mintCountingTokens struct {
+	*fakeAPITokens
+	mints int
+}
+
+func (m *mintCountingTokens) Create(context.Context, string) (string, apitokens.Token, error) {
+	m.mints++
+	tok, _ := apitokens.New()
+	return tok, apitokens.Token{ID: 99, UserID: 7}, nil
+}
+
+// TestATokenCannotMintAToken (review round 1): a personal token must not be
+// able to mint another. A leaked token that could would mint a non-expiring
+// child that survives revoking the parent. Minting is browser-session only
+// (/account/tokens); POST /api/tokens does not exist, and nothing is created.
+func TestATokenCannotMintAToken(t *testing.T) {
+	f := &mintCountingTokens{fakeAPITokens: newFakeAPITokens()}
+	tok := f.add(t, 7)
+	s := New(nil, AuthConfig{HookToken: tokTestHook}, log.New(io.Discard, "", 0))
+	s.UseExtensions(Extensions{APITokens: f, Users: stubUsers{}})
+	mux := http.NewServeMux()
+	s.registerAll(mux)
+	r := httptest.NewRequest(http.MethodPost, "/api/tokens", strings.NewReader(`{"name":"child"}`))
+	r.Header.Set("Authorization", "Bearer "+tok)
+	r.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, r)
+	if rec.Code >= 200 && rec.Code < 300 || f.mints != 0 {
+		t.Fatalf("POST /api/tokens with a personal token: %d %s, %d mint(s); want no route and nothing minted",
+			rec.Code, truncate(rec.Body.String(), 200), f.mints)
+	}
+	// Control: the same token IS admitted on the token API (GET lists), so the
+	// refusal above is about minting, not about the credential.
+	if code, body := whoami(t, mux, tok, ""); code != 200 || body["userId"] != float64(7) {
+		t.Fatalf("CONTROL: the token is not admitted at all: %d %v", code, body)
+	}
+}
+
+// TestTheTokenAPITakesOnlyAPersonalToken: the hook secret manages no tokens.
 func TestTheTokenAPITakesOnlyAPersonalToken(t *testing.T) {
 	f := newFakeAPITokens()
 	h := tokenTestServer(t, AuthConfig{HookToken: tokTestHook}, f)
-	for _, c := range []struct{ method, path string }{{"GET", "/api/tokens"}, {"POST", "/api/tokens"}, {"DELETE", "/api/tokens/1"}} {
+	for _, c := range []struct{ method, path string }{{"GET", "/api/tokens"}, {"DELETE", "/api/tokens/1"}} {
 		r := httptest.NewRequest(c.method, c.path, strings.NewReader(`{}`))
 		r.Header.Set("Authorization", "Bearer "+tokTestHook)
 		rec := httptest.NewRecorder()
@@ -324,48 +363,54 @@ func TestPersonalTokenLifecycleOverHTTP(t *testing.T) {
 		t.Fatalf("B's token reading A's task: %d %s", rec.Code, truncate(rec.Body.String(), 200))
 	}
 
-	// 3. Mint over the API with the token: 201, the secret once; the list never
-	// carries one.
-	rec = do("POST", apiTokensPath, `{"name":"cli-`+suffix+`"}`, pageTok, 0)
-	var created struct {
-		ID    int64  `json:"id"`
-		Token string `json:"token"`
-		Name  string `json:"name"`
+	// mint mints a token for user uid on the PAGE — the only place a token is
+	// minted — and returns it.
+	mint := func(uid int64, name string) string {
+		t.Helper()
+		rec := do("POST", accountTokensPath, url.Values{"name": {name}}.Encode(), "", uid)
+		m := mintedRE.FindStringSubmatch(rec.Body.String())
+		if rec.Code != 200 || m == nil {
+			t.Fatalf("minting %q on the page: %d", name, rec.Code)
+		}
+		return m[1]
 	}
-	if rec.Code != http.StatusCreated || json.Unmarshal(rec.Body.Bytes(), &created) != nil || !apitokens.ShapeOK(created.Token) {
-		t.Fatalf("POST /api/tokens: %d %s", rec.Code, rec.Body)
+	countTokens := func(uid int64) int {
+		var n int
+		if err := pool.QueryRow(sys, `SELECT count(*) FROM api_tokens WHERE user_id = $1`, uid).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
 	}
+
+	// 3. A token cannot mint a token (review round 1): no create route on the
+	// token API, and nothing is written. The list never carries a secret.
+	before := countTokens(a)
+	if rec := do("POST", apiTokensPath, `{"name":"child"}`, pageTok, 0); rec.Code >= 200 && rec.Code < 300 {
+		t.Fatalf("POST /api/tokens with a token: %d %s; minting must be browser-session only", rec.Code, truncate(rec.Body.String(), 200))
+	}
+	if after := countTokens(a); after != before {
+		t.Fatalf("A's token count moved %d -> %d through the API", before, after)
+	}
+	second := mint(a, "second-"+suffix)
 	listed := do("GET", apiTokensPath, "", pageTok, 0).Body.String()
-	if strings.Contains(listed, created.Token) || strings.Contains(listed, pageTok) || !strings.Contains(listed, "cli-"+suffix) {
+	if strings.Contains(listed, second) || strings.Contains(listed, pageTok) || !strings.Contains(listed, "second-"+suffix) {
 		t.Fatalf("GET /api/tokens: %s", truncate(listed, 400))
 	}
-
-	// 4. Disable A: refused at once; re-enable: admitted at once.
-	if _, err := pool.Exec(sys, `UPDATE users SET disabled_at = now() WHERE id = $1`, a); err != nil {
-		t.Fatal(err)
-	}
-	if rec := do("GET", "/api/tasks", "", created.Token, 0); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("a disabled user's token: %d", rec.Code)
-	}
-	if _, err := pool.Exec(sys, `UPDATE users SET disabled_at = NULL WHERE id = $1`, a); err != nil {
-		t.Fatal(err)
-	}
-	if rec := do("GET", "/api/tasks", "", created.Token, 0); rec.Code != 200 {
-		t.Fatalf("re-enabled: %d", rec.Code)
+	var secondID, pageID int64
+	for tok, id := range map[string]*int64{second: &secondID, pageTok: &pageID} {
+		if err := pool.QueryRow(sys, `SELECT id FROM api_tokens WHERE token_hash = $1`, apitokens.Hash(tok)).Scan(id); err != nil {
+			t.Fatal(err)
+		}
 	}
 
-	// 5. Revoke over the API (a token revoking ITSELF): the next request is 401.
-	if rec := do("DELETE", apiTokensPath+"/"+strconv.FormatInt(created.ID, 10), "", created.Token, 0); rec.Code != 200 {
+	// 4. Revoke over the API (a token revoking ITSELF): the next request is 401.
+	if rec := do("DELETE", apiTokensPath+"/"+strconv.FormatInt(secondID, 10), "", second, 0); rec.Code != 200 {
 		t.Fatalf("self-revoke: %d %s", rec.Code, rec.Body)
 	}
-	if rec := do("GET", "/api/tasks", "", created.Token, 0); rec.Code != http.StatusUnauthorized {
+	if rec := do("GET", "/api/tasks", "", second, 0); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("a revoked token, the very next request: %d", rec.Code)
 	}
 	// B cannot revoke A's page token (404, like a ghost), which keeps working.
-	var pageID int64
-	if err := pool.QueryRow(sys, `SELECT id FROM api_tokens WHERE token_hash = $1`, apitokens.Hash(pageTok)).Scan(&pageID); err != nil {
-		t.Fatal(err)
-	}
 	if rec := do("DELETE", apiTokensPath+"/"+strconv.FormatInt(pageID, 10), "", bTok, 0); rec.Code != http.StatusNotFound {
 		t.Fatalf("B revoking A's token: %d", rec.Code)
 	}
@@ -383,18 +428,44 @@ func TestPersonalTokenLifecycleOverHTTP(t *testing.T) {
 		t.Fatalf("the page-revoked token: %d", rec.Code)
 	}
 
-	// 6. The audit trail: A's two creates and two revokes, with the door each
-	// came through, and no secret anywhere in them.
+	// 5. Disable A through the REAL disable writer: refused at once — and
+	// re-enabling does NOT bring the token back (review round 1: the disable
+	// revoked it). A token minted after the re-enable works.
+	third := mint(a, "third-"+suffix)
+	if rec := do("GET", "/api/tasks", "", third, 0); rec.Code != 200 {
+		t.Fatalf("CONTROL: a fresh token before the disable: %d", rec.Code)
+	}
+	us := users.NewPG(pool)
+	if _, err := us.SetDisabled(ctx, a, true); err != nil {
+		t.Fatal(err)
+	}
+	if rec := do("GET", "/api/tasks", "", third, 0); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("a disabled user's token: %d", rec.Code)
+	}
+	if _, err := us.SetDisabled(ctx, a, false); err != nil {
+		t.Fatal(err)
+	}
+	if rec := do("GET", "/api/tasks", "", third, 0); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("a token of a disabled-then-RE-ENABLED user: %d; the disable must have revoked it for good", rec.Code)
+	}
+	fourth := mint(a, "fourth-"+suffix)
+	if rec := do("GET", "/api/tasks", "", fourth, 0); rec.Code != 200 {
+		t.Fatalf("a token minted after the re-enable: %d", rec.Code)
+	}
+
+	// 6. The audit trail: A's mints and its two explicit revokes, with the door
+	// each came through, and no secret anywhere in them.
 	var trail string
 	if err := pool.QueryRow(sys, `SELECT string_agg(action || '/' || via, ',' ORDER BY id) FROM audit_log WHERE user_id = $1`, a).Scan(&trail); err != nil {
 		t.Fatal(err)
 	}
-	if want := "api_token.create/session,api_token.create/api-token,api_token.revoke/api-token,api_token.revoke/session"; trail != want {
+	if want := "api_token.create/session,api_token.create/session,api_token.revoke/api-token,api_token.revoke/session," +
+		"api_token.create/session,api_token.create/session"; trail != want {
 		t.Fatalf("A's audit trail = %q; want %q", trail, want)
 	}
 	var all string
 	_ = pool.QueryRow(sys, `SELECT coalesce(string_agg(a::text, ' '), '') FROM audit_log a WHERE user_id = ANY($1)`, []int64{a, b}).Scan(&all)
-	for _, secret := range []string{pageTok, created.Token, bTok} {
+	for _, secret := range []string{pageTok, second, third, fourth, bTok} {
 		if strings.Contains(all, strings.TrimPrefix(secret, apitokens.Prefix)) {
 			t.Fatal("an audit row carries a token")
 		}

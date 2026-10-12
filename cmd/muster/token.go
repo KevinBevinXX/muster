@@ -8,18 +8,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// The personal-API-token verbs (accounts PR 6): `token create|ls|revoke` over
+// The personal-API-token verbs (accounts PR 6): `token ls|revoke` over
 // /api/tokens, and `whoami` over /api/whoami.
+//
+// 🔴 THERE IS NO `token create`. Minting is browser-session only (the server
+// has no create route on /api/tokens): a token that could mint a token would
+// let a leaked one mint a child that outlives revoking it.
 //
 // 🔴 `token …` WORKS ONLY WITH A PERSONAL TOKEN IN envToken. The server's
 // token API (api.requireAPIToken) refuses the shared hook secret — minting a
 // credential is a person's act, and the hook secret names nobody — so on a
-// hook-configured host these verbs exit 3 (auth). The FIRST token is minted
-// in the browser at /account/tokens; every later one can come from here.
-//
-// ⚠ `token create` PRINTS THE TOKEN — the one response that carries one. That
-// is deliberate (it is the point of the verb) and it goes to stdout only, as
-// every other response does; nothing in this binary logs it.
+// hook-configured host these verbs exit 3 (auth).
 
 const (
 	tokensRoute      = "/api/tokens"
@@ -30,37 +29,9 @@ const (
 func newTokenCmd(a *app) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "token",
-		Short: "Manage your personal API tokens (needs a personal token in " + envToken + ")",
+		Short: "List and revoke your personal API tokens (mint them in the browser at /account/tokens)",
 	}
-	cmd.AddCommand(newTokenCreateCmd(a), newTokenLsCmd(a), newTokenRevokeCmd(a))
-	return cmd
-}
-
-func newTokenCreateCmd(a *app) *cobra.Command {
-	var name string
-	cmd := &cobra.Command{
-		Use:   "create",
-		Short: "POST /api/tokens — mint a new personal token (printed ONCE, as `token`)",
-		Long: `Mint a new personal API token for the user your current token belongs to.
-
-The response carries the new token in its ` + "`token`" + ` field. It is shown this
-once: the server stores only its sha256, and neither ` + "`token ls`" + ` nor the
-web page can show it again.`,
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			body, err := a.call(cmd.Context(), request{
-				method: http.MethodPost,
-				path:   tokensRoute,
-				body:   map[string]any{"name": strings.TrimSpace(name)},
-				cred:   credHook,
-			})
-			if err != nil {
-				return err
-			}
-			return a.emit(body)
-		},
-	}
-	cmd.Flags().StringVar(&name, "name", "", "a label for the token (e.g. the machine it lives on)")
+	cmd.AddCommand(newTokenLsCmd(a), newTokenRevokeCmd(a))
 	return cmd
 }
 

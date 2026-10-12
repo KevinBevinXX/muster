@@ -49,11 +49,22 @@ func TestSeamPersonalTokensThroughTheRealServer(t *testing.T) {
 		_, _ = pool.Exec(bg, `DELETE FROM audit_log WHERE user_id = $1`, uid)
 		_, _ = pool.Exec(bg, `DELETE FROM users WHERE id = $1`, uid)
 	})
-	first, _, err := apitokens.NewPG(pool).Create(
-		authz.WithPrincipal(ctx, authz.Principal{UserID: uid, Role: authz.RoleMember, Via: authz.ViaSession}), "browser-minted")
+	// Tokens are minted by the BROWSER session only (/account/tokens) — there
+	// is no CLI or API mint — so this test mints its two through the store,
+	// as that page does.
+	asUser := authz.WithPrincipal(ctx, authz.Principal{UserID: uid, Role: authz.RoleMember, Via: authz.ViaSession})
+	first, _, err := apitokens.NewPG(pool).Create(asUser, "browser-minted")
 	if err != nil {
 		t.Fatal(err)
 	}
+	secondTok, secondRec, err := apitokens.NewPG(pool).Create(asUser, "laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := struct {
+		ID    int64
+		Token string
+	}{secondRec.ID, secondTok}
 
 	srv := api.New(sse.New(8), api.AuthConfig{HookToken: seamHookToken}, log.New(io.Discard, "", 0))
 	srv.UseExtensions(api.Extensions{Notes: notes.NewPG(pool), SessionLiveness: seamLiveness{},
@@ -86,22 +97,16 @@ func TestSeamPersonalTokensThroughTheRealServer(t *testing.T) {
 		t.Fatalf("whoami with the hook token: exit %d %v", code, m)
 	}
 
-	// token create: the new token, once.
-	code, out, errOut := cli(map[string]string{"MUSTER_TOKEN": first}, "token", "create", "--name", "laptop")
-	var created struct {
-		ID    int64  `json:"id"`
-		Token string `json:"token"`
-		Name  string `json:"name"`
-	}
-	if code != exitOK || json.Unmarshal([]byte(out), &created) != nil || !apitokens.ShapeOK(created.Token) || created.Name != "laptop" {
-		t.Fatalf("token create: exit %d stdout %q stderr %q", code, out, errOut)
+	// There is no `token create`: the CLI cannot mint (review round 1).
+	if code, _, _ := cli(map[string]string{"MUSTER_TOKEN": first}, "token", "create", "--name", "x"); code == exitOK {
+		t.Fatal("`token create` succeeded; minting is browser-session only")
 	}
 	// It works through the ALIAS name too, and acts as the same user.
 	if code, m := who(map[string]string{"MUSTER_HOOK_TOKEN": created.Token}); code != exitOK || m["userId"] != float64(uid) {
 		t.Fatalf("the new token via MUSTER_HOOK_TOKEN: exit %d %v", code, m)
 	}
 	// token ls: both, by name, and never a value.
-	code, out, _ = cli(map[string]string{"MUSTER_TOKEN": first}, "token", "ls")
+	code, out, _ := cli(map[string]string{"MUSTER_TOKEN": first}, "token", "ls")
 	if code != exitOK || !strings.Contains(out, "laptop") || !strings.Contains(out, "browser-minted") ||
 		strings.Contains(out, created.Token) || strings.Contains(out, first) {
 		t.Fatalf("token ls: exit %d %s", code, out)

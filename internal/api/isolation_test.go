@@ -118,7 +118,6 @@ var isolationClasses = map[string]routeClass{
 	"POST /account/tokens/{id}/revoke": classParam,
 	"GET /api/whoami":                  classAdmin,
 	"GET /api/tokens":                  classAPIToken,
-	"POST /api/tokens":                 classAPIToken,
 	"DELETE /api/tokens/{id}":          classAPIToken,
 
 	"GET /{$}":                     classList,
