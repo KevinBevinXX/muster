@@ -523,7 +523,9 @@ func (s *Server) requireGoTrueSession(w http.ResponseWriter, r *http.Request, ne
 	if sess.refreshed != nil {
 		s.setGoTrueCookies(w, *sess.refreshed)
 	}
-	s.admit(w, r.WithContext(ctx), next, authz.Principal{UserID: sess.user.ID, Role: sess.user.Role, Via: authz.ViaSession})
+	// The role comes from roleOf — the ONE role read (users.role, failure →
+	// member) every door uses — not from the session's cached user row.
+	s.admit(w, r.WithContext(ctx), next, s.principalFor(ctx, sess.user.ID, authz.ViaSession))
 }
 
 // OffBrowserListenerRefusal is the error a browser-session route answers on

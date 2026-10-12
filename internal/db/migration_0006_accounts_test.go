@@ -484,16 +484,20 @@ func TestGitHubConnectionStoreKeepsItsSingleUserBehaviourAfter0006(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := st.Get(ctx); err != nil || ok {
+	// The store acts for the PRINCIPAL's user since accounts PR 3b (it was the
+	// constant 1); the operator's principal keeps this test's single-user
+	// claims. The connection itself is still the migrator's.
+	op := asUser(ctx, 1)
+	if _, ok, err := st.Get(op); err != nil || ok {
 		t.Fatalf("Get on an empty table: ok=%v err=%v, want false/nil", ok, err)
 	}
-	if err := st.Save(ctx, "octo", "repo", "gho_first"); err != nil {
+	if err := st.Save(op, "octo", "repo", "gho_first"); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	if err := st.Save(ctx, "octo2", "repo,read:org", "gho_second"); err != nil {
+	if err := st.Save(op, "octo2", "repo,read:org", "gho_second"); err != nil {
 		t.Fatalf("second Save (upsert): %v", err)
 	}
-	c, ok, err := st.Get(ctx)
+	c, ok, err := st.Get(op)
 	if err != nil || !ok || c.Login != "octo2" || c.Scopes != "repo,read:org" || c.Token != "gho_second" {
 		t.Fatalf("Get after upsert: %+v ok=%v err=%v", c, ok, err)
 	}
@@ -504,13 +508,13 @@ func TestGitHubConnectionStoreKeepsItsSingleUserBehaviourAfter0006(t *testing.T)
 
 	two := scanID(ctx, t, pool, `INSERT INTO users (role) VALUES ('member') RETURNING id`)
 	mustExec(ctx, t, pool, `INSERT INTO github_connection (owner_id, login, token_ciphertext) VALUES ($1, 'someone-else', '\x00')`, two)
-	if c, _, err := st.Get(ctx); err != nil || c.Login != "octo2" {
+	if c, _, err := st.Get(op); err != nil || c.Login != "octo2" {
 		t.Fatalf("Get with a second owner's row present: %+v %v", c, err)
 	}
-	if err := st.Clear(ctx); err != nil {
+	if err := st.Clear(op); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, _ := st.Get(ctx); ok {
+	if _, ok, _ := st.Get(op); ok {
 		t.Fatal("Clear left owner 1's connection")
 	}
 	if n := countRows(ctx, t, pool, "github_connection"); n != 1 {

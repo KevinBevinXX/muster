@@ -176,10 +176,15 @@ jobs:
       # printed". MEASURED FALSE: pipefail changes the pipeline's exit status,
       # not when its commands stop — with a failing test the accounting prints
       # in full and the step exits non-zero.
+      #
+      # 🔴 THE ISOLATION WALK IS REQUIRED BY NAME (accounts PR 3c). `--require`
+      # refuses the run unless each named test is IN it and PASSED, so the gate
+      # cannot stop running quietly — a rename, a deletion or a build tag that
+      # filters it out fails this step the same way a red walk does.
       - name: go test, and assert nothing skipped (one run)
         run: |
           set -o pipefail
-          go test -race -cover -json ./... | python3 -u tests/verdict.py --echo summary
+          go test -race -cover -json ./... | python3 -u tests/verdict.py --echo summary --require TestEveryRouteIsClassifiedForIsolation --require TestNoRouteLetsOneUserReachAnothersData --require TestAnotherUsersWritesNeverReachYourEventStream
 
   # Local: make leakscan
   #

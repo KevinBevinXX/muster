@@ -36,7 +36,7 @@ func (s *Server) requireAgentToken(next http.HandlerFunc) http.HandlerFunc {
 			s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid agent token"})
 			return
 		}
-		p, ok := agentPrincipal(a, authz.ViaAgent)
+		p, ok := s.agentPrincipal(r.Context(), a, authz.ViaAgent)
 		if !ok {
 			s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid agent token"})
 			return
@@ -114,7 +114,7 @@ func (s *Server) handleAgentTaskComment(w http.ResponseWriter, r *http.Request) 
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not add comment"})
 		return
 	}
-	s.broadcast(EventTaskChanged, strconv.FormatInt(id, 10))
+	s.broadcast(r.Context(), EventTaskChanged, strconv.FormatInt(id, 10))
 	s.writeJSON(w, http.StatusCreated, c)
 }
 
@@ -156,7 +156,7 @@ func (s *Server) handleAgentTaskStatus(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not update status"})
 		return
 	}
-	s.broadcast(EventTaskChanged, strconv.FormatInt(id, 10))
+	s.broadcast(r.Context(), EventTaskChanged, strconv.FormatInt(id, 10))
 	// Background push when the agent marks its task ready_for_review (deduped).
 	s.notifyTaskDone(note)
 	s.writeJSON(w, http.StatusOK, note)
@@ -401,7 +401,7 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		if err != nil {
 			return toolErr("could not comment: %v", err)
 		}
-		s.broadcast(EventTaskChanged, strconv.FormatInt(*a.NoteID, 10))
+		s.broadcast(ctx, EventTaskChanged, strconv.FormatInt(*a.NoteID, 10))
 		return toolJSON(c)
 	case "agent_set_task_status":
 		if a.NoteID == nil {
@@ -419,7 +419,7 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		if err != nil {
 			return toolErr("could not set status: %v", err)
 		}
-		s.broadcast(EventTaskChanged, strconv.FormatInt(*a.NoteID, 10))
+		s.broadcast(ctx, EventTaskChanged, strconv.FormatInt(*a.NoteID, 10))
 		// Background push when the agent's own tool marks the task ready_for_review.
 		s.notifyTaskDone(n)
 		return toolJSON(n)

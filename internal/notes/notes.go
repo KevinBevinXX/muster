@@ -98,6 +98,11 @@ type Note struct {
 	// 🔴 IT IS NOT THE CARD REVISION. data-card-rev reads UpdatedAt and must keep
 	// doing so (refuseStaleCardSwap); this field must never be substituted there.
 	ActivityAt time.Time `json:"-"`
+	// OwnerID is the user the task belongs to (notes.owner_id; accounts PR 3b
+	// reads it so an event or notification about the task reaches its owner
+	// only). Never serialised: the JSON shape is unchanged. Zero from a store
+	// that does not read the column — and zero reaches nobody.
+	OwnerID int64 `json:"-"`
 	// Tags  are the task's routing key + labels: a normalized,
 	// de-duplicated, SORTED set. Routing namespaces (initiative:/gate:/auto:) are
 	// behaviour-bearing and validated; everything else is a descriptive label. Always '{}' (never NULL) in the DB; omitempty keeps the JSON shape

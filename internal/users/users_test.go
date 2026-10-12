@@ -15,7 +15,7 @@ import (
 	"github.com/ZacxDev/muster/internal/dbtest"
 )
 
-func storeFor(t *testing.T) (*PG, *pgxpool.Pool) {
+func storeFor(t *testing.T) (*PGStore, *pgxpool.Pool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	t.Cleanup(cancel)
@@ -67,7 +67,7 @@ func TestClaimInviteLifecycle(t *testing.T) {
 		t.Fatalf("the revoked link redeemed: %v", err)
 	}
 	u, err := s.RedeemClaim(ctx, hash("second"), "a@example.com", func(context.Context) (string, error) { return subA, nil }, nil)
-	if err != nil || u.ID != 1 || u.GotrueSub != subA || u.Email != "a@example.com" || u.Role != authz.RoleAdmin {
+	if err != nil || u.ID != 1 || u.GotrueSub != subA || u.Email != "a@example.com" {
 		t.Fatalf("redeem: %+v %v", u, err)
 	}
 	if got, err := s.BySub(ctx, subA); err != nil || got.ID != 1 {
@@ -133,8 +133,14 @@ func TestSetDisabledAndLookups(t *testing.T) {
 		t.Fatal(err)
 	}
 	u, err := s.SetDisabled(ctx, id, true)
-	if err != nil || !u.Disabled() || u.Role != authz.RoleMember {
+	if err != nil || !u.Disabled() {
 		t.Fatalf("disable: %+v %v", u, err)
+	}
+	if r, err := s.Role(authz.System(ctx), id); err != nil || r != authz.RoleMember {
+		t.Fatalf("Role of the member row: %q %v", r, err)
+	}
+	if r, err := s.Role(authz.System(ctx), 1); err != nil || r != authz.RoleAdmin {
+		t.Fatalf("Role of user 1: %q %v", r, err)
 	}
 	first := *u.DisabledAt
 	u, _ = s.SetDisabled(ctx, id, true)

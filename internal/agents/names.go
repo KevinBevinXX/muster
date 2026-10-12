@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"strconv"
+	"strings"
 
 	"github.com/ZacxDev/muster/internal/provision"
 )
@@ -54,6 +55,42 @@ var (
 // agent, not against the pool minting a reserved word — so a reserved name that
 // the pool could also produce would be a coin flip, not a guard.
 const ChiefName = "chief"
+
+// ChiefNameFor is the reserved slug of user owner's chief (accounts PR 3b:
+// one chief PER USER). The operator — user 1 — keeps ChiefName itself, so the
+// single-user deployment, its namespace and `muster chief ask`'s default are
+// unchanged; every other user's chief is "chief-<id>".
+//
+// 🔴 agents.name IS ONE GLOBAL NAMESPACE (it keys the instance's namespace),
+// so two users cannot both be "chief"; the id suffix is what makes each
+// user's reserved slug unique without a lookup. The adjective-noun pool can
+// mint none of these (it has no "chief"), and migration 0009's partial unique
+// index holds one reserved chief per owner.
+func ChiefNameFor(owner int64) string {
+	if owner == 1 {
+		return ChiefName
+	}
+	return ChiefName + "-" + strconv.FormatInt(owner, 10)
+}
+
+// IsChiefName reports whether name is a reserved chief slug — ChiefName, or
+// ChiefNameFor some other user. The instructions branch on it
+// (agentprovision.buildSpec) and deletion protection covers it.
+func IsChiefName(name string) bool {
+	if name == ChiefName {
+		return true
+	}
+	rest, ok := strings.CutPrefix(name, ChiefName+"-")
+	if !ok || rest == "" || rest[0] == '0' {
+		return false
+	}
+	for _, c := range rest {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
 
 func pick(list []string) string {
 	n, err := rand.Int(rand.Reader, big.NewInt(int64(len(list))))

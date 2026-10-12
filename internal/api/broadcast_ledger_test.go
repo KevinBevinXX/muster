@@ -1,0 +1,159 @@
+package api
+
+import (
+	"bytes"
+	"go/ast"
+	"go/parser"
+	"go/printer"
+	"go/token"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+)
+
+// TestEveryBroadcastCallSiteIsClassified is the LEDGER behind broadcast's
+// header (accounts PR 3b): every place in this package that emits an SSE event
+// — and the OWNER it names — is listed here, so a new site must say whose event
+// it is, and a site that changes its owner source shows up in review.
+//
+// Each entry is "<enclosing func> → <callee>(<owner argument as written>)".
+// The three owner shapes the header allows:
+//
+//	broadcast(ctx | r.Context(), …)  a request: the principal's user owns it
+//	broadcastTo(n.OwnerID, …)        a row read with its owner (the reaper)
+//	…(s.agentOwner(…), …)            an agent-named nudge: owner read by name
+//
+// plus the plumbing between them (publish, agentChangedFor). The set is
+// compared BOTH ways: an unlisted site fails, and so does a listed site that is
+// gone. There is no shape for "everyone": a site that broadcast to all users
+// would have to add one, here, in a reviewed diff.
+//
+// ⚠ IT IS STRUCTURAL: it pins WHICH expression each site passes as the
+// owner, not that the expression is right. The behaviour is the isolation
+// walk's SSE leg (isolation_test.go) and internal/sse's owner tests.
+func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
+	want := []string{
+		// requests — the principal's user owns the event.
+		"(*Server).advanceTaskToInProgress → broadcast(ctx)",
+		"(*Server).applyTaskStatus → broadcast(ctx)",
+		"(*Server).broadcastTaskLink → broadcast(ctx)",
+		"(*Server).decideConnectorRequest → broadcast(r.Context())",
+		"(*Server).dismissTask → broadcast(ctx)",
+		"(*Server).dispatchAgentTool → broadcast(ctx)",
+		"(*Server).dispatchAgentTool → broadcast(ctx)",
+		"(*Server).handleAPITaskComment → broadcast(r.Context())",
+		"(*Server).handleAPITaskCreate → broadcast(r.Context())",
+		"(*Server).handleAPITaskEdit → broadcast(r.Context())",
+		"(*Server).handleAgentBlocked → broadcast(r.Context())",
+		"(*Server).handleAgentTaskComment → broadcast(r.Context())",
+		"(*Server).handleAgentTaskStatus → broadcast(r.Context())",
+		"(*Server).handleAgentWS → broadcast(r.Context())",
+		"(*Server).handleConnectorCreate → broadcast(r.Context())",
+		"(*Server).handleConnectorCreate → broadcast(r.Context())",
+		"(*Server).handleConnectorDelete → broadcast(r.Context())",
+		"(*Server).handleConnectorRevoke → broadcast(r.Context())",
+		"(*Server).handleConnectorRotate → broadcast(r.Context())",
+		"(*Server).handleNoteEdit → broadcast(r.Context())",
+		"(*Server).handleNoteTagAdd → broadcast(r.Context())",
+		"(*Server).handleNoteTagRemove → broadcast(r.Context())",
+		"(*Server).handleTaskMerge → broadcast(r.Context())",
+		"(*Server).handleTaskMerge → broadcast(r.Context())",
+		"(*Server).onConnectorRequested → broadcast(ctx)",
+		"(*Server).softDeleteTaskComment → broadcast(ctx)",
+		"(*Server).createAndDispatchAgent → agentChangedFor(requestOwner(ctx))",
+		// a row read with its owner.
+		"(*Server).reapIdleTasks → broadcastTo(n.OwnerID)",
+		// agent-named nudges: the owner is read from the agent row by name.
+		"(*Server).BroadcastAgentChanged → agentChangedFor(s.agentOwner(agentName))",
+		// the mirror plugin's host nudge: the hub names the host's owner.
+		"(*Server).BroadcastAgentsChangedFor → broadcastTo(owner)",
+		// plumbing.
+		"(*Server).agentChangedFor → broadcastTo(owner)",
+		"(*Server).broadcast → broadcastTo(requestOwner(ctx))",
+		"(*Server).broadcastTo → publish(sse.Event{Name: name, Data: string(data), OwnerID: owner})",
+		"(*Server).publish → bus.Broadcast(ev)",
+	}
+	got := broadcastSites(t)
+	sort.Strings(want)
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("SSE emit sites changed.\n got:\n  %s\nwant:\n  %s\n"+
+			"Each site must name WHOSE event it is (see broadcast's header); add or correct the entry.",
+			strings.Join(got, "\n  "), strings.Join(want, "\n  "))
+	}
+	// Positive control on the scanner: it found the request sites at all.
+	if len(got) < 30 {
+		t.Fatalf("scanner found only %d sites; it is not reading the package", len(got))
+	}
+}
+
+// broadcastSites scans this package's non-test source for every call to an
+// emit function and renders it as a ledger entry.
+func broadcastSites(t *testing.T) []string {
+	t.Helper()
+	emit := map[string]bool{"broadcast": true, "broadcastTo": true, "publish": true, "agentChangedFor": true}
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	var out []string
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		file, err := parser.ParseFile(fset, f, src, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range file.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			name := fn.Name.Name
+			if fn.Recv != nil && len(fn.Recv.List) == 1 {
+				if star, ok := fn.Recv.List[0].Type.(*ast.StarExpr); ok {
+					if id, ok := star.X.(*ast.Ident); ok {
+						name = "(*" + id.Name + ")." + name
+					}
+				}
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				sel, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				callee := ""
+				switch x := sel.X.(type) {
+				case *ast.Ident:
+					if x.Name == "s" && emit[sel.Sel.Name] {
+						callee = sel.Sel.Name
+					}
+				case *ast.SelectorExpr:
+					if id, ok := x.X.(*ast.Ident); ok && id.Name == "s" && x.Sel.Name == "bus" && sel.Sel.Name == "Broadcast" {
+						callee = "bus.Broadcast"
+					}
+				}
+				if callee == "" || len(call.Args) == 0 {
+					return true
+				}
+				var b bytes.Buffer
+				_ = printer.Fprint(&b, fset, call.Args[0])
+				out = append(out, name+" → "+callee+"("+b.String()+")")
+				return true
+			})
+		}
+	}
+	sort.Strings(out)
+	return out
+}

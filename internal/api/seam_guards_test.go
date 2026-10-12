@@ -3,9 +3,11 @@ package api
 import (
 	"context"
 	"errors"
+	"github.com/ZacxDev/muster/internal/authz"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -388,6 +390,28 @@ func (r *recordingRouter) Directories(_ context.Context, _ string, limit int) ([
 	return []string{"/work/a"}, r.err
 }
 
+// asAdminSession is the operator's request context: the router's directories
+// are the operator's, and only an admin principal is served them (accounts PR
+// 3b; TestAMemberIsNeverServedTheOperatorsDirectories).
+func asAdminSession() context.Context {
+	return authz.WithPrincipal(context.Background(), authz.Principal{UserID: 1, Role: authz.RoleAdmin, Via: authz.ViaSession})
+}
+
+// TestAMemberIsNeverServedTheOperatorsDirectories: a member's session gets the
+// no-router answer (empty, not failed) and the router is never asked.
+func TestAMemberIsNeverServedTheOperatorsDirectories(t *testing.T) {
+	rr := &recordingRouter{gotLimit: -1}
+	s := New(nil, AuthConfig{}, log.New(io.Discard, "", 0))
+	s.UseRouter(rr)
+	member := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 2, Role: authz.RoleMember, Via: authz.ViaSession})
+	if dirs, failed := s.directories(member, "", 5); failed || len(dirs) != 0 || rr.gotLimit != -1 {
+		t.Fatalf("a member: dirs=%v failed=%v (router asked: %v); want none, not failed, router untouched", dirs, failed, rr.gotLimit != -1)
+	}
+	if dirs, _ := s.directories(asAdminSession(), "", 5); len(dirs) != 1 {
+		t.Fatalf("control: the admin got %v; want the router's list", dirs)
+	}
+}
+
 // TestDirectoryReadDistinguishesFailureFromEmptiness is the behavioural half,
 // and it pins the property the whole feature exists to preserve.
 func TestDirectoryReadDistinguishesFailureFromEmptiness(t *testing.T) {
@@ -408,7 +432,7 @@ func TestDirectoryReadDistinguishesFailureFromEmptiness(t *testing.T) {
 	t.Run("a configured router that errors IS a failure", func(t *testing.T) {
 		s := New(nil, AuthConfig{}, logger)
 		s.UseRouter(&recordingRouter{err: errors.New("boom")})
-		if _, failed := s.directories(context.Background(), "", 5); !failed {
+		if _, failed := s.directories(asAdminSession(), "", 5); !failed {
 			t.Error("a router read that errored reported success, so the modal would render an " +
 				"empty dropdown as if the archive were empty — the exact conflation this " +
 				"feature's bool exists to remove")
@@ -419,7 +443,7 @@ func TestDirectoryReadDistinguishesFailureFromEmptiness(t *testing.T) {
 		rr := &recordingRouter{}
 		s := New(nil, AuthConfig{}, logger)
 		s.UseRouter(rr)
-		s.directories(context.Background(), "q", 9999) //nolint:errcheck // the recorded limit is the assertion
+		s.directories(asAdminSession(), "q", 9999) //nolint:errcheck // the recorded limit is the assertion
 		if rr.gotLimit != notes.MaxDirectoryResults {
 			t.Errorf("the handler asked the router for %d directories; the clamp is %d.\n"+
 				"clampDirectoryLimit is not on the path to the call.", rr.gotLimit, notes.MaxDirectoryResults)

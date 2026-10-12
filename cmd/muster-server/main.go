@@ -35,6 +35,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ZacxDev/muster/internal/users"
 	"log"
 	"net"
 	"net/http"
@@ -65,7 +66,6 @@ import (
 	"github.com/ZacxDev/muster/internal/router"
 	"github.com/ZacxDev/muster/internal/sse"
 	"github.com/ZacxDev/muster/internal/ui"
-	"github.com/ZacxDev/muster/internal/users"
 )
 
 const (
@@ -243,6 +243,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// Unwrapping it here re-opens that blind spot for every writer at once.
 		ext.Notes = notes.WithStatusLogging(notes.NewPG(pool), logger)
 		ext.Agents = agents.NewPG(pool)
+		// The request Principal's role comes from users.role (accounts PR 3b);
+		// without this store only user 1 would be admin, by fallback.
+		ext.Users = users.NewPG(pool)
 
 		if len(cfg.ConnectorEncKey) > 0 {
 			cs, err := connectors.NewPG(pool, cfg.ConnectorEncKey)
@@ -260,6 +263,12 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 				return nil, fmt.Errorf("github store: %w", err)
 			}
 			ext.GitHub = gh
+			// The OAuth state's MAC key, derived from the same secret under its
+			// own label (github.OAuthStateKey) — never from the UI password.
+			if ext.GitHubOAuth.StateKey, err = github.OAuthStateKey(cfg.GitHubEncKey); err != nil {
+				a.Close()
+				return nil, fmt.Errorf("github oauth state key: %w", err)
+			}
 			if cfg.GitHubToken != "" {
 				// Backgrounded: it is one network round trip to github.com and a
 				// boot that blocks on a third party is a boot that a third party's
@@ -333,9 +342,11 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		srv.UseGoTrue(goTrueAuth(cfg, a.pool))
 	}
 	if mirrorSvc != nil {
-		// No agent name: a mirrored session is not an agent. The nudge only makes
-		// open Agents views re-fetch, each scoped to its own principal.
-		mirrorSvc.SetNotify(func() { srv.BroadcastAgentChanged("") })
+		// No agent name: a mirrored session is not an agent. The nudge makes the
+		// host OWNER's open Agents views re-fetch — and only that owner's: an SSE
+		// event reaches its owner's streams alone (accounts PR 3b), so a nudge
+		// with no owner would reach nobody.
+		mirrorSvc.SetNotify(srv.BroadcastAgentsChangedFor)
 	}
 	if port.Configured() {
 		srv.UseRouter(port)

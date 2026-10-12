@@ -335,7 +335,7 @@ func (s *Server) requireRelayAgent(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		s.admit(w, r.WithContext(context.WithValue(r.Context(), agentCtxKey{}, a)), next,
-			principalFor(agentOwnerID(a), authz.ViaRelay))
+			s.principalFor(r.Context(), agentOwnerID(a), authz.ViaRelay))
 	}
 }
 
@@ -398,6 +398,19 @@ func (s *Server) handleApprovalCreate(w http.ResponseWriter, r *http.Request) {
 		if l = clip(l, 500); l != "" {
 			ctxLines = append(ctxLines, l)
 		}
+	}
+	// 🔴 ONLY AN ADMIN'S AGENTS FILE ON THE ROUTER (accounts PR 3b, operator
+	// decision). The router is the OPERATOR's: a card lands on the operator's
+	// phone and an approval there runs the tool. A member's agent filing here
+	// would put that member's prompts in front of the operator — and let the
+	// operator (or an auto-approve window they opened) approve another user's
+	// tool calls. So a member's agent gets the same 503 an unarmed relay gives,
+	// and ccd falls back to the in-terminal prompt in that member's own pod.
+	// The principal's role is read from users.role (roleOf), and the
+	// principal is the AGENT's OWNER (requireRelayAgent), never a constant.
+	if p, ok := authz.From(r.Context()); !ok || p.Role != authz.RoleAdmin {
+		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": ErrRelayAdminOnly, HookUnarmedField: true})
+		return
 	}
 	g := s.approvalGatePort
 	if g == nil {
@@ -528,6 +541,10 @@ func (s *Server) forgetApproval(id string) {
 	delete(l.owners, id)
 }
 
+// ErrRelayAdminOnly is the relay's refusal for an agent whose owner is not an
+// admin: its prompts stay in its own terminal.
+const ErrRelayAdminOnly = "the approval relay files cards only for an admin's agents; this prompt stays in the agent's terminal"
+
 // errNotYours is the single refusal for an id this agent did not file, whether
 // it exists or not: answering differently would tell an agent which ids exist.
 var errNotYours = errors.New("no such approval request for this agent")
@@ -625,7 +642,7 @@ func (s *Server) handleAgentBlocked(w http.ResponseWriter, r *http.Request) {
 	}
 	l.mu.Unlock()
 	if was != body.Blocked {
-		s.broadcast(EventAgentChanged, a.Name)
+		s.broadcast(r.Context(), EventAgentChanged, a.Name)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

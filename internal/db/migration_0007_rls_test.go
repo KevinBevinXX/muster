@@ -108,13 +108,20 @@ func count(t *testing.T, ctx context.Context, pool *pgxpool.Pool, table, where s
 	return n
 }
 
+// userKeyedTables are the account tables migration 0009 puts under row-level
+// security: keyed by a USER column (users.id, api_tokens.user_id,
+// audit_log.user_id) or admin-only (invites), not by owner_id. Their policies
+// are pinned whole by TestTheUserKeyedTablesCarryExactlyTheirPolicies.
+var userKeyedTables = []string{"api_tokens", "audit_log", "invites", "users"}
+
 // TestRLSCoversExactlyTheOwnedTables is the LEDGER: the set of public tables
-// with an owner_id column, the set with RLS ENABLED, the set with RLS FORCED and
-// the set carrying the owner_isolation policy must all be the same eleven — and
-// each policy must have BOTH arms (the user and the scope-all) in USING and in
-// WITH CHECK, and each owner_id must default to the principal. It fails when a
-// new owned table arrives without RLS, and when RLS appears on a table with no
-// owner.
+// with an owner_id column and the set carrying the owner_isolation policy must
+// be the same eleven, and the sets with RLS ENABLED and FORCED must be those
+// eleven plus the user-keyed account tables (0009) — and each owner_isolation
+// policy must have BOTH arms (the user and the scope-all) in USING and in WITH
+// CHECK, and each owner_id must default to the principal. It fails when a new
+// owned table arrives without RLS, and when RLS appears on a table that is in
+// neither ledger.
 func TestRLSCoversExactlyTheOwnedTables(t *testing.T) {
 	f := newRLSFixture(t, "ms_0007_ledger")
 	set := func(sql string) []string {
@@ -132,21 +139,27 @@ func TestRLSCoversExactlyTheOwnedTables(t *testing.T) {
 	}
 	want := rlsTables()
 	sort.Strings(want)
-	for name, got := range map[string][]string{
-		"tables with owner_id": set(`SELECT table_name::text FROM information_schema.columns
-			WHERE table_schema='public' AND column_name='owner_id'`),
-		"RLS enabled": set(`SELECT c.relname::text FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-			WHERE n.nspname='public' AND c.relkind='r' AND c.relrowsecurity`),
-		"RLS forced": set(`SELECT c.relname::text FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-			WHERE n.nspname='public' AND c.relkind='r' AND c.relforcerowsecurity`),
-		"tables with a policy": set(`SELECT DISTINCT tablename::text FROM pg_policies WHERE schemaname='public'`),
+	all := append(rlsTables(), userKeyedTables...)
+	sort.Strings(all)
+	for name, c := range map[string]struct {
+		got, want []string
+	}{
+		"tables with owner_id": {set(`SELECT table_name::text FROM information_schema.columns
+			WHERE table_schema='public' AND column_name='owner_id'`), want},
+		"RLS enabled": {set(`SELECT c.relname::text FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+			WHERE n.nspname='public' AND c.relkind='r' AND c.relrowsecurity`), all},
+		"RLS forced": {set(`SELECT c.relname::text FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+			WHERE n.nspname='public' AND c.relkind='r' AND c.relforcerowsecurity`), all},
+		"tables with an owner_isolation policy": {set(`SELECT DISTINCT tablename::text FROM pg_policies
+			WHERE schemaname='public' AND policyname='owner_isolation'`), want},
+		"tables with a policy": {set(`SELECT DISTINCT tablename::text FROM pg_policies WHERE schemaname='public'`), all},
 	} {
-		if !slices.Equal(got, want) {
-			t.Errorf("%s = %v\nwant          %v", name, got, want)
+		if !slices.Equal(c.got, c.want) {
+			t.Errorf("%s = %v\nwant          %v", name, c.got, c.want)
 		}
 	}
 	rows, err := f.pool.Query(f.mig, `SELECT tablename::text, policyname::text, cmd, permissive, coalesce(qual,''), coalesce(with_check,'')
-		FROM pg_policies WHERE schemaname='public'`)
+		FROM pg_policies WHERE schemaname='public' AND tablename = ANY($1)`, rlsTables())
 	if err != nil {
 		t.Fatal(err)
 	}

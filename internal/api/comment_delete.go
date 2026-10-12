@@ -54,7 +54,7 @@ func (s *Server) softDeleteTaskComment(ctx context.Context, taskID, commentID in
 	// comment too. The session path additionally swaps the card for the client that
 	// asked; the machine path has no swap at all, so without this a retraction made
 	// from a phone would stay visible on a laptop until the next refresh.
-	s.broadcast(EventTaskChanged, strconv.FormatInt(taskID, 10))
+	s.broadcast(ctx, EventTaskChanged, strconv.FormatInt(taskID, 10))
 	return nil
 }
 

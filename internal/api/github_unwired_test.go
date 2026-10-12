@@ -235,6 +235,9 @@ func TestTheOAuthFlowStartsWhenItCanCompleteAConnection(t *testing.T) {
 	s.UseExtensions(Extensions{
 		GitHub: disconnectedGitHubStore{},
 		GitHubOAuth: GitHubOAuthConfig{
+			// The state's MAC key (cmd/muster-server derives it from the store's
+			// encryption key); a build that can connect always has one.
+			StateKey:     []byte("unwired-test-state-key-0123456789abcd"),
 			ClientID:     "an-oauth-app-client-id",
 			ClientSecret: "an-oauth-app-client-secret-not-a-real-one",
 			BaseURL:      "https://muster.example",

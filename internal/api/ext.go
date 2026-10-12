@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"github.com/ZacxDev/muster/internal/users"
 	"io"
 	"net/http"
 
@@ -39,6 +40,9 @@ type Extensions struct {
 	Notes  notes.Store
 	Agents agents.Store
 	GitHub github.Store
+	// Users answers a user's role for the request Principal (principal.go's
+	// roleOf). Nil: user 1 is admin and everyone else a member.
+	Users users.Store
 
 	// AgentNamespacePrefix is the prefix [Extensions.AgentNamespace] builds a new
 	// agent's stored namespace from. It is the DEPLOYMENT's prefix — the same
@@ -142,6 +146,10 @@ type GitHubOAuthConfig struct {
 	// BaseURL is the externally reachable origin used to construct the callback
 	// URL. If empty the callback is derived from the inbound request host.
 	BaseURL string
+	// StateKey MACs the OAuth `state` (github.OAuthStateKey, derived from the
+	// store's encryption key). Empty: no state is minted and every callback is
+	// refused — the flow never runs on an unkeyed MAC.
+	StateKey []byte
 }
 
 // Configured reports whether the OAuth App credentials are present.

@@ -286,7 +286,7 @@ func (s *Server) requireSession(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if s.hasValidSession(r) {
-			s.admit(w, r, next, principalFor(sessionUserID(), authz.ViaSession))
+			s.admit(w, r, next, s.principalFor(r.Context(), s.sessionUserID(r), authz.ViaSession))
 			return
 		}
 		s.refuseUnauthenticated(w, r)
@@ -416,7 +416,7 @@ func (s *Server) requireHookToken(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if !s.auth.hookTokenEnforced() || auth.ConstantTimeEqual(hookTokenFromRequest(r), s.auth.HookToken) {
-			s.admit(w, r, next, principalFor(machineUserID(), authz.ViaHook))
+			s.admit(w, r, next, s.principalFor(r.Context(), machineUserID(), authz.ViaHook))
 			return
 		}
 		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid or missing hook token"})
@@ -517,7 +517,7 @@ func (s *Server) requireArmedHookToken(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if auth.ConstantTimeEqual(hookTokenFromRequest(r), s.auth.HookToken) {
-			s.admit(w, r, next, principalFor(machineUserID(), authz.ViaHook))
+			s.admit(w, r, next, s.principalFor(r.Context(), machineUserID(), authz.ViaHook))
 			return
 		}
 		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid or missing hook token"})
@@ -602,7 +602,7 @@ func (s *Server) admitAttributedService(w http.ResponseWriter, r *http.Request, 
 		s.logger.Printf(ServiceTierLogPrefix+"%s %s attributed to %q", r.Method, r.URL.Path, actor)
 	}
 	s.admit(w, r.WithContext(context.WithValue(r.Context(), serviceActorCtxKey{}, actor)), next,
-		principalFor(machineUserID(), authz.ViaService))
+		s.principalFor(r.Context(), machineUserID(), authz.ViaService))
 }
 
 // requireServiceToken gates the SERVICE-TO-SERVICE tier: a named sibling process
@@ -773,7 +773,7 @@ func (s *Server) requireHookOrServiceToken(next http.HandlerFunc) http.HandlerFu
 			return
 		}
 		if !s.auth.hookTokenEnforced() {
-			s.admit(w, r, next, principalFor(machineUserID(), authz.ViaHook))
+			s.admit(w, r, next, s.principalFor(r.Context(), machineUserID(), authz.ViaHook))
 			return
 		}
 		token := hookTokenFromRequest(r)
@@ -782,7 +782,7 @@ func (s *Server) requireHookOrServiceToken(next http.HandlerFunc) http.HandlerFu
 			// secret is held by every hook script on both hosts and names nobody.
 			// (Unattributed means no ACTOR name; it still acts as the machine
 			// user, which is a different question.)
-			s.admit(w, r, next, principalFor(machineUserID(), authz.ViaHook))
+			s.admit(w, r, next, s.principalFor(r.Context(), machineUserID(), authz.ViaHook))
 			return
 		}
 		if token == "" {

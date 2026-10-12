@@ -85,8 +85,18 @@ var ErrChiefNotRunning = errors.New("the chief agent is not running")
 // order — the same recap arriving from two different agents across two renders,
 // with nothing on screen saying so. Lowest id is arbitrary but STABLE, which is
 // the property that matters.
+//
+// 🔴 IT IS THE CALLER'S CHIEF (accounts PR 3b). The list is read on the
+// request's own context, so row-level security shows only the principal's
+// agents and the chief resolved is that user's. A scope-all (System) or
+// principal-less context has no single chief — every user has their own — so
+// it resolves none rather than the lowest-id chief across all users, which
+// would hand one user's panel, recaps and threads to another's chief.
 func (s *Server) chiefAgent(ctx context.Context) (agents.Agent, error) {
 	if s.ext.Agents == nil {
+		return agents.Agent{}, ErrNoChief
+	}
+	if requestOwner(ctx) <= 0 {
 		return agents.Agent{}, ErrNoChief
 	}
 	list, err := s.ext.Agents.List(ctx)
@@ -147,7 +157,7 @@ func resolveChief(list []agents.Agent) (agents.Agent, bool) {
 // there is. An agent that is the chief only because of its display name stops
 // being the chief the moment it is renamed, and saying so is the remedy.
 func chiefRefusal(a agents.Agent) string {
-	if a.Name == agents.ChiefName {
+	if agents.IsChiefName(a.Name) {
 		return "the chief agent cannot be deleted"
 	}
 	return "the chief agent cannot be deleted; this agent is the chief because it is labelled \"" +
@@ -157,10 +167,31 @@ func chiefRefusal(a agents.Agent) string {
 // chiefPredicate is THE chief predicate, bound to one read of the agent list:
 // the chief is resolved once, so a caller deciding many agents (the card list)
 // pays one resolve, not one per card.
+//
+// 🔴 EVERY USER HAS A CHIEF (accounts PR 3b), so the label rule is applied PER
+// OWNER: an agent is the chief when it carries a reserved chief slug
+// (agents.IsChiefName — any user's) or is the lowest-id agent labelled chief
+// AMONG ITS OWN OWNER'S agents. A list read under row-level security holds one
+// owner anyway; grouping keeps the predicate right for any list, so one user's
+// labelled chief can never make another user's agent unprotected or vice
+// versa.
 func chiefPredicate(list []agents.Agent) func(agents.Agent) bool {
-	c, ok := resolveChief(list)
+	byOwner := map[int64][]agents.Agent{}
+	for _, a := range list {
+		byOwner[a.OwnerID] = append(byOwner[a.OwnerID], a)
+	}
+	chiefs := map[int64]int64{}
+	for owner, l := range byOwner {
+		if c, ok := resolveChief(l); ok {
+			chiefs[owner] = c.ID
+		}
+	}
 	return func(a agents.Agent) bool {
-		return a.Name == agents.ChiefName || (ok && a.ID == c.ID)
+		if agents.IsChiefName(a.Name) {
+			return true
+		}
+		id, ok := chiefs[a.OwnerID]
+		return ok && a.ID == id
 	}
 }
 

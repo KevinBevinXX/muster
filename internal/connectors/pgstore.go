@@ -35,6 +35,18 @@ var _ Store = (*PGStore)(nil)
 // principal's user (accounts PR 3a). Opening never uses this: it binds the
 // owner_id read from the row (see binding).
 //
+// 🔴 IT IS ALSO THE OWNER EVERY NAME-KEYED READ OR WRITE RESOLVES WITHIN
+// (accounts PR 3b): GetConnector, Credential, RotateSecret, DeleteConnector
+// and TouchConnector all say `owner_id = <this> AND name = $1`. Names are
+// unique per OWNER (UNIQUE(owner_id, name)), not globally, so two users may
+// each have a connector called `github`; a grant names its connector by NAME
+// (connector_grants.connector_name — not a foreign key), so the proxy's
+// "resolve the grant's connector" must never land on another owner's row of
+// the same name. Row-level security already scopes a user principal to its
+// own rows; the explicit predicate is what keeps a scope-all (System) caller
+// from resolving "the" connector called X across every user — it refuses
+// instead (TestAConnectorNameResolvesOnlyWithinItsOwner).
+//
 // 🔴 NO PRINCIPAL, OR A SCOPE-ALL ONE, IS A REFUSAL — NOT A DEFAULT. A
 // connector belongs to a person; a background loop (authz.System, no user)
 // has no business creating one, and the old constant 1 would have sealed it to
@@ -85,7 +97,11 @@ func (s *PGStore) ListConnectors(ctx context.Context) ([]Connector, error) {
 
 // GetConnector returns one connector's public description.
 func (s *PGStore) GetConnector(ctx context.Context, name string) (Connector, error) {
-	return scanConnector(s.pool.QueryRow(ctx, `SELECT `+connectorCols+` FROM connectors WHERE name=$1`, name))
+	owner, err := createOwner(ctx)
+	if err != nil {
+		return Connector{}, err
+	}
+	return scanConnector(s.pool.QueryRow(ctx, `SELECT `+connectorCols+` FROM connectors WHERE owner_id=$2 AND name=$1`, name, owner))
 }
 
 // CreateConnector validates, seals and inserts a connector. A duplicate name is
@@ -164,14 +180,18 @@ func (s *PGStore) DeleteConnector(ctx context.Context, name string) error {
 		return err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // a no-op after Commit
-	tag, err := tx.Exec(ctx, `DELETE FROM connectors WHERE name=$1`, name)
+	owner, err := createOwner(ctx)
+	if err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `DELETE FROM connectors WHERE owner_id=$2 AND name=$1`, name, owner)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM connector_grants WHERE connector_name=$1`, name); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM connector_grants WHERE owner_id=$2 AND connector_name=$1`, name, owner); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -202,8 +222,12 @@ func (s *PGStore) credentialRow(ctx context.Context, name string) (Connector, in
 	var ct []byte
 	var c Connector
 	var scheme string
-	var owner int64
-	err := s.pool.QueryRow(ctx, `SELECT `+connectorCols+`, owner_id, secret_ciphertext FROM connectors WHERE name=$1`, name).
+	owner, err := createOwner(ctx)
+	if err != nil {
+		return Connector{}, 0, nil, err
+	}
+	err = s.pool.QueryRow(ctx, `SELECT `+connectorCols+`, owner_id, secret_ciphertext FROM connectors
+		WHERE owner_id=$2 AND name=$1`, name, owner).
 		Scan(&c.ID, &c.Name, &c.Platform, &c.Hosts, &scheme, &c.HeaderName, &c.Username,
 			&c.CreatedAt, &c.UpdatedAt, &c.RotatedAt, &c.LastUsedAt, &owner, &ct)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -218,7 +242,11 @@ func (s *PGStore) credentialRow(ctx context.Context, name string) (Connector, in
 
 // TouchConnector stamps last_used_at.
 func (s *PGStore) TouchConnector(ctx context.Context, name string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE connectors SET last_used_at=now() WHERE name=$1`, name)
+	owner, err := createOwner(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `UPDATE connectors SET last_used_at=now() WHERE owner_id=$2 AND name=$1`, name, owner)
 	return err
 }
 

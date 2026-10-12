@@ -59,9 +59,11 @@ func NewService(store Store, logger *log.Logger) *Service {
 }
 
 // SetNotify installs the Agents-view refresh nudge (internal/api's
-// agents-changed broadcast). It carries no data: it only tells open views to
-// re-fetch, and each re-fetch is scoped to its own principal.
-func (s *Service) SetNotify(fn func()) { s.hub.SetNotify(fn) }
+// agents-changed broadcast), called with the OWNER of the host that changed:
+// the event reaches only that owner's open views (accounts PR 3b). It carries
+// no data: it only tells them to re-fetch, and each re-fetch is scoped to its
+// own principal.
+func (s *Service) SetNotify(fn func(owner int64)) { s.hub.SetNotify(fn) }
 
 // SetNotifyDebounce overrides the nudge coalescing window (tests).
 func (s *Service) SetNotifyDebounce(d time.Duration) {

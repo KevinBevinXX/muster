@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"github.com/ZacxDev/muster/internal/authz"
 
 	"github.com/ZacxDev/muster/internal/notes"
 )
@@ -86,6 +87,14 @@ import (
 // a failure, and is reported as one.
 func (s *Server) directories(ctx context.Context, query string, limit int) (dirs []string, failed bool) {
 	if s.router == nil {
+		return nil, false
+	}
+	// 🔴 THE ROUTER'S DIRECTORIES ARE THE OPERATOR'S (accounts PR 3b): paths on
+	// the operator's own machines, from the operator's own router. A member's
+	// session gets none — the same answer as a deployment with no router —
+	// rather than a list of somebody else's filesystem. The isolation walk
+	// (isolation_test.go) serves a canary path and asserts no member sees it.
+	if p, ok := authz.From(ctx); !ok || p.Role != authz.RoleAdmin {
 		return nil, false
 	}
 	dirs, err := s.router.Directories(ctx, query, clampDirectoryLimit(query, limit))

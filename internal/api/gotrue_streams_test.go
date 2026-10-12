@@ -13,7 +13,6 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/gotrue/gotruetest"
 	"github.com/ZacxDev/muster/internal/sse"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -52,7 +51,7 @@ func newStreamFixture(t *testing.T) *streamFixture {
 	t.Cleanup(ts.Close)
 	// User 1 is the one fakeMirror shows hosts to.
 	sub := fake.AddUser("op@example.com", "correct horse battery")
-	f.store.add(users.User{ID: 1, GotrueSub: sub, Email: "op@example.com", Role: authz.RoleAdmin})
+	f.store.add(users.User{ID: 1, GotrueSub: sub, Email: "op@example.com"})
 	return &streamFixture{gtFixture: f, ts: ts, sub: sub}
 }
 

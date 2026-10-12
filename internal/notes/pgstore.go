@@ -36,7 +36,7 @@ func (s *PGStore) Create(ctx context.Context, n Note) (Note, error) {
 
 // noteCols is the SINGLE column list every full-note read uses, so Create/Get/
 // List/ListByTags can never drift out of sync with scanNoteInto's target order.
-const noteCols = `id, directory, title, body, status, model, repo, repo_branch, tags, source_type, source_session_id, created_at, updated_at`
+const noteCols = `id, directory, title, body, status, model, repo, repo_branch, tags, source_type, source_session_id, created_at, updated_at, owner_id`
 
 // liveOnly is the SINGLE soft-delete predicate, spelled once so no read or write
 // path can quietly opt out of it. It now covers BOTH soft-deleted tables — notes
@@ -110,7 +110,7 @@ func scanCommentInto(c *Comment) []any {
 func scanNoteInto(n *Note) []any {
 	return []any{
 		&n.ID, &n.Directory, &n.Title, &n.Body, &n.Status, &n.Model, &n.Repo, &n.RepoBranch,
-		&n.Tags, &n.SourceType, &n.SourceSessionID, &n.CreatedAt, &n.UpdatedAt,
+		&n.Tags, &n.SourceType, &n.SourceSessionID, &n.CreatedAt, &n.UpdatedAt, &n.OwnerID,
 	}
 }
 
@@ -414,7 +414,7 @@ func (s *PGStore) CountByStatus(ctx context.Context, status string) (int, error)
 // that grew three joins are separate regressions, each earned once already.
 func (s *PGStore) ListSummaries(ctx context.Context) ([]Note, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, directory, title, body, model, repo, repo_branch, tags, updated_at
+		SELECT id, directory, title, body, model, repo, repo_branch, tags, updated_at, owner_id
 		FROM notes WHERE `+liveOnly+` ORDER BY updated_at DESC`)
 	if err != nil {
 		return nil, err
@@ -423,7 +423,7 @@ func (s *PGStore) ListSummaries(ctx context.Context) ([]Note, error) {
 	out := make([]Note, 0)
 	for rows.Next() {
 		var n Note
-		if err := rows.Scan(&n.ID, &n.Directory, &n.Title, &n.Body, &n.Model, &n.Repo, &n.RepoBranch, &n.Tags, &n.UpdatedAt); err != nil {
+		if err := rows.Scan(&n.ID, &n.Directory, &n.Title, &n.Body, &n.Model, &n.Repo, &n.RepoBranch, &n.Tags, &n.UpdatedAt, &n.OwnerID); err != nil {
 			return nil, err
 		}
 		out = append(out, n)

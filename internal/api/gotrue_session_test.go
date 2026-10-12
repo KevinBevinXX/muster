@@ -49,7 +49,7 @@ type memInvite struct {
 
 func newMemUsers() *memUsers {
 	return &memUsers{rows: map[int64]*users.User{
-		1: {ID: 1, Role: authz.RoleAdmin, DisplayName: "operator"},
+		1: {ID: 1, DisplayName: "operator"},
 	}, invites: map[string]*memInvite{}}
 }
 
@@ -165,9 +165,12 @@ func newGoTrueFixture(t *testing.T) *gtFixture {
 
 // member adds a GoTrue user bound to a new muster row and returns
 // (muster id, gotrue sub).
-func (f *gtFixture) member(email string, id int64, role authz.Role) string {
+// member's role argument documents the caller's intent; the principal's role
+// comes from roleOf, which with no users store wired is admin for user 1 and
+// member for everyone else.
+func (f *gtFixture) member(email string, id int64, _ authz.Role) string {
 	sub := f.fake.AddUser(email, "correct horse battery")
-	f.store.add(users.User{ID: id, GotrueSub: sub, Email: email, Role: role})
+	f.store.add(users.User{ID: id, GotrueSub: sub, Email: email})
 	return sub
 }
 
@@ -579,7 +582,7 @@ func TestPasswordModeIgnoresGoTrueCookies(t *testing.T) {
 	fake := gotruetest.New(t, gtSecret)
 	store := newMemUsers()
 	sub := fake.AddUser("m@example.com", "correct horse battery")
-	store.add(users.User{ID: 7, GotrueSub: sub, Role: authz.RoleMember})
+	store.add(users.User{ID: 7, GotrueSub: sub})
 	s := New(nil, AuthConfig{HookToken: gtHook, UIPassword: strings.Repeat("p", 20)}, log.New(io.Discard, "", 0))
 	s.UseGoTrue(GoTrueAuth{Client: fake.Client(), Verifier: fake.Verifier(), Users: store})
 	h := BrowserListener(s.Handler())
@@ -619,7 +622,7 @@ func TestGoTrueModeClosesAnUnarmedHookTier(t *testing.T) {
 
 func TestDisableUserReportsAGoTrueFailureAfterTheRowChanged(t *testing.T) {
 	f := newGoTrueFixture(t)
-	f.store.add(users.User{ID: 9, GotrueSub: "00000000-0000-4000-a000-000000000009", Role: authz.RoleMember})
+	f.store.add(users.User{ID: 9, GotrueSub: "00000000-0000-4000-a000-000000000009"})
 	err := f.s.DisableUser(context.Background(), 9, true)
 	if err == nil || !strings.Contains(err.Error(), "disabled_at is updated") {
 		t.Fatalf("a ban against a missing GoTrue user must say the row changed anyway: %v", err)

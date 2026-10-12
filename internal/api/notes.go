@@ -493,7 +493,7 @@ func (s *Server) handleAPITaskCreate(w http.ResponseWriter, r *http.Request) {
 	// link is best-effort here (unlike the task-scoped routes, where the link is
 	// the only reason the request was interesting).
 	s.noteTaskSession(r, note.ID, notes.RoleCreated)
-	s.broadcast(EventTaskChanged, strconv.FormatInt(note.ID, 10))
+	s.broadcast(r.Context(), EventTaskChanged, strconv.FormatInt(note.ID, 10))
 	// Usage telemetry: count the created task by its derived producer source so
 	// captures (esp. from the Brave extension) show up in the usage dashboard.
 	// Bounded label — taskSource only emits allowlisted values. Note this uses the
@@ -841,7 +841,7 @@ func (s *Server) handleAPITaskGet(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not load task"})
 		return
 	}
-	s.broadcastTaskLink(changed, id)
+	s.broadcastTaskLink(r.Context(), changed, id)
 	s.writeJSON(w, http.StatusOK, s.apiTaskOne(r.Context(), note))
 }
 
@@ -1147,7 +1147,7 @@ func (s *Server) handleAPITaskEdit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// Broadcast so any open Tasks tab re-fetches #tasks-list and shows the edit.
-	s.broadcast(EventTaskChanged, strconv.FormatInt(updated.ID, 10))
+	s.broadcast(r.Context(), EventTaskChanged, strconv.FormatInt(updated.ID, 10))
 	s.writeJSON(w, http.StatusOK, s.apiTaskOne(r.Context(), updated))
 }
 
@@ -1252,7 +1252,7 @@ func (s *Server) dismissTask(ctx context.Context, id int64) error {
 	// re-sorts the flat activity-ordered list (an empty-200 card removal
 	// alone leaves the section headers stale). Shared by the human dismiss and
 	// the machine DELETE, so both paths regroup consistently.
-	s.broadcast(EventTaskChanged, strconv.FormatInt(id, 10))
+	s.broadcast(ctx, EventTaskChanged, strconv.FormatInt(id, 10))
 	return nil
 }
 
@@ -1403,7 +1403,7 @@ func (s *Server) applyTaskStatus(ctx context.Context, writer statusWriter, id in
 	// response, and the extra re-fetch this triggers is refused-or-applied by the
 	// data-card-rev stale-swap guard (internal/ui/notes.go) — a status write moves
 	// notes.updated_at, so the re-fetch is never STRICTLY older and ties apply.
-	s.broadcast(EventTaskChanged, strconv.FormatInt(note.ID, 10))
+	s.broadcast(ctx, EventTaskChanged, strconv.FormatInt(note.ID, 10))
 	return note, nil
 }
 
@@ -1649,7 +1649,7 @@ func (s *Server) handleNoteEdit(w http.ResponseWriter, r *http.Request) {
 	}
 	observeRoutingTags(updated.Tags)
 	s.logAutoDispatch(updated.ID, updated.Tags)
-	s.broadcast(EventTaskChanged, strconv.FormatInt(updated.ID, 10))
+	s.broadcast(r.Context(), EventTaskChanged, strconv.FormatInt(updated.ID, 10))
 	s.renderNoteCard(w, r, updated)
 }
 
@@ -1805,7 +1805,7 @@ func (s *Server) handleAPITaskComment(w http.ResponseWriter, r *http.Request) {
 	s.noteTaskSession(r, id, notes.RoleWorked)
 	// The machine path returns JSON (no htmx card swap), so broadcast task.changed
 	// so any open Tasks tab re-fetches and shows the new comment live.
-	s.broadcast(EventTaskChanged, strconv.FormatInt(id, 10))
+	s.broadcast(r.Context(), EventTaskChanged, strconv.FormatInt(id, 10))
 	// Coalesced background push (machine path ONLY — the session route is the human
 	// typing their own comment and must not buzz their own phone; the per-agent
 	// route keeps its existing no-push behaviour). Best-effort + nil-push-safe.
