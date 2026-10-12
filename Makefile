@@ -297,9 +297,10 @@ verb-ledger:
 # The browser suite, as CI's `e2e` job runs it: playwright, then the verdict
 # (pass floor + skip cap) whatever playwright's exit code was. Needs a Postgres
 # database whose name ends in _e2e (the seed truncates it) and `npm ci` +
-# `npx playwright install chromium` in e2e/ once.
+# `npx playwright install chromium` in e2e/ once. CI runs it in legs
+# (e2e/legs.json); `MUSTER_E2E_LEG=N make e2e` runs leg N and its leg verdict.
 e2e:
 	@cd e2e && MUSTER_E2E_REQUIRE_FULL=1 npx playwright test; rc=$$?; \
-	node verdict.mjs test-results/results.json && exit $$rc
+	node verdict.mjs $${MUSTER_E2E_LEG:+--leg $$MUSTER_E2E_LEG} test-results/results.json && exit $$rc
 
 check: vet test leakscan css-check verb-ledger

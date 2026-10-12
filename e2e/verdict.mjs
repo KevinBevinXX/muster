@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// verdict.mjs — read Playwright's JSON report and refuse a run that proves
+// verdict.mjs — read Playwright's JSON report(s) and refuse a run that proves
 // nothing.
 //
 // 🔴 A COUNT, NOT AN EXIT CODE. `playwright test` exits 0 when every test
@@ -11,20 +11,100 @@
 // against a seeded database — see the PR). A floor below the real count is
 // indistinguishable from no floor, so when a spec is added, raise it in the
 // same change.
+//
+// 🔴 CI RUNS THE SUITE IN LEGS (e2e/legs.json), SO THERE ARE THREE MODES:
+//
+//   node verdict.mjs REPORT                  the whole suite in one run (make e2e)
+//   node verdict.mjs --leg N REPORT          one CI leg
+//   node verdict.mjs --all REPORT REPORT…    every leg's report, summed
+//
+// The failed == 0 and skipped <= CAP rules hold in every mode. FLOOR is a TOTAL,
+// so it holds in the whole-suite and `--all` modes; a leg's floor defaults to 1.
+//
+// 🔴 `--all` IS THE SEAM GUARD: NO SPEC DROPPED, NONE RUN TWICE. Over the summed
+// reports, every spec file on disk must be present with at least one passing
+// test (else NOT RUN / NO PASS), no file may appear in two reports (RAN TWICE),
+// and nothing may run that is not on disk (STRAY). It reads what RAN, so it
+// catches a spec in no leg, a spec in two legs, and a legs.json entry spelled so
+// it matches nothing (its real file is then NOT RUN) — measured, each against
+// real leg reports, before a static legs.json check was dropped as redundant (#58).
 import fs from 'node:fs';
+import { specFiles } from './legs.mjs';
 
-const FLOOR = Number(process.env.E2E_PASS_FLOOR ?? 31);
+const args = process.argv.slice(2);
+let mode = 'whole';
+let leg = '';
+if (args[0] === '--leg') {
+  mode = 'leg';
+  leg = args[1] ?? '';
+  args.splice(0, 2);
+} else if (args[0] === '--all') {
+  mode = 'all';
+  args.splice(0, 1);
+}
+const files = args.length ? args : ['test-results/results.json'];
+if (mode !== 'all' && files.length !== 1) {
+  console.error(`usage: one report per run unless --all (got ${files.length})`);
+  process.exit(2);
+}
+
+const FLOOR = Number(process.env.E2E_PASS_FLOOR ?? (mode === 'leg' ? 1 : 31));
 const CAP = Number(process.env.E2E_SKIP_CAP ?? 0);
-const file = process.argv[2] ?? 'test-results/results.json';
 
-const report = JSON.parse(fs.readFileSync(file, 'utf8'));
-const s = report.stats ?? {};
-const passed = (s.expected ?? 0) + (s.flaky ?? 0);
-const skipped = s.skipped ?? 0;
-const failed = s.unexpected ?? 0;
-console.log(`e2e verdict: ${passed} passed (${s.flaky ?? 0} flaky), ${failed} failed, ${skipped} skipped — floor ${FLOOR}, skip cap ${CAP}`);
+// perFile walks a report's suite tree: file -> { tests, passed }.
+function perFile(report) {
+  const out = new Map();
+  const visit = (suite, file) => {
+    for (const spec of suite.specs ?? []) {
+      for (const t of spec.tests ?? []) {
+        const e = out.get(file) ?? { tests: 0, passed: 0 };
+        e.tests++;
+        if (t.status === 'expected' || t.status === 'flaky') e.passed++;
+        out.set(file, e);
+      }
+    }
+    for (const s of suite.suites ?? []) visit(s, file);
+  };
+  for (const s of report.suites ?? []) visit(s, s.file);
+  return out;
+}
+
+const sum = { expected: 0, flaky: 0, unexpected: 0, skipped: 0 };
+const seen = new Map(); // file -> report path
+const overlaps = [];
+const ran = new Map();
+for (const f of files) {
+  const report = JSON.parse(fs.readFileSync(f, 'utf8'));
+  const s = report.stats ?? {};
+  for (const k of Object.keys(sum)) sum[k] += s[k] ?? 0;
+  for (const [file, e] of perFile(report)) {
+    if (seen.has(file)) overlaps.push(`${file} is in ${seen.get(file)} AND ${f}`);
+    seen.set(file, f);
+    const prev = ran.get(file) ?? { tests: 0, passed: 0 };
+    ran.set(file, { tests: prev.tests + e.tests, passed: prev.passed + e.passed });
+  }
+}
+
+const passed = sum.expected + sum.flaky;
+const label = mode === 'leg' ? `e2e verdict (leg ${leg})` : mode === 'all' ? `e2e verdict (${files.length} reports)` : 'e2e verdict';
+console.log(`${label}: ${passed} passed (${sum.flaky} flaky), ${sum.unexpected} failed, ${sum.skipped} skipped — floor ${FLOOR}, skip cap ${CAP}`);
 let bad = false;
-if (failed > 0) { console.error('FAIL: tests failed'); bad = true; }
+if (sum.unexpected > 0) { console.error('FAIL: tests failed'); bad = true; }
 if (passed < FLOOR) { console.error(`FAIL: ${passed} passed is under the floor of ${FLOOR}`); bad = true; }
-if (skipped > CAP) { console.error(`FAIL: ${skipped} skipped exceeds the cap of ${CAP}`); bad = true; }
+if (sum.skipped > CAP) { console.error(`FAIL: ${sum.skipped} skipped exceeds the cap of ${CAP}`); bad = true; }
+
+if (mode === 'all') {
+  const want = specFiles();
+  const wantSet = new Set(want);
+  const passing = [...ran].filter(([, e]) => e.passed > 0).length;
+  console.log(`spec files: ${want.length} on disk, ${ran.size} in the report(s), ${passing} with a passing test`);
+  for (const o of overlaps) { console.error(`FAIL: RAN TWICE: ${o}`); bad = true; }
+  for (const f of want) {
+    if (!ran.has(f)) { console.error(`FAIL: NOT RUN: ${f} is on disk but absent from every report`); bad = true; }
+    else if (ran.get(f).passed === 0) { console.error(`FAIL: NO PASS: ${f} ran but no test in it passed`); bad = true; }
+  }
+  for (const f of ran.keys()) {
+    if (!wantSet.has(f)) { console.error(`FAIL: STRAY: ${f} ran but is not a spec file on disk`); bad = true; }
+  }
+}
 process.exit(bad ? 1 : 0);

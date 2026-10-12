@@ -189,7 +189,9 @@ mechanism looks over-built and each part of it is there for a measured failure.
 - **The `e2e` job is real; `e2e-unit` is still a stub.** `e2e` runs the
   Playwright suite in `e2e/tests/` (Chromium, a locally built server, a seeded
   Postgres) and fails on any skip or on fewer passes than its floor
-  (`e2e/verdict.mjs`); `make e2e` is the local spelling. `e2e-unit` runs nothing,
+  (`e2e/verdict.mjs`); `make e2e` is the local spelling. In CI it runs as
+  parallel legs, each with its own Postgres (`e2e/legs.json`), and the `e2e`
+  check is their aggregate — it refuses a spec that ran in no leg or in two. `e2e-unit` runs nothing,
   says so, and fails the moment a `*.unit.mjs` harness test appears. ⚠ Several
   comments in `internal/ui` still cite upstream spec files (`tasks.spec.ts`,
   `task-board-paging.spec.ts`) that were never carried into `e2e/tests/`.
