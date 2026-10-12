@@ -109,3 +109,47 @@ func TestMustersClientWithTheWrongTokenIsRefused(t *testing.T) {
 		t.Fatal("a wrongly-authenticated turn reached the session")
 	}
 }
+
+// The tool calls Claude Code RAN reach muster's chat — through the path the chat
+// box uses (ChatWithTools + PartCollector) — as an ordered call+result pair
+// between the two text segments, and are NEVER dispatched as muster tools.
+func TestMustersChatPersistsTheCLIsToolCallsAsRowsAndNeverDispatchesThem(t *testing.T) {
+	srv, _ := newScripted(t, cliScript{transcript: fixture(t, "turn_success_tools_2.1.289.jsonl"), stopEvent: "Stop"})
+	gw := mustersGateway(t, gatewayServer(t, srv).URL)
+
+	dispatched := 0
+	pc := &agents.PartCollector{}
+	reply, err := gw.ChatWithTools(context.Background(), contractAgent, "s", "", "list the workspace",
+		[]agents.ToolDef{{Type: "function", Name: "Bash"}},
+		func(name, args string) string { dispatched++; return "{}" }, pc.Observe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dispatched != 0 {
+		t.Fatalf("muster dispatched %d of the CLI's own tool calls", dispatched)
+	}
+	want := "First segment: I will list the workspace.\n\nSecond segment: the workspace holds file-a and file-b."
+	if reply != want {
+		t.Fatalf("reply %q, want %q (the reply is the text only)", reply, want)
+	}
+	parts := pc.Parts()
+	wantParts := []agents.TurnPart{
+		{Kind: "text", Content: "First segment: I will list the workspace."},
+		{Kind: "tool_call", ToolID: "toolu_fixture1", ToolName: "Bash", Content: `{"command":"ls","description":"List files"}`},
+		{Kind: "tool_result", ToolID: "toolu_fixture1", ToolName: "Bash", ToolOK: true, Content: "file-a\nfile-b"},
+		{Kind: "text", Content: "Second segment: the workspace holds file-a and file-b."},
+	}
+	if len(parts) != len(wantParts) {
+		t.Fatalf("parts %+v,\nwant %+v", parts, wantParts)
+	}
+	for i := range wantParts {
+		if parts[i] != wantParts[i] {
+			t.Fatalf("part %d = %+v,\nwant %+v", i, parts[i], wantParts[i])
+		}
+	}
+	for _, p := range parts {
+		if strings.Contains(p.Content, "PRIVATE REASONING") {
+			t.Fatal("thinking reached muster's chat")
+		}
+	}
+}

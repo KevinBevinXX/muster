@@ -239,11 +239,32 @@ func (s *Service) Attach(ctx context.Context, host, session string, readOnly boo
 	return s.hub.Attach(ctx, o, host, session, readOnly, stdin, stdout, resize)
 }
 
+// Watch streams one of the viewing principal's host sessions' Claude Code
+// transcript. See Hub.Watch.
+func (s *Service) Watch(ctx context.Context, host, session, gen string, offset int64, out func(Msg) error) error {
+	o, err := owner(ctx)
+	if err != nil {
+		return err
+	}
+	return s.hub.Watch(ctx, o, host, session, gen, offset, out)
+}
+
+// Paste types a message into one of the viewing principal's host sessions'
+// Claude pane. See Hub.Paste.
+func (s *Service) Paste(ctx context.Context, host, session, text string) error {
+	o, err := owner(ctx)
+	if err != nil {
+		return err
+	}
+	return s.hub.Paste(ctx, o, host, session, text)
+}
+
 // IsAttachRefusal reports whether err is one of the plugin's own refusals,
 // whose text is written for the operator and is passed to the browser as is.
 func IsAttachRefusal(err error) bool {
 	for _, e := range []error{ErrHostOffline, ErrSessionGone, ErrHostDisconnected, ErrOverrun,
-		ErrInteractiveRefused, ErrTooManyStreams, ErrNoPrincipal} {
+		ErrInteractiveRefused, ErrTooManyStreams, ErrNoPrincipal,
+		ErrNoRenderedView, ErrNotClaude, ErrViewOverrun, ErrTooManyWatches, ErrPasteTimeout, ErrPasteRefused, ErrBadPaste} {
 		if errors.Is(err, e) {
 			return true
 		}

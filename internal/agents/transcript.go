@@ -46,7 +46,10 @@ func (pc *PartCollector) flush() {
 	// Drop empty + gateway "no reply" sentinel segments so they aren't persisted as
 	// noise bubbles (the gateway emits a marker like NO_REPLY when a turn ends via
 	// tool calls with no closing narration).
-	if s := pc.buf.String(); !isSentinelReply(s) {
+	// A segment that follows a tool row begins with the blank-line separator a
+	// text-only reader needs between segments (handleResponsesEvent); as its own
+	// part it is a separate bubble, and the separator is just leading space.
+	if s := strings.TrimLeft(pc.buf.String(), "\n"); !isSentinelReply(s) {
 		pc.parts = append(pc.parts, TurnPart{Kind: "text", Content: s})
 	}
 	pc.buf.Reset()

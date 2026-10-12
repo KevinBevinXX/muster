@@ -55,6 +55,10 @@ type Config struct {
 	// Refresh is how often the session list is re-read (default 5s); a change is
 	// sent at once.
 	Refresh time.Duration
+	// ViewPoll is how often an open rendered view's transcript is checked for
+	// new lines (default 300ms): what "live while a turn runs" costs — one stat
+	// per open view per tick.
+	ViewPoll time.Duration
 	// Interactive lets muster open INTERACTIVE terminals on this host. It is OFF
 	// by default (muster-mirror's -interactive flag): a host that did not opt in
 	// is read-only — it advertises so in its hello, so muster offers no
@@ -118,6 +122,9 @@ func New(cfg Config) (*Client, error) {
 	if cfg.Refresh <= 0 {
 		cfg.Refresh = 5 * time.Second
 	}
+	if cfg.ViewPoll <= 0 {
+		cfg.ViewPoll = 300 * time.Millisecond
+	}
 	if cfg.Backend == nil {
 		return nil, errors.New("muster-mirror: no backend")
 	}
@@ -162,7 +169,28 @@ func (c *Client) Run(ctx context.Context) error {
 }
 
 // RunOnce makes one connection and serves it until it ends.
+//
+// It speaks the newest tunnel version (mirror.ProtocolVersion) and, when a v1
+// muster refuses that with its version error, reconnects AT ONCE as v1: the
+// sessions and terminals work as before, with no rendered view, instead of
+// the host staying offline until muster is upgraded. The next connection tries
+// the newest version again, so an upgraded muster is picked up.
 func (c *Client) RunOnce(ctx context.Context) error {
+	err := c.runOnce(ctx, mirror.ProtocolVersion)
+	var vr *versionRefusal
+	if errors.As(err, &vr) && ctx.Err() == nil {
+		c.log.Printf("muster-mirror: muster speaks tunnel v1 (%s); reconnecting as v1, without the rendered view", vr.msg)
+		return c.runOnce(ctx, 1)
+	}
+	return err
+}
+
+// versionRefusal is a v1 muster refusing this host's newer tunnel version.
+type versionRefusal struct{ msg string }
+
+func (v *versionRefusal) Error() string { return "muster refused the registration: " + v.msg }
+
+func (c *Client) runOnce(ctx context.Context, version int) error {
 	hdr := http.Header{}
 	hdr.Set("Authorization", "Bearer "+c.cfg.Token)
 	dctx, dcancel := context.WithTimeout(ctx, 20*time.Second)
@@ -182,13 +210,15 @@ func (c *Client) RunOnce(ctx context.Context) error {
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	conn := &hostSide{c: c, ws: ws, ctx: ctx, streams: map[uint32]*hostStream{}, listed: map[string]bool{}}
+	conn := &hostSide{c: c, ws: ws, ctx: ctx, version: version, streams: map[uint32]*hostStream{},
+		listed: map[string]bool{}, watches: map[uint32]context.CancelFunc{}}
 	defer conn.closeAll()
 
 	sessions := c.list(ctx)
 	conn.setListed(sessions)
-	if err := conn.send(mirror.Msg{Type: mirror.TypeHello, Version: mirror.ProtocolVersion, Host: c.cfg.Host,
-		Sessions: sessions, Interactive: c.cfg.Interactive}); err != nil {
+	claude := conn.resolveClaude(sessions)
+	if err := conn.send(mirror.Msg{Type: mirror.TypeHello, Version: version, Host: c.cfg.Host,
+		Sessions: sessions, Claude: claude, Interactive: c.cfg.Interactive}); err != nil {
 		return err
 	}
 	wctx, wcancel := context.WithTimeout(ctx, 15*time.Second)
@@ -202,11 +232,14 @@ func (c *Client) RunOnce(ctx context.Context) error {
 		return errors.New("muster's first message was not a welcome")
 	}
 	if welcome.Error != "" {
+		if version > 1 && strings.HasPrefix(welcome.Error, mirror.V1RefusalPrefix) {
+			return &versionRefusal{msg: welcome.Error}
+		}
 		return fmt.Errorf("muster refused the registration: %s", welcome.Error)
 	}
 	c.log.Printf("muster-mirror: connected to %s as host %s with %d session(s)", c.url, c.cfg.Host, len(sessions))
 
-	go conn.refresh(sessions)
+	go conn.refresh(sessions, claude)
 	go conn.keepalive(cancel)
 	for {
 		typ, data, err := ws.Read(ctx)
@@ -235,6 +268,15 @@ func (c *Client) RunOnce(ctx context.Context) error {
 				if st := conn.get(m.ID); st != nil {
 					_ = st.term.Close()
 				}
+				conn.unwatch(m.ID)
+			case mirror.TypeWatch:
+				if conn.version >= 2 {
+					conn.watch(m)
+				}
+			case mirror.TypePaste:
+				if conn.version >= 2 {
+					go conn.paste(m)
+				}
 			}
 		}
 	}
@@ -262,12 +304,16 @@ type hostSide struct {
 	c   *Client
 	ws  *websocket.Conn
 	ctx context.Context
+	// version is the tunnel version this connection speaks.
+	version int
 
 	mu      sync.Mutex
 	streams map[uint32]*hostStream
 	// listed is the session list this host last SENT. An open for any other
 	// name is refused: muster can only attach what this host chose to show.
 	listed map[string]bool
+	// watches are the open transcript streams (rendered views), by stream id.
+	watches map[uint32]context.CancelFunc
 }
 
 func (h *hostSide) setListed(list []string) {
@@ -405,8 +451,9 @@ func (h *hostSide) closeAll() {
 	}
 }
 
-// refresh re-reads the session list every Refresh and sends it when it changed.
-func (h *hostSide) refresh(last []string) {
+// refresh re-reads the session list (and, on v2, which sessions run Claude Code)
+// every Refresh and sends it when either changed.
+func (h *hostSide) refresh(last, lastClaude []string) {
 	t := time.NewTicker(h.c.cfg.Refresh)
 	defer t.Stop()
 	for {
@@ -415,17 +462,18 @@ func (h *hostSide) refresh(last []string) {
 			return
 		case <-t.C:
 			now := h.c.list(h.ctx)
-			if slices.Equal(now, last) {
+			claude := h.resolveClaude(now)
+			if slices.Equal(now, last) && slices.Equal(claude, lastClaude) {
 				continue
 			}
 			// The allowlist moves BEFORE muster hears of a new session, so an open
 			// for it is never refused for being unlisted; a session that ended
 			// is unattachable from this instant.
 			h.setListed(now)
-			if err := h.send(mirror.Msg{Type: mirror.TypeSessions, Sessions: now}); err != nil {
+			if err := h.send(mirror.Msg{Type: mirror.TypeSessions, Sessions: now, Claude: claude}); err != nil {
 				return
 			}
-			last = now
+			last, lastClaude = now, claude
 		}
 	}
 }

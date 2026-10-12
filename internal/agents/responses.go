@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
@@ -173,6 +174,9 @@ type responsesOutputItem struct {
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
+	// type=cctranscript.NativeToolItem (ccd): a call the runtime already RAN.
+	Status string `json:"status,omitempty"`
+	Output string `json:"output,omitempty"`
 }
 
 type responsesResponse struct {
@@ -452,6 +456,23 @@ func handleResponsesEvent(ev sseEvent, emit StreamEmit, final **responsesRespons
 	}
 
 	switch {
+	case kind == "response.output_item.done" && env.Item.Type == cctranscript.NativeToolItem:
+		// A tool the runtime (ccd's Claude Code) ran ITSELF: drawn as a collapsed
+		// row, live and — through PartCollector — persisted. 🔴 NEVER DISPATCHED:
+		// functionCalls() reads only "function_call" items from the COMPLETED
+		// response, and this item is neither of those (see
+		// cctranscript.NativeToolItem).
+		if emit != nil && env.Item.CallID != "" {
+			emit(StreamEvent{Kind: "tool_call", ToolID: env.Item.CallID, ToolName: env.Item.Name, ToolArgs: env.Item.Arguments})
+			if env.Item.Status == "completed" || env.Item.Status == "failed" {
+				emit(StreamEvent{Kind: "tool_result", ToolID: env.Item.CallID, ToolName: env.Item.Name,
+					ToolOK: env.Item.Status == "completed", ToolOutput: truncateForStream(env.Item.Output, toolResultMaxBytes)})
+			}
+		}
+		// ⚠ lastTextIndex is left alone ON PURPOSE: a text-only consumer
+		// (textDeltasOnly) never sees this row, and still needs the blank line
+		// between the segments on either side of it. PartCollector starts a new
+		// part at the row and drops that separator from the part's head.
 	case kind == "response.completed":
 		r := &responsesResponse{Status: "completed", Output: env.Response.Output}
 		*final = r

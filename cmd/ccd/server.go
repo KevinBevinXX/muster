@@ -531,7 +531,7 @@ func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stream := req.Stream == nil || *req.Stream
-	writeResponse(w, res.promptID, res.Segments, stream)
+	writeResponse(w, res.promptID, res.Items, stream)
 }
 
 type turnOutcome struct {
