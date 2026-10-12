@@ -159,12 +159,17 @@ jobs:
       # ok/coverage lines, build errors, the output of every non-passing test)
       # and refuses a skip, zero verdicts, or a `fail` event.
       #
-      # 🔴 `set -o pipefail` IS EXPLICIT AND LOAD-BEARING. Actions runs a `run:`
+      # 🔴 `set -o pipefail` IS EXPLICIT AND LOAD-BEARING (and pinned, with the
+      # pipe, by internal/modulegate/ci_verdict_steps_test.go). Actions runs a `run:`
       # with no `shell:` under `bash -e`, which has NO pipefail, so without this
       # line the step's status is verdict.py's alone. With it, the step fails if
       # EITHER side does. What pipefail ALONE carries is a run that exits
       # non-zero over a stream with no `fail` event in it; a failed test or
       # package is refused by verdict.py as well, independently.
+      #
+      # ⚠ `python3 -u` KEEPS THE LOG STREAMING. On a pipe Python block-buffers
+      # stdout, so without it the whole log lands at once when the suite ends —
+      # and a runner killed from outside loses whatever was still buffered.
       #
       # ⚠ THIS COMMENT USED TO SAY pipefail WAS DELIBERATELY NOT SET, because "a
       # single failing test would kill this step before the skip accounting
@@ -174,7 +179,7 @@ jobs:
       - name: go test, and assert nothing skipped (one run)
         run: |
           set -o pipefail
-          go test -race -cover -json ./... | python3 tests/verdict.py --echo summary
+          go test -race -cover -json ./... | python3 -u tests/verdict.py --echo summary
 
   # Local: make leakscan
   #
@@ -335,7 +340,7 @@ jobs:
           CCD_TMUXIT_RAW_ESC: "1"
         run: |
           set -o pipefail
-          go test -tags tmuxit -race -run '^TestTmux' -json ./cmd/ccd/ | python3 tests/verdict.py --echo all
+          go test -tags tmuxit -race -run '^TestTmux' -json ./cmd/ccd/ | python3 -u tests/verdict.py --echo all
 
   # Local: docker build -f images/claude-code-agent/Dockerfile -t claude-code-agent . \
   #          && docker run --rm claude-code-agent cc-smoke

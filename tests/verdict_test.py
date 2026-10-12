@@ -44,6 +44,11 @@ def stream(*tests: tuple[str, str], pkg_end: str = "pass") -> list[str]:
 
 GREEN = stream(("TestA", "pass"), ("TestB", "pass"))
 
+# What Go >= 1.24 emits for a build that failed: keyed by ImportPath, no Package.
+BUILD_OUTPUT = json.dumps({"ImportPath": f"{PKG}.test", "Action": "build-output",
+                           "Output": "x.go:1:1: synthetic compiler error\n"})
+BUILD_FAIL = json.dumps({"ImportPath": f"{PKG}.test", "Action": "build-fail"})
+
 
 def run(lines: list[str], echo: str = "summary") -> tuple[int, str]:
     out = io.StringIO()
@@ -66,6 +71,8 @@ class Verdict(unittest.TestCase):
     def test_a_skip_is_refused_and_named(self):
         text = self.refuses(stream(("TestA", "pass"), ("TestB", "skip")), "FAIL: tests skipped")
         self.assertIn(f"SKIPPED  {PKG}.TestB", text)
+        # The skip's own output carries its REASON; the list line above does not.
+        self.assertIn("--- SKIP: TestB\n", text)
         self.assertNotIn("records a failure", text)
 
     def test_zero_verdicts_is_refused(self):
@@ -80,6 +87,19 @@ class Verdict(unittest.TestCase):
     def test_a_failed_package_with_passing_tests_is_refused(self):
         text = self.refuses(stream(("TestA", "pass"), pkg_end="fail"), f"FAILED PACKAGE  {PKG}")
         self.assertNotIn("FAILED TEST", text)
+
+    def test_a_bare_build_fail_is_refused_and_named(self):
+        # MEASURED with `go test -json -o <unwritable>`: the tests pass, the package
+        # says `pass`, and the ONLY failure in the stream is a `build-fail`.
+        text = self.refuses(GREEN + [BUILD_FAIL], f"FAILED BUILD    {PKG}.test")
+        self.assertNotIn("FAILED PACKAGE", text)
+        self.assertNotIn("FAILED TEST", text)
+
+    def test_build_output_is_echoed_in_both_modes(self):
+        # Under `-json` this is the only way a compiler error reaches the log.
+        for echo in ("summary", "all"):
+            _, text = run(GREEN + [BUILD_OUTPUT], echo=echo)
+            self.assertIn("x.go:1:1: synthetic compiler error\n", text, echo)
 
     def test_empty_and_non_json_input_cannot_vouch(self):
         self.assertEqual(run([])[0], 2)

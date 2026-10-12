@@ -20,8 +20,9 @@ script under `set -o pipefail`, so the step fails if EITHER side does.
 
 🔴 THE RUN'S OWN EXIT STATUS IS NOT THIS SCRIPT'S TO SEE — `pipefail` CARRIES
 IT. What this script adds is a second, independent read: a `fail` event, for a
-test or for a package whose tests all passed (a TestMain exiting non-zero), is
-refused and NAMED here. If someone drops `pipefail`, that read still stands;
+test, for a package whose tests all passed (a TestMain exiting non-zero), or a
+`build-fail` (which can arrive with NO package `fail` beside it), is refused
+and NAMED here. If someone drops `pipefail`, that read still stands;
 what is lost is only a run that exits non-zero over a stream with no `fail`
 event in it.
 
@@ -39,9 +40,13 @@ package count — a plausible-looking total that is not what anybody means.
            output, and the full output of every test that did not pass
   all      every output line, which is what `go test -v` prints
 
+⚠ WHAT THIS DOES NOT DO: in `summary` mode, a line a test binary writes raw to
+stderr can be attributed by `go test -json` to a neighbouring test that then
+passes, and is dropped with that test's output; `--echo all` shows everything.
+
 Exit codes:
   0  every test produced a verdict, none skipped, nothing failed
-  1  something skipped, nothing ran, or a test or package failed
+  1  something skipped, nothing ran, or a test, package or build failed
   2  the input could not be read as `go test -json` output
 """
 
@@ -58,6 +63,7 @@ def main(stream, echo: str, out=None) -> int:
     failed: list[str] = []
     skipped: list[str] = []
     failed_pkgs: list[str] = []
+    failed_builds: list[str] = []
     buffered: dict[str, list[str]] = {}
     lines = 0
     parsed = 0
@@ -83,6 +89,12 @@ def main(stream, echo: str, out=None) -> int:
         if action == "build-output":
             # Go >= 1.24 reports compiler output as events keyed by ImportPath.
             out.write(e.get("Output", ""))
+            continue
+        if action == "build-fail":
+            # 🔴 NOT IMPLIED BY A PACKAGE `fail`. MEASURED with `go test -json -o
+            # <unwritable dir>`: every test passes, the package event is `pass`,
+            # go exits 1, and this is the only failure in the stream.
+            failed_builds.append(e.get("ImportPath", "?"))
             continue
 
         if not test:
@@ -129,15 +141,18 @@ def main(stream, echo: str, out=None) -> int:
     print(f"tests that FAILED:             {len(failed)}", file=out)
     print(f"tests that SKIPPED:            {len(skipped)}", file=out)
     print(f"packages that FAILED:          {len(failed_pkgs)}", file=out)
+    print(f"builds that FAILED:            {len(failed_builds)}", file=out)
 
     refused = False
 
-    if failed or failed_pkgs:
+    if failed or failed_pkgs or failed_builds:
         refused = True
         print(file=out)
         print("FAIL: the stream records a failure. A package can fail with every one "
               "of its tests passing (a build error, a TestMain that exits non-zero, a "
               "panic outside a test):", file=out)
+        for b in sorted(failed_builds):
+            print(f"  FAILED BUILD    {b}", file=out)
         for p in sorted(failed_pkgs):
             print(f"  FAILED PACKAGE  {p}", file=out)
         for n in sorted(failed):
