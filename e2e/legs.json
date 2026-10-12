@@ -25,7 +25,8 @@
     "tests/byo-credentials.spec.ts": 15.0,
     "tests/invites.spec.ts": 45.0,
     "tests/api-tokens.spec.ts": 25.0,
-    "tests/landing.spec.ts": 4.0
+    "tests/landing.spec.ts": 4.0,
+    "tests/passkeys.spec.ts": 75.0
   },
   "legs": {
     "1": [
@@ -38,7 +39,8 @@
       "tests/agent-menu.spec.ts",
       "tests/byo-credentials.spec.ts",
       "tests/invites.spec.ts",
-      "tests/api-tokens.spec.ts"
+      "tests/api-tokens.spec.ts",
+      "tests/passkeys.spec.ts"
     ],
     "2": [
       "tests/provisioning-indicator.spec.ts",

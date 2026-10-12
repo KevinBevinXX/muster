@@ -88,6 +88,63 @@ type Claims struct {
 	// SessionID is GoTrue's session the token belongs to. muster's own logout
 	// revocation is keyed on it (see internal/api's sessionRevocations).
 	SessionID string `json:"session_id,omitempty"`
+	// AMR is how the session was authenticated, and when (see AuthenticatedAt).
+	AMR AMR `json:"amr,omitempty"`
+}
+
+// AMREntry is one authentication event GoTrue records on a session: the
+// method ("password", "passkey", "recovery", …) and its unix time.
+type AMREntry struct {
+	Method    string `json:"method"`
+	Timestamp int64  `json:"timestamp"`
+}
+
+// AMR is the `amr` claim. GoTrue writes an array of AMREntry objects; RFC 8176
+// allows an array of bare method strings, which this also accepts — with no
+// timestamp, so such an entry never counts as a recent authentication.
+//
+// Measured against v2.189.0 and v2.197.0: a password grant's token carries
+// [{"method":"password","timestamp":<sign-in>}] and a REFRESH keeps that
+// timestamp unchanged — so the timestamp is when the person last proved who
+// they are, not when the token was minted (that is iat).
+type AMR []AMREntry
+
+// UnmarshalJSON accepts both shapes, entry by entry.
+func (a *AMR) UnmarshalJSON(b []byte) error {
+	var raw []json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	out := make(AMR, 0, len(raw))
+	for _, r := range raw {
+		var m string
+		if err := json.Unmarshal(r, &m); err == nil {
+			out = append(out, AMREntry{Method: m})
+			continue
+		}
+		var e AMREntry
+		if err := json.Unmarshal(r, &e); err != nil {
+			return err
+		}
+		out = append(out, e)
+	}
+	*a = out
+	return nil
+}
+
+// AuthenticatedAt is the latest authentication time in the token's amr, and
+// false when it names none (no amr, or entries without a timestamp).
+func (c Claims) AuthenticatedAt() (time.Time, bool) {
+	var latest int64
+	for _, e := range c.AMR {
+		if e.Timestamp > latest {
+			latest = e.Timestamp
+		}
+	}
+	if latest == 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(latest, 0), true
 }
 
 // Verifier checks access tokens against one secret, issuer and audience.

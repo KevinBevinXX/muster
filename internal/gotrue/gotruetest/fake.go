@@ -47,6 +47,8 @@ type User struct {
 	Password  string
 	Confirmed bool
 	Banned    bool
+	// AppMetadata is admin-writable metadata (merged by top-level key).
+	AppMetadata map[string]any
 }
 
 type refreshToken struct {
@@ -59,6 +61,10 @@ type refreshToken struct {
 type session struct {
 	user    string
 	revoked bool
+	// method and authAt are the session's amr entry: how and when the person
+	// authenticated. A refresh keeps both (measured, v2.189.0 and v2.197.0).
+	method string
+	authAt int64
 }
 
 // Fake is a running fake GoTrue.
@@ -88,6 +94,13 @@ type Fake struct {
 	// recovery is each live recovery token_hash → user id (accounts PR 5).
 	recovery map[string]string
 	calls    []Call
+	// Passkeys (GoTrue v2.197.0's /passkeys API; see passkeys.go).
+	passkeysEnabled bool
+	passkeys        map[string]*FakePasskey
+	challenges      map[string]*challenge
+	lastCredential  []byte
+	// adminPasskeyFailures: the next N admin passkey calls answer 500.
+	adminPasskeyFailures int
 }
 
 // Call is one request the fake served.
@@ -106,13 +119,15 @@ func New(t interface {
 }, secret []byte) *Fake {
 	t.Helper()
 	f := &Fake{
-		Secret:    secret,
-		now:       time.Now(),
-		accessTTL: 15 * time.Minute,
-		users:     map[string]*User{},
-		sessions:  map[string]*session{},
-		refresh:   map[string]*refreshToken{},
-		recovery:  map[string]string{},
+		Secret:     secret,
+		now:        time.Now(),
+		accessTTL:  15 * time.Minute,
+		users:      map[string]*User{},
+		sessions:   map[string]*session{},
+		refresh:    map[string]*refreshToken{},
+		recovery:   map[string]string{},
+		passkeys:   map[string]*FakePasskey{},
+		challenges: map[string]*challenge{},
 	}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	f.URL = f.srv.URL
@@ -259,7 +274,7 @@ func (f *Fake) Mint(id string) (string, string, string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	sid := newUUID()
-	f.sessions[sid] = &session{user: id}
+	f.sessions[sid] = &session{user: id, method: "password", authAt: f.nowLocked().Unix()}
 	at, rt := f.issueLocked(sid, "")
 	return at, rt, sid
 }
@@ -291,6 +306,19 @@ func (f *Fake) route(w http.ResponseWriter, r *http.Request) {
 		f.logout(w, r)
 	case r.Method == http.MethodPost && p == "/verify":
 		f.verify(w, r)
+	case r.Method == http.MethodGet && p == "/settings":
+		f.mu.Lock()
+		on := f.passkeysEnabled
+		f.mu.Unlock()
+		writeJSON(w, 200, map[string]any{"passkeys_enabled": on})
+	case strings.HasPrefix(p, "/passkeys"):
+		f.passkeyRoute(w, r)
+	case strings.HasPrefix(p, "/admin/users/") && strings.Contains(strings.TrimPrefix(p, "/admin/users/"), "/passkeys"):
+		if !f.isAdmin(r) {
+			writeErr(w, 403, "not_admin", "User not allowed")
+			return
+		}
+		f.adminPasskeyRoute(w, r)
 	case strings.HasPrefix(p, "/admin/"):
 		if !f.isAdmin(r) {
 			writeErr(w, 403, "not_admin", "User not allowed")
@@ -331,7 +359,7 @@ func (f *Fake) token(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				sid := newUUID()
-				f.sessions[sid] = &session{user: u.ID}
+				f.sessions[sid] = &session{user: u.ID, method: "password", authAt: f.nowLocked().Unix()}
 				at, rt := f.issueLocked(sid, "")
 				f.writeSessionLocked(w, at, rt, u)
 				return
@@ -477,7 +505,21 @@ func (f *Fake) adminRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		switch r.Method {
+		case http.MethodGet:
+			writeJSON(w, 200, map[string]any{"id": id, "email": u.Email, "app_metadata": u.AppMetadata})
 		case http.MethodPut:
+			if md, ok := body["app_metadata"].(map[string]any); ok {
+				if u.AppMetadata == nil {
+					u.AppMetadata = map[string]any{}
+				}
+				for k, v := range md {
+					if v == nil {
+						delete(u.AppMetadata, k)
+					} else {
+						u.AppMetadata[k] = v
+					}
+				}
+			}
 			if pw, ok := body["password"].(string); ok {
 				// Measured (v2.189.0, v2.197.0): an admin password change revokes every
 				// session the user has.
@@ -545,7 +587,7 @@ func (f *Fake) verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sid := newUUID()
-	f.sessions[sid] = &session{user: u.ID}
+	f.sessions[sid] = &session{user: u.ID, method: "recovery", authAt: f.nowLocked().Unix()}
 	at, rt := f.issueLocked(sid, "")
 	f.writeSessionLocked(w, at, rt, u)
 }
@@ -561,6 +603,7 @@ func (f *Fake) issueLocked(sid, _ string) (access, refresh string) {
 		Subject: s.user, Issuer: Issuer, Audience: gotrue.Audience{Audience},
 		IssuedAt: f.nowLocked().Unix(), ExpiresAt: f.nowLocked().Add(f.accessTTL).Unix(),
 		Role: "authenticated", Email: email, SessionID: sid,
+		AMR: gotrue.AMR{{Method: s.method, Timestamp: s.authAt}},
 	})
 	if err != nil {
 		panic(err)

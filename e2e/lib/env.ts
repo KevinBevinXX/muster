@@ -53,6 +53,11 @@ export const gotrueSecret = 'e2e-gotrue-jwt-secret-not-a-real-one-0123456789';
 export const invitesMainPort = port + 13;
 export const invitesBrowserPort = port + 14;
 export const invitesGotruePort = Number(process.env.MUSTER_E2E_INVITES_GOTRUE_PORT ?? port + 15);
+// Passkeys: their own gotrue-mode server and real GoTrue (passkeys ON, RP
+// localhost, origin = this browser port), for the same reason as invites.
+export const passkeysMainPort = port + 16;
+export const passkeysBrowserPort = port + 17;
+export const passkeysGotruePort = Number(process.env.MUSTER_E2E_PASSKEYS_GOTRUE_PORT ?? port + 18);
 // The seeded `docs-sweeper` agent's own token (e2e/seed). Invented, like every
 // value here.
 export const agentToken = 'e2e-agent-token-not-a-real-one';
