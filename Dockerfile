@@ -34,6 +34,7 @@ COPY internal/ui/ ./internal/ui/
 COPY internal/api/login.go ./internal/api/login.go
 # The gotrue-mode sign-in, claim and account pages (accounts PR 4).
 COPY internal/api/login_gotrue.go ./internal/api/login_gotrue.go
+COPY internal/api/api_tokens.go ./internal/api/api_tokens.go
 
 # 🔴 `make css-check`, NOT A HAND-ROLLED `test -s` PLUS A grep. That target
 # already owns this verification, and it checks TWO things this Dockerfile must

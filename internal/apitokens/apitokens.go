@@ -193,10 +193,13 @@ func (s *PGStore) Authenticate(ctx context.Context, token string) (Token, error)
 		return Token{}, ErrUserDisabled
 	}
 	if now := s.now(); t.LastUsedAt == nil || now.Sub(*t.LastUsedAt) >= LastUsedGranularity {
+		// ONE throttle, here, on the value just read. (A second copy in the
+		// UPDATE's WHERE was unreachable — this branch already decided — so
+		// no test could tell it was there; two concurrent first uses both
+		// writing is harmless.)
 		var stamped time.Time
-		if err := s.pool.QueryRow(ctx, `UPDATE api_tokens SET last_used_at = now()
-			WHERE id = $1 AND (last_used_at IS NULL OR last_used_at < now() - make_interval(secs => $2))
-			RETURNING last_used_at`, t.ID, LastUsedGranularity.Seconds()).Scan(&stamped); err == nil {
+		if err := s.pool.QueryRow(ctx, `UPDATE api_tokens SET last_used_at = now() WHERE id = $1
+			RETURNING last_used_at`, t.ID).Scan(&stamped); err == nil {
 			t.LastUsedAt = &stamped
 		}
 	}

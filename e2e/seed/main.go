@@ -59,7 +59,12 @@ func run() error {
 		// The accounts state the gotrue-login spec changes: the admin claim
 		// binds user 1 to a GoTrue login, which a re-run must be able to do
 		// again. User 1 itself stays (every row is owned by it).
-		if _, err = owner.Exec(ctx, `DELETE FROM invites`); err == nil {
+		// Personal API tokens (accounts PR 6) go too: the api-tokens spec
+		// asserts an empty token list, so a re-run must start from one.
+		if _, err = owner.Exec(ctx, `DELETE FROM api_tokens`); err == nil {
+			_, err = owner.Exec(ctx, `DELETE FROM invites`)
+		}
+		if err == nil {
 			_, err = owner.Exec(ctx, `UPDATE users SET gotrue_sub = NULL, email = NULL, disabled_at = NULL WHERE id = 1`)
 		}
 	}
