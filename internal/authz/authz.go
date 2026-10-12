@@ -69,6 +69,11 @@ const (
 	// ViaRelay is an agent's own per-agent token on the claude-code approval
 	// relay (requireRelayAgent: /agent/approvals, /agent/blocked).
 	ViaRelay Via = "relay"
+	// ViaToken is a user's own PERSONAL API token (`mst_…`, accounts PR 6),
+	// presented on the machine tier (requireHookToken and its siblings, and
+	// requireAPIToken). It acts as the token's OWNER, never as the machine
+	// user. The spelling is the audit_log `via` value migration 0006 names.
+	ViaToken Via = "api-token"
 	// ViaSystem is a background loop acting for every user. Only System sets
 	// it.
 	ViaSystem Via = "system"
@@ -82,7 +87,7 @@ const (
 // deliberately absent: a request is never the system.
 var requestVias = map[Via]bool{
 	ViaSession: true, ViaHook: true, ViaService: true,
-	ViaAgent: true, ViaConnect: true, ViaRelay: true,
+	ViaAgent: true, ViaConnect: true, ViaRelay: true, ViaToken: true,
 }
 
 // OperatorUserID is the user every principal names today: the operator, the

@@ -115,7 +115,8 @@ parameter is empty (the doubled-slash 301 class).
 
 Config, lowest to highest precedence:
   ` + defaultEnvFile + `  ->  environment  ->  --api-url / --token
-The token is read from ` + envToken + ` only. It is never accepted as a positional
+The token is read from ` + envToken + ` (or its older name ` + envTokenAlias + `, which
+` + envToken + ` beats within one source). It is never accepted as a positional
 argument (argv is world-readable via /proc) and is never printed.
 
 TWO COMMAND FAMILIES REACH TASKS, AND THEY ARE NOT ALIASES.
@@ -155,10 +156,10 @@ func newRootCmd(a *app) *cobra.Command {
 	root.SetErr(a.stderr)
 	root.PersistentFlags().StringVar(&a.flagAPIURL, "api-url", "", "muster base URL (default from "+envAPIURL+")")
 	root.PersistentFlags().StringVar(&a.flagToken, "token", "",
-		"hook token (default from "+envToken+"; prefer the env file — flags are visible in ps)")
+		"personal API token or hook token (default from "+envToken+"; prefer the env file — flags are visible in ps)")
 	root.PersistentFlags().StringVar(&a.flagEnvFile, "env-file", defaultEnvFile, "KEY=VALUE config file")
 	root.PersistentFlags().DurationVar(&a.flagTimeout, "timeout", rootDefaultTimeout, "per-request timeout")
 
-	root.AddCommand(newTaskCmd(a), newAgentCmd(a), newChiefCmd(a))
+	root.AddCommand(newTaskCmd(a), newAgentCmd(a), newChiefCmd(a), newTokenCmd(a), newWhoAmICmd(a))
 	return root
 }

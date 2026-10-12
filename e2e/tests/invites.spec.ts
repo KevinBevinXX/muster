@@ -189,7 +189,9 @@ test('an admin invites a member by link; the member sees only its own (empty) bo
   expect(mp.url(), 'the fragment left the address bar').toBe(browserURL + '/auth/reset');
   await mp.fill('#reset-password', newPW);
   await mp.fill('#reset-password2', newPW);
-  await Promise.all([mp.waitForURL(browserURL + '/'), mp.getByRole('button', { name: 'Set password' }).click()]);
+  // A reset lands on /account, which says it revoked the API tokens (accounts PR 6).
+  await Promise.all([mp.waitForURL(browserURL + '/account?reset=1'), mp.getByRole('button', { name: 'Set password' }).click()]);
+  await expect(mp.getByRole('status')).toContainText('Your API tokens were revoked');
   await mp.goto(browserURL + '/tasks');
   await expect(mp.locator('#fab-tasks')).toBeVisible();
   const again = await browser.newContext({ viewport });

@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/apitokens"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -43,6 +44,9 @@ type Extensions struct {
 	// Users answers a user's role for the request Principal (principal.go's
 	// roleOf). Nil: user 1 is admin and everyone else a member.
 	Users users.Store
+	// APITokens is the personal API token store (accounts PR 6;
+	// api_tokens.go). Nil: no personal token is admitted anywhere (503).
+	APITokens apitokens.Store
 
 	// AgentNamespacePrefix is the prefix [Extensions.AgentNamespace] builds a new
 	// agent's stored namespace from. It is the DEPLOYMENT's prefix — the same

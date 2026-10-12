@@ -783,8 +783,15 @@ func (s *Server) requireGoTrueSession(w http.ResponseWriter, r *http.Request, ne
 	}
 	// The role comes from roleOf — the ONE role read (users.role, failure →
 	// member) every door uses — not from the session's cached user row.
+	// The session's issued-at rides along for the one handler that needs it:
+	// minting an API token re-checks it against the session cutoff under the
+	// credentials lock (api_tokens.go, apitokens.Create).
+	ctx = context.WithValue(ctx, sessionIssuedAtKey{}, sess.claims.IssuedAt)
 	s.admit(w, r.WithContext(ctx), next, s.principalFor(ctx, sess.user.ID, authz.ViaSession))
 }
+
+// sessionIssuedAtKey carries a GoTrue session's iat (unix seconds).
+type sessionIssuedAtKey struct{}
 
 // OffBrowserListenerRefusal is the error a browser-session route answers on
 // the machine-token listener in gotrue mode.

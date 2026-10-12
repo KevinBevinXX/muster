@@ -110,6 +110,14 @@ func auditInsert(ctx context.Context, tx pgx.Tx, by Actor, action, object string
 	return err
 }
 
+// AuditTx writes one audit_log row inside the CALLER's transaction tx, so an
+// action and its record commit together. It is the account packages' one
+// audit writer: apitokens (accounts PR 6) records token create/revoke through
+// it, as the token's owner (0009's self_append policy).
+func AuditTx(ctx context.Context, tx pgx.Tx, by Actor, action, object string, detail map[string]any) error {
+	return auditInsert(ctx, tx, by, action, object, detail)
+}
+
 // inTx runs fn in one System transaction.
 func (s *PGStore) inTx(ctx context.Context, fn func(context.Context, pgx.Tx) error) error {
 	ctx = sys(ctx)

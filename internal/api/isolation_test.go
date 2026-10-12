@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/apitokens"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/db"
@@ -88,6 +89,7 @@ const (
 	classAgentToken routeClass = "agent-token" // an agent's own token: /agent/task, /agent/approvals, ...
 	classConnect    routeClass = "connect"     // the connector surface (also served on the connect port)
 	classMirror     routeClass = "mirror"      // the mirrored terminal (#63), addressed by ?host=&session=
+	classAPIToken   routeClass = "api-token"   // a user's own PERSONAL token only: the token API (accounts PR 6)
 	// classAdminOnly is a SESSION route served to role=admin only — the admin
 	// pages (/admin/*, accounts PR 5), the one place "see all" exists. It is
 	// NOT classAdmin: that class is the shared MACHINE tier acting as user 1.
@@ -116,6 +118,14 @@ var isolationClasses = map[string]routeClass{
 	"GET /auth/claim":  classPublic,
 	"POST /auth/claim": classPublic,
 	"GET /account":     classList,
+	// Personal API tokens (accounts PR 6). The page lists the CALLER's tokens
+	// (A's carry the canary in their names); revoke names a token by id.
+	"GET /account/tokens":              classList,
+	"POST /account/tokens":             classList,
+	"POST /account/tokens/{id}/revoke": classParam,
+	"GET /api/whoami":                  classAdmin,
+	"GET /api/tokens":                  classAPIToken,
+	"DELETE /api/tokens/{id}":          classAPIToken,
 	// accounts PR 5: invite redemption and the password reset (tokens in form
 	// fields, like the claim), and the admin pages.
 	"GET /invite":      classPublic,
@@ -254,6 +264,11 @@ var wantCanaryForA = []string{
 	// first lists the router's directories, admin-only and checked by the
 	// operator canary; the second is the bare dispatch form.)
 	"GET /ui/tags", "GET /ui/notifications",
+	// Accounts PR 6: A's tokens are canary-named, so the token page and the
+	// token API must show A its own — and a machine-tier list read through A's
+	// personal token must show A's tasks (the hook tier had no such control
+	// before: only the operator held a machine credential).
+	"GET /account/tokens", "GET /api/tokens", "GET /api/tasks",
 }
 
 func TestEveryRouteIsClassifiedForIsolation(t *testing.T) {
@@ -275,7 +290,7 @@ func TestEveryRouteIsClassifiedForIsolation(t *testing.T) {
 	sort.Strings(unclassified)
 	sort.Strings(stale)
 	if len(unclassified) > 0 {
-		t.Errorf("routes in %s with no isolation class (public|list|param|admin|admin-only|agent-token|connect|mirror):\n  %s",
+		t.Errorf("routes in %s with no isolation class (public|list|param|admin|admin-only|agent-token|connect|mirror|api-token):\n  %s",
 			goldenPath, strings.Join(unclassified, "\n  "))
 	}
 	if len(stale) > 0 {
@@ -347,6 +362,13 @@ type isoWorld struct {
 	gtH      http.Handler
 	gtFake   *gotruetest.Fake
 	gtTokens map[int64][2]string
+	// Personal API tokens (accounts PR 6): each user's own credential, and A's
+	// SECOND token — the object the token routes name (so revoking it never
+	// revokes the credential A's control walk is using).
+	apiTokens   map[int64]string
+	aToken2     apitokens.Token
+	aTokTask    notes.Note    // A's task (with aTokComment) for A's personal-token control
+	aTokComment notes.Comment // see TestNoRouteLetsOneUserReachAnothersData's objTok
 }
 
 func newIsoWorld(t *testing.T) *isoWorld {
@@ -474,19 +496,36 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		Connector: w.aConnName, Method: "GET", Host: w.upHost, Path: "/", Status: 200, Detail: w.canary + " audit"}), "a audit")
 	must(gh.Save(ua, w.canary+"-login", "repo", "gho_"+w.canary), "a github")
 
+	// Personal tokens: one credential each for A and B, and A's second token
+	// (canary-named) as the object. Minted through the real store as each
+	// user, so row-level security decides the owner.
+	ts := apitokens.NewPG(pool)
+	w.apiTokens = map[int64]string{}
+	for _, u := range []isoUser{w.a, w.b} {
+		tok, _, err := ts.Create(as2(u), u.name+" cli", 0)
+		must(err, u.name+" api token")
+		w.apiTokens[u.uid] = tok
+	}
+	_, w.aToken2, err = ts.Create(ua, w.canary+" token", 0)
+	must(err, "a second api token")
+	w.aTokTask, err = ns.Create(ua, notes.Note{Title: w.canary + " token-control", Status: notes.StatusOpen})
+	must(err, "a token-control task")
+	w.aTokComment, err = ns.AddComment(ua, notes.Comment{NoteID: w.aTokTask.ID, Author: "a", Body: w.canary + " token comment"})
+	must(err, "a token-control comment")
+
 	w.aIdentities = []string{w.a.agent.Name, agents.ChiefNameFor(w.a.uid), w.aSessionLink, w.aTag, w.aProject}
 	w.opInvite, err = users.NewPG(pool).CreateInvite(ctx, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession},
 		bytes.Repeat([]byte{byte(time.Now().UnixNano())}, 32), "", time.Now().Add(time.Hour))
 	must(err, "op invite")
 	w.objA = isoObjs{user: w.a.uid, invite: w.opInvite.ID, task: w.a.task.ID, agent: w.a.agent.ID, grant: w.aGrantID, comment: w.aComment.ID,
 		attach: w.aAttachment.ID, chat: w.aChatSession.ID, agentName: w.a.agent.Name, connName: w.aConnName,
-		tag: w.aTag, link: w.aSessionLink, mirrorHost: w.canary + "-host", mirrorSession: "main"}
+		tag: w.aTag, link: w.aSessionLink, mirrorHost: w.canary + "-host", mirrorSession: "main", token: w.aToken2.ID}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
 	const ghostID = 9_000_000_000
 	w.ghost = isoObjs{user: ghostID, invite: ghostID, task: ghostID, agent: ghostID, grant: ghostID, comment: ghostID, attach: ghostID, chat: ghostID,
 		agentName: "ghost-agent" + w.suffix, connName: "ghostconn" + w.suffix, tag: "ghosttag", link: "ghost-sess-" + w.suffix,
-		mirrorHost: "ghost-host", mirrorSession: "main"}
+		mirrorHost: "ghost-host", mirrorSession: "main", token: ghostID}
 
 	// The server, fully wired over the real stores.
 	w.bus = sse.New(64)
@@ -494,7 +533,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		log.New(io.Discard, "", 0))
 	w.prov = &isoProvisioner{store: as}
 	ext := Extensions{
-		Notes: ns, Agents: as, GitHub: gh, Users: users.NewPG(pool),
+		Notes: ns, Agents: as, GitHub: gh, Users: users.NewPG(pool), APITokens: apitokens.NewPG(pool),
 		GitHubOAuth: GitHubOAuthConfig{ClientID: "iso-client", ClientSecret: "iso-secret", BaseURL: "http://muster.test",
 			StateKey: []byte("iso-walk-oauth-state-key-0123456789")},
 		Provisioner: w.prov, Gateway: w.prov, Connectors: cs,
@@ -602,7 +641,8 @@ func newIsoWorld(t *testing.T) *isoWorld {
 			`DELETE FROM chat_sessions WHERE owner_id = ANY($1)`, `DELETE FROM agents WHERE owner_id = ANY($1)`,
 			`DELETE FROM task_sessions WHERE owner_id = ANY($1)`, `DELETE FROM note_attachments WHERE owner_id = ANY($1)`,
 			`DELETE FROM note_comments WHERE owner_id = ANY($1)`, `DELETE FROM notes WHERE owner_id = ANY($1)`,
-			`DELETE FROM github_connection WHERE owner_id = ANY($1)`, `DELETE FROM audit_log WHERE user_id = ANY($1)`,
+			`DELETE FROM github_connection WHERE owner_id = ANY($1)`,
+			`DELETE FROM api_tokens WHERE user_id = ANY($1)`, `DELETE FROM audit_log WHERE user_id = ANY($1)`,
 			`DELETE FROM users WHERE id = ANY($1)`,
 		} {
 			_, _ = pool.Exec(bg, q, ids)
@@ -620,6 +660,7 @@ type cred struct {
 	gotrueUser  int64  // a REAL gotrue session (cookies the fake issuer signed) of this user
 	agentToken  string // an agent's own token
 	hook        bool   // the shared machine hook token (user 1)
+	apiToken    string // a user's own personal API token (mst_…)
 }
 
 func (c cred) String() string {
@@ -632,6 +673,8 @@ func (c cred) String() string {
 		return "agent-token"
 	case c.hook:
 		return "hook"
+	case c.apiToken != "":
+		return "api-token"
 	}
 	return "none"
 }
@@ -680,6 +723,8 @@ func (w *isoWorld) do(h http.Handler, method, path, body string, c cred) *httpte
 		r.Header.Set("X-Muster-Token", c.agentToken)
 	case c.hook:
 		r.Header.Set("X-Muster-Token", isoHookToken)
+	case c.apiToken != "":
+		r.Header.Set("Authorization", "Bearer "+c.apiToken)
 	}
 	rec := httptest.NewRecorder()
 	func() {
@@ -693,6 +738,7 @@ func (w *isoWorld) do(h http.Handler, method, path, body string, c cred) *httpte
 type isoObjs struct {
 	user, invite                              int64
 	task, agent, grant, comment, attach, chat int64
+	token                                     int64 // a personal API token's id
 	agentName, connName, tag, link            string
 	mirrorHost, mirrorSession                 string
 }
@@ -717,6 +763,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		}
 	case strings.Contains(path, "/api/sessions/{id}"):
 		id = o.link
+	case strings.Contains(path, "tokens/{id}"):
+		id = strconv.FormatInt(o.token, 10)
 	case strings.HasPrefix(path, "/admin/users/{id}"):
 		id = strconv.FormatInt(o.user, 10)
 	case strings.HasPrefix(path, "/admin/invites/{id}"):
@@ -797,6 +845,15 @@ func (w *isoWorld) snapshot() map[string]string {
 			if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t::text)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
 				w.t.Fatalf("snapshot %s: %v", tbl, err)
 			}
+		}
+		out[tbl] = js
+	}
+	// The account tables are keyed by user_id, not owner_id (accounts PR 6:
+	// B's revoke of A's token, or an audit row written as A, would show here).
+	for _, tbl := range []string{"api_tokens", "audit_log"} {
+		var js string
+		if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t.id)::text, '[]') FROM `+tbl+` t WHERE user_id=$1`, w.a.uid).Scan(&js); err != nil {
+			w.t.Fatalf("snapshot %s: %v", tbl, err)
 		}
 		out[tbl] = js
 	}
@@ -952,7 +1009,8 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 	w.router.reset()
 
 	// --- user B, a member, through every one of B's credentials ---
-	bResults := w.walkAs(w.b, w.objA, []cred{{sessionUser: w.b.uid}, {gotrueUser: w.b.uid}, {agentToken: w.b.token}}, routes)
+	bResults := w.walkAs(w.b, w.objA, []cred{{sessionUser: w.b.uid}, {gotrueUser: w.b.uid}, {agentToken: w.b.token},
+		{apiToken: w.apiTokens[w.b.uid]}}, routes)
 	w.checkOutsider(t, "B", bResults)
 	// The operator's own data (the router's directory list) is not A's, so the
 	// canary check above cannot see it: a MEMBER must not get it either.
@@ -971,7 +1029,18 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 	if gtAdmitted < 20 {
 		t.Errorf("CONTROL: B's real gotrue session was admitted on only %d routes — the leg is not walking", gtAdmitted)
 	}
-	if len(bResults) < 4*len(isolationClasses) {
+	// The personal-token leg must have been ADMITTED too (accounts PR 6): every
+	// hook-tier and token route, or its clean bodies are 401s.
+	tokAdmitted := 0
+	for _, res := range bResults {
+		if strings.HasPrefix(res.via, "api-token") && is2xx(res.status) {
+			tokAdmitted++
+		}
+	}
+	if tokAdmitted < 8 {
+		t.Errorf("CONTROL: B's personal API token was admitted on only %d routes — the leg is not walking", tokAdmitted)
+	}
+	if len(bResults) < 5*len(isolationClasses) {
 		t.Fatalf("the walk drove %d requests for %d routes", len(bResults), len(isolationClasses))
 	}
 	for _, res := range bResults {
@@ -1020,6 +1089,22 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 
 	// --- the NEGATIVE CONTROL: the same walk as A must reach A's data ---
 	aResults := w.walkAs(w.a, w.objA, []cred{{sessionUser: w.a.uid}, {gotrueUser: w.a.uid}, {agentToken: w.a.token}}, routes)
+	// A's PERSONAL-TOKEN control runs on its own objects (objTok: a fresh task
+	// and comment of A's), AFTER the walk above. 🔴 NOT folded into that walk:
+	// the hook tier's DELETE /api/tasks/… sort before the session tier's
+	// DELETE /tasks/…, so A's token would delete the very objects the session
+	// control then has to find — and the session routes would read as
+	// unreached (measured: two CONTROL failures). Its results join aResults,
+	// so the reached/canary checks below cover it.
+	objTok := w.objA
+	objTok.task, objTok.comment = w.aTokTask.ID, w.aTokComment.ID
+	var tokRoutes []string
+	for _, r := range routes {
+		if c := isolationClasses[r]; c == classAdmin || c == classAPIToken {
+			tokRoutes = append(tokRoutes, r)
+		}
+	}
+	aResults = append(aResults, w.walkAs(w.a, objTok, []cred{{apiToken: w.apiTokens[w.a.uid]}}, tokRoutes)...)
 	sawCanary := map[string]bool{}
 	reached := map[string]bool{}
 	distinguishes := func(res isoResult) bool {
@@ -1045,8 +1130,12 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 		}
 	}
 	for _, route := range routes {
-		if !namesObject(route) || reached[route] || isolationClasses[route] == classAdmin {
-			continue // admin-tier routes: A has no machine credential; the hook control is below
+		// 🔴 ADMIN-TIER ROUTES ARE NO LONGER EXEMPT (accounts PR 6): A now holds a
+		// machine credential of its own — its personal token — so the hook tier
+		// gets the same "A's own answer differs from the ghost's" control as
+		// every other route, and B's token walk above is a fact about identity.
+		if !namesObject(route) || reached[route] {
+			continue
 		}
 		if isolationClasses[route] == classAdminOnly {
 			continue // A is a member too; the admin's control is TestAMemberCannotReachAnyAdminRoute

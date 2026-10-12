@@ -404,6 +404,8 @@ func (s *Server) registerAll(mux Mux) {
 	// login), and the admin pages (requireAdmin).
 	s.registerInviteRoutes(mux)
 	s.registerAdminRoutes(mux)
+	// Personal API tokens (accounts PR 6): /api/whoami, /api/tokens, /account/tokens.
+	s.registerAPITokenRoutes(mux)
 
 	// --- The SPA shell. Each tab is a real route (deep-linking + back/forward);
 	// they all serve the shell with the matching tab active, derived from the

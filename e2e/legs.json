@@ -22,7 +22,8 @@
     "tests/sw.spec.ts": 0.8,
     "tests/mirrored.spec.ts": 5.4,
     "tests/gotrue-login.spec.ts": 50.0,
-    "tests/invites.spec.ts": 45.0
+    "tests/invites.spec.ts": 45.0,
+    "tests/api-tokens.spec.ts": 25.0
   },
   "legs": {
     "1": [
@@ -33,7 +34,8 @@
       "tests/connectors.spec.ts",
       "tests/shortcuts.spec.ts",
       "tests/agent-menu.spec.ts",
-      "tests/invites.spec.ts"
+      "tests/invites.spec.ts",
+      "tests/api-tokens.spec.ts"
     ],
     "2": [
       "tests/provisioning-indicator.spec.ts",

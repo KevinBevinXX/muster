@@ -69,14 +69,17 @@ task comment
 task create
 task get
 task ls
-task status"
+task status
+token ls
+token revoke
+whoami"
 
 # WANT_COUNT is pinned to the number the split SPECIFIES, not to `wc -l` of
 # LEDGER. Both are asserted, so adding a verb AND its ledger row in one commit
 # still fails until someone moves this literal deliberately. (tree_test.go pins
 # the identical number for the in-process tree; they are two reads of one
 # decision.)
-WANT_COUNT=12
+WANT_COUNT=15
 
 # FORBIDDEN is the other half of the split: verbs that belong to the upstream
 # CLI this one was extracted from and must NEVER appear here.

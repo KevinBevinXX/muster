@@ -30,12 +30,14 @@ DELETE /agent/approvals/{id}
 DELETE /agents/{id}
 DELETE /api/tasks/{id}
 DELETE /api/tasks/{id}/comments/{cid}
+DELETE /api/tokens/{id}
 DELETE /connector-grants/{id}
 DELETE /connectors/{name}
 DELETE /tasks/{id}
 DELETE /tasks/{id}/comments/{cid}
 DELETE /tasks/{id}/tags/{tag}
 GET /account
+GET /account/tokens
 GET /admin/invites
 GET /admin/users
 GET /agent/approvals/{id}
@@ -58,6 +60,8 @@ GET /api/sessions/{id}/tasks
 GET /api/tags
 GET /api/tasks
 GET /api/tasks/{id}
+GET /api/tokens
+GET /api/whoami
 GET /apple-touch-icon-precomposed.png
 GET /apple-touch-icon.png
 GET /auth/claim
@@ -112,6 +116,8 @@ PATCH /agent/task/status
 PATCH /api/tasks/{id}
 PATCH /api/tasks/{id}/status
 PATCH /tasks/{id}/status
+POST /account/tokens
+POST /account/tokens/{id}/revoke
 POST /admin/invites
 POST /admin/invites/{id}/revoke
 POST /admin/users/{id}/disable

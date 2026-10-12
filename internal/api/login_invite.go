@@ -492,7 +492,10 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 	// (TestAResetEndsOtherDevicesAccessTokensAtOnce). Moving it first means a
 	// failure below leaves the old sessions ended and the password unchanged —
 	// the safe half — never the reverse.
-	cut, err := s.gt.Accounts.BumpSessionCutoff(r.Context(), u.ID)
+	// ResetCredentials also REVOKES every personal API token the user holds, in
+	// the cutoff's transaction (accounts PR 6): a reset is what someone does
+	// after a credential leaked, and a token is a credential.
+	cut, err := s.gt.Accounts.ResetCredentials(r.Context(), u.ID)
 	if err != nil {
 		s.logger.Printf("reset: moving the session cutoff for user %d failed: %v", u.ID, err)
 		// GoTrue has already SPENT the single-use recovery token (/verify
@@ -537,6 +540,10 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 // first, and checks what GoTrue issued: a token still inside the cutoff's
 // second (GoTrue's clock behind Postgres's) is signed out again and the grant
 // retried, at most three times.
+// resetTokensRevoked is appended to every page a reset that SET the password
+// ends on: the reset revoked the user's API tokens (users.ResetCredentials).
+const resetTokensRevoked = "Your API tokens were revoked."
+
 func (s *Server) signInAfterCutoff(w http.ResponseWriter, r *http.Request, ip, email, pw string, cut time.Time) {
 	for attempt := 0; attempt < 3; attempt++ {
 		// Attempt n waits until n+1 whole seconds past the cutoff's second.
@@ -558,13 +565,15 @@ func (s *Server) signInAfterCutoff(w http.ResponseWriter, r *http.Request, ip, e
 			continue
 		}
 		if _, problem, code := s.admitFreshSession(r.Context(), sess); problem != "" {
-			s.renderNotice(w, code, "Your password is set, but sign-in failed", problem)
+			s.renderNotice(w, code, "Your password is set, but sign-in failed", problem+" "+resetTokensRevoked)
 			return
 		}
 		s.setGoTrueCookies(w, sess)
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		// To /account, which says the reset revoked the user's API tokens
+		// (accounts PR 6), rather than straight to the board.
+		http.Redirect(w, r, accountResetDonePath, http.StatusSeeOther)
 		return
 	}
 	s.renderNotice(w, http.StatusBadGateway, "Your password is set, but sign-in failed",
-		"Sign in with your email and new password in a moment.")
+		"Sign in with your email and new password in a moment. "+resetTokensRevoked)
 }

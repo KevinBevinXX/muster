@@ -409,6 +409,14 @@ func isDocumentNavigation(r *http.Request) bool {
 // warns at boot when the token is unset.
 func (s *Server) requireHookToken(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// A PERSONAL token (mst_…) is its own door, decided before anything about
+		// the shared secret: it acts as its owner, needs no MUSTER_HOOK_TOKEN, and
+		// a bad one is refused rather than falling through to the open
+		// enforce-when-set case (api_tokens.go).
+		if tok, ok := s.personalTokenFor(r); ok {
+			s.admitAPIToken(w, r, next, tok)
+			return
+		}
 		// ⚠ THE UNENFORCED CASE ACTS AS THE MACHINE USER TOO. It admitted
 		// everyone as the operator's own tier before principals existed; giving
 		// it a principal states that rather than changing it.
@@ -509,6 +517,14 @@ const HookUnarmedField = "unarmed"
 // `queued:false` gives the approval gate (cmd/muster's refusedApproval).
 func (s *Server) requireArmedHookToken(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// A PERSONAL token (mst_…) is its own door, decided before anything about
+		// the shared secret: it acts as its owner, needs no MUSTER_HOOK_TOKEN, and
+		// a bad one is refused rather than falling through to the open
+		// enforce-when-set case (api_tokens.go).
+		if tok, ok := s.personalTokenFor(r); ok {
+			s.admitAPIToken(w, r, next, tok)
+			return
+		}
 		if reason := s.auth.HookArmingRefusal(); reason != "" {
 			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 				"error":          "this server does not serve the machine agent-steering write: " + reason,
@@ -769,6 +785,14 @@ func (s *Server) requireServiceToken(next http.HandlerFunc) http.HandlerFunc {
 // stated in full.
 func (s *Server) requireHookOrServiceToken(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// A PERSONAL token (mst_…) is its own door, decided before anything about
+		// the shared secret: it acts as its owner, needs no MUSTER_HOOK_TOKEN, and
+		// a bad one is refused rather than falling through to the open
+		// enforce-when-set case (api_tokens.go).
+		if tok, ok := s.personalTokenFor(r); ok {
+			s.admitAPIToken(w, r, next, tok)
+			return
+		}
 		if s.refuseUnarmedHookInGoTrueMode(w) {
 			return
 		}

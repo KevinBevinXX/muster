@@ -38,17 +38,25 @@ const (
 	// does not carry, and that test is what turns "one URL is enough" into a
 	// measurement.
 	envAPIURL = "MUSTER_API_URL"
-	// envToken is the ONE credential this binary presents.
+	// envToken is the ONE credential this binary presents (accounts PR 6).
 	//
-	// ⚠ WHAT IT HOLDS DEPENDS ON WHERE THE CLIENT RUNS, and the two cases are
-	// not interchangeable. On an operator HOST it is the server's shared hook
-	// secret — the value api.AuthConfig.HookToken is compared against. Inside a
-	// managed AGENT POD it is that pod's OWN per-agent token, which is what
-	// api.requireAgentToken resolves to an agent row; the shared secret is not
-	// in a pod at all. The `agent task` verbs work only in the second case and
-	// every other verb only in the first, which is why they are separate
-	// families rather than aliases.
-	envToken = "MUSTER_HOOK_TOKEN"
+	// ⚠ WHAT IT HOLDS DEPENDS ON WHO RUNS THE CLIENT, and the cases are not
+	// interchangeable:
+	//   - a PERSON: their own personal API token (`mst_…`, minted at
+	//     /account/tokens or with `token create`). It acts as that person on
+	//     every machine-tier route, and it is the only credential `token …`
+	//     accepts.
+	//   - an operator HOST's hook scripts: the server's shared hook secret
+	//     (api.AuthConfig.HookToken), acting as the machine user.
+	//   - a managed AGENT POD: that pod's OWN per-agent token, which is what
+	//     api.requireAgentToken resolves to an agent row. The `agent task`
+	//     verbs work only there.
+	envToken = "MUSTER_TOKEN"
+	// envTokenAlias is the name this credential had before personal tokens,
+	// and it is STILL READ: every hook host's env file and every agent pod
+	// (internal/agentspec injects it) spells it this way. Within one source
+	// envToken wins over it; a higher-precedence source still wins over both.
+	envTokenAlias = "MUSTER_HOOK_TOKEN"
 )
 
 // config is the resolved connection config. The token is NEVER printed: it is
@@ -136,8 +144,10 @@ func resolveConfig(envFilePath string, fileVals map[string]string, getenv func(s
 		}
 	}
 	set(&c.apiURL, fileVals[envAPIURL])
+	set(&c.token, fileVals[envTokenAlias])
 	set(&c.token, fileVals[envToken])
 	set(&c.apiURL, getenv(envAPIURL))
+	set(&c.token, getenv(envTokenAlias))
 	set(&c.token, getenv(envToken))
 	set(&c.apiURL, flagURL)
 	set(&c.token, flagToken)

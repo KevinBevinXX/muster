@@ -27,11 +27,8 @@ import (
 // only that user's rows. Its ROLE is read from users.role (3b; roleOf). With
 // one user every principal is still user 1, admin, and behaviour is unchanged.
 
-// machineUserID is who the SHARED machine tokens (hook, service) act as.
-//
-// ⚠ A FIXED VALUE TODAY. The accounts plan (§5) makes it MUSTER_MACHINE_USER_ID
-// (default 1) once there is a second user to choose between; until then a
-// variable would be a knob with exactly one legal setting.
+// machineUserID is who the SHARED machine tokens (hook, service) act as: the
+// admin, user 1 — no deployment needs otherwise; a person uses a personal token.
 func machineUserID() int64 { return authz.OperatorUserID }
 
 // sessionUserID is who a valid browser session on r acts as. The password mode

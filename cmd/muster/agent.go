@@ -93,7 +93,7 @@ interleaved as they happened. ` + "`kind`" + ` is what tells them apart and ` + 
 links a call to its result. Nothing here reassembles them: the interleaving IS the
 record.
 
-It reads on ` + envToken + `. Inside a muster-dispatched instance that variable
+It reads on ` + envToken + ` (or ` + envTokenAlias + `). Inside a muster-dispatched instance that variable
 carries the instance's own row token, which is what makes this verb reachable
 from inside one.`,
 		Args: cobra.ExactArgs(1),
@@ -178,7 +178,7 @@ agent's token both authenticates and identifies the caller, so no task id is
 passed: the server resolves the bound task from the token.
 
 Inside a muster-dispatched instance there is nothing to configure: the
-provisioner exports ` + envToken + ` and ` + envAPIURL + `, so resolution finds
+provisioner exports ` + envTokenAlias + ` and ` + envAPIURL + `, so resolution finds
 them without a flag.
 
 🔴 Do NOT pass the token as ` + "`--token`" + ` in an instance. argv is world-readable

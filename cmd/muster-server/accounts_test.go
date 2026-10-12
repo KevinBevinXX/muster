@@ -250,3 +250,28 @@ func TestTheUserDisableCommandSetsTheRowAndBansTheLogin(t *testing.T) {
 		t.Fatalf("CLI audit rows %v", got)
 	}
 }
+
+// TestAnMstPrefixedSharedSecretIsRefusedAtBoot (accounts PR 6, review round
+// 1): an `mst_` value on the machine tier is read as a personal API token, so
+// a MUSTER_HOOK_TOKEN or MUSTER_SERVICE_TOKEN in that namespace would be
+// refused 401 on every request. Boot refuses it instead, naming the variable.
+// The control is the unprefixed fixture, which boots — including with a
+// service token set (so the service case is reached, not masked).
+func TestAnMstPrefixedSharedSecretIsRefusedAtBoot(t *testing.T) {
+	ok := validGoTrueConfig()
+	ok.ServiceToken = strings.Repeat("s", 40)
+	if err := ok.validate(); err != nil {
+		t.Fatalf("CONTROL: the unprefixed config is refused: %v", err)
+	}
+	for name, mutate := range map[string]func(*config){
+		"MUSTER_HOOK_TOKEN":    func(c *config) { c.HookToken = "mst_" + strings.Repeat("h", 43) },
+		"MUSTER_SERVICE_TOKEN": func(c *config) { c.ServiceToken = "mst_" + strings.Repeat("s", 43) },
+	} {
+		c := ok
+		mutate(&c)
+		err := c.validate()
+		if err == nil || !strings.Contains(err.Error(), name) || !strings.Contains(err.Error(), "mst_") {
+			t.Errorf("an mst_-prefixed %s: validate() = %v; want a refusal naming it", name, err)
+		}
+	}
+}

@@ -24,6 +24,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -143,21 +144,49 @@ func (s *PGStore) ByID(ctx context.Context, id int64) (User, error) {
 // 🔴 A DISABLE ALSO MOVES sessions_not_before TO NOW, AND AN ENABLE LEAVES IT.
 // A GoTrue unban resurrects every pre-ban session (migration 0010), so the
 // session tier's cutoff is what keeps a disable from being undone by an enable.
+//
+// 🔴 A DISABLE ALSO REVOKES EVERY PERSONAL API TOKEN THE USER HOLDS, in the
+// same transaction (SetDisabledAs → revokeAPITokensTx; accounts PR 6).
+// Without it, re-enabling the user brought every old token back to life —
+// including one that leaked, which is often WHY the user was disabled. An
+// enable revokes nothing and restores nothing: the user mints new tokens.
 func (s *PGStore) SetDisabled(ctx context.Context, id int64, disabled bool) (User, error) {
 	return s.SetDisabledAs(ctx, nil, id, disabled)
 }
 
-// BumpSessionCutoff moves user id's session cutoff to clock_timestamp() and
-// returns it: every token issued at or before it is refused from now on
-// (a password reset; TestAResetEndsOtherDevicesAccessTokensAtOnce).
-func (s *PGStore) BumpSessionCutoff(ctx context.Context, id int64) (time.Time, error) {
+// ResetCredentials is a password reset's database half: in ONE transaction it
+// moves user id's session cutoff to clock_timestamp() — every GoTrue token
+// issued at or before it is refused from now on
+// (TestAResetEndsOtherDevicesAccessTokensAtOnce) — and revokes every live
+// personal API token the user holds (accounts PR 6;
+// TestAPasswordResetRevokesTheUsersAPITokens). It returns the cutoff.
+//
+// ⚠ "SIGN OUT EVERYWHERE" IS NOT THIS: it ends GoTrue sessions only, and the
+// /account page says so next to its button.
+func (s *PGStore) ResetCredentials(ctx context.Context, id int64) (time.Time, error) {
+	ctx = sys(ctx)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	// The credentials lock FIRST — see LockCredentialsTx for the order rule.
+	if err := LockCredentialsTx(ctx, tx, id); err != nil {
+		return time.Time{}, err
+	}
 	var t time.Time
-	err := s.pool.QueryRow(sys(ctx), `UPDATE users SET sessions_not_before = clock_timestamp() WHERE id = $1
+	err = tx.QueryRow(ctx, `UPDATE users SET sessions_not_before = clock_timestamp() WHERE id = $1
 		RETURNING sessions_not_before`, id).Scan(&t)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return t, ErrNotFound
 	}
-	return t, err
+	if err != nil {
+		return t, err
+	}
+	if err := revokeAPITokensTx(ctx, tx, id); err != nil {
+		return time.Time{}, err
+	}
+	return t, tx.Commit(ctx)
 }
 
 // SetDisabledAs is SetDisabled that, when by is non-nil, writes the
@@ -173,6 +202,12 @@ func (s *PGStore) SetDisabledAs(ctx context.Context, by *Actor, id int64, disabl
 	q := `UPDATE users SET disabled_at = NULL WHERE id = $1 RETURNING ` + userCols
 	action := "user.enable"
 	if disabled {
+		// The credentials lock FIRST, before guardLastAdmin's row locks and
+		// before the cutoff is stamped — see LockCredentialsTx for the order
+		// rule (a deadlock and a stale cutoff are what the other order cost).
+		if err := LockCredentialsTx(ctx, tx, id); err != nil {
+			return User{}, err
+		}
 		if err := guardLastAdmin(ctx, tx, id); err != nil {
 			return User{}, err
 		}
@@ -200,6 +235,10 @@ func (s *PGStore) SetDisabledAs(ctx context.Context, by *Actor, id int64, disabl
 		if err := revokePendingInvitesOf(ctx, tx, actor, id, "creator disabled"); err != nil {
 			return User{}, err
 		}
+		// Accounts PR 6: every live personal API token, in THIS transaction.
+		if err := revokeAPITokensTx(ctx, tx, id); err != nil {
+			return User{}, err
+		}
 	}
 	if by != nil {
 		if err := auditInsert(ctx, tx, *by, action, UserObject(id), nil); err != nil {
@@ -207,6 +246,51 @@ func (s *PGStore) SetDisabledAs(ctx context.Context, by *Actor, id int64, disabl
 		}
 	}
 	return u, tx.Commit(ctx)
+}
+
+// revokeAPITokensTx revokes every live personal API token (accounts PR 6) of
+// user id inside tx. EVERY disable path must call it in the disable's own
+// transaction — it is one helper so a second disable writer is one call.
+//
+// 🔴 THE CALLER MUST ALREADY HOLD LockCredentialsTx, TAKEN AS ITS TRANSACTION'S
+// FIRST STATEMENT. apitokens.Create takes the same lock and then re-reads the
+// user's disabled_at and session cutoff, so a mint racing a disable or a reset
+// either commits before this revoke (and is revoked by it) or waits for the
+// whole transaction (and is refused). Without the lock a token inserted after
+// this UPDATE ran but before the commit survived.
+func revokeAPITokensTx(ctx context.Context, tx pgx.Tx, id int64) error {
+	_, err := tx.Exec(ctx, `UPDATE api_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`, id)
+	return err
+}
+
+// credentialsLockClass is the first key of the per-user advisory lock that
+// serialises minting a personal API token against revoking them all. The
+// two-int form keeps it out of the migration lock's single-bigint keyspace.
+const credentialsLockClass int32 = 0x6d75746b // "mutk"
+
+// LockCredentialsTx takes user id's credentials lock for the rest of tx.
+//
+// ⚠ AN ADVISORY LOCK, NOT `SELECT … FROM users FOR SHARE`: apitokens.Create
+// runs as the USER, and under row-level security a locking read of the user's
+// own row returns NO row (0009 gives users no UPDATE policy, and FOR SHARE is
+// checked against UPDATE policies — measured: 0 rows). An advisory lock needs
+// no row and no policy.
+//
+// 🔴 ORDER RULE: THIS LOCK IS TAKEN BEFORE ANY users ROW LOCK, IN EVERY PATH.
+// Create holds it and then needs FOR KEY SHARE on the user's row (its INSERTs'
+// foreign keys); a disable that locked rows first (guardLastAdmin takes FOR
+// UPDATE on every enabled admin) and then waited for this lock deadlocked
+// against a mint by an ADMIN — measured: SQLSTATE 40P01, the disable lost, the
+// user stayed enabled with the minted token live
+// (TestAMintRacingAnAdminsDisableDoesNotDeadlock). Taking it first also keeps
+// the session cutoff honest: clock_timestamp() is stamped AFTER the wait for
+// this lock, not before it (TestTheCutoffIsStampedAfterTheCredentialsLockWait).
+func LockCredentialsTx(ctx context.Context, tx pgx.Tx, id int64) error {
+	if id <= 0 || id > math.MaxInt32 {
+		return fmt.Errorf("users: credentials lock: user id %d out of range", id)
+	}
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, $2)`, credentialsLockClass, int32(id))
+	return err
 }
 
 // IDByEmail returns the id of the user whose email is email (case-folded), and

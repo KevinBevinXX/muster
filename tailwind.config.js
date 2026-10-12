@@ -99,6 +99,10 @@ module.exports = {
     // css-check control.
     './internal/api/login_invite.go',
     './internal/api/admin.go',
+    // Accounts PR 6: the /account/tokens page. Same status as the entry above
+    // (measured by `make css` with and without it); a class only it writes
+    // needs a css-check control.
+    './internal/api/api_tokens.go',
     //
     // ✅ SEAM CLOSED BY THE API CARVE — kept, rather than deleted, because it
     // states WHY the entry above is a file and not a glob. Re-read it before

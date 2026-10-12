@@ -34,11 +34,14 @@ func main() {
 
 // accountsReset returns the accounts tables to the seeded state: user 1 (the
 // operator, admin, unbound) and nothing else — no invites, no other users, no
-// audit rows. The gotrue specs claim user 1 and invite members, and a later
+// audit rows, no personal API tokens. The gotrue specs claim user 1 and invite members, and a later
 // spec (or a re-run) must be able to do both again.
 var accountsReset = []string{
 	`DELETE FROM audit_log`,
 	`DELETE FROM invites`,
+	// Personal API tokens (accounts PR 6) reference users, so they go BEFORE
+	// the members do; and the api-tokens spec asserts an empty token list.
+	`DELETE FROM api_tokens`,
 	`DELETE FROM users WHERE id <> 1`,
 	`UPDATE users SET gotrue_sub = NULL, email = NULL, disabled_at = NULL, role = 'admin' WHERE id = 1`,
 }
