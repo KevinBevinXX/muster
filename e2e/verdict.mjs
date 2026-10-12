@@ -12,7 +12,7 @@
 // indistinguishable from no floor, so when a spec is added, raise it in the
 // same change.
 //
-// 🔴 CI RUNS THE SUITE IN LEGS (e2e/legs.mjs), SO THERE ARE THREE MODES:
+// 🔴 CI RUNS THE SUITE IN LEGS (e2e/legs.json), SO THERE ARE THREE MODES:
 //
 //   node verdict.mjs REPORT                  the whole suite in one run (make e2e)
 //   node verdict.mjs --leg N REPORT          one CI leg
@@ -21,14 +21,15 @@
 // The failed == 0 and skipped <= CAP rules hold in every mode. FLOOR is a TOTAL,
 // so it holds in the whole-suite and `--all` modes; a leg's floor defaults to 1.
 //
-// 🔴 `--leg` AND `--all` ALSO PIN THE FILES. legs.mjs proves legs.json covers
-// every spec once; it cannot prove a leg RAN what legs.json says (a testMatch
-// that matches a subset is a smaller, green run). So here the spec files present
-// in the report, and the files with at least one passing test, must each EQUAL
-// the assigned set — that leg's files for `--leg`, every spec on disk for
-// `--all` — and under `--all` no file may appear in two reports (run twice).
+// 🔴 `--all` IS THE SEAM GUARD: NO SPEC DROPPED, NONE RUN TWICE. Over the summed
+// reports, every spec file on disk must be present with at least one passing
+// test (else NOT RUN / NO PASS), no file may appear in two reports (RAN TWICE),
+// and nothing may run that is not on disk (STRAY). It reads what RAN, so it
+// catches a spec in no leg, a spec in two legs, and a legs.json entry spelled so
+// it matches nothing (its real file is then NOT RUN) — measured, each against
+// real leg reports, before a static legs.json check was dropped as redundant (#58).
 import fs from 'node:fs';
-import { loadLegs, specFiles } from './legs.mjs';
+import { specFiles } from './legs.mjs';
 
 const args = process.argv.slice(2);
 let mode = 'whole';
@@ -92,27 +93,18 @@ if (sum.unexpected > 0) { console.error('FAIL: tests failed'); bad = true; }
 if (passed < FLOOR) { console.error(`FAIL: ${passed} passed is under the floor of ${FLOOR}`); bad = true; }
 if (sum.skipped > CAP) { console.error(`FAIL: ${sum.skipped} skipped exceeds the cap of ${CAP}`); bad = true; }
 
-if (mode !== 'whole') {
-  let want;
-  if (mode === 'leg') {
-    want = loadLegs().legs[leg];
-    if (!Array.isArray(want)) {
-      console.error(`FAIL: no leg ${JSON.stringify(leg)} in e2e/legs.json`);
-      process.exit(1);
-    }
-  } else {
-    want = specFiles();
-  }
+if (mode === 'all') {
+  const want = specFiles();
   const wantSet = new Set(want);
   const passing = [...ran].filter(([, e]) => e.passed > 0).length;
-  console.log(`spec files: ${want.length} assigned, ${ran.size} in the report(s), ${passing} with a passing test`);
+  console.log(`spec files: ${want.length} on disk, ${ran.size} in the report(s), ${passing} with a passing test`);
   for (const o of overlaps) { console.error(`FAIL: RAN TWICE: ${o}`); bad = true; }
   for (const f of want) {
-    if (!ran.has(f)) { console.error(`FAIL: NOT RUN: ${f} is assigned but absent from the report(s)`); bad = true; }
+    if (!ran.has(f)) { console.error(`FAIL: NOT RUN: ${f} is on disk but absent from every report`); bad = true; }
     else if (ran.get(f).passed === 0) { console.error(`FAIL: NO PASS: ${f} ran but no test in it passed`); bad = true; }
   }
   for (const f of ran.keys()) {
-    if (!wantSet.has(f)) { console.error(`FAIL: STRAY: ${f} ran but is not assigned here`); bad = true; }
+    if (!wantSet.has(f)) { console.error(`FAIL: STRAY: ${f} ran but is not a spec file on disk`); bad = true; }
   }
 }
 process.exit(bad ? 1 : 0);

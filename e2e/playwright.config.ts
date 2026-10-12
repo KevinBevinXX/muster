@@ -14,8 +14,8 @@ const capture = process.env.MUSTER_E2E_CAPTURE === '1';
 
 // 🔴 CI RUNS THE SUITE IN LEGS: MUSTER_E2E_LEG=N runs only leg N's spec files
 // from legs.json, each leg on its own runner with its own database. Unset, every
-// spec runs (make e2e). legs.mjs guards the partition; verdict.mjs --leg checks
-// the leg's report holds exactly its files. An unknown leg THROWS rather than
+// spec runs (make e2e). `verdict.mjs --all` over every leg's report refuses a
+// spec that ran in no leg or in two. An unknown or empty leg THROWS rather than
 // matching nothing, because a run of zero files is a green run.
 const leg = process.env.MUSTER_E2E_LEG ?? '';
 function legMatch(): RegExp | RegExp[] {

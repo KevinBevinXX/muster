@@ -18,24 +18,22 @@
   },
   "legs": {
     "1": [
-      "tests/claude-code-polish.spec.ts"
-    ],
-    "2": [
-      "tests/provisioning-indicator.spec.ts",
+      "tests/claude-code-polish.spec.ts",
       "tests/badge.spec.ts",
       "tests/terminal.spec.ts",
       "tests/kinds.spec.ts",
-      "tests/installability.spec.ts",
-      "tests/shortcuts.spec.ts",
-      "tests/sw.spec.ts"
+      "tests/connectors.spec.ts",
+      "tests/shortcuts.spec.ts"
     ],
-    "3": [
+    "2": [
+      "tests/provisioning-indicator.spec.ts",
       "tests/update.spec.ts",
       "tests/layout.spec.ts",
       "tests/theme.spec.ts",
       "tests/install-button.spec.ts",
-      "tests/connectors.spec.ts",
-      "tests/share.spec.ts"
+      "tests/installability.spec.ts",
+      "tests/share.spec.ts",
+      "tests/sw.spec.ts"
     ]
   }
 }

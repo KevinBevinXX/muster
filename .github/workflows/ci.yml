@@ -376,14 +376,13 @@ jobs:
   # specs write to a shared database, so inside one run they stay serial (one
   # worker); a leg is a separate database, so legs cannot race. It was the
   # longest job in CI as one runner. The split is static, balanced on measured
-  # per-file time, in e2e/legs.json; e2e/legs.mjs is the seam guard (every spec
-  # file in exactly one leg) and runs in the `e2e` job below.
+  # per-file time, in e2e/legs.json. The seam — every spec file run exactly
+  # once — is guarded by the `e2e` job below, from what the legs RAN.
   #
   # 🔴 A SKIP IS IMPOSSIBLE HERE, TWICE OVER. MUSTER_E2E_REQUIRE_FULL=1 makes a
   # missing database a hard failure in global-setup, and the verdict step reads
-  # the JSON report and fails on any failure or ANY skip, and on a report whose
-  # spec files are not exactly the leg's — the PAIR is printed, never a bare exit
-  # code. `playwright test` exits 0 when everything skipped; that is the green
+  # the JSON report and fails on any failure or ANY skip — the PAIR is printed,
+  # never a bare exit code. `playwright test` exits 0 when everything skipped; that is the green
   # this step exists to refuse.
   e2e-leg:
     name: e2e leg ${{ matrix.leg }} (playwright, chromium)
@@ -392,11 +391,13 @@ jobs:
       # Every leg always finishes, so one red leg never hides another's verdict.
       fail-fast: false
       matrix:
-        # ⚠ ADDING A LEG IS TWO EDITS: a key in e2e/legs.json and a value here.
-        # A leg in the JSON and not here runs nowhere — and the `e2e` job's
-        # `--all` verdict refuses that, because its files are absent from every
-        # report.
-        leg: [1, 2, 3]
+        # ⚠ THIS LIST MUST MATCH THE KEYS OF e2e/legs.json — adding a leg is
+        # two edits. A leg in the JSON and not here runs nowhere, and the `e2e`
+        # job's `--all` verdict refuses that (its files are NOT RUN); a value
+        # here and not in the JSON throws at config load. It is not GENERATED
+        # from the JSON because that takes a job of its own ahead of the legs:
+        # one more runner slot and one more serial hop on every run.
+        leg: [1, 2]
     services:
       postgres:
         image: postgres:16-alpine
@@ -449,10 +450,10 @@ jobs:
         working-directory: e2e
         run: npx playwright test
 
-      # Per leg: no failure, no skip, at least one pass, and the report's spec
-      # files are EXACTLY this leg's. The 31-test floor is a TOTAL and is
-      # asserted over every leg's report in the `e2e` job.
-      - name: verdict — this leg's files, and the skip cap
+      # Per leg: no failure, no skip, at least one pass. The 31-test floor and
+      # the which-files-ran check are TOTALS, asserted over every leg's report
+      # in the `e2e` job.
+      - name: verdict — this leg's failures and the skip cap
         if: always()
         working-directory: e2e
         run: node verdict.mjs --leg ${{ matrix.leg }} test-results/results.json
@@ -467,7 +468,7 @@ jobs:
           path: e2e/test-results/
           retention-days: 7
 
-  # Local: cd e2e && node legs.mjs --self-test && node legs.mjs check
+  # Local: cd e2e && node verdict.mjs --all <each leg's test-results/results.json>
   #
   # 🔴 THIS JOB KEEPS THE CHECK NAME `e2e (playwright, chromium)`, and it is the
   # suite's verdict in aggregate. It runs `if: always()` so a failed or
@@ -490,25 +491,15 @@ jobs:
           echo "e2e-leg result: ${{ needs.e2e-leg.result }}"
           test "${{ needs.e2e-leg.result }}" = success
 
-      # The seam guard on the STATIC partition: every spec file on disk is in
-      # exactly one leg. Its self-test runs first and exits 2 if a refusal
-      # cannot fire.
-      - name: the legs guard can refuse
-        working-directory: e2e
-        run: node legs.mjs --self-test
-
-      - name: the legs cover every spec exactly once
-        working-directory: e2e
-        run: node legs.mjs check
-
       - uses: actions/download-artifact@v4
         with:
           pattern: e2e-results-leg-*
           path: e2e-legs
 
-      # The seam guard on what RAN: both reports summed against the 31-test
-      # floor and the skip cap, every spec file on disk present with a passing
-      # test, none in two reports.
+      # 🔴 THE SEAM GUARD, ON WHAT RAN: every leg's report summed against the
+      # 31-test floor and the skip cap; every spec file on disk present with a
+      # passing test (NOT RUN: a spec in no leg, or a misspelled legs.json
+      # entry), none in two reports (RAN TWICE: a spec in two legs).
       - name: verdict — the pass floor and the skip cap, over every leg
         working-directory: e2e
         run: node verdict.mjs --all ../e2e-legs/e2e-results-leg-*/results.json
