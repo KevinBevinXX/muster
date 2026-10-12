@@ -309,7 +309,8 @@ type GateSpec struct {
 
 // Gate states, as the router spells them on the wire.
 const (
-	// GateDecided means a human answered. Response/Comment are populated.
+	// GateDecided means the card was answered — by a human, or by the router's
+	// auto-approval for a type it lets that decide. Response/Comment are populated.
 	GateDecided = "decided"
 	// GatePending means the card is still on the operator's screen.
 	GatePending = "pending"
@@ -325,7 +326,9 @@ type GateDecision struct {
 	Comment  string `json:"comment,omitempty"`
 }
 
-// MintGate files a human-only approval request and returns its id.
+// MintGate files an approval request and returns its id. Whether the router's
+// auto-approval may decide it depends on spec.Type: the router's, not this
+// client's, rule.
 //
 // 🔴 AN ERROR HERE IS A REFUSAL, NEVER AN APPROVAL. Every caller must treat a
 // checkpoint that could not be FILED as not approved: nobody was asked, so
