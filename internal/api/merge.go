@@ -315,8 +315,8 @@ func (s *Server) handleTaskMerge(w http.ResponseWriter, r *http.Request) {
 
 	// Both cards moved (tags/comments on one, status+comment on the other), so both
 	// ids are broadcast for any other open tab.
-	s.broadcast(EventTaskChanged, strconv.FormatInt(winnerID, 10))
-	s.broadcast(EventTaskChanged, strconv.FormatInt(loserID, 10))
+	s.broadcast(r.Context(), EventTaskChanged, strconv.FormatInt(winnerID, 10))
+	s.broadcast(r.Context(), EventTaskChanged, strconv.FormatInt(loserID, 10))
 	// The REQUESTING tab refreshes via HX-Trigger rather than a rendered body, so
 	// the list is re-fetched instead of rendered blind here. What carries the
 	// active filter across that refetch is tagScript's htmx:configRequest

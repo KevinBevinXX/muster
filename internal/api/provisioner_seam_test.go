@@ -1255,7 +1255,7 @@ func TestAPanickingFanOutStillReleasesTheShutdownWait(t *testing.T) {
 	before := goroutinePanicCount()
 
 	s.goNotify(RouterNotification{Tag: "a-tag"}, nil)
-	s.mirrorToRouter("an-event", "some-data")
+	s.mirrorToRouter(1, "an-event", "some-data") // user 1: admin with no users store
 
 	done := make(chan struct{})
 	go func() {

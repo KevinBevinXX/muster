@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -215,8 +216,8 @@ func (s *Server) handleAPISessionTasks(w http.ResponseWriter, r *http.Request) {
 // broadcastTaskLink fires task.changed for a link that actually changed something.
 // A bare last_seen_at touch does NOT broadcast: the Stop hook drives a session's
 // activity, so every read would otherwise nudge every open Tasks tab on a timer.
-func (s *Server) broadcastTaskLink(changed bool, noteID int64) {
+func (s *Server) broadcastTaskLink(ctx context.Context, changed bool, noteID int64) {
 	if changed {
-		s.broadcast(EventTaskChanged, strconv.FormatInt(noteID, 10))
+		s.broadcast(ctx, EventTaskChanged, strconv.FormatInt(noteID, 10))
 	}
 }

@@ -357,3 +357,20 @@ func TestBuildUniqueAgentNameStoreError(t *testing.T) {
 		t.Errorf("BuildUniqueAgentName error = %v, want the store error propagated", err)
 	}
 }
+
+// TestEachUserHasOneReservedChiefSlug (accounts PR 3b): the operator keeps
+// `chief`; every other user's chief is `chief-<id>`; IsChiefName accepts
+// exactly those shapes (the instructions branch and deletion protection read
+// it) and nothing the adjective-noun pool or a discriminator can mint.
+func TestEachUserHasOneReservedChiefSlug(t *testing.T) {
+	for owner, want := range map[int64]string{1: "chief", 2: "chief-2", 417: "chief-417"} {
+		if got := ChiefNameFor(owner); got != want || !IsChiefName(got) {
+			t.Errorf("ChiefNameFor(%d) = %q (IsChiefName %v); want %q", owner, got, IsChiefName(got), want)
+		}
+	}
+	for _, name := range []string{"chief-", "chief-0", "chief-01", "chief-2a", "chiefs", "brave-chief", "zesty-stoat", "zesty-stoat-2", ""} {
+		if IsChiefName(name) {
+			t.Errorf("IsChiefName(%q) = true", name)
+		}
+	}
+}

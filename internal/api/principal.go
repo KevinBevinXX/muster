@@ -24,8 +24,8 @@ import (
 //
 // 🔴 THE PRINCIPAL IS ENFORCED (accounts PR 3a): internal/db sets Postgres's
 // muster.uid from it on every acquire, and row-level security shows the request
-// only that user's rows. muster has one user today, so every principal still
-// names authz.OperatorUserID as admin and behaviour is unchanged.
+// only that user's rows. Its ROLE is read from users.role (3b; roleOf). With
+// one user every principal is still user 1, admin, and behaviour is unchanged.
 
 // machineUserID is who the SHARED machine tokens (hook, service) act as.
 //
@@ -34,10 +34,20 @@ import (
 // variable would be a knob with exactly one legal setting.
 func machineUserID() int64 { return authz.OperatorUserID }
 
-// sessionUserID is who a valid browser session acts as. The password mode has
-// exactly one login, the operator's, so it is user 1 by construction; PR 4's
-// GoTrue mode resolves it from the token's subject instead.
-func sessionUserID() int64 { return authz.OperatorUserID }
+// sessionUserID is who a valid browser session on r acts as. The password mode
+// has exactly one login, the operator's, so it is user 1 by construction; PR
+// 4's GoTrue mode resolves it from the token's subject instead.
+//
+// sessionUserOverride is the seam that resolution will replace. TEST-ONLY
+// today: nothing in production sets it, and it exists so the isolation walk
+// (isolation_test.go) can hold a SECOND user's session — the one door that
+// cannot otherwise act as anyone but the operator until PR 4.
+func (s *Server) sessionUserID(r *http.Request) int64 {
+	if s.sessionUserOverride != nil {
+		return s.sessionUserOverride(r)
+	}
+	return authz.OperatorUserID
+}
 
 // agentOwnerID is who a request authenticated by an AGENT'S OWN token acts as:
 // the agent's owner (agents.owner_id). Every per-agent door (requireAgentToken,
@@ -69,22 +79,48 @@ func (s *Server) agentByToken(ctx context.Context, token string) (agents.Agent, 
 
 // agentPrincipal is the principal a request authenticated by agent a acts as,
 // or false when the row names no owner (see agentOwnerID).
-func agentPrincipal(a agents.Agent, via authz.Via) (authz.Principal, bool) {
+func (s *Server) agentPrincipal(ctx context.Context, a agents.Agent, via authz.Via) (authz.Principal, bool) {
 	uid := agentOwnerID(a)
 	if uid <= 0 {
 		return authz.Principal{}, false
 	}
-	return principalFor(uid, via), true
+	return s.principalFor(ctx, uid, via), true
 }
 
-// roleOf is the role a user acts with. Today the only user is the operator,
-// who is admin. ⚠ Not yet read from users.role: a second user's agent acts as
-// admin too. Nothing branches on the role today; PR 4 reads users.role.
-func roleOf(_ int64) authz.Role { return authz.RoleAdmin }
+// roleOf is the role user uid acts with, read from users.role (accounts PR
+// 3b; until then every principal was admin by construction).
+//
+// 🔴 IT READS UNDER authz.System, FOR THE SAME REASON agentByToken DOES: it
+// runs inside the wrappers, BEFORE the principal it completes exists. It reads
+// one column of one row and hands nothing else on. System ledger entry.
+//
+// 🔴 EVERY FAILURE IS MEMBER, NEVER ADMIN. A read error, a missing row or an
+// unknown role value acts with the LEAST privilege: the one branch on the role
+// today is the approval relay, and a wrong "admin" files a stranger's prompt on
+// the operator's phone, while a wrong "member" only sends a prompt back to the
+// agent's own terminal.
+//
+// ⚠ WITH NO users STORE WIRED (unit tests over fakes) the operator — user 1 —
+// is admin and everyone else is a member: the seeded row, without a database.
+// cmd/muster-server always wires the store beside the database.
+func (s *Server) roleOf(ctx context.Context, uid int64) authz.Role {
+	if s.ext.Users == nil {
+		if uid == authz.OperatorUserID {
+			return authz.RoleAdmin
+		}
+		return authz.RoleMember
+	}
+	r, err := s.ext.Users.Role(authz.System(ctx), uid)
+	if err != nil {
+		s.logger.Printf("principal: reading user %d's role: %v (acting as member)", uid, err)
+		return authz.RoleMember
+	}
+	return r
+}
 
 // principalFor builds the request principal for a user admitted through via.
-func principalFor(uid int64, via authz.Via) authz.Principal {
-	return authz.Principal{UserID: uid, Role: roleOf(uid), Via: via}
+func (s *Server) principalFor(ctx context.Context, uid int64, via authz.Via) authz.Principal {
+	return authz.Principal{UserID: uid, Role: s.roleOf(ctx, uid), Via: via}
 }
 
 // admit attaches p to the request and hands it to next. See the file header:

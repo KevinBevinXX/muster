@@ -1,0 +1,1299 @@
+package api
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
+	"net/netip"
+	"net/url"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/db"
+	"github.com/ZacxDev/muster/internal/dbtest"
+	"github.com/ZacxDev/muster/internal/github"
+	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/sse"
+	"github.com/ZacxDev/muster/internal/users"
+)
+
+// ---------------------------------------------------------------------------
+// THE ISOLATION WALK (accounts plan §4; PR 3c). This is the gate that says a
+// second user cannot see or change the first user's data THROUGH ANY ROUTE.
+//
+// Row-level security (3a) is the mechanism; this test is the proof, and it is
+// deliberately not a list of spot checks. It reads routes.golden, demands a
+// CLASS for every route in it (an unclassified route fails — a new route must
+// say what it is before it ships), fills every path parameter with USER A's
+// ids, and drives each route as USER B through each of B's credentials: B's
+// browser session, B's agent's own token on the main port, and the same token
+// on the dedicated connect port (OnlyConnectSurface). It then asserts:
+//
+//   - no response carries A's CANARY strings (seeded into every object A owns:
+//     task title/body, comment, attachment name, agent display name and chat,
+//     connector auth username, grant reason, GitHub login) — and, on routes
+//     that take no A id, not A's identifiers either (agent and connector name);
+//   - a route that names A's object answers no 2xx (403/404/401/...);
+//   - the SSE leg: B's open /events stream receives nothing while A writes;
+//   - the mutation leg: every row A owns is byte-identical after B's walk —
+//     B's writes against A's ids changed nothing;
+//   - the connect leg: B's agent never gets A's secret injected upstream,
+//     even holding an APPROVED grant for A's connector's NAME (#61's note: the
+//     grant→connector link is a name, not a foreign key);
+//   - nothing B (a member) did reached the operator's router (push / mirror),
+//     and B's agent cannot file approval cards (503 → in-terminal prompt).
+//
+// The ADMIN leg repeats the param and list checks as user 1 — the operator,
+// through its session AND the shared machine (hook) token — against the
+// MEMBER A's objects: an admin's ordinary routes are scoped to its own rows
+// too ("see all" is for /admin/* only, and there is none yet).
+//
+// 🔴 THE NEGATIVE CONTROL IS THE SAME WALK AS A. Every request B made against
+// A's ids is re-sent as A, identically except for the identity, and must NOT
+// be refused the way B was (or must show A's canary). Without it a refusal
+// could be a malformed request — a 404 for a wrong path is indistinguishable
+// from a 404 for "not yours". The control is what makes each refusal a fact
+// about identity. And the list routes that render data must show A its canary
+// (wantCanaryForA), so "B saw no canary" is a fact about B, not about a
+// renderer that shows nobody anything.
+// ---------------------------------------------------------------------------
+
+// routeClass is what a route IS, for the walk.
+type routeClass string
+
+const (
+	classPublic     routeClass = "public"      // no credential; must leak nothing
+	classList       routeClass = "list"        // a session route naming no object
+	classParam      routeClass = "param"       // a session route naming an object by id/name
+	classAdmin      routeClass = "admin"       // the shared machine (hook/service) tier: acts as user 1
+	classAgentToken routeClass = "agent-token" // an agent's own token: /agent/task, /agent/approvals, ...
+	classConnect    routeClass = "connect"     // the connector surface (also served on the connect port)
+	classMirror     routeClass = "mirror"      // the mirrored terminal (#63), addressed by ?host=&session=
+)
+
+// isolationClasses classifies EVERY route in routes.golden. Exhaustive both
+// ways (TestEveryRouteIsClassifiedForIsolation).
+var isolationClasses = map[string]routeClass{
+	"GET /apple-touch-icon-precomposed.png": classPublic,
+	"GET /apple-touch-icon.png":             classPublic,
+	"GET /favicon.ico":                      classPublic,
+	"GET /health":                           classPublic,
+	"GET /login":                            classPublic,
+	"GET /manifest.webmanifest":             classPublic,
+	"GET /metrics":                          classPublic,
+	"GET /readyz":                           classPublic,
+	"GET /static/":                          classPublic,
+	"GET /sw.js":                            classPublic,
+	"POST /login":                           classPublic,
+	"POST /logout":                          classPublic,
+
+	"GET /{$}":                     classList,
+	"GET /agents":                  classList,
+	"GET /api/directories":         classList,
+	"GET /api/openrouter/models":   classList,
+	"GET /connectors":              classList,
+	"GET /events":                  classList,
+	"GET /github/callback":         classList,
+	"GET /github/connect":          classList,
+	"GET /repos":                   classList,
+	"GET /share":                   classList,
+	"GET /tasks":                   classList,
+	"GET /ui/agents":               classList,
+	"GET /ui/agents/new":           classList,
+	"GET /ui/agents/notes":         classList,
+	"GET /ui/agents/repos":         classList,
+	"GET /ui/chief/panel":          classList,
+	"GET /ui/chief/threads/search": classList,
+	"GET /ui/connector-requests":   classList,
+	"GET /ui/connectors":           classList,
+	"GET /ui/connectors/new":       classList,
+	"GET /ui/notifications":        classList,
+	"GET /ui/repos":                classList,
+	"GET /ui/tags":                 classList,
+	"GET /ui/tasks":                classList,
+	"GET /ui/tasks/new":            classList,
+	"GET /ui/tasks/review-count":   classList,
+	"POST /agents":                 classList, // the form names A's task as note_id
+	"POST /chief/provision":        classList,
+	"POST /connectors":             classList,
+	"POST /github/disconnect":      classList,
+	"POST /tasks":                  classList,
+	"POST /tasks/merge":            classList, // the form names A's task as the loser
+
+	"DELETE /agents/{id}":                      classParam,
+	"DELETE /connector-grants/{id}":            classParam,
+	"DELETE /connectors/{name}":                classParam,
+	"DELETE /tasks/{id}":                       classParam,
+	"DELETE /tasks/{id}/comments/{cid}":        classParam,
+	"DELETE /tasks/{id}/tags/{tag}":            classParam,
+	"GET /agents/{name}":                       classParam,
+	"GET /agents/{name}/logs/stream":           classParam,
+	"GET /agents/{name}/terminal":              classParam,
+	"GET /agents/{name}/terminal/ws":           classParam,
+	"GET /agents/{name}/ws":                    classParam,
+	"GET /tasks/{id}":                          classParam,
+	"GET /tasks/{id}/attachments/{aid}":        classParam,
+	"GET /ui/agents/{id}/card":                 classParam,
+	"GET /ui/agents/{id}/recent":               classParam,
+	"GET /ui/agents/{id}/rename":               classParam,
+	"GET /ui/agents/{id}/status":               classParam,
+	"GET /ui/agents/{name}/chat-log":           classParam,
+	"GET /ui/agents/{name}/task":               classParam,
+	"GET /ui/connectors/{name}/rotate":         classParam,
+	"GET /ui/tasks/{id}/card":                  classParam,
+	"GET /ui/tasks/{id}/edit":                  classParam,
+	"PATCH /tasks/{id}/status":                 classParam,
+	"POST /agents/sessions/{sid}/read":         classParam,
+	"POST /agents/{id}/model":                  classParam,
+	"POST /agents/{id}/name":                   classParam,
+	"POST /agents/{id}/sessions":               classParam,
+	"POST /agents/{id}/start":                  classParam,
+	"POST /agents/{id}/stop":                   classParam,
+	"POST /connectors/{name}/rotate":           classParam,
+	"POST /tasks/{id}/comments":                classParam,
+	"POST /tasks/{id}/edit":                    classParam,
+	"POST /tasks/{id}/tags":                    classParam,
+	"POST /ui/connector-requests/{id}/approve": classParam,
+	"POST /ui/connector-requests/{id}/deny":    classParam,
+
+	"DELETE /api/tasks/{id}":                classAdmin,
+	"DELETE /api/tasks/{id}/comments/{cid}": classAdmin,
+	"GET /api/agents":                       classAdmin,
+	"GET /api/agents/{name}/messages":       classAdmin,
+	"GET /api/projects":                     classAdmin,
+	"GET /api/sessions/{id}/tasks":          classAdmin,
+	"GET /api/tags":                         classAdmin,
+	"GET /api/tasks":                        classAdmin,
+	"GET /api/tasks/{id}":                   classAdmin,
+	"PATCH /api/tasks/{id}":                 classAdmin,
+	"PATCH /api/tasks/{id}/status":          classAdmin,
+	"POST /api/agents/{name}/messages":      classAdmin,
+	"POST /api/tasks":                       classAdmin,
+	"POST /api/tasks/{id}/comments":         classAdmin,
+
+	"DELETE /agent/approvals/{id}": classAgentToken,
+	"GET /agent/approvals/{id}":    classAgentToken,
+	"GET /agent/muster":            classAgentToken,
+	"GET /agent/task":              classAgentToken,
+	"PATCH /agent/task/status":     classAgentToken,
+	"POST /agent/approvals":        classAgentToken,
+	"POST /agent/blocked":          classAgentToken,
+	"POST /agent/task/comment":     classAgentToken,
+
+	"/connect/{connector}/{host}/{path...}": classConnect,
+	"GET /agent/connectors":                 classConnect,
+	"GET /agent/connectors/{name}":          classConnect,
+	"POST /agent/connectors/{name}/request": classConnect,
+	"POST /mcp":                             classConnect,
+
+	// The mirrored terminal names its object in the QUERY (?host=&session=),
+	// and fill() puts A's mirrored host there. The tunnel door is public to
+	// the principal walk (only a mirror token opens it): B's credentials must
+	// open nothing on it and leak nothing.
+	"GET /mirror/connect":     classPublic,
+	"GET /mirror/terminal":    classMirror,
+	"GET /mirror/terminal/ws": classMirror,
+}
+
+// wantCanaryForA: list routes that render A's data to A. The negative control
+// demands A sees its canary (or an identifier) on each, so B's clean body on
+// the same route is a fact about B.
+var wantCanaryForA = []string{
+	"GET /ui/agents", "GET /ui/agents/notes", "GET /ui/connector-requests", "GET /ui/connectors",
+	"GET /ui/repos", "GET /ui/tasks", "GET /ui/chief/panel",
+	// The AGGREGATES — vocabularies, suggestion lists, unread rolls — read
+	// across rows rather than by id, which is exactly where a missing scope
+	// hides (plan §Recon 4). A's tag and project are identities, its unread
+	// assistant message names its agent.
+	// (/ui/tasks/new and /ui/agents/new carry no per-user aggregate: the
+	// first lists the router's directories, admin-only and checked by the
+	// operator canary; the second is the bare dispatch form.)
+	"GET /ui/tags", "GET /ui/notifications",
+}
+
+func TestEveryRouteIsClassifiedForIsolation(t *testing.T) {
+	golden := map[string]bool{}
+	for _, r := range readGolden(t) {
+		golden[r] = true
+	}
+	var unclassified, stale []string
+	for r := range golden {
+		if _, ok := isolationClasses[r]; !ok {
+			unclassified = append(unclassified, r)
+		}
+	}
+	for r := range isolationClasses {
+		if !golden[r] {
+			stale = append(stale, r)
+		}
+	}
+	sort.Strings(unclassified)
+	sort.Strings(stale)
+	if len(unclassified) > 0 {
+		t.Errorf("routes in %s with no isolation class (public|list|param|admin|agent-token|connect|mirror):\n  %s",
+			goldenPath, strings.Join(unclassified, "\n  "))
+	}
+	if len(stale) > 0 {
+		t.Errorf("classified routes not in %s:\n  %s", goldenPath, strings.Join(stale, "\n  "))
+	}
+	// The public allowlist is principal_test.go's: one list, two tests.
+	for _, r := range publicRoutes {
+		if isolationClasses[r] != classPublic {
+			t.Errorf("%s is public for the principal walk but %q here", r, isolationClasses[r])
+		}
+	}
+}
+
+// --- the world ---------------------------------------------------------------
+
+const (
+	isoHookToken    = "iso-walk-hook-token-0123456789abcdef"
+	isoServiceToken = "iso-walk-service-token-0123456789abcd"
+	isoPassword     = "iso-walk-operator-password"
+	isoUserHeader   = "X-Iso-Test-User"
+)
+
+type isoUser struct {
+	name  string
+	uid   int64
+	token string // the user's agent's own token
+	agent agents.Agent
+	task  notes.Note
+}
+
+type isoWorld struct {
+	t        *testing.T
+	pool     *pgxpool.Pool
+	srv      *Server
+	h        http.Handler
+	connectH http.Handler
+	bus      *sse.Broadcaster
+	sys      context.Context
+	a, b, op isoUser
+	suffix   string
+	// A's canary strings (data) and identifiers.
+	canary      string
+	aIdentities []string
+	opCanary    string
+	// A's ids, by path placeholder.
+	aTask2       notes.Note
+	aComment     notes.Comment
+	aAttachment  notes.Attachment
+	aTag         string
+	aChatSession agents.ChatSession
+	aConnName    string
+	aGrantID     int64
+	aSessionLink string
+	aChief       agents.Agent
+	opApproval   string
+	aProject     string
+	objA, ghost  isoObjs
+	upHost       string
+	up           *isoUpstream
+	router       *isoRouter
+	prov         *isoProvisioner
+}
+
+func newIsoWorld(t *testing.T) *isoWorld {
+	t.Helper()
+	dsn := dbtest.DSN(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	t.Cleanup(cancel)
+	pool, err := db.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	w := &isoWorld{t: t, pool: pool, sys: authz.System(ctx)}
+	w.suffix = strings.ReplaceAll(time.Now().Format("150405.000000"), ".", "")
+	w.canary = "cnrya" + w.suffix
+	w.opCanary = "cnryop" + w.suffix
+
+	mkUser := func(name, role string) isoUser {
+		var id int64
+		if err := pool.QueryRow(w.sys, `INSERT INTO users (role, display_name) VALUES ($1, $2) RETURNING id`, role, name+w.suffix).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return isoUser{name: name, uid: id}
+	}
+	w.a = mkUser("a", "member")
+	w.b = mkUser("b", "member")
+	w.op = isoUser{name: "op", uid: authz.OperatorUserID}
+
+	ns := notes.NewPG(pool)
+	as := agents.NewPG(pool)
+	cs, err := connectors.NewPG(pool, bytes.Repeat([]byte{3}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gh, err := github.NewPG(pool, bytes.Repeat([]byte{4}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	as2 := func(u isoUser) context.Context {
+		role := authz.RoleMember
+		if u.uid == authz.OperatorUserID {
+			role = authz.RoleAdmin
+		}
+		return authz.WithPrincipal(ctx, authz.Principal{UserID: u.uid, Role: role, Via: authz.ViaSession})
+	}
+	must := func(err error, what string) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("seed %s: %v", what, err)
+		}
+	}
+
+	// Every user: one task and one agent (with its own token) on it.
+	for _, u := range []*isoUser{&w.a, &w.b, &w.op} {
+		uc := as2(*u)
+		title, body := u.name+"-task-"+w.suffix, u.name+" body"
+		if u == &w.a {
+			title, body = w.canary+" title", w.canary+" body"
+		}
+		if u == &w.op {
+			title = w.opCanary + " title"
+		}
+		nt := notes.Note{Title: title, Body: body, Status: notes.StatusOpen}
+		if u == &w.a {
+			nt.Repo, nt.Directory = w.canary+"/repo", "/srv/"+w.canary
+		}
+		u.task, err = ns.Create(uc, nt)
+		must(err, u.name+" task")
+		u.token = "iso-" + u.name + "-agent-token-" + w.suffix
+		display := u.name + " agent"
+		if u == &w.a {
+			display = w.canary + " agent"
+		}
+		u.agent, err = as.Create(uc, agents.Agent{Name: "iso" + u.name + w.suffix, DisplayName: display,
+			Namespace: "ns-iso" + u.name + w.suffix, HooksToken: u.token, NoteID: &u.task.ID, Status: agents.StatusRunning})
+		must(err, u.name+" agent")
+	}
+
+	// A's every other object, each carrying the canary.
+	ua := as2(w.a)
+	// A's second task is READY FOR REVIEW: the review-count aggregate.
+	w.aTask2, err = ns.Create(ua, notes.Note{Title: w.canary + " second", Status: notes.StatusReadyForReview})
+	must(err, "a task2")
+	_, err = ns.SetStatus(ua, w.aTask2.ID, notes.StatusReadyForReview) // Create files every task open
+	must(err, "a task2 review")
+	w.aComment, err = ns.AddComment(ua, notes.Comment{NoteID: w.a.task.ID, Author: "a", Body: w.canary + " comment"})
+	must(err, "a comment")
+	w.aAttachment, err = ns.AddAttachment(ua, w.a.task.ID, notes.Attachment{Filename: w.canary + ".txt",
+		ContentType: "text/plain", SizeBytes: int64(len(w.canary)), Data: []byte(w.canary)})
+	must(err, "a attachment")
+	w.aTag = "isotag" + w.suffix
+	w.aProject = "isoproj" + w.suffix
+	_, err = ns.AddTags(ua, w.a.task.ID, []string{w.aTag, "project:" + w.aProject})
+	must(err, "a tag")
+	w.aSessionLink = "isosess-" + w.suffix
+	_, _, err = ns.LinkSession(ua, w.a.task.ID, notes.SessionLink{SessionID: w.aSessionLink, Role: "created", Project: w.canary}, false)
+	must(err, "a session link")
+	w.aChatSession, err = as.LatestOrCreateSession(ua, w.a.agent.ID, w.a.agent.Name)
+	must(err, "a chat session")
+	_, err = as.AddChatMessage(ua, agents.ChatMessage{AgentID: w.a.agent.ID, SessionID: w.aChatSession.ID, Role: "user", Content: w.canary + " chat"})
+	must(err, "a chat message")
+	// An UNREAD assistant reply: the notifications roll-up.
+	_, err = as.AddChatMessage(ua, agents.ChatMessage{AgentID: w.a.agent.ID, SessionID: w.aChatSession.ID, Role: "assistant", Kind: "text", Content: w.canary + " reply"})
+	must(err, "a chat reply")
+
+	w.up = newIsoUpstream(t)
+	w.upHost = "iso.fake.test:" + w.up.port
+	w.aConnName = "isoconn" + w.suffix
+	_, err = cs.CreateConnector(ua, connectors.NewConnector{Name: w.aConnName, Hosts: []string{w.upHost},
+		Scheme: connectors.SchemeBasic, Username: w.canary + "-user", Secret: w.canary + "-SECRET"})
+	must(err, "a connector")
+	// A's agent: an APPROVED grant (the positive control for the proxy), and a
+	// PENDING request with a canary reason (the approve/deny/revoke target).
+	_, err = pool.Exec(w.sys, `INSERT INTO connector_grants (agent_id, owner_id, connector_name, status, reason)
+		VALUES ($1, $2, $3, 'approved', 'ok')`, w.a.agent.ID, w.a.uid, w.aConnName)
+	must(err, "a approved grant")
+	// A second connector whose NAME is the canary: the one no other user ever
+	// names in a request, so its name on any of B's pages is A's data. (The
+	// path connector's name is not a canary — B's walk sends it, and a grant B
+	// files for a name is B's own row.)
+	_, err = cs.CreateConnector(ua, connectors.NewConnector{Name: w.canary + "c", Hosts: []string{"api.example.test"},
+		Scheme: connectors.SchemeBearer, Secret: "iso-list-secret-0123456789"})
+	must(err, "a canary-named connector")
+	must(cs.Audit(ua, connectors.AuditEntry{Kind: "proxy", AgentID: w.a.agent.ID, AgentName: w.a.agent.Name,
+		Connector: w.aConnName, Method: "GET", Host: w.upHost, Path: "/", Status: 200, Detail: w.canary + " audit"}), "a audit")
+	must(gh.Save(ua, w.canary+"-login", "repo", "gho_"+w.canary), "a github")
+
+	w.aIdentities = []string{w.a.agent.Name, agents.ChiefNameFor(w.a.uid), w.aSessionLink, w.aTag, w.aProject}
+	w.objA = isoObjs{task: w.a.task.ID, agent: w.a.agent.ID, grant: w.aGrantID, comment: w.aComment.ID,
+		attach: w.aAttachment.ID, chat: w.aChatSession.ID, agentName: w.a.agent.Name, connName: w.aConnName,
+		tag: w.aTag, link: w.aSessionLink, mirrorHost: w.canary + "-host", mirrorSession: "main"}
+	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
+	// must be indistinguishable from the answer about the ghost.
+	const ghostID = 9_000_000_000
+	w.ghost = isoObjs{task: ghostID, agent: ghostID, grant: ghostID, comment: ghostID, attach: ghostID, chat: ghostID,
+		agentName: "ghost-agent" + w.suffix, connName: "ghostconn" + w.suffix, tag: "ghosttag", link: "ghost-sess-" + w.suffix,
+		mirrorHost: "ghost-host", mirrorSession: "main"}
+
+	// The server, fully wired over the real stores.
+	w.bus = sse.New(64)
+	srv := New(w.bus, AuthConfig{HookToken: isoHookToken, ServiceToken: isoServiceToken, UIPassword: isoPassword},
+		log.New(io.Discard, "", 0))
+	w.prov = &isoProvisioner{store: as}
+	srv.UseExtensions(Extensions{
+		Notes: ns, Agents: as, GitHub: gh, Users: users.NewPG(pool),
+		GitHubOAuth: GitHubOAuthConfig{ClientID: "iso-client", ClientSecret: "iso-secret", BaseURL: "http://muster.test",
+			StateKey: []byte("iso-walk-oauth-state-key-0123456789")},
+		Provisioner: w.prov, Gateway: w.prov, Connectors: cs,
+		Mirror: &isoMirror{owner: w.a.uid, host: w.canary + "-host"},
+		ConnectorPolicy: connectors.Policy{AllowLoopback: true, InsecureHTTP: true,
+			Resolve: func(_ context.Context, host string) ([]netip.Addr, error) {
+				if strings.HasSuffix(host, ".fake.test") {
+					return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+				}
+				return nil, fmt.Errorf("no such host %s", host)
+			}},
+	})
+	w.router = &isoRouter{dirs: []string{"/srv/projects/" + w.opCanary}}
+	srv.UseRouter(w.router)
+	srv.UseApprovalGate(&isoGate{})
+	srv.sessionUserOverride = func(r *http.Request) int64 {
+		if v, err := strconv.ParseInt(r.Header.Get(isoUserHeader), 10, 64); err == nil && v > 0 {
+			return v
+		}
+		return authz.OperatorUserID
+	}
+	w.srv = srv
+	w.h = srv.Handler()
+	w.connectH = OnlyConnectSurface(w.h)
+
+	// A's chief, through the REAL provision path (POST /chief/provision as A's
+	// session) — not a hand-set display name, so the walk sees the chief a
+	// member actually gets.
+	if rec := w.do(w.h, "POST", "/chief/provision", url.Values{"model": {""}}.Encode(), cred{sessionUser: w.a.uid}); rec.Code != http.StatusOK {
+		t.Fatalf("seed: A's chief provision: %d %s", rec.Code, rec.Body)
+	}
+	w.aChief, err = as.GetByName(ua, agents.ChiefNameFor(w.a.uid))
+	must(err, "a chief")
+	must(pool.QueryRow(w.sys, `INSERT INTO connector_grants (agent_id, owner_id, connector_name, status, reason)
+		VALUES ($1, $2, $3, 'pending', $4) RETURNING id`, w.aChief.ID, w.a.uid, w.aConnName, w.canary+" reason").Scan(&w.aGrantID), "a pending grant")
+	w.objA.grant = w.aGrantID
+	// An ACTIVE TURN of A's chief (round-2 audit 🟡1): the notifications
+	// panel's ACTIVE section reads a SERVER-WIDE in-memory registry, not a
+	// table, so row-level security never sees it. The chief has no unread
+	// messages, so its name on a panel can only come from this registry.
+	// (markAgentActive is exactly what handleAgentWS calls at turn start.)
+	srv.markAgentActive(w.a.uid, w.aChief.Name, "thinking")
+	// The operator's own tag and project: the positive control for the admin's
+	// vocabulary routes, whose leak check looks for A's.
+	_, err = ns.AddTags(authz.Operator(ctx), w.op.task.ID, []string{"isoop" + w.suffix, "project:isoopproj" + w.suffix})
+	must(err, "op tags")
+
+	// The operator's agent files one approval: the only kind of id there is,
+	// and the target for B's GET/DELETE /agent/approvals/{id}.
+	rec := w.do(w.h, "POST", "/agent/approvals", `{"tool":"Bash","command":"ls"}`, cred{agentToken: w.op.token})
+	var filed struct {
+		RequestID string `json:"requestId"`
+	}
+	if rec.Code != http.StatusCreated || json.Unmarshal(rec.Body.Bytes(), &filed) != nil || filed.RequestID == "" {
+		t.Fatalf("control: the operator's agent could not file an approval: %d %s", rec.Code, rec.Body)
+	}
+	w.opApproval = filed.RequestID
+
+	t.Cleanup(func() {
+		bg := authz.System(context.Background())
+		ids := []int64{w.a.uid, w.b.uid}
+		for _, q := range []string{
+			`DELETE FROM connector_audit WHERE owner_id = ANY($1)`, `DELETE FROM connector_grants WHERE owner_id = ANY($1)`,
+			`DELETE FROM connectors WHERE owner_id = ANY($1)`, `DELETE FROM chat_messages WHERE owner_id = ANY($1)`,
+			`DELETE FROM chat_sessions WHERE owner_id = ANY($1)`, `DELETE FROM agents WHERE owner_id = ANY($1)`,
+			`DELETE FROM task_sessions WHERE owner_id = ANY($1)`, `DELETE FROM note_attachments WHERE owner_id = ANY($1)`,
+			`DELETE FROM note_comments WHERE owner_id = ANY($1)`, `DELETE FROM notes WHERE owner_id = ANY($1)`,
+			`DELETE FROM github_connection WHERE owner_id = ANY($1)`, `DELETE FROM users WHERE id = ANY($1)`,
+		} {
+			_, _ = pool.Exec(bg, q, ids)
+		}
+		_, _ = pool.Exec(bg, `DELETE FROM agents WHERE id=$1`, w.op.agent.ID)
+		_, _ = pool.Exec(bg, `DELETE FROM notes WHERE id=$1`, w.op.task.ID)
+	})
+	return w
+}
+
+// cred is one way of authenticating a request.
+type cred struct {
+	sessionUser int64  // a browser session acting as this user
+	agentToken  string // an agent's own token
+	hook        bool   // the shared machine hook token (user 1)
+}
+
+func (c cred) String() string {
+	switch {
+	case c.sessionUser > 0:
+		return fmt.Sprintf("session(user %d)", c.sessionUser)
+	case c.agentToken != "":
+		return "agent-token"
+	case c.hook:
+		return "hook"
+	}
+	return "none"
+}
+
+func (w *isoWorld) do(h http.Handler, method, path, body string, c cred) *httptest.ResponseRecorder {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	ctype := ""
+	switch {
+	case strings.HasPrefix(body, "multipart:"):
+		vals, _ := url.ParseQuery(strings.TrimPrefix(body, "multipart:"))
+		var buf bytes.Buffer
+		mw := multipart.NewWriter(&buf)
+		for k, vs := range vals {
+			for _, v := range vs {
+				_ = mw.WriteField(k, v)
+			}
+		}
+		_ = mw.Close()
+		body, ctype = buf.String(), mw.FormDataContentType()
+	case strings.HasPrefix(body, "{"):
+		ctype = "application/json"
+	case body != "":
+		ctype = "application/x-www-form-urlencoded"
+	}
+	r := httptest.NewRequest(method, path, strings.NewReader(body)).WithContext(ctx)
+	r.Host = "muster.test"
+	if ctype != "" {
+		r.Header.Set("Content-Type", ctype)
+	}
+	switch {
+	case c.sessionUser > 0:
+		r.Header.Set("Cookie", sessionCookieFor(w.srv))
+		r.Header.Set("Origin", "http://muster.test")
+		r.Header.Set(isoUserHeader, strconv.FormatInt(c.sessionUser, 10))
+		r.Header.Set("HX-Request", "true")
+	case c.agentToken != "":
+		r.Header.Set("X-Muster-Token", c.agentToken)
+	case c.hook:
+		r.Header.Set("X-Muster-Token", isoHookToken)
+	}
+	rec := httptest.NewRecorder()
+	func() {
+		defer func() { _ = recover() }() // a handler panic is a 500, as recoverMiddleware makes it
+		h.ServeHTTP(rec, r)
+	}()
+	return rec
+}
+
+// isoObjs names one set of objects a request can point at.
+type isoObjs struct {
+	task, agent, grant, comment, attach, chat int64
+	agentName, connName, tag, link            string
+	mirrorHost, mirrorSession                 string
+}
+
+// fill turns a route pattern into a concrete request naming objects o, with a
+// body that would succeed for o's owner (actor's own task is the merge winner).
+func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path, body string) {
+	method, path = http.MethodGet, pattern
+	if i := strings.IndexByte(pattern, ' '); i > 0 {
+		method, path = pattern[:i], pattern[i+1:]
+	}
+	id := strconv.FormatInt(o.task, 10)
+	switch {
+	case strings.Contains(path, "/agents/{id}") || strings.HasPrefix(path, "/ui/agents/{id}"):
+		id = strconv.FormatInt(o.agent, 10)
+	case strings.Contains(path, "connector-grants/{id}") || strings.Contains(path, "connector-requests/{id}"):
+		id = strconv.FormatInt(o.grant, 10)
+	case strings.Contains(path, "/agent/approvals/{id}"):
+		id = w.opApproval
+		if o.task == w.ghost.task {
+			id = "ghost-card"
+		}
+	case strings.Contains(path, "/api/sessions/{id}"):
+		id = o.link
+	}
+	name := o.agentName
+	if strings.Contains(path, "connectors/{name}") {
+		name = o.connName
+	}
+	path = strings.NewReplacer(
+		"{$}", "", "{id}", url.PathEscape(id), "{name}", url.PathEscape(name),
+		"{cid}", strconv.FormatInt(o.comment, 10), "{aid}", strconv.FormatInt(o.attach, 10),
+		"{tag}", url.PathEscape(o.tag), "{sid}", strconv.FormatInt(o.chat, 10),
+		"{connector}", o.connName, "{host}", w.upHost, "{path...}", "probe",
+	).Replace(path)
+	if path == "/static/" {
+		path = "/static/app.css"
+	}
+	if strings.HasPrefix(path, "/mirror/terminal") {
+		path += "?" + url.Values{"host": {o.mirrorHost}, "session": {o.mirrorSession}}.Encode()
+	}
+	if method == http.MethodGet || method == http.MethodDelete {
+		if strings.HasPrefix(path, "/github/callback") {
+			path += "?state=x&code=y"
+		}
+		return method, path, ""
+	}
+	if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/agent/") || path == "/mcp" || strings.HasPrefix(path, "/connect/") {
+		return method, path, `{"jsonrpc":"2.0","id":1,"method":"tools/list","title":"iso-write","body":"iso-write",` +
+			`"status":"in_progress","message":"iso-write","reason":"iso-write","blocked":true,"tool":"Bash","command":"ls"}`
+	}
+	winner := actor.task.ID
+	if actor.uid == w.a.uid {
+		winner = w.aTask2.ID
+	}
+	f := url.Values{
+		"title": {"iso-write"}, "body": {"iso-write"}, "status": {"in_progress"}, "tags": {"isowrite"},
+		"name": {"iso-name"}, "model": {""}, "secret": {"iso-rotated-secret-0123456789"},
+		"note_text": {"iso"}, "directory": {"/tmp"},
+		// Cross-user links attempted through FORM fields, not the path: the
+		// actor's own task wins a merge whose loser is o's task, and a dispatch
+		// names o's task.
+		"winner": {strconv.FormatInt(winner, 10)}, "loser": {strconv.FormatInt(o.task, 10)},
+		"note_id": {strconv.FormatInt(o.task, 10)},
+	}
+	if pattern == "POST /tasks" {
+		return method, path, "multipart:" + f.Encode()
+	}
+	return method, path, f.Encode()
+}
+
+// leaks reports which of A's strings body carries.
+func (w *isoWorld) leaks(body string, withIdentities bool) []string {
+	var out []string
+	if strings.Contains(body, w.canary) {
+		out = append(out, "canary")
+	}
+	if withIdentities {
+		for _, id := range w.aIdentities {
+			if strings.Contains(body, id) {
+				out = append(out, id)
+			}
+		}
+	}
+	return out
+}
+
+// snapshot is every row A owns, as JSON, from System's view.
+func (w *isoWorld) snapshot() map[string]string {
+	w.t.Helper()
+	out := map[string]string{}
+	for _, tbl := range []string{"notes", "note_comments", "note_attachments", "task_sessions", "agents",
+		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "github_connection", "mirror_tokens"} {
+		var js string
+		if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t.id)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
+			// task_sessions/github_connection have no `id` ordering column in every
+			// shape; fall back to a stable text ordering.
+			if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t::text)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
+				w.t.Fatalf("snapshot %s: %v", tbl, err)
+			}
+		}
+		out[tbl] = js
+	}
+	return out
+}
+
+// --- the walk ------------------------------------------------------------------
+
+type isoResult struct {
+	route, via      string
+	status, ghost   int // the answer about the real object, and about the ghost
+	body, ghostBody string
+}
+
+// walkAs drives every route as actor through each credential (an agent token
+// on BOTH the main handler and the connect port), naming objects o — and
+// again naming the ghost, which exists for nobody.
+func (w *isoWorld) walkAs(actor isoUser, o isoObjs, creds []cred, routes []string) []isoResult {
+	var out []isoResult
+	for _, route := range routes {
+		for _, c := range creds {
+			hs := map[string]http.Handler{"main": w.h}
+			if c.agentToken != "" {
+				hs["connect-port"] = w.connectH
+			}
+			for _, via := range []string{"main", "connect-port"} {
+				h, ok := hs[via]
+				if !ok {
+					continue
+				}
+				res := isoResult{route: route, via: c.String() + "@" + via}
+				if namesObject(route) {
+					m, p, b := w.fill(route, w.ghost, actor)
+					g := w.do(h, m, p, b, c)
+					res.ghost, res.ghostBody = g.Code, g.Body.String()
+				}
+				m, p, b := w.fill(route, o, actor)
+				rec := w.do(h, m, p, b, c)
+				res.status, res.body = rec.Code, rec.Body.String()
+				out = append(out, res)
+			}
+		}
+	}
+	return out
+}
+
+// namesObject reports whether a route names an object — in its path, or (for
+// the dispatch and merge forms) in its body.
+func namesObject(route string) bool {
+	return paramRE.MatchString(route) || route == "POST /agents" || route == "POST /tasks/merge" ||
+		strings.HasPrefix(route, "GET /mirror/terminal")
+}
+
+var paramRE = regexp.MustCompile(`\{[a-z]`)
+
+func sortedRoutes() []string {
+	var out []string
+	for r := range isolationClasses {
+		out = append(out, r)
+	}
+	// Destructive routes last, children before parents, so the control walk as
+	// A can run them all against one fixture.
+	rank := func(r string) int {
+		switch {
+		case !strings.HasPrefix(r, "DELETE "):
+			return 0
+		case strings.Contains(r, "{cid}"), strings.Contains(r, "{tag}"), strings.Contains(r, "grants"), strings.Contains(r, "approvals"):
+			return 1
+		default:
+			return 2
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if ri, rj := rank(out[i]), rank(out[j]); ri != rj {
+			return ri < rj
+		}
+		return out[i] < out[j]
+	})
+	return out
+}
+
+// sideEffectControlled are the routes whose answer to their OWNER is the same
+// as their answer about a ghost (fire-and-forget or acknowledge-only), so the
+// control cannot be read off the status. Each has its control asserted on the
+// side effect instead, at the end of the walk.
+var sideEffectControlled = map[string]string{
+	"POST /agents/{id}/start":               "the provisioner acted for A (isoProvisioner records it), never for B",
+	"POST /agents/{id}/stop":                "as start",
+	"DELETE /agents/{id}":                   "as start (Destroy)",
+	"POST /agents/sessions/{sid}/read":      "A's chat_sessions.read_at moved; the mutation leg shows B's did not",
+	"POST /agent/approvals":                 "B's agent is refused 503 (a member); the admin agent files (newIsoWorld's control)",
+	"/connect/{connector}/{host}/{path...}": "A's secret reached the upstream for A, never for B",
+}
+
+// controlMarkers: a route whose owner and ghost answers share a status, where
+// a string in the OWNER's body is what tells them apart.
+var controlMarkers = map[string]string{
+	"GET /agent/connectors/{name}":          `"exists":true`,
+	"POST /agent/connectors/{name}/request": `"exists":true`,
+}
+
+// echoOnly: routes that render the same thing for ANY name — their own and a
+// ghost alike — echoing only the name the caller sent, so there is nothing an
+// owner sees that an outsider does not. The leak check still runs on them.
+var echoOnly = map[string]string{
+	"GET /ui/connectors/{name}/rotate": "renders the rotate form for whatever name is in the URL; the rotate itself (POST) is owner-scoped",
+}
+
+// checkOutsider asserts what an outsider's (B's, or the admin's against a
+// member) walk may show: no canary anywhere, no identifier of A's on a route
+// that names no object, and — for a route naming A's object — the SAME answer
+// it gives about the ghost.
+func (w *isoWorld) checkOutsider(t *testing.T, who string, results []isoResult) {
+	t.Helper()
+	for _, res := range results {
+		named := namesObject(res.route)
+		if l := w.leaks(res.body, !named); len(l) > 0 {
+			t.Errorf("LEAK: %s %s %s → %d carries A's %v\n  body: %s", who, res.via, res.route, res.status, l, truncate(res.body, 300))
+		}
+		if named && res.status != res.ghost {
+			t.Errorf("DISTINGUISHABLE: %s %s %s answered %d about A's object but %d about a ghost — it can tell A's "+
+				"object exists (or acted on it)\n  body: %s", who, res.via, res.route, res.status, res.ghost, truncate(res.body, 300))
+		}
+		if strings.Contains(res.body, `"exists":true`) && strings.Contains(res.route, "/agent/connectors/{name}") {
+			t.Errorf("LEAK: %s %s %s reports A's connector EXISTS: %s", who, res.via, res.route, truncate(res.body, 300))
+		}
+	}
+}
+
+func is2xx(code int) bool { return code >= 200 && code < 300 }
+
+// TestNoRouteLetsOneUserReachAnothersData is the walk. See the file header.
+func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
+	w := newIsoWorld(t)
+	routes := sortedRoutes()
+	before := w.snapshot()
+	w.router.reset()
+
+	// --- user B, a member, through every one of B's credentials ---
+	bResults := w.walkAs(w.b, w.objA, []cred{{sessionUser: w.b.uid}, {agentToken: w.b.token}}, routes)
+	w.checkOutsider(t, "B", bResults)
+	// The operator's own data (the router's directory list) is not A's, so the
+	// canary check above cannot see it: a MEMBER must not get it either.
+	for _, res := range bResults {
+		if strings.Contains(res.body, w.opCanary) {
+			t.Errorf("LEAK: B %s %s → %d carries the OPERATOR's data\n  body: %s", res.via, res.route, res.status, truncate(res.body, 300))
+		}
+	}
+	if len(bResults) < 3*len(isolationClasses) {
+		t.Fatalf("the walk drove %d requests for %d routes", len(bResults), len(isolationClasses))
+	}
+	for _, res := range bResults {
+		if res.route == "POST /agent/approvals" && strings.HasPrefix(res.via, "agent-token") && res.status != http.StatusServiceUnavailable {
+			t.Errorf("B's (a member's) agent filing an approval: %d %s; want 503 → its own terminal", res.status, truncate(res.body, 200))
+		}
+	}
+	w.checkCounts(t)
+	w.srv.WaitForPushes()
+	if got := w.router.snapshot(); len(got) != 0 {
+		t.Errorf("a MEMBER's walk reached the operator's router %d time(s): %v", len(got), got)
+	}
+	// --- the mutation leg ---
+	w.sameRows(t, "B's walk", before)
+	// --- the connect leg ---
+	if got := w.up.sawSecret(w.canary + "-SECRET"); got != 0 {
+		t.Errorf("A's connector secret was injected upstream %d time(s) during B's walk", got)
+	}
+	if got := w.prov.actedOn(w.a.agent.ID, w.b.uid); got != 0 {
+		t.Errorf("the provisioner acted on A's agent %d time(s) for B", got)
+	}
+
+	// --- the admin leg: user 1 (session, machine token, own agent) against member A ---
+	opResults := w.walkAs(w.op, w.objA, []cred{{sessionUser: w.op.uid}, {hook: true}, {agentToken: w.op.token}}, routes)
+	var opOutsider []isoResult
+	for _, res := range opResults {
+		// The operator's own approval card is the admin agent's to read.
+		if !strings.Contains(res.route, "/agent/approvals/{id}") {
+			opOutsider = append(opOutsider, res)
+		}
+	}
+	w.checkOutsider(t, "admin (user 1)", opOutsider)
+	w.sameRows(t, "the admin walk", before)
+	if got := w.prov.actedOn(w.a.agent.ID, w.op.uid); got != 0 {
+		t.Errorf("the provisioner acted on member A's agent %d time(s) for the admin", got)
+	}
+
+	// --- the NEGATIVE CONTROL: the same walk as A must reach A's data ---
+	aResults := w.walkAs(w.a, w.objA, []cred{{sessionUser: w.a.uid}, {agentToken: w.a.token}}, routes)
+	sawCanary := map[string]bool{}
+	reached := map[string]bool{}
+	distinguishes := func(res isoResult) bool {
+		if res.status != res.ghost || len(w.leaks(res.body, true)) > 0 {
+			return true
+		}
+		m, ok := controlMarkers[res.route]
+		return ok && strings.Contains(res.body, m) && !strings.Contains(res.ghostBody, m)
+	}
+	for _, res := range aResults {
+		if len(w.leaks(res.body, true)) > 0 {
+			sawCanary[res.route] = true
+		}
+		if namesObject(res.route) && distinguishes(res) {
+			reached[res.route] = true
+		}
+	}
+	// The approval card is the ADMIN agent's (a member cannot file one), so its
+	// control is the admin walk: user 1's own agent reaches its own card.
+	for _, res := range opResults {
+		if strings.Contains(res.route, "/agent/approvals/{id}") && distinguishes(res) {
+			reached[res.route] = true
+		}
+	}
+	for _, route := range routes {
+		if !namesObject(route) || reached[route] || isolationClasses[route] == classAdmin {
+			continue // admin-tier routes: A has no machine credential; the hook control is below
+		}
+		if _, ok := sideEffectControlled[route]; ok {
+			continue
+		}
+		if _, ok := echoOnly[route]; ok {
+			continue
+		}
+		t.Errorf("CONTROL: no credential of A's distinguished A's OWN object from a ghost on %s (same status, no "+
+			"canary, no marker) — so an outsider's identical answers there prove nothing", route)
+	}
+	for _, r := range wantCanaryForA {
+		if !sawCanary[r] {
+			t.Errorf("CONTROL: A did not see its own data on %s, so B's clean body there proves nothing", r)
+		}
+	}
+	if len(reached) < 30 {
+		t.Errorf("CONTROL: A's walk distinguished its own objects on only %d routes", len(reached))
+	}
+	// The ACTIVE-section control: A's panel names A's in-flight chief.
+	if body := w.do(w.h, "GET", "/ui/notifications", "", cred{sessionUser: w.a.uid}).Body.String(); !strings.Contains(body, w.aChief.Name) {
+		t.Errorf("CONTROL: A's notifications panel does not name A's in-flight %s, so B's clean panel proves nothing\n  body: %s",
+			w.aChief.Name, truncate(body, 300))
+	}
+	// The side-effect controls.
+	if w.up.sawSecret(w.canary+"-SECRET") == 0 {
+		t.Error("CONTROL: A's own agent never got A's connector secret upstream — the connect leg proves nothing")
+	}
+	if got := w.prov.actedOn(w.a.agent.ID, w.a.uid); got < 3 {
+		t.Errorf("CONTROL: the provisioner acted on A's agent %d time(s) for A; want start, stop and destroy", got)
+	}
+	if after := w.snapshot(); after["chat_sessions"] == before["chat_sessions"] {
+		t.Error("CONTROL: A's own POST /agents/sessions/{sid}/read did not move read_at, so B's unchanged row proves nothing")
+	}
+	// The machine-token control: the hook tier reaches user 1's OWN task.
+	if rec := w.do(w.h, "GET", "/api/tasks/"+strconv.FormatInt(w.op.task.ID, 10), "", cred{hook: true}); rec.Code != 200 ||
+		!strings.Contains(rec.Body.String(), w.opCanary) {
+		t.Errorf("CONTROL: the hook token could not read user 1's own task: %d %s", rec.Code, truncate(rec.Body.String(), 200))
+	}
+}
+
+// checkCounts: a COUNT aggregate must be the caller's own — nothing in its
+// body names A, so only the number can show the leak. B's review count must
+// equal B's own (from System's view of B's rows), A's must equal A's (the
+// control: A has a ready-for-review task, so a scope that dropped A's rows
+// would also show). The admin's vocabulary routes must show the operator's
+// own tag and project (their leak check above looks for A's).
+func (w *isoWorld) checkCounts(t *testing.T) {
+	t.Helper()
+	truth := func(u isoUser) int {
+		var n int
+		if err := w.pool.QueryRow(w.sys, `SELECT count(*) FROM notes WHERE owner_id=$1 AND status='ready_for_review'
+			AND deleted_at IS NULL`, u.uid).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	for _, u := range []isoUser{w.b, w.a} {
+		rec := w.do(w.h, "GET", "/ui/tasks/review-count", "", cred{sessionUser: u.uid})
+		var body struct {
+			Count int `json:"count"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Count != truth(u) {
+			t.Errorf("COUNT: %s's review count = %s; want its own %d", u.name, rec.Body, truth(u))
+		}
+	}
+	// The ACTIVE section: A's in-flight chief is on nobody else's panel (the
+	// walk's identity check covers this too). A's own panel is the control,
+	// asserted after the mutation legs — rendering it creates A's chat session.
+	for _, c := range []struct {
+		u    isoUser
+		want bool
+	}{{w.b, false}, {w.op, false}} {
+		body := w.do(w.h, "GET", "/ui/notifications", "", cred{sessionUser: c.u.uid}).Body.String()
+		if strings.Contains(body, w.aChief.Name) != c.want {
+			t.Errorf("ACTIVE: %s's notifications panel names A's in-flight %s = %v; want %v\n  body: %s",
+				c.u.name, w.aChief.Name, !c.want, c.want, truncate(body, 300))
+		}
+	}
+	if truth(w.a) == 0 {
+		t.Error("CONTROL: A has no ready-for-review task, so B's count proves nothing")
+	}
+	for _, rt := range []struct{ path, want string }{{"/api/tags", "isoop" + w.suffix}, {"/api/projects", "isoopproj" + w.suffix}} {
+		if rec := w.do(w.h, "GET", rt.path, "", cred{hook: true}); !strings.Contains(rec.Body.String(), rt.want) {
+			t.Errorf("CONTROL: the admin's %s does not show the operator's own %q: %s", rt.path, rt.want, truncate(rec.Body.String(), 200))
+		}
+	}
+}
+
+// sameRows asserts every row A owns is unchanged since before.
+func (w *isoWorld) sameRows(t *testing.T, what string, before map[string]string) {
+	t.Helper()
+	after := w.snapshot()
+	for tbl, js := range before {
+		if after[tbl] != js {
+			t.Errorf("MUTATION: %s changed A's %s rows.\n before: %s\n  after: %s", what, tbl, truncate(js, 400), truncate(after[tbl], 400))
+		}
+	}
+}
+
+// --- the SSE leg -------------------------------------------------------------
+
+// TestAnotherUsersWritesNeverReachYourEventStream: B holds /events open while
+// A writes through the API (create, edit, comment, status) and A's agent's
+// state changes; within 2s B's stream carries none of A's events (by A's task
+// ids and agent name), while A's own stream does — and B's own write reaches B.
+func TestAnotherUsersWritesNeverReachYourEventStream(t *testing.T) {
+	w := newIsoWorld(t)
+	ts := httptest.NewServer(w.h)
+	t.Cleanup(ts.Close)
+
+	open := func(uid int64) (*isoStream, func()) {
+		ctx, cancel := context.WithCancel(context.Background())
+		req, _ := http.NewRequestWithContext(ctx, "GET", ts.URL+"/events", nil)
+		req.Header.Set("Cookie", sessionCookieFor(w.srv))
+		req.Header.Set(isoUserHeader, strconv.FormatInt(uid, 10))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil || resp.StatusCode != 200 {
+			t.Fatalf("open /events as %d: %v %v", uid, err, resp)
+		}
+		st := &isoStream{}
+		go st.read(resp.Body)
+		return st, func() { cancel(); _ = resp.Body.Close() }
+	}
+	bStream, closeB := open(w.b.uid)
+	defer closeB()
+	aStream, closeA := open(w.a.uid)
+	defer closeA()
+	deadline := time.Now().Add(2 * time.Second)
+	for w.bus.Count() < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	asA := cred{sessionUser: w.a.uid}
+	aTask := strconv.FormatInt(w.a.task.ID, 10)
+	for _, rq := range []struct{ m, p, b string }{
+		{"POST", "/tasks", "multipart:" + url.Values{"title": {w.canary + " new"}}.Encode()},
+		{"POST", "/tasks/" + aTask + "/comments", url.Values{"body": {w.canary + " c2"}}.Encode()},
+		{"PATCH", "/tasks/" + aTask + "/status", url.Values{"status": {"in_progress"}}.Encode()},
+		{"POST", "/tasks/" + aTask + "/tags", url.Values{"tags": {"ssetag"}}.Encode()},
+	} {
+		if rec := w.do(w.h, rq.m, rq.p, rq.b, asA); rec.Code >= 400 {
+			t.Fatalf("A's write %s %s: %d %s", rq.m, rq.p, rec.Code, rec.Body)
+		}
+	}
+	w.srv.BroadcastAgentChanged(w.a.agent.Name) // a loop's nudge about A's agent
+	// And B's own write, so B's stream is shown live.
+	if rec := w.do(w.h, "PATCH", "/tasks/"+strconv.FormatInt(w.b.task.ID, 10)+"/status",
+		url.Values{"status": {"in_progress"}}.Encode(), cred{sessionUser: w.b.uid}); rec.Code >= 400 {
+		t.Fatalf("B's own write: %d %s", rec.Code, rec.Body)
+	}
+	time.Sleep(2 * time.Second)
+
+	aGot, bGot := aStream.text(), bStream.text()
+	for _, needle := range []string{`"id":"` + aTask + `"`, w.a.agent.Name} {
+		if strings.Contains(bGot, needle) {
+			t.Errorf("LEAK: B's /events stream carried A's %q:\n%s", needle, bGot)
+		}
+		if !strings.Contains(aGot, needle) {
+			t.Errorf("CONTROL: A's own stream never carried %q, so B's silence proves nothing:\n%s", needle, aGot)
+		}
+	}
+	if !strings.Contains(bGot, `"id":"`+strconv.FormatInt(w.b.task.ID, 10)+`"`) {
+		t.Errorf("CONTROL: B's stream never carried B's own event:\n%s", bGot)
+	}
+}
+
+type isoStream struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *isoStream) read(r io.Reader) {
+	b := make([]byte, 4096)
+	for {
+		n, err := r.Read(b)
+		s.mu.Lock()
+		s.buf.Write(b[:n])
+		s.mu.Unlock()
+		if err != nil {
+			return
+		}
+	}
+}
+
+func (s *isoStream) text() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+// --- fakes for the parts that are not this package's -------------------------
+
+// isoMirror plays the mirror plugin as mirror.Service behaves: A's one host
+// (named with the canary) is visible to A's principal only — Hosts and Attach
+// act for ctx's principal; a scope-all or principal-less context has none.
+// #63's own tests cover the real Service's owner keying; this is the API side.
+type isoMirror struct {
+	owner int64
+	host  string
+}
+
+func (m *isoMirror) mine(ctx context.Context) bool {
+	p, ok := authz.From(ctx)
+	return ok && !p.All() && p.UserID == m.owner
+}
+
+func (m *isoMirror) ServeConnect(w http.ResponseWriter, _ *http.Request) {
+	http.Error(w, "mirror token required", http.StatusUnauthorized)
+}
+
+func (m *isoMirror) Hosts(ctx context.Context) []mirror.HostView {
+	if !m.mine(ctx) {
+		return nil
+	}
+	return []mirror.HostView{{Host: m.host, Sessions: []string{"main"}, Online: true}}
+}
+
+func (m *isoMirror) Attach(ctx context.Context, host, _ string, _ bool, _ io.Reader, stdout io.Writer, _ <-chan provision.TermSize) error {
+	if !m.mine(ctx) || host != m.host {
+		return mirror.ErrHostOffline
+	}
+	_, err := io.WriteString(stdout, "mirrored "+m.host)
+	return err
+}
+
+// isoUpstream records the credentials the proxy injected.
+type isoUpstream struct {
+	srv  *httptest.Server
+	port string
+	mu   sync.Mutex
+	auth []string
+}
+
+func newIsoUpstream(t *testing.T) *isoUpstream {
+	u := &isoUpstream{}
+	u.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u.mu.Lock()
+		u.auth = append(u.auth, r.Header.Get("Authorization"))
+		u.mu.Unlock()
+		_, _ = io.WriteString(w, "upstream ok")
+	}))
+	t.Cleanup(u.srv.Close)
+	u.port = u.srv.URL[strings.LastIndexByte(u.srv.URL, ':')+1:]
+	return u
+}
+
+func (u *isoUpstream) sawSecret(secret string) int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	n := 0
+	for _, a := range u.auth {
+		if strings.Contains(a, secret) || strings.Contains(decodeBasic(a), secret) {
+			n++
+		}
+	}
+	return n
+}
+
+func decodeBasic(h string) string {
+	r := http.Request{Header: http.Header{"Authorization": {h}}}
+	_, p, _ := r.BasicAuth()
+	return p
+}
+
+// isoRouter is the operator's router: it records every push and mirror.
+type isoRouter struct {
+	stubLiveness
+	dirs []string
+	mu   sync.Mutex
+	got  []string
+}
+
+func (r *isoRouter) PublishEvent(_ context.Context, name, data string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.got = append(r.got, "publish "+name+" "+data)
+	return nil
+}
+
+func (r *isoRouter) Notify(_ context.Context, n RouterNotification) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.got = append(r.got, "notify "+n.Title)
+	return nil
+}
+
+func (r *isoRouter) Directories(context.Context, string, int) ([]string, error) { return r.dirs, nil }
+
+func (r *isoRouter) SessionMeta(context.Context, string) (SessionMeta, bool, error) {
+	return SessionMeta{}, false, nil
+}
+
+func (r *isoRouter) reset() {
+	r.mu.Lock()
+	r.got = nil
+	r.mu.Unlock()
+}
+
+func (r *isoRouter) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.got)
+}
+
+func (r *isoRouter) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.got...)
+}
+
+type isoGate struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (g *isoGate) MintGate(context.Context, GateSpec) (string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.n++
+	return "iso-card-" + strconv.Itoa(g.n), nil
+}
+func (g *isoGate) ReadGate(context.Context, string) (GateDecision, error) {
+	return GateDecision{State: GateStatePending}, nil
+}
+func (g *isoGate) ClearGate(context.Context, string) error { return nil }
+
+// isoProvisioner stands in for the cluster. Like the real adapter it reads the
+// agent row on the CALLER's context before acting, so a call for an agent the
+// caller cannot see fails exactly as it would in production.
+type isoProvisioner struct {
+	store agents.Store
+	mu    sync.Mutex
+	acted map[[2]int64]int // (agent id, acting uid) -> successful actions
+}
+
+func (p *isoProvisioner) check(ctx context.Context, id int64) error {
+	if _, err := p.store.Get(ctx, id); err != nil {
+		return err
+	}
+	pr, _ := authz.From(ctx)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.acted == nil {
+		p.acted = map[[2]int64]int{}
+	}
+	p.acted[[2]int64{id, pr.UserID}]++
+	return nil
+}
+
+// actedOn waits briefly for the handlers' background actions, then reports
+// how many times agent id was acted on for uid.
+func (p *isoProvisioner) actedOn(id, uid int64) int {
+	time.Sleep(200 * time.Millisecond)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.acted[[2]int64{id, uid}]
+}
+func (p *isoProvisioner) Dispatch(ctx context.Context, id int64, _ bool) error {
+	return p.check(ctx, id)
+}
+func (p *isoProvisioner) Start(ctx context.Context, id int64) error   { return p.check(ctx, id) }
+func (p *isoProvisioner) Stop(ctx context.Context, id int64) error    { return p.check(ctx, id) }
+func (p *isoProvisioner) Destroy(ctx context.Context, id int64) error { return p.check(ctx, id) }
+func (p *isoProvisioner) Instances(context.Context) ([]provision.Instance, error) {
+	return nil, nil
+}
+func (p *isoProvisioner) TailLogs(_ context.Context, a agents.Agent, _ int64) (string, error) {
+	return "logs of " + a.Name, nil
+}
+func (p *isoProvisioner) StreamLogs(_ context.Context, a agents.Agent, emit func(string)) error {
+	emit("log of " + a.Name)
+	return nil
+}
+func (p *isoProvisioner) AttachTerminal(context.Context, agents.Agent, bool, io.Reader, io.Writer, <-chan provision.TermSize) error {
+	return nil
+}
+func (p *isoProvisioner) KickoffUndeliverableReason() string { return "" }
+func (p *isoProvisioner) Chat(context.Context, agents.Agent, string, string, func(string)) (string, error) {
+	return "", nil
+}
+func (p *isoProvisioner) ChatWithTools(context.Context, agents.Agent, string, string, string, []agents.ToolDef, agents.ToolDispatch, agents.StreamEmit) (string, error) {
+	return "", nil
+}

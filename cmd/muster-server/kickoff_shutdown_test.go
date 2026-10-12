@@ -37,6 +37,10 @@ func (s *shutdownStore) List(context.Context) ([]agents.Agent, error) {
 	return []agents.Agent{s.row}, nil
 }
 func (s *shutdownStore) Get(context.Context, int64) (agents.Agent, error) { return s.row, nil }
+
+// GetByName serves api.Server.agentOwner: an agent.changed nudge reaches its
+// agent's OWNER only (accounts PR 3b), so the server reads the row by name.
+func (s *shutdownStore) GetByName(context.Context, string) (agents.Agent, error) { return s.row, nil }
 func (s *shutdownStore) ClaimKickoff(context.Context, int64, string, time.Duration) (bool, error) {
 	return true, nil
 }
@@ -188,11 +192,14 @@ func TestShutdownWaitsForTheCardChangeAShutdownCancelledKickoffBroadcasts(t *tes
 		ID: 9227, Name: "brisk-teal", Namespace: agents.NamespaceFor(prefix, "brisk-teal"),
 		Status: agents.StatusProvisioning, PendingNote: "sweep the stale branches",
 		HooksToken: "tok-teal-81c4", UpdatedAt: time.Now(),
+		// The operator's agent: an event about it is mirrored to the router.
+		OwnerID: 1,
 	}
 	store := &shutdownStore{row: row, recordDelay: 20 * time.Millisecond}
 	gw := &heldGateway{entered: make(chan struct{})}
 	logger := log.New(io.Discard, "", 0)
 	srv := api.New(nil, api.AuthConfig{}, logger)
+	srv.UseExtensions(api.Extensions{Agents: store})
 	router := &slowRouter{publishDelay: 300 * time.Millisecond}
 	srv.UseRouter(router)
 	d, err := agentkickoff.New(agentkickoff.Config{

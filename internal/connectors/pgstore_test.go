@@ -85,7 +85,8 @@ func TestACiphertextMovedToAnotherOwnersRowDoesNotOpen(t *testing.T) {
 		t.Fatalf("a created connector is owned by %d (%v), want 1", owner, err)
 	}
 	var two int64
-	if err := pool.QueryRow(ctx, `INSERT INTO users (role) VALUES ('member') RETURNING id`).Scan(&two); err != nil {
+	// users is under row-level security since 0009: only scope-all creates one.
+	if err := pool.QueryRow(authz.System(ctx), `INSERT INTO users (role) VALUES ('member') RETURNING id`).Scan(&two); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -94,19 +95,21 @@ func TestACiphertextMovedToAnotherOwnersRowDoesNotOpen(t *testing.T) {
 		_, _ = pool.Exec(bg, `DELETE FROM users WHERE id=$1`, two)
 	})
 
-	// The move and the reads after it run as authz.System (scope all): under
-	// row-level security user 1 can neither hand a row to user 2 (WITH CHECK)
-	// nor read it afterwards (it would be ErrNoRows, not the seal's refusal this
-	// test is about). System sees the row as it really is — owner 2, owner 1's
-	// ciphertext — which is exactly the tampered state the seal must refuse.
+	// The move runs as authz.System (scope all): under row-level security user
+	// 1 cannot hand a row to user 2 (WITH CHECK). The reads after it run as
+	// USER 2 — the row's new owner, who sees it as it really is (owner 2, owner
+	// 1's ciphertext): exactly the tampered state the seal must refuse. (Not
+	// System: since accounts PR 3b a name-keyed read resolves within the
+	// principal's user and refuses a scope-all caller outright.)
 	sys := authz.System(ctx)
 	if _, err := pool.Exec(sys, `UPDATE connectors SET owner_id=$1 WHERE name='github'`, two); err != nil {
 		t.Fatal(err)
 	}
-	if _, secret, err := s.Credential(sys, "github"); !errors.Is(err, connectors.ErrDecrypt) || secret != "" {
+	asTwo := authz.WithPrincipal(ctx, authz.Principal{UserID: two, Role: authz.RoleMember, Via: authz.ViaSession})
+	if _, secret, err := s.Credential(asTwo, "github"); !errors.Is(err, connectors.ErrDecrypt) || secret != "" {
 		t.Fatalf("owner 1's ciphertext opened on owner %d's row: %q, %v; want ErrDecrypt", two, secret, err)
 	}
-	if err := s.RotateSecret(sys, "github", "ghp_FAKE-rotated-0123456789"); !errors.Is(err, connectors.ErrDecrypt) {
+	if err := s.RotateSecret(asTwo, "github", "ghp_FAKE-rotated-0123456789"); !errors.Is(err, connectors.ErrDecrypt) {
 		t.Fatalf("RotateSecret re-sealed a ciphertext that does not open for the row's owner: %v", err)
 	}
 
@@ -269,5 +272,101 @@ func TestAuditRecordsAndPrunes(t *testing.T) {
 	n, err := s.PruneAudit(ctx, time.Now().Add(time.Minute))
 	if err != nil || n != 1 {
 		t.Fatalf("prune = %d %v", n, err)
+	}
+}
+
+// TestAConnectorNameResolvesOnlyWithinItsOwner (accounts PR 3b): names are
+// unique per OWNER, so user 1 and user 2 each hold a connector called
+// `github`. Every name-keyed call resolves within the principal's user —
+// each reads its own secret, a rotate or delete by one leaves the other's row
+// alone — and a scope-all (System) caller, which row-level security would let
+// see BOTH rows, is refused rather than handed whichever came first.
+//
+// 🔴 THE EXPLICIT `owner_id = …` PREDICATE IS NOT REDUNDANT WITH ROW-LEVEL
+// SECURITY, AND THE LAST LEG SHOWS WHERE: the documented rollback runs
+// `muster-migrate --rls-off` while THIS image is still serving (internal/db's
+// rls_off.sql: off first, then change the pin). In that window RLS shows every
+// user's rows, and only the predicate keeps user 2's `github` from resolving to
+// user 1's. RED when the predicate is dropped from credentialRow — here, and
+// for System (which then opens one of the two secrets instead of refusing).
+func TestAConnectorNameResolvesOnlyWithinItsOwner(t *testing.T) {
+	ctx, pool := testPool(t)
+	s := newStore(t, pool, key(1))
+	sys := authz.System(ctx)
+	var two int64
+	if err := pool.QueryRow(sys, `INSERT INTO users (role) VALUES ('member') RETURNING id`).Scan(&two); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		bg := authz.System(context.Background())
+		_, _ = pool.Exec(bg, `DELETE FROM connectors WHERE owner_id=$1`, two)
+		_, _ = pool.Exec(bg, `DELETE FROM users WHERE id=$1`, two)
+	})
+	asTwo := authz.WithPrincipal(ctx, authz.Principal{UserID: two, Role: authz.RoleMember, Via: authz.ViaSession})
+	const secretTwo = "ghp_FAKE-user-two-0123456789"
+	createGitHub(t, ctx, s)
+	p := connectors.GitHubPreset
+	if _, err := s.CreateConnector(asTwo, connectors.NewConnector{Name: "github", Platform: p.Key, Hosts: p.Hosts,
+		Scheme: p.Scheme, Username: p.Username, Secret: secretTwo}); err != nil {
+		t.Fatalf("user 2's same-named connector: %v", err)
+	}
+
+	for _, c := range []struct {
+		who  string
+		ctx  context.Context
+		want string
+	}{{"user 1", ctx, fakeSecret}, {"user 2", asTwo, secretTwo}} {
+		if _, got, err := s.Credential(c.ctx, "github"); err != nil || got != c.want {
+			t.Errorf("%s's Credential(github) = %q, %v; want its own secret", c.who, got, err)
+		}
+		if _, err := s.GetConnector(c.ctx, "github"); err != nil {
+			t.Errorf("%s's GetConnector(github): %v", c.who, err)
+		}
+	}
+	if _, got, err := s.Credential(sys, "github"); err == nil || got != "" {
+		t.Errorf("System resolved `github` across users to %q (%v); want a refusal", got, err)
+	}
+	if _, err := s.GetConnector(sys, "github"); err == nil {
+		t.Error("System resolved GetConnector(github) across users; want a refusal")
+	}
+	if err := s.TouchConnector(sys, "github"); err == nil {
+		t.Error("System touched `github` across users; want a refusal")
+	}
+
+	// A write by user 2 changes only user 2's row.
+	if err := s.RotateSecret(asTwo, "github", "ghp_FAKE-two-rotated-0123456789"); err != nil {
+		t.Fatalf("user 2 rotating its own: %v", err)
+	}
+	if _, got, _ := s.Credential(ctx, "github"); got != fakeSecret {
+		t.Errorf("user 2's rotate changed user 1's secret to %q", got)
+	}
+	if err := s.DeleteConnector(asTwo, "github"); err != nil {
+		t.Fatalf("user 2 deleting its own: %v", err)
+	}
+	if _, got, err := s.Credential(ctx, "github"); err != nil || got != fakeSecret {
+		t.Errorf("user 2's delete took user 1's connector: %q, %v", got, err)
+	}
+
+	// The rollback window: RLS OFF, this image still serving.
+	if _, err := s.CreateConnector(asTwo, connectors.NewConnector{Name: "github", Platform: p.Key, Hosts: p.Hosts,
+		Scheme: p.Scheme, Username: p.Username, Secret: secretTwo}); err != nil {
+		t.Fatalf("user 2's connector again: %v", err)
+	}
+	if err := db.RLSOff(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := db.RLSOn(context.Background(), pool); err != nil {
+			t.Errorf("RLSOn: %v", err)
+		}
+	})
+	for _, c := range []struct {
+		who  string
+		ctx  context.Context
+		want string
+	}{{"user 1", ctx, fakeSecret}, {"user 2", asTwo, secretTwo}} {
+		if _, got, err := s.Credential(c.ctx, "github"); err != nil || got != c.want {
+			t.Errorf("RLS off: %s's Credential(github) = %q, %v; want its own secret", c.who, got, err)
+		}
 	}
 }

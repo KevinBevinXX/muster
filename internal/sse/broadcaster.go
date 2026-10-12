@@ -1,6 +1,18 @@
 // Package sse implements a small Server-Sent Events broadcaster: subscribers
-// register a channel, the broadcaster fans an Event out to every subscriber,
-// and subscribers unregister when done.
+// register a channel FOR ONE USER, the broadcaster fans an Event out to the
+// subscribers of the user who owns it, and subscribers unregister when done.
+//
+// 🔴 DELIVERY IS BY OWNER, AND AN EVENT WITH NO OWNER REACHES NOBODY (accounts
+// PR 3b). This bus used to fan every event to every subscriber: with a second
+// user, user B's open board would have received user A's task ids and agent
+// names with no handler bug at
+// all — row-level security never sees the bus. So an Event names its OwnerID,
+// a subscriber names its user, and Broadcast delivers only where they are
+// equal. There is no "deliver to everyone" path: every event muster emits is
+// about an owned row (the call-site classification is in internal/api's
+// broadcast helpers), and a zero owner is a wiring bug that FAILS CLOSED —
+// dropped, and reported to the caller through Broadcast's return value —
+// rather than a broadcast to all.
 //
 // The broadcaster is transport-agnostic — it only deals in Event values and
 // channels. The HTTP handler that writes the SSE wire format lives in the api
@@ -18,6 +30,9 @@ import (
 type Event struct {
 	Name string
 	Data string
+	// OwnerID is the user whose subscribers receive the event. Zero (or
+	// negative) reaches nobody. It is never written to the wire.
+	OwnerID int64
 }
 
 // ValidData reports whether s may be used as an Event's Data without breaking
@@ -70,9 +85,15 @@ func ValidData(s string) bool {
 // concurrent use.
 type Broadcaster struct {
 	mu     sync.RWMutex
-	subs   map[uint64]chan Event
+	subs   map[uint64]subscriber
 	nextID uint64
 	buffer int
+}
+
+// subscriber is one registered stream and the user it streams for.
+type subscriber struct {
+	owner int64
+	ch    chan Event
 }
 
 // New returns a Broadcaster. buffer is the per-subscriber channel buffer
@@ -83,18 +104,19 @@ func New(buffer int) *Broadcaster {
 		buffer = 1
 	}
 	return &Broadcaster{
-		subs:   make(map[uint64]chan Event),
+		subs:   make(map[uint64]subscriber),
 		buffer: buffer,
 	}
 }
 
-// Subscribe registers a new subscriber and returns its receive channel plus
-// an id used to Unsubscribe. The channel is buffered.
-func (b *Broadcaster) Subscribe() (uint64, <-chan Event) {
+// Subscribe registers a new subscriber streaming for user owner and returns
+// its receive channel plus an id used to Unsubscribe. The channel is buffered.
+// A subscriber whose owner is not positive receives nothing.
+func (b *Broadcaster) Subscribe(owner int64) (uint64, <-chan Event) {
 	ch := make(chan Event, b.buffer)
 	id := atomic.AddUint64(&b.nextID, 1)
 	b.mu.Lock()
-	b.subs[id] = ch
+	b.subs[id] = subscriber{owner: owner, ch: ch}
 	b.mu.Unlock()
 	return id, ch
 }
@@ -103,26 +125,36 @@ func (b *Broadcaster) Subscribe() (uint64, <-chan Event) {
 // channel. It is idempotent.
 func (b *Broadcaster) Unsubscribe(id uint64) {
 	b.mu.Lock()
-	if ch, ok := b.subs[id]; ok {
+	if sub, ok := b.subs[id]; ok {
 		delete(b.subs, id)
-		close(ch)
+		close(sub.ch)
 	}
 	b.mu.Unlock()
 }
 
-// Broadcast delivers ev to every current subscriber. Delivery is
-// non-blocking: if a subscriber's buffer is full the event is dropped for
+// Broadcast delivers ev to every current subscriber of ev.OwnerID. Delivery
+// is non-blocking: if a subscriber's buffer is full the event is dropped for
 // that subscriber so one slow consumer cannot stall the rest.
-func (b *Broadcaster) Broadcast(ev Event) {
+//
+// It reports false — and delivers to nobody — when ev names no owner. That is
+// the fail-closed case in the package doc; the caller logs it.
+func (b *Broadcaster) Broadcast(ev Event) bool {
+	if ev.OwnerID <= 0 {
+		return false
+	}
 	b.mu.RLock()
-	for _, ch := range b.subs {
+	for _, sub := range b.subs {
+		if sub.owner != ev.OwnerID {
+			continue
+		}
 		select {
-		case ch <- ev:
+		case sub.ch <- ev:
 		default:
 			// subscriber buffer full; drop rather than block
 		}
 	}
 	b.mu.RUnlock()
+	return true
 }
 
 // Count returns the number of active subscribers. Primarily for tests.

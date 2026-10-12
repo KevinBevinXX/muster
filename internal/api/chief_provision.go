@@ -40,9 +40,23 @@ import (
 // ONLY one — upstream task #653 phase two deleted handleOperatorProvision, the
 // first — and that is what makes `operator` unmintable. agents.go's chatTurn header
 // carries the argument and its two pins.
+//
+// 🔴 IT PROVISIONS THE CALLER'S CHIEF (accounts PR 3b): the reserved slug is
+// agents.ChiefNameFor(the principal's user) — `chief` for the operator, as
+// before, and `chief-<id>` for anyone else — and the lookup runs on the
+// request's context, so under row-level security it can only find the
+// caller's own. Another user's chief is invisible here and its slug is not
+// the one this request would mint, so a second user's POST creates THEIR
+// chief rather than starting (or colliding with) the operator's.
 func (s *Server) handleChiefProvision(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	if a, err := s.ext.Agents.GetByName(ctx, agents.ChiefName); err == nil {
+	owner := requestOwner(ctx)
+	if owner <= 0 {
+		http.Error(w, "no user to provision a chief for", http.StatusForbidden)
+		return
+	}
+	chiefName := agents.ChiefNameFor(owner)
+	if a, err := s.ext.Agents.GetByName(ctx, chiefName); err == nil {
 		// 🔴 safeGo, NOT `go func`, AND THE DIFFERENCE WAS A DEAD CONTAINER. This
 		// was the one background goroutine in internal/api written bare while the
 		// other seven used safeGo, and a panic in a goroutine with no recover
@@ -76,7 +90,14 @@ func (s *Server) handleChiefProvision(w http.ResponseWriter, r *http.Request) {
 	intro := "You are chief, muster's fleet agent. You have no task and no repo, and that is expected. " +
 		"Read AGENTS.md, then report the current state of the fleet."
 	rec, err := s.createAndDispatchAgent(ctx, dispatchParams{
-		Name: agents.ChiefName, Model: model, NoteText: intro, Kickoff: true,
+		// 🔴 THE DISPLAY NAME IS SET EXPLICITLY. Everything that TALKS to the
+		// chief (the panel, recaps, threads, `chief ask`) resolves it by display
+		// name (chiefAgent), and a dispatch keeps the slug as the display name
+		// when none is given. For the operator that was harmless — the slug IS
+		// `chief` — but a member's `chief-<id>` would never resolve, so the
+		// member's panel said "no agent carries the chief display name" over a
+		// chief that existed (accounts PR 3b audit). Same value for user 1.
+		Name: chiefName, DisplayName: ChiefDisplayName, Model: model, NoteText: intro, Kickoff: true,
 	})
 	if err != nil {
 		s.logger.Printf("chief: provision: %v", err)

@@ -35,6 +35,13 @@ the number has to be able to move.
 with no "Test" key, and counting those would inflate every number here by the
 package count — a plausible-looking total that is not what anybody means.
 
+`--require NAME` (repeatable) names a test that MUST be in the run and PASS — by
+its test name, in any package. A required test that is absent (renamed,
+deleted, filtered out by a build tag) is refused exactly like a failure. It is
+how a gate test is made REQUIRED rather than merely present: the accounts
+isolation walk (internal/api/isolation_test.go) is named in ci.yml, so the job
+fails if that walk ever stops running, not only if it goes red.
+
 `--echo` (required) re-renders the human-readable log that `-json` replaced:
   summary  what plain `go test` prints: package lines (ok/FAIL/coverage), build
            output, and the full output of every test that did not pass
@@ -57,7 +64,7 @@ import json
 import sys
 
 
-def main(stream, echo: str, out=None) -> int:
+def main(stream, echo: str, out=None, require: list[str] | None = None) -> int:
     out = out if out is not None else sys.stdout
     verdicts: list[str] = []
     failed: list[str] = []
@@ -176,6 +183,18 @@ def main(stream, echo: str, out=None) -> int:
               "their DSN from dbtest.Base/dbtest.DSN and not from os.Getenv directly — "
               "or they skip for a reason of their own that needs stating.", file=out)
 
+    passed = {n.rsplit(".", 1)[-1] for n in verdicts if n not in failed}
+    missing = sorted(set(require or []) - passed)
+    if require:
+        print(f"required tests that PASSED:    {len(set(require)) - len(missing)} of {len(set(require))}", file=out)
+    if missing:
+        refused = True
+        print(file=out)
+        print("FAIL: a REQUIRED test did not pass in this run (absent, renamed, filtered "
+              "out, or failed). A gate that silently stops running is no gate:", file=out)
+        for n in missing:
+            print(f"  REQUIRED  {n}", file=out)
+
     if refused:
         return 1
 
@@ -189,4 +208,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--echo", choices=("summary", "all"), required=True,
                     help="how much of the human-readable log to re-render")
-    raise SystemExit(main(sys.stdin, ap.parse_args().echo))
+    ap.add_argument("--require", action="append", default=[], metavar="TEST",
+                    help="a test name that must be in the run and pass (repeatable)")
+    args = ap.parse_args()
+    raise SystemExit(main(sys.stdin, args.echo, require=args.require))

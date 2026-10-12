@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/notes"
@@ -52,6 +53,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		Notes:           stubNotesStore{},
 		Agents:          stubAgentsStore{},
 		GitHub:          stubGitHubStore{},
+		Users:           stubUsers{},
 		SessionLiveness: stubLiveness{},
 		TagAutoDispatch: true,
 		Provisioner:     stubProvisioner{},
@@ -59,9 +61,10 @@ func fullyWiredServer(t *testing.T) *Server {
 		// api.Provisioner and api.Gateway are separate now, so setting only the first
 		// would quietly make this an "almost everything" fixture — and a registration
 		// test that does not wire a dependency cannot notice a route gated on it.
-		Gateway:     stubGateway{},
-		Kinds:       stubKinds{},
-		GitHubOAuth: GitHubOAuthConfig{ClientID: "id", ClientSecret: "secret", BaseURL: "http://example.test"},
+		Gateway: stubGateway{},
+		Kinds:   stubKinds{},
+		GitHubOAuth: GitHubOAuthConfig{ClientID: "id", ClientSecret: "secret", BaseURL: "http://example.test",
+			StateKey: []byte("registration-test-state-key-01234567")},
 		// A NON-DEFAULT prefix on purpose. agents.NamespacePrefix here would be
 		// indistinguishable from the zero value's resolved behaviour, so this
 		// fixture would claim "fully wired" while exercising the default — which is
@@ -347,4 +350,15 @@ func TestEveryTabHasADocumentRoute(t *testing.T) {
 				"A tab whose document route is missing renders a 404 from the navigation.", tab, want)
 		}
 	}
+}
+
+// stubUsers is the seeded users table without a database: user 1 is the
+// admin, everyone else a member.
+type stubUsers struct{}
+
+func (stubUsers) Role(_ context.Context, id int64) (authz.Role, error) {
+	if id == authz.OperatorUserID {
+		return authz.RoleAdmin, nil
+	}
+	return authz.RoleMember, nil
 }

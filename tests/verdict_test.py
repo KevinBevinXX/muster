@@ -50,9 +50,9 @@ BUILD_OUTPUT = json.dumps({"ImportPath": f"{PKG}.test", "Action": "build-output"
 BUILD_FAIL = json.dumps({"ImportPath": f"{PKG}.test", "Action": "build-fail"})
 
 
-def run(lines: list[str], echo: str = "summary") -> tuple[int, str]:
+def run(lines: list[str], echo: str = "summary", require: list[str] | None = None) -> tuple[int, str]:
     out = io.StringIO()
-    return verdict.main(iter(lines), echo, out=out), out.getvalue()
+    return verdict.main(iter(lines), echo, out=out, require=require), out.getvalue()
 
 
 class Verdict(unittest.TestCase):
@@ -117,6 +117,22 @@ class Verdict(unittest.TestCase):
         cut = [ev("start"), ev("run", "TestA"), ev("output", "TestA", "panic: test timed out\n")]
         _, text = run(cut, echo="summary")
         self.assertIn("panic: test timed out\n", text)
+
+    def test_a_required_test_that_passed_is_accepted(self):
+        rc, text = run(GREEN, require=["TestB"])
+        self.assertEqual(rc, 0, text)
+        self.assertIn("required tests that PASSED:    1 of 1", text)
+
+    def test_a_required_test_that_is_absent_is_refused(self):
+        rc, text = run(GREEN, require=["TestB", "TestGone"])
+        self.assertEqual(rc, 1, text)
+        self.assertIn("REQUIRED  TestGone", text)
+        self.assertNotIn("REQUIRED  TestB", text)
+
+    def test_a_required_test_that_failed_is_refused_as_required_too(self):
+        rc, text = run(stream(("TestA", "pass"), ("TestB", "fail")), require=["TestB"])
+        self.assertEqual(rc, 1, text)
+        self.assertIn("REQUIRED  TestB", text)
 
     def test_echo_all_shows_every_line(self):
         _, text = run(GREEN, echo="all")

@@ -291,7 +291,7 @@ func (s *Server) handleNoteTagAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	observeRoutingTags(tags)
 	s.logAutoDispatch(note.ID, note.Tags)
-	s.broadcast(EventTaskChanged, strconv.FormatInt(note.ID, 10))
+	s.broadcast(r.Context(), EventTaskChanged, strconv.FormatInt(note.ID, 10))
 	s.renderNoteCard(w, r, note)
 }
 
@@ -322,7 +322,7 @@ func (s *Server) handleNoteTagRemove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not remove tag", http.StatusInternalServerError)
 		return
 	}
-	s.broadcast(EventTaskChanged, strconv.FormatInt(note.ID, 10))
+	s.broadcast(r.Context(), EventTaskChanged, strconv.FormatInt(note.ID, 10))
 	s.renderNoteCard(w, r, note)
 }
 

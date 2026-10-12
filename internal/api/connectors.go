@@ -154,7 +154,7 @@ func (s *Server) requireConnectorAgent(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		s.admit(w, r.WithContext(context.WithValue(r.Context(), agentCtxKey{}, a)), next,
-			principalFor(agentOwnerID(a), authz.ViaConnect))
+			s.principalFor(r.Context(), agentOwnerID(a), authz.ViaConnect))
 	}
 }
 
@@ -396,7 +396,7 @@ func (s *Server) AgentRequestConnector(ctx context.Context, a agents.Agent, name
 			Connector: name, Detail: "requested"}); err != nil {
 			s.logger.Printf("connectors: audit request %d: %v", g.ID, err)
 		}
-		s.onConnectorRequested(g)
+		s.onConnectorRequested(ctx, g)
 	}
 	v, err := s.agentConnectorView(ctx, a, name)
 	return v, created, err
@@ -439,10 +439,16 @@ func (s *Server) handleAgentConnectorRequest(w http.ResponseWriter, r *http.Requ
 
 // onConnectorRequested prompts the operator for a new pending grant: an SSE
 // nudge for an open Connectors tab and a push notification.
-func (s *Server) onConnectorRequested(g connectors.Grant) {
+//
+// ctx is the requesting agent's request: its principal is the agent's owner,
+// who owns the grant (connector_grants.owner_id is the agent's) and is the one
+// who approves it — so the nudge reaches that owner's Connectors tab, and the
+// push goes to the operator's phone only when that owner is an admin
+// (routerServes).
+func (s *Server) onConnectorRequested(ctx context.Context, g connectors.Grant) {
 	s.logger.Printf("connector request created id=%d agent=%q connector=%q", g.ID, g.AgentName, g.Connector)
-	s.broadcast(EventConnectorChanged, strconv.FormatInt(g.ID, 10))
-	if s.router == nil {
+	s.broadcast(ctx, EventConnectorChanged, strconv.FormatInt(g.ID, 10))
+	if s.router == nil || !s.routerServes(requestOwner(ctx)) {
 		return
 	}
 	body := g.Connector
@@ -682,13 +688,13 @@ func (s *Server) handleConnectorCreate(w http.ResponseWriter, r *http.Request) {
 			s.logger.Printf("connectors: approve %d after create: %v", f.RequestID, err)
 			s.renderConnectorsContent(w, r, ui.ConnectorsContent{Notice: notice,
 				Error: "The connector was saved but the request could not be approved; approve it below."})
-			s.broadcast(EventConnectorChanged, c.Name)
+			s.broadcast(r.Context(), EventConnectorChanged, c.Name)
 			return
 		}
 		s.auditGrant(ctx, g, "approved")
 		notice = "Connector " + c.Name + " saved and " + g.AgentName + " approved."
 	}
-	s.broadcast(EventConnectorChanged, c.Name)
+	s.broadcast(r.Context(), EventConnectorChanged, c.Name)
 	s.renderConnectorsContent(w, r, ui.ConnectorsContent{Notice: notice})
 }
 
@@ -729,7 +735,7 @@ func (s *Server) handleConnectorRotate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.auditGrant(r.Context(), connectors.Grant{Connector: name}, "secret rotated by the operator")
-	s.broadcast(EventConnectorChanged, name)
+	s.broadcast(r.Context(), EventConnectorChanged, name)
 	s.renderConnectorsContent(w, r, ui.ConnectorsContent{Notice: "The secret of " + name + " was replaced."})
 }
 
@@ -745,7 +751,7 @@ func (s *Server) handleConnectorDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.auditGrant(r.Context(), connectors.Grant{Connector: name}, "connector deleted by the operator; its grants were removed")
-	s.broadcast(EventConnectorChanged, name)
+	s.broadcast(r.Context(), EventConnectorChanged, name)
 	s.renderConnectorsContent(w, r, ui.ConnectorsContent{Notice: "Connector " + name + " deleted."})
 }
 
@@ -787,7 +793,7 @@ func (s *Server) decideConnectorRequest(w http.ResponseWriter, r *http.Request, 
 		verb = "approved"
 	}
 	s.auditGrant(ctx, g, verb)
-	s.broadcast(EventConnectorChanged, strconv.FormatInt(id, 10))
+	s.broadcast(r.Context(), EventConnectorChanged, strconv.FormatInt(id, 10))
 	s.renderConnectorsContent(w, r, ui.ConnectorsContent{Notice: g.AgentName + " " + verb + " for " + g.Connector + "."})
 }
 
@@ -820,6 +826,6 @@ func (s *Server) handleConnectorRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.auditGrant(r.Context(), g, "revoked")
-	s.broadcast(EventConnectorChanged, strconv.FormatInt(id, 10))
+	s.broadcast(r.Context(), EventConnectorChanged, strconv.FormatInt(id, 10))
 	s.renderConnectorsContent(w, r, ui.ConnectorsContent{Notice: g.AgentName + "'s access to " + g.Connector + " was revoked."})
 }

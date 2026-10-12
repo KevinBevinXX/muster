@@ -175,7 +175,7 @@ type Proxy struct {
 	Logger *log.Logger
 	// OnGrantRequested is called (synchronously; keep it cheap) when a proxied
 	// request files a NEW pending grant, so the operator can be prompted.
-	OnGrantRequested func(Grant)
+	OnGrantRequested func(context.Context, Grant)
 	// StreamsEnd is the server's shutdown signal for streams: once it is done, a
 	// proxied GET EVENT STREAM in flight ends, and one that starts later ends at
 	// once (endsAtShutdown says which exchanges, and why only GET).
@@ -251,7 +251,7 @@ func (p *Proxy) CheckAccess(ctx context.Context, caller Caller, connector, reaso
 	if created {
 		p.recordGrantEvent(ctx, ng, "requested")
 		if p.OnGrantRequested != nil {
-			p.OnGrantRequested(ng)
+			p.OnGrantRequested(ctx, ng)
 		}
 	}
 	return Access{Grant: ng, Usable: ng.Usable(), Filed: created}, nil

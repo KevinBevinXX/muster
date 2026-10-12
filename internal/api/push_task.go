@@ -97,6 +97,22 @@ type commentedTaskRef struct {
 //
 // The service worker already routes payload.type === 'task' through
 // focusOrOpen(data.url), so nothing in sw.js changes.
+// routerServes reports whether an event owned by owner may reach the router —
+// a push to the operator's phone or a mirror onto the router's bus.
+//
+// 🔴 ONLY AN ADMIN'S (accounts PR 3b). The router is the OPERATOR's service:
+// its push subscriptions are the operator's devices and its bus the operator's
+// page, with no notion of a muster user. A member's task title, comment or
+// connector request pushed there would land on the operator's phone — the same
+// cross-user leak the SSE owner filter closes, through a different door. The
+// approval relay draws the same line (operator decision: only admin-owned
+// agents relay to the router). A member's notifications arrive with per-user
+// delivery in a later PR; until then a member gets none, never the operator's.
+// roleOf fails to member, so an unreadable role notifies nobody.
+func (s *Server) routerServes(owner int64) bool {
+	return owner > 0 && s.roleOf(context.Background(), owner) == authz.RoleAdmin
+}
+
 func (s *Server) pushTask(payload RouterNotification) {
 	if s.router == nil {
 		return
@@ -128,8 +144,10 @@ func (s *Server) pushTask(payload RouterNotification) {
 // the user just made that task themselves. Best-effort + nil-push-safe.
 func (s *Server) notifyTaskCreated(n notes.Note) {
 	// Skip the buffer+timer machinery entirely when push is disabled — there is
-	// nothing to eventually deliver.
-	if s.router == nil {
+	// nothing to eventually deliver. A member's task never enters the buffer:
+	// the coalesced push is one notification for every buffered task, so the
+	// owner gate must sit BEFORE the buffer, not at the send.
+	if s.router == nil || !s.routerServes(n.OwnerID) {
 		return
 	}
 	s.taskNotifyMu.Lock()
@@ -216,6 +234,9 @@ func (s *Server) notifyAgentRunning(agentName string) {
 	if a.Status != agents.StatusRunning || a.NoteID == nil {
 		return
 	}
+	if !s.routerServes(a.OwnerID) {
+		return
+	}
 
 	// Dedupe: fire once per agent id.
 	s.taskProvisionedMu.Lock()
@@ -255,7 +276,7 @@ func (s *Server) notifyTaskDone(n notes.Note) {
 		s.taskDoneMu.Unlock()
 		return
 	}
-	if s.router == nil {
+	if s.router == nil || !s.routerServes(n.OwnerID) {
 		return
 	}
 

@@ -995,7 +995,7 @@ func (a *Adapter) ensureHooksToken(ctx context.Context, ag agents.Agent) (agents
 // note defending a form that carries no invariant is worse than no note: it sends
 // the next reader to protect a formatting choice.
 func (a *Adapter) buildSpec(ag agents.Agent) (provision.Spec, error) {
-	if ag.Name != agents.ChiefName {
+	if !agents.IsChiefName(ag.Name) {
 		return agentspec.Build(ag, a.spec, agentspec.Options{
 			Instructions: agentspec.WorkerInstructions,
 		})

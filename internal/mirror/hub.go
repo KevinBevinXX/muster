@@ -83,14 +83,14 @@ type Hub struct {
 	mu      sync.Mutex
 	hosts   map[hostKey]*hostConn
 	offline map[hostKey]offlineHost
-	notify  func()
+	notify  func(owner int64)
 	now     func() time.Time
 	// maxHosts is MaxHosts; a test lowers it.
 	maxHosts int
 	// debounce coalesces change nudges (notifyDebounce; a test shortens it), and
 	// notifyPending is whether one is already scheduled.
 	debounce      time.Duration
-	notifyPending bool
+	notifyPending map[int64]bool
 }
 
 // notifyDebounce is the window change nudges are coalesced in: however fast
@@ -117,8 +117,10 @@ func NewHub(logger *log.Logger) *Hub {
 }
 
 // SetNotify installs the change nudge (a host connected, disconnected or
-// changed its list). It is called on its own goroutine.
-func (h *Hub) SetNotify(fn func()) {
+// changed its list), called with the OWNER of the host that changed — the one
+// user whose Agents view shows it (accounts PR 3b: an SSE event reaches only
+// its owner's streams). It is called on its own goroutine.
+func (h *Hub) SetNotify(fn func(owner int64)) {
 	h.mu.Lock()
 	h.notify = fn
 	h.mu.Unlock()
@@ -128,20 +130,26 @@ func (h *Hub) SetNotify(fn func()) {
 // already scheduled: a burst of changes (a flapping host, a session list that
 // changes every refresh) costs open views one re-fetch per window, not one per
 // change.
-func (h *Hub) changed() {
+//
+// The window is PER OWNER: one owner's flapping host cannot delay (or swallow)
+// another owner's nudge.
+func (h *Hub) changed(owner int64) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.notify == nil || h.notifyPending {
+	if h.notify == nil || h.notifyPending[owner] {
 		return
 	}
-	h.notifyPending = true
+	if h.notifyPending == nil {
+		h.notifyPending = map[int64]bool{}
+	}
+	h.notifyPending[owner] = true
 	time.AfterFunc(h.debounce, func() {
 		h.mu.Lock()
-		h.notifyPending = false
+		delete(h.notifyPending, owner)
 		fn := h.notify
 		h.mu.Unlock()
 		if fn != nil {
-			fn()
+			fn(owner)
 		}
 	})
 }
@@ -286,7 +294,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		mode = "interactive"
 	}
 	h.logger.Printf("mirror: host %s (owner %d) connected, %s, with %d session(s)", host, owner, mode, len(hc.sessions))
-	h.changed()
+	h.changed(owner)
 
 	go func() {
 		t := time.NewTicker(pingInterval)
@@ -334,7 +342,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				hc.mu.Lock()
 				hc.sessions = list
 				hc.mu.Unlock()
-				h.changed()
+				h.changed(hc.key.owner)
 			case TypeClosed:
 				var why error
 				if m.Error != "" {
@@ -373,7 +381,7 @@ func (h *Hub) drop(hc *hostConn) {
 	hc.mu.Unlock()
 	if current {
 		h.logger.Printf("mirror: host %s (owner %d) disconnected", hc.key.host, hc.key.owner)
-		h.changed()
+		h.changed(hc.key.owner)
 	}
 }
 

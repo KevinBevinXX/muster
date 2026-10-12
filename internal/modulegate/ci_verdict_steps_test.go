@@ -30,7 +30,8 @@ import (
 // ---------------------------------------------------------------------------
 
 var wantVerdictPipes = map[string]string{
-	"test":     "go test -race -cover -json ./... | python3 -u tests/verdict.py --echo summary",
+	"test": "go test -race -cover -json ./... | python3 -u tests/verdict.py --echo summary" +
+		" --require TestEveryRouteIsClassifiedForIsolation --require TestNoRouteLetsOneUserReachAnothersData --require TestAnotherUsersWritesNeverReachYourEventStream",
 	"ccd-tmux": "go test -tags tmuxit -race -run '^TestTmux' -json ./cmd/ccd/ ./internal/mirror/ ./internal/mirrorhost/ | python3 -u tests/verdict.py --echo all",
 }
 

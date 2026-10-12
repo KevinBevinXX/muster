@@ -16,6 +16,9 @@ const activeAgentWindow = 3 * time.Minute
 // currently in flight (and showing "thinking…"/"responding"), and the timestamp
 // of its last activity (used for both window expiry and the "Xm ago" label).
 type agentPhase struct {
+	// owner is the user whose agent this is (accounts PR 3b): the registry is
+	// one server-wide map, so a reader MUST filter by it (activeAgentsList).
+	owner    int64
 	phase    string // "thinking" | "responding"
 	at       time.Time
 	inFlight bool // true while a turn is running; false once it ends (done/error)
@@ -34,13 +37,13 @@ type ActiveAgent struct {
 // now(). phase is "thinking" or "responding". Guarded by activeAgentsMu (WS turns
 // run on goroutines). Setting it when a turn STARTS (with "thinking") makes the
 // agent show active immediately, before its first stream event lands.
-func (s *Server) markAgentActive(name, phase string) {
-	if name == "" {
+func (s *Server) markAgentActive(owner int64, name, phase string) {
+	if name == "" || owner <= 0 {
 		return
 	}
 	now := s.activeAgentsNow()
 	s.activeAgentsMu.Lock()
-	s.activeAgents[name] = agentPhase{phase: phase, at: now, inFlight: true}
+	s.activeAgents[name] = agentPhase{owner: owner, phase: phase, at: now, inFlight: true}
 	s.activeAgentsMu.Unlock()
 }
 
@@ -64,7 +67,12 @@ func (s *Server) markAgentIdle(name string) {
 // in-flight agent, plus any agent whose last activity was within
 // activeAgentWindow. Expired entries are pruned as a side effect. The result is
 // sorted most-recently-active first for a stable, useful order.
-func (s *Server) activeAgentsList() []ActiveAgent {
+//
+// 🔴 ONLY owner's (accounts PR 3b audit). The map is server-wide and keyed by
+// agent name, fed by every user's chat turns; unfiltered, the notifications
+// panel's ACTIVE section named other users' in-flight agents. A non-positive
+// owner sees nothing.
+func (s *Server) activeAgentsList(owner int64) []ActiveAgent {
 	now := s.activeAgentsNow()
 	s.activeAgentsMu.Lock()
 	out := make([]ActiveAgent, 0, len(s.activeAgents))
@@ -74,6 +82,9 @@ func (s *Server) activeAgentsList() []ActiveAgent {
 		// timestamp is refreshed by each stream event anyway.
 		if !st.inFlight && now.Sub(st.at) > activeAgentWindow {
 			delete(s.activeAgents, name)
+			continue
+		}
+		if owner <= 0 || st.owner != owner {
 			continue
 		}
 		out = append(out, ActiveAgent{Name: name, Phase: st.phase, At: st.at, InFlight: st.inFlight})

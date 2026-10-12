@@ -75,13 +75,22 @@ var (
 	//   - notifyAgentRunning: BroadcastAgentChanged's status hook, which is
 	//     handed only an agent name (by request handlers and loops alike) and
 	//     re-reads the row to decide whether to push.
+	//
+	// Accounts PR 3b added two more, each reading one value of one row:
+	//   - agentOwner: the agent-named SSE nudge (BroadcastAgentChanged) is
+	//     handed only a NAME, by loops with no principal; the owner the event
+	//     reaches is read here.
+	//   - roleOf: the request principal's ROLE, read inside the wrappers before
+	//     the principal it completes exists (as agentByToken learns the owner).
 	systemLedger = []string{
 		"internal/agentkickoff.(*Deliverer).Run",
 		"internal/agentstatus.(*Promoter).Run",
 		"internal/api.(*Server).RunTaskReap",
 		"internal/api.(*Server).RunTaskRetention",
 		"internal/api.(*Server).agentByToken",
+		"internal/api.(*Server).agentOwner",
 		"internal/api.(*Server).notifyAgentRunning",
+		"internal/api.(*Server).roleOf",
 		// The mirror plugin's token lookup and its 30 s recheck: a host's token
 		// must be found by its hash before anyone is known (mirror_tokens is
 		// under RLS). What it yields — the token's owner — scopes everything after.

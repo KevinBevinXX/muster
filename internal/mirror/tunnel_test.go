@@ -356,7 +356,7 @@ func TestChangeNudgesAreCoalesced(t *testing.T) {
 	r.svc.SetNotifyDebounce(200 * time.Millisecond)
 	var mu sync.Mutex
 	nudges := 0
-	r.svc.SetNotify(func() { mu.Lock(); nudges++; mu.Unlock() })
+	r.svc.SetNotify(func(int64) { mu.Lock(); nudges++; mu.Unlock() })
 	tok, _ := r.store.mint(t, 1, "flappy")
 	h, err := r.rawConnect(t, tok, hello("flappy", false, "s0"))
 	if err != nil {
@@ -372,6 +372,36 @@ func TestChangeNudgesAreCoalesced(t *testing.T) {
 	defer mu.Unlock()
 	if nudges == 0 || nudges > 3 {
 		t.Fatalf("41 changes within ~0.2 s produced %d nudges; want 1-3 (coalesced)", nudges)
+	}
+}
+
+// TestChangeNudgesNameTheHostsOwner (accounts PR 3b): a nudge reaches only its
+// owner's SSE streams, so the hub must say WHOSE host changed — and coalesce per
+// owner, so one owner's flapping host cannot swallow another owner's nudge.
+// RED when the nudge carries no owner (the pre-3b func()) or one shared window.
+func TestChangeNudgesNameTheHostsOwner(t *testing.T) {
+	r := newRig(t)
+	r.svc.SetNotifyDebounce(300 * time.Millisecond)
+	var mu sync.Mutex
+	got := map[int64]int{}
+	r.svc.SetNotify(func(owner int64) { mu.Lock(); got[owner]++; mu.Unlock() })
+	tok1, _ := r.store.mint(t, 1, "one-host")
+	if _, err := r.rawConnect(t, tok1, hello("one-host", false, "a")); err != nil {
+		t.Fatal(err)
+	}
+	tok2, _ := r.store.mint(t, 2, "two-host")
+	if _, err := r.rawConnect(t, tok2, hello("two-host", false, "b")); err != nil {
+		t.Fatal(err)
+	}
+	r.online(t, 1, "one-host", "a")
+	r.online(t, 2, "two-host", "b")
+	eventually(t, "both owners nudged", func() bool { mu.Lock(); defer mu.Unlock(); return got[1] >= 1 && got[2] >= 1 })
+	mu.Lock()
+	defer mu.Unlock()
+	for owner := range got {
+		if owner != 1 && owner != 2 {
+			t.Errorf("a nudge named owner %d, who has no host", owner)
+		}
 	}
 }
 

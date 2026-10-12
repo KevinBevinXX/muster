@@ -128,7 +128,7 @@ func TestEachAgentDoorWorksUnderRowLevelSecurity(t *testing.T) {
 		t.Helper()
 		mu.Lock()
 		defer mu.Unlock()
-		want := principalFor(uid, via).String()
+		want := s.principalFor(context.Background(), uid, via).String()
 		if len(seen) != 1 || seen[0] != want {
 			t.Errorf("%s: principal at admit = %v, want [%s]", door, seen, want)
 		}

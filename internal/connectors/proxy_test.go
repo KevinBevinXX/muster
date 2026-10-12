@@ -120,7 +120,7 @@ func newFixtureWithSecret(t *testing.T, scheme connectors.Scheme, secret string)
 	}
 	f.agentA = connectors.Caller{AgentID: seedAgent(t, ctx, pool, "proxy-agent-a", "tok-pa-0123456789"), AgentName: "proxy-agent-a"}
 	f.agentB = connectors.Caller{AgentID: seedAgent(t, ctx, pool, "proxy-agent-b", "tok-pb-0123456789"), AgentName: "proxy-agent-b"}
-	f.proxy = &connectors.Proxy{Store: f.store, Policy: testPolicy(), OnGrantRequested: func(connectors.Grant) { f.filed.Add(1) }}
+	f.proxy = &connectors.Proxy{Store: f.store, Policy: testPolicy(), OnGrantRequested: func(context.Context, connectors.Grant) { f.filed.Add(1) }}
 	f.handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		caller := f.agentA
 		if r.Header.Get("X-Test-Agent") == "b" {
