@@ -15,6 +15,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -357,7 +358,7 @@ func bridgeTerminal(parent context.Context, logger *log.Logger, c *websocket.Con
 func terminalErrorText(err error) string {
 	switch {
 	case errors.Is(err, agents.ErrNoTerminal), errors.Is(err, provision.ErrUnsupported),
-		errors.Is(err, provision.ErrNotFound):
+		errors.Is(err, provision.ErrNotFound), mirror.IsAttachRefusal(err):
 		return err.Error()
 	}
 	return "the terminal ended with an error: " + err.Error()

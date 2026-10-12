@@ -12,6 +12,7 @@ import (
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/github"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/router"
 )
 
@@ -315,6 +316,10 @@ var bannerLedger = []string{
 	envConnectorEncKey,
 	envConnectPort,
 	envAgentConnectURL,
+	// 🔴 THE MIRROR PLUGIN IS LEDGERED: ON, it accepts host connections on a route
+	// that answers 404 when OFF, and an operator installing muster-mirror needs the
+	// log to say which of the two this deployment is before blaming the host.
+	envMirror,
 }
 
 // bannerExempt is every environment variable config.go declares that logBanner
@@ -580,8 +585,12 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		ConnectorEncKey: make([]byte, 32),
 		ConnectPort:     18191,
 		AgentConnectURL: "http://muster.example.test:18191",
+
+		// The mirror plugin: the banner branches on ext.Mirror, as for connectors.
+		Mirror: true,
 	}
 	onOut = renderBannerWithPool(t, on, api.Extensions{
+		Mirror:      mirror.NewService(nil, nil),
 		Connectors:  bannerStubConnectorStore{},
 		GitHub:      bannerStubGitHubStore{},
 		Provisioner: bannerProvisioner(t, on),

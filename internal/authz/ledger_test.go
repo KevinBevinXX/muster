@@ -82,6 +82,11 @@ var (
 		"internal/api.(*Server).RunTaskRetention",
 		"internal/api.(*Server).agentByToken",
 		"internal/api.(*Server).notifyAgentRunning",
+		// The mirror plugin's token lookup and its 30 s recheck: a host's token
+		// must be found by its hash before anyone is known (mirror_tokens is
+		// under RLS). What it yields — the token's owner — scopes everything after.
+		"internal/mirror.(*Service).ServeConnect",
+		"internal/mirror.(*Service).watchToken",
 	}
 	// operatorLedger: work done as the OPERATOR (user 1) with no request —
 	// the boot-time GitHub connect of the operator's own static token, and the
@@ -93,6 +98,8 @@ var (
 	// (TestOnlyTestFilesImportDBTest).
 	operatorLedger = []string{
 		"cmd/muster-server.connectStaticGitHub",
+		// `muster-server mirror token create|ls|revoke`: the operator's tokens.
+		"cmd/muster-server.runMirrorCLI",
 		"e2e/seed.run",
 		"internal/dbtest.AsOperator",
 	}

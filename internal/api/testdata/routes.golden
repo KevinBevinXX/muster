@@ -66,6 +66,9 @@ GET /health
 GET /login
 GET /manifest.webmanifest
 GET /metrics
+GET /mirror/connect
+GET /mirror/terminal
+GET /mirror/terminal/ws
 GET /readyz
 GET /repos
 GET /share

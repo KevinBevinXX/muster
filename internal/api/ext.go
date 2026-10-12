@@ -8,6 +8,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/github"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/provision"
 )
@@ -111,6 +112,26 @@ type Extensions struct {
 	// ConnectorPolicy is the proxy's upstream network policy. The zero value is
 	// production's strict one; see connectors.Policy.
 	ConnectorPolicy connectors.Policy
+
+	// Mirror is the optional MIRRORED-sessions plugin (internal/mirror). nil
+	// means the plugin is off (MUSTER_MIRROR unset), which is the default: GET
+	// /mirror/connect and the mirror terminal routes answer 404 and the Agents
+	// view draws no mirrored card. See mirror.go.
+	Mirror Mirror
+}
+
+// Mirror is the mirror plugin as this package consumes it. *mirror.Service
+// implements it. Hosts and Attach act for the principal on ctx: another user's
+// hosts are not in Hosts and not attachable.
+type Mirror interface {
+	// ServeConnect is GET /mirror/connect: a host's muster-mirror dialling in.
+	ServeConnect(w http.ResponseWriter, r *http.Request)
+	// Hosts is the viewing principal's hosts and their sessions.
+	Hosts(ctx context.Context) []mirror.HostView
+	// Attach attaches a terminal to one of the viewing principal's host
+	// sessions, with Provisioner.AttachTerminal's shape so one terminal bridge
+	// serves both.
+	Attach(ctx context.Context, host, session string, readOnly bool, stdin io.Reader, stdout io.Writer, resize <-chan provision.TermSize) error
 }
 
 // GitHubOAuthConfig holds the OAuth App credentials + the public base URL used

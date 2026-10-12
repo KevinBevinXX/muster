@@ -100,6 +100,7 @@ database into a hard failure that names itself. CI sets it. Set it locally too.
 | run the CLI without installing (nix) | `nix run .#muster-cli -- task ls` |
 | build the migrator (nix) | `nix build .#muster-migrate` |
 | build the migrator image (nix, Linux) | `nix build .#migrate-image` |
+| build the mirror host binary (nix) | `nix build .#muster-mirror` |
 
 ### Installing the CLI from somewhere else
 
@@ -339,6 +340,62 @@ without the restricted one the capability refusals are never watched to fire.
 |---|---|
 | `provision.Noop` | records instead of provisioning; develop everything above the seam without a backend |
 | `provision/k8s` | renders its own minimal manifests — Namespace, ServiceAccount, **two** Secrets (confidential env, and separately confidential files), ConfigMap, PVC, Deployment, Service — and installs no chart |
+
+## Mirrored sessions (optional plugin)
+
+A **mirrored session** is a tmux session on one of your own machines, shown in
+the Agents view beside muster's provisioned agents, so the view is complete. It
+is off unless the server runs with `MUSTER_MIRROR=1`; off, `GET /mirror/connect`
+and the mirror terminal routes answer 404 and nothing mirrored is drawn.
+
+**The host dials out; muster never dials in.** A small `muster-mirror` binary on
+the host lists its tmux sessions and opens ONE WebSocket to muster,
+authenticated by a per-host *mirror token*. muster multiplexes terminal
+attaches back down that connection. muster holds no SSH key, address or inbound
+route to the host, and the host holds no muster credential but its own token.
+
+- **Not an agent, and not persisted.** muster keeps each connected host's
+  session list in memory, under the token's **owner**, and draws it as
+  "Mirrored · host" cards. Nothing is written to `agents`: a mirrored session
+  cannot be dispatched, chatted with, deleted or mistaken for one (a session
+  named `chief` is not the chief). A disconnected host stays on the view as
+  `offline` for a day. Only `mirror_tokens` is in the database (owned, under
+  row-level security; only each token's sha256 is stored).
+- **Read-only unless the host opts in.** `muster-mirror` is read-only by default:
+  muster offers no Interactive switch and refuses a rw attach. Read-only is
+  enforced by muster, by the host, and by `tmux attach -r`, and the host opens
+  only sessions it listed itself.
+- 🔴 **`-interactive` is a shell on the host.** An interactive tmux client can
+  switch to any session on that tmux server or open a new window, so anyone who
+  can use muster's Interactive switch for the host can run commands there as the
+  user `muster-mirror` runs as. The "only listed sessions" rule bounds read-only
+  viewing; it is not a boundary once an interactive client is attached.
+- **Limits:** 8 terminals per host, 64 hosts. A revoked token (or one the
+  database cannot re-verify twice running) ends the host's connection and its
+  open terminals within 30 s, and removes the host from the view. Repeated bad
+  tokens get 429, but a valid token is never refused by that limit. One muster
+  replica (the tunnel is in-process state).
+
+Mint a token where the server runs (it is printed once, owned by the operator),
+then install and run the host binary:
+
+```bash
+# muster side
+muster-server mirror token create <host>      # also: token ls, token revoke <id>
+
+# host side
+nix profile install github:ZacxDev/muster#muster-mirror   # or: go install ./cmd/muster-mirror
+mkdir -p ~/.config/muster-mirror && install -m600 /dev/stdin ~/.config/muster-mirror/token  # paste the token
+muster-mirror -url https://muster.example.com -token-file ~/.config/muster-mirror/token
+```
+
+`<host>` is a lowercase DNS label and defaults to the short hostname; a token
+minted for one host cannot register another. `-interactive` allows typing,
+`-tmux-socket`/`-tmux-socket-path` pick a non-default tmux server, and `-list`
+prints what would be registered. Every flag also reads a `MUSTER_MIRROR_*`
+variable (see `-help`), so a systemd user unit needs no token in its command
+line. If muster sits behind an auth proxy, `/mirror/connect` (GET) must bypass
+it: the route authenticates its own tokens.
 
 ## Licence
 

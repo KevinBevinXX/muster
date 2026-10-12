@@ -74,6 +74,17 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 // ownedTables is every table 0006 gives an owner_id. A LEDGER: the test that
 // reads it fails if a table gains or loses the column without this list
 // changing.
+// ownedAfter0006 are owned tables a LATER migration created, in 0006's shape
+// and under 0007's row-level security. They are not in ownedTables because the
+// backfill fixture builds a version-5 database, where they do not exist yet;
+// the owner-column and RLS ledgers check both (rlsTables).
+//
+//   - mirror_tokens (0008, the mirrored-agents plugin's per-host tokens).
+var ownedAfter0006 = []string{"mirror_tokens"}
+
+// rlsTables is every owned table today: ownedTables plus ownedAfter0006.
+func rlsTables() []string { return append(slices.Clone(ownedTables), ownedAfter0006...) }
+
 var ownedTables = []string{
 	"agents",
 	"chat_messages",
@@ -116,6 +127,7 @@ var wantForeignKeys = []string{
 	"invites|invites_claim_user_id_fkey|FOREIGN KEY (claim_user_id) REFERENCES users(id)",
 	"invites|invites_created_by_fkey|FOREIGN KEY (created_by) REFERENCES users(id)",
 	"invites|invites_redeemed_by_fkey|FOREIGN KEY (redeemed_by) REFERENCES users(id)",
+	"mirror_tokens|mirror_tokens_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"note_attachments|note_attachments_note_owner_fkey|FOREIGN KEY (note_id, owner_id) REFERENCES notes(id, owner_id) ON DELETE CASCADE",
 	"note_attachments|note_attachments_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"note_comments|note_comments_note_owner_fkey|FOREIGN KEY (note_id, owner_id) REFERENCES notes(id, owner_id) ON DELETE CASCADE",
@@ -302,8 +314,10 @@ func TestMigration0006OwnerColumnLedger(t *testing.T) {
 		got = append(got, n)
 	}
 	rows.Close()
-	if !equal(got, ownedTables) {
-		t.Fatalf("tables with owner_id changed.\n got: %v\nwant: %v", got, ownedTables)
+	wantOwned := rlsTables()
+	slices.Sort(wantOwned)
+	if !equal(got, wantOwned) {
+		t.Fatalf("tables with owner_id changed.\n got: %v\nwant: %v", got, wantOwned)
 	}
 	for _, tbl := range sharedTables {
 		if slices.Contains(got, tbl) {

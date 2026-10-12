@@ -438,6 +438,7 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerAgentSelfServiceRoutes(mux)
 	s.registerConnectorRoutes(mux)
 	s.registerApprovalRoutes(mux)
+	s.registerMirrorRoutes(mux)
 }
 
 // registerAgentSelfServiceRoutes wires the agent callback API. These are

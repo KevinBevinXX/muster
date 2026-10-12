@@ -490,6 +490,41 @@
         };
       };
 
+      # muster-mirror: the OPTIONAL host half of the mirrored-sessions plugin. It
+      # runs on an operator's own machine (never in the cluster), lists that
+      # machine's tmux sessions and dials OUT to muster. Install it only on the
+      # hosts whose sessions muster should show:
+      #
+      #     nix profile install github:ZacxDev/muster#muster-mirror
+      #
+      # (or `go install github.com/ZacxDev/muster/cmd/muster-mirror@<rev>`).
+      # tmux itself is the host's own; it is deliberately not a runtime input,
+      # because the sessions to mirror live on the host's tmux server.
+      mkMirror = pkgs: (buildGoPinned pkgs) {
+        pname = "muster-mirror";
+        inherit version;
+        src = onlyGo pkgs;
+        vendorHash = goVendorHash;
+
+        subPackages = [ "cmd/muster-mirror" ];
+
+        ldflags = [ "-X main.buildRevision=${version}" ];
+
+        doCheck = true;
+
+        # The untagged tests only: the real-tmux suite (`-tags tmuxit`) runs in
+        # CI's ccd-tmux job, and the nix sandbox has no tmux.
+        checkPhase = goCheckPhase "./cmd/muster-mirror/... ./internal/mirrorhost/...";
+
+        meta = with pkgs.lib; {
+          description = "Show this machine's tmux sessions in muster as mirrored sessions (dials out; no listener; read-only unless -interactive)";
+          homepage = "https://github.com/ZacxDev/muster";
+          license = licenses.mit;
+          mainProgram = "muster-mirror";
+          platforms = platforms.unix;
+        };
+      };
+
       # 🔴 THE IMAGE CARRIES BUSYBOX AND DECLARES `PATH`, AND NEITHER IS
       # DECORATION. `buildLayeredImage` with `contents` set to the binary alone
       # produces an image with NO `PATH` and no `sh` — so `kubectl exec … -- sh`
@@ -538,6 +573,7 @@
           # client asks for the flake's unnamed entry point to change meaning.
           # Consumers address it by name.
           muster-cli = mkCLI pkgs;
+          muster-mirror = mkMirror pkgs;
           default = mkMigrate pkgs;
         }
         // nixpkgs.lib.optionalAttrs
@@ -570,6 +606,10 @@
           type = "app";
           program = "${nixpkgs.lib.getExe (mkCLI pkgs)}";
         };
+        muster-mirror = {
+          type = "app";
+          program = "${nixpkgs.lib.getExe (mkMirror pkgs)}";
+        };
       });
 
       checks = forAll (pkgs: {
@@ -579,6 +619,7 @@
         # job runs. Its `checkPhase` and its verb-ledger `installCheckPhase` are
         # the substance; this attribute is only how they get collected.
         muster-cli = mkCLI pkgs;
+        muster-mirror = mkMirror pkgs;
       });
 
       devShells = forAll (pkgs: {

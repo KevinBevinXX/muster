@@ -46,6 +46,12 @@ BEGIN
         EXECUTE format('ALTER TABLE public.%I DISABLE ROW LEVEL SECURITY', t);
         EXECUTE format('ALTER TABLE public.%I ALTER COLUMN owner_id SET DEFAULT 1', t);
     END LOOP;
+    -- 0008 (the mirror plugin's tokens), when this schema has it.
+    IF to_regclass('public.mirror_tokens') IS NOT NULL THEN
+        ALTER TABLE public.mirror_tokens NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.mirror_tokens DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.mirror_tokens ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
 END
 $$;
 

@@ -83,6 +83,7 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO connector_grants (agent_id, connector_name) VALUES ($1, $2)`, func() []any { return []any{agent, "conn-" + tag} }, nil},
 		{`INSERT INTO connector_audit (kind, agent_id, agent_name, connector_name, method, host, path, status) VALUES ('proxy', $1, 'a', 'c', 'GET', 'h', '/', 200)`, func() []any { return []any{agent} }, nil},
 		{`INSERT INTO github_connection (login, scopes, token_ciphertext) VALUES ($1, 'repo', '\xde')`, func() []any { return []any{"octo-" + tag} }, nil},
+		{`INSERT INTO mirror_tokens (host, token_hash) VALUES ($1, $2)`, func() []any { return []any{"host-" + tag, "hash-" + tag} }, nil},
 	}
 	for _, s := range steps {
 		var err error
@@ -129,7 +130,7 @@ func TestRLSCoversExactlyTheOwnedTables(t *testing.T) {
 		sort.Strings(out)
 		return out
 	}
-	want := slices.Clone(ownedTables)
+	want := rlsTables()
 	sort.Strings(want)
 	for name, got := range map[string][]string{
 		"tables with owner_id": set(`SELECT table_name::text FROM information_schema.columns
@@ -165,7 +166,7 @@ func TestRLSCoversExactlyTheOwnedTables(t *testing.T) {
 			}
 		}
 	}
-	for _, tbl := range ownedTables {
+	for _, tbl := range rlsTables() {
 		var def string
 		if err := f.pool.QueryRow(f.mig, `SELECT coalesce(column_default,'') FROM information_schema.columns
 			WHERE table_schema='public' AND table_name=$1 AND column_name='owner_id'`, tbl).Scan(&def); err != nil {
@@ -220,7 +221,7 @@ func TestRowLevelSecurityScopesEveryOwnedTable(t *testing.T) {
 	}
 	// "User 1 sees all of today's data": before a second user has written
 	// anything, user 1's view of every table IS the whole table.
-	for _, tbl := range ownedTables {
+	for _, tbl := range rlsTables() {
 		all := count(t, f.mig, f.pool, tbl, "")
 		if all == 0 {
 			t.Fatalf("fixture: %s is empty", tbl)
@@ -237,7 +238,7 @@ func TestRowLevelSecurityScopesEveryOwnedTable(t *testing.T) {
 	if err := writeEveryOwnedTable(two, f.pool, "two"); err != nil {
 		t.Fatalf("user 2's writes: %v", err)
 	}
-	for _, tbl := range ownedTables {
+	for _, tbl := range rlsTables() {
 		ones := count(t, f.mig, f.pool, tbl, "WHERE owner_id = 1")
 		twos := count(t, f.mig, f.pool, tbl, "WHERE owner_id = $1", f.two)
 		if twos == 0 {
@@ -321,7 +322,7 @@ func TestForceAppliesRLSToTheTablesOwner(t *testing.T) {
 		IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'zz_muster_rls_owner') THEN
 			CREATE ROLE zz_muster_rls_owner NOLOGIN NOSUPERUSER NOBYPASSRLS;
 		END IF; END $$`)
-	for _, tbl := range ownedTables {
+	for _, tbl := range rlsTables() {
 		mustExec(f.mig, t, f.pool, `ALTER TABLE public.`+tbl+` OWNER TO zz_muster_rls_owner`)
 	}
 	conn, err := f.pool.Acquire(f.mig)
@@ -335,7 +336,7 @@ func TestForceAppliesRLSToTheTablesOwner(t *testing.T) {
 	if _, err := conn.Exec(f.mig, `SET ROLE zz_muster_rls_owner`); err != nil {
 		t.Fatal(err)
 	}
-	for _, tbl := range ownedTables {
+	for _, tbl := range rlsTables() {
 		var n int
 		if err := conn.QueryRow(f.mig, `SELECT count(*) FROM public.`+tbl).Scan(&n); err != nil {
 			t.Fatalf("%s: %v", tbl, err)
@@ -591,7 +592,7 @@ func assertRLSState(t *testing.T, f *rlsFixture, on bool) {
 			t.Errorf("%s after rls on=%v: %+v", st.Table, on, st)
 		}
 	}
-	want := slices.Clone(ownedTables)
+	want := rlsTables()
 	sort.Strings(want)
 	if !slices.Equal(tables, want) {
 		t.Errorf("RLSStatus tables = %v; want %v", tables, want)

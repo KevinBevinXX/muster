@@ -31,7 +31,7 @@ import (
 
 var wantVerdictPipes = map[string]string{
 	"test":     "go test -race -cover -json ./... | python3 -u tests/verdict.py --echo summary",
-	"ccd-tmux": "go test -tags tmuxit -race -run '^TestTmux' -json ./cmd/ccd/ | python3 -u tests/verdict.py --echo all",
+	"ccd-tmux": "go test -tags tmuxit -race -run '^TestTmux' -json ./cmd/ccd/ ./internal/mirror/ ./internal/mirrorhost/ | python3 -u tests/verdict.py --echo all",
 }
 
 // TestCIGoSuitesPipeIntoTheVerdictUnderPipefail pins both verdict steps.

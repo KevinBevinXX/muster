@@ -41,6 +41,7 @@ export const provPort = port + 5;
 export const connectorsPort = port + 6;
 export const connectPort = port + 7;
 export const fakeUpstreamPort = port + 8;
+export const mirrorPort = port + 9;
 // The seeded `docs-sweeper` agent's own token (e2e/seed). Invented, like every
 // value here.
 export const agentToken = 'e2e-agent-token-not-a-real-one';

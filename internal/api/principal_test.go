@@ -43,6 +43,12 @@ var publicRoutes = []string{
 	"GET /login",
 	"GET /manifest.webmanifest",
 	"GET /metrics",
+	// ⚠ NOT UNAUTHENTICATED: the mirror plugin's host connection. No muster door
+	// admits it and no request Principal is attached — internal/mirror
+	// authenticates its own per-host mirror token (mirror_tokens, looked up under
+	// authz.System), and the token's OWNER is what its sessions are registered
+	// under. It 404s with the plugin off.
+	"GET /mirror/connect",
 	"GET /readyz",
 	"GET /static/",
 	"GET /sw.js",
@@ -55,6 +61,8 @@ var publicRoutes = []string{
 var routeVias = map[authz.Via][]string{
 	authz.ViaSession: {
 		"DELETE /agents/{id}",
+		"GET /mirror/terminal",
+		"GET /mirror/terminal/ws",
 		"DELETE /connector-grants/{id}",
 		"DELETE /connectors/{name}",
 		"DELETE /tasks/{id}",
