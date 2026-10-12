@@ -52,6 +52,18 @@ BEGIN
         ALTER TABLE public.mirror_tokens DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.mirror_tokens ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0011 (bring-your-own credentials: user_credentials, and cc_account_marks
+    -- made owned), when this schema has it. Both carry owner_id, so the
+    -- read-back (RLSStatus) checks them with the rest; leaving them on would
+    -- make --rls-off exit non-zero.
+    IF to_regclass('public.user_credentials') IS NOT NULL THEN
+        ALTER TABLE public.user_credentials NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.user_credentials DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.user_credentials ALTER COLUMN owner_id SET DEFAULT 1;
+        ALTER TABLE public.cc_account_marks NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.cc_account_marks DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.cc_account_marks ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
 END
 $$;
 

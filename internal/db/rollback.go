@@ -38,6 +38,12 @@ func RLSOff(ctx context.Context, pool *pgxpool.Pool) error {
 // HAS the table, so RLSOn never creates it outside Migrate.
 const mirrorTokensMigrationVersion = 8
 
+// userCredentialsMigrationVersion is 0011: user_credentials and the owned
+// cc_account_marks, under the same row-level security. Same treatment as 0008:
+// RLSOff turns them off, RLSOn re-applies 0011's (idempotent) body when the
+// schema has user_credentials.
+const userCredentialsMigrationVersion = 11
+
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the
 // principal, the role and its grants — and 0008's for mirror_tokens when that
@@ -48,13 +54,15 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		return err
 	}
 	ctx = asMigrator(ctx)
-	var hasMirrorTokens bool
-	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.mirror_tokens') IS NOT NULL`).Scan(&hasMirrorTokens); err != nil {
+	var hasMirrorTokens, hasUserCredentials bool
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.mirror_tokens') IS NOT NULL,
+		to_regclass('public.user_credentials') IS NOT NULL`).Scan(&hasMirrorTokens, &hasUserCredentials); err != nil {
 		return fmt.Errorf("rls on: %w", err)
 	}
 	applied := false
 	for _, m := range ms {
-		if m.version != rlsMigrationVersion && !(m.version == mirrorTokensMigrationVersion && hasMirrorTokens) {
+		if m.version != rlsMigrationVersion && !(m.version == mirrorTokensMigrationVersion && hasMirrorTokens) &&
+			!(m.version == userCredentialsMigrationVersion && hasUserCredentials) {
 			continue
 		}
 		tx, err := pool.Begin(ctx)

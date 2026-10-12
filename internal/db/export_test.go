@@ -17,3 +17,24 @@ func AsMigratorForTest(ctx context.Context) context.Context {
 // AfterReleaseForTest is the pool's AfterRelease hook, for the test that a
 // released connection carries nobody's id.
 var AfterReleaseForTest = afterRelease
+
+// EmbeddedMigrationForTest is one embedded migration's version and file name.
+type EmbeddedMigrationForTest struct {
+	Version int
+	Name    string
+}
+
+// EmbeddedMigrationsForTest lists the embedded migrations, ascending — so a
+// test can pick a version from whatever files this tree holds rather than
+// hard-coding one that a later migration (or another branch's) shifts.
+func EmbeddedMigrationsForTest() ([]EmbeddedMigrationForTest, error) {
+	ms, err := loadMigrations()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]EmbeddedMigrationForTest, len(ms))
+	for i, m := range ms {
+		out[i] = EmbeddedMigrationForTest{Version: m.version, Name: m.name}
+	}
+	return out, nil
+}

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -33,6 +34,8 @@ const MigrationLockKey int64 = 0x6d_75_73_74_01
 // Migrate applies every embedded migration whose numeric prefix is greater than
 // the highest already recorded, each inside a transaction, under a session
 // advisory lock so that two processes starting at once cannot both apply them.
+// It REFUSES (ErrSkippedMigration) when an embedded migration below that
+// highest version was never recorded — see checkNoSkippedMigration.
 //
 // It is idempotent: a second run with no new files is a no-op.
 func Migrate(ctx context.Context, pool *pgxpool.Pool, logger *log.Logger) error {
@@ -101,6 +104,10 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, logger *log.Logger) error 
 		return fmt.Errorf("read schema_migrations: %w", err)
 	}
 
+	if err := checkNoSkippedMigration(ctx, conn.QueryRow, migrations, current); err != nil {
+		return err
+	}
+
 	applied := 0
 	for _, m := range migrations {
 		if m.version <= current {
@@ -130,6 +137,83 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, logger *log.Logger) error 
 		logger.Printf("muster: schema is at version %d; nothing to apply", current)
 	}
 	return nil
+}
+
+// ErrSkippedMigration: an embedded migration older than the newest applied one
+// was never applied. Migrate refuses to boot rather than skip it forever.
+var ErrSkippedMigration = errors.New("db: an embedded migration below the applied version was never applied")
+
+// checkNoSkippedMigration refuses a database where an EMBEDDED migration below
+// the highest recorded version is absent from schema_migrations.
+//
+// 🔴 WHY: THE RUNNER APPLIES ONLY VERSIONS ABOVE max(version), SO A GAP IS
+// PERMANENT AND SILENT. Two PRs that each add a migration can merge (or deploy)
+// in either order; if 0011 reaches a database before 0010 exists in the image,
+// that database records 11, and every later boot skips 0010 — #67's session
+// revocation, in the case that prompted this (round-2 audit on #69).
+//
+// 🔴 REFUSE, NOT APPLY OUT OF ORDER. Every migration here is written against the
+// schema its predecessors leave (0009 assumes 0007's policies; 0005 drops what
+// 0001 made; 0011 re-keys a table 0003 created), so running an old file on a
+// newer schema is unsafe in general, and which ones would happen to be safe is
+// not decidable by the runner. The failure names the file, so the operator can
+// apply it by hand (or redeploy an image whose order is right) and boot again.
+// A normal database — every embedded version up to max recorded — is unchanged.
+// TestMigrateRefusesToSkipAMigrationBelowTheAppliedVersion.
+func checkNoSkippedMigration(ctx context.Context, queryRow func(context.Context, string, ...any) pgx.Row, migrations []migration, current int) error {
+	var missing []migration
+	for _, m := range migrations {
+		if m.version >= current {
+			break
+		}
+		var present bool
+		if err := queryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)`, m.version).Scan(&present); err != nil {
+			return fmt.Errorf("read schema_migrations: %w", err)
+		}
+		if !present {
+			missing = append(missing, m)
+		}
+	}
+	if len(missing) > 0 {
+		names := make([]string, len(missing))
+		cmds := make([]string, len(missing))
+		for i, m := range missing {
+			names[i], cmds[i] = m.name, ApplyByHandCommand(m.version, m.name)
+		}
+		return fmt.Errorf("%w: %s (the database is at version %d). From a checkout at the commit the running "+
+			"image was built from (so each file is the one this image embeds), apply each, in this order: %s — or "+
+			"deploy an image in which it precedes every applied migration; this server will not boot past it",
+			ErrSkippedMigration, strings.Join(names, ", "), current, strings.Join(cmds, " ; then "))
+	}
+	return nil
+}
+
+// ApplyByHandCommand is the operator's remedy for one skipped migration: apply
+// the file AND record it, in ONE transaction, through the deployment's own
+// Postgres pod (the in-cluster form: the file is streamed on stdin, so it is
+// read from the operator's checkout — which must be at the commit the running
+// image was built from, the refusal says so).
+//
+// 🔴 -1 IS THE POINT (round-3 audit on #69). Without it psql runs the file in
+// autocommit: every file begins `SET LOCAL lock_timeout`, which outside a
+// transaction only warns — the 3 s guard is silently gone — and a failure part
+// way through leaves the file half-applied and unrecorded. With -1 the file
+// (-f -, stdin) and the -c INSERT run as one transaction; ON_ERROR_STOP makes
+// the first error abort it. Measured on PostgreSQL 16 (psql 16.15) with this
+// exact stdin form (`docker exec -i … psql … -1 -f - -c … < file`): a
+// re-applied 0009 plus its row committed, rc 0, no SET LOCAL warning; a file
+// failing on its third statement left neither its table nor the
+// schema_migrations row, rc 3.
+// Pinned by TestTheSkippedMigrationRefusalGivesTheSingleTransactionCommand.
+func ApplyByHandCommand(version int, name string) string {
+	return fmt.Sprintf(`kubectl -n muster exec -i deploy/muster-postgres -- psql -U muster -d muster `+
+		`-v ON_ERROR_STOP=1 -1 -f - -c "INSERT INTO schema_migrations (version, name) VALUES (%d, '%s')" `+
+		`< internal/db/migrations/%s`, version, name, name)
+}
+
+// sortMigrations orders migrations by version, ascending.
+func sortMigrations(ms []migration) {
+	sort.Slice(ms, func(i, j int) bool { return ms[i].version < ms[j].version })
 }
 
 type migration struct {
@@ -182,6 +266,6 @@ func loadMigrations() ([]migration, error) {
 		// schema. Migrate would then report success having done nothing.
 		return nil, errors.New("no migrations were embedded; the //go:embed pattern is not matching")
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].version < out[j].version })
+	sortMigrations(out)
 	return out, nil
 }

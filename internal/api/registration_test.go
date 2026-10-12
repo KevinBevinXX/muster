@@ -73,6 +73,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		// Extensions.AgentNamespacePrefix.
 		AgentNamespacePrefix: "muster-agent-",
 		Connectors:           stubConnectorsStore{},
+		Credentials:          stubCredentialStore{},
 		// NON-ZERO on purpose, for AgentNamespacePrefix's reason: the zero policy
 		// is production's, so a fixture holding it would not be "wired".
 		ConnectorPolicy: connectors.Policy{AllowLoopback: true},
@@ -88,6 +89,9 @@ type stubMirror struct{ Mirror }
 // stubConnectorsStore satisfies connectors.Store for registration only; any
 // method call panics, which is the point — registering must call none.
 type stubConnectorsStore struct{ connectors.Store }
+
+// stubCredentialStore satisfies CredentialStore for registration only.
+type stubCredentialStore struct{ CredentialStore }
 
 func recordFrom(register func(Mux)) []string {
 	rec := &muxRecorder{}

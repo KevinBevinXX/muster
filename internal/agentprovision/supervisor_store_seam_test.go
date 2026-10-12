@@ -1,6 +1,7 @@
 package agentprovision
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -136,7 +137,7 @@ func TestTheSupervisorsProseAndItsSpecAgreeAboutTheStore(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			a := adapterWith(t, c.spec, c.agent)
-			spec, err := a.buildSpec(c.agent)
+			spec, err := a.buildSpec(context.Background(), c.agent)
 			if err != nil {
 				t.Fatalf("buildSpec: %v", err)
 			}
@@ -181,7 +182,7 @@ func TestOnlyTheSupervisorIsEligibleForTheStoreCredential(t *testing.T) {
 	// Positive control FIRST: the supervisor's spec must carry all of it, or the
 	// absences below are indistinguishable from an integration that is simply off.
 	sup := adapterWith(t, cfg, supervisorRow())
-	supSpec, err := sup.buildSpec(supervisorRow())
+	supSpec, err := sup.buildSpec(context.Background(), supervisorRow())
 	if err != nil {
 		t.Fatalf("buildSpec(supervisor): %v", err)
 	}
@@ -193,7 +194,7 @@ func TestOnlyTheSupervisorIsEligibleForTheStoreCredential(t *testing.T) {
 
 	worker := fixtureAgent()
 	a := adapterWith(t, cfg, worker)
-	spec, err := a.buildSpec(worker)
+	spec, err := a.buildSpec(context.Background(), worker)
 	if err != nil {
 		t.Fatalf("buildSpec(worker): %v", err)
 	}
@@ -262,7 +263,7 @@ func TestAHalfConfiguredStoreGatesTheProseAndTheSpecTheSameWay(t *testing.T) {
 			c.tune(&cfg)
 
 			a := adapterWith(t, cfg, supervisorRow())
-			spec, err := a.buildSpec(supervisorRow())
+			spec, err := a.buildSpec(context.Background(), supervisorRow())
 			if err != nil {
 				t.Fatalf("buildSpec: %v", err)
 			}
@@ -281,7 +282,7 @@ func TestAHalfConfiguredStoreGatesTheProseAndTheSpecTheSameWay(t *testing.T) {
 	// Positive control: the fully-configured case must produce both, or every row
 	// above passes because nothing ever produces anything.
 	a := adapterWith(t, full, supervisorRow())
-	spec, err := a.buildSpec(supervisorRow())
+	spec, err := a.buildSpec(context.Background(), supervisorRow())
 	if err != nil {
 		t.Fatalf("buildSpec(full): %v", err)
 	}

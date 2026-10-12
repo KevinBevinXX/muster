@@ -37,6 +37,7 @@ DELETE /tasks/{id}
 DELETE /tasks/{id}/comments/{cid}
 DELETE /tasks/{id}/tags/{tag}
 GET /account
+GET /account/credentials
 GET /account/tokens
 GET /admin/invites
 GET /admin/users
@@ -116,6 +117,10 @@ PATCH /agent/task/status
 PATCH /api/tasks/{id}
 PATCH /api/tasks/{id}/status
 PATCH /tasks/{id}/status
+POST /account/credentials/claude
+POST /account/credentials/claude/{name}/delete
+POST /account/credentials/openrouter
+POST /account/credentials/openrouter/delete
 POST /account/tokens
 POST /account/tokens/{id}/revoke
 POST /admin/invites

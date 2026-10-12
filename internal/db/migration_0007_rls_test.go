@@ -84,6 +84,8 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO connector_audit (kind, agent_id, agent_name, connector_name, method, host, path, status) VALUES ('proxy', $1, 'a', 'c', 'GET', 'h', '/', 200)`, func() []any { return []any{agent} }, nil},
 		{`INSERT INTO github_connection (login, scopes, token_ciphertext) VALUES ($1, 'repo', '\xde')`, func() []any { return []any{"octo-" + tag} }, nil},
 		{`INSERT INTO mirror_tokens (host, token_hash) VALUES ($1, $2)`, func() []any { return []any{"host-" + tag, "hash-" + tag} }, nil},
+		{`INSERT INTO user_credentials (kind, name, secret_ciphertext, fingerprint) VALUES ('claude', $1, '\x00', 'fp')`, func() []any { return []any{"acct-" + tag} }, nil},
+		{`INSERT INTO cc_account_marks (account, rate_limited_detail) VALUES ($1, 'x')`, func() []any { return []any{"acct-" + tag} }, nil},
 	}
 	for _, s := range steps {
 		var err error

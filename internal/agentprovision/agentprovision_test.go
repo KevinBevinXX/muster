@@ -400,7 +400,7 @@ func seedInstance(t *testing.T, a *Adapter, store *recordingStore, driver *flaky
 		store.agent.HooksToken = strings.Repeat("7", 64)
 	}
 	ag := store.agent
-	spec, err := a.buildSpec(ag)
+	spec, err := a.buildSpec(context.Background(), ag)
 	if err != nil {
 		t.Fatalf("seed: buildSpec: %v", err)
 	}
@@ -1021,7 +1021,7 @@ func TestReapplyProfilesReconcilesRatherThanRecreates(t *testing.T) {
 // neither implies the other: the prose can be perfect and never placed.
 func TestTheBuiltSpecCarriesTheWorkerInstructions(t *testing.T) {
 	a, _, _ := newAdapter(t, nil)
-	spec, err := a.buildSpec(fixtureAgent())
+	spec, err := a.buildSpec(context.Background(), fixtureAgent())
 	if err != nil {
 		t.Fatalf("buildSpec: %v", err)
 	}

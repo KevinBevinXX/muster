@@ -113,6 +113,12 @@ type Extensions struct {
 	// GitHubOAuth configures the OAuth web flow for connecting an account.
 	GitHubOAuth GitHubOAuthConfig
 
+	// Credentials is the per-owner model-provider credential store behind
+	// Account → Credentials (internal/credentials). nil: none configured — the
+	// page says so, and every member then has no credential (never the
+	// admin's). See credentials.go.
+	Credentials CredentialStore
+
 	// Connectors is the secure connector store. nil means the feature is off
 	// (no MUSTER_CONNECTOR_ENCRYPTION_KEY): every connector route answers 503 and
 	// the tab is not drawn. See internal/connectors and connectors.go.
@@ -580,18 +586,27 @@ type Gateway interface {
 }
 
 // AgentKinds is the dispatch side of agent kinds (cmd/muster-server implements it
-// over internal/ccpool).
+// over internal/ccpool and internal/credentials).
+//
+// 🔴 EVERY ACCOUNT QUESTION IS ASKED FOR AN OWNER. Members bring their own
+// credentials (accounts plan, operator decisions): the names a member's form
+// lists, the account a member's dispatch selects and whether a kind is usable
+// at all are answers about THAT member — never the deployment's pool, which is
+// the admin's.
 type AgentKinds interface {
 	// Enabled is the kinds a dispatch may name, in picker order. It always
 	// includes agents.KindGateway.
 	Enabled() []string
-	// ClaudeAccounts is the configured Claude account NAMES (never tokens), for
-	// the pin picker. Empty when the claude-code kind is not enabled.
-	ClaudeAccounts() []string
-	// SelectClaudeAccount picks the account a new claude-code agent runs on, or
-	// returns the pin when it names a configured account. An error is a dispatch
-	// refusal.
-	SelectClaudeAccount(ctx context.Context, pin string) (string, error)
+	// ClaudeAccounts is owner's Claude account NAMES (never tokens), for the
+	// pin picker.
+	ClaudeAccounts(ctx context.Context, owner int64) ([]string, error)
+	// SelectClaudeAccount picks the account owner's new claude-code agent runs
+	// on, from owner's accounts only, or returns the pin when it names one of
+	// them. An error is a dispatch refusal.
+	SelectClaudeAccount(ctx context.Context, owner int64, pin string) (string, error)
+	// Unavailable maps each enabled kind owner has NO credential for to the
+	// sentence telling them what to add. Absent = usable.
+	Unavailable(ctx context.Context, owner int64) map[string]string
 }
 
 // enabledKinds is Extensions.Kinds.Enabled with the nil case resolved.

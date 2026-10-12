@@ -36,7 +36,23 @@ func main() {
 // operator, admin, unbound) and nothing else — no invites, no other users, no
 // audit rows, no personal API tokens. The gotrue specs claim user 1 and invite members, and a later
 // spec (or a re-run) must be able to do both again.
+//
+// 🔴 A MEMBER CAN OWN ROWS, SO THEY GO BEFORE THE MEMBER. The byo-credentials
+// spec's member saves a Claude account (user_credentials) and an agent, and
+// --accounts-only (the invites spec, later in the same leg) runs WITHOUT the
+// board TRUNCATE — so deleting the users alone hit agents_owner_id_fkey. Every
+// owned table a member can reach is cleared for owners other than user 1;
+// deleting a member's agents and tasks cascades to their chat, grants,
+// comments, attachments and session links (the composite FKs, 0006).
 var accountsReset = []string{
+	`DELETE FROM user_credentials WHERE owner_id <> 1`,
+	`DELETE FROM cc_account_marks WHERE owner_id <> 1`,
+	`DELETE FROM connector_audit WHERE owner_id <> 1`,
+	`DELETE FROM agents WHERE owner_id <> 1`,
+	`DELETE FROM connectors WHERE owner_id <> 1`,
+	`DELETE FROM notes WHERE owner_id <> 1`,
+	`DELETE FROM github_connection WHERE owner_id <> 1`,
+	`DELETE FROM mirror_tokens WHERE owner_id <> 1`,
 	`DELETE FROM audit_log`,
 	`DELETE FROM invites`,
 	// Personal API tokens (accounts PR 6) reference users, so they go BEFORE

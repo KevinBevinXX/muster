@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/provision"
@@ -223,7 +224,7 @@ func (s *Server) handleAgentNewModal(w http.ResponseWriter, r *http.Request) {
 				// land: #agents-list exists only on the shell. See
 				// ui.TaskDispatchView.FromDetailPage.
 				v.FromDetailPage = rendersInDetailShape(r, n.ID)
-				v.Kinds = s.kindChoices()
+				v.Kinds = s.kindChoices(r.Context())
 				if rerr := ui.RenderDispatchModalTask(w, v); rerr != nil {
 					s.logger.Printf("agents: render task dispatch modal: %v", rerr)
 				}
@@ -233,19 +234,35 @@ func (s *Server) handleAgentNewModal(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if err := ui.RenderDispatchModal(w, s.kindChoices()); err != nil {
+	if err := ui.RenderDispatchModal(w, s.kindChoices(r.Context())); err != nil {
 		s.logger.Printf("agents: render dispatch modal: %v", err)
 	}
 }
 
-// kindChoices is what the dispatch form offers: the enabled kinds and the
-// Claude account names (never tokens).
-func (s *Server) kindChoices() ui.KindChoices {
+// kindChoices is what the dispatch form offers THE CALLER: the enabled kinds,
+// the caller's OWN Claude account names (never tokens — and never the admin's
+// pool for a member), and which kinds the caller has no credential for.
+func (s *Server) kindChoices(ctx context.Context) ui.KindChoices {
 	k := ui.KindChoices{Kinds: s.ext.enabledKinds()}
 	if s.ext.Kinds != nil {
-		k.Accounts = s.ext.Kinds.ClaudeAccounts()
+		owner := callerID(ctx)
+		if names, err := s.ext.Kinds.ClaudeAccounts(ctx, owner); err == nil {
+			k.Accounts = names
+		} else {
+			s.logger.Printf("agents: user %d's Claude accounts: %v", owner, err)
+		}
+		k.Unavailable = s.ext.Kinds.Unavailable(ctx, owner)
 	}
 	return k
+}
+
+// callerID is the acting principal's user, or 0 (no user: every per-owner
+// answer is then "nothing").
+func callerID(ctx context.Context) int64 {
+	if p, ok := authz.From(ctx); ok && !p.All() {
+		return p.UserID
+	}
+	return 0
 }
 
 // buildTaskDispatchView resolves a task's dispatch config into the task-scoped
@@ -902,6 +919,15 @@ func (s *Server) resolveKindAccount(ctx context.Context, p dispatchParams) (kind
 	if !s.ext.kindEnabled(kind) {
 		return "", "", fmt.Errorf("%w: agent kind %q is not enabled on this deployment (MUSTER_AGENT_KINDS)", ErrDispatchRefused, kind)
 	}
+	// 🔴 A KIND THE CALLER HAS NO CREDENTIAL FOR IS REFUSED HERE, BEFORE THE ROW,
+	// with the sentence that says what to add — never dispatched onto the
+	// admin's credentials. (The pod-spec path refuses it again from the owner's
+	// own credentials: internal/agentprovision.specFor.)
+	if s.ext.Kinds != nil {
+		if why := s.ext.Kinds.Unavailable(ctx, callerID(ctx))[kind]; why != "" {
+			return "", "", fmt.Errorf("%w: %s", ErrDispatchRefused, why)
+		}
+	}
 	if kind != agents.KindClaudeCode {
 		if p.CCAccount != "" {
 			return "", "", fmt.Errorf("%w: a Claude account can only be pinned for a %s agent", ErrDispatchRefused, agents.KindClaudeCode)
@@ -921,7 +947,7 @@ func (s *Server) resolveKindAccount(ctx context.Context, p dispatchParams) (kind
 	if s.ext.Kinds == nil {
 		return "", "", fmt.Errorf("%w: no Claude account pool is configured", ErrDispatchRefused)
 	}
-	account, err = s.ext.Kinds.SelectClaudeAccount(ctx, p.CCAccount)
+	account, err = s.ext.Kinds.SelectClaudeAccount(ctx, callerID(ctx), p.CCAccount)
 	if err != nil {
 		return "", "", fmt.Errorf("%w: %v", ErrDispatchRefused, err)
 	}
@@ -1038,6 +1064,23 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 }
 
 func (s *Server) handleAgentStart(w http.ResponseWriter, r *http.Request) {
+	// 🔴 A START IS REFUSED, LIKE A DISPATCH, FOR A KIND THE CALLER HAS NO
+	// CREDENTIAL FOR — 409 with what to add. Start re-applies the agent's spec
+	// through its owner's credentials (agentprovision.Adapter.Start), so a
+	// member who deleted their key would only get a background failure; this
+	// says why at the door. The row is read as the caller (row-level security),
+	// so another user's agent is not found here and falls through to the
+	// lifecycle path exactly as before.
+	if s.ext.Kinds != nil && s.ext.Agents != nil {
+		if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil {
+			if a, err := s.ext.Agents.Get(r.Context(), id); err == nil {
+				if why := s.ext.Kinds.Unavailable(r.Context(), callerID(r.Context()))[agents.ResolveKind(a.Kind)]; why != "" {
+					http.Error(w, fmt.Sprintf("%v: %s", ErrDispatchRefused, why), http.StatusConflict)
+					return
+				}
+			}
+		}
+	}
 	s.agentLifecycle(w, r, func(ctx context.Context, id int64) error { return s.ext.Provisioner.Start(ctx, id) }, "start")
 }
 

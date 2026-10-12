@@ -103,6 +103,10 @@ func newDispatchRecorder() *dispatchRecorder {
 		Namespace:   agents.NamespaceFor(agents.NamespacePrefix, "wiring-kestrel"),
 		PendingNote: "read the plan and report what is missing",
 		Status:      agents.StatusProvisioning,
+		// Every real row has an owner (owner_id NOT NULL). The operator's: a
+		// member's agent with no credential of its own is refused, which is a
+		// different seam (TestTheAgentPlaneResolvesCredentialsPerOwner).
+		OwnerID: 1,
 	}}
 }
 

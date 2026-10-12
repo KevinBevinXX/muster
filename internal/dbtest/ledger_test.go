@@ -124,6 +124,9 @@ var pgBackedPackages = []string{
 	// and "the wrong key fails closed" are claims about what reaches Postgres, and
 	// the proxy's grant checks are SQL (the partial unique index) — only a real database can falsify either.
 	"internal/connectors",
+	// Bring-your-own credentials: the per-owner sealed store, under row-level
+	// security — its isolation and seal-binding tests need the real database.
+	"internal/credentials",
 	"internal/db",
 	// Added by the mirrored-sessions plugin. "Only the token's hash is stored",
 	// "another user's principal cannot find, list or revoke a token" and "a

@@ -80,7 +80,11 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 // the owner-column and RLS ledgers check both (rlsTables).
 //
 //   - mirror_tokens (0008, the mirrored-agents plugin's per-host tokens).
-var ownedAfter0006 = []string{"mirror_tokens"}
+//   - user_credentials (0011, members' own Claude/OpenRouter credentials).
+//   - cc_account_marks (0011: SHARED until then — the environment pool's marks
+//     — and owned since, because an account is (owner, name) once members bring
+//     their own).
+var ownedAfter0006 = []string{"cc_account_marks", "mirror_tokens", "user_credentials"}
 
 // rlsTables is every owned table today: ownedTables plus ownedAfter0006.
 func rlsTables() []string { return append(slices.Clone(ownedTables), ownedAfter0006...) }
@@ -99,9 +103,9 @@ var ownedTables = []string{
 	"task_sessions",
 }
 
-// sharedTables deliberately have NO owner: the operator's account pool, the
-// global agent-name ledger, and the migration ledger.
-var sharedTables = []string{"agent_retired_names", "cc_account_marks", "schema_migrations"}
+// sharedTables deliberately have NO owner: the global agent-name ledger and
+// the migration ledger. (cc_account_marks was here until 0011 made it owned.)
+var sharedTables = []string{"agent_retired_names", "schema_migrations"}
 
 // wantForeignKeys is EVERY foreign key in the public schema after 0006, as
 // `table|constraint|definition`. It pins the RELATIONSHIP — each owned
@@ -112,6 +116,7 @@ var sharedTables = []string{"agent_retired_names", "cc_account_marks", "schema_m
 var wantForeignKeys = []string{
 	"agents|agents_note_owner_fkey|FOREIGN KEY (note_id, owner_id) REFERENCES notes(id, owner_id) ON DELETE SET NULL (note_id)",
 	"agents|agents_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"cc_account_marks|cc_account_marks_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"api_tokens|api_tokens_user_id_fkey|FOREIGN KEY (user_id) REFERENCES users(id)",
 	"audit_log|audit_log_user_id_fkey|FOREIGN KEY (user_id) REFERENCES users(id)",
 	"chat_messages|chat_messages_agent_owner_fkey|FOREIGN KEY (agent_id, owner_id) REFERENCES agents(id, owner_id) ON DELETE CASCADE",
@@ -135,6 +140,7 @@ var wantForeignKeys = []string{
 	"notes|notes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"task_sessions|task_sessions_note_owner_fkey|FOREIGN KEY (note_id, owner_id) REFERENCES notes(id, owner_id) ON DELETE CASCADE",
 	"task_sessions|task_sessions_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"user_credentials|user_credentials_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 }
 
 func freshMigrated(ctx context.Context, t *testing.T, name string) *pgxpool.Pool {

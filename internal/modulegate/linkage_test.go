@@ -66,6 +66,9 @@ var notLinkedLedger = map[string]string{
 	"e2e/seed": "the browser suite's fixture loader (`go run ./e2e/seed`). It TRUNCATES " +
 		"the board before seeding, so it must never be reachable from a shipped binary; it " +
 		"also refuses any database whose name does not end in _e2e.",
+	"e2e/mkmember": "the byo-credentials browser spec's member maker (`go run ./e2e/mkmember`). " +
+		"It writes a users row as the login role, bypassing row-level security, so it must " +
+		"never be reachable from a shipped binary; it refuses any database not ending in _e2e.",
 
 	// 🔴 internal/agentspec AND internal/provision/k8s WERE BOTH HERE, AND THEIR
 	// DEPARTURE IS THE ONLY MECHANICAL SIGNAL PLAN STEP 22b HAD. Both entries said

@@ -3,6 +3,7 @@ package ccpool
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -108,23 +109,60 @@ func TestChooseRefusesWhenEveryAccountsTokenFailedAuth(t *testing.T) {
 	}
 }
 
-// fakeStore records writes and serves canned marks/counts.
+// fakeStore records writes and serves canned marks/counts. It records the
+// OWNER every read and write was asked for, so a pool that consulted another
+// owner's marks (or wrote a mark against the wrong owner) shows.
 type fakeStore struct {
 	marks map[string]Mark
 	live  map[string]int
 	calls []string
+	asked []int64
 	err   error
 }
 
-func (f *fakeStore) Marks(context.Context) (map[string]Mark, error)     { return f.marks, f.err }
-func (f *fakeStore) LiveCounts(context.Context) (map[string]int, error) { return f.live, f.err }
-func (f *fakeStore) MarkRateLimited(_ context.Context, a, d string, _ time.Time) error {
-	f.calls = append(f.calls, "rate_limited|"+a+"|"+d)
+func (f *fakeStore) Marks(_ context.Context, owner int64) (map[string]Mark, error) {
+	f.asked = append(f.asked, owner)
+	return f.marks, f.err
+}
+func (f *fakeStore) LiveCounts(_ context.Context, owner int64) (map[string]int, error) {
+	f.asked = append(f.asked, owner)
+	return f.live, f.err
+}
+func (f *fakeStore) MarkRateLimited(_ context.Context, owner int64, a, d string, _ time.Time) error {
+	f.calls = append(f.calls, "rate_limited|"+strconv.FormatInt(owner, 10)+"|"+a+"|"+d)
 	return f.err
 }
-func (f *fakeStore) MarkAuthFailed(_ context.Context, a, fp, d string, _ time.Time) error {
-	f.calls = append(f.calls, "auth_failed|"+a+"|"+fp+"|"+d)
+func (f *fakeStore) MarkAuthFailed(_ context.Context, owner int64, a, fp, d string, _ time.Time) error {
+	f.calls = append(f.calls, "auth_failed|"+strconv.FormatInt(owner, 10)+"|"+a+"|"+fp+"|"+d)
 	return f.err
+}
+
+// owned is a per-owner Source: each owner's own account map, nothing for an
+// owner it does not know.
+type owned map[int64]map[string]string
+
+func (o owned) Accounts(_ context.Context, owner int64) (map[string]string, error) {
+	out := map[string]string{}
+	for k, v := range o[owner] {
+		out[k] = v
+	}
+	return out, nil
+}
+
+// opOwner is the owner the single-pool tests below select for.
+const opOwner int64 = 1
+
+func newPool(t *testing.T, st Store) *Pool {
+	t.Helper()
+	src, err := NewStatic(tokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := New(src, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
 }
 
 func TestSelectHonoursAPinOverEverySelectionRule(t *testing.T) {
@@ -135,27 +173,24 @@ func TestSelectHonoursAPinOverEverySelectionRule(t *testing.T) {
 		marks: map[string]Mark{"gamma": {RateLimitedAt: t0, AuthFailedAt: t0, AuthFailedToken: Fingerprint(tokGamma)}},
 		live:  map[string]int{"gamma": 9},
 	}
-	p, err := New(tokens, st)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := p.Select(context.Background(), "gamma")
+	p := newPool(t, st)
+	got, err := p.Select(context.Background(), opOwner, "gamma")
 	if err != nil || got != "gamma" {
 		t.Fatalf("Select(pin gamma) = %q, %v; want gamma", got, err)
 	}
-	auto, err := p.Select(context.Background(), "")
+	auto, err := p.Select(context.Background(), opOwner, "")
 	if err != nil || auto != "alpha" {
 		t.Fatalf("Select(auto) = %q, %v; want alpha (the control: gamma is NOT what auto picks)", auto, err)
 	}
-	if _, err := p.Select(context.Background(), "delta"); !errors.Is(err, ErrUnknownAccount) {
+	if _, err := p.Select(context.Background(), opOwner, "delta"); !errors.Is(err, ErrUnknownAccount) {
 		t.Fatalf("Select(pin delta) err = %v, want ErrUnknownAccount", err)
 	}
 }
 
 func TestSelectReadsTheStoresMarksAndLiveCounts(t *testing.T) {
 	st := &fakeStore{marks: map[string]Mark{"alpha": {RateLimitedAt: t0}}, live: map[string]int{"beta": 1}}
-	p, _ := New(tokens, st)
-	got, err := p.Select(context.Background(), "")
+	p := newPool(t, st)
+	got, err := p.Select(context.Background(), opOwner, "")
 	if err != nil || got != "gamma" {
 		t.Fatalf("Select = %q, %v; want gamma (alpha rate-limited, beta has a live agent)", got, err)
 	}
@@ -163,20 +198,20 @@ func TestSelectReadsTheStoresMarksAndLiveCounts(t *testing.T) {
 
 func TestMarkFailureRecordsRateLimitAndAuthFailureNeverTheToken(t *testing.T) {
 	st := &fakeStore{}
-	p, _ := New(tokens, st)
+	p := newPool(t, st)
 	ctx := context.Background()
-	if err := p.MarkFailure(ctx, "beta", FailureRateLimited, "You've hit your limit · resets 5pm"); err != nil {
+	if err := p.MarkFailure(ctx, opOwner, "beta", FailureRateLimited, "You've hit your limit · resets 5pm"); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.MarkFailure(ctx, "beta", FailureAuthFailed, "OAuth token invalid"); err != nil {
+	if err := p.MarkFailure(ctx, opOwner, "beta", FailureAuthFailed, "OAuth token invalid"); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.MarkFailure(ctx, "beta", "turn_timeout", "ignored"); err != nil {
+	if err := p.MarkFailure(ctx, opOwner, "beta", "turn_timeout", "ignored"); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
-		"rate_limited|beta|You've hit your limit · resets 5pm",
-		"auth_failed|beta|" + Fingerprint(tokBeta) + "|OAuth token invalid",
+		"rate_limited|1|beta|You've hit your limit · resets 5pm",
+		"auth_failed|1|beta|" + Fingerprint(tokBeta) + "|OAuth token invalid",
 	}
 	if strings.Join(st.calls, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("store calls:\n%s\nwant:\n%s", strings.Join(st.calls, "\n"), strings.Join(want, "\n"))
@@ -186,7 +221,7 @@ func TestMarkFailureRecordsRateLimitAndAuthFailureNeverTheToken(t *testing.T) {
 			t.Fatalf("a stored mark carries the token: %q", c)
 		}
 	}
-	if err := p.MarkFailure(ctx, "nope", FailureRateLimited, ""); !errors.Is(err, ErrUnknownAccount) {
+	if err := p.MarkFailure(ctx, opOwner, "nope", FailureRateLimited, ""); !errors.Is(err, ErrUnknownAccount) {
 		t.Fatalf("unknown account err = %v", err)
 	}
 }
@@ -202,8 +237,7 @@ func TestFingerprintIsPinnedAndShort(t *testing.T) {
 	}
 }
 
-func TestNewRefusesAnEmptyPoolABadNameAndAnEmptyToken(t *testing.T) {
-	st := &fakeStore{}
+func TestNewStaticRefusesAnEmptyPoolABadNameAndAnEmptyToken(t *testing.T) {
 	cases := map[string]map[string]string{
 		"empty":       {},
 		"bad name":    {"Alpha": tokAlpha},
@@ -211,14 +245,18 @@ func TestNewRefusesAnEmptyPoolABadNameAndAnEmptyToken(t *testing.T) {
 		"empty token": {"alpha": "  "},
 	}
 	for name, acc := range cases {
-		if _, err := New(acc, st); err == nil {
-			t.Errorf("%s: New accepted %v", name, acc)
+		if _, err := NewStatic(acc); err == nil {
+			t.Errorf("%s: NewStatic accepted %v", name, acc)
 		} else if strings.Contains(err.Error(), tokAlpha) {
 			t.Errorf("%s: refusal carries the token: %v", name, err)
 		}
 	}
-	if _, err := New(tokens, nil); err == nil {
+	src, _ := NewStatic(tokens)
+	if _, err := New(src, nil); err == nil {
 		t.Error("New accepted a nil store")
+	}
+	if _, err := New(nil, &fakeStore{}); err == nil {
+		t.Error("New accepted a nil source")
 	}
 }
 
@@ -234,13 +272,62 @@ func TestEnvSuffix(t *testing.T) {
 // invalid UTF-8, which Postgres refuses for TEXT — losing the mark.
 func TestALongDetailIsCutOnARuneBoundary(t *testing.T) {
 	st := &fakeStore{}
-	p, _ := New(tokens, st)
+	p := newPool(t, st)
 	detail := strings.Repeat("a", maxDetail-1) + "·resets 5pm" // "·" is 2 bytes and straddles the cut
-	if err := p.MarkFailure(context.Background(), "alpha", FailureRateLimited, detail); err != nil {
+	if err := p.MarkFailure(context.Background(), opOwner, "alpha", FailureRateLimited, detail); err != nil {
 		t.Fatal(err)
 	}
-	stored := strings.TrimPrefix(st.calls[0], "rate_limited|alpha|")
+	stored := strings.TrimPrefix(st.calls[0], "rate_limited|1|alpha|")
 	if !utf8.ValidString(stored) || !strings.HasSuffix(stored, "…") || len(stored) > maxDetail+len("…") {
 		t.Fatalf("stored detail is invalid or over-long: %q", stored)
+	}
+}
+
+// TestSelectChoosesOnlyAmongTheOwnersOwnAccounts: two owners, each with an
+// account the OTHER's automatic rule would prefer. Each owner's selection, pin
+// and token lookup stay inside that owner's own accounts, and the store is
+// asked about exactly that owner.
+func TestSelectChoosesOnlyAmongTheOwnersOwnAccounts(t *testing.T) {
+	src := owned{
+		1: {"alpha": tokAlpha}, // the admin's ("alpha" wins every tiebreak)
+		7: {"zulu": "sk-ant-oat01-FAKE-zulu-member-token"},
+	}
+	st := &fakeStore{}
+	p, err := New(src, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for i := 0; i < 50; i++ {
+		got, err := p.Select(ctx, 7, "")
+		if err != nil || got != "zulu" {
+			t.Fatalf("member Select = %q, %v; want zulu, the member's ONLY account", got, err)
+		}
+	}
+	for _, o := range st.asked {
+		if o != 7 {
+			t.Fatalf("the member's selection read the store for owner %d", o)
+		}
+	}
+	if _, err := p.Select(ctx, 7, "alpha"); !errors.Is(err, ErrUnknownAccount) {
+		t.Fatalf("a member pinning the admin's account: err = %v, want ErrUnknownAccount", err)
+	}
+	if _, err := p.Token(ctx, 7, "alpha"); !errors.Is(err, ErrUnknownAccount) {
+		t.Fatalf("a member's agent on account alpha got a token (err %v)", err)
+	}
+	if got, err := p.Select(ctx, 1, ""); err != nil || got != "alpha" {
+		t.Fatalf("control: the admin's Select = %q, %v; want alpha", got, err)
+	}
+	if _, err := p.Select(ctx, 9, ""); !errors.Is(err, ErrNoUsableAccount) {
+		t.Fatalf("an owner with no account: err = %v, want ErrNoUsableAccount", err)
+	}
+	if err := p.MarkFailure(ctx, 7, "zulu", FailureRateLimited, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if got := st.calls[len(st.calls)-1]; got != "rate_limited|7|zulu|x" {
+		t.Fatalf("mark = %q, want it against owner 7", got)
+	}
+	if err := p.MarkFailure(ctx, 7, "alpha", FailureRateLimited, "x"); !errors.Is(err, ErrUnknownAccount) {
+		t.Fatalf("a member's agent marking the admin's account: err = %v", err)
 	}
 }

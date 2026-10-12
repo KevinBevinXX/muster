@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"log"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/ccpool"
+	"github.com/ZacxDev/muster/internal/credentials"
 )
 
 // Fake setup-tokens, obviously not real.
@@ -149,23 +151,33 @@ func TestEnablingClaudeCodeRaisesTheDriversPersistenceAndNothingElse(t *testing.
 
 type memMarks struct{}
 
-func (memMarks) Marks(context.Context) (map[string]ccpool.Mark, error) { return nil, nil }
-func (memMarks) LiveCounts(context.Context) (map[string]int, error)    { return nil, nil }
-func (memMarks) MarkRateLimited(context.Context, string, string, time.Time) error {
+func (memMarks) Marks(context.Context, int64) (map[string]ccpool.Mark, error) { return nil, nil }
+func (memMarks) LiveCounts(context.Context, int64) (map[string]int, error)    { return nil, nil }
+func (memMarks) MarkRateLimited(context.Context, int64, string, string, time.Time) error {
 	return nil
 }
-func (memMarks) MarkAuthFailed(context.Context, string, string, string, time.Time) error {
+func (memMarks) MarkAuthFailed(context.Context, int64, string, string, string, time.Time) error {
 	return nil
 }
 
+// envPlane is the environment-only credential plane for cfg.
+func envPlane(t *testing.T, cfg config) *credentials.Plane {
+	t.Helper()
+	p, err := buildCredentialPlane(cfg, nil, nil, log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 func TestAClaudeCodeDeploymentWithNoDatabaseIsRefused(t *testing.T) {
-	if _, err := buildClaudePool(ccTestConfig(), nil); err == nil || !strings.Contains(err.Error(), "DATABASE_URL") {
+	if _, err := buildClaudePool(ccTestConfig(), envPlane(t, ccTestConfig()), nil); err == nil || !strings.Contains(err.Error(), "DATABASE_URL") {
 		t.Fatalf("err = %v", err)
 	}
-	if p, err := buildClaudePool(provisionerTestConfig(provisionerNoop), nil); p != nil || err != nil {
+	if p, err := buildClaudePool(provisionerTestConfig(provisionerNoop), envPlane(t, provisionerTestConfig(provisionerNoop)), nil); p != nil || err != nil {
 		t.Fatalf("gateway-only: pool %v err %v, want neither", p, err)
 	}
-	if _, _, err := buildAgentPlaneWith(ccTestConfig(), stubStore{}, nil, log.New(&strings.Builder{}, "", 0)); err == nil {
+	if _, _, err := buildAgentPlaneWith(ccTestConfig(), stubStore{}, nil, nil, log.New(&strings.Builder{}, "", 0)); err == nil {
 		t.Fatal("a claude-code agent plane was built with no account pool")
 	}
 }
@@ -176,11 +188,11 @@ func TestAClaudeCodeDeploymentWithNoDatabaseIsRefused(t *testing.T) {
 func TestTheKindsBannerLineNamesAccountsNeverTokens(t *testing.T) {
 	logger := log.New(&strings.Builder{}, "", 0)
 	cc := ccTestConfig()
-	pool, err := buildClaudePool(cc, memMarks{})
+	pool, err := buildClaudePool(cc, envPlane(t, cc), memMarks{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	prov, _, err := buildAgentPlaneWith(cc, stubStore{}, pool, logger)
+	prov, _, err := buildAgentPlaneWith(cc, stubStore{}, pool, nil, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,11 +368,11 @@ func TestTheNetworkBannerLineSaysWhetherAgentsAreConfined(t *testing.T) {
 		build := c
 		build.AgentProvisioner = provisionerNoop
 		build.AgentNetpolFromNS, build.AgentNetpolFromLabels = "", ""
-		pool, err := buildClaudePool(build, memMarks{})
+		pool, err := buildClaudePool(build, envPlane(t, build), memMarks{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		prov, _, err := buildAgentPlaneWith(build, stubStore{}, pool, logger)
+		prov, _, err := buildAgentPlaneWith(build, stubStore{}, pool, nil, logger)
 		if err != nil {
 			t.Fatal(err)
 		}

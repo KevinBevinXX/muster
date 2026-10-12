@@ -19,6 +19,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/sse"
 )
@@ -289,7 +290,18 @@ func TestEachUserProvisionsTheirOwnChief(t *testing.T) {
 	if before := panel(); !strings.Contains(before, "data-chief-panel-missing") {
 		t.Fatalf("control: before provisioning, B's panel already resolves a chief:\n%s", truncate(before, 300))
 	}
+	// Bring-your-own: a member's chief is a gateway agent, which runs on the
+	// member's OWN OpenRouter key — without one the provision is refused (409,
+	// naming what to add), never built on the operator's.
 	rec := w.do(w.h, "POST", "/chief/provision", url.Values{"model": {""}}.Encode(), cred{sessionUser: w.b.uid})
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), credentials.NeedOpenRouter) {
+		t.Fatalf("B's chief provision with no OpenRouter key: %d %s; want 409 naming what to add", rec.Code, rec.Body)
+	}
+	bctx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: w.b.uid, Role: authz.RoleMember, Via: authz.ViaSession})
+	if err := w.creds.PutOpenRouter(bctx, "sk-or-v1-iso-member-B-api-key-0003333"); err != nil {
+		t.Fatal(err)
+	}
+	rec = w.do(w.h, "POST", "/chief/provision", url.Values{"model": {""}}.Encode(), cred{sessionUser: w.b.uid})
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"created":true`) {
 		t.Fatalf("B's chief provision: %d %s; want 200 created", rec.Code, rec.Body)
 	}

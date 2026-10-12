@@ -443,6 +443,7 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerAgentRoutes(mux)
 	s.registerAgentSelfServiceRoutes(mux)
 	s.registerConnectorRoutes(mux)
+	s.registerCredentialRoutes(mux)
 	s.registerApprovalRoutes(mux)
 	s.registerMirrorRoutes(mux)
 }

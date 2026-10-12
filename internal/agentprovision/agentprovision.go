@@ -346,6 +346,24 @@ type Config struct {
 	// test that needs to observe the expiry. If no such test exists by the time the
 	// reconcile loop lands, collapse this to the constant.
 	OpTimeout time.Duration
+	// Credentials resolves the model-provider credentials of an agent's OWNER
+	// for every spec this adapter builds (internal/credentials.Plane). nil
+	// keeps Spec's deployment-wide credentials for every agent — the shape
+	// every pre-accounts test builds; cmd/muster-server always sets it
+	// (TestTheAgentPlaneResolvesCredentialsPerOwner).
+	Credentials CredentialResolver
+}
+
+// CredentialResolver answers which credentials an OWNER's agent is built with.
+//
+// 🔴 EVERY SPEC BUILD ASKS, FOR THE AGENT ROW'S OWN owner_id. A member's agent
+// is built with that member's setup-token and OpenRouter key and nothing else;
+// the deployment-wide values in Config.Spec (the admin's environment pool and
+// key) are REPLACED, not merged, so a member's pod can never be handed the
+// admin's credential by falling through to them.
+type CredentialResolver interface {
+	ClaudeToken(ctx context.Context, owner int64, account string) (string, error)
+	OpenRouterKey(ctx context.Context, owner int64) (string, error)
 }
 
 // Adapter implements the consumer-side lifecycle interface over a driver.
@@ -366,6 +384,7 @@ type Adapter struct {
 	// kickoffDeliverable mirrors [Config.KickoffDeliverable]. See there for why the
 	// zero value refuses.
 	kickoffDeliverable bool
+	creds              CredentialResolver
 }
 
 // New validates the configuration and builds the adapter.
@@ -386,6 +405,7 @@ func New(cfg Config) (*Adapter, error) {
 		log:                cfg.Logger,
 		timeout:            cfg.OpTimeout,
 		kickoffDeliverable: cfg.KickoffDeliverable,
+		creds:              cfg.Credentials,
 	}
 	if a.log == nil {
 		a.log = log.New(io.Discard, "", 0)
@@ -582,23 +602,36 @@ func (a *Adapter) Start(ctx context.Context, agentID int64) error {
 	if err != nil {
 		return fmt.Errorf("agentprovision: start agent %d: load row: %w", agentID, err)
 	}
-	if agents.ResolveKind(ag.Kind) == agents.KindClaudeCode {
-		// 🔴 A CLAUDE-CODE START RE-APPLIES THE SPEC instead of only scaling, so it
-		// carries the account's CURRENT setup-token. The token lives in the agent's
-		// own Secret, written at create; after an operator rotates an account's
-		// token (an auth_failed mark), Stop then Start is how an existing agent gets
-		// the new one — a bare Scale would bring the pod back on the revoked token.
-		// Update creates an absent instance, so the saved-agent case is covered too.
-		// It keeps the agent's stored account: buildSpec reads the row.
+	// 🔴 A START RE-APPLIES THE SPEC instead of only scaling WHENEVER THE SPEC
+	// CARRIES A CREDENTIAL THAT CAN HAVE CHANGED SINCE CREATE: always for
+	// claude-code (the account's setup-token), and for every kind once credentials
+	// resolve per owner ([Config.Credentials] — a gateway agent's OpenRouter key).
+	// Both live in the agent's own Secret, written at create; after a token or key
+	// is rotated (an operator replacing an env token after an auth_failed mark, a
+	// member saving a new key in Account → Credentials), Stop then Start is how an
+	// existing agent gets the new value — a bare Scale brings the pod back on the
+	// old one. And when the owner has DELETED the credential, building the spec
+	// fails, so Start refuses instead of reviving a pod on a credential its owner
+	// withdrew. (Round-1 audit on #69: gateway Start only scaled, so a member's
+	// rotated key never reached the pod and a deleted key kept working —
+	// TestAGatewayStartPicksUpARotatedKeyAndRefusesADeletedOne.)
+	// Update creates an absent instance, so the saved-agent case is covered too.
+	// It keeps the agent's stored account: buildSpec reads the row.
+	//
+	// ⚠ WITH NO RESOLVER (the pre-accounts wiring every older test builds) a
+	// gateway Start still only scales: its spec then carries nothing per-owner
+	// that could have changed, and the scale-first contract those tests pin
+	// (create only when the backend SAYS the instance is absent) stands.
+	if agents.ResolveKind(ag.Kind) == agents.KindClaudeCode || a.creds != nil {
 		if ag, err = a.ensureHooksToken(ctx, ag); err != nil {
 			return err
 		}
-		spec, err := a.buildSpec(ag)
+		spec, err := a.buildSpec(ctx, ag)
 		if err != nil {
 			return a.fail(ctx, ag, "build spec", err)
 		}
 		if err := a.driver.Update(ctx, spec); err != nil {
-			return a.fail(ctx, ag, "apply claude-code instance", err)
+			return a.fail(ctx, ag, "apply instance", err)
 		}
 	} else if err := a.driver.Scale(ctx, agents.RefOf(ag), 1); err != nil {
 		if !errors.Is(err, provision.ErrNotFound) {
@@ -870,7 +903,7 @@ func (a *Adapter) ReapplyProfiles(ctx context.Context, agentID int64) error {
 	if err != nil {
 		return err
 	}
-	spec, err := a.buildSpec(ag)
+	spec, err := a.buildSpec(ctx, ag)
 	if err != nil {
 		return err
 	}
@@ -892,7 +925,7 @@ func (a *Adapter) create(ctx context.Context, ag agents.Agent) (agents.Agent, er
 	if err != nil {
 		return ag, err
 	}
-	spec, err := a.buildSpec(ag)
+	spec, err := a.buildSpec(ctx, ag)
 	if err != nil {
 		return ag, a.fail(ctx, ag, "build spec", err)
 	}
@@ -994,17 +1027,60 @@ func (a *Adapter) ensureHooksToken(ctx context.Context, ag agents.Agent) (agents
 // the same expression evaluated twice, and that test's own comment says so. A 🔴
 // note defending a form that carries no invariant is worse than no note: it sends
 // the next reader to protect a formatting choice.
-func (a *Adapter) buildSpec(ag agents.Agent) (provision.Spec, error) {
+func (a *Adapter) buildSpec(ctx context.Context, ag agents.Agent) (provision.Spec, error) {
+	cfg, err := a.specFor(ctx, ag)
+	if err != nil {
+		return provision.Spec{}, err
+	}
 	if !agents.IsChiefName(ag.Name) {
-		return agentspec.Build(ag, a.spec, agentspec.Options{
+		return agentspec.Build(ag, cfg, agentspec.Options{
 			Instructions: agentspec.WorkerInstructions,
 		})
 	}
-	store := a.spec.CairnConfigured()
-	return agentspec.Build(ag, a.spec, agentspec.Options{
+	store := cfg.CairnConfigured()
+	return agentspec.Build(ag, cfg, agentspec.Options{
 		Instructions:  agentspec.ChiefInstructions(store),
 		CairnEligible: true,
 	})
+}
+
+// specFor is the deployment-wide spec config with the model-provider
+// credentials REPLACED by those of ag's owner (see [CredentialResolver]).
+//
+// 🔴 BOTH CREDENTIALS ARE OVERWRITTEN FOR EVERY KIND, NOT ONLY THE ONE THE KIND
+// USES: a claude-code spec gets an empty OpenRouter key and a gateway spec an
+// empty account map. agentspec places each only for its own kind today; zeroing
+// the other means a future kind that reads both still cannot carry the admin's.
+func (a *Adapter) specFor(ctx context.Context, ag agents.Agent) (agentspec.Config, error) {
+	cfg := a.spec
+	if a.creds == nil {
+		return cfg, nil
+	}
+	cfg.OpenRouterAPIKey = ""
+	if cfg.ClaudeCode != nil {
+		cc := *cfg.ClaudeCode
+		cc.Accounts = map[string]string{}
+		cfg.ClaudeCode = &cc
+	}
+	switch agents.ResolveKind(ag.Kind) {
+	case agents.KindClaudeCode:
+		if cfg.ClaudeCode == nil || ag.CCAccount == "" {
+			return cfg, nil // agentspec refuses this row, naming why
+		}
+		tok, err := a.creds.ClaudeToken(ctx, ag.OwnerID, ag.CCAccount)
+		if err != nil {
+			// The account NAME and the error only — never a token.
+			return cfg, fmt.Errorf("agentprovision: agent %q: Claude account %q of its owner: %w", ag.Name, ag.CCAccount, err)
+		}
+		cfg.ClaudeCode.Accounts[ag.CCAccount] = tok
+	default:
+		key, err := a.creds.OpenRouterKey(ctx, ag.OwnerID)
+		if err != nil {
+			return cfg, fmt.Errorf("agentprovision: agent %q: its owner's OpenRouter key: %w", ag.Name, err)
+		}
+		cfg.OpenRouterAPIKey = key
+	}
+	return cfg, nil
 }
 
 // clearKickoffDelivery drops the delivery provenance on its own budget. See

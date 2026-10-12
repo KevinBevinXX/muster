@@ -109,6 +109,12 @@ func (s *Server) handleChiefProvision(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		// A member with no OpenRouter key: say what to add (409, as the
+		// dispatch form answers the same refusal).
+		if errors.Is(err, ErrDispatchRefused) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		http.Error(w, "could not provision chief", http.StatusInternalServerError)
 		return
 	}

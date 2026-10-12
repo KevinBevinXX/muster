@@ -22,7 +22,8 @@ import (
 
 // tablesThisSchemaMustHave is the public schema after every migration has
 // applied. (0005 dropped the five privilege and runbook tables 0001 created;
-// 0006 added users, invites, api_tokens and audit_log; 0008 added mirror_tokens.)
+// 0006 added users, invites, api_tokens and audit_log; 0008 added mirror_tokens;
+// 0011 added user_credentials.)
 //
 // 🔴 A LEDGER, NOT A SPOT CHECK. It fails when the set GROWS or SHRINKS, so a
 // table quietly dropped from 0001 reddens here and a table added without a
@@ -46,6 +47,7 @@ var tablesThisSchemaMustHave = []string{
 	"note_comments",
 	"notes",
 	"task_sessions",
+	"user_credentials",
 	"users",
 }
 
@@ -68,8 +70,9 @@ var tablesThisSchemaMustHave = []string{
 // failure message, which is the one thing the reader needs.
 var tablesWithNoIdentityColumn = []string{
 	"agent_retired_names",
-	// cc_account_marks is keyed by the account NAME (migration 0003), for the
-	// agent_retired_names reason: one account, one record.
+	// cc_account_marks is keyed by (owner_id, account) — the account NAME
+	// within its owner (0003, per owner since 0011), for the agent_retired_names
+	// reason: one account, one record.
 	"cc_account_marks",
 	"github_connection",
 	"task_sessions",

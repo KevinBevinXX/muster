@@ -91,6 +91,12 @@ var (
 		"internal/api.(*Server).agentOwner",
 		"internal/api.(*Server).notifyAgentRunning",
 		"internal/api.(*Server).roleOf",
+		// Bring-your-own credentials: whose model-provider credentials an
+		// OWNER's agents run on is decided by that owner's ROLE, and the pod-spec
+		// path asks it from loops with no principal (and a member's principal
+		// cannot read another user's row). It reads one role and returns one
+		// boolean; every failure answers "the owner's own credentials".
+		"internal/credentials.(*Plane).usesEnvironment",
 		// The mirror plugin's token lookup and its 30 s recheck: a host's token
 		// must be found by its hash before anyone is known (mirror_tokens is
 		// under RLS). What it yields — the token's owner — scopes everything after.

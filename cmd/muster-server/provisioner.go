@@ -14,6 +14,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/agentstatus"
 	"github.com/ZacxDev/muster/internal/ccpool"
+	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/provision"
 	k8sdriver "github.com/ZacxDev/muster/internal/provision/k8s"
 )
@@ -99,7 +100,7 @@ import (
 // nil-pointer method call in a goroutine. The concrete return is what makes the
 // check at the assignment site possible.
 func buildAgentPlane(cfg config, store agents.Store, logger *log.Logger) (*agentprovision.Adapter, *agentgateway.Gateway, error) {
-	return buildAgentPlaneWith(cfg, store, nil, logger)
+	return buildAgentPlaneWith(cfg, store, nil, nil, logger)
 }
 
 // buildClaudePool builds the claude-code kind's account pool, or (nil, nil) when
@@ -110,7 +111,10 @@ func buildAgentPlane(cfg config, store agents.Store, logger *log.Logger) (*agent
 // restart — the account would be picked again straight into its rate limit. So a
 // claude-code deployment with no marks store is refused here rather than
 // degraded to an in-memory pool.
-func buildClaudePool(cfg config, marks ccpool.Store) (*ccpool.Pool, error) {
+//
+// src is the per-owner account source — the credential plane in production, so
+// the environment pool is the admin's and a member's accounts are their own.
+func buildClaudePool(cfg config, src ccpool.Source, marks ccpool.Store) (*ccpool.Pool, error) {
 	if !cfg.claudeCodeEnabled() {
 		return nil, nil
 	}
@@ -118,14 +122,20 @@ func buildClaudePool(cfg config, marks ccpool.Store) (*ccpool.Pool, error) {
 		return nil, fmt.Errorf("%s includes %s, whose account pool persists its rate-limit and auth marks "+
 			"in Postgres, and %s is unset", envAgentKinds, agents.KindClaudeCode, envDatabase)
 	}
-	return ccpool.New(cfg.AgentCCTokens, marks)
+	return ccpool.New(src, marks)
 }
 
 // buildAgentPlaneWith is buildAgentPlane with the claude-code account pool,
 // which the gateway marks typed ccd failures against. A claude-code deployment
 // MUST pass one; buildAgentPlane (pool nil) is the pre-kinds wiring every
 // gateway-only test uses.
-func buildAgentPlaneWith(cfg config, store agents.Store, pool *ccpool.Pool, logger *log.Logger) (*agentprovision.Adapter, *agentgateway.Gateway, error) {
+//
+// plane decides whose credentials each agent's spec is built with. nil builds
+// the environment-only plane (no personal store, user 1 the only admin): every
+// other owner then has NO credential and is refused — so the adapter ALWAYS
+// resolves per owner, and no wiring can fall back to building a member's pod
+// from the environment (TestTheAgentPlaneResolvesCredentialsPerOwner).
+func buildAgentPlaneWith(cfg config, store agents.Store, pool *ccpool.Pool, plane *credentials.Plane, logger *log.Logger) (*agentprovision.Adapter, *agentgateway.Gateway, error) {
 	named := cfg.agentProvisioner()
 	if cfg.claudeCodeEnabled() && named != provisionerNone && pool == nil {
 		return nil, nil, fmt.Errorf("%s includes %s but no account pool was built (it needs %s)",
@@ -191,10 +201,16 @@ func buildAgentPlaneWith(cfg config, store agents.Store, pool *ccpool.Pool, logg
 	if err != nil {
 		return nil, nil, err
 	}
+	if plane == nil {
+		if plane, err = buildCredentialPlane(cfg, nil, nil, logger); err != nil {
+			return nil, nil, err
+		}
+	}
 	prov, err := agentprovision.New(agentprovision.Config{
 		Driver:             driver,
 		Store:              store,
 		Spec:               specCfg,
+		Credentials:        credResolver{pool: pool, plane: plane},
 		Logger:             logger,
 		KickoffDeliverable: kickoffDeliverable(gw, agentprovision.KickoffDeliveryWired),
 	})

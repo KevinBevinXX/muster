@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -18,8 +19,8 @@ type recordingMarker struct {
 	err   error
 }
 
-func (m *recordingMarker) MarkFailure(_ context.Context, account, failure, detail string) error {
-	m.calls = append(m.calls, account+"|"+failure+"|"+detail)
+func (m *recordingMarker) MarkFailure(_ context.Context, owner int64, account, failure, detail string) error {
+	m.calls = append(m.calls, strconv.FormatInt(owner, 10)+"|"+account+"|"+failure+"|"+detail)
 	return m.err
 }
 
@@ -36,6 +37,9 @@ func ccAgent() agents.Agent {
 	a := fixtureAgent()
 	a.Kind = agents.KindClaudeCode
 	a.CCAccount = "work"
+	// A member's agent: the mark must name THIS owner (an account is
+	// (owner, name)), and 7 is a value no default could produce.
+	a.OwnerID = 7
 	return a
 }
 
@@ -75,8 +79,8 @@ func TestATypedCcdFailureMarksTheClaudeAccount(t *testing.T) {
 		agent  agents.Agent
 		want   string
 	}{
-		{"rate limited", 429, ccdRateLimited, ccAgent(), "work|rate_limited|You've hit your limit · resets 5pm"},
-		{"auth failed", 502, ccdAuthFailed, ccAgent(), "work|auth_failed|OAuth access token is invalid"},
+		{"rate limited", 429, ccdRateLimited, ccAgent(), "7|work|rate_limited|You've hit your limit · resets 5pm"},
+		{"auth failed", 502, ccdAuthFailed, ccAgent(), "7|work|auth_failed|OAuth access token is invalid"},
 		{"busy is not an account fault", 409, ccdBusy, ccAgent(), ""},
 		{"an untyped 429 (a proxy) is not ccd", 429, `slow down`, ccAgent(), ""},
 		{"a gateway-kind agent never marks", 429, ccdRateLimited, fixtureAgent(), ""},

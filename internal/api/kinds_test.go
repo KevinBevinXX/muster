@@ -19,11 +19,13 @@ import (
 // stubKinds is AgentKinds for tests: both kinds enabled, a fixed account list,
 // and a recorded selection.
 type stubKinds struct {
-	enabled  []string
-	accounts []string
-	pick     string
-	err      error
-	pins     *[]string
+	enabled     []string
+	accounts    []string
+	pick        string
+	err         error
+	pins        *[]string
+	unavailable map[string]string
+	owners      *[]int64
 }
 
 func (k stubKinds) Enabled() []string {
@@ -32,8 +34,12 @@ func (k stubKinds) Enabled() []string {
 	}
 	return k.enabled
 }
-func (k stubKinds) ClaudeAccounts() []string { return k.accounts }
-func (k stubKinds) SelectClaudeAccount(_ context.Context, pin string) (string, error) {
+func (k stubKinds) ClaudeAccounts(context.Context, int64) ([]string, error) { return k.accounts, nil }
+func (k stubKinds) Unavailable(context.Context, int64) map[string]string    { return k.unavailable }
+func (k stubKinds) SelectClaudeAccount(_ context.Context, owner int64, pin string) (string, error) {
+	if k.owners != nil {
+		*k.owners = append(*k.owners, owner)
+	}
 	if k.pins != nil {
 		*k.pins = append(*k.pins, pin)
 	}

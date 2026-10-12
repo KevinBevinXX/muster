@@ -58,6 +58,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/gotrue"
@@ -301,13 +302,43 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if a.pool != nil {
 		marks = ccpool.NewPG(a.pool)
 	}
-	ccPool, err := buildClaudePool(cfg, marks)
+	//
+	// 🔴 THE CREDENTIAL PLANE IS BUILT ONCE AND HANDED TO ALL THREE CONSUMERS —
+	// the pool (as its account Source), the dispatch form (kindSet) and the pod
+	// builder (agentprovision, through credResolver) — so "whose credentials"
+	// is one decision, not three that could disagree. Members' credentials live
+	// in the per-owner store, sealed under a key derived from the connector key;
+	// with no such key there is no store, and every member has no credential
+	// (their kinds are refused; the environment is never lent to them).
+	var personal credentials.Personal
+	var roles credentials.RoleReader
+	var credStore *credentials.PGStore
+	if a.pool != nil {
+		roles = users.NewPG(a.pool)
+		if len(cfg.ConnectorEncKey) > 0 {
+			cs, err := credentials.NewPG(a.pool, cfg.ConnectorEncKey)
+			if err != nil {
+				a.Close()
+				return nil, fmt.Errorf("credential store: %w", err)
+			}
+			credStore, personal = cs, cs
+		}
+	}
+	plane, err := buildCredentialPlane(cfg, personal, roles, logger)
+	if err != nil {
+		a.Close()
+		return nil, fmt.Errorf("credential plane: %w", err)
+	}
+	if credStore != nil {
+		ext.Credentials = credentialPage{PGStore: credStore, plane: plane}
+	}
+	ccPool, err := buildClaudePool(cfg, plane, marks)
 	if err != nil {
 		a.Close()
 		return nil, fmt.Errorf("claude account pool: %w", err)
 	}
-	ext.Kinds = kindSet{kinds: cfg.agentKinds(), pool: ccPool}
-	prov, gw, err := buildAgentPlaneWith(cfg, ext.Agents, ccPool, logger)
+	ext.Kinds = kindSet{kinds: cfg.agentKinds(), pool: ccPool, plane: plane}
+	prov, gw, err := buildAgentPlaneWith(cfg, ext.Agents, ccPool, plane, logger)
 	if err != nil {
 		a.Close()
 		// "agent plane", not "agent provisioner": this call builds ALL THREE tiers,

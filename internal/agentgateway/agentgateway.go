@@ -122,7 +122,10 @@ type Config struct {
 // EndpointResolver is: a chat path has no business selecting accounts or reading
 // tokens.
 type AccountMarker interface {
-	MarkFailure(ctx context.Context, account, failure, detail string) error
+	//
+	// owner is the agent's owner: an account is (owner, name) since members
+	// bring their own (internal/ccpool's Store doc).
+	MarkFailure(ctx context.Context, owner int64, account, failure, detail string) error
 }
 
 // ⚠ THERE IS DELIBERATELY NO Logger FIELD, AND THERE WAS ONE. It was accepted,
@@ -237,6 +240,7 @@ type Target struct {
 	// and mark the account a typed failure came from.
 	kind    string
 	account string
+	owner   int64
 }
 
 // Resolve does the part of [Gateway.Chat] that contacts no agent runtime: it
@@ -253,7 +257,7 @@ func (g *Gateway) Resolve(ctx context.Context, a agents.Agent) (Target, error) {
 	if err != nil {
 		return Target{}, err
 	}
-	return Target{ep: ep, bearer: bearer, kind: agents.ResolveKind(a.Kind), account: a.CCAccount}, nil
+	return Target{ep: ep, bearer: bearer, kind: agents.ResolveKind(a.Kind), account: a.CCAccount, owner: a.OwnerID}, nil
 }
 
 // Send runs the turn half of [Gateway.Chat] against a [Target] from
@@ -312,7 +316,7 @@ func (g *Gateway) noteFailure(ctx context.Context, t Target, err error) error {
 	}
 	mctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), markTimeout)
 	defer cancel()
-	if merr := g.accounts.MarkFailure(mctx, t.account, rt.Type, rt.Message); merr != nil {
+	if merr := g.accounts.MarkFailure(mctx, t.owner, t.account, rt.Type, rt.Message); merr != nil {
 		return fmt.Errorf("%w (recording %s against Claude account %q also failed: %v)", err, rt.Type, t.account, merr)
 	}
 	return err

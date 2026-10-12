@@ -11,8 +11,18 @@
 // three questions:
 //
 //   - Select: which account should a NEW claude-code agent use?
+//   - Token: which setup-token does a pod on account X get?
 //   - MarkFailure: ccd reported `rate_limited` or `auth_failed` for an agent on
 //     account X — remember it, with a timestamp, in Postgres.
+//
+// # Whose accounts (bring-your-own, migration 0011)
+//
+// The environment pool is the ADMIN's. A member's agents run only on accounts
+// the member entered in muster (internal/credentials). The [Source] answers
+// "which accounts may this OWNER use", and every selection, mark and live count
+// is per (owner, account): there is no path from a member's dispatch to an
+// environment-pool account (TestAMemberDispatchNeverSelectsAnAdminPoolAccount
+// in internal/credentials).
 //
 // # Selection
 //
@@ -39,12 +49,12 @@
 // refuses any later change. A restart, a re-provision, a model of the pool
 // changing under it — none of them re-select.
 //
-// 🔴 THIS PACKAGE NEVER HANDS A TOKEN OUT. It holds the tokens only to
-// fingerprint an auth failure; the token reaches a pod through a SEPARATE copy
-// of the same configuration (cmd/muster-server's claudeCodeSpecConfig →
-// agentspec.ClaudeCodeConfig), which places it in exactly one place — the
-// agent's own per-agent Secret, as CLAUDE_CODE_OAUTH_TOKEN. No error, log line
-// or stored mark here carries it; a mark stores a truncated sha256 fingerprint.
+// 🔴 [Pool.Token] IS THE ONE PLACE A TOKEN LEAVES THIS PACKAGE: the pod-spec
+// path (internal/agentprovision, through internal/credentials.Plane) asks it
+// for the token of the agent's OWN owner and account, and agentspec places it
+// in exactly one place — the agent's own per-agent Secret, as
+// CLAUDE_CODE_OAUTH_TOKEN. No error, log line or stored mark here carries it;
+// a mark stores a truncated sha256 fingerprint.
 //
 // ⚠ ROTATING A TOKEN DOES NOT REACH A RUNNING POD. The new value is in muster's
 // environment; an existing agent's Secret still holds the old one until its spec
@@ -132,73 +142,141 @@ type Mark struct {
 	AuthFailedToken string
 }
 
-// Store persists marks and counts live agents per account.
+// Store persists marks and counts live agents per account — PER OWNER.
+//
+// 🔴 AN ACCOUNT IS (owner, name), NOT A NAME. Members bring their own accounts
+// (internal/credentials), and two owners may each call one "work": they are
+// different subscriptions, so a rate-limit mark on one must not push the other
+// down the order, and one owner's live agents must not count against the
+// other's. Every method takes the owner and every query names it (migration
+// 0011 keys cc_account_marks on (owner_id, account)).
 type Store interface {
-	Marks(ctx context.Context) (map[string]Mark, error)
-	LiveCounts(ctx context.Context) (map[string]int, error)
-	MarkRateLimited(ctx context.Context, account, detail string, at time.Time) error
-	MarkAuthFailed(ctx context.Context, account, fingerprint, detail string, at time.Time) error
+	Marks(ctx context.Context, owner int64) (map[string]Mark, error)
+	LiveCounts(ctx context.Context, owner int64) (map[string]int, error)
+	MarkRateLimited(ctx context.Context, owner int64, account, detail string, at time.Time) error
+	MarkAuthFailed(ctx context.Context, owner int64, account, fingerprint, detail string, at time.Time) error
 }
 
-// Pool is the configured accounts plus their store.
-type Pool struct {
-	names  []string
-	tokens map[string]string
-	store  Store
-	now    func() time.Time
+// Source answers which Claude accounts an OWNER's agents may run on: name →
+// setup-token. An empty map is "this owner has none", which Select refuses
+// with [ErrNoUsableAccount]. internal/credentials.Plane is the production
+// Source (the environment pool for the admin, the member's own tokens for a
+// member); [Static] is a fixed map.
+type Source interface {
+	Accounts(ctx context.Context, owner int64) (map[string]string, error)
 }
 
-// New builds a pool. It REFUSES an empty pool, an invalid name and an empty
-// token, so a misconfiguration stops the process at boot instead of building a
-// pod with no credential at the first dispatch.
-func New(accounts map[string]string, store Store) (*Pool, error) {
+// Static is a fixed account map, the same for every owner: the environment
+// pool. Build it with [NewStatic], which validates it.
+type Static struct{ accounts map[string]string }
+
+// NewStatic validates an account map. It REFUSES an empty pool, an invalid
+// name and an empty token, so a misconfiguration stops the process at boot
+// instead of building a pod with no credential at the first dispatch.
+func NewStatic(accounts map[string]string) (Static, error) {
 	if len(accounts) == 0 {
-		return nil, fmt.Errorf("%w: the pool is empty", ErrNoUsableAccount)
+		return Static{}, fmt.Errorf("%w: the pool is empty", ErrNoUsableAccount)
+	}
+	out := make(map[string]string, len(accounts))
+	for name, tok := range accounts {
+		if !ValidName(name) {
+			return Static{}, fmt.Errorf("ccpool: account name %q is not 1-%d of [a-z0-9-] (not starting or ending with '-')", name, maxNameLen)
+		}
+		if strings.TrimSpace(tok) == "" {
+			return Static{}, fmt.Errorf("ccpool: account %q has an empty token", name)
+		}
+		out[name] = tok
+	}
+	return Static{accounts: out}, nil
+}
+
+// Accounts implements [Source]: a copy, whoever asks.
+func (s Static) Accounts(context.Context, int64) (map[string]string, error) {
+	out := make(map[string]string, len(s.accounts))
+	for k, v := range s.accounts {
+		out[k] = v
+	}
+	return out, nil
+}
+
+// Pool is selection and marking over a per-owner [Source] and its [Store].
+type Pool struct {
+	src   Source
+	store Store
+	now   func() time.Time
+}
+
+// New builds a pool.
+func New(src Source, store Store) (*Pool, error) {
+	if src == nil {
+		return nil, errors.New("ccpool: a Source is required (it says whose accounts an owner may use)")
 	}
 	if store == nil {
 		return nil, errors.New("ccpool: a Store is required (marks and live counts are what selection reads)")
 	}
-	p := &Pool{tokens: make(map[string]string, len(accounts)), store: store, now: time.Now}
-	for name, tok := range accounts {
-		if !ValidName(name) {
-			return nil, fmt.Errorf("ccpool: account name %q is not 1-%d of [a-z0-9-] (not starting or ending with '-')", name, maxNameLen)
-		}
-		if strings.TrimSpace(tok) == "" {
-			return nil, fmt.Errorf("ccpool: account %q has an empty token", name)
-		}
-		p.names = append(p.names, name)
-		p.tokens[name] = tok
+	return &Pool{src: src, store: store, now: time.Now}, nil
+}
+
+func (p *Pool) accounts(ctx context.Context, owner int64) (map[string]string, []string, error) {
+	acc, err := p.src.Accounts(ctx, owner)
+	if err != nil {
+		return nil, nil, fmt.Errorf("ccpool: read the Claude accounts of user %d: %w", owner, err)
 	}
-	sort.Strings(p.names)
-	return p, nil
+	names := make([]string, 0, len(acc))
+	for n := range acc {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return acc, names, nil
 }
 
-// Names returns the configured account names, sorted. Never the tokens.
-func (p *Pool) Names() []string {
-	out := make([]string, len(p.names))
-	copy(out, p.names)
-	return out
+// Names returns owner's account names, sorted. Never the tokens.
+func (p *Pool) Names(ctx context.Context, owner int64) ([]string, error) {
+	_, names, err := p.accounts(ctx, owner)
+	return names, err
 }
 
-// Select picks the account for a new claude-code agent. A non-empty pin is
-// returned as-is when it names a configured account (the operator's override),
+// Token returns the setup-token of owner's account. It is how a pod spec gets
+// its token; [ErrUnknownAccount] when owner has no such account — including
+// when ANOTHER owner does.
+func (p *Pool) Token(ctx context.Context, owner int64, account string) (string, error) {
+	acc, _, err := p.accounts(ctx, owner)
+	if err != nil {
+		return "", err
+	}
+	tok, ok := acc[account]
+	if !ok || tok == "" {
+		return "", fmt.Errorf("%w %q for user %d", ErrUnknownAccount, account, owner)
+	}
+	return tok, nil
+}
+
+// Select picks the account for owner's new claude-code agent, from OWNER'S
+// accounts only. A non-empty pin is returned as-is when it names one of them,
 // and refused with [ErrUnknownAccount] otherwise.
-func (p *Pool) Select(ctx context.Context, pin string) (string, error) {
+func (p *Pool) Select(ctx context.Context, owner int64, pin string) (string, error) {
+	tokens, names, err := p.accounts(ctx, owner)
+	if err != nil {
+		return "", err
+	}
+	if len(names) == 0 {
+		return "", fmt.Errorf("%w: you have no Claude account", ErrNoUsableAccount)
+	}
 	if pin != "" {
-		if _, ok := p.tokens[pin]; !ok {
-			return "", fmt.Errorf("%w %q (configured: %s)", ErrUnknownAccount, pin, strings.Join(p.names, ", "))
+		if _, ok := tokens[pin]; !ok {
+			return "", fmt.Errorf("%w %q (yours: %s)", ErrUnknownAccount, pin, strings.Join(names, ", "))
 		}
 		return pin, nil
 	}
-	marks, err := p.store.Marks(ctx)
+	marks, err := p.store.Marks(ctx, owner)
 	if err != nil {
 		return "", fmt.Errorf("ccpool: read account marks: %w", err)
 	}
-	live, err := p.store.LiveCounts(ctx)
+	live, err := p.store.LiveCounts(ctx, owner)
 	if err != nil {
 		return "", fmt.Errorf("ccpool: count live agents per account: %w", err)
 	}
-	return Choose(p.names, p.tokens, marks, live)
+	return Choose(names, tokens, marks, live)
 }
 
 // Choose is the selection algorithm (see the package doc), pure.
@@ -246,13 +324,16 @@ func Choose(names []string, tokens map[string]string, marks map[string]Mark, liv
 // text, which is what is worth keeping; a runtime body is not.
 const maxDetail = 300
 
-// MarkFailure records a typed ccd failure against an account. Types other than
-// [FailureRateLimited] and [FailureAuthFailed] are ignored (nil): only those two
-// say something about the ACCOUNT rather than about the turn.
-func (p *Pool) MarkFailure(ctx context.Context, account, failure, detail string) error {
-	tok, ok := p.tokens[account]
-	if !ok {
-		return fmt.Errorf("%w %q", ErrUnknownAccount, account)
+// MarkFailure records a typed ccd failure against owner's account. Types other
+// than [FailureRateLimited] and [FailureAuthFailed] are ignored (nil): only
+// those two say something about the ACCOUNT rather than about the turn.
+func (p *Pool) MarkFailure(ctx context.Context, owner int64, account, failure, detail string) error {
+	if failure != FailureRateLimited && failure != FailureAuthFailed {
+		return nil
+	}
+	tok, err := p.Token(ctx, owner, account)
+	if err != nil {
+		return err
 	}
 	if len(detail) > maxDetail {
 		// Cut on a rune boundary: a byte cut through "·" or "…" is invalid UTF-8,
@@ -263,11 +344,8 @@ func (p *Pool) MarkFailure(ctx context.Context, account, failure, detail string)
 		}
 		detail = detail[:cut] + "…"
 	}
-	switch failure {
-	case FailureRateLimited:
-		return p.store.MarkRateLimited(ctx, account, detail, p.now())
-	case FailureAuthFailed:
-		return p.store.MarkAuthFailed(ctx, account, Fingerprint(tok), detail, p.now())
+	if failure == FailureRateLimited {
+		return p.store.MarkRateLimited(ctx, owner, account, detail, p.now())
 	}
-	return nil
+	return p.store.MarkAuthFailed(ctx, owner, account, Fingerprint(tok), detail, p.now())
 }
