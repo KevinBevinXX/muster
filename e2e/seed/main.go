@@ -32,6 +32,17 @@ func main() {
 	}
 }
 
+// accountsReset returns the accounts tables to the seeded state: user 1 (the
+// operator, admin, unbound) and nothing else — no invites, no other users, no
+// audit rows. The gotrue specs claim user 1 and invite members, and a later
+// spec (or a re-run) must be able to do both again.
+var accountsReset = []string{
+	`DELETE FROM audit_log`,
+	`DELETE FROM invites`,
+	`DELETE FROM users WHERE id <> 1`,
+	`UPDATE users SET gotrue_sub = NULL, email = NULL, disabled_at = NULL, role = 'admin' WHERE id = 1`,
+}
+
 func run() error {
 	dsn := os.Getenv("DATABASE_URL")
 	if err := checkE2EDatabase(dsn); err != nil {
@@ -39,6 +50,24 @@ func run() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+
+	// --accounts-only: ONLY the accounts reset, leaving the board alone — for a
+	// spec that needs user 1 unclaimed while the shared server keeps serving
+	// the seeded tasks (the invites spec runs after gotrue-login in one leg).
+	if len(os.Args) > 1 && os.Args[1] == "--accounts-only" {
+		owner, err := pgx.Connect(ctx, dsn)
+		if err != nil {
+			return fmt.Errorf("connect for reset: %w", err)
+		}
+		defer func() { _ = owner.Close(ctx) }()
+		for _, q := range accountsReset {
+			if _, err := owner.Exec(ctx, q); err != nil {
+				return fmt.Errorf("accounts reset: %w", err)
+			}
+		}
+		fmt.Println("seed: accounts reset")
+		return nil
+	}
 
 	// 🔴 THE RESET RUNS ON ITS OWN CONNECTION, AS THE LOGIN ROLE — NOT THROUGH THE
 	// APPLICATION POOL. TRUNCATE ignores row-level security, so the application
@@ -56,11 +85,14 @@ func run() error {
 	_, err = owner.Exec(ctx, `TRUNCATE notes, agents, connectors, connector_audit
 		RESTART IDENTITY CASCADE`)
 	if err == nil {
-		// The accounts state the gotrue-login spec changes: the admin claim
-		// binds user 1 to a GoTrue login, which a re-run must be able to do
-		// again. User 1 itself stays (every row is owned by it).
-		if _, err = owner.Exec(ctx, `DELETE FROM invites`); err == nil {
-			_, err = owner.Exec(ctx, `UPDATE users SET gotrue_sub = NULL, email = NULL, disabled_at = NULL WHERE id = 1`)
+		// The accounts state the gotrue specs change: the admin claim binds
+		// user 1 to a GoTrue login and the invites spec creates members, which
+		// a re-run must be able to do again. User 1 itself stays (every row is
+		// owned by it); the members own nothing the TRUNCATE left.
+		for _, q := range accountsReset {
+			if _, err = owner.Exec(ctx, q); err != nil {
+				break
+			}
 		}
 	}
 	_ = owner.Close(ctx)

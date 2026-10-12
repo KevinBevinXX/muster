@@ -6,9 +6,13 @@
 // password and refresh grants with rotation (a spent token's direct parent
 // replay is accepted, any older replay revokes the session), local and global
 // logout, admin create (with email_confirm required to sign in and NO
-// password-length check, as measured), ban, delete, and a
-// service_role check on /admin/*. The e2e suite runs the REAL image for the
-// claim → login → refresh → logout path; this fake exists so every guard can be
+// password-length check, as measured), ban, delete, a service_role check on
+// /admin/*, and (accounts PR 5) admin/generate_link for recovery, POST /verify
+// with a single-use token_hash, and an admin password update (which revokes
+// the user's sessions). A ban does NOT revoke sessions — refreshes are
+// refused only while it stands, as measured. The e2e suite
+// runs the REAL image for the claim → login → refresh → logout path and the
+// invite redemption; this fake exists so every guard can be
 // driven from `go test` with a controllable clock.
 package gotruetest
 
@@ -61,8 +65,12 @@ type Fake struct {
 	Secret []byte
 	srv    *httptest.Server
 
-	mu        sync.Mutex
-	now       time.Time
+	mu  sync.Mutex
+	now time.Time
+	// realClock: the clock is the wall clock plus offset (UseRealClock), so
+	// iat lines up with Postgres's clock; Advance moves offset.
+	realClock bool
+	offset    time.Duration
 	accessTTL time.Duration
 	// createDelay holds every /admin/users call open this long, to widen a
 	// race a concurrency test wants to observe.
@@ -75,7 +83,9 @@ type Fake struct {
 	users           map[string]*User
 	sessions        map[string]*session
 	refresh         map[string]*refreshToken
-	calls           []Call
+	// recovery is each live recovery token_hash → user id (accounts PR 5).
+	recovery map[string]string
+	calls    []Call
 }
 
 // Call is one request the fake served.
@@ -100,6 +110,7 @@ func New(t interface {
 		users:     map[string]*User{},
 		sessions:  map[string]*session{},
 		refresh:   map[string]*refreshToken{},
+		recovery:  map[string]string{},
 	}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	f.URL = f.srv.URL
@@ -111,6 +122,13 @@ func New(t interface {
 func (f *Fake) Now() time.Time {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	return f.nowLocked()
+}
+
+func (f *Fake) nowLocked() time.Time {
+	if f.realClock {
+		return time.Now().Add(f.offset)
+	}
 	return f.now
 }
 
@@ -118,6 +136,16 @@ func (f *Fake) Now() time.Time {
 func (f *Fake) Advance(d time.Duration) {
 	f.mu.Lock()
 	f.now = f.now.Add(d)
+	f.offset += d
+	f.mu.Unlock()
+}
+
+// UseRealClock makes the clock the wall clock (plus whatever Advance adds),
+// for tests where a token's iat is compared with a timestamp Postgres stamped
+// (users.sessions_not_before).
+func (f *Fake) UseRealClock() {
+	f.mu.Lock()
+	f.realClock = true
 	f.mu.Unlock()
 }
 
@@ -203,6 +231,16 @@ func (f *Fake) SessionRevoked(sid string) bool {
 	return !ok || s.revoked
 }
 
+// RecoveryHash mints a recovery token_hash for user id without going through
+// HTTP, as /admin/generate_link would.
+func (f *Fake) RecoveryHash(id string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	h := randHex(28)
+	f.recovery[h] = id
+	return h
+}
+
 // Verifier returns a verifier matching what this fake signs, on its clock.
 func (f *Fake) Verifier() gotrue.Verifier {
 	return gotrue.Verifier{Secret: f.Secret, Issuer: Issuer, Audience: Audience, Now: f.Now}
@@ -249,6 +287,8 @@ func (f *Fake) route(w http.ResponseWriter, r *http.Request) {
 		f.token(w, r)
 	case r.Method == http.MethodPost && p == "/logout":
 		f.logout(w, r)
+	case r.Method == http.MethodPost && p == "/verify":
+		f.verify(w, r)
 	case strings.HasPrefix(p, "/admin/"):
 		if !f.isAdmin(r) {
 			writeErr(w, 403, "not_admin", "User not allowed")
@@ -339,7 +379,7 @@ func (f *Fake) logout(w http.ResponseWriter, r *http.Request) {
 	tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	v := gotrue.Verifier{Secret: f.Secret, Issuer: Issuer, Audience: Audience, Now: func() time.Time { return f.now }}
+	v := gotrue.Verifier{Secret: f.Secret, Issuer: Issuer, Audience: Audience, Now: func() time.Time { return f.nowLocked() }}
 	c, err := v.Verify(tok)
 	if err != nil {
 		writeErr(w, 401, "bad_jwt", "invalid JWT")
@@ -424,15 +464,21 @@ func (f *Fake) adminRoute(w http.ResponseWriter, r *http.Request) {
 		}
 		switch r.Method {
 		case http.MethodPut:
-			if d, ok := body["ban_duration"].(string); ok {
-				u.Banned = d != "none"
-				if u.Banned {
-					for _, s := range f.sessions {
-						if s.user == id {
-							s.revoked = true
-						}
+			if pw, ok := body["password"].(string); ok {
+				// Measured (v2.189.0): an admin password change revokes every
+				// session the user has.
+				u.Password = pw
+				for _, s := range f.sessions {
+					if s.user == id {
+						s.revoked = true
 					}
 				}
+			}
+			if d, ok := body["ban_duration"].(string); ok {
+				// Measured (v2.189.0): a ban does NOT revoke sessions. A
+				// refresh is refused WHILE banned and accepted again once the
+				// ban is lifted — so unbanning resurrects pre-ban sessions.
+				u.Banned = d != "none"
 			}
 			writeJSON(w, 200, map[string]any{"id": id})
 		case http.MethodDelete:
@@ -441,9 +487,53 @@ func (f *Fake) adminRoute(w http.ResponseWriter, r *http.Request) {
 		default:
 			writeErr(w, 405, "method", "method not allowed")
 		}
+	case r.Method == http.MethodPost && p == "/admin/generate_link":
+		// Modelled on v2.189.0: the response is the user's fields FLAT, plus
+		// action_link / hashed_token / verification_type. Only recovery is
+		// modelled; an unknown email is 404.
+		typ, _ := body["type"].(string)
+		email, _ := body["email"].(string)
+		if typ != "recovery" {
+			writeErr(w, 422, "validation_failed", "unsupported link type")
+			return
+		}
+		for _, u := range f.users {
+			if strings.EqualFold(u.Email, email) {
+				h := randHex(28)
+				f.recovery[h] = u.ID
+				writeJSON(w, 200, map[string]any{"id": u.ID, "email": u.Email, "hashed_token": h,
+					"verification_type": "recovery", "action_link": f.URL + "/verify?token=" + h + "&type=recovery"})
+				return
+			}
+		}
+		writeErr(w, 404, "user_not_found", "User with this email not found")
 	default:
 		writeErr(w, 404, "not_found", "no such admin route")
 	}
+}
+
+// verify is POST /verify for type=recovery + token_hash: single use, and a
+// banned user gets no session.
+func (f *Fake) verify(w http.ResponseWriter, r *http.Request) {
+	var body map[string]string
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id, ok := f.recovery[body["token_hash"]]
+	if body["type"] != "recovery" || !ok {
+		writeErr(w, 403, "otp_expired", "Email link is invalid or has expired")
+		return
+	}
+	delete(f.recovery, body["token_hash"])
+	u := f.users[id]
+	if u == nil || u.Banned {
+		writeErr(w, 403, "user_banned", "User is banned")
+		return
+	}
+	sid := newUUID()
+	f.sessions[sid] = &session{user: u.ID}
+	at, rt := f.issueLocked(sid, "")
+	f.writeSessionLocked(w, at, rt, u)
 }
 
 func (f *Fake) issueLocked(sid, _ string) (access, refresh string) {
@@ -455,7 +545,7 @@ func (f *Fake) issueLocked(sid, _ string) (access, refresh string) {
 	}
 	at, err := gotrue.Sign(f.Secret, gotrue.Claims{
 		Subject: s.user, Issuer: Issuer, Audience: gotrue.Audience{Audience},
-		IssuedAt: f.now.Unix(), ExpiresAt: f.now.Add(f.accessTTL).Unix(),
+		IssuedAt: f.nowLocked().Unix(), ExpiresAt: f.nowLocked().Add(f.accessTTL).Unix(),
 		Role: "authenticated", Email: email, SessionID: sid,
 	})
 	if err != nil {

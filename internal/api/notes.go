@@ -1924,7 +1924,7 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 	note, err := s.ext.Notes.Get(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			s.renderTaskNotFound(w, r.PathValue("id"))
+			s.renderTaskNotFound(w, r, r.PathValue("id"))
 			return
 		}
 		s.logger.Printf("notes: get %d for detail: %v", id, err)
@@ -1934,7 +1934,7 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 	view := s.taskCardView(r.Context(), note)
 	view.Detail = true
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderTaskDetail(w, view, s.shellFeatures()); err != nil {
+	if err := ui.RenderTaskDetail(w, view, s.shellFeatures(r.Context())); err != nil {
 		s.logger.Printf("notes: render task detail %d: %v", id, err)
 	}
 }
@@ -1942,10 +1942,10 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 // renderTaskNotFound writes the styled 404 document for a task that is gone
 // (dismissed) or never existed. Status FIRST, then the body — this is a real 404
 // to crawlers and to the e2e suite, not a 200 that says "not found".
-func (s *Server) renderTaskNotFound(w http.ResponseWriter, id string) {
+func (s *Server) renderTaskNotFound(w http.ResponseWriter, r *http.Request, id string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusNotFound)
-	if err := ui.RenderTaskNotFound(w, id, s.shellFeatures()); err != nil {
+	if err := ui.RenderTaskNotFound(w, id, s.shellFeatures(r.Context())); err != nil {
 		s.logger.Printf("notes: render task 404 %s: %v", id, err)
 	}
 }

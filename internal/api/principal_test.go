@@ -40,6 +40,12 @@ var publicRoutes = []string{
 	// single-use link stops being anonymous, like /login.
 	"GET /auth/claim",
 	"POST /auth/claim",
+	// Invite redemption and the password reset (accounts PR 5): the same
+	// shape — a single-use link held by a visitor with no session yet.
+	"GET /invite",
+	"POST /invite",
+	"GET /auth/reset",
+	"POST /auth/reset",
 	"GET /apple-touch-icon-precomposed.png",
 	"GET /apple-touch-icon.png",
 	"GET /favicon.ico",
@@ -65,6 +71,16 @@ var publicRoutes = []string{
 var routeVias = map[authz.Via][]string{
 	authz.ViaSession: {
 		"GET /account",
+		// The admin pages (accounts PR 5): requireAdmin is requireSession plus
+		// a role check AFTER the principal is attached.
+		"GET /admin/invites",
+		"GET /admin/users",
+		"POST /admin/invites",
+		"POST /admin/invites/{id}/revoke",
+		"POST /admin/users/{id}/disable",
+		"POST /admin/users/{id}/enable",
+		"POST /admin/users/{id}/reset-link",
+		"POST /admin/users/{id}/role",
 		"DELETE /agents/{id}",
 		"GET /mirror/terminal",
 		"GET /mirror/terminal/ws",

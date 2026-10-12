@@ -81,6 +81,10 @@ type Server struct {
 	// streams ends every open SSE stream when shutdown begins. See EndStreams.
 	streams streamEnd
 
+	// inviteLimits throttles invite redemption and the password reset
+	// (accounts PR 5; login_invite.go).
+	inviteLimits inviteLimits
+
 	// approvals is the claude-code approval relay's in-memory ledger: which agent
 	// filed which request, and which agents report a blocked terminal. See
 	// approvals.go.
@@ -396,6 +400,10 @@ func (s *Server) registerAll(mux Mux) {
 	// --- The human login tier: open by necessity, since it is how a caller
 	// stops being anonymous. ---
 	s.registerLoginRoutes(mux)
+	// Accounts PR 5: the invitee's page, the password reset (open, like
+	// login), and the admin pages (requireAdmin).
+	s.registerInviteRoutes(mux)
+	s.registerAdminRoutes(mux)
 
 	// --- The SPA shell. Each tab is a real route (deep-linking + back/forward);
 	// they all serve the shell with the matching tab active, derived from the
@@ -477,8 +485,14 @@ func staticHandler() http.Handler {
 // ⚠ IT IS NOT A READINESS OR PERMISSION CHECK. A tab hidden here is a surface the
 // build does not have, not one this caller may not see — every route stays
 // registered and answers for itself (see internal/api/routes.go and github.go).
-func (s *Server) shellFeatures() ui.Features {
-	return ui.Features{GitHub: s.ext.GitHub != nil, Connectors: s.ext.Connectors != nil}
+//
+// Admin (accounts PR 5) draws the sidebar's Admin link: the request's
+// principal is an admin AND the admin pages have a store to serve. It is a
+// LINK only — requireAdmin is what refuses a member, whatever the nav drew.
+func (s *Server) shellFeatures(ctx context.Context) ui.Features {
+	p, _ := authz.From(ctx)
+	return ui.Features{GitHub: s.ext.GitHub != nil, Connectors: s.ext.Connectors != nil,
+		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed()}
 }
 
 // handleIndex serves the document shell. The active tab is derived from the
@@ -488,12 +502,12 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	// /tasks?new=1 is the manifest's "New task" shortcut: the board with the
 	// composer open. It is the same mechanism a share uses (ComposePage).
 	if r.URL.Query().Get("new") == "1" && tabFromPath(r.URL.Path) == "tasks" {
-		if err := ui.RenderComposePage(w, s.shellFeatures(), ""); err != nil {
+		if err := ui.RenderComposePage(w, s.shellFeatures(r.Context()), ""); err != nil {
 			s.logger.Printf("error rendering composer page: %v", err)
 		}
 		return
 	}
-	if err := ui.RenderPage(w, tabFromPath(r.URL.Path), s.shellFeatures()); err != nil {
+	if err := ui.RenderPage(w, tabFromPath(r.URL.Path), s.shellFeatures(r.Context())); err != nil {
 		s.logger.Printf("error rendering index page: %v", err)
 	}
 }

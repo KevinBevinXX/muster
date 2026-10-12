@@ -27,8 +27,9 @@ func storeFor(t *testing.T) (*PGStore, *pgxpool.Pool) {
 	reset := func() {
 		sys := authz.System(context.Background())
 		for _, q := range []string{
+			`DELETE FROM audit_log`,
 			`DELETE FROM invites`,
-			`UPDATE users SET gotrue_sub = NULL, email = NULL, disabled_at = NULL WHERE id = 1`,
+			`UPDATE users SET gotrue_sub = NULL, email = NULL, disabled_at = NULL, role = 'admin' WHERE id = 1`,
 			`DELETE FROM users WHERE id <> 1`,
 		} {
 			if _, err := pool.Exec(sys, q); err != nil {

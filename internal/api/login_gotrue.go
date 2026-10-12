@@ -364,23 +364,17 @@ func (s *Server) renderClaimForm(w http.ResponseWriter, code int, token, email, 
 <input id="` + id + `" name="` + name + `" type="` + typ + `" autocomplete="` + auto + `" required value="` + html.EscapeString(value) + `"
  class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">`
 	}
-	writeAuthDocument(w, code, "Claim the admin account", `<form method="POST" action="`+ClaimPath+`" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+	writeAuthDocument(w, code, "Claim the admin account", `<form id="claim-form" method="POST" action="`+ClaimPath+`" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Claim the admin account</h1>
 <p class="text-sm text-fg2">Choose the email and password you will sign in to muster with. This link works once.</p>
 `+problemNode(problem)+`
 `+field("claim-email", "email", "Email", "email", "username", email)+`
 `+field("claim-password", "password", "Password (at least 12 characters)", "password", "new-password", "")+`
 `+field("claim-password2", "password2", "Password again", "password", "new-password", "")+`
-<input type="hidden" id="claim-token" name="token" value="`+html.EscapeString(token)+`">
+`+linkTokenField("claim-token", token)+`
 <button type="submit" class="press min-h-[44px] rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Claim</button>
 </form>
-<script>
-(function () {
-  var t = document.getElementById('claim-token');
-  if (!t.value && location.hash.length > 1) { t.value = location.hash.slice(1); }
-  if (location.hash) { history.replaceState(null, '', location.pathname); }
-})();
-</script>`)
+`+linkTokenScript("claim-form", "claim-token", false))
 }
 
 func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
@@ -408,7 +402,7 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	outcome := outcomeUnjudged
 	defer func() { s.gt.signin.settle(ticket, outcome) }()
-	token := r.FormValue("token")
+	token := postedLinkToken(r)
 	email := strings.TrimSpace(r.FormValue("email"))
 	pw, pw2 := r.FormValue("password"), r.FormValue("password2")
 	if token == "" {
@@ -428,22 +422,11 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 		s.renderClaimForm(w, http.StatusBadRequest, token, email, "The two passwords are different.")
 		return
 	}
-	var createErr error
-	u, err := s.gt.Users.RedeemClaim(r.Context(), claimHash(token), email,
-		func(ctx context.Context) (string, error) {
-			sub, err := s.gt.Client.AdminCreateUser(ctx, ip, email, pw)
-			createErr = err
-			return sub, err
-		},
-		func(sub string) {
-			// Compensation: the GoTrue user exists but its muster binding did
-			// not commit. Delete it, so the email is not stranded in GoTrue.
-			ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Second)
-			defer cancel()
-			if err := s.gt.Client.AdminDeleteUser(ctx, ip, sub); err != nil {
-				s.logger.Printf("claim: COMPENSATION FAILED — GoTrue user %s has no muster binding and could not be deleted: %v", sub, err)
-			}
-		})
+	// Compensation (undo): the GoTrue user exists but its muster binding did
+	// not commit. Delete it, so the email is not stranded in GoTrue.
+	create, undo, createErrp := s.gotrueCreate(r, ip, email, pw, "claim")
+	u, err := s.gt.Users.RedeemClaim(r.Context(), claimHash(token), email, create, undo)
+	createErr := *createErrp
 	switch {
 	case errors.Is(err, users.ErrInvalidInvite):
 		outcome = outcomeFailed
