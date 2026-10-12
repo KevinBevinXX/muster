@@ -46,7 +46,7 @@ type dispatchSignalProvisioner struct {
 	dispatched chan int64
 }
 
-func (p dispatchSignalProvisioner) Dispatch(id int64, _ bool) error {
+func (p dispatchSignalProvisioner) Dispatch(_ context.Context, id int64, _ bool) error {
 	p.dispatched <- id
 	return nil
 }

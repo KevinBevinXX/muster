@@ -9,6 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/ZacxDev/muster/internal/authz"
 )
 
 // PGStore is the Postgres-backed [Store]. Secrets are sealed with the key given
@@ -29,16 +31,24 @@ func NewPG(pool *pgxpool.Pool, key []byte) (*PGStore, error) {
 
 var _ Store = (*PGStore)(nil)
 
-// operatorOwnerID is the owner every connector is CREATED as.
+// createOwner is the owner a connector is CREATED (and sealed) as: the acting
+// principal's user (accounts PR 3a). Opening never uses this: it binds the
+// owner_id read from the row (see binding).
 //
-// ⚠ TEMPORARY, AND THE ONE PLACE IT IS DECIDED. Until the request principal
-// exists (accounts PR 2/3) there is exactly one user, the operator (users.id 1,
-// seeded by migration 0006), so CreateConnector inserts and seals as owner 1.
-// Accounts PR 3 replaces createOwner with the principal's user id. Opening never
-// uses this: it binds the owner_id read from the row (see binding).
-const operatorOwnerID int64 = 1
+// 🔴 NO PRINCIPAL, OR A SCOPE-ALL ONE, IS A REFUSAL — NOT A DEFAULT. A
+// connector belongs to a person; a background loop (authz.System, no user)
+// has no business creating one, and the old constant 1 would have sealed it to
+// the operator whoever asked. Row-level security would refuse the INSERT anyway
+// (WITH CHECK), but only AFTER the secret had been sealed to the wrong owner.
+func createOwner(ctx context.Context) (int64, error) {
+	p, ok := authz.From(ctx)
+	if !ok || p.All() || p.UserID <= 0 {
+		return 0, errNoOwner
+	}
+	return p.UserID, nil
+}
 
-func createOwner(context.Context) int64 { return operatorOwnerID }
+var errNoOwner = errors.New("connectors: no acting user to own the connector")
 
 const connectorCols = `id, name, platform, hosts, auth_scheme, auth_header, auth_username,
 	created_at, updated_at, rotated_at, last_used_at`
@@ -85,7 +95,10 @@ func (s *PGStore) CreateConnector(ctx context.Context, nc NewConnector) (Connect
 	if err != nil {
 		return Connector{}, err
 	}
-	owner := createOwner(ctx)
+	owner, err := createOwner(ctx)
+	if err != nil {
+		return Connector{}, err
+	}
 	ct, err := s.seal.seal(binding{Owner: owner, Name: nc.Name, Hosts: nc.Hosts, Scheme: nc.Scheme, HeaderName: nc.HeaderName,
 		Username: nc.Username}, nc.Secret)
 	if err != nil {
@@ -280,7 +293,8 @@ func (s *PGStore) RequestGrant(ctx context.Context, agentID int64, connector, re
 			return Grant{}, false, ErrTooManyPending
 		}
 		if err := tx.QueryRow(ctx, `
-			INSERT INTO connector_grants (agent_id, connector_name, reason) VALUES ($1, $2, $3)
+			INSERT INTO connector_grants (agent_id, owner_id, connector_name, reason)
+			VALUES ($1, COALESCE((SELECT owner_id FROM agents WHERE id = $1), nullif(current_setting('muster.uid', true), '')::bigint), $2, $3)
 			RETURNING id`, agentID, connector, reason).Scan(&id); err != nil {
 			return Grant{}, false, err
 		}
@@ -374,8 +388,9 @@ func (s *PGStore) Audit(ctx context.Context, e AuditEntry) error {
 		agentID = &e.AgentID
 	}
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO connector_audit (kind, agent_id, agent_name, connector_name, method, host, path, status, detail)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		INSERT INTO connector_audit (kind, agent_id, owner_id, agent_name, connector_name, method, host, path, status, detail)
+		VALUES ($1, $2, COALESCE((SELECT owner_id FROM agents WHERE id = $2), nullif(current_setting('muster.uid', true), '')::bigint),
+		        $3, $4, $5, $6, $7, $8, $9)`,
 		e.Kind, agentID, e.AgentName, e.Connector, e.Method, e.Host, truncate(e.Path, 1024), e.Status, truncate(e.Detail, 500))
 	return err
 }

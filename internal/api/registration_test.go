@@ -249,10 +249,10 @@ func (stubGate) ClearGate(context.Context, string) error { return nil }
 
 type stubProvisioner struct{}
 
-func (stubProvisioner) Dispatch(int64, bool) error { return nil }
-func (stubProvisioner) Start(int64) error          { return nil }
-func (stubProvisioner) Stop(int64) error           { return nil }
-func (stubProvisioner) Destroy(int64) error        { return nil }
+func (stubProvisioner) Dispatch(context.Context, int64, bool) error { return nil }
+func (stubProvisioner) Start(context.Context, int64) error          { return nil }
+func (stubProvisioner) Stop(context.Context, int64) error           { return nil }
+func (stubProvisioner) Destroy(context.Context, int64) error        { return nil }
 func (stubProvisioner) Instances(context.Context) ([]provision.Instance, error) {
 	return nil, nil
 }

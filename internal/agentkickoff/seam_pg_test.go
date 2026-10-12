@@ -87,7 +87,7 @@ func (f *fakeRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // passes the probe, that a Service name resolves. That is the cluster check named
 // at the foot of cmd/muster-server/doc_seams.go entry 1.
 func TestADispatchedAgentAnswersItsFirstTurnThroughTheRealPlane(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 60*time.Second)
 	defer cancel()
 	pool, err := db.Connect(ctx, dbtest.DSN(t))
 	if err != nil {
@@ -136,9 +136,11 @@ func TestADispatchedAgentAnswersItsFirstTurnThroughTheRealPlane(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM agents WHERE id=$1`, row.ID) })
+	t.Cleanup(func() {
+		_, _ = pool.Exec(dbtest.AsOperator(context.Background()), `DELETE FROM agents WHERE id=$1`, row.ID)
+	})
 
-	if err := adapter.Dispatch(row.ID, true); err != nil {
+	if err := adapter.Dispatch(dbtest.AsOperator(context.Background()), row.ID, true); err != nil {
 		t.Fatalf("Dispatch(kickoff=true) on a delivering plane: %v", err)
 	}
 	minted, err := store.Get(ctx, row.ID)

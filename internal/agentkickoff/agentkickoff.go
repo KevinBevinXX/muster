@@ -348,7 +348,7 @@ func (d *Deliverer) Tick(ctx context.Context) error {
 		case agents.ActionRetryKickoff:
 			d.startDelivery(ctx, a, *inst)
 		case agents.ActionError:
-			d.failStuck(a)
+			d.failStuck(ctx, a)
 		default:
 			// ActionNone / ActionPersistStatus: nothing owed THIS tick. Persisting a
 			// recomputed status is not this package's job: internal/agentstatus
@@ -396,12 +396,12 @@ func (d *Deliverer) startDelivery(ctx context.Context, a agents.Agent, inst prov
 //
 // ⚠ THE LOG LINES ARE SCRUBBED OF THE PENDING NOTE, as recordError's is: msg carries
 // the last kickoff_error, which can quote a runtime's response body.
-func (d *Deliverer) failStuck(a agents.Agent) {
+func (d *Deliverer) failStuck(parent context.Context, a agents.Agent) {
 	msg := fmt.Sprintf("kickoff never delivered: the agent dwelt more than %s without a ready "+
 		"instance accepting its first turn", agents.ProvisioningStuckTimeout) +
 		agents.KickoffErrorSuffix(a)
 	shown := agents.ScrubNote(msg, a.PendingNote)
-	ctx, cancel := bookkeeping()
+	ctx, cancel := bookkeeping(parent)
 	defer cancel()
 	applied, err := d.store.MarkKickoffStuck(ctx, a.ID, a.UpdatedAt, msg)
 	if err != nil {
@@ -446,7 +446,7 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	// A token-less row derives a well-formed WRONG bearer (agentgateway.reach), so
 	// it is refused here, before the stamp, and retried until the dwell bound.
 	if a.HooksToken == "" {
-		d.recordError(a, "kickoff not sent: the agent has no hooks token yet, so no gateway "+
+		d.recordError(parent, a, "kickoff not sent: the agent has no hooks token yet, so no gateway "+
 			"credential can be derived (it is minted when the instance is created)")
 		return
 	}
@@ -462,7 +462,7 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 		return
 	}
 	defer func() {
-		rctx, rcancel := bookkeeping()
+		rctx, rcancel := bookkeeping(parent)
 		defer rcancel()
 		if err := d.store.ReleaseKickoffClaim(rctx, a.ID, d.owner); err != nil {
 			d.log.Printf("agentkickoff: agent %d (%s): release claim: %v", a.ID, a.Name, err)
@@ -485,7 +485,7 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	// nothing and is retried, whereas after the stamp it would strand the turn.
 	sess, err := d.store.LatestOrCreateSession(ctx, fresh.ID, fresh.Name)
 	if err != nil {
-		d.recordError(fresh, "kickoff not sent: could not open a chat session: "+err.Error())
+		d.recordError(parent, fresh, "kickoff not sent: could not open a chat session: "+err.Error())
 		return
 	}
 
@@ -496,13 +496,13 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	// never sent. Pinned by TestAnUnresolvableAgentIsRetriedNotStamped.
 	target, err := d.gw.Resolve(ctx, fresh)
 	if err != nil {
-		d.recordError(fresh, "kickoff not sent: could not resolve the agent's gateway: "+err.Error())
+		d.recordError(parent, fresh, "kickoff not sent: could not resolve the agent's gateway: "+err.Error())
 		return
 	}
 
 	// ---- the point of no return: from here the turn is never re-run. ----
 	if err := d.store.SetKickedOff(ctx, fresh.ID, true); err != nil {
-		d.recordError(fresh, "kickoff not sent: could not stamp kicked_off: "+err.Error())
+		d.recordError(parent, fresh, "kickoff not sent: could not stamp kicked_off: "+err.Error())
 		return
 	}
 	// The "kickoff owed" badge goes with the stamp; tell open Agents lists.
@@ -544,21 +544,21 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 		// mid-wait. Nothing was sent, which turnFailure's texts (shutdown, budget,
 		// "handed to the gateway") would deny; this one says so, and makes the
 		// card's remedy say a re-send is safe (agents.KickoffResendSafe).
-		d.recordError(fresh, agents.KickoffNotAcceptedReason+": "+err.Error())
+		d.recordError(parent, fresh, agents.KickoffNotAcceptedReason+": "+err.Error())
 		d.notify(fresh.Name)
 		return
 	}
 	if err != nil {
-		d.recordError(fresh, turnFailure(parent, ctx, turn, err))
+		d.recordError(parent, fresh, turnFailure(parent, ctx, turn, err))
 		d.notify(fresh.Name)
 		return
 	}
 	if strings.TrimSpace(reply) == "" {
-		d.recordError(fresh, EmptyReplyReason)
+		d.recordError(parent, fresh, EmptyReplyReason)
 		d.notify(fresh.Name)
 		return
 	}
-	actx, acancel := bookkeeping()
+	actx, acancel := bookkeeping(parent)
 	defer acancel()
 	if provenance != nil {
 		// 🔴 RecordKickoffDelivery IS WHAT CLEARS kickoff_error, AND IT JUST FAILED.
@@ -670,9 +670,9 @@ func neverConnected(err error) bool {
 // — and a runtime that echoes its request would put the operator's note in the pod
 // log. The stored column is not scrubbed: the row already holds the note, and every
 // surface that reads the column scrubs it there (agents.KickoffFailureText).
-func (d *Deliverer) recordError(a agents.Agent, msg string) {
+func (d *Deliverer) recordError(parent context.Context, a agents.Agent, msg string) {
 	d.log.Printf("agentkickoff: agent %d (%s): %s", a.ID, a.Name, agents.ScrubNote(msg, a.PendingNote))
-	ctx, cancel := bookkeeping()
+	ctx, cancel := bookkeeping(parent)
 	defer cancel()
 	if err := d.store.SetKickoffError(ctx, a.ID, msg); err != nil {
 		d.log.Printf("agentkickoff: agent %d (%s): could not record kickoff error: %v",
@@ -680,6 +680,15 @@ func (d *Deliverer) recordError(a agents.Agent, msg string) {
 	}
 }
 
-func bookkeeping() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), bookkeepingTimeout)
+// bookkeeping is a FRESH budget for a store write that records an outcome:
+// detached from parent's cancellation and deadline (a shutdown-cancelled turn
+// must still be recorded), but KEEPING parent's values.
+//
+// 🔴 THE VALUES ARE THE POINT (accounts PR 3a). parent carries Run's
+// authz.System principal, and row-level security scopes every store call to
+// the principal on its context. This used to be context.Background(): under
+// RLS that acts as NOBODY, so every recorded failure and every kickoff
+// delivery stamp would update zero rows — silently.
+func bookkeeping(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), bookkeepingTimeout)
 }

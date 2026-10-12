@@ -39,7 +39,7 @@ func (m *movingPG) List(ctx context.Context) ([]agents.Agent, error) {
 // CONTROL in the same harness: an unmoved row IS marked `error`, so "the row was
 // left alone" is not "the write never runs".
 func TestAStuckVerdictDoesNotOverwriteARowThatMoved(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
 	defer cancel()
 	pool, err := db.Connect(ctx, dbtest.DSN(t))
 	if err != nil {
@@ -88,7 +88,9 @@ func TestAStuckVerdictDoesNotOverwriteARowThatMoved(t *testing.T) {
 			if err != nil {
 				t.Fatalf("create: %v", err)
 			}
-			t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM agents WHERE id=$1`, row.ID) })
+			t.Cleanup(func() {
+				_, _ = pool.Exec(dbtest.AsOperator(context.Background()), `DELETE FROM agents WHERE id=$1`, row.ID)
+			})
 			if _, err := pool.Exec(ctx, `UPDATE agents SET last_output='booting zt66',
 				updated_at = now() - $2::interval WHERE id=$1`,
 				row.ID, (agents.ProvisioningStuckTimeout + time.Minute).String()); err != nil {

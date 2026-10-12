@@ -136,9 +136,33 @@ public schema they leave (pinned as a ledger by `internal/db/migrate_test.go`):
 
 `0006` gives every user-data table an `owner_id` (backfilled to user 1, the
 operator) and makes each parent→child link a composite foreign key over
-`(parent_id, owner_id)`, so a row can never point at another user's row. Until
-the request principal exists, `owner_id` defaults to 1 and nothing reads the
-account tables. `agent_retired_names` and `cc_account_marks` stay unowned.
+`(parent_id, owner_id)`, so a row can never point at another user's row.
+`agent_retired_names` and `cc_account_marks` stay unowned.
+
+`0007` turns on **row-level security** for those eleven owned tables (ENABLE +
+FORCE, one `owner_isolation` policy each): a connection sees and writes only the
+rows whose `owner_id` is its `muster.uid` setting, unless `muster.scope = 'all'`.
+`internal/db` sets both — and switches to the `muster_app` role, because a
+superuser login bypasses RLS — on **every pool acquire**, from the context's
+`authz.Principal`; a context with no principal sees nothing and inserts nothing.
+`owner_id` now defaults to the principal's id. Today every principal is user 1,
+so behaviour is unchanged. psql, `pg_dump` and backups connect as the login role
+and still see every row.
+
+🔴 **Restoring a backup into a fresh Postgres:** `muster_app` is a cluster role and
+`pg_dump` does not carry it, so the dump's `GRANT … TO muster_app` lines fail
+(`ON_ERROR_STOP` stops at the first). Restore without `ON_ERROR_STOP` (or
+`CREATE ROLE muster_app NOLOGIN` first), then boot: `Migrate` re-creates the role
+and its grants on every boot (`internal/db/approle.go`).
+
+🔴 **Rolling the image back below `0007`:** an older image never sets
+`muster.uid`, so every insert it makes fails. Run `--rls-off` with a 3a-or-newer
+binary — `/muster-migrate --rls-off` in the CURRENT pod — or the psql path in
+`internal/db/rollback/rls_off.sql`, **before** changing the image. The older
+image's `/muster-migrate` does not know the flag: it says "nothing to apply",
+exits 0, and leaves RLS on. Check `select relrowsecurity from pg_class where
+relname='notes'` is `f` (the 3a+ binary prints this for every owned table and
+fails if any is wrong). `/muster-migrate --rls-on` re-enables it.
 
 `0001` also creates the runbook and privilege tables (`runbooks`,
 `runbook_runs`, `privilege_profiles`, `agent_privileges`, `privilege_requests`)

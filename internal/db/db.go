@@ -34,6 +34,10 @@ func Connect(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 	if _, set := cfg.ConnConfig.RuntimeParams["application_name"]; !set {
 		cfg.ConnConfig.RuntimeParams["application_name"] = "muster"
 	}
+	// Row-level security: every acquire acts as AppRole with the context's
+	// principal; every release clears it. See scope.go.
+	cfg.PrepareConn = prepareConn
+	cfg.AfterRelease = afterRelease
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("open pool: %w", err)
@@ -41,7 +45,11 @@ func Connect(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 	// 🔴 PING BEFORE RETURNING. pgxpool.New is LAZY — it returns a healthy-looking
 	// pool against a server that does not exist, and the failure then surfaces at
 	// the first query, attributed to whatever happened to run it.
-	if err := pool.Ping(ctx); err != nil {
+	//
+	// It pings as the MIGRATOR (the login role, no row scope): the pool may be
+	// connecting to a database 0007 has not reached yet, where AppRole does not
+	// exist, and a ping reads no rows.
+	if err := pool.Ping(asMigrator(ctx)); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("ping database: %w", err)
 	}

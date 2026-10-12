@@ -177,8 +177,8 @@ func (s *Server) authenticateCallingAgent(w http.ResponseWriter, r *http.Request
 		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": SharedTokenRefusal})
 		return agents.Agent{}, false
 	}
-	a, err := s.ext.Agents.GetByHooksToken(r.Context(), token)
-	if err != nil {
+	a, err := s.agentByToken(r.Context(), token)
+	if err != nil || agentOwnerID(a) <= 0 {
 		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid agent token"})
 		return agents.Agent{}, false
 	}

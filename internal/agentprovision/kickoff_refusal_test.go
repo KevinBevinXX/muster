@@ -1,6 +1,7 @@
 package agentprovision
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -61,7 +62,7 @@ const (
 func TestACreateWithAKickoffIsREFUSEDWhenNothingCanDeliverIt(t *testing.T) {
 	a, store, driver := newAdapterWithNoKickoffDelivery(t, nil)
 
-	err := a.Dispatch(fixtureAgentID, true)
+	err := a.Dispatch(context.Background(), fixtureAgentID, true)
 	if err == nil {
 		t.Fatalf("Dispatch(kickoff=true) with no gateway returned nil, so the caller was told "+
 			"the work had begun.\n  transcript: %s", store.transcript())
@@ -400,7 +401,7 @@ func TestEveryCapabilityClaimTheRefusalMakesIsTRUE(t *testing.T) {
 func TestAKickoffIsNOTRefusedWhenTheAdapterIsToldItCanBeDelivered(t *testing.T) {
 	a, store, driver := newAdapter(t, nil)
 
-	if err := a.Dispatch(fixtureAgentID, true); err != nil {
+	if err := a.Dispatch(context.Background(), fixtureAgentID, true); err != nil {
 		t.Fatalf("Dispatch(kickoff=true) was refused by an adapter TOLD a kickoff is "+
 			"deliverable, so the refusal is firing on this package's own identity rather "+
 			"than on what it was told — nothing a deliverer lands could lift it: %v\n"+
@@ -458,7 +459,7 @@ func TestAKickoffIsNOTRefusedWhenTheAdapterIsToldItCanBeDelivered(t *testing.T) 
 func TestASaveIsNeverRefusedWhenNoKickoffCanBeDelivered(t *testing.T) {
 	a, store, driver := newAdapterWithNoKickoffDelivery(t, nil)
 
-	if err := a.Dispatch(fixtureAgentID, false); err != nil {
+	if err := a.Dispatch(context.Background(), fixtureAgentID, false); err != nil {
 		t.Fatalf("Dispatch(kickoff=false) — \"Save for later\" — was refused on a deployment "+
 			"with no gateway: %v\n  transcript: %s", err, store.transcript())
 	}
@@ -500,7 +501,7 @@ func TestStartStillWorksWhenNoKickoffCanBeDelivered(t *testing.T) {
 		a, store, driver := newAdapterWithNoKickoffDelivery(t, nil)
 		seedInstance(t, a, store, driver)
 
-		if err := a.Start(fixtureAgentID); err != nil {
+		if err := a.Start(context.Background(), fixtureAgentID); err != nil {
 			t.Fatalf("Start was refused on a deployment with no gateway, so a stopped agent "+
 				"cannot be restarted: %v\n  transcript: %s", err, store.transcript())
 		}
@@ -529,7 +530,7 @@ func TestStartStillWorksWhenNoKickoffCanBeDelivered(t *testing.T) {
 	t.Run("first start of a saved agent creates its instance", func(t *testing.T) {
 		a, store, driver := newAdapterWithNoKickoffDelivery(t, nil)
 
-		if err := a.Start(fixtureAgentID); err != nil {
+		if err := a.Start(context.Background(), fixtureAgentID); err != nil {
 			t.Fatalf("Start of a never-provisioned (saved) agent was refused, which dead-ends "+
 				"the remedy the refusal recommends: %v\n  transcript: %s", err, store.transcript())
 		}
@@ -556,7 +557,7 @@ func TestStartStillWorksWhenNoKickoffCanBeDelivered(t *testing.T) {
 		})
 		seedInstance(t, a, store, driver)
 
-		if err := a.Start(fixtureAgentID); err != nil {
+		if err := a.Start(context.Background(), fixtureAgentID); err != nil {
 			t.Fatalf("Start of an already-kicked-off agent was refused: %v\n  transcript: %s",
 				err, store.transcript())
 		}
@@ -586,7 +587,7 @@ func TestARefusedKickoffReportsAFailedRecordRatherThanSwallowingIt(t *testing.T)
 		s.updateErr = wantErr
 	})
 
-	err := a.Dispatch(fixtureAgentID, true)
+	err := a.Dispatch(context.Background(), fixtureAgentID, true)
 	if err == nil {
 		t.Fatalf("Dispatch returned nil when it could neither deliver the kickoff nor record "+
 			"the refusal.\n  transcript: %s", store.transcript())

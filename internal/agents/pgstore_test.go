@@ -21,7 +21,7 @@ import (
 func TestPGStoreModelRoundTrip(t *testing.T) {
 	dsn := dbtest.DSN(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
 	defer cancel()
 
 	pool, err := db.Connect(ctx, dsn)
@@ -89,7 +89,7 @@ func TestPGStoreModelRoundTrip(t *testing.T) {
 func TestPGStoreSetDisplayName(t *testing.T) {
 	dsn := dbtest.DSN(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
 	defer cancel()
 
 	pool, err := db.Connect(ctx, dsn)
@@ -147,7 +147,7 @@ func TestPGStoreSetDisplayName(t *testing.T) {
 // instead of 5. Verified pre-existing at a39ed0c5. The pool itself is closed by a
 // t.Cleanup registered before these, so it is still open when this runs.
 func cleanupAgent(_ context.Context, pool *pgxpool.Pool, id int64) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 10*time.Second)
 	defer cancel()
 	_, _ = pool.Exec(ctx, `DELETE FROM agents WHERE id=$1`, id)
 }
@@ -165,7 +165,7 @@ func createNote(ctx context.Context, t *testing.T, pool *pgxpool.Pool) int64 {
 	// Fresh context for the same reason as cleanupAgent: this runs after the
 	// caller's `defer cancel()`.
 	t.Cleanup(func() {
-		c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		c, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 10*time.Second)
 		defer cancel()
 		_, _ = pool.Exec(c, `DELETE FROM notes WHERE id=$1`, id)
 	})
@@ -178,7 +178,7 @@ func createNote(ctx context.Context, t *testing.T, pool *pgxpool.Pool) int64 {
 // PG-gated (skipped without MUSTER_TEST_DATABASE_URL).
 func TestPGStoreAgentsByNoteIDs(t *testing.T) {
 	dsn := dbtest.DSN(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
 	defer cancel()
 	pool, err := db.Connect(ctx, dsn)
 	if err != nil {
@@ -268,7 +268,7 @@ func TestReverseChatChronological(t *testing.T) {
 func TestPGStoreRecentChatMessages(t *testing.T) {
 	dsn := dbtest.DSN(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
 	defer cancel()
 
 	pool, err := db.Connect(ctx, dsn)
@@ -349,7 +349,7 @@ func TestPGStoreRecentChatMessages(t *testing.T) {
 // messages at limit 3 is deliberately not a multiple.
 func TestPGStoreChatMessagesPage(t *testing.T) {
 	dsn := dbtest.DSN(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
 	defer cancel()
 	pool, err := db.Connect(ctx, dsn)
 	if err != nil {
@@ -485,7 +485,7 @@ func contentsOf(msgs []ChatMessage) []string {
 // row (no Kind set) defaults to 'text', and List preserves order. PG-gated.
 func TestPGStoreChatMessageParts(t *testing.T) {
 	dsn := dbtest.DSN(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
 	defer cancel()
 	pool, err := db.Connect(ctx, dsn)
 	if err != nil {
@@ -533,7 +533,7 @@ func TestPGStoreChatMessageParts(t *testing.T) {
 // sums per agent, picks the most-recently-active session as the link target, and
 // that MarkSessionRead clears the unread. PG-gated.
 func TestPGStoreUnreadByAgent(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
 	defer cancel()
 	store := requirePGStore(t, ctx)
 
@@ -644,7 +644,7 @@ func requirePGStore(t *testing.T, ctx context.Context) *PGStore {
 // the updated_at bump on append, and LatestOrCreateSession's legacy-key behaviour.
 // PG-gated (skipped without MUSTER_TEST_DATABASE_URL).
 func TestPGStoreSessions(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
 	defer cancel()
 	store := requirePGStore(t, ctx)
 
@@ -748,7 +748,7 @@ func TestPGStoreSessions(t *testing.T) {
 // PG-gated (skipped without MUSTER_TEST_DATABASE_URL).
 func TestPGStoreLastMessageByAgentIDs(t *testing.T) {
 	dsn := dbtest.DSN(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
 	defer cancel()
 	pool, err := db.Connect(ctx, dsn)
 	if err != nil {

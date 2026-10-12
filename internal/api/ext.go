@@ -420,7 +420,14 @@ type Provisioner interface {
 	// unchanged and still true of THIS method — createAndDispatchAgent calls it
 	// inside safeGo, after the row exists — which is why the pre-flight is a
 	// separate question rather than a different return value here.
-	Dispatch(agentID int64, kickoff bool) error
+	//
+	// 🔴 ctx CARRIES THE CALLER'S PRINCIPAL, NOT ITS DEADLINE (all four lifecycle
+	// methods). The work outlives the request (these run inside safeGo), so an
+	// implementation must detach from ctx's cancellation — context.WithoutCancel —
+	// but keep its values: under row-level security every store read and write
+	// the operation makes acts as ctx's principal, and a context.Background()
+	// budget would see no rows (accounts PR 3a).
+	Dispatch(ctx context.Context, agentID int64, kickoff bool) error
 	// Start brings a stopped or never-provisioned agent up, creating its instance
 	// when the driver reports the backend does not have one.
 	//
@@ -428,10 +435,10 @@ type Provisioner interface {
 	// pending)" — the same retracted claim Dispatch's doc above corrects, left
 	// behind in the sibling method for one round. The only implementation records
 	// the non-delivery instead; see agentprovision.UndeliveredKickoffReason.
-	Start(agentID int64) error
+	Start(ctx context.Context, agentID int64) error
 	// Stop scales a running agent down to zero replicas, keeping its declaration.
 	// An instance the backend does not have is already stopped, not an error.
-	Stop(agentID int64) error
+	Stop(ctx context.Context, agentID int64) error
 	// Destroy removes the instance and everything the driver created for it, then
 	// deletes the stored row.
 	//
@@ -444,7 +451,7 @@ type Provisioner interface {
 	// namespace" — helm and Kubernetes vocabulary in an interface whose Instances
 	// doc makes a 🔴 point of having removed exactly that, and false for any driver
 	// without namespaces.
-	Destroy(agentID int64) error
+	Destroy(ctx context.Context, agentID int64) error
 	// Instances returns the live state of every agent workload, for status
 	// reconciliation.
 	//

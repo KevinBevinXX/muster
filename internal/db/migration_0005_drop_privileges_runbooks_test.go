@@ -122,7 +122,7 @@ func assertPrivilegeAndRunbookSchemaGone(ctx context.Context, t *testing.T, pool
 // and a task carrying grant_profiles. 0005 must apply, drop them, and leave the
 // task itself — its body, tags and status — intact.
 func TestMigration0005DropsThePrivilegeAndRunbookSchemaFromAPopulatedDatabase(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(db.AsMigratorForTest(context.Background()), 2*time.Minute)
 	t.Cleanup(cancel)
 	pool, err := db.Connect(ctx, scratchDatabase(ctx, t, "ms_0005_populated", ""))
 	if err != nil {
@@ -186,7 +186,7 @@ func TestMigration0005DropsThePrivilegeAndRunbookSchemaFromAPopulatedDatabase(t 
 // TestMigration0005OnAFreshDatabase: a brand-new deployment runs 0001..0005 in
 // one go and ends with none of the removed schema.
 func TestMigration0005OnAFreshDatabase(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(db.AsMigratorForTest(context.Background()), 2*time.Minute)
 	t.Cleanup(cancel)
 	pool, err := db.Connect(ctx, scratchDatabase(ctx, t, "ms_0005_fresh", ""))
 	if err != nil {

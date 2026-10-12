@@ -44,6 +44,11 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, logger *log.Logger) error 
 		return err
 	}
 
+	// 🔴 THE MIGRATOR KEEPS THE LOGIN ROLE AND SEES EVERY ROW (scope.go): it
+	// runs DDL, and a data migration must reach every user's rows. Without
+	// this the pool would switch to AppRole — which does not exist before 0007
+	// — with no principal, and every backfill would see nothing.
+	ctx = asMigrator(ctx)
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire migration conn: %w", err)
@@ -82,6 +87,12 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, logger *log.Logger) error 
 			applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`); err != nil {
 		return fmt.Errorf("create schema_migrations: %w", err)
+	}
+
+	// Before the version check, on every boot: a restored backup is at the
+	// latest version but has no application role (see appRoleSQL).
+	if err := ensureAppRole(ctx, conn); err != nil {
+		return err
 	}
 
 	var current int

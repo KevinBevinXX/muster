@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"github.com/ZacxDev/muster/internal/dbtest"
 	"testing"
 	"time"
 )
@@ -21,7 +22,7 @@ import (
 // ⚠ RecordKickoffDelivery IS DELIBERATELY STILL A BUMP and the control below
 // asserts it: a delivery IS a state transition, and the asymmetry is the point.
 func TestSetKickoffErrorDoesNotMoveTheDwellClock(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
 	defer cancel()
 	store := requirePGStore(t, ctx)
 

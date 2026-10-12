@@ -37,7 +37,7 @@ func ready(name string) provision.Instance {
 
 func newStore(t *testing.T) (agents.Store, func(string) agents.Agent, context.Context) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
 	t.Cleanup(cancel)
 	pool, err := db.Connect(ctx, dbtest.DSN(t))
 	if err != nil {

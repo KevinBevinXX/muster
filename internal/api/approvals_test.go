@@ -41,6 +41,11 @@ func (r relayAgents) GetByHooksToken(_ context.Context, tok string) (agents.Agen
 	if !ok {
 		return agents.Agent{}, errors.New("no such agent")
 	}
+	// A row read from Postgres always carries its owner (NOT NULL); these
+	// fixtures predate the column, so they are the operator's, as every agent is.
+	if a.OwnerID == 0 {
+		a.OwnerID = 1
+	}
 	return a, nil
 }
 

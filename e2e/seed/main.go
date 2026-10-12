@@ -17,7 +17,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/notes"
 )
@@ -36,19 +39,37 @@ func run() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+
+	// 🔴 THE RESET RUNS ON ITS OWN CONNECTION, AS THE LOGIN ROLE — NOT THROUGH THE
+	// APPLICATION POOL. TRUNCATE ignores row-level security, so the application
+	// role (internal/db AppRole) is deliberately NOT granted it; and RESTART
+	// IDENTITY needs the sequences' owner. A fixture reset is a database
+	// owner's operation, so it uses the owner's connection.
+	//
+	// CASCADE empties every table that references these (comments, attachments,
+	// sessions, chat, connector grants) without this file naming them — the notes
+	// package's ledger forbids spelling the comments table outside its store.
+	owner, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		return fmt.Errorf("connect for reset: %w", err)
+	}
+	_, err = owner.Exec(ctx, `TRUNCATE notes, agents, connectors, connector_audit
+		RESTART IDENTITY CASCADE`)
+	_ = owner.Close(ctx)
+	if err != nil {
+		return fmt.Errorf("truncate: %w", err)
+	}
+
 	pool, err := db.Connect(ctx, dsn)
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
 
-	// CASCADE empties every table that references these (comments, attachments,
-	// sessions, chat, connector grants) without this file naming them — the notes
-	// package's ledger forbids spelling the comments table outside its store.
-	if _, err := pool.Exec(ctx, `TRUNCATE notes, agents, connectors, connector_audit
-		RESTART IDENTITY CASCADE`); err != nil {
-		return fmt.Errorf("truncate: %w", err)
-	}
+	// The board is the OPERATOR'S: every row below is created as user 1, as the
+	// operator's own browser session would create it (row-level security files
+	// each row under the principal on the context).
+	ctx = authz.Operator(ctx)
 
 	ns := notes.NewPG(pool)
 	tasks := []struct {

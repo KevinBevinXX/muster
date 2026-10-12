@@ -61,7 +61,7 @@ func TestAClaudeCodeStartReappliesTheSpecWithTheAccountsCurrentToken(t *testing.
 		return a
 	}
 
-	if err := adapterWithToken(oldTok).Dispatch(row.ID, true); err != nil {
+	if err := adapterWithToken(oldTok).Dispatch(context.Background(), row.ID, true); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
 	if tokenIn(driver.last) != oldTok {
@@ -70,11 +70,11 @@ func TestAClaudeCodeStartReappliesTheSpecWithTheAccountsCurrentToken(t *testing.
 	// The operator rotates the token (muster restarts with the new value), then
 	// Stops and Starts the agent.
 	a := adapterWithToken(newTok)
-	if err := a.Stop(row.ID); err != nil {
+	if err := a.Stop(context.Background(), row.ID); err != nil {
 		t.Fatal(err)
 	}
 	updatesBefore, scalesBefore := driver.updates, driver.scales
-	if err := a.Start(row.ID); err != nil {
+	if err := a.Start(context.Background(), row.ID); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	if driver.updates != updatesBefore+1 {

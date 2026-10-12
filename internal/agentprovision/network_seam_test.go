@@ -108,7 +108,7 @@ func recordedError(s *recordingStore) string {
 func TestAClaudeCodeDispatchWritesItsNetworkPolicyAndIsRefusedWithoutOne(t *testing.T) {
 	t.Run("permitted", func(t *testing.T) {
 		a, store, cs, _ := seamAdapter(t, seamRow())
-		if err := a.Dispatch(fixtureAgentID, true); err != nil {
+		if err := a.Dispatch(context.Background(), fixtureAgentID, true); err != nil {
 			t.Fatalf("dispatch: %v", err)
 		}
 		if deps, nps := seamCounts(t, cs); deps != 1 || nps != 1 {
@@ -122,7 +122,7 @@ func TestAClaudeCodeDispatchWritesItsNetworkPolicyAndIsRefusedWithoutOne(t *test
 	t.Run("refused", func(t *testing.T) {
 		a, store, cs, _ := seamAdapter(t, seamRow())
 		refuseNetworkPolicies(cs)
-		err := a.Dispatch(fixtureAgentID, true)
+		err := a.Dispatch(context.Background(), fixtureAgentID, true)
 		if err == nil {
 			t.Fatal("the dispatch succeeded although muster may not write the agent's NetworkPolicy")
 		}
@@ -168,7 +168,7 @@ func TestAStoppedClaudeCodeAgentFromBeforeIsolationIsConfinedOrNotStarted(t *tes
 		if deps, nps := seamCounts(t, cs); deps != 1 || nps != 0 {
 			t.Fatalf("premise: the pre-isolation agent has %d deployment(s) and %d policy object(s); want 1 and 0", deps, nps)
 		}
-		if err := a.Stop(fixtureAgentID); err != nil {
+		if err := a.Stop(context.Background(), fixtureAgentID); err != nil {
 			t.Fatalf("stop: %v", err)
 		}
 		return a, store, cs
@@ -190,7 +190,7 @@ func TestAStoppedClaudeCodeAgentFromBeforeIsolationIsConfinedOrNotStarted(t *tes
 		if got := replicas(t, cs); got != 0 {
 			t.Fatalf("premise: the stopped agent has %d replica(s)", got)
 		}
-		if err := a.Start(fixtureAgentID); err != nil {
+		if err := a.Start(context.Background(), fixtureAgentID); err != nil {
 			t.Fatalf("start: %v", err)
 		}
 		if _, nps := seamCounts(t, cs); nps != 1 {
@@ -204,7 +204,7 @@ func TestAStoppedClaudeCodeAgentFromBeforeIsolationIsConfinedOrNotStarted(t *tes
 	t.Run("refused: it stays stopped", func(t *testing.T) {
 		a, store, cs := seedOldAgent(t)
 		refuseNetworkPolicies(cs)
-		if err := a.Start(fixtureAgentID); !errors.Is(err, provision.ErrUnsupported) {
+		if err := a.Start(context.Background(), fixtureAgentID); !errors.Is(err, provision.ErrUnsupported) {
 			t.Fatalf("start = %v, want the networkpolicies refusal", err)
 		}
 		if got := replicas(t, cs); got != 0 {
@@ -233,7 +233,7 @@ func TestAGatewayAgentGetsNoNetworkPolicyFromTheSameDeployment(t *testing.T) {
 	row := fixtureAgent()
 	a, store, cs, _ := seamAdapter(t, row)
 	refuseNetworkPolicies(cs)
-	if err := a.Dispatch(fixtureAgentID, true); err != nil {
+	if err := a.Dispatch(context.Background(), fixtureAgentID, true); err != nil {
 		t.Fatalf("a gateway-kind dispatch failed on a cluster that refuses networkpolicies: %v", err)
 	}
 	if msg := recordedError(store); msg != "" {

@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/dbtest"
 )
 
 // upstream is a FAKE platform: it records every request it receives and answers
@@ -126,6 +127,10 @@ func newFixtureWithSecret(t *testing.T, scheme connectors.Scheme, secret string)
 			caller = f.agentB
 		}
 		parts := strings.SplitN(strings.TrimPrefix(r.URL.EscapedPath(), "/connect/"), "/", 3)
+		// The API's door (requireConnectorAgent) attaches the calling agent's
+		// owner as the request principal; row-level security scopes every store
+		// call the proxy makes to it. Both fixture agents are the operator's.
+		r = r.WithContext(dbtest.AsOperator(r.Context()))
 		f.proxy.Serve(w, r, caller, parts[0], parts[1], parts[2])
 	})
 	return f

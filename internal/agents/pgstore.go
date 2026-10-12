@@ -13,6 +13,15 @@ import (
 	"github.com/ZacxDev/muster/internal/db"
 )
 
+// ownerOfAgent is the owner_id a CHILD row of agent $1 (a chat session or
+// message) is inserted with: the agent's own (accounts PR 3a). 0006's composite
+// foreign keys already demand child.owner_id = agent.owner_id, so it is the only
+// legal value — and the kickoff deliverer, which runs as authz.System and names
+// no user, writes chat rows for whichever user's agent it is delivering to. An
+// agent the caller cannot see, or none, yields the caller's own id instead, so
+// the foreign key refuses the row as it did before.
+const ownerOfAgent = `COALESCE((SELECT owner_id FROM agents WHERE id = $1), nullif(current_setting('muster.uid', true), '')::bigint)`
+
 // PGStore is the Postgres-backed agents Store.
 type PGStore struct{ pool *pgxpool.Pool }
 
@@ -21,7 +30,7 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 
 const agentCols = `id, name, namespace, display_name, repo, repo_branch, note_id, note_text,
 	pending_note, model, status, hooks_token, kicked_off, last_output, error_message, created_at, updated_at,
-	kickoff_pod, kickoff_restarts, kickoff_attempts, kickoff_error, kind, cc_account`
+	kickoff_pod, kickoff_restarts, kickoff_attempts, kickoff_error, kind, cc_account, owner_id`
 
 func scanAgent(row interface {
 	Scan(dest ...any) error
@@ -30,7 +39,7 @@ func scanAgent(row interface {
 	err := row.Scan(&a.ID, &a.Name, &a.Namespace, &a.DisplayName, &a.Repo, &a.RepoBranch,
 		&a.NoteID, &a.NoteText, &a.PendingNote, &a.Model, &a.Status, &a.HooksToken, &a.KickedOff,
 		&a.LastOutput, &a.ErrorMessage, &a.CreatedAt, &a.UpdatedAt,
-		&a.KickoffPod, &a.KickoffRestarts, &a.KickoffAttempts, &a.KickoffError, &a.Kind, &a.CCAccount)
+		&a.KickoffPod, &a.KickoffRestarts, &a.KickoffAttempts, &a.KickoffError, &a.Kind, &a.CCAccount, &a.OwnerID)
 	return a, err
 }
 
@@ -160,11 +169,17 @@ func (s *PGStore) LastMessageByAgentIDs(ctx context.Context, ids []int64) (map[i
 // auto-named agent creation, since BuildUniqueAgentName asks nothing else.
 // TestANonOwnerRoleCanBothRetireANameAndReadTheLedger pins both halves together;
 // each passes alone while the pair is broken.
+//
+// 🔴 IT ASKS A SECURITY DEFINER FUNCTION, NOT THE TABLE (accounts PR 3a). An
+// agent name is ONE GLOBAL NAMESPACE — it becomes a Kubernetes namespace — but
+// under row-level security a plain SELECT on agents sees only the caller's own
+// agents, so user B would be told user A's agent's name is free and fail later
+// on the UNIQUE index (or, for a retired name, not at all). Migration 0007's
+// muster_agent_name_taken reads every user's names and returns ONLY the
+// boolean; it is the same two EXISTS clauses this method used to run.
 func (s *PGStore) NameExists(ctx context.Context, name string) (bool, error) {
 	var exists bool
-	err := s.pool.QueryRow(ctx, `
-		SELECT EXISTS(SELECT 1 FROM agents WHERE name=$1)
-		    OR EXISTS(SELECT 1 FROM agent_retired_names WHERE name=$1)`, name).Scan(&exists)
+	err := s.pool.QueryRow(ctx, `SELECT public.muster_agent_name_taken($1)`, name).Scan(&exists)
 	return exists, err
 }
 
@@ -378,7 +393,7 @@ func newSessionKey(agentName string) string {
 
 func (s *PGStore) CreateSession(ctx context.Context, agentID int64, agentName string) (ChatSession, error) {
 	return scanSession(s.pool.QueryRow(ctx, `
-		INSERT INTO chat_sessions (agent_id, session_key, title) VALUES ($1,$2,'')
+		INSERT INTO chat_sessions (agent_id, owner_id, session_key, title) VALUES ($1, `+ownerOfAgent+`, $2, '')
 		RETURNING `+sessionCols, agentID, newSessionKey(agentName)))
 }
 
@@ -482,7 +497,7 @@ func (s *PGStore) LatestOrCreateSession(ctx context.Context, agentID int64, agen
 		return ChatSession{}, err
 	}
 	return scanSession(s.pool.QueryRow(ctx, `
-		INSERT INTO chat_sessions (agent_id, session_key, title) VALUES ($1,$2,'')
+		INSERT INTO chat_sessions (agent_id, owner_id, session_key, title) VALUES ($1, `+ownerOfAgent+`, $2, '')
 		RETURNING `+sessionCols, agentID, legacySessionKey(agentName)))
 }
 
@@ -494,8 +509,8 @@ func (s *PGStore) AddChatMessage(ctx context.Context, m ChatMessage) (ChatMessag
 		m.Kind = "text"
 	}
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO chat_messages (agent_id, session_id, role, content, kind, tool_id, tool_name, tool_ok)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		INSERT INTO chat_messages (agent_id, owner_id, session_id, role, content, kind, tool_id, tool_name, tool_ok)
+		VALUES ($1, `+ownerOfAgent+`, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id, agent_id, session_id, role, content, kind, tool_id, tool_name, tool_ok, created_at`,
 		m.AgentID, m.SessionID, m.Role, m.Content, m.Kind, m.ToolID, m.ToolName, m.ToolOK).
 		Scan(&m.ID, &m.AgentID, &m.SessionID, &m.Role, &m.Content, &m.Kind, &m.ToolID, &m.ToolName, &m.ToolOK, &m.CreatedAt)

@@ -170,7 +170,7 @@ type principalAgents struct{ agents.Store }
 
 func (principalAgents) GetByHooksToken(_ context.Context, tok string) (agents.Agent, error) {
 	if tok == pAgentToken {
-		return agents.Agent{ID: 7, Name: "principal-test-agent"}, nil
+		return agents.Agent{ID: 7, Name: "principal-test-agent", OwnerID: authz.OperatorUserID}, nil
 	}
 	return agents.Agent{}, errors.New("no such agent")
 }

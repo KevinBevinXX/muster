@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/ZacxDev/muster/internal/agents"
@@ -13,16 +14,18 @@ import (
 // 🔴 admit IS THE ONLY CALL SITE OF authz.WithPrincipal IN THE MODULE, AND
 // EVERY require* WRAPPER HANDS ITS ADMITTED REQUEST TO next THROUGH IT. One
 // function is one place to get the attach right; a wrapper that called next
-// directly would reach its handler with no principal, which under PR 3's
-// row-level security is an empty board and a failing insert.
+// directly would reach its handler with no principal, which under row-level
+// security is an empty board and a failing insert.
 // TestEveryAuthenticatedRouteAttachesAPrincipal drives every route in
 // routes.golden through its real wrapper and demands the principal (with the
 // right Via) arrive at admit's hand-off; internal/authz's
 // TestOnlyTheAuthWrappersCallAdmit pins the call-site ledger (type-resolved, so
 // a method value or package-level alias of admit counts too).
 //
-// ⚠ NO BEHAVIOUR CHANGES HERE. muster has one user today, so every principal
-// names authz.OperatorUserID as admin; nothing reads the principal yet.
+// 🔴 THE PRINCIPAL IS ENFORCED (accounts PR 3a): internal/db sets Postgres's
+// muster.uid from it on every acquire, and row-level security shows the request
+// only that user's rows. muster has one user today, so every principal still
+// names authz.OperatorUserID as admin and behaviour is unchanged.
 
 // machineUserID is who the SHARED machine tokens (hook, service) act as.
 //
@@ -37,25 +40,46 @@ func machineUserID() int64 { return authz.OperatorUserID }
 func sessionUserID() int64 { return authz.OperatorUserID }
 
 // agentOwnerID is who a request authenticated by an AGENT'S OWN token acts as:
-// the agent's owner.
+// the agent's owner (agents.owner_id). Every per-agent door (requireAgentToken,
+// requireConnectorAgent, requireRelayAgent) derives the user here.
 //
-// 🔴 PR 3 CHANGES THIS TO `return a.OwnerID` — AND THAT IS NOT THE WHOLE SWITCH.
-// Every per-agent door (requireAgentToken, requireConnectorAgent,
-// requireRelayAgent) derives the user here, so the PRINCIPAL side is one line.
-// But each of those doors first resolves the agent row by token
-// (Agents.GetByHooksToken, in requireAgentToken and in
-// authenticateCallingAgent) BEFORE any principal exists — it is how the owner
-// is learned. Under PR 3's FORCE RLS that lookup runs with no muster.uid and
-// sees no rows, so every /agent/*, /connect/*, /mcp and relay request would
-// 401. PR 3 must run the token lookup outside the caller's scope — under
-// authz.System (adding the lookup to the System ledger) or through a SECURITY
-// DEFINER function that returns only the matched row — and only then build the
-// principal from the row's owner here. Today the agents table has no owner
-// column (PR 1 adds it, default 1), so every agent is the operator's.
-func agentOwnerID(_ agents.Agent) int64 { return authz.OperatorUserID }
+// 🔴 ZERO IS "NOBODY", AND THE DOORS REFUSE IT (agentPrincipal) rather than
+// guess. A row read from Postgres always carries its owner (NOT NULL); a zero
+// can only come from a store that never read the column, and acting as user 1
+// for it would hand the operator's rows to whatever that agent is.
+func agentOwnerID(a agents.Agent) int64 { return a.OwnerID }
+
+// agentByToken resolves a per-agent token to its agent row, for the three
+// per-agent doors (requireAgentToken directly; requireConnectorAgent and
+// requireRelayAgent through authenticateCallingAgent).
+//
+// 🔴 IT RUNS UNDER authz.System, AND THAT IS NOT A SHORTCUT: IT IS HOW THE
+// OWNER IS LEARNED. No principal exists yet — the token IS the credential, and
+// the row it names says who the request acts as. Under row-level security a
+// lookup with no principal sees no rows, so without System every /agent/*,
+// /connect/*, /mcp and relay request would 401 (accounts PR 2's top follow-up;
+// TestEachAgentDoorWorksUnderRowLevelSecurity is the regression test). The
+// System context is used for this ONE store call and is never handed on: the
+// handler gets the request's own context, with the principal built from the
+// row's owner. It is one entry in the System ledger
+// (internal/authz/ledger_test.go).
+func (s *Server) agentByToken(ctx context.Context, token string) (agents.Agent, error) {
+	return s.ext.Agents.GetByHooksToken(authz.System(ctx), token)
+}
+
+// agentPrincipal is the principal a request authenticated by agent a acts as,
+// or false when the row names no owner (see agentOwnerID).
+func agentPrincipal(a agents.Agent, via authz.Via) (authz.Principal, bool) {
+	uid := agentOwnerID(a)
+	if uid <= 0 {
+		return authz.Principal{}, false
+	}
+	return principalFor(uid, via), true
+}
 
 // roleOf is the role a user acts with. Today the only user is the operator,
-// who is admin; PR 3/4 read users.role.
+// who is admin. ⚠ Not yet read from users.role: a second user's agent acts as
+// admin too. Nothing branches on the role today; PR 4 reads users.role.
 func roleOf(_ int64) authz.Role { return authz.RoleAdmin }
 
 // principalFor builds the request principal for a user admitted through via.

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -59,8 +60,9 @@ func (s *Server) handleChiefProvision(w http.ResponseWriter, r *http.Request) {
 		// to a cluster, which is the case safeGo's own doc names ("any goroutine
 		// that touches external data"). The two guards fail for different reasons,
 		// so neither substitutes for the other.
+		opCtx := context.WithoutCancel(r.Context()) // keeps the principal; see Provisioner
 		safeGo(s.logger, "chief start", func() {
-			if err := s.ext.Provisioner.Start(a.ID); err != nil {
+			if err := s.ext.Provisioner.Start(opCtx, a.ID); err != nil {
 				s.logger.Printf("chief: start: %v", err)
 			}
 		})

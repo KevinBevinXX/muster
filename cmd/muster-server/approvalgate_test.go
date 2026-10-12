@@ -13,6 +13,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/db"
+	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/router"
 )
 
@@ -65,7 +66,7 @@ func (f *fakeGateDoor) seen() []string {
 // seedRelayAgent inserts an agent row whose own token the relay will accept.
 func seedRelayAgent(t *testing.T, dsn, name, token string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
 	defer cancel()
 	pool, err := db.Connect(ctx, dsn)
 	if err != nil {

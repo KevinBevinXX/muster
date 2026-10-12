@@ -27,7 +27,7 @@ import (
 // and is errored; with the clock reset by tick 1's write it has dwelt ~2s and is
 // retried AGAIN — the forever-provisioning agent.
 func TestAFailureEveryTickReachesActionErrorAtTheDwellBoundary(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
 	defer cancel()
 	pool, err := db.Connect(ctx, dbtest.DSN(t))
 	if err != nil {
@@ -47,7 +47,9 @@ func TestAFailureEveryTickReachesActionErrorAtTheDwellBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM agents WHERE id=$1`, row.ID) })
+	t.Cleanup(func() {
+		_, _ = pool.Exec(dbtest.AsOperator(context.Background()), `DELETE FROM agents WHERE id=$1`, row.ID)
+	})
 	if _, err := pool.Exec(ctx, `UPDATE agents SET updated_at = now() - $2::interval WHERE id=$1`,
 		row.ID, (agents.ProvisioningStuckTimeout - time.Second).String()); err != nil {
 		t.Fatalf("backdate: %v", err)

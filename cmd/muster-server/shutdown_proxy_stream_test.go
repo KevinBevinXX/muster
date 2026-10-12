@@ -139,7 +139,7 @@ func proxyShutdownApp(t *testing.T, connectPort int, u *proxyUpstream) (a *app, 
 	cfg.ConnectPort = connectPort
 	a = buildForShutdown(t, cfg)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), time.Minute)
 	defer cancel()
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
 	connector = "drain" + suffix
@@ -153,13 +153,15 @@ func proxyShutdownApp(t *testing.T, connectPort int, u *proxyUpstream) (a *app, 
 	}); err != nil {
 		t.Fatalf("create connector: %v", err)
 	}
-	t.Cleanup(func() { _ = store.DeleteConnector(context.Background(), connector) })
+	t.Cleanup(func() { _ = store.DeleteConnector(dbtest.AsOperator(context.Background()), connector) })
 	var agentID int64
 	if err := a.pool.QueryRow(ctx, `INSERT INTO agents (name, namespace, hooks_token) VALUES ($1, $2, $3) RETURNING id`,
 		"drain-"+suffix, "ns-drain-"+suffix, token).Scan(&agentID); err != nil {
 		t.Fatalf("seed agent: %v", err)
 	}
-	t.Cleanup(func() { _, _ = a.pool.Exec(context.Background(), `DELETE FROM agents WHERE id=$1`, agentID) })
+	t.Cleanup(func() {
+		_, _ = a.pool.Exec(dbtest.AsOperator(context.Background()), `DELETE FROM agents WHERE id=$1`, agentID)
+	})
 	g, _, err := store.RequestGrant(ctx, agentID, connector, "shutdown test")
 	if err != nil {
 		t.Fatalf("request grant: %v", err)
@@ -302,7 +304,7 @@ func TestShutdownEndsAProxiedEventStreamOnBothListeners(t *testing.T) {
 	// connector audit must not see a 200 that looks like a stream the upstream
 	// closed. The rows are written before Serve returns, so Run's return orders
 	// them before this read.
-	ctx, cancelRead := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancelRead := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
 	defer cancelRead()
 	rows, err := store.ListAudit(ctx, 500)
 	if err != nil {

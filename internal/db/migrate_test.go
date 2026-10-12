@@ -77,7 +77,7 @@ var tablesWithNoIdentityColumn = []string{
 func migrated(t *testing.T) (context.Context, *pgxpool.Pool) {
 	t.Helper()
 	dsn := dbtest.DSN(t) // skips, or fails, per MUSTER_TEST_REQUIRE_DB
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(db.AsMigratorForTest(context.Background()), 2*time.Minute)
 	t.Cleanup(cancel)
 
 	pool, err := db.Connect(ctx, dsn)

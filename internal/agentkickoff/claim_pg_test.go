@@ -64,7 +64,7 @@ func (g *gatedPG) LatestOrCreateSession(ctx context.Context, agentID int64, name
 // POSITIVE CONTROL: the claim verdicts are asserted as the pair [won, lost], so "one
 // turn" cannot be satisfied by a tick 2 that never reached the claim at all.
 func TestASecondTickInTheSameProcessDoesNotRunASecondTurn(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
 	defer cancel()
 	pool, err := db.Connect(ctx, dbtest.DSN(t))
 	if err != nil {
@@ -87,7 +87,9 @@ func TestASecondTickInTheSameProcessDoesNotRunASecondTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM agents WHERE id=$1`, row.ID) })
+	t.Cleanup(func() {
+		_, _ = pool.Exec(dbtest.AsOperator(context.Background()), `DELETE FROM agents WHERE id=$1`, row.ID)
+	})
 
 	log := &recorder{}
 	gw := &fakeGateway{log: log, reply: "4 open pull requests"}
