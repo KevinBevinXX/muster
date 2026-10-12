@@ -46,6 +46,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/sse"
@@ -167,6 +168,12 @@ type Server struct {
 	// connectProxy is the connector proxy, built by UseExtensions when a
 	// connector store is wired. See connectors.go.
 	connectProxy *connectors.Proxy
+
+	// principalProbe, when set, is called by admit (principal.go) with every
+	// request it hands to a handler. TEST-ONLY: nothing in production sets it,
+	// and it exists so principal_test.go can observe the principal at the
+	// hand-off without running the handler.
+	principalProbe func(*http.Request)
 }
 
 // LeaderGate is the cross-process singleton gate the background loops consult.
@@ -610,6 +617,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 // exited would be permanently sweep-less for the rest of the process's life and
 // would look identical to a healthy one.
 func (s *Server) RunTaskRetention(ctx context.Context, interval time.Duration) {
+	// A background loop acts for every user (accounts PR 2/6); see internal/authz.
+	ctx = authz.System(ctx)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -660,6 +669,8 @@ func (s *Server) taskRetentionPass(ctx context.Context) {
 // 🔴 It is a SEPARATE loop from RunTaskRetention, and that is a fixed bug rather
 // than a preference — see TaskReapInterval.
 func (s *Server) RunTaskReap(ctx context.Context, interval time.Duration) {
+	// A background loop acts for every user (accounts PR 2/6); see internal/authz.
+	ctx = authz.System(ctx)
 	// 🔴 Announce at ENTRY, unconditionally. The pass is silent when it flags
 	// nothing, so without this line a process whose reaper was never wired and one
 	// sweeping a board with no idle tasks emit BYTE-IDENTICAL logs. That

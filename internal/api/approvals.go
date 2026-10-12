@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 )
 
 // ---------------------------------------------------------------------------
@@ -333,7 +334,8 @@ func (s *Server) requireRelayAgent(next http.HandlerFunc) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		next(w, r.WithContext(context.WithValue(r.Context(), agentCtxKey{}, a)))
+		s.admit(w, r.WithContext(context.WithValue(r.Context(), agentCtxKey{}, a)), next,
+			principalFor(agentOwnerID(a), authz.ViaRelay))
 	}
 }
 

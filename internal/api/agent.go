@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/notes"
 )
 
@@ -36,7 +37,7 @@ func (s *Server) requireAgentToken(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		ctx := context.WithValue(r.Context(), agentCtxKey{}, a)
-		next(w, r.WithContext(ctx))
+		s.admit(w, r.WithContext(ctx), next, principalFor(agentOwnerID(a), authz.ViaAgent))
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/auth"
+	"github.com/ZacxDev/muster/internal/authz"
 )
 
 // sessionCookieName is the cookie carrying the human session (see
@@ -266,7 +267,7 @@ func (s *Server) requireSession(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if s.hasValidSession(r) {
-			next(w, r)
+			s.admit(w, r, next, principalFor(sessionUserID(), authz.ViaSession))
 			return
 		}
 		s.refuseUnauthenticated(w, r)
@@ -389,12 +390,11 @@ func isDocumentNavigation(r *http.Request) bool {
 // warns at boot when the token is unset.
 func (s *Server) requireHookToken(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.auth.hookTokenEnforced() {
-			next(w, r)
-			return
-		}
-		if auth.ConstantTimeEqual(hookTokenFromRequest(r), s.auth.HookToken) {
-			next(w, r)
+		// ⚠ THE UNENFORCED CASE ACTS AS THE MACHINE USER TOO. It admitted
+		// everyone as the operator's own tier before principals existed; giving
+		// it a principal states that rather than changing it.
+		if !s.auth.hookTokenEnforced() || auth.ConstantTimeEqual(hookTokenFromRequest(r), s.auth.HookToken) {
+			s.admit(w, r, next, principalFor(machineUserID(), authz.ViaHook))
 			return
 		}
 		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid or missing hook token"})
@@ -475,7 +475,7 @@ func (s *Server) requireArmedHookToken(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if auth.ConstantTimeEqual(hookTokenFromRequest(r), s.auth.HookToken) {
-			next(w, r)
+			s.admit(w, r, next, principalFor(machineUserID(), authz.ViaHook))
 			return
 		}
 		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid or missing hook token"})
@@ -559,7 +559,8 @@ func (s *Server) admitAttributedService(w http.ResponseWriter, r *http.Request, 
 	if isWriteRequest(r) {
 		s.logger.Printf(ServiceTierLogPrefix+"%s %s attributed to %q", r.Method, r.URL.Path, actor)
 	}
-	next(w, r.WithContext(context.WithValue(r.Context(), serviceActorCtxKey{}, actor)))
+	s.admit(w, r.WithContext(context.WithValue(r.Context(), serviceActorCtxKey{}, actor)), next,
+		principalFor(machineUserID(), authz.ViaService))
 }
 
 // requireServiceToken gates the SERVICE-TO-SERVICE tier: a named sibling process
@@ -727,14 +728,16 @@ func (s *Server) requireServiceToken(next http.HandlerFunc) http.HandlerFunc {
 func (s *Server) requireHookOrServiceToken(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.auth.hookTokenEnforced() {
-			next(w, r)
+			s.admit(w, r, next, principalFor(machineUserID(), authz.ViaHook))
 			return
 		}
 		token := hookTokenFromRequest(r)
 		if auth.ConstantTimeEqual(token, s.auth.HookToken) {
 			// The operator's own tier: legitimately unattributed, because that
 			// secret is held by every hook script on both hosts and names nobody.
-			next(w, r)
+			// (Unattributed means no ACTOR name; it still acts as the machine
+			// user, which is a different question.)
+			s.admit(w, r, next, principalFor(machineUserID(), authz.ViaHook))
 			return
 		}
 		if token == "" {

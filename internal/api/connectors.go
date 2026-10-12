@@ -13,6 +13,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/auth"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -152,7 +153,8 @@ func (s *Server) requireConnectorAgent(next http.HandlerFunc) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		next(w, r.WithContext(context.WithValue(r.Context(), agentCtxKey{}, a)))
+		s.admit(w, r.WithContext(context.WithValue(r.Context(), agentCtxKey{}, a)), next,
+			principalFor(agentOwnerID(a), authz.ViaConnect))
 	}
 }
 

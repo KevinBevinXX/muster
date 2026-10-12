@@ -50,6 +50,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
@@ -168,6 +169,8 @@ func (p *Promoter) Tick(ctx context.Context) (int, error) {
 
 // Run ticks every interval until ctx is cancelled, then closes [Promoter.Done].
 func (p *Promoter) Run(ctx context.Context, interval time.Duration) {
+	// A background loop acts for every user (accounts PR 2/6); see internal/authz.
+	ctx = authz.System(ctx)
 	defer p.once.Do(func() { close(p.done) })
 	if interval <= 0 {
 		interval = DefaultInterval

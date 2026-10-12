@@ -98,6 +98,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
@@ -251,6 +252,8 @@ func defaultOwner() string {
 // Run ticks every interval until ctx is cancelled, then waits for in-flight turns
 // and closes [Deliverer.Done].
 func (d *Deliverer) Run(ctx context.Context, interval time.Duration) {
+	// A background loop acts for every user (accounts PR 2/6); see internal/authz.
+	ctx = authz.System(ctx)
 	if interval <= 0 {
 		interval = DefaultInterval
 	}

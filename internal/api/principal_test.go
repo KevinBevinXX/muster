@@ -1,0 +1,407 @@
+package api
+
+import (
+	"context"
+	"errors"
+	"io"
+	"log"
+	"net/http"
+	"net/http/httptest"
+	"regexp"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/connectors"
+)
+
+// Accounts PR 2/6: every authenticated route reaches its handler carrying an
+// authz.Principal, and the Principal names the door that admitted it.
+//
+// 🔴 THE CLASSIFICATION BELOW IS EXHAUSTIVE OVER routes.golden, BOTH WAYS. A
+// route in the golden that is not classified fails (a new route must say
+// which door it is behind, or that it is deliberately public); a route
+// classified here that is not in the golden fails (a stale entry would keep
+// vouching for a route that no longer exists). Public is an ALLOWLIST, not
+// the default.
+
+const (
+	pHookToken    = "principal-test-hook-token-0123456789abcdef"
+	pServiceToken = "principal-test-service-token-0123456789abcd"
+	pPassword     = "principal-test-operator-password"
+	pAgentToken   = "principal-test-agent-own-token-0123456789"
+)
+
+// publicRoutes are served with no credential and therefore no Principal.
+var publicRoutes = []string{
+	"GET /apple-touch-icon-precomposed.png",
+	"GET /apple-touch-icon.png",
+	"GET /favicon.ico",
+	"GET /health",
+	"GET /login",
+	"GET /manifest.webmanifest",
+	"GET /metrics",
+	"GET /readyz",
+	"GET /static/",
+	"GET /sw.js",
+	"POST /login",
+	"POST /logout",
+}
+
+// routeVias is, for every non-public route, each door that admits it.
+// A route behind requireHookOrServiceToken has two.
+var routeVias = map[authz.Via][]string{
+	authz.ViaSession: {
+		"DELETE /agents/{id}",
+		"DELETE /connector-grants/{id}",
+		"DELETE /connectors/{name}",
+		"DELETE /tasks/{id}",
+		"DELETE /tasks/{id}/comments/{cid}",
+		"DELETE /tasks/{id}/tags/{tag}",
+		"GET /agents",
+		"GET /agents/{name}",
+		"GET /agents/{name}/logs/stream",
+		"GET /agents/{name}/terminal",
+		"GET /agents/{name}/terminal/ws",
+		"GET /agents/{name}/ws",
+		"GET /api/directories",
+		"GET /api/openrouter/models",
+		"GET /connectors",
+		"GET /events",
+		"GET /github/callback",
+		"GET /github/connect",
+		"GET /repos",
+		"GET /share",
+		"GET /tasks",
+		"GET /tasks/{id}",
+		"GET /tasks/{id}/attachments/{aid}",
+		"GET /ui/agents",
+		"GET /ui/agents/new",
+		"GET /ui/agents/notes",
+		"GET /ui/agents/repos",
+		"GET /ui/agents/{id}/card",
+		"GET /ui/agents/{id}/recent",
+		"GET /ui/agents/{id}/rename",
+		"GET /ui/agents/{id}/status",
+		"GET /ui/agents/{name}/chat-log",
+		"GET /ui/agents/{name}/task",
+		"GET /ui/chief/panel",
+		"GET /ui/chief/threads/search",
+		"GET /ui/connector-requests",
+		"GET /ui/connectors",
+		"GET /ui/connectors/new",
+		"GET /ui/connectors/{name}/rotate",
+		"GET /ui/notifications",
+		"GET /ui/repos",
+		"GET /ui/tags",
+		"GET /ui/tasks",
+		"GET /ui/tasks/new",
+		"GET /ui/tasks/review-count",
+		"GET /ui/tasks/{id}/card",
+		"GET /ui/tasks/{id}/edit",
+		"GET /{$}",
+		"PATCH /tasks/{id}/status",
+		"POST /agents",
+		"POST /agents/sessions/{sid}/read",
+		"POST /agents/{id}/model",
+		"POST /agents/{id}/name",
+		"POST /agents/{id}/sessions",
+		"POST /agents/{id}/start",
+		"POST /agents/{id}/stop",
+		"POST /chief/provision",
+		"POST /connectors",
+		"POST /connectors/{name}/rotate",
+		"POST /github/disconnect",
+		"POST /tasks",
+		"POST /tasks/merge",
+		"POST /tasks/{id}/comments",
+		"POST /tasks/{id}/edit",
+		"POST /tasks/{id}/tags",
+		"POST /ui/connector-requests/{id}/approve",
+		"POST /ui/connector-requests/{id}/deny",
+	},
+	authz.ViaHook: {
+		"DELETE /api/tasks/{id}",
+		"DELETE /api/tasks/{id}/comments/{cid}",
+		"GET /api/agents",
+		"GET /api/agents/{name}/messages",
+		"GET /api/projects",
+		"GET /api/sessions/{id}/tasks",
+		"GET /api/tags",
+		"GET /api/tasks",
+		"GET /api/tasks/{id}",
+		"PATCH /api/tasks/{id}",
+		"PATCH /api/tasks/{id}/status",
+		"POST /api/agents/{name}/messages",
+		"POST /api/tasks",
+		"POST /api/tasks/{id}/comments",
+	},
+	authz.ViaService: {
+		"GET /api/tasks",
+		"PATCH /api/tasks/{id}/status",
+	},
+	authz.ViaAgent: {
+		"GET /agent/muster",
+		"GET /agent/task",
+		"PATCH /agent/task/status",
+		"POST /agent/task/comment",
+	},
+	authz.ViaConnect: {
+		"/connect/{connector}/{host}/{path...}",
+		"GET /agent/connectors",
+		"GET /agent/connectors/{name}",
+		"POST /agent/connectors/{name}/request",
+		"POST /mcp",
+	},
+	authz.ViaRelay: {
+		"DELETE /agent/approvals/{id}",
+		"GET /agent/approvals/{id}",
+		"POST /agent/approvals",
+		"POST /agent/blocked",
+	},
+}
+
+// principalAgents resolves the one test agent by its own token. Every other
+// method is the nil embedded interface: the probe aborts the request before
+// any handler could call one.
+type principalAgents struct{ agents.Store }
+
+func (principalAgents) GetByHooksToken(_ context.Context, tok string) (agents.Agent, error) {
+	if tok == pAgentToken {
+		return agents.Agent{ID: 7, Name: "principal-test-agent"}, nil
+	}
+	return agents.Agent{}, errors.New("no such agent")
+}
+
+type principalConnectors struct{ connectors.Store }
+
+// errProbeAbort stops a request at admit's hand-off, so no handler body runs:
+// the test observes the principal, not the handler's dependencies.
+var errProbeAbort = errors.New("principal probe: abort before the handler")
+
+// concretePath turns a mux pattern into a request path that matches it.
+var wildcard = regexp.MustCompile(`\{[^}]*\}`)
+
+func concretePath(pattern string) (method, path string) {
+	method, path = http.MethodGet, pattern
+	if i := strings.IndexByte(pattern, ' '); i > 0 {
+		method, path = pattern[:i], pattern[i+1:]
+	}
+	path = strings.ReplaceAll(path, "{$}", "")
+	path = wildcard.ReplaceAllString(path, "x1")
+	if strings.HasSuffix(path, "/") && path != "/" {
+		path += "x1"
+	}
+	return method, path
+}
+
+func newPrincipalTestServer(t *testing.T) (*Server, http.Handler, *[]authz.Principal) {
+	t.Helper()
+	return newPrincipalTestServerWith(t, AuthConfig{HookToken: pHookToken, ServiceToken: pServiceToken, UIPassword: pPassword})
+}
+
+func newPrincipalTestServerWith(t *testing.T, cfg AuthConfig) (*Server, http.Handler, *[]authz.Principal) {
+	t.Helper()
+	s := New(nil, cfg, log.New(io.Discard, "", 0))
+	s.UseExtensions(Extensions{Agents: principalAgents{}, Connectors: principalConnectors{}})
+	seen := &[]authz.Principal{}
+	s.principalProbe = func(r *http.Request) {
+		p, ok := authz.From(r.Context())
+		if !ok {
+			t.Errorf("%s %s: admit handed on a request with no principal", r.Method, r.URL.Path)
+		}
+		*seen = append(*seen, p)
+		panic(errProbeAbort)
+	}
+	mux := http.NewServeMux()
+	s.registerAll(mux)
+	return s, mux, seen
+}
+
+// serve runs one request and reports whether it was stopped by the probe.
+func serve(t *testing.T, h http.Handler, req *http.Request) (aborted bool, code int) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	func() {
+		defer func() {
+			// Any OTHER panic means a handler body ran — against the fakes'
+			// nil methods — which is itself the observation "no principal was
+			// handed on". It is reported as not-aborted so the caller's own
+			// assertion names the failure, rather than crashing the binary.
+			if r := recover(); r != nil {
+				aborted = r == errProbeAbort //nolint:errorlint // identity of the sentinel
+				if !aborted {
+					t.Logf("%s %s: the handler ran and panicked: %v", req.Method, req.URL.Path, r)
+					rec.Code = http.StatusInternalServerError
+				}
+			}
+		}()
+		h.ServeHTTP(rec, req)
+	}()
+	return aborted, rec.Code
+}
+
+func credential(s *Server, req *http.Request, via authz.Via) {
+	switch via {
+	case authz.ViaSession:
+		req.Header.Set("Cookie", sessionCookieFor(s))
+		req.Header.Set("Origin", "http://"+req.Host) // requireOperatorWrite's same-origin half
+	case authz.ViaHook:
+		req.Header.Set("X-Muster-Token", pHookToken)
+	case authz.ViaService:
+		req.Header.Set("Authorization", "Bearer "+pServiceToken)
+		req.Header.Set(ActorHeader, "principal-test-service")
+	case authz.ViaAgent, authz.ViaConnect, authz.ViaRelay:
+		req.Header.Set("X-Muster-Token", pAgentToken)
+	}
+}
+
+func TestEveryRouteIsClassifiedForItsPrincipal(t *testing.T) {
+	golden := map[string]bool{}
+	for _, r := range readGolden(t) {
+		golden[r] = true
+	}
+	classified := map[string]bool{}
+	for _, r := range publicRoutes {
+		classified[r] = true
+	}
+	for _, rs := range routeVias {
+		for _, r := range rs {
+			classified[r] = true
+		}
+	}
+	var unclassified, stale []string
+	for r := range golden {
+		if !classified[r] {
+			unclassified = append(unclassified, r)
+		}
+	}
+	for r := range classified {
+		if !golden[r] {
+			stale = append(stale, r)
+		}
+	}
+	sort.Strings(unclassified)
+	sort.Strings(stale)
+	if len(unclassified) > 0 {
+		t.Errorf("routes in %s with no principal classification (add each to routeVias under the door "+
+			"that admits it, or to publicRoutes if it is deliberately unauthenticated):\n  %s",
+			goldenPath, strings.Join(unclassified, "\n  "))
+	}
+	if len(stale) > 0 {
+		t.Errorf("classified routes that are not in %s:\n  %s", goldenPath, strings.Join(stale, "\n  "))
+	}
+	for _, r := range publicRoutes {
+		for via, rs := range routeVias {
+			for _, x := range rs {
+				if x == r {
+					t.Errorf("%s is listed public AND behind %s", r, via)
+				}
+			}
+		}
+	}
+}
+
+// TestEveryAuthenticatedRouteAttachesAPrincipal drives each classified route
+// through its REAL registered wrapper chain with that door's credential and
+// observes the principal at admit's hand-off to the handler.
+//
+// Per route and door it asserts: (1) with the credential, exactly one
+// principal reaches the hand-off, and it is user 1 / admin / THAT door; (2)
+// with NO credential, nothing reaches the hand-off — which is what makes (1)
+// a fact about the credential rather than about a route that admits anyone.
+func TestEveryAuthenticatedRouteAttachesAPrincipal(t *testing.T) {
+	s, h, seen := newPrincipalTestServer(t)
+	vias := make([]string, 0, len(routeVias))
+	for v := range routeVias {
+		vias = append(vias, string(v))
+	}
+	sort.Strings(vias)
+	checked := 0
+	for _, v := range vias {
+		via := authz.Via(v)
+		for _, pattern := range routeVias[via] {
+			method, path := concretePath(pattern)
+			t.Run(string(via)+" "+pattern, func(t *testing.T) {
+				*seen = nil
+				bare := httptest.NewRequest(method, path, nil)
+				if aborted, _ := serve(t, h, bare); aborted || len(*seen) != 0 {
+					t.Fatalf("with no credential the request reached a handler (principal %v)", *seen)
+				}
+				req := httptest.NewRequest(method, path, nil)
+				credential(s, req, via)
+				aborted, code := serve(t, h, req)
+				if !aborted || len(*seen) != 1 {
+					t.Fatalf("with the %s credential no principal reached the handler (status %d, saw %v)",
+						via, code, *seen)
+				}
+				want := authz.Principal{UserID: authz.OperatorUserID, Role: authz.RoleAdmin, Via: via}
+				if got := (*seen)[0]; got != want {
+					t.Fatalf("principal = %v; want %v", got, want)
+				}
+			})
+			checked++
+		}
+	}
+	// Positive control on the walk, derived from the golden rather than from
+	// the table it is checking: every non-public route must have been driven
+	// at least once (the classification test pins that the table and the
+	// golden agree; this pins that the loop actually ran them).
+	if nonPublic := len(readGolden(t)) - len(publicRoutes); checked < nonPublic || nonPublic < 90 {
+		t.Fatalf("drove %d route/door pairs; the golden has %d non-public routes", checked, nonPublic)
+	}
+}
+
+// TestAnUnarmedHookTierStillActsAsTheMachineUser covers the branch the main
+// walk cannot reach: with NO MUSTER_HOOK_TOKEN, requireHookToken and
+// requireHookOrServiceToken admit an uncredentialed caller (back-compat; see
+// requireHookToken). Such a request must still carry the machine principal —
+// an admitted request with none is exactly what PR 3 turns into an empty
+// board. requireArmedHookToken refuses instead (503), so it is the one hook
+// route that must NOT reach a handler here.
+func TestAnUnarmedHookTierStillActsAsTheMachineUser(t *testing.T) {
+	_, h, seen := newPrincipalTestServerWith(t, AuthConfig{UIPassword: pPassword})
+	armed := "POST /api/agents/{name}/messages"
+	for _, pattern := range routeVias[authz.ViaHook] {
+		method, path := concretePath(pattern)
+		t.Run(pattern, func(t *testing.T) {
+			*seen = nil
+			aborted, code := serve(t, h, httptest.NewRequest(method, path, nil))
+			if pattern == armed {
+				if aborted || code != http.StatusServiceUnavailable {
+					t.Fatalf("the armed route on an unarmed server: aborted=%v status %d; want a 503 refusal", aborted, code)
+				}
+				return
+			}
+			want := authz.Principal{UserID: authz.OperatorUserID, Role: authz.RoleAdmin, Via: authz.ViaHook}
+			if !aborted || len(*seen) != 1 || (*seen)[0] != want {
+				t.Fatalf("unarmed hook tier: aborted=%v status %d saw %v; want %v", aborted, code, *seen, want)
+			}
+		})
+	}
+}
+
+// TestPublicRoutesAreServedWithoutAPrincipal drives every allowlisted public
+// route once with EACH door's credential. None may reach admit: a route that
+// does is behind a wrapper, so listing it public is a misclassification that
+// would exempt it from the walk above. (Driving it with NO credential would
+// prove nothing — a mislabelled route simply refuses and attaches nothing.)
+func TestPublicRoutesAreServedWithoutAPrincipal(t *testing.T) {
+	s, h, seen := newPrincipalTestServer(t)
+	doors := []authz.Via{authz.ViaSession, authz.ViaHook, authz.ViaService, authz.ViaAgent}
+	for _, pattern := range publicRoutes {
+		method, path := concretePath(pattern)
+		for _, via := range doors {
+			t.Run(pattern+" as "+string(via), func(t *testing.T) {
+				*seen = nil
+				req := httptest.NewRequest(method, path, strings.NewReader(""))
+				credential(s, req, via)
+				if aborted, _ := serve(t, h, req); aborted || len(*seen) != 0 {
+					t.Fatalf("a route listed public attached principal %v — it is behind a wrapper", *seen)
+				}
+			})
+		}
+	}
+}
