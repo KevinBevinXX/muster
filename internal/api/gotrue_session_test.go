@@ -673,3 +673,28 @@ func TestTheGoTrueFormsRefuseACrossSitePost(t *testing.T) {
 		t.Fatalf("positive control: %d", w.Code)
 	}
 }
+
+// TestTheAuthPagesLetTheirOwnFormsCarryAnOrigin: securityHeaders sets
+// no-referrer everywhere, under which a browser sends `Origin: null` on a form
+// POST — and the gotrue forms refuse that. The auth documents must override it
+// to same-origin, through the REAL middleware chain.
+func TestTheAuthPagesLetTheirOwnFormsCarryAnOrigin(t *testing.T) {
+	f := newGoTrueFixture(t)
+	path := mintClaim(t, f.store)
+	for _, target := range []string{"/login", path} {
+		w := do(f.edge, "GET", target, nil)
+		if got := w.Header().Get("Referrer-Policy"); got != "same-origin" {
+			t.Errorf("GET %s: Referrer-Policy %q, want same-origin", target, got)
+		}
+	}
+	// Control: an ordinary response keeps the global no-referrer.
+	if got := do(f.edge, "GET", "/health", nil).Header().Get("Referrer-Policy"); got != "no-referrer" {
+		t.Fatalf("control: /health Referrer-Policy %q, want no-referrer", got)
+	}
+	// And a POST whose Origin is the literal "null" is refused (what a form
+	// under no-referrer would have sent).
+	null := func(r *http.Request) { r.Header.Set("Origin", "null") }
+	if w := do(f.edge, "POST", "/login", url.Values{"email": {"a@example.com"}, "password": {"x"}}, null); w.Code != http.StatusForbidden {
+		t.Fatalf("Origin: null POST /login: %d, want 403", w.Code)
+	}
+}

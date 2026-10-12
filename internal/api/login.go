@@ -240,6 +240,14 @@ func writeAuthDocument(w http.ResponseWriter, code int, title, inner string) {
 	// A login page must never be cached: a shared or restored cache entry would
 	// show a stale form (or a stale error) to the next person at this origin.
 	w.Header().Set("Cache-Control", "no-store")
+	// 🔴 same-origin, OVERRIDING securityHeaders' no-referrer, FOR THESE PAGES
+	// ONLY. Under no-referrer a browser sends `Origin: null` on a form POST
+	// navigation, so the gotrue sign-in, claim and sign-out forms — which
+	// refuse a POST whose Origin is not muster's (login CSRF) — refused
+	// muster's OWN forms. Measured in Chromium by the e2e spec: the claim POST
+	// carried `Origin: null` and got 403. same-origin still sends nothing to
+	// any other site, which is what no-referrer protects (a token in a URL).
+	w.Header().Set("Referrer-Policy", "same-origin")
 	w.WriteHeader(code)
 	_, _ = w.Write([]byte(doc))
 }
