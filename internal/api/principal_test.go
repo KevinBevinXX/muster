@@ -36,6 +36,10 @@ const (
 
 // publicRoutes are served with no credential and therefore no Principal.
 var publicRoutes = []string{
+	// The admin claim (accounts PR 4): how an anonymous visitor holding a
+	// single-use link stops being anonymous, like /login.
+	"GET /auth/claim",
+	"POST /auth/claim",
 	"GET /apple-touch-icon-precomposed.png",
 	"GET /apple-touch-icon.png",
 	"GET /favicon.ico",
@@ -60,6 +64,7 @@ var publicRoutes = []string{
 // A route behind requireHookOrServiceToken has two.
 var routeVias = map[authz.Via][]string{
 	authz.ViaSession: {
+		"GET /account",
 		"DELETE /agents/{id}",
 		"GET /mirror/terminal",
 		"GET /mirror/terminal/ws",

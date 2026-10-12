@@ -55,6 +55,14 @@ func run() error {
 	}
 	_, err = owner.Exec(ctx, `TRUNCATE notes, agents, connectors, connector_audit
 		RESTART IDENTITY CASCADE`)
+	if err == nil {
+		// The accounts state the gotrue-login spec changes: the admin claim
+		// binds user 1 to a GoTrue login, which a re-run must be able to do
+		// again. User 1 itself stays (every row is owned by it).
+		if _, err = owner.Exec(ctx, `DELETE FROM invites`); err == nil {
+			_, err = owner.Exec(ctx, `UPDATE users SET gotrue_sub = NULL, email = NULL, disabled_at = NULL WHERE id = 1`)
+		}
+	}
 	_ = owner.Close(ctx)
 	if err != nil {
 		return fmt.Errorf("truncate: %w", err)

@@ -28,6 +28,7 @@ import (
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/github"
+	"github.com/ZacxDev/muster/internal/gotrue/gotruetest"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/provision"
@@ -104,6 +105,10 @@ var isolationClasses = map[string]routeClass{
 	"GET /sw.js":                            classPublic,
 	"POST /login":                           classPublic,
 	"POST /logout":                          classPublic,
+	// accounts PR 4: the admin claim (token in a form field) and the account page.
+	"GET /auth/claim":  classPublic,
+	"POST /auth/claim": classPublic,
+	"GET /account":     classList,
 
 	"GET /{$}":                     classList,
 	"GET /agents":                  classList,
@@ -310,6 +315,12 @@ type isoWorld struct {
 	up           *isoUpstream
 	router       *isoRouter
 	prov         *isoProvisioner
+	// The REAL gotrue-session leg (accounts PR 4): a second server in gotrue
+	// mode over the SAME stores, signing users in through the fake GoTrue
+	// issuer — no sessionUserOverride. gtTokens is each user's minted pair.
+	gtH      http.Handler
+	gtFake   *gotruetest.Fake
+	gtTokens map[int64][2]string
 }
 
 func newIsoWorld(t *testing.T) *isoWorld {
@@ -453,7 +464,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	srv := New(w.bus, AuthConfig{HookToken: isoHookToken, ServiceToken: isoServiceToken, UIPassword: isoPassword},
 		log.New(io.Discard, "", 0))
 	w.prov = &isoProvisioner{store: as}
-	srv.UseExtensions(Extensions{
+	ext := Extensions{
 		Notes: ns, Agents: as, GitHub: gh, Users: users.NewPG(pool),
 		GitHubOAuth: GitHubOAuthConfig{ClientID: "iso-client", ClientSecret: "iso-secret", BaseURL: "http://muster.test",
 			StateKey: []byte("iso-walk-oauth-state-key-0123456789")},
@@ -466,10 +477,33 @@ func newIsoWorld(t *testing.T) *isoWorld {
 				}
 				return nil, fmt.Errorf("no such host %s", host)
 			}},
-	})
+	}
+	srv.UseExtensions(ext)
 	w.router = &isoRouter{dirs: []string{"/srv/projects/" + w.opCanary}}
 	srv.UseRouter(w.router)
 	srv.UseApprovalGate(&isoGate{})
+
+	// The gotrue-mode twin: same stores, same router and gate, its sessions
+	// resolved by the real session tier (requireGoTrueSession → users.gotrue_sub
+	// → users row) from cookies the fake issuer signed. A and B are bound to
+	// GoTrue subjects the way a claim or an invite binds them.
+	w.gtFake = gotruetest.New(t, []byte("iso-walk-gotrue-secret-0123456789abcdef"))
+	gtSrv := New(w.bus, AuthConfig{Mode: AuthModeGoTrue, HookToken: isoHookToken, ServiceToken: isoServiceToken},
+		log.New(io.Discard, "", 0))
+	gtSrv.UseExtensions(ext)
+	gtSrv.UseRouter(w.router)
+	gtSrv.UseApprovalGate(&isoGate{})
+	gtSrv.UseGoTrue(GoTrueAuth{Client: w.gtFake.Client(), Verifier: w.gtFake.Verifier(), Users: users.NewPG(pool)})
+	w.gtH = BrowserListener(gtSrv.Handler())
+	w.gtTokens = map[int64][2]string{}
+	for _, u := range []isoUser{w.a, w.b} {
+		sub := w.gtFake.AddUser(u.name+w.suffix+"@example.com", "iso-walk-password-0123")
+		if _, err := pool.Exec(w.sys, `UPDATE users SET gotrue_sub = $1 WHERE id = $2`, sub, u.uid); err != nil {
+			t.Fatal(err)
+		}
+		at, rt, _ := w.gtFake.Mint(sub)
+		w.gtTokens[u.uid] = [2]string{at, rt}
+	}
 	srv.sessionUserOverride = func(r *http.Request) int64 {
 		if v, err := strconv.ParseInt(r.Header.Get(isoUserHeader), 10, 64); err == nil && v > 0 {
 			return v
@@ -513,6 +547,13 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	}
 	w.opApproval = filed.RequestID
 
+	// A signs in through the gotrue twin BEFORE anyone else, so anything in the
+	// session tier that keys a user by the wrong thing (a cache, a lookup) would
+	// hand A's identity to the next caller — which the B walk below then is.
+	if rec := w.do(w.h, "GET", "/tasks", "", cred{gotrueUser: w.a.uid}); rec.Code != http.StatusOK {
+		t.Fatalf("seed: A's gotrue session: %d %s", rec.Code, truncate(rec.Body.String(), 200))
+	}
+
 	t.Cleanup(func() {
 		bg := authz.System(context.Background())
 		ids := []int64{w.a.uid, w.b.uid}
@@ -535,6 +576,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 // cred is one way of authenticating a request.
 type cred struct {
 	sessionUser int64  // a browser session acting as this user
+	gotrueUser  int64  // a REAL gotrue session (cookies the fake issuer signed) of this user
 	agentToken  string // an agent's own token
 	hook        bool   // the shared machine hook token (user 1)
 }
@@ -543,6 +585,8 @@ func (c cred) String() string {
 	switch {
 	case c.sessionUser > 0:
 		return fmt.Sprintf("session(user %d)", c.sessionUser)
+	case c.gotrueUser > 0:
+		return fmt.Sprintf("gotrue-session(user %d)", c.gotrueUser)
 	case c.agentToken != "":
 		return "agent-token"
 	case c.hook:
@@ -572,6 +616,9 @@ func (w *isoWorld) do(h http.Handler, method, path, body string, c cred) *httpte
 	case body != "":
 		ctype = "application/x-www-form-urlencoded"
 	}
+	if c.gotrueUser > 0 {
+		h = w.gtH // the gotrue twin, on its browser listener
+	}
 	r := httptest.NewRequest(method, path, strings.NewReader(body)).WithContext(ctx)
 	r.Host = "muster.test"
 	if ctype != "" {
@@ -582,6 +629,11 @@ func (w *isoWorld) do(h http.Handler, method, path, body string, c cred) *httpte
 		r.Header.Set("Cookie", sessionCookieFor(w.srv))
 		r.Header.Set("Origin", "http://muster.test")
 		r.Header.Set(isoUserHeader, strconv.FormatInt(c.sessionUser, 10))
+		r.Header.Set("HX-Request", "true")
+	case c.gotrueUser > 0:
+		tk := w.gtTokens[c.gotrueUser]
+		r.Header.Set("Cookie", accessCookieName+"="+tk[0]+"; "+refreshCookieName+"="+tk[1])
+		r.Header.Set("Origin", "http://muster.test")
 		r.Header.Set("HX-Request", "true")
 	case c.agentToken != "":
 		r.Header.Set("X-Muster-Token", c.agentToken)
@@ -838,7 +890,7 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 	w.router.reset()
 
 	// --- user B, a member, through every one of B's credentials ---
-	bResults := w.walkAs(w.b, w.objA, []cred{{sessionUser: w.b.uid}, {agentToken: w.b.token}}, routes)
+	bResults := w.walkAs(w.b, w.objA, []cred{{sessionUser: w.b.uid}, {gotrueUser: w.b.uid}, {agentToken: w.b.token}}, routes)
 	w.checkOutsider(t, "B", bResults)
 	// The operator's own data (the router's directory list) is not A's, so the
 	// canary check above cannot see it: a MEMBER must not get it either.
@@ -847,7 +899,17 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 			t.Errorf("LEAK: B %s %s → %d carries the OPERATOR's data\n  body: %s", res.via, res.route, res.status, truncate(res.body, 300))
 		}
 	}
-	if len(bResults) < 3*len(isolationClasses) {
+	// The gotrue leg must have been ADMITTED, or its clean bodies are 401s.
+	gtAdmitted := 0
+	for _, res := range bResults {
+		if strings.HasPrefix(res.via, "gotrue-session") && is2xx(res.status) {
+			gtAdmitted++
+		}
+	}
+	if gtAdmitted < 20 {
+		t.Errorf("CONTROL: B's real gotrue session was admitted on only %d routes — the leg is not walking", gtAdmitted)
+	}
+	if len(bResults) < 4*len(isolationClasses) {
 		t.Fatalf("the walk drove %d requests for %d routes", len(bResults), len(isolationClasses))
 	}
 	for _, res := range bResults {
@@ -886,7 +948,7 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 	}
 
 	// --- the NEGATIVE CONTROL: the same walk as A must reach A's data ---
-	aResults := w.walkAs(w.a, w.objA, []cred{{sessionUser: w.a.uid}, {agentToken: w.a.token}}, routes)
+	aResults := w.walkAs(w.a, w.objA, []cred{{sessionUser: w.a.uid}, {gotrueUser: w.a.uid}, {agentToken: w.a.token}}, routes)
 	sawCanary := map[string]bool{}
 	reached := map[string]bool{}
 	distinguishes := func(res isoResult) bool {
@@ -923,6 +985,16 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 		}
 		t.Errorf("CONTROL: no credential of A's distinguished A's OWN object from a ghost on %s (same status, no "+
 			"canary, no marker) — so an outsider's identical answers there prove nothing", route)
+	}
+	// The gotrue leg's own control: A's REAL gotrue session sees A's canary.
+	gtCanary := 0
+	for _, res := range aResults {
+		if strings.HasPrefix(res.via, "gotrue-session") && len(w.leaks(res.body, true)) > 0 {
+			gtCanary++
+		}
+	}
+	if gtCanary == 0 {
+		t.Error("CONTROL: A's real gotrue session never saw A's own data, so B's clean gotrue walk proves nothing")
 	}
 	for _, r := range wantCanaryForA {
 		if !sawCanary[r] {

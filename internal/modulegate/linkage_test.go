@@ -59,6 +59,10 @@ var notLinkedLedger = map[string]string{
 
 	"internal/modulegate": "this package. Test files only; it has no importable symbol.",
 
+	"internal/gotrue/gotruetest": "the in-memory GoTrue the Go tests drive the session tier " +
+		"against. Imported only by _test.go files: a fake identity provider linked into the " +
+		"server would be a way to mint sessions.",
+
 	"e2e/seed": "the browser suite's fixture loader (`go run ./e2e/seed`). It TRUNCATES " +
 		"the board before seeding, so it must never be reachable from a shipped binary; it " +
 		"also refuses any database whose name does not end in _e2e.",

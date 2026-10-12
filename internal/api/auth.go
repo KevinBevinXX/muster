@@ -74,7 +74,17 @@ type AuthConfig struct {
 	// there is never sent — which would present as "login succeeds and then
 	// nothing is logged in".
 	SecureCookies bool
+	// Mode is MUSTER_AUTH_MODE. The zero value is AuthModePassword, so every
+	// existing construction keeps today's behaviour. See accounts.go.
+	Mode AuthMode
+	// PublicURL is where a person should sign in (MUSTER_PUBLIC_URL). It is
+	// named in the refusal the machine-token listener gives a browser in
+	// gotrue mode, and it is the base of the admin claim link.
+	PublicURL string
 }
+
+// goTrueMode reports whether the human tier is GoTrue's.
+func (c AuthConfig) goTrueMode() bool { return c.Mode == AuthModeGoTrue }
 
 // hookTokenEnforced reports whether the hook endpoints require a token.
 func (c AuthConfig) hookTokenEnforced() bool { return c.HookToken != "" }
@@ -179,6 +189,11 @@ const minUIPasswordLen = 12
 // the log.
 func (c AuthConfig) BrowserAuthRefusal() string {
 	switch {
+	case c.goTrueMode():
+		// gotrue mode does not use the operator password. Its own
+		// preconditions are refused at boot (cmd/muster-server's
+		// config.validate) and, failing that, by requireGoTrueSession.
+		return ""
 	case c.UIPassword == "":
 		return "MUSTER_UI_PASSWORD is not set"
 	case len(c.UIPassword) < minUIPasswordLen:
@@ -207,7 +222,7 @@ func (c AuthConfig) uiSessionSecret() []byte {
 // hasValidSession reports whether the request carries a cookie this server
 // signed and that has not expired.
 func (s *Server) hasValidSession(r *http.Request) bool {
-	if s.auth.BrowserAuthRefusal() != "" {
+	if s.auth.goTrueMode() || s.auth.BrowserAuthRefusal() != "" {
 		return false
 	}
 	ck, err := r.Cookie(sessionCookieName)
@@ -251,6 +266,10 @@ func (s *Server) hasValidSession(r *http.Request) bool {
 // and therefore into that same 303.
 func (s *Server) requireSession(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if s.auth.goTrueMode() {
+			s.requireGoTrueSession(w, r, next)
+			return
+		}
 		if reason := s.auth.BrowserAuthRefusal(); reason != "" {
 			// A person typing the address deserves the page that NAMES the
 			// missing variable, not a JSON blob. /login renders that explanation
@@ -393,12 +412,35 @@ func (s *Server) requireHookToken(next http.HandlerFunc) http.HandlerFunc {
 		// ⚠ THE UNENFORCED CASE ACTS AS THE MACHINE USER TOO. It admitted
 		// everyone as the operator's own tier before principals existed; giving
 		// it a principal states that rather than changing it.
+		if s.refuseUnarmedHookInGoTrueMode(w) {
+			return
+		}
 		if !s.auth.hookTokenEnforced() || auth.ConstantTimeEqual(hookTokenFromRequest(r), s.auth.HookToken) {
 			s.admit(w, r, next, s.principalFor(r.Context(), machineUserID(), authz.ViaHook))
 			return
 		}
 		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid or missing hook token"})
 	}
+}
+
+// refuseUnarmedHookInGoTrueMode answers 503 (and reports true) when the hook
+// tier is unarmed in gotrue mode.
+//
+// 🔴 THE ENFORCE-WHEN-SET OPENING IS A PASSWORD-MODE DEBT ONLY. Unarmed, the
+// hook wrappers admit anyone as the machine user — user 1, the admin. With one
+// shared operator that is the documented back-compat; beside per-user logins it
+// is an anonymous admin door. cmd/muster-server refuses to BOOT gotrue mode
+// this way; this is the second wall, so a server built some other way still
+// cannot serve it (TestGoTrueModeClosesAnUnarmedHookTier).
+func (s *Server) refuseUnarmedHookInGoTrueMode(w http.ResponseWriter) bool {
+	if !s.auth.goTrueMode() || s.auth.hookTokenEnforced() {
+		return false
+	}
+	s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+		"error":          "this server does not serve the machine hook tier: " + s.auth.HookArmingRefusal(),
+		HookUnarmedField: true,
+	})
+	return true
 }
 
 // HookArmingRefusal reports why this server must not serve a FAIL-CLOSED hook-tier
@@ -727,6 +769,9 @@ func (s *Server) requireServiceToken(next http.HandlerFunc) http.HandlerFunc {
 // stated in full.
 func (s *Server) requireHookOrServiceToken(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if s.refuseUnarmedHookInGoTrueMode(w) {
+			return
+		}
 		if !s.auth.hookTokenEnforced() {
 			s.admit(w, r, next, s.principalFor(r.Context(), machineUserID(), authz.ViaHook))
 			return

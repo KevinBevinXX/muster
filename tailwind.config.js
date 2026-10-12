@@ -83,6 +83,13 @@ module.exports = {
     // this entry has a positive control rather than merely having been typed —
     // of every file this config scans, only login.go writes it.
     './internal/api/login.go',
+    // ⚠ THE SECOND ONE (accounts PR 4): the gotrue-mode sign-in, admin claim
+    // and account pages. It has NO control class of its own, and that is
+    // stated rather than hidden: every class it writes is also written under
+    // internal/ui or in login.go (measured: `make css` is byte-identical with
+    // and without this line), so nothing it alone could prove is missing. The
+    // first class it writes that no other entry does needs a css-check control.
+    './internal/api/login_gotrue.go',
     //
     // ✅ SEAM CLOSED BY THE API CARVE — kept, rather than deleted, because it
     // states WHY the entry above is a file and not a glob. Re-read it before
