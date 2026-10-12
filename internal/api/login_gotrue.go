@@ -122,6 +122,13 @@ func (s *Server) handleGoTrueLoginSubmit(w http.ResponseWriter, r *http.Request)
 			"This server is in gotrue mode but has no GoTrue configured.")
 		return
 	}
+	if !s.isSameOrigin(r) {
+		// Login CSRF: a cross-site form could otherwise sign the victim's
+		// browser into the ATTACKER'S account. Every browser sends Origin on
+		// a form POST, and muster's own form is same-origin.
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
+		return
+	}
 	if err := r.ParseForm(); err != nil {
 		s.renderGoTrueLogin(w, http.StatusBadRequest, "", "", "That form could not be read.")
 		return
@@ -188,6 +195,10 @@ func (s *Server) admitFreshSession(ctx context.Context, sess gotrue.Session) (us
 // form asks for "everywhere"), this process's revocation of the access token,
 // and the cookies.
 func (s *Server) handleGoTrueLogout(w http.ResponseWriter, r *http.Request) {
+	if !s.isSameOrigin(r) {
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
+		return
+	}
 	scope := gotrue.ScopeLocal
 	if r.FormValue("scope") == "global" {
 		scope = gotrue.ScopeGlobal
@@ -229,7 +240,7 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 <form method="POST" action="/logout">
 <button type="submit" class="press min-h-[44px] w-full rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Sign out</button></form>
 `+everywhere+`
-<a href="/" class="text-sm text-accent underline">Back to muster</a>
+<a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to muster</a>
 </section>`)
 }
 
@@ -334,6 +345,10 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.renderNotice(w, code, "Open this link at the public address", msg)
+		return
+	}
+	if !s.isSameOrigin(r) {
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
 		return
 	}
 	if err := r.ParseForm(); err != nil {

@@ -118,9 +118,12 @@ func TestVerifyRejectsATamperedSignature(t *testing.T) {
 	}
 	// An empty verifier secret verifies nothing (HMAC with an empty key is
 	// computable by anyone).
+	// An empty verifier secret verifies nothing — not even a token HMAC'd with
+	// the empty key, which anyone can compute.
 	v := testVerifier()
 	v.Secret = nil
-	if _, err := v.Verify(tok); !errors.Is(err, ErrSignature) {
+	emptyKeyed := forge(t, map[string]any{"alg": "HS256"}, goodClaims(), nil, nil)
+	if _, err := v.Verify(emptyKeyed); !errors.Is(err, ErrSignature) {
 		t.Fatalf("empty secret: got %v, want ErrSignature", err)
 	}
 }

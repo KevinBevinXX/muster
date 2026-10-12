@@ -170,6 +170,10 @@ func TestTheClaimLinkIsSingleUseUnderConcurrency(t *testing.T) {
 	t.Cleanup(reset)
 
 	fake := gotruetest.New(t, gtSecret)
+	// Hold each GoTrue create open, so that without the row lock every racer
+	// would pass the "unredeemed" check before any commits (measured: with
+	// no delay a lock-free mutant was caught only 2 runs in 3).
+	fake.SetCreateDelay(100 * time.Millisecond)
 	store := users.NewPG(pool)
 	s := New(nil, AuthConfig{Mode: AuthModeGoTrue, HookToken: gtHook}, log.New(io.Discard, "", 0))
 	s.UseGoTrue(GoTrueAuth{Client: fake.Client(), Verifier: fake.Verifier(), Users: store})

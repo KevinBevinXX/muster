@@ -159,6 +159,12 @@ func (s *PG) ClaimInviteLive(ctx context.Context, tokenHash []byte) (bool, error
 // ErrInvalidInvite, having never called create — so GoTrue gets exactly one
 // user (TestTheClaimLinkIsSingleUseUnderConcurrency).
 //
+// ⚠ THE users ROW IS LOCKED TOO, AND FOR A CLAIM EITHER LOCK ALONE SUFFICES —
+// measured by mutation: removing one leaves that test green, removing both
+// turns it red. The users lock is what stops two DIFFERENT links bound to one
+// user both binding it; the invite lock is what single-use rests on for an
+// invite with no claim user (accounts PR 5). Neither is decoration.
+//
 // create makes the GoTrue user and returns its subject. If anything after it
 // fails, undo(sub) is called so a GoTrue user is not left behind with no muster
 // row bound to it.

@@ -703,10 +703,15 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"A plain-HTTP LAN port will NOT be able to log in against this process",
 			envSecureCookies)
 	} else {
+		gotrueNote := ""
+		if api.AuthMode(a.cfg.AuthMode) == api.AuthModeGoTrue {
+			gotrueNote = " (this is the PASSWORD-mode cookie, unused here: gotrue mode's " +
+				"cookies are always Secure — see the auth mode line)"
+		}
 		l.Printf("session cookie: NOT Secure — %s is unset, which is the DEFAULT and is "+
 			"correct for a plain-HTTP LAN port. ⚠ If this deployment is reached over TLS, "+
 			"set it: without it the session cookie travels with no Secure attribute and any "+
-			"plain-HTTP request to the same host carries it", envSecureCookies)
+			"plain-HTTP request to the same host carries it%s", envSecureCookies, gotrueNote)
 	}
 
 	if a.cfg.HookToken != "" {

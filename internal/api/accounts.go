@@ -316,9 +316,6 @@ func (s *Server) resolveGoTrueSession(r *http.Request) (gotrueSession, error) {
 	if at != "" {
 		c, err = g.Verifier.Verify(at)
 	}
-	if err == nil && g.isRevoked(c) {
-		return sess, errRevoked
-	}
 	if errors.Is(err, gotrue.ErrExpired) && rt != "" {
 		fresh, rerr := g.refresh(r.Context(), clientIP(r), rt)
 		if rerr != nil {

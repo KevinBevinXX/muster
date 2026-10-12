@@ -64,10 +64,13 @@ type Fake struct {
 	mu        sync.Mutex
 	now       time.Time
 	accessTTL time.Duration
-	users     map[string]*User
-	sessions  map[string]*session
-	refresh   map[string]*refreshToken
-	calls     []Call
+	// createDelay holds every /admin/users call open this long, to widen a
+	// race a concurrency test wants to observe.
+	createDelay time.Duration
+	users       map[string]*User
+	sessions    map[string]*session
+	refresh     map[string]*refreshToken
+	calls       []Call
 }
 
 // Call is one request the fake served.
@@ -117,6 +120,13 @@ func (f *Fake) Advance(d time.Duration) {
 func (f *Fake) SetAccessTTL(d time.Duration) {
 	f.mu.Lock()
 	f.accessTTL = d
+	f.mu.Unlock()
+}
+
+// SetCreateDelay makes every admin create take d before it answers.
+func (f *Fake) SetCreateDelay(d time.Duration) {
+	f.mu.Lock()
+	f.createDelay = d
 	f.mu.Unlock()
 }
 
@@ -352,6 +362,12 @@ func (f *Fake) adminRoute(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
 	var body map[string]any
 	_ = json.NewDecoder(r.Body).Decode(&body)
+	f.mu.Lock()
+	delay := f.createDelay
+	f.mu.Unlock()
+	if r.Method == http.MethodPost && p == "/admin/users" && delay > 0 {
+		time.Sleep(delay)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	switch {

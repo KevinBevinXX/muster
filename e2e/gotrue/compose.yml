@@ -1,0 +1,70 @@
+# The REAL GoTrue the gotrue-login spec signs in against (accounts PR 4).
+#
+# 🔴 SAME IMAGE PIN AS THE DEPLOYMENT, AND THE SAME SETTINGS EXCEPT WHERE A
+# TEST NEEDS A DIFFERENT NUMBER. Every GOTRUE_* line below mirrors muster's
+# GoTrue manifest; the deliberate differences are:
+#   - GOTRUE_JWT_EXP is 5 s, not 900 s, so the spec can watch an access token
+#     expire and be refreshed server-side within one test;
+#   - SITE_URL / API_EXTERNAL_URL / URI_ALLOW_LIST name the local browser
+#     listener instead of the public host;
+#   - the database is its own throwaway Postgres (muster_auth_e2e, tmpfs).
+#
+# Started by e2e/tests/gotrue-login.spec.ts (`docker compose up -d --wait`),
+# so `make e2e` needs nothing extra beyond Docker. The JWT secret below is a
+# test value and is the one the spec hands muster.
+name: ${MUSTER_E2E_GOTRUE_PROJECT:-muster-e2e-gotrue}
+services:
+  auth-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: muster
+      POSTGRES_PASSWORD: muster
+      POSTGRES_DB: muster
+    volumes:
+      - ./initdb.sql:/docker-entrypoint-initdb.d/initdb.sql:ro
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U muster -d muster_auth_e2e"]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+  gotrue:
+    image: supabase/gotrue:v2.189.0
+    depends_on:
+      auth-db:
+        condition: service_healthy
+    restart: on-failure
+    ports:
+      - "127.0.0.1:${MUSTER_E2E_GOTRUE_PORT:-18192}:9999"
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: "9999"
+      API_EXTERNAL_URL: ${MUSTER_E2E_GOTRUE_SITE:-http://localhost:18191}
+      GOTRUE_SITE_URL: ${MUSTER_E2E_GOTRUE_SITE:-http://localhost:18191}
+      GOTRUE_URI_ALLOW_LIST: ${MUSTER_E2E_GOTRUE_SITE:-http://localhost:18191}/**
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://muster_auth:muster-auth-e2e-not-a-secret@auth-db:5432/muster_auth_e2e?sslmode=disable
+      GOTRUE_DB_NAMESPACE: auth
+      GOTRUE_DB_MAX_POOL_SIZE: "5"
+      GOTRUE_DISABLE_SIGNUP: "true"
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: "true"
+      GOTRUE_MAILER_AUTOCONFIRM: "true"
+      GOTRUE_EXTERNAL_PHONE_ENABLED: "false"
+      GOTRUE_SMS_AUTOCONFIRM: "false"
+      GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: "false"
+      GOTRUE_PASSWORD_MIN_LENGTH: "12"
+      GOTRUE_JWT_SECRET: e2e-gotrue-jwt-secret-not-a-real-one-0123456789
+      GOTRUE_JWT_EXP: "5"
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_ISSUER: muster-auth
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_SECURITY_REFRESH_TOKEN_ROTATION_ENABLED: "true"
+      GOTRUE_RATE_LIMIT_HEADER: X-Muster-Client-IP
+      GOTRUE_LOG_LEVEL: info
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9999/health >/dev/null"]
+      interval: 1s
+      timeout: 3s
+      retries: 90

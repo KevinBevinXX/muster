@@ -200,6 +200,11 @@ func do(h http.Handler, method, target string, body url.Values, opts ...reqOpt) 
 	if body != nil {
 		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
+	if method == http.MethodPost {
+		// muster's own forms are same-origin; a test that wants a cross-site
+		// POST overrides this with an option.
+		r.Header.Set("Origin", "http://"+r.Host)
+	}
 	for _, o := range opts {
 		o(r)
 	}
@@ -643,5 +648,28 @@ func TestDisableUserReportsAGoTrueFailureAfterTheRowChanged(t *testing.T) {
 	}
 	if !errors.Is(f.s.DisableUser(context.Background(), 404, true), users.ErrNotFound) {
 		t.Fatal("disabling a missing user must report ErrNotFound")
+	}
+}
+
+// TestTheGoTrueFormsRefuseACrossSitePost: sign-in, claim and sign-out each
+// refuse a POST whose Origin is another site (login CSRF would sign the
+// victim's browser into the attacker's account), before reaching GoTrue.
+func TestTheGoTrueFormsRefuseACrossSitePost(t *testing.T) {
+	f := newGoTrueFixture(t)
+	f.member("m@example.com", 7, authz.RoleMember)
+	path := mintClaim(t, f.store)
+	evil := func(r *http.Request) { r.Header.Set("Origin", "https://evil.example.net") }
+	for _, target := range []string{"/login", path, "/logout"} {
+		w := do(f.edge, "POST", target, url.Values{"email": {"m@example.com"}, "password": {"correct horse battery"}}, evil)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("cross-site POST %s: %d, want 403", target, w.Code)
+		}
+	}
+	if n := len(f.fake.Calls()); n != 0 {
+		t.Fatalf("cross-site posts reached GoTrue %d time(s)", n)
+	}
+	// Positive control: the same sign-in, same-origin, succeeds.
+	if w := do(f.edge, "POST", "/login", url.Values{"email": {"m@example.com"}, "password": {"correct horse battery"}}); w.Code != http.StatusSeeOther {
+		t.Fatalf("positive control: %d", w.Code)
 	}
 }

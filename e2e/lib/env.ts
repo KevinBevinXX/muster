@@ -41,6 +41,12 @@ export const provPort = port + 5;
 export const connectorsPort = port + 6;
 export const connectPort = port + 7;
 export const fakeUpstreamPort = port + 8;
+// accounts PR 4: a gotrue-mode server (machine port + browser listener) and
+// the real GoTrue it signs in against (e2e/gotrue/compose.yml).
+export const gotrueMainPort = port + 9;
+export const gotrueBrowserPort = port + 10;
+export const gotruePort = Number(process.env.MUSTER_E2E_GOTRUE_PORT ?? port + 11);
+export const gotrueSecret = 'e2e-gotrue-jwt-secret-not-a-real-one-0123456789';
 // The seeded `docs-sweeper` agent's own token (e2e/seed). Invented, like every
 // value here.
 export const agentToken = 'e2e-agent-token-not-a-real-one';
