@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -18,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -174,6 +176,13 @@ type Proxy struct {
 	// OnGrantRequested is called (synchronously; keep it cheap) when a proxied
 	// request files a NEW pending grant, so the operator can be prompted.
 	OnGrantRequested func(Grant)
+	// StreamsEnd is the server's shutdown signal for streams: once it is done, a
+	// proxied EVENT STREAM in flight ends, and one that starts later ends at once.
+	// Every other proxied request is left alone. nil means never (a Proxy built
+	// directly, as tests do). The api package hands it the same signal
+	// api.Server.EndStreams cancels, so ending its own streams and the ones relayed
+	// here is ONE event, registered once per http.Server. See endOnShutdown.
+	StreamsEnd context.Context
 
 	transportOnce sync.Once
 	built         http.RoundTripper // Policy.Transport(), built once
@@ -406,6 +415,13 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 	red := newRedactor(secretForms(c, secret))
 	prefix := "/connect/" + connector + "/"
 
+	// The upstream request runs on outCtx, which only an event stream's shutdown
+	// end cancels (ModifyResponse below); r.Context() still cancels it as before.
+	outCtx, cancelOut := context.WithCancel(ctx)
+	defer cancelOut()
+	var endedAtShutdown atomic.Bool
+	stopEnd := func() bool { return false }
+
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL = target
@@ -444,6 +460,16 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 			// any the upstream sends anyway.
 			resp.Header.Del("Trailer")
 			resp.Trailer = nil
+			// Decided on the upstream's own Content-Type, before the redactor
+			// touches any header; INSIDE the redactor's wrap, so the redactor sees
+			// a clean EOF and releases what it was holding back.
+			if p.StreamsEnd != nil && isEventStream(resp.Header) {
+				resp.Body = &endOnShutdown{ReadCloser: resp.Body, ended: &endedAtShutdown}
+				stopEnd = context.AfterFunc(p.StreamsEnd, func() {
+					endedAtShutdown.Store(true) // before the cancel, so the failed Read sees it
+					cancelOut()
+				})
+			}
 			red.headers(resp.Header)
 			resp.Body = red.reader(resp.Body)
 			resp.Header.Del("Content-Length")
@@ -469,7 +495,11 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 		},
 		FlushInterval: -1,
 	}
-	rp.ServeHTTP(&trailerlessWriter{w: w}, r)
+	rp.ServeHTTP(&trailerlessWriter{w: w}, r.WithContext(outCtx))
+	stopEnd()
+	if endedAtShutdown.Load() {
+		detail = "event stream ended at server shutdown"
+	}
 
 	bg := context.WithoutCancel(ctx)
 	if err := p.Store.TouchGrant(bg, acc.Grant.ID); err != nil {
@@ -542,6 +572,56 @@ func (t *trailerlessWriter) Flush() {
 	if f, ok := t.w.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// isEventStream reports whether an upstream response is a server-sent-event
+// stream — the one kind of proxied response shutdown ENDS rather than drains.
+//
+// 🔴 THE TEST IS THE RESPONSE'S MEDIA TYPE, AND THE TWO OBVIOUS ALTERNATIVES
+// CANNOT TELL THE CASES APART HERE. The flush mode is FlushInterval -1 for every
+// proxied response, and ModifyResponse forces ContentLength -1 on every one too
+// (the redactor changes lengths), so neither marks a stream. An unknown-length
+// body is not a stream either: a git fetch's pack arrives exactly that way, is
+// finite, and truncating it breaks the clone — that is a request the drain
+// exists to let finish. text/event-stream is the only type whose contract has
+// no end and promises the client reconnects (EventSource, with Last-Event-ID),
+// so ending it loses nothing — the same reason api.Server.EndStreams may end
+// /events. The predicate is httputil.ReverseProxy's own for "this response is a
+// stream" (mime.ParseMediaType, parameters and case ignored), so the two agree.
+//
+// ⚠ RESIDUAL: a long-lived response of any OTHER type (an ndjson watch, a
+// chunked long-poll) is still drained, and can still hold a shutdown to its
+// deadline. Which platforms answer that way was not surveyed; widening the set
+// means naming a type whose truncation is as harmless as an event stream's.
+func isEventStream(h http.Header) bool {
+	mt, _, _ := mime.ParseMediaType(h.Get("Content-Type"))
+	return mt == "text/event-stream"
+}
+
+// endOnShutdown wraps an event stream's upstream body. Once ended is set (by
+// Proxy.StreamsEnd firing, which also cancels the upstream request), the read
+// error that cancellation causes is reported as io.EOF.
+//
+// 🔴 THE EOF IS WHAT MAKES THE END CLEAN RATHER THAN AN ABORT. A non-EOF error
+// from the body (context.Canceled, MEASURED) makes httputil.ReverseProxy panic
+// with http.ErrAbortHandler under a real server. In muster that panic does not
+// even reach net/http: api's recoverMiddleware catches it, logs a PANIC with a
+// stack and counts muster's panic metric — on every shutdown with a stream
+// open — and Serve's grant/connector touches after ServeHTTP never run. The
+// client cannot tell (the middleware lets the response finish, so it reads EOF
+// either way), which is why cmd/muster-server's test reads the panic counter.
+// As EOF the redactor releases what it held back and Serve returns normally.
+type endOnShutdown struct {
+	io.ReadCloser
+	ended *atomic.Bool
+}
+
+func (b *endOnShutdown) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil && err != io.EOF && b.ended.Load() {
+		err = io.EOF
+	}
+	return n, err
 }
 
 // authHeader is the header name and value that carries the credential.

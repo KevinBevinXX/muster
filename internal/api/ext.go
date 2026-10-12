@@ -153,6 +153,9 @@ func (s *Server) UseExtensions(ext Extensions) {
 			Policy:           ext.ConnectorPolicy,
 			Logger:           s.logger,
 			OnGrantRequested: s.onConnectorRequested,
+			// The SAME signal EndStreams cancels: a relayed event stream ends with
+			// this package's own streams, on whichever listener it arrived.
+			StreamsEnd: s.streams.context(),
 		}
 	}
 }

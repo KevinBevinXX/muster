@@ -5,11 +5,11 @@ import (
 	"sync"
 )
 
-// EndStreams ends every server-sent-event stream this package's own handlers
-// serve, and any opened after it — not one relayed by the /connect/ proxy (see
-// the open residual below).
-// It is idempotent and safe to call concurrently. cmd/muster-server registers it
-// with http.Server.RegisterOnShutdown, so it runs the moment Shutdown begins.
+// EndStreams ends every server-sent-event stream this server serves — its own
+// handlers' and any text/event-stream relayed by the /connect/ proxy — and any
+// opened after it. It is idempotent and safe to call concurrently.
+// cmd/muster-server registers it with RegisterOnShutdown on BOTH of its
+// http.Servers (main and connect), so it runs the moment either drain begins.
 //
 // 🔴 WITHOUT IT EVERY SHUTDOWN WITH A BROWSER OPEN COST THE WHOLE DRAIN BUDGET.
 // http.Server.Shutdown closes idle connections and WAITS for active ones, and an
@@ -27,18 +27,20 @@ import (
 // nothing: the EventSource reconnects to whichever process answers next.
 // Pinned by cmd/muster-server's TestShutdownEndsStreamsButLetsAnOrdinaryRequestFinish.
 //
-// 🔴 OPEN RESIDUAL: A STREAM PROXIED THROUGH /connect/ STILL HOLDS THE DRAIN.
-// "Every stream" here means the handlers in THIS package that answer
-// text/event-stream themselves. connectors.Proxy.Serve is a ReverseProxy on the
-// request's own context, so a long-lived upstream response relayed through
-// /connect/{connector}/… is an active connection EndStreams does not end — and
-// that route is served by the main listener as well as the connect one. Such a
-// request still costs a shutdown the whole drain budget — MEASURED at `f44c849`
-// at component level (connectors.Proxy behind a plain http.Server, a fake
-// upstream holding a text/event-stream open): Shutdown ran to its 10 s deadline,
-// against 0 s with no stream; not measured through the built binary. Deliberately not closed
-// here: the proxy also carries ordinary requests the drain must let finish, so
-// ending it needs a way to tell the two apart.
+// 🔴 A STREAM PROXIED THROUGH /connect/ ENDS TOO — THIS WAS AN OPEN RESIDUAL.
+// connectors.Proxy.Serve relays the upstream on the request's own context, so
+// a long-lived upstream response was an active connection nothing here ended,
+// on the main listener and the connect one alike. MEASURED at `f44c849` at
+// component level: Shutdown ran to its 10 s deadline with one proxied stream
+// open, against 0 s with none. The proxy now holds the SAME signal
+// (connectors.Proxy.StreamsEnd, set in UseExtensions) and ends a relayed
+// response when it fires — but only one whose Content-Type is
+// text/event-stream, because the proxy also carries ordinary requests the
+// drain must let finish (a git fetch's pack among them); why the media type is
+// the test, and what it still does not end, is on connectors.isEventStream.
+// Pinned through buildApp + Run (not the built binary) by cmd/muster-server's
+// TestShutdownEndsAProxiedEventStreamOnBothListeners and
+// TestShutdownLetsAnOrdinaryProxiedRequestFinish.
 //
 // It is a second registry beside terminalSet deliberately, not a missed reuse:
 // terminalSet.endAll also refuses new entries and waits for each release, and
@@ -51,7 +53,8 @@ func (s *Server) EndStreams() { s.streams.end() }
 // Every handler in this package that sets the literal "text/event-stream" must
 // take its loop's context from here rather than from r.Context() —
 // TestEveryEventStreamHandlerEndsOnShutdown holds that as a ledger, and that is
-// all it sees: a stream relayed by a proxy sets no such literal.
+// all it sees: a stream relayed by the /connect/ proxy sets no such literal and
+// ends through connectors.Proxy.StreamsEnd instead, pinned behaviourally.
 func (s *Server) streamContext(parent context.Context) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(parent)
 	// AfterFunc, not a watcher goroutine: nothing runs per stream until the end

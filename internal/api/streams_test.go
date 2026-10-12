@@ -23,7 +23,9 @@ import (
 // ⚠ THAT IS ITS WHOLE REACH, AND IT IS NARROWER THAN "EVERY STREAM THIS SERVER
 // CAN HOLD OPEN". It reads one package for one literal. A stream relayed through
 // the /connect/ reverse proxy (internal/connectors) sets no such literal and is
-// invisible here — the open residual EndStreams' doc names.
+// invisible here; it ends through connectors.Proxy.StreamsEnd, which this ledger
+// does not read — cmd/muster-server's TestShutdownEndsAProxiedEventStreamOnBothListeners
+// is what pins it.
 //
 // It is structural. The behavioural proof for /events is cmd/muster-server's
 // TestShutdownDoesNotWaitOutAnOpenEventStream; the agent log stream needs a

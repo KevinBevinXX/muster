@@ -342,8 +342,11 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	}
 	// Shutdown waits for active connections and an SSE stream never goes idle,
 	// so streams are ended the moment the drain begins — see api.EndStreams.
-	// Pinned by TestShutdownDoesNotWaitOutAnOpenEventStream; that ONLY streams end,
-	// by TestShutdownEndsStreamsButLetsAnOrdinaryRequestFinish.
+	// That covers event streams relayed by the /connect/ proxy too.
+	// Pinned by TestShutdownDoesNotWaitOutAnOpenEventStream and
+	// TestShutdownEndsAProxiedEventStreamOnBothListeners; that ONLY streams end,
+	// by TestShutdownEndsStreamsButLetsAnOrdinaryRequestFinish and
+	// TestShutdownLetsAnOrdinaryProxiedRequestFinish.
 	a.http.RegisterOnShutdown(srv.EndStreams)
 	if cfg.ConnectPort != 0 {
 		a.connect = &http.Server{
@@ -351,6 +354,12 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			Handler:           api.OnlyConnectSurface(handler),
 			ReadHeaderTimeout: readHeaderTimeout,
 		}
+		// 🔴 REGISTERED ON THIS SERVER TOO, so the connect listener's drain does
+		// not depend on the main one having begun first. Today shutdown() drains
+		// a.http first and the signal is shared, so this registration is redundant
+		// under that order — and only under it. EndStreams is idempotent. Pinned on
+		// its own by TestTheConnectListenersShutdownEndsAProxiedEventStreamByItself.
+		a.connect.RegisterOnShutdown(srv.EndStreams)
 	}
 
 	a.logBanner(ext, port)
