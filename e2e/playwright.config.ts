@@ -18,16 +18,22 @@ const capture = process.env.MUSTER_E2E_CAPTURE === '1';
 // spec that ran in no leg or in two. An unknown or empty leg THROWS rather than
 // matching nothing, because a run of zero files is a green run.
 const leg = process.env.MUSTER_E2E_LEG ?? '';
+const { spec, legs } = JSON.parse(fs.readFileSync(path.join(__dirname, 'legs.json'), 'utf8'));
+const esc = (f: string) => f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 function legMatch(): RegExp | RegExp[] {
-  if (!leg) return /tests\/.*\.spec\.ts/;
-  const { legs } = JSON.parse(fs.readFileSync(path.join(__dirname, 'legs.json'), 'utf8'));
+  // 🔴 WHAT A SPEC IS COMES FROM legs.json's `spec` — the SAME two values
+  // `specFiles()` in legs.mjs walks with, so the whole suite and the `--all`
+  // seam guard cannot disagree about which files exist. They did once: this was
+  // an unanchored /tests\/.*\.spec\.ts/, which also collected a
+  // `tests/x.spec.tsx` that no leg ran and `--all` never counted. Anchored at
+  // both ends: a file under e2e/<dir>/, at any depth, whose name ends in <suffix>.
+  if (!leg) return new RegExp(`^${esc(path.join(__dirname, spec.dir))}/.*${esc(spec.suffix)}$`);
   const files: unknown = legs[leg];
   if (!Array.isArray(files) || files.length === 0) {
     throw new Error(`MUSTER_E2E_LEG=${leg}: no such leg (or an empty one) in e2e/legs.json`);
   }
   // Anchored on the whole relative path, so tests/sw.spec.ts cannot also match
   // a file whose name merely ends in sw.spec.ts.
-  const esc = (f: string) => f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return files.map((f: string) => new RegExp(`(^|/)${esc(f)}$`));
 }
 

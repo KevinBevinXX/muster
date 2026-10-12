@@ -32,17 +32,22 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-// Every spec Playwright's chromium project would collect: tests/**/*.spec.ts,
-// relative to e2e/ — the same spelling the JSON report's `file` uses.
+// specFiles lists every file under e2e/<spec.dir>/, at any depth, whose name
+// ends in <spec.suffix> — legs.json's `spec`, the one definition of a spec file
+// that playwright.config.ts's whole-suite testMatch is built from too. Paths are
+// relative to e2e/, the spelling the JSON report's `file` uses. It does NOT list
+// anything else Playwright might collect under another rule (the `capture`
+// project's specs, for one); the chromium project collects exactly this set.
 export function specFiles(root = here) {
+  const { spec } = JSON.parse(fs.readFileSync(path.join(root, 'legs.json'), 'utf8'));
   const out = [];
   const walk = (rel) => {
     for (const d of fs.readdirSync(path.join(root, rel), { withFileTypes: true })) {
       const r = `${rel}/${d.name}`;
       if (d.isDirectory()) walk(r);
-      else if (d.name.endsWith('.spec.ts')) out.push(r);
+      else if (d.name.endsWith(spec.suffix)) out.push(r);
     }
   };
-  walk('tests');
+  walk(spec.dir);
   return out.sort();
 }

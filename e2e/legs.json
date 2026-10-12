@@ -1,4 +1,8 @@
 {
+  "spec": {
+    "dir": "tests",
+    "suffix": ".spec.ts"
+  },
   "measured_at": "289502c",
   "seconds": {
     "tests/claude-code-polish.spec.ts": 41.8,

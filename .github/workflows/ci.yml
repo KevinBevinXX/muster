@@ -471,13 +471,15 @@ jobs:
   # Local: cd e2e && node verdict.mjs --all <each leg's test-results/results.json>
   #
   # 🔴 THIS JOB KEEPS THE CHECK NAME `e2e (playwright, chromium)`, and it is the
-  # suite's verdict in aggregate. It runs `if: always()` so a failed or
-  # cancelled leg reddens it rather than SKIPPING it — a skipped check reads as
-  # neutral, not red.
+  # suite's verdict in aggregate. It runs `if: ${{ !cancelled() }}` so a FAILED
+  # leg reddens it rather than SKIPPING it — a skipped check reads as neutral,
+  # not red. Not `always()`: that also ran it on a CANCELLED run (a PR run
+  # superseded by a newer push), where it went red on a verdict nobody needs and
+  # took a runner slot to do it.
   e2e:
     name: e2e (playwright, chromium)
     needs: e2e-leg
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
