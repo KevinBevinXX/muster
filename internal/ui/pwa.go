@@ -62,7 +62,9 @@ func updateToast() g.Node {
 
 // installButton is the sidebar's "Install app" control. Hidden until the
 // browser fires beforeinstallprompt (pwaScript), and never shown once the app
-// runs standalone or has been installed.
+// runs in ANY installed display mode (pwaScript's installed()) or has been
+// installed. It is rendered `hidden`, so a page whose script never runs — or
+// runs inside the app — never shows it.
 func installButton() g.Node {
 	return Button(
 		Type("button"),
@@ -151,16 +153,34 @@ func pwaScript() g.Node {
 
   // --- install button -------------------------------------------------------
   var deferred = null;
-  function standalone() {
-    return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+  // installed() is the ONE "are we already the app" predicate. Every display
+  // mode but 'browser' is an installed window: the manifest asks for
+  // standalone, a browser that cannot do that falls back along the spec's
+  // chain (standalone -> minimal-ui -> browser), and a desktop app window can
+  // switch to window-controls-overlay at runtime. Asking only for standalone —
+  // what this used to do — offered "Install app" inside the other three.
+  // navigator.standalone is iOS Safari's own flag for a home-screen launch.
+  var INSTALLED_MODES = ['standalone', 'fullscreen', 'minimal-ui', 'window-controls-overlay'];
+  function installed() {
+    if (navigator.standalone === true) return true;
+    if (!window.matchMedia) return false;
+    for (var i = 0; i < INSTALLED_MODES.length; i++) {
+      if (window.matchMedia('(display-mode: ' + INSTALLED_MODES[i] + ')').matches) return true;
+    }
+    return false;
   }
+  // 🔴 THE PREDICATE IS APPLIED HERE, ON EVERY SHOW, NOT ONLY WHEN THE EVENT
+  // ARRIVES. A window's display mode can change after beforeinstallprompt (the
+  // install itself moves a desktop tab into an app window), and every caller
+  // that turns the button on goes through this one function.
   function showInstall(on) {
+    on = on && !installed();
     var bs = document.querySelectorAll('[data-install-app]');
     for (var i = 0; i < bs.length; i++) bs[i].hidden = !on;
   }
   window.addEventListener('beforeinstallprompt', function (e) {
     e.preventDefault();
-    if (standalone() || !window.isSecureContext) return;
+    if (installed() || !window.isSecureContext) return;
     deferred = e;
     showInstall(true);
   });
@@ -174,7 +194,7 @@ func pwaScript() g.Node {
     ev.prompt();
     if (ev.userChoice) ev.userChoice.catch(function () {});
   });
-  document.addEventListener('htmx:load', function () { showInstall(!!deferred && !standalone()); });
+  document.addEventListener('htmx:load', function () { showInstall(!!deferred); });
 
   // --- app badge (desktop / ChromeOS) ---------------------------------------
   // Where setAppBadge exists, show the ready-for-review count. Android has no

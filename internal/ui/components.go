@@ -337,6 +337,8 @@ func shell(activeTab string, feat Features, extra g.Node) g.Node {
 					// that both are bind-once and order-independent — it reads the
 					// `selecting` class merge mode sets, not any of its functions.
 					cardMetaNavScript(),
+					// Places the agent cards' ⋯ popover menus (floating_menu.go).
+					floatingMenuScript(),
 					// Refetch the list on focus / visibility / SSE reconnect so a
 					// closed-and-reopened app is never stale.
 					resyncScript(),

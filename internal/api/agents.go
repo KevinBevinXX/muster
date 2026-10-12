@@ -191,8 +191,9 @@ func (s *Server) handleAgentsContent(w http.ResponseWriter, r *http.Request) {
 	agents.SortByLastActivity(list, lastMsg)
 
 	cards := make([]ui.AgentCardView, 0, len(list))
+	isChief := chiefPredicate(list)
 	for _, a := range list {
-		cards = append(cards, s.cardViewIndexed(a, instIdx, lastMsg[a.ID]))
+		cards = append(cards, s.cardViewIndexed(a, instIdx, lastMsg[a.ID], isChief))
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -522,7 +523,7 @@ func (s *Server) handleSessionRead(w http.ResponseWriter, r *http.Request) {
 // The status is reconciled against live instances through liveStatusIndexed, so
 // callers in a loop pass an index they fetched once; cardViewFor is the
 // single-agent spelling.
-func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Instance, lastMsg time.Time) ui.AgentCardView {
+func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Instance, lastMsg time.Time, isChief func(agents.Agent) bool) ui.AgentCardView {
 	status := liveStatusIndexed(a, idx)
 	return ui.AgentCardView{
 		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName,
@@ -547,14 +548,27 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 		// the list path makes NO per-agent k8s call. Only running agents with a
 		// provisioner get a preview (others render none).
 		LazyRecent: s.ext.Provisioner != nil && status == agents.StatusRunning,
+		// The ONE chief predicate's answer (chief_agent.go), so the menu never
+		// offers a Delete the server would refuse.
+		IsChief: isChief(a),
 	}
 }
 
 // cardViewFor builds the single-card view for one agent, fetching the live
 // instance index itself. Used by the inline-rename re-render and the cancel/card
 // re-fetch. Do NOT use it in a loop — see liveStatus.
+//
+// The chief answer needs the whole list (the chief is resolved across it). A
+// failed read degrades to the reserved-slug half of the predicate only — the
+// card then may offer a Delete the server still refuses, which is the safe
+// direction to be wrong in.
 func (s *Server) cardViewFor(ctx context.Context, a agents.Agent) ui.AgentCardView {
-	return s.cardViewIndexed(a, s.instanceIndex(ctx), s.lastMessageByAgents(ctx, []agents.Agent{a})[a.ID])
+	list, err := s.ext.Agents.List(ctx)
+	if err != nil {
+		s.logger.Printf("agents: card %d: list for chief check: %v", a.ID, err)
+		list = nil
+	}
+	return s.cardViewIndexed(a, s.instanceIndex(ctx), s.lastMessageByAgents(ctx, []agents.Agent{a})[a.ID], chiefPredicate(list))
 }
 
 // handleAgentRenameForm serves GET /ui/agents/{id}/rename: the inline rename
@@ -1109,10 +1123,25 @@ func (s *Server) handleAgentModel(w http.ResponseWriter, r *http.Request) {
 
 // handleAgentDelete tears down the agent (release + namespace + record) in the
 // background and removes its card.
+//
+// 🔴 THE CHIEF IS REFUSED WITH 409, BEFORE ANYTHING IS STARTED. The teardown is
+// asynchronous, so a check inside it could only log; the refusal has to happen
+// here, while there is still a response to put it in. A failed read of the
+// agent table refuses too (500) — see agentIsChief on failing closed.
 func (s *Server) handleAgentDelete(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	a, chief, err := s.agentIsChief(r.Context(), id)
+	if err != nil {
+		s.logger.Printf("agents: delete %d: chief check: %v", id, err)
+		http.Error(w, "could not check whether this is the chief agent; nothing was deleted", http.StatusInternalServerError)
+		return
+	}
+	if chief {
+		http.Error(w, chiefRefusal(a), http.StatusConflict)
 		return
 	}
 	safeGo(s.logger, "destroy", func() {

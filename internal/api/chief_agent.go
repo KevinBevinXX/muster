@@ -93,6 +93,17 @@ func (s *Server) chiefAgent(ctx context.Context) (agents.Agent, error) {
 	if err != nil {
 		return agents.Agent{}, err
 	}
+	found, ok := resolveChief(list)
+	if !ok {
+		return agents.Agent{}, ErrNoChief
+	}
+	return found, nil
+}
+
+// resolveChief is chiefAgent's rule over a list already read: the lowest-id
+// agent whose display name is ChiefDisplayName. It is the one place that rule
+// is written; chiefAgent and isChiefAmong both call it.
+func resolveChief(list []agents.Agent) (agents.Agent, bool) {
 	var found agents.Agent
 	var ok bool
 	for _, a := range list {
@@ -103,10 +114,78 @@ func (s *Server) chiefAgent(ctx context.Context) (agents.Agent, error) {
 			found, ok = a, true
 		}
 	}
-	if !ok {
-		return agents.Agent{}, ErrNoChief
+	return found, ok
+}
+
+// ---------------------------------------------------------------------------
+// DELETION PROTECTION
+//
+// 🔴 ONE PREDICATE, EVERY DESTROY PATH. The chief is the fleet's orchestrator and
+// the only inference path muster has; deleting it by a stray tap in a ⋯ menu, or
+// as a side effect of dismissing the task it was once linked to, removes the
+// thing the operator talks to. Every caller of Provisioner.Destroy in this package
+// asks agentIsChief first (TestEveryDestroyCallSiteIsChiefGuarded holds the
+// ledger of those callers), and the card's menu reads the same answer to hide
+// Delete.
+//
+// "The chief" is BOTH of the two agents that can carry the role, because they
+// are different rows on a real fleet (see the header above):
+//   - the RESERVED SLUG agents.ChiefName, which POST /chief/provision creates and
+//     which nothing else can mint; and
+//   - the agent chiefAgent resolves — by display name, lowest id — which is what
+//     the panel, recaps and `muster chief ask` actually talk to.
+// Protecting only the first leaves the live chief (a generated slug labelled
+// "chief") deletable; protecting only the second leaves the provisioned slug
+// deletable the moment someone relabels it.
+// ---------------------------------------------------------------------------
+
+// chiefRefusal is the text every refused delete of the chief carries.
+//
+// ⚠ THE TWO CHIEFS GET DIFFERENT ADVICE BECAUSE ONLY ONE OF THEM HAS A WAY OUT.
+// The reserved slug is protected ABSOLUTELY (operator decision): its name is
+// immutable, so there is nothing to relabel and the message must not suggest
+// there is. An agent that is the chief only because of its display name stops
+// being the chief the moment it is renamed, and saying so is the remedy.
+func chiefRefusal(a agents.Agent) string {
+	if a.Name == agents.ChiefName {
+		return "the chief agent cannot be deleted"
 	}
-	return found, nil
+	return "the chief agent cannot be deleted; this agent is the chief because it is labelled \"" +
+		ChiefDisplayName + "\" — rename it first if it is really meant to go"
+}
+
+// chiefPredicate is THE chief predicate, bound to one read of the agent list:
+// the chief is resolved once, so a caller deciding many agents (the card list)
+// pays one resolve, not one per card.
+func chiefPredicate(list []agents.Agent) func(agents.Agent) bool {
+	c, ok := resolveChief(list)
+	return func(a agents.Agent) bool {
+		return a.Name == agents.ChiefName || (ok && a.ID == c.ID)
+	}
+}
+
+// isChiefAmong reports whether a is the chief, given the full agent list.
+func isChiefAmong(a agents.Agent, list []agents.Agent) bool { return chiefPredicate(list)(a) }
+
+// agentIsChief reads the agent table and answers isChiefAmong for id, returning
+// the agent's row with it (the refusal text depends on which chief it is). An
+// agent that is not in the table is not the chief. A read error is returned, and
+// every destroy path treats it as "might be the chief" — it FAILS CLOSED, since
+// a refused delete can be retried and a destroyed chief cannot be undone.
+func (s *Server) agentIsChief(ctx context.Context, id int64) (agents.Agent, bool, error) {
+	if s.ext.Agents == nil {
+		return agents.Agent{}, false, nil
+	}
+	list, err := s.ext.Agents.List(ctx)
+	if err != nil {
+		return agents.Agent{}, false, err
+	}
+	for _, a := range list {
+		if a.ID == id {
+			return a, isChiefAmong(a, list), nil
+		}
+	}
+	return agents.Agent{}, false, nil
 }
 
 // 🔴 THERE IS NO chat_sessions ROW FOR RECAPS, AND DELETING IT IS THE FIX.

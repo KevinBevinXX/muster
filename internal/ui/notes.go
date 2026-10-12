@@ -2171,8 +2171,8 @@ func labelledFieldFor(forID, label string, control g.Node) g.Node {
 
 // advancedDisclosure wraps power-user fields (directory / model / repo) in a
 // collapsed native <details> so the default form is just the
-// essentials. No JS — the same disclosure primitive the auto-approve menu and
-// task cards use (boost-safe, keyboard/a11y-correct). data-advanced marks it for
+// essentials. No JS — the same disclosure primitive the agent menu's Delete step
+// and the chat's tool chips use (boost-safe, keyboard/a11y-correct). data-advanced marks it for
 // the e2e state-machine assertions. Subtle styling so it never competes with the
 // primary action.
 func advancedDisclosure(fields ...g.Node) g.Node {

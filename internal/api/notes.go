@@ -1187,8 +1187,9 @@ func (s *Server) handleNoteDelete(w http.ResponseWriter, r *http.Request) {
 
 // dismissTask SOFT-deletes a task and tears down its linked agent pod (if any) in
 // the background — so dismissing a task cleans up its pod instead of orphaning it.
-// Shared by the human dismiss (handleNoteDelete), the machine DELETE
-// (handleAPITaskDelete) and the idle-task reaper (reapIdleTasks). Returns the
+// Shared by the human dismiss (handleNoteDelete) and the machine DELETE
+// (handleAPITaskDelete); the idle-task reaper (reapIdleTasks) is NOT a caller —
+// it flags idle tasks and dismisses nothing. Returns the
 // store error; the teardown is best-effort/async and never blocks or fails it.
 //
 // 🔴 SOFT, since migration 0019. It used to call Notes.Delete, a real row delete,
@@ -1207,6 +1208,14 @@ func (s *Server) handleNoteDelete(w http.ResponseWriter, r *http.Request) {
 // consumer of that link already degrades to "no task", which is what a nulled link
 // produced). Reading it first is kept regardless: it is the order that makes the
 // two deletion modes behave identically, and it is what a future purge needs.
+//
+// 🔴 THE CHIEF IS NEVER TORN DOWN BY A DISMISS. The TASK is still dismissed —
+// the operator asked for that and it is recoverable — but a linked agent that
+// isChiefAmong answers for is left running, and the skip is logged. Refusing the
+// whole dismiss instead would make a task un-dismissable for as long as the
+// chief stays linked to it, and both the human dismiss and the machine DELETE
+// come through here. A failed chief check also leaves the agent
+// alone (agentIsChief: fail closed); the dismiss itself is unaffected.
 func (s *Server) dismissTask(ctx context.Context, id int64) error {
 	// Resolve the task's linked agent (latest) before dismissing it.
 	var linkedAgentID int64
@@ -1215,6 +1224,17 @@ func (s *Server) dismissTask(ctx context.Context, id int64) error {
 			if a, ok := m[id]; ok {
 				linkedAgentID = a.ID
 			}
+		}
+	}
+	if linkedAgentID != 0 {
+		_, chief, err := s.agentIsChief(ctx, linkedAgentID)
+		switch {
+		case err != nil:
+			s.logger.Printf("dismiss task %d: chief check for linked agent %d: %v; leaving the agent running", id, linkedAgentID, err)
+			linkedAgentID = 0
+		case chief:
+			s.logger.Printf("dismiss task %d: linked agent %d is the chief; dismissing the task and leaving the agent running", id, linkedAgentID)
+			linkedAgentID = 0
 		}
 	}
 	if err := s.ext.Notes.SoftDelete(ctx, id); err != nil {
@@ -1230,7 +1250,7 @@ func (s *Server) dismissTask(ctx context.Context, id int64) error {
 	// Broadcast task.changed so any open Tasks tab re-fetches #tasks-list and
 	// re-sorts the flat activity-ordered list (an empty-200 card removal
 	// alone leaves the section headers stale). Shared by the human dismiss and
-	// the idle-task reaper, so both paths regroup consistently.
+	// the machine DELETE, so both paths regroup consistently.
 	s.broadcast(EventTaskChanged, strconv.FormatInt(id, 10))
 	return nil
 }

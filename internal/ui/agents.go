@@ -70,6 +70,11 @@ type AgentCardView struct {
 	// the order and the label on screen are one number. Composed in internal/api's
 	// cardViewIndexed; a zero value (a minimal test view) falls back to UpdatedAt.
 	LastActiveAt time.Time
+	// IsChief marks the fleet's chief agent; its ⋯ menu offers no Delete. It is
+	// the answer of internal/api's ONE chief predicate (isChiefAmong), composed in
+	// cardViewIndexed and never re-derived here — the server refuses the delete
+	// regardless, so this only keeps the UI from offering what it would refuse.
+	IsChief bool
 }
 
 // lastActive is the card's "active" time: LastActiveAt, or UpdatedAt when the
@@ -254,7 +259,8 @@ func agentRenameForm(a AgentCardView) g.Node {
 // preview). The interactive controls — the inline rename pencil and the ⋯
 // context menu (Start/Stop/Delete) — sit OUTSIDE that anchor in a top-right
 // control cluster, so tapping them never triggers card navigation. All
-// interactivity is boost-safe: a native <details> menu (no JS) and htmx.
+// interactivity is boost-safe: a native popover menu (placed by
+// floatingMenuScript) and htmx.
 func agentCard(a AgentCardView) g.Node {
 	ids := strconv.FormatInt(a.ID, 10)
 	return Article(
@@ -380,12 +386,32 @@ func agentRenameButton(ids string) g.Node {
 	)
 }
 
-// agentMenu is the ⋯ context menu: a native <details> dropdown (boost-safe, no
-// JS) holding Start/Stop and Delete. Start/Stop occupy one slot (the agent's
+// agentMenu is the ⋯ context menu: a trigger button plus a FLOATING menu
+// holding Start/Stop and Delete. Start/Stop occupy one slot (the agent's
 // current lifecycle action); Delete uses a two-step in-menu confirm (no native
-// confirm()).
+// confirm()) and is ABSENT for the chief agent (AgentCardView.IsChief), which
+// the server refuses to delete anyway.
+//
+// 🔴 THE MENU IS A NATIVE POPOVER, NOT AN ABSOLUTE DROPDOWN, AND THE CARD IS WHY.
+// It used to be a <details> whose panel was `absolute right-0` inside the card —
+// and agentCard is `overflow-hidden` (its rounded corners clip the footer), so
+// the panel was cut off at the card's bottom edge, and the two-step delete,
+// which GROWS the panel, was cut off worst. A popover renders in the TOP LAYER:
+// no ancestor's overflow, stacking context or transform can clip or bury it.
+// popover="auto" is also what closes it on an outside tap and on Escape, with
+// no listener of ours. Placement (below the trigger, flipped above it near the
+// viewport bottom, clamped inside the viewport at phone width) is
+// floatingMenuScript's, and is re-run whenever the menu's size can change.
+//
+// `invisible` is the other half of the placement contract: the menu is drawn
+// only once floatingMenuScript has put it beside its trigger (see there).
+//
+// ⚠ `hidden [&:popover-open]:flex`, NOT `flex`. The UA hides a closed popover
+// with a UA-origin rule, and ANY author display utility beats it — a plain
+// `flex` here renders every closed menu inline in every card.
 func agentMenu(a AgentCardView) g.Node {
 	ids := strconv.FormatInt(a.ID, 10)
+	menuID := "agent-menu-" + ids
 	var lifecycle g.Node
 	switch a.Status {
 	case "running", "provisioning":
@@ -393,24 +419,31 @@ func agentMenu(a AgentCardView) g.Node {
 	default: // stopped/pending/error
 		lifecycle = agentMenuItem("Start", "/agents/"+ids+"/start", "text-accent")
 	}
-	return Details(
-		Class("group/menu relative"),
-		Summary(
+	return g.Group{
+		Button(
+			Type("button"),
 			g.Attr("aria-label", "Agent actions"),
-			Class("press flex h-11 w-11 cursor-pointer list-none items-center justify-center rounded-xl text-muted transition hover:bg-s2 hover:text-fg [&::-webkit-details-marker]:hidden"),
+			g.Attr("aria-haspopup", "menu"),
+			g.Attr("popovertarget", menuID),
+			Class("press flex h-11 w-11 cursor-pointer items-center justify-center rounded-xl text-muted transition hover:bg-s2 hover:text-fg"),
 			g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><circle cx="4" cy="10" r="1.6"/><circle cx="10" cy="10" r="1.6"/><circle cx="16" cy="10" r="1.6"/></svg>`),
 		),
 		Div(
-			Class("absolute right-0 z-20 mt-1 flex w-44 flex-col gap-1 rounded-xl border border-line bg-s1 p-1.5 shadow-2xl ring-1 ring-black/20"),
+			ID(menuID),
+			g.Attr("popover", "auto"),
+			g.Attr("role", "menu"),
+			g.Attr("data-floating-menu", ""),
+			Class("invisible hidden [&:popover-open]:flex m-0 w-44 flex-col gap-1 rounded-xl border border-line bg-s1 p-1.5 text-fg shadow-2xl ring-1 ring-black/20"),
 			lifecycle,
-			Div(Class("my-0.5 border-t border-line")),
-			agentDeleteConfirm(ids),
+			g.If(!a.IsChief, Div(Class("my-0.5 border-t border-line"))),
+			g.If(!a.IsChief, agentDeleteConfirm(ids)),
 		),
-	)
+	}
 }
 
 // agentMenuItem is a lifecycle action (Start/Stop) inside the ⋯ menu. It posts
-// to its endpoint and morphs the agents list, then closes the menu.
+// to its endpoint and morphs the agents list; floatingMenuScript closes the menu
+// as the request starts, so a failed request does not leave it open.
 func agentMenuItem(label, postURL, tone string) g.Node {
 	return Button(
 		Type("button"),
