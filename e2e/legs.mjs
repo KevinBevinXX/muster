@@ -15,6 +15,13 @@
 // so a file's own beforeAll server start is in its number), pinned to the commit
 // in `measured_at`. They are a balancing input only — nothing asserts them.
 //
+// ⚠ THREE LEGS, AND A FOURTH WOULD BUY NOTHING. claude-code-polish.spec.ts alone
+// is ~42 s and a file is the unit, so leg 1 is that one file and the other two
+// are balanced to just under it. Every leg also pays ~60 s of fixed cost (runner,
+// Postgres service, setup-go, chromium install, global-setup's three server
+// builds). Two legs were measured first: 129 s / 138 s per leg, which left the
+// e2e path still the longest in the run.
+//
 // 🔴 THE SEAM THIS GUARDS: a static partition goes stale SILENTLY. A spec added
 // to tests/ and not to a leg runs in NO leg, and every leg is still green. So
 // `check` refuses, each with its own message:

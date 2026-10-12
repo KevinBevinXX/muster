@@ -389,14 +389,14 @@ jobs:
     name: e2e leg ${{ matrix.leg }} (playwright, chromium)
     runs-on: ubuntu-latest
     strategy:
-      # Both legs always finish, so one red leg never hides the other's verdict.
+      # Every leg always finishes, so one red leg never hides another's verdict.
       fail-fast: false
       matrix:
         # ⚠ ADDING A LEG IS TWO EDITS: a key in e2e/legs.json and a value here.
         # A leg in the JSON and not here runs nowhere — and the `e2e` job's
         # `--all` verdict refuses that, because its files are absent from every
         # report.
-        leg: [1, 2]
+        leg: [1, 2, 3]
     services:
       postgres:
         image: postgres:16-alpine
@@ -451,7 +451,7 @@ jobs:
 
       # Per leg: no failure, no skip, at least one pass, and the report's spec
       # files are EXACTLY this leg's. The 31-test floor is a TOTAL and is
-      # asserted over both legs' reports in the `e2e` job.
+      # asserted over every leg's report in the `e2e` job.
       - name: verdict — this leg's files, and the skip cap
         if: always()
         working-directory: e2e
