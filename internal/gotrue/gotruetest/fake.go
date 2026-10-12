@@ -1,12 +1,14 @@
 // Package gotruetest is an in-memory GoTrue for muster's tests: the endpoints
 // internal/gotrue calls, with the behaviours muster depends on modelled on the
-// MEASURED behaviour of GoTrue v2.189.0 (see internal/gotrue's comments).
+// MEASURED behaviour of GoTrue v2.197.0 (see internal/gotrue's comments; the
+// same probe run against v2.189.0 differed only where noted below).
 //
 // ⚠ IT IS A FAKE, AND IT IS ONLY AS TRUE AS ITS MODEL. What it models:
 // password and refresh grants with rotation (a spent token's direct parent
 // replay is accepted, any older replay revokes the session), local and global
-// logout, admin create (with email_confirm required to sign in and NO
-// password-length check, as measured), ban, delete, a service_role check on
+// logout (REFUSED for a banned user — new in v2.197.0), admin create (with
+// email_confirm required to sign in and the 12-character floor — enforced on
+// the admin path since v2.197.0), ban, delete, a service_role check on
 // /admin/*, and (accounts PR 5) admin/generate_link for recovery, POST /verify
 // with a single-use token_hash, and an admin password update (which revokes
 // the user's sessions). A ban does NOT revoke sessions — refreshes are
@@ -385,6 +387,12 @@ func (f *Fake) logout(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 401, "bad_jwt", "invalid JWT")
 		return
 	}
+	// Measured (v2.197.0; v2.189.0 answered 204): /logout with a token for a
+	// BANNED user is refused, and nothing is revoked.
+	if u := f.users[c.Subject]; u != nil && u.Banned {
+		writeErr(w, 403, "user_banned", "User is banned")
+		return
+	}
 	switch r.URL.Query().Get("scope") {
 	case "global":
 		for _, s := range f.sessions {
@@ -451,6 +459,12 @@ func (f *Fake) adminRoute(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		// Measured (v2.197.0; v2.189.0 accepted it): the admin create path
+		// enforces GOTRUE_PASSWORD_MIN_LENGTH too.
+		if len(pw) < gotrue.MinPasswordLength {
+			writeErr(w, 422, "weak_password", "Password should be at least 12 characters.")
+			return
+		}
 		confirm, _ := body["email_confirm"].(bool)
 		id := newUUID()
 		f.users[id] = &User{ID: id, Email: email, Password: pw, Confirmed: confirm}
@@ -465,7 +479,7 @@ func (f *Fake) adminRoute(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPut:
 			if pw, ok := body["password"].(string); ok {
-				// Measured (v2.189.0): an admin password change revokes every
+				// Measured (v2.189.0, v2.197.0): an admin password change revokes every
 				// session the user has.
 				u.Password = pw
 				for _, s := range f.sessions {
@@ -475,7 +489,7 @@ func (f *Fake) adminRoute(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if d, ok := body["ban_duration"].(string); ok {
-				// Measured (v2.189.0): a ban does NOT revoke sessions. A
+				// Measured (v2.189.0, v2.197.0): a ban does NOT revoke sessions. A
 				// refresh is refused WHILE banned and accepted again once the
 				// ban is lifted — so unbanning resurrects pre-ban sessions.
 				u.Banned = d != "none"
