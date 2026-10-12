@@ -14,6 +14,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/gotrue"
+	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -787,6 +788,11 @@ func (s *Server) requireGoTrueSession(w http.ResponseWriter, r *http.Request, ne
 	// minting an API token re-checks it against the session cutoff under the
 	// credentials lock (api_tokens.go, apitokens.Create).
 	ctx = context.WithValue(ctx, sessionIssuedAtKey{}, sess.claims.IssuedAt)
+	// The step-up gate's input: when this person last SIGNED IN (the token's
+	// `amr`), which a refresh does not move. No `amr`, no time — never fresh.
+	if at, ok := sess.claims.AuthenticatedAt(); ok {
+		ctx = stepup.WithAuthTime(ctx, at)
+	}
 	s.admit(w, r.WithContext(ctx), next, s.principalFor(ctx, sess.user.ID, authz.ViaSession))
 }
 
