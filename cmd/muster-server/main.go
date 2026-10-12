@@ -1217,10 +1217,12 @@ func (c config) authConfig() api.AuthConfig {
 // goTrueAuth builds the GoTrue wiring from cfg over pool.
 func goTrueAuth(cfg config, pool *pgxpool.Pool) api.GoTrueAuth {
 	secret := []byte(cfg.GoTrueSecret)
+	store := users.NewPG(pool)
 	return api.GoTrueAuth{
 		Client:   &gotrue.Client{BaseURL: cfg.GoTrueURL, Secret: secret, Issuer: gotrueIssuer},
 		Verifier: gotrue.Verifier{Secret: secret, Issuer: gotrueIssuer, Audience: gotrueAudience},
-		Users:    users.NewPG(pool),
+		Users:    store,
+		Accounts: store,
 	}
 }
 

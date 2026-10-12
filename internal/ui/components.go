@@ -938,9 +938,26 @@ func sidebar(activeTab, currentTab string, hasPanels bool, feat Features) g.Node
 				Class("mt-auto flex flex-col gap-1 border-t border-line p-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]"),
 				installButton(),
 				themeToggle(),
+				accountLinks(feat),
 			),
 		),
 	)
+}
+
+// accountLinks is the sidebar's way to the account page (sign out, sign out
+// everywhere) and, for an admin, to the admin pages (accounts PR 5). Both are
+// standalone documents outside the shell, so the links opt out of boost: a
+// full navigation, never a body swap of a document that has no panels.
+func accountLinks(feat Features) g.Node {
+	link := func(id, href, label, icon string) g.Node {
+		return A(ID(id), Href(href), hx("hx-boost", "false"),
+			Class("press flex min-h-[44px] w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-medium text-fg2 transition hover:bg-s2 hover:text-fg"),
+			Span(Class("text-base"), g.Text(icon)), Span(g.Text(label)))
+	}
+	return g.Group([]g.Node{
+		g.If(feat.Admin, link("sidebar-admin", "/admin/users", "Admin", "🛡️")),
+		link("sidebar-account", "/account", "Account", "👤"),
+	})
 }
 
 // pathForTab maps a tab key to its SPA route: requests→"/", else "/<tab>".

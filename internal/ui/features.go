@@ -34,6 +34,10 @@ type Features struct {
 	// key is configured). False removes the Connectors tab and its panel, for the
 	// reason GitHub's false removes Repos: the store is built only with a key.
 	Connectors bool
+	// Admin is true when the viewer is an admin and the admin pages are
+	// served (accounts PR 5). It draws the sidebar's Admin link and nothing
+	// else: the pages refuse a member on their own (requireAdmin).
+	Admin bool
 }
 
 // visibleTabs is the subset of musterTabs a document with these features may

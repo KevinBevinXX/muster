@@ -210,7 +210,11 @@ func TestTheUserDisableCommandSetsTheRowAndBansTheLogin(t *testing.T) {
 	if err := pool.QueryRow(sys, `INSERT INTO users (role, gotrue_sub) VALUES ('member', $1) RETURNING id`, sub).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = pool.Exec(authz.System(context.Background()), `DELETE FROM users WHERE id = $1`, id) })
+	t.Cleanup(func() {
+		bg := authz.System(context.Background())
+		_, _ = pool.Exec(bg, `DELETE FROM audit_log WHERE object = $1`, users.UserObject(id))
+		_, _ = pool.Exec(bg, `DELETE FROM users WHERE id = $1`, id)
+	})
 	env := map[string]string{envDatabase: dsn, envGoTrueURL: fake.URL, envGoTrueSecret: accountsSecret}
 	var out, errb bytes.Buffer
 	if rc := runAccountCommand(ctx, []string{"user", "disable", strconv.FormatInt(id, 10)}, func(k string) string { return env[k] }, &out, &errb); rc != 0 {
@@ -228,6 +232,22 @@ func TestTheUserDisableCommandSetsTheRowAndBansTheLogin(t *testing.T) {
 	}
 	if fu, _ := fake.User(sub); fu.Banned {
 		t.Fatal("GoTrue user still banned after enable")
+	}
+	// Both are audited as the CLI (accounts PR 5): no muster user, via "cli".
+	rows, err := pool.Query(sys, `SELECT action, COALESCE(user_id, 0), via FROM audit_log WHERE object = $1 ORDER BY id`, users.UserObject(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for rows.Next() {
+		var action, via string
+		var uid int64
+		_ = rows.Scan(&action, &uid, &via)
+		got = append(got, action+"/"+strconv.FormatInt(uid, 10)+"/"+via)
+	}
+	rows.Close()
+	if strings.Join(got, ",") != "user.disable/0/cli,user.enable/0/cli" {
+		t.Fatalf("CLI audit rows %v", got)
 	}
 }
 

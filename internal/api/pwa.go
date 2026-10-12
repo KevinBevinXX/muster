@@ -255,7 +255,7 @@ func (s *Server) handleShare(w http.ResponseWriter, r *http.Request) {
 	body := ShareBody(q.Get("title"), q.Get("text"), q.Get("url"))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	if err := ui.RenderComposePage(w, s.shellFeatures(), body); err != nil {
+	if err := ui.RenderComposePage(w, s.shellFeatures(r.Context()), body); err != nil {
 		s.logger.Printf("share: render: %v", err)
 	}
 }

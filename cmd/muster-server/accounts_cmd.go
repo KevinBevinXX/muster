@@ -75,7 +75,10 @@ func runAccountCommand(ctx context.Context, args []string, getenv func(string) s
 		}
 		defer pool.Close()
 		disable := args[1] == "disable"
-		if err := api.SetUserDisabled(ctx, goTrueAuth(cfg, pool), id, disable, nil); err != nil {
+		// Audited as the CLI (no muster user: the operator at a shell), in the
+		// same transaction as the change.
+		cli := users.Actor{Via: "cli"}
+		if err := api.SetUserDisabledAs(ctx, goTrueAuth(cfg, pool), &cli, id, disable, nil); err != nil {
 			fmt.Fprintf(stderr, "%s user %d: %v\n", args[1], id, err)
 			return 1
 		}

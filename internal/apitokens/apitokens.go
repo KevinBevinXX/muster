@@ -33,7 +33,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -45,6 +44,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // Prefix starts every personal token. It is how the machine tier tells a
@@ -328,15 +328,10 @@ func (s *PGStore) inTx(ctx context.Context, fn func(pgx.Tx) error) error {
 // Object is the audit_log `object` a token's rows carry.
 func Object(id int64) string { return "api_token:" + strconv.FormatInt(id, 10) }
 
-// audit appends one audit_log row as p (0009's self_append policy: a user
-// appends only rows naming itself). The detail never carries the token or its
-// hash — only the label.
+// audit appends one audit_log row as p inside tx, through the users package's
+// writer (users.AuditTx). 0009's self_append policy: a user appends only rows
+// naming itself. The detail never carries the token or its hash — only the
+// label.
 func audit(ctx context.Context, tx pgx.Tx, p authz.Principal, action string, id int64, detail map[string]any) error {
-	b, err := json.Marshal(detail)
-	if err != nil {
-		return err
-	}
-	_, err = tx.Exec(ctx, `INSERT INTO audit_log (user_id, via, action, object, detail) VALUES ($1, $2, $3, $4, $5::jsonb)`,
-		p.UserID, string(p.Via), action, Object(id), string(b))
-	return err
+	return users.AuditTx(ctx, tx, users.Actor{UserID: p.UserID, Via: p.Via}, action, Object(id), detail)
 }

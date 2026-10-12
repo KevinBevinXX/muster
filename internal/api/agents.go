@@ -1213,7 +1213,7 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 		Kind: agents.ResolveKind(a.Kind), CCAccount: a.CCAccount,
 		Messages: lines, Sessions: sessions, ActiveSessionID: active.ID,
 		NoteID: noteID, TaskStatus: taskStatus,
-	}, s.shellFeatures()); err != nil {
+	}, s.shellFeatures(r.Context())); err != nil {
 		s.logger.Printf("agents: render detail: %v", err)
 	}
 }

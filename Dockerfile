@@ -34,6 +34,9 @@ COPY internal/ui/ ./internal/ui/
 COPY internal/api/login.go ./internal/api/login.go
 # The gotrue-mode sign-in, claim and account pages (accounts PR 4).
 COPY internal/api/login_gotrue.go ./internal/api/login_gotrue.go
+# The invite/reset pages and the admin pages (accounts PR 5).
+COPY internal/api/login_invite.go ./internal/api/login_invite.go
+COPY internal/api/admin.go ./internal/api/admin.go
 COPY internal/api/api_tokens.go ./internal/api/api_tokens.go
 
 # 🔴 `make css-check`, NOT A HAND-ROLLED `test -s` PLUS A grep. That target

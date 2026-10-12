@@ -12,10 +12,11 @@ import { serverBinary, startServer, Running } from '../lib/server';
 // revokes it on the page and watches the very next request get 401.
 //
 // 412 px, as the gotrue-login spec. Its OWN ports (port+16..18) and GoTrue, so it
-// never shares a container with another spec; and it RE-SEEDS the database
-// before and after, because claiming binds user 1 to a GoTrue login and a spec
-// that runs later (gotrue-login sorts after this file) must be able to claim it
-// again. The seed's reset is what unbinds it.
+// never shares a container with another spec; and it resets the ACCOUNTS
+// tables (seed --accounts-only, accounts PR 5) before and after, because
+// claiming binds user 1 to a GoTrue login and a spec that runs later
+// (gotrue-login sorts after this file) must be able to claim it again. The
+// board is left alone: step 4 reads a task global-setup seeded.
 
 const mainPort = port + 16;
 const browserPort = port + 17;
@@ -35,8 +36,8 @@ let server: Running | undefined;
 
 test.use({ viewport: { width: 412, height: 915 }, storageState: { cookies: [], origins: [] } });
 
-function reseed() {
-  execFileSync('go', ['run', './e2e/seed'], { cwd: repoRoot, stdio: 'inherit', env: { ...process.env, DATABASE_URL: dsn } });
+function resetAccounts() {
+  execFileSync('go', ['run', './e2e/seed', '--accounts-only'], { cwd: repoRoot, stdio: 'inherit', env: { ...process.env, DATABASE_URL: dsn } });
 }
 
 test.beforeAll(async () => {
@@ -44,7 +45,7 @@ test.beforeAll(async () => {
   execFileSync('docker', ['compose', '-f', compose, 'up', '-d', '--wait'], { env: composeEnv, stdio: 'inherit' });
   const health = await fetch(gotrueURL + '/health');
   expect(health.status, 'the real GoTrue is up').toBe(200);
-  reseed();
+  resetAccounts();
   server = await startServer(versionA, mainPort, {
     MUSTER_AUTH_MODE: 'gotrue',
     MUSTER_GOTRUE_URL: gotrueURL,
@@ -57,7 +58,7 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   await server?.stop();
   execFileSync('docker', ['compose', '-f', compose, 'down', '-v'], { env: composeEnv, stdio: 'inherit' });
-  reseed();
+  resetAccounts();
 });
 
 function claimLink(): string {

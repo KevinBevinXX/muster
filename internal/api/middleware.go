@@ -127,9 +127,14 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 // cut to that prefix: the claim token lives in the URL fragment now (never
 // sent), but an old-style or hand-made /auth/claim/<token> request must still
 // not put a credential into the log. Defence in depth.
+//
+// The same holds for the invite and reset links (accounts PR 5): their tokens
+// ride in the fragment too, and a hand-made path form is cut the same way.
 func loggedPath(p string) string {
-	if strings.HasPrefix(p, "/auth/claim/") {
-		return "/auth/claim/[redacted]"
+	for _, prefix := range []string{"/auth/claim/", "/invite/", "/auth/reset/"} {
+		if strings.HasPrefix(p, prefix) {
+			return prefix + "[redacted]"
+		}
 	}
 	return p
 }

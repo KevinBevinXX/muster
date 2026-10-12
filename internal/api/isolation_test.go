@@ -90,6 +90,13 @@ const (
 	classConnect    routeClass = "connect"     // the connector surface (also served on the connect port)
 	classMirror     routeClass = "mirror"      // the mirrored terminal (#63), addressed by ?host=&session=
 	classAPIToken   routeClass = "api-token"   // a user's own PERSONAL token only: the token API (accounts PR 6)
+	// classAdminOnly is a SESSION route served to role=admin only — the admin
+	// pages (/admin/*, accounts PR 5), the one place "see all" exists. It is
+	// NOT classAdmin: that class is the shared MACHINE tier acting as user 1.
+	// A member must be refused every one (TestAMemberCannotReachAnyAdminRoute,
+	// which also holds the admin's control); the generic walk drives them as
+	// B and A, and keeps them out of the admin leg, whose writes would act on A.
+	classAdminOnly routeClass = "admin-only"
 )
 
 // isolationClasses classifies EVERY route in routes.golden. Exhaustive both
@@ -119,6 +126,21 @@ var isolationClasses = map[string]routeClass{
 	"GET /api/whoami":                  classAdmin,
 	"GET /api/tokens":                  classAPIToken,
 	"DELETE /api/tokens/{id}":          classAPIToken,
+	// accounts PR 5: invite redemption and the password reset (tokens in form
+	// fields, like the claim), and the admin pages.
+	"GET /invite":      classPublic,
+	"POST /invite":     classPublic,
+	"GET /auth/reset":  classPublic,
+	"POST /auth/reset": classPublic,
+
+	"GET /admin/invites":                classAdminOnly,
+	"GET /admin/users":                  classAdminOnly,
+	"POST /admin/invites":               classAdminOnly,
+	"POST /admin/invites/{id}/revoke":   classAdminOnly,
+	"POST /admin/users/{id}/disable":    classAdminOnly,
+	"POST /admin/users/{id}/enable":     classAdminOnly,
+	"POST /admin/users/{id}/reset-link": classAdminOnly,
+	"POST /admin/users/{id}/role":       classAdminOnly,
 
 	"GET /{$}":                     classList,
 	"GET /agents":                  classList,
@@ -268,7 +290,7 @@ func TestEveryRouteIsClassifiedForIsolation(t *testing.T) {
 	sort.Strings(unclassified)
 	sort.Strings(stale)
 	if len(unclassified) > 0 {
-		t.Errorf("routes in %s with no isolation class (public|list|param|admin|agent-token|connect|mirror|api-token):\n  %s",
+		t.Errorf("routes in %s with no isolation class (public|list|param|admin|admin-only|agent-token|connect|mirror|api-token):\n  %s",
 			goldenPath, strings.Join(unclassified, "\n  "))
 	}
 	if len(stale) > 0 {
@@ -330,6 +352,10 @@ type isoWorld struct {
 	up           *isoUpstream
 	router       *isoRouter
 	prov         *isoProvisioner
+	// gt is the fake GoTrue the admin pages talk to (accounts PR 5); opInvite
+	// is a pending invite the operator created.
+	gt       *gotruetest.Fake
+	opInvite users.Invite
 	// The REAL gotrue-session leg (accounts PR 4): a second server in gotrue
 	// mode over the SAME stores, signing users in through the fake GoTrue
 	// issuer — no sessionUserOverride. gtTokens is each user's minted pair.
@@ -488,13 +514,16 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(err, "a token-control comment")
 
 	w.aIdentities = []string{w.a.agent.Name, agents.ChiefNameFor(w.a.uid), w.aSessionLink, w.aTag, w.aProject}
-	w.objA = isoObjs{task: w.a.task.ID, agent: w.a.agent.ID, grant: w.aGrantID, comment: w.aComment.ID,
+	w.opInvite, err = users.NewPG(pool).CreateInvite(ctx, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession},
+		bytes.Repeat([]byte{byte(time.Now().UnixNano())}, 32), "", time.Now().Add(time.Hour))
+	must(err, "op invite")
+	w.objA = isoObjs{user: w.a.uid, invite: w.opInvite.ID, task: w.a.task.ID, agent: w.a.agent.ID, grant: w.aGrantID, comment: w.aComment.ID,
 		attach: w.aAttachment.ID, chat: w.aChatSession.ID, agentName: w.a.agent.Name, connName: w.aConnName,
 		tag: w.aTag, link: w.aSessionLink, mirrorHost: w.canary + "-host", mirrorSession: "main", token: w.aToken2.ID}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
 	const ghostID = 9_000_000_000
-	w.ghost = isoObjs{task: ghostID, agent: ghostID, grant: ghostID, comment: ghostID, attach: ghostID, chat: ghostID,
+	w.ghost = isoObjs{user: ghostID, invite: ghostID, task: ghostID, agent: ghostID, grant: ghostID, comment: ghostID, attach: ghostID, chat: ghostID,
 		agentName: "ghost-agent" + w.suffix, connName: "ghostconn" + w.suffix, tag: "ghosttag", link: "ghost-sess-" + w.suffix,
 		mirrorHost: "ghost-host", mirrorSession: "main", token: ghostID}
 
@@ -520,6 +549,12 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	srv.UseExtensions(ext)
 	w.router = &isoRouter{dirs: []string{"/srv/projects/" + w.opCanary}}
 	srv.UseRouter(w.router)
+	// The admin pages need GoTrue and the account store; the session tier stays
+	// password mode (sessionUserOverride below).
+	w.gt = gotruetest.New(t, bytes.Repeat([]byte{5}, 40))
+	acct := users.NewPG(pool)
+	srv.UseGoTrue(GoTrueAuth{Client: w.gt.Client(), Verifier: w.gt.Verifier(), Users: acct, Accounts: acct})
+	srv.auth.PublicURL = "https://muster.test"
 	srv.UseApprovalGate(&isoGate{})
 
 	// The gotrue-mode twin: same stores, same router and gate, its sessions
@@ -532,7 +567,11 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	gtSrv.UseExtensions(ext)
 	gtSrv.UseRouter(w.router)
 	gtSrv.UseApprovalGate(&isoGate{})
-	gtSrv.UseGoTrue(GoTrueAuth{Client: w.gtFake.Client(), Verifier: w.gtFake.Verifier(), Users: users.NewPG(pool)})
+	// Accounts too, so the twin SERVES the admin pages (accounts PR 5): a
+	// member's real gotrue session must be refused them by its role, not by a
+	// 503 for a missing store (TestAMemberCannotReachAnyAdminRoute).
+	gtStore := users.NewPG(pool)
+	gtSrv.UseGoTrue(GoTrueAuth{Client: w.gtFake.Client(), Verifier: w.gtFake.Verifier(), Users: gtStore, Accounts: gtStore})
 	w.gtH = BrowserListener(gtSrv.Handler())
 	w.gtTokens = map[int64][2]string{}
 	for _, u := range []isoUser{w.a, w.b} {
@@ -608,6 +647,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		} {
 			_, _ = pool.Exec(bg, q, ids)
 		}
+		_, _ = pool.Exec(bg, `DELETE FROM invites WHERE id=$1`, w.opInvite.ID)
 		_, _ = pool.Exec(bg, `DELETE FROM agents WHERE id=$1`, w.op.agent.ID)
 		_, _ = pool.Exec(bg, `DELETE FROM notes WHERE id=$1`, w.op.task.ID)
 	})
@@ -696,6 +736,7 @@ func (w *isoWorld) do(h http.Handler, method, path, body string, c cred) *httpte
 
 // isoObjs names one set of objects a request can point at.
 type isoObjs struct {
+	user, invite                              int64
 	task, agent, grant, comment, attach, chat int64
 	token                                     int64 // a personal API token's id
 	agentName, connName, tag, link            string
@@ -724,6 +765,10 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		id = o.link
 	case strings.Contains(path, "tokens/{id}"):
 		id = strconv.FormatInt(o.token, 10)
+	case strings.HasPrefix(path, "/admin/users/{id}"):
+		id = strconv.FormatInt(o.user, 10)
+	case strings.HasPrefix(path, "/admin/invites/{id}"):
+		id = strconv.FormatInt(o.invite, 10)
 	}
 	name := o.agentName
 	if strings.Contains(path, "connectors/{name}") {
@@ -811,6 +856,22 @@ func (w *isoWorld) snapshot() map[string]string {
 			w.t.Fatalf("snapshot %s: %v", tbl, err)
 		}
 		out[tbl] = js
+	}
+	// The account rows an admin-only route could change: A's user row and the
+	// operator's pending invite (accounts PR 5).
+	for name, q := range map[string]string{
+		"users":   `SELECT row_to_json(u)::text FROM users u WHERE id=$1`,
+		"invites": `SELECT row_to_json(i)::text FROM invites i WHERE id=$1`,
+	} {
+		id := w.a.uid
+		if name == "invites" {
+			id = w.opInvite.ID
+		}
+		var js string
+		if err := w.pool.QueryRow(w.sys, q, id).Scan(&js); err != nil {
+			w.t.Fatalf("snapshot %s: %v", name, err)
+		}
+		out[name] = js
 	}
 	return out
 }
@@ -1003,7 +1064,16 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 	}
 
 	// --- the admin leg: user 1 (session, machine token, own agent) against member A ---
-	opResults := w.walkAs(w.op, w.objA, []cred{{sessionUser: w.op.uid}, {hook: true}, {agentToken: w.op.token}}, routes)
+	// The admin-only routes are NOT in the admin's walk: there the admin acting
+	// on A is the feature, and its writes would disable A mid-test. Their
+	// admin control is TestAMemberCannotReachAnyAdminRoute.
+	var opRoutes []string
+	for _, r := range routes {
+		if isolationClasses[r] != classAdminOnly {
+			opRoutes = append(opRoutes, r)
+		}
+	}
+	opResults := w.walkAs(w.op, w.objA, []cred{{sessionUser: w.op.uid}, {hook: true}, {agentToken: w.op.token}}, opRoutes)
 	var opOutsider []isoResult
 	for _, res := range opResults {
 		// The operator's own approval card is the admin agent's to read.
@@ -1066,6 +1136,9 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 		// every other route, and B's token walk above is a fact about identity.
 		if !namesObject(route) || reached[route] {
 			continue
+		}
+		if isolationClasses[route] == classAdminOnly {
+			continue // A is a member too; the admin's control is TestAMemberCannotReachAnyAdminRoute
 		}
 		if _, ok := sideEffectControlled[route]; ok {
 			continue

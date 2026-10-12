@@ -1,8 +1,9 @@
 // Package users is muster's account store: the `users` and `invites` tables
 // (migration 0006). It answers a user's ROLE for the request Principal
 // (accounts PR 3b) and, for accounts PR 4, reads users by GoTrue subject,
-// disables them, and runs the ONE invite flow PR 4 ships — the admin bootstrap
-// claim that binds a new GoTrue user to users.id = 1.
+// disables them, and runs the admin bootstrap claim that binds a new GoTrue
+// user to users.id = 1. Accounts PR 5 adds general link invites, the admin's
+// user management (role, last-admin guard) and the audit log (invites.go).
 //
 // 🔴 THE ROLE IS READ, NOT ASSUMED, AND IT IS READ IN ONE PLACE: Role, which
 // internal/api's roleOf calls for every principal (failure → member). Nothing
@@ -47,6 +48,10 @@ type User struct {
 	Email       string
 	DisplayName string
 	DisabledAt  *time.Time
+	// SessionsNotBefore is the session cutoff (migration 0010): a token issued
+	// at or before it is refused. Set by every disable and every password
+	// reset, never cleared.
+	SessionsNotBefore *time.Time
 }
 
 // Disabled reports whether the account is disabled.
@@ -100,11 +105,11 @@ func (s *PGStore) Role(ctx context.Context, id int64) (authz.Role, error) {
 // sys is the store's one authz.System call. See the package doc.
 func sys(ctx context.Context) context.Context { return authz.System(ctx) }
 
-const userCols = `id, COALESCE(gotrue_sub::text, ''), COALESCE(email, ''), display_name, disabled_at`
+const userCols = `id, COALESCE(gotrue_sub::text, ''), COALESCE(email, ''), display_name, disabled_at, sessions_not_before`
 
 func scanUser(row pgx.Row) (User, error) {
 	var u User
-	if err := row.Scan(&u.ID, &u.GotrueSub, &u.Email, &u.DisplayName, &u.DisabledAt); err != nil {
+	if err := row.Scan(&u.ID, &u.GotrueSub, &u.Email, &u.DisplayName, &u.DisabledAt, &u.SessionsNotBefore); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return User{}, ErrNotFound
 		}
@@ -131,12 +136,40 @@ func (s *PGStore) ByID(ctx context.Context, id int64) (User, error) {
 // SetDisabled sets (or clears) disabled_at and returns the updated row.
 // Disabling an already-disabled user keeps its original timestamp.
 //
+// 🔴 DISABLING THE LAST ENABLED ADMIN IS REFUSED (ErrLastAdmin), for the reason
+// SetRole refuses demoting it: nobody would be left who can reach /admin to undo
+// it. The check runs under guardLastAdmin's lock (accounts PR 5).
+//
+// 🔴 A DISABLE ALSO MOVES sessions_not_before TO NOW, AND AN ENABLE LEAVES IT.
+// A GoTrue unban resurrects every pre-ban session (migration 0010), so the
+// session tier's cutoff is what keeps a disable from being undone by an enable.
+//
 // 🔴 A DISABLE ALSO REVOKES EVERY PERSONAL API TOKEN THE USER HOLDS, in the
-// same transaction (revokeAPITokensTx). Without it, re-enabling the user
-// brought every old token back to life — including one that leaked, which is
-// often WHY the user was disabled. An enable revokes nothing and restores
-// nothing: the user mints new tokens.
+// same transaction (SetDisabledAs → revokeAPITokensTx; accounts PR 6).
+// Without it, re-enabling the user brought every old token back to life —
+// including one that leaked, which is often WHY the user was disabled. An
+// enable revokes nothing and restores nothing: the user mints new tokens.
 func (s *PGStore) SetDisabled(ctx context.Context, id int64, disabled bool) (User, error) {
+	return s.SetDisabledAs(ctx, nil, id, disabled)
+}
+
+// BumpSessionCutoff moves user id's session cutoff to clock_timestamp() and
+// returns it: every token issued at or before it is refused from now on
+// (a password reset; TestAResetEndsOtherDevicesAccessTokensAtOnce).
+func (s *PGStore) BumpSessionCutoff(ctx context.Context, id int64) (time.Time, error) {
+	var t time.Time
+	err := s.pool.QueryRow(sys(ctx), `UPDATE users SET sessions_not_before = clock_timestamp() WHERE id = $1
+		RETURNING sessions_not_before`, id).Scan(&t)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return t, ErrNotFound
+	}
+	return t, err
+}
+
+// SetDisabledAs is SetDisabled that, when by is non-nil, writes the
+// user.disable / user.enable audit row in the SAME transaction as the change.
+// A disable also revokes the user's pending invites, in that transaction.
+func (s *PGStore) SetDisabledAs(ctx context.Context, by *Actor, id int64, disabled bool) (User, error) {
 	ctx = sys(ctx)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -144,22 +177,46 @@ func (s *PGStore) SetDisabled(ctx context.Context, id int64, disabled bool) (Use
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := `UPDATE users SET disabled_at = NULL WHERE id = $1 RETURNING ` + userCols
+	action := "user.enable"
 	if disabled {
-		q = `UPDATE users SET disabled_at = COALESCE(disabled_at, now()) WHERE id = $1 RETURNING ` + userCols
+		if err := guardLastAdmin(ctx, tx, id); err != nil {
+			return User{}, err
+		}
+		// 🔴 clock_timestamp(), NOT now(): now() is the TRANSACTION's start,
+		// taken before guardLastAdmin waited for its lock, so a token minted
+		// during that wait would have been issued after the cutoff and
+		// survived (TestTheDisableCutoffIsStampedAfterTheLockWait). No extra
+		// margin: the session tier already refuses a token stamped with the
+		// cutoff's own second (iat is whole seconds), and Postgres and GoTrue
+		// share the cluster's NTP time; skew beyond a second is not
+		// compensated.
+		q = `UPDATE users SET disabled_at = COALESCE(disabled_at, clock_timestamp()), sessions_not_before = clock_timestamp()
+			WHERE id = $1 RETURNING ` + userCols
+		action = "user.disable"
 	}
 	u, err := scanUser(tx.QueryRow(ctx, q, id))
 	if err != nil {
 		return User{}, err
 	}
 	if disabled {
+		actor := Actor{Via: "system"}
+		if by != nil {
+			actor = *by
+		}
+		if err := revokePendingInvitesOf(ctx, tx, actor, id, "creator disabled"); err != nil {
+			return User{}, err
+		}
+		// Accounts PR 6: every live personal API token, in THIS transaction.
 		if err := revokeAPITokensTx(ctx, tx, id); err != nil {
 			return User{}, err
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return User{}, err
+	if by != nil {
+		if err := auditInsert(ctx, tx, *by, action, UserObject(id), nil); err != nil {
+			return User{}, err
+		}
 	}
-	return u, nil
+	return u, tx.Commit(ctx)
 }
 
 // revokeAPITokensTx revokes every live personal API token (accounts PR 6) of
@@ -318,34 +375,47 @@ func (s *PGStore) RedeemClaim(ctx context.Context, tokenHash []byte, email strin
 	if _, err := tx.Exec(ctx, `UPDATE invites SET redeemed_at = now(), redeemed_by = $2 WHERE id = $1`, inviteID, uid); err != nil {
 		return User{}, err
 	}
+	committed, err = s.commitDeciding(ctx, tx, sub, func(rctx context.Context) (bool, error) {
+		var bound string
+		err := s.pool.QueryRow(rctx, `SELECT COALESCE(gotrue_sub::text, '') FROM users WHERE id = $1`, uid).Scan(&bound)
+		return bound == sub, err
+	})
+	if err != nil {
+		return User{}, err
+	}
+	return u, nil
+}
+
+// commitDeciding commits a redeem transaction that has already created GoTrue
+// user sub, and reports whether that user must be KEPT (true) or undone.
+//
+// 🔴 A FAILED COMMIT IS AN UNKNOWN OUTCOME, NOT A ROLLBACK. The server may have
+// committed and the reply been lost; deleting the GoTrue user then would leave
+// a muster row bound to a subject that no longer exists — that account locked
+// out. So landed re-reads the row and the outcome is decided from what is there
+// (TestAnAmbiguousCommitIsDecidedByRereadingTheRow): bound → kept, success;
+// not bound → undo, the commit's error; re-read failed → still unknown, so the
+// GoTrue user is kept (an orphan login is recoverable, a deleted bound one is
+// not) and the error says so. Shared by the admin claim and invite redemption.
+func (s *PGStore) commitDeciding(ctx context.Context, tx pgx.Tx, sub string, landed func(context.Context) (bool, error)) (bool, error) {
 	commit := s.commit
 	if commit == nil {
 		commit = func(ctx context.Context, tx pgx.Tx) error { return tx.Commit(ctx) }
 	}
-	if err := commit(ctx, tx); err != nil {
-		// 🔴 A FAILED COMMIT IS AN UNKNOWN OUTCOME, NOT A ROLLBACK. The server
-		// may have committed and the reply been lost; deleting the GoTrue user
-		// then would leave user 1 bound to a subject that no longer exists —
-		// the admin locked out. Re-read the row and decide from what is there
-		// (TestAnAmbiguousCommitIsDecidedByRereadingTheRow).
-		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		defer cancel()
-		var bound string
-		rerr := s.pool.QueryRow(rctx, `SELECT COALESCE(gotrue_sub::text, '') FROM users WHERE id = $1`, uid).Scan(&bound)
-		switch {
-		case rerr == nil && bound == sub:
-			committed = true
-			return u, nil
-		case rerr != nil:
-			// Still unknown: keep the GoTrue user (an orphan login is
-			// recoverable; a deleted bound one is not) and say so.
-			committed = true
-			return User{}, fmt.Errorf("users: claim commit outcome unknown (%v; re-read failed: %v) — the GoTrue user %s was kept", err, rerr, sub)
-		}
-		return User{}, err
+	err := commit(ctx, tx)
+	if err == nil {
+		return true, nil
 	}
-	committed = true
-	return u, nil
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	ok, rerr := landed(rctx)
+	switch {
+	case rerr == nil && ok:
+		return true, nil
+	case rerr != nil:
+		return true, fmt.Errorf("users: commit outcome unknown (%v; re-read failed: %v) — the GoTrue user %s was kept", err, rerr, sub)
+	}
+	return false, err
 }
 
 func looksLikeUUID(s string) bool {
