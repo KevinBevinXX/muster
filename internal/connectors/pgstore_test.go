@@ -69,6 +69,48 @@ func createGitHub(t *testing.T, ctx context.Context, s connectors.Store) connect
 	return c
 }
 
+// TestACiphertextMovedToAnotherOwnersRowDoesNotOpen: the store seals as the
+// owner it inserts the row as (user 1 today) and opens under the owner_id READ
+// FROM THE ROW. So the same row re-owned by user 2 — the shape of one owner's
+// ciphertext copied onto another owner's same-named connector — fails closed
+// for both Credential and RotateSecret, and opens again once the owner is back.
+func TestACiphertextMovedToAnotherOwnersRowDoesNotOpen(t *testing.T) {
+	ctx, pool := testPool(t)
+	s := newStore(t, pool, key(1))
+	createGitHub(t, ctx, s)
+
+	var owner int64
+	if err := pool.QueryRow(ctx, `SELECT owner_id FROM connectors WHERE name='github'`).Scan(&owner); err != nil || owner != 1 {
+		t.Fatalf("a created connector is owned by %d (%v), want 1", owner, err)
+	}
+	var two int64
+	if err := pool.QueryRow(ctx, `INSERT INTO users (role) VALUES ('member') RETURNING id`).Scan(&two); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		_, _ = pool.Exec(bg, `DELETE FROM connectors WHERE owner_id=$1`, two)
+		_, _ = pool.Exec(bg, `DELETE FROM users WHERE id=$1`, two)
+	})
+
+	if _, err := pool.Exec(ctx, `UPDATE connectors SET owner_id=$1 WHERE name='github'`, two); err != nil {
+		t.Fatal(err)
+	}
+	if _, secret, err := s.Credential(ctx, "github"); !errors.Is(err, connectors.ErrDecrypt) || secret != "" {
+		t.Fatalf("owner 1's ciphertext opened on owner %d's row: %q, %v; want ErrDecrypt", two, secret, err)
+	}
+	if err := s.RotateSecret(ctx, "github", "ghp_FAKE-rotated-0123456789"); !errors.Is(err, connectors.ErrDecrypt) {
+		t.Fatalf("RotateSecret re-sealed a ciphertext that does not open for the row's owner: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `UPDATE connectors SET owner_id=1 WHERE name='github'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, secret, err := s.Credential(ctx, "github"); err != nil || secret != fakeSecret {
+		t.Fatalf("control: back on owner 1 the secret did not open: %q, %v", secret, err)
+	}
+}
+
 // TestTheStoredRowNeverContainsThePlaintext reads the RAW row — every column,
 // cast to text — and refuses any occurrence of the secret.
 func TestTheStoredRowNeverContainsThePlaintext(t *testing.T) {

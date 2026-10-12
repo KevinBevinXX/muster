@@ -29,6 +29,17 @@ func NewPG(pool *pgxpool.Pool, key []byte) (*PGStore, error) {
 
 var _ Store = (*PGStore)(nil)
 
+// operatorOwnerID is the owner every connector is CREATED as.
+//
+// ⚠ TEMPORARY, AND THE ONE PLACE IT IS DECIDED. Until the request principal
+// exists (accounts PR 2/3) there is exactly one user, the operator (users.id 1,
+// seeded by migration 0006), so CreateConnector inserts and seals as owner 1.
+// Accounts PR 3 replaces createOwner with the principal's user id. Opening never
+// uses this: it binds the owner_id read from the row (see binding).
+const operatorOwnerID int64 = 1
+
+func createOwner(context.Context) int64 { return operatorOwnerID }
+
 const connectorCols = `id, name, platform, hosts, auth_scheme, auth_header, auth_username,
 	created_at, updated_at, rotated_at, last_used_at`
 
@@ -74,16 +85,17 @@ func (s *PGStore) CreateConnector(ctx context.Context, nc NewConnector) (Connect
 	if err != nil {
 		return Connector{}, err
 	}
-	ct, err := s.seal.seal(binding{Name: nc.Name, Hosts: nc.Hosts, Scheme: nc.Scheme, HeaderName: nc.HeaderName,
+	owner := createOwner(ctx)
+	ct, err := s.seal.seal(binding{Owner: owner, Name: nc.Name, Hosts: nc.Hosts, Scheme: nc.Scheme, HeaderName: nc.HeaderName,
 		Username: nc.Username}, nc.Secret)
 	if err != nil {
 		return Connector{}, err
 	}
 	c, err := scanConnector(s.pool.QueryRow(ctx, `
-		INSERT INTO connectors (name, platform, hosts, auth_scheme, auth_header, auth_username, secret_ciphertext)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO connectors (owner_id, name, platform, hosts, auth_scheme, auth_header, auth_username, secret_ciphertext)
+		VALUES ($8, $1, $2, $3, $4, $5, $6, $7)
 		RETURNING `+connectorCols,
-		nc.Name, nc.Platform, nc.Hosts, string(nc.Scheme), nc.HeaderName, nc.Username, ct))
+		nc.Name, nc.Platform, nc.Hosts, string(nc.Scheme), nc.HeaderName, nc.Username, ct, owner))
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		return Connector{}, fmt.Errorf("%w: a connector named %q already exists", ErrInvalid, nc.Name)
@@ -105,21 +117,22 @@ func (s *PGStore) RotateSecret(ctx context.Context, name, secret string) error {
 	if err := ValidateSecret(secret); err != nil {
 		return err
 	}
-	c, old, err := s.credentialRow(ctx, name)
+	c, owner, old, err := s.credentialRow(ctx, name)
 	if err != nil {
 		return err
 	}
-	if _, err := s.seal.open(bindingOf(c), old); err != nil {
+	if _, err := s.seal.open(bindingOf(owner, c), old); err != nil {
 		return err
 	}
-	ct, err := s.seal.seal(bindingOf(c), secret)
+	ct, err := s.seal.seal(bindingOf(owner, c), secret)
 	if err != nil {
 		return err
 	}
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE connectors SET secret_ciphertext=$2, rotated_at=now(), updated_at=now()
-		WHERE name=$1 AND secret_ciphertext=$3 AND hosts=$4 AND auth_scheme=$5 AND auth_header=$6 AND auth_username=$7`,
-		name, ct, old, c.Hosts, string(c.Scheme), c.HeaderName, c.Username)
+		WHERE name=$1 AND secret_ciphertext=$3 AND hosts=$4 AND auth_scheme=$5 AND auth_header=$6 AND auth_username=$7
+		  AND owner_id=$8`,
+		name, ct, old, c.Hosts, string(c.Scheme), c.HeaderName, c.Username, owner)
 	if err != nil {
 		return err
 	}
@@ -159,32 +172,35 @@ func (s *PGStore) DeleteConnector(ctx context.Context, name string) error {
 // was sealed for: a row edited outside muster is ErrDecrypt, not a credential
 // sent somewhere new.
 func (s *PGStore) Credential(ctx context.Context, name string) (Connector, string, error) {
-	c, ct, err := s.credentialRow(ctx, name)
+	c, owner, ct, err := s.credentialRow(ctx, name)
 	if err != nil {
 		return Connector{}, "", err
 	}
-	secret, err := s.seal.open(bindingOf(c), ct)
+	secret, err := s.seal.open(bindingOf(owner, c), ct)
 	if err != nil {
 		return Connector{}, "", err
 	}
 	return c, secret, nil
 }
 
-func (s *PGStore) credentialRow(ctx context.Context, name string) (Connector, []byte, error) {
+// credentialRow reads a connector with its ciphertext and the row's owner_id —
+// the owner the ciphertext must have been sealed for.
+func (s *PGStore) credentialRow(ctx context.Context, name string) (Connector, int64, []byte, error) {
 	var ct []byte
 	var c Connector
 	var scheme string
-	err := s.pool.QueryRow(ctx, `SELECT `+connectorCols+`, secret_ciphertext FROM connectors WHERE name=$1`, name).
+	var owner int64
+	err := s.pool.QueryRow(ctx, `SELECT `+connectorCols+`, owner_id, secret_ciphertext FROM connectors WHERE name=$1`, name).
 		Scan(&c.ID, &c.Name, &c.Platform, &c.Hosts, &scheme, &c.HeaderName, &c.Username,
-			&c.CreatedAt, &c.UpdatedAt, &c.RotatedAt, &c.LastUsedAt, &ct)
+			&c.CreatedAt, &c.UpdatedAt, &c.RotatedAt, &c.LastUsedAt, &owner, &ct)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Connector{}, nil, ErrNotFound
+		return Connector{}, 0, nil, ErrNotFound
 	}
 	if err != nil {
-		return Connector{}, nil, err
+		return Connector{}, 0, nil, err
 	}
 	c.Scheme = Scheme(scheme)
-	return c, ct, nil
+	return c, owner, ct, nil
 }
 
 // TouchConnector stamps last_used_at.

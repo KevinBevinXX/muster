@@ -53,8 +53,25 @@ func TestACiphertextIsBoundToItsConnectorName(t *testing.T) {
 	}
 }
 
+// TestACiphertextIsBoundToItsOwner: names are unique per OWNER (migration
+// 0006), so two owners can hold same-named connectors with identical hosts and
+// auth shape. A secret sealed for owner 1 must not open as owner 2's.
+func TestACiphertextIsBoundToItsOwner(t *testing.T) {
+	s, _ := newSealer(testKey(1))
+	one := bind("github")
+	ct, _ := s.seal(one, "ghp_FAKE-0123456789")
+	if got, err := s.open(one, ct); err != nil || got != "ghp_FAKE-0123456789" {
+		t.Fatalf("control: owner 1's own ciphertext did not open: %q %v", got, err)
+	}
+	two := one
+	two.Owner = 2
+	if got, err := s.open(two, ct); !errors.Is(err, ErrDecrypt) || got != "" {
+		t.Fatalf("owner 1's ciphertext opened as owner 2 (%q, %v); want ErrDecrypt", got, err)
+	}
+}
+
 func bind(name string) binding {
-	return binding{Name: name, Hosts: []string{"api.example.com", "example.com"}, Scheme: SchemeBasic, Username: "x-access-token"}
+	return binding{Owner: 1, Name: name, Hosts: []string{"api.example.com", "example.com"}, Scheme: SchemeBasic, Username: "x-access-token"}
 }
 
 // TestACiphertextIsBoundToWhereAndHowItIsSent: changing ANY of the fields that
@@ -78,6 +95,7 @@ func TestACiphertextIsBoundToWhereAndHowItIsSent(t *testing.T) {
 		"header":         func(b *binding) { b.HeaderName = "X-Leak" },
 		"username":       func(b *binding) { b.Username = "someone-else" },
 		"name":           func(b *binding) { b.Name = "github2" },
+		"owner":          func(b *binding) { b.Owner = 2 },
 		"field boundary": func(b *binding) { b.Name, b.Scheme = "githubbasic", "" },
 	} {
 		b := base

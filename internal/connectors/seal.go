@@ -26,8 +26,8 @@ var ErrDecrypt = errors.New("connectors: the stored secret could not be decrypte
 // sealer encrypts connector secrets with AES-256-GCM.
 //
 // 🔴 EVERYTHING THAT DECIDES WHERE AND HOW THE SECRET IS SENT IS ADDITIONAL
-// AUTHENTICATED DATA — the name, the allowlisted hosts, the auth scheme, the
-// header name and the basic-auth username (binding). Someone who can write the
+// AUTHENTICATED DATA — the owner, the name, the allowlisted hosts, the auth
+// scheme, the header name and the basic-auth username (binding). Someone who can write the
 // database but does not hold the key could otherwise leave the ciphertext alone
 // and point the row elsewhere: add a host they control, or switch the scheme or
 // header so the secret goes out in a form they can read. Any such edit now makes
@@ -56,7 +56,16 @@ func newSealer(key []byte) (sealer, error) {
 }
 
 // binding is the part of a connector its ciphertext is bound to.
+//
+// 🔴 Owner IS THE ROW'S owner_id (migration 0006). Connector names are unique
+// per owner, not globally, so without it two owners' same-named connectors with
+// the same hosts and auth shape would have INTERCHANGEABLE ciphertexts: one
+// owner's sealed secret copied onto the other's row would open and be sent on
+// their behalf. PGStore seals under the owner it inserts the row as and opens
+// under the owner_id READ FROM THE ROW, so a ciphertext moved to a row with a
+// different owner fails closed (ErrDecrypt).
 type binding struct {
+	Owner      int64
 	Name       string
 	Hosts      []string
 	Scheme     Scheme
@@ -64,8 +73,8 @@ type binding struct {
 	Username   string
 }
 
-func bindingOf(c Connector) binding {
-	return binding{Name: c.Name, Hosts: c.Hosts, Scheme: c.Scheme, HeaderName: c.HeaderName, Username: c.Username}
+func bindingOf(owner int64, c Connector) binding {
+	return binding{Owner: owner, Name: c.Name, Hosts: c.Hosts, Scheme: c.Scheme, HeaderName: c.HeaderName, Username: c.Username}
 }
 
 // aad is the binding's canonical encoding: hosts lowercased and sorted (neither
@@ -78,7 +87,11 @@ func (b binding) aad() []byte {
 		hosts[i] = strings.ToLower(h)
 	}
 	sort.Strings(hosts)
-	out := []byte("muster-connector-v2")
+	// v3 = v2 plus the owner. A v2 ciphertext (sealed before the owner was
+	// bound) does not open under v3; none existed in production when this
+	// changed (0 connectors live), so there is no dual-read.
+	out := []byte("muster-connector-v3")
+	out = binary.BigEndian.AppendUint64(out, uint64(b.Owner))
 	put := func(s string) {
 		out = binary.BigEndian.AppendUint32(out, uint32(len(s)))
 		out = append(out, s...)

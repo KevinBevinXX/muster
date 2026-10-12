@@ -131,7 +131,14 @@ public schema they leave (pinned as a ledger by `internal/db/migrate_test.go`):
 - **agents** — `agents`, `chat_sessions`, `chat_messages`, `agent_retired_names`,
   `cc_account_marks`
 - **connectors** — `connectors`, `connector_grants`, `connector_audit`
-- plus `github_connection`, a pinned singleton
+- **accounts** — `users`, `invites`, `api_tokens`, `audit_log`
+- plus `github_connection`, one row per owner
+
+`0006` gives every user-data table an `owner_id` (backfilled to user 1, the
+operator) and makes each parent→child link a composite foreign key over
+`(parent_id, owner_id)`, so a row can never point at another user's row. Until
+the request principal exists, `owner_id` defaults to 1 and nothing reads the
+account tables. `agent_retired_names` and `cc_account_marks` stay unowned.
 
 `0001` also creates the runbook and privilege tables (`runbooks`,
 `runbook_runs`, `privilege_profiles`, `agent_privileges`, `privilege_requests`)

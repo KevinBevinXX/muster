@@ -21,7 +21,8 @@ import (
 // the table rather than calling the runner.
 
 // tablesThisSchemaMustHave is the public schema after every migration has
-// applied. (0005 dropped the five privilege and runbook tables 0001 created.)
+// applied. (0005 dropped the five privilege and runbook tables 0001 created;
+// 0006 added users, invites, api_tokens and audit_log.)
 //
 // 🔴 A LEDGER, NOT A SPOT CHECK. It fails when the set GROWS or SHRINKS, so a
 // table quietly dropped from 0001 reddens here and a table added without a
@@ -30,6 +31,8 @@ import (
 var tablesThisSchemaMustHave = []string{
 	"agent_retired_names",
 	"agents",
+	"api_tokens",
+	"audit_log",
 	"cc_account_marks",
 	"chat_messages",
 	"chat_sessions",
@@ -37,17 +40,21 @@ var tablesThisSchemaMustHave = []string{
 	"connector_grants",
 	"connectors",
 	"github_connection",
+	"invites",
 	"note_attachments",
 	"note_comments",
 	"notes",
 	"task_sessions",
+	"users",
 }
 
 // tablesWithNoIdentityColumn names the tables that deliberately have none, each
 // for its own stated reason:
 //
 //   - task_sessions is keyed by a composite.
-//   - github_connection is a singleton pinned to id = 1 by a CHECK.
+//   - github_connection is keyed by owner_id, one connection per user (0006;
+//     it was a singleton pinned to id = 1 before that, and had no identity then
+//     either).
 //   - agent_retired_names is keyed by the NAME itself; a surrogate id there would
 //     let one name be tombstoned twice.
 //
