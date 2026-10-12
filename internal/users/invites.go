@@ -268,6 +268,12 @@ func (s *PGStore) ListInvites(ctx context.Context) ([]Invite, error) {
 // invite may still be revoked (it changes nothing but the record).
 func (s *PGStore) RevokeInvite(ctx context.Context, by Actor, id int64) error {
 	return s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		// FIRST — see lockAccountWritersTx: this locks an invite row and then
+		// its audit row needs the acting admin's users row, the reverse of a
+		// disable (admin rows, then the disabled creator's invite rows).
+		if err := lockAccountWritersTx(ctx, tx); err != nil {
+			return err
+		}
 		tag, err := tx.Exec(ctx, `UPDATE invites SET revoked_at = now()
 			WHERE id = $1 AND claim_user_id IS NULL AND redeemed_at IS NULL AND revoked_at IS NULL`, id)
 		if err != nil {
@@ -471,6 +477,10 @@ func (s *PGStore) SetRole(ctx context.Context, by Actor, id int64, role authz.Ro
 	}
 	var u User
 	err := s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		// FIRST, in both directions — see lockAccountWritersTx.
+		if err := lockAccountWritersTx(ctx, tx); err != nil {
+			return err
+		}
 		if role != authz.RoleAdmin {
 			if err := guardLastAdmin(ctx, tx, id); err != nil {
 				return err

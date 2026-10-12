@@ -199,6 +199,10 @@ func (s *PGStore) SetDisabledAs(ctx context.Context, by *Actor, id int64, disabl
 		return User{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	// FIRST, in both directions — see lockAccountWritersTx.
+	if err := lockAccountWritersTx(ctx, tx); err != nil {
+		return User{}, err
+	}
 	q := `UPDATE users SET disabled_at = NULL WHERE id = $1 RETURNING ` + userCols
 	action := "user.enable"
 	if disabled {
@@ -263,6 +267,32 @@ func revokeAPITokensTx(ctx context.Context, tx pgx.Tx, id int64) error {
 	return err
 }
 
+// accountWritersLockClass is the first key of the ONE advisory lock that
+// serialises the admin account writers.
+const accountWritersLockClass int32 = 0x6d756163 // "muac"
+
+// lockAccountWritersTx takes the account-writers lock for the rest of tx. It
+// is the FIRST statement of every admin writer that locks a row and then
+// writes an audit row: SetDisabledAs (disable AND enable), SetRole (demote AND
+// promote) and RevokeInvite.
+//
+// 🔴 WITHOUT IT THOSE WRITERS DEADLOCKED AGAINST EACH OTHER, with no token
+// involved (measured, review round 5; Postgres's own report): an enable or a
+// promote holds the TARGET's row and then needs FOR KEY SHARE on the ACTING
+// admin's row (its audit row's foreign key), while a disable or a demote holds
+// FOR UPDATE on every enabled admin — the actor included — and then wants the
+// target's row. RevokeInvite had the same shape against a disable's
+// pending-invite revoke (invite row then actor row, versus admin rows then
+// invite rows; 5 deadlocks in 5 stress runs). They are rare, short, admin-only transactions, so one lock for
+// all of them costs nothing that matters and leaves no order to get wrong.
+//
+// Order, everywhere: this lock → LockCredentialsTx → rows.
+// TestCredentialWritersNeverDeadlock runs them all at once.
+func lockAccountWritersTx(ctx context.Context, tx pgx.Tx) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, 0)`, accountWritersLockClass)
+	return err
+}
+
 // credentialsLockClass is the first key of the per-user advisory lock that
 // serialises minting a personal API token against revoking them all. The
 // two-int form keeps it out of the migration lock's single-bigint keyspace.
@@ -276,15 +306,37 @@ const credentialsLockClass int32 = 0x6d75746b // "mutk"
 // checked against UPDATE policies — measured: 0 rows). An advisory lock needs
 // no row and no policy.
 //
-// 🔴 ORDER RULE: THIS LOCK IS TAKEN BEFORE ANY users ROW LOCK, IN EVERY PATH.
-// Create holds it and then needs FOR KEY SHARE on the user's row (its INSERTs'
-// foreign keys); a disable that locked rows first (guardLastAdmin takes FOR
-// UPDATE on every enabled admin) and then waited for this lock deadlocked
+// 🔴 ORDER RULE: A TRANSACTION THAT WRITES api_tokens TAKES THIS LOCK FIRST —
+// before any users row lock and before any api_tokens row lock. The writers,
+// enumerated (TestCredentialWritersNeverDeadlock runs them all against one
+// admin and demands zero deadlocks):
+//
+//   - apitokens.Create      lock → reads users → INSERT api_tokens, audit_log
+//   - apitokens.Revoke      lock → token row FOR UPDATE → UPDATE, audit_log
+//   - SetDisabledAs (disable) lockAccountWritersTx → lock → guardLastAdmin (FOR
+//     UPDATE on every enabled admin) → UPDATE users → invites → UPDATE
+//     api_tokens → audit_log
+//   - ResetCredentials      lock → UPDATE users → UPDATE api_tokens
+//
+// NOT api_tokens writers, and deliberately outside the rule: the
+// bring-your-own-credentials writers (internal/credentials Put*/Delete). Each
+// writes user_credentials and an audit row, needing only FOR KEY SHARE on the
+// owner's users row; nothing else writes user_credentials, so they can wait
+// for a disable but hold nothing it wants. They are in the stress test all the
+// same (0 deadlocks).
+//
+// and the one api_tokens writer that deliberately does NOT take it: apitokens.Authenticate's
+// last_used_at stamp, a single autocommit UPDATE of one token row that takes
+// no users lock (last_used_at is in no foreign key), so it can only ever wait,
+// never hold-and-wait.
+//
+// Why first: Create and Revoke end by inserting rows whose foreign keys need
+// FOR KEY SHARE on the user's row, and a disable holds FOR UPDATE on it. A
+// disable that locked rows first and THEN waited for this lock deadlocked
 // against a mint by an ADMIN — measured: SQLSTATE 40P01, the disable lost, the
-// user stayed enabled with the minted token live
-// (TestAMintRacingAnAdminsDisableDoesNotDeadlock). Taking it first also keeps
+// user stayed enabled with the minted token live. Taking it first also keeps
 // the session cutoff honest: clock_timestamp() is stamped AFTER the wait for
-// this lock, not before it (TestTheCutoffIsStampedAfterTheCredentialsLockWait).
+// this lock (TestTheCutoffIsStampedAfterTheCredentialsLockWait).
 func LockCredentialsTx(ctx context.Context, tx pgx.Tx, id int64) error {
 	if id <= 0 || id > math.MaxInt32 {
 		return fmt.Errorf("users: credentials lock: user id %d out of range", id)

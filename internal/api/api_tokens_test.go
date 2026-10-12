@@ -573,7 +573,7 @@ func TestTheMintPageSaysWhyItRefused(t *testing.T) {
 		want string
 	}{
 		{apitokens.ErrUserDisabled, http.StatusForbidden, "This account is disabled"},
-		{apitokens.ErrSessionEnded, http.StatusUnauthorized, "Sign in again to create API tokens"},
+		{apitokens.ErrSessionEnded, http.StatusUnauthorized, "your password was reset, or the account was disabled and re-enabled). Sign in again to create API tokens"},
 	} {
 		s := New(nil, AuthConfig{HookToken: tokTestHook, UIPassword: "mint-refusal-operator-pw"}, log.New(io.Discard, "", 0))
 		s.UseExtensions(Extensions{APITokens: refusingTokens{err: c.err}, Users: stubUsers{}})
@@ -649,5 +649,32 @@ func TestAGoTrueMintCarriesTheSessionsIssuedAt(t *testing.T) {
 	rec := do(edge, "POST", accountTokensPath, url.Values{"name": {"x"}}, w.asAdmin())
 	if rec.Code != 200 || len(got) != 1 || got[0] != c.IssuedAt {
 		t.Fatalf("mint as a gotrue session: %d, store saw issued-at %v; want exactly the session's %d", rec.Code, got, c.IssuedAt)
+	}
+}
+
+// TestAGoTrueMintWithNoIssuedAtIsRefused (review round 5): in gotrue mode a
+// mint that reaches the handler with NO session issued-at is a wiring bug, and
+// a zero would make the store skip its cutoff check — so the handler refuses
+// it (500) and the store is never asked. The handler is called directly: the
+// real session wrapper always sets the value
+// (TestAGoTrueMintCarriesTheSessionsIssuedAt), which is why only a direct call
+// can reach this branch. Control: password mode has no cutoff, and mints.
+func TestAGoTrueMintWithNoIssuedAtIsRefused(t *testing.T) {
+	for _, c := range []struct {
+		mode  AuthMode
+		code  int
+		mints int
+	}{{AuthModeGoTrue, http.StatusInternalServerError, 0}, {AuthModePassword, http.StatusOK, 1}} {
+		var got []int64
+		s := New(nil, AuthConfig{Mode: c.mode, HookToken: tokTestHook, UIPassword: "no-iat-operator-password"}, log.New(io.Discard, "", 0))
+		s.UseExtensions(Extensions{APITokens: iatCapturingTokens{got: &got}, Users: stubUsers{}})
+		r := httptest.NewRequest(http.MethodPost, accountTokensPath, strings.NewReader("name=x"))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r = r.WithContext(authz.WithPrincipal(r.Context(), authz.Principal{UserID: 1, Role: authz.RoleAdmin, Via: authz.ViaSession}))
+		rec := httptest.NewRecorder()
+		s.handleAccountTokenCreate(rec, r)
+		if rec.Code != c.code || len(got) != c.mints || strings.Contains(rec.Body.String(), "minted-token") != (c.mints == 1) {
+			t.Errorf("mode %q, no issued-at on the context: %d, %d mint(s); want %d and %d", c.mode, rec.Code, len(got), c.code, c.mints)
+		}
 	}
 }

@@ -228,7 +228,7 @@ func (s *Server) handleAccountTokenCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if errors.Is(err, apitokens.ErrSessionEnded) {
-		s.renderAccountTokens(w, r, http.StatusUnauthorized, "", "This sign-in has been ended (a password reset or a sign-out). Sign in again to create API tokens.")
+		s.renderAccountTokens(w, r, http.StatusUnauthorized, "", "This sign-in has been ended (your password was reset, or the account was disabled and re-enabled). Sign in again to create API tokens.")
 		return
 	}
 	if errors.Is(err, apitokens.ErrUserDisabled) {

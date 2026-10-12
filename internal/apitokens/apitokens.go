@@ -325,6 +325,15 @@ func (s *PGStore) Revoke(ctx context.Context, id int64) (found, wasLive bool, er
 		return false, false, err
 	}
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		// The credentials lock FIRST (users.LockCredentialsTx's order rule):
+		// this transaction locks a token row and then its audit row needs FOR
+		// KEY SHARE on the user's row — the reverse of a disable, which holds
+		// the user's row and then wants the token rows. Unordered, an admin
+		// revoking their own token deadlocked against their own disable
+		// (TestCredentialWritersNeverDeadlock).
+		if err := users.LockCredentialsTx(ctx, tx, p.UserID); err != nil {
+			return err
+		}
 		var revoked *time.Time
 		var name string
 		err := tx.QueryRow(ctx, `SELECT revoked_at, name FROM api_tokens WHERE id = $1 AND user_id = $2 FOR UPDATE`,
