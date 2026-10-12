@@ -506,6 +506,32 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 		},
 		FlushInterval: -1,
 	}
+	// 🔴 FULL DUPLEX, OR A PROXIED REQUEST WITH A BODY CAN BE TORN AND DELIVERED
+	// AS A CLEAN, SHORT 200. net/http's HTTP/1 server, when it writes a response
+	// head, consumes what is left of the request body and CLOSES it unless the
+	// handler enabled full duplex. This handler writes the head as soon as the
+	// upstream's arrives, while the upstream transport may still be reading that
+	// same body to forward it (at least its trailing EOF read). That read then
+	// fails ("invalid Read on closed Body"), the transport's write loop closes the
+	// upstream connection, ReverseProxy aborts, and api's recoverMiddleware lets
+	// the response finish: the client reads a truncated body with no error, and
+	// the upstream received a truncated request. MEASURED without this call:
+	// cmd/muster-server's TestAProxiedPOSTIsNotTornWhenTheUpstreamAnswersBeforeTheBodyEnds,
+	// which forces the order, failed 60/60 (30 with -race, 30 without), and the
+	// shutdown POST test failed 4/240, 10/240 and 4/240 in three stress batches.
+	// With it: 0/60, and 0/240 in each of three batches.
+	//
+	// The error is handled, not dropped: HTTP/2 always runs full duplex and
+	// answers nil, and so does the server's own HTTP/1 writer reached through
+	// api's statusRecorder.Unwrap. Anything else means a ResponseWriter in the
+	// chain hides the server's (a wrapper with no Unwrap, a test recorder), and
+	// then the race above is OPEN for this request — said in the log rather than
+	// silently, because nothing else would show it.
+	if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
+		p.logf("connectors: proxy agent=%q connector=%q host=%q: full duplex unavailable (%v); "+
+			"a request body still being forwarded when the upstream answers may be cut off",
+			caller.AgentName, connector, host, err)
+	}
 	rp.ServeHTTP(&trailerlessWriter{w: w}, r.WithContext(outCtx))
 	if endedAtShutdown.Load() {
 		detail = "event stream ended at server shutdown"

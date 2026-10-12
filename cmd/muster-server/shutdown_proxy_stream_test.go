@@ -51,6 +51,8 @@ type proxyUpstream struct {
 	slowIn    chan struct{}
 	release   chan struct{}
 	slowCtxOK atomic.Bool // the /slow request's context was live when released
+	// POST /early (proxy_full_duplex_test.go): answers before reading its body.
+	earlyFlushed chan struct{}
 }
 
 func newProxyUpstream(t *testing.T) *proxyUpstream {
@@ -59,6 +61,8 @@ func newProxyUpstream(t *testing.T) *proxyUpstream {
 		streams: make(chan struct{}, 8),
 		slowIn:  make(chan struct{}, 1),
 		release: make(chan struct{}),
+
+		earlyFlushed: make(chan struct{}, 1),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /stream", func(w http.ResponseWriter, r *http.Request) {
@@ -91,6 +95,8 @@ func newProxyUpstream(t *testing.T) *proxyUpstream {
 	}
 	mux.HandleFunc("GET /slow", held("application/json", slowHead, slowTail))
 	mux.HandleFunc("POST /turn", held("text/event-stream", turnHead, turnTail))
+	mux.HandleFunc("POST /early", u.answerBeforeReading)
+	mux.HandleFunc("/echo", echoUpstream)
 	u.srv = httptest.NewServer(mux)
 	t.Cleanup(u.srv.Close)
 	_, port, _ := net.SplitHostPort(u.srv.Listener.Addr().String())
