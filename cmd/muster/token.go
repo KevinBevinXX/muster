@@ -111,7 +111,7 @@ func newWhoAmICmd(a *app) *cobra.Command {
 		Short: "GET /api/whoami — the user (and token) your credential acts as",
 		Long: `Print who the configured credential acts as: userId, role, and via —
 "api-token" for a personal token (with the token's id and name), "hook" for the
-shared hook secret (which acts as the server's MUSTER_MACHINE_USER_ID).`,
+shared hook secret (which acts as the admin, user 1).`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			body, err := a.call(cmd.Context(), request{method: http.MethodGet, path: whoamiRoute, cred: credHook})

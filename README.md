@@ -137,8 +137,7 @@ The CLI presents one credential, read from `MUSTER_TOKEN` (or its older name
   `muster whoami` says who a credential acts as. Revoking a token, or disabling
   its user, refuses it on the very next request.
 - **The shared hook secret** (`MUSTER_HOOK_TOKEN` on the server) acts as the
-  server's **machine user**: `MUSTER_MACHINE_USER_ID`, a `users.id`, default
-  `1` (the operator). The same applies to `MUSTER_SERVICE_TOKEN`. Every holder
+  admin, user 1, and so does `MUSTER_SERVICE_TOKEN`. Every holder
   of the shared secret acts as that one user, so a person who wants their own
   identity on the machine tier uses a personal token instead. `token …` refuses
   the hook secret: minting a credential is a person's act.

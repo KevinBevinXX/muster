@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"html"
@@ -10,7 +9,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/ZacxDev/muster/internal/apitokens"
 	"github.com/ZacxDev/muster/internal/auth"
@@ -25,12 +23,12 @@ import (
 // requireHookOrServiceToken all accept one — and the request then acts as the
 // token's OWNER, with the owner's role (roleOf), through authz.ViaToken. That
 // is the difference from the shared hook secret, which acts as the machine user
-// (MUSTER_MACHINE_USER_ID) whoever holds it. Tokens work on the LAN machine
+// (user 1, the admin) whoever holds it. Tokens work on the LAN machine
 // port; that is what they are for.
 //
 // 🔴 ONE DOOR, admitAPIToken, FOR EVERY WRAPPER THAT TAKES A TOKEN. The
-// refusals (malformed, unknown, revoked, disabled owner), the failure limiter
-// and the principal are decided in one function, so a wrapper cannot admit a
+// refusals (malformed, unknown, revoked, disabled owner) and the principal
+// are decided in one function, so a wrapper cannot admit a
 // token on a weaker rule than its siblings. It is an admit-ledger entry
 // (internal/authz/ledger_test.go).
 //
@@ -115,76 +113,35 @@ func (s *Server) requireAPIToken(next http.HandlerFunc) http.HandlerFunc {
 const APITokenRefusal = "invalid or revoked API token"
 
 // admitAPIToken authenticates a personal token and admits the request as its
-// owner, or refuses it. See the file header.
+// owner, or refuses it 401. See the file header.
 //
-// The order is cheapest-first, and NONE of the gates before the lookup can
-// refuse a valid token:
-//
-//  1. shape (apitokens.ShapeOK) — no I/O; a valid token always has it;
-//  2. the known-bad cache — no I/O; it holds only hashes the store said are
-//     UNKNOWN or REVOKED, both permanent, so a valid token is never in it;
-//  3. the lookup (under System, apiTokenUser).
-//
-// 🔴 THE PER-ADDRESS LIMIT ONLY CHANGES WHAT A FAILURE IS ANSWERED. An address
-// past its failure budget gets 429 instead of 401 for its NEXT failure — and
-// its valid tokens are still looked up and admitted. Refusing an address
-// before the lookup would refuse every valid token behind a shared address
-// (the LAN NodePort sees one) whenever anyone there sent junk, which is the
-// one thing this limiter must never do (TestAValidTokenIsNeverRefusedByTheLimiter).
+// ⚠ NO FAILURE LIMITER, ON PURPOSE: a 256-bit token cannot be guessed, so a
+// limiter would only turn 401 into 429. The one gate before the lookup is
+// apitokens.ShapeOK — a stateless format check, so junk costs no DB read.
 func (s *Server) admitAPIToken(w http.ResponseWriter, r *http.Request, next http.HandlerFunc, tok string) {
 	if s.ext.APITokens == nil {
 		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "this server does not serve personal API tokens (no database)"})
 		return
 	}
-	now := s.clock()
-	ip := clientIP(r)
 	if !apitokens.ShapeOK(tok) {
-		s.refuseAPIToken(w, ip, now)
-		return
-	}
-	key := hex.EncodeToString(apitokens.Hash(tok))
-	if s.apiTokenGate.knownBad(key, now) {
-		s.refuseAPIToken(w, ip, now)
+		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": APITokenRefusal})
 		return
 	}
 	t, err := s.apiTokenUser(r.Context(), tok)
 	switch {
 	case err == nil:
-	case errors.Is(err, apitokens.ErrBadToken):
-		s.apiTokenGate.markBad(key, now)
-		s.refuseAPIToken(w, ip, now)
-		return
-	case errors.Is(err, apitokens.ErrUserDisabled):
-		// NOT cached as bad: the owner can be re-enabled.
-		s.refuseAPIToken(w, ip, now)
+	case errors.Is(err, apitokens.ErrBadToken), errors.Is(err, apitokens.ErrUserDisabled):
+		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": APITokenRefusal})
 		return
 	default:
-		// The lookup FAILED; nothing was judged. Not counted, and 503 rather
-		// than 401 so a caller does not throw away a good token.
+		// The lookup FAILED; nothing was judged. 503 rather than 401 so a
+		// caller does not throw away a good token.
 		s.logger.Printf("api-token: lookup failed: %v", err)
 		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "could not check the API token"})
 		return
 	}
 	ctx := context.WithValue(r.Context(), apiTokenCtxKey{}, t)
 	s.admit(w, r.WithContext(ctx), next, s.principalFor(r.Context(), t.UserID, authz.ViaToken))
-}
-
-// refuseAPIToken answers a failed personal token: 401, or 429 once ip is past
-// its failure budget.
-func (s *Server) refuseAPIToken(w http.ResponseWriter, ip string, now time.Time) {
-	if !s.apiTokenGate.failure(ip, now) {
-		w.Header().Set("Retry-After", strconv.Itoa(int(apiTokenFailureWindow/time.Second)))
-		s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "too many invalid API tokens from this address; slow down"})
-		return
-	}
-	s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": APITokenRefusal})
-}
-
-func (s *Server) clock() time.Time {
-	if s.now != nil {
-		return s.now()
-	}
-	return time.Now()
 }
 
 // apiTokenUser resolves a personal token to its record.
@@ -196,40 +153,6 @@ func (s *Server) clock() time.Time {
 // with the principal built from the row's user_id. System-ledger entry.
 func (s *Server) apiTokenUser(ctx context.Context, tok string) (apitokens.Token, error) {
 	return s.ext.APITokens.Authenticate(authz.System(ctx), tok)
-}
-
-// --- the failure limiter -------------------------------------------------------
-
-const (
-	// apiTokenFailureWindow / apiTokenFailureBudget: an address may send this
-	// many failing personal tokens per window before its failures are answered
-	// 429. Generous on purpose: a 256-bit token cannot be guessed, so this is
-	// back-pressure on a misconfigured loop, not a brute-force defence.
-	apiTokenFailureWindow = time.Minute
-	apiTokenFailureBudget = 30
-	// apiTokenBadTTL is how long a known-bad hash is answered without a lookup.
-	apiTokenBadTTL = 10 * time.Minute
-)
-
-// apiTokenGate is the personal-token failure state. Both tables are
-// boundedWindows — capped, least-recently-touched eviction — so a flood of
-// distinct junk tokens or addresses cannot grow them. Eviction forgets: an
-// evicted bad hash costs one more lookup, an evicted address restarts its
-// budget. Neither direction can refuse a valid token.
-type apiTokenGate struct {
-	bad boundedWindow // key: token hash (hex) the store refused as unknown/revoked
-	ips boundedWindow // key: client address; value: failures this window
-}
-
-func (g *apiTokenGate) knownBad(key string, now time.Time) bool {
-	return g.bad.count(key, now, apiTokenBadTTL) > 0
-}
-
-func (g *apiTokenGate) markBad(key string, now time.Time) { g.bad.add(key, now, apiTokenBadTTL) }
-
-// failure records one failure from ip and reports whether it is within budget.
-func (g *apiTokenGate) failure(ip string, now time.Time) bool {
-	return g.ips.take(ip, now, apiTokenFailureWindow, apiTokenFailureBudget)
 }
 
 // --- the API ---------------------------------------------------------------------

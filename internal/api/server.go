@@ -105,9 +105,6 @@ type Server struct {
 	// loginRate throttles password attempts on the human tier.
 	loginRate rateLimiter
 
-	// apiTokenGate is the personal-token failure limiter. See api_tokens.go.
-	apiTokenGate apiTokenGate
-
 	// gt is the GoTrue wiring (accounts PR 4); nil unless UseGoTrue was
 	// called. See accounts.go.
 	gt *gotrueState

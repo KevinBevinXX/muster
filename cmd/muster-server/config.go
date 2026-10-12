@@ -66,10 +66,6 @@ const (
 	envGoTrueURL    = "MUSTER_GOTRUE_URL"
 	envGoTrueSecret = "MUSTER_GOTRUE_JWT_SECRET"
 	envBrowserPort  = "MUSTER_BROWSER_PORT"
-	// Accounts PR 6: who the SHARED machine credentials (MUSTER_HOOK_TOKEN,
-	// MUSTER_SERVICE_TOKEN) act as — a users.id, default 1 (the operator).
-	// Personal API tokens act as their owner and ignore it.
-	envMachineUserID = "MUSTER_MACHINE_USER_ID"
 
 	envGitHubToken     = "MUSTER_GITHUB_TOKEN"
 	envGitHubEncKey    = "MUSTER_GITHUB_ENCRYPTION_KEY"
@@ -311,9 +307,6 @@ type config struct {
 	// which gotrue mode serves a session (api.BrowserListener). The main port
 	// then serves machine tokens only.
 	BrowserPort int
-	// MachineUserID is MUSTER_MACHINE_USER_ID: the users.id the shared hook
-	// and service tokens act as. 1 (the operator) when unset.
-	MachineUserID int64
 
 	GitHubToken        string
 	GitHubEncKey       []byte
@@ -821,24 +814,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if c.AuthMode == "" {
 		c.AuthMode = string(api.AuthModePassword)
 	}
-	// ⚠ A WRITTEN 0 IS REFUSED, NOT READ AS THE DEFAULT: users.id starts at 1,
-	// and an operator who typed 0 meant something this cannot know.
-	c.MachineUserID = defaultMachineUserID
-	if v := strings.TrimSpace(getenv(envMachineUserID)); v != "" {
-		id, err := strconv.ParseInt(v, 10, 64)
-		if err != nil || id < 1 {
-			return config{}, fmt.Errorf("invalid %s %q: must be a users.id (an integer >= 1), or unset for %d (the operator)",
-				envMachineUserID, v, defaultMachineUserID)
-		}
-		c.MachineUserID = id
-	}
 
 	return c, nil
 }
-
-// defaultMachineUserID is MUSTER_MACHINE_USER_ID's default: the operator, the
-// seeded users.id = 1 every pre-accounts row was backfilled to.
-const defaultMachineUserID int64 = 1
 
 // gotrueIssuer and gotrueAudience are what muster's GoTrue stamps on its
 // tokens (GOTRUE_JWT_ISSUER / GOTRUE_JWT_AUD in its deployment). Verify

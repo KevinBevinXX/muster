@@ -1211,7 +1211,6 @@ func (c config) authConfig() api.AuthConfig {
 		SecureCookies: c.SecureCookies,
 		Mode:          api.AuthMode(c.AuthMode),
 		PublicURL:     c.PublicURL,
-		MachineUserID: c.MachineUserID,
 	}
 }
 

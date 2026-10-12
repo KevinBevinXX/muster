@@ -347,9 +347,6 @@ var bannerLedger = []string{
 // GITHUB_CLIENT_ID and MUSTER_GITHUB_TOKEN and neither of the other two, so the
 // entries say what is actually true of them.
 var bannerExempt = map[string]string{
-	envMachineUserID: "not an on/off state: it always has a value (default 1, the operator) and only names " +
-		"which users.id the SHARED hook/service tokens act as; a bad value refuses boot in loadConfig, so " +
-		"there is no silent refusing state to tell apart from a healthy one",
 	envAgentKinds: "announced on the `agent kinds:` line in both arms (gateway-only and claude-code " +
 		"enabled); the claude-code arm cannot be rendered by bannerBothDirections' fixture, whose " +
 		"provisioner is built without an account pool. TestTheKindsBannerLineNamesAccountsNeverTokens " +

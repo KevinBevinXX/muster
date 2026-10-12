@@ -104,10 +104,9 @@ func whoami(t *testing.T, h http.Handler, bearer, remote string) (int, map[strin
 	return rec.Code, body
 }
 
-// TestAPersonalTokenActsAsItsOwnerNotTheMachineUser: the same route, three
-// credentials, three identities. A token is its owner (user 7, a member — the
-// role is READ, via roleOf); the hook secret is the machine user, which
-// MUSTER_MACHINE_USER_ID moves.
+// TestAPersonalTokenActsAsItsOwnerNotTheMachineUser: the same route, two
+// credentials, two identities. A token is its owner (user 7, a member — the
+// role is READ, via roleOf); the hook secret is the machine user, user 1.
 func TestAPersonalTokenActsAsItsOwnerNotTheMachineUser(t *testing.T) {
 	f := newFakeAPITokens()
 	tok := f.add(t, 7)
@@ -121,13 +120,6 @@ func TestAPersonalTokenActsAsItsOwnerNotTheMachineUser(t *testing.T) {
 	}
 	if code, body := whoami(t, h, tokTestHook, ""); code != 200 || body["userId"] != float64(1) || body["via"] != "hook" {
 		t.Fatalf("whoami with the hook token = %d %v", code, body)
-	}
-	moved := tokenTestServer(t, AuthConfig{HookToken: tokTestHook, MachineUserID: 5}, f)
-	if code, body := whoami(t, moved, tokTestHook, ""); code != 200 || body["userId"] != float64(5) {
-		t.Fatalf("MachineUserID 5: the hook token acts as %v (%d); want 5", body["userId"], code)
-	}
-	if code, body := whoami(t, moved, tok, ""); body["userId"] != float64(7) {
-		t.Fatalf("MachineUserID must not move a PERSONAL token: %d %v", code, body)
 	}
 }
 
@@ -147,56 +139,6 @@ func TestAMalformedPersonalTokenNeverReachesTheStore(t *testing.T) {
 	unknown, _ := apitokens.New()
 	if code, _ := whoami(t, h, unknown, ""); code != http.StatusUnauthorized || f.lookups() != 1 {
 		t.Fatalf("CONTROL: a well-formed unknown token: %d after %d lookups; want 401 after 1", code, f.lookups())
-	}
-}
-
-// TestAKnownBadTokenIsAnsweredWithoutASecondLookup: unknown and revoked are
-// permanent, so the second presentation is answered from the bad-hash table.
-func TestAKnownBadTokenIsAnsweredWithoutASecondLookup(t *testing.T) {
-	f := newFakeAPITokens()
-	h := tokenTestServer(t, AuthConfig{HookToken: tokTestHook}, f)
-	unknown, _ := apitokens.New()
-	for i := 0; i < 3; i++ {
-		if code, _ := whoami(t, h, unknown, ""); code != http.StatusUnauthorized {
-			t.Fatalf("attempt %d: %d", i, code)
-		}
-	}
-	if n := f.lookups(); n != 1 {
-		t.Fatalf("one unknown token presented 3 times cost %d lookups; want 1", n)
-	}
-}
-
-// TestAValidTokenIsNeverRefusedByTheLimiter: one address floods well-formed
-// junk until its failures are answered 429 — and its valid token is still
-// admitted, then the junk is still 429 (the limiter really was engaged).
-func TestAValidTokenIsNeverRefusedByTheLimiter(t *testing.T) {
-	f := newFakeAPITokens()
-	tok := f.add(t, 7)
-	h := tokenTestServer(t, AuthConfig{HookToken: tokTestHook}, f)
-	const addr = "192.0.2.9:4000"
-	saw429 := 0
-	for i := 0; i < apiTokenFailureBudget+10; i++ {
-		junk, _ := apitokens.New()
-		code, _ := whoami(t, h, junk, addr)
-		switch {
-		case i < apiTokenFailureBudget && code != http.StatusUnauthorized:
-			t.Fatalf("failure %d (within budget): %d; want 401", i, code)
-		case code == http.StatusTooManyRequests:
-			saw429++
-		}
-	}
-	if saw429 != 10 {
-		t.Fatalf("CONTROL: %d of the 10 over-budget failures were 429; the limiter never engaged", saw429)
-	}
-	if code, body := whoami(t, h, tok, addr); code != 200 || body["userId"] != float64(7) {
-		t.Fatalf("a VALID token from the flooded address: %d %v; a valid token must never be refused", code, body)
-	}
-	junk, _ := apitokens.New()
-	if code, _ := whoami(t, h, junk, addr); code != http.StatusTooManyRequests {
-		t.Fatalf("after the valid token, junk from the address: %d; want 429 still", code)
-	}
-	if code, _ := whoami(t, h, junk, "198.51.100.1:1"); code != http.StatusUnauthorized {
-		t.Fatalf("another address: %d; want 401 (the budget is per address)", code)
 	}
 }
 
