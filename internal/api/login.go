@@ -93,11 +93,16 @@ func (s *Server) registerLoginRoutes(mux Mux) {
 	mux.HandleFunc("GET /login", s.handleLoginPage)
 	mux.HandleFunc("POST /login", s.handleLoginSubmit)
 	mux.HandleFunc("POST /logout", s.handleLogout)
+	s.registerAccountRoutes(mux)
 }
 
 // handleLoginPage renders the form. An already-signed-in caller is sent on
 // rather than shown a second login.
 func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
+	if s.auth.goTrueMode() {
+		s.handleGoTrueLoginPage(w, r)
+		return
+	}
 	if reason := s.auth.BrowserAuthRefusal(); reason != "" {
 		// 🔴 THE REASON IS SHOWN, and it is safe to show: it names an env var the
 		// operator controls and discloses no secret. Without it a fail-closed
@@ -117,6 +122,10 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 
 // handleLoginSubmit checks the password and mints the session cookie.
 func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
+	if s.auth.goTrueMode() {
+		s.handleGoTrueLoginSubmit(w, r)
+		return
+	}
 	if reason := s.auth.BrowserAuthRefusal(); reason != "" {
 		s.renderLoginPage(w, http.StatusServiceUnavailable, "",
 			"This server has no operator password configured ("+reason+").")
@@ -162,6 +171,10 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 // handleLogout clears the session cookie. It is a POST because a GET logout is
 // triggerable by any third-party page embedding an image.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if s.auth.goTrueMode() {
+		s.handleGoTrueLogout(w, r)
+		return
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",
@@ -177,13 +190,35 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 // renderLoginPage writes the whole document. Hand-written rather than composed,
 // for the independence reason at the top of this file.
 func (s *Server) renderLoginPage(w http.ResponseWriter, code int, next, problem string) {
-	var problemNode string
-	if problem != "" {
-		// role=alert so a screen reader announces the failure without the operator
-		// hunting for it; the text is server-authored, and escaped regardless.
-		problemNode = `<p role="alert" class="rounded-lg bg-st-error-bg px-3 py-2 text-sm text-st-error-fg ring-1 ring-inset ring-st-error-fg/40">` +
-			html.EscapeString(problem) + `</p>`
+	inner := `<form method="POST" action="` + loginPath + `" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+<h1 class="text-balance text-base font-semibold text-fg">Sign in to muster</h1>
+<p class="text-sm text-fg2">Enter the operator password to continue.</p>
+` + problemNode(problem) + `
+<label for="muster-password" class="text-sm font-medium text-fg">Operator password</label>
+<input id="muster-password" name="password" type="password" autocomplete="current-password" autofocus required
+ class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">
+<input type="hidden" name="next" value="` + html.EscapeString(safeReturnTo(next)) + `">
+<button type="submit" class="press min-h-[44px] rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Sign in</button>
+</form>`
+	writeAuthDocument(w, code, "Sign in", inner)
+}
+
+// problemNode renders a server-authored failure message, or nothing.
+func problemNode(problem string) string {
+	if problem == "" {
+		return ""
 	}
+	// role=alert so a screen reader announces the failure without the operator
+	// hunting for it; the text is server-authored, and escaped regardless.
+	return `<p role="alert" class="rounded-lg bg-st-error-bg px-3 py-2 text-sm text-st-error-fg ring-1 ring-inset ring-st-error-fg/40">` +
+		html.EscapeString(problem) + `</p>`
+}
+
+// writeAuthDocument writes one of the standalone auth pages (sign-in, the
+// gotrue sign-in, the admin claim, the account page, notices): the same bare
+// document, so none of them depends on internal/ui's shell. title is escaped;
+// inner is trusted markup built by this package.
+func writeAuthDocument(w http.ResponseWriter, code int, title, inner string) {
 	doc := `<!doctype html>
 <html class="dark" lang="en">
 <head>
@@ -192,21 +227,12 @@ func (s *Server) renderLoginPage(w http.ResponseWriter, code int, next, problem 
 <meta name="color-scheme" content="dark light">
 ` + ui.ThemeHeadHTML() + `
 <meta name="robots" content="noindex">
-<title>Sign in · muster</title>
+<title>` + html.EscapeString(title) + ` · muster</title>
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body class="flex min-h-dvh items-center justify-center bg-bg px-4 text-fg antialiased">
 <main class="w-full max-w-sm">
-<form method="POST" action="` + loginPath + `" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
-<h1 class="text-balance text-base font-semibold text-fg">Sign in to muster</h1>
-<p class="text-sm text-fg2">Enter the operator password to continue.</p>
-` + problemNode + `
-<label for="muster-password" class="text-sm font-medium text-fg">Operator password</label>
-<input id="muster-password" name="password" type="password" autocomplete="current-password" autofocus required
- class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">
-<input type="hidden" name="next" value="` + html.EscapeString(safeReturnTo(next)) + `">
-<button type="submit" class="press min-h-[44px] rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Sign in</button>
-</form>
+` + inner + `
 </main>
 </body>
 </html>`

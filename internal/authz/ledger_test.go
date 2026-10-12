@@ -82,6 +82,12 @@ var (
 		"internal/api.(*Server).RunTaskRetention",
 		"internal/api.(*Server).agentByToken",
 		"internal/api.(*Server).notifyAgentRunning",
+		// Accounts PR 4: the account store (users, invites). Neither table is
+		// under row-level security, and every query there is how a request
+		// LEARNS its user (a token's sub → users row) or runs for an anonymous
+		// claim-link visitor — there is no principal to run as yet. One helper,
+		// so the whole package is this one site.
+		"internal/users.sys",
 	}
 	// operatorLedger: work done as the OPERATOR (user 1) with no request —
 	// the boot-time GitHub connect of the operator's own static token, and the
@@ -106,6 +112,7 @@ var (
 		"internal/api.(*Server).requireAgentToken",
 		"internal/api.(*Server).requireArmedHookToken",
 		"internal/api.(*Server).requireConnectorAgent",
+		"internal/api.(*Server).requireGoTrueSession", // requireSession's gotrue-mode half (accounts PR 4)
 		"internal/api.(*Server).requireHookOrServiceToken",
 		"internal/api.(*Server).requireHookToken",
 		"internal/api.(*Server).requireRelayAgent",

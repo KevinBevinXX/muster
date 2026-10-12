@@ -17,6 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
+	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/ccpool"
 )
 
@@ -58,6 +59,13 @@ const (
 	envHookToken     = "MUSTER_HOOK_TOKEN"
 	envServiceToken  = "MUSTER_SERVICE_TOKEN"
 	envSecureCookies = "MUSTER_SECURE_COOKIES"
+
+	// Accounts PR 4: the human tier's mode and muster's GoTrue. See
+	// internal/api/accounts.go and validateAuthMode.
+	envAuthMode     = "MUSTER_AUTH_MODE"
+	envGoTrueURL    = "MUSTER_GOTRUE_URL"
+	envGoTrueSecret = "MUSTER_GOTRUE_JWT_SECRET"
+	envBrowserPort  = "MUSTER_BROWSER_PORT"
 
 	envGitHubToken     = "MUSTER_GITHUB_TOKEN"
 	envGitHubEncKey    = "MUSTER_GITHUB_ENCRYPTION_KEY"
@@ -283,6 +291,18 @@ type config struct {
 	HookToken     string
 	ServiceToken  string
 	SecureCookies bool
+
+	// AuthMode is MUSTER_AUTH_MODE: "password" (the default) or "gotrue".
+	AuthMode string
+	// GoTrueURL and GoTrueSecret reach muster's GoTrue. Set in either mode:
+	// in password mode they arm only the admin claim, so the operator's login
+	// can be bound before the mode is flipped.
+	GoTrueURL    string
+	GoTrueSecret string
+	// BrowserPort, when non-zero, binds the BROWSER listener: the only one on
+	// which gotrue mode serves a session (api.BrowserListener). The main port
+	// then serves machine tokens only.
+	BrowserPort int
 
 	GitHubToken        string
 	GitHubEncKey       []byte
@@ -621,6 +641,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 		HookToken:          getenv(envHookToken),
 		ServiceToken:       getenv(envServiceToken),
 		SecureCookies:      envFlag(getenv, envSecureCookies),
+		AuthMode:           strings.ToLower(strings.TrimSpace(getenv(envAuthMode))),
+		GoTrueURL:          strings.TrimRight(strings.TrimSpace(getenv(envGoTrueURL)), "/"),
+		GoTrueSecret:       strings.TrimSpace(getenv(envGoTrueSecret)),
 		GitHubToken:        strings.TrimSpace(getenv(envGitHubToken)),
 		PublicURL:          strings.TrimSpace(getenv(envPublicURL)),
 		GitHubClientID:     strings.TrimSpace(getenv(envGitHubClientID)),
@@ -773,8 +796,96 @@ func loadConfig(getenv func(string) string) (config, error) {
 		c.ConnectPort = p
 	}
 	c.AgentConnectURL = strings.TrimRight(strings.TrimSpace(getenv(envAgentConnectURL)), "/")
+	if v := strings.TrimSpace(getenv(envBrowserPort)); v != "" {
+		p, err := strconv.Atoi(v)
+		if err != nil || p < 1 || p > 65535 {
+			return config{}, fmt.Errorf("invalid %s %q: must be an integer 1-65535", envBrowserPort, v)
+		}
+		c.BrowserPort = p
+	}
+	if c.AuthMode == "" {
+		c.AuthMode = string(api.AuthModePassword)
+	}
 
 	return c, nil
+}
+
+// gotrueIssuer and gotrueAudience are what muster's GoTrue stamps on its
+// tokens (GOTRUE_JWT_ISSUER / GOTRUE_JWT_AUD in its deployment). Verify
+// refuses any other value.
+const (
+	gotrueIssuer   = "muster-auth"
+	gotrueAudience = "authenticated"
+)
+
+// minGoTrueSecretLen is the shortest shared secret muster will verify tokens
+// with. GoTrue's own guidance is at least 32 characters; a shorter value is a
+// placeholder, and a guessable HS256 secret is a forgeable session for anyone.
+const minGoTrueSecretLen = 32
+
+// goTrueConfigured reports whether muster's GoTrue is wired at all.
+func (c config) goTrueConfigured() bool { return c.GoTrueURL != "" && c.GoTrueSecret != "" }
+
+// validateAuthMode refuses an auth configuration that would boot unsafe.
+//
+// 🔴 gotrue MODE REFUSES TO BOOT UNLESS EVERY ONE OF THESE HOLDS, and each is
+// a real failure rather than tidiness:
+//
+//   - MUSTER_GOTRUE_URL and MUSTER_GOTRUE_JWT_SECRET (≥32 characters): without
+//     them no session can be minted or verified.
+//   - an ARMED hook tier (MUSTER_HOOK_TOKEN set). The hook tier is
+//     enforce-when-set: unset, every hook route admits ANYONE as the machine
+//     user, user 1 — the admin. In password mode that is the documented
+//     back-compat debt; once other people have accounts it is an anonymous
+//     admin door beside a per-user login, so gotrue mode will not boot with it.
+//   - MUSTER_BROWSER_PORT, distinct from the main and connect ports: the only
+//     listener a browser session is served on.
+//
+// The GoTrue pair is validated in password mode too whenever either half is
+// set, because there it arms the admin claim.
+func (c config) validateAuthMode() error {
+	switch api.AuthMode(c.AuthMode) {
+	// "" is a config built without loadConfig (every struct-literal fixture):
+	// the default, password.
+	case "", api.AuthModePassword, api.AuthModeGoTrue:
+	default:
+		return fmt.Errorf("%s=%q is not a mode this server has: use %q (the default) or %q",
+			envAuthMode, c.AuthMode, api.AuthModePassword, api.AuthModeGoTrue)
+	}
+	if (c.GoTrueURL == "") != (c.GoTrueSecret == "") {
+		return fmt.Errorf("%s and %s are a pair and only one is set (%s=%s, %s=%s). Set both or neither",
+			envGoTrueURL, envGoTrueSecret, envGoTrueURL, presence(c.GoTrueURL), envGoTrueSecret, presence(c.GoTrueSecret))
+	}
+	if c.GoTrueURL != "" {
+		u, err := url.Parse(c.GoTrueURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("%s=%q is not an http(s) URL", envGoTrueURL, c.GoTrueURL)
+		}
+		if len(c.GoTrueSecret) < minGoTrueSecretLen {
+			return fmt.Errorf("%s is shorter than %d characters: it signs every session, so a short "+
+				"value is a forgeable login. Use GoTrue's GOTRUE_JWT_SECRET", envGoTrueSecret, minGoTrueSecretLen)
+		}
+	}
+	if c.BrowserPort != 0 && (c.BrowserPort == c.Port || c.BrowserPort == c.ConnectPort) {
+		return fmt.Errorf("%s=%d collides with another listener's port", envBrowserPort, c.BrowserPort)
+	}
+	if api.AuthMode(c.AuthMode) != api.AuthModeGoTrue {
+		return nil
+	}
+	if !c.goTrueConfigured() {
+		return fmt.Errorf("%s=gotrue needs %s and %s: without them no session can be minted or verified",
+			envAuthMode, envGoTrueURL, envGoTrueSecret)
+	}
+	if c.HookToken == "" {
+		return fmt.Errorf("%s=gotrue refuses to boot with %s unset: the hook tier is enforce-when-set, so "+
+			"unset it admits ANYONE as the machine user — user 1, the admin. With per-user logins that is an "+
+			"anonymous admin door. Set %s", envAuthMode, envHookToken, envHookToken)
+	}
+	if c.BrowserPort == 0 {
+		return fmt.Errorf("%s=gotrue needs %s: browser sessions are served only on that listener, and the "+
+			"main port serves machine tokens only. Route the public edge to it", envAuthMode, envBrowserPort)
+	}
+	return nil
 }
 
 // validateConnectors refuses a connector configuration that could only fail
@@ -894,6 +1005,9 @@ func (c config) validate() error {
 		}
 	}
 	if err := c.validateConnectors(); err != nil {
+		return err
+	}
+	if err := c.validateAuthMode(); err != nil {
 		return err
 	}
 	return c.validateProvisioner()

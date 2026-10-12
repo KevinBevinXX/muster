@@ -130,6 +130,9 @@ var pgBackedPackages = []string{
 	// what the fake's author believed — so that one test opens a database and
 	// the rest of the package renders strings.
 	"internal/ui",
+	// Accounts PR 4: the account store. Its claim redemption's single-use
+	// guarantee IS a Postgres row lock, which no fake can stand in for.
+	"internal/users",
 }
 
 // envVarReaders is the ledger of files that may name either environment

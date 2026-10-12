@@ -35,6 +35,7 @@ DELETE /connectors/{name}
 DELETE /tasks/{id}
 DELETE /tasks/{id}/comments/{cid}
 DELETE /tasks/{id}/tags/{tag}
+GET /account
 GET /agent/approvals/{id}
 GET /agent/connectors
 GET /agent/connectors/{name}
@@ -57,6 +58,7 @@ GET /api/tasks
 GET /api/tasks/{id}
 GET /apple-touch-icon-precomposed.png
 GET /apple-touch-icon.png
+GET /auth/claim/{token}
 GET /connectors
 GET /events
 GET /favicon.ico
@@ -117,6 +119,7 @@ POST /agents/{id}/stop
 POST /api/agents/{name}/messages
 POST /api/tasks
 POST /api/tasks/{id}/comments
+POST /auth/claim/{token}
 POST /chief/provision
 POST /connectors
 POST /connectors/{name}/rotate

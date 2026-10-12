@@ -1,0 +1,419 @@
+package api
+
+import (
+	"context"
+	"crypto/sha256"
+	"errors"
+	"html"
+	"net/http"
+	"net/mail"
+	"strings"
+	"time"
+
+	"github.com/ZacxDev/muster/internal/auth"
+	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/gotrue"
+	"github.com/ZacxDev/muster/internal/users"
+)
+
+// The gotrue-mode halves of the login tier, the admin claim, and the account
+// page. login.go dispatches here when AuthConfig.Mode is gotrue; password mode
+// never reaches this file except for the claim, which works in both modes so
+// the admin can be bound BEFORE the mode is flipped (accounts plan §8 step 3).
+
+// Sign-in throttles for gotrue mode.
+//
+// 🔴 TWO LIMITS, AND THE PER-ADDRESS ONE IS NOT ENOUGH ON ITS OWN. Failures are
+// counted per client address (loginFailureLimit per loginFailureWindow), which
+// is what stops one guesser without locking every other user out — the
+// password mode's single shared bucket would let one person deny sign-in to
+// all. But the address is read from headers on the browser listener (see
+// clientIP), so a caller who can reach that port around the CDN chooses it;
+// loginAttemptCeiling bounds ALL attempts process-wide so rotating addresses
+// buys a bounded rate, not an unbounded one. GoTrue applies its own limits
+// too, bucketed on the address muster forwards.
+const (
+	loginFailureLimit   = 10
+	loginFailureWindow  = 10 * time.Minute
+	loginAttemptCeiling = 120
+	loginAttemptWindow  = time.Minute
+)
+
+// ClaimPathPrefix is the admin claim link's path; the token follows it.
+const ClaimPathPrefix = "/auth/claim/"
+
+// ClaimTTL is how long a claim link stays redeemable.
+const ClaimTTL = 24 * time.Hour
+
+// accountPath is the signed-in account page (sign out, sign out everywhere).
+const accountPath = "/account"
+
+// registerAccountRoutes wires the claim and account routes. Literal patterns,
+// for the reason registerLoginRoutes gives.
+func (s *Server) registerAccountRoutes(mux Mux) {
+	mux.HandleFunc("GET /auth/claim/{token}", s.handleClaimPage)
+	mux.HandleFunc("POST /auth/claim/{token}", s.handleClaimSubmit)
+	mux.HandleFunc("GET /account", s.requireSession(s.handleAccountPage))
+}
+
+// renderNotice writes a one-message standalone page.
+func (s *Server) renderNotice(w http.ResponseWriter, code int, heading, body string) {
+	writeAuthDocument(w, code, heading, `<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+<h1 class="text-balance text-base font-semibold text-fg">`+html.EscapeString(heading)+`</h1>
+<p class="text-sm text-fg2">`+html.EscapeString(body)+`</p>
+</section>`)
+}
+
+// --- sign-in ------------------------------------------------------------------
+
+func (s *Server) handleGoTrueLoginPage(w http.ResponseWriter, r *http.Request) {
+	if !viaBrowserListener(r) {
+		s.refuseOffBrowserListener(w, r)
+		return
+	}
+	if s.gt == nil {
+		s.renderNotice(w, http.StatusServiceUnavailable, "Sign-in is not configured",
+			"This server is in gotrue mode but has no GoTrue configured, so it cannot sign anyone in.")
+		return
+	}
+	if sess, err := s.resolveGoTrueSession(r); err == nil {
+		if sess.refreshed != nil {
+			s.setGoTrueCookies(w, *sess.refreshed)
+		}
+		http.Redirect(w, r, safeReturnTo(r.URL.Query().Get("next")), http.StatusSeeOther)
+		return
+	}
+	s.renderGoTrueLogin(w, http.StatusOK, r.URL.Query().Get("next"), "", "")
+}
+
+func (s *Server) renderGoTrueLogin(w http.ResponseWriter, code int, next, email, problem string) {
+	inner := `<form method="POST" action="` + loginPath + `" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+<h1 class="text-balance text-base font-semibold text-fg">Sign in to muster</h1>
+` + problemNode(problem) + `
+<label for="muster-email" class="text-sm font-medium text-fg">Email</label>
+<input id="muster-email" name="email" type="email" autocomplete="username" autofocus required value="` + html.EscapeString(email) + `"
+ class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">
+<label for="muster-password" class="text-sm font-medium text-fg">Password</label>
+<input id="muster-password" name="password" type="password" autocomplete="current-password" required
+ class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">
+<input type="hidden" name="next" value="` + html.EscapeString(safeReturnTo(next)) + `">
+<button type="submit" class="press min-h-[44px] rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Sign in</button>
+</form>`
+	writeAuthDocument(w, code, "Sign in", inner)
+}
+
+// loginThrottled reports whether ip may NOT attempt a sign-in now, and counts
+// the attempt against the process-wide ceiling when it may.
+func (g *gotrueState) loginThrottled(ip string) bool {
+	now := g.now()
+	if g.failures.count(ip, now, loginFailureWindow) >= loginFailureLimit {
+		return true
+	}
+	return !g.attempts.allow(now, loginAttemptCeiling, loginAttemptWindow)
+}
+
+func (s *Server) handleGoTrueLoginSubmit(w http.ResponseWriter, r *http.Request) {
+	if !viaBrowserListener(r) {
+		s.refuseOffBrowserListener(w, r)
+		return
+	}
+	if s.gt == nil {
+		s.renderNotice(w, http.StatusServiceUnavailable, "Sign-in is not configured",
+			"This server is in gotrue mode but has no GoTrue configured.")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		s.renderGoTrueLogin(w, http.StatusBadRequest, "", "", "That form could not be read.")
+		return
+	}
+	next, email, password := r.FormValue("next"), strings.TrimSpace(r.FormValue("email")), r.FormValue("password")
+	ip := clientIP(r)
+	if s.gt.loginThrottled(ip) {
+		// 429, not 401: the credential was never judged.
+		s.renderGoTrueLogin(w, http.StatusTooManyRequests, next, email, "Too many attempts. Wait a few minutes and try again.")
+		return
+	}
+	sess, err := s.gt.Client.PasswordGrant(r.Context(), ip, email, password)
+	if err != nil {
+		var ae *gotrue.APIError
+		switch {
+		case errors.As(err, &ae) && ae.Status == http.StatusTooManyRequests:
+			s.renderGoTrueLogin(w, http.StatusTooManyRequests, next, email, "Too many attempts. Wait a few minutes and try again.")
+		case gotrue.IsClientError(err):
+			s.gt.failures.add(ip, s.gt.now(), loginFailureWindow)
+			s.logger.Printf("login: rejected a sign-in attempt from %s", ip)
+			s.renderGoTrueLogin(w, http.StatusUnauthorized, next, email, "That email and password do not match.")
+		default:
+			s.logger.Printf("login: GoTrue is unavailable: %v", err)
+			s.renderGoTrueLogin(w, http.StatusBadGateway, next, email, "Sign-in is unavailable right now. Try again shortly.")
+		}
+		return
+	}
+	u, problem, code := s.admitFreshSession(r.Context(), sess)
+	if problem != "" {
+		s.renderGoTrueLogin(w, code, next, email, problem)
+		return
+	}
+	s.setGoTrueCookies(w, sess)
+	s.logger.Printf("login: user %d signed in", u.ID)
+	http.Redirect(w, r, safeReturnTo(next), http.StatusSeeOther)
+}
+
+// admitFreshSession checks a pair GoTrue just issued: the access token must
+// verify with muster's own settings, and its subject must be a muster user
+// who is not disabled. A refusal returns the message and status to show.
+func (s *Server) admitFreshSession(ctx context.Context, sess gotrue.Session) (users.User, string, int) {
+	c, err := s.gt.Verifier.Verify(sess.AccessToken)
+	if err != nil {
+		s.logger.Printf("login: a token GoTrue just issued does not verify (%v) — check "+
+			"MUSTER_GOTRUE_JWT_SECRET and the issuer/audience against GoTrue's", err)
+		return users.User{}, "Sign-in is misconfigured on this server.", http.StatusInternalServerError
+	}
+	u, err := s.gt.user(ctx, c.Subject)
+	if errors.Is(err, users.ErrNotFound) {
+		return users.User{}, "This login has no muster account.", http.StatusForbidden
+	}
+	if err != nil {
+		s.logger.Printf("login: user lookup failed: %v", err)
+		return users.User{}, "Sign-in is unavailable right now. Try again shortly.", http.StatusInternalServerError
+	}
+	if u.Disabled() {
+		return users.User{}, "This account is disabled.", http.StatusForbidden
+	}
+	s.gt.signedIn(c)
+	return u, "", 0
+}
+
+// handleGoTrueLogout ends the session: GoTrue /logout (scope global when the
+// form asks for "everywhere"), this process's revocation of the access token,
+// and the cookies.
+func (s *Server) handleGoTrueLogout(w http.ResponseWriter, r *http.Request) {
+	scope := gotrue.ScopeLocal
+	if r.FormValue("scope") == "global" {
+		scope = gotrue.ScopeGlobal
+	}
+	if s.gt != nil && viaBrowserListener(r) {
+		if sess, err := s.resolveGoTrueSession(r); err == nil {
+			if err := s.gt.Client.Logout(r.Context(), clientIP(r), sess.access, scope); err != nil {
+				// The local revocation below still applies; the refresh side
+				// may survive in GoTrue, so it is logged rather than swallowed.
+				s.logger.Printf("logout: GoTrue /logout failed for user %d: %v", sess.user.ID, err)
+			}
+			s.gt.revoke(sess.claims, scope)
+			s.logger.Printf("logout: user %d signed out (%s)", sess.user.ID, scope)
+		}
+	}
+	s.clearGoTrueCookies(w)
+	http.Redirect(w, r, loginPath, http.StatusSeeOther)
+}
+
+// --- the account page ---------------------------------------------------------
+
+func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
+	who := "the operator password"
+	if s.auth.goTrueMode() && s.gt != nil {
+		// The principal requireSession attached names the user; read the row
+		// rather than resolving the cookies a second time.
+		if u, err := s.gt.Users.ByID(r.Context(), authz.MustFrom(r.Context()).UserID); err == nil {
+			who = u.Email
+		}
+	}
+	everywhere := ""
+	if s.auth.goTrueMode() {
+		everywhere = `<form method="POST" action="/logout"><input type="hidden" name="scope" value="global">
+<button type="submit" class="press min-h-[44px] w-full rounded-md bg-bg px-3 py-2 text-base font-semibold text-fg ring-1 ring-inset ring-edge">Sign out everywhere</button></form>`
+	}
+	writeAuthDocument(w, http.StatusOK, "Account", `<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+<h1 class="text-balance text-base font-semibold text-fg">Account</h1>
+<p class="text-sm text-fg2">Signed in as <span class="font-semibold text-fg">`+html.EscapeString(who)+`</span>.</p>
+<form method="POST" action="/logout">
+<button type="submit" class="press min-h-[44px] w-full rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Sign out</button></form>
+`+everywhere+`
+<a href="/" class="text-sm text-accent underline">Back to muster</a>
+</section>`)
+}
+
+// --- the admin claim ------------------------------------------------------------
+//
+// `muster-server invite --claim-admin` mints a single-use link; redeeming it
+// creates a GoTrue user and binds it to users.id = 1 (the operator, whose
+// gotrue_sub is NULL until then). It is the ONLY invite flow in this PR; general
+// invites are accounts PR 5.
+
+// ClaimMinter is what minting a claim link needs from the store.
+type ClaimMinter interface {
+	CreateClaimInvite(ctx context.Context, tokenHash []byte, claimUserID, createdBy int64, expiresAt time.Time) error
+}
+
+// NewAdminClaimLink mints a claim invite for user 1 and returns the link. The
+// token is shown once here and stored only as its sha256.
+func NewAdminClaimLink(ctx context.Context, store ClaimMinter, publicURL string, now time.Time) (string, error) {
+	if strings.TrimSpace(publicURL) == "" {
+		return "", errors.New("MUSTER_PUBLIC_URL is not set, so there is no address to put in the link")
+	}
+	token, err := auth.RandomToken(32)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(token))
+	if err := store.CreateClaimInvite(ctx, sum[:], adminUserID, adminUserID, now.Add(ClaimTTL)); err != nil {
+		return "", err
+	}
+	return strings.TrimRight(publicURL, "/") + ClaimPathPrefix + token, nil
+}
+
+// adminUserID is the seeded operator row the claim binds.
+const adminUserID int64 = 1
+
+func claimHash(r *http.Request) []byte {
+	sum := sha256.Sum256([]byte(r.PathValue("token")))
+	return sum[:]
+}
+
+// claimRefusal reports why this request may not use the claim flow, or "".
+func (s *Server) claimRefusal(r *http.Request) (int, string) {
+	if s.gt == nil {
+		return http.StatusNotFound, ""
+	}
+	if !viaBrowserListener(r) {
+		return http.StatusForbidden, "This port serves muster's machine API only. Open the link at muster's public address" + s.publicURLSuffix() + "."
+	}
+	return 0, ""
+}
+
+func (s *Server) renderInvalidClaim(w http.ResponseWriter) {
+	// ONE page for every way a link can be bad, so it cannot be used to learn
+	// which tokens exist.
+	s.renderNotice(w, http.StatusNotFound, "This link is invalid or expired",
+		"Ask the operator for a new link.")
+}
+
+func (s *Server) handleClaimPage(w http.ResponseWriter, r *http.Request) {
+	if code, msg := s.claimRefusal(r); code != 0 {
+		if msg == "" {
+			http.NotFound(w, r)
+			return
+		}
+		s.renderNotice(w, code, "Open this link at the public address", msg)
+		return
+	}
+	live, err := s.gt.Users.ClaimInviteLive(r.Context(), claimHash(r))
+	if err != nil {
+		s.logger.Printf("claim: lookup failed: %v", err)
+		s.renderNotice(w, http.StatusInternalServerError, "Something went wrong", "Try the link again shortly.")
+		return
+	}
+	if !live {
+		s.renderInvalidClaim(w)
+		return
+	}
+	s.renderClaimForm(w, http.StatusOK, r.URL.Path, "", "")
+}
+
+func (s *Server) renderClaimForm(w http.ResponseWriter, code int, action, email, problem string) {
+	field := func(id, name, label, typ, auto, value string) string {
+		return `<label for="` + id + `" class="text-sm font-medium text-fg">` + label + `</label>
+<input id="` + id + `" name="` + name + `" type="` + typ + `" autocomplete="` + auto + `" required value="` + html.EscapeString(value) + `"
+ class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">`
+	}
+	writeAuthDocument(w, code, "Claim the admin account", `<form method="POST" action="`+html.EscapeString(action)+`" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+<h1 class="text-balance text-base font-semibold text-fg">Claim the admin account</h1>
+<p class="text-sm text-fg2">Choose the email and password you will sign in to muster with. This link works once.</p>
+`+problemNode(problem)+`
+`+field("claim-email", "email", "Email", "email", "username", email)+`
+`+field("claim-password", "password", "Password (at least 12 characters)", "password", "new-password", "")+`
+`+field("claim-password2", "password2", "Password again", "password", "new-password", "")+`
+<button type="submit" class="press min-h-[44px] rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Claim</button>
+</form>`)
+}
+
+func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
+	if code, msg := s.claimRefusal(r); code != 0 {
+		if msg == "" {
+			http.NotFound(w, r)
+			return
+		}
+		s.renderNotice(w, code, "Open this link at the public address", msg)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		s.renderClaimForm(w, http.StatusBadRequest, r.URL.Path, "", "That form could not be read.")
+		return
+	}
+	ip := clientIP(r)
+	if s.gt.loginThrottled(ip) {
+		s.renderNotice(w, http.StatusTooManyRequests, "Too many attempts", "Wait a few minutes and try again.")
+		return
+	}
+	email := strings.TrimSpace(r.FormValue("email"))
+	pw, pw2 := r.FormValue("password"), r.FormValue("password2")
+	if a, err := mail.ParseAddress(email); err != nil || a.Address != email {
+		s.renderClaimForm(w, http.StatusBadRequest, r.URL.Path, email, "Enter a valid email address.")
+		return
+	}
+	if len(pw) < gotrue.MinPasswordLength {
+		s.renderClaimForm(w, http.StatusBadRequest, r.URL.Path, email, "The password must be at least 12 characters.")
+		return
+	}
+	if pw != pw2 {
+		s.renderClaimForm(w, http.StatusBadRequest, r.URL.Path, email, "The two passwords are different.")
+		return
+	}
+	var createErr error
+	u, err := s.gt.Users.RedeemClaim(r.Context(), claimHash(r), email,
+		func(ctx context.Context) (string, error) {
+			sub, err := s.gt.Client.AdminCreateUser(ctx, ip, email, pw)
+			createErr = err
+			return sub, err
+		},
+		func(sub string) {
+			// Compensation: the GoTrue user exists but its muster binding did
+			// not commit. Delete it, so the email is not stranded in GoTrue.
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Second)
+			defer cancel()
+			if err := s.gt.Client.AdminDeleteUser(ctx, ip, sub); err != nil {
+				s.logger.Printf("claim: COMPENSATION FAILED — GoTrue user %s has no muster binding and could not be deleted: %v", sub, err)
+			}
+		})
+	switch {
+	case errors.Is(err, users.ErrInvalidInvite):
+		s.gt.failures.add(ip, s.gt.now(), loginFailureWindow)
+		s.renderInvalidClaim(w)
+		return
+	case err != nil && createErr != nil:
+		var ae *gotrue.APIError
+		if errors.As(createErr, &ae) && ae.Status == http.StatusUnprocessableEntity {
+			s.renderClaimForm(w, http.StatusUnprocessableEntity, r.URL.Path, email, "GoTrue refused that email or password ("+ae.Code+").")
+			return
+		}
+		s.logger.Printf("claim: GoTrue create failed: %v", createErr)
+		s.renderClaimForm(w, http.StatusBadGateway, r.URL.Path, email, "Sign-in is unavailable right now. Try again shortly.")
+		return
+	case err != nil:
+		s.logger.Printf("claim: redeem failed: %v", err)
+		s.renderClaimForm(w, http.StatusInternalServerError, r.URL.Path, email, "The account could not be claimed. Try again.")
+		return
+	}
+	s.gt.forgetUser(u.ID)
+	s.logger.Printf("claim: user %d is now bound to a GoTrue login", u.ID)
+	// Prove the new login works before telling anyone it does.
+	sess, err := s.gt.Client.PasswordGrant(r.Context(), ip, email, pw)
+	if err != nil {
+		s.logger.Printf("claim: the new login could not sign in: %v", err)
+		s.renderNotice(w, http.StatusBadGateway, "Claimed, but sign-in failed",
+			"The account is bound, but signing in with it failed. Try signing in again in a moment.")
+		return
+	}
+	if !s.auth.goTrueMode() {
+		s.renderNotice(w, http.StatusOK, "Admin account claimed",
+			"Your sign-in works. This server still uses the operator password; once it is switched to "+
+				"GoTrue sign-in (MUSTER_AUTH_MODE=gotrue) you will sign in with this email and password.")
+		return
+	}
+	if _, problem, code := s.admitFreshSession(r.Context(), sess); problem != "" {
+		s.renderNotice(w, code, "Claimed, but sign-in failed", problem)
+		return
+	}
+	s.setGoTrueCookies(w, sess)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}

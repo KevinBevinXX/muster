@@ -266,6 +266,13 @@ func normaliseBannerLine(s string) string {
 var bannerLedger = []string{
 	envDatabase,
 	envUIPassword,
+	// Accounts PR 4: the mode, muster's GoTrue (its secret is named, never
+	// printed), and the browser listener — each on its own line in both
+	// directions (logAuthBanner).
+	envAuthMode,
+	envGoTrueURL,
+	envGoTrueSecret,
+	envBrowserPort,
 	envSecureCookies,
 	envHookToken,
 	envServiceToken,
@@ -540,6 +547,10 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		SecureCookies: true,
 		HookToken:     "hook",
 		ServiceToken:  strings.Repeat("s", 40),
+		AuthMode:      string(api.AuthModeGoTrue),
+		GoTrueURL:     "http://auth.example.invalid:9999",
+		GoTrueSecret:  strings.Repeat("j", 40),
+		BrowserPort:   18192,
 		RouterURL:     "https://router.example.invalid",
 		RouterToken:   "t",
 		RouterActor:   "muster",

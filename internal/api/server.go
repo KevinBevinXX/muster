@@ -123,6 +123,10 @@ type Server struct {
 	// loginRate throttles password attempts on the human tier.
 	loginRate rateLimiter
 
+	// gt is the GoTrue wiring (accounts PR 4); nil unless UseGoTrue was
+	// called. See accounts.go.
+	gt *gotrueState
+
 	// agentCLIPath is where the agent-facing CLI binary is read from.
 	agentCLIPath string
 

@@ -58,11 +58,13 @@ import (
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/github"
+	"github.com/ZacxDev/muster/internal/gotrue"
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/router"
 	"github.com/ZacxDev/muster/internal/sse"
 	"github.com/ZacxDev/muster/internal/ui"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 const (
@@ -105,6 +107,12 @@ const (
 func main() {
 	logger := log.New(os.Stdout, "", log.LstdFlags|log.LUTC)
 
+	// One-shot account commands (`muster-server invite --claim-admin`,
+	// `muster-server user disable <id>`): run and exit. See accounts_cmd.go.
+	if len(os.Args) > 1 {
+		os.Exit(runAccountCommand(context.Background(), os.Args[1:], osGetenv, os.Stdout, os.Stderr))
+	}
+
 	cfg, err := loadConfig(osGetenv)
 	if err != nil {
 		logger.Fatalf("config: %v", err)
@@ -138,6 +146,9 @@ type app struct {
 	// connect is the second listener that serves ONLY the agent-facing connector
 	// surface (api.OnlyConnectSurface); nil unless MUSTER_CONNECT_PORT is set.
 	connect *http.Server
+	// browser is the listener gotrue mode serves browser sessions on
+	// (api.BrowserListener); nil unless MUSTER_BROWSER_PORT is set.
+	browser *http.Server
 	pool    *pgxpool.Pool
 	// kickoff delivers dispatched agents' first turns; nil when no gateway is
 	// built. See buildKickoffDeliverer.
@@ -303,6 +314,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 
 	srv := api.New(bus, cfg.authConfig(), logger)
 	srv.UseExtensions(ext)
+	if cfg.goTrueConfigured() && a.pool != nil {
+		srv.UseGoTrue(goTrueAuth(cfg, a.pool))
+	}
 	if port.Configured() {
 		srv.UseRouter(port)
 	}
@@ -346,6 +360,13 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		a.connect = &http.Server{
 			Addr:              net.JoinHostPort("", strconv.Itoa(cfg.ConnectPort)),
 			Handler:           api.OnlyConnectSurface(handler),
+			ReadHeaderTimeout: readHeaderTimeout,
+		}
+	}
+	if cfg.BrowserPort != 0 {
+		a.browser = &http.Server{
+			Addr:              net.JoinHostPort("", strconv.Itoa(cfg.BrowserPort)),
+			Handler:           api.BrowserListener(handler),
 			ReadHeaderTimeout: readHeaderTimeout,
 		}
 	}
@@ -448,11 +469,20 @@ func (a *app) Run(ctx context.Context, ready func(net.Addr)) error {
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", a.http.Addr, err)
 	}
-	var connectLn net.Listener
+	var connectLn, browserLn net.Listener
 	if a.connect != nil {
 		if connectLn, err = net.Listen("tcp", a.connect.Addr); err != nil {
 			ln.Close()
 			return fmt.Errorf("listen %s (%s): %w", a.connect.Addr, envConnectPort, err)
+		}
+	}
+	if a.browser != nil {
+		if browserLn, err = net.Listen("tcp", a.browser.Addr); err != nil {
+			ln.Close()
+			if connectLn != nil {
+				connectLn.Close()
+			}
+			return fmt.Errorf("listen %s (%s): %w", a.browser.Addr, envBrowserPort, err)
 		}
 	}
 	if ready != nil {
@@ -461,7 +491,7 @@ func (a *app) Run(ctx context.Context, ready func(net.Addr)) error {
 
 	a.startBackgroundLoops(ctx)
 
-	serveErr := make(chan error, 2)
+	serveErr := make(chan error, 3)
 	go func() {
 		a.logger.Printf("muster %s listening on %s (auth tiers reported above)", api.BuildVersion, ln.Addr())
 		serveErr <- a.http.Serve(ln)
@@ -470,6 +500,12 @@ func (a *app) Run(ctx context.Context, ready func(net.Addr)) error {
 		go func() {
 			a.logger.Printf("muster connector surface listening on %s (only %v)", connectLn.Addr(), api.ConnectSurfacePrefixes)
 			serveErr <- a.connect.Serve(connectLn)
+		}()
+	}
+	if browserLn != nil {
+		go func() {
+			a.logger.Printf("muster browser listener on %s (%s)", browserLn.Addr(), envBrowserPort)
+			serveErr <- a.browser.Serve(browserLn)
 		}()
 	}
 
@@ -564,6 +600,11 @@ func (a *app) shutdown() {
 			a.logger.Printf("connect listener drain did not complete within %s: %v", shutdownDrainTimeout, err)
 		}
 	}
+	if a.browser != nil {
+		if err := a.browser.Shutdown(drainCtx); err != nil {
+			a.logger.Printf("browser listener drain did not complete within %s: %v", shutdownDrainTimeout, err)
+		}
+	}
 	if !<-terminalsEnded {
 		a.logger.Printf("agent terminals did not finish releasing within %s; exiting anyway "+
 			"(their tmux clients may stay attached in the agents' pods until those restart)", terminalDrainTimeout)
@@ -635,7 +676,12 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"supported deployment; config.validate refuses it in main()", envDatabase)
 	}
 
-	if reason := a.cfg.browserAuthRefusal(); reason != "" {
+	a.logAuthBanner()
+
+	if api.AuthMode(a.cfg.AuthMode) == api.AuthModeGoTrue {
+		l.Printf("human web tier: GOTRUE (%s=gotrue) — per-user sign-in; %s is NOT used for "+
+			"sign-in and the shared-password cookie is ignored", envAuthMode, envUIPassword)
+	} else if reason := a.cfg.browserAuthRefusal(); reason != "" {
 		l.Printf("human web tier: REFUSED (fail-closed) — %s. Every browser surface answers "+
 			"503 and /login says which variable is missing", reason)
 	} else {
@@ -1114,6 +1160,18 @@ func (c config) authConfig() api.AuthConfig {
 		ServiceToken:  c.ServiceToken,
 		UIPassword:    c.UIPassword,
 		SecureCookies: c.SecureCookies,
+		Mode:          api.AuthMode(c.AuthMode),
+		PublicURL:     c.PublicURL,
+	}
+}
+
+// goTrueAuth builds the GoTrue wiring from cfg over pool.
+func goTrueAuth(cfg config, pool *pgxpool.Pool) api.GoTrueAuth {
+	secret := []byte(cfg.GoTrueSecret)
+	return api.GoTrueAuth{
+		Client:   &gotrue.Client{BaseURL: cfg.GoTrueURL, Secret: secret, Issuer: gotrueIssuer},
+		Verifier: gotrue.Verifier{Secret: secret, Issuer: gotrueIssuer, Audience: gotrueAudience},
+		Users:    users.NewPG(pool),
 	}
 }
 
