@@ -149,11 +149,20 @@ superuser login bypasses RLS — on **every pool acquire**, from the context's
 so behaviour is unchanged. psql, `pg_dump` and backups connect as the login role
 and still see every row.
 
+🔴 **Restoring a backup into a fresh Postgres:** `muster_app` is a cluster role and
+`pg_dump` does not carry it, so the dump's `GRANT … TO muster_app` lines fail
+(`ON_ERROR_STOP` stops at the first). Restore without `ON_ERROR_STOP` (or
+`CREATE ROLE muster_app NOLOGIN` first), then boot: `Migrate` re-creates the role
+and its grants on every boot (`internal/db/approle.go`).
+
 🔴 **Rolling the image back below `0007`:** an older image never sets
-`muster.uid`, so every insert it makes fails. Run
-`/muster-migrate --rls-off` from the CURRENT image first (RLS off,
-`owner_id DEFAULT 1`; `internal/db/rollback/rls_off.sql`), then change the image.
-`/muster-migrate --rls-on` re-enables it.
+`muster.uid`, so every insert it makes fails. Run `--rls-off` with a 3a-or-newer
+binary — `/muster-migrate --rls-off` in the CURRENT pod — or the psql path in
+`internal/db/rollback/rls_off.sql`, **before** changing the image. The older
+image's `/muster-migrate` does not know the flag: it says "nothing to apply",
+exits 0, and leaves RLS on. Check `select relrowsecurity from pg_class where
+relname='notes'` is `f` (the 3a+ binary prints this for every owned table and
+fails if any is wrong). `/muster-migrate --rls-on` re-enables it.
 
 `0001` also creates the runbook and privilege tables (`runbooks`,
 `runbook_runs`, `privilege_profiles`, `agent_privileges`, `privilege_requests`)

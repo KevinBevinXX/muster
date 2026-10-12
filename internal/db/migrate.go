@@ -89,6 +89,12 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, logger *log.Logger) error 
 		return fmt.Errorf("create schema_migrations: %w", err)
 	}
 
+	// Before the version check, on every boot: a restored backup is at the
+	// latest version but has no application role (see appRoleSQL).
+	if err := ensureAppRole(ctx, conn); err != nil {
+		return err
+	}
+
 	var current int
 	if err := conn.QueryRow(ctx,
 		`SELECT coalesce(max(version), 0) FROM schema_migrations`).Scan(&current); err != nil {

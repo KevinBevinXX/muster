@@ -497,6 +497,7 @@ func TestRLSOffAndOnRoundTrip(t *testing.T) {
 	if err := db.RLSOff(f.base, f.pool); err != nil {
 		t.Fatal(err)
 	}
+	assertRLSState(t, f, false)
 	for _, tbl := range ownedTables {
 		if got, all := count(t, f.base, f.pool, tbl, ""), count(t, f.mig, f.pool, tbl, ""); got != all {
 			t.Errorf("RLS off: no principal sees %d of %d rows in %s", got, all, tbl)
@@ -509,6 +510,7 @@ func TestRLSOffAndOnRoundTrip(t *testing.T) {
 	if err := db.RLSOn(f.base, f.pool); err != nil {
 		t.Fatal(err)
 	}
+	assertRLSState(t, f, true)
 	if got := count(t, f.base, f.pool, "notes", ""); got != 0 {
 		t.Errorf("RLS back on: no principal sees %d notes; want 0", got)
 	}
@@ -539,5 +541,59 @@ func TestMigrateRunsFromABareContext(t *testing.T) {
 	}
 	if got := count(t, asUser(bare, 1), pool, "notes", ""); got != 1 {
 		t.Errorf("after migrating, user 1 sees %d notes; want 1", got)
+	}
+}
+
+// TestMigrateRecreatesTheAppRolesGrants is the restore case: a database at the
+// latest version whose `GRANT … TO muster_app` statements never landed (the
+// backup's plain dump restored into a fresh Postgres, where the role did not
+// exist) must come back to life on the next boot. The cluster role itself
+// cannot be dropped here — other test databases on this server depend on it —
+// so the in-suite half removes the GRANTS; the missing-role half was measured
+// against a fresh PG16 (see appRoleSQL).
+func TestMigrateRecreatesTheAppRolesGrants(t *testing.T) {
+	f := newRLSFixture(t, "ms_0007_restore")
+	if err := writeEveryOwnedTable(asUser(f.base, 1), f.pool, "one"); err != nil {
+		t.Fatal(err)
+	}
+	mustExec(f.mig, t, f.pool, `REVOKE ALL ON ALL TABLES IN SCHEMA public FROM muster_app`)
+	mustExec(f.mig, t, f.pool, `REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM muster_app`)
+	mustExec(f.mig, t, f.pool, `ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM muster_app`)
+	mustExec(f.mig, t, f.pool, `REVOKE USAGE ON SCHEMA public FROM muster_app`)
+	one := asUser(f.base, 1)
+	var n int
+	err := f.pool.QueryRow(one, `SELECT count(*) FROM notes`).Scan(&n)
+	assertSQLState(t, "control: user 1 reading notes with the grants gone", err, "42501")
+
+	if err := db.Migrate(f.base, f.pool, nil); err != nil {
+		t.Fatalf("db.Migrate on a restored (latest-version, grant-less) database: %v", err)
+	}
+	if got := count(t, one, f.pool, "notes", ""); got != 1 {
+		t.Errorf("after a boot's Migrate, user 1 sees %d notes; want 1", got)
+	}
+	if _, err := f.pool.Exec(one, `INSERT INTO notes (title) VALUES ('after restore')`); err != nil {
+		t.Errorf("after a boot's Migrate, user 1 cannot insert: %v", err)
+	}
+}
+
+// assertRLSState checks db.RLSStatus — what muster-migrate prints after
+// --rls-off / --rls-on — against the eleven owned tables.
+func assertRLSState(t *testing.T, f *rlsFixture, on bool) {
+	t.Helper()
+	states, err := db.RLSStatus(f.base, f.pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tables []string
+	for _, st := range states {
+		tables = append(tables, st.Table)
+		if st.Enabled != on || st.Forced != on || (st.OwnerDefault == "1") == on {
+			t.Errorf("%s after rls on=%v: %+v", st.Table, on, st)
+		}
+	}
+	want := slices.Clone(ownedTables)
+	sort.Strings(want)
+	if !slices.Equal(tables, want) {
+		t.Errorf("RLSStatus tables = %v; want %v", tables, want)
 	}
 }

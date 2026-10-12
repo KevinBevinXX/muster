@@ -22,7 +22,15 @@
 -- an ordinary table OWNER (not a superuser) is covered too.
 --   Consequences, all deliberate:
 --   * psql / pg_dump / the backup CronJob connect as `muster` and do NOT set the
---     role, so they still see (and dump) every row. Backups are unaffected.
+--     role, so they still see (and dump) every row. DUMPING is unaffected.
+--     🔴 RESTORING is not quite: a role is cluster-global and pg_dump does not
+--     carry it, so a dump restored into a FRESH Postgres has no muster_app and
+--     every `GRANT … TO muster_app` in it fails (with ON_ERROR_STOP the restore
+--     stops at the first one, rc 3). schema_migrations already says 7, so this
+--     file never re-runs. internal/db.Migrate therefore re-runs this file's role
+--     block on EVERY boot (internal/db/approle.go), which recreates the role
+--     and its grants. Restore WITHOUT ON_ERROR_STOP (or create the role first:
+--     `CREATE ROLE muster_app NOLOGIN`), then boot.
 --   * The migration runner does NOT switch role (it needs DDL), and runs with
 --     muster.scope = 'all' (internal/db/migrate.go).
 --   * muster_app is granted DML on every table in `public` and USAGE on every
@@ -81,6 +89,13 @@
 -- fails.) Before rolling the image back below this migration, run
 --     /muster-migrate --rls-off      (from THIS image; see internal/db/rollback)
 -- which disables RLS and restores DEFAULT 1. Re-running this file re-enables it.
+-- 🔴 THE OLDER IMAGE'S /muster-migrate IGNORES THE FLAG. It predates --rls-off,
+-- logs "schema is at version 7; nothing to apply", EXITS 0 — and RLS stays on
+-- (measured on 0.11.0). So revert the image pin LAST: run --rls-off with a
+-- 3a-or-newer binary (or the psql path) FIRST, then check it took:
+--     select relrowsecurity from pg_class where relname='notes';   -- must be f
+-- (The 3a+ binary prints this read-back for every owned table and exits non-zero
+-- if any is wrong.)
 --
 -- Convention: idempotent (IF [NOT] EXISTS, DROP ... IF EXISTS before CREATE),
 -- one transaction (internal/db/migrate.go).

@@ -13,6 +13,14 @@
 --     kubectl -n muster exec -i deploy/muster-postgres -- \
 --         psql -U muster -d muster -v ON_ERROR_STOP=1 < internal/db/rollback/rls_off.sql
 --
+-- 🔴 THE OLDER IMAGE'S /muster-migrate IGNORES THE FLAG. It predates --rls-off,
+-- logs "schema is at version 7; nothing to apply", EXITS 0 — and RLS stays on
+-- (measured on 0.11.0). So revert the image pin LAST: run --rls-off with a
+-- 3a-or-newer binary (or the psql path) FIRST, then check it took:
+--     select relrowsecurity from pg_class where relname='notes';   -- must be f
+-- (The 3a+ binary prints this read-back for every owned table and exits non-zero
+-- if any is wrong.)
+--
 -- WHAT IT DOES, per owned table: NO FORCE, DISABLE row-level security, and
 -- owner_id DEFAULT 1 again (0006's single-user default). It leaves the policies,
 -- the muster_app role, its grants and the SECURITY DEFINER function in place —

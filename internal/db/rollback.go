@@ -60,3 +60,46 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 	return fmt.Errorf("rls on: migration %04d is not embedded", rlsMigrationVersion)
 }
+
+// RLSState is what RLSStatus reads back: per owned table, whether row-level
+// security is enabled and forced, and owner_id's default expression.
+type RLSState struct {
+	Table        string
+	Enabled      bool
+	Forced       bool
+	OwnerDefault string
+}
+
+// RLSStatus reads pg_class and information_schema for every table that has an
+// owner_id column — the verification after RLSOff / RLSOn, so a run that did
+// nothing (an image whose muster-migrate predates the flag ignores it and exits
+// 0) cannot pass for one that worked.
+func RLSStatus(ctx context.Context, pool *pgxpool.Pool) ([]RLSState, error) {
+	rows, err := pool.Query(asMigrator(ctx), `
+		SELECT c.relname::text, c.relrowsecurity, c.relforcerowsecurity, coalesce(col.column_default, '')
+		  FROM pg_class c
+		  JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'public'
+		  JOIN information_schema.columns col
+		    ON col.table_schema = 'public' AND col.table_name = c.relname AND col.column_name = 'owner_id'
+		 WHERE c.relkind = 'r'
+		 ORDER BY 1`)
+	if err != nil {
+		return nil, fmt.Errorf("rls status: %w", err)
+	}
+	defer rows.Close()
+	var out []RLSState
+	for rows.Next() {
+		var st RLSState
+		if err := rows.Scan(&st.Table, &st.Enabled, &st.Forced, &st.OwnerDefault); err != nil {
+			return nil, err
+		}
+		out = append(out, st)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("rls status: no table has an owner_id column — this is not a muster schema at version >= 6")
+	}
+	return out, nil
+}
