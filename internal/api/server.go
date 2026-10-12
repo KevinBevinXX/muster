@@ -95,6 +95,9 @@ type Server struct {
 	auth   AuthConfig
 	router RouterPort
 
+	// streams ends every open SSE stream when shutdown begins. See EndStreams.
+	streams streamEnd
+
 	// approvals is the claude-code approval relay's in-memory ledger: which agent
 	// filed which request, and which agents report a blocked terminal. See
 	// approvals.go.
@@ -581,7 +584,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, ": connected\n\n")
 	flusher.Flush()
 
-	ctx := r.Context()
+	ctx, cancel := s.streamContext(r.Context())
+	defer cancel()
 	for {
 		select {
 		case <-ctx.Done():

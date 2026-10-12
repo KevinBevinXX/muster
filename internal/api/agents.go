@@ -1488,12 +1488,14 @@ func (s *Server) handleAgentLogsStream(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, ": connected\n\n")
 	flusher.Flush()
 
-	err = s.ext.Provisioner.StreamLogs(r.Context(), a, func(line string) {
+	ctx, cancel := s.streamContext(r.Context())
+	defer cancel()
+	err = s.ext.Provisioner.StreamLogs(ctx, a, func(line string) {
 		// SSE data cannot contain raw newlines; logs are single lines already.
 		fmt.Fprintf(w, "event: log\ndata: %s\n\n", line)
 		flusher.Flush()
 	})
-	if err != nil && r.Context().Err() == nil {
+	if err != nil && ctx.Err() == nil {
 		s.logger.Printf("agents: stream logs %s: %v", a.Name, err)
 	}
 }
