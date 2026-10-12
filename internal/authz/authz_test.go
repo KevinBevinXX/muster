@@ -44,8 +44,25 @@ func TestSystemIsScopeAllAndNoUser(t *testing.T) {
 	}
 }
 
+// Operator is user 1 and NOT scope-all: it sees the operator's rows the way the
+// operator's own browser session does, never every user's.
+func TestOperatorIsUserOneAndNotScopeAll(t *testing.T) {
+	p, ok := From(Operator(context.Background()))
+	want := Principal{UserID: OperatorUserID, Role: RoleAdmin, Via: ViaOperator}
+	if !ok || p != want || p.All() {
+		t.Fatalf("Operator principal = %+v (all=%v), %v; want %+v, not scope-all", p, p.All(), ok, want)
+	}
+	// And WithPrincipal still refuses the door: a request cannot claim it.
+	defer func() {
+		if recover() == nil {
+			t.Fatalf("WithPrincipal accepted ViaOperator, which no request may claim")
+		}
+	}()
+	WithPrincipal(context.Background(), want)
+}
+
 // 🔴 A REQUEST PRINCIPAL CANNOT CLAIM THE SYSTEM DOOR, NOR NO USER, NOR A ROLE
-// OUTSIDE THE SET. Each is a wrapper bug that would hand PR 3's row-level
+// OUTSIDE THE SET. Each is a wrapper bug that would hand row-level
 // security a principal selecting everybody or nobody.
 func TestWithPrincipalRefusesMalformedPrincipals(t *testing.T) {
 	for name, p := range map[string]Principal{

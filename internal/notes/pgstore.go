@@ -64,6 +64,15 @@ const noteCols = `id, directory, title, body, status, model, repo, repo_branch, 
 // task's surviving attachments while deciding whether to Restore it.
 const liveOnly = `deleted_at IS NULL`
 
+// ownerOfNote is the owner_id a CHILD row of note $1 is inserted with: the
+// parent's own (accounts PR 3a). 0006's composite foreign keys already demand
+// child.owner_id = parent.owner_id, so this is the only legal value — and it is
+// right for a background loop running as authz.System too, which names no user
+// for owner_id's default to take. A parent the caller cannot see (row-level
+// security) or that does not exist yields the caller's own id instead, so the
+// foreign key still refuses the row exactly as it did before (23503).
+const ownerOfNote = `COALESCE((SELECT owner_id FROM notes WHERE id = $1), nullif(current_setting('muster.uid', true), '')::bigint)`
+
 // commentCols is the SINGLE comment projection — the ONE place
 // retraction is applied on a read, used by both comment reads (ListComments and
 // listCommentsForNotes) so they cannot drift, exactly as noteCols keeps the note
@@ -647,8 +656,8 @@ func (s *PGStore) UpdateNote(ctx context.Context, id int64, patch NoteUpdate) (N
 func (s *PGStore) AddComment(ctx context.Context, c Comment) (Comment, error) {
 	err := s.pool.QueryRow(ctx, `
 		WITH ins AS (
-			INSERT INTO note_comments (note_id, author, body)
-			SELECT $1,$2,$3 WHERE EXISTS (SELECT 1 FROM notes WHERE id=$1 AND `+liveOnly+`)
+			INSERT INTO note_comments (note_id, owner_id, author, body)
+			SELECT id, owner_id, $2, $3 FROM notes WHERE id=$1 AND `+liveOnly+`
 			RETURNING id, note_id, author, body, created_at
 		), bump AS (
 			UPDATE notes SET updated_at=now() WHERE id=(SELECT note_id FROM ins)
@@ -795,10 +804,10 @@ func (s *PGStore) FlagIdle(ctx context.Context, id int64, tag, body string) (boo
 			          WHERE c.note_id = notes.id
 			            AND c.author = $3
 			            AND c.created_at >= notes.updated_at)
-			RETURNING id
+			RETURNING id, owner_id
 		), ins AS (
-			INSERT INTO note_comments (note_id, author, body)
-			SELECT id, $3, $4 FROM tagged
+			INSERT INTO note_comments (note_id, owner_id, author, body)
+			SELECT id, owner_id, $3, $4 FROM tagged
 			RETURNING id
 		)
 		SELECT count(*) FROM ins`, id, add, ReapCommentAuthor, body).Scan(&wrote)
@@ -945,8 +954,8 @@ func (s *PGStore) Restore(ctx context.Context, id int64) (Note, error) {
 func (s *PGStore) AddAttachment(ctx context.Context, noteID int64, a Attachment) (Attachment, error) {
 	a.NoteID = noteID
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO note_attachments (note_id, filename, content_type, size_bytes, data)
-		VALUES ($1,$2,$3,$4,$5)
+		INSERT INTO note_attachments (note_id, owner_id, filename, content_type, size_bytes, data)
+		VALUES ($1, `+ownerOfNote+`, $2, $3, $4, $5)
 		RETURNING id, note_id, filename, content_type, size_bytes, created_at`,
 		noteID, a.Filename, a.ContentType, a.SizeBytes, a.Data).
 		Scan(&a.ID, &a.NoteID, &a.Filename, &a.ContentType, &a.SizeBytes, &a.CreatedAt)

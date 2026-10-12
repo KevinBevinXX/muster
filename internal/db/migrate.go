@@ -44,6 +44,11 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, logger *log.Logger) error 
 		return err
 	}
 
+	// 🔴 THE MIGRATOR KEEPS THE LOGIN ROLE AND SEES EVERY ROW (scope.go): it
+	// runs DDL, and a data migration must reach every user's rows. Without
+	// this the pool would switch to AppRole — which does not exist before 0007
+	// — with no principal, and every backfill would see nothing.
+	ctx = asMigrator(ctx)
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire migration conn: %w", err)

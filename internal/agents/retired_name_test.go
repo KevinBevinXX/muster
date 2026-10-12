@@ -52,7 +52,7 @@ func retiredNameTestStore(t *testing.T) (context.Context, *PGStore) {
 	t.Helper()
 	dsn := dbtest.DSN(t) // skips, or fails, per MUSTER_TEST_REQUIRE_DB
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 60*time.Second)
 	t.Cleanup(cancel)
 
 	pool, err := db.Connect(ctx, dsn)
@@ -241,9 +241,9 @@ func TestProvisioningStillGetsANameWhenTheENTIREPoolIsTombstoned(t *testing.T) {
 		if len(seeded) == 0 {
 			return
 		}
-		// context.Background(): ctx is cancelled by its own t.Cleanup, and which
+		// dbtest.AsOperator(context.Background()): ctx is cancelled by its own t.Cleanup, and which
 		// cleanup runs first is not something this should depend on.
-		cctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		cctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
 		defer cancel()
 		if _, err := store.pool.Exec(cctx,
 			`DELETE FROM public.agent_retired_names WHERE name = ANY($1)`, seeded); err != nil {

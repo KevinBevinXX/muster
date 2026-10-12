@@ -490,8 +490,8 @@ func (a *Adapter) KickoffUndeliverableReason() string {
 // ⚠ Start IS WHAT PROVISIONS A SAVED AGENT, and it already does: its
 // provision.ErrNotFound branch creates the instance the save deliberately did not.
 // So "save, then start later" works without this method creating anything.
-func (a *Adapter) Dispatch(agentID int64, kickoff bool) error {
-	ctx, cancel := a.opCtx()
+func (a *Adapter) Dispatch(ctx context.Context, agentID int64, kickoff bool) error {
+	ctx, cancel := a.opCtx(ctx)
 	defer cancel()
 
 	ag, err := a.store.Get(ctx, agentID)
@@ -511,7 +511,7 @@ func (a *Adapter) Dispatch(agentID int64, kickoff bool) error {
 		// would remove a working operation to punish a missing gateway — and it is
 		// the operation an operator is steered to by the refusal's own remedy text.
 		// Guarded by TestASaveIsNeverRefusedWhenNoKickoffCanBeDelivered.
-		return a.setStatus(ag.ID, agents.StatusStopped)
+		return a.setStatus(ctx, ag.ID, agents.StatusStopped)
 	}
 	if !a.kickoffDeliverable {
 		// 🔴 REFUSE BEFORE create, SO NOTHING IS BUILT AND NO SECRET IS MINTED.
@@ -528,7 +528,7 @@ func (a *Adapter) Dispatch(agentID int64, kickoff bool) error {
 		// refusal stands on the COST — a pod, a namespace, a ServiceAccount and a
 		// minted secret for work that cannot begin — which was always the stronger
 		// of the two reasons.
-		return a.refuseKickoff(ag)
+		return a.refuseKickoff(ctx, ag)
 	}
 	if ag, err = a.create(ctx, ag); err != nil {
 		return err
@@ -539,7 +539,7 @@ func (a *Adapter) Dispatch(agentID int64, kickoff bool) error {
 	// status once the instance is ready — so a "NOT delivered" written now would be a
 	// false statement the delivery then has to overwrite. The row stays owed
 	// (pending_note set, kicked_off false) and the deliverer pays it.
-	return a.setStatus(ag.ID, agents.StatusProvisioning)
+	return a.setStatus(ctx, ag.ID, agents.StatusProvisioning)
 }
 
 // Start scales a stopped instance back up, creating it first when the backend
@@ -574,8 +574,8 @@ func (a *Adapter) Dispatch(agentID int64, kickoff bool) error {
 // before — and here that field is honest, because an instance really does exist for
 // a retry to act on. The difference between the two methods is whether an instance
 // SHOULD come into being, not whether the missing gateway is reported.
-func (a *Adapter) Start(agentID int64) error {
-	ctx, cancel := a.opCtx()
+func (a *Adapter) Start(ctx context.Context, agentID int64) error {
+	ctx, cancel := a.opCtx(ctx)
 	defer cancel()
 
 	ag, err := a.store.Get(ctx, agentID)
@@ -595,20 +595,20 @@ func (a *Adapter) Start(agentID int64) error {
 		}
 		spec, err := a.buildSpec(ag)
 		if err != nil {
-			return a.fail(ag, "build spec", err)
+			return a.fail(ctx, ag, "build spec", err)
 		}
 		if err := a.driver.Update(ctx, spec); err != nil {
-			return a.fail(ag, "apply claude-code instance", err)
+			return a.fail(ctx, ag, "apply claude-code instance", err)
 		}
 	} else if err := a.driver.Scale(ctx, agents.RefOf(ag), 1); err != nil {
 		if !errors.Is(err, provision.ErrNotFound) {
-			return a.fail(ag, "scale up", err)
+			return a.fail(ctx, ag, "scale up", err)
 		}
 		if ag, err = a.create(ctx, ag); err != nil {
 			return err
 		}
 	}
-	if err := a.setStatus(ag.ID, agents.StatusProvisioning); err != nil {
+	if err := a.setStatus(ctx, ag.ID, agents.StatusProvisioning); err != nil {
 		return err
 	}
 	if !ag.KickedOff {
@@ -619,16 +619,16 @@ func (a *Adapter) Start(agentID int64) error {
 		if a.kickoffDeliverable {
 			return nil
 		}
-		return a.recordUndeliveredKickoff(ag)
+		return a.recordUndeliveredKickoff(ctx, ag)
 	}
 	// Already kicked off: nothing is owed, so the row stops saying it is waiting.
 	// A live read refines this through agents.ComputeStatus.
-	return a.setStatus(ag.ID, agents.StatusRunning)
+	return a.setStatus(ctx, ag.ID, agents.StatusRunning)
 }
 
 // Stop scales the instance to zero replicas, keeping its declaration.
-func (a *Adapter) Stop(agentID int64) error {
-	ctx, cancel := a.opCtx()
+func (a *Adapter) Stop(ctx context.Context, agentID int64) error {
+	ctx, cancel := a.opCtx(ctx)
 	defer cancel()
 
 	ag, err := a.store.Get(ctx, agentID)
@@ -651,10 +651,10 @@ func (a *Adapter) Stop(agentID int64) error {
 	// agent as having lost its message and re-send the original task. Best-effort
 	// on purpose: failing the stop over a provenance write would be a worse
 	// answer than a stop that succeeded with stale provenance.
-	if err := a.clearKickoffDelivery(ag); err != nil {
+	if err := a.clearKickoffDelivery(ctx, ag); err != nil {
 		a.log.Printf("agentprovision: stop %s: clear kickoff delivery: %v", ag.Name, err)
 	}
-	return a.setStatus(ag.ID, agents.StatusStopped)
+	return a.setStatus(ctx, ag.ID, agents.StatusStopped)
 }
 
 // Destroy removes the instance and then the stored row.
@@ -677,8 +677,8 @@ func (a *Adapter) Stop(agentID int64) error {
 //
 // A nil error and provision.ErrNotFound both mean the backend holds nothing, and
 // only those two reach the delete.
-func (a *Adapter) Destroy(agentID int64) error {
-	ctx, cancel := a.opCtx()
+func (a *Adapter) Destroy(ctx context.Context, agentID int64) error {
+	ctx, cancel := a.opCtx(ctx)
 	defer cancel()
 
 	ag, err := a.store.Get(ctx, agentID)
@@ -720,7 +720,7 @@ func (a *Adapter) Destroy(agentID int64) error {
 		// So the operator gets a dot that turns red instead of a card that silently
 		// reappears, and the REASON is machine-readable only. That is worth having and
 		// it is all that is claimed.
-		return a.fail(ag, "destroy instance (the stored row was KEPT because the "+
+		return a.fail(ctx, ag, "destroy instance (the stored row was KEPT because the "+
 			"instance was not removed)", err)
 	}
 	// 🔴 THE DELETE IS BOOKKEEPING, NOT THE OPERATION, AND IT WAS ON THE WRONG
@@ -733,7 +733,7 @@ func (a *Adapter) Destroy(agentID int64) error {
 	// 200 htmx has already used to remove the card. The card comes back pointing at
 	// nothing. Caught by a mutant that handed this call a cancelled context and
 	// SURVIVED the whole suite.
-	if err := a.deleteRow(ag); err != nil {
+	if err := a.deleteRow(ctx, ag); err != nil {
 		return fmt.Errorf("agentprovision: destroy agent %d (%s): instance removed but the row "+
 			"was not deleted: %w", ag.ID, ag.Name, err)
 	}
@@ -741,8 +741,8 @@ func (a *Adapter) Destroy(agentID int64) error {
 }
 
 // deleteRow removes the stored agent on the bookkeeping budget. See bookkeepingCtx.
-func (a *Adapter) deleteRow(ag agents.Agent) error {
-	ctx, cancel := a.bookkeepingCtx()
+func (a *Adapter) deleteRow(ctx context.Context, ag agents.Agent) error {
+	ctx, cancel := a.bookkeepingCtx(ctx)
 	defer cancel()
 	return a.store.Delete(ctx, ag.ID)
 }
@@ -894,7 +894,7 @@ func (a *Adapter) create(ctx context.Context, ag agents.Agent) (agents.Agent, er
 	}
 	spec, err := a.buildSpec(ag)
 	if err != nil {
-		return ag, a.fail(ag, "build spec", err)
+		return ag, a.fail(ctx, ag, "build spec", err)
 	}
 	if err := a.driver.Create(ctx, spec); err != nil {
 		// provision.ErrDivergentSpec is named in the message because it is the
@@ -902,10 +902,10 @@ func (a *Adapter) create(ctx context.Context, ag agents.Agent) (agents.Agent, er
 		// the instance exists and does not match, and the way to change it is
 		// Update (ReapplyProfiles), not another Create.
 		if errors.Is(err, provision.ErrDivergentSpec) {
-			return ag, a.fail(ag, "create instance (it already exists with a different "+
+			return ag, a.fail(ctx, ag, "create instance (it already exists with a different "+
 				"spec; reconciling an existing instance is ReapplyProfiles, not Dispatch)", err)
 		}
-		return ag, a.fail(ag, "create instance", err)
+		return ag, a.fail(ctx, ag, "create instance", err)
 	}
 	return ag, nil
 }
@@ -945,11 +945,11 @@ func (a *Adapter) ensureHooksToken(ctx context.Context, ag agents.Agent) (agents
 	}
 	buf := make([]byte, hooksTokenBytes)
 	if _, err := rand.Read(buf); err != nil {
-		return ag, a.fail(ag, "mint hooks token", err)
+		return ag, a.fail(ctx, ag, "mint hooks token", err)
 	}
 	token := hex.EncodeToString(buf)
 	if err := a.store.SetHooksToken(ctx, ag.ID, token); err != nil {
-		return ag, a.fail(ag, "store hooks token", err)
+		return ag, a.fail(ctx, ag, "store hooks token", err)
 	}
 	ag.HooksToken = token
 	return ag, nil
@@ -1009,8 +1009,8 @@ func (a *Adapter) buildSpec(ag agents.Agent) (provision.Spec, error) {
 
 // clearKickoffDelivery drops the delivery provenance on its own budget. See
 // bookkeepingCtx — this is a record of what the stop did, not part of doing it.
-func (a *Adapter) clearKickoffDelivery(ag agents.Agent) error {
-	ctx, cancel := a.bookkeepingCtx()
+func (a *Adapter) clearKickoffDelivery(ctx context.Context, ag agents.Agent) error {
+	ctx, cancel := a.bookkeepingCtx(ctx)
 	defer cancel()
 	return a.store.ClearKickoffDelivery(ctx, ag.ID)
 }
@@ -1021,8 +1021,8 @@ func (a *Adapter) clearKickoffDelivery(ag agents.Agent) error {
 // are one letter apart in a call site and opposite in meaning: kickoff_error is
 // evidence that a send did not happen, KickedOff is a claim that one did. See
 // the package doc.
-func (a *Adapter) recordUndeliveredKickoff(ag agents.Agent) error {
-	ctx, cancel := a.bookkeepingCtx()
+func (a *Adapter) recordUndeliveredKickoff(ctx context.Context, ag agents.Agent) error {
+	ctx, cancel := a.bookkeepingCtx(ctx)
 	defer cancel()
 	a.log.Printf("agentprovision: agent %d (%s) owes a first turn this deployment cannot "+
 		"deliver (no gateway) — instance up, note left pending. %s", ag.ID, ag.Name,
@@ -1056,8 +1056,8 @@ func (a *Adapter) recordUndeliveredKickoff(ag agents.Agent) error {
 // fail() already has a cause worth reporting and must not lose it to bookkeeping;
 // here the refusal IS the outcome, so a refusal nobody could record is a real
 // failure of this call and the caller's log line should say which one happened.
-func (a *Adapter) refuseKickoff(ag agents.Agent) error {
-	ctx, cancel := a.bookkeepingCtx()
+func (a *Adapter) refuseKickoff(ctx context.Context, ag agents.Agent) error {
+	ctx, cancel := a.bookkeepingCtx(ctx)
 	defer cancel()
 	// The log keeps the whole information of the line it replaces — which agent,
 	// that nothing was delivered, and why — and adds that nothing was built.
@@ -1076,8 +1076,8 @@ func (a *Adapter) refuseKickoff(ag agents.Agent) error {
 // 🔴 IT TAKES NO ctx AND DERIVES ITS OWN, WHICH IS THE WHOLE POINT — see
 // bookkeepingCtx. It used to take the operation's context, and that is how the one
 // failure most in need of a durable record got none.
-func (a *Adapter) setStatus(id int64, status string) error {
-	ctx, cancel := a.bookkeepingCtx()
+func (a *Adapter) setStatus(ctx context.Context, id int64, status string) error {
+	ctx, cancel := a.bookkeepingCtx(ctx)
 	defer cancel()
 	if err := a.store.UpdateStatus(ctx, id, status, "", ""); err != nil {
 		return fmt.Errorf("agentprovision: agent %d: persist status %q: %w", id, status, err)
@@ -1090,8 +1090,8 @@ func (a *Adapter) setStatus(id int64, status string) error {
 // ⚠ THE STATUS WRITE'S OWN FAILURE IS LOGGED, NOT RETURNED. The error being
 // reported is what the caller needs; replacing it with "could not write the
 // status" would lose the cause and report the bookkeeping.
-func (a *Adapter) fail(ag agents.Agent, what string, cause error) error {
-	ctx, cancel := a.bookkeepingCtx()
+func (a *Adapter) fail(ctx context.Context, ag agents.Agent, what string, cause error) error {
+	ctx, cancel := a.bookkeepingCtx(ctx)
 	defer cancel()
 	msg := what + ": " + cause.Error()
 	if err := a.store.UpdateStatus(ctx, ag.ID, agents.StatusError, "", msg); err != nil {
@@ -1101,9 +1101,18 @@ func (a *Adapter) fail(ag agents.Agent, what string, cause error) error {
 	return fmt.Errorf("agentprovision: agent %d (%s): %s: %w", ag.ID, ag.Name, what, cause)
 }
 
-// opCtx is the budget for a method that was handed no context.
-func (a *Adapter) opCtx() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), a.timeout)
+// opCtx is the budget for a lifecycle method: a.timeout, DETACHED from the
+// caller's cancellation (the work outlives the request that started it) but
+// KEEPING its values.
+//
+// 🔴 THE VALUES ARE THE POINT (accounts PR 3a). parent carries the caller's
+// authz.Principal, and row-level security scopes every store call on this
+// budget to it. This was context.Background()-derived when the methods took no
+// context, which under RLS reads no rows: Dispatch would fail "load row" for
+// every agent. context.WithoutCancel keeps the principal and drops both the
+// cancellation and the deadline, so the budget is still a.timeout, fresh.
+func (a *Adapter) opCtx(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), a.timeout)
 }
 
 // bookkeepingCtx is a FRESH, SHORT budget for the store write that RECORDS what an
@@ -1140,6 +1149,14 @@ func (a *Adapter) opCtx() (context.Context, context.CancelFunc) {
 // pass the wrong one. That is the structural form of the fix; a rule asking every
 // caller to remember which context to hand a status write is a rule that gets
 // obeyed at four sites and missed at the fifth.
-func (a *Adapter) bookkeepingCtx() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), bookkeepingTimeout)
+//
+// 🔴 IT IS DERIVED FROM parent WITH context.WithoutCancel, NOT FROM
+// context.Background() (accounts PR 3a): FRESH still holds — WithoutCancel drops
+// parent's deadline and cancellation, so an operation that consumed its whole
+// budget does not take this write down with it — but parent's VALUES survive,
+// and the principal is one of them. A Background budget acts as nobody under
+// row-level security, so the record would land nowhere: the same "the only
+// record is a log line" outcome the paragraph above exists to prevent.
+func (a *Adapter) bookkeepingCtx(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), bookkeepingTimeout)
 }

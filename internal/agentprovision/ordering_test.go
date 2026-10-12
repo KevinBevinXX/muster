@@ -30,7 +30,7 @@ import (
 // rather than the row.
 func TestDispatchWithoutAKickoffCreatesNothing(t *testing.T) {
 	a, store, driver := newAdapter(t, nil)
-	if err := a.Dispatch(fixtureAgentID, false); err != nil {
+	if err := a.Dispatch(context.Background(), fixtureAgentID, false); err != nil {
 		t.Fatalf("Dispatch(kickoff=false): %v", err)
 	}
 
@@ -63,7 +63,7 @@ func TestDispatchWithoutAKickoffCreatesNothing(t *testing.T) {
 	// SAME fixture with kickoff=true MUST create. Without it, "Create was not
 	// called" would pass over an adapter whose Create never works at all.
 	a2, _, driver2 := newAdapter(t, nil)
-	if err := a2.Dispatch(fixtureAgentID, true); err != nil {
+	if err := a2.Dispatch(context.Background(), fixtureAgentID, true); err != nil {
 		t.Fatalf("Dispatch(kickoff=true): %v", err)
 	}
 	if driver2.creates != 1 {
@@ -109,7 +109,7 @@ func TestATimedOutOperationStillRECORDSItsFailure(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	if err := a.Dispatch(fixtureAgentID, true); err == nil {
+	if err := a.Dispatch(context.Background(), fixtureAgentID, true); err == nil {
 		t.Fatal("Dispatch returned nil over a driver call that timed out")
 	}
 
@@ -223,7 +223,7 @@ func TestATimedOutDestroyStillDELETESTheRow(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	err = a.Destroy(fixtureAgentID)
+	err = a.Destroy(context.Background(), fixtureAgentID)
 
 	// POSITIVE CONTROL: the driver really was reached and really did burn the budget.
 	if driver.destroys != 1 {
@@ -294,19 +294,19 @@ func TestTheBackendLEADSTheRowInEveryMethod(t *testing.T) {
 	}{
 		{
 			name:       "Dispatch with kickoff",
-			run:        func(a *Adapter) error { return a.Dispatch(fixtureAgentID, true) },
+			run:        func(a *Adapter) error { return a.Dispatch(context.Background(), fixtureAgentID, true) },
 			driverCall: "driver.Create",
 		},
 		{
 			name:       "Start",
 			live:       true,
-			run:        func(a *Adapter) error { return a.Start(fixtureAgentID) },
+			run:        func(a *Adapter) error { return a.Start(context.Background(), fixtureAgentID) },
 			driverCall: "driver.Scale",
 		},
 		{
 			name:       "Stop",
 			live:       true,
-			run:        func(a *Adapter) error { return a.Stop(fixtureAgentID) },
+			run:        func(a *Adapter) error { return a.Stop(context.Background(), fixtureAgentID) },
 			driverCall: "driver.Scale",
 		},
 	}
@@ -369,7 +369,7 @@ func TestDestroyRecordsWHYItKeptTheRow(t *testing.T) {
 			seedInstance(t, a, store, driver)
 			driver.destroyErr = tc.err
 
-			if err := a.Destroy(fixtureAgentID); err == nil {
+			if err := a.Destroy(context.Background(), fixtureAgentID); err == nil {
 				t.Fatal("Destroy returned nil while keeping the row")
 			}
 			if store.called("Delete") {
@@ -403,7 +403,7 @@ func TestStopTreatsAnAbsentInstanceAsAlreadyStopped(t *testing.T) {
 	seedInstance(t, a, store, driver)
 	driver.scaleErr = fmt.Errorf("deployment gone: %w", provision.ErrNotFound)
 
-	if err := a.Stop(fixtureAgentID); err != nil {
+	if err := a.Stop(context.Background(), fixtureAgentID); err != nil {
 		t.Fatalf("Stop over an absent instance returned %v; absence is what a stop is FOR", err)
 	}
 	if !strings.Contains(store.transcript(), "UpdateStatus(4291,stopped,") {
@@ -416,7 +416,7 @@ func TestStopTreatsAnAbsentInstanceAsAlreadyStopped(t *testing.T) {
 	a2, store2, driver2 := newAdapter(t, nil)
 	seedInstance(t, a2, store2, driver2)
 	driver2.scaleErr = fmt.Errorf("dial tcp: %w", provision.ErrBlind)
-	if err := a2.Stop(fixtureAgentID); err == nil {
+	if err := a2.Stop(context.Background(), fixtureAgentID); err == nil {
 		t.Error("Stop swallowed a non-absence scale failure")
 	}
 	if strings.Contains(store2.transcript(), "UpdateStatus(4291,stopped,") {

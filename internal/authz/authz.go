@@ -1,26 +1,32 @@
 // Package authz carries WHO a request (or a background loop) is acting as.
 //
-// A Principal is attached to a context by exactly two kinds of code:
+// A Principal is attached to a context by exactly three kinds of code:
 //
 //   - the require* authentication wrappers in internal/api, through
-//     WithPrincipal, once the credential has been checked; and
-//   - the background loops, through System, which acts for every user.
+//     WithPrincipal, once the credential has been checked;
+//   - the background loops, through System, which acts for every user; and
+//   - the operator's own out-of-request writes (the boot-time GitHub connect,
+//     the e2e seed), through Operator, which acts as user 1 and nobody else.
 //
 // 🔴 THE CONTEXT KEY IS UNEXPORTED, AND THAT IS THE COMPILE-LEVEL HALF OF THE
 // GUARD. No package can plant a value that From will return by calling
 // context.WithValue itself: the key type cannot be named outside this file, so
-// the ONLY ways to put a Principal on a context are WithPrincipal and System.
+// the ONLY ways to put a Principal on a context are WithPrincipal, System and
+// Operator.
 // Which code may call those two is the test-level half, and it is a
 // relationship over the source rather than a convention: see
 // internal/api/principal_test.go (every authenticated route observes a
 // Principal with the right Via) and ledger_test.go in this package (the
-// type-checked set of code that reaches System, WithPrincipal and api's admit,
-// and this package's exported names, are each a ledger).
+// type-checked set of code that reaches System, WithPrincipal, Operator and
+// api's admit, and this package's exported names, are each a ledger).
 //
-// ⚠ NOTHING ENFORCES ON A PRINCIPAL YET. This package is accounts PR 2/6: it
-// threads identity through every door with no behaviour change, so that PR 3's
-// row-level security has something to read. Today every principal names user 1
-// (the operator, admin) — see OperatorUserID.
+// 🔴 THE DATABASE ENFORCES ON IT (accounts PR 3a). internal/db reads the
+// principal on EVERY pool acquire and sets Postgres's `muster.uid` /
+// `muster.scope` from it; row-level security (migration 0007) then shows a
+// connection only its user's rows. A context with NO principal sees no rows
+// and cannot insert one. Today every request principal names user 1 (the
+// operator, admin) — see OperatorUserID — so single-user behaviour is
+// unchanged.
 package authz
 
 import (
@@ -66,6 +72,10 @@ const (
 	// ViaSystem is a background loop acting for every user. Only System sets
 	// it.
 	ViaSystem Via = "system"
+	// ViaOperator is the operator acting OUTSIDE any request: a one-shot write
+	// the process makes on the operator's behalf (cmd/muster-server's boot-time
+	// GitHub connect) or a fixture (e2e/seed). Only Operator sets it.
+	ViaOperator Via = "operator"
 )
 
 // requestVias is the closed set WithPrincipal accepts. ViaSystem is
@@ -89,7 +99,7 @@ type Principal struct {
 }
 
 // All reports whether this principal acts across every user's rows — true
-// only for System. It is what PR 3 maps to the `muster.scope = 'all'` setting.
+// only for System. internal/db maps it to the `muster.scope = 'all'` setting.
 func (p Principal) All() bool { return p.Via == ViaSystem }
 
 // String renders the principal for a log line.
@@ -130,6 +140,15 @@ func WithPrincipal(ctx context.Context, p Principal) context.Context {
 // package's allowlist test may call it.
 func System(ctx context.Context) context.Context {
 	return context.WithValue(ctx, principalKey{}, Principal{Role: RoleAdmin, Via: ViaSystem})
+}
+
+// Operator returns ctx carrying the OPERATOR (user 1, admin) for work the
+// process does on the operator's behalf with no request to take a principal
+// from — today the boot-time GitHub connect and the e2e seed. It is NOT a
+// scope-all principal: it sees user 1's rows only, exactly like the operator's
+// browser session. Its call sites are a ledger (ledger_test.go).
+func Operator(ctx context.Context) context.Context {
+	return context.WithValue(ctx, principalKey{}, Principal{UserID: OperatorUserID, Role: RoleAdmin, Via: ViaOperator})
 }
 
 // From returns the principal ctx carries, and whether it carries one.

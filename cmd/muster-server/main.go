@@ -53,6 +53,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/agentstatus"
 	"github.com/ZacxDev/muster/internal/api"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/db"
@@ -317,7 +318,8 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// Readiness pings the database, so a pod whose Postgres is unreachable is
 		// pulled from rotation rather than serving 500s. It runs AFTER the wiring
 		// check handleReady performs first; both must pass.
-		srv.SetReadyCheck(a.pool.Ping)
+		pool := a.pool
+		srv.SetReadyCheck(func(ctx context.Context) error { return db.Ping(ctx, pool) })
 	}
 	a.srv = srv
 
@@ -1127,7 +1129,14 @@ func (c config) serviceWriteRefusal() string { return c.authConfig().ServiceWrit
 // 🔴 A FAILURE HERE IS LOGGED, NOT FATAL. The token may be expired or the
 // network may be down at boot, and neither is a reason to refuse to serve a task
 // board. The Repos tab shows "not connected", which is what is true.
+//
+// 🔴 IT ACTS AS THE OPERATOR (authz.Operator), BECAUSE THE STATIC TOKEN IS THE
+// OPERATOR'S. There is no request to take a principal from, and row-level
+// security (accounts PR 3a) scopes the write to whoever the context names: with
+// none it would write nothing. NOT authz.System — that names no user, and this
+// is one user's connection, not a sweep over everyone's.
 func connectStaticGitHub(ctx context.Context, store github.Store, token string, logger *log.Logger) {
+	ctx = authz.Operator(ctx)
 	login, err := github.FetchLogin(ctx, token)
 	if err != nil {
 		logger.Printf("github: %s is set but its login could not be resolved (%v); no account connected",

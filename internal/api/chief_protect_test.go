@@ -108,7 +108,7 @@ type destroyRecorder struct {
 	ch chan int64
 }
 
-func (p *destroyRecorder) Destroy(id int64) error { p.ch <- id; return nil }
+func (p *destroyRecorder) Destroy(_ context.Context, id int64) error { p.ch <- id; return nil }
 
 const (
 	chiefSlugID     int64 = 11
@@ -333,7 +333,7 @@ func cardChunk(t *testing.T, markup string, id int64) string {
 // `p := s.ext.Provisioner; p.Destroy(id)`; walking only function BODIES missed a
 // package-level `var x = func(s *Server) … { return s.ext.Provisioner.Destroy }`;
 // and matching only (Provisioner).Destroy missed a narrower local interface
-// (`type d interface{ Destroy(int64) error }`) assigned from the provisioner.
+// (`type d interface{ Destroy(context.Context, int64) error }`) assigned from the provisioner.
 //
 // ⚠ WHAT IT PROVES, EXACTLY, AND NO MORE. A "use" is any selector, anywhere in a
 // non-test file of THIS package, that type-checks to a method named Destroy
@@ -365,15 +365,17 @@ func TestEveryDestroyCallSiteIsChiefGuarded(t *testing.T) {
 	}
 	users := destroyUsers(t, map[string]string{"zz_ledger_control.go": `package api
 
-func (s *Server) ledgerControlAlias() { p := s.ext.Provisioner; _ = p.Destroy(1) }
+import "context"
+
+func (s *Server) ledgerControlAlias() { p := s.ext.Provisioner; _ = p.Destroy(context.Background(), 1) }
 func (s *Server) ledgerControlValue() { f := s.ext.Provisioner.Destroy; _ = f }
 
-var ledgerControlPkgLit = func(s *Server) func(int64) error { return s.ext.Provisioner.Destroy }
+var ledgerControlPkgLit = func(s *Server) func(context.Context, int64) error { return s.ext.Provisioner.Destroy }
 
 func (s *Server) ledgerControlNarrow() {
-	type destroyer interface{ Destroy(int64) error }
+	type destroyer interface{ Destroy(context.Context, int64) error }
 	var d destroyer = s.ext.Provisioner
-	_ = d.Destroy(1)
+	_ = d.Destroy(context.Background(), 1)
 }
 `})
 	var names []string

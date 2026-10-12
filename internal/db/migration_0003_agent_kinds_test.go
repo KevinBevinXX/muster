@@ -10,6 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/ZacxDev/muster/internal/db"
 )
 
 // Migration 0003's guards, against the real migrated schema, with raw SQL — the
@@ -37,7 +39,7 @@ func sqlState(err error) string {
 func TestAnInsertNamingNoKindIsAGatewayAgentWithNoAccount(t *testing.T) {
 	ctx, conn := pinnedConn(t)
 	name := "kindless-" + uniq()
-	t.Cleanup(func() { clearName(context.Background(), t, conn, name) })
+	t.Cleanup(func() { clearName(db.AsMigratorForTest(context.Background()), t, conn, name) })
 	id := insertAgentRow(ctx, t, conn, name)
 	var kind, account string
 	if err := conn.QueryRow(ctx, `SELECT kind, cc_account FROM agents WHERE id=$1`, id).Scan(&kind, &account); err != nil {
@@ -62,12 +64,12 @@ func TestTheKindAndAccountMustAgree(t *testing.T) {
 		err := execErr(ctx, conn, ins, name, c.kind, c.account)
 		if sqlState(err) != "23514" || !strings.Contains(err.Error(), c.constraint) {
 			t.Errorf("kind %q account %q: err = %v, want a %s CHECK violation", c.kind, c.account, err, c.constraint)
-			clearName(context.Background(), t, conn, name)
+			clearName(db.AsMigratorForTest(context.Background()), t, conn, name)
 		}
 	}
 	// The control: the agreeing pair is accepted.
 	name := "agree-" + uniq()
-	t.Cleanup(func() { clearName(context.Background(), t, conn, name) })
+	t.Cleanup(func() { clearName(db.AsMigratorForTest(context.Background()), t, conn, name) })
 	if err := execErr(ctx, conn, ins, name, "claude-code", "work"); err != nil {
 		t.Fatalf("control: a claude-code row with an account was refused: %v", err)
 	}
@@ -79,7 +81,7 @@ func TestTheKindAndAccountMustAgree(t *testing.T) {
 func TestKindAndAccountAreImmutableAfterInsert(t *testing.T) {
 	ctx, conn := pinnedConn(t)
 	name := "sticky-" + uniq()
-	t.Cleanup(func() { clearName(context.Background(), t, conn, name) })
+	t.Cleanup(func() { clearName(db.AsMigratorForTest(context.Background()), t, conn, name) })
 	var id int64
 	if err := conn.QueryRow(ctx, `INSERT INTO agents (name, namespace, status, kind, cc_account)
 		VALUES ($1, 'ns', 'provisioning', 'claude-code', 'work') RETURNING id`, name).Scan(&id); err != nil {

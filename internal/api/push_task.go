@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/notes"
 )
 
@@ -201,7 +202,14 @@ func (s *Server) notifyAgentRunning(agentName string) {
 	if s.router == nil || s.ext.Agents == nil || agentName == "" {
 		return
 	}
-	a, err := s.ext.Agents.GetByName(context.Background(), agentName)
+	// 🔴 authz.System, BECAUSE THIS HOOK HAS NO CONTEXT TO TAKE A PRINCIPAL
+	// FROM. It is BroadcastAgentChanged's status-change hook, called by request
+	// handlers and by the background loops alike with only a name. Under
+	// row-level security a no-principal read sees nothing, and this push would
+	// silently never fire. The row is used here only to decide whether to
+	// notify; nothing read under System is returned to any caller. Listed in
+	// the System ledger (internal/authz/ledger_test.go).
+	a, err := s.ext.Agents.GetByName(authz.System(context.Background()), agentName)
 	if err != nil {
 		return // unknown agent (or DB blip) — best-effort, skip
 	}

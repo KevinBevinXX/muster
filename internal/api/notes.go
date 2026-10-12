@@ -1241,8 +1241,9 @@ func (s *Server) dismissTask(ctx context.Context, id int64) error {
 		return err
 	}
 	if linkedAgentID != 0 && s.ext.Provisioner != nil {
+		opCtx := context.WithoutCancel(ctx) // keeps the principal; see Provisioner
 		safeGo(s.logger, "dismiss-destroy", func() {
-			if err := s.ext.Provisioner.Destroy(linkedAgentID); err != nil {
+			if err := s.ext.Provisioner.Destroy(opCtx, linkedAgentID); err != nil {
 				s.logger.Printf("dismiss task %d: destroy linked agent %d: %v", id, linkedAgentID, err)
 			}
 		})

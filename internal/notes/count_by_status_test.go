@@ -21,7 +21,7 @@ import (
 // measured before and after.
 func TestCountByStatusCountsLiveTasksInThatStatus(t *testing.T) {
 	dsn := dbtest.DSN(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
 	defer cancel()
 	pool, err := db.Connect(ctx, dsn)
 	if err != nil {

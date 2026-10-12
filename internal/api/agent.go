@@ -30,14 +30,19 @@ func (s *Server) requireAgentToken(next http.HandlerFunc) http.HandlerFunc {
 			s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "missing agent token"})
 			return
 		}
-		a, err := s.ext.Agents.GetByHooksToken(r.Context(), token)
+		a, err := s.agentByToken(r.Context(), token)
 		if err != nil {
 			// Unknown token (or no rows) → unauthorized. Don't leak which.
 			s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid agent token"})
 			return
 		}
+		p, ok := agentPrincipal(a, authz.ViaAgent)
+		if !ok {
+			s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid agent token"})
+			return
+		}
 		ctx := context.WithValue(r.Context(), agentCtxKey{}, a)
-		s.admit(w, r.WithContext(ctx), next, principalFor(agentOwnerID(a), authz.ViaAgent))
+		s.admit(w, r.WithContext(ctx), next, p)
 	}
 }
 

@@ -1017,8 +1017,12 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	// The agent was just created (provisioning): nudge open Tasks/Agents tabs so a
 	// task's linked-agent chip + the agents list appear live (best-effort).
 	s.BroadcastAgentChanged(rec.Name)
+	// WithoutCancel: the dispatch outlives this request, but it must keep the
+	// request's principal — row-level security scopes every store call the
+	// adapter makes to it (see Provisioner).
+	opCtx := context.WithoutCancel(ctx)
 	safeGo(s.logger, "dispatch "+rec.Name, func() {
-		if err := s.ext.Provisioner.Dispatch(rec.ID, p.Kickoff); err != nil {
+		if err := s.ext.Provisioner.Dispatch(opCtx, rec.ID, p.Kickoff); err != nil {
 			s.logger.Printf("agents: dispatch %s: %v", rec.Name, err)
 			return
 		}
@@ -1027,23 +1031,25 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 }
 
 func (s *Server) handleAgentStart(w http.ResponseWriter, r *http.Request) {
-	s.agentLifecycle(w, r, func(id int64) error { return s.ext.Provisioner.Start(id) }, "start")
+	s.agentLifecycle(w, r, func(ctx context.Context, id int64) error { return s.ext.Provisioner.Start(ctx, id) }, "start")
 }
 
 func (s *Server) handleAgentStop(w http.ResponseWriter, r *http.Request) {
-	s.agentLifecycle(w, r, func(id int64) error { return s.ext.Provisioner.Stop(id) }, "stop")
+	s.agentLifecycle(w, r, func(ctx context.Context, id int64) error { return s.ext.Provisioner.Stop(ctx, id) }, "stop")
 }
 
 // agentLifecycle runs a start/stop action in the background then re-renders the
 // agents panel.
-func (s *Server) agentLifecycle(w http.ResponseWriter, r *http.Request, action func(int64) error, label string) {
+func (s *Server) agentLifecycle(w http.ResponseWriter, r *http.Request, action func(context.Context, int64) error, label string) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
+	// Detached from the request's cancellation, NOT from its principal.
+	opCtx := context.WithoutCancel(r.Context())
 	safeGo(s.logger, label, func() {
-		if err := action(id); err != nil {
+		if err := action(opCtx, id); err != nil {
 			s.logger.Printf("agents: %s %d: %v", label, id, err)
 		}
 	})
@@ -1109,8 +1115,11 @@ func (s *Server) handleAgentModel(w http.ResponseWriter, r *http.Request) {
 	// upgrades the release in place (a no-op when no release is installed yet).
 	if updated.Status == agents.StatusRunning || updated.Status == agents.StatusProvisioning {
 		if rp, ok := s.ext.Provisioner.(ProfileReapplier); ok {
+			// WithoutCancel, not Background: the roll outlives the request but
+			// must keep its principal (row-level security, accounts PR 3a).
+			opCtx := context.WithoutCancel(r.Context())
 			safeGo(s.logger, "reapply model", func() {
-				if err := rp.ReapplyProfiles(context.Background(), updated.ID); err != nil {
+				if err := rp.ReapplyProfiles(opCtx, updated.ID); err != nil {
 					s.logger.Printf("agents: reapply model for %d: %v", updated.ID, err)
 				}
 			})
@@ -1144,8 +1153,9 @@ func (s *Server) handleAgentDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, chiefRefusal(a), http.StatusConflict)
 		return
 	}
+	opCtx := context.WithoutCancel(r.Context()) // keeps the principal; see Provisioner
 	safeGo(s.logger, "destroy", func() {
-		if err := s.ext.Provisioner.Destroy(id); err != nil {
+		if err := s.ext.Provisioner.Destroy(opCtx, id); err != nil {
 			s.logger.Printf("agents: destroy %d: %v", id, err)
 		}
 	})

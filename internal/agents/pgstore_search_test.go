@@ -28,7 +28,7 @@ import (
 func searchStore(t *testing.T) (*PGStore, *pgxpool.Pool, context.Context) {
 	t.Helper()
 	dsn := dbtest.DSN(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 60*time.Second)
 	t.Cleanup(cancel)
 	pool, err := db.Connect(ctx, dsn)
 	if err != nil {
@@ -50,7 +50,7 @@ func searchAgent(t *testing.T, s *PGStore, pool *pgxpool.Pool, ctx context.Conte
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	t.Cleanup(func() { cleanupAgent(context.Background(), pool, a.ID) })
+	t.Cleanup(func() { cleanupAgent(dbtest.AsOperator(context.Background()), pool, a.ID) })
 	return a
 }
 

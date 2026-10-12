@@ -64,7 +64,7 @@ func (seamLiveness) SessionsExisting(context.Context, []string) (map[string]bool
 func seamServer(t *testing.T) (*httptest.Server, notes.Store) {
 	t.Helper()
 	dsn := dbtest.DSN(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
 	t.Cleanup(cancel)
 	pool, err := db.Connect(ctx, dsn)
 	if err != nil {
@@ -99,14 +99,14 @@ func runSeamCLI(t *testing.T, ts *httptest.Server, env map[string]string, args .
 
 func TestSeamClientToServerMovesTheThreadCount(t *testing.T) {
 	ts, ns := seamServer(t)
-	ctx := context.Background()
+	ctx := dbtest.AsOperator(context.Background())
 	const sessionID = "seam-session-7f3a"
 
 	task, err := ns.Create(ctx, notes.Note{Title: "seam task", Body: "prove the header crosses the wire"})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	t.Cleanup(func() { _ = ns.Delete(context.Background(), task.ID) })
+	t.Cleanup(func() { _ = ns.Delete(dbtest.AsOperator(context.Background()), task.ID) })
 	id := strconv.FormatInt(task.ID, 10)
 
 	// --- NEGATIVE CONTROL: the same command with NO session in the environment
@@ -255,7 +255,7 @@ func postRawTaskComment(t *testing.T, ts *httptest.Server, taskID int64, headers
 // nothing. Both halves of the pair are asserted and both are reported.
 func TestSeamAStaleLegacyClientIsStillAttributedAndStillLinks(t *testing.T) {
 	ts, ns := seamServer(t)
-	ctx := context.Background()
+	ctx := dbtest.AsOperator(context.Background())
 	// Distinct from every other fixture in this file, and distinct from "api" —
 	// the value the fall-through emits — so a collapse cannot be mistaken for a hit.
 	const (
@@ -267,7 +267,7 @@ func TestSeamAStaleLegacyClientIsStillAttributedAndStillLinks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	t.Cleanup(func() { _ = ns.Delete(context.Background(), task.ID) })
+	t.Cleanup(func() { _ = ns.Delete(dbtest.AsOperator(context.Background()), task.ID) })
 
 	// --- NEGATIVE CONTROL: no provenance headers at all.
 	code, respBody := postRawTaskComment(t, ts, task.ID, nil, "no provenance at all")
@@ -364,14 +364,14 @@ func TestSeamAStaleLegacyClientIsStillAttributedAndStillLinks(t *testing.T) {
 // different facts about a task.
 func TestSeamTaskGetRecordsAReadNotAWrite(t *testing.T) {
 	ts, ns := seamServer(t)
-	ctx := context.Background()
+	ctx := dbtest.AsOperator(context.Background())
 	const sessionID = "seam-read-only-session"
 
 	task, err := ns.Create(ctx, notes.Note{Title: "read-only seam task", Body: "b"})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	t.Cleanup(func() { _ = ns.Delete(context.Background(), task.ID) })
+	t.Cleanup(func() { _ = ns.Delete(dbtest.AsOperator(context.Background()), task.ID) })
 
 	code, _, stderr := runSeamCLI(t, ts, map[string]string{liveSessionEnvName: sessionID},
 		"task", "get", strconv.FormatInt(task.ID, 10))

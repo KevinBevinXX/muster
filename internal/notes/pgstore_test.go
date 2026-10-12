@@ -22,7 +22,7 @@ import (
 func TestPGStoreStatusAndComments(t *testing.T) {
 	dsn := dbtest.DSN(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
 	defer cancel()
 
 	pool, err := db.Connect(ctx, dsn)
@@ -85,7 +85,7 @@ func TestPGStoreStatusAndComments(t *testing.T) {
 func TestPGStoreDispatchConfigRoundTrips(t *testing.T) {
 	dsn := dbtest.DSN(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
 	defer cancel()
 
 	pool, err := db.Connect(ctx, dsn)
@@ -179,7 +179,7 @@ func TestPGStoreDispatchConfigRoundTrips(t *testing.T) {
 func TestPGStoreSourceProvenanceRoundTrips(t *testing.T) {
 	dsn := dbtest.DSN(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
 	defer cancel()
 
 	pool, err := db.Connect(ctx, dsn)
@@ -264,7 +264,7 @@ func TestPGStoreSourceProvenanceRoundTrips(t *testing.T) {
 func TestPGStoreUpdateNote(t *testing.T) {
 	dsn := dbtest.DSN(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
 	defer cancel()
 
 	pool, err := db.Connect(ctx, dsn)
@@ -364,7 +364,7 @@ func TestPGStoreUpdateNote(t *testing.T) {
 func TestPGStoreListBatched(t *testing.T) {
 	dsn := dbtest.DSN(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
 	defer cancel()
 
 	pool, err := db.Connect(ctx, dsn)
@@ -445,7 +445,7 @@ func TestPGStoreListBatched(t *testing.T) {
 func TestPGStoreListSummaries(t *testing.T) {
 	dsn := dbtest.DSN(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
 	defer cancel()
 
 	pool, err := db.Connect(ctx, dsn)

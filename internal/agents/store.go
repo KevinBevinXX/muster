@@ -141,7 +141,13 @@ type Agent struct {
 	// setup-token this claude-code agent runs on; "" for every other kind. It is a
 	// NAME, never the token. Chosen once at dispatch by internal/ccpool and kept
 	// for the agent's life (migration 0003 enforces both halves).
-	CCAccount    string    `json:"ccAccount,omitempty"`
+	CCAccount string `json:"ccAccount,omitempty"`
+	// OwnerID is the user this agent belongs to (agents.owner_id, migration
+	// 0006). A request authenticated by THIS agent's own token acts as this
+	// user (internal/api agentOwnerID). Not serialised: the JSON shape is
+	// unchanged, and an owner id is not something an agent or a page needs.
+	// Zero only for an Agent that never came from the database (a fake store).
+	OwnerID      int64     `json:"-"`
 	Status       string    `json:"status"`
 	HooksToken   string    `json:"-"`
 	KickedOff    bool      `json:"kickedOff"`

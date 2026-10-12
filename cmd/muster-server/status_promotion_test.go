@@ -44,7 +44,7 @@ func TestAStartedAgentsStoredStatusFollowsItsReadyInstance(t *testing.T) {
 	cfg.HookToken = "status-promotion-hook-token-not-a-real-one-0123"
 	base := startServer(t, cfg)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 60*time.Second)
 	defer cancel()
 	pool, err := db.Connect(ctx, cfg.Database)
 	if err != nil {
@@ -81,7 +81,9 @@ func TestAStartedAgentsStoredStatusFollowsItsReadyInstance(t *testing.T) {
 			if err != nil {
 				t.Fatalf("create: %v", err)
 			}
-			t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM agents WHERE id=$1`, row.ID) })
+			t.Cleanup(func() {
+				_, _ = pool.Exec(dbtest.AsOperator(context.Background()), `DELETE FROM agents WHERE id=$1`, row.ID)
+			})
 
 			req, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("%s/agents/%d/start", base, row.ID), nil)
 			req.Header.Set("Origin", base)

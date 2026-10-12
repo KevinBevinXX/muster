@@ -45,16 +45,14 @@ type connFixture struct {
 func newConnFixture(t *testing.T) *connFixture {
 	t.Helper()
 	dsn := dbtest.DSN(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), time.Minute)
 	t.Cleanup(cancel)
 	pool, err := db.Connect(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	if _, err := pool.Exec(ctx, `TRUNCATE connectors, connector_grants, connector_audit RESTART IDENTITY`); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.OwnerExec(t, dsn, `TRUNCATE connectors, connector_grants, connector_audit RESTART IDENTITY`)
 	store, err := connectors.NewPG(pool, bytes.Repeat([]byte{3}, 32))
 	if err != nil {
 		t.Fatal(err)
@@ -72,7 +70,9 @@ func (f *connFixture) seedAgent(t *testing.T, name, token string) int64 {
 		name, "ns-"+name, token).Scan(&id); err != nil {
 		t.Fatalf("seed agent: %v", err)
 	}
-	t.Cleanup(func() { _, _ = f.pool.Exec(context.Background(), `DELETE FROM agents WHERE id=$1`, id) })
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(dbtest.AsOperator(context.Background()), `DELETE FROM agents WHERE id=$1`, id)
+	})
 	return id
 }
 

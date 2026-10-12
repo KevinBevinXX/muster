@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/dbtest"
@@ -21,16 +22,14 @@ func key(b byte) []byte { return bytes.Repeat([]byte{b}, connectors.KeySize) }
 func testPool(t *testing.T) (context.Context, *pgxpool.Pool) {
 	t.Helper()
 	dsn := dbtest.DSN(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), time.Minute)
 	t.Cleanup(cancel)
 	pool, err := db.Connect(ctx, dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	if _, err := pool.Exec(ctx, `TRUNCATE connectors, connector_grants, connector_audit RESTART IDENTITY`); err != nil {
-		t.Fatalf("truncate: %v", err)
-	}
+	dbtest.OwnerExec(t, dsn, `TRUNCATE connectors, connector_grants, connector_audit RESTART IDENTITY`)
 	return ctx, pool
 }
 
@@ -43,7 +42,9 @@ func seedAgent(t *testing.T, ctx context.Context, pool *pgxpool.Pool, name, toke
 		name, "ns-"+name, token).Scan(&id); err != nil {
 		t.Fatalf("seed agent %q: %v", name, err)
 	}
-	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM agents WHERE id=$1`, id) })
+	t.Cleanup(func() {
+		_, _ = pool.Exec(dbtest.AsOperator(context.Background()), `DELETE FROM agents WHERE id=$1`, id)
+	})
 	return id
 }
 
@@ -88,22 +89,28 @@ func TestACiphertextMovedToAnotherOwnersRowDoesNotOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		bg := context.Background()
+		bg := authz.System(context.Background())
 		_, _ = pool.Exec(bg, `DELETE FROM connectors WHERE owner_id=$1`, two)
 		_, _ = pool.Exec(bg, `DELETE FROM users WHERE id=$1`, two)
 	})
 
-	if _, err := pool.Exec(ctx, `UPDATE connectors SET owner_id=$1 WHERE name='github'`, two); err != nil {
+	// The move and the reads after it run as authz.System (scope all): under
+	// row-level security user 1 can neither hand a row to user 2 (WITH CHECK)
+	// nor read it afterwards (it would be ErrNoRows, not the seal's refusal this
+	// test is about). System sees the row as it really is — owner 2, owner 1's
+	// ciphertext — which is exactly the tampered state the seal must refuse.
+	sys := authz.System(ctx)
+	if _, err := pool.Exec(sys, `UPDATE connectors SET owner_id=$1 WHERE name='github'`, two); err != nil {
 		t.Fatal(err)
 	}
-	if _, secret, err := s.Credential(ctx, "github"); !errors.Is(err, connectors.ErrDecrypt) || secret != "" {
+	if _, secret, err := s.Credential(sys, "github"); !errors.Is(err, connectors.ErrDecrypt) || secret != "" {
 		t.Fatalf("owner 1's ciphertext opened on owner %d's row: %q, %v; want ErrDecrypt", two, secret, err)
 	}
-	if err := s.RotateSecret(ctx, "github", "ghp_FAKE-rotated-0123456789"); !errors.Is(err, connectors.ErrDecrypt) {
+	if err := s.RotateSecret(sys, "github", "ghp_FAKE-rotated-0123456789"); !errors.Is(err, connectors.ErrDecrypt) {
 		t.Fatalf("RotateSecret re-sealed a ciphertext that does not open for the row's owner: %v", err)
 	}
 
-	if _, err := pool.Exec(ctx, `UPDATE connectors SET owner_id=1 WHERE name='github'`); err != nil {
+	if _, err := pool.Exec(sys, `UPDATE connectors SET owner_id=1 WHERE name='github'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, secret, err := s.Credential(ctx, "github"); err != nil || secret != fakeSecret {

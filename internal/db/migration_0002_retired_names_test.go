@@ -309,7 +309,7 @@ func TestRetiredNameTombstoneIsSearchPathProof(t *testing.T) {
 		}
 	}
 	t.Cleanup(func() {
-		bg := context.Background()
+		bg := db.AsMigratorForTest(context.Background())
 		if _, err := conn.Exec(bg, `RESET search_path`); err != nil {
 			t.Errorf("cleanup RESET search_path: %v", err)
 		}
@@ -391,7 +391,7 @@ func TestRetiredNameStillAllowsInsertingARetiredName(t *testing.T) {
 	// The insert the refusal would have blocked.
 	id := insertAgentRow(ctx, t, conn, name)
 	t.Cleanup(func() {
-		if _, err := conn.Exec(context.Background(), `DELETE FROM public.agents WHERE id=$1`, id); err != nil {
+		if _, err := conn.Exec(db.AsMigratorForTest(context.Background()), `DELETE FROM public.agents WHERE id=$1`, id); err != nil {
 			t.Errorf("cleanup: %v", err)
 		}
 	})
@@ -462,7 +462,7 @@ func nonOwnerPool(ctx context.Context, t *testing.T, owner *pgxpool.Conn) *pgxpo
 		}
 	}
 	t.Cleanup(func() {
-		if _, err := owner.Exec(context.Background(),
+		if _, err := owner.Exec(db.AsMigratorForTest(context.Background()),
 			`DROP SCHEMA IF EXISTS `+nonOwnerSchema+` CASCADE`); err != nil {
 			t.Errorf("cleanup DROP SCHEMA %s: %v", nonOwnerSchema, err)
 		}
@@ -789,7 +789,7 @@ func scratchDatabase(ctx context.Context, t *testing.T, name, searchPath string)
 		t.Fatalf("create the scratch database %q: %v", name, err)
 	}
 	t.Cleanup(func() {
-		bg, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		bg, cancel := context.WithTimeout(db.AsMigratorForTest(context.Background()), 60*time.Second)
 		defer cancel()
 		p, err := db.Connect(bg, admin.String())
 		if err != nil {
@@ -834,7 +834,7 @@ func TestMigrationRefusesASchemaWhoseAgentsTableIsNotInPublic(t *testing.T) {
 	quiet := log.New(io.Discard, "", 0)
 
 	t.Run("public", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		ctx, cancel := context.WithTimeout(db.AsMigratorForTest(context.Background()), 2*time.Minute)
 		t.Cleanup(cancel)
 		dsn := scratchDatabase(ctx, t, "ms_0002_guard_public", "")
 
@@ -860,7 +860,7 @@ func TestMigrationRefusesASchemaWhoseAgentsTableIsNotInPublic(t *testing.T) {
 	})
 
 	t.Run("non-public", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		ctx, cancel := context.WithTimeout(db.AsMigratorForTest(context.Background()), 2*time.Minute)
 		t.Cleanup(cancel)
 		const appSchema = "musterapp"
 		dsn := scratchDatabase(ctx, t, "ms_0002_guard_nonpublic", appSchema)
@@ -967,7 +967,7 @@ func TestMigrationRefusesASchemaWhoseAgentsTableIsNotInPublic(t *testing.T) {
 	// keeps writing to `public`. Qualified, it is a no-op. This subtest is what
 	// pins that; without it the qualification would be unpinned defence.
 	t.Run("search_path_preferring_another_schema", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		ctx, cancel := context.WithTimeout(db.AsMigratorForTest(context.Background()), 2*time.Minute)
 		t.Cleanup(cancel)
 		const otherSchema = "musterpref"
 		dsn := scratchDatabase(ctx, t, "ms_0002_guard_pref", "")

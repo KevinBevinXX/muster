@@ -20,10 +20,10 @@ import (
 	"testing"
 )
 
-// There are exactly three ways to put a Principal on a context: authz.System,
-// authz.WithPrincipal, and internal/api's (*Server).admit, which wraps the
-// second. (The key is unexported — see the package doc — so there is no
-// fourth.) Which code may reach each is pinned here as a ledger over the
+// There are exactly four ways to put a Principal on a context: authz.System,
+// authz.WithPrincipal, authz.Operator, and internal/api's (*Server).admit, which
+// wraps the second. (The key is unexported — see the package doc — so there is
+// no fifth.) Which code may reach each is pinned here as a ledger over the
 // module's non-test source, and authz's own exported surface is pinned too,
 // so a new alias for one of them cannot appear unlisted.
 //
@@ -42,7 +42,7 @@ import (
 // 🔴 EACH LEDGER IS SET EQUALITY. A new site fails (a handler minting its own
 // principal, a request path reading every user's rows through System), and so
 // does a vanished one (a loop that stopped calling System reads an empty board
-// under PR 3; a wrapper that stopped calling admit hands its handler nothing).
+// under row-level security; a wrapper that stopped calling admit hands its handler nothing).
 //
 // ⚠ SCOPE: the default build plus `-tags e2eterm` (the only build tag on any
 // non-test file in this module, measured when this was written). A file behind
@@ -61,14 +61,40 @@ var (
 	// ⚠ NOT LISTED, BECAUSE THERE IS NO LOOP TO LIST: ccpool (selection runs
 	// inside a dispatch request), a GitHub mirror (none exists;
 	// cmd/muster-server's connectStaticGitHub is a one-shot boot write of the
-	// OPERATOR'S connection, which PR 3 gives the operator's principal, not
+	// OPERATOR'S connection, which runs under authz.Operator (operatorLedger), not
 	// System), and a reconciler (agents/reconcile.go is a pure decision table
 	// that agentstatus drives).
+	//
+	// Accounts PR 3a added the two non-loop sites, each reading ONE row with
+	// no principal to take its scope from, and handing nothing read on to a
+	// caller:
+	//   - agentByToken: the per-agent doors' token lookup. It is how the
+	//     request's owner is LEARNED, so it cannot run as that owner; under
+	//     row-level security with no principal it would see no rows and every
+	//     agent door would 401.
+	//   - notifyAgentRunning: BroadcastAgentChanged's status hook, which is
+	//     handed only an agent name (by request handlers and loops alike) and
+	//     re-reads the row to decide whether to push.
 	systemLedger = []string{
 		"internal/agentkickoff.(*Deliverer).Run",
 		"internal/agentstatus.(*Promoter).Run",
 		"internal/api.(*Server).RunTaskReap",
 		"internal/api.(*Server).RunTaskRetention",
+		"internal/api.(*Server).agentByToken",
+		"internal/api.(*Server).notifyAgentRunning",
+	}
+	// operatorLedger: work done as the OPERATOR (user 1) with no request —
+	// the boot-time GitHub connect of the operator's own static token, and the
+	// e2e fixture seed. Not System: each is one user's rows, not everyone's.
+	//
+	// internal/dbtest.AsOperator is the Postgres-backed TESTS' default
+	// principal. It is listed because dbtest is ordinary (non-_test) source;
+	// it is safe only because no non-test file imports dbtest
+	// (TestOnlyTestFilesImportDBTest).
+	operatorLedger = []string{
+		"cmd/muster-server.connectStaticGitHub",
+		"e2e/seed.run",
+		"internal/dbtest.AsOperator",
 	}
 	// withPrincipalLedger: admit only.
 	withPrincipalLedger = []string{
@@ -89,14 +115,57 @@ var (
 	// name — `var Everyone = System`, a helper wrapping WithPrincipal — is a
 	// new door until someone has decided it is not.
 	authzExports = []string{
-		"From", "MustFrom", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
-		"System", "Via", "ViaAgent", "ViaConnect", "ViaHook", "ViaRelay", "ViaService",
+		"From", "MustFrom", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
+		"System", "Via", "ViaAgent", "ViaConnect", "ViaHook", "ViaOperator", "ViaRelay", "ViaService",
 		"ViaSession", "ViaSystem", "WithPrincipal",
 	}
 )
 
 func TestSystemIsCalledOnlyByTheListedBackgroundLoops(t *testing.T) {
 	assertLedger(t, "authz.System", scanModule(t).sites[targetSystem], systemLedger)
+}
+
+func TestOperatorIsCalledOnlyByTheListedOutOfRequestWrites(t *testing.T) {
+	assertLedger(t, "authz.Operator", scanModule(t).sites[targetOperator], operatorLedger)
+}
+
+// TestOnlyTestFilesImportDBTest pins the premise of dbtest.AsOperator's place
+// in the Operator ledger: a helper that acts as the operator is harmless in a
+// test and a door anywhere else. It reads the import lists of every module
+// package's NON-test files (the same `go list` the scan uses) and refuses any
+// that names internal/dbtest, other than dbtest itself.
+func TestOnlyTestFilesImportDBTest(t *testing.T) {
+	const dbtestPath = modulePath + "/internal/dbtest"
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tags := range []string{"", "e2eterm"} {
+		cmd := exec.Command("go", "list", "-tags="+tags, "-f", "{{.ImportPath}}|{{join .Imports \",\"}}", "./...")
+		cmd.Dir = root
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("go list: %v", err)
+		}
+		seen := 0
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			pkg, imps, _ := strings.Cut(line, "|")
+			seen++
+			if pkg == dbtestPath {
+				continue
+			}
+			for _, imp := range strings.Split(imps, ",") {
+				if imp == dbtestPath {
+					t.Errorf("%s (tags %q) imports internal/dbtest from a NON-test file. dbtest.AsOperator "+
+						"acts as the operator with no request; outside a test that is an unledgered door.", pkg, tags)
+				}
+			}
+		}
+		// Positive control: the listing saw the module, not nothing.
+		if seen < 20 {
+			t.Fatalf("go list (tags %q) returned %d packages; the walk is not seeing the module", tags, seen)
+		}
+	}
 }
 
 func TestWithPrincipalIsCalledOnlyByAdmit(t *testing.T) {
@@ -150,6 +219,13 @@ import az "` + authzPath + `"
 func F() { g := func() { h := az.WithPrincipal; _ = h }; g() }
 `,
 		target: targetWithPrincipal, wantSite: "internal/bypassfour.F",
+	}, {
+		name: "B5 Operator as a package-level function value", pkgPath: modulePath + "/internal/bypassfive", pkgName: "bypassfive",
+		src: `package bypassfive
+import "` + authzPath + `"
+var asOperator = authz.Operator
+`,
+		target: targetOperator, wantSite: "internal/bypassfive.asOperator",
 	}}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -170,6 +246,7 @@ type target string
 
 const (
 	targetSystem        target = "authz.System"
+	targetOperator      target = "authz.Operator"
 	targetWithPrincipal target = "authz.WithPrincipal"
 	targetAdmit         target = "api.(*Server).admit"
 )
@@ -188,6 +265,8 @@ func targetOf(obj types.Object) (target, bool) {
 		return targetSystem, true
 	case fn.Pkg().Path() == authzPath && sig.Recv() == nil && fn.Name() == "WithPrincipal":
 		return targetWithPrincipal, true
+	case fn.Pkg().Path() == authzPath && sig.Recv() == nil && fn.Name() == "Operator":
+		return targetOperator, true
 	case fn.Pkg().Path() == apiPath && sig.Recv() != nil && fn.Name() == "admit":
 		return targetAdmit, true
 	}

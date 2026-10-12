@@ -460,39 +460,39 @@ func TestTheAdapterNeverClaimsAKickoffItCannotDeliver(t *testing.T) {
 	}{
 		{
 			name:                    "Dispatch with kickoff",
-			run:                     func(a *Adapter) error { return a.Dispatch(fixtureAgentID, true) },
+			run:                     func(a *Adapter) error { return a.Dispatch(context.Background(), fixtureAgentID, true) },
 			refusedWithoutDeliverer: true,
 		},
 		{
 			name: "Dispatch without kickoff",
-			run:  func(a *Adapter) error { return a.Dispatch(fixtureAgentID, false) },
+			run:  func(a *Adapter) error { return a.Dispatch(context.Background(), fixtureAgentID, false) },
 		},
 		{
 			name:                     "Start of an agent that never got its note",
 			live:                     true,
-			run:                      func(a *Adapter) error { return a.Start(fixtureAgentID) },
+			run:                      func(a *Adapter) error { return a.Start(context.Background(), fixtureAgentID) },
 			recordedWithoutDeliverer: true,
 		},
 		{
 			name:                     "Start of a never-provisioned agent",
-			run:                      func(a *Adapter) error { return a.Start(fixtureAgentID) },
+			run:                      func(a *Adapter) error { return a.Start(context.Background(), fixtureAgentID) },
 			recordedWithoutDeliverer: true,
 		},
 		{
 			name:      "Start of an already-kicked-off agent",
 			kickedOff: true,
 			live:      true,
-			run:       func(a *Adapter) error { return a.Start(fixtureAgentID) },
+			run:       func(a *Adapter) error { return a.Start(context.Background(), fixtureAgentID) },
 		},
 		{
 			name: "Stop",
 			live: true,
-			run:  func(a *Adapter) error { return a.Stop(fixtureAgentID) },
+			run:  func(a *Adapter) error { return a.Stop(context.Background(), fixtureAgentID) },
 		},
 		{
 			name: "Destroy",
 			live: true,
-			run:  func(a *Adapter) error { return a.Destroy(fixtureAgentID) },
+			run:  func(a *Adapter) error { return a.Destroy(context.Background(), fixtureAgentID) },
 		},
 	}
 
@@ -580,7 +580,7 @@ func TestTheRecordedNonDeliveryNamesTheBuildRatherThanTheAgent(t *testing.T) {
 	// nothing can deliver (a Dispatch there is refused; with a gateway, the
 	// deliverer pays it and nothing is recorded).
 	a, store, _ := newAdapterWithNoKickoffDelivery(t, nil)
-	if err := a.Start(fixtureAgentID); err != nil {
+	if err := a.Start(context.Background(), fixtureAgentID); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	if !strings.Contains(store.transcript(), want) {
@@ -599,7 +599,7 @@ func TestTheRecordedNonDeliveryNamesTheBuildRatherThanTheAgent(t *testing.T) {
 // cannot authenticate to this server, with nothing refused anywhere.
 func TestDispatchCreatesTheInstanceAndMintsTheAgentsOwnToken(t *testing.T) {
 	a, store, driver := newAdapter(t, nil)
-	if err := a.Dispatch(fixtureAgentID, true); err != nil {
+	if err := a.Dispatch(context.Background(), fixtureAgentID, true); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 
@@ -639,7 +639,7 @@ func TestDispatchCreatesTheInstanceAndMintsTheAgentsOwnToken(t *testing.T) {
 		ag.HooksToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 		s.agent = ag
 	})
-	if err := a2.Dispatch(fixtureAgentID, true); err != nil {
+	if err := a2.Dispatch(context.Background(), fixtureAgentID, true); err != nil {
 		t.Fatalf("Dispatch (token present): %v", err)
 	}
 	if store2.called("SetHooksToken") {
@@ -660,7 +660,7 @@ func TestDispatchStatusFollowsWhetherAFirstTurnIsOwed(t *testing.T) {
 	} {
 		t.Run(fmt.Sprintf("kickoff=%t", tc.kickoff), func(t *testing.T) {
 			a, store, _ := newAdapter(t, nil)
-			if err := a.Dispatch(fixtureAgentID, tc.kickoff); err != nil {
+			if err := a.Dispatch(context.Background(), fixtureAgentID, tc.kickoff); err != nil {
 				t.Fatalf("Dispatch: %v", err)
 			}
 			want := fmt.Sprintf("UpdateStatus(4291,%s,out=%q,err=%q)", tc.want, "", "")
@@ -715,7 +715,7 @@ func TestStartCreatesOnlyWhenTheBackendSAYSTheInstanceIsAbsent(t *testing.T) {
 			seedInstance(t, a, store, driver)
 			driver.scaleErr = tc.scaleErr
 
-			err := a.Start(fixtureAgentID)
+			err := a.Start(context.Background(), fixtureAgentID)
 			if tc.wantErr {
 				// 🔴 THE CREATE CHECK RUNS FIRST, AND THE ORDER WAS FOUND BY
 				// MUTATION RATHER THAN BY REVIEW. With the nil-error Fatalf above
@@ -773,7 +773,7 @@ func TestStartCreatesOnlyWhenTheBackendSAYSTheInstanceIsAbsent(t *testing.T) {
 func TestStopScalesToZeroAndDropsTheDeliveryProvenance(t *testing.T) {
 	a, store, driver := newAdapter(t, nil)
 	seedInstance(t, a, store, driver)
-	if err := a.Stop(fixtureAgentID); err != nil {
+	if err := a.Stop(context.Background(), fixtureAgentID); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 	if len(driver.scaled) != 1 || driver.scaled[0] != 0 {
@@ -793,7 +793,7 @@ func TestStopScalesToZeroAndDropsTheDeliveryProvenance(t *testing.T) {
 	a2, store2, driver2 := newAdapter(t, nil)
 	seedInstance(t, a2, store2, driver2)
 	driver2.scaleErr = errors.New("apiserver said no")
-	if err := a2.Stop(fixtureAgentID); err == nil {
+	if err := a2.Stop(context.Background(), fixtureAgentID); err == nil {
 		t.Fatal("Stop returned nil over a failed scale-down")
 	}
 	if strings.Contains(store2.transcript(), "UpdateStatus(4291,stopped,") {
@@ -842,7 +842,7 @@ func TestDestroyKeepsTheRowWhenNothingWasRemoved(t *testing.T) {
 			a, store, driver := newAdapter(t, nil)
 			seedInstance(t, a, store, driver)
 			driver.destroyErr = tc.destroyErr
-			err := a.Destroy(fixtureAgentID)
+			err := a.Destroy(context.Background(), fixtureAgentID)
 
 			// POSITIVE CONTROL: the driver's Destroy must have been attempted at
 			// all, or "the row was kept" would be true for the wrong reason.
@@ -916,8 +916,8 @@ func TestTheDriverReferenceIsTheAgentsNameNotItsNamespace(t *testing.T) {
 		name string
 		run  func(*Adapter) error
 	}{
-		{"Stop", func(a *Adapter) error { return a.Stop(fixtureAgentID) }},
-		{"Destroy", func(a *Adapter) error { return a.Destroy(fixtureAgentID) }},
+		{"Stop", func(a *Adapter) error { return a.Stop(context.Background(), fixtureAgentID) }},
+		{"Destroy", func(a *Adapter) error { return a.Destroy(context.Background(), fixtureAgentID) }},
 		{"TailLogs", func(a *Adapter) error {
 			_, err := a.TailLogs(context.Background(), fixtureAgent(), 4)
 			return err

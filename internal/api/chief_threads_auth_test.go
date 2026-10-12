@@ -45,7 +45,11 @@ type tokenAgentsStore struct {
 
 func (s tokenAgentsStore) GetByHooksToken(_ context.Context, token string) (agents.Agent, error) {
 	if token == s.token {
-		return s.agent, nil
+		a := s.agent
+		if a.OwnerID == 0 { // a Postgres row always has an owner; see relayAgents
+			a.OwnerID = 1
+		}
+		return a, nil
 	}
 	return agents.Agent{}, errNoSuchAgentInTest
 }

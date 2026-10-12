@@ -137,7 +137,7 @@ func TestADispatchIsRefusedExactlyWhenNoGatewayIsNamed(t *testing.T) {
 				"below is exercised")
 		}
 
-		err = prov.Dispatch(store.agent.ID, true)
+		err = prov.Dispatch(context.Background(), store.agent.ID, true)
 		if err == nil {
 			t.Fatalf("a kickoff dispatch was ACCEPTED on a deployment with no gateway, so the "+
 				"adapter was told a kickoff is deliverable when buildGateway returned nil.\n"+
@@ -176,7 +176,7 @@ func TestADispatchIsRefusedExactlyWhenNoGatewayIsNamed(t *testing.T) {
 			t.Fatalf("instrument check FAILED: gateway=%v adapter=%v, so this is not the "+
 				"gateway-configured deployment it claims to be", gw != nil, prov != nil)
 		}
-		if err := prov.Dispatch(store.agent.ID, true); err != nil {
+		if err := prov.Dispatch(context.Background(), store.agent.ID, true); err != nil {
 			t.Fatalf("a kickoff dispatch was REFUSED on a deployment that names a gateway and "+
 				"has a deliverer: %v\n  transcript: %s", err, store.transcript())
 		}

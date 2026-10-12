@@ -3,6 +3,7 @@ package db_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -17,6 +18,52 @@ import (
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/github"
 )
+
+// applyThroughFrom applies every on-disk migration NEWER than the database's
+// recorded version and no newer than max, the way db.Migrate does (one
+// transaction each, recorded). It lets a test stop a populated database at an
+// exact version, which db.Migrate (always "latest") cannot.
+func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max int) {
+	t.Helper()
+	var cur int
+	if err := pool.QueryRow(ctx, `SELECT coalesce(max(version), 0) FROM schema_migrations`).Scan(&cur); err != nil {
+		t.Fatal(err)
+	}
+	files, err := filepath.Glob(filepath.Join("migrations", "*.sql"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("list migrations: %v (%d files)", err, len(files))
+	}
+	slices.Sort(files)
+	for _, f := range files {
+		name := filepath.Base(f)
+		var v int
+		if _, err := fmt.Sscanf(name, "%04d_", &v); err != nil {
+			t.Fatalf("migration %s: %v", name, err)
+		}
+		if v <= cur || v > max {
+			continue
+		}
+		body, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(ctx, string(body)); err != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatalf("apply %s: %v", name, err)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO schema_migrations (version, name) VALUES ($1, $2)`, v, name); err != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatal(err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
 
 // Migration 0006 — accounts, schema only. These tests run against real
 // Postgres in SCRATCH databases: the package database is copied from an
@@ -92,7 +139,7 @@ func freshMigrated(ctx context.Context, t *testing.T, name string) *pgxpool.Pool
 }
 
 func ctx0006(t *testing.T) context.Context {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(db.AsMigratorForTest(context.Background()), 2*time.Minute)
 	t.Cleanup(cancel)
 	return ctx
 }
@@ -179,9 +226,10 @@ func TestMigration0006BackfillsAPopulatedDatabaseToTheOperator(t *testing.T) {
 		}
 	}
 
-	if err := db.Migrate(ctx, pool, log.New(io.Discard, "", 0)); err != nil {
-		t.Fatalf("migrating a populated 0005 database failed: %v", err)
-	}
+	// Through 0006 EXACTLY: this test is about 0006's backfill and its
+	// temporary DEFAULT 1. 0007 replaces that default (TestRLS… in
+	// migration_0007_rls_test.go covers the database after it).
+	applyThroughFrom(ctx, t, pool, 6)
 
 	for _, tbl := range ownedTables {
 		if got := countRows(ctx, t, pool, tbl); got != before[tbl] {

@@ -200,9 +200,9 @@ func (s *PGStore) LinkSession(ctx context.Context, noteID int64, l SessionLink, 
 		WITH prev AS (
 			SELECT role FROM task_sessions WHERE note_id = $1 AND session_id = $2
 		), ins AS (
-			INSERT INTO task_sessions (note_id, session_id, role, project, cwd, host, detail_seen)
-			SELECT $1, $2, $3, $4, $5, $6, $8::boolean
-			 WHERE EXISTS (SELECT 1 FROM notes WHERE id = $1 AND `+liveOnly+`)
+			INSERT INTO task_sessions (note_id, owner_id, session_id, role, project, cwd, host, detail_seen)
+			SELECT $1, owner_id, $2, $3, $4, $5, $6, $8::boolean
+			  FROM notes WHERE id = $1 AND `+liveOnly+`
 			ON CONFLICT (note_id, session_id) DO UPDATE SET
 				role         = `+roleUpgradeExpr+`,
 				last_seen_at = now(),

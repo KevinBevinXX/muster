@@ -56,7 +56,7 @@ type preflightProvisioner struct {
 
 func (p *preflightProvisioner) KickoffUndeliverableReason() string { return p.reason }
 
-func (p *preflightProvisioner) Dispatch(_ int64, kickoff bool) error {
+func (p *preflightProvisioner) Dispatch(_ context.Context, _ int64, kickoff bool) error {
 	p.mu.Lock()
 	p.dispatch = append(p.dispatch, kickoff)
 	p.mu.Unlock()
@@ -67,7 +67,7 @@ func (p *preflightProvisioner) Dispatch(_ int64, kickoff bool) error {
 	return nil
 }
 
-func (p *preflightProvisioner) Start(id int64) error {
+func (p *preflightProvisioner) Start(_ context.Context, id int64) error {
 	p.mu.Lock()
 	p.starts = append(p.starts, id)
 	p.mu.Unlock()
@@ -336,7 +336,7 @@ func TestTheCreateHandlersPreflightAgreesWithWhatDispatchWouldDo(t *testing.T) {
 			// What the handler's pre-flight would read...
 			reason := adapter.KickoffUndeliverableReason()
 			// ...and what the dispatch it predicts actually does.
-			dispatchErr := adapter.Dispatch(store.agent.ID, true)
+			dispatchErr := adapter.Dispatch(context.Background(), store.agent.ID, true)
 			refused := errors.Is(dispatchErr, agentprovision.ErrKickoffUndeliverable)
 
 			if (reason != "") != refused {

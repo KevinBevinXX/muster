@@ -22,7 +22,7 @@ import (
 func threadStore(t *testing.T) (context.Context, *pgxpool.Pool, *PGStore) {
 	t.Helper()
 	dsn := dbtest.DSN(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
 	t.Cleanup(cancel)
 	pool, err := db.Connect(ctx, dsn)
 	if err != nil {
@@ -46,7 +46,7 @@ func seedTask(t *testing.T, ctx context.Context, s *PGStore, n Note) Note {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	t.Cleanup(func() { _ = s.Delete(context.Background(), out.ID) })
+	t.Cleanup(func() { _ = s.Delete(dbtest.AsOperator(context.Background()), out.ID) })
 	return out
 }
 
