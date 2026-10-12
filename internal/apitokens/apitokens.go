@@ -69,6 +69,10 @@ var (
 	ErrBadToken = errors.New("apitokens: invalid or revoked token")
 	// ErrUserDisabled: the token is live but its owner is disabled.
 	ErrUserDisabled = errors.New("apitokens: the token's user is disabled")
+	// ErrSessionEnded: the browser session asking to mint was issued at or
+	// before the user's session cutoff (a password reset or a disable moved
+	// it), so it is no longer a session that may mint.
+	ErrSessionEnded = errors.New("apitokens: the session that asked to mint has been ended")
 	// ErrNoUser: a management call with no user principal on its context (or
 	// with the System principal, which is nobody's).
 	ErrNoUser = errors.New("apitokens: no user principal on this context")
@@ -131,7 +135,11 @@ type Store interface {
 	Authenticate(ctx context.Context, token string) (Token, error)
 	// Create mints a token named name for ctx's user, records it in
 	// audit_log, and returns the token ONCE with its record.
-	Create(ctx context.Context, name string) (string, Token, error)
+	// sessionIssuedAt is the minting browser session's iat (unix seconds): a
+	// session issued at or before the user's session cutoff is refused
+	// ErrSessionEnded. Zero means the caller is not a GoTrue session (password
+	// mode, a fixture) and there is no cutoff to compare.
+	Create(ctx context.Context, name string, sessionIssuedAt int64) (string, Token, error)
 	// List returns ctx's user's tokens, newest first, revoked included.
 	List(ctx context.Context) ([]Token, error)
 	// Revoke revokes ctx's user's token id. found is false when the user has
@@ -236,7 +244,14 @@ func CleanName(name string) (string, error) {
 // commits first and is revoked by it, or waits for it and is refused
 // ErrUserDisabled — never a token inserted after the revoke ran that comes
 // back on re-enable (TestAMintRacingADisableNeverSurvivesIt).
-func (s *PGStore) Create(ctx context.Context, name string) (string, Token, error) {
+//
+// 🔴 AND THE SESSION CUTOFF, UNDER THE SAME LOCK. A password reset revokes the
+// tokens but leaves the user enabled, so disabled_at alone let a mint queued
+// behind a reset insert a live token. The minting session's iat is compared
+// with users.sessions_not_before by the session tier's own rule (at or before
+// the cutoff's second is refused): a session the reset ended cannot mint, and
+// the session the reset signs in can (TestAMintQueuedBehindAResetIsRefused).
+func (s *PGStore) Create(ctx context.Context, name string, sessionIssuedAt int64) (string, Token, error) {
 	p, err := user(ctx)
 	if err != nil {
 		return "", Token{}, err
@@ -254,12 +269,17 @@ func (s *PGStore) Create(ctx context.Context, name string) (string, Token, error
 			return err
 		}
 		var disabled bool
+		var cutoff *time.Time
 		// The user's own row: 0009's self_read policy shows it to its owner.
-		if err := tx.QueryRow(ctx, `SELECT disabled_at IS NOT NULL FROM users WHERE id = $1`, p.UserID).Scan(&disabled); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT disabled_at IS NOT NULL, sessions_not_before FROM users WHERE id = $1`,
+			p.UserID).Scan(&disabled, &cutoff); err != nil {
 			return err
 		}
 		if disabled {
 			return ErrUserDisabled
+		}
+		if sessionIssuedAt > 0 && cutoff != nil && sessionIssuedAt <= cutoff.Unix() {
+			return ErrSessionEnded
 		}
 		var err error
 		t, err = scan(tx.QueryRow(ctx, `INSERT INTO api_tokens (user_id, name, token_hash)

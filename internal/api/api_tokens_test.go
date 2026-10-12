@@ -200,7 +200,7 @@ type mintCountingTokens struct {
 	mints int
 }
 
-func (m *mintCountingTokens) Create(context.Context, string) (string, apitokens.Token, error) {
+func (m *mintCountingTokens) Create(context.Context, string, int64) (string, apitokens.Token, error) {
 	m.mints++
 	tok, _ := apitokens.New()
 	return tok, apitokens.Token{ID: 99, UserID: 7}, nil
@@ -351,7 +351,7 @@ func TestPersonalTokenLifecycleOverHTTP(t *testing.T) {
 	if !strings.Contains(list, aTask.Title) || strings.Contains(list, bTask.Title) {
 		t.Fatalf("A's token's task list: %s", truncate(list, 400))
 	}
-	bTok, _, err := apitokens.NewPG(pool).Create(asUser(b), "b")
+	bTok, _, err := apitokens.NewPG(pool).Create(asUser(b), "b", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -491,7 +491,7 @@ func TestAPasswordResetRevokesTheUsersAPITokens(t *testing.T) {
 	})
 	ts := apitokens.NewPG(w.pool)
 	asUser := authz.WithPrincipal(context.Background(), authz.Principal{UserID: uid, Role: authz.RoleMember, Via: authz.ViaSession})
-	secret, _, err := ts.Create(asUser, "before-reset")
+	secret, _, err := ts.Create(asUser, "before-reset", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -537,7 +537,7 @@ func TestSignOutEverywhereSaysItKeepsAPITokens(t *testing.T) {
 		_, _ = w.pool.Exec(authz.System(context.Background()), `DELETE FROM api_tokens WHERE user_id = 1`)
 	})
 	ts := apitokens.NewPG(w.pool)
-	secret, _, err := ts.Create(authz.Operator(context.Background()), "kept")
+	secret, _, err := ts.Create(authz.Operator(context.Background()), "kept", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -547,5 +547,107 @@ func TestSignOutEverywhereSaysItKeepsAPITokens(t *testing.T) {
 	}
 	if _, err := ts.Authenticate(authz.System(context.Background()), secret); err != nil {
 		t.Fatalf("a token after Sign out everywhere: %v; the page says tokens are not affected", err)
+	}
+}
+
+// refusingTokens is a store whose Create returns a preset error (and whose
+// List is empty), for the mint page's refusal texts.
+type refusingTokens struct {
+	apitokens.Store
+	err error
+}
+
+func (r refusingTokens) Create(context.Context, string, int64) (string, apitokens.Token, error) {
+	return "", apitokens.Token{}, r.err
+}
+func (refusingTokens) List(context.Context) ([]apitokens.Token, error) { return nil, nil }
+
+// TestTheMintPageSaysWhyItRefused (review round 4): the two refusals the store
+// can give a mint each reach the person as a status and a sentence — a
+// disabled account (403) and a session a reset or sign-out ended (401) — and
+// neither renders a token.
+func TestTheMintPageSaysWhyItRefused(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		code int
+		want string
+	}{
+		{apitokens.ErrUserDisabled, http.StatusForbidden, "This account is disabled"},
+		{apitokens.ErrSessionEnded, http.StatusUnauthorized, "Sign in again to create API tokens"},
+	} {
+		s := New(nil, AuthConfig{HookToken: tokTestHook, UIPassword: "mint-refusal-operator-pw"}, log.New(io.Discard, "", 0))
+		s.UseExtensions(Extensions{APITokens: refusingTokens{err: c.err}, Users: stubUsers{}})
+		mux := http.NewServeMux()
+		s.registerAll(mux)
+		r := httptest.NewRequest(http.MethodPost, accountTokensPath, strings.NewReader("name=x"))
+		r.Host = "muster.test"
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.Header.Set("Cookie", sessionCookieFor(s))
+		r.Header.Set("Origin", "http://muster.test")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, r)
+		if rec.Code != c.code || !strings.Contains(rec.Body.String(), c.want) || strings.Contains(rec.Body.String(), "minted-token") {
+			t.Errorf("mint refused with %v: %d; want %d and %q, and no token\n%s", c.err, rec.Code, c.code, c.want, truncate(rec.Body.String(), 400))
+		}
+	}
+}
+
+// TestAResetWhoseSignInFailsStillSaysTheTokensWereRevoked (review round 4):
+// the password is set and the tokens are revoked BEFORE the sign-in, so when
+// the sign-in then fails (GoTrue down) the notice must still say the tokens
+// are gone — the person would otherwise find their scripts 401 with no word.
+func TestAResetWhoseSignInFailsStillSaysTheTokensWereRevoked(t *testing.T) {
+	w := newInviteWorld(t)
+	uid, sub, _, _ := w.joinMember("tokfail@invite.test")
+	t.Cleanup(func() {
+		_, _ = w.pool.Exec(authz.System(context.Background()), `DELETE FROM api_tokens WHERE user_id = $1`, uid)
+	})
+	ts := apitokens.NewPG(w.pool)
+	secret, _, err := ts.Create(authz.WithPrincipal(context.Background(),
+		authz.Principal{UserID: uid, Role: authz.RoleMember, Via: authz.ViaSession}), "before", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.fake.FailToken(http.StatusInternalServerError, 10)
+	r := do(w.edge, "POST", ResetPath, url.Values{"token": {w.fake.RecoveryHash(sub)}, "password": {"a-new-long-password"}, "password2": {"a-new-long-password"}})
+	body := r.Body.String()
+	if r.Code != http.StatusBadGateway || !strings.Contains(body, "Your password is set, but sign-in failed") ||
+		!strings.Contains(body, "Your API tokens were revoked") {
+		t.Fatalf("a reset whose sign-in fails: %d; want 502 saying the password is set AND the API tokens were revoked\n%s", r.Code, truncate(body, 500))
+	}
+	if _, err := ts.Authenticate(authz.System(context.Background()), secret); !errors.Is(err, apitokens.ErrBadToken) {
+		t.Fatalf("CONTROL: the token after that reset: %v; the notice says it was revoked", err)
+	}
+}
+
+// iatCapturingTokens records the session issued-at the mint handler passes.
+type iatCapturingTokens struct {
+	apitokens.Store
+	got *[]int64
+}
+
+func (c iatCapturingTokens) Create(_ context.Context, _ string, iat int64) (string, apitokens.Token, error) {
+	*c.got = append(*c.got, iat)
+	tok, _ := apitokens.New()
+	return tok, apitokens.Token{ID: 1}, nil
+}
+func (iatCapturingTokens) List(context.Context) ([]apitokens.Token, error) { return nil, nil }
+
+// TestAGoTrueMintCarriesTheSessionsIssuedAt (review round 4): the store's
+// cutoff check is only as good as the iat the handler hands it — zero would
+// skip it — so a real gotrue session's mint must arrive with that session's
+// own, non-zero issued-at.
+func TestAGoTrueMintCarriesTheSessionsIssuedAt(t *testing.T) {
+	w := newInviteWorld(t)
+	var got []int64
+	w.s.UseExtensions(Extensions{Users: w.store, APITokens: iatCapturingTokens{got: &got}})
+	edge := BrowserListener(w.s.Handler())
+	c, err := w.fake.Verifier().Verify(w.adminAT)
+	if err != nil || c.IssuedAt <= 0 {
+		t.Fatalf("CONTROL: the admin's access token: %+v %v", c, err)
+	}
+	rec := do(edge, "POST", accountTokensPath, url.Values{"name": {"x"}}, w.asAdmin())
+	if rec.Code != 200 || len(got) != 1 || got[0] != c.IssuedAt {
+		t.Fatalf("mint as a gotrue session: %d, store saw issued-at %v; want exactly the session's %d", rec.Code, got, c.IssuedAt)
 	}
 }

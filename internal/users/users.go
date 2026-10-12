@@ -170,6 +170,10 @@ func (s *PGStore) ResetCredentials(ctx context.Context, id int64) (time.Time, er
 		return time.Time{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	// The credentials lock FIRST — see LockCredentialsTx for the order rule.
+	if err := LockCredentialsTx(ctx, tx, id); err != nil {
+		return time.Time{}, err
+	}
 	var t time.Time
 	err = tx.QueryRow(ctx, `UPDATE users SET sessions_not_before = clock_timestamp() WHERE id = $1
 		RETURNING sessions_not_before`, id).Scan(&t)
@@ -198,6 +202,12 @@ func (s *PGStore) SetDisabledAs(ctx context.Context, by *Actor, id int64, disabl
 	q := `UPDATE users SET disabled_at = NULL WHERE id = $1 RETURNING ` + userCols
 	action := "user.enable"
 	if disabled {
+		// The credentials lock FIRST, before guardLastAdmin's row locks and
+		// before the cutoff is stamped — see LockCredentialsTx for the order
+		// rule (a deadlock and a stale cutoff are what the other order cost).
+		if err := LockCredentialsTx(ctx, tx, id); err != nil {
+			return User{}, err
+		}
 		if err := guardLastAdmin(ctx, tx, id); err != nil {
 			return User{}, err
 		}
@@ -242,15 +252,13 @@ func (s *PGStore) SetDisabledAs(ctx context.Context, by *Actor, id int64, disabl
 // user id inside tx. EVERY disable path must call it in the disable's own
 // transaction — it is one helper so a second disable writer is one call.
 //
-// 🔴 IT TAKES LockCredentialsTx FIRST. apitokens.Create takes the same lock and
-// then re-reads disabled_at, so a mint racing a disable either commits before
-// this revoke (and is revoked by it) or waits for the disable to commit (and
-// is refused). Without the lock a token inserted after this UPDATE ran but
-// before the disable committed survived, and came back on re-enable.
+// 🔴 THE CALLER MUST ALREADY HOLD LockCredentialsTx, TAKEN AS ITS TRANSACTION'S
+// FIRST STATEMENT. apitokens.Create takes the same lock and then re-reads the
+// user's disabled_at and session cutoff, so a mint racing a disable or a reset
+// either commits before this revoke (and is revoked by it) or waits for the
+// whole transaction (and is refused). Without the lock a token inserted after
+// this UPDATE ran but before the commit survived.
 func revokeAPITokensTx(ctx context.Context, tx pgx.Tx, id int64) error {
-	if err := LockCredentialsTx(ctx, tx, id); err != nil {
-		return err
-	}
 	_, err := tx.Exec(ctx, `UPDATE api_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`, id)
 	return err
 }
@@ -267,6 +275,16 @@ const credentialsLockClass int32 = 0x6d75746b // "mutk"
 // own row returns NO row (0009 gives users no UPDATE policy, and FOR SHARE is
 // checked against UPDATE policies — measured: 0 rows). An advisory lock needs
 // no row and no policy.
+//
+// 🔴 ORDER RULE: THIS LOCK IS TAKEN BEFORE ANY users ROW LOCK, IN EVERY PATH.
+// Create holds it and then needs FOR KEY SHARE on the user's row (its INSERTs'
+// foreign keys); a disable that locked rows first (guardLastAdmin takes FOR
+// UPDATE on every enabled admin) and then waited for this lock deadlocked
+// against a mint by an ADMIN — measured: SQLSTATE 40P01, the disable lost, the
+// user stayed enabled with the minted token live
+// (TestAMintRacingAnAdminsDisableDoesNotDeadlock). Taking it first also keeps
+// the session cutoff honest: clock_timestamp() is stamped AFTER the wait for
+// this lock, not before it (TestTheCutoffIsStampedAfterTheCredentialsLockWait).
 func LockCredentialsTx(ctx context.Context, tx pgx.Tx, id int64) error {
 	if id <= 0 || id > math.MaxInt32 {
 		return fmt.Errorf("users: credentials lock: user id %d out of range", id)

@@ -213,9 +213,22 @@ func (s *Server) handleAccountTokenCreate(w http.ResponseWriter, r *http.Request
 		s.renderAccountTokens(w, r, http.StatusServiceUnavailable, "", "")
 		return
 	}
-	tok, _, err := s.ext.APITokens.Create(r.Context(), r.PostFormValue("name"))
+	// The minting session's iat, for the store's cutoff check. 🔴 IN GOTRUE
+	// MODE A MISSING ONE IS A WIRING BUG, NOT "NO CUTOFF": zero would skip the
+	// check, so it is refused rather than passed on.
+	iat, _ := r.Context().Value(sessionIssuedAtKey{}).(int64)
+	if s.auth.goTrueMode() && iat <= 0 {
+		s.logger.Printf("api-token: create: a gotrue session reached the mint with no issued-at")
+		s.renderAccountTokens(w, r, http.StatusInternalServerError, "", "The token could not be created.")
+		return
+	}
+	tok, _, err := s.ext.APITokens.Create(r.Context(), r.PostFormValue("name"), iat)
 	if errors.Is(err, apitokens.ErrNameTooLong) {
 		s.renderAccountTokens(w, r, http.StatusBadRequest, "", err.Error())
+		return
+	}
+	if errors.Is(err, apitokens.ErrSessionEnded) {
+		s.renderAccountTokens(w, r, http.StatusUnauthorized, "", "This sign-in has been ended (a password reset or a sign-out). Sign in again to create API tokens.")
 		return
 	}
 	if errors.Is(err, apitokens.ErrUserDisabled) {

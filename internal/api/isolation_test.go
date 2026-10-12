@@ -502,11 +502,11 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	ts := apitokens.NewPG(pool)
 	w.apiTokens = map[int64]string{}
 	for _, u := range []isoUser{w.a, w.b} {
-		tok, _, err := ts.Create(as2(u), u.name+" cli")
+		tok, _, err := ts.Create(as2(u), u.name+" cli", 0)
 		must(err, u.name+" api token")
 		w.apiTokens[u.uid] = tok
 	}
-	_, w.aToken2, err = ts.Create(ua, w.canary+" token")
+	_, w.aToken2, err = ts.Create(ua, w.canary+" token", 0)
 	must(err, "a second api token")
 	w.aTokTask, err = ns.Create(ua, notes.Note{Title: w.canary + " token-control", Status: notes.StatusOpen})
 	must(err, "a token-control task")

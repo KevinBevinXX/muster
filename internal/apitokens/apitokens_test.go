@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -101,7 +102,7 @@ func TestAMalformedTokenIsRefusedWithoutADatabaseRead(t *testing.T) {
 
 func TestOnlyTheHashIsStoredAndTheTokenIsShownOnce(t *testing.T) {
 	w := newWorld(t)
-	tok, rec, err := w.s.Create(as(w.a, authz.RoleMember), "  laptop  ")
+	tok, rec, err := w.s.Create(as(w.a, authz.RoleMember), "  laptop  ", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,11 +139,11 @@ func TestOnlyTheHashIsStoredAndTheTokenIsShownOnce(t *testing.T) {
 
 func TestAuthenticateResolvesTheOwnerAndRefusesRevokedAndDisabled(t *testing.T) {
 	w := newWorld(t)
-	tokA, recA, err := w.s.Create(as(w.a, authz.RoleMember), "a")
+	tokA, recA, err := w.s.Create(as(w.a, authz.RoleMember), "a", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tokB, _, err := w.s.Create(as(w.b, authz.RoleMember), "b")
+	tokB, _, err := w.s.Create(as(w.b, authz.RoleMember), "b", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,11 +212,11 @@ func TestAuthenticateResolvesTheOwnerAndRefusesRevokedAndDisabled(t *testing.T) 
 // a token minted after the re-enable works.
 func TestDisablingAUserRevokesItsTokensForGood(t *testing.T) {
 	w := newWorld(t)
-	tokA, _, err := w.s.Create(as(w.a, authz.RoleMember), "a")
+	tokA, _, err := w.s.Create(as(w.a, authz.RoleMember), "a", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tokB, _, err := w.s.Create(as(w.b, authz.RoleMember), "b")
+	tokB, _, err := w.s.Create(as(w.b, authz.RoleMember), "b", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +240,7 @@ func TestDisablingAUserRevokesItsTokensForGood(t *testing.T) {
 	if got, err := w.s.Authenticate(sysCtx(), tokB); err != nil || got.UserID != w.b {
 		t.Fatalf("CONTROL: B's token after A's disable: %+v %v", got, err)
 	}
-	fresh, _, err := w.s.Create(as(w.a, authz.RoleMember), "after")
+	fresh, _, err := w.s.Create(as(w.a, authz.RoleMember), "after", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +253,7 @@ func TestDisablingAUserRevokesItsTokensForGood(t *testing.T) {
 // "no such token", and A's token still works.
 func TestNobodyRevokesAnotherUsersToken(t *testing.T) {
 	w := newWorld(t)
-	tokA, recA, err := w.s.Create(as(w.a, authz.RoleMember), "a")
+	tokA, recA, err := w.s.Create(as(w.a, authz.RoleMember), "a", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +274,7 @@ func TestNobodyRevokesAnotherUsersToken(t *testing.T) {
 // The positive control is A, who sees its own.
 func TestRowLevelSecurityKeepsTokensToTheirOwner(t *testing.T) {
 	w := newWorld(t)
-	if _, _, err := w.s.Create(as(w.a, authz.RoleMember), "a"); err != nil {
+	if _, _, err := w.s.Create(as(w.a, authz.RoleMember), "a", 0); err != nil {
 		t.Fatal(err)
 	}
 	count := func(ctx context.Context) int {
@@ -304,7 +305,7 @@ func TestRowLevelSecurityKeepsTokensToTheirOwner(t *testing.T) {
 func TestManagementNeedsAUserPrincipal(t *testing.T) {
 	w := newWorld(t)
 	for name, ctx := range map[string]context.Context{"none": context.Background(), "system": sysCtx()} {
-		if _, _, err := w.s.Create(ctx, "x"); !errors.Is(err, ErrNoUser) {
+		if _, _, err := w.s.Create(ctx, "x", 0); !errors.Is(err, ErrNoUser) {
 			t.Errorf("%s Create: %v", name, err)
 		}
 		if _, err := w.s.List(ctx); !errors.Is(err, ErrNoUser) {
@@ -314,10 +315,10 @@ func TestManagementNeedsAUserPrincipal(t *testing.T) {
 			t.Errorf("%s Revoke: %v", name, err)
 		}
 	}
-	if _, _, err := w.s.Create(as(w.a, authz.RoleMember), strings.Repeat("é", MaxNameLen+1)); !errors.Is(err, ErrNameTooLong) {
+	if _, _, err := w.s.Create(as(w.a, authz.RoleMember), strings.Repeat("é", MaxNameLen+1), 0); !errors.Is(err, ErrNameTooLong) {
 		t.Errorf("an over-long name: %v", err)
 	}
-	if _, _, err := w.s.Create(as(w.a, authz.RoleMember), strings.Repeat("é", MaxNameLen)); err != nil {
+	if _, _, err := w.s.Create(as(w.a, authz.RoleMember), strings.Repeat("é", MaxNameLen), 0); err != nil {
 		t.Errorf("a name of exactly %d characters: %v", MaxNameLen, err)
 	}
 }
@@ -326,7 +327,7 @@ func TestManagementNeedsAUserPrincipal(t *testing.T) {
 // within LastUsedGranularity does not rewrite it; a use after it does.
 func TestLastUsedIsStampedAndThrottled(t *testing.T) {
 	w := newWorld(t)
-	tok, rec, err := w.s.Create(as(w.a, authz.RoleMember), "a")
+	tok, rec, err := w.s.Create(as(w.a, authz.RoleMember), "a", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,46 +364,59 @@ func TestLastUsedIsStampedAndThrottled(t *testing.T) {
 	}
 }
 
-// TestAMintRacingADisableNeverSurvivesIt (review round 3). The window: a
-// disable has RUN its revoke statement but not committed, and a mint inserts
-// meanwhile — that token was not there to be revoked, so it came back on
-// re-enable. The test holds the real disable (users.SetDisabledAs) inside that
-// window by locking audit_log, which the disable writes to AFTER its revoke;
-// then starts a mint, releases, re-enables, and requires the minted token to
-// be refused — the mint failed, or its token is revoked — never live.
-func TestAMintRacingADisableNeverSurvivesIt(t *testing.T) {
-	w := newWorld(t)
+// lockWatch is a login-role connection that can LOCK a table (the application
+// role cannot) and count sessions waiting on a lock in this database.
+type lockWatch struct {
+	t    *testing.T
+	conn *pgx.Conn
+}
+
+func newLockWatch(t *testing.T) *lockWatch {
+	t.Helper()
+	conn, err := pgx.Connect(context.Background(), dbtest.DSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	return &lockWatch{t: t, conn: conn}
+}
+
+func (l *lockWatch) waiting() int {
+	var n int
+	if err := l.conn.QueryRow(context.Background(), `SELECT count(*) FROM pg_stat_activity
+		WHERE datname = current_database() AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()`).Scan(&n); err != nil {
+		l.t.Fatal(err)
+	}
+	return n
+}
+
+// until waits for at least n sessions to be blocked on a lock.
+func (l *lockWatch) until(n int, what string) {
+	l.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for l.waiting() < n {
+		if time.Now().After(deadline) {
+			l.t.Fatalf("timed out waiting for %s (%d lock waiter(s))", what, l.waiting())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// raceMintAgainstDisable holds the REAL disable (users.SetDisabledAs) of w.a
+// in flight by locking a table it writes to mid-transaction, starts a mint as
+// w.a, releases, and re-enables. The disable must succeed, and the minted
+// token must not be live: the mint failed ErrUserDisabled, or its token is
+// revoked.
+func raceMintAgainstDisable(t *testing.T, w world, role authz.Role, lockTable string) {
+	t.Helper()
 	ctx := context.Background()
-	dsn := dbtest.DSN(t)
-	blocker, err := pgx.Connect(ctx, dsn) // the login role: may LOCK the table
+	lw := newLockWatch(t)
+	btx, err := lw.conn.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer blocker.Close(ctx)
-	btx, err := blocker.Begin(ctx)
-	if err != nil {
+	if _, err := btx.Exec(ctx, `LOCK TABLE `+lockTable+` IN ACCESS EXCLUSIVE MODE`); err != nil {
 		t.Fatal(err)
-	}
-	if _, err := btx.Exec(ctx, `LOCK TABLE audit_log IN ACCESS EXCLUSIVE MODE`); err != nil {
-		t.Fatal(err)
-	}
-	waiting := func() int {
-		var n int
-		if err := blocker.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity
-			WHERE datname = current_database() AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()`).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		return n
-	}
-	until := func(n int, what string) {
-		t.Helper()
-		deadline := time.Now().Add(10 * time.Second)
-		for waiting() < n {
-			if time.Now().After(deadline) {
-				t.Fatalf("timed out waiting for %s (%d lock waiter(s))", what, waiting())
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
 	}
 	us := users.NewPG(w.pool)
 	disabled := make(chan error, 1)
@@ -410,24 +424,28 @@ func TestAMintRacingADisableNeverSurvivesIt(t *testing.T) {
 		_, err := us.SetDisabledAs(ctx, &users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, w.a, true)
 		disabled <- err
 	}()
-	until(1, "the disable to block on audit_log (its revoke has run)")
+	lw.until(1, "the disable to block on "+lockTable)
 	type minted struct {
 		tok string
 		err error
 	}
 	mintc := make(chan minted, 1)
 	go func() {
-		tok, _, err := w.s.Create(as(w.a, authz.RoleMember), "racer")
+		tok, _, err := w.s.Create(as(w.a, role), "racer", 0)
 		mintc <- minted{tok, err}
 	}()
-	until(2, "the mint to block")
+	lw.until(2, "the mint to block")
 	if err := btx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if err := <-disabled; err != nil {
-		t.Fatalf("the disable: %v", err)
+		t.Fatalf("the disable FAILED: %v (a deadlock against the mint leaves the user enabled)", err)
 	}
 	m := <-mintc
+	var isDisabled bool
+	if err := w.pool.QueryRow(sysCtx(), `SELECT disabled_at IS NOT NULL FROM users WHERE id = $1`, w.a).Scan(&isDisabled); err != nil || !isDisabled {
+		t.Fatalf("after the disable returned, the user is disabled = %v (%v)", isDisabled, err)
+	}
 	if _, err := us.SetDisabled(ctx, w.a, false); err != nil {
 		t.Fatal(err)
 	}
@@ -439,5 +457,160 @@ func TestAMintRacingADisableNeverSurvivesIt(t *testing.T) {
 	}
 	if _, err := w.s.Authenticate(sysCtx(), m.tok); !errors.Is(err, ErrBadToken) {
 		t.Fatalf("a token minted while a disable was in flight is LIVE after re-enable (%v); it must be refused or revoked", err)
+	}
+}
+
+// TestAMintRacingADisableNeverSurvivesIt (review round 3). The window: a
+// disable has RUN its revoke statement but not committed, and a mint inserts
+// meanwhile — that token was not there to be revoked, so it came back on
+// re-enable. audit_log is what the disable writes AFTER its revoke, so locking
+// it holds the disable inside that window. A MEMBER target.
+func TestAMintRacingADisableNeverSurvivesIt(t *testing.T) {
+	raceMintAgainstDisable(t, newWorld(t), authz.RoleMember, "audit_log")
+}
+
+// TestAMintRacingAnAdminsDisableDoesNotDeadlock (review round 4). An ADMIN
+// target: the disable's last-admin guard takes FOR UPDATE on every enabled
+// admin row — the target's included — and the mint's INSERT needs FOR KEY
+// SHARE on that row (its foreign key) while holding the credentials lock. With
+// the disable locking rows BEFORE the credentials lock, the two deadlocked:
+// Postgres killed the disable (SQLSTATE 40P01), the user stayed enabled and
+// the minted token was live. `invites` is what the disable touches after its
+// row locks, so locking it holds the disable there while the mint queues.
+func TestAMintRacingAnAdminsDisableDoesNotDeadlock(t *testing.T) {
+	w := newWorld(t)
+	if _, err := w.pool.Exec(sysCtx(), `UPDATE users SET role = 'admin' WHERE id = $1`, w.a); err != nil {
+		t.Fatal(err)
+	}
+	raceMintAgainstDisable(t, w, authz.RoleAdmin, "invites")
+}
+
+// TestTheCutoffIsStampedAfterTheCredentialsLockWait (review round 4): the
+// session cutoff a disable or a reset stamps must be taken AFTER the wait for
+// the credentials lock, or a session issued during that wait postdates the
+// cutoff and survives. The test holds the lock, lets the writer queue behind
+// it, reads the database clock, releases — and the cutoff must not be earlier
+// than that reading.
+func TestTheCutoffIsStampedAfterTheCredentialsLockWait(t *testing.T) {
+	for name, write := range map[string]func(*users.PGStore, int64) (time.Time, error){
+		"disable": func(us *users.PGStore, id int64) (time.Time, error) {
+			u, err := us.SetDisabledAs(context.Background(), nil, id, true)
+			if err != nil || u.SessionsNotBefore == nil {
+				return time.Time{}, err
+			}
+			return *u.SessionsNotBefore, nil
+		},
+		"reset": func(us *users.PGStore, id int64) (time.Time, error) {
+			return us.ResetCredentials(context.Background(), id)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := newWorld(t)
+			lw := newLockWatch(t)
+			hold, err := w.pool.Begin(sysCtx())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = hold.Rollback(context.Background()) }()
+			if err := users.LockCredentialsTx(sysCtx(), hold, w.a); err != nil {
+				t.Fatal(err)
+			}
+			type res struct {
+				cut time.Time
+				err error
+			}
+			done := make(chan res, 1)
+			go func() {
+				cut, err := write(users.NewPG(w.pool), w.a)
+				done <- res{cut, err}
+			}()
+			lw.until(1, "the "+name+" to queue behind the credentials lock")
+			time.Sleep(50 * time.Millisecond)
+			var mark time.Time
+			if err := lw.conn.QueryRow(context.Background(), `SELECT clock_timestamp()`).Scan(&mark); err != nil {
+				t.Fatal(err)
+			}
+			if err := hold.Commit(sysCtx()); err != nil {
+				t.Fatal(err)
+			}
+			r := <-done
+			if r.err != nil || r.cut.IsZero() {
+				t.Fatalf("the %s: cutoff %v, %v", name, r.cut, r.err)
+			}
+			if r.cut.Before(mark) {
+				t.Fatalf("the %s stamped its session cutoff %v BEFORE it stopped waiting for the credentials lock (still waiting at %v)",
+					name, r.cut.Format(time.RFC3339Nano), mark.Format(time.RFC3339Nano))
+			}
+		})
+	}
+}
+
+// TestAMintQueuedBehindAResetIsRefused (review round 4): a reset revokes the
+// tokens but leaves the user ENABLED, so a mint queued behind it used to
+// insert a live token. The mint carries its session's issued-at, and under the
+// credentials lock a session issued at or before the cutoff is refused — the
+// session tier's own rule. The session the reset signs in (issued after the
+// cutoff's second) can mint.
+func TestAMintQueuedBehindAResetIsRefused(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	lw := newLockWatch(t)
+	oldSession := time.Now().Add(-time.Minute).Unix() // a session from before the reset
+	btx, err := lw.conn.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The reset's revoke writes api_tokens; locking it holds the reset in
+	// flight, AFTER it moved the cutoff and while it holds the credentials lock.
+	if _, err := btx.Exec(ctx, `LOCK TABLE api_tokens IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	type reset struct {
+		cut time.Time
+		err error
+	}
+	resetc := make(chan reset, 1)
+	go func() {
+		cut, err := users.NewPG(w.pool).ResetCredentials(ctx, w.a)
+		resetc <- reset{cut, err}
+	}()
+	lw.until(1, "the reset to block on api_tokens")
+	type minted struct {
+		tok string
+		err error
+	}
+	mintc := make(chan minted, 1)
+	go func() {
+		tok, _, err := w.s.Create(as(w.a, authz.RoleMember), "queued", oldSession)
+		mintc <- minted{tok, err}
+	}()
+	lw.until(2, "the mint to queue behind the reset")
+	if err := btx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	r := <-resetc
+	if r.err != nil {
+		t.Fatalf("the reset: %v", r.err)
+	}
+	m := <-mintc
+	if !errors.Is(m.err, ErrSessionEnded) {
+		live := "no token"
+		if m.err == nil {
+			_, aerr := w.s.Authenticate(sysCtx(), m.tok)
+			live = fmt.Sprintf("a token whose Authenticate is %v", aerr)
+		}
+		t.Fatalf("a mint by a pre-reset session, queued behind the reset: %v (%s); want ErrSessionEnded", m.err, live)
+	}
+	// The boundary: a session stamped with the cutoff's own second is refused
+	// (the session tier's rule); the next second's is the post-reset session.
+	if _, _, err := w.s.Create(as(w.a, authz.RoleMember), "same-second", r.cut.Unix()); !errors.Is(err, ErrSessionEnded) {
+		t.Fatalf("a session issued in the cutoff's own second: %v; want ErrSessionEnded", err)
+	}
+	tok, _, err := w.s.Create(as(w.a, authz.RoleMember), "after-reset", r.cut.Unix()+1)
+	if err != nil {
+		t.Fatalf("the POST-reset session cannot mint: %v", err)
+	}
+	if _, err := w.s.Authenticate(sysCtx(), tok); err != nil {
+		t.Fatalf("the post-reset session's token: %v", err)
 	}
 }
