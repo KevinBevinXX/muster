@@ -330,8 +330,15 @@ func TestGateSpecUsesTheWireSpelling(t *testing.T) {
 		w.Write([]byte(`{"requestId":"x"}`)) //nolint:errcheck
 	})
 	if _, err := c.MintGate(context.Background(),
-		GateSpec{Type: "checkpoint", SessionID: "sess-1"}); err != nil {
+		GateSpec{Type: "agent-permission", Project: "muster-agent/bold-hawk", SessionID: "sess-1"}); err != nil {
 		t.Fatal(err)
+	}
+	// The type and project travel verbatim: the router allowlists the type and
+	// matches an auto-approve window on the exact project.
+	for _, want := range []string{`"type":"agent-permission"`, `"project":"muster-agent/bold-hawk"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the gate body does not carry %s: %s", want, body)
+		}
 	}
 	if !strings.Contains(body, `"sessionId":"sess-1"`) {
 		t.Errorf("the gate body does not carry `sessionId`: %s\n"+

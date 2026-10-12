@@ -146,7 +146,7 @@ func (s *Server) handleAgentTerminalWS(w http.ResponseWriter, r *http.Request) {
 // it; the process would exit with the handler mid-bridge and the release that
 // ends the client in the agent's pod would never run.
 func (s *Server) EndTerminals(timeout time.Duration) bool {
-	return s.terminals.endAll(s.logger, timeout)
+	return s.terminals.endAll(s.logger, time.After(timeout))
 }
 
 // terminalSet tracks live terminals. The zero value is ready to use.
@@ -184,7 +184,14 @@ func (t *terminalSet) add(parent context.Context) (ctx context.Context, done fun
 	}, true
 }
 
-func (t *terminalSet) endAll(logger *log.Logger, timeout time.Duration) bool {
+// endAll cancels every registered terminal, refuses new ones, and waits for
+// their handlers to return until giveUp delivers. It reports whether they all
+// returned first.
+//
+// giveUp is a channel rather than a duration so a test can decide WHEN the
+// budget runs out instead of racing a wall-clock timer against the scheduler;
+// EndTerminals is the one production caller and passes time.After.
+func (t *terminalSet) endAll(logger *log.Logger, giveUp <-chan time.Time) bool {
 	t.mu.Lock()
 	t.closed = true
 	for _, cancel := range t.cancels {
@@ -199,7 +206,7 @@ func (t *terminalSet) endAll(logger *log.Logger, timeout time.Duration) bool {
 	select {
 	case <-finished:
 		return true
-	case <-time.After(timeout):
+	case <-giveUp:
 		return false
 	}
 }
