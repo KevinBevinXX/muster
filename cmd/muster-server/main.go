@@ -342,7 +342,8 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	}
 	// Shutdown waits for active connections and an SSE stream never goes idle,
 	// so streams are ended the moment the drain begins — see api.EndStreams.
-	// Pinned by TestShutdownDoesNotWaitOutAnOpenEventStream.
+	// Pinned by TestShutdownDoesNotWaitOutAnOpenEventStream; that ONLY streams end,
+	// by TestShutdownEndsStreamsButLetsAnOrdinaryRequestFinish.
 	a.http.RegisterOnShutdown(srv.EndStreams)
 	if cfg.ConnectPort != 0 {
 		a.connect = &http.Server{

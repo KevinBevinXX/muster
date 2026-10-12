@@ -5,7 +5,9 @@ import (
 	"sync"
 )
 
-// EndStreams ends every open server-sent-event stream, and any opened after it.
+// EndStreams ends every server-sent-event stream this package's own handlers
+// serve, and any opened after it — not one relayed by the /connect/ proxy (see
+// the open residual below).
 // It is idempotent and safe to call concurrently. cmd/muster-server registers it
 // with http.Server.RegisterOnShutdown, so it runs the moment Shutdown begins.
 //
@@ -23,6 +25,20 @@ import (
 // turning the drain into an abort for the ordinary requests it exists to let
 // finish. A stream has no "finished" state to drain to, so ending it loses
 // nothing: the EventSource reconnects to whichever process answers next.
+// Pinned by cmd/muster-server's TestShutdownEndsStreamsButLetsAnOrdinaryRequestFinish.
+//
+// 🔴 OPEN RESIDUAL: A STREAM PROXIED THROUGH /connect/ STILL HOLDS THE DRAIN.
+// "Every stream" here means the handlers in THIS package that answer
+// text/event-stream themselves. connectors.Proxy.Serve is a ReverseProxy on the
+// request's own context, so a long-lived upstream response relayed through
+// /connect/{connector}/… is an active connection EndStreams does not end — and
+// that route is served by the main listener as well as the connect one. Such a
+// request still costs a shutdown the whole drain budget — MEASURED at `f44c849`
+// at component level (connectors.Proxy behind a plain http.Server, a fake
+// upstream holding a text/event-stream open): Shutdown ran to its 10 s deadline,
+// against 0 s with no stream; not measured through the built binary. Deliberately not closed
+// here: the proxy also carries ordinary requests the drain must let finish, so
+// ending it needs a way to tell the two apart.
 //
 // It is a second registry beside terminalSet deliberately, not a missed reuse:
 // terminalSet.endAll also refuses new entries and waits for each release, and
@@ -32,9 +48,10 @@ func (s *Server) EndStreams() { s.streams.end() }
 // streamContext returns a context for an SSE handler's loop: parent's, also
 // cancelled by EndStreams. The caller must call cancel when the handler returns.
 //
-// Every handler that answers text/event-stream must take its loop's context
-// from here rather than from r.Context() — TestEveryEventStreamHandlerEndsOnShutdown
-// holds that as a ledger.
+// Every handler in this package that sets the literal "text/event-stream" must
+// take its loop's context from here rather than from r.Context() —
+// TestEveryEventStreamHandlerEndsOnShutdown holds that as a ledger, and that is
+// all it sees: a stream relayed by a proxy sets no such literal.
 func (s *Server) streamContext(parent context.Context) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(parent)
 	// AfterFunc, not a watcher goroutine: nothing runs per stream until the end

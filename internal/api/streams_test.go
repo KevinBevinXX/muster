@@ -13,16 +13,21 @@ import (
 	"time"
 )
 
-// TestEveryEventStreamHandlerEndsOnShutdown is a LEDGER over the handlers that
-// answer text/event-stream: each must take its loop's context from
-// streamContext, or it holds http.Server.Shutdown open for the whole drain
-// budget (see EndStreams). It fails when the set GROWS — a new stream handler
-// must be added here deliberately — or SHRINKS, and when any member does not
-// call streamContext.
+// TestEveryEventStreamHandlerEndsOnShutdown is a LEDGER over the functions in
+// package api whose body sets the literal "text/event-stream": each must take
+// its loop's context from streamContext, or it holds http.Server.Shutdown open
+// for the whole drain budget (see EndStreams). It fails when the set GROWS — a
+// new stream handler must be added here deliberately — or SHRINKS, and when any
+// member does not call streamContext.
 //
-// ⚠ It is structural. The behavioural proof for /events is
-// cmd/muster-server's TestShutdownDoesNotWaitOutAnOpenEventStream; the agent
-// log stream needs a provisioner to reach and is covered by this ledger only.
+// ⚠ THAT IS ITS WHOLE REACH, AND IT IS NARROWER THAN "EVERY STREAM THIS SERVER
+// CAN HOLD OPEN". It reads one package for one literal. A stream relayed through
+// the /connect/ reverse proxy (internal/connectors) sets no such literal and is
+// invisible here — the open residual EndStreams' doc names.
+//
+// It is structural. The behavioural proof for /events is cmd/muster-server's
+// TestShutdownDoesNotWaitOutAnOpenEventStream; the agent log stream needs a
+// provisioner to reach and is covered by this ledger only.
 func TestEveryEventStreamHandlerEndsOnShutdown(t *testing.T) {
 	want := []string{"handleAgentLogsStream", "handleEvents"}
 
@@ -61,7 +66,7 @@ func TestEveryEventStreamHandlerEndsOnShutdown(t *testing.T) {
 	}
 	sort.Strings(got)
 	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Errorf("handlers answering text/event-stream = %v, want %v — a new stream handler must "+
+		t.Errorf("package api functions setting the literal text/event-stream = %v, want %v — a new stream handler must "+
 			"end on shutdown (take its context from s.streamContext) and be added here", got, want)
 	}
 	if len(missing) > 0 {
