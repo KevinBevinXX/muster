@@ -23,7 +23,7 @@ import (
 )
 
 // The step-up gate, end to end through the real GoTrue session tier (over the
-// fake GoTrue, whose `amr` follows what v2.189.0 was measured to do): a mirrored
+// fake GoTrue, whose `amr` follows what v2.189.0 and v2.197.0 were measured to do): a mirrored
 // terminal attaches INTERACTIVELY only on a session that signed in within
 // stepup.MaxAge, and POST /auth/confirm is how a stale one becomes fresh.
 

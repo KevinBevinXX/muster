@@ -645,7 +645,7 @@ func (w *invWorld) joinMember(email string) (int64, string, string, string) {
 }
 
 // TestEnablingDoesNotResurrectOldSessions (audit Y1): GoTrue accepts a
-// pre-ban refresh token again once the ban is lifted (measured on v2.189.0;
+// pre-ban refresh token again once the ban is lifted (measured on v2.189.0 and v2.197.0;
 // the fake models it). Disable → enable must NOT hand the old session back:
 // neither its still-valid access token nor, once that expires, a refresh from
 // it. A sign-in made after the enable works.

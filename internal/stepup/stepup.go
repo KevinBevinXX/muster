@@ -12,7 +12,7 @@
 // 🔴 THE TIME IS THE SIGN-IN'S, NEVER THE TOKEN'S. A GoTrue access token is
 // re-minted by every refresh, so its `iat` says nothing about when the person
 // last typed a password; its `amr` timestamp does (gotrue.Claims.
-// AuthenticatedAt, measured on v2.189.0). In password mode it is the session
+// AuthenticatedAt, measured on v2.189.0 and v2.197.0). In password mode it is the session
 // cookie's issue time, which only a sign-in mints.
 //
 // 🔴 UNKNOWN IS STALE. A context with no authentication time — a token without

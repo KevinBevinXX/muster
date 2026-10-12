@@ -228,7 +228,7 @@ func goodPayload(amr any) map[string]any {
 	return p
 }
 
-// TestAMRIsReadAsTheLatestSignIn: GoTrue's measured shape (v2.189.0:
+// TestAMRIsReadAsTheLatestSignIn: GoTrue's measured shape (v2.189.0 and v2.197.0:
 // [{"method":"password","timestamp":…}]) yields its timestamp; several entries
 // (a password and a later passkey/MFA step) yield the LATEST, whatever the
 // method — the timestamps below are pairwise distinct and none is the token's

@@ -104,7 +104,7 @@ type AMREntry struct {
 
 // AMR is GoTrue's `amr` claim.
 //
-// MEASURED on GoTrue v2.189.0 (the deployment's pin): a password grant mints
+// MEASURED on GoTrue v2.189.0 and again on v2.197.0: a password grant mints
 // `[{"method":"password","timestamp":<sign-in second>}]`, and a refresh grant
 // carries the SAME entry forward unchanged while `iat` moves on — so the
 // timestamp is when the person last proved who they are, not when this token
