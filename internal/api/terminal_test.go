@@ -55,9 +55,21 @@ type fakeTerminal struct {
 
 	refuse    error // returned at once, before any output
 	exitAfter bool  // write a banner, then return nil (the client exited)
-	// release, when set, is waited for after ctx ends and before returning —
-	// the adapter's release of the pod-side client happens in that interval.
-	release chan struct{}
+	// release, when set, is waited for before returning on EVERY exit path
+	// once attached — the adapter's release of the pod-side client happens in
+	// that interval, and the adapter runs it whatever ended the attach
+	// (agentprovision.Adapter.AttachTerminal). Each attach that reaches its
+	// release announces it on releasing first.
+	//
+	// 🔴 "EVERY EXIT PATH" IS THE POINT. This fake used to wait for release only
+	// in its main loop, so an attach whose context ended while its banner write
+	// was still in flight returned AT ONCE, with no release — and the browser
+	// is told "ready" BEFORE that write finishes (terminalWriter.Write), so a
+	// test that ended terminals right after reading "ready" raced it. That was
+	// the whole flake in both TestEndTerminals* tests: the fake skipping a
+	// release the real adapter never skips.
+	release   chan struct{}
+	releasing chan struct{}
 
 	mu     sync.Mutex
 	calls  []termCall
@@ -68,7 +80,9 @@ type fakeTerminal struct {
 	event  chan struct{}
 }
 
-func newFakeTerminal() *fakeTerminal { return &fakeTerminal{event: make(chan struct{}, 64)} }
+func newFakeTerminal() *fakeTerminal {
+	return &fakeTerminal{event: make(chan struct{}, 64), releasing: make(chan struct{}, 64)}
+}
 
 func (f *fakeTerminal) signal() {
 	select {
@@ -89,6 +103,13 @@ func (f *fakeTerminal) AttachTerminal(ctx context.Context, a agents.Agent, readO
 	f.active++
 	f.mu.Unlock()
 	defer func() {
+		if f.release != nil {
+			select {
+			case f.releasing <- struct{}{}:
+			default:
+			}
+			<-f.release
+		}
 		f.mu.Lock()
 		f.active--
 		f.ended++
@@ -120,9 +141,6 @@ func (f *fakeTerminal) AttachTerminal(ctx context.Context, a agents.Agent, readO
 	for {
 		select {
 		case <-ctx.Done():
-			if f.release != nil {
-				<-f.release
-			}
 			return ctx.Err()
 		case sz := <-resize:
 			f.mu.Lock()
@@ -510,6 +528,35 @@ func TestClosingTheTerminalSocketEndsTheExecAndLeaksNothing(t *testing.T) {
 	t.Fatalf("goroutines grew from %d to %d over 6 attach/close cycles", baseline, n)
 }
 
+// terminalTestWatchdog bounds a wait for something that MUST happen. It is a
+// hang detector, not a budget: nothing passes or fails by how long it took,
+// only by whether it happened at all, so host load cannot turn it red.
+const terminalTestWatchdog = 30 * time.Second
+
+// terminalTestGrace is how long a test watches for something that must NOT
+// happen yet. Load can only make the forbidden thing later, so this can fail
+// only when the behaviour is really broken — never spuriously.
+const terminalTestGrace = 50 * time.Millisecond
+
+// awaitReleasing waits for one attach to reach its release: its context has
+// ended and it is now held open until ft.release is closed.
+func (f *fakeTerminal) awaitReleasing(t *testing.T) {
+	t.Helper()
+	select {
+	case <-f.releasing:
+	case <-time.After(terminalTestWatchdog):
+		_, _, _, active, ended := f.snapshot()
+		t.Fatalf("the terminal was never ended: its attach did not reach its release (active=%d ended=%d)", active, ended)
+	}
+}
+
+// endTerminalsResult is what an EndTerminals call returned and what the fake
+// looked like AT THAT MOMENT.
+type endTerminalsResult struct {
+	ok            bool
+	active, ended int
+}
+
 // TestEndTerminalsEndsALiveTerminalAndWaitsForItsRelease: a shutdown cancels
 // an open terminal — whose socket is hijacked, so http.Server.Shutdown would
 // neither end nor wait for it — and returns only once its attach has returned,
@@ -526,28 +573,37 @@ func TestEndTerminalsEndsALiveTerminalAndWaitsForItsRelease(t *testing.T) {
 	defer c.CloseNow()
 	readUntil(t, c, "ready")
 
-	ended := make(chan bool, 1)
-	go func() { ended <- s.EndTerminals(5 * time.Second) }()
+	// An hour: this test is about waiting, so the budget must never be what
+	// ends the call. The give-up path has its own test below.
+	returned := make(chan endTerminalsResult, 1)
+	go func() {
+		ok := s.EndTerminals(time.Hour)
+		_, _, _, active, ended := ft.snapshot()
+		returned <- endTerminalsResult{ok: ok, active: active, ended: ended}
+	}()
 	// The attach sees its context end and then "releases" until ft.release is
-	// closed: EndTerminals must still be waiting. (Had it not cancelled the
-	// terminal at all, it would time out below and report false.)
-	time.Sleep(200 * time.Millisecond)
+	// closed. Reaching the release is the proof EndTerminals cancelled it.
+	ft.awaitReleasing(t)
+	// ...and EndTerminals must still be waiting.
 	select {
-	case <-ended:
+	case <-returned:
 		t.Fatal("EndTerminals returned while the terminal was still releasing")
-	default:
+	case <-time.After(terminalTestGrace):
 	}
 	close(ft.release)
 	select {
-	case ok := <-ended:
-		if !ok {
+	case got := <-returned:
+		if !got.ok {
 			t.Fatal("EndTerminals reported a timeout for a terminal that ended")
 		}
-	case <-time.After(5 * time.Second):
+		// Read the instant it returned, not after: an EndTerminals that
+		// returns without waiting is caught here even if it was scheduled too
+		// late for the grace window above.
+		if got.active != 0 || got.ended != 1 {
+			t.Fatalf("when EndTerminals returned: active=%d ended=%d, want 0 and 1 (it did not wait for the release)", got.active, got.ended)
+		}
+	case <-time.After(terminalTestWatchdog):
 		t.Fatal("EndTerminals did not return after the terminal ended")
-	}
-	if _, _, _, active, ended := ft.snapshot(); active != 0 || ended != 1 {
-		t.Fatalf("after EndTerminals: active=%d ended=%d, want 0 and 1", active, ended)
 	}
 
 	callsBefore, _, _, _, _ := ft.snapshot()
@@ -556,7 +612,7 @@ func TestEndTerminalsEndsALiveTerminalAndWaitsForItsRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c2.CloseNow()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), terminalTestWatchdog)
 	defer cancel()
 	if _, _, err := c2.Read(ctx); websocket.CloseStatus(err) != websocket.StatusGoingAway {
 		t.Fatalf("a terminal opened during shutdown: want close %v, got %v", websocket.StatusGoingAway, err)
@@ -568,6 +624,15 @@ func TestEndTerminalsEndsALiveTerminalAndWaitsForItsRelease(t *testing.T) {
 
 // TestEndTerminalsGivesUpAtItsTimeout: a terminal whose release never finishes
 // does not hold the shutdown past its budget, and the result says so.
+//
+// The budget running out is driven by the test (terminalSet.endAll's giveUp),
+// so "at its timeout" is asserted as an ORDER — still waiting before it, false
+// right after it — rather than as a duration measured on a loaded host. The
+// last step goes through EndTerminals itself, with a real timer, because the
+// duration-to-timer wiring lives there and nowhere else: EndTerminals(1ms)
+// must return false within 2s, which is what "not past its budget" means for
+// the exported call (a wrapper that stretched the timeout would pass the
+// order checks above).
 func TestEndTerminalsGivesUpAtItsTimeout(t *testing.T) {
 	ft := newFakeTerminal()
 	ft.release = make(chan struct{})
@@ -579,11 +644,47 @@ func TestEndTerminalsGivesUpAtItsTimeout(t *testing.T) {
 	}
 	defer c.CloseNow()
 	readUntil(t, c, "ready")
-	start := time.Now()
-	if s.EndTerminals(150 * time.Millisecond) {
-		t.Fatal("EndTerminals reported success for a terminal still releasing")
+
+	giveUp := make(chan time.Time)
+	returned := make(chan bool, 1)
+	go func() { returned <- s.terminals.endAll(s.logger, giveUp) }()
+	ft.awaitReleasing(t)
+	select {
+	case ok := <-returned:
+		t.Fatalf("EndTerminals returned %t before its timeout, for a terminal still releasing", ok)
+	case <-time.After(terminalTestGrace):
 	}
-	if d := time.Since(start); d > 2*time.Second {
-		t.Fatalf("EndTerminals took %s against a 150ms budget", d)
+	select {
+	case giveUp <- time.Now():
+	case ok := <-returned:
+		t.Fatalf("EndTerminals returned %t before its timeout, for a terminal still releasing", ok)
+	case <-time.After(terminalTestWatchdog):
+		t.Fatal("EndTerminals was not waiting on its timeout")
+	}
+	select {
+	case ok := <-returned:
+		if ok {
+			t.Fatal("EndTerminals reported success for a terminal still releasing")
+		}
+	case <-time.After(terminalTestWatchdog):
+		t.Fatal("EndTerminals did not give up at its timeout")
+	}
+
+	// The same terminal is still releasing: the exported call, on a real
+	// timer, must also give up, say so, and do it PROMPTLY — the wrapper is
+	// where the duration becomes a timer, so a budget it stretches is caught
+	// only here. 2s against 1ms leaves three orders of magnitude for load.
+	start := time.Now()
+	go func() { returned <- s.EndTerminals(time.Millisecond) }()
+	select {
+	case ok := <-returned:
+		if ok {
+			t.Fatal("EndTerminals(1ms) reported success for a terminal still releasing")
+		}
+		if d := time.Since(start); d > 2*time.Second {
+			t.Fatalf("EndTerminals(1ms) took %s: it held the shutdown past its budget", d)
+		}
+	case <-time.After(terminalTestWatchdog):
+		t.Fatal("EndTerminals(1ms) did not give up: its timeout is not wired to the drain")
 	}
 }
