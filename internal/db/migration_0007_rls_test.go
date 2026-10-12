@@ -443,6 +443,18 @@ func TestSystemWritesChildRowsAsTheParentsOwner(t *testing.T) {
 	if got := count(t, f.mig, f.pool, "note_comments", "WHERE note_id=$1 AND owner_id=$2", n.ID, f.two); got != 1 {
 		t.Errorf("a System comment on user %d's task: %d rows owned by them; want 1", f.two, got)
 	}
+	if _, _, err := ns.LinkSession(sys, n.ID, notes.SessionLink{SessionID: "sys-session", Role: "read"}, false); err != nil {
+		t.Fatalf("System LinkSession: %v", err)
+	}
+	if got := count(t, f.mig, f.pool, "task_sessions", "WHERE note_id=$1 AND owner_id=$2", n.ID, f.two); got != 1 {
+		t.Errorf("a System session link on user %d's task: %d rows owned by them; want 1", f.two, got)
+	}
+	if _, err := ns.AddAttachment(sys, n.ID, notes.Attachment{Filename: "s.txt", ContentType: "text/plain", SizeBytes: 1, Data: []byte("s")}); err != nil {
+		t.Fatalf("System AddAttachment: %v", err)
+	}
+	if got := count(t, f.mig, f.pool, "note_attachments", "WHERE note_id=$1 AND owner_id=$2", n.ID, f.two); got != 1 {
+		t.Errorf("a System attachment on user %d's task: %d rows owned by them; want 1", f.two, got)
+	}
 	// Control: user 1 cannot attach a comment to user 2's task (it cannot see it).
 	if _, err := ns.AddComment(asUser(f.base, 1), notes.Comment{NoteID: n.ID, Author: "op", Body: "y"}); err == nil {
 		t.Errorf("user 1 commented on user %d's task", f.two)
@@ -502,5 +514,30 @@ func TestRLSOffAndOnRoundTrip(t *testing.T) {
 	}
 	if got := count(t, asUser(f.base, 1), f.pool, "notes", ""); got != 2 {
 		t.Errorf("RLS back on: user 1 sees %d notes; want 2", got)
+	}
+}
+
+// TestMigrateRunsFromABareContext: muster-server and muster-migrate call
+// db.Migrate with a context that carries NO principal, against a database
+// 0007 may not have reached (the application role may not even exist). Migrate
+// must act as the migrator on its own — the login role, every row — or a
+// fresh database could never be migrated.
+func TestMigrateRunsFromABareContext(t *testing.T) {
+	mig := ctx0006(t)
+	pool, err := db.Connect(mig, scratchDatabase(mig, t, "ms_0007_bare_migrate", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	applyThrough(mig, t, pool, 6)
+	// Populated, so 0007 has rows to act on and a data step would see them.
+	scanID(mig, t, pool, `INSERT INTO notes (title) VALUES ('pre-0007') RETURNING id`)
+	bare, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err := db.Migrate(bare, pool, nil); err != nil {
+		t.Fatalf("db.Migrate from a bare context: %v", err)
+	}
+	if got := count(t, asUser(bare, 1), pool, "notes", ""); got != 1 {
+		t.Errorf("after migrating, user 1 sees %d notes; want 1", got)
 	}
 }

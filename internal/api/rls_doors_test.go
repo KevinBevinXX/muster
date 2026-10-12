@@ -206,3 +206,47 @@ type ownerlessAgents struct{ agents.Store }
 func (ownerlessAgents) GetByHooksToken(_ context.Context, tok string) (agents.Agent, error) {
 	return agents.Agent{ID: 9, Name: "ownerless"}, nil
 }
+
+// TestTheAgentReadyPushReadsItsAgentUnderRowLevelSecurity: notifyAgentRunning
+// is handed only a NAME (by request handlers and background loops alike) and
+// re-reads the row to decide whether to push "agent ready". Under row-level
+// security a no-principal read finds nothing and the push silently never
+// fires; it reads under authz.System. Observed through its dedupe mark, which
+// is set only once the row was read and qualified.
+func TestTheAgentReadyPushReadsItsAgentUnderRowLevelSecurity(t *testing.T) {
+	dsn := dbtest.DSN(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	t.Cleanup(cancel)
+	pool, err := db.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	op := dbtest.AsOperator(ctx)
+	suffix := time.Now().Format("150405.000000")
+	task, err := notes.NewPG(pool).Create(op, notes.Note{Title: "ready-push-" + suffix, Status: notes.StatusOpen})
+	if err != nil {
+		t.Fatal(err)
+	}
+	as := agents.NewPG(pool)
+	a, err := as.Create(op, agents.Agent{Name: "ready-push-" + suffix, Namespace: "ns-ready-push", NoteID: &task.ID, Status: agents.StatusRunning})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		bg := dbtest.AsOperator(context.Background())
+		_, _ = pool.Exec(bg, `DELETE FROM agents WHERE id=$1`, a.ID)
+		_, _ = pool.Exec(bg, `DELETE FROM notes WHERE id=$1`, task.ID)
+	})
+	s := New(nil, AuthConfig{}, log.New(io.Discard, "", 0))
+	s.UseExtensions(Extensions{Agents: as})
+	s.UseRouter(stubRouter{})
+	s.notifyAgentRunning(a.Name)
+	s.pushInFlight.Wait()
+	s.taskProvisionedMu.Lock()
+	fired := s.taskProvisionedNotified[a.ID]
+	s.taskProvisionedMu.Unlock()
+	if !fired {
+		t.Fatalf("the agent-ready push did not fire for running, task-linked agent %q: its row was not read", a.Name)
+	}
+}
