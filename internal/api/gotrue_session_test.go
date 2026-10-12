@@ -74,6 +74,21 @@ func (m *memUsers) BySub(_ context.Context, sub string) (users.User, error) {
 	return users.User{}, users.ErrNotFound
 }
 
+func (m *memUsers) DisabledAmong(_ context.Context, ids []int64) (map[int64]bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.lookupErr != nil {
+		return nil, m.lookupErr
+	}
+	out := map[int64]bool{}
+	for _, id := range ids {
+		if u, ok := m.rows[id]; ok {
+			out[id] = u.DisabledAt != nil
+		}
+	}
+	return out, nil
+}
+
 func (m *memUsers) ByID(_ context.Context, id int64) (users.User, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -47,75 +47,8 @@ const (
 	loginFailureWindow  = 10 * time.Minute
 )
 
-// backoff is one account's failure record.
-type backoff struct {
-	failures int
-	until    time.Time
-	last     time.Time
-}
-
 // normaliseAccount is the key an email is throttled under.
 func normaliseAccount(email string) string { return strings.ToLower(strings.TrimSpace(email)) }
-
-// loginThrottled reports whether a sign-in for account from ip must wait.
-// An empty account (the claim form) is limited by address only.
-func (g *gotrueState) loginThrottled(account, ip string) bool {
-	now := g.now()
-	if g.ipFailures.count(ip, now, loginFailureWindow) >= loginFailureLimit {
-		return true
-	}
-	if account == "" {
-		return false
-	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	b := g.accountFailures[account]
-	return b != nil && now.Before(b.until)
-}
-
-// loginFailed records a failure against account (if any) and ip.
-func (g *gotrueState) loginFailed(account, ip string) {
-	now := g.now()
-	g.ipFailures.add(ip, now, loginFailureWindow)
-	if account == "" {
-		return
-	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.accountFailures == nil {
-		g.accountFailures = map[string]*backoff{}
-	}
-	if len(g.accountFailures) > 10000 {
-		for k, b := range g.accountFailures {
-			if now.Sub(b.last) > time.Hour {
-				delete(g.accountFailures, k)
-			}
-		}
-	}
-	b := g.accountFailures[account]
-	if b == nil || now.Sub(b.last) > time.Hour {
-		b = &backoff{}
-		g.accountFailures[account] = b
-	}
-	b.failures++
-	b.last = now
-	if over := b.failures - accountFreeFailures; over > 0 {
-		d := accountBackoffMax
-		if over <= 20 {
-			if e := accountBackoffBase << (over - 1); e < accountBackoffMax {
-				d = e
-			}
-		}
-		b.until = now.Add(d)
-	}
-}
-
-// loginSucceeded clears account's failure record.
-func (g *gotrueState) loginSucceeded(account string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	delete(g.accountFailures, account)
-}
 
 // ClaimPath is the admin claim page. The token is NOT in the path: it rides
 // in the URL FRAGMENT (`/auth/claim#<token>`), which a browser never sends to
@@ -211,11 +144,17 @@ func (s *Server) handleGoTrueLoginSubmit(w http.ResponseWriter, r *http.Request)
 	next, email, password := r.FormValue("next"), strings.TrimSpace(r.FormValue("email")), r.FormValue("password")
 	ip := clientIP(r)
 	account := normaliseAccount(email)
-	if s.gt.loginThrottled(account, ip) {
+	// Reserved BEFORE GoTrue is asked (see signinLimiter): the attempt counts
+	// as a failure until settle says otherwise, and a second attempt at the
+	// same account while this one is in flight is refused here.
+	ticket, ok := s.gt.signin.reserve(account, ip, s.gt.now())
+	if !ok {
 		// 429, not 401: the credential was never judged.
 		s.renderGoTrueLogin(w, http.StatusTooManyRequests, next, email, "Too many attempts. Wait a few minutes and try again.")
 		return
 	}
+	outcome := outcomeUnjudged
+	defer func() { s.gt.signin.settle(ticket, outcome) }()
 	sess, err := s.gt.Client.PasswordGrant(r.Context(), ip, email, password)
 	if err != nil {
 		var ae *gotrue.APIError
@@ -223,7 +162,7 @@ func (s *Server) handleGoTrueLoginSubmit(w http.ResponseWriter, r *http.Request)
 		case errors.As(err, &ae) && ae.Status == http.StatusTooManyRequests:
 			s.renderGoTrueLogin(w, http.StatusTooManyRequests, next, email, "Too many attempts. Wait a few minutes and try again.")
 		case gotrue.IsClientError(err):
-			s.gt.loginFailed(account, ip)
+			outcome = outcomeFailed
 			s.logger.Printf("login: rejected a sign-in attempt from %s", ip)
 			s.renderGoTrueLogin(w, http.StatusUnauthorized, next, email, "That email and password do not match.")
 		default:
@@ -234,10 +173,13 @@ func (s *Server) handleGoTrueLoginSubmit(w http.ResponseWriter, r *http.Request)
 	}
 	u, problem, code := s.admitFreshSession(r.Context(), sess)
 	if problem != "" {
+		if code != http.StatusInternalServerError {
+			outcome = outcomeFailed // no muster account / disabled: still throttled
+		}
 		s.renderGoTrueLogin(w, code, next, email, problem)
 		return
 	}
-	s.gt.loginSucceeded(account)
+	outcome = outcomeSucceeded
 	s.setGoTrueCookies(w, sess)
 	s.logger.Printf("login: user %d signed in", u.ID)
 	http.Redirect(w, r, safeReturnTo(next), http.StatusSeeOther)
@@ -433,15 +375,18 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := clientIP(r)
-	if s.gt.loginThrottled("", ip) {
+	ticket, ok := s.gt.signin.reserve("", ip, s.gt.now())
+	if !ok {
 		s.renderNotice(w, http.StatusTooManyRequests, "Too many attempts", "Wait a few minutes and try again.")
 		return
 	}
+	outcome := outcomeUnjudged
+	defer func() { s.gt.signin.settle(ticket, outcome) }()
 	token := r.FormValue("token")
 	email := strings.TrimSpace(r.FormValue("email"))
 	pw, pw2 := r.FormValue("password"), r.FormValue("password2")
 	if token == "" {
-		s.gt.loginFailed("", ip)
+		outcome = outcomeFailed
 		s.renderInvalidClaim(w)
 		return
 	}
@@ -475,7 +420,7 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 		})
 	switch {
 	case errors.Is(err, users.ErrInvalidInvite):
-		s.gt.loginFailed("", ip)
+		outcome = outcomeFailed
 		s.renderInvalidClaim(w)
 		return
 	case err != nil && createErr != nil:
@@ -492,6 +437,7 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 		s.renderClaimForm(w, http.StatusInternalServerError, token, email, "The account could not be claimed. Try again.")
 		return
 	}
+	outcome = outcomeSucceeded
 	s.gt.forgetUser(u.ID)
 	s.logger.Printf("claim: user %d is now bound to a GoTrue login", u.ID)
 	// Prove the new login works before telling anyone it does.

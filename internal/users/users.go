@@ -138,6 +138,26 @@ func (s *PGStore) SetDisabled(ctx context.Context, id int64, disabled bool) (Use
 	return scanUser(s.pool.QueryRow(sys(ctx), q, id))
 }
 
+// DisabledAmong reports, for each of ids that exists, whether it is disabled,
+// in one query. An id with no row is absent from the result.
+func (s *PGStore) DisabledAmong(ctx context.Context, ids []int64) (map[int64]bool, error) {
+	rows, err := s.pool.Query(sys(ctx), `SELECT id, disabled_at IS NOT NULL FROM users WHERE id = ANY($1)`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[int64]bool, len(ids))
+	for rows.Next() {
+		var id int64
+		var disabled bool
+		if err := rows.Scan(&id, &disabled); err != nil {
+			return nil, err
+		}
+		out[id] = disabled
+	}
+	return out, rows.Err()
+}
+
 // CreateClaimInvite stores a single-use claim invite binding a future GoTrue
 // user to claimUserID, and REVOKES every earlier unredeemed claim invite for
 // that user — so exactly one claim link is live at a time.

@@ -13,6 +13,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/gotrue/gotruetest"
 	"github.com/ZacxDev/muster/internal/sse"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -24,6 +25,13 @@ import (
 // kind with a gotrue session, then disable the user or sign the session out,
 // and require the stream to END — with a sibling stream of a DIFFERENT
 // session as the control that a local sign-out must leave alone.
+
+// chatAgents adds the chat-session reads the chat socket makes to termAgents.
+type chatAgents struct{ termAgents }
+
+func (chatAgents) LatestOrCreateSession(_ context.Context, agentID int64, _ string) (agents.ChatSession, error) {
+	return agents.ChatSession{ID: 1, AgentID: agentID}, nil
+}
 
 type streamFixture struct {
 	*gtFixture
@@ -39,12 +47,14 @@ func newStreamFixture(t *testing.T) *streamFixture {
 		log.New(io.Discard, "", 0))
 	f.s.UseExtensions(Extensions{
 		Notes:           stubNotesStore{},
-		Agents:          termAgents{},
+		Agents:          chatAgents{},
 		SessionLiveness: stubLiveness{},
 		Provisioner:     newFakeTerminal(),
+		Gateway:         stubGateway{},
 		Mirror:          &fakeMirror{online: true},
 	})
 	f.s.UseGoTrue(GoTrueAuth{Client: fake.Client(), Verifier: fake.Verifier(), Users: f.store})
+	f.s.gt.sweepInterval = 50 * time.Millisecond // before the first tracked request starts it
 	h := f.s.Handler()
 	f.edge, f.machine = BrowserListener(h), h
 	ts := httptest.NewServer(f.edge)
@@ -99,6 +109,12 @@ func (f *streamFixture) openSSE(t *testing.T, at, rt string) opened {
 }
 
 func (f *streamFixture) openWS(t *testing.T, name, path, at, rt string) opened {
+	return f.openWSWait(t, name, path, at, rt, true)
+}
+
+// openWSWait dials a socket; ready says whether to wait for the terminal's
+// "ready" frame (the chat socket sends none).
+func (f *streamFixture) openWSWait(t *testing.T, name, path, at, rt string, ready bool) opened {
 	t.Helper()
 	h := http.Header{}
 	h.Set("Cookie", cookieHeader(at, rt))
@@ -110,7 +126,9 @@ func (f *streamFixture) openWS(t *testing.T, name, path, at, rt string) opened {
 		t.Fatalf("%s: dial: %v", name, err)
 	}
 	t.Cleanup(func() { c.CloseNow() })
-	readUntil(t, c, "ready")
+	if ready {
+		readUntil(t, c, "ready")
+	}
 	gone := make(chan struct{})
 	go func() {
 		for {
@@ -136,6 +154,7 @@ func (f *streamFixture) openAll(t *testing.T, at, rt string) []opened {
 		f.openSSE(t, at, rt),
 		f.openWS(t, "agent terminal", "/agents/keen-wren/terminal/ws", at, rt),
 		f.openWS(t, "mirror terminal", ui.MirrorTerminalWSPath("ws", "main"), at, rt),
+		f.openWSWait(t, "agent chat", "/agents/keen-wren/ws", at, rt, false),
 	}
 }
 
@@ -197,4 +216,40 @@ func TestEndingASessionEndsItsOpenStreams(t *testing.T) {
 		}
 		requireEnded(t, "after sign-out-everywhere", ss)
 	})
+}
+
+// TestADisableFromAnotherProcessEndsOpenStreams: the disable an operator
+// runs is the CLI, in another process — it writes disabled_at and nothing
+// else. The disable sweep must end that user's open SSE, terminals and chat
+// within its interval, and a later re-enable (also row-only) lets them back.
+func TestADisableFromAnotherProcessEndsOpenStreams(t *testing.T) {
+	f := newStreamFixture(t)
+	at, rt, _ := f.fake.Mint(f.sub)
+	ss := f.openAll(t, at, rt)
+	requireOpen(t, "before the disable", ss)
+	if _, err := f.store.SetDisabled(context.Background(), 1, true); err != nil { // the row only, as the CLI does
+		t.Fatal(err)
+	}
+	for _, s := range ss {
+		if !s.ended(2 * time.Second) {
+			t.Errorf("a row-only disable: the %s stream is still open after 2s (sweep every 50ms)", s.name)
+		}
+		s.close()
+	}
+	if w := do(f.edge, "GET", "/account", nil, withCookies(at, rt), asXHR); w.Code != http.StatusUnauthorized {
+		t.Fatalf("a request after the sweep saw the disable: %d, want 401", w.Code)
+	}
+	if _, err := f.store.SetDisabled(context.Background(), 1, false); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if w := do(f.edge, "GET", "/account", nil, withCookies(at, rt)); w.Code == http.StatusOK {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("a row-only re-enable was never noticed")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }

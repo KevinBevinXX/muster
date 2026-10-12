@@ -213,3 +213,25 @@ func TestAnAmbiguousCommitIsDecidedByRereadingTheRow(t *testing.T) {
 		t.Fatalf("a commit that did NOT land must undo the GoTrue user: err=%v undone=%q", err, undone)
 	}
 }
+
+func TestDisabledAmongReadsEveryIDInOneQuery(t *testing.T) {
+	s, pool := storeFor(t)
+	ctx := context.Background()
+	var id int64
+	if err := pool.QueryRow(authz.System(ctx), `INSERT INTO users (role, disabled_at) VALUES ('member', now()) RETURNING id`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.DisabledAmong(ctx, []int64{1, id, 99999999})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d, ok := got[1]; !ok || d {
+		t.Fatalf("user 1: %v %v, want present and enabled", d, ok)
+	}
+	if !got[id] {
+		t.Fatalf("the disabled row reads enabled: %v", got)
+	}
+	if _, ok := got[99999999]; ok {
+		t.Fatal("a missing id is reported")
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -100,17 +101,25 @@ type UserStore interface {
 	BySub(ctx context.Context, sub string) (users.User, error)
 	ByID(ctx context.Context, id int64) (users.User, error)
 	SetDisabled(ctx context.Context, id int64, disabled bool) (users.User, error)
+	// DisabledAmong reports, for each of ids that exists, whether it is
+	// disabled. One query: the disable sweep calls it every interval.
+	DisabledAmong(ctx context.Context, ids []int64) (map[int64]bool, error)
 	RedeemClaim(ctx context.Context, tokenHash []byte, email string,
 		create func(context.Context) (string, error), undo func(sub string)) (users.User, error)
 }
 
 // UseGoTrue attaches the GoTrue wiring. Call before Handler.
 func (s *Server) UseGoTrue(g GoTrueAuth) {
-	s.gt = &gotrueState{GoTrueAuth: g, now: time.Now}
+	s.gt = &gotrueState{GoTrueAuth: g, now: time.Now, sweepInterval: DisableSweepInterval,
+		lifetime: s.streams.context(), logger: s.logger}
 	if g.Verifier.Now != nil {
 		s.gt.now = g.Verifier.Now
 	}
 }
+
+// DisableSweepInterval is how often the disable sweep (sweepDisabled) re-reads
+// disabled_at for every user with an open request.
+const DisableSweepInterval = 10 * time.Second
 
 // gotrueState is the GoTrue wiring plus this process's caches.
 type gotrueState struct {
@@ -139,11 +148,18 @@ type gotrueState struct {
 	live     map[int64]map[*liveRequest]struct{}
 	disabled map[int64]bool
 
-	// Sign-in throttles: per account (the real key) and per forwarded client
-	// address (secondary). See login_gotrue.go.
-	accountFailures map[string]*backoff
-	ipFailures      keyedWindow
-	// refreshes counts GoTrue refreshes per subject (refreshPerSubjectLimit).
+	// The disable sweep: lifetime ends it (EndStreams at shutdown);
+	// sweepInterval is DisableSweepInterval outside tests; sweepOnce starts it
+	// with the first tracked request.
+	sweepInterval time.Duration
+	lifetime      context.Context
+	sweepOnce     sync.Once
+	logger        *log.Logger
+
+	// signin is the sign-in throttle (signin_limiter.go): its own mutex, not
+	// mu, which every authenticated request takes.
+	signin signinLimiter
+	// refreshes counts GoTrue refreshes per refresh-token hash (refreshPerTokenLimit).
 	refreshes keyedWindow
 }
 
@@ -181,6 +197,7 @@ func (g *gotrueState) track(parent context.Context, uid int64, c gotrue.Claims) 
 		g.live[uid] = map[*liveRequest]struct{}{}
 	}
 	g.live[uid][lr] = struct{}{}
+	g.sweepOnce.Do(func() { safeGo(g.logger, "disable sweep", g.runDisableSweep) })
 	return ctx, func() {
 		g.mu.Lock()
 		delete(g.live[uid], lr)
@@ -197,6 +214,86 @@ func (g *gotrueState) endLocked(uid int64, sid string) {
 	for lr := range g.live[uid] {
 		if sid == "" || lr.sid == sid {
 			lr.cancel(errSessionEnded)
+		}
+	}
+}
+
+// runDisableSweep calls sweepDisabled every sweepInterval until lifetime ends.
+//
+// 🔴 IT EXISTS BECAUSE THE REAL DISABLE IS NOT IN THIS PROCESS. DisableUser
+// ends a user's open streams at once — but its only caller today is the
+// (future) admin page; the disable an operator actually runs is the CLI
+// (`muster-server user disable`), which writes disabled_at from ANOTHER
+// process. Without this, that user's open SSE stream, agent terminal or
+// mirror shell lived on until the browser hung up. Now every open request's
+// user is re-read here, in ONE batched query, and a disabled (or deleted)
+// user's requests are cancelled within one interval
+// (TestADisableFromAnotherProcessEndsOpenStreams).
+func (g *gotrueState) runDisableSweep() {
+	ctx := g.lifetime
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	t := time.NewTicker(g.sweepInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			g.sweepDisabled(ctx)
+		}
+	}
+}
+
+// sweepDisabled re-reads disabled_at for every user with an open request, and
+// for every user this process holds as disabled: it cancels the first kind
+// when the row says disabled (or the row is gone), and forgets the second when
+// the row says enabled again (a CLI `user enable`).
+func (g *gotrueState) sweepDisabled(ctx context.Context) {
+	g.mu.Lock()
+	seen := map[int64]bool{}
+	var ids []int64
+	for id := range g.live {
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	for id := range g.disabled {
+		if !seen[id] {
+			ids = append(ids, id)
+		}
+	}
+	g.mu.Unlock()
+	if len(ids) == 0 {
+		return
+	}
+	qctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	state, err := g.Users.DisabledAmong(qctx, ids)
+	if err != nil {
+		if g.logger != nil {
+			g.logger.Printf("session: disable sweep could not read users (open streams unchanged): %v", err)
+		}
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.disabled == nil {
+		g.disabled = map[int64]bool{}
+	}
+	for _, id := range ids {
+		disabled, exists := state[id]
+		if !exists || disabled {
+			if !g.disabled[id] || len(g.live[id]) > 0 {
+				g.disabled[id] = true
+				g.endLocked(id, "")
+				g.forgetUserLocked(id)
+			}
+			continue
+		}
+		if g.disabled[id] {
+			delete(g.disabled, id)
+			g.forgetUserLocked(id)
 		}
 	}
 }
@@ -257,6 +354,10 @@ func (g *gotrueState) user(ctx context.Context, sub string) (users.User, error) 
 func (g *gotrueState) forgetUser(id int64) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	g.forgetUserLocked(id)
+}
+
+func (g *gotrueState) forgetUserLocked(id int64) {
 	for sub, c := range g.userCache {
 		if c.u.ID == id {
 			delete(g.userCache, sub)
@@ -415,14 +516,17 @@ func (s *Server) resolveGoTrueSession(r *http.Request) (gotrueSession, error) {
 	// muster call GoTrue at all (TestARefreshNeedsASignedExpiredAccessToken).
 	c, err := g.Verifier.Verify(at)
 	if errors.Is(err, gotrue.ErrExpired) && rt != "" {
-		// And per SUBJECT of that signed token, a ceiling on refresh calls:
-		// coalescing already makes a real browser one call per token, so this
-		// bounds only a replayed expired token.
-		now := g.now()
-		if g.refreshes.count(c.Subject, now, time.Minute) >= refreshPerSubjectLimit {
+		// A ceiling on refresh calls per REFRESH TOKEN (its hash), taken and
+		// counted in one step. Keyed on the token, not the expired access
+		// token's subject: an expired access token is a weaker secret than the
+		// refresh token beside it, and a subject key let anyone holding a
+		// victim's old access token spend the VICTIM's refresh quota.
+		// Coalescing already makes a real browser one GoTrue call per token.
+		rtSum := sha256.Sum256([]byte(rt))
+		if !g.refreshes.take(hex.EncodeToString(rtSum[:]), g.now(), time.Minute, refreshPerTokenLimit) {
 			return sess, errRefreshThrottled
 		}
-		g.refreshes.add(c.Subject, now, time.Minute)
+		expiredSub := c.Subject
 		fresh, rerr := g.refresh(r.Context(), clientIP(r), rt)
 		if rerr != nil {
 			return sess, rerr
@@ -432,6 +536,14 @@ func (s *Server) resolveGoTrueSession(r *http.Request) (gotrueSession, error) {
 			s.logger.Printf("gotrue: a token GoTrue just issued does not verify (%v) — check "+
 				"MUSTER_GOTRUE_JWT_SECRET and the issuer/audience against GoTrue's", err)
 			return sess, err
+		}
+		if c.Subject != expiredSub {
+			// 🔴 THE REFRESH TOKEN BELONGS TO SOMEONE ELSE. The pair in the
+			// cookies is not one session: a planted muster_rt beside the
+			// victim's own expired access token would otherwise sign the
+			// victim in as the PLANTER (TestARefreshForAnotherSubjectIsRefused).
+			s.logger.Printf("session: refusing a refresh whose new subject differs from the expired token's")
+			return sess, errRefreshMismatch
 		}
 		sess.refreshed = &fresh
 	}
@@ -454,11 +566,12 @@ func (s *Server) resolveGoTrueSession(r *http.Request) (gotrueSession, error) {
 
 var (
 	errDisabled         = errors.New("user is disabled")
-	errRefreshThrottled = errors.New("too many refreshes for this subject")
+	errRefreshThrottled = errors.New("too many refreshes of this refresh token")
+	errRefreshMismatch  = errors.New("the refresh token belongs to another subject")
 )
 
-// refreshPerSubjectLimit bounds GoTrue refresh calls per subject per minute.
-const refreshPerSubjectLimit = 20
+// refreshPerTokenLimit bounds GoTrue refresh calls per refresh token per minute.
+const refreshPerTokenLimit = 20
 
 // endsTheSession reports whether err means the cookies are no good — so they
 // are cleared and the caller must sign in again — as opposed to muster or
@@ -469,7 +582,8 @@ const refreshPerSubjectLimit = 20
 // every open tab out for a blip (TestATransientFailureKeepsTheSession).
 func endsTheSession(err error) bool {
 	switch {
-	case errors.Is(err, errRevoked), errors.Is(err, errDisabled), errors.Is(err, users.ErrNotFound):
+	case errors.Is(err, errRevoked), errors.Is(err, errDisabled), errors.Is(err, users.ErrNotFound),
+		errors.Is(err, errRefreshMismatch):
 		return true
 	case errors.Is(err, gotrue.ErrMalformed), errors.Is(err, gotrue.ErrAlgorithm),
 		errors.Is(err, gotrue.ErrSignature), errors.Is(err, gotrue.ErrIssuer),
@@ -685,7 +799,7 @@ func parseIP(v string) string {
 	return ip.String()
 }
 
-// keyedWindow is a fixed-window counter per key (a client address).
+// keyedWindow is a fixed-window counter per key (a refresh-token hash).
 type keyedWindow struct {
 	mu   sync.Mutex
 	hits map[string]*windowCount
@@ -696,35 +810,30 @@ type windowCount struct {
 	n     int
 }
 
-// count returns the key's count in the current window.
-func (k *keyedWindow) count(key string, now time.Time, window time.Duration) int {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	c, ok := k.hits[key]
-	if !ok || now.Sub(c.start) >= window {
-		return 0
-	}
-	return c.n
-}
-
-// add records one hit for key.
-func (k *keyedWindow) add(key string, now time.Time, window time.Duration) {
+// take records one hit for key if fewer than limit are in the current
+// window, in ONE step under the lock — a separate count then add lets
+// parallel callers all pass the count.
+func (k *keyedWindow) take(key string, now time.Time, window time.Duration, limit int) bool {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if k.hits == nil {
 		k.hits = map[string]*windowCount{}
 	}
-	if len(k.hits) > 10000 {
-		for key, c := range k.hits {
-			if now.Sub(c.start) >= window {
-				delete(k.hits, key)
-			}
-		}
-	}
 	c, ok := k.hits[key]
 	if !ok || now.Sub(c.start) >= window {
+		if len(k.hits) > 10000 {
+			for key, c := range k.hits {
+				if now.Sub(c.start) >= window {
+					delete(k.hits, key)
+				}
+			}
+		}
 		k.hits[key] = &windowCount{start: now, n: 1}
-		return
+		return true
+	}
+	if c.n >= limit {
+		return false
 	}
 	c.n++
+	return true
 }

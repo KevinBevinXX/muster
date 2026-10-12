@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -73,6 +74,9 @@ func TestARefreshNeedsASignedExpiredAccessToken(t *testing.T) {
 	sub := f.member("m@example.com", 7, authz.RoleMember)
 	f.fake.SetAccessTTL(60 * time.Second)
 	at, rt, _ := f.fake.Mint(sub)
+	// The victim's own second session, expired at the same time — refreshed
+	// at the end, INSIDE the minute the junk token's quota was spent in.
+	at2, rt2, _ := f.fake.Mint(sub)
 	f.fake.Advance(2 * time.Minute)
 	for i := 0; i < 50; i++ {
 		if w := do(f.edge, "GET", "/account", nil, withCookies("", rt), asXHR); w.Code != http.StatusUnauthorized {
@@ -86,13 +90,43 @@ func TestARefreshNeedsASignedExpiredAccessToken(t *testing.T) {
 	if w := do(f.edge, "GET", "/account", nil, withCookies(at, rt)); w.Code != http.StatusOK {
 		t.Fatalf("control: a signed expired token + rt: %d", w.Code)
 	}
-	// Per-subject cap: an expired token replayed with junk refresh tokens.
+	// Per-REFRESH-TOKEN cap: one (junk) refresh token replayed with a real
+	// expired access token reaches GoTrue at most refreshPerTokenLimit times —
+	// and it does not spend the victim's quota: the victim's own pair still
+	// refreshes afterwards.
 	before := f.fake.CountCalls("POST", "/token")
-	for i := 0; i < refreshPerSubjectLimit+10; i++ {
-		do(f.edge, "GET", "/account", nil, withCookies(at, "junk-"+string(rune('a'+i%26))+strings.Repeat("x", i)), asXHR)
+	for i := 0; i < refreshPerTokenLimit+15; i++ {
+		do(f.edge, "GET", "/account", nil, withCookies(at, "planted-junk-refresh-token"), asXHR)
 	}
-	if n := f.fake.CountCalls("POST", "/token") - before; n > refreshPerSubjectLimit {
-		t.Fatalf("one subject drove %d refresh calls in a minute, cap is %d", n, refreshPerSubjectLimit)
+	if n := f.fake.CountCalls("POST", "/token") - before; n > refreshPerTokenLimit || n == 0 {
+		t.Fatalf("one refresh token drove %d refresh calls in a minute, want 1..%d", n, refreshPerTokenLimit)
+	}
+	if w := do(f.edge, "GET", "/account", nil, withCookies(at2, rt2)); w.Code != http.StatusOK {
+		t.Fatalf("the victim's own refresh after someone burned a junk token's quota: %d", w.Code)
+	}
+}
+
+// TestARefreshForAnotherSubjectIsRefused: a muster_rt that belongs to someone
+// else, beside the victim's expired access token, must not sign the victim's
+// browser in as that someone.
+func TestARefreshForAnotherSubjectIsRefused(t *testing.T) {
+	f := newGoTrueFixture(t)
+	victim := f.member("v@example.com", 7, authz.RoleMember)
+	planter := f.member("p@example.com", 8, authz.RoleMember)
+	f.fake.SetAccessTTL(60 * time.Second)
+	vat, _, _ := f.fake.Mint(victim)
+	_, prt, _ := f.fake.Mint(planter)
+	f.fake.Advance(2 * time.Minute)
+	f.seen = nil
+	w := do(f.edge, "GET", "/account", nil, withCookies(vat, prt), asXHR)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("a refresh token of another subject: %d, want 401", w.Code)
+	}
+	if c := setCookies(w)[accessCookieName]; c == nil || c.MaxAge >= 0 {
+		t.Fatal("the mismatched pair was not cleared")
+	}
+	if len(f.principals()) != 0 {
+		t.Fatalf("a principal was admitted: %+v", f.principals())
 	}
 }
 
@@ -280,5 +314,120 @@ func TestADisabledUserIsRefusedOnceTheCacheTurnsOver(t *testing.T) {
 	f.fake.Advance(userCacheTTL + time.Second)
 	if w := do(f.edge, "GET", "/account", nil, withCookies(at, rt), asXHR); w.Code != http.StatusUnauthorized {
 		t.Fatalf("a row-only disable after the cache window: %d, want 401", w.Code)
+	}
+}
+
+// TestParallelSignInsAtOneAccountAreBounded is the audit's probe as a test:
+// 200 PARALLEL wrong-password sign-ins at one account, each from its own
+// forwarded address, against a GoTrue that holds every /token call open.
+// The reservation (count up front, one in flight per account) bounds how many
+// reach GoTrue to the backoff schedule's free attempts plus the one that
+// starts the backoff. Check-then-record let 136-179 of 200 through.
+func TestParallelSignInsAtOneAccountAreBounded(t *testing.T) {
+	f := newGoTrueFixture(t)
+	f.member("victim@example.com", 7, authz.RoleMember)
+	f.fake.SetTokenDelay(20 * time.Millisecond)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < 200; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			ip := "198.51." + strconv.Itoa(i/250) + "." + strconv.Itoa(i%250+1)
+			do(f.edge, "POST", "/login", url.Values{"email": {"victim@example.com"}, "password": {"wrong password!!"}}, fromIP(ip))
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	if n := f.fake.CountCalls("POST", "/token"); n > accountFreeFailures+1 || n == 0 {
+		t.Fatalf("200 parallel sign-ins at one account reached GoTrue %d times, want 1..%d", n, accountFreeFailures+1)
+	}
+
+	// One in flight per account: a burst of 10 at a FRESH account (inside its
+	// free failures, so the backoff is not what stops them) reaches GoTrue once
+	// while that one call is held open.
+	b := newGoTrueFixture(t)
+	b.member("burst@example.com", 9, authz.RoleMember)
+	b.fake.SetTokenDelay(300 * time.Millisecond)
+	var wg3 sync.WaitGroup
+	start3 := make(chan struct{})
+	for i := 0; i < 10; i++ {
+		wg3.Add(1)
+		go func(i int) {
+			defer wg3.Done()
+			<-start3
+			do(b.edge, "POST", "/login", url.Values{"email": {"burst@example.com"}, "password": {"wrong password!!"}},
+				fromIP("203.0.113."+strconv.Itoa(i+1)))
+		}(i)
+	}
+	close(start3)
+	wg3.Wait()
+	if n := b.fake.CountCalls("POST", "/token"); n != 1 {
+		t.Fatalf("a burst of 10 at one fresh account reached GoTrue %d times, want 1 (one in flight per account)", n)
+	}
+
+	// The per-address window is reserved the same way: 200 parallel attempts
+	// from ONE address at 200 different accounts.
+	g := newGoTrueFixture(t)
+	g.fake.SetTokenDelay(20 * time.Millisecond)
+	var wg2 sync.WaitGroup
+	start2 := make(chan struct{})
+	for i := 0; i < 200; i++ {
+		wg2.Add(1)
+		go func(i int) {
+			defer wg2.Done()
+			<-start2
+			do(g.edge, "POST", "/login", url.Values{"email": {"spray" + strconv.Itoa(i) + "@example.com"}, "password": {"x"}}, fromIP("192.0.2.9"))
+		}(i)
+	}
+	close(start2)
+	wg2.Wait()
+	if n := g.fake.CountCalls("POST", "/token"); n > loginFailureLimit || n == 0 {
+		t.Fatalf("200 parallel sign-ins from one address reached GoTrue %d times, want 1..%d", n, loginFailureLimit)
+	}
+}
+
+// TestTheSignInLimiterIsBoundedAndRefundsUnjudgedAttempts: the limiter's maps
+// never exceed signinLimiterCap (oldest evicted), a success or an unjudged
+// attempt gives the address its slot back, and only a failure keeps it.
+func TestTheSignInLimiterIsBoundedAndRefundsUnjudgedAttempts(t *testing.T) {
+	var l signinLimiter
+	now := time.Unix(946684800, 0)
+	for i := 0; i < signinLimiterCap+500; i++ {
+		tk, ok := l.reserve("acct"+strconv.Itoa(i)+"@example.com", "ip"+strconv.Itoa(i), now)
+		if !ok {
+			t.Fatalf("reserve %d refused", i)
+		}
+		l.settle(tk, outcomeFailed)
+	}
+	if a, ips := l.sizes(); a > signinLimiterCap || ips > signinLimiterCap {
+		t.Fatalf("limiter grew past its cap: %d accounts, %d addresses (cap %d)", a, ips, signinLimiterCap)
+	}
+	// One address: failures keep their slot, unjudged/success give it back.
+	var m signinLimiter
+	for i := 0; i < loginFailureLimit*3; i++ {
+		tk, ok := m.reserve("u"+strconv.Itoa(i), "203.0.113.1", now)
+		if !ok {
+			t.Fatalf("an address with only refunded attempts was refused at %d", i)
+		}
+		m.settle(tk, []signinOutcome{outcomeSucceeded, outcomeUnjudged}[i%2])
+	}
+	for i := 0; i < loginFailureLimit; i++ {
+		tk, _ := m.reserve("f"+strconv.Itoa(i), "203.0.113.1", now)
+		m.settle(tk, outcomeFailed)
+	}
+	if _, ok := m.reserve("another", "203.0.113.1", now); ok {
+		t.Fatal("an address with loginFailureLimit failures was not limited")
+	}
+	// One account: a second reservation while one is in flight is refused.
+	var a signinLimiter
+	tk, _ := a.reserve("x@example.com", "198.51.100.1", now)
+	if _, ok := a.reserve("x@example.com", "198.51.100.2", now); ok {
+		t.Fatal("two attempts at one account were in flight at once")
+	}
+	a.settle(tk, outcomeUnjudged)
+	if _, ok := a.reserve("x@example.com", "198.51.100.2", now); !ok {
+		t.Fatal("after the in-flight attempt settled, the account was still refused")
 	}
 }

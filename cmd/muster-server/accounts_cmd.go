@@ -79,8 +79,17 @@ func runAccountCommand(ctx context.Context, args []string, getenv func(string) s
 			fmt.Fprintf(stderr, "%s user %d: %v\n", args[1], id, err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "user %d %sd. A running server notices within %s (its user cache); "+
-			"GoTrue already refuses the user's refresh tokens.\n", id, args[1], userCacheWindow)
+		// What a RUNNING server does, stated as what is true: this process
+		// cannot reach its caches, so the server learns from the database.
+		if !disable {
+			fmt.Fprintf(stdout, "user %d enabled. A running server accepts them again within %s.\n",
+				id, userCacheWindow)
+			return 0
+		}
+		fmt.Fprintf(stdout, "user %d %sd. A running server ends that user's open streams (SSE, "+
+			"terminals) and refuses their requests within %s if they have anything open (its disable "+
+			"sweep), and refuses their next request within %s otherwise (its user cache). GoTrue already "+
+			"refuses the user's refresh tokens.\n", id, args[1], api.DisableSweepInterval, userCacheWindow)
 		return 0
 	}
 	return usage()

@@ -67,6 +67,8 @@ type Fake struct {
 	// createDelay holds every /admin/users call open this long, to widen a
 	// race a concurrency test wants to observe.
 	createDelay time.Duration
+	// tokenDelay holds every /token call open this long (races).
+	tokenDelay time.Duration
 	// tokenFailures makes the next N /token calls answer tokenFailStatus.
 	tokenFailures   int
 	tokenFailStatus int
@@ -123,6 +125,13 @@ func (f *Fake) Advance(d time.Duration) {
 func (f *Fake) SetAccessTTL(d time.Duration) {
 	f.mu.Lock()
 	f.accessTTL = d
+	f.mu.Unlock()
+}
+
+// SetTokenDelay makes every /token call take d before it answers.
+func (f *Fake) SetTokenDelay(d time.Duration) {
+	f.mu.Lock()
+	f.tokenDelay = d
 	f.mu.Unlock()
 }
 
@@ -254,6 +263,12 @@ func (f *Fake) route(w http.ResponseWriter, r *http.Request) {
 func (f *Fake) token(w http.ResponseWriter, r *http.Request) {
 	var body map[string]string
 	_ = json.NewDecoder(r.Body).Decode(&body)
+	f.mu.Lock()
+	delay := f.tokenDelay
+	f.mu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.tokenFailures > 0 {
