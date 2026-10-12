@@ -159,8 +159,13 @@ type gotrueState struct {
 	// signin is the sign-in throttle (signin_limiter.go): its own mutex, not
 	// mu, which every authenticated request takes.
 	signin signinLimiter
-	// refreshes counts GoTrue refreshes per refresh-token hash (refreshPerTokenLimit).
-	refreshes keyedWindow
+	// Refresh throttles (resolveGoTrueSession), each bounded, O(1), own mutex:
+	// refreshPerToken counts calls per refresh-token hash; failedRefreshes
+	// counts FAILED refreshes per subject; issued is the set of refresh tokens
+	// this process handed out (their hashes), which pass the subject cap.
+	refreshPerToken boundedWindow
+	failedRefreshes boundedWindow
+	issued          boundedWindow
 }
 
 // liveRequest is one in-flight session request's cancel.
@@ -516,19 +521,38 @@ func (s *Server) resolveGoTrueSession(r *http.Request) (gotrueSession, error) {
 	// muster call GoTrue at all (TestARefreshNeedsASignedExpiredAccessToken).
 	c, err := g.Verifier.Verify(at)
 	if errors.Is(err, gotrue.ErrExpired) && rt != "" {
-		// A ceiling on refresh calls per REFRESH TOKEN (its hash), taken and
-		// counted in one step. Keyed on the token, not the expired access
-		// token's subject: an expired access token is a weaker secret than the
-		// refresh token beside it, and a subject key let anyone holding a
-		// victim's old access token spend the VICTIM's refresh quota.
-		// Coalescing already makes a real browser one GoTrue call per token.
+		// TWO refresh throttles, both checked BEFORE GoTrue is called.
+		//
+		// 🔴 PER SUBJECT, ONLY FAILURES COUNT, AND A TOKEN THIS PROCESS ISSUED
+		// IS EXEMPT. With a signed expired access token, a caller can attach a
+		// fresh junk refresh token to every request; a per-token cap alone
+		// bounds nothing (measured: every one of 500 requests a minute reached
+		// GoTrue). So failed refreshes are counted against the expired token's
+		// SUBJECT, and over failedRefreshLimit a refresh is answered 503
+		// without calling GoTrue — unless the refresh token is one this process
+		// issued (issued), which is what the subject's real browser holds. The
+		// victim's own refresh therefore keeps working through a junk flood
+		// aimed at them (TestAJunkRefreshFloodIsBoundedAndSparesTheVictim);
+		// after a restart, when nothing is known as issued, it waits out the
+		// window with its cookies kept.
+		//
+		// And per refresh token, a ceiling on calls (a replay of one token).
 		rtSum := sha256.Sum256([]byte(rt))
-		if !g.refreshes.take(hex.EncodeToString(rtSum[:]), g.now(), time.Minute, refreshPerTokenLimit) {
+		rtKey := hex.EncodeToString(rtSum[:])
+		now := g.now()
+		if g.issued.count(rtKey, now, issuedWindow) == 0 &&
+			g.failedRefreshes.count(c.Subject, now, time.Minute) >= failedRefreshLimit {
+			return sess, errRefreshThrottled
+		}
+		if !g.refreshPerToken.take(rtKey, now, time.Minute, refreshPerTokenLimit) {
 			return sess, errRefreshThrottled
 		}
 		expiredSub := c.Subject
 		fresh, rerr := g.refresh(r.Context(), clientIP(r), rt)
 		if rerr != nil {
+			if gotrue.IsClientError(rerr) {
+				g.failedRefreshes.add(expiredSub, now, time.Minute)
+			}
 			return sess, rerr
 		}
 		at = fresh.AccessToken
@@ -570,8 +594,16 @@ var (
 	errRefreshMismatch  = errors.New("the refresh token belongs to another subject")
 )
 
-// refreshPerTokenLimit bounds GoTrue refresh calls per refresh token per minute.
-const refreshPerTokenLimit = 20
+// Refresh throttle limits (see resolveGoTrueSession).
+const (
+	// refreshPerTokenLimit bounds GoTrue refresh calls per refresh token per minute.
+	refreshPerTokenLimit = 20
+	// failedRefreshLimit bounds FAILED refreshes per subject per minute, for
+	// refresh tokens this process did not issue.
+	failedRefreshLimit = 10
+	// issuedWindow is how long an issued refresh token is remembered.
+	issuedWindow = 30 * 24 * time.Hour
+)
 
 // endsTheSession reports whether err means the cookies are no good — so they
 // are cleared and the caller must sign in again — as opposed to muster or
@@ -672,6 +704,10 @@ func (s *Server) publicURLSuffix() string {
 // MUSTER_SECURE_COOKIES. Browser sign-in is served only on the edge, which is
 // TLS; a Secure cookie is the browser's half of "never over plain HTTP".
 func (s *Server) setGoTrueCookies(w http.ResponseWriter, sess gotrue.Session) {
+	if s.gt != nil && sess.RefreshToken != "" {
+		sum := sha256.Sum256([]byte(sess.RefreshToken))
+		s.gt.issued.add(hex.EncodeToString(sum[:]), s.gt.now(), issuedWindow)
+	}
 	for _, c := range []struct{ name, value string }{
 		{accessCookieName, sess.AccessToken},
 		{refreshCookieName, sess.RefreshToken},
@@ -797,43 +833,4 @@ func parseIP(v string) string {
 		return ""
 	}
 	return ip.String()
-}
-
-// keyedWindow is a fixed-window counter per key (a refresh-token hash).
-type keyedWindow struct {
-	mu   sync.Mutex
-	hits map[string]*windowCount
-}
-
-type windowCount struct {
-	start time.Time
-	n     int
-}
-
-// take records one hit for key if fewer than limit are in the current
-// window, in ONE step under the lock — a separate count then add lets
-// parallel callers all pass the count.
-func (k *keyedWindow) take(key string, now time.Time, window time.Duration, limit int) bool {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	if k.hits == nil {
-		k.hits = map[string]*windowCount{}
-	}
-	c, ok := k.hits[key]
-	if !ok || now.Sub(c.start) >= window {
-		if len(k.hits) > 10000 {
-			for key, c := range k.hits {
-				if now.Sub(c.start) >= window {
-					delete(k.hits, key)
-				}
-			}
-		}
-		k.hits[key] = &windowCount{start: now, n: 1}
-		return true
-	}
-	if c.n >= limit {
-		return false
-	}
-	c.n++
-	return true
 }

@@ -29,23 +29,32 @@ import (
 //
 // ⚠ ITS OWN MUTEX, AND BOUNDED. It is not gotrueState.mu, which every
 // authenticated request takes; and each map is capped at signinLimiterCap
-// entries with least-recently-touched eviction, O(1) per operation. Eviction
-// forgets a backoff, so an attacker who touches more than the cap of OTHER
-// accounts can reset one — which costs them signinLimiterCap distinct accounts'
-// worth of attempts, each also counted against their address.
+// entries. Address records are evicted least-recently-touched (the address is
+// the secondary, forgeable key). Account records are evicted only when they
+// are neither in flight nor backing off — a full table of protected records
+// refuses a new account instead (see accountRecordLocked) — so churning other
+// accounts cannot reset a victim's backoff.
 type signinLimiter struct {
 	mu       sync.Mutex
 	accounts map[string]*list.Element // value: *accountRecord
 	accOrder *list.List               // front = most recently touched
 	ips      map[string]*list.Element // value: *ipRecord
 	ipOrder  *list.List
+	gen      uint64 // the next account record's generation
 }
+
+// evictScan is how many of the least recently touched account records
+// accountRecordLocked examines for one it may evict.
+const evictScan = 256
 
 // signinLimiterCap bounds each of the limiter's maps.
 const signinLimiterCap = 10000
 
 type accountRecord struct {
-	key      string
+	key string
+	// gen identifies THIS record: an evicted-and-recreated account gets a new
+	// one, so a ticket from the old record cannot settle the new record.
+	gen      uint64
 	failures int
 	until    time.Time
 	last     time.Time
@@ -61,6 +70,7 @@ type ipRecord struct {
 // signinTicket is one reserved attempt; settle it exactly once.
 type signinTicket struct {
 	account, ip   string
+	gen           uint64
 	prevFailures  int
 	prevUntil     time.Time
 	accountCounts bool
@@ -115,10 +125,11 @@ func (l *signinLimiter) reserve(account, ip string, now time.Time) (signinTicket
 	t := signinTicket{account: account, ip: ip}
 	if account != "" {
 		ar := l.accountRecordLocked(account, now)
-		if ar.inFlight || now.Before(ar.until) {
+		if ar == nil || ar.inFlight || now.Before(ar.until) {
 			return signinTicket{}, false
 		}
 		t.accountCounts = true
+		t.gen = ar.gen
 		t.prevFailures, t.prevUntil = ar.failures, ar.until
 		ar.inFlight = true
 		ar.failures++
@@ -151,6 +162,9 @@ func (l *signinLimiter) settle(t signinTicket, outcome signinOutcome) {
 		return // evicted while in flight: nothing to settle
 	}
 	ar := e.Value.(*accountRecord)
+	if ar.gen != t.gen {
+		return // the record this ticket reserved was evicted; this is another
+	}
 	ar.inFlight = false
 	switch outcome {
 	case outcomeSucceeded:
@@ -161,9 +175,19 @@ func (l *signinLimiter) settle(t signinTicket, outcome signinOutcome) {
 	}
 }
 
-// accountRecordLocked returns account's record, creating it (and evicting
-// the least recently touched one past the cap). A record idle for an hour
-// starts over.
+// accountRecordLocked returns account's record, creating it when absent. A
+// record idle for an hour starts over. It returns nil — the caller answers
+// the backoff 429 — when the table is full and nothing may be evicted.
+//
+// 🔴 EVICTION NEVER TAKES A PROTECTED RECORD. The first version evicted the
+// least recently touched record unconditionally, so 10,001 sign-ins at
+// made-up emails (from forged addresses) pushed a victim's backoff out of the
+// table and reset it: 4 more guesses at the victim got through. Now only a
+// record that is neither in flight nor still backing off (until <= now) may go;
+// if none of the evictScan oldest qualifies, the NEW key is refused instead —
+// fail closed (TestChurnCannotEvictAVictimsBackoff). The cost, stated: a flood
+// that keeps signinLimiterCap accounts in backoff makes sign-in answer 429 for
+// accounts with no record yet, for as long as the flood keeps them backing off.
 func (l *signinLimiter) accountRecordLocked(account string, now time.Time) *accountRecord {
 	if e, ok := l.accounts[account]; ok {
 		l.accOrder.MoveToFront(e)
@@ -173,13 +197,23 @@ func (l *signinLimiter) accountRecordLocked(account string, now time.Time) *acco
 		}
 		return ar
 	}
-	ar := &accountRecord{key: account, last: now}
-	l.accounts[account] = l.accOrder.PushFront(ar)
-	for len(l.accounts) > signinLimiterCap {
-		oldest := l.accOrder.Back()
-		l.accOrder.Remove(oldest)
-		delete(l.accounts, oldest.Value.(*accountRecord).key)
+	if len(l.accounts) >= signinLimiterCap {
+		var victim *list.Element
+		for e, i := l.accOrder.Back(), 0; e != nil && i < evictScan; e, i = e.Prev(), i+1 {
+			if r := e.Value.(*accountRecord); !r.inFlight && !now.Before(r.until) {
+				victim = e
+				break
+			}
+		}
+		if victim == nil {
+			return nil
+		}
+		l.accOrder.Remove(victim)
+		delete(l.accounts, victim.Value.(*accountRecord).key)
 	}
+	l.gen++
+	ar := &accountRecord{key: account, last: now, gen: l.gen}
+	l.accounts[account] = l.accOrder.PushFront(ar)
 	return ar
 }
 

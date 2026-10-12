@@ -3,6 +3,7 @@ package api
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -251,5 +252,23 @@ func TestADisableFromAnotherProcessEndsOpenStreams(t *testing.T) {
 			t.Fatal("a row-only re-enable was never noticed")
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// TestAFailedDisableSweepCancelsNothing: a database error in the sweep is not
+// "every user is gone". Treating it so would sign every open browser out on a
+// DB blip.
+func TestAFailedDisableSweepCancelsNothing(t *testing.T) {
+	f := newStreamFixture(t)
+	at, rt, _ := f.fake.Mint(f.sub)
+	ss := f.openAll(t, at, rt)
+	f.store.mu.Lock()
+	f.store.lookupErr = errors.New("conn refused")
+	f.store.mu.Unlock()
+	requireOpen(t, "through failing sweeps (50ms interval, observed 300ms+)", ss)
+	time.Sleep(300 * time.Millisecond)
+	requireOpen(t, "through failing sweeps", ss)
+	for _, s := range ss {
+		s.close()
 	}
 }

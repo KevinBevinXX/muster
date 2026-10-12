@@ -3,6 +3,8 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"log"
@@ -90,10 +92,13 @@ func TestARefreshNeedsASignedExpiredAccessToken(t *testing.T) {
 	if w := do(f.edge, "GET", "/account", nil, withCookies(at, rt)); w.Code != http.StatusOK {
 		t.Fatalf("control: a signed expired token + rt: %d", w.Code)
 	}
-	// Per-REFRESH-TOKEN cap: one (junk) refresh token replayed with a real
-	// expired access token reaches GoTrue at most refreshPerTokenLimit times —
-	// and it does not spend the victim's quota: the victim's own pair still
-	// refreshes afterwards.
+	// Per-REFRESH-TOKEN cap: one refresh token replayed with a real expired
+	// access token reaches GoTrue at most refreshPerTokenLimit times. The
+	// token is marked as issued by this process so the per-SUBJECT cap
+	// (TestAJunkRefreshFloodIsBoundedAndSparesTheVictim) cannot be what stops
+	// it — this measures the per-token cap alone.
+	markIssued(f, "planted-junk-refresh-token")
+	markIssued(f, rt2) // the victim's real token, as muster would have issued it
 	before := f.fake.CountCalls("POST", "/token")
 	for i := 0; i < refreshPerTokenLimit+15; i++ {
 		do(f.edge, "GET", "/account", nil, withCookies(at, "planted-junk-refresh-token"), asXHR)
@@ -103,6 +108,115 @@ func TestARefreshNeedsASignedExpiredAccessToken(t *testing.T) {
 	}
 	if w := do(f.edge, "GET", "/account", nil, withCookies(at2, rt2)); w.Code != http.StatusOK {
 		t.Fatalf("the victim's own refresh after someone burned a junk token's quota: %d", w.Code)
+	}
+}
+
+func markIssued(f *gtFixture, rt string) {
+	sum := sha256.Sum256([]byte(rt))
+	f.s.gt.issued.add(hex.EncodeToString(sum[:]), f.fake.Now(), issuedWindow)
+}
+
+// TestAJunkRefreshFloodIsBoundedAndSparesTheVictim: a signed expired access
+// token with a NEW junk refresh token on every request (a per-token cap sees
+// each as fresh) reaches GoTrue at most failedRefreshLimit times per subject
+// per minute — and the victim's own browser, holding a refresh token muster
+// issued, keeps refreshing through the flood.
+func TestAJunkRefreshFloodIsBoundedAndSparesTheVictim(t *testing.T) {
+	f := newGoTrueFixture(t)
+	f.member("v@example.com", 7, authz.RoleMember)
+	f.fake.SetAccessTTL(60 * time.Second)
+	w := do(f.edge, "POST", "/login", url.Values{"email": {"v@example.com"}, "password": {"correct horse battery"}})
+	ck := setCookies(w)
+	if w.Code != http.StatusSeeOther || ck[accessCookieName] == nil {
+		t.Fatalf("victim sign-in: %d", w.Code)
+	}
+	vat, vrt := ck[accessCookieName].Value, ck[refreshCookieName].Value
+	f.fake.Advance(2 * time.Minute) // the victim's access token (and the attacker's copy) expires
+	before := f.fake.CountCalls("POST", "/token")
+	for i := 0; i < 200; i++ {
+		w := do(f.edge, "GET", "/account", nil, withCookies(vat, "junk-"+strconv.Itoa(i)), asXHR)
+		if i >= failedRefreshLimit && w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("junk refresh %d past the cap: %d, want 503 without calling GoTrue", i, w.Code)
+		}
+	}
+	if n := f.fake.CountCalls("POST", "/token") - before; n > failedRefreshLimit || n == 0 {
+		t.Fatalf("200 junk refreshes for one subject reached GoTrue %d times, want 1..%d", n, failedRefreshLimit)
+	}
+	if w := do(f.edge, "GET", "/account", nil, withCookies(vat, vrt)); w.Code != http.StatusOK {
+		t.Fatalf("the victim's own refresh during the flood: %d, want 200", w.Code)
+	}
+	// The per-token map is bounded however many junk tokens arrive.
+	for i := 0; i < 3*boundedWindowCap; i++ {
+		f.s.gt.refreshPerToken.take("k"+strconv.Itoa(i), f.fake.Now(), time.Minute, refreshPerTokenLimit)
+	}
+	if n := f.s.gt.refreshPerToken.size(); n > boundedWindowCap {
+		t.Fatalf("the per-token map grew to %d (cap %d)", n, boundedWindowCap)
+	}
+}
+
+// TestChurnCannotEvictAVictimsBackoff is the auditor's churn probe: a victim
+// in backoff, then more than signinLimiterCap sign-ins at made-up emails. The
+// victim must still be blocked; a table full of protected records refuses a
+// NEW key rather than evict one; and a stale ticket cannot settle a newer
+// record of the same account.
+func TestChurnCannotEvictAVictimsBackoff(t *testing.T) {
+	var l signinLimiter
+	now := time.Unix(946684800, 0)
+	ipN := 0
+	fail := func(acct string) bool {
+		ipN++
+		tk, ok := l.reserve(acct, "ip"+strconv.Itoa(ipN), now)
+		if ok {
+			l.settle(tk, outcomeFailed)
+		}
+		return ok
+	}
+	for i := 0; i <= accountFreeFailures; i++ {
+		if !fail("victim@example.com") {
+			t.Fatalf("victim failure %d refused early", i+1)
+		}
+	}
+	if fail("victim@example.com") {
+		t.Fatal("control: the victim is not in backoff")
+	}
+	for i := 0; i < signinLimiterCap+1; i++ {
+		fail("made-up-" + strconv.Itoa(i) + "@example.com")
+	}
+	if fail("victim@example.com") {
+		t.Fatal("churn through more than the cap evicted the victim's backoff")
+	}
+
+	// A table full of PROTECTED records refuses a new key (fail closed).
+	var full signinLimiter
+	for i := 0; i < signinLimiterCap; i++ {
+		acct := "p" + strconv.Itoa(i)
+		for j := 0; j <= accountFreeFailures; j++ {
+			ipN++
+			tk, _ := full.reserve(acct, "ip"+strconv.Itoa(ipN), now)
+			full.settle(tk, outcomeFailed)
+		}
+	}
+	if _, ok := full.reserve("brand-new@example.com", "fresh-ip", now); ok {
+		t.Fatal("a full table of records in backoff evicted one to admit a new key")
+	}
+	if _, ok := full.reserve("brand-new@example.com", "fresh-ip", now.Add(accountBackoffMax+time.Second)); !ok {
+		t.Fatal("control: once the backoffs expired, a new key was still refused")
+	}
+
+	// Generation: a ticket for a record that is gone must not settle its
+	// replacement.
+	var g signinLimiter
+	stale, _ := g.reserve("x@example.com", "a", now)
+	g.mu.Lock()
+	g.accOrder.Remove(g.accounts["x@example.com"])
+	delete(g.accounts, "x@example.com")
+	g.mu.Unlock()
+	if _, ok := g.reserve("x@example.com", "b", now); !ok {
+		t.Fatal("control: the recreated record refused its first attempt")
+	}
+	g.settle(stale, outcomeUnjudged)
+	if _, ok := g.reserve("x@example.com", "c", now); ok {
+		t.Fatal("a stale ticket cleared the in-flight flag of the account's NEW record")
 	}
 }
 
