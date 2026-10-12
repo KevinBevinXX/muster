@@ -51,7 +51,12 @@ var (
 )
 
 // PG is the Postgres store.
-type PG struct{ pool *pgxpool.Pool }
+type PG struct {
+	pool *pgxpool.Pool
+	// commit commits a redeem transaction. A field so a test can make the
+	// COMMIT's outcome ambiguous; nil means tx.Commit.
+	commit func(context.Context, pgx.Tx) error
+}
 
 // NewPG constructs the store.
 func NewPG(pool *pgxpool.Pool) *PG { return &PG{pool: pool} }
@@ -212,7 +217,30 @@ func (s *PG) RedeemClaim(ctx context.Context, tokenHash []byte, email string,
 	if _, err := tx.Exec(ctx, `UPDATE invites SET redeemed_at = now(), redeemed_by = $2 WHERE id = $1`, inviteID, uid); err != nil {
 		return User{}, err
 	}
-	if err := tx.Commit(ctx); err != nil {
+	commit := s.commit
+	if commit == nil {
+		commit = func(ctx context.Context, tx pgx.Tx) error { return tx.Commit(ctx) }
+	}
+	if err := commit(ctx, tx); err != nil {
+		// 🔴 A FAILED COMMIT IS AN UNKNOWN OUTCOME, NOT A ROLLBACK. The server
+		// may have committed and the reply been lost; deleting the GoTrue user
+		// then would leave user 1 bound to a subject that no longer exists —
+		// the admin locked out. Re-read the row and decide from what is there
+		// (TestAnAmbiguousCommitIsDecidedByRereadingTheRow).
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		var bound string
+		rerr := s.pool.QueryRow(rctx, `SELECT COALESCE(gotrue_sub::text, '') FROM users WHERE id = $1`, uid).Scan(&bound)
+		switch {
+		case rerr == nil && bound == sub:
+			committed = true
+			return u, nil
+		case rerr != nil:
+			// Still unknown: keep the GoTrue user (an orphan login is
+			// recoverable; a deleted bound one is not) and say so.
+			committed = true
+			return User{}, fmt.Errorf("users: claim commit outcome unknown (%v; re-read failed: %v) — the GoTrue user %s was kept", err, rerr, sub)
+		}
 		return User{}, err
 	}
 	committed = true

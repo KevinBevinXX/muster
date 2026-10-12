@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/metrics"
@@ -118,8 +119,19 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 		next.ServeHTTP(sw, r)
 		dur := time.Since(start)
 		metrics.ObserveHTTP(routeLabel(r), r.Method, sw.status, dur)
-		s.logger.Printf("%s %s %d %s", r.Method, r.URL.Path, sw.status, dur.Round(time.Millisecond))
+		s.logger.Printf("%s %s %d %s", r.Method, loggedPath(r.URL.Path), sw.status, dur.Round(time.Millisecond))
 	})
+}
+
+// loggedPath is the path accessLog writes. Anything under /auth/claim/ is
+// cut to that prefix: the claim token lives in the URL fragment now (never
+// sent), but an old-style or hand-made /auth/claim/<token> request must still
+// not put a credential into the log. Defence in depth.
+func loggedPath(p string) string {
+	if strings.HasPrefix(p, "/auth/claim/") {
+		return "/auth/claim/[redacted]"
+	}
+	return p
 }
 
 // routeLabel returns the matched ServeMux pattern for the request as a bounded

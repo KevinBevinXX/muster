@@ -19,30 +19,32 @@ import (
 	"github.com/ZacxDev/muster/internal/users"
 )
 
-func claimForm(email, pw, pw2 string) url.Values {
-	return url.Values{"email": {email}, "password": {pw}, "password2": {pw2}}
+func claimForm(token, email, pw, pw2 string) url.Values {
+	return url.Values{"token": {token}, "email": {email}, "password": {pw}, "password2": {pw2}}
 }
 
-// mintClaim returns the path of a fresh claim link against store.
+// mintClaim mints a claim link against store and returns its token (the
+// fragment), checking the link's shape on the way.
 func mintClaim(t *testing.T, store ClaimMinter) string {
 	t.Helper()
 	link, err := NewAdminClaimLink(context.Background(), store, "https://muster.example.com", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(link, "https://muster.example.com"+ClaimPathPrefix) {
-		t.Fatalf("link %q is not under the public URL", link)
+	prefix := "https://muster.example.com" + ClaimPath + "#"
+	if !strings.HasPrefix(link, prefix) || len(link) <= len(prefix) {
+		t.Fatalf("link %q is not <public>%s#<token>", link, ClaimPath)
 	}
-	return strings.TrimPrefix(link, "https://muster.example.com")
+	return strings.TrimPrefix(link, prefix)
 }
 
 func TestAClaimInGoTrueModeBindsUserOneAndSignsIn(t *testing.T) {
 	f := newGoTrueFixture(t)
-	path := mintClaim(t, f.store)
-	if w := do(f.edge, "GET", path, nil); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Claim the admin account") {
+	tok := mintClaim(t, f.store)
+	if w := do(f.edge, "GET", ClaimPath, nil); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Claim the admin account") {
 		t.Fatalf("claim page: %d", w.Code)
 	}
-	w := do(f.edge, "POST", path, claimForm("op@example.com", "a-strong-password", "a-strong-password"))
+	w := do(f.edge, "POST", ClaimPath, claimForm(tok, "op@example.com", "a-strong-password", "a-strong-password"))
 	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/" {
 		t.Fatalf("claim: %d %s", w.Code, w.Body)
 	}
@@ -63,11 +65,8 @@ func TestAClaimInGoTrueModeBindsUserOneAndSignsIn(t *testing.T) {
 		t.Fatalf("principal %+v, want user 1 admin", ps)
 	}
 	// Single use: the same link is now the uniform invalid page.
-	if w := do(f.edge, "POST", path, claimForm("other@example.com", "a-strong-password", "a-strong-password")); w.Code != http.StatusNotFound {
+	if w := do(f.edge, "POST", ClaimPath, claimForm(tok, "other@example.com", "a-strong-password", "a-strong-password")); w.Code != http.StatusNotFound {
 		t.Fatalf("second redemption: %d, want 404", w.Code)
-	}
-	if w := do(f.edge, "GET", path, nil); w.Code != http.StatusNotFound {
-		t.Fatalf("the redeemed link's page: %d, want 404", w.Code)
 	}
 }
 
@@ -77,8 +76,8 @@ func TestAClaimInPasswordModeBindsButDoesNotSignIn(t *testing.T) {
 	s := New(nil, AuthConfig{HookToken: gtHook, UIPassword: strings.Repeat("p", 20)}, log.New(io.Discard, "", 0))
 	s.UseGoTrue(GoTrueAuth{Client: fake.Client(), Verifier: fake.Verifier(), Users: store})
 	h := BrowserListener(s.Handler())
-	path := mintClaim(t, store)
-	w := do(h, "POST", path, claimForm("op@example.com", "a-strong-password", "a-strong-password"))
+	tok := mintClaim(t, store)
+	w := do(h, "POST", ClaimPath, claimForm(tok, "op@example.com", "a-strong-password", "a-strong-password"))
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Admin account claimed") {
 		t.Fatalf("password-mode claim: %d %s", w.Code, w.Body)
 	}
@@ -96,14 +95,14 @@ func TestAClaimInPasswordModeBindsButDoesNotSignIn(t *testing.T) {
 
 func TestTheClaimFormRefusesBeforeReachingGoTrue(t *testing.T) {
 	f := newGoTrueFixture(t)
-	path := mintClaim(t, f.store)
+	tok := mintClaim(t, f.store)
 	for name, form := range map[string]url.Values{
-		"11-char password": claimForm("op@example.com", "elevenchars", "elevenchars"),
-		"mismatch":         claimForm("op@example.com", "a-strong-password", "a-strong-passwore"),
-		"bad email":        claimForm("not an email", "a-strong-password", "a-strong-password"),
-		"named email":      claimForm("Op <op@example.com>", "a-strong-password", "a-strong-password"),
+		"11-char password": claimForm(tok, "op@example.com", "elevenchars", "elevenchars"),
+		"mismatch":         claimForm(tok, "op@example.com", "a-strong-password", "a-strong-passwore"),
+		"bad email":        claimForm(tok, "not an email", "a-strong-password", "a-strong-password"),
+		"named email":      claimForm(tok, "Op <op@example.com>", "a-strong-password", "a-strong-password"),
 	} {
-		if w := do(f.edge, "POST", path, form); w.Code != http.StatusBadRequest {
+		if w := do(f.edge, "POST", ClaimPath, form); w.Code != http.StatusBadRequest {
 			t.Errorf("%s: %d, want 400", name, w.Code)
 		}
 	}
@@ -111,17 +110,17 @@ func TestTheClaimFormRefusesBeforeReachingGoTrue(t *testing.T) {
 		t.Fatalf("refused forms reached GoTrue %d time(s)", n)
 	}
 	// Positive control: a good form on the same link works.
-	if w := do(f.edge, "POST", path, claimForm("op@example.com", "a-strong-password", "a-strong-password")); w.Code != http.StatusSeeOther {
+	if w := do(f.edge, "POST", ClaimPath, claimForm(tok, "op@example.com", "a-strong-password", "a-strong-password")); w.Code != http.StatusSeeOther {
 		t.Fatalf("positive control: %d %s", w.Code, w.Body)
 	}
 }
 
 func TestAnUnknownClaimTokenGetsTheUniformInvalidPage(t *testing.T) {
 	f := newGoTrueFixture(t)
-	for _, m := range []string{"GET", "POST"} {
-		w := do(f.edge, m, ClaimPathPrefix+"no-such-token", claimForm("op@example.com", "a-strong-password", "a-strong-password"))
+	for name, tok := range map[string]string{"unknown": "no-such-token", "empty": ""} {
+		w := do(f.edge, "POST", ClaimPath, claimForm(tok, "op@example.com", "a-strong-password", "a-strong-password"))
 		if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "invalid or expired") {
-			t.Fatalf("%s unknown token: %d", m, w.Code)
+			t.Fatalf("%s token: %d", name, w.Code)
 		}
 	}
 	if f.fake.CountCalls("POST", "/admin/users") != 0 {
@@ -131,9 +130,9 @@ func TestAnUnknownClaimTokenGetsTheUniformInvalidPage(t *testing.T) {
 
 func TestClaimCompensatesWhenTheBindingFails(t *testing.T) {
 	f := newGoTrueFixture(t)
-	path := mintClaim(t, f.store)
+	tok := mintClaim(t, f.store)
 	f.store.bindFail = errors.New("simulated commit failure")
-	w := do(f.edge, "POST", path, claimForm("op@example.com", "a-strong-password", "a-strong-password"))
+	w := do(f.edge, "POST", ClaimPath, claimForm(tok, "op@example.com", "a-strong-password", "a-strong-password"))
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("failed binding: %d", w.Code)
 	}
@@ -178,7 +177,7 @@ func TestTheClaimLinkIsSingleUseUnderConcurrency(t *testing.T) {
 	s := New(nil, AuthConfig{Mode: AuthModeGoTrue, HookToken: gtHook}, log.New(io.Discard, "", 0))
 	s.UseGoTrue(GoTrueAuth{Client: fake.Client(), Verifier: fake.Verifier(), Users: store})
 	h := BrowserListener(s.Handler())
-	path := mintClaim(t, store)
+	tok := mintClaim(t, store)
 
 	const n = 8
 	codes := make([]int, n)
@@ -190,7 +189,7 @@ func TestTheClaimLinkIsSingleUseUnderConcurrency(t *testing.T) {
 			defer wg.Done()
 			<-start
 			email := "op" + string(rune('a'+i)) + "@example.com"
-			w := do(h, "POST", path, claimForm(email, "a-strong-password", "a-strong-password"),
+			w := do(h, "POST", ClaimPath, claimForm(tok, email, "a-strong-password", "a-strong-password"),
 				fromIP("198.51.100."+string(rune('1'+i))))
 			codes[i] = w.Code
 		}(i)

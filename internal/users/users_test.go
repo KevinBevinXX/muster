@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/authz"
@@ -158,5 +159,51 @@ func mustNotCreate(t *testing.T) func(context.Context) (string, error) {
 	return func(context.Context) (string, error) {
 		t.Error("create ran for an invalid invite")
 		return "", errors.New("must not run")
+	}
+}
+
+// TestAnAmbiguousCommitIsDecidedByRereadingTheRow: a COMMIT that errors may
+// still have committed. The GoTrue user is deleted only when the re-read row
+// shows it is NOT bound — never when it is.
+func TestAnAmbiguousCommitIsDecidedByRereadingTheRow(t *testing.T) {
+	s, pool := storeFor(t)
+	ctx := context.Background()
+	lost := errors.New("connection lost during COMMIT")
+
+	// Committed, reply lost.
+	if err := s.CreateClaimInvite(ctx, hash("a"), 1, 1, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	s.commit = func(ctx context.Context, tx pgx.Tx) error {
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
+		return lost
+	}
+	undone := ""
+	u, err := s.RedeemClaim(ctx, hash("a"), "a@example.com",
+		func(context.Context) (string, error) { return subA, nil }, func(sub string) { undone = sub })
+	if err != nil || u.GotrueSub != subA {
+		t.Fatalf("a commit that landed must be reported as the success it was: %+v %v", u, err)
+	}
+	if undone != "" {
+		t.Fatalf("the GoTrue user of a COMMITTED binding was deleted (%q): user 1 would be bound to nothing", undone)
+	}
+
+	// Not committed.
+	if _, err := pool.Exec(authz.System(ctx), `UPDATE users SET gotrue_sub = NULL, email = NULL WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateClaimInvite(ctx, hash("b"), 1, 1, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	s.commit = func(ctx context.Context, tx pgx.Tx) error {
+		_ = tx.Rollback(ctx)
+		return lost
+	}
+	_, err = s.RedeemClaim(ctx, hash("b"), "b@example.com",
+		func(context.Context) (string, error) { return subA, nil }, func(sub string) { undone = sub })
+	if err == nil || undone != subA {
+		t.Fatalf("a commit that did NOT land must undo the GoTrue user: err=%v undone=%q", err, undone)
 	}
 }

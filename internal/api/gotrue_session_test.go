@@ -37,6 +37,8 @@ type memUsers struct {
 	rows     map[int64]*users.User
 	invites  map[string]*memInvite
 	bindFail error
+	// lookupErr makes BySub fail as a database outage would.
+	lookupErr error
 }
 
 type memInvite struct {
@@ -61,6 +63,9 @@ func (m *memUsers) add(u users.User) {
 func (m *memUsers) BySub(_ context.Context, sub string) (users.User, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.lookupErr != nil {
+		return users.User{}, m.lookupErr
+	}
 	for _, u := range m.rows {
 		if u.GotrueSub == sub && sub != "" {
 			return *u, nil
@@ -413,9 +418,19 @@ func TestADisabledUserIsRefusedOnTheNextRequest(t *testing.T) {
 	if u, _ := f.fake.User(sub); !u.Banned {
 		t.Fatal("disabling did not ban the GoTrue user")
 	}
-	// Sign-in is refused too (GoTrue's ban), and re-enabling restores it.
+	// Let the cache take the DISABLED row, then re-enable: the very next
+	// request must see it (DisableUser drops the cache in both directions).
+	f.fake.SetAccessTTL(time.Hour)
+	at2, rt2, _ := f.fake.Mint(sub)
+	f.fake.Advance(userCacheTTL + time.Second)
+	if w := do(f.edge, "GET", "/account", nil, withCookies(at2, rt2), asXHR); w.Code != http.StatusUnauthorized {
+		t.Fatalf("disabled, cache refreshed: %d", w.Code)
+	}
 	if err := f.s.DisableUser(context.Background(), 7, false); err != nil {
 		t.Fatal(err)
+	}
+	if w := do(f.edge, "GET", "/account", nil, withCookies(at2, rt2)); w.Code != http.StatusOK {
+		t.Fatalf("the request right after a re-enable: %d, want 200 (stale cache)", w.Code)
 	}
 	w := do(f.edge, "POST", "/login", url.Values{"email": {"m@example.com"}, "password": {"correct horse battery"}})
 	if w.Code != http.StatusSeeOther {
@@ -498,7 +513,7 @@ func TestGoTrueSessionsAreRefusedOffTheBrowserListener(t *testing.T) {
 	if w := do(f.machine, "POST", "/login", url.Values{"email": {"m@example.com"}, "password": {"correct horse battery"}}); w.Code != http.StatusForbidden || len(setCookies(w)) != 0 {
 		t.Fatalf("POST /login on the LAN listener: %d cookies %v", w.Code, setCookies(w))
 	}
-	if w := do(f.machine, "POST", "/auth/claim/sometoken", url.Values{}); w.Code != http.StatusForbidden {
+	if w := do(f.machine, "POST", ClaimPath, url.Values{"token": {"sometoken"}}); w.Code != http.StatusForbidden {
 		t.Fatalf("claim on the LAN listener: %d", w.Code)
 	}
 	if n := len(f.fake.Calls()) - before; n != 0 {
@@ -547,40 +562,6 @@ func TestClientIPIsTrustedFromHeadersOnlyOnTheBrowserListener(t *testing.T) {
 	} {
 		if got := clientIP(mk(tc.edge, tc.hdr)); got != tc.want {
 			t.Errorf("edge=%v %v: clientIP = %s, want %s", tc.edge, tc.hdr, got, tc.want)
-		}
-	}
-}
-
-func TestLoginFailuresAreRateLimitedPerClientIP(t *testing.T) {
-	f := newGoTrueFixture(t)
-	f.member("m@example.com", 7, authz.RoleMember)
-	bad := url.Values{"email": {"m@example.com"}, "password": {"wrong password!!"}}
-	good := url.Values{"email": {"m@example.com"}, "password": {"correct horse battery"}}
-	for i := 0; i < loginFailureLimit; i++ {
-		if w := do(f.edge, "POST", "/login", bad, fromIP("198.51.100.1")); w.Code != http.StatusUnauthorized {
-			t.Fatalf("failure %d: %d, want 401", i+1, w.Code)
-		}
-	}
-	before := f.fake.CountCalls("POST", "/token")
-	if w := do(f.edge, "POST", "/login", good, fromIP("198.51.100.1")); w.Code != http.StatusTooManyRequests {
-		t.Fatalf("after %d failures, even the right password: %d, want 429", loginFailureLimit, w.Code)
-	}
-	if f.fake.CountCalls("POST", "/token") != before {
-		t.Fatal("a throttled attempt still reached GoTrue")
-	}
-	// Another address is unaffected.
-	if w := do(f.edge, "POST", "/login", good, fromIP("198.51.100.2")); w.Code != http.StatusSeeOther {
-		t.Fatalf("another address: %d, want 303", w.Code)
-	}
-	// The window passes.
-	f.fake.Advance(loginFailureWindow + time.Second)
-	if w := do(f.edge, "POST", "/login", good, fromIP("198.51.100.1")); w.Code != http.StatusSeeOther {
-		t.Fatalf("after the window: %d, want 303", w.Code)
-	}
-	// GoTrue saw the address muster resolved, on every call.
-	for _, c := range f.fake.Calls() {
-		if c.ClientIP != "198.51.100.1" && c.ClientIP != "198.51.100.2" {
-			t.Fatalf("GoTrue saw %s=%q", gotrue.ClientIPHeader, c.ClientIP)
 		}
 	}
 }
@@ -657,10 +638,10 @@ func TestDisableUserReportsAGoTrueFailureAfterTheRowChanged(t *testing.T) {
 func TestTheGoTrueFormsRefuseACrossSitePost(t *testing.T) {
 	f := newGoTrueFixture(t)
 	f.member("m@example.com", 7, authz.RoleMember)
-	path := mintClaim(t, f.store)
+	tok := mintClaim(t, f.store)
 	evil := func(r *http.Request) { r.Header.Set("Origin", "https://evil.example.net") }
-	for _, target := range []string{"/login", path, "/logout"} {
-		w := do(f.edge, "POST", target, url.Values{"email": {"m@example.com"}, "password": {"correct horse battery"}}, evil)
+	for _, target := range []string{"/login", ClaimPath, "/logout"} {
+		w := do(f.edge, "POST", target, url.Values{"token": {tok}, "email": {"m@example.com"}, "password": {"correct horse battery"}}, evil)
 		if w.Code != http.StatusForbidden {
 			t.Errorf("cross-site POST %s: %d, want 403", target, w.Code)
 		}
@@ -680,8 +661,7 @@ func TestTheGoTrueFormsRefuseACrossSitePost(t *testing.T) {
 // to same-origin, through the REAL middleware chain.
 func TestTheAuthPagesLetTheirOwnFormsCarryAnOrigin(t *testing.T) {
 	f := newGoTrueFixture(t)
-	path := mintClaim(t, f.store)
-	for _, target := range []string{"/login", path} {
+	for _, target := range []string{"/login", ClaimPath} {
 		w := do(f.edge, "GET", target, nil)
 		if got := w.Header().Get("Referrer-Policy"); got != "same-origin" {
 			t.Errorf("GET %s: Referrer-Policy %q, want same-origin", target, got)

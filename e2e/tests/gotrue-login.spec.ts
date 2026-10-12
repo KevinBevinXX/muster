@@ -64,7 +64,8 @@ function claimLink(): string {
       MUSTER_GOTRUE_JWT_SECRET: gotrueSecret,
     },
   }).toString().trim();
-  expect(out.startsWith(browserURL + '/auth/claim/'), `claim link: ${out}`).toBe(true);
+  // The token rides in the FRAGMENT, which no request (and so no log) carries.
+  expect(out.startsWith(browserURL + '/auth/claim#'), `claim link: ${out}`).toBe(true);
   return out;
 }
 
@@ -76,6 +77,8 @@ test('claim the admin, sign in, survive an access-token expiry, sign out (real G
   // 1. Claim: the link the server binary printed, redeemed in the browser.
   await page.goto(claimLink());
   await expect(page.getByRole('heading', { name: 'Claim the admin account' })).toBeVisible();
+  // The page moved the fragment into its form and dropped it from the address bar.
+  expect(page.url()).toBe(browserURL + '/auth/claim');
   await page.fill('#claim-email', email);
   await page.fill('#claim-password', password);
   await page.fill('#claim-password2', password);

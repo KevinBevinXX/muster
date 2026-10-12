@@ -186,6 +186,17 @@ func TestVerifyAppliesThirtySecondsOfSkewToExpiry(t *testing.T) {
 	if _, err := testVerifier().Verify(sign(t, c)); err != nil {
 		t.Fatalf("nbf 29s ahead is within skew: %v", err)
 	}
+	// iat in the future: a token minted by a clock running ahead (or forged
+	// ahead to outlive a not-before) is refused past the skew, accepted inside.
+	c = goodClaims()
+	c.IssuedAt = testNow.Add(31 * time.Second).Unix()
+	if _, err := testVerifier().Verify(sign(t, c)); !errors.Is(err, ErrNotYet) {
+		t.Fatalf("iat 31s ahead: got %v, want ErrNotYet", err)
+	}
+	c.IssuedAt = testNow.Add(29 * time.Second).Unix()
+	if _, err := testVerifier().Verify(sign(t, c)); err != nil {
+		t.Fatalf("iat 29s ahead is within skew: %v", err)
+	}
 }
 
 func TestVerifyRejectsMalformedTokens(t *testing.T) {

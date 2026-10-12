@@ -161,7 +161,7 @@ func TestTheClaimAdminCommandPrintsASingleLiveLink(t *testing.T) {
 		return rc, strings.TrimSpace(out.String()), errb.String()
 	}
 	rc, first, stderr := run("invite", "--claim-admin")
-	if rc != 0 || !strings.HasPrefix(first, "https://muster.example.com/auth/claim/") {
+	if rc != 0 || !strings.HasPrefix(first, "https://muster.example.com/auth/claim#") {
 		t.Fatalf("claim-admin: rc=%d out=%q err=%q", rc, first, stderr)
 	}
 	rc, second, _ := run("invite", "--claim-admin")
@@ -170,7 +170,7 @@ func TestTheClaimAdminCommandPrintsASingleLiveLink(t *testing.T) {
 	}
 	store := users.NewPG(pool)
 	live := func(link string) bool {
-		tok := link[strings.LastIndex(link, "/")+1:]
+		tok := link[strings.LastIndex(link, "#")+1:]
 		sum := sha256.Sum256([]byte(tok))
 		ok, err := store.ClaimInviteLive(ctx, sum[:])
 		if err != nil {

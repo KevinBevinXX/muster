@@ -83,12 +83,6 @@ const (
 	ScopeGlobal LogoutScope = "global"
 )
 
-// LinkType is an /admin/generate_link type muster uses.
-type LinkType string
-
-// LinkRecovery is a password-reset link (no SMTP: muster shows it).
-const LinkRecovery LinkType = "recovery"
-
 // Client talks to one GoTrue instance.
 type Client struct {
 	// BaseURL is GoTrue's root, e.g. http://auth.example.com:9999.
@@ -187,22 +181,6 @@ func (c *Client) AdminSetBanned(ctx context.Context, clientIP, userID string, ba
 // user whose muster-side binding failed to commit.
 func (c *Client) AdminDeleteUser(ctx context.Context, clientIP, userID string) error {
 	return c.admin(ctx, clientIP, http.MethodDelete, "/admin/users/"+url.PathEscape(userID), nil, nil)
-}
-
-// AdminGenerateLink returns an action link of typ for email without sending
-// mail (GoTrue has no SMTP here).
-func (c *Client) AdminGenerateLink(ctx context.Context, clientIP string, typ LinkType, email, redirectTo string) (string, error) {
-	var out struct {
-		ActionLink string `json:"action_link"`
-	}
-	body := map[string]any{"type": typ, "email": email}
-	if redirectTo != "" {
-		body["redirect_to"] = redirectTo
-	}
-	if err := c.admin(ctx, clientIP, http.MethodPost, "/admin/generate_link", body, &out); err != nil {
-		return "", err
-	}
-	return out.ActionLink, nil
 }
 
 // ServiceToken mints the service_role token an admin call carries.

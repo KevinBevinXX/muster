@@ -23,24 +23,109 @@ import (
 
 // Sign-in throttles for gotrue mode.
 //
-// 🔴 TWO LIMITS, AND THE PER-ADDRESS ONE IS NOT ENOUGH ON ITS OWN. Failures are
-// counted per client address (loginFailureLimit per loginFailureWindow), which
-// is what stops one guesser without locking every other user out — the
-// password mode's single shared bucket would let one person deny sign-in to
-// all. But the address is read from headers on the browser listener (see
-// clientIP), so a caller who can reach that port around the CDN chooses it;
-// loginAttemptCeiling bounds ALL attempts process-wide so rotating addresses
-// buys a bounded rate, not an unbounded one. GoTrue applies its own limits
-// too, bucketed on the address muster forwards.
+// 🔴 THE KEY IS THE ACCOUNT, NOT THE ADDRESS, AND THERE IS NO GLOBAL CEILING.
+// The client address comes from CF-Connecting-IP / X-Forwarded-For on the
+// browser listener, and anything that reaches the edge without passing the CDN
+// can write those — so an address-only limit is walked by rotating it, and a
+// process-wide ceiling (an earlier draft had one) is a lever any anonymous
+// caller pulls to lock EVERY user out. Failures are therefore counted per
+// ACCOUNT (the normalised email): after accountFreeFailures, each further
+// failure doubles the wait before that account may try again, from
+// accountBackoffBase up to accountBackoffMax. The per-address count
+// (loginFailureLimit per loginFailureWindow) is kept as a secondary limit on
+// one source spraying many accounts. GoTrue applies its own limits too.
+//
+// ⚠ THE ACCOUNT BACKOFF IS ITSELF A TARGETED LOCKOUT: someone who knows your
+// email can keep you waiting up to accountBackoffMax by failing on purpose. That
+// is the accepted trade (one account, bounded wait) against the alternative of
+// unbounded guessing of that account's password.
 const (
+	accountFreeFailures = 3
+	accountBackoffBase  = 2 * time.Second
+	accountBackoffMax   = 5 * time.Minute
 	loginFailureLimit   = 10
 	loginFailureWindow  = 10 * time.Minute
-	loginAttemptCeiling = 120
-	loginAttemptWindow  = time.Minute
 )
 
-// ClaimPathPrefix is the admin claim link's path; the token follows it.
-const ClaimPathPrefix = "/auth/claim/"
+// backoff is one account's failure record.
+type backoff struct {
+	failures int
+	until    time.Time
+	last     time.Time
+}
+
+// normaliseAccount is the key an email is throttled under.
+func normaliseAccount(email string) string { return strings.ToLower(strings.TrimSpace(email)) }
+
+// loginThrottled reports whether a sign-in for account from ip must wait.
+// An empty account (the claim form) is limited by address only.
+func (g *gotrueState) loginThrottled(account, ip string) bool {
+	now := g.now()
+	if g.ipFailures.count(ip, now, loginFailureWindow) >= loginFailureLimit {
+		return true
+	}
+	if account == "" {
+		return false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	b := g.accountFailures[account]
+	return b != nil && now.Before(b.until)
+}
+
+// loginFailed records a failure against account (if any) and ip.
+func (g *gotrueState) loginFailed(account, ip string) {
+	now := g.now()
+	g.ipFailures.add(ip, now, loginFailureWindow)
+	if account == "" {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.accountFailures == nil {
+		g.accountFailures = map[string]*backoff{}
+	}
+	if len(g.accountFailures) > 10000 {
+		for k, b := range g.accountFailures {
+			if now.Sub(b.last) > time.Hour {
+				delete(g.accountFailures, k)
+			}
+		}
+	}
+	b := g.accountFailures[account]
+	if b == nil || now.Sub(b.last) > time.Hour {
+		b = &backoff{}
+		g.accountFailures[account] = b
+	}
+	b.failures++
+	b.last = now
+	if over := b.failures - accountFreeFailures; over > 0 {
+		d := accountBackoffMax
+		if over <= 20 {
+			if e := accountBackoffBase << (over - 1); e < accountBackoffMax {
+				d = e
+			}
+		}
+		b.until = now.Add(d)
+	}
+}
+
+// loginSucceeded clears account's failure record.
+func (g *gotrueState) loginSucceeded(account string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.accountFailures, account)
+}
+
+// ClaimPath is the admin claim page. The token is NOT in the path: it rides
+// in the URL FRAGMENT (`/auth/claim#<token>`), which a browser never sends to
+// a server, and the page's form posts it as a field.
+//
+// 🔴 A PATH TOKEN WAS WRITTEN TO THE ACCESS LOG. accessLog records
+// r.URL.Path for every request, so `GET /auth/claim/<token>` put a live,
+// single-use admin credential into muster's logs (and any proxy's). A fragment
+// reaches neither (TestTheClaimTokenNeverReachesTheLog).
+const ClaimPath = "/auth/claim"
 
 // ClaimTTL is how long a claim link stays redeemable.
 const ClaimTTL = 24 * time.Hour
@@ -51,8 +136,8 @@ const accountPath = "/account"
 // registerAccountRoutes wires the claim and account routes. Literal patterns,
 // for the reason registerLoginRoutes gives.
 func (s *Server) registerAccountRoutes(mux Mux) {
-	mux.HandleFunc("GET /auth/claim/{token}", s.handleClaimPage)
-	mux.HandleFunc("POST /auth/claim/{token}", s.handleClaimSubmit)
+	mux.HandleFunc("GET /auth/claim", s.handleClaimPage)
+	mux.HandleFunc("POST /auth/claim", s.handleClaimSubmit)
 	mux.HandleFunc("GET /account", s.requireSession(s.handleAccountPage))
 }
 
@@ -102,16 +187,6 @@ func (s *Server) renderGoTrueLogin(w http.ResponseWriter, code int, next, email,
 	writeAuthDocument(w, code, "Sign in", inner)
 }
 
-// loginThrottled reports whether ip may NOT attempt a sign-in now, and counts
-// the attempt against the process-wide ceiling when it may.
-func (g *gotrueState) loginThrottled(ip string) bool {
-	now := g.now()
-	if g.failures.count(ip, now, loginFailureWindow) >= loginFailureLimit {
-		return true
-	}
-	return !g.attempts.allow(now, loginAttemptCeiling, loginAttemptWindow)
-}
-
 func (s *Server) handleGoTrueLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	if !viaBrowserListener(r) {
 		s.refuseOffBrowserListener(w, r)
@@ -135,7 +210,8 @@ func (s *Server) handleGoTrueLoginSubmit(w http.ResponseWriter, r *http.Request)
 	}
 	next, email, password := r.FormValue("next"), strings.TrimSpace(r.FormValue("email")), r.FormValue("password")
 	ip := clientIP(r)
-	if s.gt.loginThrottled(ip) {
+	account := normaliseAccount(email)
+	if s.gt.loginThrottled(account, ip) {
 		// 429, not 401: the credential was never judged.
 		s.renderGoTrueLogin(w, http.StatusTooManyRequests, next, email, "Too many attempts. Wait a few minutes and try again.")
 		return
@@ -147,7 +223,7 @@ func (s *Server) handleGoTrueLoginSubmit(w http.ResponseWriter, r *http.Request)
 		case errors.As(err, &ae) && ae.Status == http.StatusTooManyRequests:
 			s.renderGoTrueLogin(w, http.StatusTooManyRequests, next, email, "Too many attempts. Wait a few minutes and try again.")
 		case gotrue.IsClientError(err):
-			s.gt.failures.add(ip, s.gt.now(), loginFailureWindow)
+			s.gt.loginFailed(account, ip)
 			s.logger.Printf("login: rejected a sign-in attempt from %s", ip)
 			s.renderGoTrueLogin(w, http.StatusUnauthorized, next, email, "That email and password do not match.")
 		default:
@@ -161,6 +237,7 @@ func (s *Server) handleGoTrueLoginSubmit(w http.ResponseWriter, r *http.Request)
 		s.renderGoTrueLogin(w, code, next, email, problem)
 		return
 	}
+	s.gt.loginSucceeded(account)
 	s.setGoTrueCookies(w, sess)
 	s.logger.Printf("login: user %d signed in", u.ID)
 	http.Redirect(w, r, safeReturnTo(next), http.StatusSeeOther)
@@ -210,7 +287,7 @@ func (s *Server) handleGoTrueLogout(w http.ResponseWriter, r *http.Request) {
 				// may survive in GoTrue, so it is logged rather than swallowed.
 				s.logger.Printf("logout: GoTrue /logout failed for user %d: %v", sess.user.ID, err)
 			}
-			s.gt.revoke(sess.claims, scope)
+			s.gt.revoke(sess.user.ID, sess.claims, scope)
 			s.logger.Printf("logout: user %d signed out (%s)", sess.user.ID, scope)
 		}
 	}
@@ -270,14 +347,14 @@ func NewAdminClaimLink(ctx context.Context, store ClaimMinter, publicURL string,
 	if err := store.CreateClaimInvite(ctx, sum[:], adminUserID, adminUserID, now.Add(ClaimTTL)); err != nil {
 		return "", err
 	}
-	return strings.TrimRight(publicURL, "/") + ClaimPathPrefix + token, nil
+	return strings.TrimRight(publicURL, "/") + ClaimPath + "#" + token, nil
 }
 
 // adminUserID is the seeded operator row the claim binds.
 const adminUserID int64 = 1
 
-func claimHash(r *http.Request) []byte {
-	sum := sha256.Sum256([]byte(r.PathValue("token")))
+func claimHash(token string) []byte {
+	sum := sha256.Sum256([]byte(token))
 	return sum[:]
 }
 
@@ -308,34 +385,34 @@ func (s *Server) handleClaimPage(w http.ResponseWriter, r *http.Request) {
 		s.renderNotice(w, code, "Open this link at the public address", msg)
 		return
 	}
-	live, err := s.gt.Users.ClaimInviteLive(r.Context(), claimHash(r))
-	if err != nil {
-		s.logger.Printf("claim: lookup failed: %v", err)
-		s.renderNotice(w, http.StatusInternalServerError, "Something went wrong", "Try the link again shortly.")
-		return
-	}
-	if !live {
-		s.renderInvalidClaim(w)
-		return
-	}
-	s.renderClaimForm(w, http.StatusOK, r.URL.Path, "", "")
+	// The token is in the fragment, so the server cannot check it here; the
+	// page reads it into the form and the POST is where it is judged.
+	s.renderClaimForm(w, http.StatusOK, "", "", "")
 }
 
-func (s *Server) renderClaimForm(w http.ResponseWriter, code int, action, email, problem string) {
+func (s *Server) renderClaimForm(w http.ResponseWriter, code int, token, email, problem string) {
 	field := func(id, name, label, typ, auto, value string) string {
 		return `<label for="` + id + `" class="text-sm font-medium text-fg">` + label + `</label>
 <input id="` + id + `" name="` + name + `" type="` + typ + `" autocomplete="` + auto + `" required value="` + html.EscapeString(value) + `"
  class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">`
 	}
-	writeAuthDocument(w, code, "Claim the admin account", `<form method="POST" action="`+html.EscapeString(action)+`" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+	writeAuthDocument(w, code, "Claim the admin account", `<form method="POST" action="`+ClaimPath+`" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Claim the admin account</h1>
 <p class="text-sm text-fg2">Choose the email and password you will sign in to muster with. This link works once.</p>
 `+problemNode(problem)+`
 `+field("claim-email", "email", "Email", "email", "username", email)+`
 `+field("claim-password", "password", "Password (at least 12 characters)", "password", "new-password", "")+`
 `+field("claim-password2", "password2", "Password again", "password", "new-password", "")+`
+<input type="hidden" id="claim-token" name="token" value="`+html.EscapeString(token)+`">
 <button type="submit" class="press min-h-[44px] rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Claim</button>
-</form>`)
+</form>
+<script>
+(function () {
+  var t = document.getElementById('claim-token');
+  if (!t.value && location.hash.length > 1) { t.value = location.hash.slice(1); }
+  if (location.hash) { history.replaceState(null, '', location.pathname); }
+})();
+</script>`)
 }
 
 func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
@@ -352,30 +429,36 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		s.renderClaimForm(w, http.StatusBadRequest, r.URL.Path, "", "That form could not be read.")
+		s.renderClaimForm(w, http.StatusBadRequest, "", "", "That form could not be read.")
 		return
 	}
 	ip := clientIP(r)
-	if s.gt.loginThrottled(ip) {
+	if s.gt.loginThrottled("", ip) {
 		s.renderNotice(w, http.StatusTooManyRequests, "Too many attempts", "Wait a few minutes and try again.")
 		return
 	}
+	token := r.FormValue("token")
 	email := strings.TrimSpace(r.FormValue("email"))
 	pw, pw2 := r.FormValue("password"), r.FormValue("password2")
+	if token == "" {
+		s.gt.loginFailed("", ip)
+		s.renderInvalidClaim(w)
+		return
+	}
 	if a, err := mail.ParseAddress(email); err != nil || a.Address != email {
-		s.renderClaimForm(w, http.StatusBadRequest, r.URL.Path, email, "Enter a valid email address.")
+		s.renderClaimForm(w, http.StatusBadRequest, token, email, "Enter a valid email address.")
 		return
 	}
 	if len(pw) < gotrue.MinPasswordLength {
-		s.renderClaimForm(w, http.StatusBadRequest, r.URL.Path, email, "The password must be at least 12 characters.")
+		s.renderClaimForm(w, http.StatusBadRequest, token, email, "The password must be at least 12 characters.")
 		return
 	}
 	if pw != pw2 {
-		s.renderClaimForm(w, http.StatusBadRequest, r.URL.Path, email, "The two passwords are different.")
+		s.renderClaimForm(w, http.StatusBadRequest, token, email, "The two passwords are different.")
 		return
 	}
 	var createErr error
-	u, err := s.gt.Users.RedeemClaim(r.Context(), claimHash(r), email,
+	u, err := s.gt.Users.RedeemClaim(r.Context(), claimHash(token), email,
 		func(ctx context.Context) (string, error) {
 			sub, err := s.gt.Client.AdminCreateUser(ctx, ip, email, pw)
 			createErr = err
@@ -392,21 +475,21 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 		})
 	switch {
 	case errors.Is(err, users.ErrInvalidInvite):
-		s.gt.failures.add(ip, s.gt.now(), loginFailureWindow)
+		s.gt.loginFailed("", ip)
 		s.renderInvalidClaim(w)
 		return
 	case err != nil && createErr != nil:
 		var ae *gotrue.APIError
 		if errors.As(createErr, &ae) && ae.Status == http.StatusUnprocessableEntity {
-			s.renderClaimForm(w, http.StatusUnprocessableEntity, r.URL.Path, email, "GoTrue refused that email or password ("+ae.Code+").")
+			s.renderClaimForm(w, http.StatusUnprocessableEntity, token, email, "GoTrue refused that email or password ("+ae.Code+").")
 			return
 		}
 		s.logger.Printf("claim: GoTrue create failed: %v", createErr)
-		s.renderClaimForm(w, http.StatusBadGateway, r.URL.Path, email, "Sign-in is unavailable right now. Try again shortly.")
+		s.renderClaimForm(w, http.StatusBadGateway, token, email, "Sign-in is unavailable right now. Try again shortly.")
 		return
 	case err != nil:
 		s.logger.Printf("claim: redeem failed: %v", err)
-		s.renderClaimForm(w, http.StatusInternalServerError, r.URL.Path, email, "The account could not be claimed. Try again.")
+		s.renderClaimForm(w, http.StatusInternalServerError, token, email, "The account could not be claimed. Try again.")
 		return
 	}
 	s.gt.forgetUser(u.ID)

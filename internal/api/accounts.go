@@ -100,7 +100,6 @@ type UserStore interface {
 	BySub(ctx context.Context, sub string) (users.User, error)
 	ByID(ctx context.Context, id int64) (users.User, error)
 	SetDisabled(ctx context.Context, id int64, disabled bool) (users.User, error)
-	ClaimInviteLive(ctx context.Context, tokenHash []byte) (bool, error)
 	RedeemClaim(ctx context.Context, tokenHash []byte, email string,
 		create func(context.Context) (string, error), undo func(sub string)) (users.User, error)
 }
@@ -132,8 +131,89 @@ type gotrueState struct {
 	notBefore    map[string]time.Time
 	afterSignOut map[string]bool
 
-	failures keyedWindow
-	attempts rateLimiter
+	// live is every in-flight session request — SSE streams and terminal /
+	// chat sockets included — by user, so a disable or a sign-out can END
+	// what is already open (see track). disabled is the set of users disabled
+	// through this process, checked under the same lock so a request that
+	// resolved just before a disable cannot register just after its sweep.
+	live     map[int64]map[*liveRequest]struct{}
+	disabled map[int64]bool
+
+	// Sign-in throttles: per account (the real key) and per forwarded client
+	// address (secondary). See login_gotrue.go.
+	accountFailures map[string]*backoff
+	ipFailures      keyedWindow
+	// refreshes counts GoTrue refreshes per subject (refreshPerSubjectLimit).
+	refreshes keyedWindow
+}
+
+// liveRequest is one in-flight session request's cancel.
+type liveRequest struct {
+	sid    string
+	cancel context.CancelCauseFunc
+}
+
+// errSessionEnded is the cause an open stream is cancelled with when its
+// user is disabled or its session signed out.
+var errSessionEnded = errors.New("session ended: signed out or disabled")
+
+// track registers a session request so endUser / revoke can cancel it, and
+// returns the context the handler must run under. ok is false when the user
+// was disabled, or the session revoked, after this request resolved — the
+// check is under the same lock as the sweeps, so nothing slips between them.
+//
+// 🔴 ONE CHOKE POINT FOR EVERY KIND OF OPEN STREAM. Every SSE handler takes
+// its loop context from r.Context() (streamContext), and both terminal
+// sockets and the chat socket bridge on a context derived from it; cancelling
+// this one context ends all of them (TestEndingASessionEndsItsOpenStreams).
+func (g *gotrueState) track(parent context.Context, uid int64, c gotrue.Claims) (context.Context, func(), bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.disabled[uid] || g.isRevokedLocked(c) {
+		return nil, nil, false
+	}
+	ctx, cancel := context.WithCancelCause(parent)
+	lr := &liveRequest{sid: c.SessionID, cancel: cancel}
+	if g.live == nil {
+		g.live = map[int64]map[*liveRequest]struct{}{}
+	}
+	if g.live[uid] == nil {
+		g.live[uid] = map[*liveRequest]struct{}{}
+	}
+	g.live[uid][lr] = struct{}{}
+	return ctx, func() {
+		g.mu.Lock()
+		delete(g.live[uid], lr)
+		if len(g.live[uid]) == 0 {
+			delete(g.live, uid)
+		}
+		g.mu.Unlock()
+		cancel(nil)
+	}, true
+}
+
+// endLocked cancels uid's live requests — all of them, or only session sid's.
+func (g *gotrueState) endLocked(uid int64, sid string) {
+	for lr := range g.live[uid] {
+		if sid == "" || lr.sid == sid {
+			lr.cancel(errSessionEnded)
+		}
+	}
+}
+
+// setDisabled records a disable (ending the user's open streams) or clears it.
+func (g *gotrueState) setDisabled(uid int64, disabled bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.disabled == nil {
+		g.disabled = map[int64]bool{}
+	}
+	if !disabled {
+		delete(g.disabled, uid)
+		return
+	}
+	g.disabled[uid] = true
+	g.endLocked(uid, "")
 }
 
 type cachedUser struct {
@@ -221,6 +301,15 @@ func (g *gotrueState) refresh(ctx context.Context, clientIP, rt string) (gotrue.
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	f.sess, f.err = g.Client.Refresh(rctx, clientIP, rt)
 	cancel()
+	if f.err != nil {
+		// A FAILED flight is shared only with the requests already waiting on
+		// it, never cached: a GoTrue blip must not stay the answer for 30 s.
+		g.mu.Lock()
+		if g.flights[key] == f {
+			delete(g.flights, key)
+		}
+		g.mu.Unlock()
+	}
 	close(f.done)
 	return f.sess, f.err
 }
@@ -233,7 +322,7 @@ func (g *gotrueState) refresh(ctx context.Context, clientIP, rt string) (gotrue.
 // ⚠ IN-MEMORY. A restart forgets it, leaving at most one access-token lifetime
 // in which a copied token from before the sign-out still verifies; the refresh
 // side stays revoked in GoTrue regardless.
-func (g *gotrueState) revoke(c gotrue.Claims, scope gotrue.LogoutScope) {
+func (g *gotrueState) revoke(uid int64, c gotrue.Claims, scope gotrue.LogoutScope) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := g.now()
@@ -262,7 +351,10 @@ func (g *gotrueState) revoke(c gotrue.Claims, scope gotrue.LogoutScope) {
 		if len(g.afterSignOut) > 10000 {
 			g.afterSignOut = map[string]bool{}
 		}
+		g.endLocked(uid, "")
+		return
 	}
+	g.endLocked(uid, c.SessionID)
 }
 
 // signedIn records a session this process just minted (sign-in, claim), so a
@@ -278,6 +370,10 @@ func (g *gotrueState) signedIn(c gotrue.Claims) {
 func (g *gotrueState) isRevoked(c gotrue.Claims) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	return g.isRevokedLocked(c)
+}
+
+func (g *gotrueState) isRevokedLocked(c gotrue.Claims) bool {
 	if _, ok := g.revokedSessions[c.SessionID]; ok && c.SessionID != "" {
 		return true
 	}
@@ -311,12 +407,22 @@ func (s *Server) resolveGoTrueSession(r *http.Request) (gotrueSession, error) {
 	at := cookieValue(r, accessCookieName)
 	rt := cookieValue(r, refreshCookieName)
 	var sess gotrueSession
-	var c gotrue.Claims
-	err := gotrue.ErrExpired
-	if at != "" {
-		c, err = g.Verifier.Verify(at)
-	}
+	// 🔴 NO SIGNED ACCESS TOKEN, NO REFRESH. A refresh is attempted only for an
+	// access token whose SIGNATURE verified and which has merely expired
+	// (Verify returns ErrExpired only after the signature check): that is
+	// unforgeable, so a request carrying only a muster_rt — real or invented,
+	// with the access cookie absent ("" is malformed) or forged — cannot make
+	// muster call GoTrue at all (TestARefreshNeedsASignedExpiredAccessToken).
+	c, err := g.Verifier.Verify(at)
 	if errors.Is(err, gotrue.ErrExpired) && rt != "" {
+		// And per SUBJECT of that signed token, a ceiling on refresh calls:
+		// coalescing already makes a real browser one call per token, so this
+		// bounds only a replayed expired token.
+		now := g.now()
+		if g.refreshes.count(c.Subject, now, time.Minute) >= refreshPerSubjectLimit {
+			return sess, errRefreshThrottled
+		}
+		g.refreshes.add(c.Subject, now, time.Minute)
 		fresh, rerr := g.refresh(r.Context(), clientIP(r), rt)
 		if rerr != nil {
 			return sess, rerr
@@ -346,7 +452,34 @@ func (s *Server) resolveGoTrueSession(r *http.Request) (gotrueSession, error) {
 	return sess, nil
 }
 
-var errDisabled = errors.New("user is disabled")
+var (
+	errDisabled         = errors.New("user is disabled")
+	errRefreshThrottled = errors.New("too many refreshes for this subject")
+)
+
+// refreshPerSubjectLimit bounds GoTrue refresh calls per subject per minute.
+const refreshPerSubjectLimit = 20
+
+// endsTheSession reports whether err means the cookies are no good — so they
+// are cleared and the caller must sign in again — as opposed to muster or
+// GoTrue being unable to answer right now.
+//
+// 🔴 ONLY AUTH-CLASS FAILURES CLEAR COOKIES. A GoTrue 5xx or 429, a timeout or
+// a Postgres error says nothing about the session; clearing on those signed
+// every open tab out for a blip (TestATransientFailureKeepsTheSession).
+func endsTheSession(err error) bool {
+	switch {
+	case errors.Is(err, errRevoked), errors.Is(err, errDisabled), errors.Is(err, users.ErrNotFound):
+		return true
+	case errors.Is(err, gotrue.ErrMalformed), errors.Is(err, gotrue.ErrAlgorithm),
+		errors.Is(err, gotrue.ErrSignature), errors.Is(err, gotrue.ErrIssuer),
+		errors.Is(err, gotrue.ErrAudience), errors.Is(err, gotrue.ErrExpired),
+		errors.Is(err, gotrue.ErrNotYet), errors.Is(err, gotrue.ErrNoSubject):
+		return true
+	}
+	var ae *gotrue.APIError
+	return errors.As(err, &ae) && ae.Status >= 400 && ae.Status < 500 && ae.Status != http.StatusTooManyRequests
+}
 
 // requireGoTrueSession is requireSession in gotrue mode.
 func (s *Server) requireGoTrueSession(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
@@ -365,15 +498,32 @@ func (s *Server) requireGoTrueSession(w http.ResponseWriter, r *http.Request, ne
 		return
 	}
 	sess, err := s.resolveGoTrueSession(r)
+	if err != nil && !endsTheSession(err) {
+		s.logger.Printf("session: could not resolve (cookies kept): %v", err)
+		if isDocumentNavigation(r) {
+			s.renderNotice(w, http.StatusServiceUnavailable, "muster cannot check your sign-in right now",
+				"Reload in a moment; you are still signed in.")
+			return
+		}
+		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "sign-in could not be checked right now; retry"})
+		return
+	}
 	if err != nil {
 		s.clearGoTrueCookies(w)
 		s.refuseUnauthenticated(w, r)
 		return
 	}
+	ctx, untrack, ok := s.gt.track(r.Context(), sess.user.ID, sess.claims)
+	if !ok {
+		s.clearGoTrueCookies(w)
+		s.refuseUnauthenticated(w, r)
+		return
+	}
+	defer untrack()
 	if sess.refreshed != nil {
 		s.setGoTrueCookies(w, *sess.refreshed)
 	}
-	s.admit(w, r, next, authz.Principal{UserID: sess.user.ID, Role: sess.user.Role, Via: authz.ViaSession})
+	s.admit(w, r.WithContext(ctx), next, authz.Principal{UserID: sess.user.ID, Role: sess.user.Role, Via: authz.ViaSession})
 }
 
 // OffBrowserListenerRefusal is the error a browser-session route answers on
@@ -446,7 +596,10 @@ func (s *Server) DisableUser(ctx context.Context, id int64, disabled bool) error
 	if s.gt == nil {
 		return errors.New("GoTrue is not configured (MUSTER_GOTRUE_URL)")
 	}
-	return SetUserDisabled(ctx, s.gt.GoTrueAuth, id, disabled, func() { s.gt.forgetUser(id) })
+	return SetUserDisabled(ctx, s.gt.GoTrueAuth, id, disabled, func() {
+		s.gt.forgetUser(id)
+		s.gt.setDisabled(id, disabled)
+	})
 }
 
 // SetUserDisabled is DisableUser without a server, for the CLI. invalidate

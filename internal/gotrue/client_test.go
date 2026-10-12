@@ -43,10 +43,6 @@ func TestEveryCallCarriesTheClientIP(t *testing.T) {
 			return err
 		},
 		"AdminSetBanned": func(ip string) error { return c.AdminSetBanned(ctx, ip, id, false) },
-		"AdminGenerateLink": func(ip string) error {
-			_, err := c.AdminGenerateLink(ctx, ip, gotrue.LinkRecovery, "a@example.com", "")
-			return err
-		},
 		"AdminDeleteUser": func(ip string) error {
 			victim := f.AddUser("victim-"+ip+"@example.com", "a-long-enough-password")
 			return c.AdminDeleteUser(ctx, ip, victim)

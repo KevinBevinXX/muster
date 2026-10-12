@@ -6,7 +6,7 @@
 // password and refresh grants with rotation (a spent token's direct parent
 // replay is accepted, any older replay revokes the session), local and global
 // logout, admin create (with email_confirm required to sign in and NO
-// password-length check, as measured), ban, delete, generate_link, and a
+// password-length check, as measured), ban, delete, and a
 // service_role check on /admin/*. The e2e suite runs the REAL image for the
 // claim → login → refresh → logout path; this fake exists so every guard can be
 // driven from `go test` with a controllable clock.
@@ -67,10 +67,13 @@ type Fake struct {
 	// createDelay holds every /admin/users call open this long, to widen a
 	// race a concurrency test wants to observe.
 	createDelay time.Duration
-	users       map[string]*User
-	sessions    map[string]*session
-	refresh     map[string]*refreshToken
-	calls       []Call
+	// tokenFailures makes the next N /token calls answer tokenFailStatus.
+	tokenFailures   int
+	tokenFailStatus int
+	users           map[string]*User
+	sessions        map[string]*session
+	refresh         map[string]*refreshToken
+	calls           []Call
 }
 
 // Call is one request the fake served.
@@ -120,6 +123,14 @@ func (f *Fake) Advance(d time.Duration) {
 func (f *Fake) SetAccessTTL(d time.Duration) {
 	f.mu.Lock()
 	f.accessTTL = d
+	f.mu.Unlock()
+}
+
+// FailToken makes the next n /token calls (either grant) answer status with
+// no body change — a GoTrue outage or rate limit, not a credential verdict.
+func (f *Fake) FailToken(status, n int) {
+	f.mu.Lock()
+	f.tokenFailStatus, f.tokenFailures = status, n
 	f.mu.Unlock()
 }
 
@@ -245,6 +256,11 @@ func (f *Fake) token(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.tokenFailures > 0 {
+		f.tokenFailures--
+		writeErr(w, f.tokenFailStatus, "unexpected_failure", "injected failure")
+		return
+	}
 	switch r.URL.Query().Get("grant_type") {
 	case "password":
 		for _, u := range f.users {
@@ -384,8 +400,6 @@ func (f *Fake) adminRoute(w http.ResponseWriter, r *http.Request) {
 		id := newUUID()
 		f.users[id] = &User{ID: id, Email: email, Password: pw, Confirmed: confirm}
 		writeJSON(w, 200, map[string]any{"id": id, "email": email})
-	case r.Method == http.MethodPost && p == "/admin/generate_link":
-		writeJSON(w, 200, map[string]any{"action_link": "https://example.com/verify?type=" + toString(body["type"])})
 	case strings.HasPrefix(p, "/admin/users/"):
 		id := strings.TrimPrefix(p, "/admin/users/")
 		u := f.users[id]
@@ -453,8 +467,6 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 func writeErr(w http.ResponseWriter, code int, ec, msg string) {
 	writeJSON(w, code, map[string]any{"code": code, "error_code": ec, "msg": msg})
 }
-
-func toString(v any) string { s, _ := v.(string); return s }
 
 func randHex(n int) string {
 	b := make([]byte, n)

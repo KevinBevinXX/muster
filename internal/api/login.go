@@ -67,16 +67,37 @@ func loginPathFor(r *http.Request) string {
 // scheme-relative URL to ANOTHER HOST — the case a naive `strings.HasPrefix(v,
 // "/")` check lets straight through). Anything else falls back to "/".
 func safeReturnTo(v string) string {
-	if v == "" || !strings.HasPrefix(v, "/") || strings.HasPrefix(v, "//") {
+	if !localPath(v) {
 		return "/"
 	}
-	// A backslash is normalised to a forward slash by some browsers, so "/\evil"
-	// can also escape the origin. Reject anything with one rather than reason
-	// about which browser does what.
-	if strings.ContainsAny(v, "\\\r\n") {
+	u, err := url.Parse(v)
+	// The DECODED path must pass the same test: "/%2F%2Fevil.example" and
+	// "/%5Cevil" decode to a second slash or a backslash.
+	if err != nil || u.Scheme != "" || u.Host != "" || u.Opaque != "" || u.User != nil || !localPath(u.Path) {
 		return "/"
 	}
 	return v
+}
+
+// localPath reports whether p is a path on THIS origin: one leading "/", no
+// "//" or "/\" start, and no byte a browser strips or rewrites before
+// resolving — every control byte and space (≤ 0x20), DEL (0x7f) and a
+// backslash anywhere.
+//
+// 🔴 THE CONTROL BYTES ARE THE CASE THE FIRST VERSION MISSED. It rejected
+// CR/LF and "//" but not a TAB: "/\t/evil.example/x" passed every check,
+// and browsers DELETE tab and newline from a URL before parsing it, leaving
+// "//evil.example/x" — another host (TestSafeReturnToRefusesEveryOffOriginShape).
+func localPath(p string) bool {
+	if p == "" || p[0] != '/' {
+		return false
+	}
+	for i := 0; i < len(p); i++ {
+		if c := p[i]; c <= 0x20 || c == 0x7f || c == '\\' {
+			return false
+		}
+	}
+	return !strings.HasPrefix(p, "//")
 }
 
 // registerLoginRoutes wires the human login tier. These routes are OPEN by

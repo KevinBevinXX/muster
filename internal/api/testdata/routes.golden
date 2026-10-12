@@ -58,7 +58,7 @@ GET /api/tasks
 GET /api/tasks/{id}
 GET /apple-touch-icon-precomposed.png
 GET /apple-touch-icon.png
-GET /auth/claim/{token}
+GET /auth/claim
 GET /connectors
 GET /events
 GET /favicon.ico
@@ -122,7 +122,7 @@ POST /agents/{id}/stop
 POST /api/agents/{name}/messages
 POST /api/tasks
 POST /api/tasks/{id}/comments
-POST /auth/claim/{token}
+POST /auth/claim
 POST /chief/provision
 POST /connectors
 POST /connectors/{name}/rotate
