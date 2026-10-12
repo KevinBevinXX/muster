@@ -366,23 +366,37 @@ jobs:
   # with MUSTER_E2E_DATABASE_URL naming a database ending in _e2e). On NixOS set
   # PLAYWRIGHT_BROWSERS_PATH=$(nix build --print-out-paths
   # nixpkgs#playwright-driver.browsers) — it must match @playwright/test 1.63.0.
+  # One leg, as CI runs it: MUSTER_E2E_LEG=1 make e2e.
   #
   # 🔴 THIS JOB WAS AN HONEST STUB THAT FAILED THE MOMENT A SPEC APPEARED, AND THE
   # SPECS HAVE APPEARED. It is now the real browser suite: Chromium against a
   # locally built muster-server and a seeded Postgres, every spec in e2e/tests/.
   #
+  # 🔴 THE SUITE RUNS IN LEGS, EACH ON ITS OWN RUNNER WITH ITS OWN POSTGRES. The
+  # specs write to a shared database, so inside one run they stay serial (one
+  # worker); a leg is a separate database, so legs cannot race. It was the
+  # longest job in CI as one runner. The split is static, balanced on measured
+  # per-file time, in e2e/legs.json; e2e/legs.mjs is the seam guard (every spec
+  # file in exactly one leg) and runs in the `e2e` job below.
+  #
   # 🔴 A SKIP IS IMPOSSIBLE HERE, TWICE OVER. MUSTER_E2E_REQUIRE_FULL=1 makes a
   # missing database a hard failure in global-setup, and the verdict step reads
-  # the JSON report and fails on fewer passes than the floor or ANY skip — the
-  # PAIR is printed, never a bare exit code. `playwright test` exits 0 when
-  # everything skipped; that is the green this step exists to refuse.
-  #
-  # ⚠ THE FLOOR (e2e/verdict.mjs) IS THE CURRENT SPEC COUNT, measured with
-  # every spec passing locally. Adding a spec without raising it
-  # leaves a floor indistinguishable from none for that spec.
-  e2e:
-    name: e2e (playwright, chromium)
+  # the JSON report and fails on any failure or ANY skip, and on a report whose
+  # spec files are not exactly the leg's — the PAIR is printed, never a bare exit
+  # code. `playwright test` exits 0 when everything skipped; that is the green
+  # this step exists to refuse.
+  e2e-leg:
+    name: e2e leg ${{ matrix.leg }} (playwright, chromium)
     runs-on: ubuntu-latest
+    strategy:
+      # Both legs always finish, so one red leg never hides the other's verdict.
+      fail-fast: false
+      matrix:
+        # ⚠ ADDING A LEG IS TWO EDITS: a key in e2e/legs.json and a value here.
+        # A leg in the JSON and not here runs nowhere — and the `e2e` job's
+        # `--all` verdict refuses that, because its files are absent from every
+        # report.
+        leg: [1, 2]
     services:
       postgres:
         image: postgres:16-alpine
@@ -402,6 +416,7 @@ jobs:
     env:
       MUSTER_E2E_DATABASE_URL: postgres://muster:muster@127.0.0.1:5432/muster_e2e?sslmode=disable
       MUSTER_E2E_REQUIRE_FULL: "1"
+      MUSTER_E2E_LEG: ${{ matrix.leg }}
     steps:
       - uses: actions/checkout@v6
 
@@ -429,22 +444,74 @@ jobs:
 
       # global-setup builds two server versions, migrates, seeds, starts one,
       # and signs in; the update spec runs the pair itself on its own port.
+      # MUSTER_E2E_LEG selects this leg's files (e2e/playwright.config.ts).
       - name: playwright test
         working-directory: e2e
         run: npx playwright test
 
-      - name: verdict — the pass floor and the skip cap
+      # Per leg: no failure, no skip, at least one pass, and the report's spec
+      # files are EXACTLY this leg's. The 31-test floor is a TOTAL and is
+      # asserted over both legs' reports in the `e2e` job.
+      - name: verdict — this leg's files, and the skip cap
         if: always()
         working-directory: e2e
-        run: node verdict.mjs test-results/results.json
+        run: node verdict.mjs --leg ${{ matrix.leg }} test-results/results.json
 
-      - name: keep traces of failures
-        if: failure()
+      # ALWAYS, not only on failure: the `e2e` job reads results.json from here.
+      # Traces are only written for failures (trace: retain-on-failure).
+      - name: keep the report (and traces of failures)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-results
+          name: e2e-results-leg-${{ matrix.leg }}
           path: e2e/test-results/
           retention-days: 7
+
+  # Local: cd e2e && node legs.mjs --self-test && node legs.mjs check
+  #
+  # 🔴 THIS JOB KEEPS THE CHECK NAME `e2e (playwright, chromium)`, and it is the
+  # suite's verdict in aggregate. It runs `if: always()` so a failed or
+  # cancelled leg reddens it rather than SKIPPING it — a skipped check reads as
+  # neutral, not red.
+  e2e:
+    name: e2e (playwright, chromium)
+    needs: e2e-leg
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: every leg succeeded
+        run: |
+          echo "e2e-leg result: ${{ needs.e2e-leg.result }}"
+          test "${{ needs.e2e-leg.result }}" = success
+
+      # The seam guard on the STATIC partition: every spec file on disk is in
+      # exactly one leg. Its self-test runs first and exits 2 if a refusal
+      # cannot fire.
+      - name: the legs guard can refuse
+        working-directory: e2e
+        run: node legs.mjs --self-test
+
+      - name: the legs cover every spec exactly once
+        working-directory: e2e
+        run: node legs.mjs check
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: e2e-results-leg-*
+          path: e2e-legs
+
+      # The seam guard on what RAN: both reports summed against the 31-test
+      # floor and the skip cap, every spec file on disk present with a passing
+      # test, none in two reports.
+      - name: verdict — the pass floor and the skip cap, over every leg
+        working-directory: e2e
+        run: node verdict.mjs --all ../e2e-legs/e2e-results-leg-*/results.json
 
   # ---------------------------------------------------------------------------
   # 🔴 THE JOB BELOW IS STILL AN HONEST STUB. IT HAS NOTHING TO RUN, AND IT SAYS
