@@ -29,7 +29,7 @@ const (
 	failInvalidInput = "invalid_input" // 400: the prompt holds a control character (server.go sanitizePrompt)
 	failBusy         = "busy"          // 409: a turn is already running in the session
 	failNotReady     = "not_ready"     // 503: the TUI has not reached its prompt
-	failNotSubmitted = "not_submitted" // 504: no UserPromptSubmit matching the pasted prompt (server.go promptKey)
+	failNotSubmitted = "not_submitted" // 504: no UserPromptSubmit matching the pasted prompt (server.go reportedPromptMatches)
 	failLocalCommand = "local_command" // 502: a `/` prompt the CLI ran locally — no model turn, no reply
 	failTurnTimeout  = "turn_timeout"  // 504: no Stop/StopFailure within the turn budget
 	failTerminal     = "terminal"      // 502: tmux could not be driven
