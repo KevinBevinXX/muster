@@ -340,11 +340,6 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		Handler:           handler,
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
-	// Shutdown waits for active connections and an SSE stream never goes idle,
-	// so streams are ended the moment the drain begins — see api.EndStreams.
-	// Pinned by TestShutdownDoesNotWaitOutAnOpenEventStream; that ONLY streams end,
-	// by TestShutdownEndsStreamsButLetsAnOrdinaryRequestFinish.
-	a.http.RegisterOnShutdown(srv.EndStreams)
 	if cfg.ConnectPort != 0 {
 		a.connect = &http.Server{
 			Addr:              net.JoinHostPort("", strconv.Itoa(cfg.ConnectPort)),
@@ -538,7 +533,20 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 // — an HTTP handler, or the deliverer's card-change broadcast — so waiting for
 // fan-outs before either has stopped would wait on a set that is still growing.
 func (a *app) shutdown() {
-	// Terminals first and CONCURRENTLY with the HTTP drain: their sockets are
+	// Streams end FIRST, by one explicit call, before EITHER server's Shutdown.
+	// Shutdown waits for active connections and an SSE stream never goes idle,
+	// so an open stream would otherwise hold the drain to its deadline — see
+	// api.EndStreams; that covers event streams relayed by the /connect/ proxy,
+	// on BOTH listeners, too. It is a call here rather than a RegisterOnShutdown
+	// hook per server so that no listener's drain depends on another's having
+	// begun first: one hook on the main server alone covered the connect
+	// listener only because a.http happens to be drained first.
+	// Pinned by TestShutdownDoesNotWaitOutAnOpenEventStream and
+	// TestShutdownEndsAProxiedEventStreamOnBothListeners; that ONLY streams end,
+	// by TestShutdownEndsStreamsButLetsAnOrdinaryRequestFinish and
+	// TestShutdownLetsAnOrdinaryProxiedRequestFinish.
+	a.srv.EndStreams()
+	// Terminals next, and CONCURRENTLY with the HTTP drain: their sockets are
 	// hijacked, so Shutdown neither ends nor waits for them, and each one's
 	// release (a second exec into its pod) must run before the process exits or
 	// its tmux client stays attached in the pod.

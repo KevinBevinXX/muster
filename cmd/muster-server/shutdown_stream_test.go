@@ -19,11 +19,24 @@ import (
 // shutdown; runErr yields Run's result.
 func runForShutdown(t *testing.T, cfg config, wrap func(http.Handler) http.Handler) (base string, cancel context.CancelFunc, runErr chan error) {
 	t.Helper()
+	return runBuiltForShutdown(t, buildForShutdown(t, cfg), wrap)
+}
+
+// buildForShutdown is buildApp as main() calls it, closed when the test ends.
+func buildForShutdown(t *testing.T, cfg config) *app {
+	t.Helper()
 	app, err := buildApp(context.Background(), cfg, quietLogger())
 	if err != nil {
 		t.Fatalf("buildApp: %v", err)
 	}
 	t.Cleanup(app.Close)
+	return app
+}
+
+// runBuiltForShutdown is runForShutdown's second half, for a test that must
+// seed the built app (its database) before it serves.
+func runBuiltForShutdown(t *testing.T, app *app, wrap func(http.Handler) http.Handler) (base string, cancel context.CancelFunc, runErr chan error) {
+	t.Helper()
 	if wrap != nil {
 		app.http.Handler = wrap(app.http.Handler)
 	}
@@ -92,12 +105,12 @@ func openEventStream(t *testing.T, base string, cfg config) *http.Response {
 //
 // 🔴 EVERY PAGE OPENS /events, SO THIS WAS EVERY SHUTDOWN WITH A TAB OPEN.
 // http.Server.Shutdown waits for active connections and an SSE stream is never
-// idle, so before api.EndStreams was registered with RegisterOnShutdown the
+// idle, so before shutdown() called api.EndStreams the
 // process sat out the whole drain budget and exited on the deadline. Red at
 // `a75b09b` (Run returns only after the 10 s deadline), green after.
 //
 // It drives buildApp + Run on a real port — the same path main() takes — so it
-// also fails if the RegisterOnShutdown wiring is removed while the api side
+// also fails if that call is removed while the api side
 // stays correct.
 //
 // ⚠ THE BOUND IS HALF THE DRAIN BUDGET, NOT A TIGHT TIMING. A correct shutdown
