@@ -83,10 +83,16 @@
 #
 # THIS FILE'S OWN COUNTS (re-derived, not copied from the plan)
 #
-# counts: muster=67 router=66 shared=14 total=147
+# counts: muster=70 router=63 shared=14 total=147
 #
-#   muster + router + shared = 67 + 66 + 14 = 147
-#   muster's projected post-carve registration count = 67 + 14 = 81
+#   muster + router + shared = 70 + 63 + 14 = 147
+#   muster's projected post-carve registration count = 70 + 14 = 84
+#
+#   ⚠ 67 / 66 / 81 UNTIL muster GREW ITS OWN WEB PUSH. The three /api/push/*
+#   rows moved router → muster then: muster holds its own VAPID key and
+#   subscription table (migration 0013), so those three routes are served
+#   here and no longer by the router. That is a deliberate re-cut of the line
+#   below ("stays: … push"), not a carve-time drift.
 #
 #   ⚠ THESE WERE 82 / 162 / 96 AT THE CARVE. The 15 privilege and runbook rows
 #   were deleted when those subsystems were removed (muster PR #49), so the
@@ -156,7 +162,7 @@ muster	agents.go:registerAgentRoutes	GET /api/openrouter/models
 # so this route moves, but its data source does not come with it. Expect to
 # either drop the picker or repoint it at a muster-local source.
 muster	server.go:registerNotesRoutes	GET /api/projects
-router	server.go:registerRoutes	GET /api/push/vapid-public-key
+muster	server.go:registerRoutes	GET /api/push/vapid-public-key
 router	server.go:registerRoutes	GET /api/requests
 router	server.go:registerRoutes	GET /api/response/{id}
 muster	server.go:registerNotesRoutes	GET /api/sessions/{id}/tasks
@@ -259,8 +265,8 @@ router	server.go:registerRoutes	POST /api/auto-approve-all
 router	layout.go:registerLayoutRoutes	POST /api/layout/views
 router	layout.go:registerLayoutRoutes	POST /api/layout/views/{name}/panels
 router	server.go:registerRoutes	POST /api/notify
-router	server.go:registerRoutes	POST /api/push/subscribe
-router	server.go:registerRoutes	POST /api/push/unsubscribe
+muster	server.go:registerRoutes	POST /api/push/subscribe
+muster	server.go:registerRoutes	POST /api/push/unsubscribe
 router	server.go:registerRoutes	POST /api/send
 router	suggest.go:registerSuggestRoutes	POST /api/suggest
 muster	server.go:registerNotesRoutes	POST /api/tasks

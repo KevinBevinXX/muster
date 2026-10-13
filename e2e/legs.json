@@ -30,6 +30,7 @@
     "tests/mirror-stepup.spec.ts": 25.0,
     "tests/terminal-overflow.spec.ts": 8.0,
     "tests/passkeys.spec.ts": 75.0,
+    "tests/push.spec.ts": 10.0,
     "tests/tool-rows.spec.ts": 2.0
   },
   "legs": {
@@ -61,7 +62,8 @@
       "tests/landing.spec.ts",
       "tests/flows.spec.ts",
       "tests/terminal-overflow.spec.ts",
-      "tests/passkeys.spec.ts"
+      "tests/passkeys.spec.ts",
+      "tests/push.spec.ts"
     ]
   }
 }

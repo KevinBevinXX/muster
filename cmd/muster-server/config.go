@@ -19,6 +19,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/ccpool"
+	"github.com/ZacxDev/muster/internal/push"
 )
 
 // defaultPort is the port this service listens on when MUSTER_PORT is unset.
@@ -104,6 +105,14 @@ const (
 	// MUSTER_STANDALONE. It turns on no router behaviour. See config.ApprovalGateURL.
 	envApprovalGateURL   = "MUSTER_APPROVAL_GATE_URL"
 	envApprovalGateToken = "MUSTER_APPROVAL_GATE_TOKEN"
+
+	// muster-native Web Push (internal/push): muster's OWN VAPID identity, a
+	// triple that is all-or-nothing (validate). Unset: no push — the Enable
+	// button is not drawn and /api/push/vapid-public-key answers 503. Mint one
+	// with `muster-server vapid generate`.
+	envVAPIDPublicKey  = "MUSTER_VAPID_PUBLIC_KEY"
+	envVAPIDPrivateKey = "MUSTER_VAPID_PRIVATE_KEY"
+	envVAPIDSubject    = "MUSTER_VAPID_SUBJECT"
 
 	// --- agent provisioning (see provisioner.go) ---
 	envAgentProvisioner  = "MUSTER_AGENT_PROVISIONER"
@@ -374,6 +383,14 @@ type config struct {
 	// (default "muster"), checked by validate against the router's label rule.
 	ApprovalGateURL   string
 	ApprovalGateToken string
+
+	// VAPIDPublicKey / VAPIDPrivateKey / VAPIDSubject are muster's own Web Push
+	// identity (internal/push). ALL OR NONE: validate refuses one or two of
+	// them, and refuses three that are not a working identity (the private key
+	// must derive the public one; the subject must be mailto: or https).
+	VAPIDPublicKey  string
+	VAPIDPrivateKey string
+	VAPIDSubject    string
 
 	// AgentProvisioner names the provisioning backend: one of
 	// provisionerChoices. Default provisionerNone, which leaves
@@ -672,6 +689,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 		Standalone:         envFlag(getenv, envStandalone),
 		ApprovalGateURL:    strings.TrimSpace(getenv(envApprovalGateURL)),
 		ApprovalGateToken:  strings.TrimSpace(getenv(envApprovalGateToken)),
+		VAPIDPublicKey:     strings.TrimSpace(getenv(envVAPIDPublicKey)),
+		VAPIDPrivateKey:    strings.TrimSpace(getenv(envVAPIDPrivateKey)),
+		VAPIDSubject:       strings.TrimSpace(getenv(envVAPIDSubject)),
 
 		AgentProvisioner:  strings.ToLower(strings.TrimSpace(getenv(envAgentProvisioner))),
 		AgentGateway:      strings.ToLower(strings.TrimSpace(getenv(envAgentGateway))),
@@ -1023,6 +1043,9 @@ func (c config) validate() error {
 				envRouterActor, actor, routerActorLabel, routerReservedActor, envApprovalGateURL)
 		}
 	}
+	if err := c.validateVAPID(); err != nil {
+		return err
+	}
 	if err := c.validateConnectors(); err != nil {
 		return err
 	}
@@ -1030,6 +1053,47 @@ func (c config) validate() error {
 		return err
 	}
 	return c.validateProvisioner()
+}
+
+// pushConfigured reports whether the VAPID triple is set (validate has
+// already refused a partial one).
+func (c config) pushConfigured() bool {
+	return c.VAPIDPublicKey != "" && c.VAPIDPrivateKey != "" && c.VAPIDSubject != ""
+}
+
+// vapid is the configured identity.
+func (c config) vapid() push.VAPIDConfig {
+	return push.VAPIDConfig{PublicKey: c.VAPIDPublicKey, PrivateKey: c.VAPIDPrivateKey, Subject: c.VAPIDSubject}
+}
+
+// validateVAPID refuses a partial VAPID triple, and a complete one that is not
+// a working identity.
+//
+// 🔴 HALF A CONFIGURATION REFUSES BOOT, LIKE THE APPROVAL-GATE PAIR. With one
+// or two of the three set the operator meant push to be on; booting without
+// it would draw no Enable button and log nothing anyone reads, which is the
+// "silent death" this subsystem's plan names as its first risk.
+func (c config) validateVAPID() error {
+	set := 0
+	for _, v := range []string{c.VAPIDPublicKey, c.VAPIDPrivateKey, c.VAPIDSubject} {
+		if v != "" {
+			set++
+		}
+	}
+	if set == 0 {
+		return nil
+	}
+	if set != 3 {
+		return fmt.Errorf("%s, %s and %s are a triple and only %d of them are set (%s=%s, %s=%s, %s=%s): "+
+			"half a push configuration would boot with no push. Set all three (`muster-server vapid generate`) "+
+			"or none", envVAPIDPublicKey, envVAPIDPrivateKey, envVAPIDSubject, set,
+			envVAPIDPublicKey, presence(c.VAPIDPublicKey), envVAPIDPrivateKey, presence(c.VAPIDPrivateKey),
+			envVAPIDSubject, presence(c.VAPIDSubject))
+	}
+	if err := c.vapid().Validate(); err != nil {
+		return fmt.Errorf("%s/%s/%s: %v", envVAPIDPublicKey, envVAPIDPrivateKey, envVAPIDSubject, err)
+	}
+	return nil
 }
 
 // presence renders whether a value is set, WITHOUT rendering the value.
