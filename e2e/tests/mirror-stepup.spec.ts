@@ -1,5 +1,7 @@
 import { execFileSync, spawn, ChildProcess } from 'node:child_process';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { BrowserContext, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
@@ -47,6 +49,16 @@ const adminPW = 'e2e-stepup-password-not-a-real-one';
 let server: Running | undefined;
 let mirrorProc: ChildProcess | undefined;
 let mirrorLog = '';
+// `main` is played as a Claude Code pane (cmd/muster-mirror/e2emirror.go) whose
+// transcript is this file, so the session also has a RENDERED view; a message
+// sent there is appended to <transcript>.pasted by the fake host.
+const transcriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'muster-e2e-stepup-cc-'));
+const transcript = path.join(transcriptDir, 'e2e-stepup-0001.jsonl');
+fs.writeFileSync(
+  transcript,
+  JSON.stringify({ type: 'user', promptId: 'p', message: { role: 'user', content: 'hello there' } }) + '\n' +
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Hi.' }] } }) + '\n',
+);
 
 test.use({ viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true, storageState: { cookies: [], origins: [] } });
 
@@ -78,6 +90,7 @@ test.afterAll(async () => {
   }
   await server?.stop();
   execFileSync('docker', ['compose', '-f', compose, 'down', '-v'], { env: composeEnv, stdio: 'inherit' });
+  fs.rmSync(transcriptDir, { recursive: true, force: true });
 });
 
 const serverEnv = () => ({ ...process.env, DATABASE_URL: dsn, MUSTER_PUBLIC_URL: browserURL, MUSTER_GOTRUE_URL: gotrueURL, MUSTER_GOTRUE_JWT_SECRET: gotrueSecret });
@@ -106,6 +119,7 @@ function startMirror(): ChildProcess {
       MUSTER_MIRROR_E2E_SESSIONS: 'main',
       MUSTER_MIRROR_E2E_WINDOW: WIN,
       MUSTER_MIRROR_INTERACTIVE: '1',
+      MUSTER_MIRROR_E2E_CLAUDE: 'main=' + transcript,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -278,5 +292,101 @@ test.describe('at a desktop width (1280px)', () => {
     await page.locator('#term').click();
     await page.keyboard.type('ok');
     await expect(screen(page)).toContainText(/in=6F6B|in=6F/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SENDING FROM THE RENDERED VIEW, on a phone (390×844, touch), by the real tap
+// path: the Agents list → the Claude session's card → the rendered view → type
+// → Send. With real GoTrue, so the stale refusal is the SERVER's own (in
+// mirrored.spec.ts it is played, because a password-mode session cannot be
+// aged in a browser).
+//
+// ⚠ AN INVARIANT GUARD, NOT A REGRESSION TEST: it was written while
+// investigating a report that messages could not be sent from the rendered
+// view, and it PASSES on the code that report was made against (4208deb). It
+// pins that the composer is there by default — no Interactive switch, which
+// lives only on the Terminal page — and that a stale sign-in is asked to
+// confirm inline and the SAME text is then sent.
+// ---------------------------------------------------------------------------
+test.describe('the rendered view on a phone (390×844)', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  test('a message is typed and sent from the rendered view: at once when the sign-in is fresh, after an inline confirm when it is stale (real GoTrue)', async ({ page, context }) => {
+    test.setTimeout(120_000);
+    // Signed in through /login: like the desktop test above, this relies on the
+    // 412px test having claimed the account (the file's tests run in order).
+    await page.goto(browserURL + '/login');
+    await page.fill('#muster-email', adminEmail);
+    await page.fill('#muster-password', adminPW);
+    await Promise.all([page.waitForURL(browserURL + '/'), page.click('button[type=submit]')]);
+    if (!mirrorProc || mirrorProc.exitCode !== null) mirrorProc = startMirror();
+    const pasted = () => (fs.existsSync(transcript + '.pasted') ? fs.readFileSync(transcript + '.pasted', 'utf8') : '');
+    const sends: number[] = [];
+    page.on('response', (r) => {
+      if (r.url().endsWith('/mirror/view/send')) sends.push(r.status());
+    });
+
+    // The card of a Claude session opens the rendered view.
+    await page.goto(browserURL + '/agents');
+    const card = page.locator('#agents-list article[data-mirror-card]').filter({ hasText: `Mirrored · ${host}` });
+    await expect(card.locator('[data-mirror-claude]'), `main is a Claude pane (muster-mirror log:\n${mirrorLog})`).toBeVisible({ timeout: 20_000 });
+    await Promise.all([page.waitForURL((u) => u.pathname === '/mirror/view'), card.locator('a').first().tap()]);
+    await expect(page.locator('#mv-log [data-bubble="assistant"]').first()).toContainText('Hi.');
+
+    // The composer is THERE, enabled and on screen, with nothing to switch on.
+    const input = page.locator('#mv-input');
+    const send = page.locator('#mv-send');
+    await expect(input).toBeEnabled();
+    await expect(send).toBeEnabled();
+    await expect(page.locator('#term-mode')).toHaveCount(0);
+    for (const el of [input, send]) {
+      const b = (await el.boundingBox())!;
+      expect(b.y + b.height, 'the composer is above the bottom of a 390×844 screen').toBeLessThanOrEqual(844);
+      expect(b.x + b.width, 'the composer fits 390px').toBeLessThanOrEqual(390);
+      expect(b.height, 'a 44px touch target').toBeGreaterThanOrEqual(44);
+    }
+
+    // 1. FRESH: typed, tapped, pasted into the Claude pane; the composer clears
+    // and the prompt comes back through the transcript.
+    const before = pasted();
+    await input.tap();
+    await page.keyboard.type('first from the phone');
+    await send.tap();
+    await expect.poll(pasted).toBe(before + '%9 first from the phone\n');
+    await expect(input).toHaveValue('');
+    await expect(page.locator('#mv-log [data-bubble="user"]').last()).toContainText('first from the phone');
+    await expect(dialog(page)).toBeHidden();
+    expect(sends, 'one send, accepted').toEqual([204]);
+
+    // 2. STALE: the server refuses (403 + X-Muster-Step-Up), the page asks to
+    // confirm, and NOTHING is pasted and nothing typed is lost meanwhile.
+    await makeStale(context);
+    await input.tap();
+    await page.keyboard.type('second, after the confirm');
+    await send.tap();
+    await expect(dialog(page)).toBeVisible();
+    expect(sends, 'the stale send was refused by the server').toEqual([204, 403]);
+    await expect(input).toHaveValue('second, after the confirm');
+    expect(pasted()).toBe(before + '%9 first from the phone\n');
+    const box = (await dialog(page).boundingBox())!;
+    expect(box.x + box.width, 'the dialog fits 390px').toBeLessThanOrEqual(390);
+
+    await page.fill('#term-confirm-password', 'not the password');
+    await page.locator('#term-confirm-submit').tap();
+    await expect(page.locator('#term-confirm-error')).toHaveText('That password is not right.');
+    expect(pasted(), 'a wrong password sends nothing').toBe(before + '%9 first from the phone\n');
+    await expect(input).toHaveValue('second, after the confirm');
+
+    await page.fill('#term-confirm-password', adminPW);
+    await page.locator('#term-confirm-submit').tap();
+    await expect(dialog(page)).toBeHidden();
+    await expect.poll(pasted).toBe(before + '%9 first from the phone\n%9 second, after the confirm\n');
+    await expect(input).toHaveValue('');
+    expect(sends, 'the SAME text was sent again after the confirm, once').toEqual([204, 403, 204]);
+    expect(Math.abs(Date.now() / 1000 - amrOf(await accessToken(context))), 'the confirm signed in just now').toBeLessThan(60);
+    await expect(page.locator('#mv-error')).toBeHidden();
+    const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+    expect(sw, 'no horizontal scroll').toBeLessThanOrEqual(cw);
   });
 });

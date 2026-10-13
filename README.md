@@ -382,6 +382,14 @@ route to the host, and the host holds no muster credential but its own token.
   named `chief` is not the chief). A disconnected host stays on the view as
   `offline` for a day. Only `mirror_tokens` is in the database (owned, under
   row-level security; only each token's sha256 is stored).
+- **Most recently active first.** The cards are one list across your hosts,
+  ordered by when each session was last active — on tmux the newest of its
+  windows' `#{window_activity}` and its `#{session_activity}`, so a pane
+  printing output counts, not only a key you pressed. Times are carried to the
+  minute: sessions active within the same minute keep their name order, and an
+  open list reorders only when the order really changes. A host running a
+  `muster-mirror` older than this sends no times; its sessions come after, in
+  name order.
 - **Read-only unless the host opts in.** `muster-mirror` is read-only by default:
   muster offers no Interactive switch and refuses a rw attach. Read-only is
   enforced by muster, by the host, and by `tmux attach -r`, and the host opens

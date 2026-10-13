@@ -195,6 +195,42 @@ test('a labelled session shows its pretty name, follows the active window, and s
   }
 });
 
+// MOST RECENTLY ACTIVE FIRST: a host reports when each session was last active
+// (real tmux: the newest of its windows' activity; here the fake's
+// MUSTER_MIRROR_E2E_ACTIVITY_FILE), and the Agents list shows the session active
+// last on top — then FOLLOWS, live and with no reload, when another session
+// becomes the most recent. The session set never changes.
+//
+// The times are whole MINUTES apart on purpose: activity is carried floored to
+// a minute (mirror.ActivityBucket), and two sessions inside one minute tie and
+// keep their name order — which would make "main first" pass for the wrong
+// reason. `scratch` leading `main` at the start is the reverse of name order,
+// so it is the ordering and nothing else.
+test('mirrored sessions are listed most recently active first, and the open list follows', async ({ page }) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mirror-activity-'));
+  const activityFile = path.join(dir, 'activity');
+  const t0 = Math.floor(Date.now() / 1000);
+  fs.writeFileSync(activityFile, `scratch=${t0 - 120}\nmain=${t0 - 3600}\n`);
+  try {
+    await stopMirror();
+    mirrorProc = startMirror(false, undefined, { MUSTER_MIRROR_E2E_ACTIVITY_FILE: activityFile });
+    await login(page);
+    await waitForCards(page, true);
+    await page.goto(origin + '/agents');
+    const order = () =>
+      page.locator('#agents-list article[data-mirror-card]').filter({ hasText: `Mirrored · ${host}` }).locator('[data-mirror-name]').allTextContents();
+    await expect.poll(order, { message: `scratch was active last (muster-mirror log:\n${mirrorLog})`, timeout: 20_000 }).toEqual(['scratch', 'main']);
+
+    // main's pane produces output now; scratch has not moved.
+    fs.writeFileSync(activityFile, `scratch=${t0 - 120}\nmain=${Math.floor(Date.now() / 1000) - 5}\n`);
+    await expect.poll(order, { message: `the open list follows main becoming the most recent (muster-mirror log:\n${mirrorLog})`, timeout: 20_000 }).toEqual(['main', 'scratch']);
+    await noHorizontalScroll(page);
+  } finally {
+    await stopMirror();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('an -interactive host offers the switch and types into the session', async ({ page }) => {
   mirrorProc = startMirror(true);
   await login(page);

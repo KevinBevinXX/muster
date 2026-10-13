@@ -322,3 +322,100 @@ func TestTmuxNoShrinkLeavesTheWindowAloneAndADesktopStillGrowsIt(t *testing.T) {
 	waitFor(t, "a desktop grows the window", func() bool { return size("main") == "150x49" })
 	_ = term.Close()
 }
+
+// TestTmuxActivityFollowsPaneOutputAndTypedKeysNotJustTheSession is the
+// measurement behind Tmux.Activity, on real tmux with NO client attached: a
+// session's time must move when its pane prints, when a BACKGROUND window of it
+// prints, and when keys are sent to it — and must NOT move for a session where
+// nothing happened. #{session_activity} alone fails the first two on tmux 3.7c
+// (it stays at the session's creation time), which is why every window's
+// #{window_activity} is read too.
+//
+// Four sessions, read before and after: `quiet` (nothing happens — the
+// control that a time does not simply follow the clock), `noisy` (its pane
+// prints after a delay), `bgwin` (a window that is NOT the session's current
+// one prints), and `typed` (keys sent, nothing else).
+func TestTmuxActivityFollowsPaneOutputAndTypedKeysNotJustTheSession(t *testing.T) {
+	r := newTmuxRig(t)
+	const later = "sleep 2; printf 'late output\\n'; exec cat"
+	r.session("quiet", "Q")
+	r.run("new-session", "-d", "-s", "noisy", "-x", "120", "-y", "40", "sh", "-c", later)
+	r.session("bgwin", "B")
+	r.run("new-window", "-d", "-t", "=bgwin:", "sh", "-c", later)
+	r.session("typed", "T")
+	b := Tmux{Socket: r.sock}
+	read := func() map[string]int64 {
+		t.Helper()
+		got, err := b.Activity(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	before := read()
+	started := time.Now().Unix()
+	for _, s := range []string{"quiet", "noisy", "bgwin", "typed"} {
+		if at := before[s]; at < started-30 || at > started+1 {
+			t.Fatalf("%s's activity at start = %d, want about now (%d): %v", s, at, started, before)
+		}
+	}
+	if len(before) != 4 {
+		t.Fatalf("Activity = %v, want exactly the four sessions", before)
+	}
+
+	// tmux stamps whole seconds, so "moved" needs the output to land in a later
+	// second than the session started in: the panes print 2 s in.
+	waitFor(t, "noisy's pane output to move its activity", func() bool { return read()["noisy"] > before["noisy"] })
+	waitFor(t, "bgwin's BACKGROUND window's output to move its activity", func() bool { return read()["bgwin"] > before["bgwin"] })
+	r.run("send-keys", "-t", "=typed:", "x")
+	waitFor(t, "keys sent to typed to move its activity", func() bool { return read()["typed"] > before["typed"] })
+
+	after := read()
+	if after["quiet"] != before["quiet"] {
+		t.Fatalf("quiet's activity moved %d → %d with nothing happening in it", before["quiet"], after["quiet"])
+	}
+	for _, s := range []string{"noisy", "bgwin", "typed"} {
+		if after[s] <= after["quiet"] {
+			t.Fatalf("%s (%d) does not rank above quiet (%d)", s, after[s], after["quiet"])
+		}
+	}
+}
+
+// TestTmuxPasteTypesIntoTheNamedPaneAndSubmits is the rendered view's SEND
+// against real tmux — the one link of that path every other test plays with a
+// fake: the text lands in the pane it was addressed to (by pane id, even when
+// another pane of the window is the active one), whole, and is submitted
+// (cat echoes a line only once it has been entered).
+//
+// ⚠ It proves tmux's half. What Claude Code's own TUI does with a bracketed
+// paste followed by Enter is not something a test here can see.
+func TestTmuxPasteTypesIntoTheNamedPaneAndSubmits(t *testing.T) {
+	r := newTmuxRig(t)
+	r.session("claude", "READY")
+	first := strings.TrimSpace(r.run("display-message", "-p", "-t", "=claude:", "#{pane_id}"))
+	// A second pane, now the ACTIVE one: a paste aimed at the session would land here.
+	r.run("split-window", "-t", "=claude:", "sh", "-c", "printf 'OTHER\\n'; exec cat")
+	second := strings.TrimSpace(r.run("display-message", "-p", "-t", "=claude:", "#{pane_id}"))
+	if first == second || !strings.HasPrefix(first, "%") {
+		t.Fatalf("instrument check FAILED: the split did not move the active pane (%q, %q)", first, second)
+	}
+	b := Tmux{Socket: r.sock}
+	const msg = "/status please — and `code` & $HOME 'quoted'"
+	if err := b.Paste(context.Background(), ClaudePane{Pane: first}, msg); err != nil {
+		t.Fatalf("Paste: %v", err)
+	}
+	capture := func(pane string) string { return r.run("capture-pane", "-p", "-J", "-t", pane) }
+	// Typed once by the tty's echo, and once more by cat when Enter submits it.
+	waitFor(t, "the message to be pasted AND submitted in the addressed pane", func() bool {
+		return strings.Count(capture(first), msg) == 2
+	})
+	if got := capture(second); strings.Contains(got, "status please") {
+		t.Fatalf("the paste reached the ACTIVE pane instead of the addressed one:\n%s", got)
+	}
+	if out := r.run("list-buffers"); strings.Contains(out, "muster-mirror-") {
+		t.Fatalf("the paste left its buffer behind: %s", out)
+	}
+	if err := b.Paste(context.Background(), ClaudePane{Pane: "claude"}, msg); err == nil {
+		t.Fatal("a session name was accepted as a paste target; only a pane id may be")
+	}
+}
