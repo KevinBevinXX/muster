@@ -6,7 +6,8 @@
 #   - GOTRUE_JWT_EXP is 5 s, not 900 s, so the spec can watch an access token
 #     expire and be refreshed server-side within one test;
 #   - SITE_URL / API_EXTERNAL_URL / URI_ALLOW_LIST name the local browser
-#     listener instead of the public host;
+#     listener instead of the public host (and so does the WebAuthn origin,
+#     with RP id localhost);
 #   - the database is its own throwaway Postgres (muster_auth_e2e, tmpfs).
 #
 # ⚠ v2.197.0 IS AHEAD OF THE DEPLOYMENT UNTIL the deployment's GoTrue manifest is
@@ -69,6 +70,18 @@ services:
       GOTRUE_SECURITY_REFRESH_TOKEN_ROTATION_ENABLED: "true"
       GOTRUE_RATE_LIMIT_HEADER: X-Muster-Client-IP
       GOTRUE_LOG_LEVEL: info
+      # Passkeys: OFF unless the spec asks (passkeys.spec.ts sets
+      # MUSTER_E2E_GOTRUE_PASSKEYS=true), so every other spec runs the
+      # deployment's passkey-less shape. RP id localhost, and the one origin
+      # is the spec's own browser listener. The WebAuthn MFA factor stays off
+      # (the deployment's setting too): passkeys are a sign-in method here,
+      # not a second factor.
+      GOTRUE_PASSKEY_ENABLED: ${MUSTER_E2E_GOTRUE_PASSKEYS:-false}
+      GOTRUE_WEBAUTHN_RP_ID: localhost
+      GOTRUE_WEBAUTHN_RP_DISPLAY_NAME: muster
+      GOTRUE_WEBAUTHN_RP_ORIGINS: ${MUSTER_E2E_GOTRUE_SITE:-http://localhost:18191}
+      GOTRUE_MFA_WEB_AUTHN_ENROLL_ENABLED: "false"
+      GOTRUE_MFA_WEB_AUTHN_VERIFY_ENABLED: "false"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9999/health >/dev/null"]
       interval: 1s

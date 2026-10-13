@@ -29,6 +29,7 @@
     "tests/flows.spec.ts": 4.0,
     "tests/mirror-stepup.spec.ts": 25.0,
     "tests/terminal-overflow.spec.ts": 8.0,
+    "tests/passkeys.spec.ts": 75.0,
     "tests/tool-rows.spec.ts": 2.0
   },
   "legs": {
@@ -59,7 +60,8 @@
       "tests/gotrue-login.spec.ts",
       "tests/landing.spec.ts",
       "tests/flows.spec.ts",
-      "tests/terminal-overflow.spec.ts"
+      "tests/terminal-overflow.spec.ts",
+      "tests/passkeys.spec.ts"
     ]
   }
 }
