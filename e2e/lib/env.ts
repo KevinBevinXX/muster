@@ -61,9 +61,14 @@ export const overflowPort = port + 16;
 export const stepupMainPort = port + 17;
 export const stepupBrowserPort = port + 18;
 export const stepupGotruePort = Number(process.env.MUSTER_E2E_STEPUP_GOTRUE_PORT ?? port + 19);
+// Passkeys: their own gotrue-mode server and real GoTrue (passkeys ON, RP
+// localhost, origin = this browser port), for the same reason as invites.
+export const passkeysMainPort = port + 20;
+export const passkeysBrowserPort = port + 21;
+export const passkeysGotruePort = Number(process.env.MUSTER_E2E_PASSKEYS_GOTRUE_PORT ?? port + 22);
 // muster-native Web Push: the push spec's own server, with a VAPID keypair
 // minted by the binary under test (`muster-server vapid generate`).
-export const pushPort = port + 20;
+export const pushPort = port + 23;
 // The seeded `docs-sweeper` agent's own token (e2e/seed). Invented, like every
 // value here.
 export const agentToken = 'e2e-agent-token-not-a-real-one';
