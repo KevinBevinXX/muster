@@ -283,6 +283,11 @@ var bannerLedger = []string{
 	// the router line says NONE by design (a standalone deployment).
 	envApprovalGateURL,
 	envApprovalGateToken,
+	// The cairn memo relay: one line names both, in all three of its states
+	// (logMemoRelayBanner). Its off-state is the one a deployment waits in
+	// until the credential is issued, so it has to be readable off the log.
+	envMemoURL,
+	envMemoToken,
 	envGitHubEncKey,
 	envAgentProvisioner,
 	// The chat tier is its own axis with its own two lines — the fully-off arm names
@@ -599,6 +604,11 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 
 		// The mirror plugin: the banner branches on ext.Mirror, as for connectors.
 		Mirror: true,
+
+		// The memo relay: ON needs the credential, a pool and ext.Gateway (both
+		// supplied below), which is memoRelayEnabled's whole predicate.
+		MemoURL:   "http://memos.example.invalid:8125",
+		MemoToken: "memo-credential-fixture",
 	}
 	onOut = renderBannerWithPool(t, on, api.Extensions{
 		Mirror:      mirror.NewService(nil, nil),

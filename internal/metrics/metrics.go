@@ -177,6 +177,26 @@ var (
 		Name: "muster_flow_jobs_total",
 		Help: "Browser-flow job transitions, by catalogue flow name and outcome ONLY — never a job id, host or parameter.",
 	}, []string{"flow", "outcome"})
+
+	// The memo relay (internal/memorelay): what each agent's check, each listener
+	// call and each delivery came to.
+	//
+	// 🔴 CARDINALITY RULE: `result` is a closed vocabulary compiled into
+	// internal/memorelay (its Result* and Outcome* constants and upstreamResult).
+	// An agent name, a scope, a memo id or anything a listener sent must NEVER
+	// become a label.
+	MemoRelayAgentChecks = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_memo_relay_agent_checks_total",
+		Help: "Memo relay: agents classified per tick, by result ONLY (eligible, or why an agent is sent nothing).",
+	}, []string{"result"})
+	MemoRelayUpstream = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_memo_relay_upstream_total",
+		Help: "Memo relay: calls to the cairn memo listener, by result ONLY — including the ones NOT sent (not_yet, backed_off).",
+	}, []string{"result"})
+	MemoRelayDeliveries = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_memo_relay_deliveries_total",
+		Help: "Memo relay: delivery attempts to agents, by result ONLY — never an agent, scope or memo id.",
+	}, []string{"result"})
 )
 
 // ObserveHTTP records one HTTP request's matched route pattern, method, status,
