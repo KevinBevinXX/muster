@@ -27,6 +27,8 @@
     "tests/api-tokens.spec.ts": 25.0,
     "tests/landing.spec.ts": 4.0,
     "tests/flows.spec.ts": 4.0,
+    "tests/mirror-stepup.spec.ts": 25.0,
+    "tests/terminal-overflow.spec.ts": 8.0,
     "tests/tool-rows.spec.ts": 2.0
   },
   "legs": {
@@ -41,6 +43,7 @@
       "tests/byo-credentials.spec.ts",
       "tests/invites.spec.ts",
       "tests/api-tokens.spec.ts",
+      "tests/mirror-stepup.spec.ts",
       "tests/tool-rows.spec.ts"
     ],
     "2": [
@@ -55,7 +58,8 @@
       "tests/mirrored.spec.ts",
       "tests/gotrue-login.spec.ts",
       "tests/landing.spec.ts",
-      "tests/flows.spec.ts"
+      "tests/flows.spec.ts",
+      "tests/terminal-overflow.spec.ts"
     ]
   }
 }

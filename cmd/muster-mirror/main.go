@@ -101,6 +101,10 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	if e2eBackend != nil {
 		backend = e2eBackend()
 	}
+	// No attach shrinks a session's window; the browser scrolls instead
+	// (internal/termsize). Wrapped AFTER the e2e swap, so the browser suite
+	// drives the same wrapper the shipped binary runs.
+	backend = mirrorhost.NoShrink(backend)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 

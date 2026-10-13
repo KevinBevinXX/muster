@@ -206,3 +206,86 @@ func TestVerifyRejectsMalformedTokens(t *testing.T) {
 		}
 	}
 }
+
+// signRaw signs an arbitrary JSON payload, so a test can put any `amr` shape
+// into a token that otherwise verifies.
+func signRaw(t *testing.T, payload map[string]any) string {
+	t.Helper()
+	tok, err := Sign(testSecret, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tok
+}
+
+func goodPayload(amr any) map[string]any {
+	c := goodClaims()
+	p := map[string]any{"sub": c.Subject, "iss": c.Issuer, "aud": "authenticated", "iat": c.IssuedAt,
+		"exp": c.ExpiresAt, "role": c.Role, "session_id": c.SessionID}
+	if amr != nil {
+		p["amr"] = amr
+	}
+	return p
+}
+
+// TestAMRIsReadAsTheLatestSignIn: GoTrue's measured shape (v2.189.0 and v2.197.0:
+// [{"method":"password","timestamp":…}]) yields its timestamp; several entries
+// (a password and a later passkey/MFA step) yield the LATEST, whatever the
+// method — the timestamps below are pairwise distinct and none is the token's
+// iat, so neither "first entry" nor "iat" can pass.
+func TestAMRIsReadAsTheLatestSignIn(t *testing.T) {
+	for name, tc := range map[string]struct {
+		amr  any
+		want int64
+	}{
+		"password (measured shape)": {[]any{map[string]any{"method": "password", "timestamp": 946684000}}, 946684000},
+		"later passkey wins":        {[]any{map[string]any{"method": "password", "timestamp": 946684000}, map[string]any{"method": "webauthn", "timestamp": 946684500}}, 946684500},
+		"order does not matter":     {[]any{map[string]any{"method": "totp", "timestamp": 946684700}, map[string]any{"method": "password", "timestamp": 946684100}}, 946684700},
+		"an unknown method counts":  {[]any{map[string]any{"method": "something-new", "timestamp": 946684321}}, 946684321},
+	} {
+		c, err := testVerifier().Verify(signRaw(t, goodPayload(tc.amr)))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		got, ok := c.AuthenticatedAt()
+		if !ok || got.Unix() != tc.want {
+			t.Fatalf("%s: AuthenticatedAt = %v (%v), want %d", name, got.Unix(), ok, tc.want)
+		}
+		if got.Unix() == c.IssuedAt {
+			t.Fatalf("%s: fixture: the sign-in time equals iat, so the test cannot tell them apart", name)
+		}
+	}
+}
+
+// TestAnUnreadableAMRIsUnknownAndNeverFailsTheToken: an absent `amr`, RFC
+// 8176's plain strings, entries with no or a bad timestamp, and outright
+// garbage all leave the token VALID (a session must not end over this claim)
+// with no sign-in time.
+func TestAnUnreadableAMRIsUnknownAndNeverFailsTheToken(t *testing.T) {
+	for name, amr := range map[string]any{
+		"absent":             nil,
+		"strings (RFC 8176)": []any{"pwd", "mfa"},
+		"no timestamp":       []any{map[string]any{"method": "password"}},
+		"zero timestamp":     []any{map[string]any{"method": "password", "timestamp": 0}},
+		"negative":           []any{map[string]any{"method": "password", "timestamp": -5}},
+		"string timestamp":   []any{map[string]any{"method": "password", "timestamp": "946684000"}},
+		"an object":          map[string]any{"method": "password", "timestamp": 946684000},
+		"a number":           42,
+	} {
+		c, err := testVerifier().Verify(signRaw(t, goodPayload(amr)))
+		if err != nil {
+			t.Fatalf("%s: the token was refused (%v); an amr shape must never fail a token", name, err)
+		}
+		if at, ok := c.AuthenticatedAt(); ok {
+			t.Fatalf("%s: AuthenticatedAt = %v, want unknown", name, at)
+		}
+	}
+	// A mixed list keeps the good entry.
+	c, err := testVerifier().Verify(signRaw(t, goodPayload([]any{"pwd", map[string]any{"method": "password", "timestamp": 946684222}})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if at, ok := c.AuthenticatedAt(); !ok || at.Unix() != 946684222 {
+		t.Fatalf("a mixed amr lost its good entry: %v %v", at, ok)
+	}
+}

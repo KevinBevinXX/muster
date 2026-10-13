@@ -19,6 +19,9 @@ type MirrorCardView struct {
 	Session string
 	// Online: the host is connected and still lists the session.
 	Online bool
+	// Interactive: the host ANNOUNCED -interactive, so its terminal page offers
+	// the Interactive switch (still behind a fresh sign-in: internal/stepup).
+	Interactive bool
 	// Claude: the host reports Claude Code in the session's pane, so the card
 	// opens the RENDERED view by default (MirrorViewPath); otherwise it opens the
 	// terminal.
@@ -78,6 +81,13 @@ func mirrorCard(m MirrorCardView) g.Node {
 					g.Text(m.Session),
 				),
 				Span(g.Attr("data-mirror-badge", ""), chip("kind", "Mirrored · "+m.Host)),
+				// What the host announced, not what this viewer may do right
+				// now: typing still needs a fresh sign-in on the terminal page.
+				g.If(m.Interactive, Span(
+					g.Attr("data-mirror-interactive", ""),
+					g.Attr("title", "This host accepts typing (muster-mirror -interactive); the terminal asks you to confirm it's you first"),
+					chip("mode", "interactive"),
+				)),
 				g.If(m.Claude, Span(g.Attr("data-mirror-claude", ""), chip("kind", "Claude Code"))),
 				g.If(!m.Online, Span(
 					g.Attr("data-mirror-offline", ""),

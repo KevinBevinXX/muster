@@ -41,9 +41,13 @@ type MirrorViewView struct {
 	Host    string
 	Session string
 	// Interactive: the host advertised -interactive, so the composer is offered
-	// (each send is still gated on a fresh step-up, server-side). False draws
+	// (each send is still gated on a fresh sign-in, server-side). False draws
 	// it disabled, saying why.
 	Interactive bool
+	// ConfirmPath is the same-origin "Confirm it's you" route (internal/api's
+	// step-up confirm): a send refused as stale asks for the password there
+	// and retries. The terminal page's own dialog (confirmDialog) is reused.
+	ConfirmPath string
 }
 
 // MirrorViewPage is the rendered view's document.
@@ -108,6 +112,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 					g.Attr("data-send", MirrorSendPath),
 					g.Attr("data-host", v.Host),
 					g.Attr("data-session", v.Session),
+					g.Attr("data-confirm", v.ConfirmPath),
 					Class("flex flex-none items-end gap-2 border-t border-line px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2"),
 					Textarea(
 						ID("mv-input"),
@@ -129,6 +134,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 					),
 				),
 				g.If(!v.Interactive, P(ID("mv-readonly"), Class("px-3 pb-2 text-[11px] text-muted"), g.Text(readOnlyNote))),
+				g.If(v.Interactive, confirmDialog()),
 				mirrorViewScript(),
 				pwaChrome(),
 			),
@@ -312,22 +318,57 @@ func mirrorViewScript() g.Node {
   window.addEventListener('pagehide', function () { closed = true; if (sock) sock.close(); });
   connect();
 
-  if (form) form.addEventListener('submit', function (e) {
-    e.preventDefault();
-    if (!input || input.disabled || !input.value.trim()) return;
+  // post sends the composer's text. A 403 carrying X-Muster-Step-Up means the
+  // sign-in is not fresh: "Confirm it's you" is asked, and on success the SAME
+  // text is sent again. The page never decides freshness — the server does.
+  function post() {
     var body = new URLSearchParams();
     body.set('host', form.getAttribute('data-host'));
     body.set('session', form.getAttribute('data-session'));
     body.set('text', input.value);
     send.disabled = true;
-    fetch(form.getAttribute('data-send'), { method: 'POST', body: body, credentials: 'same-origin',
+    return fetch(form.getAttribute('data-send'), { method: 'POST', body: body, credentials: 'same-origin',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' } })
       .then(function (r) {
         if (r.ok) { input.value = ''; clearError(); return; }
+        if (r.status === 403 && r.headers.get('X-Muster-Step-Up') && dlg) { askConfirm(); return; }
         return r.text().then(function (t) { showError(t.trim() || ('Not sent (HTTP ' + r.status + ')')); });
       })
       .catch(function () { showError('Not sent: muster could not be reached.'); })
       .then(function () { send.disabled = false; });
+  }
+  var dlg = document.getElementById('term-confirm');
+  function askConfirm() {
+    var err = document.getElementById('term-confirm-error');
+    err.hidden = true; err.textContent = '';
+    document.getElementById('term-confirm-password').value = '';
+    if (!dlg.open) dlg.showModal();
+  }
+  if (dlg) {
+    document.getElementById('term-confirm-cancel').addEventListener('click', function () { dlg.close(); });
+    document.getElementById('term-confirm-form').addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var pw = document.getElementById('term-confirm-password');
+      var err = document.getElementById('term-confirm-error');
+      var btn = document.getElementById('term-confirm-submit');
+      var body = new URLSearchParams(); body.set('password', pw.value);
+      btn.disabled = true;
+      fetch(form.getAttribute('data-confirm'), { method: 'POST', body: body, credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' } })
+        .then(function (r) {
+          return r.json().catch(function () { return {}; }).then(function (j) {
+            if (r.ok) { pw.value = ''; dlg.close(); return post(); }
+            err.textContent = j.error || 'Could not confirm.'; err.hidden = false;
+          });
+        })
+        .catch(function () { err.textContent = 'muster could not be reached.'; err.hidden = false; })
+        .then(function () { btn.disabled = false; });
+    });
+  }
+  if (form) form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (!input || input.disabled || !input.value.trim()) return;
+    post();
   });
   if (input) input.addEventListener('keydown', function (e) {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); }

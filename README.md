@@ -391,6 +391,20 @@ route to the host, and the host holds no muster credential but its own token.
   can use muster's Interactive switch for the host can run commands there as the
   user `muster-mirror` runs as. The "only listed sessions" rule bounds read-only
   viewing; it is not a boundary once an interactive client is attached.
+- **Typing needs a fresh sign-in (step-up).** An interactive attach is refused
+  (403, before the socket upgrades — and again inside the plugin) unless the
+  session signed in within the last 5 minutes. The time is the sign-in's — the
+  GoTrue access token's `amr` timestamp, which a refresh does not move; a token
+  with no `amr` is never fresh. The terminal page asks "Confirm it's you" (the
+  password again, `POST /auth/confirm`, same-origin, throttled like sign-in) and
+  remembers the Interactive choice per host for the browser session. Watching
+  read-only needs no step-up.
+- **A terminal never shrinks the session's window.** The far side (the host's
+  `muster-mirror`, or muster itself for an agent pod) reads the tmux window's
+  size and gives the browser's client that size unless the browser's own covers
+  it; a phone renders the wider session in a scrolling, pinch-zoomable view with
+  "Fit width". Hosts running a `muster-mirror` older than this still work — they
+  report no size, and the page fits its container as before.
 - **Limits:** 8 terminals per host, 64 hosts. A revoked token (or one the
   database cannot re-verify twice running) ends the host's connection and its
   open terminals within 30 s, and removes the host from the view. Repeated bad
@@ -406,8 +420,10 @@ route to the host, and the host holds no muster credential but its own token.
   streams bounded events (the last 300 at most on open, capped per field;
   never the file). Nothing is stored on the server. `muster-mirror -list
   -claude` prints what a host resolves. Sending a message from the view pastes
-  it into the Claude pane and needs the host's `-interactive` **and** a fresh
-  step-up; with no step-up gate wired, every send is refused.
+  it into the Claude pane (as typed — a leading `/` or `!` included; control
+  characters are refused) and needs the host's `-interactive` **and** a
+  sign-in from the last 5 minutes, the same gate as typing into the terminal;
+  a stale one is asked to confirm and the message is then sent.
 - **Rolling upgrade:** this muster accepts tunnel v1 and v2 hosts (a v1 host
   simply has no rendered view), and a v2 `muster-mirror` falls back to v1
   against an older muster — so either side can be upgraded first.

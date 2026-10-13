@@ -12,6 +12,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -30,7 +31,12 @@ import (
 // 🔴 SENDING IS A WRITE INTO THE OPERATOR'S SESSION, AND IT IS GATED THREE
 // TIMES HERE BEFORE THE PLUGIN AND THE HOST GATE IT AGAIN: a same-origin
 // request (requireOperatorWrite), a host that advertised -interactive, and a
-// FRESH STEP-UP (Extensions.MirrorStepUp — nil refuses every send).
+// FRESH SIGN-IN — internal/stepup, the SAME gate on the same clock as an
+// interactive terminal attach (mirror.go), not a second notion of "fresh".
+//
+// A leading `/` or `!` is pasted as typed (an operator decision): the sender is
+// the operator, on a host that opted into -interactive, which is already a
+// shell there. Only control characters are refused (mirror.SanitizePaste).
 // ---------------------------------------------------------------------------
 
 func (s *Server) registerMirrorViewRoutes(mux Mux) {
@@ -60,7 +66,8 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.MirrorViewPage(ui.MirrorViewView{Host: h.Host, Session: session, Interactive: h.Interactive}).Render(w); err != nil {
+	if err := ui.MirrorViewPage(ui.MirrorViewView{Host: h.Host, Session: session, Interactive: h.Interactive,
+		ConfirmPath: stepUpConfirmPath}).Render(w); err != nil {
 		s.logger.Printf("mirror: render view page: %v", err)
 	}
 }
@@ -128,12 +135,11 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	_ = c.Close(websocket.StatusNormalClosure, "view ended")
 }
 
-// errStepUpRequired is the send refusal while the step-up is not fresh.
-var errStepUpRequired = errors.New("step-up required: re-authenticate to send into this session")
-
-// stepUpFresh asks the shared gate; with none wired, the answer is no.
-func (s *Server) stepUpFresh(r *http.Request) bool {
-	return s.ext.MirrorStepUp != nil && s.ext.MirrorStepUp.StepUpFresh(r)
+// refuseStale answers a send whose sign-in is not fresh: 403, the gate's own
+// text, and a header the page reads to ask "Confirm it's you" and retry.
+func refuseStale(w http.ResponseWriter) {
+	w.Header().Set("X-Muster-Step-Up", "required")
+	http.Error(w, stepup.ErrStale.Error(), http.StatusForbidden)
 }
 
 // mirrorSendTimeout bounds one send end to end (the host confirms the paste).
@@ -163,9 +169,8 @@ func (s *Server) handleMirrorViewSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, mirror.ErrInteractiveRefused.Error(), http.StatusConflict)
 		return
 	}
-	if !s.stepUpFresh(r) {
-		w.Header().Set("X-Muster-Step-Up", "required")
-		http.Error(w, errStepUpRequired.Error(), http.StatusForbidden)
+	if !stepup.Fresh(r.Context(), s.stepUpNow()) {
+		refuseStale(w)
 		return
 	}
 	if strings.TrimSpace(text) == "" {
@@ -175,6 +180,12 @@ func (s *Server) handleMirrorViewSend(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), mirrorSendTimeout)
 	defer cancel()
 	if err := s.ext.Mirror.Paste(ctx, host, session, text); err != nil {
+		if errors.Is(err, mirror.ErrStepUpRequired) {
+			// The plugin's own check of the same gate (it does not rely on the
+			// one above): the same answer.
+			refuseStale(w)
+			return
+		}
 		status := http.StatusBadGateway
 		switch {
 		case errors.Is(err, mirror.ErrBadPaste):

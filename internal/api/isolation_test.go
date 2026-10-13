@@ -125,6 +125,8 @@ var isolationClasses = map[string]routeClass{
 	"GET /auth/claim":  classPublic,
 	"POST /auth/claim": classPublic,
 	"GET /account":     classList,
+	// The step-up confirm names no object: it re-proves the CALLER (stepup.go).
+	"POST /auth/confirm": classList,
 	// Bring-your-own credentials: the caller's own page and writes (list), and
 	// the delete that names an account (param, by NAME — A's is the canary).
 	"GET /account/credentials":                       classList,

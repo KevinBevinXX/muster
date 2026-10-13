@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/stepup"
 )
 
 // THE RENDERED VIEW's server half (tunnel v2): a transcript stream per open
@@ -175,10 +177,18 @@ func (h *Hub) Watch(ctx context.Context, owner int64, host, session, gen string,
 // — the way ccd hands a provisioned agent a prompt (a bracketed paste, then
 // Enter) — and waits for the host to confirm it.
 //
-// 🔴 IT IS A WRITE INTO THE OPERATOR'S SESSION, SO IT IS REFUSED UNLESS THE HOST
-// ADVERTISED -interactive, here as well as on the host. The caller (internal/api)
-// additionally requires a fresh step-up; this layer does not depend on it.
+// 🔴 IT IS A WRITE INTO THE OPERATOR'S SESSION, SO IT IS REFUSED UNLESS THE
+// REQUEST'S SIGN-IN IS FRESH (internal/stepup) AND THE HOST ADVERTISED
+// -interactive — both here, whatever the caller (internal/api) already checked,
+// and the host refuses a paste it did not opt into again.
 func (h *Hub) Paste(ctx context.Context, owner int64, host, session, text string) error {
+	// 🔴 A FRESH SIGN-IN, checked HERE as well as by internal/api — the same
+	// gate, on the same clock, as an interactive Attach (Service.Attach): a
+	// paste types into the operator's session exactly as a keystroke does. A
+	// context with no sign-in time is never fresh.
+	if !stepup.Fresh(ctx, h.now()) {
+		return ErrStepUpRequired
+	}
 	text, err := SanitizePaste(text)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrBadPaste, err)

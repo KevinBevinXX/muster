@@ -365,13 +365,6 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if e2eConnectorPolicy != nil {
 		ext.ConnectorPolicy = *e2eConnectorPolicy
 	}
-	// 🔴 NO STEP-UP GATE IS WIRED IN A DEPLOYABLE BINARY YET, SO EVERY SEND FROM
-	// A MIRRORED SESSION'S RENDERED VIEW IS REFUSED (fail closed) until the
-	// step-up flow sets ext.MirrorStepUp. Only the e2eterm build sets this hook
-	// (e2estepup.go), so the browser suite can drive a real paste.
-	if e2eMirrorStepUp != nil {
-		ext.MirrorStepUp = e2eMirrorStepUp
-	}
 
 	// The mirrored-agents plugin: only with MUSTER_MIRROR=1 AND a database (its
 	// tokens and rows live there; config.validate already refuses a deployment

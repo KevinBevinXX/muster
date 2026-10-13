@@ -26,9 +26,6 @@ let server: Running | undefined;
 let mirrorProc: ChildProcess | undefined;
 let mirrorLog = '';
 let token = '';
-// The e2eterm build's step-up gate is FRESH while this file exists
-// (cmd/muster-server/e2estepup.go).
-const stepUpFile = path.join(os.tmpdir(), `muster-e2e-stepup-${process.pid}`);
 
 // startMirror runs the host binary; read-only unless interactive. The e2e
 // server is plain http on localhost, so the TEST-ONLY -allow-http is set here.
@@ -65,9 +62,7 @@ test.beforeAll(async () => {
     MUSTER_AGENT_PROVISIONER: 'noop',
     MUSTER_AGENT_IMAGE_REPO: 'registry.example.test/runtime',
     MUSTER_AGENT_API_URL: 'http://muster.example.test:8105',
-    MUSTER_E2E_STEPUP_FRESH_FILE: stepUpFile,
   });
-  fs.rmSync(stepUpFile, { force: true });
   token = execFileSync(serverBinary(versionTerm), ['mirror', 'token', 'create', host], {
     env: { ...process.env, DATABASE_URL: dsn },
   })
@@ -308,7 +303,7 @@ test('a mirrored Claude pane opens in the rendered view: collapsed tool rows, li
   await stopMirror();
 });
 
-test('an interactive host offers the composer; a send is refused until the step-up is fresh, then pasted into the pane', async ({ page }) => {
+test('an interactive host offers the composer: a fresh sign-in sends into the pane, and a stale one is asked to confirm and then sent', async ({ page }) => {
   await stopMirror();
   const tr = newTranscript();
   mirrorProc = startMirror(true, tr);
@@ -317,27 +312,49 @@ test('an interactive host offers the composer; a send is refused until the step-
   await page.goto(origin + viewPath('main'));
   await expect(page.locator('#mv-log [data-tool-row]')).toHaveCount(1);
   await expect(page.locator('#mv-input')).toBeEnabled();
-  await page.locator('#mv-input').fill('please continue');
-  await page.locator('#mv-send').click();
-  // 🔴 The step-up is not fresh: muster refuses, and nothing reaches the host.
-  await expect(page.locator('#mv-error-text')).toContainText('step-up required');
-  await page.waitForTimeout(500);
-  expect(fs.existsSync(tr + '.pasted'), 'the host was asked to paste').toBe(false);
-  await expect(page.locator('#mv-input')).toHaveValue('please continue');
+  const pasted = () => (fs.existsSync(tr + '.pasted') ? fs.readFileSync(tr + '.pasted', 'utf8') : '');
 
-  // Fresh step-up: the same send is pasted into the Claude pane (its pane id,
-  // the fake host records), the composer clears, and the prompt arrives back
-  // through the transcript — the view shows what the CLI received.
-  fs.writeFileSync(stepUpFile, '');
-  try {
-    await page.locator('#mv-send').click();
-    await expect(page.locator('#mv-input')).toHaveValue('');
-    await expect(page.locator('#mv-error')).toBeHidden();
-    await expect.poll(() => (fs.existsSync(tr + '.pasted') ? fs.readFileSync(tr + '.pasted', 'utf8') : '')).toBe('%9 please continue\n');
-    await expect(page.locator('#mv-log [data-bubble="user"]').last()).toContainText('please continue');
-  } finally {
-    fs.rmSync(stepUpFile, { force: true });
-  }
+  // Signed in just now, so the sign-in is fresh: the send is pasted into the
+  // Claude pane (its pane id, which the fake host records), the composer
+  // clears, and the prompt comes back through the transcript. A leading `/` is
+  // pasted as typed.
+  await page.locator('#mv-input').fill('/status please continue');
+  await page.locator('#mv-send').click();
+  await expect(page.locator('#mv-input')).toHaveValue('');
+  await expect.poll(pasted).toBe('%9 /status please continue\n');
+  await expect(page.locator('#mv-log [data-bubble="user"]').last()).toContainText('/status please continue');
+  await expect(page.locator('#mv-error')).toBeHidden();
+
+  // A STALE sign-in. ⚠ The refusal itself is PLAYED here (one intercepted
+  // response, shaped as the server's own: 403 + X-Muster-Step-Up) because a
+  // password-mode session cannot be aged in a browser test; the server's real
+  // stale refusal is pinned in Go (TestASendIsGatedOnInteractiveAndAFreshSignIn)
+  // and with real GoTrue in mirror-stepup.spec.ts. Everything after it is real:
+  // the dialog, the confirm route, the new session, the retried send.
+  let refused = 0;
+  await page.route('**/mirror/view/send', async (route) => {
+    if (refused++ === 0) {
+      await route.fulfill({ status: 403, headers: { 'X-Muster-Step-Up': 'required', 'Content-Type': 'text/plain' }, body: 'confirm it\'s you' });
+      return;
+    }
+    await route.continue();
+  });
+  await page.locator('#mv-input').fill('second message');
+  await page.locator('#mv-send').click();
+  const dialog = page.locator('#term-confirm');
+  await expect(dialog).toBeVisible();
+  expect(pasted(), 'nothing is pasted while the confirm is open').toBe('%9 /status please continue\n');
+  await page.fill('#term-confirm-password', 'not the password');
+  await page.click('#term-confirm-submit');
+  await expect(page.locator('#term-confirm-error')).toHaveText('That password is not right.');
+  expect(pasted()).toBe('%9 /status please continue\n');
+  await page.fill('#term-confirm-password', password);
+  await page.click('#term-confirm-submit');
+  await expect(dialog).toBeHidden();
+  await expect.poll(pasted).toBe('%9 /status please continue\n%9 second message\n');
+  await expect(page.locator('#mv-input')).toHaveValue('');
+  expect(refused, 'the send was retried once after the confirm').toBe(2);
+  await page.unroute('**/mirror/view/send');
   await noHorizontalScroll(page);
   await stopMirror();
   mirrorProc = startMirror(false);

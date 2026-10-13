@@ -18,6 +18,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/mirrorhost"
@@ -355,6 +356,18 @@ func TestPasteIsGatedOnInteractiveClaudeAndCleanText(t *testing.T) {
 	}
 	if err := r.svc.Paste(asUser(1), "rw", "main", "evil\x1b[201~!rm -rf /"); !errors.Is(err, mirror.ErrBadPaste) {
 		t.Fatalf("paste with ESC = %v, want ErrBadPaste", err)
+	}
+	// 🔴 A stale sign-in is refused before anything reaches the host; so is a
+	// context that carries no sign-in time at all.
+	if err := r.svc.Paste(asStaleUser(1), "rw", "main", "hi"); !errors.Is(err, mirror.ErrStepUpRequired) {
+		t.Fatalf("paste on a stale sign-in = %v, want ErrStepUpRequired", err)
+	}
+	noTime := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 1, Role: authz.RoleAdmin, Via: authz.ViaSession})
+	if err := r.svc.Paste(noTime, "rw", "main", "hi"); !errors.Is(err, mirror.ErrStepUpRequired) {
+		t.Fatalf("paste with no sign-in time = %v, want ErrStepUpRequired", err)
+	}
+	if len(b2.pasted()) != 0 {
+		t.Fatal("a stale paste reached the host")
 	}
 	if err := r.svc.Paste(asUser(1), "rw", "main", "line one\r\nline two"); err != nil {
 		t.Fatalf("a clean paste: %v", err)

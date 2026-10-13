@@ -17,9 +17,11 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/ZacxDev/muster/internal/auth"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -95,16 +97,11 @@ func (f *fakeMirrorV2) snapshot() ([]watchCall, []pasteCall) {
 	return append([]watchCall(nil), f.watches...), append([]pasteCall(nil), f.pastes...)
 }
 
-// stepUp is the shared gate, played.
-type stepUp bool
-
-func (s stepUp) StepUpFresh(*http.Request) bool { return bool(s) }
-
-func viewServer(t *testing.T, fm *fakeMirror, gate StepUpGate) (*Server, *httptest.Server) {
+func viewServer(t *testing.T, fm *fakeMirror) (*Server, *httptest.Server) {
 	t.Helper()
 	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(io.Discard, "", 0))
 	ext := Extensions{Notes: stubNotesStore{}, Agents: mirrorAgents{}, SessionLiveness: stubLiveness{},
-		Provisioner: newFakeTerminal(), MirrorStepUp: gate}
+		Provisioner: newFakeTerminal()}
 	if fm != nil {
 		ext.Mirror = fm
 	}
@@ -122,7 +119,7 @@ func TestAClaudePanesCardOpensTheRenderedViewAndOthersTheTerminal(t *testing.T) 
 		if v2 {
 			fm.v2 = &fakeMirrorV2{}
 		}
-		s, ts := viewServer(t, fm, nil)
+		s, ts := viewServer(t, fm)
 		_, list := mirrorGet(t, s, ts, "/ui/agents")
 		wantMain := ui.MirrorTerminalPath("ws", "main")
 		if v2 {
@@ -156,7 +153,7 @@ func TestTheRenderedViewPageIsTheOwnersAndFallsBackToTheTerminal(t *testing.T) {
 		{"an unknown host", &fakeMirror{online: true, v2: &fakeMirrorV2{}}, ui.MirrorViewPath("nope", "main"), 404, ""},
 		{"the plugin off", nil, viewMain, 404, ""},
 	} {
-		s, ts := viewServer(t, c.fm, nil)
+		s, ts := viewServer(t, c.fm)
 		resp, body := mirrorGet(t, s, ts, c.path)
 		if resp.StatusCode != c.status || resp.Header.Get("Location") != c.location {
 			t.Errorf("%s: %d → %q, want %d → %q", c.name, resp.StatusCode, resp.Header.Get("Location"), c.status, c.location)
@@ -172,7 +169,7 @@ func TestTheRenderedViewPageIsTheOwnersAndFallsBackToTheTerminal(t *testing.T) {
 	}
 	// Another user: 404, page and socket, and the plugin is never asked.
 	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{}}
-	s, _ := viewServer(t, fm, stepUp(true))
+	s, _ := viewServer(t, fm)
 	for _, user := range []int64{2, 1} {
 		for _, path := range []string{viewMain, ui.MirrorViewWSPath("ws", "main")} {
 			req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -197,7 +194,7 @@ var disabledAttr = regexp.MustCompile(`\sdisabled(=""|\s|$)`)
 
 func TestTheComposerIsDisabledOnAReadOnlyHost(t *testing.T) {
 	for _, interactive := range []bool{false, true} {
-		s, ts := viewServer(t, &fakeMirror{online: true, interactive: interactive, v2: &fakeMirrorV2{}}, nil)
+		s, ts := viewServer(t, &fakeMirror{online: true, interactive: interactive, v2: &fakeMirrorV2{}})
 		_, page := mirrorGet(t, s, ts, ui.MirrorViewPath("ws", "main"))
 		i := strings.Index(page, `id="mv-input"`)
 		tag := page[strings.LastIndex(page[:i], "<"):]
@@ -210,7 +207,7 @@ func TestTheComposerIsDisabledOnAReadOnlyHost(t *testing.T) {
 }
 
 func TestTheTerminalOffersTheRenderedViewForAClaudePane(t *testing.T) {
-	s, ts := viewServer(t, &fakeMirror{online: true, v2: &fakeMirrorV2{}}, nil)
+	s, ts := viewServer(t, &fakeMirror{online: true, v2: &fakeMirrorV2{}})
 	_, main := mirrorGet(t, s, ts, ui.MirrorTerminalPath("ws", "main"))
 	if !strings.Contains(main, `id="view-rendered" href="`+amp(ui.MirrorViewPath("ws", "main"))+`"`) || !strings.Contains(main, `id="view-terminal" aria-current="page"`) {
 		t.Errorf("main's terminal has no Rendered switch")
@@ -247,7 +244,7 @@ func TestTheViewSocketRendersBatchesWithTheChatsComponents(t *testing.T) {
 			{Kind: cctranscript.KindToolResult, ToolID: "tu1", OK: false, Output: "FAIL"},
 		}},
 	}}}
-	s, ts := viewServer(t, fm, nil)
+	s, ts := viewServer(t, fm)
 	c, _, err := dialTerm(t, s, ts, ui.MirrorViewWSPath("ws", "main")+"&gen=g0&offset=42")
 	if err != nil {
 		t.Fatal(err)
@@ -287,7 +284,7 @@ func TestTheViewSocketRendersBatchesWithTheChatsComponents(t *testing.T) {
 
 func TestTheViewSocketPassesTheRefusalThrough(t *testing.T) {
 	refusal := fmt.Errorf("%w (host %q, session %q)", mirror.ErrNotClaude, "ws", "main")
-	s, ts := viewServer(t, &fakeMirror{online: true, v2: &fakeMirrorV2{watchErr: refusal}}, nil)
+	s, ts := viewServer(t, &fakeMirror{online: true, v2: &fakeMirrorV2{watchErr: refusal}})
 	c, _, err := dialTerm(t, s, ts, ui.MirrorViewWSPath("ws", "main"))
 	if err != nil {
 		t.Fatal(err)
@@ -298,31 +295,43 @@ func TestTheViewSocketPassesTheRefusalThrough(t *testing.T) {
 	}
 }
 
-// 🔴 THE SEND GATE: same origin, an interactive host, a FRESH step-up — each
-// refused before the plugin is asked; and only then is the text pasted.
-func TestASendIsGatedOnInteractiveAndAFreshStepUp(t *testing.T) {
+// staleCookieFor is a real browser session that signed in longer ago than
+// stepup.MaxAge: still a valid session, no longer a fresh one.
+func staleCookieFor(s *Server) string {
+	return sessionCookieName + "=" + auth.SignSession(s.auth.uiSessionSecret(), time.Now().Add(-stepup.MaxAge-time.Minute), sessionTTL)
+}
+
+// 🔴 THE SEND GATE, through the real mux and real session cookies: same origin,
+// an interactive host, a FRESH sign-in (internal/stepup — the terminal's own
+// gate). Each refusal happens before the plugin is asked; a fresh, interactive,
+// same-origin send is pasted.
+func TestASendIsGatedOnInteractiveAndAFreshSignIn(t *testing.T) {
 	type tc struct {
 		name        string
 		interactive bool
-		gate        StepUpGate
+		stale       bool
 		origin      string
 		status      int
 		pasted      bool
 	}
 	cases := []tc{
-		{"a read-only host", false, stepUp(true), "", http.StatusConflict, false},
-		{"no step-up gate wired (fail closed)", true, nil, "", http.StatusForbidden, false},
-		{"a stale step-up", true, stepUp(false), "", http.StatusForbidden, false},
-		{"another origin", true, stepUp(true), "https://evil.example", http.StatusForbidden, false},
-		{"interactive + fresh step-up", true, stepUp(true), "", http.StatusNoContent, true},
+		{"a read-only host", false, false, "", http.StatusConflict, false},
+		{"a stale sign-in", true, true, "", http.StatusForbidden, false},
+		{"another origin", true, false, "https://evil.example", http.StatusForbidden, false},
+		{"interactive + fresh sign-in", true, false, "", http.StatusNoContent, true},
 	}
 	for _, c := range cases {
 		fm := &fakeMirror{online: true, interactive: c.interactive, v2: &fakeMirrorV2{}}
-		s, ts := viewServer(t, fm, c.gate)
-		form := url.Values{"host": {"ws"}, "session": {"main"}, "text": {"hello claude"}}
+		s, ts := viewServer(t, fm)
+		// A leading ! and / are pasted as typed (the operator's decision).
+		form := url.Values{"host": {"ws"}, "session": {"main"}, "text": {"!ls /srv"}}
 		req, _ := http.NewRequest(http.MethodPost, ts.URL+ui.MirrorSendPath, strings.NewReader(form.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.Header.Set("Cookie", sessionCookieFor(s))
+		cookie := sessionCookieFor(s)
+		if c.stale {
+			cookie = staleCookieFor(s)
+		}
+		req.Header.Set("Cookie", cookie)
 		origin := ts.URL
 		if c.origin != "" {
 			origin = c.origin
@@ -338,24 +347,46 @@ func TestASendIsGatedOnInteractiveAndAFreshStepUp(t *testing.T) {
 		if resp.StatusCode != c.status || (len(pastes) == 1) != c.pasted {
 			t.Errorf("%s: %d %q, pasted %+v; want %d pasted=%v", c.name, resp.StatusCode, body, pastes, c.status, c.pasted)
 		}
-		if c.pasted && pastes[0] != (pasteCall{1, "ws", "main", "hello claude"}) {
+		if c.pasted && pastes[0] != (pasteCall{1, "ws", "main", "!ls /srv"}) {
 			t.Errorf("%s: pasted %+v", c.name, pastes[0])
 		}
-		if c.status == http.StatusForbidden && c.origin == "" && resp.Header.Get("X-Muster-Step-Up") != "required" {
-			t.Errorf("%s: the step-up refusal does not say so", c.name)
+		if c.stale && (resp.Header.Get("X-Muster-Step-Up") != "required" || !strings.Contains(string(body), stepup.ErrStale.Error())) {
+			t.Errorf("%s: the refusal does not ask for a fresh sign-in: %q", c.name, body)
 		}
 	}
-	// Another user's host: 404, never pasted.
+	// A session with NO sign-in time is never fresh; and the plugin's own
+	// refusal of the same gate is answered the same way.
 	fm := &fakeMirror{online: true, interactive: true, v2: &fakeMirrorV2{}}
-	s, _ := viewServer(t, fm, stepUp(true))
-	form := url.Values{"host": {"ws"}, "session": {"main"}, "text": {"x"}}
-	req := httptest.NewRequest(http.MethodPost, ui.MirrorSendPath, strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req = req.WithContext(authz.WithPrincipal(req.Context(), authz.Principal{UserID: 2, Role: authz.RoleMember, Via: authz.ViaSession}))
-	rec := httptest.NewRecorder()
-	s.handleMirrorViewSend(rec, req)
-	if _, pastes := fm.v2.snapshot(); rec.Code != http.StatusNotFound || len(pastes) != 0 {
-		t.Fatalf("user 2's send: %d, pasted %+v", rec.Code, pastes)
+	s, _ := viewServer(t, fm)
+	send := func(ctx context.Context) *httptest.ResponseRecorder {
+		form := url.Values{"host": {"ws"}, "session": {"main"}, "text": {"x"}}
+		req := httptest.NewRequest(http.MethodPost, ui.MirrorSendPath, strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		s.handleMirrorViewSend(rec, req.WithContext(ctx))
+		return rec
+	}
+	owner := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 1, Role: authz.RoleMember, Via: authz.ViaSession})
+	if rec := send(owner); rec.Code != http.StatusForbidden || rec.Header().Get("X-Muster-Step-Up") != "required" {
+		t.Fatalf("a send with no sign-in time: %d", rec.Code)
+	}
+	if _, pastes := fm.v2.snapshot(); len(pastes) != 0 {
+		t.Fatalf("a send with no sign-in time was pasted: %+v", pastes)
+	}
+	fm.v2.pasteErr = mirror.ErrStepUpRequired
+	if rec := send(stepup.WithAuthTime(owner, time.Now())); rec.Code != http.StatusForbidden || rec.Header().Get("X-Muster-Step-Up") != "required" {
+		t.Fatalf("the plugin's own step-up refusal: %d", rec.Code)
+	}
+	fm.v2.pasteErr = nil
+	// Another user's host: 404, never pasted — fresh or not.
+	fm2 := &fakeMirror{online: true, interactive: true, v2: &fakeMirrorV2{}}
+	s, _ = viewServer(t, fm2)
+	other := stepup.WithAuthTime(authz.WithPrincipal(context.Background(), authz.Principal{UserID: 2, Role: authz.RoleMember, Via: authz.ViaSession}), time.Now())
+	if rec := send(other); rec.Code != http.StatusNotFound {
+		t.Fatalf("user 2's send: %d", rec.Code)
+	}
+	if _, pastes := fm2.v2.snapshot(); len(pastes) != 0 {
+		t.Fatalf("user 2's send was pasted: %+v", pastes)
 	}
 }
 

@@ -138,23 +138,6 @@ type Extensions struct {
 	// migration 0012). nil (no database): every flow route answers 503 and
 	// /flows says so.
 	Flows flows.Store
-	// MirrorStepUp is the step-up freshness check a message SENT from a
-	// mirrored session's rendered view must pass (mirror_view.go). nil REFUSES
-	// every send — fail closed — which is the state until the step-up flow
-	// (built separately, for mirror typing) is wired here.
-	MirrorStepUp StepUpGate
-}
-
-// StepUpGate is the shared step-up freshness check.
-//
-// 🔴 ONE GATE, NOT ONE PER SURFACE. Every write into an operator's own session
-// from a browser — typing into a mirrored terminal, sending from the rendered
-// view — asks the same question of the same implementation, so "fresh" cannot
-// mean two different things on two routes.
-type StepUpGate interface {
-	// StepUpFresh reports whether r's browser session completed a step-up
-	// re-authentication recently enough to write into an operator's session.
-	StepUpFresh(r *http.Request) bool
 }
 
 // Mirror is the mirror plugin as this package consumes it. *mirror.Service
