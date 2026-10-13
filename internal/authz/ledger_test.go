@@ -139,6 +139,10 @@ var (
 		"cmd/muster-server.runMirrorCLI",
 		"e2e/seed.run",
 		"internal/dbtest.AsOperator",
+		// The cairn memo relay: it presents the OPERATOR's cairn credential, so it
+		// serves the operator's agents and must be handed nobody else's. Running as
+		// the operator (not the system) is what makes row-level security say so.
+		"internal/memorelay.(*Relay).Run",
 	}
 	// withPrincipalLedger: admit only.
 	withPrincipalLedger = []string{

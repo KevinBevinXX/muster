@@ -284,6 +284,11 @@ var bannerLedger = []string{
 	// the router line says NONE by design (a standalone deployment).
 	envApprovalGateURL,
 	envApprovalGateToken,
+	// The cairn memo relay: one line names both, in all three of its states
+	// (logMemoRelayBanner). Its off-state is the one a deployment waits in
+	// until the credential is issued, so it has to be readable off the log.
+	envMemoURL,
+	envMemoToken,
 	// muster-native Web Push: the `web push:` line names all three in both
 	// directions (ENABLED / OFF). Its off-state — no Enable button, nothing
 	// sent — is otherwise invisible: nothing errors when push is off.
@@ -609,6 +614,10 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		// The mirror plugin: the banner branches on ext.Mirror, as for connectors.
 		Mirror: true,
 
+		// The memo relay: ON needs the credential, a pool and ext.Gateway (both
+		// supplied below), which is memoRelayEnabled's whole predicate.
+		MemoURL:   "http://memos.example.invalid:8125",
+		MemoToken: "memo-credential-fixture",
 		// Web Push: the banner branches on ext.Push (below), as for connectors.
 		VAPIDPublicKey:  bannerVAPIDPub,
 		VAPIDPrivateKey: bannerVAPIDPriv,

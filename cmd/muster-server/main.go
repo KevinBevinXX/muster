@@ -63,6 +63,7 @@ import (
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/gotrue"
+	"github.com/ZacxDev/muster/internal/memorelay"
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
@@ -171,6 +172,9 @@ type app struct {
 	// status promotes provisioning agents to running once their instance is
 	// ready; nil when no provisioner is configured. See buildStatusPromoter.
 	status *agentstatus.Promoter
+	// memo relays cairn scope memos to the operator's agents; nil unless the
+	// relay's credential is set and a gateway exists. See buildMemoRelay.
+	memo *memorelay.Relay
 }
 
 // buildApp wires the whole service from cfg WITHOUT binding a port.
@@ -431,6 +435,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		a.Close()
 		return nil, fmt.Errorf("status promoter: %w", err)
 	}
+	if a.memo, err = buildMemoRelay(cfg, a.pool, ext.Agents, ext.Notes, gw, logger); err != nil {
+		a.Close()
+		return nil, fmt.Errorf("memo relay: %w", err)
+	}
 
 	handler := srv.Handler()
 	a.http = &http.Server{
@@ -633,6 +641,12 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	if a.status != nil {
 		go a.status.Run(ctx, agentstatus.DefaultInterval)
 	}
+	// The memo relay needs no leader either: each delivery takes the agent's
+	// session claim (agents.Store.ClaimKickoff) and re-reads the agent and its
+	// delivery record under it, so two replicas cannot both send one agent a memo.
+	if a.memo != nil {
+		go a.memo.Run(ctx, memorelay.DefaultInterval)
+	}
 	if a.pool == nil {
 		return
 	}
@@ -693,7 +707,15 @@ func (a *app) shutdown() {
 	}
 	// The deliverer registers fan-outs too (its card-change broadcast), so it is
 	// waited for BEFORE the fan-out set, for the same reason HTTP is.
+	// The memo relay records a cut-off turn the same way, and is waited for
+	// CONCURRENTLY under the same bound, so it adds nothing to the budget above.
+	memoDone := make(chan struct{})
+	go func() {
+		defer close(memoDone)
+		a.waitForMemoRelay(kickoffDrainTimeout)
+	}()
 	a.waitForKickoffs(kickoffDrainTimeout)
+	<-memoDone
 
 	done := make(chan struct{})
 	go func() {
@@ -909,6 +931,8 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("mirrored sessions: OFF — %s is unset (or there is no database), so GET %s answers 404, "+
 			"no mirrored session is listed and the plugin's UI is not drawn", envMirror, mirror.ConnectPath)
 	}
+
+	a.logMemoRelayBanner(ext)
 
 	if ext.GitHub != nil {
 		l.Printf("github connection: ENCRYPTED AT REST (%s set). %s",

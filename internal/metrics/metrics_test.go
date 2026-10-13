@@ -56,6 +56,9 @@ var wantMetrics = map[string][]string{
 	"muster_task_session_links_total":         {"role"},
 	"muster_task_session_links_skipped_total": {"reason"},
 	"muster_flow_jobs_total":                  {"flow", "outcome"},
+	"muster_memo_relay_agent_checks_total":    {"result"},
+	"muster_memo_relay_upstream_total":        {"result"},
+	"muster_memo_relay_deliveries_total":      {"result"},
 }
 
 // 🔴 LABELS THAT MAY NEVER APPEAR, BY NAME. This is the denylist half: the
@@ -86,6 +89,9 @@ func gather(t *testing.T) map[string][]string {
 	TaskSessionLinks.WithLabelValues("read")
 	TaskSessionLinksSkipped.WithLabelValues("error")
 	FlowJobs.WithLabelValues("muse.poll", "enqueued")
+	MemoRelayAgentChecks.WithLabelValues("eligible")
+	MemoRelayUpstream.WithLabelValues("ok")
+	MemoRelayDeliveries.WithLabelValues("delivered")
 	ObserveHTTP("GET /api/tasks/{id}", "GET", 200, 0)
 
 	families, err := prometheus.DefaultGatherer.Gather()
