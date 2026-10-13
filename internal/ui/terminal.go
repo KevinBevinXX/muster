@@ -70,6 +70,11 @@ type AgentTerminalView struct {
 	BackHref string
 	// Badge is a short label beside the title ("Mirrored · <host>"); "" = none.
 	Badge string
+	// RawName, when set, is shown small and muted after the title, and as its
+	// tooltip (mirrorSessionTitle): a mirrored session titled by its host's
+	// label ("mango:1") keeps its real tmux session name findable. "" = the
+	// title alone.
+	RawName string
 	// WSPath is the socket the page opens, WITHOUT its query ("" = the agent's
 	// /agents/{name}/terminal/ws). A mirrored session's is
 	// /mirror/terminal/ws?host=…&session=…, and the page appends mode/cols/rows.
@@ -174,7 +179,9 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 					),
 					Div(
 						Class("min-w-0 flex-1"),
-						H1(Class("truncate text-sm font-semibold"), g.Text(markdownPlain(title)),
+						H1(Class("truncate text-sm font-semibold"),
+							g.If(v.RawName == "", g.Text(markdownPlain(title))),
+							g.If(v.RawName != "", mirrorSessionTitle(markdownPlain(title), v.RawName, "")),
 							g.If(v.Badge != "", Span(g.Attr("data-term-badge", ""), Class("ml-2"), chip("kind", v.Badge)))),
 						P(ID("term-status"), Class("truncate text-xs text-muted"), g.Attr("aria-live", "polite"), g.Text("Not connected")),
 					),

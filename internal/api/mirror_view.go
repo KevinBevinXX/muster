@@ -66,7 +66,7 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.MirrorViewPage(ui.MirrorViewView{Host: h.Host, Session: session, Interactive: h.Interactive,
+	if err := ui.MirrorViewPage(ui.MirrorViewView{Host: h.Host, Session: session, Label: h.Labels[session], Interactive: h.Interactive,
 		ConfirmPath: stepUpConfirmPath}).Render(w); err != nil {
 		s.logger.Printf("mirror: render view page: %v", err)
 	}

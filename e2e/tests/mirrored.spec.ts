@@ -31,7 +31,7 @@ let token = '';
 // server is plain http on localhost, so the TEST-ONLY -allow-http is set here.
 // claude, when given, makes session main a Claude Code pane writing that
 // transcript (the rendered view; cmd/muster-mirror/e2emirror.go).
-function startMirror(interactive: boolean, claude?: string): ChildProcess {
+function startMirror(interactive: boolean, claude?: string, extra?: NodeJS.ProcessEnv): ChildProcess {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     MUSTER_MIRROR_URL: origin,
@@ -42,6 +42,7 @@ function startMirror(interactive: boolean, claude?: string): ChildProcess {
   };
   if (interactive) env.MUSTER_MIRROR_INTERACTIVE = '1';
   if (claude) env.MUSTER_MIRROR_E2E_CLAUDE = 'main=' + claude;
+  Object.assign(env, extra);
   const p = spawn(mirrorBin, [], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   p.stdout?.on('data', (d) => (mirrorLog += d));
   p.stderr?.on('data', (d) => (mirrorLog += d));
@@ -146,6 +147,52 @@ test('a read-only host’s sessions appear as Mirrored cards and open the shared
   await page.evaluate(() => (document.getElementById('term-mode') as HTMLButtonElement).click());
   await expect(page.locator('#term-error-text')).toContainText('this host is read-only');
   await stopMirror();
+});
+
+// PRETTY NAMES: a host with a labels file (muster-mirror -labels-file) shows a
+// session it has a codename for as `<codename>:<active window>` — and the card
+// FOLLOWS the active window with the session set unchanged, live, with no
+// reload. The label is display-only: the card still opens the session by its
+// tmux name, which stays visible beside the label. A session with no codename
+// keeps its raw name.
+test('a labelled session shows its pretty name, follows the active window, and still opens by its tmux name', async ({ page }) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mirror-labels-'));
+  const labelsFile = path.join(dir, 'labels.json');
+  const activeFile = path.join(dir, 'active');
+  fs.writeFileSync(labelsFile, JSON.stringify({ main: 'Mango' }));
+  fs.writeFileSync(activeFile, 'main=1\nscratch=4\n');
+  try {
+    mirrorProc = startMirror(false, undefined, { MUSTER_MIRROR_LABELS_FILE: labelsFile, MUSTER_MIRROR_E2E_ACTIVE_FILE: activeFile });
+    await login(page);
+    await waitForCards(page, true);
+    await page.goto(origin + '/agents');
+    const main = card(page, 'main');
+    await expect(main.locator('[data-mirror-label]')).toHaveText('Mango:1');
+    await expect(main.locator('[data-mirror-session]')).toHaveText('main');
+    await expect(main.locator('[data-mirror-name]')).toHaveAttribute('title', 'tmux session main');
+    // No codename: the raw name, and nothing else.
+    const scratch = card(page, 'scratch');
+    await expect(scratch.locator('[data-mirror-name]')).toHaveText('scratch');
+    await expect(scratch.locator('[data-mirror-label]')).toHaveCount(0);
+
+    // The operator moves main to window 3; the session SET is unchanged. The
+    // open page follows without a reload.
+    fs.writeFileSync(activeFile, 'main=3\nscratch=4\n');
+    await expect(main.locator('[data-mirror-label]'), `the card follows the window (muster-mirror log:\n${mirrorLog})`).toHaveText('Mango:3', { timeout: 20_000 });
+    await noHorizontalScroll(page);
+
+    await main.locator('a').first().click();
+    await page.waitForURL((u) => u.pathname === '/mirror/terminal');
+    expect(new URL(page.url()).searchParams.get('session'), 'opened by the tmux name, not the label').toBe('main');
+    await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=ro');
+    await expect(page.locator('header h1')).toContainText('Mango:3');
+    await expect(page.locator('header h1 [data-mirror-session]')).toHaveText('main');
+    await expect(page).toHaveTitle(/Mango:3/);
+    await noHorizontalScroll(page);
+  } finally {
+    await stopMirror();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('an -interactive host offers the switch and types into the session', async ({ page }) => {

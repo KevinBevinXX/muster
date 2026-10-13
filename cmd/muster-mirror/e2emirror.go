@@ -93,6 +93,28 @@ func (fakeBackend) List(context.Context) ([]string, error) {
 	return out, nil
 }
 
+// ActiveWindows plays each session's active window (pretty-name labels): the
+// file MUSTER_MIRROR_E2E_ACTIVE_FILE holds `session=index` lines and is re-read
+// on every call, so a spec can MOVE a session's window by rewriting it. Unset,
+// no window is known (a label is then the codename alone).
+func (fakeBackend) ActiveWindows(context.Context) (map[string]string, error) {
+	f := os.Getenv("MUSTER_MIRROR_E2E_ACTIVE_FILE")
+	if f == "" {
+		return nil, nil
+	}
+	b, err := os.ReadFile(f)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for _, line := range strings.Split(string(b), "\n") {
+		if s, idx, ok := strings.Cut(strings.TrimSpace(line), "="); ok {
+			out[s] = idx
+		}
+	}
+	return out, nil
+}
+
 // WindowSize plays a session window of MUSTER_MIRROR_E2E_WINDOW ("CxR"); with
 // it unset the fake is a backend that cannot report one (the pre-termsize
 // behaviour: attach as asked, no report).

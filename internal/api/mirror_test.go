@@ -79,6 +79,8 @@ type fakeMirror struct {
 	stdin       []byte
 	// v2 is the rendered view's half (mirror_view_test.go); nil = a v1 host.
 	v2 *fakeMirrorV2
+	// labels is the host's session labels (HostView.Labels); nil = none.
+	labels map[string]string
 }
 
 func (f *fakeMirror) ServeConnect(w http.ResponseWriter, _ *http.Request) {
@@ -99,7 +101,7 @@ func (f *fakeMirror) Hosts(ctx context.Context) []mirror.HostView {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	hv := mirror.HostView{Host: "ws", Sessions: []string{"chief", "main"}, Online: f.online, Interactive: f.interactive}
+	hv := mirror.HostView{Host: "ws", Sessions: []string{"chief", "main"}, Labels: f.labels, Online: f.online, Interactive: f.interactive}
 	if f.v2 != nil {
 		hv.Rendered, hv.Claude = f.online, []string{"main"}
 	}

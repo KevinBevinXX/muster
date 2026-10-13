@@ -119,6 +119,17 @@ type Msg struct {
 	Host string `json:"host,omitempty"`
 	// Sessions is the host's full tmux session list (hello, sessions).
 	Sessions []string `json:"sessions,omitempty"`
+	// Labels (hello, sessions) is an optional DISPLAY name per session —
+	// session → label, e.g. "scratch13" → "mango:1" (the host's codename for the
+	// session plus its active window). Display only: a session is still
+	// addressed by its name everywhere (opens, URLs), because a label changes
+	// whenever the active window does.
+	//
+	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS: an older muster's JSON
+	// decode ignores the unknown field, and a host that sends none is shown by
+	// its raw session names. muster keeps only entries NormalizeLabels accepts
+	// and drops the rest — never the hello.
+	Labels map[string]string `json:"labels,omitempty"`
 	// Interactive (hello) is the host ADVERTISING that it accepts interactive
 	// attaches — muster-mirror's -interactive flag. Without it the host is
 	// read-only: muster offers no Interactive switch and refuses a rw attach,
@@ -231,6 +242,46 @@ func ValidSession(name string) error {
 		}
 	}
 	return nil
+}
+
+// MaxLabel bounds a session's display label (Msg.Labels), in bytes.
+const MaxLabel = 64
+
+// ValidLabel reports whether label is a display label the tunnel carries: valid
+// UTF-8, 1-MaxLabel bytes, no control characters (C0, DEL or C1) and not all
+// whitespace. It is rendered as text only, never parsed or passed to tmux.
+func ValidLabel(label string) error {
+	if strings.TrimSpace(label) == "" || len(label) > MaxLabel || !utf8.ValidString(label) {
+		return fmt.Errorf("mirror: label %q must be 1-%d bytes of valid UTF-8, not blank", label, MaxLabel)
+	}
+	for _, r := range label {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return fmt.Errorf("mirror: label %q carries a control character", label)
+		}
+	}
+	return nil
+}
+
+// NormalizeLabels is labels restricted to sessions (a host cannot label a
+// session it does not list) with every invalid label dropped; nil when nothing
+// is left. Both halves apply it: the host to what it sends, muster to what it
+// keeps — muster never trusts the host to have done it.
+func NormalizeLabels(labels map[string]string, sessions []string) map[string]string {
+	if len(labels) == 0 {
+		return nil
+	}
+	var out map[string]string
+	for _, s := range sessions {
+		l, ok := labels[s]
+		if !ok || ValidLabel(l) != nil {
+			continue
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[s] = l
+	}
+	return out
 }
 
 // BatchLines frames lines — read from a transcript starting at offset from —

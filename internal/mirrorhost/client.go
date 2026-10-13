@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"math/rand/v2"
 	"net/http"
 	"net/url"
@@ -69,6 +70,10 @@ type Config struct {
 	// use muster's Interactive switch for this host can run commands here as the
 	// user muster-mirror runs as. Turn it on only where that is intended.
 	Interactive bool
+	// Codenames is session name → codename (LoadCodenames). A listed session
+	// with one is shown in muster as "<codename>:<active window index>"
+	// (BuildLabels); nil labels nothing, and then no window index is read.
+	Codenames map[string]string
 	// AllowHTTP permits a plain http:// URL — FOR TESTS AND LOCAL DEVELOPMENT
 	// ONLY; the documented install is https. Without it only https is accepted:
 	// the token travels in the Authorization header of every connect.
@@ -217,8 +222,9 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	sessions := c.list(ctx)
 	conn.setListed(sessions)
 	claude := conn.resolveClaude(sessions)
+	labels := conn.labels(sessions)
 	if err := conn.send(mirror.Msg{Type: mirror.TypeHello, Version: version, Host: c.cfg.Host,
-		Sessions: sessions, Claude: claude, Interactive: c.cfg.Interactive}); err != nil {
+		Sessions: sessions, Claude: claude, Labels: labels, Interactive: c.cfg.Interactive}); err != nil {
 		return err
 	}
 	wctx, wcancel := context.WithTimeout(ctx, 15*time.Second)
@@ -239,7 +245,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	}
 	c.log.Printf("muster-mirror: connected to %s as host %s with %d session(s)", c.url, c.cfg.Host, len(sessions))
 
-	go conn.refresh(sessions, claude)
+	go conn.refresh(sessions, claude, labels)
 	go conn.keepalive(cancel)
 	for {
 		typ, data, err := ws.Read(ctx)
@@ -314,6 +320,26 @@ type hostSide struct {
 	listed map[string]bool
 	// watches are the open transcript streams (rendered views), by stream id.
 	watches map[uint32]context.CancelFunc
+	// labelErr is the last window-index read error logged ("" = none), so a
+	// failing read is logged when it starts failing, not every Refresh. Only
+	// the hello and then the one refresh goroutine touch it, in that order.
+	labelErr string
+}
+
+// labels is sessions' display labels (SessionLabels over Config.Codenames).
+func (h *hostSide) labels(sessions []string) map[string]string {
+	labels, err := SessionLabels(h.ctx, h.c.cfg.Backend, h.c.cfg.Codenames, sessions)
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	if msg != h.labelErr {
+		if msg != "" {
+			h.c.log.Printf("muster-mirror: read active windows for labels (labelling by codename alone): %v", err)
+		}
+		h.labelErr = msg
+	}
+	return labels
 }
 
 func (h *hostSide) setListed(list []string) {
@@ -451,9 +477,14 @@ func (h *hostSide) closeAll() {
 	}
 }
 
-// refresh re-reads the session list (and, on v2, which sessions run Claude Code)
-// every Refresh and sends it when either changed.
-func (h *hostSide) refresh(last, lastClaude []string) {
+// refresh re-reads the session list (and, on v2, which sessions run Claude Code,
+// and each session's label) every Refresh and sends it when any of them changed.
+//
+// 🔴 A LABEL CHANGE ALONE IS A CHANGE. A label carries the session's ACTIVE
+// window, which moves while the session set stays the same; comparing only the
+// sessions would leave muster showing "mango:1" after the operator moved to
+// window 3.
+func (h *hostSide) refresh(last, lastClaude []string, lastLabels map[string]string) {
 	t := time.NewTicker(h.c.cfg.Refresh)
 	defer t.Stop()
 	for {
@@ -463,17 +494,18 @@ func (h *hostSide) refresh(last, lastClaude []string) {
 		case <-t.C:
 			now := h.c.list(h.ctx)
 			claude := h.resolveClaude(now)
-			if slices.Equal(now, last) && slices.Equal(claude, lastClaude) {
+			labels := h.labels(now)
+			if slices.Equal(now, last) && slices.Equal(claude, lastClaude) && maps.Equal(labels, lastLabels) {
 				continue
 			}
 			// The allowlist moves BEFORE muster hears of a new session, so an open
 			// for it is never refused for being unlisted; a session that ended
 			// is unattachable from this instant.
 			h.setListed(now)
-			if err := h.send(mirror.Msg{Type: mirror.TypeSessions, Sessions: now, Claude: claude}); err != nil {
+			if err := h.send(mirror.Msg{Type: mirror.TypeSessions, Sessions: now, Claude: claude, Labels: labels}); err != nil {
 				return
 			}
-			last, lastClaude = now, claude
+			last, lastClaude, lastLabels = now, claude, labels
 		}
 	}
 }

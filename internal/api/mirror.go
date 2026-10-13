@@ -84,7 +84,7 @@ func (s *Server) mirrorCards(ctx context.Context) []ui.MirrorCardView {
 	var out []ui.MirrorCardView
 	for _, h := range s.ext.Mirror.Hosts(ctx) {
 		for _, sess := range h.Sessions {
-			out = append(out, ui.MirrorCardView{Host: h.Host, Session: sess, Online: h.Online, Interactive: h.Interactive, Claude: slices.Contains(h.Claude, sess)})
+			out = append(out, ui.MirrorCardView{Host: h.Host, Session: sess, Label: h.Labels[sess], Online: h.Online, Interactive: h.Interactive, Claude: slices.Contains(h.Claude, sess)})
 		}
 	}
 	return out
@@ -99,11 +99,20 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		http.NotFound(w, r)
 		return
 	}
+	label := h.Labels[session]
+	rawName := ""
+	if label != "" && label != session {
+		rawName = session
+	}
 	v := ui.AgentTerminalView{
-		Name:     session,
-		BackHref: "/agents",
-		Badge:    "Mirrored · " + h.Host,
-		WSPath:   ui.MirrorTerminalWSPath(h.Host, session),
+		Name: session,
+		// The host's display label ("mango:1") titles the page; the session
+		// NAME stays the address (WSPath).
+		DisplayName: label,
+		RawName:     rawName,
+		BackHref:    "/agents",
+		Badge:       "Mirrored · " + h.Host,
+		WSPath:      ui.MirrorTerminalWSPath(h.Host, session),
 		// 🔴 THE SWITCH IS OFFERED ONLY WHEN THE HOST ADVERTISED -interactive.
 		// The hub refuses a rw attach to a host that did not, regardless.
 		ReadOnlyOnly: !h.Interactive,
