@@ -163,6 +163,7 @@ var isolationClasses = map[string]routeClass{
 	"POST /api/push/unsubscribe":     classList,
 	"POST /account/push/test":        classList,
 	"POST /account/push/{id}/remove": classParam,
+	"POST /account/push/preferences": classList,
 	// accounts PR 5: invite redemption and the password reset (tokens in form
 	// fields, like the claim), and the admin pages.
 	"GET /invite":      classPublic,

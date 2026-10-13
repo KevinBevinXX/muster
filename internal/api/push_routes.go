@@ -8,10 +8,13 @@ import (
 	"html"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/push"
 )
 
@@ -33,10 +36,11 @@ import (
 // task titles.
 
 const (
-	pushKeyPath         = "/api/push/vapid-public-key"
-	pushSubscribePath   = "/api/push/subscribe"
-	pushUnsubscribePath = "/api/push/unsubscribe"
-	accountPushTestPath = "/account/push/test"
+	pushKeyPath          = "/api/push/vapid-public-key"
+	pushSubscribePath    = "/api/push/subscribe"
+	pushUnsubscribePath  = "/api/push/unsubscribe"
+	accountPushTestPath  = "/account/push/test"
+	accountPushPrefsPath = "/account/push/preferences"
 
 	// pushDeviceCookie names the browser's own subscription (the sha256 of its
 	// endpoint), so logout can remove THIS device's row and no other. HttpOnly:
@@ -67,6 +71,33 @@ func (s *Server) registerPushRoutes(mux Mux) {
 	mux.HandleFunc("POST "+pushUnsubscribePath, s.requireOperatorWrite(s.handlePushUnsubscribe))
 	mux.HandleFunc("POST "+accountPushTestPath, s.requireOperatorWrite(s.handlePushTest))
 	mux.HandleFunc("POST /account/push/{id}/remove", s.requireOperatorWrite(s.handlePushRemove))
+	mux.HandleFunc("POST "+accountPushPrefsPath, s.requireOperatorWrite(s.handlePushPreferences))
+}
+
+// handlePushPreferences saves the caller's event toggles: every event NOT
+// checked in the form is muted.
+func (s *Server) handlePushPreferences(w http.ResponseWriter, r *http.Request) {
+	if !s.pushServed() {
+		http.Redirect(w, r, "/account?push=off#notifications", http.StatusSeeOther)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	on := r.PostForm["on"]
+	var muted []string
+	for _, e := range push.Events {
+		if !slices.Contains(on, e.Name) {
+			muted = append(muted, e.Name)
+		}
+	}
+	if err := s.ext.Push.Store().SetMuted(r.Context(), muted); err != nil {
+		s.logger.Printf("push: save preferences: %v", err)
+		http.Error(w, "the preferences could not be saved", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/account?push=saved#notifications", http.StatusSeeOther)
 }
 
 // pushServed reports whether this server can hold and send to subscriptions.
@@ -179,6 +210,81 @@ func (s *Server) handlePushRemove(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/account?push=removed#notifications", http.StatusSeeOther)
 }
 
+// Per-owner rate cap. "Every event on by default" (operator decision) is the
+// amplification risk: the router this replaces once sent 14–17k pushes a day
+// to one device. The debounce coalesces bursts; this caps what is left, per
+// owner, so one user's runaway producer cannot buzz their phone without bound
+// (and cannot spend another user's budget).
+const (
+	pushOwnerBurst  = 30
+	pushOwnerWindow = 10 * time.Minute
+)
+
+// ownerRateLimit is a fixed window per owner.
+type ownerRateLimit struct {
+	mu   sync.Mutex
+	wins map[int64]*ownerWindow
+}
+
+type ownerWindow struct {
+	start  time.Time
+	count  int
+	warned bool
+}
+
+// allow reports whether owner may be sent one more notification at now, and
+// records it. first is true the first time owner is refused in a window, so
+// the refusal is logged once rather than per notification.
+func (l *ownerRateLimit) allow(owner int64, now time.Time) (ok, first bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.wins == nil {
+		l.wins = map[int64]*ownerWindow{}
+	}
+	w := l.wins[owner]
+	if w == nil || now.Sub(w.start) >= pushOwnerWindow {
+		w = &ownerWindow{start: now}
+		l.wins[owner] = w
+	}
+	if w.count >= pushOwnerBurst {
+		first = !w.warned
+		w.warned = true
+		return false, first
+	}
+	w.count++
+	return true, false
+}
+
+// pushAllowed applies owner's preferences and the per-owner rate cap to one
+// notification of event. A muted event is not sent; past the cap nothing is
+// sent until the window rolls. "resolved" (which shows nothing and only clears
+// what an earlier push showed) never counts against the cap — throttling the
+// clear would strand exactly the notification the cap let through.
+func (s *Server) pushAllowed(ctx context.Context, owner int64, event string) bool {
+	muted, err := s.ext.Push.Store().Muted(ctx, owner)
+	if err != nil {
+		// Fail OPEN: preferences are a convenience, and a database blip must not
+		// silence a notification the user did not ask to silence.
+		s.logger.Printf("push: read preferences for owner=%d: %v", owner, err)
+	}
+	if slices.Contains(muted, event) {
+		metrics.PushSuppressed.WithLabelValues("muted").Inc()
+		return false
+	}
+	if event == push.EventResolved {
+		return true
+	}
+	ok, first := s.pushLimit.allow(owner, s.now())
+	if !ok {
+		metrics.PushSuppressed.WithLabelValues("throttled").Inc()
+		if first {
+			s.logger.Printf("push: owner=%d reached the cap of %d notifications per %s; dropping until the window rolls",
+				owner, pushOwnerBurst, pushOwnerWindow)
+		}
+	}
+	return ok
+}
+
 // sendPush is the ONE caller of PushService.SendTo. Everything that delivers a
 // notification comes through here, so "who receives it" is decided in one
 // place: owner, and only owner.
@@ -245,6 +351,8 @@ func (s *Server) accountNotificationsSection(r *http.Request) string {
 			html.EscapeString(q.Get("ok")) + ` of ` + html.EscapeString(q.Get("of")) + ` device(s) accepted it.</p>`)
 	case "removed":
 		b.WriteString(`<p role="status" class="text-sm font-semibold text-fg">Device removed.</p>`)
+	case "saved":
+		b.WriteString(`<p role="status" class="text-sm font-semibold text-fg">Notification settings saved.</p>`)
 	}
 	devs, err := s.ext.Push.Store().Devices(r.Context())
 	if err != nil {
@@ -283,6 +391,30 @@ func (s *Server) accountNotificationsSection(r *http.Request) string {
 <form method="POST" action="` + accountPushTestPath + `">
 <button type="submit" class="press min-h-[44px] w-full rounded-md bg-bg px-3 py-2 text-base font-semibold text-fg ring-1 ring-inset ring-edge">Send a test notification</button></form>`)
 	}
+	b.WriteString(s.pushPreferencesForm(r))
 	b.WriteString(`</section>`)
+	return b.String()
+}
+
+// pushPreferencesForm is the caller's per-event toggles. Every event is on
+// unless the caller muted it.
+func (s *Server) pushPreferencesForm(r *http.Request) string {
+	muted, err := s.ext.Push.Store().MyMuted(r.Context())
+	if err != nil {
+		s.logger.Printf("push: read preferences: %v", err)
+		return problemNode("The notification settings could not be read.")
+	}
+	var b strings.Builder
+	b.WriteString(`<form method="POST" action="` + accountPushPrefsPath + `" data-testid="push-preferences" class="flex flex-col gap-2">
+<p class="text-sm font-medium text-fg">Notify me when</p>`)
+	for _, e := range push.Events {
+		checked := ""
+		if !slices.Contains(muted, e.Name) {
+			checked = " checked"
+		}
+		b.WriteString(`<label class="flex min-h-[44px] items-center gap-2 text-sm text-fg"><input type="checkbox" name="on" value="` +
+			e.Name + `"` + checked + `> ` + html.EscapeString(e.Label) + `</label>`)
+	}
+	b.WriteString(`<button type="submit" class="press min-h-[44px] w-full rounded-md bg-bg px-3 py-2 text-base font-semibold text-fg ring-1 ring-inset ring-edge">Save notification settings</button></form>`)
 	return b.String()
 }

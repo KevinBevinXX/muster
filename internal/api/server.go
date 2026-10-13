@@ -48,6 +48,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/github"
+	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/sse"
 	"github.com/ZacxDev/muster/internal/ui"
 	"github.com/ZacxDev/muster/web"
@@ -133,15 +134,14 @@ type Server struct {
 	// listPullRequests is the GitHub PR read, injectable for tests.
 	listPullRequests func(ctx context.Context, token, repo, state string) ([]github.PullRequest, error)
 
-	// --- debounced task notifications ---
+	// --- debounced task notifications, one buffer PER OWNER (push_task.go) ---
 	taskCreateAfter  afterFunc
-	taskNotifyMu     sync.Mutex
-	taskNotifyBuf    []createdTaskRef
-	taskNotifyTimer  resettableTimer
+	createdBuf       ownerBuffer[createdTaskRef]
 	taskCommentAfter afterFunc
-	taskCommentMu    sync.Mutex
-	taskCommentBuf   []commentedTaskRef
-	taskCommentTimer resettableTimer
+	commentBuf       ownerBuffer[commentedTaskRef]
+
+	// pushLimit is the per-owner notification rate cap (push_routes.go).
+	pushLimit ownerRateLimit
 
 	taskProvisionedMu       sync.Mutex
 	taskProvisionedNotified map[int64]bool
@@ -854,10 +854,21 @@ const pushBroadcastTimeout = 15 * time.Second
 // goNotify is the ONE place a notification fan-out is spawned.
 //
 // 🔴 "ONE PLACE" IS ASSERTED, NOT DESCRIBED: TestNotifyFanOutHasOneCallSite
-// fails if a second call site appears. Every notification helper in this package
-// routes through it, so the registration on s.pushInFlight, the timeout and the
-// "only log a delivery that reached someone" rule are each spelled once instead
-// of once per caller.
+// fails if a second call site of router.Notify appears, and
+// TestNativePushHasOneSendSite pins PushService.SendTo to sendPush, whose
+// only callers are this function and the account page's "send test". Every
+// notification helper in this package routes through here, so the
+// registration on s.pushInFlight, the timeout, the owner's preferences, the
+// rate cap and the "only log a delivery that reached someone" rule are each
+// spelled once instead of once per caller.
+//
+// 🔴 EVERY NOTIFICATION HAS ONE OWNER, AND ONLY THAT OWNER'S DEVICES ARE ASKED.
+// owner is the user the event is ABOUT (the task's, the agent's, the
+// connector request's); muster-native push delivers to that owner's own
+// subscriptions (push.Service.SendTo → the store's owner-filtered read), and
+// the router — the operator's service, with no notion of a muster user — is
+// reached only for an admin owner (routerServes), as before. event is the
+// /account toggle that can mute it (push.Events).
 //
 // It runs the fan-out in its own goroutine — delivery latency must never block
 // the handler that triggered it — but performs the Add SYNCHRONOUSLY, on the
@@ -865,20 +876,15 @@ const pushBroadcastTimeout = 15 * time.Second
 // called Wait between the goroutine starting and its Add would wait for nothing
 // and return immediately, and the notification would be lost on exit.
 //
-// 🔴 THE FAN-OUT IS THE ROUTER'S NOW, AND THE FAILURE IS LOGGED RATHER THAN
-// SWALLOWED. muster holds no push subscriptions — the browser subscribes
-// against the router, which owns the VAPID key and the subscription table — so
-// this is an HTTP call that can fail in ways an in-process fan-out could not.
-// It is best-effort by contract at every call site, but a silent best-effort is
-// indistinguishable from a working one, which is how upstream's own push
-// pipeline was dead for months without anyone noticing.
+// The router hop is logged on failure rather than swallowed: a silent
+// best-effort is indistinguishable from a working one, which is how upstream's
+// own push pipeline was dead for months without anyone noticing.
 //
-// onDelivered, when non-nil, is called ONLY when the router accepted the
-// notification. The device count is not available across the hop, so it is
-// called with -1: an unknown count, spelled as one rather than as a plausible
-// zero or one.
-func (s *Server) goNotify(n RouterNotification, onDelivered func(int)) {
-	if s.router == nil {
+// onDelivered, when non-nil, is called when a delivery reached someone: with
+// the device count for muster-native push, and with -1 (an unknown count,
+// spelled as one rather than as a plausible zero or one) for the router.
+func (s *Server) goNotify(owner int64, event string, n RouterNotification, onDelivered func(int)) {
+	if !s.notifiable() || owner <= 0 {
 		return
 	}
 	// 🔴 THE Add IS ON THE CALLER'S GOROUTINE AND THE Done IS fn's FIRST DEFER,
@@ -886,18 +892,21 @@ func (s *Server) goNotify(n RouterNotification, onDelivered func(int)) {
 	// fn, so on a panic fn's own defers unwind first — Done runs, then the
 	// recover logs. A shutdown therefore cannot be left waiting on a fan-out that
 	// panicked, which is the one property this pairing has to keep.
-	//
-	// ⚠ IT WAS BARE, AND s.router BEING NIL-CHECKED ABOVE IS NOT WHAT MADE THAT
-	// SAFE — NOTHING DID. The nil check covers the field; the panic this recovers
-	// is whatever happens INSIDE an HTTP call to another service, which is the
-	// case safeGo's own doc names ("gateway responses"). A nil-map write or a
-	// bad decode in that client would have taken the whole single-replica process
-	// down from a best-effort notification.
 	s.pushInFlight.Add(1)
-	safeGo(s.logger, "router notify tag="+n.Tag, func() {
+	safeGo(s.logger, "notify tag="+n.Tag, func() {
 		defer s.pushInFlight.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), pushBroadcastTimeout)
 		defer cancel()
+		if s.pushServed() && s.pushAllowed(ctx, owner, event) {
+			rep := s.sendPush(ctx, owner, push.Payload{Type: n.Type, ID: n.ID, Title: n.Title, Body: n.Body, Tag: n.Tag, Data: n.Data})
+			if rep.Delivered > 0 && onDelivered != nil {
+				onDelivered(rep.Delivered)
+			}
+		}
+		// The router knows nothing of "resolved" (it closes its own cards).
+		if s.router == nil || event == push.EventResolved || !s.routerServes(owner) {
+			return
+		}
 		if err := s.router.Notify(ctx, n); err != nil {
 			s.logger.Printf("router: notify tag=%s: %v", n.Tag, err)
 			return
@@ -907,6 +916,11 @@ func (s *Server) goNotify(n RouterNotification, onDelivered func(int)) {
 		}
 	})
 }
+
+// notifiable reports whether ANY notification can be delivered: muster's own
+// push, or the router. Every notify helper returns early when it cannot, so a
+// deployment with neither does no buffering, no timers and no reads.
+func (s *Server) notifiable() bool { return s.router != nil || s.pushServed() }
 
 // mirrorToRouter forwards one of owner's events to the router's SSE bus, if
 // configured and owner is an admin (see publish).

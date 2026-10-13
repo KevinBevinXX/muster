@@ -6,24 +6,38 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/push"
 )
 
-// Task-lifecycle Web Push notifications. Three events hang off the existing
-// producer/agent hooks and fan out to every subscribed device via the shared
-// push.Service, exactly like the permission-request pushes:
+// Task-lifecycle Web Push notifications. Each hangs off an existing
+// producer/agent hook and goes to ONE owner — the task's (or the agent's, or
+// the connector request's) — through goNotify, which delivers it to that
+// owner's own devices (muster-native push) and, for an admin, to the router:
 //
 //  1. Task CREATED (machine/producer path only, POST /api/tasks) — coalesced: a
 //     burst of creates (the drafter posts ~6 in a loop) collapses to ONE push.
+//
 //  2. Provisioning COMPLETE — a task-linked agent reaching `running`, once.
+//
 //  3. Task DONE — a task entering `ready_for_review`.
 //
-// All three are best-effort and nil-push-safe (pushTask no-ops when push is
-// disabled), and none may ever fail the create/dispatch/status handler.
+//  4. Task LEAVES review — a "resolved" control message that clears the
+//     notification from (3) on the owner's other devices.
+//
+// All are best-effort and no-ops with no push configured, and none may ever
+// fail the create/dispatch/status handler.
+//
+// 🔴 THE COALESCERS ARE PER OWNER. They used to be one global buffer, which was
+// only safe because the router admin-gate sat in front of them: a coalesced
+// "3 new tasks" push is ONE notification for every buffered task, so with two
+// owners in one buffer, one user's task titles would land on the other's phone.
+// ownerBuffer keys the buffer AND its debounce timer by owner.
 const (
 	// taskNotificationType is the payload Type the service worker branches on to
 	// render an informational task notification (no Approve/Deny actions) and, on
@@ -74,9 +88,9 @@ type commentedTaskRef struct {
 	text   string
 }
 
-// pushTask fans a task-lifecycle payload out to every subscription. It is the
-// single choke point every task notification uses: it no-ops when push is
-// disabled (s.push == nil) and runs the fan-out in its own goroutine so push
+// pushTask sends a task-lifecycle payload to owner, as event (the /account
+// toggle that can mute it). It is the single choke point every task
+// notification uses, and goNotify runs the fan-out in its own goroutine so push
 // latency never blocks the create/dispatch/status handler that triggered it.
 //
 // 🔴 ONE RULE, ONE PLACE — the click-through URL is DEFAULTED here, not spelled
@@ -97,6 +111,40 @@ type commentedTaskRef struct {
 //
 // The service worker already routes payload.type === 'task' through
 // focusOrOpen(data.url), so nothing in sw.js changes.
+// ownerBuffer is a debounce buffer PER OWNER: each owner's burst collapses into
+// that owner's one notification, on that owner's own timer.
+type ownerBuffer[T any] struct {
+	mu     sync.Mutex
+	bufs   map[int64][]T
+	timers map[int64]resettableTimer
+}
+
+// add buffers v for owner and (re)arms owner's debounce timer, which calls
+// flush(owner) once the burst settles.
+func (b *ownerBuffer[T]) add(owner int64, v T, after afterFunc, d time.Duration, flush func(int64)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.bufs == nil {
+		b.bufs, b.timers = map[int64][]T{}, map[int64]resettableTimer{}
+	}
+	b.bufs[owner] = append(b.bufs[owner], v)
+	if t, ok := b.timers[owner]; ok {
+		t.Reset(d)
+		return
+	}
+	b.timers[owner] = after(d, func() { flush(owner) })
+}
+
+// take empties owner's buffer and forgets its timer.
+func (b *ownerBuffer[T]) take(owner int64) []T {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	v := b.bufs[owner]
+	delete(b.bufs, owner)
+	delete(b.timers, owner)
+	return v
+}
+
 // routerServes reports whether an event owned by owner may reach the router —
 // a push to the operator's phone or a mirror onto the router's bus.
 //
@@ -106,15 +154,15 @@ type commentedTaskRef struct {
 // connector request pushed there would land on the operator's phone — the same
 // cross-user leak the SSE owner filter closes, through a different door. The
 // approval relay draws the same line (operator decision: only admin-owned
-// agents relay to the router). A member's notifications arrive with per-user
-// delivery in a later PR; until then a member gets none, never the operator's.
-// roleOf fails to member, so an unreadable role notifies nobody.
+// agents relay to the router). A member's notifications go to the member's
+// OWN devices through muster-native push (goNotify), never to the router's.
+// roleOf fails to member, so an unreadable role reaches no router.
 func (s *Server) routerServes(owner int64) bool {
 	return owner > 0 && s.roleOf(context.Background(), owner) == authz.RoleAdmin
 }
 
-func (s *Server) pushTask(payload RouterNotification) {
-	if s.router == nil {
+func (s *Server) pushTask(owner int64, event string, payload RouterNotification) {
+	if !s.notifiable() {
 		return
 	}
 	if payload.Data["url"] == "" {
@@ -131,8 +179,8 @@ func (s *Server) pushTask(payload RouterNotification) {
 		data["url"] = url
 		payload.Data = data
 	}
-	s.goNotify(payload, func(n int) {
-		s.logger.Printf("push: delivered task notification tag=%s to %d device(s)", payload.Tag, n)
+	s.goNotify(owner, event, payload, func(n int) {
+		s.logger.Printf("push: delivered task notification tag=%s owner=%d to %d device(s)", payload.Tag, owner, n)
 	})
 }
 
@@ -143,33 +191,22 @@ func (s *Server) pushTask(payload RouterNotification) {
 // producer path (POST /api/tasks) calls this — the FAB create does not, since
 // the user just made that task themselves. Best-effort + nil-push-safe.
 func (s *Server) notifyTaskCreated(n notes.Note) {
-	// Skip the buffer+timer machinery entirely when push is disabled — there is
-	// nothing to eventually deliver. A member's task never enters the buffer:
-	// the coalesced push is one notification for every buffered task, so the
-	// owner gate must sit BEFORE the buffer, not at the send.
-	if s.router == nil || !s.routerServes(n.OwnerID) {
+	// Skip the buffer+timer machinery entirely when nothing can be delivered.
+	// The buffer is the task OWNER's: the coalesced push is one notification for
+	// every buffered task, so owners must never share one.
+	if !s.notifiable() || n.OwnerID <= 0 {
 		return
 	}
-	s.taskNotifyMu.Lock()
-	s.taskNotifyBuf = append(s.taskNotifyBuf, createdTaskRef{id: n.ID, title: taskTitle(n)})
-	if s.taskNotifyTimer == nil {
-		s.taskNotifyTimer = s.taskCreateAfter(taskCreateDebounce, s.flushCreatedTasks)
-	} else {
-		s.taskNotifyTimer.Reset(taskCreateDebounce)
-	}
-	s.taskNotifyMu.Unlock()
+	s.createdBuf.add(n.OwnerID, createdTaskRef{id: n.ID, title: taskTitle(n)}, s.taskCreateAfter,
+		taskCreateDebounce, s.flushCreatedTasks)
 }
 
-// flushCreatedTasks fires the single coalesced push for the tasks buffered since
-// the window opened, then clears the buffer + timer. It is the debounce timer's
+// flushCreatedTasks fires owner's single coalesced push for the tasks buffered
+// since owner's window opened, then clears that buffer + timer. It is the debounce timer's
 // callback (and is invoked directly by tests via the injected timer). A single
 // buffered task → "New task" + its title; N>1 → "N new tasks" + a brief summary.
-func (s *Server) flushCreatedTasks() {
-	s.taskNotifyMu.Lock()
-	buf := s.taskNotifyBuf
-	s.taskNotifyBuf = nil
-	s.taskNotifyTimer = nil
-	s.taskNotifyMu.Unlock()
+func (s *Server) flushCreatedTasks(owner int64) {
+	buf := s.createdBuf.take(owner)
 
 	if len(buf) == 0 {
 		return
@@ -184,7 +221,7 @@ func (s *Server) flushCreatedTasks() {
 		body = truncate(createdTasksSummary(buf), taskBodyMax)
 	}
 
-	s.pushTask(RouterNotification{
+	s.pushTask(owner, push.EventCreated, RouterNotification{
 		Type:  taskNotificationType,
 		Title: title,
 		Body:  body,
@@ -217,7 +254,7 @@ func createdTasksSummary(buf []createdTaskRef) string {
 // for the same agent does not re-push. A repo-less/no-task agent and the
 // operator never match (NoteID==nil). Nil-push-safe.
 func (s *Server) notifyAgentRunning(agentName string) {
-	if s.router == nil || s.ext.Agents == nil || agentName == "" {
+	if !s.notifiable() || s.ext.Agents == nil || agentName == "" {
 		return
 	}
 	// 🔴 authz.System, BECAUSE THIS HOOK HAS NO CONTEXT TO TAKE A PRINCIPAL
@@ -234,9 +271,6 @@ func (s *Server) notifyAgentRunning(agentName string) {
 	if a.Status != agents.StatusRunning || a.NoteID == nil {
 		return
 	}
-	if !s.routerServes(a.OwnerID) {
-		return
-	}
 
 	// Dedupe: fire once per agent id.
 	s.taskProvisionedMu.Lock()
@@ -250,7 +284,7 @@ func (s *Server) notifyAgentRunning(agentName string) {
 	}
 
 	noteID := *a.NoteID
-	s.pushTask(RouterNotification{
+	s.pushTask(a.OwnerID, push.EventAgent, RouterNotification{
 		Type:  taskNotificationType,
 		ID:    strconv.FormatInt(noteID, 10),
 		Title: fmt.Sprintf("Task #%d: agent ready", noteID),
@@ -267,16 +301,31 @@ func (s *Server) notifyAgentRunning(agentName string) {
 // re-push. A task moving to any OTHER status clears its dedupe mark, so a
 // genuine re-entry (ready → in_progress → ready) notifies again. Called from
 // every task status-set path (human select + agent self-service). Nil-push-safe.
+//
+// LEAVING review sends ONE "resolved" control message (event resolved) that
+// closes the ready-for-review notification on the owner's devices — the
+// Android icon dot is the unread-notification count, so this is what clears
+// it. It fires only for a task this process actually notified (the dedupe
+// mark), so a task that never buzzed sends nothing, and a repeated save of
+// the new status sends nothing more.
 func (s *Server) notifyTaskDone(n notes.Note) {
 	if n.Status != notes.StatusReadyForReview {
 		// Left (or never in) the review state: drop any dedupe mark so a future
 		// transition back into ready_for_review notifies.
 		s.taskDoneMu.Lock()
+		was := s.taskDoneNotified[n.ID]
 		delete(s.taskDoneNotified, n.ID)
 		s.taskDoneMu.Unlock()
+		if was {
+			s.goNotify(n.OwnerID, push.EventResolved, RouterNotification{
+				Type: push.TypeResolved,
+				ID:   strconv.FormatInt(n.ID, 10),
+				Tag:  fmt.Sprintf("task-%d-done", n.ID),
+			}, nil)
+		}
 		return
 	}
-	if s.router == nil || !s.routerServes(n.OwnerID) {
+	if !s.notifiable() || n.OwnerID <= 0 {
 		return
 	}
 
@@ -290,7 +339,7 @@ func (s *Server) notifyTaskDone(n notes.Note) {
 		return
 	}
 
-	s.pushTask(RouterNotification{
+	s.pushTask(n.OwnerID, push.EventReview, RouterNotification{
 		Type:  taskNotificationType,
 		ID:    strconv.FormatInt(n.ID, 10),
 		Title: fmt.Sprintf("Task #%d ready for review", n.ID),
@@ -311,11 +360,10 @@ func (s *Server) notifyTaskDone(n notes.Note) {
 // Best-effort + nil-push-safe.
 func (s *Server) notifyTaskCommented(n notes.Note, c notes.Comment) {
 	// Nothing to eventually deliver when push is disabled — skip the machinery.
-	if s.router == nil {
+	if !s.notifiable() || n.OwnerID <= 0 {
 		return
 	}
-	s.taskCommentMu.Lock()
-	s.taskCommentBuf = append(s.taskCommentBuf, commentedTaskRef{
+	s.commentBuf.add(n.OwnerID, commentedTaskRef{
 		noteID: n.ID,
 		author: c.Author,
 		// A comment body is markdown (a completion report: `**Done**`, a
@@ -323,13 +371,7 @@ func (s *Server) notifyTaskCommented(n notes.Note, c notes.Comment) {
 		// every platform, so flatten it HERE — the phone would otherwise show
 		// literal `**`/backticks (the 0.7.60 bug class).
 		text: commentNotificationText(c.Body),
-	})
-	if s.taskCommentTimer == nil {
-		s.taskCommentTimer = s.taskCommentAfter(taskCommentDebounce, s.flushCommentedTasks)
-	} else {
-		s.taskCommentTimer.Reset(taskCommentDebounce)
-	}
-	s.taskCommentMu.Unlock()
+	}, s.taskCommentAfter, taskCommentDebounce, s.flushCommentedTasks)
 }
 
 // flushCommentedTasks fires the single coalesced push for the comments buffered
@@ -337,12 +379,8 @@ func (s *Server) notifyTaskCommented(n notes.Note, c notes.Comment) {
 // "New comment on task #N" + "author: text"; N>1 → "N new comments" + a brief
 // summary. Tagged per-task when it's a single task (so a later comment REPLACES
 // rather than stacks) and generically for a mixed burst.
-func (s *Server) flushCommentedTasks() {
-	s.taskCommentMu.Lock()
-	buf := s.taskCommentBuf
-	s.taskCommentBuf = nil
-	s.taskCommentTimer = nil
-	s.taskCommentMu.Unlock()
+func (s *Server) flushCommentedTasks(owner int64) {
+	buf := s.commentBuf.take(owner)
 
 	if len(buf) == 0 {
 		return
@@ -361,7 +399,7 @@ func (s *Server) flushCommentedTasks() {
 		tag = "tasks-comments"
 	}
 
-	s.pushTask(RouterNotification{
+	s.pushTask(owner, push.EventComment, RouterNotification{
 		Type:  taskNotificationType,
 		ID:    id,
 		Title: title,

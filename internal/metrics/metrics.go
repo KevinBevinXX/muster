@@ -69,6 +69,17 @@ var (
 		Help: "Web Push delivery attempts by result (ok|expired|failed).",
 	}, []string{"result"})
 
+	// PushSuppressed counts notifications NOT sent, one per notification (not
+	// per device), by reason:
+	//   muted     — the owner turned that event off on /account
+	//   throttled — the owner's per-owner rate cap was reached
+	// A rising `throttled` is the amplification signal: something is producing
+	// notifications faster than a person can read them.
+	PushSuppressed = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_push_suppressed_total",
+		Help: "Web Push notifications not sent, by reason (muted|throttled).",
+	}, []string{"reason"})
+
 	// AgentProvision counts agent provisioning attempts.
 	AgentProvision = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "muster_agent_provision_total",

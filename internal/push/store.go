@@ -96,6 +96,12 @@ type Store interface {
 	MarkFailed(ctx context.Context, d Device) error
 	Prune(ctx context.Context, d Device) (bool, error)
 	ForgetDevice(ctx context.Context, owner int64, endpointHash string) (bool, error)
+
+	// Muted is owner's muted events, for a send (System, filtered by owner).
+	Muted(ctx context.Context, owner int64) ([]string, error)
+	// MyMuted / SetMuted are the CALLER's preferences (row-level security).
+	MyMuted(ctx context.Context) ([]string, error)
+	SetMuted(ctx context.Context, muted []string) error
 }
 
 // sys is this package's ONE authz.System call (ledgered). See Store.
@@ -280,4 +286,41 @@ func (s *PGStore) ForgetDevice(ctx context.Context, owner int64, endpointHash st
 		}
 	}
 	return false, nil
+}
+
+// Muted reads owner's muted events. System, filtered by owner. A user with no
+// preference row has nothing muted: every event is on by default.
+func (s *PGStore) Muted(ctx context.Context, owner int64) ([]string, error) {
+	return s.muted(sys(ctx), `SELECT muted FROM push_preferences WHERE owner_id = $1`, owner)
+}
+
+// MyMuted reads the CALLER's muted events (row-level security).
+func (s *PGStore) MyMuted(ctx context.Context) ([]string, error) {
+	return s.muted(ctx, `SELECT muted FROM push_preferences`)
+}
+
+func (s *PGStore) muted(ctx context.Context, q string, args ...any) ([]string, error) {
+	var out []string
+	err := s.pool.QueryRow(ctx, q, args...).Scan(&out)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return []string{}, nil
+	}
+	return out, err
+}
+
+// SetMuted replaces the CALLER's muted events. Names outside Events are
+// dropped, so the stored set is always a subset of the vocabulary.
+func (s *PGStore) SetMuted(ctx context.Context, muted []string) error {
+	clean := []string{}
+	for _, e := range Events {
+		for _, m := range muted {
+			if m == e.Name {
+				clean = append(clean, e.Name)
+				break
+			}
+		}
+	}
+	_, err := s.pool.Exec(ctx, `INSERT INTO push_preferences (muted) VALUES ($1)
+		ON CONFLICT (owner_id) DO UPDATE SET muted = EXCLUDED.muted, updated_at = now()`, clean)
+	return err
 }

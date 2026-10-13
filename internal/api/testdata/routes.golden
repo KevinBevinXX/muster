@@ -129,6 +129,7 @@ POST /account/credentials/openrouter/delete
 POST /account/passkeys/options
 POST /account/passkeys/verify
 POST /account/passkeys/{id}/delete
+POST /account/push/preferences
 POST /account/push/test
 POST /account/push/{id}/remove
 POST /account/tokens

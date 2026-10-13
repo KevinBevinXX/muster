@@ -106,6 +106,7 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/push/unsubscribe",
 		"POST /account/push/test",
 		"POST /account/push/{id}/remove",
+		"POST /account/push/preferences",
 		// The admin pages (accounts PR 5): requireAdmin is requireSession plus
 		// a role check AFTER the principal is attached.
 		"GET /admin/invites",

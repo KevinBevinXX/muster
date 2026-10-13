@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"net/url"
+	"strings"
 	"sync"
 
 	"github.com/ZacxDev/muster/internal/metrics"
@@ -71,6 +73,9 @@ func (s *Service) SendTo(ctx context.Context, owner int64, p Payload) Report {
 		s.logger.Printf("push: list devices for owner=%d: %v", owner, err)
 		return rep
 	}
+	if p.Type == TypeResolved {
+		devs = withoutSilentPenalty(devs)
+	}
 	rep.Devices = len(devs)
 	if len(devs) == 0 {
 		return rep
@@ -107,6 +112,25 @@ func (s *Service) SendTo(ctx context.Context, owner int64, p Payload) Report {
 	s.logger.Printf("push: delivered tag=%s owner=%d to %d/%d device(s) (expired %d, failed %d)",
 		p.Tag, owner, rep.Delivered, rep.Devices, rep.Expired, rep.Failed)
 	return rep
+}
+
+// withoutSilentPenalty drops Safari (web.push.apple.com) devices from a
+// "resolved" send.
+//
+// 🔴 A resolved MESSAGE SHOWS NOTHING, AND SAFARI PENALISES A PUSH THAT SHOWS
+// NOTHING. WebKit's push contract is "every push displays a notification"; a
+// silent one counts against the subscription and repeated ones can get it
+// revoked. Dropping the clear on Apple devices costs a stale notification on
+// an iPhone; sending it risks losing the device's notifications altogether.
+func withoutSilentPenalty(devs []Device) []Device {
+	out := devs[:0:0]
+	for _, d := range devs {
+		if u, err := url.Parse(d.Sub.Endpoint); err == nil && strings.EqualFold(u.Hostname(), applePushHost) {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
 }
 
 // settle records one attempt's outcome against its device and names the
