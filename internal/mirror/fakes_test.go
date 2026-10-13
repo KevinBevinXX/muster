@@ -270,7 +270,7 @@ func newRig(t *testing.T) *rig {
 func (r *rig) connect(t *testing.T, host, token string, b mirrorhost.Backend, interactive bool) (stop func(), done <-chan error) {
 	t.Helper()
 	c, err := mirrorhost.New(mirrorhost.Config{URL: r.srv.URL, Token: token, Host: host, Backend: b,
-		Interactive: interactive, AllowHTTP: true, Refresh: 30 * time.Millisecond, Logger: log.New(io.Discard, "", 0)})
+		Interactive: interactive, AllowHTTP: true, Refresh: 30 * time.Millisecond, ViewPoll: 20 * time.Millisecond, Logger: log.New(io.Discard, "", 0)})
 	if err != nil {
 		t.Fatal(err)
 	}

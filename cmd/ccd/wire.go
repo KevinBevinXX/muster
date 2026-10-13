@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/ZacxDev/muster/internal/cctranscript"
 )
 
 // The success wire: OpenAI-Responses-style SSE, in the shape muster's client
@@ -63,7 +65,43 @@ func buildResponse(promptID string, segments []string) responseObject {
 	return resp
 }
 
-func writeResponse(w http.ResponseWriter, promptID string, segments []string, stream bool) {
+// nativeToolItem is one tool call the CLI ran during the turn, streamed as a
+// cctranscript.NativeToolItem output item so muster draws it as a collapsed row.
+// It never appears in response.completed's output: the reply muster assembles
+// from that event is the text segments, exactly as before.
+type nativeToolItem struct {
+	Type      string `json:"type"`
+	ID        string `json:"id"`
+	CallID    string `json:"call_id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+	// Status: "completed" (the tool returned ok), "failed" (is_error), or
+	// "in_progress" (no result before the turn ended — an interrupted turn).
+	Status string `json:"status"`
+	Output string `json:"output,omitempty"`
+}
+
+func toolItem(it turnItem) nativeToolItem {
+	n := nativeToolItem{Type: cctranscript.NativeToolItem, ID: "ntc_" + it.Tool.ToolID, CallID: it.Tool.ToolID,
+		Name: it.Tool.Tool, Arguments: it.Tool.Input, Status: "in_progress"}
+	if it.Result != nil {
+		n.Status, n.Output = "completed", it.Result.Output
+		if !it.Result.OK {
+			n.Status = "failed"
+		}
+	}
+	return n
+}
+
+// writeResponse writes the turn. items is turnResult.Items (text segments and
+// tool calls in transcript order); the REPLY is its text segments.
+func writeResponse(w http.ResponseWriter, promptID string, items []turnItem, stream bool) {
+	var segments []string
+	for _, it := range items {
+		if it.Tool == nil {
+			segments = append(segments, it.Text)
+		}
+	}
 	resp := buildResponse(promptID, segments)
 	if !stream {
 		w.Header().Set("Content-Type", "application/json")
@@ -80,11 +118,28 @@ func writeResponse(w http.ResponseWriter, promptID string, segments []string, st
 	inProgress := resp
 	inProgress.Status, inProgress.Output = "in_progress", []outputItem{}
 	emit("response.created", map[string]any{"type": "response.created", "response": inProgress})
-	for i, item := range resp.Output {
+	// Text deltas and tool items in TRANSCRIPT order, so the chat shows the
+	// narration with each call where it happened. A text item's output_index is
+	// its index in resp.Output (the completed event's), as before; tool items
+	// take the indices after those, so neither collides.
+	text, tool := 0, len(resp.Output)
+	for _, it := range items {
+		if it.Tool != nil {
+			emit("response.output_item.done", map[string]any{
+				"type": "response.output_item.done", "output_index": tool, "item": toolItem(it),
+			})
+			tool++
+			continue
+		}
+		if strings.TrimSpace(it.Text) == "" {
+			continue
+		}
+		item := resp.Output[text]
 		emit("response.output_text.delta", map[string]any{
 			"type": "response.output_text.delta", "item_id": item.ID,
-			"output_index": i, "content_index": 0, "delta": item.Content[0].Text,
+			"output_index": text, "content_index": 0, "delta": item.Content[0].Text,
 		})
+		text++
 	}
 	emit("response.completed", map[string]any{"type": "response.completed", "response": resp})
 	if f, ok := w.(http.Flusher); ok {

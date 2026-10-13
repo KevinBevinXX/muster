@@ -64,6 +64,13 @@ type hostKey struct {
 type HostView struct {
 	Host     string
 	Sessions []string
+	// Claude is the subset of Sessions whose active pane runs Claude Code (a v2
+	// host's report; always empty for a v1 host): the sessions opened in the
+	// rendered view by default.
+	Claude []string
+	// Rendered: the host speaks tunnel v2, so its Claude sessions have a
+	// rendered view. False for a v1 host and for an offline one.
+	Rendered bool
 	// Online: connected now. False is a host that disconnected within
 	// offlineRetention; Sessions is then its last list.
 	Online bool
@@ -104,6 +111,7 @@ var ErrTokenRevoked = errors.New("mirror: the host's token was revoked")
 
 type offlineHost struct {
 	sessions    []string
+	claude      []string
 	interactive bool
 	since       time.Time
 }
@@ -160,10 +168,15 @@ type hostConn struct {
 	ctx         context.Context
 	cancel      context.CancelCauseFunc
 	interactive bool
+	// version is the tunnel version this connection speaks (its hello's).
+	version int
 
 	mu       sync.Mutex
 	sessions []string
+	claude   []string
 	streams  map[uint32]*stream
+	watches  map[uint32]*watch
+	pastes   map[uint32]chan error
 	next     uint32
 }
 
@@ -192,7 +205,8 @@ func (h *Hub) Hosts(owner int64) []HostView {
 			continue
 		}
 		hc.mu.Lock()
-		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...), Online: true, Interactive: hc.interactive})
+		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...),
+			Claude: append([]string(nil), hc.claude...), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive})
 		hc.mu.Unlock()
 	}
 	now := h.now()
@@ -202,7 +216,8 @@ func (h *Hub) Hosts(owner int64) []HostView {
 			continue
 		}
 		if k.owner == owner {
-			out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), o.sessions...), Interactive: o.interactive})
+			out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), o.sessions...),
+				Claude: append([]string(nil), o.claude...), Interactive: o.interactive})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Host < out[j].Host })
@@ -222,6 +237,33 @@ func (hc *hostConn) has(session string) bool {
 	defer hc.mu.Unlock()
 	i := sort.SearchStrings(hc.sessions, session)
 	return i < len(hc.sessions) && hc.sessions[i] == session
+}
+
+// normalizeClaude is claude restricted to sessions (a host cannot mark a
+// session it does not list), deduplicated and sorted.
+func normalizeClaude(claude, sessions []string) []string {
+	listed := map[string]bool{}
+	for _, s := range sessions {
+		listed[s] = true
+	}
+	seen := map[string]bool{}
+	out := []string{}
+	for _, c := range claude {
+		if listed[c] && !seen[c] {
+			seen[c] = true
+			out = append(out, c)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// isClaude reports whether session's pane runs Claude Code, per the host.
+func (hc *hostConn) isClaude(session string) bool {
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	i := sort.SearchStrings(hc.claude, session)
+	return i < len(hc.claude) && hc.claude[i] == session
 }
 
 // normalizeSessions drops invalid and duplicate names, sorts, and caps the list.
@@ -269,8 +311,12 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 	}
 
 	key := hostKey{owner, host}
-	hc := &hostConn{key: key, ws: ws, ctx: ctx, cancel: cancel, interactive: hello.Interactive,
-		sessions: normalizeSessions(hello.Sessions), streams: map[uint32]*stream{}}
+	sessions := normalizeSessions(hello.Sessions)
+	hc := &hostConn{key: key, ws: ws, ctx: ctx, cancel: cancel, interactive: hello.Interactive, version: hello.Version,
+		sessions: sessions, streams: map[uint32]*stream{}, watches: map[uint32]*watch{}, pastes: map[uint32]chan error{}}
+	if hc.version >= 2 {
+		hc.claude = normalizeClaude(hello.Claude, sessions)
+	}
 	h.mu.Lock()
 	old := h.hosts[key]
 	if old == nil && len(h.hosts) >= h.maxHosts {
@@ -286,14 +332,16 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 	}
 	defer h.drop(hc)
 
-	if err := writeJSON(ctx, ws, Msg{Type: TypeWelcome, Version: ProtocolVersion, Host: host}); err != nil {
+	// The welcome names the version this connection SPEAKS: the host's own,
+	// which readHello accepted. A v1 host is never sent anything newer.
+	if err := writeJSON(ctx, ws, Msg{Type: TypeWelcome, Version: hc.version, Host: host}); err != nil {
 		return err
 	}
 	mode := "read-only"
 	if hc.interactive {
 		mode = "interactive"
 	}
-	h.logger.Printf("mirror: host %s (owner %d) connected, %s, with %d session(s)", host, owner, mode, len(hc.sessions))
+	h.logger.Printf("mirror: host %s (owner %d) connected, %s, tunnel v%d, with %d session(s)", host, owner, mode, hc.version, len(hc.sessions))
 	h.changed(owner)
 
 	go func() {
@@ -341,8 +389,19 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				list := normalizeSessions(m.Sessions)
 				hc.mu.Lock()
 				hc.sessions = list
+				if hc.version >= 2 {
+					hc.claude = normalizeClaude(m.Claude, list)
+				}
 				hc.mu.Unlock()
 				h.changed(hc.key.owner)
+			case TypeEvents:
+				if hc.version >= 2 {
+					hc.deliverEvents(m)
+				}
+			case TypePasted:
+				if hc.version >= 2 {
+					hc.pasted(m.ID, m.Error)
+				}
 			case TypeClosed:
 				var why error
 				if m.Error != "" {
@@ -369,7 +428,10 @@ func (h *Hub) drop(hc *hostConn) {
 			// anyone's view.
 			delete(h.offline, hc.key)
 		} else {
-			h.offline[hc.key] = offlineHost{sessions: hc.sessionsCopy(), interactive: hc.interactive, since: h.now()}
+			hc.mu.Lock()
+			claude := append([]string(nil), hc.claude...)
+			hc.mu.Unlock()
+			h.offline[hc.key] = offlineHost{sessions: hc.sessionsCopy(), claude: claude, interactive: hc.interactive, since: h.now()}
 		}
 	}
 	h.mu.Unlock()
@@ -377,6 +439,14 @@ func (h *Hub) drop(hc *hostConn) {
 	for id, st := range hc.streams {
 		st.finish(ErrHostDisconnected)
 		delete(hc.streams, id)
+	}
+	for id, w := range hc.watches {
+		w.finish(ErrHostDisconnected)
+		delete(hc.watches, id)
+	}
+	for id, ch := range hc.pastes {
+		ch <- ErrHostDisconnected
+		delete(hc.pastes, id)
 	}
 	hc.mu.Unlock()
 	if current {
@@ -405,12 +475,18 @@ func (hc *hostConn) deliver(id uint32, p []byte) {
 	}
 }
 
+// finish ends stream id — a terminal or a transcript watch, which share the id
+// space — with err.
 func (hc *hostConn) finish(id uint32, err error) {
 	hc.mu.Lock()
 	st := hc.streams[id]
+	w := hc.watches[id]
 	hc.mu.Unlock()
 	if st != nil {
 		st.finish(err)
+	}
+	if w != nil {
+		w.finish(err)
 	}
 }
 
@@ -425,8 +501,8 @@ func readHello(ctx context.Context, ws *websocket.Conn) (Msg, error) {
 	if typ != websocket.MessageText || json.Unmarshal(data, &m) != nil || m.Type != TypeHello {
 		return Msg{}, errors.New("mirror: the first message must be a hello")
 	}
-	if m.Version != ProtocolVersion {
-		return Msg{}, fmt.Errorf("mirror: this muster speaks tunnel version %d and the host sent %d; upgrade the older side", ProtocolVersion, m.Version)
+	if m.Version < MinProtocolVersion || m.Version > ProtocolVersion {
+		return Msg{}, fmt.Errorf("mirror: this muster speaks tunnel versions %d-%d and the host sent %d; upgrade the older side", MinProtocolVersion, ProtocolVersion, m.Version)
 	}
 	if err := ValidHost(m.Host); err != nil {
 		return Msg{}, err

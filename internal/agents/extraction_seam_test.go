@@ -113,7 +113,7 @@ func TestAgentsNeverNamesAnotherServicesTable(t *testing.T) {
 	}
 }
 
-// TestAgentsImportsOnlyItsTwoDependencies pins the package's INTERNAL import
+// TestAgentsImportsOnlyItsLedgeredDependencies pins the package's INTERNAL import
 // ledger.
 //
 // 🔴 THE FAILURE IT GUARDS AGAINST IS NOT A COMPILE ERROR. An import added here
@@ -129,8 +129,8 @@ func TestAgentsNeverNamesAnotherServicesTable(t *testing.T) {
 // It fails when the set GROWS or SHRINKS. A shrink is not automatically wrong,
 // but it means a dependency was removed and the ledger should record that it
 // was.
-func TestAgentsImportsOnlyItsTwoDependencies(t *testing.T) {
-	// 🔴 TWO ENTRIES, AND WHICH TWO IS THE POINT.
+func TestAgentsImportsOnlyItsLedgeredDependencies(t *testing.T) {
+	// 🔴 THREE ENTRIES, AND WHICH THREE IS THE POINT.
 	//
 	// `provision` is the provisioner CONTRACT — types and sentinels, standard
 	// library only. It is not a driver, and importing one (internal/provision/k8s
@@ -142,9 +142,16 @@ func TestAgentsImportsOnlyItsTwoDependencies(t *testing.T) {
 	// the store as a *pgxpool.Pool by whoever constructs it — a store that opened
 	// its own connection would be a store the API layer could not hand a
 	// transaction to.
+	//
+	// `cctranscript` is here for exactly one symbol, NativeToolItem: the
+	// Responses output-item type ccd streams a tool call the CLI already RAN
+	// under, which this package must DRAW and never dispatch. It is a
+	// standard-library-only leaf, and the constant lives there so ccd and this
+	// parser cannot spell it differently.
 	want := map[string]bool{
-		modulePath + "/internal/db":        true,
-		modulePath + "/internal/provision": true,
+		modulePath + "/internal/cctranscript": true,
+		modulePath + "/internal/db":           true,
+		modulePath + "/internal/provision":    true,
 	}
 
 	fset := token.NewFileSet()
