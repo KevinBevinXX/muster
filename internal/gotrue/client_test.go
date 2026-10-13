@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +24,7 @@ func TestEveryCallCarriesTheClientIP(t *testing.T) {
 	c := f.Client()
 	ctx := context.Background()
 	id := f.AddUser("a@example.com", "a-long-enough-password")
+	f.EnablePasskeys()
 
 	calls := map[string]func(ip string) error{
 		"PasswordGrant": func(ip string) error {
@@ -58,6 +60,57 @@ func TestEveryCallCarriesTheClientIP(t *testing.T) {
 		},
 		"AdminSetPassword":       func(ip string) error { return c.AdminSetPassword(ctx, ip, id, "a-long-enough-password") },
 		"AdminSignOutEverywhere": func(ip string) error { return c.AdminSignOutEverywhere(ctx, ip, id) },
+		// Passkeys (GoTrue v2.197.0's /passkeys API).
+		"Settings": func(ip string) error { _, err := c.Settings(ctx, ip); return err },
+		"PasskeySignInOptions": func(ip string) error {
+			_, err := c.PasskeySignInOptions(ctx, ip)
+			return err
+		},
+		"PasskeySignInVerify": func(ip string) error {
+			// Its own passkey: the map runs in random order, and the delete
+			// calls below may already have removed any shared one.
+			f.AddPasskey(id, "signin-"+ip)
+			_, err := c.PasskeySignInVerify(ctx, ip, f.NewChallenge(""), gotruetest.Assertion("signin-"+ip, gotruetest.FlagUPUV))
+			return err
+		},
+		"PasskeyRegisterOptions": func(ip string) error {
+			at, _, _ := f.Mint(id)
+			_, err := c.PasskeyRegisterOptions(ctx, ip, at)
+			return err
+		},
+		"PasskeyRegisterVerify": func(ip string) error {
+			at, _, _ := f.Mint(id)
+			_, err := c.PasskeyRegisterVerify(ctx, ip, at, f.NewChallenge(id), gotruetest.Attestation("reg-"+ip, gotruetest.FlagUPUV))
+			return err
+		},
+		"Passkeys": func(ip string) error {
+			at, _, _ := f.Mint(id)
+			_, err := c.Passkeys(ctx, ip, at)
+			return err
+		},
+		"DeletePasskey": func(ip string) error {
+			at, _, _ := f.Mint(id)
+			return c.DeletePasskey(ctx, ip, at, f.AddPasskey(id, "del-"+ip))
+		},
+		"AdminPasskeys": func(ip string) error { _, err := c.AdminPasskeys(ctx, ip, id); return err },
+		"AdminDeletePasskey": func(ip string) error {
+			return c.AdminDeletePasskey(ctx, ip, id, f.AddPasskey(id, "adel-"+ip))
+		},
+		"AdminDeleteAllPasskeys": func(ip string) error { _, err := c.AdminDeleteAllPasskeys(ctx, ip, id); return err },
+		"AdminAppMetadata":       func(ip string) error { _, err := c.AdminAppMetadata(ctx, ip, id); return err },
+		"AdminSetAppMetadata":    func(ip string) error { return c.AdminSetAppMetadata(ctx, ip, id, "k", "v") },
+	}
+	// 🔴 THE LEDGER IS CHECKED AGAINST THE TYPE, not trusted: every exported
+	// method of *Client that takes a context (i.e. calls GoTrue) must be in
+	// the map above, so a method added later cannot skip this test.
+	ct := reflect.TypeOf(c)
+	for i := 0; i < ct.NumMethod(); i++ {
+		m := ct.Method(i)
+		if m.Type.NumIn() > 1 && m.Type.In(1) == reflect.TypeOf((*context.Context)(nil)).Elem() {
+			if _, ok := calls[m.Name]; !ok {
+				t.Errorf("(*Client).%s calls GoTrue but is not in this test's ledger", m.Name)
+			}
+		}
 	}
 	for name, call := range calls {
 		before := len(f.Calls())

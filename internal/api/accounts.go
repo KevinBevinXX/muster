@@ -179,6 +179,9 @@ type gotrueState struct {
 	refreshPerToken boundedWindow
 	failedRefreshes refreshGuard
 	issued          boundedWindow
+
+	// pk caches GoTrue's passkeys_enabled (passkeys.go).
+	pk passkeyGate
 }
 
 // liveRequest is one in-flight session request's cancel.
@@ -788,6 +791,10 @@ func (s *Server) requireGoTrueSession(w http.ResponseWriter, r *http.Request, ne
 	// minting an API token re-checks it against the session cutoff under the
 	// credentials lock (api_tokens.go, apitokens.Create).
 	ctx = context.WithValue(ctx, sessionIssuedAtKey{}, sess.claims.IssuedAt)
+	// The passkey handlers act AS the user at GoTrue (its /passkeys API takes
+	// the user's own access token) and read the session's amr; both ride here.
+	// Set only by this function, so only a GoTrue browser session carries it.
+	ctx = context.WithValue(ctx, gotrueSessionKey{}, gotrueCreds{access: sess.access, claims: sess.claims})
 	// The step-up gate's input: when this person last SIGNED IN (the token's
 	// `amr`), which a refresh does not move. No `amr`, no time — never fresh.
 	if at, ok := sess.claims.AuthenticatedAt(); ok {
@@ -798,6 +805,23 @@ func (s *Server) requireGoTrueSession(w http.ResponseWriter, r *http.Request, ne
 
 // sessionIssuedAtKey carries a GoTrue session's iat (unix seconds).
 type sessionIssuedAtKey struct{}
+
+// gotrueSessionKey carries the resolved GoTrue session (gotrueCreds) of a
+// request requireGoTrueSession admitted.
+type gotrueSessionKey struct{}
+
+// gotrueCreds is the access token a request was admitted on (after any
+// refresh) and its verified claims.
+type gotrueCreds struct {
+	access string
+	claims gotrue.Claims
+}
+
+// gotrueCredsFrom returns the request's GoTrue session, if it has one.
+func gotrueCredsFrom(ctx context.Context) (gotrueCreds, bool) {
+	c, ok := ctx.Value(gotrueSessionKey{}).(gotrueCreds)
+	return c, ok && c.access != ""
+}
 
 // OffBrowserListenerRefusal is the error a browser-session route answers on
 // the machine-token listener in gotrue mode.

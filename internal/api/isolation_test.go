@@ -141,6 +141,19 @@ var isolationClasses = map[string]routeClass{
 	"GET /account/tokens":              classList,
 	"POST /account/tokens":             classList,
 	"POST /account/tokens/{id}/revoke": classParam,
+	// Passkeys. The sign-in pair is public (like POST /login). The account
+	// routes act on the caller's OWN passkeys at GoTrue with the caller's own
+	// access token, so GoTrue — not muster's database — scopes them; delete
+	// names a passkey by id (param: A's passkey id).
+	"POST /auth/passkey/options":         classPublic,
+	"POST /auth/passkey/verify":          classPublic,
+	"GET /account/passkeys":              classList,
+	"POST /account/passkeys/options":     classList,
+	"POST /account/passkeys/verify":      classList,
+	"POST /account/passkeys/{id}/delete": classParam,
+	"GET /api/whoami":                    classAdmin,
+	"GET /api/tokens":                    classAPIToken,
+	"DELETE /api/tokens/{id}":            classAPIToken,
 	// muster-native Web Push (migration 0013). The key and the subscribe /
 	// unsubscribe writes act on the CALLER's own devices (list); the account
 	// page's remove names a device by id (param, A's is the object). A's device
@@ -150,9 +163,6 @@ var isolationClasses = map[string]routeClass{
 	"POST /api/push/unsubscribe":     classList,
 	"POST /account/push/test":        classList,
 	"POST /account/push/{id}/remove": classParam,
-	"GET /api/whoami":                classAdmin,
-	"GET /api/tokens":                classAPIToken,
-	"DELETE /api/tokens/{id}":        classAPIToken,
 	// accounts PR 5: invite redemption and the password reset (tokens in form
 	// fields, like the claim), and the admin pages.
 	"GET /invite":      classPublic,
@@ -160,14 +170,15 @@ var isolationClasses = map[string]routeClass{
 	"GET /auth/reset":  classPublic,
 	"POST /auth/reset": classPublic,
 
-	"GET /admin/invites":                classAdminOnly,
-	"GET /admin/users":                  classAdminOnly,
-	"POST /admin/invites":               classAdminOnly,
-	"POST /admin/invites/{id}/revoke":   classAdminOnly,
-	"POST /admin/users/{id}/disable":    classAdminOnly,
-	"POST /admin/users/{id}/enable":     classAdminOnly,
-	"POST /admin/users/{id}/reset-link": classAdminOnly,
-	"POST /admin/users/{id}/role":       classAdminOnly,
+	"GET /admin/invites":                     classAdminOnly,
+	"GET /admin/users":                       classAdminOnly,
+	"POST /admin/invites":                    classAdminOnly,
+	"POST /admin/invites/{id}/revoke":        classAdminOnly,
+	"POST /admin/users/{id}/disable":         classAdminOnly,
+	"POST /admin/users/{id}/enable":          classAdminOnly,
+	"POST /admin/users/{id}/reset-link":      classAdminOnly,
+	"POST /admin/users/{id}/role":            classAdminOnly,
+	"POST /admin/users/{id}/passkeys/delete": classAdminOnly,
 
 	"GET /{$}":                     classList,
 	"GET /agents":                  classList,
@@ -415,6 +426,8 @@ type isoWorld struct {
 	gtH      http.Handler
 	gtFake   *gotruetest.Fake
 	gtTokens map[int64][2]string
+	aSub     string // A's GoTrue subject in the twin's fake
+	bSub     string // B's
 	// Personal API tokens (accounts PR 6): each user's own credential, and A's
 	// SECOND token — the object the token routes name (so revoking it never
 	// revokes the credential A's control walk is using).
@@ -621,7 +634,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	w.ghost = isoObjs{user: ghostID, invite: ghostID, task: ghostID, agent: ghostID, grant: ghostID, comment: ghostID, attach: ghostID, chat: ghostID,
 		agentName: "ghost-agent" + w.suffix, connName: "ghostconn" + w.suffix, tag: "ghosttag", link: "ghost-sess-" + w.suffix,
 		mirrorHost: "ghost-host", mirrorSession: "main", ccAccount: "ghostacct", token: ghostID, pushDevice: ghostID,
-		flowJob: ghostID, runnerTok: ghostID}
+		flowJob: ghostID, runnerTok: ghostID, passkey: "00000000-0000-4000-a000-00000000ghost"}
 
 	// A's push device: through the real store, as the claim the subscribe route
 	// makes. Its user agent and endpoint carry the canary.
@@ -699,7 +712,18 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		}
 		at, rt, _ := w.gtFake.Mint(sub)
 		w.gtTokens[u.uid] = [2]string{at, rt}
+		if u.uid == w.a.uid {
+			w.aSub = sub
+		} else {
+			w.bSub = sub
+		}
 	}
+	// Passkeys on in the twin's GoTrue, and A holds one: the target of B's
+	// POST /account/passkeys/{id}/delete. GoTrue — not muster's database —
+	// owns passkeys, so sameRows cannot see them; the walk's end checks B
+	// cannot remove A's (TestNoRouteLetsOneUserReachAnothersData).
+	w.gtFake.EnablePasskeys()
+	w.objA.passkey = w.gtFake.AddPasskey(w.aSub, "iso-a-credential-"+w.suffix)
 	srv.sessionUserOverride = func(r *http.Request) int64 {
 		if v, err := strconv.ParseInt(r.Header.Get(isoUserHeader), 10, 64); err == nil && v > 0 {
 			return v
@@ -865,9 +889,10 @@ type isoObjs struct {
 	ccAccount                                 string
 	user, invite                              int64
 	task, agent, grant, comment, attach, chat int64
-	token                                     int64 // a personal API token's id
-	flowJob, runnerTok                        int64 // a browser-flow job's id, a runner token's id
-	pushDevice                                int64 // a Web Push device's id
+	token                                     int64  // a personal API token's id
+	flowJob, runnerTok                        int64  // a browser-flow job's id, a runner token's id
+	passkey                                   string // a GoTrue passkey id (the gotrue twin's fake)
+	pushDevice                                int64  // a Web Push device's id
 	agentName, connName, tag, link            string
 	mirrorHost, mirrorSession                 string
 }
@@ -899,6 +924,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		id = strconv.FormatInt(o.flowJob, 10)
 	case strings.Contains(path, "tokens/{id}"):
 		id = strconv.FormatInt(o.token, 10)
+	case strings.HasPrefix(path, "/account/passkeys/{id}"):
+		id = o.passkey
 	case strings.Contains(path, "/account/push/{id}"):
 		id = strconv.FormatInt(o.pushDevice, 10)
 	case strings.HasPrefix(path, "/admin/users/{id}"):
@@ -1108,6 +1135,12 @@ var sideEffectControlled = map[string]string{
 	"POST /agents/sessions/{sid}/read":      "A's chat_sessions.read_at moved; the mutation leg shows B's did not",
 	"POST /agent/approvals":                 "B's agent is refused 503 (a member); the admin agent files (newIsoWorld's control)",
 	"/connect/{connector}/{host}/{path...}": "A's secret reached the upstream for A, never for B",
+	// Only the gotrue twin serves passkeys, and A's walk ends A's gotrue
+	// session at POST /logout before the {id} routes sort — so the control is
+	// run at the end of the walk on a FRESH session of A's: it removes A's
+	// passkey (303, gone from GoTrue), after a fresh session of B's was
+	// refused it (404, still there).
+	"POST /account/passkeys/{id}/delete": "fresh sessions: B's delete of A's passkey is refused and leaves it; A's removes it",
 }
 
 // controlMarkers: a route whose owner and ghost answers share a status, where
@@ -1327,6 +1360,29 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 	}
 	if gtCanary == 0 {
 		t.Error("CONTROL: A's real gotrue session never saw A's own data, so B's clean gotrue walk proves nothing")
+	}
+	// The passkey delete, on FRESH sessions (sideEffectControlled): B's and A's
+	// gotrue sessions both ended at POST /logout in their walks, before the
+	// {id} routes sort, so the walk itself never put this route to GoTrue —
+	// measured: a fake whose delete ignored the owner survived it. B first:
+	// A's passkey id on B's own delete route must leave it in place.
+	bAT, bRT, _ := w.gtFake.Mint(w.bSub)
+	w.gtTokens[w.b.uid] = [2]string{bAT, bRT}
+	bm, bp, bb := w.fill("POST /account/passkeys/{id}/delete", w.objA, w.b)
+	if rec := w.do(w.h, bm, bp, bb, cred{gotrueUser: w.b.uid}); rec.Code != http.StatusNotFound {
+		t.Errorf("B removing A's passkey: %d, want 404", rec.Code)
+	}
+	if got := len(w.gtFake.Passkeys(w.aSub)); got != 1 {
+		t.Errorf("LEAK: B removed A's passkey (A has %d, want 1)", got)
+	}
+	freshAT, freshRT, _ := w.gtFake.Mint(w.aSub)
+	w.gtTokens[w.a.uid] = [2]string{freshAT, freshRT}
+	pm, pp, pb := w.fill("POST /account/passkeys/{id}/delete", w.objA, w.a)
+	if rec := w.do(w.h, pm, pp, pb, cred{gotrueUser: w.a.uid}); rec.Code != http.StatusSeeOther {
+		t.Errorf("CONTROL: A could not remove its OWN passkey: %d %s", rec.Code, truncate(rec.Body.String(), 200))
+	}
+	if got := len(w.gtFake.Passkeys(w.aSub)); got != 0 {
+		t.Errorf("CONTROL: A's passkey delete left %d passkeys, so B's refused delete proves nothing", got)
 	}
 	for _, r := range wantCanaryForA {
 		if !sawCanary[r] {
