@@ -179,6 +179,19 @@ var (
 		Name: "muster_task_session_links_skipped_total",
 		Help: "Task-thread links NOT recorded, by reason ONLY (thread_full|error) — never the session id.",
 	}, []string{"reason"})
+
+	// FlowJobs counts browser-flow job transitions (internal/flows), by flow and
+	// outcome.
+	//
+	// 🔴 CARDINALITY RULE: `flow` is a name from the COMPILED-IN catalogue
+	// (flows.Catalogue — two entries today, and an enqueue naming anything else
+	// is refused before it is counted), and `outcome` is the closed vocabulary
+	// enqueued|claimed|requeued|done|failed|needs_operator|expired|cancelled.
+	// A job id, host, instance or any parameter must NEVER become a label.
+	FlowJobs = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_flow_jobs_total",
+		Help: "Browser-flow job transitions, by catalogue flow name and outcome ONLY — never a job id, host or parameter.",
+	}, []string{"flow", "outcome"})
 )
 
 // ObserveHTTP records one HTTP request's matched route pattern, method, status,

@@ -17,7 +17,7 @@ import (
 // (GOTRUE_RATE_LIMIT_HEADER in the deployment).
 //
 // 🔴 EVERY CALL THIS CLIENT MAKES CARRIES IT, AND A CALL WITHOUT ONE IS REFUSED
-// HERE RATHER THAN SENT. Measured against GoTrue v2.189.0: a request with no such
+// HERE RATHER THAN SENT. Measured against GoTrue v2.189.0 and v2.197.0: a request with no such
 // header is NOT rejected, it is served — and bucketed with every other headerless
 // request, so one guesser exhausts everyone's budget, or (worse) nobody is limited
 // at all. GoTrue cannot enforce that muster sets it; this client does
@@ -26,10 +26,12 @@ const ClientIPHeader = "X-Muster-Client-IP"
 
 // MinPasswordLength is the shortest password muster will hand GoTrue to set.
 //
-// 🔴 ENFORCED HERE BECAUSE GoTrue DOES NOT ENFORCE IT ON THE ADMIN PATH. Measured
-// against v2.189.0: POST /admin/users accepted an 11-character password with
-// GOTRUE_PASSWORD_MIN_LENGTH=12 set — only the user self-service path checks it.
-// Every password muster sets goes through the admin path.
+// 🔴 ENFORCED HERE, NOT LEFT TO GoTrue. Measured against v2.189.0: POST
+// /admin/users accepted an 11-character password with
+// GOTRUE_PASSWORD_MIN_LENGTH=12 set. v2.197.0 refuses it (422 weak_password),
+// but that is a property of the image and the deployment's env, either of
+// which can change; every password muster sets goes through the admin path,
+// so the floor stays here as well and nothing short is ever sent.
 const MinPasswordLength = 12
 
 // ServiceTokenTTL is how long the service_role token an admin call carries
@@ -123,8 +125,9 @@ func (c *Client) PasswordGrant(ctx context.Context, clientIP, email, password st
 // Refresh exchanges a refresh token for a new pair.
 //
 // ⚠ GoTrue ROTATES on every refresh: the token passed in is spent. Measured
-// (rotation on, no reuse interval): replaying the PARENT of the current token is
-// accepted, replaying an older one revokes the whole session. internal/api
+// (rotation on, no reuse interval; v2.189.0 and again on v2.197.0, unchanged):
+// replaying the PARENT of the current token is accepted, replaying an older one
+// revokes the whole session. internal/api
 // coalesces concurrent refreshes of one token so two tabs do not walk a session
 // into that revocation.
 func (c *Client) Refresh(ctx context.Context, clientIP, refreshToken string) (Session, error) {
@@ -142,7 +145,7 @@ func (c *Client) Logout(ctx context.Context, clientIP, accessToken string, scope
 
 // AdminCreateUser creates a CONFIRMED user and returns its id (the `sub`).
 //
-// 🔴 email_confirm IS SENT, ALWAYS. Measured against v2.189.0: /admin/users
+// 🔴 email_confirm IS SENT, ALWAYS. Measured against v2.189.0 and v2.197.0: /admin/users
 // ignores GOTRUE_MAILER_AUTOCONFIRM, and a user created without it cannot sign
 // in (400 email_not_confirmed). muster has no SMTP, so nobody would ever confirm.
 func (c *Client) AdminCreateUser(ctx context.Context, clientIP, email, password string) (string, error) {
@@ -332,13 +335,17 @@ func (c *Client) VerifyRecovery(ctx context.Context, clientIP, tokenHash string)
 // userID, as a disable must.
 //
 // 🔴 GoTrue HAS NO ADMIN "SIGN OUT USER" ENDPOINT, AND A BAN DOES NOT END A
-// SESSION — measured on v2.189.0: a refresh token from before a ban is
+// SESSION — measured on v2.189.0 and v2.197.0: a refresh token from before a ban is
 // accepted again once the ban is lifted. What does end them is the user's own
 // global sign-out, and muster holds the HS256 secret GoTrue verifies with, so
 // it mints a short-lived token FOR the user (no session_id: GoTrue refuses a
 // session_id that is not a real session's UUID) and calls /logout?scope=global
 // with it. Measured: 204, and the user's refresh tokens are then
-// refresh_token_not_found.
+// refresh_token_not_found (v2.189.0 and v2.197.0).
+//
+// 🔴 CALL IT BEFORE THE BAN. Since v2.197.0 GoTrue refuses /logout for a
+// banned user (403 user_banned) — measured; v2.189.0 answered 204 — so a
+// sign-out after the ban does nothing (see SetUserDisabledAs).
 func (c *Client) AdminSignOutEverywhere(ctx context.Context, clientIP, userID string) error {
 	now := c.now()
 	tok, err := Sign(c.Secret, Claims{

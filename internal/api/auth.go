@@ -420,6 +420,9 @@ func (s *Server) requireHookToken(next http.HandlerFunc) http.HandlerFunc {
 		// ⚠ THE UNENFORCED CASE ACTS AS THE MACHINE USER TOO. It admitted
 		// everyone as the operator's own tier before principals existed; giving
 		// it a principal states that rather than changing it.
+		if s.refuseSharedTokenOnBrowserListener(w, r) {
+			return
+		}
 		if s.refuseUnarmedHookInGoTrueMode(w) {
 			return
 		}
@@ -429,6 +432,51 @@ func (s *Server) requireHookToken(next http.HandlerFunc) http.HandlerFunc {
 		}
 		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid or missing hook token"})
 	}
+}
+
+// SharedTokenOffMachineListenerRefusal is the error a hook- or service-tier route
+// answers on the BROWSER listener in gotrue mode, whatever credential (other than
+// a personal mst_ token) was presented.
+const SharedTokenOffMachineListenerRefusal = "shared machine tokens are not accepted on this port; " +
+	"use a personal API token (mst_) or the machine port"
+
+// SharedTokenRefusalLogPrefix prefixes the log line refuseSharedTokenOnBrowserListener
+// writes when a request on the browser listener PRESENTED a non-personal credential —
+// the line to grep for when looking for a client still pointed at the wrong port.
+const SharedTokenRefusalLogPrefix = "shared-token-refusal: "
+
+// refuseSharedTokenOnBrowserListener answers 403 and reports true when a hook- or
+// service-tier request arrives on the BROWSER listener of a gotrue-mode server.
+//
+// 🔴 WHY: the shared secrets (MUSTER_HOOK_TOKEN, MUSTER_SERVICE_TOKEN) act as user
+// 1, the admin, and are held by every hook script on every host. The browser
+// listener is the port the public edge routes to, so a leaked copy would work from
+// anywhere. Machine clients belong on the machine listener (MUSTER_PORT); people
+// off-LAN use a personal token, which every caller decides BEFORE this (the mst_
+// branch), so it is unaffected — as are agent/connect/relay/mirror credentials,
+// which never reach these wrappers.
+//
+// 🔴 IT REFUSES BEFORE THE PRESENTED VALUE IS COMPARED, AND THAT IS DELIBERATE.
+// Comparing first would answer a right secret 403 and a wrong one 401 — an oracle
+// for the admin secret on a public port. Right, wrong and absent all get this one
+// answer (TestTheBrowserListenerRefusalIsNotAnOracle).
+//
+// ⚠ GOTRUE MODE ONLY. A password-mode server is the single-operator setup, and its
+// browser tier is not the public multi-user one this closes.
+//
+// It logs (path and client address, never the credential) only when SOME credential
+// was presented, so a straggling client is findable without every anonymous probe
+// of /api/ on the public port writing a line.
+func (s *Server) refuseSharedTokenOnBrowserListener(w http.ResponseWriter, r *http.Request) bool {
+	if !viaBrowserListener(r) || !s.auth.goTrueMode() {
+		return false
+	}
+	if hookTokenFromRequest(r) != "" {
+		s.logger.Printf(SharedTokenRefusalLogPrefix+"refusing %s %s from %s: a shared machine credential "+
+			"was presented on the browser listener", r.Method, r.URL.Path, clientIP(r))
+	}
+	s.writeJSON(w, http.StatusForbidden, map[string]any{"error": SharedTokenOffMachineListenerRefusal})
+	return true
 }
 
 // refuseUnarmedHookInGoTrueMode answers 503 (and reports true) when the hook
@@ -523,6 +571,9 @@ func (s *Server) requireArmedHookToken(next http.HandlerFunc) http.HandlerFunc {
 		// enforce-when-set case (api_tokens.go).
 		if tok, ok := s.personalTokenFor(r); ok {
 			s.admitAPIToken(w, r, next, tok)
+			return
+		}
+		if s.refuseSharedTokenOnBrowserListener(w, r) {
 			return
 		}
 		if reason := s.auth.HookArmingRefusal(); reason != "" {
@@ -661,6 +712,9 @@ func (s *Server) admitAttributedService(w http.ResponseWriter, r *http.Request, 
 // chief credential here is a 401.
 func (s *Server) requireServiceToken(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if s.refuseSharedTokenOnBrowserListener(w, r) {
+			return
+		}
 		if reason := s.auth.ServiceWriteRefusal(); reason != "" {
 			// 🔴 THE REASON GOES TO THE LOG AND NOT TO THE WIRE. It used to be appended
 			// to this body, and this refusal is written BEFORE the credential compare —
@@ -791,6 +845,9 @@ func (s *Server) requireHookOrServiceToken(next http.HandlerFunc) http.HandlerFu
 		// enforce-when-set case (api_tokens.go).
 		if tok, ok := s.personalTokenFor(r); ok {
 			s.admitAPIToken(w, r, next, tok)
+			return
+		}
+		if s.refuseSharedTokenOnBrowserListener(w, r) {
 			return
 		}
 		if s.refuseUnarmedHookInGoTrueMode(w) {

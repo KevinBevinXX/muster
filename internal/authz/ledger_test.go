@@ -113,6 +113,11 @@ var (
 		// agentByToken, it is how the request's user is LEARNED (api_tokens is
 		// under FORCE RLS); only the row's user_id is handed on.
 		"internal/api.(*Server).apiTokenUser",
+		// Browser flows (0012): a RUNNER token's lookup by hash. Like
+		// apiTokenUser, it is how the request's owner is LEARNED
+		// (flow_runner_tokens is under FORCE RLS); only the row's owner and
+		// host are handed on.
+		"internal/api.(*Server).runnerTokenFor",
 		// muster-native Web Push (migration 0013): the push store's one helper.
 		// A send runs from hooks and loops with no request; a CLAIM must see
 		// another user's row to move a shared device; a logout has already
@@ -150,6 +155,7 @@ var (
 		"internal/api.(*Server).requireHookOrServiceToken",
 		"internal/api.(*Server).requireHookToken",
 		"internal/api.(*Server).requireRelayAgent",
+		"internal/api.(*Server).requireRunnerToken", // browser-flow runner tokens (0012): /runner/flows/*
 		"internal/api.(*Server).requireSession",
 	}
 	// authzExports is authz's whole exported package scope. A new exported
@@ -157,7 +163,7 @@ var (
 	// new door until someone has decided it is not.
 	authzExports = []string{
 		"From", "MustFrom", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
-		"System", "Via", "ViaAgent", "ViaConnect", "ViaHook", "ViaOperator", "ViaRelay", "ViaService",
+		"System", "Via", "ViaAgent", "ViaConnect", "ViaHook", "ViaOperator", "ViaRelay", "ViaRunner", "ViaService",
 		"ViaSession", "ViaSystem", "ViaToken", "WithPrincipal",
 	}
 )

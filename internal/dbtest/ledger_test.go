@@ -132,6 +132,7 @@ var pgBackedPackages = []string{
 	// "another user's principal cannot find, list or revoke a token" and "a
 	// revoked token stops authenticating" are claims about SQL and row-level
 	// security that only a real database can falsify.
+	"internal/flows",
 	"internal/mirror",
 	"internal/notes",
 	// muster-native Web Push (migration 0013). "A member's principal (and the

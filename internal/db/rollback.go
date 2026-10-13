@@ -44,6 +44,12 @@ const mirrorTokensMigrationVersion = 8
 // schema has user_credentials.
 const userCredentialsMigrationVersion = 11
 
+// flowJobsMigrationVersion is 0012: browser flows' flow_jobs and
+// flow_runner_tokens, owned and under the same row-level security. Same
+// treatment as 0008: RLSOff turns them off, RLSOn re-applies 0012's
+// (idempotent) body when the schema has flow_jobs.
+const flowJobsMigrationVersion = 12
+
 // pushSubscriptionsMigrationVersion is 0013: push_subscriptions and
 // push_preferences (muster-native Web Push), under the same row-level
 // security. Same treatment as 0008 and 0011.
@@ -59,17 +65,19 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		return err
 	}
 	ctx = asMigrator(ctx)
-	var hasMirrorTokens, hasUserCredentials, hasPushSubscriptions bool
+	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasPushSubscriptions bool
 	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.mirror_tokens') IS NOT NULL,
 		to_regclass('public.user_credentials') IS NOT NULL,
+		to_regclass('public.flow_jobs') IS NOT NULL,
 		to_regclass('public.push_subscriptions') IS NOT NULL`).Scan(&hasMirrorTokens, &hasUserCredentials,
-		&hasPushSubscriptions); err != nil {
+		&hasFlowJobs, &hasPushSubscriptions); err != nil {
 		return fmt.Errorf("rls on: %w", err)
 	}
 	applied := false
 	for _, m := range ms {
 		if m.version != rlsMigrationVersion && !(m.version == mirrorTokensMigrationVersion && hasMirrorTokens) &&
 			!(m.version == userCredentialsMigrationVersion && hasUserCredentials) &&
+			!(m.version == flowJobsMigrationVersion && hasFlowJobs) &&
 			!(m.version == pushSubscriptionsMigrationVersion && hasPushSubscriptions) {
 			continue
 		}

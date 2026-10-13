@@ -16,6 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/apitokens"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/flows"
 )
 
 // Accounts PR 2/6: every authenticated route reaches its handler carrying an
@@ -36,6 +37,9 @@ const (
 	// it reaches the store; principalAPITokens resolves it to user 1.
 	pAPIToken   = "mst_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	pAgentToken = "principal-test-agent-own-token-0123456789"
+	// pRunnerToken is shaped like a minted flow runner token
+	// (flows.RunnerTokenShapeOK); principalFlows resolves it to user 1.
+	pRunnerToken = "mfr_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 )
 
 // publicRoutes are served with no credential and therefore no Principal.
@@ -169,6 +173,12 @@ var routeVias = map[authz.Via][]string{
 		"POST /tasks/{id}/tags",
 		"POST /ui/connector-requests/{id}/approve",
 		"POST /ui/connector-requests/{id}/deny",
+		// Browser flows (0012): the page and its forms.
+		"GET /flows",
+		"POST /flows/jobs",
+		"POST /flows/jobs/{id}/cancel",
+		"POST /flows/runner-tokens",
+		"POST /flows/runner-tokens/{id}/revoke",
 	},
 	authz.ViaHook: {
 		"DELETE /api/tasks/{id}",
@@ -213,6 +223,17 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/agents/{name}/messages",
 		"POST /api/tasks",
 		"POST /api/tasks/{id}/comments",
+		// Browser flows (0012): a personal token ONLY — the hook and service
+		// tiers are absent above on purpose (requireAPIToken).
+		"GET /api/flows/jobs",
+		"GET /api/flows/jobs/{id}",
+		"POST /api/flows/jobs",
+	},
+	// A browser-flow RUNNER token (0012) opens exactly the runner door.
+	authz.ViaRunner: {
+		"POST /runner/flows/claim",
+		"POST /runner/flows/{id}/heartbeat",
+		"POST /runner/flows/{id}/result",
 	},
 	authz.ViaAgent: {
 		"GET /agent/muster",
@@ -248,6 +269,16 @@ func (principalAgents) GetByHooksToken(_ context.Context, tok string) (agents.Ag
 }
 
 type principalConnectors struct{ connectors.Store }
+
+// principalFlows resolves the one test runner token to user 1.
+type principalFlows struct{ flows.Store }
+
+func (principalFlows) AuthenticateRunner(_ context.Context, tok string) (flows.RunnerToken, error) {
+	if tok == pRunnerToken {
+		return flows.RunnerToken{ID: 5, OwnerID: authz.OperatorUserID, Host: "principal-test"}, nil
+	}
+	return flows.RunnerToken{}, flows.ErrBadRunnerToken
+}
 
 // principalAPITokens resolves the one test personal token to user 1.
 type principalAPITokens struct{ apitokens.Store }
@@ -287,7 +318,8 @@ func newPrincipalTestServer(t *testing.T) (*Server, http.Handler, *[]authz.Princ
 func newPrincipalTestServerWith(t *testing.T, cfg AuthConfig) (*Server, http.Handler, *[]authz.Principal) {
 	t.Helper()
 	s := New(nil, cfg, log.New(io.Discard, "", 0))
-	s.UseExtensions(Extensions{Agents: principalAgents{}, Connectors: principalConnectors{}, APITokens: principalAPITokens{}})
+	s.UseExtensions(Extensions{Agents: principalAgents{}, Connectors: principalConnectors{}, APITokens: principalAPITokens{},
+		Flows: principalFlows{}})
 	seen := &[]authz.Principal{}
 	s.principalProbe = func(r *http.Request) {
 		p, ok := authz.From(r.Context())
@@ -339,6 +371,8 @@ func credential(s *Server, req *http.Request, via authz.Via) {
 		req.Header.Set("X-Muster-Token", pAgentToken)
 	case authz.ViaToken:
 		req.Header.Set("Authorization", "Bearer "+pAPIToken)
+	case authz.ViaRunner:
+		req.Header.Set("Authorization", "Bearer "+pRunnerToken)
 	}
 }
 
@@ -474,7 +508,7 @@ func TestAnUnarmedHookTierStillActsAsTheMachineUser(t *testing.T) {
 // prove nothing — a mislabelled route simply refuses and attaches nothing.)
 func TestPublicRoutesAreServedWithoutAPrincipal(t *testing.T) {
 	s, h, seen := newPrincipalTestServer(t)
-	doors := []authz.Via{authz.ViaSession, authz.ViaHook, authz.ViaService, authz.ViaAgent, authz.ViaToken}
+	doors := []authz.Via{authz.ViaSession, authz.ViaHook, authz.ViaService, authz.ViaAgent, authz.ViaToken, authz.ViaRunner}
 	for _, pattern := range publicRoutes {
 		method, path := concretePath(pattern)
 		for _, via := range doors {
