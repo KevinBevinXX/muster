@@ -85,6 +85,8 @@ GET /metrics
 GET /mirror/connect
 GET /mirror/terminal
 GET /mirror/terminal/ws
+GET /mirror/view
+GET /mirror/view/ws
 GET /readyz
 GET /repos
 GET /share
@@ -175,6 +177,7 @@ POST /invite
 POST /login
 POST /logout
 POST /mcp
+POST /mirror/view/send
 POST /runner/flows/claim
 POST /runner/flows/{id}/heartbeat
 POST /runner/flows/{id}/result

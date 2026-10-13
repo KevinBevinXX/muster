@@ -30,7 +30,8 @@
     "tests/mirror-stepup.spec.ts": 25.0,
     "tests/terminal-overflow.spec.ts": 8.0,
     "tests/passkeys.spec.ts": 75.0,
-    "tests/push.spec.ts": 10.0
+    "tests/push.spec.ts": 10.0,
+    "tests/tool-rows.spec.ts": 2.0
   },
   "legs": {
     "1": [
@@ -44,7 +45,8 @@
       "tests/byo-credentials.spec.ts",
       "tests/invites.spec.ts",
       "tests/api-tokens.spec.ts",
-      "tests/mirror-stepup.spec.ts"
+      "tests/mirror-stepup.spec.ts",
+      "tests/tool-rows.spec.ts"
     ],
     "2": [
       "tests/provisioning-indicator.spec.ts",

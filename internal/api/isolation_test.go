@@ -302,6 +302,13 @@ var isolationClasses = map[string]routeClass{
 	"POST /runner/flows/claim":              classRunner,
 	"POST /runner/flows/{id}/heartbeat":     classRunner,
 	"POST /runner/flows/{id}/result":        classRunner,
+
+	// The mirrored rendered view (tunnel v2) addresses its session like the
+	// mirrored terminal above (?host=&session=); the
+	// send carries host and session in its FORM, which fill() also sets.
+	"GET /mirror/view":       classMirror,
+	"GET /mirror/view/ws":    classMirror,
+	"POST /mirror/view/send": classMirror,
 }
 
 // wantCanaryForA: list routes that render A's data to A. The negative control
@@ -950,7 +957,10 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 	if path == "/static/" {
 		path = "/static/app.css"
 	}
-	if strings.HasPrefix(path, "/mirror/terminal") {
+	if strings.HasPrefix(path, "/mirror/terminal") || strings.HasPrefix(path, "/mirror/view") {
+		if method == http.MethodPost {
+			return method, path, url.Values{"host": {o.mirrorHost}, "session": {o.mirrorSession}, "text": {"iso-write"}}.Encode()
+		}
 		path += "?" + url.Values{"host": {o.mirrorHost}, "session": {o.mirrorSession}}.Encode()
 	}
 	if method == http.MethodGet || method == http.MethodDelete {
@@ -1092,7 +1102,8 @@ func (w *isoWorld) walkAs(actor isoUser, o isoObjs, creds []cred, routes []strin
 // the dispatch and merge forms) in its body.
 func namesObject(route string) bool {
 	return paramRE.MatchString(route) || route == "POST /agents" || route == "POST /tasks/merge" ||
-		strings.HasPrefix(route, "GET /mirror/terminal")
+		strings.HasPrefix(route, "GET /mirror/terminal") || strings.HasPrefix(route, "GET /mirror/view") ||
+		route == "POST /mirror/view/send"
 }
 
 var paramRE = regexp.MustCompile(`\{[a-z]`)

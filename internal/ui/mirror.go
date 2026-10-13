@@ -22,6 +22,19 @@ type MirrorCardView struct {
 	// Interactive: the host ANNOUNCED -interactive, so its terminal page offers
 	// the Interactive switch (still behind a fresh sign-in: internal/stepup).
 	Interactive bool
+	// Claude: the host reports Claude Code in the session's pane, so the card
+	// opens the RENDERED view by default (MirrorViewPath); otherwise it opens the
+	// terminal.
+	Claude bool
+}
+
+// MirrorCardHref is where a mirrored card opens: the rendered view for a
+// Claude Code pane, the terminal for anything else.
+func MirrorCardHref(m MirrorCardView) string {
+	if m.Claude {
+		return MirrorViewPath(m.Host, m.Session)
+	}
+	return MirrorTerminalPath(m.Host, m.Session)
 }
 
 // MirrorTerminalPath is a mirrored session's terminal page.
@@ -57,7 +70,7 @@ func mirrorCard(m MirrorCardView) g.Node {
 		g.Attr("data-mirror-card", ""),
 		Class("group relative overflow-hidden rounded-2xl border border-line bg-s1/70 shadow-lg shadow-black/20 ring-1 ring-line"),
 		A(
-			Href(MirrorTerminalPath(m.Host, m.Session)),
+			Href(MirrorCardHref(m)),
 			hx("hx-boost", "false"),
 			Class("flex flex-col gap-3 p-4"),
 			Div(
@@ -75,6 +88,7 @@ func mirrorCard(m MirrorCardView) g.Node {
 					g.Attr("title", "This host accepts typing (muster-mirror -interactive); the terminal asks you to confirm it's you first"),
 					chip("mode", "interactive"),
 				)),
+				g.If(m.Claude, Span(g.Attr("data-mirror-claude", ""), chip("kind", "Claude Code"))),
 				g.If(!m.Online, Span(
 					g.Attr("data-mirror-offline", ""),
 					g.Attr("title", "The host's muster-mirror is not connected, or the host no longer lists this tmux session"),

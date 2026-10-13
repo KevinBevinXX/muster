@@ -119,6 +119,17 @@ var standaloneDocuments = []documentRenderer{
 		},
 	},
 	{
+		// A mirrored Claude Code session's rendered view. Its "empty" state is a
+		// read-only host's: the composer drawn disabled, saying why.
+		fn: "MirrorViewPage", label: "the mirrored rendered view (/mirror/view)",
+		render: func(w io.Writer) error {
+			return MirrorViewPage(MirrorViewView{Host: "laptop", Session: "work **main**", Interactive: true}).Render(w)
+		},
+		renderEmpty: func(w io.Writer) error {
+			return MirrorViewPage(MirrorViewView{Host: "laptop", Session: "main"}).Render(w)
+		},
+	},
+	{
 		// A real document a reader can LAND on — a legacy deeplink to a dismissed
 		// task arrives here — so it owes the same contract as any other page.
 		fn: "TaskNotFoundPage", label: "the task 404 page (/tasks/<id>, dismissed)",

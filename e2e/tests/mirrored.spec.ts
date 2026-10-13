@@ -1,4 +1,6 @@
 import { execFileSync, spawn, ChildProcess } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
@@ -27,7 +29,9 @@ let token = '';
 
 // startMirror runs the host binary; read-only unless interactive. The e2e
 // server is plain http on localhost, so the TEST-ONLY -allow-http is set here.
-function startMirror(interactive: boolean): ChildProcess {
+// claude, when given, makes session main a Claude Code pane writing that
+// transcript (the rendered view; cmd/muster-mirror/e2emirror.go).
+function startMirror(interactive: boolean, claude?: string): ChildProcess {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     MUSTER_MIRROR_URL: origin,
@@ -37,6 +41,7 @@ function startMirror(interactive: boolean): ChildProcess {
     MUSTER_MIRROR_E2E_SESSIONS: 'main,scratch',
   };
   if (interactive) env.MUSTER_MIRROR_INTERACTIVE = '1';
+  if (claude) env.MUSTER_MIRROR_E2E_CLAUDE = 'main=' + claude;
   const p = spawn(mirrorBin, [], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   p.stdout?.on('data', (d) => (mirrorLog += d));
   p.stderr?.on('data', (d) => (mirrorLog += d));
@@ -179,4 +184,178 @@ test('a host that disconnects reads offline and its terminal says why', async ({
 
   mirrorProc = startMirror(false);
   await waitForCards(page, true);
+});
+
+// ---------------------------------------------------------------------------
+// THE RENDERED VIEW (tunnel v2). The host binary is the real muster-mirror with
+// main played as a Claude Code pane whose transcript is a real file THIS test
+// writes, record by record, as the CLI would: the tailer, the parser, the v2
+// tunnel, the hub, the socket and the page are all real.
+// ---------------------------------------------------------------------------
+
+const viewPath = (session: string) => `/mirror/view?host=${encodeURIComponent(host)}&session=${encodeURIComponent(session)}`;
+
+function rec(o: object): string {
+  return JSON.stringify(o) + '\n';
+}
+const prompt = (t: string) => rec({ type: 'user', promptId: 'p', message: { role: 'user', content: t } });
+const reply = (t: string) => rec({ type: 'assistant', message: { content: [{ type: 'text', text: t }] } });
+const thinking = (t: string) => rec({ type: 'assistant', message: { content: [{ type: 'thinking', thinking: t }] } });
+const toolUse = (id: string, name: string, input: object) =>
+  rec({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } });
+const toolResult = (id: string, out: string, isError: boolean) =>
+  rec({ type: 'user', promptId: 'p', message: { content: [{ type: 'tool_result', tool_use_id: id, content: out, is_error: isError }] } });
+
+function newTranscript(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'muster-e2e-cc-'));
+  const p = path.join(dir, 'e2e-session-0001.jsonl');
+  fs.writeFileSync(
+    p,
+    prompt('list the files') + thinking('PRIVATE REASONING never rendered') + reply('Listing them.') +
+      toolUse('tu_ls', 'Bash', { command: 'ls -la /srv', description: 'List' }) + toolResult('tu_ls', 'alpha\nbeta', false),
+  );
+  return p;
+}
+
+async function waitForClaude(page: Page) {
+  await expect
+    .poll(async () => (await (await page.request.get(origin + '/ui/agents')).text()).includes('data-mirror-claude'), {
+      message: `main reported as a Claude pane (muster-mirror log:\n${mirrorLog})`,
+      timeout: 20_000,
+    })
+    .toBe(true);
+}
+
+const viewCard = (page: Page, session: string) => page.locator(`#agents-list article[data-mirror-card]:has(a[href="${viewPath(session)}"])`);
+
+test('a mirrored Claude pane opens in the rendered view: collapsed tool rows, live updates, a Terminal toggle, no send on a read-only host', async ({ page }) => {
+  await stopMirror();
+  const tr = newTranscript();
+  mirrorProc = startMirror(false, tr);
+  await login(page);
+  await waitForClaude(page);
+
+  // The card for the Claude pane opens the rendered view; the other the terminal.
+  await page.goto(origin + '/agents');
+  await expect(viewCard(page, 'main')).toBeVisible();
+  await expect(viewCard(page, 'main').locator('[data-mirror-claude]')).toContainText('Claude Code');
+  await expect(card(page, 'scratch')).toBeVisible();
+  await viewCard(page, 'main').locator('a').first().click();
+  await page.waitForURL((u) => u.pathname === '/mirror/view');
+
+  const log = page.locator('#mv-log');
+  await expect(log.locator('[data-bubble="user"]').first()).toContainText('list the files');
+  await expect(log.locator('[data-bubble="assistant"]').first()).toContainText('Listing them.');
+  await expect(log).not.toContainText('PRIVATE REASONING');
+
+  // One collapsed row per call: tool, target, status — expanding to the output.
+  const ls = log.locator('[data-tool-row]').first();
+  await expect(ls).toHaveAttribute('data-tool-status', 'ok');
+  await expect(ls.locator('summary')).toContainText('Bash');
+  await expect(ls.locator('[data-tool-target]')).toHaveText('ls -la /srv');
+  await expect(ls).not.toHaveAttribute('open', '');
+  await expect(ls.locator('pre').last()).toBeHidden();
+  await ls.locator('summary').click();
+  await expect(ls).toHaveAttribute('open', '');
+  await expect(ls.locator('pre').last()).toBeVisible();
+  await expect(ls.locator('pre').last()).toContainText('alpha');
+  const row = (await ls.boundingBox())!;
+  expect(row.x + row.width, 'the tool row fits 412px').toBeLessThanOrEqual(412);
+  await noHorizontalScroll(page);
+
+  // A turn runs: Claude Code reports busy, a call is written and runs, then fails.
+  fs.writeFileSync(tr + '.busy', '');
+  fs.appendFileSync(tr, prompt('now run the tests') + reply('Running the suite.') +
+    toolUse('tu_test', 'Bash', { command: 'go test ./...' }));
+  const testRow = log.locator('[data-tool-row]').nth(1);
+  await expect(testRow.locator('[data-tool-target]')).toHaveText('go test ./...');
+  await expect(testRow).toHaveAttribute('data-tool-status', 'running');
+  await expect(page.locator('#mv-working')).toBeVisible({ timeout: 15_000 });
+  fs.appendFileSync(tr, toolResult('tu_test', 'FAIL: TestX', true) + thinking('PRIVATE again'));
+  await expect(testRow).toHaveAttribute('data-tool-status', 'error');
+  await expect(log.locator('[data-tool-row]')).toHaveCount(2); // redrawn in place, not appended
+  fs.rmSync(tr + '.busy');
+  fs.appendFileSync(tr, reply('One test failed.'));
+  await expect(log.locator('[data-bubble="assistant"]').last()).toContainText('One test failed.');
+  await expect(page.locator('#mv-working')).toBeHidden({ timeout: 15_000 });
+  await expect(log).not.toContainText('PRIVATE');
+
+  // Read-only host: the composer is there and disabled, and says why.
+  await expect(page.locator('#mv-input')).toBeDisabled();
+  await expect(page.locator('#mv-send')).toBeDisabled();
+  await expect(page.locator('#mv-readonly')).toContainText('read-only');
+  await noHorizontalScroll(page);
+
+  // The Terminal is one tap away, and back.
+  await expect(page.locator('#view-rendered')).toHaveAttribute('aria-current', 'page');
+  await page.locator('#view-terminal').click();
+  await page.waitForURL((u) => u.pathname === '/mirror/terminal');
+  await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=ro');
+  await expect(page.locator('#view-terminal')).toHaveAttribute('aria-current', 'page');
+  await page.locator('#view-rendered').click();
+  await page.waitForURL((u) => u.pathname === '/mirror/view');
+  await expect(log.locator('[data-tool-row]')).toHaveCount(2);
+  await noHorizontalScroll(page);
+
+  // A non-Claude session's view falls back to its terminal.
+  await page.goto(origin + viewPath('scratch'));
+  await page.waitForURL((u) => u.pathname === '/mirror/terminal');
+  await stopMirror();
+});
+
+test('an interactive host offers the composer: a fresh sign-in sends into the pane, and a stale one is asked to confirm and then sent', async ({ page }) => {
+  await stopMirror();
+  const tr = newTranscript();
+  mirrorProc = startMirror(true, tr);
+  await login(page);
+  await waitForClaude(page);
+  await page.goto(origin + viewPath('main'));
+  await expect(page.locator('#mv-log [data-tool-row]')).toHaveCount(1);
+  await expect(page.locator('#mv-input')).toBeEnabled();
+  const pasted = () => (fs.existsSync(tr + '.pasted') ? fs.readFileSync(tr + '.pasted', 'utf8') : '');
+
+  // Signed in just now, so the sign-in is fresh: the send is pasted into the
+  // Claude pane (its pane id, which the fake host records), the composer
+  // clears, and the prompt comes back through the transcript. A leading `/` is
+  // pasted as typed.
+  await page.locator('#mv-input').fill('/status please continue');
+  await page.locator('#mv-send').click();
+  await expect(page.locator('#mv-input')).toHaveValue('');
+  await expect.poll(pasted).toBe('%9 /status please continue\n');
+  await expect(page.locator('#mv-log [data-bubble="user"]').last()).toContainText('/status please continue');
+  await expect(page.locator('#mv-error')).toBeHidden();
+
+  // A STALE sign-in. ⚠ The refusal itself is PLAYED here (one intercepted
+  // response, shaped as the server's own: 403 + X-Muster-Step-Up) because a
+  // password-mode session cannot be aged in a browser test; the server's real
+  // stale refusal is pinned in Go (TestASendIsGatedOnInteractiveAndAFreshSignIn)
+  // and with real GoTrue in mirror-stepup.spec.ts. Everything after it is real:
+  // the dialog, the confirm route, the new session, the retried send.
+  let refused = 0;
+  await page.route('**/mirror/view/send', async (route) => {
+    if (refused++ === 0) {
+      await route.fulfill({ status: 403, headers: { 'X-Muster-Step-Up': 'required', 'Content-Type': 'text/plain' }, body: 'confirm it\'s you' });
+      return;
+    }
+    await route.continue();
+  });
+  await page.locator('#mv-input').fill('second message');
+  await page.locator('#mv-send').click();
+  const dialog = page.locator('#term-confirm');
+  await expect(dialog).toBeVisible();
+  expect(pasted(), 'nothing is pasted while the confirm is open').toBe('%9 /status please continue\n');
+  await page.fill('#term-confirm-password', 'not the password');
+  await page.click('#term-confirm-submit');
+  await expect(page.locator('#term-confirm-error')).toHaveText('That password is not right.');
+  expect(pasted()).toBe('%9 /status please continue\n');
+  await page.fill('#term-confirm-password', password);
+  await page.click('#term-confirm-submit');
+  await expect(dialog).toBeHidden();
+  await expect.poll(pasted).toBe('%9 /status please continue\n%9 second message\n');
+  await expect(page.locator('#mv-input')).toHaveValue('');
+  expect(refused, 'the send was retried once after the confirm').toBe(2);
+  await page.unroute('**/mirror/view/send');
+  await noHorizontalScroll(page);
+  await stopMirror();
+  mirrorProc = startMirror(false);
 });

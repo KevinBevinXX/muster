@@ -410,6 +410,23 @@ route to the host, and the host holds no muster credential but its own token.
   open terminals within 30 s, and removes the host from the view. Repeated bad
   tokens get 429, but a valid token is never refused by that limit. One muster
   replica (the tunnel is in-process state).
+- **A rendered view for Claude Code panes (tunnel v2).** When a session's
+  active pane runs Claude Code, its card opens a *rendered* view by default:
+  prompts and replies as chat bubbles, each tool call as one collapsed row
+  (tool, target, ok / error / running), live while a turn runs; thinking is
+  never shown, and the Terminal is one tap away. The host finds the session by
+  walking the pane's process tree to the `claude` process and reading the
+  CLI's own `~/.claude/sessions/<pid>.json`, then tails that transcript and
+  streams bounded events (the last 300 at most on open, capped per field;
+  never the file). Nothing is stored on the server. `muster-mirror -list
+  -claude` prints what a host resolves. Sending a message from the view pastes
+  it into the Claude pane (as typed — a leading `/` or `!` included; control
+  characters are refused) and needs the host's `-interactive` **and** a
+  sign-in from the last 5 minutes, the same gate as typing into the terminal;
+  a stale one is asked to confirm and the message is then sent.
+- **Rolling upgrade:** this muster accepts tunnel v1 and v2 hosts (a v1 host
+  simply has no rendered view), and a v2 `muster-mirror` falls back to v1
+  against an older muster — so either side can be upgraded first.
 
 Mint a token where the server runs (it is printed once, owned by the operator),
 then install and run the host binary:
@@ -427,7 +444,8 @@ muster-mirror -url https://muster.example.com -token-file ~/.config/muster-mirro
 `<host>` is a lowercase DNS label and defaults to the short hostname; a token
 minted for one host cannot register another. `-interactive` allows typing,
 `-tmux-socket`/`-tmux-socket-path` pick a non-default tmux server, and `-list`
-prints what would be registered. Every flag also reads a `MUSTER_MIRROR_*`
+prints what would be registered (`-list -claude` adds each Claude Code pane's
+transcript). Every flag also reads a `MUSTER_MIRROR_*`
 variable (see `-help`), so a systemd user unit needs no token in its command
 line. If muster sits behind an auth proxy, `/mirror/connect` (GET) must bypass
 it: the route authenticates its own tokens.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/coder/websocket"
@@ -50,6 +51,7 @@ func (s *Server) registerMirrorRoutes(mux Mux) {
 	// needs. Registered whether or not the plugin is on — it is an auth route,
 	// and its only consumer today is the terminal page above.
 	mux.HandleFunc("POST /auth/confirm", s.requireSession(s.handleStepUpConfirm))
+	s.registerMirrorViewRoutes(mux)
 }
 
 func (s *Server) handleMirrorConnect(w http.ResponseWriter, r *http.Request) {
@@ -82,7 +84,7 @@ func (s *Server) mirrorCards(ctx context.Context) []ui.MirrorCardView {
 	var out []ui.MirrorCardView
 	for _, h := range s.ext.Mirror.Hosts(ctx) {
 		for _, sess := range h.Sessions {
-			out = append(out, ui.MirrorCardView{Host: h.Host, Session: sess, Online: h.Online, Interactive: h.Interactive})
+			out = append(out, ui.MirrorCardView{Host: h.Host, Session: sess, Online: h.Online, Interactive: h.Interactive, Claude: slices.Contains(h.Claude, sess)})
 		}
 	}
 	return out
@@ -115,6 +117,9 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		// stepup.MaxAge. The page asks for the password when this has passed;
 		// the socket below refuses a stale rw attach whatever the page does.
 		StepUp: &ui.StepUpView{ConfirmPath: stepUpConfirmPath, FreshFor: freshForMillis(r.Context(), s.stepUpNow()), RememberKey: "mirror:" + h.Host},
+	}
+	if hasRenderedView(h, session) {
+		v.RenderedHref = ui.MirrorViewPath(h.Host, session)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.AgentTerminalPage(v).Render(w); err != nil {
