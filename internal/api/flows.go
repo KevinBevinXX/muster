@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"html"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/flows"
@@ -56,6 +58,10 @@ func (s *Server) registerFlowRoutes(mux Mux) {
 	mux.HandleFunc("POST "+flowsPath+"/jobs", s.requireOperatorWrite(s.handleFlowEnqueueForm))
 	mux.HandleFunc("POST "+flowsPath+"/jobs/{id}/cancel", s.requireOperatorWrite(s.handleFlowCancelForm))
 	mux.HandleFunc("POST "+flowsPath+"/runner-tokens", s.requireOperatorWrite(s.handleRunnerTokenCreate))
+	// An agent's request (flow_tools.go) is decided HERE, by its owner, on the
+	// connector-request approve pattern (requireOperatorWrite).
+	mux.HandleFunc("POST "+flowsPath+"/requests/{id}/approve", s.requireOperatorWrite(s.handleFlowRequestApprove))
+	mux.HandleFunc("POST "+flowsPath+"/requests/{id}/deny", s.requireOperatorWrite(s.handleFlowRequestDeny))
 	mux.HandleFunc("POST "+flowsPath+"/runner-tokens/{id}/revoke", s.requireOperatorWrite(s.handleRunnerTokenRevoke))
 
 	mux.HandleFunc("POST "+flowsAPIPath, s.requireAPIToken(s.handleFlowEnqueueAPI))
@@ -362,6 +368,38 @@ func (s *Server) handleFlowCancelForm(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleFlowRequestApprove(w http.ResponseWriter, r *http.Request) {
+	s.decideFlowRequest(w, r, true)
+}
+
+func (s *Server) handleFlowRequestDeny(w http.ResponseWriter, r *http.Request) {
+	s.decideFlowRequest(w, r, false)
+}
+
+// decideFlowRequest approves (creating the job, in the deciding owner's queue)
+// or denies one of the session user's pending agent requests. Another owner's
+// request is "no such request" — row-level security does not show it.
+func (s *Server) decideFlowRequest(w http.ResponseWriter, r *http.Request, approve bool) {
+	id, ok := flowJobID(r)
+	var err error = flows.ErrNotFound
+	if ok && s.ext.Flows != nil {
+		_, _, err = s.ext.Flows.DecideRequest(r.Context(), id, approve, "the owner's browser session")
+	}
+	switch {
+	case err == nil:
+		http.Redirect(w, r, flowsPath, http.StatusSeeOther)
+	case errors.Is(err, flows.ErrNotFound):
+		s.renderFlowsPage(w, r, http.StatusNotFound, "", "No such request.")
+	case errors.Is(err, flows.ErrState):
+		s.renderFlowsPage(w, r, http.StatusConflict, "", "That request was already decided, or it expired.")
+	case errors.Is(err, flows.ErrInvalid), errors.Is(err, flows.ErrPendingCap):
+		s.renderFlowsPage(w, r, http.StatusBadRequest, "", err.Error())
+	default:
+		s.logger.Printf("flows: decide request %d: %v", id, err)
+		s.renderFlowsPage(w, r, http.StatusInternalServerError, "", "The request could not be decided.")
+	}
+}
+
 func (s *Server) handleRunnerTokenCreate(w http.ResponseWriter, r *http.Request) {
 	if s.ext.Flows == nil {
 		s.renderFlowsPage(w, r, http.StatusServiceUnavailable, "", "")
@@ -399,6 +437,77 @@ func (s *Server) handleRunnerTokenRevoke(w http.ResponseWriter, r *http.Request)
 	http.Redirect(w, r, flowsPath, http.StatusSeeOther)
 }
 
+// flowDecidedShown is how many decided agent requests /flows lists.
+const flowDecidedShown = 20
+
+// flowRequestCardHTML draws one pending agent request for its owner's decision.
+//
+// 🔴 WHAT IS APPROVED IS WHAT IS SEEN — the control the whole agent door rests
+// on. So: (1) EVERY parameter the request carries is drawn, taken from the
+// catalogue's definition of the flow and then any the catalogue does not name
+// (never a hardcoded list a new parameter could slip past); (2) each value is
+// drawn through flows.VisibleEscape — printable ASCII as itself, everything
+// else spelled out as an escape — with its length in characters, so an
+// invisible or look-alike character cannot ride along unseen; (3) the agent's
+// REASON, which is never sent anywhere, sits in its own labelled box below the
+// parameters, on one line and escaped the same way, so it cannot pass for one.
+func flowRequestCardHTML(q flows.FlowRequest) string {
+	esc := html.EscapeString
+	id := strconv.FormatInt(q.ID, 10)
+	var b strings.Builder
+	b.WriteString(`<li class="` + flowsCardClass + `" data-flow-request-id="` + id + `">
+<span class="break-all text-sm font-semibold text-fg">` + esc(flows.VisibleEscape(q.AgentName)) + ` asks: ` + esc(q.Flow) + ` on ` + esc(q.Host) + `/` + esc(q.Instance) + `</span>
+<span class="text-xs font-semibold text-fg">Approving runs this flow with exactly these parameters:</span>
+`)
+	var names []string
+	seen := map[string]bool{}
+	if f, ok := flows.Lookup(q.Flow); ok {
+		for _, p := range f.Params {
+			if _, has := q.Params[p.Name]; has {
+				names, seen[p.Name] = append(names, p.Name), true
+			}
+		}
+	}
+	var extra []string
+	for k := range q.Params {
+		if !seen[k] {
+			extra = append(extra, k)
+		}
+	}
+	sort.Strings(extra)
+	names = append(names, extra...)
+	if len(names) == 0 {
+		b.WriteString(`<span class="text-xs text-fg2" data-flow-no-params>(no parameters)</span>
+`)
+	}
+	for _, k := range names {
+		v := q.Params[k]
+		n := strconv.Itoa(utf8.RuneCountInString(v))
+		b.WriteString(`<div class="flex flex-col gap-1 rounded-md bg-s1 px-3 py-2 ring-1 ring-inset ring-edge" data-flow-param="` + esc(k) + `" data-runes="` + n + `">
+<span class="text-xs font-semibold text-fg">` + esc(flows.VisibleEscape(k)) + ` · ` + n + ` characters</span>
+<code class="whitespace-pre-wrap break-all font-mono text-xs text-fg" data-flow-param-value>` + esc(flows.VisibleEscape(v)) + `</code>
+</div>
+`)
+	}
+	if q.Reason != "" {
+		reason := strings.Join(strings.Fields(q.Reason), " ")
+		if utf8.RuneCountInString(reason) > flows.MaxReasonRunes {
+			reason = string([]rune(reason)[:flows.MaxReasonRunes])
+		}
+		b.WriteString(`<div class="flex flex-col gap-1 rounded-md bg-bg px-3 py-2 ring-1 ring-inset ring-edge" data-flow-reason>
+<span class="text-xs font-semibold text-fg2">The agent's stated reason (not sent anywhere)</span>
+<span class="break-all text-xs text-fg2" data-flow-reason-value>` + esc(flows.VisibleEscape(reason)) + `</span>
+</div>
+`)
+	}
+	b.WriteString(`<span class="text-xs text-fg2">expires ` + q.ExpiresAt.UTC().Format("2006-01-02 15:04") + ` UTC</span>
+<form method="POST" action="` + flowsPath + `/requests/` + id + `/approve"><button type="submit" class="` + flowsButtonClass + ` w-full">Approve and queue</button></form>
+<form method="POST" action="` + flowsPath + `/requests/` + id + `/deny"><button type="submit" class="` + flowsQuietButton + `">Deny</button></form>
+</li>
+`)
+	return b.String()
+}
+
 // Shared class strings (each already emitted by the stylesheet: see
 // api_tokens.go, which these are copied from).
 const (
@@ -413,6 +522,7 @@ const (
 func (s *Server) renderFlowsPage(w http.ResponseWriter, r *http.Request, code int, minted, problem string) {
 	var jobs []flows.Job
 	var runners []flows.RunnerToken
+	var requests []flows.FlowRequest
 	if s.ext.Flows == nil {
 		problem = "This server has no database, so it cannot queue browser flows."
 	} else {
@@ -420,6 +530,10 @@ func (s *Server) renderFlowsPage(w http.ResponseWriter, r *http.Request, code in
 		if jobs, err = s.ext.Flows.List(r.Context(), 50); err != nil {
 			s.logger.Printf("flows: page list: %v", err)
 			problem = "The job list could not be read."
+		}
+		if requests, err = s.ext.Flows.ListRequests(r.Context(), 50); err != nil {
+			s.logger.Printf("flows: page requests: %v", err)
+			problem = "The request list could not be read."
 		}
 		if runners, err = s.ext.Flows.ListRunnerTokens(r.Context()); err != nil {
 			s.logger.Printf("flows: page runners: %v", err)
@@ -480,6 +594,49 @@ func (s *Server) renderFlowsPage(w http.ResponseWriter, r *http.Request, code in
 <input id="flow-ttl" name="ttl_minutes" inputmode="numeric" value="` + strconv.Itoa(int(flows.DefaultTTL/time.Minute)) + `" class="` + flowsInputClass + `">
 <button type="submit" class="` + flowsButtonClass + `">Queue flow</button>
 </form>
+`)
+
+	// Agent requests waiting on this owner. 🔴 THE CARD IS THE CONTROL: what the
+	// owner approves is exactly what is drawn here (flowRequestCardHTML).
+	b.WriteString(`<h2 class="text-sm font-semibold text-fg">Agent requests</h2>
+<ul class="flex flex-col gap-2" data-testid="flow-requests">
+`)
+	shown := 0
+	for _, q := range requests {
+		if q.Status != flows.RequestPending {
+			continue
+		}
+		shown++
+		b.WriteString(flowRequestCardHTML(q))
+	}
+	if shown == 0 {
+		b.WriteString(`<li class="text-sm text-fg2">No agent requests waiting.</li>`)
+	}
+	b.WriteString(`</ul>
+<h2 class="text-sm font-semibold text-fg">Recent decisions</h2>
+<ul class="flex flex-col gap-2" data-testid="flow-requests-decided">
+`)
+	decided := 0
+	for _, q := range requests {
+		if q.Status == flows.RequestPending || decided >= flowDecidedShown {
+			continue
+		}
+		decided++
+		line := esc(flows.VisibleEscape(q.AgentName)) + ` · ` + esc(q.Flow) + ` · ` + esc(string(q.Status))
+		if q.DecidedAt != nil {
+			line += ` ` + q.DecidedAt.UTC().Format("2006-01-02 15:04") + ` UTC`
+		}
+		if q.JobID != nil {
+			line += ` · job #` + strconv.FormatInt(*q.JobID, 10)
+		}
+		b.WriteString(`<li class="break-all text-xs text-fg2" data-flow-request-decided="` + strconv.FormatInt(q.ID, 10) +
+			`" data-flow-request-status="` + esc(string(q.Status)) + `">#` + strconv.FormatInt(q.ID, 10) + ` ` + line + `</li>
+`)
+	}
+	if decided == 0 {
+		b.WriteString(`<li class="text-sm text-fg2">No decisions yet.</li>`)
+	}
+	b.WriteString(`</ul>
 `)
 
 	// The jobs.

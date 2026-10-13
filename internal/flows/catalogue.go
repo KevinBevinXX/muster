@@ -58,6 +58,12 @@ type Param struct {
 	Pattern *regexp.Regexp
 	// Help is the one-line description the /flows form and the CLI show.
 	Help string
+	// ID marks a CLOSED identifier (a task id: digits only, by its Pattern). It
+	// is the one kind of parameter that is not prose somebody composed, so it
+	// is the one kind the agent-text screen (requests.go) skips. Every other
+	// parameter — whatever its pattern — is screened; a new parameter is
+	// therefore screened by default.
+	ID bool
 }
 
 // Flow is one catalogue entry.
@@ -90,7 +96,7 @@ var (
 )
 
 var (
-	paramTask   = Param{Name: "task", MaxLen: 18, Pattern: taskRE, Help: "muster task id the flow posts its result on"}
+	paramTask   = Param{Name: "task", MaxLen: 18, Pattern: taskRE, ID: true, Help: "muster task id the flow posts its result on"}
 	paramThread = Param{Name: "thread", MaxLen: 120, Pattern: threadRE, Help: "Muse side-chat title (default: the main chat)"}
 )
 

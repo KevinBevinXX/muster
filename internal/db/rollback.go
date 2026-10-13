@@ -55,6 +55,10 @@ const flowJobsMigrationVersion = 12
 // security. Same treatment as 0008 and 0011.
 const pushSubscriptionsMigrationVersion = 13
 
+// flowRequestsMigrationVersion is 0014: browser flows' agent requests, owned
+// and under the same row-level security; same treatment again.
+const flowRequestsMigrationVersion = 14
+
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the
 // principal, the role and its grants — and 0008's for mirror_tokens when that
@@ -65,12 +69,13 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		return err
 	}
 	ctx = asMigrator(ctx)
-	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasPushSubscriptions bool
+	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasPushSubscriptions, hasFlowRequests bool
 	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.mirror_tokens') IS NOT NULL,
 		to_regclass('public.user_credentials') IS NOT NULL,
 		to_regclass('public.flow_jobs') IS NOT NULL,
-		to_regclass('public.push_subscriptions') IS NOT NULL`).Scan(&hasMirrorTokens, &hasUserCredentials,
-		&hasFlowJobs, &hasPushSubscriptions); err != nil {
+		to_regclass('public.push_subscriptions') IS NOT NULL,
+		to_regclass('public.flow_requests') IS NOT NULL`).Scan(&hasMirrorTokens, &hasUserCredentials,
+		&hasFlowJobs, &hasPushSubscriptions, &hasFlowRequests); err != nil {
 		return fmt.Errorf("rls on: %w", err)
 	}
 	applied := false
@@ -78,7 +83,8 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		if m.version != rlsMigrationVersion && !(m.version == mirrorTokensMigrationVersion && hasMirrorTokens) &&
 			!(m.version == userCredentialsMigrationVersion && hasUserCredentials) &&
 			!(m.version == flowJobsMigrationVersion && hasFlowJobs) &&
-			!(m.version == pushSubscriptionsMigrationVersion && hasPushSubscriptions) {
+			!(m.version == pushSubscriptionsMigrationVersion && hasPushSubscriptions) &&
+			!(m.version == flowRequestsMigrationVersion && hasFlowRequests) {
 			continue
 		}
 		tx, err := pool.Begin(ctx)

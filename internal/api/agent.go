@@ -13,6 +13,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/notes"
 )
 
@@ -230,7 +231,9 @@ const agentSystemPrompt = `You are a muster worker agent. You have native tools 
 // whose MCP flag is set. A tool added for one transport is therefore added for
 // the other by setting a flag, never by copying a definition.
 //
-// 🔴 MCP IS AN EXPLICIT, PER-TOOL OPT-IN, AND ONLY THE CONNECTOR TOOLS HAVE IT.
+// 🔴 MCP IS AN EXPLICIT, PER-TOOL OPT-IN: THE CONNECTOR TOOLS AND THE TWO
+// BROWSER-FLOW TOOLS HAVE IT (the flow tools only FILE a request the owner
+// must approve; flow_tools.go).
 // /mcp is served on the connect listener — the ONE muster port a claude-code
 // pod's network policy lets it reach — and that listener's contract is "the
 // connector surface and nothing else" (OnlyConnectSurface). The other tools stay
@@ -269,6 +272,13 @@ func (s *Server) agentTools() []agentTool {
 	}
 	if s.ext.Connectors != nil {
 		for _, d := range connectorToolDefs() {
+			tools = append(tools, agentTool{def: d, mcp: true})
+		}
+	}
+	// Browser flows (flow_tools.go): MCP too — any agent may ASK; only its
+	// owner's approval on /flows makes anything run.
+	if s.ext.Flows != nil {
+		for _, d := range flowToolDefs() {
 			tools = append(tools, agentTool{def: d, mcp: true})
 		}
 	}
@@ -332,6 +342,10 @@ func (s *Server) AgentInstructions(a agents.Agent) string {
 	if s.ext.Connectors != nil {
 		b += "\n\nTo use an external platform's API (e.g. GitHub), ask for its connector with connector_request, wait with connector_status, then call it through muster's proxy: " +
 			ProxyRecipe("<connector>", "<host>") + " You never see the credential."
+	}
+	if s.ext.Flows != nil {
+		b += "\n\nTo have your owner's logged-in browser run a named flow (" + strings.Join(flows.Names(), ", ") +
+			"), call browser_flow_request; your owner approves each run in muster, then poll browser_flow_status."
 	}
 	b += "\n\nWhen asked what you can do, describe ONLY these real capabilities: your task tools (above), reading/writing files + git + shell in your workspace" +
 		". Do NOT claim messaging (Signal/Telegram/WhatsApp/Discord), paired devices/cameras/location, image/video generation, web browsing, or calendar/email — you do not have those here."
@@ -431,6 +445,10 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		var in struct{ Name, Reason string }
 		_ = arg(&in)
 		return s.toolConnectorRequest(ctx, a, in.Name, in.Reason)
+	case "browser_flow_request":
+		return s.toolFlowRequest(ctx, a, arguments)
+	case "browser_flow_status":
+		return s.toolFlowStatus(ctx, a, arguments)
 	case "connector_status":
 		var in struct {
 			Name        string `json:"name"`

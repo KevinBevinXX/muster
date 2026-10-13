@@ -264,7 +264,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// Browser flows (migration 0012): the owner-scoped job queue and the
 		// per-host runner tokens. Always on with a database: with no runner
 		// token minted, nothing ever claims a job and each one expires.
-		ext.Flows = flows.NewPG(pool)
+		ext.Flows = flows.NewPG(pool).WithAgentDenyWords(cfg.FlowAgentDenyWords)
 
 		if len(cfg.ConnectorEncKey) > 0 {
 			cs, err := connectors.NewPG(pool, cfg.ConnectorEncKey)
@@ -932,6 +932,20 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"no mirrored session is listed and the plugin's UI is not drawn", envMirror, mirror.ConnectPath)
 	}
 
+	// The agent door to browser flows. The deployment's own names are
+	// configuration, and their ABSENCE is a state an operator must be told
+	// about: the screen then runs on its generic patterns alone. Non-fatal —
+	// the owner's approval of the visible text is the control either way.
+	if n := len(a.cfg.FlowAgentDenyWords); n > 0 {
+		l.Printf("browser-flow agent screen: %d deployment name(s) from %s are refused in agent-composed "+
+			"flow text, on top of the generic patterns (a heuristic; the owner's approval on /flows is the gate)",
+			n, envFlowAgentDenyWords)
+	} else {
+		l.Printf("WARNING — browser-flow agent screen: %s is UNSET, so agent-composed flow text is screened by "+
+			"the GENERIC patterns only (addresses, host names, token shapes) and NOT for this deployment's own "+
+			"cluster/host/project names. Set it to a comma-separated list. The owner's approval on /flows is "+
+			"still required for every run", envFlowAgentDenyWords)
+	}
 	a.logMemoRelayBanner(ext)
 
 	if ext.GitHub != nil {

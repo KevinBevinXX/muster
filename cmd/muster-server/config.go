@@ -94,6 +94,10 @@ const (
 	// Off, GET /mirror/connect answers 404 and nothing mirrored is listed.
 	envMirror = "MUSTER_MIRROR"
 
+	// Browser flows: the deployment's own infrastructure names (comma-separated)
+	// that an AGENT's browser-flow text may not carry (internal/flows
+	// AgentTextRefusal). Configuration, not source: this repository is public.
+	envFlowAgentDenyWords = "MUSTER_FLOW_AGENT_DENY_WORDS"
 	// The cairn memo relay (internal/memorelay): the memo listener's base URL
 	// and the ONE read-only credential muster reads live memos with. The token
 	// alone decides whether the relay runs — see config.validate.
@@ -355,6 +359,8 @@ type config struct {
 	// Mirror turns the mirrored-sessions plugin on (MUSTER_MIRROR=1).
 	Mirror bool
 
+	// FlowAgentDenyWords is MUSTER_FLOW_AGENT_DENY_WORDS, split on commas.
+	FlowAgentDenyWords []string
 	// MemoURL and MemoToken are the cairn memo listener the relay reads
 	// (internal/memorelay). The relay runs iff MemoToken is set; MemoURL alone
 	// is the state a deployment sits in before its credential is issued.
@@ -695,6 +701,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		FaroTracing:        envFlag(getenv, envFaroTracing),
 		TagAutoDispatch:    envFlag(getenv, envTagAutoDispatch),
 		Mirror:             envFlag(getenv, envMirror),
+		FlowAgentDenyWords: splitList(getenv(envFlowAgentDenyWords)),
 		MemoURL:            strings.TrimRight(strings.TrimSpace(getenv(envMemoURL)), "/"),
 		MemoToken:          strings.TrimSpace(getenv(envMemoToken)),
 		RouterURL:          strings.TrimSpace(getenv(envRouterURL)),

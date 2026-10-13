@@ -87,7 +87,8 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - flow_jobs, flow_runner_tokens (0012, browser flows' queue and per-host
 //     runner tokens).
 //   - push_subscriptions, push_preferences (0013, muster-native Web Push).
-var ownedAfter0006 = []string{"cc_account_marks", "flow_jobs", "flow_runner_tokens", "mirror_tokens", "push_preferences", "push_subscriptions", "user_credentials"}
+//   - flow_requests (0014, an agent's per-run browser-flow request).
+var ownedAfter0006 = []string{"cc_account_marks", "flow_jobs", "flow_requests", "flow_runner_tokens", "mirror_tokens", "push_preferences", "push_subscriptions", "user_credentials"}
 
 // rlsTables is every owned table today: ownedTables plus ownedAfter0006.
 func rlsTables() []string { return append(slices.Clone(ownedTables), ownedAfter0006...) }
@@ -136,6 +137,8 @@ var wantForeignKeys = []string{
 	"invites|invites_created_by_fkey|FOREIGN KEY (created_by) REFERENCES users(id)",
 	"invites|invites_redeemed_by_fkey|FOREIGN KEY (redeemed_by) REFERENCES users(id)",
 	"flow_jobs|flow_jobs_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"flow_requests|flow_requests_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL",
+	"flow_requests|flow_requests_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"flow_runner_tokens|flow_runner_tokens_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"mirror_tokens|mirror_tokens_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"note_attachments|note_attachments_note_owner_fkey|FOREIGN KEY (note_id, owner_id) REFERENCES notes(id, owner_id) ON DELETE CASCADE",

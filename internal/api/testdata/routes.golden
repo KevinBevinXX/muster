@@ -170,6 +170,8 @@ POST /connectors
 POST /connectors/{name}/rotate
 POST /flows/jobs
 POST /flows/jobs/{id}/cancel
+POST /flows/requests/{id}/approve
+POST /flows/requests/{id}/deny
 POST /flows/runner-tokens
 POST /flows/runner-tokens/{id}/revoke
 POST /github/disconnect

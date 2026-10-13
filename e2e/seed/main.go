@@ -53,6 +53,7 @@ var accountsReset = []string{
 	`DELETE FROM notes WHERE owner_id <> 1`,
 	`DELETE FROM github_connection WHERE owner_id <> 1`,
 	`DELETE FROM mirror_tokens WHERE owner_id <> 1`,
+	`DELETE FROM flow_requests WHERE owner_id <> 1`,
 	`DELETE FROM flow_jobs WHERE owner_id <> 1`,
 	`DELETE FROM flow_runner_tokens WHERE owner_id <> 1`,
 	`DELETE FROM audit_log`,
@@ -109,7 +110,7 @@ func run() error {
 		return fmt.Errorf("connect for reset: %w", err)
 	}
 	_, err = owner.Exec(ctx, `TRUNCATE notes, agents, connectors, connector_audit,
-		flow_jobs, flow_runner_tokens RESTART IDENTITY CASCADE`)
+		flow_jobs, flow_runner_tokens, flow_requests RESTART IDENTITY CASCADE`)
 	if err == nil {
 		// The accounts state the gotrue specs change: the admin claim binds
 		// user 1 to a GoTrue login and the invites spec creates members, which

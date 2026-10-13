@@ -339,6 +339,10 @@ var bannerLedger = []string{
 	// that answers 404 when OFF, and an operator installing muster-mirror needs the
 	// log to say which of the two this deployment is before blaming the host.
 	envMirror,
+	// 🔴 THE AGENT-FLOW DENY WORDS ARE LEDGERED: unset, the agent door screens
+	// agent-composed text with the generic patterns only, and that fail-open
+	// state must be a loud line, not a silence (the operator's audit of #76).
+	envFlowAgentDenyWords,
 }
 
 // bannerExempt is every environment variable config.go declares that logBanner
@@ -614,6 +618,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		// The mirror plugin: the banner branches on ext.Mirror, as for connectors.
 		Mirror: true,
 
+		FlowAgentDenyWords: []string{"examplecluster"},
 		// The memo relay: ON needs the credential, a pool and ext.Gateway (both
 		// supplied below), which is memoRelayEnabled's whole predicate.
 		MemoURL:   "http://memos.example.invalid:8125",

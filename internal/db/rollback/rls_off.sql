@@ -84,6 +84,12 @@ BEGIN
         ALTER TABLE public.push_preferences DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.push_preferences ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0014 (browser flows: agent requests), when this schema has it.
+    IF to_regclass('public.flow_requests') IS NOT NULL THEN
+        ALTER TABLE public.flow_requests NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.flow_requests DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.flow_requests ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
 END
 $$;
 
