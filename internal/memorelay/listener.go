@@ -58,11 +58,17 @@ var (
 	ErrBackedOff = errors.New("memorelay: backed off after a refused credential; nothing was sent")
 	// ErrRefused: the listener answered 401 to THIS request. [RefusedBackoff] starts now.
 	ErrRefused = errors.New("memorelay: the listener refused the relay's credential (401)")
-	// ErrScopeUnreadable: the listener's uniform miss for the scope (404), now or within
-	// [UnreadableBackoff].
+	// ErrScopeUnreadable: the listener answered its uniform miss for the scope (404) to THIS
+	// request. The scope's [UnreadableBackoff] starts now.
 	ErrScopeUnreadable = errors.New("memorelay: the listener has no such scope for this credential (404)")
-	// ErrUnreachable: no answer, or a status that is none of 200, 401, 404.
+	// ErrScopeBackedOff: the scope missed earlier and its [UnreadableBackoff] has not passed. No
+	// request was sent.
+	ErrScopeBackedOff = errors.New("memorelay: the scope missed earlier; nothing was sent for it")
+	// ErrUnreachable: no answer at all — the request could not be made, or its answer not read.
 	ErrUnreachable = errors.New("memorelay: the listener could not be reached")
+	// ErrUnexpectedStatus: an answer whose status is none of 200, 401, 404. The listener IS
+	// there, so this says nothing about the next scope.
+	ErrUnexpectedStatus = errors.New("memorelay: the listener answered an unexpected status")
 	// ErrMalformed: a 200 whose body is not the wire contract.
 	ErrMalformed = errors.New("memorelay: the listener's answer is not a memo list")
 )
@@ -129,7 +135,7 @@ func NewListener(baseURL, token string, now func() time.Time) (*Listener, error)
 			Timeout: requestTimeout,
 			// 🔴 NO PROXY AND NO REDIRECTS: the request carries the credential. An environment
 			// proxy would be handed it, and a redirect would carry it to wherever the answer
-			// pointed. A 3xx is therefore an answer that is not 200, 401 or 404: unreachable.
+			// pointed. A 3xx is therefore an answer that is not 200, 401 or 404: an unexpected status.
 			Transport:     &http.Transport{Proxy: nil, MaxIdleConns: 1, IdleConnTimeout: 30 * time.Second},
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
@@ -152,7 +158,7 @@ func (l *Listener) Live(ctx context.Context, scope string) ([]Memo, error) {
 	case now.Before(l.refusedUntil):
 		return nil, ErrBackedOff
 	case now.Before(l.unreadable[scope]):
-		return nil, ErrScopeUnreadable
+		return nil, ErrScopeBackedOff
 	}
 	delete(l.unreadable, scope)
 
@@ -178,7 +184,7 @@ func (l *Listener) Live(ctx context.Context, scope string) ([]Memo, error) {
 		l.unreadable[scope] = l.now().Add(UnreadableBackoff)
 		return nil, ErrScopeUnreadable
 	default:
-		return nil, fmt.Errorf("%w: HTTP %d", ErrUnreachable, resp.StatusCode)
+		return nil, fmt.Errorf("%w: HTTP %d", ErrUnexpectedStatus, resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))

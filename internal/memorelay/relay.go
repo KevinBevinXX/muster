@@ -18,6 +18,11 @@
 // lands in the agent's transcript beside every other message, and waits for an agent that is
 // mid-turn (the runtime's typed `busy` pastes nothing, and the next tick offers it again).
 //
+// ⚠ THAT WAIT IS A PROPERTY OF ONE RUNTIME, SO ONLY ITS AGENTS ARE SERVED. The claude-code
+// runtime (cmd/ccd) refuses a turn that arrives during another before it pastes anything. No
+// other kind is known to, so an agent of any other kind is counted ([ResultKindUnsupported])
+// and sent nothing.
+//
 // What is delivered is a fenced block ([Render]): cairn's own fence, standing line and field
 // replacement, re-applied here because the relay cannot know it is talking to a real listener.
 //
@@ -41,9 +46,10 @@
 // memo simply stops being listed by the listener, so it stops being delivered; one already
 // delivered is not recalled (it is in the agent's context, as on a host).
 //
-// ⚠ ONE PROCESS. Nothing here takes a cross-process claim: two replicas ticking together could
-// each send an agent the same memo before either records it. muster runs one replica (its
-// background loops have no leader lease), and a new process sends nothing for [StartDelay].
+// A delivery runs under the agent's session claim (agents.Store.ClaimKickoff — the claim a first
+// turn holds), and re-reads the agent and the record under it. So a memo never takes the session
+// from a first turn that is still being handed over, and two processes cannot both send one
+// agent the same memo.
 //
 // The wire contract (`GET /client/v1/memos`, the memo's field names) and the block shape were read
 // from cairn at revision f283823: internal/memowire, internal/memo/block.go, predicates.go.
@@ -51,12 +57,15 @@ package memorelay
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -84,27 +93,42 @@ const bookkeepingTimeout = 15 * time.Second
 // The closed vocabulary of what one agent's check came to. Every listed agent is counted under
 // exactly one, each tick.
 const (
-	ResultEligible          = "eligible"
-	ResultForeign           = "foreign"      // a row this deployment's prefix did not produce
-	ResultNotOperator       = "not_operator" // owned by a user the credential does not belong to
-	ResultNotRunning        = "not_running"  // any status but `running`
+	ResultEligible    = "eligible"
+	ResultForeign     = "foreign"      // a row this deployment's prefix did not produce
+	ResultNotOperator = "not_operator" // owned by a user the credential does not belong to
+	ResultNotRunning  = "not_running"  // any status but `running`
+	// ResultKindUnsupported: a kind whose runtime is not KNOWN to refuse a turn while another
+	// is running. Only the claude-code runtime answers a typed `busy` before pasting anything.
+	ResultKindUnsupported   = "kind_unsupported"
 	ResultKickoffOwed       = "kickoff_owed" // its first turn has not been handed over yet
 	ResultNoToken           = "no_token"     // no gateway credential can be derived
 	ResultNoScope           = "no_scope"     // neither the agent nor its task names a repository
 	ResultScopeLookupFailed = "scope_lookup_failed"
 )
 
-// What one delivery came to (beyond [OutcomeDelivered] and [OutcomeUnconfirmed]). The first five
-// send nothing and are offered again next tick.
+// What one delivery came to (beyond [OutcomeDelivered] and [OutcomeUnconfirmed]). Every one but
+// the last sends nothing, and the memos are offered again next tick.
 const (
-	ResultBusy             = "busy"
-	ResultNotReady         = "not_ready"
-	ResultNeverConnected   = "never_connected"
-	ResultUnresolved       = "unresolved"
-	ResultNoSession        = "no_session"
+	ResultBusy           = "busy"
+	ResultNotReady       = "not_ready"
+	ResultUnauthorized   = "unauthorized" // the runtime refused muster's own bearer
+	ResultRejected       = "rejected"     // the runtime refused the request's shape (a typed 400)
+	ResultNeverConnected = "never_connected"
+	ResultUnresolved     = "unresolved"
+	ResultNoSession      = "no_session"
+	// ResultSessionClaimed: another delivery holds the agent's session claim — its first turn
+	// (internal/agentkickoff), or another process's memo turn.
+	ResultSessionClaimed = "session_claimed"
+	// ResultMoved: under the claim, the agent was no longer eligible for this scope, or had
+	// already been sent everything in the batch.
+	ResultMoved            = "moved"
 	ResultLedgerUnreadable = "ledger_unreadable"
 	ResultRecordFailed     = "record_failed"
 )
+
+// claimMargin is how much longer than a turn the agent's session claim lives, so a healthy turn
+// always finishes inside its own claim. The TTL is the crash backstop, not the normal path.
+const claimMargin = 2 * time.Minute
 
 // Source is where live memos come from. [Listener] is the production one.
 type Source interface {
@@ -136,8 +160,6 @@ type Config struct {
 	NamespacePrefix string
 	// Logger is optional. No line it is given ever carries memo text.
 	Logger *log.Logger
-	// TurnTimeout defaults to [DefaultTurnTimeout].
-	TurnTimeout time.Duration
 }
 
 // Relay delivers memos. Build it with [New].
@@ -148,17 +170,16 @@ type Relay struct {
 	src      Source
 	ledger   Ledger
 	prefix   string
-	log      *log.Logger
-	turn     time.Duration
+	// owner names this process in an agent's session claim (hostname/random).
+	owner string
+	log   *log.Logger
+	turn  time.Duration
 
 	wg       sync.WaitGroup
 	done     chan struct{}
 	doneOnce sync.Once
 
 	mu sync.Mutex
-	// inFlight holds the agents a delivery is running for: a second one is not started, since
-	// the runtime would only answer `busy`.
-	inFlight map[int64]bool
 	// sent is what THIS PROCESS has sent each agent. It backs the ledger up: a memo whose record
 	// could not be written is still never sent twice by the process that sent it.
 	sent map[int64]map[Key]bool
@@ -186,17 +207,18 @@ func New(cfg Config) (*Relay, error) {
 	r := &Relay{
 		agents: cfg.Agents, taskRepo: cfg.TaskRepo, gw: cfg.Gateway, src: cfg.Source, ledger: cfg.Ledger,
 		prefix: agents.ResolveNamespacePrefix(cfg.NamespacePrefix),
-		log:    cfg.Logger, turn: cfg.TurnTimeout,
-		done:     make(chan struct{}),
-		inFlight: map[int64]bool{}, sent: map[int64]map[Key]bool{}, said: map[int64]string{},
+		log:    cfg.Logger, turn: DefaultTurnTimeout,
+		done: make(chan struct{}),
+		sent: map[int64]map[Key]bool{}, said: map[int64]string{},
 		counts: map[string]int{},
 	}
 	if r.log == nil {
 		r.log = log.New(io.Discard, "", 0)
 	}
-	if r.turn <= 0 {
-		r.turn = DefaultTurnTimeout
-	}
+	host, _ := os.Hostname()
+	buf := make([]byte, 6)
+	_, _ = rand.Read(buf)
+	r.owner = host + "/memorelay/" + hex.EncodeToString(buf)
 	return r, nil
 }
 
@@ -300,8 +322,16 @@ func (r *Relay) Tick(ctx context.Context) error {
 		r.count(familyUpstream, upstreamResult(err))
 		switch {
 		case err == nil:
-		case errors.Is(err, ErrScopeUnreadable), errors.Is(err, ErrMalformed):
-			// This scope's answer says nothing about the next one's.
+		case errors.Is(err, ErrScopeBackedOff):
+			// Said when the miss happened; nothing was sent now.
+			continue
+		case errors.Is(err, ErrScopeUnreadable), errors.Is(err, ErrMalformed), errors.Is(err, ErrUnexpectedStatus):
+			// An ANSWER about this scope says nothing about the next one's, so the tick goes on
+			// — and it is logged, because each of these stops every delivery on the scope (a
+			// wrong listener URL, a credential not narrowed to it, a clone kept under another
+			// name, a wire the listener changed) with a counter as the only other sign. The
+			// error names a status, a defect or a memo id; never memo text.
+			r.log.Printf("memorelay: scope %s: nothing delivered: %v", scope, err)
 			continue
 		default:
 			if errors.Is(err, ErrRefused) {
@@ -332,8 +362,12 @@ func upstreamResult(err error) string {
 		return "refused"
 	case errors.Is(err, ErrScopeUnreadable):
 		return "scope_unreadable"
+	case errors.Is(err, ErrScopeBackedOff):
+		return "scope_backed_off"
 	case errors.Is(err, ErrMalformed):
 		return "malformed"
+	case errors.Is(err, ErrUnexpectedStatus):
+		return "unexpected_status"
 	default:
 		return "unreachable"
 	}
@@ -350,8 +384,17 @@ func (r *Relay) classify(ctx context.Context, a agents.Agent) (scope, result str
 		return "", ResultNotOperator
 	case a.Status != agents.StatusRunning:
 		return "", ResultNotRunning
+	case agents.ResolveKind(a.Kind) != agents.KindClaudeCode:
+		// 🔴 A MEMO IS NEVER POSTED INTO A RUNTIME THAT MIGHT BE MID-TURN. "Wait for an idle
+		// agent" rests on the runtime REFUSING a second turn before it pastes anything, and
+		// only ccd is known to (a typed 409 `busy`). What any other runtime does with a turn
+		// that arrives during another is not established, so its agents are counted, not sent.
+		return "", ResultKindUnsupported
 	case agents.KickoffOwed(a):
-		// Its first turn is the task itself; a memo must not take the session ahead of it.
+		// Its first turn has not been handed over. ⚠ This excludes only the row that is not
+		// yet STAMPED: a first turn is stamped before it is sent and then re-sent for minutes
+		// while the CLI starts, and through all of that the row reads as kicked off. What
+		// keeps a memo out of THAT window is the session claim deliver takes.
 		return "", ResultKickoffOwed
 	case a.HooksToken == "":
 		return "", ResultNoToken
@@ -394,7 +437,7 @@ func (r *Relay) forget(listed map[int64]bool) {
 		}
 	}
 	for id := range r.sent {
-		if !listed[id] && !r.inFlight[id] {
+		if !listed[id] {
 			delete(r.sent, id)
 		}
 	}
@@ -406,67 +449,55 @@ func (r *Relay) forget(listed map[int64]bool) {
 // 🔴 AN UNREADABLE LEDGER DELIVERS NOTHING. "Could not read what was delivered" is not "nothing
 // was delivered": treating it so would send every live memo again on every tick the database
 // was unwell.
+//
+// ⚠ THERE IS NO IN-PROCESS IN-FLIGHT SET, for internal/agentkickoff's reason: the agent's session
+// claim already excludes a second delivery, in this process and in any other, and a map kept
+// beside it duplicated that for one process only (it was written, and a mutant deleting it
+// survived). A tick that finds an agent still mid-turn starts a goroutine that loses the claim
+// and returns. Pinned by TestAnAgentMidDeliveryIsNotStartedOnAgain.
 func (r *Relay) offer(ctx context.Context, a agents.Agent, scope string, live []Memo) {
-	if len(live) == 0 || !r.begin(a.ID) {
+	if len(live) == 0 {
 		return
 	}
-	started := false
-	defer func() {
-		if !started {
-			r.end(a.ID)
-		}
+	pending, ok := r.pending(ctx, a, scope, live)
+	if !ok || len(pending) == 0 {
+		return
+	}
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		r.deliver(ctx, a, scope, pending)
 	}()
+}
+
+// pending is the live memos a has no record of — in the ledger or in this process's memory —
+// oldest first, at most [MaxPerDelivery]. ok is false when the ledger could not be read.
+func (r *Relay) pending(ctx context.Context, a agents.Agent, scope string, live []Memo) (out []Memo, ok bool) {
 	recorded, err := r.ledger.Delivered(ctx, a.ID)
 	if err != nil {
 		r.count(familyDelivery, ResultLedgerUnreadable)
 		r.log.Printf("memorelay: agent %d (%s): could not read what it was already sent; sending nothing: %v",
 			a.ID, a.Name, err)
-		return
+		return nil, false
 	}
-	var pending []Memo
 	r.mu.Lock()
 	for _, m := range live {
 		k := Key{Scope: scope, ID: m.ID}
 		if !recorded[k] && !r.sent[a.ID][k] {
-			pending = append(pending, m)
+			out = append(out, m)
 		}
 	}
 	r.mu.Unlock()
-	if len(pending) == 0 {
-		return
-	}
-	sort.SliceStable(pending, func(i, j int) bool {
-		if !pending[i].created.Equal(pending[j].created) {
-			return pending[i].created.Before(pending[j].created)
+	sort.SliceStable(out, func(i, j int) bool {
+		if !out[i].created.Equal(out[j].created) {
+			return out[i].created.Before(out[j].created)
 		}
-		return pending[i].ID < pending[j].ID
+		return out[i].ID < out[j].ID
 	})
-	if len(pending) > MaxPerDelivery {
-		pending = pending[:MaxPerDelivery]
+	if len(out) > MaxPerDelivery {
+		out = out[:MaxPerDelivery]
 	}
-	started = true
-	r.wg.Add(1)
-	go func() {
-		defer r.wg.Done()
-		defer r.end(a.ID)
-		r.deliver(ctx, a, scope, pending)
-	}()
-}
-
-func (r *Relay) begin(agentID int64) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.inFlight[agentID] {
-		return false
-	}
-	r.inFlight[agentID] = true
-	return true
-}
-
-func (r *Relay) end(agentID int64) {
-	r.mu.Lock()
-	delete(r.inFlight, agentID)
-	r.mu.Unlock()
+	return out, true
 }
 
 // deliver runs one turn carrying batch and records it.
@@ -482,6 +513,50 @@ func (r *Relay) deliver(parent context.Context, a agents.Agent, scope string, ba
 	}
 	ctx, cancel := context.WithTimeout(parent, turn)
 	defer cancel()
+
+	// 🔴 THE AGENT'S SESSION CLAIM IS TAKEN FIRST, AND IT IS THE SAME CLAIM A FIRST TURN HOLDS
+	// (agents.Store.ClaimKickoff). internal/agentkickoff stamps a row kicked-off BEFORE it sends
+	// the first turn and then re-sends it for minutes while the CLI starts; all that time the
+	// row reads as eligible here. A memo that took the session in that window would leave the
+	// first turn answered `busy` — recorded as failed, never retried — and the agent would never
+	// be told its task. The deliverer holds this claim for its whole delivery, so losing it IS
+	// "a first turn is in flight"; and holding it makes a first turn wait for the memo's.
+	//
+	// It is also what makes "once" hold across PROCESSES: two replicas cannot be inside this
+	// section for one agent, and the winner re-reads the row and the ledger below.
+	won, err := r.agents.ClaimKickoff(ctx, a.ID, r.owner, turn+claimMargin)
+	if err != nil || !won {
+		r.count(familyDelivery, ResultSessionClaimed)
+		return
+	}
+	defer func() {
+		rctx, rcancel := context.WithTimeout(context.WithoutCancel(parent), bookkeepingTimeout)
+		defer rcancel()
+		if err := r.agents.ReleaseKickoffClaim(rctx, a.ID, r.owner); err != nil {
+			r.log.Printf("memorelay: agent %d (%s): release the session claim: %v", a.ID, a.Name, err)
+		}
+	}()
+
+	// 🔴 RE-READ UNDER THE CLAIM. The row and the ledger were read before it; a first turn may
+	// have been owed and delivered in between, and another process may have sent this batch.
+	fresh, err := r.agents.Get(ctx, a.ID)
+	if err != nil {
+		r.count(familyDelivery, ResultUnresolved)
+		return
+	}
+	if s, result := r.classify(ctx, fresh); result != ResultEligible || s != scope {
+		r.count(familyDelivery, ResultMoved)
+		return
+	}
+	a = fresh
+	batch, ok := r.pending(ctx, a, scope, batch)
+	if !ok {
+		return
+	}
+	if len(batch) == 0 {
+		r.count(familyDelivery, ResultMoved)
+		return
+	}
 
 	target, err := r.gw.Resolve(ctx, a)
 	if err != nil {
@@ -537,10 +612,17 @@ func (r *Relay) deliver(parent context.Context, a agents.Agent, scope string, ba
 // unsent names a send failure that PROVES nothing was pasted into the agent's session, or ""
 // for success and for every failure that does not prove it.
 //
-//   - a typed 409 `busy` and a typed 503 `not_ready` are the runtime's own refusals, answered
-//     before it pastes anything. Only its typed body sets Type, so an untyped 409 or 503 from
-//     anything else is NOT read as "nothing was sent";
+//   - the runtime's own TYPED refusals — 409 `busy`, 503 `not_ready`, 401 `unauthorized`, and a
+//     400 (`bad_request`, `invalid_input`) — are each answered before it pastes anything. Only
+//     its typed body sets Type, so an untyped 409 or 503 from anything else is NOT read as
+//     "nothing was sent";
 //   - a dial error is a connection that was never opened, so no byte of the request left.
+//
+// ⚠ ONE CASE THIS CANNOT PROVE, AND IT ERRS TOWARDS "MAY HAVE BEEN SENT": a send cancelled
+// while its connection was still being opened surfaces as a bare context error, with no dial
+// error inside it. It is recorded `unconfirmed` and not sent again, so a shutdown that lands
+// while an agent is unreachable can cost that agent those memos. The alternative reading — a
+// cancelled send was never sent — would repeat every turn a redeploy cut off mid-flight.
 func unsent(err error) string {
 	if err == nil {
 		return ""
@@ -552,6 +634,10 @@ func unsent(err error) string {
 			return ResultBusy
 		case rt.Status == http.StatusServiceUnavailable && rt.Type == "not_ready":
 			return ResultNotReady
+		case rt.Status == http.StatusUnauthorized && rt.Type == "unauthorized":
+			return ResultUnauthorized
+		case rt.Status == http.StatusBadRequest && (rt.Type == "bad_request" || rt.Type == "invalid_input"):
+			return ResultRejected
 		}
 		return ""
 	}

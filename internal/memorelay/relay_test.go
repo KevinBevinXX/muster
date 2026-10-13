@@ -28,6 +28,78 @@ type fakeAgents struct {
 	messages []agents.ChatMessage
 	// principals records who each List was made as.
 	principals []authz.Principal
+	// claims is each agent's session claim (agents.Store.ClaimKickoff): owner by agent id.
+	claims map[int64]string
+	// onGet, when set, runs inside Get — "something happened between the list and the claim".
+	onGet func(id int64)
+	// getOverride, when set for an id, is what Get returns instead of the listed row.
+	getOverride map[int64]agents.Agent
+}
+
+func (f *fakeAgents) Get(_ context.Context, id int64) (agents.Agent, error) {
+	f.mu.Lock()
+	hook := f.onGet
+	f.mu.Unlock()
+	if hook != nil {
+		hook(id)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if a, ok := f.getOverride[id]; ok {
+		return a, nil
+	}
+	for _, a := range f.rows {
+		if a.ID == id {
+			return a, nil
+		}
+	}
+	return agents.Agent{}, errors.New("no such agent")
+}
+
+// ClaimKickoff wins iff the claim is unheld, exactly as the real conditional UPDATE does.
+func (f *fakeAgents) ClaimKickoff(_ context.Context, id int64, owner string, _ time.Duration) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.claims == nil {
+		f.claims = map[int64]string{}
+	}
+	if f.claims[id] != "" {
+		return false, nil
+	}
+	f.claims[id] = owner
+	return true, nil
+}
+
+// ReleaseKickoffClaim clears the claim only for its owner, and — like pgx — refuses a done ctx.
+func (f *fakeAgents) ReleaseKickoffClaim(ctx context.Context, id int64, owner string) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.claims[id] == owner {
+		delete(f.claims, id)
+	}
+	return nil
+}
+
+func (f *fakeAgents) claimOf(id int64) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.claims[id]
+}
+
+func (f *fakeAgents) setClaim(id int64, owner string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.claims == nil {
+		f.claims = map[int64]string{}
+	}
+	if owner == "" {
+		delete(f.claims, id)
+	} else {
+		f.claims[id] = owner
+	}
 }
 
 func (f *fakeAgents) List(ctx context.Context) ([]agents.Agent, error) {
@@ -100,6 +172,8 @@ type fakeGateway struct {
 	// block, when set, is waited on inside Send (after the turn is recorded) until the Send's
 	// own context ends: a turn in flight when the process is told to stop.
 	block bool
+	// duringSend, when set, runs inside every Send that pastes.
+	duringSend func(agent string)
 }
 
 // Resolve notes which agent each session belongs to. agentgateway.Target's fields are unexported
@@ -120,11 +194,16 @@ func (g *fakeGateway) Send(ctx context.Context, _ agentgateway.Target, sessionKe
 	name := g.names[sessionKey]
 	err := g.fail[name]
 	block := g.block
-	if unsent(err) == "" {
+	hook := g.duringSend
+	pasted := unsent(err) == ""
+	if pasted {
 		// The runtime pasted it (or may have): this is what "the agent saw" means below.
 		g.sends = append(g.sends, sentTurn{agent: name, session: sessionKey, message: message})
 	}
 	g.mu.Unlock()
+	if pasted && hook != nil {
+		hook(name)
+	}
 	if block {
 		<-ctx.Done()
 		return "", ctx.Err()
@@ -206,10 +285,14 @@ func (l *memLedger) snapshot() []ledgerRow {
 
 const prefix = "fleet-"
 
-// agent is an operator-owned, running, kicked-off agent dispatched for repo.
+// agent is an operator-owned, running, kicked-off claude-code agent working on repo.
+//
+// ⚠ The real claude-code kind refuses a row that names a repository (its scope comes from its
+// task); the fixture names one directly so most tests need no task. The task path has its own
+// test.
 func agent(id int64, name, repo string) agents.Agent {
 	return agents.Agent{ID: id, Name: name, Namespace: prefix + name, Repo: repo, OwnerID: authz.OperatorUserID,
-		Status: agents.StatusRunning, HooksToken: "hooks-" + name, KickedOff: true, Kind: agents.KindGateway}
+		Status: agents.StatusRunning, HooksToken: "hooks-" + name, KickedOff: true, Kind: agents.KindClaudeCode}
 }
 
 type world struct {
@@ -415,16 +498,26 @@ func TestAnUnreachableListenerEndsTheTickButAMissedScopeDoesNot(t *testing.T) {
 	w := newWorld(agent(1, "ada", "example/aaa"), agent(2, "bob", "example/bbb"), agent(3, "cy", "example/ccc"))
 	w.src.set("ccc", m(t, 7, "ccc", "2000-01-02T03:04:05Z"))
 
-	w.src.errs["aaa"] = ErrScopeUnreadable
-	w.src.errs["bbb"] = fmt.Errorf("%w: a later release's shape", ErrMalformed)
+	for _, answer := range []error{
+		ErrScopeUnreadable,
+		ErrScopeBackedOff,
+		fmt.Errorf("%w: a later release's shape", ErrMalformed),
+		fmt.Errorf("%w: HTTP 500", ErrUnexpectedStatus),
+	} {
+		w.src.errs["aaa"], w.src.errs["bbb"] = answer, answer
+		w.src.asked = nil
+		w.gw.sends = nil
+		w.ledger.rows = nil
+		r := w.relay(t)
+		tick(t, r)
+		if got := w.src.askedFor(); !reflect.DeepEqual(got, []string{"aaa", "bbb", "ccc"}) {
+			t.Fatalf("%v: asked for %v, want all three scopes in order", answer, got)
+		}
+		if got := w.gw.sent(); len(got) != 1 || got[0].agent != "cy" {
+			t.Fatalf("%v: turns = %+v, want cy's alone", answer, got)
+		}
+	}
 	r := w.relay(t)
-	tick(t, r)
-	if got := w.src.askedFor(); !reflect.DeepEqual(got, []string{"aaa", "bbb", "ccc"}) {
-		t.Fatalf("asked for %v, want all three scopes in order", got)
-	}
-	if got := w.gw.sent(); len(got) != 1 || got[0].agent != "cy" {
-		t.Fatalf("turns = %+v, want cy's alone", got)
-	}
 
 	w.src.errs["aaa"] = fmt.Errorf("%w: connection refused", ErrUnreachable)
 	w.src.asked = nil
@@ -506,8 +599,14 @@ func TestOnlyTheOperatorsRunningKickedOffAgentsAreSentMemos(t *testing.T) {
 	// Never kicked off and nothing pending: a blank agent a person chats with. It IS eligible.
 	blank := agent(9, "blank", "example/widgets")
 	blank.KickedOff = false
+	// Any kind but claude-code: nothing says its runtime refuses a turn while another runs.
+	gatewayKind := agent(10, "gatewaykind", "example/widgets")
+	gatewayKind.Kind = agents.KindGateway
+	defaultKind := agent(11, "defaultkind", "example/widgets")
+	defaultKind.Kind = "" // reads as the gateway kind
 
-	w := newWorld(agent(1, "ada", "example/widgets"), other, unowned, foreign, stopped, errored, owed, tokenless, blank)
+	w := newWorld(agent(1, "ada", "example/widgets"), other, unowned, foreign, stopped, errored, owed, tokenless, blank,
+		gatewayKind, defaultKind)
 	w.src.set("widgets", m(t, 7, "widgets", "2000-01-02T03:04:05Z"))
 	r := w.relay(t)
 	tick(t, r)
@@ -521,7 +620,7 @@ func TestOnlyTheOperatorsRunningKickedOffAgentsAreSentMemos(t *testing.T) {
 		t.Fatalf("agents sent the memo = %v, want %v", got, want)
 	}
 	want := map[string]int{"agent/eligible": 2, "agent/not_operator": 2, "agent/foreign": 1, "agent/not_running": 2,
-		"agent/kickoff_owed": 1, "agent/no_token": 1}
+		"agent/kickoff_owed": 1, "agent/no_token": 1, "agent/kind_unsupported": 2}
 	counts := r.Counts()
 	for k, n := range want {
 		if counts[k] != n {
@@ -580,6 +679,12 @@ func TestASendThatPastedNothingIsOfferedAgainAndOneThatMayHaveIsNot(t *testing.T
 		"typed busy":           {busyErr(), true, ResultBusy},
 		"typed not_ready":      {&agents.RuntimeError{Status: 503, Type: "not_ready"}, true, ResultNotReady},
 		"a dial that failed":   {fmt.Errorf("post: %w", dial), true, ResultNeverConnected},
+		"typed unauthorized":   {&agents.RuntimeError{Status: 401, Type: "unauthorized"}, true, ResultUnauthorized},
+		"typed invalid_input":  {&agents.RuntimeError{Status: 400, Type: "invalid_input"}, true, ResultRejected},
+		"typed bad_request":    {&agents.RuntimeError{Status: 400, Type: "bad_request"}, true, ResultRejected},
+		"an UNTYPED 401":       {&agents.RuntimeError{Status: 401}, false, OutcomeUnconfirmed},
+		"an UNTYPED 400":       {&agents.RuntimeError{Status: 400}, false, OutcomeUnconfirmed},
+		"a cancelled send":     {context.Canceled, false, OutcomeUnconfirmed},
 		"an UNTYPED 409":       {&agents.RuntimeError{Status: 409}, false, OutcomeUnconfirmed},
 		"an UNTYPED 503":       {&agents.RuntimeError{Status: 503}, false, OutcomeUnconfirmed},
 		"busy on another code": {&agents.RuntimeError{Status: 500, Type: "busy"}, false, OutcomeUnconfirmed},
@@ -796,6 +901,138 @@ func TestTwoScopesNeverSuppressEachOther(t *testing.T) {
 	tick(t, w.relay(t))
 	if got := len(w.gw.sent()); got != 2 {
 		t.Fatalf("%d turn(s), want 2: one per scope", got)
+	}
+}
+
+// ---- the session claim ------------------------------------------------------------------------
+
+// TestAMemoNeverTakesTheSessionFromAFirstTurnStillBeingHandedOver: internal/agentkickoff stamps a
+// row kicked-off BEFORE it sends the first turn, then re-sends it for minutes while the CLI
+// starts. Through all of that the row reads eligible — running, stamped, with a token. A memo
+// sent then would leave the first turn answered `busy`, recorded as failed and never retried.
+// The deliverer holds the agent's claim for its whole delivery; the relay must lose to it.
+func TestAMemoNeverTakesTheSessionFromAFirstTurnStillBeingHandedOver(t *testing.T) {
+	midKickoff := agent(1, "ada", "example/widgets")
+	midKickoff.PendingNote = "the task" // stamped, first turn in flight
+	w := newWorld(midKickoff)
+	w.src.set("widgets", m(t, 7, "widgets", "2000-01-02T03:04:05Z"))
+	w.store.setClaim(1, "kickoff-deliverer")
+	r := w.relay(t)
+
+	for i := 0; i < 3; i++ {
+		tick(t, r)
+	}
+	if got := len(w.gw.sent()); got != 0 {
+		t.Fatalf("%d memo turn(s) reached the agent while its first turn held the session claim, want 0", got)
+	}
+	if rows := w.ledger.snapshot(); len(rows) != 0 {
+		t.Fatalf("a memo that was not sent was recorded: %+v", rows)
+	}
+	if n := r.Counts()["delivery/session_claimed"]; n != 3 {
+		t.Fatalf("counts = %v, want delivery/session_claimed 3", r.Counts())
+	}
+	if got := w.store.claimOf(1); got != "kickoff-deliverer" {
+		t.Fatalf("the first turn's claim is now %q: the relay released or overwrote a claim it never held", got)
+	}
+
+	w.store.setClaim(1, "") // the first turn has finished
+	tick(t, r)
+	if got := len(w.gw.sent()); got != 1 {
+		t.Fatalf("control: once the claim is free the memo must be delivered; turns = %d", got)
+	}
+}
+
+// TestADeliveryHoldsTheSessionClaimForTheTurnAndReleasesIt: held while the turn runs (so a first
+// turn owed meanwhile waits), released afterwards whatever the turn came to — including a turn
+// cut off by shutdown, whose release must not ride the cancelled context.
+func TestADeliveryHoldsTheSessionClaimForTheTurnAndReleasesIt(t *testing.T) {
+	for name, fail := range map[string]error{"delivered": nil, "busy": busyErr(), "unconfirmed": errors.New("unexpected EOF")} {
+		t.Run(name, func(t *testing.T) {
+			w := newWorld(agent(1, "ada", "example/widgets"))
+			w.src.set("widgets", m(t, 7, "widgets", "2000-01-02T03:04:05Z"))
+			w.gw.setFail("ada", fail)
+			var during string
+			w.gw.duringSend = func(string) { during = w.store.claimOf(1) }
+			tick(t, w.relay(t))
+			if fail == nil || unsent(fail) == "" {
+				if !strings.Contains(during, "/memorelay/") {
+					t.Fatalf("during the turn the agent's claim was %q, want this relay's", during)
+				}
+			}
+			if got := w.store.claimOf(1); got != "" {
+				t.Fatalf("after the delivery the claim is still held by %q", got)
+			}
+		})
+	}
+
+	w := newWorld(agent(1, "ada", "example/widgets"))
+	w.src.set("widgets", m(t, 7, "widgets", "2000-01-02T03:04:05Z"))
+	w.gw.block = true
+	r := w.relay(t)
+	ctx, cancel := context.WithCancel(authz.Operator(context.Background()))
+	if err := r.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(w.gw.sent()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if w.store.claimOf(1) == "" {
+		t.Fatal("setup: the claim is not held while the turn is in flight")
+	}
+	cancel()
+	r.Wait()
+	if got := w.store.claimOf(1); got != "" {
+		t.Fatalf("after a shutdown-cancelled turn the claim is still held by %q", got)
+	}
+}
+
+// TestTheAgentAndTheRecordAreReadAgainUnderTheClaim: both were read before the claim was taken.
+// Between the two, a first turn can have become owed, and another process can have sent the batch.
+func TestTheAgentAndTheRecordAreReadAgainUnderTheClaim(t *testing.T) {
+	t.Run("the agent came to owe a first turn", func(t *testing.T) {
+		w := newWorld(agent(1, "ada", "example/widgets"))
+		w.src.set("widgets", m(t, 7, "widgets", "2000-01-02T03:04:05Z"))
+		owed := agent(1, "ada", "example/widgets")
+		owed.KickedOff, owed.PendingNote = false, "the task"
+		w.store.getOverride = map[int64]agents.Agent{1: owed}
+		r := w.relay(t)
+		tick(t, r)
+		if len(w.gw.sent()) != 0 || r.Counts()["delivery/moved"] != 1 {
+			t.Fatalf("sent=%d counts=%v; want nothing sent and delivery/moved 1", len(w.gw.sent()), r.Counts())
+		}
+	})
+	t.Run("the agent moved to another scope", func(t *testing.T) {
+		w := newWorld(agent(1, "ada", "example/widgets"))
+		w.src.set("widgets", m(t, 7, "widgets", "2000-01-02T03:04:05Z"))
+		w.store.getOverride = map[int64]agents.Agent{1: agent(1, "ada", "example/gadgets")}
+		r := w.relay(t)
+		tick(t, r)
+		if len(w.gw.sent()) != 0 || r.Counts()["delivery/moved"] != 1 {
+			t.Fatalf("sent=%d counts=%v; want nothing sent and delivery/moved 1", len(w.gw.sent()), r.Counts())
+		}
+	})
+	t.Run("another process sent the batch", func(t *testing.T) {
+		w := newWorld(agent(1, "ada", "example/widgets"))
+		w.src.set("widgets", m(t, 7, "widgets", "2000-01-02T03:04:05Z"), m(t, 8, "widgets", "2000-01-02T04:00:00Z"))
+		once := sync.Once{}
+		w.store.onGet = func(id int64) {
+			once.Do(func() {
+				_ = w.ledger.Record(context.Background(), agents.Agent{ID: id}, "widgets", []int64{7}, OutcomeDelivered)
+			})
+		}
+		tick(t, w.relay(t))
+		sent := w.gw.sent()
+		if len(sent) != 1 || !reflect.DeepEqual(memoIDs(sent[0].message), []int64{8}) {
+			t.Fatalf("turns = %d; want one turn carrying memo 8 alone (7 was sent elsewhere meanwhile)", len(sent))
+		}
+	})
+	// Control: with nothing changing in between, the same world delivers both.
+	w := newWorld(agent(1, "ada", "example/widgets"))
+	w.src.set("widgets", m(t, 7, "widgets", "2000-01-02T03:04:05Z"), m(t, 8, "widgets", "2000-01-02T04:00:00Z"))
+	tick(t, w.relay(t))
+	if sent := w.gw.sent(); len(sent) != 1 || !reflect.DeepEqual(memoIDs(sent[0].message), []int64{7, 8}) {
+		t.Fatalf("control: turns = %+v, want one carrying 7 and 8", sent)
 	}
 }
 

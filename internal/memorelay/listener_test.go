@@ -243,9 +243,12 @@ func TestAMissedScopeIsNotAskedAgainButOtherScopesAre(t *testing.T) {
 	c := newClock()
 	l := started(t, s, c)
 
-	for i := 0; i < 3; i++ {
-		if _, err := l.Live(context.Background(), "gone"); !errors.Is(err, ErrScopeUnreadable) {
-			t.Fatalf("call %d for the missed scope: err = %v, want ErrScopeUnreadable", i, err)
+	if _, err := l.Live(context.Background(), "gone"); !errors.Is(err, ErrScopeUnreadable) {
+		t.Fatalf("the missed call: err = %v, want ErrScopeUnreadable", err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := l.Live(context.Background(), "gone"); !errors.Is(err, ErrScopeBackedOff) {
+			t.Fatalf("call %d after the miss: err = %v, want ErrScopeBackedOff (nothing sent)", i, err)
 		}
 	}
 	if n := s.requests.Load(); n != 1 {
@@ -359,8 +362,8 @@ func TestARedirectIsNotFollowed(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.advance(StartDelay)
-	if _, err := l.Live(context.Background(), "widgets"); !errors.Is(err, ErrUnreachable) {
-		t.Fatalf("a redirect: err = %v, want ErrUnreachable", err)
+	if _, err := l.Live(context.Background(), "widgets"); !errors.Is(err, ErrUnexpectedStatus) {
+		t.Fatalf("a redirect: err = %v, want ErrUnexpectedStatus", err)
 	}
 	if n := elsewhere.Load(); n != 0 {
 		t.Fatalf("the redirect was followed %d time(s): the credential left for another host", n)
@@ -368,18 +371,30 @@ func TestARedirectIsNotFollowed(t *testing.T) {
 }
 
 // TestAServerErrorBacksOffNobody: a 5xx says nothing about the credential, so the next call asks
-// again.
+// again. And a listener that cannot be dialled at all is the OTHER error: unreachable.
 func TestAServerErrorBacksOffNobody(t *testing.T) {
 	s := newStub(t, func(string) (int, string) { return 500, `{"error":"internal"}` })
 	c := newClock()
 	l := started(t, s, c)
 	for i := 0; i < 2; i++ {
-		if _, err := l.Live(context.Background(), "widgets"); !errors.Is(err, ErrUnreachable) {
-			t.Fatalf("err = %v, want ErrUnreachable", err)
+		if _, err := l.Live(context.Background(), "widgets"); !errors.Is(err, ErrUnexpectedStatus) {
+			t.Fatalf("err = %v, want ErrUnexpectedStatus", err)
 		}
 	}
 	if n := s.requests.Load(); n != 2 {
 		t.Fatalf("%d request(s), want 2", n)
+	}
+
+	dead := httptest.NewServer(http.NotFoundHandler())
+	url := dead.URL
+	dead.Close()
+	gone, err := NewListener(url, "tok-fixture", c.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.advance(StartDelay)
+	if _, err := gone.Live(context.Background(), "widgets"); !errors.Is(err, ErrUnreachable) || errors.Is(err, ErrUnexpectedStatus) {
+		t.Fatalf("a listener that is not there: err = %v, want ErrUnreachable", err)
 	}
 }
 

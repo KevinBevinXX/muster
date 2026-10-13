@@ -191,7 +191,7 @@ var (
 	}, []string{"result"})
 	MemoRelayUpstream = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "muster_memo_relay_upstream_total",
-		Help: "Memo relay: calls to the cairn memo listener, by result ONLY — including the ones NOT sent (not_yet, backed_off).",
+		Help: "Memo relay: calls to the cairn memo listener, by result ONLY — including the ones NOT sent (not_yet, backed_off, scope_backed_off).",
 	}, []string{"result"})
 	MemoRelayDeliveries = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "muster_memo_relay_deliveries_total",
