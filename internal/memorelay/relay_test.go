@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"reflect"
 	"sort"
@@ -499,6 +500,27 @@ func TestARefusedCredentialEndsTheTickAndEveryLaterOne(t *testing.T) {
 	tick(t, r)
 	if n := s.requests.Load(); n != 2 {
 		t.Fatalf("after the backoff: %d request(s) in all, want 2 (one more, then refused again)", n)
+	}
+}
+
+// TestARefusalTellsTheOperatorToRestartOnce pins the WHOLE line a 401 logs. It is the instruction
+// an operator acts on with a shared lockout bucket at stake, so a reword must be a decision.
+func TestARefusalTellsTheOperatorToRestartOnce(t *testing.T) {
+	var buf strings.Builder
+	w := newWorld(agent(1, "ada", "example/widgets"))
+	w.src.errs["widgets"] = ErrRefused
+	r, err := New(Config{Agents: w.store, Gateway: w.gw, Source: w.src, Ledger: w.ledger, NamespacePrefix: prefix,
+		TaskRepo: func(context.Context, int64) (string, error) { return "", nil }, Logger: log.New(&buf, "", 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tick(t, r)
+	want := "memorelay: the listener REFUSED the relay's credential; nothing is asked of it for 15m0s. " +
+		"The token is read once, at start: fix the Secret behind MUSTER_MEMO_TOKEN, then restart muster ONCE. " +
+		"Until then this process re-sends the same token every 15m0s. Never restart in a loop: each refused " +
+		"request counts toward the listener's lockout of this node.\n"
+	if got := buf.String(); got != want {
+		t.Fatalf("the refusal logged:\n%q\nwant:\n%q", got, want)
 	}
 }
 
