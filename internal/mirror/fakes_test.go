@@ -21,11 +21,23 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/mirrorhost"
 	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/stepup"
 )
 
-// asUser is a request principal for user id (the shape requireSession attaches).
+// asUser is a request principal for user id (the shape requireSession attaches),
+// signed in just now — so an interactive attach passes the step-up gate.
+// asStaleUser is the same session signed in longer ago than stepup.MaxAge.
 func asUser(id int64) context.Context {
-	return authz.WithPrincipal(context.Background(), authz.Principal{UserID: id, Role: authz.RoleAdmin, Via: authz.ViaSession})
+	return signedInAt(id, time.Now())
+}
+
+func asStaleUser(id int64) context.Context {
+	return signedInAt(id, time.Now().Add(-stepup.MaxAge-time.Minute))
+}
+
+func signedInAt(id int64, at time.Time) context.Context {
+	ctx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: id, Role: authz.RoleAdmin, Via: authz.ViaSession})
+	return stepup.WithAuthTime(ctx, at)
 }
 
 // memStore is mirror.Store in memory, with mirror_tokens' RLS semantics played:

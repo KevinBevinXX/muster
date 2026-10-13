@@ -14,8 +14,9 @@
 // the shared secret a public key. Verify refuses any header whose alg is not the
 // literal "HS256" BEFORE it computes anything (TestVerifyRejectsEveryOtherAlg).
 //
-// No JWT library is used: the format muster accepts is one algorithm and five
-// claims, and a library's flexibility is exactly what Verify must not have.
+// No JWT library is used: the format muster accepts is one algorithm and a
+// handful of claims, and a library's flexibility is exactly what Verify must not
+// have.
 package gotrue
 
 import (
@@ -88,6 +89,72 @@ type Claims struct {
 	// SessionID is GoTrue's session the token belongs to. muster's own logout
 	// revocation is keyed on it (see internal/api's sessionRevocations).
 	SessionID string `json:"session_id,omitempty"`
+	// AMR is how — and WHEN — the session's user authenticated: GoTrue's
+	// `amr` claim, one entry per method used ({"method":"password",
+	// "timestamp":…}). It is what the step-up gate reads (AuthenticatedAt).
+	AMR AMR `json:"amr,omitempty"`
+}
+
+// AMREntry is one authentication event of a session: the method ("password",
+// "otp", a passkey/webauthn method, …) and the unix second it happened.
+type AMREntry struct {
+	Method    string `json:"method"`
+	Timestamp int64  `json:"timestamp"`
+}
+
+// AMR is GoTrue's `amr` claim.
+//
+// MEASURED on GoTrue v2.189.0 and again on v2.197.0: a password grant mints
+// `[{"method":"password","timestamp":<sign-in second>}]`, and a refresh grant
+// carries the SAME entry forward unchanged while `iat` moves on — so the
+// timestamp is when the person last proved who they are, not when this token
+// was minted. A new sign-in is a new session with a new timestamp.
+//
+// 🔴 PARSING IT NEVER FAILS A TOKEN. Verify decodes the whole payload in one
+// json.Unmarshal; an `amr` shaped differently from what was measured (RFC 8176's
+// plain strings, a future GoTrue's extra fields, garbage) must not turn every
+// signed-in browser into ErrMalformed — i.e. sign everyone out. Anything that is
+// not an object with a positive integer timestamp is dropped, and an absent or
+// unreadable claim is simply an empty AMR: "authentication time unknown", which
+// the step-up gate treats as NOT fresh (fail closed for that gate only).
+type AMR []AMREntry
+
+// UnmarshalJSON keeps every well-formed entry and drops the rest; it never
+// returns an error.
+func (a *AMR) UnmarshalJSON(b []byte) error {
+	*a = nil
+	var raw []json.RawMessage
+	if json.Unmarshal(b, &raw) != nil {
+		return nil
+	}
+	for _, r := range raw {
+		var e AMREntry
+		if json.Unmarshal(r, &e) != nil || e.Timestamp <= 0 {
+			continue
+		}
+		*a = append(*a, e)
+	}
+	return nil
+}
+
+// AuthenticatedAt is the most recent authentication the token records — the
+// latest `amr` timestamp, whatever its method — and false when it records none.
+//
+// ANY METHOD COUNTS, by design: the gate asks "did this person prove who they
+// are recently", and a passkey (webauthn) sign-in answers that as well as a
+// password does. A method muster has never heard of still counts, because GoTrue
+// signed it.
+func (c Claims) AuthenticatedAt() (time.Time, bool) {
+	var latest int64
+	for _, e := range c.AMR {
+		if e.Timestamp > latest {
+			latest = e.Timestamp
+		}
+	}
+	if latest == 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(latest, 0), true
 }
 
 // Verifier checks access tokens against one secret, issuer and audience.

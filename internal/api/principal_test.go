@@ -79,6 +79,8 @@ var publicRoutes = []string{
 var routeVias = map[authz.Via][]string{
 	authz.ViaSession: {
 		"GET /account",
+		// The step-up confirm (stepup.go): the SESSION's user, re-proven.
+		"POST /auth/confirm",
 		"GET /account/credentials",
 		"POST /account/credentials/claude",
 		"POST /account/credentials/claude/{name}/delete",

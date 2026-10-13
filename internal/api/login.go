@@ -170,6 +170,15 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.setPasswordSessionCookie(w)
+	s.logger.Printf("login: a browser session was issued")
+	http.Redirect(w, r, safeReturnTo(next), http.StatusSeeOther)
+}
+
+// setPasswordSessionCookie mints a password-mode session issued NOW — the
+// sign-in and the step-up confirm (stepup.go) are its two callers, and the
+// issue time is what the step-up gate reads.
+func (s *Server) setPasswordSessionCookie(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
 		Name:  sessionCookieName,
 		Value: auth.SignSession(s.auth.uiSessionSecret(), time.Now(), sessionTTL),
@@ -185,8 +194,6 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		Secure:   s.auth.SecureCookies,
 		MaxAge:   int(sessionTTL / time.Second),
 	})
-	s.logger.Printf("login: a browser session was issued")
-	http.Redirect(w, r, safeReturnTo(next), http.StatusSeeOther)
 }
 
 // handleLogout clears the session cookie. It is a POST because a GET logout is
