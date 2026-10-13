@@ -113,6 +113,11 @@ var (
 		// agentByToken, it is how the request's user is LEARNED (api_tokens is
 		// under FORCE RLS); only the row's user_id is handed on.
 		"internal/api.(*Server).apiTokenUser",
+		// Browser flows (0012): a RUNNER token's lookup by hash. Like
+		// apiTokenUser, it is how the request's owner is LEARNED
+		// (flow_runner_tokens is under FORCE RLS); only the row's owner and
+		// host are handed on.
+		"internal/api.(*Server).runnerTokenFor",
 	}
 	// operatorLedger: work done as the OPERATOR (user 1) with no request —
 	// the boot-time GitHub connect of the operator's own static token, and the
@@ -144,6 +149,7 @@ var (
 		"internal/api.(*Server).requireHookOrServiceToken",
 		"internal/api.(*Server).requireHookToken",
 		"internal/api.(*Server).requireRelayAgent",
+		"internal/api.(*Server).requireRunnerToken", // browser-flow runner tokens (0012): /runner/flows/*
 		"internal/api.(*Server).requireSession",
 	}
 	// authzExports is authz's whole exported package scope. A new exported
@@ -151,7 +157,7 @@ var (
 	// new door until someone has decided it is not.
 	authzExports = []string{
 		"From", "MustFrom", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
-		"System", "Via", "ViaAgent", "ViaConnect", "ViaHook", "ViaOperator", "ViaRelay", "ViaService",
+		"System", "Via", "ViaAgent", "ViaConnect", "ViaHook", "ViaOperator", "ViaRelay", "ViaRunner", "ViaService",
 		"ViaSession", "ViaSystem", "ViaToken", "WithPrincipal",
 	}
 )

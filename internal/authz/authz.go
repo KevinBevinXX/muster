@@ -74,6 +74,11 @@ const (
 	// requireAPIToken). It acts as the token's OWNER, never as the machine
 	// user. The spelling is the audit_log `via` value migration 0006 names.
 	ViaToken Via = "api-token"
+	// ViaRunner is a host's BROWSER-FLOW RUNNER token (`mfr_…`, internal/flows):
+	// requireRunnerToken, on the /runner/flows/* routes only. It acts as the
+	// token's OWNER, so row-level security confines the runner to that owner's
+	// jobs; the token's host confines it further, to jobs addressed to it.
+	ViaRunner Via = "flow-runner"
 	// ViaSystem is a background loop acting for every user. Only System sets
 	// it.
 	ViaSystem Via = "system"
@@ -87,7 +92,7 @@ const (
 // deliberately absent: a request is never the system.
 var requestVias = map[Via]bool{
 	ViaSession: true, ViaHook: true, ViaService: true,
-	ViaAgent: true, ViaConnect: true, ViaRelay: true, ViaToken: true,
+	ViaAgent: true, ViaConnect: true, ViaRelay: true, ViaToken: true, ViaRunner: true,
 }
 
 // OperatorUserID is the user every principal names today: the operator, the

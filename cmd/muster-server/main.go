@@ -60,6 +60,7 @@ import (
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/db"
+	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/gotrue"
 	"github.com/ZacxDev/muster/internal/metrics"
@@ -250,6 +251,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.Users = users.NewPG(pool)
 		// Personal API tokens (accounts PR 6): mst_… on the machine tier.
 		ext.APITokens = apitokens.NewPG(pool)
+		// Browser flows (migration 0012): the owner-scoped job queue and the
+		// per-host runner tokens. Always on with a database: with no runner
+		// token minted, nothing ever claims a job and each one expires.
+		ext.Flows = flows.NewPG(pool)
 
 		if len(cfg.ConnectorEncKey) > 0 {
 			cs, err := connectors.NewPG(pool, cfg.ConnectorEncKey)

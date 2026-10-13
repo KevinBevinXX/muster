@@ -44,7 +44,7 @@ import (
 // status/comment, agent ls/resolve/messages, agent task get/comment/status, and
 // chief ask. If a thirteenth is genuinely wanted, change this number, add its
 // ledger row, and say so in the commit — do not discover it in a diff.
-const wantVerbCount = 15
+const wantVerbCount = 18
 
 // minRunnableCommands is a hardcoded floor BELOW wantVerbCount. It exists so
 // that a tree wired to NOTHING cannot pass this file vacuously: a tree that lost
@@ -84,6 +84,10 @@ var wiring = []struct {
 	{"token ls", []string{"token", "ls"}, "GET /api/tokens"},
 	{"token revoke", []string{"token", "revoke", "9"}, "DELETE /api/tokens/9"},
 	{"whoami", []string{"whoami"}, "GET /api/whoami"},
+	// Browser flows (muster 0012): a personal token's queue and read verbs.
+	{"flow enqueue", []string{"flow", "enqueue", "muse.poll", "--param", "thread=Side chat"}, "POST /api/flows/jobs"},
+	{"flow ls", []string{"flow", "ls"}, "GET /api/flows/jobs"},
+	{"flow status", []string{"flow", "status", "9"}, "GET /api/flows/jobs/9"},
 }
 
 // runnableCommands walks the tree and returns the full path of every command
@@ -184,6 +188,9 @@ func TestEveryCommandReachesItsRoute(t *testing.T) {
 			h.json("GET /api/tokens", http.StatusOK, `[]`)
 			h.json("DELETE /api/tokens/9", http.StatusOK, `{"id":9,"revoked":true}`)
 			h.json("GET /api/whoami", http.StatusOK, `{"userId":7,"role":"member","via":"api-token"}`)
+			h.json("POST /api/flows/jobs", http.StatusCreated, `{"id":9,"flow":"muse.poll","status":"queued"}`)
+			h.json("GET /api/flows/jobs", http.StatusOK, `[]`)
+			h.json("GET /api/flows/jobs/9", http.StatusOK, `{"id":9,"status":"done"}`)
 
 			got := h.runCLI(w.args...)
 			if got.code != exitOK {
