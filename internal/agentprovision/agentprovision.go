@@ -834,7 +834,12 @@ func (a *Adapter) AttachTerminal(ctx context.Context, ag agents.Agent, readOnly 
 		return err
 	}
 	ref := agents.RefOf(ag)
-	err = provision.ExecTTY(ctx, a.driver, ref, cmd, stdin, stdout, resize)
+	// 🔴 NO ATTACH SHRINKS THE SESSION'S WINDOW (internal/termsize): ask how
+	// big it is, and size the client so it is not narrowed — a phone gets the
+	// TUI at its real width, scrolled, and the operator's later desktop attach
+	// is not met by a phone-narrow TUI. Unknown size = the old behaviour.
+	out, sized := noShrink(ctx, a.windowSize(ctx, ref), stdout, resize)
+	err = provision.ExecTTY(ctx, a.driver, ref, cmd, stdin, out, sized)
 	if terminalMayHaveStarted(err) {
 		a.releaseTerminal(ctx, ref, tag)
 	}

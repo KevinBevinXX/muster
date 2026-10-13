@@ -370,6 +370,8 @@ var bannerExempt = map[string]string{
 	envE2EHoldReadyDir: "a browser-test fixture read ONLY by a `-tags e2eterm` build's fake driver (e2eterm.go); the " +
 		"shipped binary has no reader, so it has no state to announce, and an e2e build already logs its own " +
 		"🔴 E2E BUILD line at boot",
+	envE2ETermWindow: "the same: a browser-test fixture read ONLY by a `-tags e2eterm` build's fake driver " +
+		"(the session window its fake pod reports); the shipped binary has no reader",
 	envAgentGatewayModel: "the CHAT: WIRED line prints it beside the scheme, and there is no " +
 		"off-direction line to write: validate refuses a named gateway with no sentinel, so the " +
 		"only states that reach a banner are \"wired, and the value is on the line\" and \"no " +

@@ -14,6 +14,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/termsize"
 )
 
 // ---------------------------------------------------------------------------
@@ -37,6 +38,14 @@ type termDriver struct {
 	releaseErr   error // checked when the release ran: its context's state
 	releaseLeft  time.Duration
 	releaseFails error // returned from the release
+
+	// The window-size query (agents.TerminalSizeCommand) is answered with
+	// window — or refused when it is "" — and is NOT a release.
+	window      string
+	sizeQueries int
+	// tty, when set, is the attach's body in place of attach: it sees the
+	// writer and the size channel the adapter hands the exec.
+	tty func(ctx context.Context, stdout io.Writer, resize <-chan provision.TermSize) error
 }
 
 func (d *termDriver) Capabilities() provision.Capabilities {
@@ -45,10 +54,14 @@ func (d *termDriver) Capabilities() provision.Capabilities {
 	return c
 }
 
-func (d *termDriver) ExecTTY(ctx context.Context, _ provision.Ref, cmd []string, _ io.Reader, _ io.Writer, _ <-chan provision.TermSize) error {
+func (d *termDriver) ExecTTY(ctx context.Context, _ provision.Ref, cmd []string, _ io.Reader, stdout io.Writer, resize <-chan provision.TermSize) error {
 	d.mu.Lock()
 	d.ttyCmd = cmd
+	tty := d.tty
 	d.mu.Unlock()
+	if tty != nil {
+		return tty(ctx, stdout, resize)
+	}
 	return d.attach(ctx)
 }
 
@@ -56,6 +69,14 @@ func (d *termDriver) Exec(ctx context.Context, _ provision.Ref, cmd []string, st
 	in, _ := io.ReadAll(stdin)
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if strings.Join(cmd, "\x00") == strings.Join(agents.TerminalSizeCommand(termsize.TmuxWindowFormat), "\x00") {
+		d.sizeQueries++
+		if d.window == "" {
+			return errors.New("can't find session: cc")
+		}
+		_, _ = io.WriteString(stdout, d.window)
+		return nil
+	}
 	d.releases++
 	d.releaseCmd = cmd
 	d.releaseIn = string(in)
@@ -226,4 +247,119 @@ func TestASuccessfulReleaseLogsWhatItEnded(t *testing.T) {
 	if got := logs.String(); !strings.Contains(got, "agents: terminal keen-wren: released 1") {
 		t.Fatalf("log %q does not report the release", got)
 	}
+}
+
+// writes records each Write as its own element (a frame each, on the socket).
+type writes struct {
+	mu sync.Mutex
+	w  []string
+}
+
+func (r *writes) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	r.w = append(r.w, string(p))
+	r.mu.Unlock()
+	return len(p), nil
+}
+
+func (r *writes) all() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.w...)
+}
+
+// TestAnAgentTerminalNeverShrinksTheSessionsWindow: the attach asks the pod how
+// big the window is first; a phone's 47x29 — read-only or interactive — reaches
+// the exec as the window's 201x53 (201x52 plus the status line), the browser is
+// told so ahead of the TUI's first output, and a later shrinking resize does
+// not reach the exec while a growing one does. With the window unknown (the
+// control) the browser's size goes through as asked and nothing is reported.
+func TestAnAgentTerminalNeverShrinksTheSessionsWindow(t *testing.T) {
+	for _, readOnly := range []bool{true, false} {
+		a, d, _ := newTermAdapter(t, nil)
+		d.window = "201 52 on\n"
+		sizes := make(chan provision.TermSize, 8)
+		emit := make(chan string)
+		d.tty = func(ctx context.Context, stdout io.Writer, resize <-chan provision.TermSize) error {
+			for {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case sz := <-resize:
+					sizes <- sz
+				case s := <-emit:
+					_, _ = io.WriteString(stdout, s)
+				}
+			}
+		}
+		var out writes
+		resize := make(chan provision.TermSize, 8)
+		resize <- provision.TermSize{Cols: 47, Rows: 29}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			done <- a.AttachTerminal(ctx, claudeCodeAgent(), readOnly, strings.NewReader(""), &out, resize)
+		}()
+
+		next := func(what string) provision.TermSize {
+			t.Helper()
+			select {
+			case sz := <-sizes:
+				return sz
+			case <-time.After(5 * time.Second):
+				t.Fatalf("readOnly=%v: no size reached the exec (%s)", readOnly, what)
+				return provision.TermSize{}
+			}
+		}
+		if got := next("initial"); got != (provision.TermSize{Cols: 201, Rows: 53}) {
+			t.Fatalf("readOnly=%v: the exec started at %v, want the window's 201x53", readOnly, got)
+		}
+		emit <- "TUI"
+		want := []string{string(termsize.Report(termsize.Size{Cols: 201, Rows: 53})), "TUI"}
+		for deadline := time.Now().Add(5 * time.Second); len(out.all()) < 2 && time.Now().Before(deadline); {
+			time.Sleep(5 * time.Millisecond)
+		}
+		if got := out.all(); fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("readOnly=%v: the browser got %q, want the report then the TUI, as separate frames", readOnly, got)
+		}
+
+		resize <- provision.TermSize{Cols: 52, Rows: 31}
+		resize <- provision.TermSize{Cols: 239, Rows: 61}
+		if got := next("after a shrink then a grow"); got != (provision.TermSize{Cols: 239, Rows: 61}) {
+			t.Fatalf("readOnly=%v: the exec got %v; the shrinking 52x31 must not reach it", readOnly, got)
+		}
+		cancel()
+		<-done
+		d.mu.Lock()
+		q := d.sizeQueries
+		d.mu.Unlock()
+		if q != 1 {
+			t.Fatalf("readOnly=%v: %d window-size queries, want 1", readOnly, q)
+		}
+	}
+
+	// Control: the window cannot be read — the old behaviour, exactly.
+	a, d, _ := newTermAdapter(t, nil)
+	sizes := make(chan provision.TermSize, 8)
+	d.tty = func(ctx context.Context, stdout io.Writer, resize <-chan provision.TermSize) error {
+		sizes <- <-resize
+		_, _ = io.WriteString(stdout, "TUI")
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	var out writes
+	resize := make(chan provision.TermSize, 8)
+	resize <- provision.TermSize{Cols: 47, Rows: 29}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.AttachTerminal(ctx, claudeCodeAgent(), true, strings.NewReader(""), &out, resize) }()
+	if got := <-sizes; got != (provision.TermSize{Cols: 47, Rows: 29}) {
+		t.Fatalf("control: with no window size the exec got %v, want the browser's 47x29", got)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := out.all(); fmt.Sprint(got) != "[TUI]" {
+		t.Fatalf("control: the browser got %q, want only the TUI", got)
+	}
+	cancel()
+	<-done
 }
