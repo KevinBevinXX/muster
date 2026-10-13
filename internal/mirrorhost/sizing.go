@@ -61,6 +61,12 @@ type noShrink struct {
 	sizer WindowSizer
 }
 
+// Unwrap is the backend this wraps. 🔴 A WRAPPER THAT EMBEDS THE Backend
+// INTERFACE HIDES EVERY OPTIONAL CAPABILITY OF WHAT IT WRAPS (a type assertion
+// on the wrapper sees only Backend's own methods), so a capability lookup must
+// walk through it: see ClaudeOf.
+func (n noShrink) Unwrap() Backend { return n.Backend }
+
 func (n noShrink) Attach(ctx context.Context, session string, readOnly bool, cols, rows uint16) (Terminal, error) {
 	req := termsize.Size{Cols: cols, Rows: rows}
 	win, err := n.sizer.WindowSize(ctx, session)

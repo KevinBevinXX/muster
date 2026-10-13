@@ -18,6 +18,7 @@ import (
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/mirrorhost"
+	"github.com/ZacxDev/muster/internal/termsize"
 )
 
 // driveV2 runs a REAL muster-mirror (interactive or not) against a HAND-DRIVEN
@@ -175,5 +176,42 @@ func TestSanitizePaste(t *testing.T) {
 		if _, err := mirror.SanitizePaste(bad); err == nil {
 			t.Errorf("SanitizePaste(%q) accepted", bad)
 		}
+	}
+}
+
+// sizedClaude is a Claude backend that can also report a window size, so
+// mirrorhost.NoShrink WRAPS it — the composition cmd/muster-mirror ships.
+type sizedClaude struct{ *claudeBackend }
+
+func (sizedClaude) WindowSize(context.Context, string) (termsize.Size, error) {
+	return termsize.Size{Cols: 120, Rows: 40}, nil
+}
+
+// 🔴 THE SEAM BETWEEN TWO FEATURES: muster-mirror wraps its backend in NoShrink
+// (terminal sizing), and the rendered view asks the backend whether it can see
+// Claude Code. A wrapper that embeds the Backend INTERFACE hides every optional
+// capability of what it wraps — each feature passed its own tests while the
+// shipped composition reported no Claude pane at all. This runs the composition.
+func TestTheRenderedViewSurvivesTheNoShrinkWrapper(t *testing.T) {
+	r := newRig(t)
+	tok, _ := r.store.mint(t, 1, "ws")
+	tr := newTranscript(t, promptLine("through the wrapper"))
+	b := newClaudeBackend("main")
+	b.setPane("main", mirrorhost.ClaudePane{Pane: "%2", Transcript: tr.path, Gen: "g"})
+	wrapped := mirrorhost.NoShrink(sizedClaude{b})
+	// Positive control: the wrapper really is in the way.
+	if _, direct := wrapped.(mirrorhost.ClaudeBackend); direct {
+		t.Fatal("NoShrink did not hide the capability; this test would prove nothing")
+	}
+	r.connect(t, "ws", tok, wrapped, true)
+	r.online(t, 1, "ws", "main")
+	eventually(t, "the wrapped host still reports main as a Claude pane", func() bool {
+		h := r.svc.Hosts(asUser(1))
+		return len(h) == 1 && slices.Equal(h[0].Claude, []string{"main"})
+	})
+	rec, _, _ := watchAs(t, asUser(1), r.svc, "ws", "main", "", 0)
+	eventually(t, "the transcript through the wrapper", func() bool { return len(rec.events()) == 1 })
+	if err := r.svc.Paste(asUser(1), "ws", "main", "hi"); err != nil || !slices.Equal(b.pasted(), []string{"%2:hi"}) {
+		t.Fatalf("paste through the wrapper: %v, pasted %v", err, b.pasted())
 	}
 }

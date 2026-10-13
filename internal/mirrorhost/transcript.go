@@ -29,8 +29,7 @@ func (h *hostSide) claudeBackend() (ClaudeBackend, bool) {
 	if h.version < 2 {
 		return nil, false
 	}
-	cb, ok := h.c.cfg.Backend.(ClaudeBackend)
-	return cb, ok
+	return ClaudeOf(h.c.cfg.Backend)
 }
 
 // resolveClaude is the sorted subset of sessions that run Claude Code (nil on v1

@@ -30,6 +30,24 @@ type ClaudeBackend interface {
 	Paste(ctx context.Context, pane ClaudePane, text string) error
 }
 
+// ClaudeOf is b's ClaudeBackend, looking THROUGH any wrapper around it (a
+// wrapper exposes what it wraps with `Unwrap() Backend`, as NoShrink's does).
+// It is the ONE way to ask a backend for this capability: a bare type
+// assertion on a wrapped backend answers "no" for a backend that can.
+func ClaudeOf(b Backend) (ClaudeBackend, bool) {
+	for i := 0; b != nil && i < 8; i++ {
+		if cb, ok := b.(ClaudeBackend); ok {
+			return cb, true
+		}
+		u, ok := b.(interface{ Unwrap() Backend })
+		if !ok {
+			break
+		}
+		b = u.Unwrap()
+	}
+	return nil, false
+}
+
 // ClaudePane is one tmux pane running Claude Code.
 type ClaudePane struct {
 	// Pane is the tmux pane id (%12): the only input target — never the session
