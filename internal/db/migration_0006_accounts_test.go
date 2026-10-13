@@ -136,7 +136,7 @@ var wantForeignKeys = []string{
 	"invites|invites_created_by_fkey|FOREIGN KEY (created_by) REFERENCES users(id)",
 	"invites|invites_redeemed_by_fkey|FOREIGN KEY (redeemed_by) REFERENCES users(id)",
 	"flow_jobs|flow_jobs_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
-	"flow_requests|flow_requests_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE",
+	"flow_requests|flow_requests_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL",
 	"flow_requests|flow_requests_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"flow_runner_tokens|flow_runner_tokens_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"mirror_tokens|mirror_tokens_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",

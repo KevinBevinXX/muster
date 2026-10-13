@@ -327,6 +327,10 @@ var bannerLedger = []string{
 	// that answers 404 when OFF, and an operator installing muster-mirror needs the
 	// log to say which of the two this deployment is before blaming the host.
 	envMirror,
+	// 🔴 THE AGENT-FLOW DENY WORDS ARE LEDGERED: unset, the agent door screens
+	// agent-composed text with the generic patterns only, and that fail-open
+	// state must be a loud line, not a silence (the operator's audit of #76).
+	envFlowAgentDenyWords,
 }
 
 // bannerExempt is every environment variable config.go declares that logBanner
@@ -347,8 +351,6 @@ var bannerLedger = []string{
 // GITHUB_CLIENT_ID and MUSTER_GITHUB_TOKEN and neither of the other two, so the
 // entries say what is actually true of them.
 var bannerExempt = map[string]string{
-	envFlowAgentDenyWords: "a defence-in-depth word list for agent-composed browser-flow text; it changes no " +
-		"route and no door, and unset means only the generic screen applies — the human approval on /flows is the gate",
 	envAgentKinds: "announced on the `agent kinds:` line in both arms (gateway-only and claude-code " +
 		"enabled); the claude-code arm cannot be rendered by bannerBothDirections' fixture, whose " +
 		"provisioner is built without an account pool. TestTheKindsBannerLineNamesAccountsNeverTokens " +
@@ -601,6 +603,8 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 
 		// The mirror plugin: the banner branches on ext.Mirror, as for connectors.
 		Mirror: true,
+
+		FlowAgentDenyWords: []string{"examplecluster"},
 	}
 	onOut = renderBannerWithPool(t, on, api.Extensions{
 		Mirror:      mirror.NewService(nil, nil),

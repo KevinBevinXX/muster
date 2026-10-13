@@ -34,6 +34,7 @@ func pgStore(t *testing.T) (*PGStore, *pgxpool.Pool) {
 	dbtest.OwnerExec(t, dsn, `UPDATE users SET disabled_at = now() WHERE id = 4`)
 	// Each test starts from an empty queue: the tables are this package's own.
 	dbtest.OwnerExec(t, dsn, `TRUNCATE flow_jobs, flow_runner_tokens, flow_requests`)
+	dbtest.OwnerExec(t, dsn, `DELETE FROM audit_log WHERE action LIKE 'flow.request.%'`)
 	return NewPG(pool), pool
 }
 

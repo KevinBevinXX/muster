@@ -24,7 +24,9 @@ CREATE TABLE IF NOT EXISTS public.flow_requests (
     owner_id     BIGINT      NOT NULL
                  DEFAULT nullif(current_setting('muster.uid', true), '')::bigint
                  REFERENCES public.users (id),
-    agent_id     BIGINT      NOT NULL REFERENCES public.agents (id) ON DELETE CASCADE,
+    -- 🔴 SET NULL, NOT CASCADE: deleting an agent must not delete the record of
+    -- what it asked for and what its owner decided. agent_name stays.
+    agent_id     BIGINT      REFERENCES public.agents (id) ON DELETE SET NULL,
     agent_name   TEXT        NOT NULL,
     flow         TEXT        NOT NULL,
     host         TEXT        NOT NULL,
@@ -51,6 +53,12 @@ CREATE TABLE IF NOT EXISTS public.flow_requests (
 CREATE OR REPLACE FUNCTION public.flow_requests_owner_is_agents_owner() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
+    -- An agent's deletion nulls agent_id (the foreign key's action): the row
+    -- keeps its owner and is no longer anyone's to re-point. A NEW row must
+    -- name its agent.
+    IF TG_OP = 'UPDATE' AND NEW.agent_id IS NULL AND NEW.owner_id = OLD.owner_id THEN
+        RETURN NEW;
+    END IF;
     IF NEW.owner_id IS DISTINCT FROM (SELECT a.owner_id FROM public.agents a WHERE a.id = NEW.agent_id) THEN
         RAISE EXCEPTION 'flow_requests: owner % is not the owner of agent %', NEW.owner_id, NEW.agent_id
             USING ERRCODE = 'check_violation';

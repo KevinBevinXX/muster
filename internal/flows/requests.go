@@ -2,12 +2,15 @@ package flows
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -37,9 +40,11 @@ const (
 
 // FlowRequest is one row of flow_requests.
 type FlowRequest struct {
-	ID        int64             `json:"id"`
-	OwnerID   int64             `json:"ownerId"`
-	AgentID   int64             `json:"agentId"`
+	ID      int64 `json:"id"`
+	OwnerID int64 `json:"ownerId"`
+	// AgentID is nil once the agent has been deleted: the request stays, as
+	// the record of what was asked and decided (0014: ON DELETE SET NULL).
+	AgentID   *int64            `json:"agentId,omitempty"`
 	AgentName string            `json:"agentName"`
 	Flow      string            `json:"flow"`
 	Host      string            `json:"host"`
@@ -57,6 +62,9 @@ type FlowRequest struct {
 // connector store's per-agent shape (connectors.MaxPendingGrantsPerAgent).
 const MaxPendingRequestsPerAgent = 3
 
+// MaxReasonRunes caps an agent's stated reason.
+const MaxReasonRunes = 300
+
 // RequestTTL is how long a request waits for its owner's decision before it
 // expires (and can no longer be approved).
 const RequestTTL = time.Hour
@@ -68,10 +76,13 @@ var ErrTooManyPendingRequests = errors.New("flows: too many pending flow request
 // agentTextDeny is the defence-in-depth screen on text an AGENT composes for a
 // third party (muse.send goes to Meta): an IP address, a host name with a
 // dot, a token-shaped string, or one of this deployment's infrastructure
-// words. 🔴 IT IS A HEURISTIC, NOT A PROOF — a prompt-injected agent can
-// paraphrase anything past a regex. The real bound is that a human reads the
-// full text on /flows before approving it; this only refuses the obvious
-// shapes before they ever reach that screen.
+// words. 🔴 IT IS A HEURISTIC, NOT A PROOF AND NOT THE GATE — a prompt-injected
+// agent can paraphrase anything past a regex, and a look-alike letter from
+// another script walks past an ASCII pattern. THE CONTROL IS THE OWNER'S
+// APPROVAL OF THE EXACT VISIBLE TEXT (screen.go): values are NFKC-normalised,
+// may carry no character the owner cannot see, and the card spells out every
+// non-ASCII code point. This list only refuses the obvious shapes before
+// they reach that screen.
 var agentTextDeny = []struct {
 	re   *regexp.Regexp
 	what string
@@ -141,17 +152,43 @@ func (s *PGStore) FileRequest(ctx context.Context, agentID, ownerID int64, agent
 		return FlowRequest{}, invalidf("the agent has no owner")
 	}
 	r.TTL = 0 // an agent does not choose a job ttl; the approval does
-	if _, err := Validate(&r); err != nil {
+	// Everything an agent composed is normalised FIRST, so what is validated,
+	// screened, stored, shown on the card and sent is one string.
+	norm := make(map[string]string, len(r.Params))
+	for k, v := range r.Params {
+		norm[k] = NormalizeAgentText(v)
+	}
+	r.Params = norm
+	f, err := Validate(&r)
+	if err != nil {
 		return FlowRequest{}, err
 	}
-	if t := r.Params["text"]; t != "" {
-		if why := AgentTextRefusal(t, s.denyWords); why != "" {
-			return FlowRequest{}, invalidf("%s", why)
+	// 🔴 EVERY PARAMETER IS SCREENED, DRIVEN BY THE CATALOGUE — not a named key.
+	// (It screened only `text`; `thread` carried anything.) No value may hold
+	// a character the approver cannot see, and every parameter that is not a
+	// closed identifier (Param.ID) goes through the deny patterns too. A
+	// parameter added to the catalogue later is screened by default.
+	for _, p := range f.Params {
+		v, ok := r.Params[p.Name]
+		if !ok {
+			continue
+		}
+		if why := HiddenCharRefusal(v); why != "" {
+			return FlowRequest{}, invalidf("parameter %q: %s", p.Name, why)
+		}
+		if !p.ID {
+			if why := AgentTextRefusal(v, s.denyWords); why != "" {
+				return FlowRequest{}, invalidf("parameter %q: %s", p.Name, why)
+			}
 		}
 	}
-	if len(reason) > 2000 {
-		reason = truncateBytes(reason, 2000)
+	// The reason is shown to the owner and never sent: one line, capped, and
+	// under the same no-invisible-characters rule.
+	reason = NormalizeAgentText(reason)
+	if why := HiddenCharRefusal(reason); why != "" { // before the collapse, which would hide a hidden space
+		return FlowRequest{}, invalidf("reason: %s", why)
 	}
+	reason = truncateRunes(strings.Join(strings.Fields(reason), " "), MaxReasonRunes)
 	params, err := json.Marshal(r.Params)
 	if err != nil {
 		return FlowRequest{}, err
@@ -182,6 +219,9 @@ func (s *PGStore) FileRequest(ctx context.Context, agentID, ownerID int64, agent
 		RETURNING `+requestCols, ownerID, agentID, truncateRunes(agentName, 100), r.Flow, r.Host, r.Instance,
 		params, reason, RequestTTL.Seconds()))
 	if err != nil {
+		return FlowRequest{}, err
+	}
+	if err := auditRequest(ctx, tx, "flow.request.filed", "agent", q, nil); err != nil {
 		return FlowRequest{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -280,6 +320,13 @@ func (s *PGStore) DecideRequest(ctx context.Context, id int64, approve bool, by 
 			return FlowRequest{}, nil, err
 		}
 	}
+	action := "flow.request.denied"
+	if approve {
+		action = "flow.request.approved"
+	}
+	if err := auditRequest(ctx, tx, action, "session", q, job); err != nil {
+		return FlowRequest{}, nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return FlowRequest{}, nil, err
 	}
@@ -288,4 +335,32 @@ func (s *PGStore) DecideRequest(ctx context.Context, id int64, approve bool, by 
 	}
 	count(q.Flow, string(q.Status))
 	return q, job, nil
+}
+
+// auditRequest writes one audit_log row for a request's filing or decision, in
+// the SAME transaction as the change it records. The row names ids, the flow,
+// the agent and where it would run — and for each parameter only a sha256 and
+// a length, NEVER the text: the audit log is not a second copy of a message
+// bound for a third party.
+func auditRequest(ctx context.Context, tx pgx.Tx, action, via string, q FlowRequest, job *Job) error {
+	params := map[string]any{}
+	for k, v := range q.Params {
+		sum := sha256.Sum256([]byte(v))
+		params[k] = map[string]any{"sha256": hex.EncodeToString(sum[:]), "runes": utf8.RuneCountInString(v)}
+	}
+	detail := map[string]any{"request": q.ID, "flow": q.Flow, "agent": q.AgentName, "host": q.Host,
+		"instance": q.Instance, "params": params}
+	if q.AgentID != nil {
+		detail["agent_id"] = *q.AgentID
+	}
+	if job != nil {
+		detail["job"] = job.ID
+	}
+	raw, err := json.Marshal(detail)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO audit_log (user_id, via, action, object, detail) VALUES ($1, $2, $3, $4, $5)`,
+		q.OwnerID, via, action, fmt.Sprintf("flow_request:%d", q.ID), raw)
+	return err
 }

@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"html"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/flows"
@@ -435,6 +437,77 @@ func (s *Server) handleRunnerTokenRevoke(w http.ResponseWriter, r *http.Request)
 	http.Redirect(w, r, flowsPath, http.StatusSeeOther)
 }
 
+// flowDecidedShown is how many decided agent requests /flows lists.
+const flowDecidedShown = 20
+
+// flowRequestCardHTML draws one pending agent request for its owner's decision.
+//
+// 🔴 WHAT IS APPROVED IS WHAT IS SEEN — the control the whole agent door rests
+// on. So: (1) EVERY parameter the request carries is drawn, taken from the
+// catalogue's definition of the flow and then any the catalogue does not name
+// (never a hardcoded list a new parameter could slip past); (2) each value is
+// drawn through flows.VisibleEscape — printable ASCII as itself, everything
+// else spelled out as an escape — with its length in characters, so an
+// invisible or look-alike character cannot ride along unseen; (3) the agent's
+// REASON, which is never sent anywhere, sits in its own labelled box below the
+// parameters, on one line and escaped the same way, so it cannot pass for one.
+func flowRequestCardHTML(q flows.FlowRequest) string {
+	esc := html.EscapeString
+	id := strconv.FormatInt(q.ID, 10)
+	var b strings.Builder
+	b.WriteString(`<li class="` + flowsCardClass + `" data-flow-request-id="` + id + `">
+<span class="break-all text-sm font-semibold text-fg">` + esc(flows.VisibleEscape(q.AgentName)) + ` asks: ` + esc(q.Flow) + ` on ` + esc(q.Host) + `/` + esc(q.Instance) + `</span>
+<span class="text-xs font-semibold text-fg">Approving runs this flow with exactly these parameters:</span>
+`)
+	var names []string
+	seen := map[string]bool{}
+	if f, ok := flows.Lookup(q.Flow); ok {
+		for _, p := range f.Params {
+			if _, has := q.Params[p.Name]; has {
+				names, seen[p.Name] = append(names, p.Name), true
+			}
+		}
+	}
+	var extra []string
+	for k := range q.Params {
+		if !seen[k] {
+			extra = append(extra, k)
+		}
+	}
+	sort.Strings(extra)
+	names = append(names, extra...)
+	if len(names) == 0 {
+		b.WriteString(`<span class="text-xs text-fg2" data-flow-no-params>(no parameters)</span>
+`)
+	}
+	for _, k := range names {
+		v := q.Params[k]
+		n := strconv.Itoa(utf8.RuneCountInString(v))
+		b.WriteString(`<div class="flex flex-col gap-1 rounded-md bg-s1 px-3 py-2 ring-1 ring-inset ring-edge" data-flow-param="` + esc(k) + `" data-runes="` + n + `">
+<span class="text-xs font-semibold text-fg">` + esc(flows.VisibleEscape(k)) + ` · ` + n + ` characters</span>
+<code class="whitespace-pre-wrap break-all font-mono text-xs text-fg" data-flow-param-value>` + esc(flows.VisibleEscape(v)) + `</code>
+</div>
+`)
+	}
+	if q.Reason != "" {
+		reason := strings.Join(strings.Fields(q.Reason), " ")
+		if utf8.RuneCountInString(reason) > flows.MaxReasonRunes {
+			reason = string([]rune(reason)[:flows.MaxReasonRunes])
+		}
+		b.WriteString(`<div class="flex flex-col gap-1 rounded-md bg-bg px-3 py-2 ring-1 ring-inset ring-edge" data-flow-reason>
+<span class="text-xs font-semibold text-fg2">The agent's stated reason (not sent anywhere)</span>
+<span class="break-all text-xs text-fg2" data-flow-reason-value>` + esc(flows.VisibleEscape(reason)) + `</span>
+</div>
+`)
+	}
+	b.WriteString(`<span class="text-xs text-fg2">expires ` + q.ExpiresAt.UTC().Format("2006-01-02 15:04") + ` UTC</span>
+<form method="POST" action="` + flowsPath + `/requests/` + id + `/approve"><button type="submit" class="` + flowsButtonClass + ` w-full">Approve and queue</button></form>
+<form method="POST" action="` + flowsPath + `/requests/` + id + `/deny"><button type="submit" class="` + flowsQuietButton + `">Deny</button></form>
+</li>
+`)
+	return b.String()
+}
+
 // Shared class strings (each already emitted by the stylesheet: see
 // api_tokens.go, which these are copied from).
 const (
@@ -523,8 +596,8 @@ func (s *Server) renderFlowsPage(w http.ResponseWriter, r *http.Request, code in
 </form>
 `)
 
-	// Agent requests waiting on this owner: the FULL parameters are shown,
-	// because approving a muse.send sends exactly that text to a third party.
+	// Agent requests waiting on this owner. 🔴 THE CARD IS THE CONTROL: what the
+	// owner approves is exactly what is drawn here (flowRequestCardHTML).
 	b.WriteString(`<h2 class="text-sm font-semibold text-fg">Agent requests</h2>
 <ul class="flex flex-col gap-2" data-testid="flow-requests">
 `)
@@ -534,28 +607,34 @@ func (s *Server) renderFlowsPage(w http.ResponseWriter, r *http.Request, code in
 			continue
 		}
 		shown++
-		id := strconv.FormatInt(q.ID, 10)
-		b.WriteString(`<li class="` + flowsCardClass + `" data-flow-request-id="` + id + `">
-<span class="break-all text-sm font-semibold text-fg">` + esc(q.AgentName) + ` asks: ` + esc(q.Flow) + ` on ` + esc(q.Host) + `/` + esc(q.Instance) + `</span>
-`)
-		if q.Reason != "" {
-			b.WriteString(`<span class="whitespace-pre-wrap break-words text-xs text-fg2">reason: ` + esc(q.Reason) + `</span>
-`)
-		}
-		for _, k := range []string{"thread", "task", "text"} {
-			if v := q.Params[k]; v != "" {
-				b.WriteString(`<span class="whitespace-pre-wrap break-words text-xs text-fg2">` + esc(k) + `: ` + esc(v) + `</span>
-`)
-			}
-		}
-		b.WriteString(`<span class="text-xs text-fg2">expires ` + q.ExpiresAt.UTC().Format("2006-01-02 15:04") + ` UTC</span>
-<form method="POST" action="` + flowsPath + `/requests/` + id + `/approve"><button type="submit" class="` + flowsButtonClass + ` w-full">Approve and queue</button></form>
-<form method="POST" action="` + flowsPath + `/requests/` + id + `/deny"><button type="submit" class="` + flowsQuietButton + `">Deny</button></form>
-</li>
-`)
+		b.WriteString(flowRequestCardHTML(q))
 	}
 	if shown == 0 {
 		b.WriteString(`<li class="text-sm text-fg2">No agent requests waiting.</li>`)
+	}
+	b.WriteString(`</ul>
+<h2 class="text-sm font-semibold text-fg">Recent decisions</h2>
+<ul class="flex flex-col gap-2" data-testid="flow-requests-decided">
+`)
+	decided := 0
+	for _, q := range requests {
+		if q.Status == flows.RequestPending || decided >= flowDecidedShown {
+			continue
+		}
+		decided++
+		line := esc(flows.VisibleEscape(q.AgentName)) + ` · ` + esc(q.Flow) + ` · ` + esc(string(q.Status))
+		if q.DecidedAt != nil {
+			line += ` ` + q.DecidedAt.UTC().Format("2006-01-02 15:04") + ` UTC`
+		}
+		if q.JobID != nil {
+			line += ` · job #` + strconv.FormatInt(*q.JobID, 10)
+		}
+		b.WriteString(`<li class="break-all text-xs text-fg2" data-flow-request-decided="` + strconv.FormatInt(q.ID, 10) +
+			`" data-flow-request-status="` + esc(string(q.Status)) + `">#` + strconv.FormatInt(q.ID, 10) + ` ` + line + `</li>
+`)
+	}
+	if decided == 0 {
+		b.WriteString(`<li class="text-sm text-fg2">No decisions yet.</li>`)
 	}
 	b.WriteString(`</ul>
 `)

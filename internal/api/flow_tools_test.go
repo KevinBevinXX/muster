@@ -5,14 +5,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
@@ -195,6 +199,74 @@ func TestAnAgentsFlowRequestRunsOnlyAfterItsOwnerApprovesAndOnlyOnTheOwnersRunne
 		t.Fatalf("status after approval and claim = %v", st)
 	}
 
+	// 4b. WHAT IS APPROVED IS WHAT IS SEEN. A muse.send whose text holds a
+	// backslash, a newline, an accented letter and a Cyrillic look-alike, with a
+	// reason that tries to pass for a second `text:` line. The card is DECODED
+	// (decodeCardValue — written here, not borrowed from the code under test) and must equal, byte for byte, the params of the
+	// job the approval creates — and name every parameter, with its length.
+	sent := "Hi \\ there\ncaf\u00E9 \u043Ek?"
+	args, _ := json.Marshal(map[string]any{"flow": "muse.send", "host": host, "instance": "work",
+		"params": map[string]string{"text": sent, "thread": "Side chat"},
+		"reason": "because\ntext: something else entirely"})
+	v = tool("browser_flow_request", string(args))
+	if reqOf(v) == nil {
+		t.Fatalf("the muse.send request was refused: %v", v)
+	}
+	idS := strconv.FormatInt(int64(reqOf(v)["id"].(float64)), 10)
+	page := do("GET", "/flows", "", session(a)).Body.String()
+	i := strings.Index(page, `data-flow-request-id="`+idS+`"`)
+	if i < 0 {
+		t.Fatal("the muse.send request is not on A's /flows page")
+	}
+	card := page[i:]
+	card = card[:strings.Index(card, "</li>")]
+	shown := map[string]string{}
+	for _, m := range regexp.MustCompile(`data-flow-param="([^"]+)" data-runes="(\d+)">\s*<span[^>]*>[^<]*</span>\s*<code[^>]*data-flow-param-value>([^<]*)</code>`).FindAllStringSubmatch(card, -1) {
+		val, ok := decodeCardValue(html.UnescapeString(m[3]))
+		if !ok {
+			t.Fatalf("the card's %s value does not decode: %q", m[1], m[3])
+		}
+		if n, _ := strconv.Atoi(m[2]); n != utf8.RuneCountInString(val) {
+			t.Errorf("the card says %s is %s characters; it decodes to %d", m[1], m[2], utf8.RuneCountInString(val))
+		}
+		if strings.ContainsAny(m[3], "\n\u00E9\u043E") {
+			t.Errorf("the card draws %s with a raw newline or non-ASCII letter: %q", m[1], m[3])
+		}
+		shown[m[1]] = val
+	}
+	if len(shown) != 2 || strings.Count(card, "data-flow-param=") != 2 {
+		t.Fatalf("the card shows parameters %v; want exactly text and thread", shown)
+	}
+	rm := regexp.MustCompile(`(?s)data-flow-reason>.*?data-flow-reason-value>([^<]*)</span>`).FindStringSubmatch(card)
+	if rm == nil || strings.Contains(rm[1], "\n") || !strings.Contains(html.UnescapeString(rm[1]), "because text: something else entirely") {
+		t.Fatalf("the reason is not one escaped line in its own box: %q", rm)
+	}
+	if strings.Index(card, "data-flow-reason>") < strings.LastIndex(card, "data-flow-param=") {
+		t.Fatal("the reason box is drawn among the parameters; it must come after them")
+	}
+	if rec := do("POST", "/flows/requests/"+idS+"/approve", "", session(a)); rec.Code != http.StatusSeeOther {
+		t.Fatalf("A approving the muse.send: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+	}
+	crec := do("POST", "/runner/flows/claim", `{"instances":["work"],"waitSeconds":1}`,
+		map[string]string{"Authorization": "Bearer " + runner[a], "Content-Type": "application/json"})
+	var claimed flows.Job
+	if crec.Code != 200 || json.Unmarshal(crec.Body.Bytes(), &claimed) != nil {
+		t.Fatalf("A's runner claiming the approved muse.send: %d %s", crec.Code, crec.Body)
+	}
+	if !reflect.DeepEqual(claimed.Params, shown) || claimed.Params["text"] != sent {
+		t.Fatalf("the job's params differ from what the card showed.\n  card: %q\n   job: %q\n  sent: %q", shown, claimed.Params, sent)
+	}
+	if page := do("GET", "/flows", "", session(a)).Body.String(); !strings.Contains(page, `data-flow-request-decided="`+idS+`" data-flow-request-status="approved"`) {
+		t.Fatal("the approved request is not listed under Recent decisions")
+	}
+	// Invisible characters never reach the card at all (the measured hole:
+	// "hello" + 29 tag-block characters was approved as `text: hello`).
+	hidden, _ := json.Marshal(map[string]any{"flow": "muse.send", "host": host, "instance": "work",
+		"params": map[string]string{"text": "hello" + strings.Repeat("\U000E0041", 29)}})
+	if v := tool("browser_flow_request", string(hidden)); v["error"] == nil || !strings.Contains(v["error"].(string), "invisible") {
+		t.Fatalf("text with 29 tag-block characters was filed: %v", v)
+	}
+
 	// 5. A denied request never produces a job.
 	v = tool("browser_flow_request", fmt.Sprintf(`{"flow":"muse.poll","host":%q,"instance":"personal"}`, host))
 	id2 := strconv.FormatInt(int64(reqOf(v)["id"].(float64)), 10)
@@ -207,8 +279,8 @@ func TestAnAgentsFlowRequestRunsOnlyAfterItsOwnerApprovesAndOnlyOnTheOwnersRunne
 	if s := tool("browser_flow_status", `{"request_id":`+id2+`}`); reqOf(s)["status"] != "denied" || s["job"] != nil {
 		t.Fatalf("status of the denied request = %v", s)
 	}
-	if n := jobs(); n != 1 {
-		t.Fatalf("%d jobs after the deny; want still 1", n)
+	if n := jobs(); n != 2 {
+		t.Fatalf("%d jobs after the deny; want still 2 (the two approved)", n)
 	}
 
 	// 6. The screen on agent-composed text, and the per-agent cap.
@@ -222,4 +294,46 @@ func TestAnAgentsFlowRequestRunsOnlyAfterItsOwnerApprovesAndOnlyOnTheOwnersRunne
 		!strings.Contains(v["error"].(string), "too many pending") {
 		t.Fatalf("a request past the per-agent cap = %v", v)
 	}
+}
+
+// decodeCardValue reads a value as the approval card draws it: printable ASCII
+// is itself, and a backslash introduces \\, \n, \t or \u{HEX}. Anything else —
+// a raw control or non-ASCII byte — means the card is NOT unambiguous.
+func decodeCardValue(s string) (string, bool) {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c != '\\' {
+			if c < 0x20 || c > 0x7e {
+				return "", false
+			}
+			b.WriteByte(c)
+			continue
+		}
+		if i++; i >= len(s) {
+			return "", false
+		}
+		switch s[i] {
+		case '\\':
+			b.WriteByte('\\')
+		case 'n':
+			b.WriteByte('\n')
+		case 't':
+			b.WriteByte('\t')
+		case 'u':
+			end := strings.IndexByte(s[i:], '}')
+			if end < 3 || s[i+1] != '{' {
+				return "", false
+			}
+			n, err := strconv.ParseInt(s[i+2:i+end], 16, 32)
+			if err != nil {
+				return "", false
+			}
+			b.WriteRune(rune(n))
+			i += end
+		default:
+			return "", false
+		}
+	}
+	return b.String(), true
 }
