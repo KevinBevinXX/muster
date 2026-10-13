@@ -17,6 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/provision"
@@ -78,6 +79,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		// is production's, so a fixture holding it would not be "wired".
 		ConnectorPolicy: connectors.Policy{AllowLoopback: true},
 		Mirror:          stubMirror{},
+		Flows:           stubFlows{},
 	})
 	s.UseRouter(stubRouter{})
 	return s
@@ -85,6 +87,9 @@ func fullyWiredServer(t *testing.T) *Server {
 
 // stubMirror satisfies Mirror for registration only; any method call panics.
 type stubMirror struct{ Mirror }
+
+// stubFlows satisfies flows.Store for registration only; any method call panics.
+type stubFlows struct{ flows.Store }
 
 // stubConnectorsStore satisfies connectors.Store for registration only; any
 // method call panics, which is the point — registering must call none.

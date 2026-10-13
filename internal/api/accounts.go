@@ -14,6 +14,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/gotrue"
+	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -794,6 +795,11 @@ func (s *Server) requireGoTrueSession(w http.ResponseWriter, r *http.Request, ne
 	// the user's own access token) and read the session's amr; both ride here.
 	// Set only by this function, so only a GoTrue browser session carries it.
 	ctx = context.WithValue(ctx, gotrueSessionKey{}, gotrueCreds{access: sess.access, claims: sess.claims})
+	// The step-up gate's input: when this person last SIGNED IN (the token's
+	// `amr`), which a refresh does not move. No `amr`, no time — never fresh.
+	if at, ok := sess.claims.AuthenticatedAt(); ok {
+		ctx = stepup.WithAuthTime(ctx, at)
+	}
 	s.admit(w, r.WithContext(ctx), next, s.principalFor(ctx, sess.user.ID, authz.ViaSession))
 }
 

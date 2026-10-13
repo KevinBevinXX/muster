@@ -65,6 +65,9 @@ agent task comment
 agent task get
 agent task status
 chief ask
+flow enqueue
+flow ls
+flow status
 task comment
 task create
 task get
@@ -79,7 +82,7 @@ whoami"
 # still fails until someone moves this literal deliberately. (tree_test.go pins
 # the identical number for the in-process tree; they are two reads of one
 # decision.)
-WANT_COUNT=15
+WANT_COUNT=18
 
 # FORBIDDEN is the other half of the split: verbs that belong to the upstream
 # CLI this one was extracted from and must NEVER appear here.

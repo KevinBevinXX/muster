@@ -11,9 +11,10 @@ package api
 //     the same two cookies — so the session cutoff, sign-out-everywhere, the
 //     disable sweep and refresh all apply to a passkey session unchanged.
 //   - Account: GET /account/passkeys lists them; options/verify add one;
-//     /{id}/delete removes one. Adding requires a sign-in within
-//     passkeyAddWindow (freshAuth), else the password is asked again
-//     (/account/passkeys/reauth).
+//     /{id}/delete removes one. Adding is a STEP-UP action: it requires a
+//     sign-in within stepup.MaxAge (stepup.Fresh — the one freshness rule,
+//     shared with the mirror terminal), else the password is asked again
+//     through the shared POST /auth/confirm (stepup.go).
 //   - Admin: /admin/users/{id}/passkeys/delete removes all of a user's.
 //   - A password reset removes all of the user's (login_invite.go).
 //
@@ -38,6 +39,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/gotrue"
+	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -45,10 +47,6 @@ const (
 	passkeySignInOptionsPath = "/auth/passkey/options"
 	passkeySignInVerifyPath  = "/auth/passkey/verify"
 	accountPasskeysPath      = "/account/passkeys"
-
-	// passkeyAddWindow: adding a passkey needs a sign-in (password or
-	// passkey) this recent; otherwise the password is asked again.
-	passkeyAddWindow = 5 * time.Minute
 
 	// passkeyMetaKey is the GoTrue app_metadata key under which muster records
 	// each passkey's backup flags at registration: GoTrue stores them but its
@@ -119,7 +117,6 @@ func (s *Server) registerPasskeyRoutes(mux Mux) {
 	mux.HandleFunc("GET /account/passkeys", s.requireSession(s.handleAccountPasskeys))
 	mux.HandleFunc("POST /account/passkeys/options", s.requireSession(s.handlePasskeyAddOptions))
 	mux.HandleFunc("POST /account/passkeys/verify", s.requireSession(s.handlePasskeyAddVerify))
-	mux.HandleFunc("POST /account/passkeys/reauth", s.requireSession(s.handlePasskeyReauth))
 	mux.HandleFunc("POST /account/passkeys/{id}/delete", s.requireSession(s.handlePasskeyDelete))
 }
 
@@ -388,10 +385,11 @@ func (s *Server) renderAccountPasskeys(w http.ResponseWriter, r *http.Request, c
 <script>`+passkeyJS+passkeyAddJS+`</script>`)
 }
 
-// refuseStale answers 401 reauth_required when the session's last sign-in is
-// older than passkeyAddWindow.
-func (s *Server) refuseStale(w http.ResponseWriter, creds gotrueCreds) bool {
-	if freshAuth(creds.claims, s.gt.now(), passkeyAddWindow) {
+// refuseStale answers 401 reauth_required unless the request's person signed
+// in within stepup.MaxAge. The sign-in time is the one requireGoTrueSession
+// put on the context from the token's amr (stepup.WithAuthTime).
+func (s *Server) refuseStale(w http.ResponseWriter, r *http.Request) bool {
+	if stepup.Fresh(r.Context(), s.stepUpNow()) {
 		return false
 	}
 	s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": PasskeyReauthRequired})
@@ -400,7 +398,7 @@ func (s *Server) refuseStale(w http.ResponseWriter, creds gotrueCreds) bool {
 
 func (s *Server) handlePasskeyAddOptions(w http.ResponseWriter, r *http.Request) {
 	creds, ok := s.passkeyAccountCreds(w, r)
-	if !ok || s.refuseStale(w, creds) {
+	if !ok || s.refuseStale(w, r) {
 		return
 	}
 	o, err := s.gt.Client.PasskeyRegisterOptions(r.Context(), clientIP(r), creds.access)
@@ -418,7 +416,7 @@ func (s *Server) handlePasskeyAddOptions(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handlePasskeyAddVerify(w http.ResponseWriter, r *http.Request) {
 	creds, ok := s.passkeyAccountCreds(w, r)
-	if !ok || s.refuseStale(w, creds) {
+	if !ok || s.refuseStale(w, r) {
 		return
 	}
 	var body struct {
@@ -451,64 +449,6 @@ func (s *Server) handlePasskeyAddVerify(w http.ResponseWriter, r *http.Request) 
 	}
 	s.logger.Printf("passkeys: user %d added a passkey", uid)
 	s.writeJSON(w, http.StatusOK, map[string]any{"id": p.ID})
-}
-
-// handlePasskeyReauth re-asks the password of the signed-in user (never an
-// email the client names) and, when it is right, replaces the session with the
-// new one — whose amr is now — so adding a passkey passes freshAuth.
-func (s *Server) handlePasskeyReauth(w http.ResponseWriter, r *http.Request) {
-	creds, ok := s.passkeyAccountCreds(w, r)
-	if !ok {
-		return
-	}
-	var body struct {
-		Password string `json:"password"`
-	}
-	if !readPasskeyBody(w, r, &body) || body.Password == "" {
-		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "Enter your password."})
-		return
-	}
-	uid := authz.MustFrom(r.Context()).UserID
-	u, err := s.gt.Users.ByID(r.Context(), uid)
-	if err != nil || u.Email == "" {
-		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "Your account could not be read."})
-		return
-	}
-	ip := clientIP(r)
-	// The same per-ACCOUNT backoff a sign-in gets: this is a password guess.
-	ticket, ok := s.gt.signin.reserve(signinAccount{known: true, uid: u.ID}, ip, s.gt.now())
-	if !ok {
-		s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "Too many attempts. Wait a few minutes and try again."})
-		return
-	}
-	outcome := outcomeUnjudged
-	defer func() { s.gt.signin.settle(ticket, outcome) }()
-	sess, err := s.gt.Client.PasswordGrant(r.Context(), ip, u.Email, body.Password)
-	if err != nil {
-		if gotrue.IsClientError(err) && !isStatus(err, http.StatusTooManyRequests) {
-			outcome = outcomeFailed
-		}
-		s.writeGoTrueRefusal(w, "a re-authentication", err, "That password is not right.")
-		return
-	}
-	nu, problem, code := s.admitFreshSession(r.Context(), sess)
-	if problem != "" || nu.ID != uid {
-		if problem == "" {
-			problem, code = "That password is not right.", http.StatusUnauthorized
-		}
-		s.writeJSON(w, code, map[string]any{"error": problem})
-		return
-	}
-	outcome = outcomeSucceeded
-	s.setGoTrueCookies(w, sess)
-	// The session this request came in on is replaced; end its refresh side
-	// in GoTrue so sessions do not pile up. Best effort.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
-	defer cancel()
-	if err := s.gt.Client.Logout(ctx, ip, creds.access, gotrue.ScopeLocal); err != nil {
-		s.logger.Printf("passkeys: ending the replaced session failed (it expires on its own): %v", err)
-	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) handlePasskeyDelete(w http.ResponseWriter, r *http.Request) {

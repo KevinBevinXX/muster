@@ -196,7 +196,7 @@ func (f *Fake) passkeyRoute(w http.ResponseWriter, r *http.Request) {
 		now := f.nowLocked()
 		pk.LastUsedAt = &now
 		sid := newUUID()
-		f.sessions[sid] = &session{user: u.ID, method: "passkey", authAt: now.Unix()}
+		f.sessions[sid] = &session{user: u.ID, amr: f.amrLocked("passkey")}
 		at, rt := f.issueLocked(sid, "")
 		f.writeSessionLocked(w, at, rt, u)
 	case r.Method == http.MethodPost && p == "/passkeys/registration/options":

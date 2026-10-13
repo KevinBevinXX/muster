@@ -148,7 +148,12 @@ const passkeyAddJS = passkeyPrefetchJS + `
   });
   form.addEventListener('submit', async function (ev) {
     ev.preventDefault();
-    var r = await mpkPost('` + accountPasskeysPath + `/reauth', { password: pw.value });
+    // The shared "confirm it's you" route (stepup.go): the session user's
+    // password again, form-encoded, answered with a fresh session.
+    var res = await fetch('` + stepUpConfirmPath + `', { method: 'POST', credentials: 'same-origin',
+      headers: { 'Accept': 'application/json' }, body: new URLSearchParams({ password: pw.value }) });
+    var r = { ok: res.ok, data: {} };
+    try { r.data = await res.json(); } catch (e) {}
     pw.value = '';
     if (!r.ok) { mpkSay(msg, r.data.error || 'That password is not right.'); return; }
     form.hidden = true; btn.hidden = false;

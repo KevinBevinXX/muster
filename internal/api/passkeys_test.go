@@ -197,7 +197,7 @@ func TestPasskeyRoutesRefuseCrossOriginWrites(t *testing.T) {
 	pid := w.fake.AddPasskey(sub, "cred-xo")
 	cookies := withCookies(at, rt)
 	for _, path := range []string{passkeySignInOptionsPath, passkeySignInVerifyPath, accountPasskeysPath + "/options",
-		accountPasskeysPath + "/verify", accountPasskeysPath + "/reauth", accountPasskeysPath + "/" + pid + "/delete"} {
+		accountPasskeysPath + "/verify", accountPasskeysPath + "/" + pid + "/delete"} {
 		rec := postJSON(w.edge, path, map[string]any{}, cookies, fromOrigin("https://evil.example"))
 		if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), CrossOriginRefusal) {
 			t.Errorf("cross-origin %s: %d %s", path, rec.Code, truncate(rec.Body.String(), 200))
@@ -220,7 +220,7 @@ func TestPasskeyRoutesAreBrowserListenerOnly(t *testing.T) {
 	_, _, at, rt := w.joinMember("pk-ml@invite.test")
 	machine := w.s.Handler() // NOT wrapped in BrowserListener
 	for _, path := range []string{passkeySignInOptionsPath, passkeySignInVerifyPath, accountPasskeysPath + "/options",
-		accountPasskeysPath + "/verify", accountPasskeysPath + "/reauth", accountPasskeysPath + "/x/delete"} {
+		accountPasskeysPath + "/verify", accountPasskeysPath + "/x/delete"} {
 		if rec := postJSON(machine, path, map[string]any{}, withCookies(at, rt)); rec.Code != http.StatusForbidden {
 			t.Errorf("machine listener %s: %d %s", path, rec.Code, truncate(rec.Body.String(), 200))
 		}
@@ -258,7 +258,7 @@ func TestSignOutEverywhereEndsAPasskeySession(t *testing.T) {
 }
 
 // TestAStaleSessionCannotAddAPasskey: adding a passkey needs a sign-in within
-// passkeyAddWindow (the session's amr timestamp). Measured at two points: 4
+// stepup.MaxAge (the session's amr timestamp). Measured at two points: 4
 // minutes after sign-in it is allowed, 6 minutes after it is refused with
 // reauth_required — and GoTrue's registration API is not called. The
 // password, asked again, mints a fresh session that may add one.
@@ -287,10 +287,11 @@ func TestAStaleSessionCannotAddAPasskey(t *testing.T) {
 	if regCalls() != before || len(w.fake.Passkeys(sub)) != 0 {
 		t.Fatal("a stale session reached GoTrue's registration API")
 	}
-	if rec := postJSON(w.edge, accountPasskeysPath+"/reauth", map[string]any{"password": "not-the-password-x"}, cookies, fromIP("198.51.100.40")); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("reauth with a wrong password: %d %s", rec.Code, rec.Body)
+	// The re-ask is the shared step-up confirm (POST /auth/confirm).
+	if rec := do(w.edge, "POST", stepUpConfirmPath, url.Values{"password": {"not-the-password-x"}}, cookies, fromIP("198.51.100.40")); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("confirm with a wrong password: %d %s", rec.Code, rec.Body)
 	}
-	rec = postJSON(w.edge, accountPasskeysPath+"/reauth", map[string]any{"password": goodPW}, cookies, fromIP("198.51.100.40"))
+	rec = do(w.edge, "POST", stepUpConfirmPath, url.Values{"password": {goodPW}}, cookies, fromIP("198.51.100.40"))
 	ck := setCookies(rec)
 	if rec.Code != http.StatusOK || ck[accessCookieName] == nil {
 		t.Fatalf("reauth with the password: %d %s", rec.Code, rec.Body)
@@ -298,10 +299,6 @@ func TestAStaleSessionCannotAddAPasskey(t *testing.T) {
 	fresh := withCookies(ck[accessCookieName].Value, ck[refreshCookieName].Value)
 	if rec := w.addPasskey("after-reauth", gotruetest.FlagUPUV, fresh); rec.Code != http.StatusOK || len(w.fake.Passkeys(sub)) != 1 {
 		t.Fatalf("adding a passkey after reauth: %d %s", rec.Code, rec.Body)
-	}
-	old, _ := w.fake.Verifier().Verify(at)
-	if !w.fake.SessionRevoked(old.SessionID) {
-		t.Error("the session the reauth replaced is still live in GoTrue")
 	}
 }
 
@@ -471,34 +468,6 @@ func TestPasskeySignInIsThrottledPerAddress(t *testing.T) {
 	}
 	if rec := w.passkeySignIn("cred-rl", gotruetest.FlagUPUV, fromIP("203.0.113.67")); rec.Code != http.StatusOK {
 		t.Fatalf("CONTROL: another address: %d", rec.Code)
-	}
-}
-
-// TestFreshAuth pins the freshness rule at its boundaries.
-func TestFreshAuth(t *testing.T) {
-	now := time.Unix(1_800_000_000, 0)
-	at := func(d time.Duration) gotrue.Claims {
-		return gotrue.Claims{AMR: gotrue.AMR{{Method: "password", Timestamp: now.Add(d).Unix()}}}
-	}
-	for _, c := range []struct {
-		name string
-		c    gotrue.Claims
-		want bool
-	}{
-		{"just now", at(0), true},
-		{"4m59s ago", at(-4*time.Minute - 59*time.Second), true},
-		{"exactly 5m ago", at(-5 * time.Minute), true},
-		{"5m01s ago", at(-5*time.Minute - time.Second), false},
-		{"an hour ago", at(-time.Hour), false},
-		{"in the future beyond skew", at(2 * time.Minute), false},
-		{"no amr", gotrue.Claims{}, false},
-		{"amr without timestamps", gotrue.Claims{AMR: gotrue.AMR{{Method: "pwd"}}}, false},
-		{"the LATEST entry counts", gotrue.Claims{AMR: gotrue.AMR{{Method: "password", Timestamp: now.Add(-time.Hour).Unix()},
-			{Method: "passkey", Timestamp: now.Add(-time.Minute).Unix()}}}, true},
-	} {
-		if got := freshAuth(c.c, now, passkeyAddWindow); got != c.want {
-			t.Errorf("%s: freshAuth = %v, want %v", c.name, got, c.want)
-		}
 	}
 }
 

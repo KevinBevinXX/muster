@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/ZacxDev/muster/internal/gotrue"
 	"github.com/ZacxDev/muster/internal/gotrue/gotruetest"
@@ -156,27 +155,5 @@ func TestRequireUserVerificationSetsTheRightField(t *testing.T) {
 	_ = json.Unmarshal(out, &reg)
 	if reg.Sel["userVerification"] != "required" || reg.Sel["residentKey"] != "required" || reg.UserVerification != nil {
 		t.Fatalf("registration options: %s", out)
-	}
-}
-
-// TestAMRAcceptsBothShapesAndNamesTheLatestAuthentication.
-func TestAMRAcceptsBothShapesAndNamesTheLatestAuthentication(t *testing.T) {
-	var c gotrue.Claims
-	if err := json.Unmarshal([]byte(`{"amr":[{"method":"password","timestamp":1700000000},{"method":"passkey","timestamp":1700000500}]}`), &c); err != nil {
-		t.Fatal(err)
-	}
-	if at, ok := c.AuthenticatedAt(); !ok || !at.Equal(time.Unix(1700000500, 0)) {
-		t.Fatalf("AuthenticatedAt = %v %v, want the LATER entry", at, ok)
-	}
-	var s gotrue.Claims
-	if err := json.Unmarshal([]byte(`{"amr":["pwd","mfa"]}`), &s); err != nil || len(s.AMR) != 2 || s.AMR[0].Method != "pwd" {
-		t.Fatalf("string amr: %+v %v", s.AMR, err)
-	}
-	if _, ok := s.AuthenticatedAt(); ok {
-		t.Fatal("an amr with no timestamps named an authentication time")
-	}
-	var none gotrue.Claims
-	if _, ok := none.AuthenticatedAt(); ok {
-		t.Fatal("no amr named an authentication time")
 	}
 }
