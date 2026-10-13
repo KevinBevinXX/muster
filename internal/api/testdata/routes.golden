@@ -38,6 +38,7 @@ DELETE /tasks/{id}/comments/{cid}
 DELETE /tasks/{id}/tags/{tag}
 GET /account
 GET /account/credentials
+GET /account/passkeys
 GET /account/tokens
 GET /admin/invites
 GET /admin/users
@@ -124,12 +125,16 @@ POST /account/credentials/claude
 POST /account/credentials/claude/{name}/delete
 POST /account/credentials/openrouter
 POST /account/credentials/openrouter/delete
+POST /account/passkeys/options
+POST /account/passkeys/verify
+POST /account/passkeys/{id}/delete
 POST /account/tokens
 POST /account/tokens/{id}/revoke
 POST /admin/invites
 POST /admin/invites/{id}/revoke
 POST /admin/users/{id}/disable
 POST /admin/users/{id}/enable
+POST /admin/users/{id}/passkeys/delete
 POST /admin/users/{id}/reset-link
 POST /admin/users/{id}/role
 POST /agent/approvals
@@ -148,6 +153,9 @@ POST /api/flows/jobs
 POST /api/tasks
 POST /api/tasks/{id}/comments
 POST /auth/claim
+POST /auth/confirm
+POST /auth/passkey/options
+POST /auth/passkey/verify
 POST /auth/reset
 POST /chief/provision
 POST /connectors

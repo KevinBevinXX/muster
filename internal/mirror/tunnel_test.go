@@ -163,6 +163,54 @@ func TestInteractiveIsRefusedWhenTheHostDidNotAdvertiseIt(t *testing.T) {
 	}
 }
 
+// TestAnInteractiveAttachNeedsAFreshSignIn: the plugin's OWN step-up check
+// (internal/api checks too, before its upgrade; this does not rely on it). On an
+// -interactive host: a session signed in longer ago than stepup.MaxAge, and one
+// with no sign-in time at all, are refused a rw attach before anything reaches
+// the host — while the same stale session still attaches read-only, and a fresh
+// one types (the controls). Another owner's host stays invisible to a fresh
+// session (ErrHostOffline, as for a host that does not exist).
+func TestAnInteractiveAttachNeedsAFreshSignIn(t *testing.T) {
+	r := newRig(t)
+	tok, _ := r.store.mint(t, 1, "ws")
+	b := &fakeBackend{}
+	b.set("main")
+	r.connect(t, "ws", tok, b, true)
+	r.online(t, 1, "ws", "main")
+
+	noTime := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 1, Role: authz.RoleAdmin, Via: authz.ViaSession})
+	for name, ctx := range map[string]context.Context{"stale": asStaleUser(1), "no sign-in time": noTime} {
+		_, _, _, _, res := attach(t, ctx, r.svc, "ws", "main", false)
+		if err := within(t, res, name+" refusal"); !errors.Is(err, mirror.ErrStepUpRequired) || !mirror.IsAttachRefusal(err) {
+			t.Fatalf("%s: rw attach = %v, want ErrStepUpRequired (a plugin refusal)", name, err)
+		}
+	}
+	time.Sleep(100 * time.Millisecond)
+	if b.attached() != 0 {
+		t.Fatal("a stale rw attach still opened a client on the host")
+	}
+
+	// Control 1: the stale session may still WATCH.
+	_, screen, _, cancel, _ := attach(t, asStaleUser(1), r.svc, "ws", "main", true)
+	eventually(t, "the stale session's read-only screen", func() bool { return strings.Contains(screen.String(), "SCREEN main") })
+	if !b.term(t, 0).readOnly {
+		t.Fatal("the stale session's attach was not read-only")
+	}
+	cancel()
+
+	// Control 2: a fresh session types.
+	stdin, _, _, _, _ := attach(t, asUser(1), r.svc, "ws", "main", false)
+	eventually(t, "the fresh rw attach", func() bool { return b.attached() == 2 })
+	_, _ = stdin.Write([]byte("ok\r"))
+	eventually(t, "fresh input reaches the host", func() bool { typed, _, _ := b.term(t, 1).snapshot(); return typed == "ok\r" })
+
+	// Another owner, fresh: invisible, exactly like a host that does not exist.
+	_, _, _, _, res := attach(t, asUser(2), r.svc, "ws", "main", false)
+	if err := within(t, res, "the other owner's attach"); !errors.Is(err, mirror.ErrHostOffline) {
+		t.Fatalf("user 2's fresh rw attach to user 1's host = %v, want ErrHostOffline", err)
+	}
+}
+
 // TestMusterSendsNoInputFrameForAReadOnlyStream isolates muster's OWN read-only
 // layer with a hand-driven (interactive) host that records every frame.
 func TestMusterSendsNoInputFrameForAReadOnlyStream(t *testing.T) {

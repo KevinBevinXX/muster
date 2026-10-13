@@ -182,6 +182,10 @@ const (
 	// running instance reports not-ready until a file named after the instance
 	// exists in it. The shipped binary has no reader of it; see e2eterm.go.
 	envE2EHoldReadyDir = "MUSTER_E2E_HOLD_READY_DIR"
+	// The session window ("CxR") the e2e fake pod reports to muster's
+	// window-size query (internal/termsize's no-shrink rule); unset, the query
+	// fails as on a pod with no session. Read only by e2eterm.go.
+	envE2ETermWindow = "MUSTER_E2E_TERM_WINDOW"
 )
 
 // The values MUSTER_AGENT_PROVISIONER accepts.

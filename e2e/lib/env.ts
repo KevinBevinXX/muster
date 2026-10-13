@@ -53,6 +53,19 @@ export const gotrueSecret = 'e2e-gotrue-jwt-secret-not-a-real-one-0123456789';
 export const invitesMainPort = port + 13;
 export const invitesBrowserPort = port + 14;
 export const invitesGotruePort = Number(process.env.MUSTER_E2E_INVITES_GOTRUE_PORT ?? port + 15);
+// The terminal-overflow spec's own e2eterm server (its fake pod reports a
+// session window: MUSTER_E2E_TERM_WINDOW).
+export const overflowPort = port + 16;
+// The mirror step-up spec: a gotrue-mode server with the mirror plugin on
+// (machine port + browser listener) and its own real GoTrue.
+export const stepupMainPort = port + 17;
+export const stepupBrowserPort = port + 18;
+export const stepupGotruePort = Number(process.env.MUSTER_E2E_STEPUP_GOTRUE_PORT ?? port + 19);
+// Passkeys: their own gotrue-mode server and real GoTrue (passkeys ON, RP
+// localhost, origin = this browser port), for the same reason as invites.
+export const passkeysMainPort = port + 20;
+export const passkeysBrowserPort = port + 21;
+export const passkeysGotruePort = Number(process.env.MUSTER_E2E_PASSKEYS_GOTRUE_PORT ?? port + 22);
 // The seeded `docs-sweeper` agent's own token (e2e/seed). Invented, like every
 // value here.
 export const agentToken = 'e2e-agent-token-not-a-real-one';
