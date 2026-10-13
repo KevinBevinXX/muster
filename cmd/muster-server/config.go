@@ -94,6 +94,12 @@ const (
 	// Off, GET /mirror/connect answers 404 and nothing mirrored is listed.
 	envMirror = "MUSTER_MIRROR"
 
+	// The cairn memo relay (internal/memorelay): the memo listener's base URL
+	// and the ONE read-only credential muster reads live memos with. The token
+	// alone decides whether the relay runs — see config.validate.
+	envMemoURL   = "MUSTER_MEMO_URL"
+	envMemoToken = "MUSTER_MEMO_TOKEN"
+
 	envRouterURL   = "MUSTER_ROUTER_URL"
 	envRouterToken = "MUSTER_ROUTER_TOKEN"
 	envRouterActor = "MUSTER_ROUTER_ACTOR"
@@ -348,6 +354,12 @@ type config struct {
 
 	// Mirror turns the mirrored-sessions plugin on (MUSTER_MIRROR=1).
 	Mirror bool
+
+	// MemoURL and MemoToken are the cairn memo listener the relay reads
+	// (internal/memorelay). The relay runs iff MemoToken is set; MemoURL alone
+	// is the state a deployment sits in before its credential is issued.
+	MemoURL   string
+	MemoToken string
 
 	RouterURL   string
 	RouterToken string
@@ -683,6 +695,8 @@ func loadConfig(getenv func(string) string) (config, error) {
 		FaroTracing:        envFlag(getenv, envFaroTracing),
 		TagAutoDispatch:    envFlag(getenv, envTagAutoDispatch),
 		Mirror:             envFlag(getenv, envMirror),
+		MemoURL:            strings.TrimRight(strings.TrimSpace(getenv(envMemoURL)), "/"),
+		MemoToken:          strings.TrimSpace(getenv(envMemoToken)),
 		RouterURL:          strings.TrimSpace(getenv(envRouterURL)),
 		RouterToken:        strings.TrimSpace(getenv(envRouterToken)),
 		RouterActor:        strings.TrimSpace(getenv(envRouterActor)),
@@ -1042,6 +1056,9 @@ func (c config) validate() error {
 				"and every prompt would fall back to the terminal. Fix or unset it",
 				envRouterActor, actor, routerActorLabel, routerReservedActor, envApprovalGateURL)
 		}
+	}
+	if err := c.validateMemoRelay(); err != nil {
+		return err
 	}
 	if err := c.validateVAPID(); err != nil {
 		return err
