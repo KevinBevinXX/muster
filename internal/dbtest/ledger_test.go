@@ -135,6 +135,11 @@ var pgBackedPackages = []string{
 	"internal/flows",
 	"internal/mirror",
 	"internal/notes",
+	// muster-native Web Push (migration 0013). "A member's principal (and the
+	// admin's) reads and writes only its own subscriptions", "a claim moves a
+	// shared device and nothing else" and "a stale handle cannot touch a row
+	// that changed hands" are claims about SQL and row-level security.
+	"internal/push",
 	// Added by the UI carve, and the decision behind it is worth one line
 	// because a RENDERING package taking a real database looks wrong at a
 	// glance. It takes exactly one: the reaper writes a task's idle flag

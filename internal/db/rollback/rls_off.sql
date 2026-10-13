@@ -74,6 +74,16 @@ BEGIN
         ALTER TABLE public.flow_runner_tokens DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.flow_runner_tokens ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0013 (muster-native Web Push: push_subscriptions, push_preferences),
+    -- when this schema has it. Both carry owner_id; same reason as 0011.
+    IF to_regclass('public.push_subscriptions') IS NOT NULL THEN
+        ALTER TABLE public.push_subscriptions NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.push_subscriptions DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.push_subscriptions ALTER COLUMN owner_id SET DEFAULT 1;
+        ALTER TABLE public.push_preferences NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.push_preferences DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.push_preferences ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
 END
 $$;
 

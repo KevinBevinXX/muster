@@ -60,6 +60,7 @@ GET /api/flows/jobs
 GET /api/flows/jobs/{id}
 GET /api/openrouter/models
 GET /api/projects
+GET /api/push/vapid-public-key
 GET /api/sessions/{id}/tasks
 GET /api/tags
 GET /api/tasks
@@ -128,6 +129,9 @@ POST /account/credentials/openrouter/delete
 POST /account/passkeys/options
 POST /account/passkeys/verify
 POST /account/passkeys/{id}/delete
+POST /account/push/preferences
+POST /account/push/test
+POST /account/push/{id}/remove
 POST /account/tokens
 POST /account/tokens/{id}/revoke
 POST /admin/invites
@@ -150,6 +154,8 @@ POST /agents/{id}/start
 POST /agents/{id}/stop
 POST /api/agents/{name}/messages
 POST /api/flows/jobs
+POST /api/push/subscribe
+POST /api/push/unsubscribe
 POST /api/tasks
 POST /api/tasks/{id}/comments
 POST /auth/claim

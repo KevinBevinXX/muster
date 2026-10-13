@@ -38,6 +38,11 @@ type Features struct {
 	// served (accounts PR 5). It draws the sidebar's Admin link and nothing
 	// else: the pages refuse a member on their own (requireAdmin).
 	Admin bool
+	// Push is true when the server holds VAPID keys and a subscription store
+	// (muster-native Web Push). False draws no Enable button, no "on" pill and
+	// no subscribe script: the routes behind them would only answer 503, and an
+	// Enable button over a 503 asks for the OS permission and then fails.
+	Push bool
 }
 
 // visibleTabs is the subset of musterTabs a document with these features may

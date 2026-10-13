@@ -80,6 +80,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		ConnectorPolicy: connectors.Policy{AllowLoopback: true},
 		Mirror:          stubMirror{},
 		Flows:           stubFlows{},
+		Push:            stubPush{},
 	})
 	s.UseRouter(stubRouter{})
 	return s
@@ -90,6 +91,9 @@ type stubMirror struct{ Mirror }
 
 // stubFlows satisfies flows.Store for registration only; any method call panics.
 type stubFlows struct{ flows.Store }
+
+// stubPush satisfies PushService for registration only; any method call panics.
+type stubPush struct{ PushService }
 
 // stubConnectorsStore satisfies connectors.Store for registration only; any
 // method call panics, which is the point — registering must call none.
