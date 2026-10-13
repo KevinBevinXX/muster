@@ -448,6 +448,9 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerMirrorRoutes(mux)
 	// Browser flows (internal/flows): /flows, /api/flows/jobs, /runner/flows/*.
 	s.registerFlowRoutes(mux)
+	// muster-native Web Push (push_routes.go): the subscribe flow and the
+	// account page's Notifications section.
+	s.registerPushRoutes(mux)
 }
 
 // registerAgentSelfServiceRoutes wires the agent callback API. These are
@@ -497,7 +500,7 @@ func staticHandler() http.Handler {
 func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 	p, _ := authz.From(ctx)
 	return ui.Features{GitHub: s.ext.GitHub != nil, Connectors: s.ext.Connectors != nil,
-		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed()}
+		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed(), Push: s.pushServed()}
 }
 
 // handleIndex serves the document shell. The active tab is derived from the

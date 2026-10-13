@@ -54,6 +54,21 @@ var (
 		Help: "Recovered panics by source.",
 	}, []string{"source"})
 
+	// PushDelivery counts Web Push delivery attempts, one per DEVICE per
+	// notification, by result:
+	//   ok      — the push service accepted it (2xx)
+	//   expired — the push service said the subscription is gone (404/410);
+	//             the device was pruned
+	//   failed  — a transport error or any other status; the device's
+	//             fail_count went up
+	// A notification to an owner with no devices counts nothing. The owner is
+	// deliberately NOT a label (an identifier — see the cardinality rule); the
+	// per-owner line is in the log (`push: delivered … owner=<id>`).
+	PushDelivery = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_push_delivery_total",
+		Help: "Web Push delivery attempts by result (ok|expired|failed).",
+	}, []string{"result"})
+
 	// AgentProvision counts agent provisioning attempts.
 	AgentProvision = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "muster_agent_provision_total",

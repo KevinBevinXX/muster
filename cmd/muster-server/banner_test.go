@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/router"
 )
 
@@ -288,6 +289,12 @@ var bannerLedger = []string{
 	// until the credential is issued, so it has to be readable off the log.
 	envMemoURL,
 	envMemoToken,
+	// muster-native Web Push: the `web push:` line names all three in both
+	// directions (ENABLED / OFF). Its off-state — no Enable button, nothing
+	// sent — is otherwise invisible: nothing errors when push is off.
+	envVAPIDPublicKey,
+	envVAPIDPrivateKey,
+	envVAPIDSubject,
 	envGitHubEncKey,
 	envAgentProvisioner,
 	// The chat tier is its own axis with its own two lines — the fully-off arm names
@@ -611,9 +618,14 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		// supplied below), which is memoRelayEnabled's whole predicate.
 		MemoURL:   "http://memos.example.invalid:8125",
 		MemoToken: "memo-credential-fixture",
+		// Web Push: the banner branches on ext.Push (below), as for connectors.
+		VAPIDPublicKey:  bannerVAPIDPub,
+		VAPIDPrivateKey: bannerVAPIDPriv,
+		VAPIDSubject:    "mailto:ops@example.com",
 	}
 	onOut = renderBannerWithPool(t, on, api.Extensions{
 		Mirror:      mirror.NewService(nil, nil),
+		Push:        push.NewService(nil, nil, on.vapid(), nil),
 		Connectors:  bannerStubConnectorStore{},
 		GitHub:      bannerStubGitHubStore{},
 		Provisioner: bannerProvisioner(t, on),
@@ -950,3 +962,13 @@ func TestTheHalfWiredProvisioningBannerReportsBothTiersSeparately(t *testing.T) 
 		}
 	}
 }
+
+// bannerVAPIDPriv / bannerVAPIDPub are a keypair minted when the test binary
+// starts, so no key material is written into the tree.
+var bannerVAPIDPriv, bannerVAPIDPub = func() (string, string) {
+	priv, pub, err := push.GenerateVAPIDKeys()
+	if err != nil {
+		panic(err)
+	}
+	return priv, pub
+}()

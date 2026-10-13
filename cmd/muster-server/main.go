@@ -67,6 +67,7 @@ import (
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/router"
 	"github.com/ZacxDev/muster/internal/sse"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -114,6 +115,11 @@ func main() {
 	// the server's DATABASE_URL is (e.g. `kubectl exec` into the muster pod).
 	if len(os.Args) > 1 && os.Args[1] == "mirror" {
 		os.Exit(runMirrorCLI(context.Background(), os.Args[2:], osGetenv, os.Stdout, os.Stderr))
+	}
+	// `muster-server vapid generate`: mint muster's Web Push keypair. Needs no
+	// database and no configuration.
+	if len(os.Args) > 1 && os.Args[1] == "vapid" {
+		os.Exit(runVAPIDCLI(os.Args[2:], os.Stdout, os.Stderr))
 	}
 	logger := log.New(os.Stdout, "", log.LstdFlags|log.LUTC)
 
@@ -377,6 +383,12 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if cfg.Mirror && a.pool != nil {
 		mirrorSvc = mirror.NewService(mirror.NewPG(a.pool), logger)
 		ext.Mirror = mirrorSvc
+	}
+
+	// muster-native Web Push: only with the VAPID triple AND a database (the
+	// subscriptions are rows; config.validate refuses a partial triple).
+	if cfg.pushConfigured() && a.pool != nil {
+		ext.Push = push.NewService(push.NewPG(a.pool), push.NewWebpushPusher(cfg.vapid()), cfg.vapid(), logger)
 	}
 
 	srv := api.New(bus, cfg.authConfig(), logger)
@@ -880,6 +892,18 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("approval relay gate: NONE — %s/%s are unset, so /agent/approvals answers 503 "+
 			"and every claude-code permission prompt falls back to the agent's own terminal "+
 			"(a configured permission router is NOT used for this)", envApprovalGateURL, envApprovalGateToken)
+	}
+
+	// Push, on its own line: "is anyone's phone going to buzz" must be
+	// answerable from the boot log.
+	if ext.Push != nil {
+		l.Printf("web push: ENABLED — %s/%s/%s are set (subject %q); devices subscribe on the session "+
+			"tier and each notification reaches only its owner's devices", envVAPIDPublicKey, envVAPIDPrivateKey,
+			envVAPIDSubject, a.cfg.VAPIDSubject)
+	} else {
+		l.Printf("web push: OFF — %s/%s/%s are unset (or there is no database), so no Enable button is drawn, "+
+			"%s answers 503 and nothing is sent. Mint a keypair with `muster-server vapid generate`",
+			envVAPIDPublicKey, envVAPIDPrivateKey, envVAPIDSubject, "/api/push/vapid-public-key")
 	}
 
 	if ext.Connectors != nil {
