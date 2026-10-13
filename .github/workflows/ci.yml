@@ -326,12 +326,19 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      - name: install tmux, and fail if it is not there
+      # zsh too: TestTmuxPastePaneIntoAShellSubmitsOnce pastes into a real bash
+      # AND a real zsh (the two shells a mirrored session is most likely to be
+      # running) and, like the rest of this suite, fails rather than skips when
+      # one is missing. bash is already on the runner.
+      - name: install tmux and zsh, and fail if either is not there
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq tmux
+          sudo apt-get install -y -qq tmux zsh
           command -v tmux
           tmux -V
+          command -v zsh
+          zsh --version
+          bash --version | head -1
 
       # CCD_TMUXIT_RAW_ESC=1: Ubuntu 24.04's tmux (3.4 — measured in an
       # ubuntu:24.04 container, as is the image's 3.3a) delivers ESC raw inside a

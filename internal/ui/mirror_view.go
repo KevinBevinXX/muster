@@ -33,9 +33,6 @@ func MirrorViewWSPath(host, session string) string {
 	return "/mirror/view/ws?" + url.Values{"host": {host}, "session": {session}}.Encode()
 }
 
-// MirrorSendPath is where the view's composer posts a message.
-const MirrorSendPath = "/mirror/view/send"
-
 // MirrorViewView is the data the rendered view's page renders.
 type MirrorViewView struct {
 	Host    string
@@ -47,18 +44,26 @@ type MirrorViewView struct {
 	// (each send is still gated on a fresh sign-in, server-side). False draws
 	// it disabled, saying why.
 	Interactive bool
-	// ConfirmPath is the same-origin "Confirm it's you" route (internal/api's
-	// step-up confirm): a send refused as stale asks for the password there
-	// and retries. The terminal page's own dialog (confirmDialog) is reused.
-	ConfirmPath string
+	// StepUp is the "Confirm it's you" wiring (stepup_confirm.go): a send
+	// refused as stale asks there — passkey or password — and retries. Unused
+	// (no dialog is drawn) on a read-only host, which cannot be sent to at all.
+	StepUp *StepUpView
 }
+
+// MirrorReadOnlyNote is what a read-only host's composer says instead of
+// accepting text.
+const MirrorReadOnlyNote = "This host is read-only — its muster-mirror was not started with -interactive, so nothing can be sent from here."
 
 // MirrorViewPage is the rendered view's document.
 //
 // ⚠ ITS OWN DOCUMENT, like the terminal page: a real load (the links into it
 // opt out of boost), with its own socket and script.
 func MirrorViewPage(v MirrorViewView) g.Node {
-	readOnlyNote := "This host is read-only — its muster-mirror was not started with -interactive, so nothing can be sent from here."
+	composer := MirrorComposerView{SendPath: MirrorSendPath, Host: v.Host, Session: v.Session,
+		Placeholder: "Message Claude…", Aria: "Message Claude in this session", DisabledPlaceholder: "Read-only host"}
+	if !v.Interactive {
+		composer.Disabled = MirrorReadOnlyNote
+	}
 	return Doctype(
 		HTML(Class("dark"), Lang("en"),
 			Head(
@@ -110,35 +115,11 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 					Class("px-3 pb-1 text-xs text-muted"),
 					Span(Class("animate-pulse"), g.Text("Claude is working…")),
 				),
-				Form(
-					ID("mv-form"),
-					g.Attr("data-send", MirrorSendPath),
-					g.Attr("data-host", v.Host),
-					g.Attr("data-session", v.Session),
-					g.Attr("data-confirm", v.ConfirmPath),
-					Class("flex flex-none items-end gap-2 border-t border-line px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2"),
-					Textarea(
-						ID("mv-input"),
-						Name("text"),
-						Rows("1"),
-						g.Attr("aria-label", "Message Claude in this session"),
-						g.If(!v.Interactive, g.Attr("disabled", "")),
-						g.If(!v.Interactive, g.Attr("title", readOnlyNote)),
-						Placeholder(map[bool]string{true: "Message Claude…", false: "Read-only host"}[v.Interactive]),
-						Class("min-h-[44px] min-w-0 flex-1 resize-none rounded-xl border-0 bg-s2 px-3 py-2.5 text-sm text-fg ring-1 ring-inset ring-line placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus disabled:opacity-50"),
-					),
-					Button(
-						ID("mv-send"),
-						Type("submit"),
-						g.If(!v.Interactive, g.Attr("disabled", "")),
-						g.Attr("aria-label", "Send"),
-						Class("press min-h-[44px] shrink-0 rounded-xl bg-accent px-4 text-sm font-semibold text-on-accent transition disabled:opacity-40"),
-						g.Text("Send"),
-					),
-				),
-				g.If(!v.Interactive, P(ID("mv-readonly"), Class("px-3 pb-2 text-[11px] text-muted"), g.Text(readOnlyNote))),
-				g.If(v.Interactive, confirmDialog()),
+				mirrorComposer(composer),
+				g.If(v.Interactive, confirmDialog(v.StepUp)),
+				g.If(v.Interactive, stepUpScript()),
 				mirrorViewScript(),
+				mirrorComposerScript(),
 				pwaChrome(),
 			),
 		),
@@ -246,8 +227,9 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 	return ops
 }
 
-// mirrorViewScript connects the transcript socket and applies its batches;
-// reconnects resuming from the last offset; posts the composer.
+// mirrorViewScript connects the transcript socket and applies its batches, and
+// reconnects resuming from the last offset. The composer is its own script
+// (mirrorComposerScript), shared with the Terminal view.
 //
 // Every node it inserts is server-rendered HTML (MirrorTranscript.Ops), whose
 // text was escaped by gomponents and renderMarkdown; the script adds none of
@@ -261,9 +243,6 @@ func mirrorViewScript() g.Node {
   var errEl = document.getElementById('mv-error');
   var errText = document.getElementById('mv-error-text');
   var working = document.getElementById('mv-working');
-  var form = document.getElementById('mv-form');
-  var input = document.getElementById('mv-input');
-  var send = document.getElementById('mv-send');
   var gen = '', offset = 0, retry = 0, closed = false, sock = null;
 
   function showError(msg) { errText.textContent = msg; errEl.hidden = false; }
@@ -321,61 +300,6 @@ func mirrorViewScript() g.Node {
   window.addEventListener('pagehide', function () { closed = true; if (sock) sock.close(); });
   connect();
 
-  // post sends the composer's text. A 403 carrying X-Muster-Step-Up means the
-  // sign-in is not fresh: "Confirm it's you" is asked, and on success the SAME
-  // text is sent again. The page never decides freshness — the server does.
-  function post() {
-    var body = new URLSearchParams();
-    body.set('host', form.getAttribute('data-host'));
-    body.set('session', form.getAttribute('data-session'));
-    body.set('text', input.value);
-    send.disabled = true;
-    return fetch(form.getAttribute('data-send'), { method: 'POST', body: body, credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' } })
-      .then(function (r) {
-        if (r.ok) { input.value = ''; clearError(); return; }
-        if (r.status === 403 && r.headers.get('X-Muster-Step-Up') && dlg) { askConfirm(); return; }
-        return r.text().then(function (t) { showError(t.trim() || ('Not sent (HTTP ' + r.status + ')')); });
-      })
-      .catch(function () { showError('Not sent: muster could not be reached.'); })
-      .then(function () { send.disabled = false; });
-  }
-  var dlg = document.getElementById('term-confirm');
-  function askConfirm() {
-    var err = document.getElementById('term-confirm-error');
-    err.hidden = true; err.textContent = '';
-    document.getElementById('term-confirm-password').value = '';
-    if (!dlg.open) dlg.showModal();
-  }
-  if (dlg) {
-    document.getElementById('term-confirm-cancel').addEventListener('click', function () { dlg.close(); });
-    document.getElementById('term-confirm-form').addEventListener('submit', function (ev) {
-      ev.preventDefault();
-      var pw = document.getElementById('term-confirm-password');
-      var err = document.getElementById('term-confirm-error');
-      var btn = document.getElementById('term-confirm-submit');
-      var body = new URLSearchParams(); body.set('password', pw.value);
-      btn.disabled = true;
-      fetch(form.getAttribute('data-confirm'), { method: 'POST', body: body, credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' } })
-        .then(function (r) {
-          return r.json().catch(function () { return {}; }).then(function (j) {
-            if (r.ok) { pw.value = ''; dlg.close(); return post(); }
-            err.textContent = j.error || 'Could not confirm.'; err.hidden = false;
-          });
-        })
-        .catch(function () { err.textContent = 'muster could not be reached.'; err.hidden = false; })
-        .then(function () { btn.disabled = false; });
-    });
-  }
-  if (form) form.addEventListener('submit', function (e) {
-    e.preventDefault();
-    if (!input || input.disabled || !input.value.trim()) return;
-    post();
-  });
-  if (input) input.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); }
-  });
 })();
 `))
 }

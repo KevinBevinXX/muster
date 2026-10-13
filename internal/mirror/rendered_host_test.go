@@ -24,7 +24,7 @@ import (
 // driveV2 runs a REAL muster-mirror (interactive or not) against a HAND-DRIVEN
 // muster that sends one v2 request and returns the host's first reply to it —
 // so each host-side refusal is tested with muster misbehaving.
-func driveV2(t *testing.T, interactive bool, b *claudeBackend, req mirror.Msg) mirror.Msg {
+func driveV2(t *testing.T, interactive bool, b mirrorhost.Backend, req mirror.Msg) mirror.Msg {
 	t.Helper()
 	got := make(chan mirror.Msg, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -211,7 +211,7 @@ func TestTheRenderedViewSurvivesTheNoShrinkWrapper(t *testing.T) {
 	})
 	rec, _, _ := watchAs(t, asUser(1), r.svc, "ws", "main", "", 0)
 	eventually(t, "the transcript through the wrapper", func() bool { return len(rec.events()) == 1 })
-	if err := r.svc.Paste(asUser(1), "ws", "main", "hi"); err != nil || !slices.Equal(b.pasted(), []string{"%2:hi"}) {
+	if err := r.svc.Paste(asUser(1), "ws", "main", "hi", mirror.PasteClaude); err != nil || !slices.Equal(b.pasted(), []string{"%2:hi"}) {
 		t.Fatalf("paste through the wrapper: %v, pasted %v", err, b.pasted())
 	}
 }

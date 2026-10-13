@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/auth"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/gotrue"
+	"github.com/ZacxDev/muster/internal/ui"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -147,7 +148,7 @@ func (s *Server) renderGoTrueLogin(w http.ResponseWriter, code int, next, email,
 <button type="button" id="passkey-signin" class="press min-h-[44px] w-full rounded-md bg-bg px-3 py-2 text-base font-semibold text-fg ring-1 ring-inset ring-edge">Sign in with a passkey</button>
 <p class="text-sm text-fg2" id="passkey-signin-status" role="status" aria-live="polite"></p>
 </section>
-<script>` + passkeyJS + passkeySignInJS + `</script>`
+<script>` + ui.PasskeyJS + passkeySignInJS + `</script>`
 	}
 	inner := `<form method="POST" action="` + loginPath + `" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Sign in to muster</h1>

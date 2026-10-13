@@ -87,6 +87,21 @@ type HostView struct {
 	Online bool
 	// Interactive: the host advertised -interactive.
 	Interactive bool
+	// PanePaste: the host advertised that a paste may target a session's active
+	// pane whatever runs there (Msg.PanePaste). False for an older muster-mirror
+	// and for an offline host.
+	PanePaste bool
+}
+
+// CanPaste reports whether a message can be sent into session's active pane
+// from the Terminal view (PasteActivePane): the host is connected and
+// -interactive, and either pastes into any pane or — an older muster-mirror —
+// reports Claude Code in this one, which its Claude-only paste reaches.
+func (v HostView) CanPaste(session string) bool {
+	if !v.Online || !v.Interactive {
+		return false
+	}
+	return v.PanePaste || (v.Rendered && slices.Contains(v.Claude, session))
 }
 
 // Hub is the set of connected hosts, their session lists and their live
@@ -181,6 +196,9 @@ type hostConn struct {
 	ctx         context.Context
 	cancel      context.CancelCauseFunc
 	interactive bool
+	// panePaste: the host advertised Msg.PanePaste (and speaks v2, where paste
+	// exists at all).
+	panePaste bool
 	// version is the tunnel version this connection speaks (its hello's).
 	version int
 
@@ -221,7 +239,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		}
 		hc.mu.Lock()
 		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...),
-			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive})
+			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste})
 		hc.mu.Unlock()
 	}
 	now := h.now()
@@ -331,6 +349,8 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		sessions: sessions, labels: NormalizeLabels(hello.Labels, sessions), activity: NormalizeActivity(hello.Activity, sessions, h.now().Unix()), streams: map[uint32]*stream{}, watches: map[uint32]*watch{}, pastes: map[uint32]chan error{}}
 	if hc.version >= 2 {
 		hc.claude = normalizeClaude(hello.Claude, sessions)
+		// A read-only host cannot be pasted into whatever it claims.
+		hc.panePaste = hello.PanePaste && hello.Interactive
 	}
 	h.mu.Lock()
 	old := h.hosts[key]

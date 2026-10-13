@@ -165,7 +165,7 @@ func TestInteractiveIsRefusedWhenTheHostDidNotAdvertiseIt(t *testing.T) {
 
 // TestAnInteractiveAttachNeedsAFreshSignIn: the plugin's OWN step-up check
 // (internal/api checks too, before its upgrade; this does not rely on it). On an
-// -interactive host: a session signed in longer ago than stepup.MaxAge, and one
+// -interactive host: a session signed in longer ago than stepup.Window(), and one
 // with no sign-in time at all, are refused a rw attach before anything reaches
 // the host — while the same stale session still attaches read-only, and a fresh
 // one types (the controls). Another owner's host stays invisible to a fresh

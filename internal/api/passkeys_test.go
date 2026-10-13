@@ -258,7 +258,7 @@ func TestSignOutEverywhereEndsAPasskeySession(t *testing.T) {
 }
 
 // TestAStaleSessionCannotAddAPasskey: adding a passkey needs a sign-in within
-// stepup.MaxAge (the session's amr timestamp). Measured at two points: 4
+// stepup.Window() (the session's amr timestamp). Measured at two points: 4
 // minutes after sign-in it is allowed, 6 minutes after it is refused with
 // reauth_required — and GoTrue's registration API is not called. The
 // password, asked again, mints a fresh session that may add one.

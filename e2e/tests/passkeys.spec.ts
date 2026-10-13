@@ -1,11 +1,12 @@
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
-import type { BrowserContext, CDPSession, Page } from '@playwright/test';
+import type { BrowserContext, Page } from '@playwright/test';
 import { test, expect, expectShellShows } from '../lib/fixtures';
 import {
   dsn, e2eRoot, gotrueSecret, passkeysBrowserPort, passkeysGotruePort, passkeysMainPort, repoRoot, versionA,
 } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
+import { authenticator, credentialCount } from '../lib/webauthn';
 
 // Passkeys, end to end: Chromium's VIRTUAL AUTHENTICATOR (CDP WebAuthn domain)
 // against the REAL GoTrue image with GOTRUE_PASSKEY_ENABLED, through muster's
@@ -65,24 +66,6 @@ test.afterAll(async () => {
   await server?.stop();
   execFileSync('docker', ['compose', '-f', compose, 'down', '-v'], { env: composeEnv, stdio: 'inherit' });
 });
-
-// authenticator attaches a virtual platform authenticator to page.
-async function authenticator(page: Page): Promise<{ cdp: CDPSession; id: string }> {
-  const cdp = await page.context().newCDPSession(page);
-  await cdp.send('WebAuthn.enable');
-  const { authenticatorId } = await cdp.send('WebAuthn.addVirtualAuthenticator', {
-    options: {
-      protocol: 'ctap2', transport: 'internal', hasResidentKey: true,
-      hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true,
-    },
-  });
-  return { cdp, id: authenticatorId };
-}
-
-async function credentialCount(a: { cdp: CDPSession; id: string }): Promise<number> {
-  const { credentials } = await a.cdp.send('WebAuthn.getCredentials', { authenticatorId: a.id });
-  return credentials.length;
-}
 
 async function session(ctx: BrowserContext): Promise<{ at?: string; rt?: string }> {
   const cs = await ctx.cookies(browserURL);

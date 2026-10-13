@@ -18,7 +18,8 @@ import (
 
 // ---------------------------------------------------------------------------
 // THE RENDERED VIEW of a mirrored session whose pane runs Claude Code (tunnel
-// v2): the page, its transcript socket, and its composer.
+// v2): the page, its transcript socket, and its composer — and the ONE send
+// handler behind that composer and the Terminal view's (mirrorSend).
 //
 // 🔴 NOTHING HERE IS PERSISTED. The socket relays the host's batches, rendered
 // to HTML with the agent chat's own components, to the one browser that opened
@@ -33,6 +34,8 @@ import (
 // request (requireOperatorWrite), a host that advertised -interactive, and a
 // FRESH SIGN-IN — internal/stepup, the SAME gate on the same clock as an
 // interactive terminal attach (mirror.go), not a second notion of "fresh".
+// Both send routes run those three in mirrorSend; they differ only in WHICH
+// pane the host may paste into (mirror.PasteTarget).
 //
 // A leading `/` or `!` is pasted as typed (an operator decision): the sender is
 // the operator, on a host that opted into -interactive, which is already a
@@ -67,7 +70,7 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.MirrorViewPage(ui.MirrorViewView{Host: h.Host, Session: session, Label: h.Labels[session], Interactive: h.Interactive,
-		ConfirmPath: stepUpConfirmPath}).Render(w); err != nil {
+		StepUp: s.stepUpView(r, "")}).Render(w); err != nil {
 		s.logger.Printf("mirror: render view page: %v", err)
 	}
 }
@@ -146,10 +149,34 @@ func refuseStale(w http.ResponseWriter) {
 const mirrorSendTimeout = 20 * time.Second
 
 // handleMirrorViewSend is POST /mirror/view/send (host, session, text): paste
-// the text into the session's Claude pane, the way ccd hands an agent a prompt.
-// 204 on success; otherwise a status and the reason as plain text, which the
-// page shows.
+// the text into the session's CLAUDE pane, the way ccd hands an agent a prompt
+// — and only into a pane that runs Claude Code.
 func (s *Server) handleMirrorViewSend(w http.ResponseWriter, r *http.Request) {
+	s.mirrorSend(w, r, mirror.PasteClaude)
+}
+
+// handleMirrorTerminalSend is POST /mirror/terminal/send (host, session, text):
+// paste the text into the session's ACTIVE pane, whatever runs in it — the
+// Terminal view's composer, for a session with no rendered view (a shell,
+// another TUI) as much as for one with.
+func (s *Server) handleMirrorTerminalSend(w http.ResponseWriter, r *http.Request) {
+	s.mirrorSend(w, r, mirror.PasteActivePane)
+}
+
+// MirrorSendEmpty answers a send with no text: 400, said rather than dropped.
+const MirrorSendEmpty = "nothing to send: type a message first"
+
+// mirrorSend is BOTH send routes: paste the text into a pane of the session and
+// press Enter. 204 on success; otherwise a status and the reason as plain text,
+// which the composer shows inline.
+//
+// 🔴 THE GATES ARE HERE ONCE, FOR BOTH ROUTES, IN THIS ORDER: the plugin on;
+// the host is the request principal's (else 404 — never a 403 that would say
+// "this exists"); the host advertised -interactive (409); the sign-in is fresh
+// (403 + X-Muster-Step-Up, which the page answers with "Confirm it's you" and a
+// retry of the same text). Only then is the text looked at. The plugin checks
+// the last two again on its own.
+func (s *Server) mirrorSend(w http.ResponseWriter, r *http.Request, target mirror.PasteTarget) {
 	if s.ext.Mirror == nil {
 		http.NotFound(w, r)
 		return
@@ -174,12 +201,12 @@ func (s *Server) handleMirrorViewSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.TrimSpace(text) == "" {
-		http.Error(w, "nothing to send", http.StatusBadRequest)
+		http.Error(w, MirrorSendEmpty, http.StatusBadRequest)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), mirrorSendTimeout)
 	defer cancel()
-	if err := s.ext.Mirror.Paste(ctx, host, session, text); err != nil {
+	if err := s.ext.Mirror.Paste(ctx, host, session, text, target); err != nil {
 		if errors.Is(err, mirror.ErrStepUpRequired) {
 			// The plugin's own check of the same gate (it does not rely on the
 			// one above): the same answer.
@@ -191,7 +218,8 @@ func (s *Server) handleMirrorViewSend(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, mirror.ErrBadPaste):
 			status = http.StatusBadRequest
 		case errors.Is(err, mirror.ErrInteractiveRefused), errors.Is(err, mirror.ErrNotClaude),
-			errors.Is(err, mirror.ErrNoRenderedView), errors.Is(err, mirror.ErrSessionGone):
+			errors.Is(err, mirror.ErrNoRenderedView), errors.Is(err, mirror.ErrSessionGone),
+			errors.Is(err, mirror.ErrPanePasteUnsupported):
 			status = http.StatusConflict
 		case errors.Is(err, mirror.ErrHostOffline):
 			status = http.StatusServiceUnavailable

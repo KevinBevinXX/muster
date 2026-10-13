@@ -11,10 +11,12 @@ package api
 //     the same two cookies — so the session cutoff, sign-out-everywhere, the
 //     disable sweep and refresh all apply to a passkey session unchanged.
 //   - Account: GET /account/passkeys lists them; options/verify add one;
-//     /{id}/delete removes one. Adding is a STEP-UP action: it requires a
-//     sign-in within stepup.MaxAge (stepup.Fresh — the one freshness rule,
-//     shared with the mirror terminal), else the password is asked again
-//     through the shared POST /auth/confirm (stepup.go).
+//     /{id}/delete removes one. Adding is a STEP-UP action with its OWN,
+//     shorter, fixed window: a sign-in within stepup.CredentialMaxAge (5
+//     minutes — NOT the configurable window typing into a mirrored session
+//     uses; a new credential outlives the session that mints it), else the
+//     password is asked again through the shared POST /auth/confirm
+//     (stepup.go).
 //   - Admin: /admin/users/{id}/passkeys/delete removes all of a user's.
 //   - A password reset removes all of the user's (login_invite.go).
 //
@@ -40,6 +42,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/gotrue"
 	"github.com/ZacxDev/muster/internal/stepup"
+	"github.com/ZacxDev/muster/internal/ui"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -382,14 +385,16 @@ func (s *Server) renderAccountPasskeys(w http.ResponseWriter, r *http.Request, c
 `+skip+`
 <a href="/account" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to account</a>
 </section>
-<script>`+passkeyJS+passkeyAddJS+`</script>`)
+<script>`+ui.PasskeyJS+passkeyAddJS+`</script>`)
 }
 
-// refuseStale answers 401 reauth_required unless the request's person signed
-// in within stepup.MaxAge. The sign-in time is the one requireGoTrueSession
-// put on the context from the token's amr (stepup.WithAuthTime).
-func (s *Server) refuseStale(w http.ResponseWriter, r *http.Request) bool {
-	if stepup.Fresh(r.Context(), s.stepUpNow()) {
+// refuseStaleCredentialChange answers 401 reauth_required unless the request's
+// person signed in within stepup.CredentialMaxAge — the short fixed window, not
+// stepup.Window (see CredentialMaxAge on why they differ). The sign-in time is
+// the one requireGoTrueSession put on the context from the token's amr
+// (stepup.WithAuthTime).
+func (s *Server) refuseStaleCredentialChange(w http.ResponseWriter, r *http.Request) bool {
+	if stepup.FreshWithin(r.Context(), s.stepUpNow(), stepup.CredentialMaxAge) {
 		return false
 	}
 	s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": PasskeyReauthRequired})
@@ -398,7 +403,7 @@ func (s *Server) refuseStale(w http.ResponseWriter, r *http.Request) bool {
 
 func (s *Server) handlePasskeyAddOptions(w http.ResponseWriter, r *http.Request) {
 	creds, ok := s.passkeyAccountCreds(w, r)
-	if !ok || s.refuseStale(w, r) {
+	if !ok || s.refuseStaleCredentialChange(w, r) {
 		return
 	}
 	o, err := s.gt.Client.PasskeyRegisterOptions(r.Context(), clientIP(r), creds.access)
@@ -416,7 +421,7 @@ func (s *Server) handlePasskeyAddOptions(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handlePasskeyAddVerify(w http.ResponseWriter, r *http.Request) {
 	creds, ok := s.passkeyAccountCreds(w, r)
-	if !ok || s.refuseStale(w, r) {
+	if !ok || s.refuseStaleCredentialChange(w, r) {
 		return
 	}
 	var body struct {

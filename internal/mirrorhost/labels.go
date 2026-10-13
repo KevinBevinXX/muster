@@ -65,7 +65,7 @@ func WindowIndexerOf(b Backend) (WindowIndexer, bool) { return capabilityOf[Wind
 // window — measured on tmux 3.7c: a session with windows 0-2 and window 1
 // selected lists 1, and after `select-window` to 2 lists 2.
 func (t Tmux) ActiveWindows(ctx context.Context) (map[string]string, error) {
-	cmd := exec.CommandContext(ctx, t.bin(), append(t.server(), "list-sessions", "-F", "#{window_index}\t#{session_name}")...)
+	cmd := exec.CommandContext(ctx, t.bin(), t.query("list-sessions", "-F", "#{window_index}\t#{session_name}")...)
 	cmd.Env = tmuxEnv()
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb

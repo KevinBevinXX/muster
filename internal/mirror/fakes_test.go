@@ -26,13 +26,13 @@ import (
 
 // asUser is a request principal for user id (the shape requireSession attaches),
 // signed in just now — so an interactive attach passes the step-up gate.
-// asStaleUser is the same session signed in longer ago than stepup.MaxAge.
+// asStaleUser is the same session signed in longer ago than stepup.Window().
 func asUser(id int64) context.Context {
 	return signedInAt(id, time.Now())
 }
 
 func asStaleUser(id int64) context.Context {
-	return signedInAt(id, time.Now().Add(-stepup.MaxAge-time.Minute))
+	return signedInAt(id, time.Now().Add(-stepup.Window()-time.Minute))
 }
 
 func signedInAt(id int64, at time.Time) context.Context {

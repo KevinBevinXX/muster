@@ -25,7 +25,7 @@ import (
 // The step-up gate, end to end through the real GoTrue session tier (over the
 // fake GoTrue, whose `amr` follows what v2.189.0 and v2.197.0 were measured to do): a mirrored
 // terminal attaches INTERACTIVELY only on a session that signed in within
-// stepup.MaxAge, and POST /auth/confirm is how a stale one becomes fresh.
+// stepup.Window(), and POST /auth/confirm is how a stale one becomes fresh.
 
 const (
 	stepUpOwnerPW = "owner password, correct"
@@ -129,7 +129,7 @@ func (r *stepUpRig) rwCalls() int {
 }
 
 // TestAStaleSessionCannotAttachAMirrorInteractively is the server-side gate:
-// a session that signed in more than stepup.MaxAge ago gets 403 for mode=rw —
+// a session that signed in more than stepup.Window() ago gets 403 for mode=rw —
 // before the upgrade, so the plugin is never asked — and still watches
 // read-only. A fresh session (the control) attaches rw.
 func TestAStaleSessionCannotAttachAMirrorInteractively(t *testing.T) {
@@ -143,9 +143,10 @@ func TestAStaleSessionCannotAttachAMirrorInteractively(t *testing.T) {
 		t.Fatalf("control: the plugin saw %d rw attaches, want 1", n)
 	}
 
-	// Past MaxAge — and STILL inside the access token's lifetime (15 min), so
-	// the session itself is perfectly valid. Only the sign-in is old.
-	r.fake.Advance(stepup.MaxAge + time.Minute)
+	// Past the window. (The access token has long expired by then — the window
+	// is hours — so each request below is served on a server-side REFRESH of a
+	// perfectly valid session. Only the sign-in is old.)
+	r.fake.Advance(stepup.Window() + time.Minute)
 	r.mustRefuse(t, at, rt, "rw", http.StatusForbidden, "a stale session's rw attach")
 	if n := r.rwCalls(); n != 1 {
 		t.Fatalf("a stale rw attach reached the plugin (%d rw attaches)", n)
@@ -162,8 +163,9 @@ func TestAStaleSessionCannotAttachAMirrorInteractively(t *testing.T) {
 func TestARefreshDoesNotMakeASessionFresh(t *testing.T) {
 	r := newStepUpRig(t)
 	at, rt, _ := r.fake.Mint(r.owner)
-	// Past the access token's 15 min lifetime: the request must refresh.
-	r.fake.Advance(16 * time.Minute)
+	// Past the window, and so past the access token's 15 min lifetime too: the
+	// request must refresh.
+	r.fake.Advance(stepup.Window() + 16*time.Minute)
 	w := do(r.edge, http.MethodGet, ui.MirrorTerminalPath("ws", "main"), nil, withCookies(at, rt), asNavigation)
 	if w.Code != http.StatusOK {
 		t.Fatalf("the page on a refreshed session: %d", w.Code)
@@ -215,7 +217,7 @@ func TestAnotherOwnersHostStaysInvisibleWhateverTheFreshness(t *testing.T) {
 	for _, mode := range []string{"rw", ""} {
 		r.mustRefuse(t, at, rt, mode, http.StatusNotFound, "user 2, fresh, mode="+mode)
 	}
-	r.fake.Advance(stepup.MaxAge + time.Minute)
+	r.fake.Advance(stepup.Window() + time.Minute)
 	r.mustRefuse(t, at, rt, "rw", http.StatusNotFound, "user 2, stale, rw")
 	if calls, _ := r.mirror.snapshot(); len(calls) != 0 {
 		t.Fatalf("the plugin was asked to attach for a non-owner: %+v", calls)
@@ -240,7 +242,7 @@ func errorOf(w *httptest.ResponseRecorder) string {
 func TestConfirmingThePasswordMakesAStaleSessionFresh(t *testing.T) {
 	r := newStepUpRig(t)
 	at, rt, _ := r.fake.Mint(r.owner)
-	r.fake.Advance(stepup.MaxAge + time.Minute)
+	r.fake.Advance(stepup.Window() + time.Minute)
 	r.mustRefuse(t, at, rt, "rw", http.StatusForbidden, "stale before confirming")
 
 	w := r.confirm(at, rt, url.Values{"password": {stepUpOwnerPW}})
@@ -248,8 +250,8 @@ func TestConfirmingThePasswordMakesAStaleSessionFresh(t *testing.T) {
 		t.Fatalf("confirm with the right password: %d %s", w.Code, w.Body)
 	}
 	var res stepUpResult
-	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil || res.FreshFor <= 0 || res.FreshFor > stepup.MaxAge.Milliseconds() {
-		t.Fatalf("confirm answered %s; want 0 < fresh_for <= %d", w.Body, stepup.MaxAge.Milliseconds())
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil || res.FreshFor <= 0 || res.FreshFor > stepup.Window().Milliseconds() {
+		t.Fatalf("confirm answered %s; want 0 < fresh_for <= %d", w.Body, stepup.Window().Milliseconds())
 	}
 	ck := setCookies(w)
 	nat, nrt := ck[accessCookieName], ck[refreshCookieName]
@@ -274,7 +276,7 @@ func TestTheConfirmRefusesTheWrongPasswordAndAnotherUsersPassword(t *testing.T) 
 	at, rt, _ := r.fake.Mint(r.owner)
 	first, _ := r.fake.Verifier().Verify(at)
 	signedIn, _ := first.AuthenticatedAt()
-	r.fake.Advance(stepup.MaxAge + time.Minute)
+	r.fake.Advance(stepup.Window() + time.Minute)
 	for name, body := range map[string]url.Values{
 		"wrong password":         {"password": {"not it"}},
 		"another user's":         {"password": {stepUpOtherPW}},
@@ -380,9 +382,9 @@ func TestTheTerminalPageCarriesTheFreshnessWindowAndTheConfirmRoute(t *testing.T
 		t.Fatalf("the mirrored page has no step-up wiring")
 	}
 	ff, _ := strconv.ParseInt(attrOf(page, "data-fresh-for"), 10, 64)
-	// amr is whole seconds, so up to one second less than MaxAge minus the
+	// amr is whole seconds, so up to one second less than the window minus the
 	// minute since sign-in.
-	want := (stepup.MaxAge - time.Minute).Milliseconds()
+	want := (stepup.Window() - time.Minute).Milliseconds()
 	if ff > want || ff <= want-1000 {
 		t.Fatalf("data-fresh-for = %d, want (%d, %d]", ff, want-1000, want)
 	}
@@ -403,7 +405,7 @@ func TestTheTerminalPageCarriesTheFreshnessWindowAndTheConfirmRoute(t *testing.T
 func TestPasswordModeConfirmsWithTheOperatorPassword(t *testing.T) {
 	fm := &fakeMirror{online: true, interactive: true}
 	s, ts := mirrorServer(t, fm, newFakeTerminal())
-	old := auth.SignSession(s.auth.uiSessionSecret(), time.Now().Add(-stepup.MaxAge-time.Minute), time.Hour)
+	old := auth.SignSession(s.auth.uiSessionSecret(), time.Now().Add(-stepup.Window()-time.Minute), sessionTTL)
 	stale := func(r *http.Request) { r.Header.Set("Cookie", sessionCookieName+"="+old) }
 
 	// Stale: rw refused, ro fine.

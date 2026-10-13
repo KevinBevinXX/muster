@@ -145,6 +145,19 @@ type Msg struct {
 	// read-only: muster offers no Interactive switch and refuses a rw attach,
 	// and the host refuses one itself.
 	Interactive bool `json:"interactive,omitempty"`
+	// PanePaste (hello) is the host ADVERTISING that a paste may name a
+	// session's ACTIVE PANE whatever runs in it (AnyPane) — a shell, another
+	// TUI — and not only a Claude Code pane: what the Terminal view's composer
+	// needs for a session with no rendered view. Only an -interactive v2 host
+	// whose backend can do it sets it.
+	//
+	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS, like Labels: an older
+	// muster ignores the field and never asks; an older host never sets it, so
+	// muster never sends it AnyPane (Hub.Paste) — and if it somehow did, that
+	// host would ignore the unknown field and apply its Claude-only rule, which
+	// REFUSES a pane that is not Claude Code. The failure direction is "not
+	// sent", never "sent somewhere unintended".
+	PanePaste bool `json:"panePaste,omitempty"`
 	// ID names one terminal stream (open, resize, close, closed).
 	ID uint32 `json:"id,omitempty"`
 	// Session is the tmux session an open attaches to.
@@ -176,8 +189,13 @@ type Msg struct {
 	// Busy (events): Claude Code reports a turn running (its session status).
 	Busy   bool                 `json:"busy,omitempty"`
 	Events []cctranscript.Event `json:"events,omitempty"`
-	// Text is what a paste types into the session's Claude pane.
+	// Text is what a paste types into the session's pane.
 	Text string `json:"text,omitempty"`
+	// AnyPane (paste) asks for the session's ACTIVE pane whatever runs in it.
+	// Unset — every paste before this field existed — the host pastes only into
+	// a pane it resolves as Claude Code NOW, and refuses otherwise: the rendered
+	// view's send must never land a prompt meant for Claude in a shell.
+	AnyPane bool `json:"anyPane,omitempty"`
 }
 
 // The v2 bounds. Each is a property of the wire, so both halves read it here.
@@ -374,7 +392,7 @@ func BatchLines(lines []cctranscript.Line, from int64) []Msg {
 	return out
 }
 
-// SanitizePaste is text ready to paste into a Claude pane, or why it cannot be:
+// SanitizePaste is text ready to paste into a pane, or why it cannot be:
 // CRLF and lone CR fold to LF, and every other control character is REFUSED
 // (tab and newline excepted), with the size bounded by MaxPaste.
 //

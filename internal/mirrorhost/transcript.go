@@ -242,13 +242,37 @@ func (h *hostSide) tail(ctx context.Context, cb ClaudeBackend, m mirror.Msg) err
 	}
 }
 
-// paste types m.Text into m.Session's Claude pane and answers pasted.
+// paneBackend is the backend's PaneBackend, when it has one AND this
+// connection speaks v2 (paste does not exist on v1).
+func (h *hostSide) paneBackend() (PaneBackend, bool) {
+	if h.version < 2 {
+		return nil, false
+	}
+	return PaneOf(h.c.cfg.Backend)
+}
+
+// panePaste is what this host advertises as Msg.PanePaste: it accepts a paste
+// into a session's active pane whatever runs there. Only an -interactive host
+// whose backend can do it — a read-only host advertises nothing it would
+// refuse.
+func (h *hostSide) panePaste() bool {
+	_, ok := h.paneBackend()
+	return ok && h.c.cfg.Interactive
+}
+
+// paste types m.Text into a pane of m.Session and answers pasted.
 //
 // 🔴 REFUSED UNLESS THIS HOST OPTED IN (-interactive), whatever muster asks —
 // muster refuses it too, and this layer does not depend on it. Then only a
-// listed session whose pane runs Claude Code NOW (re-resolved here, so the
-// paste goes to the pane id of the CLI, never to a shell the operator split
-// beside it), and only text that passes mirror.SanitizePaste again.
+// listed session, and only text that passes mirror.SanitizePaste again.
+//
+// 🔴 WHICH PANE IS DECIDED HERE, BY WHAT muster ASKED FOR:
+//   - without m.AnyPane (the rendered view's send, and every paste an older
+//     muster sends): only a pane that runs Claude Code NOW, re-resolved here —
+//     a prompt written for Claude is never typed into the shell it left behind;
+//   - with m.AnyPane (the Terminal view's composer): the session's active pane
+//     whatever runs in it. That is no more than this host already granted by
+//     -interactive, which lets the same person type into the same pane.
 func (h *hostSide) paste(m mirror.Msg) {
 	reply := func(err error) {
 		msg := ""
@@ -273,13 +297,27 @@ func (h *hostSide) paste(m mirror.Msg) {
 		reply(err)
 		return
 	}
+	ctx, cancel := context.WithTimeout(h.ctx, 10*time.Second)
+	defer cancel()
+	if m.AnyPane {
+		pb, ok := h.paneBackend()
+		if !ok {
+			reply(errors.New("this host cannot paste into a pane"))
+			return
+		}
+		pane, ok := pb.ActivePane(ctx, m.Session)
+		if !ok {
+			reply(fmt.Errorf("session %q has no active pane to send to", m.Session))
+			return
+		}
+		reply(pb.PastePane(ctx, pane, text))
+		return
+	}
 	cb, ok := h.claudeBackend()
 	if !ok {
 		reply(errors.New("this host cannot see Claude Code panes"))
 		return
 	}
-	ctx, cancel := context.WithTimeout(h.ctx, 10*time.Second)
-	defer cancel()
 	p, ok := h.pane(ctx, cb, m.Session)
 	if !ok {
 		reply(errNotClaudeNow)

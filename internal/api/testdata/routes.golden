@@ -162,6 +162,8 @@ POST /api/tasks
 POST /api/tasks/{id}/comments
 POST /auth/claim
 POST /auth/confirm
+POST /auth/confirm/passkey/options
+POST /auth/confirm/passkey/verify
 POST /auth/passkey/options
 POST /auth/passkey/verify
 POST /auth/reset
@@ -179,6 +181,7 @@ POST /invite
 POST /login
 POST /logout
 POST /mcp
+POST /mirror/terminal/send
 POST /mirror/view/send
 POST /runner/flows/claim
 POST /runner/flows/{id}/heartbeat

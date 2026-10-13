@@ -36,6 +36,9 @@ var (
 	ErrPasteTimeout = errors.New("mirror: the host did not confirm the message in time")
 	// ErrPasteRefused wraps the host's own reason for refusing a paste.
 	ErrPasteRefused = errors.New("mirror: the host refused the message")
+	// ErrPanePasteUnsupported: the session's pane does not run Claude Code and
+	// the host's muster-mirror predates pasting into any other pane.
+	ErrPanePasteUnsupported = errors.New("mirror: this host's muster-mirror can only send to a Claude Code pane; upgrade it to send into this session, or use the Interactive terminal")
 	// ErrBadPaste: a message SanitizePaste refuses (empty, oversized, or
 	// carrying a control character).
 	ErrBadPaste = errors.New("mirror: the message cannot be pasted")
@@ -173,15 +176,62 @@ func (h *Hub) Watch(ctx context.Context, owner int64, host, session, gen string,
 	}
 }
 
-// Paste types text into owner's host's session's Claude pane and presses Enter
-// — the way ccd hands a provisioned agent a prompt (a bracketed paste, then
-// Enter) — and waits for the host to confirm it.
+// PasteTarget is WHICH pane of a session a paste may land in.
+type PasteTarget int
+
+const (
+	// PasteClaude: only a pane the host resolves as Claude Code — the rendered
+	// view's composer. A session whose pane runs anything else is refused, on
+	// muster and again on the host: a prompt written for Claude must never be
+	// typed into a shell.
+	PasteClaude PasteTarget = iota
+	// PasteActivePane: the session's active pane, whatever runs in it — the
+	// Terminal view's composer, where the person is looking at that pane.
+	PasteActivePane
+)
+
+// lookupPaste is owner's host for a paste into session at target, and whether
+// to ask the host for the active pane (Msg.AnyPane) — or the refusal.
+//
+// An older muster-mirror (no Msg.PanePaste) is never sent AnyPane: for a
+// session it reports as Claude Code its Claude-only paste reaches the very pane
+// PasteActivePane means, so that is used; for any other session the answer is
+// ErrPanePasteUnsupported, here, without asking the host.
+func (h *Hub) lookupPaste(owner int64, host, session string, target PasteTarget) (*hostConn, bool, error) {
+	if target != PasteActivePane {
+		hc, err := h.lookupClaude(owner, host, session)
+		return hc, false, err
+	}
+	h.mu.Lock()
+	hc := h.hosts[hostKey{owner, host}]
+	h.mu.Unlock()
+	switch {
+	case hc == nil:
+		return nil, false, fmt.Errorf("%w (host %q)", ErrHostOffline, host)
+	case !hc.has(session):
+		return nil, false, fmt.Errorf("%w (host %q, session %q)", ErrSessionGone, host, session)
+	case !hc.interactive:
+		// Before "can it paste into this pane": a read-only host's answer is
+		// that it is read-only, not that it wants upgrading.
+		return nil, false, fmt.Errorf("%w (host %q)", ErrInteractiveRefused, host)
+	case hc.panePaste:
+		return hc, true, nil
+	case hc.version >= 2 && hc.isClaude(session):
+		return hc, false, nil
+	}
+	return nil, false, fmt.Errorf("%w (host %q, session %q)", ErrPanePasteUnsupported, host, session)
+}
+
+// Paste types text into a pane of owner's host's session and presses Enter —
+// the way ccd hands a provisioned agent a prompt (a bracketed paste, then
+// Enter) — and waits for the host to confirm it. target says which pane it may
+// be (PasteTarget).
 //
 // 🔴 IT IS A WRITE INTO THE OPERATOR'S SESSION, SO IT IS REFUSED UNLESS THE
 // REQUEST'S SIGN-IN IS FRESH (internal/stepup) AND THE HOST ADVERTISED
 // -interactive — both here, whatever the caller (internal/api) already checked,
 // and the host refuses a paste it did not opt into again.
-func (h *Hub) Paste(ctx context.Context, owner int64, host, session, text string) error {
+func (h *Hub) Paste(ctx context.Context, owner int64, host, session, text string, target PasteTarget) error {
 	// 🔴 A FRESH SIGN-IN, checked HERE as well as by internal/api — the same
 	// gate, on the same clock, as an interactive Attach (Service.Attach): a
 	// paste types into the operator's session exactly as a keystroke does. A
@@ -193,7 +243,7 @@ func (h *Hub) Paste(ctx context.Context, owner int64, host, session, text string
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrBadPaste, err)
 	}
-	hc, err := h.lookupClaude(owner, host, session)
+	hc, anyPane, err := h.lookupPaste(owner, host, session, target)
 	if err != nil {
 		return err
 	}
@@ -211,7 +261,7 @@ func (h *Hub) Paste(ctx context.Context, owner int64, host, session, text string
 		delete(hc.pastes, id)
 		hc.mu.Unlock()
 	}()
-	if err := writeJSON(ctx, hc.ws, Msg{Type: TypePaste, ID: id, Session: session, Text: text}); err != nil {
+	if err := writeJSON(ctx, hc.ws, Msg{Type: TypePaste, ID: id, Session: session, Text: text, AnyPane: anyPane}); err != nil {
 		return fmt.Errorf("mirror: send the message to the host: %w", err)
 	}
 	t := time.NewTimer(pasteTimeout)

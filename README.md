@@ -399,14 +399,40 @@ route to the host, and the host holds no muster credential but its own token.
   can use muster's Interactive switch for the host can run commands there as the
   user `muster-mirror` runs as. The "only listed sessions" rule bounds read-only
   viewing; it is not a boundary once an interactive client is attached.
-- **Typing needs a fresh sign-in (step-up).** An interactive attach is refused
-  (403, before the socket upgrades — and again inside the plugin) unless the
-  session signed in within the last 5 minutes. The time is the sign-in's — the
-  GoTrue access token's `amr` timestamp, which a refresh does not move; a token
-  with no `amr` is never fresh. The terminal page asks "Confirm it's you" (the
-  password again, `POST /auth/confirm`, same-origin, throttled like sign-in) and
-  remembers the Interactive choice per host for the browser session. Watching
-  read-only needs no step-up.
+- **Typing needs a fresh sign-in (step-up).** An interactive attach, and every
+  message sent into a session, is refused (403, before the socket upgrades or
+  anything is pasted — and again inside the plugin) unless the session signed
+  in within the last **12 hours** (`MUSTER_STEPUP_WINDOW`, a Go duration; the
+  server refuses to start on a value outside 1m–24h). The time is the
+  sign-in's — the GoTrue access token's `amr` timestamp, which a refresh does
+  not move; a token with no `amr` is never fresh. 🔴 **Freshness belongs to one
+  browser session, never to the user**: it is read from the session a request
+  presents, and nothing is recorded per user, so confirming on one device
+  leaves the same person's other devices exactly as stale as they were.
+  The page asks "Confirm it's you" and then completes what was waiting (the
+  attach, or sending the same text): with a **passkey** — the default when the
+  account has one and the browser supports WebAuthn; the assertion must carry
+  user verification and must be the *signed-in* user's, or it is refused — or
+  with the password again (`POST /auth/confirm`). Both are same-origin and
+  throttled like sign-in. The passkey challenge is requested when the dialog
+  opens, never on page load, and not at all for an account with no passkey.
+  The Interactive choice is remembered per host for the browser session.
+  Watching read-only needs no step-up. (Adding a passkey keeps its own, fixed,
+  five-minute window: a new credential outlives the session that mints it.)
+- **A message box on the Terminal view.** On an `-interactive` host every
+  session's Terminal has a composer at the bottom — including a session whose
+  pane is *not* Claude Code (a shell, another TUI), which has no rendered view.
+  Send pastes the text into the session's **active pane** and presses Enter. It
+  does not need the Interactive switch: the switch is a live keyboard, the
+  composer is one gated paste per Send (same-origin, the host's `-interactive`,
+  a fresh sign-in). Measured on tmux 3.7c with bash 5.3 and zsh 5.9: a line is
+  run once; several lines arrive as one bracketed paste and the one Enter runs
+  them in order. A program that did not ask for bracketed paste gets the text
+  as typed, so each newline is an Enter. Only newline and tab are accepted as
+  control characters. A read-only host draws no composer. It needs a
+  `muster-mirror` that advertises pasting into any pane; with an older one the
+  composer works for Claude Code panes and is drawn disabled, saying so, for
+  the rest.
 - **A terminal never shrinks the session's window.** The far side (the host's
   `muster-mirror`, or muster itself for an agent pod) reads the tmux window's
   size and gives the browser's client that size unless the browser's own covers
@@ -430,11 +456,15 @@ route to the host, and the host holds no muster credential but its own token.
   -claude` prints what a host resolves. Sending a message from the view pastes
   it into the Claude pane (as typed — a leading `/` or `!` included; control
   characters are refused) and needs the host's `-interactive` **and** a
-  sign-in from the last 5 minutes, the same gate as typing into the terminal;
-  a stale one is asked to confirm and the message is then sent.
+  fresh sign-in, the same gate as typing into the terminal; a stale one is
+  asked to confirm and the message is then sent. It goes only into a pane that
+  still runs Claude Code — never into the shell it left behind. An empty Send
+  says so instead of doing nothing.
 - **Rolling upgrade:** this muster accepts tunnel v1 and v2 hosts (a v1 host
   simply has no rendered view), and a v2 `muster-mirror` falls back to v1
-  against an older muster — so either side can be upgraded first.
+  against an older muster — so either side can be upgraded first. Pasting into
+  a non-Claude pane is advertised by the host in its hello, with no version
+  bump: an older host is never asked for it, and an older muster never asks.
 
 Mint a token where the server runs (it is printed once, owned by the operator),
 then install and run the host binary:

@@ -308,16 +308,16 @@ func TestAnotherOwnerCannotWatchOrPaste(t *testing.T) {
 	if len(rec.all()) != 0 {
 		t.Fatal("user 2 received user 1's transcript")
 	}
-	if err := r.svc.Paste(asUser(2), "ws", "main", "hi"); !errors.Is(err, mirror.ErrHostOffline) {
+	if err := r.svc.Paste(asUser(2), "ws", "main", "hi", mirror.PasteClaude); !errors.Is(err, mirror.ErrHostOffline) {
 		t.Fatalf("user 2's paste = %v, want ErrHostOffline", err)
 	}
-	if err := r.svc.Paste(context.Background(), "ws", "main", "hi"); !errors.Is(err, mirror.ErrNoPrincipal) {
+	if err := r.svc.Paste(context.Background(), "ws", "main", "hi", mirror.PasteClaude); !errors.Is(err, mirror.ErrNoPrincipal) {
 		t.Fatalf("no principal's paste = %v", err)
 	}
 	// The control: the owner's own watch and paste work.
 	own, _, _ := watchAs(t, asUser(1), r.svc, "ws", "main", "", 0)
 	eventually(t, "the owner's watch", func() bool { return len(own.events()) == 1 })
-	if err := r.svc.Paste(asUser(1), "ws", "main", "hi"); err != nil {
+	if err := r.svc.Paste(asUser(1), "ws", "main", "hi", mirror.PasteClaude); err != nil {
 		t.Fatalf("the owner's paste: %v", err)
 	}
 	if got := b.pasted(); !slices.Equal(got, []string{"%1:hi"}) {
@@ -334,7 +334,7 @@ func TestPasteIsGatedOnInteractiveClaudeAndCleanText(t *testing.T) {
 	r.connect(t, "ro", tok, b, false)
 	eventually(t, "claude listed", func() bool { h := r.svc.Hosts(asUser(1)); return len(h) == 1 && len(h[0].Claude) == 1 })
 
-	if err := r.svc.Paste(asUser(1), "ro", "main", "hi"); !errors.Is(err, mirror.ErrInteractiveRefused) {
+	if err := r.svc.Paste(asUser(1), "ro", "main", "hi", mirror.PasteClaude); !errors.Is(err, mirror.ErrInteractiveRefused) {
 		t.Fatalf("paste on a read-only host = %v, want ErrInteractiveRefused", err)
 	}
 
@@ -351,25 +351,25 @@ func TestPasteIsGatedOnInteractiveClaudeAndCleanText(t *testing.T) {
 		}
 		return false
 	})
-	if err := r.svc.Paste(asUser(1), "rw", "shell", "ls"); !errors.Is(err, mirror.ErrNotClaude) {
+	if err := r.svc.Paste(asUser(1), "rw", "shell", "ls", mirror.PasteClaude); !errors.Is(err, mirror.ErrNotClaude) {
 		t.Fatalf("paste into a non-Claude session = %v, want ErrNotClaude", err)
 	}
-	if err := r.svc.Paste(asUser(1), "rw", "main", "evil\x1b[201~!rm -rf /"); !errors.Is(err, mirror.ErrBadPaste) {
+	if err := r.svc.Paste(asUser(1), "rw", "main", "evil\x1b[201~!rm -rf /", mirror.PasteClaude); !errors.Is(err, mirror.ErrBadPaste) {
 		t.Fatalf("paste with ESC = %v, want ErrBadPaste", err)
 	}
 	// 🔴 A stale sign-in is refused before anything reaches the host; so is a
 	// context that carries no sign-in time at all.
-	if err := r.svc.Paste(asStaleUser(1), "rw", "main", "hi"); !errors.Is(err, mirror.ErrStepUpRequired) {
+	if err := r.svc.Paste(asStaleUser(1), "rw", "main", "hi", mirror.PasteClaude); !errors.Is(err, mirror.ErrStepUpRequired) {
 		t.Fatalf("paste on a stale sign-in = %v, want ErrStepUpRequired", err)
 	}
 	noTime := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 1, Role: authz.RoleAdmin, Via: authz.ViaSession})
-	if err := r.svc.Paste(noTime, "rw", "main", "hi"); !errors.Is(err, mirror.ErrStepUpRequired) {
+	if err := r.svc.Paste(noTime, "rw", "main", "hi", mirror.PasteClaude); !errors.Is(err, mirror.ErrStepUpRequired) {
 		t.Fatalf("paste with no sign-in time = %v, want ErrStepUpRequired", err)
 	}
 	if len(b2.pasted()) != 0 {
 		t.Fatal("a stale paste reached the host")
 	}
-	if err := r.svc.Paste(asUser(1), "rw", "main", "line one\r\nline two"); err != nil {
+	if err := r.svc.Paste(asUser(1), "rw", "main", "line one\r\nline two", mirror.PasteClaude); err != nil {
 		t.Fatalf("a clean paste: %v", err)
 	}
 	if got := b2.pasted(); !slices.Equal(got, []string{"%8:line one\nline two"}) {

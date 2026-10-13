@@ -42,6 +42,7 @@ type watchCall struct {
 type pasteCall struct {
 	user                int64
 	host, session, text string
+	target              mirror.PasteTarget
 }
 
 // fakeMirrorV2 is the plugin's rendered-view half, played: Watch serves
@@ -78,13 +79,13 @@ func (f *fakeMirror) Watch(ctx context.Context, host, session, gen string, offse
 	return nil
 }
 
-func (f *fakeMirror) Paste(ctx context.Context, host, session, text string) error {
+func (f *fakeMirror) Paste(ctx context.Context, host, session, text string, target mirror.PasteTarget) error {
 	if f.v2 == nil {
 		return mirror.ErrNoRenderedView
 	}
 	f.v2.mu.Lock()
 	defer f.v2.mu.Unlock()
-	f.v2.pastes = append(f.v2.pastes, pasteCall{f.user(ctx), host, session, text})
+	f.v2.pastes = append(f.v2.pastes, pasteCall{f.user(ctx), host, session, text, target})
 	if f.user(ctx) != 1 {
 		return mirror.ErrHostOffline
 	}
@@ -296,9 +297,9 @@ func TestTheViewSocketPassesTheRefusalThrough(t *testing.T) {
 }
 
 // staleCookieFor is a real browser session that signed in longer ago than
-// stepup.MaxAge: still a valid session, no longer a fresh one.
+// stepup.Window(): still a valid session, no longer a fresh one.
 func staleCookieFor(s *Server) string {
-	return sessionCookieName + "=" + auth.SignSession(s.auth.uiSessionSecret(), time.Now().Add(-stepup.MaxAge-time.Minute), sessionTTL)
+	return sessionCookieName + "=" + auth.SignSession(s.auth.uiSessionSecret(), time.Now().Add(-stepup.Window()-time.Minute), sessionTTL)
 }
 
 // 🔴 THE SEND GATE, through the real mux and real session cookies: same origin,
@@ -347,7 +348,7 @@ func TestASendIsGatedOnInteractiveAndAFreshSignIn(t *testing.T) {
 		if resp.StatusCode != c.status || (len(pastes) == 1) != c.pasted {
 			t.Errorf("%s: %d %q, pasted %+v; want %d pasted=%v", c.name, resp.StatusCode, body, pastes, c.status, c.pasted)
 		}
-		if c.pasted && pastes[0] != (pasteCall{1, "ws", "main", "!ls /srv"}) {
+		if c.pasted && pastes[0] != (pasteCall{1, "ws", "main", "!ls /srv", mirror.PasteClaude}) {
 			t.Errorf("%s: pasted %+v", c.name, pastes[0])
 		}
 		if c.stale && (resp.Header.Get("X-Muster-Step-Up") != "required" || !strings.Contains(string(body), stepup.ErrStale.Error())) {
@@ -399,7 +400,7 @@ func (m *isoMirror) Watch(ctx context.Context, host, _, _ string, _ int64, _ fun
 	return mirror.ErrNoRenderedView
 }
 
-func (m *isoMirror) Paste(ctx context.Context, host, _, _ string) error {
+func (m *isoMirror) Paste(ctx context.Context, host, _, _ string, _ mirror.PasteTarget) error {
 	if !m.mine(ctx) || host != m.host {
 		return mirror.ErrHostOffline
 	}

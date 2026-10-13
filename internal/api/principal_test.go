@@ -85,6 +85,10 @@ var routeVias = map[authz.Via][]string{
 		"GET /account",
 		// The step-up confirm (stepup.go): the SESSION's user, re-proven.
 		"POST /auth/confirm",
+		// …and its passkey form: the same session's user, re-proven by a
+		// passkey that must be THAT user's (handleStepUpPasskeyVerify).
+		"POST /auth/confirm/passkey/options",
+		"POST /auth/confirm/passkey/verify",
 		"GET /account/credentials",
 		"POST /account/credentials/claude",
 		"POST /account/credentials/claude/{name}/delete",
@@ -123,6 +127,7 @@ var routeVias = map[authz.Via][]string{
 		"GET /mirror/view",
 		"GET /mirror/view/ws",
 		"POST /mirror/view/send",
+		"POST /mirror/terminal/send",
 		"DELETE /connector-grants/{id}",
 		"DELETE /connectors/{name}",
 		"DELETE /tasks/{id}",

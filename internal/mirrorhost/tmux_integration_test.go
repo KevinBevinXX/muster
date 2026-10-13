@@ -419,3 +419,164 @@ func TestTmuxPasteTypesIntoTheNamedPaneAndSubmits(t *testing.T) {
 		t.Fatal("a session name was accepted as a paste target; only a pane id may be")
 	}
 }
+
+// shellSession starts a detached session running an INTERACTIVE shell with no
+// rc files, in dir, and waits for its prompt.
+func (r *tmuxRig) shellSession(name, dir string, argv ...string) {
+	r.t.Helper()
+	args := append([]string{"new-session", "-d", "-s", name, "-x", "120", "-y", "40", "-c", dir,
+		"env", "HOME=" + dir, "ZDOTDIR=" + dir, "HISTFILE=/dev/null"}, argv...)
+	r.run(args...)
+	waitFor(r.t, name+"'s shell prompt", func() bool { return strings.TrimSpace(r.pane(name)) != "" })
+	// The line editor turns bracketed paste on as it starts reading the line,
+	// just after the prompt is drawn.
+	time.Sleep(300 * time.Millisecond)
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// TestTmuxPastePaneIntoAShellSubmitsOnce is the Terminal view's composer
+// against REAL tmux and REAL shells (never skipped: bash and zsh are both
+// required, like tmux): what PastePane + Enter does in a session whose active
+// pane is NOT Claude Code.
+//
+// MEASURED (tmux 3.7c, bash 5.3, zsh 5.9 — both ask for bracketed paste by
+// default, with no rc file):
+//
+//   - one line: typed at the prompt and run EXACTLY ONCE (the file gains one
+//     line, not two — a paste that submitted and an Enter that submitted again
+//     would write two);
+//   - several lines: ONE bracketed paste. The shell holds all of them in its
+//     edit buffer — the second line is on screen with NO prompt in front of it
+//     — and the single Enter runs them, in order. Shell metacharacters reach
+//     the shell as typed; tmux interprets none of them.
+//   - a program that did NOT ask for bracketed paste (cat): the text arrives as
+//     typed, each newline entering its line.
+//
+// And ActivePane is the pane the operator is looking at: it follows a split.
+func TestTmuxPastePaneIntoAShellSubmitsOnce(t *testing.T) {
+	r := newTmuxRig(t)
+	b := Tmux{Socket: r.sock}
+	ctx := context.Background()
+	for name, argv := range map[string][]string{
+		"bash": {"bash", "--norc", "--noprofile", "-i"},
+		"zsh":  {"zsh", "-f", "-i"},
+	} {
+		if _, err := exec.LookPath(argv[0]); err != nil {
+			t.Fatalf("%s is REQUIRED by this test and is not on PATH; it fails rather than skips: %v", argv[0], err)
+		}
+		dir := t.TempDir()
+		r.shellSession(name, dir, argv...)
+		pane, ok := b.ActivePane(ctx, name)
+		if want := strings.TrimSpace(r.run("display-message", "-p", "-t", "="+name+":", "#{pane_id}")); !ok || pane != want {
+			t.Fatalf("%s: ActivePane = %q, %v; want %q", name, pane, ok, want)
+		}
+
+		if err := b.PastePane(ctx, pane, "echo one-$((40+2)) 'q u o t e d' >> one.txt"); err != nil {
+			t.Fatalf("%s: PastePane: %v", name, err)
+		}
+		waitFor(t, name+": the single line to run", func() bool { return readFile(t, dir+"/one.txt") != "" })
+		time.Sleep(300 * time.Millisecond) // a second submission would land by now
+		if got := readFile(t, dir+"/one.txt"); got != "one-42 q u o t e d\n" {
+			t.Fatalf("%s: the single line ran as %q, want it run exactly once", name, got)
+		}
+
+		const second = "echo second >> two.txt"
+		if err := b.PastePane(ctx, pane, "echo first >> two.txt\n"+second); err != nil {
+			t.Fatalf("%s: PastePane (two lines): %v", name, err)
+		}
+		waitFor(t, name+": both lines to run", func() bool { return readFile(t, dir+"/two.txt") == "first\nsecond\n" })
+		// Bracketed: the second line sat in the edit buffer under the first,
+		// with no prompt IN FRONT of it. Typed raw, it would follow a prompt.
+		// (HasPrefix, not equality: bash 5.3 draws its next prompt straight
+		// after the pasted text, on the same line.)
+		bare := false
+		for _, line := range strings.Split(r.run("capture-pane", "-p", "-t", pane), "\n") {
+			if strings.HasPrefix(line, second) {
+				bare = true
+			}
+		}
+		if !bare {
+			t.Fatalf("%s: the two lines did not arrive as ONE bracketed paste (no bare %q line):\n%s", name, second, r.run("capture-pane", "-p", "-t", pane))
+		}
+	}
+
+	// A program that never asked for bracketed paste gets the text as typed.
+	dir := t.TempDir()
+	r.run("new-session", "-d", "-s", "plain", "-x", "120", "-y", "40", "-c", dir, "sh", "-c", "printf 'READY\\n'; exec cat > out.txt")
+	waitFor(t, "cat to start", func() bool { return strings.Contains(r.pane("plain"), "READY") })
+	pane, _ := b.ActivePane(ctx, "plain")
+	if err := b.PastePane(ctx, pane, "line one\nline two"); err != nil {
+		t.Fatalf("PastePane into cat: %v", err)
+	}
+	waitFor(t, "cat to receive both lines", func() bool { return readFile(t, dir+"/out.txt") == "line one\nline two\n" })
+
+	// ActivePane follows the operator: after a split, it is the new pane, and a
+	// paste aimed at it does not reach the first.
+	first := pane
+	r.run("split-window", "-t", "=plain:", "-c", dir, "sh", "-c", "printf 'SECOND\\n'; exec cat > second.txt")
+	now, ok := b.ActivePane(ctx, "plain")
+	if !ok || now == first {
+		t.Fatalf("after a split ActivePane = %q, %v; want the new pane, not %q", now, ok, first)
+	}
+	if err := b.PastePane(ctx, now, "to the active pane"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the active pane to receive the paste", func() bool { return readFile(t, dir+"/second.txt") == "to the active pane\n" })
+	if got := readFile(t, dir+"/out.txt"); got != "line one\nline two\n" {
+		t.Fatalf("the paste also reached the pane that is no longer active: %q", got)
+	}
+
+	if p, ok := b.ActivePane(ctx, "no-such-session"); ok {
+		t.Fatalf("ActivePane of a session that does not exist = %q, true", p)
+	}
+	// A session whose name merely STARTS like another is not matched.
+	if p, ok := b.ActivePane(ctx, "pla"); ok {
+		t.Fatalf("ActivePane matched a prefix of a session name: %q", p)
+	}
+	if out := r.run("list-buffers"); strings.Contains(out, "muster-mirror-") {
+		t.Fatalf("a paste left its buffer behind: %s", out)
+	}
+}
+
+// TestTmuxFormatQueriesSurviveANonUTF8Locale: 🔴 every `-F` output this package
+// parses is TAB-separated, and tmux turns a TAB into `_` when its client's
+// locale is not UTF-8 — so under `LC_ALL=C` (a systemd unit with no LANG, a
+// container) each of them silently parsed NOTHING: no active pane to send to,
+// no label, no activity order. Tmux.query passes `-u`; this runs the three
+// queries with the locale forced to C.
+//
+// The control is the instrument: the same format WITHOUT `-u`, in this same
+// environment, must come back with no TAB in it — or the test proves nothing
+// about a host where the locale is already UTF-8.
+func TestTmuxFormatQueriesSurviveANonUTF8Locale(t *testing.T) {
+	for _, v := range []string{"LANG", "LC_CTYPE"} {
+		t.Setenv(v, "C")
+	}
+	t.Setenv("LC_ALL", "C")
+	r := newTmuxRig(t)
+	r.session("alpha", "A")
+	r.run("new-window", "-t", "=alpha:")
+	if raw := r.run("list-panes", "-a", "-F", "#{pane_id}\t#{session_name}"); strings.Contains(raw, "\t") {
+		t.Fatalf("instrument check FAILED: under LC_ALL=C tmux still printed a TAB (%q); this host cannot show the hazard", raw)
+	}
+	b := Tmux{Socket: r.sock}
+	ctx := context.Background()
+	want := strings.TrimSpace(r.run("display-message", "-p", "-t", "=alpha:", "#{pane_id}"))
+	if pane, ok := b.ActivePane(ctx, "alpha"); !ok || pane != want {
+		t.Errorf("ActivePane under LC_ALL=C = %q, %v; want %q", pane, ok, want)
+	}
+	if got, err := b.ActiveWindows(ctx); err != nil || got["alpha"] != "1" {
+		t.Errorf("ActiveWindows under LC_ALL=C = %v, %v; want alpha:1", got, err)
+	}
+	if got, err := b.Activity(ctx); err != nil || got["alpha"] <= 0 {
+		t.Errorf("Activity under LC_ALL=C = %v, %v; want a time for alpha", got, err)
+	}
+}
