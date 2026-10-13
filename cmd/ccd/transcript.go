@@ -3,10 +3,11 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"errors"
 	"io"
 	"strings"
+
+	"github.com/ZacxDev/muster/internal/cctranscript"
 )
 
 // The session transcript is the ONE place ccd reads a reply from.
@@ -50,12 +51,38 @@ type turnResult struct {
 	// tool_use is skipped: neither is the answer, and forwarding reasoning would
 	// render it to the user as if it were.
 	Segments []string
-	// ToolUses counts skipped tool_use blocks (diagnostics only).
+	// ToolUses counts tool_use blocks (diagnostics).
 	ToolUses int
+	// Items is the turn in transcript order: each text segment and each tool
+	// call the CLI ran, with its result once the result record exists. It is
+	// what the success wire streams so the agent's chat can show the calls as
+	// collapsed rows; Segments stays the REPLY (text only), unchanged.
+	Items []turnItem
 	// Err is set when the turn carried an API-error record.
 	Err *apiError
 	// Complete reports that the turn's turn_duration record was seen.
 	Complete bool
+}
+
+// turnItem is one Items entry: a text segment (Tool nil) or a tool call.
+type turnItem struct {
+	Text string
+	Tool *cctranscript.Event // the KindToolCall event
+	// Result is the call's KindToolResult event, nil while the tool runs (or
+	// when the turn ended before it returned).
+	Result *cctranscript.Event
+}
+
+// addResult pairs a tool result with its call, by id. A result whose call is
+// not in this turn is dropped: it belongs to no row this turn draws.
+func (r *turnResult) addResult(ev cctranscript.Event) {
+	for i := range r.Items {
+		if it := &r.Items[i]; it.Tool != nil && it.Tool.ToolID == ev.ToolID && it.Result == nil {
+			ev := ev
+			it.Result = &ev
+			return
+		}
+	}
 }
 
 // Text joins the segments the way muster's own client joins output items: a blank
@@ -74,35 +101,12 @@ func (r turnResult) Text() string {
 	return b.String()
 }
 
+// contentBlock is one part of a REQUEST's user message (promptFrom). The
+// transcript's own records are decoded by internal/cctranscript, the one
+// decoder of that format in muster.
 type contentBlock struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
-}
-
-type transcriptRecord struct {
-	Type           string `json:"type"`
-	Subtype        string `json:"subtype"`
-	PromptID       string `json:"promptId"`
-	IsSidechain    bool   `json:"isSidechain"`
-	IsAPIError     bool   `json:"isApiErrorMessage"`
-	Error          string `json:"error"`
-	APIErrorStatus int    `json:"apiErrorStatus"`
-	Message        struct {
-		Content json.RawMessage `json:"content"`
-	} `json:"message"`
-}
-
-// blocks decodes an array content; a string content (a prompt) yields nil.
-func (r transcriptRecord) blocks() []contentBlock {
-	c := bytes.TrimSpace(r.Message.Content)
-	if len(c) == 0 || c[0] != '[' {
-		return nil
-	}
-	var bs []contentBlock
-	if json.Unmarshal(c, &bs) != nil {
-		return nil
-	}
-	return bs
 }
 
 // maxTranscriptLine bounds one JSONL record. A tool result can be large; a record
@@ -131,8 +135,8 @@ func extractTurn(r io.Reader, promptID string) (turnResult, error) {
 		if len(line) == 0 {
 			continue
 		}
-		var rec transcriptRecord
-		if json.Unmarshal(line, &rec) != nil {
+		rec, ok := cctranscript.DecodeLine(line)
+		if !ok {
 			continue
 		}
 		if rec.IsSidechain {
@@ -151,21 +155,35 @@ func extractTurn(r io.Reader, promptID string) (turnResult, error) {
 				// turn_duration was never written (an interrupted turn).
 				return res, nil
 			}
+			for _, ev := range cctranscript.Events(rec) {
+				if ev.Kind == cctranscript.KindToolResult {
+					res.addResult(ev)
+				}
+			}
 		case "assistant":
-			for _, b := range rec.blocks() {
+			for _, b := range rec.Blocks() {
 				switch b.Type {
 				case "text":
 					if rec.IsAPIError {
 						continue // the error's text is reported as the error, never as a reply
 					}
 					res.Segments = append(res.Segments, b.Text)
+					res.Items = append(res.Items, turnItem{Text: b.Text})
 				case "tool_use":
 					res.ToolUses++
 				}
 			}
+			if !rec.IsAPIError {
+				for _, ev := range cctranscript.Events(rec) {
+					if ev.Kind == cctranscript.KindToolCall {
+						ev := ev
+						res.Items = append(res.Items, turnItem{Tool: &ev})
+					}
+				}
+			}
 			if rec.IsAPIError {
 				msg := ""
-				for _, b := range rec.blocks() {
+				for _, b := range rec.Blocks() {
 					if b.Type == "text" {
 						msg += b.Text
 					}

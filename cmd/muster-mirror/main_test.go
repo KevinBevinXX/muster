@@ -43,7 +43,7 @@ func TestMissingURLOrTokenIsAUsageError(t *testing.T) {
 }
 
 func TestVersion(t *testing.T) {
-	if rc, out, _ := runWith(t, nil, "-version"); rc != 0 || !strings.Contains(out, "tunnel protocol 1") {
+	if rc, out, _ := runWith(t, nil, "-version"); rc != 0 || !strings.Contains(out, "tunnel protocol 2") {
 		t.Fatalf("-version: rc %d %q", rc, out)
 	}
 }

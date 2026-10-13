@@ -353,7 +353,13 @@ func (s *Server) handleInviteSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	s.gt.forgetUser(u.ID)
 	s.logger.Printf("invite: user %d (%s) created from invite %d", u.ID, inv.Role, inv.ID)
-	s.signInNewLogin(w, r, ip, email, pw)
+	// With passkeys on, the new member lands on the offer to add one on this
+	// device (skippable); otherwise on the board.
+	dest := "/"
+	if s.passkeysServed(r.Context()) {
+		dest = accountPasskeysPath + "?welcome=1"
+	}
+	s.signInNewLogin(w, r, ip, email, pw, dest)
 }
 
 // gotrueCreate is the create/undo pair a redemption hands the store: create
@@ -381,8 +387,8 @@ func (s *Server) gotrueCreate(r *http.Request, ip, email, pw, what string) (func
 
 // signInNewLogin signs a just-created (or just-reset) login in: a real
 // password grant — which proves the login works — the same admission checks
-// /login applies, cookies, and a redirect to the board.
-func (s *Server) signInNewLogin(w http.ResponseWriter, r *http.Request, ip, email, pw string) {
+// /login applies, cookies, and a redirect to dest (a local path).
+func (s *Server) signInNewLogin(w http.ResponseWriter, r *http.Request, ip, email, pw, dest string) {
 	sess, err := s.gt.Client.PasswordGrant(r.Context(), ip, email, pw)
 	if err != nil {
 		s.logger.Printf("sign-in after account setup failed: %v", err)
@@ -395,7 +401,7 @@ func (s *Server) signInNewLogin(w http.ResponseWriter, r *http.Request, ip, emai
 		return
 	}
 	s.setGoTrueCookies(w, sess)
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, safeReturnTo(dest), http.StatusSeeOther)
 }
 
 // registerInviteRoutes wires the invitee's page and the password reset. Open
@@ -513,6 +519,21 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 	// Recorded like a sign-out-everywhere, so a request that resolved before
 	// this point is refused when it registers after it (recordReset).
 	s.gt.recordReset(u.ID, c.Subject, cut)
+	// 🔴 AND EVERY PASSKEY GOES, BEFORE THE PASSWORD IS SET. A reset is what
+	// someone does after a credential leaked or a device was lost; a passkey on
+	// that device is a credential too, and the cutoff above only ends SESSIONS —
+	// a passkey would sign the thief straight back in. Deleted through GoTrue's
+	// admin API (list, then each). FAIL CLOSED: if any may remain, the password
+	// is not set and the person is told to ask for a new link — the sessions are
+	// already ended, which is the safe half (TestAResetDeletesEveryPasskey).
+	if n, err := s.gt.Client.AdminDeleteAllPasskeys(r.Context(), ip, c.Subject); err != nil {
+		s.logger.Printf("reset: removing the passkeys of user %d failed after %d: %v", u.ID, n, err)
+		s.renderNotice(w, http.StatusBadGateway, "The password could not be set", "Ask for a new reset link.")
+		return
+	} else if n > 0 {
+		s.logger.Printf("reset: removed %d passkeys of user %d", n, u.ID)
+		s.setPasskeyFlag(r.Context(), c.Subject, "", nil)
+	}
 	// The audit row (actor: the user; the client address in the detail)
 	// commits only if GoTrue set the password.
 	//

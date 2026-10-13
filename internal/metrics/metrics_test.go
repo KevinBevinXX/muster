@@ -46,6 +46,8 @@ var wantMetrics = map[string][]string{
 	"muster_http_request_duration_seconds":    {"method", "route"},
 	"muster_panics_total":                     {"source"},
 	"muster_agent_provision_total":            {"result"},
+	"muster_push_delivery_total":              {"result"},
+	"muster_push_suppressed_total":            {"reason"},
 	"muster_agent_provision_duration_seconds": {},
 	"muster_agent_kickoff_resend_total":       {"result"},
 	"muster_agent_kickoff_claim_total":        {"result"},
@@ -54,6 +56,9 @@ var wantMetrics = map[string][]string{
 	"muster_task_session_links_total":         {"role"},
 	"muster_task_session_links_skipped_total": {"reason"},
 	"muster_flow_jobs_total":                  {"flow", "outcome"},
+	"muster_memo_relay_agent_checks_total":    {"result"},
+	"muster_memo_relay_upstream_total":        {"result"},
+	"muster_memo_relay_deliveries_total":      {"result"},
 }
 
 // 🔴 LABELS THAT MAY NEVER APPEAR, BY NAME. This is the denylist half: the
@@ -75,6 +80,8 @@ func gather(t *testing.T) map[string][]string {
 	BuildInfo.WithLabelValues("0.0.0-test")
 	Panics.WithLabelValues("test")
 	AgentProvision.WithLabelValues("ok")
+	PushDelivery.WithLabelValues("ok")
+	PushSuppressed.WithLabelValues("muted")
 	AgentKickoffResend.WithLabelValues("resent")
 	AgentKickoffClaim.WithLabelValues("won")
 	TasksCreated.WithLabelValues("api")
@@ -82,6 +89,9 @@ func gather(t *testing.T) map[string][]string {
 	TaskSessionLinks.WithLabelValues("read")
 	TaskSessionLinksSkipped.WithLabelValues("error")
 	FlowJobs.WithLabelValues("muse.poll", "enqueued")
+	MemoRelayAgentChecks.WithLabelValues("eligible")
+	MemoRelayUpstream.WithLabelValues("ok")
+	MemoRelayDeliveries.WithLabelValues("delivered")
 	ObserveHTTP("GET /api/tasks/{id}", "GET", 200, 0)
 
 	families, err := prometheus.DefaultGatherer.Gather()

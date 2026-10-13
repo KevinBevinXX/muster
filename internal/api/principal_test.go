@@ -54,6 +54,10 @@ var publicRoutes = []string{
 	"POST /invite",
 	"GET /auth/reset",
 	"POST /auth/reset",
+	// Passkey sign-in: like POST /login, how a visitor with no session stops
+	// being anonymous (browser listener + same-origin only).
+	"POST /auth/passkey/options",
+	"POST /auth/passkey/verify",
 	"GET /apple-touch-icon-precomposed.png",
 	"GET /apple-touch-icon.png",
 	"GET /favicon.ico",
@@ -79,6 +83,8 @@ var publicRoutes = []string{
 var routeVias = map[authz.Via][]string{
 	authz.ViaSession: {
 		"GET /account",
+		// The step-up confirm (stepup.go): the SESSION's user, re-proven.
+		"POST /auth/confirm",
 		"GET /account/credentials",
 		"POST /account/credentials/claude",
 		"POST /account/credentials/claude/{name}/delete",
@@ -87,6 +93,20 @@ var routeVias = map[authz.Via][]string{
 		"GET /account/tokens",
 		"POST /account/tokens",
 		"POST /account/tokens/{id}/revoke",
+		// Passkeys: the caller's own, acted on AS the caller at GoTrue.
+		"GET /account/passkeys",
+		"POST /account/passkeys/options",
+		"POST /account/passkeys/verify",
+		"POST /account/passkeys/{id}/delete",
+		"POST /admin/users/{id}/passkeys/delete",
+		// muster-native Web Push: the subscribe flow and the account page's
+		// Notifications section — the session tier only.
+		"GET /api/push/vapid-public-key",
+		"POST /api/push/subscribe",
+		"POST /api/push/unsubscribe",
+		"POST /account/push/test",
+		"POST /account/push/{id}/remove",
+		"POST /account/push/preferences",
 		// The admin pages (accounts PR 5): requireAdmin is requireSession plus
 		// a role check AFTER the principal is attached.
 		"GET /admin/invites",
@@ -100,6 +120,9 @@ var routeVias = map[authz.Via][]string{
 		"DELETE /agents/{id}",
 		"GET /mirror/terminal",
 		"GET /mirror/terminal/ws",
+		"GET /mirror/view",
+		"GET /mirror/view/ws",
+		"POST /mirror/view/send",
 		"DELETE /connector-grants/{id}",
 		"DELETE /connectors/{name}",
 		"DELETE /tasks/{id}",

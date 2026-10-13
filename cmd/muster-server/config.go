@@ -19,6 +19,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/ccpool"
+	"github.com/ZacxDev/muster/internal/push"
 )
 
 // defaultPort is the port this service listens on when MUSTER_PORT is unset.
@@ -97,6 +98,11 @@ const (
 	// that an AGENT's browser-flow text may not carry (internal/flows
 	// AgentTextRefusal). Configuration, not source: this repository is public.
 	envFlowAgentDenyWords = "MUSTER_FLOW_AGENT_DENY_WORDS"
+	// The cairn memo relay (internal/memorelay): the memo listener's base URL
+	// and the ONE read-only credential muster reads live memos with. The token
+	// alone decides whether the relay runs — see config.validate.
+	envMemoURL   = "MUSTER_MEMO_URL"
+	envMemoToken = "MUSTER_MEMO_TOKEN"
 
 	envRouterURL   = "MUSTER_ROUTER_URL"
 	envRouterToken = "MUSTER_ROUTER_TOKEN"
@@ -109,6 +115,14 @@ const (
 	// MUSTER_STANDALONE. It turns on no router behaviour. See config.ApprovalGateURL.
 	envApprovalGateURL   = "MUSTER_APPROVAL_GATE_URL"
 	envApprovalGateToken = "MUSTER_APPROVAL_GATE_TOKEN"
+
+	// muster-native Web Push (internal/push): muster's OWN VAPID identity, a
+	// triple that is all-or-nothing (validate). Unset: no push — the Enable
+	// button is not drawn and /api/push/vapid-public-key answers 503. Mint one
+	// with `muster-server vapid generate`.
+	envVAPIDPublicKey  = "MUSTER_VAPID_PUBLIC_KEY"
+	envVAPIDPrivateKey = "MUSTER_VAPID_PRIVATE_KEY"
+	envVAPIDSubject    = "MUSTER_VAPID_SUBJECT"
 
 	// --- agent provisioning (see provisioner.go) ---
 	envAgentProvisioner  = "MUSTER_AGENT_PROVISIONER"
@@ -181,6 +195,10 @@ const (
 	// running instance reports not-ready until a file named after the instance
 	// exists in it. The shipped binary has no reader of it; see e2eterm.go.
 	envE2EHoldReadyDir = "MUSTER_E2E_HOLD_READY_DIR"
+	// The session window ("CxR") the e2e fake pod reports to muster's
+	// window-size query (internal/termsize's no-shrink rule); unset, the query
+	// fails as on a pod with no session. Read only by e2eterm.go.
+	envE2ETermWindow = "MUSTER_E2E_TERM_WINDOW"
 )
 
 // The values MUSTER_AGENT_PROVISIONER accepts.
@@ -343,6 +361,11 @@ type config struct {
 
 	// FlowAgentDenyWords is MUSTER_FLOW_AGENT_DENY_WORDS, split on commas.
 	FlowAgentDenyWords []string
+	// MemoURL and MemoToken are the cairn memo listener the relay reads
+	// (internal/memorelay). The relay runs iff MemoToken is set; MemoURL alone
+	// is the state a deployment sits in before its credential is issued.
+	MemoURL   string
+	MemoToken string
 
 	RouterURL   string
 	RouterToken string
@@ -378,6 +401,14 @@ type config struct {
 	// (default "muster"), checked by validate against the router's label rule.
 	ApprovalGateURL   string
 	ApprovalGateToken string
+
+	// VAPIDPublicKey / VAPIDPrivateKey / VAPIDSubject are muster's own Web Push
+	// identity (internal/push). ALL OR NONE: validate refuses one or two of
+	// them, and refuses three that are not a working identity (the private key
+	// must derive the public one; the subject must be mailto: or https).
+	VAPIDPublicKey  string
+	VAPIDPrivateKey string
+	VAPIDSubject    string
 
 	// AgentProvisioner names the provisioning backend: one of
 	// provisionerChoices. Default provisionerNone, which leaves
@@ -671,12 +702,17 @@ func loadConfig(getenv func(string) string) (config, error) {
 		TagAutoDispatch:    envFlag(getenv, envTagAutoDispatch),
 		Mirror:             envFlag(getenv, envMirror),
 		FlowAgentDenyWords: splitList(getenv(envFlowAgentDenyWords)),
+		MemoURL:            strings.TrimRight(strings.TrimSpace(getenv(envMemoURL)), "/"),
+		MemoToken:          strings.TrimSpace(getenv(envMemoToken)),
 		RouterURL:          strings.TrimSpace(getenv(envRouterURL)),
 		RouterToken:        strings.TrimSpace(getenv(envRouterToken)),
 		RouterActor:        strings.TrimSpace(getenv(envRouterActor)),
 		Standalone:         envFlag(getenv, envStandalone),
 		ApprovalGateURL:    strings.TrimSpace(getenv(envApprovalGateURL)),
 		ApprovalGateToken:  strings.TrimSpace(getenv(envApprovalGateToken)),
+		VAPIDPublicKey:     strings.TrimSpace(getenv(envVAPIDPublicKey)),
+		VAPIDPrivateKey:    strings.TrimSpace(getenv(envVAPIDPrivateKey)),
+		VAPIDSubject:       strings.TrimSpace(getenv(envVAPIDSubject)),
 
 		AgentProvisioner:  strings.ToLower(strings.TrimSpace(getenv(envAgentProvisioner))),
 		AgentGateway:      strings.ToLower(strings.TrimSpace(getenv(envAgentGateway))),
@@ -1028,6 +1064,12 @@ func (c config) validate() error {
 				envRouterActor, actor, routerActorLabel, routerReservedActor, envApprovalGateURL)
 		}
 	}
+	if err := c.validateMemoRelay(); err != nil {
+		return err
+	}
+	if err := c.validateVAPID(); err != nil {
+		return err
+	}
 	if err := c.validateConnectors(); err != nil {
 		return err
 	}
@@ -1035,6 +1077,47 @@ func (c config) validate() error {
 		return err
 	}
 	return c.validateProvisioner()
+}
+
+// pushConfigured reports whether the VAPID triple is set (validate has
+// already refused a partial one).
+func (c config) pushConfigured() bool {
+	return c.VAPIDPublicKey != "" && c.VAPIDPrivateKey != "" && c.VAPIDSubject != ""
+}
+
+// vapid is the configured identity.
+func (c config) vapid() push.VAPIDConfig {
+	return push.VAPIDConfig{PublicKey: c.VAPIDPublicKey, PrivateKey: c.VAPIDPrivateKey, Subject: c.VAPIDSubject}
+}
+
+// validateVAPID refuses a partial VAPID triple, and a complete one that is not
+// a working identity.
+//
+// 🔴 HALF A CONFIGURATION REFUSES BOOT, LIKE THE APPROVAL-GATE PAIR. With one
+// or two of the three set the operator meant push to be on; booting without
+// it would draw no Enable button and log nothing anyone reads, which is the
+// "silent death" this subsystem's plan names as its first risk.
+func (c config) validateVAPID() error {
+	set := 0
+	for _, v := range []string{c.VAPIDPublicKey, c.VAPIDPrivateKey, c.VAPIDSubject} {
+		if v != "" {
+			set++
+		}
+	}
+	if set == 0 {
+		return nil
+	}
+	if set != 3 {
+		return fmt.Errorf("%s, %s and %s are a triple and only %d of them are set (%s=%s, %s=%s, %s=%s): "+
+			"half a push configuration would boot with no push. Set all three (`muster-server vapid generate`) "+
+			"or none", envVAPIDPublicKey, envVAPIDPrivateKey, envVAPIDSubject, set,
+			envVAPIDPublicKey, presence(c.VAPIDPublicKey), envVAPIDPrivateKey, presence(c.VAPIDPrivateKey),
+			envVAPIDSubject, presence(c.VAPIDSubject))
+	}
+	if err := c.vapid().Validate(); err != nil {
+		return fmt.Errorf("%s/%s/%s: %v", envVAPIDPublicKey, envVAPIDPrivateKey, envVAPIDSubject, err)
+	}
+	return nil
 }
 
 // presence renders whether a value is set, WITHOUT rendering the value.

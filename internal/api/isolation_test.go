@@ -36,6 +36,7 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/sse"
 	"github.com/ZacxDev/muster/internal/users"
 )
@@ -125,6 +126,8 @@ var isolationClasses = map[string]routeClass{
 	"GET /auth/claim":  classPublic,
 	"POST /auth/claim": classPublic,
 	"GET /account":     classList,
+	// The step-up confirm names no object: it re-proves the CALLER (stepup.go).
+	"POST /auth/confirm": classList,
 	// Bring-your-own credentials: the caller's own page and writes (list), and
 	// the delete that names an account (param, by NAME — A's is the canary).
 	"GET /account/credentials":                       classList,
@@ -138,9 +141,29 @@ var isolationClasses = map[string]routeClass{
 	"GET /account/tokens":              classList,
 	"POST /account/tokens":             classList,
 	"POST /account/tokens/{id}/revoke": classParam,
-	"GET /api/whoami":                  classAdmin,
-	"GET /api/tokens":                  classAPIToken,
-	"DELETE /api/tokens/{id}":          classAPIToken,
+	// Passkeys. The sign-in pair is public (like POST /login). The account
+	// routes act on the caller's OWN passkeys at GoTrue with the caller's own
+	// access token, so GoTrue — not muster's database — scopes them; delete
+	// names a passkey by id (param: A's passkey id).
+	"POST /auth/passkey/options":         classPublic,
+	"POST /auth/passkey/verify":          classPublic,
+	"GET /account/passkeys":              classList,
+	"POST /account/passkeys/options":     classList,
+	"POST /account/passkeys/verify":      classList,
+	"POST /account/passkeys/{id}/delete": classParam,
+	"GET /api/whoami":                    classAdmin,
+	"GET /api/tokens":                    classAPIToken,
+	"DELETE /api/tokens/{id}":            classAPIToken,
+	// muster-native Web Push (migration 0013). The key and the subscribe /
+	// unsubscribe writes act on the CALLER's own devices (list); the account
+	// page's remove names a device by id (param, A's is the object). A's device
+	// carries the canary in its user agent and its endpoint.
+	"GET /api/push/vapid-public-key": classList,
+	"POST /api/push/subscribe":       classList,
+	"POST /api/push/unsubscribe":     classList,
+	"POST /account/push/test":        classList,
+	"POST /account/push/{id}/remove": classParam,
+	"POST /account/push/preferences": classList,
 	// accounts PR 5: invite redemption and the password reset (tokens in form
 	// fields, like the claim), and the admin pages.
 	"GET /invite":      classPublic,
@@ -148,14 +171,15 @@ var isolationClasses = map[string]routeClass{
 	"GET /auth/reset":  classPublic,
 	"POST /auth/reset": classPublic,
 
-	"GET /admin/invites":                classAdminOnly,
-	"GET /admin/users":                  classAdminOnly,
-	"POST /admin/invites":               classAdminOnly,
-	"POST /admin/invites/{id}/revoke":   classAdminOnly,
-	"POST /admin/users/{id}/disable":    classAdminOnly,
-	"POST /admin/users/{id}/enable":     classAdminOnly,
-	"POST /admin/users/{id}/reset-link": classAdminOnly,
-	"POST /admin/users/{id}/role":       classAdminOnly,
+	"GET /admin/invites":                     classAdminOnly,
+	"GET /admin/users":                       classAdminOnly,
+	"POST /admin/invites":                    classAdminOnly,
+	"POST /admin/invites/{id}/revoke":        classAdminOnly,
+	"POST /admin/users/{id}/disable":         classAdminOnly,
+	"POST /admin/users/{id}/enable":          classAdminOnly,
+	"POST /admin/users/{id}/reset-link":      classAdminOnly,
+	"POST /admin/users/{id}/role":            classAdminOnly,
+	"POST /admin/users/{id}/passkeys/delete": classAdminOnly,
 
 	"GET /{$}":                     classList,
 	"GET /agents":                  classList,
@@ -281,6 +305,13 @@ var isolationClasses = map[string]routeClass{
 	"POST /runner/flows/claim":          classRunner,
 	"POST /runner/flows/{id}/heartbeat": classRunner,
 	"POST /runner/flows/{id}/result":    classRunner,
+
+	// The mirrored rendered view (tunnel v2) addresses its session like the
+	// mirrored terminal above (?host=&session=); the
+	// send carries host and session in its FORM, which fill() also sets.
+	"GET /mirror/view":       classMirror,
+	"GET /mirror/view/ws":    classMirror,
+	"POST /mirror/view/send": classMirror,
 }
 
 // wantCanaryForA: list routes that render A's data to A. The negative control
@@ -309,6 +340,9 @@ var wantCanaryForA = []string{
 	// Browser flows: A's jobs carry the canary in a parameter, so A's page, A's
 	// token list and A's runner's claim (of A's second job) each show it.
 	"GET /flows", "GET /api/flows/jobs", "POST /runner/flows/claim",
+	// Web Push: the account page lists the caller's devices, and A's carries
+	// the canary in its user agent.
+	"GET /account",
 }
 
 func TestEveryRouteIsClassifiedForIsolation(t *testing.T) {
@@ -403,12 +437,18 @@ type isoWorld struct {
 	gtH      http.Handler
 	gtFake   *gotruetest.Fake
 	gtTokens map[int64][2]string
+	aSub     string // A's GoTrue subject in the twin's fake
+	bSub     string // B's
 	// Personal API tokens (accounts PR 6): each user's own credential, and A's
 	// SECOND token — the object the token routes name (so revoking it never
 	// revokes the credential A's control walk is using).
-	apiTokens   map[int64]string
-	aToken2     apitokens.Token
-	aTokTask    notes.Note    // A's task (with aTokComment) for A's personal-token control
+	apiTokens map[int64]string
+	aToken2   apitokens.Token
+	aTokTask  notes.Note // A's task (with aTokComment) for A's personal-token control
+	// Web Push: the recording pusher every send goes through, and A's device
+	// (its endpoint carries the canary).
+	pusher      *isoPusher
+	aEndpoint   string
 	aTokComment notes.Comment // see TestNoRouteLetsOneUserReachAnothersData's objTok
 	// Browser flows (0012): each user's runner token (for the SAME host, so
 	// B's claim is a real attempt at A's queue), A's two queued jobs (the
@@ -605,14 +645,27 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	w.objA = isoObjs{ccAccount: w.objA.ccAccount, user: w.a.uid, invite: w.opInvite.ID, task: w.a.task.ID, agent: w.a.agent.ID, grant: w.aGrantID, comment: w.aComment.ID,
 		attach: w.aAttachment.ID, chat: w.aChatSession.ID, agentName: w.a.agent.Name, connName: w.aConnName,
 		tag: w.aTag, link: w.aSessionLink, mirrorHost: w.canary + "-host", mirrorSession: "main", token: w.aToken2.ID,
-		flowJob: w.aJob.ID, runnerTok: w.aRunner2.ID, flowReq: w.aFlowReq.ID}
+		pushDevice: w.objA.pushDevice, flowJob: w.aJob.ID, runnerTok: w.aRunner2.ID, flowReq: w.aFlowReq.ID}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
 	const ghostID = 9_000_000_000
 	w.ghost = isoObjs{user: ghostID, invite: ghostID, task: ghostID, agent: ghostID, grant: ghostID, comment: ghostID, attach: ghostID, chat: ghostID,
 		agentName: "ghost-agent" + w.suffix, connName: "ghostconn" + w.suffix, tag: "ghosttag", link: "ghost-sess-" + w.suffix,
-		mirrorHost: "ghost-host", mirrorSession: "main", ccAccount: "ghostacct", token: ghostID,
-		flowJob: ghostID, runnerTok: ghostID, flowReq: ghostID}
+		mirrorHost: "ghost-host", mirrorSession: "main", ccAccount: "ghostacct", token: ghostID, pushDevice: ghostID,
+		flowJob: ghostID, runnerTok: ghostID, flowReq: ghostID, passkey: "00000000-0000-4000-a000-00000000ghost"}
+
+	// A's push device: through the real store, as the claim the subscribe route
+	// makes. Its user agent and endpoint carry the canary.
+	pushStore := push.NewPG(pool)
+	w.aEndpoint = "https://fcm.googleapis.com/fcm/send/" + w.canary
+	var aSub push.Subscription
+	aSub.Endpoint, aSub.Keys.P256dh, aSub.Keys.Auth = w.aEndpoint, "p256-"+w.canary, "auth-"+w.canary
+	_, err = pushStore.Claim(ctx, w.a.uid, aSub, w.canary+" browser")
+	must(err, "a push device")
+	aDevs, err := pushStore.Devices(ua)
+	must(err, "a push devices")
+	w.objA.pushDevice = aDevs[0].ID
+	w.pusher = &isoPusher{}
 
 	// The server, fully wired over the real stores.
 	w.bus = sse.New(64)
@@ -633,6 +686,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		Provisioner: w.prov, Gateway: w.prov, Connectors: cs,
 		Mirror: &isoMirror{owner: w.a.uid, host: w.canary + "-host"},
 		Flows:  flows.NewPG(pool),
+		Push:   push.NewService(pushStore, w.pusher, push.VAPIDConfig{PublicKey: "iso-walk-vapid-public"}, log.New(io.Discard, "", 0)),
 		ConnectorPolicy: connectors.Policy{AllowLoopback: true, InsecureHTTP: true,
 			Resolve: func(_ context.Context, host string) ([]netip.Addr, error) {
 				if strings.HasSuffix(host, ".fake.test") {
@@ -676,7 +730,18 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		}
 		at, rt, _ := w.gtFake.Mint(sub)
 		w.gtTokens[u.uid] = [2]string{at, rt}
+		if u.uid == w.a.uid {
+			w.aSub = sub
+		} else {
+			w.bSub = sub
+		}
 	}
+	// Passkeys on in the twin's GoTrue, and A holds one: the target of B's
+	// POST /account/passkeys/{id}/delete. GoTrue — not muster's database —
+	// owns passkeys, so sameRows cannot see them; the walk's end checks B
+	// cannot remove A's (TestNoRouteLetsOneUserReachAnothersData).
+	w.gtFake.EnablePasskeys()
+	w.objA.passkey = w.gtFake.AddPasskey(w.aSub, "iso-a-credential-"+w.suffix)
 	srv.sessionUserOverride = func(r *http.Request) int64 {
 		if v, err := strconv.ParseInt(r.Header.Get(isoUserHeader), 10, 64); err == nil && v > 0 {
 			return v
@@ -738,6 +803,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 			`DELETE FROM note_comments WHERE owner_id = ANY($1)`, `DELETE FROM notes WHERE owner_id = ANY($1)`,
 			`DELETE FROM github_connection WHERE owner_id = ANY($1)`, `DELETE FROM user_credentials WHERE owner_id = ANY($1)`,
 			`DELETE FROM cc_account_marks WHERE owner_id = ANY($1)`,
+			`DELETE FROM push_subscriptions WHERE owner_id = ANY($1)`, `DELETE FROM push_preferences WHERE owner_id = ANY($1)`,
 			`DELETE FROM api_tokens WHERE user_id = ANY($1)`, `DELETE FROM audit_log WHERE user_id = ANY($1)`,
 			`DELETE FROM flow_requests WHERE owner_id = ANY($1)`, `DELETE FROM flow_jobs WHERE owner_id = ANY($1)`, `DELETE FROM flow_runner_tokens WHERE owner_id = ANY($1)`,
 			`DELETE FROM users WHERE id = ANY($1)`,
@@ -841,8 +907,10 @@ type isoObjs struct {
 	ccAccount                                 string
 	user, invite                              int64
 	task, agent, grant, comment, attach, chat int64
-	token                                     int64 // a personal API token's id
-	flowJob, runnerTok, flowReq               int64 // a browser-flow job's, runner token's and agent request's id
+	token                                     int64  // a personal API token's id
+	flowJob, runnerTok, flowReq               int64  // a browser-flow job's, runner token's and agent request's id
+	passkey                                   string // a GoTrue passkey id (the gotrue twin's fake)
+	pushDevice                                int64  // a Web Push device's id
 	agentName, connName, tag, link            string
 	mirrorHost, mirrorSession                 string
 }
@@ -876,6 +944,10 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		id = strconv.FormatInt(o.flowJob, 10)
 	case strings.Contains(path, "tokens/{id}"):
 		id = strconv.FormatInt(o.token, 10)
+	case strings.HasPrefix(path, "/account/passkeys/{id}"):
+		id = o.passkey
+	case strings.Contains(path, "/account/push/{id}"):
+		id = strconv.FormatInt(o.pushDevice, 10)
 	case strings.HasPrefix(path, "/admin/users/{id}"):
 		id = strconv.FormatInt(o.user, 10)
 	case strings.HasPrefix(path, "/admin/invites/{id}"):
@@ -897,7 +969,10 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 	if path == "/static/" {
 		path = "/static/app.css"
 	}
-	if strings.HasPrefix(path, "/mirror/terminal") {
+	if strings.HasPrefix(path, "/mirror/terminal") || strings.HasPrefix(path, "/mirror/view") {
+		if method == http.MethodPost {
+			return method, path, url.Values{"host": {o.mirrorHost}, "session": {o.mirrorSession}, "text": {"iso-write"}}.Encode()
+		}
 		path += "?" + url.Values{"host": {o.mirrorHost}, "session": {o.mirrorSession}}.Encode()
 	}
 	if method == http.MethodGet || method == http.MethodDelete {
@@ -956,7 +1031,7 @@ func (w *isoWorld) snapshot() map[string]string {
 	out := map[string]string{}
 	for _, tbl := range []string{"notes", "note_comments", "note_attachments", "task_sessions", "agents",
 		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "github_connection", "mirror_tokens",
-		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens", "flow_requests"} {
+		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens", "push_subscriptions", "push_preferences", "flow_requests"} {
 		var js string
 		if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t.id)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
 			// task_sessions/github_connection have no `id` ordering column in every
@@ -1039,7 +1114,8 @@ func (w *isoWorld) walkAs(actor isoUser, o isoObjs, creds []cred, routes []strin
 // the dispatch and merge forms) in its body.
 func namesObject(route string) bool {
 	return paramRE.MatchString(route) || route == "POST /agents" || route == "POST /tasks/merge" ||
-		strings.HasPrefix(route, "GET /mirror/terminal")
+		strings.HasPrefix(route, "GET /mirror/terminal") || strings.HasPrefix(route, "GET /mirror/view") ||
+		route == "POST /mirror/view/send"
 }
 
 var paramRE = regexp.MustCompile(`\{[a-z]`)
@@ -1083,6 +1159,12 @@ var sideEffectControlled = map[string]string{
 	"POST /agents/sessions/{sid}/read":      "A's chat_sessions.read_at moved; the mutation leg shows B's did not",
 	"POST /agent/approvals":                 "B's agent is refused 503 (a member); the admin agent files (newIsoWorld's control)",
 	"/connect/{connector}/{host}/{path...}": "A's secret reached the upstream for A, never for B",
+	// Only the gotrue twin serves passkeys, and A's walk ends A's gotrue
+	// session at POST /logout before the {id} routes sort — so the control is
+	// run at the end of the walk on a FRESH session of A's: it removes A's
+	// passkey (303, gone from GoTrue), after a fresh session of B's was
+	// refused it (404, still there).
+	"POST /account/passkeys/{id}/delete": "fresh sessions: B's delete of A's passkey is refused and leaves it; A's removes it",
 }
 
 // controlMarkers: a route whose owner and ghost answers share a status, where
@@ -1174,6 +1256,9 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 	if got := w.router.snapshot(); len(got) != 0 {
 		t.Errorf("a MEMBER's walk reached the operator's router %d time(s): %v", len(got), got)
 	}
+	if got := w.pusher.sentTo(w.aEndpoint); got != 0 {
+		t.Errorf("B's walk delivered %d notification(s) to A's device", got)
+	}
 	// --- the mutation leg ---
 	w.sameRows(t, "B's walk", before)
 	// --- the connect leg ---
@@ -1204,6 +1289,10 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 	}
 	w.checkOutsider(t, "admin (user 1)", opOutsider)
 	w.sameRows(t, "the admin walk", before)
+	w.srv.WaitForPushes()
+	if got := w.pusher.sentTo(w.aEndpoint); got != 0 {
+		t.Errorf("the admin's walk delivered %d notification(s) to member A's device", got)
+	}
 	if got := w.prov.actedOn(w.a.agent.ID, w.op.uid); got != 0 {
 		t.Errorf("the provisioner acted on member A's agent %d time(s) for the admin", got)
 	}
@@ -1236,6 +1325,12 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 		}
 	}
 	aResults = append(aResults, w.walkAs(w.a, w.objA, []cred{{runnerToken: w.runnerTokens[w.a.uid]}}, runnerRoutes)...)
+	// The push legs above are only facts about B and the admin if A's own walk
+	// DID reach A's device (its "send test").
+	w.srv.WaitForPushes()
+	if w.pusher.sentTo(w.aEndpoint) == 0 {
+		t.Error("CONTROL: A's own walk never delivered to A's device — the push assertions above are vacuous")
+	}
 	sawCanary := map[string]bool{}
 	reached := map[string]bool{}
 	distinguishes := func(res isoResult) bool {
@@ -1289,6 +1384,29 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 	}
 	if gtCanary == 0 {
 		t.Error("CONTROL: A's real gotrue session never saw A's own data, so B's clean gotrue walk proves nothing")
+	}
+	// The passkey delete, on FRESH sessions (sideEffectControlled): B's and A's
+	// gotrue sessions both ended at POST /logout in their walks, before the
+	// {id} routes sort, so the walk itself never put this route to GoTrue —
+	// measured: a fake whose delete ignored the owner survived it. B first:
+	// A's passkey id on B's own delete route must leave it in place.
+	bAT, bRT, _ := w.gtFake.Mint(w.bSub)
+	w.gtTokens[w.b.uid] = [2]string{bAT, bRT}
+	bm, bp, bb := w.fill("POST /account/passkeys/{id}/delete", w.objA, w.b)
+	if rec := w.do(w.h, bm, bp, bb, cred{gotrueUser: w.b.uid}); rec.Code != http.StatusNotFound {
+		t.Errorf("B removing A's passkey: %d, want 404", rec.Code)
+	}
+	if got := len(w.gtFake.Passkeys(w.aSub)); got != 1 {
+		t.Errorf("LEAK: B removed A's passkey (A has %d, want 1)", got)
+	}
+	freshAT, freshRT, _ := w.gtFake.Mint(w.aSub)
+	w.gtTokens[w.a.uid] = [2]string{freshAT, freshRT}
+	pm, pp, pb := w.fill("POST /account/passkeys/{id}/delete", w.objA, w.a)
+	if rec := w.do(w.h, pm, pp, pb, cred{gotrueUser: w.a.uid}); rec.Code != http.StatusSeeOther {
+		t.Errorf("CONTROL: A could not remove its OWN passkey: %d %s", rec.Code, truncate(rec.Body.String(), 200))
+	}
+	if got := len(w.gtFake.Passkeys(w.aSub)); got != 0 {
+		t.Errorf("CONTROL: A's passkey delete left %d passkeys, so B's refused delete proves nothing", got)
 	}
 	for _, r := range wantCanaryForA {
 		if !sawCanary[r] {
@@ -1662,4 +1780,27 @@ func (p *isoProvisioner) Chat(context.Context, agents.Agent, string, string, fun
 }
 func (p *isoProvisioner) ChatWithTools(context.Context, agents.Agent, string, string, string, []agents.ToolDef, agents.ToolDispatch, agents.StreamEmit) (string, error) {
 	return "", nil
+}
+
+// isoPusher is the walk's push.Pusher: it records which endpoints it was asked
+// to reach and accepts everything, so "B's walk reached A's device" is a count.
+type isoPusher struct {
+	mu   sync.Mutex
+	sent map[string]int
+}
+
+func (p *isoPusher) Send(_ context.Context, sub push.Subscription, _ []byte) push.SendResult {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.sent == nil {
+		p.sent = map[string]int{}
+	}
+	p.sent[sub.Endpoint]++
+	return push.SendResult{StatusCode: http.StatusCreated}
+}
+
+func (p *isoPusher) sentTo(endpoint string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.sent[endpoint]
 }

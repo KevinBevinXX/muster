@@ -25,6 +25,9 @@ type Tmux struct {
 	// means tmux's default socket — the server an operator's plain `tmux` uses.
 	Socket     string
 	SocketPath string
+	// Claude finds Claude Code in a session's pane (the rendered view); its
+	// zero value reads /proc and the user's own ~/.claude.
+	Claude ClaudeLocator
 }
 
 func (t Tmux) bin() string {

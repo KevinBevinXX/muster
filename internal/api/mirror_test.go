@@ -77,6 +77,8 @@ type fakeMirror struct {
 	refuse      error
 	calls       []mirrorCall
 	stdin       []byte
+	// v2 is the rendered view's half (mirror_view_test.go); nil = a v1 host.
+	v2 *fakeMirrorV2
 }
 
 func (f *fakeMirror) ServeConnect(w http.ResponseWriter, _ *http.Request) {
@@ -97,7 +99,11 @@ func (f *fakeMirror) Hosts(ctx context.Context) []mirror.HostView {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return []mirror.HostView{{Host: "ws", Sessions: []string{"chief", "main"}, Online: f.online, Interactive: f.interactive}}
+	hv := mirror.HostView{Host: "ws", Sessions: []string{"chief", "main"}, Online: f.online, Interactive: f.interactive}
+	if f.v2 != nil {
+		hv.Rendered, hv.Claude = f.online, []string{"main"}
+	}
+	return []mirror.HostView{hv}
 }
 
 func (f *fakeMirror) Attach(ctx context.Context, host, session string, readOnly bool, stdin io.Reader, stdout io.Writer, _ <-chan provision.TermSize) error {

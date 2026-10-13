@@ -118,6 +118,12 @@ var (
 		// (flow_runner_tokens is under FORCE RLS); only the row's owner and
 		// host are handed on.
 		"internal/api.(*Server).runnerTokenFor",
+		// muster-native Web Push (migration 0013): the push store's one helper.
+		// A send runs from hooks and loops with no request; a CLAIM must see
+		// another user's row to move a shared device; a logout has already
+		// ended its session. Every query through it filters on an explicit owner
+		// (or a row handle carrying one) — see internal/push.Store.
+		"internal/push.sys",
 	}
 	// operatorLedger: work done as the OPERATOR (user 1) with no request —
 	// the boot-time GitHub connect of the operator's own static token, and the
@@ -133,6 +139,10 @@ var (
 		"cmd/muster-server.runMirrorCLI",
 		"e2e/seed.run",
 		"internal/dbtest.AsOperator",
+		// The cairn memo relay: it presents the OPERATOR's cairn credential, so it
+		// serves the operator's agents and must be handed nobody else's. Running as
+		// the operator (not the system) is what makes row-level security say so.
+		"internal/memorelay.(*Relay).Run",
 	}
 	// withPrincipalLedger: admit only.
 	withPrincipalLedger = []string{

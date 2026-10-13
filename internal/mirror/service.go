@@ -16,6 +16,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/stepup"
 )
 
 const (
@@ -35,6 +36,10 @@ const (
 
 // ErrNoPrincipal: a view or attach was asked for with no user on the context.
 var ErrNoPrincipal = errors.New("mirror: no user principal on this request")
+
+// ErrStepUpRequired: an interactive attach on a session that did not sign in
+// within stepup.MaxAge.
+var ErrStepUpRequired = fmt.Errorf("mirror: %w", stepup.ErrStale)
 
 // Service is the mirror plugin as internal/api consumes it: the connect
 // endpoint, the viewing principal's hosts, and terminal attach.
@@ -231,19 +236,48 @@ func (s *Service) Hosts(ctx context.Context) []HostView {
 
 // Attach attaches a terminal to one of the viewing principal's host sessions.
 // See Hub.Attach.
+//
+// 🔴 AN INTERACTIVE ATTACH NEEDS A FRESH SIGN-IN (internal/stepup), checked
+// HERE as well as by internal/api before its socket upgrade: the plugin does
+// not rely on its caller to have asked. A context with no sign-in time is never
+// fresh, so a caller that forgot to carry one gets read-only or nothing.
 func (s *Service) Attach(ctx context.Context, host, session string, readOnly bool, stdin io.Reader, stdout io.Writer, resize <-chan provision.TermSize) error {
 	o, err := owner(ctx)
 	if err != nil {
 		return err
 	}
+	if !readOnly && !stepup.Fresh(ctx, s.hub.now()) {
+		return ErrStepUpRequired
+	}
 	return s.hub.Attach(ctx, o, host, session, readOnly, stdin, stdout, resize)
+}
+
+// Watch streams one of the viewing principal's host sessions' Claude Code
+// transcript. See Hub.Watch.
+func (s *Service) Watch(ctx context.Context, host, session, gen string, offset int64, out func(Msg) error) error {
+	o, err := owner(ctx)
+	if err != nil {
+		return err
+	}
+	return s.hub.Watch(ctx, o, host, session, gen, offset, out)
+}
+
+// Paste types a message into one of the viewing principal's host sessions'
+// Claude pane. See Hub.Paste.
+func (s *Service) Paste(ctx context.Context, host, session, text string) error {
+	o, err := owner(ctx)
+	if err != nil {
+		return err
+	}
+	return s.hub.Paste(ctx, o, host, session, text)
 }
 
 // IsAttachRefusal reports whether err is one of the plugin's own refusals,
 // whose text is written for the operator and is passed to the browser as is.
 func IsAttachRefusal(err error) bool {
 	for _, e := range []error{ErrHostOffline, ErrSessionGone, ErrHostDisconnected, ErrOverrun,
-		ErrInteractiveRefused, ErrTooManyStreams, ErrNoPrincipal} {
+		ErrInteractiveRefused, ErrTooManyStreams, ErrNoPrincipal, ErrStepUpRequired,
+		ErrNoRenderedView, ErrNotClaude, ErrViewOverrun, ErrTooManyWatches, ErrPasteTimeout, ErrPasteRefused, ErrBadPaste} {
 		if errors.Is(err, e) {
 			return true
 		}

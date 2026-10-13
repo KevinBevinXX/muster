@@ -50,6 +50,11 @@ const userCredentialsMigrationVersion = 11
 // (idempotent) body when the schema has flow_jobs.
 const flowJobsMigrationVersion = 12
 
+// pushSubscriptionsMigrationVersion is 0013: push_subscriptions and
+// push_preferences (muster-native Web Push), under the same row-level
+// security. Same treatment as 0008 and 0011.
+const pushSubscriptionsMigrationVersion = 13
+
 // flowRequestsMigrationVersion is 0014: browser flows' agent requests, owned
 // and under the same row-level security; same treatment again.
 const flowRequestsMigrationVersion = 14
@@ -64,11 +69,13 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		return err
 	}
 	ctx = asMigrator(ctx)
-	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasFlowRequests bool
+	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasPushSubscriptions, hasFlowRequests bool
 	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.mirror_tokens') IS NOT NULL,
 		to_regclass('public.user_credentials') IS NOT NULL,
 		to_regclass('public.flow_jobs') IS NOT NULL,
-		to_regclass('public.flow_requests') IS NOT NULL`).Scan(&hasMirrorTokens, &hasUserCredentials, &hasFlowJobs, &hasFlowRequests); err != nil {
+		to_regclass('public.push_subscriptions') IS NOT NULL,
+		to_regclass('public.flow_requests') IS NOT NULL`).Scan(&hasMirrorTokens, &hasUserCredentials,
+		&hasFlowJobs, &hasPushSubscriptions, &hasFlowRequests); err != nil {
 		return fmt.Errorf("rls on: %w", err)
 	}
 	applied := false
@@ -76,6 +83,7 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		if m.version != rlsMigrationVersion && !(m.version == mirrorTokensMigrationVersion && hasMirrorTokens) &&
 			!(m.version == userCredentialsMigrationVersion && hasUserCredentials) &&
 			!(m.version == flowJobsMigrationVersion && hasFlowJobs) &&
+			!(m.version == pushSubscriptionsMigrationVersion && hasPushSubscriptions) &&
 			!(m.version == flowRequestsMigrationVersion && hasFlowRequests) {
 			continue
 		}

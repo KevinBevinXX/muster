@@ -267,7 +267,7 @@ func shell(activeTab string, feat Features, extra g.Node) g.Node {
 					// desktop (lg+); full width on mobile (slide-out sidebar).
 					Div(
 						Class("lg:pl-72"),
-						header(),
+						header(feat.Push),
 						pushStatusMessage(),
 						Main(
 							// Width comes from contentWidth() — the SAME helper the header
@@ -348,7 +348,9 @@ func shell(activeTab string, feat Features, extra g.Node) g.Node {
 					// (pwa.go) — then the push-subscribe flow behind the "Enable"
 					// control, which uses the registration pwaScript made.
 					pwaChrome(),
-					pushScript(),
+					// Only when the server holds VAPID keys (Features.Push): with
+					// none, every route this script calls answers 503.
+					g.If(feat.Push, pushScript()),
 					// 🔴 THE CHIEF PANEL'S OPEN/WIDTH MEMORY, IN THE SHELL — NOT IN THE
 					// PANEL. #chief-panel-body is an `hx-swap: innerHTML` target, so a
 					// persistence script rendered inside it would be destroyed by the
@@ -656,13 +658,16 @@ func proseWidth() string {
 // header is the sticky top bar: hamburger, brand, and the push-notification
 // affordances.
 //
-// 🔴 IT TAKES NO ARGUMENTS, WHICH IS A NARROWING RATHER THAN A TIDY-UP.
-// Upstream's header carried a live pending-permission-request badge and the
-// auto-approve dropdown control; both read state that belongs to the permission
-// router and neither has a muster-side source. Keeping either as an empty
-// element would render an affordance that can never change — worse than absent,
-// because it reads as "zero" rather than "not applicable".
-func header() g.Node {
+// 🔴 ITS ONE ARGUMENT IS WHETHER PUSH EXISTS, AND THAT IS A NARROWING RATHER
+// THAN A TIDY-UP. Upstream's header carried a live pending-permission-request
+// badge and the auto-approve dropdown control; both read state that belongs to
+// the permission router and neither has a muster-side source. Keeping either as
+// an empty element would render an affordance that can never change — worse
+// than absent, because it reads as "zero" rather than "not applicable". The
+// push affordances follow the same rule: with no VAPID keys (push false) the
+// Enable button is not drawn, because tapping it would ask for the OS
+// permission and then fail on a 503.
+func header(push bool) g.Node {
 	return Header(
 		Class("sticky top-0 z-20 border-b border-line bg-bg/80 backdrop-blur supports-[backdrop-filter]:bg-bg/60"),
 		Div(
@@ -687,9 +692,9 @@ func header() g.Node {
 			// has not yet granted/subscribed. Tapping it drives the
 			// permission-request + pushManager.subscribe flow (needs a user
 			// gesture).
-			enableNotificationsButton(),
+			g.If(push, enableNotificationsButton()),
 			// Subtle "notifications on" indicator, shown once subscribed.
-			pushOnIndicator(),
+			g.If(push, pushOnIndicator()),
 		),
 	)
 }
@@ -3153,8 +3158,20 @@ func pushScript() g.Node {
                   ('PushManager' in window) &&
                   ('Notification' in window);
   if (!supported) {
-    // Surface the unsupported case instead of silently doing nothing.
-    status('Notifications are not supported in this browser.', 'warn');
+    // 🔴 iOS/iPadOS: Web Push exists ONLY in a Home-Screen-installed app
+    // (16.4+). A Safari TAB has no PushManager, so "not supported" would be
+    // false and unhelpful there — say what makes it work instead. iPadOS
+    // reports itself as a Mac, hence the touch-points check.
+    var ios = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+              (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    var installed = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) ||
+                    navigator.standalone === true;
+    if (ios && !installed) {
+      status('To get notifications on iPhone or iPad, add muster to your Home Screen (Share → Add to Home Screen) and open it from there.', 'warn');
+    } else {
+      // Surface the unsupported case instead of silently doing nothing.
+      status('Notifications are not supported in this browser.', 'warn');
+    }
     applyState('off');
     return;
   }
@@ -3213,9 +3230,39 @@ func pushScript() g.Node {
   // relying on the click handler's optimistic flip). Determinism rule: the
   // Enable button is shown ONLY when permission is granted-able AND there is no
   // active subscription; once a subscription exists, only the "on" pill shows.
+  // sameKey reports whether a subscription was made with the server's CURRENT
+  // VAPID key. A subscription is bound to the key it was made with, so after a
+  // key rotation every device's old subscription is refused by the push
+  // service — it must be replaced, not re-POSTed.
+  function sameKey(sub, key) {
+    var have = sub && sub.options && sub.options.applicationServerKey;
+    if (!have) return true; // unknown: leave it (older browsers do not expose it)
+    var a = new Uint8Array(have), b = urlBase64ToUint8Array(key);
+    if (a.length !== b.length) return false;
+    for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  }
+
   async function refresh(reg) {
     var existing = await reg.pushManager.getSubscription();
     if (existing) {
+      var key = null;
+      try { key = await getVapidKey(); } catch (e) {}
+      if (key && !sameKey(existing, key)) {
+        // Key rotation: drop the stale subscription (here and on the server)
+        // and make a new one with the current key. Permission is already
+        // granted, so no user gesture is needed.
+        var old = existing.endpoint;
+        try { await existing.unsubscribe(); } catch (e) {}
+        try {
+          await fetch(apiURL('/api/push/unsubscribe'), {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ endpoint: old }), credentials: 'include',
+          });
+        } catch (e) {}
+        try { await subscribe(reg); markSubscribed(); return; }
+        catch (e) { status(e.message || 'Could not re-enable notifications.', 'error'); applyState('enable'); return; }
+      }
       // Re-POST so a restarted/persisted-empty server re-learns this device.
       try { await postSubscription(existing); } catch (e) {}
       markSubscribed();

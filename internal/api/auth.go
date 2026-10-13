@@ -11,6 +11,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/auth"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/stepup"
 )
 
 // sessionCookieName is the cookie carrying the human session (see
@@ -222,15 +223,21 @@ func (c AuthConfig) uiSessionSecret() []byte {
 // hasValidSession reports whether the request carries a cookie this server
 // signed and that has not expired.
 func (s *Server) hasValidSession(r *http.Request) bool {
+	_, ok := s.passwordSession(r)
+	return ok
+}
+
+// passwordSession is the request's verified password-mode session cookie.
+func (s *Server) passwordSession(r *http.Request) (auth.Session, bool) {
 	if s.auth.goTrueMode() || s.auth.BrowserAuthRefusal() != "" {
-		return false
+		return auth.Session{}, false
 	}
 	ck, err := r.Cookie(sessionCookieName)
 	if err != nil || ck.Value == "" {
-		return false
+		return auth.Session{}, false
 	}
-	_, err = auth.VerifySession(s.auth.uiSessionSecret(), ck.Value, time.Now())
-	return err == nil
+	sess, err := auth.VerifySession(s.auth.uiSessionSecret(), ck.Value, time.Now())
+	return sess, err == nil
 }
 
 // requireSession gates the HUMAN web tier: the app shell, every panel, the
@@ -285,7 +292,10 @@ func (s *Server) requireSession(next http.HandlerFunc) http.HandlerFunc {
 			})
 			return
 		}
-		if s.hasValidSession(r) {
+		if sess, ok := s.passwordSession(r); ok {
+			// The step-up gate's input in password mode: the cookie's issue
+			// time, which only a sign-in (or a confirm) mints.
+			r = r.WithContext(stepup.WithAuthTime(r.Context(), sess.IssuedAt))
 			s.admit(w, r, next, s.principalFor(r.Context(), s.sessionUserID(r), authz.ViaSession))
 			return
 		}

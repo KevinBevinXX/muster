@@ -4,11 +4,14 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"slices"
+	"time"
 
 	"github.com/coder/websocket"
 
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -44,6 +47,11 @@ func (s *Server) registerMirrorRoutes(mux Mux) {
 	// terminal). No provisioner is involved, so no provisioner wrapper.
 	mux.HandleFunc("GET /mirror/terminal", s.requireSession(s.handleMirrorTerminalPage))
 	mux.HandleFunc("GET /mirror/terminal/ws", s.requireSession(s.handleMirrorTerminalWS))
+	// "Confirm it's you" (stepup.go): the fresh sign-in an INTERACTIVE attach
+	// needs. Registered whether or not the plugin is on — it is an auth route,
+	// and its only consumer today is the terminal page above.
+	mux.HandleFunc("POST /auth/confirm", s.requireSession(s.handleStepUpConfirm))
+	s.registerMirrorViewRoutes(mux)
 }
 
 func (s *Server) handleMirrorConnect(w http.ResponseWriter, r *http.Request) {
@@ -76,7 +84,7 @@ func (s *Server) mirrorCards(ctx context.Context) []ui.MirrorCardView {
 	var out []ui.MirrorCardView
 	for _, h := range s.ext.Mirror.Hosts(ctx) {
 		for _, sess := range h.Sessions {
-			out = append(out, ui.MirrorCardView{Host: h.Host, Session: sess, Online: h.Online})
+			out = append(out, ui.MirrorCardView{Host: h.Host, Session: sess, Online: h.Online, Interactive: h.Interactive, Claude: slices.Contains(h.Claude, sess)})
 		}
 	}
 	return out
@@ -105,11 +113,27 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		// attach, not what an interactive client does once attached.
 		InteractiveNote: "Interactive types into a tmux client on " + h.Host +
 			": from it you can switch to any tmux session there or open a shell on the host.",
+		// 🔴 STEP-UP: Interactive needs a sign-in from the last
+		// stepup.MaxAge. The page asks for the password when this has passed;
+		// the socket below refuses a stale rw attach whatever the page does.
+		StepUp: &ui.StepUpView{ConfirmPath: stepUpConfirmPath, FreshFor: freshForMillis(r.Context(), s.stepUpNow()), RememberKey: "mirror:" + h.Host},
+	}
+	if hasRenderedView(h, session) {
+		v.RenderedHref = ui.MirrorViewPath(h.Host, session)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.AgentTerminalPage(v).Render(w); err != nil {
 		s.logger.Printf("mirror: render terminal page: %v", err)
 	}
+}
+
+// freshForMillis is how long the request's sign-in stays fresh enough for a
+// step-up, in milliseconds from now; 0 when it is not fresh (or unknown).
+func freshForMillis(ctx context.Context, now time.Time) int64 {
+	if !stepup.Fresh(ctx, now) {
+		return 0
+	}
+	return stepup.FreshUntil(ctx).Sub(now).Milliseconds()
 }
 
 // handleMirrorTerminalWS is the mirror terminal's socket: the same bridge as the
@@ -126,6 +150,15 @@ func (s *Server) handleMirrorTerminalWS(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	readOnly := q.Get("mode") != terminalModeInteractive
+	// 🔴 STEP-UP, BEFORE THE UPGRADE: an interactive attach needs a sign-in
+	// from the last stepup.MaxAge, whatever the page decided. 403 rather than an
+	// in-socket error, so nothing is attached and the refusal has a status a
+	// test (or a proxy log) can read. internal/mirror's Attach checks the same
+	// context again, independently.
+	if !readOnly && !stepup.Fresh(r.Context(), s.stepUpNow()) {
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": stepup.ErrStale.Error()})
+		return
+	}
 	initial, hasInitial := terminalSize(q.Get("cols"), q.Get("rows"))
 
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: s.wsAllowedOrigins(r)})

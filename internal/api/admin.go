@@ -67,6 +67,7 @@ func (s *Server) registerAdminRoutes(mux Mux) {
 	mux.HandleFunc("POST /admin/users/{id}/enable", s.requireAdmin(s.handleAdminUserEnable))
 	mux.HandleFunc("POST /admin/users/{id}/role", s.requireAdmin(s.handleAdminUserRole))
 	mux.HandleFunc("POST /admin/users/{id}/reset-link", s.requireAdmin(s.handleAdminUserResetLink))
+	mux.HandleFunc("POST /admin/users/{id}/passkeys/delete", s.requireAdmin(s.handleAdminUserPasskeysDelete))
 	mux.HandleFunc("GET /admin/invites", s.requireAdmin(s.handleAdminInvites))
 	mux.HandleFunc("POST /admin/invites", s.requireAdmin(s.handleAdminInviteCreate))
 	mux.HandleFunc("POST /admin/invites/{id}/revoke", s.requireAdmin(s.handleAdminInviteRevoke))
@@ -166,6 +167,7 @@ func (s *Server) renderAdminUsers(w http.ResponseWriter, r *http.Request, code i
 		return
 	}
 	me := authz.MustFrom(ctx).UserID
+	passkeys := s.passkeysServed(ctx)
 	var b strings.Builder
 	b.WriteString(once)
 	b.WriteString(problemNode(problem))
@@ -208,6 +210,9 @@ func (s *Server) renderAdminUsers(w http.ResponseWriter, r *http.Request, code i
 <button type="submit" class="` + adminQuiet + `">Make ` + string(other) + `</button></form>`)
 		if u.GotrueSub != "" && u.Email != "" {
 			b.WriteString(`<form method="POST" action="/admin/users/` + id + `/reset-link"><button type="submit" class="` + adminQuiet + `">Reset link</button></form>`)
+		}
+		if u.GotrueSub != "" && passkeys {
+			b.WriteString(`<form method="POST" action="/admin/users/` + id + `/passkeys/delete"><button type="submit" class="` + adminQuiet + `">Remove passkeys</button></form>`)
 		}
 		b.WriteString(`</div></li>`)
 	}

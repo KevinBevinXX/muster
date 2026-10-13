@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/router"
 )
 
@@ -283,6 +284,17 @@ var bannerLedger = []string{
 	// the router line says NONE by design (a standalone deployment).
 	envApprovalGateURL,
 	envApprovalGateToken,
+	// The cairn memo relay: one line names both, in all three of its states
+	// (logMemoRelayBanner). Its off-state is the one a deployment waits in
+	// until the credential is issued, so it has to be readable off the log.
+	envMemoURL,
+	envMemoToken,
+	// muster-native Web Push: the `web push:` line names all three in both
+	// directions (ENABLED / OFF). Its off-state — no Enable button, nothing
+	// sent — is otherwise invisible: nothing errors when push is off.
+	envVAPIDPublicKey,
+	envVAPIDPrivateKey,
+	envVAPIDSubject,
 	envGitHubEncKey,
 	envAgentProvisioner,
 	// The chat tier is its own axis with its own two lines — the fully-off arm names
@@ -367,6 +379,8 @@ var bannerExempt = map[string]string{
 	envE2EHoldReadyDir: "a browser-test fixture read ONLY by a `-tags e2eterm` build's fake driver (e2eterm.go); the " +
 		"shipped binary has no reader, so it has no state to announce, and an e2e build already logs its own " +
 		"🔴 E2E BUILD line at boot",
+	envE2ETermWindow: "the same: a browser-test fixture read ONLY by a `-tags e2eterm` build's fake driver " +
+		"(the session window its fake pod reports); the shipped binary has no reader",
 	envAgentGatewayModel: "the CHAT: WIRED line prints it beside the scheme, and there is no " +
 		"off-direction line to write: validate refuses a named gateway with no sentinel, so the " +
 		"only states that reach a banner are \"wired, and the value is on the line\" and \"no " +
@@ -605,9 +619,18 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		Mirror: true,
 
 		FlowAgentDenyWords: []string{"examplecluster"},
+		// The memo relay: ON needs the credential, a pool and ext.Gateway (both
+		// supplied below), which is memoRelayEnabled's whole predicate.
+		MemoURL:   "http://memos.example.invalid:8125",
+		MemoToken: "memo-credential-fixture",
+		// Web Push: the banner branches on ext.Push (below), as for connectors.
+		VAPIDPublicKey:  bannerVAPIDPub,
+		VAPIDPrivateKey: bannerVAPIDPriv,
+		VAPIDSubject:    "mailto:ops@example.com",
 	}
 	onOut = renderBannerWithPool(t, on, api.Extensions{
 		Mirror:      mirror.NewService(nil, nil),
+		Push:        push.NewService(nil, nil, on.vapid(), nil),
 		Connectors:  bannerStubConnectorStore{},
 		GitHub:      bannerStubGitHubStore{},
 		Provisioner: bannerProvisioner(t, on),
@@ -944,3 +967,13 @@ func TestTheHalfWiredProvisioningBannerReportsBothTiersSeparately(t *testing.T) 
 		}
 	}
 }
+
+// bannerVAPIDPriv / bannerVAPIDPub are a keypair minted when the test binary
+// starts, so no key material is written into the tree.
+var bannerVAPIDPriv, bannerVAPIDPub = func() (string, string) {
+	priv, pub, err := push.GenerateVAPIDKeys()
+	if err != nil {
+		panic(err)
+	}
+	return priv, pub
+}()

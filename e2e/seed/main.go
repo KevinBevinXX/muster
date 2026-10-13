@@ -61,6 +61,11 @@ var accountsReset = []string{
 	// Personal API tokens (accounts PR 6) reference users, so they go BEFORE
 	// the members do; and the api-tokens spec asserts an empty token list.
 	`DELETE FROM api_tokens`,
+	// Web Push (migration 0013): every owner's devices and preferences — the
+	// push spec counts its own devices from empty, and a member's row would
+	// otherwise block the member's delete (push_subscriptions_owner_id_fkey).
+	`DELETE FROM push_subscriptions`,
+	`DELETE FROM push_preferences`,
 	`DELETE FROM users WHERE id <> 1`,
 	`UPDATE users SET gotrue_sub = NULL, email = NULL, disabled_at = NULL, role = 'admin' WHERE id = 1`,
 }
@@ -161,6 +166,7 @@ func run() error {
 	}
 
 	as := agents.NewPG(pool)
+	var sweeper agents.Agent
 	for _, a := range []agents.Agent{
 		// The hooks token is the agent's OWN credential; the connector spec presents
 		// it as the agent (e2e/lib/env.ts agentToken). Invented.
@@ -169,8 +175,34 @@ func run() error {
 		{Name: "release-helper", Namespace: "agents", Repo: "example/api", Status: "error", KickedOff: true, KickoffError: "gateway timed out after 30s"},
 		{Name: "notes-tidy", Namespace: "agents", Status: "pending"},
 	} {
-		if _, err := as.Create(ctx, a); err != nil {
+		created, err := as.Create(ctx, a)
+		if err != nil {
 			return fmt.Errorf("create agent %q: %w", a.Name, err)
+		}
+		if created.Name == "docs-sweeper" {
+			sweeper = created
+		}
+	}
+	// One persisted turn with tool calls on docs-sweeper (e2e/tests/
+	// tool-rows.spec.ts): text, two PARALLEL calls whose results arrive after
+	// both (the shape Claude Code writes — a strictly-adjacent pairing drew it as
+	// four rows), one failed, then the closing text.
+	sess, err := as.LatestOrCreateSession(ctx, sweeper.ID, sweeper.Name)
+	if err != nil {
+		return fmt.Errorf("chat session: %w", err)
+	}
+	for _, m := range []agents.ChatMessage{
+		{Role: "user", Content: "Check the docs build."},
+		{Role: "assistant", Kind: "text", Content: "Checking the build and the link report."},
+		{Role: "assistant", Kind: "tool_call", ToolID: "seed-t1", ToolName: "Bash", Content: `{"command":"make docs","description":"Build the docs"}`},
+		{Role: "assistant", Kind: "tool_call", ToolID: "seed-t2", ToolName: "Read", Content: `{"file_path":"/srv/site/links.txt"}`},
+		{Role: "assistant", Kind: "tool_result", ToolID: "seed-t1", ToolName: "Bash", ToolOK: true, Content: "built 42 pages"},
+		{Role: "assistant", Kind: "tool_result", ToolID: "seed-t2", ToolName: "Read", ToolOK: false, Content: "no such file"},
+		{Role: "assistant", Kind: "text", Content: "The build passes; the link report is missing."},
+	} {
+		m.AgentID, m.SessionID = sweeper.ID, sess.ID
+		if _, err := as.AddChatMessage(ctx, m); err != nil {
+			return fmt.Errorf("seed chat: %w", err)
 		}
 	}
 	fmt.Printf("seed: %d tasks, 3 agents\n", len(tasks))

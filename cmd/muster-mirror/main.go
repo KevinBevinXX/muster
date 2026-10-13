@@ -84,6 +84,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	interactive := fs.Bool("interactive", envBool(envInteractive), "let muster open INTERACTIVE terminals on this host — effectively a SHELL here: an interactive tmux client can switch to any session or open a new window (default: read-only; muster then offers no Interactive switch) ("+envInteractive+")")
 	allowHTTP := fs.Bool("allow-http", envBool(envAllowHTTP), "TESTS AND LOCAL DEVELOPMENT ONLY: permit a plain http:// muster URL, which sends the token in cleartext ("+envAllowHTTP+")")
 	list := fs.Bool("list", false, "print the sessions this host would register, and exit")
+	listClaude := fs.Bool("claude", false, "with -list: also print, for each session whose active pane runs Claude Code, its pane, session id and transcript (what the rendered view would stream)")
 	version := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -100,6 +101,10 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	if e2eBackend != nil {
 		backend = e2eBackend()
 	}
+	// No attach shrinks a session's window; the browser scrolls instead
+	// (internal/termsize). Wrapped AFTER the e2e swap, so the browser suite
+	// drives the same wrapper the shipped binary runs.
+	backend = mirrorhost.NoShrink(backend)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -111,7 +116,19 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			fmt.Fprintf(stderr, "muster-mirror: %v\n", err)
 			return 1
 		}
+		var claude map[string]mirrorhost.ClaudePane
+		if cb, ok := mirrorhost.ClaudeOf(backend); ok && *listClaude {
+			claude = cb.ClaudePanes(lctx, sessions)
+		}
 		for _, s := range sessions {
+			if p, ok := claude[s]; ok {
+				state := "idle"
+				if p.Busy {
+					state = "busy"
+				}
+				fmt.Fprintf(stdout, "%s\tclaude\t%s\t%s\t%s\t%s\n", s, p.Pane, state, p.Gen, p.Transcript)
+				continue
+			}
 			fmt.Fprintln(stdout, s)
 		}
 		return 0

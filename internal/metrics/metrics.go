@@ -54,6 +54,32 @@ var (
 		Help: "Recovered panics by source.",
 	}, []string{"source"})
 
+	// PushDelivery counts Web Push delivery attempts, one per DEVICE per
+	// notification, by result:
+	//   ok      — the push service accepted it (2xx)
+	//   expired — the push service said the subscription is gone (404/410);
+	//             the device was pruned
+	//   failed  — a transport error or any other status; the device's
+	//             fail_count went up
+	// A notification to an owner with no devices counts nothing. The owner is
+	// deliberately NOT a label (an identifier — see the cardinality rule); the
+	// per-owner line is in the log (`push: delivered … owner=<id>`).
+	PushDelivery = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_push_delivery_total",
+		Help: "Web Push delivery attempts by result (ok|expired|failed).",
+	}, []string{"result"})
+
+	// PushSuppressed counts notifications NOT sent, one per notification (not
+	// per device), by reason:
+	//   muted     — the owner turned that event off on /account
+	//   throttled — the owner's per-owner rate cap was reached
+	// A rising `throttled` is the amplification signal: something is producing
+	// notifications faster than a person can read them.
+	PushSuppressed = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_push_suppressed_total",
+		Help: "Web Push notifications not sent, by reason (muted|throttled).",
+	}, []string{"reason"})
+
 	// AgentProvision counts agent provisioning attempts.
 	AgentProvision = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "muster_agent_provision_total",
@@ -178,6 +204,26 @@ var (
 		Name: "muster_flow_jobs_total",
 		Help: "Browser-flow job transitions, by catalogue flow name and outcome ONLY — never a job id, host or parameter.",
 	}, []string{"flow", "outcome"})
+
+	// The memo relay (internal/memorelay): what each agent's check, each listener
+	// call and each delivery came to.
+	//
+	// 🔴 CARDINALITY RULE: `result` is a closed vocabulary compiled into
+	// internal/memorelay (its Result* and Outcome* constants and upstreamResult).
+	// An agent name, a scope, a memo id or anything a listener sent must NEVER
+	// become a label.
+	MemoRelayAgentChecks = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_memo_relay_agent_checks_total",
+		Help: "Memo relay: agents classified per tick, by result ONLY (eligible, or why an agent is sent nothing).",
+	}, []string{"result"})
+	MemoRelayUpstream = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_memo_relay_upstream_total",
+		Help: "Memo relay: calls to the cairn memo listener, by result ONLY — including the ones NOT sent (not_yet, backed_off, scope_backed_off).",
+	}, []string{"result"})
+	MemoRelayDeliveries = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_memo_relay_deliveries_total",
+		Help: "Memo relay: delivery attempts to agents, by result ONLY — never an agent, scope or memo id.",
+	}, []string{"result"})
 )
 
 // ObserveHTTP records one HTTP request's matched route pattern, method, status,

@@ -38,6 +38,7 @@ DELETE /tasks/{id}/comments/{cid}
 DELETE /tasks/{id}/tags/{tag}
 GET /account
 GET /account/credentials
+GET /account/passkeys
 GET /account/tokens
 GET /admin/invites
 GET /admin/users
@@ -59,6 +60,7 @@ GET /api/flows/jobs
 GET /api/flows/jobs/{id}
 GET /api/openrouter/models
 GET /api/projects
+GET /api/push/vapid-public-key
 GET /api/sessions/{id}/tasks
 GET /api/tags
 GET /api/tasks
@@ -83,6 +85,8 @@ GET /metrics
 GET /mirror/connect
 GET /mirror/terminal
 GET /mirror/terminal/ws
+GET /mirror/view
+GET /mirror/view/ws
 GET /readyz
 GET /repos
 GET /share
@@ -124,12 +128,19 @@ POST /account/credentials/claude
 POST /account/credentials/claude/{name}/delete
 POST /account/credentials/openrouter
 POST /account/credentials/openrouter/delete
+POST /account/passkeys/options
+POST /account/passkeys/verify
+POST /account/passkeys/{id}/delete
+POST /account/push/preferences
+POST /account/push/test
+POST /account/push/{id}/remove
 POST /account/tokens
 POST /account/tokens/{id}/revoke
 POST /admin/invites
 POST /admin/invites/{id}/revoke
 POST /admin/users/{id}/disable
 POST /admin/users/{id}/enable
+POST /admin/users/{id}/passkeys/delete
 POST /admin/users/{id}/reset-link
 POST /admin/users/{id}/role
 POST /agent/approvals
@@ -145,9 +156,14 @@ POST /agents/{id}/start
 POST /agents/{id}/stop
 POST /api/agents/{name}/messages
 POST /api/flows/jobs
+POST /api/push/subscribe
+POST /api/push/unsubscribe
 POST /api/tasks
 POST /api/tasks/{id}/comments
 POST /auth/claim
+POST /auth/confirm
+POST /auth/passkey/options
+POST /auth/passkey/verify
 POST /auth/reset
 POST /chief/provision
 POST /connectors
@@ -163,6 +179,7 @@ POST /invite
 POST /login
 POST /logout
 POST /mcp
+POST /mirror/view/send
 POST /runner/flows/claim
 POST /runner/flows/{id}/heartbeat
 POST /runner/flows/{id}/result

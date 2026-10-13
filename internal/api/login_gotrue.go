@@ -104,6 +104,7 @@ func (s *Server) registerAccountRoutes(mux Mux) {
 	mux.HandleFunc("GET /auth/claim", s.handleClaimPage)
 	mux.HandleFunc("POST /auth/claim", s.handleClaimSubmit)
 	mux.HandleFunc("GET /account", s.requireSession(s.handleAccountPage))
+	s.registerPasskeyRoutes(mux)
 }
 
 // renderNotice writes a one-message standalone page.
@@ -137,6 +138,17 @@ func (s *Server) handleGoTrueLoginPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) renderGoTrueLogin(w http.ResponseWriter, code int, next, email, problem string) {
+	passkey := ""
+	if s.gt != nil && s.gt.passkeysOn(context.Background()) {
+		// Outside the form: the passkey button posts nothing, so the form's
+		// required email/password never block it. The script prefetches the
+		// sign-in options and runs the ceremony (passkeySignInJS).
+		passkey = `<section class="mt-4 flex flex-col gap-2">
+<button type="button" id="passkey-signin" class="press min-h-[44px] w-full rounded-md bg-bg px-3 py-2 text-base font-semibold text-fg ring-1 ring-inset ring-edge">Sign in with a passkey</button>
+<p class="text-sm text-fg2" id="passkey-signin-status" role="status" aria-live="polite"></p>
+</section>
+<script>` + passkeyJS + passkeySignInJS + `</script>`
+	}
 	inner := `<form method="POST" action="` + loginPath + `" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Sign in to muster</h1>
 ` + problemNode(problem) + `
@@ -148,7 +160,7 @@ func (s *Server) renderGoTrueLogin(w http.ResponseWriter, code int, next, email,
  class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">
 <input type="hidden" name="next" value="` + html.EscapeString(safeReturnTo(next)) + `">
 <button type="submit" class="press min-h-[44px] rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Sign in</button>
-</form>`
+</form>` + passkey
 	writeAuthDocument(w, code, "Sign in", inner)
 }
 
@@ -270,6 +282,8 @@ func (s *Server) handleGoTrueLogout(w http.ResponseWriter, r *http.Request) {
 				s.logger.Printf("logout: GoTrue /logout failed for user %d: %v", sess.user.ID, err)
 			}
 			s.gt.revoke(sess.user.ID, sess.claims, scope)
+			// This browser's push subscription goes with its session.
+			s.forgetPushDevice(w, r, sess.user.ID)
 			s.logger.Printf("logout: user %d signed out (%s)", sess.user.ID, scope)
 		}
 	}
@@ -294,21 +308,27 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 <button type="submit" class="press min-h-[44px] w-full rounded-md bg-bg px-3 py-2 text-base font-semibold text-fg ring-1 ring-inset ring-edge">Sign out everywhere</button></form>
 <p class="text-sm text-fg2">` + SignOutEverywhereTokenNote + `</p>`
 	}
+	passkeysLink := ""
+	if s.passkeysServed(r.Context()) {
+		passkeysLink = `<a href="` + accountPasskeysPath + `" id="account-passkeys" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Passkeys</a>`
+	}
 	resetNote := ""
 	if r.URL.Query().Get("reset") == "1" {
 		resetNote = `<p class="text-sm font-semibold text-fg" role="status">` + ResetDoneNote + `</p>`
 	}
-	writeAuthDocument(w, http.StatusOK, "Account", `<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+	writeAuthDocument(w, http.StatusOK, "Account", `<div class="flex flex-col gap-4"><section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Account</h1>
 `+resetNote+`
 <p class="text-sm text-fg2">Signed in as <span class="font-semibold text-fg">`+html.EscapeString(who)+`</span>.</p>
 <form method="POST" action="/logout">
 <button type="submit" class="press min-h-[44px] w-full rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Sign out</button></form>
 `+everywhere+`
+`+passkeysLink+`
 <a href="/account/credentials" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Credentials (Claude, OpenRouter)</a>
 <a href="`+accountTokensPath+`" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">API tokens</a>
 <a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to muster</a>
-</section>`)
+</section>
+`+s.accountNotificationsSection(r)+`</div>`)
 }
 
 // --- the admin claim ------------------------------------------------------------

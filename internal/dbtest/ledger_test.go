@@ -133,8 +133,18 @@ var pgBackedPackages = []string{
 	// revoked token stops authenticating" are claims about SQL and row-level
 	// security that only a real database can falsify.
 	"internal/flows",
+	// Added by the cairn memo relay. "Each agent is sent each memo once" rests
+	// on a delivery record that survives a restart and that no other user can
+	// read — the first is a claim about SQL, the second about audit_log's
+	// row-level security, and a fake ledger can falsify neither.
+	"internal/memorelay",
 	"internal/mirror",
 	"internal/notes",
+	// muster-native Web Push (migration 0013). "A member's principal (and the
+	// admin's) reads and writes only its own subscriptions", "a claim moves a
+	// shared device and nothing else" and "a stale handle cannot touch a row
+	// that changed hands" are claims about SQL and row-level security.
+	"internal/push",
 	// Added by the UI carve, and the decision behind it is worth one line
 	// because a RENDERING package taking a real database looks wrong at a
 	// glance. It takes exactly one: the reaper writes a task's idle flag
