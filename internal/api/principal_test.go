@@ -54,6 +54,10 @@ var publicRoutes = []string{
 	"POST /invite",
 	"GET /auth/reset",
 	"POST /auth/reset",
+	// Passkey sign-in: like POST /login, how a visitor with no session stops
+	// being anonymous (browser listener + same-origin only).
+	"POST /auth/passkey/options",
+	"POST /auth/passkey/verify",
 	"GET /apple-touch-icon-precomposed.png",
 	"GET /apple-touch-icon.png",
 	"GET /favicon.ico",
@@ -89,6 +93,12 @@ var routeVias = map[authz.Via][]string{
 		"GET /account/tokens",
 		"POST /account/tokens",
 		"POST /account/tokens/{id}/revoke",
+		// Passkeys: the caller's own, acted on AS the caller at GoTrue.
+		"GET /account/passkeys",
+		"POST /account/passkeys/options",
+		"POST /account/passkeys/verify",
+		"POST /account/passkeys/{id}/delete",
+		"POST /admin/users/{id}/passkeys/delete",
 		// The admin pages (accounts PR 5): requireAdmin is requireSession plus
 		// a role check AFTER the principal is attached.
 		"GET /admin/invites",

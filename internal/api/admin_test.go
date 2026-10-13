@@ -164,8 +164,8 @@ func TestAMemberCannotReachAnyAdminRoute(t *testing.T) {
 		}
 	}
 	sort.Strings(routes)
-	if len(routes) != 8 {
-		t.Fatalf("the admin-only class has %d routes, want 8: %v", len(routes), routes)
+	if len(routes) != 9 {
+		t.Fatalf("the admin-only class has %d routes, want 9: %v", len(routes), routes)
 	}
 	concrete := func(route string) (string, string, string) {
 		method, path, _ := strings.Cut(route, " ")
