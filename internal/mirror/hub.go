@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"maps"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -73,6 +74,11 @@ type HostView struct {
 	// to Sessions; a session without one is shown by its name. nil when the
 	// host sends none (an older muster-mirror, or no labels configured).
 	Labels map[string]string
+	// Activity is when each session was last active on the host
+	// (Msg.Activity: Unix seconds, floored to ActivityBucket), restricted to
+	// Sessions. nil when the host sends none (an older muster-mirror); a
+	// session without one sorts after every session with one (Ordered).
+	Activity map[string]int64
 	// Rendered: the host speaks tunnel v2, so its Claude sessions have a
 	// rendered view. False for a v1 host and for an offline one.
 	Rendered bool
@@ -118,6 +124,7 @@ type offlineHost struct {
 	sessions    []string
 	claude      []string
 	labels      map[string]string
+	activity    map[string]int64
 	interactive bool
 	since       time.Time
 }
@@ -181,6 +188,7 @@ type hostConn struct {
 	sessions []string
 	claude   []string
 	labels   map[string]string
+	activity map[string]int64
 	streams  map[uint32]*stream
 	watches  map[uint32]*watch
 	pastes   map[uint32]chan error
@@ -213,7 +221,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		}
 		hc.mu.Lock()
 		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...),
-			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive})
+			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive})
 		hc.mu.Unlock()
 	}
 	now := h.now()
@@ -224,7 +232,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		}
 		if k.owner == owner {
 			out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), o.sessions...),
-				Claude: append([]string(nil), o.claude...), Labels: maps.Clone(o.labels), Interactive: o.interactive})
+				Claude: append([]string(nil), o.claude...), Labels: maps.Clone(o.labels), Activity: maps.Clone(o.activity), Interactive: o.interactive})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Host < out[j].Host })
@@ -320,7 +328,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 	key := hostKey{owner, host}
 	sessions := normalizeSessions(hello.Sessions)
 	hc := &hostConn{key: key, ws: ws, ctx: ctx, cancel: cancel, interactive: hello.Interactive, version: hello.Version,
-		sessions: sessions, labels: NormalizeLabels(hello.Labels, sessions), streams: map[uint32]*stream{}, watches: map[uint32]*watch{}, pastes: map[uint32]chan error{}}
+		sessions: sessions, labels: NormalizeLabels(hello.Labels, sessions), activity: NormalizeActivity(hello.Activity, sessions, h.now().Unix()), streams: map[uint32]*stream{}, watches: map[uint32]*watch{}, pastes: map[uint32]chan error{}}
 	if hc.version >= 2 {
 		hc.claude = normalizeClaude(hello.Claude, sessions)
 	}
@@ -394,16 +402,28 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 			switch m.Type {
 			case TypeSessions:
 				list := normalizeSessions(m.Sessions)
-				hc.mu.Lock()
-				hc.sessions = list
-				// Labels ride every sessions message, so one that changed with the
-				// same session set (the active window moved) still lands here.
-				hc.labels = NormalizeLabels(m.Labels, list)
+				// Labels and activity ride every sessions message, so one that
+				// changed with the same session set (the active window moved, a
+				// pane produced output) still lands here.
+				labels := NormalizeLabels(m.Labels, list)
+				activity := NormalizeActivity(m.Activity, list, h.now().Unix())
+				var claude []string
 				if hc.version >= 2 {
-					hc.claude = normalizeClaude(m.Claude, list)
+					claude = normalizeClaude(m.Claude, list)
 				}
+				before := orderKeys(h.Hosts(hc.key.owner))
+				hc.mu.Lock()
+				same := slices.Equal(hc.sessions, list) && slices.Equal(hc.claude, claude) && maps.Equal(hc.labels, labels)
+				hc.sessions, hc.labels, hc.activity, hc.claude = list, labels, activity, claude
 				hc.mu.Unlock()
-				h.changed(hc.key.owner)
+				// 🔴 ONLY A CHANGE SOMEBODY CAN SEE NUDGES THE OPEN VIEWS. Activity
+				// moves all the time; a host re-sends it once per ActivityBucket
+				// while a session stays busy, and most of those leave the list in
+				// the same order. Re-rendering the Agents view for each would move
+				// nothing and still cost every open page a re-fetch.
+				if !same || !slices.Equal(before, orderKeys(h.Hosts(hc.key.owner))) {
+					h.changed(hc.key.owner)
+				}
 			case TypeEvents:
 				if hc.version >= 2 {
 					hc.deliverEvents(m)
@@ -441,8 +461,9 @@ func (h *Hub) drop(hc *hostConn) {
 			hc.mu.Lock()
 			claude := append([]string(nil), hc.claude...)
 			labels := maps.Clone(hc.labels)
+			activity := maps.Clone(hc.activity)
 			hc.mu.Unlock()
-			h.offline[hc.key] = offlineHost{sessions: hc.sessionsCopy(), claude: claude, labels: labels, interactive: hc.interactive, since: h.now()}
+			h.offline[hc.key] = offlineHost{sessions: hc.sessionsCopy(), claude: claude, labels: labels, activity: activity, interactive: hc.interactive, since: h.now()}
 		}
 	}
 	h.mu.Unlock()

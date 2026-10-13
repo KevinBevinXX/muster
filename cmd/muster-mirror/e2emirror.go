@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -110,6 +111,31 @@ func (fakeBackend) ActiveWindows(context.Context) (map[string]string, error) {
 	for _, line := range strings.Split(string(b), "\n") {
 		if s, idx, ok := strings.Cut(strings.TrimSpace(line), "="); ok {
 			out[s] = idx
+		}
+	}
+	return out, nil
+}
+
+// Activity plays each session's last-active time (most-recently-active-first
+// ordering): the file MUSTER_MIRROR_E2E_ACTIVITY_FILE holds `session=<unix
+// seconds>` lines and is re-read on every call, so a spec can make a session
+// "active" by rewriting it. Unset, no activity is known and muster keeps the
+// name order — what every spec written before the ordering relies on.
+func (fakeBackend) Activity(context.Context) (map[string]int64, error) {
+	f := os.Getenv("MUSTER_MIRROR_E2E_ACTIVITY_FILE")
+	if f == "" {
+		return nil, nil
+	}
+	b, err := os.ReadFile(f)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]int64{}
+	for _, line := range strings.Split(string(b), "\n") {
+		if s, at, ok := strings.Cut(strings.TrimSpace(line), "="); ok {
+			if v, err := strconv.ParseInt(at, 10, 64); err == nil {
+				out[s] = v
+			}
 		}
 	}
 	return out, nil

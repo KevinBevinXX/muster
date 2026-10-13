@@ -223,8 +223,9 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	conn.setListed(sessions)
 	claude := conn.resolveClaude(sessions)
 	labels := conn.labels(sessions)
+	activity := conn.activity(sessions)
 	if err := conn.send(mirror.Msg{Type: mirror.TypeHello, Version: version, Host: c.cfg.Host,
-		Sessions: sessions, Claude: claude, Labels: labels, Interactive: c.cfg.Interactive}); err != nil {
+		Sessions: sessions, Claude: claude, Labels: labels, Activity: activity, Interactive: c.cfg.Interactive}); err != nil {
 		return err
 	}
 	wctx, wcancel := context.WithTimeout(ctx, 15*time.Second)
@@ -245,7 +246,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	}
 	c.log.Printf("muster-mirror: connected to %s as host %s with %d session(s)", c.url, c.cfg.Host, len(sessions))
 
-	go conn.refresh(sessions, claude, labels)
+	go conn.refresh(sessions, claude, labels, activity)
 	go conn.keepalive(cancel)
 	for {
 		typ, data, err := ws.Read(ctx)
@@ -324,6 +325,26 @@ type hostSide struct {
 	// failing read is logged when it starts failing, not every Refresh. Only
 	// the hello and then the one refresh goroutine touch it, in that order.
 	labelErr string
+	// activityErr is labelErr for the activity read.
+	activityErr string
+}
+
+// activity is what this host sends as sessions' last-active times
+// (SessionActivity): already floored to mirror.ActivityBucket, so it is equal
+// between two reads unless a session crossed into a newer bucket.
+func (h *hostSide) activity(sessions []string) map[string]int64 {
+	activity, err := SessionActivity(h.ctx, h.c.cfg.Backend, sessions, time.Now())
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	if msg != h.activityErr {
+		if msg != "" {
+			h.c.log.Printf("muster-mirror: read session activity (muster keeps the name order): %v", err)
+		}
+		h.activityErr = msg
+	}
+	return activity
 }
 
 // labels is sessions' display labels (SessionLabels over Config.Codenames).
@@ -478,13 +499,23 @@ func (h *hostSide) closeAll() {
 }
 
 // refresh re-reads the session list (and, on v2, which sessions run Claude Code,
-// and each session's label) every Refresh and sends it when any of them changed.
+// each session's label, and each session's activity) every Refresh and sends it
+// when any of them changed.
 //
 // 🔴 A LABEL CHANGE ALONE IS A CHANGE. A label carries the session's ACTIVE
 // window, which moves while the session set stays the same; comparing only the
 // sessions would leave muster showing "mango:1" after the operator moved to
 // window 3.
-func (h *hostSide) refresh(last, lastClaude []string, lastLabels map[string]string) {
+//
+// 🔴 ACTIVITY IS COMPARED FLOORED (mirror.ActivityBucket), SO IT IS NOT A
+// RE-SEND EVERY REFRESH. A busy pane's raw time differs on every read; what is
+// compared here changes only when a session enters a newer bucket. Sessions
+// that stay busy all cross a bucket boundary on the same refresh and share ONE
+// message per bucket, however many they are; a session that wakes up in the
+// middle of a bucket adds one more. Those messages are what keep this host's
+// times comparable with another host's; muster nudges its open views only if
+// the ORDER came out different (mirror.Hub).
+func (h *hostSide) refresh(last, lastClaude []string, lastLabels map[string]string, lastActivity map[string]int64) {
 	t := time.NewTicker(h.c.cfg.Refresh)
 	defer t.Stop()
 	for {
@@ -495,17 +526,18 @@ func (h *hostSide) refresh(last, lastClaude []string, lastLabels map[string]stri
 			now := h.c.list(h.ctx)
 			claude := h.resolveClaude(now)
 			labels := h.labels(now)
-			if slices.Equal(now, last) && slices.Equal(claude, lastClaude) && maps.Equal(labels, lastLabels) {
+			activity := h.activity(now)
+			if slices.Equal(now, last) && slices.Equal(claude, lastClaude) && maps.Equal(labels, lastLabels) && maps.Equal(activity, lastActivity) {
 				continue
 			}
 			// The allowlist moves BEFORE muster hears of a new session, so an open
 			// for it is never refused for being unlisted; a session that ended
 			// is unattachable from this instant.
 			h.setListed(now)
-			if err := h.send(mirror.Msg{Type: mirror.TypeSessions, Sessions: now, Claude: claude, Labels: labels}); err != nil {
+			if err := h.send(mirror.Msg{Type: mirror.TypeSessions, Sessions: now, Claude: claude, Labels: labels, Activity: activity}); err != nil {
 				return
 			}
-			last, lastClaude, lastLabels = now, claude, labels
+			last, lastClaude, lastLabels, lastActivity = now, claude, labels, activity
 		}
 	}
 }

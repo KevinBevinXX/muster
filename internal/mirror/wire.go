@@ -130,6 +130,16 @@ type Msg struct {
 	// its raw session names. muster keeps only entries NormalizeLabels accepts
 	// and drops the rest — never the hello.
 	Labels map[string]string `json:"labels,omitempty"`
+	// Activity (hello, sessions) is, per session, WHEN it was last active on
+	// the host: Unix seconds, floored to ActivityBucket. muster lists mirrored
+	// sessions most recently active first (Ordered). Ordering only — it is
+	// never shown and never addresses anything.
+	//
+	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS, exactly like Labels: an
+	// older muster ignores the field, and a host that sends none is listed in
+	// the order it always was (host, then session name). muster keeps only
+	// entries NormalizeActivity accepts and drops the rest — never the hello.
+	Activity map[string]int64 `json:"activity,omitempty"`
 	// Interactive (hello) is the host ADVERTISING that it accepts interactive
 	// attaches — muster-mirror's -interactive flag. Without it the host is
 	// read-only: muster offers no Interactive switch and refuses a rw attach,
@@ -280,6 +290,49 @@ func NormalizeLabels(labels map[string]string, sessions []string) map[string]str
 			out = map[string]string{}
 		}
 		out[s] = l
+	}
+	return out
+}
+
+// ActivityBucket is the granularity of Msg.Activity, in seconds. A session's
+// activity is carried and compared floored to it.
+//
+// 🔴 IT IS THE RE-SEND AND RE-ORDER POLICY, NOT A ROUNDING NICETY. A busy pane's
+// raw activity time moves every second; sent raw, every refresh would differ,
+// every one would be re-sent, and two busy sessions would swap places on the
+// Agents view each time. Floored, a host's map changes at most once per bucket
+// per session, sessions active within the same bucket TIE (and keep their
+// name order), and the list reorders only when a session falls a whole bucket
+// behind another.
+const ActivityBucket = 60
+
+// NormalizeActivity is activity restricted to sessions (a host cannot rank a
+// session it does not list), each time floored to ActivityBucket; nil when
+// nothing is left. An entry that is not a positive time is dropped, and one
+// later than now is CAPPED at now — a host whose clock runs ahead ties with
+// "active now" rather than outranking every other host forever (now <= 0
+// skips the cap). Both halves apply it: the host to what it sends, muster to
+// what it keeps.
+func NormalizeActivity(activity map[string]int64, sessions []string, now int64) map[string]int64 {
+	if len(activity) == 0 {
+		return nil
+	}
+	var out map[string]int64
+	for _, s := range sessions {
+		v, ok := activity[s]
+		if !ok || v <= 0 {
+			continue
+		}
+		if now > 0 && v > now {
+			v = now
+		}
+		if v -= v % ActivityBucket; v <= 0 {
+			continue
+		}
+		if out == nil {
+			out = map[string]int64{}
+		}
+		out[s] = v
 	}
 	return out
 }

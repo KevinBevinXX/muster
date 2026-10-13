@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"slices"
 	"time"
 
 	"github.com/coder/websocket"
@@ -76,16 +75,15 @@ func (s *Server) mirrorHost(ctx context.Context, host string) (mirror.HostView, 
 }
 
 // mirrorCards is the viewing principal's mirrored sessions, for the Agents
-// view; nil with the plugin off.
+// view — one list across its hosts, most recently active first (mirror.Ordered
+// is the order's one definition); nil with the plugin off.
 func (s *Server) mirrorCards(ctx context.Context) []ui.MirrorCardView {
 	if s.ext.Mirror == nil {
 		return nil
 	}
 	var out []ui.MirrorCardView
-	for _, h := range s.ext.Mirror.Hosts(ctx) {
-		for _, sess := range h.Sessions {
-			out = append(out, ui.MirrorCardView{Host: h.Host, Session: sess, Label: h.Labels[sess], Online: h.Online, Interactive: h.Interactive, Claude: slices.Contains(h.Claude, sess)})
-		}
+	for _, m := range mirror.Ordered(s.ext.Mirror.Hosts(ctx)) {
+		out = append(out, ui.MirrorCardView{Host: m.Host, Session: m.Session, Label: m.Label, Online: m.Online, Interactive: m.Interactive, Claude: m.Claude})
 	}
 	return out
 }

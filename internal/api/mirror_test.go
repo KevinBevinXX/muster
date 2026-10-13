@@ -81,6 +81,9 @@ type fakeMirror struct {
 	v2 *fakeMirrorV2
 	// labels is the host's session labels (HostView.Labels); nil = none.
 	labels map[string]string
+	// activity is the host's per-session last-active times (HostView.Activity);
+	// nil = none (an older muster-mirror).
+	activity map[string]int64
 }
 
 func (f *fakeMirror) ServeConnect(w http.ResponseWriter, _ *http.Request) {
@@ -101,7 +104,7 @@ func (f *fakeMirror) Hosts(ctx context.Context) []mirror.HostView {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	hv := mirror.HostView{Host: "ws", Sessions: []string{"chief", "main"}, Labels: f.labels, Online: f.online, Interactive: f.interactive}
+	hv := mirror.HostView{Host: "ws", Sessions: []string{"chief", "main"}, Labels: f.labels, Activity: f.activity, Online: f.online, Interactive: f.interactive}
 	if f.v2 != nil {
 		hv.Rendered, hv.Claude = f.online, []string{"main"}
 	}
