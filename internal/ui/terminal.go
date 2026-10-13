@@ -94,24 +94,11 @@ type AgentTerminalView struct {
 	// (internal/stepup): a mirrored session. nil = the switch attaches at once
 	// (an agent pod's terminal).
 	StepUp *StepUpView
-}
-
-// StepUpView is what the page needs to ask "Confirm it's you" before it
-// attaches interactively.
-//
-// ⚠ THE PAGE'S VIEW OF FRESHNESS IS A CONVENIENCE, NOT THE GATE. It only
-// decides whether to ask before trying; the server refuses a stale interactive
-// attach (403) whatever the page believed, and the page then asks.
-type StepUpView struct {
-	// ConfirmPath is the same-origin route that takes the password again.
-	ConfirmPath string
-	// FreshFor is how many milliseconds the current sign-in stays fresh, as
-	// the SERVER measured it when it rendered the page (0 = not fresh). A
-	// duration rather than an instant, so the browser's clock does not matter.
-	FreshFor int64
-	// RememberKey names what an Interactive choice is remembered for, in this
-	// browser session (sessionStorage): "mirror:<host>" — one choice per host.
-	RememberKey string
+	// Composer, when set, draws the message composer under the terminal: a
+	// mirrored session of an -interactive host (mirror_compose.go). It needs
+	// StepUp — a send refused as stale asks through the same dialog. nil = no
+	// composer (an agent pod's terminal, a read-only host).
+	Composer *MirrorComposerView
 }
 
 // termModeDisplay is the switch's display utility: gone when the far side is
@@ -127,7 +114,8 @@ func termModeDisplay(readOnlyOnly bool) string {
 func AgentTerminalPath(name string) string { return "/agents/" + url.PathEscape(name) + "/terminal" }
 
 // AgentTerminalPage is a full-height document: a header with the read-only /
-// interactive switch, the terminal, and the quick-key bar.
+// interactive switch, the terminal, the quick-key bar and — for a mirrored
+// session that can be sent to — the message composer.
 //
 // 🔴 IT IS ITS OWN DOCUMENT, NOT A PANEL OF THE AGENT PAGE. The agent page is
 // hx-boost'ed and its chat script tears down and re-creates its socket on
@@ -253,67 +241,36 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 						),
 					),
 				),
-				quickKeyBar(),
-				g.If(v.StepUp != nil, confirmDialog()),
+				quickKeyBar(v.Composer == nil),
+				terminalComposer(v.Composer),
+				confirmDialog(v.StepUp),
+				g.If(v.StepUp != nil, stepUpScript()),
 				agentTerminalScript(),
+				g.If(v.Composer != nil, mirrorComposerScript()),
 				pwaChrome(),
 			),
 		),
 	)
 }
 
-// stepUpAttrs carries a StepUpView to the script on #term; nothing for nil.
-func stepUpAttrs(s *StepUpView) g.Node {
-	if s == nil {
+// terminalComposer is the page's composer, nothing for nil.
+func terminalComposer(c *MirrorComposerView) g.Node {
+	if c == nil {
 		return nil
 	}
-	return g.Group{
-		g.Attr("data-step-up", s.ConfirmPath),
-		g.Attr("data-fresh-for", strconv.FormatInt(s.FreshFor, 10)),
-		g.Attr("data-remember", s.RememberKey),
-	}
-}
-
-// confirmDialog is "Confirm it's you": the password again before an
-// interactive attach. It posts to the StepUpView's ConfirmPath from the script
-// (same origin, credentials included); the server's answer replaces the
-// session's cookies with a freshly signed-in one.
-func confirmDialog() g.Node {
-	return Dialog(
-		ID("term-confirm"),
-		g.Attr("aria-labelledby", "term-confirm-title"),
-		Class("w-[calc(100%-2rem)] max-w-sm rounded-2xl bg-s1 p-0 text-fg ring-1 ring-line backdrop:bg-black/60"),
-		Form(
-			ID("term-confirm-form"),
-			Class("flex flex-col gap-4 px-5 py-6"),
-			H2(ID("term-confirm-title"), Class("text-base font-semibold text-fg"), g.Text("Confirm it's you")),
-			P(Class("text-sm text-fg2"), g.Text("Typing into this session needs a sign-in from the last 5 minutes. Enter your password to continue.")),
-			Label(For("term-confirm-password"), Class("text-sm font-medium text-fg"), g.Text("Password")),
-			Input(
-				ID("term-confirm-password"),
-				Name("password"),
-				Type("password"),
-				g.Attr("autocomplete", "current-password"),
-				g.Attr("required", ""),
-				Class("min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus"),
-			),
-			P(ID("term-confirm-error"), g.Attr("role", "alert"), g.Attr("hidden", ""), Class("rounded-lg bg-st-error-bg px-3 py-2 text-sm text-st-error-fg ring-1 ring-inset ring-st-error-fg/40")),
-			Div(
-				Class("flex gap-2"),
-				Button(ID("term-confirm-cancel"), Type("button"),
-					Class("press min-h-[44px] flex-1 rounded-md bg-bg px-3 py-2 text-base font-semibold text-fg ring-1 ring-inset ring-edge"),
-					g.Text("Cancel")),
-				Button(ID("term-confirm-submit"), Type("submit"),
-					Class("press min-h-[44px] flex-1 rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90"),
-					g.Text("Confirm")),
-			),
-		),
-	)
+	return mirrorComposer(*c)
 }
 
 // quickKeyBar renders QuickKeys as a two-row grid that fits a phone's width
 // without scrolling. The buttons start DISABLED: the page opens read-only.
-func quickKeyBar() g.Node {
+//
+// last says the bar is the bottom of the page, and so carries the safe-area
+// inset; when a composer follows, the composer carries it instead.
+func quickKeyBar(last bool) g.Node {
+	pad := "pb-2"
+	if last {
+		pad = "pb-[max(0.5rem,env(safe-area-inset-bottom))]"
+	}
 	keys := make([]g.Node, 0, len(QuickKeys))
 	for _, k := range QuickKeys {
 		keys = append(keys, Button(
@@ -329,7 +286,7 @@ func quickKeyBar() g.Node {
 	return Nav(
 		ID("term-keys"),
 		g.Attr("aria-label", "Terminal keys"),
-		Class("grid grid-cols-6 gap-1 border-t border-line bg-bg px-2 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]"),
+		Class("grid grid-cols-6 gap-1 border-t border-line bg-bg px-2 pt-2 "+pad),
 		g.Group(keys),
 	)
 }
@@ -483,17 +440,13 @@ func agentTerminalScript() g.Node {
   }
 
   // --- step-up (mirrored sessions) ------------------------------------------
+  // The dialog, the freshness the page believes and both ways of confirming
+  // live in window.musterStepUp (stepup_confirm.go), shared with the composer.
   var confirmPath = host.getAttribute('data-step-up');
-  var dlg = document.getElementById('term-confirm');
-  var freshUntil = 0;     // performance.now() deadline of the current sign-in's freshness
+  var stepUp = confirmPath ? window.musterStepUp : null;
   var justConfirmed = false;
   var rememberKey = 'muster.interactive.' + (host.getAttribute('data-remember') || '');
-  if (confirmPath) {
-    var ff = +host.getAttribute('data-fresh-for') || 0;
-    if (ff > 0) freshUntil = performance.now() + ff;
-  }
-  // A margin, so an attach is not tried in the last seconds of freshness.
-  function fresh() { return performance.now() < freshUntil - 10000; }
+  function fresh() { return !!stepUp && stepUp.fresh(); }
   function remember(on) {
     if (!confirmPath) return;
     try { if (on) sessionStorage.setItem(rememberKey, '1'); else sessionStorage.removeItem(rememberKey); } catch (e) {}
@@ -501,15 +454,11 @@ func agentTerminalScript() g.Node {
   function remembered() {
     try { return sessionStorage.getItem(rememberKey) === '1'; } catch (e) { return false; }
   }
+  // openConfirm asks "Confirm it's you" and, once confirmed (passkey or
+  // password), attaches interactively — the action that was waiting on it.
   function openConfirm(why) {
-    if (!dlg) return;
-    var err = document.getElementById('term-confirm-error');
-    err.hidden = !why;
-    err.textContent = why || '';
-    var pw = document.getElementById('term-confirm-password');
-    pw.value = '';
-    if (!dlg.open) dlg.showModal();
-    pw.focus();
+    if (!stepUp) return;
+    stepUp.ask(why, function () { justConfirmed = true; goInteractive(); });
   }
 
   function setStatus(t) { statusEl.textContent = t; }
@@ -583,11 +532,10 @@ func agentTerminalScript() g.Node {
       // 🔴 A STEP-UP REFUSAL ARRIVES AS A REFUSED UPGRADE (403), which a
       // browser socket cannot read. An interactive mirrored attach that never
       // opened is therefore taken as "not fresh any more": back to read-only,
-      // and ask — unless the password was JUST confirmed, when asking again
-      // would loop.
+      // and ask — unless it was JUST confirmed, when asking again would loop.
       if (!opened && mode === 'rw' && confirmPath) {
         var again = !justConfirmed;
-        freshUntil = 0;
+        if (stepUp) stepUp.stale();
         justConfirmed = false;
         mode = 'ro';
         remember(false);
@@ -636,43 +584,6 @@ func agentTerminalScript() g.Node {
     fitWidth = !fitWidth;
     if (overflowing) drawOverflow();
   });
-
-  if (dlg) {
-    document.getElementById('term-confirm-cancel').addEventListener('click', function () { dlg.close(); });
-    document.getElementById('term-confirm-form').addEventListener('submit', function (ev) {
-      ev.preventDefault();
-      var pw = document.getElementById('term-confirm-password');
-      var err = document.getElementById('term-confirm-error');
-      var btn = document.getElementById('term-confirm-submit');
-      btn.disabled = true;
-      fetch(confirmPath, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Accept': 'application/json' },
-        body: new URLSearchParams({ password: pw.value })
-      }).then(function (r) {
-        return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, j: j }; });
-      }).then(function (res) {
-        btn.disabled = false;
-        if (!res.ok) {
-          err.textContent = res.j.error || 'That could not be confirmed.';
-          err.hidden = false;
-          pw.value = '';
-          pw.focus();
-          return;
-        }
-        freshUntil = performance.now() + (+res.j.fresh_for || 0);
-        justConfirmed = true;
-        pw.value = '';
-        dlg.close();
-        goInteractive();
-      }, function () {
-        btn.disabled = false;
-        err.textContent = 'muster could not be reached. Try again.';
-        err.hidden = false;
-      });
-    });
-  }
 
   var pending = false;
   function scheduleLayout() {

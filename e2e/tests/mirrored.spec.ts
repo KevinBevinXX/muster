@@ -2,7 +2,7 @@ import { execFileSync, spawn, ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Page } from '@playwright/test';
+import { BrowserContext, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { binDir, dsn, hookToken, mirrorPort, password, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
@@ -77,10 +77,22 @@ test.afterAll(async () => {
   await server?.stop();
 });
 
+// login signs the page's (fresh) context in. The FORM is driven once per run of
+// this file and the session cookie it earns is handed to every later test:
+// password-mode sign-in is throttled to 10 attempts a minute in ONE shared
+// bucket (internal/api's loginRate), and this file has more tests than that —
+// a later one's form was refused (429) and it timed out on /login. None of
+// these tests is about signing in.
+let signedIn: Awaited<ReturnType<BrowserContext['cookies']>> | undefined;
 async function login(page: Page) {
+  if (signedIn) {
+    await page.context().addCookies(signedIn);
+    return;
+  }
   await page.goto(origin + '/login');
   await page.fill('#muster-password', password);
   await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  signedIn = await page.context().cookies(origin);
 }
 
 async function noHorizontalScroll(page: Page) {
@@ -438,6 +450,175 @@ test('an interactive host offers the composer: a fresh sign-in sends into the pa
   await expect(page.locator('#mv-input')).toHaveValue('');
   expect(refused, 'the send was retried once after the confirm').toBe(2);
   await page.unroute('**/mirror/view/send');
+  await noHorizontalScroll(page);
+  await stopMirror();
+  mirrorProc = startMirror(false);
+});
+
+// ---------------------------------------------------------------------------
+// THE TERMINAL VIEW'S COMPOSER: a message box for a session whose pane is NOT
+// Claude Code (here `scratch` — a shell, opencode, anything). Such a session has
+// no rendered view, so before this its card opened a Terminal with no way to
+// send it a message short of flipping Interactive and typing key by key.
+//
+// By the real tap path at a phone's size and at a desktop's: the Agents list →
+// the session's card → the Terminal → type → Send. The fake host records a
+// paste into a session's active pane (`%e2e-<session>`) in
+// MUSTER_MIRROR_E2E_PASTE_FILE; everything in muster and the tunnel is real.
+//
+// 🔴 A REGRESSION TEST: on the commit before the feature the Terminal page draws
+// no composer, so the first `#mv-input` assertion fails there.
+// ---------------------------------------------------------------------------
+for (const size of [
+  { name: 'a phone (390×844, touch)', viewport: { width: 390, height: 844 }, touch: true },
+  { name: 'a desktop (1280×900)', viewport: { width: 1280, height: 900 }, touch: false },
+]) {
+  test.describe(`the Terminal composer on ${size.name}`, () => {
+    test.use({ viewport: size.viewport, hasTouch: size.touch, isMobile: size.touch });
+
+    test('a non-Claude session is sent a message from its Terminal view, without the Interactive switch', async ({ page }) => {
+      await stopMirror();
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'muster-e2e-panes-'));
+      const pasteFile = path.join(dir, 'pasted');
+      const tr = newTranscript();
+      const pasted = () => (fs.existsSync(pasteFile) ? fs.readFileSync(pasteFile, 'utf8') : '');
+      mirrorProc = startMirror(true, tr, { MUSTER_MIRROR_E2E_PASTE_FILE: pasteFile });
+      const rw: string[] = [];
+      const sends: number[] = [];
+      page.on('websocket', (ws) => {
+        if (ws.url().includes('/mirror/terminal/ws') && ws.url().includes('mode=rw')) rw.push(ws.url());
+      });
+      page.on('response', (r) => {
+        if (r.url().endsWith('/mirror/terminal/send')) sends.push(r.status());
+      });
+      const act = (l: ReturnType<Page['locator']>) => (size.touch ? l.tap() : l.click());
+      try {
+        await login(page);
+        await waitForClaude(page);
+
+        // The card of a session with no Claude pane opens its TERMINAL.
+        await page.goto(origin + '/agents');
+        const scratch = card(page, 'scratch');
+        await expect(scratch).toBeVisible();
+        await expect(scratch.locator('[data-mirror-claude]')).toHaveCount(0);
+        await Promise.all([page.waitForURL((u) => u.pathname === '/mirror/terminal'), act(scratch.locator('a').first())]);
+        await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch mode=ro');
+        await expect(page.locator('#view-rendered'), 'scratch has no rendered view').toHaveCount(0);
+
+        // The composer is THERE, enabled, on screen, phone-shaped — and the
+        // terminal is still read-only.
+        const input = page.locator('#mv-input');
+        const send = page.locator('#mv-send');
+        await expect(input).toBeEnabled();
+        await expect(send).toBeEnabled();
+        await expect(input).toHaveAttribute('placeholder', 'Message…');
+        await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
+        for (const el of [input, send]) {
+          const b = (await el.boundingBox())!;
+          expect(b.y + b.height, 'the composer is above the bottom of the screen').toBeLessThanOrEqual(size.viewport.height);
+          expect(b.x + b.width, 'the composer fits the width').toBeLessThanOrEqual(size.viewport.width);
+          expect(b.height, 'a 44px touch target').toBeGreaterThanOrEqual(44);
+        }
+        expect(await input.evaluate((el) => parseFloat(getComputedStyle(el).fontSize)), 'a 16px input: iOS zooms the page on anything smaller').toBeGreaterThanOrEqual(16);
+        const keys = (await page.locator('#term-keys').boundingBox())!;
+        expect((await input.boundingBox())!.y, 'the composer is the LAST thing on the page, under the quick keys').toBeGreaterThanOrEqual(keys.y + keys.height - 1);
+        await noHorizontalScroll(page);
+
+        // Typed, sent, pasted into THAT session's active pane; the box clears.
+        await act(input);
+        await page.keyboard.type('git status');
+        await act(send);
+        await expect.poll(pasted).toBe('%e2e-scratch git status\n');
+        await expect(input).toHaveValue('');
+        await expect(page.locator('#mv-note')).toBeHidden();
+        expect(sends, 'one send, accepted').toEqual([204]);
+        expect(rw, 'no interactive terminal was opened to do it').toEqual([]);
+        await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
+        await expect(page.locator('#term-confirm')).toBeHidden();
+
+        // Enter sends too; Shift+Enter is a newline, and several lines go as ONE
+        // message (one paste).
+        await act(input);
+        await page.keyboard.type('line one');
+        await page.keyboard.press('Shift+Enter');
+        await page.keyboard.type('line two');
+        await page.keyboard.press('Enter');
+        await expect.poll(pasted).toBe('%e2e-scratch git status\n%e2e-scratch line one\nline two\n');
+        await expect(input).toHaveValue('');
+
+        // An EMPTY Send says so, inline, and sends nothing.
+        await act(send);
+        await expect(page.locator('#mv-note')).toHaveText('Type a message first.');
+        await input.fill('   ');
+        await act(send);
+        await expect(page.locator('#mv-note')).toHaveText('Type a message first.');
+        expect(sends, 'an empty Send never reached the server').toEqual([204, 204]);
+        await input.fill('x');
+        await expect(page.locator('#mv-note'), 'typing clears the note').toBeHidden();
+        await input.fill('');
+
+        // With the on-screen keyboard up the page is shorter (the viewport meta
+        // is interactive-widget=resizes-content): the composer stays on screen.
+        if (size.touch) {
+          await page.setViewportSize({ width: size.viewport.width, height: 460 });
+          for (const el of [input, send]) {
+            const b = (await el.boundingBox())!;
+            expect(b.y + b.height, 'the composer is still on screen in a keyboard-height viewport').toBeLessThanOrEqual(460);
+            expect(b.y, 'and not pushed off the top').toBeGreaterThanOrEqual(0);
+          }
+          await page.setViewportSize(size.viewport);
+        }
+
+        // A FAILURE is shown inline with its reason, and the text is KEPT. (The
+        // host goes away between the page load and the Send.)
+        await stopMirror();
+        await waitForCards(page, false);
+        await input.fill('this one cannot be delivered');
+        await act(send);
+        await expect(page.locator('#mv-note')).toContainText('offline');
+        await expect(input).toHaveValue('this one cannot be delivered');
+        expect(sends[sends.length - 1], 'the refusal was the server\'s').toBe(503);
+        expect(pasted(), 'nothing more was pasted').toBe('%e2e-scratch git status\n%e2e-scratch line one\nline two\n');
+        await noHorizontalScroll(page);
+      } finally {
+        await stopMirror();
+        fs.rmSync(dir, { recursive: true, force: true });
+        mirrorProc = startMirror(false);
+      }
+    });
+  });
+}
+
+test('a read-only host’s Terminal view draws no composer, and the rendered view’s empty Send says so', async ({ page }) => {
+  await stopMirror();
+  const tr = newTranscript();
+  // Read-only: no composer on the Terminal page of either kind of session.
+  mirrorProc = startMirror(false, tr);
+  await login(page);
+  await waitForClaude(page);
+  for (const session of ['scratch', 'main']) {
+    await page.goto(origin + termPath(session));
+    await expect(screen(page)).toContainText(`FAKE-MIRROR session=${session} mode=ro`);
+    await expect(page.locator('#mv-form'), `${session}: no composer on a read-only host`).toHaveCount(0);
+    await expect(page.locator('#mv-input')).toHaveCount(0);
+    await expect(page.locator('#term-keys'), 'control: the rest of the page is there').toBeVisible();
+  }
+
+  // Interactive: the SAME composer on the rendered view answers an empty Send
+  // (it used to do nothing at all, silently).
+  await stopMirror();
+  mirrorProc = startMirror(true, tr);
+  await waitForClaude(page);
+  await page.goto(origin + viewPath('main'));
+  await expect(page.locator('#mv-input')).toBeEnabled();
+  const sends: number[] = [];
+  page.on('response', (r) => {
+    if (r.url().endsWith('/mirror/view/send')) sends.push(r.status());
+  });
+  await page.locator('#mv-send').click();
+  await expect(page.locator('#mv-note')).toHaveText('Type a message first.');
+  expect(sends, 'nothing was sent').toEqual([]);
+  expect(await page.locator('#mv-input').evaluate((el) => parseFloat(getComputedStyle(el).fontSize)), 'the rendered view’s input is 16px too').toBeGreaterThanOrEqual(16);
   await noHorizontalScroll(page);
   await stopMirror();
   mirrorProc = startMirror(false);

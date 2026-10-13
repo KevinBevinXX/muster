@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -46,10 +47,17 @@ func (s *Server) registerMirrorRoutes(mux Mux) {
 	// terminal). No provisioner is involved, so no provisioner wrapper.
 	mux.HandleFunc("GET /mirror/terminal", s.requireSession(s.handleMirrorTerminalPage))
 	mux.HandleFunc("GET /mirror/terminal/ws", s.requireSession(s.handleMirrorTerminalWS))
-	// "Confirm it's you" (stepup.go): the fresh sign-in an INTERACTIVE attach
-	// needs. Registered whether or not the plugin is on — it is an auth route,
-	// and its only consumer today is the terminal page above.
+	// The Terminal view's composer: one gated paste into the session's active
+	// pane (mirror_view.go's mirrorSend — the rendered view's send, with the
+	// other target).
+	mux.HandleFunc("POST /mirror/terminal/send", s.requireOperatorWrite(s.handleMirrorTerminalSend))
+	// "Confirm it's you" (stepup.go): the fresh sign-in an INTERACTIVE attach or
+	// a send needs — the password again, or a passkey. Registered whether or
+	// not the plugin is on — they are auth routes, and their consumers today
+	// are the pages above and the account's passkey page.
 	mux.HandleFunc("POST /auth/confirm", s.requireSession(s.handleStepUpConfirm))
+	mux.HandleFunc("POST /auth/confirm/passkey/options", s.requireSession(s.handleStepUpPasskeyOptions))
+	mux.HandleFunc("POST /auth/confirm/passkey/verify", s.requireSession(s.handleStepUpPasskeyVerify))
 	s.registerMirrorViewRoutes(mux)
 }
 
@@ -120,10 +128,24 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		// attach, not what an interactive client does once attached.
 		InteractiveNote: "Interactive types into a tmux client on " + h.Host +
 			": from it you can switch to any tmux session there or open a shell on the host.",
-		// 🔴 STEP-UP: Interactive needs a sign-in from the last
-		// stepup.MaxAge. The page asks for the password when this has passed;
-		// the socket below refuses a stale rw attach whatever the page does.
-		StepUp: &ui.StepUpView{ConfirmPath: stepUpConfirmPath, FreshFor: freshForMillis(r.Context(), s.stepUpNow()), RememberKey: "mirror:" + h.Host},
+		// 🔴 STEP-UP: Interactive, and every send from the composer, needs a
+		// sign-in from the last stepup.Window. The page asks to confirm (passkey
+		// or password) when this has passed; the socket and the send route below
+		// refuse a stale write whatever the page does.
+		StepUp: s.stepUpView(r, "mirror:"+h.Host),
+	}
+	// 🔴 THE COMPOSER IS OFFERED ONLY FOR A HOST THAT ADVERTISED -interactive
+	// — a read-only host draws none — and it does not need the switch above: it
+	// is one gated paste per Send into the pane on screen, not a live keyboard.
+	// An -interactive host whose muster-mirror cannot paste into this pane (an
+	// older one, and no Claude Code here) draws it disabled, saying why.
+	if h.Online && h.Interactive {
+		c := ui.MirrorComposerView{SendPath: ui.MirrorTerminalSendPath, Host: h.Host, Session: session,
+			Placeholder: "Message…", Aria: "Send a message into this session", DisabledPlaceholder: "Update muster-mirror to send"}
+		if !h.CanPaste(session) {
+			c.Disabled = strings.TrimPrefix(mirror.ErrPanePasteUnsupported.Error(), "mirror: ")
+		}
+		v.Composer = &c
 	}
 	if hasRenderedView(h, session) {
 		v.RenderedHref = ui.MirrorViewPath(h.Host, session)
@@ -132,6 +154,20 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 	if err := ui.AgentTerminalPage(v).Render(w); err != nil {
 		s.logger.Printf("mirror: render terminal page: %v", err)
 	}
+}
+
+// stepUpView is the "Confirm it's you" wiring a page renders: the confirm
+// route, the passkey confirm's prefix when this server serves passkeys at all
+// (the dialog asks whether THIS account has one when it opens — never here,
+// which would cost a GoTrue call per page view), how long the request's sign-in
+// stays fresh, and the window in words.
+func (s *Server) stepUpView(r *http.Request, rememberKey string) *ui.StepUpView {
+	v := &ui.StepUpView{ConfirmPath: stepUpConfirmPath, FreshFor: freshForMillis(r.Context(), s.stepUpNow()),
+		RememberKey: rememberKey, Window: stepup.WindowText()}
+	if s.auth.goTrueMode() && s.gt != nil {
+		v.PasskeyPath = stepUpPasskeyPath
+	}
+	return v
 }
 
 // freshForMillis is how long the request's sign-in stays fresh enough for a
@@ -158,7 +194,7 @@ func (s *Server) handleMirrorTerminalWS(w http.ResponseWriter, r *http.Request) 
 	}
 	readOnly := q.Get("mode") != terminalModeInteractive
 	// 🔴 STEP-UP, BEFORE THE UPGRADE: an interactive attach needs a sign-in
-	// from the last stepup.MaxAge, whatever the page decided. 403 rather than an
+	// from the last stepup.Window, whatever the page decided. 403 rather than an
 	// in-socket error, so nothing is attached and the refusal has a status a
 	// test (or a proxy log) can read. internal/mirror's Attach checks the same
 	// context again, independently.

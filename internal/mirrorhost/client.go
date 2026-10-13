@@ -225,7 +225,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	labels := conn.labels(sessions)
 	activity := conn.activity(sessions)
 	if err := conn.send(mirror.Msg{Type: mirror.TypeHello, Version: version, Host: c.cfg.Host,
-		Sessions: sessions, Claude: claude, Labels: labels, Activity: activity, Interactive: c.cfg.Interactive}); err != nil {
+		Sessions: sessions, Claude: claude, Labels: labels, Activity: activity, Interactive: c.cfg.Interactive, PanePaste: conn.panePaste()}); err != nil {
 		return err
 	}
 	wctx, wcancel := context.WithTimeout(ctx, 15*time.Second)

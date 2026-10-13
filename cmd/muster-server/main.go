@@ -70,6 +70,7 @@ import (
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/router"
 	"github.com/ZacxDev/muster/internal/sse"
+	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -379,6 +380,15 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// The mirrored-agents plugin: only with MUSTER_MIRROR=1 AND a database (its
 	// tokens and rows live there; config.validate already refuses a deployment
 	// with no database). Its agents-changed nudge is installed once srv exists.
+	// The step-up window (internal/stepup) is process-wide and read by both
+	// internal/api and the plugin below, so it is set before either exists.
+	// loadConfig already bounded it (and a config built without loadConfig —
+	// a test's — leaves it zero, which keeps stepup.DefaultWindow).
+	if cfg.StepUpWindow != 0 {
+		if err := stepup.SetWindow(cfg.StepUpWindow); err != nil {
+			return nil, err
+		}
+	}
 	var mirrorSvc *mirror.Service
 	if cfg.Mirror && a.pool != nil {
 		mirrorSvc = mirror.NewService(mirror.NewPG(a.pool), logger)
@@ -925,8 +935,9 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	if ext.Mirror != nil {
 		l.Printf("mirrored sessions: ENABLED (%s=1) — hosts running muster-mirror dial GET %s with a "+
 			"per-host mirror token (mint one with `muster-server mirror token create <host>`), and their "+
-			"tmux sessions are shown (in memory, to the token owner only) as Mirrored cards whose terminal attaches through that tunnel",
-			envMirror, mirror.ConnectPath)
+			"tmux sessions are shown (in memory, to the token owner only) as Mirrored cards whose terminal attaches through that tunnel. "+
+			"Typing into one needs a sign-in from the last %s in that same browser session (%s)",
+			envMirror, mirror.ConnectPath, stepup.WindowText(), envStepUpWindow)
 	} else {
 		l.Printf("mirrored sessions: OFF — %s is unset (or there is no database), so GET %s answers 404, "+
 			"no mirrored session is listed and the plugin's UI is not drawn", envMirror, mirror.ConnectPath)

@@ -47,6 +47,24 @@ func (t Tmux) server() []string {
 	return nil
 }
 
+// query is the argv of a tmux command whose `-F` output this process PARSES:
+// the server flags, behind `-u`.
+//
+// 🔴 `-u` IS LOAD-BEARING. Without a UTF-8 locale in its environment (a systemd
+// unit with no LANG, a container, `LC_ALL=C`) tmux SANITISES what it prints for
+// a command client: every non-printable byte becomes `_` — including the TAB
+// these formats use as their field separator (measured on tmux 3.4 and 3.7c:
+// `11_%0_283_main`). Every line then fails to parse, with no error: no Claude
+// pane is seen, no active pane can be sent to, no label and no activity order —
+// a host that simply looks like it has none. `-u` tells tmux the client is
+// UTF-8 whatever the locale says, and the TABs arrive.
+//
+// Only for queries: an ATTACH keeps the locale's own answer, which decides how
+// the session is drawn for that client.
+func (t Tmux) query(args ...string) []string {
+	return append(append([]string{"-u"}, t.server()...), args...)
+}
+
 // tmuxEnv is this process's environment WITHOUT $TMUX and $TMUX_PANE, plus a
 // TERM the browser's terminal emulates.
 //

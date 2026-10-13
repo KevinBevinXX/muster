@@ -37,9 +37,17 @@ const (
 // ErrNoPrincipal: a view or attach was asked for with no user on the context.
 var ErrNoPrincipal = errors.New("mirror: no user principal on this request")
 
-// ErrStepUpRequired: an interactive attach on a session that did not sign in
-// within stepup.MaxAge.
-var ErrStepUpRequired = fmt.Errorf("mirror: %w", stepup.ErrStale)
+// stepUpRequired is ErrStepUpRequired's type: stepup.ErrStale under this
+// package's prefix. A type rather than fmt.Errorf("%w") because ErrStale's text
+// names the CONFIGURED window and Errorf would freeze it at package load.
+type stepUpRequired struct{}
+
+func (stepUpRequired) Error() string { return "mirror: " + stepup.ErrStale.Error() }
+func (stepUpRequired) Unwrap() error { return stepup.ErrStale }
+
+// ErrStepUpRequired: an interactive attach, or a paste, on a session that did
+// not sign in within stepup.Window.
+var ErrStepUpRequired error = stepUpRequired{}
 
 // Service is the mirror plugin as internal/api consumes it: the connect
 // endpoint, the viewing principal's hosts, and terminal attach.
@@ -262,14 +270,14 @@ func (s *Service) Watch(ctx context.Context, host, session, gen string, offset i
 	return s.hub.Watch(ctx, o, host, session, gen, offset, out)
 }
 
-// Paste types a message into one of the viewing principal's host sessions'
-// Claude pane. See Hub.Paste.
-func (s *Service) Paste(ctx context.Context, host, session, text string) error {
+// Paste types a message into a pane of one of the viewing principal's host
+// sessions: its Claude pane, or its active pane (target). See Hub.Paste.
+func (s *Service) Paste(ctx context.Context, host, session, text string, target PasteTarget) error {
 	o, err := owner(ctx)
 	if err != nil {
 		return err
 	}
-	return s.hub.Paste(ctx, o, host, session, text)
+	return s.hub.Paste(ctx, o, host, session, text, target)
 }
 
 // IsAttachRefusal reports whether err is one of the plugin's own refusals,
@@ -277,7 +285,8 @@ func (s *Service) Paste(ctx context.Context, host, session, text string) error {
 func IsAttachRefusal(err error) bool {
 	for _, e := range []error{ErrHostOffline, ErrSessionGone, ErrHostDisconnected, ErrOverrun,
 		ErrInteractiveRefused, ErrTooManyStreams, ErrNoPrincipal, ErrStepUpRequired,
-		ErrNoRenderedView, ErrNotClaude, ErrViewOverrun, ErrTooManyWatches, ErrPasteTimeout, ErrPasteRefused, ErrBadPaste} {
+		ErrNoRenderedView, ErrNotClaude, ErrViewOverrun, ErrTooManyWatches, ErrPasteTimeout, ErrPasteRefused, ErrBadPaste,
+		ErrPanePasteUnsupported} {
 		if errors.Is(err, e) {
 			return true
 		}

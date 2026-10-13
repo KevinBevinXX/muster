@@ -9,22 +9,30 @@ import {
   binDir, dsn, e2eRoot, gotrueSecret, repoRoot, stepupBrowserPort, stepupGotruePort, stepupMainPort, versionA,
 } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
+import { Authenticator, authenticator, credentialIds, removeCredential, setUserVerified } from '../lib/webauthn';
 
 // STEP-UP for typing into a mirrored session, end to end against the REAL
 // GoTrue image (e2e/gotrue/compose.yml, the deployment's pin), a gotrue-mode
 // muster with the mirror plugin on, and a REAL muster-mirror (`-tags
 // e2emirror`: only tmux is played) started -interactive.
 //
-// The Interactive switch attaches rw at once on a FRESH sign-in (within 5
-// minutes, read from the access token's `amr`), and on a STALE one asks
-// "Confirm it's you" — the password again, checked by GoTrue — first. The
-// server refuses a stale rw attach whatever the page believes.
+// The Interactive switch attaches rw at once on a FRESH sign-in (within the
+// step-up window — 12 hours, the server's default, which this spec runs with —
+// read from the access token's `amr`), and on a STALE one asks "Confirm it's
+// you" first: a PASSKEY (a WebAuthn assertion with user verification, verified
+// by GoTrue and bound by muster to the signed-in user) or the password again.
+// The server refuses a stale rw attach or send whatever the page believes.
 //
-// 🔴 HOW A STALE SESSION IS MADE WITHOUT WAITING 5 MINUTES: the access cookie
+// This GoTrue runs with passkeys ON (MUSTER_E2E_GOTRUE_PASSKEYS), so the
+// dialog's passkey path is the real one; the first three tests never register a
+// passkey, and so also pin that an account WITHOUT one is offered the password
+// alone.
+//
+// 🔴 HOW A STALE SESSION IS MADE WITHOUT WAITING 12 HOURS: the access cookie
 // is re-signed with the e2e JWT secret (which muster and this GoTrue share)
-// with its `amr` timestamp moved 10 minutes back and everything else — sub,
+// with its `amr` timestamp moved 13 hours back and everything else — sub,
 // session_id, iss, aud — the real token's. That is byte-for-byte the token
-// GoTrue mints for a session signed in 10 minutes ago (measured: a refresh
+// GoTrue mints for a session signed in 13 hours ago (measured: a refresh
 // carries amr forward unchanged), so muster's verifier takes it as such. Its
 // exp is pushed out so muster does not refresh it back into a fresh one
 // mid-test (GOTRUE_JWT_EXP is 5 s here).
@@ -36,6 +44,7 @@ const composeEnv = {
   MUSTER_E2E_GOTRUE_PROJECT: project,
   MUSTER_E2E_GOTRUE_PORT: String(stepupGotruePort),
   MUSTER_E2E_GOTRUE_SITE: `http://localhost:${stepupBrowserPort}`,
+  MUSTER_E2E_GOTRUE_PASSKEYS: 'true',
 };
 const browserURL = `http://localhost:${stepupBrowserPort}`;
 const machineURL = `http://localhost:${stepupMainPort}`;
@@ -154,13 +163,18 @@ function amrOf(token: string): number {
   return Math.max(...amr.map((e) => e.timestamp));
 }
 
-// makeStale replaces the access cookie with the same session signed in 10
-// minutes ago (see the header).
-async function makeStale(ctx: BrowserContext) {
+// How long ago makeStale's session "signed in": an hour past the 12 hour
+// window. (10 minutes — stale under the old five-minute window — is FRESH now,
+// which the window test below pins.)
+const STALE_SECONDS = 13 * 3600;
+
+// makeStale replaces the access cookie with the same session signed in `ago`
+// seconds ago — by default 13 hours, an hour past the window (see the header).
+async function makeStale(ctx: BrowserContext, ago = STALE_SECONDS) {
   const real = await accessToken(ctx);
   const claims = b64urlJSON(real.split('.')[1]);
   const now = Math.floor(Date.now() / 1000);
-  claims.amr = [{ method: 'password', timestamp: now - 600 }];
+  claims.amr = [{ method: 'password', timestamp: now - ago }];
   claims.exp = now + 600;
   await ctx.addCookies([{ name: 'muster_at', value: sign(claims), url: browserURL, httpOnly: true, secure: true, sameSite: 'Lax' }]);
 }
@@ -223,7 +237,7 @@ test('the Interactive switch on a mirrored session needs a fresh sign-in, and as
   await expect(page.locator('#term-confirm-error')).toHaveText('That password is not right.');
   await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
   const staleToken = await accessToken(context);
-  expect(Date.now() / 1000 - amrOf(staleToken), 'still the stale session').toBeGreaterThan(500);
+  expect(Date.now() / 1000 - amrOf(staleToken), 'still the stale session').toBeGreaterThan(STALE_SECONDS - 100);
 
   //    The right one: a NEW sign-in (amr is now), then rw.
   await page.fill('#term-confirm-password', adminPW);
@@ -388,5 +402,309 @@ test.describe('the rendered view on a phone (390×844)', () => {
     await expect(page.locator('#mv-error')).toBeHidden();
     const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
     expect(sw, 'no horizontal scroll').toBeLessThanOrEqual(cw);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE 12 HOUR WINDOW and CONFIRMING WITH A PASSKEY, with real GoTrue and
+// Chromium's virtual authenticator (real signatures, verified by GoTrue).
+//
+// 🔴 REGRESSION TESTS: on the commit before the feature the window is five
+// minutes (so a sign-in from ten minutes ago is refused, and the first test
+// fails at its first send) and the dialog has no passkey button (so the others
+// fail at `#term-confirm-passkey`).
+// ---------------------------------------------------------------------------
+
+const viewPath = `/mirror/view?host=${encodeURIComponent(host)}&session=main`;
+const pasted = () => (fs.existsSync(transcript + '.pasted') ? fs.readFileSync(transcript + '.pasted', 'utf8') : '');
+const passkeyBtn = (page: Page) => page.locator('#term-confirm-passkey');
+const subOf = (token: string) => String(b64urlJSON(token.split('.')[1]).sub);
+
+async function signIn(page: Page, email = adminEmail, pw = adminPW) {
+  await page.goto(browserURL + '/login');
+  await page.fill('#muster-email', email);
+  await page.fill('#muster-password', pw);
+  await page.click('button[type=submit]');
+  // A sign-in that does not land says WHY (the page's own words), rather than
+  // timing out on a URL.
+  await page.waitForURL(browserURL + '/', { timeout: 20_000 }).catch(async () => {
+    throw new Error(`sign-in as ${email} did not land on /: ${page.url()} says: ${(await page.locator('body').innerText()).slice(0, 400)}`);
+  });
+  if (!mirrorProc || mirrorProc.exitCode !== null) mirrorProc = startMirror();
+}
+
+async function signOut(page: Page) {
+  await page.goto(browserURL + '/account');
+  await Promise.all([page.waitForURL(/\/login$/), page.getByRole('button', { name: 'Sign out', exact: true }).click()]);
+}
+
+// addPasskey registers a passkey for the signed-in account on this page's
+// authenticator. It needs a sign-in from the last FIVE minutes — that window
+// did not lengthen — so every caller has just signed in.
+async function addPasskey(page: Page) {
+  await page.goto(browserURL + '/account/passkeys');
+  await expect(page.locator('#passkey-add')).toBeVisible();
+  const before = await page.locator('#passkey-list [data-passkey-id]').count();
+  await page.locator('#passkey-add').click();
+  await expect(page.locator('#passkey-list [data-passkey-id]'), 'the new passkey is listed').toHaveCount(before + 1);
+}
+
+// sendFrom opens the rendered view and returns its composer plus a live list of
+// the send route's answers.
+async function openView(page: Page) {
+  const sends: number[] = [];
+  page.on('response', (r) => {
+    if (r.url().endsWith('/mirror/view/send')) sends.push(r.status());
+  });
+  await page.goto(browserURL + viewPath);
+  await expect(page.locator('#mv-log [data-bubble="assistant"]').first()).toContainText('Hi.', { timeout: 20_000 });
+  await expect(page.locator('#mv-input')).toBeEnabled();
+  return { input: page.locator('#mv-input'), send: page.locator('#mv-send'), sends };
+}
+
+test.describe('the window and the passkey confirm on a phone (390×844)', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  test('a sign-in from ten minutes ago still sends; one from over twelve hours ago is asked — by password alone when the account has no passkey (real GoTrue)', async ({ page, context }) => {
+    test.setTimeout(120_000);
+    await signIn(page);
+    const { input, send, sends } = await openView(page);
+    const before = pasted();
+
+    // Ten minutes: stale under the old five-minute window, FRESH under twelve hours.
+    await makeStale(context, 600);
+    await input.tap();
+    await page.keyboard.type('ten minutes in');
+    await send.tap();
+    await expect.poll(pasted).toBe(before + '%9 ten minutes in\n');
+    await expect(input, 'cleared once the 204 arrived').toHaveValue('');
+    expect(sends, 'sent at once, no step-up').toEqual([204]);
+    await expect(dialog(page)).toBeHidden();
+
+    // Eleven hours fifty: still inside the window.
+    await makeStale(context, 12 * 3600 - 600);
+    await input.tap();
+    await page.keyboard.type('nearly twelve hours in');
+    await send.tap();
+    await expect.poll(pasted).toBe(before + '%9 ten minutes in\n%9 nearly twelve hours in\n');
+    await expect(input).toHaveValue('');
+    expect(sends).toEqual([204, 204]);
+    await page.goto(browserURL + termPath);
+    const freshFor = Number(await page.locator('#term').getAttribute('data-fresh-for'));
+    expect(freshFor, 'about ten minutes of freshness left').toBeGreaterThan(8 * 60_000);
+    expect(freshFor).toBeLessThanOrEqual(10 * 60_000);
+
+    // Twelve hours and ten minutes: asked, and the dialog names the window.
+    const v = await openView(page);
+    await makeStale(context, 12 * 3600 + 600);
+    await v.input.tap();
+    await page.keyboard.type('past the window');
+    await v.send.tap();
+    await expect(dialog(page)).toBeVisible();
+    expect(v.sends, 'refused by the server').toEqual([403]);
+    await expect(dialog(page)).toContainText('needs a sign-in from the last 12 hours.');
+    await expect(dialog(page)).not.toContainText('5 minutes');
+    // No passkey is registered for this account: the dialog stays password-only
+    // although this GoTrue has passkeys on and this browser supports WebAuthn.
+    await page.waitForResponse((r) => r.url().endsWith('/auth/confirm/passkey/options')).catch(() => undefined);
+    await expect(passkeyBtn(page)).toBeHidden();
+    await expect(page.locator('#term-confirm-submit')).toHaveText('Confirm');
+    await page.fill('#term-confirm-password', adminPW);
+    await page.locator('#term-confirm-submit').tap();
+    await expect(dialog(page)).toBeHidden();
+    await expect.poll(pasted).toBe(before + '%9 ten minutes in\n%9 nearly twelve hours in\n%9 past the window\n');
+    await expect(v.input).toHaveValue('');
+    expect(v.sends).toEqual([403, 204]);
+  });
+
+  test('a stale send is confirmed with a PASSKEY and the same text is delivered; a UV=false assertion and another account’s passkey are refused; the password still works (real GoTrue, virtual authenticator)', async ({ page, context }) => {
+    test.setTimeout(300_000);
+    const auth: Authenticator = await authenticator(page);
+    await signIn(page);
+    await addPasskey(page);
+    const adminCreds = await credentialIds(auth);
+    expect(adminCreds.length, 'the authenticator holds the admin’s passkey').toBe(1);
+    const adminSub = subOf(await accessToken(context));
+
+    // 1. STALE → Send → the dialog offers the PASSKEY as the primary action →
+    //    confirmed → the SAME text is delivered.
+    let v = await openView(page);
+    let before = pasted();
+    await makeStale(context);
+    await v.input.tap();
+    await page.keyboard.type('sent after a passkey');
+    await v.send.tap();
+    await expect(dialog(page)).toBeVisible();
+    expect(v.sends, 'the stale send was refused by the server').toEqual([403]);
+    await expect(passkeyBtn(page)).toBeVisible();
+    await expect(passkeyBtn(page), 'the passkey is the default action').toBeFocused();
+    await expect(page.locator('#term-confirm-password'), 'the password stays as the fallback').toBeVisible();
+    await expect(page.locator('#term-confirm-submit')).toHaveText('Use password');
+    await expect(dialog(page)).toContainText('Confirm with your passkey, or use your password.');
+    const box = (await dialog(page).boundingBox())!;
+    expect(box.x + box.width, 'the dialog fits 390px').toBeLessThanOrEqual(390);
+    expect(box.y + box.height, 'and is on screen').toBeLessThanOrEqual(844);
+    expect((await passkeyBtn(page).boundingBox())!.height, 'a 44px touch target').toBeGreaterThanOrEqual(44);
+    await expect(v.input, 'nothing typed is lost while confirming').toHaveValue('sent after a passkey');
+    expect(pasted(), 'nothing is pasted while the confirm is open').toBe(before);
+    const staleToken = await accessToken(context);
+
+    await passkeyBtn(page).tap();
+    await expect(dialog(page)).toBeHidden();
+    await expect.poll(pasted).toBe(before + '%9 sent after a passkey\n');
+    await expect(v.input).toHaveValue('');
+    expect(v.sends, 'the SAME text was sent again after the confirm, once').toEqual([403, 204]);
+    const freshToken = await accessToken(context);
+    expect(freshToken).not.toBe(staleToken);
+    expect(subOf(freshToken), 'the new session is the SAME user').toBe(adminSub);
+    expect(Math.abs(Date.now() / 1000 - amrOf(freshToken)), 'the passkey confirm signed in just now').toBeLessThan(60);
+    const methods = (b64urlJSON(freshToken.split('.')[1]).amr as { method: string }[]).map((e) => e.method);
+    test.info().annotations.push({ type: 'amr-after-passkey-confirm', description: methods.join(',') });
+    expect(methods, 'not a password sign-in').not.toContain('password');
+    await expect(page.locator('#mv-note')).toBeHidden();
+
+    // 2. 🔴 UV=false. The options are rewritten in flight to userVerification
+    //    "discouraged" and the authenticator stops verifying, so the browser
+    //    makes a correctly SIGNED assertion with UV=0 — which GoTrue (UV
+    //    "preferred") would accept. muster refuses it; nothing is sent.
+    before = pasted();
+    await setUserVerified(auth, false);
+    await page.route('**/auth/confirm/passkey/options', async (route) => {
+      const resp = await route.fetch();
+      const body = await resp.json();
+      if (body.options) body.options.userVerification = 'discouraged';
+      await route.fulfill({ response: resp, json: body });
+    });
+    v = await openView(page);
+    await makeStale(context);
+    await v.input.tap();
+    await page.keyboard.type('must not be sent without verification');
+    await v.send.tap();
+    await expect(passkeyBtn(page)).toBeVisible();
+    const verify = page.waitForResponse((r) => r.url().endsWith('/auth/confirm/passkey/verify'));
+    await passkeyBtn(page).tap();
+    expect((await verify).status(), 'muster refused the UV=0 assertion').toBe(401);
+    await expect(page.locator('#term-confirm-error')).toContainText('did not verify you');
+    await expect(dialog(page)).toBeVisible();
+    expect(pasted(), 'a UV=0 assertion sends nothing').toBe(before);
+    await expect(v.input).toHaveValue('must not be sent without verification');
+    expect(Date.now() / 1000 - amrOf(await accessToken(context)), 'still the stale session').toBeGreaterThan(STALE_SECONDS - 100);
+    await page.unrouteAll({ behavior: 'wait' });
+
+    // 3. THE PASSWORD FALLBACK, in the same dialog, sends the same text.
+    await setUserVerified(auth, true);
+    await page.fill('#term-confirm-password', 'not the password');
+    await page.locator('#term-confirm-submit').tap();
+    await expect(page.locator('#term-confirm-error')).toHaveText('That password is not right.');
+    expect(pasted(), 'a wrong password sends nothing').toBe(before);
+    await page.fill('#term-confirm-password', adminPW);
+    await page.locator('#term-confirm-submit').tap();
+    await expect(dialog(page)).toBeHidden();
+    await expect.poll(pasted).toBe(before + '%9 must not be sent without verification\n');
+    await expect(v.input).toHaveValue('');
+
+    // 4. 🔴 ANOTHER ACCOUNT'S PASSKEY. A member joins and registers a passkey on
+    //    this same authenticator; the admin's own credential is then removed
+    //    from it, so the only passkey this browser can present is the MEMBER's
+    //    — perfectly valid, user-verified, and GoTrue (usernameless) accepts it.
+    //    Presented on the ADMIN's session, muster refuses it: nothing is sent,
+    //    and the browser is still the admin.
+    await page.goto(browserURL + '/admin/invites');
+    await page.getByRole('button', { name: 'Create link' }).click();
+    const link = await page.locator('#once-link').inputValue();
+    await signOut(page);
+    const memberEmail = `stepup-member-${Date.now()}@example.com`;
+    const memberPW = 'e2e-stepup-member-password-not-real';
+    await page.goto(link);
+    await page.fill('#invite-email', memberEmail);
+    await page.fill('#invite-password', memberPW);
+    await page.fill('#invite-password2', memberPW);
+    await Promise.all([page.waitForURL(browserURL + '/account/passkeys?welcome=1'), page.getByRole('button', { name: 'Create account' }).click()]);
+    await page.locator('#passkey-add').click();
+    await expect(page.locator('#passkey-list [data-passkey-id]')).toHaveCount(1);
+    await signOut(page);
+    await removeCredential(auth, adminCreds[0]);
+    expect((await credentialIds(auth)).length, 'the authenticator now holds ONLY the member’s passkey').toBe(1);
+
+    await signIn(page);
+    v = await openView(page);
+    before = pasted();
+    await makeStale(context);
+    await v.input.tap();
+    await page.keyboard.type('must not be sent as somebody else');
+    await v.send.tap();
+    await expect(passkeyBtn(page), 'the admin HAS a passkey, so one is offered').toBeVisible();
+    const verify2 = page.waitForResponse((r) => r.url().endsWith('/auth/confirm/passkey/verify'));
+    await passkeyBtn(page).tap();
+    expect((await verify2).status(), 'muster refused another account’s passkey').toBe(403);
+    await expect(page.locator('#term-confirm-error')).toContainText('belongs to a different account');
+    await expect(dialog(page)).toBeVisible();
+    expect(pasted(), 'another account’s passkey sends nothing').toBe(before);
+    await expect(v.input).toHaveValue('must not be sent as somebody else');
+    const after = await accessToken(context);
+    expect(subOf(after), '🔴 the browser is STILL the admin, not the member').toBe(adminSub);
+    expect(Date.now() / 1000 - amrOf(after), 'and still stale').toBeGreaterThan(STALE_SECONDS - 100);
+    await page.locator('#term-confirm-cancel').tap();
+    const account = await (await page.request.get(browserURL + '/account')).text();
+    expect(account.includes(adminEmail) && !account.includes(memberEmail), 'the account page is the admin’s').toBe(true);
+    const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+    expect(sw, 'no horizontal scroll').toBeLessThanOrEqual(cw);
+  });
+});
+
+test.describe('the passkey confirm at a desktop width (1280px)', () => {
+  test.use({ viewport: { width: 1280, height: 900 }, hasTouch: false, isMobile: false });
+
+  test('the Interactive switch, and a send from the Terminal composer, are confirmed with a passkey (real GoTrue, virtual authenticator)', async ({ page, context }) => {
+    test.setTimeout(180_000);
+    await authenticator(page);
+    await signIn(page);
+    await addPasskey(page); // this browser's own passkey for the admin
+    const adminSub = subOf(await accessToken(context));
+
+    // The Interactive attach: stale → the switch asks → passkey → rw.
+    await makeStale(context);
+    await page.goto(browserURL + termPath);
+    await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=ro');
+    await page.locator('#term-mode').click();
+    await expect(dialog(page)).toBeVisible();
+    await expect(dialog(page)).toContainText('needs a sign-in from the last 12 hours.');
+    await expect(passkeyBtn(page)).toBeVisible();
+    await expect(passkeyBtn(page)).toBeFocused();
+    await passkeyBtn(page).click();
+    await expect(dialog(page)).toBeHidden();
+    await expect(screen(page)).toContainText('mode=rw');
+    await expect(page.locator('#term-status')).toHaveText('Connected · interactive');
+    await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'true');
+    let token = await accessToken(context);
+    expect(subOf(token)).toBe(adminSub);
+    expect(Math.abs(Date.now() / 1000 - amrOf(token)), 'the passkey confirm signed in just now').toBeLessThan(60);
+    await page.locator('#term').click();
+    await page.keyboard.type('ok');
+    await expect(screen(page)).toContainText(/in=6F6B|in=6F/);
+
+    // The Terminal view's composer (main's active pane is its Claude pane, %9):
+    // stale → Send → passkey → the same text is delivered.
+    await page.locator('#term-mode').click(); // back to read-only: the composer does not need the switch
+    await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
+    const sends: number[] = [];
+    page.on('response', (r) => {
+      if (r.url().endsWith('/mirror/terminal/send')) sends.push(r.status());
+    });
+    const before = pasted();
+    await makeStale(context);
+    await page.locator('#mv-input').fill('from the desktop terminal');
+    await page.locator('#mv-send').click();
+    await expect(dialog(page)).toBeVisible();
+    expect(sends).toEqual([403]);
+    await expect(passkeyBtn(page)).toBeVisible();
+    await passkeyBtn(page).click();
+    await expect(dialog(page)).toBeHidden();
+    await expect.poll(pasted).toBe(before + '%9 from the desktop terminal\n');
+    await expect(page.locator('#mv-input')).toHaveValue('');
+    expect(sends).toEqual([403, 204]);
+    await expect(page.locator('#term-mode'), 'the send did not flip the switch').toHaveAttribute('aria-checked', 'false');
+    token = await accessToken(context);
+    expect(Math.abs(Date.now() / 1000 - amrOf(token))).toBeLessThan(60);
   });
 });

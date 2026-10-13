@@ -79,6 +79,9 @@ type fakeMirror struct {
 	stdin       []byte
 	// v2 is the rendered view's half (mirror_view_test.go); nil = a v1 host.
 	v2 *fakeMirrorV2
+	// oldMirror: the host's muster-mirror predates Msg.PanePaste — it pastes
+	// only into a Claude Code pane. The zero value is a current one.
+	oldMirror bool
 	// labels is the host's session labels (HostView.Labels); nil = none.
 	labels map[string]string
 	// activity is the host's per-session last-active times (HostView.Activity);
@@ -107,6 +110,7 @@ func (f *fakeMirror) Hosts(ctx context.Context) []mirror.HostView {
 	hv := mirror.HostView{Host: "ws", Sessions: []string{"chief", "main"}, Labels: f.labels, Activity: f.activity, Online: f.online, Interactive: f.interactive}
 	if f.v2 != nil {
 		hv.Rendered, hv.Claude = f.online, []string{"main"}
+		hv.PanePaste = f.online && f.interactive && !f.oldMirror
 	}
 	return []mirror.HostView{hv}
 }

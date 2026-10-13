@@ -128,6 +128,10 @@ var isolationClasses = map[string]routeClass{
 	"GET /account":     classList,
 	// The step-up confirm names no object: it re-proves the CALLER (stepup.go).
 	"POST /auth/confirm": classList,
+	// Its passkey form names no object either: the options are for the caller's
+	// own passkeys, and verify refuses an assertion that is not the caller's.
+	"POST /auth/confirm/passkey/options": classList,
+	"POST /auth/confirm/passkey/verify":  classList,
 	// Bring-your-own credentials: the caller's own page and writes (list), and
 	// the delete that names an account (param, by NAME — A's is the canary).
 	"GET /account/credentials":                       classList,
@@ -312,6 +316,8 @@ var isolationClasses = map[string]routeClass{
 	"GET /mirror/view":       classMirror,
 	"GET /mirror/view/ws":    classMirror,
 	"POST /mirror/view/send": classMirror,
+	// The Terminal view's composer: the same handler, the same form fields.
+	"POST /mirror/terminal/send": classMirror,
 }
 
 // wantCanaryForA: list routes that render A's data to A. The negative control
@@ -1115,7 +1121,7 @@ func (w *isoWorld) walkAs(actor isoUser, o isoObjs, creds []cred, routes []strin
 func namesObject(route string) bool {
 	return paramRE.MatchString(route) || route == "POST /agents" || route == "POST /tasks/merge" ||
 		strings.HasPrefix(route, "GET /mirror/terminal") || strings.HasPrefix(route, "GET /mirror/view") ||
-		route == "POST /mirror/view/send"
+		route == "POST /mirror/view/send" || route == "POST /mirror/terminal/send"
 }
 
 var paramRE = regexp.MustCompile(`\{[a-z]`)

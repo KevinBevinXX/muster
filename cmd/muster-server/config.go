@@ -20,6 +20,7 @@ import (
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/push"
+	"github.com/ZacxDev/muster/internal/stepup"
 )
 
 // defaultPort is the port this service listens on when MUSTER_PORT is unset.
@@ -93,6 +94,10 @@ const (
 	// The optional MIRRORED-sessions plugin (internal/mirror): "1" turns it on.
 	// Off, GET /mirror/connect answers 404 and nothing mirrored is listed.
 	envMirror = "MUSTER_MIRROR"
+	// How long a sign-in stays fresh enough to TYPE into a mirrored session
+	// (internal/stepup): a Go duration, 12h when unset, refused outside
+	// 1m–24h. Freshness is per browser session, never per user.
+	envStepUpWindow = "MUSTER_STEPUP_WINDOW"
 
 	// Browser flows: the deployment's own infrastructure names (comma-separated)
 	// that an AGENT's browser-flow text may not carry (internal/flows
@@ -362,6 +367,9 @@ type config struct {
 
 	// Mirror turns the mirrored-sessions plugin on (MUSTER_MIRROR=1).
 	Mirror bool
+	// StepUpWindow is internal/stepup's freshness window (MUSTER_STEPUP_WINDOW;
+	// stepup.DefaultWindow when unset). loadConfig refuses an out-of-bounds one.
+	StepUpWindow time.Duration
 
 	// FlowAgentDenyWords is MUSTER_FLOW_AGENT_DENY_WORDS, split on commas.
 	FlowAgentDenyWords []string
@@ -824,6 +832,11 @@ func loadConfig(getenv func(string) string) (config, error) {
 		c.AgentGatewayPort = p
 	}
 
+	w, err := stepup.ParseWindow(getenv(envStepUpWindow))
+	if err != nil {
+		return config{}, fmt.Errorf("invalid %s: %w", envStepUpWindow, err)
+	}
+	c.StepUpWindow = w
 	if v := strings.TrimSpace(getenv(envTaskReapAfter)); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil {

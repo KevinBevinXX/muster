@@ -45,7 +45,7 @@ func ActivityReaderOf(b Backend) (ActivityReader, bool) { return capabilityOf[Ac
 // ⚠ "Active" is therefore "its screen changed, or someone typed": a pane that
 // redraws on a timer (a clock, `watch`) is always recently active.
 func (t Tmux) Activity(ctx context.Context) (map[string]int64, error) {
-	cmd := exec.CommandContext(ctx, t.bin(), append(t.server(), "list-windows", "-a", "-F",
+	cmd := exec.CommandContext(ctx, t.bin(), t.query("list-windows", "-a", "-F",
 		"#{window_activity}\t#{session_activity}\t#{session_name}")...)
 	cmd.Env = tmuxEnv()
 	var out, errb bytes.Buffer

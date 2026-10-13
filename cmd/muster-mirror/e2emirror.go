@@ -33,6 +33,13 @@ import (
 // (what the CLI would write on receiving it) and to <path>.pasted, so the spec
 // sees both. Unset, no session is a Claude pane — the v1-era behaviour the
 // terminal tests above rely on.
+//
+// A PASTE INTO ANY PANE (the Terminal view's composer): every session's active
+// "pane" is `%e2e-<session>`, and a paste into one is appended to
+// MUSTER_MIRROR_E2E_PASTE_FILE as `<pane> <text>` (refused when that is unset,
+// so a spec that did not ask for it cannot pass by accident). The Claude
+// session's active pane is its Claude pane (%9), as on a real host, and a paste
+// into it goes where a Claude paste goes.
 func init() {
 	e2eBackend = func() mirrorhost.Backend {
 		if c := os.Getenv("MUSTER_MIRROR_E2E_CLAUDE"); c != "" {
@@ -55,7 +62,7 @@ func (c claudeFake) ClaudePanes(_ context.Context, sessions []string) map[string
 	for _, s := range sessions {
 		if s == c.session {
 			_, err := os.Stat(c.path + ".busy")
-			out[s] = mirrorhost.ClaudePane{Pane: "%9", PID: 1, Transcript: c.path,
+			out[s] = mirrorhost.ClaudePane{Pane: claudeFakePane, PID: 1, Transcript: c.path,
 				Gen: strings.TrimSuffix(filepath.Base(c.path), ".jsonl"), Busy: err == nil}
 		}
 	}
@@ -82,7 +89,48 @@ func (c claudeFake) Paste(_ context.Context, p mirrorhost.ClaudePane, text strin
 	return nil
 }
 
+// ActivePane: the Claude session's active pane IS its Claude pane.
+func (c claudeFake) ActivePane(ctx context.Context, session string) (string, bool) {
+	if session == c.session {
+		return claudeFakePane, true
+	}
+	return c.fakeBackend.ActivePane(ctx, session)
+}
+
+func (c claudeFake) PastePane(ctx context.Context, pane, text string) error {
+	if pane == claudeFakePane {
+		return c.Paste(ctx, mirrorhost.ClaudePane{Pane: pane}, text)
+	}
+	return c.fakeBackend.PastePane(ctx, pane, text)
+}
+
+const claudeFakePane = "%9"
+
 type fakeBackend struct{}
+
+func (b fakeBackend) ActivePane(ctx context.Context, session string) (string, bool) {
+	list, _ := b.List(ctx)
+	for _, s := range list {
+		if s == session {
+			return "%e2e-" + session, true
+		}
+	}
+	return "", false
+}
+
+func (fakeBackend) PastePane(_ context.Context, pane, text string) error {
+	f := os.Getenv("MUSTER_MIRROR_E2E_PASTE_FILE")
+	if f == "" {
+		return fmt.Errorf("e2e fake: no MUSTER_MIRROR_E2E_PASTE_FILE")
+	}
+	fh, err := os.OpenFile(f, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer fh.Close()
+	_, err = fh.WriteString(pane + " " + text + "\n")
+	return err
+}
 
 func (fakeBackend) List(context.Context) ([]string, error) {
 	var out []string

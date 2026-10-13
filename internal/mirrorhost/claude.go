@@ -30,6 +30,20 @@ type ClaudeBackend interface {
 	Paste(ctx context.Context, pane ClaudePane, text string) error
 }
 
+// PaneBackend is a Backend that can type into a session's ACTIVE pane whatever
+// runs in it — a shell, another TUI: what the Terminal view's composer needs
+// for a session with no rendered view. The tmux backend implements it.
+type PaneBackend interface {
+	// ActivePane is session's active pane (of its active window) as an input
+	// target, and false when the session has none this backend can resolve.
+	ActivePane(ctx context.Context, session string) (string, bool)
+	// PastePane types text into pane as ONE bracketed paste and presses Enter.
+	PastePane(ctx context.Context, pane, text string) error
+}
+
+// PaneOf is b's PaneBackend, looking through wrappers like ClaudeOf.
+func PaneOf(b Backend) (PaneBackend, bool) { return capabilityOf[PaneBackend](b) }
+
 // ClaudeOf is b's ClaudeBackend, looking THROUGH any wrapper around it (a
 // wrapper exposes what it wraps with `Unwrap() Backend`, as NoShrink's does).
 // It is the ONE way to ask a backend for this capability: a bare type
@@ -307,7 +321,7 @@ func (t Tmux) activePanes(ctx context.Context, sessions []string) []pane {
 	for _, s := range sessions {
 		want[s] = true
 	}
-	cmd := exec.CommandContext(ctx, t.bin(), append(t.server(), "list-panes", "-a", "-F",
+	cmd := exec.CommandContext(ctx, t.bin(), t.query("list-panes", "-a", "-F",
 		"#{window_active}#{pane_active}\t#{pane_id}\t#{pane_pid}\t#{session_name}")...)
 	cmd.Env = tmuxEnv()
 	out, err := cmd.Output()
@@ -345,16 +359,40 @@ func (t Tmux) ClaudePanes(ctx context.Context, sessions []string) map[string]Cla
 // in before the submit key arrives (ccd's value, measured there).
 const enterDelay = 150 * time.Millisecond
 
-// Paste implements ClaudeBackend the way ccd hands a provisioned agent its
-// prompt: `load-buffer` from STDIN into a uniquely named buffer (never argv —
-// visible in the process table and parsed by tmux), `paste-buffer -p -d` into
-// the PANE id (bracketed, buffer deleted after), then Enter.
+// Paste implements ClaudeBackend: PastePane into the Claude pane's id.
+func (t Tmux) Paste(ctx context.Context, p ClaudePane, text string) error {
+	return t.PastePane(ctx, p.Pane, text)
+}
+
+// ActivePane implements PaneBackend: session's active pane id, from the same
+// `list-panes` read ClaudePanes resolves a Claude pane with — so for a session
+// whose pane runs Claude Code the two name the SAME pane.
+func (t Tmux) ActivePane(ctx context.Context, session string) (string, bool) {
+	// activePanes keeps only the panes of the sessions it is given, matched on
+	// the whole name, and a session has one active pane.
+	if panes := t.activePanes(ctx, []string{session}); len(panes) == 1 {
+		return panes[0].ID, true
+	}
+	return "", false
+}
+
+// PastePane implements PaneBackend — and is the ONE paste this host has (Paste
+// calls it) — the way ccd hands a provisioned agent its prompt: `load-buffer`
+// from STDIN into a uniquely named buffer (never argv — visible in the process
+// table and parsed by tmux), `paste-buffer -p -d` into the PANE id (buffer
+// deleted after), then Enter.
+//
+// `-p` brackets the paste ONLY for a program that asked for bracketed paste
+// (zsh and bash 5.1+ do by default, as does Claude Code): there the whole text,
+// newlines included, arrives as one paste and the Enter submits it once. A
+// program that did not ask gets the bytes as typed, so every newline in the
+// text is an Enter of its own (measured: tmux_integration_test.go).
 //
 // The text must already be mirror.SanitizePaste'd: a control character inside
 // a bracketed paste can end it, and what follows is then TYPED.
-func (t Tmux) Paste(ctx context.Context, p ClaudePane, text string) error {
-	if !strings.HasPrefix(p.Pane, "%") {
-		return fmt.Errorf("muster-mirror: %q is not a tmux pane id", p.Pane)
+func (t Tmux) PastePane(ctx context.Context, paneID, text string) error {
+	if !strings.HasPrefix(paneID, "%") {
+		return fmt.Errorf("muster-mirror: %q is not a tmux pane id", paneID)
 	}
 	var rnd [6]byte
 	_, _ = rand.Read(rnd[:])
@@ -373,7 +411,7 @@ func (t Tmux) Paste(ctx context.Context, p ClaudePane, text string) error {
 	if err := run([]byte(text), "load-buffer", "-b", buf, "-"); err != nil {
 		return err
 	}
-	if err := run(nil, "paste-buffer", "-p", "-d", "-b", buf, "-t", p.Pane); err != nil {
+	if err := run(nil, "paste-buffer", "-p", "-d", "-b", buf, "-t", paneID); err != nil {
 		_ = run(nil, "delete-buffer", "-b", buf)
 		return err
 	}
@@ -382,7 +420,7 @@ func (t Tmux) Paste(ctx context.Context, p ClaudePane, text string) error {
 	case <-ctx.Done():
 		return errors.New("muster-mirror: the message was pasted but not submitted (cancelled)")
 	}
-	if err := run(nil, "send-keys", "-t", p.Pane, "Enter"); err != nil {
+	if err := run(nil, "send-keys", "-t", paneID, "Enter"); err != nil {
 		return fmt.Errorf("muster-mirror: the message was pasted but not submitted: %w", err)
 	}
 	return nil

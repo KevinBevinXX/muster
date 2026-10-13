@@ -161,9 +161,11 @@ type Mirror interface {
 	// sessions whose pane runs Claude Code (the rendered view), resuming at
 	// (gen, offset) when it can, until ctx ends.
 	Watch(ctx context.Context, host, session, gen string, offset int64, out func(mirror.Msg) error) error
-	// Paste types a message into such a session's Claude pane and presses
-	// Enter. The caller has already required the step-up.
-	Paste(ctx context.Context, host, session, text string) error
+	// Paste types a message into a pane of one of the viewing principal's host
+	// sessions and presses Enter: its Claude pane only, or its active pane
+	// whatever runs there (target). The caller has already required the
+	// step-up; the plugin requires it again.
+	Paste(ctx context.Context, host, session, text string, target mirror.PasteTarget) error
 }
 
 // GitHubOAuthConfig holds the OAuth App credentials + the public base URL used
