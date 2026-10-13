@@ -99,6 +99,10 @@ const (
 	// alone decides whether the relay runs — see config.validate.
 	envMemoURL   = "MUSTER_MEMO_URL"
 	envMemoToken = "MUSTER_MEMO_TOKEN"
+	// The relay's repo → scope-set map (memorelay.ParseScopeMap's syntax,
+	// `repo=scope,scope;…`): which cairn scopes an agent working on a
+	// repository reads, when that is not just the repository's own name.
+	envMemoScopeMap = "MUSTER_MEMO_SCOPE_MAP"
 
 	envRouterURL   = "MUSTER_ROUTER_URL"
 	envRouterToken = "MUSTER_ROUTER_TOKEN"
@@ -360,6 +364,8 @@ type config struct {
 	// is the state a deployment sits in before its credential is issued.
 	MemoURL   string
 	MemoToken string
+	// MemoScopeMap is MUSTER_MEMO_SCOPE_MAP as written; validate parses it.
+	MemoScopeMap string
 
 	RouterURL   string
 	RouterToken string
@@ -697,6 +703,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		Mirror:             envFlag(getenv, envMirror),
 		MemoURL:            strings.TrimRight(strings.TrimSpace(getenv(envMemoURL)), "/"),
 		MemoToken:          strings.TrimSpace(getenv(envMemoToken)),
+		MemoScopeMap:       strings.TrimSpace(getenv(envMemoScopeMap)),
 		RouterURL:          strings.TrimSpace(getenv(envRouterURL)),
 		RouterToken:        strings.TrimSpace(getenv(envRouterToken)),
 		RouterActor:        strings.TrimSpace(getenv(envRouterActor)),

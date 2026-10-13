@@ -34,9 +34,11 @@
 // agents and nobody else's, and [Relay] checks the owner again itself (a store without row-level
 // security — every fake — still has to be refused).
 //
-// An agent's scope is derived, never configured per agent and never guessed: the repository the
-// agent was dispatched for, else the repository its task names, through [ScopeForRepo]. An agent
-// with neither gets nothing, and is counted ([ResultNoScope]).
+// An agent's scopes are derived, never configured per agent and never guessed: the repository the
+// agent was dispatched for, else the repository its task names, through [ScopeForRepo] — and then
+// through the deployment's [ScopeMap], which may name a SET of scopes for one repository (cairn
+// files memos under a clone's directory name, which need not be the repository's). An agent with
+// no repository gets nothing, and is counted ([ResultNoScope]).
 //
 // # Once
 //
@@ -67,6 +69,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -163,6 +166,9 @@ type Config struct {
 	// NamespacePrefix is the deployment's configured agent namespace prefix; a row is this
 	// deployment's iff its namespace is agents.NamespaceFor(prefix, name).
 	NamespacePrefix string
+	// ScopeMap maps a repository's derived scope to the set of scopes its agents read. Optional:
+	// nil reads each repository's derived scope alone. See [ScopeMap].
+	ScopeMap ScopeMap
 	// Logger is optional. No line it is given ever carries memo text.
 	Logger *log.Logger
 }
@@ -175,6 +181,7 @@ type Relay struct {
 	src      Source
 	ledger   Ledger
 	prefix   string
+	scopes   ScopeMap
 	// owner names this process in an agent's session claim (hostname/random).
 	owner string
 	log   *log.Logger
@@ -212,6 +219,7 @@ func New(cfg Config) (*Relay, error) {
 	r := &Relay{
 		agents: cfg.Agents, taskRepo: cfg.TaskRepo, gw: cfg.Gateway, src: cfg.Source, ledger: cfg.Ledger,
 		prefix: agents.ResolveNamespacePrefix(cfg.NamespacePrefix),
+		scopes: cfg.ScopeMap,
 		log:    cfg.Logger, turn: DefaultTurnTimeout,
 		done: make(chan struct{}),
 		sent: map[int64]map[Key]bool{}, said: map[int64]string{},
@@ -251,6 +259,10 @@ func (r *Relay) Run(ctx context.Context, interval time.Duration) {
 		}
 	}
 }
+
+// ScopeMap is the map this relay classifies with — what the wiring handed it, for the wiring's
+// own test to read back.
+func (r *Relay) ScopeMap() ScopeMap { return r.scopes }
 
 // Wait blocks until every delivery started by [Relay.Tick] has finished.
 func (r *Relay) Wait() { r.wg.Wait() }
@@ -308,11 +320,16 @@ func (r *Relay) Tick(ctx context.Context) error {
 	listed := map[int64]bool{}
 	for _, a := range rows {
 		listed[a.ID] = true
-		scope, result := r.classify(ctx, a)
+		scopes, result := r.classify(ctx, a)
 		r.count(familyAgent, result)
 		r.say(a, result)
 		if result == ResultEligible {
-			byScope[scope] = append(byScope[scope], a)
+			// An agent may read several scopes (Config.ScopeMap). Each is offered on its own:
+			// a memo's identity is (scope, id), so the two scopes' memos are distinct and the
+			// ledger keeps each from repeating.
+			for _, scope := range scopes {
+				byScope[scope] = append(byScope[scope], a)
+			}
 		}
 	}
 	r.forget(listed)
@@ -391,46 +408,46 @@ func upstreamResult(err error) string {
 	}
 }
 
-// classify answers whether a is sent memos at all and, if so, for which scope. The order is the
-// order of the claims: whose row it is, whose agent it is, whether it can take a turn, and only
-// then what it works on.
-func (r *Relay) classify(ctx context.Context, a agents.Agent) (scope, result string) {
+// classify answers whether a is sent memos at all and, if so, for which scopes (sorted, never
+// empty when eligible). The order is the order of the claims: whose row it is, whose agent it
+// is, whether it can take a turn, and only then what it works on.
+func (r *Relay) classify(ctx context.Context, a agents.Agent) (scopes []string, result string) {
 	switch {
 	case a.Namespace != agents.NamespaceFor(r.prefix, a.Name):
-		return "", ResultForeign
+		return nil, ResultForeign
 	case a.OwnerID != authz.OperatorUserID:
-		return "", ResultNotOperator
+		return nil, ResultNotOperator
 	case a.Status != agents.StatusRunning:
-		return "", ResultNotRunning
+		return nil, ResultNotRunning
 	case agents.ResolveKind(a.Kind) != agents.KindClaudeCode:
 		// 🔴 A MEMO IS NEVER POSTED INTO A RUNTIME THAT MIGHT BE MID-TURN. "Wait for an idle
 		// agent" rests on the runtime REFUSING a second turn before it pastes anything, and
 		// only ccd is known to (a typed 409 `busy`). What any other runtime does with a turn
 		// that arrives during another is not established, so its agents are counted, not sent.
-		return "", ResultKindUnsupported
+		return nil, ResultKindUnsupported
 	case agents.KickoffOwed(a):
 		// Its first turn has not been handed over. ⚠ This excludes only the row that is not
 		// yet STAMPED: a first turn is stamped before it is sent and then re-sent for minutes
 		// while the CLI starts, and through all of that the row reads as kicked off. What
 		// keeps a memo out of THAT window is the session claim deliver takes.
-		return "", ResultKickoffOwed
+		return nil, ResultKickoffOwed
 	case a.HooksToken == "":
-		return "", ResultNoToken
+		return nil, ResultNoToken
 	}
-	if s := ScopeForRepo(a.Repo); s != "" {
+	if s := r.scopes.scopesFor(a.Repo); len(s) > 0 {
 		return s, ResultEligible
 	}
 	if a.NoteID == nil {
-		return "", ResultNoScope
+		return nil, ResultNoScope
 	}
 	repo, err := r.taskRepo(ctx, *a.NoteID)
 	if err != nil {
-		return "", ResultScopeLookupFailed
+		return nil, ResultScopeLookupFailed
 	}
-	if s := ScopeForRepo(repo); s != "" {
+	if s := r.scopes.scopesFor(repo); len(s) > 0 {
 		return s, ResultEligible
 	}
-	return "", ResultNoScope
+	return nil, ResultNoScope
 }
 
 // say logs a non-eligible result once per agent, and again only when it changes.
@@ -567,7 +584,7 @@ func (r *Relay) deliver(parent context.Context, a agents.Agent, scope string, ba
 		r.count(familyDelivery, ResultUnresolved)
 		return
 	}
-	if s, result := r.classify(ctx, fresh); result != ResultEligible || s != scope {
+	if s, result := r.classify(ctx, fresh); result != ResultEligible || !slices.Contains(s, scope) {
 		r.count(familyDelivery, ResultMoved)
 		return
 	}

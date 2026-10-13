@@ -77,6 +77,29 @@ func TestAMemoURLWithoutATokenIsValidAndATokenWithoutAURLIsNot(t *testing.T) {
 	}
 }
 
+// TestTheScopeMapIsReadAndRefusedWhenMalformedTokenOrNot: the map is parsed at boot whenever it
+// is set, so a typo is a refusal now rather than on the day the credential arrives.
+func TestTheScopeMapIsReadAndRefusedWhenMalformedTokenOrNot(t *testing.T) {
+	c, err := loadConfig(func(k string) string {
+		return map[string]string{"MUSTER_MEMO_SCOPE_MAP": " widgets=widgets,widgets-clone "}[k]
+	})
+	if err != nil || c.MemoScopeMap != "widgets=widgets,widgets-clone" {
+		t.Fatalf("MemoScopeMap=%q err=%v", c.MemoScopeMap, err)
+	}
+	for _, token := range []string{"", "memo-credential-fixture"} {
+		c := memoBase()
+		c.MemoURL, c.MemoToken = "http://memos.example.invalid:8125", token
+		c.MemoScopeMap = "widgets=widgets,widgets-clone"
+		if err := c.validate(); err != nil {
+			t.Fatalf("token %q: a valid map was refused: %v", token, err)
+		}
+		c.MemoScopeMap = "Widgets=widgets"
+		if err := c.validate(); err == nil || !strings.Contains(err.Error(), envMemoScopeMap) {
+			t.Fatalf("token %q: a malformed map: err = %v; want a refusal naming %s", token, err, envMemoScopeMap)
+		}
+	}
+}
+
 // TestTheMemoRelayIsBuiltOnlyWithACredentialAPoolAndAGateway walks the predicate's three inputs.
 // Each missing one alone leaves the relay unbuilt — in particular a NIL gateway pointer, which a
 // builder taking the interface would have mistaken for a gateway.
@@ -88,6 +111,15 @@ func TestTheMemoRelayIsBuiltOnlyWithACredentialAPoolAndAGateway(t *testing.T) {
 	r, err := buildMemoRelay(full, pool, stubStore{}, stubNotesStore{}, gw, logger)
 	if err != nil || r == nil {
 		t.Fatalf("control: with all three the relay is not built (relay=%v err=%v)", r, err)
+	}
+	if len(r.ScopeMap()) != 0 {
+		t.Fatalf("with no %s the relay carries a scope map: %v", envMemoScopeMap, r.ScopeMap())
+	}
+	mapped := full
+	mapped.MemoScopeMap = "widgets=widgets,widgets-clone"
+	if r, err := buildMemoRelay(mapped, pool, stubStore{}, stubNotesStore{}, gw, logger); err != nil ||
+		r.ScopeMap().String() != "widgets=widgets,widgets-clone" {
+		t.Fatalf("the configured scope map did not reach the relay: %v (err %v)", r.ScopeMap(), err)
 	}
 	noToken := full
 	noToken.MemoToken = ""

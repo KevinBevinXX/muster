@@ -30,6 +30,11 @@ import (
 // The other direction IS refused: a token with no listener URL is a credential
 // with nowhere to go, and the relay would silently never run.
 func (c config) validateMemoRelay() error {
+	// The map is checked whenever it is set, token or not: a typo in it would otherwise wait,
+	// silent, for the day the credential arrives and then refuse the boot that enables the relay.
+	if _, err := memorelay.ParseScopeMap(c.MemoScopeMap); err != nil {
+		return fmt.Errorf("invalid %s: %w", envMemoScopeMap, err)
+	}
 	if c.MemoToken == "" {
 		return nil
 	}
@@ -67,12 +72,17 @@ func buildMemoRelay(cfg config, pool *pgxpool.Pool, store agents.Store, tasks no
 	if err != nil {
 		return nil, err
 	}
+	scopeMap, err := memorelay.ParseScopeMap(cfg.MemoScopeMap)
+	if err != nil {
+		return nil, err
+	}
 	return memorelay.New(memorelay.Config{
 		Agents:          store,
 		TaskRepo:        taskRepoReader(tasks),
 		Gateway:         gw,
 		Source:          listener,
 		Ledger:          memorelay.NewPGLedger(pool),
+		ScopeMap:        scopeMap,
 		NamespacePrefix: cfg.AgentNamespacePrefix,
 		Logger:          logger,
 	})
@@ -100,20 +110,34 @@ func (a *app) logMemoRelayBanner(ext api.Extensions) {
 	switch {
 	case a.cfg.MemoToken == "":
 		l.Printf("memo relay: OFF — %s is unset, so no cairn memo is read or delivered and the listener "+
-			"(%s: %s) is never contacted. This is the state a deployment waits in until its credential is issued",
-			envMemoToken, envMemoURL, presence(a.cfg.MemoURL))
+			"(%s: %s) is never contacted. This is the state a deployment waits in until its credential is issued "+
+			"(%s: %s)", envMemoToken, envMemoURL, presence(a.cfg.MemoURL), envMemoScopeMap, scopeMapWord(a.cfg))
 	case !memoRelayEnabled(a.cfg, a.pool != nil, ext.Gateway != nil):
 		l.Printf("memo relay: CONFIGURED BUT NOT RUNNING — %s and %s are set, but the relay delivers a memo "+
 			"as a turn through the agent gateway and keeps its delivery record in the database, and one of "+
-			"the two is missing (gateway: %s, database: %s)", envMemoToken, envMemoURL,
-			wiredWord(ext.Gateway == nil), wiredWord(a.pool == nil))
+			"the two is missing (gateway: %s, database: %s; %s: %s)", envMemoToken, envMemoURL,
+			wiredWord(ext.Gateway == nil), wiredWord(a.pool == nil), envMemoScopeMap, scopeMapWord(a.cfg))
 	default:
 		l.Printf("memo relay: ON — %s is set; live cairn memos are read from %s=%s every %s (ONE request at "+
 			"a time, none for the first %s, and none for %s after a refused credential) and delivered once "+
 			"to each of the OPERATOR's running agents whose repository — its own, else its task's — names "+
-			"a scope. An agent with neither is sent nothing and counted",
+			"a scope, read through %s: %s. An agent with neither is sent nothing and counted",
 			envMemoToken, envMemoURL, a.cfg.MemoURL, memorelay.DefaultInterval, memorelay.StartDelay,
-			memorelay.RefusedBackoff)
+			memorelay.RefusedBackoff, envMemoScopeMap, scopeMapWord(a.cfg))
+	}
+}
+
+// scopeMapWord renders the scope map for the banner: its entries, or that every repository reads
+// its own name. validate has already refused a map that does not parse.
+func scopeMapWord(cfg config) string {
+	m, err := memorelay.ParseScopeMap(cfg.MemoScopeMap)
+	switch {
+	case err != nil:
+		return "INVALID"
+	case len(m) == 0:
+		return "unset — each repository reads the scope of its own name"
+	default:
+		return m.String()
 	}
 }
 

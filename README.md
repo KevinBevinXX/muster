@@ -479,8 +479,12 @@ take. No credential reaches a pod and no agent's network policy changes.
   dispatched for, else the repository its task names, reduced to cairn's scope
   name (the repository's name, lower-cased and slugged). An agent with neither
   is sent nothing and counted (`muster_memo_relay_agent_checks_total{result="no_scope"}`).
-  ⚠ cairn names a scope after the clone's *directory*; a clone kept under
-  another name files its memos where this derivation does not look.
+  ⚠ cairn names a scope after the clone's *directory*, so a clone kept under
+  another name files its memos where this derivation does not look — silently,
+  if both scopes exist. `MUSTER_MEMO_SCOPE_MAP` (`repo=scope,scope;…`, names in
+  cairn's normalised form) maps a repository to the SET of scopes its agents
+  read; an entry replaces the default, so list the repository's own name too.
+  A memo's identity is (scope, id), and each is delivered once.
 - **Once per agent.** Each delivered turn is recorded in `audit_log`
   (`memo.delivered`, `agent:<id>`), after the send. A retracted or expired memo
   stops being listed and so stops being delivered. An agent that is mid-turn is

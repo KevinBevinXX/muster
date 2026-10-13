@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -307,12 +308,13 @@ func agent(id int64, name, repo string) agents.Agent {
 }
 
 type world struct {
-	store   *fakeAgents
-	src     *fakeSource
-	gw      *fakeGateway
-	ledger  *memLedger
-	tasks   map[int64]string
-	taskErr error
+	store    *fakeAgents
+	src      *fakeSource
+	gw       *fakeGateway
+	ledger   *memLedger
+	tasks    map[int64]string
+	taskErr  error
+	scopeMap ScopeMap
 }
 
 func newWorld(rows ...agents.Agent) *world {
@@ -336,6 +338,7 @@ func (w *world) relayWith(t *testing.T, src Source) *Relay {
 	r, err := New(Config{
 		Agents: w.store, Gateway: w.gw, Source: src, Ledger: w.ledger, NamespacePrefix: prefix,
 		TaskRepo: func(_ context.Context, id int64) (string, error) { return w.tasks[id], w.taskErr },
+		ScopeMap: w.scopeMap,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1091,6 +1094,125 @@ func TestTheAgentAndTheRecordAreReadAgainUnderTheClaim(t *testing.T) {
 	tick(t, w.relay(t))
 	if sent := w.gw.sent(); len(sent) != 1 || !reflect.DeepEqual(memoIDs(sent[0].message), []int64{7, 8}) {
 		t.Fatalf("control: turns = %+v, want one carrying 7 and 8", sent)
+	}
+}
+
+// ---- one repository, several scopes ------------------------------------------------------------
+
+// sentKeys is every (scope, id) the gateway was handed, across all turns, with a count.
+func sentKeys(t *testing.T, sent []sentTurn) map[string]int {
+	t.Helper()
+	out := map[string]int{}
+	for _, s := range sent {
+		for _, line := range strings.Split(s.message, "\n") {
+			var id int64
+			var scope string
+			// "| [m-<id>] from <sender> · <scope> · <created> · expires <date>"
+			if _, err := fmt.Sscanf(line, "| [m-%d] from", &id); err != nil {
+				continue
+			}
+			parts := strings.Split(line, " · ")
+			if len(parts) < 2 {
+				t.Fatalf("unparseable stanza header %q", line)
+			}
+			scope = parts[1]
+			out[fmt.Sprintf("%s/%s:%d", s.agent, scope, id)]++
+		}
+	}
+	return out
+}
+
+// TestARepositoryMappedToTwoScopesReceivesBothAndEachMemoOnce: the deployment's map names two
+// scopes for one repository (memos filed under the repository's name AND under the directory its
+// clone lives in). The agent working on it is sent the memos of BOTH, and each exactly once —
+// over several ticks and across a restart — including two memos that share an id in different
+// scopes, which are distinct memos because a memo's identity is (scope, id).
+func TestARepositoryMappedToTwoScopesReceivesBothAndEachMemoOnce(t *testing.T) {
+	task := int64(40)
+	viaTask := agent(2, "tasked", "")
+	viaTask.NoteID = &task
+	w := newWorld(agent(1, "ada", "example/widgets"), viaTask, agent(3, "cy", "example/gadgets"))
+	w.tasks[40] = "example/widgets"
+	w.scopeMap = ScopeMap{"widgets": {"widgets", "widgets-clone"}}
+	w.src.set("widgets", m(t, 7, "widgets", "2000-01-02T03:04:05Z"))
+	w.src.set("widgets-clone", m(t, 7, "widgets-clone", "2000-01-02T03:05:00Z"), m(t, 8, "widgets-clone", "2000-01-02T03:06:00Z"))
+	w.src.set("gadgets", m(t, 9, "gadgets", "2000-01-02T03:04:05Z"))
+
+	r := w.relay(t)
+	for i := 0; i < 4; i++ {
+		tick(t, r)
+	}
+	tick(t, w.relay(t)) // a restart
+
+	want := map[string]int{
+		"ada/widgets:7": 1, "ada/widgets-clone:7": 1, "ada/widgets-clone:8": 1,
+		"tasked/widgets:7": 1, "tasked/widgets-clone:7": 1, "tasked/widgets-clone:8": 1,
+		"cy/gadgets:9": 1,
+	}
+	if got := sentKeys(t, w.gw.sent()); !reflect.DeepEqual(got, want) {
+		t.Fatalf("memos delivered (agent/scope:id → times) = %v\nwant %v", got, want)
+	}
+	if asked := w.src.askedFor(); !slices.Contains(asked, "widgets-clone") || slices.Contains(asked, "gadgets-clone") {
+		t.Fatalf("the listener was asked for %v: want the mapped scope, and no scope for an unmapped repository's guess", asked)
+	}
+}
+
+// TestAMappedRepositoryReadsOnlyItsSet: an entry REPLACES the default, so a repository mapped to
+// one other scope does not also read its own name — and an unmapped repository is untouched.
+func TestAMappedRepositoryReadsOnlyItsSet(t *testing.T) {
+	w := newWorld(agent(1, "ada", "example/widgets"))
+	w.scopeMap = ScopeMap{"widgets": {"widgets-clone"}}
+	w.src.set("widgets", m(t, 7, "widgets", "2000-01-02T03:04:05Z"))
+	w.src.set("widgets-clone", m(t, 8, "widgets-clone", "2000-01-02T03:04:05Z"))
+	tick(t, w.relay(t))
+	if got := sentKeys(t, w.gw.sent()); !reflect.DeepEqual(got, map[string]int{"ada/widgets-clone:8": 1}) {
+		t.Fatalf("delivered %v, want the mapped scope's memo alone", got)
+	}
+}
+
+// TestAMemoOfASecondMappedScopeIsStillDeliveredUnderTheClaim: the re-read under the claim must
+// accept ANY scope of the agent's set, not only the first. Otherwise the second scope's memos
+// are counted "moved" and never sent.
+func TestAMemoOfASecondMappedScopeIsStillDeliveredUnderTheClaim(t *testing.T) {
+	w := newWorld(agent(1, "ada", "example/widgets"))
+	w.scopeMap = ScopeMap{"widgets": {"aaa-first", "widgets"}}
+	w.src.set("widgets", m(t, 7, "widgets", "2000-01-02T03:04:05Z"))
+	r := w.relay(t)
+	tick(t, r)
+	if got := sentKeys(t, w.gw.sent()); !reflect.DeepEqual(got, map[string]int{"ada/widgets:7": 1}) {
+		t.Fatalf("delivered %v (counts %v), want memo 7 of the second scope", got, r.Counts())
+	}
+}
+
+func TestParseScopeMap(t *testing.T) {
+	got, err := ParseScopeMap(" widgets = widgets-clone , widgets ,widgets ; gadgets=gadgets ; ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := ScopeMap{"widgets": {"widgets", "widgets-clone"}, "gadgets": {"gadgets"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parsed %v, want %v", got, want)
+	}
+	if s := got.String(); s != "gadgets=gadgets;widgets=widgets,widgets-clone" {
+		t.Fatalf("String() = %q", s)
+	}
+	if m, err := ParseScopeMap(""); err != nil || len(m) != 0 {
+		t.Fatalf("empty spec: %v, %v; want an empty map", m, err)
+	}
+	for _, bad := range []string{
+		"widgets",               // no =
+		"widgets=",              // no scope
+		"widgets=a,,b",          // an empty scope
+		"Widgets=widgets",       // not normalised
+		"widgets=Widgets-Clone", // not normalised
+		"widgets=a;widgets=b",   // a repository twice
+		"wid gets=widgets",      // not normalised
+		"=widgets",              // no repository
+		"widgets=-x",            // not normalised
+	} {
+		if _, err := ParseScopeMap(bad); err == nil {
+			t.Errorf("ParseScopeMap(%q) was accepted", bad)
+		}
 	}
 }
 
