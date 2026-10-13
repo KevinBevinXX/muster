@@ -6,7 +6,8 @@
 // ⚠ IT IS A FAKE, AND IT IS ONLY AS TRUE AS ITS MODEL. What it models:
 // password and refresh grants with rotation (a spent token's direct parent
 // replay is accepted, any older replay revokes the session), local and global
-// logout (REFUSED for a banned user — new in v2.197.0), admin create (with
+// logout (REFUSED for a banned user — new in v2.197.0), the `amr` claim (stamped
+// at sign-in, carried unchanged by every refresh), admin create (with
 // email_confirm required to sign in and the 12-character floor — enforced on
 // the admin path since v2.197.0), ban, delete, a service_role check on
 // /admin/*, and (accounts PR 5) admin/generate_link for recovery, POST /verify
@@ -59,6 +60,10 @@ type refreshToken struct {
 type session struct {
 	user    string
 	revoked bool
+	// amr is the session's authentication record, stamped when it was signed in
+	// and carried unchanged by every refresh — as measured on v2.189.0 and v2.197.0 (see
+	// gotrue.AMR).
+	amr gotrue.AMR
 }
 
 // Fake is a running fake GoTrue.
@@ -259,7 +264,7 @@ func (f *Fake) Mint(id string) (string, string, string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	sid := newUUID()
-	f.sessions[sid] = &session{user: id}
+	f.sessions[sid] = &session{user: id, amr: f.amrLocked("password")}
 	at, rt := f.issueLocked(sid, "")
 	return at, rt, sid
 }
@@ -331,7 +336,7 @@ func (f *Fake) token(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				sid := newUUID()
-				f.sessions[sid] = &session{user: u.ID}
+				f.sessions[sid] = &session{user: u.ID, amr: f.amrLocked("password")}
 				at, rt := f.issueLocked(sid, "")
 				f.writeSessionLocked(w, at, rt, u)
 				return
@@ -545,7 +550,7 @@ func (f *Fake) verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sid := newUUID()
-	f.sessions[sid] = &session{user: u.ID}
+	f.sessions[sid] = &session{user: u.ID, amr: f.amrLocked("otp")}
 	at, rt := f.issueLocked(sid, "")
 	f.writeSessionLocked(w, at, rt, u)
 }
@@ -560,7 +565,7 @@ func (f *Fake) issueLocked(sid, _ string) (access, refresh string) {
 	at, err := gotrue.Sign(f.Secret, gotrue.Claims{
 		Subject: s.user, Issuer: Issuer, Audience: gotrue.Audience{Audience},
 		IssuedAt: f.nowLocked().Unix(), ExpiresAt: f.nowLocked().Add(f.accessTTL).Unix(),
-		Role: "authenticated", Email: email, SessionID: sid,
+		Role: "authenticated", Email: email, SessionID: sid, AMR: s.amr,
 	})
 	if err != nil {
 		panic(err)
@@ -568,6 +573,22 @@ func (f *Fake) issueLocked(sid, _ string) (access, refresh string) {
 	rt := randHex(16)
 	f.refresh[rt] = &refreshToken{session: sid}
 	return at, rt
+}
+
+// amrLocked is a one-entry authentication record for method, stamped now.
+func (f *Fake) amrLocked(method string) gotrue.AMR {
+	return gotrue.AMR{{Method: method, Timestamp: f.nowLocked().Unix()}}
+}
+
+// SetSessionAMR replaces session sid's authentication record: every token
+// minted for it from now on (a refresh included) carries amr. nil models a
+// GoTrue that sends no `amr` at all.
+func (f *Fake) SetSessionAMR(sid string, amr gotrue.AMR) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if s := f.sessions[sid]; s != nil {
+		s.amr = amr
+	}
 }
 
 func (f *Fake) writeSessionLocked(w http.ResponseWriter, at, rt string, u *User) {

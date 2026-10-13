@@ -160,10 +160,11 @@ func CheckTerminal(kind string) error {
 // ⚠ A CLIENT AFFECTS THE WINDOW SIZE EVEN WHEN READ-ONLY. Measured on tmux
 // 3.7c: an `attach-session -r` client reports flags `ignore-size,read-only`
 // and the window still took its size (200x50 → 60x19, then 45x29 on a resize),
-// and KEPT it after the client detached. So a phone attaching leaves the TUI
-// phone-narrow until a wider client attaches. ccd reads turns from the
-// transcript rather than the screen, so its answers are unaffected; what the
-// operator sees in a later, wider attach is a TUI redrawn at that width.
+// and KEPT it after the client detached (ignore-size only applies while some
+// other client is NOT ignore-size). That is why the attach is no longer sized
+// by the browser alone: internal/agentprovision asks the window's size first
+// (TerminalSizeCommand) and never gives the client a size that would shrink it
+// (internal/termsize) — a phone renders the wider TUI in a scrolling view.
 func TerminalCommand(kind string, readOnly bool, tag TerminalTag) ([]string, error) {
 	if err := CheckTerminal(kind); err != nil {
 		return nil, err
@@ -176,6 +177,23 @@ func TerminalCommand(kind string, readOnly bool, tag TerminalTag) ([]string, err
 		cmd = append(cmd, TerminalReadOnlyFlag)
 	}
 	return cmd, nil
+}
+
+// terminalSizeScript prints the agent session's window size in the tmux format
+// passed as $1. It runs as an ordinary exec, before
+// the attach, on the same server and target the attach names. It starts no
+// tmux server (display-message fails on a socket with none).
+const terminalSizeScript = `exec tmux -L "${CCD_TMUX_SOCKET:-default}" ` +
+	`display-message -p -t "=${CCD_TMUX_TARGET:-cc}:" "$1"`
+
+// TerminalSizeCommand is the command that prints the agent session's current
+// window in the tmux format given (the caller's — internal/agentprovision
+// passes termsize.TmuxWindowFormat; this package only knows WHERE the session
+// is), for the no-shrink rule: the attach then sizes its client so the window
+// is not shrunk. Its failure — no session yet, an image without tmux — means
+// "size unknown", and the attach proceeds as it did before.
+func TerminalSizeCommand(format string) []string {
+	return []string{"sh", "-c", terminalSizeScript, "muster-terminal-size", format}
 }
 
 // TerminalReleaseCommand is the command that ends the attach tagged
