@@ -629,8 +629,9 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	if a.status != nil {
 		go a.status.Run(ctx, agentstatus.DefaultInterval)
 	}
-	// The memo relay needs no leader for the reason this deployment has one
-	// replica (see internal/memorelay's package doc: ONE PROCESS).
+	// The memo relay needs no leader either: each delivery takes the agent's
+	// session claim (agents.Store.ClaimKickoff) and re-reads the agent and its
+	// delivery record under it, so two replicas cannot both send one agent a memo.
 	if a.memo != nil {
 		go a.memo.Run(ctx, memorelay.DefaultInterval)
 	}

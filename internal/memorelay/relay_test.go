@@ -30,6 +30,9 @@ type fakeAgents struct {
 	principals []authz.Principal
 	// claims is each agent's session claim (agents.Store.ClaimKickoff): owner by agent id.
 	claims map[int64]string
+	// claimTTLs records the ttl of every claim that was WON; claimErr fails every claim.
+	claimTTLs []time.Duration
+	claimErr  error
 	// onGet, when set, runs inside Get — "something happened between the list and the claim".
 	onGet func(id int64)
 	// getOverride, when set for an id, is what Get returns instead of the listed row.
@@ -57,9 +60,15 @@ func (f *fakeAgents) Get(_ context.Context, id int64) (agents.Agent, error) {
 }
 
 // ClaimKickoff wins iff the claim is unheld, exactly as the real conditional UPDATE does.
-func (f *fakeAgents) ClaimKickoff(_ context.Context, id int64, owner string, _ time.Duration) (bool, error) {
+//
+// ⚠ It does not model EXPIRY: the real claim is also winnable once its ttl has passed, so a ttl
+// too short to cover the turn excludes nobody. The ttl is recorded and asserted on instead.
+func (f *fakeAgents) ClaimKickoff(_ context.Context, id int64, owner string, ttl time.Duration) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.claimErr != nil {
+		return true, f.claimErr // the worst a store could answer: "won", and an error
+	}
 	if f.claims == nil {
 		f.claims = map[int64]string{}
 	}
@@ -67,6 +76,7 @@ func (f *fakeAgents) ClaimKickoff(_ context.Context, id int64, owner string, _ t
 		return false, nil
 	}
 	f.claims[id] = owner
+	f.claimTTLs = append(f.claimTTLs, ttl)
 	return true, nil
 }
 
@@ -984,6 +994,32 @@ func TestADeliveryHoldsTheSessionClaimForTheTurnAndReleasesIt(t *testing.T) {
 	r.Wait()
 	if got := w.store.claimOf(1); got != "" {
 		t.Fatalf("after a shutdown-cancelled turn the claim is still held by %q", got)
+	}
+}
+
+// TestTheSessionClaimOutlivesTheTurnAndAnUnverifiedClaimSendsNothing: the real claim can be taken
+// by anyone once its ttl has passed, so a ttl shorter than the turn it covers would let a first
+// turn in while the memo's is still running — the collision the claim exists to prevent. And a
+// claim the store could not verify is not a claim, whatever it answered.
+func TestTheSessionClaimOutlivesTheTurnAndAnUnverifiedClaimSendsNothing(t *testing.T) {
+	w := newWorld(agent(1, "ada", "example/widgets"))
+	w.src.set("widgets", m(t, 7, "widgets", "2000-01-02T03:04:05Z"))
+	tick(t, w.relay(t))
+	if len(w.store.claimTTLs) != 1 {
+		t.Fatalf("%d claim(s) won, want 1", len(w.store.claimTTLs))
+	}
+	// A claude-code turn may run for the kind's whole budget.
+	if got, floor := w.store.claimTTLs[0], agents.KindTurnTimeout(agents.KindClaudeCode); got <= floor {
+		t.Fatalf("the claim lives %s, which does not outlast a %s turn", got, floor)
+	}
+
+	w = newWorld(agent(1, "ada", "example/widgets"))
+	w.src.set("widgets", m(t, 7, "widgets", "2000-01-02T03:04:05Z"))
+	w.store.claimErr = errors.New("database unavailable")
+	r := w.relay(t)
+	tick(t, r)
+	if len(w.gw.sent()) != 0 || r.Counts()["delivery/claim_failed"] != 1 {
+		t.Fatalf("sent=%d counts=%v; want nothing sent on an unverified claim and delivery/claim_failed 1", len(w.gw.sent()), r.Counts())
 	}
 }
 

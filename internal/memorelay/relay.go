@@ -49,7 +49,8 @@
 // A delivery runs under the agent's session claim (agents.Store.ClaimKickoff — the claim a first
 // turn holds), and re-reads the agent and the record under it. So a memo never takes the session
 // from a first turn that is still being handed over, and two processes cannot both send one
-// agent the same memo.
+// agent the same memo — unless the first one's record could not be written ([ResultRecordFailed]),
+// which is the same exposure as a process killed before its record.
 //
 // The wire contract (`GET /client/v1/memos`, the memo's field names) and the block shape were read
 // from cairn at revision f283823: internal/memowire, internal/memo/block.go, predicates.go.
@@ -117,8 +118,12 @@ const (
 	ResultUnresolved     = "unresolved"
 	ResultNoSession      = "no_session"
 	// ResultSessionClaimed: another delivery holds the agent's session claim — its first turn
-	// (internal/agentkickoff), or another process's memo turn.
+	// (internal/agentkickoff), another process's memo turn, or (the common case) THIS process's
+	// own earlier memo turn, still running: once per tick for as long as it runs.
 	ResultSessionClaimed = "session_claimed"
+	// ResultClaimFailed: the claim could not be asked for at all (the database). Nothing is
+	// sent on a claim that was not verified.
+	ResultClaimFailed = "claim_failed"
 	// ResultMoved: under the claim, the agent was no longer eligible for this scope, or had
 	// already been sent everything in the batch.
 	ResultMoved            = "moved"
@@ -525,7 +530,12 @@ func (r *Relay) deliver(parent context.Context, a agents.Agent, scope string, ba
 	// It is also what makes "once" hold across PROCESSES: two replicas cannot be inside this
 	// section for one agent, and the winner re-reads the row and the ledger below.
 	won, err := r.agents.ClaimKickoff(ctx, a.ID, r.owner, turn+claimMargin)
-	if err != nil || !won {
+	if err != nil {
+		r.count(familyDelivery, ResultClaimFailed)
+		r.log.Printf("memorelay: agent %d (%s): the session claim could not be taken; sending nothing: %v", a.ID, a.Name, err)
+		return
+	}
+	if !won {
 		r.count(familyDelivery, ResultSessionClaimed)
 		return
 	}

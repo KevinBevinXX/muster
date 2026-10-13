@@ -470,7 +470,7 @@ take. No credential reaches a pod and no agent's network policy changes.
   session claim — the one a first turn holds — so a memo never takes the
   session from a first turn still being handed over, and two processes cannot
   both send one agent the same memo. A process *killed* between a send and its
-  record sends those memos once more; a graceful shutdown records first, and a
+  record — or one whose record could not be written — sends those memos once more; a graceful shutdown records first, and a
   turn it cuts off is recorded as possibly sent and not repeated (so a shutdown
   that lands while an agent is unreachable can cost that agent those memos).
 - **Untrusted data, fenced.** A memo arrives inside cairn's own fence, behind
