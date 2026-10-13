@@ -14,6 +14,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/termsize"
 )
 
 // A BROWSER-TEST FIXTURE, COMPILED ONLY WITH `-tags e2eterm` (e2e/lib/server.ts
@@ -81,6 +82,18 @@ func (fakeTerminalDriver) Exec(_ context.Context, _ provision.Ref, cmd []string,
 		_, err := io.WriteString(stdout, "released 0 (e2e fake terminal)\n")
 		return err
 	}
+	// The window-size query (internal/termsize's no-shrink rule): a session
+	// window of envE2ETermWindow ("CxR", the CLIENT size that shows it),
+	// answered in tmux's own format with the status line off. Unset, the query
+	// fails as it does on a pod with no session — the pre-termsize behaviour.
+	if slices.Equal(cmd, agents.TerminalSizeCommand(termsize.TmuxWindowFormat)) {
+		var c, r int
+		if _, err := fmt.Sscanf(os.Getenv(envE2ETermWindow), "%dx%d", &c, &r); err != nil || c <= 0 || r <= 0 {
+			return fmt.Errorf("e2e fake terminal: no session window (no window configured)")
+		}
+		_, err := fmt.Fprintf(stdout, "%d %d off\n", c, r)
+		return err
+	}
 	return fmt.Errorf("%w: the e2e fake driver only plays a terminal", provision.ErrUnsupported)
 }
 
@@ -116,7 +129,13 @@ func (fakeTerminalDriver) ExecTTY(ctx context.Context, ref provision.Ref, cmd []
 		case <-ctx.Done():
 			return ctx.Err()
 		case sz := <-resize:
-			if _, err := fmt.Fprintf(stdout, "size=%dx%d\r\n", sz.Cols, sz.Rows); err != nil {
+			// A ruler ending EXACTLY at the client's last column, so a browser
+			// test can scroll to RIGHT-EDGE on a client wider than the page.
+			ruler := ""
+			if mark := "RIGHT-EDGE"; int(sz.Cols) > len(mark) {
+				ruler = strings.Repeat("-", int(sz.Cols)-len(mark)) + mark + "\r\n"
+			}
+			if _, err := fmt.Fprintf(stdout, "size=%dx%d\r\n%s", sz.Cols, sz.Rows, ruler); err != nil {
 				return err
 			}
 		case b, ok := <-in:

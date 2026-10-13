@@ -19,6 +19,9 @@ type MirrorCardView struct {
 	Session string
 	// Online: the host is connected and still lists the session.
 	Online bool
+	// Interactive: the host ANNOUNCED -interactive, so its terminal page offers
+	// the Interactive switch (still behind a fresh sign-in: internal/stepup).
+	Interactive bool
 }
 
 // MirrorTerminalPath is a mirrored session's terminal page.
@@ -65,6 +68,13 @@ func mirrorCard(m MirrorCardView) g.Node {
 					g.Text(m.Session),
 				),
 				Span(g.Attr("data-mirror-badge", ""), chip("kind", "Mirrored · "+m.Host)),
+				// What the host announced, not what this viewer may do right
+				// now: typing still needs a fresh sign-in on the terminal page.
+				g.If(m.Interactive, Span(
+					g.Attr("data-mirror-interactive", ""),
+					g.Attr("title", "This host accepts typing (muster-mirror -interactive); the terminal asks you to confirm it's you first"),
+					chip("mode", "interactive"),
+				)),
 				g.If(!m.Online, Span(
 					g.Attr("data-mirror-offline", ""),
 					g.Attr("title", "The host's muster-mirror is not connected, or the host no longer lists this tmux session"),

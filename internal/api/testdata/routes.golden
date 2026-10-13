@@ -148,6 +148,7 @@ POST /api/flows/jobs
 POST /api/tasks
 POST /api/tasks/{id}/comments
 POST /auth/claim
+POST /auth/confirm
 POST /auth/reset
 POST /chief/provision
 POST /connectors

@@ -9,6 +9,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -20,6 +21,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/termsize"
 )
 
 // heldTerminalDriver plays a pod whose terminal stays attached until its
@@ -48,7 +50,12 @@ func (d *heldTerminalDriver) ExecTTY(ctx context.Context, _ provision.Ref, _ []s
 	return ctx.Err()
 }
 
-func (d *heldTerminalDriver) Exec(ctx context.Context, _ provision.Ref, _ []string, _ io.Reader, stdout, _ io.Writer) error {
+func (d *heldTerminalDriver) Exec(ctx context.Context, _ provision.Ref, cmd []string, _ io.Reader, stdout, _ io.Writer) error {
+	// The window-size query that precedes an attach is not a release; this
+	// pod has no session to size ("unknown" — the attach proceeds as asked).
+	if slices.Equal(cmd, agents.TerminalSizeCommand(termsize.TmuxWindowFormat)) {
+		return errors.New("can't find session: cc")
+	}
 	select {
 	case <-time.After(d.releaseDelay):
 	case <-ctx.Done():

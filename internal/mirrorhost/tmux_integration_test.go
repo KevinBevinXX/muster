@@ -18,6 +18,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/termsize"
 )
 
 // tmuxRig is a private tmux server.
@@ -230,4 +232,62 @@ func TestMain(m *testing.M) {
 	// The suite's own tmux servers inherit nothing from the developer's.
 	_ = os.Unsetenv("TMUX_PANE")
 	os.Exit(m.Run())
+}
+
+// TestTmuxNoShrinkLeavesTheWindowAloneAndADesktopStillGrowsIt is the hazard and
+// its fix on REAL tmux, with the phone as the ONLY client (the case
+// TestTmuxAReadOnlyViewerDoesNotResizeTheOperatorsWindow does not cover, and
+// where tmux's ignore-size does not apply): a bare 47x20 attach — read-only —
+// shrinks a 120x40 window (the control: what NoShrink exists for); through
+// NoShrink the same request leaves it 120x40 and the client is told 120x41
+// (the window plus the status line). A 150x50 desktop request still grows it.
+func TestTmuxNoShrinkLeavesTheWindowAloneAndADesktopStillGrowsIt(t *testing.T) {
+	r := newTmuxRig(t)
+	size := func(s string) string {
+		return strings.TrimSpace(r.run("display-message", "-p", "-t", "="+s+":", "#{window_width}x#{window_height}"))
+	}
+	attach := func(b Backend, s string, cols, rows uint16) (Terminal, *screen) {
+		t.Helper()
+		term, err := b.Attach(context.Background(), s, true, cols, rows)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sc screen
+		go sc.read(term)
+		waitFor(t, "the client draws", func() bool { return strings.Contains(sc.String(), "MARK-"+s) })
+		return term, &sc
+	}
+
+	// Control: the bare backend shrinks the window.
+	r.session("bare", "MARK-bare")
+	if got := size("bare"); got != "120x40" {
+		t.Fatalf("fixture: the detached window is %s", got)
+	}
+	term, _ := attach(Tmux{Socket: r.sock}, "bare", 47, 20)
+	waitFor(t, "the bare phone shrinks the window", func() bool { return size("bare") == "47x19" })
+	_ = term.Close()
+
+	// The fix.
+	r.session("main", "MARK-main")
+	b := NoShrink(Tmux{Socket: r.sock})
+	term, sc := attach(b, "main", 47, 20)
+	time.Sleep(300 * time.Millisecond)
+	if got := size("main"); got != "120x40" {
+		t.Fatalf("a phone through NoShrink resized the window to %s (want 120x40)", got)
+	}
+	if want := string(termsize.Report(termsize.Size{Cols: 120, Rows: 41})); !strings.HasPrefix(sc.String(), want) {
+		t.Fatalf("the client was not told its size first: %q", sc.String()[:min(len(sc.String()), 40)])
+	}
+	if err := term.Resize(40, 12); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if got := size("main"); got != "120x40" {
+		t.Fatalf("a shrinking resize through NoShrink changed the window to %s", got)
+	}
+	_ = term.Close()
+
+	term, _ = attach(b, "main", 150, 50)
+	waitFor(t, "a desktop grows the window", func() bool { return size("main") == "150x49" })
+	_ = term.Close()
 }
