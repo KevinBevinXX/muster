@@ -117,7 +117,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			return 1
 		}
 		var claude map[string]mirrorhost.ClaudePane
-		if cb, ok := backend.(mirrorhost.ClaudeBackend); ok && *listClaude {
+		if cb, ok := mirrorhost.ClaudeOf(backend); ok && *listClaude {
 			claude = cb.ClaudePanes(lctx, sessions)
 		}
 		for _, s := range sessions {
