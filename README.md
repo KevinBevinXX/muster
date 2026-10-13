@@ -500,8 +500,10 @@ take. No credential reaches a pod and no agent's network policy changes.
   (a newly issued credential is refused for up to 30 seconds, so one issued just
   before the rollout must not be asked about at once), and **none for 15
   minutes after a 401**.
-  So a wrong token costs one refused request per 15 minutes, and a corrected
-  one is not tried sooner than that unless the process restarts.
+  So a wrong token costs one refused request per 15 minutes. The token is read
+  once, at start: after correcting its Secret, restart muster **once** (a
+  running process re-sends the old token after every backoff), and never in a
+  loop.
 
 ## Licence
 

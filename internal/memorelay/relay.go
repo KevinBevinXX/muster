@@ -340,8 +340,7 @@ func (r *Relay) Tick(ctx context.Context) error {
 			continue
 		default:
 			if errors.Is(err, ErrRefused) {
-				r.log.Printf("memorelay: the listener REFUSED the relay's credential; nothing is asked of it "+
-					"for %s. Check the token, then wait: a corrected one is not tried sooner", RefusedBackoff)
+				r.log.Printf("%s", refusedLine)
 			} else if errors.Is(err, ErrUnreachable) {
 				r.log.Printf("memorelay: %v", err)
 			}
@@ -353,6 +352,20 @@ func (r *Relay) Tick(ctx context.Context) error {
 	}
 	return nil
 }
+
+// refusedLine is what the relay logs on a 401. It is the operator's whole instruction at that
+// moment, so it is pinned whole (TestARefusalTellsTheOperatorToRestartOnce).
+//
+// 🔴 IT SAYS "RESTART ONCE" BECAUSE THE TOKEN IS READ ONCE. MUSTER_MEMO_TOKEN comes from the
+// environment at start and nothing reloads it, so a corrected Secret is never seen by a running
+// process: after the backoff it sends the OLD token again. An earlier wording said "check the
+// token, then wait: a corrected one is not tried sooner", which led an operator to fix the Secret
+// and wait — for ever, one refused request in the shared lockout bucket every 15 minutes.
+var refusedLine = "memorelay: the listener REFUSED the relay's credential; nothing is asked of it for " +
+	RefusedBackoff.String() + ". The token is read once, at start: fix the Secret behind " +
+	"MUSTER_MEMO_TOKEN, then restart muster ONCE. Until then this process re-sends the same token " +
+	"every " + RefusedBackoff.String() + ". Never restart in a loop: each refused request counts " +
+	"toward the listener's lockout of this node."
 
 // upstreamResult names what one listener call came to.
 func upstreamResult(err error) string {
