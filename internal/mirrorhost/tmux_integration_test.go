@@ -228,6 +228,37 @@ func TestTmuxAReadOnlyViewerDoesNotResizeTheOperatorsWindow(t *testing.T) {
 	}
 }
 
+// TestTmuxActiveWindowsIsEachSessionsCURRENTWindow: list-sessions'
+// #{window_index} is the session's ACTIVE window — measured at three points (a
+// middle window, the last after select-window, the first) and on a second
+// session left on its newest window, so a format that answered "the first
+// window" or "the last window" fails one of them.
+func TestTmuxActiveWindowsIsEachSessionsCURRENTWindow(t *testing.T) {
+	r := newTmuxRig(t)
+	r.session("alpha", "A")
+	r.run("new-window", "-d", "-t", "=alpha:")
+	r.run("new-window", "-d", "-t", "=alpha:")
+	r.run("select-window", "-t", "=alpha:1")
+	r.session("beta", "B")
+	r.run("new-window", "-t", "=beta:")
+	b := Tmux{Socket: r.sock}
+	got, err := b.ActiveWindows(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["alpha"] != "1" || got["beta"] != "1" || len(got) != 2 {
+		t.Fatalf("ActiveWindows = %v, want alpha:1 beta:1", got)
+	}
+	r.run("select-window", "-t", "=alpha:2")
+	if got, err = b.ActiveWindows(context.Background()); err != nil || got["alpha"] != "2" {
+		t.Fatalf("after select-window alpha:2, ActiveWindows = %v (%v)", got, err)
+	}
+	r.run("select-window", "-t", "=alpha:0")
+	if got, _ = b.ActiveWindows(context.Background()); got["alpha"] != "0" {
+		t.Fatalf("after select-window alpha:0, ActiveWindows = %v", got)
+	}
+}
+
 func TestMain(m *testing.M) {
 	// The suite's own tmux servers inherit nothing from the developer's.
 	_ = os.Unsetenv("TMUX_PANE")

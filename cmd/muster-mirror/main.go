@@ -25,6 +25,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -49,6 +50,7 @@ const (
 	envSocketPath  = "MUSTER_MIRROR_TMUX_SOCKET_PATH"
 	envInteractive = "MUSTER_MIRROR_INTERACTIVE"
 	envAllowHTTP   = "MUSTER_MIRROR_ALLOW_HTTP"
+	envLabelsFile  = "MUSTER_MIRROR_LABELS_FILE"
 )
 
 func main() {
@@ -83,7 +85,8 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	socketPath := fs.String("tmux-socket-path", getenv(envSocketPath), "tmux -S socket path ("+envSocketPath+")")
 	interactive := fs.Bool("interactive", envBool(envInteractive), "let muster open INTERACTIVE terminals on this host — effectively a SHELL here: an interactive tmux client can switch to any session or open a new window (default: read-only; muster then offers no Interactive switch) ("+envInteractive+")")
 	allowHTTP := fs.Bool("allow-http", envBool(envAllowHTTP), "TESTS AND LOCAL DEVELOPMENT ONLY: permit a plain http:// muster URL, which sends the token in cleartext ("+envAllowHTTP+")")
-	list := fs.Bool("list", false, "print the sessions this host would register, and exit")
+	labelsFile := fs.String("labels-file", getenv(envLabelsFile), "JSON object {\"<session>\": \"<codename>\"}: muster shows such a session as <codename>:<active window index> instead of its name; unreadable or invalid = no labels, logged, never fatal ("+envLabelsFile+")")
+	list := fs.Bool("list", false, "print the sessions this host would register, and exit (a labelled session's line ends in a label=<label> column)")
 	listClaude := fs.Bool("claude", false, "with -list: also print, for each session whose active pane runs Claude Code, its pane, session id and transcript (what the rendered view would stream)")
 	version := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
@@ -107,6 +110,8 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	backend = mirrorhost.NoShrink(backend)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	logger := log.New(stderr, "", log.LstdFlags)
+	codenames := loadCodenames(*labelsFile, logger)
 
 	if *list {
 		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -120,16 +125,26 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		if cb, ok := mirrorhost.ClaudeOf(backend); ok && *listClaude {
 			claude = cb.ClaudePanes(lctx, sessions)
 		}
+		labels, lerr := mirrorhost.SessionLabels(lctx, backend, codenames, sessions)
+		if lerr != nil {
+			logger.Printf("muster-mirror: read active windows for labels (labelling by codename alone): %v", lerr)
+		}
 		for _, s := range sessions {
+			// The label is the LAST column, so the columns before it keep
+			// their positions whether or not a session has one.
+			suffix := ""
+			if l, ok := labels[s]; ok {
+				suffix = "\tlabel=" + l
+			}
 			if p, ok := claude[s]; ok {
 				state := "idle"
 				if p.Busy {
 					state = "busy"
 				}
-				fmt.Fprintf(stdout, "%s\tclaude\t%s\t%s\t%s\t%s\n", s, p.Pane, state, p.Gen, p.Transcript)
+				fmt.Fprintf(stdout, "%s\tclaude\t%s\t%s\t%s\t%s%s\n", s, p.Pane, state, p.Gen, p.Transcript, suffix)
 				continue
 			}
-			fmt.Fprintln(stdout, s)
+			fmt.Fprintln(stdout, s+suffix)
 		}
 		return 0
 	}
@@ -148,9 +163,8 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return 2
 	}
 
-	logger := log.New(stderr, "", log.LstdFlags)
 	c, err := mirrorhost.New(mirrorhost.Config{
-		URL: *url, Token: token, Host: *host, Backend: backend,
+		URL: *url, Token: token, Host: *host, Backend: backend, Codenames: codenames,
 		Interactive: *interactive, AllowHTTP: *allowHTTP, Logger: logger,
 	})
 	if err != nil {
@@ -167,4 +181,25 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return 1
 	}
 	return 0
+}
+
+// loadCodenames reads the labels file at path ("" = none configured). It is
+// NEVER fatal: a missing, unreadable or invalid file is logged once, here at
+// start, and the host runs with no labels — muster then shows raw session
+// names, exactly as before labels existed. Entries it had to drop are named.
+func loadCodenames(path string, logger *log.Logger) map[string]string {
+	if path == "" {
+		return nil
+	}
+	codenames, skipped, err := mirrorhost.LoadCodenames(path)
+	if err != nil {
+		logger.Printf("muster-mirror: no session labels: %v", err)
+		return nil
+	}
+	if len(skipped) > 0 {
+		sort.Strings(skipped)
+		logger.Printf("muster-mirror: the labels file %s has %d invalid entr(y/ies), ignored: %q", path, len(skipped), skipped)
+	}
+	logger.Printf("muster-mirror: %d session label(s) from %s", len(codenames), path)
+	return codenames
 }

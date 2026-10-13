@@ -445,7 +445,12 @@ muster-mirror -url https://muster.example.com -token-file ~/.config/muster-mirro
 minted for one host cannot register another. `-interactive` allows typing,
 `-tmux-socket`/`-tmux-socket-path` pick a non-default tmux server, and `-list`
 prints what would be registered (`-list -claude` adds each Claude Code pane's
-transcript). Every flag also reads a `MUSTER_MIRROR_*`
+transcript). `-labels-file` (`MUSTER_MIRROR_LABELS_FILE`) names a JSON object
+`{"<session>": "<codename>"}`: muster then shows such a session as
+`<codename>:<active window index>` (`scratch13` → `mango:1`), following the
+window as it moves, with the raw session name beside it; the session is still
+opened by its name. A missing or invalid file is logged and ignored, never
+fatal, and a session not in it keeps its raw name. Every flag also reads a `MUSTER_MIRROR_*`
 variable (see `-help`), so a systemd user unit needs no token in its command
 line. If muster sits behind an auth proxy, `/mirror/connect` (GET) must bypass
 it: the route authenticates its own tokens.

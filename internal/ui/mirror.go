@@ -17,6 +17,10 @@ import (
 type MirrorCardView struct {
 	Host    string
 	Session string
+	// Label is the host's display name for the session ("mango:1"), "" for
+	// none. DISPLAY ONLY: the card still links, keys and ids by Session, and
+	// shows Session beside the label so the real name stays findable.
+	Label string
 	// Online: the host is connected and still lists the session.
 	Online bool
 	// Interactive: the host ANNOUNCED -interactive, so its terminal page offers
@@ -76,10 +80,8 @@ func mirrorCard(m MirrorCardView) g.Node {
 			Div(
 				Class("flex flex-wrap items-center gap-2"),
 				statusIcon(status),
-				Span(
-					Class("mr-auto break-all text-base font-semibold leading-tight text-fg group-hover:text-accent"),
-					g.Text(m.Session),
-				),
+				mirrorSessionTitle(m.Label, m.Session,
+					"mr-auto break-all text-base font-semibold leading-tight text-fg group-hover:text-accent"),
 				Span(g.Attr("data-mirror-badge", ""), chip("kind", "Mirrored · "+m.Host)),
 				// What the host announced, not what this viewer may do right
 				// now: typing still needs a fresh sign-in on the terminal page.
@@ -107,4 +109,23 @@ func AgentsCardsWithMirrors(list []AgentCardView, mirrors []MirrorCardView) g.No
 		return AgentsCards(list)
 	}
 	return g.Group{g.Group(g.Map(list, agentCard)), g.Group(g.Map(mirrors, mirrorCard))}
+}
+
+// mirrorSessionTitle is a mirrored session's name as a list or page title: the
+// host's label when it sent one, with the raw tmux session name as a small
+// secondary text AND the tooltip; the session name alone otherwise.
+//
+// 🔴 THE RAW NAME STAYS VISIBLE, NOT ONLY IN A TOOLTIP: it is what an operator
+// types into `tmux attach`, and a phone has no hover.
+func mirrorSessionTitle(label, session, class string) g.Node {
+	if label == "" || label == session {
+		return Span(Class(class), g.Attr("data-mirror-name", ""), g.Text(session))
+	}
+	return Span(
+		Class(class),
+		g.Attr("data-mirror-name", ""),
+		g.Attr("title", "tmux session "+session),
+		Span(g.Attr("data-mirror-label", ""), g.Text(label)),
+		Span(g.Attr("data-mirror-session", ""), Class("ml-1.5 text-xs text-muted"), g.Text(session)),
+	)
 }

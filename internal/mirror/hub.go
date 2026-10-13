@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"sort"
 	"sync"
 	"time"
@@ -68,6 +69,10 @@ type HostView struct {
 	// host's report; always empty for a v1 host): the sessions opened in the
 	// rendered view by default.
 	Claude []string
+	// Labels is the host's display label per session (Msg.Labels), restricted
+	// to Sessions; a session without one is shown by its name. nil when the
+	// host sends none (an older muster-mirror, or no labels configured).
+	Labels map[string]string
 	// Rendered: the host speaks tunnel v2, so its Claude sessions have a
 	// rendered view. False for a v1 host and for an offline one.
 	Rendered bool
@@ -112,6 +117,7 @@ var ErrTokenRevoked = errors.New("mirror: the host's token was revoked")
 type offlineHost struct {
 	sessions    []string
 	claude      []string
+	labels      map[string]string
 	interactive bool
 	since       time.Time
 }
@@ -174,6 +180,7 @@ type hostConn struct {
 	mu       sync.Mutex
 	sessions []string
 	claude   []string
+	labels   map[string]string
 	streams  map[uint32]*stream
 	watches  map[uint32]*watch
 	pastes   map[uint32]chan error
@@ -206,7 +213,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		}
 		hc.mu.Lock()
 		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...),
-			Claude: append([]string(nil), hc.claude...), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive})
+			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive})
 		hc.mu.Unlock()
 	}
 	now := h.now()
@@ -217,7 +224,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		}
 		if k.owner == owner {
 			out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), o.sessions...),
-				Claude: append([]string(nil), o.claude...), Interactive: o.interactive})
+				Claude: append([]string(nil), o.claude...), Labels: maps.Clone(o.labels), Interactive: o.interactive})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Host < out[j].Host })
@@ -313,7 +320,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 	key := hostKey{owner, host}
 	sessions := normalizeSessions(hello.Sessions)
 	hc := &hostConn{key: key, ws: ws, ctx: ctx, cancel: cancel, interactive: hello.Interactive, version: hello.Version,
-		sessions: sessions, streams: map[uint32]*stream{}, watches: map[uint32]*watch{}, pastes: map[uint32]chan error{}}
+		sessions: sessions, labels: NormalizeLabels(hello.Labels, sessions), streams: map[uint32]*stream{}, watches: map[uint32]*watch{}, pastes: map[uint32]chan error{}}
 	if hc.version >= 2 {
 		hc.claude = normalizeClaude(hello.Claude, sessions)
 	}
@@ -389,6 +396,9 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				list := normalizeSessions(m.Sessions)
 				hc.mu.Lock()
 				hc.sessions = list
+				// Labels ride every sessions message, so one that changed with the
+				// same session set (the active window moved) still lands here.
+				hc.labels = NormalizeLabels(m.Labels, list)
 				if hc.version >= 2 {
 					hc.claude = normalizeClaude(m.Claude, list)
 				}
@@ -430,8 +440,9 @@ func (h *Hub) drop(hc *hostConn) {
 		} else {
 			hc.mu.Lock()
 			claude := append([]string(nil), hc.claude...)
+			labels := maps.Clone(hc.labels)
 			hc.mu.Unlock()
-			h.offline[hc.key] = offlineHost{sessions: hc.sessionsCopy(), claude: claude, interactive: hc.interactive, since: h.now()}
+			h.offline[hc.key] = offlineHost{sessions: hc.sessionsCopy(), claude: claude, labels: labels, interactive: hc.interactive, since: h.now()}
 		}
 	}
 	h.mu.Unlock()
