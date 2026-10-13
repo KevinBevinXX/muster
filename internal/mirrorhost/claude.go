@@ -380,7 +380,7 @@ func (t Tmux) ActivePane(ctx context.Context, session string) (string, bool) {
 // calls it) — the way ccd hands a provisioned agent its prompt: `load-buffer`
 // from STDIN into a uniquely named buffer (never argv — visible in the process
 // table and parsed by tmux), `paste-buffer -p -d` into the PANE id (buffer
-// deleted after), then Enter.
+// deleted after), then Enter — itself a pasted newline, see the end of the body.
 //
 // `-p` brackets the paste ONLY for a program that asked for bracketed paste
 // (zsh and bash 5.1+ do by default, as does Claude Code): there the whole text,
@@ -420,7 +420,18 @@ func (t Tmux) PastePane(ctx context.Context, paneID, text string) error {
 	case <-ctx.Done():
 		return errors.New("muster-mirror: the message was pasted but not submitted (cancelled)")
 	}
-	if err := run(nil, "send-keys", "-t", paneID, "Enter"); err != nil {
+	// 🔴 THE ENTER IS A PASTED NEWLINE, NOT `send-keys`. tmux refuses
+	// `send-keys` with "client is read-only" when the client it resolves for
+	// the target is a read-only one — and muster's own Terminal view attaches
+	// exactly that (`attach -r`), so with that page open the text landed and
+	// the Enter never did. `paste-buffer` has no such check. Without `-p` the
+	// buffer is written unbracketed and tmux turns its LF into CR: the same
+	// byte the Enter key sends.
+	if err := run([]byte("\n"), "load-buffer", "-b", buf, "-"); err != nil {
+		return fmt.Errorf("muster-mirror: the message was pasted but not submitted: %w", err)
+	}
+	if err := run(nil, "paste-buffer", "-d", "-b", buf, "-t", paneID); err != nil {
+		_ = run(nil, "delete-buffer", "-b", buf)
 		return fmt.Errorf("muster-mirror: the message was pasted but not submitted: %w", err)
 	}
 	return nil

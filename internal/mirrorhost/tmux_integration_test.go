@@ -442,6 +442,41 @@ func readFile(t *testing.T, path string) string {
 	return string(b)
 }
 
+// The Terminal view of a mirrored session IS a read-only tmux client on that
+// session (Attach with readOnly). With it attached — and no other client —
+// tmux refuses `send-keys` with "client is read-only", so a message sent from
+// the Terminal view's own message box was pasted and never submitted (seen
+// live on 0.32.0: POST /mirror/terminal/send 502). The submit must not depend
+// on which clients are attached.
+func TestTmuxPastePaneSubmitsWhileAReadOnlyClientIsAttached(t *testing.T) {
+	r := newTmuxRig(t)
+	b := Tmux{Socket: r.sock}
+	ctx := context.Background()
+	dir := t.TempDir()
+	r.shellSession("viewed", dir, "bash", "--norc", "--noprofile", "-i")
+	term, err := b.Attach(ctx, "viewed", true, 120, 40)
+	if err != nil {
+		t.Fatalf("Attach (read-only): %v", err)
+	}
+	defer term.Close()
+	go func() { _, _ = io.Copy(io.Discard, term) }()
+	waitFor(t, "the read-only client to attach", func() bool {
+		return strings.TrimSpace(r.run("list-clients", "-t", "=viewed", "-F", "#{client_readonly}")) == "1"
+	})
+	pane, ok := b.ActivePane(ctx, "viewed")
+	if !ok {
+		t.Fatal("no active pane")
+	}
+	if err := b.PastePane(ctx, pane, "echo viewed-$((50+7)) >> ro.txt"); err != nil {
+		t.Fatalf("PastePane with a read-only client attached: %v", err)
+	}
+	waitFor(t, "the line to run", func() bool { return readFile(t, dir+"/ro.txt") != "" })
+	time.Sleep(300 * time.Millisecond) // a second submission would land by now
+	if got := readFile(t, dir+"/ro.txt"); got != "viewed-57\n" {
+		t.Fatalf("the line ran as %q, want it run exactly once", got)
+	}
+}
+
 // TestTmuxPastePaneIntoAShellSubmitsOnce is the Terminal view's composer
 // against REAL tmux and REAL shells (never skipped: bash and zsh are both
 // required, like tmux): what PastePane + Enter does in a session whose active
