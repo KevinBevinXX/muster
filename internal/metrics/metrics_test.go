@@ -46,6 +46,7 @@ var wantMetrics = map[string][]string{
 	"muster_http_request_duration_seconds":    {"method", "route"},
 	"muster_panics_total":                     {"source"},
 	"muster_agent_provision_total":            {"result"},
+	"muster_push_delivery_total":              {"result"},
 	"muster_agent_provision_duration_seconds": {},
 	"muster_agent_kickoff_resend_total":       {"result"},
 	"muster_agent_kickoff_claim_total":        {"result"},
@@ -75,6 +76,7 @@ func gather(t *testing.T) map[string][]string {
 	BuildInfo.WithLabelValues("0.0.0-test")
 	Panics.WithLabelValues("test")
 	AgentProvision.WithLabelValues("ok")
+	PushDelivery.WithLabelValues("ok")
 	AgentKickoffResend.WithLabelValues("resent")
 	AgentKickoffClaim.WithLabelValues("won")
 	TasksCreated.WithLabelValues("api")
