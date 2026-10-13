@@ -9,6 +9,12 @@
 #     listener instead of the public host;
 #   - the database is its own throwaway Postgres (muster_auth_e2e, tmpfs).
 #
+# ⚠ v2.197.0 IS AHEAD OF THE DEPLOYMENT UNTIL the deployment's GoTrue manifest is
+# bumped to match — which must wait until a muster carrying the disable-order
+# fix (sign out BEFORE the ban; accounts.go SetUserDisabledAs) is live, because
+# v2.197.0 refuses /logout for a banned user and the old order broke every
+# disable against it.
+#
 # Started by e2e/tests/gotrue-login.spec.ts (`docker compose up -d --wait`),
 # so `make e2e` needs nothing extra beyond Docker. The JWT secret below is a
 # test value and is the one the spec hands muster.
@@ -30,7 +36,7 @@ services:
       timeout: 3s
       retries: 60
   gotrue:
-    image: supabase/gotrue:v2.189.0
+    image: supabase/gotrue:v2.197.0
     depends_on:
       auth-db:
         condition: service_healthy

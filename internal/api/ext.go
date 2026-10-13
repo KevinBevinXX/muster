@@ -9,6 +9,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/apitokens"
 	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
@@ -137,6 +138,11 @@ type Extensions struct {
 	// /mirror/connect and the mirror terminal routes answer 404 and the Agents
 	// view draws no mirrored card. See mirror.go.
 	Mirror Mirror
+
+	// Flows is the browser-flow queue and its runner tokens (internal/flows,
+	// migration 0012). nil (no database): every flow route answers 503 and
+	// /flows says so.
+	Flows flows.Store
 }
 
 // Mirror is the mirror plugin as this package consumes it. *mirror.Service

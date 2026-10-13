@@ -446,6 +446,8 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerCredentialRoutes(mux)
 	s.registerApprovalRoutes(mux)
 	s.registerMirrorRoutes(mux)
+	// Browser flows (internal/flows): /flows, /api/flows/jobs, /runner/flows/*.
+	s.registerFlowRoutes(mux)
 	// muster-native Web Push (push_routes.go): the subscribe flow and the
 	// account page's Notifications section.
 	s.registerPushRoutes(mux)

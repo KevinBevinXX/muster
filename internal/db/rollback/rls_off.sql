@@ -64,6 +64,16 @@ BEGIN
         ALTER TABLE public.cc_account_marks DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.cc_account_marks ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0012 (browser flows: flow_jobs and flow_runner_tokens), when this schema
+    -- has it. Both carry owner_id, so RLSStatus reads them back with the rest.
+    IF to_regclass('public.flow_jobs') IS NOT NULL THEN
+        ALTER TABLE public.flow_jobs NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.flow_jobs DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.flow_jobs ALTER COLUMN owner_id SET DEFAULT 1;
+        ALTER TABLE public.flow_runner_tokens NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.flow_runner_tokens DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.flow_runner_tokens ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
     -- 0013 (muster-native Web Push: push_subscriptions, push_preferences),
     -- when this schema has it. Both carry owner_id; same reason as 0011.
     IF to_regclass('public.push_subscriptions') IS NOT NULL THEN

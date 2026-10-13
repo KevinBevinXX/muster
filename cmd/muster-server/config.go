@@ -314,7 +314,9 @@ type config struct {
 	GoTrueSecret string
 	// BrowserPort, when non-zero, binds the BROWSER listener: the only one on
 	// which gotrue mode serves a session (api.BrowserListener). The main port
-	// then serves machine tokens only.
+	// then serves machine tokens only. The reverse holds too: in gotrue mode the
+	// browser listener refuses the SHARED hook/service tokens (403) and admits
+	// only personal mst_ tokens on the /api/ tier (refuseSharedTokenOnBrowserListener).
 	BrowserPort int
 
 	GitHubToken        string

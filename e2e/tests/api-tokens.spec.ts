@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { request as pwRequest } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { dsn, e2eRoot, gotrueSecret, port, repoRoot, versionA } from '../lib/env';
+import { dsn, e2eRoot, gotrueSecret, hookToken, port, repoRoot, versionA } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 
 // Accounts PR 6, end to end against the REAL GoTrue image (e2e/gotrue/compose.yml,
@@ -124,8 +124,24 @@ test('mint a personal API token on the page, use it, revoke it → 401 (real GoT
   const onMachinePort = await machine.get('/api/tasks');
   expect(onMachinePort.status(), await onMachinePort.text()).toBe(200);
   // Control: the same fetch with no token is refused — the 200 above was the token.
+  // 403, not 401: on the browser listener the hook/service tier refuses every
+  // credential but a personal token before comparing anything (auth.go,
+  // refuseSharedTokenOnBrowserListener), so "missing" and "wrong" look alike.
   const bare = await page.evaluate(async () => (await fetch('/api/tasks', { credentials: 'omit' })).status);
-  expect(bare).toBe(401);
+  expect(bare).toBe(403);
+  // The SHARED hook token (user 1, admin, held by every hook script) is refused on
+  // the browser listener — the port the public edge routes to — and still works on
+  // the machine port. The machine-port 200 is the control: without it the 403
+  // could be a server refusing the hook token everywhere.
+  const hookOnBrowser = await pageFetch(page, '/api/whoami', hookToken);
+  expect(hookOnBrowser.status, hookOnBrowser.body).toBe(403);
+  expect(JSON.parse(hookOnBrowser.body).error).toBe(
+    'shared machine tokens are not accepted on this port; use a personal API token (mst_) or the machine port');
+  const hookMachine = await pwRequest.newContext({ baseURL: machineURL, extraHTTPHeaders: { Authorization: `Bearer ${hookToken}` } });
+  const hookOnMachine = await hookMachine.get('/api/whoami');
+  expect(hookOnMachine.status(), await hookOnMachine.text()).toBe(200);
+  expect(await hookOnMachine.json()).toMatchObject({ userId: 1, via: 'hook', role: 'admin' });
+  await hookMachine.dispose();
   // The list now shows it was used.
   await page.reload();
   await expect(page.locator('[data-testid="token-list"]')).toContainText('last used');

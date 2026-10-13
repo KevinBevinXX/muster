@@ -80,7 +80,7 @@ const userCacheTTL = 30 * time.Second
 // load fires several requests at once, all carrying the same expired access
 // token and the same refresh token. GoTrue rotates on every refresh, accepts a
 // replay of the direct PARENT of the live token, and REVOKES THE SESSION on any
-// older replay (measured, v2.189.0, rotation on, no reuse interval). Two
+// older replay (measured, v2.189.0 and v2.197.0, rotation on, no reuse interval). Two
 // concurrent refreshes of one token, each setting a different new token, leave
 // the tab holding a grandparent the next time — and the session dies. So every
 // request presenting a token this process has just refreshed gets that one
@@ -913,24 +913,40 @@ func SetUserDisabledAs(ctx context.Context, g GoTrueAuth, by *users.Actor, id in
 	if u.GotrueSub == "" {
 		return nil
 	}
+	// A ban does not end GoTrue sessions (an unban resurrects them), so a
+	// disable also signs the user out everywhere in GoTrue. muster's own cutoff
+	// (users.sessions_not_before) refuses those sessions regardless; this keeps
+	// GoTrue from holding them live.
+	//
+	// 🔴 THE SIGN-OUT RUNS BEFORE THE BAN, NOT AFTER. GoTrue v2.197.0 refuses
+	// /logout for a BANNED user (403 user_banned; v2.189.0 accepted it), so the
+	// old order — ban, then sign out — failed every disable and left the
+	// pre-disable refresh token live in GoTrue, accepted again after an enable.
+	// Measured on both images: sign-out then ban leaves that token
+	// refresh_token_not_found after the enable (TestEnablingDoesNotResurrectOldSessions).
+	// The gap between the two calls opens nothing: disabled_at and the cutoff
+	// are already committed above, so muster refuses the user's requests and
+	// will not refresh a pre-cutoff token, and the browser never talks to GoTrue.
+	var signOutErr error
+	if disabled {
+		if err := g.Client.AdminSignOutEverywhere(ctx, "muster-server", u.GotrueSub); err != nil {
+			if by != nil && g.Accounts != nil {
+				_ = g.Accounts.Audit(ctx, *by, "user.signout_failed", users.UserObject(id), map[string]any{"error": err.Error()})
+			}
+			// The ban is still applied: it stops sign-in and refresh while it
+			// stands, which is worth having whatever the sign-out did.
+			signOutErr = err
+		}
+	}
 	if err := g.Client.AdminSetBanned(ctx, "muster-server", u.GotrueSub, disabled); err != nil {
 		if by != nil && g.Accounts != nil {
 			_ = g.Accounts.Audit(ctx, *by, "user.ban_failed", users.UserObject(id), map[string]any{"disabled": disabled, "error": err.Error()})
 		}
 		return errors.New("users.disabled_at is updated, but the GoTrue ban did not apply: " + err.Error())
 	}
-	if disabled {
-		// A ban does not end GoTrue sessions (an unban resurrects them), so
-		// a disable also signs the user out everywhere in GoTrue. muster's
-		// own cutoff (users.sessions_not_before) refuses those sessions
-		// regardless; this keeps GoTrue from holding them live.
-		if err := g.Client.AdminSignOutEverywhere(ctx, "muster-server", u.GotrueSub); err != nil {
-			if by != nil && g.Accounts != nil {
-				_ = g.Accounts.Audit(ctx, *by, "user.signout_failed", users.UserObject(id), map[string]any{"error": err.Error()})
-			}
-			return errors.New("users.disabled_at is updated and the login banned, but GoTrue's sign-out-everywhere did not apply " +
-				"(muster still refuses the old sessions): " + err.Error())
-		}
+	if signOutErr != nil {
+		return errors.New("users.disabled_at is updated and the login banned, but GoTrue's sign-out-everywhere did not apply " +
+			"(muster still refuses the old sessions): " + signOutErr.Error())
 	}
 	return nil
 }

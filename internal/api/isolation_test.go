@@ -30,6 +30,7 @@ import (
 	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/dbtest"
+	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/gotrue/gotruetest"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -100,6 +101,10 @@ const (
 	// which also holds the admin's control); the generic walk drives them as
 	// B and A, and keeps them out of the admin leg, whose writes would act on A.
 	classAdminOnly routeClass = "admin-only"
+	// classRunner is a browser-flow RUNNER token's door (/runner/flows/*,
+	// 0012): no session, agent, hook or personal credential opens it, and a
+	// runner token acts as its owner — so B's runner must reach nothing of A's.
+	classRunner routeClass = "runner"
 )
 
 // isolationClasses classifies EVERY route in routes.golden. Exhaustive both
@@ -269,6 +274,21 @@ var isolationClasses = map[string]routeClass{
 	"GET /mirror/connect":     classPublic,
 	"GET /mirror/terminal":    classMirror,
 	"GET /mirror/terminal/ws": classMirror,
+
+	// Browser flows (0012). The page and its forms are the session tier; the
+	// JSON API is a personal token only; the runner door is a runner token
+	// only. Each names A's job (or A's runner token) by id.
+	"GET /flows":                            classList,
+	"POST /flows/jobs":                      classList,
+	"POST /flows/runner-tokens":             classList,
+	"POST /flows/jobs/{id}/cancel":          classParam,
+	"POST /flows/runner-tokens/{id}/revoke": classParam,
+	"GET /api/flows/jobs":                   classAPIToken,
+	"GET /api/flows/jobs/{id}":              classAPIToken,
+	"POST /api/flows/jobs":                  classAPIToken,
+	"POST /runner/flows/claim":              classRunner,
+	"POST /runner/flows/{id}/heartbeat":     classRunner,
+	"POST /runner/flows/{id}/result":        classRunner,
 }
 
 // wantCanaryForA: list routes that render A's data to A. The negative control
@@ -294,6 +314,9 @@ var wantCanaryForA = []string{
 	// personal token must show A's tasks (the hook tier had no such control
 	// before: only the operator held a machine credential).
 	"GET /account/tokens", "GET /api/tokens", "GET /api/tasks",
+	// Browser flows: A's jobs carry the canary in a parameter, so A's page, A's
+	// token list and A's runner's claim (of A's second job) each show it.
+	"GET /flows", "GET /api/flows/jobs", "POST /runner/flows/claim",
 	// Web Push: the account page lists the caller's devices, and A's carries
 	// the canary in its user agent.
 	"GET /account",
@@ -318,7 +341,7 @@ func TestEveryRouteIsClassifiedForIsolation(t *testing.T) {
 	sort.Strings(unclassified)
 	sort.Strings(stale)
 	if len(unclassified) > 0 {
-		t.Errorf("routes in %s with no isolation class (public|list|param|admin|admin-only|agent-token|connect|mirror|api-token):\n  %s",
+		t.Errorf("routes in %s with no isolation class (public|list|param|admin|admin-only|agent-token|connect|mirror|api-token|runner):\n  %s",
 			goldenPath, strings.Join(unclassified, "\n  "))
 	}
 	if len(stale) > 0 {
@@ -402,6 +425,15 @@ type isoWorld struct {
 	pusher      *isoPusher
 	aEndpoint   string
 	aTokComment notes.Comment // see TestNoRouteLetsOneUserReachAnothersData's objTok
+	// Browser flows (0012): each user's runner token (for the SAME host, so
+	// B's claim is a real attempt at A's queue), A's two queued jobs (the
+	// first is the object the {id} routes name; the second is what A's own
+	// runner claims), and A's SECOND runner token (the revoke route's object,
+	// so revoking it never revokes the credential A's runner control uses).
+	runnerTokens map[int64]string
+	flowHost     string
+	aJob, aJob2  flows.Job
+	aRunner2     flows.RunnerToken
 }
 
 func newIsoWorld(t *testing.T) *isoWorld {
@@ -555,6 +587,25 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	w.aTokComment, err = ns.AddComment(ua, notes.Comment{NoteID: w.aTokTask.ID, Author: "a", Body: w.canary + " token comment"})
 	must(err, "a token-control comment")
 
+	// Browser flows: a runner token each (one host, so B's runner addresses
+	// the queue A's jobs are in), A's two queued jobs with the canary in a
+	// parameter, and A's second runner token.
+	fs := flows.NewPG(pool)
+	w.flowHost = "iso" + w.suffix
+	w.runnerTokens = map[int64]string{}
+	for _, u := range []isoUser{w.a, w.b} {
+		tok, _, err := fs.CreateRunnerToken(as2(u), w.flowHost)
+		must(err, u.name+" runner token")
+		w.runnerTokens[u.uid] = tok
+	}
+	_, w.aRunner2, err = fs.CreateRunnerToken(ua, w.flowHost)
+	must(err, "a second runner token")
+	for _, j := range []*flows.Job{&w.aJob, &w.aJob2} {
+		*j, err = fs.Enqueue(ua, flows.Request{Flow: "muse.poll", Host: w.flowHost, Instance: "isoinst",
+			Params: map[string]string{"thread": w.canary + " thread"}}, "session", "iso")
+		must(err, "a flow job")
+	}
+
 	w.aIdentities = []string{w.a.agent.Name, agents.ChiefNameFor(w.a.uid), w.aSessionLink, w.aTag, w.aProject}
 	w.opInvite, err = users.NewPG(pool).CreateInvite(ctx, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession},
 		bytes.Repeat([]byte{byte(time.Now().UnixNano())}, 32), "", time.Now().Add(time.Hour))
@@ -562,13 +613,14 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	w.objA = isoObjs{ccAccount: w.objA.ccAccount, user: w.a.uid, invite: w.opInvite.ID, task: w.a.task.ID, agent: w.a.agent.ID, grant: w.aGrantID, comment: w.aComment.ID,
 		attach: w.aAttachment.ID, chat: w.aChatSession.ID, agentName: w.a.agent.Name, connName: w.aConnName,
 		tag: w.aTag, link: w.aSessionLink, mirrorHost: w.canary + "-host", mirrorSession: "main", token: w.aToken2.ID,
-		pushDevice: w.objA.pushDevice}
+		pushDevice: w.objA.pushDevice, flowJob: w.aJob.ID, runnerTok: w.aRunner2.ID}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
 	const ghostID = 9_000_000_000
 	w.ghost = isoObjs{user: ghostID, invite: ghostID, task: ghostID, agent: ghostID, grant: ghostID, comment: ghostID, attach: ghostID, chat: ghostID,
 		agentName: "ghost-agent" + w.suffix, connName: "ghostconn" + w.suffix, tag: "ghosttag", link: "ghost-sess-" + w.suffix,
-		mirrorHost: "ghost-host", mirrorSession: "main", ccAccount: "ghostacct", token: ghostID, pushDevice: ghostID}
+		mirrorHost: "ghost-host", mirrorSession: "main", ccAccount: "ghostacct", token: ghostID, pushDevice: ghostID,
+		flowJob: ghostID, runnerTok: ghostID}
 
 	// A's push device: through the real store, as the claim the subscribe route
 	// makes. Its user agent and endpoint carry the canary.
@@ -601,6 +653,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 			StateKey: []byte("iso-walk-oauth-state-key-0123456789")},
 		Provisioner: w.prov, Gateway: w.prov, Connectors: cs,
 		Mirror: &isoMirror{owner: w.a.uid, host: w.canary + "-host"},
+		Flows:  flows.NewPG(pool),
 		Push:   push.NewService(pushStore, w.pusher, push.VAPIDConfig{PublicKey: "iso-walk-vapid-public"}, log.New(io.Discard, "", 0)),
 		ConnectorPolicy: connectors.Policy{AllowLoopback: true, InsecureHTTP: true,
 			Resolve: func(_ context.Context, host string) ([]netip.Addr, error) {
@@ -709,6 +762,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 			`DELETE FROM cc_account_marks WHERE owner_id = ANY($1)`,
 			`DELETE FROM push_subscriptions WHERE owner_id = ANY($1)`, `DELETE FROM push_preferences WHERE owner_id = ANY($1)`,
 			`DELETE FROM api_tokens WHERE user_id = ANY($1)`, `DELETE FROM audit_log WHERE user_id = ANY($1)`,
+			`DELETE FROM flow_jobs WHERE owner_id = ANY($1)`, `DELETE FROM flow_runner_tokens WHERE owner_id = ANY($1)`,
 			`DELETE FROM users WHERE id = ANY($1)`,
 		} {
 			_, _ = pool.Exec(bg, q, ids)
@@ -727,6 +781,7 @@ type cred struct {
 	agentToken  string // an agent's own token
 	hook        bool   // the shared machine hook token (user 1)
 	apiToken    string // a user's own personal API token (mst_…)
+	runnerToken string // a user's own browser-flow runner token (mfr_…)
 }
 
 func (c cred) String() string {
@@ -741,6 +796,8 @@ func (c cred) String() string {
 		return "hook"
 	case c.apiToken != "":
 		return "api-token"
+	case c.runnerToken != "":
+		return "runner-token"
 	}
 	return "none"
 }
@@ -791,6 +848,8 @@ func (w *isoWorld) do(h http.Handler, method, path, body string, c cred) *httpte
 		r.Header.Set("X-Muster-Token", isoHookToken)
 	case c.apiToken != "":
 		r.Header.Set("Authorization", "Bearer "+c.apiToken)
+	case c.runnerToken != "":
+		r.Header.Set("Authorization", "Bearer "+c.runnerToken)
 	}
 	rec := httptest.NewRecorder()
 	func() {
@@ -806,6 +865,7 @@ type isoObjs struct {
 	user, invite                              int64
 	task, agent, grant, comment, attach, chat int64
 	token                                     int64 // a personal API token's id
+	flowJob, runnerTok                        int64 // a browser-flow job's id, a runner token's id
 	pushDevice                                int64 // a Web Push device's id
 	agentName, connName, tag, link            string
 	mirrorHost, mirrorSession                 string
@@ -831,6 +891,11 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		}
 	case strings.Contains(path, "/api/sessions/{id}"):
 		id = o.link
+	case strings.Contains(path, "/runner-tokens/{id}"):
+		// Before "tokens/{id}" below, which would otherwise match it.
+		id = strconv.FormatInt(o.runnerTok, 10)
+	case strings.Contains(path, "flows/jobs/{id}") || strings.HasPrefix(path, "/runner/flows/{id}"):
+		id = strconv.FormatInt(o.flowJob, 10)
 	case strings.Contains(path, "tokens/{id}"):
 		id = strconv.FormatInt(o.token, 10)
 	case strings.Contains(path, "/account/push/{id}"):
@@ -865,9 +930,13 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		}
 		return method, path, ""
 	}
-	if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/agent/") || path == "/mcp" || strings.HasPrefix(path, "/connect/") {
+	if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/agent/") || path == "/mcp" || strings.HasPrefix(path, "/connect/") ||
+		strings.HasPrefix(path, "/runner/") {
+		// The runner door's fields ride along: a claim naming the instance A's
+		// jobs are queued on (a one-second wait), and a result's outcome.
 		return method, path, `{"jsonrpc":"2.0","id":1,"method":"tools/list","title":"iso-write","body":"iso-write",` +
-			`"status":"in_progress","message":"iso-write","reason":"iso-write","blocked":true,"tool":"Bash","command":"ls"}`
+			`"status":"in_progress","message":"iso-write","reason":"iso-write","blocked":true,"tool":"Bash","command":"ls",` +
+			`"instances":["isoinst"],"waitSeconds":1,"outcome":"done"}`
 	}
 	winner := actor.task.ID
 	if actor.uid == w.a.uid {
@@ -911,7 +980,7 @@ func (w *isoWorld) snapshot() map[string]string {
 	out := map[string]string{}
 	for _, tbl := range []string{"notes", "note_comments", "note_attachments", "task_sessions", "agents",
 		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "github_connection", "mirror_tokens",
-		"user_credentials", "cc_account_marks", "push_subscriptions", "push_preferences"} {
+		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens", "push_subscriptions", "push_preferences"} {
 		var js string
 		if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t.id)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
 			// task_sessions/github_connection have no `id` ordering column in every
@@ -1086,7 +1155,7 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 
 	// --- user B, a member, through every one of B's credentials ---
 	bResults := w.walkAs(w.b, w.objA, []cred{{sessionUser: w.b.uid}, {gotrueUser: w.b.uid}, {agentToken: w.b.token},
-		{apiToken: w.apiTokens[w.b.uid]}}, routes)
+		{apiToken: w.apiTokens[w.b.uid]}, {runnerToken: w.runnerTokens[w.b.uid]}}, routes)
 	w.checkOutsider(t, "B", bResults)
 	// The operator's own data (the router's directory list) is not A's, so the
 	// canary check above cannot see it: a MEMBER must not get it either.
@@ -1188,6 +1257,16 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 		}
 	}
 	aResults = append(aResults, w.walkAs(w.a, objTok, []cred{{apiToken: w.apiTokens[w.a.uid]}}, tokRoutes)...)
+	// A's RUNNER control, last: A's runner claims A's second queued job (the
+	// first was cancelled by A's session walk above), and its heartbeat and
+	// result on A's first job answer differently from the ghost's.
+	var runnerRoutes []string
+	for _, r := range routes {
+		if isolationClasses[r] == classRunner {
+			runnerRoutes = append(runnerRoutes, r)
+		}
+	}
+	aResults = append(aResults, w.walkAs(w.a, w.objA, []cred{{runnerToken: w.runnerTokens[w.a.uid]}}, runnerRoutes)...)
 	// The push legs above are only facts about B and the admin if A's own walk
 	// DID reach A's device (its "send test").
 	w.srv.WaitForPushes()

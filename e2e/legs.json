@@ -26,6 +26,7 @@
     "tests/invites.spec.ts": 45.0,
     "tests/api-tokens.spec.ts": 25.0,
     "tests/landing.spec.ts": 4.0,
+    "tests/flows.spec.ts": 4.0,
     "tests/push.spec.ts": 10.0
   },
   "legs": {
@@ -53,6 +54,7 @@
       "tests/mirrored.spec.ts",
       "tests/gotrue-login.spec.ts",
       "tests/landing.spec.ts",
+      "tests/flows.spec.ts",
       "tests/push.spec.ts"
     ]
   }
