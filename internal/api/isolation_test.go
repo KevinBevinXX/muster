@@ -326,6 +326,9 @@ var isolationClasses = map[string]routeClass{
 	// A message to an agent as a form post, and the GET it can come back as.
 	"POST /agents/{name}/send": classParam,
 	"GET /agents/{name}/send":  classParam,
+	// Dictation (transcribe.go) names no object: it turns the caller's recording
+	// into text for the caller and reads or writes no row.
+	"POST /transcribe": classList,
 }
 
 // wantCanaryForA: list routes that render A's data to A. The negative control

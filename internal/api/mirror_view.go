@@ -72,7 +72,7 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	v := ui.MirrorViewView{Host: h.Host, Session: e.Session, Window: e.Window, Title: mirrorTitle(e), Label: e.Label, Interactive: h.Interactive,
-		StepUp: s.stepUpView(r, ""), Nonce: newSendNonce()}
+		StepUp: s.stepUpView(r, ""), Nonce: newSendNonce(), Dictate: s.dictatePath()}
 	v.Notice, v.NoticeOK = composerNotice(r)
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

@@ -74,6 +74,17 @@ func safeGo(logger *log.Logger, what string, fn func()) {
 	}()
 }
 
+// permissionsPolicy is the Permissions-Policy every response carries.
+//
+// 🔴 IT NAMES THE MICROPHONE, AND ONLY THE MICROPHONE, FOR THIS ORIGIN ALONE.
+// The message box's dictation (internal/ui/dictate.go) records through
+// getUserMedia; a top-level page of this origin may do that by the browser's
+// default already, so this widens nothing — it pins the grant to `self`, which
+// is what stops any frame of another origin from ever asking (the CSP's
+// frame-ancestors 'none' already keeps muster out of other pages' frames). No
+// other feature is listed, so none changes from the browser's default.
+const permissionsPolicy = "microphone=(self)"
+
 // securityHeaders sets conservative security headers on every response. The app
 // is server-rendered HTML + vendored htmx/idiomorph + inline <script> blocks and
 // `hx-on:` attributes. htmx compiles `hx-on:` handlers via `new Function`, so the
@@ -101,6 +112,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Permissions-Policy", permissionsPolicy)
 		next.ServeHTTP(w, r)
 	})
 }

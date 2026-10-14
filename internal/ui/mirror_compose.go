@@ -91,6 +91,11 @@ type ComposerView struct {
 	// post is recognised and answered as sent, without being pasted. "" = no
 	// such protection (the server then delivers every post).
 	Nonce string
+	// Dictate is where the microphone posts a recording (TranscribePath), or ""
+	// for no microphone — the server has no speech-to-text service. A disabled
+	// composer draws none either way: there is nothing its text could be sent
+	// to. See dictate.go.
+	Dictate string
 }
 
 // MirrorComposerView is ComposerView under the name it had while only mirrored
@@ -150,6 +155,10 @@ const (
 // mirrorComposer is the composer's markup: a status line, then the input row.
 func mirrorComposer(v ComposerView) g.Node {
 	off := v.Disabled != ""
+	dictate := v.Dictate
+	if off {
+		dictate = ""
+	}
 	placeholder := v.Placeholder
 	if off {
 		placeholder = v.DisabledPlaceholder
@@ -175,6 +184,10 @@ func mirrorComposer(v ComposerView) g.Node {
 			g.If(v.Notice == "", g.Attr("hidden", "")),
 			g.If(v.Notice != "" && v.NoticeOK, g.Attr("data-ok", "")),
 			Class(noteClass), g.Text(v.Notice)),
+		// The microphone's own status line (dictate.go): kept apart from the
+		// send's, so a recording's timer and a send's outcome never overwrite
+		// each other.
+		dictateNote(dictate, "mv-dictate-note", "px-3 pt-2"),
 		Form(
 			ID("mv-form"),
 			// 🔴 method + action: without the script this is still a form the
@@ -201,6 +214,7 @@ func mirrorComposer(v ComposerView) g.Node {
 				Placeholder(placeholder),
 				Class(composerInputClass),
 			),
+			dictateControl(dictate, "mv-input", "mv-dictate-note", "mv-dictate"),
 			Button(
 				ID("mv-send"),
 				Type("submit"),
@@ -211,6 +225,7 @@ func mirrorComposer(v ComposerView) g.Node {
 			),
 		),
 		g.If(off, P(ID("mv-readonly"), Class("px-3 pb-2 text-[11px] text-muted"), g.Text(v.Disabled))),
+		dictateScript(dictate),
 	)
 }
 

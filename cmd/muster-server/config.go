@@ -112,6 +112,12 @@ const (
 	// `repo=scope,scope;…`): which cairn scopes an agent working on a
 	// repository reads, when that is not just the repository's own name.
 	envMemoScopeMap = "MUSTER_MEMO_SCOPE_MAP"
+	// Dictation (internal/stt; internal/api/transcribe.go): the speech-to-text
+	// service the message box's microphone is transcribed by, and the bearer
+	// token muster presents to it. The token alone turns dictation on — see
+	// config.validateSTT.
+	envSTTURL   = "MUSTER_STT_URL"
+	envSTTToken = "MUSTER_STT_TOKEN"
 
 	envRouterURL   = "MUSTER_ROUTER_URL"
 	envRouterToken = "MUSTER_ROUTER_TOKEN"
@@ -380,6 +386,12 @@ type config struct {
 	MemoToken string
 	// MemoScopeMap is MUSTER_MEMO_SCOPE_MAP as written; validate parses it.
 	MemoScopeMap string
+	// STTURL and STTToken are the speech-to-text service behind the message
+	// box's microphone. Dictation is on iff STTToken is set; STTURL alone is a
+	// valid, inert state (the deployment names the service before its secret
+	// exists), and a token with no URL refuses to boot.
+	STTURL   string
+	STTToken string
 
 	RouterURL   string
 	RouterToken string
@@ -719,6 +731,8 @@ func loadConfig(getenv func(string) string) (config, error) {
 		MemoURL:            strings.TrimRight(strings.TrimSpace(getenv(envMemoURL)), "/"),
 		MemoToken:          strings.TrimSpace(getenv(envMemoToken)),
 		MemoScopeMap:       strings.TrimSpace(getenv(envMemoScopeMap)),
+		STTURL:             strings.TrimRight(strings.TrimSpace(getenv(envSTTURL)), "/"),
+		STTToken:           strings.TrimSpace(getenv(envSTTToken)),
 		RouterURL:          strings.TrimSpace(getenv(envRouterURL)),
 		RouterToken:        strings.TrimSpace(getenv(envRouterToken)),
 		RouterActor:        strings.TrimSpace(getenv(envRouterActor)),
@@ -1088,6 +1102,9 @@ func (c config) validate() error {
 		return err
 	}
 	if err := c.validateVAPID(); err != nil {
+		return err
+	}
+	if err := c.validateSTT(); err != nil {
 		return err
 	}
 	if err := c.validateConnectors(); err != nil {

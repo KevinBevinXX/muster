@@ -1270,6 +1270,8 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 		// The chat form's fallback when its socket cannot carry a message
 		// (agent_send.go): its nonce, and the outcome of such a send.
 		SendNonce: newSendNonce(),
+		// The chat form's microphone (transcribe.go); "" when there is none.
+		Dictate: s.dictatePath(),
 	}
 	view.SendNotice, view.SendNoticeOK = composerNotice(r)
 	formDocument(w)

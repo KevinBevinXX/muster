@@ -74,6 +74,13 @@ export const pushPort = port + 23;
 export const windowsPort = port + 24;
 // The agent view-switch and composer spec's own e2eterm server (kinds enabled).
 export const agentComposerPort = port + 25;
+// Dictation: the dictation spec's own server (the e2eterm binary, mirror plugin
+// on, kinds enabled, MUSTER_STT_* pointing at a fake speech-to-text service),
+// and that fake service.
+export const dictationPort = port + 26;
+export const fakeSttPort = port + 27;
+// The fake service's bearer token. Invented, like every value here.
+export const sttToken = 'e2e-stt-token-not-a-real-one';
 // The seeded `docs-sweeper` agent's own token (e2e/seed). Invented, like every
 // value here.
 export const agentToken = 'e2e-agent-token-not-a-real-one';

@@ -128,6 +128,8 @@ func (s *Server) writeChiefPanelBodyFor(ctx context.Context, w http.ResponseWrit
 			// absolutely-positioned sub-view of its own column) instead, and it is
 			// also what puts the zero-message intro on screen. See ui.ChatSurface.
 			Surface: ui.ChatSurfaceChiefPanel,
+			// The panel's message box has the microphone too (transcribe.go).
+			Dictate: s.dictatePath(),
 		},
 	})
 }
