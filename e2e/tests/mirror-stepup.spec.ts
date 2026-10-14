@@ -499,6 +499,11 @@ test.describe('the window and the passkey confirm on a phone (390×844)', () => 
     await makeStale(context, 12 * 3600 + 600);
     await v.input.tap();
     await page.keyboard.type('past the window');
+    // Listened for BEFORE the send: the dialog asks for the options the moment
+    // it opens, and a listener registered after the dialog's own checks missed
+    // an answer that had already arrived and waited out the test (measured: the
+    // options came back 35 ms after the 403).
+    const options = page.waitForResponse((r) => r.url().endsWith('/auth/confirm/passkey/options'), { timeout: 20_000 });
     await v.send.tap();
     await expect(dialog(page)).toBeVisible();
     expect(v.sends, 'refused by the server').toEqual([403]);
@@ -506,7 +511,7 @@ test.describe('the window and the passkey confirm on a phone (390×844)', () => 
     await expect(dialog(page)).not.toContainText('5 minutes');
     // No passkey is registered for this account: the dialog stays password-only
     // although this GoTrue has passkeys on and this browser supports WebAuthn.
-    await page.waitForResponse((r) => r.url().endsWith('/auth/confirm/passkey/options')).catch(() => undefined);
+    await options.catch(() => undefined);
     await expect(passkeyBtn(page)).toBeHidden();
     await expect(page.locator('#term-confirm-submit')).toHaveText('Confirm');
     await page.fill('#term-confirm-password', adminPW);
