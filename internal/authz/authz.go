@@ -79,6 +79,10 @@ const (
 	// token's OWNER, so row-level security confines the runner to that owner's
 	// jobs; the token's host confines it further, to jobs addressed to it.
 	ViaRunner Via = "flow-runner"
+	// ViaPlugin is a PLUGIN token (`mpl_…`, internal/plugins): requirePluginToken,
+	// on the /plugin/v1/* routes only. It acts as the token's OWNER, so row-level
+	// security confines the plugin to that owner's plugin rows.
+	ViaPlugin Via = "plugin"
 	// ViaSystem is a background loop acting for every user. Only System sets
 	// it.
 	ViaSystem Via = "system"
@@ -92,7 +96,7 @@ const (
 // deliberately absent: a request is never the system.
 var requestVias = map[Via]bool{
 	ViaSession: true, ViaHook: true, ViaService: true,
-	ViaAgent: true, ViaConnect: true, ViaRelay: true, ViaToken: true, ViaRunner: true,
+	ViaAgent: true, ViaConnect: true, ViaRelay: true, ViaToken: true, ViaRunner: true, ViaPlugin: true,
 }
 
 // OperatorUserID is the user every principal names today: the operator, the

@@ -66,8 +66,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
-	"net/http"
 	"os"
 	"slices"
 	"sort"
@@ -113,11 +111,11 @@ const (
 // What one delivery came to (beyond [OutcomeDelivered] and [OutcomeUnconfirmed]). Every one but
 // the last sends nothing, and the memos are offered again next tick.
 const (
-	ResultBusy           = "busy"
-	ResultNotReady       = "not_ready"
-	ResultUnauthorized   = "unauthorized" // the runtime refused muster's own bearer
-	ResultRejected       = "rejected"     // the runtime refused the request's shape (a typed 400)
-	ResultNeverConnected = "never_connected"
+	ResultBusy           = agentgateway.UnsentBusy
+	ResultNotReady       = agentgateway.UnsentNotReady
+	ResultUnauthorized   = agentgateway.UnsentUnauthorized // the runtime refused muster's own bearer
+	ResultRejected       = agentgateway.UnsentRejected     // the runtime refused the request's shape (a typed 400)
+	ResultNeverConnected = agentgateway.UnsentNeverConnected
 	ResultUnresolved     = "unresolved"
 	ResultNoSession      = "no_session"
 	// ResultSessionClaimed: another delivery holds the agent's session claim — its first turn
@@ -650,43 +648,10 @@ func (r *Relay) deliver(parent context.Context, a agents.Agent, scope string, ba
 }
 
 // unsent names a send failure that PROVES nothing was pasted into the agent's session, or ""
-// for success and for every failure that does not prove it.
-//
-//   - the runtime's own TYPED refusals — 409 `busy`, 503 `not_ready`, 401 `unauthorized`, and a
-//     400 (`bad_request`, `invalid_input`) — are each answered before it pastes anything. Only
-//     its typed body sets Type, so an untyped 409 or 503 from anything else is NOT read as
-//     "nothing was sent";
-//   - a dial error is a connection that was never opened, so no byte of the request left.
-//
-// ⚠ ONE CASE THIS CANNOT PROVE, AND IT ERRS TOWARDS "MAY HAVE BEEN SENT": a send cancelled
-// while its connection was still being opened surfaces as a bare context error, with no dial
-// error inside it. It is recorded `unconfirmed` and not sent again, so a shutdown that lands
-// while an agent is unreachable can cost that agent those memos. The alternative reading — a
-// cancelled send was never sent — would repeat every turn a redeploy cut off mid-flight.
-func unsent(err error) string {
-	if err == nil {
-		return ""
-	}
-	var rt *agents.RuntimeError
-	if errors.As(err, &rt) {
-		switch {
-		case rt.Status == http.StatusConflict && rt.Type == "busy":
-			return ResultBusy
-		case rt.Status == http.StatusServiceUnavailable && rt.Type == "not_ready":
-			return ResultNotReady
-		case rt.Status == http.StatusUnauthorized && rt.Type == "unauthorized":
-			return ResultUnauthorized
-		case rt.Status == http.StatusBadRequest && (rt.Type == "bad_request" || rt.Type == "invalid_input"):
-			return ResultRejected
-		}
-		return ""
-	}
-	var op *net.OpError
-	if errors.As(err, &op) && op.Op == "dial" {
-		return ResultNeverConnected
-	}
-	return ""
-}
+// for success and for every failure that does not prove it. The rule is
+// agentgateway.Unsent's (moved there so the plugin deliverer reads the same one); its reason
+// names ARE this package's Result* values, which are declared as those constants.
+func unsent(err error) string { return agentgateway.Unsent(err) }
 
 // failureNote describes a send failure for the log WITHOUT quoting it: a runtime's error can
 // carry a snippet of its response body, and a runtime that echoes its request would put memo

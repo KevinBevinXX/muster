@@ -88,7 +88,10 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //     runner tokens).
 //   - push_subscriptions, push_preferences (0013, muster-native Web Push).
 //   - flow_requests (0014, an agent's per-run browser-flow request).
-var ownedAfter0006 = []string{"cc_account_marks", "flow_jobs", "flow_requests", "flow_runner_tokens", "mirror_tokens", "push_preferences", "push_subscriptions", "user_credentials"}
+//   - plugins, plugin_messages, plugin_reply_drafts (0015, the plugin
+//     interface's tokens, inbound messages and reply drafts).
+var ownedAfter0006 = []string{"cc_account_marks", "flow_jobs", "flow_requests", "flow_runner_tokens", "mirror_tokens",
+	"plugin_messages", "plugin_reply_drafts", "plugins", "push_preferences", "push_subscriptions", "user_credentials"}
 
 // rlsTables is every owned table today: ownedTables plus ownedAfter0006.
 func rlsTables() []string { return append(slices.Clone(ownedTables), ownedAfter0006...) }
@@ -146,6 +149,13 @@ var wantForeignKeys = []string{
 	"note_comments|note_comments_note_owner_fkey|FOREIGN KEY (note_id, owner_id) REFERENCES notes(id, owner_id) ON DELETE CASCADE",
 	"note_comments|note_comments_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"notes|notes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"plugin_messages|plugin_messages_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL",
+	"plugin_messages|plugin_messages_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"plugin_messages|plugin_messages_plugin_owner_fkey|FOREIGN KEY (plugin_id, owner_id) REFERENCES plugins(id, owner_id) ON DELETE CASCADE",
+	"plugin_reply_drafts|plugin_reply_drafts_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL",
+	"plugin_reply_drafts|plugin_reply_drafts_message_owner_fkey|FOREIGN KEY (message_id, owner_id) REFERENCES plugin_messages(id, owner_id) ON DELETE CASCADE",
+	"plugin_reply_drafts|plugin_reply_drafts_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"plugins|plugins_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"push_preferences|push_preferences_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"push_subscriptions|push_subscriptions_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"task_sessions|task_sessions_note_owner_fkey|FOREIGN KEY (note_id, owner_id) REFERENCES notes(id, owner_id) ON DELETE CASCADE",

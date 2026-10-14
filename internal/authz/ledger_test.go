@@ -167,7 +167,7 @@ var (
 	// new door until someone has decided it is not.
 	authzExports = []string{
 		"From", "MustFrom", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
-		"System", "Via", "ViaAgent", "ViaConnect", "ViaHook", "ViaOperator", "ViaRelay", "ViaRunner", "ViaService",
+		"System", "Via", "ViaAgent", "ViaConnect", "ViaHook", "ViaOperator", "ViaPlugin", "ViaRelay", "ViaRunner", "ViaService",
 		"ViaSession", "ViaSystem", "ViaToken", "WithPrincipal",
 	}
 )
