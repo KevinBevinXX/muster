@@ -52,6 +52,9 @@ type Store interface {
 	// same transaction. It reports false (and writes nothing) when the message was
 	// no longer queued.
 	RecordDelivery(ctx context.Context, messageID, agentID int64, outcome Status) (bool, error)
+	// ReserveGatedTask spends one unit of an agent's gated-task budget (gated.go),
+	// or returns ErrGatedTaskCap.
+	ReserveGatedTask(ctx context.Context, agentID int64, messageID *int64) error
 }
 
 // PGStore is the Postgres Store.

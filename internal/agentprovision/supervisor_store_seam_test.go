@@ -291,3 +291,45 @@ func TestAHalfConfiguredStoreGatesTheProseAndTheSpecTheSameWay(t *testing.T) {
 			hasCredential(spec), claimsTheStore(t, spec))
 	}
 }
+
+// TestOnlyTheSupervisorIsToldAboutPluginsAndOnlyWhenTheyAreOn is the plugin
+// section's seam: the prose the INSTANCE receives (read out of the built spec)
+// names task_create_gated exactly when the row is the supervisor AND the
+// deployment has plugins on. 2x2 over the two independent axes, for the same
+// reason as the store matrix above.
+func TestOnlyTheSupervisorIsToldAboutPluginsAndOnlyWhenTheyAreOn(t *testing.T) {
+	worker := fixtureAgent()
+	on := fixtureSpecConfig()
+	on.Plugins = true
+	const marker = "`task_create_gated`"
+	for _, c := range []struct {
+		name  string
+		agent agents.Agent
+		spec  agentspec.Config
+		want  bool
+	}{
+		{"supervisor, plugins on", supervisorRow(), on, true},
+		{"supervisor, plugins off", supervisorRow(), fixtureSpecConfig(), false},
+		{"worker, plugins on", worker, on, false},
+		{"worker, plugins off", worker, fixtureSpecConfig(), false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			spec, err := adapterWith(t, c.spec, c.agent).buildSpec(context.Background(), c.agent)
+			if err != nil {
+				t.Fatalf("buildSpec: %v", err)
+			}
+			found := false
+			for _, f := range spec.Files {
+				if strings.HasSuffix(f.Path, agentspec.InstructionsFileName) {
+					found = true
+					if got := strings.Contains(string(f.Content), marker); got != c.want {
+						t.Errorf("the instance's prose names %s = %v, want %v", marker, got, c.want)
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("no %s in the built spec; files: %v", agentspec.InstructionsFileName, filePaths(spec))
+			}
+		})
+	}
+}

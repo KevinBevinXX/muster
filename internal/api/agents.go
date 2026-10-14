@@ -1800,7 +1800,7 @@ func (s *Server) wsAllowedOrigins(r *http.Request) []string {
 // That ledger is updated in the same commit — do not re-add a row for a path that
 // no longer exists.
 func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text string, emit agents.StreamEmit) (string, error) {
-	instr, tools, dispatch := s.AgentInstructions(a), s.AgentToolDefs(), s.AgentToolDispatch(ctx, a)
+	instr, tools, dispatch := s.AgentInstructions(a), s.AgentToolDefsFor(ctx, a), s.AgentToolDispatch(ctx, a)
 	reply, err := s.ext.Gateway.ChatWithTools(ctx, a, sessionKey, instr, text, tools, dispatch, emit)
 	if errors.Is(err, agents.ErrResponsesUnsupported) {
 		s.logger.Printf("agents: %s gateway lacks /v1/responses; retrying the turn WITHOUT tools "+

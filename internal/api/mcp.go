@@ -18,10 +18,11 @@ import (
 // call carries the agent's own token, so there is nothing to resume.
 //
 // 🔴 THIS FILE IS A TRANSPORT, NOT A TOOL SET. It declares no tool and executes
-// none: tools/list is the agent tool registry's MCP subset ([Server.MCPToolDefs])
+// none: tools/list is the agent tool registry's MCP subset ([Server.MCPToolDefsFor],
+// filtered to what the calling agent may see)
 // and tools/call runs the registry's one dispatcher (dispatchAgentTool). Which
 // tools are on /mcp is a per-tool flag in agentTools (agent.go), whose comment
-// says why only the connector tools carry it.
+// says which tools carry it and why.
 
 // mcpProtocolVersions are the protocol revisions this server answers. A client
 // asking for one gets it back; any other gets the newest.
@@ -127,7 +128,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	case "ping":
 		s.writeMCP(w, req.ID, map[string]any{}, nil)
 	case "tools/list":
-		defs := s.MCPToolDefs()
+		defs := s.MCPToolDefsFor(r.Context(), a)
 		tools := make([]map[string]any, 0, len(defs))
 		for _, d := range defs {
 			tools = append(tools, map[string]any{"name": d.Name, "description": d.Description, "inputSchema": d.Parameters})
@@ -145,7 +146,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		// Only a tool this transport LISTS may be called through it: a gateway-only
 		// tool's name is as unknown here as a made-up one.
 		listed := false
-		for _, d := range s.MCPToolDefs() {
+		for _, d := range s.MCPToolDefsFor(r.Context(), a) {
 			listed = listed || d.Name == p.Name
 		}
 		if !listed {

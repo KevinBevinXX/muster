@@ -376,6 +376,12 @@ type Config struct {
 	CairnURL   string
 	CairnToken string
 
+	// Plugins reports that the plugin interface is on for this deployment
+	// (MUSTER_PLUGINS=1 with a database). It decides one thing here: whether the
+	// supervisor's prose carries the plugin section ([ChiefInstructions]). The
+	// server sets it from the same predicate that wires the plugin store.
+	Plugins bool
+
 	// RuntimeConfig is the operator-supplied bundle that makes the agent
 	// runtime's own gateway START. Zero means nothing is installed and the
 	// image's entrypoint runs unchanged, which is what every deployment did

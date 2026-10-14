@@ -44,7 +44,7 @@ const (
 	// writerAgentTool is the NATIVE function tool `agent_set_task_status`. It has
 	// no route, so it produces no request log line — one of the two paths the
 	// incident could not distinguish, and the reason this whole seam exists. It is
-	// still registered (AgentToolDefs) and agentSystemPrompt still instructs the
+	// still registered (AgentToolDefsFor) and agentSystemPrompt still instructs the
 	// worker to call it, so #430/#431 did NOT retire it.
 	writerAgentTool statusWriter = "agent_set_task_status"
 	// writerDispatchAdvance is the open→in_progress advance after a dispatch.

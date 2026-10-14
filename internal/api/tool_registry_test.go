@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log"
@@ -14,8 +15,9 @@ import (
 
 // The ONE agent tool registry (agentTools, agent.go) and its two transports.
 
-// mcpOnlyLedger and gatewayOnlyLedger are the two halves of the registry with the
-// connector store configured.
+// mcpLedger and gatewayOnlyLedger are the two halves of the registry with the
+// connector, flow and plugin stores configured, as the CHIEF sees it;
+// chiefOnlyLedger is the part of it no other agent is offered.
 //
 // 🔴 BOTH ARE PINNED AS LITERALS AND THE TEST FAILS WHEN EITHER SET GROWS OR
 // SHRINKS. A new tool is a decision about which pods may call it: setting the
@@ -25,10 +27,50 @@ import (
 // existing tools are gateway-only).
 var (
 	mcpLedger = []string{"connectors_list", "connector_request", "connector_status",
-		"browser_flow_request", "browser_flow_status"}
+		"browser_flow_request", "browser_flow_status", "task_create_gated"}
 	gatewayOnlyLedger = []string{"agent_get_task", "agent_comment_task", "agent_set_task_status",
 		"agent_list_pull_requests"}
+	// 🔴 chiefOnlyLedger IS PINNED THE SAME WAY: a tool joining it is offered to
+	// one agent per owner and refused to every other, and a tool LEAVING it is
+	// offered to every worker in the fleet. Either is a decision to review here.
+	chiefOnlyLedger = []string{"task_create_gated"}
 )
+
+// without returns list minus the names in drop, in order.
+func without(list, drop []string) []string {
+	skip := map[string]bool{}
+	for _, d := range drop {
+		skip[d] = true
+	}
+	var out []string
+	for _, n := range list {
+		if !skip[n] {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// mcpListNames is what POST /mcp tools/list answers for token, by name.
+func mcpListNames(t *testing.T, f *connFixture, token string) ([]string, []map[string]any) {
+	t.Helper()
+	r, _ := f.mcp(t, token, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, nil)
+	if r == nil || r.Error != nil {
+		t.Fatalf("tools/list: %+v", r)
+	}
+	var listed struct {
+		Tools []map[string]any `json:"tools"`
+	}
+	if err := json.Unmarshal(r.Result, &listed); err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, tl := range listed.Tools {
+		name, _ := tl["name"].(string)
+		names = append(names, name)
+	}
+	return names, listed.Tools
+}
 
 func normJSON(t *testing.T, v any) string {
 	t.Helper()
@@ -44,72 +86,101 @@ func normJSON(t *testing.T, v any) string {
 	return string(out)
 }
 
-// TestTheMCPToolsAreTheRegistrysMCPSubset: what POST /mcp lists is, tool for
-// tool and byte for byte (name, description, input schema), the registry's
-// MCP-flagged entries — the same definitions the gateway kind is given — and the
-// split between the two is the ledgered one.
+// TestTheMCPToolsAreTheRegistrysMCPSubset: what POST /mcp lists for an agent is,
+// tool for tool and byte for byte (name, description, input schema), the
+// MCP-flagged entries of what the registry offers THAT agent — the same
+// definitions its gateway turns are given — and the split is the ledgered one,
+// for the chief and (minus the chief-only tools) for a worker.
 func TestTheMCPToolsAreTheRegistrysMCPSubset(t *testing.T) {
-	f := newConnFixture(t)
-	f.seedAgent(t, "registry-agent", "registry-agent-token-0123456789")
+	g := newGatedFixture(t)
 
-	r, _ := f.mcp(t, "registry-agent-token-0123456789", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, nil)
-	if r == nil || r.Error != nil {
-		t.Fatalf("tools/list: %+v", r)
-	}
-	var listed struct {
-		Tools []map[string]any `json:"tools"`
-	}
-	if err := json.Unmarshal(r.Result, &listed); err != nil {
-		t.Fatal(err)
-	}
-	// Positive control: the comparison below must have something to compare.
-	if len(listed.Tools) == 0 {
-		t.Fatal("positive control FAILED: tools/list returned no tools")
-	}
+	for _, c := range []struct {
+		name    string
+		agent   agents.Agent
+		token   string
+		wantMCP []string
+	}{
+		{"chief", g.chief, g.chiefTok, mcpLedger},
+		{"worker", g.worker, g.workerTok, without(mcpLedger, chiefOnlyLedger)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			mcpNames, tools := mcpListNames(t, g.connFixture, c.token)
+			// Positive control: the comparison below must have something to compare.
+			if len(tools) == 0 {
+				t.Fatal("positive control FAILED: tools/list returned no tools")
+			}
+			gateway := map[string]string{}
+			var gatewayNames []string
+			for _, d := range g.srv.AgentToolDefsFor(g.asOwner, c.agent) {
+				gateway[d.Name] = normJSON(t, map[string]any{"name": d.Name, "description": d.Description, "inputSchema": d.Parameters})
+				gatewayNames = append(gatewayNames, d.Name)
+			}
+			for _, tl := range tools {
+				name, _ := tl["name"].(string)
+				want, ok := gateway[name]
+				if !ok {
+					t.Errorf("/mcp lists %q, which the gateway tool defs do not have: a tool was added to one transport only", name)
+					continue
+				}
+				if got := normJSON(t, tl); got != want {
+					t.Errorf("/mcp's %q differs from the gateway's definition:\n  mcp:     %s\n  gateway: %s", name, got, want)
+				}
+			}
+			if !reflect.DeepEqual(mcpNames, c.wantMCP) {
+				t.Errorf("/mcp tools = %v, want exactly %v", mcpNames, c.wantMCP)
+			}
+			if got := without(gatewayNames, mcpNames); !reflect.DeepEqual(got, gatewayOnlyLedger) {
+				t.Errorf("gateway-only tools = %v, want exactly %v", got, gatewayOnlyLedger)
+			}
 
-	gateway := map[string]string{}
-	var gatewayNames []string
-	for _, d := range f.srv.AgentToolDefs() {
-		gateway[d.Name] = normJSON(t, map[string]any{"name": d.Name, "description": d.Description, "inputSchema": d.Parameters})
-		gatewayNames = append(gatewayNames, d.Name)
+			// A gateway-only tool is not callable over /mcp: the name is as unknown
+			// there as a made-up one, even though dispatchAgentTool knows it.
+			for _, n := range gatewayOnlyLedger {
+				r, _ := g.mcp(t, c.token,
+					`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"`+n+`","arguments":{}}}`, nil)
+				if r == nil || r.Error == nil || r.Error.Code != -32602 {
+					t.Errorf("tools/call %s over /mcp: %+v, want -32602 unknown tool", n, r)
+				}
+			}
+		})
 	}
-	var mcpNames []string
-	for _, tl := range listed.Tools {
-		name, _ := tl["name"].(string)
-		mcpNames = append(mcpNames, name)
-		want, ok := gateway[name]
-		if !ok {
-			t.Errorf("/mcp lists %q, which the gateway tool defs do not have: a tool was added to one transport only", name)
-			continue
-		}
-		if got := normJSON(t, tl); got != want {
-			t.Errorf("/mcp's %q differs from the gateway's definition:\n  mcp:     %s\n  gateway: %s", name, got, want)
-		}
-	}
-	if !reflect.DeepEqual(mcpNames, mcpLedger) {
-		t.Errorf("/mcp tools = %v, want exactly %v", mcpNames, mcpLedger)
-	}
-	inMCP := map[string]bool{}
-	for _, n := range mcpNames {
-		inMCP[n] = true
-	}
-	var gatewayOnly []string
-	for _, n := range gatewayNames {
-		if !inMCP[n] {
-			gatewayOnly = append(gatewayOnly, n)
-		}
-	}
-	if !reflect.DeepEqual(gatewayOnly, gatewayOnlyLedger) {
-		t.Errorf("gateway-only tools = %v, want exactly %v", gatewayOnly, gatewayOnlyLedger)
-	}
+}
 
-	// A gateway-only tool is not callable over /mcp: the name is as unknown there
-	// as a made-up one, even though dispatchAgentTool knows it.
-	for _, n := range gatewayOnlyLedger {
-		r, _ := f.mcp(t, "registry-agent-token-0123456789",
-			`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"`+n+`","arguments":{}}}`, nil)
-		if r == nil || r.Error == nil || r.Error.Code != -32602 {
-			t.Errorf("tools/call %s over /mcp: %+v, want -32602 unknown tool", n, r)
+// TestTheChiefOnlyToolsAreLedgered: the registry's chief-only set is exactly
+// chiefOnlyLedger with the plugin store wired, and EMPTY without it (a chief-only
+// tool with plugins off would be offered to the chief and answer "unconfigured").
+func TestTheChiefOnlyToolsAreLedgered(t *testing.T) {
+	g := newGatedFixture(t)
+	chiefOnly := func(s *Server) []string {
+		var out []string
+		for _, tl := range s.agentTools() {
+			if tl.chiefOnly {
+				out = append(out, tl.def.Name)
+			}
+		}
+		return out
+	}
+	if got := chiefOnly(g.srv); !reflect.DeepEqual(got, chiefOnlyLedger) {
+		t.Errorf("chief-only tools = %v, want exactly %v", got, chiefOnlyLedger)
+	}
+	if got := chiefOnly(newConnFixture(t).srv); len(got) != 0 {
+		t.Errorf("with no plugin store the registry still declares chief-only tools %v", got)
+	}
+	// Behavioural half: each ledgered tool is offered to the chief and to nobody else.
+	names := func(a agents.Agent) map[string]bool {
+		m := map[string]bool{}
+		for _, d := range g.srv.AgentToolDefsFor(g.asOwner, a) {
+			m[d.Name] = true
+		}
+		return m
+	}
+	chief, worker := names(g.chief), names(g.worker)
+	for _, n := range chiefOnlyLedger {
+		if !chief[n] {
+			t.Errorf("the chief is not offered %s", n)
+		}
+		if worker[n] {
+			t.Errorf("a worker is offered the chief-only %s", n)
 		}
 	}
 }
@@ -117,20 +188,18 @@ func TestTheMCPToolsAreTheRegistrysMCPSubset(t *testing.T) {
 // TestEveryRegisteredToolIsDispatched: a tool declared in the registry with no
 // case in dispatchAgentTool would be listed and then answer "unknown tool".
 func TestEveryRegisteredToolIsDispatched(t *testing.T) {
-	f := newConnFixture(t)
-	id := f.seedAgent(t, "dispatch-agent", "dispatch-agent-token-0123456789")
-	a := agents.Agent{ID: id, Name: "dispatch-agent"}
-	defs := f.srv.AgentToolDefs()
+	g := newGatedFixture(t)
+	defs := g.srv.AgentToolDefsFor(g.asOwner, g.chief)
 	if len(defs) != len(mcpLedger)+len(gatewayOnlyLedger) {
 		t.Fatalf("positive control: %d tool defs, want %d", len(defs), len(mcpLedger)+len(gatewayOnlyLedger))
 	}
 	for _, d := range defs {
-		if out := f.srv.dispatchAgentTool(f.ctx, a, d.Name, "{}"); out == toolErr("unknown tool %q", d.Name) {
+		if out := g.srv.dispatchAgentTool(g.asOwner, g.chief, d.Name, "{}"); out == toolErr("unknown tool %q", d.Name) {
 			t.Errorf("%s is registered but not dispatched", d.Name)
 		}
 	}
 	// Control: the comparison above can see an unknown tool.
-	if out := f.srv.dispatchAgentTool(f.ctx, a, "no_such_tool", "{}"); out != toolErr("unknown tool %q", "no_such_tool") {
+	if out := g.srv.dispatchAgentTool(g.asOwner, g.chief, "no_such_tool", "{}"); out != toolErr("unknown tool %q", "no_such_tool") {
 		t.Fatalf("control: an unregistered name answered %s", out)
 	}
 }
@@ -154,7 +223,7 @@ func TestTheGatewayKindGetsTheConnectorToolsOnItsOwnPath(t *testing.T) {
 	bare := New(nil, AuthConfig{HookToken: connTestHookToken, UIPassword: connTestPassword}, log.New(io.Discard, "", 0))
 	bare.UseExtensions(Extensions{Agents: stubAgentsStore{}})
 	var names []string
-	for _, d := range bare.AgentToolDefs() {
+	for _, d := range bare.AgentToolDefsFor(context.Background(), agents.Agent{ID: 1, Name: "bare"}) {
 		names = append(names, d.Name)
 	}
 	sort.Strings(names)
@@ -163,8 +232,8 @@ func TestTheGatewayKindGetsTheConnectorToolsOnItsOwnPath(t *testing.T) {
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("without a store the gateway is offered %v, want only %v", names, want)
 	}
-	if len(bare.MCPToolDefs()) != 0 {
-		t.Fatalf("without a store /mcp would list %v", bare.MCPToolDefs())
+	if got := bare.MCPToolDefsFor(context.Background(), agents.Agent{ID: 1, Name: "bare"}); len(got) != 0 {
+		t.Fatalf("without a store /mcp would list %v", got)
 	}
 }
 
