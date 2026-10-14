@@ -25,7 +25,7 @@ import (
 // it; there is no table and no cache. A reload asks the host again.
 //
 // 🔴 OWNER-SCOPED EXACTLY LIKE THE TERMINAL: every route resolves the host
-// through mirrorHost (the request principal's hosts only), so another user's
+// through mirrorEntry (the request principal's hosts only), so another user's
 // host 404s, and the plugin keys its own lookup on the same principal.
 //
 // 🔴 SENDING IS A WRITE INTO THE OPERATOR'S SESSION, AND IT IS GATED THREE
@@ -71,7 +71,7 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, keepNotice(r, mirrorRef(e).ViewPath()), http.StatusSeeOther)
 		return
 	}
-	v := ui.MirrorViewView{Host: h.Host, Session: e.Session, Window: e.Window, Title: mirrorTitle(e), Label: e.Label, Interactive: h.Interactive,
+	v := ui.MirrorViewView{Host: h.Host, Session: e.Session, Window: e.Window, Title: mirrorTitle(e), Label: e.Label, Qualifier: e.Qualifier, Interactive: h.Interactive,
 		StepUp: s.stepUpView(r, ""), Nonce: newSendNonce(), Dictate: s.dictatePath()}
 	v.Notice, v.NoticeOK = composerNotice(r)
 	formDocument(w)

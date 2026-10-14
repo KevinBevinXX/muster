@@ -46,6 +46,10 @@ type MirrorViewView struct {
 	// Label is the host's display name for the session ("mango:1"), "" for
 	// none: the page's title. Session stays the address.
 	Label string
+	// Qualifier is what tells this entry apart from another listed entry of the
+	// same name ("" = none) — the SAME qualifier its Agents card shows
+	// (mirror.Qualified): part of the header's title and of <title>.
+	Qualifier string
 	// Interactive: the host advertised -interactive, so the composer is offered
 	// (each send is still gated on a fresh sign-in, server-side). False draws
 	// it disabled, saying why.
@@ -86,7 +90,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				Meta(Name("color-scheme"), Content("dark light")),
 				ThemeHead(),
 				manifestLink(),
-				TitleEl(g.Text(markdownPlain(displayOr(v.Label, displayOr(v.Title, v.Session)))+" · Mirrored · muster")),
+				TitleEl(g.Text(mirrorQualified(markdownPlain(displayOr(v.Label, displayOr(v.Title, v.Session))), v.Qualifier)+" · Mirrored · muster")),
 				Link(Rel("stylesheet"), Href("/static/app.css")),
 				faroHead(),
 			),
@@ -103,8 +107,8 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 					),
 					Div(
 						Class("min-w-0 flex-1"),
-						H1(Class("truncate text-sm font-semibold"), mirrorEntryTitle(v.Label, v.Title, v.Session, ""),
-							Span(g.Attr("data-term-badge", ""), Class("ml-2"), chip("kind", "Mirrored · "+v.Host))),
+						H1(Class("truncate text-sm font-semibold"), mirrorEntryTitle(v.Label, v.Title, v.Session, v.Qualifier, ""),
+							Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge("Mirrored · "+v.Host))),
 						P(ID("mv-status"), Class("truncate text-xs text-muted"), g.Attr("aria-live", "polite"), g.Text("Connecting…")),
 					),
 					viewToggle(true, ref.ViewPath(), ref.TerminalPath()),
