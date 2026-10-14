@@ -123,6 +123,20 @@ var transcribeKinds = map[string]string{
 	"audio/wave":      "recording.wav",
 }
 
+// transcribeKindOf names the container head starts. Beyond the sniffer, any
+// ISO-BMFF file (an `ftyp` box at offset 4) is MP4: Go only calls it video/mp4
+// when a brand starts with "mp4", and a recorder may write only iso*/M4A
+// brands — which would refuse a phone's whole recording as "not audio".
+func transcribeKindOf(head []byte) string {
+	if k := transcribeKinds[http.DetectContentType(head)]; k != "" {
+		return k
+	}
+	if len(head) >= 8 && string(head[4:8]) == "ftyp" {
+		return "recording.mp4"
+	}
+	return ""
+}
+
 func (s *Server) registerTranscribeRoutes(mux Mux) {
 	mux.HandleFunc("POST "+ui.TranscribePath, s.requireOperatorWrite(s.handleTranscribe))
 }
@@ -207,7 +221,7 @@ func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 		say(http.StatusBadRequest, TranscribeEmptyBody)
 		return
 	}
-	kind = transcribeKinds[http.DetectContentType(head)]
+	kind = transcribeKindOf(head)
 	if kind == "" {
 		size = body.n
 		say(http.StatusUnsupportedMediaType, TranscribeNotAudio)

@@ -131,12 +131,20 @@ func (c *Client) Endpoint() string { return c.base + TranscribePath }
 func (c *Client) Transcribe(ctx context.Context, audio io.Reader, filename string) (string, error) {
 	pr, pw := io.Pipe()
 	mw := multipart.NewWriter(pw)
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		pw.CloseWithError(writeBody(mw, audio, filename))
 	}()
-	// The pipe's reader is closed whatever happens below, so the writer above
-	// never blocks forever on a request that was abandoned.
-	defer pr.Close()
+	// 🔴 THE WRITER IS JOINED, NOT JUST UNBLOCKED. Closing the pipe's reader
+	// makes a blocked write fail, and waiting for the goroutine guarantees it
+	// has stopped READING THE CALLER'S AUDIO before Transcribe returns — the
+	// caller's reader is a request body, which must not be read after its
+	// handler has returned (and whose read counters the caller inspects).
+	defer func() {
+		pr.Close()
+		<-done
+	}()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+TranscribePath, pr)
 	if err != nil {

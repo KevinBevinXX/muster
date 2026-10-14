@@ -424,8 +424,11 @@ func TestDictationRefusesWhatIsNotAudio(t *testing.T) {
 	// service by their bytes.
 	for name, head := range map[string][]byte{
 		"recording.mp4": []byte("\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom"),
-		"recording.ogg": []byte("OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00"),
-		"recording.wav": []byte("RIFF\x24\x00\x00\x00WAVEfmt "),
+		// An ISO-BMFF file whose brands never start with "mp4" (Go's sniffer
+		// does not call it video/mp4): still MP4.
+		"recording.mp4 (M4A brands)": []byte("\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00M4A isom"),
+		"recording.ogg":              []byte("OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00"),
+		"recording.wav":              []byte("RIFF\x24\x00\x00\x00WAVEfmt "),
 	} {
 		body := append(append([]byte(nil), head...), make([]byte, 600)...)
 		if resp, txt := postAudio(t, s, ts, body, txOpt{}); resp.StatusCode != http.StatusOK {
