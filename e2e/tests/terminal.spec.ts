@@ -99,7 +99,10 @@ test('a claude-code agent opens its live terminal read-only at phone width', asy
   const sent = recordSent(page);
 
   await page.goto(origin + '/agents/' + name);
-  const open = page.locator('#open-terminal');
+  // The chat is the agent's rendered view and its default; the Terminal is the
+  // other half of the Rendered | Terminal switch.
+  await expect(page.locator('#view-rendered')).toHaveAttribute('aria-current', 'page');
+  const open = page.locator('#view-terminal');
   await expect(open).toBeVisible();
   await expect(open).toHaveText(/Terminal/);
   const ob = (await open.boundingBox())!;
@@ -241,7 +244,7 @@ test('a standard agent has no terminal', async ({ page }) => {
   const name = await saveAgent(page, 'gateway', 'e2e terminal: standard');
   await page.goto(origin + '/agents/' + name);
   await expect(page.locator('h1').first()).toBeVisible();
-  await expect(page.locator('#open-terminal')).toHaveCount(0);
+  await expect(page.locator('#view-terminal')).toHaveCount(0);
   const r = await page.request.get(origin + '/agents/' + name + '/terminal');
   expect(r.status()).toBe(404);
 });

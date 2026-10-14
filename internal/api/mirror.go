@@ -157,7 +157,7 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if redirect {
-		http.Redirect(w, r, mirrorRef(e).TerminalPath(), http.StatusSeeOther)
+		http.Redirect(w, r, keepNotice(r, mirrorRef(e).TerminalPath()), http.StatusSeeOther)
 		return
 	}
 	session := e.Session
@@ -190,15 +190,24 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		// refuse a stale write whatever the page does.
 		StepUp: s.stepUpView(r, "mirror:"+h.Host),
 	}
-	// 🔴 THE COMPOSER IS OFFERED ONLY FOR A HOST THAT ADVERTISED -interactive
-	// — a read-only host draws none — and it does not need the switch above: it
-	// is one gated paste per Send into the pane on screen, not a live keyboard.
-	// An -interactive host whose muster-mirror cannot paste into this pane (an
-	// older one, and no Claude Code here) draws it disabled, saying why.
-	if h.Online && h.Interactive {
-		c := ui.MirrorComposerView{SendPath: ui.MirrorTerminalSendPath, Host: h.Host, Session: session, Window: e.Window,
-			Placeholder: "Message…", Aria: "Send a message into this session", DisabledPlaceholder: "Update muster-mirror to send"}
-		if !e.CanPaste() {
+	// 🔴 THE COMPOSER TAKES TEXT ONLY ON A HOST THAT ADVERTISED -interactive,
+	// and it does not need the switch above: it is one gated paste per Send into
+	// the pane on screen, not a live keyboard. Where it cannot send it is drawn
+	// all the same, DISABLED AND SAYING WHY — a read-only host (it used to draw
+	// none there, which reads as "this view has no message box"), and an
+	// -interactive host whose muster-mirror cannot paste into this pane (an
+	// older one, and no Claude Code here).
+	if h.Online {
+		c := ui.ComposerView{SendPath: ui.MirrorTerminalSendPath, Host: h.Host, Session: session, Window: e.Window,
+			Placeholder: "Message…", Aria: "Send a message into this session", DisabledPlaceholder: "Update muster-mirror to send",
+			Nonce: newSendNonce()}
+		// The outcome of a send the browser submitted, which was answered with a
+		// redirect back here (composer.go).
+		c.Notice, c.NoticeOK = composerNotice(r)
+		switch {
+		case !h.Interactive:
+			c.Disabled, c.DisabledPlaceholder = ui.MirrorReadOnlyNote, "Read-only host"
+		case !e.CanPaste():
 			c.Disabled = strings.TrimPrefix(mirror.ErrPanePasteUnsupported.Error(), "mirror: ")
 		}
 		v.Composer = &c
@@ -206,6 +215,7 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 	if e.HasRenderedView() {
 		v.RenderedHref = mirrorRef(e).ViewPath()
 	}
+	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.AgentTerminalPage(v).Render(w); err != nil {
 		s.logger.Printf("mirror: render terminal page: %v", err)

@@ -339,6 +339,8 @@ func shell(activeTab string, feat Features, extra g.Node) g.Node {
 					cardMetaNavScript(),
 					// Places the agent cards' ⋯ popover menus (floating_menu.go).
 					floatingMenuScript(),
+					// The Agents list's search box (agents_filter.go).
+					agentsFilterScript(),
 					// Refetch the list on focus / visibility / SSE reconnect so a
 					// closed-and-reopened app is never stale.
 					resyncScript(),

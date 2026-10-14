@@ -167,6 +167,17 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	// socket bridging it to a pty exec in the pod. requireSession ONLY — the
 	// hook token must not open a terminal — and the socket is lifecycle, not
 	// chat: it reaches the driver's exec, not the agent's gateway.
+	// A message as a form post (agent_send.go): the Terminal page's composer,
+	// and the chat form when its socket cannot carry it. GET is where such a
+	// post lands when it comes back from a sign-in at a forward-auth edge.
+	//
+	// ⚠ The gateway check sits OUTSIDE the same-origin one (requireOperatorWrite
+	// is the session and same-origin wrappers, spelled out here to put it
+	// between them): "this build cannot deliver a message at all" is the more
+	// useful refusal, and the one provisioner_seam_test.go drives every route
+	// on its ledger for.
+	mux.HandleFunc("POST /agents/{name}/send", s.requireSession(s.requireGatewayProvisioner(s.requireSameOrigin(s.handleAgentSend))))
+	mux.HandleFunc("GET /agents/{name}/send", s.requireSession(s.handleAgentSendAgain))
 	mux.HandleFunc("GET /agents/{name}/terminal", s.requireSession(s.handleAgentTerminalPage))
 	mux.HandleFunc("GET /agents/{name}/terminal/ws", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentTerminalWS)))
 }
@@ -1251,13 +1262,19 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 		lines = append(lines, ui.ChatLine{Role: m.Role, Content: m.Content, Kind: m.Kind, ToolID: m.ToolID, ToolName: m.ToolName, ToolOK: m.ToolOK})
 	}
 	noteID, taskStatus := s.agentTaskStatus(ctx, a)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderAgentDetail(w, ui.AgentDetailView{
+	view := ui.AgentDetailView{
 		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, Status: status, Repo: a.Repo, Model: a.Model,
 		Kind: agents.ResolveKind(a.Kind), CCAccount: a.CCAccount,
 		Messages: lines, Sessions: sessions, ActiveSessionID: active.ID,
 		NoteID: noteID, TaskStatus: taskStatus,
-	}, s.shellFeatures(r.Context())); err != nil {
+		// The chat form's fallback when its socket cannot carry a message
+		// (agent_send.go): its nonce, and the outcome of such a send.
+		SendNonce: newSendNonce(),
+	}
+	view.SendNotice, view.SendNoticeOK = composerNotice(r)
+	formDocument(w)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := ui.RenderAgentDetail(w, view, s.shellFeatures(r.Context())); err != nil {
 		s.logger.Printf("agents: render detail: %v", err)
 	}
 }
@@ -1626,44 +1643,73 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		if err := json.Unmarshal(data, &in); err != nil || in.Type != "message" || strings.TrimSpace(in.Text) == "" {
 			continue
 		}
-		_, _ = s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{AgentID: a.ID, SessionID: session.ID, Role: "user", Content: in.Text})
-
-		// Mark active immediately (a turn always starts thinking) so the agent
-		// shows in the notification panel's ACTIVE section before its first stream
-		// event lands; wsStreamEmit then refines the phase as events arrive.
-		s.markAgentActive(requestOwner(ctx), a.Name, "thinking")
-		emit := wsStreamEmit(ctx, c, s, a.Name)
-		// Observe the stream to persist the turn's ORDERED parts (text + tool calls
-		// interleaved), so a reload/reconcile shows the full response, not just the
-		// final text segment.
-		pc := &agents.PartCollector{}
-		collect := func(ev agents.StreamEvent) { pc.Observe(ev); emit(ev) }
-
-		reply, err := s.chatTurn(ctx, a, session.SessionKey, in.Text, collect)
-		// The turn ended (reply or error): drop the live phase. The entry lingers
-		// as "recently active" until activeAgentWindow lapses.
-		s.markAgentIdle(a.Name)
+		parts, err := s.runUserTurn(ctx, a, session, in.Text, wsStreamEmit(ctx, c, s, a.Name))
 		if err != nil {
 			_ = wsWriteJSON(ctx, c, map[string]string{"type": "error", "content": err.Error()})
 			continue
 		}
+		// 🔴 "done" BEFORE the turn is persisted and chat.reply broadcast: the page
+		// cancels a #chat-log refresh while its turn is still streaming, and the
+		// refresh that chat.reply asks for is the one that swaps the streamed
+		// bubbles for the stored ones.
 		_ = wsWriteJSON(ctx, c, map[string]string{"type": "done"})
-		parts := pc.Parts()
-		if len(parts) == 0 && reply != "" {
-			parts = []agents.TurnPart{{Kind: "text", Content: reply}} // fallback
+		s.persistTurn(ctx, a, session, parts)
+	}
+}
+
+// runUserTurn stores the user's message and runs the turn it starts against
+// a's gateway, with every stream event passed to emit (nil-safe). It returns
+// the reply's ORDERED parts — text and tool calls interleaved, so a reload
+// shows the full response and not just its last text segment — for
+// persistTurn to store, or the turn's error.
+//
+// 🔴 THE ONE WAY A USER MESSAGE BECOMES A TURN, for both doors that take one:
+// the chat page's socket (handleAgentWS, which streams the events to the
+// browser) and the composer's POST (agent_send.go, which has no stream to send
+// them down). Two copies would be two transcripts' worth of disagreement about
+// what is stored.
+func (s *Server) runUserTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, emit agents.StreamEmit) ([]agents.TurnPart, error) {
+	_, _ = s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{AgentID: a.ID, SessionID: session.ID, Role: "user", Content: text})
+
+	// Mark active immediately (a turn always starts thinking) so the agent
+	// shows in the notification panel's ACTIVE section before its first stream
+	// event lands; the emit refines the phase as events arrive.
+	s.markAgentActive(requestOwner(ctx), a.Name, "thinking")
+	pc := &agents.PartCollector{}
+	collect := func(ev agents.StreamEvent) {
+		pc.Observe(ev)
+		if emit != nil {
+			emit(ev)
 		}
-		for _, part := range parts {
-			_, _ = s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{
-				AgentID: a.ID, SessionID: session.ID, Role: "assistant",
-				Kind: part.Kind, Content: part.Content, ToolID: part.ToolID, ToolName: part.ToolName, ToolOK: part.ToolOK,
-			})
-		}
-		if len(parts) > 0 {
-			// Nudge the shell's notification FAB to refetch its panel + badge: one
-			// broadcast per completed turn. Carries the agent name (the client only
-			// needs the nudge).
-			s.broadcast(r.Context(), EventChatReply, a.Name)
-		}
+	}
+	reply, err := s.chatTurn(ctx, a, session.SessionKey, text, collect)
+	// The turn ended (reply or error): drop the live phase. The entry lingers
+	// as "recently active" until activeAgentWindow lapses.
+	s.markAgentIdle(a.Name)
+	if err != nil {
+		return nil, err
+	}
+	parts := pc.Parts()
+	if len(parts) == 0 && reply != "" {
+		parts = []agents.TurnPart{{Kind: "text", Content: reply}} // fallback
+	}
+	return parts, nil
+}
+
+// persistTurn stores a finished turn's parts and tells open pages a reply was
+// persisted.
+func (s *Server) persistTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, parts []agents.TurnPart) {
+	for _, part := range parts {
+		_, _ = s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{
+			AgentID: a.ID, SessionID: session.ID, Role: "assistant",
+			Kind: part.Kind, Content: part.Content, ToolID: part.ToolID, ToolName: part.ToolName, ToolOK: part.ToolOK,
+		})
+	}
+	if len(parts) > 0 {
+		// Nudge the shell's notification FAB to refetch its panel + badge: one
+		// broadcast per completed turn. Carries the agent name (the client only
+		// needs the nudge).
+		s.broadcast(ctx, EventChatReply, a.Name)
 	}
 }
 

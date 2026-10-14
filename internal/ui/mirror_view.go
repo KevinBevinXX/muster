@@ -54,6 +54,10 @@ type MirrorViewView struct {
 	// refused as stale asks there — passkey or password — and retries. Unused
 	// (no dialog is drawn) on a read-only host, which cannot be sent to at all.
 	StepUp *StepUpView
+	// Notice, NoticeOK and Nonce are the composer's (ComposerView).
+	Notice   string
+	NoticeOK bool
+	Nonce    string
 }
 
 // MirrorReadOnlyNote is what a read-only host's composer says instead of
@@ -66,8 +70,9 @@ const MirrorReadOnlyNote = "This host is read-only — its muster-mirror was not
 // opt out of boost), with its own socket and script.
 func MirrorViewPage(v MirrorViewView) g.Node {
 	ref := MirrorRef{Host: v.Host, Session: v.Session, Window: v.Window}
-	composer := MirrorComposerView{SendPath: MirrorSendPath, Host: v.Host, Session: v.Session, Window: v.Window,
-		Placeholder: "Message Claude…", Aria: "Message Claude in this session", DisabledPlaceholder: "Read-only host"}
+	composer := ComposerView{SendPath: MirrorSendPath, Host: v.Host, Session: v.Session, Window: v.Window,
+		Placeholder: "Message Claude…", Aria: "Message Claude in this session", DisabledPlaceholder: "Read-only host",
+		Notice: v.Notice, NoticeOK: v.NoticeOK, Nonce: v.Nonce}
 	if !v.Interactive {
 		composer.Disabled = MirrorReadOnlyNote
 	}
@@ -133,12 +138,14 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 	)
 }
 
-// viewToggle is the Rendered | Terminal switch in a mirrored Claude session's
-// header: the current view (aria-current, not a link) and a real-load link to
-// the other. The current one's href is unused.
+// viewToggle is the Rendered | Terminal switch in the header of anything that
+// has both views — a mirrored Claude Code window, a claude-code agent: the
+// current view (aria-current, not a link) and a real-load link to the other.
+// The current one's href is unused.
 func viewToggle(rendered bool, renderedHref, terminalHref string) g.Node {
 	seg := func(id, label, href string, current bool) g.Node {
-		cls := "press inline-flex min-h-[36px] items-center px-2.5 text-xs font-semibold transition "
+		// 44px: a thumb target, like every other control in these headers.
+		cls := "press inline-flex min-h-[44px] items-center px-2.5 text-xs font-semibold transition "
 		if current {
 			return Span(ID(id), g.Attr("aria-current", "page"), Class(cls+"bg-accent text-on-accent"), g.Text(label))
 		}

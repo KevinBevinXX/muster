@@ -147,8 +147,8 @@ func TestAWindowsPagesSocketAndComposerAllNameThatWindow(t *testing.T) {
 	if !strings.Contains(term, `data-ws="`+amp(nine.TerminalWSPath())+`"`) {
 		t.Errorf("the terminal page's socket is not window @9's:\n%s", tagOf(term, "term"))
 	}
-	if form := tagOf(term, "mv-form"); !strings.Contains(form, `data-window="@9"`) || !strings.Contains(form, `data-session="scratch2"`) {
-		t.Errorf("the terminal page's composer does not name window @9: %s", form)
+	if f := composerFields(t, term); f["window"] != "@9" || f["session"] != "scratch2" || f["host"] != "ws" {
+		t.Errorf("the terminal page's composer does not name window @9: %v", f)
 	}
 	if !strings.Contains(term, `id="view-rendered" href="`+amp(nine.ViewPath())+`"`) {
 		t.Error("the terminal page's Rendered switch does not lead to window @9's view")
@@ -161,8 +161,8 @@ func TestAWindowsPagesSocketAndComposerAllNameThatWindow(t *testing.T) {
 	if !strings.Contains(view, `data-ws="`+amp(nine.ViewWSPath())+`"`) {
 		t.Errorf("the rendered view's socket is not window @9's: %s", tagOf(view, "mv-log"))
 	}
-	if form := tagOf(view, "mv-form"); !strings.Contains(form, `data-window="@9"`) {
-		t.Errorf("the rendered view's composer does not name window @9: %s", form)
+	if f := composerFields(t, view); f["window"] != "@9" || f["session"] != "scratch2" || f["host"] != "ws" {
+		t.Errorf("the rendered view's composer does not name window @9: %v", f)
 	}
 	if !strings.Contains(view, `id="view-terminal" href="`+amp(nine.TerminalPath())+`"`) {
 		t.Error("the rendered view's Terminal switch does not lead to window @9's terminal")

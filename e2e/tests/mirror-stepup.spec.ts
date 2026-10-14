@@ -338,7 +338,7 @@ test.describe('the rendered view on a phone (390×844)', () => {
     const pasted = () => (fs.existsSync(transcript + '.pasted') ? fs.readFileSync(transcript + '.pasted', 'utf8') : '');
     const sends: number[] = [];
     page.on('response', (r) => {
-      if (r.url().endsWith('/mirror/view/send')) sends.push(r.status());
+      if (new URL(r.url()).pathname === '/mirror/view/send') sends.push(r.status());
     });
 
     // The card of a Claude session opens the rendered view.
@@ -454,7 +454,7 @@ async function addPasskey(page: Page) {
 async function openView(page: Page) {
   const sends: number[] = [];
   page.on('response', (r) => {
-    if (r.url().endsWith('/mirror/view/send')) sends.push(r.status());
+    if (new URL(r.url()).pathname === '/mirror/view/send') sends.push(r.status());
   });
   await page.goto(browserURL + viewPath);
   await expect(page.locator('#mv-log [data-bubble="assistant"]').first()).toContainText('Hi.', { timeout: 20_000 });
@@ -689,7 +689,7 @@ test.describe('the passkey confirm at a desktop width (1280px)', () => {
     await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
     const sends: number[] = [];
     page.on('response', (r) => {
-      if (r.url().endsWith('/mirror/terminal/send')) sends.push(r.status());
+      if (new URL(r.url()).pathname === '/mirror/terminal/send') sends.push(r.status());
     });
     const before = pasted();
     await makeStale(context);
@@ -706,5 +706,70 @@ test.describe('the passkey confirm at a desktop width (1280px)', () => {
     await expect(page.locator('#term-mode'), 'the send did not flip the switch').toHaveAttribute('aria-checked', 'false');
     token = await accessToken(context);
     expect(Math.abs(Date.now() / 1000 - amrOf(token))).toBeLessThan(60);
+  });
+});
+
+// THE STEP-UP WITH NO SCRIPT. A browser context with JavaScript off has no
+// confirm dialog: a stale send, submitted by the browser itself, is answered
+// with a plain page — the password, and the message that was waiting — and
+// confirming there delivers it.
+//
+// 🔴 A REGRESSION TEST: on the commit before this the composer had no method and
+// no action (the browser would GET the page with `?text=…`), and a stale POST
+// was a bare 403 text page with nothing to do on it.
+test.describe('with no script at all (390×844)', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  test('a stale send is confirmed on a plain page with the password, and the same text is then delivered once (real GoTrue)', async ({ page, context, browser }) => {
+    test.setTimeout(120_000);
+    await signIn(page);
+    const viewPath = `/mirror/view?host=${encodeURIComponent(host)}&session=main`;
+    await expect.poll(async () => (await (await page.request.get(browserURL + '/ui/agents')).text()).includes('data-mirror-claude'), {
+      message: `main is a Claude pane (muster-mirror log:\n${mirrorLog})`, timeout: 20_000,
+    }).toBe(true);
+    const pasted = () => (fs.existsSync(transcript + '.pasted') ? fs.readFileSync(transcript + '.pasted', 'utf8') : '');
+    const before = pasted();
+
+    // The signed-in session, made stale, in a context that runs no script.
+    await makeStale(context);
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, javaScriptEnabled: false });
+    await ctx.addCookies(await context.cookies(browserURL));
+    const plain = await ctx.newPage();
+    try {
+      await plain.goto(browserURL + viewPath);
+      await plain.locator('#mv-input').fill('typed with no script, before the confirm');
+      await plain.locator('#mv-send').click();
+
+      // Not delivered: the plain confirm page, in the send route's place.
+      await expect(plain.locator('#stepup-form')).toBeVisible();
+      await expect(plain.locator('#stepup-form')).toContainText('from the last 12 hours');
+      expect(pasted(), 'nothing is delivered before the confirm').toBe(before);
+      const box = (await plain.locator('#stepup-form').boundingBox())!;
+      expect(box.x + box.width, 'the confirm page fits 390px').toBeLessThanOrEqual(390);
+      for (const id of ['#stepup-password', '#stepup-submit', '#stepup-cancel']) {
+        expect((await plain.locator(id).boundingBox())!.height, `${id} is a 44px target`).toBeGreaterThanOrEqual(44);
+      }
+
+      // A wrong password: the page again, saying so, and still nothing delivered.
+      await plain.locator('#stepup-password').fill('not the password');
+      await plain.locator('#stepup-submit').click();
+      await expect(plain.locator('#stepup-error')).toHaveText('That password is not right.');
+      expect(pasted()).toBe(before);
+
+      // The right one: delivered, and back on the view, which says so.
+      await plain.locator('#stepup-password').fill(adminPW);
+      await plain.locator('#stepup-submit').click();
+      await plain.waitForURL((u) => u.pathname === '/mirror/view' && u.searchParams.get('notice') === 'sent');
+      await expect(plain.locator('#mv-note')).toHaveText('Sent.');
+      expect(pasted(), 'the pending message was delivered once').toBe(before + '%9 typed with no script, before the confirm\n');
+
+      // That confirm signed this browser in afresh: the next send needs none.
+      await plain.locator('#mv-input').fill('and the next one');
+      await plain.locator('#mv-send').click();
+      await plain.waitForURL((u) => u.pathname === '/mirror/view' && u.searchParams.get('notice') === 'sent');
+      expect(pasted()).toBe(before + '%9 typed with no script, before the confirm\n%9 and the next one\n');
+    } finally {
+      await ctx.close();
+    }
   });
 });

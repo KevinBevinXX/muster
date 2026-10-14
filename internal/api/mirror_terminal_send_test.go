@@ -2,12 +2,15 @@ package api
 
 import (
 	"context"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // THE TERMINAL VIEW'S COMPOSER: a message box for a mirrored session whose pane
@@ -49,6 +52,25 @@ func postSend(t *testing.T, base, path, cookie, origin string, form url.Values) 
 	return resp.StatusCode, strings.TrimSpace(string(body)), resp.Header
 }
 
+var hiddenInput = regexp.MustCompile(`<input(?: id="[^"]*")? type="hidden" name="([^"]+)" value="([^"]*)"`)
+
+// composerFields is the composer form's hidden fields (name → value) on page:
+// what the browser posts beside the text.
+func composerFields(t *testing.T, page string) map[string]string {
+	t.Helper()
+	i := strings.Index(page, `<form id="mv-form"`)
+	if i < 0 {
+		t.Fatal("the page has no composer form")
+	}
+	form := page[i:]
+	form = form[:strings.Index(form, "</form>")]
+	out := map[string]string{}
+	for _, m := range hiddenInput.FindAllStringSubmatch(form, -1) {
+		out[m[1]] = html.UnescapeString(m[2])
+	}
+	return out
+}
+
 // tagOf is the opening tag of the element with id in markup, "" when absent.
 func tagOf(markup, id string) string {
 	i := strings.Index(markup, `id="`+id+`"`)
@@ -65,8 +87,8 @@ var hasText16px = regexp.MustCompile(`class="[^"]*\btext-base\b`)
 // host the Terminal page of a NON-Claude session draws the composer — posting
 // to the terminal's own send route, enabled, with a 16px input (iOS zooms on
 // anything smaller) — while the page still opens READ-ONLY: the composer does
-// not need the Interactive switch. A read-only host draws none at all, and
-// neither does an offline one.
+// not need the Interactive switch. A read-only host draws it DISABLED, saying
+// why (see TestAReadOnlyHostsTerminalComposerIsDisabledAndSaysWhy).
 func TestTheTerminalViewHasAComposerForASessionThatIsNotClaude(t *testing.T) {
 	s, ts := viewServer(t, &fakeMirror{online: true, interactive: true, v2: &fakeMirrorV2{}})
 	_, page := mirrorGet(t, s, ts, chiefTermPage)
@@ -77,10 +99,13 @@ func TestTheTerminalViewHasAComposerForASessionThatIsNotClaude(t *testing.T) {
 	if form == "" {
 		t.Fatalf("a non-Claude session's Terminal page has no composer")
 	}
-	for _, want := range []string{`data-send="/mirror/terminal/send"`, `data-host="ws"`, `data-session="chief"`} {
-		if !strings.Contains(form, want) {
-			t.Errorf("the composer form lacks %s: %s", want, form)
-		}
+	// A real form: its route is its action, and its address is in hidden
+	// fields the browser itself would post.
+	if !strings.Contains(form, `method="post" action="/mirror/terminal/send?`) {
+		t.Errorf("the composer form does not post to the terminal's send route: %s", form)
+	}
+	if got := composerFields(t, page); got["host"] != "ws" || got["session"] != "chief" || got["window"] != "" {
+		t.Errorf("the composer's hidden fields = %v, want host ws, session chief and no window", got)
 	}
 	input, send := tagOf(page, "mv-input"), tagOf(page, "mv-send")
 	if input == "" || send == "" || disabledAttr.MatchString(input) || disabledAttr.MatchString(send) {
@@ -101,24 +126,47 @@ func TestTheTerminalViewHasAComposerForASessionThatIsNotClaude(t *testing.T) {
 		t.Error("the page has a composer but no confirm dialog")
 	}
 	// The Claude session's Terminal page has one too (the same pane).
-	if _, main := mirrorGet(t, s, ts, mainPage); !strings.Contains(tagOf(main, "mv-form"), `data-send="/mirror/terminal/send"`) {
+	if _, main := mirrorGet(t, s, ts, mainPage); !strings.Contains(tagOf(main, "mv-form"), `action="/mirror/terminal/send?`) {
 		t.Error("the Claude session's Terminal page has no composer")
 	}
 
-	for name, fm := range map[string]*fakeMirror{
-		"a read-only host": {online: true, interactive: false, v2: &fakeMirrorV2{}},
-		"an offline host":  {online: false, interactive: true, v2: &fakeMirrorV2{}},
-	} {
-		s, ts := viewServer(t, fm)
-		_, page := mirrorGet(t, s, ts, chiefTermPage)
-		if !strings.Contains(page, `id="term"`) {
-			t.Fatalf("%s: fixture: not the terminal page", name)
+	// An offline host's page draws none: there is nothing to send to, and the
+	// page says the host is away.
+	off, offTS := viewServer(t, &fakeMirror{online: false, interactive: true, v2: &fakeMirrorV2{}})
+	_, page = mirrorGet(t, off, offTS, chiefTermPage)
+	if !strings.Contains(page, `id="term"`) {
+		t.Fatal("an offline host: fixture: not the terminal page")
+	}
+	for _, id := range []string{"mv-form", "mv-input", "mv-send", "mv-compose"} {
+		if tagOf(page, id) != "" {
+			t.Errorf("an offline host: the Terminal page draws #%s", id)
 		}
-		for _, id := range []string{"mv-form", "mv-input", "mv-send", "mv-compose"} {
-			if tagOf(page, id) != "" {
-				t.Errorf("%s: the Terminal page draws #%s", name, id)
-			}
-		}
+	}
+}
+
+// TestAReadOnlyHostsTerminalComposerIsDisabledAndSaysWhy: a host whose
+// muster-mirror was not started with -interactive cannot be sent to. Its
+// Terminal page used to draw no message box at all — which reads as "this view
+// has none" — and now draws it disabled, with the reason on screen, as the
+// rendered view of the same host always did.
+func TestAReadOnlyHostsTerminalComposerIsDisabledAndSaysWhy(t *testing.T) {
+	s, ts := viewServer(t, &fakeMirror{online: true, interactive: false, v2: &fakeMirrorV2{}})
+	_, page := mirrorGet(t, s, ts, chiefTermPage)
+	if !strings.Contains(page, `id="term"`) {
+		t.Fatal("fixture: not the terminal page")
+	}
+	input, send := tagOf(page, "mv-input"), tagOf(page, "mv-send")
+	if input == "" || send == "" {
+		t.Fatalf("a read-only host's Terminal page has no message box")
+	}
+	if !disabledAttr.MatchString(input) || !disabledAttr.MatchString(send) {
+		t.Errorf("a read-only host's composer is not disabled: %s / %s", input, send)
+	}
+	if !strings.Contains(input, `placeholder="Read-only host"`) {
+		t.Errorf("the disabled input's placeholder: %s", input)
+	}
+	if !strings.Contains(page, `<p id="mv-readonly"`) || !strings.Contains(page, ui.MirrorReadOnlyNote) {
+		t.Error("the page does not say why nothing can be sent")
 	}
 }
 

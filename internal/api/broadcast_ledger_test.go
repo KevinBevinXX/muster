@@ -49,7 +49,7 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		"(*Server).handleAgentBlocked → broadcast(r.Context())",
 		"(*Server).handleAgentTaskComment → broadcast(r.Context())",
 		"(*Server).handleAgentTaskStatus → broadcast(r.Context())",
-		"(*Server).handleAgentWS → broadcast(r.Context())",
+		"(*Server).persistTurn → broadcast(ctx)",
 		"(*Server).handleConnectorCreate → broadcast(r.Context())",
 		"(*Server).handleConnectorCreate → broadcast(r.Context())",
 		"(*Server).handleConnectorDelete → broadcast(r.Context())",

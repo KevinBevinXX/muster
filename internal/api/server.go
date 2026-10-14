@@ -106,6 +106,9 @@ type Server struct {
 	// terminals is every live agent terminal, so a shutdown can end them and
 	// wait for their releases. See EndTerminals.
 	terminals terminalSet
+	// sends remembers delivered composer messages by nonce, so a send posted
+	// twice is delivered once (composer.go).
+	sends sendNonces
 
 	// loginRate throttles password attempts on the human tier.
 	loginRate rateLimiter

@@ -50,6 +50,7 @@ GET /agent/task
 GET /agents
 GET /agents/{name}
 GET /agents/{name}/logs/stream
+GET /agents/{name}/send
 GET /agents/{name}/terminal
 GET /agents/{name}/terminal/ws
 GET /agents/{name}/ws
@@ -84,8 +85,10 @@ GET /manifest.webmanifest
 GET /metrics
 GET /mirror/connect
 GET /mirror/terminal
+GET /mirror/terminal/send
 GET /mirror/terminal/ws
 GET /mirror/view
+GET /mirror/view/send
 GET /mirror/view/ws
 GET /readyz
 GET /repos
@@ -154,6 +157,7 @@ POST /agents/{id}/name
 POST /agents/{id}/sessions
 POST /agents/{id}/start
 POST /agents/{id}/stop
+POST /agents/{name}/send
 POST /api/agents/{name}/messages
 POST /api/flows/jobs
 POST /api/push/subscribe
@@ -181,6 +185,7 @@ POST /invite
 POST /login
 POST /logout
 POST /mcp
+POST /mirror/confirm-send
 POST /mirror/terminal/send
 POST /mirror/view/send
 POST /runner/flows/claim

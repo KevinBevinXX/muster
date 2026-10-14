@@ -72,6 +72,8 @@ export const pushPort = port + 23;
 // Per-window mirrors: the mirror-windows spec's own server (the e2eterm binary
 // with the mirror plugin on), so its host and its cards are no other spec's.
 export const windowsPort = port + 24;
+// The agent view-switch and composer spec's own e2eterm server (kinds enabled).
+export const agentComposerPort = port + 25;
 // The seeded `docs-sweeper` agent's own token (e2e/seed). Invented, like every
 // value here.
 export const agentToken = 'e2e-agent-token-not-a-real-one';
