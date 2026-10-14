@@ -53,6 +53,10 @@ the route checks its own tokens.
   session name shown beside it. Each entry is checked on its own: an invalid one
   is logged and skipped, and a missing or unreadable file is logged and ignored,
   never fatal.
+  When the same title appears on more than one host, every one of them carries
+  its host (`mango:1 · <host>`); when it repeats on one host (two sessions given
+  one codename), each also carries its tmux address (`mango:1 · <session>:<index>`).
+  The card, both view headers and the page title always agree.
 - **Most recently active first.** One list across all your hosts, ordered by each
   window's last activity, to the minute. Output in a pane counts as activity, not
   only keystrokes. Ties keep a stable order (host, session, index). An open list
