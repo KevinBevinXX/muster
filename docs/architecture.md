@@ -82,7 +82,9 @@ The main and browser listeners serve these. The connect listener serves only
   - Read-only unless the host opts in with `-interactive`.
 - **Agent → server:**
   - Each agent has its own token.
-  - Agents reach connectors and approvals only on the connect listener, and
-    never see a connector's secret.
+  - The connect listener serves only the agent-facing routes, so an agent's
+    network policy can be limited to it. The main and browser listeners serve
+    those routes too, behind the same per-agent token.
+  - An agent never sees a connector's secret.
 - **Server → database:** every query runs as `muster_app`, under row-level
   security scoped to the request's user ([schema.md](schema.md)).

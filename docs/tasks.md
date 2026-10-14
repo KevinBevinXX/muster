@@ -8,8 +8,9 @@ scripts write them through the JSON API and the [CLI](cli.md).
 ## Tasks
 
 - **Statuses:** `open`, `in_progress`, `ready_for_review`, `complete`. Every
-  change is logged, with a warning when a status moves backwards. Only a person
-  can mark a task `complete`; the agent route cannot.
+  change is logged, with a warning when a status moves backwards. A dispatched
+  agent cannot mark a task `complete` through its own route; people and the
+  machine API can.
 - **Comments:** comments can be added from the browser, the machine API
   (`POST /api/tasks/{id}/comments`), or an agent's own route
   (`POST /agent/task/comment`). A deleted comment leaves a tombstone.

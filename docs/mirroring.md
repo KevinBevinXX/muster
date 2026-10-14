@@ -26,7 +26,7 @@ muster-server mirror token create <host>      # also: mirror token ls, mirror to
 
 # on the host
 nix profile install github:ZacxDev/muster#muster-mirror   # or: go install ./cmd/muster-mirror
-install -m600 /dev/stdin ~/.config/muster-mirror/token     # paste the token
+install -D -m600 /dev/stdin ~/.config/muster-mirror/token  # paste the token
 muster-mirror -url https://muster.example.com -token-file ~/.config/muster-mirror/token
 ```
 

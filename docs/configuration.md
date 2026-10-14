@@ -70,7 +70,7 @@ See [auth.md](auth.md).
 | `MUSTER_VAPID_PRIVATE_KEY` | none | no | The private half of that keypair. It must match the public key. |
 | `MUSTER_VAPID_SUBJECT` | none | no | A `mailto:` or `https:` contact address that is sent to push services. |
 | `MUSTER_MEMO_URL` | none | with the token | The base URL of the cairn memo listener, for the [memo relay](memo-relay.md). |
-| `MUSTER_MEMO_TOKEN` | none | no | A read-only cairn credential. Setting it turns the relay on. |
+| `MUSTER_MEMO_TOKEN` | none | no | A read-only cairn credential. The relay runs only while it is set, and also needs a database and an agent gateway. |
 | `MUSTER_MEMO_SCOPE_MAP` | none | no | `repo=scope,scope;…`. Use it when a repository's memos are filed under other scope names. |
 | `MUSTER_FLOW_AGENT_DENY_WORDS` | none (logs a warning) | no | Comma-separated names (your hosts, clusters or projects) that an agent may not put into [browser-flow](browser-flows.md) text. |
 | `MUSTER_CONNECTOR_ENCRYPTION_KEY` | none | no | A 32-byte base64 key. Setting it turns on the [connector store](connectors.md), and with it members' own stored credentials. |

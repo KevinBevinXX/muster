@@ -36,7 +36,9 @@ import (
 //	  so their configuration is testable without a process environment
 //	a HELPER: any function or closure that forwards one of its own string
 //	  parameters into a read (`envOr(name, def)`, `envBool := func(k string)`),
-//	  found to a fixpoint, so helpers of helpers are reads too
+//	  found to a fixpoint, so helpers of helpers are reads too — called by name
+//	  in its own package, or as `pkg.Helper(…)` from another package of the
+//	  module
 //
 // and its name argument is RESOLVED to strings: a literal, a constant (in the
 // file, the package, or another package of this module), a range variable over
@@ -182,7 +184,8 @@ func TestTheEnvCollectorSeesEveryShapeItClaims(t *testing.T) {
 		}
 	}
 	write("go.mod", "module example.test/m\n")
-	write("lib/lib.go", "package lib\n\nconst EnvShared = \"S_SHARED\"\n")
+	write("lib/lib.go", "package lib\n\nimport \"os\"\n\nconst EnvShared = \"S_SHARED\"\n\n"+
+		"func EnvOr(name, def string) string {\n\tif v := os.Getenv(name); v != \"\" {\n\t\treturn v\n\t}\n\treturn def\n}\n")
 	write("a/a.go", `package a
 
 import (
@@ -212,6 +215,7 @@ func run(getenv func(string) string, x string) {
 	_ = getenv("S_PARAM")
 	_ = getenv(lib.EnvShared)
 	_ = envOr("S_HELPER", "d")
+	_ = lib.EnvOr("S_IMPORTED_HELPER", "d")
 	_ = wrap("S_HELPER2")
 	b := func(k string) bool { return getenv(k) == "1" }
 	_ = b("S_CLOSURE")
@@ -229,7 +233,7 @@ func run(getenv func(string) string, x string) {
 	write("a/a_test.go", "package a\n\nimport \"os\"\n\nvar _ = os.Getenv(\"S_TEST_ONLY\")\n")
 
 	got := collectEnvReads(t, dir, "example.test/m")
-	want := []string{"S_CLOSURE", "S_CONST", "S_FIELD", "S_HELPER", "S_HELPER2", "S_LITERAL", "S_PARAM", "S_RANGE_1", "S_RANGE_2", "S_SHARED"}
+	want := []string{"S_CLOSURE", "S_CONST", "S_FIELD", "S_HELPER", "S_HELPER2", "S_IMPORTED_HELPER", "S_LITERAL", "S_PARAM", "S_RANGE_1", "S_RANGE_2", "S_SHARED"}
 	if g := sortedKeys(got.names); strings.Join(g, ",") != strings.Join(want, ",") {
 		t.Errorf("names: got %v\n want %v", g, want)
 	}
@@ -412,6 +416,9 @@ func collectEnvReads(t *testing.T, root, modPath string) envReads {
 				helperCalls[pf.pkg+"."+id.Name]++
 			}
 		}
+		if dir, name, ok := c.importedHelper(pf, call.Fun); ok {
+			helperCalls[dir+"."+name]++
+		}
 
 		vals, refs, ok := c.resolve(pf, arg)
 		if len(refs) > 0 {
@@ -565,7 +572,32 @@ func (c *envCollector) readArg(pf *parsedFile, call *ast.CallExpr) (int, bool) {
 			return i, true
 		}
 	}
+	// A helper exported from another package of this module: `pkg.EnvOr("X")`.
+	if dir, name, ok := c.importedHelper(pf, call.Fun); ok {
+		return c.helpers[dir][name], true
+	}
 	return 0, false
+}
+
+// importedHelper reports whether fun is `pkg.Name` naming a helper of another
+// package of this module, and which.
+func (c *envCollector) importedHelper(pf *parsedFile, fun ast.Expr) (string, string, bool) {
+	s, ok := fun.(*ast.SelectorExpr)
+	if !ok {
+		return "", "", false
+	}
+	x, ok := s.X.(*ast.Ident)
+	if !ok || x.Obj != nil {
+		return "", "", false
+	}
+	dir, ok := pf.imports[x.Name]
+	if !ok {
+		return "", "", false
+	}
+	if _, ok := c.helpers[dir][s.Sel.Name]; !ok {
+		return "", "", false
+	}
+	return dir, s.Sel.Name, true
 }
 
 func isSel(e ast.Expr, pkg, name string) bool {

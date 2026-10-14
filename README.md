@@ -67,7 +67,7 @@ export DATABASE_URL='postgres://muster:muster@127.0.0.1:55432/muster_dev?sslmode
 export MUSTER_UI_PASSWORD='pick-a-password-of-12+-chars'
 export MUSTER_STANDALONE=1         # no external permission router
 export MUSTER_MIRROR=1             # turn mirrored sessions on
-go run ./cmd/muster-server         # migrates, then serves http://127.0.0.1:8105
+go run ./cmd/muster-server         # migrates, then listens on :8105 (all interfaces)
 ```
 
 Open <http://127.0.0.1:8105> and sign in with the password. Then mirror your
@@ -82,6 +82,10 @@ go run ./cmd/muster-mirror -url http://127.0.0.1:8105 -allow-http \
 Your tmux windows now appear under **Agents**. Drop `-interactive` to make them
 read-only. `-allow-http` is for local development only; a real deployment uses
 https. When you are done, `make test-db-down` removes the database.
+
+⚠ This quickstart listens on every interface and sets no `MUSTER_HOOK_TOKEN`, so
+the machine API is open to anyone who can reach the port. Keep it on a trusted
+machine, or set the token ([docs/auth.md](docs/auth.md#machine-credentials)).
 
 The server prints one line per feature at boot, saying what is on, what is off,
 and which variable changes it. Every variable is listed in
