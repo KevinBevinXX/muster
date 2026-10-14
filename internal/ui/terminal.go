@@ -75,6 +75,10 @@ type AgentTerminalView struct {
 	// label ("mango:1") keeps its real tmux session name findable. "" = the
 	// title alone.
 	RawName string
+	// TitleQualifier, when set, is drawn right after the title as part of it
+	// (" · laptop") and added to <title>: a mirrored entry whose name another
+	// listed entry shares (mirror.SessionView.Qualifier). "" = the title alone.
+	TitleQualifier string
 	// WSPath is the socket the page opens, WITHOUT its query ("" = the agent's
 	// /agents/{name}/terminal/ws). A mirrored session's is
 	// /mirror/terminal/ws?host=…&session=…, and the page appends mode/cols/rows.
@@ -160,7 +164,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 				Meta(Name("color-scheme"), Content("dark light")),
 				ThemeHead(),
 				manifestLink(),
-				TitleEl(g.Text("Terminal · "+markdownPlain(title)+" · muster")),
+				TitleEl(g.Text("Terminal · "+mirrorQualified(markdownPlain(title), v.TitleQualifier)+" · muster")),
 				Link(Rel("stylesheet"), Href("/static/app.css")),
 				Link(Rel("stylesheet"), Href(xtermCSS)),
 				Script(Src(xtermJS)),
@@ -185,9 +189,11 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 					Div(
 						Class("min-w-[6rem] flex-1"),
 						H1(Class("truncate text-sm font-semibold"),
-							g.If(v.RawName == "", g.Text(markdownPlain(title))),
-							g.If(v.RawName != "", mirrorSessionTitle(markdownPlain(title), v.RawName, "")),
-							g.If(v.Badge != "", Span(g.Attr("data-term-badge", ""), Class("ml-2"), chip("kind", v.Badge)))),
+							g.If(v.RawName == "" && v.TitleQualifier == "", g.Text(markdownPlain(title))),
+							// A mirrored entry: its label with the raw session name
+							// beside it, and/or its qualifier — drawn like its card.
+							g.If(v.RawName != "" || v.TitleQualifier != "", mirrorTerminalTitle(markdownPlain(title), v.RawName, v.TitleQualifier)),
+							g.If(v.Badge != "", Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge(v.Badge)))),
 						P(ID("term-status"), Class("truncate text-xs text-muted"), g.Attr("aria-live", "polite"), g.Text("Not connected")),
 					),
 					// Fit width: shown only while the far side is wider than this
@@ -630,4 +636,15 @@ func agentTerminalScript() g.Node {
   if (!unavailable) connect();
 })();
 `))
+}
+
+// mirrorTerminalTitle is the terminal page's title for a mirrored entry, drawn
+// by the same mirrorEntryTitle as its card: the label with the raw session name
+// beside it when rawName is set, else the title alone — either with its
+// qualifier.
+func mirrorTerminalTitle(title, rawName, qualifier string) g.Node {
+	if rawName != "" {
+		return mirrorEntryTitle(title, "", rawName, qualifier, "")
+	}
+	return mirrorEntryTitle("", title, "", qualifier, "")
 }

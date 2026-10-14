@@ -29,6 +29,11 @@ type MirrorCardView struct {
 	// none. DISPLAY ONLY: the card shows Session beside the label so the real
 	// name stays findable.
 	Label string
+	// Qualifier is what tells this entry apart from another listed entry with
+	// the same title — its host, and/or its tmux address — "" when the title is
+	// already unique. Decided in ONE place over the whole list
+	// (mirror.SessionView.Qualifier); shown as part of the title.
+	Qualifier string
 	// Kind is what runs in the pane, as the list names it ("Claude Code",
 	// "opencode", "shell", or a command); "" = unknown. Shown as a chip and
 	// searched; Claude decides where the card opens.
@@ -139,8 +144,10 @@ func mirrorCard(m MirrorCardView) g.Node {
 		ID(mirrorCardID(m)),
 		g.Attr("data-mirror-card", ""),
 		// What the list's filter finds this card by (agents_filter.go): its title
-		// ("Gold:8"), its raw tmux session name, its host, and what runs in it.
-		g.Attr("data-filter", filterHaystack(m.Label, m.Title, m.Session, m.Host, kind, "mirrored", mode, state)),
+		// ("Gold:8"), the title as shown — with its qualifier ("Gold:8 · laptop")
+		// — its raw tmux session name, its host, and what runs in it.
+		g.Attr("data-filter", filterHaystack(m.Label, m.Title, mirrorQualified(displayOr(m.Label, displayOr(m.Title, m.Session)), m.Qualifier),
+			m.Session, m.Host, kind, "mirrored", mode, state)),
 		Class("group relative overflow-hidden rounded-2xl border border-line bg-s1/70 shadow-lg shadow-black/20 ring-1 ring-line"),
 		A(
 			Href(MirrorCardHref(m)),
@@ -149,9 +156,9 @@ func mirrorCard(m MirrorCardView) g.Node {
 			Div(
 				Class("flex flex-wrap items-center gap-2"),
 				statusIcon(status),
-				mirrorEntryTitle(m.Label, m.Title, m.Session,
+				mirrorEntryTitle(m.Label, m.Title, m.Session, m.Qualifier,
 					"mr-auto break-all text-base font-semibold leading-tight text-fg group-hover:text-accent"),
-				Span(g.Attr("data-mirror-badge", ""), chip("kind", "Mirrored · "+m.Host)),
+				Span(g.Attr("data-mirror-badge", ""), mirrorBadge("Mirrored · "+m.Host)),
 				// What the host announced, not what this viewer may do right
 				// now: typing still needs a fresh sign-in on the terminal page.
 				g.If(m.Interactive, Span(
@@ -190,22 +197,57 @@ func AgentsCardsWithMirrors(list []AgentCardView, mirrors []MirrorCardView) g.No
 // 🔴 THE RAW NAME STAYS VISIBLE, NOT ONLY IN A TOOLTIP: it is what an operator
 // types into `tmux attach`, and a phone has no hover.
 func mirrorSessionTitle(label, session, class string) g.Node {
-	return mirrorEntryTitle(label, "", session, class)
+	return mirrorEntryTitle(label, "", session, "", class)
 }
 
 // mirrorEntryTitle is mirrorSessionTitle for an entry that may be a WINDOW:
 // title is what an entry with no label is called ("<session>:<window index>";
 // "" = the session name). A window with no label needs no secondary text — its
 // title already spells the session.
-func mirrorEntryTitle(label, title, session, class string) g.Node {
+//
+// qualifier ("" = none) is what tells the entry apart from another listed
+// entry of the same name (mirror.SessionView.Qualifier). It is drawn AS PART
+// OF THE TITLE, right after the name — "mango:1 · laptop" — not in a chip, so
+// two "mango:1" cards read as two different titles. The card, the rendered
+// view and the terminal page all draw their title here.
+func mirrorEntryTitle(label, title, session, qualifier, class string) g.Node {
+	q := g.If(qualifier != "", Span(g.Attr("data-mirror-qualifier", ""), g.Text(mirrorQualifierSep+qualifier)))
 	if label == "" || label == session {
-		return Span(Class(class), g.Attr("data-mirror-name", ""), g.Text(displayOr(title, session)))
+		return Span(Class(class), g.Attr("data-mirror-name", ""), g.Text(displayOr(title, session)), q)
 	}
 	return Span(
 		Class(class),
 		g.Attr("data-mirror-name", ""),
 		g.Attr("title", "tmux session "+session),
 		Span(g.Attr("data-mirror-label", ""), g.Text(label)),
+		q,
 		Span(g.Attr("data-mirror-session", ""), Class("ml-1.5 text-xs text-muted"), g.Text(session)),
+	)
+}
+
+// mirrorQualifierSep joins a mirrored entry's name and its qualifier — the
+// same separator as mirror.QualifierSep (this package does not import the
+// plugin), so the titles here spell mirror.SessionView.DisplayTitle exactly.
+const mirrorQualifierSep = " · "
+
+// mirrorQualified is a mirrored entry's name as plain text (a <title>, the
+// filter's haystack): the name, then its qualifier when it has one.
+func mirrorQualified(name, qualifier string) string {
+	if qualifier == "" {
+		return name
+	}
+	return name + mirrorQualifierSep + qualifier
+}
+
+// mirrorBadge is the "Mirrored · <host>" badge beside a mirrored entry's
+// title, on its card and on both its pages. It is NOT the generic grey chip:
+// a muted chip among the kind/mode chips was easy to miss on a phone, and the
+// host is what tells two same-named windows apart — so it is tinted, bold, and
+// leads with a screen icon.
+func mirrorBadge(text string) g.Node {
+	return Span(
+		Class("inline-flex items-center gap-1 rounded-full bg-st-progress-bg px-2.5 py-1 text-xs font-semibold text-st-progress-fg ring-1 ring-inset ring-st-progress-fg/40"),
+		g.Raw(`<svg class="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>`),
+		g.Text(text),
 	)
 }

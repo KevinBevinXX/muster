@@ -79,6 +79,10 @@ export const agentComposerPort = port + 25;
 // and that fake service.
 export const dictationPort = port + 26;
 export const fakeSttPort = port + 27;
+// Duplicate mirror labels: the spec's own server (the e2eterm binary with the
+// mirror plugin on), so only ITS two hosts are listed — the clash it draws is
+// between them and no other spec's host.
+export const dupLabelsPort = port + 28;
 // The fake service's bearer token. Invented, like every value here.
 export const sttToken = 'e2e-stt-token-not-a-real-one';
 // The seeded `docs-sweeper` agent's own token (e2e/seed). Invented, like every

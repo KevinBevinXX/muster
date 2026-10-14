@@ -4,6 +4,7 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 // SessionView is one mirrored entry as a LIST or a page shows it — a WINDOW of
@@ -35,6 +36,100 @@ type SessionView struct {
 	Rendered    bool
 	PanePaste   bool
 	Claude      bool
+	// Qualifier is what the entry's Title needs beside it to be told apart from
+	// every OTHER entry listed with it ("" = its Title is already unique). Set
+	// by Ordered (qualify) and only there; a SessionView from HostView.Entries
+	// or Find alone has none — Qualified gives one the list's.
+	Qualifier string
+}
+
+// QualifierSep joins a Title and its Qualifier: "mango:1 · laptop".
+const QualifierSep = " · "
+
+// DisplayTitle is the entry's name as every surface shows it — the card, the
+// rendered view's and the terminal's header and <title>: its Title, then its
+// Qualifier when it has one.
+func (s SessionView) DisplayTitle() string {
+	if s.Qualifier == "" {
+		return s.Title()
+	}
+	return s.Title() + QualifierSep + s.Qualifier
+}
+
+// Address is the entry's tmux address on its host, as an operator types it:
+// "<session>:<window index>" for a window, the session name for a per-session
+// host's entry. It is unique WITHIN one host at any moment — tmux allows one
+// session per name and one window per index in a session — which is what
+// makes it the tie-break for two entries of one host that share a Title.
+func (s SessionView) Address() string {
+	if s.Window != "" {
+		return s.Session + ":" + strconv.Itoa(s.Index)
+	}
+	return s.Session
+}
+
+// qualify sets every entry's Qualifier over list — the WHOLE list, across
+// hosts, as Ordered produces it.
+//
+// 🔴 ONE RULE, ONE PLACE. The Agents card and the pages it opens (their header
+// and their <title>) all take an entry's name from here, so they cannot
+// disagree about whether "mango:1" needs its host. It is decided over the list
+// as it is NOW, so a host connecting with a clashing label — or the one it
+// clashed with going away — changes the answer on the next render; the hub
+// re-renders on exactly those changes (a connect, a drop, a list change).
+//
+// The rule, over entries whose Title is identical (exact bytes):
+//   - a Title no other entry has: no qualifier — the name is unchanged;
+//   - a Title shared ACROSS hosts: each entry gets its host ("mango:1 · laptop");
+//   - a Title shared by two entries of ONE host (two sessions whose label is
+//     the same, say): each of those gets its tmux Address too, after the host
+//     when the Title is also shared across hosts ("Gold:1 · laptop · scratch3:1"),
+//     alone when it is not ("Gold:1 · scratch3:1"). Address is unique per host,
+//     so every listed entry ends up with a distinct DisplayTitle.
+func qualify(list []SessionView) {
+	type hostTitle struct{ host, title string }
+	byTitle := map[string]int{}
+	hostsOf := map[string]map[string]bool{}
+	byHostTitle := map[hostTitle]int{}
+	for _, s := range list {
+		t := s.Title()
+		byTitle[t]++
+		if hostsOf[t] == nil {
+			hostsOf[t] = map[string]bool{}
+		}
+		hostsOf[t][s.Host] = true
+		byHostTitle[hostTitle{s.Host, t}]++
+	}
+	for i := range list {
+		t := list[i].Title()
+		list[i].Qualifier = ""
+		if byTitle[t] < 2 {
+			continue
+		}
+		var parts []string
+		if len(hostsOf[t]) > 1 {
+			parts = append(parts, list[i].Host)
+		}
+		if byHostTitle[hostTitle{list[i].Host, t}] > 1 {
+			parts = append(parts, list[i].Address())
+		}
+		list[i].Qualifier = strings.Join(parts, QualifierSep)
+	}
+}
+
+// Qualified is e with the Qualifier Ordered(hosts) gives the same entry (host,
+// session, window): what a PAGE of one entry calls it, so the page and the
+// card it was opened from say the same name. An entry hosts does not list
+// keeps no qualifier.
+func Qualified(hosts []HostView, e SessionView) SessionView {
+	e.Qualifier = ""
+	for _, s := range Ordered(hosts) {
+		if s.Host == e.Host && s.Session == e.Session && s.Window == e.Window {
+			e.Qualifier = s.Qualifier
+			break
+		}
+	}
+	return e
 }
 
 // Title is the entry's display name: the host's label when it sent one, else
@@ -169,6 +264,7 @@ func Ordered(hosts []HostView) []SessionView {
 		out = append(out, h.Entries()...)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Activity > out[j].Activity })
+	qualify(out)
 	return out
 }
 

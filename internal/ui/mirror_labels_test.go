@@ -82,3 +82,87 @@ func TestTheRenderedViewIsTitledByTheLabelAndAddressedByTheSession(t *testing.T)
 		t.Errorf("an unlabelled rendered view is not titled by its raw name alone")
 	}
 }
+
+// A QUALIFIED TITLE: an entry whose name another listed entry shares carries a
+// qualifier (mirror.SessionView.Qualifier), drawn as PART OF THE TITLE — inside
+// data-mirror-name, right after the name — on the card, the rendered view's
+// header and <title>, and the terminal's. With none, nothing changes.
+func TestAQualifiedMirrorTitleIsPartOfTheTitleEverywhere(t *testing.T) {
+	const q = `<span data-mirror-qualifier=""> · tower</span>`
+
+	labelled := renderNode(t, mirrorCard(MirrorCardView{Host: "tower", Session: "mango", Window: "@7", Label: "mango:1", Qualifier: "tower", Online: true}))
+	if !strings.Contains(labelled, `<span data-mirror-label="">mango:1</span>`+q+`<span data-mirror-session=""`) {
+		t.Errorf("a labelled card's qualifier is not between its label and its session:\n%s", labelled)
+	}
+	if !strings.Contains(labelled, `data-filter="mango:1 mango:1 · tower mango tower `) {
+		t.Errorf("the filter does not carry the qualified title:\n%s", labelled)
+	}
+	unlabelled := renderNode(t, mirrorCard(MirrorCardView{Host: "tower", Session: "solo", Window: "@2", Title: "solo:3", Qualifier: "tower", Online: true}))
+	if !strings.Contains(unlabelled, `data-mirror-name="">solo:3`+q+`</span>`) {
+		t.Errorf("an unlabelled card's qualifier is not part of its name:\n%s", unlabelled)
+	}
+
+	view := renderNode(t, MirrorViewPage(MirrorViewView{Host: "tower", Session: "mango", Window: "@7", Label: "mango:1", Qualifier: "tower"}))
+	for _, want := range []string{"<title>mango:1 · tower · Mirrored · muster</title>", `<span data-mirror-label="">mango:1</span>` + q} {
+		if !strings.Contains(view, want) {
+			t.Errorf("rendered view lacks %q", want)
+		}
+	}
+
+	term := renderNode(t, AgentTerminalPage(AgentTerminalView{Name: "mango", DisplayName: "mango:1", RawName: "mango", TitleQualifier: "tower",
+		Badge: "Mirrored · tower", BackHref: "/agents"}))
+	for _, want := range []string{"<title>Terminal · mango:1 · tower · muster</title>", `<span data-mirror-label="">mango:1</span>` + q} {
+		if !strings.Contains(term, want) {
+			t.Errorf("terminal page lacks %q", want)
+		}
+	}
+	// A window with no label: the title text, then the qualifier.
+	termPlain := renderNode(t, AgentTerminalPage(AgentTerminalView{Name: "solo", DisplayName: "solo:3", TitleQualifier: "tower", BackHref: "/agents"}))
+	if !strings.Contains(termPlain, "<title>Terminal · solo:3 · tower · muster</title>") || !strings.Contains(termPlain, `data-mirror-name="">solo:3`+q+`</span>`) {
+		t.Errorf("an unlabelled window's terminal page is not titled solo:3 · tower")
+	}
+
+	// Control: no qualifier — no qualifier markup, and the titles as before.
+	for name, html := range map[string]string{
+		"card": renderNode(t, mirrorCard(MirrorCardView{Host: "tower", Session: "mango", Label: "mango:1", Online: true})),
+		"view": renderNode(t, MirrorViewPage(MirrorViewView{Host: "tower", Session: "mango", Label: "mango:1"})),
+		"term": renderNode(t, AgentTerminalPage(AgentTerminalView{Name: "mango", DisplayName: "mango:1", RawName: "mango", BackHref: "/agents"})),
+	} {
+		if strings.Contains(html, "data-mirror-qualifier") || strings.Contains(html, " · tower ·") {
+			t.Errorf("%s: an unqualified title drew a qualifier", name)
+		}
+	}
+}
+
+// THE HOST BADGE IS NOT THE GREY CHIP: on the card and on both pages it is the
+// tinted, bold mirrorBadge (with its screen icon), so the host stands out on a
+// phone among the kind/mode chips.
+func TestTheMirroredHostBadgeIsDistinctFromTheGenericChip(t *testing.T) {
+	const tint = "bg-st-progress-bg"
+	grey := renderNode(t, chip("kind", "x"))
+	if strings.Contains(grey, tint) {
+		t.Fatal("CONTROL: the generic chip already carries the tint — this test cannot tell them apart")
+	}
+	badge := func(html, attr string) string {
+		i := strings.Index(html, attr)
+		if i < 0 {
+			t.Fatalf("no %s in:\n%s", attr, html)
+		}
+		rest := html[i:]
+		return rest[:strings.Index(rest, "</span></span>")]
+	}
+	for name, got := range map[string]string{
+		"card": badge(renderNode(t, mirrorCard(MirrorCardView{Host: "tower", Session: "s", Online: true})), "data-mirror-badge"),
+		"view": badge(renderNode(t, MirrorViewPage(MirrorViewView{Host: "tower", Session: "s"})), "data-term-badge"),
+		"term": badge(renderNode(t, AgentTerminalPage(AgentTerminalView{Name: "s", Badge: "Mirrored · tower", BackHref: "/agents"})), "data-term-badge"),
+	} {
+		for _, want := range []string{tint, "font-semibold", "<svg", "Mirrored · tower"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("%s badge lacks %q: %s", name, want, got)
+			}
+		}
+		if strings.Contains(got, `<span class="text-muted">kind</span>`) {
+			t.Errorf("%s badge is still the generic kind chip: %s", name, got)
+		}
+	}
+}

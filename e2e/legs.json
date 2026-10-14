@@ -34,7 +34,8 @@
     "tests/tool-rows.spec.ts": 2.0,
     "tests/mirror-windows.spec.ts": 90.0,
     "tests/agent-composer.spec.ts": 90.0,
-    "tests/dictation.spec.ts": 90.0
+    "tests/dictation.spec.ts": 90.0,
+    "tests/mirror-duplicate-labels.spec.ts": 20.0
   },
   "legs": {
     "1": [
@@ -69,7 +70,8 @@
       "tests/terminal-overflow.spec.ts",
       "tests/passkeys.spec.ts",
       "tests/push.spec.ts",
-      "tests/agent-composer.spec.ts"
+      "tests/agent-composer.spec.ts",
+      "tests/mirror-duplicate-labels.spec.ts"
     ]
   }
 }

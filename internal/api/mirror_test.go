@@ -94,6 +94,9 @@ type fakeMirror struct {
 	// asked is the window id each AttachWindow / WatchWindow / PasteWindow was
 	// given, in order ("" = the request named only the session).
 	asked []string
+	// others are further hosts listed AFTER "ws", as given (mirror_labels_test.go:
+	// two hosts listing the same label); nil = "ws" alone.
+	others []mirror.HostView
 }
 
 func (f *fakeMirror) ServeConnect(w http.ResponseWriter, _ *http.Request) {
@@ -125,7 +128,7 @@ func (f *fakeMirror) Hosts(ctx context.Context) []mirror.HostView {
 		hv.Windows = mirror.NormalizeWindows(f.windows, 0)
 		hv.Sessions, hv.Claude, hv.Labels, hv.Activity = mirror.SessionsOf(hv.Windows)
 	}
-	return []mirror.HostView{hv}
+	return append([]mirror.HostView{hv}, f.others...)
 }
 
 func (f *fakeMirror) AttachWindow(ctx context.Context, host, session, window string, readOnly bool, stdin io.Reader, stdout io.Writer, _ <-chan provision.TermSize) error {

@@ -78,19 +78,6 @@ func (s *Server) handleMirrorConnect(w http.ResponseWriter, r *http.Request) {
 	s.ext.Mirror.ServeConnect(w, r)
 }
 
-// mirrorHost is the viewing principal's host named host, if it has one.
-func (s *Server) mirrorHost(ctx context.Context, host string) (mirror.HostView, bool) {
-	if s.ext.Mirror == nil {
-		return mirror.HostView{}, false
-	}
-	for _, h := range s.ext.Mirror.Hosts(ctx) {
-		if h.Host == host {
-			return h, true
-		}
-	}
-	return mirror.HostView{}, false
-}
-
 // mirrorCards is the viewing principal's mirrored sessions, for the Agents
 // view — one list across its hosts, most recently active first (mirror.Ordered
 // is the order's one definition); nil with the plugin off.
@@ -101,7 +88,7 @@ func (s *Server) mirrorCards(ctx context.Context) []ui.MirrorCardView {
 	var out []ui.MirrorCardView
 	for _, m := range mirror.Ordered(s.ext.Mirror.Hosts(ctx)) {
 		out = append(out, ui.MirrorCardView{Host: m.Host, Session: m.Session, Window: m.Window, Title: mirrorTitle(m), Label: m.Label,
-			Kind: m.Kind(), Online: m.Online, Interactive: m.Interactive, Claude: m.Claude})
+			Qualifier: m.Qualifier, Kind: m.Kind(), Online: m.Online, Interactive: m.Interactive, Claude: m.Claude})
 	}
 	return out
 }
@@ -129,8 +116,21 @@ func mirrorTitle(e mirror.SessionView) string {
 //     and e is the session's active window: the pages send the browser to the
 //     explicit address rather than serve a page whose window could change
 //     between its socket connects.
+//   - e carries the Qualifier the Agents list gives the same entry
+//     (mirror.Qualified, over the same hosts), so a page is titled exactly as
+//     the card that opened it.
 func (s *Server) mirrorEntry(r *http.Request, host, session, window string) (h mirror.HostView, e mirror.SessionView, listed, redirect, ok bool) {
-	h, found := s.mirrorHost(r.Context(), host)
+	if s.ext.Mirror == nil {
+		return h, e, false, false, false
+	}
+	hosts := s.ext.Mirror.Hosts(r.Context())
+	found := false
+	for _, x := range hosts {
+		if x.Host == host {
+			h, found = x, true
+			break
+		}
+	}
 	if !found || mirror.ValidSession(session) != nil || (window != "" && mirror.ValidWindowID(window) != nil) {
 		return h, e, false, false, false
 	}
@@ -139,7 +139,7 @@ func (s *Server) mirrorEntry(r *http.Request, host, session, window string) (h m
 		e = mirror.SessionView{Host: h.Host, Session: session, Window: window, Online: h.Online, Interactive: h.Interactive,
 			Rendered: h.Rendered, PanePaste: h.PanePaste}
 	}
-	return h, e, listed, listed && window == "" && e.Window != "", true
+	return h, mirror.Qualified(hosts, e), listed, listed && window == "" && e.Window != "", true
 }
 
 // mirrorRef is e's address for the ui package's URLs.
@@ -171,10 +171,13 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		// "<session>:<index>" — titles the page; the session NAME and the
 		// window ID stay the address (WSPath).
 		DisplayName: e.Title(),
-		RawName:     rawName,
-		BackHref:    "/agents",
-		Badge:       "Mirrored · " + h.Host,
-		WSPath:      mirrorRef(e).TerminalWSPath(),
+		// What tells this entry apart from another host's (or window's) of the
+		// same name — the card's own qualifier (mirror.Qualified).
+		TitleQualifier: e.Qualifier,
+		RawName:        rawName,
+		BackHref:       "/agents",
+		Badge:          "Mirrored · " + h.Host,
+		WSPath:         mirrorRef(e).TerminalWSPath(),
 		// 🔴 THE SWITCH IS OFFERED ONLY WHEN THE HOST ADVERTISED -interactive.
 		// The hub refuses a rw attach to a host that did not, regardless.
 		ReadOnlyOnly: !h.Interactive,
