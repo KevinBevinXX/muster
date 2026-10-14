@@ -251,6 +251,13 @@ func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if body.err != nil {
+		// Belt and braces: the upload failed (the cap, or a client gone) yet the
+		// service answered. Whatever it heard is a fragment; it is never handed
+		// back as though the recording had arrived whole.
+		s.writeTranscribeReadError(say, w, body.err)
+		return
+	}
 	outcome = http.StatusOK
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")

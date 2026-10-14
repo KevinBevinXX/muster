@@ -50,11 +50,15 @@ type fakeSTT struct {
 	status   int
 	text     string
 	delay    time.Duration
+	trickle  bool          // read the body in small pieces with a pause between them
 	hold     chan struct{} // when set, every request waits on it
 	reqs     atomic.Int32
+	ended    atomic.Int32 // handlers that have finished reading and answered
 	auths    []string
 	files    []string
-	gotBytes []int
+	gotBytes []int // WHOLE file parts only (see below)
+	// cutOff is every file part that did NOT arrive whole: its bytes, and why.
+	cutOff []string
 }
 
 func newFakeSTT(t *testing.T) *fakeSTT {
@@ -63,7 +67,7 @@ func newFakeSTT(t *testing.T) *fakeSTT {
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.reqs.Add(1)
 		f.mu.Lock()
-		status, text, delay, hold := f.status, f.text, f.delay, f.hold
+		status, text, delay, hold, trickle := f.status, f.text, f.delay, f.hold, f.trickle
 		f.auths = append(f.auths, r.Header.Get("Authorization"))
 		f.mu.Unlock()
 		if hold != nil {
@@ -73,20 +77,43 @@ func newFakeSTT(t *testing.T) *fakeSTT {
 			time.Sleep(delay)
 		}
 		_, params, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
-		mr := multipart.NewReader(r.Body, params["boundary"])
+		// 🔴 A FILE PART IS WHOLE ONLY IF ITS READ ENDED CLEANLY *AND* THE BODY
+		// WENT ON TO ITS CLOSING BOUNDARY — what the real service (FastAPI's
+		// multipart parser) needs before it will transcribe anything. Recording
+		// the length of whatever was read, error or not, is what made this fake
+		// report a cut-off upload as a "COMPLETE file part".
+		var body io.Reader = r.Body
+		if trickle {
+			body = &slowReader{r: r.Body}
+		}
+		mr := multipart.NewReader(body, params["boundary"])
+		var name string
+		var n int
+		var readErr error
+		seen := false
+		var end error
 		for {
 			p, err := mr.NextPart()
 			if err != nil {
+				end = err
 				break
 			}
 			if p.FormName() == "file" {
-				b, _ := io.ReadAll(p)
-				f.mu.Lock()
-				f.files = append(f.files, p.FileName())
-				f.gotBytes = append(f.gotBytes, len(b))
-				f.mu.Unlock()
+				b, rerr := io.ReadAll(p)
+				name, n, readErr, seen = p.FileName(), len(b), rerr, true
 			}
 		}
+		if seen {
+			f.mu.Lock()
+			if readErr == nil && end == io.EOF {
+				f.files = append(f.files, name)
+				f.gotBytes = append(f.gotBytes, n)
+			} else {
+				f.cutOff = append(f.cutOff, fmt.Sprintf("%d bytes (part: %v, body: %v)", n, readErr, end))
+			}
+			f.mu.Unlock()
+		}
+		defer f.ended.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		if status != http.StatusOK {
@@ -286,11 +313,17 @@ func TestDictationCapsTheRecording(t *testing.T) {
 	if resp.StatusCode != http.StatusRequestEntityTooLarge || body != TranscribeTooLarge {
 		t.Errorf("streamed oversize: %d %q; want 413 %q", resp.StatusCode, body, TranscribeTooLarge)
 	}
+	fake.waitEnded(t, fake.reqs.Load())
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
 	for _, n := range fake.gotBytes {
-		t.Errorf("the service received a COMPLETE file part of %d bytes from an oversize stream — "+
-			"a truncated recording was transcribed as though it were whole", n)
+		t.Errorf("the service received a WHOLE multipart body (file part of %d bytes, closing boundary) from "+
+			"an oversize stream — a truncated recording would be transcribed as though it were whole", n)
+	}
+	// Positive control: the service DID receive the stream and saw it cut off —
+	// so the zero above is a fact about the body, not a fake that read nothing.
+	if len(fake.cutOff) != 1 {
+		t.Errorf("the service saw %d cut-off upload(s) %v; want exactly the oversize one", len(fake.cutOff), fake.cutOff)
 	}
 	noLeak(t, resp, body, logs.String())
 
@@ -461,5 +494,69 @@ func TestCleanTranscript(t *testing.T) {
 	}
 	if got := cleanTranscript(strings.Repeat("a ", maxTranscriptRunes)); len([]rune(got)) > maxTranscriptRunes {
 		t.Errorf("a long transcript was not bounded: %d runes", len([]rune(got)))
+	}
+}
+
+// waitEnded waits until n of the fake's handlers have finished reading. muster
+// answers its caller as soon as the upload fails, WITHOUT waiting for the
+// service to finish reading what it was sent — so a test that inspects what the
+// service received must wait for this, or it races the service's handler.
+func (f *fakeSTT) waitEnded(t *testing.T, n int32) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for f.ended.Load() < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("the fake service finished %d request(s); want %d", f.ended.Load(), n)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// slowReader reads at most 64 KiB at a time, pausing before each read: a
+// service slower than the uploader, so muster's side of the stream runs ahead.
+type slowReader struct{ r io.Reader }
+
+func (s *slowReader) Read(p []byte) (int, error) {
+	time.Sleep(time.Millisecond)
+	if len(p) > 64<<10 {
+		p = p[:64<<10]
+	}
+	return s.r.Read(p)
+}
+
+// TestAnOversizeStreamNeverReachesTheServiceWhole drives the streamed cap
+// against a fast service, one that starts reading late, and one that reads
+// slower than the upload arrives — the timings that decide what the service
+// has buffered when muster's read hits the cap. In every one the service must
+// see the upload CUT OFF (no closing boundary), never a well-formed body it
+// would transcribe, and muster must answer 413.
+func TestAnOversizeStreamNeverReachesTheServiceWhole(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		delay   time.Duration
+		trickle bool
+	}{
+		{"fast service", 0, false},
+		{"service starts late", 300 * time.Millisecond, false},
+		{"service reads slowly", 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newFakeSTT(t)
+			fake.delay, fake.trickle = tc.delay, tc.trickle
+			s, ts := transcribeServer(t, fake, 0, io.Discard)
+			resp, body := postAudio(t, s, ts, webmOf(maxTranscribeBytes+(1<<20)), txOpt{chunked: true})
+			if resp.StatusCode != http.StatusRequestEntityTooLarge || body != TranscribeTooLarge {
+				t.Errorf("streamed oversize: %d %q; want 413", resp.StatusCode, body)
+			}
+			fake.waitEnded(t, fake.reqs.Load())
+			fake.mu.Lock()
+			defer fake.mu.Unlock()
+			if len(fake.gotBytes) != 0 {
+				t.Errorf("the service received a WHOLE multipart body %v from an oversize stream", fake.gotBytes)
+			}
+			if len(fake.cutOff) != 1 {
+				t.Errorf("the service saw cut-off uploads %v; want exactly one (the control: it did read the stream)", fake.cutOff)
+			}
+		})
 	}
 }

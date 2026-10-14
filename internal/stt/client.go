@@ -183,6 +183,12 @@ func writeBody(mw *multipart.Writer, audio io.Reader, filename string) error {
 	if err != nil {
 		return err
 	}
+	// 🔴 A FAILED READ RETURNS HERE, BEFORE THE CLOSING BOUNDARY IS WRITTEN, and
+	// the caller closes the pipe WITH that error — so the transport aborts the
+	// request mid-body. The service is left with an unterminated part it cannot
+	// parse, never a well-formed upload of whatever arrived before the failure
+	// (a recording cut at the size cap, transcribed as though it were whole).
+	// api's TestAnOversizeStreamNeverReachesTheServiceWhole holds this.
 	if _, err := io.Copy(part, audio); err != nil {
 		return err
 	}
