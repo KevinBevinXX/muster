@@ -117,7 +117,7 @@ test('Enable subscribes with the server key and the device appears on the accoun
 
   await page.goto(origin + '/account');
   await expect(page.locator('[data-testid="push-device"]')).toHaveCount(1);
-  await expect(page.locator('[data-testid="push-preferences"] input[type=checkbox]:checked')).toHaveCount(6);
+  await expect(page.locator('[data-testid="push-preferences"] input[type=checkbox]:checked')).toHaveCount(7); // every push.Events toggle, on by default (plugin: PR C)
 });
 
 test('a subscription made with an old VAPID key is replaced with one on the current key', async ({ page }) => {

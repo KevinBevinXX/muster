@@ -2,24 +2,24 @@
 // the few rows that spec needs and the e2e harness cannot make through a real
 // route, because the e2e harness runs no agent runtime.
 //
-//	DATABASE_URL=…_e2e go run ./e2e/pluginfix chief <owner-id> <name> <token>   → prints the agent id
-//	DATABASE_URL=…_e2e go run ./e2e/pluginfix deliver <message-id> <agent-id>
-//	DATABASE_URL=…_e2e go run ./e2e/pluginfix lapse <draft-id>
-//	DATABASE_URL=…_e2e go run ./e2e/pluginfix cleanup <owner-id> <name>
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix chief <owner-id> <name> <token>   → prints the agent id
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix deliver <message-id> <agent-id>
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix lapse <draft-id>
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix cleanup <owner-id> <name>
 //
-//   - chief: an agent labelled "chief", running, holding token — the owner's
-//     chief, whose own token the spec then calls /mcp with. It REFUSES when the
-//     owner already has an agent labelled chief: the lowest id is the chief, so
-//     a leftover one would silently take the role and the spec would test it.
-//   - deliver: settles a queued plugin message as delivered to that agent, which
-//     is what a completed delivery turn records (internal/plugins.RecordDelivery).
-//     The delivery itself — the fenced turn through the agent gateway — is the Go
-//     seam tests' (plugins_seam_pg_test.go, plugin_drafts_pg_test.go), which run a
-//     fake runtime the browser suite has no place for.
-//   - lapse: moves a claimed draft's claim and lease ten minutes back, so its
-//     two-minute lease has lapsed without waiting for it.
-//   - cleanup: removes the chief and the owner's plugins (their messages and
-//     drafts cascade), so later specs on the shared database see neither.
+//	  - chief: an agent labelled "chief", running, holding token — the owner's
+//	    chief, whose own token the spec then calls /mcp with. It REFUSES when the
+//	    owner already has an agent labelled chief: the lowest id is the chief, so
+//	    a leftover one would silently take the role and the spec would test it.
+//	  - deliver: settles a queued plugin message as delivered to that agent, which
+//	    is what a completed delivery turn records (internal/plugins.RecordDelivery).
+//	    The delivery itself — the fenced turn through the agent gateway — is the Go
+//	    seam tests' (plugins_seam_pg_test.go, plugin_drafts_pg_test.go), which run a
+//	    fake runtime the browser suite has no place for.
+//	  - lapse: moves a claimed draft's claim and lease ten minutes back, so its
+//	    two-minute lease has lapsed without waiting for it.
+//	  - cleanup: removes the chief and the owner's plugins (their messages and
+//	    drafts cascade), so later specs on the shared database see neither.
 //
 // 🔴 IT REFUSES ANY DATABASE WHOSE NAME DOES NOT END IN "_e2e", like e2e/seed:
 // it writes as the login role with row-level security's scope set to all, which

@@ -422,29 +422,78 @@ func TestALapsedLeaseIsUnconfirmedAndNeverReoffered(t *testing.T) {
 		t.Fatalf("another owner re-approving: %v; want ErrNotFound", err)
 	}
 	re, err := w.s.ReapproveDraft(session(2), d.ID)
-	if err != nil || re.Status != DraftApproved || re.ClaimedAt != nil || re.LeaseUntil != nil ||
-		re.ApprovedAt == nil || !re.ApprovedAt.After(*got.ApprovedAt) {
-		t.Fatalf("re-approve: %+v %v (was approved at %v)", re, err, got.ApprovedAt)
+	if err != nil || re.ID == d.ID || re.Status != DraftApproved || re.ClaimedAt != nil || re.Body != d.Body ||
+		re.MessageID != d.MessageID || !re.ExpiresAt.Equal(got.ExpiresAt) || re.ApprovedAt == nil || !re.ApprovedAt.After(*got.ApprovedAt) {
+		t.Fatalf("re-approve: %+v %v; want a NEW approved draft with the same text, message and expiry", re, err)
+	}
+	if old, _ := w.s.Draft(session(2), d.ID); old.Status != DraftUnconfirmed || old.ClaimedAt == nil ||
+		old.ReapprovedAs == nil || *old.ReapprovedAs != re.ID {
+		t.Fatalf("the re-approved row: %+v; want still unconfirmed, still claimed, naming %d", old, re.ID)
 	}
 	if err := w.s.pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM audit_log
 		WHERE action = 'plugin.draft.reapproved' AND object = $1 AND user_id = 2`, DraftObject(d.ID)).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("plugin.draft.reapproved audit rows = %d (%v); want 1", n, err)
 	}
-	if c, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); !ok || c.DraftID != d.ID {
-		t.Fatalf("after re-approval the draft is offered again: ok=%v %+v", ok, c)
+	if _, err := w.s.ReapproveDraft(session(2), d.ID); !errors.Is(err, ErrDraftState) {
+		t.Fatalf("re-approving the same unconfirmed draft twice: %v; want ErrDraftState", err)
 	}
-	// A late result for a lapsed claim is recorded.
-	late := w.approve(t, w.file(t, w.delivered(t, "m-late", false), "late"))
-	if _, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); !ok {
-		t.Fatal("claim late")
+	c2, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID)
+	if !ok || c2.DraftID != re.ID || c2.Body != d.Body {
+		t.Fatalf("after re-approval the NEW draft is offered: ok=%v %+v; want draft %d", ok, c2, re.ID)
 	}
-	ageDraft(t, w.dsn, late.ID, int(LeaseDuration.Seconds())+5)
-	_, _, _ = w.s.ClaimDraft(plugin(2), w.p.ID) // sweeps it to unconfirmed
-	if got, err := w.s.FinishDraft(plugin(2), w.p.ID, late.ID, DraftResult{OK: true}); err != nil || got.Status != DraftSent {
-		t.Fatalf("a late result on an unconfirmed draft: %+v %v; want sent", got, err)
+	// 🔴 A LATE result from the FIRST claim lands on the first row, never on the
+	// second claim's: the second claim's own result is then still accepted.
+	if late, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: false, Detail: "timed out"}); err != nil || late.Status != DraftFailed {
+		t.Fatalf("the first claim's late result: %+v %v; want the first row failed", late, err)
 	}
-	if _, err := w.s.ReapproveDraft(session(2), late.ID); !errors.Is(err, ErrDraftState) {
+	if cur, _ := w.s.Draft(session(2), re.ID); cur.Status != DraftApproved || cur.ClaimedAt == nil {
+		t.Fatalf("the first claim's late result touched the re-approval: %+v", cur)
+	}
+	if got, err := w.s.FinishDraft(plugin(2), w.p.ID, re.ID, DraftResult{OK: true}); err != nil || got.Status != DraftSent {
+		t.Fatalf("the second claim's result: %+v %v; want sent", got, err)
+	}
+	if _, err := w.s.ReapproveDraft(session(2), re.ID); !errors.Is(err, ErrDraftState) {
 		t.Fatalf("re-approving a sent draft: %v; want ErrDraftState", err)
+	}
+}
+
+// TestOneReplyPerMessageIsInFlight: while a reply to a message is approved and
+// unsettled, no other draft for that message may be filed or approved; once it
+// has settled (sent), a new one may. Rejecting is never blocked.
+func TestOneReplyPerMessageIsInFlight(t *testing.T) {
+	w := newDraftWorld(t)
+	d1 := w.approve(t, w.file(t, w.m, "first"))
+	if _, _, err := w.s.FileDraft(session(2), w.chief.ID, 2, w.chief.Name, w.m.ID, "second"); !errors.Is(err, ErrReplyInFlight) {
+		t.Fatalf("filing while a reply is approved: %v; want ErrReplyInFlight", err)
+	}
+	// Another message's draft is unaffected.
+	other := w.file(t, w.delivered(t, "m-other", false), "other")
+	if _, err := w.s.DecideDraft(session(2), other.ID, true); err != nil {
+		t.Fatalf("approving a draft for ANOTHER message: %v", err)
+	}
+	if _, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); !ok {
+		t.Fatal("claim d1")
+	}
+	if _, err := w.s.FinishDraft(plugin(2), w.p.ID, d1.ID, DraftResult{OK: true}); err != nil {
+		t.Fatal(err)
+	}
+	d2 := w.file(t, w.m, "a follow-up after the first was sent")
+	if _, err := w.s.DecideDraft(session(2), d2.ID, true); err != nil {
+		t.Fatalf("approving a follow-up after the first settled: %v", err)
+	}
+	// Approving while another reply is in flight: d3 is pending for m-race when
+	// a reply to m-race is already approved (written directly — through the
+	// store it can only arise from the race lockMessage serialises).
+	race := w.delivered(t, "m-race", false)
+	d3 := w.file(t, race, "three")
+	dbtest.OwnerExec(t, w.dsn, `INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at,
+		status, decided_at, approved_at) VALUES (2, $1, $2, 'x', 'already approved', now() + interval '1 day', 'approved', now(), now())`,
+		race.ID, w.chief.ID)
+	if _, err := w.s.DecideDraft(session(2), d3.ID, true); !errors.Is(err, ErrReplyInFlight) {
+		t.Fatalf("approving while another reply is in flight: %v; want ErrReplyInFlight", err)
+	}
+	if got, err := w.s.DecideDraft(session(2), d3.ID, false); err != nil || got.Status != DraftRejected {
+		t.Fatalf("rejecting while another reply is in flight: %+v %v; want rejected", got, err)
 	}
 }
 

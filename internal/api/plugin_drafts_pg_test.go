@@ -381,8 +381,21 @@ func TestAReplyDraftGoesFromTheChiefToThePluginOnceThroughTheRealPlane(t *testin
 	if rec := d.do("POST", reapprove, "", d.session(d.a, false, true)); rec.Code != http.StatusSeeOther {
 		t.Fatalf("a fresh re-approval: %d; want 303", rec.Code)
 	}
-	if rec := d.claim(aTok, 0); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Second reply.") {
-		t.Fatalf("a claim after the re-approval: %d %s; want the draft once more", rec.Code, rec.Body.String())
+	rec = d.claim(aTok, 0)
+	var re struct {
+		DraftID int64  `json:"draft_id"`
+		Body    string `json:"body"`
+	}
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &re) != nil || re.Body != "Second reply." || re.DraftID == second {
+		t.Fatalf("a claim after the re-approval: %d %s; want the same text under a NEW draft id (not %d)", rec.Code, rec.Body.String(), second)
+	}
+	// The first claim's late result settles the first row only.
+	if rec := d.do("POST", "/plugin/v1/drafts/"+strconv.FormatInt(second, 10)+"/result", `{"ok":false}`, bearerTok(aTok)); rec.Code != http.StatusOK {
+		t.Fatalf("the first claim's late result: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := d.do("POST", "/plugin/v1/drafts/"+strconv.FormatInt(re.DraftID, 10)+"/result", `{"ok":true}`, bearerTok(aTok)); rec.Code != http.StatusOK ||
+		!strings.Contains(rec.Body.String(), `"status":"sent"`) {
+		t.Fatalf("the re-approval's own result: %d %s; want 200 sent", rec.Code, rec.Body.String())
 	}
 }
 

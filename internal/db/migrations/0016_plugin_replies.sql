@@ -75,6 +75,15 @@ ALTER TABLE public.plugin_reply_drafts DROP CONSTRAINT IF EXISTS plugin_reply_dr
 ALTER TABLE public.plugin_reply_drafts ADD CONSTRAINT plugin_reply_drafts_result_was_claimed CHECK (
     status NOT IN ('sent', 'failed') OR (claimed_at IS NOT NULL AND finished_at IS NOT NULL));
 
--- The claim's lookup: a plugin's approved, unclaimed drafts, oldest approval first.
-CREATE INDEX IF NOT EXISTS idx_plugin_reply_drafts_claimable
-    ON public.plugin_reply_drafts (message_id) WHERE status = 'approved' AND claimed_at IS NULL;
+-- 🔴 A RE-APPROVAL IS A NEW DRAFT, NOT THE OLD ONE CLAIMED AGAIN. An unconfirmed
+-- draft (claimed, never reported) that its owner approves again is copied into a
+-- NEW row with a new id, and the old row names it here. So a plugin that keeps a
+-- durable "already sent" set by draft id sends the re-approval (a different id),
+-- and a late result from the FIRST claim still lands on the first row — never on
+-- the second claim's. A row is re-approved at most once. No foreign key, like
+-- plugins.chief_session_id: a single-column reference between owned rows is what
+-- the composite-key ledger refuses (it could name another owner's row), and the
+-- store writes it only with an id it inserted under the same owner a moment ago.
+ALTER TABLE public.plugin_reply_drafts ADD COLUMN IF NOT EXISTS reapproved_as BIGINT;
+CREATE UNIQUE INDEX IF NOT EXISTS plugin_reply_drafts_reapproved_as_key
+    ON public.plugin_reply_drafts (reapproved_as) WHERE reapproved_as IS NOT NULL;

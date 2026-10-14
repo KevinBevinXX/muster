@@ -27,7 +27,8 @@ import (
 //	   ▼      (newer          ▼                    ▼               ▼
 //	rejected   draft)      expired          sent / failed     unconfirmed
 //	                                                              │
-//	                                          owner re-approves ──┘ (a new decision)
+//	                     owner re-approves ──┘ (a new decision: a NEW draft,
+//	                                            approved, with the same text)
 //
 // 🔴 AT MOST ONCE, AND THAT IS WHY A LAPSED LEASE IS NOT RE-OFFERED. A plugin that
 // claimed a draft and then went quiet may have sent it upstream before it died.
@@ -85,6 +86,9 @@ type Draft struct {
 	FinishedAt  *time.Time  `json:"finishedAt,omitempty"`
 	ExternalRef string      `json:"externalRef,omitempty"`
 	Detail      string      `json:"detail,omitempty"`
+	// ReapprovedAs is the NEW draft an unconfirmed one was approved again as
+	// (ReapproveDraft); nil until then.
+	ReapprovedAs *int64 `json:"reapprovedAs,omitempty"`
 }
 
 // Claim is what the claim route hands a plugin: an approved draft to send.
@@ -117,6 +121,9 @@ var (
 	ErrTooManyPendingDrafts = errors.New("plugins: too many reply drafts awaiting the owner")
 	// ErrDraftState: the draft is not in a state that allows this (409).
 	ErrDraftState = errors.New("plugins: the draft is not in a state that allows this")
+	// ErrReplyInFlight: another reply to the same message is approved and not yet
+	// settled; a second one would risk two replies reaching the sender.
+	ErrReplyInFlight = errors.New("plugins: another reply to this message is already approved and on its way")
 	// ErrResultConflict: the draft already settled with the OTHER result (409).
 	ErrResultConflict = errors.New("plugins: the draft already settled with a different result")
 )
@@ -175,11 +182,11 @@ func (s *PGStore) WithAgentDenyWords(words []string) *PGStore {
 }
 
 const draftCols = `id, owner_id, message_id, agent_id, agent_name, body, status, created_at, expires_at, decided_at,
-	approved_at, claimed_at, lease_until, finished_at, external_ref, detail`
+	approved_at, claimed_at, lease_until, finished_at, external_ref, detail, reapproved_as`
 
 func draftDest(d *Draft, st *string) []any {
 	return []any{&d.ID, &d.OwnerID, &d.MessageID, &d.AgentID, &d.AgentName, &d.Body, st, &d.CreatedAt, &d.ExpiresAt,
-		&d.DecidedAt, &d.ApprovedAt, &d.ClaimedAt, &d.LeaseUntil, &d.FinishedAt, &d.ExternalRef, &d.Detail}
+		&d.DecidedAt, &d.ApprovedAt, &d.ClaimedAt, &d.LeaseUntil, &d.FinishedAt, &d.ExternalRef, &d.Detail, &d.ReapprovedAs}
 }
 
 func scanDraft(row pgx.Row) (Draft, error) {
@@ -192,28 +199,64 @@ func scanDraft(row pgx.Row) (Draft, error) {
 
 // sweepDrafts settles what time has decided, for the principal's rows: a draft
 // pending or approved-but-unclaimed past its expiry is `expired`, and a claim
-// whose lease lapsed without a result is `unconfirmed` (audited, one row each:
-// it is the at-most-once rule acting, and the owner must be able to see when).
+// whose lease lapsed without a result is `unconfirmed` — the at-most-once rule
+// acting. Each is audited, one row per draft, as whichever principal's request
+// ran the sweep.
 func sweepDrafts(ctx context.Context, tx pgx.Tx) error {
-	if _, err := tx.Exec(ctx, `UPDATE plugin_reply_drafts SET status = 'expired', decided_at = coalesce(decided_at, now())
-		WHERE status IN ('pending', 'approved') AND claimed_at IS NULL AND expires_at <= now()`); err != nil {
-		return err
-	}
-	rows, err := tx.Query(ctx, `UPDATE plugin_reply_drafts SET status = 'unconfirmed'
-		WHERE status = 'approved' AND claimed_at IS NOT NULL AND lease_until <= now() RETURNING id`)
-	if err != nil {
-		return err
-	}
-	ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
-	if err != nil {
-		return err
-	}
-	for _, id := range ids {
-		if err := audit(ctx, tx, "plugin.draft.unconfirmed", DraftObject(id), map[string]any{"why": "lease lapsed without a result"}); err != nil {
+	for _, step := range []struct{ q, action, why string }{
+		{`UPDATE plugin_reply_drafts SET status = 'expired', decided_at = coalesce(decided_at, now())
+			WHERE status IN ('pending', 'approved') AND claimed_at IS NULL AND expires_at <= now() RETURNING id`,
+			"plugin.draft.expired", "not sent within 7 days of being written"},
+		{`UPDATE plugin_reply_drafts SET status = 'unconfirmed'
+			WHERE status = 'approved' AND claimed_at IS NOT NULL AND lease_until <= now() RETURNING id`,
+			"plugin.draft.unconfirmed", "lease lapsed without a result"},
+	} {
+		rows, err := tx.Query(ctx, step.q)
+		if err != nil {
 			return err
+		}
+		ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			if err := audit(ctx, tx, step.action, DraftObject(id), map[string]any{"why": step.why}); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+// lockMessage locks message id's row and answers ErrReplyInFlight when another
+// draft for it (not except) is approved and unsettled.
+//
+// 🔴 ONE REPLY IN FLIGHT PER MESSAGE, AND THE MESSAGE ROW IS THE LOCK. Filing,
+// approving and re-approving all take it first, so an owner approving draft 1
+// while the chief files draft 2 for the same message are serialised, and the
+// second never becomes a second approved reply the sender would receive too.
+// A reply that has SETTLED (sent, failed) does not block a new one: answering
+// again after a send is the owner's decision to make on the new card.
+func lockMessage(ctx context.Context, tx pgx.Tx, id, except int64) (Message, error) {
+	m, err := scanMessage(tx.QueryRow(ctx, `SELECT `+messageCols+` FROM plugin_messages WHERE id = $1 FOR UPDATE`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Message{}, ErrNotFound
+	}
+	if err != nil {
+		return Message{}, err
+	}
+	if err := sweepDrafts(ctx, tx); err != nil {
+		return Message{}, err
+	}
+	var inFlight bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM plugin_reply_drafts
+		WHERE message_id = $1 AND status = 'approved' AND id <> $2)`, id, except).Scan(&inFlight); err != nil {
+		return Message{}, err
+	}
+	if inFlight {
+		return m, ErrReplyInFlight
+	}
+	return m, nil
 }
 
 // FileDraft stores agent agentID's reply to message messageID: the message must
@@ -233,27 +276,27 @@ func (s *PGStore) FileDraft(ctx context.Context, agentID, ownerID int64, agentNa
 	var d Draft
 	superseded := 0
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
-		// 🔴 THE MESSAGE ROW IS LOCKED FIRST: two drafts for one message are filed
-		// one at a time, so "supersede the pending one, insert mine" cannot leave
-		// two pending (the one-pending index would refuse it, as a 500).
-		m, err := scanMessage(tx.QueryRow(ctx, `SELECT `+messageCols+` FROM plugin_messages WHERE id = $1 FOR UPDATE`, messageID))
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrNotFound
+		// 🔴 THE MESSAGE ROW IS LOCKED FIRST (lockMessage): two drafts for one
+		// message are filed one at a time, so "supersede the pending one, insert
+		// mine" cannot leave two pending (the one-pending index would refuse it, as
+		// a 500), and none is filed while another reply to it is in flight.
+		m, inFlight := lockMessage(ctx, tx, messageID, 0)
+		if inFlight != nil && !errors.Is(inFlight, ErrReplyInFlight) {
+			return inFlight
 		}
-		if err != nil {
-			return err
-		}
+		// Who may draft is decided before whether they may draft NOW, so the
+		// in-flight answer says nothing about a message that is not theirs.
 		if !DeliveredTo(m, agentID, ownerID) {
 			return ErrNotFound
 		}
 		if m.NoReply {
 			return ErrNoReply
 		}
+		if inFlight != nil {
+			return inFlight
+		}
 		// One agent's filings are serialised so the pending count cannot be raced.
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('plugin_reply_drafts.file'), $1::int)`, int32(agentID)); err != nil {
-			return err
-		}
-		if err := sweepDrafts(ctx, tx); err != nil {
 			return err
 		}
 		var pending int
@@ -311,7 +354,8 @@ func (s *PGStore) DraftCards(ctx context.Context, limit int) ([]DraftCard, error
 		  FROM plugin_reply_drafts d
 		  JOIN plugin_messages m ON m.id = d.message_id
 		  JOIN plugins p ON p.id = m.plugin_id
-		 ORDER BY (d.status IN ('pending', 'unconfirmed')) DESC, d.id DESC
+		 ORDER BY (d.status = 'pending' OR (d.status = 'unconfirmed' AND d.reapproved_as IS NULL
+		           AND d.expires_at > now())) DESC, d.id DESC
 		 LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
@@ -335,20 +379,44 @@ func (s *PGStore) DraftCards(ctx context.Context, limit int) ([]DraftCard, error
 	return out, rows.Err()
 }
 
+// lockedDraft locks draft id after its message (lockMessage, the lock order
+// every draft write takes), answering the message's in-flight check as well.
+func lockedDraft(ctx context.Context, tx pgx.Tx, id int64) (Draft, error) {
+	var messageID int64
+	err := tx.QueryRow(ctx, `SELECT message_id FROM plugin_reply_drafts WHERE id = $1`, id).Scan(&messageID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Draft{}, ErrNotFound
+	}
+	if err != nil {
+		return Draft{}, err
+	}
+	_, inFlight := lockMessage(ctx, tx, messageID, id)
+	if inFlight != nil && !errors.Is(inFlight, ErrReplyInFlight) {
+		return Draft{}, inFlight
+	}
+	cur, err := scanDraft(tx.QueryRow(ctx, `SELECT `+draftCols+` FROM plugin_reply_drafts WHERE id = $1 FOR UPDATE`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Draft{}, ErrNotFound
+	}
+	if err != nil {
+		return Draft{}, err
+	}
+	return cur, inFlight
+}
+
 // DecideDraft approves or rejects one of the principal's PENDING, unexpired
 // drafts (ErrDraftState otherwise). An approved draft is what the plugin's next
-// claim may hand out.
+// claim may hand out. Approving while another reply to the same message is in
+// flight is ErrReplyInFlight; rejecting is always allowed.
 func (s *PGStore) DecideDraft(ctx context.Context, id int64, approve bool) (Draft, error) {
 	var d Draft
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		if err := sweepDrafts(ctx, tx); err != nil {
-			return err
-		}
-		cur, err := scanDraft(tx.QueryRow(ctx, `SELECT `+draftCols+` FROM plugin_reply_drafts WHERE id = $1 FOR UPDATE`, id))
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrNotFound
+		cur, err := lockedDraft(ctx, tx, id)
+		if errors.Is(err, ErrReplyInFlight) && (!approve || cur.Status != DraftPending) {
+			err = nil
 		}
 		if err != nil {
+			d = cur
 			return err
 		}
 		if cur.Status != DraftPending {
@@ -368,34 +436,49 @@ func (s *PGStore) DecideDraft(ctx context.Context, id int64, approve bool) (Draf
 }
 
 // ReapproveDraft is the owner's NEW decision on an UNCONFIRMED draft — one a
-// plugin claimed and never reported on, which may or may not have been sent:
-// it is approved again (a fresh approved_at, the old claim cleared) and the
-// plugin's next claim may hand it out once more. Only an unconfirmed draft not
-// past its expiry may be re-approved (ErrDraftState otherwise). Audited with the
-// claim it replaces.
+// plugin claimed and never reported on, which may or may not have been sent. It
+// returns a NEW draft, approved now, with the same text, message and expiry; the
+// old row keeps its claim and its `unconfirmed` state and names the new one
+// (reapproved_as, migration 0016).
+//
+// 🔴 A NEW ID, ON PURPOSE. Clearing the old row's claim and handing it out again
+// under the same id would (a) let a late result from the FIRST claim settle the
+// SECOND, and (b) be skipped by a plugin that, as docs/plugins.md tells it to,
+// never sends one draft id twice. A new row has neither problem.
+//
+// Only an unconfirmed draft not yet re-approved, not past its expiry, whose
+// agent still exists, may be re-approved (ErrDraftState otherwise); and not
+// while another reply to the message is in flight (ErrReplyInFlight).
 func (s *PGStore) ReapproveDraft(ctx context.Context, id int64) (Draft, error) {
 	var d Draft
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		if err := sweepDrafts(ctx, tx); err != nil {
-			return err
-		}
-		cur, err := scanDraft(tx.QueryRow(ctx, `SELECT `+draftCols+` FROM plugin_reply_drafts WHERE id = $1 FOR UPDATE`, id))
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrNotFound
+		cur, err := lockedDraft(ctx, tx, id)
+		if errors.Is(err, ErrReplyInFlight) && (cur.Status != DraftUnconfirmed || cur.ReapprovedAs != nil) {
+			err = nil // not re-approvable anyway: the state check below answers
 		}
 		if err != nil {
+			d = cur
 			return err
 		}
-		if cur.Status != DraftUnconfirmed || !cur.ExpiresAt.After(time.Now()) {
+		var live bool
+		if err := tx.QueryRow(ctx, `SELECT expires_at > now() FROM plugin_reply_drafts WHERE id = $1`, id).Scan(&live); err != nil {
+			return err
+		}
+		if cur.Status != DraftUnconfirmed || cur.ReapprovedAs != nil || cur.AgentID == nil || !live {
 			d = cur
 			return ErrDraftState
 		}
-		if d, err = scanDraft(tx.QueryRow(ctx, `UPDATE plugin_reply_drafts
-			SET status = 'approved', decided_at = now(), approved_at = now(), claimed_at = NULL, lease_until = NULL
-			WHERE id = $1 RETURNING `+draftCols, id)); err != nil {
+		if d, err = scanDraft(tx.QueryRow(ctx, `
+			INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at,
+			                                 status, decided_at, approved_at)
+			VALUES ($1, $2, $3, $4, $5, $6, 'approved', now(), now()) RETURNING `+draftCols,
+			cur.OwnerID, cur.MessageID, *cur.AgentID, cur.AgentName, cur.Body, cur.ExpiresAt)); err != nil {
 			return err
 		}
-		detail := map[string]any{"message_id": d.MessageID}
+		if _, err := tx.Exec(ctx, `UPDATE plugin_reply_drafts SET reapproved_as = $2 WHERE id = $1`, id, d.ID); err != nil {
+			return err
+		}
+		detail := map[string]any{"message_id": d.MessageID, "new_draft_id": d.ID}
 		if cur.ClaimedAt != nil {
 			detail["previous_claimed_at"] = cur.ClaimedAt.UTC().Format(time.RFC3339)
 		}
@@ -409,7 +492,8 @@ func (s *PGStore) ReapproveDraft(ctx context.Context, id int64) (Draft, error) {
 // false when there is none.
 //
 // 🔴 `claimed_at IS NULL` IS THE AT-MOST-ONCE RULE (see the file header): a
-// draft is claimed once, and only an owner's re-approval clears the claim. SKIP
+// draft is claimed once and its claim is never cleared; an owner's re-approval
+// makes a new draft (ReapproveDraft). SKIP
 // LOCKED lets two claims race without both taking one draft.
 func (s *PGStore) ClaimDraft(ctx context.Context, pluginID int64) (Claim, bool, error) {
 	var c Claim
@@ -444,14 +528,14 @@ func (s *PGStore) ClaimDraft(ctx context.Context, pluginID int64) (Claim, bool, 
 	if err != nil || !found {
 		return Claim{}, false, err
 	}
+	c.ApprovedAt = c.ApprovedAt.UTC()
 	return c, true, nil
 }
 
 // FinishDraft records plugin pluginID's result for a draft IT claimed: sent when
 // r.OK, failed otherwise. The same result again answers the stored draft
 // unchanged; the other result is ErrResultConflict. A draft of another plugin is
-// ErrNotFound; one never claimed (or re-approved since the claim) is
-// ErrDraftState.
+// ErrNotFound; one never claimed is ErrDraftState.
 //
 // A result arriving after the lease lapsed (the draft is `unconfirmed`) is still
 // recorded: it is exactly the fact the owner would otherwise have to find out
@@ -495,7 +579,8 @@ func (s *PGStore) FinishDraft(ctx context.Context, pluginID, draftID int64, r Dr
 			return err
 		}
 		return audit(ctx, tx, "plugin.draft."+string(want), DraftObject(draftID), map[string]any{
-			"plugin_id": pluginID, "external_ref": r.ExternalRef, "late": cur.Status == DraftUnconfirmed,
+			"plugin_id": pluginID, "external_ref": r.ExternalRef,
+			"late": cur.Status == DraftUnconfirmed || (cur.LeaseUntil != nil && !cur.LeaseUntil.After(time.Now())),
 		})
 	})
 	return d, err

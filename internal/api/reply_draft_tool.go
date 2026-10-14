@@ -59,6 +59,8 @@ func (s *Server) toolReplyDraft(ctx context.Context, a agents.Agent, arguments s
 		return toolErr("message_id %d cannot be replied to: its plugin marked it as not replyable. Do not draft a reply to it", in.MessageID)
 	case errors.Is(err, plugins.ErrInvalid):
 		return toolErr("%s", strings.TrimPrefix(err.Error(), plugins.ErrInvalid.Error()+": "))
+	case errors.Is(err, plugins.ErrReplyInFlight):
+		return toolErr("a reply to message_id %d is already approved and on its way; wait until it is sent before drafting another", in.MessageID)
 	case errors.Is(err, plugins.ErrTooManyPendingDrafts):
 		return toolErr("%s", strings.TrimPrefix(err.Error(), "plugins: "))
 	default:

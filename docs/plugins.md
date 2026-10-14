@@ -134,7 +134,7 @@ that long-polls keeps delivery moving.
 | `200 {"draft_id", "status"}` | recorded: `sent` or `failed`. The same result again is also `200` and changes nothing. |
 | `400 {"error"}` | `ok` is missing, or a field breaks a rule |
 | `404 {"error"}` | no such reply claimed by this plugin (another plugin's, another owner's, or none) |
-| `409 {"error", "draft_id", "status"}` | the reply already has the **other** result, or it is not claimed by you: it was never claimed, or your owner approved it again after your lease lapsed |
+| `409 {"error", "draft_id", "status"}` | the reply already has the **other** result, or it was never claimed |
 
 ### At most once
 
@@ -144,16 +144,25 @@ receive the same reply.
 If no result arrives within the 2-minute lease, the reply becomes
 **unconfirmed**. muster does not know whether you sent it, so it **never offers
 it again** on its own. Your owner sees it on `/plugins`, can check the upstream,
-and may approve it again. That is a new decision, recorded in the audit log,
-after which the next claim receives it once more.
+and may approve it again. That is a new decision, recorded in the audit log, and
+it makes a **new draft with a new `draft_id`** and the same text, which the next
+claim receives.
 
-A result that arrives after the lease lapsed is still recorded, as long as the
-owner has not approved the reply again.
+A result that arrives after the lease lapsed is still recorded, on the draft it
+was claimed as. It never settles the re-approved copy.
+
+Only one reply to a message is in flight at a time: while one is approved and
+has no result, no other draft for that message can be filed or approved.
+
+Set your HTTP client's timeout to `wait_seconds` plus at least 10 seconds. A
+claim whose answer you never received is still a claim: the reply becomes
+unconfirmed when its lease lapses, and your owner has to approve it again.
 
 So a plugin should:
 
 1. record the `draft_id` durably **before** sending upstream;
-2. never send the same `draft_id` twice, even after a restart;
+2. never send the same `draft_id` twice, even after a restart (a re-approved
+   reply arrives under a new `draft_id`, so this never blocks one);
 3. post the result as soon as it knows, and post it again if it did not see an
    answer (a repeat is safe).
 
@@ -233,7 +242,8 @@ chief, on the agent gateway and over `/mcp`, and only while plugins are on.
   name, a credential-shaped string, an infrastructure word, or one of the
   deployment's own names (`MUSTER_FLOW_AGENT_DENY_WORDS`) is refused. The screen
   is a heuristic; your approval is the control.
-- A new draft for the same message **supersedes** the pending one.
+- A new draft for the same message **supersedes** the pending one. While a
+  reply to the message is approved and not yet sent, no new draft is accepted.
 - At most **20** drafts per agent may await you at once.
 
 You get a `plugin` push, "A reply draft awaits your approval". Its words are
@@ -264,10 +274,11 @@ Each draft is a card on `/plugins`:
 | `pending` | awaiting your decision |
 | `approved` | the next claim will hand it to the plugin, or already has (leased) |
 | `sent` / `failed` | the plugin's result |
-| `unconfirmed` | the plugin claimed it and never reported; it may have been sent. Offered again only if you **approve it again** (fresh sign-in, audited). |
+| `unconfirmed` | the plugin claimed it and never reported; it may have been sent. Never offered again. **Approve again** (fresh sign-in, audited) makes a new approved draft with the same text, within the original 7 days. |
 | `rejected` | you said no |
 | `superseded` | the chief wrote a newer draft for the same message |
 | `expired` | not sent within 7 days of being written, whether pending or approved |
 
-Every decision, claim, result and lapse writes a `plugin.draft.*` row to the
-audit log.
+Filing, every decision, claim, result, lapse and expiry writes a
+`plugin.draft.*` row to the audit log. A superseded draft is recorded as a
+count on the filing that replaced it.

@@ -147,8 +147,8 @@ func (s *Server) handlePluginDraftClaim(w http.ResponseWriter, r *http.Request) 
 // handlePluginDraftResult is POST /plugin/v1/drafts/{id}/result {ok,
 // external_ref, detail}: settle a draft this plugin claimed as sent (ok) or
 // failed. 200 {draft_id, status}; the same result again is 200 and changes
-// nothing; the other result is 409; a draft never claimed (or re-approved since)
-// is 409; another plugin's, or none, is 404.
+// nothing; the other result is 409; a draft never claimed is 409; another
+// plugin's, or none, is 404.
 func (s *Server) handlePluginDraftResult(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 {
@@ -177,7 +177,7 @@ func (s *Server) handlePluginDraftResult(w http.ResponseWriter, r *http.Request)
 		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "the draft already settled with the other result",
 			"draft_id": d.ID, "status": string(d.Status)})
 	case errors.Is(err, plugins.ErrDraftState):
-		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "the draft is not claimed by this plugin (never claimed, or approved again since)",
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "the draft was never claimed",
 			"draft_id": d.ID, "status": string(d.Status)})
 	default:
 		s.logger.Printf("plugins: plugin %d result for draft %d: %v", p.ID, id, err)
@@ -274,6 +274,10 @@ func (s *Server) decideDraft(w http.ResponseWriter, r *http.Request, how string)
 	case errors.Is(err, plugins.ErrDraftState):
 		s.renderPluginsPage(w, r, http.StatusConflict, "", "That draft is no longer awaiting this decision (it is "+string(d.Status)+").")
 		return
+	case errors.Is(err, plugins.ErrReplyInFlight):
+		s.renderPluginsPage(w, r, http.StatusConflict, "", "Another reply to that message is already approved and not yet sent. "+
+			"Wait for its result before approving a second one.")
+		return
 	default:
 		s.logger.Printf("plugins: draft %d %s: %v", id, how, err)
 		s.renderPluginsPage(w, r, http.StatusInternalServerError, "", "The decision could not be recorded.")
@@ -324,8 +328,14 @@ func draftStatusText(d plugins.Draft) string {
 	case plugins.DraftFailed:
 		return "The plugin could not send it" + at(d.FinishedAt)
 	case plugins.DraftUnconfirmed:
-		return "Unconfirmed: the plugin collected it" + at(d.ClaimedAt) + " and never said whether it was sent. " +
-			"It may have been. muster will not offer it again unless you approve it again."
+		s := "Unconfirmed: the plugin collected it" + at(d.ClaimedAt) + " and never said whether it was sent. It may have been. "
+		switch {
+		case d.ReapprovedAs != nil:
+			return s + "You approved it again, as draft " + strconv.FormatInt(*d.ReapprovedAs, 10) + "."
+		case !d.ExpiresAt.After(time.Now()):
+			return s + "It is past its 7 days and can no longer be approved again."
+		}
+		return s + "muster will not offer it again unless you approve it again."
 	case plugins.DraftRejected:
 		return "Rejected" + at(d.DecidedAt)
 	case plugins.DraftSuperseded:
@@ -381,6 +391,9 @@ func draftCardHTML(c plugins.DraftCard) string {
 <form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject"><button type="submit" class="` + flowsQuietButton + `" data-draft-reject>Reject</button></form>
 `)
 	case plugins.DraftUnconfirmed:
+		if d.ReapprovedAs != nil || !d.ExpiresAt.After(time.Now()) {
+			break
+		}
 		b.WriteString(`<form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reapprove" data-step-up-form><button type="submit" class="` +
 			flowsQuietButton + `" data-draft-reapprove>Approve again (it may be sent twice)</button></form>
 `)

@@ -14,7 +14,7 @@ import (
 // sender's text is HTML-escaped in its own labelled box; only a pending draft
 // has Approve/Reject and only an unconfirmed one has "Approve again".
 func TestADraftCardShowsExactlyWhatIsApproved(t *testing.T) {
-	at := time.Date(2000, 1, 2, 3, 4, 5, 0, time.UTC)
+	at := time.Now().UTC()
 	c := plugins.DraftCard{
 		Draft: plugins.Draft{ID: 9, AgentName: "chief", Body: "café\nsee you", Status: plugins.DraftPending,
 			CreatedAt: at, ExpiresAt: at.Add(plugins.DraftTTL)},
@@ -38,6 +38,19 @@ func TestADraftCardShowsExactlyWhatIsApproved(t *testing.T) {
 			t.Errorf("the pending card carries %q", bad)
 		}
 	}
+	// An unconfirmed draft already approved again, or past its expiry, offers no
+	// second re-approval.
+	c.Draft.Status = plugins.DraftUnconfirmed
+	again := int64(10)
+	c.Draft.ReapprovedAs = &again
+	if got := draftCardHTML(c); strings.Contains(got, "data-draft-reapprove") || !strings.Contains(got, "as draft 10") {
+		t.Errorf("a re-approved unconfirmed card:\n%s", got)
+	}
+	c.Draft.ReapprovedAs, c.Draft.ExpiresAt = nil, at.Add(-time.Minute)
+	if got := draftCardHTML(c); strings.Contains(got, "data-draft-reapprove") {
+		t.Errorf("an expired unconfirmed card offers re-approval:\n%s", got)
+	}
+	c.Draft.ExpiresAt = at.Add(time.Hour)
 	for st, want := range map[plugins.DraftStatus][2]bool{ // {approve, reapprove}
 		plugins.DraftApproved: {false, false}, plugins.DraftSent: {false, false}, plugins.DraftRejected: {false, false},
 		plugins.DraftUnconfirmed: {false, true}, plugins.DraftExpired: {false, false}, plugins.DraftSuperseded: {false, false},
