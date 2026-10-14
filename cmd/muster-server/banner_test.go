@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"github.com/ZacxDev/muster/internal/plugins"
 	"log"
 	"os"
 	"strings"
@@ -344,6 +345,11 @@ var bannerLedger = []string{
 	// that answers 404 when OFF, and an operator installing muster-mirror needs the
 	// log to say which of the two this deployment is before blaming the host.
 	envMirror,
+	// 🔴 THE PLUGIN INTERFACE IS LEDGERED for the mirror's reason: OFF, every
+	// /plugin/* route answers 404, and a plugin author needs the log to say which
+	// state this deployment is in (and, ON without a gateway, that nothing is
+	// delivered).
+	envPlugins,
 	// 🔴 THE AGENT-FLOW DENY WORDS ARE LEDGERED: unset, the agent door screens
 	// agent-composed text with the generic patterns only, and that fail-open
 	// state must be a loud line, not a silence (the operator's audit of #76).
@@ -649,10 +655,18 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		Provisioner: bannerProvisioner(t, on),
 		Gateway:     bannerGateway(t, on),
 		Transcriber: bannerTranscriber(t, on),
+		// Plugins: the banner branches on ext.Plugins and ext.PluginGateway.
+		Plugins:       bannerStubPlugins{},
+		PluginGateway: bannerStubPluginGateway{},
 	}, &pgxpool.Pool{})
 	offOut = renderBannerWithPool(t, config{}, api.Extensions{}, nil)
 	return onOut, offOut
 }
+
+// bannerStubPlugins and bannerStubPluginGateway are present-but-inert: the
+// banner only asks whether they are wired.
+type bannerStubPlugins struct{ plugins.Store }
+type bannerStubPluginGateway struct{ plugins.Gateway }
 
 func TestTheBannerAnnouncesEveryLedgeredVariableInBothDirections(t *testing.T) {
 	onOut, offOut := bannerBothDirections(t)

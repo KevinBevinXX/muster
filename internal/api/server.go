@@ -48,6 +48,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/github"
+	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/sse"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -102,6 +103,11 @@ type Server struct {
 	// graceful shutdown can wait for them. Add happens on the CALLER's
 	// goroutine; see goNotify.
 	pushInFlight sync.WaitGroup
+	// pluginInFlight registers every plugin message delivery started by the
+	// message route (plugins.go), so shutdown waits for each to record its
+	// outcome; pluginDeliverer is built by UseExtensions (nil: none wired).
+	pluginInFlight  sync.WaitGroup
+	pluginDeliverer *plugins.Deliverer
 
 	// terminals is every live agent terminal, so a shutdown can end them and
 	// wait for their releases. See EndTerminals.
@@ -453,6 +459,8 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerMirrorRoutes(mux)
 	// Browser flows (internal/flows): /flows, /api/flows/jobs, /runner/flows/*.
 	s.registerFlowRoutes(mux)
+	// Plugins (internal/plugins): /plugins and /plugin/v1/*, 404 while off.
+	s.registerPluginRoutes(mux)
 	// muster-native Web Push (push_routes.go): the subscribe flow and the
 	// account page's Notifications section.
 	s.registerPushRoutes(mux)

@@ -35,6 +35,7 @@ import (
 	"github.com/ZacxDev/muster/internal/gotrue/gotruetest"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/sse"
@@ -105,6 +106,10 @@ const (
 	// 0012): no session, agent, hook or personal credential opens it, and a
 	// runner token acts as its owner — so B's runner must reach nothing of A's.
 	classRunner routeClass = "runner"
+	// classPlugin is a PLUGIN token's door (/plugin/v1/*, 0015): no other
+	// credential opens it, and a plugin token acts as its owner — so B's plugin
+	// must reach nothing of A's.
+	classPlugin routeClass = "plugin"
 )
 
 // isolationClasses classifies EVERY route in routes.golden. Exhaustive both
@@ -310,6 +315,14 @@ var isolationClasses = map[string]routeClass{
 	"POST /runner/flows/{id}/heartbeat": classRunner,
 	"POST /runner/flows/{id}/result":    classRunner,
 
+	// Plugins (0015). The page and its forms are the session tier and the
+	// revoke names A's plugin by id; the message route is a plugin token only
+	// and names no object (a message lands in the token owner's own rows).
+	"GET /plugins":              classList,
+	"POST /plugins":             classList,
+	"POST /plugins/{id}/revoke": classParam,
+	"POST /plugin/v1/messages":  classPlugin,
+
 	// The mirrored rendered view (tunnel v2) addresses its session like the
 	// mirrored terminal above (?host=&session=); the
 	// send carries host and session in its FORM, which fill() also sets.
@@ -360,6 +373,8 @@ var wantCanaryForA = []string{
 	// Web Push: the account page lists the caller's devices, and A's carries
 	// the canary in its user agent.
 	"GET /account",
+	// Plugins: A's second plugin is canary-labelled, so A's page shows it.
+	"GET /plugins",
 }
 
 func TestEveryRouteIsClassifiedForIsolation(t *testing.T) {
@@ -477,6 +492,11 @@ type isoWorld struct {
 	aJob, aJob2  flows.Job
 	aRunner2     flows.RunnerToken
 	aFlowReq     flows.FlowRequest // A's agent's pending browser-flow request (PR 4)
+	// Plugins (0015): each user's plugin token, and A's SECOND plugin
+	// (canary-labelled) — the revoke route's object, so revoking it never
+	// revokes a credential.
+	pluginTokens map[int64]string
+	aPlugin2     plugins.Plugin
 }
 
 func newIsoWorld(t *testing.T) *isoWorld {
@@ -655,6 +675,17 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		Host: w.flowHost, Instance: "isoinst", Params: map[string]string{"thread": w.canary + " asked"}}, w.canary+" because")
 	must(err, "a flow request")
 
+	// Plugins: a token each, and A's canary-labelled second plugin.
+	ps := plugins.NewPG(pool)
+	w.pluginTokens = map[int64]string{}
+	for _, u := range []isoUser{w.a, w.b} {
+		tok, _, err := ps.Create(as2(u), "iso-inbox", "Iso inbox", "iso")
+		must(err, u.name+" plugin")
+		w.pluginTokens[u.uid] = tok
+	}
+	_, w.aPlugin2, err = ps.Create(ua, "iso-second", w.canary+" plugin", "iso")
+	must(err, "a second plugin")
+
 	w.aIdentities = []string{w.a.agent.Name, agents.ChiefNameFor(w.a.uid), w.aSessionLink, w.aTag, w.aProject}
 	w.opInvite, err = users.NewPG(pool).CreateInvite(ctx, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession},
 		bytes.Repeat([]byte{byte(time.Now().UnixNano())}, 32), "", time.Now().Add(time.Hour))
@@ -662,14 +693,15 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	w.objA = isoObjs{ccAccount: w.objA.ccAccount, user: w.a.uid, invite: w.opInvite.ID, task: w.a.task.ID, agent: w.a.agent.ID, grant: w.aGrantID, comment: w.aComment.ID,
 		attach: w.aAttachment.ID, chat: w.aChatSession.ID, agentName: w.a.agent.Name, connName: w.aConnName,
 		tag: w.aTag, link: w.aSessionLink, mirrorHost: w.canary + "-host", mirrorSession: "main", token: w.aToken2.ID,
-		pushDevice: w.objA.pushDevice, flowJob: w.aJob.ID, runnerTok: w.aRunner2.ID, flowReq: w.aFlowReq.ID}
+		pushDevice: w.objA.pushDevice, flowJob: w.aJob.ID, runnerTok: w.aRunner2.ID, flowReq: w.aFlowReq.ID,
+		plugin: w.aPlugin2.ID}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
 	const ghostID = 9_000_000_000
 	w.ghost = isoObjs{user: ghostID, invite: ghostID, task: ghostID, agent: ghostID, grant: ghostID, comment: ghostID, attach: ghostID, chat: ghostID,
 		agentName: "ghost-agent" + w.suffix, connName: "ghostconn" + w.suffix, tag: "ghosttag", link: "ghost-sess-" + w.suffix,
 		mirrorHost: "ghost-host", mirrorSession: "main", ccAccount: "ghostacct", token: ghostID, pushDevice: ghostID,
-		flowJob: ghostID, runnerTok: ghostID, flowReq: ghostID, passkey: "00000000-0000-4000-a000-00000000ghost"}
+		flowJob: ghostID, runnerTok: ghostID, flowReq: ghostID, plugin: ghostID, passkey: "00000000-0000-4000-a000-00000000ghost"}
 
 	// A's push device: through the real store, as the claim the subscribe route
 	// makes. Its user agent and endpoint carry the canary.
@@ -703,7 +735,10 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		Provisioner: w.prov, Gateway: w.prov, Connectors: cs,
 		Mirror: &isoMirror{owner: w.a.uid, host: w.canary + "-host"},
 		Flows:  flows.NewPG(pool),
-		Push:   push.NewService(pushStore, w.pusher, push.VAPIDConfig{PublicKey: "iso-walk-vapid-public"}, log.New(io.Discard, "", 0)),
+		// Plugins ON, with no gateway: a message B's plugin posts is stored as
+		// B's and stays queued.
+		Plugins: plugins.NewPG(pool),
+		Push:    push.NewService(pushStore, w.pusher, push.VAPIDConfig{PublicKey: "iso-walk-vapid-public"}, log.New(io.Discard, "", 0)),
 		ConnectorPolicy: connectors.Policy{AllowLoopback: true, InsecureHTTP: true,
 			Resolve: func(_ context.Context, host string) ([]netip.Addr, error) {
 				if strings.HasSuffix(host, ".fake.test") {
@@ -823,6 +858,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 			`DELETE FROM push_subscriptions WHERE owner_id = ANY($1)`, `DELETE FROM push_preferences WHERE owner_id = ANY($1)`,
 			`DELETE FROM api_tokens WHERE user_id = ANY($1)`, `DELETE FROM audit_log WHERE user_id = ANY($1)`,
 			`DELETE FROM flow_requests WHERE owner_id = ANY($1)`, `DELETE FROM flow_jobs WHERE owner_id = ANY($1)`, `DELETE FROM flow_runner_tokens WHERE owner_id = ANY($1)`,
+			`DELETE FROM plugins WHERE owner_id = ANY($1)`,
 			`DELETE FROM users WHERE id = ANY($1)`,
 		} {
 			_, _ = pool.Exec(bg, q, ids)
@@ -842,6 +878,7 @@ type cred struct {
 	hook        bool   // the shared machine hook token (user 1)
 	apiToken    string // a user's own personal API token (mst_…)
 	runnerToken string // a user's own browser-flow runner token (mfr_…)
+	pluginToken string // a user's own plugin token (mpl_…)
 }
 
 func (c cred) String() string {
@@ -858,6 +895,8 @@ func (c cred) String() string {
 		return "api-token"
 	case c.runnerToken != "":
 		return "runner-token"
+	case c.pluginToken != "":
+		return "plugin-token"
 	}
 	return "none"
 }
@@ -910,6 +949,8 @@ func (w *isoWorld) do(h http.Handler, method, path, body string, c cred) *httpte
 		r.Header.Set("Authorization", "Bearer "+c.apiToken)
 	case c.runnerToken != "":
 		r.Header.Set("Authorization", "Bearer "+c.runnerToken)
+	case c.pluginToken != "":
+		r.Header.Set("Authorization", "Bearer "+c.pluginToken)
 	}
 	rec := httptest.NewRecorder()
 	func() {
@@ -926,6 +967,7 @@ type isoObjs struct {
 	task, agent, grant, comment, attach, chat int64
 	token                                     int64  // a personal API token's id
 	flowJob, runnerTok, flowReq               int64  // a browser-flow job's, runner token's and agent request's id
+	plugin                                    int64  // a plugin's id (0015)
 	passkey                                   string // a GoTrue passkey id (the gotrue twin's fake)
 	pushDevice                                int64  // a Web Push device's id
 	agentName, connName, tag, link            string
@@ -955,6 +997,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 	case strings.Contains(path, "/runner-tokens/{id}"):
 		// Before "tokens/{id}" below, which would otherwise match it.
 		id = strconv.FormatInt(o.runnerTok, 10)
+	case strings.HasPrefix(path, "/plugins/{id}"):
+		id = strconv.FormatInt(o.plugin, 10)
 	case strings.Contains(path, "/flows/requests/{id}"):
 		id = strconv.FormatInt(o.flowReq, 10)
 	case strings.Contains(path, "flows/jobs/{id}") || strings.HasPrefix(path, "/runner/flows/{id}"):
@@ -999,6 +1043,11 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 			path += "?state=x&code=y"
 		}
 		return method, path, ""
+	}
+	if strings.HasPrefix(path, "/plugin/") {
+		// A whole valid message: what B's plugin posts is accepted as B's own.
+		return method, path, `{"external_id":"iso-` + w.suffix + `-` + strconv.FormatInt(actor.uid, 10) +
+			`","sender":"iso","subject":"iso-write","body":"iso-write"}`
 	}
 	if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/agent/") || path == "/mcp" || strings.HasPrefix(path, "/connect/") ||
 		strings.HasPrefix(path, "/runner/") {
@@ -1050,7 +1099,8 @@ func (w *isoWorld) snapshot() map[string]string {
 	out := map[string]string{}
 	for _, tbl := range []string{"notes", "note_comments", "note_attachments", "task_sessions", "agents",
 		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "github_connection", "mirror_tokens",
-		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens", "push_subscriptions", "push_preferences", "flow_requests"} {
+		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens", "push_subscriptions", "push_preferences", "flow_requests",
+		"plugins", "plugin_messages", "plugin_reply_drafts"} {
 		var js string
 		if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t.id)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
 			// task_sessions/github_connection have no `id` ordering column in every
@@ -1232,7 +1282,7 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 
 	// --- user B, a member, through every one of B's credentials ---
 	bResults := w.walkAs(w.b, w.objA, []cred{{sessionUser: w.b.uid}, {gotrueUser: w.b.uid}, {agentToken: w.b.token},
-		{apiToken: w.apiTokens[w.b.uid]}, {runnerToken: w.runnerTokens[w.b.uid]}}, routes)
+		{apiToken: w.apiTokens[w.b.uid]}, {runnerToken: w.runnerTokens[w.b.uid]}, {pluginToken: w.pluginTokens[w.b.uid]}}, routes)
 	w.checkOutsider(t, "B", bResults)
 	// The operator's own data (the router's directory list) is not A's, so the
 	// canary check above cannot see it: a MEMBER must not get it either.
@@ -1261,6 +1311,21 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 	}
 	if tokAdmitted < 8 {
 		t.Errorf("CONTROL: B's personal API token was admitted on only %d routes — the leg is not walking", tokAdmitted)
+	}
+	// The plugin-token leg too: B's plugin must have been ADMITTED on its own
+	// door (its message stored as B's), or its clean answers everywhere else are
+	// only the refusal of an unknown token.
+	plugAdmitted := 0
+	for _, res := range bResults {
+		if strings.HasPrefix(res.via, "plugin-token") && is2xx(res.status) && isolationClasses[res.route] != classPublic {
+			plugAdmitted++
+			if isolationClasses[res.route] != classPlugin {
+				t.Errorf("B's plugin token was answered %d on %s, which is not the plugin door", res.status, res.route)
+			}
+		}
+	}
+	if plugAdmitted != 1 {
+		t.Errorf("CONTROL: B's plugin token was admitted on %d routes; want exactly its own door", plugAdmitted)
 	}
 	if len(bResults) < 5*len(isolationClasses) {
 		t.Fatalf("the walk drove %d requests for %d routes", len(bResults), len(isolationClasses))

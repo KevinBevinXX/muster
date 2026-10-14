@@ -82,6 +82,7 @@ offered only in gotrue mode, and only when GoTrue reports `passkeys_enabled`.
 | `MUSTER_SERVICE_TOKEN` | user 1 | It also requires an `X-Muster-Actor` header. It fails closed (503 while unset) and must be at least 32 characters. |
 | Mirror token (`mmt_…`) | the host it was minted for | See [mirroring.md](mirroring.md). |
 | Flow runner token (`mfr_…`) | its owner, confined to one host | See [browser-flows.md](browser-flows.md). |
+| Plugin token (`mpl_…`) | its owner, on `/plugin/v1/*` only | Minted at `/plugins` and shown once. Every other route refuses it. See [plugins.md](plugins.md). |
 
 The two shared secrets may not start with `mst_`. The server refuses to boot if
 one does.

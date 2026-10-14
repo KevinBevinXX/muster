@@ -140,6 +140,7 @@ var pgBackedPackages = []string{
 	"internal/memorelay",
 	"internal/mirror",
 	"internal/notes",
+	"internal/plugins",
 	// muster-native Web Push (migration 0013). "A member's principal (and the
 	// admin's) reads and writes only its own subscriptions", "a claim moves a
 	// shared device and nothing else" and "a stale handle cannot touch a row
