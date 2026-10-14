@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -82,7 +83,22 @@ type ClaudePane struct {
 	Gen string
 	// Busy: Claude Code reports a turn running.
 	Busy bool
+	// Source says how Transcript was found: SourcePaneMap, SourceSessions or
+	// SourceGuessed (see ClaudeLocator).
+	Source string
 }
+
+// How a ClaudePane's transcript was resolved, most to least authoritative.
+const (
+	// SourcePaneMap: the pane map's entry for this pane, validated against the
+	// process running in the pane (ClaudeLocator.PaneMapDir).
+	SourcePaneMap = "pane-map"
+	// SourceSessions: Claude Code's own sessions/<pid>.json (following a
+	// parked background job to the job's session).
+	SourceSessions = "sessions"
+	// SourceGuessed: the newest transcript in the process's cwd — a guess.
+	SourceGuessed = "guessed"
+)
 
 // pane is one tmux pane as list-panes reports it.
 type pane struct {
@@ -95,14 +111,24 @@ type pane struct {
 //
 // HOW (decided here, see the PR for the alternatives):
 //
+//  0. THE PANE MAP, when PaneMapDir is set: a file per pane written by a Claude
+//     Code hook on every event that carries the conversation's id — so it names
+//     the conversation the pane SHOWS NOW. It is believed only after it is
+//     proved to still describe this pane (paneMapEntry.valid); anything else
+//     falls through to 2. Why it outranks 2: Claude Code does NOT rewrite
+//     sessions/<pid>.json when the conversation in a process changes id — a
+//     conversation moved to a background job (/bg) keeps the CLI's file naming
+//     the session it was forked FROM, for hours.
 //  1. Walk the pane's process tree from its root process (#{pane_pid}),
 //     breadth-first, to the nearest process that IS Claude Code (isClaude). A
 //     shell, `nix develop`, a wrapper script in between is fine.
 //  2. Claude Code records itself in <home>/sessions/<pid>.json — {sessionId,
-//     cwd, status}, written by the CLI for its own peers and kept current
-//     (status flips busy/idle per turn; a /clear moves sessionId). That names the
-//     transcript exactly: <home>/projects/<slug(cwd)>/<sessionId>.jsonl, and it
-//     is unambiguous when several sessions share one cwd.
+//     cwd, status}, written by the CLI for its own peers (status flips busy/idle
+//     per turn; a /clear moves sessionId). That names the transcript exactly:
+//     <home>/projects/<slug(cwd)>/<sessionId>.jsonl, and it is unambiguous when
+//     several sessions share one cwd. When the file says the CLI has a
+//     background job PARKED (parkedJobId), the pane shows that job: the live
+//     job's own sessions file (kind "bg", the same jobId) names the session.
 //  3. Fallback, for a CLI that writes no sessions file: the NEWEST *.jsonl in
 //     <home>/projects/<slug(the process's cwd)>/. ⚠ With two CLIs in one cwd and
 //     no sessions files, that is whichever wrote last — the one ambiguity this
@@ -119,6 +145,12 @@ type ClaudeLocator struct {
 	Proc string
 	// Home is Claude Code's config dir ("" = $CLAUDE_CONFIG_DIR, else ~/.claude).
 	Home string
+	// PaneMapDir is the pane map's directory ("" = not consulted). One file per
+	// tmux pane, claude-p<N>.json for pane %N, whose first line is a JSON
+	// object {runtime: "claude", pane_id, tmux_pid, session_id,
+	// transcript_path, claude_pid, claude_start} — the shape a Claude Code hook
+	// writes (the format is documented in README.md, under the mirrored sessions).
+	PaneMapDir string
 }
 
 func (l ClaudeLocator) proc() string {
@@ -144,6 +176,9 @@ type procInfo struct {
 	ppid int
 	comm string
 	argv []string
+	// start is /proc/<pid>/stat field 22 (start time, clock ticks since boot),
+	// as written: what tells a live process from a reused pid.
+	start string
 }
 
 // table reads every process's parent, name and argv once.
@@ -176,6 +211,9 @@ func (l ClaudeLocator) table() (map[int]procInfo, map[int][]int) {
 		}
 		ppid, _ := strconv.Atoi(rest[1])
 		info := procInfo{ppid: ppid, comm: string(stat[open+1 : close])}
+		if len(rest) > 19 {
+			info.start = rest[19]
+		}
 		if cmd, err := os.ReadFile(filepath.Join(dir, "cmdline")); err == nil {
 			for _, a := range bytes.Split(bytes.TrimRight(cmd, "\x00"), []byte{0}) {
 				info.argv = append(info.argv, string(a))
@@ -240,9 +278,57 @@ func ProjectSlug(cwd string) string { return slugPattern.ReplaceAllString(cwd, "
 
 // sessionFile is <home>/sessions/<pid>.json, the fields read.
 type sessionFile struct {
+	PID       int    `json:"pid"`
 	SessionID string `json:"sessionId"`
 	Cwd       string `json:"cwd"`
 	Status    string `json:"status"`
+	ProcStart string `json:"procStart"`
+	Kind      string `json:"kind"`
+	JobID     string `json:"jobId"`
+	// ParkedJobID: this CLI is showing a background job (/bg), not its own
+	// session.
+	ParkedJobID string `json:"parkedJobId"`
+}
+
+// liveSessions indexes every sessions file whose process is ALIVE — its pid is
+// in procs and, when the file records procStart, has that start time (a sessions
+// file outlives its process, and the pid can be reused). byID is sessionId ->
+// file; byJob is a background job's jobId -> file, and a jobId two live files
+// claim is left out: ambiguous is not resolved.
+type liveSessions struct {
+	byID  map[string]sessionFile
+	byJob map[string]sessionFile
+}
+
+func (l ClaudeLocator) liveSessions(procs map[int]procInfo) liveSessions {
+	out := liveSessions{byID: map[string]sessionFile{}, byJob: map[string]sessionFile{}}
+	m, _ := filepath.Glob(filepath.Join(l.configDir(), "sessions", "*.json"))
+	dup := map[string]bool{}
+	for _, p := range m {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		var sf sessionFile
+		if json.Unmarshal(b, &sf) != nil || !sessionIDPattern.MatchString(sf.SessionID) {
+			continue
+		}
+		pi, alive := procs[sf.PID]
+		if !alive || (sf.ProcStart != "" && sf.ProcStart != pi.start) {
+			continue
+		}
+		out.byID[sf.SessionID] = sf
+		if sf.Kind == "bg" && sf.JobID != "" {
+			if _, seen := out.byJob[sf.JobID]; seen {
+				dup[sf.JobID] = true
+			}
+			out.byJob[sf.JobID] = sf
+		}
+	}
+	for j := range dup {
+		delete(out.byJob, j)
+	}
+	return out
 }
 
 // sessionIDPattern bounds what a sessions file may name: it is joined into a path.
@@ -251,11 +337,18 @@ var sessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,128}$`)
 // resolve is the transcript of Claude Code process pid, or ok=false. guessed
 // says the answer is the FALLBACK's (the newest transcript in the process's
 // cwd), not one the CLI named for itself.
-func (l ClaudeLocator) resolve(pid int) (path, gen string, busy, guessed, ok bool) {
+func (l ClaudeLocator) resolve(pid int, live func() liveSessions) (path, gen string, busy, guessed, ok bool) {
 	cfg := l.configDir()
 	if b, err := os.ReadFile(filepath.Join(cfg, "sessions", strconv.Itoa(pid)+".json")); err == nil {
 		var sf sessionFile
 		if json.Unmarshal(b, &sf) == nil && sessionIDPattern.MatchString(sf.SessionID) {
+			// A parked background job is what the pane shows; its own file is
+			// kept current, the CLI's is not.
+			if sf.ParkedJobID != "" {
+				if job, ok := live().byJob[sf.ParkedJobID]; ok {
+					sf.SessionID, sf.Cwd, sf.Status = job.SessionID, job.Cwd, job.Status
+				}
+			}
 			busy = sf.Status == "busy"
 			name := sf.SessionID + ".jsonl"
 			if sf.Cwd != "" {
@@ -297,6 +390,78 @@ func fileExists(p string) bool {
 	return err == nil && st.Mode().IsRegular()
 }
 
+// paneMapEntry is one pane map file's record (ClaudeLocator.PaneMapDir).
+type paneMapEntry struct {
+	Runtime     string `json:"runtime"`
+	PaneID      string `json:"pane_id"`
+	TmuxPID     string `json:"tmux_pid"`
+	SessionID   string `json:"session_id"`
+	Transcript  string `json:"transcript_path"`
+	ClaudePID   string `json:"claude_pid"`
+	ClaudeStart string `json:"claude_start"`
+}
+
+// paneIDPattern is a tmux pane id; only its digits name a pane map file.
+var paneIDPattern = regexp.MustCompile(`^%[0-9]{1,9}$`)
+
+// fromPaneMap is pane p's transcript from the pane map, or ok=false — when the
+// map is off, has no entry for p, or its entry fails valid. claude is the
+// Claude Code process findClaude found in p.
+func (l ClaudeLocator) fromPaneMap(p pane, claude int, procs map[int]procInfo) (path, gen string, ok bool) {
+	if l.PaneMapDir == "" || !paneIDPattern.MatchString(p.ID) {
+		return "", "", false
+	}
+	f, err := os.Open(filepath.Join(l.PaneMapDir, "claude-p"+p.ID[1:]+".json"))
+	if err != nil {
+		return "", "", false
+	}
+	defer f.Close()
+	var e paneMapEntry
+	if json.NewDecoder(io.LimitReader(f, 64<<10)).Decode(&e) != nil {
+		return "", "", false
+	}
+	if !e.valid(p, claude, procs, filepath.Join(l.configDir(), "projects")) {
+		return "", "", false
+	}
+	return e.Transcript, e.SessionID, true
+}
+
+// valid: the entry still describes pane p as it is NOW. Every clause is a way a
+// pane map entry goes stale or wrong while its file sits there unchanged:
+//
+//   - it is another pane's (pane ids are per server) or another runtime's;
+//   - it was written under a DIFFERENT tmux server: p's root process is a child
+//     of its server, so the recorded server pid must be that parent;
+//   - the Claude Code process it names is not the one in the pane NOW — exited,
+//     replaced, or the pane runs something else (claude == 0). Not merely "a
+//     descendant of the pane": a `claude -p` run from inside a session is a
+//     descendant too, with its own session id, and is not what the pane shows;
+//   - that pid was reused: the recorded start time must be the live one's;
+//   - the transcript is not a file under <home>/projects named <session>.jsonl.
+//     The map is data, not a path to follow anywhere it points.
+func (e paneMapEntry) valid(p pane, claude int, procs map[int]procInfo, projects string) bool {
+	if e.Runtime != "claude" || e.PaneID != p.ID || claude <= 0 {
+		return false
+	}
+	root, ok := procs[p.PID]
+	if !ok || e.TmuxPID == "" || e.TmuxPID != strconv.Itoa(root.ppid) {
+		return false
+	}
+	c, ok := procs[claude]
+	if !ok || e.ClaudePID != strconv.Itoa(claude) || e.ClaudeStart == "" || e.ClaudeStart != c.start {
+		return false
+	}
+	if !sessionIDPattern.MatchString(e.SessionID) || !filepath.IsAbs(e.Transcript) ||
+		filepath.Base(e.Transcript) != e.SessionID+".jsonl" {
+		return false
+	}
+	rel, err := filepath.Rel(projects, filepath.Clean(e.Transcript))
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return false
+	}
+	return fileExists(e.Transcript)
+}
+
 // Locate maps each pane that runs Claude Code to its ClaudePane, keyed by the
 // pane's session (one pane per session: each session's active pane).
 func (l ClaudeLocator) Locate(panes []pane) map[string]ClaudePane {
@@ -327,23 +492,41 @@ func (l ClaudeLocator) LocatePanes(panes []pane) map[string]ClaudePane {
 		return out
 	}
 	procs, children := l.table()
-	guessed := map[string]bool{}
+	// Read every sessions file at most once per lookup, and only when a pane
+	// needs it (a parked job, or a pane-map session's busy flag).
+	var live *liveSessions
+	lives := func() liveSessions {
+		if live == nil {
+			ls := l.liveSessions(procs)
+			live = &ls
+		}
+		return *live
+	}
 	claims := map[string]int{}
 	for _, p := range panes {
 		pid := findClaude(p.PID, procs, children)
 		if pid == 0 {
 			continue
 		}
-		path, gen, busy, guess, ok := l.resolve(pid)
+		if path, gen, ok := l.fromPaneMap(p, pid, procs); ok {
+			busy := lives().byID[gen].Status == "busy"
+			out[p.ID] = ClaudePane{Pane: p.ID, PID: pid, Transcript: path, Gen: gen, Busy: busy, Source: SourcePaneMap}
+			claims[path]++
+			continue
+		}
+		path, gen, busy, guess, ok := l.resolve(pid, lives)
 		if !ok {
 			continue
 		}
-		out[p.ID] = ClaudePane{Pane: p.ID, PID: pid, Transcript: path, Gen: gen, Busy: busy}
-		guessed[p.ID] = guess
+		src := SourceSessions
+		if guess {
+			src = SourceGuessed
+		}
+		out[p.ID] = ClaudePane{Pane: p.ID, PID: pid, Transcript: path, Gen: gen, Busy: busy, Source: src}
 		claims[path]++
 	}
 	for id, cp := range out {
-		if guessed[id] && claims[cp.Transcript] > 1 {
+		if cp.Source == SourceGuessed && claims[cp.Transcript] > 1 {
 			delete(out, id)
 		}
 	}

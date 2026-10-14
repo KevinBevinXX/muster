@@ -51,6 +51,7 @@ const (
 	envInteractive = "MUSTER_MIRROR_INTERACTIVE"
 	envAllowHTTP   = "MUSTER_MIRROR_ALLOW_HTTP"
 	envLabelsFile  = "MUSTER_MIRROR_LABELS_FILE"
+	envPaneMapDir  = "MUSTER_MIRROR_PANE_MAP_DIR"
 )
 
 func main() {
@@ -86,9 +87,10 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	interactive := fs.Bool("interactive", envBool(envInteractive), "let muster open INTERACTIVE terminals on this host — effectively a SHELL here: an interactive tmux client can switch to any session or open a new window (default: read-only; muster then offers no Interactive switch) ("+envInteractive+")")
 	allowHTTP := fs.Bool("allow-http", envBool(envAllowHTTP), "TESTS AND LOCAL DEVELOPMENT ONLY: permit a plain http:// muster URL, which sends the token in cleartext ("+envAllowHTTP+")")
 	labelsFile := fs.String("labels-file", getenv(envLabelsFile), "JSON object {\"<session>\": \"<codename>\"}: muster shows such a session as <codename>:<active window index> instead of its name; unreadable or invalid = no labels, logged, never fatal ("+envLabelsFile+")")
+	paneMapDir := fs.String("pane-map-dir", getenv(envPaneMapDir), "directory of per-pane Claude Code records (claude-p<N>.json for pane %N, written by a hook on every event) that the rendered view resolves a pane's transcript from FIRST, each validated against the process in the pane; empty = not consulted ("+envPaneMapDir+")")
 	list := fs.Bool("list", false, "print the sessions this host would register, and exit (a labelled session's line ends in a label=<label> column)")
-	listClaude := fs.Bool("claude", false, "with -list: also print, for each session whose active pane runs Claude Code, its pane, session id and transcript (what the rendered view would stream)")
-	listWindows := fs.Bool("windows", false, "with -list: print every WINDOW this host would register instead (one line each: session, window id, index, active|-, command, then claude <pane> <state> <session id> <transcript> for a Claude Code window, then label=<label>)")
+	listClaude := fs.Bool("claude", false, "with -list: print, for each WINDOW whose active pane runs Claude Code, what its rendered view would stream (one line each: session, window id, index, claude, pane, state, session id, transcript, source = pane-map|sessions|guessed, then label=<label>); per session on a backend that does not list windows")
+	listWindows := fs.Bool("windows", false, "with -list: print every WINDOW this host would register instead (one line each: session, window id, index, active|-, command, then claude <pane> <state> <session id> <transcript> <source> for a Claude Code window, then label=<label>)")
 	version := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -101,7 +103,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return 0
 	}
 
-	var backend mirrorhost.Backend = mirrorhost.Tmux{Socket: *socket, SocketPath: *socketPath}
+	backend := newTmuxBackend(*socket, *socketPath, *paneMapDir)
 	if e2eBackend != nil {
 		backend = e2eBackend()
 	}
@@ -117,7 +119,15 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	if *list && *listWindows {
 		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		return printWindows(lctx, backend, codenames, stdout, stderr)
+		return printWindows(lctx, backend, codenames, false, stdout, stderr)
+	}
+	// -list -claude is PER WINDOW: a session's windows each run their own
+	// Claude Code, and the rendered view resolves each on its own — a row per
+	// session showed only the active window's.
+	if _, ok := mirrorhost.WindowListerOf(backend); ok && *list && *listClaude {
+		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		return printWindows(lctx, backend, codenames, true, stdout, stderr)
 	}
 	if *list {
 		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -147,7 +157,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 				if p.Busy {
 					state = "busy"
 				}
-				fmt.Fprintf(stdout, "%s\tclaude\t%s\t%s\t%s\t%s%s\n", s, p.Pane, state, p.Gen, p.Transcript, suffix)
+				fmt.Fprintf(stdout, "%s\tclaude\t%s\t%s\t%s\t%s\t%s%s\n", s, p.Pane, state, p.Gen, p.Transcript, p.Source, suffix)
 				continue
 			}
 			fmt.Fprintln(stdout, s+suffix)
@@ -202,8 +212,20 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	return 0
 }
 
-// printWindows is `-list -windows`: every window this host would register.
-func printWindows(ctx context.Context, backend mirrorhost.Backend, codenames map[string]string, stdout, stderr io.Writer) int {
+// newTmuxBackend is tmuxBackend; a test replaces it to see what run passes.
+var newTmuxBackend = tmuxBackend
+
+// tmuxBackend is the host's tmux, with its rendered-view lookup reading the pane
+// map in paneMapDir ("" = none).
+func tmuxBackend(socket, socketPath, paneMapDir string) mirrorhost.Backend {
+	return mirrorhost.Tmux{Socket: socket, SocketPath: socketPath,
+		Claude: mirrorhost.ClaudeLocator{PaneMapDir: paneMapDir}}
+}
+
+// printWindows is `-list -windows`: every window this host would register — or,
+// with claudeOnly (`-list -claude`), each window whose active pane runs Claude
+// Code, without the active/command columns.
+func printWindows(ctx context.Context, backend mirrorhost.Backend, codenames map[string]string, claudeOnly bool, stdout, stderr io.Writer) int {
 	wl, ok := mirrorhost.WindowListerOf(backend)
 	if !ok {
 		fmt.Fprintln(stderr, "muster-mirror: this backend lists sessions only, not windows")
@@ -223,13 +245,19 @@ func printWindows(ctx context.Context, backend mirrorhost.Backend, codenames map
 		if w.Active {
 			active = "active"
 		}
+		if claudeOnly && w.Claude == nil {
+			continue
+		}
 		line := fmt.Sprintf("%s\t%s\t%d\t%s\t%s", w.Session, w.ID, w.Index, active, w.Command)
+		if claudeOnly {
+			line = fmt.Sprintf("%s\t%s\t%d", w.Session, w.ID, w.Index)
+		}
 		if p := w.Claude; p != nil {
 			state := "idle"
 			if p.Busy {
 				state = "busy"
 			}
-			line += fmt.Sprintf("\tclaude\t%s\t%s\t%s\t%s", p.Pane, state, p.Gen, p.Transcript)
+			line += fmt.Sprintf("\tclaude\t%s\t%s\t%s\t%s\t%s", p.Pane, state, p.Gen, p.Transcript, p.Source)
 		}
 		if l := labels[w.Session+"\x00"+w.ID]; l != "" {
 			line += "\tlabel=" + l

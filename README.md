@@ -503,7 +503,8 @@ route to the host, and the host holds no muster credential but its own token.
   (tool, target, ok / error / running), live while a turn runs; thinking is
   never shown, and the Terminal is one tap away. The host finds the session by
   walking the pane's process tree to the `claude` process and reading the
-  CLI's own `~/.claude/sessions/<pid>.json`, then tails that transcript and
+  CLI's own `~/.claude/sessions/<pid>.json` (following a background job the
+  CLI has parked, `/bg`, to the job's own session), then tails that transcript and
   streams bounded events (the last 300 at most on open, capped per field;
   never the file). Nothing is stored on the server. `muster-mirror -list
   -claude` prints what a host resolves. Sending a message from the view pastes
@@ -540,7 +541,7 @@ muster-mirror -url https://muster.example.com -token-file ~/.config/muster-mirro
 `<host>` is a lowercase DNS label and defaults to the short hostname; a token
 minted for one host cannot register another. `-interactive` allows typing,
 `-tmux-socket`/`-tmux-socket-path` pick a non-default tmux server, and `-list`
-prints the sessions (`-list -claude` adds each session's Claude Code pane and
+prints the sessions (`-list -claude` prints each Claude Code window's pane and
 transcript; `-list -windows` prints every window that would be registered).
 `-labels-file` (`MUSTER_MIRROR_LABELS_FILE`) names a JSON object
 `{"<session>": "<codename>"}`: muster then shows each window of such a session
@@ -548,7 +549,19 @@ as `<codename>:<window index>` (`scratch13` → `mango:1`, `mango:2`, …),
 following a window as it is renumbered, with the raw session name beside it;
 the window is still opened by its session name and window id. A missing or
 invalid file is logged and ignored, never fatal, and a session not in it is
-shown as `<session>:<index>`. Every flag also reads a `MUSTER_MIRROR_*`
+shown as `<session>:<index>`. `-pane-map-dir` (`MUSTER_MIRROR_PANE_MAP_DIR`,
+off by default) names a directory a Claude Code hook keeps current — one file
+per tmux pane, `claude-p<N>.json` for pane `%N`, whose first line is
+`{"runtime":"claude","pane_id":"%N","tmux_pid":"<tmux server pid>","session_id":…,"transcript_path":…,"claude_pid":"<the Claude Code process in the pane>","claude_start":"<its /proc/<pid>/stat start time>"}`
+— and a pane's transcript is then resolved from it FIRST, because Claude Code
+does not rewrite its sessions file when a conversation changes id inside one
+process. An entry is used only while it still describes the pane: same tmux
+server, the recorded process is the Claude Code process in that pane now (pid
+and start time), and the transcript is an existing `<session_id>.jsonl` under
+`~/.claude/projects`; otherwise the sessions file decides, and failing that the
+newest transcript in the process's directory (a guess, never shown for two
+panes at once). `-list -claude` prints one row per Claude Code window, ending
+in how it was resolved (`pane-map`, `sessions` or `guessed`). Every flag also reads a `MUSTER_MIRROR_*`
 variable (see `-help`), so a systemd user unit needs no token in its command
 line. If muster sits behind an auth proxy, `/mirror/connect` (GET) must bypass
 it: the route authenticates its own tokens.
