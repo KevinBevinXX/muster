@@ -318,6 +318,14 @@ var isolationClasses = map[string]routeClass{
 	"POST /mirror/view/send": classMirror,
 	// The Terminal view's composer: the same handler, the same form fields.
 	"POST /mirror/terminal/send": classMirror,
+	// A send that came back from a sign-in as a GET: the address is in the query.
+	"GET /mirror/view/send":     classMirror,
+	"GET /mirror/terminal/send": classMirror,
+	// The plain confirm page's form: the same address fields, plus `kind`.
+	"POST /mirror/confirm-send": classMirror,
+	// A message to an agent as a form post, and the GET it can come back as.
+	"POST /agents/{name}/send": classParam,
+	"GET /agents/{name}/send":  classParam,
 }
 
 // wantCanaryForA: list routes that render A's data to A. The negative control
@@ -975,9 +983,11 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 	if path == "/static/" {
 		path = "/static/app.css"
 	}
-	if strings.HasPrefix(path, "/mirror/terminal") || strings.HasPrefix(path, "/mirror/view") {
+	if strings.HasPrefix(path, "/mirror/terminal") || strings.HasPrefix(path, "/mirror/view") || path == "/mirror/confirm-send" {
 		if method == http.MethodPost {
-			return method, path, url.Values{"host": {o.mirrorHost}, "session": {o.mirrorSession}, "text": {"iso-write"}}.Encode()
+			// `kind` and `password` are the plain confirm page's own fields.
+			return method, path, url.Values{"host": {o.mirrorHost}, "session": {o.mirrorSession}, "text": {"iso-write"},
+				"kind": {"terminal"}, "password": {"iso-not-the-password"}}.Encode()
 		}
 		path += "?" + url.Values{"host": {o.mirrorHost}, "session": {o.mirrorSession}}.Encode()
 	}
@@ -1121,7 +1131,7 @@ func (w *isoWorld) walkAs(actor isoUser, o isoObjs, creds []cred, routes []strin
 func namesObject(route string) bool {
 	return paramRE.MatchString(route) || route == "POST /agents" || route == "POST /tasks/merge" ||
 		strings.HasPrefix(route, "GET /mirror/terminal") || strings.HasPrefix(route, "GET /mirror/view") ||
-		route == "POST /mirror/view/send" || route == "POST /mirror/terminal/send"
+		route == "POST /mirror/view/send" || route == "POST /mirror/terminal/send" || route == "POST /mirror/confirm-send"
 }
 
 var paramRE = regexp.MustCompile(`\{[a-z]`)

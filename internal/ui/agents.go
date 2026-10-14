@@ -136,6 +136,9 @@ func AgentsPanel(active bool) g.Node {
 			Class("mb-2 flex items-center gap-2"),
 			H2(Class("text-xs font-medium uppercase tracking-wide text-muted"), g.Text("Agents")),
 		),
+		// The filter: a search box that narrows the cards as you type. OUTSIDE
+		// #agents-list, so the list's own refresh never touches it (agents_filter.go).
+		agentsFilterBar(),
 		Div(
 			ID("agents-list"),
 			Class("grid grid-cols-1 gap-3 lg:grid-cols-2"),
@@ -265,6 +268,9 @@ func agentCard(a AgentCardView) g.Node {
 	ids := strconv.FormatInt(a.ID, 10)
 	return Article(
 		ID("agent-"+ids),
+		// What the list's filter finds this card by (agents_filter.go).
+		g.Attr("data-filter", filterHaystack(displayOr(a.DisplayName, a.Name), a.Name, a.Repo,
+			agents.KindLabel(a.Kind), a.CCAccount, a.Status, "agent")),
 		Class("group relative overflow-hidden rounded-2xl border border-line bg-s1/70 shadow-lg shadow-black/20 ring-1 ring-line"),
 		// The control cluster (rename + ⋯ menu) is positioned over the card's
 		// top-right corner, OUTSIDE the nav anchor, so its clicks don't navigate.

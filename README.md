@@ -453,10 +453,37 @@ route to the host, and the host holds no muster credential but its own token.
   run once; several lines arrive as one bracketed paste and the one Enter runs
   them in order. A program that did not ask for bracketed paste gets the text
   as typed, so each newline is an Enter. Only newline and tab are accepted as
-  control characters. A read-only host draws no composer. It needs a
+  control characters. A read-only host draws it disabled, saying why. It needs a
   `muster-mirror` that advertises pasting into any pane; with an older one the
   composer works for Claude Code panes and is drawn disabled, saying so, for
   the rest.
+- **Send works without the page's script, and never fails silently.** Every
+  message box is a real form (`method=post`, its address in hidden fields).
+  With script it sends in place; when the script's request gets no answer
+  while the browser is online (a sign-in redirect at a forward-auth edge, a
+  proxy's error), or the script cannot run at all, the browser submits the
+  form itself and muster answers with a redirect back to the same view and a
+  line saying what happened ("Sent.", or the refusal). A stale sign-in on that
+  path gets a plain confirm page (the password again, `POST
+  /mirror/confirm-send`) that carries the message and delivers it once
+  confirmed. Each message carries a nonce, so one that is posted twice (the
+  first answer was lost) is delivered once. Pages that carry such a form are
+  served `Referrer-Policy: same-origin` and `Cache-Control: no-store` — under
+  the app-wide `no-referrer` a browser sends `Origin: null` with a form it
+  submits itself, which the same-origin check refuses.
+- **Dispatched agents have the same two views.** An agent's card opens its
+  rendered view (the chat); a claude-code agent has the same Rendered |
+  Terminal switch on both pages, and its Terminal page has the same message
+  box, posting to `POST /agents/<name>/send` — the turn the chat's socket
+  would have run, started in the background, with a failure stored in the
+  conversation where the reply would be. Only a running agent can be sent a
+  message; otherwise the box is drawn disabled and says why.
+- **A filter on the Agents list.** One box above the cards narrows dispatched
+  agents and mirrored windows together: case-insensitive, every word must
+  match (name, repo, label, session, host, kind, status, account), with an "N of M" count
+  and a clear button. It runs in the page — no request per keystroke, no
+  socket per card — and is applied as a style rule, so the list's own live
+  refresh cannot undo it.
 - **A terminal never shrinks the session's window.** The far side (the host's
   `muster-mirror`, or muster itself for an agent pod) reads the tmux window's
   size and gives the browser's client that size unless the browser's own covers

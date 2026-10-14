@@ -80,10 +80,31 @@ func (s *Server) handleAgentTerminalPage(w http.ResponseWriter, r *http.Request)
 		http.Error(w, fmt.Sprintf("agent %q is a %s agent, which has no terminal", a.Name, agents.KindLabel(a.Kind)), http.StatusNotFound)
 		return
 	}
-	v := ui.AgentTerminalView{Name: a.Name, DisplayName: a.DisplayName}
+	v := ui.AgentTerminalView{Name: a.Name, DisplayName: a.DisplayName,
+		// The Rendered | Terminal switch: the agent's chat is its rendered view.
+		RenderedHref: ui.AgentPath(a.Name)}
 	if s.ext.Provisioner == nil {
 		v.Unavailable = "this build has no agent provisioner wired, so it cannot attach a terminal"
 	}
+	// 🔴 THE TERMINAL HAS A MESSAGE BOX TOO — the SAME composer as a mirrored
+	// session's views (ui.ComposerView), posting to the agent's send route, which
+	// hands the text to the agent as a chat turn. It is drawn DISABLED, saying
+	// why, when the message could not be delivered: an agent that is not
+	// running, or a build with no gateway to deliver through. The route refuses
+	// such a send regardless.
+	c := ui.ComposerView{SendPath: ui.AgentSendPath(a.Name),
+		Extra:       []ui.ComposerField{{Name: "from", Value: ui.AgentSendFromTerminal}},
+		Placeholder: "Message the agent…", Aria: "Send a message to this agent", DisabledPlaceholder: "Cannot be sent a message",
+		Nonce: newSendNonce()}
+	c.Notice, c.NoticeOK = composerNotice(r)
+	switch {
+	case s.ext.Gateway == nil:
+		c.Disabled = "This build has no agent gateway wired, so a message cannot be delivered."
+	case !agentCanBeSent(s.liveStatus(r.Context(), a)):
+		c.Disabled = AgentNotRunningNotice
+	}
+	v.Composer = &c
+	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.AgentTerminalPage(v).Render(w); err != nil {
 		s.logger.Printf("agents: render terminal page: %v", err)

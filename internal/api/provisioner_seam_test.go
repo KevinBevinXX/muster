@@ -155,10 +155,11 @@ var provisionerDeps = []provisionerDep{
 		wrapper: "requireGatewayProvisioner",
 		routes: []string{
 			"GET /agents/{name}/ws",
+			"POST /agents/{name}/send",
 			"POST /api/agents/{name}/messages",
 		},
 		callers: []string{
-			"(*Server).chatTurn",                  // ChatWithTools + Chat; reached from handleAgentWS
+			"(*Server).chatTurn",                  // ChatWithTools + Chat; reached from runUserTurn (handleAgentWS, handleAgentSend)
 			"(*Server).handleAPIAgentSendMessage", // Chat
 		},
 	},

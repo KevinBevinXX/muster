@@ -108,89 +108,112 @@ func (s *Server) handleStepUpConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// PostForm, never Form: a password in the URL would be in the access log.
-	password := r.PostForm.Get("password")
-	if s.auth.goTrueMode() {
-		s.confirmGoTrue(w, r, password)
+	o := s.stepUpWithPassword(w, r, r.PostForm.Get("password"))
+	if o.Error != "" {
+		s.writeJSON(w, o.Status, map[string]any{"error": o.Error})
 		return
 	}
-	s.confirmOperatorPassword(w, password)
+	s.writeJSON(w, http.StatusOK, stepUpResult{FreshFor: o.FreshFor})
+}
+
+// stepUpOutcome is how a password confirm ended.
+type stepUpOutcome struct {
+	// Error is the refusal the person is shown, "" when the confirm succeeded;
+	// Status is its HTTP status.
+	Error  string
+	Status int
+	// FreshFor is how many milliseconds the new sign-in stays fresh, and At is
+	// that sign-in's time on the gate's own clock (success only).
+	FreshFor int64
+	At       time.Time
+}
+
+func stepUpRefused(status int, msg string) stepUpOutcome {
+	return stepUpOutcome{Error: msg, Status: status}
+}
+
+// stepUpWithPassword is the password confirm, for BOTH of its callers: the
+// dialog's route (handleStepUpConfirm, which answers JSON) and the plain confirm
+// page of a send the browser submitted (mirror_view.go, which answers a page).
+// On success the new session's cookies are ALREADY SET on w when it returns;
+// on refusal nothing is.
+//
+// 🔴 ONE CHECK, ONE THROTTLE, ONE PLACE. The second caller exists so that a page
+// whose script did not run can still confirm; a second copy of the check would
+// be a second way to guess a password, with its own idea of the limit.
+func (s *Server) stepUpWithPassword(w http.ResponseWriter, r *http.Request, password string) stepUpOutcome {
+	if s.auth.goTrueMode() {
+		return s.confirmGoTrue(w, r, password)
+	}
+	return s.confirmOperatorPassword(w, password)
 }
 
 // confirmGoTrue re-checks the session user's password with a GoTrue password
 // grant and, on success, swaps in the new session.
-func (s *Server) confirmGoTrue(w http.ResponseWriter, r *http.Request, password string) {
+func (s *Server) confirmGoTrue(w http.ResponseWriter, r *http.Request, password string) stepUpOutcome {
 	if s.gt == nil {
-		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": stepUpUnavailable})
-		return
+		return stepUpRefused(http.StatusServiceUnavailable, stepUpUnavailable)
 	}
 	ctx := r.Context()
 	p := authz.MustFrom(ctx)
 	me, err := s.gt.Users.ByID(ctx, p.UserID)
 	if err != nil {
 		s.logger.Printf("stepup: could not read user %d: %v", p.UserID, err)
-		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": stepUpUnavailable})
-		return
+		return stepUpRefused(http.StatusServiceUnavailable, stepUpUnavailable)
 	}
 	ip := clientIP(r)
 	ticket, ok := s.gt.signin.reserve(signinAccount{known: true, uid: me.ID}, ip, s.gt.now())
 	if !ok {
-		s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": stepUpThrottled})
-		return
+		return stepUpRefused(http.StatusTooManyRequests, stepUpThrottled)
 	}
 	outcome := outcomeUnjudged
 	defer func() { s.gt.signin.settle(ticket, outcome) }()
 	if password == "" {
 		outcome = outcomeFailed
-		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": stepUpWrongPassword})
-		return
+		return stepUpRefused(http.StatusUnauthorized, stepUpWrongPassword)
 	}
 	sess, err := s.gt.Client.PasswordGrant(ctx, ip, me.Email, password)
 	if err != nil {
 		var ae *gotrue.APIError
 		switch {
 		case errors.As(err, &ae) && ae.Status == http.StatusTooManyRequests:
-			s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": stepUpThrottled})
+			return stepUpRefused(http.StatusTooManyRequests, stepUpThrottled)
 		case gotrue.IsClientError(err):
 			outcome = outcomeFailed
 			s.logger.Printf("stepup: user %d failed to confirm (from %s)", me.ID, ip)
-			s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": stepUpWrongPassword})
+			return stepUpRefused(http.StatusUnauthorized, stepUpWrongPassword)
 		default:
 			s.logger.Printf("stepup: GoTrue is unavailable: %v", err)
-			s.writeJSON(w, http.StatusBadGateway, map[string]any{"error": stepUpUnavailable})
+			return stepUpRefused(http.StatusBadGateway, stepUpUnavailable)
 		}
-		return
 	}
 	u, problem, code := s.admitFreshSession(ctx, sess)
 	if problem != "" {
-		s.writeJSON(w, code, map[string]any{"error": problem})
-		return
+		return stepUpRefused(code, problem)
 	}
 	if u.ID != me.ID {
 		// The email resolved to a different muster user than the session's —
 		// never swap one person's session for another's.
 		outcome = outcomeFailed
 		s.logger.Printf("stepup: refusing a confirm whose new session is user %d, not the session's user %d", u.ID, me.ID)
-		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": stepUpWrongPassword})
-		return
+		return stepUpRefused(http.StatusForbidden, stepUpWrongPassword)
 	}
 	c, err := s.gt.Verifier.Verify(sess.AccessToken)
 	if err != nil {
 		// admitFreshSession verified it a moment ago; this cannot differ.
-		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": stepUpUnavailable})
-		return
+		return stepUpRefused(http.StatusInternalServerError, stepUpUnavailable)
 	}
 	at, ok := c.AuthenticatedAt()
 	if !ok {
 		// Loud, not silent: without `amr` no session can ever be fresh, so the
 		// Interactive switch could never attach. Say why.
 		s.logger.Printf("stepup: GoTrue issued a session with no `amr` claim — the step-up gate cannot be satisfied")
-		s.writeJSON(w, http.StatusBadGateway, map[string]any{"error": "GoTrue's session has no sign-in time (amr), so it cannot be confirmed."})
-		return
+		return stepUpRefused(http.StatusBadGateway, "GoTrue's session has no sign-in time (amr), so it cannot be confirmed.")
 	}
 	outcome = outcomeSucceeded
 	s.setGoTrueCookies(w, sess)
 	s.logger.Printf("stepup: user %d confirmed (fresh sign-in)", me.ID)
-	s.writeJSON(w, http.StatusOK, stepUpResult{FreshFor: max(0, at.Add(stepup.Window()).Sub(s.stepUpNow()).Milliseconds())})
+	return stepUpOutcome{Status: http.StatusOK, At: at, FreshFor: max(0, at.Add(stepup.Window()).Sub(s.stepUpNow()).Milliseconds())}
 }
 
 // --- the passkey confirm ------------------------------------------------------
@@ -382,19 +405,17 @@ func (s *Server) handleStepUpPasskeyVerify(w http.ResponseWriter, r *http.Reques
 
 // confirmOperatorPassword is the password-mode confirm: the operator password
 // again, a new session cookie issued now.
-func (s *Server) confirmOperatorPassword(w http.ResponseWriter, password string) {
+func (s *Server) confirmOperatorPassword(w http.ResponseWriter, password string) stepUpOutcome {
 	now := time.Now()
 	if !s.loginRate.allow(now, loginRateBurst, loginRateWindow) {
-		s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": stepUpThrottled})
-		return
+		return stepUpRefused(http.StatusTooManyRequests, stepUpThrottled)
 	}
 	if password == "" || !auth.ConstantTimeEqual(password, s.auth.UIPassword) {
 		s.logger.Printf("stepup: rejected an operator-password confirm")
-		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": stepUpWrongPassword})
-		return
+		return stepUpRefused(http.StatusUnauthorized, stepUpWrongPassword)
 	}
 	s.setPasswordSessionCookie(w)
 	// SignSession stamps whole seconds; report what the cookie will read as.
 	issued := time.Unix(now.Unix(), 0)
-	s.writeJSON(w, http.StatusOK, stepUpResult{FreshFor: issued.Add(stepup.Window()).Sub(now).Milliseconds()})
+	return stepUpOutcome{Status: http.StatusOK, At: issued, FreshFor: issued.Add(stepup.Window()).Sub(now).Milliseconds()}
 }

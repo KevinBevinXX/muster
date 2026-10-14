@@ -137,6 +137,86 @@ func confirmDialog(s *StepUpView) g.Node {
 	)
 }
 
+// StepUpFormView is the plain "Confirm it's you" page: the step-up for a send
+// the BROWSER submitted (no script ran), which the dialog above cannot serve.
+type StepUpFormView struct {
+	// Action is the route the page posts to: it checks the password and, when
+	// it is right, performs the send that was waiting.
+	Action string
+	// Fields are the pending send, carried as hidden inputs — its address, its
+	// text, its nonce — so confirming completes it rather than asking for the
+	// message again.
+	Fields []ComposerField
+	// BackHref is the view the send came from (Cancel, and where the result is
+	// shown).
+	BackHref string
+	// Window is the freshness window as a person reads it ("12 hours").
+	Window string
+	// Error is why the last attempt was not accepted; "" on the first showing.
+	Error string
+}
+
+// StepUpFormPage is a whole document with one form: the password again, and
+// the pending send in hidden fields. No script is needed to use it — it exists
+// for the page whose script did not run. (A passkey needs script; the dialog on
+// a working page offers one.)
+func StepUpFormPage(v StepUpFormView) g.Node {
+	hidden := make([]g.Node, 0, len(v.Fields))
+	for _, f := range v.Fields {
+		hidden = append(hidden, Input(Type("hidden"), Name(f.Name), Value(f.Value)))
+	}
+	return Doctype(
+		HTML(Class("dark"), Lang("en"),
+			Head(
+				Meta(Charset("utf-8")),
+				Meta(Name("viewport"), Content("width=device-width, initial-scale=1, viewport-fit=cover")),
+				Meta(Name("color-scheme"), Content("dark light")),
+				ThemeHead(),
+				manifestLink(),
+				TitleEl(g.Text("Confirm it's you · muster")),
+				Link(Rel("stylesheet"), Href("/static/app.css")),
+				faroHead(),
+			),
+			Body(
+				Class("flex min-h-dvh items-center justify-center bg-bg px-4 text-fg antialiased"),
+				Form(
+					ID("stepup-form"),
+					Method("post"),
+					Action(v.Action),
+					Class("flex w-full max-w-sm flex-col gap-4 rounded-2xl bg-s1 px-5 py-6 ring-1 ring-line"),
+					g.Group(hidden),
+					H1(Class("text-base font-semibold text-fg"), g.Text("Confirm it's you")),
+					P(Class("text-sm text-fg2"), g.Text(StepUpWhy(v.Window)+" "+stepUpHowPassword+" Your message is sent once you have.")),
+					Label(For("stepup-password"), Class("text-sm font-medium text-fg"), g.Text("Password")),
+					Input(
+						ID("stepup-password"),
+						Name("password"),
+						Type("password"),
+						g.Attr("autocomplete", "current-password"),
+						g.Attr("required", ""),
+						g.Attr("autofocus", ""),
+						Class("min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus"),
+					),
+					g.If(v.Error != "", P(ID("stepup-error"), g.Attr("role", "alert"),
+						Class("rounded-lg bg-st-error-bg px-3 py-2 text-sm text-st-error-fg ring-1 ring-inset ring-st-error-fg/40"), g.Text(v.Error))),
+					Div(
+						Class("flex gap-2"),
+						A(ID("stepup-cancel"), Href(v.BackHref),
+							Class("press inline-flex min-h-[44px] flex-1 items-center justify-center rounded-md px-3 py-2 text-base font-semibold "+stepUpSecondary),
+							g.Text("Cancel")),
+						Button(ID("stepup-submit"), Type("submit"),
+							Class("press min-h-[44px] flex-1 rounded-md px-3 py-2 text-base font-semibold transition "+stepUpPrimary),
+							g.Text("Confirm and send")),
+					),
+				),
+				// Like every document: the worker and the update toast. The form
+				// above needs neither.
+				pwaChrome(),
+			),
+		),
+	)
+}
+
 // PasskeyJS is the WebAuthn helpers every passkey script on every page shares:
 // the sign-in and account pages (internal/api) and the confirm dialog here.
 // mpk* names keep them out of any other page script's way.

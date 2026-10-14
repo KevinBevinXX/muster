@@ -91,6 +91,14 @@ type AgentDetailView struct {
 	// no completion banner is rendered.
 	NoteID     *int64
 	TaskStatus string
+
+	// SendNonce names one message for the chat form's FALLBACK post (see
+	// agentChatPane and ComposerView.Nonce); "" = none. SendNotice is the
+	// outcome of such a post, drawn above the form when the page was reached by
+	// the redirect that answered it; SendNoticeOK says it is good news.
+	SendNonce    string
+	SendNotice   string
+	SendNoticeOK bool
 }
 
 // SessionView is one chat session in the switcher.
@@ -264,27 +272,15 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 				chatHistoryButton(sessionDrawerID),
 			),
 			g.If(agents.ResolveKind(v.Kind) != agents.KindClaudeCode, agentModelControl(v)),
+			// 🔴 THE CHAT IS THE RENDERED VIEW, AND IT IS THE DEFAULT: an agent's
+			// card opens this page. A claude-code agent also has a Terminal — the
+			// same Rendered | Terminal switch a mirrored Claude Code window has
+			// (viewToggle), on both of its pages. An agent of a kind with no
+			// terminal has one view and no switch.
 			g.If(agents.ResolveKind(v.Kind) == agents.KindClaudeCode,
-				Div(Class("flex items-center gap-2"), chip("kind", agents.KindLabel(v.Kind)+" · "+v.CCAccount), terminalLink(v.Name))),
+				Div(Class("flex items-center gap-2"), chip("kind", agents.KindLabel(v.Kind)+" · "+v.CCAccount),
+					Div(Class("ml-auto"), viewToggle(true, "", AgentTerminalPath(v.Name))))),
 		),
-	)
-}
-
-// terminalLink opens the agent's live terminal (terminal.go). Only a
-// claude-code agent has one, so only its header renders this.
-//
-// 🔴 hx-boost="false": the page is hx-boost'ed, and a boosted click would swap
-// the terminal page's BODY into this document without running the <head>
-// scripts it needs (xterm.js), leaving a dead terminal. A real navigation
-// loads them.
-func terminalLink(name string) g.Node {
-	return A(
-		ID("open-terminal"),
-		Href(AgentTerminalPath(name)),
-		hx("hx-boost", "false"),
-		Class("press ml-auto inline-flex min-h-[44px] items-center gap-1.5 rounded-lg bg-s2 px-3 text-sm font-semibold text-fg ring-1 ring-inset ring-line transition hover:bg-s3"),
-		g.Raw(`<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 17l6-6-6-6"/><path d="M12 19h8"/></svg>`),
-		g.Text("Terminal"),
 	)
 }
 
@@ -654,6 +650,19 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// exposed to the same inherited-target hazard, and would swap its destination
 			// page into the panel.
 			g.Attr("hx-boost", "false"),
+			// 🔴 A REAL FORM UNDER THE SOCKET. The message normally travels over this
+			// page's WebSocket (agentChatScript), which streams the reply back. But a
+			// form with no action and no method can only be sent by that script: when
+			// it had not run, or its socket was not open, pressing Send did NOTHING —
+			// no message, no error. With method + action the browser can send it
+			// itself (POST /agents/{name}/send, which runs the same turn and answers
+			// with a redirect back here), and agentChatScript hands it over whenever
+			// the socket cannot take it. The nonce makes a message that went both ways
+			// one message (ComposerView.Nonce).
+			Method("post"),
+			Action(AgentSendPath(v.Name)+"?session="+strconv.FormatInt(v.ActiveSessionID, 10)),
+			Input(Type("hidden"), Name("session"), Value(strconv.FormatInt(v.ActiveSessionID, 10))),
+			g.If(v.SendNonce != "", Input(ID("chat-nonce"), Type("hidden"), Name("nonce"), Value(v.SendNonce))),
 			// The chat WS target agent, read by agentChatScript so its boost-safe
 			// init derives the agent from the LIVE form (never a stale closure from
 			// a previously-visited page).
@@ -670,18 +679,28 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// inside Main (already contentWidth() inside the lg:pl-72 column), so no
 			// width/offset classes here.
 			Class("flex-none border-t border-line pt-3"),
+			// The outcome of a send the browser submitted (see above), drawn by the
+			// server on the page its redirect lands on.
+			g.If(v.SendNotice != "", P(ID("chat-note"), g.Attr("role", "status"),
+				g.If(v.SendNoticeOK, g.Attr("data-ok", "")),
+				Class("pb-2 text-xs break-words "+chatNoteTone(v.SendNoticeOK)), g.Text(v.SendNotice))),
 			Div(
 				Class("flex w-full items-end gap-2"),
+				// The SAME look as every other message box (composerInputClass,
+				// composerSendClass): a 16px input — iOS zooms the page on focusing a
+				// smaller one, and this one was 14px — and 44px targets.
 				Textarea(
 					ID("chat-input"),
+					Name("text"),
 					Rows("1"),
+					g.Attr("enterkeyhint", "send"),
 					Placeholder("Message the agent…"),
-					Class("max-h-32 min-h-[2.75rem] w-full resize-none rounded-xl border-0 bg-s1 px-3 py-2.5 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
+					Class("max-h-32 "+composerInputClass),
 				),
 				Button(
 					Type("submit"),
 					ID("chat-send"),
-					Class("press inline-flex h-11 shrink-0 items-center justify-center rounded-xl bg-accent px-4 text-sm font-semibold text-on-accent transition hover:bg-accent/90 active:scale-[0.98] disabled:opacity-60"),
+					Class(composerSendClass),
 					g.Text("Send"),
 				),
 			),
@@ -719,6 +738,14 @@ func agentChatPane(v AgentDetailView) g.Node {
 // at once, the promoter (which only promotes stored `provisioning`) never fires,
 // and nothing broadcasts when its instance later becomes ready — so a page opened
 // in that window still holds the row until a message or a reload.
+// chatNoteTone is the colour of the chat form's notice: plain for good news.
+func chatNoteTone(ok bool) string {
+	if ok {
+		return "text-fg2"
+	}
+	return "text-st-error-fg"
+}
+
 func chatLogTrigger(agentName string) string {
 	quoted, _ := json.Marshal(agentName) // a string always marshals
 	return "sse:chat.reply from:body, task:changed from:body, " +
@@ -1717,23 +1744,53 @@ func agentChatScript(name string) g.Node {
   // the open-at-bottom behaviour.
   connectStream();
 
+  // 🔴 NEVER A SILENT SEND. With the socket open the message goes over it and
+  // the reply streams back. With it NOT open — still connecting, dropped, or
+  // refused — this used to return and do nothing at all. Now the browser sends
+  // the form itself (POST, a redirect back here): the same turn, by the door
+  // that needs no socket. The form's nonce is renewed after a socket send, so
+  // that message and the next are never taken for one.
+  function nativeSend() { HTMLFormElement.prototype.submit.call(form); }
+  function renewNonce() {
+    var n = document.getElementById('chat-nonce');
+    if (!n) return;
+    n.value = '';
+    if (!window.crypto || !crypto.getRandomValues) return;
+    var b = new Uint8Array(16), s = '';
+    crypto.getRandomValues(b);
+    for (var i = 0; i < b.length; i++) s += (b[i] < 16 ? '0' : '') + b[i].toString(16);
+    n.value = s;
+  }
   function send() {
     var t = input.value.trim();
-    if (!t || !ws || ws.readyState !== 1) return;
+    if (!t) return;
+    if (!ws || ws.readyState !== 1) { nativeSend(); return; }
     var ub = bubble('user'); ub.innerHTML = mdRender(t);
     forceScroll(); // his own send always brings the latest into view
     ws.send(JSON.stringify({ type: 'message', text: t }));
     try { window.cgTrack('chat.sent', { agent: (form.getAttribute('data-agent') || '') }); } catch (e) {}
     input.value = '';
+    renewNonce();
     sendBtn.disabled = true;
     session.streaming = true;
     resetTurn();
     showWorking();
   }
-  form.addEventListener('submit', function (e) { e.preventDefault(); send(); });
+  // preventDefault only once send() has taken the message: if it throws, the
+  // event is left alone and the browser submits the form.
+  form.addEventListener('submit', function (e) { send(); e.preventDefault(); });
   input.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
   });
+  // A notice the server drew for a send the browser made has been shown: take
+  // it out of the address, so a reload does not repeat it.
+  try {
+    var here = new URL(location.href);
+    if (here.searchParams.has('notice')) {
+      here.searchParams.delete('notice');
+      history.replaceState(history.state, '', here.pathname + here.search + here.hash);
+    }
+  } catch (e) {}
   } // end start
 
   // Global, document-lifetime hooks (the <body> survives hx-boost swaps, so

@@ -246,6 +246,276 @@ for (const vp of [
       await noHorizontalScroll(page);
     });
 
+    // THE LIST FILTER: a search box above the cards.
+    //
+    // 🔴 A REGRESSION TEST: there is no #agents-search on the commit before it.
+    test('the filter narrows the cards as you type, ANDs its words, counts, clears — and survives the list refreshing itself', async ({ page }) => {
+      const sockets: string[] = [];
+      page.on('websocket', (ws) => sockets.push(ws.url()));
+      await openList(page, 4);
+      const box = page.locator('#agents-search');
+      const count = page.locator('#agents-count');
+      const visible = () => cards(page).filter({ visible: true });
+      const names = async () =>
+        (await visible().evaluateAll((els) => els.map((e) => ((e.querySelector('[data-mirror-label]') ?? e.querySelector('[data-mirror-name]')) as HTMLElement).textContent))).sort();
+
+      // Phone-shaped: 16px (iOS zooms the page on focusing anything smaller), a
+      // 44px target, inside the viewport.
+      expect(await box.evaluate((e) => parseFloat(getComputedStyle(e).fontSize)), 'a 16px input').toBeGreaterThanOrEqual(16);
+      const bb = (await box.boundingBox())!;
+      expect(bb.height).toBeGreaterThanOrEqual(44);
+      expect(bb.x + bb.width, 'the filter fits the viewport').toBeLessThanOrEqual(vp.use.viewport.width);
+      await expect(page.locator('#agents-search-clear')).toBeHidden();
+
+      // With nothing typed, everything is shown and counted. (Other cards — the
+      // seeded agents — are in the list too: the count is of all of it.)
+      const all = await page.locator('#agents-list > article').count();
+      expect(all).toBeGreaterThanOrEqual(4);
+      await expect(count).toHaveText(`${all} of ${all}`);
+
+      // One word: a label, case-insensitively.
+      await box.pressSequentially('GOLD');
+      expect(await names()).toEqual(['Gold:1', 'Gold:11', 'Gold:8']);
+      await expect(count).toHaveText(`3 of ${all}`);
+      await expect(page.locator('#agents-search-clear')).toBeVisible();
+      // Several words must ALL match: a label and a kind…
+      await box.pressSequentially('   shell');
+      expect(await names()).toEqual(['Gold:1']);
+      await expect(count).toHaveText(`1 of ${all}`);
+      // …the raw session name and a kind…
+      await box.fill('scratch2 claude');
+      expect(await names()).toEqual(['Gold:11', 'Gold:8']);
+      // …the host and a kind (a window with no codename)…
+      await box.fill(`${host} opencode`);
+      expect(await names()).toEqual(['solo:3']);
+      // …and "mirrored" finds every mirrored card of this host and no agent.
+      await box.fill(`mirrored ${host}`);
+      expect(await names()).toEqual(['Gold:1', 'Gold:11', 'Gold:8', 'solo:3']);
+      await expect(count).toHaveText(`4 of ${all}`);
+      // Nothing matches: said, not a blank list.
+      await box.fill('gold opencode');
+      await expect(visible()).toHaveCount(0);
+      await expect(count).toHaveText(`0 of ${all}`);
+      await expect(page.locator('#agents-nomatch')).toBeVisible();
+      // A quote or a backslash in the box is text, not a broken selector.
+      await box.fill('gold" \\');
+      await expect(count).toHaveText(`0 of ${all}`);
+
+      // Clear (×): everything back, the box empty and focused.
+      await page.locator('#agents-search-clear').click();
+      await expect(box).toHaveValue('');
+      await expect(box).toBeFocused();
+      await expect(count).toHaveText(`${all} of ${all}`);
+      await expect(page.locator('#agents-nomatch')).toBeHidden();
+      await expect(page.locator('#agents-search-clear')).toBeHidden();
+
+      // 🔴 THE LIST REFRESHES ITSELF UNDER THE FILTER. Type, put the caret in the
+      // middle of the word, and have the host change: a window is renumbered (a
+      // card's text changes) and a new one appears. The filter still holds, the
+      // count follows, and the box keeps its text, its focus and its caret.
+      await box.fill('gold');
+      await box.evaluate((e: HTMLInputElement) => e.setSelectionRange(2, 2));
+      await expect(count).toHaveText(`3 of ${all}`);
+      const marked = await page.evaluate(() => ((window as unknown as { __noReload: number }).__noReload = 1));
+      expect(marked).toBe(1);
+      const twelve: Win = { session: 'scratch2', id: '@12', index: 12, active: false, command: 'zsh', activity: now - 30 };
+      writeWindows([shellWin, eightWin, { ...elevenWin, index: 2 }, soloWin, twelve]);
+      await expect(cardOf(page, viewPath(elevenWin)).locator('[data-mirror-label]'), `the list refreshed (log:\n${mirrorLog})`).toHaveText('Gold:2', { timeout: 20_000 });
+      await expect(cardOf(page, termPath(twelve))).toBeVisible({ timeout: 20_000 });
+      expect(await names()).toEqual(['Gold:1', 'Gold:12', 'Gold:2', 'Gold:8']);
+      await expect(cardOf(page, termPath(soloWin)), 'a card the filter hides stays hidden through the refresh').toBeHidden();
+      await expect(count).toHaveText(`4 of ${all + 1}`);
+      await expect(box).toHaveValue('gold');
+      await expect(box).toBeFocused();
+      expect(await box.evaluate((e: HTMLInputElement) => [e.selectionStart, e.selectionEnd]), 'the caret did not move').toEqual([2, 2]);
+      expect(await page.evaluate(() => (window as unknown as { __noReload?: number }).__noReload), 'no reload happened').toBe(1);
+      // Typing on, after the refresh, still works on the refreshed list.
+      await page.keyboard.press('End');
+      await page.keyboard.type(':12');
+      expect(await names()).toEqual(['Gold:12']);
+
+      // A hundred cards must not mean a hundred connections: the list page
+      // opened no socket at all for its mirrored cards. (Read here, before a
+      // card is opened: its page has a socket of its own.)
+      expect(sockets.filter((u) => u.includes('/mirror/')), 'no per-card socket').toEqual([]);
+
+      // It is remembered across a visit to a card and back.
+      await visible().first().locator('a').first().click();
+      await page.waitForURL((u) => u.pathname === '/mirror/terminal');
+      await page.goto(origin + '/agents');
+      await expect(page.locator('#agents-search')).toHaveValue('gold:12');
+      await expect(cards(page).filter({ visible: true })).toHaveCount(1);
+      await page.locator('#agents-search-clear').click();
+
+      await noHorizontalScroll(page);
+    });
+
+    // THE COMPOSER WITHOUT ITS SCRIPT. A browser context with JavaScript OFF: the
+    // page's composer script does not exist, so what is left is the form itself.
+    //
+    // 🔴 A REGRESSION TEST: on the commit before this the composer was a form with
+    // no method and no action — a browser submitting it GETs the page it is on
+    // with `?text=…`, and nothing is sent.
+    test('with no script at all, a message is typed, submitted by the browser, delivered, and the page comes back saying so', async ({ page, browser }) => {
+      await login(page);
+      await expect.poll(async () => (await page.request.get(origin + '/ui/agents')).text(), { timeout: 20_000 }).toContain(`Mirrored · ${host}`);
+      const ctx = await browser.newContext({ ...vp.use, javaScriptEnabled: false });
+      await ctx.addCookies(signedIn!);
+      const plain = await ctx.newPage();
+      try {
+        // The Terminal view of a shell window (not its session's active one).
+        await plain.goto(origin + termPath(shellWin));
+        // The control that this page ran no script: the page's own script is
+        // what builds the terminal, and there is none. (page.evaluate is no
+        // witness — it runs in a context with script disabled all the same.)
+        await expect(plain.locator('#mv-input')).toBeVisible();
+        await expect(plain.locator('#term .xterm-rows'), 'this page ran no script').toHaveCount(0);
+        await plain.locator('#mv-input').fill('ls -la /srv');
+        await plain.locator('#mv-send').click();
+        await plain.waitForURL((u) => u.pathname === '/mirror/terminal' && u.searchParams.get('notice') === 'sent', { timeout: 20_000 });
+        expect(new URL(plain.url()).searchParams.get('window'), 'back on the same window').toBe('@4');
+        await expect(plain.locator('#mv-note')).toBeVisible();
+        await expect(plain.locator('#mv-note')).toHaveText('Sent.');
+        expect(read(pasteFile)).toBe('%e2e-scratch2-@4 ls -la /srv\n');
+
+        // The Rendered view of a Claude Code window: the same form, the Claude pane.
+        await plain.goto(origin + viewPath(elevenWin));
+        await plain.locator('#mv-input').fill('continue, please');
+        await plain.locator('#mv-send').click();
+        await plain.waitForURL((u) => u.pathname === '/mirror/view' && u.searchParams.get('notice') === 'sent', { timeout: 20_000 });
+        await expect(plain.locator('#mv-note')).toHaveText('Sent.');
+        expect(read(trEleven + '.pasted')).toBe('%e2e-scratch2-@9 continue, please\n');
+        expect(read(trEight + '.pasted'), 'nothing reached the active window').toBe('');
+
+        // Nothing typed: said on the page it comes back to, and nothing is sent.
+        await plain.locator('#mv-send').click();
+        await plain.waitForURL((u) => u.searchParams.get('notice') === 'empty');
+        await expect(plain.locator('#mv-note')).toHaveText('Type a message first.');
+        expect(read(trEleven + '.pasted')).toBe('%e2e-scratch2-@9 continue, please\n');
+        expect(read(pasteFile)).toBe('%e2e-scratch2-@4 ls -la /srv\n');
+      } finally {
+        await ctx.close();
+      }
+    });
+
+    // THE COMPOSER WHEN ITS SCRIPT'S WAY FAILS. Send must never be a silent
+    // no-op: when the fetch gets no answer the browser submits the form itself.
+    test('a send whose request gets no answer is handed to the browser, and a message is never delivered twice', async ({ page }) => {
+      await openList(page, 4);
+      await page.goto(origin + termPath(shellWin));
+      await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch2 window=@4');
+      const isFetch = (h: Record<string, string>) => h['x-requested-with'] === 'XMLHttpRequest';
+
+      // 1. The request never reaches muster (a sign-in redirect a fetch cannot
+      // follow, a proxy's error): the script's fetch is aborted, the browser's
+      // own submission is let through. Delivered once, and the page says so.
+      let aborted = 0;
+      await page.route('**/mirror/terminal/send?*', async (route) => {
+        if (isFetch(route.request().headers())) {
+          aborted++;
+          await route.abort('failed');
+          return;
+        }
+        await route.continue();
+      });
+      await page.locator('#mv-input').fill('echo first');
+      await page.locator('#mv-send').click();
+      await page.waitForURL((u) => u.searchParams.get('notice') === 'sent');
+      await expect(page.locator('#mv-note')).toHaveText('Sent.');
+      expect(aborted, 'the script tried its own way first').toBe(1);
+      expect(read(pasteFile)).toBe('%e2e-scratch2-@4 echo first\n');
+      // The notice is taken out of the address once shown: a reload does not repeat it.
+      await expect.poll(() => new URL(page.url()).searchParams.get('notice')).toBeNull();
+      await page.unroute('**/mirror/terminal/send?*');
+
+      // 2. The request REACHES muster and is delivered, and only the answer is
+      // lost. The browser posts the form again — the same message — and it must
+      // not be pasted a second time.
+      let delivered = 0;
+      await page.route('**/mirror/terminal/send?*', async (route) => {
+        if (isFetch(route.request().headers())) {
+          const res = await route.fetch();
+          expect(res.status(), 'the first post was delivered').toBe(204);
+          delivered++;
+          await route.abort('failed'); // …and the page never hears
+          return;
+        }
+        await route.continue();
+      });
+      await page.locator('#mv-input').fill('echo second');
+      await page.locator('#mv-send').click();
+      await page.waitForURL((u) => u.searchParams.get('notice') === 'sent');
+      expect(delivered).toBe(1);
+      expect(read(pasteFile), 'the message whose answer was lost was delivered ONCE').toBe('%e2e-scratch2-@4 echo first\n%e2e-scratch2-@4 echo second\n');
+      await page.unroute('**/mirror/terminal/send?*');
+
+      // 3. Control: with nothing in the way the script sends without leaving the
+      // page, and the NEXT message is a new message (its nonce was renewed).
+      const before = page.url();
+      await page.locator('#mv-input').fill('echo third');
+      await page.locator('#mv-send').click();
+      await expect(page.locator('#mv-input')).toHaveValue('');
+      await page.locator('#mv-input').fill('echo third');
+      await page.locator('#mv-send').click();
+      await expect.poll(() => read(pasteFile)).toBe(
+        '%e2e-scratch2-@4 echo first\n%e2e-scratch2-@4 echo second\n%e2e-scratch2-@4 echo third\n%e2e-scratch2-@4 echo third\n',
+      );
+      // The send's answer empties the box; typing before it has would be wiped.
+      await expect(page.locator('#mv-input')).toHaveValue('');
+      expect(page.url(), 'the script sends without navigating').toBe(before);
+
+      // 3b. Text typed while a send is still out is not thrown away when its
+      // answer arrives.
+      let release: () => void = () => {};
+      const held = new Promise<void>((r) => (release = r));
+      await page.route('**/mirror/terminal/send?*', async (route) => {
+        await held;
+        await route.continue();
+      });
+      await page.locator('#mv-input').fill('echo fourth');
+      await page.locator('#mv-send').click();
+      await expect(page.locator('#mv-send')).toBeDisabled();
+      await page.locator('#mv-input').fill('typed meanwhile');
+      release();
+      await expect(page.locator('#mv-send')).toBeEnabled();
+      expect(read(pasteFile)).toContain('%e2e-scratch2-@4 echo fourth\n');
+      await expect(page.locator('#mv-input')).toHaveValue('typed meanwhile');
+      await page.unroute('**/mirror/terminal/send?*');
+
+      // 4. Offline is the one failure the script keeps: it says so and keeps the text.
+      await page.context().setOffline(true);
+      await page.locator('#mv-input').fill('while offline');
+      await page.locator('#mv-send').click();
+      await expect(page.locator('#mv-note')).toHaveText('Not sent: you are offline.');
+      await expect(page.locator('#mv-input')).toHaveValue('while offline');
+      expect(page.url()).toBe(before);
+      await page.context().setOffline(false);
+    });
+
+    // THE UPDATE TOAST AND THE COMPOSER. "muster has been updated — Reload" is a
+    // fixed overlay near the bottom of every page; it must never sit on the
+    // message box or on Send.
+    test('the update toast does not cover the composer', async ({ page }) => {
+      await openList(page, 4);
+      for (const p of [termPath(shellWin), viewPath(elevenWin)]) {
+        await page.goto(origin + p);
+        await expect(page.locator('#mv-send')).toBeVisible();
+        const boxes = await page.evaluate(() => {
+          const toast = document.getElementById('sw-update-toast')!;
+          toast.hidden = false;
+          const r = (e: Element) => e.getBoundingClientRect();
+          const t = r(toast);
+          const over = (e: Element) => {
+            const b = r(e);
+            return !(t.right <= b.left || t.left >= b.right || t.bottom <= b.top || t.top >= b.bottom);
+          };
+          return { height: t.height, input: over(document.getElementById('mv-input')!), send: over(document.getElementById('mv-send')!) };
+        });
+        expect(boxes.height, 'CONTROL: the toast was really laid out').toBeGreaterThan(20);
+        expect(boxes, `on ${p}`).toMatchObject({ input: false, send: false });
+      }
+    });
+
     // The URLs that existed before windows were addressable.
     test('an old link naming only the session lands on its active window', async ({ page }) => {
       await login(page);

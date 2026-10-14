@@ -58,7 +58,7 @@ func TestBothMirrorViewsShareOneComposerAndOneConfirm(t *testing.T) {
 		return page[i : i+strings.Index(page[i:], ">")]
 	}
 	tf, vf := formOf(term), formOf(view)
-	if !strings.Contains(tf, `data-send="/mirror/terminal/send"`) || !strings.Contains(vf, `data-send="/mirror/view/send"`) {
+	if !strings.Contains(tf, `method="post" action="/mirror/terminal/send?`) || !strings.Contains(vf, `method="post" action="/mirror/view/send?`) {
 		t.Fatalf("the forms do not post to their own routes:\n%s\n%s", tf, vf)
 	}
 	if strings.Replace(tf, "/mirror/terminal/send", "/mirror/view/send", 1) != vf {

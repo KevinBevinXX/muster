@@ -130,6 +130,21 @@ var standaloneDocuments = []documentRenderer{
 		},
 	},
 	{
+		// The plain "Confirm it's you" page: the step-up for a send the browser
+		// submitted with no script. Its first showing has no error; the other
+		// state is a wrong password, said on the page. The pending message rides
+		// in a hidden field, with every character that must stay inert.
+		fn: "StepUpFormPage", label: "the plain confirm page (a stale send with no script)",
+		render: func(w io.Writer) error {
+			return StepUpFormPage(StepUpFormView{Action: "/mirror/confirm-send", BackHref: "/mirror/view?host=laptop&session=main", Window: "12 hours",
+				Error:  "That password is not right.",
+				Fields: []ComposerField{{Name: "host", Value: "laptop"}, {Name: "text", Value: "<b>run</b> \"it\" & </textarea>"}}}).Render(w)
+		},
+		renderEmpty: func(w io.Writer) error {
+			return StepUpFormPage(StepUpFormView{Action: "/mirror/confirm-send", BackHref: "/agents", Window: "12 hours"}).Render(w)
+		},
+	},
+	{
 		// A real document a reader can LAND on — a legacy deeplink to a dismissed
 		// task arrives here — so it owes the same contract as any other page.
 		fn: "TaskNotFoundPage", label: "the task 404 page (/tasks/<id>, dismissed)",

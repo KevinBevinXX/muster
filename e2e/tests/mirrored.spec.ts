@@ -427,7 +427,7 @@ test('an interactive host offers the composer: a fresh sign-in sends into the pa
   // and with real GoTrue in mirror-stepup.spec.ts. Everything after it is real:
   // the dialog, the confirm route, the new session, the retried send.
   let refused = 0;
-  await page.route('**/mirror/view/send', async (route) => {
+  await page.route('**/mirror/view/send?*', async (route) => {
     if (refused++ === 0) {
       await route.fulfill({ status: 403, headers: { 'X-Muster-Step-Up': 'required', 'Content-Type': 'text/plain' }, body: 'confirm it\'s you' });
       return;
@@ -449,7 +449,7 @@ test('an interactive host offers the composer: a fresh sign-in sends into the pa
   await expect.poll(pasted).toBe('%9 /status please continue\n%9 second message\n');
   await expect(page.locator('#mv-input')).toHaveValue('');
   expect(refused, 'the send was retried once after the confirm').toBe(2);
-  await page.unroute('**/mirror/view/send');
+  await page.unroute('**/mirror/view/send?*');
   await noHorizontalScroll(page);
   await stopMirror();
   mirrorProc = startMirror(false);
@@ -489,7 +489,7 @@ for (const size of [
         if (ws.url().includes('/mirror/terminal/ws') && ws.url().includes('mode=rw')) rw.push(ws.url());
       });
       page.on('response', (r) => {
-        if (r.url().endsWith('/mirror/terminal/send')) sends.push(r.status());
+        if (new URL(r.url()).pathname === '/mirror/terminal/send') sends.push(r.status());
       });
       const act = (l: ReturnType<Page['locator']>) => (size.touch ? l.tap() : l.click());
       try {
@@ -589,18 +589,20 @@ for (const size of [
   });
 }
 
-test('a read-only host’s Terminal view draws no composer, and the rendered view’s empty Send says so', async ({ page }) => {
+test('a read-only host’s Terminal view draws its composer disabled and says why, and the rendered view’s empty Send says so', async ({ page }) => {
   await stopMirror();
   const tr = newTranscript();
-  // Read-only: no composer on the Terminal page of either kind of session.
+  // Read-only: the Terminal page of either kind of session has the message
+  // box, disabled, with the reason under it (it used to have none at all).
   mirrorProc = startMirror(false, tr);
   await login(page);
   await waitForClaude(page);
   for (const session of ['scratch', 'main']) {
     await page.goto(origin + termPath(session));
     await expect(screen(page)).toContainText(`FAKE-MIRROR session=${session} mode=ro`);
-    await expect(page.locator('#mv-form'), `${session}: no composer on a read-only host`).toHaveCount(0);
-    await expect(page.locator('#mv-input')).toHaveCount(0);
+    await expect(page.locator('#mv-input'), `${session}: a read-only host’s composer is disabled`).toBeDisabled();
+    await expect(page.locator('#mv-send')).toBeDisabled();
+    await expect(page.locator('#mv-readonly')).toContainText('This host is read-only');
     await expect(page.locator('#term-keys'), 'control: the rest of the page is there').toBeVisible();
   }
 
@@ -613,7 +615,7 @@ test('a read-only host’s Terminal view draws no composer, and the rendered vie
   await expect(page.locator('#mv-input')).toBeEnabled();
   const sends: number[] = [];
   page.on('response', (r) => {
-    if (r.url().endsWith('/mirror/view/send')) sends.push(r.status());
+    if (new URL(r.url()).pathname === '/mirror/view/send') sends.push(r.status());
   });
   await page.locator('#mv-send').click();
   await expect(page.locator('#mv-note')).toHaveText('Type a message first.');

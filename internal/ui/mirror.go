@@ -124,9 +124,23 @@ func mirrorCard(m MirrorCardView) g.Node {
 	if !m.Online {
 		status = "stopped"
 	}
+	kind := m.Kind
+	if m.Claude {
+		kind = "Claude Code"
+	}
+	mode, state := "", ""
+	if m.Interactive {
+		mode = "interactive"
+	}
+	if !m.Online {
+		state = "offline"
+	}
 	return Article(
 		ID(mirrorCardID(m)),
 		g.Attr("data-mirror-card", ""),
+		// What the list's filter finds this card by (agents_filter.go): its title
+		// ("Gold:8"), its raw tmux session name, its host, and what runs in it.
+		g.Attr("data-filter", filterHaystack(m.Label, m.Title, m.Session, m.Host, kind, "mirrored", mode, state)),
 		Class("group relative overflow-hidden rounded-2xl border border-line bg-s1/70 shadow-lg shadow-black/20 ring-1 ring-line"),
 		A(
 			Href(MirrorCardHref(m)),

@@ -45,6 +45,11 @@ func (s *Server) registerMirrorViewRoutes(mux Mux) {
 	mux.HandleFunc("GET /mirror/view", s.requireSession(s.handleMirrorViewPage))
 	mux.HandleFunc("GET /mirror/view/ws", s.requireSession(s.handleMirrorViewWS))
 	mux.HandleFunc("POST "+ui.MirrorSendPath, s.requireOperatorWrite(s.handleMirrorViewSend))
+	// A send that came back from a sign-in as a GET (handleMirrorSendAgain).
+	mux.HandleFunc("GET "+ui.MirrorSendPath, s.requireSession(s.handleMirrorViewSendAgain))
+	mux.HandleFunc("GET "+ui.MirrorTerminalSendPath, s.requireSession(s.handleMirrorTerminalSendAgain))
+	// The plain confirm page's form: a stale send the BROWSER submitted.
+	mux.HandleFunc("POST "+mirrorConfirmSendPath, s.requireOperatorWrite(s.handleMirrorConfirmSend))
 }
 
 // handleMirrorViewPage is GET /mirror/view?host=…&session=…[&window=…]. An
@@ -59,16 +64,19 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !e.HasRenderedView() {
-		http.Redirect(w, r, mirrorRef(e).TerminalPath(), http.StatusSeeOther)
+		http.Redirect(w, r, keepNotice(r, mirrorRef(e).TerminalPath()), http.StatusSeeOther)
 		return
 	}
 	if redirect {
-		http.Redirect(w, r, mirrorRef(e).ViewPath(), http.StatusSeeOther)
+		http.Redirect(w, r, keepNotice(r, mirrorRef(e).ViewPath()), http.StatusSeeOther)
 		return
 	}
+	v := ui.MirrorViewView{Host: h.Host, Session: e.Session, Window: e.Window, Title: mirrorTitle(e), Label: e.Label, Interactive: h.Interactive,
+		StepUp: s.stepUpView(r, ""), Nonce: newSendNonce()}
+	v.Notice, v.NoticeOK = composerNotice(r)
+	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.MirrorViewPage(ui.MirrorViewView{Host: h.Host, Session: e.Session, Window: e.Window, Title: mirrorTitle(e), Label: e.Label, Interactive: h.Interactive,
-		StepUp: s.stepUpView(r, "")}).Render(w); err != nil {
+	if err := ui.MirrorViewPage(v).Render(w); err != nil {
 		s.logger.Printf("mirror: render view page: %v", err)
 	}
 }
@@ -146,17 +154,17 @@ func refuseStale(w http.ResponseWriter) {
 // mirrorSendTimeout bounds one send end to end (the host confirms the paste).
 const mirrorSendTimeout = 20 * time.Second
 
-// handleMirrorViewSend is POST /mirror/view/send (host, session, text): paste
-// the text into the session's CLAUDE pane, the way ccd hands an agent a prompt
-// — and only into a pane that runs Claude Code.
+// handleMirrorViewSend is POST /mirror/view/send (host, session, window,
+// text): paste the text into the window's CLAUDE pane, the way ccd hands an
+// agent a prompt — and only into a pane that runs Claude Code.
 func (s *Server) handleMirrorViewSend(w http.ResponseWriter, r *http.Request) {
 	s.mirrorSend(w, r, mirror.PasteClaude)
 }
 
-// handleMirrorTerminalSend is POST /mirror/terminal/send (host, session, text):
-// paste the text into the session's ACTIVE pane, whatever runs in it — the
-// Terminal view's composer, for a session with no rendered view (a shell,
-// another TUI) as much as for one with.
+// handleMirrorTerminalSend is POST /mirror/terminal/send (host, session,
+// window, text): paste the text into the window's ACTIVE pane, whatever runs in
+// it — the Terminal view's composer, for a session with no rendered view (a
+// shell, another TUI) as much as for one with.
 func (s *Server) handleMirrorTerminalSend(w http.ResponseWriter, r *http.Request) {
 	s.mirrorSend(w, r, mirror.PasteActivePane)
 }
@@ -164,69 +172,264 @@ func (s *Server) handleMirrorTerminalSend(w http.ResponseWriter, r *http.Request
 // MirrorSendEmpty answers a send with no text: 400, said rather than dropped.
 const MirrorSendEmpty = "nothing to send: type a message first"
 
-// mirrorSend is BOTH send routes: paste the text into a pane of the session and
-// press Enter. 204 on success; otherwise a status and the reason as plain text,
-// which the composer shows inline.
+// The plain confirm page's route, and the values of its `kind` field: which of
+// the two sends is waiting.
+const (
+	mirrorConfirmSendPath = "/mirror/confirm-send"
+	mirrorSendKindView    = "view"
+	mirrorSendKindTerm    = "terminal"
+)
+
+// mirrorSendKind is target as the confirm page's `kind` field.
+func mirrorSendKind(target mirror.PasteTarget) string {
+	if target == mirror.PasteClaude {
+		return mirrorSendKindView
+	}
+	return mirrorSendKindTerm
+}
+
+// mirrorSendPage is the view a send to e at target came from: where the
+// browser is sent back to.
+func mirrorSendPage(e mirror.SessionView, target mirror.PasteTarget) string {
+	if target == mirror.PasteClaude {
+		return mirrorRef(e).ViewPath()
+	}
+	return mirrorRef(e).TerminalPath()
+}
+
+// mirrorPending is one send as it arrived.
+type mirrorPending struct {
+	e      mirror.SessionView // the address the request named (mirrorEntry)
+	window string             // as the request named it; "" = the session's active window
+	text   string
+	nonce  string
+	target mirror.PasteTarget
+	// nav: the BROWSER submitted the form (see composer.go).
+	nav bool
+}
+
+// refuse answers a send that is not delivered: to the composer's script the
+// status and the reason, to the browser a redirect back to the view with the
+// notice code.
+func (s *Server) mirrorRefuse(w http.ResponseWriter, r *http.Request, p mirrorPending, status int, msg, notice string) {
+	if p.nav {
+		http.Redirect(w, r, withNotice(mirrorSendPage(p.e, p.target), notice), http.StatusSeeOther)
+		return
+	}
+	http.Error(w, msg, status)
+}
+
+// mirrorStepUpPage answers a browser-submitted send whose sign-in is stale: the
+// plain confirm page, carrying the send in hidden fields.
+func (s *Server) mirrorStepUpPage(w http.ResponseWriter, p mirrorPending, problem string) {
+	fields := []ui.ComposerField{{Name: "kind", Value: mirrorSendKind(p.target)}, {Name: "host", Value: p.e.Host}, {Name: "session", Value: p.e.Session}}
+	if p.window != "" {
+		fields = append(fields, ui.ComposerField{Name: "window", Value: p.window})
+	}
+	fields = append(fields, ui.ComposerField{Name: "text", Value: p.text}, ui.ComposerField{Name: "nonce", Value: p.nonce})
+	formDocument(w)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := ui.StepUpFormPage(ui.StepUpFormView{Action: mirrorConfirmSendPath, Fields: fields,
+		BackHref: mirrorSendPage(p.e, p.target), Window: stepup.WindowText(), Error: problem}).Render(w); err != nil {
+		s.logger.Printf("mirror: render confirm page: %v", err)
+	}
+}
+
+// mirrorSendForm reads a send's form: its address, resolved against the
+// principal's hosts, and its text. ok is false when it answered already (the
+// plugin off, a body too large, or an address that is not the principal's —
+// 404, never a 403 that would say "this exists").
+func (s *Server) mirrorSendForm(w http.ResponseWriter, r *http.Request, target mirror.PasteTarget) (h mirror.HostView, p mirrorPending, ok bool) {
+	if s.ext.Mirror == nil {
+		http.NotFound(w, r)
+		return h, p, false
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, mirror.MaxPaste*4)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "the message is too large", http.StatusRequestEntityTooLarge)
+		return h, p, false
+	}
+	window := r.PostFormValue("window")
+	h, e, _, _, found := s.mirrorEntry(r, r.PostFormValue("host"), r.PostFormValue("session"), window)
+	if !found {
+		http.NotFound(w, r)
+		return h, p, false
+	}
+	return h, mirrorPending{e: e, window: window, text: r.PostFormValue("text"), nonce: r.PostFormValue("nonce"),
+		target: target, nav: isDocumentNavigation(r)}, true
+}
+
+// mirrorSend is BOTH send routes: paste the text into a pane of the window and
+// press Enter. To the composer's script: 204 on success, otherwise a status
+// and the reason as plain text, which it shows inline. To a form the browser
+// submitted: a redirect back to the view (composer.go).
 //
 // 🔴 THE GATES ARE HERE ONCE, FOR BOTH ROUTES, IN THIS ORDER: the plugin on;
 // the host is the request principal's (else 404 — never a 403 that would say
 // "this exists"); the host advertised -interactive (409); the sign-in is fresh
 // (403 + X-Muster-Step-Up, which the page answers with "Confirm it's you" and a
-// retry of the same text). Only then is the text looked at. The plugin checks
-// the last two again on its own.
+// retry of the same text — or, for a browser-submitted form, the plain confirm
+// page). Only then is the text looked at. The plugin checks the last two again
+// on its own.
 func (s *Server) mirrorSend(w http.ResponseWriter, r *http.Request, target mirror.PasteTarget) {
+	h, p, ok := s.mirrorSendForm(w, r, target)
+	if !ok {
+		return
+	}
+	if !h.Interactive {
+		s.mirrorRefuse(w, r, p, http.StatusConflict, mirror.ErrInteractiveRefused.Error(), noticeReadOnly)
+		return
+	}
+	if !stepup.Fresh(r.Context(), s.stepUpNow()) {
+		if p.nav {
+			s.mirrorStepUpPage(w, p, "")
+			return
+		}
+		refuseStale(w)
+		return
+	}
+	s.mirrorDeliver(r.Context(), w, r, p)
+}
+
+// handleMirrorConfirmSend is POST /mirror/confirm-send: the plain confirm
+// page's form — the password again, and the send that was waiting. A right
+// password replaces the session with a freshly signed-in one (the SAME check
+// and throttle as the dialog's route: stepUpWithPassword) and the send is then
+// delivered, in this request; a wrong one shows the page again, saying so.
+//
+// 🔴 THE SEND IS FRESH BECAUSE THIS REQUEST JUST CONFIRMED, AND ONLY THEN. The
+// request arrived with a stale session, so the gate is given the sign-in time
+// of the session the confirm minted — whose cookies are on this very response —
+// and nothing else: a wrong password delivers nothing, and every other gate
+// (the host is the principal's, -interactive, the plugin's own) runs as for any
+// send.
+func (s *Server) handleMirrorConfirmSend(w http.ResponseWriter, r *http.Request) {
 	if s.ext.Mirror == nil {
 		http.NotFound(w, r)
 		return
 	}
+	// The kind is read before the form is otherwise looked at: it decides the
+	// target mirrorSendForm resolves for.
 	r.Body = http.MaxBytesReader(w, r.Body, mirror.MaxPaste*4)
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "the message is too large", http.StatusRequestEntityTooLarge)
 		return
 	}
-	host, session, window, text := r.PostFormValue("host"), r.PostFormValue("session"), r.PostFormValue("window"), r.PostFormValue("text")
-	h, _, _, _, ok := s.mirrorEntry(r, host, session, window)
+	var target mirror.PasteTarget
+	switch r.PostFormValue("kind") {
+	case mirrorSendKindView:
+		target = mirror.PasteClaude
+	case mirrorSendKindTerm:
+		target = mirror.PasteActivePane
+	default:
+		http.Error(w, "unknown kind of send", http.StatusBadRequest)
+		return
+	}
+	h, p, ok := s.mirrorSendForm(w, r, target)
 	if !ok {
+		return
+	}
+	// The page is only ever the browser's: its result is a page or a redirect.
+	p.nav = true
+	if !h.Interactive {
+		s.mirrorRefuse(w, r, p, http.StatusConflict, mirror.ErrInteractiveRefused.Error(), noticeReadOnly)
+		return
+	}
+	// PostForm, never Form: a password in the URL would be in the access log.
+	o := s.stepUpWithPassword(w, r, r.PostForm.Get("password"))
+	if o.Error != "" {
+		s.mirrorStepUpPage(w, p, o.Error)
+		return
+	}
+	s.mirrorDeliver(stepup.WithAuthTime(r.Context(), o.At), w, r, p)
+}
+
+// handleMirrorViewSendAgain and handleMirrorTerminalSendAgain are GET on the
+// two send routes. Nothing in this app links there: it is where a POST lands
+// that was sent through a sign-in at a forward-auth edge and came back as a GET
+// with no body (ui.ComposerView's action carries the address in its query for
+// exactly this). The browser is sent back to the view, told the message was not
+// sent.
+func (s *Server) handleMirrorViewSendAgain(w http.ResponseWriter, r *http.Request) {
+	s.mirrorSendAgain(w, r, mirror.PasteClaude)
+}
+
+func (s *Server) handleMirrorTerminalSendAgain(w http.ResponseWriter, r *http.Request) {
+	s.mirrorSendAgain(w, r, mirror.PasteActivePane)
+}
+
+func (s *Server) mirrorSendAgain(w http.ResponseWriter, r *http.Request, target mirror.PasteTarget) {
+	q := r.URL.Query()
+	_, e, _, _, ok := s.mirrorEntry(r, q.Get("host"), q.Get("session"), q.Get("window"))
+	if !ok {
+		// Not the principal's host: not found, like its pages.
 		http.NotFound(w, r)
 		return
 	}
-	if !h.Interactive {
-		http.Error(w, mirror.ErrInteractiveRefused.Error(), http.StatusConflict)
+	http.Redirect(w, r, withNotice(mirrorSendPage(e, target), noticeAgain), http.StatusSeeOther)
+}
+
+// mirrorDeliver pastes p's text and answers. ctx carries the sign-in time the
+// plugin's own freshness gate reads: the request's, or a just-confirmed one.
+func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *http.Request, p mirrorPending) {
+	host, session := p.e.Host, p.e.Session
+	if strings.TrimSpace(p.text) == "" {
+		s.mirrorRefuse(w, r, p, http.StatusBadRequest, MirrorSendEmpty, noticeEmpty)
 		return
 	}
-	if !stepup.Fresh(r.Context(), s.stepUpNow()) {
-		refuseStale(w)
+	sent := func() {
+		if p.nav {
+			http.Redirect(w, r, withNotice(mirrorSendPage(p.e, p.target), noticeSent), http.StatusSeeOther)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+	// 🔴 THE SAME MESSAGE TWICE IS DELIVERED ONCE (sendNonces): the composer's
+	// script hands a send whose answer was lost to the browser's own submit, and
+	// the first may have been pasted.
+	repeat, finish := s.sends.begin(requestOwner(ctx), p.nonce, p.text)
+	if repeat {
+		s.logger.Printf("mirror: a repeat of a message to %s/%s%s was not sent again", host, session, p.window)
+		sent()
 		return
 	}
-	if strings.TrimSpace(text) == "" {
-		http.Error(w, MirrorSendEmpty, http.StatusBadRequest)
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), mirrorSendTimeout)
+	pctx, cancel := context.WithTimeout(ctx, mirrorSendTimeout)
 	defer cancel()
 	// window == "" is the session's active window (mirror.Hub.PasteWindow).
-	if err := s.ext.Mirror.PasteWindow(ctx, host, session, window, text, target); err != nil {
+	if err := s.ext.Mirror.PasteWindow(pctx, host, session, p.window, p.text, p.target); err != nil {
+		finish(false)
 		if errors.Is(err, mirror.ErrStepUpRequired) {
 			// The plugin's own check of the same gate (it does not rely on the
 			// one above): the same answer.
+			if p.nav {
+				s.mirrorStepUpPage(w, p, "")
+				return
+			}
 			refuseStale(w)
 			return
 		}
-		status := http.StatusBadGateway
+		status, notice := http.StatusBadGateway, noticeFailed
 		switch {
 		case errors.Is(err, mirror.ErrBadPaste):
-			status = http.StatusBadRequest
-		case errors.Is(err, mirror.ErrInteractiveRefused), errors.Is(err, mirror.ErrNotClaude),
-			errors.Is(err, mirror.ErrNoRenderedView), errors.Is(err, mirror.ErrSessionGone),
-			errors.Is(err, mirror.ErrWindowGone), errors.Is(err, mirror.ErrPanePasteUnsupported):
-			status = http.StatusConflict
+			status, notice = http.StatusBadRequest, noticeBadText
+		case errors.Is(err, mirror.ErrInteractiveRefused):
+			status, notice = http.StatusConflict, noticeReadOnly
+		case errors.Is(err, mirror.ErrNotClaude), errors.Is(err, mirror.ErrNoRenderedView):
+			status, notice = http.StatusConflict, noticeNotClaude
+		case errors.Is(err, mirror.ErrSessionGone):
+			status, notice = http.StatusConflict, noticeGone
+		case errors.Is(err, mirror.ErrWindowGone):
+			status, notice = http.StatusConflict, noticeWindowGone
+		case errors.Is(err, mirror.ErrPanePasteUnsupported):
+			status, notice = http.StatusConflict, noticeUpgrade
 		case errors.Is(err, mirror.ErrHostOffline):
-			status = http.StatusServiceUnavailable
+			status, notice = http.StatusServiceUnavailable, noticeOffline
 		}
-		s.logger.Printf("mirror: send to %s/%s%s refused: %v", host, session, window, err)
-		http.Error(w, err.Error(), status)
+		s.logger.Printf("mirror: send to %s/%s%s refused: %v", host, session, p.window, err)
+		s.mirrorRefuse(w, r, p, status, err.Error(), notice)
 		return
 	}
-	s.logger.Printf("mirror: sent a message to %s/%s%s", host, session, window)
-	w.WriteHeader(http.StatusNoContent)
+	finish(true)
+	s.logger.Printf("mirror: sent a message to %s/%s%s", host, session, p.window)
+	sent()
 }

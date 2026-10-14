@@ -48,7 +48,7 @@ if (mode !== 'all' && files.length !== 1) {
   process.exit(2);
 }
 
-const FLOOR = Number(process.env.E2E_PASS_FLOOR ?? (mode === 'leg' ? 1 : 104));
+const FLOOR = Number(process.env.E2E_PASS_FLOOR ?? (mode === 'leg' ? 1 : 120));
 const CAP = Number(process.env.E2E_SKIP_CAP ?? 0);
 
 // perFile walks a report's suite tree: file -> { tests, passed }.

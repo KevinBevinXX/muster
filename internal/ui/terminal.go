@@ -113,6 +113,19 @@ func termModeDisplay(readOnlyOnly bool) string {
 // AgentTerminalPath is the terminal page of an agent.
 func AgentTerminalPath(name string) string { return "/agents/" + url.PathEscape(name) + "/terminal" }
 
+// AgentPath is an agent's own page: its chat, the RENDERED view of its work.
+func AgentPath(name string) string { return "/agents/" + url.PathEscape(name) }
+
+// AgentSendPath is where a message for an agent is posted as a form: the
+// composer on its Terminal page, and its chat form when the page's socket
+// cannot carry the message.
+func AgentSendPath(name string) string { return "/agents/" + url.PathEscape(name) + "/send" }
+
+// AgentSendFromTerminal is the `from` field of a send that came from the
+// agent's Terminal page: where its answer returns the browser to. Anything
+// else is the chat page.
+const AgentSendFromTerminal = "terminal"
+
 // AgentTerminalPage is a full-height document: a header with the read-only /
 // interactive switch, the terminal, the quick-key bar and — for a mirrored
 // session that can be sent to — the message composer.
@@ -157,7 +170,11 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 			Body(
 				Class("flex h-dvh flex-col overflow-hidden bg-bg text-fg antialiased"),
 				Header(
-					Class("flex items-center gap-2 border-b border-line px-2 py-1.5"),
+					// It WRAPS: with the view switch beside Fit width and the
+					// Interactive switch, a phone's width does not hold them all
+					// on one line, and a header that cannot wrap pushes the
+					// document sideways instead.
+					Class("flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-line px-2 py-1.5"),
 					A(
 						ID("term-back"),
 						Href(back),
@@ -166,7 +183,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 						g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>`),
 					),
 					Div(
-						Class("min-w-0 flex-1"),
+						Class("min-w-[6rem] flex-1"),
 						H1(Class("truncate text-sm font-semibold"),
 							g.If(v.RawName == "", g.Text(markdownPlain(title))),
 							g.If(v.RawName != "", mirrorSessionTitle(markdownPlain(title), v.RawName, "")),
