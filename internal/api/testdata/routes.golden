@@ -189,8 +189,13 @@ POST /mcp
 POST /mirror/confirm-send
 POST /mirror/terminal/send
 POST /mirror/view/send
+POST /plugin/v1/drafts/claim
+POST /plugin/v1/drafts/{id}/result
 POST /plugin/v1/messages
 POST /plugins
+POST /plugins/drafts/{id}/approve
+POST /plugins/drafts/{id}/reapprove
+POST /plugins/drafts/{id}/reject
 POST /plugins/{id}/revoke
 POST /runner/flows/claim
 POST /runner/flows/{id}/heartbeat

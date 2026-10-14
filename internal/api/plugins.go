@@ -55,7 +55,15 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	mux.HandleFunc("POST "+pluginsPath, s.requirePluginsOn(s.requireOperatorWrite(s.handlePluginCreate)))
 	mux.HandleFunc("POST "+pluginsPath+"/{id}/revoke", s.requirePluginsOn(s.requireOperatorWrite(s.handlePluginRevoke)))
 
+	// Reply drafts (plugin_drafts.go): the owner decides; Approve and Approve
+	// again also need a fresh sign-in, checked in the handler.
+	mux.HandleFunc("POST "+pluginsPath+"/drafts/{id}/approve", s.requirePluginsOn(s.requireOperatorWrite(s.handleDraftApprove)))
+	mux.HandleFunc("POST "+pluginsPath+"/drafts/{id}/reapprove", s.requirePluginsOn(s.requireOperatorWrite(s.handleDraftReapprove)))
+	mux.HandleFunc("POST "+pluginsPath+"/drafts/{id}/reject", s.requirePluginsOn(s.requireOperatorWrite(s.handleDraftReject)))
+
 	mux.HandleFunc("POST "+pluginAPIPrefix+"/messages", s.requirePluginToken(s.handlePluginMessage))
+	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/claim", s.requirePluginToken(s.handlePluginDraftClaim))
+	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/{id}/result", s.requirePluginToken(s.handlePluginDraftResult))
 }
 
 // requirePluginsOn answers 404 for a plugin route on a server with plugins off,
@@ -139,7 +147,7 @@ func (s *Server) handlePluginMessage(w http.ResponseWriter, r *http.Request) {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, plugins.MaxRequestBytes))
 	if err := dec.Decode(&in); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error": "the body is {\"external_id\",\"sender\",\"subject\",\"body\",\"received_at\"} (RFC 3339)"})
+			"error": "the body is {\"external_id\",\"sender\",\"subject\",\"body\",\"received_at\" (RFC 3339),\"no_reply\"}"})
 		return
 	}
 	p := pluginFromContext(r.Context())
@@ -247,6 +255,16 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 		s.logger.Printf("plugins: page list: %v", err)
 		problem = "The plugin list could not be read."
 	}
+	queued, err := s.ext.Plugins.QueuedCounts(r.Context())
+	if err != nil {
+		s.logger.Printf("plugins: page queued counts: %v", err)
+		problem = "The plugin list could not be read."
+	}
+	cards, err := s.ext.Plugins.DraftCards(r.Context(), pluginDraftsShown)
+	if err != nil {
+		s.logger.Printf("plugins: page drafts: %v", err)
+		problem = "The reply drafts could not be read."
+	}
 	esc := html.EscapeString
 	var b strings.Builder
 	b.WriteString(`<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line" data-testid="plugins-page">
@@ -284,7 +302,9 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 		id := strconv.FormatInt(p.ID, 10)
 		b.WriteString(`<li class="` + flowsCardClass + `" data-plugin-id="` + id + `">
 <span class="break-all text-sm font-semibold text-fg">` + esc(p.Label) + ` <span class="font-mono text-xs text-fg2">` + esc(p.Name) + `</span></span>
-<span class="text-xs text-fg2">scope ` + esc(p.DataScope) + ` · created ` + p.CreatedAt.UTC().Format("2006-01-02 15:04") + ` UTC · ` + seen + `</span>
+<span class="text-xs text-fg2">scope ` + esc(p.DataScope) + ` · created ` + p.CreatedAt.UTC().Format("2006-01-02 15:04") + ` UTC</span>
+<span class="text-xs text-fg2"><span data-plugin-seen>` + seen + `</span> · <span data-plugin-queued="` + strconv.Itoa(queued[p.ID]) + `">` +
+			queuedText(queued[p.ID]) + `</span></span>
 `)
 		if p.RevokedAt != nil {
 			b.WriteString(`<span class="text-xs font-semibold text-fg2">revoked</span>`)
@@ -294,8 +314,21 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 		}
 		b.WriteString("</li>\n")
 	}
-	b.WriteString(`</ul>
-<a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to muster</a>
+	b.WriteString("</ul>\n")
+	b.WriteString(draftsSectionHTML(cards))
+	b.WriteString(`<a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to muster</a>
 </section>`)
+	b.WriteString(s.draftStepUpHTML(r))
 	writeAuthDocument(w, code, "Plugins", b.String())
+}
+
+// queuedText is a plugin's undelivered-message count in words.
+func queuedText(n int) string {
+	switch n {
+	case 0:
+		return "nothing waiting for your chief"
+	case 1:
+		return "1 message waiting for your chief"
+	}
+	return strconv.Itoa(n) + " messages waiting for your chief"
 }

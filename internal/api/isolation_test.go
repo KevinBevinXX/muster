@@ -322,6 +322,14 @@ var isolationClasses = map[string]routeClass{
 	"POST /plugins":             classList,
 	"POST /plugins/{id}/revoke": classParam,
 	"POST /plugin/v1/messages":  classPlugin,
+	// Reply drafts (PR C): the owner's decisions name A's draft by id; the
+	// plugin's claim names nothing (it leases the token owner's own drafts) and
+	// its result names A's draft — which B's plugin must not settle.
+	"POST /plugins/drafts/{id}/approve":   classParam,
+	"POST /plugins/drafts/{id}/reapprove": classParam,
+	"POST /plugins/drafts/{id}/reject":    classParam,
+	"POST /plugin/v1/drafts/claim":        classPlugin,
+	"POST /plugin/v1/drafts/{id}/result":  classPlugin,
 
 	// The mirrored rendered view (tunnel v2) addresses its session like the
 	// mirrored terminal above (?host=&session=); the
@@ -497,6 +505,7 @@ type isoWorld struct {
 	// revokes a credential.
 	pluginTokens map[int64]string
 	aPlugin2     plugins.Plugin
+	aDraft       plugins.Draft
 }
 
 func newIsoWorld(t *testing.T) *isoWorld {
@@ -678,13 +687,28 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	// Plugins: a token each, and A's canary-labelled second plugin.
 	ps := plugins.NewPG(pool)
 	w.pluginTokens = map[int64]string{}
+	var aPlugin1 plugins.Plugin
 	for _, u := range []isoUser{w.a, w.b} {
-		tok, _, err := ps.Create(as2(u), "iso-inbox", "Iso inbox", "iso")
+		tok, p, err := ps.Create(as2(u), "iso-inbox", "Iso inbox", "iso")
 		must(err, u.name+" plugin")
 		w.pluginTokens[u.uid] = tok
+		if u.uid == w.a.uid {
+			aPlugin1 = p
+		}
 	}
 	_, w.aPlugin2, err = ps.Create(ua, "iso-second", w.canary+" plugin", "iso")
 	must(err, "a second plugin")
+	// A's agent was handed a message (the canary in its body) and drafted a
+	// reply (the canary in it too): the object the draft routes name. Through
+	// A's FIRST plugin, the one whose token the walk holds, so A's own result
+	// call reaches its own draft (409: not claimed) where a ghost's is 404.
+	aMsg, _, err := ps.Submit(ua, aPlugin1.ID, plugins.MessageIn{ExternalID: "iso-a-msg", Sender: "iso",
+		Body: w.canary + " asks"})
+	must(err, "a plugin message")
+	_, err = ps.RecordDelivery(ua, aMsg.ID, w.a.agent.ID, plugins.StatusDelivered)
+	must(err, "a plugin message delivered")
+	w.aDraft, _, err = ps.FileDraft(ua, w.a.agent.ID, w.a.uid, w.a.agent.Name, aMsg.ID, w.canary+" reply")
+	must(err, "a reply draft")
 
 	w.aIdentities = []string{w.a.agent.Name, agents.ChiefNameFor(w.a.uid), w.aSessionLink, w.aTag, w.aProject}
 	w.opInvite, err = users.NewPG(pool).CreateInvite(ctx, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession},
@@ -694,14 +718,14 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		attach: w.aAttachment.ID, chat: w.aChatSession.ID, agentName: w.a.agent.Name, connName: w.aConnName,
 		tag: w.aTag, link: w.aSessionLink, mirrorHost: w.canary + "-host", mirrorSession: "main", token: w.aToken2.ID,
 		pushDevice: w.objA.pushDevice, flowJob: w.aJob.ID, runnerTok: w.aRunner2.ID, flowReq: w.aFlowReq.ID,
-		plugin: w.aPlugin2.ID}
+		plugin: w.aPlugin2.ID, draft: w.aDraft.ID}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
 	const ghostID = 9_000_000_000
 	w.ghost = isoObjs{user: ghostID, invite: ghostID, task: ghostID, agent: ghostID, grant: ghostID, comment: ghostID, attach: ghostID, chat: ghostID,
 		agentName: "ghost-agent" + w.suffix, connName: "ghostconn" + w.suffix, tag: "ghosttag", link: "ghost-sess-" + w.suffix,
 		mirrorHost: "ghost-host", mirrorSession: "main", ccAccount: "ghostacct", token: ghostID, pushDevice: ghostID,
-		flowJob: ghostID, runnerTok: ghostID, flowReq: ghostID, plugin: ghostID, passkey: "00000000-0000-4000-a000-00000000ghost"}
+		flowJob: ghostID, runnerTok: ghostID, flowReq: ghostID, plugin: ghostID, draft: ghostID, passkey: "00000000-0000-4000-a000-00000000ghost"}
 
 	// A's push device: through the real store, as the claim the subscribe route
 	// makes. Its user agent and endpoint carry the canary.
@@ -968,6 +992,7 @@ type isoObjs struct {
 	token                                     int64  // a personal API token's id
 	flowJob, runnerTok, flowReq               int64  // a browser-flow job's, runner token's and agent request's id
 	plugin                                    int64  // a plugin's id (0015)
+	draft                                     int64  // a plugin reply draft's id (0015/0016)
 	passkey                                   string // a GoTrue passkey id (the gotrue twin's fake)
 	pushDevice                                int64  // a Web Push device's id
 	agentName, connName, tag, link            string
@@ -999,6 +1024,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		id = strconv.FormatInt(o.runnerTok, 10)
 	case strings.HasPrefix(path, "/plugins/{id}"):
 		id = strconv.FormatInt(o.plugin, 10)
+	case strings.HasPrefix(path, "/plugins/drafts/{id}") || strings.HasPrefix(path, "/plugin/v1/drafts/{id}"):
+		id = strconv.FormatInt(o.draft, 10)
 	case strings.Contains(path, "/flows/requests/{id}"):
 		id = strconv.FormatInt(o.flowReq, 10)
 	case strings.Contains(path, "flows/jobs/{id}") || strings.HasPrefix(path, "/runner/flows/{id}"):
@@ -1046,8 +1073,10 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 	}
 	if strings.HasPrefix(path, "/plugin/") {
 		// A whole valid message: what B's plugin posts is accepted as B's own.
+		// The draft routes' fields ride along: a claim that does not wait, and a
+		// result (so a refusal is about WHOSE draft, not a malformed body).
 		return method, path, `{"external_id":"iso-` + w.suffix + `-` + strconv.FormatInt(actor.uid, 10) +
-			`","sender":"iso","subject":"iso-write","body":"iso-write"}`
+			`","sender":"iso","subject":"iso-write","body":"iso-write","wait_seconds":0,"ok":true}`
 	}
 	if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/agent/") || path == "/mcp" || strings.HasPrefix(path, "/connect/") ||
 		strings.HasPrefix(path, "/runner/") {
@@ -1313,8 +1342,9 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 		t.Errorf("CONTROL: B's personal API token was admitted on only %d routes — the leg is not walking", tokAdmitted)
 	}
 	// The plugin-token leg too: B's plugin must have been ADMITTED on its own
-	// door (its message stored as B's), or its clean answers everywhere else are
-	// only the refusal of an unknown token.
+	// door (its message stored as B's, its claim answered "nothing for you"),
+	// or its clean answers everywhere else are only the refusal of an unknown
+	// token. The result route names A's draft, so it is NOT among them.
 	plugAdmitted := 0
 	for _, res := range bResults {
 		if strings.HasPrefix(res.via, "plugin-token") && is2xx(res.status) && isolationClasses[res.route] != classPublic {
@@ -1324,8 +1354,8 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 			}
 		}
 	}
-	if plugAdmitted != 1 {
-		t.Errorf("CONTROL: B's plugin token was admitted on %d routes; want exactly its own door", plugAdmitted)
+	if plugAdmitted != 2 {
+		t.Errorf("CONTROL: B's plugin token was admitted on %d routes; want exactly its own message and claim routes", plugAdmitted)
 	}
 	if len(bResults) < 5*len(isolationClasses) {
 		t.Fatalf("the walk drove %d requests for %d routes", len(bResults), len(isolationClasses))
@@ -1409,6 +1439,15 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 		}
 	}
 	aResults = append(aResults, w.walkAs(w.a, w.objA, []cred{{runnerToken: w.runnerTokens[w.a.uid]}}, runnerRoutes)...)
+	// A's PLUGIN control: A's plugin token on the plugin door, so the result
+	// route — which names A's draft — answers A differently from the ghost.
+	var pluginRoutes []string
+	for _, r := range routes {
+		if isolationClasses[r] == classPlugin {
+			pluginRoutes = append(pluginRoutes, r)
+		}
+	}
+	aResults = append(aResults, w.walkAs(w.a, w.objA, []cred{{pluginToken: w.pluginTokens[w.a.uid]}}, pluginRoutes)...)
 	// The push legs above are only facts about B and the admin if A's own walk
 	// DID reach A's device (its "send test").
 	w.srv.WaitForPushes()

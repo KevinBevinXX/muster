@@ -98,6 +98,10 @@ type MessageIn struct {
 	Subject    string     `json:"subject"`
 	Body       string     `json:"body"`
 	ReceivedAt *time.Time `json:"received_at"`
+	// NoReply marks a message nobody may answer (a notification, a no-reply
+	// sender): no reply draft can be filed for it (migration 0016 refuses one),
+	// and the chief's turn says so. Optional; false when absent.
+	NoReply bool `json:"no_reply"`
 }
 
 // Message is one row of plugin_messages.
@@ -116,6 +120,7 @@ type Message struct {
 	LastAttemptAt *time.Time `json:"lastAttemptAt,omitempty"`
 	DeliveredAt   *time.Time `json:"deliveredAt,omitempty"`
 	AgentID       *int64     `json:"-"`
+	NoReply       bool       `json:"noReply"`
 }
 
 // Errors the API maps to status codes.

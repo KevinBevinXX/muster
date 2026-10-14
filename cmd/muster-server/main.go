@@ -394,7 +394,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// tokens and messages are rows). A message is handed to the owner's chief
 	// through the agent gateway; with none, messages are stored and stay queued.
 	if cfg.pluginsEnabled() {
-		ext.Plugins = plugins.NewPG(a.pool)
+		// A reply draft is screened with the browser-flow agent screen's list of
+		// the deployment's own names (MUSTER_FLOW_AGENT_DENY_WORDS): the same
+		// "agent text bound for an outside party" (internal/plugins/drafts.go).
+		ext.Plugins = plugins.NewPG(a.pool).WithAgentDenyWords(cfg.FlowAgentDenyWords)
 		if gw != nil {
 			ext.PluginGateway = gw
 		}

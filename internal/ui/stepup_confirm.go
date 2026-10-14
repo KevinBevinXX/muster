@@ -43,6 +43,20 @@ type StepUpView struct {
 	// Window is the freshness window as a person reads it ("12 hours") —
 	// stepup.WindowText, passed in so this package states no window of its own.
 	Window string
+	// Why, when set, is the dialog's sentence about the gate in place of
+	// StepUpWhy's (which names typing into a session): a page gating something
+	// else says what. It should name Window too.
+	Why string
+}
+
+// StepUpDialog is the dialog and its script (window.musterStepUp) for a page
+// other than the terminal and the rendered view — today /plugins, whose Approve
+// asks before it submits. Nothing for nil.
+func StepUpDialog(s *StepUpView) g.Node {
+	if s == nil {
+		return nil
+	}
+	return g.Group{confirmDialog(s), stepUpScript()}
 }
 
 // stepUpAttrs carries a StepUpView to the terminal script on #term; nothing for
@@ -61,6 +75,14 @@ func stepUpAttrs(s *StepUpView) g.Node {
 // StepUpWhy is the dialog's sentence about the gate, with the window in it.
 func StepUpWhy(window string) string {
 	return "Typing into this session needs a sign-in from the last " + window + "."
+}
+
+// stepUpWhyFor is s.Why when set, else StepUpWhy's sentence.
+func stepUpWhyFor(s *StepUpView) string {
+	if s.Why != "" {
+		return s.Why
+	}
+	return StepUpWhy(s.Window)
 }
 
 // The dialog's "how" line, in its two states. The server renders the password
@@ -102,7 +124,7 @@ func confirmDialog(s *StepUpView) g.Node {
 			Class("flex flex-col gap-4 px-5 py-6"),
 			H2(ID("term-confirm-title"), Class("text-base font-semibold text-fg"), g.Text("Confirm it's you")),
 			P(ID("term-confirm-why"), Class("text-sm text-fg2"),
-				g.Text(StepUpWhy(s.Window)+" "), Span(ID("term-confirm-how"), g.Text(stepUpHowPassword))),
+				g.Text(stepUpWhyFor(s)+" "), Span(ID("term-confirm-how"), g.Text(stepUpHowPassword))),
 			Div(
 				ID("term-confirm-passkey-box"),
 				g.Attr("hidden", ""),

@@ -70,6 +70,26 @@ func (c *countingPlugins) List(ctx context.Context) ([]plugins.Plugin, error) {
 	return nil, nil
 }
 
+func (c *countingPlugins) QueuedCounts(ctx context.Context) (map[int64]int, error) {
+	c.note(ctx, "QueuedCounts")
+	return map[int64]int{}, nil
+}
+
+func (c *countingPlugins) DraftCards(ctx context.Context, _ int) ([]plugins.DraftCard, error) {
+	c.note(ctx, "DraftCards")
+	return nil, nil
+}
+
+func (c *countingPlugins) ClaimDraft(ctx context.Context, _ int64) (plugins.Claim, bool, error) {
+	c.note(ctx, "ClaimDraft")
+	return plugins.Claim{}, false, nil
+}
+
+func (c *countingPlugins) FinishDraft(ctx context.Context, _, _ int64, _ plugins.DraftResult) (plugins.Draft, error) {
+	c.note(ctx, "FinishDraft")
+	return plugins.Draft{}, plugins.ErrNotFound
+}
+
 // pluginsTestAgents resolves one agent by its own token (pgnAgent).
 type pluginsTestAgents struct{ agents.Store }
 
@@ -141,14 +161,16 @@ func TestThePluginDoorRefusesEveryOtherCredential(t *testing.T) {
 		"no credential":          func(*http.Request) {},
 		"malformed plugin token": pBearer(pgnTok[:len(pgnTok)-1]),
 	}
-	for name, c := range foreign {
-		f.reset()
-		rec := pServe(h, "POST", "/plugin/v1/messages", pgnMsg, c)
-		if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "this route takes a plugin token") {
-			t.Errorf("%s: %d %q; want 401 with the plugin-token refusal", name, rec.Code, rec.Body.String())
-		}
-		if got := f.snapshot(); len(got) != 0 {
-			t.Errorf("%s reached the plugin store: %v", name, got)
+	for _, door := range pluginDoorRoutes {
+		for name, c := range foreign {
+			f.reset()
+			rec := pServe(h, "POST", door.path, door.body, c)
+			if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "this route takes a plugin token") {
+				t.Errorf("%s %s: %d %q; want 401 with the plugin-token refusal", door.path, name, rec.Code, rec.Body.String())
+			}
+			if got := f.snapshot(); len(got) != 0 {
+				t.Errorf("%s %s reached the plugin store: %v", door.path, name, got)
+			}
 		}
 	}
 	f.reset()
@@ -160,6 +182,25 @@ func TestThePluginDoorRefusesEveryOtherCredential(t *testing.T) {
 	if len(got) != 2 || got[0] != "Authenticate as system" || got[1] != "Submit as plugin" {
 		t.Fatalf("CONTROL: the plugin's own token made store calls %v; want [Authenticate as system, Submit as plugin]", got)
 	}
+	// CONTROL on the two draft routes: the plugin's own token reaches the store.
+	for _, door := range pluginDoorRoutes[1:] {
+		f.reset()
+		rec := pServe(h, "POST", door.path, door.body, pBearer(pgnTok))
+		if got := f.snapshot(); rec.Code != door.ownCode || len(got) < 2 || got[0] != "Authenticate as system" || got[len(got)-1] != door.reaches+" as plugin" {
+			t.Errorf("CONTROL %s: %d, store calls %v; want %d reaching %s as the plugin", door.path, rec.Code, got, door.ownCode, door.reaches)
+		}
+	}
+}
+
+// pluginDoorRoutes is every /plugin/v1/* route with a body, the store method the
+// plugin's own token reaches, and what the countingPlugins fake makes it answer.
+var pluginDoorRoutes = []struct {
+	path, body, reaches string
+	ownCode             int
+}{
+	{"/plugin/v1/messages", pgnMsg, "Submit", http.StatusAccepted},
+	{"/plugin/v1/drafts/claim", `{"wait_seconds":0}`, "ClaimDraft", http.StatusNoContent},
+	{"/plugin/v1/drafts/5/result", `{"ok":true}`, "FinishDraft", http.StatusNotFound},
 }
 
 // TestAPluginTokenIsRefusedOnEveryOtherRoute: a plugin token opens nothing but
@@ -224,6 +265,9 @@ func TestPluginsOffIsNotFound(t *testing.T) {
 	for _, rt := range []struct{ method, path, body string }{
 		{"GET", "/plugins", ""}, {"POST", "/plugins", "name=example-inbox&label=x&data_scope=x"},
 		{"POST", "/plugins/1/revoke", ""}, {"POST", "/plugin/v1/messages", pgnMsg},
+		{"POST", "/plugins/drafts/1/approve", ""}, {"POST", "/plugins/drafts/1/reapprove", ""},
+		{"POST", "/plugins/drafts/1/reject", ""},
+		{"POST", "/plugin/v1/drafts/claim", `{"wait_seconds":0}`}, {"POST", "/plugin/v1/drafts/1/result", `{"ok":true}`},
 	} {
 		for name, c := range map[string]pluginCred{"plugin token": pBearer(pgnTok), "session": session,
 			"hook token": pBearer(tokTestHook), "none": func(*http.Request) {}} {

@@ -27,13 +27,13 @@ import (
 // existing tools are gateway-only).
 var (
 	mcpLedger = []string{"connectors_list", "connector_request", "connector_status",
-		"browser_flow_request", "browser_flow_status", "task_create_gated"}
+		"browser_flow_request", "browser_flow_status", "task_create_gated", "reply_draft"}
 	gatewayOnlyLedger = []string{"agent_get_task", "agent_comment_task", "agent_set_task_status",
 		"agent_list_pull_requests"}
 	// 🔴 chiefOnlyLedger IS PINNED THE SAME WAY: a tool joining it is offered to
 	// one agent per owner and refused to every other, and a tool LEAVING it is
 	// offered to every worker in the fleet. Either is a decision to review here.
-	chiefOnlyLedger = []string{"task_create_gated"}
+	chiefOnlyLedger = []string{"task_create_gated", "reply_draft"}
 )
 
 // without returns list minus the names in drop, in order.
