@@ -11,6 +11,9 @@ import { baseURL } from './lib/env';
 // runs only when MUSTER_E2E_CAPTURE=1 (`npm run capture`), so a CI run never
 // rewrites a committed image.
 const capture = process.env.MUSTER_E2E_CAPTURE === '1';
+// The `docshots` project regenerates docs/img/*.png (`make screenshots`). Like
+// capture, it runs only when asked (MUSTER_E2E_DOCSHOTS=1) and never in CI.
+const docshots = process.env.MUSTER_E2E_DOCSHOTS === '1';
 
 // 🔴 CI RUNS THE SUITE IN LEGS: MUSTER_E2E_LEG=N runs only leg N's spec files
 // from legs.json, each leg on its own runner with its own database. Unset, every
@@ -49,7 +52,9 @@ export default defineConfig({
     baseURL,
     trace: 'retain-on-failure',
   },
-  projects: capture
+  projects: docshots
+    ? [{ name: 'docshots', testMatch: /docshots\/.*\.spec\.ts/, use: { ...devices['Desktop Chrome'] } }]
+    : capture
     ? [{ name: 'capture', testMatch: /capture\/.*\.spec\.ts/, use: { ...devices['Desktop Chrome'] } }]
     : [
         {

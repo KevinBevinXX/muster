@@ -85,6 +85,11 @@ export const fakeSttPort = port + 27;
 export const dupLabelsPort = port + 28;
 // The fake service's bearer token. Invented, like every value here.
 export const sttToken = 'e2e-stt-token-not-a-real-one';
+// The docs screenshots (e2e/docshots, `make screenshots`, never in the suite):
+// a gotrue-mode server with the mirror plugin on, and its own real GoTrue.
+export const docsMainPort = port + 40;
+export const docsBrowserPort = port + 41;
+export const docsGotruePort = Number(process.env.MUSTER_E2E_DOCS_GOTRUE_PORT ?? port + 42);
 // The seeded `docs-sweeper` agent's own token (e2e/seed). Invented, like every
 // value here.
 export const agentToken = 'e2e-agent-token-not-a-real-one';

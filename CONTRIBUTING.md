@@ -72,9 +72,12 @@ go vet ./...                                          # vet
 python3 tests/leakscan.py --self-test                 # the gate can REFUSE
 python3 tests/leakscan.py                             # the tree is clean
 MUSTER_TEST_REQUIRE_DB=1 go test -race -cover ./...   # the suite
+make css-check                                        # the committed stylesheet is current
+make verb-ledger                                      # the built CLI has exactly its verbs
 ```
 
-or `make check`.
+or `make check`, which runs all of them. The browser suite is `make e2e`; see
+[docs/testing.md](docs/testing.md) for what it needs.
 
 `nix develop` gives you the pinned Go toolchain, `psql`/`pg_dump`, Python and the
 Docker client, and its `shellHook` prints every one of those commands verbatim.
@@ -117,6 +120,22 @@ Two conventions it enforces that are easy to trip over:
 To add a name to the denylist, add the SHA-256 of its lowercase spelling and bump
 `DENIED_COUNT`. The names are stored as digests because a plaintext denylist in a
 repository that may one day be public *is* the leak it exists to prevent.
+
+## Documentation
+
+The README is for newcomers; everything else lives in [`docs/`](docs/README.md).
+Two tests in `internal/modulegate` keep the docs honest, and both run in
+`go test ./...`:
+
+- **A new environment variable needs a row in
+  [`docs/configuration.md`](docs/configuration.md).** The test parses the Go
+  source for every variable it reads, and fails on a variable with no row and on
+  a row nothing reads.
+- **Relative links and images must resolve,** including `#anchors`.
+
+Screenshots in `docs/img/` are generated: `make screenshots` (see
+[docs/testing.md](docs/testing.md#screenshots)). Re-run it when a pictured view
+changes rather than editing the images by hand.
 
 ## Changing the schema
 

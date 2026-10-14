@@ -34,7 +34,7 @@ export MUSTER_TEST_PG_PORT
 # database, which is the specific failure that file's header is about.
 TEST_DSN := postgres://muster:muster@127.0.0.1:$(MUSTER_TEST_PG_PORT)/muster_test?sslmode=disable
 
-.PHONY: build vet run image test test-db test-db-down leakscan css css-check check help verb-ledger icons e2e
+.PHONY: build vet run image test test-db test-db-down leakscan css css-check check help verb-ledger icons e2e screenshots
 
 # The stylesheet the UI serves, and the classes that prove each Tailwind content
 # entry is still matching something. See css-check.
@@ -104,6 +104,7 @@ help:
 	@echo "  make css-check    prove the committed stylesheet matches the views"
 	@echo "  make check        vet + test + leakscan + css-check"
 	@echo "  make e2e          the Playwright suite (needs MUSTER_E2E_DATABASE_URL=…/<name>_e2e)"
+	@echo "  make screenshots  regenerate docs/img/*.png from fixture data (same database, plus Docker)"
 	@echo "  make test-db-down stop and remove the throwaway Postgres"
 
 build:
@@ -302,5 +303,18 @@ verb-ledger:
 e2e:
 	@cd e2e && MUSTER_E2E_REQUIRE_FULL=1 npx playwright test; rc=$$?; \
 	node verdict.mjs $${MUSTER_E2E_LEG:+--leg $$MUSTER_E2E_LEG} test-results/results.json && exit $$rc
+
+# Regenerate the documentation's screenshots (docs/img/) from the e2e harness:
+# the seeded fixture board and a fake mirrored host, at a phone's size. A
+# GENERATOR, NOT A GATE — like `icons`, CI does not run it. Needs what `make e2e`
+# needs, plus Docker for the GoTrue container the passkey shot signs in against.
+# pngquant (nix-shell -p pngquant) is used when present; every image must end up
+# at or under 200 KB either way.
+screenshots:
+	@cd e2e && MUSTER_E2E_DOCSHOTS=1 npx playwright test
+	@if command -v pngquant >/dev/null 2>&1; then pngquant --force --ext .png --quality 65-90 docs/img/*.png; \
+	  else echo "screenshots: pngquant not found; images left as captured"; fi
+	@for f in docs/img/*.png; do s=$$(wc -c < "$$f"); echo "$$f: $$s bytes"; \
+	  test "$$s" -le 204800 || { echo "screenshots: $$f is over 200 KB"; exit 1; }; done
 
 check: vet test leakscan css-check verb-ledger

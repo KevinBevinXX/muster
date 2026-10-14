@@ -149,7 +149,7 @@ type ClaudeLocator struct {
 	// tmux pane, claude-p<N>.json for pane %N, whose first line is a JSON
 	// object {runtime: "claude", pane_id, tmux_pid, session_id,
 	// transcript_path, claude_pid, claude_start} — the shape a Claude Code hook
-	// writes (the format is documented in README.md, under the mirrored sessions).
+	// writes (the format is documented in docs/mirroring.md).
 	PaneMapDir string
 }
 
