@@ -10,12 +10,17 @@ package mirror_test
 // is a failure.
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -110,5 +115,234 @@ func TestTmuxThroughTheTunnel(t *testing.T) {
 		if !strings.Contains(run("list-sessions"), "work") {
 			t.Fatal("ending the terminal ended the operator's SESSION")
 		}
+	}
+}
+
+// tunnelClaude writes a stand-in Claude Code CLI under dir and returns the argv
+// that runs it in a pane: its argv names the npm package's entry script (what
+// the host's locator looks for), it records itself in <home>/sessions/<pid>.json
+// as the CLI does, prints a marker and echoes what is typed.
+func tunnelClaude(t *testing.T, dir, home, sessionID string) []string {
+	t.Helper()
+	script := filepath.Join(dir, "node_modules", "@anthropic-ai", "claude-code", "cli.js")
+	if err := os.MkdirAll(filepath.Dir(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "mkdir -p \"$1/sessions\"\n" +
+		"printf '{\"sessionId\":\"%s\",\"cwd\":\"%s\",\"status\":\"idle\"}' \"$2\" \"$PWD\" > \"$1/sessions/$$.json\"\n" +
+		"printf 'FAKE-CLAUDE %s\\n' \"$2\"\ncat\n"
+	if err := os.WriteFile(script, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return []string{"sh", script, home, sessionID}
+}
+
+// TestTmuxEveryWindowThroughTheTunnel is per-window registration over the WHOLE
+// chain — a muster, a real muster-mirror, real tmux — with the operator's own
+// client attached and watched throughout.
+//
+// One session, three windows: a shell (the operator's current window) and two
+// Claude Code windows in the SAME directory. Through muster: all three are
+// listed; each Claude window's rendered view streams ITS OWN transcript; a
+// message sent to the second Claude window lands in that window; an
+// interactive terminal on it types into it. After every step the operator's
+// client is still on window 0, and when the views close no viewer session is
+// left on the server.
+func TestTmuxEveryWindowThroughTheTunnel(t *testing.T) {
+	sock, run := privateTmux(t)
+	home, cwd := t.TempDir(), t.TempDir()
+	project := filepath.Join(home, "projects", mirrorhost.ProjectSlug(cwd))
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "sess-a.jsonl"), []byte(promptLine("the first window's prompt")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "sess-b.jsonl"), []byte(promptLine("the second window's prompt")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	id := func(args ...string) string { return strings.TrimSpace(run(args...)) }
+	run("new-session", "-d", "-s", "work", "-x", "120", "-y", "40", "-c", cwd, "sh", "-c", "printf 'SHELL-WINDOW\\n'; exec cat")
+	w0 := id("display-message", "-p", "-t", "=work:", "#{window_id}")
+	w1 := id(append([]string{"new-window", "-d", "-P", "-F", "#{window_id}", "-t", "=work:", "-c", cwd}, tunnelClaude(t, t.TempDir(), home, "sess-a")...)...)
+	w2 := id(append([]string{"new-window", "-d", "-P", "-F", "#{window_id}", "-t", "=work:", "-c", cwd}, tunnelClaude(t, t.TempDir(), home, "sess-b")...)...)
+	pane := func(w string) string { return run("capture-pane", "-p", "-t", w) }
+	waitLong(t, "both fake CLIs", func() bool {
+		return strings.Contains(pane(w1), "FAKE-CLAUDE sess-a") && strings.Contains(pane(w2), "FAKE-CLAUDE sess-b")
+	})
+
+	backend := mirrorhost.Tmux{Socket: sock, Claude: mirrorhost.ClaudeLocator{Home: home}}
+	// The operator: an interactive client on the session, as a terminal on the
+	// host is.
+	op, err := backend.Attach(context.Background(), "work", false, 150, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer op.Close()
+	go func() { _, _ = io.Copy(io.Discard, op) }()
+	operator := func() string {
+		return id("list-clients", "-t", "=work", "-F", "#{client_session} #{window_id}") + " / " + id("display-message", "-p", "-t", "=work:", "#{window_index} #{window_id}")
+	}
+	waitLong(t, "the operator's client", func() bool { return strings.HasPrefix(operator(), "work "+w0) })
+	want := "work " + w0 + " / 0 " + w0
+	still := func(step string) {
+		t.Helper()
+		time.Sleep(150 * time.Millisecond)
+		if got := operator(); got != want {
+			t.Fatalf("after %s the operator shows %q; it was on %q", step, got, want)
+		}
+	}
+
+	r := newRig(t)
+	tok, _ := r.store.mint(t, 1, "workstation")
+	// Wrapped as the shipped binary wraps it.
+	r.connect(t, "workstation", tok, mirrorhost.NoShrink(backend), true)
+	var h mirror.HostView
+	waitLong(t, "three windows, two of them Claude Code", func() bool {
+		hs := r.svc.Hosts(asUser(1))
+		if len(hs) != 1 {
+			return false
+		}
+		h = hs[0]
+		a, _ := h.Find("work", w1)
+		b, _ := h.Find("work", w2)
+		return len(h.Windows) == 3 && a.Claude && b.Claude
+	})
+	if e, _ := h.Find("work", ""); e.Window != w0 || e.Claude || e.Title() != "work:0" {
+		t.Fatalf("the session's own address = %+v, want its active window %s (a shell)", e, w0)
+	}
+	still("the host registered")
+
+	// Each Claude window's rendered view is its own transcript.
+	view := func(window string) (gen func() string, text func() string, cancel func()) {
+		var mu sync.Mutex
+		var gens, texts []string
+		ctx, c := context.WithCancel(asUser(1))
+		go func() {
+			_ = r.svc.WatchWindow(ctx, "workstation", "work", window, "", 0, func(m mirror.Msg) error {
+				mu.Lock()
+				defer mu.Unlock()
+				gens = append(gens, m.Gen)
+				for _, ev := range m.Events {
+					texts = append(texts, ev.Text)
+				}
+				return nil
+			})
+		}()
+		t.Cleanup(c)
+		return func() string {
+				mu.Lock()
+				defer mu.Unlock()
+				return strings.Join(slices.Compact(slices.Clone(gens)), ",")
+			},
+			func() string { mu.Lock(); defer mu.Unlock(); return strings.Join(texts, "|") }, c
+	}
+	genA, textA, cancelA := view(w1)
+	genB, textB, cancelB := view(w2)
+	waitLong(t, "both transcripts", func() bool {
+		return strings.Contains(textA(), "first window") && strings.Contains(textB(), "second window")
+	})
+	if genA() != "sess-a" || genB() != "sess-b" || strings.Contains(textA(), "second window") || strings.Contains(textB(), "first window") {
+		t.Fatalf("the two windows' views are not their own: %q %q / %q %q", genA(), textA(), genB(), textB())
+	}
+	still("both rendered views opened")
+
+	// A message to the second Claude window.
+	if err := r.svc.PasteWindow(asUser(1), "workstation", "work", w2, "a message for sess-b", mirror.PasteClaude); err != nil {
+		t.Fatal(err)
+	}
+	waitLong(t, "the message in the second window", func() bool { return strings.Contains(pane(w2), "a message for sess-b") })
+	if strings.Contains(pane(w1), "a message for sess-b") || strings.Contains(pane(w0), "a message for sess-b") {
+		t.Fatal("a message for the second window reached another")
+	}
+	still("a message was sent to the second window")
+	// The shell window is not Claude Code: a prompt for Claude is refused there.
+	if err := r.svc.PasteWindow(asUser(1), "workstation", "work", w0, "nope", mirror.PasteClaude); !errors.Is(err, mirror.ErrNotClaude) {
+		t.Fatalf("a Claude send into the shell window = %v, want ErrNotClaude", err)
+	}
+
+	// An interactive terminal on the second window, typing.
+	stdin, screen, _, cancel, _ := attachWindow(t, asUser(1), r.svc, "workstation", "work", w2, false)
+	// The operator is checked as soon as the host has made the viewer's session
+	// — before the viewer's own screen is waited for (a host that moved the
+	// OPERATOR instead would fail that wait, and hide what it did).
+	waitLong(t, "the host to make a viewer session", func() bool {
+		return strings.Contains(run("list-sessions", "-F", "#{session_name} #{session_attached}"), mirror.ViewSessionPrefix)
+	})
+	still("the host made a viewer session for the second window")
+	waitLong(t, "the second window on the terminal", func() bool { return strings.Contains(screen.String(), "FAKE-CLAUDE sess-b") })
+	if strings.Contains(screen.String(), "SHELL-WINDOW") {
+		t.Fatal("the terminal showed the operator's window")
+	}
+	still("an interactive terminal opened the second window")
+	_, _ = stdin.Write([]byte("typed-into-sess-b\r"))
+	waitLong(t, "the keys in the second window", func() bool { return strings.Contains(pane(w2), "typed-into-sess-b") })
+	if strings.Contains(pane(w0), "typed-into-sess-b") {
+		t.Fatal("keys for the second window were typed into the operator's")
+	}
+	still("the terminal typed into the second window")
+	// And the session's own address, the old URL: the active window, through a
+	// viewer session too.
+	_, screen0, _, cancel0, _ := attach(t, asUser(1), r.svc, "workstation", "work", true)
+	waitLong(t, "the active window on the terminal", func() bool { return strings.Contains(screen0.String(), "SHELL-WINDOW") })
+	still("a terminal opened the session by name")
+
+	cancel()
+	cancel0()
+	cancelA()
+	cancelB()
+	waitLong(t, "every viewer session to be gone", func() bool {
+		return !strings.Contains(run("list-sessions", "-F", "#{session_name}"), mirror.ViewSessionPrefix)
+	})
+	still("everything closed")
+	if got := strings.Fields(run("list-sessions", "-F", "#{session_name}")); !slices.Equal(got, []string{"work"}) {
+		t.Fatalf("sessions left on the server = %q, want only [work]", got)
+	}
+	if n := len(strings.Fields(run("list-windows", "-t", "=work", "-F", "#{window_id}"))); n != 3 {
+		t.Fatalf("the operator's session has %d windows after the views closed, want 3", n)
+	}
+}
+
+// TestTmuxAViewerDoesNotKeepAnEndedSessionsWindowAlive: a viewer's session
+// LINKS the window it shows, so when the operator ends that window's session
+// tmux keeps the window — on nobody's list, its program running on. The host
+// notices on its next refresh that it no longer lists the window, ends the
+// viewer, and the window goes with it: what the operator asked for happens.
+//
+// The control is in the same test: the moment after the kill, BEFORE the host
+// has refreshed, the window is still on the server — so "it is gone" below is
+// the host's doing, not tmux's.
+func TestTmuxAViewerDoesNotKeepAnEndedSessionsWindowAlive(t *testing.T) {
+	sock, run := privateTmux(t)
+	run("new-session", "-d", "-s", "keep", "-x", "100", "-y", "30", "sh", "-c", "exec cat") // keeps the server up
+	run("new-session", "-d", "-s", "work", "-x", "100", "-y", "30", "sh", "-c", "printf 'DOOMED-WINDOW\\n'; exec cat")
+	w := strings.TrimSpace(run("display-message", "-p", "-t", "=work:", "#{window_id}"))
+	windows := func() string { return run("list-windows", "-a", "-F", "#{window_id}") }
+
+	r := newRig(t)
+	tok, _ := r.store.mint(t, 1, "workstation")
+	// A SLOW refresh, so the moment between the kill and the host noticing is
+	// long enough to look at.
+	c, err := mirrorhost.New(mirrorhost.Config{URL: r.srv.URL, Token: tok, Host: "workstation", Backend: mirrorhost.NoShrink(mirrorhost.Tmux{Socket: sock}),
+		AllowHTTP: true, Refresh: 1500 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	t.Cleanup(stop)
+	go func() { _ = c.RunOnce(ctx) }()
+	r.online(t, 1, "workstation", "work")
+
+	_, screen, _, _, res := attachWindow(t, asUser(1), r.svc, "workstation", "work", w, true)
+	waitLong(t, "the viewer to see the window", func() bool { return strings.Contains(screen.String(), "DOOMED-WINDOW") })
+
+	run("kill-session", "-t", "=work")
+	if !strings.Contains(windows(), w) {
+		t.Fatalf("CONTROL: straight after kill-session the window %s is already gone (%q) — tmux removed it, so this test shows nothing about the host", w, windows())
+	}
+	waitLong(t, "the host to end the viewer, and the window with it", func() bool { return !strings.Contains(windows(), w) })
+	_ = within(t, res, "the viewer's terminal to end")
+	if got := strings.Fields(run("list-sessions", "-F", "#{session_name}")); !slices.Equal(got, []string{"keep"}) {
+		t.Fatalf("sessions left = %q, want only [keep]", got)
 	}
 }

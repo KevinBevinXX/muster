@@ -45,6 +45,9 @@ type MirrorComposerView struct {
 	SendPath string
 	Host     string
 	Session  string
+	// Window is the tmux window id the message is for; "" = the session's
+	// active window (a per-session host).
+	Window string
 	// Placeholder and Aria name what the text reaches ("Message Claude…").
 	Placeholder string
 	Aria        string
@@ -82,6 +85,7 @@ func mirrorComposer(v MirrorComposerView) g.Node {
 			g.Attr("data-send", v.SendPath),
 			g.Attr("data-host", v.Host),
 			g.Attr("data-session", v.Session),
+			g.Attr("data-window", v.Window),
 			g.Attr("data-empty", MirrorComposeEmpty),
 			g.Attr("data-down", mirrorComposeDown),
 			g.Attr("novalidate", ""),
@@ -133,6 +137,8 @@ func mirrorComposerScript() g.Node {
     var body = new URLSearchParams();
     body.set('host', form.getAttribute('data-host'));
     body.set('session', form.getAttribute('data-session'));
+    var win = form.getAttribute('data-window');
+    if (win) body.set('window', win);
     body.set('text', input.value);
     send.disabled = true;
     return fetch(form.getAttribute('data-send'), { method: 'POST', body: body, credentials: 'same-origin',

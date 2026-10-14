@@ -69,6 +69,9 @@ export const passkeysGotruePort = Number(process.env.MUSTER_E2E_PASSKEYS_GOTRUE_
 // muster-native Web Push: the push spec's own server, with a VAPID keypair
 // minted by the binary under test (`muster-server vapid generate`).
 export const pushPort = port + 23;
+// Per-window mirrors: the mirror-windows spec's own server (the e2eterm binary
+// with the mirror plugin on), so its host and its cards are no other spec's.
+export const windowsPort = port + 24;
 // The seeded `docs-sweeper` agent's own token (e2e/seed). Invented, like every
 // value here.
 export const agentToken = 'e2e-agent-token-not-a-real-one';

@@ -3,6 +3,7 @@ package mirrorhost
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -68,19 +69,51 @@ type noShrink struct {
 func (n noShrink) Unwrap() Backend { return n.Backend }
 
 func (n noShrink) Attach(ctx context.Context, session string, readOnly bool, cols, rows uint16) (Terminal, error) {
+	return sized(ctx, cols, rows,
+		func(ctx context.Context) (termsize.Size, error) { return n.sizer.WindowSize(ctx, session) },
+		func(c, r uint16) (Terminal, error) { return n.Backend.Attach(ctx, session, readOnly, c, r) })
+}
+
+// AttachWindow is the same rule for ONE window of a session (WindowAttacher):
+// the client is sized from THAT window, which is not the session's current one
+// when the viewer is looking at a window the operator is not.
+//
+// ⚠ A window viewer's client is ignore-size (ViewClientFlags), so beside
+// another client it sizes nothing whatever size it has. This still matters:
+// tmux does not honour ignore-size for the ONLY client of a window (measured on
+// 3.7c — a lone 60x20 ignore-size viewer left a 150x40 window at 60x19), which
+// is every window of a session nobody is attached to.
+func (n noShrink) AttachWindow(ctx context.Context, session, window string, readOnly bool, cols, rows uint16) (Terminal, error) {
+	wa, ok := n.Backend.(WindowAttacher)
+	if !ok {
+		return nil, errors.New("muster-mirror: this host's backend cannot attach to a single window")
+	}
+	size := func(context.Context) (termsize.Size, error) {
+		return termsize.Size{}, errors.New("no window size")
+	}
+	if ws, ok := n.Backend.(WindowOfSizer); ok {
+		size = func(ctx context.Context) (termsize.Size, error) { return ws.WindowSizeOf(ctx, session, window) }
+	}
+	return sized(ctx, cols, rows, size,
+		func(c, r uint16) (Terminal, error) { return wa.AttachWindow(ctx, session, window, readOnly, c, r) })
+}
+
+// sized attaches (attach) a client at termsize.Decide's size for the window
+// size reads now, under the no-shrink rule for every later resize.
+func sized(ctx context.Context, cols, rows uint16, size func(context.Context) (termsize.Size, error), attach func(cols, rows uint16) (Terminal, error)) (Terminal, error) {
 	req := termsize.Size{Cols: cols, Rows: rows}
-	win, err := n.sizer.WindowSize(ctx, session)
+	win, err := size(ctx)
 	if err != nil {
 		// Unknown: attach as asked and report nothing — the page then fits
 		// itself exactly as it did before this existed.
 		win = termsize.Size{}
 	}
 	got := termsize.Decide(req, win)
-	t, err := n.Backend.Attach(ctx, session, readOnly, got.Cols, got.Rows)
+	t, err := attach(got.Cols, got.Rows)
 	if err != nil {
 		return nil, err
 	}
-	st := &sizedTerm{Terminal: t, ctx: ctx, session: session, sizer: n.sizer, cur: got, known: win.Known()}
+	st := &sizedTerm{Terminal: t, ctx: ctx, size: size, cur: got, known: win.Known()}
 	if st.known {
 		st.pending = termsize.Report(got)
 	}
@@ -97,9 +130,9 @@ func (n noShrink) Attach(ctx context.Context, session string, readOnly bool, col
 // the report instead, and the output follows on the next Read.
 type sizedTerm struct {
 	Terminal
-	ctx     context.Context
-	session string
-	sizer   WindowSizer
+	ctx context.Context
+	// size reads the window's size now.
+	size func(context.Context) (termsize.Size, error)
 
 	mu      sync.Mutex
 	cur     termsize.Size
@@ -147,7 +180,7 @@ func (s *sizedTerm) Resize(cols, rows uint16) error {
 		// behaviour rather than half of the new one.
 		return s.Terminal.Resize(cols, rows)
 	}
-	win, err := s.sizer.WindowSize(s.ctx, s.session)
+	win, err := s.size(s.ctx)
 	if err != nil {
 		win = cur // the window is at least what this client last set
 	}

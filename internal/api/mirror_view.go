@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -48,28 +47,27 @@ func (s *Server) registerMirrorViewRoutes(mux Mux) {
 	mux.HandleFunc("POST "+ui.MirrorSendPath, s.requireOperatorWrite(s.handleMirrorViewSend))
 }
 
-// hasRenderedView reports whether h serves session's rendered view: a v2 host,
-// connected, reporting Claude Code in the session's pane.
-func hasRenderedView(h mirror.HostView, session string) bool {
-	return h.Online && h.Rendered && slices.Contains(h.Claude, session)
-}
-
-// handleMirrorViewPage is GET /mirror/view?host=…&session=…. A session with no
-// rendered view (a v1 host, an offline one, a pane not running Claude Code)
-// goes to its terminal instead, which says why it cannot attach if it cannot.
+// handleMirrorViewPage is GET /mirror/view?host=…&session=…[&window=…]. An
+// entry with no rendered view (a v1 host, an offline one, a pane not running
+// Claude Code) goes to its terminal instead, which says why it cannot attach if
+// it cannot.
 func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
-	host, session := r.URL.Query().Get("host"), r.URL.Query().Get("session")
-	h, ok := s.mirrorHost(r.Context(), host)
-	if !ok || mirror.ValidSession(session) != nil {
+	q := r.URL.Query()
+	h, e, _, redirect, ok := s.mirrorEntry(r, q.Get("host"), q.Get("session"), q.Get("window"))
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	if !hasRenderedView(h, session) {
-		http.Redirect(w, r, ui.MirrorTerminalPath(h.Host, session), http.StatusSeeOther)
+	if !e.HasRenderedView() {
+		http.Redirect(w, r, mirrorRef(e).TerminalPath(), http.StatusSeeOther)
+		return
+	}
+	if redirect {
+		http.Redirect(w, r, mirrorRef(e).ViewPath(), http.StatusSeeOther)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.MirrorViewPage(ui.MirrorViewView{Host: h.Host, Session: session, Label: h.Labels[session], Interactive: h.Interactive,
+	if err := ui.MirrorViewPage(ui.MirrorViewView{Host: h.Host, Session: e.Session, Window: e.Window, Title: mirrorTitle(e), Label: e.Label, Interactive: h.Interactive,
 		StepUp: s.stepUpView(r, "")}).Render(w); err != nil {
 		s.logger.Printf("mirror: render view page: %v", err)
 	}
@@ -92,8 +90,8 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	host, session := q.Get("host"), q.Get("session")
-	if _, ok := s.mirrorHost(r.Context(), host); !ok || mirror.ValidSession(session) != nil {
+	host, session, window := q.Get("host"), q.Get("session"), q.Get("window")
+	if _, _, _, _, ok := s.mirrorEntry(r, host, session, window); !ok {
 		http.NotFound(w, r)
 		return
 	}
@@ -116,7 +114,7 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	ctx = c.CloseRead(ctx)
 
 	var drawn ui.MirrorTranscript
-	err = s.ext.Mirror.Watch(ctx, host, session, gen, offset, func(m mirror.Msg) error {
+	err = s.ext.Mirror.WatchWindow(ctx, host, session, window, gen, offset, func(m mirror.Msg) error {
 		if m.Reset {
 			drawn.Reset()
 		}
@@ -186,9 +184,9 @@ func (s *Server) mirrorSend(w http.ResponseWriter, r *http.Request, target mirro
 		http.Error(w, "the message is too large", http.StatusRequestEntityTooLarge)
 		return
 	}
-	host, session, text := r.PostFormValue("host"), r.PostFormValue("session"), r.PostFormValue("text")
-	h, ok := s.mirrorHost(r.Context(), host)
-	if !ok || mirror.ValidSession(session) != nil {
+	host, session, window, text := r.PostFormValue("host"), r.PostFormValue("session"), r.PostFormValue("window"), r.PostFormValue("text")
+	h, _, _, _, ok := s.mirrorEntry(r, host, session, window)
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
@@ -206,7 +204,8 @@ func (s *Server) mirrorSend(w http.ResponseWriter, r *http.Request, target mirro
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), mirrorSendTimeout)
 	defer cancel()
-	if err := s.ext.Mirror.Paste(ctx, host, session, text, target); err != nil {
+	// window == "" is the session's active window (mirror.Hub.PasteWindow).
+	if err := s.ext.Mirror.PasteWindow(ctx, host, session, window, text, target); err != nil {
 		if errors.Is(err, mirror.ErrStepUpRequired) {
 			// The plugin's own check of the same gate (it does not rely on the
 			// one above): the same answer.
@@ -219,15 +218,15 @@ func (s *Server) mirrorSend(w http.ResponseWriter, r *http.Request, target mirro
 			status = http.StatusBadRequest
 		case errors.Is(err, mirror.ErrInteractiveRefused), errors.Is(err, mirror.ErrNotClaude),
 			errors.Is(err, mirror.ErrNoRenderedView), errors.Is(err, mirror.ErrSessionGone),
-			errors.Is(err, mirror.ErrPanePasteUnsupported):
+			errors.Is(err, mirror.ErrWindowGone), errors.Is(err, mirror.ErrPanePasteUnsupported):
 			status = http.StatusConflict
 		case errors.Is(err, mirror.ErrHostOffline):
 			status = http.StatusServiceUnavailable
 		}
-		s.logger.Printf("mirror: send to %s/%s refused: %v", host, session, err)
+		s.logger.Printf("mirror: send to %s/%s%s refused: %v", host, session, window, err)
 		http.Error(w, err.Error(), status)
 		return
 	}
-	s.logger.Printf("mirror: sent a message to %s/%s", host, session)
+	s.logger.Printf("mirror: sent a message to %s/%s%s", host, session, window)
 	w.WriteHeader(http.StatusNoContent)
 }

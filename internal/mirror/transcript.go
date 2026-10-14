@@ -95,23 +95,26 @@ func (hc *hostConn) pasted(id uint32, why string) {
 	ch <- nil
 }
 
-// lookupClaude is owner's host serving session as a Claude pane over v2, or the
-// refusal that says which of those it is not.
-func (h *Hub) lookupClaude(owner int64, host, session string) (*hostConn, error) {
+// lookupClaude is owner's host serving (session, window) as a Claude pane over
+// v2 and the window id to send it (hostConn.target), or the refusal that says
+// which of those it is not.
+func (h *Hub) lookupClaude(owner int64, host, session, window string) (*hostConn, string, error) {
 	h.mu.Lock()
 	hc := h.hosts[hostKey{owner, host}]
 	h.mu.Unlock()
-	switch {
-	case hc == nil:
-		return nil, fmt.Errorf("%w (host %q)", ErrHostOffline, host)
-	case !hc.has(session):
-		return nil, fmt.Errorf("%w (host %q, session %q)", ErrSessionGone, host, session)
-	case hc.version < 2:
-		return nil, fmt.Errorf("%w (host %q)", ErrNoRenderedView, host)
-	case !hc.isClaude(session):
-		return nil, fmt.Errorf("%w (host %q, session %q)", ErrNotClaude, host, session)
+	if hc == nil {
+		return nil, "", fmt.Errorf("%w (host %q)", ErrHostOffline, host)
 	}
-	return hc, nil
+	id, claude, err := hc.target(session, window)
+	switch {
+	case err != nil:
+		return nil, "", err
+	case hc.version < 2:
+		return nil, "", fmt.Errorf("%w (host %q)", ErrNoRenderedView, host)
+	case !claude:
+		return nil, "", fmt.Errorf("%w (host %q, session %q)", ErrNotClaude, host, session)
+	}
+	return hc, id, nil
 }
 
 // Watch streams owner's host's session's Claude Code transcript to out until ctx
@@ -124,7 +127,14 @@ func (h *Hub) lookupClaude(owner int64, host, session string) (*hostConn, error)
 // (bounded by MaxBatchEvents / MaxBatchBytes, every field capped by
 // cctranscript). An out error ends the watch.
 func (h *Hub) Watch(ctx context.Context, owner int64, host, session, gen string, offset int64, out func(Msg) error) error {
-	hc, err := h.lookupClaude(owner, host, session)
+	return h.WatchWindow(ctx, owner, host, session, "", gen, offset, out)
+}
+
+// WatchWindow is Watch on one WINDOW of the session (its tmux window id), or —
+// window == "" — on the session's active window: the transcript of the Claude
+// Code session running in THAT window's pane.
+func (h *Hub) WatchWindow(ctx context.Context, owner int64, host, session, window, gen string, offset int64, out func(Msg) error) error {
+	hc, windowID, err := h.lookupClaude(owner, host, session, window)
 	if err != nil {
 		return err
 	}
@@ -147,7 +157,7 @@ func (h *Hub) Watch(ctx context.Context, owner int64, host, session, gen string,
 		hc.mu.Unlock()
 	}()
 
-	if err := writeJSON(ctx, hc.ws, Msg{Type: TypeWatch, ID: id, Session: session, Gen: gen, Offset: offset}); err != nil {
+	if err := writeJSON(ctx, hc.ws, Msg{Type: TypeWatch, ID: id, Session: session, Window: windowID, Gen: gen, Offset: offset}); err != nil {
 		return fmt.Errorf("mirror: ask the host to stream the transcript: %w", err)
 	}
 	defer func() { _ = writeJSON(hc.ctx, hc.ws, Msg{Type: TypeClose, ID: id}) }()
@@ -190,36 +200,39 @@ const (
 	PasteActivePane
 )
 
-// lookupPaste is owner's host for a paste into session at target, and whether
-// to ask the host for the active pane (Msg.AnyPane) — or the refusal.
+// lookupPaste is owner's host for a paste into (session, window) at target, the
+// window id to send it, and whether to ask the host for the active pane
+// (Msg.AnyPane) — or the refusal.
 //
 // An older muster-mirror (no Msg.PanePaste) is never sent AnyPane: for a
 // session it reports as Claude Code its Claude-only paste reaches the very pane
 // PasteActivePane means, so that is used; for any other session the answer is
 // ErrPanePasteUnsupported, here, without asking the host.
-func (h *Hub) lookupPaste(owner int64, host, session string, target PasteTarget) (*hostConn, bool, error) {
+func (h *Hub) lookupPaste(owner int64, host, session, window string, target PasteTarget) (*hostConn, string, bool, error) {
 	if target != PasteActivePane {
-		hc, err := h.lookupClaude(owner, host, session)
-		return hc, false, err
+		hc, id, err := h.lookupClaude(owner, host, session, window)
+		return hc, id, false, err
 	}
 	h.mu.Lock()
 	hc := h.hosts[hostKey{owner, host}]
 	h.mu.Unlock()
+	if hc == nil {
+		return nil, "", false, fmt.Errorf("%w (host %q)", ErrHostOffline, host)
+	}
+	id, claude, err := hc.target(session, window)
 	switch {
-	case hc == nil:
-		return nil, false, fmt.Errorf("%w (host %q)", ErrHostOffline, host)
-	case !hc.has(session):
-		return nil, false, fmt.Errorf("%w (host %q, session %q)", ErrSessionGone, host, session)
+	case err != nil:
+		return nil, "", false, err
 	case !hc.interactive:
 		// Before "can it paste into this pane": a read-only host's answer is
 		// that it is read-only, not that it wants upgrading.
-		return nil, false, fmt.Errorf("%w (host %q)", ErrInteractiveRefused, host)
+		return nil, "", false, fmt.Errorf("%w (host %q)", ErrInteractiveRefused, host)
 	case hc.panePaste:
-		return hc, true, nil
-	case hc.version >= 2 && hc.isClaude(session):
-		return hc, false, nil
+		return hc, id, true, nil
+	case hc.version >= 2 && claude:
+		return hc, id, false, nil
 	}
-	return nil, false, fmt.Errorf("%w (host %q, session %q)", ErrPanePasteUnsupported, host, session)
+	return nil, "", false, fmt.Errorf("%w (host %q, session %q)", ErrPanePasteUnsupported, host, session)
 }
 
 // Paste types text into a pane of owner's host's session and presses Enter —
@@ -232,6 +245,16 @@ func (h *Hub) lookupPaste(owner int64, host, session string, target PasteTarget)
 // -interactive — both here, whatever the caller (internal/api) already checked,
 // and the host refuses a paste it did not opt into again.
 func (h *Hub) Paste(ctx context.Context, owner int64, host, session, text string, target PasteTarget) error {
+	return h.PasteWindow(ctx, owner, host, session, "", text, target)
+}
+
+// PasteWindow is Paste into one WINDOW of the session (its tmux window id), or
+// — window == "" — into the session's active window.
+//
+// 🔴 A PASTE NEVER MOVES ANYONE'S WINDOW. The host pastes into a PANE id
+// (tmux's paste-buffer -t %<n>), which needs no client and no current window,
+// so a message can be sent to a window nobody is looking at.
+func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, window, text string, target PasteTarget) error {
 	// 🔴 A FRESH SIGN-IN, checked HERE as well as by internal/api — the same
 	// gate, on the same clock, as an interactive Attach (Service.Attach): a
 	// paste types into the operator's session exactly as a keystroke does. A
@@ -243,7 +266,7 @@ func (h *Hub) Paste(ctx context.Context, owner int64, host, session, text string
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrBadPaste, err)
 	}
-	hc, anyPane, err := h.lookupPaste(owner, host, session, target)
+	hc, windowID, anyPane, err := h.lookupPaste(owner, host, session, window, target)
 	if err != nil {
 		return err
 	}
@@ -261,7 +284,7 @@ func (h *Hub) Paste(ctx context.Context, owner int64, host, session, text string
 		delete(hc.pastes, id)
 		hc.mu.Unlock()
 	}()
-	if err := writeJSON(ctx, hc.ws, Msg{Type: TypePaste, ID: id, Session: session, Text: text, AnyPane: anyPane}); err != nil {
+	if err := writeJSON(ctx, hc.ws, Msg{Type: TypePaste, ID: id, Session: session, Window: windowID, Text: text, AnyPane: anyPane}); err != nil {
 		return fmt.Errorf("mirror: send the message to the host: %w", err)
 	}
 	t := time.NewTimer(pasteTimeout)

@@ -56,10 +56,13 @@ type fakeMirrorV2 struct {
 	pastes   []pasteCall
 }
 
-func (f *fakeMirror) Watch(ctx context.Context, host, session, gen string, offset int64, out func(mirror.Msg) error) error {
+func (f *fakeMirror) WatchWindow(ctx context.Context, host, session, window, gen string, offset int64, out func(mirror.Msg) error) error {
 	if f.v2 == nil {
 		return mirror.ErrNoRenderedView
 	}
+	f.mu.Lock()
+	f.asked = append(f.asked, window)
+	f.mu.Unlock()
 	f.v2.mu.Lock()
 	f.v2.watches = append(f.v2.watches, watchCall{f.user(ctx), host, session, gen, offset})
 	batches, werr := append([]mirror.Msg(nil), f.v2.batches...), f.v2.watchErr
@@ -79,10 +82,13 @@ func (f *fakeMirror) Watch(ctx context.Context, host, session, gen string, offse
 	return nil
 }
 
-func (f *fakeMirror) Paste(ctx context.Context, host, session, text string, target mirror.PasteTarget) error {
+func (f *fakeMirror) PasteWindow(ctx context.Context, host, session, window, text string, target mirror.PasteTarget) error {
 	if f.v2 == nil {
 		return mirror.ErrNoRenderedView
 	}
+	f.mu.Lock()
+	f.asked = append(f.asked, window)
+	f.mu.Unlock()
 	f.v2.mu.Lock()
 	defer f.v2.mu.Unlock()
 	f.v2.pastes = append(f.v2.pastes, pasteCall{f.user(ctx), host, session, text, target})
@@ -393,14 +399,14 @@ func TestASendIsGatedOnInteractiveAndAFreshSignIn(t *testing.T) {
 
 // isoMirror (the isolation walk's plugin) has no rendered view: A's host is a
 // v1 host there, and a view route as B must still 404 before the plugin.
-func (m *isoMirror) Watch(ctx context.Context, host, _, _ string, _ int64, _ func(mirror.Msg) error) error {
+func (m *isoMirror) WatchWindow(ctx context.Context, host, _, _, _ string, _ int64, _ func(mirror.Msg) error) error {
 	if !m.mine(ctx) || host != m.host {
 		return mirror.ErrHostOffline
 	}
 	return mirror.ErrNoRenderedView
 }
 
-func (m *isoMirror) Paste(ctx context.Context, host, _, _ string, _ mirror.PasteTarget) error {
+func (m *isoMirror) PasteWindow(ctx context.Context, host, _, _, _ string, _ mirror.PasteTarget) error {
 	if !m.mine(ctx) || host != m.host {
 		return mirror.ErrHostOffline
 	}
