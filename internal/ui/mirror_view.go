@@ -58,6 +58,8 @@ type MirrorViewView struct {
 	Notice   string
 	NoticeOK bool
 	Nonce    string
+	// Dictate is the composer's (ComposerView.Dictate).
+	Dictate string
 }
 
 // MirrorReadOnlyNote is what a read-only host's composer says instead of
@@ -72,7 +74,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 	ref := MirrorRef{Host: v.Host, Session: v.Session, Window: v.Window}
 	composer := ComposerView{SendPath: MirrorSendPath, Host: v.Host, Session: v.Session, Window: v.Window,
 		Placeholder: "Message Claude…", Aria: "Message Claude in this session", DisabledPlaceholder: "Read-only host",
-		Notice: v.Notice, NoticeOK: v.NoticeOK, Nonce: v.Nonce}
+		Notice: v.Notice, NoticeOK: v.NoticeOK, Nonce: v.Nonce, Dictate: v.Dictate}
 	if !v.Interactive {
 		composer.Disabled = MirrorReadOnlyNote
 	}

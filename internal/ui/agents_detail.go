@@ -99,6 +99,9 @@ type AgentDetailView struct {
 	SendNonce    string
 	SendNotice   string
 	SendNoticeOK bool
+	// Dictate is where the chat form's microphone posts a recording
+	// (TranscribePath), or "" for none. See dictate.go.
+	Dictate string
 }
 
 // SessionView is one chat session in the switcher.
@@ -684,6 +687,7 @@ func agentChatPane(v AgentDetailView) g.Node {
 			g.If(v.SendNotice != "", P(ID("chat-note"), g.Attr("role", "status"),
 				g.If(v.SendNoticeOK, g.Attr("data-ok", "")),
 				Class("pb-2 text-xs break-words "+chatNoteTone(v.SendNoticeOK)), g.Text(v.SendNotice))),
+			dictateNote(v.Dictate, "chat-dictate-note", "pb-2"),
 			Div(
 				Class("flex w-full items-end gap-2"),
 				// The SAME look as every other message box (composerInputClass,
@@ -697,6 +701,7 @@ func agentChatPane(v AgentDetailView) g.Node {
 					Placeholder("Message the agent…"),
 					Class("max-h-32 "+composerInputClass),
 				),
+				dictateControl(v.Dictate, "chat-input", "chat-dictate-note", "chat-dictate"),
 				Button(
 					Type("submit"),
 					ID("chat-send"),
@@ -705,6 +710,10 @@ func agentChatPane(v AgentDetailView) g.Node {
 				),
 			),
 		),
+		// The microphone's script travels WITH the pane, so the chief panel —
+		// which renders this pane into another page — gets it too. It is built
+		// to run again on every swap (dictate.go).
+		dictateScript(v.Dictate),
 	)
 }
 

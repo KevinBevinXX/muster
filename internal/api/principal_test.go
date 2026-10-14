@@ -133,6 +133,8 @@ var routeVias = map[authz.Via][]string{
 		"POST /mirror/confirm-send",
 		"GET /agents/{name}/send",
 		"POST /agents/{name}/send",
+		// Dictation: the session tier only (requireOperatorWrite), like a send.
+		"POST /transcribe",
 		"DELETE /connector-grants/{id}",
 		"DELETE /connectors/{name}",
 		"DELETE /tasks/{id}",

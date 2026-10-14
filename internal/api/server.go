@@ -109,6 +109,8 @@ type Server struct {
 	// sends remembers delivered composer messages by nonce, so a send posted
 	// twice is delivered once (composer.go).
 	sends sendNonces
+	// transcribe throttles the message box's microphone (transcribe.go).
+	transcribe transcribeLimits
 
 	// loginRate throttles password attempts on the human tier.
 	loginRate rateLimiter
@@ -454,6 +456,8 @@ func (s *Server) registerAll(mux Mux) {
 	// muster-native Web Push (push_routes.go): the subscribe flow and the
 	// account page's Notifications section.
 	s.registerPushRoutes(mux)
+	// Dictation (transcribe.go): the message box's microphone.
+	s.registerTranscribeRoutes(mux)
 }
 
 // registerAgentSelfServiceRoutes wires the agent callback API. These are

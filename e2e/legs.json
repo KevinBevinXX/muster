@@ -33,7 +33,8 @@
     "tests/push.spec.ts": 10.0,
     "tests/tool-rows.spec.ts": 2.0,
     "tests/mirror-windows.spec.ts": 90.0,
-    "tests/agent-composer.spec.ts": 90.0
+    "tests/agent-composer.spec.ts": 90.0,
+    "tests/dictation.spec.ts": 90.0
   },
   "legs": {
     "1": [
@@ -49,7 +50,8 @@
       "tests/api-tokens.spec.ts",
       "tests/mirror-stepup.spec.ts",
       "tests/tool-rows.spec.ts",
-      "tests/mirror-windows.spec.ts"
+      "tests/mirror-windows.spec.ts",
+      "tests/dictation.spec.ts"
     ],
     "2": [
       "tests/provisioning-indicator.spec.ts",

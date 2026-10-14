@@ -290,6 +290,10 @@ var bannerLedger = []string{
 	envMemoURL,
 	envMemoToken,
 	envMemoScopeMap,
+	// Dictation: the `dictation:` line names both in both directions (ON / OFF).
+	// Its off-state — no microphone on any message box — errors nowhere.
+	envSTTURL,
+	envSTTToken,
 	// muster-native Web Push: the `web push:` line names all three in both
 	// directions (ENABLED / OFF). Its off-state — no Enable button, nothing
 	// sent — is otherwise invisible: nothing errors when push is off.
@@ -629,6 +633,9 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		MemoToken: "memo-credential-fixture",
 		// A synthetic split: one repository whose memos are filed under two names.
 		MemoScopeMap: "widgets=widgets,widgets-clone",
+		// Dictation: the banner branches on ext.Transcriber (below).
+		STTURL:   "http://stt.example.invalid:8000",
+		STTToken: "stt-credential-fixture",
 		// Web Push: the banner branches on ext.Push (below), as for connectors.
 		VAPIDPublicKey:  bannerVAPIDPub,
 		VAPIDPrivateKey: bannerVAPIDPriv,
@@ -641,6 +648,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		GitHub:      bannerStubGitHubStore{},
 		Provisioner: bannerProvisioner(t, on),
 		Gateway:     bannerGateway(t, on),
+		Transcriber: bannerTranscriber(t, on),
 	}, &pgxpool.Pool{})
 	offOut = renderBannerWithPool(t, config{}, api.Extensions{}, nil)
 	return onOut, offOut
@@ -983,3 +991,14 @@ var bannerVAPIDPriv, bannerVAPIDPub = func() (string, string) {
 	}
 	return priv, pub
 }()
+
+// bannerTranscriber is the REAL builder over cfg, so the ON render is the arm a
+// deployment with that configuration would print.
+func bannerTranscriber(t *testing.T, cfg config) api.Transcriber {
+	t.Helper()
+	tr, err := buildTranscriber(cfg)
+	if err != nil || tr == nil {
+		t.Fatalf("buildTranscriber(%+v) = %v, %v; want a client", cfg.STTURL, tr, err)
+	}
+	return tr
+}

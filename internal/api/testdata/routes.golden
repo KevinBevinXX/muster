@@ -196,5 +196,6 @@ POST /tasks/merge
 POST /tasks/{id}/comments
 POST /tasks/{id}/edit
 POST /tasks/{id}/tags
+POST /transcribe
 POST /ui/connector-requests/{id}/approve
 POST /ui/connector-requests/{id}/deny

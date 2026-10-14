@@ -612,6 +612,36 @@ take. No credential reaches a pod and no agent's network policy changes.
   running process re-sends the old token after every backoff), and never in a
   loop.
 
+## Dictation (optional)
+
+Every message box — a mirrored session's Rendered and Terminal views, a
+dispatched agent's chat and Terminal views, and the chief panel — can carry a
+microphone. Tap it, speak, tap it again: the recording is transcribed and the
+text is **inserted into the box at the caret**. It is never sent; you read it
+and press Send, which is the gated step it always was.
+
+Set `MUSTER_STT_URL` (the base URL, `http(s)://host[:port]`, of a service
+answering the OpenAI-style `POST /v1/audio/transcriptions` — multipart `file`,
+plus `language` and `punctuation` fields, bearer-authenticated, `{"text": …}`
+back) and `MUSTER_STT_TOKEN` (its bearer token).
+
+- **Off until the token exists.** Dictation is on iff `MUSTER_STT_TOKEN` is
+  set; the URL alone is valid and inert, and a token with no URL refuses to
+  boot. With it off no microphone is drawn and `POST /transcribe` answers 404.
+  The boot banner's `dictation:` line says which.
+- **The browser never sees the token.** The page posts the recording to
+  muster's `POST /transcribe` (a signed-in, same-origin request, like a send);
+  muster streams it to the service with its own credential and answers with
+  the text. No step-up is asked: a transcription types into nothing, and the
+  Send that follows is gated as if the words had been typed.
+- **Bounded.** The page stops a recording at two minutes; the route refuses a
+  body over 8 MiB, 12 recordings a minute per user, and more than 3 at once
+  per process, and gives the service a minute to answer.
+- **It needs a secure context.** Browsers offer the microphone to https pages
+  (and localhost) only. Over a plain-http address the mic says so when tapped.
+  Responses carry `Permissions-Policy: microphone=(self)`.
+- Without the page's script there is no mic; the box still sends.
+
 ## Licence
 
 MIT. See `LICENSE`.

@@ -119,6 +119,12 @@ type Extensions struct {
 	// answers 503, and nothing is ever sent.
 	Push PushService
 
+	// Transcriber turns a recording into text for the message box's microphone
+	// (transcribe.go; internal/stt). nil: no speech-to-text service is
+	// configured (MUSTER_STT_TOKEN unset) — no microphone is drawn on any
+	// message box and POST /transcribe answers 404.
+	Transcriber Transcriber
+
 	// Credentials is the per-owner model-provider credential store behind
 	// Account → Credentials (internal/credentials). nil: none configured — the
 	// page says so, and every member then has no credential (never the

@@ -401,6 +401,14 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.Push = push.NewService(push.NewPG(a.pool), push.NewWebpushPusher(cfg.vapid()), cfg.vapid(), logger)
 	}
 
+	// Dictation: the message box's microphone, only with MUSTER_STT_TOKEN.
+	transcriber, err := buildTranscriber(cfg)
+	if err != nil {
+		a.Close()
+		return nil, fmt.Errorf("dictation: %w", err)
+	}
+	ext.Transcriber = transcriber
+
 	srv := api.New(bus, cfg.authConfig(), logger)
 	srv.UseExtensions(ext)
 	if cfg.goTrueConfigured() && a.pool != nil {
@@ -958,6 +966,7 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"still required for every run", envFlowAgentDenyWords)
 	}
 	a.logMemoRelayBanner(ext)
+	a.logSTTBanner(ext)
 
 	if ext.GitHub != nil {
 		l.Printf("github connection: ENCRYPTED AT REST (%s set). %s",
