@@ -447,59 +447,114 @@ func (s *Server) handleAPITaskCreate(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
 		return
 	}
-	if strings.TrimSpace(body.Body) == "" {
+	source, sessionID := taskSource(r)
+	note, err := s.createTask(r.Context(), taskCreateInput{
+		Directory: body.Directory, Title: body.Title, Body: body.Body,
+		Model: body.Model, Repo: body.Repo, Branch: body.Branch, Tags: body.Tags,
+		Source: source, SessionID: sessionID,
+	}, func(id int64) {
+		// Task thread (migration 0023): the creating session joins its own task's
+		// thread with the TERMINAL `created` role. This is the live twin of the 0023
+		// backfill (which derives the same row from notes.source_session_id for every
+		// pre-existing task), so a task created before and after this change carries
+		// the identical first thread row. Cap/store failures cannot fail a create that
+		// already succeeded — the task exists and the id has been handed back, so the
+		// link is best-effort here (unlike the task-scoped routes, where the link is
+		// the only reason the request was interesting).
+		s.noteTaskSession(r, id, notes.RoleCreated)
+	})
+	var ve errTagValidation
+	switch {
+	case err == nil:
+	case errors.Is(err, errTaskBodyRequired):
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "body required"})
 		return
-	}
-	tags, err := s.resolveTaskTags(r.Context(), body.Tags)
-	if err != nil {
-		var ve errTagValidation
-		if errors.As(err, &ve) {
-			s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": ve.Error()})
-			return
-		}
-		s.logger.Printf("notes: api create tags: %v", err)
+	case errors.As(err, &ve):
+		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": ve.Error()})
+		return
+	case errors.Is(err, errTaskTagsUnchecked):
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not validate tags"})
 		return
-	}
-	// Provenance (migration 0017): derive the source + session once — taskSource is
-	// the single source of truth for BOTH the metric label (below) and the stored
-	// value. The default/unidentified "api" source is stored as NULL (pre-0017
-	// behavior); only a named producer is persisted. Session id is stored whenever
-	// present, independent of source.
-	source, sessionID := taskSource(r)
-	note, err := s.ext.Notes.Create(r.Context(), notes.Note{
-		Directory:       body.Directory,
-		Title:           capRunes(strings.TrimSpace(body.Title), maxTaskFieldLen),
-		Body:            body.Body,
-		Model:           body.Model,
-		Repo:            body.Repo,
-		RepoBranch:      body.Branch,
-		Tags:            tags,
-		SourceType:      storedSourceType(source),
-		SourceSessionID: nilIfEmpty(sessionID),
-	})
-	if err != nil {
-		s.logger.Printf("notes: api create: %v", err)
+	default:
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not create task"})
 		return
 	}
-	// Task thread (migration 0023): the creating session joins its own task's
-	// thread with the TERMINAL `created` role. This is the live twin of the 0023
-	// backfill (which derives the same row from notes.source_session_id for every
-	// pre-existing task), so a task created before and after this change carries
-	// the identical first thread row. Cap/store failures cannot fail a create that
-	// already succeeded — the task exists and the id has been handed back, so the
-	// link is best-effort here (unlike the task-scoped routes, where the link is
-	// the only reason the request was interesting).
-	s.noteTaskSession(r, note.ID, notes.RoleCreated)
-	s.broadcast(r.Context(), EventTaskChanged, strconv.FormatInt(note.ID, 10))
+	s.writeJSON(w, http.StatusOK, map[string]any{"id": note.ID})
+}
+
+// taskCreateInput is everything one machine-path task create carries. Source and
+// SessionID are the DERIVED provenance (taskSource) — the caller derives them,
+// because only an HTTP caller has the headers they come from.
+type taskCreateInput struct {
+	Directory, Title, Body string
+	Model, Repo, Branch    string
+	Tags                   []string
+	Source, SessionID      string
+}
+
+// errTaskBodyRequired: the create carried no body (a 400).
+var errTaskBodyRequired = errors.New("body required")
+
+// errTaskTagsUnchecked: the tags could not be validated for a reason that is not
+// the caller's (a 500); a caller's bad tag is errTagValidation instead.
+var errTaskTagsUnchecked = errors.New("could not validate tags")
+
+// createTask is THE machine-path task create: validate, resolve tags, store, and
+// every side effect a created task has — the thread link (linked, called with the
+// new id; nil for a caller with no session to link), the task-changed broadcast,
+// the created-tasks metric, the routing-tag metric, the auto-dispatch log line,
+// and the coalesced `created` push (notifyTaskCreated).
+//
+// 🔴 ONE FUNCTION SO A SECOND DOOR CANNOT FORGET A SIDE EFFECT. It was the body of
+// handleAPITaskCreate, moved verbatim and in the same order; the plugin interface's
+// gated-task tool (internal/plugins, a later PR) creates tasks through it, and the
+// `created` push it ends with is that tool's "notify me". A door that re-spelled
+// the create would silently skip the push or the metric.
+//
+// The FAB create (handleNoteCreate) deliberately does NOT come through here: it does
+// not notify, because the user just made that task themselves.
+func (s *Server) createTask(ctx context.Context, in taskCreateInput, linked func(id int64)) (notes.Note, error) {
+	if strings.TrimSpace(in.Body) == "" {
+		return notes.Note{}, errTaskBodyRequired
+	}
+	tags, err := s.resolveTaskTags(ctx, in.Tags)
+	if err != nil {
+		var ve errTagValidation
+		if errors.As(err, &ve) {
+			return notes.Note{}, ve
+		}
+		s.logger.Printf("notes: api create tags: %v", err)
+		return notes.Note{}, errTaskTagsUnchecked
+	}
+	// Provenance (migration 0017): taskSource is the single source of truth for BOTH
+	// the metric label (below) and the stored value. The default/unidentified "api"
+	// source is stored as NULL (pre-0017 behavior); only a named producer is
+	// persisted. Session id is stored whenever present, independent of source.
+	note, err := s.ext.Notes.Create(ctx, notes.Note{
+		Directory:       in.Directory,
+		Title:           capRunes(strings.TrimSpace(in.Title), maxTaskFieldLen),
+		Body:            in.Body,
+		Model:           in.Model,
+		Repo:            in.Repo,
+		RepoBranch:      in.Branch,
+		Tags:            tags,
+		SourceType:      storedSourceType(in.Source),
+		SourceSessionID: nilIfEmpty(in.SessionID),
+	})
+	if err != nil {
+		s.logger.Printf("notes: api create: %v", err)
+		return notes.Note{}, err
+	}
+	if linked != nil {
+		linked(note.ID)
+	}
+	s.broadcast(ctx, EventTaskChanged, strconv.FormatInt(note.ID, 10))
 	// Usage telemetry: count the created task by its derived producer source so
 	// captures (esp. from the Brave extension) show up in the usage dashboard.
 	// Bounded label — taskSource only emits allowlisted values. Note this uses the
 	// full derived source (incl. "api"), so the metric label behavior is UNCHANGED
 	// from pre-0017 even though "api" is stored as a NULL source_type.
-	metrics.TasksCreated.WithLabelValues(source).Inc()
+	metrics.TasksCreated.WithLabelValues(in.Source).Inc()
 	// Routing-tag telemetry (namespace only — never a tag value; see metrics.RoutingTags)
 	// + the auto:dispatch plumbing log line.
 	observeRoutingTags(note.Tags)
@@ -509,7 +564,7 @@ func (s *Server) handleAPITaskCreate(w http.ResponseWriter, r *http.Request) {
 	// only — the FAB create (handleNoteCreate) intentionally does NOT notify, the
 	// user just made that task themselves. Best-effort + nil-push-safe.
 	s.notifyTaskCreated(note)
-	s.writeJSON(w, http.StatusOK, map[string]any{"id": note.ID})
+	return note, nil
 }
 
 // --- machine task reads: the agent join + server-side filtering ---
