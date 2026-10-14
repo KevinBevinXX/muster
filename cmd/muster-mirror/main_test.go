@@ -103,6 +103,75 @@ func TestABadLabelsFileIsNeverFatal(t *testing.T) {
 	}
 }
 
+// windowsListBackend is a per-window host: one session, three windows — two
+// running Claude Code (resolved two different ways), one a shell.
+type windowsListBackend struct{ listBackend }
+
+func (windowsListBackend) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
+	return []mirrorhost.WindowInfo{
+		{Session: "scratch13", ID: "@46", Index: 1, Active: true, Pane: "%46", Command: "claude",
+			Claude: &mirrorhost.ClaudePane{Pane: "%46", Gen: "sess-b", Transcript: "/p/sess-b.jsonl", Busy: true, Source: mirrorhost.SourcePaneMap}},
+		{Session: "scratch13", ID: "@47", Index: 2, Pane: "%47", Command: "claude",
+			Claude: &mirrorhost.ClaudePane{Pane: "%47", Gen: "sess-c", Transcript: "/p/sess-c.jsonl", Source: mirrorhost.SourceSessions}},
+		{Session: "scratch13", ID: "@48", Index: 3, Pane: "%48", Command: "zsh"},
+	}, nil
+}
+
+// TestListClaudeIsOneRowPerClaudeWINDOW: two Claude Code windows of ONE session
+// are two rows, each with its own window id, pane, session id, transcript and
+// how it was resolved; the shell window is not listed. (It printed one row per
+// SESSION — the active window's — which hid the window being debugged.)
+func TestListClaudeIsOneRowPerClaudeWINDOW(t *testing.T) {
+	prev := e2eBackend
+	e2eBackend = func() mirrorhost.Backend { return windowsListBackend{} }
+	t.Cleanup(func() { e2eBackend = prev })
+	f := filepath.Join(t.TempDir(), "labels.json")
+	if err := os.WriteFile(f, []byte(`{"scratch13":"mango"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rc, out, errs := runWith(t, map[string]string{envLabelsFile: f}, "-list", "-claude")
+	if rc != 0 {
+		t.Fatalf("-list -claude: rc %d: %s", rc, errs)
+	}
+	want := "scratch13\t@46\t1\tclaude\t%46\tbusy\tsess-b\t/p/sess-b.jsonl\tpane-map\tlabel=mango:1\n" +
+		"scratch13\t@47\t2\tclaude\t%47\tidle\tsess-c\t/p/sess-c.jsonl\tsessions\tlabel=mango:2\n"
+	if out != want {
+		t.Fatalf("-list -claude printed\n%q\nwant\n%q", out, want)
+	}
+}
+
+// TestThePaneMapDirReachesTheTmuxBackend: the flag/env is not decoration — the
+// backend the host runs reads the map from it.
+func TestThePaneMapDirReachesTheTmuxBackend(t *testing.T) {
+	b, ok := tmuxBackend("s", "", "/fx/ledger").(mirrorhost.Tmux)
+	if !ok || b.Claude.PaneMapDir != "/fx/ledger" || b.Socket != "s" {
+		t.Fatalf("tmuxBackend = %+v, want PaneMapDir /fx/ledger", b)
+	}
+	if b := tmuxBackend("", "", "").(mirrorhost.Tmux); b.Claude.PaneMapDir != "" {
+		t.Fatalf("no pane map dir configured, yet the backend has %q", b.Claude.PaneMapDir)
+	}
+	// And run passes it: from the environment, and from the flag (which wins).
+	prev := newTmuxBackend
+	t.Cleanup(func() { newTmuxBackend = prev })
+	var got []string
+	newTmuxBackend = func(s, sp, dir string) mirrorhost.Backend {
+		got = append(got, dir)
+		return listBackend{}
+	}
+	if rc, _, errs := runWith(t, map[string]string{envPaneMapDir: "/fx/from-env"}, "-list"); rc != 0 {
+		t.Fatalf("-list: rc %d %s", rc, errs)
+	}
+	if rc, _, errs := runWith(t, map[string]string{envPaneMapDir: "/fx/from-env"}, "-list", "-pane-map-dir", "/fx/from-flag"); rc != 0 {
+		t.Fatalf("-list -pane-map-dir: rc %d %s", rc, errs)
+	}
+	if rc, _, errs := runWith(t, nil, "-list"); rc != 0 {
+		t.Fatalf("-list: rc %d %s", rc, errs)
+	}
+	if strings.Join(got, "|") != "/fx/from-env|/fx/from-flag|" {
+		t.Fatalf("run passed pane map dirs %q, want env, flag, none", got)
+	}
+}
+
 func TestVersion(t *testing.T) {
 	if rc, out, _ := runWith(t, nil, "-version"); rc != 0 || !strings.Contains(out, "tunnel protocol 2") {
 		t.Fatalf("-version: rc %d %q", rc, out)
