@@ -359,7 +359,7 @@ func draftCardHTML(c plugins.DraftCard) string {
 <span class="text-xs font-semibold text-fg2">The message it answers — from an outside sender, untrusted (message ` +
 		strconv.FormatInt(m.ID, 10) + `)</span>
 <span class="break-all text-xs text-fg2">from ` + esc(m.Sender) + ` · subject ` + esc(m.Subject) + `</span>
-<pre class="whitespace-pre-wrap break-words font-sans text-xs text-fg2" data-draft-original-body>` + esc(m.Body) + `</pre>
+<pre class="whitespace-pre-wrap break-words text-xs text-fg2" data-draft-original-body>` + esc(m.Body) + `</pre>
 </div>
 <div class="flex flex-col gap-1 rounded-md bg-bg px-3 py-2 ring-1 ring-inset ring-edge" data-draft-text data-runes="` + runes + `">
 <span class="text-xs font-semibold text-fg">The reply · ` + runes + ` characters` + draftTextLead(d.Status) + `</span>

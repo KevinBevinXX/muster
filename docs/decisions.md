@@ -154,6 +154,31 @@ The app-wide `Referrer-Policy: no-referrer` turned out to make a browser send
 `Origin: null` on its own form submits, which the same-origin check refuses. So
 pages that carry a message box are served `same-origin` instead.
 
+## Plugins pull; muster never calls out
+
+A plugin connects muster to some other system, such as an inbox. muster could
+have called the plugin, posting each approved reply to a URL the plugin
+registered. It does not. The plugin calls muster for everything: it posts the
+messages it receives, long-polls for the replies its owner approved, and
+reports what happened to each one.
+
+- **muster holds no address and no credential for anything outside it.** A
+  plugin is a process on someone else's terms. If muster called out, it would
+  need a URL per plugin, an egress path to it, and a way to authenticate the
+  plugin's endpoint. Each of those is something to get wrong, and a URL an
+  owner can set is a way to make muster send requests wherever that owner
+  chooses. With pull, the plugin's token is the only link, and it opens
+  `/plugin/v1/*` and nothing else.
+- **There is no background loop.** The plugin's long-poll is the clock. Each
+  claim first retries the owner's messages that could not be delivered to the
+  chief. A plugin that stops polling stops costing anything.
+- **At most once is the plugin's promise to keep, and muster makes it
+  checkable.** A claimed reply is leased for two minutes. If no result comes
+  back, the reply is marked unconfirmed and is never offered again, because the
+  plugin may have sent it before it died. Only the owner, who can check
+  upstream, can approve it again. A push design would have to answer the same
+  question ("did the call that timed out arrive?") with nothing but a retry.
+
 ## Why the task table is called `notes`
 
 Every id in it is a task number people cite. Renaming the table would be a data
