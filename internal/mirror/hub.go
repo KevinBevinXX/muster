@@ -25,6 +25,10 @@ var (
 	ErrHostOffline = errors.New("mirror: the host is offline — its muster-mirror is not connected to muster")
 	// ErrSessionGone: the host is connected and does not list the session.
 	ErrSessionGone = errors.New("mirror: the host is online but no longer lists this tmux session")
+	// ErrWindowGone: the host lists the session, and not this window of it (the
+	// window was closed, or the host registers per session and has no windows
+	// to name).
+	ErrWindowGone = errors.New("mirror: the host is online but no longer lists this tmux window")
 	// ErrHostDisconnected: the host's connection ended while attached (it went
 	// away, its token was revoked, or a newer connection replaced it).
 	ErrHostDisconnected = errors.New("mirror: the host's connection ended while the terminal was attached")
@@ -63,9 +67,18 @@ type hostKey struct {
 }
 
 // HostView is one host as its owner sees it.
+//
+// A PER-WINDOW host (Windows != nil) lists every tmux window; Sessions, Claude,
+// Labels and Activity are then muster's own per-session view of that list
+// (SessionsOf) — what a request naming only a session resolves through. A
+// PER-SESSION host (an older muster-mirror) has no Windows, and those four are
+// what it sent.
 type HostView struct {
 	Host     string
 	Sessions []string
+	// Windows is every window the host lists (NormalizeWindows' order); nil for
+	// a per-session host.
+	Windows []Window
 	// Claude is the subset of Sessions whose active pane runs Claude Code (a v2
 	// host's report; always empty for a v1 host): the sessions opened in the
 	// rendered view by default.
@@ -91,17 +104,6 @@ type HostView struct {
 	// pane whatever runs there (Msg.PanePaste). False for an older muster-mirror
 	// and for an offline host.
 	PanePaste bool
-}
-
-// CanPaste reports whether a message can be sent into session's active pane
-// from the Terminal view (PasteActivePane): the host is connected and
-// -interactive, and either pastes into any pane or — an older muster-mirror —
-// reports Claude Code in this one, which its Claude-only paste reaches.
-func (v HostView) CanPaste(session string) bool {
-	if !v.Online || !v.Interactive {
-		return false
-	}
-	return v.PanePaste || (v.Rendered && slices.Contains(v.Claude, session))
 }
 
 // Hub is the set of connected hosts, their session lists and their live
@@ -137,6 +139,7 @@ var ErrTokenRevoked = errors.New("mirror: the host's token was revoked")
 
 type offlineHost struct {
 	sessions    []string
+	windows     []Window
 	claude      []string
 	labels      map[string]string
 	activity    map[string]int64
@@ -204,6 +207,9 @@ type hostConn struct {
 
 	mu       sync.Mutex
 	sessions []string
+	// windows is the host's window list; nil for a per-session host. When it is
+	// set, sessions / claude / labels / activity are DERIVED from it (list).
+	windows  []Window
 	claude   []string
 	labels   map[string]string
 	activity map[string]int64
@@ -238,7 +244,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 			continue
 		}
 		hc.mu.Lock()
-		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...),
+		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
 			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste})
 		hc.mu.Unlock()
 	}
@@ -249,7 +255,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 			continue
 		}
 		if k.owner == owner {
-			out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), o.sessions...),
+			out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), o.sessions...), Windows: slices.Clone(o.windows),
 				Claude: append([]string(nil), o.claude...), Labels: maps.Clone(o.labels), Activity: maps.Clone(o.activity), Interactive: o.interactive})
 		}
 	}
@@ -291,12 +297,83 @@ func normalizeClaude(claude, sessions []string) []string {
 	return out
 }
 
-// isClaude reports whether session's pane runs Claude Code, per the host.
-func (hc *hostConn) isClaude(session string) bool {
+// target resolves a request for (session, window) on this host: the window id
+// to SEND the host ("" for a per-session host, whose requests name only the
+// session) and whether that window's pane runs Claude Code.
+//
+// window == "" is "the session's ACTIVE window" — every URL from before
+// windows were addressable. On a per-window host it is resolved HERE, to an
+// explicit id, so the host is never left to decide which window was meant.
+func (hc *hostConn) target(session, window string) (id string, claude bool, err error) {
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
-	i := sort.SearchStrings(hc.claude, session)
-	return i < len(hc.claude) && hc.claude[i] == session
+	i := sort.SearchStrings(hc.sessions, session)
+	listed := i < len(hc.sessions) && hc.sessions[i] == session
+	if !listed {
+		return "", false, fmt.Errorf("%w (host %q, session %q)", ErrSessionGone, hc.key.host, session)
+	}
+	if hc.windows == nil {
+		if window != "" {
+			return "", false, fmt.Errorf("%w (host %q registers per session; session %q, window %q)", ErrWindowGone, hc.key.host, session, window)
+		}
+		j := sort.SearchStrings(hc.claude, session)
+		return "", j < len(hc.claude) && hc.claude[j] == session, nil
+	}
+	if window == "" {
+		w, ok := ActiveWindow(hc.windows, session)
+		if !ok {
+			return "", false, fmt.Errorf("%w (host %q, session %q)", ErrSessionGone, hc.key.host, session)
+		}
+		return w.ID, w.Claude, nil
+	}
+	for _, w := range hc.windows {
+		if w.Session == session && w.ID == window {
+			return w.ID, w.Claude, nil
+		}
+	}
+	return "", false, fmt.Errorf("%w (host %q, session %q, window %q)", ErrWindowGone, hc.key.host, session, window)
+}
+
+// list is what a hello or a sessions message registers: the window list when
+// the host sent one (and then muster's OWN per-session view of it), else the
+// per-session fields as sent. Each through its normalizer; nothing of the
+// host's is kept unchecked.
+func (hc *hostConn) list(m Msg, now int64) (sessions []string, windows []Window, claude []string, labels map[string]string, activity map[string]int64) {
+	if windows = NormalizeWindows(m.Windows, now); windows != nil {
+		if hc.version < 2 {
+			// A v1 host has no rendered view whatever it claims.
+			for i := range windows {
+				windows[i].Claude = false
+			}
+		}
+		sessions, claude, labels, activity = SessionsOf(windows)
+		if claude == nil {
+			claude = []string{}
+		}
+		return sessions, windows, claude, labels, activity
+	}
+	sessions = normalizeSessions(m.Sessions)
+	if hc.version >= 2 {
+		claude = normalizeClaude(m.Claude, sessions)
+	}
+	return sessions, nil, claude, NormalizeLabels(m.Labels, sessions), NormalizeActivity(m.Activity, sessions, now)
+}
+
+// sameWindows reports whether a and b differ in nothing a viewer can SEE:
+// everything but Activity, which moves all the time and matters only through
+// the order (orderKeys).
+func sameWindows(a, b []Window) bool {
+	if (a == nil) != (b == nil) || len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		x, y := a[i], b[i]
+		x.Activity, y.Activity = 0, 0
+		if x != y {
+			return false
+		}
+	}
+	return true
 }
 
 // normalizeSessions drops invalid and duplicate names, sorts, and caps the list.
@@ -344,11 +421,10 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 	}
 
 	key := hostKey{owner, host}
-	sessions := normalizeSessions(hello.Sessions)
 	hc := &hostConn{key: key, ws: ws, ctx: ctx, cancel: cancel, interactive: hello.Interactive, version: hello.Version,
-		sessions: sessions, labels: NormalizeLabels(hello.Labels, sessions), activity: NormalizeActivity(hello.Activity, sessions, h.now().Unix()), streams: map[uint32]*stream{}, watches: map[uint32]*watch{}, pastes: map[uint32]chan error{}}
+		streams: map[uint32]*stream{}, watches: map[uint32]*watch{}, pastes: map[uint32]chan error{}}
+	hc.sessions, hc.windows, hc.claude, hc.labels, hc.activity = hc.list(hello, h.now().Unix())
 	if hc.version >= 2 {
-		hc.claude = normalizeClaude(hello.Claude, sessions)
 		// A read-only host cannot be pasted into whatever it claims.
 		hc.panePaste = hello.PanePaste && hello.Interactive
 	}
@@ -376,7 +452,11 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 	if hc.interactive {
 		mode = "interactive"
 	}
-	h.logger.Printf("mirror: host %s (owner %d) connected, %s, tunnel v%d, with %d session(s)", host, owner, mode, hc.version, len(hc.sessions))
+	if hc.windows != nil {
+		h.logger.Printf("mirror: host %s (owner %d) connected, %s, tunnel v%d, with %d window(s) in %d session(s)", host, owner, mode, hc.version, len(hc.windows), len(hc.sessions))
+	} else {
+		h.logger.Printf("mirror: host %s (owner %d) connected, %s, tunnel v%d, with %d session(s) (per session: its muster-mirror predates per-window registration)", host, owner, mode, hc.version, len(hc.sessions))
+	}
 	h.changed(owner)
 
 	go func() {
@@ -421,20 +501,14 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 			}
 			switch m.Type {
 			case TypeSessions:
-				list := normalizeSessions(m.Sessions)
 				// Labels and activity ride every sessions message, so one that
 				// changed with the same session set (the active window moved, a
 				// pane produced output) still lands here.
-				labels := NormalizeLabels(m.Labels, list)
-				activity := NormalizeActivity(m.Activity, list, h.now().Unix())
-				var claude []string
-				if hc.version >= 2 {
-					claude = normalizeClaude(m.Claude, list)
-				}
+				list, windows, claude, labels, activity := hc.list(m, h.now().Unix())
 				before := orderKeys(h.Hosts(hc.key.owner))
 				hc.mu.Lock()
-				same := slices.Equal(hc.sessions, list) && slices.Equal(hc.claude, claude) && maps.Equal(hc.labels, labels)
-				hc.sessions, hc.labels, hc.activity, hc.claude = list, labels, activity, claude
+				same := slices.Equal(hc.sessions, list) && slices.Equal(hc.claude, claude) && maps.Equal(hc.labels, labels) && sameWindows(hc.windows, windows)
+				hc.sessions, hc.windows, hc.labels, hc.activity, hc.claude = list, windows, labels, activity, claude
 				hc.mu.Unlock()
 				// 🔴 ONLY A CHANGE SOMEBODY CAN SEE NUDGES THE OPEN VIEWS. Activity
 				// moves all the time; a host re-sends it once per ActivityBucket
@@ -482,8 +556,9 @@ func (h *Hub) drop(hc *hostConn) {
 			claude := append([]string(nil), hc.claude...)
 			labels := maps.Clone(hc.labels)
 			activity := maps.Clone(hc.activity)
+			windows := slices.Clone(hc.windows)
 			hc.mu.Unlock()
-			h.offline[hc.key] = offlineHost{sessions: hc.sessionsCopy(), claude: claude, labels: labels, activity: activity, interactive: hc.interactive, since: h.now()}
+			h.offline[hc.key] = offlineHost{sessions: hc.sessionsCopy(), windows: windows, claude: claude, labels: labels, activity: activity, interactive: hc.interactive, since: h.now()}
 		}
 	}
 	h.mu.Unlock()
@@ -607,14 +682,27 @@ func writeJSON(ctx context.Context, ws *websocket.Conn, m Msg) error {
 // It returns nil when the host reports the session's client exited cleanly, and
 // when ctx ends (the browser left).
 func (h *Hub) Attach(ctx context.Context, owner int64, host, session string, readOnly bool, stdin io.Reader, stdout io.Writer, resize <-chan provision.TermSize) error {
+	return h.AttachWindow(ctx, owner, host, session, "", readOnly, stdin, stdout, resize)
+}
+
+// AttachWindow is Attach on one WINDOW of the session (its tmux window id), or
+// — window == "" — on the session's active window.
+//
+// 🔴 ON A PER-WINDOW HOST THE OPEN ALWAYS NAMES A WINDOW ID, resolved here even
+// when the caller named only the session (hostConn.target). The host then shows
+// that window through a viewer session of its own (internal/mirrorhost) and
+// never through the operator's session, so neither viewing nor typing into a
+// window moves what the operator is looking at.
+func (h *Hub) AttachWindow(ctx context.Context, owner int64, host, session, window string, readOnly bool, stdin io.Reader, stdout io.Writer, resize <-chan provision.TermSize) error {
 	h.mu.Lock()
 	hc := h.hosts[hostKey{owner, host}]
 	h.mu.Unlock()
 	if hc == nil {
 		return fmt.Errorf("%w (host %q)", ErrHostOffline, host)
 	}
-	if !hc.has(session) {
-		return fmt.Errorf("%w (host %q, session %q)", ErrSessionGone, host, session)
+	windowID, _, err := hc.target(session, window)
+	if err != nil {
+		return err
 	}
 	if !readOnly && !hc.interactive {
 		return fmt.Errorf("%w (host %q)", ErrInteractiveRefused, host)
@@ -636,7 +724,7 @@ func (h *Hub) Attach(ctx context.Context, owner int64, host, session string, rea
 		hc.mu.Unlock()
 	}()
 
-	open := Msg{Type: TypeOpen, ID: id, Session: session, ReadOnly: readOnly}
+	open := Msg{Type: TypeOpen, ID: id, Session: session, Window: windowID, ReadOnly: readOnly}
 	select {
 	case sz := <-resize:
 		open.Cols, open.Rows = sz.Cols, sz.Rows

@@ -54,6 +54,43 @@ func (h *hostSide) pane(ctx context.Context, cb ClaudeBackend, session string) (
 	return p, ok
 }
 
+// window re-reads ONE window now: where a request that names a window finds
+// its pane. A fresh read, at the moment of acting — never the list this host
+// last sent, in which the window's pane may since have changed (a pane split,
+// Claude Code exiting).
+func (h *hostSide) window(ctx context.Context, session, window string) (WindowInfo, error) {
+	wl, ok := WindowListerOf(h.c.cfg.Backend)
+	if !ok {
+		return WindowInfo{}, errors.New("this host does not list windows")
+	}
+	all, err := wl.Windows(ctx)
+	if err != nil {
+		return WindowInfo{}, err
+	}
+	w, ok := FindWindow(all, session, window)
+	if !ok {
+		return WindowInfo{}, fmt.Errorf("window %s of session %q is gone", window, session)
+	}
+	return w, nil
+}
+
+// claudePaneOf is how a watch or a paste finds the Claude Code pane of what m
+// names: THAT WINDOW's active pane when m names a window — so two Claude Code
+// windows of one session each stream their own transcript — else the session's
+// active pane, as before.
+func (h *hostSide) claudePaneOf(cb ClaudeBackend, m mirror.Msg) func(context.Context) (ClaudePane, bool) {
+	if m.Window == "" {
+		return func(ctx context.Context) (ClaudePane, bool) { return h.pane(ctx, cb, m.Session) }
+	}
+	return func(ctx context.Context) (ClaudePane, bool) {
+		w, err := h.window(ctx, m.Session, m.Window)
+		if err != nil || w.Claude == nil {
+			return ClaudePane{}, false
+		}
+		return *w.Claude, true
+	}
+}
+
 func (h *hostSide) unwatch(id uint32) {
 	h.mu.Lock()
 	cancel := h.watches[id]
@@ -80,8 +117,8 @@ func (h *hostSide) watch(m mirror.Msg) {
 		fail(errors.New("this host cannot read Claude Code transcripts"))
 		return
 	}
-	if !h.isListed(m.Session) {
-		fail(fmt.Errorf("session %q is not in this host's latest list", m.Session))
+	if err := h.allowed(m); err != nil {
+		fail(err)
 		return
 	}
 	ctx, cancel := context.WithCancel(h.ctx)
@@ -95,7 +132,7 @@ func (h *hostSide) watch(m mirror.Msg) {
 	h.watches[m.ID] = cancel
 	h.mu.Unlock()
 	go func() {
-		err := h.tail(ctx, cb, m)
+		err := h.tail(ctx, h.claudePaneOf(cb, m), m)
 		h.unwatch(m.ID)
 		msg := ""
 		if err != nil && !errors.Is(err, context.Canceled) {
@@ -110,10 +147,11 @@ func (h *hostSide) watch(m mirror.Msg) {
 // errNotClaudeNow ends a view whose pane no longer runs Claude Code.
 var errNotClaudeNow = errors.New("Claude Code is not running in this session's active pane")
 
-// tail serves one watch. It returns when ctx ends (nil after cancel), or with
-// the reason the view cannot continue.
-func (h *hostSide) tail(ctx context.Context, cb ClaudeBackend, m mirror.Msg) error {
-	p, ok := h.pane(ctx, cb, m.Session)
+// tail serves one watch, resolving its pane with pane (claudePaneOf). It
+// returns when ctx ends (nil after cancel), or with the reason the view cannot
+// continue.
+func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudePane, bool), m mirror.Msg) error {
+	p, ok := pane(ctx)
 	if !ok {
 		return errNotClaudeNow
 	}
@@ -183,7 +221,7 @@ func (h *hostSide) tail(ctx context.Context, cb ClaudeBackend, m mirror.Msg) err
 		case <-t.C:
 		}
 		if tick%reresolveEvery == 0 {
-			np, ok := h.pane(ctx, cb, m.Session)
+			np, ok := pane(ctx)
 			if !ok {
 				if ctx.Err() != nil {
 					return nil
@@ -278,9 +316,9 @@ func (h *hostSide) paste(m mirror.Msg) {
 		msg := ""
 		if err != nil {
 			msg = err.Error()
-			h.c.log.Printf("muster-mirror: paste into %q refused: %v", m.Session, err)
+			h.c.log.Printf("muster-mirror: paste into %q%s refused: %v", m.Session, windowSuffix(m.Window), err)
 		} else {
-			h.c.log.Printf("muster-mirror: pasted a message into %q", m.Session)
+			h.c.log.Printf("muster-mirror: pasted a message into %q%s", m.Session, windowSuffix(m.Window))
 		}
 		_ = h.send(mirror.Msg{Type: mirror.TypePasted, ID: m.ID, Error: msg})
 	}
@@ -288,8 +326,8 @@ func (h *hostSide) paste(m mirror.Msg) {
 		reply(errors.New("this host is read-only (muster-mirror was not started with -interactive)"))
 		return
 	}
-	if !h.isListed(m.Session) {
-		reply(fmt.Errorf("session %q is not in this host's latest list", m.Session))
+	if err := h.allowed(m); err != nil {
+		reply(err)
 		return
 	}
 	text, err := mirror.SanitizePaste(m.Text)
@@ -305,7 +343,21 @@ func (h *hostSide) paste(m mirror.Msg) {
 			reply(errors.New("this host cannot paste into a pane"))
 			return
 		}
-		pane, ok := pb.ActivePane(ctx, m.Session)
+		// 🔴 THE TARGET IS A PANE ID, AND THAT IS WHY A PASTE MOVES NOBODY'S
+		// WINDOW: paste-buffer -t %<n> needs no client and no current window, so
+		// the pane of a window nobody is looking at is reached exactly like the
+		// one on screen. A named window's pane is read NOW (hostSide.window).
+		pane, ok := "", false
+		if m.Window != "" {
+			w, err := h.window(ctx, m.Session, m.Window)
+			if err != nil {
+				reply(err)
+				return
+			}
+			pane, ok = w.Pane, w.Pane != ""
+		} else {
+			pane, ok = pb.ActivePane(ctx, m.Session)
+		}
 		if !ok {
 			reply(fmt.Errorf("session %q has no active pane to send to", m.Session))
 			return
@@ -318,7 +370,7 @@ func (h *hostSide) paste(m mirror.Msg) {
 		reply(errors.New("this host cannot see Claude Code panes"))
 		return
 	}
-	p, ok := h.pane(ctx, cb, m.Session)
+	p, ok := h.claudePaneOf(cb, m)(ctx)
 	if !ok {
 		reply(errNotClaudeNow)
 		return

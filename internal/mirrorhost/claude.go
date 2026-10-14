@@ -106,7 +106,10 @@ type pane struct {
 //  3. Fallback, for a CLI that writes no sessions file: the NEWEST *.jsonl in
 //     <home>/projects/<slug(the process's cwd)>/. ⚠ With two CLIs in one cwd and
 //     no sessions files, that is whichever wrote last — the one ambiguity this
-//     cannot resolve, and it is only reached on CLIs older than the sessions file.
+//     cannot resolve, and it is only reached on CLIs older than the sessions
+//     file. So a GUESSED transcript that another pane resolves to as well is
+//     dropped (LocatePanes): two panes are never shown one conversation, and a
+//     pane it cannot tell apart has no rendered view rather than a wrong one.
 //
 // It reads only files the user muster-mirror runs as can read: its own
 // processes' /proc entries and its own ~/.claude.
@@ -245,8 +248,10 @@ type sessionFile struct {
 // sessionIDPattern bounds what a sessions file may name: it is joined into a path.
 var sessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,128}$`)
 
-// resolve is the transcript of Claude Code process pid, or ok=false.
-func (l ClaudeLocator) resolve(pid int) (path, gen string, busy, ok bool) {
+// resolve is the transcript of Claude Code process pid, or ok=false. guessed
+// says the answer is the FALLBACK's (the newest transcript in the process's
+// cwd), not one the CLI named for itself.
+func (l ClaudeLocator) resolve(pid int) (path, gen string, busy, guessed, ok bool) {
 	cfg := l.configDir()
 	if b, err := os.ReadFile(filepath.Join(cfg, "sessions", strconv.Itoa(pid)+".json")); err == nil {
 		var sf sessionFile
@@ -256,22 +261,22 @@ func (l ClaudeLocator) resolve(pid int) (path, gen string, busy, ok bool) {
 			if sf.Cwd != "" {
 				p := filepath.Join(cfg, "projects", ProjectSlug(sf.Cwd), name)
 				if fileExists(p) {
-					return p, sf.SessionID, busy, true
+					return p, sf.SessionID, busy, false, true
 				}
 			}
 			// The cwd moved, or the slug rule differs: the id is unique, so find it.
 			if m, _ := filepath.Glob(filepath.Join(cfg, "projects", "*", name)); len(m) > 0 {
-				return m[0], sf.SessionID, busy, true
+				return m[0], sf.SessionID, busy, false, true
 			}
 			// A brand-new session has a sessions file before its first record:
 			// nothing to show YET. Not the fallback — that would show another
 			// session's transcript under this pane.
-			return "", "", false, false
+			return "", "", false, false, false
 		}
 	}
 	cwd, err := os.Readlink(filepath.Join(l.proc(), strconv.Itoa(pid), "cwd"))
 	if err != nil {
-		return "", "", false, false
+		return "", "", false, false, false
 	}
 	m, _ := filepath.Glob(filepath.Join(cfg, "projects", ProjectSlug(cwd), "*.jsonl"))
 	var newest string
@@ -282,9 +287,9 @@ func (l ClaudeLocator) resolve(pid int) (path, gen string, busy, ok bool) {
 		}
 	}
 	if newest == "" {
-		return "", "", false, false
+		return "", "", false, false, false
 	}
-	return newest, strings.TrimSuffix(filepath.Base(newest), ".jsonl"), false, true
+	return newest, strings.TrimSuffix(filepath.Base(newest), ".jsonl"), false, true, true
 }
 
 func fileExists(p string) bool {
@@ -293,23 +298,54 @@ func fileExists(p string) bool {
 }
 
 // Locate maps each pane that runs Claude Code to its ClaudePane, keyed by the
-// pane's session.
+// pane's session (one pane per session: each session's active pane).
 func (l ClaudeLocator) Locate(panes []pane) map[string]ClaudePane {
+	byPane := l.LocatePanes(panes)
+	out := map[string]ClaudePane{}
+	for _, p := range panes {
+		if cp, ok := byPane[p.ID]; ok {
+			out[p.Session] = cp
+		}
+	}
+	return out
+}
+
+// LocatePanes maps each pane that runs Claude Code to its ClaudePane, keyed by
+// the PANE id — so any number of panes of one session (one per window) each
+// resolve to their own Claude Code process and so their own transcript.
+//
+// 🔴 TWO PANES NEVER SHARE A GUESSED TRANSCRIPT. A CLI that named its own
+// session (its sessions file) is resolved exactly, however many share a cwd. A
+// CLI that did not is GUESSED from its cwd (resolve's fallback), and two of
+// those in one cwd guess the same file: whichever wrote last. Showing that one
+// conversation under both windows would put the wrong transcript above a
+// composer that sends to the right pane — so a guess that any other pane also
+// resolves to is dropped, and that window opens in the Terminal instead.
+func (l ClaudeLocator) LocatePanes(panes []pane) map[string]ClaudePane {
 	out := map[string]ClaudePane{}
 	if len(panes) == 0 {
 		return out
 	}
 	procs, children := l.table()
+	guessed := map[string]bool{}
+	claims := map[string]int{}
 	for _, p := range panes {
 		pid := findClaude(p.PID, procs, children)
 		if pid == 0 {
 			continue
 		}
-		path, gen, busy, ok := l.resolve(pid)
+		path, gen, busy, guess, ok := l.resolve(pid)
 		if !ok {
 			continue
 		}
-		out[p.Session] = ClaudePane{Pane: p.ID, PID: pid, Transcript: path, Gen: gen, Busy: busy}
+		out[p.ID] = ClaudePane{Pane: p.ID, PID: pid, Transcript: path, Gen: gen, Busy: busy}
+		guessed[p.ID] = guess
+		claims[path]++
+	}
+	for id, cp := range out {
+		if guessed[id] && claims[cp.Transcript] > 1 {
+			delete(out, id)
+		}
 	}
 	return out
 }

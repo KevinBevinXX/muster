@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"net/url"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -22,21 +21,28 @@ import (
 // rows are rendered HERE, on the server, and sent to the page as HTML; the page
 // only places them.
 
-// MirrorViewPath is a mirrored session's rendered view.
+// MirrorViewPath is a mirrored session's rendered view (its active window).
 func MirrorViewPath(host, session string) string {
-	return "/mirror/view?" + url.Values{"host": {host}, "session": {session}}.Encode()
+	return MirrorRef{Host: host, Session: session}.ViewPath()
 }
 
 // MirrorViewWSPath is that page's transcript socket, before the page adds its
 // resume point.
 func MirrorViewWSPath(host, session string) string {
-	return "/mirror/view/ws?" + url.Values{"host": {host}, "session": {session}}.Encode()
+	return MirrorRef{Host: host, Session: session}.ViewWSPath()
 }
 
 // MirrorViewView is the data the rendered view's page renders.
 type MirrorViewView struct {
 	Host    string
 	Session string
+	// Window is the tmux window id the view is of; "" = the session's active
+	// window (a per-session host). With Session it is the page's ADDRESS: its
+	// socket and its composer name the same window.
+	Window string
+	// Title is what an entry with no Label is called ("<session>:<window
+	// index>"); "" = the session name.
+	Title string
 	// Label is the host's display name for the session ("mango:1"), "" for
 	// none: the page's title. Session stays the address.
 	Label string
@@ -59,7 +65,8 @@ const MirrorReadOnlyNote = "This host is read-only — its muster-mirror was not
 // ⚠ ITS OWN DOCUMENT, like the terminal page: a real load (the links into it
 // opt out of boost), with its own socket and script.
 func MirrorViewPage(v MirrorViewView) g.Node {
-	composer := MirrorComposerView{SendPath: MirrorSendPath, Host: v.Host, Session: v.Session,
+	ref := MirrorRef{Host: v.Host, Session: v.Session, Window: v.Window}
+	composer := MirrorComposerView{SendPath: MirrorSendPath, Host: v.Host, Session: v.Session, Window: v.Window,
 		Placeholder: "Message Claude…", Aria: "Message Claude in this session", DisabledPlaceholder: "Read-only host"}
 	if !v.Interactive {
 		composer.Disabled = MirrorReadOnlyNote
@@ -72,7 +79,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				Meta(Name("color-scheme"), Content("dark light")),
 				ThemeHead(),
 				manifestLink(),
-				TitleEl(g.Text(markdownPlain(displayOr(v.Label, v.Session))+" · Mirrored · muster")),
+				TitleEl(g.Text(markdownPlain(displayOr(v.Label, displayOr(v.Title, v.Session)))+" · Mirrored · muster")),
 				Link(Rel("stylesheet"), Href("/static/app.css")),
 				faroHead(),
 			),
@@ -89,11 +96,11 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 					),
 					Div(
 						Class("min-w-0 flex-1"),
-						H1(Class("truncate text-sm font-semibold"), mirrorSessionTitle(v.Label, v.Session, ""),
+						H1(Class("truncate text-sm font-semibold"), mirrorEntryTitle(v.Label, v.Title, v.Session, ""),
 							Span(g.Attr("data-term-badge", ""), Class("ml-2"), chip("kind", "Mirrored · "+v.Host))),
 						P(ID("mv-status"), Class("truncate text-xs text-muted"), g.Attr("aria-live", "polite"), g.Text("Connecting…")),
 					),
-					viewToggle(true, MirrorViewPath(v.Host, v.Session), MirrorTerminalPath(v.Host, v.Session)),
+					viewToggle(true, ref.ViewPath(), ref.TerminalPath()),
 				),
 				Div(
 					ID("mv-error"),
@@ -104,7 +111,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				),
 				Main(
 					ID("mv-log"),
-					g.Attr("data-ws", MirrorViewWSPath(v.Host, v.Session)),
+					g.Attr("data-ws", ref.ViewWSPath()),
 					g.Attr("aria-label", "Conversation"),
 					Class("flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overflow-x-hidden px-3 py-3"),
 				),

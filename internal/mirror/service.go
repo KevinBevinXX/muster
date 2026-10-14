@@ -250,6 +250,12 @@ func (s *Service) Hosts(ctx context.Context) []HostView {
 // not rely on its caller to have asked. A context with no sign-in time is never
 // fresh, so a caller that forgot to carry one gets read-only or nothing.
 func (s *Service) Attach(ctx context.Context, host, session string, readOnly bool, stdin io.Reader, stdout io.Writer, resize <-chan provision.TermSize) error {
+	return s.AttachWindow(ctx, host, session, "", readOnly, stdin, stdout, resize)
+}
+
+// AttachWindow is Attach on one window of the session (its tmux window id);
+// window == "" is the session's active window. See Hub.AttachWindow.
+func (s *Service) AttachWindow(ctx context.Context, host, session, window string, readOnly bool, stdin io.Reader, stdout io.Writer, resize <-chan provision.TermSize) error {
 	o, err := owner(ctx)
 	if err != nil {
 		return err
@@ -257,33 +263,45 @@ func (s *Service) Attach(ctx context.Context, host, session string, readOnly boo
 	if !readOnly && !stepup.Fresh(ctx, s.hub.now()) {
 		return ErrStepUpRequired
 	}
-	return s.hub.Attach(ctx, o, host, session, readOnly, stdin, stdout, resize)
+	return s.hub.AttachWindow(ctx, o, host, session, window, readOnly, stdin, stdout, resize)
 }
 
 // Watch streams one of the viewing principal's host sessions' Claude Code
 // transcript. See Hub.Watch.
 func (s *Service) Watch(ctx context.Context, host, session, gen string, offset int64, out func(Msg) error) error {
+	return s.WatchWindow(ctx, host, session, "", gen, offset, out)
+}
+
+// WatchWindow is Watch on one window of the session; window == "" is the
+// session's active window. See Hub.WatchWindow.
+func (s *Service) WatchWindow(ctx context.Context, host, session, window, gen string, offset int64, out func(Msg) error) error {
 	o, err := owner(ctx)
 	if err != nil {
 		return err
 	}
-	return s.hub.Watch(ctx, o, host, session, gen, offset, out)
+	return s.hub.WatchWindow(ctx, o, host, session, window, gen, offset, out)
 }
 
 // Paste types a message into a pane of one of the viewing principal's host
 // sessions: its Claude pane, or its active pane (target). See Hub.Paste.
 func (s *Service) Paste(ctx context.Context, host, session, text string, target PasteTarget) error {
+	return s.PasteWindow(ctx, host, session, "", text, target)
+}
+
+// PasteWindow is Paste into one window of the session; window == "" is the
+// session's active window. See Hub.PasteWindow.
+func (s *Service) PasteWindow(ctx context.Context, host, session, window, text string, target PasteTarget) error {
 	o, err := owner(ctx)
 	if err != nil {
 		return err
 	}
-	return s.hub.Paste(ctx, o, host, session, text, target)
+	return s.hub.PasteWindow(ctx, o, host, session, window, text, target)
 }
 
 // IsAttachRefusal reports whether err is one of the plugin's own refusals,
 // whose text is written for the operator and is passed to the browser as is.
 func IsAttachRefusal(err error) bool {
-	for _, e := range []error{ErrHostOffline, ErrSessionGone, ErrHostDisconnected, ErrOverrun,
+	for _, e := range []error{ErrHostOffline, ErrSessionGone, ErrWindowGone, ErrHostDisconnected, ErrOverrun,
 		ErrInteractiveRefused, ErrTooManyStreams, ErrNoPrincipal, ErrStepUpRequired,
 		ErrNoRenderedView, ErrNotClaude, ErrViewOverrun, ErrTooManyWatches, ErrPasteTimeout, ErrPasteRefused, ErrBadPaste,
 		ErrPanePasteUnsupported} {

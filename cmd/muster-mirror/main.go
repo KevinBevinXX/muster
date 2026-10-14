@@ -1,5 +1,5 @@
 // Command muster-mirror shows this machine's tmux sessions in muster's Agents
-// view as MIRRORED sessions. It is READ-ONLY unless started with -interactive. It is the optional host half of the mirror plugin: install it
+// view as MIRRORED sessions — one card per tmux WINDOW. It is READ-ONLY unless started with -interactive. It is the optional host half of the mirror plugin: install it
 // only on the machines whose sessions muster should show, and only against a
 // muster running with MUSTER_MIRROR=1.
 //
@@ -88,6 +88,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	labelsFile := fs.String("labels-file", getenv(envLabelsFile), "JSON object {\"<session>\": \"<codename>\"}: muster shows such a session as <codename>:<active window index> instead of its name; unreadable or invalid = no labels, logged, never fatal ("+envLabelsFile+")")
 	list := fs.Bool("list", false, "print the sessions this host would register, and exit (a labelled session's line ends in a label=<label> column)")
 	listClaude := fs.Bool("claude", false, "with -list: also print, for each session whose active pane runs Claude Code, its pane, session id and transcript (what the rendered view would stream)")
+	listWindows := fs.Bool("windows", false, "with -list: print every WINDOW this host would register instead (one line each: session, window id, index, active|-, command, then claude <pane> <state> <session id> <transcript> for a Claude Code window, then label=<label>)")
 	version := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -113,6 +114,11 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	logger := log.New(stderr, "", log.LstdFlags)
 	codenames := loadCodenames(*labelsFile, logger)
 
+	if *list && *listWindows {
+		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		return printWindows(lctx, backend, codenames, stdout, stderr)
+	}
 	if *list {
 		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
@@ -176,9 +182,59 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		mode = "INTERACTIVE (-interactive)"
 	}
 	logger.Printf("muster-mirror %s: host %s → %s, %s", buildRevision, *host, *url, mode)
+	// A muster-mirror that was killed between creating a viewer session and
+	// attaching to it left that session behind; nothing else would remove it.
+	if vc, ok := mirrorhost.ViewCleanerOf(backend); ok {
+		cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		ended, err := vc.CleanViewSessions(cctx)
+		cancel()
+		if len(ended) > 0 {
+			logger.Printf("muster-mirror: removed %d stale viewer session(s): %q", len(ended), ended)
+		}
+		if err != nil {
+			logger.Printf("muster-mirror: clean up stale viewer sessions: %v", err)
+		}
+	}
 	if err := c.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		logger.Printf("muster-mirror: %v", err)
 		return 1
+	}
+	return 0
+}
+
+// printWindows is `-list -windows`: every window this host would register.
+func printWindows(ctx context.Context, backend mirrorhost.Backend, codenames map[string]string, stdout, stderr io.Writer) int {
+	wl, ok := mirrorhost.WindowListerOf(backend)
+	if !ok {
+		fmt.Fprintln(stderr, "muster-mirror: this backend lists sessions only, not windows")
+		return 1
+	}
+	raw, err := wl.Windows(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "muster-mirror: %v\n", err)
+		return 1
+	}
+	labels := map[string]string{}
+	for _, w := range mirrorhost.WireWindows(raw, codenames, true, time.Now()) {
+		labels[w.Session+"\x00"+w.ID] = w.Label
+	}
+	for _, w := range raw {
+		active := "-"
+		if w.Active {
+			active = "active"
+		}
+		line := fmt.Sprintf("%s\t%s\t%d\t%s\t%s", w.Session, w.ID, w.Index, active, w.Command)
+		if p := w.Claude; p != nil {
+			state := "idle"
+			if p.Busy {
+				state = "busy"
+			}
+			line += fmt.Sprintf("\tclaude\t%s\t%s\t%s\t%s", p.Pane, state, p.Gen, p.Transcript)
+		}
+		if l := labels[w.Session+"\x00"+w.ID]; l != "" {
+			line += "\tlabel=" + l
+		}
+		fmt.Fprintln(stdout, line)
 	}
 	return 0
 }

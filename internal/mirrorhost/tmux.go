@@ -101,7 +101,9 @@ func (t Tmux) List(ctx context.Context) ([]string, error) {
 	}
 	list := []string{}
 	for _, line := range strings.Split(out.String(), "\n") {
-		if line = strings.TrimRight(line, "\r"); line != "" {
+		// A viewer session is muster-mirror's own (perwindow.go), never a session
+		// to mirror.
+		if line = strings.TrimRight(line, "\r"); line != "" && !mirror.IsViewSession(line) {
 			list = append(list, line)
 		}
 	}
@@ -133,6 +135,12 @@ func (t Tmux) Attach(ctx context.Context, session string, readOnly bool, cols, r
 	if err := mirror.ValidSession(session); err != nil {
 		return nil, err
 	}
+	return t.client(t.AttachArgs(session, readOnly), cols, rows, nil)
+}
+
+// client starts a tmux client with argv args on a fresh pty of the given size;
+// after runs once the client has ended.
+func (t Tmux) client(args []string, cols, rows uint16, after func()) (Terminal, error) {
 	master, slave, err := openPTY()
 	if err != nil {
 		return nil, err
@@ -145,7 +153,7 @@ func (t Tmux) Attach(ctx context.Context, session string, readOnly bool, cols, r
 		_ = slave.Close()
 		return nil, err
 	}
-	cmd := exec.Command(t.bin(), t.AttachArgs(session, readOnly)...)
+	cmd := exec.Command(t.bin(), args...)
 	cmd.Env = tmuxEnv()
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
 	cmd.SysProcAttr = ttyAttr()
@@ -155,7 +163,7 @@ func (t Tmux) Attach(ctx context.Context, session string, readOnly bool, cols, r
 		return nil, fmt.Errorf("start tmux attach: %w", err)
 	}
 	_ = slave.Close()
-	pt := &ptyTerm{master: master, cmd: cmd, exited: make(chan struct{})}
+	pt := &ptyTerm{master: master, cmd: cmd, exited: make(chan struct{}), after: after}
 	go func() {
 		_ = cmd.Wait()
 		close(pt.exited)
@@ -169,6 +177,9 @@ type ptyTerm struct {
 	cmd    *exec.Cmd
 	exited chan struct{}
 	once   sync.Once
+	// after, when set, runs once the client has ended (Close): a window
+	// viewer's own session is removed there.
+	after func()
 }
 
 // Read is the client's screen. Linux reports the client's exit as EIO on the
@@ -197,6 +208,9 @@ func (p *ptyTerm) Close() error {
 		case <-time.After(2 * time.Second):
 			_ = p.cmd.Process.Kill()
 			<-p.exited
+		}
+		if p.after != nil {
+			p.after()
 		}
 	})
 	return nil

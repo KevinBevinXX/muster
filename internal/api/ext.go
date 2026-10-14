@@ -153,19 +153,24 @@ type Mirror interface {
 	ServeConnect(w http.ResponseWriter, r *http.Request)
 	// Hosts is the viewing principal's hosts and their sessions.
 	Hosts(ctx context.Context) []mirror.HostView
-	// Attach attaches a terminal to one of the viewing principal's host
-	// sessions, with Provisioner.AttachTerminal's shape so one terminal bridge
-	// serves both.
-	Attach(ctx context.Context, host, session string, readOnly bool, stdin io.Reader, stdout io.Writer, resize <-chan provision.TermSize) error
-	// Watch streams the transcript of one of the viewing principal's host
-	// sessions whose pane runs Claude Code (the rendered view), resuming at
-	// (gen, offset) when it can, until ctx ends.
-	Watch(ctx context.Context, host, session, gen string, offset int64, out func(mirror.Msg) error) error
-	// Paste types a message into a pane of one of the viewing principal's host
-	// sessions and presses Enter: its Claude pane only, or its active pane
-	// whatever runs there (target). The caller has already required the
-	// step-up; the plugin requires it again.
-	Paste(ctx context.Context, host, session, text string, target mirror.PasteTarget) error
+	// 🔴 EACH OF THE THREE BELOW TAKES A WINDOW: the tmux window id of the entry
+	// (mirror.Window.ID), or "" for the session's ACTIVE window — the only
+	// address a per-session host has, and what a URL with no `window` means.
+	// The plugin resolves "" to an explicit window on a per-window host.
+
+	// AttachWindow attaches a terminal to one window of one of the viewing
+	// principal's host sessions, with Provisioner.AttachTerminal's shape so one
+	// terminal bridge serves both.
+	AttachWindow(ctx context.Context, host, session, window string, readOnly bool, stdin io.Reader, stdout io.Writer, resize <-chan provision.TermSize) error
+	// WatchWindow streams the transcript of the Claude Code session in that
+	// window's pane (the rendered view), resuming at (gen, offset) when it can,
+	// until ctx ends.
+	WatchWindow(ctx context.Context, host, session, window, gen string, offset int64, out func(mirror.Msg) error) error
+	// PasteWindow types a message into that window's pane and presses Enter:
+	// its Claude pane only, or its active pane whatever runs there (target).
+	// The caller has already required the step-up; the plugin requires it
+	// again.
+	PasteWindow(ctx context.Context, host, session, window, text string, target mirror.PasteTarget) error
 }
 
 // GitHubOAuthConfig holds the OAuth App credentials + the public base URL used

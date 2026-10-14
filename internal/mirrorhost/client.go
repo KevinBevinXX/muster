@@ -216,16 +216,18 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	conn := &hostSide{c: c, ws: ws, ctx: ctx, version: version, streams: map[uint32]*hostStream{},
-		listed: map[string]bool{}, watches: map[uint32]context.CancelFunc{}}
+		listed: map[string]bool{}, listedWindows: map[windowKey]bool{}, watches: map[uint32]context.CancelFunc{}}
 	defer conn.closeAll()
 
-	sessions := c.list(ctx)
-	conn.setListed(sessions)
-	claude := conn.resolveClaude(sessions)
-	labels := conn.labels(sessions)
-	activity := conn.activity(sessions)
-	if err := conn.send(mirror.Msg{Type: mirror.TypeHello, Version: version, Host: c.cfg.Host,
-		Sessions: sessions, Claude: claude, Labels: labels, Activity: activity, Interactive: c.cfg.Interactive, PanePaste: conn.panePaste()}); err != nil {
+	first, ok := conn.read()
+	if !ok {
+		// A failed read registers nothing; the refresh loop tries again.
+		first = listing{sessions: []string{}}
+	}
+	conn.setListed(first)
+	hello := first.msg(mirror.TypeHello)
+	hello.Version, hello.Host, hello.Interactive, hello.PanePaste = version, c.cfg.Host, c.cfg.Interactive, conn.panePaste()
+	if err := conn.send(hello); err != nil {
 		return err
 	}
 	wctx, wcancel := context.WithTimeout(ctx, 15*time.Second)
@@ -244,9 +246,13 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 		}
 		return fmt.Errorf("muster refused the registration: %s", welcome.Error)
 	}
-	c.log.Printf("muster-mirror: connected to %s as host %s with %d session(s)", c.url, c.cfg.Host, len(sessions))
+	if first.windows != nil {
+		c.log.Printf("muster-mirror: connected to %s as host %s with %d window(s) in %d session(s)", c.url, c.cfg.Host, len(first.windows), len(first.sessions))
+	} else {
+		c.log.Printf("muster-mirror: connected to %s as host %s with %d session(s)", c.url, c.cfg.Host, len(first.sessions))
+	}
 
-	go conn.refresh(sessions, claude, labels, activity)
+	go conn.refresh(first)
 	go conn.keepalive(cancel)
 	for {
 		typ, data, err := ws.Read(ctx)
@@ -319,6 +325,10 @@ type hostSide struct {
 	// listed is the session list this host last SENT. An open for any other
 	// name is refused: muster can only attach what this host chose to show.
 	listed map[string]bool
+	// listedWindows is the same allowlist for a per-window host: the (session,
+	// window id) pairs it last sent. A request naming a window not in it is
+	// refused.
+	listedWindows map[windowKey]bool
 	// watches are the open transcript streams (rendered views), by stream id.
 	watches map[uint32]context.CancelFunc
 	// labelErr is the last window-index read error logged ("" = none), so a
@@ -327,6 +337,74 @@ type hostSide struct {
 	labelErr string
 	// activityErr is labelErr for the activity read.
 	activityErr string
+	// windowsErr is labelErr for a per-window host's one read.
+	windowsErr string
+}
+
+// windowKey addresses one window: its session and its tmux window id.
+type windowKey struct{ session, window string }
+
+// listing is one read of the host: what it registers.
+//
+// A PER-WINDOW host (the backend is a WindowLister) fills windows from ONE
+// backend read and DERIVES the per-session fields from it (mirror.SessionsOf)
+// — sent beside the windows for a muster that predates them. A per-session
+// host fills only the per-session fields, each from its own read, as before.
+type listing struct {
+	sessions []string
+	claude   []string
+	labels   map[string]string
+	activity map[string]int64
+	// windows is nil for a per-session host.
+	windows []mirror.Window
+}
+
+func (l listing) equal(o listing) bool {
+	return slices.Equal(l.sessions, o.sessions) && slices.Equal(l.claude, o.claude) &&
+		maps.Equal(l.labels, o.labels) && maps.Equal(l.activity, o.activity) &&
+		(l.windows == nil) == (o.windows == nil) && slices.Equal(l.windows, o.windows)
+}
+
+// msg is the listing as a hello or sessions message.
+func (l listing) msg(typ string) mirror.Msg {
+	return mirror.Msg{Type: typ, Sessions: l.sessions, Claude: l.claude, Labels: l.labels, Activity: l.activity, Windows: l.windows}
+}
+
+// read is the host's listing now. ok is false when a per-window read failed:
+// the caller keeps what it last sent rather than registering an empty host
+// (which would end every open terminal for a tmux hiccup).
+func (h *hostSide) read() (listing, bool) {
+	wl, ok := WindowListerOf(h.c.cfg.Backend)
+	if !ok {
+		sessions := h.c.list(h.ctx)
+		return listing{sessions: sessions, claude: h.resolveClaude(sessions), labels: h.labels(sessions), activity: h.activity(sessions)}, true
+	}
+	raw, err := wl.Windows(h.ctx)
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	if msg != h.windowsErr {
+		if msg != "" {
+			h.c.log.Printf("muster-mirror: list windows (keeping the last list): %v", err)
+		}
+		h.windowsErr = msg
+	}
+	if err != nil {
+		return listing{}, false
+	}
+	windows := WireWindows(raw, h.c.cfg.Codenames, h.version >= 2, time.Now())
+	l := listing{windows: windows}
+	l.sessions, l.claude, l.labels, l.activity = mirror.SessionsOf(windows)
+	// What a muster that predates Windows keeps is at most MaxSessions sessions,
+	// so no more than that is sent it.
+	if len(l.sessions) > mirror.MaxSessions {
+		l.sessions = l.sessions[:mirror.MaxSessions]
+		l.claude = slices.DeleteFunc(l.claude, func(s string) bool { return !slices.Contains(l.sessions, s) })
+		l.labels = mirror.NormalizeLabels(l.labels, l.sessions)
+		maps.DeleteFunc(l.activity, func(s string, _ int64) bool { return !slices.Contains(l.sessions, s) })
+	}
+	return l, true
 }
 
 // activity is what this host sends as sessions' last-active times
@@ -363,13 +441,20 @@ func (h *hostSide) labels(sessions []string) map[string]string {
 	return labels
 }
 
-func (h *hostSide) setListed(list []string) {
-	m := make(map[string]bool, len(list))
-	for _, s := range list {
+func (h *hostSide) setListed(l listing) {
+	m := make(map[string]bool, len(l.sessions))
+	for _, s := range l.sessions {
 		m[s] = true
 	}
+	w := make(map[windowKey]bool, len(l.windows))
+	for _, win := range l.windows {
+		w[windowKey{win.Session, win.ID}] = true
+		// Every session a window belongs to is listed, also one beyond the
+		// MaxSessions an older muster is sent.
+		m[win.Session] = true
+	}
 	h.mu.Lock()
-	h.listed = m
+	h.listed, h.listedWindows = m, w
 	h.mu.Unlock()
 }
 
@@ -379,9 +464,41 @@ func (h *hostSide) isListed(session string) bool {
 	return h.listed[session]
 }
 
+// isListedWindow reports whether (session, window) is in this host's latest
+// list.
+func (h *hostSide) isListedWindow(session, window string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.listedWindows[windowKey{session, window}]
+}
+
+// allowed is the allowlist check every request passes: the session — and, when
+// the request names one, the window — must be in this host's latest list.
+func (h *hostSide) allowed(m mirror.Msg) error {
+	if err := mirror.ValidSession(m.Session); err != nil {
+		return err
+	}
+	if !h.isListed(m.Session) {
+		return fmt.Errorf("session %q is not in this host's latest list", m.Session)
+	}
+	if m.Window == "" {
+		return nil
+	}
+	if err := mirror.ValidWindowID(m.Window); err != nil {
+		return err
+	}
+	if !h.isListedWindow(m.Session, m.Window) {
+		return fmt.Errorf("window %s of session %q is not in this host's latest list", m.Window, m.Session)
+	}
+	return nil
+}
+
 type hostStream struct {
 	term     Terminal
 	readOnly bool
+	// session and window are what the stream is attached to; window is "" for
+	// an attach to the session's own active window.
+	session, window string
 }
 
 func (h *hostSide) send(m mirror.Msg) error {
@@ -419,16 +536,13 @@ func (h *hostSide) open(m mirror.Msg) {
 		h.c.log.Printf("muster-mirror: open %q: %v", m.Session, err)
 		_ = h.send(mirror.Msg{Type: mirror.TypeClosed, ID: m.ID, Error: err.Error()})
 	}
-	if err := mirror.ValidSession(m.Session); err != nil {
+	// 🔴 ONLY A SESSION — AND A WINDOW — THIS HOST LISTED. tmux would attach any
+	// session on the server; muster may OPEN only what this host last reported.
+	// ⚠ This bounds read-only viewing. It is NOT a boundary for an interactive
+	// client, which can switch sessions or open a shell once attached (see
+	// Interactive).
+	if err := h.allowed(m); err != nil {
 		fail(err)
-		return
-	}
-	// 🔴 ONLY A SESSION THIS HOST LISTED. tmux would attach any session on the
-	// server; muster may OPEN only the ones this host last reported. ⚠ This
-	// bounds read-only viewing. It is NOT a boundary for an interactive client,
-	// which can switch sessions or open a shell once attached (see Interactive).
-	if !h.isListed(m.Session) {
-		fail(fmt.Errorf("session %q is not in this host's latest list", m.Session))
 		return
 	}
 	// 🔴 INTERACTIVE ONLY IF THIS HOST OPTED IN (-interactive), whatever muster
@@ -441,12 +555,28 @@ func (h *hostSide) open(m mirror.Msg) {
 		fail(fmt.Errorf("stream %d is already open", m.ID))
 		return
 	}
-	term, err := h.c.cfg.Backend.Attach(h.ctx, m.Session, readOnly, m.Cols, m.Rows)
+	// 🔴 A REQUEST THAT NAMES A WINDOW IS SHOWN THROUGH A VIEWER SESSION OF ITS
+	// OWN (WindowAttacher), never through the operator's session — which is what
+	// keeps the operator's current window where it is. One that names only the
+	// session (a muster from before windows were addressable) attaches the
+	// session itself, as it always did: its active window, moving nothing.
+	var term Terminal
+	var err error
+	if m.Window != "" {
+		wa, ok := WindowAttacherOf(h.c.cfg.Backend)
+		if !ok {
+			fail(errors.New("this host cannot attach to a single window"))
+			return
+		}
+		term, err = wa.AttachWindow(h.ctx, m.Session, m.Window, readOnly, m.Cols, m.Rows)
+	} else {
+		term, err = h.c.cfg.Backend.Attach(h.ctx, m.Session, readOnly, m.Cols, m.Rows)
+	}
 	if err != nil {
 		fail(err)
 		return
 	}
-	st := &hostStream{term: term, readOnly: readOnly}
+	st := &hostStream{term: term, readOnly: readOnly, session: m.Session, window: m.Window}
 	h.mu.Lock()
 	h.streams[m.ID] = st
 	h.mu.Unlock()
@@ -454,14 +584,14 @@ func (h *hostSide) open(m mirror.Msg) {
 	if readOnly {
 		mode = "read-only"
 	}
-	h.c.log.Printf("muster-mirror: attached %q (%s, stream %d)", m.Session, mode, m.ID)
+	h.c.log.Printf("muster-mirror: attached %q%s (%s, stream %d)", m.Session, windowSuffix(m.Window), mode, m.ID)
 	go func() {
 		defer func() {
 			_ = term.Close()
 			h.mu.Lock()
 			delete(h.streams, m.ID)
 			h.mu.Unlock()
-			h.c.log.Printf("muster-mirror: detached %q (stream %d)", m.Session, m.ID)
+			h.c.log.Printf("muster-mirror: detached %q%s (stream %d)", m.Session, windowSuffix(m.Window), m.ID)
 		}()
 		buf := make([]byte, 32*1024)
 		for {
@@ -484,6 +614,35 @@ func (h *hostSide) open(m mirror.Msg) {
 			}
 		}
 	}()
+}
+
+// windowSuffix is " window @n" for a log line, "" for a session-level request.
+func windowSuffix(window string) string {
+	if window == "" {
+		return ""
+	}
+	return " window " + window
+}
+
+// closeGone ends every terminal whose WINDOW this host no longer lists.
+//
+// 🔴 A VIEWER SESSION KEEPS THE WINDOW IT LINKS ALIVE. When the operator ends
+// the window's session while a viewer is attached, tmux keeps the window — it
+// is still linked into the viewer's session — on nobody's list, running on.
+// Ending the viewer's client removes its session and lets tmux finish what the
+// operator asked for.
+func (h *hostSide) closeGone() {
+	h.mu.Lock()
+	var gone []Terminal
+	for _, st := range h.streams {
+		if st.window != "" && !h.listedWindows[windowKey{st.session, st.window}] {
+			gone = append(gone, st.term)
+		}
+	}
+	h.mu.Unlock()
+	for _, t := range gone {
+		_ = t.Close()
+	}
 }
 
 func (h *hostSide) closeAll() {
@@ -515,7 +674,11 @@ func (h *hostSide) closeAll() {
 // middle of a bucket adds one more. Those messages are what keep this host's
 // times comparable with another host's; muster nudges its open views only if
 // the ORDER came out different (mirror.Hub).
-func (h *hostSide) refresh(last, lastClaude []string, lastLabels map[string]string, lastActivity map[string]int64) {
+//
+// 🔴 ON A PER-WINDOW HOST THE WHOLE REFRESH IS ONE BACKEND READ (hostSide.read):
+// one tmux invocation however many windows there are, where the per-session
+// refresh makes one per kind of fact.
+func (h *hostSide) refresh(last listing) {
 	t := time.NewTicker(h.c.cfg.Refresh)
 	defer t.Stop()
 	for {
@@ -523,21 +686,19 @@ func (h *hostSide) refresh(last, lastClaude []string, lastLabels map[string]stri
 		case <-h.ctx.Done():
 			return
 		case <-t.C:
-			now := h.c.list(h.ctx)
-			claude := h.resolveClaude(now)
-			labels := h.labels(now)
-			activity := h.activity(now)
-			if slices.Equal(now, last) && slices.Equal(claude, lastClaude) && maps.Equal(labels, lastLabels) && maps.Equal(activity, lastActivity) {
+			now, ok := h.read()
+			if !ok || now.equal(last) {
 				continue
 			}
 			// The allowlist moves BEFORE muster hears of a new session, so an open
 			// for it is never refused for being unlisted; a session that ended
 			// is unattachable from this instant.
 			h.setListed(now)
-			if err := h.send(mirror.Msg{Type: mirror.TypeSessions, Sessions: now, Claude: claude, Labels: labels, Activity: activity}); err != nil {
+			h.closeGone()
+			if err := h.send(now.msg(mirror.TypeSessions)); err != nil {
 				return
 			}
-			last, lastClaude, lastLabels, lastActivity = now, claude, labels, activity
+			last = now
 		}
 	}
 }

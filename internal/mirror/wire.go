@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -79,9 +80,40 @@ const TokenPrefix = "mmt_"
 // output can exceed).
 const MaxFrame = 1 << 20
 
-// MaxSessions bounds the list one host may register. A host with more is
-// truncated to this many, sorted, so the set is stable between refreshes.
+// MaxSessions bounds the SESSION list a per-session host may register (a
+// muster-mirror from before per-window registration; Msg.Sessions). A host with
+// more is truncated to this many, sorted, so the set is stable between
+// refreshes. A per-window host is bounded by MaxWindows instead.
 const MaxSessions = 64
+
+// MaxWindows bounds the WINDOW list one host may register (Msg.Windows). A host
+// with more is truncated to this many in (session, index) order, so the set is
+// stable between refreshes.
+//
+// 🔴 IT REPLACES MaxSessions FOR A PER-WINDOW HOST, AND THE NUMBER IS A DECISION:
+// one entry per tmux WINDOW is several times one per session (an operator runs
+// one coding agent per window), and 64 was already exceeded by a real host. 512
+// leaves that host room to grow several-fold.
+//
+// 🔴 IT IS ALSO A SIZE, AND THE SIZE IS WHAT CAPS IT. The whole list travels in
+// ONE message, and a message over MaxFrame ends the connection. A count is not
+// a size — JSON writes some bytes six-fold (`<` is \u003c) — so the bound that
+// matters is the WORST-CASE encoding of MaxWindows entries, each field at its
+// own limit, beside the per-session fields at theirs: it must stay within
+// MaxFrame. TestTheLargestWindowListFitsOneFrame measures that, so raising
+// this number (or a field's limit) past what fits fails there rather than on a
+// host with many windows.
+const MaxWindows = 512
+
+// MaxCommand bounds Window.Command, in bytes.
+const MaxCommand = 32
+
+// ViewSessionPrefix starts the name of every tmux session muster-mirror itself
+// creates: the short-lived session a terminal viewer attaches to, holding a
+// link to the one window it shows, so that viewing a window never moves the
+// operator's own current window (internal/mirrorhost). Such a session is never
+// registered, on either side.
+const ViewSessionPrefix = "muster-view-"
 
 // MaxStreamsPerHost bounds the terminals open on one host at once.
 const MaxStreamsPerHost = 8
@@ -196,6 +228,59 @@ type Msg struct {
 	// a pane it resolves as Claude Code NOW, and refuses otherwise: the rendered
 	// view's send must never land a prompt meant for Claude in a shell.
 	AnyPane bool `json:"anyPane,omitempty"`
+
+	// ---- per-window registration ----
+
+	// Windows (hello, sessions) is EVERY WINDOW of every session on the host,
+	// one entry each: what muster lists when it is present. A host that sends
+	// it is a PER-WINDOW host; it still sends Sessions / Labels / Activity /
+	// Claude beside it, describing each session by its ACTIVE window exactly as
+	// before, for a muster that predates this field.
+	//
+	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS, like Labels:
+	//   - an older muster's JSON decode ignores the field and lists the host per
+	//     session from the fields it always read; it never sends Window, so the
+	//     host serves it the session's active window as it always did;
+	//   - an older host sends none, and muster lists it per session, addresses it
+	//     by session name alone, and never sends it Window.
+	// muster keeps only what NormalizeWindows accepts and derives its own
+	// per-session view of a per-window host from Windows — never from the
+	// host's Sessions, so the two cannot disagree.
+	Windows []Window `json:"windows,omitempty"`
+	// Window (open, watch, paste) is the tmux window id (Window.ID) the request
+	// is for, within Session. Empty — every request before this field existed,
+	// and every request to a per-session host — is the session's ACTIVE window.
+	Window string `json:"window,omitempty"`
+}
+
+// Window is one tmux window of a host (Msg.Windows).
+//
+// 🔴 A WINDOW IS ADDRESSED BY (Session, ID), NEVER BY ITS INDEX. tmux renumbers
+// indexes (renumber-windows, move-window, a window closing below it), so an
+// index names whatever sits there NOW; the id (@12) is the window's own for as
+// long as it exists. Index is carried for DISPLAY only ("Gold:8").
+type Window struct {
+	// Session is the tmux session the window belongs to.
+	Session string `json:"session"`
+	// ID is tmux's window id, "@<n>" (#{window_id}).
+	ID string `json:"id"`
+	// Index is the window's index in its session NOW. Display only.
+	Index int `json:"index"`
+	// Active: this is its session's current window — the one a request that
+	// names only the session reaches.
+	Active bool `json:"active,omitempty"`
+	// Label is the host's display name, "<codename>:<index>", "" for none
+	// (muster then shows "<session>:<index>").
+	Label string `json:"label,omitempty"`
+	// Activity is when the window was last active (Unix seconds, floored to
+	// ActivityBucket); 0 = unknown. Ordering only.
+	Activity int64 `json:"activity,omitempty"`
+	// Claude: the window's active pane runs Claude Code with a transcript the
+	// host can read — it has a rendered view.
+	Claude bool `json:"claude,omitempty"`
+	// Command is what runs in the window's active pane (#{pane_current_command}:
+	// "zsh", "opencode", "vim"), "" for unknown. Display and search only.
+	Command string `json:"command,omitempty"`
 }
 
 // The v2 bounds. Each is a property of the wire, so both halves read it here.
@@ -353,6 +438,156 @@ func NormalizeActivity(activity map[string]int64, sessions []string, now int64) 
 		out[s] = v
 	}
 	return out
+}
+
+// windowIDPattern is a tmux window id.
+var windowIDPattern = regexp.MustCompile(`^@[0-9]{1,10}$`)
+
+// maxWindowIndex bounds Window.Index (tmux's own base-index arithmetic stays
+// far below it).
+const maxWindowIndex = 1 << 20
+
+// ValidWindowID reports whether id is a tmux window id ("@12"): the only thing
+// the tunnel carries as a window address, and — being digits behind an `@` —
+// safe as one argv element of a tmux target.
+func ValidWindowID(id string) error {
+	if !windowIDPattern.MatchString(id) {
+		return fmt.Errorf("mirror: %q is not a tmux window id (@<n>)", id)
+	}
+	return nil
+}
+
+// IsViewSession reports whether name is one of muster-mirror's own viewer
+// sessions (ViewSessionPrefix), which are never listed.
+func IsViewSession(name string) bool { return strings.HasPrefix(name, ViewSessionPrefix) }
+
+// validCommand is command when it is a usable Window.Command, else "".
+func validCommand(command string) string {
+	if command == "" || len(command) > MaxCommand || !utf8.ValidString(command) {
+		return ""
+	}
+	for _, r := range command {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return ""
+		}
+	}
+	return command
+}
+
+// NormalizeWindows is in as the tunnel carries it: every entry with a valid
+// session and window id, de-duplicated on (session, id), sorted by session,
+// then index, then id, and capped at MaxWindows. Within an entry an invalid
+// label or command is blanked and the activity is floored and capped exactly
+// as NormalizeActivity does; at most ONE window per session stays Active (the
+// first in order). A viewer session's windows (IsViewSession) are dropped.
+// Both halves apply it: the host to what it sends, muster to what it keeps.
+//
+// It returns nil for no input and a non-nil empty slice when every entry was
+// dropped, so "sent no window list" and "sent one that was all invalid" stay
+// distinguishable to the caller.
+func NormalizeWindows(in []Window, now int64) []Window {
+	if in == nil {
+		return nil
+	}
+	type key struct{ session, id string }
+	seen := map[key]bool{}
+	out := make([]Window, 0, len(in))
+	for _, w := range in {
+		if ValidSession(w.Session) != nil || IsViewSession(w.Session) || ValidWindowID(w.ID) != nil ||
+			w.Index < 0 || w.Index > maxWindowIndex || seen[key{w.Session, w.ID}] {
+			continue
+		}
+		seen[key{w.Session, w.ID}] = true
+		if w.Label != "" && ValidLabel(w.Label) != nil {
+			w.Label = ""
+		}
+		w.Command = validCommand(w.Command)
+		if w.Activity < 0 {
+			w.Activity = 0
+		}
+		if now > 0 && w.Activity > now {
+			w.Activity = now
+		}
+		w.Activity -= w.Activity % ActivityBucket
+		out = append(out, w)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Session != b.Session {
+			return a.Session < b.Session
+		}
+		if a.Index != b.Index {
+			return a.Index < b.Index
+		}
+		return a.ID < b.ID
+	})
+	if len(out) > MaxWindows {
+		out = out[:MaxWindows]
+	}
+	active := map[string]bool{}
+	for i := range out {
+		if out[i].Active {
+			if active[out[i].Session] {
+				out[i].Active = false
+			}
+			active[out[i].Session] = true
+		}
+	}
+	return out
+}
+
+// ActiveWindow is the window of session a request naming only the session
+// reaches: the one marked Active, else (a list with none marked) the session's
+// first. ok is false when windows lists none for session. windows must be
+// NormalizeWindows' output.
+func ActiveWindow(windows []Window, session string) (Window, bool) {
+	var first Window
+	found := false
+	for _, w := range windows {
+		if w.Session != session {
+			continue
+		}
+		if w.Active {
+			return w, true
+		}
+		if !found {
+			first, found = w, true
+		}
+	}
+	return first, found
+}
+
+// SessionsOf is the PER-SESSION view of a per-window list — what a muster that
+// predates Windows is sent, and what muster itself answers a request that names
+// only a session with: the distinct session names (sorted), and per session its
+// ACTIVE window's label and Claude flag and the NEWEST activity of any of its
+// windows. windows must be NormalizeWindows' output.
+func SessionsOf(windows []Window) (sessions, claude []string, labels map[string]string, activity map[string]int64) {
+	sessions = []string{}
+	for _, w := range windows {
+		if n := len(sessions); n == 0 || sessions[n-1] != w.Session {
+			sessions = append(sessions, w.Session)
+		}
+		if w.Activity > activity[w.Session] {
+			if activity == nil {
+				activity = map[string]int64{}
+			}
+			activity[w.Session] = w.Activity
+		}
+	}
+	for _, s := range sessions {
+		w, _ := ActiveWindow(windows, s)
+		if w.Claude {
+			claude = append(claude, s)
+		}
+		if w.Label != "" {
+			if labels == nil {
+				labels = map[string]string{}
+			}
+			labels[s] = w.Label
+		}
+	}
+	return sessions, claude, labels, activity
 }
 
 // BatchLines frames lines — read from a transcript starting at offset from —

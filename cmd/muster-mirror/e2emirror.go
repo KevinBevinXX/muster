@@ -40,8 +40,25 @@ import (
 // so a spec that did not ask for it cannot pass by accident). The Claude
 // session's active pane is its Claude pane (%9), as on a real host, and a paste
 // into it goes where a Claude paste goes.
+//
+// EVERY WINDOW (per-window registration): with MUSTER_MIRROR_E2E_WINDOWS_FILE
+// the fake is a PER-WINDOW host (windowFake) whose windows are that file's
+// lines, re-read on every listing so a spec can close, renumber or re-order
+// them:
+//
+//	<session>|<window id>|<index>|<active 0/1>|<command>|<activity unix secs>|<claude transcript path, or empty>
+//
+// A window's active "pane" is `%e2e-<session>-<window id>`. Its terminal prints
+// `FAKE-MIRROR session=<s> window=<id> mode=ro|rw`, so a spec sees WHICH window
+// it was shown. A window with a transcript path runs Claude Code writing it,
+// exactly as MUSTER_MIRROR_E2E_CLAUDE's session does; a paste into such a
+// window is recorded in <transcript>.pasted, and one into any other window in
+// MUSTER_MIRROR_E2E_PASTE_FILE — each with the pane it reached.
 func init() {
 	e2eBackend = func() mirrorhost.Backend {
+		if f := os.Getenv("MUSTER_MIRROR_E2E_WINDOWS_FILE"); f != "" {
+			return windowFake{file: f}
+		}
 		if c := os.Getenv("MUSTER_MIRROR_E2E_CLAUDE"); c != "" {
 			if s, p, ok := strings.Cut(c, "="); ok {
 				return claudeFake{fakeBackend: fakeBackend{}, session: s, path: p}
@@ -250,4 +267,95 @@ func (t *fakeTerm) Resize(cols, rows uint16) error {
 func (t *fakeTerm) Close() error {
 	t.once.Do(func() { _ = t.w.Close() })
 	return nil
+}
+
+// windowFake is a per-window host: fakeBackend's terminal and paste recorder,
+// with the windows of a file.
+type windowFake struct {
+	fakeBackend
+	file string
+}
+
+func windowFakePane(session, window string) string { return "%e2e-" + session + "-" + window }
+
+// Windows implements mirrorhost.WindowLister.
+func (w windowFake) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
+	b, err := os.ReadFile(w.file)
+	if err != nil {
+		return nil, err
+	}
+	var out []mirrorhost.WindowInfo
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Split(strings.TrimSpace(line), "|")
+		if len(f) != 7 {
+			continue
+		}
+		index, _ := strconv.Atoi(f[2])
+		activity, _ := strconv.ParseInt(f[5], 10, 64)
+		info := mirrorhost.WindowInfo{Session: f[0], ID: f[1], Index: index, Active: f[3] == "1", Command: f[4],
+			Activity: activity, Pane: windowFakePane(f[0], f[1]), PanePID: 1}
+		if f[6] != "" {
+			_, busy := os.Stat(f[6] + ".busy")
+			info.Claude = &mirrorhost.ClaudePane{Pane: info.Pane, PID: 1, Transcript: f[6],
+				Gen: strings.TrimSuffix(filepath.Base(f[6]), ".jsonl"), Busy: busy == nil}
+		}
+		out = append(out, info)
+	}
+	return out, nil
+}
+
+// List is the windows' sessions: what a per-session reader of this host sees.
+func (w windowFake) List(ctx context.Context) ([]string, error) {
+	ws, err := w.Windows(ctx)
+	var out []string
+	for _, win := range ws {
+		if len(out) == 0 || out[len(out)-1] != win.Session {
+			out = append(out, win.Session)
+		}
+	}
+	return out, err
+}
+
+// AttachWindow implements mirrorhost.WindowAttacher: a terminal that says which
+// window it is.
+func (w windowFake) AttachWindow(_ context.Context, session, window string, readOnly bool, cols, rows uint16) (mirrorhost.Terminal, error) {
+	pr, pw := io.Pipe()
+	mode := "rw"
+	if readOnly {
+		mode = "ro"
+	}
+	t := &fakeTerm{r: pr, w: pw}
+	go t.say(fmt.Sprintf("FAKE-MIRROR session=%s window=%s mode=%s size=%dx%d\r\n", session, window, mode, cols, rows) + edgeLine(cols))
+	return t, nil
+}
+
+// WindowSizeOf plays every window at fakeBackend.WindowSize's size.
+func (w windowFake) WindowSizeOf(ctx context.Context, session, _ string) (termsize.Size, error) {
+	return w.fakeBackend.WindowSize(ctx, session)
+}
+
+// ClaudePanes is the per-session lookup; a per-window host is never asked it.
+func (w windowFake) ClaudePanes(context.Context, []string) map[string]mirrorhost.ClaudePane {
+	return nil
+}
+
+// Paste implements mirrorhost.ClaudeBackend: what claudeFake.Paste records,
+// for whichever Claude window p is.
+func (w windowFake) Paste(_ context.Context, p mirrorhost.ClaudePane, text string) error {
+	return claudeFake{path: p.Transcript}.Paste(context.Background(), p, text)
+}
+
+// ActivePane is the per-session lookup; a per-window host is never asked it.
+func (w windowFake) ActivePane(context.Context, string) (string, bool) { return "", false }
+
+// PastePane: into a Claude window's pane, as a Claude paste; into any other,
+// recorded in MUSTER_MIRROR_E2E_PASTE_FILE.
+func (w windowFake) PastePane(ctx context.Context, pane, text string) error {
+	ws, _ := w.Windows(ctx)
+	for _, win := range ws {
+		if win.Pane == pane && win.Claude != nil {
+			return w.Paste(ctx, *win.Claude, text)
+		}
+	}
+	return w.fakeBackend.PastePane(ctx, pane, text)
 }

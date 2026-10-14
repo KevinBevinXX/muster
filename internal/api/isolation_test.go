@@ -1621,7 +1621,7 @@ func (m *isoMirror) Hosts(ctx context.Context) []mirror.HostView {
 	return []mirror.HostView{{Host: m.host, Sessions: []string{"main"}, Online: true}}
 }
 
-func (m *isoMirror) Attach(ctx context.Context, host, _ string, _ bool, _ io.Reader, stdout io.Writer, _ <-chan provision.TermSize) error {
+func (m *isoMirror) AttachWindow(ctx context.Context, host, _, _ string, _ bool, _ io.Reader, stdout io.Writer, _ <-chan provision.TermSize) error {
 	if !m.mine(ctx) || host != m.host {
 		return mirror.ErrHostOffline
 	}

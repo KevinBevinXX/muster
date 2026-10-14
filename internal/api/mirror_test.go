@@ -87,6 +87,13 @@ type fakeMirror struct {
 	// activity is the host's per-session last-active times (HostView.Activity);
 	// nil = none (an older muster-mirror).
 	activity map[string]int64
+	// windows, when set, makes "ws" a PER-WINDOW host listing exactly these
+	// (mirror_perwindow_test.go); nil = a per-session host, as every test written
+	// before windows were addressable expects.
+	windows []mirror.Window
+	// asked is the window id each AttachWindow / WatchWindow / PasteWindow was
+	// given, in order ("" = the request named only the session).
+	asked []string
 }
 
 func (f *fakeMirror) ServeConnect(w http.ResponseWriter, _ *http.Request) {
@@ -112,11 +119,18 @@ func (f *fakeMirror) Hosts(ctx context.Context) []mirror.HostView {
 		hv.Rendered, hv.Claude = f.online, []string{"main"}
 		hv.PanePaste = f.online && f.interactive && !f.oldMirror
 	}
+	if f.windows != nil {
+		// A per-window host: its per-session view is derived from its windows,
+		// exactly as the hub derives it.
+		hv.Windows = mirror.NormalizeWindows(f.windows, 0)
+		hv.Sessions, hv.Claude, hv.Labels, hv.Activity = mirror.SessionsOf(hv.Windows)
+	}
 	return []mirror.HostView{hv}
 }
 
-func (f *fakeMirror) Attach(ctx context.Context, host, session string, readOnly bool, stdin io.Reader, stdout io.Writer, _ <-chan provision.TermSize) error {
+func (f *fakeMirror) AttachWindow(ctx context.Context, host, session, window string, readOnly bool, stdin io.Reader, stdout io.Writer, _ <-chan provision.TermSize) error {
 	f.mu.Lock()
+	f.asked = append(f.asked, window)
 	f.calls = append(f.calls, mirrorCall{user: f.user(ctx), host: host, session: session, readOnly: readOnly})
 	refuse := f.refuse
 	f.mu.Unlock()

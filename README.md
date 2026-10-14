@@ -365,9 +365,10 @@ without the restricted one the capability refusals are never watched to fire.
 ## Mirrored sessions (optional plugin)
 
 A **mirrored session** is a tmux session on one of your own machines, shown in
-the Agents view beside muster's provisioned agents, so the view is complete. It
-is off unless the server runs with `MUSTER_MIRROR=1`; off, `GET /mirror/connect`
-and the mirror terminal routes answer 404 and nothing mirrored is drawn.
+the Agents view beside muster's provisioned agents, so the view is complete —
+**one card per tmux window**. It is off unless the server runs with
+`MUSTER_MIRROR=1`; off, `GET /mirror/connect` and the mirror terminal routes
+answer 404 and nothing mirrored is drawn.
 
 **The host dials out; muster never dials in.** A small `muster-mirror` binary on
 the host lists its tmux sessions and opens ONE WebSocket to muster,
@@ -382,12 +383,35 @@ route to the host, and the host holds no muster credential but its own token.
   named `chief` is not the chief). A disconnected host stays on the view as
   `offline` for a day. Only `mirror_tokens` is in the database (owned, under
   row-level security; only each token's sha256 is stored).
-- **Most recently active first.** The cards are one list across your hosts,
-  ordered by when each session was last active — on tmux the newest of its
-  windows' `#{window_activity}` and its `#{session_activity}`, so a pane
-  printing output counts, not only a key you pressed. Times are carried to the
-  minute: sessions active within the same minute keep their name order, and an
-  open list reorders only when the order really changes. A host running a
+- **Every window is a card.** The host registers every window of every
+  session, each addressed by its session and tmux's own window id (`@12`) —
+  never the index, which tmux renumbers. A card is titled
+  `<codename>:<window index>` (`Gold:8`) when the session has a codename (see
+  `-labels-file`), else `<session>:<index>`, and says what runs in the window's
+  active pane (Claude Code, opencode, a shell, or the command). A link that
+  names only the session (`/mirror/{view,terminal}?host=&session=` — every link
+  from before windows were addressable) lands on the session's *active*
+  window. Up to 512 windows per host; the whole list is read with **one** tmux
+  invocation per refresh.
+  🔴 **Looking at a window never moves your own terminal.** A tmux session has
+  one current window, shared by every client attached to it, so a window is
+  never shown through your session: each viewer gets a short-lived session of
+  its own (`muster-view-<random>`) that *links* the one window it shows, with a
+  client that takes no part in sizing (`ignore-size`), removed by tmux itself
+  when the viewer leaves (`destroy-unattached`). Measured on tmux 3.7c with an
+  operator's client attached throughout: its current window and that window's
+  size did not change while a viewer opened another window, typed into it,
+  pasted into it and left. A message is pasted into a *pane id*, which needs no
+  window switch at all. These viewer sessions are never listed. ⚠ While a
+  viewer is attached its session is visible to other tmux tooling (`tmux ls`,
+  a session picker, a `session-created` / `client-attached` hook).
+- **Most recently active first.** The cards are one list across your hosts and
+  windows, ordered by when each window was last active — its own
+  `#{window_activity}`, and for a session's current window the session's
+  `#{session_activity}` when that is newer — so a pane printing output counts,
+  not only a key you pressed. Times are carried to the minute: windows active
+  within the same minute keep their (session, index) order, and an open list
+  reorders only when the order really changes. A host running a
   `muster-mirror` older than this sends no times; its sessions come after, in
   name order.
 - **Read-only unless the host opts in.** `muster-mirror` is read-only by default:
@@ -439,13 +463,15 @@ route to the host, and the host holds no muster credential but its own token.
   it; a phone renders the wider session in a scrolling, pinch-zoomable view with
   "Fit width". Hosts running a `muster-mirror` older than this still work — they
   report no size, and the page fits its container as before.
-- **Limits:** 8 terminals per host, 64 hosts. A revoked token (or one the
+- **Limits:** 512 windows, 8 terminals and 8 rendered views per host, 64 hosts. A revoked token (or one the
   database cannot re-verify twice running) ends the host's connection and its
   open terminals within 30 s, and removes the host from the view. Repeated bad
   tokens get 429, but a valid token is never refused by that limit. One muster
   replica (the tunnel is in-process state).
-- **A rendered view for Claude Code panes (tunnel v2).** When a session's
-  active pane runs Claude Code, its card opens a *rendered* view by default:
+- **A rendered view for Claude Code panes (tunnel v2).** When a window's
+  active pane runs Claude Code, its card opens a *rendered* view by default —
+  each window its own, so two Claude Code windows of one session (even in one
+  directory) each show their own conversation:
   prompts and replies as chat bubbles, each tool call as one collapsed row
   (tool, target, ok / error / running), live while a turn runs; thinking is
   never shown, and the Terminal is one tap away. The host finds the session by
@@ -465,6 +491,11 @@ route to the host, and the host holds no muster credential but its own token.
   against an older muster — so either side can be upgraded first. Pasting into
   a non-Claude pane is advertised by the host in its hello, with no version
   bump: an older host is never asked for it, and an older muster never asks.
+  Per-window registration is the same kind of addition (no version bump): a
+  `muster-mirror` that lists windows still sends the per-session list beside
+  them, so an older muster shows it one card per session exactly as before;
+  and a muster that lists windows shows an older `muster-mirror` per session,
+  addressed by session name alone.
 
 Mint a token where the server runs (it is printed once, owned by the operator),
 then install and run the host binary:
@@ -482,13 +513,15 @@ muster-mirror -url https://muster.example.com -token-file ~/.config/muster-mirro
 `<host>` is a lowercase DNS label and defaults to the short hostname; a token
 minted for one host cannot register another. `-interactive` allows typing,
 `-tmux-socket`/`-tmux-socket-path` pick a non-default tmux server, and `-list`
-prints what would be registered (`-list -claude` adds each Claude Code pane's
-transcript). `-labels-file` (`MUSTER_MIRROR_LABELS_FILE`) names a JSON object
-`{"<session>": "<codename>"}`: muster then shows such a session as
-`<codename>:<active window index>` (`scratch13` → `mango:1`), following the
-window as it moves, with the raw session name beside it; the session is still
-opened by its name. A missing or invalid file is logged and ignored, never
-fatal, and a session not in it keeps its raw name. Every flag also reads a `MUSTER_MIRROR_*`
+prints the sessions (`-list -claude` adds each session's Claude Code pane and
+transcript; `-list -windows` prints every window that would be registered).
+`-labels-file` (`MUSTER_MIRROR_LABELS_FILE`) names a JSON object
+`{"<session>": "<codename>"}`: muster then shows each window of such a session
+as `<codename>:<window index>` (`scratch13` → `mango:1`, `mango:2`, …),
+following a window as it is renumbered, with the raw session name beside it;
+the window is still opened by its session name and window id. A missing or
+invalid file is logged and ignored, never fatal, and a session not in it is
+shown as `<session>:<index>`. Every flag also reads a `MUSTER_MIRROR_*`
 variable (see `-help`), so a systemd user unit needs no token in its command
 line. If muster sits behind an auth proxy, `/mirror/connect` (GET) must bypass
 it: the route authenticates its own tokens.
