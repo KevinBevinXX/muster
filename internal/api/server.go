@@ -108,6 +108,11 @@ type Server struct {
 	// outcome; pluginDeliverer is built by UseExtensions (nil: none wired).
 	pluginInFlight  sync.WaitGroup
 	pluginDeliverer *plugins.Deliverer
+	// pluginRetrying holds the owners whose queued messages a claim is
+	// retrying now (plugin_drafts.go), so concurrent claims start one retry;
+	// draftWake wakes waiting claims when this process approves a draft.
+	pluginRetrying sync.Map
+	draftWake      draftSignal
 
 	// terminals is every live agent terminal, so a shutdown can end them and
 	// wait for their releases. See EndTerminals.

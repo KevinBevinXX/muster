@@ -68,10 +68,37 @@ type Store interface {
 	// ReserveGatedTask spends one unit of an agent's gated-task budget (gated.go),
 	// or returns ErrGatedTaskCap.
 	ReserveGatedTask(ctx context.Context, agentID int64, messageID *int64) error
+
+	// Reply drafts (drafts.go).
+
+	// FileDraft stores an agent's reply draft to a message delivered to it,
+	// superseding that message's pending draft (superseded counts them).
+	FileDraft(ctx context.Context, agentID, ownerID int64, agentName string, messageID int64, body string) (d Draft, superseded int, err error)
+	// Draft reads one draft.
+	Draft(ctx context.Context, id int64) (Draft, error)
+	// DraftCards is the principal's drafts for /plugins, those awaiting a
+	// decision first.
+	DraftCards(ctx context.Context, limit int) ([]DraftCard, error)
+	// DecideDraft approves or rejects a pending draft.
+	DecideDraft(ctx context.Context, id int64, approve bool) (Draft, error)
+	// ClaimDraft leases one approved, unclaimed draft of pluginID's.
+	ClaimDraft(ctx context.Context, pluginID int64) (c Claim, ok bool, err error)
+	// FinishDraft records pluginID's result for a draft it claimed; a sent one
+	// supersedes the message's other pending or unclaimed approved drafts.
+	FinishDraft(ctx context.Context, pluginID, draftID int64, r DraftResult) (Draft, error)
+	// QueuedForOwner is ownerID's undelivered messages across live plugins.
+	QueuedForOwner(ctx context.Context, ownerID int64, limit int) ([]Message, error)
+	// QueuedCounts is the principal's undelivered messages per plugin.
+	QueuedCounts(ctx context.Context) (map[int64]int, error)
 }
 
 // PGStore is the Postgres Store.
-type PGStore struct{ pool *pgxpool.Pool }
+type PGStore struct {
+	pool *pgxpool.Pool
+	// denyWords are the deployment's own names a reply draft may not carry
+	// (WithAgentDenyWords; drafts.go).
+	denyWords []string
+}
 
 // NewPG returns the Postgres store.
 func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
@@ -88,13 +115,13 @@ func scanPlugin(row pgx.Row) (Plugin, error) {
 }
 
 const messageCols = `id, owner_id, plugin_id, external_id, sender, subject, body, received_at, created_at, status,
-	attempts, last_attempt_at, delivered_at, agent_id`
+	attempts, last_attempt_at, delivered_at, agent_id, no_reply`
 
 func scanMessage(row pgx.Row) (Message, error) {
 	var m Message
 	var st string
 	err := row.Scan(&m.ID, &m.OwnerID, &m.PluginID, &m.ExternalID, &m.Sender, &m.Subject, &m.Body, &m.ReceivedAt,
-		&m.CreatedAt, &st, &m.Attempts, &m.LastAttemptAt, &m.DeliveredAt, &m.AgentID)
+		&m.CreatedAt, &st, &m.Attempts, &m.LastAttemptAt, &m.DeliveredAt, &m.AgentID, &m.NoReply)
 	m.Status = Status(st)
 	return m, err
 }
@@ -266,9 +293,9 @@ func (s *PGStore) Submit(ctx context.Context, pluginID int64, in MessageIn) (Mes
 			return ErrQueueFull
 		}
 		m, err = scanMessage(tx.QueryRow(ctx, `
-			INSERT INTO plugin_messages (plugin_id, external_id, sender, subject, body, received_at)
-			VALUES ($1, $2, $3, $4, $5, $6) RETURNING `+messageCols,
-			pluginID, in.ExternalID, in.Sender, in.Subject, in.Body, in.ReceivedAt))
+			INSERT INTO plugin_messages (plugin_id, external_id, sender, subject, body, received_at, no_reply)
+			VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING `+messageCols,
+			pluginID, in.ExternalID, in.Sender, in.Subject, in.Body, in.ReceivedAt, in.NoReply))
 		if err != nil {
 			return err
 		}

@@ -90,6 +90,8 @@ var routeVias = map[authz.Via][]string{
 		"GET /plugins",
 		"POST /plugins",
 		"POST /plugins/{id}/revoke",
+		"POST /plugins/drafts/{id}/approve",
+		"POST /plugins/drafts/{id}/reject",
 		"GET /account",
 		// The step-up confirm (stepup.go): the SESSION's user, re-proven.
 		"POST /auth/confirm",
@@ -276,6 +278,8 @@ var routeVias = map[authz.Via][]string{
 	// A PLUGIN token (0015) opens exactly the plugin door.
 	authz.ViaPlugin: {
 		"POST /plugin/v1/messages",
+		"POST /plugin/v1/drafts/claim",
+		"POST /plugin/v1/drafts/{id}/result",
 	},
 	authz.ViaAgent: {
 		"GET /agent/muster",

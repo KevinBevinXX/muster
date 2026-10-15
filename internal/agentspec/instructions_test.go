@@ -358,7 +358,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSection",
 			text: chiefPluginSection,
-			want: "98f178ce2bd4ea09a51a3821375a8609c099f2e3e9cefaf52cfb90155b05983b",
+			want: "32f5b19be15dfa71914f63a810adcf3215136c034ad29c9a7c6ef234e10523e7",
 			min:  1000,
 		},
 	} {
@@ -652,6 +652,8 @@ func TestThePluginSectionShipsOnlyWhenPluginsAreOn(t *testing.T) {
 		"`task_create_gated`",
 		"nothing runs until they approve it",
 		"goes to that plugin's data scope only",
+		"`reply_draft`",
+		"nothing is sent until they approve",
 	} {
 		if !strings.Contains(strings.Join(strings.Fields(on), " "), claim) {
 			t.Errorf("the plugin section does not state %q", claim)

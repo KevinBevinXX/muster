@@ -30,6 +30,7 @@ has its own toggle, and all are on by default:
 | `agent` | A task's agent comes up. |
 | `created` | A machine (an agent, the CLI) created tasks. |
 | `comment` | A machine commented on a task. |
+| `plugin` | Your chief drafted a reply to a [plugin](plugins.md) message, and it awaits your approval. The notification's text is muster's own: it never quotes the message or the draft. A tap opens the draft's card on `/plugins`. |
 
 Push routes are session-authenticated and same-origin:
 `/api/push/{vapid-public-key,subscribe,unsubscribe}` and

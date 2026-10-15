@@ -71,6 +71,26 @@ func (c *countingPlugins) List(ctx context.Context) ([]plugins.Plugin, error) {
 	return nil, nil
 }
 
+func (c *countingPlugins) QueuedCounts(ctx context.Context) (map[int64]int, error) {
+	c.note(ctx, "QueuedCounts")
+	return map[int64]int{}, nil
+}
+
+func (c *countingPlugins) DraftCards(ctx context.Context, _ int) ([]plugins.DraftCard, error) {
+	c.note(ctx, "DraftCards")
+	return nil, nil
+}
+
+func (c *countingPlugins) ClaimDraft(ctx context.Context, _ int64) (plugins.Claim, bool, error) {
+	c.note(ctx, "ClaimDraft")
+	return plugins.Claim{}, false, nil
+}
+
+func (c *countingPlugins) FinishDraft(ctx context.Context, _, _ int64, _ plugins.DraftResult) (plugins.Draft, error) {
+	c.note(ctx, "FinishDraft")
+	return plugins.Draft{}, plugins.ErrNotFound
+}
+
 // pluginsTestAgents resolves one agent by its own token (pgnAgent).
 type pluginsTestAgents struct{ agents.Store }
 
@@ -142,14 +162,16 @@ func TestThePluginDoorRefusesEveryOtherCredential(t *testing.T) {
 		"no credential":          func(*http.Request) {},
 		"malformed plugin token": pBearer(pgnTok[:len(pgnTok)-1]),
 	}
-	for name, c := range foreign {
-		f.reset()
-		rec := pServe(h, "POST", "/plugin/v1/messages", pgnMsg, c)
-		if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "this route takes a plugin token") {
-			t.Errorf("%s: %d %q; want 401 with the plugin-token refusal", name, rec.Code, rec.Body.String())
-		}
-		if got := f.snapshot(); len(got) != 0 {
-			t.Errorf("%s reached the plugin store: %v", name, got)
+	for _, door := range pluginDoorRoutes {
+		for name, c := range foreign {
+			f.reset()
+			rec := pServe(h, "POST", door.path, door.body, c)
+			if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "this route takes a plugin token") {
+				t.Errorf("%s %s: %d %q; want 401 with the plugin-token refusal", door.path, name, rec.Code, rec.Body.String())
+			}
+			if got := f.snapshot(); len(got) != 0 {
+				t.Errorf("%s %s reached the plugin store: %v", door.path, name, got)
+			}
 		}
 	}
 	f.reset()
@@ -161,6 +183,25 @@ func TestThePluginDoorRefusesEveryOtherCredential(t *testing.T) {
 	if len(got) != 2 || got[0] != "Authenticate as system" || got[1] != "Submit as plugin" {
 		t.Fatalf("CONTROL: the plugin's own token made store calls %v; want [Authenticate as system, Submit as plugin]", got)
 	}
+	// CONTROL on the two draft routes: the plugin's own token reaches the store.
+	for _, door := range pluginDoorRoutes[1:] {
+		f.reset()
+		rec := pServe(h, "POST", door.path, door.body, pBearer(pgnTok))
+		if got := f.snapshot(); rec.Code != door.ownCode || len(got) < 2 || got[0] != "Authenticate as system" || got[len(got)-1] != door.reaches+" as plugin" {
+			t.Errorf("CONTROL %s: %d, store calls %v; want %d reaching %s as the plugin", door.path, rec.Code, got, door.ownCode, door.reaches)
+		}
+	}
+}
+
+// pluginDoorRoutes is every /plugin/v1/* route with a body, the store method the
+// plugin's own token reaches, and what the countingPlugins fake makes it answer.
+var pluginDoorRoutes = []struct {
+	path, body, reaches string
+	ownCode             int
+}{
+	{"/plugin/v1/messages", pgnMsg, "Submit", http.StatusAccepted},
+	{"/plugin/v1/drafts/claim", `{"wait_seconds":0}`, "ClaimDraft", http.StatusNoContent},
+	{"/plugin/v1/drafts/5/result", `{"ok":true}`, "FinishDraft", http.StatusNotFound},
 }
 
 // TestAPluginTokenIsRefusedOnEveryOtherRoute: a plugin token opens nothing but
@@ -225,6 +266,9 @@ func TestPluginsOffIsNotFound(t *testing.T) {
 	for _, rt := range []struct{ method, path, body string }{
 		{"GET", "/plugins", ""}, {"POST", "/plugins", "name=example-inbox&label=x&data_scope=x"},
 		{"POST", "/plugins/1/revoke", ""}, {"POST", "/plugin/v1/messages", pgnMsg},
+		{"POST", "/plugins/drafts/1/approve", ""},
+		{"POST", "/plugins/drafts/1/reject", ""},
+		{"POST", "/plugin/v1/drafts/claim", `{"wait_seconds":0}`}, {"POST", "/plugin/v1/drafts/1/result", `{"ok":true}`},
 	} {
 		for name, c := range map[string]pluginCred{"plugin token": pBearer(pgnTok), "session": session,
 			"hook token": pBearer(tokTestHook), "none": func(*http.Request) {}} {
@@ -310,5 +354,71 @@ func TestAValidMessageIsReadWhateverItsJSONEscaping(t *testing.T) {
 	}
 	if len(worst) > plugins.MaxRequestBytes {
 		t.Fatalf("the worst-case fixture is %d bytes, over the %d read cap it is meant to fit", len(worst), plugins.MaxRequestBytes)
+	}
+}
+
+// resultPlugins is countingPlugins whose FinishDraft applies the real result
+// caps (DraftResult.Validate) and keeps the decoded detail.
+type resultPlugins struct {
+	countingPlugins
+	detail string
+}
+
+func (v *resultPlugins) FinishDraft(_ context.Context, _, id int64, r plugins.DraftResult) (plugins.Draft, error) {
+	if err := r.Validate(); err != nil {
+		return plugins.Draft{}, err
+	}
+	v.detail = r.Detail
+	return plugins.Draft{ID: id, Status: plugins.DraftSent}, nil
+}
+
+// TestAValidDraftResultIsReadWhateverItsJSONEscaping (audit round 1): the result
+// route's READ cap must admit every result the decoded caps admit. A detail of
+// 4,096 '<' is valid, and encoding/json sends it as 24,576 bytes; the old cap
+// (3x the detail cap) refused it. external_ref is capped in runes, and a 4-byte
+// rune may arrive as a 12-byte surrogate pair. The decoded caps still refuse a
+// detail one byte over.
+func TestAValidDraftResultIsReadWhateverItsJSONEscaping(t *testing.T) {
+	// The read cap is the route's DoS bound, so its VALUE is pinned as a literal:
+	// the "over the read cap" row pads by the constant and so follows any value.
+	if plugins.MaxResultRequestBytes != 28000 {
+		t.Fatalf("MaxResultRequestBytes = %d; want 28000 (6×4096 + 12×200 + 1024)", plugins.MaxResultRequestBytes)
+	}
+	store := &resultPlugins{}
+	_, h, _ := newPluginsDoorServer(t, store)
+	marshal := func(v any) string {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	// Built at run time so no tool between here and the file can decode them.
+	esc := func(hex string) string { return string(rune(92)) + "u" + hex }
+	worst := `{"ok":true,"external_ref":"` + strings.Repeat(esc("d83d")+esc("de00"), plugins.MaxExternalRefRunes) +
+		`","detail":"` + strings.Repeat(esc("0001"), plugins.MaxDetailBytes) + `"}`
+	for _, c := range []struct {
+		name, body string
+		want, n    int
+	}{
+		{"4,096 '<' via encoding/json", marshal(map[string]any{"ok": true, "detail": strings.Repeat("<", plugins.MaxDetailBytes)}), http.StatusOK, plugins.MaxDetailBytes},
+		{"every field at its widest", worst, http.StatusOK, plugins.MaxDetailBytes},
+		{"one byte over the detail cap", marshal(map[string]any{"ok": true, "detail": strings.Repeat("a", plugins.MaxDetailBytes+1)}), http.StatusBadRequest, 0},
+		// A VALID result (accepted if read in full) padded with insignificant
+		// whitespace between tokens past the read cap: only the cap can refuse it.
+		{"over the read cap", `{"ok":true,` + strings.Repeat(" ", plugins.MaxResultRequestBytes) + `"detail":"x"}`, http.StatusBadRequest, 0},
+	} {
+		store.detail = ""
+		rec := pServe(h, "POST", "/plugin/v1/drafts/5/result", c.body, pBearer(pgnTok))
+		if c.name == "over the read cap" && !strings.Contains(rec.Body.String(), "the body is {") {
+			t.Errorf("%s: %d %s; want the read refusal, not a per-field one", c.name, rec.Code, rec.Body.String())
+		}
+		if rec.Code != c.want || len(store.detail) != c.n {
+			t.Errorf("%s (%d bytes on the wire): %d %s, kept %d bytes; want %d, %d bytes",
+				c.name, len(c.body), rec.Code, rec.Body.String(), len(store.detail), c.want, c.n)
+		}
+	}
+	if len(worst) > plugins.MaxResultRequestBytes {
+		t.Fatalf("the worst-case fixture is %d bytes, over the %d read cap it is meant to fit", len(worst), plugins.MaxResultRequestBytes)
 	}
 }

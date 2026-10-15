@@ -13,6 +13,7 @@ const (
 	EventAgent     = "agent"     // a task's agent is up and working
 	EventCreated   = "created"   // a machine (producer) created tasks
 	EventComment   = "comment"   // an external (machine) comment on a task
+	EventPlugin    = "plugin"    // a plugin reply draft awaits its owner's approval
 )
 
 // Event is one toggle.
@@ -29,6 +30,7 @@ var Events = []Event{
 	{EventAgent, "A task's agent is up and working"},
 	{EventCreated, "A machine created tasks"},
 	{EventComment, "A machine commented on a task"},
+	{EventPlugin, "A reply draft awaits your approval"},
 }
 
 // KnownEvent reports whether name is in Events.

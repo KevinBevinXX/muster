@@ -233,8 +233,9 @@ const agentSystemPrompt = `You are a muster worker agent. You have native tools 
 //
 // 🔴 MCP IS AN EXPLICIT, PER-TOOL OPT-IN: THE CONNECTOR TOOLS AND THE TWO
 // BROWSER-FLOW TOOLS HAVE IT (the flow tools only FILE a request the owner
-// must approve; flow_tools.go), AND SO DOES task_create_gated (it only files a
-// task gated on the owner's approval; gated_task_tool.go).
+// must approve; flow_tools.go), AND SO DO task_create_gated (it only files a
+// task gated on the owner's approval; gated_task_tool.go) AND reply_draft (it
+// only files a draft the owner must approve; reply_draft_tool.go).
 // /mcp is served on the connect listener — the ONE muster port a claude-code
 // pod's network policy lets it reach — and that listener's contract is "the
 // connector surface and nothing else" (OnlyConnectSurface). The other tools stay
@@ -299,6 +300,10 @@ func (s *Server) agentTools() []agentTool {
 	// because the chief is the one agent plugin messages are delivered to.
 	if s.ext.Plugins != nil {
 		tools = append(tools, agentTool{def: gatedTaskToolDef(), mcp: true, chiefOnly: true})
+		// reply_draft (reply_draft_tool.go): the chief may DRAFT a reply its
+		// owner must approve before the plugin sends it. MCP and chief-only for
+		// task_create_gated's reasons.
+		tools = append(tools, agentTool{def: replyDraftToolDef(), mcp: true, chiefOnly: true})
 	}
 	return tools
 }
@@ -529,6 +534,8 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return s.toolFlowStatus(ctx, a, arguments)
 	case gatedTaskToolName:
 		return s.toolTaskCreateGated(ctx, a, arguments)
+	case replyDraftToolName:
+		return s.toolReplyDraft(ctx, a, arguments)
 	case "connector_status":
 		var in struct {
 			Name        string `json:"name"`

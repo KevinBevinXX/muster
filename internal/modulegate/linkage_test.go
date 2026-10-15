@@ -69,6 +69,10 @@ var notLinkedLedger = map[string]string{
 	"e2e/mkmember": "the byo-credentials browser spec's member maker (`go run ./e2e/mkmember`). " +
 		"It writes a users row as the login role, bypassing row-level security, so it must " +
 		"never be reachable from a shipped binary; it refuses any database not ending in _e2e.",
+	"e2e/pluginfix": "the plugins browser spec's fixture (`go run ./e2e/pluginfix`): a chief agent, a " +
+		"delivered message and a lapsed lease, written as the login role with row-level security's " +
+		"scope set to all, so it must never be reachable from a shipped binary; it refuses any " +
+		"database not ending in _e2e.",
 
 	// 🔴 internal/agentspec AND internal/provision/k8s WERE BOTH HERE, AND THEIR
 	// DEPARTURE IS THE ONLY MECHANICAL SIGNAL PLAN STEP 22b HAD. Both entries said

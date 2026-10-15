@@ -83,6 +83,13 @@ export const fakeSttPort = port + 27;
 // mirror plugin on), so only ITS two hosts are listed — the clash it draws is
 // between them and no other spec's host.
 export const dupLabelsPort = port + 28;
+// Plugins: a gotrue-mode server with MUSTER_PLUGINS=1 and the connector store
+// (for /mcp, on its own connect port), and its own real GoTrue with passkeys on —
+// so no other spec's server ever has plugins on.
+export const pluginsMainPort = port + 29;
+export const pluginsBrowserPort = port + 30;
+export const pluginsGotruePort = Number(process.env.MUSTER_E2E_PLUGINS_GOTRUE_PORT ?? port + 31);
+export const pluginsConnectPort = port + 32;
 // The fake service's bearer token. Invented, like every value here.
 export const sttToken = 'e2e-stt-token-not-a-real-one';
 // The docs screenshots (e2e/docshots, `make screenshots`, never in the suite):

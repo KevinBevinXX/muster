@@ -18,7 +18,7 @@ the set grows **or** shrinks.
 | mirroring | `mirror_tokens` |
 | browser flows | `flow_jobs`, `flow_runner_tokens`, `flow_requests` |
 | push | `push_subscriptions`, `push_preferences` |
-| plugins | `plugins`, `plugin_messages` |
+| plugins | `plugins`, `plugin_messages`, `plugin_reply_drafts` |
 | GitHub | `github_connection`, one row per owner |
 
 `notes` is the task table. The name is historical. It is kept because every id in
@@ -42,6 +42,7 @@ buys only a word.
 | `0013` | `push_subscriptions` and `push_preferences`. |
 | `0014` | `flow_requests`: an agent's request for a flow, which its owner approves. |
 | `0015` | `plugins` and `plugin_messages`: the [plugin interface](plugins.md). A message's input cannot be changed after it is written. |
+| `0016` | `plugin_reply_drafts` (a draft's body cannot be changed after it is written; the claim, lease and result rules) and `plugin_messages.no_reply`, which cannot be changed and refuses any reply draft for its message. |
 
 To change the schema, add a new numbered file.
 

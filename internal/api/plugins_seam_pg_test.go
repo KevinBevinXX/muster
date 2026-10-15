@@ -35,6 +35,20 @@ type pluginRuntime struct {
 	mu     sync.Mutex
 	want   string
 	bodies []string
+	// gate, when set (hold), holds every turn until it is closed; each held turn
+	// is announced on arrived first. A slow runtime, for the claim tests.
+	gate    chan struct{}
+	arrived chan struct{}
+}
+
+// hold makes every later turn wait for the returned release.
+func (f *pluginRuntime) hold() (arrived <-chan struct{}, release func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.gate, f.arrived = make(chan struct{}), make(chan struct{}, 16)
+	gate := f.gate
+	var once sync.Once
+	return f.arrived, func() { once.Do(func() { close(gate) }) }
 }
 
 // expect sets the credential the fake accepts: the one the production runtime
@@ -50,7 +64,12 @@ func (f *pluginRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.bodies = append(f.bodies, r.URL.Path+" "+string(body))
 	want := "Bearer " + f.want
+	gate, arrived := f.gate, f.arrived
 	f.mu.Unlock()
+	if gate != nil {
+		arrived <- struct{}{}
+		<-gate
+	}
 	if r.URL.Path != "/v1/responses" || r.Header.Get("Authorization") != want {
 		http.Error(w, "refused", http.StatusUnauthorized)
 		return
@@ -286,7 +305,8 @@ func TestAPluginMessageReachesTheOwnersChiefThroughTheRealPlane(t *testing.T) {
 //
 // 🔴 TWO PINS, NOT ONE: the names are compared to the server's own list for THIS
 // agent (the plumbing passes whatever the agent is offered), AND literal names
-// are required — a worker tool and the chief-only task_create_gated — so a turn
+// are required — a worker tool and the chief-only task_create_gated and
+// reply_draft — so a turn
 // carrying no tools, or the unfiltered worker set, cannot pass by comparing a
 // list to itself.
 func deliveryTurnTools(t *testing.T, srv *Server, ctx context.Context, chief agents.Agent, body string) {
@@ -310,7 +330,7 @@ func deliveryTurnTools(t *testing.T, srv *Server, ctx context.Context, chief age
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("the delivery turn offered the chief tools %v; want the ones its chat turn offers: %v", got, want)
 	}
-	for _, name := range []string{"agent_get_task", "task_create_gated"} {
+	for _, name := range []string{"agent_get_task", "task_create_gated", replyDraftToolName} {
 		if !slices.Contains(got, name) {
 			t.Fatalf("the delivery turn offered the chief %v; want it to include %s", got, name)
 		}
