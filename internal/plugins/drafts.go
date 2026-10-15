@@ -115,10 +115,10 @@ type DraftCard struct {
 	// EarlierUnconfirmed: another draft for the same message is unconfirmed —
 	// it may already have reached the sender. The card says so.
 	EarlierUnconfirmed bool
-	// SameTextSent: an unconfirmed draft whose exact text an earlier draft for
-	// the same message was reported sent with — the card offers no re-approval
-	// (the store refuses one when that earlier draft is in its chain).
-	SameTextSent bool
+	// OriginalSent: an unconfirmed draft that repeats (re-approves, at any depth)
+	// a draft reported sent — ancestorSentSQL's rule, so the card offers no
+	// re-approval exactly when ReapproveDraft would refuse one (ErrAlreadySent).
+	OriginalSent bool
 }
 
 var (
@@ -393,9 +393,12 @@ func (s *PGStore) DraftCards(ctx context.Context, limit int) ([]DraftCard, error
 	rows, err := s.pool.Query(ctx, `SELECT `+prefixed("d", draftCols)+`, `+prefixed("m", messageCols)+`, p.name, p.label,
 		       EXISTS (SELECT 1 FROM plugin_reply_drafts o
 		                WHERE o.message_id = d.message_id AND o.id <> d.id AND o.status = 'unconfirmed'),
-		       d.status = 'unconfirmed' AND EXISTS (SELECT 1 FROM plugin_reply_drafts o
-		                WHERE o.message_id = d.message_id AND o.status = 'sent' AND o.id < d.id
-		                  AND o.body = d.body)
+		       d.status = 'unconfirmed' AND EXISTS (
+		           WITH RECURSIVE up(id) AS (
+		               SELECT o.id FROM plugin_reply_drafts o WHERE o.reapproved_as = d.id
+		               UNION
+		               SELECT a.id FROM plugin_reply_drafts a JOIN up u ON a.reapproved_as = u.id)
+		           SELECT 1 FROM plugin_reply_drafts x WHERE x.id IN (SELECT id FROM up) AND x.status = 'sent')
 		  FROM plugin_reply_drafts d
 		  JOIN plugin_messages m ON m.id = d.message_id
 		  JOIN plugins p ON p.id = m.plugin_id
@@ -414,7 +417,7 @@ func (s *PGStore) DraftCards(ctx context.Context, limit int) ([]DraftCard, error
 		m := &c.Message
 		dest = append(dest, &m.ID, &m.OwnerID, &m.PluginID, &m.ExternalID, &m.Sender, &m.Subject, &m.Body, &m.ReceivedAt,
 			&m.CreatedAt, &mst, &m.Attempts, &m.LastAttemptAt, &m.DeliveredAt, &m.AgentID, &m.NoReply,
-			&c.PluginName, &c.PluginLabel, &c.EarlierUnconfirmed, &c.SameTextSent)
+			&c.PluginName, &c.PluginLabel, &c.EarlierUnconfirmed, &c.OriginalSent)
 		if err := rows.Scan(dest...); err != nil {
 			return nil, err
 		}

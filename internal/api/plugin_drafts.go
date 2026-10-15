@@ -278,7 +278,7 @@ func (s *Server) decideDraft(w http.ResponseWriter, r *http.Request, how string)
 		s.renderPluginsPage(w, r, http.StatusConflict, "", "A plugin has already collected that draft, so it can no longer be withdrawn.")
 		return
 	case errors.Is(err, plugins.ErrDraftState) && (d.Status == plugins.DraftPending || d.Status == plugins.DraftApproved) &&
-		!d.ExpiresAt.After(time.Now()):
+		d.ClaimedAt == nil && !d.ExpiresAt.After(time.Now()):
 		s.renderPluginsPage(w, r, http.StatusConflict, "", "That draft has expired: it was not sent within 7 days of being written.")
 		return
 	case errors.Is(err, plugins.ErrDraftState):
@@ -413,11 +413,11 @@ func draftCardHTML(c plugins.DraftCard) string {
 <form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject"><button type="submit" class="` + flowsQuietButton + `" data-draft-reject>Reject</button></form>
 `)
 	case plugins.DraftUnconfirmed:
-		if c.SameTextSent {
-			b.WriteString(`<span class="text-xs font-semibold text-fg" data-draft-same-sent>The same text was later reported sent, so it is not approved again.</span>
+		if c.OriginalSent {
+			b.WriteString(`<span class="text-xs font-semibold text-fg" data-draft-same-sent>The draft this one repeats was reported sent, so it is not approved again.</span>
 `)
 		}
-		if d.ReapprovedAs != nil || d.AgentID == nil || c.SameTextSent || !d.ExpiresAt.After(time.Now()) {
+		if d.ReapprovedAs != nil || d.AgentID == nil || c.OriginalSent || !d.ExpiresAt.After(time.Now()) {
 			break
 		}
 		b.WriteString(`<form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reapprove" data-step-up-form><button type="submit" class="` +

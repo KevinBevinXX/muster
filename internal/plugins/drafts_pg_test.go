@@ -531,7 +531,7 @@ func TestALateSentCancelsEveryHopOfARechain(t *testing.T) {
 	}
 	cards, _ := w.s.DraftCards(session(2), 50)
 	for _, c := range cards {
-		if c.Draft.ID == d2.ID && !c.SameTextSent {
+		if c.Draft.ID == d2.ID && !c.OriginalSent {
 			t.Errorf("the card of %d does not know its text was sent", d2.ID)
 		}
 	}
@@ -747,5 +747,37 @@ func TestAResultTakesTheMessageLockFirst(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("FinishDraft did not finish after the message lock was released")
+	}
+}
+
+// TestTheCardAndTheStoreAgreeOnReapprovingSentText: an earlier, UNRELATED draft
+// with the same text was sent; a later one with that text lapses. It is not a
+// re-approval of the sent one, so the store allows approving it again and the
+// card offers it (OriginalSent false) — the two rules are one rule.
+func TestTheCardAndTheStoreAgreeOnReapprovingSentText(t *testing.T) {
+	w := newDraftWorld(t)
+	x := w.approve(t, w.file(t, w.m, "same text"))
+	if _, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); !ok {
+		t.Fatal("claim x")
+	}
+	if _, err := w.s.FinishDraft(plugin(2), w.p.ID, x.ID, DraftResult{OK: true}); err != nil {
+		t.Fatal(err)
+	}
+	y := w.approve(t, w.file(t, w.m, "same text"))
+	if _, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); !ok {
+		t.Fatal("claim y")
+	}
+	ageDraft(t, w.dsn, y.ID, int(LeaseDuration.Seconds())+5)
+	cards, err := w.s.DraftCards(session(2), 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cards {
+		if c.Draft.ID == y.ID && (c.Draft.Status != DraftUnconfirmed || c.OriginalSent) {
+			t.Fatalf("y's card: %s OriginalSent=%v; want unconfirmed and re-approvable", c.Draft.Status, c.OriginalSent)
+		}
+	}
+	if _, err := w.s.ReapproveDraft(session(2), y.ID); err != nil {
+		t.Fatalf("the store refuses what the card offers: %v", err)
 	}
 }
