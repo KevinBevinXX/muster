@@ -4,7 +4,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { BrowserContext, Page, request as pwRequest } from '@playwright/test';
-import { test, expect } from '../lib/fixtures';
+import { test, expect, expectAgentsDestroyed } from '../lib/fixtures';
 import { authState, baseURL, binDir, dictationPort, dsn, fakeSttPort, hookToken, password, repoRoot, sttToken, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 
@@ -145,7 +145,7 @@ test.afterAll(async ({ browser }) => {
       await login(page);
       const r = await page.request.delete(`${origin}/agents/${agent.id}`, { headers: { Origin: origin } });
       expect(r.status(), `deleting ${agent.name}: ${await r.text()}`).toBeLessThan(300);
-      expect((await agentRows()).some((a) => a.id === agent!.id), 'the agent this spec made is still there').toBe(false);
+      await expectAgentsDestroyed(agentRows, [agent.id], 'the agent this spec made is still there');
       await ctx.close();
     }
   } finally {
