@@ -92,3 +92,27 @@ export async function expectShellShows(page: Page, tab: string, heading: string,
   const drawn = ((await page.evaluate(shellStateJS)) as { drawn: number }).drawn;
   expect(drawn, `${why}: CONTROL — the shell drew more than one panel, so "exactly one shown" hid the rest`).toBeGreaterThan(1);
 }
+
+// expectAgentsDestroyed waits for every agent in `ids` to leave GET /api/agents.
+//
+// 🔴 DELETE /agents/{id} ANSWERS ITS EMPTY 200 BEFORE THE AGENT IS GONE.
+// handleAgentDelete starts the destroy in a background goroutine and answers at
+// once (htmx removes the card from that 200); the row is deleted only when the
+// provisioner's Destroy returns. A read straight after the 200 races that
+// goroutine: measured locally, the row was still listed (status "running") 3-6
+// ms after the 200 and gone by ~110 ms, and CI lost the race intermittently.
+// So the deletion is waited for, not assumed. A destroy that FAILS keeps the row
+// and marks it "error" (agentprovision.Adapter.Destroy); that row never leaves,
+// so the poll fails on it, and its status is in the failure.
+export async function expectAgentsDestroyed(
+  rows: () => Promise<{ id: number; name: string; status: string }[]>,
+  ids: number[],
+  message: string,
+): Promise<void> {
+  await expect
+    .poll(async () => (await rows()).filter((a) => ids.includes(a.id)).map((a) => ({ id: a.id, name: a.name, status: a.status })), {
+      message,
+      timeout: 10_000,
+    })
+    .toEqual([]);
+}
