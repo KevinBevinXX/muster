@@ -47,11 +47,24 @@ type Store interface {
 	// RecordAttempt counts an attempt that provably delivered nothing; the
 	// message stays queued.
 	RecordAttempt(ctx context.Context, messageID int64) error
-	// RecordDelivery settles a queued message as delivered or unconfirmed, names
-	// the agent it went to, and appends the `plugin.delivered` audit row in the
-	// same transaction. It reports false (and writes nothing) when the message was
-	// no longer queued.
+	// BeginDelivery moves a queued message to `delivering` to agentID and counts
+	// the attempt, BEFORE the turn runs, so the chief can cite it on that turn. It
+	// reports false (and writes nothing) when the message was no longer queued.
+	BeginDelivery(ctx context.Context, messageID, agentID int64) (bool, error)
+	// AbandonDelivery returns a message `delivering` to agentID to `queued` and
+	// clears its agent: the turn provably sent nothing. The attempt stays counted.
+	AbandonDelivery(ctx context.Context, messageID, agentID int64) error
+	// RecordDelivery settles a message `delivering` to agentID as delivered or
+	// unconfirmed and appends the `plugin.delivered` audit row in the same
+	// transaction. It reports false (and writes nothing) when the message was no
+	// longer delivering to agentID.
 	RecordDelivery(ctx context.Context, messageID, agentID int64, outcome Status) (bool, error)
+	// RecoverDeliveries settles every message still `delivering` to agentID as
+	// unconfirmed (audited, with "recovered": true) and returns how many. The
+	// caller must hold agentID's session claim, which proves no live delivery to
+	// that agent is in flight: such a row was left by a process that died
+	// mid-turn, and it may have been pasted.
+	RecoverDeliveries(ctx context.Context, agentID int64) (int, error)
 	// ReserveGatedTask spends one unit of an agent's gated-task budget (gated.go),
 	// or returns ErrGatedTaskCap.
 	ReserveGatedTask(ctx context.Context, agentID int64, messageID *int64) error
@@ -312,6 +325,22 @@ func (s *PGStore) RecordAttempt(ctx context.Context, messageID int64) error {
 	return err
 }
 
+func (s *PGStore) BeginDelivery(ctx context.Context, messageID, agentID int64) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE plugin_messages SET status = 'delivering', agent_id = $2,
+		       attempts = attempts + 1, last_attempt_at = now()
+		 WHERE id = $1 AND status = 'queued'`, messageID, agentID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+func (s *PGStore) AbandonDelivery(ctx context.Context, messageID, agentID int64) error {
+	_, err := s.pool.Exec(ctx, `UPDATE plugin_messages SET status = 'queued', agent_id = NULL
+		WHERE id = $1 AND status = 'delivering' AND agent_id = $2`, messageID, agentID)
+	return err
+}
+
 func (s *PGStore) RecordDelivery(ctx context.Context, messageID, agentID int64, outcome Status) (bool, error) {
 	if outcome != StatusDelivered && outcome != StatusUnconfirmed {
 		return false, invalid("a delivery settles as delivered or unconfirmed, not %q", outcome)
@@ -320,9 +349,8 @@ func (s *PGStore) RecordDelivery(ctx context.Context, messageID, agentID int64, 
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var pluginID int64
 		err := tx.QueryRow(ctx, `
-			UPDATE plugin_messages SET status = $3, delivered_at = now(), agent_id = $2,
-			       attempts = attempts + 1, last_attempt_at = now()
-			 WHERE id = $1 AND status = 'queued'
+			UPDATE plugin_messages SET status = $3, delivered_at = now()
+			 WHERE id = $1 AND status = 'delivering' AND agent_id = $2
 			RETURNING plugin_id`, messageID, agentID, string(outcome)).Scan(&pluginID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
@@ -336,6 +364,43 @@ func (s *PGStore) RecordDelivery(ctx context.Context, messageID, agentID int64, 
 		})
 	})
 	return settled, err
+}
+
+func (s *PGStore) RecoverDeliveries(ctx context.Context, agentID int64) (int, error) {
+	n := 0
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			UPDATE plugin_messages SET status = 'unconfirmed', delivered_at = now()
+			 WHERE agent_id = $1 AND status = 'delivering'
+			RETURNING id, plugin_id`, agentID)
+		if err != nil {
+			return err
+		}
+		type rec struct{ id, plugin int64 }
+		var got []rec
+		for rows.Next() {
+			var r rec
+			if err := rows.Scan(&r.id, &r.plugin); err != nil {
+				rows.Close()
+				return err
+			}
+			got = append(got, r)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, r := range got {
+			if err := audit(ctx, tx, "plugin.delivered", MessageObject(r.id), map[string]any{
+				"plugin_id": r.plugin, "agent_id": agentID, "outcome": string(StatusUnconfirmed), "recovered": true,
+			}); err != nil {
+				return err
+			}
+		}
+		n = len(got)
+		return nil
+	})
+	return n, err
 }
 
 // prefixed qualifies a column list with a table alias.

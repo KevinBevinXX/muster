@@ -76,16 +76,28 @@ The turn is an ordinary chat turn: your chief has the same instructions and the
 same tools on it as when you chat with it, so it can act on the message in the
 turn that tells it about the message.
 
+While the turn runs the message is **delivering** to that chief. This state is
+written before the turn starts, so on that same turn the chief's tools can cite
+the message as delivered to it.
+
 A delivery ends in one of three states:
 
 - **delivered**: the chief's turn completed.
 - **unconfirmed**: the send failed after the text may have reached the chief. It
-  is never sent again.
+  is never sent again. A tool turn that fails on any request after its first
+  ends here too, because the runtime had already answered and the chief's tools
+  had already run.
 - **pending**: nothing was sent (you have no chief, it is not running, or it was
-  busy). The message stays queued. Pending messages are retried by a later
-  change.
+  busy). The message goes back to queued and no longer names a chief. Pending
+  messages are retried by a later change.
 
-Each settled delivery writes a `plugin.delivered` row to the audit log.
+If muster stops in the middle of a turn, the message stays **delivering**. The
+next delivery to the same chief settles it as unconfirmed, and it is never sent
+again. A message delivering to a chief that never gets another delivery stays
+delivering, and is not sent again either.
+
+Each settled delivery writes a `plugin.delivered` row to the audit log. A
+delivering message settled after a stop is recorded with `"recovered": true`.
 
 The data-scope sentence is **advisory**. The chief's own memory credential can
 write anywhere; only the preface asks it to keep what it records from plugin

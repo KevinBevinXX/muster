@@ -65,9 +65,13 @@ CREATE TABLE IF NOT EXISTS public.plugin_messages (
     body            TEXT        NOT NULL,
     received_at     TIMESTAMPTZ,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    -- queued: not yet handed to the chief (a provably-unsent attempt leaves it
-    -- here); delivered: the turn completed; unconfirmed: the send failed after
-    -- the text may have been pasted — NEVER resent.
+    -- queued: not yet handed to the chief (a provably-unsent attempt returns it
+    -- here); delivering: the chief named by agent_id is on the turn that hands
+    -- it over, so it may already cite it (a gated task, a reply draft);
+    -- delivered: the turn completed; unconfirmed: the send failed after the text
+    -- may have been pasted — NEVER resent. A `delivering` row left by a process
+    -- that died mid-turn is settled `unconfirmed` by the next delivery to the
+    -- same chief (internal/plugins Deliverer), never sent again.
     status          TEXT        NOT NULL DEFAULT 'queued',
     attempts        INTEGER     NOT NULL DEFAULT 0,
     last_attempt_at TIMESTAMPTZ,
@@ -79,8 +83,11 @@ CREATE TABLE IF NOT EXISTS public.plugin_messages (
     CONSTRAINT plugin_messages_external_unique UNIQUE (plugin_id, external_id),
     CONSTRAINT plugin_messages_plugin_owner_fkey FOREIGN KEY (plugin_id, owner_id)
         REFERENCES public.plugins (id, owner_id) ON DELETE CASCADE,
-    CONSTRAINT plugin_messages_status_check CHECK (status IN ('queued', 'delivered', 'unconfirmed')),
-    CONSTRAINT plugin_messages_settled_has_time CHECK ((status = 'queued') = (delivered_at IS NULL)),
+    CONSTRAINT plugin_messages_status_check CHECK (status IN ('queued', 'delivering', 'delivered', 'unconfirmed')),
+    CONSTRAINT plugin_messages_settled_has_time CHECK ((status IN ('queued', 'delivering')) = (delivered_at IS NULL)),
+    -- A queued message names no chief: a delivery that provably sent nothing
+    -- clears the agent it was being delivered to, so nothing can cite it.
+    CONSTRAINT plugin_messages_queued_has_no_agent CHECK (status <> 'queued' OR agent_id IS NULL),
     CONSTRAINT plugin_messages_external_id_check CHECK (char_length(external_id) BETWEEN 1 AND 200),
     CONSTRAINT plugin_messages_sender_cap CHECK (char_length(sender) <= 200),
     CONSTRAINT plugin_messages_subject_cap CHECK (char_length(subject) <= 200),
