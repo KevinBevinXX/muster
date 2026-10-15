@@ -163,7 +163,7 @@ ending in how its transcript was resolved: `pane-map`, `sessions` or `guessed`.
 
 ## Read-only, interactive, and sending
 
-`muster-mirror` is **read-only by default**. muster then offers no Interactive
+`muster-mirror` is **read-only by default**. muster then offers no Live keys
 switch and refuses an interactive attach. Read-only is enforced in three places:
 
 - muster refuses it;
@@ -175,7 +175,7 @@ The host opens only windows it listed itself.
 
 🔴 **`-interactive` is a shell on the host.** An interactive tmux client can
 switch to any session on that tmux server, or open a new window. So anyone who
-can use muster's Interactive switch for the host can run commands there, as the
+can use muster's Live keys switch for the host can run commands there, as the
 user `muster-mirror` runs as. The "only listed windows" rule limits what a
 read-only viewer can see. It does not limit an attached interactive client.
 

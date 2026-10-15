@@ -50,7 +50,7 @@
 ## Mirroring
 
 - 🔴 **`-interactive` is a shell on the host** for anyone who can use muster's
-  Interactive switch for it ([mirroring.md](mirroring.md#read-only-interactive-and-sending)).
+  Live keys switch for it ([mirroring.md](mirroring.md#read-only-interactive-and-sending)).
 - **While a window is being viewed, its viewer session is visible to tmux
   tooling** (`tmux ls`, session pickers, hooks).
 - **Per host:** 512 windows, 8 terminals, 8 rendered views. **Per server:** 64

@@ -129,7 +129,7 @@ the listeners, and what each component trusts.
   NetworkPolicy does not restrict egress by DNS name. An agent can still reach
   any public HTTPS host.
 - **An interactive mirror is a shell on that host.** `-interactive` lets
-  anyone who can use muster's Interactive switch for that host run commands as
+  anyone who can use muster's Live keys switch for that host run commands as
   the user that `muster-mirror` runs as.
 
 The full list is in [docs/limits.md](docs/limits.md).
