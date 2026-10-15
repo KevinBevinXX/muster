@@ -150,8 +150,8 @@ claim receives.
 
 A result that arrives after the lease lapsed is still recorded, on the draft it
 was claimed as. It never settles the re-approved copy, but a late `ok: true`
-**cancels** the copy if no claim has taken it yet: the text has reached the
-sender, so it must not go twice.
+**cancels** every re-approval of it (and of those) that no claim has taken
+yet: the text has reached the sender, so it must not go again.
 
 Only one reply to a message is in flight at a time: while one is approved and
 either unclaimed or within its lease, no other draft for that message can be
@@ -272,8 +272,8 @@ Each draft is a card on `/plugins`:
   direction. An approved draft no plugin has collected yet shows **Withdraw the
   approval**, which rejects it the same way; once a plugin has collected it, it
   cannot be withdrawn.
-- If an earlier reply to the same message is unconfirmed, the card says the
-  sender may get both.
+- If an earlier reply to the same message is unconfirmed, a pending card says
+  the sender may get both.
 
 ### What happens to a draft
 
@@ -285,7 +285,7 @@ Each draft is a card on `/plugins`:
 | `unconfirmed` | the plugin claimed it and never reported; it may have been sent. Never offered again. **Approve again** (fresh sign-in, audited) makes a new approved draft with the same text, within the original 7 days. |
 | `rejected` | you said no |
 | `superseded` | the chief wrote a newer draft for the same message |
-| `expired` | not sent within 7 days of being written, whether pending or approved |
+| `expired` | not sent within 7 days of being written, whether pending or approved; or an unclaimed re-approval cancelled because the draft it repeats was reported sent |
 
 Filing, every decision, claim, result, lapse and expiry writes a
 `plugin.draft.*` row to the audit log. A superseded draft is recorded as a

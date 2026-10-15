@@ -454,9 +454,23 @@ func (s *PGStore) DecideDraft(ctx context.Context, id int64, approve bool) (Draf
 			d = cur
 			return err
 		}
+		// Past its expiry but not yet swept (the sweep ran in its own transaction a
+		// moment ago): not decidable, as if the sweep had already said so.
+		var live bool
+		if err := tx.QueryRow(ctx, `SELECT expires_at > now() FROM plugin_reply_drafts WHERE id = $1`, id).Scan(&live); err != nil {
+			return err
+		}
+		if !live {
+			d = cur
+			return ErrDraftState
+		}
 		if !approve && cur.Status == DraftApproved && cur.ClaimedAt == nil {
 			if d, err = scanDraft(tx.QueryRow(ctx, `UPDATE plugin_reply_drafts
 				SET status = 'rejected', decided_at = now(), approved_at = NULL WHERE id = $1 RETURNING `+draftCols, id)); err != nil {
+				return err
+			}
+			// A withdrawn re-approval frees its original to be approved again.
+			if _, err := tx.Exec(ctx, `UPDATE plugin_reply_drafts SET reapproved_as = NULL WHERE reapproved_as = $1`, id); err != nil {
 				return err
 			}
 			return audit(ctx, tx, "plugin.draft.withdrawn", DraftObject(id), map[string]any{
@@ -644,9 +658,17 @@ func (s *PGStore) FinishDraft(ctx context.Context, pluginID, draftID int64, r Dr
 		// this text again because nobody knew whether it had gone; now the plugin
 		// says it has, so the copy (if no plugin has taken it yet) must not go
 		// too. Lock order: this row, then its copy — ReapproveDraft's order.
+		// The whole chain: a copy can itself have lapsed and been approved again.
 		if want == DraftSent && cur.ReapprovedAs != nil {
-			rows, err := tx.Query(ctx, `UPDATE plugin_reply_drafts SET status = 'expired', decided_at = now()
-				WHERE id = $1 AND status = 'approved' AND claimed_at IS NULL RETURNING id`, *cur.ReapprovedAs)
+			rows, err := tx.Query(ctx, `
+				WITH RECURSIVE chain(id) AS (
+					SELECT $1::bigint
+					UNION ALL
+					SELECT d.reapproved_as FROM plugin_reply_drafts d JOIN chain c ON d.id = c.id
+					 WHERE d.reapproved_as IS NOT NULL)
+				UPDATE plugin_reply_drafts SET status = 'expired', decided_at = now()
+				 WHERE id IN (SELECT id FROM chain) AND status = 'approved' AND claimed_at IS NULL
+				RETURNING id`, *cur.ReapprovedAs)
 			if err != nil {
 				return err
 			}

@@ -271,6 +271,9 @@ func (s *Server) decideDraft(w http.ResponseWriter, r *http.Request, how string)
 	case errors.Is(err, plugins.ErrNotFound):
 		s.renderPluginsPage(w, r, http.StatusNotFound, "", "No such draft.")
 		return
+	case errors.Is(err, plugins.ErrDraftState) && d.Status == plugins.DraftApproved && d.ClaimedAt != nil:
+		s.renderPluginsPage(w, r, http.StatusConflict, "", "A plugin has already collected that draft, so it can no longer be withdrawn.")
+		return
 	case errors.Is(err, plugins.ErrDraftState):
 		s.renderPluginsPage(w, r, http.StatusConflict, "", "That draft is no longer awaiting this decision (it is "+string(d.Status)+").")
 		return

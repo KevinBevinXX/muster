@@ -486,6 +486,42 @@ func TestALateSentCancelsTheUnclaimedReapproval(t *testing.T) {
 	}
 }
 
+// TestALateSentCancelsEveryHopOfARechain: draft 1 lapses and is approved again
+// as 2; 2 lapses and is approved again as 3. Draft 1's late "sent" cancels 3,
+// which no claim has taken (2 is unconfirmed and stays so).
+func TestALateSentCancelsEveryHopOfARechain(t *testing.T) {
+	w := newDraftWorld(t)
+	lapse := func(d Draft) {
+		t.Helper()
+		if c, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); !ok || c.DraftID != d.ID {
+			t.Fatalf("claim %d: %+v %v", d.ID, c, ok)
+		}
+		ageDraft(t, w.dsn, d.ID, int(LeaseDuration.Seconds())+5)
+	}
+	d1 := w.approve(t, w.file(t, w.m, "r"))
+	lapse(d1)
+	d2, err := w.s.ReapproveDraft(session(2), d1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lapse(d2)
+	d3, err := w.s.ReapproveDraft(session(2), d2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.s.FinishDraft(plugin(2), w.p.ID, d1.ID, DraftResult{OK: true}); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[int64]DraftStatus{d1.ID: DraftSent, d2.ID: DraftUnconfirmed, d3.ID: DraftExpired} {
+		if got, _ := w.s.Draft(session(2), id); got.Status != want {
+			t.Errorf("draft %d is %s; want %s", id, got.Status, want)
+		}
+	}
+	if c, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); ok {
+		t.Fatalf("a two-hop re-approval was handed out after the original was sent: %+v", c)
+	}
+}
+
 // TestAnApprovalCanBeWithdrawnUntilItIsClaimed: an approved draft no plugin has
 // taken can be withdrawn (rejected, approval time cleared, audited), which also
 // unblocks the message; a claimed one cannot.
@@ -524,6 +560,30 @@ func TestAnApprovalCanBeWithdrawnUntilItIsClaimed(t *testing.T) {
 	}
 	if !flagged[d3.ID] || flagged[d2.ID] {
 		t.Fatalf("EarlierUnconfirmed = %v; want true for %d only", flagged, d3.ID)
+	}
+}
+
+// TestWithdrawingAReapprovalFreesTheOriginal: the original of a withdrawn
+// re-approval no longer names it and may be approved again.
+func TestWithdrawingAReapprovalFreesTheOriginal(t *testing.T) {
+	w := newDraftWorld(t)
+	d := w.approve(t, w.file(t, w.m, "r"))
+	if _, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); !ok {
+		t.Fatal("claim")
+	}
+	ageDraft(t, w.dsn, d.ID, int(LeaseDuration.Seconds())+5)
+	cp, err := w.s.ReapproveDraft(session(2), d.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := w.s.DecideDraft(session(2), cp.ID, false); err != nil || got.Status != DraftRejected {
+		t.Fatalf("withdraw the copy: %+v %v", got, err)
+	}
+	if orig, _ := w.s.Draft(session(2), d.ID); orig.ReapprovedAs != nil {
+		t.Fatalf("the original still names the withdrawn copy: %+v", orig)
+	}
+	if _, err := w.s.ReapproveDraft(session(2), d.ID); err != nil {
+		t.Fatalf("re-approving the original after its copy was withdrawn: %v", err)
 	}
 }
 
