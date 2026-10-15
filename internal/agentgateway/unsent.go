@@ -16,7 +16,20 @@ const (
 	UnsentUnauthorized   = "unauthorized" // the runtime refused muster's own bearer
 	UnsentRejected       = "rejected"     // the runtime refused the request's shape (a typed 400)
 	UnsentNeverConnected = "never_connected"
+	UnsentUnresolved     = "unresolved" // Resolve failed: no runtime was contacted
 )
+
+// unresolved marks a [Gateway.Resolve] failure, which happens before any runtime
+// is contacted. Its text is the cause's, unchanged.
+//
+// 🔴 IT EXISTS FOR THE TOOL-RUNNING TURN. ChatWithTools and Chat resolve the agent
+// themselves, so a caller that resolved first and then runs either can still see
+// a resolve failure come back from the TURN — and without this mark Unsent reads
+// it as "may have been sent", which settles a message nobody ever received.
+type unresolved struct{ err error }
+
+func (u unresolved) Error() string { return u.err.Error() }
+func (u unresolved) Unwrap() error { return u.err }
 
 // Unsent names a [Gateway.Send] failure that PROVES nothing was pasted into the
 // agent's session, or "" for success and for every failure that does not prove it.
@@ -27,7 +40,8 @@ const (
 //     400 (`bad_request`, `invalid_input`) — are each answered before it pastes anything. Only
 //     its typed body sets Type, so an untyped 409 or 503 from anything else is NOT read as
 //     "nothing was sent";
-//   - a dial error is a connection that was never opened, so no byte of the request left.
+//   - a dial error is a connection that was never opened, so no byte of the request left;
+//   - a [Gateway.Resolve] failure, from a turn that resolves its agent itself, contacted nothing.
 //
 // ⚠ ONE CASE THIS CANNOT PROVE, AND IT ERRS TOWARDS "MAY HAVE BEEN SENT": a send cancelled
 // while its connection was still being opened surfaces as a bare context error, with no dial
@@ -37,6 +51,10 @@ const (
 func Unsent(err error) string {
 	if err == nil {
 		return ""
+	}
+	var ur unresolved
+	if errors.As(err, &ur) {
+		return UnsentUnresolved
 	}
 	var rt *agents.RuntimeError
 	if errors.As(err, &rt) {

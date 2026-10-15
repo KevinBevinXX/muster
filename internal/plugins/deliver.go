@@ -14,13 +14,24 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 )
 
-// Gateway is a delivered turn's two halves — internal/memorelay's and
-// internal/agentkickoff's: Resolve contacts no runtime, Send runs the turn.
-// agentgateway.Gateway satisfies it.
+// Gateway is the half of a delivered turn that contacts no runtime: Resolve
+// refuses an agent that cannot be reached BEFORE anything is sent, so such a
+// failure leaves the message queued. agentgateway.Gateway satisfies it.
 type Gateway interface {
 	Resolve(ctx context.Context, a agents.Agent) (agentgateway.Target, error)
-	Send(ctx context.Context, t agentgateway.Target, sessionKey, message string, emit func(string)) (string, error)
 }
+
+// TurnFunc runs one turn for agent a under sessionKey and returns the reply,
+// streaming every event (text, thinking, tool_call, tool_result) to emit.
+//
+// 🔴 IT IS THE ORDINARY CHAT TURN, WITH THE AGENT'S TOOLS, AND NOT A TOOLLESS
+// SEND. internal/api wires its chatTurn here: the agent's instructions, the tool
+// definitions THAT agent is offered and the in-process dispatch for them. A
+// delivered message is the turn on which the chief acts on it (files a gated
+// task, drafts a reply), so a toolless send would leave a gateway-kind chief
+// unable to call a single tool on exactly the turn the tools exist for. This
+// package cannot import internal/api (it imports this one), hence a function.
+type TurnFunc func(ctx context.Context, a agents.Agent, sessionKey, message string, emit agents.StreamEmit) (string, error)
 
 // Outcome is what one delivery attempt came to.
 type Outcome string
@@ -61,11 +72,13 @@ type DelivererConfig struct {
 	Store   Store
 	Agents  agents.Store
 	Gateway Gateway
+	Turn    TurnFunc
 	Logger  *log.Logger
 }
 
 // Deliverer hands one stored message to the owner's chief as a fenced turn: the
-// memo relay's shape (render → the agent's session claim → Send → outcome).
+// memo relay's shape (render → the agent's session claim → the turn → outcome),
+// except that the turn is the chief's ordinary chat turn, tools included (TurnFunc).
 //
 // 🔴 IT IS CALLED, NOT A LOOP. The message route calls [Deliverer.Deliver] right
 // after it stores a NEW message. A message left `queued` by a pending attempt is
@@ -75,6 +88,7 @@ type Deliverer struct {
 	store  Store
 	agents agents.Store
 	gw     Gateway
+	run    TurnFunc
 	log    *log.Logger
 	turn   time.Duration
 	// owner names this process in an agent's session claim.
@@ -90,8 +104,10 @@ func NewDeliverer(cfg DelivererConfig) (*Deliverer, error) {
 		return nil, errors.New("plugins: DelivererConfig.Agents is required")
 	case cfg.Gateway == nil:
 		return nil, errors.New("plugins: DelivererConfig.Gateway is required (a message is delivered as a turn)")
+	case cfg.Turn == nil:
+		return nil, errors.New("plugins: DelivererConfig.Turn is required (the tool-capable chat turn a message is delivered as)")
 	}
-	d := &Deliverer{store: cfg.Store, agents: cfg.Agents, gw: cfg.Gateway, log: cfg.Logger, turn: DefaultTurnTimeout}
+	d := &Deliverer{store: cfg.Store, agents: cfg.Agents, gw: cfg.Gateway, run: cfg.Turn, log: cfg.Logger, turn: DefaultTurnTimeout}
 	if d.log == nil {
 		d.log = log.New(io.Discard, "", 0)
 	}
@@ -177,8 +193,7 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 	case fresh.HooksToken == "":
 		return d.attempted(parent, messageID, "no_token")
 	}
-	target, err := d.gw.Resolve(ctx, fresh)
-	if err != nil {
+	if _, err := d.gw.Resolve(ctx, fresh); err != nil {
 		return d.attempted(parent, messageID, "unresolved")
 	}
 	sess, err := d.session(ctx, p, fresh)
@@ -187,7 +202,8 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 	}
 
 	message := RenderMessage(p, m)
-	reply, err := d.gw.Send(ctx, target, sess.SessionKey, message, nil)
+	pc := &agents.PartCollector{}
+	reply, err := d.run(ctx, fresh, sess.SessionKey, message, pc.Observe)
 	if reason := agentgateway.Unsent(err); reason != "" {
 		return d.attempted(parent, messageID, reason)
 	}
@@ -205,8 +221,15 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 			messageID, outcome, ok, rerr)
 	}
 	_, _ = d.agents.AddChatMessage(bctx, agents.ChatMessage{AgentID: fresh.ID, SessionID: sess.ID, Role: "user", Content: message})
-	if reply != "" {
-		_, _ = d.agents.AddChatMessage(bctx, agents.ChatMessage{AgentID: fresh.ID, SessionID: sess.ID, Role: "assistant", Content: reply})
+	// The reply's ORDERED parts — text and tool calls interleaved — as an
+	// ordinary chat turn stores them, so the session shows what the chief did.
+	parts := pc.Parts()
+	if len(parts) == 0 && reply != "" {
+		parts = []agents.TurnPart{{Kind: "text", Content: reply}}
+	}
+	for _, part := range parts {
+		_, _ = d.agents.AddChatMessage(bctx, agents.ChatMessage{AgentID: fresh.ID, SessionID: sess.ID, Role: "assistant",
+			Kind: part.Kind, Content: part.Content, ToolID: part.ToolID, ToolName: part.ToolName, ToolOK: part.ToolOK})
 	}
 	d.log.Printf("plugins: plugin %d message %d: %s", pluginID, messageID, outcome)
 	return Result{Outcome: Outcome(outcome)}

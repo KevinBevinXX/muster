@@ -34,7 +34,7 @@ func pgStore(t *testing.T) (*PGStore, *pgxpool.Pool, string) {
 		ON CONFLICT (id) DO NOTHING`)
 	dbtest.OwnerExec(t, dsn, `UPDATE users SET disabled_at = NULL WHERE id IN (2, 3)`)
 	dbtest.OwnerExec(t, dsn, `UPDATE users SET disabled_at = now() WHERE id = 4`)
-	dbtest.OwnerExec(t, dsn, `TRUNCATE plugins, plugin_messages, plugin_reply_drafts`)
+	dbtest.OwnerExec(t, dsn, `TRUNCATE plugins, plugin_messages`)
 	dbtest.OwnerExec(t, dsn, `DELETE FROM agents WHERE name LIKE 'plg-%'`)
 	dbtest.OwnerExec(t, dsn, `DELETE FROM audit_log WHERE action LIKE 'plugin.%'`)
 	return NewPG(pool), pool, dsn
@@ -156,7 +156,7 @@ func TestPluginRowsAreUnderForcedRowLevelSecurity(t *testing.T) {
 	}
 	// No principal: nothing visible, nothing insertable.
 	bare := context.Background()
-	for _, table := range []string{"plugins", "plugin_messages", "plugin_reply_drafts"} {
+	for _, table := range []string{"plugins", "plugin_messages"} {
 		var n int
 		if err := pool.QueryRow(bare, `SELECT count(*) FROM `+table).Scan(&n); err != nil || n != 0 {
 			t.Errorf("%s with no principal: %d rows (%v); want 0", table, n, err)
@@ -168,8 +168,8 @@ func TestPluginRowsAreUnderForcedRowLevelSecurity(t *testing.T) {
 	// FORCE, not just ENABLE: the table owner's own role is held to the policy.
 	var forced int
 	if err := pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM pg_class
-		WHERE relname IN ('plugins', 'plugin_messages', 'plugin_reply_drafts') AND relrowsecurity AND relforcerowsecurity`).Scan(&forced); err != nil || forced != 3 {
-		t.Fatalf("tables with FORCED row-level security: %d (%v); want 3", forced, err)
+		WHERE relname IN ('plugins', 'plugin_messages') AND relrowsecurity AND relforcerowsecurity`).Scan(&forced); err != nil || forced != 2 {
+		t.Fatalf("tables with FORCED row-level security: %d (%v); want 2", forced, err)
 	}
 }
 
@@ -354,8 +354,8 @@ func TestADeliveryIsRecordedOnceWithItsAuditRow(t *testing.T) {
 }
 
 // TestTheTriggersHoldUnderTheScopeAllPrincipal: even a principal that sees every
-// row cannot rewrite a message's input, a draft's body, point a row at another
-// owner's agent, or hang a message off another owner's plugin.
+// row cannot rewrite a message's input, point a message at another owner's
+// agent, or hang a message off another owner's plugin.
 func TestTheTriggersHoldUnderTheScopeAllPrincipal(t *testing.T) {
 	s, pool, dsn := pgStore(t)
 	sys := authz.System(context.Background())
@@ -378,29 +378,16 @@ func TestTheTriggersHoldUnderTheScopeAllPrincipal(t *testing.T) {
 	check("message to another owner's agent", `UPDATE plugin_messages SET agent_id = $2 WHERE id = $1`, m.ID, theirs.ID)
 	check("message on another owner's plugin", `INSERT INTO plugin_messages (owner_id, plugin_id, external_id, body) VALUES (3, $1, 'z', 'b')`, p.ID)
 
-	var draft int64
-	if err := pool.QueryRow(sys, `INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at)
-		VALUES (2, $1, $2, 'chief', 'reply', now() + interval '7 days') RETURNING id`, m.ID, mine.ID).Scan(&draft); err != nil {
-		t.Fatalf("a draft by the owner's own agent: %v", err)
-	}
-	check("draft body", `UPDATE plugin_reply_drafts SET body = 'swapped' WHERE id = $1`, draft)
-	check("draft by another owner's agent", `INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at)
-		VALUES (2, $1, $2, 'x', 'r', now() + interval '1 day')`, m.ID, theirs.ID)
-	check("draft with no agent", `INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at)
-		VALUES (2, $1, NULL, 'x', 'r', now() + interval '1 day')`, m.ID)
-	check("draft approved without a time", `UPDATE plugin_reply_drafts SET status = 'approved' WHERE id = $1`, draft)
-	// What MAY change does: a status move, and the agent's deletion nulling agent_id.
-	if _, err := pool.Exec(sys, `UPDATE plugin_reply_drafts SET status = 'approved', approved_at = now(), decided_at = now() WHERE id = $1`, draft); err != nil {
-		t.Fatalf("approving a draft: %v", err)
-	}
+	// What MAY change does: naming the owner's own agent, and that agent's
+	// deletion nulling agent_id.
 	if _, err := pool.Exec(sys, `UPDATE plugin_messages SET agent_id = $2 WHERE id = $1`, m.ID, mine.ID); err != nil {
 		t.Fatalf("naming the owner's own agent: %v", err)
 	}
 	if _, err := pool.Exec(sys, `DELETE FROM agents WHERE id = $1`, mine.ID); err != nil {
-		t.Fatalf("deleting the agent a message and draft name: %v", err)
+		t.Fatalf("deleting the agent a message names: %v", err)
 	}
 	var stillThere int
-	if err := pool.QueryRow(sys, `SELECT count(*) FROM plugin_reply_drafts WHERE id = $1 AND agent_id IS NULL`, draft).Scan(&stillThere); err != nil || stillThere != 1 {
-		t.Fatalf("the draft after its agent's deletion: %d (%v); want kept with agent_id NULL", stillThere, err)
+	if err := pool.QueryRow(sys, `SELECT count(*) FROM plugin_messages WHERE id = $1 AND agent_id IS NULL`, m.ID).Scan(&stillThere); err != nil || stillThere != 1 {
+		t.Fatalf("the message after its agent's deletion: %d (%v); want kept with agent_id NULL", stillThere, err)
 	}
 }

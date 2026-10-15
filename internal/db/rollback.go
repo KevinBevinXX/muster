@@ -59,9 +59,8 @@ const pushSubscriptionsMigrationVersion = 13
 // and under the same row-level security; same treatment again.
 const flowRequestsMigrationVersion = 14
 
-// pluginsMigrationVersion is 0015: plugins, plugin_messages and
-// plugin_reply_drafts, owned and under the same row-level security; same
-// treatment again.
+// pluginsMigrationVersion is 0015: plugins and plugin_messages, owned and
+// under the same row-level security; same treatment again.
 const pluginsMigrationVersion = 15
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and

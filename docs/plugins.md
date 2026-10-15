@@ -179,6 +179,10 @@ an outside sender, the message id and the data scope (and, for a `no_reply`
 message, that no reply is possible), then every message field behind a content
 prefix so that no text in the message can close the block.
 
+The turn is an ordinary chat turn: your chief has the same instructions and the
+same tools on it as when you chat with it, so it can act on the message in the
+turn that tells it about the message.
+
 A delivery ends in one of three states:
 
 - **delivered**: the chief's turn completed.

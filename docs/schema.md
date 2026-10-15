@@ -41,8 +41,8 @@ buys only a word.
 | `0012` | `flow_jobs` and `flow_runner_tokens`. |
 | `0013` | `push_subscriptions` and `push_preferences`. |
 | `0014` | `flow_requests`: an agent's request for a flow, which its owner approves. |
-| `0015` | `plugins`, `plugin_messages` and `plugin_reply_drafts`: the [plugin interface](plugins.md). A message's input and a draft's body cannot be changed after they are written. |
-| `0016` | `plugin_messages.no_reply`, which cannot be changed and refuses any reply draft for its message; the claim, lease and result rules on `plugin_reply_drafts`. |
+| `0015` | `plugins` and `plugin_messages`: the [plugin interface](plugins.md). A message's input cannot be changed after it is written. |
+| `0016` | `plugin_reply_drafts` (a draft's body cannot be changed after it is written; the claim, lease and result rules) and `plugin_messages.no_reply`, which cannot be changed and refuses any reply draft for its message. |
 
 To change the schema, add a new numbered file.
 

@@ -1,26 +1,23 @@
 -- muster 0015 — PLUGINS: out-of-process connectors an owner mints a token for
 -- (internal/plugins). A plugin POSTs inbound messages to muster (plugin_messages);
--- muster hands each to its owner's chief agent as a fenced turn; the chief may
--- draft a reply the owner approves (plugin_reply_drafts) and the plugin then
--- claims and sends. muster NEVER calls a plugin: the plugin long-polls muster.
+-- muster hands each to its owner's chief agent as a fenced turn. (Reply drafts
+-- arrive in 0016.) muster NEVER calls a plugin: the plugin long-polls muster.
 --
--- 🔴 ALL THREE TABLES ARE OWNED AND UNDER FORCED ROW-LEVEL SECURITY, IN 0012's
+-- 🔴 BOTH TABLES ARE OWNED AND UNDER FORCED ROW-LEVEL SECURITY, IN 0012's
 -- SHAPE. A plugin token is found by its hash under authz.System and then acts AS
 -- ITS OWNER (authz.ViaPlugin), so owner_isolation is what keeps one owner's
--- plugin from ever seeing another owner's messages or drafts.
+-- plugin from ever seeing another owner's messages.
 --
 -- 🔴 A CHILD'S OWNER IS ITS PARENT'S OWNER, BY COMPOSITE FOREIGN KEY. A message
--- references (plugin_id, owner_id) and a draft (message_id, owner_id), so a row
--- cannot claim a parent another owner holds. The UNIQUE (id, owner_id) keys
+-- references (plugin_id, owner_id), so a row cannot claim a parent another owner
+-- holds. The UNIQUE (id, owner_id) keys
 -- those references need are declared here, on tables this migration owns — not
 -- on agents, whose key 0006's re-runnable body drops and re-creates (see 0014).
 -- The agent a row names is pinned by plugin_rows_owner_is_agents_owner, 0014's
 -- trigger shape, for the same reason.
 --
 -- 🔴 WHAT ARRIVED IS IMMUTABLE. plugin_messages_input_immutable refuses an
--- UPDATE of who sent what (flow_jobs_input_immutable's shape), and
--- plugin_reply_drafts_body_immutable refuses one of what was drafted: an
--- approval is of THESE bytes, and nothing may rewrite them after it.
+-- UPDATE of who sent what (flow_jobs_input_immutable's shape).
 --
 -- Only the sha256 of a plugin token is stored; the token is shown once.
 
@@ -93,50 +90,11 @@ CREATE TABLE IF NOT EXISTS public.plugin_messages (
 CREATE INDEX IF NOT EXISTS idx_plugin_messages_plugin_status ON public.plugin_messages (plugin_id, status, id);
 CREATE INDEX IF NOT EXISTS idx_plugin_messages_plugin_created ON public.plugin_messages (plugin_id, created_at);
 
-CREATE TABLE IF NOT EXISTS public.plugin_reply_drafts (
-    id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    owner_id     BIGINT      NOT NULL
-                 DEFAULT nullif(current_setting('muster.uid', true), '')::bigint
-                 REFERENCES public.users (id),
-    message_id   BIGINT      NOT NULL,
-    -- SET NULL, NOT CASCADE (0014's reason): the record of what an agent drafted
-    -- and what its owner decided outlives the agent. agent_name stays.
-    agent_id     BIGINT      REFERENCES public.agents (id) ON DELETE SET NULL,
-    agent_name   TEXT        NOT NULL,
-    body         TEXT        NOT NULL,
-    status       TEXT        NOT NULL DEFAULT 'pending',
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    expires_at   TIMESTAMPTZ NOT NULL,
-    decided_at   TIMESTAMPTZ,
-    approved_at  TIMESTAMPTZ,
-    claimed_at   TIMESTAMPTZ,
-    lease_until  TIMESTAMPTZ,
-    finished_at  TIMESTAMPTZ,
-    external_ref TEXT        NOT NULL DEFAULT '',
-    detail       TEXT        NOT NULL DEFAULT '',
-    CONSTRAINT plugin_reply_drafts_message_owner_fkey FOREIGN KEY (message_id, owner_id)
-        REFERENCES public.plugin_messages (id, owner_id) ON DELETE CASCADE,
-    CONSTRAINT plugin_reply_drafts_status_check CHECK (status IN
-        ('pending', 'approved', 'rejected', 'superseded', 'sent', 'failed', 'unconfirmed', 'expired')),
-    -- Everything at or past approval carries the approval's time.
-    CONSTRAINT plugin_reply_drafts_approved_has_time CHECK
-        ((status IN ('approved', 'sent', 'failed', 'unconfirmed')) = (approved_at IS NOT NULL)),
-    CONSTRAINT plugin_reply_drafts_body_cap CHECK (octet_length(body) BETWEEN 1 AND 16384),
-    CONSTRAINT plugin_reply_drafts_external_ref_cap CHECK (char_length(external_ref) <= 200),
-    CONSTRAINT plugin_reply_drafts_detail_cap CHECK (octet_length(detail) <= 4096)
-);
-
--- At most one pending draft per message: a new one supersedes it.
-CREATE UNIQUE INDEX IF NOT EXISTS plugin_reply_drafts_one_pending
-    ON public.plugin_reply_drafts (message_id) WHERE status = 'pending';
-CREATE INDEX IF NOT EXISTS idx_plugin_reply_drafts_owner_status ON public.plugin_reply_drafts (owner_id, status, id);
-CREATE INDEX IF NOT EXISTS idx_plugin_reply_drafts_agent ON public.plugin_reply_drafts (agent_id, status);
-
 -- 🔴 0014's TRIGGER, PARAMETERISED. The row's owner IS the named agent's owner,
 -- read as the writing principal (an agent it cannot see reads as no owner and is
 -- refused). TG_ARGV[0] = 'nullable' admits a NULL agent_id on any write (a
--- message not yet delivered); otherwise a NEW row must name its agent, and only
--- the foreign key's own SET NULL may clear it.
+-- message not yet delivered); otherwise (0016's drafts) a NEW row must name its
+-- agent, and only the foreign key's own SET NULL may clear it.
 CREATE OR REPLACE FUNCTION public.plugin_rows_owner_is_agents_owner() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
@@ -159,9 +117,6 @@ $$;
 DROP TRIGGER IF EXISTS plugin_messages_owner_is_agents_owner ON public.plugin_messages;
 CREATE TRIGGER plugin_messages_owner_is_agents_owner BEFORE INSERT OR UPDATE OF owner_id, agent_id
     ON public.plugin_messages FOR EACH ROW EXECUTE FUNCTION public.plugin_rows_owner_is_agents_owner('nullable');
-DROP TRIGGER IF EXISTS plugin_reply_drafts_owner_is_agents_owner ON public.plugin_reply_drafts;
-CREATE TRIGGER plugin_reply_drafts_owner_is_agents_owner BEFORE INSERT OR UPDATE OF owner_id, agent_id
-    ON public.plugin_reply_drafts FOR EACH ROW EXECUTE FUNCTION public.plugin_rows_owner_is_agents_owner('required');
 
 CREATE OR REPLACE FUNCTION public.plugin_messages_input_immutable() RETURNS trigger
 LANGUAGE plpgsql AS $$
@@ -185,40 +140,18 @@ DROP TRIGGER IF EXISTS plugin_messages_input_immutable ON public.plugin_messages
 CREATE TRIGGER plugin_messages_input_immutable BEFORE UPDATE ON public.plugin_messages
     FOR EACH ROW EXECUTE FUNCTION public.plugin_messages_input_immutable();
 
-CREATE OR REPLACE FUNCTION public.plugin_reply_drafts_body_immutable() RETURNS trigger
-LANGUAGE plpgsql AS $$
-BEGIN
-    IF NEW.owner_id IS DISTINCT FROM OLD.owner_id
-       OR NEW.message_id IS DISTINCT FROM OLD.message_id
-       OR NEW.agent_name IS DISTINCT FROM OLD.agent_name
-       OR NEW.body IS DISTINCT FROM OLD.body
-       OR NEW.created_at IS DISTINCT FROM OLD.created_at
-       OR NEW.expires_at IS DISTINCT FROM OLD.expires_at THEN
-        RAISE EXCEPTION 'plugin_reply_drafts: a draft''s body is immutable (id %)', OLD.id
-            USING ERRCODE = 'check_violation';
-    END IF;
-    RETURN NEW;
-END
-$$;
-
-DROP TRIGGER IF EXISTS plugin_reply_drafts_body_immutable ON public.plugin_reply_drafts;
-CREATE TRIGGER plugin_reply_drafts_body_immutable BEFORE UPDATE ON public.plugin_reply_drafts
-    FOR EACH ROW EXECUTE FUNCTION public.plugin_reply_drafts_body_immutable();
-
 -- Stated again outside CREATE TABLE so re-applying this body (db.RLSOn, after
 -- the rls_off rollback set them to 1) restores the principal default.
 ALTER TABLE public.plugins ALTER COLUMN owner_id
     SET DEFAULT nullif(current_setting('muster.uid', true), '')::bigint;
 ALTER TABLE public.plugin_messages ALTER COLUMN owner_id
     SET DEFAULT nullif(current_setting('muster.uid', true), '')::bigint;
-ALTER TABLE public.plugin_reply_drafts ALTER COLUMN owner_id
-    SET DEFAULT nullif(current_setting('muster.uid', true), '')::bigint;
 
 DO $$
 DECLARE
     t text;
 BEGIN
-    FOREACH t IN ARRAY ARRAY['plugins', 'plugin_messages', 'plugin_reply_drafts'] LOOP
+    FOREACH t IN ARRAY ARRAY['plugins', 'plugin_messages'] LOOP
         EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', t);
         EXECUTE format('ALTER TABLE public.%I FORCE ROW LEVEL SECURITY', t);
         EXECUTE format('DROP POLICY IF EXISTS owner_isolation ON public.%I', t);
@@ -242,5 +175,3 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public.plugins TO muster_app;
 GRANT USAGE, SELECT, UPDATE ON SEQUENCE public.plugins_id_seq TO muster_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.plugin_messages TO muster_app;
 GRANT USAGE, SELECT, UPDATE ON SEQUENCE public.plugin_messages_id_seq TO muster_app;
-GRANT SELECT, INSERT, UPDATE, DELETE ON public.plugin_reply_drafts TO muster_app;
-GRANT USAGE, SELECT, UPDATE ON SEQUENCE public.plugin_reply_drafts_id_seq TO muster_app;
