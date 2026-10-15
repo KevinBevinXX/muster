@@ -16,6 +16,11 @@ const (
 	// KindError is an API failure the CLI recorded in place of a reply (rate
 	// limit, auth failure); Text is the CLI's own message.
 	KindError = "error"
+	// KindNotice is a user record the harness wrote, not the human (a
+	// background task finishing, a slash command, a local command's output):
+	// notice.go. Notice names its source, Status a task's status, Text its
+	// one-line summary and Output the detail shown when the row is expanded.
+	KindNotice = "notice"
 )
 
 // The size caps. An Event never carries a field past these, so a batch of
@@ -64,8 +69,13 @@ type Event struct {
 	Input string `json:"input,omitempty"`
 	// OK is a result's status (is_error false).
 	OK bool `json:"ok,omitempty"`
-	// Output is a result's text, capped at MaxOutput.
+	// Output is a result's text, capped at MaxOutput (and a notice's detail).
 	Output string `json:"output,omitempty"`
+	// Notice is a notice's source (NoticeTask, NoticeCommand,
+	// NoticeCommandOutput); Status a task notice's status as the harness
+	// wrote it ("completed", "failed", "killed"…), "" when it gave none.
+	Notice string `json:"notice,omitempty"`
+	Status string `json:"status,omitempty"`
 }
 
 // Events is what one record contributes to the rendered view, in order. It is
@@ -85,6 +95,9 @@ func Events(r Record) []Event {
 		if text, ok := r.PromptText(); ok {
 			if strings.TrimSpace(text) == "" {
 				return nil
+			}
+			if n, ok := noticeOf(r, text); ok {
+				return []Event{n}
 			}
 			return []Event{{Kind: KindPrompt, Text: Cap(text, MaxText)}}
 		}

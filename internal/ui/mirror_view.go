@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -226,6 +227,8 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 				g.Attr("data-mirror-error", ""),
 				Class("max-w-[85%] self-start break-words rounded-2xl bg-danger/15 px-3 py-2 text-sm text-fg ring-1 ring-inset ring-danger/40"),
 				g.Text("⚠ "+ev.Text)))})
+		case cctranscript.KindNotice:
+			ops = append(ops, MirrorOp{Op: "append", HTML: render(noticeRow(ev))})
 		case cctranscript.KindToolCall:
 			call := ChatLine{Kind: "tool_call", ToolID: ev.ToolID, ToolName: ev.Tool, ToolTarget: ev.Target, Content: ev.Input}
 			id := toolRowID(ev.ToolID)
@@ -251,6 +254,53 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 		}
 	}
 	return ops
+}
+
+// noticeRow draws a harness notice (cctranscript.KindNotice) as a compact
+// collapsed row in the tool rows' frame — never as the human's bubble: an icon
+// for its source, its one-line summary, and a task's status; expanding shows
+// the detail (a task's result, a command's output).
+//
+// ⚠ ONLY THE MIRRORED VIEW DRAWS ONE. A dispatched agent's chat is muster's own
+// persisted messages plus ccd's reply stream, which carries a turn's text and
+// tool calls and nothing the harness injects, so no notice ever reaches it.
+func noticeRow(ev cctranscript.Event) g.Node {
+	icon, label := "🔔", "task"
+	switch ev.Notice {
+	case cctranscript.NoticeCommand:
+		icon, label = "⌘", "command"
+	case cctranscript.NoticeCommandOutput:
+		icon, label = "▸", "output"
+	}
+	// The status as the harness wrote it, drawn the tool rows' way: a known
+	// good one ✓, a known bad one ✗, anything else by name.
+	var status g.Node
+	switch ev.Status {
+	case "":
+	case "completed", "success":
+		status = Span(Class("ml-auto shrink-0 font-semibold text-accent"), g.Attr("aria-label", "status: "+ev.Status), g.Text("✓"))
+	case "failed", "error":
+		status = Span(Class("ml-auto shrink-0 font-semibold text-st-error-fg"), g.Attr("aria-label", "status: "+ev.Status), g.Text("✗"))
+	default:
+		status = Span(Class("ml-auto shrink-0 text-muted"), g.Text(ev.Status))
+	}
+	var body g.Node
+	if strings.TrimSpace(ev.Output) != "" && ev.Output != ev.Text {
+		body = Div(Class("flex flex-col gap-1 px-3 pb-2 pt-0"), toolPre("detail", ev.Output))
+	}
+	return Details(
+		g.Attr("data-notice-row", ev.Notice),
+		g.If(ev.Status != "", g.Attr("data-notice-status", ev.Status)),
+		Class("w-full max-w-[92%] min-w-0 self-start rounded-xl bg-bg/50 text-xs ring-1 ring-inset ring-line"),
+		Summary(
+			Class("flex min-h-[44px] min-w-0 cursor-pointer select-none items-center gap-2 px-3 py-2 font-medium text-fg2 hover:text-fg"),
+			Span(Class("shrink-0"), g.Attr("aria-hidden", "true"), g.Text(icon)),
+			Span(Class("shrink-0 font-mono text-muted"), g.Text(label)),
+			Span(g.Attr("data-notice-text", ""), Class("min-w-0 truncate"), g.Text(ev.Text)),
+			status,
+		),
+		body,
+	)
 }
 
 // mirrorViewScript connects the transcript socket and applies its batches, and

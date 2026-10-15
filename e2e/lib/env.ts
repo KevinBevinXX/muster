@@ -93,6 +93,9 @@ export const pluginsConnectPort = port + 32;
 // Pins: the pins spec's own server (the e2eterm binary with the mirror plugin
 // on), so its mirrored host and its pins' order are no other spec's.
 export const pinsPort = port + 36;
+// The mirrored chat spec's own server (the e2eterm binary with the mirror plugin
+// on): notices, bubble clamps, the message index and context usage.
+export const mirrorChatPort = port + 50;
 // The fake service's bearer token. Invented, like every value here.
 export const sttToken = 'e2e-stt-token-not-a-real-one';
 // The docs screenshots (e2e/docshots, `make screenshots`, never in the suite):
