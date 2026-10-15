@@ -129,10 +129,12 @@ and the preface on each message.
 - You get the usual "New task" push. The tool creates through the same path as
   `POST /api/tasks`.
 - `message_id` is optional. If it is given, it must be a plugin message that was
-  delivered to this chief, and the server appends a line to the body citing it.
+  delivered, or is being delivered, to this chief. That includes the message on
+  the turn that delivers it. The server appends a line to the body citing it.
   The link is in the body rather than a tag: a per-message tag would add a
   filter chip for every task, and it would use up one of the task's tags.
 - Each chief can file **20 gated tasks in any 24 hours**. Each one writes a
   `plugin.task_gated` audit row, and the budget is counted from those rows. A
   unit is reserved before the task is created, so if the create fails after a
-  valid request, the unit is still spent.
+  valid request, the unit is still spent. Text the database would refuse (a NUL
+  byte in the title, body or repo) is refused before the unit is reserved.

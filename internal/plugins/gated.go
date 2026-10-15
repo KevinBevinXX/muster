@@ -36,8 +36,15 @@ var ErrGatedTaskCap = errors.New("plugins: the gated-task budget for the last da
 func AgentObject(id int64) string { return "agent:" + strconv.FormatInt(id, 10) }
 
 // DeliveredTo reports whether message m was handed to agent agentID of owner
-// ownerID: it is that owner's, it settled as delivered or unconfirmed (both mean
-// the chief may have read it), and the agent it went to is agentID.
+// ownerID: it is that owner's, the agent it went to is agentID, and it is
+// delivering, delivered or unconfirmed (each means the chief may have read it).
+//
+// 🔴 `delivering` IS THE CASE THE FEATURE EXISTS FOR. It is the state DURING the
+// turn that hands the message to the chief — the turn on which the chief learns
+// of it and files a task for it (Deliverer.Deliver writes it before the turn
+// runs). Refusing it would refuse the core flow and accept only a citation made
+// on some later turn. A `queued` message names no agent (0015's CHECK), so it is
+// refused by the agent conjunct as well as by status.
 //
 // 🔴 THE OWNER CONJUNCT IS NOT REDUNDANT WITH ROW-LEVEL SECURITY. Under Postgres
 // another owner's message is invisible anyway; a Store without row-level
@@ -48,7 +55,7 @@ func DeliveredTo(m Message, agentID, ownerID int64) bool {
 	if ownerID <= 0 || m.OwnerID != ownerID || m.AgentID == nil || *m.AgentID != agentID {
 		return false
 	}
-	return m.Status == StatusDelivered || m.Status == StatusUnconfirmed
+	return m.Status == StatusDelivering || m.Status == StatusDelivered || m.Status == StatusUnconfirmed
 }
 
 // ReserveGatedTask spends one unit of agentID's gated-task budget, appending the
