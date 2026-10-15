@@ -115,6 +115,10 @@ type DraftCard struct {
 	// EarlierUnconfirmed: another draft for the same message is unconfirmed —
 	// it may already have reached the sender. The card says so.
 	EarlierUnconfirmed bool
+	// SameTextSent: an unconfirmed draft whose exact text an earlier draft for
+	// the same message was reported sent with — the card offers no re-approval
+	// (the store refuses one when that earlier draft is in its chain).
+	SameTextSent bool
 }
 
 var (
@@ -127,6 +131,9 @@ var (
 	// ErrReplyInFlight: another reply to the same message is approved and not yet
 	// settled; a second one would risk two replies reaching the sender.
 	ErrReplyInFlight = errors.New("plugins: another reply to this message is already approved and on its way")
+	// ErrAlreadySent: the draft repeats one that was reported sent, so it may not
+	// be approved again.
+	ErrAlreadySent = errors.New("plugins: this text was already reported sent")
 	// ErrResultConflict: the draft already settled with the OTHER result (409).
 	ErrResultConflict = errors.New("plugins: the draft already settled with a different result")
 )
@@ -199,6 +206,15 @@ func scanDraft(row pgx.Row) (Draft, error) {
 	d.Status = DraftStatus(st)
 	return d, err
 }
+
+// ancestorSentSQL answers whether any draft that draft $1 is a re-approval of —
+// at any depth — was reported sent.
+const ancestorSentSQL = `
+	WITH RECURSIVE up(id) AS (
+		SELECT id FROM plugin_reply_drafts WHERE reapproved_as = $1
+		UNION
+		SELECT d.id FROM plugin_reply_drafts d JOIN up u ON d.reapproved_as = u.id)
+	SELECT EXISTS (SELECT 1 FROM plugin_reply_drafts WHERE id IN (SELECT id FROM up) AND status = 'sent')`
 
 // sweep runs sweepDrafts in a transaction of its own.
 //
@@ -376,7 +392,10 @@ func (s *PGStore) DraftCards(ctx context.Context, limit int) ([]DraftCard, error
 	}
 	rows, err := s.pool.Query(ctx, `SELECT `+prefixed("d", draftCols)+`, `+prefixed("m", messageCols)+`, p.name, p.label,
 		       EXISTS (SELECT 1 FROM plugin_reply_drafts o
-		                WHERE o.message_id = d.message_id AND o.id <> d.id AND o.status = 'unconfirmed')
+		                WHERE o.message_id = d.message_id AND o.id <> d.id AND o.status = 'unconfirmed'),
+		       d.status = 'unconfirmed' AND EXISTS (SELECT 1 FROM plugin_reply_drafts o
+		                WHERE o.message_id = d.message_id AND o.status = 'sent' AND o.id < d.id
+		                  AND o.body = d.body)
 		  FROM plugin_reply_drafts d
 		  JOIN plugin_messages m ON m.id = d.message_id
 		  JOIN plugins p ON p.id = m.plugin_id
@@ -395,7 +414,7 @@ func (s *PGStore) DraftCards(ctx context.Context, limit int) ([]DraftCard, error
 		m := &c.Message
 		dest = append(dest, &m.ID, &m.OwnerID, &m.PluginID, &m.ExternalID, &m.Sender, &m.Subject, &m.Body, &m.ReceivedAt,
 			&m.CreatedAt, &mst, &m.Attempts, &m.LastAttemptAt, &m.DeliveredAt, &m.AgentID, &m.NoReply,
-			&c.PluginName, &c.PluginLabel, &c.EarlierUnconfirmed)
+			&c.PluginName, &c.PluginLabel, &c.EarlierUnconfirmed, &c.SameTextSent)
 		if err := rows.Scan(dest...); err != nil {
 			return nil, err
 		}
@@ -526,6 +545,16 @@ func (s *PGStore) ReapproveDraft(ctx context.Context, id int64) (Draft, error) {
 			d = cur
 			return ErrDraftState
 		}
+		// 🔴 NOT IF THIS TEXT IS KNOWN TO HAVE GONE: a draft this one repeats (it
+		// is a re-approval of a re-approval of …) was reported sent.
+		var sentBefore bool
+		if err := tx.QueryRow(ctx, ancestorSentSQL, id).Scan(&sentBefore); err != nil {
+			return err
+		}
+		if sentBefore {
+			d = cur
+			return ErrAlreadySent
+		}
 		if inFlight != nil {
 			d = cur
 			return inFlight
@@ -617,6 +646,23 @@ func (s *PGStore) FinishDraft(ctx context.Context, pluginID, draftID int64, r Dr
 	}
 	var d Draft
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		// 🔴 THE MESSAGE ROW FIRST, the lock order every draft write takes
+		// (lockMessage): a late result and a withdraw or re-approval of the same
+		// message's drafts are serialised rather than deadlocking, and the chain
+		// walk below sees every re-approval committed before it.
+		var messageID int64
+		err := tx.QueryRow(ctx, `SELECT d.message_id FROM plugin_reply_drafts d
+			  JOIN plugin_messages m ON m.id = d.message_id AND m.owner_id = d.owner_id
+			 WHERE d.id = $1 AND m.plugin_id = $2`, draftID, pluginID).Scan(&messageID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := lockMessage(ctx, tx, messageID, draftID); err != nil && !errors.Is(err, ErrReplyInFlight) {
+			return err
+		}
 		cur, err := scanDraft(tx.QueryRow(ctx, `SELECT `+prefixed("d", draftCols)+`
 			  FROM plugin_reply_drafts d
 			  JOIN plugin_messages m ON m.id = d.message_id AND m.owner_id = d.owner_id
@@ -657,13 +703,13 @@ func (s *PGStore) FinishDraft(ctx context.Context, pluginID, draftID int64, r Dr
 		// 🔴 A LATE "SENT" CANCELS ITS UNCLAIMED RE-APPROVAL. The owner approved
 		// this text again because nobody knew whether it had gone; now the plugin
 		// says it has, so the copy (if no plugin has taken it yet) must not go
-		// too. Lock order: this row, then its copy — ReapproveDraft's order.
+		// too. Lock order: the message (above), this row, then its copies.
 		// The whole chain: a copy can itself have lapsed and been approved again.
 		if want == DraftSent && cur.ReapprovedAs != nil {
 			rows, err := tx.Query(ctx, `
 				WITH RECURSIVE chain(id) AS (
 					SELECT $1::bigint
-					UNION ALL
+					UNION -- not ALL: a cycle (impossible through the store) ends
 					SELECT d.reapproved_as FROM plugin_reply_drafts d JOIN chain c ON d.id = c.id
 					 WHERE d.reapproved_as IS NOT NULL)
 				UPDATE plugin_reply_drafts SET status = 'expired', decided_at = now()

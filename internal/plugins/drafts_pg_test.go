@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -520,6 +521,20 @@ func TestALateSentCancelsEveryHopOfARechain(t *testing.T) {
 	if c, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); ok {
 		t.Fatalf("a two-hop re-approval was handed out after the original was sent: %+v", c)
 	}
+	// And the unconfirmed middle hop cannot be approved again now: its text went.
+	if _, err := w.s.DecideDraft(session(2), d3.ID, false); !errors.Is(err, ErrDraftState) {
+		t.Fatalf("the cancelled copy: %v; want ErrDraftState", err)
+	}
+	dbtest.OwnerExec(t, w.dsn, `UPDATE plugin_reply_drafts SET reapproved_as = NULL WHERE id = $1`, d2.ID)
+	if _, err := w.s.ReapproveDraft(session(2), d2.ID); !errors.Is(err, ErrAlreadySent) {
+		t.Fatalf("re-approving a draft whose original was reported sent: %v; want ErrAlreadySent", err)
+	}
+	cards, _ := w.s.DraftCards(session(2), 50)
+	for _, c := range cards {
+		if c.Draft.ID == d2.ID && !c.SameTextSent {
+			t.Errorf("the card of %d does not know its text was sent", d2.ID)
+		}
+	}
 }
 
 // TestAnApprovalCanBeWithdrawnUntilItIsClaimed: an approved draft no plugin has
@@ -688,3 +703,49 @@ func ids(ms []Message) []int64 {
 }
 
 func pgxConnect(dsn string) (*pgx.Conn, error) { return pgx.Connect(context.Background(), dsn) }
+
+// TestAResultTakesTheMessageLockFirst: FinishDraft waits for a transaction
+// holding the message row (the lock every draft write takes first), so a late
+// result and a withdraw or re-approval on the same message are serialised in
+// one order instead of deadlocking. CONTROL: with the lock released it lands.
+func TestAResultTakesTheMessageLockFirst(t *testing.T) {
+	w := newDraftWorld(t)
+	d := w.approve(t, w.file(t, w.m, "r"))
+	if _, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); !ok {
+		t.Fatal("claim")
+	}
+	conn, err := pgxConnect(w.dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(context.Background())
+	tx, err := conn.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(context.Background(), `SELECT 1 FROM plugin_messages WHERE id = $1 FOR UPDATE`, w.m.ID); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: true})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("FinishDraft finished (%v) while the message row was locked; want it to wait for the message lock", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+	if err := tx.Rollback(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("FinishDraft after the lock was released: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("FinishDraft did not finish after the message lock was released")
+	}
+}

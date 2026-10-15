@@ -271,8 +271,15 @@ func (s *Server) decideDraft(w http.ResponseWriter, r *http.Request, how string)
 	case errors.Is(err, plugins.ErrNotFound):
 		s.renderPluginsPage(w, r, http.StatusNotFound, "", "No such draft.")
 		return
-	case errors.Is(err, plugins.ErrDraftState) && d.Status == plugins.DraftApproved && d.ClaimedAt != nil:
+	case errors.Is(err, plugins.ErrAlreadySent):
+		s.renderPluginsPage(w, r, http.StatusConflict, "", "The plugin has since reported this reply sent, so it is not approved again.")
+		return
+	case how == "reject" && errors.Is(err, plugins.ErrDraftState) && d.Status == plugins.DraftApproved && d.ClaimedAt != nil:
 		s.renderPluginsPage(w, r, http.StatusConflict, "", "A plugin has already collected that draft, so it can no longer be withdrawn.")
+		return
+	case errors.Is(err, plugins.ErrDraftState) && (d.Status == plugins.DraftPending || d.Status == plugins.DraftApproved) &&
+		!d.ExpiresAt.After(time.Now()):
+		s.renderPluginsPage(w, r, http.StatusConflict, "", "That draft has expired: it was not sent within 7 days of being written.")
 		return
 	case errors.Is(err, plugins.ErrDraftState):
 		s.renderPluginsPage(w, r, http.StatusConflict, "", "That draft is no longer awaiting this decision (it is "+string(d.Status)+").")
@@ -406,7 +413,11 @@ func draftCardHTML(c plugins.DraftCard) string {
 <form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject"><button type="submit" class="` + flowsQuietButton + `" data-draft-reject>Reject</button></form>
 `)
 	case plugins.DraftUnconfirmed:
-		if d.ReapprovedAs != nil || d.AgentID == nil || !d.ExpiresAt.After(time.Now()) {
+		if c.SameTextSent {
+			b.WriteString(`<span class="text-xs font-semibold text-fg" data-draft-same-sent>The same text was later reported sent, so it is not approved again.</span>
+`)
+		}
+		if d.ReapprovedAs != nil || d.AgentID == nil || c.SameTextSent || !d.ExpiresAt.After(time.Now()) {
 			break
 		}
 		b.WriteString(`<form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reapprove" data-step-up-form><button type="submit" class="` +
