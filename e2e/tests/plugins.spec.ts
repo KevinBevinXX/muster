@@ -20,7 +20,9 @@ import { authenticator } from '../lib/webauthn';
 //   chief drafts a reply over /mcp → the owner, on a STALE sign-in, taps Approve
 //   and confirms with a PASSKEY → the plugin claims it once → reports sent → the
 //   card says Sent → a second draft's lease lapses → unconfirmed, not
-//   re-offered, "Approve again" offered → a no_reply message's draft is refused.
+//   re-offered, no approval offered → a third draft (its card warns) is
+//   approved, then the second is reported sent late → the third is superseded
+//   and never claimed → a no_reply message's draft is refused.
 //
 // ⚠ WHAT IS PLAYED, AND WHY. The e2e harness runs no agent runtime, so the
 // delivery TURN is not run here: `go run ./e2e/pluginfix deliver` records what a
@@ -265,6 +267,25 @@ test('a plugin posts, the chief drafts, the owner approves with a passkey on a s
   expect((await plugin.post('/plugin/v1/drafts/claim', { data: { wait_seconds: 0 } })).status(), 'a lapsed lease is never re-offered').toBe(204);
   await page.goto(browserURL + '/plugins');
   await expect(card(page, secondID)).toHaveAttribute('data-draft-status', 'unconfirmed');
-  await expect(card(page, secondID).locator('[data-draft-reapprove]')).toBeVisible();
-  await expect(card(page, secondID).locator('[data-draft-approve]')).toHaveCount(0);
+  await expect(card(page, secondID).locator('form[data-step-up-form]'), 'an unconfirmed draft offers no approval').toHaveCount(0);
+
+  // 10. THE MESSAGE-SCOPED RULE: a third draft for the same message (its card
+  //     warns that an earlier reply may have gone) is approved; THEN the plugin
+  //     reports the second sent after all. The third must not go too.
+  const third = await mcpCall('reply_draft', { message_id: firstBody.id, body: 'One more thing.' });
+  expect(third.isError, third.text).toBe(false);
+  const thirdID = (JSON.parse(third.text) as { draft_id: number }).draft_id;
+  await page.goto(browserURL + '/plugins');
+  await expect(card(page, thirdID).locator('[data-draft-twice]')).toBeVisible();
+  await Promise.all([
+    page.waitForURL((u) => u.hash === `#draft-${thirdID}`),
+    card(page, thirdID).locator('[data-draft-approve]').tap(),
+  ]);
+  await expect(card(page, thirdID)).toHaveAttribute('data-draft-status', 'approved');
+  const late = await plugin.post(`/plugin/v1/drafts/${secondID}/result`, { data: { ok: true, external_ref: 'upstream-78' } });
+  expect(late.status()).toBe(200);
+  expect(await late.json()).toEqual({ draft_id: secondID, status: 'sent' });
+  expect((await plugin.post('/plugin/v1/drafts/claim', { data: { wait_seconds: 0 } })).status(), 'the superseded third is never claimed').toBe(204);
+  await page.goto(browserURL + '/plugins');
+  await expect(card(page, thirdID)).toHaveAttribute('data-draft-status', 'superseded');
 });

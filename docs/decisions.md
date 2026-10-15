@@ -175,8 +175,10 @@ reports what happened to each one.
 - **At most once is the plugin's promise to keep, and muster makes it
   checkable.** A claimed reply is leased for two minutes. If no result comes
   back, the reply is marked unconfirmed and is never offered again, because the
-  plugin may have sent it before it died. Only the owner, who can check
-  upstream, can approve it again. A push design would have to answer the same
+  plugin may have sent it before it died; not even its owner can approve it
+  again. A new reply to the message is a new draft, and if the unconfirmed one
+  is reported sent after all, every other reply to that message that no plugin
+  has collected yet is superseded. A push design would have to answer the same
   question ("did the call that timed out arrive?") with nothing but a retry.
 
 ## Why the task table is called `notes`

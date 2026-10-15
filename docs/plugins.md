@@ -23,7 +23,7 @@ The whole loop:
 
 | door | who | routes |
 |---|---|---|
-| The **page** | you, signed in | `/plugins`: create and revoke plugin tokens; approve, reject or re-approve reply drafts |
+| The **page** | you, signed in | `/plugins`: create and revoke plugin tokens; approve or reject reply drafts |
 | The **plugin** | an `mpl_` plugin token | `POST /plugin/v1/messages`, `POST /plugin/v1/drafts/claim`, `POST /plugin/v1/drafts/{id}/result` |
 
 A plugin token is shown once, when you create it. muster stores only its
@@ -115,7 +115,9 @@ reply answers that message. `body` is exactly the text your owner approved.
 **Each claim also retries delivery.** At the start of every claim, muster tries
 again to hand your owner's queued messages to the chief, oldest first, stopping
 at the first one the chief cannot take yet. There is no other retry, so a plugin
-that long-polls keeps delivery moving.
+that long-polls keeps delivery moving. The retry runs in the background: a
+delivery is a full chat turn and can take minutes, so the claim answers without
+waiting for it, and a message already being delivered is not handed over twice.
 
 ### `POST /plugin/v1/drafts/{id}/result`: report what happened
 
@@ -143,15 +145,15 @@ receive the same reply.
 
 If no result arrives within the 2-minute lease, the reply becomes
 **unconfirmed**. muster does not know whether you sent it, so it **never offers
-it again** on its own. Your owner sees it on `/plugins`, can check the upstream,
-and may approve it again. That is a new decision, recorded in the audit log, and
-it makes a **new draft with a new `draft_id`** and the same text, which the next
-claim receives.
+it again**, and your owner cannot approve it again either. If the sender still
+needs an answer, the chief can draft a new reply to the message; its card warns
+your owner that the earlier one may already have gone.
 
 A result that arrives after the lease lapsed is still recorded, on the draft it
-was claimed as. It never settles the re-approved copy, but a late `ok: true`
-**cancels** every re-approval of it (and of those) that no claim has taken
-yet: the text has reached the sender, so it must not go again.
+was claimed as. A `"ok": true` (late or not) also **supersedes every other reply
+to the same message** that is still pending or approved and not yet claimed:
+the sender has an answer, so no second one goes. A reply some claim already
+holds is left to that claim's own result. `"ok": false` supersedes nothing.
 
 Only one reply to a message is in flight at a time: while one is approved and
 either unclaimed or within its lease, no other draft for that message can be
@@ -159,13 +161,13 @@ filed or approved.
 
 Set your HTTP client's timeout to `wait_seconds` plus at least 10 seconds. A
 claim whose answer you never received is still a claim: the reply becomes
-unconfirmed when its lease lapses, and your owner has to approve it again.
+unconfirmed when its lease lapses and is never offered again.
 
 So a plugin should:
 
 1. record the `draft_id` durably **before** sending upstream;
-2. never send the same `draft_id` twice, even after a restart (a re-approved
-   reply arrives under a new `draft_id`, so this never blocks one);
+2. never send the same `draft_id` twice, even after a restart (muster never
+   offers one twice either; a new reply always has a new `draft_id`);
 3. post the result as soon as it knows, and post it again if it did not see an
    answer (a repeat is safe).
 
@@ -286,11 +288,13 @@ Each draft is a card on `/plugins`:
 | `pending` | awaiting your decision |
 | `approved` | the next claim will hand it to the plugin, or already has (leased) |
 | `sent` / `failed` | the plugin's result |
-| `unconfirmed` | the plugin claimed it and never reported; it may have been sent. Never offered again. **Approve again** (fresh sign-in, audited) makes a new approved draft with the same text, within the original 7 days. |
+| `unconfirmed` | the plugin claimed it and never reported; it may have been sent. Never offered again, and it cannot be approved again. |
 | `rejected` | you said no |
-| `superseded` | the chief wrote a newer draft for the same message |
-| `expired` | not sent within 7 days of being written, whether pending or approved; or an unclaimed re-approval cancelled because the draft it repeats was reported sent |
+| `superseded` | the chief wrote a newer draft for the same message; or another reply to the same message was reported sent before a plugin collected this one (it may then still carry its approval time) |
+| `expired` | not sent within 7 days of being written, whether pending or approved |
 
 Filing, every decision, claim, result, lapse and expiry writes a
-`plugin.draft.*` row to the audit log. A superseded draft is recorded as a
-count on the filing that replaced it.
+`plugin.draft.*` row to the audit log. A draft superseded by a newer one is
+recorded as a count on the filing that replaced it; one superseded because
+another reply was sent has its own `plugin.draft.superseded` row naming that
+reply.
