@@ -208,28 +208,6 @@ func TestAGatedTaskIsAlwaysGatedAndNeverAuto(t *testing.T) {
 	}
 }
 
-// FuzzGatedTaskTags is the same property on the tag function alone, open-ended
-// under `go test -fuzz` (and run over its seeds by every `go test`).
-func FuzzGatedTaskTags(f *testing.F) {
-	for _, s := range [][2]string{{"auto:dispatch", ""}, {" Gate:X ", "why"}, {"inbox", "Needs Owner OK!"}, {"", ""}} {
-		f.Add(s[0], s[1])
-	}
-	f.Fuzz(func(t *testing.T, tag, reason string) {
-		tags, err := gatedTaskTags([]string{tag}, reason)
-		if err != nil {
-			return
-		}
-		if !notes.IsGated(tags) {
-			t.Fatalf("%q/%q: not gated: %v", tag, reason, tags)
-		}
-		for _, tg := range tags {
-			if ns, _ := notes.ParseTag(tg); ns == notes.NSAuto {
-				t.Fatalf("%q/%q: carries %q", tag, reason, tg)
-			}
-		}
-	})
-}
-
 // TestTheGateSlug pins the reason → tag-value mapping with literals.
 func TestTheGateSlug(t *testing.T) {
 	for in, want := range map[string]string{

@@ -204,7 +204,7 @@ func TestAPluginMessageReachesTheOwnersChiefThroughTheRealPlane(t *testing.T) {
 	if len(sent) != 1 || !strings.HasPrefix(sent[0], "/v1/responses ") {
 		t.Fatalf("the runtime saw %d request(s); want exactly one turn: %q", len(sent), sent)
 	}
-	deliveryTurnTools(t, srv, chief, strings.TrimPrefix(sent[0], "/v1/responses "))
+	deliveryTurnTools(t, srv, asUser(a), chief, strings.TrimPrefix(sent[0], "/v1/responses "))
 	m, err := ps.Message(asUser(a), first.ID)
 	if err != nil || m.Status != plugins.StatusDelivered || m.AgentID == nil || *m.AgentID != chief.ID {
 		t.Fatalf("the message after delivery: %+v (%v); want delivered to the chief", m, err)
@@ -285,10 +285,11 @@ func TestAPluginMessageReachesTheOwnersChiefThroughTheRealPlane(t *testing.T) {
 // draft a reply) on the turn that tells it about the message.
 //
 // 🔴 TWO PINS, NOT ONE: the names are compared to the server's own list for THIS
-// agent (the plumbing passes whatever the agent is offered), AND a literal name
-// is required, so a turn carrying no tools cannot pass by comparing an empty list
-// to an empty list.
-func deliveryTurnTools(t *testing.T, srv *Server, chief agents.Agent, body string) {
+// agent (the plumbing passes whatever the agent is offered), AND literal names
+// are required — a worker tool and the chief-only task_create_gated — so a turn
+// carrying no tools, or the unfiltered worker set, cannot pass by comparing a
+// list to itself.
+func deliveryTurnTools(t *testing.T, srv *Server, ctx context.Context, chief agents.Agent, body string) {
 	t.Helper()
 	var req struct {
 		Instructions string `json:"instructions"`
@@ -303,14 +304,16 @@ func deliveryTurnTools(t *testing.T, srv *Server, chief agents.Agent, body strin
 	for _, tl := range req.Tools {
 		got = append(got, tl.Name)
 	}
-	for _, d := range srv.AgentToolDefs() {
+	for _, d := range srv.AgentToolDefsFor(ctx, chief) {
 		want = append(want, d.Name)
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("the delivery turn offered the chief tools %v; want the ones its chat turn offers: %v", got, want)
 	}
-	if !slices.Contains(got, "agent_get_task") {
-		t.Fatalf("the delivery turn offered the chief %v; want it to include agent_get_task", got)
+	for _, name := range []string{"agent_get_task", "task_create_gated"} {
+		if !slices.Contains(got, name) {
+			t.Fatalf("the delivery turn offered the chief %v; want it to include %s", got, name)
+		}
 	}
 	if req.Instructions == "" || req.Instructions != srv.AgentInstructions(chief) {
 		t.Fatalf("the delivery turn's instructions are not the chief's own (%d bytes)", len(req.Instructions))
