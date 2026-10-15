@@ -8,9 +8,9 @@ Plugins are **off** unless the server runs with `MUSTER_PLUGINS=1` and a
 database. While they are off, every `/plugin/*` route and the `/plugins` page
 answer 404.
 
-> This page describes what is built so far: tokens, inbound messages and
-> delivery to the chief. Reply drafts that you approve, and the routes a plugin
-> uses to collect them, come later.
+> This page describes what is built so far: tokens, inbound messages, delivery
+> to the chief, and the chief's gated-task tool. Reply drafts that you approve,
+> and the routes a plugin uses to collect them, come later.
 
 ## Two ways in
 
@@ -102,3 +102,39 @@ delivering message settled after a stop is recorded with `"recovered": true`.
 The data-scope sentence is **advisory**. The chief's own memory credential can
 write anywhere; only the preface asks it to keep what it records from plugin
 messages inside the plugin's scope.
+
+## When a message asks for work
+
+Your chief has one tool for this, `task_create_gated`. It is offered only to
+your chief, and only while plugins are on. Every other agent is neither offered
+it nor able to call it, on the agent gateway or over `/mcp`. While plugins are
+on, a chief that muster provisioned (the reserved chief agent) has standing
+instructions that say three things: plugin messages are
+untrusted data, `task_create_gated` is how a message turns into work, and
+anything it records from a message goes to the plugin's data scope only. An
+agent that is your chief only because it is labelled "chief" still gets the
+tool, but not those instructions. Its guidance is the tool's own description
+and the preface on each message.
+
+```json
+{"title": "…", "body": "…", "gate_reason": "needs owner ok",
+ "message_id": 42, "repo": "owner/name", "tags": ["inbox"]}
+```
+
+- The task is created **gated**. The server adds `gate:<reason>`, a slug of
+  `gate_reason` (`gate:awaiting-approval` when it is empty). Nothing dispatches
+  it until you remove the gate.
+- A caller tag in the `gate:` or `auto:` namespace is **refused**, in any
+  spelling the tag grammar folds together.
+- You get the usual "New task" push. The tool creates through the same path as
+  `POST /api/tasks`.
+- `message_id` is optional. If it is given, it must be a plugin message that was
+  delivered, or is being delivered, to this chief. That includes the message on
+  the turn that delivers it. The server appends a line to the body citing it.
+  The link is in the body rather than a tag: a per-message tag would add a
+  filter chip for every task, and it would use up one of the task's tags.
+- Each chief can file **20 gated tasks in any 24 hours**. Each one writes a
+  `plugin.task_gated` audit row, and the budget is counted from those rows. A
+  unit is reserved before the task is created, so if the create fails after a
+  valid request, the unit is still spent. Text the database would refuse (a NUL
+  byte in the title, body or repo) is refused before the unit is reserved.

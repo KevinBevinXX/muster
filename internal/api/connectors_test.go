@@ -43,7 +43,11 @@ type connFixture struct {
 	store *connectors.PGStore
 }
 
-func newConnFixture(t *testing.T) *connFixture {
+func newConnFixture(t *testing.T) *connFixture { t.Helper(); return newConnFixtureWith(t, nil) }
+
+// newConnFixtureWith is newConnFixture with more extensions wired over the same
+// pool (extra may add to ext; nil adds nothing).
+func newConnFixtureWith(t *testing.T, extra func(ext *Extensions, pool *pgxpool.Pool)) *connFixture {
 	t.Helper()
 	dsn := dbtest.DSN(t)
 	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), time.Minute)
@@ -60,7 +64,11 @@ func newConnFixture(t *testing.T) *connFixture {
 	}
 	s := New(nil, AuthConfig{HookToken: connTestHookToken, ServiceToken: connTestServiceToken, UIPassword: connTestPassword},
 		log.New(io.Discard, "", 0))
-	s.UseExtensions(Extensions{Agents: agents.NewPG(pool), Connectors: store, Flows: flows.NewPG(pool)})
+	ext := Extensions{Agents: agents.NewPG(pool), Connectors: store, Flows: flows.NewPG(pool)}
+	if extra != nil {
+		extra(&ext, pool)
+	}
+	s.UseExtensions(ext)
 	return &connFixture{ctx: ctx, pool: pool, srv: s, h: s.Handler(), store: store}
 }
 

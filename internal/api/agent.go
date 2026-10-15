@@ -226,14 +226,15 @@ const agentSystemPrompt = `You are a muster worker agent. You have native tools 
 //
 // 🔴 THERE IS ONE LIST AND ONE SWITCH. agentTools is the only place a tool is
 // DECLARED; dispatchAgentTool is the only place one is EXECUTED. Both transports
-// read them: the gateway kind gets [Server.AgentToolDefs] + [Server.AgentToolDispatch]
+// read them: the gateway kind gets [Server.AgentToolDefsFor] + [Server.AgentToolDispatch]
 // on its /v1/responses turns, and POST /mcp (mcp.go) lists and calls the subset
 // whose MCP flag is set. A tool added for one transport is therefore added for
 // the other by setting a flag, never by copying a definition.
 //
 // 🔴 MCP IS AN EXPLICIT, PER-TOOL OPT-IN: THE CONNECTOR TOOLS AND THE TWO
 // BROWSER-FLOW TOOLS HAVE IT (the flow tools only FILE a request the owner
-// must approve; flow_tools.go).
+// must approve; flow_tools.go), AND SO DOES task_create_gated (it only files a
+// task gated on the owner's approval; gated_task_tool.go).
 // /mcp is served on the connect listener — the ONE muster port a claude-code
 // pod's network policy lets it reach — and that listener's contract is "the
 // connector surface and nothing else" (OnlyConnectSurface). The other tools stay
@@ -244,11 +245,22 @@ const agentSystemPrompt = `You are a muster worker agent. You have native tools 
 // which would let a pod read through a credential it was never granted under the
 // per-agent connector model. TestTheMCPToolsAreTheRegistrysMCPSubset pins both
 // sets.
+//
+// 🔴 chiefOnly IS A SECOND, ORTHOGONAL AXIS: WHO, NOT WHICH TRANSPORT. A
+// chief-only tool is offered (on both transports) to the owner's CHIEF agent and
+// to no other — the predicate is chiefPredicate's, the one every chief decision in
+// this package uses. It is enforced twice: the listing ([Server.AgentToolDefsFor],
+// [Server.MCPToolDefsFor]) leaves it out for anyone else, and dispatchAgentTool
+// refuses it for anyone else, because a gateway runtime can name a tool it was
+// never offered and the dispatch closure is the trust boundary.
+// TestTheChiefOnlyToolsAreLedgered pins the set.
 type agentTool struct {
 	def agents.ToolDef
 	// mcp: also served over POST /mcp to claude-code agents. See above before
 	// setting it.
 	mcp bool
+	// chiefOnly: offered to, and callable by, the chief agent alone. See above.
+	chiefOnly bool
 }
 
 // agentTools is the registry. The connector tools are present only when the
@@ -282,13 +294,71 @@ func (s *Server) agentTools() []agentTool {
 			tools = append(tools, agentTool{def: d, mcp: true})
 		}
 	}
+	// The plugin interface (gated_task_tool.go): the chief may FILE a task its
+	// owner must approve. MCP too, so a claude-code chief reaches it; chief-only,
+	// because the chief is the one agent plugin messages are delivered to.
+	if s.ext.Plugins != nil {
+		tools = append(tools, agentTool{def: gatedTaskToolDef(), mcp: true, chiefOnly: true})
+	}
 	return tools
 }
 
-// AgentToolDefs returns the native function tools given to gateway agents: every
-// tool in the registry.
-func (s *Server) AgentToolDefs() []agents.ToolDef {
-	tools := s.agentTools()
+// toolsFor is the registry as agent a may see it: every tool, minus the
+// chief-only ones unless a is its owner's chief. It reads the agent list only
+// when the registry HAS a chief-only tool, so a deployment without one pays
+// nothing per turn.
+//
+// 🔴 IT FAILS CLOSED: an agent list that cannot be read offers no chief-only
+// tool, the same direction agentIsChief's other callers take for the reverse
+// question.
+func (s *Server) toolsFor(ctx context.Context, a agents.Agent) []agentTool {
+	all := s.agentTools()
+	chief, decided := false, false
+	out := make([]agentTool, 0, len(all))
+	for _, t := range all {
+		if t.chiefOnly {
+			if !decided {
+				chief, decided = s.isChiefAgent(ctx, a), true
+			}
+			if !chief {
+				continue
+			}
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+// chiefOnlyTool reports whether the registry declares name chief-only. It reads
+// the registry rather than a second list, so the flag is the one place the
+// decision is written.
+func (s *Server) chiefOnlyTool(name string) bool {
+	for _, t := range s.agentTools() {
+		if t.def.Name == name {
+			return t.chiefOnly
+		}
+	}
+	return false
+}
+
+// isChiefAgent answers chiefPredicate for a's CURRENT row (a caller's copy of the
+// row may predate a relabel). A read error is "not the chief".
+func (s *Server) isChiefAgent(ctx context.Context, a agents.Agent) bool {
+	_, chief, err := s.agentIsChief(ctx, a.ID)
+	if err != nil {
+		s.logger.Printf("agent tools: agent %d: could not decide whether it is the chief: %v", a.ID, err)
+		return false
+	}
+	return chief
+}
+
+// AgentToolDefsFor returns the native function tools given to gateway agent a:
+// every tool in the registry a may see (toolsFor).
+//
+// 🔴 THERE IS NO AGENT-LESS VARIANT, ON PURPOSE. An unfiltered listing is how a
+// chief-only tool would reach a worker; every consumer names the agent.
+func (s *Server) AgentToolDefsFor(ctx context.Context, a agents.Agent) []agents.ToolDef {
+	tools := s.toolsFor(ctx, a)
 	defs := make([]agents.ToolDef, 0, len(tools))
 	for _, t := range tools {
 		defs = append(defs, t.def)
@@ -296,10 +366,11 @@ func (s *Server) AgentToolDefs() []agents.ToolDef {
 	return defs
 }
 
-// MCPToolDefs returns the registry's MCP subset, in registry order.
-func (s *Server) MCPToolDefs() []agents.ToolDef {
+// MCPToolDefsFor returns the MCP subset of what agent a may see, in registry
+// order.
+func (s *Server) MCPToolDefsFor(ctx context.Context, a agents.Agent) []agents.ToolDef {
 	var defs []agents.ToolDef
-	for _, t := range s.agentTools() {
+	for _, t := range s.toolsFor(ctx, a) {
 		if t.mcp {
 			defs = append(defs, t.def)
 		}
@@ -392,6 +463,13 @@ func (s *Server) AgentToolDispatch(ctx context.Context, a agents.Agent) agents.T
 
 func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, arguments string) string {
 	arg := func(v any) error { return json.Unmarshal([]byte(orEmptyJSON(arguments)), v) }
+	// 🔴 THE CHIEF-ONLY RE-CHECK. The listing already leaves a chief-only tool out
+	// for any other agent, but a gateway runtime can call a name it was not
+	// offered, and this closure runs whatever it is handed — so the decision is
+	// made again here, against the agent's current row.
+	if s.chiefOnlyTool(name) && !s.isChiefAgent(ctx, a) {
+		return toolErr("%s is available to your owner's chief agent only", name)
+	}
 	switch name {
 	case "agent_get_task":
 		if a.NoteID == nil {
@@ -449,6 +527,8 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return s.toolFlowRequest(ctx, a, arguments)
 	case "browser_flow_status":
 		return s.toolFlowStatus(ctx, a, arguments)
+	case gatedTaskToolName:
+		return s.toolTaskCreateGated(ctx, a, arguments)
 	case "connector_status":
 		var in struct {
 			Name        string `json:"name"`

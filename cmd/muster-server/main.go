@@ -393,7 +393,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// The plugin interface: only with MUSTER_PLUGINS=1 AND a database (its
 	// tokens and messages are rows). A message is handed to the owner's chief
 	// through the agent gateway; with none, messages are stored and stay queued.
-	if cfg.Plugins && a.pool != nil {
+	if cfg.pluginsEnabled() {
 		ext.Plugins = plugins.NewPG(a.pool)
 		if gw != nil {
 			ext.PluginGateway = gw

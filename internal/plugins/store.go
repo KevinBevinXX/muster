@@ -65,6 +65,9 @@ type Store interface {
 	// that agent is in flight: such a row was left by a process that died
 	// mid-turn, and it may have been pasted.
 	RecoverDeliveries(ctx context.Context, agentID int64) (int, error)
+	// ReserveGatedTask spends one unit of an agent's gated-task budget (gated.go),
+	// or returns ErrGatedTaskCap.
+	ReserveGatedTask(ctx context.Context, agentID int64, messageID *int64) error
 }
 
 // PGStore is the Postgres Store.

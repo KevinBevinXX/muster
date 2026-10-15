@@ -919,6 +919,14 @@ const (
 const minGoTrueSecretLen = 32
 
 // goTrueConfigured reports whether muster's GoTrue is wired at all.
+// pluginsEnabled is THE predicate for "the plugin interface is on": the flag AND
+// a database (its tokens and messages are rows; buildApp connects one exactly
+// when Database is set, or refuses to boot). It decides two things that must
+// agree — whether the plugin store (and with it task_create_gated) is wired, and
+// whether the chief's prose describes plugins (agentSpecConfig) — so both read it
+// here rather than spelling it twice.
+func (c config) pluginsEnabled() bool { return c.Plugins && c.Database != "" }
+
 func (c config) goTrueConfigured() bool { return c.GoTrueURL != "" && c.GoTrueSecret != "" }
 
 // validateAuthMode refuses an auth configuration that would boot unsafe.
