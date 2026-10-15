@@ -40,10 +40,11 @@ import (
 //
 // PHONE ERGONOMICS, which the browser suite measures at 390×844: the input is
 // 16px (text-base) — iOS zooms the page on focusing anything smaller and does
-// not zoom back; both controls are 44px touch targets; the form is the last
-// thing in an h-dvh column and carries the safe-area inset, so with
-// interactive-widget=resizes-content it sits on top of the on-screen keyboard
-// rather than under it.
+// not zoom back; both controls are 44px touch targets; the form carries the
+// safe-area inset. On the Terminal views it is the last thing in an h-dvh
+// column, so with interactive-widget=resizes-content it sits on top of the
+// on-screen keyboard rather than under it. On the Rendered view it is Pinned
+// (position:fixed to the visible viewport's bottom; composerPinScript).
 
 // MirrorSendPath is where the rendered view's composer posts a message: into
 // the session's Claude Code pane, and only that.
@@ -96,6 +97,11 @@ type ComposerView struct {
 	// composer draws none either way: there is nothing its text could be sent
 	// to. See dictate.go.
 	Dictate string
+	// Pinned draws the composer position:fixed to the bottom of the VISIBLE
+	// viewport instead of as the last in-flow child of the page's column, and
+	// adds composerPinScript. The page must reserve the room it takes
+	// (pinnedShellClass on its body). See composerPinScript for why.
+	Pinned bool
 }
 
 // MirrorComposerView is ComposerView under the name it had while only mirrored
@@ -173,9 +179,13 @@ func mirrorComposer(v ComposerView) g.Node {
 	for _, f := range v.fields() {
 		hidden = append(hidden, Input(Type("hidden"), Name(f.Name), Value(f.Value)))
 	}
+	place := "flex-none"
+	if v.Pinned {
+		place = "fixed inset-x-0 bottom-0 z-20"
+	}
 	return Div(
 		ID("mv-compose"),
-		Class("flex-none border-t border-line bg-bg"),
+		Class(place+" border-t border-line bg-bg"),
 		// The send's outcome, inline: why it was not sent, or that there was
 		// nothing to send. Empty and hidden otherwise — unless the page was
 		// reached by the redirect that answers a send the browser submitted,
@@ -226,7 +236,80 @@ func mirrorComposer(v ComposerView) g.Node {
 		),
 		g.If(off, P(ID("mv-readonly"), Class("px-3 pb-2 text-[11px] text-muted"), g.Text(v.Disabled))),
 		dictateScript(dictate),
+		g.If(v.Pinned, composerPinScript()),
 	)
+}
+
+// pinnedShellClass is the body of a page whose composer is Pinned: the same
+// fixed-height app shell (a flex column, only the transcript scrolls), but its
+// height is the VISIBLE viewport's as composerPinScript measures it (100dvh
+// until it runs, or without script), and its bottom padding is the pinned
+// composer's height (4.5rem — one input row — until measured), so the
+// column's last child ends exactly where the composer starts.
+const pinnedShellClass = "flex h-[var(--mv-vh,100dvh)] flex-col overflow-hidden pb-[var(--mv-compose-h,4.5rem)]"
+
+// composerPinScript keeps a Pinned composer at the bottom of what is on
+// screen, and the page's column sized to end above it.
+//
+// 🔴 WHY PINNED, NOT IN FLOW (the Rendered view, a phone): an in-flow composer
+// is wherever the bottom of an h-dvh body is, and on a real phone that can be
+// below what is visible — the body cannot scroll (overflow-hidden), so a
+// collapsing browser toolbar that sized 100dvh against one state while the
+// screen shows the other leaves the composer under the chrome with no way to
+// scroll it back (reported: it reappeared only after Terminal → tap →
+// Rendered). position:fixed; bottom:0 is placed against the viewport itself,
+// whatever the body's height. ⚠ The mechanism is a hypothesis; emulation has
+// no collapsing toolbar, so no browser test reproduces it.
+//
+// What this script adds on top:
+//   - --mv-compose-h: the composer's measured height (a notice, the mic's
+//     line, a read-only note all change it), which the body reserves;
+//   - --mv-vh: the bottom of the VISUAL viewport in layout-viewport pixels,
+//     the body's height — so the transcript's end is never behind the
+//     composer or off screen;
+//   - the composer's `bottom`: the layout viewport below the visual one. Zero
+//     where the keyboard resizes the page (interactive-widget=resizes-content,
+//     Chrome); the keyboard's height where it only overlays it (iOS Safari),
+//     so the composer rides on top of the keyboard.
+//
+// 🔴 A PINCH IS NOT A RESIZE (the Terminal view's rule, terminal.go): a zoom
+// changes visualViewport.scale and shrinks its height without the page being
+// any shorter, so a change at a scale other than 1 is ignored.
+func composerPinScript() g.Node {
+	return Script(g.Raw(`
+(function () {
+  var box = document.getElementById('mv-compose');
+  if (!box) return;
+  var root = document.documentElement;
+  var pending = false;
+  function measure() {
+    pending = false;
+    var vv = window.visualViewport;
+    var bottom = window.innerHeight;
+    if (vv) {
+      if (Math.abs(vv.scale - 1) > 0.001) return;
+      bottom = Math.min(window.innerHeight, vv.height + vv.offsetTop);
+    }
+    var kb = Math.max(0, Math.round(window.innerHeight - bottom));
+    box.style.bottom = kb ? kb + 'px' : '';
+    root.style.setProperty('--mv-vh', Math.round(bottom) + 'px');
+    root.style.setProperty('--mv-compose-h', Math.ceil(box.getBoundingClientRect().height) + 'px');
+  }
+  function schedule() {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(measure);
+  }
+  measure();
+  if (typeof ResizeObserver !== 'undefined') { new ResizeObserver(schedule).observe(box); }
+  window.addEventListener('resize', schedule);
+  window.addEventListener('pageshow', schedule);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', schedule);
+    window.visualViewport.addEventListener('scroll', schedule);
+  }
+})();
+`))
 }
 
 // mirrorComposerScript sends the composer's text without leaving the page.

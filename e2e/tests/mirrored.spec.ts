@@ -456,6 +456,151 @@ test('an interactive host offers the composer: a fresh sign-in sends into the pa
 });
 
 // ---------------------------------------------------------------------------
+// THE RENDERED VIEW'S COMPOSER STAYS ON SCREEN on a phone (operator report: on
+// a real phone it was missing until Terminal → tap → Rendered).
+//
+// ⚠ NOT A REPRODUCTION. The suspected cause is a collapsing browser toolbar
+// leaving the bottom of the page's h-dvh shell under the chrome, and Chromium
+// emulation has no such toolbar (100dvh == innerHeight here). What this pins
+// is the PROPERTY the fix gives — the composer is placed against the viewport,
+// not at the bottom of the body — by making the body TALLER than the screen
+// (the shape of that mismatch) and checking the composer is still on it. 🔴 A
+// REGRESSION GUARD: red at the commit before the fix, where the composer is an
+// in-flow last child (position: static) and lands below the screen.
+//
+// Also the Terminal composer's phone checks (below), for this view: 44px
+// targets, a 16px input, nothing wider than the screen, and on screen with the
+// keyboard up — both the kind that resizes the page and the kind that only
+// overlays it (iOS; played with a visualViewport shorter than the window).
+// ---------------------------------------------------------------------------
+test('the Rendered composer stays on screen at a phone size: pinned to the viewport, above the transcript\'s end, and above the keyboard', async ({ page }) => {
+  await stopMirror();
+  const tr = newTranscript();
+  // A conversation longer than the screen, so the transcript scrolls.
+  let more = '';
+  for (let i = 1; i <= 30; i++) more += prompt(`question ${i}`) + reply(`answer number ${i}`);
+  fs.appendFileSync(tr, more);
+  mirrorProc = startMirror(true, tr);
+  const W = 412;
+  const H = 915;
+  const lastAnswer = () => page.locator('#mv-log [data-bubble="assistant"]').last();
+  // onScreen: the composer's input and Send are inside [0, bottom] and the width.
+  async function onScreen(bottom: number, why: string, soft = false) {
+    const e = soft ? expect.soft : expect;
+    for (const el of [page.locator('#mv-input'), page.locator('#mv-send')]) {
+      const b = (await el.boundingBox())!;
+      e(b.y + b.height, `${why}: the composer is above the bottom of the screen (${bottom}px)`).toBeLessThanOrEqual(bottom + 0.5);
+      e(b.y, `${why}: and not pushed off the top`).toBeGreaterThanOrEqual(0);
+      e(b.x + b.width, `${why}: the composer fits the width`).toBeLessThanOrEqual(W);
+    }
+  }
+  // endAboveComposer: the transcript's last message ends above the composer
+  // (nothing of it hidden behind it) and is on screen.
+  async function endAboveComposer(why: string) {
+    await expect(lastAnswer()).toContainText('answer number 30');
+    await expect
+      .poll(async () => {
+        const a = (await lastAnswer().boundingBox())!;
+        const c = (await page.locator('#mv-compose').boundingBox())!;
+        return a.y + a.height <= c.y + 0.5 && a.y + a.height > 0;
+      }, { message: `${why}: the last message ends above the composer, on screen` })
+      .toBe(true);
+  }
+
+  await login(page);
+  await waitForClaude(page);
+  // The real path: the Agents list, scrolled (as a phone collapses its toolbar
+  // on), then the card.
+  await page.goto(origin + '/agents');
+  await expect(viewCard(page, 'main')).toBeVisible();
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+  await Promise.all([page.waitForURL((u) => u.pathname === '/mirror/view'), viewCard(page, 'main').locator('a').first().tap()]);
+  await expect(page.locator('#mv-input')).toBeEnabled();
+
+  // As loaded: on screen, phone-shaped, and the transcript ends above it.
+  await onScreen(H, 'as loaded');
+  for (const el of [page.locator('#mv-input'), page.locator('#mv-send')]) {
+    expect((await el.boundingBox())!.height, 'a 44px touch target').toBeGreaterThanOrEqual(44);
+  }
+  expect(await page.locator('#mv-input').evaluate((el) => parseFloat(getComputedStyle(el).fontSize)), 'a 16px input: iOS zooms the page on anything smaller').toBeGreaterThanOrEqual(16);
+  await endAboveComposer('as loaded');
+  await noHorizontalScroll(page);
+
+  // 🔴 THE GUARD. A body taller than the screen — what a toolbar that sized
+  // 100dvh against its other state leaves: the composer is still on screen,
+  // because it is placed against the viewport. ⚠ The document is held at
+  // scrollY 0, as a person finds it: overflow:hidden stops a FINGER scrolling
+  // the page, not a script, and a scripted scroll here brings an in-flow
+  // composer back into view (measured: that version of this check was green
+  // at the pre-fix commit).
+  await page.addStyleTag({ content: 'html body { height: calc(100dvh + 160px) !important; }' });
+  await page.evaluate(() => window.scrollTo(0, 0));
+  expect(await page.evaluate(() => window.scrollY), 'the document is not scrolled').toBe(0);
+  await onScreen(H, 'with the page taller than the screen', true);
+  expect
+    .soft(await page.locator('#mv-compose').evaluate((el) => getComputedStyle(el).position), 'the Rendered composer is pinned to the viewport (position: fixed), not in flow at the bottom of the body')
+    .toBe('fixed');
+  expect(test.info().errors, 'the Rendered composer guard').toEqual([]);
+  await page.evaluate(() => document.querySelectorAll('style').forEach((s) => s.textContent?.includes('160px') && s.remove()));
+
+  // The keyboard RESIZES the page (interactive-widget=resizes-content): on
+  // screen, and the transcript's end still above it.
+  await page.locator('#mv-input').tap();
+  await page.setViewportSize({ width: W, height: 460 });
+  await onScreen(460, 'in a keyboard-height viewport');
+  await endAboveComposer('in a keyboard-height viewport');
+  await page.setViewportSize({ width: W, height: H });
+  await onScreen(H, 'after the keyboard closed');
+
+  // The keyboard OVERLAYS the page (iOS Safari: the window keeps its height,
+  // the visual viewport shrinks): the composer rides on top of the keyboard.
+  const KB = 300;
+  await page.addInitScript((kb) => {
+    const vv = new EventTarget();
+    Object.defineProperties(vv, {
+      height: { get: () => window.innerHeight - kb },
+      width: { get: () => window.innerWidth },
+      offsetTop: { value: 0 },
+      offsetLeft: { value: 0 },
+      scale: { value: 1 },
+    });
+    Object.defineProperty(window, 'visualViewport', { configurable: true, get: () => vv });
+  }, KB);
+  await page.reload();
+  await expect(page.locator('#mv-input')).toBeEnabled();
+  await expect.poll(async () => { const b = (await page.locator('#mv-send').boundingBox())!; return b.y + b.height; },
+    { message: 'with an overlaid keyboard the composer sits above it' }).toBeLessThanOrEqual(H - KB + 0.5);
+  await onScreen(H - KB, 'above an overlaid keyboard');
+  await endAboveComposer('above an overlaid keyboard');
+  await noHorizontalScroll(page);
+
+  // A composer TALLER than the shell's no-script fallback reserve (4.5rem =
+  // 72px): a read-only host's composer carries its note. Only the MEASURED
+  // reserve (--mv-compose-h) keeps the transcript's end out from behind it —
+  // the 65px interactive composer above fits inside the fallback either way.
+  // A fresh page: the stubbed visualViewport above is that page's alone.
+  await stopMirror();
+  mirrorProc = startMirror(false, tr);
+  const ro = await page.context().newPage();
+  await ro.goto(origin + viewPath('main'));
+  await expect(ro.locator('#mv-readonly')).toBeVisible();
+  const roLast = ro.locator('#mv-log [data-bubble="assistant"]').last();
+  await expect(roLast).toContainText('answer number 30');
+  const roH = (await ro.locator('#mv-compose').boundingBox())!.height;
+  expect(roH, 'the read-only composer is taller than the 72px fallback reserve (else this check cannot see the measurement)').toBeGreaterThan(72);
+  await expect
+    .poll(async () => {
+      const a = (await roLast.boundingBox())!;
+      const c = (await ro.locator('#mv-compose').boundingBox())!;
+      return Math.round(a.y + a.height - c.y);
+    }, { message: `a ${Math.round(roH)}px read-only composer: the last message ends above it (overlap px, must be <= 0)` })
+    .toBeLessThanOrEqual(0);
+  await ro.close();
+  await stopMirror();
+  mirrorProc = startMirror(false);
+});
+
+// ---------------------------------------------------------------------------
 // THE TERMINAL VIEW'S COMPOSER: a message box for a session whose pane is NOT
 // Claude Code (here `scratch` — a shell, opencode, anything). Such a session has
 // no rendered view, so before this its card opened a Terminal with no way to

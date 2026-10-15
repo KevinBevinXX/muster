@@ -78,7 +78,11 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 	ref := MirrorRef{Host: v.Host, Session: v.Session, Window: v.Window}
 	composer := ComposerView{SendPath: MirrorSendPath, Host: v.Host, Session: v.Session, Window: v.Window,
 		Placeholder: "Message Claude…", Aria: "Message Claude in this session", DisabledPlaceholder: "Read-only host",
-		Notice: v.Notice, NoticeOK: v.NoticeOK, Nonce: v.Nonce, Dictate: v.Dictate}
+		Notice: v.Notice, NoticeOK: v.NoticeOK, Nonce: v.Nonce, Dictate: v.Dictate,
+		// Pinned to the visible viewport, not in flow at the bottom of the body:
+		// on a phone the body's bottom can be under the browser's chrome, and
+		// this page cannot be scrolled to bring it back (composerPinScript).
+		Pinned: true}
 	if !v.Interactive {
 		composer.Disabled = MirrorReadOnlyNote
 	}
@@ -95,7 +99,9 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				faroHead(),
 			),
 			Body(
-				Class("flex h-dvh flex-col overflow-hidden bg-bg text-fg antialiased"),
+				// The app shell (only #mv-log scrolls), sized to the visible
+				// viewport and ending above the pinned composer.
+				Class(pinnedShellClass+" bg-bg text-fg antialiased"),
 				Header(
 					Class("flex items-center gap-2 border-b border-line px-2 py-1.5"),
 					A(
@@ -316,6 +322,14 @@ func mirrorViewScript() g.Node {
       retry = Math.min(retry + 1, 6);
       setTimeout(connect, 500 * Math.pow(2, retry - 1));
     };
+  }
+  // The log's box shrinks when the keyboard opens or the composer grows: a
+  // reader at the end stays at the end, rather than the last message sliding
+  // under the box's bottom edge.
+  var atEnd = true;
+  log.addEventListener('scroll', function () { atEnd = nearBottom(); }, { passive: true });
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(function () { if (atEnd) log.scrollTop = log.scrollHeight; }).observe(log);
   }
   window.addEventListener('pagehide', function () { closed = true; if (sock) sock.close(); });
   connect();

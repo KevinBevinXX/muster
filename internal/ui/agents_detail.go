@@ -173,7 +173,8 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// container (via the flex-1 + min-h-0 chain). With min-h-dvh the body
 				// had no definite height, so the flex children grew with content and the
 				// WINDOW scrolled instead — making logEl.scrollTop a no-op (autoscroll
-				// silently did nothing). The input bar is position:fixed (out of flow).
+				// silently did nothing). The input bar is an IN-FLOW flex-none child at
+				// the bottom of the chat pane (agentChatPane) — it is not position:fixed.
 				Class("flex h-dvh flex-col overflow-hidden bg-bg text-fg antialiased"),
 				// SPA navigation: boost the sidebar tabs + any internal links into AJAX
 				// body-swaps. The chat WebSocket is made boost-safe (torn down on the
@@ -196,7 +197,7 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// carry lg:pl-72 so nothing sits under the sidebar.
 				agentDetailHeader(v),
 				// The detail page IS the chat: a single full-height chat pane between the
-				// header and the fixed input bar (flex-1 + min-h-0 so it fills + scrolls).
+				// header and the input bar at its bottom (flex-1 + min-h-0 so it fills + scrolls).
 				// 🔴 TWO ELEMENTS, NOT ONE, AND THAT IS THE FIX RATHER THAN A TIDY-UP.
 				// This used to be a single <main class="mx-auto w-full max-w-xl … lg:pl-72">:
 				// one box 576px wide with 288px of LEFT PADDING inside it. Measured on a
