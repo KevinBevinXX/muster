@@ -264,6 +264,11 @@ func (v *validatingPlugins) Submit(ctx context.Context, id int64, in plugins.Mes
 // 4-byte rune may arrive as a 12-byte surrogate pair. The decoded caps still
 // refuse a body one byte over 16 KiB.
 func TestAValidMessageIsReadWhateverItsJSONEscaping(t *testing.T) {
+	// The read cap is the route's DoS bound, so its VALUE is pinned as a literal:
+	// the "over the read cap" row pads by the constant and so follows any value.
+	if plugins.MaxRequestBytes != 105328 {
+		t.Fatalf("MaxRequestBytes = %d; want 105328 (6×16384 + 12×200 + 12×200 + 6×200 + 1024)", plugins.MaxRequestBytes)
+	}
 	store := &validatingPlugins{}
 	_, h, _ := newPluginsDoorServer(t, store)
 	marshal := func(in map[string]string) string {
