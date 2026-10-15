@@ -530,10 +530,17 @@ func TestALateSentCancelsEveryHopOfARechain(t *testing.T) {
 		t.Fatalf("re-approving a draft whose original was reported sent: %v; want ErrAlreadySent", err)
 	}
 	cards, _ := w.s.DraftCards(session(2), 50)
+	found := false
 	for _, c := range cards {
-		if c.Draft.ID == d2.ID && !c.OriginalSent {
-			t.Errorf("the card of %d does not know its text was sent", d2.ID)
+		if c.Draft.ID == d2.ID {
+			found = true
+			if !c.OriginalSent {
+				t.Errorf("the card of %d does not know its text was sent", d2.ID)
+			}
 		}
+	}
+	if !found {
+		t.Fatalf("no card for draft %d", d2.ID)
 	}
 }
 
@@ -772,10 +779,17 @@ func TestTheCardAndTheStoreAgreeOnReapprovingSentText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	found := false
 	for _, c := range cards {
-		if c.Draft.ID == y.ID && (c.Draft.Status != DraftUnconfirmed || c.OriginalSent) {
-			t.Fatalf("y's card: %s OriginalSent=%v; want unconfirmed and re-approvable", c.Draft.Status, c.OriginalSent)
+		if c.Draft.ID == y.ID {
+			found = true
+			if c.Draft.Status != DraftUnconfirmed || c.OriginalSent {
+				t.Fatalf("y's card: %s OriginalSent=%v; want unconfirmed and re-approvable", c.Draft.Status, c.OriginalSent)
+			}
 		}
+	}
+	if !found {
+		t.Fatalf("no card for draft %d", y.ID)
 	}
 	if _, err := w.s.ReapproveDraft(session(2), y.ID); err != nil {
 		t.Fatalf("the store refuses what the card offers: %v", err)

@@ -207,14 +207,21 @@ func scanDraft(row pgx.Row) (Draft, error) {
 	return d, err
 }
 
-// ancestorSentSQL answers whether any draft that draft $1 is a re-approval of —
-// at any depth — was reported sent.
-const ancestorSentSQL = `
-	WITH RECURSIVE up(id) AS (
-		SELECT id FROM plugin_reply_drafts WHERE reapproved_as = $1
-		UNION
-		SELECT d.id FROM plugin_reply_drafts d JOIN up u ON d.reapproved_as = u.id)
-	SELECT EXISTS (SELECT 1 FROM plugin_reply_drafts WHERE id IN (SELECT id FROM up) AND status = 'sent')`
+// originalSent is the ONE rule "a draft this one re-approves, at any depth, was
+// reported sent", as a boolean SQL expression over the draft id expression id
+// (a parameter or an outer column). ReapproveDraft refuses on it and DraftCards
+// hides Approve again on it, so the store and the card cannot disagree.
+func originalSent(id string) string {
+	return `EXISTS (
+		WITH RECURSIVE up(id) AS (
+			SELECT o.id FROM plugin_reply_drafts o WHERE o.reapproved_as = ` + id + `
+			UNION
+			SELECT a.id FROM plugin_reply_drafts a JOIN up u ON a.reapproved_as = u.id)
+		SELECT 1 FROM plugin_reply_drafts x WHERE x.id IN (SELECT id FROM up) AND x.status = 'sent')`
+}
+
+// ancestorSentSQL is originalSent for draft $1.
+var ancestorSentSQL = `SELECT ` + originalSent("$1")
 
 // sweep runs sweepDrafts in a transaction of its own.
 //
@@ -393,12 +400,7 @@ func (s *PGStore) DraftCards(ctx context.Context, limit int) ([]DraftCard, error
 	rows, err := s.pool.Query(ctx, `SELECT `+prefixed("d", draftCols)+`, `+prefixed("m", messageCols)+`, p.name, p.label,
 		       EXISTS (SELECT 1 FROM plugin_reply_drafts o
 		                WHERE o.message_id = d.message_id AND o.id <> d.id AND o.status = 'unconfirmed'),
-		       d.status = 'unconfirmed' AND EXISTS (
-		           WITH RECURSIVE up(id) AS (
-		               SELECT o.id FROM plugin_reply_drafts o WHERE o.reapproved_as = d.id
-		               UNION
-		               SELECT a.id FROM plugin_reply_drafts a JOIN up u ON a.reapproved_as = u.id)
-		           SELECT 1 FROM plugin_reply_drafts x WHERE x.id IN (SELECT id FROM up) AND x.status = 'sent')
+		       d.status = 'unconfirmed' AND `+originalSent("d.id")+`
 		  FROM plugin_reply_drafts d
 		  JOIN plugin_messages m ON m.id = d.message_id
 		  JOIN plugins p ON p.id = m.plugin_id
