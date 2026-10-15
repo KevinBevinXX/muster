@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -84,7 +85,8 @@ var mintedPluginRE = regexp.MustCompile(`id="minted-plugin-token" readonly value
 // runtime is a fake. A member mints a plugin on /plugins; the hook token is
 // refused on the plugin door; the plugin's token posts a message (202); the
 // owner's chief receives it ONCE, fenced, in the plugin's own session, with the
-// bearer its token derives; the message is `delivered` and audited; a repeat POST
+// bearer its token derives and WITH THE TOOLS THAT CHIEF IS OFFERED ON A CHAT
+// TURN (deliveryTurnTools); the message is `delivered` and audited; a repeat POST
 // answers the same id; and another member's plugin cannot reach this chief.
 func TestAPluginMessageReachesTheOwnersChiefThroughTheRealPlane(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -133,7 +135,7 @@ func TestAPluginMessageReachesTheOwnersChiefThroughTheRealPlane(t *testing.T) {
 
 	ps := plugins.NewPG(pool)
 	srv := New(nil, AuthConfig{HookToken: tokTestHook, UIPassword: "plugin-seam-operator-pw"}, log.New(io.Discard, "", 0))
-	srv.UseExtensions(Extensions{Agents: as, Users: users.NewPG(pool), Plugins: ps, PluginGateway: gw})
+	srv.UseExtensions(Extensions{Agents: as, Users: users.NewPG(pool), Plugins: ps, PluginGateway: gw, Gateway: gw})
 	const userHeader = "X-Plugin-Test-User"
 	srv.sessionUserOverride = func(r *http.Request) int64 {
 		v, _ := strconv.ParseInt(r.Header.Get(userHeader), 10, 64)
@@ -202,6 +204,7 @@ func TestAPluginMessageReachesTheOwnersChiefThroughTheRealPlane(t *testing.T) {
 	if len(sent) != 1 || !strings.HasPrefix(sent[0], "/v1/responses ") {
 		t.Fatalf("the runtime saw %d request(s); want exactly one turn: %q", len(sent), sent)
 	}
+	deliveryTurnTools(t, srv, chief, strings.TrimPrefix(sent[0], "/v1/responses "))
 	m, err := ps.Message(asUser(a), first.ID)
 	if err != nil || m.Status != plugins.StatusDelivered || m.AgentID == nil || *m.AgentID != chief.ID {
 		t.Fatalf("the message after delivery: %+v (%v); want delivered to the chief", m, err)
@@ -273,5 +276,43 @@ func TestAPluginMessageReachesTheOwnersChiefThroughTheRealPlane(t *testing.T) {
 	}
 	if rec := do("POST", "/plugin/v1/messages", strings.Replace(msg, "ext-", "late-", 1), bearer(aTok)); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("a revoked plugin token: %d; want 401", rec.Code)
+	}
+}
+
+// deliveryTurnTools asserts the request that delivered a plugin message to a
+// gateway-kind chief carried that chief's TOOLS and instructions — the ones an
+// ordinary chat turn hands the same agent — so the chief can act (file a task,
+// draft a reply) on the turn that tells it about the message.
+//
+// 🔴 TWO PINS, NOT ONE: the names are compared to the server's own list for THIS
+// agent (the plumbing passes whatever the agent is offered), AND a literal name
+// is required, so a turn carrying no tools cannot pass by comparing an empty list
+// to an empty list.
+func deliveryTurnTools(t *testing.T, srv *Server, chief agents.Agent, body string) {
+	t.Helper()
+	var req struct {
+		Instructions string `json:"instructions"`
+		Tools        []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("the delivery turn's body is not the responses request: %v\n%s", err, body)
+	}
+	var got, want []string
+	for _, tl := range req.Tools {
+		got = append(got, tl.Name)
+	}
+	for _, d := range srv.AgentToolDefs() {
+		want = append(want, d.Name)
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("the delivery turn offered the chief tools %v; want the ones its chat turn offers: %v", got, want)
+	}
+	if !slices.Contains(got, "agent_get_task") {
+		t.Fatalf("the delivery turn offered the chief %v; want it to include agent_get_task", got)
+	}
+	if req.Instructions == "" || req.Instructions != srv.AgentInstructions(chief) {
+		t.Fatalf("the delivery turn's instructions are not the chief's own (%d bytes)", len(req.Instructions))
 	}
 }
