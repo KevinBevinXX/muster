@@ -16,8 +16,9 @@
 // does not sanitise lines a second time: a caller-composed line (a standing
 // sentence, a stanza header) is muster's own text.
 //
-// This package was extracted from internal/memorelay, whose delivered turn must
-// stay byte-identical (internal/memorelay's TestTheRenderedTurnsAreByteIdenticalToTheGolden).
+// This package was extracted from internal/memorelay. A byte golden of the memo
+// relay's rendered turn checked the move changed no byte; it was deleted once the
+// extraction landed, so internal/memorelay's own tests are what pin its shape now.
 // internal/plugins renders inbound plugin messages through it as well.
 package fence
 

@@ -14,22 +14,28 @@ import (
 	"github.com/ZacxDev/muster/internal/db"
 )
 
-// fakeGateway records each Send and answers with err (or reply).
+// fakeGateway resolves every agent and records each Turn, answering with err
+// (or reply).
 type fakeGateway struct {
 	mu       sync.Mutex
 	err      error
 	reply    string
 	sent     []string
 	sessions []string
+	// events are streamed to the turn's emit before it answers (a tool-running turn).
+	events []agents.StreamEvent
 }
 
 func (f *fakeGateway) Resolve(_ context.Context, a agents.Agent) (agentgateway.Target, error) {
 	return agentgateway.Target{}, nil
 }
 
-func (f *fakeGateway) Send(_ context.Context, _ agentgateway.Target, key, message string, _ func(string)) (string, error) {
+func (f *fakeGateway) Turn(_ context.Context, _ agents.Agent, key, message string, emit agents.StreamEmit) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	for _, ev := range f.events {
+		emit(ev)
+	}
 	f.sent = append(f.sent, message)
 	f.sessions = append(f.sessions, key)
 	if f.err != nil {
@@ -48,7 +54,7 @@ func deliverFixture(t *testing.T) (*PGStore, agents.Store, *fakeGateway, *Delive
 	t.Cleanup(pool.Close)
 	ag := agents.NewPG(pool)
 	gw := &fakeGateway{reply: "noted"}
-	d, err := NewDeliverer(DelivererConfig{Store: s, Agents: ag, Gateway: gw})
+	d, err := NewDeliverer(DelivererConfig{Store: s, Agents: ag, Gateway: gw, Turn: gw.Turn})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,5 +169,34 @@ func TestNothingIsSentToAChiefThatCannotTakeItOrIsNotTheOwners(t *testing.T) {
 	got, _ := s.Message(plugin(2), m.ID)
 	if got.Status != StatusQueued || got.Attempts != 4 {
 		t.Fatalf("message = %+v; want queued with 4 counted attempts", got)
+	}
+}
+
+// TestATurnThatCallsToolsIsStoredAsTheChatTurnStoresIt: the delivered turn runs
+// with tools, so what the chief did on it — a tool call, its result, the text
+// around them — is stored in order in the plugin's session, as an ordinary chat
+// turn's parts are, and not collapsed to the final text.
+func TestATurnThatCallsToolsIsStoredAsTheChatTurnStoresIt(t *testing.T) {
+	s, ag, gw, d, p, chief := deliverFixture(t)
+	gw.events = []agents.StreamEvent{
+		{Kind: "text", Text: "filing it"},
+		{Kind: "tool_call", ToolID: "c1", ToolName: "agent_get_task", ToolArgs: `{}`},
+		{Kind: "tool_result", ToolID: "c1", ToolName: "agent_get_task", ToolOK: true, ToolOutput: `{"ok":true}`},
+		{Kind: "text", Text: "done"},
+	}
+	m, _, _ := s.Submit(plugin(2), p.ID, msg("tools-1"))
+	if r := d.Deliver(plugin(2), p.ID, m.ID, chief); r.Outcome != OutcomeDelivered {
+		t.Fatalf("%+v; want delivered", r)
+	}
+	pp, _ := s.Plugin(plugin(2), p.ID)
+	msgs, _ := ag.ListChatMessages(plugin(2), *pp.ChiefSessionID)
+	var got []string
+	for _, c := range msgs {
+		got = append(got, c.Role+"/"+c.Kind+"/"+c.ToolName+"/"+c.Content)
+	}
+	want := []string{"user/text//" + gw.sent[0], "assistant/text//filing it",
+		"assistant/tool_call/agent_get_task/{}", `assistant/tool_result/agent_get_task/{"ok":true}`, "assistant/text//done"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("stored turn:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
