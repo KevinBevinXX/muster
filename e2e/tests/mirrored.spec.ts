@@ -132,7 +132,8 @@ test('a read-only host’s sessions appear as Mirrored cards and open the shared
   const main = card(page, 'main');
   await expect(main).toBeVisible();
   await expect(card(page, 'scratch')).toBeVisible();
-  await expect(main.locator('[data-mirror-badge]')).toContainText(`Mirrored · ${host}`);
+  await expect(main.locator('[data-mirror-badge]')).toHaveAttribute('aria-label', `Mirrored · ${host}`);
+  await expect(main.locator('[data-mirror-host]')).toHaveText(host);
   await expect(main.locator('[data-mirror-offline]')).toHaveCount(0);
   await expect(main.locator('button[aria-label="Agent actions"]')).toHaveCount(0);
   await noHorizontalScroll(page);
@@ -230,12 +231,106 @@ test('mirrored sessions are listed most recently active first, and the open list
     await waitForCards(page, true);
     await page.goto(origin + '/agents');
     const order = () =>
-      page.locator('#agents-list article[data-mirror-card]').filter({ hasText: `Mirrored · ${host}` }).locator('[data-mirror-name]').allTextContents();
+      page.locator('#agents-list article[data-mirror-card]').filter({ has: page.locator(`[data-mirror-badge][aria-label="Mirrored · ${host}"]`) }).locator('[data-mirror-name]').allTextContents();
     await expect.poll(order, { message: `scratch was active last (muster-mirror log:\n${mirrorLog})`, timeout: 20_000 }).toEqual(['scratch', 'main']);
 
     // main's pane produces output now; scratch has not moved.
     fs.writeFileSync(activityFile, `scratch=${t0 - 120}\nmain=${Math.floor(Date.now() / 1000) - 5}\n`);
     await expect.poll(order, { message: `the open list follows main becoming the most recent (muster-mirror log:\n${mirrorLog})`, timeout: 20_000 }).toEqual(['main', 'scratch']);
+    await noHorizontalScroll(page);
+  } finally {
+    await stopMirror();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The operator report "agent cards and mirrored cards look like two different
+// apps": both are laid out from the same slots, at the same insets, with no
+// chat preview on either; the mirrored card's footer prints the window's last
+// activity with the agent card's own component; and "Mirrored · <host>" is an
+// icon whose tooltip a TAP opens (a phone has no hover) without opening the
+// window. The host is -interactive and still draws no mode badge.
+test('an agent card and a mirrored card share one layout: no preview, the last activity in the footer, a mirrored mark a tap explains', async ({ page }) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mirror-cards-'));
+  const activityFile = path.join(dir, 'activity');
+  const t0 = Math.floor(Date.now() / 1000);
+  const mainAt = t0 - 300;
+  fs.writeFileSync(activityFile, `main=${mainAt}\nscratch=${t0 - 7200}\n`);
+  const previews: string[] = [];
+  page.on('request', (r) => {
+    if (/^\/ui\/agents\/\d+\/recent$/.test(new URL(r.url()).pathname)) previews.push(r.url());
+  });
+  try {
+    await stopMirror();
+    mirrorProc = startMirror(true, undefined, { MUSTER_MIRROR_E2E_ACTIVITY_FILE: activityFile });
+    await login(page);
+    await waitForCards(page, true);
+    await page.goto(origin + '/agents');
+    const m = card(page, 'main');
+    const a = page.locator('#agents-list article[id^="agent-"]').first();
+    await expect(m).toBeVisible();
+    await expect(a).toBeVisible();
+
+    // Same slots, same nesting.
+    const slots = (loc: typeof m) =>
+      loc.evaluate((el) =>
+        [...el.querySelectorAll<HTMLElement>('[data-card-slot]')].map((s) => {
+          const p: string[] = [];
+          for (let n: HTMLElement | null = s; n && n !== el; n = n.parentElement) if (n.dataset.cardSlot) p.unshift(n.dataset.cardSlot);
+          return p.join('>');
+        }),
+      );
+    expect(await slots(a)).toEqual(['controls', 'body', 'body>header', 'footer']);
+    expect(await slots(m)).toEqual(await slots(a));
+    // Same insets: the header row starts, the controls sit and the footer ends
+    // at the same place on both cards.
+    const geo = (loc: typeof m) =>
+      loc.evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        const g = (n: string) => el.querySelector(`[data-card-slot="${n}"]`)!.getBoundingClientRect();
+        return {
+          headerLeft: Math.round(g('header').left - r.left),
+          headerTop: Math.round(g('header').top - r.top),
+          controlsRight: Math.round(r.right - g('controls').right),
+          controlsTop: Math.round(g('controls').top - r.top),
+          footerBottom: Math.round(r.bottom - g('footer').bottom),
+          width: Math.round(r.width),
+        };
+      });
+    expect(await geo(m)).toEqual(await geo(a));
+
+    // No preview on any card, and nothing fetches one.
+    await expect(page.locator('#agents-list article pre')).toHaveCount(0);
+    await page.waitForTimeout(500);
+    expect(previews, 'card preview requests').toEqual([]);
+
+    // The footer: the host, visible, and the window's own last activity.
+    await expect(m.locator('[data-mirror-host]')).toHaveText(host);
+    await expect(m.locator('[data-card-active] time')).toHaveAttribute('data-ts', String((mainAt - (mainAt % 60)) * 1000));
+    await expect(m.locator('[data-card-active]')).toBeVisible();
+
+    // The host announced -interactive; the card draws no mode badge for it.
+    await expect(m).toHaveAttribute('data-f-mode', 'interactive');
+    await expect(m.getByText('interactive', { exact: true })).toHaveCount(0);
+    await expect(m.locator('[data-card-slot="body"]')).not.toContainText('Mirrored');
+
+    // The mark: an icon; a TAP shows its tooltip and does not open the window.
+    const mark = m.locator('[data-mirror-badge]');
+    await expect(mark).toHaveAttribute('aria-label', `Mirrored · ${host}`);
+    await expect(mark).toHaveAttribute('title', `Mirrored · ${host}`);
+    const tip = page.locator('#' + (await mark.getAttribute('popovertarget')));
+    await expect(tip).toBeHidden();
+    await mark.tap();
+    await expect(tip).toBeVisible();
+    await expect(tip).toHaveText(`Mirrored · ${host}`);
+    expect(new URL(page.url()).pathname, 'the tap did not open the window').toBe('/agents');
+    const mb = (await mark.boundingBox())!;
+    const tb = (await tip.boundingBox())!;
+    expect(tb.y, 'the tooltip sits below its mark').toBeGreaterThanOrEqual(mb.y + mb.height - 1);
+    expect(tb.x + tb.width, 'the tooltip fits the phone').toBeLessThanOrEqual(412);
+    // A tap elsewhere dismisses it.
+    await page.locator('#panel-agents h2').first().tap();
+    await expect(tip).toBeHidden();
     await noHorizontalScroll(page);
   } finally {
     await stopMirror();

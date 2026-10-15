@@ -196,8 +196,10 @@ test('the Interactive switch on a mirrored session needs a fresh sign-in, and as
     message: `the host's card (muster-mirror log:\n${mirrorLog})`, timeout: 20_000,
   }).toBe(true);
   await page.goto(browserURL + '/agents');
-  const card = page.locator('#agents-list article[data-mirror-card]').filter({ hasText: `Mirrored · ${host}` });
-  await expect(card.locator('[data-mirror-interactive]')).toContainText('interactive');
+  const card = page.locator('#agents-list article[data-mirror-card]').filter({ has: page.locator(`[data-mirror-badge][aria-label="Mirrored · ${host}"]`) });
+  // What the host announced is a filter field now, not a badge on the card.
+  await expect(card).toHaveAttribute('data-f-mode', 'interactive');
+  await expect(card.locator('[data-mirror-interactive]')).toHaveCount(0);
 
   // 1. FRESH (just signed in): the switch attaches rw with no prompt, at the
   // session's own size (a phone does not shrink it).
@@ -343,7 +345,7 @@ test.describe('the rendered view on a phone (390×844)', () => {
 
     // The card of a Claude session opens the rendered view.
     await page.goto(browserURL + '/agents');
-    const card = page.locator('#agents-list article[data-mirror-card]').filter({ hasText: `Mirrored · ${host}` });
+    const card = page.locator('#agents-list article[data-mirror-card]').filter({ has: page.locator(`[data-mirror-badge][aria-label="Mirrored · ${host}"]`) });
     await expect(card.locator('[data-mirror-claude]'), `main is a Claude pane (muster-mirror log:\n${mirrorLog})`).toBeVisible({ timeout: 20_000 });
     await Promise.all([page.waitForURL((u) => u.pathname === '/mirror/view'), card.locator('a').first().tap()]);
     await expect(page.locator('#mv-log [data-bubble="assistant"]').first()).toContainText('Hi.');

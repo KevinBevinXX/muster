@@ -144,7 +144,6 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	mux.HandleFunc("GET /ui/agents/new", s.requireSession(s.handleAgentNewModal))
 	mux.HandleFunc("GET /ui/agents/repos", s.requireSession(s.handleAgentRepoOptions))
 	mux.HandleFunc("GET /ui/agents/notes", s.requireSession(s.handleAgentNoteOptions))
-	mux.HandleFunc("GET /ui/agents/{id}/recent", s.requireSession(s.handleAgentRecent))
 	// Inline rename: the pencil swaps in the edit form; cancel re-fetches the card.
 	mux.HandleFunc("GET /ui/agents/{id}/rename", s.requireSession(s.handleAgentRenameForm))
 	mux.HandleFunc("GET /ui/agents/{id}/card", s.requireSession(s.handleAgentCard))
@@ -397,37 +396,6 @@ func (s *Server) handleAgentNoteOptions(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-// handleAgentRecent serves /ui/agents/{id}/recent: the last few log lines of one
-// running agent's pod, lazy-loaded by its card (htmx) so the agents-list path
-// makes no per-agent k8s call. Renders an empty preview (nothing) when the agent
-// isn't running, has no provisioner, or the tail fails — the card's skeleton is
-// simply replaced with empty content.
-func (s *Server) handleAgentRecent(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
-		return
-	}
-	if s.ext.Provisioner == nil {
-		_ = ui.RenderAgentRecent(w, nil)
-		return
-	}
-	ctx := r.Context()
-	a, err := s.ext.Agents.Get(ctx, id)
-	if err != nil {
-		_ = ui.RenderAgentRecent(w, nil)
-		return
-	}
-	var lines []string
-	if out, err := s.ext.Provisioner.TailLogs(ctx, a, 4); err == nil && out != "" {
-		lines = strings.Split(out, "\n")
-	}
-	if err := ui.RenderAgentRecent(w, lines); err != nil {
-		s.logger.Printf("agents: render recent %d: %v", id, err)
-	}
-}
-
 // handleAgentStatusIcon serves GET /ui/agents/{id}/status: the bare status icon
 // (no label) for the agent-detail / operator header, reflecting live pod state.
 // It loads the agent, computes the live status against pods (when a provisioner
@@ -585,10 +553,6 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 		Namespace:         a.Namespace,
 		NoteID:            a.NoteID, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
 		LastActiveAt: agents.LastActivity(a, lastMsg),
-		// The recent-log preview lazy-loads via /ui/agents/{id}/recent (htmx) so
-		// the list path makes NO per-agent k8s call. Only running agents with a
-		// provisioner get a preview (others render none).
-		LazyRecent: s.ext.Provisioner != nil && status == agents.StatusRunning,
 		// The ONE chief predicate's answer (chief_agent.go), so the menu never
 		// offers a Delete the server would refuse.
 		IsChief: isChief(a),

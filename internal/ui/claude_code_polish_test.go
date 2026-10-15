@@ -95,8 +95,7 @@ func TestTheBoardCardPrintsTheTimeTheBoardIsOrderedBy(t *testing.T) {
 
 // TestTheAgentsListRefreshesOnServerEvents: the list re-renders (and so
 // re-orders) on the SSE events that change it, not only on a local action's
-// HX-Trigger — and each card's recent-log slot is refreshed after the list has
-// settled rather than racing it.
+// HX-Trigger.
 func TestTheAgentsListRefreshesOnServerEvents(t *testing.T) {
 	html := renderNode(t, AgentsPanel(true))
 	i := strings.Index(html, `id="agents-list"`)
@@ -108,12 +107,5 @@ func TestTheAgentsListRefreshesOnServerEvents(t *testing.T) {
 		if !strings.Contains(list, ev) {
 			t.Errorf("#agents-list does not re-render on %q", ev)
 		}
-	}
-	slot := renderNode(t, agentRecentSlot(AgentCardView{ID: 4, LazyRecent: true}))
-	if strings.Contains(slot, "agents:changed") {
-		t.Error("the recent-log slot still listens to agents:changed directly, racing the list's morph")
-	}
-	if !strings.Contains(slot, recentRefreshEvent) || !strings.Contains(list, recentRefreshEvent) {
-		t.Errorf("the list does not refresh the slot after it settles (%s)", recentRefreshEvent)
 	}
 }

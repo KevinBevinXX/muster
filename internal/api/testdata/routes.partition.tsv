@@ -83,7 +83,7 @@
 #
 # THIS FILE'S OWN COUNTS (re-derived, not copied from the plan)
 #
-# counts: muster=70 router=63 shared=14 total=147
+# counts: muster=69 router=63 shared=14 total=146
 #
 #   muster + router + shared = 70 + 63 + 14 = 147
 #   muster's projected post-carve registration count = 70 + 14 = 84
@@ -218,7 +218,6 @@ muster	agents.go:registerAgentRoutes	GET /ui/agents/new
 muster	agents.go:registerAgentRoutes	GET /ui/agents/notes
 muster	agents.go:registerAgentRoutes	GET /ui/agents/repos
 muster	agents.go:registerAgentRoutes	GET /ui/agents/{id}/card
-muster	agents.go:registerAgentRoutes	GET /ui/agents/{id}/recent
 muster	agents.go:registerAgentRoutes	GET /ui/agents/{id}/rename
 muster	agents.go:registerAgentRoutes	GET /ui/agents/{id}/status
 muster	agents.go:registerAgentRoutes	GET /ui/agents/{name}/chat-log

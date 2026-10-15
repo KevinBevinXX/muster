@@ -61,7 +61,7 @@ function writeWindows(ws: Win[]) {
 const q = (w: Win) => `host=${encodeURIComponent(host)}&session=${encodeURIComponent(w.session)}&window=${encodeURIComponent(w.id)}`;
 const viewPath = (w: Win) => '/mirror/view?' + q(w);
 const termPath = (w: Win) => '/mirror/terminal?' + q(w);
-const cards = (page: Page) => page.locator(`#agents-list article[data-mirror-card]:has([data-mirror-badge]:has-text("Mirrored · ${host}"))`);
+const cards = (page: Page) => page.locator(`#agents-list article[data-mirror-card]:has([data-mirror-badge][aria-label="Mirrored · ${host}"])`);
 const cardOf = (page: Page, href: string) => page.locator(`#agents-list article[data-mirror-card]:has(a[href="${href}"])`);
 const screen = (page: Page) => page.locator('#term .xterm-rows');
 const read = (f: string) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '');
@@ -172,7 +172,7 @@ for (const vp of [
       await expect(eight.locator('[data-mirror-claude]')).toContainText('Claude Code');
       await expect(shell.locator('[data-mirror-kind]')).toContainText('shell');
       await expect(solo.locator('[data-mirror-kind]')).toContainText('opencode');
-      for (const c of [eleven, eight, shell, solo]) await expect(c.locator('[data-mirror-badge]')).toContainText(`Mirrored · ${host}`);
+      for (const c of [eleven, eight, shell, solo]) await expect(c.locator('[data-mirror-host]')).toHaveText(host);
 
       // One flat list, most recently active first — two windows of ONE session
       // sit either side of another session's.

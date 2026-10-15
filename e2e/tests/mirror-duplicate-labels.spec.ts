@@ -115,7 +115,7 @@ test.afterAll(async () => {
   fs.rmSync(mirrorBin, { force: true });
 });
 
-const cardsOf = (page: Page, host: string) => page.locator(`#agents-list article[data-mirror-card]:has([data-mirror-badge]:has-text("Mirrored · ${host}"))`);
+const cardsOf = (page: Page, host: string) => page.locator(`#agents-list article[data-mirror-card]:has([data-mirror-badge][aria-label="Mirrored · ${host}"])`);
 const mangoCard = (page: Page, host: string) => cardsOf(page, host).filter({ has: page.locator('[data-mirror-label]', { hasText: /^mango:1$/ }) });
 
 // The TITLE as shown: the name element's text, minus the raw tmux session name
@@ -156,12 +156,13 @@ test('two hosts with the same label: two distinct titles, live, and each page is
   await expect.poll(() => shownTitle(kiwi)).toBe('kiwi:2');
   expect(await page.evaluate(() => (window as unknown as { __noReload?: number }).__noReload), 'no reload happened').toBe(1);
 
-  // The host badge is visible on the phone and is not the grey chip.
+  // The mirrored mark is visible on the phone and names its host; the host
+  // itself is visible text in the footer.
   for (const [c, h] of [[a, hostA], [b, hostB]] as const) {
-    const badge = c.locator('[data-mirror-badge] > span');
+    const badge = c.locator('[data-mirror-badge]');
     await expect(badge).toBeVisible();
-    await expect(badge).toHaveText(`Mirrored · ${h}`);
-    await expect(badge).toHaveClass(/bg-st-progress-bg/);
+    await expect(badge).toHaveAttribute('aria-label', `Mirrored · ${h}`);
+    await expect(c.locator('[data-mirror-host]')).toHaveText(h);
     const box = (await c.boundingBox())!;
     expect(box.x + box.width, 'the card fits the phone').toBeLessThanOrEqual(390);
   }

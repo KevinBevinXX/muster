@@ -24,7 +24,7 @@ func cardFor(t *testing.T, status string, owed bool) string {
 //
 // 🔴 IT LOOKS FOR THE ATTRIBUTE, NOT FOR THE WORDS "kickoff owed". A substring
 // guard on the label is walkable by any other element that happens to spell the
-// same phrase — a tooltip, a log line in the recent-output preview, a future
+// same phrase — a tooltip, a mirrored window's title, a future
 // filter chip — and the attribute is a handle only this badge has.
 //
 // 🔴 AND IT RETURNS ALL OF THEM RATHER THAN THE FIRST, WHICH IS A HARNESS FIX FOR

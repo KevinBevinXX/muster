@@ -77,10 +77,10 @@ func sampleAgentCards() []AgentCardView {
 	noteID := int64(101)
 	return []AgentCardView{
 		{ID: 41, Name: "worker-gamma", DisplayName: "worker-gamma", Repo: "ZacxDev/muster", Status: "running",
-			KickedOff: true, Recent: []string{"gamma log line one", "gamma log line two"}, Model: "sonnet",
+			KickedOff: true, Model: "sonnet",
 			NoteID: &noteID, CreatedAt: fixedNow.Add(-3 * time.Hour), UpdatedAt: fixedNow.Add(-4 * time.Minute)},
 		{ID: 42, Name: "worker-delta", DisplayName: "worker-delta", Repo: "ZacxDev/vetr", Status: "error",
-			Recent: []string{"delta log line one"}, CreatedAt: fixedNow.Add(-9 * time.Hour), UpdatedAt: fixedNow.Add(-70 * time.Minute)},
+			CreatedAt: fixedNow.Add(-9 * time.Hour), UpdatedAt: fixedNow.Add(-70 * time.Minute)},
 	}
 }
 
