@@ -12,7 +12,8 @@ import (
 // flows.VisibleEscape (a non-ASCII letter and an invisible-looking character are
 // spelled out, a newline is \n) with its length in characters; the outside
 // sender's text is HTML-escaped in its own labelled box; only a pending draft
-// has Approve/Reject and only an unconfirmed one has "Approve again".
+// has Approve/Reject, and no card of any state offers a second approval (there
+// is no re-approval: an unconfirmed draft is never offered again).
 func TestADraftCardShowsExactlyWhatIsApproved(t *testing.T) {
 	at := time.Now().UTC()
 	agentID := int64(3)
@@ -34,29 +35,11 @@ func TestADraftCardShowsExactlyWhatIsApproved(t *testing.T) {
 			t.Errorf("the pending card lacks %q:\n%s", want, got)
 		}
 	}
-	for _, bad := range []string{"<script>", "café", "data-draft-reapprove"} {
+	for _, bad := range []string{"<script>", "café"} {
 		if strings.Contains(got, bad) {
 			t.Errorf("the pending card carries %q", bad)
 		}
 	}
-	// An unconfirmed draft already approved again, or past its expiry, offers no
-	// second re-approval.
-	c.Draft.Status = plugins.DraftUnconfirmed
-	again := int64(10)
-	c.Draft.ReapprovedAs = &again
-	if got := draftCardHTML(c); strings.Contains(got, "data-draft-reapprove") || !strings.Contains(got, "as draft 10") {
-		t.Errorf("a re-approved unconfirmed card:\n%s", got)
-	}
-	c.Draft.ReapprovedAs, c.Draft.ExpiresAt = nil, at.Add(-time.Minute)
-	if got := draftCardHTML(c); strings.Contains(got, "data-draft-reapprove") {
-		t.Errorf("an expired unconfirmed card offers re-approval:\n%s", got)
-	}
-	c.Draft.ExpiresAt = at.Add(time.Hour)
-	c.Draft.AgentID = nil
-	if got := draftCardHTML(c); strings.Contains(got, "data-draft-reapprove") {
-		t.Errorf("an unconfirmed card whose agent is gone offers re-approval:\n%s", got)
-	}
-	c.Draft.AgentID = &agentID
 	// Approved and not yet claimed: the approval can be withdrawn; once claimed, not.
 	c.Draft.Status = plugins.DraftApproved
 	if got := draftCardHTML(c); !strings.Contains(got, `action="/plugins/drafts/9/reject"`) || !strings.Contains(got, "data-draft-withdraw") {
@@ -73,15 +56,19 @@ func TestADraftCardShowsExactlyWhatIsApproved(t *testing.T) {
 		t.Errorf("the send-twice warning is missing:\n%s", got)
 	}
 	c.EarlierUnconfirmed = false
-	for st, want := range map[plugins.DraftStatus][2]bool{ // {approve, reapprove}
-		plugins.DraftApproved: {false, false}, plugins.DraftSent: {false, false}, plugins.DraftRejected: {false, false},
-		plugins.DraftUnconfirmed: {false, true}, plugins.DraftExpired: {false, false}, plugins.DraftSuperseded: {false, false},
-	} {
+	// The approval surface, structurally: the step-up form is the ONLY way an
+	// approval is posted, so its count per state is the claim — one on a pending
+	// card, none on any other (an unconfirmed card included).
+	for _, st := range []plugins.DraftStatus{plugins.DraftPending, plugins.DraftApproved, plugins.DraftSent, plugins.DraftFailed,
+		plugins.DraftRejected, plugins.DraftUnconfirmed, plugins.DraftExpired, plugins.DraftSuperseded} {
 		c.Draft.Status = st
 		got := draftCardHTML(c)
-		if strings.Contains(got, "data-draft-approve") != want[0] || strings.Contains(got, "data-draft-reapprove") != want[1] {
-			t.Errorf("%s card: approve=%v reapprove=%v; want %v", st, strings.Contains(got, "data-draft-approve"),
-				strings.Contains(got, "data-draft-reapprove"), want)
+		want := 0
+		if st == plugins.DraftPending {
+			want = 1
+		}
+		if n := strings.Count(got, "data-step-up-form"); n != want || strings.Count(got, "/approve\"") != want {
+			t.Errorf("%s card: %d approval form(s); want %d:\n%s", st, n, want, got)
 		}
 	}
 }

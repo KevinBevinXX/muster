@@ -34,7 +34,7 @@ func pgStore(t *testing.T) (*PGStore, *pgxpool.Pool, string) {
 		ON CONFLICT (id) DO NOTHING`)
 	dbtest.OwnerExec(t, dsn, `UPDATE users SET disabled_at = NULL WHERE id IN (2, 3)`)
 	dbtest.OwnerExec(t, dsn, `UPDATE users SET disabled_at = now() WHERE id = 4`)
-	dbtest.OwnerExec(t, dsn, `TRUNCATE plugins, plugin_messages`)
+	dbtest.OwnerExec(t, dsn, `TRUNCATE plugins, plugin_messages, plugin_reply_drafts`)
 	dbtest.OwnerExec(t, dsn, `DELETE FROM agents WHERE name LIKE 'plg-%'`)
 	dbtest.OwnerExec(t, dsn, `DELETE FROM audit_log WHERE action LIKE 'plugin.%'`)
 	return NewPG(pool), pool, dsn

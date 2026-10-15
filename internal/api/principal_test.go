@@ -91,7 +91,6 @@ var routeVias = map[authz.Via][]string{
 		"POST /plugins",
 		"POST /plugins/{id}/revoke",
 		"POST /plugins/drafts/{id}/approve",
-		"POST /plugins/drafts/{id}/reapprove",
 		"POST /plugins/drafts/{id}/reject",
 		"GET /account",
 		// The step-up confirm (stepup.go): the SESSION's user, re-proven.

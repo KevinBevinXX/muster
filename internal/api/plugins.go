@@ -58,7 +58,6 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	// Reply drafts (plugin_drafts.go): the owner decides; Approve and Approve
 	// again also need a fresh sign-in, checked in the handler.
 	mux.HandleFunc("POST "+pluginsPath+"/drafts/{id}/approve", s.requirePluginsOn(s.requireOperatorWrite(s.handleDraftApprove)))
-	mux.HandleFunc("POST "+pluginsPath+"/drafts/{id}/reapprove", s.requirePluginsOn(s.requireOperatorWrite(s.handleDraftReapprove)))
 	mux.HandleFunc("POST "+pluginsPath+"/drafts/{id}/reject", s.requirePluginsOn(s.requireOperatorWrite(s.handleDraftReject)))
 
 	mux.HandleFunc("POST "+pluginAPIPrefix+"/messages", s.requirePluginToken(s.handlePluginMessage))

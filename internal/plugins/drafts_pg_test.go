@@ -392,8 +392,7 @@ func ageDraft(t *testing.T, dsn string, id int64, secs int) {
 
 // TestALapsedLeaseIsUnconfirmedAndNeverReoffered: a claim whose lease lapses
 // without a result becomes `unconfirmed`, audited, and the next claim does NOT
-// hand it out again. The owner's explicit re-approval is a new decision (a new
-// approved_at, audited) and only then is it offered again. A late result on an
+// hand it out again — not even after an approve attempt. A late result on an
 // unconfirmed draft is still recorded.
 func TestALapsedLeaseIsUnconfirmedAndNeverReoffered(t *testing.T) {
 	w := newDraftWorld(t)
@@ -418,129 +417,17 @@ func TestALapsedLeaseIsUnconfirmedAndNeverReoffered(t *testing.T) {
 		WHERE action = 'plugin.draft.unconfirmed' AND object = $1`, DraftObject(d.ID)).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("plugin.draft.unconfirmed audit rows = %d (%v); want 1", n, err)
 	}
-	// Approve (the pending decision) does not apply to it; re-approve does.
+	// Approve (the pending decision) does not apply to it: an unconfirmed draft
+	// is never offered again, whatever its owner does.
 	if _, err := w.s.DecideDraft(session(2), d.ID, true); !errors.Is(err, ErrDraftState) {
-		t.Fatalf("approving an unconfirmed draft through DecideDraft: %v; want ErrDraftState", err)
+		t.Fatalf("approving an unconfirmed draft: %v; want ErrDraftState", err)
 	}
-	if _, err := w.s.ReapproveDraft(session(3), d.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("another owner re-approving: %v; want ErrNotFound", err)
+	if _, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); ok {
+		t.Fatal("an unconfirmed draft was handed out after an approve attempt")
 	}
-	re, err := w.s.ReapproveDraft(session(2), d.ID)
-	if err != nil || re.ID == d.ID || re.Status != DraftApproved || re.ClaimedAt != nil || re.Body != d.Body ||
-		re.MessageID != d.MessageID || !re.ExpiresAt.Equal(got.ExpiresAt) || re.ApprovedAt == nil || !re.ApprovedAt.After(*got.ApprovedAt) {
-		t.Fatalf("re-approve: %+v %v; want a NEW approved draft with the same text, message and expiry", re, err)
-	}
-	if old, _ := w.s.Draft(session(2), d.ID); old.Status != DraftUnconfirmed || old.ClaimedAt == nil ||
-		old.ReapprovedAs == nil || *old.ReapprovedAs != re.ID {
-		t.Fatalf("the re-approved row: %+v; want still unconfirmed, still claimed, naming %d", old, re.ID)
-	}
-	if err := w.s.pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM audit_log
-		WHERE action = 'plugin.draft.reapproved' AND object = $1 AND user_id = 2`, DraftObject(d.ID)).Scan(&n); err != nil || n != 1 {
-		t.Fatalf("plugin.draft.reapproved audit rows = %d (%v); want 1", n, err)
-	}
-	if _, err := w.s.ReapproveDraft(session(2), d.ID); !errors.Is(err, ErrDraftState) {
-		t.Fatalf("re-approving the same unconfirmed draft twice: %v; want ErrDraftState", err)
-	}
-	c2, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID)
-	if !ok || c2.DraftID != re.ID || c2.Body != d.Body {
-		t.Fatalf("after re-approval the NEW draft is offered: ok=%v %+v; want draft %d", ok, c2, re.ID)
-	}
-	// 🔴 A LATE result from the FIRST claim lands on the first row, never on the
-	// second claim's: the second claim's own result is then still accepted.
+	// A LATE result is still recorded on it.
 	if late, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: false, Detail: "timed out"}); err != nil || late.Status != DraftFailed {
-		t.Fatalf("the first claim's late result: %+v %v; want the first row failed", late, err)
-	}
-	if cur, _ := w.s.Draft(session(2), re.ID); cur.Status != DraftApproved || cur.ClaimedAt == nil {
-		t.Fatalf("the first claim's late result touched the re-approval: %+v", cur)
-	}
-	if got, err := w.s.FinishDraft(plugin(2), w.p.ID, re.ID, DraftResult{OK: true}); err != nil || got.Status != DraftSent {
-		t.Fatalf("the second claim's result: %+v %v; want sent", got, err)
-	}
-	if _, err := w.s.ReapproveDraft(session(2), re.ID); !errors.Is(err, ErrDraftState) {
-		t.Fatalf("re-approving a sent draft: %v; want ErrDraftState", err)
-	}
-}
-
-// TestALateSentCancelsTheUnclaimedReapproval: the original's late "sent" means
-// the text reached the sender, so its re-approved copy — not yet claimed — is
-// expired, audited, and never handed out. CONTROL: a late "failed" leaves the
-// copy approved (covered in TestALapsedLeaseIsUnconfirmedAndNeverReoffered).
-func TestALateSentCancelsTheUnclaimedReapproval(t *testing.T) {
-	w := newDraftWorld(t)
-	d := w.approve(t, w.file(t, w.m, "r"))
-	if _, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); !ok {
-		t.Fatal("claim")
-	}
-	ageDraft(t, w.dsn, d.ID, int(LeaseDuration.Seconds())+5)
-	copyOf, err := w.s.ReapproveDraft(session(2), d.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: true}); err != nil || got.Status != DraftSent {
-		t.Fatalf("the late sent: %+v %v", got, err)
-	}
-	if got, _ := w.s.Draft(session(2), copyOf.ID); got.Status != DraftExpired {
-		t.Fatalf("the re-approved copy is %s after the original was reported sent; want expired", got.Status)
-	}
-	if c, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); ok {
-		t.Fatalf("the cancelled copy was handed out: %+v", c)
-	}
-}
-
-// TestALateSentCancelsEveryHopOfARechain: draft 1 lapses and is approved again
-// as 2; 2 lapses and is approved again as 3. Draft 1's late "sent" cancels 3,
-// which no claim has taken (2 is unconfirmed and stays so).
-func TestALateSentCancelsEveryHopOfARechain(t *testing.T) {
-	w := newDraftWorld(t)
-	lapse := func(d Draft) {
-		t.Helper()
-		if c, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); !ok || c.DraftID != d.ID {
-			t.Fatalf("claim %d: %+v %v", d.ID, c, ok)
-		}
-		ageDraft(t, w.dsn, d.ID, int(LeaseDuration.Seconds())+5)
-	}
-	d1 := w.approve(t, w.file(t, w.m, "r"))
-	lapse(d1)
-	d2, err := w.s.ReapproveDraft(session(2), d1.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lapse(d2)
-	d3, err := w.s.ReapproveDraft(session(2), d2.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := w.s.FinishDraft(plugin(2), w.p.ID, d1.ID, DraftResult{OK: true}); err != nil {
-		t.Fatal(err)
-	}
-	for id, want := range map[int64]DraftStatus{d1.ID: DraftSent, d2.ID: DraftUnconfirmed, d3.ID: DraftExpired} {
-		if got, _ := w.s.Draft(session(2), id); got.Status != want {
-			t.Errorf("draft %d is %s; want %s", id, got.Status, want)
-		}
-	}
-	if c, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); ok {
-		t.Fatalf("a two-hop re-approval was handed out after the original was sent: %+v", c)
-	}
-	// And the unconfirmed middle hop cannot be approved again now: its text went.
-	if _, err := w.s.DecideDraft(session(2), d3.ID, false); !errors.Is(err, ErrDraftState) {
-		t.Fatalf("the cancelled copy: %v; want ErrDraftState", err)
-	}
-	dbtest.OwnerExec(t, w.dsn, `UPDATE plugin_reply_drafts SET reapproved_as = NULL WHERE id = $1`, d2.ID)
-	if _, err := w.s.ReapproveDraft(session(2), d2.ID); !errors.Is(err, ErrAlreadySent) {
-		t.Fatalf("re-approving a draft whose original was reported sent: %v; want ErrAlreadySent", err)
-	}
-	cards, _ := w.s.DraftCards(session(2), 50)
-	found := false
-	for _, c := range cards {
-		if c.Draft.ID == d2.ID {
-			found = true
-			if !c.OriginalSent {
-				t.Errorf("the card of %d does not know its text was sent", d2.ID)
-			}
-		}
-	}
-	if !found {
-		t.Fatalf("no card for draft %d", d2.ID)
+		t.Fatalf("the late result: %+v %v; want failed", late, err)
 	}
 }
 
@@ -582,30 +469,6 @@ func TestAnApprovalCanBeWithdrawnUntilItIsClaimed(t *testing.T) {
 	}
 	if !flagged[d3.ID] || flagged[d2.ID] {
 		t.Fatalf("EarlierUnconfirmed = %v; want true for %d only", flagged, d3.ID)
-	}
-}
-
-// TestWithdrawingAReapprovalFreesTheOriginal: the original of a withdrawn
-// re-approval no longer names it and may be approved again.
-func TestWithdrawingAReapprovalFreesTheOriginal(t *testing.T) {
-	w := newDraftWorld(t)
-	d := w.approve(t, w.file(t, w.m, "r"))
-	if _, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); !ok {
-		t.Fatal("claim")
-	}
-	ageDraft(t, w.dsn, d.ID, int(LeaseDuration.Seconds())+5)
-	cp, err := w.s.ReapproveDraft(session(2), d.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, err := w.s.DecideDraft(session(2), cp.ID, false); err != nil || got.Status != DraftRejected {
-		t.Fatalf("withdraw the copy: %+v %v", got, err)
-	}
-	if orig, _ := w.s.Draft(session(2), d.ID); orig.ReapprovedAs != nil {
-		t.Fatalf("the original still names the withdrawn copy: %+v", orig)
-	}
-	if _, err := w.s.ReapproveDraft(session(2), d.ID); err != nil {
-		t.Fatalf("re-approving the original after its copy was withdrawn: %v", err)
 	}
 }
 
@@ -713,7 +576,7 @@ func pgxConnect(dsn string) (*pgx.Conn, error) { return pgx.Connect(context.Back
 
 // TestAResultTakesTheMessageLockFirst: FinishDraft waits for a transaction
 // holding the message row (the lock every draft write takes first), so a late
-// result and a withdraw or re-approval on the same message are serialised in
+// result and a filing, approval or withdrawal on the same message are serialised in
 // one order instead of deadlocking. CONTROL: with the lock released it lands.
 func TestAResultTakesTheMessageLockFirst(t *testing.T) {
 	w := newDraftWorld(t)
@@ -757,41 +620,138 @@ func TestAResultTakesTheMessageLockFirst(t *testing.T) {
 	}
 }
 
-// TestTheCardAndTheStoreAgreeOnReapprovingSentText: an earlier, UNRELATED draft
-// with the same text was sent; a later one with that text lapses. It is not a
-// re-approval of the sent one, so the store allows approving it again and the
-// card offers it (OriginalSent false) — the two rules are one rule.
-func TestTheCardAndTheStoreAgreeOnReapprovingSentText(t *testing.T) {
+// TestALateSentCancelsEveryOtherReplyToTheMessage is the hole round 0 found: draft
+// 1 is claimed and its lease lapses (unconfirmed); the chief files draft 2 for the
+// same message and the owner approves it; THEN the plugin reports draft 1 sent.
+// The sender has the reply, so draft 2 — approved, unclaimed — must not go too:
+// it is superseded in the same transaction, audited, and never handed out. A
+// PENDING draft of a message whose earlier draft is reported sent late is
+// superseded likewise.
+//
+// CONTROLS: a late "failed" cancels nothing (its message's approved draft stays
+// approved); a sibling a plugin has already CLAIMED is left to its own result;
+// an approved draft for ANOTHER message is untouched; and the final claim is
+// live (it hands out a draft — just never draft 2).
+func TestALateSentCancelsEveryOtherReplyToTheMessage(t *testing.T) {
 	w := newDraftWorld(t)
-	x := w.approve(t, w.file(t, w.m, "same text"))
-	if _, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); !ok {
-		t.Fatal("claim x")
+	sys := authz.System(context.Background())
+	m2, m3, m4 := w.delivered(t, "m-2", false), w.delivered(t, "m-3", false), w.delivered(t, "m-4", false)
+
+	// One claimed draft per message, each claim then lapsing.
+	var claimed []Draft
+	for _, m := range []Message{w.m, m2, m3, m4} {
+		d := w.approve(t, w.file(t, m, "first for "+m.ExternalID))
+		if c, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); !ok || c.DraftID != d.ID {
+			t.Fatalf("claim the draft for %s: %+v ok=%v", m.ExternalID, c, ok)
+		}
+		ageDraft(t, w.dsn, d.ID, int(LeaseDuration.Seconds())+5)
+		claimed = append(claimed, d)
 	}
-	if _, err := w.s.FinishDraft(plugin(2), w.p.ID, x.ID, DraftResult{OK: true}); err != nil {
-		t.Fatal(err)
+	d1, d3, d5, d7 := claimed[0], claimed[1], claimed[2], claimed[3]
+	// m4: a second draft approved AND claimed (inside its lease) before draft 7's
+	// late sent arrives.
+	d8 := w.approve(t, w.file(t, m4, "eighth, claimed"))
+	if c, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); !ok || c.DraftID != d8.ID {
+		t.Fatalf("claim draft 8: %+v ok=%v", c, ok)
 	}
-	y := w.approve(t, w.file(t, w.m, "same text"))
-	if _, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); !ok {
-		t.Fatal("claim y")
+	// After the lapses: m gets an APPROVED second draft, m2 a PENDING one, m3 an
+	// approved one (for the "failed" control); and another message an approved one.
+	d2 := w.approve(t, w.file(t, w.m, "second"))
+	d4 := w.file(t, m2, "fourth, pending")
+	d6 := w.approve(t, w.file(t, m3, "sixth"))
+	other := w.approve(t, w.file(t, w.delivered(t, "m-other", false), "other"))
+	if got, _ := w.s.Draft(session(2), d1.ID); got.Status != DraftUnconfirmed {
+		t.Fatalf("draft 1 after its lease lapsed: %s; want unconfirmed", got.Status)
 	}
-	ageDraft(t, w.dsn, y.ID, int(LeaseDuration.Seconds())+5)
-	cards, err := w.s.DraftCards(session(2), 50)
-	if err != nil {
-		t.Fatal(err)
-	}
-	found := false
-	for _, c := range cards {
-		if c.Draft.ID == y.ID {
-			found = true
-			if c.Draft.Status != DraftUnconfirmed || c.OriginalSent {
-				t.Fatalf("y's card: %s OriginalSent=%v; want unconfirmed and re-approvable", c.Draft.Status, c.OriginalSent)
-			}
+
+	for _, d := range []Draft{d1, d3, d7} {
+		if got, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: true, ExternalRef: "up"}); err != nil || got.Status != DraftSent {
+			t.Fatalf("draft %d's late sent: %+v %v; want sent", d.ID, got, err)
 		}
 	}
-	if !found {
-		t.Fatalf("no card for draft %d", y.ID)
+	if got, err := w.s.FinishDraft(plugin(2), w.p.ID, d5.ID, DraftResult{OK: false, Detail: "upstream said no"}); err != nil || got.Status != DraftFailed {
+		t.Fatalf("draft 5's late failed: %+v %v; want failed", got, err)
 	}
-	if _, err := w.s.ReapproveDraft(session(2), y.ID); err != nil {
-		t.Fatalf("the store refuses what the card offers: %v", err)
+	for _, c := range []struct {
+		d    Draft
+		want DraftStatus
+		why  string
+	}{
+		{d2, DraftSuperseded, "an approved draft of a message whose earlier draft was reported sent"},
+		{d4, DraftSuperseded, "a pending draft of a message whose earlier draft was reported sent"},
+		{d6, DraftApproved, "the control: a late FAILED cancels nothing"},
+		{other, DraftApproved, "the control: another message's draft"},
+		{d8, DraftApproved, "the control: a sibling a plugin already claimed"},
+	} {
+		if got, _ := w.s.Draft(session(2), c.d.ID); got.Status != c.want || (c.d.ID == d8.ID && got.ClaimedAt == nil) {
+			t.Fatalf("%s is %s; want %s", c.why, got.Status, c.want)
+		}
+	}
+	for sent, cancelled := range map[int64]int64{d1.ID: d2.ID, d3.ID: d4.ID} {
+		var n int
+		if err := w.s.pool.QueryRow(sys, `SELECT count(*) FROM audit_log WHERE action = 'plugin.draft.superseded'
+			AND object = $1 AND detail->>'sent_draft_id' = $2`, DraftObject(cancelled), strconv.FormatInt(sent, 10)).Scan(&n); err != nil || n != 1 {
+			t.Fatalf("plugin.draft.superseded audit rows for draft %d: %d (%v); want 1 naming draft %d", cancelled, n, err, sent)
+		}
+	}
+	// Draft 2 was approved FIRST of the live ones, so a claim query that still
+	// saw it would hand it out now.
+	if c, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); !ok || c.DraftID == d2.ID {
+		t.Fatalf("the next claim: %+v ok=%v; want a live claim that is NOT draft 2 (%d)", c, ok, d2.ID)
+	}
+}
+
+// TestTheDraftTriggersHoldUnderTheScopeAllPrincipal (moved here with the table,
+// from 0015 to 0016): even a principal that sees every row cannot rewrite a
+// draft's body, name another owner's agent, file a draft with no agent, or
+// approve one without an approval time; the agent's deletion keeps the draft
+// (agent_id NULL); and the table is under FORCED row-level security, so a bare
+// connection sees none of it.
+func TestTheDraftTriggersHoldUnderTheScopeAllPrincipal(t *testing.T) {
+	w := newDraftWorld(t)
+	sys := authz.System(context.Background())
+	theirs := mustAgent(t, w.dsn, 3, "plg-theirs")
+	check := func(name, sql string, args ...any) {
+		t.Helper()
+		_, err := w.s.pool.Exec(sys, sql, args...)
+		var pg *pgconn.PgError
+		if !errors.As(err, &pg) || (pg.Code != "23514" && pg.Code != "23503") {
+			t.Errorf("%s: err = %v; want a check or foreign-key violation", name, err)
+		}
+	}
+	var draft int64
+	if err := w.s.pool.QueryRow(sys, `INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at)
+		VALUES (2, $1, $2, 'chief', 'reply', now() + interval '7 days') RETURNING id`, w.m.ID, w.chief.ID).Scan(&draft); err != nil {
+		t.Fatalf("a draft by the owner's own agent: %v", err)
+	}
+	check("draft body", `UPDATE plugin_reply_drafts SET body = 'swapped' WHERE id = $1`, draft)
+	check("draft by another owner's agent", `INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at)
+		VALUES (2, $1, $2, 'x', 'r', now() + interval '1 day')`, w.m.ID, theirs.ID)
+	check("draft with no agent", `INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at)
+		VALUES (2, $1, NULL, 'x', 'r', now() + interval '1 day')`, w.m.ID)
+	check("draft approved without a time", `UPDATE plugin_reply_drafts SET status = 'approved' WHERE id = $1`, draft)
+	check("draft pending WITH an approval time", `UPDATE plugin_reply_drafts SET approved_at = now() WHERE id = $1`, draft)
+	// What MAY change does: a status move; superseded may keep an approval time.
+	if _, err := w.s.pool.Exec(sys, `UPDATE plugin_reply_drafts SET status = 'approved', approved_at = now(), decided_at = now() WHERE id = $1`, draft); err != nil {
+		t.Fatalf("approving a draft: %v", err)
+	}
+	if _, err := w.s.pool.Exec(sys, `UPDATE plugin_reply_drafts SET status = 'superseded' WHERE id = $1`, draft); err != nil {
+		t.Fatalf("superseding an approved draft, keeping its approval time: %v", err)
+	}
+	if _, err := w.s.pool.Exec(sys, `DELETE FROM agents WHERE id = $1`, w.chief.ID); err != nil {
+		t.Fatalf("deleting the agent a draft names: %v", err)
+	}
+	var stillThere int
+	if err := w.s.pool.QueryRow(sys, `SELECT count(*) FROM plugin_reply_drafts WHERE id = $1 AND agent_id IS NULL`, draft).Scan(&stillThere); err != nil || stillThere != 1 {
+		t.Fatalf("the draft after its agent's deletion: %d (%v); want kept with agent_id NULL", stillThere, err)
+	}
+	var n int
+	if err := w.s.pool.QueryRow(context.Background(), `SELECT count(*) FROM plugin_reply_drafts`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("plugin_reply_drafts with no principal: %d rows (%v); want 0", n, err)
+	}
+	var forced bool
+	if err := w.s.pool.QueryRow(sys, `SELECT relrowsecurity AND relforcerowsecurity FROM pg_class
+		WHERE relname = 'plugin_reply_drafts'`).Scan(&forced); err != nil || !forced {
+		t.Fatalf("plugin_reply_drafts FORCED row-level security: %v (%v); want true", forced, err)
 	}
 }

@@ -88,7 +88,7 @@ func newDraftSeam(t *testing.T) *draftSeam {
 	claim(t, store, d.a, ep("draft-a"))
 	claim(t, store, d.b, ep("draft-b"))
 	d.srv = New(nil, AuthConfig{HookToken: tokTestHook, UIPassword: "plugin-draft-operator-pw"}, log.New(io.Discard, "", 0))
-	d.srv.UseExtensions(Extensions{Agents: d.as, Users: users.NewPG(pool), Plugins: d.ps, PluginGateway: gw,
+	d.srv.UseExtensions(Extensions{Agents: d.as, Users: users.NewPG(pool), Plugins: d.ps, PluginGateway: gw, Gateway: gw,
 		Push: push.NewService(store, d.pusher, push.VAPIDConfig{PublicKey: "k"}, log.New(io.Discard, "", 0))})
 	d.srv.sessionUserOverride = func(r *http.Request) int64 {
 		v, _ := strconv.ParseInt(r.Header.Get(d.userHdr), 10, 64)
@@ -218,8 +218,10 @@ func (d *draftSeam) replyDraft(a agents.Agent, messageID int64, body string) (in
 //     message_external_id, body, approved_at}), a second claim gets 204.
 //  6. The result settles it as sent; the same result again is 200; the other is
 //     409; another member's plugin gets 404 — and the card says Sent.
-//  7. A second draft whose lease lapses is UNCONFIRMED and not re-offered; the
-//     owner's explicit re-approval (fresh sign-in again) offers it once more.
+//  7. A second draft whose lease lapses is UNCONFIRMED, not re-offered, and its
+//     card offers no approval (an approve POST is 409).
+//  8. A new draft for that message, approved, is SUPERSEDED when the
+//     unconfirmed one is reported sent late — and is never handed out.
 func TestAReplyDraftGoesFromTheChiefToThePluginOnceThroughTheRealPlane(t *testing.T) {
 	d := newDraftSeam(t)
 	aTok, bTok := d.mint(d.a), d.mint(d.b)
@@ -368,34 +370,35 @@ func TestAReplyDraftGoesFromTheChiefToThePluginOnceThroughTheRealPlane(t *testin
 		t.Fatalf("the lapsed draft is %s; want unconfirmed", got.Status)
 	}
 	page = d.do("GET", "/plugins", "", d.session(d.a, false, true)).Body.String()
-	if card := cardOf(t, page, second); !strings.Contains(card, "data-draft-reapprove") || !strings.Contains(card, "It may have been") {
-		t.Fatalf("the unconfirmed card offers no re-approval:\n%s", card)
+	if card := cardOf(t, page, second); strings.Contains(card, "data-step-up-form") || !strings.Contains(card, "It may have been") {
+		t.Fatalf("the unconfirmed card: want the may-have-been-sent warning and NO approval form:\n%s", card)
 	}
-	reapprove := "/plugins/drafts/" + strconv.FormatInt(second, 10) + "/reapprove"
-	if rec := d.do("POST", reapprove, "", d.session(d.a, true, false)); rec.Code != http.StatusForbidden {
-		t.Fatalf("a stale re-approval: %d; want 403", rec.Code)
+	if rec := d.do("POST", "/plugins/drafts/"+strconv.FormatInt(second, 10)+"/approve", "", d.session(d.a, false, true)); rec.Code != http.StatusConflict {
+		t.Fatalf("approving an unconfirmed draft: %d; want 409 — it is never offered again", rec.Code)
+	}
+	// 8. The message-scoped rule: the chief files a NEW draft for the same
+	// message (its card warns), the owner approves it — and then the plugin
+	// reports the unconfirmed one sent after all. The new one must not go too.
+	third, out := d.replyDraft(chief, m2, "Third reply.")
+	if third == 0 {
+		t.Fatalf("third draft: %s", out)
+	}
+	page = d.do("GET", "/plugins", "", d.session(d.a, false, true)).Body.String()
+	if card := cardOf(t, page, third); !strings.Contains(card, "data-draft-twice") {
+		t.Fatalf("the new draft's card does not warn that an earlier reply may have gone:\n%s", card)
+	}
+	if rec := d.do("POST", "/plugins/drafts/"+strconv.FormatInt(third, 10)+"/approve", "", d.session(d.a, false, true)); rec.Code != http.StatusSeeOther {
+		t.Fatalf("approve the third: %d", rec.Code)
+	}
+	if rec := d.do("POST", "/plugin/v1/drafts/"+strconv.FormatInt(second, 10)+"/result", `{"ok":true,"external_ref":"up-2"}`, bearerTok(aTok)); rec.Code != http.StatusOK ||
+		!strings.Contains(rec.Body.String(), `"status":"sent"`) {
+		t.Fatalf("the unconfirmed draft's late sent: %d %s", rec.Code, rec.Body.String())
 	}
 	if rec := d.claim(aTok, 0); rec.Code != http.StatusNoContent {
-		t.Fatalf("a claim after a refused re-approval: %d; want 204", rec.Code)
+		t.Fatalf("a claim after the late sent: %d %s; want 204 — the third draft is superseded", rec.Code, rec.Body.String())
 	}
-	if rec := d.do("POST", reapprove, "", d.session(d.a, false, true)); rec.Code != http.StatusSeeOther {
-		t.Fatalf("a fresh re-approval: %d; want 303", rec.Code)
-	}
-	rec = d.claim(aTok, 0)
-	var re struct {
-		DraftID int64  `json:"draft_id"`
-		Body    string `json:"body"`
-	}
-	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &re) != nil || re.Body != "Second reply." || re.DraftID == second {
-		t.Fatalf("a claim after the re-approval: %d %s; want the same text under a NEW draft id (not %d)", rec.Code, rec.Body.String(), second)
-	}
-	// The first claim's late result settles the first row only.
-	if rec := d.do("POST", "/plugin/v1/drafts/"+strconv.FormatInt(second, 10)+"/result", `{"ok":false}`, bearerTok(aTok)); rec.Code != http.StatusOK {
-		t.Fatalf("the first claim's late result: %d %s", rec.Code, rec.Body.String())
-	}
-	if rec := d.do("POST", "/plugin/v1/drafts/"+strconv.FormatInt(re.DraftID, 10)+"/result", `{"ok":true}`, bearerTok(aTok)); rec.Code != http.StatusOK ||
-		!strings.Contains(rec.Body.String(), `"status":"sent"`) {
-		t.Fatalf("the re-approval's own result: %d %s; want 200 sent", rec.Code, rec.Body.String())
+	if got := d.draft(third); got.Status != plugins.DraftSuperseded {
+		t.Fatalf("the third draft is %s; want superseded", got.Status)
 	}
 }
 
@@ -519,5 +522,80 @@ func TestTheChiefDraftsAReplyOverMCP(t *testing.T) {
 	}
 	if text, isErr, _ := call(g.chiefTok, map[string]any{"message_id": nr.ID, "body": "x"}); !isErr || !strings.Contains(text, "cannot be replied to") {
 		t.Fatalf("a no_reply message: %q; want refused", text)
+	}
+}
+
+// TestAClaimAnswersWhileADeliveryIsStillRunning: a delivered message is a TOOL
+// turn and can take minutes, so neither the claim-time retry nor a delivery
+// already running may hold a claim's answer — and one message is never handed
+// to the chief twice at once.
+//
+//  1. A message queued while its owner had no chief; then a chief whose runtime
+//     HOLDS every turn. A claim must answer (204) while the retry it started is
+//     still inside that held turn — and a second claim meanwhile starts nothing
+//     new. Released, the message is delivered, in ONE turn.
+//  2. A message whose POST-time delivery is held: a claim answers, and its retry
+//     — which finds the same message still queued — does not send it again (the
+//     chief's session claim refuses the second attempt). One turn in all.
+func TestAClaimAnswersWhileADeliveryIsStillRunning(t *testing.T) {
+	d := newDraftSeam(t)
+	aTok := d.mint(d.a)
+	claimWithin := func(what string) {
+		t.Helper()
+		done := make(chan int, 1)
+		go func() { done <- d.claim(aTok, 0).Code }()
+		select {
+		case code := <-done:
+			if code != http.StatusNoContent {
+				t.Fatalf("%s: the claim answered %d; want 204", what, code)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: the claim did not answer within 5s while a delivery was running — it waited for the delivery", what)
+		}
+	}
+	arrivedWithin := func(arrived <-chan struct{}, what string) {
+		t.Helper()
+		select {
+		case <-arrived:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s: no turn reached the runtime — the delivery never started", what)
+		}
+	}
+
+	// 1. The claim-time retry is detached.
+	m1 := d.post(aTok, "slow-1-"+d.suffix, "")
+	chief := d.chief(d.a, "slowchief")
+	d.rt.expect(chief)
+	arrived, release := d.rt.hold()
+	t.Cleanup(release)
+	claimWithin("a claim whose retry is delivering")
+	arrivedWithin(arrived, "the claim's retry")
+	if got, _ := d.ps.Message(d.asUser(d.a), m1); got.Status != plugins.StatusQueued {
+		t.Fatalf("the message is %s while its turn is still held; want queued", got.Status)
+	}
+	claimWithin("a second claim while the retry is still delivering")
+	release()
+	d.srv.WaitForPluginDeliveries()
+	if got, _ := d.ps.Message(d.asUser(d.a), m1); got.Status != plugins.StatusDelivered {
+		t.Fatalf("after the release the message is %s; want delivered", got.Status)
+	}
+	if n := len(d.rt.seen()); n != 1 {
+		t.Fatalf("the runtime saw %d turns for one message; want 1", n)
+	}
+
+	// 2. A POST-time delivery is running when a claim's retry finds the message.
+	arrived, release = d.rt.hold()
+	t.Cleanup(release)
+	rec := d.do("POST", "/plugin/v1/messages", `{"external_id":"slow-2-`+d.suffix+`","sender":"Ada <ada@example.invalid>",`+
+		`"subject":"again","body":"Still free?"}`, bearerTok(aTok))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("post: %d %s", rec.Code, rec.Body.String())
+	}
+	arrivedWithin(arrived, "the POST's delivery")
+	claimWithin("a claim while the POST's delivery is running")
+	release()
+	d.srv.WaitForPluginDeliveries()
+	if n := len(d.rt.seen()); n != 2 {
+		t.Fatalf("the runtime saw %d turns for two messages; want 2 — the claim's retry sent the running one again", n)
 	}
 }

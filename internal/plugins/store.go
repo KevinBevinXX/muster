@@ -68,11 +68,10 @@ type Store interface {
 	DraftCards(ctx context.Context, limit int) ([]DraftCard, error)
 	// DecideDraft approves or rejects a pending draft.
 	DecideDraft(ctx context.Context, id int64, approve bool) (Draft, error)
-	// ReapproveDraft approves an unconfirmed draft again: a new decision.
-	ReapproveDraft(ctx context.Context, id int64) (Draft, error)
 	// ClaimDraft leases one approved, unclaimed draft of pluginID's.
 	ClaimDraft(ctx context.Context, pluginID int64) (c Claim, ok bool, err error)
-	// FinishDraft records pluginID's result for a draft it claimed.
+	// FinishDraft records pluginID's result for a draft it claimed; a sent one
+	// supersedes the message's other pending or unclaimed approved drafts.
 	FinishDraft(ctx context.Context, pluginID, draftID int64, r DraftResult) (Draft, error)
 	// QueuedForOwner is ownerID's undelivered messages across live plugins.
 	QueuedForOwner(ctx context.Context, ownerID int64, limit int) ([]Message, error)

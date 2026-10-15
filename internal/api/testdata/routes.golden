@@ -194,7 +194,6 @@ POST /plugin/v1/drafts/{id}/result
 POST /plugin/v1/messages
 POST /plugins
 POST /plugins/drafts/{id}/approve
-POST /plugins/drafts/{id}/reapprove
 POST /plugins/drafts/{id}/reject
 POST /plugins/{id}/revoke
 POST /runner/flows/claim

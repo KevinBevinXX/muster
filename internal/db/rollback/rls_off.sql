@@ -100,6 +100,12 @@ BEGIN
         ALTER TABLE public.plugin_messages DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.plugin_messages ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0016 (plugin_reply_drafts), when this schema has it; same reason as 0011.
+    IF to_regclass('public.plugin_reply_drafts') IS NOT NULL THEN
+        ALTER TABLE public.plugin_reply_drafts NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.plugin_reply_drafts DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.plugin_reply_drafts ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
 END
 $$;
 

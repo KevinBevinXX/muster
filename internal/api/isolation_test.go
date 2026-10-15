@@ -325,11 +325,10 @@ var isolationClasses = map[string]routeClass{
 	// Reply drafts (PR C): the owner's decisions name A's draft by id; the
 	// plugin's claim names nothing (it leases the token owner's own drafts) and
 	// its result names A's draft — which B's plugin must not settle.
-	"POST /plugins/drafts/{id}/approve":   classParam,
-	"POST /plugins/drafts/{id}/reapprove": classParam,
-	"POST /plugins/drafts/{id}/reject":    classParam,
-	"POST /plugin/v1/drafts/claim":        classPlugin,
-	"POST /plugin/v1/drafts/{id}/result":  classPlugin,
+	"POST /plugins/drafts/{id}/approve":  classParam,
+	"POST /plugins/drafts/{id}/reject":   classParam,
+	"POST /plugin/v1/drafts/claim":       classPlugin,
+	"POST /plugin/v1/drafts/{id}/result": classPlugin,
 
 	// The mirrored rendered view (tunnel v2) addresses its session like the
 	// mirrored terminal above (?host=&session=); the
@@ -1129,7 +1128,7 @@ func (w *isoWorld) snapshot() map[string]string {
 	for _, tbl := range []string{"notes", "note_comments", "note_attachments", "task_sessions", "agents",
 		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "github_connection", "mirror_tokens",
 		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens", "push_subscriptions", "push_preferences", "flow_requests",
-		"plugins", "plugin_messages"} {
+		"plugins", "plugin_messages", "plugin_reply_drafts"} {
 		var js string
 		if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t.id)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
 			// task_sessions/github_connection have no `id` ordering column in every

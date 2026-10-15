@@ -25,8 +25,8 @@ import (
 //
 //   - The OWNER decides on /plugins: each pending draft is a card showing the
 //     message it answers (untrusted, escaped) and the EXACT text that will be
-//     sent (flows.VisibleEscape, with its length). Approve and "Approve again"
-//     need a FRESH sign-in (stepup.Fresh, as typing into a mirrored session
+//     sent (flows.VisibleEscape, with its length). Approve needs a FRESH
+//     sign-in (stepup.Fresh, as typing into a mirrored session
 //     does): an approval sends text to an outside party in the owner's name.
 //     Reject needs none — refusing to send is never the risky direction.
 //   - The PLUGIN collects: POST /plugin/v1/drafts/claim long-polls for an
@@ -229,16 +229,12 @@ func (s *Server) handleDraftApprove(w http.ResponseWriter, r *http.Request) {
 	s.decideDraft(w, r, "approve")
 }
 
-func (s *Server) handleDraftReapprove(w http.ResponseWriter, r *http.Request) {
-	s.decideDraft(w, r, "reapprove")
-}
-
 func (s *Server) handleDraftReject(w http.ResponseWriter, r *http.Request) {
 	s.decideDraft(w, r, "reject")
 }
 
-// decideDraft is the three decision routes. 🔴 THE STEP-UP IS CHECKED HERE, ON
-// THE SERVER, FOR BOTH APPROVALS, whatever the page decided: the page's script
+// decideDraft is the two decision routes. 🔴 THE STEP-UP IS CHECKED HERE, ON
+// THE SERVER, FOR AN APPROVAL, whatever the page decided: the page's script
 // only asks BEFORE submitting so the owner is not bounced. A stale approval is
 // 403 — to a script with X-Muster-Step-Up (refuseStale), to a browser form the
 // page again, saying so.
@@ -257,22 +253,11 @@ func (s *Server) decideDraft(w http.ResponseWriter, r *http.Request, how string)
 		refuseStale(w)
 		return
 	}
-	var d plugins.Draft
-	switch how {
-	case "approve":
-		d, err = s.ext.Plugins.DecideDraft(r.Context(), id, true)
-	case "reapprove":
-		d, err = s.ext.Plugins.ReapproveDraft(r.Context(), id)
-	default:
-		d, err = s.ext.Plugins.DecideDraft(r.Context(), id, false)
-	}
+	d, err := s.ext.Plugins.DecideDraft(r.Context(), id, how == "approve")
 	switch {
 	case err == nil:
 	case errors.Is(err, plugins.ErrNotFound):
 		s.renderPluginsPage(w, r, http.StatusNotFound, "", "No such draft.")
-		return
-	case errors.Is(err, plugins.ErrAlreadySent):
-		s.renderPluginsPage(w, r, http.StatusConflict, "", "The plugin has since reported this reply sent, so it is not approved again.")
 		return
 	case how == "reject" && errors.Is(err, plugins.ErrDraftState) && d.Status == plugins.DraftApproved && d.ClaimedAt != nil:
 		s.renderPluginsPage(w, r, http.StatusConflict, "", "A plugin has already collected that draft, so it can no longer be withdrawn.")
@@ -338,20 +323,15 @@ func draftStatusText(d plugins.Draft) string {
 	case plugins.DraftFailed:
 		return "The plugin could not send it" + at(d.FinishedAt)
 	case plugins.DraftUnconfirmed:
-		s := "Unconfirmed: the plugin collected it" + at(d.ClaimedAt) + " and never said whether it was sent. It may have been. "
-		switch {
-		case d.ReapprovedAs != nil:
-			return s + "You approved it again, as draft " + strconv.FormatInt(*d.ReapprovedAs, 10) + "."
-		case !d.ExpiresAt.After(time.Now()):
-			return s + "It is past its 7 days and can no longer be approved again."
-		case d.AgentID == nil:
-			return s + "The agent that wrote it is gone, so it can no longer be approved again."
-		}
-		return s + "muster will not offer it again unless you approve it again."
+		return "Unconfirmed: the plugin collected it" + at(d.ClaimedAt) + " and never said whether it was sent. It may have been. " +
+			"muster will not offer it again; ask your chief for a new draft if the sender still needs an answer."
 	case plugins.DraftRejected:
 		return "Rejected" + at(d.DecidedAt)
 	case plugins.DraftSuperseded:
-		return "Replaced by a newer draft"
+		if d.ApprovedAt != nil {
+			return "Not sent: another reply to this message was reported sent"
+		}
+		return "Replaced by a newer draft, or another reply to this message was sent"
 	case plugins.DraftExpired:
 		return "Expired unsent"
 	}
@@ -412,17 +392,6 @@ func draftCardHTML(c plugins.DraftCard) string {
 			flowsButtonClass + ` w-full" data-draft-approve>Approve and send</button></form>
 <form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject"><button type="submit" class="` + flowsQuietButton + `" data-draft-reject>Reject</button></form>
 `)
-	case plugins.DraftUnconfirmed:
-		if c.OriginalSent {
-			b.WriteString(`<span class="text-xs font-semibold text-fg" data-draft-same-sent>The draft this one repeats was reported sent, so it is not approved again.</span>
-`)
-		}
-		if d.ReapprovedAs != nil || d.AgentID == nil || c.OriginalSent || !d.ExpiresAt.After(time.Now()) {
-			break
-		}
-		b.WriteString(`<form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reapprove" data-step-up-form><button type="submit" class="` +
-			flowsQuietButton + `" data-draft-reapprove>Approve again (it may be sent twice)</button></form>
-`)
 	}
 	b.WriteString("</li>\n")
 	return b.String()
@@ -433,8 +402,6 @@ func draftTextLead(st plugins.DraftStatus) string {
 	switch st {
 	case plugins.DraftPending:
 		return " · approving sends exactly this, once"
-	case plugins.DraftUnconfirmed:
-		return " · approving again lets the plugin send exactly this once more"
 	}
 	return ""
 }

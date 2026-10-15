@@ -265,7 +265,7 @@ func TestPluginsOffIsNotFound(t *testing.T) {
 	for _, rt := range []struct{ method, path, body string }{
 		{"GET", "/plugins", ""}, {"POST", "/plugins", "name=example-inbox&label=x&data_scope=x"},
 		{"POST", "/plugins/1/revoke", ""}, {"POST", "/plugin/v1/messages", pgnMsg},
-		{"POST", "/plugins/drafts/1/approve", ""}, {"POST", "/plugins/drafts/1/reapprove", ""},
+		{"POST", "/plugins/drafts/1/approve", ""},
 		{"POST", "/plugins/drafts/1/reject", ""},
 		{"POST", "/plugin/v1/drafts/claim", `{"wait_seconds":0}`}, {"POST", "/plugin/v1/drafts/1/result", `{"ok":true}`},
 	} {
