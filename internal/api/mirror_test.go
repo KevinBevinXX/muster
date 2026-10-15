@@ -293,8 +293,8 @@ func TestTheTerminalPageOffersInteractiveOnlyWhenTheHostAdvertisedIt(t *testing.
 		if offered != interactive {
 			t.Errorf("host interactive=%v: the Interactive switch is offered = %v (%s)", interactive, offered, tag)
 		}
-		if !strings.Contains(tag, `title="Interactive types into a tmux client on ws: from it you can switch to any tmux session there or open a shell on the host."`) {
-			t.Errorf("the switch does not say that interactive is a shell on the host: %s", tag)
+		if !strings.Contains(tag, `title="Live keys type into a tmux client on ws: from it you can switch to any tmux session there or open a shell on the host."`) {
+			t.Errorf("the switch does not say that live keys are a shell on the host: %s", tag)
 		}
 		wantWS := strings.ReplaceAll(ui.MirrorTerminalWSPath("ws", "main"), "&", "&amp;")
 		if !strings.Contains(page, `data-ws="`+wantWS+`"`) || !strings.Contains(page, `href="/agents"`) {

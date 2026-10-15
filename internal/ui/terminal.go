@@ -105,6 +105,18 @@ type AgentTerminalView struct {
 	Composer *MirrorComposerView
 }
 
+// The Live keys switch's words, and the status line's. Exported so a test pins
+// the page against the same strings rather than a copy of them.
+const (
+	LiveKeysOff = "Live keys off"
+	LiveKeysOn  = "Live keys on"
+	// StatusConnected is the status while live keys are off. It says nothing
+	// about sending: the composer can send either way.
+	StatusConnected = "Connected"
+	StatusLiveKeys  = "Connected · live keys"
+	liveKeysTitle   = "Live keys: send your keystrokes and the quick keys straight into the session"
+)
+
 // termModeDisplay is the switch's display utility: gone when the far side is
 // read-only-only.
 func termModeDisplay(readOnlyOnly bool) string {
@@ -130,9 +142,18 @@ func AgentSendPath(name string) string { return "/agents/" + url.PathEscape(name
 // else is the chat page.
 const AgentSendFromTerminal = "terminal"
 
-// AgentTerminalPage is a full-height document: a header with the read-only /
-// interactive switch, the terminal, the quick-key bar and — for a mirrored
-// session that can be sent to — the message composer.
+// AgentTerminalPage is a full-height document: a header with the Live keys
+// switch, the terminal, the quick-key bar and — for a mirrored session that can
+// be sent to — the message composer.
+//
+// 🔴 THE PAGE NEVER CALLS ITSELF "READ-ONLY". It used to: the switch read
+// "Read-only" and the status "Connected · read-only" whenever live keys were
+// off — while the composer under the terminal sends messages without the
+// switch, so the label told a person they could not send when they could. What
+// the switch gates is LIVE KEYS (keystrokes and the quick-key bar typed
+// straight into the session), and it says exactly that. A host that genuinely
+// cannot be sent to says so ONCE, in its composer's disabled note
+// (MirrorReadOnlyNote).
 //
 // 🔴 IT IS ITS OWN DOCUMENT, NOT A PANEL OF THE AGENT PAGE. The agent page is
 // hx-boost'ed and its chat script tears down and re-creates its socket on
@@ -140,8 +161,9 @@ const AgentSendFromTerminal = "terminal"
 // re-attached on every navigation. The links into this page opt out of boost,
 // so it is always a real load with its own scripts.
 //
-// ⚠ READ-ONLY IS THE STATE THE PAGE OPENS IN, AND THE SERVER AGREES
-// INDEPENDENTLY: the socket is opened with mode=ro until the switch is flipped,
+// ⚠ LIVE KEYS OFF — A READ-ONLY ATTACH — IS THE STATE THE PAGE OPENS IN, AND
+// THE SERVER AGREES INDEPENDENTLY: the socket is opened with mode=ro until the
+// switch is flipped,
 // and the server attaches read-only for anything but mode=rw. (The one
 // exception is a mirrored host whose Interactive choice this browser session
 // remembers while its sign-in is still fresh — and the server re-checks that.)
@@ -207,22 +229,24 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 						Class("press min-h-[44px] shrink-0 items-center rounded-lg bg-s2 px-3 text-xs font-semibold text-fg ring-1 ring-inset ring-line transition aria-pressed:bg-accent aria-pressed:text-on-accent"),
 						g.Text("Fit width"),
 					),
-					// The switch. aria-checked is the INTERACTIVE state, so
-					// "false" — read-only — is what the page opens with.
+					// The switch. aria-checked is the LIVE-KEYS state, so
+					// "false" — keys off, a read-only attach — is what the page
+					// opens with. Its label names what it gates, never "read-only":
+					// the composer sends with it off (see AgentTerminalPage).
 					Button(
 						ID("term-mode"),
 						Type("button"),
 						g.Attr("role", "switch"),
 						g.Attr("aria-checked", "false"),
-						g.Attr("aria-label", "Interactive: let this page type into the session"),
+						g.Attr("aria-label", "Live keys: type keystrokes and the quick keys straight into the session"),
 						g.If(v.Unavailable != "", g.Attr("disabled", "")),
 						// ⚠ The `hidden` CLASS, not the attribute: an author display
 						// utility (inline-flex) beats the UA's [hidden] rule.
 						g.If(v.ReadOnlyOnly, g.Attr("hidden", "")),
-						g.If(v.InteractiveNote != "", g.Attr("title", v.InteractiveNote)),
+						g.Attr("title", displayOr(v.InteractiveNote, liveKeysTitle)),
 						g.If(v.InteractiveNote != "", g.Attr("data-interactive-note", v.InteractiveNote)),
 						Class(termModeDisplay(v.ReadOnlyOnly)+" press min-h-[44px] shrink-0 items-center gap-2 rounded-lg bg-s2 px-3 text-xs font-semibold text-fg ring-1 ring-inset ring-line transition aria-checked:bg-danger aria-checked:text-on-accent disabled:opacity-40"),
-						Span(ID("term-mode-label"), g.Text("Read-only")),
+						Span(ID("term-mode-label"), g.Text(LiveKeysOff)),
 					),
 					g.If(v.RenderedHref != "", viewToggle(false, v.RenderedHref, "")),
 				),
@@ -285,7 +309,8 @@ func terminalComposer(c *MirrorComposerView) g.Node {
 }
 
 // quickKeyBar renders QuickKeys as a two-row grid that fits a phone's width
-// without scrolling. The buttons start DISABLED: the page opens read-only.
+// without scrolling. The buttons start DISABLED: the page opens with live keys
+// off.
 //
 // last says the bar is the bottom of the page, and so carries the safe-area
 // inset; when a composer follows, the composer carries it instead.
@@ -494,7 +519,7 @@ func agentTerminalScript() g.Node {
   function applyMode() {
     var rw = mode === 'rw';
     modeBtn.setAttribute('aria-checked', rw ? 'true' : 'false');
-    modeLabel.textContent = rw ? 'Interactive' : 'Read-only';
+    modeLabel.textContent = rw ? '` + LiveKeysOn + `' : '` + LiveKeysOff + `';
     term.options.disableStdin = !rw;
     for (var i = 0; i < keys.length; i++) { keys[i].disabled = !rw; }
   }
@@ -536,7 +561,7 @@ func agentTerminalScript() g.Node {
         try { m = JSON.parse(ev.data); } catch (e) { return; }
         if (m.type === 'ready') {
           justConfirmed = false;
-          setStatus(m.mode === 'rw' ? 'Connected · interactive' : 'Connected · read-only');
+          setStatus(m.mode === 'rw' ? '` + StatusLiveKeys + `' : '` + StatusConnected + `');
         } else if (m.type === 'error') {
           refused = true;
           showError(m.message, true);
@@ -554,7 +579,7 @@ func agentTerminalScript() g.Node {
       setStatus('Disconnected');
       // 🔴 A STEP-UP REFUSAL ARRIVES AS A REFUSED UPGRADE (403), which a
       // browser socket cannot read. An interactive mirrored attach that never
-      // opened is therefore taken as "not fresh any more": back to read-only,
+      // opened is therefore taken as "not fresh any more": back to keys off,
       // and ask — unless it was JUST confirmed, when asking again would loop.
       if (!opened && mode === 'rw' && confirmPath) {
         var again = !justConfirmed;

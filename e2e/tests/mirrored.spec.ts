@@ -142,7 +142,7 @@ test('a read-only host’s sessions appear as Mirrored cards and open the shared
   await main.locator('a').first().click();
   await page.waitForURL((u) => u.pathname === '/mirror/terminal');
   await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=ro');
-  await expect(page.locator('#term-status')).toHaveText('Connected · read-only');
+  await expect(page.locator('#term-status')).toHaveText('Connected');
   await expect(page.locator('[data-term-badge]')).toContainText(`Mirrored · ${host}`);
   await expect(page.locator('#term-back')).toHaveAttribute('href', '/agents');
   // The host did not advertise -interactive: no switch is offered.
@@ -252,13 +252,80 @@ test('an -interactive host offers the switch and types into the session', async 
   await expect(page.locator('#term-mode')).toBeVisible();
   await page.locator('#term-mode').click();
   await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=rw');
-  await expect(page.locator('#term-status')).toHaveText('Connected · interactive');
+  await expect(page.locator('#term-status')).toHaveText('Connected · live keys');
   await page.locator('#term-keys [data-key="esc"]').click();
   await expect(screen(page)).toContainText('in=1B');
   await page.locator('#term').click();
   await page.keyboard.type('ok');
   await expect(screen(page)).toContainText(/in=6F6B|in=6F/);
   await noHorizontalScroll(page);
+});
+
+// readOnlyShown is every "read-only" a person can READ on the page: its visible
+// text, and the tooltips / labels / placeholders of its elements — minus the
+// text of the elements `except` names.
+async function readOnlyShown(page: Page, except: string[] = []): Promise<string[]> {
+  return page.evaluate((except) => {
+    const re = /read[- ]only/i;
+    const out: string[] = [];
+    const body = document.body.cloneNode(true) as HTMLElement;
+    for (const sel of except) body.querySelectorAll(sel).forEach((el) => el.remove());
+    body.querySelectorAll('script, style').forEach((el) => el.remove());
+    // innerText of a detached clone is its textContent; scripts are gone.
+    const text = (body.textContent || '').replace(/\s+/g, ' ');
+    const m = text.match(new RegExp('.{0,30}' + re.source + '.{0,30}', 'gi'));
+    if (m) out.push(...m.map((s) => 'text: ' + s));
+    body.querySelectorAll('[title], [aria-label], [placeholder]').forEach((el) => {
+      for (const a of ['title', 'aria-label', 'placeholder']) {
+        const v = el.getAttribute(a);
+        if (v && re.test(v)) out.push(`${a} of #${el.id || el.tagName}: ${v}`);
+      }
+    });
+    return out;
+  }, except);
+}
+
+// 🔴 A REGRESSION TEST. The switch read "Read-only" and the status "Connected ·
+// read-only" with live keys off, while the composer under the terminal sends
+// without the switch: the page told a person they could not send when they
+// could. Red at origin/main 5252925, green at HEAD.
+test('the terminal never says read-only where its composer can send; a read-only host explains once, in its composer’s note', async ({ page }) => {
+  await stopMirror();
+  mirrorProc = startMirror(true);
+  await login(page);
+  await waitForCards(page, true);
+  for (const session of ['main', 'scratch']) {
+    await page.goto(origin + termPath(session));
+    await expect(screen(page)).toContainText(`FAKE-MIRROR session=${session} mode=ro`);
+    await expect(page.locator('#mv-input'), `${session}: the composer can send`).toBeEnabled();
+    await expect(page.locator('#term-status')).toHaveText('Connected');
+    await expect(page.locator('#term-mode')).toBeVisible();
+    await expect(page.locator('#term-mode-label')).toHaveText('Live keys off');
+    expect(await readOnlyShown(page), `${session}: nothing on a page that can send says read-only`).toEqual([]);
+  }
+  // Live keys on and off again: still never "read-only".
+  await page.locator('#term-mode').click();
+  await expect(page.locator('#term-status')).toHaveText('Connected · live keys');
+  await expect(page.locator('#term-mode-label')).toHaveText('Live keys on');
+  await page.locator('#term-mode').click();
+  await expect(page.locator('#term-status')).toHaveText('Connected');
+  await expect(page.locator('#term-mode-label')).toHaveText('Live keys off');
+  expect(await readOnlyShown(page), 'after a round trip of the switch').toEqual([]);
+
+  // A host that genuinely cannot be sent to: no switch, and the composer's own
+  // disabled note is the ONE place the page says so.
+  await stopMirror();
+  mirrorProc = startMirror(false);
+  await waitForCards(page, true);
+  await page.goto(origin + termPath('scratch'));
+  await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch mode=ro');
+  await expect(page.locator('#term-status')).toHaveText('Connected');
+  await expect(page.locator('#term-mode')).toBeHidden();
+  await expect(page.locator('#mv-input')).toBeDisabled();
+  await expect(page.locator('#mv-readonly')).toContainText('This host is read-only');
+  expect((await readOnlyShown(page)).length, 'control: the note itself is seen').toBeGreaterThan(0);
+  // The composer's note, and the composer's own fields (its tooltip and placeholder carry the same words).
+  expect(await readOnlyShown(page, ['#mv-readonly', '#mv-compose']), 'read-only wording outside the composer').toEqual([]);
 });
 
 test('a host that disconnects reads offline and its terminal says why', async ({ page }) => {

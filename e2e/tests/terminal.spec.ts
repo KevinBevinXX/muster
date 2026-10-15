@@ -114,9 +114,9 @@ test('a claude-code agent opens its live terminal read-only at phone width', asy
   await page.waitForURL(origin + '/agents/' + name + '/terminal');
   await expect(screen(page)).toContainText('FAKE-TUI mode=ro');
   await expect(screen(page)).toContainText('agent=' + name);
-  await expect(page.locator('#term-status')).toHaveText('Connected · read-only');
+  await expect(page.locator('#term-status')).toHaveText('Connected');
   await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
-  await expect(page.locator('#term-mode-label')).toHaveText('Read-only');
+  await expect(page.locator('#term-mode-label')).toHaveText('Live keys off');
 
   // The bar has every key a phone keyboard lacks, all disabled while read-only.
   const keys = page.locator('#term-keys [data-key]');
@@ -176,9 +176,9 @@ test('the switch makes it interactive and the quick-key bar types the right byte
 
   await page.locator('#term-mode').click();
   await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'true');
-  await expect(page.locator('#term-mode-label')).toHaveText('Interactive');
+  await expect(page.locator('#term-mode-label')).toHaveText('Live keys on');
   await expect(screen(page)).toContainText('FAKE-TUI mode=rw');
-  await expect(page.locator('#term-status')).toHaveText('Connected · interactive');
+  await expect(page.locator('#term-status')).toHaveText('Connected · live keys');
 
   // Literal expected bytes, NOT read from the page's data attributes.
   const want: [string, string][] = [
