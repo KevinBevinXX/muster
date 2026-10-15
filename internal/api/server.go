@@ -457,6 +457,8 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerNotesRoutes(mux)
 	s.registerGitHubRoutes(mux)
 	s.registerAgentRoutes(mux)
+	// Pins (internal/pins): the Agents list's pin toggles, 404 without a store.
+	s.registerPinRoutes(mux)
 	s.registerAgentSelfServiceRoutes(mux)
 	s.registerConnectorRoutes(mux)
 	s.registerCredentialRoutes(mux)

@@ -193,10 +193,20 @@ type gtFixture struct {
 
 func newGoTrueFixture(t *testing.T) *gtFixture {
 	t.Helper()
+	return newGoTrueFixtureWith(t, nil)
+}
+
+// newGoTrueFixtureWith is newGoTrueFixture with ext wired (nil = none) before
+// the handler is built.
+func newGoTrueFixtureWith(t *testing.T, ext *Extensions) *gtFixture {
+	t.Helper()
 	fake := gotruetest.New(t, gtSecret)
 	f := &gtFixture{fake: fake, store: newMemUsers()}
 	f.s = New(nil, AuthConfig{Mode: AuthModeGoTrue, HookToken: gtHook, PublicURL: "https://muster.example.com"},
 		log.New(io.Discard, "", 0))
+	if ext != nil {
+		f.s.UseExtensions(*ext)
+	}
 	f.s.UseGoTrue(GoTrueAuth{Client: fake.Client(), Verifier: fake.Verifier(), Users: f.store})
 	f.s.principalProbe = func(r *http.Request) {
 		p, _ := authz.From(r.Context())

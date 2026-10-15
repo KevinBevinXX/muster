@@ -10,6 +10,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -81,14 +82,19 @@ func (s *Server) handleMirrorConnect(w http.ResponseWriter, r *http.Request) {
 // mirrorCards is the viewing principal's mirrored sessions, for the Agents
 // view — one list across its hosts, most recently active first (mirror.Ordered
 // is the order's one definition); nil with the plugin off.
-func (s *Server) mirrorCards(ctx context.Context) []ui.MirrorCardView {
+//
+// pinned is the viewer's pins: an entry whose address is pinned is marked. A
+// pin whose window is not listed matches nothing here and draws nothing — it
+// stays dormant until the window is listed again.
+func (s *Server) mirrorCards(ctx context.Context, pinned pins.Set) []ui.MirrorCardView {
 	if s.ext.Mirror == nil {
 		return nil
 	}
 	var out []ui.MirrorCardView
 	for _, m := range mirror.Ordered(s.ext.Mirror.Hosts(ctx)) {
 		out = append(out, ui.MirrorCardView{Host: m.Host, Session: m.Session, Window: m.Window, Title: mirrorTitle(m), Label: m.Label,
-			Qualifier: m.Qualifier, Kind: m.Kind(), Online: m.Online, Interactive: m.Interactive, Claude: m.Claude})
+			Qualifier: m.Qualifier, Kind: m.Kind(), Online: m.Online, Interactive: m.Interactive, Claude: m.Claude,
+			Pinned: pinned.Mirror(pins.MirrorKey{Host: m.Host, Session: m.Session, Window: m.Window})})
 	}
 	return out
 }

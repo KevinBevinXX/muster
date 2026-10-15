@@ -90,8 +90,9 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - flow_requests (0014, an agent's per-run browser-flow request).
 //   - plugins, plugin_messages (0015, the plugin interface's tokens and
 //     inbound messages); plugin_reply_drafts (0016, its reply drafts).
+//   - pins (0017, the Agents list's pinned entries).
 var ownedAfter0006 = []string{"cc_account_marks", "flow_jobs", "flow_requests", "flow_runner_tokens", "mirror_tokens",
-	"plugin_messages", "plugin_reply_drafts", "plugins", "push_preferences", "push_subscriptions", "user_credentials"}
+	"pins", "plugin_messages", "plugin_reply_drafts", "plugins", "push_preferences", "push_subscriptions", "user_credentials"}
 
 // rlsTables is every owned table today: ownedTables plus ownedAfter0006.
 func rlsTables() []string { return append(slices.Clone(ownedTables), ownedAfter0006...) }
@@ -149,6 +150,8 @@ var wantForeignKeys = []string{
 	"note_comments|note_comments_note_owner_fkey|FOREIGN KEY (note_id, owner_id) REFERENCES notes(id, owner_id) ON DELETE CASCADE",
 	"note_comments|note_comments_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"notes|notes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"pins|pins_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE",
+	"pins|pins_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"plugin_messages|plugin_messages_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL",
 	"plugin_messages|plugin_messages_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"plugin_messages|plugin_messages_plugin_owner_fkey|FOREIGN KEY (plugin_id, owner_id) REFERENCES plugins(id, owner_id) ON DELETE CASCADE",

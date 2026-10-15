@@ -90,6 +90,9 @@ export const pluginsMainPort = port + 29;
 export const pluginsBrowserPort = port + 30;
 export const pluginsGotruePort = Number(process.env.MUSTER_E2E_PLUGINS_GOTRUE_PORT ?? port + 31);
 export const pluginsConnectPort = port + 32;
+// Pins: the pins spec's own server (the e2eterm binary with the mirror plugin
+// on), so its mirrored host and its pins' order are no other spec's.
+export const pinsPort = port + 36;
 // The fake service's bearer token. Invented, like every value here.
 export const sttToken = 'e2e-stt-token-not-a-real-one';
 // The docs screenshots (e2e/docshots, `make screenshots`, never in the suite):

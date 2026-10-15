@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
 )
@@ -160,6 +161,11 @@ type Extensions struct {
 	// over Gateway, so the chief has its tools on it. nil (or a nil Gateway) with
 	// Plugins set: messages are stored and stay queued — nothing is delivered.
 	PluginGateway plugins.Gateway
+
+	// Pins is the Agents list's per-user pins (internal/pins, migration 0017).
+	// nil (no database): nothing is pinned, no card is drawn pinned, and the pin
+	// routes answer 404.
+	Pins pins.Store
 }
 
 // Mirror is the mirror plugin as this package consumes it. *mirror.Service

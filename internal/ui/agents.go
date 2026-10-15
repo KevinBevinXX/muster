@@ -75,6 +75,10 @@ type AgentCardView struct {
 	// cardViewIndexed and never re-derived here — the server refuses the delete
 	// regardless, so this only keeps the UI from offering what it would refuse.
 	IsChief bool
+	// Pinned: the viewing user pinned this agent (internal/pins). The list draws
+	// pinned entries first (AgentsCardsWithMirrors), the card a pin glyph, and the
+	// ⋯ menu offers Unpin instead of Pin. Composed in cardViewIndexed.
+	Pinned bool
 }
 
 // lastActive is the card's "active" time: LastActiveAt, or UpdatedAt when the
@@ -268,6 +272,7 @@ func agentCard(a AgentCardView) g.Node {
 	ids := strconv.FormatInt(a.ID, 10)
 	return Article(
 		ID("agent-"+ids),
+		g.If(a.Pinned, g.Attr("data-pinned", "")),
 		// What the list's filter finds this card by (agents_filter.go).
 		cardFilterAttrs(cardFields{Host: podHost, Type: "agent", Name: filterHaystack(a.DisplayName, a.Name),
 			Status: a.Status, Kind: agents.KindLabel(a.Kind), Repo: a.Repo, Account: a.CCAccount, NS: a.Namespace},
@@ -295,6 +300,7 @@ func agentCard(a AgentCardView) g.Node {
 			Div(
 				Class("flex flex-wrap items-center gap-2"),
 				cardStatusIcon(a),
+				g.If(a.Pinned, pinnedGlyph()),
 				// The owed-kickoff badge sits OUTSIDE cardStatusIcon's span on
 				// purpose: that span polls /ui/agents/{id}/status every 10s and
 				// swaps its own innerHTML, so anything nested inside it is erased
@@ -442,6 +448,7 @@ func agentMenu(a AgentCardView) g.Node {
 			g.Attr("data-floating-menu", ""),
 			Class("invisible hidden [&:popover-open]:flex m-0 w-44 flex-col gap-1 rounded-xl border border-line bg-s1 p-1.5 text-fg shadow-2xl ring-1 ring-black/20"),
 			lifecycle,
+			agentPinMenuItem(a),
 			g.If(!a.IsChief, Div(Class("my-0.5 border-t border-line"))),
 			g.If(!a.IsChief, agentDeleteConfirm(ids)),
 		),

@@ -106,6 +106,12 @@ BEGIN
         ALTER TABLE public.plugin_reply_drafts DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.plugin_reply_drafts ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0017 (pins), when this schema has it; same reason as 0011.
+    IF to_regclass('public.pins') IS NOT NULL THEN
+        ALTER TABLE public.pins NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.pins DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.pins ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
 END
 $$;
 

@@ -35,6 +35,7 @@ import (
 	"github.com/ZacxDev/muster/internal/gotrue/gotruetest"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/push"
@@ -321,7 +322,12 @@ var isolationClasses = map[string]routeClass{
 	"GET /plugins":              classList,
 	"POST /plugins":             classList,
 	"POST /plugins/{id}/revoke": classParam,
-	"POST /plugin/v1/messages":  classPlugin,
+	// Pins (0017): the form names A's agent as agent_id. B's pin of it is
+	// refused (the owner trigger) and B's unpin deletes only B's rows; A's
+	// seeded pins are in the snapshot, so either reaching A's would show.
+	"POST /agents/pins":        classList,
+	"POST /agents/pins/delete": classList,
+	"POST /plugin/v1/messages": classPlugin,
 	// Reply drafts (PR C): the owner's decisions name A's draft by id; the
 	// plugin's claim names nothing (it leases the token owner's own drafts) and
 	// its result names A's draft — which B's plugin must not settle.
@@ -711,6 +717,12 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	w.aDraft, _, err = ps.FileDraft(ua, w.a.agent.ID, w.a.uid, w.a.agent.Name, aMsg.ID, w.canary+" reply")
 	must(err, "a reply draft")
 
+	// A's pins (0017): A's agent, and a window on A's mirrored host. B's pin
+	// routes must not remove either (the snapshot holds them).
+	pinStore := pins.NewPG(pool)
+	must(pinStore.PinAgent(ua, w.a.agent.ID), "a agent pin")
+	must(pinStore.PinMirror(ua, pins.MirrorKey{Host: w.canary + "-host", Session: "main", Window: "@1"}), "a mirror pin")
+
 	w.aIdentities = []string{w.a.agent.Name, agents.ChiefNameFor(w.a.uid), w.aSessionLink, w.aTag, w.aProject}
 	w.opInvite, err = users.NewPG(pool).CreateInvite(ctx, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession},
 		bytes.Repeat([]byte{byte(time.Now().UnixNano())}, 32), "", time.Now().Add(time.Hour))
@@ -763,6 +775,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		// Plugins ON, with no gateway: a message B's plugin posts is stored as
 		// B's and stays queued.
 		Plugins: plugins.NewPG(pool),
+		Pins:    pins.NewPG(pool),
 		Push:    push.NewService(pushStore, w.pusher, push.VAPIDConfig{PublicKey: "iso-walk-vapid-public"}, log.New(io.Discard, "", 0)),
 		ConnectorPolicy: connectors.Policy{AllowLoopback: true, InsecureHTTP: true,
 			Resolve: func(_ context.Context, host string) ([]netip.Addr, error) {
@@ -1101,6 +1114,12 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		"winner": {strconv.FormatInt(winner, 10)}, "loser": {strconv.FormatInt(o.task, 10)},
 		"note_id": {strconv.FormatInt(o.task, 10)},
 	}
+	// The pin routes name o's agent. Only on them: `kind` is also the dispatch
+	// form's agent-kind field.
+	if strings.HasPrefix(pattern, "POST /agents/pins") {
+		f.Set("kind", "agent")
+		f.Set("agent_id", strconv.FormatInt(o.agent, 10))
+	}
 	if pattern == "POST /tasks" {
 		return method, path, "multipart:" + f.Encode()
 	}
@@ -1130,7 +1149,7 @@ func (w *isoWorld) snapshot() map[string]string {
 	for _, tbl := range []string{"notes", "note_comments", "note_attachments", "task_sessions", "agents",
 		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "github_connection", "mirror_tokens",
 		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens", "push_subscriptions", "push_preferences", "flow_requests",
-		"plugins", "plugin_messages", "plugin_reply_drafts"} {
+		"plugins", "plugin_messages", "plugin_reply_drafts", "pins"} {
 		var js string
 		if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t.id)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
 			// task_sessions/github_connection have no `id` ordering column in every

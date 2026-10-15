@@ -20,6 +20,7 @@ import (
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -203,16 +204,20 @@ func (s *Server) handleAgentsContent(w http.ResponseWriter, r *http.Request) {
 	lastMsg := s.lastMessageByAgents(ctx, list)
 	agents.SortByLastActivity(list, lastMsg)
 
+	// The viewer's pins, read once: each card is marked, and the list draws the
+	// pinned ones first (ui.AgentsCardsWithMirrors — the one place that orders
+	// by pin, as a stable partition of the order above).
+	pinned := s.pinSet(ctx)
 	cards := make([]ui.AgentCardView, 0, len(list))
 	isChief := chiefPredicate(list)
 	for _, a := range list {
-		cards = append(cards, s.cardViewIndexed(a, instIdx, lastMsg[a.ID], isChief))
+		cards = append(cards, s.cardViewIndexed(a, instIdx, lastMsg[a.ID], isChief, pinned))
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// The viewer's mirrored sessions (internal/mirror), after the agents: from
 	// the plugin's in-memory hub, scoped to this request's principal.
-	if err := ui.RenderAgentsList(w, cards, s.mirrorCards(ctx)); err != nil {
+	if err := ui.RenderAgentsList(w, cards, s.mirrorCards(ctx, pinned)); err != nil {
 		s.logger.Printf("agents: render: %v", err)
 	}
 }
@@ -559,7 +564,7 @@ func (s *Server) handleSessionRead(w http.ResponseWriter, r *http.Request) {
 // The status is reconciled against live instances through liveStatusIndexed, so
 // callers in a loop pass an index they fetched once; cardViewFor is the
 // single-agent spelling.
-func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Instance, lastMsg time.Time, isChief func(agents.Agent) bool) ui.AgentCardView {
+func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Instance, lastMsg time.Time, isChief func(agents.Agent) bool, pinned pins.Set) ui.AgentCardView {
 	status := liveStatusIndexed(a, idx)
 	return ui.AgentCardView{
 		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName,
@@ -587,6 +592,8 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 		// The ONE chief predicate's answer (chief_agent.go), so the menu never
 		// offers a Delete the server would refuse.
 		IsChief: isChief(a),
+		// The viewer's pin (internal/pins), read once per render by the caller.
+		Pinned: pinned.Agent(a.ID),
 	}
 }
 
@@ -604,7 +611,7 @@ func (s *Server) cardViewFor(ctx context.Context, a agents.Agent) ui.AgentCardVi
 		s.logger.Printf("agents: card %d: list for chief check: %v", a.ID, err)
 		list = nil
 	}
-	return s.cardViewIndexed(a, s.instanceIndex(ctx), s.lastMessageByAgents(ctx, []agents.Agent{a})[a.ID], chiefPredicate(list))
+	return s.cardViewIndexed(a, s.instanceIndex(ctx), s.lastMessageByAgents(ctx, []agents.Agent{a})[a.ID], chiefPredicate(list), s.pinSet(ctx))
 }
 
 // handleAgentRenameForm serves GET /ui/agents/{id}/rename: the inline rename

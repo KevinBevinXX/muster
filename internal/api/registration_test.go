@@ -20,6 +20,7 @@ import (
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -82,6 +83,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		Mirror:          stubMirror{},
 		Flows:           stubFlows{},
 		Plugins:         stubPlugins{},
+		Pins:            stubPins{},
 		PluginGateway:   stubPluginGateway{},
 		Push:            stubPush{},
 		Transcriber:     stubTranscriber{},
@@ -98,6 +100,9 @@ type stubFlows struct{ flows.Store }
 
 // stubPlugins satisfies plugins.Store for registration only; any method call panics.
 type stubPlugins struct{ plugins.Store }
+
+// stubPins satisfies pins.Store for registration only; any method call panics.
+type stubPins struct{ pins.Store }
 
 // stubPluginGateway satisfies plugins.Gateway for registration only; any method call panics.
 type stubPluginGateway struct{ plugins.Gateway }

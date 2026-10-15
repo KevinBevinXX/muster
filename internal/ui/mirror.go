@@ -47,6 +47,10 @@ type MirrorCardView struct {
 	// opens the RENDERED view by default (MirrorViewPath); otherwise it opens the
 	// terminal.
 	Claude bool
+	// Pinned: the viewing user pinned this entry's address (internal/pins). The
+	// list draws pinned entries first (AgentsCardsWithMirrors); the card shows a
+	// pin glyph and its pin toggle pressed.
+	Pinned bool
 }
 
 // MirrorCardHref is where a mirrored card opens: the rendered view for a
@@ -143,6 +147,7 @@ func mirrorCard(m MirrorCardView) g.Node {
 	return Article(
 		ID(mirrorCardID(m)),
 		g.Attr("data-mirror-card", ""),
+		g.If(m.Pinned, g.Attr("data-pinned", "")),
 		// What the list's filter finds this card by (agents_filter.go): its title
 		// ("Gold:8"), the title as shown — with its qualifier ("Gold:8 · laptop")
 		// — its raw tmux session name, its host, and what runs in it.
@@ -151,13 +156,21 @@ func mirrorCard(m MirrorCardView) g.Node {
 			m.Label, m.Title, mirrorQualified(displayOr(m.Label, displayOr(m.Title, m.Session)), m.Qualifier),
 			m.Session, m.Host, kind, "mirrored", mode, state),
 		Class("group relative overflow-hidden rounded-2xl border border-line bg-s1/70 shadow-lg shadow-black/20 ring-1 ring-line"),
+		// The pin toggle sits OUTSIDE the nav anchor, over the card's top-right
+		// corner — the agent card's control-cluster pattern — so tapping it never
+		// opens the window; the anchor reserves right padding for it.
+		Div(
+			Class("absolute right-3 top-3 z-10 flex items-center gap-1"),
+			mirrorPinToggle(m),
+		),
 		A(
 			Href(MirrorCardHref(m)),
 			hx("hx-boost", "false"),
-			Class("flex flex-col gap-3 p-4"),
+			Class("flex flex-col gap-3 p-4 pr-20"),
 			Div(
 				Class("flex flex-wrap items-center gap-2"),
 				statusIcon(status),
+				g.If(m.Pinned, pinnedGlyph()),
 				mirrorEntryTitle(m.Label, m.Title, m.Session, m.Qualifier,
 					"mr-auto break-all text-base font-semibold leading-tight text-fg group-hover:text-accent"),
 				Span(g.Attr("data-mirror-badge", ""), mirrorBadge("Mirrored · "+m.Host)),
@@ -182,14 +195,44 @@ func mirrorCard(m MirrorCardView) g.Node {
 	)
 }
 
-// AgentsCardsWithMirrors is the Agents list: every agent card, then every
-// mirrored session the viewing principal's hosts report. The empty state shows
-// only when there are neither.
+// AgentsCardsWithMirrors is the Agents list: the viewer's PINNED entries
+// first, then the rest — and within each group the order the list already had:
+// agent cards (most recently active first, agents.SortByLastActivity), then
+// mirrored entries (mirror.Ordered). The empty state shows only when there
+// are neither.
+//
+// 🔴 A STABLE PARTITION, NOT A SORT, AND THIS IS THE ONE PLACE IT HAPPENS. It
+// moves pinned cards ahead without re-deciding anyone's order, so the
+// activity order GET /api/agents publishes and the hub's mirror.Ordered (whose
+// order is also its change detection) stay per-viewer-free. Every card stays a
+// direct <article> child of #agents-list — no wrapper, no divider article — so
+// the filter's `#agents-list > article` rule and its count still see each one
+// (agents_filter.go): a pinned card that does not match is hidden like any
+// other.
 func AgentsCardsWithMirrors(list []AgentCardView, mirrors []MirrorCardView) g.Node {
-	if len(mirrors) == 0 {
-		return AgentsCards(list)
+	if len(list) == 0 && len(mirrors) == 0 {
+		return AgentsCards(nil)
 	}
-	return g.Group{g.Group(g.Map(list, agentCard)), g.Group(g.Map(mirrors, mirrorCard))}
+	var pinnedAgents, rest []AgentCardView
+	for _, a := range list {
+		if a.Pinned {
+			pinnedAgents = append(pinnedAgents, a)
+		} else {
+			rest = append(rest, a)
+		}
+	}
+	var pinnedMirrors, others []MirrorCardView
+	for _, m := range mirrors {
+		if m.Pinned {
+			pinnedMirrors = append(pinnedMirrors, m)
+		} else {
+			others = append(others, m)
+		}
+	}
+	return g.Group{
+		g.Group(g.Map(pinnedAgents, agentCard)), g.Group(g.Map(pinnedMirrors, mirrorCard)),
+		g.Group(g.Map(rest, agentCard)), g.Group(g.Map(others, mirrorCard)),
+	}
 }
 
 // mirrorSessionTitle is a mirrored session's name as a list or page title: the

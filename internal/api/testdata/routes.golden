@@ -152,6 +152,8 @@ POST /agent/blocked
 POST /agent/connectors/{name}/request
 POST /agent/task/comment
 POST /agents
+POST /agents/pins
+POST /agents/pins/delete
 POST /agents/sessions/{sid}/read
 POST /agents/{id}/model
 POST /agents/{id}/name

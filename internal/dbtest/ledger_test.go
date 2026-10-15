@@ -140,6 +140,10 @@ var pgBackedPackages = []string{
 	"internal/memorelay",
 	"internal/mirror",
 	"internal/notes",
+	// Pins (migration 0017). "Another user cannot see, delete or make a pin of
+	// yours" and "deleting an agent deletes its pin" are claims about row-level
+	// security and a foreign key cascade.
+	"internal/pins",
 	"internal/plugins",
 	// muster-native Web Push (migration 0013). "A member's principal (and the
 	// admin's) reads and writes only its own subscriptions", "a claim moves a

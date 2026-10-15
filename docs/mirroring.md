@@ -64,8 +64,17 @@ the route checks its own tokens.
 - **Not an agent, and not stored.** muster keeps each connected host's window
   list in memory, under the token owner's account. A mirrored window cannot be
   dispatched, deleted, or mistaken for a muster agent. A disconnected host stays
-  listed as `offline` for a day. Only `mirror_tokens` is stored in the database,
-  as sha256 hashes, under row-level security.
+  listed as `offline` for a day. The database holds `mirror_tokens`, as sha256
+  hashes, and your pins (below), both under row-level security.
+- **Pins.** The pin button on a card (and **Pin to top** in an agent card's ⋯
+  menu) puts that entry first in your list, on every device you sign in on.
+  Pinned entries keep their own most-recently-active order, ahead of the rest.
+  A mirrored pin is the window's address — host, session and tmux window id —
+  so it survives renumbering, a list refresh and a muster restart. A pin whose
+  window is gone is kept and shown nothing; it comes back with the window. A
+  tmux-server restart (a reboot) reissues window ids, so after one a pin names
+  whichever window now has that id in a same-named session, or nothing — re-pin.
+  The filter still hides a pinned card that does not match.
 - **A filter.** One box above the cards narrows dispatched agents and mirrored
   windows together. It is case-insensitive, and every word must match. It shows
   an "N of M" count and runs entirely in the page. A `field:value` term looks

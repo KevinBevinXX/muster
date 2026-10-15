@@ -67,6 +67,7 @@ import (
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/router"
@@ -267,6 +268,8 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// per-host runner tokens. Always on with a database: with no runner
 		// token minted, nothing ever claims a job and each one expires.
 		ext.Flows = flows.NewPG(pool).WithAgentDenyWords(cfg.FlowAgentDenyWords)
+		// The Agents list's per-user pins (migration 0017).
+		ext.Pins = pins.NewPG(pool)
 
 		if len(cfg.ConnectorEncKey) > 0 {
 			cs, err := connectors.NewPG(pool, cfg.ConnectorEncKey)
