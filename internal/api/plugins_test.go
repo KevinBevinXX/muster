@@ -394,10 +394,15 @@ func TestAValidDraftResultIsReadWhateverItsJSONEscaping(t *testing.T) {
 		{"4,096 '<' via encoding/json", marshal(map[string]any{"ok": true, "detail": strings.Repeat("<", plugins.MaxDetailBytes)}), http.StatusOK, plugins.MaxDetailBytes},
 		{"every field at its widest", worst, http.StatusOK, plugins.MaxDetailBytes},
 		{"one byte over the detail cap", marshal(map[string]any{"ok": true, "detail": strings.Repeat("a", plugins.MaxDetailBytes+1)}), http.StatusBadRequest, 0},
-		{"over the read cap", `{"ok":true,"detail":"` + strings.Repeat(" ", plugins.MaxResultRequestBytes) + `"}`, http.StatusBadRequest, 0},
+		// A VALID result (accepted if read in full) padded with insignificant
+		// whitespace between tokens past the read cap: only the cap can refuse it.
+		{"over the read cap", `{"ok":true,` + strings.Repeat(" ", plugins.MaxResultRequestBytes) + `"detail":"x"}`, http.StatusBadRequest, 0},
 	} {
 		store.detail = ""
 		rec := pServe(h, "POST", "/plugin/v1/drafts/5/result", c.body, pBearer(pgnTok))
+		if c.name == "over the read cap" && !strings.Contains(rec.Body.String(), "the body is {") {
+			t.Errorf("%s: %d %s; want the read refusal, not a per-field one", c.name, rec.Code, rec.Body.String())
+		}
 		if rec.Code != c.want || len(store.detail) != c.n {
 			t.Errorf("%s (%d bytes on the wire): %d %s, kept %d bytes; want %d, %d bytes",
 				c.name, len(c.body), rec.Code, rec.Body.String(), len(store.detail), c.want, c.n)
