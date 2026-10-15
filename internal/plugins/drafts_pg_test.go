@@ -254,8 +254,11 @@ func TestOnlyAPendingDraftIsDecided(t *testing.T) {
 		t.Fatalf("another owner approving: %v; want ErrNotFound", err)
 	}
 	w.approve(t, d)
-	if _, err := w.s.DecideDraft(session(2), d.ID, false); !errors.Is(err, ErrDraftState) {
-		t.Fatalf("rejecting an approved draft: %v; want ErrDraftState", err)
+	if _, err := w.s.DecideDraft(session(2), d.ID, true); !errors.Is(err, ErrDraftState) {
+		t.Fatalf("approving an approved draft: %v; want ErrDraftState", err)
+	}
+	if _, err := w.s.DecideDraft(session(3), d.ID, false); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("another owner withdrawing: %v; want ErrNotFound", err)
 	}
 	r := w.file(t, w.delivered(t, "m-2", false), "no")
 	got, err := w.s.DecideDraft(session(2), r.ID, false)
@@ -454,6 +457,73 @@ func TestALapsedLeaseIsUnconfirmedAndNeverReoffered(t *testing.T) {
 	}
 	if _, err := w.s.ReapproveDraft(session(2), re.ID); !errors.Is(err, ErrDraftState) {
 		t.Fatalf("re-approving a sent draft: %v; want ErrDraftState", err)
+	}
+}
+
+// TestALateSentCancelsTheUnclaimedReapproval: the original's late "sent" means
+// the text reached the sender, so its re-approved copy — not yet claimed — is
+// expired, audited, and never handed out. CONTROL: a late "failed" leaves the
+// copy approved (covered in TestALapsedLeaseIsUnconfirmedAndNeverReoffered).
+func TestALateSentCancelsTheUnclaimedReapproval(t *testing.T) {
+	w := newDraftWorld(t)
+	d := w.approve(t, w.file(t, w.m, "r"))
+	if _, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); !ok {
+		t.Fatal("claim")
+	}
+	ageDraft(t, w.dsn, d.ID, int(LeaseDuration.Seconds())+5)
+	copyOf, err := w.s.ReapproveDraft(session(2), d.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: true}); err != nil || got.Status != DraftSent {
+		t.Fatalf("the late sent: %+v %v", got, err)
+	}
+	if got, _ := w.s.Draft(session(2), copyOf.ID); got.Status != DraftExpired {
+		t.Fatalf("the re-approved copy is %s after the original was reported sent; want expired", got.Status)
+	}
+	if c, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); ok {
+		t.Fatalf("the cancelled copy was handed out: %+v", c)
+	}
+}
+
+// TestAnApprovalCanBeWithdrawnUntilItIsClaimed: an approved draft no plugin has
+// taken can be withdrawn (rejected, approval time cleared, audited), which also
+// unblocks the message; a claimed one cannot.
+func TestAnApprovalCanBeWithdrawnUntilItIsClaimed(t *testing.T) {
+	w := newDraftWorld(t)
+	d := w.approve(t, w.file(t, w.m, "oops"))
+	got, err := w.s.DecideDraft(session(2), d.ID, false)
+	if err != nil || got.Status != DraftRejected || got.ApprovedAt != nil {
+		t.Fatalf("withdraw: %+v %v", got, err)
+	}
+	var n int
+	if err := w.s.pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM audit_log
+		WHERE action = 'plugin.draft.withdrawn' AND object = $1`, DraftObject(d.ID)).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("withdrawn audit rows = %d (%v)", n, err)
+	}
+	if _, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); ok {
+		t.Fatal("a withdrawn draft was handed out")
+	}
+	d2 := w.approve(t, w.file(t, w.m, "corrected"))
+	if _, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); !ok {
+		t.Fatal("claim the corrected draft")
+	}
+	if _, err := w.s.DecideDraft(session(2), d2.ID, false); !errors.Is(err, ErrDraftState) {
+		t.Fatalf("withdrawing a claimed draft: %v; want ErrDraftState", err)
+	}
+	// The card flag: a pending draft whose message has an unconfirmed sibling.
+	ageDraft(t, w.dsn, d2.ID, int(LeaseDuration.Seconds())+5)
+	d3 := w.file(t, w.m, "third")
+	cards, err := w.s.DraftCards(session(2), 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flagged := map[int64]bool{}
+	for _, c := range cards {
+		flagged[c.Draft.ID] = c.EarlierUnconfirmed
+	}
+	if !flagged[d3.ID] || flagged[d2.ID] {
+		t.Fatalf("EarlierUnconfirmed = %v; want true for %d only", flagged, d3.ID)
 	}
 }
 

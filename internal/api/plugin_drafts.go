@@ -334,6 +334,8 @@ func draftStatusText(d plugins.Draft) string {
 			return s + "You approved it again, as draft " + strconv.FormatInt(*d.ReapprovedAs, 10) + "."
 		case !d.ExpiresAt.After(time.Now()):
 			return s + "It is past its 7 days and can no longer be approved again."
+		case d.AgentID == nil:
+			return s + "The agent that wrote it is gone, so it can no longer be approved again."
 		}
 		return s + "muster will not offer it again unless you approve it again."
 	case plugins.DraftRejected:
@@ -384,14 +386,24 @@ func draftCardHTML(c plugins.DraftCard) string {
 		b.WriteString(`<span class="break-all text-xs text-fg2" data-draft-detail>the plugin said: ` + esc(flows.VisibleEscape(d.Detail)) + `</span>
 `)
 	}
+	if d.Status == plugins.DraftPending && c.EarlierUnconfirmed {
+		b.WriteString(`<span class="text-xs font-semibold text-fg" data-draft-twice>An earlier reply to this message is unconfirmed: it may already have been sent. If you approve this one, the sender may get both.</span>
+`)
+	}
 	switch d.Status {
+	case plugins.DraftApproved:
+		if d.ClaimedAt == nil {
+			b.WriteString(`<form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject"><button type="submit" class="` +
+				flowsQuietButton + `" data-draft-withdraw>Withdraw the approval</button></form>
+`)
+		}
 	case plugins.DraftPending:
 		b.WriteString(`<form method="POST" action="` + pluginsPath + `/drafts/` + id + `/approve" data-step-up-form><button type="submit" class="` +
 			flowsButtonClass + ` w-full" data-draft-approve>Approve and send</button></form>
 <form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject"><button type="submit" class="` + flowsQuietButton + `" data-draft-reject>Reject</button></form>
 `)
 	case plugins.DraftUnconfirmed:
-		if d.ReapprovedAs != nil || !d.ExpiresAt.After(time.Now()) {
+		if d.ReapprovedAs != nil || d.AgentID == nil || !d.ExpiresAt.After(time.Now()) {
 			break
 		}
 		b.WriteString(`<form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reapprove" data-step-up-form><button type="submit" class="` +

@@ -149,10 +149,13 @@ it makes a **new draft with a new `draft_id`** and the same text, which the next
 claim receives.
 
 A result that arrives after the lease lapsed is still recorded, on the draft it
-was claimed as. It never settles the re-approved copy.
+was claimed as. It never settles the re-approved copy, but a late `ok: true`
+**cancels** the copy if no claim has taken it yet: the text has reached the
+sender, so it must not go twice.
 
 Only one reply to a message is in flight at a time: while one is approved and
-has no result, no other draft for that message can be filed or approved.
+either unclaimed or within its lease, no other draft for that message can be
+filed or approved.
 
 Set your HTTP client's timeout to `wait_seconds` plus at least 10 seconds. A
 claim whose answer you never received is still a claim: the reply becomes
@@ -243,7 +246,8 @@ chief, on the agent gateway and over `/mcp`, and only while plugins are on.
   deployment's own names (`MUSTER_FLOW_AGENT_DENY_WORDS`) is refused. The screen
   is a heuristic; your approval is the control.
 - A new draft for the same message **supersedes** the pending one. While a
-  reply to the message is approved and not yet sent, no new draft is accepted.
+  reply to the message is approved and in flight (not yet claimed, or claimed
+  within its lease), no new draft is accepted.
 - At most **20** drafts per agent may await you at once.
 
 You get a `plugin` push, "A reply draft awaits your approval". Its words are
@@ -265,7 +269,11 @@ Each draft is a card on `/plugins`:
   a passkey or your password first. The server checks again whatever the page
   did.
 - **Reject** needs no fresh sign-in: refusing to send is never the risky
-  direction.
+  direction. An approved draft no plugin has collected yet shows **Withdraw the
+  approval**, which rejects it the same way; once a plugin has collected it, it
+  cannot be withdrawn.
+- If an earlier reply to the same message is unconfirmed, the card says the
+  sender may get both.
 
 ### What happens to a draft
 
