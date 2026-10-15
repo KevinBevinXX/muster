@@ -555,7 +555,7 @@ func RunToolLoop(
 
 	for i := 0; i < MaxToolLoopIterations; i++ {
 		if ctx.Err() != nil {
-			return "", ctx.Err()
+			return "", laterRequest(i, ctx.Err())
 		}
 		resp, err := streamResponses(ctx, client, url, token, sessionKey, responsesRequest{
 			Model:        model,
@@ -564,7 +564,7 @@ func RunToolLoop(
 			Tools:        tools,
 		}, emit)
 		if err != nil {
-			return "", err
+			return "", laterRequest(i, err)
 		}
 		calls := resp.functionCalls()
 		if len(calls) == 0 {
@@ -597,7 +597,50 @@ func RunToolLoop(
 			})
 		}
 	}
-	return "", fmt.Errorf("tool loop exceeded %d iterations", MaxToolLoopIterations)
+	// Every request was answered with calls that ran, so this is never "nothing sent".
+	return "", &AfterFirstRequestError{Request: MaxToolLoopIterations,
+		Err: fmt.Errorf("tool loop exceeded %d iterations", MaxToolLoopIterations)}
+}
+
+// AfterFirstRequestError is a [RunToolLoop] failure on a request AFTER the first
+// one: the runtime had already answered request 1 with function calls, and THIS
+// process had already dispatched them.
+//
+// 🔴 IT EXISTS SO NO CALLER READS SUCH A FAILURE AS "NOTHING HAPPENED". The cause
+// it wraps can be exactly the shape that means "nothing was sent" on a FIRST
+// request — a typed 409 busy, a dial error after a pod restart, a 404 — and every
+// reader that branches on those (agentgateway.Unsent, a toolless 404 fallback)
+// would then resend a turn whose tools already ran: a second gated task, a second
+// paste of the same message. [PastFirstRequest] is the test each of them applies
+// first. Unwrap keeps the cause visible to errors.As (an account mark on a typed
+// rate_limited, a log line); it is the CALLERS' rule, not the wrapper's, that
+// decides what the cause may no longer mean.
+type AfterFirstRequestError struct {
+	// Request is the 1-based number of the request that failed (2 or more).
+	Request int
+	Err     error
+}
+
+// Error is the cause's text, unchanged: a RuntimeError's text is stored and
+// matched by prefix (see RuntimeError), and the mark must not move it.
+func (e *AfterFirstRequestError) Error() string { return e.Err.Error() }
+
+func (e *AfterFirstRequestError) Unwrap() error { return e.Err }
+
+// PastFirstRequest reports whether err is a [RunToolLoop] failure after its first
+// request — one that must never be read as "nothing was sent".
+func PastFirstRequest(err error) bool {
+	var a *AfterFirstRequestError
+	return errors.As(err, &a)
+}
+
+// laterRequest marks err as [AfterFirstRequestError] when iteration i (0-based)
+// is not the first request, and returns it unchanged otherwise.
+func laterRequest(i int, err error) error {
+	if i == 0 {
+		return err
+	}
+	return &AfterFirstRequestError{Request: i + 1, Err: err}
 }
 
 // RunToollessTurn runs ONE /v1/responses turn carrying NO tools and returns the

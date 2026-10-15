@@ -255,7 +255,7 @@ type Target struct {
 func (g *Gateway) Resolve(ctx context.Context, a agents.Agent) (Target, error) {
 	ep, bearer, err := g.reach(ctx, a)
 	if err != nil {
-		return Target{}, err
+		return Target{}, unresolved{err}
 	}
 	return Target{ep: ep, bearer: bearer, kind: agents.ResolveKind(a.Kind), account: a.CCAccount, owner: a.OwnerID}, nil
 }

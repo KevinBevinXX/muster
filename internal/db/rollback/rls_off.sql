@@ -90,6 +90,16 @@ BEGIN
         ALTER TABLE public.flow_requests DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.flow_requests ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0015 (plugins: plugins, plugin_messages), when this schema has it. Both
+    -- carry owner_id; same reason as 0011.
+    IF to_regclass('public.plugins') IS NOT NULL THEN
+        ALTER TABLE public.plugins NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.plugins DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.plugins ALTER COLUMN owner_id SET DEFAULT 1;
+        ALTER TABLE public.plugin_messages NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.plugin_messages DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.plugin_messages ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
 END
 $$;
 

@@ -90,6 +90,7 @@ GET /mirror/terminal/ws
 GET /mirror/view
 GET /mirror/view/send
 GET /mirror/view/ws
+GET /plugins
 GET /readyz
 GET /repos
 GET /share
@@ -188,6 +189,9 @@ POST /mcp
 POST /mirror/confirm-send
 POST /mirror/terminal/send
 POST /mirror/view/send
+POST /plugin/v1/messages
+POST /plugins
+POST /plugins/{id}/revoke
 POST /runner/flows/claim
 POST /runner/flows/{id}/heartbeat
 POST /runner/flows/{id}/result

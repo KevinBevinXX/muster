@@ -1,33 +1,28 @@
 package memorelay
 
 import (
-	"crypto/rand"
-	"encoding/hex"
-	"regexp"
 	"sort"
 	"strconv"
-	"strings"
-	"unicode"
-	"unicode/utf8"
+
+	"github.com/ZacxDev/muster/internal/fence"
 )
 
 // The fenced block an agent is shown. Its shape is cairn's own (`internal/memo/block.go` at the
 // revision named in the package doc): an opening marker at column 0 carrying a fresh nonce, the
 // standing lines, one stanza per memo, a closing marker — and EVERY line between the markers
 // behind [contentPrefix], which is what makes the fence structural: no memo text can reach
-// column 0, where the markers live.
+// column 0, where the markers live. The rendering itself is internal/fence's (extracted from
+// here; a byte golden checked that the move changed no byte, and was deleted after it landed).
 //
 // 🔴 EVERY FIELD IS SANITISED HERE, AGAIN, ALTHOUGH THE LISTENER ALREADY RENDERED IT. The relay
 // cannot know it is talking to a real listener, so what arrives is untrusted text and the same
 // replacement runs on every output. Rendering already-rendered text is a no-op (U+FFFD is never
-// [unsafe]), so a real listener's memos pass through unchanged.
+// [fence.Unsafe]), so a real listener's memos pass through unchanged.
 const (
 	// contentPrefix begins every line between the markers.
-	contentPrefix = "| "
+	contentPrefix = fence.ContentPrefix
 
-	markerWord        = "cairn-memo"
-	markerPlaceholder = "[fence-marker]"
-	noncePlaceholder  = "[nonce]"
+	markerWord = "cairn-memo"
 
 	// MaxPerDelivery is the most memos one delivered turn carries; the rest go in later turns,
 	// oldest first. A scope may hold 200 live memos of 4 KiB each, and one turn is one paste.
@@ -55,16 +50,6 @@ func preface(scope string, n int) string {
 		"acknowledge it in one line and carry on."
 }
 
-var markerWordRE = regexp.MustCompile("(?i)" + regexp.QuoteMeta(markerWord))
-
-// freshNonce is drawn per render, so text that guesses an earlier block's nonce still sits behind
-// the content prefix of this one.
-func freshNonce() string {
-	var b [8]byte
-	_, _ = rand.Read(b[:]) // crypto/rand.Read never returns an error (Go 1.24+).
-	return hex.EncodeToString(b[:])
-}
-
 // Render is the whole turn delivered to an agent for memos on scope: [preface], a blank line,
 // then the fenced block with every memo's FULL body (the pod has no cairn client to run a
 // `memo-read` with, so a preview would point at a command that does not exist there). Zero memos
@@ -73,7 +58,7 @@ func Render(scope string, memos []Memo) string {
 	if len(memos) == 0 {
 		return ""
 	}
-	return render(scope, memos, freshNonce())
+	return render(scope, memos, fence.NewNonce())
 }
 
 func render(scope string, memos []Memo, nonce string) string {
@@ -91,76 +76,12 @@ func render(scope string, memos []Memo, nonce string) string {
 		content = append(content, "",
 			"[m-"+strconv.FormatInt(m.ID, 10)+"] from "+sanitize(m.Sender)+" · "+sanitize(m.Scope)+
 				" · "+sanitize(m.CreatedAt)+" · expires "+sanitize(m.ExpiresAt),
-			"  subject: "+sanitize(cut(m.Subject, maxSubjectRunes)),
-			"  body: "+sanitize(cut(m.Body, maxBodyRunes)))
+			"  subject: "+sanitize(fence.Cut(m.Subject, maxSubjectRunes)),
+			"  body: "+sanitize(fence.Cut(m.Body, maxBodyRunes)))
 	}
-
-	nonceRE := regexp.MustCompile("(?i)" + regexp.QuoteMeta(nonce))
-	var b strings.Builder
-	b.WriteString(preface(scope, len(memos)) + "\n\n")
-	b.WriteString("<<<" + markerWord + " untrusted nonce=" + nonce + " count=" + strconv.Itoa(len(memos)) + ">>>\n")
-	for _, line := range content {
-		line = markerWordRE.ReplaceAllLiteralString(line, markerPlaceholder)
-		line = nonceRE.ReplaceAllLiteralString(line, noncePlaceholder)
-		b.WriteString(contentPrefix + line + "\n")
-	}
-	b.WriteString("<<<end " + markerWord + " nonce=" + nonce + ">>>\n")
-	return b.String()
+	return fence.Block{Preface: preface(scope, len(memos)), Marker: markerWord, Count: len(memos), Lines: content}.Render(nonce)
 }
 
-// cut is the first n RUNES of s, with "…" when anything was dropped.
-func cut(s string, n int) string {
-	seen := 0
-	for i := range s {
-		if seen == n {
-			return s[:i] + "…"
-		}
-		seen++
-	}
-	return s
-}
-
-// unsafe reports whether the renderer must replace r: every code point in General Category C*
-// (Cc, Cf, Co, Cs, Cn), plus Zl, Zp, the variation selectors and the other default-ignorable
-// code points (invisible letters and marks). It is cairn's `memo.Unsafe`, computed the same way:
-// "in none of L, M, N, P, S, Z" is exactly C*, unassigned code points included.
-func unsafe(r rune) bool {
-	switch {
-	case !unicode.In(r, unicode.L, unicode.M, unicode.N, unicode.P, unicode.S, unicode.Z):
-		return true
-	case unicode.In(r, unicode.Zl, unicode.Zp):
-		return true
-	case unicode.Is(unicode.Variation_Selector, r):
-		return true
-	case unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r):
-		return true
-	}
-	return false
-}
-
-// sanitize is the replacement every field passes through before it is written into a turn: each
-// [unsafe] code point becomes U+FFFD, except a line break (" ⏎ ", CRLF folded first) and a tab
-// (one space). Invalid UTF-8 decodes to U+FFFD per invalid byte.
-//
-// 🔴 IT IS ALSO WHAT KEEPS A MEMO ON ONE LINE AND OUT OF ccd's REFUSAL. A line break inside a
-// field would start a line with no content prefix, and ccd refuses a prompt holding any control
-// character other than newline and tab (a 400, nothing pasted). No output of this function holds
-// either.
-func sanitize(s string) string {
-	s = strings.ReplaceAll(s, "\r\n", "\n")
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		switch {
-		case r == '\n':
-			b.WriteString(" ⏎ ")
-		case r == '\t':
-			b.WriteByte(' ')
-		case unsafe(r):
-			b.WriteRune(utf8.RuneError)
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
+// sanitize is internal/fence's replacement (see [fence.Sanitize]); the name is kept because the
+// relay's own tests and stanza builder read as the relay's rule.
+func sanitize(s string) string { return fence.Sanitize(s) }

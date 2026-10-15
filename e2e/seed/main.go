@@ -56,6 +56,8 @@ var accountsReset = []string{
 	`DELETE FROM flow_requests WHERE owner_id <> 1`,
 	`DELETE FROM flow_jobs WHERE owner_id <> 1`,
 	`DELETE FROM flow_runner_tokens WHERE owner_id <> 1`,
+	// Plugins (0015): a member's plugin cascades to its messages and drafts.
+	`DELETE FROM plugins WHERE owner_id <> 1`,
 	`DELETE FROM audit_log`,
 	`DELETE FROM invites`,
 	// Personal API tokens (accounts PR 6) reference users, so they go BEFORE
@@ -110,7 +112,7 @@ func run() error {
 		return fmt.Errorf("connect for reset: %w", err)
 	}
 	_, err = owner.Exec(ctx, `TRUNCATE notes, agents, connectors, connector_audit,
-		flow_jobs, flow_runner_tokens, flow_requests RESTART IDENTITY CASCADE`)
+		flow_jobs, flow_runner_tokens, flow_requests, plugins RESTART IDENTITY CASCADE`)
 	if err == nil {
 		// The accounts state the gotrue specs change: the admin claim binds
 		// user 1 to a GoTrue login and the invites spec creates members, which

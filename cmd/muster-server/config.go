@@ -94,6 +94,9 @@ const (
 	// The optional MIRRORED-sessions plugin (internal/mirror): "1" turns it on.
 	// Off, GET /mirror/connect answers 404 and nothing mirrored is listed.
 	envMirror = "MUSTER_MIRROR"
+	// The optional PLUGIN interface (internal/plugins): "1" turns it on, with a
+	// database. Off, every /plugin/* route and /plugins answer 404.
+	envPlugins = "MUSTER_PLUGINS"
 	// How long a sign-in stays fresh enough to TYPE into a mirrored session
 	// (internal/stepup): a Go duration, 12h when unset, refused outside
 	// 1m–24h. Freshness is per browser session, never per user.
@@ -373,6 +376,8 @@ type config struct {
 
 	// Mirror turns the mirrored-sessions plugin on (MUSTER_MIRROR=1).
 	Mirror bool
+	// Plugins turns the plugin interface on (MUSTER_PLUGINS=1).
+	Plugins bool
 	// StepUpWindow is internal/stepup's freshness window (MUSTER_STEPUP_WINDOW;
 	// stepup.DefaultWindow when unset). loadConfig refuses an out-of-bounds one.
 	StepUpWindow time.Duration
@@ -727,6 +732,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		FaroTracing:        envFlag(getenv, envFaroTracing),
 		TagAutoDispatch:    envFlag(getenv, envTagAutoDispatch),
 		Mirror:             envFlag(getenv, envMirror),
+		Plugins:            envFlag(getenv, envPlugins),
 		FlowAgentDenyWords: splitList(getenv(envFlowAgentDenyWords)),
 		MemoURL:            strings.TrimRight(strings.TrimSpace(getenv(envMemoURL)), "/"),
 		MemoToken:          strings.TrimSpace(getenv(envMemoToken)),
@@ -1067,7 +1073,8 @@ func decodeEncryptionKey(v string) ([]byte, error) {
 // policy is HERE, it is tested, and main() applies it.
 func (c config) validate() error {
 	// Accounts PR 6: an `mst_` value on the machine tier is a personal API
-	// token or nothing, so neither shared secret may live in that namespace.
+	// token or nothing, so neither shared secret may live in that namespace —
+	// nor in the plugin token's (`mpl_`), refused on every other door.
 	if reason := c.authConfig().SharedSecretPrefixRefusal(); reason != "" {
 		return errors.New(reason)
 	}

@@ -123,6 +123,10 @@ func (s *Server) principalFor(ctx context.Context, uid int64, via authz.Via) aut
 // admit attaches p to the request and hands it to next. See the file header:
 // it is the only way a wrapper may call next.
 func (s *Server) admit(w http.ResponseWriter, r *http.Request, next http.HandlerFunc, p authz.Principal) {
+	// A plugin token opens the plugin door and nothing else (plugins.go).
+	if s.refusePluginTokenElsewhere(w, r, p.Via) {
+		return
+	}
 	r = r.WithContext(authz.WithPrincipal(r.Context(), p))
 	if s.principalProbe != nil {
 		s.principalProbe(r)

@@ -67,6 +67,7 @@ import (
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/router"
 	"github.com/ZacxDev/muster/internal/sse"
@@ -387,6 +388,15 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if cfg.StepUpWindow != 0 {
 		if err := stepup.SetWindow(cfg.StepUpWindow); err != nil {
 			return nil, err
+		}
+	}
+	// The plugin interface: only with MUSTER_PLUGINS=1 AND a database (its
+	// tokens and messages are rows). A message is handed to the owner's chief
+	// through the agent gateway; with none, messages are stored and stay queued.
+	if cfg.Plugins && a.pool != nil {
+		ext.Plugins = plugins.NewPG(a.pool)
+		if gw != nil {
+			ext.PluginGateway = gw
 		}
 	}
 	var mirrorSvc *mirror.Service
@@ -732,8 +742,20 @@ func (a *app) shutdown() {
 		defer close(memoDone)
 		a.waitForMemoRelay(kickoffDrainTimeout)
 	}()
+	// Plugin deliveries record a cut-off turn the same way (EndStreams has
+	// already cancelled them), under the same bound and concurrently.
+	pluginsDone := make(chan struct{})
+	go func() {
+		defer close(pluginsDone)
+		a.srv.WaitForPluginDeliveries()
+	}()
 	a.waitForKickoffs(kickoffDrainTimeout)
 	<-memoDone
+	select {
+	case <-pluginsDone:
+	case <-time.After(kickoffDrainTimeout):
+		a.logger.Printf("plugin deliveries did not record their outcome within %s; exiting anyway", kickoffDrainTimeout)
+	}
 
 	done := make(chan struct{})
 	go func() {
@@ -949,6 +971,18 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	} else {
 		l.Printf("mirrored sessions: OFF — %s is unset (or there is no database), so GET %s answers 404, "+
 			"no mirrored session is listed and the plugin's UI is not drawn", envMirror, mirror.ConnectPath)
+	}
+
+	switch {
+	case ext.Plugins != nil && ext.PluginGateway != nil:
+		l.Printf("plugins: ENABLED (%s=1) — owners mint plugin tokens on /plugins; a plugin POSTs messages to "+
+			"/plugin/v1/messages and each is handed to its owner's chief as a fenced turn", envPlugins)
+	case ext.Plugins != nil:
+		l.Printf("WARNING — plugins: ENABLED (%s=1) but there is NO agent gateway (%s), so plugin messages are "+
+			"stored and stay queued: nothing is delivered to any chief", envPlugins, envAgentGateway)
+	default:
+		l.Printf("plugins: OFF — %s is unset (or there is no database), so every /plugin/* route and /plugins "+
+			"answer 404", envPlugins)
 	}
 
 	// The agent door to browser flows. The deployment's own names are

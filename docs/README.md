@@ -13,6 +13,7 @@ Start with the [project README](../README.md) for the pitch and a quickstart.
 - [browser-flows.md](browser-flows.md) — the browser-job queue and its runner protocol
 - [connectors.md](connectors.md) — credentials agents use without seeing them
 - [memo-relay.md](memo-relay.md) — cairn memos delivered to dispatched agents
+- [plugins.md](plugins.md) — out-of-process plugins that bring messages to your chief agent
 
 **Running it**
 

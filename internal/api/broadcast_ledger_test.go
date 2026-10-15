@@ -44,7 +44,9 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		"(*Server).dispatchAgentTool → broadcast(ctx)",
 		"(*Server).dispatchAgentTool → broadcast(ctx)",
 		"(*Server).handleAPITaskComment → broadcast(r.Context())",
-		"(*Server).handleAPITaskCreate → broadcast(r.Context())",
+		// The machine-path task create (moved out of handleAPITaskCreate so a
+		// second door cannot skip a side effect); ctx is the request's.
+		"(*Server).createTask → broadcast(ctx)",
 		"(*Server).handleAPITaskEdit → broadcast(r.Context())",
 		"(*Server).handleAgentBlocked → broadcast(r.Context())",
 		"(*Server).handleAgentTaskComment → broadcast(r.Context())",

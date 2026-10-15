@@ -118,6 +118,10 @@ var (
 		// (flow_runner_tokens is under FORCE RLS); only the row's owner and
 		// host are handed on.
 		"internal/api.(*Server).runnerTokenFor",
+		// Plugins (0015): a PLUGIN token's lookup by hash, the same shape as
+		// runnerTokenFor (plugins is under FORCE RLS); only the row's owner and
+		// the plugin's own record are handed on.
+		"internal/api.(*Server).pluginFor",
 		// muster-native Web Push (migration 0013): the push store's one helper.
 		// A send runs from hooks and loops with no request; a CLAIM must see
 		// another user's row to move a shared device; a logout has already
@@ -159,6 +163,7 @@ var (
 		"internal/api.(*Server).requireHookOrServiceToken",
 		"internal/api.(*Server).requireHookToken",
 		"internal/api.(*Server).requireRelayAgent",
+		"internal/api.(*Server).requirePluginToken", // plugin tokens (0015): /plugin/v1/*
 		"internal/api.(*Server).requireRunnerToken", // browser-flow runner tokens (0012): /runner/flows/*
 		"internal/api.(*Server).requireSession",
 	}
@@ -167,7 +172,7 @@ var (
 	// new door until someone has decided it is not.
 	authzExports = []string{
 		"From", "MustFrom", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
-		"System", "Via", "ViaAgent", "ViaConnect", "ViaHook", "ViaOperator", "ViaRelay", "ViaRunner", "ViaService",
+		"System", "Via", "ViaAgent", "ViaConnect", "ViaHook", "ViaOperator", "ViaPlugin", "ViaRelay", "ViaRunner", "ViaService",
 		"ViaSession", "ViaSystem", "ViaToken", "WithPrincipal",
 	}
 )

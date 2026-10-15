@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
@@ -149,6 +150,16 @@ type Extensions struct {
 	// migration 0012). nil (no database): every flow route answers 503 and
 	// /flows says so.
 	Flows flows.Store
+
+	// Plugins is the plugin interface's store (internal/plugins, migration
+	// 0015). nil means plugins are OFF (MUSTER_PLUGINS unset), which is the
+	// default: every /plugin/* route and /plugins answer 404. See plugins.go.
+	Plugins plugins.Store
+	// PluginGateway resolves the owner's chief before a plugin message is handed
+	// to it (agentgateway.Gateway satisfies it); the turn itself is chatTurn's,
+	// over Gateway, so the chief has its tools on it. nil (or a nil Gateway) with
+	// Plugins set: messages are stored and stay queued — nothing is delivered.
+	PluginGateway plugins.Gateway
 }
 
 // Mirror is the mirror plugin as this package consumes it. *mirror.Service
@@ -216,6 +227,17 @@ func (s *Server) UseExtensions(ext Extensions) {
 	s.extDefects = ext.defects()
 	ext.Notes = withSessionLiveness(ext.Notes, ext.SessionLiveness)
 	s.ext = ext
+	s.pluginDeliverer = nil
+	if ext.Plugins != nil && ext.PluginGateway != nil && ext.Gateway != nil && ext.Agents != nil {
+		// 🔴 Turn IS chatTurn: the delivered message runs as an ordinary chat turn
+		// WITH the chief's tools, never as a toolless send (plugins.TurnFunc).
+		d, err := plugins.NewDeliverer(plugins.DelivererConfig{Store: ext.Plugins, Agents: ext.Agents,
+			Gateway: ext.PluginGateway, Turn: s.chatTurn, Logger: s.logger})
+		if err != nil {
+			s.logger.Printf("plugins: no deliverer: %v", err)
+		}
+		s.pluginDeliverer = d
+	}
 	s.connectProxy = nil
 	if ext.Connectors != nil {
 		s.connectProxy = &connectors.Proxy{

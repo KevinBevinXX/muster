@@ -17,6 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/flows"
+	"github.com/ZacxDev/muster/internal/plugins"
 )
 
 // Accounts PR 2/6: every authenticated route reaches its handler carrying an
@@ -40,6 +41,9 @@ const (
 	// pRunnerToken is shaped like a minted flow runner token
 	// (flows.RunnerTokenShapeOK); principalFlows resolves it to user 1.
 	pRunnerToken = "mfr_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	// pPluginToken is shaped like a minted plugin token (plugins.TokenShapeOK);
+	// principalPlugins resolves it to user 1.
+	pPluginToken = "mpl_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 )
 
 // publicRoutes are served with no credential and therefore no Principal.
@@ -82,6 +86,10 @@ var publicRoutes = []string{
 // A route behind requireHookOrServiceToken has two.
 var routeVias = map[authz.Via][]string{
 	authz.ViaSession: {
+		// Plugins (0015): the page and its forms (404 while plugins are off).
+		"GET /plugins",
+		"POST /plugins",
+		"POST /plugins/{id}/revoke",
 		"GET /account",
 		// The step-up confirm (stepup.go): the SESSION's user, re-proven.
 		"POST /auth/confirm",
@@ -265,6 +273,10 @@ var routeVias = map[authz.Via][]string{
 		"POST /runner/flows/{id}/heartbeat",
 		"POST /runner/flows/{id}/result",
 	},
+	// A PLUGIN token (0015) opens exactly the plugin door.
+	authz.ViaPlugin: {
+		"POST /plugin/v1/messages",
+	},
 	authz.ViaAgent: {
 		"GET /agent/muster",
 		"GET /agent/task",
@@ -310,6 +322,16 @@ func (principalFlows) AuthenticateRunner(_ context.Context, tok string) (flows.R
 	return flows.RunnerToken{}, flows.ErrBadRunnerToken
 }
 
+// principalPlugins resolves the one test plugin token to user 1.
+type principalPlugins struct{ plugins.Store }
+
+func (principalPlugins) Authenticate(_ context.Context, tok string) (plugins.Plugin, error) {
+	if tok == pPluginToken {
+		return plugins.Plugin{ID: 9, OwnerID: authz.OperatorUserID, Name: "principal-test"}, nil
+	}
+	return plugins.Plugin{}, plugins.ErrBadToken
+}
+
 // principalAPITokens resolves the one test personal token to user 1.
 type principalAPITokens struct{ apitokens.Store }
 
@@ -349,7 +371,7 @@ func newPrincipalTestServerWith(t *testing.T, cfg AuthConfig) (*Server, http.Han
 	t.Helper()
 	s := New(nil, cfg, log.New(io.Discard, "", 0))
 	s.UseExtensions(Extensions{Agents: principalAgents{}, Connectors: principalConnectors{}, APITokens: principalAPITokens{},
-		Flows: principalFlows{}})
+		Flows: principalFlows{}, Plugins: principalPlugins{}})
 	seen := &[]authz.Principal{}
 	s.principalProbe = func(r *http.Request) {
 		p, ok := authz.From(r.Context())
@@ -403,6 +425,8 @@ func credential(s *Server, req *http.Request, via authz.Via) {
 		req.Header.Set("Authorization", "Bearer "+pAPIToken)
 	case authz.ViaRunner:
 		req.Header.Set("Authorization", "Bearer "+pRunnerToken)
+	case authz.ViaPlugin:
+		req.Header.Set("Authorization", "Bearer "+pPluginToken)
 	}
 }
 
@@ -538,7 +562,7 @@ func TestAnUnarmedHookTierStillActsAsTheMachineUser(t *testing.T) {
 // prove nothing — a mislabelled route simply refuses and attaches nothing.)
 func TestPublicRoutesAreServedWithoutAPrincipal(t *testing.T) {
 	s, h, seen := newPrincipalTestServer(t)
-	doors := []authz.Via{authz.ViaSession, authz.ViaHook, authz.ViaService, authz.ViaAgent, authz.ViaToken, authz.ViaRunner}
+	doors := []authz.Via{authz.ViaSession, authz.ViaHook, authz.ViaService, authz.ViaAgent, authz.ViaToken, authz.ViaRunner, authz.ViaPlugin}
 	for _, pattern := range publicRoutes {
 		method, path := concretePath(pattern)
 		for _, via := range doors {
