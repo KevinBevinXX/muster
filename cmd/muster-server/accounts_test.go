@@ -275,3 +275,30 @@ func TestAnMstPrefixedSharedSecretIsRefusedAtBoot(t *testing.T) {
 		}
 	}
 }
+
+// TestAnMplPrefixedSharedSecretIsRefusedAtBoot (plugins PR A, audit round 1):
+// every door but the plugin door refuses an `mpl_` credential by shape, and it
+// does so with MUSTER_PLUGINS off too, so a shared secret in the plugin-token
+// namespace would be refused on every route. Boot refuses it, naming the
+// variable and the prefix — with plugins OFF, the fixture's default.
+func TestAnMplPrefixedSharedSecretIsRefusedAtBoot(t *testing.T) {
+	ok := validGoTrueConfig()
+	ok.ServiceToken = strings.Repeat("s", 40)
+	if err := ok.validate(); err != nil {
+		t.Fatalf("CONTROL: the unprefixed config is refused: %v", err)
+	}
+	if ok.Plugins {
+		t.Fatal("the fixture has plugins on; this case is about a server with them off")
+	}
+	for name, mutate := range map[string]func(*config){
+		"MUSTER_HOOK_TOKEN":    func(c *config) { c.HookToken = "mpl_" + strings.Repeat("h", 43) },
+		"MUSTER_SERVICE_TOKEN": func(c *config) { c.ServiceToken = "mpl_" + strings.Repeat("s", 43) },
+	} {
+		c := ok
+		mutate(&c)
+		err := c.validate()
+		if err == nil || !strings.Contains(err.Error(), name) || !strings.Contains(err.Error(), "mpl_") {
+			t.Errorf("an mpl_-prefixed %s: validate() = %v; want a refusal naming it", name, err)
+		}
+	}
+}

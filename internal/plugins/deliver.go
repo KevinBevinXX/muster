@@ -170,6 +170,19 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 		}
 	}()
 
+	// 🔴 CRASH RECOVERY, AND THE CLAIM IS WHAT MAKES IT SAFE. A delivery holds this
+	// chief's session claim for its whole turn and settles its `delivering` row
+	// before releasing it, so a row still `delivering` to this chief while WE hold
+	// the claim was left by a process that died mid-turn (its claim has expired).
+	// It may have been pasted: it settles unconfirmed and is never sent again.
+	// ⚠ A row delivering to a chief that is never delivered to again (deleted,
+	// re-provisioned as a new row) stays `delivering` — still never resent.
+	if n, err := d.store.RecoverDeliveries(ctx, chief.ID); err != nil {
+		d.log.Printf("plugins: agent %d: settle deliveries a dead process left: %v", chief.ID, err)
+	} else if n > 0 {
+		d.log.Printf("plugins: agent %d: %d delivery(ies) left mid-turn by a dead process settled unconfirmed", chief.ID, n)
+	}
+
 	// 🔴 RE-READ UNDER THE CLAIM: another attempt may have settled the message, and
 	// the chief may have stopped or been handed a first turn meanwhile.
 	m, err := d.store.Message(ctx, messageID)
@@ -201,21 +214,38 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 		return d.attempted(parent, messageID, "no_session")
 	}
 
+	// 🔴 `delivering` TO THIS CHIEF, WRITTEN BEFORE THE TURN: the chief's tools
+	// (task_create_gated, reply_draft) accept only a message delivered to it, and
+	// THIS turn is the one on which it learns of the message and acts on it. Until
+	// this write it could cite nothing. It also counts the attempt.
+	if ok, err := d.store.BeginDelivery(ctx, messageID, fresh.ID); err != nil {
+		return d.attempted(parent, messageID, "begin_failed")
+	} else if !ok {
+		return Result{Outcome: OutcomeSettled}
+	}
+
 	message := RenderMessage(p, m)
 	pc := &agents.PartCollector{}
 	reply, err := d.run(ctx, fresh, sess.SessionKey, message, pc.Observe)
-	if reason := agentgateway.Unsent(err); reason != "" {
-		return d.attempted(parent, messageID, reason)
-	}
-	outcome := StatusDelivered
-	if err != nil {
-		outcome = StatusUnconfirmed
-	}
 
 	// A DETACHED BUDGET THAT KEEPS parent's VALUES: a turn cut off by shutdown is
 	// the one most worth recording, and parent carries the owner's principal.
 	bctx, bcancel := context.WithTimeout(context.WithoutCancel(parent), bookkeepingTimeout)
 	defer bcancel()
+	if reason := agentgateway.Unsent(err); reason != "" {
+		// Provably nothing pasted: back to queued, the chief no longer named. If
+		// this write fails the row stays `delivering` and is recovered as
+		// unconfirmed — the direction that never sends it twice.
+		if aerr := d.store.AbandonDelivery(bctx, messageID, fresh.ID); aerr != nil {
+			d.log.Printf("plugins: message %d: return it to the queue (%s): %v", messageID, reason, aerr)
+		}
+		d.log.Printf("plugins: message %d left queued: %s", messageID, reason)
+		return pending(reason)
+	}
+	outcome := StatusDelivered
+	if err != nil {
+		outcome = StatusUnconfirmed
+	}
 	if ok, rerr := d.store.RecordDelivery(bctx, messageID, fresh.ID, outcome); rerr != nil || !ok {
 		d.log.Printf("plugins: message %d was sent (%s) but could NOT be recorded (settled=%v): %v",
 			messageID, outcome, ok, rerr)

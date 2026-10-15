@@ -287,7 +287,11 @@ func TestTheHourlyRateAndTheQueueCapRefuseButARepeatDoesNot(t *testing.T) {
 	var oldest int64
 	ms, _ := s.Queued(plugin(2), p.ID, 1)
 	oldest = ms[0].ID
-	if ok, err := s.RecordDelivery(plugin(2), oldest, mustAgent(t, dsn, 2, "plg-cap").ID, StatusDelivered); err != nil || !ok {
+	capChief := mustAgent(t, dsn, 2, "plg-cap").ID
+	if ok, err := s.BeginDelivery(plugin(2), oldest, capChief); err != nil || !ok {
+		t.Fatalf("begin: %v %v", ok, err)
+	}
+	if ok, err := s.RecordDelivery(plugin(2), oldest, capChief, StatusDelivered); err != nil || !ok {
 		t.Fatalf("settle: %v %v", ok, err)
 	}
 	if _, created, err := s.Submit(plugin(2), p.ID, msg("q-after")); err != nil || !created {
@@ -327,8 +331,27 @@ func TestADeliveryIsRecordedOnceWithItsAuditRow(t *testing.T) {
 	_, p := mustCreate(t, s, 2, "example-inbox")
 	a := mustAgent(t, dsn, 2, "plg-chief")
 	m, _, _ := s.Submit(plugin(2), p.ID, msg("d-1"))
+	other := mustAgent(t, dsn, 2, "plg-other")
 	if err := s.RecordAttempt(plugin(2), m.ID); err != nil {
 		t.Fatal(err)
+	}
+	// Only a message DELIVERING to the agent settles: not a queued one, and not
+	// one delivering to another agent.
+	if ok, err := s.RecordDelivery(plugin(2), m.ID, a.ID, StatusDelivered); err != nil || ok {
+		t.Fatalf("settling a queued message: settled=%v err=%v; want false", ok, err)
+	}
+	if ok, err := s.BeginDelivery(plugin(2), m.ID, a.ID); err != nil || !ok {
+		t.Fatalf("begin: %v %v", ok, err)
+	}
+	if ok, err := s.BeginDelivery(plugin(2), m.ID, other.ID); err != nil || ok {
+		t.Fatalf("a second begin: %v %v; want false (no longer queued)", ok, err)
+	}
+	if got, _ := s.Message(plugin(2), m.ID); got.Status != StatusDelivering || got.AgentID == nil || *got.AgentID != a.ID ||
+		got.DeliveredAt != nil || got.Attempts != 2 {
+		t.Fatalf("a message being delivered = %+v; want delivering to %d, attempt counted", got, a.ID)
+	}
+	if ok, err := s.RecordDelivery(plugin(2), m.ID, other.ID, StatusDelivered); err != nil || ok {
+		t.Fatalf("settling for another agent: settled=%v err=%v; want false", ok, err)
 	}
 	if ok, err := s.RecordDelivery(plugin(2), m.ID, a.ID, StatusDelivered); err != nil || !ok {
 		t.Fatalf("first record: %v %v", ok, err)
@@ -380,7 +403,7 @@ func TestTheTriggersHoldUnderTheScopeAllPrincipal(t *testing.T) {
 
 	// What MAY change does: naming the owner's own agent, and that agent's
 	// deletion nulling agent_id.
-	if _, err := pool.Exec(sys, `UPDATE plugin_messages SET agent_id = $2 WHERE id = $1`, m.ID, mine.ID); err != nil {
+	if _, err := pool.Exec(sys, `UPDATE plugin_messages SET status = 'delivering', agent_id = $2 WHERE id = $1`, m.ID, mine.ID); err != nil {
 		t.Fatalf("naming the owner's own agent: %v", err)
 	}
 	if _, err := pool.Exec(sys, `DELETE FROM agents WHERE id = $1`, mine.ID); err != nil {
@@ -389,5 +412,64 @@ func TestTheTriggersHoldUnderTheScopeAllPrincipal(t *testing.T) {
 	var stillThere int
 	if err := pool.QueryRow(sys, `SELECT count(*) FROM plugin_messages WHERE id = $1 AND agent_id IS NULL`, m.ID).Scan(&stillThere); err != nil || stillThere != 1 {
 		t.Fatalf("the message after its agent's deletion: %d (%v); want kept with agent_id NULL", stillThere, err)
+	}
+}
+
+// TestAnAbandonedDeliveryIsQueuedWithNoAgentAndADeadOneIsRecoveredUnconfirmed
+// pins the two exits from `delivering` that are not the turn's own outcome:
+// AbandonDelivery (the turn provably sent nothing) returns the message to the
+// queue with its agent CLEARED — and a queued row that names an agent is refused
+// by the schema itself — and RecoverDeliveries settles a row a dead process left
+// `delivering` to THAT agent as unconfirmed (audited), leaving another agent's alone.
+func TestAnAbandonedDeliveryIsQueuedWithNoAgentAndADeadOneIsRecoveredUnconfirmed(t *testing.T) {
+	s, pool, dsn := pgStore(t)
+	sys := authz.System(context.Background())
+	_, p := mustCreate(t, s, 2, "example-inbox")
+	a := mustAgent(t, dsn, 2, "plg-a")
+	b := mustAgent(t, dsn, 2, "plg-b")
+	m1, _, _ := s.Submit(plugin(2), p.ID, msg("x-1"))
+	m2, _, _ := s.Submit(plugin(2), p.ID, msg("x-2"))
+	m3, _, _ := s.Submit(plugin(2), p.ID, msg("x-3"))
+	for _, c := range []struct {
+		m  Message
+		to int64
+	}{{m1, a.ID}, {m2, a.ID}, {m3, b.ID}} {
+		if ok, err := s.BeginDelivery(plugin(2), c.m.ID, c.to); err != nil || !ok {
+			t.Fatalf("begin %d: %v %v", c.m.ID, ok, err)
+		}
+	}
+	// Abandon for the wrong agent does nothing; for the right one, queued + no agent.
+	if err := s.AbandonDelivery(plugin(2), m1.ID, b.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Message(plugin(2), m1.ID); got.Status != StatusDelivering {
+		t.Fatalf("abandoned by another agent: %+v; want still delivering", got)
+	}
+	if err := s.AbandonDelivery(plugin(2), m1.ID, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Message(plugin(2), m1.ID); got.Status != StatusQueued || got.AgentID != nil || got.Attempts != 1 {
+		t.Fatalf("abandoned: %+v; want queued, no agent, the attempt still counted", got)
+	}
+	var pg *pgconn.PgError
+	if _, err := pool.Exec(sys, `UPDATE plugin_messages SET agent_id = $2 WHERE id = $1`, m1.ID, a.ID); !errors.As(err, &pg) ||
+		pg.ConstraintName != "plugin_messages_queued_has_no_agent" {
+		t.Fatalf("a queued message naming an agent: %v; want plugin_messages_queued_has_no_agent", err)
+	}
+	// Recovery is per agent: a's dead delivery settles, b's live one does not.
+	if n, err := s.RecoverDeliveries(plugin(2), a.ID); err != nil || n != 1 {
+		t.Fatalf("recover a: %d %v; want 1", n, err)
+	}
+	if got, _ := s.Message(plugin(2), m2.ID); got.Status != StatusUnconfirmed || got.DeliveredAt == nil {
+		t.Fatalf("recovered: %+v; want unconfirmed", got)
+	}
+	if got, _ := s.Message(plugin(2), m3.ID); got.Status != StatusDelivering {
+		t.Fatalf("another agent's delivery: %+v; want untouched", got)
+	}
+	var detail string
+	if err := pool.QueryRow(sys, `SELECT detail::text FROM audit_log WHERE action = 'plugin.delivered' AND object = $1`,
+		MessageObject(m2.ID)).Scan(&detail); err != nil || !strings.Contains(detail, `"recovered": true`) ||
+		!strings.Contains(detail, `"outcome": "unconfirmed"`) {
+		t.Fatalf("the recovery's audit row: %q (%v)", detail, err)
 	}
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/apitokens"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/plugins"
 )
 
 // PERSONAL API TOKENS (accounts PR 6, plan §5).
@@ -88,11 +89,19 @@ func (s *Server) personalTokenFor(r *http.Request) (string, bool) {
 }
 
 // SharedSecretPrefixRefusal reports why the shared machine secrets collide
-// with the personal-token namespace, or "".
+// with the personal-token or plugin-token namespace, or "".
+//
+// 🔴 THE PLUGIN PREFIX IS REFUSED WHETHER OR NOT PLUGINS ARE ON: every door but
+// the plugin door refuses an `mpl_` credential by shape (refusePluginTokenElsewhere)
+// even with MUSTER_PLUGINS off, so a shared secret in that namespace would be
+// refused on every route.
 func (c AuthConfig) SharedSecretPrefixRefusal() string {
 	for _, v := range []struct{ name, val string }{{"MUSTER_HOOK_TOKEN", c.HookToken}, {"MUSTER_SERVICE_TOKEN", c.ServiceToken}} {
 		if apitokens.LooksLike(v.val) {
 			return v.name + " begins with " + apitokens.Prefix + ", the personal API token prefix: every request presenting it would be read as a personal token and refused. Generate a new random value."
+		}
+		if plugins.LooksLikeToken(v.val) {
+			return v.name + " begins with " + plugins.TokenPrefix + ", the plugin token prefix: every route but the plugin door would refuse it. Generate a new random value."
 		}
 	}
 	return ""

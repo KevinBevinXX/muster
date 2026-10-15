@@ -1073,7 +1073,8 @@ func decodeEncryptionKey(v string) ([]byte, error) {
 // policy is HERE, it is tested, and main() applies it.
 func (c config) validate() error {
 	// Accounts PR 6: an `mst_` value on the machine tier is a personal API
-	// token or nothing, so neither shared secret may live in that namespace.
+	// token or nothing, so neither shared secret may live in that namespace —
+	// nor in the plugin token's (`mpl_`), refused on every other door.
 	if reason := c.authConfig().SharedSecretPrefixRefusal(); reason != "" {
 		return errors.New(reason)
 	}

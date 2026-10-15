@@ -52,7 +52,8 @@ const (
 	MaxSubjectRunes   = 200
 	MaxExternalIDLen  = 200
 	MaxLabelRunes     = 80
-	maxRequestBytes   = MaxBodyBytes*2 + 4096
+	maxRequestBytes   = 6*MaxBodyBytes + 12*MaxSenderRunes + 12*MaxSubjectRunes + 6*MaxExternalIDLen + requestOverhead
+	requestOverhead   = 1024
 	MaxPerHour        = 60
 	MaxQueued         = 200
 	rateWindow        = time.Hour
@@ -61,6 +62,16 @@ const (
 
 // MaxRequestBytes bounds what the message route reads at all; the per-field caps
 // are checked after decoding.
+//
+// 🔴 IT IS THE WORST-CASE ESCAPED SIZE OF A VALID MESSAGE, NOT A MULTIPLE OF THE
+// DECODED CAPS. JSON may spell any byte as a 6-byte `\u00XX` escape — and a
+// control character MUST be spelled so; encoding/json also spells `<`, `>` and `&`
+// that way — so a valid 16 KiB body can arrive as 96 KiB. A 4-byte rune can arrive
+// as a 12-byte surrogate pair, which is the worst per RUNE (sender and subject are
+// capped in runes); per BYTE it is the 6× above (body and external_id are capped
+// in bytes). requestOverhead (1 KiB) covers the keys, an escaped received_at and
+// ordinary indentation. A cap below this refuses a message the per-field caps
+// accept (audit round 1).
 const MaxRequestBytes = maxRequestBytes
 
 // Status is a message's delivery state. The set is closed (the 0015 CHECK).
@@ -70,6 +81,15 @@ const (
 	// StatusQueued: not yet handed to the chief. A delivery that provably pasted
 	// nothing ("pending") leaves the message here.
 	StatusQueued Status = "queued"
+	// StatusDelivering: the chief named by AgentID is on the turn that hands the
+	// message over. 🔴 IT IS WRITTEN BEFORE THE TURN RUNS SO THE CHIEF CAN CITE THE
+	// MESSAGE ON THAT VERY TURN — the turn it is told about it, and the one it
+	// files a gated task or drafts a reply on. It settles to delivered or
+	// unconfirmed after the turn, or back to queued (AgentID cleared) only when the
+	// turn provably sent nothing. A process that dies mid-turn leaves it here; the
+	// next delivery to the same chief settles it unconfirmed, and it is never
+	// sent again ([Deliverer.Deliver]).
+	StatusDelivering Status = "delivering"
 	// StatusDelivered: the chief's turn completed.
 	StatusDelivered Status = "delivered"
 	// StatusUnconfirmed: the send failed after the text may have been pasted. It is

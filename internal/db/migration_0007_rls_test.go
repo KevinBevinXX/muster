@@ -92,7 +92,7 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO push_subscriptions (endpoint, p256dh, auth) VALUES ($1, 'k', 'a')`, func() []any { return []any{"https://fcm.googleapis.com/fcm/send/" + tag} }, nil},
 		{`INSERT INTO push_preferences (muted) VALUES ('{}')`, func() []any { return nil }, nil},
 		{`INSERT INTO plugins (name, label, token_hash, data_scope) VALUES ($1, 'Example inbox', $2, 'example') RETURNING id`, func() []any { return []any{"plugin-" + strings.ToLower(tag), "pluginhash-" + tag} }, &plugin},
-		{`INSERT INTO plugin_messages (plugin_id, external_id, body, agent_id) VALUES ($1, $2, 'hello', $3)`, func() []any { return []any{plugin, "ext-" + tag, agent} }, nil},
+		{`INSERT INTO plugin_messages (plugin_id, external_id, body, status, agent_id) VALUES ($1, $2, 'hello', 'delivering', $3)`, func() []any { return []any{plugin, "ext-" + tag, agent} }, nil},
 	}
 	for _, s := range steps {
 		var err error
