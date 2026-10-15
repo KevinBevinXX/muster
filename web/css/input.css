@@ -374,3 +374,31 @@
     transition: none !important;
   }
 }
+
+/*
+ * Chat bubble clamp (internal/ui/bubble_clamp.go). Outside every @layer on
+ * purpose: these are attribute selectors with no class, and only a layer's
+ * class candidates are what Tailwind matches against the views.
+ * - [data-clamp]          : a bubble the script measured as over ~12 lines;
+ *                           its max-height animates between clamped and full.
+ * - [data-clamp="closed"] : the clamped state; the bottom fades out (a mask,
+ *                           so it fades over any bubble's background).
+ */
+[data-clamp] {
+  overflow: hidden;
+  /* overflow:hidden turns a flex item's min-height:auto into 0, and both logs
+     are flex columns: without this an opened bubble is SHRUNK to fit the log
+     and still shows less than its full height. */
+  flex-shrink: 0;
+  transition: max-height 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+[data-clamp="closed"] {
+  cursor: pointer;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2.5rem), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 2.5rem), transparent);
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-clamp] {
+    transition: none;
+  }
+}

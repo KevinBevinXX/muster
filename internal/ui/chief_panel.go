@@ -395,6 +395,8 @@ func chiefPanelBody(v ChiefPanelView) g.Node {
 			// lines including a markdown renderer; putting it in the shell would charge
 			// every page load in the app for a panel most of them never open.
 			agentChatScript(v.Chat.Name),
+			// Re-executable on the same terms (window.muClamp): a re-run rescans.
+			bubbleClampScript(),
 		),
 	}
 }

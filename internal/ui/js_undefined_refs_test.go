@@ -270,7 +270,7 @@ var jsKnownGlobals = map[string]bool{
 	// Language built-ins.
 	"Array": true, "Boolean": true, "Date": true, "Error": true, "JSON": true,
 	"Map": true, "Math": true, "Number": true, "Object": true, "Promise": true,
-	"RegExp": true, "Set": true, "String": true, "Symbol": true, "WeakMap": true,
+	"RegExp": true, "Set": true, "String": true, "Symbol": true, "WeakMap": true, "WeakSet": true,
 	"parseInt": true, "parseFloat": true, "isNaN": true, "isFinite": true,
 	"encodeURIComponent": true, "decodeURIComponent": true, "encodeURI": true,
 	"decodeURI": true, "structuredClone": true, "queueMicrotask": true,

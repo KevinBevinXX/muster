@@ -144,6 +144,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				g.If(v.Interactive, confirmDialog(v.StepUp)),
 				g.If(v.Interactive, stepUpScript()),
 				mirrorViewScript(),
+				bubbleClampScript(),
 				mirrorComposerScript(),
 				pwaChrome(),
 			),

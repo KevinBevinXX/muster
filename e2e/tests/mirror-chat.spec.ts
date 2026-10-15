@@ -206,3 +206,115 @@ test('a task notification is a compact collapsible row, not a user bubble; a pro
   await expect(users.nth(2)).toHaveText('/model');
   await expect(log.locator('[data-notice-row]')).toHaveCount(2);
 });
+
+const lines = (n: number, what: string) => Array.from({ length: n }, (_, i) => `${what} line ${i + 1}`).join('\n\n');
+
+// The log's distance from its bottom, in px.
+const fromBottom = (page: Page, sel = '#mv-log') =>
+  page.locator(sel).evaluate((l) => l.scrollHeight - l.scrollTop - l.clientHeight);
+
+// B2: a bubble over ~12 lines is clamped with a fade and a control; a tap opens
+// it to its full height (animated), another closes it; a short one is untouched;
+// opening the newest at the bottom keeps the log at the bottom.
+test('a long bubble is clamped, a tap expands it to full height and back, a short one is not clamped, and the log stays at the bottom', async ({ page }) => {
+  const tr = newTranscript(prompt('a short question') + reply(lines(40, 'answer')) + prompt(lines(30, 'my long message')));
+  await openView(page, tr);
+  const log = page.locator('#mv-log');
+  const short = log.locator('[data-bubble="user"]').first();
+  const answer = log.locator('[data-bubble="assistant"]').first();
+  const newest = log.locator('[data-bubble="user"]').last();
+
+  // Short: not clamped, no control.
+  await expect(short).toContainText('a short question');
+  await expect(short).not.toHaveAttribute('data-clamp', /.*/);
+  expect(await short.evaluate((e) => e.nextElementSibling?.hasAttribute('data-clamp-toggle') ?? false), 'no control under a short bubble').toBe(false);
+
+  // Long: clamped to about twelve lines — content hidden below, a control under it.
+  for (const b of [answer, newest]) {
+    await expect(b).toHaveAttribute('data-clamp', 'closed');
+    const [h, sh, lh] = await b.evaluate((e) => [e.clientHeight, e.scrollHeight, parseFloat(getComputedStyle(e).lineHeight)]);
+    expect(sh, 'there is more content than is shown').toBeGreaterThan(h + lh);
+    expect(h, 'about 12 lines tall').toBeGreaterThanOrEqual(lh * 11);
+    expect(h, 'about 12 lines tall').toBeLessThanOrEqual(lh * 14);
+  }
+  const toggle = newest.locator('xpath=following-sibling::*[1]');
+  await expect(toggle).toHaveAttribute('data-clamp-toggle', '');
+  await expect(toggle).toHaveText('Show more');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+
+  // The view opened at the bottom; tapping the newest (a real touch tap) opens
+  // it to its scrollHeight and the log is STILL at the bottom.
+  expect(await newest.evaluate((e) => getComputedStyle(e).transitionDuration), 'the expand is animated').not.toBe('0s');
+  await expect.poll(() => fromBottom(page), { message: 'the view opened at the bottom' }).toBeLessThan(2);
+  const before = await newest.evaluate((e) => e.clientHeight);
+  await newest.tap();
+  await expect(newest).toHaveAttribute('data-clamp', 'open');
+  const [after, full] = await newest.evaluate((e) => [e.clientHeight, e.scrollHeight]);
+  expect(after, 'it grew').toBeGreaterThan(before);
+  expect(Math.abs(after - full), 'measured height equals its scrollHeight').toBeLessThanOrEqual(1);
+  expect(await fromBottom(page), 'still at the bottom after the expand').toBeLessThan(2);
+  await expect(toggle).toHaveText('Show less');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+
+  // Tap again (the control this time) collapses it back to the clamp.
+  await toggle.tap();
+  await expect(newest).toHaveAttribute('data-clamp', 'closed');
+  await expect.poll(() => newest.evaluate((e) => e.clientHeight)).toBe(before);
+  await expect(toggle).toHaveText('Show more');
+
+  // The control is a 44px thumb target and nothing scrolls sideways.
+  const tb = (await toggle.boundingBox())!;
+  expect(tb.height).toBeGreaterThanOrEqual(44);
+  const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+  expect(sw).toBeLessThanOrEqual(cw);
+
+  // Live: a long reply streamed in later is clamped as it lands.
+  fs.appendFileSync(tr, reply(lines(25, 'later')));
+  await expect(log.locator('[data-bubble="assistant"]').last()).toHaveAttribute('data-clamp', 'closed');
+});
+
+// prefers-reduced-motion: the expand is instant (no transition), and still
+// reaches the full height.
+test('with reduced motion the clamp opens with no transition', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const tr = newTranscript(prompt(lines(30, 'calm')));
+  await openView(page, tr);
+  const b = page.locator('#mv-log [data-bubble="user"]').first();
+  await expect(b).toHaveAttribute('data-clamp', 'closed');
+  expect(await b.evaluate((e) => getComputedStyle(e).transitionDuration)).toBe('0s');
+  await b.tap();
+  await expect(b).toHaveAttribute('data-clamp', 'open');
+  const [h, sh] = await b.evaluate((e) => [e.clientHeight, e.scrollHeight]);
+  expect(Math.abs(h - sh)).toBeLessThanOrEqual(1);
+});
+
+// The SAME clamp on the dispatched-agent chat (bubbleClampScript is on that
+// page too). Its seeded transcript (e2e/seed) is short, so it is checked as
+// drawn — no clamp — and a long bubble in chatBubbleOf's markup is then added
+// to #chat-log the way the chat-log refresh adds one, and is clamped and opened
+// by a tap. (Adding it through a real send would persist a message into the
+// seeded agent other specs count.)
+test('the agent chat clamps a long bubble and leaves its short seeded ones alone', async ({ page }) => {
+  await login(page);
+  await page.goto(origin + '/agents/docs-sweeper');
+  const log = page.locator('#chat-log');
+  const seeded = log.locator('[data-bubble="user"]').first();
+  await expect(seeded).toContainText('Check the docs build.');
+  await expect(seeded).not.toHaveAttribute('data-clamp', /.*/);
+  await log.evaluate((l, text) => {
+    const d = document.createElement('div');
+    d.setAttribute('data-bubble', 'user');
+    d.className = 'max-w-[85%] break-words rounded-2xl px-3 py-2 text-sm bg-accent/15 text-fg self-end ring-1 ring-inset ring-accent/30';
+    d.textContent = text;
+    d.style.whiteSpace = 'pre-wrap';
+    l.appendChild(d);
+    l.scrollTop = l.scrollHeight;
+  }, Array.from({ length: 30 }, (_, i) => `agent line ${i + 1}`).join('\n'));
+  const long = log.locator('[data-bubble="user"]').last();
+  await expect(long).toHaveAttribute('data-clamp', 'closed');
+  await long.tap();
+  await expect(long).toHaveAttribute('data-clamp', 'open');
+  const [h, sh] = await long.evaluate((e) => [e.clientHeight, e.scrollHeight]);
+  expect(Math.abs(h - sh)).toBeLessThanOrEqual(1);
+  expect(await fromBottom(page, '#chat-log'), 'the agent log stays at the bottom').toBeLessThan(2);
+});
