@@ -1,5 +1,5 @@
 import { request as pwRequest, Page } from '@playwright/test';
-import { test, expect } from '../lib/fixtures';
+import { test, expect, expectAgentsDestroyed } from '../lib/fixtures';
 import { agentComposerPort, hookToken, password, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 
@@ -57,8 +57,11 @@ test.afterAll(async ({ browser }) => {
         const r = await page.request.delete(`${origin}/agents/${a.id}`, { headers: { Origin: origin } });
         expect(r.status(), `deleting ${a.name}: ${await r.text()}`).toBeLessThan(300);
       }
-      const left = (await agentRows()).filter((a) => made.some((m) => m.id === a.id));
-      expect(left, 'agents this spec made are still there').toEqual([]);
+      await expectAgentsDestroyed(
+        agentRows,
+        made.map((m) => m.id),
+        'agents this spec made are still there',
+      );
       await ctx.close();
     }
   } finally {
