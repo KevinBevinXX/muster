@@ -115,9 +115,10 @@ func TestTheFilterHidesWithOneRulePerWordAndCountsWithTheSameSelector(t *testing
 	page := renderString(t, Page("agents", featuresAllOn))
 	script := scriptWith(t, page, "__musterAgentsFilter")
 	for name, want := range map[string]string{
-		"the rule hides a card lacking the word": `'#agents-list > article:not(' + has(w) + '){display:none !important}'`,
-		"the count uses the same selector":       `list.querySelectorAll(':scope > article' + ws.map(has).join(''))`,
-		"the words are lower-cased and split":    `toLowerCase().split(/\s+/).filter(Boolean)`,
+		"the rule hides a card lacking the term": `'#agents-list > article:not(' + sel(t) + '){display:none !important}'`,
+		"the count uses the same selector":       `list.querySelectorAll(':scope > article' + ts.map(sel).join(''))`,
+		"the terms are lower-cased and parsed":   `var out = [], s = String(v || '').toLowerCase(), m;`,
+		"typing replaces the URL, never pushes":  `history.replaceState(history.state, '', next)`,
 		"it re-counts when the list settles":     `if (e.target && e.target.id === 'agents-list') apply();`,
 		"it remembers the text for the session":  `sessionStorage.setItem(KEY, input.value)`,
 	} {
@@ -131,5 +132,126 @@ func TestTheFilterHidesWithOneRulePerWordAndCountsWithTheSameSelector(t *testing
 	// It never marks a card itself: nothing for a morph to undo.
 	if strings.Contains(script, ".hidden = true") || strings.Contains(script, "setAttribute('hidden'") {
 		t.Error("the filter script hides cards one by one; a list refresh would un-hide them")
+	}
+}
+
+var dataField = regexp.MustCompile(` data-f-([a-z][a-z0-9_]*)="([^"]*)"`)
+
+// fieldsOf is every data-f-<field> attribute on a card's own <article> tag.
+func fieldsOf(t *testing.T, card string) map[string]string {
+	t.Helper()
+	end := strings.Index(card, ">")
+	if end < 0 {
+		t.Fatalf("not a tag: %s", card)
+	}
+	out := map[string]string{}
+	for _, m := range dataField.FindAllStringSubmatch(card[:end], -1) {
+		if _, dup := out[m[1]]; dup {
+			t.Errorf("data-f-%s is written twice: %s", m[1], card[:end])
+		}
+		out[m[1]] = m[2]
+	}
+	return out
+}
+
+func sameFields(t *testing.T, what string, got, want map[string]string) {
+	t.Helper()
+	for k, w := range want {
+		if got[k] != w {
+			t.Errorf("%s: data-f-%s = %q, want %q", what, k, got[k], w)
+		}
+	}
+	for k, v := range got {
+		if _, ok := want[k]; !ok {
+			t.Errorf("%s: unexpected data-f-%s = %q", what, k, v)
+		}
+	}
+}
+
+// TestEveryCardCarriesEachFieldInItsOwnAttribute: besides the free-text
+// haystack, a card carries ONE attribute per field, so `host:tower` can ask
+// about the host alone. Every fixture value is pairwise distinct (and none is
+// the literal "cluster"), so a field filled from another field — or from the
+// whole haystack — fails here by name.
+//
+// 🔴 A DISPATCHED POD AGENT'S HOST IS THE LITERAL "cluster": muster has no
+// cluster name to put there, and naming it after a machine would merge "my
+// tmux on that machine" with "pods on that cluster" — the very cut host:
+// exists to make.
+func TestEveryCardCarriesEachFieldInItsOwnAttribute(t *testing.T) {
+	agent := renderNode(t, agentCard(AgentCardView{ID: 7, Name: "keen-wren", DisplayName: "#12 · Fix The Chip", Repo: "Acme/Widgets",
+		Kind: agents.KindClaudeCode, CCAccount: "Alpha", Status: "running", Namespace: "Pods-Ns"}))
+	sameFields(t, "a dispatched agent", fieldsOf(t, agent), map[string]string{
+		"host": "cluster", "type": "agent", "name": "#12 · fix the chip keen-wren", "status": "running",
+		"kind": "claude code", "repo": "acme/widgets", "account": "alpha", "ns": "pods-ns",
+	})
+
+	win := renderNode(t, mirrorCard(MirrorCardView{Host: "Tower", Session: "Scratch2", Window: "@7", Label: "Gold:8", Title: "Ignored:8",
+		Kind: "opencode", Online: true, Interactive: true}))
+	sameFields(t, "a mirrored window", fieldsOf(t, win), map[string]string{
+		"host": "tower", "type": "mirrored", "name": "gold:8", "session": "scratch2", "status": "running",
+		"kind": "opencode", "mode": "interactive",
+	})
+
+	// Offline, Claude Code, no label: its name is its title, it is stopped and
+	// offline, and it is filed under Claude Code whatever its command is.
+	cc := renderNode(t, mirrorCard(MirrorCardView{Host: "dock", Session: "solo", Window: "@2", Title: "solo:3", Kind: "node", Claude: true}))
+	sameFields(t, "an offline Claude Code window", fieldsOf(t, cc), map[string]string{
+		"host": "dock", "type": "mirrored", "name": "solo:3", "session": "solo", "status": "stopped",
+		"kind": "claude code", "state": "offline",
+	})
+
+	// The free-text haystack is untouched by the fields: still exactly today's.
+	if got, want := haystackOf(t, agent), "#12 · fix the chip keen-wren acme/widgets claude code alpha running agent"; got != want {
+		t.Errorf("the agent's free-text haystack changed:\n got %q\nwant %q", got, want)
+	}
+	if got, want := haystackOf(t, win), "gold:8 ignored:8 gold:8 scratch2 tower opencode mirrored interactive"; got != want {
+		t.Errorf("the mirrored window's free-text haystack changed:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestEveryFieldIsARegisteredSafeIdentifier: the attribute NAME in a selector
+// is built from the field name, so the set is closed (the registry) and every
+// name is a plain lower-case identifier; and the script is handed exactly that
+// set, so a field the cards carry is a field the box understands.
+func TestEveryFieldIsARegisteredSafeIdentifier(t *testing.T) {
+	ident := regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+	seen := map[string]bool{}
+	for _, f := range cardFieldRegistry {
+		if !ident.MatchString(f.Key) {
+			t.Errorf("field %q is not a safe CSS identifier", f.Key)
+		}
+		if seen[f.Key] {
+			t.Errorf("field %q is registered twice", f.Key)
+		}
+		seen[f.Key] = true
+	}
+	for _, want := range []string{"host", "status", "kind", "repo", "name", "account", "session", "mode", "state", "type", "ns"} {
+		if !seen[want] {
+			t.Errorf("field %q is not registered", want)
+		}
+	}
+	page := renderString(t, Page("agents", featuresAllOn))
+	script := scriptWith(t, page, "__musterAgentsFilter")
+	if !strings.Contains(script, "var FIELDS = "+cardFieldKeysJSON()+";") {
+		t.Errorf("the filter script is not handed the registry's field set %s", cardFieldKeysJSON())
+	}
+	// Both card kinds carry the fields every card has, whatever optional ones
+	// (repo, account, kind…) are empty. (An agent row always has a status.)
+	for what, card := range map[string]string{
+		"agent":  renderNode(t, agentCard(AgentCardView{ID: 1, Name: "a", Status: "pending"})),
+		"mirror": renderNode(t, mirrorCard(MirrorCardView{Host: "h", Session: "s"})),
+	} {
+		got := fieldsOf(t, card)
+		for _, k := range []string{"host", "type", "name", "status"} {
+			if got[k] == "" {
+				t.Errorf("a bare %s card has no data-f-%s: %v", what, k, got)
+			}
+		}
+		for k := range got {
+			if !seen[k] {
+				t.Errorf("a %s card writes unregistered data-f-%s", what, k)
+			}
+		}
 	}
 }

@@ -350,6 +350,129 @@ for (const vp of [
       await noHorizontalScroll(page);
     });
 
+    // FIELD TOKENS: `host:cluster` asks about the host alone; a free word asks
+    // about everything a card says. A session named `cluster-notes` is the trap:
+    // the free word "cluster" finds it, the field token must not.
+    //
+    // 🔴 A REGRESSION TEST: on the commit before field tokens `host:cluster` is
+    // one free word no card's text contains, so it hides every card — the pod
+    // agents included — and `?q=` is never read.
+    test('host:<x> matches the host field only, and survives the list refreshing itself', async ({ page }) => {
+      const trap: Win = { session: 'cluster-notes', id: '@3', index: 1, active: true, command: 'zsh', activity: now - 60 };
+      writeWindows([shellWin, eightWin, elevenWin, soloWin, trap]);
+      await openList(page, 5);
+      const box = page.locator('#agents-search');
+      const count = page.locator('#agents-count');
+      const trapCard = cardOf(page, termPath(trap));
+      const pods = page.locator('#agents-list > article:not([data-mirror-card])');
+      const names = async () =>
+        (await cards(page).filter({ visible: true }).evaluateAll((els) => els.map((e) => ((e.querySelector('[data-mirror-label]') ?? e.querySelector('[data-mirror-name]')) as HTMLElement).textContent))).sort();
+      const all = await page.locator('#agents-list > article').count();
+      const podCount = await pods.count();
+      expect(podCount, 'the seeded pod agents are listed').toBeGreaterThanOrEqual(3);
+      const qOf = () => new URL(page.url()).searchParams.get('q');
+      const historyBefore = await page.evaluate(() => history.length);
+
+      // The control: the FREE word "cluster" does find the trap (it is in its title).
+      await box.fill('cluster');
+      await expect(trapCard, 'the free word "cluster" finds the cluster-notes window').toBeVisible();
+
+      // The token: every pod agent, and no mirrored window — not even the one
+      // whose title spells "cluster".
+      await box.fill('host:cluster');
+      await expect(trapCard, 'LEAK: the word "cluster" in a mirrored title let it into host:cluster').toBeHidden();
+      await expect(page.locator('#agents-list > article[data-mirror-card]').filter({ visible: true }), 'no mirrored window is on host "cluster"').toHaveCount(0);
+      await expect(pods.filter({ visible: true }), 'every pod agent is on host "cluster"').toHaveCount(podCount);
+      await expect(count).toHaveText(`${podCount} of ${all}`);
+      expect(qOf(), 'the filter is in the URL').toBe('host:cluster');
+
+      // This host: its five windows, and no pod agent.
+      await box.fill(`host:${host}`);
+      expect(await names()).toEqual(['Gold:1', 'Gold:11', 'Gold:8', 'cluster-notes:1', 'solo:3']);
+      await expect(pods.filter({ visible: true })).toHaveCount(0);
+      // Fields AND with each other and with free words; a quoted value may hold a space.
+      await box.fill(`host:${host} kind:opencode`);
+      expect(await names()).toEqual(['solo:3']);
+      await box.fill(`HOST:${host.toUpperCase()} kind:"claude code"`);
+      expect(await names()).toEqual(['Gold:11', 'Gold:8']);
+      await box.fill(`session:scratch2 shell`);
+      expect(await names()).toEqual(['Gold:1']);
+      // An unknown field is free text: "gold:8" is a title, not a field.
+      await box.fill('gold:8');
+      expect(await names()).toEqual(['Gold:8']);
+      // A quote or a backslash in a field value is text, not a broken selector.
+      await box.fill('host:"a\\"b');
+      await expect(count).toHaveText(`0 of ${all}`);
+      expect(await page.evaluate(() => history.length), 'typing replaced the URL, it did not push history').toBe(historyBefore);
+
+      // 🔴 THE LIST REFRESHES ITSELF UNDER A FIELD TOKEN: the trap window is
+      // renumbered (its card is re-rendered) and a new pod-less window appears.
+      // The hidden stay hidden, the count follows, nothing reloads.
+      await box.fill('host:cluster');
+      await expect(count).toHaveText(`${podCount} of ${all}`);
+      await page.evaluate(() => ((window as unknown as { __noReload: number }).__noReload = 1));
+      const extra: Win = { session: 'cluster-two', id: '@5', index: 4, active: true, command: 'zsh', activity: now - 30 };
+      writeWindows([shellWin, eightWin, elevenWin, soloWin, { ...trap, index: 2 }, extra]);
+      await expect(trapCard.locator('[data-mirror-name]'), `the list refreshed (log:\n${mirrorLog})`).toHaveText('cluster-notes:2', { timeout: 20_000 });
+      await expect(page.locator(`#agents-list article[data-mirror-card]:has(a[href="${termPath(extra)}"])`)).toHaveCount(1, { timeout: 20_000 });
+      await expect(trapCard, 'a refreshed card the token hides stays hidden').toBeHidden();
+      await expect(page.locator('#agents-list > article[data-mirror-card]').filter({ visible: true })).toHaveCount(0);
+      await expect(pods.filter({ visible: true })).toHaveCount(podCount);
+      await expect(count).toHaveText(`${podCount} of ${all + 1}`);
+      expect(await page.evaluate(() => (window as unknown as { __noReload?: number }).__noReload), 'no reload happened').toBe(1);
+
+      await noHorizontalScroll(page);
+    });
+
+    // 🔴 A REGRESSION TEST: on the commit before, the filter lived in
+    // sessionStorage only — a shared link carried nothing, and the box came back
+    // with whatever this tab last typed.
+    test('a shared ?q= link reproduces the filter, wins over the remembered one, and clearing removes it', async ({ page }) => {
+      await openList(page, 4);
+      const box = page.locator('#agents-search');
+      const qOf = () => new URL(page.url()).searchParams.get('q');
+      const names = async () =>
+        (await cards(page).filter({ visible: true }).evaluateAll((els) => els.map((e) => ((e.querySelector('[data-mirror-label]') ?? e.querySelector('[data-mirror-name]')) as HTMLElement).textContent))).sort();
+      // This tab remembers a filter of its own…
+      await box.fill('gold');
+      await expect(cards(page).filter({ visible: true })).toHaveCount(3);
+      // …and a link with another one wins over it, on first paint.
+      await page.goto(origin + '/agents?q=' + encodeURIComponent(`host:${host} kind:opencode`));
+      await expect(box).toHaveValue(`host:${host} kind:opencode`);
+      await expect(cards(page).filter({ visible: true })).toHaveCount(1, { timeout: 20_000 });
+      expect(await names()).toEqual(['solo:3']);
+      // Clearing it takes it out of the URL.
+      await page.locator('#agents-search-clear').click();
+      expect(qOf(), 'an empty filter leaves no ?q=').toBeNull();
+      // Typing writes it back, and a reload of that URL is the same list.
+      await box.fill('solo');
+      expect(qOf()).toBe('solo');
+      await page.reload();
+      await expect(box).toHaveValue('solo');
+      await expect.poll(names, { message: 'the reloaded list is filtered', timeout: 20_000 }).toEqual(['solo:3']);
+
+      // 🔴 LEAVING THE TAB AND COMING BACK KEEPS ?q=. The tab router pushes a
+      // bare /<tab>; the URL must carry the filter the moment the Agents panel is
+      // back — read right after the click, before any list poll could heal it —
+      // and no other tab may carry it.
+      const tab = async (t: string) => {
+        const open = page.locator('#sidebar-open');
+        if (await open.isVisible()) await open.click();
+        await page.locator(`#sidebar a[data-tab="${t}"]`).click();
+        await expect(page.locator(`#sidebar a[data-tab="${t}"][aria-current="page"]`)).toHaveCount(1);
+      };
+      const hist = await page.evaluate(() => history.length);
+      await tab('tasks');
+      expect(new URL(page.url()).pathname).toBe('/tasks');
+      expect(qOf(), 'the Tasks tab carries no ?q=').toBeNull();
+      await tab('agents');
+      const back = new URL(page.url());
+      expect(back.pathname + back.search, 'back on Agents, the URL carries the filter at once').toBe('/agents?q=solo');
+      expect(await page.evaluate(() => history.length), 'two tab switches, two history entries').toBe(hist + 2);
+      await expect(box).toHaveValue('solo');
+      await noHorizontalScroll(page);
+    });
+
     // THE COMPOSER WITHOUT ITS SCRIPT. A browser context with JavaScript OFF: the
     // page's composer script does not exist, so what is left is the form itself.
     //

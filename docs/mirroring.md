@@ -68,7 +68,13 @@ the route checks its own tokens.
   as sha256 hashes, under row-level security.
 - **A filter.** One box above the cards narrows dispatched agents and mirrored
   windows together. It is case-insensitive, and every word must match. It shows
-  an "N of M" count and runs entirely in the page.
+  an "N of M" count and runs entirely in the page. A `field:value` term looks
+  at one field only, as a substring: `host:<name>` (a dispatched pod agent's
+  host is `cluster`), `status:`, `kind:`, `repo:`, `name:`, `account:`,
+  `session:`, `ns:`, `mode:`, `state:`, `type:` (`agent` or `mirrored`). Quote a
+  value with a space in it: `kind:"claude code"`. A term whose prefix is not one
+  of those fields is plain text, so `gold:8` still finds a window called
+  `Gold:8`. The filter is kept in the page's `?q=`, so a link reproduces it.
 
 ![The Agents list filtered with the search box](img/agents-filter.png)
 

@@ -1534,6 +1534,9 @@ func appScript(feat Features) g.Node {
     // isPage=true: the pushState above (or the early-return equality check) means
     // location.pathname IS pathForTab(sel), so this tab's link is the current page.
     show(sel, true);
+    // A panel that keeps state in the URL (the Agents filter's ?q=,
+    // agents_filter.go) re-writes it: the push above is a bare /<tab>.
+    document.dispatchEvent(new CustomEvent('muster:tabshown', { detail: { tab: sel } }));
     setOpen(false);
     navSet(NAV_TAB_KEY, sel);
   }

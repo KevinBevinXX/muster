@@ -269,8 +269,9 @@ func agentCard(a AgentCardView) g.Node {
 	return Article(
 		ID("agent-"+ids),
 		// What the list's filter finds this card by (agents_filter.go).
-		g.Attr("data-filter", filterHaystack(displayOr(a.DisplayName, a.Name), a.Name, a.Repo,
-			agents.KindLabel(a.Kind), a.CCAccount, a.Status, "agent")),
+		cardFilterAttrs(cardFields{Host: podHost, Type: "agent", Name: filterHaystack(a.DisplayName, a.Name),
+			Status: a.Status, Kind: agents.KindLabel(a.Kind), Repo: a.Repo, Account: a.CCAccount, NS: a.Namespace},
+			displayOr(a.DisplayName, a.Name), a.Name, a.Repo, agents.KindLabel(a.Kind), a.CCAccount, a.Status, "agent"),
 		Class("group relative overflow-hidden rounded-2xl border border-line bg-s1/70 shadow-lg shadow-black/20 ring-1 ring-line"),
 		// The control cluster (rename + ⋯ menu) is positioned over the card's
 		// top-right corner, OUTSIDE the nav anchor, so its clicks don't navigate.
