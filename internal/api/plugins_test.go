@@ -379,6 +379,11 @@ func (v *resultPlugins) FinishDraft(_ context.Context, _, id int64, r plugins.Dr
 // rune may arrive as a 12-byte surrogate pair. The decoded caps still refuse a
 // detail one byte over.
 func TestAValidDraftResultIsReadWhateverItsJSONEscaping(t *testing.T) {
+	// The read cap is the route's DoS bound, so its VALUE is pinned as a literal:
+	// the "over the read cap" row pads by the constant and so follows any value.
+	if plugins.MaxResultRequestBytes != 28000 {
+		t.Fatalf("MaxResultRequestBytes = %d; want 28000 (6×4096 + 12×200 + 1024)", plugins.MaxResultRequestBytes)
+	}
 	store := &resultPlugins{}
 	_, h, _ := newPluginsDoorServer(t, store)
 	marshal := func(v any) string {
