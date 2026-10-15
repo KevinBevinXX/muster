@@ -66,7 +66,7 @@ func newRLSFixture(t *testing.T, name string) *rlsFixture {
 // by 0007's default (the principal's muster.uid) and, for children, by the
 // composite foreign keys. tag keeps names unique.
 func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) error {
-	var note, agent, session, plugin, message int64
+	var note, agent, session, plugin int64
 	steps := []struct {
 		sql  string
 		args func() []any
@@ -92,8 +92,7 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO push_subscriptions (endpoint, p256dh, auth) VALUES ($1, 'k', 'a')`, func() []any { return []any{"https://fcm.googleapis.com/fcm/send/" + tag} }, nil},
 		{`INSERT INTO push_preferences (muted) VALUES ('{}')`, func() []any { return nil }, nil},
 		{`INSERT INTO plugins (name, label, token_hash, data_scope) VALUES ($1, 'Example inbox', $2, 'example') RETURNING id`, func() []any { return []any{"plugin-" + strings.ToLower(tag), "pluginhash-" + tag} }, &plugin},
-		{`INSERT INTO plugin_messages (plugin_id, external_id, body, agent_id) VALUES ($1, $2, 'hello', $3) RETURNING id`, func() []any { return []any{plugin, "ext-" + tag, agent} }, &message},
-		{`INSERT INTO plugin_reply_drafts (message_id, agent_id, agent_name, body, expires_at) VALUES ($1, $2, 'a', 'reply', now() + interval '1 day')`, func() []any { return []any{message, agent} }, nil},
+		{`INSERT INTO plugin_messages (plugin_id, external_id, body, agent_id) VALUES ($1, $2, 'hello', $3)`, func() []any { return []any{plugin, "ext-" + tag, agent} }, nil},
 	}
 	for _, s := range steps {
 		var err error

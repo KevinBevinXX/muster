@@ -12,7 +12,7 @@ import (
 // standing lines, one stanza per memo, a closing marker — and EVERY line between the markers
 // behind [contentPrefix], which is what makes the fence structural: no memo text can reach
 // column 0, where the markers live. The rendering itself is internal/fence's (extracted from
-// here; TestTheRenderedTurnsAreByteIdenticalToTheGolden pins that the move changed no byte).
+// here; a byte golden checked that the move changed no byte, and was deleted after it landed).
 //
 // 🔴 EVERY FIELD IS SANITISED HERE, AGAIN, ALTHOUGH THE LISTENER ALREADY RENDERED IT. The relay
 // cannot know it is talking to a real listener, so what arrives is untrusted text and the same
