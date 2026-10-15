@@ -1802,7 +1802,11 @@ func (s *Server) wsAllowedOrigins(r *http.Request) []string {
 func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text string, emit agents.StreamEmit) (string, error) {
 	instr, tools, dispatch := s.AgentInstructions(a), s.AgentToolDefsFor(ctx, a), s.AgentToolDispatch(ctx, a)
 	reply, err := s.ext.Gateway.ChatWithTools(ctx, a, sessionKey, instr, text, tools, dispatch, emit)
-	if errors.Is(err, agents.ErrResponsesUnsupported) {
+	// 🔴 ONLY A 404 ON THE FIRST REQUEST MEANS "THIS IMAGE HAS NO /v1/responses". A
+	// 404 on request 2+ comes after the runtime answered request 1 and its tools
+	// ran; resending the message toolless there pastes it into the session twice
+	// (agents.AfterFirstRequestError).
+	if errors.Is(err, agents.ErrResponsesUnsupported) && !agents.PastFirstRequest(err) {
 		s.logger.Printf("agents: %s gateway lacks /v1/responses; retrying the turn WITHOUT tools "+
 			"(that runtime's image predates the endpoint, so it answers over chat-completions)", a.Name)
 		var textEmit func(string)

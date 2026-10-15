@@ -278,8 +278,9 @@ func TestANonChiefCannotCallTheGatedToolThroughTheGateway(t *testing.T) {
 
 // TestAGatedTaskCitesOnlyItsOwnersMessageEvenWithoutRLS: over a store with no
 // row-level security, the tool itself refuses a message of another owner (even
-// one whose row names this chief), one delivered to another agent, and a queued
-// one — before any budget is spent. The delivered one is the control.
+// one whose row names this chief), one delivered or being delivered to another
+// agent, and a queued one — before any budget is spent. The ones delivered and
+// being delivered to this chief are the controls.
 func TestAGatedTaskCitesOnlyItsOwnersMessageEvenWithoutRLS(t *testing.T) {
 	f := newGatedFakeFixture(t)
 	chief, worker := f.chief.ID, f.worker.ID
@@ -288,8 +289,11 @@ func TestAGatedTaskCitesOnlyItsOwnersMessageEvenWithoutRLS(t *testing.T) {
 		2: {ID: 2, OwnerID: gtOwner, AgentID: &worker, Status: plugins.StatusDelivered},
 		3: {ID: 3, OwnerID: gtOwner, AgentID: &chief, Status: plugins.StatusQueued},
 		4: {ID: 4, OwnerID: gtOwner, AgentID: &chief, Status: plugins.StatusDelivered},
+		5: {ID: 5, OwnerID: gtOwner, AgentID: &worker, Status: plugins.StatusDelivering},
+		6: {ID: 6, OwnerID: gtOwner + 1, AgentID: &chief, Status: plugins.StatusDelivering},
+		7: {ID: 7, OwnerID: gtOwner, AgentID: &chief, Status: plugins.StatusDelivering},
 	}
-	for _, id := range []int64{1, 2, 3} {
+	for _, id := range []int64{1, 2, 3, 5, 6} {
 		out := f.call(f.chief, map[string]any{"title": "t", "body": "b", "gate_reason": "r", "message_id": id})
 		if !strings.Contains(out, "is not a plugin message delivered to you") {
 			t.Errorf("message %d: %s, want refused", id, out)
@@ -298,7 +302,11 @@ func TestAGatedTaskCitesOnlyItsOwnersMessageEvenWithoutRLS(t *testing.T) {
 	if f.notes.count() != 0 || f.plugins.reserved != 0 {
 		t.Fatalf("refused citations created %d task(s) and reserved %d unit(s)", f.notes.count(), f.plugins.reserved)
 	}
-	if out := f.call(f.chief, map[string]any{"title": "t", "body": "b", "gate_reason": "r", "message_id": 4}); isToolErr(out) {
-		t.Fatalf("control: citing a message delivered to this chief failed: %s", out)
+	// Controls: delivered to this chief, and BEING delivered to it (the turn that
+	// tells the chief about the message — audit round 1).
+	for _, id := range []int64{4, 7} {
+		if out := f.call(f.chief, map[string]any{"title": "t", "body": "b", "gate_reason": "r", "message_id": id}); isToolErr(out) {
+			t.Fatalf("control: citing message %d (delivered or delivering to this chief) failed: %s", id, out)
+		}
 	}
 }

@@ -84,8 +84,23 @@ func (g *gatedFixture) newAgent(t *testing.T, owner int64, name, display, token 
 }
 
 // deliveredMessage stores one plugin message for owner and settles it as
-// delivered to agentID (or leaves it queued when agentID is 0).
+// delivered to agentID (or leaves it queued when agentID is 0), through the
+// store's own delivery steps.
 func (g *gatedFixture) deliveredMessage(t *testing.T, owner, agentID int64, external string) plugins.Message {
+	t.Helper()
+	m := g.deliveringMessage(t, owner, agentID, external)
+	if agentID != 0 {
+		if ok, err := g.plugins.RecordDelivery(g.as(owner), m.ID, agentID, plugins.StatusDelivered); err != nil || !ok {
+			t.Fatalf("record delivery: %v %v", ok, err)
+		}
+	}
+	return m
+}
+
+// deliveringMessage stores one plugin message for owner and marks it as being
+// delivered to agentID — the state during the delivery turn — or leaves it
+// queued when agentID is 0.
+func (g *gatedFixture) deliveringMessage(t *testing.T, owner, agentID int64, external string) plugins.Message {
 	t.Helper()
 	ctx := g.as(owner)
 	ps, err := g.plugins.List(ctx)
@@ -103,8 +118,8 @@ func (g *gatedFixture) deliveredMessage(t *testing.T, owner, agentID int64, exte
 		t.Fatal(err)
 	}
 	if agentID != 0 {
-		if ok, err := g.plugins.RecordDelivery(ctx, m.ID, agentID, plugins.StatusDelivered); err != nil || !ok {
-			t.Fatalf("record delivery: %v %v", ok, err)
+		if ok, err := g.plugins.BeginDelivery(ctx, m.ID, agentID); err != nil || !ok {
+			t.Fatalf("begin delivery: %v %v", ok, err)
 		}
 	}
 	return m
@@ -266,21 +281,25 @@ func TestConcurrentReservationsCannotOvershootTheBudget(t *testing.T) {
 }
 
 // TestAGatedTaskCitesOnlyAMessageDeliveredToThisChief: message_id must name a
-// plugin message that was delivered to THIS chief. A queued one, one delivered to
-// another of the owner's agents, another owner's (row-level security hides it),
-// and a made-up id are each refused with nothing created and no budget spent;
-// the delivered one is accepted (the control).
+// plugin message delivered — or BEING delivered — to THIS chief. A queued one
+// (not being delivered to anyone), one being delivered or delivered to another
+// of the owner's agents, another owner's (row-level security hides it), and a
+// made-up id are each refused with nothing created and no budget spent. A message
+// being delivered to this chief — the state during the turn that tells the chief
+// about it (audit round 1) — and one already delivered to it are accepted.
 func TestAGatedTaskCitesOnlyAMessageDeliveredToThisChief(t *testing.T) {
 	g := newGatedFixture(t)
 	queued := g.deliveredMessage(t, g.owner, 0, "q-1")
 	toWorker := g.deliveredMessage(t, g.owner, g.worker.ID, "w-1")
+	deliveringToWorker := g.deliveringMessage(t, g.owner, g.worker.ID, "dw-1")
 	other := g.newMember(t)
 	otherChief := g.newAgent(t, other, "gtother-"+strconv.FormatInt(time.Now().UnixNano(), 36), "chief", "gated-other-token-0123456789")
-	foreign := g.deliveredMessage(t, other, otherChief.ID, "f-1")
+	foreign := g.deliveringMessage(t, other, otherChief.ID, "f-1")
+	delivering := g.deliveringMessage(t, g.owner, g.chief.ID, "d-1")
 	mine := g.deliveredMessage(t, g.owner, g.chief.ID, "m-1")
 
 	for name, id := range map[string]int64{"queued": queued.ID, "delivered to the worker": toWorker.ID,
-		"another owner's": foreign.ID, "made up": 999999999} {
+		"being delivered to the worker": deliveringToWorker.ID, "another owner's": foreign.ID, "made up": 999999999} {
 		text, isErr, _ := g.callGated(t, g.chiefTok, map[string]any{"title": "t", "body": "b", "gate_reason": "r", "message_id": id})
 		if !isErr || !strings.Contains(text, "is not a plugin message delivered to you") {
 			t.Errorf("%s message: isError=%v %s", name, isErr, text)
@@ -296,7 +315,39 @@ func TestAGatedTaskCitesOnlyAMessageDeliveredToThisChief(t *testing.T) {
 	if spent != 0 {
 		t.Errorf("refused citations spent %d unit(s) of the budget", spent)
 	}
-	if _, isErr, _ := g.callGated(t, g.chiefTok, map[string]any{"title": "t", "body": "b", "gate_reason": "r", "message_id": mine.ID}); isErr {
-		t.Error("control: citing a message delivered to this chief was refused")
+	for name, id := range map[string]int64{"being delivered to this chief": delivering.ID, "delivered to this chief": mine.ID} {
+		if text, isErr, _ := g.callGated(t, g.chiefTok, map[string]any{"title": "t", "body": "b", "gate_reason": "r", "message_id": id}); isErr {
+			t.Errorf("citing a message %s was refused: %s", name, text)
+		}
+	}
+}
+
+// TestANULByteIsRefusedBeforeTheBudgetIsSpent (audit round 1): Postgres refuses
+// a NUL byte in text, so a title, body or repo carrying one used to pass the
+// tool's checks, reserve a unit, and then fail in the insert — a unit spent and
+// no task. Each is refused BEFORE the reservation; the budget is unchanged.
+func TestANULByteIsRefusedBeforeTheBudgetIsSpent(t *testing.T) {
+	g := newGatedFixture(t)
+	for _, field := range []string{"title", "body", "repo"} {
+		args := map[string]any{"title": "t", "body": "b", "gate_reason": "r"}
+		args[field] = "has a \x00 byte"
+		text, isErr, rpcErr := g.callGated(t, g.chiefTok, args)
+		if rpcErr != nil || !isErr || !strings.Contains(text, field+" must be UTF-8 text without NUL") {
+			t.Errorf("a NUL in %s: rpc=%+v isError=%v %s; want refused naming the field", field, rpcErr, isErr, text)
+		}
+	}
+	var spent int
+	if err := g.pool.QueryRow(g.asOwner, `SELECT count(*) FROM audit_log WHERE action = $1`, plugins.ActionGatedTask).Scan(&spent); err != nil {
+		t.Fatal(err)
+	}
+	if spent != 0 || len(g.ownerTasks(t)) != 0 {
+		t.Fatalf("NUL-carrying calls spent %d unit(s) and created %d task(s); want none", spent, len(g.ownerTasks(t)))
+	}
+	// Control: the same call without the NUL files a task and spends one unit.
+	if text, isErr, _ := g.callGated(t, g.chiefTok, map[string]any{"title": "t", "body": "b", "gate_reason": "r", "repo": "acme/widgets"}); isErr {
+		t.Fatalf("control refused: %s", text)
+	}
+	if err := g.pool.QueryRow(g.asOwner, `SELECT count(*) FROM audit_log WHERE action = $1`, plugins.ActionGatedTask).Scan(&spent); err != nil || spent != 1 {
+		t.Fatalf("control spent %d unit(s) (%v); want 1", spent, err)
 	}
 }

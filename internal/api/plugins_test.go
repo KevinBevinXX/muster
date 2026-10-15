@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
@@ -282,5 +283,66 @@ func TestPluginsOffIsNotFound(t *testing.T) {
 	if rec := pServe(on, "GET", "/plugins", "", func(r *http.Request) { r.Header.Set("Cookie", sessionCookieFor(onS)) }); rec.Code != http.StatusOK ||
 		!strings.Contains(rec.Body.String(), `data-testid="plugins-page"`) {
 		t.Fatalf("CONTROL: plugins ON, GET /plugins with a session: %d; want the page", rec.Code)
+	}
+}
+
+// validatingPlugins is countingPlugins whose Submit applies the real per-field
+// caps (MessageIn.Validate) and keeps the decoded body.
+type validatingPlugins struct {
+	countingPlugins
+	body string
+}
+
+func (v *validatingPlugins) Submit(ctx context.Context, id int64, in plugins.MessageIn) (plugins.Message, bool, error) {
+	if err := in.Validate(); err != nil {
+		return plugins.Message{}, false, err
+	}
+	v.body = in.Body
+	return v.countingPlugins.Submit(ctx, id, in)
+}
+
+// TestAValidMessageIsReadWhateverItsJSONEscaping (audit round 1): the route's
+// READ cap must admit every message the per-field caps admit, however the plugin
+// spelled it. JSON escapes a control character as six bytes, and encoding/json
+// escapes `<` the same way, so a valid 16 KiB body arrives as up to 96 KiB; a
+// 4-byte rune may arrive as a 12-byte surrogate pair. The decoded caps still
+// refuse a body one byte over 16 KiB.
+func TestAValidMessageIsReadWhateverItsJSONEscaping(t *testing.T) {
+	store := &validatingPlugins{}
+	_, h, _ := newPluginsDoorServer(t, store)
+	marshal := func(in map[string]string) string {
+		b, err := json.Marshal(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	// Every field at its cap, every character at its widest spelling.
+	// Escapes are built at run time so no tool between here and the file can decode them.
+	esc := func(hex string) string { return string(rune(92)) + "u" + hex }
+	surrogates := strings.Repeat(esc("d83d")+esc("de00"), plugins.MaxSenderRunes) // U+1F600 as a surrogate pair, 200 runes
+	worst := `{"external_id":"` + strings.Repeat(esc("0041"), plugins.MaxExternalIDLen) +
+		`","sender":"` + surrogates + `","subject":"` + surrogates +
+		`","body":"` + strings.Repeat(esc("0001"), plugins.MaxBodyBytes) + `","received_at":"2000-01-02T03:04:05Z"}`
+	for _, c := range []struct {
+		name, body string
+		want       int
+		wantLen    int
+	}{
+		{"16 KiB of control characters", marshal(map[string]string{"external_id": "c-1", "body": strings.Repeat("\x01", plugins.MaxBodyBytes)}), http.StatusAccepted, plugins.MaxBodyBytes},
+		{"16 KiB of <", marshal(map[string]string{"external_id": "c-2", "body": strings.Repeat("<", plugins.MaxBodyBytes)}), http.StatusAccepted, plugins.MaxBodyBytes},
+		{"every field at its widest", worst, http.StatusAccepted, plugins.MaxBodyBytes},
+		{"one byte over the body cap", marshal(map[string]string{"external_id": "c-3", "body": strings.Repeat("a", plugins.MaxBodyBytes+1)}), http.StatusBadRequest, 0},
+		{"over the read cap", `{"external_id":"c-4","body":"` + strings.Repeat(" ", plugins.MaxRequestBytes) + `"}`, http.StatusBadRequest, 0},
+	} {
+		store.body = ""
+		rec := pServe(h, "POST", "/plugin/v1/messages", c.body, pBearer(pgnTok))
+		if rec.Code != c.want || len(store.body) != c.wantLen {
+			t.Errorf("%s (%d bytes on the wire): %d %s, stored %d bytes; want %d, %d bytes",
+				c.name, len(c.body), rec.Code, rec.Body.String(), len(store.body), c.want, c.wantLen)
+		}
+	}
+	if len(worst) > plugins.MaxRequestBytes {
+		t.Fatalf("the worst-case fixture is %d bytes, over the %d read cap it is meant to fit", len(worst), plugins.MaxRequestBytes)
 	}
 }

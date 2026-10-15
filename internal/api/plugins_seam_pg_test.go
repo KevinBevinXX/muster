@@ -339,3 +339,158 @@ func deliveryTurnTools(t *testing.T, srv *Server, ctx context.Context, chief age
 		t.Fatalf("the delivery turn's instructions are not the chief's own (%d bytes)", len(req.Instructions))
 	}
 }
+
+// laterRoundRuntime answers request 1 of a delivery turn with a function_call to
+// one of the chief's own tools, and request 2 with second (closing its listener
+// first when dial is set, so request 2 never connects). Every request is recorded.
+type laterRoundRuntime struct {
+	mu     sync.Mutex
+	bodies []string
+	srv    *httptest.Server
+	dial   bool
+	second func(http.ResponseWriter)
+}
+
+func (f *laterRoundRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	f.mu.Lock()
+	f.bodies = append(f.bodies, r.URL.Path+" "+string(body))
+	n := len(f.bodies)
+	f.mu.Unlock()
+	if n > 1 {
+		f.second(w)
+		return
+	}
+	if f.dial {
+		// The response below is the last thing this runtime ever serves: the next
+		// request dials a closed port, as after a pod restart.
+		w.Header().Set("Connection", "close")
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"output\":["+
+		"{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"agent_get_task\",\"arguments\":\"{}\"}]}}\n\n")
+	if f.dial {
+		w.(http.Flusher).Flush()
+		_ = f.srv.Listener.Close()
+	}
+}
+
+func (f *laterRoundRuntime) seen() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.bodies...)
+}
+
+// TestADeliveryWhoseToolTurnFailsAfterItsFirstRequestIsNeverResent is finding 1
+// of round 1, through the real plane: the real deliverer, the real chatTurn and
+// agentgateway.Gateway, the real Postgres store. The runtime answers request 1
+// with a function_call to the chief's own tool — which this process dispatches —
+// and then request 2 fails in a shape that, on a FIRST request, proves nothing was
+// sent: a dial error (the runtime went away), a typed 409 busy, a 404. The
+// message must be `unconfirmed` and never offered to the runtime again, and the
+// 404 must not trigger chatTurn's toolless resend of the whole message.
+func TestADeliveryWhoseToolTurnFailsAfterItsFirstRequestIsNeverResent(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		dial   bool
+		second func(http.ResponseWriter)
+	}{
+		{name: "dial error", dial: true},
+		{name: "typed 409 busy", second: func(w http.ResponseWriter) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			fmt.Fprint(w, `{"error":{"type":"busy","message":"a turn is running"}}`)
+		}},
+		{name: "404", second: func(w http.ResponseWriter) { http.NotFound(w, nil) }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			t.Cleanup(cancel)
+			pool, err := db.Connect(ctx, dbtest.DSN(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(pool.Close)
+			sys := authz.System(ctx)
+			suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
+			var uid int64
+			if err := pool.QueryRow(sys, `INSERT INTO users (role, display_name) VALUES ('member', $1) RETURNING id`, "plr"+suffix).Scan(&uid); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				for _, q := range []string{`DELETE FROM plugins WHERE owner_id = $1`, `DELETE FROM agents WHERE owner_id = $1`,
+					`DELETE FROM audit_log WHERE user_id = $1`, `DELETE FROM users WHERE id = $1`} {
+					_, _ = pool.Exec(authz.System(context.Background()), q, uid)
+				}
+			})
+			owner := authz.WithPrincipal(ctx, authz.Principal{UserID: uid, Role: authz.RoleMember, Via: authz.ViaPlugin})
+			as := agents.NewPG(pool)
+			chief, err := as.Create(owner, agents.Agent{Name: "plrchief-" + suffix, Namespace: "devpod-plrchief-" + suffix,
+				DisplayName: "chief", Status: agents.StatusRunning, HooksToken: "plr-hooks-" + suffix})
+			if err != nil {
+				t.Fatal(err)
+			}
+			rt := &laterRoundRuntime{dial: c.dial, second: c.second}
+			rt.srv = httptest.NewServer(rt)
+			t.Cleanup(rt.srv.Close)
+			host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(rt.srv.URL, "http://"))
+			port, _ := strconv.Atoi(portStr)
+			gw, err := agentgateway.New(agentgateway.Config{Driver: fixedEndpoint{provision.Endpoint{Host: host, Port: port}},
+				Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Client: rt.srv.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ps := plugins.NewPG(pool)
+			srv := New(nil, AuthConfig{HookToken: tokTestHook}, log.New(io.Discard, "", 0))
+			srv.UseExtensions(Extensions{Agents: as, Users: users.NewPG(pool), Plugins: ps, PluginGateway: gw, Gateway: gw})
+			_, p, err := ps.Create(owner, "example-inbox", "Example inbox", "example-inbox")
+			if err != nil {
+				t.Fatal(err)
+			}
+			m, _, err := ps.Submit(owner, p.ID, plugins.MessageIn{ExternalID: "lr-" + suffix, Body: "are you free?"})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			r := srv.pluginDeliverer.Deliver(owner, p.ID, m.ID, chief)
+			if r.Outcome != plugins.OutcomeUnconfirmed {
+				t.Fatalf("request 2 failed after request 1's tool call ran: %+v; want unconfirmed — the turn happened", r)
+			}
+			// Exactly the turn's own requests: 2, or 1 when request 2 never connected.
+			// A third would be chatTurn's toolless resend of the whole message.
+			sent := rt.seen()
+			if c.dial && len(sent) != 1 {
+				t.Fatalf("the runtime saw %d request(s); want 1 (request 2 never connected)", len(sent))
+			}
+			if !c.dial && (len(sent) != 2 || !strings.Contains(sent[1], `"function_call_output"`) || !strings.Contains(sent[1], `"call-1"`)) {
+				t.Fatalf("the runtime saw %d request(s); want exactly 2, the second carrying the dispatched call's output", len(sent))
+			}
+			// The tool call ran in this process: its result is stored in the session.
+			pp, _ := ps.Plugin(owner, p.ID)
+			if pp.ChiefSessionID == nil {
+				t.Fatal("no chief session recorded")
+			}
+			parts, _ := as.ListChatMessages(owner, *pp.ChiefSessionID)
+			ran := 0
+			for _, part := range parts {
+				if part.Kind == "tool_result" && part.ToolName == "agent_get_task" {
+					ran++
+				}
+			}
+			if ran != 1 {
+				t.Fatalf("the session stores %d agent_get_task result(s); want 1 — request 1's call was dispatched", ran)
+			}
+			got, err := ps.Message(owner, m.ID)
+			if err != nil || got.Status != plugins.StatusUnconfirmed {
+				t.Fatalf("the message: %+v (%v); want unconfirmed", got, err)
+			}
+			before := len(rt.seen())
+			if r := srv.pluginDeliverer.Deliver(owner, p.ID, m.ID, chief); r.Outcome != plugins.OutcomeSettled {
+				t.Fatalf("offered again: %+v; want settled", r)
+			}
+			if after := len(rt.seen()); after != before {
+				t.Fatalf("the runtime saw %d more request(s) after the message settled; want none", after-before)
+			}
+		})
+	}
+}

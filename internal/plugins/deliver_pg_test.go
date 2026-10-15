@@ -24,6 +24,8 @@ type fakeGateway struct {
 	sessions []string
 	// events are streamed to the turn's emit before it answers (a tool-running turn).
 	events []agents.StreamEvent
+	// during, when set, runs inside the turn (what a tool the chief calls sees).
+	during func()
 }
 
 func (f *fakeGateway) Resolve(_ context.Context, a agents.Agent) (agentgateway.Target, error) {
@@ -33,6 +35,9 @@ func (f *fakeGateway) Resolve(_ context.Context, a agents.Agent) (agentgateway.T
 func (f *fakeGateway) Turn(_ context.Context, _ agents.Agent, key, message string, emit agents.StreamEmit) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.during != nil {
+		f.during()
+	}
 	for _, ev := range f.events {
 		emit(ev)
 	}
@@ -119,8 +124,8 @@ func TestAProvablyUnsentAttemptStaysQueuedAndAnUnprovenOneIsNeverResent(t *testi
 		t.Fatalf("a dial error: %+v; want pending/never_connected", r)
 	}
 	got, _ := s.Message(plugin(2), m.ID)
-	if got.Status != StatusQueued || got.Attempts != 2 {
-		t.Fatalf("after two provably-unsent attempts: %+v; want queued, attempts 2", got)
+	if got.Status != StatusQueued || got.Attempts != 2 || got.AgentID != nil {
+		t.Fatalf("after two provably-unsent attempts: %+v; want queued, attempts 2, no chief named", got)
 	}
 	gw.err = context.DeadlineExceeded // may have been pasted
 	if r := d.Deliver(plugin(2), p.ID, m.ID, chief); r.Outcome != OutcomeUnconfirmed {
@@ -198,5 +203,50 @@ func TestATurnThatCallsToolsIsStoredAsTheChatTurnStoresIt(t *testing.T) {
 		"assistant/tool_call/agent_get_task/{}", `assistant/tool_result/agent_get_task/{"ok":true}`, "assistant/text//done"}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("stored turn:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// TestTheChiefCanCiteTheMessageOnTheTurnThatDeliversIt pins finding 2 of round 1
+// at the deliverer: DURING the turn — when the chief's tools run — the message is
+// already `delivering` to THAT chief, so a tool that accepts only a message
+// delivered to the calling chief (task_create_gated, reply_draft) accepts it on
+// the turn that tells the chief about it. Before, it was `queued` with no agent
+// until after the turn, and the core flow could not cite it at all.
+func TestTheChiefCanCiteTheMessageOnTheTurnThatDeliversIt(t *testing.T) {
+	s, _, gw, d, p, chief := deliverFixture(t)
+	m, _, _ := s.Submit(plugin(2), p.ID, msg("cite-1"))
+	var during Message
+	gw.during = func() { during, _ = s.Message(plugin(2), m.ID) }
+	if r := d.Deliver(plugin(2), p.ID, m.ID, chief); r.Outcome != OutcomeDelivered {
+		t.Fatalf("%+v; want delivered", r)
+	}
+	if during.Status != StatusDelivering || during.AgentID == nil || *during.AgentID != chief.ID {
+		t.Fatalf("the message as the chief's tools see it mid-turn: status %q agent %v; want delivering to %d",
+			during.Status, during.AgentID, chief.ID)
+	}
+}
+
+// TestADeliveryLeftMidTurnByADeadProcessIsSettledUnconfirmedAndNeverResent: a
+// process that died mid-turn leaves its message `delivering` (and its session
+// claim lapses). The next delivery to the same chief — which now holds the claim,
+// so no live delivery to it can be in flight — settles that row unconfirmed;
+// it is never offered to the runtime again.
+func TestADeliveryLeftMidTurnByADeadProcessIsSettledUnconfirmedAndNeverResent(t *testing.T) {
+	s, _, gw, d, p, chief := deliverFixture(t)
+	dead, _, _ := s.Submit(plugin(2), p.ID, msg("dead-1"))
+	if ok, err := s.BeginDelivery(plugin(2), dead.ID, chief.ID); err != nil || !ok {
+		t.Fatalf("the dead process's begin: %v %v", ok, err)
+	}
+	// Retrying the stuck message itself sends nothing.
+	if r := d.Deliver(plugin(2), p.ID, dead.ID, chief); r.Outcome != OutcomeSettled || len(gw.sent) != 0 {
+		t.Fatalf("redelivering a message left delivering: %+v, %d sends; want settled, none", r, len(gw.sent))
+	}
+	if got, _ := s.Message(plugin(2), dead.ID); got.Status != StatusUnconfirmed {
+		t.Fatalf("the dead process's message after the next delivery: %+v; want unconfirmed", got)
+	}
+	// A new message to the chief is delivered normally.
+	m, _, _ := s.Submit(plugin(2), p.ID, msg("next-1"))
+	if r := d.Deliver(plugin(2), p.ID, m.ID, chief); r.Outcome != OutcomeDelivered || len(gw.sent) != 1 {
+		t.Fatalf("the next message: %+v, %d sends; want delivered once", r, len(gw.sent))
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/notes"
@@ -100,6 +101,17 @@ func gatedTaskTags(callerTags []string, reason string) ([]string, error) {
 	return tags, nil
 }
 
+// unstorableField names a field Postgres would refuse as text (a NUL byte or
+// invalid UTF-8), checking them in a fixed order, or returns "".
+func unstorableField(fields map[string]string) string {
+	for _, name := range []string{"title", "body", "repo"} {
+		if v, ok := fields[name]; ok && (!utf8.ValidString(v) || strings.ContainsRune(v, 0)) {
+			return name
+		}
+	}
+	return ""
+}
+
 func (s *Server) toolTaskCreateGated(ctx context.Context, a agents.Agent, arguments string) string {
 	if s.ext.Plugins == nil || s.ext.Notes == nil {
 		return toolErr("%s is not available: plugins are not enabled on this deployment", gatedTaskToolName)
@@ -122,6 +134,12 @@ func (s *Server) toolTaskCreateGated(ctx context.Context, a agents.Agent, argume
 	tags, err := gatedTaskTags(in.Tags, in.GateReason)
 	if err != nil {
 		return toolErr("%s", err.Error())
+	}
+	// 🔴 WHAT THE DATABASE WOULD REFUSE, REFUSED HERE: Postgres rejects a NUL byte
+	// (and invalid UTF-8) in text, and a refusal there comes AFTER the reservation,
+	// spending a unit for a task that never exists.
+	if f := unstorableField(map[string]string{"title": in.Title, "body": in.Body, "repo": in.Repo}); f != "" {
+		return toolErr("%s must be UTF-8 text without NUL", f)
 	}
 	body := in.Body + "\n\n---\nFiled by agent " + a.Name + " with " + gatedTaskToolName + "."
 	if in.MessageID != nil {

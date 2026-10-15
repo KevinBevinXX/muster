@@ -43,6 +43,10 @@ func (u unresolved) Unwrap() error { return u.err }
 //   - a dial error is a connection that was never opened, so no byte of the request left;
 //   - a [Gateway.Resolve] failure, from a turn that resolves its agent itself, contacted nothing.
 //
+// None of those is read on a tool turn's SECOND or later request
+// ([agents.PastFirstRequest]): request 1 was answered and its tools dispatched, so
+// the turn happened whatever request 2 came back with.
+//
 // ⚠ ONE CASE THIS CANNOT PROVE, AND IT ERRS TOWARDS "MAY HAVE BEEN SENT": a send cancelled
 // while its connection was still being opened surfaces as a bare context error, with no dial
 // error inside it. A caller records that `unconfirmed` and does not send it again; the
@@ -50,6 +54,12 @@ func (u unresolved) Unwrap() error { return u.err }
 // cut off mid-flight.
 func Unsent(err error) string {
 	if err == nil {
+		return ""
+	}
+	// 🔴 FIRST, BEFORE ANY CAUSE IS READ: a tool turn's request 2+ failed after
+	// request 1 was answered and its tools ran. Whatever the cause says about THAT
+	// request, the turn was not unsent (agents.AfterFirstRequestError).
+	if agents.PastFirstRequest(err) {
 		return ""
 	}
 	var ur unresolved

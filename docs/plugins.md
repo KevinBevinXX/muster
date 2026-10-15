@@ -185,15 +185,28 @@ The turn is an ordinary chat turn: your chief has the same instructions and the
 same tools on it as when you chat with it, so it can act on the message in the
 turn that tells it about the message.
 
+While the turn runs the message is **delivering** to that chief. This state is
+written before the turn starts, so on that same turn the chief's tools can cite
+the message as delivered to it.
+
 A delivery ends in one of three states:
 
 - **delivered**: the chief's turn completed.
 - **unconfirmed**: the send failed after the text may have reached the chief. It
-  is never sent again.
+  is never sent again. A tool turn that fails on any request after its first
+  ends here too, because the runtime had already answered and the chief's tools
+  had already run.
 - **pending**: nothing was sent (you have no chief, it is not running, or it was
-  busy). The message stays queued until a later claim retries it.
+  busy). The message goes back to queued and no longer names a chief, and a
+  later claim retries it.
 
-Each settled delivery writes a `plugin.delivered` row to the audit log.
+If muster stops in the middle of a turn, the message stays **delivering**. The
+next delivery to the same chief settles it as unconfirmed, and it is never sent
+again. A message delivering to a chief that never gets another delivery stays
+delivering, and is not sent again either.
+
+Each settled delivery writes a `plugin.delivered` row to the audit log. A
+delivering message settled after a stop is recorded with `"recovered": true`.
 
 The data-scope sentence is **advisory**. The chief's own memory credential can
 write anywhere; only the preface asks it to keep what it records from plugin
@@ -225,13 +238,15 @@ descriptions and the preface on each message.
 - You get the usual "New task" push. The tool creates through the same path as
   `POST /api/tasks`.
 - `message_id` is optional. If it is given, it must be a plugin message that was
-  delivered to this chief, and the server appends a line to the body citing it.
+  delivered, or is being delivered, to this chief. That includes the message on
+  the turn that delivers it. The server appends a line to the body citing it.
   The link is in the body rather than a tag: a per-message tag would add a
   filter chip for every task, and it would use up one of the task's tags.
 - Each chief can file **20 gated tasks in any 24 hours**. Each one writes a
   `plugin.task_gated` audit row, and the budget is counted from those rows. A
   unit is reserved before the task is created, so if the create fails after a
-  valid request, the unit is still spent.
+  valid request, the unit is still spent. Text the database would refuse (a NUL
+  byte in the title, body or repo) is refused before the unit is reserved.
 
 ## Replying: drafts you approve
 
