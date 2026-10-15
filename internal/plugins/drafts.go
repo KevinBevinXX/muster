@@ -69,6 +69,14 @@ const (
 	// MaxExternalRefRunes and MaxDetailBytes cap what a result may carry.
 	MaxExternalRefRunes = 200
 	MaxDetailBytes      = 4096
+	// MaxResultRequestBytes bounds what the result route reads at all; the caps
+	// above are checked after decoding. 🔴 IT IS THE WORST-CASE ESCAPED SIZE OF A
+	// VALID RESULT (MaxRequestBytes' reasoning): detail is capped in BYTES and any
+	// byte may arrive as a 6-byte `\u00XX` escape (encoding/json spells `<` so),
+	// external_ref in RUNES and a 4-byte rune may arrive as a 12-byte surrogate
+	// pair; 1 KiB covers the keys, `ok` and indentation. A smaller cap refused a
+	// valid detail of 4,096 `<` (audit round 1).
+	MaxResultRequestBytes = 6*MaxDetailBytes + 12*MaxExternalRefRunes + 1024
 )
 
 // Draft is one row of plugin_reply_drafts.

@@ -160,7 +160,7 @@ func (s *Server) handlePluginDraftResult(w http.ResponseWriter, r *http.Request)
 		ExternalRef string `json:"external_ref"`
 		Detail      string `json:"detail"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 3*plugins.MaxDetailBytes)).Decode(&in); err != nil || in.OK == nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, plugins.MaxResultRequestBytes)).Decode(&in); err != nil || in.OK == nil {
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": `the body is {"ok": true|false, "external_ref", "detail"}`})
 		return
 	}

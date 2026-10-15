@@ -517,6 +517,9 @@ func TestTheChiefDraftsAReplyOverMCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if ok, err := g.plugins.BeginDelivery(g.asOwner, nr.ID, g.chief.ID); err != nil || !ok {
+		t.Fatal(err)
+	}
 	if ok, err := g.plugins.RecordDelivery(g.asOwner, nr.ID, g.chief.ID, plugins.StatusDelivered); err != nil || !ok {
 		t.Fatal(err)
 	}
@@ -570,8 +573,10 @@ func TestAClaimAnswersWhileADeliveryIsStillRunning(t *testing.T) {
 	t.Cleanup(release)
 	claimWithin("a claim whose retry is delivering")
 	arrivedWithin(arrived, "the claim's retry")
-	if got, _ := d.ps.Message(d.asUser(d.a), m1); got.Status != plugins.StatusQueued {
-		t.Fatalf("the message is %s while its turn is still held; want queued", got.Status)
+	// While its turn is held the message is being delivered to the chief (audit
+	// round 1: the chief may cite it on that turn), and not offered again.
+	if got, _ := d.ps.Message(d.asUser(d.a), m1); got.Status != plugins.StatusDelivering {
+		t.Fatalf("the message is %s while its turn is still held; want delivering", got.Status)
 	}
 	claimWithin("a second claim while the retry is still delivering")
 	release()

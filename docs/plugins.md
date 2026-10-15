@@ -259,7 +259,8 @@ chief, on the agent gateway and over `/mcp`, and only while plugins are on.
 
 - **Nothing is sent.** The tool files a draft. You read it on `/plugins` and
   approve or reject it.
-- `message_id` must be a plugin message delivered to this chief and not marked
+- `message_id` must be a plugin message delivered, or being delivered, to this
+  chief (so the chief can draft on the turn that delivers it), and not marked
   `no_reply`.
 - The body is at most 16 KiB. It is folded to NFKC and screened like an agent's
   browser-flow text: a character the card could not show, an IP address, a host

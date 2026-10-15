@@ -45,6 +45,9 @@ func (w draftWorld) delivered(t *testing.T, ext string, noReply bool) Message {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if ok, err := w.s.BeginDelivery(plugin(2), m.ID, w.chief.ID); err != nil || !ok {
+		t.Fatalf("begin delivery %s: %v %v", ext, ok, err)
+	}
 	if ok, err := w.s.RecordDelivery(plugin(2), m.ID, w.chief.ID, StatusDelivered); err != nil || !ok {
 		t.Fatalf("deliver %s: %v %v", ext, ok, err)
 	}

@@ -25,11 +25,13 @@ import { authenticator } from '../lib/webauthn';
 //   and never claimed → a no_reply message's draft is refused.
 //
 // ⚠ WHAT IS PLAYED, AND WHY. The e2e harness runs no agent runtime, so the
-// delivery TURN is not run here: `go run ./e2e/pluginfix deliver` records what a
-// completed delivery records. The turn itself — fenced, through the real agent
-// gateway — is the Go seam tests' (internal/api/plugins_seam_pg_test.go,
-// plugin_drafts_pg_test.go). The chief is a fixture row for the same reason; its
-// /mcp calls, the approval, the claim and the result are all the real routes.
+// delivery TURN is not run here: `go run ./e2e/pluginfix delivering` records
+// what the delivery turn holds while the chief acts on it (the message is being
+// delivered to the chief), and the chief drafts in that state. The turn itself —
+// fenced, through the real agent gateway — is the Go seam tests'
+// (internal/api/plugins_seam_pg_test.go, reply_draft_seam_pg_test.go). The chief
+// is a fixture row for the same reason; its /mcp calls, the approval, the claim
+// and the result are all the real routes.
 //
 // 🔴 ONLY THIS SPEC'S SERVER HAS PLUGINS ON, and afterAll removes the chief and
 // the plugins it made, so the specs after it on the shared database see neither.
@@ -183,10 +185,11 @@ test('a plugin posts, the chief drafts, the owner approves with a passkey on a s
   await expect(page.locator('[data-plugin-queued]')).toHaveAttribute('data-plugin-queued', '2');
   await expect(page.locator('[data-plugin-seen]')).toContainText('last seen');
 
-  // 4. The chief (a fixture row, see the header) is handed both messages.
+  // 4. The chief (a fixture row, see the header) is on the turn that hands it
+  //    both messages: they are being delivered to it, the state it drafts in.
   const chiefID = fix('chief', '1', chiefName, chiefToken);
-  fix('deliver', String(firstBody.id), chiefID);
-  fix('deliver', String(nrID), chiefID);
+  fix('delivering', String(firstBody.id), chiefID);
+  fix('delivering', String(nrID), chiefID);
 
   // 5. The chief drafts over /mcp. A no_reply message is refused.
   const refused = await mcpCall('reply_draft', { message_id: nrID, body: 'Thanks!' });

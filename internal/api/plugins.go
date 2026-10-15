@@ -55,8 +55,9 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	mux.HandleFunc("POST "+pluginsPath, s.requirePluginsOn(s.requireOperatorWrite(s.handlePluginCreate)))
 	mux.HandleFunc("POST "+pluginsPath+"/{id}/revoke", s.requirePluginsOn(s.requireOperatorWrite(s.handlePluginRevoke)))
 
-	// Reply drafts (plugin_drafts.go): the owner decides; Approve and Approve
-	// again also need a fresh sign-in, checked in the handler.
+	// Reply drafts (plugin_drafts.go): the owner decides; Approve also needs a
+	// fresh sign-in, checked in the handler. Reject (and withdrawing an approval,
+	// which is a reject) does not.
 	mux.HandleFunc("POST "+pluginsPath+"/drafts/{id}/approve", s.requirePluginsOn(s.requireOperatorWrite(s.handleDraftApprove)))
 	mux.HandleFunc("POST "+pluginsPath+"/drafts/{id}/reject", s.requirePluginsOn(s.requireOperatorWrite(s.handleDraftReject)))
 

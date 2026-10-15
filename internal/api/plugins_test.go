@@ -346,3 +346,59 @@ func TestAValidMessageIsReadWhateverItsJSONEscaping(t *testing.T) {
 		t.Fatalf("the worst-case fixture is %d bytes, over the %d read cap it is meant to fit", len(worst), plugins.MaxRequestBytes)
 	}
 }
+
+// resultPlugins is countingPlugins whose FinishDraft applies the real result
+// caps (DraftResult.Validate) and keeps the decoded detail.
+type resultPlugins struct {
+	countingPlugins
+	detail string
+}
+
+func (v *resultPlugins) FinishDraft(_ context.Context, _, id int64, r plugins.DraftResult) (plugins.Draft, error) {
+	if err := r.Validate(); err != nil {
+		return plugins.Draft{}, err
+	}
+	v.detail = r.Detail
+	return plugins.Draft{ID: id, Status: plugins.DraftSent}, nil
+}
+
+// TestAValidDraftResultIsReadWhateverItsJSONEscaping (audit round 1): the result
+// route's READ cap must admit every result the decoded caps admit. A detail of
+// 4,096 '<' is valid, and encoding/json sends it as 24,576 bytes; the old cap
+// (3x the detail cap) refused it. external_ref is capped in runes, and a 4-byte
+// rune may arrive as a 12-byte surrogate pair. The decoded caps still refuse a
+// detail one byte over.
+func TestAValidDraftResultIsReadWhateverItsJSONEscaping(t *testing.T) {
+	store := &resultPlugins{}
+	_, h, _ := newPluginsDoorServer(t, store)
+	marshal := func(v any) string {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	// Built at run time so no tool between here and the file can decode them.
+	esc := func(hex string) string { return string(rune(92)) + "u" + hex }
+	worst := `{"ok":true,"external_ref":"` + strings.Repeat(esc("d83d")+esc("de00"), plugins.MaxExternalRefRunes) +
+		`","detail":"` + strings.Repeat(esc("0001"), plugins.MaxDetailBytes) + `"}`
+	for _, c := range []struct {
+		name, body string
+		want, n    int
+	}{
+		{"4,096 '<' via encoding/json", marshal(map[string]any{"ok": true, "detail": strings.Repeat("<", plugins.MaxDetailBytes)}), http.StatusOK, plugins.MaxDetailBytes},
+		{"every field at its widest", worst, http.StatusOK, plugins.MaxDetailBytes},
+		{"one byte over the detail cap", marshal(map[string]any{"ok": true, "detail": strings.Repeat("a", plugins.MaxDetailBytes+1)}), http.StatusBadRequest, 0},
+		{"over the read cap", `{"ok":true,"detail":"` + strings.Repeat(" ", plugins.MaxResultRequestBytes) + `"}`, http.StatusBadRequest, 0},
+	} {
+		store.detail = ""
+		rec := pServe(h, "POST", "/plugin/v1/drafts/5/result", c.body, pBearer(pgnTok))
+		if rec.Code != c.want || len(store.detail) != c.n {
+			t.Errorf("%s (%d bytes on the wire): %d %s, kept %d bytes; want %d, %d bytes",
+				c.name, len(c.body), rec.Code, rec.Body.String(), len(store.detail), c.want, c.n)
+		}
+	}
+	if len(worst) > plugins.MaxResultRequestBytes {
+		t.Fatalf("the worst-case fixture is %d bytes, over the %d read cap it is meant to fit", len(worst), plugins.MaxResultRequestBytes)
+	}
+}

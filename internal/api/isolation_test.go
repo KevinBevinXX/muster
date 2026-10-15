@@ -704,6 +704,8 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	aMsg, _, err := ps.Submit(ua, aPlugin1.ID, plugins.MessageIn{ExternalID: "iso-a-msg", Sender: "iso",
 		Body: w.canary + " asks"})
 	must(err, "a plugin message")
+	_, err = ps.BeginDelivery(ua, aMsg.ID, w.a.agent.ID)
+	must(err, "a plugin message being delivered")
 	_, err = ps.RecordDelivery(ua, aMsg.ID, w.a.agent.ID, plugins.StatusDelivered)
 	must(err, "a plugin message delivered")
 	w.aDraft, _, err = ps.FileDraft(ua, w.a.agent.ID, w.a.uid, w.a.agent.Name, aMsg.ID, w.canary+" reply")

@@ -3,7 +3,7 @@
 // route, because the e2e harness runs no agent runtime.
 //
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix chief <owner-id> <name> <token>   → prints the agent id
-//		DATABASE_URL=…_e2e go run ./e2e/pluginfix deliver <message-id> <agent-id>
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix delivering <message-id> <agent-id>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix lapse <draft-id>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix cleanup <owner-id> <name>
 //
@@ -11,11 +11,15 @@
 //	    chief, whose own token the spec then calls /mcp with. It REFUSES when the
 //	    owner already has an agent labelled chief: the lowest id is the chief, so
 //	    a leftover one would silently take the role and the spec would test it.
-//	  - deliver: settles a queued plugin message as delivered to that agent, which
-//	    is what a completed delivery turn records (internal/plugins.RecordDelivery).
-//	    The delivery itself — the fenced turn through the agent gateway — is the Go
-//	    seam tests' (plugins_seam_pg_test.go, plugin_drafts_pg_test.go), which run a
-//	    fake runtime the browser suite has no place for.
+//	  - delivering: marks a queued plugin message as being delivered to that agent,
+//	    which is what the delivery turn holds WHILE the chief acts on it
+//	    (internal/plugins.BeginDelivery). 🔴 NOT `delivered`: the chief drafts its
+//	    reply on the turn that delivers the message, and a fixture that pre-settled
+//	    it as delivered would let the spec pass while that turn's state refused
+//	    every draft (audit round 1). The turn itself — fenced, through the agent
+//	    gateway — is the Go seam tests' (plugins_seam_pg_test.go,
+//	    reply_draft_seam_pg_test.go), which run a fake runtime the browser suite
+//	    has no place for.
 //	  - lapse: moves a claimed draft's claim and lease ten minutes back, so its
 //	    two-minute lease has lapsed without waiting for it.
 //	  - cleanup: removes the chief and the owner's plugins (their messages and
@@ -52,7 +56,7 @@ func run(args []string) error {
 		return fmt.Errorf("refusing: DATABASE_URL must name a database ending in _e2e")
 	}
 	if len(args) == 0 {
-		return fmt.Errorf("usage: pluginfix chief|deliver|lapse|cleanup …")
+		return fmt.Errorf("usage: pluginfix chief|delivering|lapse|cleanup …")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -91,7 +95,7 @@ func run(args []string) error {
 			return err
 		}
 		fmt.Println(id)
-	case "deliver":
+	case "delivering":
 		msg, err := num(1)
 		if err != nil {
 			return err
@@ -100,7 +104,7 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		tag, err := conn.Exec(ctx, `UPDATE plugin_messages SET status = 'delivered', delivered_at = now(), agent_id = $2,
+		tag, err := conn.Exec(ctx, `UPDATE plugin_messages SET status = 'delivering', agent_id = $2,
 			attempts = attempts + 1, last_attempt_at = now() WHERE id = $1 AND status = 'queued'`, msg, agent)
 		if err != nil {
 			return err
