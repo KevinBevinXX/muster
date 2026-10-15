@@ -333,10 +333,15 @@ func TestAValidMessageIsReadWhateverItsJSONEscaping(t *testing.T) {
 		{"16 KiB of <", marshal(map[string]string{"external_id": "c-2", "body": strings.Repeat("<", plugins.MaxBodyBytes)}), http.StatusAccepted, plugins.MaxBodyBytes},
 		{"every field at its widest", worst, http.StatusAccepted, plugins.MaxBodyBytes},
 		{"one byte over the body cap", marshal(map[string]string{"external_id": "c-3", "body": strings.Repeat("a", plugins.MaxBodyBytes+1)}), http.StatusBadRequest, 0},
-		{"over the read cap", `{"external_id":"c-4","body":"` + strings.Repeat(" ", plugins.MaxRequestBytes) + `"}`, http.StatusBadRequest, 0},
+		// A VALID message (accepted if read in full) padded with insignificant
+		// whitespace between tokens past the read cap: only the cap can refuse it.
+		{"over the read cap", `{"external_id":"c-4",` + strings.Repeat(" ", plugins.MaxRequestBytes) + `"body":"x"}`, http.StatusBadRequest, 0},
 	} {
 		store.body = ""
 		rec := pServe(h, "POST", "/plugin/v1/messages", c.body, pBearer(pgnTok))
+		if c.name == "over the read cap" && !strings.Contains(rec.Body.String(), "the body is {") {
+			t.Errorf("%s: %d %s; want the read refusal, not a per-field one", c.name, rec.Code, rec.Body.String())
+		}
 		if rec.Code != c.want || len(store.body) != c.wantLen {
 			t.Errorf("%s (%d bytes on the wire): %d %s, stored %d bytes; want %d, %d bytes",
 				c.name, len(c.body), rec.Code, rec.Body.String(), len(store.body), c.want, c.wantLen)
