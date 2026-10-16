@@ -20,6 +20,8 @@ const host = 'e2e-chat-' + Date.now().toString(36);
 const mirrorBin = path.join(binDir, 'muster-mirror-e2e');
 let server: Running | undefined;
 let mirrorProc: ChildProcess | undefined;
+// mirrorLog is the CURRENT muster-mirror process's output only (startMirror
+// resets it), so a line in it is about this test's host connection.
 let mirrorLog = '';
 let token = '';
 
@@ -33,6 +35,7 @@ function startMirror(transcript: string): ChildProcess {
     MUSTER_MIRROR_E2E_SESSIONS: 'main',
     MUSTER_MIRROR_E2E_CLAUDE: 'main=' + transcript,
   };
+  mirrorLog = '';
   const p = spawn(mirrorBin, [], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   p.stdout?.on('data', (d) => (mirrorLog += d));
   p.stderr?.on('data', (d) => (mirrorLog += d));
@@ -105,16 +108,36 @@ function newTranscript(body: string): string {
 
 const viewPath = `/mirror/view?host=${encodeURIComponent(host)}&session=main`;
 
+// 🔴 openView WAITS FOR THIS TEST'S OWN HOST CONNECTION, NOT FOR A CLAUDE CARD.
+// Every test kills its muster-mirror (afterEach), and muster then keeps that
+// host's last list as OFFLINE — Claude chip included. So from the second test
+// on, "the agents list shows data-mirror-claude" was already true before the
+// new muster-mirror had connected, and when its connect was slower than the
+// page load (a loaded host) /mirror/view found the session offline and
+// REDIRECTED to the terminal page, where #mv-status never exists: the 15 s
+// "Live" wait timed out, 1-3 tests a run.
+//
+// The signal is the new process's own "connected to" line: muster registers
+// the connection BEFORE it sends the welcome that line follows, so once it is
+// logged the view resolves to this connection. The card must also be online.
 async function openView(page: Page, transcript: string) {
   mirrorProc = startMirror(transcript);
   await login(page);
   await expect
-    .poll(async () => (await (await page.request.get(origin + '/ui/agents')).text()).includes('data-mirror-claude'), {
-      message: `main reported as a Claude pane (muster-mirror log:\n${mirrorLog})`,
-      timeout: 20_000,
-    })
-    .toBe(true);
+    .poll(
+      async () => {
+        if (!mirrorLog.includes('muster-mirror: connected to ')) return 'muster-mirror not connected yet';
+        const html = await (await page.request.get(origin + '/ui/agents')).text();
+        if (!html.includes('data-mirror-claude')) return 'main not reported as a Claude pane';
+        if (html.includes('data-mirror-offline')) return 'the host is listed offline';
+        return 'ready';
+      },
+      { message: `this test's muster-mirror connected, main online as a Claude pane (muster-mirror log:\n${mirrorLog})`, timeout: 20_000 },
+    )
+    .toBe('ready');
   await page.goto(origin + viewPath);
+  // The rendered view, not a redirect to the terminal (an offline session).
+  expect(new URL(page.url()).pathname, 'the rendered view opened, not the terminal').toBe('/mirror/view');
   await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 15_000 });
 }
 
