@@ -1,12 +1,15 @@
-import { execFileSync, spawn, ChildProcess } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { Browser, BrowserContext, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { baseURL, binDir, clsConnectPort, clsFullPort, clsGotrueBrowserPort, clsGotrueMainPort, dsn, gotrueSecret, password, repoRoot, versionA, versionTerm } from '../lib/env';
+import {
+  baseURL, clsConnectPort, clsFullPort, clsGotrueBrowserPort, clsGotrueMainPort, clsSignedBrowserPort, clsSignedConnectPort,
+  clsSignedGotruePort, clsSignedMainPort, dsn, e2eRoot, gotrueSecret, password, repoRoot, versionA, versionTerm,
+} from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { clsInit, readCls, resetCls, settle, ClsResult } from '../lib/cls';
+import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
 
 // LAYOUT SHIFT UNDER 0.01 ON EVERY PAGE, at a phone (390×844, touch) and a
 // desktop (1280×800): each page is loaded, its async htmx loads are let land
@@ -20,11 +23,7 @@ import { clsInit, readCls, resetCls, settle, ClsResult } from '../lib/cls';
 // changes the golden, and this spec then fails until the route is classified:
 // a new page cannot ship unmeasured by being forgotten.
 //
-// ⚠ FOUR PAGES ARE NAMED BUT NOT MEASURED (NEEDS_GOTRUE_SIGNIN): their real
-// rendering needs a signed-in user against a real GoTrue. They are listed rather
-// than dropped, so the gap is visible here and not only in a PR description.
-
-type Where = 'shared' | 'login' | 'full' | 'public';
+type Where = 'shared' | 'login' | 'full' | 'public' | 'signed-in';
 // `ready` is what the page is FOR, asserted visible after the measurement: a
 // page that failed to draw its content shifts nothing, and must not pass as
 // still. (The share sheet once did exactly that: opened empty, measured 0.)
@@ -34,7 +33,7 @@ const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   'GET /agents': { where: 'shared', url: '/agents', ready: '#agents-recent a[data-recent-entry]' },
   // The shared server builds neither store, so its /repos and /connectors fall
   // back to the board; the full server below builds both and draws the real tabs.
-  'GET /repos': { where: 'full', url: '/repos', ready: '#panel-repos p' },
+  'GET /repos': { where: 'full', url: '/repos', ready: '#panel-repos :is(p, li, button)' },
   'GET /connectors': { where: 'full', url: '/connectors', ready: '#panel-connectors button' },
   'GET /flows': { where: 'shared', url: '/flows' },
   'GET /share': { where: 'shared', url: '/share?title=Layout%20probe&text=hello', ready: '#task-modal textarea[name="body"]' },
@@ -50,12 +49,11 @@ const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   'GET /invite': { where: 'public', url: '/invite' },
   'GET /auth/claim': { where: 'public', url: '/auth/claim' },
   'GET /auth/reset': { where: 'public', url: '/auth/reset' },
-};
-const NEEDS_GOTRUE_SIGNIN: Record<string, string> = {
-  'GET /account/passkeys': 'gotrue mode with passkeys on, signed in',
-  'GET /admin/invites': 'a signed-in GoTrue admin (password mode answers a 503 notice page)',
-  'GET /admin/users': 'a signed-in GoTrue admin (password mode answers a 503 notice page)',
-  'GET /plugins': 'gotrue mode with MUSTER_PLUGINS=1, signed in',
+  // Signed in as a GoTrue admin, against a real GoTrue (passkeys on, plugins on).
+  'GET /account/passkeys': { where: 'signed-in', url: '/account/passkeys', ready: '#passkey-add' },
+  'GET /plugins': { where: 'signed-in', url: '/plugins', ready: 'h1' },
+  'GET /admin/invites': { where: 'signed-in', url: '/admin/invites', ready: '#invite-ttl' },
+  'GET /admin/users': { where: 'signed-in', url: '/admin/users', ready: '[data-user-email]' },
 };
 const NOT_A_PAGE: Record<string, string> = {
   'GET /agent/approvals/{id}': 'agent API (JSON)',
@@ -102,10 +100,10 @@ function goldenGets(): string[] {
     .filter((l) => l.startsWith('GET /') && !l.startsWith('GET /api/') && !l.startsWith('GET /ui/') && !l.startsWith('GET /runner/') && !l.startsWith('GET /plugin/'));
 }
 
-test('every GET route is measured here, or named as not a page (or as owed)', () => {
+test('every GET route is measured here, or named as not a page', () => {
   const gets = goldenGets();
   expect(gets.length, 'positive control: the golden lists page routes').toBeGreaterThan(30);
-  const named = new Set([...Object.keys(PAGES), ...Object.keys(NEEDS_GOTRUE_SIGNIN), ...Object.keys(NOT_A_PAGE)]);
+  const named = new Set([...Object.keys(PAGES), ...Object.keys(NOT_A_PAGE)]);
   expect(gets.filter((r) => !named.has(r)), 'routes with no layout-shift classification — measure them here').toEqual([]);
   expect([...named].filter((r) => !gets.includes(r)), 'classified routes the golden no longer has').toEqual([]);
 });
@@ -261,77 +259,37 @@ for (const vp of viewports) {
 // mirrored views and a claude-code agent's terminal are the real pages. A fake
 // mirrored host's `main` session is a Claude Code pane over a transcript this
 // spec writes.
-const mport = clsFullPort;
-const morigin = `http://localhost:${mport}`;
-const host = 'e2e-cls-' + Date.now().toString(36);
-const mirrorBin = path.join(binDir, 'muster-mirror-e2e');
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cls-'));
-const transcript = path.join(dir, 'e2e-session-0001.jsonl');
-let mserver: Running | undefined;
-let mproc: ChildProcess | undefined;
-let mlog = '';
+const rig = new MirrorRig(clsFullPort, 'e2e-cls', {
+  MUSTER_AGENT_KINDS: 'gateway,claude-code',
+  MUSTER_AGENT_CC_IMAGE: 'ghcr.io/example-org/claude-code-agent:e2e',
+  MUSTER_AGENT_CC_ACCOUNTS: 'alpha',
+  MUSTER_AGENT_CC_TOKEN_ALPHA: 'sk-ant-oat01-FAKE-e2e-cls-alpha',
+  MUSTER_CONNECTOR_ENCRYPTION_KEY: Buffer.alloc(32, 0x5a).toString('base64'),
+  // The store refuses to boot without the URL agents are told to use.
+  MUSTER_CONNECT_PORT: String(clsConnectPort),
+  MUSTER_AGENT_CONNECT_URL: `http://127.0.0.1:${clsConnectPort}`,
+  MUSTER_GITHUB_ENCRYPTION_KEY: Buffer.alloc(32, 0x6b).toString('base64'),
+});
+const morigin = rig.origin;
+const host = rig.host;
 let ccAgent = '';
-
-const rec = (o: object) => JSON.stringify(o) + '\n';
 
 test.describe('the full server', () => {
   test.use({ storageState: { cookies: [], origins: [] } });
   test.beforeAll(async () => {
     test.setTimeout(180_000);
-    execFileSync('go', ['build', '-tags', 'e2emirror', '-o', mirrorBin, './cmd/muster-mirror'], { cwd: repoRoot, stdio: 'inherit' });
-    mserver = await startServer(versionTerm, mport, {
-      MUSTER_MIRROR: '1',
-      MUSTER_AGENT_PROVISIONER: 'noop',
-      MUSTER_AGENT_IMAGE_REPO: 'registry.example.test/runtime',
-      MUSTER_AGENT_API_URL: 'http://muster.example.test:8105',
-      MUSTER_AGENT_KINDS: 'gateway,claude-code',
-      MUSTER_AGENT_CC_IMAGE: 'ghcr.io/example-org/claude-code-agent:e2e',
-      MUSTER_AGENT_CC_ACCOUNTS: 'alpha',
-      MUSTER_AGENT_CC_TOKEN_ALPHA: 'sk-ant-oat01-FAKE-e2e-cls-alpha',
-      MUSTER_CONNECTOR_ENCRYPTION_KEY: Buffer.alloc(32, 0x5a).toString('base64'),
-      // The store refuses to boot without the URL agents are told to use.
-      MUSTER_CONNECT_PORT: String(clsConnectPort),
-      MUSTER_AGENT_CONNECT_URL: `http://127.0.0.1:${clsConnectPort}`,
-      MUSTER_GITHUB_ENCRYPTION_KEY: Buffer.alloc(32, 0x6b).toString('base64'),
-    });
-    const token = execFileSync(serverBinary(versionTerm), ['mirror', 'token', 'create', host], { env: { ...process.env, DATABASE_URL: dsn } }).toString().trim();
-    fs.writeFileSync(
-      transcript,
-      rec({ type: 'user', promptId: 'p', message: { role: 'user', content: 'list the files' } }) +
-        rec({ type: 'assistant', message: { content: [{ type: 'text', text: 'Listing them.' }] } }) +
-        rec({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu_1', name: 'Bash', input: { command: 'ls' } }] } }) +
-        rec({ type: 'user', promptId: 'p', message: { content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: 'a\nb', is_error: false }] } }) +
-        rec({ type: 'assistant', message: { content: [{ type: 'text', text: 'Two files.' }] } }),
+    await rig.start();
+    const transcript = rig.transcript(
+      cc.prompt('list the files') + cc.reply('Listing them.') + cc.toolUse('tu_1', 'Bash', { command: 'ls' }) +
+        cc.toolResult('tu_1', 'a\nb') + cc.reply('Two files.'),
     );
-    mproc = spawn(mirrorBin, [], {
-      env: {
-        ...process.env,
-        MUSTER_MIRROR_URL: morigin,
-        MUSTER_MIRROR_ALLOW_HTTP: '1',
-        MUSTER_MIRROR_TOKEN: token,
-        MUSTER_MIRROR_HOST: host,
-        MUSTER_MIRROR_INTERACTIVE: '1',
-        MUSTER_MIRROR_E2E_SESSIONS: 'main,scratch',
-        MUSTER_MIRROR_E2E_CLAUDE: 'main=' + transcript,
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    mproc.stdout?.on('data', (d) => (mlog += d));
-    mproc.stderr?.on('data', (d) => (mlog += d));
+    await rig.startHost({ MUSTER_MIRROR_INTERACTIVE: '1', MUSTER_MIRROR_E2E_SESSIONS: 'main,scratch', MUSTER_MIRROR_E2E_CLAUDE: 'main=' + transcript });
   });
 
   test.afterAll(async () => {
-    if (mproc && mproc.exitCode === null) {
-      const done = new Promise((r) => mproc!.once('exit', r));
-      mproc.kill('SIGTERM');
-      await done;
-    }
-    await mserver?.stop();
-    fs.rmSync(dir, { recursive: true, force: true });
+    await rig.stop();
     // The claude-code agent this spec dispatched, so no later spec lists it.
-    if (ccAgent) {
-      execFileSync('go', ['run', './e2e/mkchat'], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn, MUSTER_E2E_AGENT: ccAgent, MUSTER_E2E_DELETE: '1' } });
-    }
+    if (ccAgent) mkchat(ccAgent, null);
   });
 
   async function signIn(browser: Browser, use: object): Promise<{ ctx: BrowserContext; page: Page }> {
@@ -372,7 +330,7 @@ test.describe('the full server', () => {
       try {
         await expect
           .poll(async () => (await (await page.request.get(morigin + '/ui/agents')).text()).includes('data-mirror-claude'), {
-            message: `main reported as a Claude pane (muster-mirror log:\n${mlog})`,
+            message: `main reported as a Claude pane (muster-mirror log:\n${rig.log})`,
             timeout: 20_000,
           })
           .toBe(true);
@@ -425,6 +383,87 @@ test.describe('public pages in gotrue mode', () => {
         for (const [route, p] of Object.entries(PAGES)) {
           if (p.where !== 'public') continue;
           const r = await measure(page, `http://localhost:${gbrowser}${p.url}`);
+          console.log(`[cls ${vp.name}] ${route} ${r.total}`);
+          if (r.total >= BAR) bad.push(report(`${vp.name} ${route}`, r));
+        }
+      } finally {
+        await ctx.close();
+      }
+    }
+    expect(bad).toEqual([]);
+  });
+});
+
+// --- The signed-in GoTrue pages: an admin's account pages, the admin pages and
+// the plugins page, as a GoTrue-mode server draws them for a signed-in admin —
+// against the real GoTrue image (e2e/gotrue/compose.yml), passkeys on, plugins
+// on. The admin is claimed the way invites.spec.ts claims one.
+const signedURL = `http://localhost:${clsSignedBrowserPort}`;
+const signedGotrue = `http://127.0.0.1:${clsSignedGotruePort}`;
+const signedCompose = path.join(e2eRoot, 'gotrue', 'compose.yml');
+const signedComposeEnv = {
+  ...process.env,
+  MUSTER_E2E_GOTRUE_PROJECT: `muster-e2e-gotrue-${clsSignedGotruePort}`,
+  MUSTER_E2E_GOTRUE_PORT: String(clsSignedGotruePort),
+  MUSTER_E2E_GOTRUE_SITE: signedURL,
+  MUSTER_E2E_GOTRUE_PASSKEYS: 'true',
+};
+test.describe('signed-in pages in gotrue mode', () => {
+  let sserver: Running | undefined;
+  test.use({ storageState: { cookies: [], origins: [] } });
+  test.beforeAll(async () => {
+    test.setTimeout(300_000);
+    execFileSync('docker', ['compose', '-f', signedCompose, 'up', '-d', '--wait'], { env: signedComposeEnv, stdio: 'inherit' });
+    execFileSync('go', ['run', './e2e/seed', '--accounts-only'], { cwd: repoRoot, stdio: 'inherit', env: { ...process.env, DATABASE_URL: dsn } });
+    sserver = await startServer(versionA, clsSignedMainPort, {
+      MUSTER_AUTH_MODE: 'gotrue',
+      MUSTER_GOTRUE_URL: signedGotrue,
+      MUSTER_GOTRUE_JWT_SECRET: gotrueSecret,
+      MUSTER_BROWSER_PORT: String(clsSignedBrowserPort),
+      MUSTER_PUBLIC_URL: signedURL,
+      MUSTER_PLUGINS: '1',
+      MUSTER_CONNECTOR_ENCRYPTION_KEY: Buffer.alloc(32, 0x2e).toString('base64'),
+      MUSTER_CONNECT_PORT: String(clsSignedConnectPort),
+      MUSTER_AGENT_CONNECT_URL: `http://127.0.0.1:${clsSignedConnectPort}`,
+    });
+  });
+  test.afterAll(async () => {
+    await sserver?.stop();
+    execFileSync('docker', ['compose', '-f', signedCompose, 'down', '-v'], { env: signedComposeEnv, stdio: 'inherit' });
+  });
+
+  test(`passkeys, plugins and the admin pages shift less than ${BAR}, at both sizes`, async ({ browser }) => {
+    test.setTimeout(180_000);
+    // Claim the admin (the server binary prints the link), signed in by the claim.
+    const claim = execFileSync(serverBinary(versionA), ['invite', '--claim-admin'], {
+      env: { ...process.env, DATABASE_URL: dsn, MUSTER_PUBLIC_URL: signedURL, MUSTER_GOTRUE_URL: signedGotrue, MUSTER_GOTRUE_JWT_SECRET: gotrueSecret },
+    }).toString().trim();
+    const email = `cls-admin-${Date.now()}@example.com`;
+    const pw = 'e2e-admin-password-not-a-real-one';
+    const first = await browser.newContext({ storageState: { cookies: [], origins: [] } });
+    const fp = await first.newPage();
+    await fp.goto(claim);
+    await fp.fill('#claim-email', email);
+    await fp.fill('#claim-password', pw);
+    await fp.fill('#claim-password2', pw);
+    await Promise.all([fp.waitForURL(signedURL + '/'), fp.click('button[type=submit]')]);
+    await first.close();
+
+    const bad: string[] = [];
+    for (const vp of viewports) {
+      const ctx = await browser.newContext({ ...vp.use, storageState: { cookies: [], origins: [] } });
+      try {
+        // Each size signs in on its own: GoTrue's access tokens live 5 s here and a
+        // refresh rotates the refresh token, so another context's cookies go stale.
+        const page = await ctx.newPage();
+        await page.goto(signedURL + '/login');
+        await page.fill('#muster-email', email);
+        await page.fill('#muster-password', pw);
+        await Promise.all([page.waitForURL(signedURL + '/'), page.click('button[type=submit]')]);
+        await page.addInitScript(clsInit);
+        for (const [route, p] of Object.entries(PAGES)) {
+          if (p.where !== 'signed-in') continue;
+          const r = await measure(page, signedURL + p.url, p.ready);
           console.log(`[cls ${vp.name}] ${route} ${r.total}`);
           if (r.total >= BAR) bad.push(report(`${vp.name} ${route}`, r));
         }
