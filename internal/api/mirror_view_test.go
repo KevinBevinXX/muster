@@ -442,6 +442,15 @@ func (m *isoMirror) WatchWindow(ctx context.Context, host, _, _, _ string, _ int
 	return mirror.ErrNoRenderedView
 }
 
+// ScrollWindow: A's host advertises no scrolling (Hosts sets no PaneScroll), so
+// the route answers 409 for A before asking; as B it must 404 before that.
+func (m *isoMirror) ScrollWindow(ctx context.Context, host, _, _ string, _ int) error {
+	if !m.mine(ctx) || host != m.host {
+		return mirror.ErrHostOffline
+	}
+	return mirror.ErrScrollUnsupported
+}
+
 func (m *isoMirror) PasteWindow(ctx context.Context, host, _, _, _ string, _ mirror.PasteTarget) error {
 	if !m.mine(ctx) || host != m.host {
 		return mirror.ErrHostOffline

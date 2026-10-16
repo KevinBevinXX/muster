@@ -2,6 +2,7 @@ import { request as pwRequest, Page, WebSocket as PWWebSocket } from '@playwrigh
 import { test, expect } from '../lib/fixtures';
 import { hookToken, password, termPort, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
+import { touchDrag } from '../lib/touch';
 
 // A claude-code agent's live terminal, at a phone's width (412×915), against a
 // REAL muster-server built with `-tags e2eterm`: the page, the socket, the
@@ -114,9 +115,9 @@ test('a claude-code agent opens its live terminal read-only at phone width', asy
   await page.waitForURL(origin + '/agents/' + name + '/terminal');
   await expect(screen(page)).toContainText('FAKE-TUI mode=ro');
   await expect(screen(page)).toContainText('agent=' + name);
-  await expect(page.locator('#term-status')).toHaveText('Connected · read-only');
+  await expect(page.locator('#term-status')).toHaveText('Connected');
   await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
-  await expect(page.locator('#term-mode-label')).toHaveText('Read-only');
+  await expect(page.locator('#term-mode-label')).toHaveText('Live keys off');
 
   // The bar has every key a phone keyboard lacks, all disabled while read-only.
   const keys = page.locator('#term-keys [data-key]');
@@ -176,9 +177,9 @@ test('the switch makes it interactive and the quick-key bar types the right byte
 
   await page.locator('#term-mode').click();
   await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'true');
-  await expect(page.locator('#term-mode-label')).toHaveText('Interactive');
+  await expect(page.locator('#term-mode-label')).toHaveText('Live keys on');
   await expect(screen(page)).toContainText('FAKE-TUI mode=rw');
-  await expect(page.locator('#term-status')).toHaveText('Connected · interactive');
+  await expect(page.locator('#term-status')).toHaveText('Connected · live keys');
 
   // Literal expected bytes, NOT read from the page's data attributes.
   const want: [string, string][] = [
@@ -237,6 +238,33 @@ test('the terminal follows the viewport: keyboard-height and rotation', async ({
   await page.setViewportSize({ width: 915, height: 412 });
   await expect.poll(() => last(0), { message: 'cols in landscape' }).toBeGreaterThan(c0);
   await noHorizontalScroll(page);
+});
+
+// RECORDED EXCLUSION (the operator's decision): drag-to-scroll is for mirrored
+// windows only. An agent pod's Terminal page wires no scroll gesture — the
+// page's own instrument (data-scroll-on, set when the handlers are wired; see
+// mirrored.spec.ts, where it is) stays unset — and a real vertical touch drag
+// and the mouse wheel post nothing to the scroll route.
+test('an agent pod’s terminal wires no drag-to-scroll', async ({ page }) => {
+  await login(page);
+  const name = await saveAgent(page, 'claude-code', 'e2e terminal: no scroll');
+  const posts: string[] = [];
+  page.on('request', (r) => {
+    if (new URL(r.url()).pathname.endsWith('/scroll')) posts.push(r.url());
+  });
+  await page.goto(origin + '/agents/' + name + '/terminal');
+  await expect(screen(page)).toContainText('FAKE-TUI mode=ro');
+  const term = page.locator('#term');
+  await expect(term).not.toHaveAttribute('data-scroll', /.*/);
+  await expect(term).not.toHaveAttribute('data-scroll-on', /.*/);
+  await expect(page.locator('#term-scroll-note')).toHaveCount(0);
+  const box = (await page.locator('#term-scroll').boundingBox())!;
+  const mid = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  await touchDrag(page, { x: mid.x, y: mid.y - 120 }, { x: mid.x, y: mid.y + 120 });
+  await touchDrag(page, { x: mid.x, y: mid.y + 120 }, { x: mid.x, y: mid.y - 120 });
+  await page.waitForTimeout(300);
+  expect(posts, 'an agent pod’s page posted no scroll').toEqual([]);
+  await expect(screen(page)).not.toContainText('in=');
 });
 
 test('a standard agent has no terminal', async ({ page }) => {

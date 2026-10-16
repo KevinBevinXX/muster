@@ -17,8 +17,11 @@ Each box can also have a microphone; see [dictation.md](dictation.md).
 - On the Rendered view, it goes only into a pane that is **still** running Claude
   Code, never into a shell left behind after Claude exits. A leading `/` or `!`
   is passed through as typed.
-- On the Terminal view, the box does not need the Interactive switch. That switch
-  is a live keyboard; the box is one gated paste per Send.
+- On the Terminal view, the box does not need the Live keys switch. That switch
+  is a live keyboard; the box is one gated paste per Send. So the page never
+  calls itself "read-only" while its box can send: with live keys off the status
+  reads just "Connected". A read-only host says so once, in the box's disabled
+  note.
 - Only newline and tab are accepted as control characters. Several lines arrive
   as one bracketed paste, and the single Enter runs them in order. A program that
   did not ask for bracketed paste gets the text as typed, so each newline is an

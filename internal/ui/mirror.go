@@ -100,6 +100,10 @@ func (r MirrorRef) TerminalPath() string { return "/mirror/terminal?" + r.query(
 // TerminalWSPath is that page's socket, before the page adds its mode and size.
 func (r MirrorRef) TerminalWSPath() string { return "/mirror/terminal/ws?" + r.query() }
 
+// ScrollForm is the entry's address as the body of a scroll request
+// (MirrorTerminalScrollPath), before the page adds `lines`.
+func (r MirrorRef) ScrollForm() string { return r.query() }
+
 // ViewPath is the entry's rendered view.
 func (r MirrorRef) ViewPath() string { return "/mirror/view?" + r.query() }
 

@@ -209,7 +209,7 @@ test('the Interactive switch on a mirrored session needs a fresh sign-in, and as
   expect(Number(await page.locator('#term').getAttribute('data-fresh-for'))).toBeGreaterThan(200_000);
   await page.locator('#term-mode').click();
   await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=rw size=' + WIN);
-  await expect(page.locator('#term-status')).toHaveText('Connected · interactive');
+  await expect(page.locator('#term-status')).toHaveText('Connected · live keys');
   await expect(dialog(page)).toBeHidden();
 
   // Remembered for this host, within the window: a reload comes back rw.
@@ -246,7 +246,7 @@ test('the Interactive switch on a mirrored session needs a fresh sign-in, and as
   await page.click('#term-confirm-submit');
   await expect(dialog(page)).toBeHidden();
   await expect(screen(page)).toContainText('mode=rw size=' + WIN);
-  await expect(page.locator('#term-status')).toHaveText('Connected · interactive');
+  await expect(page.locator('#term-status')).toHaveText('Connected · live keys');
   const freshToken = await accessToken(context);
   expect(freshToken).not.toBe(staleToken);
   expect(Math.abs(Date.now() / 1000 - amrOf(freshToken)), 'the confirm signed in just now').toBeLessThan(60);
@@ -256,7 +256,7 @@ test('the Interactive switch on a mirrored session needs a fresh sign-in, and as
   await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
   await page.locator('#term-mode').click();
   await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'true');
-  await expect(page.locator('#term-status')).toHaveText('Connected · interactive');
+  await expect(page.locator('#term-status')).toHaveText('Connected · live keys');
   await expect(dialog(page)).toBeHidden();
 
   // 3. THE SERVER DECIDES, NOT THE PAGE: the page was rendered fresh, the
@@ -303,7 +303,7 @@ test.describe('at a desktop width (1280px)', () => {
     await page.click('#term-confirm-submit');
     await expect(dialog(page)).toBeHidden();
     await expect(screen(page)).toContainText('mode=rw');
-    await expect(page.locator('#term-status')).toHaveText('Connected · interactive');
+    await expect(page.locator('#term-status')).toHaveText('Connected · live keys');
     // Typing reaches the host.
     await page.locator('#term').click();
     await page.keyboard.type('ok');
@@ -681,7 +681,7 @@ test.describe('the passkey confirm at a desktop width (1280px)', () => {
     await passkeyBtn(page).click();
     await expect(dialog(page)).toBeHidden();
     await expect(screen(page)).toContainText('mode=rw');
-    await expect(page.locator('#term-status')).toHaveText('Connected · interactive');
+    await expect(page.locator('#term-status')).toHaveText('Connected · live keys');
     await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'true');
     let token = await accessToken(context);
     expect(subOf(token)).toBe(adminSub);
