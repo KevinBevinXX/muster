@@ -1,0 +1,119 @@
+{
+ "comment": "Every search picker's rank (internal/searchrank). Read by searchrank_test.go AND by e2e/tests/pickers.spec.ts, which runs the browser's window.musterRank over the same rows: one table, two implementations held to it.",
+ "cases": [
+  {
+   "label": "gpt-4o",
+   "q": "gpt",
+   "tier": 0,
+   "why": "prefix"
+  },
+  {
+   "label": "GPT-4o",
+   "q": "gpt",
+   "tier": 0,
+   "why": "case-insensitive prefix"
+  },
+  {
+   "label": "gpt-4o",
+   "q": "4o",
+   "tier": 1,
+   "why": "word start after a hyphen"
+  },
+  {
+   "label": "openai/gpt-4o",
+   "q": "gpt",
+   "tier": 1,
+   "why": "word start after a slash"
+  },
+  {
+   "label": "docs sweeper",
+   "q": "sweep",
+   "tier": 1,
+   "why": "word start after a space"
+  },
+  {
+   "label": "gpt-4o",
+   "q": "pt",
+   "tier": 2,
+   "why": "substring inside a word"
+  },
+  {
+   "label": "banana",
+   "q": "ana",
+   "tier": 2,
+   "why": "a later occurrence is no word start either"
+  },
+  {
+   "label": "ana-banana",
+   "q": "ban",
+   "tier": 1,
+   "why": "the second word starts with it"
+  },
+  {
+   "label": "xbanana ana",
+   "q": "ana",
+   "tier": 1,
+   "why": "a LATER occurrence is a word start"
+  },
+  {
+   "label": "gpt-4o",
+   "q": "g4o",
+   "tier": 3,
+   "why": "letters in order"
+  },
+  {
+   "label": "/srv/projects/muster",
+   "q": "mstr",
+   "tier": 3,
+   "why": "an abbreviation"
+  },
+  {
+   "label": "gpt-4o",
+   "q": "o4",
+   "tier": -1,
+   "why": "letters out of order"
+  },
+  {
+   "label": "gpt-4o",
+   "q": "gpt5",
+   "tier": -1,
+   "why": "a letter that is not there"
+  },
+  {
+   "label": "gpt-4o",
+   "q": "",
+   "tier": 0,
+   "why": "an empty query matches everything"
+  },
+  {
+   "label": "gpt-4o",
+   "q": "  ",
+   "tier": 0,
+   "why": "spaces are an empty query"
+  },
+  {
+   "label": "a_b",
+   "q": "_b",
+   "tier": 2,
+   "why": "punctuation inside: preceded by a letter, so a substring"
+  },
+  {
+   "label": "Zürich-Bern",
+   "q": "bern",
+   "tier": 1,
+   "why": "word start in a non-ASCII label"
+  },
+  {
+   "label": "Zürich-Bern",
+   "q": "ürich",
+   "tier": 2,
+   "why": "substring after a non-ASCII letter"
+  },
+  {
+   "label": "sweeper",
+   "q": "",
+   "tier": 0,
+   "why": "empty"
+  }
+ ]
+}

@@ -1856,15 +1856,30 @@ func appScript(feat Features) g.Node {
   function cbHidden(box) { return box.querySelector('[data-combobox-hidden]'); }
   function cbList(box) { return box.querySelector('[data-combobox-list]'); }
   function cbOptions(box) { return Array.prototype.slice.call(box.querySelectorAll('[data-combobox-option]')); }
-  // cbFuzzy: subsequence match — every char of q appears in label in order
-  // (defensively lower-cased). Empty q matches everything.
-  function cbFuzzy(label, q) {
-    if (!q) return true;
-    label = label.toLowerCase(); q = q.toLowerCase();
+  // window.musterRank is EVERY search picker's rank — 0 the label starts with
+  // the query, 1 a word in it does, 2 it is anywhere in it, 3 its letters are
+  // in it in order, -1 no match — the browser's copy of internal/searchrank.
+  // ONE table holds both copies to the same answers: internal/searchrank/
+  // testdata/cases.json, read by the Go test and run through this function by
+  // e2e/tests/pickers.spec.ts. Tier 3 is the letters-in-order match these
+  // pickers always had, kept LAST (searchrank's doc says why it stays).
+  var RANK_WORD = (function () { try { return new RegExp('[\\p{L}\\p{N}]', 'u'); } catch (e) { return /[a-z0-9\u00c0-\uffff]/i; } })();
+  window.musterRank = function (label, query) {
+    var q = String(query == null ? '' : query).trim().toLowerCase();
+    if (!q) return 0;
+    var l = String(label == null ? '' : label).toLowerCase();
+    if (l.indexOf(q) === 0) return 0;
+    var found = false;
+    for (var at = l.indexOf(q); at >= 0; at = l.indexOf(q, at + 1)) {
+      found = true;
+      if (at > 0 && !RANK_WORD.test(l.charAt(at - 1))) return 1;
+    }
+    if (found) return 2;
     var i = 0;
-    for (var j = 0; j < label.length && i < q.length; j++) { if (label.charAt(j) === q.charAt(i)) i++; }
-    return i === q.length;
-  }
+    for (var j = 0; j < l.length && i < q.length; j++) { if (l.charAt(j) === q.charAt(i)) i++; }
+    return i === q.length ? 3 : -1;
+  };
+  function cbMatches(label, q) { return window.musterRank(label, q) >= 0; }
   // cbModelLabel: trim the leading "openrouter/" provider prefix for DISPLAY only
   // (the full slug stays the option value). No-op for values without the prefix.
   function cbModelLabel(val) { return val.indexOf('openrouter/') === 0 ? val.slice('openrouter/'.length) : val; }
@@ -1888,7 +1903,7 @@ func appScript(feat Features) g.Node {
     Array.prototype.slice.call(ul.querySelectorAll('[data-combobox-option]')).forEach(function (o) {
       if (o.hasAttribute('data-combobox-seed')) {
         var label = (o.getAttribute('data-label') || '').toLowerCase();
-        o.classList.toggle('hidden', !cbFuzzy(label, q));
+        o.classList.toggle('hidden', !cbMatches(label, q));
         seeds[o.getAttribute('data-value') || ''] = true;
       } else {
         o.parentNode && o.parentNode.removeChild(o);
@@ -1936,20 +1951,37 @@ func appScript(feat Features) g.Node {
     arr.unshift(val); arr = arr.slice(0, 8);
     try { localStorage.setItem(k, JSON.stringify(arr)); } catch (e) {}
   }
-  function cbReorderRecents(box) {
+  // cbArrange puts the list in order. With a query: by rank (musterRank), and
+  // within a rank recently-picked first, then the order the options arrived in
+  // (seeds before a search's results). Without one: recently-picked first, then
+  // arrival order — what the list showed before it was ranked. A remote
+  // result the rule does not match at all (the other side matched it by its own
+  // rule) goes after every ranked one rather than vanishing.
+  function cbArrange(box) {
     var ul = cbList(box); if (!ul) return;
-    var recents = cbGetRecents(box); if (!recents.length) return;
+    var input = cbInput(box);
+    var q = (input && input.value || '').trim();
+    var recents = cbGetRecents(box);
+    var remote = !!cbRemote(box);
     var opts = cbOptions(box);
-    recents.slice().reverse().forEach(function (val) {
-      var opt = opts.filter(function (o) { return o.getAttribute('data-value') === val; })[0];
-      if (opt) ul.insertBefore(opt, ul.firstChild);
+    opts.forEach(function (o) {
+      if (!o.hasAttribute('data-cb-seq')) { box.__cbSeq = (box.__cbSeq || 0) + 1; o.setAttribute('data-cb-seq', String(box.__cbSeq)); }
     });
+    function key(o) {
+      var t = q ? window.musterRank(o.getAttribute('data-label') || '', q) : 0;
+      if (t < 0) t = remote && !o.hasAttribute('data-combobox-seed') ? 4 : 5;
+      var r = recents.indexOf(o.getAttribute('data-value') || '');
+      return [t, r < 0 ? 1e6 : r, +o.getAttribute('data-cb-seq')];
+    }
+    var keyed = opts.map(function (o) { return { o: o, k: key(o) }; });
+    keyed.sort(function (a, b) { return a.k[0] - b.k[0] || a.k[1] - b.k[1] || a.k[2] - b.k[2]; });
+    keyed.forEach(function (x) { ul.appendChild(x.o); });
   }
 
   function cbOpen(box, open) {
     var list = cbList(box), input = cbInput(box);
     if (!list) return;
-    if (open) cbReorderRecents(box);
+    if (open) cbArrange(box);
     list.classList.toggle('hidden', !open);
     if (input) input.setAttribute('aria-expanded', open ? 'true' : 'false');
     if (!open) cbSetActive(box, null);
@@ -1970,7 +2002,7 @@ func appScript(feat Features) g.Node {
     var any = false;
     cbOptions(box).forEach(function (o) {
       var label = (o.getAttribute('data-label') || '').toLowerCase();
-      var match = cbFuzzy(label, q);
+      var match = cbMatches(label, q);
       o.classList.toggle('hidden', !match);
       if (match) any = true;
     });

@@ -103,11 +103,21 @@ export const clsFullPort = port + 37;
 export const clsConnectPort = port + 46;
 export const clsGotrueMainPort = port + 43;
 export const clsGotrueBrowserPort = port + 44;
+// …and the signed-in pages (cls.spec.ts): a gotrue-mode server (passkeys and
+// plugins on) with its own real GoTrue and its connector listener.
+export const clsSignedMainPort = port + 51;
+export const clsSignedBrowserPort = port + 52;
+export const clsSignedGotruePort = Number(process.env.MUSTER_E2E_CLS_GOTRUE_PORT ?? port + 53);
+export const clsSignedConnectPort = port + 54;
 // The composer-autosize, tool-group and agents-search specs' own servers (each
 // the e2eterm binary with the mirror plugin on and a fake mirrored host).
 export const composerFitPort = port + 38;
 export const toolGroupsPort = port + 39;
 export const agentsSearchPort = port + 47;
+// The pickers spec's own e2eterm server, and its fake upstreams (GitHub,
+// OpenRouter's model list, a permission router) on one loopback port.
+export const pickersPort = port + 48;
+export const pickersFakePort = port + 49;
 // The send queue: its own server (the e2eterm binary, mirror plugin on, a short
 // MUSTER_SEND_QUEUE_IDLE) and its two mirrored hosts — one that reports Claude
 // Code's status and one that plays an older muster-mirror.
