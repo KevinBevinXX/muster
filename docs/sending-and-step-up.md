@@ -90,6 +90,8 @@ no Queue.
   finishes the other's send. The lease is kept on the database's clock, so pods
   whose clocks disagree still judge it the same way.
 
+A plugin message your chief [routes to the window](plugins.md#routing-a-message-to-a-session) is queued the same way and waits on the same rules; it carries the route's own time instead of a sign-in (see there).
+
 🔴 **Step-up for a queued message is decided when you QUEUE it.** Queueing
 needs the same fresh sign-in a Send needs (the dialog, or the plain confirm page
 at `POST /send-queue/confirm`), and the server records the sign-in time of the

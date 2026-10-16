@@ -69,6 +69,8 @@ See [auth.md](auth.md).
 | `MUSTER_MIRROR` | off | no | Turns on [mirrored sessions](mirroring.md). |
 | `MUSTER_PLUGINS` | off | no | Turns on [plugins](plugins.md): owners mint plugin tokens on `/plugins`, and plugins post messages that reach the owner's chief agent. Needs a database. Off, every `/plugin/*` route and `/plugins` answer 404. |
 | `MUSTER_PLUGIN_TASK_NAMESPACES` | none | no | Comma-separated tag namespaces a plugin may file tasks by, through [`POST /plugin/v1/tasks`](plugins.md#post-pluginv1tasks-one-task-per-upstream-record). Unset, that route answers 503. A namespace muster already uses (`gate`, `auto`, `initiative`, `project`, `superseded-by`) refuses to boot. |
+| `MUSTER_SESSION_ROUTING` | off | no | `1` turns on [session routing](plugins.md#routing-a-message-to-a-session): the chief may hand a plugin message to one of its owner's sessions, and the session's answer becomes the reply. Needs `MUSTER_PLUGINS=1`. |
+| `MUSTER_ROUTE_RELAY_ALLOW` | none | no | The senders whose routed answers are sent **without** the owner's approval, per user: `<user id>:<address>` or `<user id>:*@<domain>`, comma-separated. Everyone else's answer waits for approval like any reply draft. A value that does not parse refuses to boot. |
 | `MUSTER_STT_URL` | none | with the token | The base URL (`http(s)://host[:port]`) of the speech-to-text service used for [dictation](dictation.md). |
 | `MUSTER_STT_TOKEN` | none | no | The bearer token for that service. Setting it turns dictation on. A token without a URL refuses to boot. |
 | `MUSTER_VAPID_PUBLIC_KEY` | none | no | [Web push](push.md). The three VAPID variables are all-or-none. Generate a keypair with `muster-server vapid generate`. |

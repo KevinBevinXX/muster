@@ -103,6 +103,10 @@ export const sendQueuePort = port + 45;
 // Session focus (focus.spec.ts): its own server (the e2eterm binary, mirror
 // plugin on) and one mirrored host whose Claude window reports a session id.
 export const focusPort = port + 55;
+// Session routing (session-routing.spec.ts): its own server (plugins, mirror
+// plugin and routing on) and its connect listener (the chief's /mcp door).
+export const routingPort = port + 56;
+export const routingConnectPort = port + 57;
 // The fake service's bearer token. Invented, like every value here.
 export const sttToken = 'e2e-stt-token-not-a-real-one';
 // The docs screenshots (e2e/docshots, `make screenshots`, never in the suite):

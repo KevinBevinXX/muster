@@ -14,7 +14,8 @@ The whole loop:
 1. The plugin posts an inbound message (`POST /plugin/v1/messages`).
 2. muster hands it to your chief as a fenced turn.
 3. The chief may file a gated task (`task_create_gated`), draft a reply
-   (`reply_draft`), or do nothing.
+   (`reply_draft`), [route it to a session](#routing-a-message-to-a-session)
+   (`route_to_session`, when routing is on), or do nothing.
 4. You approve or reject each draft on `/plugins`.
 5. The plugin claims an approved draft (`POST /plugin/v1/drafts/claim`), sends
    it, and reports the result (`POST /plugin/v1/drafts/{id}/result`).
@@ -375,3 +376,66 @@ Filing, every decision, claim, result, lapse and expiry writes a
 recorded as a count on the filing that replaced it; one superseded because
 another reply was sent has its own `plugin.draft.superseded` row naming that
 reply.
+
+## Routing a message to a session
+
+With `MUSTER_SESSION_ROUTING=1` (and plugins on), your chief can hand a plugin
+message to the session best placed to answer it, instead of drafting the reply
+itself. It finds the session by [focus](focus.md) (`focus_search`,
+`agents_list`) and calls `route_to_session(message_id, subject)`. The chief's
+turn for each message says when to do this.
+
+1. **The route.** muster records a route (`session_routes`, migration `0021`):
+   the message, the chief, the target and a deadline, 30 minutes away. The
+   message must be one delivered to that chief, replyable, not already routed,
+   and with no reply already approved and on its way.
+2. **Into the session.** Only a **mirrored Claude Code window** can take a
+   routed message (`mirror:<claude session id>`). muster queues it through the
+   window's [send queue](sending-and-step-up.md#queue-send-when-claude-code-is-idle),
+   so it is pasted only once Claude Code has been idle for
+   `MUSTER_SEND_QUEUE_IDLE`, one at a time, never into a busy or waiting
+   session. What is pasted is the **stored message**, never text the chief
+   wrote: a preface saying it is an untrusted external message, its `route_id`
+   and how to answer, then the message behind the fence's content prefix. It
+   appears in that window's queue like any queued message, and you can Cancel
+   it there.
+3. **The answer.** The session answers with `reply_to_chief`: from a mirrored
+   window, `muster route reply <route_id> --body-file -` (the answer on stdin),
+   which posts to `POST /api/routes/{route_id}/reply` with that host's muster
+   credential — your personal API token, or the hook token. The route must be
+   yours; the same answer again changes nothing; a different second answer is
+   refused.
+4. **Back to the sender**, exactly once, as the message's reply draft:
+   - from a sender on your allowlist (`MUSTER_ROUTE_RELAY_ALLOW`), the draft is
+     filed **already approved** — you are not asked — and the plugin's next
+     claim sends it through the usual claim and result routes;
+   - from anyone else, it is an ordinary **pending** draft that you approve on
+     `/plugins`, with the usual push.
+
+   A draft names its route (`plugin_reply_drafts.route_id`, unique), so a route
+   can never become two replies. The chief's conversation for the plugin gets a
+   short note saying what happened.
+5. **No answer by the deadline:** the route times out, a still-queued injection
+   is cancelled, and the message is handed back to the chief in a turn (or a
+   note, when it is not running).
+
+Every step writes a `session_route.*` audit row (`routed`, `answered`,
+`relayed`, `fallback`, `timed_out`, `failed`), plus the draft's own
+`plugin.draft.filed` / `plugin.draft.approved` (with `"auto": true`).
+
+🔴 **What stands in for the step-up.** A message you queue carries the sign-in
+time of the browser session that queued it, and is sent only while that sign-in
+is fresh. A routed message has no browser session: its queue row carries the
+route's own time, which stays inside the step-up window for as long as the route
+can live. What gates it instead: routing is off unless the deployment turns it
+on, only your chief can route, only an `-interactive` host that reports Claude
+Code's status is a target, the account check at delivery still applies, and the
+row is visible and cancellable in the window's queue.
+
+⚠ **The send queue does not see a half-typed prompt.** Claude Code reports
+`idle` while text sits unsent in its input box; a routed paste then lands after
+that text, and Enter sends both. The idle delay is the only protection.
+
+⚠ **An answer is sent as written.** It is screened like any reply draft (no
+hidden characters, addresses, credentials or the deployment's own names), and
+for an allowlisted sender that screen is the only check before it goes.

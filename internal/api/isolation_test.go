@@ -275,7 +275,10 @@ var isolationClasses = map[string]routeClass{
 	"PATCH /api/tasks/{id}/status":          classAdmin,
 	"POST /api/agents/{name}/messages":      classAdmin,
 	"POST /api/tasks":                       classAdmin,
-	"POST /api/tasks/{id}/comments":         classAdmin,
+	// Session routing (0021): a mirrored session's answer, on the hook tier
+	// (requireArmedHookToken), acting as the route's owner.
+	"POST /api/routes/{id}/reply":   classAdmin,
+	"POST /api/tasks/{id}/comments": classAdmin,
 
 	"DELETE /agent/approvals/{id}": classAgentToken,
 	"GET /agent/approvals/{id}":    classAgentToken,
@@ -731,6 +734,11 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(err, "a plugin message delivered")
 	w.aDraft, _, err = ps.FileDraft(ua, w.a.agent.ID, w.a.uid, w.a.agent.Name, aMsg.ID, w.canary+" reply")
 	must(err, "a reply draft")
+	// A's chief routed that message to a mirrored session (0021): the object
+	// POST /api/routes/{id}/reply names.
+	aRoute, err := ps.CreateRoute(ua, w.a.agent.ID, w.a.uid, aMsg.ID,
+		plugins.RouteTarget{Kind: "mirror", Key: "iso-session", Label: w.canary + " window"}, time.Hour)
+	must(err, "a session route")
 
 	// A's pins (0017): A's agent, and a window on A's mirrored host. B's pin
 	// routes must not remove either (the snapshot holds them).
@@ -760,7 +768,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		attach: w.aAttachment.ID, chat: w.aChatSession.ID, agentName: w.a.agent.Name, connName: w.aConnName,
 		tag: w.aTag, link: w.aSessionLink, mirrorHost: w.canary + "-host", mirrorSession: "main", token: w.aToken2.ID,
 		pushDevice: w.objA.pushDevice, flowJob: w.aJob.ID, runnerTok: w.aRunner2.ID, flowReq: w.aFlowReq.ID,
-		plugin: w.aPlugin2.ID, draft: w.aDraft.ID, queued: aQueued.ID}
+		plugin: w.aPlugin2.ID, draft: w.aDraft.ID, queued: aQueued.ID, route: aRoute.RouteID}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
 	const ghostID = 9_000_000_000
@@ -768,7 +776,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		agentName: "ghost-agent" + w.suffix, connName: "ghostconn" + w.suffix, tag: "ghosttag", link: "ghost-sess-" + w.suffix,
 		mirrorHost: "ghost-host", mirrorSession: "main", ccAccount: "ghostacct", token: ghostID, pushDevice: ghostID,
 		flowJob: ghostID, runnerTok: ghostID, flowReq: ghostID, plugin: ghostID, draft: ghostID, passkey: "00000000-0000-4000-a000-00000000ghost",
-		queued: ghostID}
+		queued: ghostID, route: "rt_000000000000000000000000"}
 
 	// A's push device: through the real store, as the claim the subscribe route
 	// makes. Its user agent and endpoint carry the canary.
@@ -804,9 +812,12 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		Flows:  flows.NewPG(pool),
 		// Plugins ON, with no gateway: a message B's plugin posts is stored as
 		// B's and stays queued.
-		Plugins:   plugins.NewPG(pool),
-		Pins:      pins.NewPG(pool),
-		Recents:   recents.NewPG(pool),
+		Plugins: plugins.NewPG(pool),
+		Pins:    pins.NewPG(pool),
+		Recents: recents.NewPG(pool),
+		// Session routing (0021), on: A's route is a real object B must not reach.
+		Routes:    plugins.NewPG(pool),
+		Routing:   &Routing{},
 		Focus:     focus.NewPG(pool),
 		SendQueue: sendqueue.NewPG(pool),
 		Push:      push.NewService(pushStore, w.pusher, push.VAPIDConfig{PublicKey: "iso-walk-vapid-public"}, log.New(io.Discard, "", 0)),
@@ -1044,7 +1055,8 @@ type isoObjs struct {
 	pushDevice                                int64  // a Web Push device's id
 	agentName, connName, tag, link            string
 	mirrorHost, mirrorSession                 string
-	queued                                    int64 // a queued message's id (0019)
+	queued                                    int64  // a queued message's id (0019)
+	route                                     string // a session route's id (0021)
 }
 
 // fill turns a route pattern into a concrete request naming objects o, with a
@@ -1090,6 +1102,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		id = strconv.FormatInt(o.invite, 10)
 	case strings.HasPrefix(path, "/send-queue/{id}"):
 		id = strconv.FormatInt(o.queued, 10)
+	case strings.HasPrefix(path, "/api/routes/{id}"):
+		id = o.route
 	}
 	name := o.agentName
 	if strings.Contains(path, "connectors/{name}") {
@@ -1186,7 +1200,7 @@ func (w *isoWorld) snapshot() map[string]string {
 	for _, tbl := range []string{"notes", "note_comments", "note_attachments", "task_sessions", "agents",
 		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "github_connection", "mirror_tokens",
 		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens", "push_subscriptions", "push_preferences", "flow_requests",
-		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "recents", "send_queue", "agent_focus"} {
+		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "recents", "send_queue", "agent_focus", "session_routes"} {
 		var js string
 		if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t.id)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
 			// task_sessions/github_connection have no `id` ordering column in every

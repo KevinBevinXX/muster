@@ -242,6 +242,7 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/tasks",
 		"POST /api/tasks/{id}/comments",
 		"GET /api/whoami",
+		"POST /api/routes/{id}/reply",
 	},
 	authz.ViaService: {
 		"GET /api/tasks",
@@ -269,6 +270,7 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/agents/{name}/messages",
 		"POST /api/tasks",
 		"POST /api/tasks/{id}/comments",
+		"POST /api/routes/{id}/reply",
 		// Browser flows (0012): a personal token ONLY — the hook and service
 		// tiers are absent above on purpose (requireAPIToken).
 		"GET /api/flows/jobs",
@@ -542,17 +544,19 @@ func TestEveryAuthenticatedRouteAttachesAPrincipal(t *testing.T) {
 // requireHookOrServiceToken admit an uncredentialed caller (back-compat; see
 // requireHookToken). Such a request must still carry the machine principal —
 // an admitted request with none is exactly what PR 3 turns into an empty
-// board. requireArmedHookToken refuses instead (503), so it is the one hook
-// route that must NOT reach a handler here.
+// board. requireArmedHookToken refuses instead (503), so its routes are the
+// hook routes that must NOT reach a handler here.
 func TestAnUnarmedHookTierStillActsAsTheMachineUser(t *testing.T) {
 	_, h, seen := newPrincipalTestServerWith(t, AuthConfig{UIPassword: pPassword})
-	armed := "POST /api/agents/{name}/messages"
+	// The fail-closed (requireArmedHookToken) routes: the agent-steering write,
+	// and session routing's answer (it decides what an outside party is sent).
+	armed := map[string]bool{"POST /api/agents/{name}/messages": true, "POST /api/routes/{id}/reply": true}
 	for _, pattern := range routeVias[authz.ViaHook] {
 		method, path := concretePath(pattern)
 		t.Run(pattern, func(t *testing.T) {
 			*seen = nil
 			aborted, code := serve(t, h, httptest.NewRequest(method, path, nil))
-			if pattern == armed {
+			if armed[pattern] {
 				if aborted || code != http.StatusServiceUnavailable {
 					t.Fatalf("the armed route on an unarmed server: aborted=%v status %d; want a 503 refusal", aborted, code)
 				}
