@@ -1057,6 +1057,121 @@ test.describe('drag-to-scroll when scrolls fail (412×915, touch)', () => {
   });
 });
 
+// A REFUSAL WITH A REASON KEEPS THE GESTURE. Only a host that cannot scroll at
+// all ("unsupported") unwires it; a host that is reconnecting, a pane in a
+// tmux menu and a window that is gone each show their note, keep the gesture
+// wired, and clear once a scroll lands. Each refusal is played twice: as the
+// route answers it (page.route, with the code header the page branches on)
+// and — mode and offline — by the real stack (the fake host's `.mode` switch;
+// the host actually stopped).
+test.describe('drag-to-scroll when the host refuses (412×915, touch)', () => {
+  test('a pane in another mode or a reconnecting host shows a note and keeps the gesture; only a host that cannot scroll unwires it, and Reconnect wires it again', async ({ page }) => {
+    await stopMirror();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'muster-e2e-scrollrefuse-'));
+    const scrollFile = path.join(dir, 'scrolls');
+    const env = { MUSTER_MIRROR_E2E_SCROLL_FILE: scrollFile, MUSTER_MIRROR_E2E_WINDOW: '200x20' };
+    mirrorProc = startMirror(true, undefined, env);
+    // Every scroll request is answered with `fault` while it is set ('' = the
+    // real server).
+    let fault: { status: number; code: string } | null = null;
+    let posts = 0;
+    const hostLines = () => scrollLog(scrollFile).scrolls.reduce((a, s) => a + s.lines, 0);
+    try {
+      await login(page);
+      await waitForCards(page, true);
+      await page.route('**/mirror/terminal/scroll', async (route) => {
+        posts++;
+        if (fault) return route.fulfill({ status: fault.status, headers: { 'X-Muster-Scroll-Refusal': fault.code }, body: 'refused' });
+        return route.continue();
+      });
+      await page.goto(origin + termPath('scratch'));
+      await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch mode=ro');
+      const term = page.locator('#term');
+      const note = page.locator('#term-scroll-note');
+      await expect(term).toHaveAttribute('data-scroll-on', '1');
+      const box = (await page.locator('#term-scroll').boundingBox())!;
+      const mid = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+      const down = () => touchDrag(page, { x: mid.x, y: mid.y - 80 }, { x: mid.x, y: mid.y + 80 });
+      // lands: a drag reaches the host, and any note goes.
+      const lands = async (what: string) => {
+        const before = hostLines();
+        await down();
+        await expect.poll(hostLines, { message: `${what}: a later drag scrolled (muster-mirror log:\n${mirrorLog})` }).toBeGreaterThan(before);
+        await expect(note, `${what}: a scroll that lands clears the note`).toBeHidden();
+        await expect(term, `${what}: the gesture is wired`).toHaveAttribute('data-scroll-on', '1');
+      };
+      // refusedWith: a drag while the route refuses shows `text`, keeps the
+      // gesture, and reaches nothing.
+      const refusedWith = async (what: string, text: string) => {
+        const before = hostLines();
+        const p0 = posts;
+        await down();
+        await expect(note, `${what}: the note`).toBeVisible();
+        await expect(note).toHaveText(text);
+        expect(posts, `${what}: fixture: the drag posted`).toBeGreaterThan(p0);
+        await expect(term, `${what}: the gesture is still wired`).toHaveAttribute('data-scroll-on', '1');
+        expect(hostLines(), `${what}: nothing reached the host`).toBe(before);
+      };
+      await lands('control');
+
+      // 1. Each refusal as the route answers it.
+      for (const c of [
+        { status: 409, code: 'mode', text: 'The pane is in another mode (e.g. a tmux menu). Close it, then drag again.' },
+        { status: 503, code: 'offline', text: 'Host reconnecting. Drag again once it is back.' },
+        { status: 404, code: 'gone', text: 'This window is no longer on the host.' },
+        { status: 409, code: 'refused', text: 'The host refused the scroll. Drag again to retry.' },
+      ]) {
+        fault = { status: c.status, code: c.code };
+        await refusedWith(`${c.status} ${c.code}`, c.text);
+        fault = null;
+        await lands(`after ${c.status} ${c.code}`);
+      }
+
+      // 2. A pane in another mode, through the real stack: the host refuses it
+      // as one, and muster says so.
+      fs.writeFileSync(scrollFile + '.mode', '');
+      await refusedWith('a real pane in another mode', 'The pane is in another mode (e.g. a tmux menu). Close it, then drag again.');
+      fs.rmSync(scrollFile + '.mode');
+      await lands('after the real mode closed');
+
+      // 3. A host that is really gone for a while: "reconnecting", the gesture
+      // kept; back again, Reconnect re-attaches and a drag lands.
+      await stopMirror();
+      await waitForCards(page, false);
+      await refusedWith('a host that went offline', 'Host reconnecting. Drag again once it is back.');
+      mirrorProc = startMirror(true, undefined, env);
+      await waitForCards(page, true);
+      await page.locator('#term-reconnect').click();
+      await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch mode=ro');
+      await lands('after the host came back');
+
+      // 4. ONLY "this host cannot scroll" unwires the gesture; a drag then posts
+      // nothing. Reconnect (after a dropped connection) wires it again.
+      fault = { status: 409, code: 'unsupported' };
+      await down();
+      await expect(term, 'a host that cannot scroll unwires the gesture').not.toHaveAttribute('data-scroll-on', /.*/);
+      await expect(note, 'and shows no note').toBeHidden();
+      const p1 = posts;
+      await down();
+      await page.waitForTimeout(300);
+      expect(posts, 'an unwired gesture posts nothing').toBe(p1);
+      fault = null;
+      await stopMirror();
+      await expect(page.locator('#term-reconnect')).toBeVisible();
+      mirrorProc = startMirror(true, undefined, env);
+      await waitForCards(page, true);
+      await page.locator('#term-reconnect').click();
+      await expect(term, 'Reconnect wires the gesture again').toHaveAttribute('data-scroll-on', '1');
+      await lands('after Reconnect');
+    } finally {
+      await page.unroute('**/mirror/terminal/scroll');
+      await stopMirror();
+      fs.rmSync(dir, { recursive: true, force: true });
+      mirrorProc = startMirror(false);
+    }
+  });
+});
+
 test.describe('drag-to-scroll on a desktop (1280×900, mouse)', () => {
   test.use({ viewport: { width: 1280, height: 900 }, hasTouch: false, isMobile: false });
 

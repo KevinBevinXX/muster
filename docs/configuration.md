@@ -217,4 +217,4 @@ build tag, which the Playwright suite uses. The shipped binaries do not read the
 | `MUSTER_MIRROR_E2E_ACTIVE_FILE` | none | no | (`e2emirror`) `session=index` lines: each session's active window. |
 | `MUSTER_MIRROR_E2E_ACTIVITY_FILE` | none | no | (`e2emirror`) `session=<unix seconds>` lines: each session's last activity. |
 | `MUSTER_MIRROR_E2E_WINDOW` | none | no | (`e2emirror`) The `CxR` window size the fake reports. |
-| `MUSTER_MIRROR_E2E_SCROLL_FILE` | none | no | (`e2emirror`) Turns on copy-mode scrolling and records each scroll (`<pane> <lines> pos=<n>`) and cancel (`<pane> cancel`). Unset, the fake is an older host that cannot scroll. |
+| `MUSTER_MIRROR_E2E_SCROLL_FILE` | none | no | (`e2emirror`) Turns on copy-mode scrolling and records each scroll (`<pane> <lines> pos=<n>`) and cancel (`<pane> cancel`). While `<file>.mode` exists every pane is in another mode, and a scroll is refused as one. Unset, the fake is an older host that cannot scroll. |

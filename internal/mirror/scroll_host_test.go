@@ -21,10 +21,10 @@ import (
 
 // driveScroll runs a REAL muster-mirror (interactive or not) over b against a
 // HAND-DRIVEN muster that sends one scroll — so the host's own gates are tested
-// with muster misbehaving — and returns the host's scrolled.error ("" = done).
-func driveScroll(t *testing.T, interactive bool, b mirrorhost.Backend, scroll mirror.Msg) string {
+// with muster misbehaving — and returns the host's scrolled (Error "" = done).
+func driveScroll(t *testing.T, interactive bool, b mirrorhost.Backend, scroll mirror.Msg) mirror.Msg {
 	t.Helper()
-	got := make(chan string, 1)
+	got := make(chan mirror.Msg, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ws, err := websocket.Accept(w, r, nil)
 		if err != nil {
@@ -46,12 +46,12 @@ func driveScroll(t *testing.T, interactive bool, b mirrorhost.Backend, scroll mi
 		for {
 			typ, data, err := ws.Read(ctx)
 			if err != nil {
-				got <- "(no answer)"
+				got <- mirror.Msg{Error: "(no answer)"}
 				return
 			}
 			var m mirror.Msg
 			if typ == websocket.MessageText && json.Unmarshal(data, &m) == nil && m.Type == mirror.TypeScrolled && m.ID == 41 {
-				got <- m.Error
+				got <- m
 				return
 			}
 		}
@@ -70,7 +70,7 @@ func driveScroll(t *testing.T, interactive bool, b mirrorhost.Backend, scroll mi
 		return e
 	case <-time.After(6 * time.Second):
 		t.Fatal("the hand-driven muster never heard back")
-		return ""
+		return mirror.Msg{}
 	}
 }
 
@@ -83,14 +83,21 @@ func TestTheHostRefusesAScrollItDidNotOptInto(t *testing.T) {
 		session     string
 		lines       int
 		want        string
+		refusal     string
 	}{
-		"a read-only host":    {false, "shell", 3, "read-only"},
-		"an unlisted session": {true, "secret", 3, "not in this host's latest list"},
-		"zero lines":          {true, "shell", 0, "at least one line"},
-		"control":             {true, "shell", 3, ""},
+		// Only "this host cannot scroll" is named unsupported: it is the one a
+		// page stops asking after.
+		"a read-only host":    {false, "shell", 3, "read-only", "unsupported"},
+		"an unlisted session": {true, "secret", 3, "not in this host's latest list", ""},
+		"zero lines":          {true, "shell", 0, "at least one line", ""},
+		"control":             {true, "shell", 3, "", ""},
 	} {
 		b := newScrollingBackend("main", "shell")
-		got := driveScroll(t, tc.interactive, b, mirror.Msg{Session: tc.session, Lines: tc.lines})
+		ans := driveScroll(t, tc.interactive, b, mirror.Msg{Session: tc.session, Lines: tc.lines})
+		got := ans.Error
+		if ans.Refusal != tc.refusal {
+			t.Errorf("%s: the refusal is named %q, want %q", name, ans.Refusal, tc.refusal)
+		}
 		calls, _, _ := b.snapshot()
 		if tc.want == "" {
 			if got != "" || !slices.Equal(calls, []string{"%a-shell 3"}) {
@@ -104,10 +111,31 @@ func TestTheHostRefusesAScrollItDidNotOptInto(t *testing.T) {
 	}
 	// And a count beyond the bound is clamped by the host itself.
 	b := newScrollingBackend("shell")
-	if got := driveScroll(t, true, b, mirror.Msg{Session: "shell", Lines: -100000}); got != "" {
+	if got := driveScroll(t, true, b, mirror.Msg{Session: "shell", Lines: -100000}).Error; got != "" {
 		t.Fatalf("a huge scroll: %q", got)
 	}
 	if calls, _, _ := b.snapshot(); !slices.Equal(calls, []string{fmt.Sprintf("%%a-shell %d", -mirror.MaxScrollLines)}) {
 		t.Fatalf("the host scrolled %q, want one clamped to -%d", calls, mirror.MaxScrollLines)
+	}
+}
+
+// TestTheHostNamesAPaneInAnotherMode: a pane whose top mode is not copy-mode
+// (mirrorhost.ErrPaneInAnotherMode) is refused as mirror.ScrollRefusalMode on
+// the wire — the code muster acts on — and any other backend failure is named
+// nothing, so muster never reads it as "this host cannot scroll".
+func TestTheHostNamesAPaneInAnotherMode(t *testing.T) {
+	for name, tc := range map[string]struct {
+		refuse  error
+		refusal string
+	}{
+		"another mode on top": {fmt.Errorf("%w: pane %%a-shell is in tree-mode", mirrorhost.ErrPaneInAnotherMode), "mode"},
+		"a tmux failure":      {fmt.Errorf("tmux send-keys: exit status 1"), ""},
+	} {
+		b := newScrollingBackend("shell")
+		b.refuse = tc.refuse
+		ans := driveScroll(t, true, b, mirror.Msg{Session: "shell", Lines: 3})
+		if ans.Error == "" || ans.Refusal != tc.refusal {
+			t.Errorf("%s: answered %q named %q, want a refusal named %q", name, ans.Error, ans.Refusal, tc.refusal)
+		}
 	}
 }

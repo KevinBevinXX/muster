@@ -121,6 +121,36 @@ const MirrorTerminalScrollPath = "/mirror/terminal/scroll"
 // the host and the page dropped what it had not sent.
 const ScrollGaveUpNote = "Scrolling is not reaching the host. Drag again to retry."
 
+// ScrollRefusalHeader names, on a scroll's refusal, WHICH refusal it is (one
+// of the ScrollRefusal* codes), so the page acts on a code rather than on a
+// status a proxy could also answer. Only ScrollRefusalUnsupported stops the
+// gesture; every other one shows its note, keeps the gesture wired and clears
+// once a scroll lands.
+const ScrollRefusalHeader = "X-Muster-Scroll-Refusal"
+
+// The scroll route's refusal codes (ScrollRefusalHeader).
+const (
+	// ScrollRefusalUnsupported: this host cannot scroll (an older or read-only
+	// muster-mirror). The page unwires the gesture; Reconnect wires it again.
+	ScrollRefusalUnsupported = "unsupported"
+	// ScrollRefusalOffline: the host is not connected now (it is reconnecting).
+	ScrollRefusalOffline = "offline"
+	// ScrollRefusalMode: the pane is in another tmux mode (a menu, choose-tree).
+	ScrollRefusalMode = "mode"
+	// ScrollRefusalGone: the session or window is no longer on the host.
+	ScrollRefusalGone = "gone"
+	// ScrollRefusalRefused: the host refused for another reason.
+	ScrollRefusalRefused = "refused"
+)
+
+// The notes the page shows for each refusal that keeps the gesture wired.
+const (
+	ScrollOfflineNote = "Host reconnecting. Drag again once it is back."
+	ScrollModeNote    = "The pane is in another mode (e.g. a tmux menu). Close it, then drag again."
+	ScrollGoneNote    = "This window is no longer on the host."
+	ScrollRefusedNote = "The host refused the scroll. Drag again to retry."
+)
+
 // The Live keys switch's words, and the status line's. Exported so a test pins
 // the page against the same strings rather than a copy of them.
 const (
@@ -701,8 +731,15 @@ func agentTerminalScript() g.Node {
   // lines to the pending count, to be sent again: on the next frame the first
   // time, then after 100, 200 and 400 ms. After scrollMaxFails failures in a
   // row the page gives up: it drops what is pending and shows
-  // #term-scroll-note until a scroll lands again. A 404 or 409 (the host cannot
-  // scroll any more) stops the gesture instead.
+  // #term-scroll-note until a scroll lands again.
+  //
+  // 🔴 A REFUSAL IS READ FROM ITS CODE (the ScrollRefusalHeader), NOT ITS
+  // STATUS, and only "this host cannot scroll" stops the gesture (Reconnect
+  // wires it again). A host that is reconnecting, a pane in a tmux menu, a
+  // window that is gone: each shows its note, drops what is pending (it was
+  // meant for a view that is not there) and keeps the gesture — the next drag
+  // asks again, and the note clears once one lands. A status with no code (a
+  // proxy's 404) is retried like any other failure.
   var scrollPath = host.getAttribute('data-scroll');
   if (scrollPath) (function () {
     var form = host.getAttribute('data-scroll-form') || '';
@@ -710,8 +747,22 @@ func agentTerminalScript() g.Node {
     var maxLines = ` + strconv.Itoa(mirror.MaxScrollLines) + `;
     var scrollMaxFails = 5;
     var px = 0, lines = 0, sent = 0, asked = 0, fails = 0;
-    var inFlight = false, frame = false, dead = false, waiting = false;
-    function showNote(on) { if (note) note.hidden = !on; }
+    var inFlight = false, frame = false, dead = true, waiting = false;
+    var refusalHeader = ` + strconv.Quote(ScrollRefusalHeader) + `;
+    var stopCode = ` + strconv.Quote(ScrollRefusalUnsupported) + `;
+    var refusalNotes = {};
+    refusalNotes[` + strconv.Quote(ScrollRefusalOffline) + `] = ` + strconv.Quote(ScrollOfflineNote) + `;
+    refusalNotes[` + strconv.Quote(ScrollRefusalMode) + `] = ` + strconv.Quote(ScrollModeNote) + `;
+    refusalNotes[` + strconv.Quote(ScrollRefusalGone) + `] = ` + strconv.Quote(ScrollGoneNote) + `;
+    refusalNotes[` + strconv.Quote(ScrollRefusalRefused) + `] = ` + strconv.Quote(ScrollRefusedNote) + `;
+    var gaveUpNote = ` + strconv.Quote(ScrollGaveUpNote) + `;
+    function showNote(text) {
+      if (!note) return;
+      if (text) note.textContent = text;
+      note.hidden = !text;
+      // An instrument for the browser suite: which note is up.
+      if (text) host.setAttribute('data-scroll-note', text); else host.removeAttribute('data-scroll-note');
+    }
     function cellHeight() {
       // The drawn height (Fit width scales it), per row.
       var sc = host.querySelector('.xterm-screen');
@@ -750,8 +801,9 @@ func agentTerminalScript() g.Node {
         body: form + '&lines=' + n
       }).then(function (r) {
         if (r.ok) return 'landed';
-        // The host cannot scroll (any more): stop asking.
-        if (r.status === 404 || r.status === 409) return 'stop';
+        var code = r.headers.get(refusalHeader) || '';
+        if (code === stopCode) return 'stop';
+        if (refusalNotes.hasOwnProperty(code)) return 'refused:' + code;
         return 'retry';
       }, function () { return 'retry'; }).then(function (how) {
         inFlight = false;
@@ -759,9 +811,19 @@ func agentTerminalScript() g.Node {
           sent += n;
           fails = 0;
           host.setAttribute('data-scroll-sent', String(sent));
-          showNote(false);
+          showNote('');
         } else if (how === 'stop') {
+          lines = 0;
+          px = 0;
+          fails = 0;
           stop();
+          return;
+        } else if (how.indexOf('refused:') === 0) {
+          // Not this host's to scroll right now: say why, keep the gesture.
+          lines = 0;
+          px = 0;
+          fails = 0;
+          showNote(refusalNotes[how.slice('refused:'.length)]);
           return;
         } else {
           lines += n;
@@ -770,7 +832,7 @@ func agentTerminalScript() g.Node {
             lines = 0;
             px = 0;
             fails = 0;
-            showNote(true);
+            showNote(gaveUpNote);
             return;
           }
           if (fails > 1) {
@@ -829,6 +891,7 @@ func agentTerminalScript() g.Node {
     }
     var touchTargets = [scrollEl, host.querySelector('.xterm-viewport')];
     function stop() {
+      if (dead) return;
       dead = true;
       scrollEl.removeEventListener('touchstart', onStart, true);
       scrollEl.removeEventListener('touchmove', onMove, true);
@@ -837,15 +900,24 @@ func agentTerminalScript() g.Node {
       scrollEl.removeEventListener('wheel', onWheel, true);
       touchTargets.forEach(function (el) { if (el) el.style.touchAction = ''; });
       host.removeAttribute('data-scroll-on');
+      showNote('');
     }
-    touchTargets.forEach(function (el) { if (el) el.style.touchAction = 'pan-x pinch-zoom'; });
-    scrollEl.addEventListener('touchstart', onStart, { capture: true, passive: true });
-    scrollEl.addEventListener('touchmove', onMove, { capture: true, passive: true });
-    scrollEl.addEventListener('touchend', onEnd, { capture: true, passive: true });
-    scrollEl.addEventListener('touchcancel', onEnd, { capture: true, passive: true });
-    scrollEl.addEventListener('wheel', onWheel, { capture: true, passive: false });
-    // An instrument for the browser suite: the handlers are wired.
-    host.setAttribute('data-scroll-on', '1');
+    function wire() {
+      if (!dead) return;
+      dead = false;
+      touchTargets.forEach(function (el) { if (el) el.style.touchAction = 'pan-x pinch-zoom'; });
+      scrollEl.addEventListener('touchstart', onStart, { capture: true, passive: true });
+      scrollEl.addEventListener('touchmove', onMove, { capture: true, passive: true });
+      scrollEl.addEventListener('touchend', onEnd, { capture: true, passive: true });
+      scrollEl.addEventListener('touchcancel', onEnd, { capture: true, passive: true });
+      scrollEl.addEventListener('wheel', onWheel, { capture: true, passive: false });
+      // An instrument for the browser suite: the handlers are wired.
+      host.setAttribute('data-scroll-on', '1');
+    }
+    wire();
+    // Reconnect wires the gesture again after "this host cannot scroll": the
+    // host may have been upgraded or restarted with -interactive since.
+    reconnectBtn.addEventListener('click', wire);
   })();
 
   // Leaving the page ends the stream now rather than when the socket times out.

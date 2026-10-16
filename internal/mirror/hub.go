@@ -541,7 +541,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				}
 			case TypeScrolled:
 				if hc.version >= 2 {
-					hc.scrolled(m.ID, m.Error)
+					hc.scrolled(m.ID, m.Error, m.Refusal)
 				}
 			case TypeClosed:
 				var why error

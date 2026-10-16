@@ -14,8 +14,9 @@ import (
 // to read it is tmux's own COPY-MODE on the pane: the host enters it (`copy-mode
 // -e`) and scrolls it (`send-keys -X -N <n> scroll-up|scroll-down`), and every
 // client showing that pane — the viewer's included — draws the scrolled view.
-// The host leaves copy-mode when the scroll returns to the bottom (-e) and after
-// an idle spell (mirrorhost), so a pane is never left in it.
+// The host leaves copy-mode when the scroll returns to the bottom (-e), after
+// an idle spell, and before a message is sent into the pane (mirrorhost) — or,
+// when a tmux menu is open over it, once the menu closes.
 //
 // 🔴 NO FRESH SIGN-IN (internal/stepup) IS ASKED FOR, AND THAT IS A DECISION
 // (the operator's), NOT AN OMISSION. A paste or a live key reaches the PROGRAM
@@ -39,6 +40,11 @@ var (
 	ErrScrollUnsupported = errors.New("mirror: this host's muster-mirror cannot scroll a pane's history; upgrade it (and start it with -interactive)")
 	// ErrScrollRefused wraps the host's own reason for refusing a scroll.
 	ErrScrollRefused = errors.New("mirror: the host refused the scroll")
+	// ErrScrollPaneInMode: the host refused because the pane is in another
+	// tmux mode (a menu, choose-tree, view-mode) — Msg.Refusal
+	// ScrollRefusalMode. Unlike ErrScrollUnsupported it passes: the pane
+	// scrolls again once that mode is closed.
+	ErrScrollPaneInMode = errors.New("mirror: the pane is in another mode (e.g. a tmux menu)")
 	// ErrScrollTimeout: the host did not answer a scroll in time.
 	ErrScrollTimeout = errors.New("mirror: the host did not answer the scroll in time")
 	// ErrBadScroll: a line count ClampScroll refuses (0).
@@ -97,8 +103,10 @@ func (h *Hub) ScrollWindow(ctx context.Context, owner int64, host, session, wind
 	}
 }
 
-// scrolled hands the host's answer to the scroll waiting on id.
-func (hc *hostConn) scrolled(id uint32, why string) {
+// scrolled hands the host's answer to the scroll waiting on id. refusal
+// (Msg.Refusal) decides which error a refusal is; the host's prose (why) is
+// only ever carried along, never parsed.
+func (hc *hostConn) scrolled(id uint32, why, refusal string) {
 	hc.mu.Lock()
 	ch := hc.scrolls[id]
 	delete(hc.scrolls, id)
@@ -106,9 +114,19 @@ func (hc *hostConn) scrolled(id uint32, why string) {
 	if ch == nil {
 		return
 	}
-	if why != "" {
-		ch <- fmt.Errorf("%w: %s", ErrScrollRefused, why)
-		return
+	ch <- scrollAnswer(why, refusal)
+}
+
+// scrollAnswer is the error a host's scrolled answer means.
+func scrollAnswer(why, refusal string) error {
+	if why == "" {
+		return nil
 	}
-	ch <- nil
+	switch refusal {
+	case ScrollRefusalMode:
+		return fmt.Errorf("%w: %s", ErrScrollPaneInMode, why)
+	case ScrollRefusalUnsupported:
+		return fmt.Errorf("%w: %s", ErrScrollUnsupported, why)
+	}
+	return fmt.Errorf("%w: %s", ErrScrollRefused, why)
 }

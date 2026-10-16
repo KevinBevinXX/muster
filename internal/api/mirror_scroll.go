@@ -9,6 +9,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // DRAG-TO-SCROLL on a mirrored session's Terminal view: POST
@@ -30,10 +31,15 @@ import (
 // limit must sit ABOVE the page's own fastest cadence, because a 429 costs the
 // page a retry (internal/ui's terminal script puts the lines back and sends
 // them again). A page sends at most one request per animation frame and only
-// one at a time (it waits for each answer), so on a 120 Hz screen with an
-// instant round trip it sends 120 a second. The window is fixed, not sliding,
-// so the limit is twice that: a page at full speed is never refused, and a
-// script sending without waiting for answers is.
+// one at a time (it waits for each answer), so it is bounded by BOTH its frame
+// rate (120 a second on a 120 Hz screen) and one over its round trip. The
+// round trip cannot be shorter than the host's own work: measured on real tmux
+// (75 windows, tmux 3.7c), resolving the pane and scrolling it take ~6–7 ms
+// (median), so even a page on the same machine as the host is held to roughly
+// 150 a second. The window is fixed, not sliding, so the limit is 240: a page
+// at full speed is never refused, and a script sending without waiting for
+// answers is stopped here before it queues on the host, which runs one
+// connection's scrolls one at a time.
 const (
 	scrollRateBurst  = 240
 	scrollRateWindow = time.Second
@@ -74,9 +80,23 @@ func (k *keyedRate) allow(key int64, now time.Time, burst int, window time.Durat
 // MirrorScrollUnsupported is the 409's text when the host cannot scroll.
 var MirrorScrollUnsupported = unprefixed(mirror.ErrScrollUnsupported)
 
+// scrollRefuse answers a scroll that did not happen, naming the refusal in
+// ui.ScrollRefusalHeader. The page branches on that code, never on the status:
+// only ui.ScrollRefusalUnsupported stops its gesture.
+func scrollRefuse(w http.ResponseWriter, code string, status int, msg string) {
+	w.Header().Set(ui.ScrollRefusalHeader, code)
+	if code == ui.ScrollRefusalOffline {
+		w.Header().Set("Retry-After", "2")
+	}
+	http.Error(w, msg, status)
+}
+
+// scrollOffline is the 503's text when the host is not connected now.
+const scrollOffline = "the host is not connected (it is reconnecting)"
+
 func (s *Server) handleMirrorTerminalScroll(w http.ResponseWriter, r *http.Request) {
 	if s.ext.Mirror == nil {
-		http.NotFound(w, r)
+		scrollRefuse(w, ui.ScrollRefusalUnsupported, http.StatusNotFound, "mirroring is off")
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
@@ -100,24 +120,38 @@ func (s *Server) handleMirrorTerminalScroll(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	window := r.PostFormValue("window")
-	_, e, listed, _, found := s.mirrorEntry(r, r.PostFormValue("host"), r.PostFormValue("session"), window)
-	if !found || !listed {
-		http.NotFound(w, r)
+	h, e, listed, _, found := s.mirrorEntry(r, r.PostFormValue("host"), r.PostFormValue("session"), window)
+	switch {
+	case !found && (mirror.ValidSession(r.PostFormValue("session")) != nil || (window != "" && mirror.ValidWindowID(window) != nil)):
+		http.Error(w, "not a session or window address", http.StatusBadRequest)
 		return
-	}
-	if !e.CanScroll() {
-		http.Error(w, MirrorScrollUnsupported, http.StatusConflict)
+	case !found || !h.Online:
+		// A host that is not connected NOW — a restart, a dropped link — is
+		// not one that cannot scroll: the page says so and keeps its gesture.
+		// (Another owner's host is not found either, and answers the same.)
+		scrollRefuse(w, ui.ScrollRefusalOffline, http.StatusServiceUnavailable, scrollOffline)
+		return
+	case !listed:
+		scrollRefuse(w, ui.ScrollRefusalGone, http.StatusNotFound, "that session or window is no longer on the host")
+		return
+	case !e.CanScroll():
+		scrollRefuse(w, ui.ScrollRefusalUnsupported, http.StatusConflict, MirrorScrollUnsupported)
 		return
 	}
 	err = s.ext.Mirror.ScrollWindow(r.Context(), e.Host, e.Session, window, lines)
 	switch {
 	case err == nil:
 		w.WriteHeader(http.StatusNoContent)
-	case errors.Is(err, mirror.ErrHostOffline), errors.Is(err, mirror.ErrSessionGone), errors.Is(err, mirror.ErrWindowGone),
-		errors.Is(err, mirror.ErrHostDisconnected):
-		http.NotFound(w, r)
-	case errors.Is(err, mirror.ErrScrollUnsupported), errors.Is(err, mirror.ErrScrollRefused), errors.Is(err, mirror.ErrBadScroll):
-		http.Error(w, unprefixed(err), http.StatusConflict)
+	case errors.Is(err, mirror.ErrHostOffline), errors.Is(err, mirror.ErrHostDisconnected):
+		scrollRefuse(w, ui.ScrollRefusalOffline, http.StatusServiceUnavailable, scrollOffline)
+	case errors.Is(err, mirror.ErrSessionGone), errors.Is(err, mirror.ErrWindowGone):
+		scrollRefuse(w, ui.ScrollRefusalGone, http.StatusNotFound, unprefixed(err))
+	case errors.Is(err, mirror.ErrScrollUnsupported):
+		scrollRefuse(w, ui.ScrollRefusalUnsupported, http.StatusConflict, unprefixed(err))
+	case errors.Is(err, mirror.ErrScrollPaneInMode):
+		scrollRefuse(w, ui.ScrollRefusalMode, http.StatusConflict, unprefixed(err))
+	case errors.Is(err, mirror.ErrScrollRefused), errors.Is(err, mirror.ErrBadScroll):
+		scrollRefuse(w, ui.ScrollRefusalRefused, http.StatusConflict, unprefixed(err))
 	case errors.Is(err, mirror.ErrScrollTimeout):
 		http.Error(w, unprefixed(err), http.StatusGatewayTimeout)
 	default:

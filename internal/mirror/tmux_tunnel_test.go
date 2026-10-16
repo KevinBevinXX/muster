@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -344,5 +345,58 @@ func TestTmuxAViewerDoesNotKeepAnEndedSessionsWindowAlive(t *testing.T) {
 	_ = within(t, res, "the viewer's terminal to end")
 	if got := strings.Fields(run("list-sessions", "-F", "#{session_name}")); !slices.Equal(got, []string{"keep"}) {
 		t.Fatalf("sessions left = %q, want only [keep]", got)
+	}
+}
+
+// TestTmuxAMessageSentWhileScrolledIsOnScreen is the composer's send into a
+// pane a drag-to-scroll left in copy-mode, over the WHOLE chain with real tmux:
+// the paste lands in the program either way, but while the pane is in
+// copy-mode it goes on showing old history, so the message and its answer are
+// out of view. The copy-mode THIS host entered is cancelled before the paste;
+// copy-mode the operator entered is not.
+func TestTmuxAMessageSentWhileScrolledIsOnScreen(t *testing.T) {
+	sock, run := privateTmux(t)
+	run("new-session", "-d", "-s", "work", "-x", "80", "-y", "20", "sh", "-c", "seq 1 300; exec cat")
+	window := strings.TrimSpace(run("display-message", "-p", "-t", "=work:", "#{window_id}"))
+	pane := strings.TrimSpace(run("display-message", "-p", "-t", "=work:", "#{pane_id}"))
+	waitLong(t, "the pane's history", func() bool {
+		h, _ := strconv.Atoi(strings.TrimSpace(run("display-message", "-p", "-t", pane, "#{history_size}")))
+		return h >= 200
+	})
+	inMode := func() string { return strings.TrimSpace(run("display-message", "-p", "-t", pane, "#{pane_in_mode}")) }
+
+	r := newRig(t)
+	tok, _ := r.store.mint(t, 1, "workstation")
+	r.connect(t, "workstation", tok, mirrorhost.Tmux{Socket: sock}, true)
+	r.online(t, 1, "workstation", "work")
+
+	// 1. This host's copy-mode: a scroll back, then a message.
+	if err := r.svc.ScrollWindow(asUser(1), "workstation", "work", window, 10); err != nil {
+		t.Fatalf("scroll: %v", err)
+	}
+	if got := inMode(); got != "1" {
+		t.Fatalf("fixture: after the scroll pane_in_mode=%s, want 1", got)
+	}
+	if err := r.svc.PasteWindow(asUser(1), "workstation", "work", window, "SENT-WHILE-SCROLLED-7c", mirror.PasteActivePane); err != nil {
+		t.Fatalf("paste: %v", err)
+	}
+	if got := inMode(); got != "0" {
+		t.Fatalf("after a message into the copy-mode this host entered, pane_in_mode=%s, want 0 (cancelled first)", got)
+	}
+	waitLong(t, "the message on screen", func() bool {
+		return strings.Contains(run("capture-pane", "-p", "-t", pane), "SENT-WHILE-SCROLLED-7c")
+	})
+
+	// 2. The operator's own copy-mode (prefix-[): scrolled by muster, but a
+	// message does not end it.
+	run("copy-mode", "-t", pane)
+	if err := r.svc.ScrollWindow(asUser(1), "workstation", "work", window, 4); err != nil {
+		t.Fatalf("scroll the operator's copy-mode: %v", err)
+	}
+	if err := r.svc.PasteWindow(asUser(1), "workstation", "work", window, "SENT-INTO-OPERATORS-9d", mirror.PasteActivePane); err != nil {
+		t.Fatalf("paste: %v", err)
+	}
+	if got := inMode(); got != "1" {
+		t.Fatalf("a message ended the OPERATOR's copy-mode: pane_in_mode=%s, want 1", got)
 	}
 }

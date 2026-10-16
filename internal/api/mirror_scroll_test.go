@@ -19,6 +19,10 @@ import (
 
 const termScrollPath = "/mirror/terminal/scroll"
 
+// scrollRefusalHeader is the header a refusal names its kind in; the page
+// stops its gesture only on "unsupported".
+const scrollRefusalHeader = "X-Muster-Scroll-Refusal"
+
 func scrollForm(session string, lines string) url.Values {
 	return url.Values{"host": {"ws"}, "session": {session}, "lines": {lines}}
 }
@@ -117,7 +121,10 @@ func TestAScrollNeedsNoStepUpAndIsClamped(t *testing.T) {
 }
 
 // TestAScrollIsRefusedBeforeThePluginIsAsked: every gate the route keeps, each
-// refusing before the plugin is asked. The last row is the control.
+// refusing before the plugin is asked, and naming its refusal (the header the
+// page branches on): only a host that CANNOT scroll is "unsupported" — one
+// that is offline, or a session that is gone, is not. The last row is the
+// control.
 func TestAScrollIsRefusedBeforeThePluginIsAsked(t *testing.T) {
 	type tc struct {
 		name    string
@@ -128,55 +135,65 @@ func TestAScrollIsRefusedBeforeThePluginIsAsked(t *testing.T) {
 		session string
 		lines   string
 		status  int
+		code    string
 	}
 	can := func() *fakeMirror {
 		return &fakeMirror{online: true, interactive: true, scroll: true, v2: &fakeMirrorV2{}}
 	}
 	for _, c := range []tc{
-		{"no session", can(), false, "", "ws", "chief", "3", http.StatusUnauthorized},
-		{"another origin", can(), true, "https://evil.example", "ws", "chief", "3", http.StatusForbidden},
-		{"zero lines", can(), true, "", "ws", "chief", "0", http.StatusBadRequest},
-		{"not a number", can(), true, "", "ws", "chief", "3.5", http.StatusBadRequest},
-		{"no lines", can(), true, "", "ws", "chief", "", http.StatusBadRequest},
-		{"another host", can(), true, "", "nope", "chief", "3", http.StatusNotFound},
-		{"an unlisted session", can(), true, "", "ws", "gone", "3", http.StatusNotFound},
-		{"an older muster-mirror", &fakeMirror{online: true, interactive: true, v2: &fakeMirrorV2{}}, true, "", "ws", "chief", "3", http.StatusConflict},
-		{"a read-only host", &fakeMirror{online: true, interactive: false, scroll: true, v2: &fakeMirrorV2{}}, true, "", "ws", "chief", "3", http.StatusConflict},
-		{"control", can(), true, "", "ws", "chief", "3", http.StatusNoContent},
+		{"no session", can(), false, "", "ws", "chief", "3", http.StatusUnauthorized, ""},
+		{"another origin", can(), true, "https://evil.example", "ws", "chief", "3", http.StatusForbidden, ""},
+		{"zero lines", can(), true, "", "ws", "chief", "0", http.StatusBadRequest, ""},
+		{"not a number", can(), true, "", "ws", "chief", "3.5", http.StatusBadRequest, ""},
+		{"no lines", can(), true, "", "ws", "chief", "", http.StatusBadRequest, ""},
+		{"not a session name", can(), true, "", "ws", "a\x01b", "3", http.StatusBadRequest, ""},
+		{"a host not connected now (or another owner's)", can(), true, "", "nope", "chief", "3", http.StatusServiceUnavailable, "offline"},
+		{"an offline host", &fakeMirror{online: false, interactive: true, scroll: true, v2: &fakeMirrorV2{}}, true, "", "ws", "chief", "3", http.StatusServiceUnavailable, "offline"},
+		{"an unlisted session", can(), true, "", "ws", "gone", "3", http.StatusNotFound, "gone"},
+		{"an older muster-mirror", &fakeMirror{online: true, interactive: true, v2: &fakeMirrorV2{}}, true, "", "ws", "chief", "3", http.StatusConflict, "unsupported"},
+		{"a read-only host", &fakeMirror{online: true, interactive: false, scroll: true, v2: &fakeMirrorV2{}}, true, "", "ws", "chief", "3", http.StatusConflict, "unsupported"},
+		{"control", can(), true, "", "ws", "chief", "3", http.StatusNoContent, ""},
 	} {
 		s, ts := viewServer(t, c.fm)
 		cookie := ""
 		if c.cookie {
 			cookie = sessionCookieFor(s)
 		}
-		code, body, _ := postSend(t, ts.URL, termScrollPath, cookie, c.origin,
+		code, body, hdr := postSend(t, ts.URL, termScrollPath, cookie, c.origin,
 			url.Values{"host": {c.host}, "session": {c.session}, "lines": {c.lines}})
 		asked := len(c.fm.scrolled())
-		if code != c.status || (asked == 1) != (c.status == http.StatusNoContent) {
-			t.Errorf("%s: %d %q, plugin asked %d time(s); want %d", c.name, code, body, asked, c.status)
+		if code != c.status || (asked == 1) != (c.status == http.StatusNoContent) || hdr.Get(scrollRefusalHeader) != c.code {
+			t.Errorf("%s: %d %q (refusal %q), plugin asked %d time(s); want %d (refusal %q)", c.name, code, body, hdr.Get(scrollRefusalHeader), asked, c.status, c.code)
 		}
 	}
 }
 
 // TestTheHostsAnswerIsMappedToAStatus: what the plugin answers decides the
-// status the page reads (404 or 409 stops its gesture; anything else is put
-// back and sent again).
+// status and the refusal code the page reads. Only "unsupported" stops the
+// gesture; "offline", "mode", "gone" and "refused" show a note and keep it;
+// no code (a timeout, a broken link) is put back and sent again.
 func TestTheHostsAnswerIsMappedToAStatus(t *testing.T) {
 	for _, c := range []struct {
 		err    error
 		status int
+		code   string
 	}{
-		{fmt.Errorf("%w: pane %%3 is in tree-mode", mirror.ErrScrollRefused), http.StatusConflict},
-		{mirror.ErrScrollUnsupported, http.StatusConflict},
-		{mirror.ErrScrollTimeout, http.StatusGatewayTimeout},
-		{mirror.ErrSessionGone, http.StatusNotFound},
-		{mirror.ErrHostDisconnected, http.StatusNotFound},
-		{errors.New("mirror: send the scroll to the host: broken pipe"), http.StatusBadGateway},
+		{fmt.Errorf("%w: pane %%3 is in tree-mode", mirror.ErrScrollPaneInMode), http.StatusConflict, "mode"},
+		{fmt.Errorf("%w: tmux send-keys: exit 1", mirror.ErrScrollRefused), http.StatusConflict, "refused"},
+		{mirror.ErrBadScroll, http.StatusConflict, "refused"},
+		{mirror.ErrScrollUnsupported, http.StatusConflict, "unsupported"},
+		{mirror.ErrScrollTimeout, http.StatusGatewayTimeout, ""},
+		{mirror.ErrSessionGone, http.StatusNotFound, "gone"},
+		{mirror.ErrWindowGone, http.StatusNotFound, "gone"},
+		{mirror.ErrHostDisconnected, http.StatusServiceUnavailable, "offline"},
+		{mirror.ErrHostOffline, http.StatusServiceUnavailable, "offline"},
+		{errors.New("mirror: send the scroll to the host: broken pipe"), http.StatusBadGateway, ""},
 	} {
 		fm := &fakeMirror{online: true, interactive: true, scroll: true, v2: &fakeMirrorV2{}, scrollErr: c.err}
 		s, ts := viewServer(t, fm)
-		if code, body, _ := postSend(t, ts.URL, termScrollPath, sessionCookieFor(s), "", scrollForm("chief", "2")); code != c.status {
-			t.Errorf("%v: %d %q, want %d", c.err, code, body, c.status)
+		code, body, hdr := postSend(t, ts.URL, termScrollPath, sessionCookieFor(s), "", scrollForm("chief", "2"))
+		if code != c.status || hdr.Get(scrollRefusalHeader) != c.code {
+			t.Errorf("%v: %d %q (refusal %q), want %d (refusal %q)", c.err, code, body, hdr.Get(scrollRefusalHeader), c.status, c.code)
 		}
 	}
 }

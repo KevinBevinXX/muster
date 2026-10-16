@@ -252,6 +252,12 @@ type Msg struct {
 	// the live screen). 0 and anything beyond MaxScrollLines either way is
 	// refused (ClampScroll is the bound both halves apply).
 	Lines int `json:"lines,omitempty"`
+	// Refusal (scrolled) is WHICH KIND of refusal Error is, for muster to act
+	// on without reading the host's prose: ScrollRefusalMode or
+	// ScrollRefusalUnsupported; "" for any other (and for every refusal an
+	// older host sends — which muster then treats as a plain refusal, never as
+	// "this host cannot scroll"). Backward-compatible both ways, like PaneScroll.
+	Refusal string `json:"refusal,omitempty"`
 
 	// ---- per-window registration ----
 
@@ -329,6 +335,17 @@ const (
 	// drag into one request per animation frame, and a frame's worth of a fast
 	// fling is tens of lines, not hundreds.
 	MaxScrollLines = 200
+)
+
+// The kinds of scroll refusal a host names (Msg.Refusal).
+const (
+	// ScrollRefusalMode: the pane is in a mode other than copy-mode at the top
+	// of its stack (a tmux menu, choose-tree, view-mode): nothing scrolls until
+	// it is closed. The pane can scroll again later.
+	ScrollRefusalMode = "mode"
+	// ScrollRefusalUnsupported: this host cannot scroll a pane at all (read-only,
+	// or its backend has no copy-mode). The only refusal that means "stop asking".
+	ScrollRefusalUnsupported = "unsupported"
 )
 
 // ClampScroll is n bounded to [-MaxScrollLines, MaxScrollLines], and ok=false

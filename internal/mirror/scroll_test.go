@@ -144,8 +144,17 @@ func TestAScrollKeepsEveryOtherGate(t *testing.T) {
 	b.smu.Lock()
 	b.refuse = errors.New("pane %a-shell is in tree-mode, not copy-mode")
 	b.smu.Unlock()
-	if err := r.svc.ScrollWindow(asUser(1), "rw", "shell", "", 3); !errors.Is(err, mirror.ErrScrollRefused) {
-		t.Fatalf("a host refusal = %v, want ErrScrollRefused", err)
+	if err := r.svc.ScrollWindow(asUser(1), "rw", "shell", "", 3); !errors.Is(err, mirror.ErrScrollRefused) ||
+		errors.Is(err, mirror.ErrScrollPaneInMode) || errors.Is(err, mirror.ErrScrollUnsupported) {
+		t.Fatalf("a host refusal = %v, want ErrScrollRefused and nothing more", err)
+	}
+	// A pane in another mode: the host names it, and muster hears it as
+	// ErrScrollPaneInMode — never as "this host cannot scroll".
+	b.smu.Lock()
+	b.refuse = fmt.Errorf("%w: pane %%a-shell is in tree-mode, not copy-mode", mirrorhost.ErrPaneInAnotherMode)
+	b.smu.Unlock()
+	if err := r.svc.ScrollWindow(asUser(1), "rw", "shell", "", 3); !errors.Is(err, mirror.ErrScrollPaneInMode) || errors.Is(err, mirror.ErrScrollUnsupported) {
+		t.Fatalf("a pane in another mode = %v, want ErrScrollPaneInMode", err)
 	}
 }
 

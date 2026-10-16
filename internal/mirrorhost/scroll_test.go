@@ -2,6 +2,7 @@ package mirrorhost
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"slices"
@@ -20,6 +21,11 @@ type modeFake struct {
 	mu      sync.Mutex
 	pos     map[string]int
 	cancels []string
+	// over: panes with another mode (a menu) open OVER their copy-mode, as
+	// tmux stacks them: a cancel reaches nothing and says so.
+	over map[string]bool
+	// tries counts every CancelCopyMode, refused ones included.
+	tries int
 }
 
 func (f *modeFake) ScrollPane(_ context.Context, pane string, lines int) (bool, bool, error) {
@@ -40,6 +46,10 @@ func (f *modeFake) ScrollPane(_ context.Context, pane string, lines int) (bool, 
 func (f *modeFake) CancelCopyMode(_ context.Context, pane string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.tries++
+	if f.over[pane] {
+		return fmt.Errorf("%w: pane %s is in tree-mode", ErrPaneInAnotherMode, pane)
+	}
 	if _, in := f.pos[pane]; in {
 		delete(f.pos, pane)
 		f.cancels = append(f.cancels, pane)
@@ -57,7 +67,20 @@ func (f *modeFake) state() (map[string]int, []string) {
 	return p, slices.Clone(f.cancels)
 }
 
-func newModeFake() *modeFake { return &modeFake{pos: map[string]int{}} }
+func newModeFake() *modeFake { return &modeFake{pos: map[string]int{}, over: map[string]bool{}} }
+
+// setOver opens (or closes) another mode over pane's copy-mode.
+func (f *modeFake) setOver(pane string, on bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.over[pane] = on
+}
+
+func (f *modeFake) cancelTries() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.tries
+}
 
 func quietScroller(f *modeFake, idle time.Duration) *scroller {
 	return newScroller(f, idle, log.New(io.Discard, "", 0))
@@ -173,5 +196,72 @@ func TestCloseAllCancelsAtOnce(t *testing.T) {
 	_ = s.scroll(context.Background(), "%4", 2)
 	if pos, _ := f.state(); pos["%4"] != 0 {
 		t.Fatalf("a scroll after closeAll left %%4 in copy-mode: %v", pos)
+	}
+}
+
+// TestAMenuOverThisHostsCopyModeDelaysTheCancelButDoesNotLoseIt: modes stack —
+// someone opens choose-tree over the copy-mode this host entered — so the idle
+// cancel cannot reach it. It is tried again each idle spell, not forgotten,
+// and lands once the menu closes.
+func TestAMenuOverThisHostsCopyModeDelaysTheCancelButDoesNotLoseIt(t *testing.T) {
+	f := newModeFake()
+	idle := 60 * time.Millisecond
+	s := quietScroller(f, idle)
+	if err := s.scroll(context.Background(), "%1", 5); err != nil {
+		t.Fatal(err)
+	}
+	f.setOver("%1", true)
+	// Several spells pass with the menu open: tried, refused, tried again.
+	within(t, "three refused cancels", 3*time.Second, func() bool { return f.cancelTries() >= 3 })
+	if pos, c := f.state(); len(c) != 0 || pos["%1"] != 5 {
+		t.Fatalf("with the menu open: pos %v, cancels %q", pos, c)
+	}
+	f.setOver("%1", false)
+	within(t, "the cancel once the menu closed", 3*time.Second, func() bool { _, c := f.state(); return slices.Equal(c, []string{"%1"}) })
+	// And then it is forgotten: no more tries.
+	n := f.cancelTries()
+	time.Sleep(4 * idle)
+	if got := f.cancelTries(); got != n {
+		t.Fatalf("after the cancel landed it was tried %d more time(s)", got-n)
+	}
+}
+
+// TestADisconnectWithAMenuOverCopyModeStillCancelsItLater: the connection's end
+// cannot cancel a copy-mode under a menu either; it keeps trying after the end
+// rather than leave the pane in it.
+func TestADisconnectWithAMenuOverCopyModeStillCancelsItLater(t *testing.T) {
+	f := newModeFake()
+	s := quietScroller(f, 60*time.Millisecond)
+	_ = s.scroll(context.Background(), "%1", 5)
+	f.setOver("%1", true)
+	s.closeAll()
+	if _, c := f.state(); len(c) != 0 {
+		t.Fatalf("fixture: cancelled through a menu: %q", c)
+	}
+	f.setOver("%1", false)
+	within(t, "the cancel after the connection ended", 3*time.Second, func() bool { _, c := f.state(); return slices.Equal(c, []string{"%1"}) })
+}
+
+// TestAMessageSentIntoThisHostsCopyModeCancelsItFirst: a paste lands in the
+// program under copy-mode but the pane goes on showing old history, so the
+// copy-mode THIS host entered is cancelled before it — and the operator's own
+// is not.
+func TestAMessageSentIntoThisHostsCopyModeCancelsItFirst(t *testing.T) {
+	f := newModeFake()
+	f.pos["%9"] = 2 // the operator's own copy-mode
+	s := quietScroller(f, time.Hour)
+	_ = s.scroll(context.Background(), "%1", 5)
+	_ = s.scroll(context.Background(), "%9", 1)
+	s.leaveForPaste("%1")
+	s.leaveForPaste("%9")
+	s.leaveForPaste("%5") // never scrolled
+	if pos, c := f.state(); !slices.Equal(c, []string{"%1"}) || pos["%9"] != 3 || len(pos) != 1 {
+		t.Fatalf("after the pastes: pos %v, cancels %q; want only %%1 cancelled", pos, c)
+	}
+	// Its timer went with it: nothing is cancelled again later (the idle here
+	// is an hour, so only a still-armed entry could be swept by closeAll).
+	s.closeAll()
+	if _, c := f.state(); !slices.Equal(c, []string{"%1"}) {
+		t.Fatalf("closeAll found %%1 still armed: cancels %q", c)
 	}
 }

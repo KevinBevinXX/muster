@@ -60,7 +60,9 @@ import (
 // (scrollFake), and each scroll is appended to that file as `<pane> <lines>
 // pos=<lines back from the bottom>` — and each cancel as `<pane> cancel`. Unset,
 // the host is an OLDER muster-mirror that advertises no scrolling, which is how
-// a spec sees the page fall back.
+// a spec sees the page fall back. While a file `<that file>.mode` exists, every
+// pane is "in another mode" (a tmux menu over it): a scroll is refused with
+// mirrorhost.ErrPaneInAnotherMode, as real tmux's would be.
 func init() {
 	e2eWrap = func(b mirrorhost.Backend) mirrorhost.Backend {
 		if f := os.Getenv("MUSTER_MIRROR_E2E_SCROLL_FILE"); f != "" {
@@ -399,6 +401,10 @@ func (s *scrollFake) record(line string) error {
 func (s *scrollFake) ScrollPane(_ context.Context, pane string, lines int) (entered, inMode bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, err := os.Stat(s.file + ".mode"); err == nil {
+		_, in := s.pos[pane]
+		return false, in, fmt.Errorf("%w: pane %s is in tree-mode, not copy-mode", mirrorhost.ErrPaneInAnotherMode, pane)
+	}
 	p, in := s.pos[pane]
 	if !in && lines < 0 {
 		// Already at the bottom: nothing moves, but the request is recorded,

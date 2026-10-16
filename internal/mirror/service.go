@@ -316,7 +316,7 @@ func IsAttachRefusal(err error) bool {
 	for _, e := range []error{ErrHostOffline, ErrSessionGone, ErrWindowGone, ErrHostDisconnected, ErrOverrun,
 		ErrInteractiveRefused, ErrTooManyStreams, ErrNoPrincipal, ErrStepUpRequired,
 		ErrNoRenderedView, ErrNotClaude, ErrViewOverrun, ErrTooManyWatches, ErrPasteTimeout, ErrPasteRefused, ErrBadPaste,
-		ErrPanePasteUnsupported, ErrScrollUnsupported, ErrScrollRefused, ErrScrollTimeout, ErrBadScroll} {
+		ErrPanePasteUnsupported, ErrScrollUnsupported, ErrScrollRefused, ErrScrollPaneInMode, ErrScrollTimeout, ErrBadScroll} {
 		if errors.Is(err, e) {
 			return true
 		}
