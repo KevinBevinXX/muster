@@ -172,27 +172,20 @@ func TestTheMessageIndexIsOnTheMirroredViewOnly(t *testing.T) {
 	}
 }
 
-// The header's context readout: the latest turn's tokens over its window,
-// the window ONLY from what the transcript says, tokens alone otherwise.
-func TestTakeContextReadsTheWindowOnlyFromTheTranscript(t *testing.T) {
-	use := func(model string, n int64) cctranscript.Event {
-		return cctranscript.Event{Kind: cctranscript.KindText, Text: "x", Usage: &cctranscript.Usage{Model: model, Tokens: n}}
+// The header's context readout: the latest turn's context as a count —
+// never a window or a share of one — and nothing until a turn reports usage.
+func TestTakeContextIsTheLatestTurnsTokenCount(t *testing.T) {
+	use := func(n int64) cctranscript.Event {
+		return cctranscript.Event{Kind: cctranscript.KindText, Text: "x", Usage: &cctranscript.Usage{Tokens: n}}
 	}
 	cases := []struct {
 		name   string
 		events []cctranscript.Event
 		want   *ContextView
 	}{
-		{"a one-window model", []cctranscript.Event{use("claude-haiku-4-5", 124_400)},
-			&ContextView{Tokens: 124_400, Window: 200_000, Pct: 62, Label: "124k / 200k · 62%"}},
-		{"a model with a 1M variant and no attachment: tokens only", []cctranscript.Event{use("claude-opus-5-5", 124_400)},
-			&ContextView{Tokens: 124_400, Pct: -1, Label: "124k tokens"}},
-		{"the attachment says 1M for the model that runs", []cctranscript.Event{{Kind: cctranscript.KindModel, Model: "claude-opus-5-5[1m]"}, use("claude-opus-5-5", 966_483)},
-			&ContextView{Tokens: 966_483, Window: 1_000_000, Pct: 96, Label: "966k / 1M · 96%"}},
-		{"an attachment for ANOTHER model says nothing about this one", []cctranscript.Event{{Kind: cctranscript.KindModel, Model: "claude-opus-5-5[1m]"}, use("claude-sonnet-5-5", 50_000)},
-			&ContextView{Tokens: 50_000, Pct: -1, Label: "50k tokens"}},
-		{"the LATEST turn wins", []cctranscript.Event{use("claude-haiku-4-5", 10_000), use("claude-haiku-4-5", 20_000)},
-			&ContextView{Tokens: 20_000, Window: 200_000, Pct: 10, Label: "20k / 200k · 10%"}},
+		{"a turn's usage", []cctranscript.Event{use(124_400)}, &ContextView{Tokens: 124_400, Label: "124k context"}},
+		{"a 1M-scale count", []cctranscript.Event{use(966_483)}, &ContextView{Tokens: 966_483, Label: "966k context"}},
+		{"the LATEST turn wins", []cctranscript.Event{use(10_000), use(20_000)}, &ContextView{Tokens: 20_000, Label: "20k context"}},
 		{"no usage at all (an older host): nothing", []cctranscript.Event{{Kind: cctranscript.KindText, Text: "x"}, {Kind: cctranscript.KindPrompt, Text: "y"}}, nil},
 	}
 	for _, c := range cases {
@@ -206,7 +199,7 @@ func TestTakeContextReadsTheWindowOnlyFromTheTranscript(t *testing.T) {
 
 	// Reported once; again only when a batch changes it; a Reset forgets it.
 	var tr MirrorTranscript
-	tr.Ops([]cctranscript.Event{use("claude-haiku-4-5", 1000)})
+	tr.Ops([]cctranscript.Event{use(1000)})
 	if tr.TakeContext() == nil || tr.TakeContext() != nil {
 		t.Error("a readout is not reported exactly once")
 	}
@@ -214,9 +207,9 @@ func TestTakeContextReadsTheWindowOnlyFromTheTranscript(t *testing.T) {
 	if tr.TakeContext() != nil {
 		t.Error("a batch that did not change the usage reported it again")
 	}
-	tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindModel, Model: "claude-haiku-4-5"}})
-	if tr.TakeContext() == nil {
-		t.Error("a model change did not re-report the readout")
+	tr.Ops([]cctranscript.Event{use(2000)})
+	if got := tr.TakeContext(); got == nil || got.Label != "2k context" {
+		t.Errorf("a new turn's usage was not reported: %+v", got)
 	}
 	tr.Reset()
 	tr.Ops(nil)

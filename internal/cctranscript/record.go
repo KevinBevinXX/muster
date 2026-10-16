@@ -56,23 +56,15 @@ type Record struct {
 	} `json:"origin"`
 	Message struct {
 		Content json.RawMessage `json:"content"`
-		// Model and Usage are an assistant record's (usage.go).
+		// Model and Usage are an assistant record's (usage.go): its model id
+		// only marks the CLI's own "<synthetic>" records.
 		Model string `json:"model"`
 		Usage *struct {
 			InputTokens              int64 `json:"input_tokens"`
 			CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
 			CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
-			OutputTokens             int64 `json:"output_tokens"`
 		} `json:"usage"`
 	} `json:"message"`
-	// Attachment is an "attachment" record's body; muster reads only the
-	// session's model attachment ({"type":"model","identity":{"modelId":…}}).
-	Attachment struct {
-		Type     string `json:"type"`
-		Identity struct {
-			ModelID string `json:"modelId"`
-		} `json:"identity"`
-	} `json:"attachment"`
 }
 
 // Block is one content block of a record's message.

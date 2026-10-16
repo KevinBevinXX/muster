@@ -202,10 +202,8 @@ type MirrorOp struct {
 type MirrorTranscript struct {
 	calls map[string]ChatLine
 	order []string
-	// model is the session's model attachment id (cctranscript.KindModel),
-	// usage the latest turn's context use, and fresh whether usage changed
+	// usage is the latest turn's context use, and fresh whether it changed
 	// since TakeContext last reported it.
-	model string
 	usage *cctranscript.Usage
 	fresh bool
 }
@@ -243,16 +241,13 @@ func NewMirrorIndex(refs []cctranscript.PromptRef, more int) *MirrorIndex {
 // Reset forgets every drawn call (the view starts over).
 func (t *MirrorTranscript) Reset() {
 	t.calls, t.order = nil, nil
-	t.model, t.usage, t.fresh = "", nil, false
+	t.usage, t.fresh = nil, false
 }
 
-// ContextView is the header's context-usage readout (mirrorViewBatch.Context).
+// ContextView is the header's context-usage readout (mirrorViewBatch.Context):
+// the latest turn's context, as a count ("124k context").
 type ContextView struct {
-	Tokens int64 `json:"tokens"`
-	// Window is 0 when it is unknown (cctranscript.ContextWindow); Pct is then
-	// -1, and Label names the tokens alone.
-	Window int64  `json:"window"`
-	Pct    int    `json:"pct"`
+	Tokens int64  `json:"tokens"`
 	Label  string `json:"label"`
 }
 
@@ -263,28 +258,7 @@ func (t *MirrorTranscript) TakeContext() *ContextView {
 		return nil
 	}
 	t.fresh = false
-	window, known := int64(0), false
-	// The attachment's id says the window only for the model that is running:
-	// a turn on another model (a /model switch the backfill cut the attachment
-	// for) falls back to what the turn's own model says.
-	if t.model != "" && cctranscript.BaseModel(t.model) == t.usage.Model {
-		window, known = cctranscript.ContextWindow(t.model)
-	}
-	if !known {
-		window, known = cctranscript.ContextWindow(t.usage.Model)
-	}
-	return contextView(t.usage.Tokens, window, known)
-}
-
-// contextView is the readout for tokens of a window ("124k / 200k · 62%"), or
-// the tokens alone ("124k tokens") when the window is not known.
-func contextView(tokens, window int64, known bool) *ContextView {
-	if !known || window <= 0 {
-		return &ContextView{Tokens: tokens, Pct: -1, Label: tokenCount(tokens) + " tokens"}
-	}
-	pct := int(tokens * 100 / window)
-	return &ContextView{Tokens: tokens, Window: window, Pct: pct,
-		Label: tokenCount(tokens) + " / " + tokenCount(window) + " · " + strconv.Itoa(pct) + "%"}
+	return &ContextView{Tokens: t.usage.Tokens, Label: tokenCount(t.usage.Tokens) + " context"}
 }
 
 // tokenCount is n tokens, short: 950, 12k, 124k, 1M, 1.2M.
@@ -324,8 +298,6 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 			t.usage, t.fresh = ev.Usage, true
 		}
 		switch ev.Kind {
-		case cctranscript.KindModel:
-			t.model, t.fresh = ev.Model, t.usage != nil
 		case cctranscript.KindPrompt:
 			// The bubble's id is the prompt's place in its transcript, the id the
 			// prompt index names it by (MirrorPromptID). A host that sends no Line
@@ -449,7 +421,6 @@ func mirrorViewScript() g.Node {
     // muster or host sends none and the readout stays hidden.
     if (m.context && m.context.label) {
       ctxEl.textContent = m.context.label;
-      ctxEl.setAttribute('data-context-pct', String(m.context.pct));
       ctxEl.hidden = false;
     }
     (m.ops || []).forEach(function (op) {

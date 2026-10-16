@@ -21,9 +21,6 @@ const (
 	// notice.go. Notice names its source, Status a task's status, Text its
 	// one-line summary and Output the detail shown when the row is expanded.
 	KindNotice = "notice"
-	// KindModel is the session's model attachment: Model is its id, which says
-	// the window ("claude-opus-5-5[1m]"; usage.go). Nothing is drawn for it.
-	KindModel = "model"
 )
 
 // The size caps. An Event never carries a field past these, so a batch of
@@ -88,14 +85,18 @@ type Event struct {
 	// event its record contributes; nil on every other event, and from a host
 	// that predates it.
 	Usage *Usage `json:"usage,omitempty"`
-	// Model is a KindModel event's model id.
-	Model string `json:"model,omitempty"`
 }
 
 // Events is what one record contributes to the rendered view, in order. It is
 // STATELESS — a record's events depend on that record alone — which is what lets
 // a reader start at any line boundary (a backfill window, a resume offset)
-// and still produce the same events for every line after it.
+// and still produce the same events for every line after it. (A prompt's Line,
+// its place in the file, is therefore set by the reader, never here.)
+//
+// A user record is a prompt, a harness notice (notice.go) or tool results; a
+// slash command is the human's prompt, as "/name args". An assistant record is
+// its text and tool calls, or one error, and its context use (usage.go) rides
+// on its FIRST event, adding none.
 //
 // Dropped: thinking blocks, subagent (sidechain) records, injected context
 // (isMeta, compaction summaries), and every record type that is not a message
@@ -159,10 +160,6 @@ func Events(r Record) []Event {
 			out[0].Usage = usageOf(r)
 		}
 		return out
-	case "attachment":
-		if r.Attachment.Type == "model" && r.Attachment.Identity.ModelID != "" {
-			return []Event{{Kind: KindModel, Model: r.Attachment.Identity.ModelID}}
-		}
 	}
 	return nil
 }

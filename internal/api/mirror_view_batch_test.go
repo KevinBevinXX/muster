@@ -16,8 +16,8 @@ func TestAViewBatchCarriesContextOnlyWhenItHasOne(t *testing.T) {
 	if strings.Contains(string(plain), "context") {
 		t.Errorf("an empty batch carries context: %s", plain)
 	}
-	with, _ := json.Marshal(mirrorViewBatch{Type: "batch", Context: &ui.ContextView{Tokens: 5, Window: 10, Pct: 50, Label: "5 / 10 · 50%"}})
-	if !strings.Contains(string(with), `"context":{"tokens":5,"window":10,"pct":50,"label":"5 / 10 · 50%"}`) {
+	with, _ := json.Marshal(mirrorViewBatch{Type: "batch", Context: &ui.ContextView{Tokens: 5, Label: "5 context"}})
+	if !strings.Contains(string(with), `"context":{"tokens":5,"label":"5 context"}`) {
 		t.Errorf("a batch with a readout: %s", with)
 	}
 }
