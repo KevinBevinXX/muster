@@ -22,7 +22,7 @@ import { MirrorRig } from '../lib/mirrorhost';
 // They are listed in the OPPOSITE order (the host reports mqtail most recently
 // active), so a rank can only come out right by being applied.
 
-const rig = new MirrorRig(agentsSearchPort, 'e2e-search');
+const rig = new MirrorRig(agentsSearchPort, 'e2e-search', {}, { decimalHost: true });
 
 test.use({ storageState: { cookies: [], origins: [] } });
 

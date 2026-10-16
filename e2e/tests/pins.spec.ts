@@ -1,11 +1,9 @@
-import { execFileSync, spawn, ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { BrowserContext, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { binDir, dsn, password, pinsPort, repoRoot, versionTerm } from '../lib/env';
-import { serverBinary, startServer, Running } from '../lib/server';
+import { password, pinsPort } from '../lib/env';
+import { MirrorRig } from '../lib/mirrorhost';
 
 // PINNED ENTRIES COME FIRST, in a real browser, against a real muster-server
 // (MUSTER_MIRROR=1, its own port) and a real muster-mirror over the tunnel
@@ -21,14 +19,11 @@ import { serverBinary, startServer, Running } from '../lib/server';
 // (one database, one operator). The test unpins it again, and afterAll unpins
 // it once more through the route, so no later spec sees it pinned.
 
-const origin = `http://localhost:${pinsPort}`;
-const host = 'e2e-pin-' + Date.now().toString(36);
-const mirrorBin = path.join(binDir, 'muster-mirror-e2e');
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pins-'));
-const windowsFile = path.join(dir, 'windows');
-let server: Running | undefined;
-let mirrorProc: ChildProcess | undefined;
-let mirrorLog = '';
+// The server, its mirror token and the fake host are e2e/lib/mirrorhost.ts's.
+const rig = new MirrorRig(pinsPort, 'e2e-pin');
+const origin = rig.origin;
+const host = rig.host;
+const windowsFile = path.join(rig.dir, 'windows');
 let pinnedAgentID = '';
 
 const now = Math.floor(Date.now() / 1000);
@@ -38,31 +33,9 @@ const newerHref = `/mirror/terminal?host=${host}&session=pinme&window=%401`;
 const olderHref = `/mirror/terminal?host=${host}&session=pinme&window=%402`;
 
 test.beforeAll(async () => {
-  execFileSync('go', ['build', '-tags', 'e2emirror', '-o', mirrorBin, './cmd/muster-mirror'], { cwd: repoRoot, stdio: 'inherit' });
-  server = await startServer(versionTerm, pinsPort, {
-    MUSTER_MIRROR: '1',
-    MUSTER_AGENT_PROVISIONER: 'noop',
-    MUSTER_AGENT_IMAGE_REPO: 'registry.example.test/runtime',
-    MUSTER_AGENT_API_URL: 'http://muster.example.test:8105',
-  });
-  const token = execFileSync(serverBinary(versionTerm), ['mirror', 'token', 'create', host], { env: { ...process.env, DATABASE_URL: dsn } })
-    .toString()
-    .trim();
-  expect(token.startsWith('mmt_'), 'a mirror token was minted').toBe(true);
+  await rig.start();
   fs.writeFileSync(windowsFile, windows.join('\n') + '\n');
-  mirrorProc = spawn(mirrorBin, [], {
-    env: {
-      ...process.env,
-      MUSTER_MIRROR_URL: origin,
-      MUSTER_MIRROR_ALLOW_HTTP: '1',
-      MUSTER_MIRROR_TOKEN: token,
-      MUSTER_MIRROR_HOST: host,
-      MUSTER_MIRROR_E2E_WINDOWS_FILE: windowsFile,
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  mirrorProc.stdout?.on('data', (d) => (mirrorLog += d));
-  mirrorProc.stderr?.on('data', (d) => (mirrorLog += d));
+  await rig.startHost({ MUSTER_MIRROR_E2E_WINDOWS_FILE: windowsFile });
 });
 
 let signedIn: Awaited<ReturnType<BrowserContext['cookies']>> | undefined;
@@ -77,13 +50,7 @@ test.afterAll(async () => {
       body: `kind=agent&agent_id=${pinnedAgentID}`,
     }).catch(() => undefined);
   }
-  if (mirrorProc && mirrorProc.exitCode === null) {
-    const done = new Promise((r) => mirrorProc!.once('exit', r));
-    mirrorProc.kill('SIGTERM');
-    await done;
-  }
-  await server?.stop();
-  fs.rmSync(dir, { recursive: true, force: true });
+  await rig.stop();
 });
 
 async function login(page: Page) {
@@ -112,7 +79,7 @@ async function order(page: Page): Promise<string[]> {
 async function openList(page: Page) {
   await login(page);
   await page.goto(origin + '/agents');
-  await expect(page.locator(`#agents-list article[data-mirror-card] a[href="${olderHref}"]`), `the host's windows (log:\n${mirrorLog})`).toHaveCount(1, {
+  await expect(page.locator(`#agents-list article[data-mirror-card] a[href="${olderHref}"]`), `the host's windows (log:\n${rig.log})`).toHaveCount(1, {
     timeout: 20_000,
   });
   await expect(page.locator(`#agents-list article[data-mirror-card] a[href="${newerHref}"]`)).toHaveCount(1);

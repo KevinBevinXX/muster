@@ -3,8 +3,9 @@
 // played by files this suite writes (cmd/muster-mirror's e2e fakes). Everything
 // between the host and the page — the tunnel, the hub, the sockets — is real.
 //
-// The specs that grew their own copy of this (pins, mirrored, mirror-chat) keep
-// it; this is for the specs that need "a server and a host" and nothing more.
+// ONE copy: every spec that runs a fake host goes through here (pins, mirrored,
+// mirror-chat, and the specs written with it). Three private copies of it
+// had grown before it existed.
 import { execFileSync, spawn, ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -42,10 +43,17 @@ export class MirrorRig {
   log = '';
   private token = '';
 
-  constructor(readonly port: number, hostPrefix: string, private readonly serverEnv: Record<string, string> = {}) {
+  // decimalHost names the host with a DECIMAL timestamp, so it carries no
+  // letter a search spec types; the default is the shorter base-36 one the
+  // layout specs were written against.
+  constructor(readonly port: number, hostPrefix: string, private readonly serverEnv: Record<string, string> = {}, opts: { decimalHost?: boolean } = {}) {
     this.origin = `http://localhost:${port}`;
-    // Decimal, so a host name never carries a letter a search spec types.
-    this.host = hostPrefix + '-' + Date.now();
+    this.host = hostPrefix + '-' + (opts.decimalHost ? String(Date.now()) : Date.now().toString(36));
+  }
+
+  // running is whether the fake host process is up.
+  running(): boolean {
+    return !!this.proc && this.proc.exitCode === null;
   }
 
   async start(): Promise<void> {
