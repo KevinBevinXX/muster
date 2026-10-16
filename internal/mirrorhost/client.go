@@ -78,7 +78,12 @@ type Config struct {
 	// ONLY; the documented install is https. Without it only https is accepted:
 	// the token travels in the Authorization header of every connect.
 	AllowHTTP bool
-	Logger    *log.Logger
+	// NoPromptIndex makes this host behave as one that predates the prompt
+	// index (mirror.Msg.PromptIndex): a fresh view gets its backfill and no
+	// index, and no event names its prompt's place (Event.Line). FOR THE BROWSER SUITE'S OLDER-HOST CASE ONLY (cmd/muster-mirror's
+	// e2emirror build); no flag sets it.
+	NoPromptIndex bool
+	Logger        *log.Logger
 }
 
 // ErrUnauthorized: muster refused the token (unknown, revoked, or not a mirror

@@ -16,6 +16,11 @@ const (
 	// KindError is an API failure the CLI recorded in place of a reply (rate
 	// limit, auth failure); Text is the CLI's own message.
 	KindError = "error"
+	// KindNotice is a user record the harness wrote, not the human (a
+	// background task finishing, a local command's output):
+	// notice.go. Notice names its source, Status a task's status, Text its
+	// one-line summary and Output the detail shown when the row is expanded.
+	KindNotice = "notice"
 )
 
 // The size caps. An Event never carries a field past these, so a batch of
@@ -64,14 +69,34 @@ type Event struct {
 	Input string `json:"input,omitempty"`
 	// OK is a result's status (is_error false).
 	OK bool `json:"ok,omitempty"`
-	// Output is a result's text, capped at MaxOutput.
+	// Output is a result's text, capped at MaxOutput (and a notice's detail).
 	Output string `json:"output,omitempty"`
+	// Notice is a notice's source (NoticeTask, NoticeCommandOutput); Status a
+	// task notice's status as the harness wrote it ("completed", "failed",
+	// "killed"…), "" when it gave none.
+	Notice string `json:"notice,omitempty"`
+	Status string `json:"status,omitempty"`
+	// Line names a PROMPT by where it is in its transcript: the byte offset
+	// just past its record's line (Line.End). ReadLines sets it — Events, being
+	// stateless, cannot — and Prompts names the same prompt by the same number,
+	// which is how the message index finds a prompt's bubble. 0 = not known.
+	Line int64 `json:"line,omitempty"`
+	// Usage is the context an assistant turn used (usage.go), on the FIRST
+	// event its record contributes; nil on every other event, and from a host
+	// that predates it.
+	Usage *Usage `json:"usage,omitempty"`
 }
 
 // Events is what one record contributes to the rendered view, in order. It is
 // STATELESS — a record's events depend on that record alone — which is what lets
 // a reader start at any line boundary (a backfill window, a resume offset)
-// and still produce the same events for every line after it.
+// and still produce the same events for every line after it. (A prompt's Line,
+// its place in the file, is therefore set by the reader, never here.)
+//
+// A user record is a prompt, a harness notice (notice.go) or tool results; a
+// slash command is the human's prompt, as "/name args". An assistant record is
+// its text and tool calls, or one error, and its context use (usage.go) rides
+// on its FIRST event, adding none.
 //
 // Dropped: thinking blocks, subagent (sidechain) records, injected context
 // (isMeta, compaction summaries), and every record type that is not a message
@@ -85,6 +110,13 @@ func Events(r Record) []Event {
 		if text, ok := r.PromptText(); ok {
 			if strings.TrimSpace(text) == "" {
 				return nil
+			}
+			if n, ok := noticeOf(r, text); ok {
+				return []Event{n}
+			}
+			// A slash command is the human's: their bubble shows what they typed.
+			if cmd, ok := slashCommand(text); ok {
+				text = cmd
 			}
 			return []Event{{Kind: KindPrompt, Text: Cap(text, MaxText)}}
 		}
@@ -120,6 +152,12 @@ func Events(r Record) []Event {
 					Target: ToolTarget(b.Name, string(b.Input)), Input: CapInput(string(b.Input))})
 			}
 			// "thinking" (and "redacted_thinking"): dropped, always.
+		}
+		if len(out) > 0 {
+			// A thinking-only record contributes no event and so no usage; the
+			// SAME message's next record (its text or tool call) carries the
+			// same usage block, so nothing is lost.
+			out[0].Usage = usageOf(r)
 		}
 		return out
 	}

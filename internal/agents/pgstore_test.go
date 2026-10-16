@@ -146,7 +146,7 @@ func TestPGStoreSetDisplayName(t *testing.T) {
 // TestPGStoreRecentChatMessages' `delete future cutoff` assertion then counted 12
 // instead of 5. Verified pre-existing at a39ed0c5. The pool itself is closed by a
 // t.Cleanup registered before these, so it is still open when this runs.
-func cleanupAgent(_ context.Context, pool *pgxpool.Pool, id int64) {
+func cleanupAgent(_ context.Context, pool querier, id int64) {
 	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 10*time.Second)
 	defer cancel()
 	_, _ = pool.Exec(ctx, `DELETE FROM agents WHERE id=$1`, id)

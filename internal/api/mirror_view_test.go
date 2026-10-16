@@ -289,6 +289,42 @@ func TestTheViewSocketRendersBatchesWithTheChatsComponents(t *testing.T) {
 	}
 }
 
+// The host's prompt index reaches the browser as the batch's index, each prompt
+// named by its bubble's element id and bounded again here (a ref naming no
+// prompt dropped), the host's "more" passed through; a batch from a host that
+// sends none has no index at all — which is how the page tells an older host.
+func TestTheViewSocketRelaysThePromptIndex(t *testing.T) {
+	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{batches: []mirror.Msg{
+		{Type: mirror.TypeEvents, Reset: true, Gen: "g1", Offset: 900, Events: []cctranscript.Event{
+			{Kind: cctranscript.KindPrompt, Text: "the newest", Line: 900},
+		}},
+		{Type: mirror.TypeEvents, Gen: "g1", Offset: 900, PromptIndex: true, PromptsMore: 12, Prompts: []cctranscript.PromptRef{
+			{Line: 0, Text: "names no prompt"}, {Line: 300, Text: "an earlier one"}, {Line: 900, Text: "the newest"},
+		}},
+	}}}
+	s, ts := viewServer(t, fm)
+	c, _, err := dialTerm(t, s, ts, ui.MirrorViewWSPath("ws", "main"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	first := readBatch(t, c)
+	if _, ok := first["index"]; ok {
+		t.Fatalf("a batch with no index carries one: %v", first)
+	}
+	if h := first["ops"].([]any)[0].(map[string]any)["html"].(string); !strings.Contains(h, `id="`+ui.MirrorPromptID(900)+`"`) {
+		t.Fatalf("the loaded prompt's bubble is not named by its place: %s", h)
+	}
+	second := readBatch(t, c)
+	b, _ := json.Marshal(second["index"])
+	if want := `{"items":[{"id":"mv-p-300","text":"an earlier one"},{"id":"mv-p-900","text":"the newest"}],"more":12}`; string(b) != want {
+		t.Fatalf("index %s, want %s", b, want)
+	}
+	if ops, _ := second["ops"].([]any); second["offset"] != float64(900) || len(ops) != 0 {
+		t.Fatalf("the index batch moved the offset or drew something: %v", second)
+	}
+}
+
 func TestTheViewSocketPassesTheRefusalThrough(t *testing.T) {
 	refusal := fmt.Errorf("%w (host %q, session %q)", mirror.ErrNotClaude, "ws", "main")
 	s, ts := viewServer(t, &fakeMirror{online: true, v2: &fakeMirrorV2{watchErr: refusal}})

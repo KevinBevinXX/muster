@@ -38,6 +38,11 @@ import (
 // `-tags e2emirror`). nil in every shipped binary.
 var e2eBackend func() mirrorhost.Backend
 
+// e2eNoPromptIndex, in a browser-test build, makes the host behave as one that
+// predates the prompt index (mirrorhost.Config.NoPromptIndex). nil in every
+// shipped binary.
+var e2eNoPromptIndex func() bool
+
 // buildRevision is stamped by the build (-X main.buildRevision=…).
 var buildRevision = "dev"
 
@@ -182,6 +187,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	c, err := mirrorhost.New(mirrorhost.Config{
 		URL: *url, Token: token, Host: *host, Backend: backend, Codenames: codenames,
 		Interactive: *interactive, AllowHTTP: *allowHTTP, Logger: logger,
+		NoPromptIndex: e2eNoPromptIndex != nil && e2eNoPromptIndex(),
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, err)

@@ -54,7 +54,11 @@ import (
 // exactly as MUSTER_MIRROR_E2E_CLAUDE's session does; a paste into such a
 // window is recorded in <transcript>.pasted, and one into any other window in
 // MUSTER_MIRROR_E2E_PASTE_FILE — each with the pane it reached.
+//
+// AN OLDER HOST: with MUSTER_MIRROR_E2E_NO_PROMPT_INDEX=1 the host sends no
+// prompt index (mirrorhost.Config.NoPromptIndex), as one from before it did.
 func init() {
+	e2eNoPromptIndex = func() bool { return os.Getenv("MUSTER_MIRROR_E2E_NO_PROMPT_INDEX") == "1" }
 	e2eBackend = func() mirrorhost.Backend {
 		if f := os.Getenv("MUSTER_MIRROR_E2E_WINDOWS_FILE"); f != "" {
 			return windowFake{file: f}

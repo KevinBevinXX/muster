@@ -1232,7 +1232,7 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	msgs, _ := s.ext.Agents.ListRecentChatMessages(ctx, active.ID, chatHistoryCap)
 	lines := make([]ui.ChatLine, 0, len(msgs))
 	for _, m := range msgs {
-		lines = append(lines, ui.ChatLine{Role: m.Role, Content: m.Content, Kind: m.Kind, ToolID: m.ToolID, ToolName: m.ToolName, ToolOK: m.ToolOK})
+		lines = append(lines, ui.ChatLine{Role: m.Role, Content: m.Content, Kind: m.Kind, ToolID: m.ToolID, ToolName: m.ToolName, ToolOK: m.ToolOK, ID: m.ID})
 	}
 	noteID, taskStatus := s.agentTaskStatus(ctx, a)
 	view := ui.AgentDetailView{
@@ -1293,7 +1293,7 @@ func (s *Server) handleAgentChatLog(w http.ResponseWriter, r *http.Request) {
 	msgs, _ := s.ext.Agents.ListRecentChatMessages(ctx, active.ID, chatHistoryCap)
 	lines := make([]ui.ChatLine, 0, len(msgs))
 	for _, m := range msgs {
-		lines = append(lines, ui.ChatLine{Role: m.Role, Content: m.Content, Kind: m.Kind, ToolID: m.ToolID, ToolName: m.ToolName, ToolOK: m.ToolOK})
+		lines = append(lines, ui.ChatLine{Role: m.Role, Content: m.Content, Kind: m.Kind, ToolID: m.ToolID, ToolName: m.ToolName, ToolOK: m.ToolOK, ID: m.ID})
 	}
 	noteID, taskStatus := s.agentTaskStatus(ctx, a)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
