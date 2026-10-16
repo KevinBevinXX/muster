@@ -159,6 +159,9 @@ type scroller struct {
 	sb   ScrollBackend
 	idle time.Duration
 	log  *log.Logger
+	// afterFunc starts an idle timer: time.AfterFunc, except in tests, which
+	// fire the timers by hand rather than race a wall clock.
+	afterFunc func(time.Duration, func()) stopper
 
 	// op serialises every scroll and every idle cancel, so a cancel can never
 	// land between a scroll's "is it in copy-mode" and its scroll command.
@@ -170,9 +173,12 @@ type scroller struct {
 	shut  bool
 }
 
+// stopper is the one method of *time.Timer the scroller uses.
+type stopper interface{ Stop() bool }
+
 // ownedPane is one pane this host put in copy-mode.
 type ownedPane struct {
-	t   *time.Timer
+	t   stopper
 	gen uint64
 }
 
@@ -180,7 +186,8 @@ func newScroller(sb ScrollBackend, idle time.Duration, logger *log.Logger) *scro
 	if idle <= 0 {
 		idle = DefaultScrollIdle
 	}
-	return &scroller{sb: sb, idle: idle, log: logger, owned: map[string]*ownedPane{}}
+	return &scroller{sb: sb, idle: idle, log: logger, owned: map[string]*ownedPane{},
+		afterFunc: func(d time.Duration, f func()) stopper { return time.AfterFunc(d, f) }}
 }
 
 // scroll scrolls pane by lines and (re)arms, or disarms, its idle cancel.
@@ -223,7 +230,7 @@ func (s *scroller) scroll(ctx context.Context, pane string, lines int) error {
 func (s *scroller) arm(pane string) {
 	s.gen++
 	gen := s.gen
-	s.owned[pane] = &ownedPane{gen: gen, t: time.AfterFunc(s.idle, func() { s.expire(pane, gen) })}
+	s.owned[pane] = &ownedPane{gen: gen, t: s.afterFunc(s.idle, func() { s.expire(pane, gen) })}
 }
 
 // expire is pane's idle timer: cancel its copy-mode, unless a later scroll

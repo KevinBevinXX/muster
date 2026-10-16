@@ -200,7 +200,9 @@ the page like any other output.
   composer cancels it first, so the message and its answer are on screen.
   - The 30 seconds count from the last *scroll*. Keys typed at the host do not
     reset them, so a selection someone starts at the host in that copy-mode is
-    cut off when they run out.
+    cut off when they run out. A message sent from a composer (the Terminal
+    view's or the rendered view's) also ends the host's copy-mode, at once, so
+    it cuts off such a selection too.
   - tmux modes stack. If someone opens a menu (choose-tree, say) over the
     host's copy-mode, the cancel cannot reach it. The host tries again every
     30 seconds, also after a disconnect, and cancels it once the menu closes.

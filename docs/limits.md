@@ -58,7 +58,8 @@
   until it exits (at the bottom, on `q`, after 30 seconds without a scroll, or
   when a message is sent from the composer). The 30 seconds count from the last
   scroll, not from the last key, so a selection someone starts at the host in
-  that copy-mode is cut off when they run out.
+  that copy-mode is cut off when they run out. A message sent from a composer
+  also ends that copy-mode at once, and cuts off such a selection the same way.
   ([mirroring.md](mirroring.md#scrolling-history))
 - **Drag-to-scroll is for mirrored windows only.** A dispatched agent pod's
   Terminal view has none in this release. Its page wires no scroll gesture and

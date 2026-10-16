@@ -115,27 +115,91 @@ func TestAPaneThisHostScrolledLeavesCopyModeWhenIdle(t *testing.T) {
 	}
 }
 
-// TestEachScrollResetsTheIdleTimer: scrolls closer together than the idle
-// spell keep the pane in copy-mode for longer than one spell; the cancel comes
-// one spell after the LAST.
+// handTimers stands in for time.AfterFunc (scroller.afterFunc): it records
+// every timer started and fires one only when the test says so, so a test of
+// WHICH timer cancels does not race a wall clock. Like a *time.Timer, a
+// stopped timer that is fired does nothing.
+type handTimers struct {
+	mu sync.Mutex
+	ts []*handTimer
+}
+
+type handTimer struct {
+	d       time.Duration
+	f       func()
+	stopped bool
+}
+
+func (h *handTimers) afterFunc(d time.Duration, f func()) stopper {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	t := &handTimer{d: d, f: f}
+	h.ts = append(h.ts, t)
+	return &handStop{h, t}
+}
+
+type handStop struct {
+	h *handTimers
+	t *handTimer
+}
+
+func (s *handStop) Stop() bool {
+	s.h.mu.Lock()
+	defer s.h.mu.Unlock()
+	was := !s.t.stopped
+	s.t.stopped = true
+	return was
+}
+
+func (h *handTimers) count() int { h.mu.Lock(); defer h.mu.Unlock(); return len(h.ts) }
+
+// fire runs timer i, unless it was stopped first (a *time.Timer's Stop).
+func (h *handTimers) fire(i int) {
+	h.mu.Lock()
+	t := h.ts[i]
+	run := !t.stopped
+	t.stopped = true
+	h.mu.Unlock()
+	if run {
+		t.f()
+	}
+}
+
+// TestEachScrollResetsTheIdleTimer: each scroll restarts the pane's idle
+// spell, so the cancel comes one spell after the LAST scroll, never one after
+// the first. The timers are fired by hand (handTimers): every spell but the
+// last, fired, cancels nothing; the last one's does. (The idle cancel against
+// a real clock is TestAPaneThisHostScrolledLeavesCopyModeWhenIdle, and against
+// real tmux TestTmuxAScrolledPaneLeavesCopyModeWhenIdle.)
 func TestEachScrollResetsTheIdleTimer(t *testing.T) {
 	f := newModeFake()
 	idle := 150 * time.Millisecond
 	s := quietScroller(f, idle)
-	for i := 0; i < 8; i++ {
+	clock := &handTimers{}
+	s.afterFunc = clock.afterFunc
+	const scrolls = 8
+	for i := 0; i < scrolls; i++ {
 		if err := s.scroll(context.Background(), "%1", 1); err != nil {
 			t.Fatal(err)
 		}
-		time.Sleep(idle / 3)
 	}
-	// 8 × idle/3 is well past one spell from the first scroll.
-	if _, c := f.state(); len(c) != 0 {
-		t.Fatalf("cancelled while scrolls kept coming: %q", c)
+	if n := clock.count(); n != scrolls {
+		t.Fatalf("%d scrolls started %d idle spells, want one each", scrolls, n)
 	}
-	last := time.Now()
-	within(t, "the idle cancel after the last scroll", 3*time.Second, func() bool { _, c := f.state(); return len(c) == 1 })
-	if el := time.Since(last); el < idle-idle/3 {
-		t.Fatalf("cancelled %s after the last scroll, sooner than its spell allows", el)
+	for i := 0; i < scrolls; i++ {
+		if d := clock.ts[i].d; d != idle {
+			t.Fatalf("spell %d is %s, want the idle spell %s", i, d, idle)
+		}
+	}
+	for i := 0; i < scrolls-1; i++ {
+		clock.fire(i)
+		if pos, c := f.state(); len(c) != 0 || pos["%1"] != scrolls {
+			t.Fatalf("the spell of scroll %d (not the last) cancelled: pos %v, cancels %q", i+1, pos, c)
+		}
+	}
+	clock.fire(scrolls - 1)
+	if pos, c := f.state(); len(pos) != 0 || !slices.Equal(c, []string{"%1"}) {
+		t.Fatalf("the last scroll's spell: in copy-mode %v, cancels %q; want one cancel of %%1", pos, c)
 	}
 }
 

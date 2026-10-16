@@ -270,3 +270,58 @@ func TestADisconnectLeavesNoPaneInCopyMode(t *testing.T) {
 		return len(pos) == 0 && slices.Equal(cancels, []string{"%a-shell"})
 	})
 }
+
+// TestAHostsNamedRefusalIsTheErrorMusterActsOn: a hand-driven host answers
+// each scroll with a refusal naming its kind (Msg.Refusal), and muster hears
+// each kind as its own error. The one that matters most is "unsupported": it
+// must come back as ErrScrollUnsupported (the error internal/api turns into
+// ui.ScrollRefusalUnsupported, the only code that stops the page's gesture)
+// and NOT as a plain ErrScrollRefused, which the page keeps scrolling through.
+// The other kinds are the controls: each row's error is distinct from every
+// other row's, so a kind mapped to its neighbour goes red.
+func TestAHostsNamedRefusalIsTheErrorMusterActsOn(t *testing.T) {
+	r := newRig(t)
+	tok, _ := r.store.mint(t, 1, "hd")
+	hi := hello("hd", true, "shell")
+	hi.PaneScroll = true
+	raw, err := r.rawConnect(t, tok, hi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.online(t, 1, "hd", "shell")
+	all := []error{mirror.ErrScrollUnsupported, mirror.ErrScrollPaneInMode, mirror.ErrScrollRefused}
+	for _, tc := range []struct {
+		refusal string
+		want    error
+	}{
+		{mirror.ScrollRefusalUnsupported, mirror.ErrScrollUnsupported},
+		{mirror.ScrollRefusalMode, mirror.ErrScrollPaneInMode},
+		{"", mirror.ErrScrollRefused},
+		{"a-kind-this-muster-does-not-know", mirror.ErrScrollRefused},
+	} {
+		seen := len(raw.of(mirror.TypeScroll))
+		done := make(chan error, 1)
+		go func() { done <- r.svc.ScrollWindow(asUser(1), "hd", "shell", "", 3) }()
+		var asked mirror.Msg
+		eventually(t, "the host is asked to scroll", func() bool {
+			if got := raw.of(mirror.TypeScroll); len(got) > seen {
+				asked = got[seen]
+				return true
+			}
+			return false
+		})
+		raw.write(t, mirror.Msg{Type: mirror.TypeScrolled, ID: asked.ID, Error: "no scroll here", Refusal: tc.refusal})
+		var err error
+		select {
+		case err = <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("refusal %q: the scroll never returned", tc.refusal)
+		}
+		for _, e := range all {
+			if errors.Is(err, e) != (e == tc.want) {
+				t.Errorf("refusal %q: muster heard %v; want %v and none of the others", tc.refusal, err, tc.want)
+				break
+			}
+		}
+	}
+}
