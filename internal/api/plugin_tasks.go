@@ -119,6 +119,7 @@ func (s *Server) handlePluginTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(notes.PluginTaskNamespaces()) == 0 {
+		s.logger.Printf("plugins: plugin task refused 503: MUSTER_PLUGIN_TASK_NAMESPACES is empty, so this server files no plugin tasks")
 		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"error": "this server files no plugin tasks: MUSTER_PLUGIN_TASK_NAMESPACES is empty"})
 		return
@@ -161,25 +162,17 @@ func (s *Server) handlePluginTask(w http.ResponseWriter, r *http.Request) {
 		}
 		note = n
 	} else {
-		found, err := s.ext.Notes.ListByTags(ctx, []string{in.Key})
+		found, ok, err := s.ext.Notes.FindLiveByTag(ctx, in.Key)
 		if err != nil {
 			s.logger.Printf("plugins: plugin %d task %s: lookup: %v", p.ID, in.Key, err)
 			s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the task could not be looked up"})
 			return
 		}
-		if len(found) == 0 {
+		if !ok {
 			answer(http.StatusOK, nil, false, false)
 			return
 		}
-		// ListByTags is most-recent-activity first; CreateOnceByTag keeps one live
-		// task per key, so there is normally exactly one. Pick the oldest, the
-		// same one CreateOnceByTag would return.
-		note = found[0]
-		for _, f := range found[1:] {
-			if f.ID < note.ID {
-				note = f
-			}
-		}
+		note = found
 	}
 	if in.Comment == "" {
 		answer(http.StatusOK, &note.ID, false, false)

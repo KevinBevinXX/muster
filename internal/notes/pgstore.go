@@ -700,14 +700,12 @@ func (s *PGStore) CreateOnceByTag(ctx context.Context, key string, n Note) (Note
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, onceKeyLockPrefix+key); err != nil {
 		return Note{}, false, err
 	}
-	var found Note
-	err = tx.QueryRow(ctx, `SELECT `+noteCols+` FROM notes WHERE tags @> ARRAY[$1]::text[] AND `+liveOnly+`
-		ORDER BY id LIMIT 1`, key).Scan(scanNoteInto(&found)...)
+	found, ok, err := findLiveByTag(ctx, tx, key)
 	switch {
-	case err == nil:
-		return found, false, tx.Commit(ctx)
-	case !errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
 		return Note{}, false, err
+	case ok:
+		return found, false, tx.Commit(ctx)
 	}
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO notes (directory, title, body, model, repo, repo_branch, tags, source_type, source_session_id)
@@ -721,6 +719,33 @@ func (s *PGStore) CreateOnceByTag(ctx context.Context, key string, n Note) (Note
 		return Note{}, false, err
 	}
 	return n, true, nil
+}
+
+// FindLiveByTag: see the Store interface.
+func (s *PGStore) FindLiveByTag(ctx context.Context, key string) (Note, bool, error) {
+	return findLiveByTag(ctx, s.pool, key)
+}
+
+// rowQuerier is what findLiveByTag needs: the pool, or CreateOnceByTag's tx.
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// findLiveByTag is THE answer to "which live task carries key": the OLDEST, so
+// CreateOnceByTag (which would otherwise create) and FindLiveByTag (the plugin
+// task route's comment path) can never name different tasks for one key — the
+// two used to be separately written lookups (audit D1).
+func findLiveByTag(ctx context.Context, q rowQuerier, key string) (Note, bool, error) {
+	var n Note
+	err := q.QueryRow(ctx, `SELECT `+noteCols+` FROM notes WHERE tags @> ARRAY[$1]::text[] AND `+liveOnly+`
+		ORDER BY id LIMIT 1`, key).Scan(scanNoteInto(&n)...)
+	switch {
+	case err == nil:
+		return n, true, nil
+	case errors.Is(err, pgx.ErrNoRows):
+		return Note{}, false, nil
+	}
+	return Note{}, false, err
 }
 
 // AddCommentOnce: see the Store interface. The same two-command shape as

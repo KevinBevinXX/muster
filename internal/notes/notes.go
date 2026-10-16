@@ -433,6 +433,10 @@ type Store interface {
 	// to n's tags. A task that was dismissed does not count: a later call files a
 	// new one.
 	CreateOnceByTag(ctx context.Context, key string, n Note) (note Note, created bool, err error)
+	// FindLiveByTag returns the live task CreateOnceByTag treats as the one
+	// carrying key (the oldest the caller can see), and whether there is one.
+	// Both go through ONE lookup, so they can never disagree.
+	FindLiveByTag(ctx context.Context, key string) (note Note, ok bool, err error)
 	// AddCommentOnce appends c unless the task's thread already holds a comment
 	// with the same author and the same body (a retracted one included, so a
 	// retraction is not undone by a retry), and reports whether it wrote.

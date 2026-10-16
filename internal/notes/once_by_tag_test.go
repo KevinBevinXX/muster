@@ -189,3 +189,47 @@ func TestAddCommentOnceWritesOnceAndRespectsRetraction(t *testing.T) {
 		t.Fatal("a comment on a dismissed task was accepted; want ErrNoRows")
 	}
 }
+
+// TestFindLiveByTagAndCreateOnceByTagNameTheSameTask: with TWO live tasks
+// carrying one key (a hand-tagged duplicate), the comment path's lookup and the
+// create path's lookup both name the OLDEST, and dismissing it moves both to
+// the next. One shared lookup (audit D1) is what makes them agree.
+func TestFindLiveByTagAndCreateOnceByTagNameTheSameTask(t *testing.T) {
+	store, ctx := flagIdleStore(t)
+	key := onceKey(t)
+	if _, ok, err := store.FindLiveByTag(ctx, key); err != nil || ok {
+		t.Fatalf("CONTROL: an unused key: ok=%v err=%v; want none", ok, err)
+	}
+	older, err := store.Create(ctx, Note{Body: "older", Tags: []string{key}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Delete(ctx, older.ID)
+	newer, err := store.Create(ctx, Note{Body: "newer", Tags: []string{key}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Delete(ctx, newer.ID)
+	// newer is the most recently ACTIVE; the lookup must still pick by age.
+	if _, err := store.AddComment(ctx, Comment{NoteID: older.ID, Author: "x", Body: "bump"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddComment(ctx, Comment{NoteID: newer.ID, Author: "x", Body: "bump"}); err != nil {
+		t.Fatal(err)
+	}
+	found, ok, err := store.FindLiveByTag(ctx, key)
+	once, created, err2 := store.CreateOnceByTag(ctx, key, Note{Body: "x"})
+	if err != nil || err2 != nil || !ok || created || found.ID != older.ID || once.ID != older.ID {
+		t.Fatalf("two live tasks: FindLiveByTag=%d ok=%v, CreateOnceByTag=%d created=%v (%v %v); want both %d (the oldest)",
+			found.ID, ok, once.ID, created, err, err2, older.ID)
+	}
+	if err := store.SoftDelete(ctx, older.ID); err != nil {
+		t.Fatal(err)
+	}
+	found, _, _ = store.FindLiveByTag(ctx, key)
+	once, created, _ = store.CreateOnceByTag(ctx, key, Note{Body: "x"})
+	if found.ID != newer.ID || once.ID != newer.ID || created {
+		t.Fatalf("after dismissing the oldest: FindLiveByTag=%d CreateOnceByTag=%d created=%v; want both %d",
+			found.ID, once.ID, created, newer.ID)
+	}
+}
