@@ -11,7 +11,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/dbtest"
@@ -34,7 +33,6 @@ func pgStore(t *testing.T) (*PGStore, *pgxpool.Pool) {
 	}
 	dbtest.OwnerExec(t, dsn, `INSERT INTO users (id, role) OVERRIDING SYSTEM VALUE VALUES (2, 'member'), (3, 'member') ON CONFLICT (id) DO NOTHING`)
 	dbtest.OwnerExec(t, dsn, `TRUNCATE send_queue`)
-	dbtest.OwnerExec(t, dsn, `DELETE FROM agents WHERE name LIKE 'sq-%'`)
 	return NewPG(pool), pool
 }
 
@@ -46,22 +44,10 @@ func as(uid int64) context.Context {
 	return authz.WithPrincipal(context.Background(), authz.Principal{UserID: uid, Role: role, Via: authz.ViaSession})
 }
 
-func mustAgent(t *testing.T, pool *pgxpool.Pool, uid int64, name string) agents.Agent {
-	t.Helper()
-	a, err := agents.NewPG(pool).Create(as(uid), agents.Agent{Name: name, Namespace: "devpod-" + name, DisplayName: name,
-		Status: agents.StatusRunning, HooksToken: "hooks-" + name})
-	if err != nil {
-		t.Fatalf("agent %s: %v", name, err)
-	}
-	return a
-}
-
-var win = Target{Kind: KindMirror, Host: "laptop", Session: "scratch2", Window: "@7"}
-
-func agentTarget(a agents.Agent) Target { return Target{Kind: KindAgent, AgentID: a.ID} }
+var win = Target{Host: "laptop", Session: "scratch2", Window: "@7"}
 
 func mirrorItem(body string) Item {
-	return Item{Target: win, Pane: PaneClaude, Body: body, StepUpAt: time.Now()}
+	return Item{Target: win, Body: body, StepUpAt: time.Now()}
 }
 
 func mustEnqueue(t *testing.T, s *PGStore, uid int64, it Item) Item {
@@ -81,49 +67,36 @@ func bodies(items []Item) []string {
 	return out
 }
 
-// TestAQueueIsInvisibleToAnotherOwner: user 2's queue — for an agent and for a
-// mirrored window — is not in user 3's list of the same targets; 3's Get and
-// Cancel of 2's message answer not found and leave it queued; 3 cannot queue
-// for 2's agent; and 3 queueing for the same WINDOW address gets a queue of its
-// own. The positive control is 2's own list, read after 3 acted.
+// TestAQueueIsInvisibleToAnotherOwner: user 2's queue for a mirrored window is
+// not in user 3's list of the same address; 3's Get and Cancel of 2's message
+// answer not found and leave it queued; and 3 queueing for the same address
+// gets a queue of its own. The positive control is 2's own list, read after 3
+// acted.
 func TestAQueueIsInvisibleToAnotherOwner(t *testing.T) {
-	s, pool := pgStore(t)
-	a := mustAgent(t, pool, 2, "sq-a")
-	am := mustEnqueue(t, s, 2, Item{Target: agentTarget(a), Body: "for the agent"})
+	s, _ := pgStore(t)
 	mm := mustEnqueue(t, s, 2, mirrorItem("for the window"))
-	if am.Owner != 2 || mm.Owner != 2 || am.State != Queued {
-		t.Fatalf("stored rows = %+v / %+v; want owner 2, queued", am, mm)
+	if mm.Owner != 2 || mm.State != Queued {
+		t.Fatalf("stored row = %+v; want owner 2, queued", mm)
 	}
-
-	for _, tgt := range []Target{agentTarget(a), win} {
-		if got, err := s.List(as(3), tgt); err != nil || len(got) != 0 {
-			t.Fatalf("user 3 lists %s: %v, %v; want nothing", tgt, bodies(got), err)
-		}
-		if _, ok, err := s.HeadOf(as(3), tgt); err != nil || ok {
-			t.Fatalf("user 3 has a head for %s: %v, %v", tgt, ok, err)
-		}
+	if got, err := s.List(as(3), win); err != nil || len(got) != 0 {
+		t.Fatalf("user 3 lists %s: %v, %v; want nothing", win, bodies(got), err)
 	}
-	for _, id := range []int64{am.ID, mm.ID} {
-		if _, err := s.Get(as(3), id); !errors.Is(err, ErrNotFound) {
-			t.Fatalf("user 3 gets %d: %v, want ErrNotFound", id, err)
-		}
-		if _, err := s.Cancel(as(3), id, time.Now()); !errors.Is(err, ErrNotFound) {
-			t.Fatalf("user 3 cancels %d: %v, want ErrNotFound", id, err)
-		}
+	if _, ok, err := s.HeadOf(as(3), win); err != nil || ok {
+		t.Fatalf("user 3 has a head for %s: %v, %v", win, ok, err)
 	}
-	if _, err := s.Enqueue(as(3), Item{Target: agentTarget(a), Body: "x"}); !errors.Is(err, ErrNoSuchAgent) {
-		t.Fatalf("user 3 queues for user 2's agent: %v, want ErrNoSuchAgent", err)
+	if _, err := s.Get(as(3), mm.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("user 3 gets %d: %v, want ErrNotFound", mm.ID, err)
+	}
+	if _, err := s.Cancel(as(3), mm.ID, time.Now()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("user 3 cancels %d: %v, want ErrNotFound", mm.ID, err)
 	}
 	own := mustEnqueue(t, s, 3, mirrorItem("user 3's own"))
 	if got, _ := s.List(as(3), win); len(got) != 1 || got[0].ID != own.ID {
 		t.Fatalf("user 3's own queue for the same address = %v", bodies(got))
 	}
-
-	for tgt, want := range map[Target]string{agentTarget(a): "queued:for the agent", win: "queued:for the window"} {
-		got, err := s.List(as(2), tgt)
-		if err != nil || len(got) != 1 || bodies(got)[0] != want {
-			t.Fatalf("CONTROL: user 2 lists %s: %v, %v; want [%s]", tgt, bodies(got), err, want)
-		}
+	got, err := s.List(as(2), win)
+	if err != nil || len(got) != 1 || bodies(got)[0] != "queued:for the window" {
+		t.Fatalf("CONTROL: user 2 lists %s: %v, %v; want [queued:for the window]", win, bodies(got), err)
 	}
 }
 
@@ -275,41 +248,24 @@ func TestTheLastAttemptIsASendThatMayHaveLanded(t *testing.T) {
 	}
 }
 
-// TestAMirrorMessageCarriesItsStepUpOrIsRefused: a mirror message queued with
-// no sign-in time is refused by the store, and the schema refuses one written
-// without it directly; an agent message needs none.
-func TestAMirrorMessageCarriesItsStepUpOrIsRefused(t *testing.T) {
+// TestAMessageCarriesItsStepUpOrIsRefused: a message queued with no sign-in
+// time is refused by the store, and the schema refuses one written without it
+// directly. The control is the same message with it.
+func TestAMessageCarriesItsStepUpOrIsRefused(t *testing.T) {
 	s, pool := pgStore(t)
 	it := mirrorItem("x")
 	it.StepUpAt = time.Time{}
 	if _, err := s.Enqueue(as(2), it); err == nil || !strings.Contains(err.Error(), "sign-in time") {
-		t.Fatalf("a mirror message with no step-up = %v, want refused", err)
+		t.Fatalf("a message with no step-up = %v, want refused", err)
 	}
-	_, err := pool.Exec(as(2), `INSERT INTO send_queue (kind, mirror_host, mirror_session, mirror_window, mirror_pane, body)
-		VALUES ('mirror', 'laptop', 's', '', 'claude', 'x')`)
-	if err == nil || !strings.Contains(err.Error(), "send_queue_subject_check") {
-		t.Fatalf("the schema accepted a mirror row with no stepup_at: %v", err)
+	_, err := pool.Exec(as(2), `INSERT INTO send_queue (mirror_host, mirror_session, mirror_window, body)
+		VALUES ('laptop', 's', '', 'x')`)
+	if err == nil || !strings.Contains(err.Error(), `"stepup_at"`) {
+		t.Fatalf("the schema accepted a row with no stepup_at: %v", err)
 	}
 	stored := mustEnqueue(t, s, 2, mirrorItem("with"))
 	if stored.StepUpAt.IsZero() {
-		t.Fatal("the step-up time was not stored")
-	}
-	a := mustAgent(t, pool, 2, "sq-noauth")
-	if got := mustEnqueue(t, s, 2, Item{Target: agentTarget(a), Body: "x"}); !got.StepUpAt.IsZero() {
-		t.Fatalf("an agent message carries a step-up time: %v", got.StepUpAt)
-	}
-}
-
-// TestAQueuedMessageDiesWithItsAgent: deleting the agent deletes its queue.
-func TestAQueuedMessageDiesWithItsAgent(t *testing.T) {
-	s, pool := pgStore(t)
-	a := mustAgent(t, pool, 2, "sq-gone")
-	it := mustEnqueue(t, s, 2, Item{Target: agentTarget(a), Body: "x"})
-	if err := agents.NewPG(pool).Delete(as(2), a.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Get(as(2), it.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("the message of a deleted agent = %v, want gone", err)
+		t.Fatal("CONTROL: the step-up time was not stored")
 	}
 }
 

@@ -90,6 +90,10 @@ type ClaudePane struct {
 	// this side recognises, and for a GUESSED transcript, which has no sessions
 	// file to read one from. Busy is Status == busy.
 	Status string
+	// StatusSince is when Claude Code wrote Status — its sessions file's
+	// statusUpdatedAt, Unix milliseconds — 0 when it states none (and whenever
+	// Status is ""). The send queue reads idle-since from it.
+	StatusSince int64
 	// Source says how Transcript was found: SourcePaneMap, SourceSessions or
 	// SourceGuessed (see ClaudeLocator).
 	Source string
@@ -289,9 +293,13 @@ type sessionFile struct {
 	SessionID string `json:"sessionId"`
 	Cwd       string `json:"cwd"`
 	Status    string `json:"status"`
-	ProcStart string `json:"procStart"`
-	Kind      string `json:"kind"`
-	JobID     string `json:"jobId"`
+	// StatusUpdatedAt is when the CLI last wrote Status, Unix milliseconds:
+	// every write that carries a status stamps it (measured on Claude Code
+	// 2.1.289; see docs/mirroring.md).
+	StatusUpdatedAt int64  `json:"statusUpdatedAt"`
+	ProcStart       string `json:"procStart"`
+	Kind            string `json:"kind"`
+	JobID           string `json:"jobId"`
 	// ParkedJobID: this CLI is showing a background job (/bg), not its own
 	// session.
 	ParkedJobID string `json:"parkedJobId"`
@@ -344,7 +352,7 @@ var sessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,128}$`)
 // resolve is the transcript of Claude Code process pid, or ok=false. guessed
 // says the answer is the FALLBACK's (the newest transcript in the process's
 // cwd), not one the CLI named for itself.
-func (l ClaudeLocator) resolve(pid int, live func() liveSessions) (path, gen, status string, guessed, ok bool) {
+func (l ClaudeLocator) resolve(pid int, live func() liveSessions) (path, gen string, st paneStatus, guessed, ok bool) {
 	cfg := l.configDir()
 	if b, err := os.ReadFile(filepath.Join(cfg, "sessions", strconv.Itoa(pid)+".json")); err == nil {
 		var sf sessionFile
@@ -353,30 +361,30 @@ func (l ClaudeLocator) resolve(pid int, live func() liveSessions) (path, gen, st
 			// kept current, the CLI's is not.
 			if sf.ParkedJobID != "" {
 				if job, ok := live().byJob[sf.ParkedJobID]; ok {
-					sf.SessionID, sf.Cwd, sf.Status = job.SessionID, job.Cwd, job.Status
+					sf.SessionID, sf.Cwd, sf.Status, sf.StatusUpdatedAt = job.SessionID, job.Cwd, job.Status, job.StatusUpdatedAt
 				}
 			}
-			status = mirror.NormalizeStatus(sf.Status)
+			st = statusOf(sf)
 			name := sf.SessionID + ".jsonl"
 			if sf.Cwd != "" {
 				p := filepath.Join(cfg, "projects", ProjectSlug(sf.Cwd), name)
 				if fileExists(p) {
-					return p, sf.SessionID, status, false, true
+					return p, sf.SessionID, st, false, true
 				}
 			}
 			// The cwd moved, or the slug rule differs: the id is unique, so find it.
 			if m, _ := filepath.Glob(filepath.Join(cfg, "projects", "*", name)); len(m) > 0 {
-				return m[0], sf.SessionID, status, false, true
+				return m[0], sf.SessionID, st, false, true
 			}
 			// A brand-new session has a sessions file before its first record:
 			// nothing to show YET. Not the fallback — that would show another
 			// session's transcript under this pane.
-			return "", "", "", false, false
+			return "", "", paneStatus{}, false, false
 		}
 	}
 	cwd, err := os.Readlink(filepath.Join(l.proc(), strconv.Itoa(pid), "cwd"))
 	if err != nil {
-		return "", "", "", false, false
+		return "", "", paneStatus{}, false, false
 	}
 	m, _ := filepath.Glob(filepath.Join(cfg, "projects", ProjectSlug(cwd), "*.jsonl"))
 	var newest string
@@ -387,9 +395,24 @@ func (l ClaudeLocator) resolve(pid int, live func() liveSessions) (path, gen, st
 		}
 	}
 	if newest == "" {
-		return "", "", "", false, false
+		return "", "", paneStatus{}, false, false
 	}
-	return newest, strings.TrimSuffix(filepath.Base(newest), ".jsonl"), "", true, true
+	return newest, strings.TrimSuffix(filepath.Base(newest), ".jsonl"), paneStatus{}, true, true
+}
+
+// paneStatus is a sessions file's status and when the CLI wrote it.
+type paneStatus struct {
+	status string
+	since  int64
+}
+
+// statusOf is sf's status, normalised, and its time — none without a status.
+func statusOf(sf sessionFile) paneStatus {
+	st := paneStatus{status: mirror.NormalizeStatus(sf.Status)}
+	if st.status != "" && sf.StatusUpdatedAt > 0 {
+		st.since = sf.StatusUpdatedAt
+	}
+	return st
 }
 
 func fileExists(p string) bool {
@@ -516,13 +539,13 @@ func (l ClaudeLocator) LocatePanes(panes []pane) map[string]ClaudePane {
 			continue
 		}
 		if path, gen, ok := l.fromPaneMap(p, pid, procs); ok {
-			status := mirror.NormalizeStatus(lives().byID[gen].Status)
-			out[p.ID] = ClaudePane{Pane: p.ID, PID: pid, Transcript: path, Gen: gen, Busy: status == mirror.StatusBusy,
-				Status: status, Source: SourcePaneMap}
+			st := statusOf(lives().byID[gen])
+			out[p.ID] = ClaudePane{Pane: p.ID, PID: pid, Transcript: path, Gen: gen, Busy: st.status == mirror.StatusBusy,
+				Status: st.status, StatusSince: st.since, Source: SourcePaneMap}
 			claims[path]++
 			continue
 		}
-		path, gen, status, guess, ok := l.resolve(pid, lives)
+		path, gen, st, guess, ok := l.resolve(pid, lives)
 		if !ok {
 			continue
 		}
@@ -530,8 +553,8 @@ func (l ClaudeLocator) LocatePanes(panes []pane) map[string]ClaudePane {
 		if guess {
 			src = SourceGuessed
 		}
-		out[p.ID] = ClaudePane{Pane: p.ID, PID: pid, Transcript: path, Gen: gen, Busy: status == mirror.StatusBusy,
-			Status: status, Source: src}
+		out[p.ID] = ClaudePane{Pane: p.ID, PID: pid, Transcript: path, Gen: gen, Busy: st.status == mirror.StatusBusy,
+			Status: st.status, StatusSince: st.since, Source: src}
 		claims[path]++
 	}
 	for id, cp := range out {

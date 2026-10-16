@@ -201,9 +201,21 @@ side can be upgraded first.
 
 Newer capabilities are announced in the host's hello, without a version bump:
 pasting into non-Claude panes, per-window registration, and reporting each
-Claude Code window's status (`busy`, `idle`, `waiting`), which the
-[send queue](sending-and-step-up.md#queue-send-when-the-agent-is-idle) waits on.
-A host that does not report status is never sent a queued message. An older host is
+Claude Code window's status (`busy`, `idle`, `waiting`) with the time Claude
+Code wrote it (`statusSince`, from its sessions file's `statusUpdatedAt`), which
+the [send queue](sending-and-step-up.md#queue-send-when-claude-code-is-idle)
+waits on. A host that does not report status, or reports it without its time,
+is never sent a queued message.
+
+The time is Claude Code's, measured on Claude Code 2.1.289 (2026-10-15, one
+Linux host, about 40 minutes of every live sessions file, read-only). The
+CLI's session writer stamps `statusUpdatedAt` with the current time on every
+write that carries a `status`. Across 122 observed status writes it moved on
+every one, including all 6 into `idle` (4 from `busy`, 2 from `waiting`). One
+turn lasted 0.86 s, shorter than the host's 5 s refresh, and its `idle` still
+carried the newer time. No session re-wrote `idle` while already idle.
+Re-stamps while `busy` do happen. They do not matter here, because `busy`
+holds the queue whatever its time. An older host is
 never asked for them, and an older muster never asks. A host that registers
 windows still sends a per-session list too, so an older muster shows one card per
 session as before. An older, per-session host is capped at 64 sessions.

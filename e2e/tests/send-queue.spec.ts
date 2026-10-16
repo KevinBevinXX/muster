@@ -10,14 +10,15 @@ import { serverBinary, startServer, Running } from '../lib/server';
 // THE SERVER-SIDE SEND QUEUE, in a real browser, against a real muster-server
 // (MUSTER_MIRROR=1, MUSTER_SEND_QUEUE_IDLE=2s, its own port) and two real
 // muster-mirror processes over the tunnel (the `-tags e2emirror` per-window
-// fake): one whose Claude window reports Claude Code's status — busy while
-// <transcript>.busy exists — and one that plays an older muster-mirror, which
-// reports none (MUSTER_MIRROR_E2E_NO_STATUS=1).
+// fake): one whose Claude window reports Claude Code's status and the time it
+// was written — from <transcript>.status, which this spec writes the way the
+// CLI writes its sessions file ({status, statusUpdatedAt}) — and one that plays
+// an older muster-mirror, which reports none (MUSTER_MIRROR_E2E_NO_STATUS=1).
 //
-// The operator decision: a queue of messages that send when the agent goes
-// idle, ONE AT A TIME — the next only after the agent has been busy and idle
-// again — that survives the page closing and is visible and cancellable from
-// any device. Each of those is driven here: the page that queued is CLOSED
+// The operator decision: a queue of messages, on a mirrored window's Rendered
+// view, that send when Claude Code goes idle, ONE AT A TIME — the next only once
+// Claude Code reports idle since AFTER the previous one was sent — that
+// survives the page closing and is visible and cancellable from any device. Each of those is driven here: the page that queued is CLOSED
 // before anything is sent, and the queue is then read (and a message
 // cancelled) from a second, separate browser context.
 //
@@ -42,7 +43,9 @@ let mirrorLog = '';
 
 const prompt = (text: string) => JSON.stringify({ type: 'user', promptId: 'p-' + text.length, message: { role: 'user', content: text } }) + '\n';
 const read = (f: string) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '');
-const busy = (on: boolean) => (on ? fs.writeFileSync(tr + '.busy', '') : fs.rmSync(tr + '.busy', { force: true }));
+// setStatus is Claude Code writing its status: the status and NOW as its time.
+const setStatus = (status: string) => fs.writeFileSync(tr + '.status', JSON.stringify({ status, statusUpdatedAt: Date.now() }));
+const busy = (on: boolean) => setStatus(on ? 'busy' : 'idle');
 const viewPath = (host: string) => `/mirror/view?host=${encodeURIComponent(host)}&session=work&window=%401`;
 // busyAndSeen makes Claude busy and waits out one host refresh, so the server
 // has seen it before anything is queued. Nothing observable says "muster saw
@@ -174,7 +177,7 @@ test.describe('phone 390×844 touch', () => {
     busy(false);
     await expect.poll(pasted, { message: `the first message is sent once idle (log:\n${mirrorLog})`, timeout: 30_000 }).toEqual([`${pane} first queued`]);
 
-    // Still idle — from BEFORE the first was sent: its turn has not been seen,
+    // Still idle — since BEFORE the first was sent: its turn has not ended,
     // so the second waits. Long enough for a wrong send to have happened
     // (refresh 5 s + idle 2 s + a tick, twice over).
     await new Promise((r) => setTimeout(r, 16_000));
@@ -234,7 +237,7 @@ test.describe('phone 390×844 touch', () => {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
-        body: new URLSearchParams({ queue: 'view', host, session: 'work', window: '@1', text: 'x' }),
+        body: new URLSearchParams({ host, session: 'work', window: '@1', text: 'x' }),
       });
       return { status: r.status, text: await r.text() };
     }, oldHost);
@@ -267,6 +270,60 @@ test.describe('desktop 1280×800', () => {
     await row(page, 'desktop queued').getByRole('button', { name: 'Cancel this queued message' }).click();
     await expect(row(page, 'desktop queued')).toHaveAttribute('data-queue-state', 'cancelled');
     busy(false);
+  });
+
+  // 🔴 D3, THE CLI'S OWN TIME: a turn that starts and ends between two host
+  // refreshes is never SEEN busy — the status reads idle both times — and the
+  // time Claude Code wrote it is newer. That alone releases the next message;
+  // without it the next is held.
+  test('a turn too short for the host to see busy still releases the next message, and only after it', async ({ page }) => {
+    await busyAndSeen();
+    fs.rmSync(tr + '.pasted', { force: true });
+    await openView(page, newHost);
+    await queue(page, 'short one', false);
+    await queue(page, 'short two', false);
+    busy(false);
+    await expect.poll(pasted, { message: `the first is sent once idle (log:\n${mirrorLog})`, timeout: 30_000 }).toEqual([`${pane} short one`]);
+    await new Promise((r) => setTimeout(r, 12_000));
+    expect(pasted(), 'the second waits: idle since before the first was sent').toEqual([`${pane} short one`]);
+    // The first message's turn, too short to be seen: idle again, a newer time.
+    setStatus('idle');
+    await expect.poll(pasted, { message: 'the second is sent after the unseen turn', timeout: 30_000 }).toEqual([
+      `${pane} short one`,
+      `${pane} short two`,
+    ]);
+  });
+
+  // 🔴 FAIL CLOSED ON A STATUS WITHOUT ITS TIME: a host that says idle but not
+  // since when is held, saying why — never released by a time guess. The
+  // positive control is the same message, sent once the time is reported.
+  test('a status without its time holds the queue and says why', async ({ page }) => {
+    await busyAndSeen();
+    fs.rmSync(tr + '.pasted', { force: true });
+    await openView(page, newHost);
+    await queue(page, 'untimed', false);
+    // No .status file and no marker: the fake reports idle with no time.
+    fs.rmSync(tr + '.status', { force: true });
+    await expect(page.locator('#mv-queue-waiting'), `the reason is shown (log:\n${mirrorLog})`).toContainText('does not report since when', {
+      timeout: 20_000,
+    });
+    await new Promise((r) => setTimeout(r, 8_000));
+    expect(pasted(), 'nothing is sent to an idle with no time').toEqual([]);
+    setStatus('idle');
+    await expect.poll(pasted, { message: 'CONTROL: sent once the time is reported', timeout: 30_000 }).toEqual([`${pane} untimed`]);
+  });
+
+  // D1: only the Rendered view queues. The Terminal view's composer pastes into
+  // whatever pane is active, which is not the pane whose idle a queue waits on.
+  test('the Terminal view of the same window has Send and no Queue', async ({ page }) => {
+    await login(page);
+    await page.goto(origin + `/mirror/terminal?host=${encodeURIComponent(newHost)}&session=work&window=%401`);
+    await expect(page.locator('#mv-input'), 'the Terminal view draws its composer').toBeVisible({ timeout: 20_000 });
+    await expect(page.locator('#mv-queue-send')).toHaveCount(0);
+    await expect(page.locator('#mv-queue')).toHaveCount(0);
+    // CONTROL: the Rendered view of the same window does.
+    await page.goto(origin + viewPath(newHost));
+    await expect(page.locator('#mv-queue-send')).toBeVisible({ timeout: 20_000 });
   });
 
   // 🔴 WHERE THE BROWSER HAS NO SubmitEvent.submitter (older Safari), the

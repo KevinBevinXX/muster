@@ -328,12 +328,12 @@ var isolationClasses = map[string]routeClass{
 	// seeded pins are in the snapshot, so either reaching A's would show.
 	"POST /agents/pins":        classList,
 	"POST /agents/pins/delete": classList,
-	// The send queue (0019): the queue form and the list name A's agent (by
-	// name); Cancel names A's queued message by id; the plain confirm page names
-	// A's mirrored host. Each must answer B exactly as for a ghost, and A's
-	// queued message (its body carries the canary) is in the snapshot.
-	"GET /send-queue":              classParam,
-	"POST /send-queue":             classParam,
+	// The send queue (0019): the queue form, the list and the plain confirm
+	// page name A's mirrored window; Cancel names A's queued message by id.
+	// Each must answer B exactly as for a ghost, and A's queued message (its
+	// body carries the canary) is in the snapshot.
+	"GET /send-queue":              classMirror,
+	"POST /send-queue":             classMirror,
 	"POST /send-queue/{id}/cancel": classParam,
 	"POST /send-queue/confirm":     classMirror,
 	"POST /plugin/v1/messages":     classPlugin,
@@ -732,9 +732,10 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(pinStore.PinAgent(ua, w.a.agent.ID), "a agent pin")
 	must(pinStore.PinMirror(ua, pins.MirrorKey{Host: w.canary + "-host", Session: "main", Window: "@1"}), "a mirror pin")
 
-	// A's queued message (0019), for A's agent, its body carrying the canary.
+	// A's queued message (0019), for a window on A's mirrored host, its body
+	// carrying the canary.
 	aQueued, err := sendqueue.NewPG(pool).Enqueue(ua, sendqueue.Item{
-		Target: sendqueue.Target{Kind: sendqueue.KindAgent, AgentID: w.a.agent.ID}, Body: w.canary + " queued"})
+		Target: sendqueue.Target{Host: w.canary + "-host", Session: "main", Window: "@1"}, Body: w.canary + " queued", StepUpAt: time.Now()})
 	must(err, "a queued message")
 
 	w.aIdentities = []string{w.a.agent.Name, agents.ChiefNameFor(w.a.uid), w.aSessionLink, w.aTag, w.aProject}
@@ -1090,22 +1091,12 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 	if path == "/static/" {
 		path = "/static/app.css"
 	}
-	if path == "/send-queue" {
-		// The queue names o's agent; on GET in the query, on POST in the form.
-		q := url.Values{"queue": {"agent"}, "agent": {o.agentName}}
-		if method == http.MethodGet {
-			return method, path + "?" + q.Encode(), ""
-		}
-		q.Set("text", "iso-write")
-		return method, path, q.Encode()
-	}
 	if strings.HasPrefix(path, "/mirror/terminal") || strings.HasPrefix(path, "/mirror/view") || path == "/mirror/confirm-send" ||
-		path == "/send-queue/confirm" {
+		path == "/send-queue" || path == "/send-queue/confirm" {
 		if method == http.MethodPost {
-			// `kind` and `password` are the plain confirm page's own fields;
-			// `queue` is the send queue's confirm page's kind.
+			// `kind` and `password` are the plain confirm page's own fields.
 			return method, path, url.Values{"host": {o.mirrorHost}, "session": {o.mirrorSession}, "text": {"iso-write"},
-				"kind": {"terminal"}, "queue": {"terminal"}, "password": {"iso-not-the-password"}}.Encode()
+				"kind": {"terminal"}, "password": {"iso-not-the-password"}}.Encode()
 		}
 		path += "?" + url.Values{"host": {o.mirrorHost}, "session": {o.mirrorSession}}.Encode()
 	}

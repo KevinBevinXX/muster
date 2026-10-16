@@ -101,6 +101,8 @@ type fakeMirror struct {
 	// a host that reports no status. statusReport is HostView.StatusReport.
 	agentState   *mirror.AgentState
 	statusReport bool
+	// agentStateVias is the principal's door on each AgentState call.
+	agentStateVias []authz.Via
 }
 
 func (f *fakeMirror) ServeConnect(w http.ResponseWriter, _ *http.Request) {

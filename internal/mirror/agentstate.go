@@ -8,52 +8,26 @@ import (
 )
 
 // AGENT STATE: whether the Claude Code session in a mirrored window is busy,
-// idle or waiting on the person, and since when — what the server-side send
+// idle or waiting on the person, and SINCE WHEN — what the server-side send
 // queue (internal/sendqueue) waits on before it sends a queued message.
 //
 // 🔴 IT COMES FROM THE HOST, NOT FROM A BROWSER. A per-window host that
 // advertised Msg.StatusReport puts Claude Code's own session status on every
-// window it lists (Window.Status), re-sent whenever it changes; the hub keeps,
-// per window, that status and SINCE WHEN it has seen it continuously. Nothing
-// here depends on a page being open, which is what lets a queued message be
-// sent after the page that queued it has closed.
+// window it lists (Window.Status), with the time Claude Code itself wrote it
+// (Window.StatusSince: its sessions file's statusUpdatedAt), re-sent whenever
+// either changes. Nothing here depends on a page being open, which is what lets
+// a queued message be sent after the page that queued it has closed.
+//
+// 🔴 "SINCE" IS THE CLI'S OWN TIMESTAMP, NOT WHEN MUSTER SAW IT. So a turn
+// that starts and ends between two host refreshes still moves it — the status
+// reads idle both times, and its time is newer — and a host reconnecting does
+// not restart anybody's clock.
 //
 // 🔴 UNKNOWN IS NOT IDLE. A host that never advertised StatusReport (an older
 // muster-mirror, or a per-session one), a window whose pane is not Claude Code,
-// and a Claude pane whose status the host cannot read are each UNKNOWN, with
-// the reason — and the queue sends nothing to an unknown target.
-//
-// ⚠ "SINCE" IS WHEN MUSTER FIRST SAW THE STATUS, NOT WHEN IT BEGAN. A host that
-// (re)connects starts every window's clock at the connect, and a status is only
-// as fine-grained as the host's refresh (mirrorhost.Config.Refresh, 5 s): a turn
-// shorter than one refresh can go unseen. Both err towards waiting longer.
-
-// windowKey addresses one window of a host: its session and tmux window id.
-type windowKey struct{ session, id string }
-
-// statusMark is one window's status and since when it has held continuously.
-type statusMark struct {
-	status string
-	since  time.Time
-}
-
-// noteStatus records, per listed window, its status and since when it has been
-// that status: a window whose status is unchanged keeps its time, a changed or
-// new one starts at now, and a window no longer listed is forgotten.
-func (hc *hostConn) noteStatus(now time.Time) {
-	hc.mu.Lock()
-	defer hc.mu.Unlock()
-	next := make(map[windowKey]statusMark, len(hc.windows))
-	for _, w := range hc.windows {
-		k := windowKey{w.Session, w.ID}
-		if old, ok := hc.status[k]; ok && old.status == w.Status {
-			next[k] = old
-			continue
-		}
-		next[k] = statusMark{status: w.Status, since: now}
-	}
-	hc.status = next
-}
+// a Claude pane whose status the host cannot read, and a status that comes
+// WITHOUT its time are each UNKNOWN, with the reason — and the queue sends
+// nothing to an unknown target.
 
 var (
 	// ErrNoStatusReport: the host's muster-mirror does not report whether
@@ -62,13 +36,17 @@ var (
 	// ErrNoStatus: the window runs Claude Code and the host cannot read its
 	// status (its sessions file is missing or names no status).
 	ErrNoStatus = errors.New("mirror: the host cannot read whether this window's Claude Code session is busy, so nothing queued for it is sent")
+	// ErrNoStatusSince: the host reports the status but not when Claude Code
+	// wrote it (an older muster-mirror, or a Claude Code whose sessions file has
+	// no statusUpdatedAt). Without it a turn cannot be told from no turn.
+	ErrNoStatusSince = errors.New("mirror: the host does not report since when this window's Claude Code session has been idle, so nothing queued for it is sent; upgrade muster-mirror (or Claude Code), or send by hand")
 )
 
 // AgentState is what the hub knows of the Claude Code session in one window.
 type AgentState struct {
 	// Status is StatusBusy, StatusIdle or StatusWaiting; "" when unknown.
 	Status string
-	// Since is when muster first saw Status, continuously since. Zero when
+	// Since is when Claude Code wrote Status (its statusUpdatedAt). Zero when
 	// unknown.
 	Since time.Time
 	// Unknown is why Status is unknown; nil when it is known.
@@ -98,11 +76,19 @@ func (h *Hub) AgentState(owner int64, host, session, window string) AgentState {
 	case !claude:
 		return AgentState{Unknown: fmt.Errorf("%w (host %q, session %q)", ErrNotClaude, host, session)}
 	}
-	m, ok := hc.status[windowKey{session, id}]
-	if !ok || m.status == "" {
-		return AgentState{Unknown: fmt.Errorf("%w (host %q, session %q)", ErrNoStatus, host, session)}
+	for _, w := range hc.windows {
+		if w.Session != session || w.ID != id {
+			continue
+		}
+		switch {
+		case w.Status == "":
+			return AgentState{Unknown: fmt.Errorf("%w (host %q, session %q)", ErrNoStatus, host, session)}
+		case w.StatusSince <= 0:
+			return AgentState{Unknown: fmt.Errorf("%w (host %q, session %q)", ErrNoStatusSince, host, session)}
+		}
+		return AgentState{Status: w.Status, Since: time.UnixMilli(w.StatusSince)}
 	}
-	return AgentState{Status: m.status, Since: m.since}
+	return AgentState{Unknown: fmt.Errorf("%w (host %q, session %q)", ErrNoStatus, host, session)}
 }
 
 // AgentState is Hub.AgentState for the viewing principal's host.

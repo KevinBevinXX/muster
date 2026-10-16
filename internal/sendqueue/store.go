@@ -1,7 +1,7 @@
 // Package sendqueue is the SERVER-SIDE SEND QUEUE (migration 0019): messages a
-// user queued for a target — a dispatched agent, or a mirrored tmux window —
-// that the server sends ONE AT A TIME, each only once the target has been idle
-// for a while (Dispatcher). The queue is per user and stored, so it survives
+// user queued for a mirrored Claude Code window, which the server sends ONE AT
+// A TIME, each only once that window's Claude Code session has been idle for a
+// while (Dispatcher). The queue is per user and stored, so it survives
 // the page that queued it closing, and every device of the owner sees (and can
 // cancel) the same queue.
 //
@@ -36,26 +36,6 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 )
 
-// Kind is what a target is.
-type Kind string
-
-const (
-	// KindAgent is a dispatched agent: the message becomes a chat turn.
-	KindAgent Kind = "agent"
-	// KindMirror is a mirrored tmux window: the message is pasted into it.
-	KindMirror Kind = "mirror"
-)
-
-// Which pane of a mirrored window a message may land in (Item.Pane): the two
-// composers' rules (mirror.PasteTarget).
-const (
-	// PaneClaude: a Claude Code pane only — the Rendered view's composer.
-	PaneClaude = "claude"
-	// PaneActive: the window's active pane, whatever runs there — the Terminal
-	// view's composer.
-	PaneActive = "active"
-)
-
 // State is where a queued message is.
 type State string
 
@@ -70,13 +50,12 @@ const (
 // Open reports whether a message in state s is still to be sent (or being sent).
 func (s State) Open() bool { return s == Queued || s == Sending }
 
-// Target addresses what messages are queued for: an agent by id, or a mirrored
-// window by (host, session, tmux window id) — "" being a per-session host's
-// session. It is the queue's identity: messages for one target are sent in the
-// order they were queued, one at a time.
+// Target addresses what messages are queued for: a mirrored window by (host,
+// session, tmux window id) — "" being a per-session host's session. It is the
+// queue's identity: messages for one target are sent in the order they were
+// queued, one at a time. A queued message always lands in the window's Claude
+// Code pane (mirror.PasteClaude), never whatever else is active there.
 type Target struct {
-	Kind    Kind
-	AgentID int64
 	Host    string
 	Session string
 	Window  string
@@ -84,32 +63,20 @@ type Target struct {
 
 // Valid reports whether t is a target the table can hold.
 func (t Target) Valid() error {
-	switch t.Kind {
-	case KindAgent:
-		if t.AgentID <= 0 {
-			return errors.New("sendqueue: an agent target needs an agent")
-		}
-		return nil
-	case KindMirror:
-		if err := mirror.ValidHost(t.Host); err != nil {
-			return err
-		}
-		if err := mirror.ValidSession(t.Session); err != nil {
-			return err
-		}
-		if t.Window != "" {
-			return mirror.ValidWindowID(t.Window)
-		}
-		return nil
+	if err := mirror.ValidHost(t.Host); err != nil {
+		return err
 	}
-	return fmt.Errorf("sendqueue: unknown target kind %q", t.Kind)
+	if err := mirror.ValidSession(t.Session); err != nil {
+		return err
+	}
+	if t.Window != "" {
+		return mirror.ValidWindowID(t.Window)
+	}
+	return nil
 }
 
 // String is t for a log line: ids and names, never anything sent to it.
 func (t Target) String() string {
-	if t.Kind == KindAgent {
-		return fmt.Sprintf("agent %d", t.AgentID)
-	}
 	return fmt.Sprintf("mirror %s/%s%s", t.Host, t.Session, t.Window)
 }
 
@@ -118,15 +85,10 @@ type Item struct {
 	ID     int64
 	Owner  int64
 	Target Target
-	// AgentSession is the chat session an agent message was typed in; 0 is the
-	// agent's latest.
-	AgentSession int64
-	// Pane is PaneClaude or PaneActive for a mirror message, "" for an agent's.
-	Pane string
-	Body string
-	// StepUpAt is the sign-in time of the session that queued a mirror message
-	// (the step-up decision, recorded): the delivery presents it to the same
-	// freshness gate a manual send passes. Zero for an agent message.
+	Body   string
+	// StepUpAt is the sign-in time of the session that queued the message (the
+	// step-up decision, recorded): the delivery presents it to the same
+	// freshness gate a manual send passes.
 	StepUpAt         time.Time
 	State            State
 	Detail           string
@@ -138,15 +100,8 @@ type Item struct {
 
 // MaxOpenPerTarget bounds the messages one target may have queued (or being
 // sent) at once. A target that is never idle — a host that stopped reporting,
-// an agent that is always answering — would otherwise collect without limit.
+// a session that is always busy — would otherwise collect without limit.
 const MaxOpenPerTarget = 20
-
-// The bodies: the agent send form's bound and mirror.MaxPaste, as 0019 spells
-// them.
-const (
-	MaxAgentBody  = 256 << 10
-	MaxMirrorBody = mirror.MaxPaste
-)
 
 // MaxDetail bounds an outcome's detail (0019's send_queue_detail_cap).
 const MaxDetail = 1024
@@ -164,8 +119,6 @@ var (
 	// ErrNotCancellable: the message is no longer queued (it is being sent, or
 	// already finished).
 	ErrNotCancellable = errors.New("sendqueue: the message is no longer queued, so it cannot be cancelled")
-	// ErrNoSuchAgent refuses a message for an agent the caller cannot see.
-	ErrNoSuchAgent = errors.New("sendqueue: no such agent")
 	// ErrEmpty refuses a message with no text.
 	ErrEmpty = errors.New("sendqueue: nothing to queue: type a message first")
 )
@@ -177,38 +130,43 @@ type PGStore struct{ pool *pgxpool.Pool }
 func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 
 // cols is every column an Item is read from, in scanItem's order.
-const cols = `id, owner_id, kind, coalesce(agent_id, 0), coalesce(agent_session, 0),
-	coalesce(mirror_host, ''), coalesce(mirror_session, ''), coalesce(mirror_window, ''), coalesce(mirror_pane, ''),
-	body, coalesce(stepup_at, 'epoch'::timestamptz), state, detail, may_have_delivered, created_at,
-	coalesce(claimed_at, 'epoch'::timestamptz), coalesce(finished_at, 'epoch'::timestamptz)`
+const cols = `id, owner_id, mirror_host, mirror_session, mirror_window, body, stepup_at, state, detail,
+	may_have_delivered, created_at, coalesce(claimed_at, 'epoch'::timestamptz), coalesce(finished_at, 'epoch'::timestamptz)`
 
-func scanItem(row pgx.Row) (Item, error) {
-	var it Item
-	var kind, state string
-	err := row.Scan(&it.ID, &it.Owner, &kind, &it.Target.AgentID, &it.AgentSession,
-		&it.Target.Host, &it.Target.Session, &it.Target.Window, &it.Pane,
-		&it.Body, &it.StepUpAt, &state, &it.Detail, &it.MayHaveDelivered, &it.CreatedAt, &it.ClaimedAt, &it.FinishedAt)
-	it.Target.Kind, it.State = Kind(kind), State(state)
-	for _, t := range []*time.Time{&it.StepUpAt, &it.ClaimedAt, &it.FinishedAt} {
+// itemDests is where cols scan into it, with its state into state.
+func itemDests(it *Item, state *string) []any {
+	return []any{&it.ID, &it.Owner, &it.Target.Host, &it.Target.Session, &it.Target.Window,
+		&it.Body, &it.StepUpAt, state, &it.Detail, &it.MayHaveDelivered, &it.CreatedAt, &it.ClaimedAt, &it.FinishedAt}
+}
+
+// settle finishes a scanned item: its state, and the epoch placeholders back to
+// zero times.
+func settle(it *Item, state string, more ...*time.Time) {
+	it.State = State(state)
+	for _, t := range append([]*time.Time{&it.ClaimedAt, &it.FinishedAt}, more...) {
 		if t.Unix() == 0 {
 			*t = time.Time{}
 		}
 	}
+}
+
+func scanItem(row pgx.Row) (Item, error) {
+	var it Item
+	var state string
+	err := row.Scan(itemDests(&it, &state)...)
+	settle(&it, state)
 	return it, err
 }
 
 // targetWhere is the SQL predicate "this row is target t's", with t's
 // parameters numbered from n.
 func targetWhere(t Target, n int) (string, []any) {
-	if t.Kind == KindAgent {
-		return fmt.Sprintf(`kind = 'agent' AND agent_id = $%d`, n), []any{t.AgentID}
-	}
-	return fmt.Sprintf(`kind = 'mirror' AND mirror_host = $%d AND mirror_session = $%d AND mirror_window = $%d`, n, n+1, n+2),
+	return fmt.Sprintf(`mirror_host = $%d AND mirror_session = $%d AND mirror_window = $%d`, n, n+1, n+2),
 		[]any{t.Host, t.Session, t.Window}
 }
 
 // Enqueue queues it for its target, as the caller, and returns the stored row.
-// Only its Target, AgentSession, Pane, Body and StepUpAt are read.
+// Only its Target, Body and StepUpAt are read.
 //
 // The per-target bound is checked AFTER the insert, in the same transaction,
 // serialised per owner by an advisory lock, so two concurrent messages cannot
@@ -220,38 +178,20 @@ func (s *PGStore) Enqueue(ctx context.Context, it Item) (Item, error) {
 	if strings.TrimSpace(it.Body) == "" {
 		return Item{}, ErrEmpty
 	}
-	var q string
-	var args []any
-	switch it.Target.Kind {
-	case KindAgent:
-		if len(it.Body) > MaxAgentBody {
-			return Item{}, fmt.Errorf("sendqueue: a message to an agent is at most %d bytes", MaxAgentBody)
-		}
-		var session any
-		if it.AgentSession > 0 {
-			session = it.AgentSession
-		}
-		q = `INSERT INTO send_queue (kind, agent_id, agent_session, body) VALUES ('agent', $1, $2, $3) RETURNING ` + cols
-		args = []any{it.Target.AgentID, session, it.Body}
-	case KindMirror:
-		if it.Pane != PaneClaude && it.Pane != PaneActive {
-			return Item{}, fmt.Errorf("sendqueue: unknown pane %q", it.Pane)
-		}
-		text, err := mirror.SanitizePaste(it.Body)
-		if err != nil {
-			return Item{}, err
-		}
-		if it.StepUpAt.IsZero() {
-			// The step-up decision has to have been made: a mirror message
-			// without the sign-in time that admitted it could never be sent.
-			return Item{}, errors.New("sendqueue: a mirror message needs the sign-in time of the session that queued it")
-		}
-		q = `INSERT INTO send_queue (kind, mirror_host, mirror_session, mirror_window, mirror_pane, body, stepup_at)
-			VALUES ('mirror', $1, $2, $3, $4, $5, $6) RETURNING ` + cols
-		args = []any{it.Target.Host, it.Target.Session, it.Target.Window, it.Pane, text, it.StepUpAt}
+	text, err := mirror.SanitizePaste(it.Body)
+	if err != nil {
+		return Item{}, err
 	}
+	if it.StepUpAt.IsZero() {
+		// The step-up decision has to have been made: a message without the
+		// sign-in time that admitted it could never be sent.
+		return Item{}, errors.New("sendqueue: a queued message needs the sign-in time of the session that queued it")
+	}
+	q := `INSERT INTO send_queue (mirror_host, mirror_session, mirror_window, body, stepup_at)
+		VALUES ($1, $2, $3, $4, $5) RETURNING ` + cols
+	args := []any{it.Target.Host, it.Target.Session, it.Target.Window, text, it.StepUpAt}
 	var out Item
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('sendqueue.enqueue'),
 			coalesce(nullif(current_setting('muster.uid', true), '')::int, 0))`); err != nil {
 			return fmt.Errorf("sendqueue: lock: %w", err)
@@ -259,14 +199,6 @@ func (s *PGStore) Enqueue(ctx context.Context, it Item) (Item, error) {
 		var err error
 		out, err = scanItem(tx.QueryRow(ctx, q, args...))
 		if err != nil {
-			var pg *pgconn.PgError
-			// An absent agent and another owner's agent both raise 23514 from
-			// the BEFORE INSERT owner trigger (no constraint name); an agent
-			// deleted under the insert fails its foreign key (23503). See
-			// internal/pins.
-			if errors.As(err, &pg) && (pg.Code == "23503" || (pg.Code == "23514" && pg.ConstraintName == "")) {
-				return ErrNoSuchAgent
-			}
 			return fmt.Errorf("sendqueue: enqueue: %w", err)
 		}
 		where, wargs := targetWhere(it.Target, 1)
@@ -305,18 +237,11 @@ func (s *PGStore) List(ctx context.Context, t Target) ([]Item, error) {
 	for rows.Next() {
 		var it Item
 		var part int
-		var kind, state string
-		if err := rows.Scan(&it.ID, &it.Owner, &kind, &it.Target.AgentID, &it.AgentSession,
-			&it.Target.Host, &it.Target.Session, &it.Target.Window, &it.Pane,
-			&it.Body, &it.StepUpAt, &state, &it.Detail, &it.MayHaveDelivered, &it.CreatedAt, &it.ClaimedAt, &it.FinishedAt, &part); err != nil {
+		var state string
+		if err := rows.Scan(append(itemDests(&it, &state), &part)...); err != nil {
 			return nil, fmt.Errorf("sendqueue: list: %w", err)
 		}
-		it.Target.Kind, it.State = Kind(kind), State(state)
-		for _, p := range []*time.Time{&it.StepUpAt, &it.ClaimedAt, &it.FinishedAt} {
-			if p.Unix() == 0 {
-				*p = time.Time{}
-			}
-		}
+		settle(&it, state)
 		if part == 0 {
 			open = append(open, it)
 		} else {
@@ -426,18 +351,14 @@ func (s *PGStore) HeadOf(ctx context.Context, t Target) (Head, bool, error) {
 
 func (s *PGStore) heads(ctx context.Context, where string, args ...any) ([]Head, error) {
 	rows, err := s.pool.Query(ctx, `WITH h AS (
-			SELECT DISTINCT ON (owner_id, kind, coalesce(agent_id, 0), coalesce(mirror_host, ''), coalesce(mirror_session, ''), coalesce(mirror_window, ''))
+			SELECT DISTINCT ON (owner_id, mirror_host, mirror_session, mirror_window)
 				*
 			FROM send_queue WHERE state IN ('queued', 'sending')`+where+`
-			ORDER BY owner_id, kind, coalesce(agent_id, 0), coalesce(mirror_host, ''), coalesce(mirror_session, ''), coalesce(mirror_window, ''),
-				(state = 'sending') DESC, id
+			ORDER BY owner_id, mirror_host, mirror_session, mirror_window, (state = 'sending') DESC, id
 		)
 		SELECT `+cols+`, coalesce((SELECT max(p.claimed_at) FROM send_queue p
-			WHERE p.owner_id = h.owner_id AND p.kind = h.kind
-				AND p.agent_id IS NOT DISTINCT FROM h.agent_id
-				AND p.mirror_host IS NOT DISTINCT FROM h.mirror_host
-				AND p.mirror_session IS NOT DISTINCT FROM h.mirror_session
-				AND p.mirror_window IS NOT DISTINCT FROM h.mirror_window
+			WHERE p.owner_id = h.owner_id AND p.mirror_host = h.mirror_host
+				AND p.mirror_session = h.mirror_session AND p.mirror_window = h.mirror_window
 				AND (p.state = 'sent' OR (p.state = 'failed' AND p.may_have_delivered))), 'epoch'::timestamptz)
 		FROM h ORDER BY id`, args...)
 	if err != nil {
@@ -447,18 +368,11 @@ func (s *PGStore) heads(ctx context.Context, where string, args ...any) ([]Head,
 	var out []Head
 	for rows.Next() {
 		var h Head
-		var kind, state string
-		if err := rows.Scan(&h.ID, &h.Owner, &kind, &h.Target.AgentID, &h.AgentSession,
-			&h.Target.Host, &h.Target.Session, &h.Target.Window, &h.Pane,
-			&h.Body, &h.StepUpAt, &state, &h.Detail, &h.MayHaveDelivered, &h.CreatedAt, &h.ClaimedAt, &h.FinishedAt, &h.LastAttempt); err != nil {
+		var state string
+		if err := rows.Scan(append(itemDests(&h.Item, &state), &h.LastAttempt)...); err != nil {
 			return nil, fmt.Errorf("sendqueue: heads: %w", err)
 		}
-		h.Target.Kind, h.State = Kind(kind), State(state)
-		for _, p := range []*time.Time{&h.StepUpAt, &h.ClaimedAt, &h.FinishedAt, &h.LastAttempt} {
-			if p.Unix() == 0 {
-				*p = time.Time{}
-			}
-		}
+		settle(&h.Item, state, &h.LastAttempt)
 		out = append(out, h)
 	}
 	return out, rows.Err()

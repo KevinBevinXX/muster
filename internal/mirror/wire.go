@@ -300,6 +300,18 @@ type Window struct {
 	// StatusReport, so muster treats every window of it as UNKNOWN — and a queued
 	// message for it is NOT sent (it fails closed), never sent on a guess.
 	Status string `json:"status,omitempty"`
+	// StatusSince is WHEN Claude Code last wrote Status, in Unix milliseconds:
+	// its sessions file's own statusUpdatedAt, the CLI's clock, not muster's
+	// or the host's guess. 0 when unknown. The send queue reads an idle window
+	// as idle SINCE this, and sends the next message only once it is later than
+	// the last one was handed over: a turn the message started and finished
+	// between two host refreshes still moves it.
+	//
+	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS, like Status: an older
+	// muster ignores it; a host that sends a Status without it is UNKNOWN to the
+	// send queue (Hub.AgentState: ErrNoStatusSince) — held, never timed out on a
+	// guess.
+	StatusSince int64 `json:"statusSince,omitempty"`
 }
 
 // The values of Window.Status: Claude Code's own session status, as its
@@ -546,6 +558,10 @@ func NormalizeWindows(in []Window, now int64) []Window {
 		// A status describes a Claude pane; a window without one has none.
 		if w.Status = NormalizeStatus(w.Status); !w.Claude {
 			w.Status = ""
+		}
+		// And so does its time: none without a status, none before 1970.
+		if w.Status == "" || w.StatusSince < 0 {
+			w.StatusSince = 0
 		}
 		if w.Activity < 0 {
 			w.Activity = 0

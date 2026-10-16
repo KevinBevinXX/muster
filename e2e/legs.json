@@ -38,7 +38,7 @@
     "tests/mirror-duplicate-labels.spec.ts": 20.0,
     "tests/plugins.spec.ts": 60.0,
     "tests/pins.spec.ts": 30.0,
-    "tests/send-queue.spec.ts": 90.0
+    "tests/send-queue.spec.ts": 150.0
   },
   "legs": {
     "1": [

@@ -124,8 +124,8 @@ var (
 		"internal/api.(*Server).pluginFor",
 		// The send queue (migration 0019): the dispatcher's one helper. It reads
 		// every owner's next queued message and moves rows between states; each
-		// message is then delivered as its own owner (withPrincipalLedger's
-		// queuedPrincipal), never under System.
+		// message is then probed and delivered as its own owner
+		// (withPrincipalLedger's queuedPrincipal), never under System.
 		"internal/sendqueue.sys",
 		// muster-native Web Push (migration 0013): the push store's one helper.
 		// A send runs from hooks and loops with no request; a CLAIM must see
@@ -156,10 +156,10 @@ var (
 	// withPrincipalLedger: admit, and the send queue's delivery.
 	//
 	// queuedPrincipal is the one site outside a wrapper: a queued message is
-	// delivered with no request in flight, as the user who queued it (from a
-	// signed-in session), through authz.ViaQueue. It is handed a row's owner —
-	// by the dispatcher, which read the row under System, and by the queue
-	// list's "waiting for" line, which read it as that same owner.
+	// probed and delivered with no request in flight, as the user who queued it
+	// (from a signed-in session), through authz.ViaQueue. Its one caller is the
+	// send queue's dispatcher (its AsOwner), handed each row's owner after it
+	// read the row under System; the request path never calls it.
 	withPrincipalLedger = []string{
 		"internal/api.(*Server).admit",
 		"internal/api.(*Server).queuedPrincipal",

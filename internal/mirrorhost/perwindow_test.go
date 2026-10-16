@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -618,8 +619,9 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 			name := strings.Repeat("<", 128-len(itoa(i))) + itoa(i)
 			out = append(out, WindowInfo{Session: name, ID: "@" + strings.Repeat("9", 10), Index: 1 << 20, Active: true,
 				Pane: "%1", PanePID: 1, Activity: 1791903960, Command: strings.Repeat(">", mirror.MaxCommand),
-				// The longest status (the send queue's): "waiting".
-				Claude: &ClaudePane{Status: mirror.StatusWaiting}})
+				// The longest status (the send queue's): "waiting", and the longest
+				// time the wire lets through (no bound but int64's).
+				Claude: &ClaudePane{Status: mirror.StatusWaiting, StatusSince: math.MaxInt64}})
 		}
 		return out
 	}
@@ -641,7 +643,7 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 			t.Fatalf("a host with %d windows registers %d, want %d", n, len(l.windows), want)
 		}
 		for _, w := range l.windows {
-			if w.Label == "" || w.Command == "" || !w.Claude || w.Status != mirror.StatusWaiting {
+			if w.Label == "" || w.Command == "" || !w.Claude || w.Status != mirror.StatusWaiting || w.StatusSince != math.MaxInt64 {
 				t.Fatalf("instrument check: a worst-case field was dropped by normalisation, so this is not the worst case: %+v", w)
 			}
 		}

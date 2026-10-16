@@ -34,37 +34,44 @@ Each box can also have a microphone; see [dictation.md](dictation.md).
   why.
 - A failed turn is stored in the conversation, where the reply would have been.
 
-## Queue: send when the agent is idle
+## Queue: send when Claude Code is idle
 
-Beside **Send**, a mirrored Claude Code window's message box (Rendered or
-Terminal view) and a dispatched agent's Terminal view have **Queue**. A queued
-message is kept by the server (`send_queue`, migration `0019`) and sent there,
-so it is sent with the page closed, and every device of yours shows the same
-queue under the box, with a **Cancel** for each message not yet being sent.
+Beside **Send**, a mirrored Claude Code window's **Rendered view** has
+**Queue**. A queued message is kept by the server (`send_queue`, migration
+`0019`) and sent there, so it is sent with the page closed, and every device of
+yours shows the same queue under the box, with a **Cancel** for each message not
+yet being sent. It is pasted into the window's Claude Code pane, the pane whose
+idle it waited on. The Terminal view, dispatched agents and the chief panel have
+no Queue.
 
-- **When.** A message is sent once its target has been idle for
-  `MUSTER_SEND_QUEUE_IDLE` (default `30s`), through the same path as Send.
-- **One at a time.** After one is sent, the next waits until the target has been
-  seen busy (the turn that message started) and then idle for the same time
-  again. A target never seen busy afterwards (a turn shorter than the host's
-  5-second refresh) is taken to have finished after 10 minutes idle.
-- **What idle means.** For a mirrored window: Claude Code's own session status,
-  which `muster-mirror` reports per window. `busy` and `waiting` (a prompt or a
-  question for you) both hold the queue. For a dispatched agent: running, with
-  no turn in flight.
-- 🔴 **Unknown is not idle.** Nothing queued is sent to a target muster cannot
+- **When.** A message is sent once the window's Claude Code session has been
+  idle for `MUSTER_SEND_QUEUE_IDLE` (default `30s`), through the same path as
+  Send.
+- **What idle means.** Claude Code's own session status and the time it wrote
+  it (`status` and `statusUpdatedAt` in its sessions file), which
+  `muster-mirror` reports per window. "Idle for 30 s" is measured from that
+  time. `busy` and `waiting` (a prompt or a question for you) both hold the
+  queue.
+- **One at a time.** After one is sent, the next waits until Claude Code
+  reports idle since a time later than that send, which is the turn the message
+  started, ended. That holds however short the turn was, even one that started
+  and finished between two of the host's 5-second refreshes. There is no
+  time-based fallback. A window that never reports a newer idle keeps its queue
+  held.
+- 🔴 **Unknown is not idle.** Nothing queued is sent to a window muster cannot
   read. For a `muster-mirror` that does not report the status (an older one) or
   a window whose pane is not Claude Code, Queue is drawn disabled saying why and
   a queue post is refused saying why. A message already queued for such a
-  target, or for an agent that is not running, is held with the reason shown.
-- **At most 20** messages can wait per target. Finished ones are shown for a
+  window is held with the reason shown. So is one for a host that reports the
+  status without its time.
+- **At most 20** messages can wait per window. Finished ones are shown for a
   while and deleted after 7 days.
 - **Never twice.** A message is claimed (`queued` → `sending`) before it is sent
   and never put back. If muster stops in the middle of a send, the message is
   marked failed ("may or may not have been delivered") at the next start and is
   not sent again.
 
-🔴 **Step-up for a queued mirror message is decided when you QUEUE it.** Queueing
+🔴 **Step-up for a queued message is decided when you QUEUE it.** Queueing
 needs the same fresh sign-in a Send needs (the dialog, or the plain confirm page
 at `POST /send-queue/confirm`), and the server records the sign-in time of the
 session that queued it. When the message is sent, exactly that time is presented

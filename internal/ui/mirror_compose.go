@@ -103,9 +103,9 @@ type ComposerView struct {
 	// (pinnedShellClass on its body). See composerPinScript for why.
 	Pinned bool
 	// Queue, when set, draws the send queue: a Queue button beside Send and the
-	// target's queue above the input (send_queue.go). nil — no database, or a
-	// target that cannot be queued for — draws neither. A disabled composer
-	// draws neither either.
+	// window's queue above the input (send_queue.go). Only a mirrored window's
+	// Rendered view sets it; nil — no database, or any other composer — draws
+	// neither. A disabled composer draws neither either.
 	Queue *ComposerQueue
 }
 
@@ -377,9 +377,9 @@ func mirrorComposerScript() g.Node {
     }
   } catch (e) {}
   // The Queue button (send_queue.go), when the composer has one: a submit
-  // whose formaction is the queue route and whose name/value says which queue.
+  // whose formaction is the queue route.
   var queueBtn = document.getElementById('mv-queue-send');
-  // Drawn disabled (the server cannot tell when this agent is idle): it stays
+  // Drawn disabled (the server cannot tell when Claude Code is idle): it stays
   // so, whatever a send re-enables.
   var queueOff = !!(queueBtn && queueBtn.disabled);
   // 🔴 WHICH BUTTON SUBMITTED, WHERE e.submitter IS MISSING (older Safari):
@@ -391,25 +391,17 @@ func mirrorComposerScript() g.Node {
   // native hands the send to the browser: an ordinary form submission, which
   // the server answers with a redirect back to this view. sub is the button
   // that submitted (Queue, or none for Send): the browser's submit() ignores a
-  // submitter, so its route and its name/value are put on the form here.
+  // submitter, so its route is put on the form here.
   function native(sub) {
-    if (sub && sub.getAttribute('formaction')) {
-      form.setAttribute('action', sub.getAttribute('formaction'));
-      var h = document.createElement('input');
-      h.type = 'hidden'; h.name = sub.name; h.value = sub.value;
-      form.appendChild(h);
-    }
+    if (sub && sub.getAttribute('formaction')) form.setAttribute('action', sub.getAttribute('formaction'));
     HTMLFormElement.prototype.submit.call(form);
   }
-  function body(sub) {
+  function body() {
     var b = new URLSearchParams();
     for (var i = 0; i < form.elements.length; i++) {
       var el = form.elements[i];
-      // A button is form data only as the submitter.
-      if (el.type === 'submit' || el.type === 'button') continue;
       if (el.name && !el.disabled) b.append(el.name, el.value);
     }
-    if (sub && sub.name) b.append(sub.name, sub.value);
     return b;
   }
   function post(sub) {
@@ -422,7 +414,7 @@ func mirrorComposerScript() g.Node {
     var sent = input.value;
     var req;
     try {
-      req = fetch(to, { method: 'POST', body: body(sub), credentials: 'same-origin',
+      req = fetch(to, { method: 'POST', body: body(), credentials: 'same-origin',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' } });
     } catch (e) { native(sub); return; }
     return req.then(function (r) {

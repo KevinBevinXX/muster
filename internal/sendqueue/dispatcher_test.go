@@ -21,6 +21,9 @@ type fakeTarget struct {
 	sends []string // what reached the send path, in order
 	// outcome is what the next send returns; zero is "sent".
 	outcome *Outcome
+	// probedAs and sentAs are, per hook call, the item's owner and the owner
+	// its ctx was handed as.
+	probedAs, sentAs [][2]int64
 }
 
 func (f *fakeTarget) set(st AgentState) {
@@ -29,15 +32,28 @@ func (f *fakeTarget) set(st AgentState) {
 	f.mu.Unlock()
 }
 
-func (f *fakeTarget) probe(context.Context, Head) AgentState {
+// ownerKey carries the owner asOwner handed the hooks.
+type ownerKey struct{}
+
+// asOwner is the dispatcher's AsOwner: ctx marked with owner.
+func (f *fakeTarget) asOwner(ctx context.Context, owner int64) context.Context {
+	return context.WithValue(ctx, ownerKey{}, owner)
+}
+
+// ctxOwner is the owner ctx was handed as, 0 for none.
+func ctxOwner(ctx context.Context) int64 { o, _ := ctx.Value(ownerKey{}).(int64); return o }
+
+func (f *fakeTarget) probe(ctx context.Context, h Head) AgentState {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.probedAs = append(f.probedAs, [2]int64{h.Owner, ctxOwner(ctx)})
 	return f.st
 }
 
-func (f *fakeTarget) send(_ context.Context, it Item) Outcome {
+func (f *fakeTarget) send(ctx context.Context, it Item) Outcome {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.sentAs = append(f.sentAs, [2]int64{it.Owner, ctxOwner(ctx)})
 	f.sends = append(f.sends, it.Body)
 	if f.outcome != nil {
 		return *f.outcome
@@ -72,7 +88,7 @@ func (c *clock) set(t time.Time) {
 const idle = 30 * time.Second
 
 func newDispatcher(s *PGStore, f *fakeTarget, c *clock) *Dispatcher {
-	return &Dispatcher{Store: s, Probe: f.probe, Send: f.send, IdleFor: idle, TurnWait: -1, Now: c.now,
+	return &Dispatcher{Store: s, Probe: f.probe, Send: f.send, AsOwner: f.asOwner, IdleFor: idle, Now: c.now,
 		Logger: log.New(io.Discard, "", 0)}
 }
 
@@ -284,37 +300,98 @@ func TestTargetsAreIndependent(t *testing.T) {
 	wantSent(t, f, "one busy, one idle target", "to the idle window")
 }
 
-// TestDecide is the rule, case by case, at its boundaries — including the one
-// exception (turnWait): an idle target whose previous message's turn was never
-// seen is taken to have finished it after turnWait, and not before.
+// TestDecide is the rule, case by case, at its boundaries. There is NO time
+// fallback: a target idle since before the previous message is held however
+// long it stays so (a day later here), and an idle target whose time is
+// unknown is not idle for any time.
 func TestDecide(t *testing.T) {
 	t0 := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
 	queued := Head{Item: Item{State: Queued}}
 	after := Head{Item: Item{State: Queued}, LastAttempt: t0.Add(time.Minute)}
 	for _, c := range []struct {
-		name     string
-		h        Head
-		st       AgentState
-		now      time.Time
-		turnWait time.Duration
-		send     bool
+		name string
+		h    Head
+		st   AgentState
+		now  time.Time
+		send bool
 	}{
-		{"being sent", Head{Item: Item{State: Sending}}, AgentState{Idle: true, Since: t0}, t0.Add(time.Hour), 0, false},
-		{"not idle", queued, AgentState{Why: "busy"}, t0.Add(time.Hour), 0, false},
-		{"idle 29s", queued, AgentState{Idle: true, Since: t0}, t0.Add(29 * time.Second), 0, false},
-		{"idle 30s", queued, AgentState{Idle: true, Since: t0}, t0.Add(30 * time.Second), 0, true},
-		{"idle since before the last attempt", after, AgentState{Idle: true, Since: t0}, t0.Add(time.Hour), 0, false},
-		{"idle since exactly the last attempt", after, AgentState{Idle: true, Since: t0.Add(time.Minute)}, t0.Add(time.Hour), 0, false},
-		{"idle since after the last attempt", after, AgentState{Idle: true, Since: t0.Add(2 * time.Minute)}, t0.Add(2*time.Minute + 30*time.Second), 0, true},
-		{"turn unseen, before turnWait", after, AgentState{Idle: true, Since: t0}, t0.Add(time.Minute + 10*time.Minute - time.Second), 10 * time.Minute, false},
-		{"turn unseen, at turnWait", after, AgentState{Idle: true, Since: t0}, t0.Add(time.Minute + 10*time.Minute), 10 * time.Minute, true},
+		{"being sent", Head{Item: Item{State: Sending}}, AgentState{Idle: true, Since: t0}, t0.Add(time.Hour), false},
+		{"not idle", queued, AgentState{Why: "busy"}, t0.Add(time.Hour), false},
+		{"idle 29s", queued, AgentState{Idle: true, Since: t0}, t0.Add(29 * time.Second), false},
+		{"idle 30s", queued, AgentState{Idle: true, Since: t0}, t0.Add(30 * time.Second), true},
+		{"idle since an unknown time", queued, AgentState{Idle: true}, t0.Add(time.Hour), false},
+		{"idle since before the last attempt", after, AgentState{Idle: true, Since: t0}, t0.Add(time.Hour), false},
+		{"idle since before the last attempt, a day later", after, AgentState{Idle: true, Since: t0}, t0.Add(24 * time.Hour), false},
+		{"idle since exactly the last attempt", after, AgentState{Idle: true, Since: t0.Add(time.Minute)}, t0.Add(time.Hour), false},
+		{"idle since after the last attempt, 29s", after, AgentState{Idle: true, Since: t0.Add(2 * time.Minute)}, t0.Add(2*time.Minute + 29*time.Second), false},
+		{"idle since after the last attempt, 30s", after, AgentState{Idle: true, Since: t0.Add(2 * time.Minute)}, t0.Add(2*time.Minute + 30*time.Second), true},
 	} {
-		got := Decide(c.h, c.st, c.now, idle, c.turnWait)
+		got := Decide(c.h, c.st, c.now, idle)
 		if got.Send != c.send {
 			t.Errorf("%s: Decide = %+v, want send=%v", c.name, got, c.send)
 		}
 		if !got.Send && got.Why == "" {
 			t.Errorf("%s: held with no reason", c.name)
 		}
+	}
+}
+
+// TestATurnNobodySawBusyStillReleasesTheNext is why idle-since is Claude
+// Code's own timestamp: after a message is sent the target may never be SEEN
+// busy (its whole turn fell between two host refreshes), and still reports a
+// newer idle-since — which alone releases the next message, IdleFor later.
+// Without a newer one the next is held (a day later), never released by time.
+func TestATurnNobodySawBusyStillReleasesTheNext(t *testing.T) {
+	s, _ := pgStore(t)
+	t0 := time.Now().Truncate(time.Second)
+	c := &clock{t: t0.Add(idle)}
+	f := &fakeTarget{st: AgentState{Idle: true, Since: t0}}
+	d := newDispatcher(s, f, c)
+	mustEnqueue(t, s, 2, mirrorItem("one"))
+	mustEnqueue(t, s, 2, mirrorItem("two"))
+	tick(t, d)
+	wantSent(t, f, "idle 30 s", "one")
+	c.set(t0.Add(24 * time.Hour))
+	tick(t, d)
+	wantSent(t, f, "the same idle-since a day later", "one")
+	// The turn "one" started ran and ended unseen: idle both times, newer time.
+	turnEnded := t0.Add(24*time.Hour + time.Second)
+	f.set(AgentState{Idle: true, Since: turnEnded})
+	c.set(turnEnded.Add(idle - time.Second))
+	tick(t, d)
+	wantSent(t, f, "a newer idle-since, 29 s", "one")
+	c.set(turnEnded.Add(idle))
+	tick(t, d)
+	wantSent(t, f, "a newer idle-since, 30 s", "one", "two")
+}
+
+// TestTheHooksActAsTheMessagesOwner: the dispatcher reads every owner's heads
+// under the system scope, and hands Probe and Send ctx AS EACH HEAD'S OWNER —
+// two owners, two targets, each hook call as its own row's owner. And with no
+// AsOwner it refuses to run at all rather than probe as the system.
+func TestTheHooksActAsTheMessagesOwner(t *testing.T) {
+	s, _ := pgStore(t)
+	t0 := time.Now().Truncate(time.Second)
+	c := &clock{t: t0.Add(idle)}
+	f := &fakeTarget{st: AgentState{Idle: true, Since: t0}}
+	d := newDispatcher(s, f, c)
+	mustEnqueue(t, s, 2, mirrorItem("user 2's"))
+	mustEnqueue(t, s, 3, mirrorItem("user 3's"))
+	tick(t, d)
+	wantSent(t, f, "both owners' heads", "user 2's", "user 3's")
+	f.mu.Lock()
+	probed, sent := f.probedAs, f.sentAs
+	f.mu.Unlock()
+	if len(probed) != 2 || len(sent) != 2 {
+		t.Fatalf("probed %v, sent %v; want two each", probed, sent)
+	}
+	for _, p := range append(probed, sent...) {
+		if p[0] == 0 || p[0] != p[1] {
+			t.Fatalf("a hook ran for owner %d as owner %d (probed %v, sent %v)", p[0], p[1], probed, sent)
+		}
+	}
+	d.AsOwner = nil
+	if _, err := d.Tick(context.Background()); err == nil {
+		t.Fatal("a dispatcher with no AsOwner ticked")
 	}
 }

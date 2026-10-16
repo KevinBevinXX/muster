@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/auth"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -123,22 +122,10 @@ func queueMirror() *fakeMirror {
 	return &fakeMirror{online: true, interactive: true, statusReport: true, v2: &fakeMirrorV2{}, windows: queueWindows()}
 }
 
-// queueAgents is sendAgents with lookups by id (the delivery reads by id).
-type queueAgents struct{ *sendAgents }
-
-func (q queueAgents) Get(ctx context.Context, id int64) (agents.Agent, error) {
-	for _, n := range []string{"keen-wren", "plain-otter"} {
-		if a, _ := q.GetByName(ctx, n); a.ID == id {
-			return a, nil
-		}
-	}
-	return agents.Agent{}, errors.New("no such agent")
-}
-
 func queueServer(t *testing.T, fm *fakeMirror, q *memQueue, gw Gateway) (*Server, *httptest.Server) {
 	t.Helper()
 	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(io.Discard, "", 0))
-	ext := Extensions{Notes: stubNotesStore{}, Agents: queueAgents{newSendAgents()}, SessionLiveness: stubLiveness{},
+	ext := Extensions{Notes: stubNotesStore{}, Agents: newSendAgents(), SessionLiveness: stubLiveness{},
 		Provisioner: newFakeTerminal(), SendQueue: q, Gateway: gw}
 	if fm != nil {
 		ext.Mirror = fm
@@ -168,7 +155,7 @@ func postQueue(t *testing.T, ts *httptest.Server, cookie string, form url.Values
 }
 
 func mirrorQueueForm(session, window, text string) url.Values {
-	f := url.Values{"queue": {ui.QueueKindView}, "host": {"ws"}, "session": {session}, "text": {text}}
+	f := url.Values{"host": {"ws"}, "session": {session}, "text": {text}}
 	if window != "" {
 		f.Set("window", window)
 	}
@@ -237,8 +224,8 @@ func TestQueueingForAMirrorIsGatedLikeASendAndFailsClosed(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("stored %d messages, want 1", len(got))
 	}
-	want := sendqueue.Target{Kind: sendqueue.KindMirror, Host: "ws", Session: "main", Window: "@1"}
-	if it := got[0]; it.Owner != 1 || it.Target != want || it.Pane != sendqueue.PaneClaude || it.Body != "later please" {
+	want := sendqueue.Target{Host: "ws", Session: "main", Window: "@1"}
+	if it := got[0]; it.Owner != 1 || it.Target != want || it.Body != "later please" {
 		t.Fatalf("stored %+v", it)
 	}
 	if at := got[0].StepUpAt; !at.Equal(signedInAt) {
@@ -270,10 +257,10 @@ func asQueueUser(uid int64, at time.Time) context.Context {
 func TestAnotherOwnerCannotSeeOrCancelAQueue(t *testing.T) {
 	q := &memQueue{}
 	s, _ := queueServer(t, queueMirror(), q, &turnGateway{})
-	it, _ := q.Enqueue(asQueueUser(1, time.Now()), sendqueue.Item{Target: sendqueue.Target{Kind: sendqueue.KindMirror,
-		Host: "ws", Session: "main", Window: "@1"}, Pane: sendqueue.PaneClaude, Body: "user one's secret plan", StepUpAt: time.Now()})
+	it, _ := q.Enqueue(asQueueUser(1, time.Now()), sendqueue.Item{Target: sendqueue.Target{
+		Host: "ws", Session: "main", Window: "@1"}, Body: "user one's secret plan", StepUpAt: time.Now()})
 	list := func(uid int64) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodGet, ui.SendQueuePath+"?"+url.Values{"queue": {ui.QueueKindView},
+		req := httptest.NewRequest(http.MethodGet, ui.SendQueuePath+"?"+url.Values{
 			"host": {"ws"}, "session": {"main"}, "window": {"@1"}}.Encode(), nil)
 		rec := httptest.NewRecorder()
 		s.handleSendQueueList(rec, req.WithContext(asQueueUser(uid, time.Now())))
@@ -306,36 +293,38 @@ func TestAnotherOwnerCannotSeeOrCancelAQueue(t *testing.T) {
 
 // TestAQueuedMirrorMessageIsSentThroughTheSendPathWithItsOwnStepUp: delivery
 // pastes through the plugin exactly as a Send does — as the message's owner,
-// into the pane its composer may reach — and presents the sign-in time the
-// message was QUEUED with: inside the window it is pasted; past it, it fails
-// saying so and NOTHING is pasted, however fresh anything else is.
+// into the window's CLAUDE CODE pane (the pane whose idle the queue waited on,
+// never whatever else is active) — and presents the sign-in time the message
+// was QUEUED with: inside the window it is pasted; past it, it fails saying so
+// and NOTHING is pasted, however fresh anything else is.
 func TestAQueuedMirrorMessageIsSentThroughTheSendPathWithItsOwnStepUp(t *testing.T) {
 	fm := queueMirror()
 	s, _ := queueServer(t, fm, &memQueue{}, &turnGateway{})
-	item := func(id int64, at time.Time, pane string) sendqueue.Item {
-		return sendqueue.Item{ID: id, Owner: 1, Target: sendqueue.Target{Kind: sendqueue.KindMirror, Host: "ws", Session: "main", Window: "@1"},
-			Pane: pane, Body: "queued text " + strconv.FormatInt(id, 10), StepUpAt: at}
+	item := func(id int64, at time.Time) sendqueue.Item {
+		return sendqueue.Item{ID: id, Owner: 1, Target: sendqueue.Target{Host: "ws", Session: "main", Window: "@1"},
+			Body: "queued text " + strconv.FormatInt(id, 10), StepUpAt: at}
 	}
-	// A request context that is itself FRESH: what is presented must be the
-	// item's time, not anything the caller carries.
-	ctx := stepup.WithAuthTime(authz.System(context.Background()), time.Now())
+	// The owner's context, as the dispatcher hands it (queuedPrincipal), and
+	// itself FRESH: what is presented must be the item's time, not anything
+	// the caller carries.
+	ctx := stepup.WithAuthTime(s.queuedPrincipal(context.Background(), 1), time.Now())
 
-	if o := s.sendQueueSend(ctx, item(1, time.Now().Add(-stepup.Window()-time.Minute), sendqueue.PaneClaude)); o.Sent || o.MayHaveDelivered ||
+	if o := s.sendQueueSend(ctx, item(1, time.Now().Add(-stepup.Window()-time.Minute))); o.Sent || o.MayHaveDelivered ||
 		!strings.Contains(o.Detail, "Confirm it's you") {
 		t.Fatalf("a message queued under a sign-in past the window: %+v", o)
 	}
 	if _, pastes := fm.v2.snapshot(); len(pastes) != 0 {
 		t.Fatalf("a message past its step-up was pasted: %+v", pastes)
 	}
-	if o := s.sendQueueSend(ctx, item(2, time.Now(), sendqueue.PaneActive)); !o.Sent {
+	if o := s.sendQueueSend(ctx, item(2, time.Now())); !o.Sent {
 		t.Fatalf("a message inside its window: %+v", o)
 	}
 	_, pastes := fm.v2.snapshot()
-	if len(pastes) != 1 || pastes[0] != (pasteCall{1, "ws", "main", "queued text 2", mirror.PasteActivePane}) {
-		t.Fatalf("pasted %+v; want one paste as user 1 into the active pane", pastes)
+	if len(pastes) != 1 || pastes[0] != (pasteCall{1, "ws", "main", "queued text 2", mirror.PasteClaude}) {
+		t.Fatalf("pasted %+v; want one paste as user 1 into the Claude Code pane", pastes)
 	}
 	// The same message again is the send path's repeat: not pasted twice.
-	if o := s.sendQueueSend(ctx, item(2, time.Now(), sendqueue.PaneActive)); !o.Sent {
+	if o := s.sendQueueSend(ctx, item(2, time.Now())); !o.Sent {
 		t.Fatalf("a repeat: %+v", o)
 	}
 	if _, pastes := fm.v2.snapshot(); len(pastes) != 1 {
@@ -343,11 +332,11 @@ func TestAQueuedMirrorMessageIsSentThroughTheSendPathWithItsOwnStepUp(t *testing
 	}
 	// A paste the host never confirmed may have landed.
 	fm.v2.pasteErr = fmtUnconfirmed()
-	if o := s.sendQueueSend(ctx, item(3, time.Now(), sendqueue.PaneClaude)); o.Sent || !o.MayHaveDelivered {
+	if o := s.sendQueueSend(ctx, item(3, time.Now())); o.Sent || !o.MayHaveDelivered {
 		t.Fatalf("an unconfirmed paste: %+v; want failed, may have been delivered", o)
 	}
 	fm.v2.pasteErr = mirror.ErrNotClaude
-	if o := s.sendQueueSend(ctx, item(4, time.Now(), sendqueue.PaneClaude)); o.Sent || o.MayHaveDelivered {
+	if o := s.sendQueueSend(ctx, item(4, time.Now())); o.Sent || o.MayHaveDelivered {
 		t.Fatalf("a paste refused before the pane: %+v; want failed, not delivered", o)
 	}
 }
@@ -356,14 +345,16 @@ func TestAQueuedMirrorMessageIsSentThroughTheSendPathWithItsOwnStepUp(t *testing
 // returns one.
 func fmtUnconfirmed() error { return errors.Join(mirror.ErrPasteTimeout, mirror.ErrPasteUnconfirmed) }
 
-// TestTheProbeFailsClosed: the dispatcher's view of a mirrored window is idle
-// ONLY when the host reports Claude Code idle; busy, waiting on the person and
-// every unknown (an older muster-mirror, a shell, the host offline) hold the
-// queue, each saying why.
+// TestTheProbeFailsClosed: the view of a mirrored window is idle ONLY when the
+// host reports Claude Code idle, and idle since exactly the host's time; busy,
+// waiting on the person and every unknown (an older muster-mirror, a status
+// without its time, a shell, the host offline) hold the queue, each saying why.
+// The probe reads as ctx's principal: another user's ctx sees no such host.
 func TestTheProbeFailsClosed(t *testing.T) {
 	fm := queueMirror()
 	s, _ := queueServer(t, fm, &memQueue{}, &turnGateway{})
-	h := sendqueue.Head{Item: sendqueue.Item{Owner: 1, Target: sendqueue.Target{Kind: sendqueue.KindMirror, Host: "ws", Session: "main", Window: "@1"}}}
+	h := sendqueue.Head{Item: sendqueue.Item{Owner: 1, Target: sendqueue.Target{Host: "ws", Session: "main", Window: "@1"}}}
+	user1 := asQueueUser(1, time.Now())
 	since := time.Now().Add(-time.Hour)
 	for _, c := range []struct {
 		st   *mirror.AgentState
@@ -374,77 +365,69 @@ func TestTheProbeFailsClosed(t *testing.T) {
 		{&mirror.AgentState{Status: mirror.StatusBusy, Since: since}, false, "working"},
 		{&mirror.AgentState{Status: mirror.StatusWaiting, Since: since}, false, "waiting for you"},
 		{&mirror.AgentState{Unknown: mirror.ErrNotClaude}, false, "no Claude Code session"},
+		{&mirror.AgentState{Unknown: mirror.ErrNoStatusSince}, false, "does not report since when"},
 		{&mirror.AgentState{Status: mirror.StatusIdle, Since: since}, true, ""},
 	} {
 		fm.mu.Lock()
 		fm.agentState = c.st
 		fm.mu.Unlock()
-		got := s.sendQueueProbe(context.Background(), h)
+		got := s.sendQueueProbe(user1, h)
 		if got.Idle != c.idle || (c.idle && !got.Since.Equal(since)) || !strings.Contains(got.Why, c.says) {
 			t.Errorf("host state %+v → probe %+v; want idle=%v saying %q", c.st, got, c.idle, c.says)
 		}
 	}
-	// Another owner's message for the same address is read as THAT owner, who
-	// has no such host.
+	// Read as another user, the same address is no host of theirs.
 	fm.agentState = &mirror.AgentState{Status: mirror.StatusIdle, Since: since}
-	h.Owner = 2
-	if got := s.sendQueueProbe(context.Background(), h); got.Idle {
-		t.Fatalf("user 2's message reads user 1's host: %+v", got)
+	if got := s.sendQueueProbe(asQueueUser(2, time.Now()), h); got.Idle {
+		t.Fatalf("user 2's context reads user 1's host: %+v", got)
 	}
 }
 
-// TestAQueuedAgentMessageIsATurnAndTheAgentIsBusyUntilItEnds: an agent target
-// is idle only while running with no turn in flight, idle SINCE its last turn
-// ended (or since the process started); a delivery starts the same turn a Send
-// starts, as the owner; while it runs the agent is busy, and when it ends the
-// agent is idle again from then.
-func TestAQueuedAgentMessageIsATurnAndTheAgentIsBusyUntilItEnds(t *testing.T) {
-	gw := &turnGateway{}
-	s, _ := queueServer(t, nil, &memQueue{}, gw)
-	h := sendqueue.Head{Item: sendqueue.Item{ID: 9, Owner: 1, Target: sendqueue.Target{Kind: sendqueue.KindAgent, AgentID: 8}, Body: "queued turn"}}
-	first := s.sendQueueProbe(context.Background(), h)
-	if !first.Idle || first.Since.Before(s.startedAt) {
-		t.Fatalf("a running agent with no turn: %+v; want idle since the process started", first)
+// TestTheQueueListReadsAsTheRequestNotAsTheQueue (D4): the list's "waiting
+// for" line probes the window as the REQUEST's own principal — the session
+// that asked — and never mints a send-queue principal on the request path;
+// only the dispatcher does (queuedPrincipal is its AsOwner). The control is the
+// dispatcher's own probe of the same head, which is ViaQueue.
+func TestTheQueueListReadsAsTheRequestNotAsTheQueue(t *testing.T) {
+	fm := queueMirror()
+	fm.agentState = &mirror.AgentState{Status: mirror.StatusBusy, Since: time.Now()}
+	q := &memQueue{}
+	s, ts := queueServer(t, fm, q, &turnGateway{})
+	if _, err := q.Enqueue(asQueueUser(1, time.Now()), sendqueue.Item{Target: sendqueue.Target{Host: "ws", Session: "main", Window: "@1"},
+		Body: "waiting", StepUpAt: time.Now()}); err != nil {
+		t.Fatal(err)
 	}
-	if o := s.sendQueueSend(context.Background(), h.Item); !o.Sent {
-		t.Fatalf("delivery: %+v", o)
+	_, page := mirrorGet(t, s, ts, ui.SendQueuePath+"?"+url.Values{"host": {"ws"}, "session": {"main"}, "window": {"@1"}}.Encode())
+	if !strings.Contains(page, "Claude Code is working.") {
+		t.Fatalf("the list did not probe the window: %q", page)
 	}
-	eventuallyAPI(t, "the turn", func() bool { return len(gw.seen()) == 1 })
-	if got := gw.seen()[0]; got != "plain-otter key-52 queued turn" {
-		t.Fatalf("the turn = %q", got)
+	fm.mu.Lock()
+	vias := append([]authz.Via(nil), fm.agentStateVias...)
+	fm.agentStateVias = nil
+	fm.mu.Unlock()
+	if len(vias) == 0 {
+		t.Fatal("the list never probed")
 	}
-	eventuallyAPI(t, "idle after the turn", func() bool {
-		st := s.sendQueueProbe(context.Background(), h)
-		return st.Idle && st.Since.After(first.Since)
-	})
-	// Not running: held, saying so.
-	ag := s.ext.Agents.(queueAgents)
-	ag.mu.Lock()
-	ag.status["plain-otter"] = agents.StatusStopped
-	ag.mu.Unlock()
-	if st := s.sendQueueProbe(context.Background(), h); st.Idle || st.Why != AgentNotRunningNotice {
-		t.Fatalf("a stopped agent: %+v", st)
+	for _, v := range vias {
+		if v != authz.ViaSession {
+			t.Fatalf("the list probed through %q; want the request's own door, %q (all: %v)", v, authz.ViaSession, vias)
+		}
 	}
-}
-
-// TestTheTurnInFlightHoldsTheQueue pins the busy half with no gateway timing:
-// an agent marked in flight is busy, whatever its last turn.
-func TestTheTurnInFlightHoldsTheQueue(t *testing.T) {
-	s, _ := queueServer(t, nil, &memQueue{}, &turnGateway{})
-	h := sendqueue.Head{Item: sendqueue.Item{Owner: 1, Target: sendqueue.Target{Kind: sendqueue.KindAgent, AgentID: 8}}}
-	s.markAgentActive(1, "plain-otter", "thinking")
-	if st := s.sendQueueProbe(context.Background(), h); st.Idle {
-		t.Fatalf("an agent with a turn in flight: %+v; want busy", st)
-	}
-	s.markAgentIdle("plain-otter")
-	if st := s.sendQueueProbe(context.Background(), h); !st.Idle {
-		t.Fatalf("CONTROL: the same agent once the turn ended: %+v; want idle", st)
+	// CONTROL: the dispatcher's probe, through its AsOwner.
+	s.sendQueueProbe(s.queuedPrincipal(context.Background(), 1), sendqueue.Head{Item: q.all()[0]})
+	fm.mu.Lock()
+	defer fm.mu.Unlock()
+	if len(fm.agentStateVias) != 1 || fm.agentStateVias[0] != authz.ViaQueue {
+		t.Fatalf("CONTROL: the dispatcher's probe went through %v; want %q", fm.agentStateVias, authz.ViaQueue)
 	}
 }
 
 // TestTheComposersDrawQueueOnlyWhereItCanWork: the Rendered view of a Claude
 // window on a reporting host draws Queue enabled; the same view on a host that
 // does not report status draws it disabled, saying why; no store, no Queue.
+// And ONLY the Rendered view: the same window's Terminal view (whose composer
+// pastes into whatever pane is active) and a dispatched agent's Terminal draw
+// none, with the store wired and the host reporting.
 func TestTheComposersDrawQueueOnlyWhereItCanWork(t *testing.T) {
 	for _, c := range []struct {
 		name     string
@@ -480,5 +463,23 @@ func TestTheComposersDrawQueueOnlyWhereItCanWork(t *testing.T) {
 		if off != (c.disabled != "") || (c.disabled != "" && !strings.Contains(page, c.disabled)) {
 			t.Errorf("%s: the off note drawn = %v; want it saying %q", c.name, off, c.disabled)
 		}
+	}
+	s, ts := queueServer(t, queueMirror(), &memQueue{}, &turnGateway{})
+	for name, path := range map[string]string{
+		"the mirror Terminal view":      ui.MirrorRef{Host: "ws", Session: "main", Window: "@1"}.TerminalPath(),
+		"a dispatched agent's Terminal": ui.AgentTerminalPath("keen-wren"),
+	} {
+		resp, page := mirrorGet(t, s, ts, path)
+		if resp.StatusCode != http.StatusOK || !strings.Contains(page, `id="mv-form"`) {
+			t.Fatalf("%s: %d, composer drawn = %v; the page must draw its composer for this to mean anything",
+				name, resp.StatusCode, strings.Contains(page, `id="mv-form"`))
+		}
+		if strings.Contains(page, `id="mv-queue-send"`) || strings.Contains(page, `id="mv-queue"`) {
+			t.Errorf("%s draws a Queue", name)
+		}
+	}
+	// CONTROL: the Rendered view of the same window, same server, does.
+	if _, page := mirrorGet(t, s, ts, ui.MirrorViewPath("ws", "main")+"&window=%401"); !strings.Contains(page, `id="mv-queue-send"`) {
+		t.Error("CONTROL: the Rendered view draws no Queue")
 	}
 }

@@ -7,8 +7,8 @@ import (
 	. "maragu.dev/gomponents/html"
 )
 
-// THE SEND QUEUE in a composer (internal/sendqueue): a Queue button beside
-// Send, and the target's queue under the status line — what is waiting, what
+// THE SEND QUEUE in a mirrored window's Rendered view (internal/sendqueue): a
+// Queue button beside Send, and the window's queue under the status line — what is waiting, what
 // it is waiting for, a Cancel for each message not yet being sent, and the
 // last few outcomes.
 //
@@ -33,22 +33,10 @@ func SendQueueCancelPath(id int64) string {
 	return SendQueuePath + "/" + strconv.FormatInt(id, 10) + "/cancel"
 }
 
-// The kinds of queue a composer posts (its Queue button's `queue` value): the
-// composer it is, and so where the message goes and which pane it may land in.
-const (
-	// QueueKindView: a mirrored window's Rendered view — a Claude Code pane only.
-	QueueKindView = "view"
-	// QueueKindTerminal: a mirrored window's Terminal view — its active pane.
-	QueueKindTerminal = "terminal"
-	// QueueKindAgent: a dispatched agent — a chat turn.
-	QueueKindAgent = "agent"
-)
-
-// ComposerQueue is a composer's queue: its kind, the list's URL, and the list
-// as it was when the page was drawn.
+// ComposerQueue is a Rendered view composer's queue: the list's URL, and the
+// list as it was when the page was drawn.
 type ComposerQueue struct {
-	Kind string
-	// Src is the list's URL (SendQueuePath with the target's address).
+	// Src is the list's URL (SendQueuePath with the window's address).
 	Src  string
 	List SendQueueListView
 	// Disabled, when set, draws Queue disabled and says why under the list —
@@ -151,7 +139,7 @@ func SendQueueList(v SendQueueListView) g.Node {
 		g.If(v.active(), g.Attr("data-active", "")),
 		Class("px-3 pt-2"),
 		g.If(open > 0, P(ID("mv-queue-head"), Class("text-[11px] font-semibold text-fg2"),
-			g.Text("Queued: "+strconv.Itoa(open)+" — sends one at a time, each when the agent has been idle a while"))),
+			g.Text("Queued: "+strconv.Itoa(open)+" — sends one at a time, each when Claude Code has been idle a while"))),
 		g.If(v.Waiting != "", P(ID("mv-queue-waiting"), Class("text-[11px] text-muted [overflow-wrap:anywhere]"),
 			g.Text("Next: "+v.Waiting))),
 		Ul(Class("max-h-40 overflow-y-auto"), g.Group(rows)),
@@ -162,8 +150,8 @@ func SendQueueList(v SendQueueListView) g.Node {
 const sendQueueButtonClass = "press min-h-[44px] shrink-0 rounded-xl bg-s2 px-3 text-sm font-semibold text-fg ring-1 ring-inset ring-line transition disabled:opacity-40"
 
 // sendQueueButton is the composer's Queue button: a submit with its own
-// formaction, so the browser posts the composer's form to the queue route
-// when no script runs. Its name/value says which queue.
+// formaction, so the browser posts the composer's form (the window's address
+// and the text) to the queue route when no script runs.
 func sendQueueButton(q *ComposerQueue, off bool) g.Node {
 	if q == nil || off {
 		return nil
@@ -171,12 +159,10 @@ func sendQueueButton(q *ComposerQueue, off bool) g.Node {
 	return Button(
 		ID("mv-queue-send"),
 		Type("submit"),
-		Name("queue"),
-		Value(q.Kind),
 		g.Attr("formaction", SendQueuePath),
 		g.If(q.Disabled != "", g.Attr("disabled", "")),
-		g.Attr("aria-label", "Queue: send when the agent is idle"),
-		g.If(q.Disabled == "", g.Attr("title", "Send when the agent has been idle for a while — even after this page is closed")),
+		g.Attr("aria-label", "Queue: send when Claude Code is idle"),
+		g.If(q.Disabled == "", g.Attr("title", "Send when Claude Code has been idle for a while — even after this page is closed")),
 		g.If(q.Disabled != "", g.Attr("title", q.Disabled)),
 		Class(sendQueueButtonClass),
 		g.Text("Queue"),

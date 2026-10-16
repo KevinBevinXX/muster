@@ -56,11 +56,14 @@ import (
 // MUSTER_MIRROR_E2E_PASTE_FILE — each with the pane it reached.
 //
 // THE CLAUDE STATUS (the send queue): a per-window host's Claude window reports
-// Claude Code's session status — busy while <transcript>.busy exists, waiting
-// while <transcript>.waiting exists, idle otherwise — and the host advertises
-// that it reports it (Msg.StatusReport). With MUSTER_MIRROR_E2E_NO_STATUS=1 it
-// advertises nothing, which is what an older muster-mirror's hello says: muster
-// must then send nothing queued to it.
+// Claude Code's session status and its time from <transcript>.status, a JSON
+// {"status", "statusUpdatedAt"} the spec writes the way the CLI writes its
+// sessions file; without that file, busy while <transcript>.busy exists,
+// waiting while <transcript>.waiting exists, idle otherwise, and NO time (which
+// muster's queue must treat as unknown). The host advertises that it reports
+// status (Msg.StatusReport). With MUSTER_MIRROR_E2E_NO_STATUS=1 it advertises
+// nothing, which is what an older muster-mirror's hello says: muster must then
+// send nothing queued to it.
 func init() {
 	e2eBackend = func() mirrorhost.Backend {
 		if f := os.Getenv("MUSTER_MIRROR_E2E_WINDOWS_FILE"); f != "" {
@@ -302,21 +305,38 @@ func (w windowFake) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
 		info := mirrorhost.WindowInfo{Session: f[0], ID: f[1], Index: index, Active: f[3] == "1", Command: f[4],
 			Activity: activity, Pane: windowFakePane(f[0], f[1]), PanePID: 1}
 		if f[6] != "" {
-			_, busy := os.Stat(f[6] + ".busy")
-			_, waiting := os.Stat(f[6] + ".waiting")
-			status := "idle"
-			switch {
-			case busy == nil:
-				status = "busy"
-			case waiting == nil:
-				status = "waiting"
-			}
+			status, since := windowFakeStatus(f[6])
 			info.Claude = &mirrorhost.ClaudePane{Pane: info.Pane, PID: 1, Transcript: f[6],
-				Gen: strings.TrimSuffix(filepath.Base(f[6]), ".jsonl"), Busy: busy == nil, Status: status}
+				Gen: strings.TrimSuffix(filepath.Base(f[6]), ".jsonl"), Busy: status == "busy", Status: status, StatusSince: since}
 		}
 		out = append(out, info)
 	}
 	return out, nil
+}
+
+// windowFakeStatus is a Claude window's status and when it was written. From
+// <transcript>.status when it exists — {"status", "statusUpdatedAt"}, the two
+// fields of Claude Code's own sessions file, written by the spec as the CLI
+// writes them — else from the marker files (busy / waiting / idle) with NO
+// time, which is what a host that reports a status without its time sends.
+func windowFakeStatus(transcript string) (status string, since int64) {
+	if b, err := os.ReadFile(transcript + ".status"); err == nil {
+		var sf struct {
+			Status          string `json:"status"`
+			StatusUpdatedAt int64  `json:"statusUpdatedAt"`
+		}
+		if json.Unmarshal(b, &sf) == nil {
+			return sf.Status, sf.StatusUpdatedAt
+		}
+		return "", 0
+	}
+	if _, err := os.Stat(transcript + ".busy"); err == nil {
+		return "busy", 0
+	}
+	if _, err := os.Stat(transcript + ".waiting"); err == nil {
+		return "waiting", 0
+	}
+	return "idle", 0
 }
 
 // ReportsStatus implements mirrorhost.StatusReporter: yes, unless the spec

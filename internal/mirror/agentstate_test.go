@@ -15,13 +15,20 @@ import (
 // of each window's Claude Code session, and since when muster has seen it.
 
 // statusWindows is one host's windows: @1 a Claude pane whose status is the
-// argument, @2 a shell.
-func statusWindows(status string) []mirror.Window {
+// argument, written at since (Unix ms, the CLI's statusUpdatedAt), @2 a shell.
+func statusWindows(status string, since int64) []mirror.Window {
 	return []mirror.Window{
-		{Session: "work", ID: "@1", Index: 0, Active: true, Claude: true, Status: status},
+		{Session: "work", ID: "@1", Index: 0, Active: true, Claude: true, Status: status, StatusSince: since},
 		{Session: "work", ID: "@2", Index: 1, Command: "zsh"},
 	}
 }
+
+// t1, t2, t3 are pairwise-distinct CLI timestamps (Unix ms), none of them now.
+const (
+	t1 = int64(1792000001111)
+	t2 = int64(1792000002222)
+	t3 = int64(1792000003333)
+)
 
 // TestAHostThatDoesNotAdvertiseStatusIsNeverIdle is the FAIL-CLOSED half: a
 // host whose hello does not carry StatusReport — every muster-mirror before
@@ -40,7 +47,7 @@ func TestAHostThatDoesNotAdvertiseStatusIsNeverIdle(t *testing.T) {
 		{"new", true, nil},
 	} {
 		tok, _ := r.store.mint(t, 1, c.host)
-		m := winHello(c.host, true, statusWindows(mirror.StatusIdle)...)
+		m := winHello(c.host, true, statusWindows(mirror.StatusIdle, t1)...)
 		m.StatusReport = c.report
 		if _, err := r.rawConnect(t, tok, m); err != nil {
 			t.Fatal(err)
@@ -48,8 +55,8 @@ func TestAHostThatDoesNotAdvertiseStatusIsNeverIdle(t *testing.T) {
 		r.online(t, 1, c.host, "work")
 		st := r.svc.AgentState(asUser(1), c.host, "work", "@1")
 		if c.want == nil {
-			if st.Unknown != nil || st.Status != mirror.StatusIdle || st.Since.IsZero() {
-				t.Fatalf("host %s (advertised): %+v, want idle since a time", c.host, st)
+			if st.Unknown != nil || st.Status != mirror.StatusIdle || !st.Since.Equal(time.UnixMilli(t1)) {
+				t.Fatalf("host %s (advertised): %+v, want idle since the CLI's %d", c.host, st, t1)
 			}
 			continue
 		}
@@ -70,66 +77,72 @@ func TestAHostThatDoesNotAdvertiseStatusIsNeverIdle(t *testing.T) {
 	}
 }
 
-// TestTheAgentStateFollowsTheHostAndKeepsItsSince: the state is the host's
-// latest report for that window, and Since moves ONLY when the status changes —
-// a sessions message that changes something else (activity) leaves it, which
-// is what makes "idle for 30 s" mean thirty continuous seconds. Plus each
-// unknown case: a shell window, a Claude window whose status the host cannot
-// read, another owner's host.
-func TestTheAgentStateFollowsTheHostAndKeepsItsSince(t *testing.T) {
+// TestTheAgentStateIsTheCLIsOwnStatusAndTime: the state is the host's latest
+// report for that window, and Since is EXACTLY the time Claude Code wrote the
+// status (Window.StatusSince) — not when muster saw it. So a turn that began
+// and ended between two reports (idle, then idle again with a newer time)
+// moves Since; a report that changes something else (activity) and repeats the
+// time does not. A status with no time is unknown (ErrNoStatusSince), never
+// idle since a guess. Plus each other unknown: a shell window, a Claude window
+// whose status the host cannot read, another owner's host, no principal.
+func TestTheAgentStateIsTheCLIsOwnStatusAndTime(t *testing.T) {
 	r := newRig(t)
 	tok, _ := r.store.mint(t, 1, "h")
-	m := winHello("h", true, statusWindows(mirror.StatusIdle)...)
+	m := winHello("h", true, statusWindows(mirror.StatusIdle, t1)...)
 	m.StatusReport = true
 	raw, err := r.rawConnect(t, tok, m)
 	if err != nil {
 		t.Fatal(err)
 	}
 	r.online(t, 1, "h", "work")
-	first := r.svc.AgentState(asUser(1), "h", "work", "@1")
-	if first.Status != mirror.StatusIdle || first.Since.IsZero() {
-		t.Fatalf("first = %+v, want idle", first)
+	at := func(window string) mirror.AgentState { return r.svc.AgentState(asUser(1), "h", "work", window) }
+	if st := at("@1"); st.Status != mirror.StatusIdle || !st.Since.Equal(time.UnixMilli(t1)) {
+		t.Fatalf("first = %+v, want idle since %d", st, t1)
 	}
 	// The session address resolves to its active window, @1.
-	if st := r.svc.AgentState(asUser(1), "h", "work", ""); st.Status != mirror.StatusIdle || !st.Since.Equal(first.Since) {
+	if st := at(""); st.Status != mirror.StatusIdle || !st.Since.Equal(time.UnixMilli(t1)) {
 		t.Fatalf("the session's address = %+v, want @1's state", st)
 	}
-
-	send := func(status string, activity int64) {
+	send := func(status string, since, activity int64) {
 		t.Helper()
-		ws := statusWindows(status)
+		ws := statusWindows(status, since)
 		ws[0].Activity = activity
 		raw.write(t, mirror.Msg{Type: mirror.TypeSessions, Windows: ws})
 	}
-	time.Sleep(5 * time.Millisecond)
-	send(mirror.StatusIdle, time.Now().Unix()) // a change that is not the status
+	waitSince := func(what, status string, since int64) {
+		t.Helper()
+		eventually(t, what, func() bool {
+			st := at("@1")
+			return st.Unknown == nil && st.Status == status && st.Since.Equal(time.UnixMilli(since))
+		})
+	}
+	send(mirror.StatusBusy, t2, 0)
+	waitSince("busy since t2", mirror.StatusBusy, t2)
+	// Idle again, a turn later: the CLI's time, not muster's clock.
+	send(mirror.StatusIdle, t3, 0)
+	waitSince("idle since t3", mirror.StatusIdle, t3)
+	// A change that is not the status, with the same time: Since stays.
+	send(mirror.StatusIdle, t3, time.Now().Unix())
 	time.Sleep(50 * time.Millisecond)
-	if st := r.svc.AgentState(asUser(1), "h", "work", "@1"); !st.Since.Equal(first.Since) {
-		t.Fatalf("an unchanged status moved Since: %v → %v", first.Since, st.Since)
+	if st := at("@1"); !st.Since.Equal(time.UnixMilli(t3)) {
+		t.Fatalf("an unchanged status and time moved Since to %v", st.Since)
 	}
-	send(mirror.StatusBusy, 0)
-	eventually(t, "busy", func() bool { return r.svc.AgentState(asUser(1), "h", "work", "@1").Status == mirror.StatusBusy })
-	busy := r.svc.AgentState(asUser(1), "h", "work", "@1")
-	if !busy.Since.After(first.Since) {
-		t.Fatalf("busy since %v, not after idle since %v", busy.Since, first.Since)
-	}
-	time.Sleep(5 * time.Millisecond)
-	send(mirror.StatusWaiting, 0)
-	eventually(t, "waiting", func() bool { return r.svc.AgentState(asUser(1), "h", "work", "@1").Status == mirror.StatusWaiting })
-	time.Sleep(5 * time.Millisecond)
-	send(mirror.StatusIdle, 0)
-	eventually(t, "idle again", func() bool { return r.svc.AgentState(asUser(1), "h", "work", "@1").Status == mirror.StatusIdle })
-	if again := r.svc.AgentState(asUser(1), "h", "work", "@1"); !again.Since.After(busy.Since) {
-		t.Fatalf("idle again since %v, not after busy since %v", again.Since, busy.Since)
-	}
+	// A turn too short for any report to see busy: idle both times, the time
+	// newer. Since follows it.
+	send(mirror.StatusIdle, t3+1, 0)
+	waitSince("idle again since t3+1", mirror.StatusIdle, t3+1)
 
-	if st := r.svc.AgentState(asUser(1), "h", "work", "@2"); !errors.Is(st.Unknown, mirror.ErrNotClaude) {
+	// A status without its time.
+	send(mirror.StatusIdle, 0, 0)
+	eventually(t, "a status with no time is unknown", func() bool { return errors.Is(at("@1").Unknown, mirror.ErrNoStatusSince) })
+	if st := at("@1"); st.Status != "" || !st.Since.IsZero() {
+		t.Fatalf("a status with no time = %+v, want unknown", st)
+	}
+	if st := at("@2"); !errors.Is(st.Unknown, mirror.ErrNotClaude) {
 		t.Fatalf("a shell window = %+v, want ErrNotClaude", st)
 	}
-	send("", 0)
-	eventually(t, "the status went unreadable", func() bool {
-		return errors.Is(r.svc.AgentState(asUser(1), "h", "work", "@1").Unknown, mirror.ErrNoStatus)
-	})
+	send("", t1, 0)
+	eventually(t, "the status went unreadable", func() bool { return errors.Is(at("@1").Unknown, mirror.ErrNoStatus) })
 	if st := r.svc.AgentState(asUser(2), "h", "work", "@1"); !errors.Is(st.Unknown, mirror.ErrHostOffline) {
 		t.Fatalf("another owner = %+v, want ErrHostOffline", st)
 	}
@@ -145,29 +158,35 @@ func (statusBackend) ReportsStatus() bool { return true }
 
 // TestARealHostReportsItsClaudeStatus is the wire end to end with the REAL
 // muster-mirror client: a backend that reports status makes the client
-// advertise it and carry each Claude window's status, and a busy flip reaches
-// AgentState on the next refresh. A backend that does not report status (the
+// advertise it and carry each Claude window's status AND its time, and a busy
+// flip reaches AgentState on the next refresh, with the CLI's time. A backend that does not report status (the
 // same windows, no StatusReporter) advertises nothing, and is unknown.
 func TestARealHostReportsItsClaudeStatus(t *testing.T) {
 	r := newRig(t)
-	claude := func(status string) []mirrorhost.WindowInfo {
+	claude := func(status string, since int64) []mirrorhost.WindowInfo {
 		return []mirrorhost.WindowInfo{{Session: "work", ID: "@1", Index: 0, Active: true, Pane: "%1", PanePID: 1,
-			Claude: &mirrorhost.ClaudePane{Pane: "%1", Gen: "g", Status: status}}}
+			Claude: &mirrorhost.ClaudePane{Pane: "%1", Gen: "g", Status: status, StatusSince: since}}}
 	}
 	b := &winBackend{}
-	b.set(claude(mirror.StatusBusy)...)
+	b.set(claude(mirror.StatusBusy, t1)...)
 	tok, _ := r.store.mint(t, 1, "rep")
 	r.connect(t, "rep", tok, statusBackend{b}, true)
 	r.online(t, 1, "rep", "work")
-	eventually(t, "busy", func() bool { return r.svc.AgentState(asUser(1), "rep", "work", "@1").Status == mirror.StatusBusy })
-	b.set(claude(mirror.StatusIdle)...)
-	eventually(t, "idle", func() bool { return r.svc.AgentState(asUser(1), "rep", "work", "@1").Status == mirror.StatusIdle })
+	is := func(status string, since int64) func() bool {
+		return func() bool {
+			st := r.svc.AgentState(asUser(1), "rep", "work", "@1")
+			return st.Status == status && st.Since.Equal(time.UnixMilli(since))
+		}
+	}
+	eventually(t, "busy since t1", is(mirror.StatusBusy, t1))
+	b.set(claude(mirror.StatusIdle, t2)...)
+	eventually(t, "idle since t2", is(mirror.StatusIdle, t2))
 	if h := r.svc.Hosts(asUser(1))[0]; !h.StatusReport {
 		t.Fatalf("the host did not advertise StatusReport: %+v", h)
 	}
 
 	quiet := &winBackend{}
-	quiet.set(claude(mirror.StatusIdle)...)
+	quiet.set(claude(mirror.StatusIdle, t2)...)
 	tok2, _ := r.store.mint(t, 1, "quiet")
 	r.connect(t, "quiet", tok2, quiet, true)
 	r.online(t, 1, "quiet", "work")
@@ -183,7 +202,7 @@ func TestARealHostReportsItsClaudeStatus(t *testing.T) {
 func TestAPasteTheHostNeverConfirmedIsMarkedUnconfirmed(t *testing.T) {
 	r := newRig(t)
 	tok, _ := r.store.mint(t, 1, "h")
-	m := winHello("h", true, statusWindows(mirror.StatusIdle)...)
+	m := winHello("h", true, statusWindows(mirror.StatusIdle, t1)...)
 	raw, err := r.rawConnect(t, tok, m)
 	if err != nil {
 		t.Fatal(err)
@@ -212,9 +231,9 @@ func TestAPasteTheHostNeverConfirmedIsMarkedUnconfirmed(t *testing.T) {
 	}
 }
 
-// TestABusyFlipDoesNotNudgeTheAgentsView: Status flips with every turn and no
-// card draws it, so a sessions message that changes ONLY a status re-renders
-// no open Agents view (sameWindows ignores it) — while it still reaches
+// TestABusyFlipDoesNotNudgeTheAgentsView: Status and its time move with every
+// turn and no card draws them, so a sessions message that changes ONLY those
+// re-renders no open Agents view (sameWindows ignores them) — while it still reaches
 // AgentState. The positive control is a visible change (a label) on the same
 // connection, which does nudge.
 func TestABusyFlipDoesNotNudgeTheAgentsView(t *testing.T) {
@@ -227,7 +246,7 @@ func TestABusyFlipDoesNotNudgeTheAgentsView(t *testing.T) {
 		}
 	})
 	tok, _ := r.store.mint(t, 1, "h")
-	m := winHello("h", true, statusWindows(mirror.StatusIdle)...)
+	m := winHello("h", true, statusWindows(mirror.StatusIdle, t1)...)
 	m.StatusReport = true
 	raw, err := r.rawConnect(t, tok, m)
 	if err != nil {
@@ -236,13 +255,13 @@ func TestABusyFlipDoesNotNudgeTheAgentsView(t *testing.T) {
 	r.online(t, 1, "h", "work")
 	time.Sleep(100 * time.Millisecond)
 	base := nudges.Load()
-	raw.write(t, mirror.Msg{Type: mirror.TypeSessions, Windows: statusWindows(mirror.StatusBusy)})
+	raw.write(t, mirror.Msg{Type: mirror.TypeSessions, Windows: statusWindows(mirror.StatusBusy, t2)})
 	eventually(t, "busy", func() bool { return r.svc.AgentState(asUser(1), "h", "work", "@1").Status == mirror.StatusBusy })
 	time.Sleep(100 * time.Millisecond)
 	if got := nudges.Load(); got != base {
 		t.Fatalf("a status-only change nudged the Agents view %d time(s)", got-base)
 	}
-	labelled := statusWindows(mirror.StatusBusy)
+	labelled := statusWindows(mirror.StatusBusy, t2)
 	labelled[0].Label = "Gold:0"
 	raw.write(t, mirror.Msg{Type: mirror.TypeSessions, Windows: labelled})
 	eventually(t, "CONTROL: a visible change nudges", func() bool { return nudges.Load() > base })
@@ -250,17 +269,23 @@ func TestABusyFlipDoesNotNudgeTheAgentsView(t *testing.T) {
 
 // TestAStatusIsKeptOnlyForAClaudeWindowAndOnlyAsOneOfThree: the normalizer
 // both halves apply keeps busy / idle / waiting on a Claude window, blanks any
-// other value, and blanks a status on a window that is not Claude Code.
+// other value, and blanks a status on a window that is not Claude Code — and
+// a status's time goes with it, and is never negative.
 func TestAStatusIsKeptOnlyForAClaudeWindowAndOnlyAsOneOfThree(t *testing.T) {
 	got := mirror.NormalizeWindows([]mirror.Window{
-		{Session: "s", ID: "@1", Claude: true, Status: mirror.StatusWaiting},
-		{Session: "s", ID: "@2", Claude: true, Status: "compacting"},
-		{Session: "s", ID: "@3", Status: mirror.StatusIdle},
+		{Session: "s", ID: "@1", Claude: true, Status: mirror.StatusWaiting, StatusSince: t1},
+		{Session: "s", ID: "@2", Claude: true, Status: "compacting", StatusSince: t1},
+		{Session: "s", ID: "@3", Status: mirror.StatusIdle, StatusSince: t1},
+		{Session: "s", ID: "@4", Claude: true, Status: mirror.StatusIdle, StatusSince: -1},
 	}, 0)
-	want := map[string]string{"@1": mirror.StatusWaiting, "@2": "", "@3": ""}
+	type st struct {
+		status string
+		since  int64
+	}
+	want := map[string]st{"@1": {mirror.StatusWaiting, t1}, "@2": {}, "@3": {}, "@4": {mirror.StatusIdle, 0}}
 	for _, w := range got {
-		if w.Status != want[w.ID] {
-			t.Errorf("window %s: Status %q, want %q", w.ID, w.Status, want[w.ID])
+		if (st{w.Status, w.StatusSince}) != want[w.ID] {
+			t.Errorf("window %s: Status %q since %d, want %+v", w.ID, w.Status, w.StatusSince, want[w.ID])
 		}
 	}
 }

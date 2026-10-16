@@ -12,8 +12,8 @@ import (
 // checked out" into "this request acts as THIS user" (accounts PR 2/6).
 //
 // 🔴 admit IS THE ONLY REQUEST-PATH CALL SITE OF authz.WithPrincipal IN THE
-// MODULE (the other is the send queue's delivery, queuedPrincipal, which runs
-// with no request), AND EVERY require* WRAPPER HANDS ITS ADMITTED REQUEST TO
+// MODULE (the other is the send queue's dispatcher, queuedPrincipal, which
+// runs with no request), AND EVERY require* WRAPPER HANDS ITS ADMITTED REQUEST TO
 // next THROUGH IT. One
 // function is one place to get the attach right; a wrapper that called next
 // directly would reach its handler with no principal, which under row-level

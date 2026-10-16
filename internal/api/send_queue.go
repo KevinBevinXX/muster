@@ -10,9 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
-	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/sendqueue"
@@ -22,28 +19,32 @@ import (
 
 // ---------------------------------------------------------------------------
 // THE SEND QUEUE's server half (internal/sendqueue, migration 0019): the
-// composers' Queue, the queue's list and Cancel, and the dispatcher's two
+// Rendered view's Queue, the queue's list and Cancel, and the dispatcher's two
 // hooks — the target's state (sendQueueProbe) and the delivery
 // (sendQueueSend).
 //
+// A queue target is a MIRRORED Claude Code window, and only its Rendered view
+// has Queue: a queued message is pasted into the window's Claude Code pane
+// (mirror.PasteClaude) — the pane whose idle the queue waited on — never into
+// whatever else is active in the window.
+//
 // 🔴 A QUEUED MESSAGE IS DELIVERED THROUGH THE SAME PATH AS A SEND, WITH THE
-// SAME GATES, AS ITS OWNER. The delivery runs mirrorPaste / agentSendTurn —
-// the functions a person's Send runs — behind the same checks in the same
-// order (the host is the owner's, -interactive, a fresh sign-in; the agent is
-// the owner's, a gateway, running), under the owner's own principal
-// (queuedPrincipal: authz.ViaQueue), so row-level security and the plugin's
-// own gates see the owner and nobody else.
+// SAME GATES, AS ITS OWNER. The delivery runs mirrorPaste — the function a
+// person's Send runs — behind the same checks in the same order (the host is
+// the owner's, -interactive, a fresh sign-in), under the owner's own principal:
+// the dispatcher hands its hooks ctx through queuedPrincipal (authz.ViaQueue),
+// so row-level security and the plugin's own gates see the owner and nobody
+// else.
 //
 // 🔴 THE STEP-UP IS DECIDED WHEN THE MESSAGE IS QUEUED, AND RE-CHECKED WHEN IT
-// IS SENT. Queueing for a mirrored window needs the same fresh sign-in a Send
-// needs (403 + X-Muster-Step-Up, or the plain confirm page), and the queue
-// stores the sign-in time of the session that queued it (stepup_at). The
-// delivery presents EXACTLY that time to the same gate — the plugin's own
-// Fresh check included — so a queued message is sent only while the sign-in
-// that queued it is still inside the step-up window (MUSTER_STEPUP_WINDOW,
-// 12 h by default). Past it the message FAILS with a reason and is not sent;
-// nothing about the queue widens the window or mints a fresher time. (An agent
-// send has no step-up, queued or not.)
+// IS SENT. Queueing needs the same fresh sign-in a Send needs (403 +
+// X-Muster-Step-Up, or the plain confirm page), and the queue stores the
+// sign-in time of the session that queued it (stepup_at). The delivery presents
+// EXACTLY that time to the same gate — the plugin's own Fresh check included —
+// so a queued message is sent only while the sign-in that queued it is still
+// inside the step-up window (MUSTER_STEPUP_WINDOW, 12 h by default). Past it
+// the message FAILS with a reason and is not sent; nothing about the queue
+// widens the window or mints a fresher time.
 //
 // ⚠ WHAT THAT DOES NOT COVER: the recorded time is the queueing SESSION's, and
 // the delivery does not re-check that the session still exists — a message
@@ -53,10 +54,9 @@ import (
 // 🔴 UNKNOWN IS NOT IDLE (fail closed). For a mirror host whose muster-mirror
 // does not report Claude Code's status, or a window that is not Claude Code,
 // Queue is drawn disabled saying why and a queue post is refused saying why.
-// An agent that is not running may be queued for (its composer is disabled, so
-// only a post can do it) and its messages wait. Whatever is already queued for
-// a target the server cannot read is held, the list saying why — never sent on
-// a guess.
+// Whatever is already queued for a target the server cannot read — including a
+// host that reports a status but not since when — is held, the list saying
+// why; never sent on a guess.
 // ---------------------------------------------------------------------------
 
 func (s *Server) registerSendQueueRoutes(mux Mux) {
@@ -77,19 +77,15 @@ const sendQueueConfirmPath = "/send-queue/confirm"
 const SendQueueNotClaude = "messages can be queued only for a Claude Code session: muster can tell when one is idle, and not when a shell is"
 
 // sendQueueTarget is a queue form's or query's target, resolved for the
-// request's principal: the target, the pane a mirror message may land in, the
-// page the composer is on, and — for a mirror — the host and entry. ok is
-// false when it answered already: 404 for anything that is not the
-// principal's (never a 403 that would say "this exists"), 400 for a malformed
-// kind.
+// request's principal: the target, the Rendered view it was queued from, and
+// the host and entry. ok is false when it answered already: 404 for anything
+// that is not the principal's (never a 403 that would say "this exists").
 type sendQueueTarget struct {
 	t    sendqueue.Target
-	kind string
-	pane string
 	back string
 	h    mirror.HostView
 	e    mirror.SessionView
-	// listed: a mirror entry the host lists now.
+	// listed: an entry the host lists now.
 	listed bool
 }
 
@@ -99,36 +95,14 @@ func (s *Server) resolveSendQueueTarget(w http.ResponseWriter, r *http.Request, 
 		http.NotFound(w, r)
 		return q, false
 	}
-	q.kind = v.Get("queue")
-	switch q.kind {
-	case ui.QueueKindView, ui.QueueKindTerminal:
-		h, e, listed, _, ok := s.mirrorEntry(r, v.Get("host"), v.Get("session"), v.Get("window"))
-		if !ok {
-			http.NotFound(w, r)
-			return q, false
-		}
-		q.h, q.e, q.listed = h, e, listed
-		q.t = sendqueue.Target{Kind: sendqueue.KindMirror, Host: h.Host, Session: e.Session, Window: e.Window}
-		q.pane, q.back = sendqueue.PaneClaude, mirrorRef(e).ViewPath()
-		if q.kind == ui.QueueKindTerminal {
-			q.pane, q.back = sendqueue.PaneActive, mirrorRef(e).TerminalPath()
-		}
-	case ui.QueueKindAgent:
-		if s.ext.Agents == nil {
-			http.NotFound(w, r)
-			return q, false
-		}
-		a, err := s.ext.Agents.GetByName(r.Context(), v.Get("agent"))
-		if err != nil {
-			http.NotFound(w, r)
-			return q, false
-		}
-		q.t = sendqueue.Target{Kind: sendqueue.KindAgent, AgentID: a.ID}
-		q.back = ui.AgentTerminalPath(a.Name)
-	default:
-		http.Error(w, "unknown queue", http.StatusBadRequest)
+	h, e, listed, _, ok := s.mirrorEntry(r, v.Get("host"), v.Get("session"), v.Get("window"))
+	if !ok {
+		http.NotFound(w, r)
 		return q, false
 	}
+	q.h, q.e, q.listed = h, e, listed
+	q.t = sendqueue.Target{Host: h.Host, Session: e.Session, Window: e.Window}
+	q.back = mirrorRef(e).ViewPath()
 	return q, true
 }
 
@@ -146,9 +120,9 @@ func mirrorQueueOff(h mirror.HostView, e mirror.SessionView) string {
 	return ""
 }
 
-// handleSendQueueAdd is POST /send-queue (queue, the target's address, text,
-// session): queue a message. To the composer's script 204 or a status and the
-// reason; to a form the browser submitted, a redirect back with a notice.
+// handleSendQueueAdd is POST /send-queue (the window's address, text): queue a
+// message. To the composer's script 204 or a status and the reason; to a form
+// the browser submitted, a redirect back with a notice.
 func (s *Server) handleSendQueueAdd(w http.ResponseWriter, r *http.Request) {
 	s.sendQueueAdd(w, r, r.Context(), false)
 }
@@ -163,7 +137,7 @@ func (s *Server) sendQueueAdd(w http.ResponseWriter, r *http.Request, ctx contex
 		return
 	}
 	if !confirmed {
-		r.Body = http.MaxBytesReader(w, r.Body, agentSendMax)
+		r.Body = http.MaxBytesReader(w, r.Body, mirror.MaxPaste*4)
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, "the message is too large", http.StatusRequestEntityTooLarge)
 			return
@@ -186,51 +160,37 @@ func (s *Server) sendQueueAdd(w http.ResponseWriter, r *http.Request, ctx contex
 		refuse(http.StatusBadRequest, MirrorSendEmpty, noticeEmpty)
 		return
 	}
-	it := sendqueue.Item{Target: q.t, Pane: q.pane, Body: text}
-	switch q.t.Kind {
-	case sendqueue.KindMirror:
-		// THE SAME GATES AS A SEND, IN mirrorSend's ORDER — then the queue's own.
-		if !q.h.Interactive {
-			refuse(http.StatusConflict, mirror.ErrInteractiveRefused.Error(), noticeReadOnly)
-			return
-		}
-		if !stepup.Fresh(ctx, s.stepUpNow()) {
-			if nav {
-				s.sendQueueStepUpPage(w, r, q, text, "")
-				return
-			}
-			refuseStale(w)
-			return
-		}
-		if !q.listed {
-			refuse(http.StatusConflict, mirror.ErrWindowGone.Error(), noticeWindowGone)
-			return
-		}
-		if off := mirrorQueueOff(q.h, q.e); off != "" {
-			refuse(http.StatusConflict, off, noticeQueueOff)
-			return
-		}
-		if _, err := mirror.SanitizePaste(text); err != nil {
-			refuse(http.StatusBadRequest, err.Error(), noticeBadText)
-			return
-		}
-		it.StepUpAt, _ = stepup.AuthTime(ctx)
-	case sendqueue.KindAgent:
-		if s.ext.Gateway == nil {
-			refuse(http.StatusConflict, composerNotices[noticeNoGateway].text, noticeNoGateway)
-			return
-		}
-		if id, err := strconv.ParseInt(r.PostFormValue("session"), 10, 64); err == nil && id > 0 {
-			it.AgentSession = id
-		}
+	// THE SAME GATES AS A SEND, IN mirrorSend's ORDER — then the queue's own.
+	if !q.h.Interactive {
+		refuse(http.StatusConflict, mirror.ErrInteractiveRefused.Error(), noticeReadOnly)
+		return
 	}
+	if !stepup.Fresh(ctx, s.stepUpNow()) {
+		if nav {
+			s.sendQueueStepUpPage(w, r, q, text, "")
+			return
+		}
+		refuseStale(w)
+		return
+	}
+	if !q.listed {
+		refuse(http.StatusConflict, mirror.ErrWindowGone.Error(), noticeWindowGone)
+		return
+	}
+	if off := mirrorQueueOff(q.h, q.e); off != "" {
+		refuse(http.StatusConflict, off, noticeQueueOff)
+		return
+	}
+	if _, err := mirror.SanitizePaste(text); err != nil {
+		refuse(http.StatusBadRequest, err.Error(), noticeBadText)
+		return
+	}
+	it := sendqueue.Item{Target: q.t, Body: text}
+	it.StepUpAt, _ = stepup.AuthTime(ctx)
 	stored, err := s.ext.SendQueue.Enqueue(ctx, it)
 	switch {
 	case errors.Is(err, sendqueue.ErrFull):
 		refuse(http.StatusConflict, strings.TrimPrefix(err.Error(), "sendqueue: "), noticeQueueFull)
-		return
-	case errors.Is(err, sendqueue.ErrNoSuchAgent):
-		http.NotFound(w, r)
 		return
 	case err != nil:
 		s.logger.Printf("sendqueue: queue for %s: %v", q.t, err)
@@ -250,7 +210,7 @@ func (s *Server) sendQueueAdd(w http.ResponseWriter, r *http.Request, ctx contex
 // stale: the plain confirm page, carrying the message in hidden fields, which
 // posts to sendQueueConfirmPath.
 func (s *Server) sendQueueStepUpPage(w http.ResponseWriter, r *http.Request, q sendQueueTarget, text, problem string) {
-	fields := []ui.ComposerField{{Name: "queue", Value: q.kind}, {Name: "host", Value: q.h.Host}, {Name: "session", Value: q.e.Session}}
+	fields := []ui.ComposerField{{Name: "host", Value: q.h.Host}, {Name: "session", Value: q.e.Session}}
 	if q.e.Window != "" {
 		fields = append(fields, ui.ComposerField{Name: "window", Value: q.e.Window})
 	}
@@ -278,10 +238,6 @@ func (s *Server) handleSendQueueConfirm(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "the message is too large", http.StatusRequestEntityTooLarge)
 		return
 	}
-	if k := r.PostFormValue("queue"); k != ui.QueueKindView && k != ui.QueueKindTerminal {
-		http.Error(w, "unknown queue", http.StatusBadRequest)
-		return
-	}
 	q, ok := s.resolveSendQueueTarget(w, r, r.PostForm)
 	if !ok {
 		return
@@ -299,9 +255,9 @@ func (s *Server) handleSendQueueConfirm(w http.ResponseWriter, r *http.Request) 
 	s.sendQueueAdd(w, r, stepup.WithAuthTime(r.Context(), o.At), true)
 }
 
-// handleSendQueueList is GET /send-queue (queue + the target's address): the
-// target's queue as an HTML fragment (ui.SendQueueList), which the composer's
-// script swaps into #mv-queue.
+// handleSendQueueList is GET /send-queue (the window's address): the window's
+// queue as an HTML fragment (ui.SendQueueList), which the composer's script
+// swaps into #mv-queue.
 func (s *Server) handleSendQueueList(w http.ResponseWriter, r *http.Request) {
 	q, ok := s.resolveSendQueueTarget(w, r, r.URL.Query())
 	if !ok {
@@ -317,8 +273,9 @@ func (s *Server) handleSendQueueList(w http.ResponseWriter, r *http.Request) {
 // sendQueuePreview bounds how much of a message the list shows.
 const sendQueuePreview = 200
 
-// sendQueueListView is t's queue as the composer draws it, read as ctx's
-// principal, with what the next message is waiting for.
+// sendQueueListView is t's queue as the composer draws it, with what the next
+// message is waiting for — all read as ctx's principal: the REQUEST's own,
+// never one minted here (only the dispatcher acts as a message's owner).
 func (s *Server) sendQueueListView(ctx context.Context, t sendqueue.Target) ui.SendQueueListView {
 	items, err := s.ext.SendQueue.List(ctx, t)
 	if err != nil {
@@ -364,7 +321,7 @@ func (s *Server) handleSendQueueCancel(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	back := s.sendQueueBack(ctx, it)
+	back := ui.MirrorRef{Host: it.Target.Host, Session: it.Target.Session, Window: it.Target.Window}.ViewPath()
 	nav := isDocumentNavigation(r)
 	if _, err := s.ext.SendQueue.Cancel(ctx, id, s.sendQueueNow()); err != nil {
 		if errors.Is(err, sendqueue.ErrNotFound) {
@@ -389,48 +346,20 @@ func (s *Server) handleSendQueueCancel(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// sendQueueBack is the composer page a message was queued from.
-func (s *Server) sendQueueBack(ctx context.Context, it sendqueue.Item) string {
-	if it.Target.Kind == sendqueue.KindMirror {
-		ref := ui.MirrorRef{Host: it.Target.Host, Session: it.Target.Session, Window: it.Target.Window}
-		if it.Pane == sendqueue.PaneActive {
-			return ref.TerminalPath()
-		}
-		return ref.ViewPath()
-	}
-	if s.ext.Agents != nil {
-		if a, err := s.ext.Agents.Get(ctx, it.Target.AgentID); err == nil {
-			return ui.AgentTerminalPath(a.Name)
-		}
-	}
-	return "/agents"
-}
-
-// mirrorComposerQueue is the Queue of a mirrored entry's composer (kind: its
-// Rendered or Terminal view), nil when there is no queue to draw.
-func (s *Server) mirrorComposerQueue(ctx context.Context, h mirror.HostView, e mirror.SessionView, kind string) *ui.ComposerQueue {
+// mirrorComposerQueue is the Queue of a mirrored entry's Rendered view, nil
+// when there is no queue to draw.
+func (s *Server) mirrorComposerQueue(ctx context.Context, h mirror.HostView, e mirror.SessionView) *ui.ComposerQueue {
 	if s.ext.SendQueue == nil {
 		return nil
 	}
 	ref := mirrorRef(e)
-	q := url.Values{"queue": {kind}, "host": {ref.Host}, "session": {ref.Session}}
+	q := url.Values{"host": {ref.Host}, "session": {ref.Session}}
 	if ref.Window != "" {
 		q.Set("window", ref.Window)
 	}
-	t := sendqueue.Target{Kind: sendqueue.KindMirror, Host: h.Host, Session: e.Session, Window: e.Window}
-	return &ui.ComposerQueue{Kind: kind, Src: ui.SendQueuePath + "?" + q.Encode(),
+	t := sendqueue.Target{Host: h.Host, Session: e.Session, Window: e.Window}
+	return &ui.ComposerQueue{Src: ui.SendQueuePath + "?" + q.Encode(),
 		List: s.sendQueueListView(ctx, t), Disabled: mirrorQueueOff(h, e)}
-}
-
-// agentComposerQueue is the Queue of an agent's composer, nil when there is
-// none to draw.
-func (s *Server) agentComposerQueue(ctx context.Context, a agents.Agent) *ui.ComposerQueue {
-	if s.ext.SendQueue == nil || s.ext.Gateway == nil {
-		return nil
-	}
-	q := url.Values{"queue": {ui.QueueKindAgent}, "agent": {a.Name}}
-	return &ui.ComposerQueue{Kind: ui.QueueKindAgent, Src: ui.SendQueuePath + "?" + q.Encode(),
-		List: s.sendQueueListView(ctx, sendqueue.Target{Kind: sendqueue.KindAgent, AgentID: a.ID})}
 }
 
 // ---------------------------------------------------------------------------
@@ -439,9 +368,9 @@ func (s *Server) agentComposerQueue(ctx context.Context, a agents.Agent) *ui.Com
 
 // queuedPrincipal is ctx acting as owner, through authz.ViaQueue: how a queued
 // message is probed and delivered — as the user who queued it, never as the
-// system. The dispatcher read the row (and so its owner) under the system
-// scope, and nothing else it read is handed on; the queue list reads it as the
-// requesting owner, so there it names the same user. internal/authz's
+// system. Its one caller is the dispatcher (RunSendQueue hands it over as the
+// Dispatcher's AsOwner), which read the row, and so its owner, under the system
+// scope; nothing else it read is handed on. internal/authz's
 // withPrincipalLedger lists it.
 func (s *Server) queuedPrincipal(ctx context.Context, owner int64) context.Context {
 	return authz.WithPrincipal(ctx, s.principalFor(ctx, owner, authz.ViaQueue))
@@ -455,60 +384,36 @@ func (s *Server) sendQueueNow() time.Time {
 	return time.Now()
 }
 
-// sendQueueDecide is sendqueue.Decide with this server's idle time and clock.
-func (s *Server) sendQueueDecide(h sendqueue.Head, st sendqueue.AgentState) sendqueue.Decision {
-	idle := s.ext.SendQueueIdle
-	if idle <= 0 {
-		idle = sendqueue.DefaultIdleFor
+// sendQueueIdle is how long a window must have been idle (MUSTER_SEND_QUEUE_IDLE).
+func (s *Server) sendQueueIdle() time.Duration {
+	if s.ext.SendQueueIdle > 0 {
+		return s.ext.SendQueueIdle
 	}
-	return sendqueue.Decide(h, st, s.sendQueueNow(), idle, sendqueue.DefaultTurnWait)
+	return sendqueue.DefaultIdleFor
 }
 
-// sendQueueProbe is what the server can see of h's target now.
+// sendQueueDecide is sendqueue.Decide with this server's idle time and clock.
+func (s *Server) sendQueueDecide(h sendqueue.Head, st sendqueue.AgentState) sendqueue.Decision {
+	return sendqueue.Decide(h, st, s.sendQueueNow(), s.sendQueueIdle())
+}
+
+// sendQueueProbe is what ctx's principal can see of h's window now: idle, and
+// since when (Claude Code's own statusUpdatedAt, as the host reports it), or
+// why not.
 func (s *Server) sendQueueProbe(ctx context.Context, h sendqueue.Head) sendqueue.AgentState {
-	if h.Owner <= 0 {
-		return sendqueue.AgentState{Why: "the message has no owner"}
+	if s.ext.Mirror == nil {
+		return sendqueue.AgentState{Why: "mirrored sessions are off on this server"}
 	}
-	octx := s.queuedPrincipal(ctx, h.Owner)
-	switch h.Target.Kind {
-	case sendqueue.KindMirror:
-		if s.ext.Mirror == nil {
-			return sendqueue.AgentState{Why: "mirrored sessions are off on this server"}
-		}
-		st := s.ext.Mirror.AgentState(octx, h.Target.Host, h.Target.Session, h.Target.Window)
-		switch {
-		case st.Unknown != nil:
-			return sendqueue.AgentState{Why: unprefixed(st.Unknown)}
-		case st.Status == mirror.StatusIdle:
-			return sendqueue.AgentState{Idle: true, Since: st.Since}
-		case st.Status == mirror.StatusWaiting:
-			return sendqueue.AgentState{Why: "Claude Code is waiting for you (a prompt or a question)."}
-		}
-		return sendqueue.AgentState{Why: "Claude Code is working."}
-	case sendqueue.KindAgent:
-		if s.ext.Agents == nil || s.ext.Gateway == nil {
-			return sendqueue.AgentState{Why: composerNotices[noticeNoGateway].text}
-		}
-		a, err := s.ext.Agents.Get(octx, h.Target.AgentID)
-		if err != nil {
-			return sendqueue.AgentState{Why: "the agent could not be read"}
-		}
-		if !agentCanBeSent(s.liveStatus(octx, a)) {
-			return sendqueue.AgentState{Why: AgentNotRunningNotice}
-		}
-		inFlight, ended := s.agentTurnState(a.Name)
-		if inFlight {
-			return sendqueue.AgentState{Why: "the agent is answering."}
-		}
-		// Idle since its last turn ended — or, with none since this process
-		// started, since it started (a turn in flight before a restart is gone).
-		since := ended
-		if since.Before(s.startedAt) {
-			since = s.startedAt
-		}
-		return sendqueue.AgentState{Idle: true, Since: since}
+	st := s.ext.Mirror.AgentState(ctx, h.Target.Host, h.Target.Session, h.Target.Window)
+	switch {
+	case st.Unknown != nil:
+		return sendqueue.AgentState{Why: unprefixed(st.Unknown)}
+	case st.Status == mirror.StatusIdle:
+		return sendqueue.AgentState{Idle: true, Since: st.Since}
+	case st.Status == mirror.StatusWaiting:
+		return sendqueue.AgentState{Why: "Claude Code is waiting for you (a prompt or a question)."}
 	}
-	return sendqueue.AgentState{Why: "unknown target"}
+	return sendqueue.AgentState{Why: "Claude Code is working."}
 }
 
 // sendQueueNonce is the nonce a queued message is delivered with: one per
@@ -517,21 +422,11 @@ func (s *Server) sendQueueProbe(ctx context.Context, h sendqueue.Head) sendqueue
 // it as no nonce at all and claim nothing.
 func sendQueueNonce(id int64) string { return fmt.Sprintf("send-queue-%020d", id) }
 
-// sendQueueSend delivers one claimed message as its owner.
+// sendQueueSend delivers one claimed message: mirrorSend's gates, then
+// mirrorPaste into the window's Claude Code pane. ctx acts as the message's
+// owner; the sign-in time presented is the one the message was QUEUED with.
 func (s *Server) sendQueueSend(ctx context.Context, it sendqueue.Item) sendqueue.Outcome {
-	octx := s.queuedPrincipal(ctx, it.Owner)
-	switch it.Target.Kind {
-	case sendqueue.KindMirror:
-		return s.sendQueueToMirror(stepup.WithAuthTime(octx, it.StepUpAt), it)
-	case sendqueue.KindAgent:
-		return s.sendQueueToAgent(octx, it)
-	}
-	return sendqueue.Outcome{Detail: "unknown target"}
-}
-
-// sendQueueToMirror is mirrorSend's gates, then mirrorPaste. ctx carries the
-// owner and the sign-in time the message was queued with.
-func (s *Server) sendQueueToMirror(ctx context.Context, it sendqueue.Item) sendqueue.Outcome {
+	ctx = stepup.WithAuthTime(ctx, it.StepUpAt)
 	if s.ext.Mirror == nil {
 		return sendqueue.Outcome{Detail: "Not sent: mirrored sessions are off on this server."}
 	}
@@ -552,11 +447,7 @@ func (s *Server) sendQueueToMirror(ctx context.Context, it sendqueue.Item) sendq
 	if !stepup.Fresh(ctx, s.stepUpNow()) {
 		return sendQueueStale()
 	}
-	target := mirror.PasteClaude
-	if it.Pane == sendqueue.PaneActive {
-		target = mirror.PasteActivePane
-	}
-	repeat, err := s.mirrorPaste(ctx, it.Target.Host, it.Target.Session, it.Target.Window, it.Body, sendQueueNonce(it.ID), target)
+	repeat, err := s.mirrorPaste(ctx, it.Target.Host, it.Target.Session, it.Target.Window, it.Body, sendQueueNonce(it.ID), mirror.PasteClaude)
 	switch {
 	case repeat:
 		return sendqueue.Outcome{Sent: true, Detail: "Sent (already delivered once; not pasted again)."}
@@ -576,32 +467,6 @@ func sendQueueStale() sendqueue.Outcome {
 		". Confirm it's you and queue it again."}
 }
 
-// sendQueueToAgent is handleAgentSend's gates, then agentSendTurn. ctx
-// carries the owner.
-func (s *Server) sendQueueToAgent(ctx context.Context, it sendqueue.Item) sendqueue.Outcome {
-	if s.ext.Agents == nil || s.ext.Gateway == nil {
-		return sendqueue.Outcome{Detail: composerNotices[noticeNoGateway].text}
-	}
-	a, err := s.ext.Agents.Get(ctx, it.Target.AgentID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return sendqueue.Outcome{Detail: "Not sent: the agent no longer exists."}
-	}
-	if err != nil {
-		return sendqueue.Outcome{Detail: "Not sent: the agent could not be read."}
-	}
-	if !agentCanBeSent(s.liveStatus(ctx, a)) {
-		return sendqueue.Outcome{Detail: "Not sent: " + AgentNotRunningNotice}
-	}
-	session := ""
-	if it.AgentSession > 0 {
-		session = strconv.FormatInt(it.AgentSession, 10)
-	}
-	if _, _, err := s.agentSendTurn(ctx, a, session, it.Body, sendQueueNonce(it.ID)); err != nil {
-		return sendqueue.Outcome{Detail: "Not sent: could not open a chat session for the agent."}
-	}
-	return sendqueue.Outcome{Sent: true, Detail: "Sent."}
-}
-
 // RunSendQueue runs the send queue's dispatcher until ctx ends. It does
 // nothing without a queue store. Started by cmd/muster-server beside the
 // other background loops.
@@ -610,14 +475,10 @@ func (s *Server) RunSendQueue(ctx context.Context, interval time.Duration) {
 		return
 	}
 	d := &sendqueue.Dispatcher{Store: s.ext.SendQueue, Probe: s.sendQueueProbe, Send: s.sendQueueSend,
-		IdleFor: s.ext.SendQueueIdle, Now: s.sendQueueNow, Logger: s.logger}
+		AsOwner: s.queuedPrincipal, IdleFor: s.ext.SendQueueIdle, Now: s.sendQueueNow, Logger: s.logger}
 	d.Init()
-	idle := s.ext.SendQueueIdle
-	if idle <= 0 {
-		idle = sendqueue.DefaultIdleFor
-	}
-	s.logger.Printf("sendqueue: dispatcher started: a queued message is sent once its target has been idle for %s, "+
-		"one at a time per target (MUSTER_SEND_QUEUE_IDLE)", idle)
+	s.logger.Printf("sendqueue: dispatcher started: a queued message is sent once its Claude Code session has been idle for %s, "+
+		"one at a time per window (MUSTER_SEND_QUEUE_IDLE)", s.sendQueueIdle())
 	s.sendQueueMu.Lock()
 	s.sendQueue = d
 	s.sendQueueMu.Unlock()

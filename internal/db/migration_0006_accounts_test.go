@@ -162,7 +162,6 @@ var wantForeignKeys = []string{
 	"plugins|plugins_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"push_preferences|push_preferences_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"push_subscriptions|push_subscriptions_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
-	"send_queue|send_queue_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE",
 	"send_queue|send_queue_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"task_sessions|task_sessions_note_owner_fkey|FOREIGN KEY (note_id, owner_id) REFERENCES notes(id, owner_id) ON DELETE CASCADE",
 	"task_sessions|task_sessions_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",

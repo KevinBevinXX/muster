@@ -147,9 +147,6 @@ type Server struct {
 	activeAgentsMu  sync.Mutex
 	activeAgents    map[string]agentPhase
 	activeAgentsNow func() time.Time
-	// turnEnded is when each agent's last turn ended (markAgentIdle), never
-	// pruned: what the send queue reads as "idle since" (send_queue.go).
-	turnEnded map[string]time.Time
 
 	// sendQueue is the send queue's dispatcher (send_queue.go); nil until
 	// RunSendQueue starts it.

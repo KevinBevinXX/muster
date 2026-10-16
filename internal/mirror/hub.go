@@ -220,13 +220,10 @@ type hostConn struct {
 	claude   []string
 	labels   map[string]string
 	activity map[string]int64
-	// status is, per window, its Claude Code status and since when muster has
-	// seen it continuously (noteStatus); only for a statusReport host.
-	status  map[windowKey]statusMark
-	streams map[uint32]*stream
-	watches map[uint32]*watch
-	pastes  map[uint32]chan error
-	next    uint32
+	streams  map[uint32]*stream
+	watches  map[uint32]*watch
+	pastes   map[uint32]chan error
+	next     uint32
 }
 
 type stream struct {
@@ -354,7 +351,7 @@ func (hc *hostConn) list(m Msg, now int64) (sessions []string, windows []Window,
 		if hc.version < 2 {
 			// A v1 host has no rendered view whatever it claims.
 			for i := range windows {
-				windows[i].Claude, windows[i].Status = false, ""
+				windows[i].Claude, windows[i].Status, windows[i].StatusSince = false, "", 0
 			}
 		}
 		sessions, claude, labels, activity = SessionsOf(windows)
@@ -372,8 +369,8 @@ func (hc *hostConn) list(m Msg, now int64) (sessions []string, windows []Window,
 
 // sameWindows reports whether a and b differ in nothing a viewer can SEE:
 // everything but Activity, which moves all the time and matters only through
-// the order (orderKeys), and Status, which no card draws and which flips with
-// every turn (it is read by the send queue, through AgentState).
+// the order (orderKeys), and Status and StatusSince, which no card draws and
+// which move with every turn (the send queue reads them, through AgentState).
 func sameWindows(a, b []Window) bool {
 	if (a == nil) != (b == nil) || len(a) != len(b) {
 		return false
@@ -381,7 +378,7 @@ func sameWindows(a, b []Window) bool {
 	for i := range a {
 		x, y := a[i], b[i]
 		x.Activity, y.Activity = 0, 0
-		x.Status, y.Status = "", ""
+		x.Status, y.Status, x.StatusSince, y.StatusSince = "", "", 0, 0
 		if x != y {
 			return false
 		}
@@ -443,7 +440,6 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		// Believed only of a window (AgentState requires a per-window list).
 		hc.statusReport = hello.StatusReport
 	}
-	hc.noteStatus(h.now())
 	h.mu.Lock()
 	old := h.hosts[key]
 	if old == nil && len(h.hosts) >= h.maxHosts {
@@ -526,7 +522,6 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				same := slices.Equal(hc.sessions, list) && slices.Equal(hc.claude, claude) && maps.Equal(hc.labels, labels) && sameWindows(hc.windows, windows)
 				hc.sessions, hc.windows, hc.labels, hc.activity, hc.claude = list, windows, labels, activity, claude
 				hc.mu.Unlock()
-				hc.noteStatus(h.now())
 				// 🔴 ONLY A CHANGE SOMEBODY CAN SEE NUDGES THE OPEN VIEWS. Activity
 				// moves all the time; a host re-sends it once per ActivityBucket
 				// while a session stays busy, and most of those leave the list in
