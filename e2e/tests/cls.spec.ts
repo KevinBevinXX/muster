@@ -430,6 +430,10 @@ test.describe('signed-in pages in gotrue mode', () => {
   test.afterAll(async () => {
     await sserver?.stop();
     execFileSync('docker', ['compose', '-f', signedCompose, 'down', '-v'], { env: signedComposeEnv, stdio: 'inherit' });
+    // The claim bound user 1 to this spec's GoTrue user: unbind it again, or the
+    // next spec that claims the admin (gotrue-login does, without a reset of its
+    // own) is refused.
+    execFileSync('go', ['run', './e2e/seed', '--accounts-only'], { cwd: repoRoot, stdio: 'inherit', env: { ...process.env, DATABASE_URL: dsn } });
   });
 
   test(`passkeys, plugins and the admin pages shift less than ${BAR}, at both sizes`, async ({ browser }) => {

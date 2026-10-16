@@ -1023,10 +1023,19 @@ test.describe('drag-to-scroll on a phone (412×915, touch)', () => {
       // Finger DOWN: back into history (tmux scroll-up), in whole lines.
       await touchDrag(page, { x: mid.x, y: mid.y - 120 }, { x: mid.x, y: mid.y + 120 });
       await expect.poll(() => scrollLog(scrollFile).scrolls.reduce((a, s) => a + s.lines, 0), { message: `a drag down scrolled back (muster-mirror log:\n${rig.log})` }).toBeGreaterThan(5);
+      // The page's own count agrees with the host's: nothing dropped. Compared
+      // once BOTH have settled — the drag's later scrolls are still landing when
+      // the poll above first passes, and a snapshot taken then raced them
+      // (measured: the host's log read pos=6 while the page went on to send 16).
+      await expect
+        .poll(async () => {
+          const s = scrollLog(scrollFile).scrolls;
+          return `${s.length ? s[s.length - 1].pos : -1} = ${await term.getAttribute('data-scroll-sent')}`;
+        }, { message: 'the host\'s last position equals the page\'s sent count' })
+        .toMatch(/^(\d+) = \1$/);
       const down = scrollLog(scrollFile).scrolls;
       expect(down.every((s) => s.pane === '%e2e-scratch' && s.lines > 0), `every scroll was back, into scratch's pane: ${JSON.stringify(down)}`).toBe(true);
       const back = down[down.length - 1].pos;
-      // The page's own count agrees with the host's: nothing dropped.
       await expect(term).toHaveAttribute('data-scroll-sent', String(back));
       expect(posts.every((s) => s === 204), `every scroll answered 204: ${posts}`).toBe(true);
       expect(await page.locator('#term-scroll').evaluate((el) => el.scrollLeft), 'a vertical drag did not pan sideways').toBe(left0);
