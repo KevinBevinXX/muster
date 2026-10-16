@@ -2,8 +2,10 @@ package notes
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
 )
 
 // --- Tag grammar -------------------------------------------------------------
@@ -106,18 +108,90 @@ const (
 // externalIDNamespaces is the closed set. Closed for the same reason
 // routingNamespaces is: adding one is a code change, because it removes a chip
 // from a control.
+//
+// The ONE other source is the deployment's plugin task namespaces
+// (SetPluginTaskNamespaces, from MUSTER_PLUGIN_TASK_NAMESPACES at boot): a key a
+// plugin files tasks by names one upstream record, exactly like `clickup:<id>`.
+// They are configuration rather than code because each names a deployment's own
+// upstream, which this repository does not.
 var externalIDNamespaces = map[string]bool{
 	NSClickUp:      true,
 	NSSupersededBy: true,
 }
 
-// ExternalIDNamespaces returns the external-id namespaces, sorted, so a test or
-// a renderer can enumerate the closed allowlist without reaching into this
-// package's internals.
+// pluginTaskNamespaces is the configured set, written once at boot (before the
+// server serves) and read on every request; the atomic makes a test that sets
+// it race-free with the reads it causes.
+var pluginTaskNamespaces atomic.Pointer[map[string]bool]
+
+// pluginTaskNamespaceRe is a namespace a deployment may configure: the tag
+// charset, starting with a letter, with no '/' or '.' (a namespace, not a path).
+var pluginTaskNamespaceRe = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+
+// SetPluginTaskNamespaces validates and installs the deployment's plugin task
+// namespaces, replacing any earlier set; nil clears it. A namespace that already
+// means something — a routing or reserved one (`gate`, `auto`, `initiative`,
+// `project`) or `superseded-by`, which only a merge writes — is refused, as is
+// one that is not a plain namespace word.
+func SetPluginTaskNamespaces(nss []string) error {
+	if err := ValidatePluginTaskNamespaces(nss); err != nil {
+		return err
+	}
+	set := make(map[string]bool, len(nss))
+	for _, ns := range nss {
+		set[ns] = true
+	}
+	pluginTaskNamespaces.Store(&set)
+	return nil
+}
+
+// ValidatePluginTaskNamespaces is SetPluginTaskNamespaces's check alone, for the
+// server's boot-time config validation.
+func ValidatePluginTaskNamespaces(nss []string) error {
+	for _, ns := range nss {
+		switch {
+		case !pluginTaskNamespaceRe.MatchString(ns):
+			return fmt.Errorf("plugin task namespace %q must match %s", ns, pluginTaskNamespaceRe)
+		case routingNamespaces[ns] || ns == NSProject || ns == NSSupersededBy:
+			return fmt.Errorf("plugin task namespace %q is reserved: it already means something to muster", ns)
+		}
+	}
+	return nil
+}
+
+// IsPluginTaskNamespace reports whether ns is one of the configured plugin task
+// namespaces.
+func IsPluginTaskNamespace(ns string) bool {
+	set := pluginTaskNamespaces.Load()
+	return set != nil && (*set)[ns]
+}
+
+// PluginTaskNamespaces returns the configured plugin task namespaces, sorted.
+func PluginTaskNamespaces() []string {
+	set := pluginTaskNamespaces.Load()
+	if set == nil {
+		return nil
+	}
+	out := make([]string, 0, len(*set))
+	for ns := range *set {
+		out = append(out, ns)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ExternalIDNamespaces returns the external-id namespaces — the closed set plus
+// the configured plugin task namespaces — sorted, so a test or a renderer can
+// enumerate them without reaching into this package's internals.
 func ExternalIDNamespaces() []string {
 	out := make([]string, 0, len(externalIDNamespaces))
 	for ns := range externalIDNamespaces {
 		out = append(out, ns)
+	}
+	for _, ns := range PluginTaskNamespaces() {
+		if !externalIDNamespaces[ns] {
+			out = append(out, ns)
+		}
 	}
 	sort.Strings(out)
 	return out
@@ -130,7 +204,7 @@ func ExternalIDNamespaces() []string {
 // descriptive tag literally named `clickupX:…`.
 func IsExternalIDTag(tag string) bool {
 	ns, _ := ParseTag(tag)
-	return externalIDNamespaces[ns]
+	return externalIDNamespaces[ns] || IsPluginTaskNamespace(ns)
 }
 
 // routingNamespaces is the closed set of ROUTING namespaces. Membership is what

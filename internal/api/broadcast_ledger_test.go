@@ -45,8 +45,14 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		"(*Server).dispatchAgentTool → broadcast(ctx)",
 		"(*Server).handleAPITaskComment → broadcast(r.Context())",
 		// The machine-path task create (moved out of handleAPITaskCreate so a
-		// second door cannot skip a side effect); ctx is the request's.
-		"(*Server).createTask → broadcast(ctx)",
+		// second door cannot skip a side effect); ctx is the request's. Its
+		// body is createTaskOnce, which createTask and the plugin task route share.
+		"(*Server).createTaskOnce → broadcast(ctx)",
+		// The plugin task route's comment on an existing task (plugin_tasks.go),
+		// once on the create path (the task existed) and once on the comment-only
+		// path: the request's principal is the plugin token's owner (authz.ViaPlugin).
+		"(*Server).handlePluginTask → broadcast(ctx)",
+		"(*Server).handlePluginTask → broadcast(ctx)",
 		"(*Server).handleAPITaskEdit → broadcast(r.Context())",
 		"(*Server).handleAgentBlocked → broadcast(r.Context())",
 		"(*Server).handleAgentTaskComment → broadcast(r.Context())",

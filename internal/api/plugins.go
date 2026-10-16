@@ -64,6 +64,8 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	mux.HandleFunc("POST "+pluginAPIPrefix+"/messages", s.requirePluginToken(s.handlePluginMessage))
 	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/claim", s.requirePluginToken(s.handlePluginDraftClaim))
 	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/{id}/result", s.requirePluginToken(s.handlePluginDraftResult))
+	// Deterministic upstream notices → one task per external key (plugin_tasks.go).
+	mux.HandleFunc("POST "+pluginTasksPath, s.requirePluginToken(s.handlePluginTask))
 }
 
 // requirePluginsOn answers 404 for a plugin route on a server with plugins off,

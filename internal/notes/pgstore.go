@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/ZacxDev/muster/internal/taskstatus"
 )
 
 // PGStore is the Postgres-backed notes Store.
@@ -669,6 +671,163 @@ func (s *PGStore) AddComment(ctx context.Context, c Comment) (Comment, error) {
 		return Comment{}, err
 	}
 	return c, nil
+}
+
+// onceKeyLockPrefix namespaces CreateOnceByTag's advisory-lock key, so it cannot
+// share a lock id with any other user of pg_advisory_xact_lock(bigint).
+const onceKeyLockPrefix = "muster.notes.once-by-tag:"
+
+// CreateOnceByTag: see the Store interface.
+//
+// 🔴 THE LOCK IS WHAT MAKES "ONCE" TRUE; THE LOOKUP ALONE IS A RACE. Two callers
+// that both run the SELECT before either INSERT commits both see nothing and both
+// insert. The transaction-scoped advisory lock on the key serialises them, and the
+// SELECT is a NEW command after the lock is granted, so at READ COMMITTED it sees
+// the winner's committed row. TestCreateOnceByTagCreatesOneUnderConcurrency is the
+// property; deleting the lock statement fails it.
+//
+// The lock is keyed on the tag alone, not the owner: two owners filing the same
+// key only wait for each other. Row-level security still confines the lookup to
+// the caller's own tasks, so each owner gets their own task.
+func (s *PGStore) CreateOnceByTag(ctx context.Context, key string, n Note, c *Comment) (Note, bool, bool, error) {
+	if k := NormalizeTag(key); k == "" || k != key {
+		return Note{}, false, false, fmt.Errorf("notes: once-key %q is not a normalized tag", key)
+	}
+	n.Tags = MergeTags(n.Tags, []string{key})
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return Note{}, false, false, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, onceKeyLockPrefix+key); err != nil {
+		return Note{}, false, false, err
+	}
+	found, ok, err := findLiveByTag(ctx, tx, key)
+	if err != nil {
+		return Note{}, false, false, err
+	}
+	created := !ok
+	if ok {
+		n = found
+	} else if err := tx.QueryRow(ctx, `
+		INSERT INTO notes (directory, title, body, model, repo, repo_branch, tags, source_type, source_session_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		RETURNING `+noteCols,
+		n.Directory, n.Title, n.Body, n.Model, n.Repo, n.RepoBranch, n.Tags, n.SourceType, n.SourceSessionID).
+		Scan(scanNoteInto(&n)...); err != nil {
+		return Note{}, false, false, err
+	}
+	// 🔴 THE COMMENT IS IN THIS TRANSACTION ON BOTH PATHS. Written after the
+	// commit (as it once was), a create whose answer was lost left the task
+	// without its comment, and the resend — finding the task — then added it:
+	// two different outcomes for one request.
+	commented := false
+	if c != nil {
+		cc := *c
+		cc.NoteID = n.ID
+		if commented, err = addCommentOnceTx(ctx, tx, cc); err != nil {
+			return Note{}, false, false, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Note{}, false, false, err
+	}
+	return n, created, commented, nil
+}
+
+// FindLiveByTag: see the Store interface.
+func (s *PGStore) FindLiveByTag(ctx context.Context, key string) (Note, bool, error) {
+	return findLiveByTag(ctx, s.pool, key)
+}
+
+// rowQuerier is what findLiveByTag needs: the pool, or CreateOnceByTag's tx.
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// openOnly is what makes a task THE OPEN task for its key (the operator's rule):
+// live (liveOnly — not dismissed), not complete, and not a merge loser — a merge
+// marks the loser complete AND tags it `superseded-by:<winner>`, and the winner
+// gets the union of tags, so the winner is what a later notice finds. The
+// superseded-by test stands on its own, so a loser someone re-opened by hand
+// is still not taken for the key. p is the placeholder bound to
+// supersededPattern; status values come from taskstatus (the one vocabulary).
+func openOnly(p string) string {
+	return liveOnly + ` AND status <> '` + taskstatus.Complete + `'
+		AND NOT EXISTS (SELECT 1 FROM unnest(tags) AS t WHERE t LIKE ` + p + `)`
+}
+
+// supersededPattern is openOnly's LIKE argument: any `superseded-by:` tag.
+const supersededPattern = NSSupersededBy + ":%"
+
+// findLiveByTag is THE answer to "which open task carries key": the OLDEST, so
+// CreateOnceByTag (which would otherwise create) and FindLiveByTag (the plugin
+// task route's comment path) can never name different tasks for one key — the
+// two used to be separately written lookups (audit D1).
+func findLiveByTag(ctx context.Context, q rowQuerier, key string) (Note, bool, error) {
+	var n Note
+	err := q.QueryRow(ctx, `SELECT `+noteCols+` FROM notes WHERE tags @> ARRAY[$1]::text[] AND `+openOnly("$2")+`
+		ORDER BY id LIMIT 1`, key, supersededPattern).Scan(scanNoteInto(&n)...)
+	switch {
+	case err == nil:
+		return n, true, nil
+	case errors.Is(err, pgx.ErrNoRows):
+		return Note{}, false, nil
+	}
+	return Note{}, false, err
+}
+
+// AddCommentOnce: see the Store interface. The same two-command shape as
+// FlagIdle, for the same reason (its comment explains why a bare NOT EXISTS is
+// not enough): command 1 locks the note row, command 2 — a new snapshot — checks
+// for the comment and inserts it. The insert keeps AddComment's live-parent guard
+// and its same-statement updated_at bump.
+//
+// The duplicate probe deliberately reads retracted comments too: a comment the
+// owner retracted must not come back because its producer retried.
+func (s *PGStore) AddCommentOnce(ctx context.Context, c Comment) (bool, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	wrote, err := addCommentOnceTx(ctx, tx, c)
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return wrote, nil
+}
+
+// addCommentOnceTx is AddCommentOnce's two commands inside the caller's
+// READ COMMITTED transaction — shared with CreateOnceByTag, so "the same
+// comment is written once" has ONE spelling.
+func addCommentOnceTx(ctx context.Context, tx pgx.Tx, c Comment) (bool, error) {
+	// 🔴 THE LOCK RE-CHECKS OPEN, not just not-dismissed: the comment path looks
+	// the task up open (FindLiveByTag) and then gets here, so a task completed
+	// or superseded in between must not gain the comment (audit round 2, C).
+	// Once this row is locked, a concurrent status change waits for the commit.
+	var locked int64
+	if err := tx.QueryRow(ctx, `SELECT id FROM notes WHERE id=$1 AND `+openOnly("$2")+` FOR UPDATE`,
+		c.NoteID, supersededPattern).Scan(&locked); err != nil {
+		return false, err
+	}
+	var wrote int64
+	if err := tx.QueryRow(ctx, `
+		WITH ins AS (
+			INSERT INTO note_comments (note_id, owner_id, author, body)
+			SELECT id, owner_id, $2, $3 FROM notes WHERE id=$1 AND `+liveOnly+`
+			   AND NOT EXISTS (SELECT 1 FROM note_comments c WHERE c.note_id = notes.id AND c.author = $2 AND c.body = $3)
+			RETURNING note_id
+		), bump AS (
+			UPDATE notes SET updated_at=now() WHERE id=(SELECT note_id FROM ins)
+		)
+		SELECT count(*) FROM ins`, c.NoteID, c.Author, c.Body).Scan(&wrote); err != nil {
+		return false, err
+	}
+	return wrote > 0, nil
 }
 
 // FlagIdle tags an idle task and posts ONE reap comment, at most once per idle

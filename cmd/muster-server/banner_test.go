@@ -350,6 +350,10 @@ var bannerLedger = []string{
 	// state this deployment is in (and, ON without a gateway, that nothing is
 	// delivered).
 	envPlugins,
+	// The plugin task namespaces: unset, POST /plugin/v1/tasks answers 503 and a
+	// plugin that files tasks holds its notices, so the operator must be told
+	// which state this is (and which namespaces are accepted).
+	envPluginTaskNamespaces,
 	// 🔴 THE AGENT-FLOW DENY WORDS ARE LEDGERED: unset, the agent door screens
 	// agent-composed text with the generic patterns only, and that fail-open
 	// state must be a loud line, not a silence (the operator's audit of #76).
@@ -642,6 +646,8 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		MemoToken: "memo-credential-fixture",
 		// A synthetic split: one repository whose memos are filed under two names.
 		MemoScopeMap: "widgets=widgets,widgets-clone",
+		// Plugin tasks: the banner branches on the list (and on ext.Plugins, below).
+		PluginTaskNamespaces: []string{"tracker"},
 		// Dictation: the banner branches on ext.Transcriber (below).
 		STTURL:   "http://stt.example.invalid:8000",
 		STTToken: "stt-credential-fixture",

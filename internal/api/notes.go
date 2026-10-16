@@ -514,23 +514,35 @@ var errTaskTagsUnchecked = errors.New("could not validate tags")
 // The FAB create (handleNoteCreate) deliberately does NOT come through here: it does
 // not notify, because the user just made that task themselves.
 func (s *Server) createTask(ctx context.Context, in taskCreateInput, linked func(id int64)) (notes.Note, error) {
+	n, _, _, err := s.createTaskOnce(ctx, in, "", nil, linked)
+	return n, err
+}
+
+// createTaskOnce is createTask with an optional once-key: with key set, the store
+// files the task only if no open task already carries that tag
+// (notes.Store.CreateOnceByTag), and created reports which happened; comment,
+// when set (and key is), is recorded once on whichever task that is, in the same
+// transaction, and commented reports whether it was written. A task that
+// already existed gets NONE of the create's side effects — no thread link,
+// broadcast, metric or push — because nothing was created.
+func (s *Server) createTaskOnce(ctx context.Context, in taskCreateInput, key string, comment *notes.Comment, linked func(id int64)) (notes.Note, bool, bool, error) {
 	if strings.TrimSpace(in.Body) == "" {
-		return notes.Note{}, errTaskBodyRequired
+		return notes.Note{}, false, false, errTaskBodyRequired
 	}
 	tags, err := s.resolveTaskTags(ctx, in.Tags)
 	if err != nil {
 		var ve errTagValidation
 		if errors.As(err, &ve) {
-			return notes.Note{}, ve
+			return notes.Note{}, false, false, ve
 		}
 		s.logger.Printf("notes: api create tags: %v", err)
-		return notes.Note{}, errTaskTagsUnchecked
+		return notes.Note{}, false, false, errTaskTagsUnchecked
 	}
 	// Provenance (migration 0017): taskSource is the single source of truth for BOTH
 	// the metric label (below) and the stored value. The default/unidentified "api"
 	// source is stored as NULL (pre-0017 behavior); only a named producer is
 	// persisted. Session id is stored whenever present, independent of source.
-	note, err := s.ext.Notes.Create(ctx, notes.Note{
+	want := notes.Note{
 		Directory:       in.Directory,
 		Title:           capRunes(strings.TrimSpace(in.Title), maxTaskFieldLen),
 		Body:            in.Body,
@@ -540,10 +552,20 @@ func (s *Server) createTask(ctx context.Context, in taskCreateInput, linked func
 		Tags:            tags,
 		SourceType:      storedSourceType(in.Source),
 		SourceSessionID: nilIfEmpty(in.SessionID),
-	})
+	}
+	var note notes.Note
+	created, commented := true, false
+	if key == "" {
+		note, err = s.ext.Notes.Create(ctx, want)
+	} else {
+		note, created, commented, err = s.ext.Notes.CreateOnceByTag(ctx, key, want, comment)
+	}
 	if err != nil {
 		s.logger.Printf("notes: api create: %v", err)
-		return notes.Note{}, err
+		return notes.Note{}, false, false, err
+	}
+	if !created {
+		return note, false, commented, nil
 	}
 	if linked != nil {
 		linked(note.ID)
@@ -564,7 +586,7 @@ func (s *Server) createTask(ctx context.Context, in taskCreateInput, linked func
 	// only — the FAB create (handleNoteCreate) intentionally does NOT notify, the
 	// user just made that task themselves. Best-effort + nil-push-safe.
 	s.notifyTaskCreated(note)
-	return note, nil
+	return note, true, commented, nil
 }
 
 // --- machine task reads: the agent join + server-side filtering ---
