@@ -48,7 +48,7 @@ func TestBothComposersGrowByTheSameRule(t *testing.T) {
 	}
 	script := renderString(t, composerFitScript())
 	docs := map[string]string{
-		"agent chat pane": renderString(t, agentChatPane(AgentDetailView{Name: "a", Status: "running", ActiveSessionID: 1})),
+		"agent chat pane":   renderString(t, agentChatPane(AgentDetailView{Name: "a", Status: "running", ActiveSessionID: 1})),
 		"mirrored composer": renderString(t, mirrorComposer(ComposerView{SendPath: "/mirror/view/send", Aria: "Message"})),
 	}
 	for name, html := range docs {
