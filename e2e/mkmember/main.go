@@ -7,7 +7,7 @@
 //
 // It prints the new user's id.
 //
-// 🔴 IT REFUSES ANY DATABASE WHOSE NAME DOES NOT END IN "_e2e", like e2e/seed:
+// 🔴 IT REFUSES ANY DATABASE WHOSE NAME DOES NOT END IN "_e2e" (e2edb.Check):
 // it writes the users table as the login role (users is scope-all-only under
 // row-level security), which nothing outside a fixture may do.
 package main
@@ -15,12 +15,12 @@ package main
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/ZacxDev/muster/e2e/internal/e2edb"
 )
 
 func main() {
@@ -32,9 +32,8 @@ func main() {
 
 func run() error {
 	dsn := os.Getenv("DATABASE_URL")
-	u, err := url.Parse(dsn)
-	if err != nil || !strings.HasSuffix(strings.TrimPrefix(u.Path, "/"), "_e2e") {
-		return fmt.Errorf("refusing: DATABASE_URL must name a database ending in _e2e")
+	if err := e2edb.Check(dsn); err != nil {
+		return err
 	}
 	sub, email := os.Getenv("MUSTER_E2E_SUB"), os.Getenv("MUSTER_E2E_EMAIL")
 	if sub == "" || email == "" {

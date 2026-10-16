@@ -4,7 +4,8 @@
 //
 // 🔴 IT REFUSES ANY DATABASE WHOSE NAME DOES NOT END IN "_e2e". It truncates
 // every table it seeds, so pointing it at a real deployment by accident would
-// empty the board. The suffix check is the guard; there is no override flag.
+// empty the board. The suffix check (e2edb.Check) is the guard; there is no
+// override flag.
 //
 // Every value is invented fixture data: no real repository, person or host.
 package main
@@ -12,13 +13,12 @@ package main
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/ZacxDev/muster/e2e/internal/e2edb"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/db"
@@ -74,7 +74,7 @@ var accountsReset = []string{
 
 func run() error {
 	dsn := os.Getenv("DATABASE_URL")
-	if err := checkE2EDatabase(dsn); err != nil {
+	if err := e2edb.Check(dsn); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -208,24 +208,5 @@ func run() error {
 		}
 	}
 	fmt.Printf("seed: %d tasks, 3 agents\n", len(tasks))
-	return nil
-}
-
-// checkE2EDatabase is the package doc's guard: nil only for a DSN naming a database
-// whose name ends in _e2e. It is what keeps the manifest screenshots honest
-// too — `npm run capture` shares global-setup, which runs this seed before it
-// starts the server, so a capture pointed at a real database fails here instead
-// of photographing it.
-func checkE2EDatabase(dsn string) error {
-	if dsn == "" {
-		return fmt.Errorf("DATABASE_URL is required")
-	}
-	u, err := url.Parse(dsn)
-	if err != nil {
-		return fmt.Errorf("parse DATABASE_URL: %w", err)
-	}
-	if name := strings.TrimPrefix(u.Path, "/"); !strings.HasSuffix(name, "_e2e") {
-		return fmt.Errorf("refusing to truncate database %q: the e2e seed only touches a database whose name ends in _e2e", name)
-	}
 	return nil
 }

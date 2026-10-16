@@ -321,14 +321,21 @@ test('tapping a code block summary inside a clamped bubble toggles only the code
 // persisted chat, so their bubbles are the server's real chatBubble markup
 // (data-md, data-msg-id) without adding rows to a seeded agent other specs
 // count. It is deleted after.
+//
+// The delete is armed BEFORE mkchat runs, and the delete is idempotent: a run
+// that fails or is killed after its commit still has its agent removed (mkchat
+// writes the agent and its messages in one transaction, so a refused message
+// leaves nothing to remove).
 const chatAgent = 'e2e-clamp-' + Date.now().toString(36);
 const longAgentMsg = Array.from({ length: 30 }, (_, i) => `agent line ${i + 1}`).join('\n');
 let chatAgentMade = false;
+let chatAgentCleanup = false;
 function mkchat(extra: NodeJS.ProcessEnv, input = '') {
   execFileSync('go', ['run', './e2e/mkchat'], { cwd: repoRoot, input, env: { ...process.env, DATABASE_URL: dsn, MUSTER_E2E_AGENT: chatAgent, ...extra } });
 }
 function makeChatAgent() {
   if (chatAgentMade) return;
+  chatAgentCleanup = true;
   mkchat({}, JSON.stringify([
     { role: 'user', content: 'Check the docs build.' },
     { role: 'assistant', content: 'The build passes.' },
@@ -337,7 +344,7 @@ function makeChatAgent() {
   chatAgentMade = true;
 }
 test.afterAll(() => {
-  if (chatAgentMade) mkchat({ MUSTER_E2E_DELETE: '1' });
+  if (chatAgentCleanup) mkchat({ MUSTER_E2E_DELETE: '1' });
 });
 
 // refreshChatLog fires task:changed on <body>, as the completion banner's

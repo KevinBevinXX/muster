@@ -11,7 +11,7 @@ import { dsn, repoRoot } from '../lib/env';
 // planned to be reachable WITHOUT auth (an edge bypass for the manifest's
 // images), so whatever this photographs is published. global-setup runs the
 // seed before starting the server, and the seed refuses any database not named
-// *_e2e (TestSeedRefusesAnythingButAnE2EDatabase); the check below refuses the
+// *_e2e (e2edb's TestCheckRefusesAnythingButAnE2EDatabase); the check below refuses the
 // same thing again here, so a capture can never run against a real board.
 //
 // ⚠ ONE THING IS HIDDEN, AND IT IS SAID HERE: the push-permission status line.
@@ -24,7 +24,11 @@ for (const [route, file, ready] of [
   ['/agents', 'screenshot-agents-narrow.png', '#agents-list article'],
 ] as const) {
   test(`capture ${file}`, async ({ page }) => {
-    expect(new URL(dsn).pathname, 'captures run only against the seeded *_e2e database').toMatch(/_e2e$/);
+    // pgx connects to ?dbname= / ?database= over the path, so every name the
+    // DSN carries must be an e2e one (the Go side asks pgx: e2edb.Check).
+    const u = new URL(dsn);
+    const names = [u.pathname.slice(1), ...u.searchParams.getAll('dbname'), ...u.searchParams.getAll('database')];
+    for (const name of names) expect(name, 'captures run only against the seeded *_e2e database').toMatch(/_e2e$/);
     await page.goto(route);
     await page.addStyleTag({ content: '#push-status{display:none!important}' });
     await expect(page.locator(ready).first()).toBeVisible();
