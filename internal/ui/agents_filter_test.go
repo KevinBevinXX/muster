@@ -119,7 +119,7 @@ func TestTheFilterHidesWithOneRulePerWordAndCountsWithTheSameSelector(t *testing
 		"the count uses the same selector":       `list.querySelectorAll(':scope > article' + ts.map(sel).join(''))`,
 		"the terms are lower-cased and parsed":   `tokens(String(q || '').toLowerCase()).forEach(`,
 		"typing replaces the URL, never pushes":  `history.replaceState(history.state, '', next)`,
-		"it re-counts when the list settles":     `if (e.target && e.target.id === 'agents-list') restore();`,
+		"it re-counts when the list settles":     `if (e.target && e.target.id === 'agents-list') settled();`,
 		"it remembers the text for the session":  `sessionStorage.setItem(KEY, q)`,
 	} {
 		if !strings.Contains(script, want) {

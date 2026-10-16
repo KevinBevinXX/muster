@@ -73,11 +73,18 @@ import (
 // 🔴 THE CONTROLS ARE A VIEW OF THE SAME TOKEN STRING, NOT A SECOND FILTER. The
 // script's ONE string (composeQ) is the selects' `field=value` tokens followed
 // by the box's text; that string is what the hide rules, the count, `?q=` and
-// sessionStorage all read and write. Going the other way, split() hands a
+// sessionStorage all read and write. Going the other way — for a link, the
+// session's copy or a history entry ONLY, never for a list refresh and never
+// while the box has focus (place / settled in the script) — split() hands a
 // `field=value` token to its select when that select is still empty and has an
 // option of exactly that value; everything else (free words, a typed
 // `host:tow`, `session:`, a value no card has) stays in the box, where it
-// filters just the same. So an old link and a typed token keep working.
+// filters just the same. So an old link and a typed token keep working, and a
+// `host=x` typed by hand stays where it was typed.
+//
+// A select's value is spelled `field=value` when it is bare-safe, else
+// `field="value"` with `\"` and `\\` escaped; inside quotes the grammar reads
+// those two escapes back, so any value a card carries round-trips through `?q=`.
 
 // cardFields is what a card can be filtered by, one value per field. Empty
 // fields write no attribute.
@@ -287,14 +294,17 @@ func agentsFilterScript() g.Node {
   function norm(v) { return String(v || '').replace(/\s+/g, ' ').trim(); }
   // tokens is a string in the grammar, term by term and in order: {raw, f, exact,
   // v} each — f a registered field (lower-cased) or null for free text, exact
-  // true for field=value, v the value as written.
+  // true for field=value, v the value as written. Inside double quotes a
+  // backslash escapes a double quote or a backslash (\" and \\, what tok
+  // writes); any other backslash is itself. Outside quotes nothing is escaped.
+  function unq(v) { return v.replace(/\\(["\\])/g, '$1'); }
   function tokens(s) {
-    var out = [], m, re = /([^\s:="]+)([:=])"([^"]*)"?|"([^"]*)"?|\S+/g;
+    var out = [], m, re = /([^\s:="]+)([:=])"((?:[^"\\]|\\.)*)"?|"((?:[^"\\]|\\.)*)"?|\S+/g;
     s = String(s || '');
     while ((m = re.exec(s))) {
       var f = null, sep = '', v = m[0];
-      if (m[1] !== undefined) { f = m[1]; sep = m[2]; v = m[3]; }
-      else if (m[4] !== undefined) { v = m[4]; }
+      if (m[1] !== undefined) { f = m[1]; sep = m[2]; v = unq(m[3]); }
+      else if (m[4] !== undefined) { v = unq(m[4]); }
       else {
         var i = m[0].search(/[:=]/);
         if (i > 0) { f = m[0].slice(0, i); sep = m[0][i]; v = m[0].slice(i + 1); }
@@ -336,9 +346,13 @@ func agentsFilterScript() g.Node {
   var CONTROLS = ` + facetFieldsJSON() + `;
   function control(f) { return el('agents-f-' + f); }
   function hasOption(c, v) { return !!v && [].some.call(c.options, function (o) { return o.value === v; }); }
-  // tok spells one select's value as an EXACT token: quoted when it holds a
-  // space. A double quote cannot be spelled in the grammar, so it is dropped.
-  function tok(f, v) { v = norm(v).replace(/"/g, ''); return /\s/.test(v) ? f + '="' + v + '"' : f + '=' + v; }
+  // tok spells one select's value as an EXACT token that tokens() reads back
+  // as the same value: bare when it holds no space, double quote or backslash,
+  // else quoted with \" and \\ escaped (so a kind such as say"hi survives ?q=).
+  function tok(f, v) {
+    v = norm(v);
+    return /[\s"\\]/.test(v) ? f + '="' + v.replace(/["\\]/g, '\\$&') + '"' : f + '=' + v;
+  }
   // composeQ is the filter's ONE token string: the selects' tokens, then the
   // box's text as typed. Everything below reads and writes this.
   function composeQ() {
@@ -411,7 +425,13 @@ func agentsFilterScript() g.Node {
       c.value = cur && seen[cur] ? cur : '';
     });
     var input = el('agents-search');
-    if (moved.length && input) input.value = moved.concat(input.value.trim() ? [input.value] : []).join(' ');
+    if (!moved.length || !input) return;
+    // The moved tokens go in FRONT (where composeQ had them), so a caret in
+    // the box keeps its place in what was typed.
+    var lead = moved.join(' ') + (input.value.trim() ? ' ' : ''), typing = focused();
+    var a = input.selectionStart, b = input.selectionEnd;
+    input.value = lead + (input.value.trim() ? input.value : '');
+    if (typing && a !== null) input.setSelectionRange(a + lead.length, b + lead.length);
   }
   function apply() {
     var input = el('agents-search'), list = el('agents-list');
@@ -440,28 +460,79 @@ func agentsFilterScript() g.Node {
     try { sessionStorage.setItem(KEY, q); } catch (e) {}
     syncURL(q);
   }
-  // restore: a ?q= wins (a shared link); otherwise the session's copy fills an
-  // empty filter. It is distributed when it differs from what the bar holds, OR
-  // when one of its tokens has found its option since — the options arrive with
-  // the list, after a link was first read, so a host=… waits in the box until
-  // then. Otherwise nothing is touched, so a list refresh (which lands here) never
-  // moves the caret.
-  function restore() {
+  // 🔴 WHEN A TOKEN MOVES FROM THE BOX TO ITS SELECT — and when it never does.
+  // ?q= is rewritten on every keystroke, so it is not a link's filter but the
+  // one being typed: re-splitting it on a list refresh took a hand-typed
+  // host=macbook out of the box mid-word (the caret jumped, and what was typed
+  // next landed in a different string), and with host "mac" selected and
+  // host=macbook typed it cleared the select. So a refresh NEVER re-splits.
+  // Tokens move only:
+  //   - place(): when a bar is first seen (page load, or a swap that brought a
+  //     new one) and on back/forward — the filter of a link, the session's copy
+  //     or a history entry;
+  //   - settled(): the token place() left in the box because its select had no
+  //     such option YET (the options arrive with the list, after a link was
+  //     read), once, at the first list render after which that select has
+  //     options — and not while the box has focus (it waits; typing in the box
+  //     cancels it, the text being the user's now).
+  // place() itself moves nothing while the box has focus: it puts the whole
+  // string in the box, which filters the same.
+  var pending = Object.create(null);
+  function focused() { var i = el('agents-search'); return !!i && document.activeElement === i; }
+  function place(q) {
     var input = el('agents-search');
     if (!input) return;
-    syncOptions();
+    pending = Object.create(null);
+    if (focused()) {
+      CONTROLS.forEach(function (f) { var c = control(f); if (c) c.value = ''; });
+      if (input.value !== q) input.value = q;
+    } else distribute(q);
+    tokens(input.value).forEach(function (t) { if (t.exact && CONTROLS.indexOf(t.f) >= 0) pending[t.f] = true; });
+  }
+  // takeFromBox moves field f's exact token from the box to f's select, by the
+  // same rule as split(): the box's only exact token of f, f's select empty,
+  // and an option of exactly that value.
+  function takeFromBox(f) {
+    var input = el('agents-search'), c = control(f);
+    if (!input || !c || c.value) return;
+    var ts = tokens(input.value), mine = ts.filter(function (t) { return t.exact && t.f === f; });
+    if (mine.length !== 1) return;
+    var v = norm(mine[0].v).toLowerCase();
+    if (!hasOption(c, v)) return;
+    c.value = v;
+    input.value = ts.filter(function (t) { return t !== mine[0]; }).map(function (t) { return t.raw; }).join(' ');
+  }
+  // boot: a bar not seen before (or one a swap emptied while a filter is
+  // remembered) is given its filter — a ?q= wins (a shared link), else the
+  // session's copy. Any other call is a no-op.
+  function boot() {
+    var input = el('agents-search');
+    if (!input) return;
     var q = urlQ();
-    if (q === null) {
-      q = composeQ();
-      if (!q) { try { q = sessionStorage.getItem(KEY) || ''; } catch (e) {} }
+    if (q === null) { try { q = sessionStorage.getItem(KEY) || ''; } catch (e) { q = ''; } }
+    if (input.__musterFilterBar && (composeQ() || !q)) return;
+    input.__musterFilterBar = true;
+    syncOptions();
+    place(q);
+    apply();
+  }
+  // settled: the list rendered. The options and the count follow it; a pending
+  // token may now find its option. Nothing else in the bar is touched.
+  function settled() {
+    boot();
+    syncOptions();
+    if (!focused()) {
+      CONTROLS.forEach(function (f) {
+        var c = control(f);
+        if (!pending[f] || !c || c.options.length < 2) return;
+        delete pending[f];
+        takeFromBox(f);
+      });
     }
-    var p = split(q);
-    var taken = CONTROLS.some(function (f) { var c = control(f); return c && (p.fields[f] || '') !== c.value; });
-    if (composeQ() !== q || taken) distribute(q);
     apply();
   }
   document.addEventListener('input', function (e) {
-    if (e.target && e.target.id === 'agents-search') apply();
+    if (e.target && e.target.id === 'agents-search') { pending = Object.create(null); apply(); }
   });
   // A select reports a choice with change (and input, in some browsers): both
   // apply, which is idempotent.
@@ -489,11 +560,11 @@ func agentsFilterScript() g.Node {
   });
   // The list re-renders itself; the rule above already hides what should be
   // hidden, so all that is left is the count and the options — and a link's
-  // token that was waiting in the box for its option (restore).
+  // token that was waiting in the box for its option (settled).
   document.addEventListener('htmx:afterSettle', function (e) {
-    if (e.target && e.target.id === 'agents-list') restore();
+    if (e.target && e.target.id === 'agents-list') settled();
   });
-  document.addEventListener('htmx:load', restore);
+  document.addEventListener('htmx:load', boot);
   // Back on the Agents tab (switchTab pushed a bare /agents): put the filter's
   // ?q= back on it at once — a replace, so the switch is still one entry.
   document.addEventListener('muster:tabshown', function (e) {
@@ -501,8 +572,13 @@ func agentsFilterScript() g.Node {
     if (input && e.detail && e.detail.tab === 'agents') syncURL(composeQ());
   });
   // Back/forward onto an /agents entry: its ?q= is the filter it had.
-  window.addEventListener('popstate', restore);
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', restore); else restore();
+  // (An entry with no ?q= leaves the bar as it is, and apply writes it back.)
+  window.addEventListener('popstate', function () {
+    var q = urlQ();
+    if (q !== null && el('agents-search')) { syncOptions(); place(q); }
+    apply();
+  });
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
 })();
 `))
 }

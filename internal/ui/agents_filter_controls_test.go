@@ -171,13 +171,13 @@ func TestTheBarHasAControlPerFacetOutsideTheList(t *testing.T) {
 func TestTheControlsWriteTheSameTokenString(t *testing.T) {
 	script := scriptWith(t, renderString(t, Page("agents", featuresAllOn)), "__musterAgentsFilter")
 	for name, want := range map[string]string{
-		"the hide rules read the one string": "var q = composeQ();\n    var ts = terms(q);",
-		"it is remembered as is":             "sessionStorage.setItem(KEY, q)",
-		"it is the URL's ?q=":                "syncURL(q);",
-		"a ?q= is split into the controls":   "if (composeQ() !== q || taken) distribute(q);",
-		"the options come from the cards":    "list.querySelectorAll(':scope > article[data-f-' + f + ']')",
-		"a select writes an EXACT token":     "return /\\s/.test(v) ? f + '=\"' + v + '\"' : f + '=' + v;",
-		"the controls are the facet fields":  "var CONTROLS = " + facetFieldsJSON() + ";",
+		"the hide rules read the one string":      "var q = composeQ();\n    var ts = terms(q);",
+		"it is remembered as is":                  "sessionStorage.setItem(KEY, q)",
+		"it is the URL's ?q=":                     "syncURL(q);",
+		"a link's ?q= is split into the controls": "} else distribute(q);",
+		"the options come from the cards":         "list.querySelectorAll(':scope > article[data-f-' + f + ']')",
+		"a select writes an EXACT token":          "return /[\\s\"\\\\]/.test(v) ? f + '=\"' + v.replace(/[\"\\\\]/g, '\\\\$&') + '\"' : f + '=' + v;",
+		"the controls are the facet fields":       "var CONTROLS = " + facetFieldsJSON() + ";",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("%s: the filter script no longer contains %q", name, want)
