@@ -25,8 +25,9 @@ import (
 // 🔴 And a record whose origin says "human" is NEVER a notice by its tags, even
 // when it is wholly a pasted <task-notification>: the CLI stamped it as typed
 // by the human, and the tag rule exists only for records that carry no origin
-// at all (CLI before 2.1.22). In the same survey (830 transcripts) no
-// human-origin record leads with a notice tag, so this costs no real notice.
+// at all (CLI before 2.1.22). A later survey of 830 real transcripts (taken
+// for the round-1 audit, a separate sample from the 832 below) found no
+// human-origin record leading with a notice tag, so this costs no real notice.
 // Measured over 832 real transcripts (CLI 2.1.22–2.1.296): every non-meta user
 // record that starts with one of these tags is wholly tag blocks — not one had
 // text after its last block.

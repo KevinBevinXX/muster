@@ -117,6 +117,11 @@ func TestEventsNoticeIgnoresTagsNestedInTaskOutput(t *testing.T) {
 		{"text between the children is skipped, not an error",
 			"<task-notification>\nloose words <status>killed</status> more <summary>Stopped</summary></task-notification>",
 			Event{Kind: KindNotice, Notice: NoticeTask, Status: "killed", Text: "Stopped"}},
+		// An unclosed top-level tag has no body to jump over: innerTag looks
+		// past its opening, so the children after it are still read.
+		{"an unclosed child does not hide the children after it",
+			"<task-notification>\n<task-id>u1</task-id>\n<br>\n<status>failed</status>\n<summary>Agent \"y\" failed</summary>\n<result>it broke</result>\n</task-notification>",
+			Event{Kind: KindNotice, Notice: NoticeTask, Status: "failed", Text: `Agent "y" failed`, Output: "it broke"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
