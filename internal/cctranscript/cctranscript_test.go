@@ -33,12 +33,59 @@ func allEvents(b []byte) []Event {
 	return out
 }
 
+// placedEvents is allEvents as a READER yields them: each prompt carries its
+// Line, the offset just past its line's newline.
+func placedEvents(b []byte) []Event {
+	var out []Event
+	pos := int64(0)
+	for _, line := range bytes.Split(b, []byte{'\n'}) {
+		pos += int64(len(line)) + 1
+		if r, ok := DecodeLine(line); ok {
+			for _, ev := range Events(r) {
+				if ev.Kind == KindPrompt {
+					ev.Line = pos
+				}
+				out = append(out, ev)
+			}
+		}
+	}
+	return out
+}
+
+// A reader names each prompt by its place: the offset just past its record's
+// line (computed independently of the fixture: 579 and 3034), the same in a
+// live read and a backfill. Nothing else carries a Line.
+func TestAReaderPlacesEachPromptAtItsLineEnd(t *testing.T) {
+	full := readFixture(t)
+	lines, _, err := Backfill(bytes.NewReader(full), int64(len(full)), 1<<20, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, _, err := ReadEvents(bytes.NewReader(full), 0, int64(len(full)), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, evs := range map[string][]Event{"backfill": Flatten(lines), "live": live} {
+		var got []int64
+		for _, ev := range evs {
+			if ev.Kind == KindPrompt {
+				got = append(got, ev.Line)
+			} else if ev.Line != 0 {
+				t.Errorf("%s: a %s carries Line %d", name, ev.Kind, ev.Line)
+			}
+		}
+		if want := []int64{579, 3034}; !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: prompt places %v, want %v", name, got, want)
+		}
+	}
+}
+
 func TestEventsFromARealToolTurn(t *testing.T) {
 	got := allEvents(readFixture(t))
 	want := []Event{
-		{Kind: KindPrompt, Text: "an earlier prompt", At: "2000-01-01T00:00:06.000Z"},
+		{Kind: KindPrompt, Text: "an earlier prompt"},
 		{Kind: KindText, Text: "AN EARLIER REPLY that is not this turn"},
-		{Kind: KindPrompt, Text: "list the workspace", At: "2000-01-01T00:00:06.000Z"},
+		{Kind: KindPrompt, Text: "list the workspace"},
 		{Kind: KindText, Text: "First segment: I will list the workspace."},
 		{Kind: KindToolCall, ToolID: "toolu_fixture1", Tool: "Bash", Target: "ls", Input: `{"command":"ls","description":"List files"}`},
 		{Kind: KindToolResult, ToolID: "toolu_fixture1", OK: true, Output: "file-a\nfile-b"},
@@ -154,7 +201,7 @@ func utf8Valid(s string) bool { return strings.ToValidUTF8(s, "�") == s }
 // parsed from a prefix, never one twice, never one lost.
 func TestReadEventsResumesAtEverySplitPoint(t *testing.T) {
 	full := readFixture(t)
-	want := allEvents(full)
+	want := placedEvents(full)
 	for k := 0; k <= len(full); k++ {
 		r := bytes.NewReader(full)
 		first, off, err := ReadEvents(r, 0, int64(k), 1<<20)
@@ -230,7 +277,7 @@ func TestBackfillIsBoundedAndStartsOnALine(t *testing.T) {
 	// A small file is read from its start.
 	lines, _, _ = Backfill(bytes.NewReader(readFixture(t)), int64(len(readFixture(t))), 1<<20, 1000)
 	events = Flatten(lines)
-	if !reflect.DeepEqual(events, allEvents(readFixture(t))) {
+	if !reflect.DeepEqual(events, placedEvents(readFixture(t))) {
 		t.Fatal("a file smaller than the window must backfill whole")
 	}
 }

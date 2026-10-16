@@ -25,9 +25,10 @@ let mirrorProc: ChildProcess | undefined;
 let mirrorLog = '';
 let token = '';
 
-function startMirror(transcript: string): ChildProcess {
+function startMirror(transcript: string, extra: NodeJS.ProcessEnv = {}): ChildProcess {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
+    ...extra,
     MUSTER_MIRROR_URL: origin,
     MUSTER_MIRROR_ALLOW_HTTP: '1',
     MUSTER_MIRROR_TOKEN: token,
@@ -120,8 +121,8 @@ const viewPath = `/mirror/view?host=${encodeURIComponent(host)}&session=main`;
 // The signal is the new process's own "connected to" line: muster registers
 // the connection BEFORE it sends the welcome that line follows, so once it is
 // logged the view resolves to this connection. The card must also be online.
-async function openView(page: Page, transcript: string) {
-  mirrorProc = startMirror(transcript);
+async function openView(page: Page, transcript: string, extra: NodeJS.ProcessEnv = {}) {
+  mirrorProc = startMirror(transcript, extra);
   await login(page);
   await expect
     .poll(
@@ -433,10 +434,6 @@ test('the agent chat clamps a long bubble and leaves its short seeded ones alone
   expect(await fromBottom(page, '#chat-log'), 'the agent log stays at the bottom').toBeLessThan(2);
 });
 
-// A prompt record with the CLI's timestamp field.
-const promptAt = (t: string, at: string) =>
-  rec({ type: 'user', promptId: 'p', origin: { kind: 'human' }, timestamp: at, message: { role: 'user', content: t } });
-
 // Is el's box inside its log's visible box?
 const inLogView = (page: Page, el: ReturnType<Page['locator']>, logSel: string) =>
   el.evaluate((e, sel) => {
@@ -445,62 +442,90 @@ const inLogView = (page: Page, el: ReturnType<Page['locator']>, logSel: string) 
     return r.top >= l.top - 1 && r.top < l.bottom && r.bottom > l.top;
   }, logSel);
 
-// B3: a header button opens every message the reader sent (first line, time);
-// a tap on one scrolls to it, opens it if clamped and highlights it — and the
-// list keeps up with messages that stream in.
-test('the message index lists every sent message and a tap jumps to it, as messages stream in', async ({ page }) => {
+// A transcript of n prompt/reply pairs: 2n events, so with n > 150 the view's
+// backfill (the newest 300 events) loads only the newest 150 prompts.
+const pairs = (n: number, text: (i: number) => string) => {
   let body = '';
-  for (let i = 1; i <= 20; i++) {
-    const text = i === 3 ? `message number ${i}\n\n` + lines(30, 'long three') : `message number ${i}`;
-    body += promptAt(text, `2026-01-02T10:${String(i).padStart(2, '0')}:00.000Z`) + reply(lines(6, `reply to ${i}`));
-  }
+  for (let i = 1; i <= n; i++) body += prompt(text(i)) + reply(`reply to ${i}`);
+  return body;
+};
+
+// An unloaded prompt with a first line far wider than the phone.
+const wide = 'an early prompt whose first line is much wider than a phone ' + 'and keeps going '.repeat(8);
+
+// B3: the header button opens EVERY message the reader sent in the whole
+// transcript — not only the ones the backfill loaded. A loaded one is a tap
+// target that scrolls to its bubble, opens it if clamped and highlights it; an
+// earlier one shows its text in full, marked "earlier — not loaded"; a slash
+// command is listed; and the list keeps up with messages that stream in.
+test('the message index lists every sent message in the transcript: loaded ones jump, earlier ones show their text', async ({ page }) => {
+  const body = pairs(199, (i) =>
+    i === 2 ? wide : i === 51 ? `message number 51\n\n` + lines(30, 'long fifty-one') : `message number ${i}`,
+  ) + command('/model');
   const tr = newTranscript(body);
   await openView(page, tr);
   const log = page.locator('#mv-log');
-  await expect(log.locator('[data-bubble="user"]')).toHaveCount(20);
+  // 399 events; the backfill (the newest 300) loads the slash command and
+  // prompts 51–199, as bubbles.
+  await expect(log.locator('[data-bubble="user"]')).toHaveCount(150);
 
   const openBtn = page.locator('#chat-index-open');
   const sheet = page.locator('#chat-index');
   const items = sheet.locator('[data-chat-index-item]');
+  const unloaded = sheet.locator('[data-chat-index-unloaded]');
   await expect(sheet).toBeHidden();
   await openBtn.tap();
   await expect(sheet).toBeVisible();
   await expect(openBtn).toHaveAttribute('aria-expanded', 'true');
-  await expect(items).toHaveCount(20);
-  // First line and a time; every item a 44px target.
-  await expect(items.nth(2)).toContainText('message number 3');
-  await expect(items.nth(2)).not.toContainText('long three');
-  expect((await items.nth(2).locator('span').last().textContent())!.trim(), 'a time is shown').toMatch(/\d/);
-  expect((await items.nth(2).boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  // ALL of them: 50 earlier ones the page never loaded, then the 150 it did.
+  await expect(sheet.locator('#chat-index-list > li')).toHaveCount(200);
+  await expect(unloaded).toHaveCount(50);
+  await expect(items).toHaveCount(150);
+  await expect(sheet.locator('#chat-index-partial')).toBeHidden();
+  await expect(sheet.locator('#chat-index-more')).toBeHidden();
+  // An earlier one: marked, its text whole — wrapped, not cut to one line.
+  const early = unloaded.nth(1);
+  await expect(early.locator('[data-chat-index-mark]')).toHaveText('earlier — not loaded');
+  await expect(early).toContainText(wide.trim());
+  const [ew, esw, eh] = await early.evaluate((e) => [e.clientWidth, e.scrollWidth, e.getBoundingClientRect().height]);
+  expect(esw, 'the earlier prompt wraps inside the sheet').toBeLessThanOrEqual(ew);
+  expect(eh, 'it wraps onto several lines').toBeGreaterThan(60);
+  expect(await early.locator('button').count(), 'an unloaded item is not a jump target').toBe(0);
+  await expect(unloaded.first()).toContainText('message number 1');
+  // The slash command is the newest, as the human typed it.
+  await expect(items.last()).toHaveText(/\/model$/);
+  // A loaded one: first line only, numbered in the whole transcript, 44px.
+  await expect(items.first().locator('span').first()).toHaveText('51');
+  await expect(items.first()).toContainText('message number 51');
+  await expect(items.first()).not.toContainText('long fifty-one');
+  expect((await items.first().boundingBox())!.height).toBeGreaterThanOrEqual(44);
 
-  // Jump to N = 3: far above the bottom the view opened at, and clamped.
-  const third = log.locator('[data-bubble="user"]').nth(2);
-  await expect(third).toHaveAttribute('data-clamp', 'closed');
-  expect(await inLogView(page, third, '#mv-log'), 'message 3 starts out of view').toBe(false);
-  await items.nth(2).tap();
+  // Jump to message 51: far above the bottom the view opened at, and clamped.
+  const target = log.locator('[data-bubble="user"]').first();
+  await expect(target).toContainText('message number 51');
+  await expect(target).toHaveAttribute('data-clamp', 'closed');
+  expect(await inLogView(page, target, '#mv-log'), 'message 51 starts out of view').toBe(false);
+  await items.first().tap();
   await expect(sheet).toBeHidden();
   // Highlighted briefly (asserted first: it is gone 1.6s later).
-  await expect(third).toHaveAttribute('data-flash', '');
-  await expect.poll(() => inLogView(page, third, '#mv-log'), { message: 'message 3 is in the viewport' }).toBe(true);
-  await expect(third).toHaveAttribute('data-clamp', 'open');
-  await expect(third).not.toHaveAttribute('data-flash', /.*/, { timeout: 5_000 });
-  // The bubble's id is the one the item named.
-  const id = await third.getAttribute('id');
-  expect(id).toBeTruthy();
+  await expect(target).toHaveAttribute('data-flash', '');
+  await expect.poll(() => inLogView(page, target, '#mv-log'), { message: 'message 51 is in the viewport' }).toBe(true);
+  await expect(target).toHaveAttribute('data-clamp', 'open');
+  await expect(target).not.toHaveAttribute('data-flash', /.*/, { timeout: 5_000 });
+  // The bubble's id is the one the item named: its place in the transcript.
+  const id = await target.getAttribute('id');
+  expect(id).toMatch(/^mv-p-\d+$/);
 
   // Messages stream in while the sheet is open: the list keeps up.
   await openBtn.tap();
-  await expect(items).toHaveCount(20);
-  fs.appendFileSync(tr, promptAt('a fresh message', '2026-01-02T11:00:00.000Z') + reply('ok'));
-  await expect(items).toHaveCount(21);
+  await expect(sheet.locator('#chat-index-list > li')).toHaveCount(200);
+  fs.appendFileSync(tr, prompt('a fresh message') + reply('ok'));
+  await expect(sheet.locator('#chat-index-list > li')).toHaveCount(201);
   await expect(items.last()).toContainText('a fresh message');
+  await expect(unloaded).toHaveCount(50);
   // …and the earlier bubble kept its id.
-  await expect(third).toHaveAttribute('id', id!);
-  // Jump to N = 1 (the top), then to the newest.
-  await items.first().tap();
-  const first = log.locator('[data-bubble="user"]').first();
-  await expect.poll(() => inLogView(page, first, '#mv-log'), { message: 'message 1 is in the viewport' }).toBe(true);
-  await openBtn.tap();
+  await expect(target).toHaveAttribute('id', id!);
+  // Jump to the newest.
   await items.last().tap();
   await expect.poll(() => inLogView(page, log.locator('[data-bubble="user"]').last(), '#mv-log')).toBe(true);
   // The backdrop closes it, and nothing scrolls sideways.
@@ -511,18 +536,34 @@ test('the message index lists every sent message and a tap jumps to it, as messa
   expect(sw).toBeLessThanOrEqual(cw);
 });
 
-// The same index on the dispatched-agent chat, over its REAL persisted
-// transcript: the seeded message carries its row id.
-test('the agent chat has the message index, keyed by the persisted message id', async ({ page }) => {
-  await login(page);
-  await page.goto(origin + '/agents/docs-sweeper');
+// The host bounds its index (mirror.MaxIndexPrompts, the newest kept): what it
+// left out is SAID, with a count, never silently dropped — and the numbering
+// still counts from the transcript's first prompt.
+test('a transcript with more prompts than the index holds says how many earlier ones are not listed', async ({ page }) => {
+  await openView(page, newTranscript(pairs(2030, (i) => `message number ${i}`)));
   await page.locator('#chat-index-open').tap();
-  const items = page.locator('#chat-index [data-chat-index-item]');
-  await expect(items).toHaveCount(1);
-  await expect(items.first()).toContainText('Check the docs build.');
-  expect(await items.first().getAttribute('data-chat-index-item')).toMatch(/^chat-msg-\d+$/);
-  await items.first().tap();
-  const b = page.locator('#chat-log [data-bubble="user"]').first();
-  await expect(b).toHaveAttribute('data-flash', '');
-  await expect.poll(() => inLogView(page, b, '#chat-log')).toBe(true);
+  const sheet = page.locator('#chat-index');
+  await expect(sheet.locator('#chat-index-more')).toBeVisible();
+  await expect(sheet.locator('#chat-index-more')).toHaveText('30 more earlier, not listed');
+  await expect(sheet.locator('#chat-index-list > li')).toHaveCount(2000);
+  const first = sheet.locator('#chat-index-list > li').first();
+  await expect(first.locator('span').first()).toHaveText('31');
+  await expect(first).toContainText('message number 31');
+  await expect(sheet.locator('[data-chat-index-item]')).toHaveCount(150);
+});
+
+// AN OLDER HOST sends no index: the list is what the page loaded, under a line
+// saying so — never presented as the whole conversation.
+test('against a host that predates the index, the list is the loaded messages and says so', async ({ page }) => {
+  await openView(page, newTranscript(pairs(200, (i) => `message number ${i}`)), { MUSTER_MIRROR_E2E_NO_PROMPT_INDEX: '1' });
+  await expect(page.locator('#mv-log [data-bubble="user"]')).toHaveCount(150);
+  await page.locator('#chat-index-open').tap();
+  const sheet = page.locator('#chat-index');
+  await expect(sheet.locator('#chat-index-partial')).toBeVisible();
+  await expect(sheet.locator('#chat-index-partial')).toContainText('Only loaded messages shown');
+  await expect(sheet.locator('[data-chat-index-item]')).toHaveCount(150);
+  await expect(sheet.locator('[data-chat-index-unloaded]')).toHaveCount(0);
+  await expect(sheet.locator('[data-chat-index-item]').first()).toContainText('message number 51');
+  // Its bubbles carry no transcript place, so the index named them itself.
+  expect(await sheet.locator('[data-chat-index-item]').first().getAttribute('data-chat-index-item')).toMatch(/^chat-umsg-\d+$/);
 });

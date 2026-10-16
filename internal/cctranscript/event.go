@@ -76,9 +76,11 @@ type Event struct {
 	// "killed"…), "" when it gave none.
 	Notice string `json:"notice,omitempty"`
 	Status string `json:"status,omitempty"`
-	// At is a prompt's record timestamp as the CLI wrote it ("" when it wrote
-	// none): the message index's time. Only a prompt carries it.
-	At string `json:"at,omitempty"`
+	// Line names a PROMPT by where it is in its transcript: the byte offset
+	// just past its record's line (Line.End). ReadLines sets it — Events, being
+	// stateless, cannot — and Prompts names the same prompt by the same number,
+	// which is how the message index finds a prompt's bubble. 0 = not known.
+	Line int64 `json:"line,omitempty"`
 }
 
 // Events is what one record contributes to the rendered view, in order. It is
@@ -106,7 +108,7 @@ func Events(r Record) []Event {
 			if cmd, ok := slashCommand(text); ok {
 				text = cmd
 			}
-			return []Event{{Kind: KindPrompt, Text: Cap(text, MaxText), At: r.Timestamp}}
+			return []Event{{Kind: KindPrompt, Text: Cap(text, MaxText)}}
 		}
 		if r.IsMeta || r.IsCompactSummary {
 			return nil

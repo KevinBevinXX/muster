@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -263,6 +264,62 @@ func TestAWatchResumesFromItsOffset(t *testing.T) {
 	eventually(t, "a fresh backfill", func() bool { return len(rec2.events()) == 3 })
 	if !rec2.all()[0].Reset {
 		t.Fatal("a stale gen was resumed instead of reset")
+	}
+}
+
+// 🔴 THE PROMPT INDEX IS THE WHOLE FILE'S, NOT THE BACKFILL'S. A fresh view
+// loads only the newest MaxBackfillEvents events; the host follows that
+// backfill with one more message naming EVERY prompt in the file, each by the
+// same Line its loaded event carries, at the backfill's own offset. A resume
+// sends none (the browser kept what it had).
+func TestAFreshViewGetsThePromptIndexOfTheWholeFile(t *testing.T) {
+	r := newRig(t)
+	tok, _ := r.store.mint(t, 1, "ws")
+	n := mirror.MaxBackfillEvents + 40
+	var lines []string
+	for i := 0; i < n; i++ {
+		lines = append(lines, promptLine(fmt.Sprintf("prompt %d\nits body", i)))
+	}
+	tr := newTranscript(t, lines...)
+	b := newClaudeBackend("main")
+	b.setPane("main", mirrorhost.ClaudePane{Pane: "%1", Transcript: tr.path, Gen: "g1"})
+	r.connect(t, "ws", tok, b, false)
+	eventually(t, "claude listed", func() bool { h := r.svc.Hosts(asUser(1)); return len(h) == 1 && len(h[0].Claude) == 1 })
+
+	rec, _, _ := watchAs(t, asUser(1), r.svc, "ws", "main", "", 0)
+	eventually(t, "the index", func() bool { return slices.ContainsFunc(rec.all(), func(m mirror.Msg) bool { return m.PromptIndex }) })
+	all := rec.all()
+	idx := all[len(all)-1]
+	st, _ := os.Stat(tr.path)
+	if !idx.PromptIndex || len(idx.Events) != 0 || idx.Offset != st.Size() || idx.Reset {
+		t.Fatalf("the index message is %+v, want the last, event-free, at the file's end", idx)
+	}
+	if len(idx.Prompts) != n || idx.PromptsMore != 0 {
+		t.Fatalf("%d prompts (more %d), want all %d", len(idx.Prompts), idx.PromptsMore, n)
+	}
+	if idx.Prompts[0].Text != "prompt 0" || idx.Prompts[n-1].Text != fmt.Sprintf("prompt %d", n-1) {
+		t.Fatalf("first/last %q / %q", idx.Prompts[0].Text, idx.Prompts[n-1].Text)
+	}
+	loaded := rec.events()
+	if len(loaded) != mirror.MaxBackfillEvents {
+		t.Fatalf("%d loaded, want the backfill's %d", len(loaded), mirror.MaxBackfillEvents)
+	}
+	// Every loaded prompt is named in the index by its own Line.
+	byLine := map[int64]string{}
+	for _, p := range idx.Prompts {
+		byLine[p.Line] = p.Text
+	}
+	for _, ev := range loaded {
+		if got, ok := byLine[ev.Line]; !ok || !strings.HasPrefix(ev.Text, got) {
+			t.Fatalf("loaded prompt %q at %d is not in the index (%q)", ev.Text, ev.Line, got)
+		}
+	}
+
+	resumed, _, _ := watchAs(t, asUser(1), r.svc, "ws", "main", "g1", st.Size())
+	eventually(t, "the resume marker", func() bool { return len(resumed.all()) > 0 })
+	time.Sleep(150 * time.Millisecond)
+	if slices.ContainsFunc(resumed.all(), func(m mirror.Msg) bool { return m.PromptIndex }) {
+		t.Fatal("a resume was sent the index again")
 	}
 }
 

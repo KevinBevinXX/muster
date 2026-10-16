@@ -168,6 +168,11 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 	send := func(msgs []mirror.Msg) error {
 		for _, b := range msgs {
 			b.Type, b.ID, b.Gen = mirror.TypeEvents, m.ID, p.Gen
+			if h.c.cfg.NoPromptIndex {
+				for i := range b.Events {
+					b.Events[i].Line = 0 // an older host names no prompt's place
+				}
+			}
 			if err := h.send(b); err != nil {
 				return err
 			}
@@ -206,7 +211,22 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 		// its window's start, and every batch's offset is in it.
 		batches[0].Reset = true
 		batches[len(batches)-1].Busy = busy
-		return send(batches)
+		if err := send(batches); err != nil || h.c.cfg.NoPromptIndex {
+			return err
+		}
+		// Then the prompt index: every prompt in the file up to where the
+		// backfill ended (later ones arrive as live events), so the message
+		// index can list the ones the window above never loaded.
+		//
+		// ⚠ A FAILED SCAN COSTS THE INDEX, NOT THE VIEW: the view then lists
+		// the prompts it has, as it does for a host that predates the index.
+		refs, err := cctranscript.Prompts(f, next)
+		if err != nil {
+			h.c.log.Printf("muster-mirror: watch %q: index the prompts: %v", m.Session, err)
+			return nil
+		}
+		refs, more := mirror.BoundPrompts(refs)
+		return send([]mirror.Msg{{Offset: off, Busy: busy, PromptIndex: true, Prompts: refs, PromptsMore: more}})
 	}
 	if err := start(m.Gen, m.Offset); err != nil {
 		return err

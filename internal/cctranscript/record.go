@@ -40,11 +40,9 @@ import (
 
 // Record is one decoded transcript line, the fields muster reads and no others.
 type Record struct {
-	Type     string `json:"type"`
-	Subtype  string `json:"subtype"`
-	PromptID string `json:"promptId"`
-	// Timestamp is when the CLI wrote the record (RFC 3339, UTC).
-	Timestamp        string `json:"timestamp"`
+	Type             string `json:"type"`
+	Subtype          string `json:"subtype"`
+	PromptID         string `json:"promptId"`
 	IsSidechain      bool   `json:"isSidechain"`
 	IsMeta           bool   `json:"isMeta"`
 	IsCompactSummary bool   `json:"isCompactSummary"`

@@ -89,6 +89,9 @@ type mirrorViewBatch struct {
 	Offset int64         `json:"offset"`
 	Busy   bool          `json:"busy"`
 	Ops    []ui.MirrorOp `json:"ops"`
+	// Index is the transcript's prompt index (mirror.Msg.PromptIndex), bounded
+	// again here; absent from a host that predates it.
+	Index *ui.MirrorIndex `json:"index,omitempty"`
 }
 
 // handleMirrorViewWS is the view's socket: ?gen=&offset= resume.
@@ -126,8 +129,12 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 		if m.Reset {
 			drawn.Reset()
 		}
-		return terminalWriteJSON(ctx, c, mirrorViewBatch{Type: "batch", Reset: m.Reset, Gen: m.Gen,
-			Offset: m.Offset, Busy: m.Busy, Ops: drawn.Ops(m.Events)})
+		b := mirrorViewBatch{Type: "batch", Reset: m.Reset, Gen: m.Gen, Offset: m.Offset, Busy: m.Busy, Ops: drawn.Ops(m.Events)}
+		if m.PromptIndex {
+			refs, dropped := mirror.BoundPrompts(m.Prompts)
+			b.Index = ui.NewMirrorIndex(refs, m.PromptsMore+dropped)
+		}
+		return terminalWriteJSON(ctx, c, b)
 	})
 	if ctx.Err() != nil {
 		return

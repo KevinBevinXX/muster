@@ -39,12 +39,9 @@ type ChatLine struct {
 	// persisted row does; the mirrored view sets it from the host's own reading.
 	ToolTarget string
 	// ID is the persisted message's row id (0 = none): a bubble's
-	// data-msg-id — the key the bubble clamp keeps a message the reader opened
-	// open by (bubble_clamp.go) — and a user bubble's element id (chatMsgID),
-	// both the same after the chat-log refresh redraws the transcript.
+	// data-msg-id, the same after the chat-log refresh redraws the transcript,
+	// so the bubble clamp keeps a message the reader opened open (bubble_clamp.go).
 	ID int64
-	// At is when it was written (zero = unknown): the message index's time.
-	At time.Time
 }
 
 // ChatSurface names WHERE a chat pane is being rendered.
@@ -241,8 +238,6 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				Div(ID("task-modal")),
 				agentChatScript(v.Name),
 				bubbleClampScript(),
-				chatIndexSheet(),
-				chatIndexScript(),
 				// appScript wires the sidebar open/close + the SPA tab router AND the
 				// model combobox (its combobox copy supports the hidden-mode autosave
 				// used by the header model form). It is now the SINGLE combobox
@@ -282,7 +277,6 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 				// is task-linked, the title is a button that opens the full task detail in
 				// a modal (hx-loads /ui/agents/{name}/task into #task-modal).
 				agentTitle(v),
-				chatIndexButton("chat-log"),
 				newChatButton(v.ID),
 				chatHistoryButton(sessionDrawerID),
 			),
@@ -480,7 +474,7 @@ func chatHistoryButton(forID string) g.Node {
 		g.Attr("aria-label", "Chat history"),
 		g.Attr("role", "button"),
 		g.Attr("tabindex", "0"),
-		Class("press inline-flex h-11 w-11 min-h-[44px] shrink-0 cursor-pointer items-center justify-center rounded-lg text-fg2 transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
+		Class("press inline-flex h-11 w-11 min-h-[44px] cursor-pointer items-center justify-center rounded-lg text-fg2 transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
 		g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l3 2"/></svg>`),
 	)
 }
@@ -500,7 +494,7 @@ func newChatButton(agentID int64) g.Node {
 			Type("submit"),
 			g.Attr("aria-label", "New chat session"),
 			g.Attr("title", "New chat"),
-			Class("press inline-flex h-11 w-11 min-h-[44px] shrink-0 cursor-pointer items-center justify-center rounded-lg text-fg2 transition hover:bg-s2"),
+			Class("press inline-flex h-11 w-11 min-h-[44px] cursor-pointer items-center justify-center rounded-lg text-fg2 transition hover:bg-s2"),
 			g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>`),
 		),
 	)
@@ -955,7 +949,7 @@ func chatLogInner(v AgentDetailView) g.Node {
 			if m.Role == "assistant" && isSentinelReply(m.Content) {
 				continue
 			}
-			msgs = append(msgs, chatBubble(m))
+			msgs = append(msgs, chatBubble(m.Role, m.Content, m.ID))
 		}
 	}
 	return g.Group{
@@ -1190,36 +1184,16 @@ func agentTaskBanner(v AgentDetailView) g.Node {
 	)
 }
 
-func chatBubble(m ChatLine) g.Node {
-	return chatBubbleOf(m.Role,
-		bubbleMeta(m.Role, m.ID, m.At),
+func chatBubble(role, content string, id int64) g.Node {
+	return chatBubbleOf(role,
 		// data-msg-id: the stable key the bubble clamp remembers an opened
 		// message by across the chat-log refresh (bubble_clamp.go).
-		g.If(m.ID > 0, g.Attr("data-msg-id", strconv.FormatInt(m.ID, 10))),
+		g.If(id > 0, g.Attr("data-msg-id", strconv.FormatInt(id, 10))),
 		// data-md: rendered as markdown client-side (mdConvert in agentChatScript);
 		// g.Text keeps the raw text as a safe textContent fallback before JS runs.
 		g.Attr("data-md", ""),
-		g.Text(m.Content),
+		g.Text(content),
 	)
-}
-
-// chatMsgID is a persisted user bubble's element id: the message index
-// (chatIndexScript) jumps to it, and it is the same id after the chat-log
-// refresh redraws the transcript.
-func chatMsgID(id int64) string { return "chat-msg-" + strconv.FormatInt(id, 10) }
-
-// bubbleMeta is what the message index reads off a USER bubble: its stable id
-// (id 0 = none; the index script gives a bubble without one a page-unique id)
-// and data-at, when it was written (RFC 3339, drawn in the viewer's own time
-// zone). An assistant bubble carries neither.
-func bubbleMeta(role string, id int64, at time.Time) g.Node {
-	if role != "user" {
-		return nil
-	}
-	return g.Group{
-		g.If(id > 0, ID(chatMsgID(id))),
-		g.If(!at.IsZero(), g.Attr("data-at", at.UTC().Format(time.RFC3339))),
-	}
 }
 
 // chatBubbleOf is the chat bubble's frame — a user's on the right, an
@@ -1550,9 +1524,7 @@ func agentChatScript(name string) g.Node {
     // data-bubble, like chatBubbleOf's: what bubbleClampScript clamps. (The
     // streamed reply's bubble, ensureText, deliberately has none.)
     d.setAttribute('data-bubble', role);
-    // When it was sent, for the message index (bubbleMeta's data-at).
-    if (mine) d.setAttribute('data-at', new Date().toISOString());
-    d.className = 'max-w-[85%] break-words rounded-2xl px-3 py-2 text-sm ' +
+    d.className ='max-w-[85%] break-words rounded-2xl px-3 py-2 text-sm ' +
       (mine ? 'bg-accent/15 text-fg self-end ring-1 ring-inset ring-accent/30'
             : 'bg-s2 text-fg self-start');
     var w = workingEl();

@@ -221,6 +221,21 @@ type Msg struct {
 	// Busy (events): Claude Code reports a turn running (its session status).
 	Busy   bool                 `json:"busy,omitempty"`
 	Events []cctranscript.Event `json:"events,omitempty"`
+	// PromptIndex (events) marks the message that carries the transcript's
+	// PROMPT INDEX: Prompts is every prompt in the WHOLE file up to the
+	// backfill's end (cctranscript.Prompts), the newest BoundPrompts keeps, and
+	// PromptsMore how many earlier ones it dropped. The host sends it once per
+	// Reset, as its own events message after the backfill, with no events and
+	// the backfill's own Offset and Busy — so the message index can list a
+	// prompt the backfill never loaded.
+	//
+	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS, like Labels: an older
+	// muster ignores the fields and relays the message as an empty batch at an
+	// offset it already had; an older host never sends it, and the view lists
+	// the prompts on the page and says that is all it can show.
+	PromptIndex bool                     `json:"promptIndex,omitempty"`
+	Prompts     []cctranscript.PromptRef `json:"prompts,omitempty"`
+	PromptsMore int                      `json:"promptsMore,omitempty"`
 	// Text is what a paste types into the session's pane.
 	Text string `json:"text,omitempty"`
 	// AnyPane (paste) asks for the session's ACTIVE pane whatever runs in it.
@@ -301,7 +316,41 @@ const (
 	BackfillWindow    = 4 << 20
 	// MaxPaste bounds a paste's text.
 	MaxPaste = 16 << 10
+	// MaxIndexPrompts and MaxIndexBytes bound a prompt index (Msg.Prompts): at
+	// most this many prompts, at most this many bytes of them ENCODED — the
+	// count alone could not keep a message inside MaxFrame, for the reason
+	// MaxBatchBytes gives. The newest are kept (BoundPrompts).
+	MaxIndexPrompts = 2000
+	MaxIndexBytes   = 512 << 10
 )
+
+// BoundPrompts is the newest of refs that fit the index bounds, in order, and
+// how many earlier ones it dropped. A ref with no Line, or whose Line does not
+// follow the one before it, is dropped too — not counted, since it names no
+// prompt — and every Text is capped again: muster applies this to what a host
+// sent as well as the host to what it read.
+func BoundPrompts(refs []cctranscript.PromptRef) ([]cctranscript.PromptRef, int) {
+	valid := make([]cctranscript.PromptRef, 0, len(refs))
+	var last int64
+	for _, r := range refs {
+		if r.Line <= last {
+			continue
+		}
+		last = r.Line
+		r.Text = cctranscript.Cap(r.Text, cctranscript.MaxPromptRefText)
+		valid = append(valid, r)
+	}
+	size, keep := 0, 0
+	for i := len(valid) - 1; i >= 0 && keep < MaxIndexPrompts; i-- {
+		b, _ := json.Marshal(valid[i])
+		if size+len(b)+1 > MaxIndexBytes {
+			break
+		}
+		size += len(b) + 1
+		keep++
+	}
+	return valid[len(valid)-keep:], len(valid) - keep
+}
 
 // dataHeader is the stream id prefixed to every binary frame.
 const dataHeader = 4

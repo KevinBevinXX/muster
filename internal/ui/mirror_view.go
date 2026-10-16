@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"strconv"
 	"strings"
-	"time"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -199,6 +199,34 @@ type MirrorTranscript struct {
 
 const maxDrawnCalls = 2048
 
+// MirrorPromptID is a mirrored prompt's element id, from its Event.Line: the
+// ONE spelling both its bubble (Ops) and its prompt-index entry
+// (NewMirrorIndex) use, so the message index finds the bubble a prompt has.
+func MirrorPromptID(line int64) string { return "mv-p-" + strconv.FormatInt(line, 10) }
+
+// MirrorIndex is the prompt index as the view's socket sends it: every prompt
+// the host's transcript holds (the newest it kept), each with its bubble's
+// element id, and how many earlier ones the host left out.
+type MirrorIndex struct {
+	Items []MirrorIndexItem `json:"items"`
+	More  int               `json:"more"`
+}
+
+// MirrorIndexItem is one prompt: its bubble's id and its first line.
+type MirrorIndexItem struct {
+	ID   string `json:"id"`
+	Text string `json:"text"`
+}
+
+// NewMirrorIndex is refs as the view's index.
+func NewMirrorIndex(refs []cctranscript.PromptRef, more int) *MirrorIndex {
+	idx := &MirrorIndex{Items: make([]MirrorIndexItem, 0, len(refs)), More: max(more, 0)}
+	for _, r := range refs {
+		idx.Items = append(idx.Items, MirrorIndexItem{ID: MirrorPromptID(r.Line), Text: r.Text})
+	}
+	return idx
+}
+
 // Reset forgets every drawn call (the view starts over).
 func (t *MirrorTranscript) Reset() { t.calls, t.order = nil, nil }
 
@@ -224,11 +252,12 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 	for _, ev := range events {
 		switch ev.Kind {
 		case cctranscript.KindPrompt:
-			// No id: a mirrored transcript has no row id, so the message index
-			// gives the bubble a page-unique one (chatIndexScript). An At the
-			// host sent that is not RFC 3339 is dropped, never drawn.
-			at, _ := time.Parse(time.RFC3339Nano, ev.At)
-			ops = append(ops, MirrorOp{Op: "append", HTML: render(chatBubbleOf("user", bubbleMeta("user", 0, at), g.Attr("data-md-rendered", ""), renderMarkdown(ev.Text)))})
+			// The bubble's id is the prompt's place in its transcript, the id the
+			// prompt index names it by (MirrorPromptID). A host that sends no Line
+			// gets none here, and the message index gives the bubble a
+			// page-unique one (chatIndexScript).
+			ops = append(ops, MirrorOp{Op: "append", HTML: render(chatBubbleOf("user",
+				g.If(ev.Line > 0, ID(MirrorPromptID(ev.Line))), g.Attr("data-md-rendered", ""), renderMarkdown(ev.Text)))})
 		case cctranscript.KindText:
 			ops = append(ops, MirrorOp{Op: "append", HTML: render(chatBubbleOf("assistant", g.Attr("data-md-rendered", ""), renderMarkdown(ev.Text)))})
 		case cctranscript.KindError:
@@ -334,7 +363,12 @@ func mirrorViewScript() g.Node {
 
   function apply(m) {
     var stick = nearBottom() || m.reset;
-    if (m.reset) { log.innerHTML = ''; }
+    // The prompt index (chatIndexScript reads it): a Reset starts a transcript
+    // over, so its index is gone until the host sends the new one — and a host
+    // that predates it never does.
+    if (m.reset) { log.innerHTML = ''; window.muMirrorIndex = null; }
+    if (m.index) { window.muMirrorIndex = m.index; }
+    if (m.reset || m.index) document.dispatchEvent(new CustomEvent('muster:chat-index'));
     (m.ops || []).forEach(function (op) {
       if (op.op === 'replace' && op.id) {
         var old = document.getElementById(op.id);
