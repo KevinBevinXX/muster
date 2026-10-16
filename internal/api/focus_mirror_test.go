@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/focus"
@@ -180,3 +181,36 @@ func TestAMirroredTailFromAnOlderHostEndsOnQuiet(t *testing.T) {
 		t.Fatal("an unknown session id resolved to a window")
 	}
 }
+
+// TestThePeriodicPassRunsAsEachOwner is the SEAM the tests above skip: they
+// call Refresh with a principal the test built, while the real pass
+// (RunFocusRefresh → Refresher.Pass) builds its own through focusPrincipal for
+// each owner Store.Owners names. That principal's door must be one
+// authz.WithPrincipal accepts — measured: authz.ViaFocus missing from its
+// request doors made the FIRST periodic pass panic (in a bare goroutine, so
+// the whole server) — and it must act as THAT owner: the fake host answers
+// only user 1, so a pass acting as anyone else reads no tail and writes nothing.
+func TestThePeriodicPassRunsAsEachOwner(t *testing.T) {
+	store := &memFocus{rows: map[focus.Subject]focus.Focus{}}
+	summ := &recordingSummarizer{}
+	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{batches: []mirror.Msg{
+		{Type: mirror.TypeEvents, Reset: true, Events: []cctranscript.Event{{Kind: cctranscript.KindPrompt, Text: "fix the reconnect"}}},
+		{Type: mirror.TypeEvents, PromptIndex: true},
+	}}, windows: claudeWindows()}
+	s, _ := focusMirrorServer(t, fm, store, summ)
+	// No dispatched agents: this pass is about the mirrored owner (the stub the
+	// other tests use lists agents it cannot read chats for).
+	s.ext.Agents = noAgents{}
+	if err := s.refresher().Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	f, ok := store.rows[focus.MirrorSubject(focusSID)]
+	if !ok || f.Title != "Fixing the mirror reconnect" || len(summ.tails) != 1 {
+		t.Fatalf("the pass did not refresh the owner's session: %+v (summarizer saw %q)", f, summ.tails)
+	}
+}
+
+// noAgents is an agents.Store that lists none.
+type noAgents struct{ agents.Store }
+
+func (noAgents) List(context.Context) ([]agents.Agent, error) { return nil, nil }

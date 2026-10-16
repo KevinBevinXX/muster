@@ -111,6 +111,9 @@ var requestVias = map[Via]bool{
 	ViaSession: true, ViaHook: true, ViaService: true,
 	ViaAgent: true, ViaConnect: true, ViaRelay: true, ViaToken: true, ViaRunner: true, ViaPlugin: true,
 	ViaQueue: true,
+	// The session focus refresher's per-owner door (internal/api's
+	// focusPrincipal). Without it the refresher's first pass PANICS here.
+	ViaFocus: true,
 }
 
 // OperatorUserID is the user every principal names today: the operator, the
