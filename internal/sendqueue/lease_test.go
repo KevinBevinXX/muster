@@ -14,11 +14,12 @@ import (
 // last place must not both fit.
 
 // TestTwoConcurrentEnqueuesCannotBothPassTheBound: with MaxOpenPerTarget-1
-// messages open, two Enqueues race for the last place. Each is held between its
-// insert and its count until the other reaches the same point (or a second
-// passes): without the advisory lock both get there, each counts its own row
-// and not the other's uncommitted one, and both pass; with it the second waits
-// for the first to commit, counts both, and is refused. Exactly one fits.
+// messages open, two Enqueues race for the last place. Each is held after its
+// count and before its commit until the other reaches the same point (or a
+// second passes): without the advisory lock both get there, each having counted
+// its own row and not the other's uncommitted one, and both commit; with it the
+// second waits for the first to commit, counts both, and is refused. Exactly
+// one fits.
 func TestTwoConcurrentEnqueuesCannotBothPassTheBound(t *testing.T) {
 	s, _ := pgStore(t)
 	for i := 0; i < MaxOpenPerTarget-1; i++ {
@@ -27,7 +28,7 @@ func TestTwoConcurrentEnqueuesCannotBothPassTheBound(t *testing.T) {
 	var mu sync.Mutex
 	arrived := 0
 	both := make(chan struct{})
-	s.afterInsert = func() {
+	s.afterCount = func() {
 		mu.Lock()
 		arrived++
 		if arrived == 2 {
@@ -57,7 +58,7 @@ func TestTwoConcurrentEnqueuesCannotBothPassTheBound(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s.afterInsert = nil
+	s.afterCount = nil
 	items, err := s.List(as(2), win)
 	if err != nil {
 		t.Fatal(err)

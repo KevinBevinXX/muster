@@ -140,9 +140,9 @@ var (
 // PGStore is the queue on Postgres.
 type PGStore struct {
 	pool *pgxpool.Pool
-	// afterInsert, when set (a test), runs inside Enqueue's transaction between
-	// the insert and the bound's count: where two concurrent Enqueues race.
-	afterInsert func()
+	// afterCount, when set (a test), runs inside Enqueue's transaction after the
+	// bound's count and before the commit: where two concurrent Enqueues race.
+	afterCount func()
 }
 
 // NewPG returns a store on pool.
@@ -223,13 +223,13 @@ func (s *PGStore) Enqueue(ctx context.Context, it Item) (Item, error) {
 		if err != nil {
 			return fmt.Errorf("sendqueue: enqueue: %w", err)
 		}
-		if s.afterInsert != nil {
-			s.afterInsert()
-		}
 		where, wargs := targetWhere(it.Target, 1)
 		var n int
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM send_queue WHERE state IN ('queued', 'sending') AND `+where, wargs...).Scan(&n); err != nil {
 			return fmt.Errorf("sendqueue: count: %w", err)
+		}
+		if s.afterCount != nil {
+			s.afterCount()
 		}
 		if n > MaxOpenPerTarget {
 			return ErrFull
