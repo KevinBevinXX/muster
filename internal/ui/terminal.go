@@ -8,6 +8,7 @@ import (
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
 
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/termsize"
 )
 
@@ -103,7 +104,64 @@ type AgentTerminalView struct {
 	// StepUp — a send refused as stale asks through the same dialog. nil = no
 	// composer (an agent pod's terminal, a read-only host).
 	Composer *MirrorComposerView
+	// ScrollForm, when set, turns on drag-to-scroll: a vertical drag on the
+	// terminal (and the mouse wheel) scrolls the session's pane through its
+	// tmux history, by POSTing ScrollForm plus `lines` to
+	// MirrorTerminalScrollPath. A host that cannot scroll (an older
+	// muster-mirror, a read-only host) leaves it "", and the page then has no
+	// gesture handlers at all — touch pans #term-scroll exactly as before.
+	ScrollForm string
 }
+
+// MirrorTerminalScrollPath is where the Terminal view's drag-to-scroll posts
+// (internal/api's handleMirrorTerminalScroll).
+const MirrorTerminalScrollPath = "/mirror/terminal/scroll"
+
+// ScrollGaveUpNote is what the Terminal view says when scrolls stopped reaching
+// the host and the page dropped what it had not sent.
+const ScrollGaveUpNote = "Scrolling is not reaching the host. Drag again to retry."
+
+// ScrollRefusalHeader names, on a scroll's refusal, WHICH refusal it is (one
+// of the ScrollRefusal* codes), so the page acts on a code rather than on a
+// status a proxy could also answer. Only ScrollRefusalUnsupported stops the
+// gesture; every other one shows its note, keeps the gesture wired and clears
+// once a scroll lands.
+const ScrollRefusalHeader = "X-Muster-Scroll-Refusal"
+
+// The scroll route's refusal codes (ScrollRefusalHeader).
+const (
+	// ScrollRefusalUnsupported: this host cannot scroll (an older or read-only
+	// muster-mirror). The page unwires the gesture; Reconnect wires it again.
+	ScrollRefusalUnsupported = "unsupported"
+	// ScrollRefusalOffline: the host is not connected now (it is reconnecting).
+	ScrollRefusalOffline = "offline"
+	// ScrollRefusalMode: the pane is in another tmux mode (a menu, choose-tree).
+	ScrollRefusalMode = "mode"
+	// ScrollRefusalGone: the session or window is no longer on the host.
+	ScrollRefusalGone = "gone"
+	// ScrollRefusalRefused: the host refused for another reason.
+	ScrollRefusalRefused = "refused"
+)
+
+// The notes the page shows for each refusal that keeps the gesture wired.
+const (
+	ScrollOfflineNote = "Host reconnecting. Drag again once it is back."
+	ScrollModeNote    = "The pane is in another mode (e.g. a tmux menu). Close it, then drag again."
+	ScrollGoneNote    = "This window is no longer on the host."
+	ScrollRefusedNote = "The host refused the scroll. Drag again to retry."
+)
+
+// The Live keys switch's words, and the status line's. Exported so a test pins
+// the page against the same strings rather than a copy of them.
+const (
+	LiveKeysOff = "Live keys off"
+	LiveKeysOn  = "Live keys on"
+	// StatusConnected is the status while live keys are off. It says nothing
+	// about sending: the composer can send either way.
+	StatusConnected = "Connected"
+	StatusLiveKeys  = "Connected · live keys"
+	liveKeysTitle   = "Live keys: send your keystrokes and the quick keys straight into the session"
+)
 
 // termModeDisplay is the switch's display utility: gone when the far side is
 // read-only-only.
@@ -130,9 +188,18 @@ func AgentSendPath(name string) string { return "/agents/" + url.PathEscape(name
 // else is the chat page.
 const AgentSendFromTerminal = "terminal"
 
-// AgentTerminalPage is a full-height document: a header with the read-only /
-// interactive switch, the terminal, the quick-key bar and — for a mirrored
-// session that can be sent to — the message composer.
+// AgentTerminalPage is a full-height document: a header with the Live keys
+// switch, the terminal, the quick-key bar and — for a mirrored session that can
+// be sent to — the message composer.
+//
+// 🔴 THE PAGE NEVER CALLS ITSELF "READ-ONLY". It used to: the switch read
+// "Read-only" and the status "Connected · read-only" whenever live keys were
+// off — while the composer under the terminal sends messages without the
+// switch, so the label told a person they could not send when they could. What
+// the switch gates is LIVE KEYS (keystrokes and the quick-key bar typed
+// straight into the session), and it says exactly that. A host that genuinely
+// cannot be sent to says so ONCE, in its composer's disabled note
+// (MirrorReadOnlyNote).
 //
 // 🔴 IT IS ITS OWN DOCUMENT, NOT A PANEL OF THE AGENT PAGE. The agent page is
 // hx-boost'ed and its chat script tears down and re-creates its socket on
@@ -140,8 +207,9 @@ const AgentSendFromTerminal = "terminal"
 // re-attached on every navigation. The links into this page opt out of boost,
 // so it is always a real load with its own scripts.
 //
-// ⚠ READ-ONLY IS THE STATE THE PAGE OPENS IN, AND THE SERVER AGREES
-// INDEPENDENTLY: the socket is opened with mode=ro until the switch is flipped,
+// ⚠ LIVE KEYS OFF — A READ-ONLY ATTACH — IS THE STATE THE PAGE OPENS IN, AND
+// THE SERVER AGREES INDEPENDENTLY: the socket is opened with mode=ro until the
+// switch is flipped,
 // and the server attaches read-only for anything but mode=rw. (The one
 // exception is a mirrored host whose Interactive choice this browser session
 // remembers while its sign-in is still fresh — and the server re-checks that.)
@@ -207,22 +275,24 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 						Class("press min-h-[44px] shrink-0 items-center rounded-lg bg-s2 px-3 text-xs font-semibold text-fg ring-1 ring-inset ring-line transition aria-pressed:bg-accent aria-pressed:text-on-accent"),
 						g.Text("Fit width"),
 					),
-					// The switch. aria-checked is the INTERACTIVE state, so
-					// "false" — read-only — is what the page opens with.
+					// The switch. aria-checked is the LIVE-KEYS state, so
+					// "false" — keys off, a read-only attach — is what the page
+					// opens with. Its label names what it gates, never "read-only":
+					// the composer sends with it off (see AgentTerminalPage).
 					Button(
 						ID("term-mode"),
 						Type("button"),
 						g.Attr("role", "switch"),
 						g.Attr("aria-checked", "false"),
-						g.Attr("aria-label", "Interactive: let this page type into the session"),
+						g.Attr("aria-label", "Live keys: type keystrokes and the quick keys straight into the session"),
 						g.If(v.Unavailable != "", g.Attr("disabled", "")),
 						// ⚠ The `hidden` CLASS, not the attribute: an author display
 						// utility (inline-flex) beats the UA's [hidden] rule.
 						g.If(v.ReadOnlyOnly, g.Attr("hidden", "")),
-						g.If(v.InteractiveNote != "", g.Attr("title", v.InteractiveNote)),
+						g.Attr("title", displayOr(v.InteractiveNote, liveKeysTitle)),
 						g.If(v.InteractiveNote != "", g.Attr("data-interactive-note", v.InteractiveNote)),
 						Class(termModeDisplay(v.ReadOnlyOnly)+" press min-h-[44px] shrink-0 items-center gap-2 rounded-lg bg-s2 px-3 text-xs font-semibold text-fg ring-1 ring-inset ring-line transition aria-checked:bg-danger aria-checked:text-on-accent disabled:opacity-40"),
-						Span(ID("term-mode-label"), g.Text("Read-only")),
+						Span(ID("term-mode-label"), g.Text(LiveKeysOff)),
 					),
 					g.If(v.RenderedHref != "", viewToggle(false, v.RenderedHref, "")),
 				),
@@ -259,10 +329,24 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 								g.If(v.Unavailable != "", g.Attr("data-unavailable", "")),
 								g.Attr("data-size-osc", strconv.Itoa(termsize.ReportOSC)),
 								stepUpAttrs(v.StepUp),
+								g.If(v.ScrollForm != "", g.Group([]g.Node{
+									g.Attr("data-scroll", MirrorTerminalScrollPath),
+									g.Attr("data-scroll-form", v.ScrollForm),
+								})),
 								Class("h-full w-full"),
 							),
 						),
 					),
+					// Drag-to-scroll's note: shown when scrolls stopped reaching
+					// the host and the page gave up on them (see the script). Only
+					// a page that can scroll has it.
+					g.If(v.ScrollForm != "", P(
+						ID("term-scroll-note"),
+						g.Attr("role", "status"),
+						g.Attr("hidden", ""),
+						Class("pointer-events-none absolute inset-x-2 top-2 z-10 rounded-md bg-s2 px-2 py-1 text-xs text-fg ring-1 ring-inset ring-line"),
+						g.Text(ScrollGaveUpNote),
+					)),
 				),
 				quickKeyBar(v.Composer == nil),
 				terminalComposer(v.Composer),
@@ -285,7 +369,8 @@ func terminalComposer(c *MirrorComposerView) g.Node {
 }
 
 // quickKeyBar renders QuickKeys as a two-row grid that fits a phone's width
-// without scrolling. The buttons start DISABLED: the page opens read-only.
+// without scrolling. The buttons start DISABLED: the page opens with live keys
+// off.
 //
 // last says the bar is the bottom of the page, and so carries the safe-area
 // inset; when a composer follows, the composer carries it instead.
@@ -494,7 +579,7 @@ func agentTerminalScript() g.Node {
   function applyMode() {
     var rw = mode === 'rw';
     modeBtn.setAttribute('aria-checked', rw ? 'true' : 'false');
-    modeLabel.textContent = rw ? 'Interactive' : 'Read-only';
+    modeLabel.textContent = rw ? '` + LiveKeysOn + `' : '` + LiveKeysOff + `';
     term.options.disableStdin = !rw;
     for (var i = 0; i < keys.length; i++) { keys[i].disabled = !rw; }
   }
@@ -536,7 +621,7 @@ func agentTerminalScript() g.Node {
         try { m = JSON.parse(ev.data); } catch (e) { return; }
         if (m.type === 'ready') {
           justConfirmed = false;
-          setStatus(m.mode === 'rw' ? 'Connected · interactive' : 'Connected · read-only');
+          setStatus(m.mode === 'rw' ? '` + StatusLiveKeys + `' : '` + StatusConnected + `');
         } else if (m.type === 'error') {
           refused = true;
           showError(m.message, true);
@@ -554,7 +639,7 @@ func agentTerminalScript() g.Node {
       setStatus('Disconnected');
       // 🔴 A STEP-UP REFUSAL ARRIVES AS A REFUSED UPGRADE (403), which a
       // browser socket cannot read. An interactive mirrored attach that never
-      // opened is therefore taken as "not fresh any more": back to read-only,
+      // opened is therefore taken as "not fresh any more": back to keys off,
       // and ask — unless it was JUST confirmed, when asking again would loop.
       if (!opened && mode === 'rw' && confirmPath) {
         var again = !justConfirmed;
@@ -628,6 +713,213 @@ func agentTerminalScript() g.Node {
       scheduleLayout();
     });
   }
+  // --- drag-to-scroll (a mirrored host that can: data-scroll) ---------------
+  // 🔴 THE HISTORY IS TMUX'S, NOT THIS TERMINAL'S. The viewer's tmux client
+  // paints only the visible screen, so xterm's own scrollback holds no real
+  // history. A vertical drag (or the mouse wheel) is turned into whole lines
+  // and posted; the host scrolls the pane in tmux copy-mode, and the scrolled
+  // view arrives on the socket like any other output. Without data-scroll (an
+  // older muster-mirror, a read-only host, an agent pod) none of this is wired
+  // and touch pans #term-scroll exactly as it always did.
+  //
+  // Coalesced: a drag accumulates pixels, whole lines are sent at most once per
+  // animation frame, and only one request is in flight (the next waits for its
+  // answer), so the order of scrolls is the order of the drag.
+  //
+  // 🔴 A SCROLL THAT DID NOT LAND IS PUT BACK, NOT DROPPED. Any answer but a 2xx
+  // (a 429, a slow host's 504, a 502) and a network failure return the request's
+  // lines to the pending count, to be sent again: on the next frame the first
+  // time, then after 100, 200 and 400 ms. After scrollMaxFails failures in a
+  // row the page gives up: it drops what is pending and shows
+  // #term-scroll-note until a scroll lands again.
+  //
+  // 🔴 A REFUSAL IS READ FROM ITS CODE (the ScrollRefusalHeader), NOT ITS
+  // STATUS, and only "this host cannot scroll" stops the gesture (Reconnect
+  // wires it again). A host that is reconnecting, a pane in a tmux menu, a
+  // window that is gone: each shows its note, drops what is pending (it was
+  // meant for a view that is not there) and keeps the gesture — the next drag
+  // asks again, and the note clears once one lands. A status with no code (a
+  // proxy's 404) is retried like any other failure.
+  var scrollPath = host.getAttribute('data-scroll');
+  if (scrollPath) (function () {
+    var form = host.getAttribute('data-scroll-form') || '';
+    var note = document.getElementById('term-scroll-note');
+    var maxLines = ` + strconv.Itoa(mirror.MaxScrollLines) + `;
+    var scrollMaxFails = 5;
+    var px = 0, lines = 0, sent = 0, asked = 0, fails = 0;
+    var inFlight = false, frame = false, dead = true, waiting = false;
+    var refusalHeader = ` + strconv.Quote(ScrollRefusalHeader) + `;
+    var stopCode = ` + strconv.Quote(ScrollRefusalUnsupported) + `;
+    var refusalNotes = {};
+    refusalNotes[` + strconv.Quote(ScrollRefusalOffline) + `] = ` + strconv.Quote(ScrollOfflineNote) + `;
+    refusalNotes[` + strconv.Quote(ScrollRefusalMode) + `] = ` + strconv.Quote(ScrollModeNote) + `;
+    refusalNotes[` + strconv.Quote(ScrollRefusalGone) + `] = ` + strconv.Quote(ScrollGoneNote) + `;
+    refusalNotes[` + strconv.Quote(ScrollRefusalRefused) + `] = ` + strconv.Quote(ScrollRefusedNote) + `;
+    var gaveUpNote = ` + strconv.Quote(ScrollGaveUpNote) + `;
+    function showNote(text) {
+      if (!note) return;
+      if (text) note.textContent = text;
+      note.hidden = !text;
+      // An instrument for the browser suite: which note is up.
+      if (text) host.setAttribute('data-scroll-note', text); else host.removeAttribute('data-scroll-note');
+    }
+    function cellHeight() {
+      // The drawn height (Fit width scales it), per row.
+      var sc = host.querySelector('.xterm-screen');
+      var h = sc ? sc.getBoundingClientRect().height / term.rows : 0;
+      return h > 0 ? h : 16;
+    }
+    function schedule() {
+      if (frame || dead) return;
+      frame = true;
+      requestAnimationFrame(function () { frame = false; flush(); });
+    }
+    function addLines(n) {
+      if (!n) return;
+      lines += n;
+      // An instrument for the browser suite: every line a gesture asked for.
+      asked += n;
+      host.setAttribute('data-scroll-asked', String(asked));
+      schedule();
+    }
+    function addPx(d) {
+      // d > 0 is back in history.
+      px += d;
+      var c = cellHeight();
+      var n = px > 0 ? Math.floor(px / c) : Math.ceil(px / c);
+      px -= n * c;
+      addLines(n);
+    }
+    function flush() {
+      if (inFlight || waiting || dead || !lines) return;
+      var n = Math.max(-maxLines, Math.min(maxLines, lines));
+      lines -= n;
+      inFlight = true;
+      fetch(scrollPath, {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: form + '&lines=' + n
+      }).then(function (r) {
+        if (r.ok) return 'landed';
+        var code = r.headers.get(refusalHeader) || '';
+        if (code === stopCode) return 'stop';
+        if (refusalNotes.hasOwnProperty(code)) return 'refused:' + code;
+        return 'retry';
+      }, function () { return 'retry'; }).then(function (how) {
+        inFlight = false;
+        if (how === 'landed') {
+          sent += n;
+          fails = 0;
+          host.setAttribute('data-scroll-sent', String(sent));
+          showNote('');
+        } else if (how === 'stop') {
+          lines = 0;
+          px = 0;
+          fails = 0;
+          stop();
+          return;
+        } else if (how.indexOf('refused:') === 0) {
+          // Not this host's to scroll right now: say why, keep the gesture.
+          lines = 0;
+          px = 0;
+          fails = 0;
+          showNote(refusalNotes[how.slice('refused:'.length)]);
+          return;
+        } else {
+          lines += n;
+          fails++;
+          if (fails >= scrollMaxFails) {
+            lines = 0;
+            px = 0;
+            fails = 0;
+            showNote(gaveUpNote);
+            return;
+          }
+          if (fails > 1) {
+            waiting = true;
+            setTimeout(function () { waiting = false; schedule(); }, 100 * Math.pow(2, fails - 2));
+            return;
+          }
+        }
+        if (lines) schedule();
+      });
+    }
+    // A far side taller than the page: the scroll area takes a drag first,
+    // and only what is left of it scrolls the history.
+    function panArea(d) {
+      if (scrollEl.scrollHeight <= scrollEl.clientHeight) return d;
+      var before = scrollEl.scrollTop;
+      scrollEl.scrollTop = before - d;
+      return d - (before - scrollEl.scrollTop);
+    }
+    // Touch: the AXIS IS DECIDED AT THE GESTURE'S START. A horizontal start is
+    // left to the browser (touch-action pan-x: #term-scroll pans as before);
+    // a vertical one is ours, and never reaches xterm, whose own touch scroll
+    // has nothing real to show. Two fingers are a pinch, never a scroll.
+    var start = null, axis = '', lastY = 0;
+    function onStart(ev) {
+      start = null;
+      if (ev.touches.length !== 1) return;
+      start = { x: ev.touches[0].clientX, y: ev.touches[0].clientY };
+      axis = '';
+    }
+    function onMove(ev) {
+      if (!start) return;
+      if (ev.touches.length !== 1) { start = null; return; }
+      var t = ev.touches[0];
+      if (!axis) {
+        var dx = t.clientX - start.x, dy = t.clientY - start.y;
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+        axis = Math.abs(dy) > Math.abs(dx) ? 'y' : 'x';
+        lastY = start.y;
+      }
+      if (axis !== 'y') return;
+      ev.stopPropagation();
+      var d = panArea(t.clientY - lastY);
+      lastY = t.clientY;
+      if (d) addPx(d);
+    }
+    function onEnd() { start = null; }
+    // The wheel: vertical only (a sideways one pans #term-scroll as before).
+    function onWheel(ev) {
+      if (Math.abs(ev.deltaX) > Math.abs(ev.deltaY) || !ev.deltaY) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (ev.deltaMode === 1) addLines(-Math.round(ev.deltaY));
+      else if (ev.deltaMode === 2) addLines(-Math.round(ev.deltaY) * term.rows);
+      else addPx(panArea(-ev.deltaY));
+    }
+    var touchTargets = [scrollEl, host.querySelector('.xterm-viewport')];
+    function stop() {
+      if (dead) return;
+      dead = true;
+      scrollEl.removeEventListener('touchstart', onStart, true);
+      scrollEl.removeEventListener('touchmove', onMove, true);
+      scrollEl.removeEventListener('touchend', onEnd, true);
+      scrollEl.removeEventListener('touchcancel', onEnd, true);
+      scrollEl.removeEventListener('wheel', onWheel, true);
+      touchTargets.forEach(function (el) { if (el) el.style.touchAction = ''; });
+      host.removeAttribute('data-scroll-on');
+      showNote('');
+    }
+    function wire() {
+      if (!dead) return;
+      dead = false;
+      touchTargets.forEach(function (el) { if (el) el.style.touchAction = 'pan-x pinch-zoom'; });
+      scrollEl.addEventListener('touchstart', onStart, { capture: true, passive: true });
+      scrollEl.addEventListener('touchmove', onMove, { capture: true, passive: true });
+      scrollEl.addEventListener('touchend', onEnd, { capture: true, passive: true });
+      scrollEl.addEventListener('touchcancel', onEnd, { capture: true, passive: true });
+      scrollEl.addEventListener('wheel', onWheel, { capture: true, passive: false });
+      // An instrument for the browser suite: the handlers are wired.
+      host.setAttribute('data-scroll-on', '1');
+    }
+    wire();
+    // Reconnect wires the gesture again after "this host cannot scroll": the
+    // host may have been upgraded or restarted with -interactive since.
+    reconnectBtn.addEventListener('click', wire);
+  })();
+
   // Leaving the page ends the stream now rather than when the socket times out.
   window.addEventListener('pagehide', function () { if (ws) { ws.onclose = null; ws.close(); } });
 

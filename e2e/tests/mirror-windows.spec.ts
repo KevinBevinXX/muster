@@ -234,7 +234,7 @@ for (const vp of [
       await cardOf(page, termPath(shellWin)).locator('a').first().click();
       await page.waitForURL((u) => u.pathname === '/mirror/terminal');
       await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch2 window=@4 mode=ro');
-      await expect(page.locator('#term-status')).toHaveText('Connected · read-only');
+      await expect(page.locator('#term-status')).toHaveText('Connected');
       await expect(page.locator('header h1')).toContainText('Gold:1');
       await expect(page.locator('#view-rendered'), 'a shell has no rendered view').toHaveCount(0);
 

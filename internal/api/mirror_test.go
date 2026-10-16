@@ -97,6 +97,12 @@ type fakeMirror struct {
 	// others are further hosts listed AFTER "ws", as given (mirror_labels_test.go:
 	// two hosts listing the same label); nil = "ws" alone.
 	others []mirror.HostView
+	// scroll: the host advertised copy-mode scrolling (HostView.PaneScroll,
+	// when online and interactive); scrolls records every ScrollWindow, and
+	// scrollErr is what it answers.
+	scroll    bool
+	scrolls   []string
+	scrollErr error
 }
 
 func (f *fakeMirror) ServeConnect(w http.ResponseWriter, _ *http.Request) {
@@ -122,6 +128,7 @@ func (f *fakeMirror) Hosts(ctx context.Context) []mirror.HostView {
 		hv.Rendered, hv.Claude = f.online, []string{"main"}
 		hv.PanePaste = f.online && f.interactive && !f.oldMirror
 	}
+	hv.PaneScroll = f.online && f.interactive && f.scroll
 	if f.windows != nil {
 		// A per-window host: its per-session view is derived from its windows,
 		// exactly as the hub derives it.
@@ -293,8 +300,8 @@ func TestTheTerminalPageOffersInteractiveOnlyWhenTheHostAdvertisedIt(t *testing.
 		if offered != interactive {
 			t.Errorf("host interactive=%v: the Interactive switch is offered = %v (%s)", interactive, offered, tag)
 		}
-		if !strings.Contains(tag, `title="Interactive types into a tmux client on ws: from it you can switch to any tmux session there or open a shell on the host."`) {
-			t.Errorf("the switch does not say that interactive is a shell on the host: %s", tag)
+		if !strings.Contains(tag, `title="Live keys type into a tmux client on ws: from it you can switch to any tmux session there or open a shell on the host."`) {
+			t.Errorf("the switch does not say that live keys are a shell on the host: %s", tag)
 		}
 		wantWS := strings.ReplaceAll(ui.MirrorTerminalWSPath("ws", "main"), "&", "&amp;")
 		if !strings.Contains(page, `data-ws="`+wantWS+`"`) || !strings.Contains(page, `href="/agents"`) {
@@ -428,4 +435,15 @@ func TestAMirroredSessionNamedChiefIsNotTheChief(t *testing.T) {
 	if resp, _ := mirrorGet(t, s, ts, "/agents/chief"); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("/agents/chief = %d; a mirrored session must not resolve as an agent", resp.StatusCode)
 	}
+}
+
+// ScrollWindow records "<user> <host>/<session>/<window> <lines>".
+func (f *fakeMirror) ScrollWindow(ctx context.Context, host, session, window string, lines int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.scrolls = append(f.scrolls, fmt.Sprintf("%d %s/%s/%s %d", f.user(ctx), host, session, window, lines))
+	if f.user(ctx) != 1 {
+		return mirror.ErrHostOffline
+	}
+	return f.scrollErr
 }

@@ -188,6 +188,7 @@ POST /login
 POST /logout
 POST /mcp
 POST /mirror/confirm-send
+POST /mirror/terminal/scroll
 POST /mirror/terminal/send
 POST /mirror/view/send
 POST /plugin/v1/drafts/claim

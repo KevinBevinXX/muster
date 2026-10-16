@@ -61,6 +61,10 @@ func (s *Server) registerMirrorRoutes(mux Mux) {
 	// pane (mirror_view.go's mirrorSend — the rendered view's send, with the
 	// other target).
 	mux.HandleFunc("POST /mirror/terminal/send", s.requireOperatorWrite(s.handleMirrorTerminalSend))
+	// Drag-to-scroll: the window's pane through its tmux history, in copy-mode
+	// (mirror_scroll.go). The same tier as the page, same-origin like every
+	// write, and NO step-up — see the handler for why.
+	mux.HandleFunc("POST "+ui.MirrorTerminalScrollPath, s.requireOperatorWrite(s.handleMirrorTerminalScroll))
 	// "Confirm it's you" (stepup.go): the fresh sign-in an INTERACTIVE attach or
 	// a send needs — the password again, or a passkey. Registered whether or
 	// not the plugin is on — they are auth routes, and their consumers today
@@ -144,7 +148,7 @@ func (s *Server) mirrorEntry(r *http.Request, host, session, window string) (h m
 	e, listed = h.Find(session, window)
 	if !listed {
 		e = mirror.SessionView{Host: h.Host, Session: session, Window: window, Online: h.Online, Interactive: h.Interactive,
-			Rendered: h.Rendered, PanePaste: h.PanePaste}
+			Rendered: h.Rendered, PanePaste: h.PanePaste, PaneScroll: h.PaneScroll}
 	}
 	return h, mirror.Qualified(hosts, e), listed, listed && window == "" && e.Window != "", true
 }
@@ -190,11 +194,11 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		// 🔴 THE SWITCH IS OFFERED ONLY WHEN THE HOST ADVERTISED -interactive.
 		// The hub refuses a rw attach to a host that did not, regardless.
 		ReadOnlyOnly: !h.Interactive,
-		// 🔴 SAY WHAT INTERACTIVE REALLY IS: a tmux client on the host. From it
+		// 🔴 SAY WHAT LIVE KEYS REALLY ARE: a tmux client on the host. From it
 		// a user can switch to ANY session there, or open a new window — a
 		// shell on the host. The "only listed sessions" rule guards opening an
 		// attach, not what an interactive client does once attached.
-		InteractiveNote: "Interactive types into a tmux client on " + h.Host +
+		InteractiveNote: "Live keys type into a tmux client on " + h.Host +
 			": from it you can switch to any tmux session there or open a shell on the host.",
 		// 🔴 STEP-UP: Interactive, and every send from the composer, needs a
 		// sign-in from the last stepup.Window. The page asks to confirm (passkey
@@ -226,6 +230,11 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 	}
 	if e.HasRenderedView() {
 		v.RenderedHref = mirrorRef(e).ViewPath()
+	}
+	// Drag-to-scroll only where the host can do it: an older muster-mirror (or
+	// a read-only host) gets a page with no gesture at all, not one that fails.
+	if e.CanScroll() {
+		v.ScrollForm = mirrorRef(e).ScrollForm()
 	}
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

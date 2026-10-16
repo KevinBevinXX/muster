@@ -43,6 +43,11 @@ var e2eBackend func() mirrorhost.Backend
 // shipped binary.
 var e2eNoPromptIndex func() bool
 
+// e2eWrap, in a browser-test build, wraps the backend AFTER NoShrink: a
+// capability added there (e2emirror.go's copy-mode scroll) is found through the
+// wrapper chain without hiding what NoShrink asserts on the backend it wraps.
+var e2eWrap func(mirrorhost.Backend) mirrorhost.Backend
+
 // buildRevision is stamped by the build (-X main.buildRevision=…).
 var buildRevision = "dev"
 
@@ -116,6 +121,9 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	// (internal/termsize). Wrapped AFTER the e2e swap, so the browser suite
 	// drives the same wrapper the shipped binary runs.
 	backend = mirrorhost.NoShrink(backend)
+	if e2eWrap != nil {
+		backend = e2eWrap(backend)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	logger := log.New(stderr, "", log.LstdFlags)

@@ -344,6 +344,8 @@ var isolationClasses = map[string]routeClass{
 	"POST /mirror/view/send": classMirror,
 	// The Terminal view's composer: the same handler, the same form fields.
 	"POST /mirror/terminal/send": classMirror,
+	// Drag-to-scroll: the same address fields, plus `lines`.
+	"POST /mirror/terminal/scroll": classMirror,
 	// A send that came back from a sign-in as a GET: the address is in the query.
 	"GET /mirror/view/send":     classMirror,
 	"GET /mirror/terminal/send": classMirror,
@@ -1081,7 +1083,7 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		if method == http.MethodPost {
 			// `kind` and `password` are the plain confirm page's own fields.
 			return method, path, url.Values{"host": {o.mirrorHost}, "session": {o.mirrorSession}, "text": {"iso-write"},
-				"kind": {"terminal"}, "password": {"iso-not-the-password"}}.Encode()
+				"kind": {"terminal"}, "password": {"iso-not-the-password"}, "lines": {"3"}}.Encode()
 		}
 		path += "?" + url.Values{"host": {o.mirrorHost}, "session": {o.mirrorSession}}.Encode()
 	}
@@ -1239,7 +1241,8 @@ func (w *isoWorld) walkAs(actor isoUser, o isoObjs, creds []cred, routes []strin
 func namesObject(route string) bool {
 	return paramRE.MatchString(route) || route == "POST /agents" || route == "POST /tasks/merge" ||
 		strings.HasPrefix(route, "GET /mirror/terminal") || strings.HasPrefix(route, "GET /mirror/view") ||
-		route == "POST /mirror/view/send" || route == "POST /mirror/terminal/send" || route == "POST /mirror/confirm-send"
+		route == "POST /mirror/view/send" || route == "POST /mirror/terminal/send" || route == "POST /mirror/confirm-send" ||
+		route == "POST /mirror/terminal/scroll"
 }
 
 var paramRE = regexp.MustCompile(`\{[a-z]`)

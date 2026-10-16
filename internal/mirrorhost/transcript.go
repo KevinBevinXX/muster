@@ -382,6 +382,7 @@ func (h *hostSide) paste(m mirror.Msg) {
 			reply(fmt.Errorf("session %q has no active pane to send to", m.Session))
 			return
 		}
+		h.leaveCopyModeFor(pane)
 		reply(pb.PastePane(ctx, pane, text))
 		return
 	}
@@ -395,5 +396,16 @@ func (h *hostSide) paste(m mirror.Msg) {
 		reply(errNotClaudeNow)
 		return
 	}
+	h.leaveCopyModeFor(p.Pane)
 	reply(cb.Paste(ctx, p, text))
+}
+
+// leaveCopyModeFor cancels the copy-mode a drag-to-scroll on THIS connection
+// put pane in, before a message is pasted into it (scroller.leaveForPaste):
+// otherwise the message lands in the program but the pane goes on showing old
+// history. Copy-mode the operator entered is never cancelled.
+func (h *hostSide) leaveCopyModeFor(pane string) {
+	if h.scroller != nil {
+		h.scroller.leaveForPaste(pane)
+	}
 }

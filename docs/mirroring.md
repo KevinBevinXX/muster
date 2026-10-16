@@ -163,7 +163,7 @@ ending in how its transcript was resolved: `pane-map`, `sessions` or `guessed`.
 
 ## Read-only, interactive, and sending
 
-`muster-mirror` is **read-only by default**. muster then offers no Interactive
+`muster-mirror` is **read-only by default**. muster then offers no Live keys
 switch and refuses an interactive attach. Read-only is enforced in three places:
 
 - muster refuses it;
@@ -175,12 +175,71 @@ The host opens only windows it listed itself.
 
 🔴 **`-interactive` is a shell on the host.** An interactive tmux client can
 switch to any session on that tmux server, or open a new window. So anyone who
-can use muster's Interactive switch for the host can run commands there, as the
+can use muster's Live keys switch for the host can run commands there, as the
 user `muster-mirror` runs as. The "only listed windows" rule limits what a
 read-only viewer can see. It does not limit an attached interactive client.
 
 With `-interactive`, both views get a message box. Typing into one requires a
 recent sign-in. See [sending-and-step-up.md](sending-and-step-up.md).
+
+## Scrolling history
+
+The Terminal view's own tmux client draws only the visible screen, so the
+browser holds no history. On a host that can, **a vertical drag on the terminal
+scrolls the pane's tmux history** (on a desktop, so does the mouse wheel). A
+sideways drag still pans a far side wider than the page.
+
+The host does it with tmux **copy-mode** on the window's active pane. It runs
+`copy-mode -e` if the pane is not already in copy-mode, then
+`send-keys -X -N <n> scroll-up` or `scroll-down`. The scrolled view arrives on
+the page like any other output.
+
+- **The pane leaves the host's copy-mode on its own.** `-e` exits when you
+  scroll back to the bottom. If nobody scrolls that pane for 30 seconds, the
+  host sends `-X cancel`. A disconnect cancels at once. A message sent from the
+  composer cancels it first, so the message and its answer are on screen.
+  - The 30 seconds count from the last *scroll*. Keys typed at the host do not
+    reset them, so a selection someone starts at the host in that copy-mode is
+    cut off when they run out. A message sent from a composer (the Terminal
+    view's or the rendered view's) also ends the host's copy-mode, at once, so
+    it cuts off such a selection too.
+  - tmux modes stack. If someone opens a menu (choose-tree, say) over the
+    host's copy-mode, the cancel cannot reach it. The host tries again every
+    30 seconds, also after a disconnect, and cancels it once the menu closes.
+  - Copy-mode the operator entered themselves (prefix-`[`) is scrolled but
+    never cancelled, not even by a message. One case slips through: if the
+    operator leaves the host's copy-mode by hand and enters their own before the
+    host's 30 seconds are up, the host cancels theirs.
+- **No step-up is asked for.** While a pane is in copy-mode, tmux sends input to
+  copy-mode, not to the program. Scrolling sends nothing but copy-mode's own
+  commands, so nothing reaches the program. The route still requires a signed-in
+  session, a same-origin request and an `-interactive` host that advertised it.
+  Each request moves at most 200 lines, and each user gets 240 requests a second.
+  A page waits for each answer, and the host's own work is ~6–7 ms a scroll
+  (measured on real tmux), so a page cannot send more than about 150 a second.
+- **A scroll that does not land is sent again.** On a failure that names no
+  reason (a timeout, a 429, a broken link), the page puts the lines back and
+  retries: on the next frame, then after 100, 200 and 400 ms. After five
+  failures in a row it drops what is pending and says *Scrolling is not reaching
+  the host*.
+- **A refusal with a reason keeps the gesture.** The page drops what is pending,
+  shows a note, and clears it once a scroll lands:
+  - *Host reconnecting* when the host is not connected right now;
+  - *The pane is in another mode (e.g. a tmux menu)* when something other than
+    copy-mode is on top of the pane;
+  - *This window is no longer on the host*, or *The host refused the scroll*.
+
+  Only a host that cannot scroll at all (read-only, or an older `muster-mirror`)
+  turns the gesture off. **Reconnect** turns it back on.
+- ⚠ **Copy-mode is the pane's, not the viewer's.** Everyone attached to that pane
+  sees it scrolled. Someone typing at the pane during copy-mode types into
+  copy-mode (its key table), not into the program, until it exits.
+
+A read-only host, or a `muster-mirror` that predates scrolling, advertises
+nothing. Its page wires no gesture, and touch pans the terminal as before.
+
+An agent pod's Terminal view has no drag-to-scroll in this release. Only
+mirrored windows do.
 
 ## Tokens, revocation, rate limits
 
@@ -200,7 +259,8 @@ view. A v2 `muster-mirror` falls back to v1 against an older muster, so either
 side can be upgraded first.
 
 Newer capabilities are announced in the host's hello, without a version bump:
-pasting into non-Claude panes, and per-window registration. An older host is
+pasting into non-Claude panes, per-window registration, and scrolling a pane's
+history. An older host is
 never asked for them, and an older muster never asks. A host that registers
 windows still sends a per-session list too, so an older muster shows one card per
 session as before. An older, per-session host is capped at 64 sessions.

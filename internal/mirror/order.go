@@ -30,12 +30,14 @@ type SessionView struct {
 	// Activity is when the entry was last active on its host (Unix seconds,
 	// floored to ActivityBucket); 0 = the host did not say.
 	Activity int64
-	// Online, Interactive, Rendered, PanePaste: the host's (HostView). Claude:
+	// Online, Interactive, Rendered, PanePaste, PaneScroll: the host's
+	// (HostView). Claude:
 	// the host reports Claude Code in this entry's pane.
 	Online      bool
 	Interactive bool
 	Rendered    bool
 	PanePaste   bool
+	PaneScroll  bool
 	Claude      bool
 	// Qualifier is what the entry's Title needs beside it to be told apart from
 	// every OTHER entry listed with it ("" = its Title is already unique). Set
@@ -160,6 +162,12 @@ func (s SessionView) CanPaste() bool {
 	return s.PanePaste || (s.Rendered && s.Claude)
 }
 
+// CanScroll reports whether the Terminal view may scroll the entry's pane
+// through its history (Hub.ScrollWindow): the host is connected, -interactive,
+// and advertised copy-mode scrolling. An older muster-mirror cannot, and the
+// page then draws no gesture at all.
+func (s SessionView) CanScroll() bool { return s.Online && s.Interactive && s.PaneScroll }
+
 // shells are the commands Kind calls a shell.
 var shells = []string{"ash", "bash", "csh", "dash", "fish", "ksh", "nu", "pwsh", "sh", "tcsh", "xonsh", "zsh"}
 
@@ -203,7 +211,7 @@ func (s SessionView) ActiveAt() time.Time {
 // Entries is every entry of the host, in its own stable order: a per-window
 // host's windows (session, then index), a per-session host's sessions (name).
 func (h HostView) Entries() []SessionView {
-	base := SessionView{Host: h.Host, Online: h.Online, Interactive: h.Interactive, Rendered: h.Rendered, PanePaste: h.PanePaste}
+	base := SessionView{Host: h.Host, Online: h.Online, Interactive: h.Interactive, Rendered: h.Rendered, PanePaste: h.PanePaste, PaneScroll: h.PaneScroll}
 	if h.Windows != nil {
 		out := make([]SessionView, 0, len(h.Windows))
 		for _, w := range h.Windows {

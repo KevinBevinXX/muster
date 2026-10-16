@@ -50,9 +50,20 @@
 ## Mirroring
 
 - 🔴 **`-interactive` is a shell on the host** for anyone who can use muster's
-  Interactive switch for it ([mirroring.md](mirroring.md#read-only-interactive-and-sending)).
+  Live keys switch for it ([mirroring.md](mirroring.md#read-only-interactive-and-sending)).
 - **While a window is being viewed, its viewer session is visible to tmux
   tooling** (`tmux ls`, session pickers, hooks).
+- **Scrolling history puts the pane itself in copy-mode**, for everyone attached
+  to it. Keys typed at that pane meanwhile go to copy-mode, not to the program,
+  until it exits (at the bottom, on `q`, after 30 seconds without a scroll, or
+  when a message is sent from the composer). The 30 seconds count from the last
+  scroll, not from the last key, so a selection someone starts at the host in
+  that copy-mode is cut off when they run out. A message sent from a composer
+  also ends that copy-mode at once, and cuts off such a selection the same way.
+  ([mirroring.md](mirroring.md#scrolling-history))
+- **Drag-to-scroll is for mirrored windows only.** A dispatched agent pod's
+  Terminal view has none in this release. Its page wires no scroll gesture and
+  sends no scroll requests.
 - **Per host:** 512 windows, 8 terminals, 8 rendered views. **Per server:** 64
   hosts.
 - **Dispatched agents' terminals and sends are not step-up gated.** Only mirrored

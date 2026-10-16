@@ -57,8 +57,23 @@ import (
 //
 // AN OLDER HOST: with MUSTER_MIRROR_E2E_NO_PROMPT_INDEX=1 the host sends no
 // prompt index (mirrorhost.Config.NoPromptIndex), as one from before it did.
+//
+// COPY-MODE SCROLL (the Terminal view's drag-to-scroll): with
+// MUSTER_MIRROR_E2E_SCROLL_FILE the host can scroll a pane's history
+// (scrollFake), and each scroll is appended to that file as `<pane> <lines>
+// pos=<lines back from the bottom>` — and each cancel as `<pane> cancel`. Unset,
+// the host is an OLDER muster-mirror that advertises no scrolling, which is how
+// a spec sees the page fall back. While a file `<that file>.mode` exists, every
+// pane is "in another mode" (a tmux menu over it): a scroll is refused with
+// mirrorhost.ErrPaneInAnotherMode, as real tmux's would be.
 func init() {
 	e2eNoPromptIndex = func() bool { return os.Getenv("MUSTER_MIRROR_E2E_NO_PROMPT_INDEX") == "1" }
+	e2eWrap = func(b mirrorhost.Backend) mirrorhost.Backend {
+		if f := os.Getenv("MUSTER_MIRROR_E2E_SCROLL_FILE"); f != "" {
+			return &scrollFake{Backend: b, file: f, pos: map[string]int{}}
+		}
+		return b
+	}
 	e2eBackend = func() mirrorhost.Backend {
 		if f := os.Getenv("MUSTER_MIRROR_E2E_WINDOWS_FILE"); f != "" {
 			return windowFake{file: f}
@@ -362,4 +377,62 @@ func (w windowFake) PastePane(ctx context.Context, pane, text string) error {
 		}
 	}
 	return w.fakeBackend.PastePane(ctx, pane, text)
+}
+
+// scrollFake plays tmux copy-mode for mirrorhost.ScrollBackend: per pane, how
+// many lines back from the bottom it is (absent = not in copy-mode). Like
+// `copy-mode -e`, scrolling back to the bottom leaves the mode.
+type scrollFake struct {
+	mirrorhost.Backend
+	file string
+	mu   sync.Mutex
+	pos  map[string]int
+}
+
+// Unwrap lets every other capability be found on the backend this wraps.
+func (s *scrollFake) Unwrap() mirrorhost.Backend { return s.Backend }
+
+func (s *scrollFake) record(line string) error {
+	fh, err := os.OpenFile(s.file, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer fh.Close()
+	_, err = fh.WriteString(line + "\n")
+	return err
+}
+
+func (s *scrollFake) ScrollPane(_ context.Context, pane string, lines int) (entered, inMode bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := os.Stat(s.file + ".mode"); err == nil {
+		_, in := s.pos[pane]
+		return false, in, fmt.Errorf("%w: pane %s is in tree-mode, not copy-mode", mirrorhost.ErrPaneInAnotherMode, pane)
+	}
+	p, in := s.pos[pane]
+	if !in && lines < 0 {
+		// Already at the bottom: nothing moves, but the request is recorded,
+		// so a spec can count one line per scroll the page sent.
+		return false, false, s.record(fmt.Sprintf("%s %d pos=0", pane, lines))
+	}
+	entered = !in
+	p += lines
+	if p <= 0 {
+		delete(s.pos, pane)
+		p = 0
+	} else {
+		s.pos[pane] = p
+	}
+	_, inMode = s.pos[pane]
+	return entered, inMode, s.record(fmt.Sprintf("%s %d pos=%d", pane, lines, p))
+}
+
+func (s *scrollFake) CancelCopyMode(_ context.Context, pane string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, in := s.pos[pane]; !in {
+		return nil
+	}
+	delete(s.pos, pane)
+	return s.record(pane + " cancel")
 }
