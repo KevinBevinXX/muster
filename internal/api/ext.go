@@ -5,6 +5,7 @@ import (
 	"github.com/ZacxDev/muster/internal/users"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/apitokens"
@@ -17,6 +18,7 @@ import (
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/recents"
+	"github.com/ZacxDev/muster/internal/sendqueue"
 )
 
 // Extensions are the server's optional dependencies. A Server built without
@@ -172,6 +174,31 @@ type Extensions struct {
 	// (internal/recents, migration 0018). nil (no database): no visit is
 	// recorded and the strip is never drawn.
 	Recents recents.Store
+
+	// SendQueue is the server-side send queue (internal/sendqueue, migration
+	// 0019). nil (no database): no composer draws Queue, the queue routes answer
+	// 404, and RunSendQueue does nothing.
+	SendQueue SendQueue
+	// SendQueueIdle is how long a target must have been idle before a queued
+	// message is sent to it (MUSTER_SEND_QUEUE_IDLE); 0 is
+	// sendqueue.DefaultIdleFor.
+	SendQueueIdle time.Duration
+}
+
+// SendQueue is the send queue's store as this package consumes it:
+// *sendqueue.PGStore. The first six run under the request's principal;
+// CancelOwner and the embedded DispatchStore are the system scope's.
+type SendQueue interface {
+	Enqueue(ctx context.Context, it sendqueue.Item) (sendqueue.Item, error)
+	List(ctx context.Context, t sendqueue.Target) ([]sendqueue.Item, error)
+	Get(ctx context.Context, id int64) (sendqueue.Item, error)
+	Cancel(ctx context.Context, id int64, now time.Time) (sendqueue.Item, error)
+	HeadOf(ctx context.Context, t sendqueue.Target) (sendqueue.Head, bool, error)
+	NotePaste(ctx context.Context, t sendqueue.Target, since int64) error
+	// CancelOwner is the system scope's: a disable or a sign-out everywhere
+	// cancels the user's queued messages.
+	CancelOwner(ctx context.Context, owner int64, now time.Time, detail string) (int, error)
+	sendqueue.DispatchStore
 }
 
 // Mirror is the mirror plugin as this package consumes it. *mirror.Service
@@ -198,8 +225,14 @@ type Mirror interface {
 	// PasteWindow types a message into that window's pane and presses Enter:
 	// its Claude pane only, or its active pane whatever runs there (target).
 	// The caller has already required the step-up; the plugin requires it
-	// again.
-	PasteWindow(ctx context.Context, host, session, window, text string, target mirror.PasteTarget) error
+	// again. opts: mirror.ExpectTurn (a queued message: refused as
+	// superseded if the window's turn moved) and mirror.ReportWindow (the
+	// window id "" resolved to).
+	PasteWindow(ctx context.Context, host, session, window, text string, target mirror.PasteTarget, opts ...mirror.PasteOption) error
+	// AgentState is whether the Claude Code session in that window is busy,
+	// idle or waiting, and since when — or why it is unknown (an older
+	// muster-mirror reports none). What the send queue waits on.
+	AgentState(ctx context.Context, host, session, window string) mirror.AgentState
 	// ScrollWindow scrolls that window's active pane through its history in
 	// tmux copy-mode by lines (positive is back). No step-up: see
 	// mirror.Hub.ScrollWindow.

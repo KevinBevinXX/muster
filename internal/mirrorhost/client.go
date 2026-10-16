@@ -240,6 +240,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	hello := first.msg(mirror.TypeHello)
 	hello.Version, hello.Host, hello.Interactive, hello.PanePaste = version, c.cfg.Host, c.cfg.Interactive, conn.panePaste()
 	hello.PaneScroll = conn.paneScroll()
+	hello.StatusReport = reportsStatus(c.cfg.Backend)
 	if err := conn.send(hello); err != nil {
 		return err
 	}

@@ -254,7 +254,12 @@ func (h *Hub) Paste(ctx context.Context, owner int64, host, session, text string
 // 🔴 A PASTE NEVER MOVES ANYONE'S WINDOW. The host pastes into a PANE id
 // (tmux's paste-buffer -t %<n>), which needs no client and no current window,
 // so a message can be sent to a window nobody is looking at.
-func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, window, text string, target PasteTarget) error {
+//
+// opts: ExpectTurn makes it a QUEUED paste, refused (ErrSuperseded) unless the
+// window's turn is still the one it was decided on; ReportWindow reports the
+// window id it resolved to.
+func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, window, text string, target PasteTarget, opts ...PasteOption) error {
+	o := PasteOptionsOf(opts...)
 	// 🔴 A FRESH SIGN-IN, checked HERE as well as by internal/api — the same
 	// gate, on the same clock, as an interactive Attach (Service.Attach): a
 	// paste types into the operator's session exactly as a keystroke does. A
@@ -273,6 +278,87 @@ func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, windo
 	if !hc.interactive {
 		return fmt.Errorf("%w (host %q)", ErrInteractiveRefused, host)
 	}
+	if o.Window != nil {
+		*o.Window = windowID
+	}
+	// The window's status time NOW, before the paste is written: the turn
+	// this paste starts is a status write newer than it (turns.go). Under
+	// turnsMu, a queued paste is refused here if another paste got in first.
+	held, err := h.beginPaste(owner, host, session, windowID, hc.statusSince(session, windowID), o.Expect)
+	if err != nil {
+		return err
+	}
+	err = h.pasteTo(ctx, hc, session, windowID, text, anyPane)
+	h.endPaste(owner, host, session, windowID, held, err == nil || errors.Is(err, ErrPasteUnconfirmed))
+	return err
+}
+
+// PasteOption is an option of PasteWindow.
+type PasteOption func(*PasteOptions)
+
+// PasteOptions is what a list of PasteOptions asks for: Expect, the turn a
+// queued paste was decided on (nil: a person's paste); Window, where to report
+// the window id the paste resolved to (nil: nowhere).
+type PasteOptions struct {
+	Expect *Turn
+	Window *string
+}
+
+// PasteOptionsOf applies opts. A PasteWindow implementation reads its options
+// through it (the hub, and internal/api's test fakes).
+func PasteOptionsOf(opts ...PasteOption) PasteOptions {
+	var o PasteOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o
+}
+
+// Turn is the window's turn a queued message was decided on: the AgentState's
+// Since and Pasted that the send queue read when it decided to send.
+type Turn struct {
+	Since, Pasted int64
+}
+
+// ExpectTurn makes the paste a QUEUED one, decided on turn t: the hub refuses
+// it with ErrSuperseded — before anything reaches the host — when another
+// paste into the window is in flight, or the window's Since or Pasted is no
+// longer t's (another paste, or a status write, came between the decision and
+// this paste). A person's own Send carries no turn and is never refused so.
+func ExpectTurn(t Turn) PasteOption { return func(o *PasteOptions) { o.Expect = &t } }
+
+// ReportWindow has PasteWindow write the window id it resolved to into dst
+// (window "" being the session's active window), once it has resolved it.
+func ReportWindow(dst *string) PasteOption { return func(o *PasteOptions) { o.Window = dst } }
+
+// ErrSuperseded refuses a queued paste whose turn is no longer the one it was
+// decided on (ExpectTurn). Nothing was sent to the host; the message can be
+// queued again and decided on afresh. It is a *SupersededError.
+var ErrSuperseded = errors.New("mirror: superseded by a newer turn: something else was pasted into the window (or its status changed) after this message was decided on, so it was not pasted")
+
+// SupersededError is ErrSuperseded with the window's Pasted at the refusal:
+// what the message must now wait behind.
+type SupersededError struct {
+	Pasted int64
+}
+
+func (e *SupersededError) Error() string { return ErrSuperseded.Error() }
+func (e *SupersededError) Unwrap() error { return ErrSuperseded }
+
+// statusSince is the StatusSince hc lists for (session, window id), 0 for none.
+func (hc *hostConn) statusSince(session, id string) int64 {
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	for _, w := range hc.windows {
+		if w.Session == session && w.ID == id {
+			return w.StatusSince
+		}
+	}
+	return 0
+}
+
+// pasteTo hands text to hc for (session, window id) and waits for the answer.
+func (h *Hub) pasteTo(ctx context.Context, hc *hostConn, session, windowID, text string, anyPane bool) error {
 	hc.mu.Lock()
 	hc.next++
 	id := hc.next
@@ -287,14 +373,19 @@ func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, windo
 	if err := writeJSON(ctx, hc.ws, Msg{Type: TypePaste, ID: id, Session: session, Window: windowID, Text: text, AnyPane: anyPane}); err != nil {
 		return fmt.Errorf("mirror: send the message to the host: %w", err)
 	}
+	// From here the host has the message: an answer that never comes is
+	// UNCONFIRMED (ErrPasteUnconfirmed), not "not sent" — it may have landed.
 	t := time.NewTimer(pasteTimeout)
 	defer t.Stop()
 	select {
 	case err := <-ch:
+		if errors.Is(err, ErrHostDisconnected) {
+			return unconfirmed{err}
+		}
 		return err
 	case <-ctx.Done():
-		return ctx.Err()
+		return unconfirmed{ctx.Err()}
 	case <-t.C:
-		return ErrPasteTimeout
+		return unconfirmed{ErrPasteTimeout}
 	}
 }

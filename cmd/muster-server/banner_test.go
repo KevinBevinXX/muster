@@ -428,6 +428,9 @@ var bannerExempt = map[string]string{
 	envTagAutoDispatch: "a feature flag on the task surface (api.Extensions.TagAutoDispatch), " +
 		"not a refusal or a dependency. Nothing about the boot posture changes with it, so " +
 		"a banner line would be noise",
+	envSendQueueIdle: "the send queue's dispatcher announces its own state with the VALUE when it " +
+		"starts (internal/api/send_queue.go: \"sendqueue: dispatcher started: …idle for %s…\"); " +
+		"with no database there is no queue and nothing reads it, and an out-of-bounds value refuses to boot",
 	envTaskReapAfter: "the reaper announces its own state with the VALUE, at the point it " +
 		"starts (internal/api/server.go: \"task reaper: sweeping every %s for tasks idle for " +
 		">%s\"), which is where a reader looking for it will be",

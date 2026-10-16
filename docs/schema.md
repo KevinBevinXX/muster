@@ -20,6 +20,7 @@ the set grows **or** shrinks.
 | push | `push_subscriptions`, `push_preferences` |
 | plugins | `plugins`, `plugin_messages`, `plugin_reply_drafts` |
 | Agents list | `pins`: the entries each user pinned to the top; `recents`: the entries each user recently opened |
+| send queue | `send_queue`: messages each user queued for a mirrored Claude Code window, sent one at a time when it is idle |
 | GitHub | `github_connection`, one row per owner |
 
 `notes` is the task table. The name is historical. It is kept because every id in
@@ -46,6 +47,7 @@ buys only a word.
 | `0016` | `plugin_reply_drafts` (a draft's body cannot be changed after it is written; the claim, lease and result rules) and `plugin_messages.no_reply`, which cannot be changed and refuses any reply draft for its message. |
 | `0017` | `pins`: a user's pinned Agents-list entries, each naming an agent (deleted with it) or a mirrored window by `(host, session, tmux window id)`. Owned, under row-level security; the agent a pin names must be the pin's owner's. |
 | `0018` | `recents`: a user's recently opened Agents-list entries, keyed as `pins` are, one row per entry (a visit moves its time), at most 50 per user (the oldest pruned). Owned, under row-level security. |
+| `0019` | `send_queue`: the server-side send queue. Each row names a mirrored window (host, tmux session, window id) and carries the message, its state (`queued`, `sending`, `sent`, `failed`, `cancelled`) and the sign-in time of the session that queued it. At most one row per window is `sending`; its claim is a lease kept on the database's clock. Owned, under row-level security. Also `users.signed_out_at`: the latest "sign out everywhere", which the queue's delivery checks. |
 
 To change the schema, add a new numbered file.
 

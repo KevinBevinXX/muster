@@ -122,6 +122,11 @@ var (
 		// runnerTokenFor (plugins is under FORCE RLS); only the row's owner and
 		// the plugin's own record are handed on.
 		"internal/api.(*Server).pluginFor",
+		// The send queue (migration 0019): the dispatcher's one helper. It reads
+		// every owner's next queued message and moves rows between states; each
+		// message is then probed and delivered as its own owner
+		// (withPrincipalLedger's queuedPrincipal), never under System.
+		"internal/sendqueue.sys",
 		// muster-native Web Push (migration 0013): the push store's one helper.
 		// A send runs from hooks and loops with no request; a CLAIM must see
 		// another user's row to move a shared device; a logout has already
@@ -151,9 +156,16 @@ var (
 		// the operator (not the system) is what makes row-level security say so.
 		"internal/memorelay.(*Relay).Run",
 	}
-	// withPrincipalLedger: admit only.
+	// withPrincipalLedger: admit, and the send queue's delivery.
+	//
+	// queuedPrincipal is the one site outside a wrapper: a queued message is
+	// probed and delivered with no request in flight, as the user who queued it
+	// (from a signed-in session), through authz.ViaQueue. Its one caller is the
+	// send queue's dispatcher (its AsOwner), handed each row's owner after it
+	// read the row under System; the request path never calls it.
 	withPrincipalLedger = []string{
 		"internal/api.(*Server).admit",
+		"internal/api.(*Server).queuedPrincipal",
 	}
 	// admitLedger: every authentication wrapper.
 	admitLedger = []string{
@@ -175,7 +187,7 @@ var (
 	// new door until someone has decided it is not.
 	authzExports = []string{
 		"From", "MustFrom", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
-		"System", "Via", "ViaAgent", "ViaConnect", "ViaHook", "ViaOperator", "ViaPlugin", "ViaRelay", "ViaRunner", "ViaService",
+		"System", "Via", "ViaAgent", "ViaConnect", "ViaHook", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaRelay", "ViaRunner", "ViaService",
 		"ViaSession", "ViaSystem", "ViaToken", "WithPrincipal",
 	}
 )
@@ -227,7 +239,7 @@ func TestOnlyTestFilesImportDBTest(t *testing.T) {
 	}
 }
 
-func TestWithPrincipalIsCalledOnlyByAdmit(t *testing.T) {
+func TestWithPrincipalIsCalledOnlyByAdmitAndTheSendQueue(t *testing.T) {
 	assertLedger(t, "authz.WithPrincipal", scanModule(t).sites[targetWithPrincipal], withPrincipalLedger)
 }
 

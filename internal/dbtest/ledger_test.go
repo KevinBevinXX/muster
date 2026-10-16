@@ -148,6 +148,11 @@ var pgBackedPackages = []string{
 	// yours" and "deleting an agent deletes its pin" are claims about row-level
 	// security and a foreign key cascade.
 	"internal/pins",
+	// The send queue (migration 0019). "Another user cannot see, queue into or
+	// cancel your queue", "one row per target is sending" and "a claim is never
+	// retried" are claims about row-level security, a unique index and a
+	// conditional UPDATE.
+	"internal/sendqueue",
 	"internal/plugins",
 	// Recents (migration 0018). "Another user cannot see or write your recently
 	// viewed entries", "a visit upserts" and "the oldest past the bound are

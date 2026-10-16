@@ -40,6 +40,7 @@ import (
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/recents"
+	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/sse"
 	"github.com/ZacxDev/muster/internal/users"
 )
@@ -327,7 +328,15 @@ var isolationClasses = map[string]routeClass{
 	// seeded pins are in the snapshot, so either reaching A's would show.
 	"POST /agents/pins":        classList,
 	"POST /agents/pins/delete": classList,
-	"POST /plugin/v1/messages": classPlugin,
+	// The send queue (0019): the queue form, the list and the plain confirm
+	// page name A's mirrored window; Cancel names A's queued message by id.
+	// Each must answer B exactly as for a ghost, and A's queued message (its
+	// body carries the canary) is in the snapshot.
+	"GET /send-queue":              classMirror,
+	"POST /send-queue":             classMirror,
+	"POST /send-queue/{id}/cancel": classParam,
+	"POST /send-queue/confirm":     classMirror,
+	"POST /plugin/v1/messages":     classPlugin,
 	// Reply drafts (PR C): the owner's decisions name A's draft by id; the
 	// plugin's claim names nothing (it leases the token owner's own drafts) and
 	// its result names A's draft — which B's plugin must not settle.
@@ -730,6 +739,12 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(recentStore.VisitAgent(ua, w.a.agent.ID), "a agent visit")
 	must(recentStore.VisitMirror(ua, pins.MirrorKey{Host: w.canary + "-host", Session: "main", Window: "@1"}), "a mirror visit")
 
+	// A's queued message (0019), for a window on A's mirrored host, its body
+	// carrying the canary.
+	aQueued, err := sendqueue.NewPG(pool).Enqueue(ua, sendqueue.Item{
+		Target: sendqueue.Target{Host: w.canary + "-host", Session: "main", Window: "@1"}, Body: w.canary + " queued", StepUpAt: time.Now()})
+	must(err, "a queued message")
+
 	w.aIdentities = []string{w.a.agent.Name, agents.ChiefNameFor(w.a.uid), w.aSessionLink, w.aTag, w.aProject}
 	w.opInvite, err = users.NewPG(pool).CreateInvite(ctx, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession},
 		bytes.Repeat([]byte{byte(time.Now().UnixNano())}, 32), "", time.Now().Add(time.Hour))
@@ -738,14 +753,15 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		attach: w.aAttachment.ID, chat: w.aChatSession.ID, agentName: w.a.agent.Name, connName: w.aConnName,
 		tag: w.aTag, link: w.aSessionLink, mirrorHost: w.canary + "-host", mirrorSession: "main", token: w.aToken2.ID,
 		pushDevice: w.objA.pushDevice, flowJob: w.aJob.ID, runnerTok: w.aRunner2.ID, flowReq: w.aFlowReq.ID,
-		plugin: w.aPlugin2.ID, draft: w.aDraft.ID}
+		plugin: w.aPlugin2.ID, draft: w.aDraft.ID, queued: aQueued.ID}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
 	const ghostID = 9_000_000_000
 	w.ghost = isoObjs{user: ghostID, invite: ghostID, task: ghostID, agent: ghostID, grant: ghostID, comment: ghostID, attach: ghostID, chat: ghostID,
 		agentName: "ghost-agent" + w.suffix, connName: "ghostconn" + w.suffix, tag: "ghosttag", link: "ghost-sess-" + w.suffix,
 		mirrorHost: "ghost-host", mirrorSession: "main", ccAccount: "ghostacct", token: ghostID, pushDevice: ghostID,
-		flowJob: ghostID, runnerTok: ghostID, flowReq: ghostID, plugin: ghostID, draft: ghostID, passkey: "00000000-0000-4000-a000-00000000ghost"}
+		flowJob: ghostID, runnerTok: ghostID, flowReq: ghostID, plugin: ghostID, draft: ghostID, passkey: "00000000-0000-4000-a000-00000000ghost",
+		queued: ghostID}
 
 	// A's push device: through the real store, as the claim the subscribe route
 	// makes. Its user agent and endpoint carry the canary.
@@ -781,10 +797,11 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		Flows:  flows.NewPG(pool),
 		// Plugins ON, with no gateway: a message B's plugin posts is stored as
 		// B's and stays queued.
-		Plugins: plugins.NewPG(pool),
-		Pins:    pins.NewPG(pool),
-		Recents: recents.NewPG(pool),
-		Push:    push.NewService(pushStore, w.pusher, push.VAPIDConfig{PublicKey: "iso-walk-vapid-public"}, log.New(io.Discard, "", 0)),
+		Plugins:   plugins.NewPG(pool),
+		Pins:      pins.NewPG(pool),
+		Recents:   recents.NewPG(pool),
+		SendQueue: sendqueue.NewPG(pool),
+		Push:      push.NewService(pushStore, w.pusher, push.VAPIDConfig{PublicKey: "iso-walk-vapid-public"}, log.New(io.Discard, "", 0)),
 		ConnectorPolicy: connectors.Policy{AllowLoopback: true, InsecureHTTP: true,
 			Resolve: func(_ context.Context, host string) ([]netip.Addr, error) {
 				if strings.HasSuffix(host, ".fake.test") {
@@ -1019,6 +1036,7 @@ type isoObjs struct {
 	pushDevice                                int64  // a Web Push device's id
 	agentName, connName, tag, link            string
 	mirrorHost, mirrorSession                 string
+	queued                                    int64 // a queued message's id (0019)
 }
 
 // fill turns a route pattern into a concrete request naming objects o, with a
@@ -1062,6 +1080,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		id = strconv.FormatInt(o.user, 10)
 	case strings.HasPrefix(path, "/admin/invites/{id}"):
 		id = strconv.FormatInt(o.invite, 10)
+	case strings.HasPrefix(path, "/send-queue/{id}"):
+		id = strconv.FormatInt(o.queued, 10)
 	}
 	name := o.agentName
 	if strings.Contains(path, "connectors/{name}") {
@@ -1079,7 +1099,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 	if path == "/static/" {
 		path = "/static/app.css"
 	}
-	if strings.HasPrefix(path, "/mirror/terminal") || strings.HasPrefix(path, "/mirror/view") || path == "/mirror/confirm-send" {
+	if strings.HasPrefix(path, "/mirror/terminal") || strings.HasPrefix(path, "/mirror/view") || path == "/mirror/confirm-send" ||
+		path == "/send-queue" || path == "/send-queue/confirm" {
 		if method == http.MethodPost {
 			// `kind` and `password` are the plain confirm page's own fields.
 			return method, path, url.Values{"host": {o.mirrorHost}, "session": {o.mirrorSession}, "text": {"iso-write"},
@@ -1157,7 +1178,7 @@ func (w *isoWorld) snapshot() map[string]string {
 	for _, tbl := range []string{"notes", "note_comments", "note_attachments", "task_sessions", "agents",
 		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "github_connection", "mirror_tokens",
 		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens", "push_subscriptions", "push_preferences", "flow_requests",
-		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "recents"} {
+		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "recents", "send_queue"} {
 		var js string
 		if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t.id)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
 			// task_sessions/github_connection have no `id` ordering column in every
@@ -1242,7 +1263,8 @@ func namesObject(route string) bool {
 	return paramRE.MatchString(route) || route == "POST /agents" || route == "POST /tasks/merge" ||
 		strings.HasPrefix(route, "GET /mirror/terminal") || strings.HasPrefix(route, "GET /mirror/view") ||
 		route == "POST /mirror/view/send" || route == "POST /mirror/terminal/send" || route == "POST /mirror/confirm-send" ||
-		route == "POST /mirror/terminal/scroll"
+		route == "POST /mirror/terminal/scroll" ||
+		route == "GET /send-queue" || route == "POST /send-queue" || route == "POST /send-queue/confirm"
 }
 
 var paramRE = regexp.MustCompile(`\{[a-z]`)

@@ -9,6 +9,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/db"
+	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -20,7 +21,8 @@ import (
 //
 //	muster-server invite --claim-admin   print a single-use link that binds a
 //	                                     new GoTrue login to user 1
-//	muster-server user disable <id>      disabled_at + GoTrue ban
+//	muster-server user disable <id>      disabled_at + GoTrue ban, and the
+//	                                     user's queued messages cancelled
 //	muster-server user enable <id>       clear both
 func runAccountCommand(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer) int {
 	usage := func() int {
@@ -78,7 +80,23 @@ func runAccountCommand(ctx context.Context, args []string, getenv func(string) s
 		// Audited as the CLI (no muster user: the operator at a shell), in the
 		// same transaction as the change.
 		cli := users.Actor{Via: "cli"}
-		if err := api.SetUserDisabledAs(ctx, goTrueAuth(cfg, pool), &cli, id, disable, nil); err != nil {
+		// A disable cancels the user's queued messages, as the admin page's
+		// does (api.Server.DisableUserAs) — after the row has changed, so a
+		// refused disable cancels nothing. A running server's delivery refuses
+		// them anyway (the account is re-read at send time); cancelling makes
+		// the queue's list say so.
+		var cancelled func()
+		if disable {
+			cancelled = func() {
+				n, err := sendqueue.NewPG(pool).CancelOwner(ctx, id, time.Now(), api.SendQueueCancelDisabled)
+				if err != nil {
+					fmt.Fprintf(stderr, "user %d: cancel their queued messages: %v (a running server still refuses to send them)\n", id, err)
+					return
+				}
+				fmt.Fprintf(stdout, "user %d: %d queued message(s) cancelled.\n", id, n)
+			}
+		}
+		if err := api.SetUserDisabledAs(ctx, goTrueAuth(cfg, pool), &cli, id, disable, cancelled); err != nil {
 			fmt.Fprintf(stderr, "%s user %d: %v\n", args[1], id, err)
 			return 1
 		}

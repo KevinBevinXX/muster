@@ -162,6 +162,41 @@ func TestSetDisabledAndLookups(t *testing.T) {
 	}
 }
 
+// TestASignOutEverywhereIsRecordedAndNeverLowered (N3): the record is the
+// database's clock at the call, read back on the user's row, and a later one
+// moves it forward; it moves neither the session cutoff nor the disable. An
+// unknown user is ErrNotFound.
+func TestASignOutEverywhereIsRecordedAndNeverLowered(t *testing.T) {
+	s, pool := storeFor(t)
+	ctx := context.Background()
+	var id int64
+	if err := pool.QueryRow(authz.System(ctx), `INSERT INTO users (role, gotrue_sub) VALUES ('member', $1) RETURNING id`, subA).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if u, err := s.ByID(ctx, id); err != nil || u.SignedOutAt != nil {
+		t.Fatalf("a new user's SignedOutAt = %v, %v; want none", u.SignedOutAt, err)
+	}
+	first, err := s.RecordSignOutEverywhere(ctx, id)
+	if err != nil || time.Since(first) > time.Minute || time.Until(first) > time.Minute {
+		t.Fatalf("RecordSignOutEverywhere = %v, %v; want about now", first, err)
+	}
+	u, err := s.ByID(ctx, id)
+	if err != nil || u.SignedOutAt == nil || !u.SignedOutAt.Equal(first) || u.SessionsNotBefore != nil || u.Disabled() {
+		t.Fatalf("the row after a sign-out everywhere = %+v, %v; want SignedOutAt %v and nothing else moved", u, err, first)
+	}
+	// Pushed into the future by hand: a later record does not lower it.
+	future := first.Add(time.Hour)
+	if _, err := pool.Exec(authz.System(ctx), `UPDATE users SET signed_out_at = $2 WHERE id = $1`, id, future); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.RecordSignOutEverywhere(ctx, id); err != nil || !got.Equal(future) {
+		t.Fatalf("a record below the stored one = %v, %v; want it kept at %v", got, err, future)
+	}
+	if _, err := s.RecordSignOutEverywhere(ctx, 99999); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown id: %v", err)
+	}
+}
+
 func mustNotCreate(t *testing.T) func(context.Context) (string, error) {
 	return func(context.Context) (string, error) {
 		t.Error("create ran for an invalid invite")

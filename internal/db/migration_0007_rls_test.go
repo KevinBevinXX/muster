@@ -96,6 +96,7 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO plugin_reply_drafts (message_id, agent_id, agent_name, body, expires_at) VALUES ($1, $2, 'a', 'reply', now() + interval '1 day')`, func() []any { return []any{message, agent} }, nil},
 		{`INSERT INTO pins (kind, agent_id) VALUES ('agent', $1)`, func() []any { return []any{agent} }, nil},
 		{`INSERT INTO recents (kind, agent_id) VALUES ('agent', $1)`, func() []any { return []any{agent} }, nil},
+		{`INSERT INTO send_queue (mirror_host, mirror_session, mirror_window, body, stepup_at) VALUES ($1, 's', '', 'hello', now())`, func() []any { return []any{"host-" + tag} }, nil},
 	}
 	for _, s := range steps {
 		var err error

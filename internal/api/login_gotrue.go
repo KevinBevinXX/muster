@@ -283,6 +283,10 @@ func (s *Server) handleGoTrueLogout(w http.ResponseWriter, r *http.Request) {
 				s.logger.Printf("logout: GoTrue /logout failed for user %d: %v", sess.user.ID, err)
 			}
 			s.gt.revoke(sess.user.ID, sess.claims, scope)
+			if signsOutEverywhere(sess.claims, scope) {
+				// Signed out of every session: nothing queued from one is sent.
+				s.signedOutEverywhere(r.Context(), sess.user.ID)
+			}
 			// This browser's push subscription goes with its session.
 			s.forgetPushDevice(w, r, sess.user.ID)
 			s.logger.Printf("logout: user %d signed out (%s)", sess.user.ID, scope)

@@ -53,6 +53,11 @@ type User struct {
 	// at or before it is refused. Set by every disable and every password
 	// reset, never cleared.
 	SessionsNotBefore *time.Time
+	// SignedOutAt is the latest "sign out everywhere" (migration 0019), nil
+	// for none. Only the send queue reads it: a message queued under a sign-in
+	// at or before it is not sent. It is NOT a session cutoff — the session
+	// tier keeps its own, in memory (internal/api gotrueState.notBefore).
+	SignedOutAt *time.Time
 }
 
 // Disabled reports whether the account is disabled.
@@ -106,11 +111,11 @@ func (s *PGStore) Role(ctx context.Context, id int64) (authz.Role, error) {
 // sys is the store's one authz.System call. See the package doc.
 func sys(ctx context.Context) context.Context { return authz.System(ctx) }
 
-const userCols = `id, COALESCE(gotrue_sub::text, ''), COALESCE(email, ''), display_name, disabled_at, sessions_not_before`
+const userCols = `id, COALESCE(gotrue_sub::text, ''), COALESCE(email, ''), display_name, disabled_at, sessions_not_before, signed_out_at`
 
 func scanUser(row pgx.Row) (User, error) {
 	var u User
-	if err := row.Scan(&u.ID, &u.GotrueSub, &u.Email, &u.DisplayName, &u.DisabledAt, &u.SessionsNotBefore); err != nil {
+	if err := row.Scan(&u.ID, &u.GotrueSub, &u.Email, &u.DisplayName, &u.DisabledAt, &u.SessionsNotBefore, &u.SignedOutAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return User{}, ErrNotFound
 		}
@@ -187,6 +192,21 @@ func (s *PGStore) ResetCredentials(ctx context.Context, id int64) (time.Time, er
 		return time.Time{}, err
 	}
 	return t, tx.Commit(ctx)
+}
+
+// RecordSignOutEverywhere stamps user id's signed_out_at with
+// clock_timestamp() — never lowering it — and returns it: the durable record
+// of a "sign out everywhere" that the send queue's delivery checks
+// (migration 0019). It moves nothing else: sessions_not_before, the API
+// tokens and GoTrue are the session tier's.
+func (s *PGStore) RecordSignOutEverywhere(ctx context.Context, id int64) (time.Time, error) {
+	var t time.Time
+	err := s.pool.QueryRow(sys(ctx), `UPDATE users SET signed_out_at = greatest(signed_out_at, clock_timestamp())
+		WHERE id = $1 RETURNING signed_out_at`, id).Scan(&t)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return t, ErrNotFound
+	}
+	return t, err
 }
 
 // SetDisabledAs is SetDisabled that, when by is non-nil, writes the

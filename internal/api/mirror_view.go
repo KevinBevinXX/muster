@@ -74,7 +74,8 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	// The viewer opened this window (best-effort).
 	s.recordMirrorVisit(r.Context(), h.Host, e.Session, e.Window)
 	v := ui.MirrorViewView{Host: h.Host, Session: e.Session, Window: e.Window, Title: mirrorTitle(e), Label: e.Label, Qualifier: e.Qualifier, Interactive: h.Interactive,
-		StepUp: s.stepUpView(r, ""), Nonce: newSendNonce(), Dictate: s.dictatePath()}
+		StepUp: s.stepUpView(r, ""), Nonce: newSendNonce(), Dictate: s.dictatePath(),
+		Queue: s.mirrorComposerQueue(r.Context(), h, e)}
 	v.Notice, v.NoticeOK = composerNotice(r)
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -398,20 +399,13 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}
-	// 🔴 THE SAME MESSAGE TWICE IS DELIVERED ONCE (sendNonces): the composer's
-	// script hands a send whose answer was lost to the browser's own submit, and
-	// the first may have been pasted.
-	repeat, finish := s.sends.begin(requestOwner(ctx), p.nonce, p.text)
+	repeat, err := s.mirrorPaste(ctx, host, session, p.window, p.text, p.nonce, p.target)
 	if repeat {
 		s.logger.Printf("mirror: a repeat of a message to %s/%s%s was not sent again", host, session, p.window)
 		sent()
 		return
 	}
-	pctx, cancel := context.WithTimeout(ctx, mirrorSendTimeout)
-	defer cancel()
-	// window == "" is the session's active window (mirror.Hub.PasteWindow).
-	if err := s.ext.Mirror.PasteWindow(pctx, host, session, p.window, p.text, p.target); err != nil {
-		finish(false)
+	if err != nil {
 		if errors.Is(err, mirror.ErrStepUpRequired) {
 			// The plugin's own check of the same gate (it does not rely on the
 			// one above): the same answer.
@@ -443,7 +437,52 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 		s.mirrorRefuse(w, r, p, status, err.Error(), notice)
 		return
 	}
-	finish(true)
 	s.logger.Printf("mirror: sent a message to %s/%s%s", host, session, p.window)
 	sent()
+}
+
+// mirrorPaste is the DELIVERY itself — what a person's Send (mirrorDeliver) and
+// a queued message (sendQueueToMirror) both run once their gates have passed:
+// the nonce claim, the bounded paste, and the claim's settlement. repeat is a
+// nonce already delivered, which is not pasted again. ctx carries the principal
+// whose host it is and the sign-in time the plugin's own freshness gate reads.
+//
+// 🔴 THE SAME MESSAGE TWICE IS DELIVERED ONCE (sendNonces): the composer's
+// script hands a send whose answer was lost to the browser's own submit, and
+// the first may have been pasted.
+//
+// 🔴 EVERY PASTE THAT MAY HAVE LANDED HOLDS THE SEND QUEUE FOR ITS TURN. The
+// hub records the window's status time at the paste (mirror's turns.go), and
+// this records it on the window's open queue rows too (sendQueueNotePaste), so
+// a queued message waits for the turn a person's own Send started — across a
+// restart as well.
+//
+// opts go to the plugin's PasteWindow (a queued message's mirror.ExpectTurn).
+// The window id the plugin resolved is what the queue rows are stamped for, so
+// a Send to the session's ACTIVE window (window "") holds that window's queue
+// too.
+func (s *Server) mirrorPaste(ctx context.Context, host, session, window, text, nonce string, target mirror.PasteTarget, opts ...mirror.PasteOption) (repeat bool, err error) {
+	resolved := window
+	opts = append(opts, mirror.ReportWindow(&resolved))
+	repeat, err = s.mirrorPasteOnce(ctx, host, session, window, text, nonce, target, opts...)
+	if !repeat && (err == nil || errors.Is(err, mirror.ErrPasteUnconfirmed)) {
+		s.sendQueueNotePaste(ctx, host, session, resolved)
+	}
+	return repeat, err
+}
+
+func (s *Server) mirrorPasteOnce(ctx context.Context, host, session, window, text, nonce string, target mirror.PasteTarget, opts ...mirror.PasteOption) (repeat bool, err error) {
+	repeat, finish := s.sends.begin(requestOwner(ctx), nonce, text)
+	if repeat {
+		return true, nil
+	}
+	pctx, cancel := context.WithTimeout(ctx, mirrorSendTimeout)
+	defer cancel()
+	// window == "" is the session's active window (mirror.Hub.PasteWindow).
+	if err := s.ext.Mirror.PasteWindow(pctx, host, session, window, text, target, opts...); err != nil {
+		finish(false)
+		return false, err
+	}
+	finish(true)
+	return false, nil
 }

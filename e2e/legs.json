@@ -39,7 +39,8 @@
     "tests/plugins.spec.ts": 60.0,
     "tests/pins.spec.ts": 30.0,
     "tests/recent-agents.spec.ts": 10.0,
-    "tests/mirror-chat.spec.ts": 30.0
+    "tests/mirror-chat.spec.ts": 30.0,
+    "tests/send-queue.spec.ts": 150.0
   },
   "legs": {
     "1": [
@@ -79,7 +80,8 @@
       "tests/mirror-duplicate-labels.spec.ts",
       "tests/plugins.spec.ts",
       "tests/pins.spec.ts",
-      "tests/recent-agents.spec.ts"
+      "tests/recent-agents.spec.ts",
+      "tests/send-queue.spec.ts"
     ]
   }
 }
