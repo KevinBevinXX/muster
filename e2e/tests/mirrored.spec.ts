@@ -923,7 +923,8 @@ test.describe('drag-to-scroll on a phone (412×915, touch)', () => {
       // SIDEWAYS: the scroll area pans as it always did, and no scroll is sent.
       // Every scroll the host recorded has had its answer (a late one would
       // otherwise land in the sideways count below).
-      await expect.poll(() => posts.length, { message: 'every scroll answered' }).toBe(scrollLog(scrollFile).scrolls.length);
+      // Both sides are re-read on every poll: a scroll still landing moves both.
+      await expect.poll(() => posts.length - scrollLog(scrollFile).scrolls.length, { message: 'every scroll answered' }).toBe(0);
       const before = scrollLog(scrollFile).scrolls.length;
       const sent = posts.length;
       await touchDrag(page, { x: mid.x + 120, y: mid.y }, { x: mid.x - 120, y: mid.y + 40 });
