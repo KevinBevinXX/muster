@@ -72,6 +72,10 @@ func TestNoTabSwitchSwipe(t *testing.T) {
 		}
 
 		// THE SURVIVOR. The sidebar's edge-swipe arms at the edge and opens/closes.
+		if !strings.Contains(bodies["touchstart"], "ownsSideways(t)") || !strings.Contains(js, "data-own-swipe") {
+			t.Errorf("%s: the edge-swipe no longer stands down for a touch that began on something that "+
+				"swipes sideways itself (the recent-agents strip starts inside the edge zone)", shape)
+		}
 		if !strings.Contains(bodies["touchstart"], "SB_EDGE") {
 			t.Errorf("%s: touchstart no longer arms the sidebar's open gesture at the left edge (SB_EDGE)", shape)
 		}

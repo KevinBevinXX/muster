@@ -2077,6 +2077,20 @@ func appScript(feat Features) g.Node {
   var SB_EDGE = 28;     // px from the left edge that begins an open-swipe
   var SB_MIN_X = 45;    // px of horizontal travel to open/close the sidebar
   function sbMobile() { return window.innerWidth < 1024; }
+  // ownsSideways: the touch began on something that takes a sideways swipe for
+  // itself — an element marked [data-own-swipe] (the recent-agents strip, which
+  // starts 12px from the edge at a phone's width) or any ancestor that scrolls
+  // sideways — so a swipe there is that thing's, never the sidebar's.
+  function ownsSideways(t) {
+    for (var el = t; el && el.nodeType === 1 && el !== document.body; el = el.parentElement) {
+      if (el.hasAttribute('data-own-swipe')) return true;
+      if (el.scrollWidth > el.clientWidth + 1) {
+        var ox = getComputedStyle(el).overflowX;
+        if (ox === 'auto' || ox === 'scroll') return true;
+      }
+    }
+    return false;
+  }
   function sbIsOpen() { var r = document.getElementById('sidebar-root'); return !!(r && r.getAttribute('data-open') === 'true'); }
   document.addEventListener('touchstart', function (e) {
     sbMode = null;
@@ -2088,7 +2102,7 @@ func appScript(feat Features) g.Node {
     if (sbMobile()) {
       if (sbIsOpen()) {
         if (t && t.closest && t.closest('#sidebar')) sbMode = 'close';
-      } else if (x <= SB_EDGE) {
+      } else if (x <= SB_EDGE && !ownsSideways(t)) {
         sbMode = 'open';
       }
     }

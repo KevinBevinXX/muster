@@ -134,8 +134,16 @@ test('a sideways swipe on the strip does not switch the tab; an edge-swipe still
     await expect(page.locator('#panel-agents')).toBeVisible();
   }
 
-  // The sidebar's edge-swipe: from the left edge, rightwards.
+  // 🔴 The strip begins INSIDE the edge-swipe's 28px zone at this width, so a
+  // rightward swipe that starts on its first entry used to open the sidebar.
+  // It is the strip's swipe now (appScript's ownsSideways).
+  expect(sb.x, 'the strip starts within the 28px edge zone at 390px').toBeLessThan(28);
   await expect(page.locator('#sidebar-root')).not.toHaveAttribute('data-open', 'true');
+  await touchDrag(page, { x: Math.max(1, sb.x + 2), y }, { x: sb.x + 220, y });
+  await page.waitForTimeout(250);
+  await expect(page.locator('#sidebar-root'), 'a swipe that began on the strip left the sidebar shut').not.toHaveAttribute('data-open', 'true');
+
+  // The sidebar's edge-swipe: from the left edge, rightwards.
   await touchDrag(page, { x: 4, y: 400 }, { x: 220, y: 404 });
   await expect(page.locator('#sidebar-root')).toHaveAttribute('data-open', 'true');
   expect(new URL(page.url()).pathname).toBe('/agents');
