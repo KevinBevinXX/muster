@@ -446,7 +446,8 @@ type Store interface {
 	// with the same author and the same body (a retracted one included, so a
 	// retraction is not undone by a retry), and reports whether it wrote.
 	// Concurrent calls for one comment write it once (the note row is locked
-	// first). Unknown or dismissed task → pgx.ErrNoRows.
+	// first). A task that is not OPEN (FindLiveByTag's rule: unknown, dismissed,
+	// complete, or a merge loser) → pgx.ErrNoRows, and nothing is written.
 	AddCommentOnce(ctx context.Context, c Comment) (wrote bool, err error)
 	// FlagIdle records ONE idle-reap on a task: it set-UNIONs tag into the task's
 	// tags AND appends body as a comment authored by ReapCommentAuthor — both or

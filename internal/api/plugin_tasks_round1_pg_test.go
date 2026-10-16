@@ -229,24 +229,29 @@ func TestPluginTaskTrimsAndTruncates(t *testing.T) {
 	}
 }
 
-// M4: an oversize body, title or comment is TRUNCATED, never refused.
+// M4: an oversize body, title or comment is TRUNCATED, never refused — and cut
+// on a CHARACTER boundary. The fixture is "€" (3 bytes), whose byte length does
+// not divide the 16 KiB cap, so the cut lands mid-character and the
+// rune-boundary step must run; with a 2-byte character it never would (audit
+// round 2, A).
 func TestPluginTaskTruncatesOversize(t *testing.T) {
 	f := newPTFixture(t)
-	big := strings.Repeat("é", plugins.MaxBodyBytes) // 2 bytes each: twice the cap
-	key2 := "tracker:m4" + f.suffix
-	code, out, raw := f.post(map[string]any{"key": key2, "create": map[string]any{"title": strings.Repeat("t", 2000), "body": big}})
+	big := strings.Repeat("€", plugins.MaxBodyBytes/3+100) // 16,683 bytes
+	want := strings.Repeat("€", plugins.MaxBodyBytes/3)    // 16,383 bytes: the last whole "€" under 16,384
+	key := "tracker:m4" + f.suffix
+	code, out, raw := f.post(map[string]any{"key": key, "create": map[string]any{"title": strings.Repeat("t", 2000), "body": big}})
 	if code != http.StatusCreated {
 		t.Fatalf("oversize body and title: %d %.200s; want 201 (truncated)", code, raw)
 	}
 	n, _ := f.notes.Get(f.asOwner, *out.ID)
-	if n.Body != strings.Repeat("é", plugins.MaxBodyBytes/2) || n.Title != strings.Repeat("t", maxTaskFieldLen) {
-		t.Fatalf("stored body %d bytes, title %d runes; want %d bytes on a rune boundary and %d runes",
-			len(n.Body), len([]rune(n.Title)), plugins.MaxBodyBytes, maxTaskFieldLen)
+	if n.Body != want || n.Title != strings.Repeat("t", maxTaskFieldLen) {
+		t.Fatalf("stored body %d bytes, title %d runes; want %d bytes on a character boundary and %d runes",
+			len(n.Body), len([]rune(n.Title)), len(want), maxTaskFieldLen)
 	}
-	if code, o, raw := f.post(map[string]any{"key": key2, "comment": big}); code != http.StatusOK || !o.Commented {
+	if code, o, raw := f.post(map[string]any{"key": key, "comment": big}); code != http.StatusOK || !o.Commented {
 		t.Fatalf("oversize comment: %d %.200s; want 200 commented (truncated)", code, raw)
 	}
-	if cs := f.comments(*out.ID); len(cs) != 1 || cs[0].Body != strings.Repeat("é", plugins.MaxBodyBytes/2) {
-		t.Fatalf("stored comment %d bytes; want %d", len(cs[0].Body), plugins.MaxBodyBytes)
+	if cs := f.comments(*out.ID); len(cs) != 1 || cs[0].Body != want {
+		t.Fatalf("stored comment: %d comments; want one of %d bytes", len(cs), len(want))
 	}
 }

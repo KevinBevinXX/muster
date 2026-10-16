@@ -220,8 +220,10 @@ It is idempotent, so a plugin can always resend:
   finds the task and the comment, and adds neither.
 - **A comment is added once.** If the thread already holds a comment from
   this plugin with the same text, it is not added again. That includes a
-  comment you retracted. Make each comment unique per upstream event, for
-  example by naming the upstream's message id in it.
+  comment you retracted. Make each comment unique per upstream event, and
+  put that unique part (for example the upstream's message id) at the
+  **start**: a comment over 16 KiB is cut, so two long comments that differ
+  only after their first 16 KiB are the same comment.
 - **Closed tasks do not count.** After the task is dismissed, completed or
   merged away (and the winner does not carry the key), the next `create` for
   its key files a new one, and a comment alone writes nothing.

@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/ZacxDev/muster/internal/taskstatus"
 )
 
 // PGStore is the Postgres-backed notes Store.
@@ -748,9 +750,15 @@ type rowQuerier interface {
 // marks the loser complete AND tags it `superseded-by:<winner>`, and the winner
 // gets the union of tags, so the winner is what a later notice finds. The
 // superseded-by test stands on its own, so a loser someone re-opened by hand
-// is still not taken for the key. Its pattern is the query's $2.
-const openOnly = liveOnly + ` AND status <> 'complete'
-		AND NOT EXISTS (SELECT 1 FROM unnest(tags) AS t WHERE t LIKE $2)`
+// is still not taken for the key. p is the placeholder bound to
+// supersededPattern; status values come from taskstatus (the one vocabulary).
+func openOnly(p string) string {
+	return liveOnly + ` AND status <> '` + taskstatus.Complete + `'
+		AND NOT EXISTS (SELECT 1 FROM unnest(tags) AS t WHERE t LIKE ` + p + `)`
+}
+
+// supersededPattern is openOnly's LIKE argument: any `superseded-by:` tag.
+const supersededPattern = NSSupersededBy + ":%"
 
 // findLiveByTag is THE answer to "which open task carries key": the OLDEST, so
 // CreateOnceByTag (which would otherwise create) and FindLiveByTag (the plugin
@@ -758,8 +766,8 @@ const openOnly = liveOnly + ` AND status <> 'complete'
 // two used to be separately written lookups (audit D1).
 func findLiveByTag(ctx context.Context, q rowQuerier, key string) (Note, bool, error) {
 	var n Note
-	err := q.QueryRow(ctx, `SELECT `+noteCols+` FROM notes WHERE tags @> ARRAY[$1]::text[] AND `+openOnly+`
-		ORDER BY id LIMIT 1`, key, NSSupersededBy+":%").Scan(scanNoteInto(&n)...)
+	err := q.QueryRow(ctx, `SELECT `+noteCols+` FROM notes WHERE tags @> ARRAY[$1]::text[] AND `+openOnly("$2")+`
+		ORDER BY id LIMIT 1`, key, supersededPattern).Scan(scanNoteInto(&n)...)
 	switch {
 	case err == nil:
 		return n, true, nil
@@ -797,8 +805,13 @@ func (s *PGStore) AddCommentOnce(ctx context.Context, c Comment) (bool, error) {
 // READ COMMITTED transaction — shared with CreateOnceByTag, so "the same
 // comment is written once" has ONE spelling.
 func addCommentOnceTx(ctx context.Context, tx pgx.Tx, c Comment) (bool, error) {
+	// 🔴 THE LOCK RE-CHECKS OPEN, not just not-dismissed: the comment path looks
+	// the task up open (FindLiveByTag) and then gets here, so a task completed
+	// or superseded in between must not gain the comment (audit round 2, C).
+	// Once this row is locked, a concurrent status change waits for the commit.
 	var locked int64
-	if err := tx.QueryRow(ctx, `SELECT id FROM notes WHERE id=$1 AND `+liveOnly+` FOR UPDATE`, c.NoteID).Scan(&locked); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT id FROM notes WHERE id=$1 AND `+openOnly("$2")+` FOR UPDATE`,
+		c.NoteID, supersededPattern).Scan(&locked); err != nil {
 		return false, err
 	}
 	var wrote int64

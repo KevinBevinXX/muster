@@ -276,3 +276,40 @@ func TestTheTaskForAKeyIsAnOpenOne(t *testing.T) {
 	}
 	defer store.Delete(ctx, n3.ID)
 }
+
+// AddCommentOnce writes only to an OPEN task: the comment path looks the task
+// up open, then locks it — and the lock re-checks OPEN, so a task completed or
+// superseded in between gets nothing (audit round 2, C). CONTROL: an open task
+// is written to.
+func TestAddCommentOnceRefusesAClosedTask(t *testing.T) {
+	store, ctx := flagIdleStore(t)
+	mk := func() Note {
+		n, err := store.Create(ctx, Note{Body: "x"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = store.Delete(ctx, n.ID) })
+		return n
+	}
+	open := mk()
+	if w, err := store.AddCommentOnce(ctx, Comment{NoteID: open.ID, Author: "plugin:x", Body: "c"}); err != nil || !w {
+		t.Fatalf("CONTROL: an open task: wrote=%v err=%v", w, err)
+	}
+	done := mk()
+	if _, err := store.SetStatus(ctx, done.ID, "complete"); err != nil {
+		t.Fatal(err)
+	}
+	merged := mk()
+	if _, err := store.AddTags(ctx, merged.ID, []string{NSSupersededBy + ":1"}); err != nil {
+		t.Fatal(err)
+	}
+	for name, n := range map[string]Note{"complete": done, "superseded": merged} {
+		w, err := store.AddCommentOnce(ctx, Comment{NoteID: n.ID, Author: "plugin:x", Body: "c"})
+		if err == nil || w {
+			t.Errorf("%s task: wrote=%v err=%v; want ErrNoRows and nothing written", name, w, err)
+		}
+		if cs, _ := store.ListComments(ctx, n.ID); len(cs) != 0 {
+			t.Errorf("%s task gained %d comment(s)", name, len(cs))
+		}
+	}
+}
