@@ -43,6 +43,9 @@ type pasteCall struct {
 	user                int64
 	host, session, text string
 	target              mirror.PasteTarget
+	// expect is the turn a queued paste carried (mirror.ExpectTurn); nil for
+	// a person's.
+	expect *mirror.Turn
 }
 
 // fakeMirrorV2 is the plugin's rendered-view half, played: Watch serves
@@ -82,16 +85,37 @@ func (f *fakeMirror) WatchWindow(ctx context.Context, host, session, window, gen
 	return nil
 }
 
-func (f *fakeMirror) PasteWindow(ctx context.Context, host, session, window, text string, target mirror.PasteTarget) error {
+// PasteWindow plays the hub's paste: window "" resolves to the session's
+// active window (reported through mirror.ReportWindow), and a queued paste
+// (mirror.ExpectTurn) is refused as superseded, recording no paste, when the
+// fake's agentState no longer has the Since and Pasted it was decided on.
+func (f *fakeMirror) PasteWindow(ctx context.Context, host, session, window, text string, target mirror.PasteTarget, opts ...mirror.PasteOption) error {
 	if f.v2 == nil {
 		return mirror.ErrNoRenderedView
 	}
+	o := mirror.PasteOptionsOf(opts...)
 	f.mu.Lock()
 	f.asked = append(f.asked, window)
+	resolved := window
+	for _, w := range f.windows {
+		if window == "" && w.Session == session && w.Active {
+			resolved = w.ID
+		}
+	}
+	if o.Window != nil {
+		*o.Window = resolved
+	}
+	var sup error
+	if o.Expect != nil && f.agentState != nil && (f.agentState.Since != o.Expect.Since || f.agentState.Pasted != o.Expect.Pasted) {
+		sup = &mirror.SupersededError{Pasted: f.agentState.Pasted}
+	}
 	f.mu.Unlock()
+	if sup != nil {
+		return sup
+	}
 	f.v2.mu.Lock()
 	defer f.v2.mu.Unlock()
-	f.v2.pastes = append(f.v2.pastes, pasteCall{f.user(ctx), host, session, text, target})
+	f.v2.pastes = append(f.v2.pastes, pasteCall{f.user(ctx), host, session, text, target, o.Expect})
 	if f.user(ctx) != 1 {
 		return mirror.ErrHostOffline
 	}
@@ -361,7 +385,7 @@ func TestASendIsGatedOnInteractiveAndAFreshSignIn(t *testing.T) {
 		if resp.StatusCode != c.status || (len(pastes) == 1) != c.pasted {
 			t.Errorf("%s: %d %q, pasted %+v; want %d pasted=%v", c.name, resp.StatusCode, body, pastes, c.status, c.pasted)
 		}
-		if c.pasted && pastes[0] != (pasteCall{1, "ws", "main", "!ls /srv", mirror.PasteClaude}) {
+		if c.pasted && pastes[0] != (pasteCall{1, "ws", "main", "!ls /srv", mirror.PasteClaude, nil}) {
 			t.Errorf("%s: pasted %+v", c.name, pastes[0])
 		}
 		if c.stale && (resp.Header.Get("X-Muster-Step-Up") != "required" || !strings.Contains(string(body), stepup.ErrStale.Error())) {
@@ -413,7 +437,7 @@ func (m *isoMirror) WatchWindow(ctx context.Context, host, _, _, _ string, _ int
 	return mirror.ErrNoRenderedView
 }
 
-func (m *isoMirror) PasteWindow(ctx context.Context, host, _, _, _ string, _ mirror.PasteTarget) error {
+func (m *isoMirror) PasteWindow(ctx context.Context, host, _, _, _ string, _ mirror.PasteTarget, _ ...mirror.PasteOption) error {
 	if !m.mine(ctx) || host != m.host {
 		return mirror.ErrHostOffline
 	}

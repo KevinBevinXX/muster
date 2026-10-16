@@ -11,10 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/gotrue/gotruetest"
+	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -193,7 +195,9 @@ func TestTheClaimAdminCommandPrintsASingleLiveLink(t *testing.T) {
 }
 
 // TestTheUserDisableCommandSetsTheRowAndBansTheLogin runs `user disable` and
-// `user enable` against Postgres and the fake GoTrue.
+// `user enable` against Postgres and the fake GoTrue. A disable also cancels
+// the user's queued messages (N4), as the admin page's does, and leaves
+// another user's alone.
 func TestTheUserDisableCommandSetsTheRowAndBansTheLogin(t *testing.T) {
 	dsn := dbtest.DSN(t)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -212,8 +216,25 @@ func TestTheUserDisableCommandSetsTheRowAndBansTheLogin(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		bg := authz.System(context.Background())
+		_, _ = pool.Exec(bg, `DELETE FROM send_queue WHERE owner_id = $1`, id)
 		_, _ = pool.Exec(bg, `DELETE FROM audit_log WHERE object = $1`, users.UserObject(id))
 		_, _ = pool.Exec(bg, `DELETE FROM users WHERE id = $1`, id)
+	})
+	queue := sendqueue.NewPG(pool)
+	asUser := func(uid int64) context.Context {
+		return authz.WithPrincipal(ctx, authz.Principal{UserID: uid, Role: authz.RoleMember, Via: authz.ViaSession})
+	}
+	enqueue := func(uid int64) sendqueue.Item {
+		it, err := queue.Enqueue(asUser(uid), sendqueue.Item{Target: sendqueue.Target{Host: "laptop", Session: "work", Window: "@1"},
+			Body: "queued before the disable", StepUpAt: time.Now()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return it
+	}
+	mine, theirs := enqueue(id), enqueue(authz.OperatorUserID)
+	t.Cleanup(func() {
+		_, _ = pool.Exec(authz.System(context.Background()), `DELETE FROM send_queue WHERE id = $1`, theirs.ID)
 	})
 	env := map[string]string{envDatabase: dsn, envGoTrueURL: fake.URL, envGoTrueSecret: accountsSecret}
 	var out, errb bytes.Buffer
@@ -226,6 +247,12 @@ func TestTheUserDisableCommandSetsTheRowAndBansTheLogin(t *testing.T) {
 	}
 	if fu, _ := fake.User(sub); !fu.Banned {
 		t.Fatal("GoTrue user not banned")
+	}
+	if got, err := queue.Get(asUser(id), mine.ID); err != nil || got.State != sendqueue.Cancelled || got.Detail != api.SendQueueCancelDisabled {
+		t.Fatalf("the disabled user's queued message = %+v, %v; want cancelled, %q", got, err, api.SendQueueCancelDisabled)
+	}
+	if got, err := queue.Get(asUser(authz.OperatorUserID), theirs.ID); err != nil || got.State != sendqueue.Queued {
+		t.Fatalf("CONTROL: another user's queued message = %+v, %v; want still queued", got, err)
 	}
 	if rc := runAccountCommand(ctx, []string{"user", "enable", strconv.FormatInt(id, 10)}, func(k string) string { return env[k] }, &out, &errb); rc != 0 {
 		t.Fatalf("enable: rc=%d %s", rc, errb.String())

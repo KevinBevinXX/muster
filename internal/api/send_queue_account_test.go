@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/gotrue"
 	"github.com/ZacxDev/muster/internal/gotrue/gotruetest"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/sendqueue"
@@ -60,7 +62,7 @@ func (r *queueAccountRig) queued(t *testing.T, body string) sendqueue.Item {
 
 // deliver is the dispatcher's delivery of it, as its owner.
 func (r *queueAccountRig) deliver(it sendqueue.Item) sendqueue.Outcome {
-	return r.s.sendQueueSend(r.s.queuedPrincipal(context.Background(), it.Owner), it)
+	return r.s.sendQueueSend(r.s.queuedPrincipal(context.Background(), it.Owner), it, sendqueue.AgentState{Idle: true})
 }
 
 func (r *queueAccountRig) pastes() int {
@@ -227,5 +229,105 @@ func TestAManualSendHoldsTheQueueForItsTurn(t *testing.T) {
 	fm.agentState.Since, fm.agentState.Observed = before+1, time.Now().Add(-s.sendQueueIdle())
 	if d := decide(); !d.Send {
 		t.Fatalf("after the Send's turn ended: %+v; want send", d)
+	}
+}
+
+// login signs user 1 in through the real sign-in route and returns the cookies.
+func (r *queueAccountRig) login(t *testing.T) (string, string) {
+	t.Helper()
+	w := do(r.edge, "POST", "/login", url.Values{"email": {"owner@example.com"}, "password": {queueOwnerPW}})
+	ck := setCookies(w)
+	if w.Code != http.StatusSeeOther || ck[accessCookieName] == nil {
+		t.Fatalf("sign-in: %d %v", w.Code, ck)
+	}
+	return ck[accessCookieName].Value, ck[refreshCookieName].Value
+}
+
+// TestSigningOutEverywhereHoldsAtSendTimeWhateverTheCancel (N3): a sign-out
+// everywhere is RECORDED (users.signed_out_at) and the delivery checks it, so
+// it holds when the cancel does not: with CancelOwner failing, the message
+// queued before the sign-out stays queued — and its delivery is refused,
+// pasting nothing. So is a message whose queue request was admitted on a
+// sign-in from before the sign-out and committed after it (the cancel never
+// saw it). The control is a message queued under a sign-in AFTER the
+// sign-out, which is sent.
+func TestSigningOutEverywhereHoldsAtSendTimeWhateverTheCancel(t *testing.T) {
+	r := newQueueAccountRig(t)
+	r.queue.cancelOwnerErr = errors.New("simulated: the queue's database is unreachable")
+	signedIn := time.Now().Add(-time.Minute)
+	before, err := r.queue.Enqueue(asQueueUser(1, signedIn), sendqueue.Item{Target: queueTarget, Body: "queued before", StepUpAt: signedIn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at, rt := r.login(t)
+	if w := do(r.edge, "POST", "/logout", url.Values{"scope": {"global"}}, withCookies(at, rt)); w.Code != http.StatusSeeOther {
+		t.Fatalf("global logout: %d", w.Code)
+	}
+	if got := r.stateOf(t, before.ID); got.State != sendqueue.Queued {
+		t.Fatalf("with CancelOwner failing the row should still be queued, got %+v", got)
+	}
+	if o := r.deliver(before); o.Sent || o.MayHaveDelivered || o.Detail != SendQueueOwnerCutoff {
+		t.Fatalf("delivery of a message queued before the sign-out = %+v; want failed, %q", o, SendQueueOwnerCutoff)
+	}
+	// Admitted on the old sign-in, committed after the sign-out.
+	late, err := r.queue.Enqueue(asQueueUser(1, signedIn), sendqueue.Item{Target: queueTarget, Body: "committed after", StepUpAt: signedIn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o := r.deliver(late); o.Sent || o.Detail != SendQueueOwnerCutoff {
+		t.Fatalf("delivery of a message committed after the sign-out = %+v; want failed, %q", o, SendQueueOwnerCutoff)
+	}
+	if n := r.pastes(); n != 0 {
+		t.Fatalf("%d paste(s) after a sign-out everywhere", n)
+	}
+	// CONTROL: a sign-in after the sign-out queues a message that is sent.
+	after := time.Now().Add(2 * time.Second)
+	fresh := sendqueue.Item{ID: 99, Owner: 1, Target: queueTarget, Body: "queued after", StepUpAt: after}
+	if o := r.deliver(fresh); !o.Sent || r.pastes() != 1 {
+		t.Fatalf("CONTROL: a sign-in after the sign-out = %+v, %d paste(s)", o, r.pastes())
+	}
+}
+
+// TestASignOutOfASessionlessTokenIsEverywhereForTheQueueToo (N3): a sign-out
+// whose token names no session cannot revoke that session alone, so the
+// session tier cuts off the whole subject (signsOutEverywhere) — and the
+// queue follows the SAME predicate: the cutoff is recorded and the queued
+// message is cancelled and refused at delivery. The control is a plain
+// sign-out of a token WITH a session, which leaves the queue alone.
+func TestASignOutOfASessionlessTokenIsEverywhereForTheQueueToo(t *testing.T) {
+	r := newQueueAccountRig(t)
+	signedIn := time.Now().Add(-time.Minute)
+	m, err := r.queue.Enqueue(asQueueUser(1, signedIn), sendqueue.Item{Target: queueTarget, Body: "queued", StepUpAt: signedIn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at, rt := r.login(t)
+	if w := do(r.edge, "POST", "/logout", url.Values{}, withCookies(at, rt)); w.Code != http.StatusSeeOther {
+		t.Fatalf("logout: %d", w.Code)
+	}
+	if got := r.stateOf(t, m.ID); got.State != sendqueue.Queued {
+		t.Fatalf("CONTROL: a sign-out of one session moved the queue to %+v", got)
+	}
+	if u, _ := r.store.ByID(context.Background(), 1); u.SignedOutAt != nil {
+		t.Fatalf("CONTROL: a sign-out of one session recorded a sign-out everywhere at %v", u.SignedOutAt)
+	}
+	now := r.fake.Now()
+	sessionless, err := gotrue.Sign(gtSecret, gotrue.Claims{Subject: r.owner, Issuer: gotruetest.Issuer,
+		Audience: gotrue.Audience{gotruetest.Audience}, IssuedAt: now.Unix(), ExpiresAt: now.Add(10 * time.Minute).Unix(),
+		Role: "authenticated", Email: "owner@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := do(r.edge, "POST", "/logout", url.Values{}, withCookies(sessionless, "")); w.Code != http.StatusSeeOther {
+		t.Fatalf("logout of a sessionless token: %d", w.Code)
+	}
+	if u, _ := r.store.ByID(context.Background(), 1); u.SignedOutAt == nil {
+		t.Fatal("a sign-out the session tier treats as everywhere recorded no sign-out everywhere")
+	}
+	if got := r.stateOf(t, m.ID); got.State != sendqueue.Cancelled || got.Detail != SendQueueCancelSignOut {
+		t.Fatalf("after a sessionless sign-out: %+v; want cancelled, %q", got, SendQueueCancelSignOut)
+	}
+	if o := r.deliver(m); o.Sent || o.Detail != SendQueueOwnerCutoff || r.pastes() != 0 {
+		t.Fatalf("delivery after a sessionless sign-out = %+v, %d paste(s); want refused, %q", o, r.pastes(), SendQueueOwnerCutoff)
 	}
 }

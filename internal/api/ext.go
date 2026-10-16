@@ -219,8 +219,10 @@ type Mirror interface {
 	// PasteWindow types a message into that window's pane and presses Enter:
 	// its Claude pane only, or its active pane whatever runs there (target).
 	// The caller has already required the step-up; the plugin requires it
-	// again.
-	PasteWindow(ctx context.Context, host, session, window, text string, target mirror.PasteTarget) error
+	// again. opts: mirror.ExpectTurn (a queued message: refused as
+	// superseded if the window's turn moved) and mirror.ReportWindow (the
+	// window id "" resolved to).
+	PasteWindow(ctx context.Context, host, session, window, text string, target mirror.PasteTarget, opts ...mirror.PasteOption) error
 	// AgentState is whether the Claude Code session in that window is busy,
 	// idle or waiting, and since when — or why it is unknown (an older
 	// muster-mirror reports none). What the send queue waits on.

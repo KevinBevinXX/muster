@@ -442,15 +442,22 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 // this records it on the window's open queue rows too (sendQueueNotePaste), so
 // a queued message waits for the turn a person's own Send started — across a
 // restart as well.
-func (s *Server) mirrorPaste(ctx context.Context, host, session, window, text, nonce string, target mirror.PasteTarget) (repeat bool, err error) {
-	repeat, err = s.mirrorPasteOnce(ctx, host, session, window, text, nonce, target)
+//
+// opts go to the plugin's PasteWindow (a queued message's mirror.ExpectTurn).
+// The window id the plugin resolved is what the queue rows are stamped for, so
+// a Send to the session's ACTIVE window (window "") holds that window's queue
+// too.
+func (s *Server) mirrorPaste(ctx context.Context, host, session, window, text, nonce string, target mirror.PasteTarget, opts ...mirror.PasteOption) (repeat bool, err error) {
+	resolved := window
+	opts = append(opts, mirror.ReportWindow(&resolved))
+	repeat, err = s.mirrorPasteOnce(ctx, host, session, window, text, nonce, target, opts...)
 	if !repeat && (err == nil || errors.Is(err, mirror.ErrPasteUnconfirmed)) {
-		s.sendQueueNotePaste(ctx, host, session, window)
+		s.sendQueueNotePaste(ctx, host, session, resolved)
 	}
 	return repeat, err
 }
 
-func (s *Server) mirrorPasteOnce(ctx context.Context, host, session, window, text, nonce string, target mirror.PasteTarget) (repeat bool, err error) {
+func (s *Server) mirrorPasteOnce(ctx context.Context, host, session, window, text, nonce string, target mirror.PasteTarget, opts ...mirror.PasteOption) (repeat bool, err error) {
 	repeat, finish := s.sends.begin(requestOwner(ctx), nonce, text)
 	if repeat {
 		return true, nil
@@ -458,7 +465,7 @@ func (s *Server) mirrorPasteOnce(ctx context.Context, host, session, window, tex
 	pctx, cancel := context.WithTimeout(ctx, mirrorSendTimeout)
 	defer cancel()
 	// window == "" is the session's active window (mirror.Hub.PasteWindow).
-	if err := s.ext.Mirror.PasteWindow(pctx, host, session, window, text, target); err != nil {
+	if err := s.ext.Mirror.PasteWindow(pctx, host, session, window, text, target, opts...); err != nil {
 		finish(false)
 		return false, err
 	}

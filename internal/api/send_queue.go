@@ -46,13 +46,17 @@ import (
 // the message FAILS with a reason and is not sent; nothing about the queue
 // widens the window or mints a fresher time.
 //
-// 🔴 AND THE ACCOUNT IS RE-CHECKED WHEN IT IS SENT. A disable and a sign-out
-// everywhere cancel the owner's queued messages (cancelQueuedFor), and the
-// delivery itself refuses — fails, saying why, pasting nothing — when the
-// owner is disabled or the recorded sign-in is at or before the account's
-// session cutoff (users.sessions_not_before: every disable and password
-// reset moves it). A message already being sent when the account changed is
-// past stopping.
+// 🔴 AND THE ACCOUNT IS RE-CHECKED WHEN IT IS SENT, FROM THE DATABASE. The
+// delivery refuses — fails, saying why, pasting nothing — when the owner is
+// disabled, or the recorded sign-in is at or before the account's session
+// cutoff (users.sessions_not_before: every disable and password reset moves
+// it) or its latest sign-out everywhere (users.signed_out_at, which the
+// logout handler stamps: signedOutEverywhere). That check is the guarantee: it
+// holds on every pod and across a restart, for a message queued by a request
+// that committed after the sign-out, and when cancelling failed. A disable and
+// a sign-out everywhere also cancel the owner's queued messages
+// (cancelQueuedFor), so the list says so at once. A message already being sent
+// when the account changed is past stopping.
 //
 // 🔴 UNKNOWN IS NOT IDLE (fail closed). For a mirror host whose muster-mirror
 // does not report Claude Code's status, or a window that is not Claude Code,
@@ -431,7 +435,14 @@ func sendQueueNonce(id int64) string { return fmt.Sprintf("send-queue-%020d", id
 // sendQueueSend delivers one claimed message: mirrorSend's gates, then
 // mirrorPaste into the window's Claude Code pane. ctx acts as the message's
 // owner; the sign-in time presented is the one the message was QUEUED with.
-func (s *Server) sendQueueSend(ctx context.Context, it sendqueue.Item) sendqueue.Outcome {
+//
+// 🔴 THE PASTE CARRIES THE TURN IT WAS DECIDED ON (st's Since and Pasted;
+// mirror.ExpectTurn). A person's Send that lands between the dispatcher's
+// decision and this paste moves the window's Pasted (or is still in flight),
+// and the hub then refuses this paste under the same lock that records the
+// Send — nothing reaches the host — so the message goes back to queued behind
+// the Send's turn (Outcome.Superseded) instead of being pasted into it.
+func (s *Server) sendQueueSend(ctx context.Context, it sendqueue.Item, st sendqueue.AgentState) sendqueue.Outcome {
 	ctx = stepup.WithAuthTime(ctx, it.StepUpAt)
 	if s.ext.Mirror == nil {
 		return sendqueue.Outcome{Detail: "Not sent: mirrored sessions are off on this server."}
@@ -456,12 +467,16 @@ func (s *Server) sendQueueSend(ctx context.Context, it sendqueue.Item) sendqueue
 	if !stepup.Fresh(ctx, s.stepUpNow()) {
 		return sendQueueStale()
 	}
-	repeat, err := s.mirrorPaste(ctx, it.Target.Host, it.Target.Session, it.Target.Window, it.Body, sendQueueNonce(it.ID), mirror.PasteClaude)
+	repeat, err := s.mirrorPaste(ctx, it.Target.Host, it.Target.Session, it.Target.Window, it.Body, sendQueueNonce(it.ID), mirror.PasteClaude,
+		mirror.ExpectTurn(mirror.Turn{Since: st.Since, Pasted: st.Pasted}))
+	var sup *mirror.SupersededError
 	switch {
 	case repeat:
 		return sendqueue.Outcome{Sent: true, Detail: "Sent (already delivered once; not pasted again)."}
 	case errors.Is(err, mirror.ErrStepUpRequired):
 		return sendQueueStale()
+	case errors.As(err, &sup):
+		return sendqueue.Outcome{Superseded: true, AfterSince: sup.Pasted, Detail: unprefixed(err)}
 	case err != nil:
 		return sendqueue.Outcome{MayHaveDelivered: errors.Is(err, mirror.ErrPasteUnconfirmed),
 			Detail: "Not sent: " + unprefixed(err)}
@@ -473,7 +488,7 @@ func (s *Server) sendQueueSend(ctx context.Context, it sendqueue.Item) sendqueue
 // (sendQueueOwnerRefusal), and why it was cancelled (cancelQueuedFor).
 const (
 	SendQueueOwnerDisabled  = "Not sent: the account that queued it is disabled."
-	SendQueueOwnerCutoff    = "Not sent: the account that queued it was signed out of every session (a disable or a password reset) after it was queued. Queue it again."
+	SendQueueOwnerCutoff    = "Not sent: the account that queued it was signed out of every session (a disable, a password reset or a sign-out everywhere) after it was queued. Queue it again."
 	SendQueueOwnerUnchecked = "Not sent: the account that queued it could not be checked. Queue it again."
 	SendQueueCancelDisabled = "Cancelled: the account was disabled."
 	SendQueueCancelSignOut  = "Cancelled: signed out everywhere."
@@ -481,10 +496,11 @@ const (
 
 // sendQueueOwnerRefusal is why it's owner can no longer send it, "" when they
 // can: the owner is disabled, or the sign-in that queued it is at or before
-// the account's session cutoff — the same "at or before, in whole seconds"
-// rule the session tier applies to a token (issuedBeforeCutoff). It fails
-// closed: an account that cannot be read sends nothing. Without accounts (the
-// operator password) there is nobody to disable.
+// the account's session cutoff or its latest sign-out everywhere — the same
+// "at or before, in whole seconds" rule the session tier applies to a token
+// (issuedBeforeCutoff). It fails closed: an account that cannot be read sends
+// nothing. Without accounts (the operator password) there is nobody to
+// disable.
 func (s *Server) sendQueueOwnerRefusal(ctx context.Context, it sendqueue.Item) string {
 	if s.gt == nil || s.gt.Users == nil {
 		return ""
@@ -496,10 +512,31 @@ func (s *Server) sendQueueOwnerRefusal(ctx context.Context, it sendqueue.Item) s
 		return SendQueueOwnerUnchecked
 	case u.Disabled():
 		return SendQueueOwnerDisabled
-	case u.SessionsNotBefore != nil && it.StepUpAt.Unix() <= u.SessionsNotBefore.Unix():
+	case atOrBefore(it.StepUpAt, u.SessionsNotBefore), atOrBefore(it.StepUpAt, u.SignedOutAt):
 		return SendQueueOwnerCutoff
 	}
 	return ""
+}
+
+// atOrBefore is whether at is at or before cut, in whole seconds; false for
+// no cut.
+func atOrBefore(at time.Time, cut *time.Time) bool {
+	return cut != nil && at.Unix() <= cut.Unix()
+}
+
+// signedOutEverywhere is what a sign-out of every session of user uid does to
+// the queue: it records the sign-out durably (users.signed_out_at), which the
+// delivery checks, and cancels the queued messages so the list says so. The
+// record is the guarantee and the cancel the courtesy: a failed cancel leaves
+// rows queued that the delivery refuses (both are logged).
+func (s *Server) signedOutEverywhere(ctx context.Context, uid int64) {
+	if s.gt != nil && s.gt.Users != nil {
+		if _, err := s.gt.Users.RecordSignOutEverywhere(ctx, uid); err != nil {
+			s.logger.Printf("logout: record user %d's sign-out everywhere: %v (their queued messages are cancelled, "+
+				"but one queued by a request still in flight may be sent)", uid, err)
+		}
+	}
+	s.cancelQueuedFor(ctx, uid, SendQueueCancelSignOut)
 }
 
 // cancelQueuedFor cancels every message user uid still has queued, saying why:
@@ -510,7 +547,8 @@ func (s *Server) cancelQueuedFor(ctx context.Context, uid int64, detail string) 
 	}
 	n, err := s.ext.SendQueue.CancelOwner(ctx, uid, s.sendQueueNow(), detail)
 	if err != nil {
-		s.logger.Printf("sendqueue: cancel user %d's queued messages: %v", uid, err)
+		// Not a hole: the delivery re-checks the account (sendQueueOwnerRefusal).
+		s.logger.Printf("sendqueue: cancel user %d's queued messages: %v (the delivery still refuses them)", uid, err)
 		return
 	}
 	if n > 0 {
@@ -521,7 +559,9 @@ func (s *Server) cancelQueuedFor(ctx context.Context, uid int64, detail string) 
 // sendQueueNotePaste records on (host, session, window)'s open queue rows the
 // status time the hub held at the paste just made into it (mirrorPaste), as
 // ctx's principal, so a queued message waits for that paste's turn even after
-// a restart. A window the hub has no status time for records nothing.
+// a restart. window is the id the paste RESOLVED to (a Send to the session's
+// active window included). A window the hub has no status time for records
+// nothing.
 func (s *Server) sendQueueNotePaste(ctx context.Context, host, session, window string) {
 	if s.ext.SendQueue == nil || s.ext.Mirror == nil || window == "" {
 		return
@@ -543,6 +583,13 @@ func sendQueueStale() sendqueue.Outcome {
 		". Confirm it's you and queue it again."}
 }
 
+// newSendQueueDispatcher is the dispatcher RunSendQueue runs: this server's
+// hooks, no Instance (each one makes its own: sendqueue.Dispatcher.InstanceID).
+func (s *Server) newSendQueueDispatcher() *sendqueue.Dispatcher {
+	return &sendqueue.Dispatcher{Store: s.ext.SendQueue, Probe: s.sendQueueProbe, Send: s.sendQueueSend,
+		AsOwner: s.queuedPrincipal, IdleFor: s.ext.SendQueueIdle, Now: s.sendQueueNow, Logger: s.logger}
+}
+
 // RunSendQueue runs the send queue's dispatcher until ctx ends. It does
 // nothing without a queue store. Started by cmd/muster-server beside the
 // other background loops.
@@ -550,8 +597,7 @@ func (s *Server) RunSendQueue(ctx context.Context, interval time.Duration) {
 	if s.ext.SendQueue == nil {
 		return
 	}
-	d := &sendqueue.Dispatcher{Store: s.ext.SendQueue, Probe: s.sendQueueProbe, Send: s.sendQueueSend,
-		AsOwner: s.queuedPrincipal, IdleFor: s.ext.SendQueueIdle, Now: s.sendQueueNow, Logger: s.logger}
+	d := s.newSendQueueDispatcher()
 	d.Init()
 	s.logger.Printf("sendqueue: dispatcher started: a queued message is sent once its Claude Code session has been idle for %s, "+
 		"one at a time per window (MUSTER_SEND_QUEUE_IDLE)", s.sendQueueIdle())

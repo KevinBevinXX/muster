@@ -2,6 +2,7 @@ package mirror_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -129,4 +130,84 @@ func TestObservedIsWhenTheHubFirstSawTheStatus(t *testing.T) {
 	if got := at().Observed; !got.After(second) {
 		t.Fatalf("a new status with the same time kept Observed at %v", got)
 	}
+}
+
+// TestAQueuedPasteIsRefusedWhenAnotherPasteGotInFirst (N1): a queued paste
+// carries the turn the send queue decided on (ExpectTurn: the AgentState's
+// Since and Pasted). A person's Send that lands between that decision and the
+// queued paste moves Pasted, so the hub refuses the queued paste —
+// ErrSuperseded, carrying the window's Pasted now — and the host receives
+// NOTHING for it. So does a Send still in flight (handed to the host, not yet
+// answered), and a status write after the decision (Since moved). The control
+// is a queued paste decided on the window's current turn, which is pasted.
+func TestAQueuedPasteIsRefusedWhenAnotherPasteGotInFirst(t *testing.T) {
+	r := newRig(t)
+	tok, _ := r.store.mint(t, 1, "h")
+	m := winHello("h", true, statusWindows(mirror.StatusIdle, t1)...)
+	m.StatusReport = true
+	raw, err := r.rawConnect(t, tok, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.online(t, 1, "h", "work")
+	at := func() mirror.AgentState { return r.svc.AgentState(asUser(1), "h", "work", "@1") }
+	turn := func() mirror.Turn { st := at(); return mirror.Turn{Since: st.Since, Pasted: st.Pasted} }
+	pastes := func() int { return len(raw.of(mirror.TypePaste)) }
+	answer := func(n int) {
+		go func() {
+			eventually(t, "the paste", func() bool { return pastes() == n })
+			raw.write(t, mirror.Msg{Type: mirror.TypePasted, ID: raw.of(mirror.TypePaste)[n-1].ID})
+		}()
+	}
+	queued := func(text string, decided mirror.Turn) error {
+		return r.svc.PasteWindow(asUser(1), "h", "work", "@1", text, mirror.PasteClaude, mirror.ExpectTurn(decided))
+	}
+	superseded := func(when string, err error, pasted int64, wantPastes int) {
+		t.Helper()
+		var sup *mirror.SupersededError
+		if !errors.As(err, &sup) || !errors.Is(err, mirror.ErrSuperseded) || sup.Pasted != pasted {
+			t.Fatalf("%s: the queued paste = %v; want superseded, Pasted %d", when, err, pasted)
+		}
+		time.Sleep(50 * time.Millisecond)
+		if n := pastes(); n != wantPastes {
+			t.Fatalf("%s: the host received %d paste(s), want %d: the queued one reached it", when, n, wantPastes)
+		}
+	}
+
+	// The queue decides on the window's turn; a person's Send lands first.
+	decided := turn()
+	answer(1)
+	if err := r.svc.PasteWindow(asUser(1), "h", "work", "@1", "sent by hand", mirror.PasteClaude); err != nil {
+		t.Fatal(err)
+	}
+	superseded("a Send between the decision and the paste", queued("queued", decided), t1, 1)
+
+	// CONTROL: decided on the turn as it is now, it is pasted.
+	answer(2)
+	if err := queued("queued, current turn", turn()); err != nil {
+		t.Fatalf("CONTROL: a queued paste on the current turn = %v", err)
+	}
+
+	// A status write after the decision: Since moved.
+	decided = turn()
+	raw.write(t, mirror.Msg{Type: mirror.TypeSessions, Windows: statusWindows(mirror.StatusIdle, t2)})
+	eventually(t, "the newer status", func() bool { return at().Since == t2 })
+	superseded("a status write after the decision", queued("queued", decided), t1, 2)
+
+	// A Send in flight: handed to the host, not answered yet.
+	sendDone := make(chan error, 1)
+	go func() {
+		sendDone <- r.svc.PasteWindow(asUser(1), "h", "work", "@1", "in flight", mirror.PasteClaude)
+	}()
+	eventually(t, "the Send reached the host", func() bool { return pastes() == 3 })
+	superseded("a Send still in flight", queued("queued", turn()), t1, 3)
+	raw.write(t, mirror.Msg{Type: mirror.TypePasted, ID: raw.of(mirror.TypePaste)[2].ID})
+	if err := <-sendDone; err != nil {
+		t.Fatal(err)
+	}
+	if p := at().Pasted; p != t2 {
+		t.Fatalf("after the in-flight Send landed, Pasted = %d, want %d", p, t2)
+	}
+	// A queued paste decided before that Send landed is refused, carrying it.
+	superseded("decided before the in-flight Send landed", queued("queued", mirror.Turn{Since: t2, Pasted: t1}), t2, 3)
 }

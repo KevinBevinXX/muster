@@ -60,7 +60,11 @@ no Queue.
   between two of the host's 5-second refreshes. There is no time-based
   fallback. A window that never reports a newer status keeps its queue held. A
   paste into another pane of a Claude Code window (from the Terminal view)
-  holds the queue the same way, until Claude Code's next turn.
+  holds the queue the same way, until Claude Code's next turn. A Send you make
+  in the moment between the server deciding to send a queued message and
+  pasting it wins: the queued paste is refused before it reaches the window,
+  and the message goes back to the queue behind your Send's turn.
+  A Send to a session with no window named counts for the window it went to.
 - **Clock skew does not matter.** Status times are the host's clock and are
   compared only with each other, and the idle time is measured on muster's
   clock. A host whose clock is ahead or behind neither stalls the queue nor
@@ -74,11 +78,14 @@ no Queue.
 - **At most 20** messages can wait per window. Finished ones are shown for a
   while and deleted after 7 days.
 - **Never twice.** A message is claimed (`queued` → `sending`) before it is sent
-  and never put back. The claim is a 30-second lease that the sending muster
-  renews while it sends. If that muster stops in the middle of a send, the
-  message is marked failed ("may or may not have been delivered") once the
-  lease has run out, and is not sent again. During a rolling update two muster
-  pods overlap, and neither fails or finishes the other's send.
+  and never put back once anything may have reached the window. (The one way
+  back to `queued` is the Send-wins case above, where nothing was pasted.) The
+  claim is a 30-second lease that the sending muster renews while it sends. If
+  that muster stops in the middle of a send, the message is marked failed ("may
+  or may not have been delivered") once the lease has run out, and is not sent
+  again. During a rolling update two muster pods overlap, and neither fails or
+  finishes the other's send. The lease is kept on the database's clock, so pods
+  whose clocks disagree still judge it the same way.
 
 🔴 **Step-up for a queued message is decided when you QUEUE it.** Queueing
 needs the same fresh sign-in a Send needs (the dialog, or the plain confirm page
@@ -89,13 +96,17 @@ only while the sign-in that queued it is still inside the step-up window. After
 that it fails, saying so, and is not sent. The queue never refreshes or extends
 the time.
 
-🔴 **A queued message does not outlive the account that queued it.** Disabling
-the account, or **Sign out everywhere**, cancels every message it has queued
-("Cancelled: …"). When a message is sent, the server also checks the account
-again: if it is disabled, or the sign-in that queued the message is at or before
-the account's session cutoff (moved by a disable or a password reset), the
-message fails, saying why, and nothing is pasted. Signing out of just the one
-session that queued it does not withdraw it; Cancel the message instead.
+🔴 **A queued message does not outlive the account that queued it.** When a
+message is sent, the server checks the account again, from the database: if it
+is disabled, or the sign-in that queued the message is at or before the
+account's session cutoff (moved by a disable or a password reset) or its latest
+**Sign out everywhere** (recorded on the account), the message fails, saying
+why, and nothing is pasted. That check is what holds on every server, after a
+restart, and for a message whose queue request was still in flight. Disabling
+the account (on the admin page or with `muster-server user disable`), or Sign
+out everywhere, also cancels every message it has queued ("Cancelled: …").
+Signing out of just the one session that queued it does not withdraw it;
+Cancel the message instead.
 
 ## It works without JavaScript, and a message is delivered once
 

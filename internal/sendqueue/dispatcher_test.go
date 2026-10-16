@@ -24,6 +24,8 @@ type fakeTarget struct {
 	// probedAs and sentAs are, per hook call, the item's owner and the owner
 	// its ctx was handed as.
 	probedAs, sentAs [][2]int64
+	// decidedOn is, per send, the state the send was handed.
+	decidedOn []AgentState
 }
 
 func (f *fakeTarget) set(st AgentState) {
@@ -50,9 +52,10 @@ func (f *fakeTarget) probe(ctx context.Context, h Head) AgentState {
 	return f.st
 }
 
-func (f *fakeTarget) send(ctx context.Context, it Item) Outcome {
+func (f *fakeTarget) send(ctx context.Context, it Item, st AgentState) Outcome {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.decidedOn = append(f.decidedOn, st)
 	f.sentAs = append(f.sentAs, [2]int64{it.Owner, ctxOwner(ctx)})
 	f.sends = append(f.sends, it.Body)
 	if f.outcome != nil {
@@ -213,10 +216,7 @@ func TestARestartMidSendDoesNotResend(t *testing.T) {
 	mustEnqueue(t, s, 2, mirrorItem("next"))
 	// The first process: claimed, then died (no Finish).
 	// Its lease ran out at t0+30s and nobody renewed it.
-	if _, ok, err := s.Claim(context.Background(), m1.ID, t0, Claim{By: "dead", Until: t0.Add(DefaultLease),
-		Since: t0.Add(-time.Hour).UnixMilli()}); err != nil || !ok {
-		t.Fatal(ok, err)
-	}
+	claimLapsed(t, s, m1.ID, "dead", t0.Add(-time.Hour).UnixMilli())
 
 	f := &fakeTarget{st: idleSince(t0.Add(-time.Hour))}
 	d := newDispatcher(s, f, c)
@@ -477,4 +477,63 @@ func TestTheHooksActAsTheMessagesOwner(t *testing.T) {
 	if _, err := d.Tick(context.Background()); err == nil {
 		t.Fatal("a dispatcher with no AsOwner ticked")
 	}
+}
+
+// TestASupersededSendGoesBackToQueued (N1): the send path is handed the state
+// the decision was made on. When it answers Superseded (the hub refused the
+// paste: a person's Send got into the window first, so NOTHING reached the
+// host), the row goes back to queued — unclaimed, nothing recorded as
+// delivered — waiting behind the window's Pasted at the refusal: not sent on
+// the same status, sent once a newer one has been idle for IdleFor. And the
+// claim's own status time is dropped: a refusal that names no newer paste
+// (the Send it lost to was itself refused) leaves the message sendable on the
+// same status, not stalled behind a turn that never started.
+func TestASupersededSendGoesBackToQueued(t *testing.T) {
+	s, _ := pgStore(t)
+	t0 := time.Now().Truncate(time.Second)
+	c := &clock{t: t0.Add(time.Hour)}
+	decided := idleSince(t0)
+	decided.Pasted = t0.Add(-time.Minute).UnixMilli()
+	f := &fakeTarget{st: decided}
+	d := newDispatcher(s, f, c)
+	m := mustEnqueue(t, s, 2, mirrorItem("superseded"))
+	pasted := t0.UnixMilli() // the person's Send, made while the window held t0
+	f.outcome = &Outcome{Superseded: true, AfterSince: pasted, Detail: "superseded"}
+	tick(t, d)
+	f.mu.Lock()
+	got := f.decidedOn
+	f.mu.Unlock()
+	if len(got) != 1 || got[0].Since != decided.Since || got[0].Pasted != decided.Pasted || !got[0].Observed.Equal(decided.Observed) {
+		t.Fatalf("the send path was handed %+v; want the state decided on, %+v", got, decided)
+	}
+	row, err := s.Get(as(2), m.ID)
+	if err != nil || row.State != Queued || row.ClaimedBy != "" || !row.LeaseUntil.IsZero() || !row.ClaimedAt.IsZero() ||
+		row.MayHaveDelivered || !row.FinishedAt.IsZero() || row.AfterSince != pasted || row.ClaimSince != 0 {
+		t.Fatalf("after a superseded send the row = %+v, %v; want queued, unclaimed, AfterSince %d", row, err, pasted)
+	}
+	// Held on the Send's status; sent after a newer one, idle IdleFor.
+	f.outcome = nil
+	f.set(AgentState{Idle: true, Since: pasted, Observed: t0, Pasted: pasted})
+	tick(t, d)
+	wantSent(t, f, "on the status the Send was made in", "superseded")
+	f.set(AgentState{Idle: true, Since: pasted + 1, Observed: c.now().Add(-idle), Pasted: pasted})
+	tick(t, d)
+	wantSent(t, f, "after the Send's turn", "superseded", "superseded")
+	if row, _ := s.Get(as(2), m.ID); row.State != Sent {
+		t.Fatalf("the row = %+v; want sent", row)
+	}
+
+	// A superseded refusal naming no newer paste: the claim's status time is
+	// not kept, so the same status sends it.
+	n := mustEnqueue(t, s, 2, mirrorItem("lost to a refused Send"))
+	same := AgentState{Idle: true, Since: pasted + 5, Observed: c.now().Add(-idle), Pasted: pasted}
+	f.set(same)
+	f.outcome = &Outcome{Superseded: true, AfterSince: pasted, Detail: "superseded"}
+	tick(t, d)
+	if row, _ := s.Get(as(2), n.ID); row.State != Queued || row.AfterSince != pasted {
+		t.Fatalf("the second row = %+v; want queued, AfterSince %d (not the claim's %d)", row, pasted, same.Since)
+	}
+	f.outcome = nil
+	tick(t, d)
+	wantSent(t, f, "the same status, after a refusal that named no newer paste", "superseded", "superseded", "lost to a refused Send", "lost to a refused Send")
 }

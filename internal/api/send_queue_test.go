@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -38,6 +39,8 @@ type memQueue struct {
 	sendqueue.DispatchStore // unused here; nil
 	mu                      sync.Mutex
 	items                   []sendqueue.Item
+	// cancelOwnerErr, when set, fails every CancelOwner, cancelling nothing.
+	cancelOwnerErr error
 }
 
 func queueUser(ctx context.Context) int64 {
@@ -117,6 +120,9 @@ func (m *memQueue) NotePaste(ctx context.Context, t sendqueue.Target, since int6
 func (m *memQueue) CancelOwner(_ context.Context, owner int64, _ time.Time, detail string) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.cancelOwnerErr != nil {
+		return 0, m.cancelOwnerErr
+	}
 	n := 0
 	for i, it := range m.items {
 		if it.Owner == owner && it.State == sendqueue.Queued {
@@ -332,23 +338,27 @@ func TestAQueuedMirrorMessageIsSentThroughTheSendPathWithItsOwnStepUp(t *testing
 	// itself FRESH: what is presented must be the item's time, not anything
 	// the caller carries.
 	ctx := stepup.WithAuthTime(s.queuedPrincipal(context.Background(), 1), time.Now())
+	// The state the dispatcher decided on: the paste must carry exactly it.
+	decided := sendqueue.AgentState{Idle: true, Since: 1792000001111, Pasted: 1792000000222, Observed: time.Now()}
 
-	if o := s.sendQueueSend(ctx, item(1, time.Now().Add(-stepup.Window()-time.Minute))); o.Sent || o.MayHaveDelivered ||
+	if o := s.sendQueueSend(ctx, item(1, time.Now().Add(-stepup.Window()-time.Minute)), decided); o.Sent || o.MayHaveDelivered ||
 		!strings.Contains(o.Detail, "Confirm it's you") {
 		t.Fatalf("a message queued under a sign-in past the window: %+v", o)
 	}
 	if _, pastes := fm.v2.snapshot(); len(pastes) != 0 {
 		t.Fatalf("a message past its step-up was pasted: %+v", pastes)
 	}
-	if o := s.sendQueueSend(ctx, item(2, time.Now())); !o.Sent {
+	if o := s.sendQueueSend(ctx, item(2, time.Now()), decided); !o.Sent {
 		t.Fatalf("a message inside its window: %+v", o)
 	}
 	_, pastes := fm.v2.snapshot()
-	if len(pastes) != 1 || pastes[0] != (pasteCall{1, "ws", "main", "queued text 2", mirror.PasteClaude}) {
+	if len(pastes) != 1 || pastes[0].expect == nil ||
+		*pastes[0].expect != (mirror.Turn{Since: 1792000001111, Pasted: 1792000000222}) ||
+		pastes[0] != (pasteCall{1, "ws", "main", "queued text 2", mirror.PasteClaude, pastes[0].expect}) {
 		t.Fatalf("pasted %+v; want one paste as user 1 into the Claude Code pane", pastes)
 	}
 	// The same message again is the send path's repeat: not pasted twice.
-	if o := s.sendQueueSend(ctx, item(2, time.Now())); !o.Sent {
+	if o := s.sendQueueSend(ctx, item(2, time.Now()), decided); !o.Sent {
 		t.Fatalf("a repeat: %+v", o)
 	}
 	if _, pastes := fm.v2.snapshot(); len(pastes) != 1 {
@@ -356,11 +366,11 @@ func TestAQueuedMirrorMessageIsSentThroughTheSendPathWithItsOwnStepUp(t *testing
 	}
 	// A paste the host never confirmed may have landed.
 	fm.v2.pasteErr = fmtUnconfirmed()
-	if o := s.sendQueueSend(ctx, item(3, time.Now())); o.Sent || !o.MayHaveDelivered {
+	if o := s.sendQueueSend(ctx, item(3, time.Now()), decided); o.Sent || !o.MayHaveDelivered {
 		t.Fatalf("an unconfirmed paste: %+v; want failed, may have been delivered", o)
 	}
 	fm.v2.pasteErr = mirror.ErrNotClaude
-	if o := s.sendQueueSend(ctx, item(4, time.Now())); o.Sent || o.MayHaveDelivered {
+	if o := s.sendQueueSend(ctx, item(4, time.Now()), decided); o.Sent || o.MayHaveDelivered {
 		t.Fatalf("a paste refused before the pane: %+v; want failed, not delivered", o)
 	}
 }
@@ -508,5 +518,99 @@ func TestTheComposersDrawQueueOnlyWhereItCanWork(t *testing.T) {
 	// CONTROL: the Rendered view of the same window, same server, does.
 	if _, page := mirrorGet(t, s, ts, ui.MirrorViewPath("ws", "main")+"&window=%401"); !strings.Contains(page, `id="mv-queue-send"`) {
 		t.Error("CONTROL: the Rendered view draws no Queue")
+	}
+}
+
+// TestASendBetweenTheDecisionAndTheQueuedPasteSupersedesIt (N1): the delivery
+// carries the state the dispatcher decided on (mirror.ExpectTurn); a person's
+// Send that lands after that decision moves the window's Pasted, and the
+// delivery is then refused before anything is pasted — Superseded, waiting
+// behind that Send's status time, nothing delivered — instead of being pasted
+// into the Send's turn. The control is the same delivery decided on the state
+// as it is after the Send, which pastes. (The hub's own refusal, under its
+// lock, is TestAQueuedPasteIsRefusedWhenAnotherPasteGotInFirst.)
+func TestASendBetweenTheDecisionAndTheQueuedPasteSupersedesIt(t *testing.T) {
+	fm := queueMirror()
+	s, _ := queueServer(t, fm, &memQueue{}, &turnGateway{})
+	const since = int64(1792000006666)
+	fm.agentState = &mirror.AgentState{Status: mirror.StatusIdle, Since: since, Observed: time.Now().Add(-time.Hour), Pasted: since - 1000}
+	user1 := stepup.WithAuthTime(asQueueUser(1, time.Now()), time.Now())
+	it := sendqueue.Item{ID: 7, Owner: 1, Target: queueTarget, Body: "queued", StepUpAt: time.Now()}
+	h := sendqueue.Head{Item: it}
+	st := s.sendQueueProbe(user1, h)
+	if d := s.sendQueueDecide(h, st); !d.Send {
+		t.Fatalf("CONTROL: the dispatcher's decision = %+v; want send", d)
+	}
+	// The person's Send, between the decision and the paste.
+	fm.onPaste = func() { fm.agentState.Pasted = since }
+	if _, err := s.mirrorPaste(user1, "ws", "main", "@1", "sent by hand", "manual-send-nonce-0002", mirror.PasteClaude); err != nil {
+		t.Fatal(err)
+	}
+	fm.onPaste = nil
+	ctx := stepup.WithAuthTime(s.queuedPrincipal(context.Background(), 1), time.Now())
+	o := s.sendQueueSend(ctx, it, st)
+	if !o.Superseded || o.Sent || o.MayHaveDelivered || o.AfterSince != since {
+		t.Fatalf("a delivery decided before a Send = %+v; want superseded behind %d, nothing delivered", o, since)
+	}
+	if _, pastes := fm.v2.snapshot(); len(pastes) != 1 || pastes[0].text != "sent by hand" {
+		t.Fatalf("pastes %+v; want only the person's Send", pastes)
+	}
+	// CONTROL: decided on the state after the Send, it is pasted.
+	if o := s.sendQueueSend(ctx, it, s.sendQueueProbe(user1, h)); !o.Sent {
+		t.Fatalf("CONTROL: a delivery decided after the Send = %+v; want sent", o)
+	}
+}
+
+// TestASendToTheActiveWindowHoldsThatWindowsQueue (N5): a Send that names no
+// window (the session's active window) is recorded on the queue rows of the
+// window it RESOLVED to, so they wait for its turn after a restart too. The
+// control is a row for another window, which it leaves alone.
+func TestASendToTheActiveWindowHoldsThatWindowsQueue(t *testing.T) {
+	fm := queueMirror()
+	q := &memQueue{}
+	s, _ := queueServer(t, fm, q, &turnGateway{})
+	const before = int64(1792000007777)
+	fm.agentState = &mirror.AgentState{Status: mirror.StatusIdle, Since: before, Observed: time.Now().Add(-time.Hour)}
+	user1 := stepup.WithAuthTime(asQueueUser(1, time.Now()), time.Now())
+	active, err := q.Enqueue(user1, sendqueue.Item{Target: queueTarget, Body: "queued for @1", StepUpAt: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := queueTarget
+	other.Window = "@3"
+	elsewhere, err := q.Enqueue(user1, sendqueue.Item{Target: other, Body: "queued for @3", StepUpAt: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm.onPaste = func() { fm.agentState.Pasted = before }
+	if _, err := s.mirrorPaste(user1, "ws", "main", "", "sent to the active window", "manual-send-nonce-0003", mirror.PasteClaude); err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range q.all() {
+		switch {
+		case it.ID == active.ID && it.AfterSince != before:
+			t.Fatalf("the active window's queued row has AfterSince %d after a Send to it, want %d", it.AfterSince, before)
+		case it.ID == elsewhere.ID && it.AfterSince != 0:
+			t.Fatalf("CONTROL: another window's row was stamped %d", it.AfterSince)
+		}
+	}
+}
+
+// TestEachDispatcherHasItsOwnInstanceID (N2): the dispatcher production runs
+// (newSendQueueDispatcher, what RunSendQueue starts) names itself; two of
+// them — two pods — never share a name, since a shared one would let each
+// renew and finish the other's claims. Both carry the host name.
+func TestEachDispatcherHasItsOwnInstanceID(t *testing.T) {
+	s, _ := queueServer(t, queueMirror(), &memQueue{}, &turnGateway{})
+	a, b := s.newSendQueueDispatcher(), s.newSendQueueDispatcher()
+	ida, idb := a.InstanceID(), b.InstanceID()
+	if ida == "" || ida == idb {
+		t.Fatalf("two dispatchers are named %q and %q; want two distinct names", ida, idb)
+	}
+	if again := a.InstanceID(); again != ida {
+		t.Fatalf("a dispatcher's name changed from %q to %q", ida, again)
+	}
+	if host, err := os.Hostname(); err == nil && !strings.HasPrefix(ida, host+"/") {
+		t.Fatalf("the name %q does not carry the host name %q", ida, host)
 	}
 }

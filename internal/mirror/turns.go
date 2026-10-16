@@ -16,6 +16,12 @@ import "time"
 // clock. A host clock that is minutes ahead or behind therefore neither stalls
 // the queue nor releases it early: neither comparison ever mixes the clocks.
 //
+// 🔴 A QUEUED PASTE IS REFUSED IF ANOTHER PASTE GOT IN FIRST. It carries the
+// turn it was decided on (ExpectTurn); beginPaste admits it only if no other
+// paste is in flight and the window's Since and Pasted are still that turn's,
+// in the same critical section that admits a person's Send — so the two are
+// never both pasted into one turn.
+//
 // They are kept on the hub, not on a connection, so a host that reconnects
 // keeps them; a revoked host's go with it, and a window the host no longer
 // lists is forgotten at its next list.
@@ -37,6 +43,9 @@ type turnState struct {
 	// pasted is the largest StatusSince the window held when something was
 	// pasted into it (0: nothing since the hub started).
 	pasted int64
+	// inflight counts the pastes into the window handed out (beginPaste) and
+	// not yet settled (endPaste): a queued paste is refused while any is.
+	inflight int
 }
 
 // observe records hc's window list at now: a window whose (status, time) pair
@@ -92,13 +101,22 @@ func (h *Hub) turn(owner int64, host, session, window string) turnState {
 	return turnState{}
 }
 
-// notePaste records that a paste which may have reached the window was handed
-// to it while the window held StatusSince since (read before the paste was
-// written). A paste refused before it reached the host, or by the host, is not
-// recorded: it started no turn, and recording it would hold the queue for one.
-func (h *Hub) notePaste(owner int64, host, session, window string, since int64) {
-	if since <= 0 || window == "" {
-		return
+// beginPaste admits a paste into the window, which holds StatusSince since
+// now, and returns the status time to record for it (endPaste). With expect
+// (a queued paste, decided on that turn) it is refused — ErrSuperseded, nothing
+// admitted — when another paste into the window is in flight, or the window's
+// Since or Pasted is no longer expect's. The check and the admission are one
+// critical section under turnsMu, so a person's Send and a queued message
+// cannot both be admitted on one turn: whichever is second either is the Send
+// (never refused) and supersedes the queued one if it has not been admitted
+// yet, or is the queued one and is refused.
+func (h *Hub) beginPaste(owner int64, host, session, window string, since int64, expect *Turn) (int64, error) {
+	if window == "" {
+		// A per-session host's session: no turns are kept (no status report).
+		if expect != nil {
+			return 0, &SupersededError{}
+		}
+		return since, nil
 	}
 	k := turnKey{owner, host, session, window}
 	h.turnsMu.Lock()
@@ -111,7 +129,37 @@ func (h *Hub) notePaste(owner int64, host, session, window string, since int64) 
 		t = &turnState{}
 		h.turns[k] = t
 	}
-	if since > t.pasted {
+	if expect != nil && (t.inflight > 0 || since != expect.Since || t.pasted != expect.Pasted) {
+		return 0, &SupersededError{Pasted: t.pasted}
+	}
+	t.inflight++
+	return since, nil
+}
+
+// endPaste settles a paste beginPaste admitted. landed: it may have reached
+// the window (confirmed, or handed over and never answered), and so is
+// recorded — Pasted rises to since, never lowers. A paste refused before it
+// reached the host, or by the host, is not recorded: it started no turn, and
+// recording it would hold the queue for one.
+func (h *Hub) endPaste(owner int64, host, session, window string, since int64, landed bool) {
+	if window == "" {
+		return
+	}
+	k := turnKey{owner, host, session, window}
+	h.turnsMu.Lock()
+	defer h.turnsMu.Unlock()
+	if h.turns == nil {
+		h.turns = map[turnKey]*turnState{}
+	}
+	t := h.turns[k]
+	if t == nil {
+		// Forgotten mid-paste (the host stopped listing the window).
+		t = &turnState{}
+		h.turns[k] = t
+	} else if t.inflight > 0 {
+		t.inflight--
+	}
+	if landed && since > t.pasted {
 		t.pasted = since
 	}
 }

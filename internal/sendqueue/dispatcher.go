@@ -47,7 +47,13 @@ import (
 // row for Lease, renews the claim every RenewEvery while the send runs, and
 // finishes only its own rows. Every pass first fails rows whose lease expired
 // (their sender stopped), so a pod that starts while another is mid-send — a
-// rolling update — leaves that send alone.
+// rolling update — leaves that send alone. The lease is on Postgres's clock.
+//
+// 🔴 A PASTE THAT LOST THE RACE GOES BACK, PASTING NOTHING. Send is handed the
+// state the decision was made on; a person's Send that got into the window
+// between the decision and the paste makes the send path refuse the paste
+// before it reaches the host (Outcome.Superseded), and the row is queued again
+// behind that Send's turn, to be decided on afresh.
 
 // AgentState is what the server can see of a target right now.
 type AgentState struct {
@@ -112,7 +118,7 @@ type DispatchStore interface {
 	Recover(ctx context.Context, now time.Time) (int, error)
 	Heads(ctx context.Context) ([]Head, error)
 	Claim(ctx context.Context, id int64, now time.Time, c Claim) (Item, bool, error)
-	Renew(ctx context.Context, id int64, by string, until time.Time) (bool, error)
+	Renew(ctx context.Context, id int64, by string, lease time.Duration) (bool, error)
 	Finish(ctx context.Context, id int64, by string, o Outcome, now time.Time) error
 	Prune(ctx context.Context, before time.Time) (int, error)
 }
@@ -121,8 +127,10 @@ type DispatchStore interface {
 type Probe func(ctx context.Context, h Head) AgentState
 
 // Sender sends one claimed message through the manual send path. ctx acts as
-// the message's owner.
-type Sender func(ctx context.Context, it Item) Outcome
+// the message's owner; st is the target's state the decision to send was made
+// on, which the send path must refuse to paste on if it has moved since
+// (Outcome.Superseded).
+type Sender func(ctx context.Context, it Item, st AgentState) Outcome
 
 // AsOwner is ctx acting as user owner: what Probe and Send are handed.
 type AsOwner func(ctx context.Context, owner int64) context.Context
@@ -153,7 +161,7 @@ type Dispatcher struct {
 	Now     func() time.Time
 	Logger  *log.Logger
 	// Instance names this dispatcher in its claims (claimed_by); "" is a
-	// random one, made once. Two dispatchers must never share one.
+	// random one, made once (InstanceID). Two dispatchers must never share one.
 	Instance string
 	// Lease and RenewEvery are the claim's lease and how often a send in
 	// progress renews it; 0 takes the defaults.
@@ -164,8 +172,9 @@ type Dispatcher struct {
 	instOnce sync.Once
 }
 
-// instance is d's claim name: Instance, or a random one made once.
-func (d *Dispatcher) instance() string {
+// InstanceID is d's claim name: Instance, or — unset — the host name and 8
+// random bytes, made once.
+func (d *Dispatcher) InstanceID() string {
 	d.instOnce.Do(func() {
 		if d.Instance != "" {
 			return
@@ -260,8 +269,7 @@ func (d *Dispatcher) Tick(ctx context.Context) (int, error) {
 		if !d.Decide(h, st).Send {
 			continue
 		}
-		now := d.now()
-		it, ok, err := d.Store.Claim(ctx, h.ID, now, Claim{By: d.instance(), Until: now.Add(d.lease()), Since: st.Since})
+		it, ok, err := d.Store.Claim(ctx, h.ID, d.now(), Claim{By: d.InstanceID(), Lease: d.lease(), Since: st.Since})
 		if err != nil {
 			d.logf("sendqueue: claim message %d (%s): %v", h.ID, h.Target, err)
 			continue
@@ -269,14 +277,23 @@ func (d *Dispatcher) Tick(ctx context.Context) (int, error) {
 		if !ok {
 			continue
 		}
-		o := d.sendRenewing(ctx, octx, it)
+		o := d.sendRenewing(ctx, octx, it, st)
 		if o.Sent {
 			o.MayHaveDelivered = true
 		}
+		if o.Sent || o.MayHaveDelivered {
+			o.Superseded = false
+		}
 		// The outcome is recorded even if ctx ended during the send: the row
 		// must not stay 'sending' (Recover would call it unknown).
-		if err := d.Store.Finish(context.WithoutCancel(ctx), it.ID, d.instance(), o, d.now()); err != nil {
+		if err := d.Store.Finish(context.WithoutCancel(ctx), it.ID, d.InstanceID(), o, d.now()); err != nil {
 			d.logf("sendqueue: record message %d (%s): %v", it.ID, it.Target, err)
+		}
+		if o.Superseded {
+			// Nothing reached the host: queued again, decided on afresh.
+			d.logf("sendqueue: message %d (%d bytes) to %s (owner %d) was superseded by a newer turn before it was pasted; queued again",
+				it.ID, len(it.Body), it.Target, it.Owner)
+			continue
 		}
 		if o.Sent {
 			d.logf("sendqueue: sent message %d (%d bytes) to %s (owner %d)", it.ID, len(it.Body), it.Target, it.Owner)
@@ -289,9 +306,10 @@ func (d *Dispatcher) Tick(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// sendRenewing is d.Send(octx, it), renewing it's claim every RenewEvery until
-// the send returns, so that no other instance's Recover fails a live send.
-func (d *Dispatcher) sendRenewing(ctx, octx context.Context, it Item) Outcome {
+// sendRenewing is d.Send(octx, it, st), renewing it's claim every RenewEvery
+// until the send returns, so that no other instance's Recover fails a live
+// send.
+func (d *Dispatcher) sendRenewing(ctx, octx context.Context, it Item, st AgentState) Outcome {
 	stop, done := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(done)
@@ -302,7 +320,7 @@ func (d *Dispatcher) sendRenewing(ctx, octx context.Context, it Item) Outcome {
 			case <-stop:
 				return
 			case <-t.C:
-				ok, err := d.Store.Renew(context.WithoutCancel(ctx), it.ID, d.instance(), d.now().Add(d.lease()))
+				ok, err := d.Store.Renew(context.WithoutCancel(ctx), it.ID, d.InstanceID(), d.lease())
 				if err != nil {
 					d.logf("sendqueue: renew the claim on message %d (%s): %v", it.ID, it.Target, err)
 				} else if !ok {
@@ -311,7 +329,7 @@ func (d *Dispatcher) sendRenewing(ctx, octx context.Context, it Item) Outcome {
 			}
 		}
 	}()
-	o := d.Send(octx, it)
+	o := d.Send(octx, it, st)
 	close(stop)
 	<-done
 	return o

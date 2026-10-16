@@ -51,8 +51,18 @@ func mirrorItem(body string) Item {
 }
 
 // claimFor is instance by's claim at now, a minute's lease, no status time.
-func claimFor(by string, now time.Time) Claim {
-	return Claim{By: by, Until: now.Add(time.Minute)}
+func claimFor(by string, _ time.Time) Claim {
+	return Claim{By: by, Lease: time.Minute}
+}
+
+// claimLapsed claims message id for by with since and lets the lease run out
+// on the database's clock (a millisecond's lease, then a wait well past it).
+func claimLapsed(t *testing.T, s *PGStore, id int64, by string, since int64) {
+	t.Helper()
+	if _, ok, err := s.Claim(context.Background(), id, time.Now(), Claim{By: by, Lease: time.Millisecond, Since: since}); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	time.Sleep(50 * time.Millisecond)
 }
 
 func mustEnqueue(t *testing.T, s *PGStore, uid int64, it Item) Item {
@@ -194,10 +204,7 @@ func TestRecoverFailsAMessageLeftSendingAndNeverRequeuesIt(t *testing.T) {
 	sys := context.Background()
 	m1 := mustEnqueue(t, s, 2, mirrorItem("one"))
 	m2 := mustEnqueue(t, s, 2, mirrorItem("two"))
-	claimed := time.Now().Add(-time.Minute).Truncate(time.Microsecond)
-	if _, ok, err := s.Claim(sys, m1.ID, claimed, Claim{By: "a", Until: claimed.Add(30 * time.Second), Since: 1234}); err != nil || !ok {
-		t.Fatal(ok, err)
-	}
+	claimLapsed(t, s, m1.ID, "a", 1234)
 	n, err := s.Recover(sys, time.Now())
 	if err != nil || n != 1 {
 		t.Fatalf("Recover = %d, %v; want 1", n, err)
@@ -236,7 +243,7 @@ func TestTheTurnAfterIsThePasteThatMayHaveLanded(t *testing.T) {
 	claimFinish := func(at time.Time, since int64, o Outcome) {
 		t.Helper()
 		it := mustEnqueue(t, s, 2, mirrorItem("x"))
-		if _, ok, err := s.Claim(sys, it.ID, at, Claim{By: "a", Until: at.Add(time.Minute), Since: since}); err != nil || !ok {
+		if _, ok, err := s.Claim(sys, it.ID, at, Claim{By: "a", Lease: time.Minute, Since: since}); err != nil || !ok {
 			t.Fatal(ok, err)
 		}
 		if err := s.Finish(sys, it.ID, "a", o, at); err != nil {

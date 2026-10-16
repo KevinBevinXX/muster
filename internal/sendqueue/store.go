@@ -14,11 +14,14 @@
 // (sys): they read and move every owner's rows, and hand each row to the
 // delivery, which acts as that row's owner.
 //
-// 🔴 A MESSAGE IS CLAIMED ONCE AND NEVER RETRIED. Claim moves a row from
-// queued to sending in one conditional UPDATE, and nothing ever moves a row
-// back: a send that fails is failed, and a process that dies mid-send leaves a
-// row that Recover marks failed (may have been delivered) once its claim's
-// lease has expired. A message is never pasted twice by the queue.
+// 🔴 A MESSAGE IS CLAIMED ONCE AND NEVER RETRIED AFTER ANYTHING REACHED THE
+// HOST. Claim moves a row from queued to sending in one conditional UPDATE: a
+// send that fails is failed, and a process that dies mid-send leaves a row that
+// Recover marks failed (may have been delivered) once its claim's lease has
+// expired. The ONE way back to queued is a send the hub refused as superseded
+// (Outcome.Superseded: another paste got into the window between the decision
+// and the paste), which by construction wrote nothing to the host. A message is
+// never pasted twice by the queue.
 //
 // 🔴 A CLAIM IS A LEASE, HELD BY ONE INSTANCE. Claim records the claiming
 // dispatcher (claimed_by) and lease_until, Renew extends it while the send
@@ -107,9 +110,14 @@ type Item struct {
 	// (0: none): the next message waits for a newer one (Decide).
 	AfterSince int64
 	// ClaimedBy and LeaseUntil are the claim: the dispatcher instance sending
-	// the row, and until when its claim holds unless renewed.
+	// the row, and until when its claim holds unless renewed (on Postgres's
+	// clock).
 	ClaimedBy  string
 	LeaseUntil time.Time
+	// ClaimSince is the status time (host clock) the claim was decided on:
+	// folded into AfterSince when the row finishes (or is recovered), dropped
+	// when the send was superseded and the row goes back to queued.
+	ClaimSince int64
 }
 
 // MaxOpenPerTarget bounds the messages one target may have queued (or being
@@ -151,13 +159,13 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 // cols is every column an Item is read from, in scanItem's order.
 const cols = `id, owner_id, mirror_host, mirror_session, mirror_window, body, stepup_at, state, detail,
 	may_have_delivered, created_at, coalesce(claimed_at, 'epoch'::timestamptz), coalesce(finished_at, 'epoch'::timestamptz),
-	after_since, coalesce(claimed_by, ''), coalesce(lease_until, 'epoch'::timestamptz)`
+	after_since, coalesce(claimed_by, ''), coalesce(lease_until, 'epoch'::timestamptz), claim_since`
 
 // itemDests is where cols scan into it, with its state into state.
 func itemDests(it *Item, state *string) []any {
 	return []any{&it.ID, &it.Owner, &it.Target.Host, &it.Target.Session, &it.Target.Window,
 		&it.Body, &it.StepUpAt, state, &it.Detail, &it.MayHaveDelivered, &it.CreatedAt, &it.ClaimedAt, &it.FinishedAt,
-		&it.AfterSince, &it.ClaimedBy, &it.LeaseUntil}
+		&it.AfterSince, &it.ClaimedBy, &it.LeaseUntil, &it.ClaimSince}
 }
 
 // settle finishes a scanned item: its state, and the epoch placeholders back to
@@ -367,13 +375,20 @@ func sys(ctx context.Context) context.Context { return authz.System(ctx) }
 // middle of sending it (Recover).
 const RecoveredDetail = "muster stopped while sending this message, so it may or may not have been delivered; it was not sent again"
 
-// Recover marks every message left 'sending' whose claim's lease expired
-// before now — its sender stopped mid-send and stopped renewing — as failed,
-// may have been delivered. It never returns a message to queued, and it leaves
-// a row whose lease is live alone: another instance is sending it.
+// Recover marks every message left 'sending' whose claim's lease has expired
+// — its sender stopped mid-send and stopped renewing — as failed, may have been
+// delivered, finished at now. It never returns a message to queued, and it
+// leaves a row whose lease is live alone: another instance is sending it.
+//
+// 🔴 THE LEASE IS ON POSTGRES'S CLOCK, BOTH SIDES. Claim and Renew write
+// lease_until as now() plus the lease and Recover compares it with now(), so
+// two pods whose own clocks disagree (a rolling update across nodes) can
+// neither fail the other's live send nor keep a dead one's row
+// (TestALeaseIsOnTheDatabasesClockNotThePods). now only stamps finished_at.
 func (s *PGStore) Recover(ctx context.Context, now time.Time) (int, error) {
 	tag, err := s.pool.Exec(sys(ctx), `UPDATE send_queue SET state = 'failed', may_have_delivered = true,
-		detail = $1, finished_at = $2 WHERE state = 'sending' AND lease_until < $2`, RecoveredDetail, now)
+		detail = $1, finished_at = $2, after_since = greatest(after_since, claim_since)
+		WHERE state = 'sending' AND lease_until < now()`, RecoveredDetail, now)
 	if err != nil {
 		return 0, fmt.Errorf("sendqueue: recover: %w", err)
 	}
@@ -442,27 +457,32 @@ func (s *PGStore) heads(ctx context.Context, where string, args ...any) ([]Head,
 	return out, rows.Err()
 }
 
-// Claim is a dispatcher's claim on a message: who claims it, until when the
-// claim holds unless renewed, and the status time (host clock) the target
-// held when the dispatcher decided to send it.
+// Claim is a dispatcher's claim on a message: who claims it, how long the
+// claim holds unless renewed (from Postgres's now()), and the status time
+// (host clock) the target held when the dispatcher decided to send it.
 type Claim struct {
 	By    string
-	Until time.Time
+	Lease time.Duration
 	Since int64
 }
+
+// leaseMicros is d in whole microseconds, for `now() + $n * interval '1 microsecond'`.
+func leaseMicros(d time.Duration) int64 { return d.Microseconds() }
 
 // Claim moves message id from queued to sending at now under claim c, and
 // returns it — or false when it is no longer queued (cancelled, or claimed by
 // another dispatcher) or its target already has a message being sent. c.Since
-// is recorded as the row's AfterSince (if newer), so that a sender that dies
-// mid-paste still leaves the next message waiting for a newer status.
+// is recorded as the row's ClaimSince, which becomes its AfterSince when the
+// row finishes or is recovered — so a sender that dies mid-paste still leaves
+// the next message waiting for a newer status — and is dropped if the send is
+// superseded (nothing was pasted).
 func (s *PGStore) Claim(ctx context.Context, id int64, now time.Time, c Claim) (Item, bool, error) {
-	if c.By == "" || !c.Until.After(now) {
-		return Item{}, false, errors.New("sendqueue: a claim needs its instance and a lease after now")
+	if c.By == "" || c.Lease < time.Millisecond {
+		return Item{}, false, errors.New("sendqueue: a claim needs its instance and a lease")
 	}
 	it, err := scanItem(s.pool.QueryRow(sys(ctx), `UPDATE send_queue SET state = 'sending', claimed_at = $2,
-		claimed_by = $3, lease_until = $4, after_since = greatest(after_since, $5)
-		WHERE id = $1 AND state = 'queued' RETURNING `+cols, id, now, c.By, c.Until, max(c.Since, 0)))
+		claimed_by = $3, lease_until = now() + $4 * interval '1 microsecond', claim_since = $5
+		WHERE id = $1 AND state = 'queued' RETURNING `+cols, id, now, c.By, leaseMicros(c.Lease), max(c.Since, 0)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Item{}, false, nil
 	}
@@ -488,14 +508,20 @@ type Outcome struct {
 	// Detail is the outcome in words, shown to the owner: why it failed, or
 	// how it was delivered. Never the message.
 	Detail string
+	// Superseded: the hub refused the paste because another paste got into
+	// the window (or its status moved) after the decision (mirror.ErrSuperseded).
+	// NOTHING reached the host, so the row goes back to queued — the one way
+	// back — waiting behind AfterSince (the window's Pasted at the refusal).
+	Superseded bool
+	AfterSince int64
 }
 
-// Renew extends instance by's claim on message id to until. False when the
-// row is no longer by's to send (it was finished, or recovered after the
-// lease lapsed).
-func (s *PGStore) Renew(ctx context.Context, id int64, by string, until time.Time) (bool, error) {
-	tag, err := s.pool.Exec(sys(ctx), `UPDATE send_queue SET lease_until = greatest(lease_until, $3)
-		WHERE id = $1 AND state = 'sending' AND claimed_by = $2`, id, by, until)
+// Renew extends instance by's claim on message id to lease from Postgres's
+// now(). False when the row is no longer by's to send (it was finished, or
+// recovered after the lease lapsed).
+func (s *PGStore) Renew(ctx context.Context, id int64, by string, lease time.Duration) (bool, error) {
+	tag, err := s.pool.Exec(sys(ctx), `UPDATE send_queue SET lease_until = greatest(lease_until, now() + $3 * interval '1 microsecond')
+		WHERE id = $1 AND state = 'sending' AND claimed_by = $2`, id, by, leaseMicros(lease))
 	if err != nil {
 		return false, fmt.Errorf("sendqueue: renew: %w", err)
 	}
@@ -505,13 +531,24 @@ func (s *PGStore) Renew(ctx context.Context, id int64, by string, until time.Tim
 // Finish records how instance by's send of message id ended, at now. Only a
 // message being sent, and only by its claimant, is finished: a slow sender
 // whose row was recovered meanwhile does not rewrite the recorded outcome.
+// A Superseded outcome puts the row back to queued instead, unclaimed, its
+// AfterSince raised to o.AfterSince and its ClaimSince dropped.
 func (s *PGStore) Finish(ctx context.Context, id int64, by string, o Outcome, now time.Time) error {
+	if o.Superseded && !o.Sent && !o.MayHaveDelivered {
+		if _, err := s.pool.Exec(sys(ctx), `UPDATE send_queue SET state = 'queued', detail = '', claimed_at = NULL,
+			claimed_by = NULL, lease_until = NULL, claim_since = 0, after_since = greatest(after_since, $2)
+			WHERE id = $1 AND state = 'sending' AND claimed_by = $3`, id, max(o.AfterSince, 0), by); err != nil {
+			return fmt.Errorf("sendqueue: requeue: %w", err)
+		}
+		return nil
+	}
 	state := Failed
 	if o.Sent {
 		state, o.MayHaveDelivered = Sent, true
 	}
 	if _, err := s.pool.Exec(sys(ctx), `UPDATE send_queue SET state = $2, detail = $3, may_have_delivered = $4,
-		finished_at = $5 WHERE id = $1 AND state = 'sending' AND claimed_by = $6`,
+		finished_at = $5, after_since = greatest(after_since, claim_since)
+		WHERE id = $1 AND state = 'sending' AND claimed_by = $6`,
 		id, string(state), clampDetail(o.Detail), o.MayHaveDelivered, now, by); err != nil {
 		return fmt.Errorf("sendqueue: finish: %w", err)
 	}

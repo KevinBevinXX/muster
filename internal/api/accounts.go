@@ -105,6 +105,9 @@ type UserStore interface {
 	BySub(ctx context.Context, sub string) (users.User, error)
 	ByID(ctx context.Context, id int64) (users.User, error)
 	SetDisabled(ctx context.Context, id int64, disabled bool) (users.User, error)
+	// RecordSignOutEverywhere persists a sign-out-everywhere of user id
+	// (users.signed_out_at), which the send queue's delivery checks.
+	RecordSignOutEverywhere(ctx context.Context, id int64) (time.Time, error)
 	// IDByEmail resolves a sign-in email to a muster user id (case-folded).
 	IDByEmail(ctx context.Context, email string) (int64, bool, error)
 	// DisabledAmong reports, for each of ids that exists, whether it is
@@ -520,7 +523,7 @@ func (g *gotrueState) revoke(uid int64, c gotrue.Claims, scope gotrue.LogoutScop
 	if c.SessionID != "" {
 		g.revokedSessions[c.SessionID] = now
 	}
-	if scope == gotrue.ScopeGlobal || c.SessionID == "" {
+	if signsOutEverywhere(c, scope) {
 		g.notBefore[c.Subject] = now
 		if len(g.afterSignOut) > 10000 {
 			g.afterSignOut = map[string]bool{}
@@ -529,6 +532,16 @@ func (g *gotrueState) revoke(uid int64, c gotrue.Claims, scope gotrue.LogoutScop
 		return
 	}
 	g.endLocked(uid, c.SessionID)
+}
+
+// signsOutEverywhere is whether a sign-out of session c at scope ends EVERY
+// session of its user: one asked for everywhere, and one whose token names no
+// session — which cannot be revoked alone, so revoke cuts off the whole
+// subject. The ONE predicate: revoke's in-memory cutoff and the logout
+// handler's durable record and queue cancel (handleGoTrueLogout) both branch on
+// it, so the two cannot disagree about what was global.
+func signsOutEverywhere(c gotrue.Claims, scope gotrue.LogoutScope) bool {
+	return scope == gotrue.ScopeGlobal || c.SessionID == ""
 }
 
 // signedIn records a session this process just minted (sign-in, claim), so a

@@ -46,7 +46,7 @@ buys only a word.
 | `0015` | `plugins` and `plugin_messages`: the [plugin interface](plugins.md). A message's input cannot be changed after it is written. |
 | `0016` | `plugin_reply_drafts` (a draft's body cannot be changed after it is written; the claim, lease and result rules) and `plugin_messages.no_reply`, which cannot be changed and refuses any reply draft for its message. |
 | `0017` | `pins`: a user's pinned Agents-list entries, each naming an agent (deleted with it) or a mirrored window by `(host, session, tmux window id)`. Owned, under row-level security; the agent a pin names must be the pin's owner's. |
-| `0019` | `send_queue`: the server-side send queue. Each row names a mirrored window (host, tmux session, window id) and carries the message, its state (`queued`, `sending`, `sent`, `failed`, `cancelled`) and the sign-in time of the session that queued it. At most one row per window is `sending`. Owned, under row-level security. |
+| `0019` | `send_queue`: the server-side send queue. Each row names a mirrored window (host, tmux session, window id) and carries the message, its state (`queued`, `sending`, `sent`, `failed`, `cancelled`) and the sign-in time of the session that queued it. At most one row per window is `sending`; its claim is a lease kept on the database's clock. Owned, under row-level security. Also `users.signed_out_at`: the latest "sign out everywhere", which the queue's delivery checks. |
 
 To change the schema, add a new numbered file.
 

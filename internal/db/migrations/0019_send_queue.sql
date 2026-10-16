@@ -13,19 +13,24 @@
 -- dispatcher reads every owner's heads under the system scope and DELIVERS each
 -- row as its owner (internal/api).
 --
--- 🔴 A ROW IS CLAIMED BY A STATE TRANSITION, AND A CLAIM IS NEVER RETRIED.
+-- 🔴 A ROW IS CLAIMED BY A STATE TRANSITION, AND A CLAIM IS NEVER RETRIED
+-- ONCE ANYTHING MAY HAVE REACHED THE HOST.
 -- queued → sending happens in one UPDATE conditional on the row still being
 -- queued; at most one row per window is 'sending' (the partial unique index),
 -- so two dispatchers cannot both deliver one window's head. A row left
 -- 'sending' by a process that died mid-send is moved to 'failed' (with
 -- may_have_delivered = true), never back to 'queued': the message may have
--- been pasted, and pasting it twice is the worse failure.
+-- been pasted, and pasting it twice is the worse failure. The one way back to
+-- 'queued' is a send the hub refused as SUPERSEDED before writing anything to
+-- the host (another paste got into the window after the decision).
 --
 -- 🔴 A CLAIM IS A LEASE. The claiming process writes its instance id
 -- (claimed_by) and lease_until, and renews lease_until while it sends; only a
 -- row whose lease has EXPIRED is failed as abandoned, and only the claimant
 -- finishes its row. During a rolling update two muster pods run at once, and
--- the new one must not fail the old one's live send.
+-- the new one must not fail the old one's live send. lease_until is written
+-- and compared with Postgres's now(), never a pod's clock, so pods whose
+-- clocks disagree cannot misjudge each other's leases.
 --
 -- 🔴 after_since IS ON THE HOST'S CLOCK. It is the window's Claude Code
 -- status time (statusUpdatedAt, Unix ms, as the host reports it) that the hub
@@ -45,6 +50,18 @@
 -- STATEMENT IS IDEMPOTENT.
 
 SET LOCAL lock_timeout = '3s';
+
+-- 🔴 users.signed_out_at: THE LATEST "SIGN OUT EVERYWHERE", PERSISTED. The
+-- session tier records a sign-out-everywhere in memory only (a restart forgets
+-- it after at most one access-token lifetime), but a queued message can wait
+-- far longer than that. So POST /logout scope=global (and a sign-out the
+-- session tier treats as global) stamps this column, and the send queue's
+-- delivery refuses a message queued under a sign-in at or before it — the same
+-- "at or before, in whole seconds" rule as sessions_not_before
+-- (internal/api sendQueueOwnerRefusal). It is NOT sessions_not_before: that
+-- one is the session cutoff every refresh and API-token mint checks, and a
+-- sign-out-everywhere deliberately leaves both (and API tokens) alone.
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS signed_out_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS public.send_queue (
     id                 BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -73,6 +90,10 @@ CREATE TABLE IF NOT EXISTS public.send_queue (
     -- holds unless renewed. Set on every claim.
     claimed_by         TEXT,
     lease_until        TIMESTAMPTZ,
+    -- The host status time the claim was decided on: folded into after_since
+    -- when the row finishes or is recovered, dropped when the send was
+    -- superseded and the row went back to queued (nothing was pasted).
+    claim_since        BIGINT      NOT NULL DEFAULT 0,
     -- The wire's own bounds (internal/mirror ValidHost / ValidSession /
     -- ValidWindowID), as 0017 spells them; the store validates first.
     CONSTRAINT send_queue_mirror_host_cap CHECK (char_length(mirror_host) BETWEEN 1 AND 63),
@@ -85,6 +106,7 @@ CREATE TABLE IF NOT EXISTS public.send_queue (
     CONSTRAINT send_queue_claimed_check CHECK (state IN ('queued', 'cancelled') OR claimed_at IS NOT NULL),
     CONSTRAINT send_queue_finished_check CHECK ((state IN ('queued', 'sending')) = (finished_at IS NULL)),
     CONSTRAINT send_queue_after_since_check CHECK (after_since >= 0),
+    CONSTRAINT send_queue_claim_since_check CHECK (claim_since >= 0),
     CONSTRAINT send_queue_claimed_by_cap CHECK (claimed_by IS NULL OR octet_length(claimed_by) BETWEEN 1 AND 128),
     CONSTRAINT send_queue_lease_check CHECK (state <> 'sending' OR (claimed_by IS NOT NULL AND lease_until IS NOT NULL))
 );
