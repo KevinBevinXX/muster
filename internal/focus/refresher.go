@@ -28,6 +28,12 @@ import (
 //     (ParseSummary), and stored with the fingerprint — or, on any failure, the
 //     error is RECORDED beside the focus the subject already had, which stays.
 
+// KeyChecker is a Summarizer that can say, without being called, that it
+// cannot serve owner (ScaleDown: the owner has no OpenRouter key).
+type KeyChecker interface {
+	CanSummarize(ctx context.Context, owner int64) error
+}
+
 // Candidate is a subject a pass may refresh, with when it was last active (zero
 // = unknown, which counts as "may have moved").
 type Candidate struct {
@@ -151,6 +157,14 @@ func (r *Refresher) Refresh(ctx context.Context, owner int64, sub Subject, force
 	}
 	if has && !force && cur.Has() && (cur.Source == SourceSelf || cur.Source == SourceManual) && r.now().Sub(cur.UpdatedAt) < SelfHold {
 		return OutcomeHeld, nil
+	}
+	// An owner the summarizer cannot serve (no OpenRouter key) costs no tail
+	// read: a mirrored tail opens a transcript stream on the host.
+	if k, ok := r.Summarizer.(KeyChecker); ok {
+		if err := k.CanSummarize(ctx, owner); err != nil {
+			r.record(ctx, sub, err)
+			return OutcomeFailed, err
+		}
 	}
 	entries, err := r.Sessions.Tail(ctx, sub)
 	if err != nil {

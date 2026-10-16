@@ -154,6 +154,12 @@ func TestScaleDownNoKeyCallsNothing(t *testing.T) {
 	if c.calls != 0 {
 		t.Fatalf("%d request(s) were made with no key", c.calls)
 	}
+	if err := client(srv.URL).CanSummarize(context.Background(), 8); !errors.Is(err, ErrNoKey) {
+		t.Fatalf("CanSummarize with no key: %v", err)
+	}
+	if err := client(srv.URL).CanSummarize(context.Background(), 7); err != nil {
+		t.Fatalf("CanSummarize with a key: %v", err)
+	}
 }
 
 func TestParseSummaryShapes(t *testing.T) {

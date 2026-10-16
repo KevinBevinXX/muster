@@ -100,6 +100,21 @@ type chatMessage struct {
 	Content string `json:"content"`
 }
 
+// CanSummarize implements KeyChecker: ErrNoKey when owner has no key.
+func (s *ScaleDown) CanSummarize(ctx context.Context, owner int64) error {
+	if s.Key == nil {
+		return ErrNoKey
+	}
+	key, err := s.Key(ctx, owner)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrNoKey, err)
+	}
+	if strings.TrimSpace(key) == "" {
+		return ErrNoKey
+	}
+	return nil
+}
+
 // Summarize implements Summarizer.
 func (s *ScaleDown) Summarize(ctx context.Context, owner int64, tail string) (Summary, error) {
 	if s.Key == nil {

@@ -206,3 +206,35 @@ func TestRenderTailBoundsAndFingerprint(t *testing.T) {
 		t.Fatal("an empty tail has a fingerprint")
 	}
 }
+
+// keyless is a summarizer that can serve nobody, and a source that counts
+// tail reads.
+type keyless struct{ fakeSummarizer }
+
+func (keyless) CanSummarize(context.Context, int64) error { return ErrNoKey }
+
+type countingSource struct {
+	fakeSource
+	reads int
+}
+
+func (c *countingSource) Tail(ctx context.Context, s Subject) ([]Entry, error) {
+	c.reads++
+	return c.fakeSource.Tail(ctx, s)
+}
+
+// TestAnOwnerWithNoKeyCostsNoTailRead: the refresh records ErrNoKey and reads
+// no transcript (a mirrored tail opens a stream on the host) and calls nothing.
+func TestAnOwnerWithNoKeyCostsNoTailRead(t *testing.T) {
+	sub := AgentSubject(5)
+	st := newMem()
+	src := &countingSource{fakeSource: fakeSource{tails: map[Subject][]Entry{sub: {{Role: "user", Text: "x"}}}}}
+	sm := &keyless{}
+	r := &Refresher{Store: st, Sessions: src, Summarizer: sm}
+	if o, err := r.Refresh(context.Background(), 1, sub, true); o != OutcomeFailed || !errors.Is(err, ErrNoKey) {
+		t.Fatalf("got %s %v", o, err)
+	}
+	if src.reads != 0 || sm.calls != 0 || st.errs[sub] == "" {
+		t.Fatalf("reads=%d calls=%d recorded=%q", src.reads, sm.calls, st.errs[sub])
+	}
+}
