@@ -164,8 +164,9 @@ type Msg struct {
 	Labels map[string]string `json:"labels,omitempty"`
 	// Activity (hello, sessions) is, per session, WHEN it was last active on
 	// the host: Unix seconds, floored to ActivityBucket. muster lists mirrored
-	// sessions most recently active first (Ordered). Ordering only — it is
-	// never shown and never addresses anything.
+	// sessions most recently active first (Ordered), and each card prints it
+	// as "active … ago". Ordering and display only — it never addresses
+	// anything.
 	//
 	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS, exactly like Labels: an
 	// older muster ignores the field, and a host that sends none is listed in
@@ -273,7 +274,8 @@ type Window struct {
 	// (muster then shows "<session>:<index>").
 	Label string `json:"label,omitempty"`
 	// Activity is when the window was last active (Unix seconds, floored to
-	// ActivityBucket); 0 = unknown. Ordering only.
+	// ActivityBucket); 0 = unknown. Ordering and display only (the card's
+	// "active … ago").
 	Activity int64 `json:"activity,omitempty"`
 	// Claude: the window's active pane runs Claude Code with a transcript the
 	// host can read — it has a rendered view.

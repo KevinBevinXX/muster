@@ -672,8 +672,9 @@ func (h *hostSide) closeAll() {
 // that stay busy all cross a bucket boundary on the same refresh and share ONE
 // message per bucket, however many they are; a session that wakes up in the
 // middle of a bucket adds one more. Those messages are what keep this host's
-// times comparable with another host's; muster nudges its open views only if
-// the ORDER came out different (mirror.Hub).
+// times comparable with another host's; muster nudges its open views at once
+// if the ORDER came out different, and otherwise — the cards' "active … ago"
+// moved — at most once per bucket per host (mirror.Hub).
 //
 // 🔴 ON A PER-WINDOW HOST THE WHOLE REFRESH IS ONE BACKEND READ (hostSide.read):
 // one tmux invocation however many windows there are, where the per-session

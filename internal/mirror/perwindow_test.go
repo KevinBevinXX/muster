@@ -452,10 +452,11 @@ func orderOfWindows(hosts []mirror.HostView) []string {
 
 // TestWindowsAreOrderedMostRecentlyActiveFirstAndOnlyAVisibleChangeNudges: the
 // list is ONE order across hosts and windows — most recently active first, two
-// windows of one session far apart when their activity is. And an update that
-// changes nothing a viewer can see (a time moving without the order changing)
-// re-renders no page, while a renumbered window, a new label, or a changed
-// order each nudge once.
+// windows of one session far apart when their activity is. And each visible
+// change nudges once: a time moving without the order changing (the card's
+// "active … ago" — throttled per host, see
+// TestABusyWindowThatStaysFirstRefreshesItsCardWithinTheThrottle), a changed
+// order, a renumbered window with its new label.
 //
 // 🔴 Each silent step is proven processed before its count is read, and the
 // counter is proven able to move (the connect, and the last steps).
@@ -510,17 +511,19 @@ func TestWindowsAreOrderedMostRecentlyActiveFirstAndOnlyAVisibleChangeNudges(t *
 		return e.Activity
 	}
 
-	// 1. The top window stays busy: its time moves, the order does not.
+	// 1. The top window stays busy: its time moves, the order does not. Its
+	// card's "active … ago" moved, so the views are told.
 	send(gold(at(10), at(1), at(5), 11, "Gold:11"))
 	eventually(t, "the hub to take @4's newer time", func() bool { return activityOf("@4") == at(10) })
-	if got := settle(); got != base {
-		t.Fatalf("a window's time moving without the order changing nudged %d time(s)", got-base)
+	if got := settle(); got != base+1 {
+		t.Fatalf("a window's shown time moving without the order changing nudged %d time(s), want 1", got-base)
 	}
-	// 2. The LAST window becomes the most recent: the order changes.
+	// 2. The LAST window becomes the most recent: the order changes — at once,
+	// although step 1 just spent this host's activity throttle.
 	send(gold(at(10), at(12), at(5), 11, "Gold:11"))
 	eventually(t, "the active window to move to the top", func() bool { return order()[0] == "laptop/Gold:8" })
-	if got := settle(); got != base+1 {
-		t.Fatalf("a changed order nudged %d time(s), want 1", got-base)
+	if got := settle(); got != base+2 {
+		t.Fatalf("a changed order nudged %d time(s), want 1", got-base-1)
 	}
 	// 3. A window is renumbered (its label follows): same order, visible change.
 	send(gold(at(10), at(12), at(5), 2, "Gold:2"))
@@ -528,11 +531,112 @@ func TestWindowsAreOrderedMostRecentlyActiveFirstAndOnlyAVisibleChangeNudges(t *
 		e, _ := hostView(t, r, 1, "laptop").Find("scratch2", "@9")
 		return e.Index == 2 && e.Label == "Gold:2"
 	})
-	if got := settle(); got != base+2 {
-		t.Fatalf("a renumbered window nudged %d time(s) in total, want 2", got-base)
+	if got := settle(); got != base+3 {
+		t.Fatalf("a renumbered window nudged %d time(s) in total, want 3", got-base)
 	}
 	if got, want := order(), []string{"laptop/Gold:8", "laptop/Gold:1", "tower/main:0", "laptop/Gold:2", "tower/main:1"}; !slices.Equal(got, want) {
 		t.Fatalf("order = %v\n  want %v", got, want)
+	}
+}
+
+// TestABusyWindowThatStaysFirstRefreshesItsCardWithinTheThrottle: the window
+// at the top of the list stays busy, so every refresh moves only its time and
+// never the order. Its card still has to follow ("active … ago" would
+// otherwise freeze at the time the page was opened while the window works):
+// the views are nudged for it, at most once per throttle window, and the
+// re-fetch that nudge triggers reads the NEWEST time — never a storm of one
+// nudge per message, never silence.
+func TestABusyWindowThatStaysFirstRefreshesItsCardWithinTheThrottle(t *testing.T) {
+	r := newRig(t)
+	r.svc.SetNotifyDebounce(5 * time.Millisecond)
+	const throttle = 500 * time.Millisecond
+	r.svc.SetActivityNudgeEvery(throttle)
+	var nudges atomic.Int64
+	// What an open view would re-fetch at each nudge: the busy window's time.
+	var seen sync.Map // nudge number -> activity read at that nudge
+	r.svc.SetNotify(func(owner int64) {
+		if owner != 1 {
+			return
+		}
+		var at int64
+		for _, h := range r.svc.Hub().Hosts(1) {
+			if e, ok := h.Find("main", "@1"); ok {
+				at = e.Activity
+			}
+		}
+		seen.Store(nudges.Add(1), at)
+	})
+	tok, _ := r.store.mint(t, 1, "laptop")
+	old := bucket(time.Now().Unix()) - 600*mirror.ActivityBucket
+	other := old // @2's time: far behind @1, so never its session's newest
+	busy := func(a int64) []mirror.Window {
+		return []mirror.Window{
+			{Session: "main", ID: "@1", Index: 0, Active: true, Activity: a},
+			{Session: "main", ID: "@2", Index: 1, Activity: other},
+		}
+	}
+	start := bucket(time.Now().Unix()) - 100*mirror.ActivityBucket
+	raw, err := r.rawConnect(t, tok, winHello("laptop", false, busy(start)...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.online(t, 1, "laptop", "main")
+	time.Sleep(120 * time.Millisecond) // well past the debounce: the connect's nudge has fired
+	base := nudges.Load()
+	if base == 0 {
+		t.Fatal("instrument check FAILED: the connect nudged nobody, so this counter cannot see a nudge")
+	}
+	order := func() []string { return orderOfWindows(r.svc.Hub().Hosts(1)) }
+	want := order()
+	if want[0] != "laptop/main:0" {
+		t.Fatalf("the busy window is not first: %v", want)
+	}
+
+	// Eight messages over ~2 throttle windows, each moving the busy window one
+	// bucket and nothing else.
+	const msgs = 8
+	last := start
+	began := time.Now()
+	for i := 1; i <= msgs; i++ {
+		last = start + int64(i)*mirror.ActivityBucket
+		raw.write(t, mirror.Msg{Type: mirror.TypeSessions, Windows: busy(last)})
+		eventually(t, "the hub to take the busy window's newer time", func() bool {
+			e, _ := hostView(t, r, 1, "laptop").Find("main", "@1")
+			return e.Activity == last
+		})
+		if got := order(); !slices.Equal(got, want) {
+			t.Fatalf("the order moved (%v), so this is not the activity-only case", got)
+		}
+		time.Sleep(throttle / 4)
+	}
+	// The card follows within one throttle window of the last change: some
+	// nudge re-fetches the newest time.
+	eventually(t, "a nudge that re-fetches the newest time", func() bool {
+		v, ok := seen.Load(nudges.Load())
+		return ok && v.(int64) == last
+	})
+	if since := time.Since(began); since > time.Duration(msgs)*throttle/4+2*throttle {
+		t.Fatalf("the card caught up %v after the burst began: later than one throttle window past the last change", since)
+	}
+	time.Sleep(throttle + 120*time.Millisecond)
+	n := nudges.Load() - base
+	// Not a storm: one per throttle window over the burst, plus the trailing one.
+	if maxN := int64(time.Since(began)/throttle) + 1; n < 2 || n > maxN {
+		t.Fatalf("%d message(s) moving the busy window's time nudged %d time(s), want 2..%d (once per %v window)", msgs, n, maxN, throttle)
+	}
+
+	// A window that is NOT its session's newest moves (the throttle window is
+	// open again): the session's own time does not change, but that window's
+	// card does — so it is compared per window, not only per session.
+	other = old + mirror.ActivityBucket
+	raw.write(t, mirror.Msg{Type: mirror.TypeSessions, Windows: busy(last)})
+	eventually(t, "the hub to take @2's newer time", func() bool {
+		e, _ := hostView(t, r, 1, "laptop").Find("main", "@2")
+		return e.Activity == other
+	})
+	time.Sleep(120 * time.Millisecond)
+	if got := nudges.Load() - base - n; got != 1 {
+		t.Fatalf("a non-newest window's shown time moving nudged %d time(s), want 1", got)
 	}
 }
 

@@ -126,12 +126,24 @@ type Hub struct {
 	// notifyPending is whether one is already scheduled.
 	debounce      time.Duration
 	notifyPending map[int64]bool
+	// activityEvery is the most often ONE host's activity-only change nudges
+	// open views (activityNudgeEvery; a test shortens it). See activityMoved.
+	activityEvery time.Duration
 }
 
 // notifyDebounce is the window change nudges are coalesced in: however fast
 // hosts connect, drop or change their lists, open Agents views are told at most
 // once per window.
 const notifyDebounce = time.Second
+
+// activityNudgeEvery is the most often one host's ACTIVITY-ONLY change (a card's
+// "active … ago" moved; nothing else did) nudges its owner's open views: once
+// per ActivityBucket, the granularity the time is carried at. A host re-sends
+// whenever a session enters a newer bucket — once per bucket for the sessions
+// that stay busy, plus once for each that wakes mid-bucket — so without it a
+// host whose sessions wake at different moments re-renders every open page
+// several times a minute.
+const activityNudgeEvery = ActivityBucket * time.Second
 
 // ErrTokenRevoked is the cause a connection ends with when its token is
 // revoked. Such a host is dropped from the view at once — not kept as offline.
@@ -152,7 +164,8 @@ func NewHub(logger *log.Logger) *Hub {
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &Hub{logger: logger, hosts: map[hostKey]*hostConn{}, offline: map[hostKey]offlineHost{}, now: time.Now, maxHosts: MaxHosts, debounce: notifyDebounce}
+	return &Hub{logger: logger, hosts: map[hostKey]*hostConn{}, offline: map[hostKey]offlineHost{}, now: time.Now, maxHosts: MaxHosts, debounce: notifyDebounce,
+		activityEvery: activityNudgeEvery}
 }
 
 // SetNotify installs the change nudge (a host connected, disconnected or
@@ -217,6 +230,9 @@ type hostConn struct {
 	watches  map[uint32]*watch
 	pastes   map[uint32]chan error
 	next     uint32
+	// activityNudged is when this host's last activity-only nudge was sent
+	// (activityMoved).
+	activityNudged time.Time
 }
 
 type stream struct {
@@ -359,9 +375,10 @@ func (hc *hostConn) list(m Msg, now int64) (sessions []string, windows []Window,
 	return sessions, nil, claude, NormalizeLabels(m.Labels, sessions), NormalizeActivity(m.Activity, sessions, now)
 }
 
-// sameWindows reports whether a and b differ in nothing a viewer can SEE:
-// everything but Activity, which moves all the time and matters only through
-// the order (orderKeys).
+// sameWindows reports whether a and b are the same windows in everything but
+// Activity. Activity is compared on its own (sameActivity): it moves all the
+// time, and a change in it is shown — in the card's "active … ago" — but is
+// throttled (activityMoved) rather than nudged at once.
 func sameWindows(a, b []Window) bool {
 	if (a == nil) != (b == nil) || len(a) != len(b) {
 		return false
@@ -374,6 +391,53 @@ func sameWindows(a, b []Window) bool {
 		}
 	}
 	return true
+}
+
+// sameActivity reports whether a host's activity is SHOWN the same before and
+// after: what each card's cardActivity prints, per window (aw, bw — compared
+// position by position, so only meaningful when sameWindows(aw, bw)) and per
+// session (am, bm, a per-session host's). Every value is already floored to
+// ActivityBucket (NormalizeWindows, NormalizeActivity) and the card prints
+// exactly that time, so an unequal value IS a different card — and a raw time
+// that moved within its bucket is no change at all.
+func sameActivity(aw, bw []Window, am, bm map[string]int64) bool {
+	if len(aw) != len(bw) || !maps.Equal(am, bm) {
+		return false
+	}
+	for i := range aw {
+		if aw[i].Activity != bw[i].Activity {
+			return false
+		}
+	}
+	return true
+}
+
+// activityMoved nudges hc's owner's open views for an ACTIVITY-ONLY change, at
+// most once per activityEvery per host. One inside the window is not dropped:
+// it schedules a trailing nudge for the window's end, so the last change of a
+// burst still reaches the cards. Every change inside one window targets that
+// same instant, and changed's debounce makes them ONE nudge. A trailing nudge
+// that outlives its connection costs one re-fetch and nothing else.
+func (h *Hub) activityMoved(hc *hostConn) {
+	h.mu.Lock()
+	every := h.activityEvery
+	h.mu.Unlock()
+	now := h.now()
+	hc.mu.Lock()
+	wait := hc.activityNudged.Add(every).Sub(now)
+	if wait <= 0 {
+		hc.activityNudged = now
+		hc.mu.Unlock()
+		h.changed(hc.key.owner)
+		return
+	}
+	hc.mu.Unlock()
+	time.AfterFunc(wait, func() {
+		hc.mu.Lock()
+		hc.activityNudged = h.now()
+		hc.mu.Unlock()
+		h.changed(hc.key.owner)
+	})
 }
 
 // normalizeSessions drops invalid and duplicate names, sorts, and caps the list.
@@ -508,15 +572,21 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				before := orderKeys(h.Hosts(hc.key.owner))
 				hc.mu.Lock()
 				same := slices.Equal(hc.sessions, list) && slices.Equal(hc.claude, claude) && maps.Equal(hc.labels, labels) && sameWindows(hc.windows, windows)
+				shown := sameActivity(hc.windows, windows, hc.activity, activity)
 				hc.sessions, hc.windows, hc.labels, hc.activity, hc.claude = list, windows, labels, activity, claude
 				hc.mu.Unlock()
-				// 🔴 ONLY A CHANGE SOMEBODY CAN SEE NUDGES THE OPEN VIEWS. Activity
-				// moves all the time; a host re-sends it once per ActivityBucket
-				// while a session stays busy, and most of those leave the list in
-				// the same order. Re-rendering the Agents view for each would move
-				// nothing and still cost every open page a re-fetch.
-				if !same || !slices.Equal(before, orderKeys(h.Hosts(hc.key.owner))) {
+				// 🔴 ONLY A CHANGE SOMEBODY CAN SEE NUDGES THE OPEN VIEWS, and an
+				// activity-only one is THROTTLED. A changed list or order nudges
+				// at once. A time that moved with nothing else (a busy window that
+				// stays where it is) still changes that card's "active … ago" — a
+				// view never told would show it going stale while the window works
+				// — so it nudges too, but at most once per activityEvery per host
+				// (activityNudgeEvery says why).
+				switch {
+				case !same || !slices.Equal(before, orderKeys(h.Hosts(hc.key.owner))):
 					h.changed(hc.key.owner)
+				case !shown:
+					h.activityMoved(hc)
 				}
 			case TypeEvents:
 				if hc.version >= 2 {

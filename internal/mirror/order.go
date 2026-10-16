@@ -255,8 +255,8 @@ func (v HostView) CanPaste(session string) bool {
 // activity anywhere the result is exactly the old list.
 //
 // 🔴 ONE RULE, ONE PLACE. The Agents view renders this list and the hub
-// decides from this same list whether a host's update changed anything worth
-// re-rendering (orderKeys); a second copy of the comparison would let the two
+// decides from this same list whether a host's update changed the order, the
+// change it re-renders for at once (orderKeys); a second copy of the comparison would let the two
 // disagree about what "the order changed" means.
 func Ordered(hosts []HostView) []SessionView {
 	var out []SessionView

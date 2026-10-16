@@ -21,9 +21,11 @@ import (
 
 // ---------------------------------------------------------------------------
 // MOST RECENTLY ACTIVE FIRST: a host may say when each session was last active.
-// It is ordering only, optional on the wire in both directions, bounded and
-// floored (mirror.ActivityBucket) — and a host's update re-renders open Agents
-// views only when the ORDER comes out different.
+// It orders the list and is printed on each card ("active … ago"), optional
+// on the wire in both directions, bounded and floored (mirror.ActivityBucket) —
+// and a host's update re-renders open Agents views at once when the ORDER
+// comes out different, and at most once per throttle window per host when
+// only a card's shown time moved.
 // ---------------------------------------------------------------------------
 
 // bucket is t floored the way the wire carries it.
@@ -199,18 +201,26 @@ func TestAnOfflineHostKeepsItsLastActivity(t *testing.T) {
 	}
 }
 
-// TestAnActivityUpdateNudgesOpenViewsOnlyWhenTheOrderChanges is the "do not
-// re-render the page for nothing" half of the policy, at the hub: a host's
-// activity update that leaves every session where it was moves no page, and
-// one that changes the order nudges exactly once.
+// TestAnActivityUpdateNudgesOpenViewsThrottledPerHost is the hub's nudge
+// policy for activity: a card prints its time ("active … ago"), so a time that
+// moves a bucket re-renders the open views even when the order stays put — but
+// an activity-only change nudges at most once per throttle window per host,
+// one inside the window becomes ONE trailing nudge at its end (not none, not
+// one each), a raw time that moved within its bucket is no change at all, and
+// an order change nudges at once, throttle or not.
 //
 // 🔴 EACH SILENT STEP IS PROVEN TO HAVE BEEN PROCESSED before its nudge count
-// is read (the hub's stored activity shows the new value), so "no nudge" is
-// never "the message had not arrived yet"; and the last step is the positive
-// control — the same counter does move when the order does.
-func TestAnActivityUpdateNudgesOpenViewsOnlyWhenTheOrderChanges(t *testing.T) {
+// is read (the hub's stored activity shows the new value, or a later message
+// on the same connection has landed), so "no nudge" is never "the message had
+// not arrived yet"; and the connect is the positive control — the counter can
+// see a nudge.
+func TestAnActivityUpdateNudgesOpenViewsThrottledPerHost(t *testing.T) {
 	r := newRig(t)
 	r.svc.SetNotifyDebounce(5 * time.Millisecond)
+	// Long enough that a settle() (120 ms) fits inside it many times over,
+	// short enough that the trailing nudge is waited for, not slept past.
+	const throttle = 700 * time.Millisecond
+	r.svc.SetActivityNudgeEvery(throttle)
 	var nudges atomic.Int64
 	r.svc.SetNotify(func(owner int64) {
 		if owner == 1 {
@@ -238,7 +248,8 @@ func TestAnActivityUpdateNudgesOpenViewsOnlyWhenTheOrderChanges(t *testing.T) {
 		t.Fatalf("order = %v, want %v", got, want)
 	}
 	settle := func() int64 {
-		// Well past the 5 ms debounce: any nudge the last message owed has fired.
+		// Well past the 5 ms debounce: any immediate nudge the last message
+		// owed has fired.
 		time.Sleep(120 * time.Millisecond)
 		return nudges.Load()
 	}
@@ -246,24 +257,56 @@ func TestAnActivityUpdateNudgesOpenViewsOnlyWhenTheOrderChanges(t *testing.T) {
 	if base == 0 {
 		t.Fatal("instrument check FAILED: connecting two hosts nudged nobody, so this counter cannot see a nudge")
 	}
+	a1 := func() int64 { return hostView(t, r, 1, "laptop").Activity["a1"] }
+	send := func(a1, a2 int64) { rawA.sendActivity(t, sessA, map[string]int64{"a1": a1, "a2": a2}) }
 
-	// 1. The top session stays busy: its time moves a bucket, the order does not.
-	rawA.sendActivity(t, sessA, map[string]int64{"a1": now + mirror.ActivityBucket, "a2": now - 5*mirror.ActivityBucket})
-	eventually(t, "the hub to take a1's newer time", func() bool {
-		return hostView(t, r, 1, "laptop").Activity["a1"] == now+mirror.ActivityBucket
-	})
-	if got := settle(); got != base {
-		t.Fatalf("an activity update that changed no order nudged the views %d time(s)", got-base)
+	// 1. The top session stays busy: its time moves a bucket, the order does
+	// not. Its card's "active … ago" did move, so the views are told — at once,
+	// the first activity-only change this host has made.
+	firstAt := time.Now() // before the hub can have stamped its nudge
+	send(now+mirror.ActivityBucket, now-5*mirror.ActivityBucket)
+	eventually(t, "the hub to take a1's newer time", func() bool { return a1() == now+mirror.ActivityBucket })
+	if got := settle(); got != base+1 {
+		t.Fatalf("a shown time moving (order unchanged) nudged %d time(s), want exactly 1", got-base)
 	}
 
-	// 2. The last session catches up with b1's bucket: a tie, which the stable
-	// order breaks laptop-first — so a2 moves above b1. The order changed.
-	rawA.sendActivity(t, sessA, map[string]int64{"a1": now + mirror.ActivityBucket, "a2": now - 2*mirror.ActivityBucket})
+	// 2. Another bucket, INSIDE the throttle window: no nudge now ...
+	send(now+2*mirror.ActivityBucket, now-5*mirror.ActivityBucket)
+	eventually(t, "the hub to take a1's next time", func() bool { return a1() == now+2*mirror.ActivityBucket })
+	// ... and a third that joins the same trailing nudge rather than adding one.
+	send(now+3*mirror.ActivityBucket, now-5*mirror.ActivityBucket)
+	eventually(t, "the hub to take a1's third time", func() bool { return a1() == now+3*mirror.ActivityBucket })
+	if got := settle(); got != base+1 {
+		t.Fatalf("activity-only changes inside the throttle window nudged %d time(s) at once, want none", got-base-1)
+	}
+	// 3. The window's end delivers ONE trailing nudge, so the last change of the
+	// burst still reaches the cards.
+	eventually(t, "the trailing nudge", func() bool { return nudges.Load() == base+2 })
+	if waited := time.Since(firstAt); waited < throttle {
+		t.Fatalf("the trailing nudge came %v after the first, inside the %v throttle", waited, throttle)
+	}
+	if got := settle(); got != base+2 {
+		t.Fatalf("the burst nudged %d time(s) in total, want 2 (one at once, one trailing)", got-base)
+	}
+
+	// 4. A raw time that moved WITHIN its bucket shows the same card: nothing.
+	// The window is open again (sleep past it), so a nudge here would be
+	// immediate and would land before step 5's message.
+	time.Sleep(throttle)
+	send(now+3*mirror.ActivityBucket+30, now-5*mirror.ActivityBucket)
+	if got := settle(); got != base+2 {
+		t.Fatalf("a raw time moving inside its bucket nudged %d time(s), want none", got-base-2)
+	}
+
+	// 5. a2 catches up with b1's bucket: a tie, which the stable order breaks
+	// laptop-first — so a2 moves above b1. An ORDER change nudges at once.
+	// (It is also the proof step 4 was processed: one connection, in order.)
+	send(now+3*mirror.ActivityBucket, now-2*mirror.ActivityBucket)
 	eventually(t, "a2 to move above b1", func() bool {
 		return slices.Equal(orderOf(r.svc.Hub().Hosts(1)), []string{"laptop/a1", "laptop/a2", "tower/b1"})
 	})
-	if got := settle(); got != base+1 {
-		t.Fatalf("an activity update that reordered the list nudged %d time(s), want exactly 1", got-base)
+	if got := settle(); got != base+3 {
+		t.Fatalf("an activity update that reordered the list nudged %d time(s), want exactly 1", got-base-2)
 	}
 }
 
