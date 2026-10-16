@@ -480,7 +480,7 @@ func chatHistoryButton(forID string) g.Node {
 		g.Attr("aria-label", "Chat history"),
 		g.Attr("role", "button"),
 		g.Attr("tabindex", "0"),
-		Class("press inline-flex h-11 w-11 min-h-[44px] cursor-pointer items-center justify-center rounded-lg text-fg2 transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
+		Class("press inline-flex h-11 w-11 min-h-[44px] shrink-0 cursor-pointer items-center justify-center rounded-lg text-fg2 transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
 		g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l3 2"/></svg>`),
 	)
 }
@@ -500,7 +500,7 @@ func newChatButton(agentID int64) g.Node {
 			Type("submit"),
 			g.Attr("aria-label", "New chat session"),
 			g.Attr("title", "New chat"),
-			Class("press inline-flex h-11 w-11 min-h-[44px] cursor-pointer items-center justify-center rounded-lg text-fg2 transition hover:bg-s2"),
+			Class("press inline-flex h-11 w-11 min-h-[44px] shrink-0 cursor-pointer items-center justify-center rounded-lg text-fg2 transition hover:bg-s2"),
 			g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>`),
 		),
 	)
