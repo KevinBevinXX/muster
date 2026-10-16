@@ -133,6 +133,10 @@ var (
 		// ended its session. Every query through it filters on an explicit owner
 		// (or a row handle carrying one) — see internal/push.Store.
 		"internal/push.sys",
+		// Session focus (migration 0020): which owners have anything to refresh
+		// (focus.PGStore.Owners). It yields owner ids only; the refresher then acts
+		// as each owner (withPrincipalLedger's focusPrincipal).
+		"internal/focus.sys",
 	}
 	// operatorLedger: work done as the OPERATOR (user 1) with no request —
 	// the boot-time GitHub connect of the operator's own static token, and the
@@ -166,6 +170,10 @@ var (
 	withPrincipalLedger = []string{
 		"internal/api.(*Server).admit",
 		"internal/api.(*Server).queuedPrincipal",
+		// The session focus refresher (internal/focus): each owner's sessions
+		// are read and their focus written as that owner, through
+		// authz.ViaFocus, after focus.PGStore.Owners read the owner ids.
+		"internal/api.(*Server).focusPrincipal",
 	}
 	// admitLedger: every authentication wrapper.
 	admitLedger = []string{
@@ -187,7 +195,7 @@ var (
 	// new door until someone has decided it is not.
 	authzExports = []string{
 		"From", "MustFrom", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
-		"System", "Via", "ViaAgent", "ViaConnect", "ViaHook", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaRelay", "ViaRunner", "ViaService",
+		"System", "Via", "ViaAgent", "ViaConnect", "ViaFocus", "ViaHook", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaRelay", "ViaRunner", "ViaService",
 		"ViaSession", "ViaSystem", "ViaToken", "WithPrincipal",
 	}
 )

@@ -39,6 +39,10 @@ type SessionView struct {
 	PanePaste   bool
 	PaneScroll  bool
 	Claude      bool
+	// ClaudeSession is the Claude Code session id of the conversation in the
+	// entry's pane (Window.ClaudeSession), "" for none — always "" for a
+	// per-session host's entry. What its focus is keyed by.
+	ClaudeSession string
 	// Qualifier is what the entry's Title needs beside it to be told apart from
 	// every OTHER entry listed with it ("" = its Title is already unique). Set
 	// by Ordered (qualify) and only there; a SessionView from HostView.Entries
@@ -217,7 +221,7 @@ func (h HostView) Entries() []SessionView {
 		for _, w := range h.Windows {
 			e := base
 			e.Session, e.Window, e.Index, e.Active = w.Session, w.ID, w.Index, w.Active
-			e.Label, e.Command, e.Activity, e.Claude = w.Label, w.Command, w.Activity, w.Claude
+			e.Label, e.Command, e.Activity, e.Claude, e.ClaudeSession = w.Label, w.Command, w.Activity, w.Claude, w.ClaudeSession
 			out = append(out, e)
 		}
 		return out

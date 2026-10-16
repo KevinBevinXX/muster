@@ -58,6 +58,9 @@ type MirrorCardView struct {
 	// list draws pinned entries first (AgentsCardsWithMirrors); the card shows a
 	// pin glyph and its pin toggle pressed.
 	Pinned bool
+	// Focus is what the Claude Code session in the window is working on
+	// (internal/focus, keyed by its Claude session id), nil for none.
+	Focus *FocusView
 }
 
 // MirrorCardHref is where a mirrored card opens: the rendered view for a
@@ -153,9 +156,9 @@ func mirrorCard(m MirrorCardView) g.Node {
 		// What the list's filter finds this card by (agents_filter.go): its title
 		// ("Gold:8"), the title as shown — with its qualifier ("Gold:8 · laptop")
 		// — its raw tmux session name, its host, and what runs in it.
-		cardFilterAttrs(f,
+		cardFilterAttrs(f, append([]string{
 			m.Label, m.Title, mirrorQualified(displayOr(m.Label, displayOr(m.Title, m.Session)), m.Qualifier),
-			m.Session, m.Host, kind, "mirrored", mode, state),
+			m.Session, m.Host, kind, "mirrored", mode, state}, focusHaystack(m.Focus)...)...),
 		Class("group relative overflow-hidden rounded-2xl border border-line bg-s1/70 shadow-lg shadow-black/20 ring-1 ring-line"),
 		// The control cluster: the mirrored mark and the pin toggle, OUTSIDE the
 		// nav anchor (agentCard's pattern) so tapping either never opens the
@@ -193,6 +196,7 @@ func mirrorCard(m MirrorCardView) g.Node {
 		cardFooter(
 			cardMeta("host", Span(g.Attr("data-mirror-host", ""), Class("font-medium text-fg2"), g.Text(m.Host))),
 			cardActivity(m.ActiveAt),
+			cardFocus(id, m.Focus),
 		),
 	)
 }

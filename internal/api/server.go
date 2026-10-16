@@ -47,6 +47,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
@@ -157,6 +158,10 @@ type Server struct {
 	sendQueue   *sendqueue.Dispatcher
 	// sendQueueClock is the queue's clock; nil is time.Now (a test sets it).
 	sendQueueClock func() time.Time
+	// focusRefresher runs session focus refreshes (focus.go); built once, on
+	// first use, from the extensions.
+	focusOnce      sync.Once
+	focusRefresher *focus.Refresher
 
 	// listPullRequests is the GitHub PR read, injectable for tests.
 	listPullRequests func(ctx context.Context, token, repo, state string) ([]github.PullRequest, error)

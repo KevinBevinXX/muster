@@ -93,8 +93,10 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - pins (0017, the Agents list's pinned entries).
 //   - recents (0018, the Agents list's recently viewed entries).
 //   - send_queue (0019, the server-side send queue).
-var ownedAfter0006 = []string{"cc_account_marks", "flow_jobs", "flow_requests", "flow_runner_tokens", "mirror_tokens",
-	"pins", "plugin_messages", "plugin_reply_drafts", "plugins", "push_preferences", "push_subscriptions", "recents", "send_queue", "user_credentials"}
+//   - agent_focus (0020, each session's focus).
+var ownedAfter0006 = []string{"agent_focus", "cc_account_marks", "flow_jobs", "flow_requests", "flow_runner_tokens",
+	"mirror_tokens", "pins", "plugin_messages", "plugin_reply_drafts", "plugins", "push_preferences",
+	"push_subscriptions", "recents", "send_queue", "user_credentials"}
 
 // rlsTables is every owned table today: ownedTables plus ownedAfter0006.
 func rlsTables() []string { return append(slices.Clone(ownedTables), ownedAfter0006...) }
@@ -152,6 +154,8 @@ var wantForeignKeys = []string{
 	"note_comments|note_comments_note_owner_fkey|FOREIGN KEY (note_id, owner_id) REFERENCES notes(id, owner_id) ON DELETE CASCADE",
 	"note_comments|note_comments_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"notes|notes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"agent_focus|agent_focus_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE",
+	"agent_focus|agent_focus_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"pins|pins_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE",
 	"pins|pins_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"recents|recents_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE",

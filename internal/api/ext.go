@@ -11,6 +11,7 @@ import (
 	"github.com/ZacxDev/muster/internal/apitokens"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/flows"
+	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
@@ -183,6 +184,16 @@ type Extensions struct {
 	// message is sent to it (MUSTER_SEND_QUEUE_IDLE); 0 is
 	// sendqueue.DefaultIdleFor.
 	SendQueueIdle time.Duration
+
+	// Focus is session focus (internal/focus, migration 0020): what each of a
+	// user's sessions is working on. nil (no database): no card shows a focus
+	// and the focus tools are not offered.
+	Focus focus.Store
+	// FocusSummarizer computes a focus from a transcript tail (the ScaleDown
+	// summarizer through OpenRouter). nil: focus is only ever written by a
+	// session itself (focus_set); RunFocusRefresh does nothing and
+	// focus_refresh says why.
+	FocusSummarizer focus.Summarizer
 }
 
 // SendQueue is the send queue's store as this package consumes it:

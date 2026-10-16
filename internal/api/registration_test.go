@@ -19,6 +19,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/flows"
+	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/pins"
@@ -87,6 +88,8 @@ func fullyWiredServer(t *testing.T) *Server {
 		Plugins:         stubPlugins{},
 		Pins:            stubPins{},
 		Recents:         stubRecents{},
+		Focus:           stubFocus{},
+		FocusSummarizer: stubSummarizer{},
 		SendQueue:       stubSendQueue{},
 		// NON-ZERO on purpose: the zero value is the default.
 		SendQueueIdle: time.Second,
@@ -112,6 +115,12 @@ type stubPins struct{ pins.Store }
 
 // stubRecents satisfies recents.Store for registration only; any method call panics.
 type stubRecents struct{ recents.Store }
+
+// stubFocus satisfies focus.Store for registration only; any method call panics.
+type stubFocus struct{ focus.Store }
+
+// stubSummarizer satisfies focus.Summarizer for registration only; any method call panics.
+type stubSummarizer struct{ focus.Summarizer }
 
 // stubSendQueue satisfies SendQueue for registration only; any method call panics.
 type stubSendQueue struct{ SendQueue }

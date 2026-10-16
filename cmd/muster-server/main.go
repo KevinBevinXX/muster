@@ -61,6 +61,7 @@ import (
 	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/flows"
+	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/gotrue"
 	"github.com/ZacxDev/muster/internal/memorelay"
@@ -277,6 +278,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// The server-side send queue (migration 0019); RunSendQueue delivers it.
 		ext.SendQueue = sendqueue.NewPG(pool)
 		ext.SendQueueIdle = cfg.SendQueueIdle
+		// Session focus (migration 0020). Its summarizer is wired below, once
+		// the credential plane that decides whose OpenRouter key it spends exists.
+		ext.Focus = focus.NewPG(pool)
 
 		if len(cfg.ConnectorEncKey) > 0 {
 			cs, err := connectors.NewPG(pool, cfg.ConnectorEncKey)
@@ -358,6 +362,12 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	}
 	if credStore != nil {
 		ext.Credentials = credentialPage{PGStore: credStore, plane: plane}
+	}
+	// The focus summarizer: ScaleDown through OpenRouter, on the OWNER's
+	// OpenRouter key exactly as that owner's gateway pods get it (the plane: the
+	// environment's for an admin, the member's own otherwise, none refused).
+	if ext.Focus != nil {
+		ext.FocusSummarizer = &focus.ScaleDown{Key: plane.OpenRouterKey}
 	}
 	ccPool, err := buildClaudePool(cfg, plane, marks)
 	if err != nil {
@@ -707,6 +717,10 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	// message a previous process left mid-send, which would be a peer's live
 	// send with two (the mirror hub is single-replica state already).
 	go a.srv.RunSendQueue(ctx, sendqueue.DefaultInterval)
+	// Session focus's periodic refresh (MUSTER_FOCUS_INTERVAL; 0 = off).
+	if a.cfg.FocusInterval > 0 {
+		go a.srv.RunFocusRefresh(ctx, a.cfg.FocusInterval)
+	}
 }
 
 // shutdown drains in-flight requests and the kickoff deliverer, then waits for

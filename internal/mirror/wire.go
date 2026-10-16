@@ -359,7 +359,33 @@ type Window struct {
 	// send queue (Hub.AgentState: ErrNoStatusSince) — held, never timed out on a
 	// guess.
 	StatusSince int64 `json:"statusSince,omitempty"`
+	// ClaudeSession is the Claude Code SESSION ID of the conversation in the
+	// window's pane (the transcript's own name, Msg.Gen's value), "" when the
+	// pane is not Claude Code or the host does not say. It is what a mirrored
+	// session's FOCUS is keyed by (internal/focus): the conversation, not the
+	// window, so a focus survives tmux reissuing window ids and an operator
+	// moving a conversation to another window.
+	//
+	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS, like Status: an older
+	// muster ignores it; an older host never sends it, and its windows simply
+	// have no focus. Only an id ValidClaudeSession accepts is kept.
+	//
+	// ⚠ THE TRANSCRIPT PATH IS DELIBERATELY NOT ON THE WIRE. The window list is
+	// ONE message within MaxFrame, and its worst case already measured 92% of
+	// it (TestTheLargestWindowListFitsOneFrame) — a host path per window does
+	// not fit beside it. muster never needs the path: it reads a transcript
+	// through the host's own watch (Hub.WatchWindow), which resolves the path
+	// on the host.
+	ClaudeSession string `json:"claudeSession,omitempty"`
 }
+
+// claudeSessionPattern is a Claude Code session id as the wire carries one: a
+// UUID in practice, bounded so the window list's worst case stays inside
+// MaxFrame. internal/focus and migration 0020 apply the same pattern.
+var claudeSessionPattern = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z_-]{0,63}$`)
+
+// ValidClaudeSession reports whether id is a Claude session id the wire carries.
+func ValidClaudeSession(id string) bool { return claudeSessionPattern.MatchString(id) }
 
 // The values of Window.Status: Claude Code's own session status, as its
 // sessions file spells it.
@@ -668,6 +694,10 @@ func NormalizeWindows(in []Window, now int64) []Window {
 		// And so does its time: none without a status, none before 1970.
 		if w.Status == "" || w.StatusSince < 0 {
 			w.StatusSince = 0
+		}
+		// A session id names a Claude pane's conversation; nothing else has one.
+		if !w.Claude || !ValidClaudeSession(w.ClaudeSession) {
+			w.ClaudeSession = ""
 		}
 		if w.Activity < 0 {
 			w.Activity = 0

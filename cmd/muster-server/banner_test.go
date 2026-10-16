@@ -435,6 +435,9 @@ var bannerExempt = map[string]string{
 	envSendQueueIdle: "the send queue's dispatcher announces its own state with the VALUE when it " +
 		"starts (internal/api/send_queue.go: \"sendqueue: dispatcher started: …idle for %s…\"); " +
 		"with no database there is no queue and nothing reads it, and an out-of-bounds value refuses to boot",
+	envFocusInterval: "the focus refresher announces its own state with the VALUE when it starts " +
+		"(internal/api/focus.go: \"focus: refresh every %s …\"); with no database or no " +
+		"summarizer nothing reads it, and an out-of-bounds value refuses to boot",
 	envTaskReapAfter: "the reaper announces its own state with the VALUE, at the point it " +
 		"starts (internal/api/server.go: \"task reaper: sweeping every %s for tasks idle for " +
 		">%s\"), which is where a reader looking for it will be",
