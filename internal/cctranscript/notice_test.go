@@ -61,6 +61,22 @@ func TestEventsClassifiesHarnessNotices(t *testing.T) {
 			Event{Kind: KindPrompt, Text: "<thoughts>keep it short</thoughts>"}},
 		{"an unclosed notice tag is not a notice", "<task-notification>\n<summary>half", "",
 			Event{Kind: KindPrompt, Text: "<task-notification>\n<summary>half"}},
+
+		// 🔴 A HUMAN-ORIGIN RECORD IS NEVER A NOTICE BY ITS TAGS, even when it is
+		// wholly a pasted notice block: the CLI says the human wrote it.
+		{"a human-origin prompt that is wholly a task notification", task, "human",
+			Event{Kind: KindPrompt, Text: task}},
+		{"a human-origin prompt that is wholly local command output", "<local-command-stdout>Set model to Example</local-command-stdout>", "human",
+			Event{Kind: KindPrompt, Text: "<local-command-stdout>Set model to Example</local-command-stdout>"}},
+
+		// 🔴 THE SLASH-COMMAND REWRITE IS ONLY FOR A PURE COMMAND RECORD: any
+		// other block would be dropped by the rewrite, so the raw text is shown.
+		{"a command record with any other block is shown raw", "<command-name>/model</command-name>\n<note>secret extra instruction</note>", "human",
+			Event{Kind: KindPrompt, Text: "<command-name>/model</command-name>\n<note>secret extra instruction</note>"}},
+		{"the same with no origin is shown raw too", "<command-message>model</command-message>\n<command-name>/model</command-name>\n<note>extra</note>", "",
+			Event{Kind: KindPrompt, Text: "<command-message>model</command-message>\n<command-name>/model</command-name>\n<note>extra</note>"}},
+		{"args before the name is still the command", "<command-args>sonnet</command-args>\n<command-name>/model</command-name>", "human",
+			Event{Kind: KindPrompt, Text: "/model sonnet"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -80,5 +96,34 @@ func TestEventsNoticeInBlockContent(t *testing.T) {
 	want := []Event{{Kind: KindNotice, Notice: NoticeTask, Status: "failed", Text: `Agent "x" failed`}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("events:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+// 🔴 A task notice's status, summary and detail are the notice's OWN direct
+// children, never a tag quoted inside its result or event (a background task's
+// output can print anything, including the notice's own tags).
+func TestEventsNoticeIgnoresTagsNestedInTaskOutput(t *testing.T) {
+	cases := []struct {
+		name, content string
+		want          Event
+	}{
+		{"a spoofed status and summary inside the result",
+			"<task-notification>\n<task-id>t1</task-id>\n<result>step one\n<status>completed</status>\n<summary>All good</summary></result>\n<status>failed</status>\n</task-notification>",
+			Event{Kind: KindNotice, Notice: NoticeTask, Status: "failed", Text: "step one",
+				Output: "step one\n<status>completed</status>\n<summary>All good</summary>"}},
+		{"a spoofed result inside a monitor event",
+			"<task-notification>\n<task-id>m1</task-id>\n<event>ci: red <result>ci: green</result></event>\n<summary>Monitor event</summary>\n</task-notification>",
+			Event{Kind: KindNotice, Notice: NoticeTask, Text: "Monitor event", Output: "ci: red <result>ci: green</result>"}},
+		{"text between the children is skipped, not an error",
+			"<task-notification>\nloose words <status>killed</status> more <summary>Stopped</summary></task-notification>",
+			Event{Kind: KindNotice, Notice: NoticeTask, Status: "killed", Text: "Stopped"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := Events(userLine(t, c.content, "task-notification"))
+			if want := []Event{c.want}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("events:\n got %+v\nwant %+v", got, want)
+			}
+		})
 	}
 }

@@ -16,11 +16,17 @@ import (
 //   - its origin is a task notification ("origin":{"kind":"task-notification"},
 //     CLI 2.1.22+ — including the plain-text "Background agent … was stopped by
 //     the user." records, which carry no tag at all), OR
-//   - its text is made ENTIRELY of <tag>…</tag> blocks (whitespace between,
-//     nothing else) and the FIRST tag is one of noticeTags.
+//   - its origin is NOT "human", its text is made ENTIRELY of <tag>…</tag>
+//     blocks (whitespace between, nothing else) and the FIRST tag is one of
+//     noticeTags.
 //
 // So a human prompt that MENTIONS <task-notification> mid-sentence, or pastes
 // one and then writes beneath it, stays a prompt: it has text outside a block.
+// 🔴 And a record whose origin says "human" is NEVER a notice by its tags, even
+// when it is wholly a pasted <task-notification>: the CLI stamped it as typed
+// by the human, and the tag rule exists only for records that carry no origin
+// at all (CLI before 2.1.22). In the same survey (830 transcripts) no
+// human-origin record leads with a notice tag, so this costs no real notice.
 // Measured over 832 real transcripts (CLI 2.1.22–2.1.296): every non-meta user
 // record that starts with one of these tags is wholly tag blocks — not one had
 // text after its last block.
@@ -75,18 +81,33 @@ func tagBlocks(s string) ([][2]string, bool) {
 	return out, len(out) > 0
 }
 
-// innerTag is the body of <name>…</name> inside s, trimmed ("" when absent).
+// childOpen is the next <tag> opening anywhere in a string.
+var childOpen = regexp.MustCompile(`<([a-z][a-z0-9_-]*)>`)
+
+// innerTag is the body of the first <name>…</name> that is a DIRECT child of s,
+// trimmed ("" when absent). It walks s block by block and jumps over each
+// block's whole body, so a <status> or <summary> written INSIDE another block
+// (a task's <result> or <event> quoting one) is never read as the notice's
+// own. Text between blocks is skipped, not an error.
 func innerTag(s, name string) string {
-	i := strings.Index(s, "<"+name+">")
-	if i < 0 {
-		return ""
+	for {
+		m := childOpen.FindStringSubmatchIndex(s)
+		if m == nil {
+			return ""
+		}
+		tag := s[m[2]:m[3]]
+		rest := s[m[1]:]
+		end := strings.Index(rest, "</"+tag+">")
+		if end < 0 {
+			// An unclosed tag has no body; look past its opening.
+			s = rest
+			continue
+		}
+		if tag == name {
+			return strings.TrimSpace(rest[:end])
+		}
+		s = rest[end+len("</"+tag+">"):]
 	}
-	rest := s[i+len(name)+2:]
-	j := strings.Index(rest, "</"+name+">")
-	if j < 0 {
-		return ""
-	}
-	return strings.TrimSpace(rest[:j])
 }
 
 // ansi is a terminal escape sequence (a local command's stdout carries them).
@@ -107,7 +128,8 @@ func firstLine(s string) string {
 func noticeOf(r Record, text string) (Event, bool) {
 	blocks, whole := tagBlocks(text)
 	src := ""
-	if whole {
+	// 🔴 Never by its tags when the CLI says the human wrote it.
+	if whole && r.Origin.Kind != "human" {
 		src = noticeTags[blocks[0][0]]
 	}
 	if src == "" && r.Origin.Kind == "task-notification" {
@@ -134,17 +156,27 @@ func noticeOf(r Record, text string) (Event, bool) {
 	return Event{}, false
 }
 
+// commandTags are the only blocks the CLI writes for a slash command.
+var commandTags = map[string]bool{"command-name": true, "command-message": true, "command-args": true}
+
 // slashCommand is the "/name args" a human typed, when text is the record the
-// CLI writes for a slash command (wholly tag blocks, the first <command-name> or
-// <command-message>), and false for anything else — so a prompt that merely
-// mentions or pastes the tags keeps its own text.
+// CLI writes for a slash command, and false for anything else — so a prompt
+// that merely mentions or pastes the tags keeps its own text.
+//
+// 🔴 The record must be wholly tag blocks AND every block must be one of
+// commandTags. The rewrite DROPS what it does not print, so a record with any
+// other block (`<command-name>/model</command-name>` and then a `<note>`) is
+// shown raw: a rewrite would hide that block's text from the reader.
 func slashCommand(text string) (string, bool) {
 	blocks, whole := tagBlocks(text)
-	if !whole || (blocks[0][0] != "command-name" && blocks[0][0] != "command-message") {
+	if !whole {
 		return "", false
 	}
 	var name, msg, args string
 	for _, b := range blocks {
+		if !commandTags[b[0]] {
+			return "", false
+		}
 		switch b[0] {
 		case "command-name":
 			name = strings.TrimSpace(b[1])

@@ -118,6 +118,25 @@ async function openView(page: Page, transcript: string) {
   await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 15_000 });
 }
 
+// B1 round 1: a record the CLI stamps as the HUMAN's is their bubble even when
+// it is wholly a pasted notice block, and a command record carrying any block
+// beyond the command's own is shown raw — never rewritten to "/name" with the
+// extra block's text dropped.
+test('a human-origin pasted notice is a user bubble; a command record with an extra block is shown raw', async ({ page }) => {
+  const pasted = '<task-notification>\n<task-id>t9</task-id>\n<status>completed</status>\n<summary>Pasted summary</summary>\n</task-notification>';
+  const extra = '<command-name>/model</command-name>\n<note>secret extra instruction</note>';
+  const tr = newTranscript(prompt(pasted) + reply('ok') + prompt('<local-command-stdout>Set model to Example</local-command-stdout>') + prompt(extra));
+  await openView(page, tr);
+  const log = page.locator('#mv-log');
+  const users = log.locator('[data-bubble="user"]');
+  await expect(users).toHaveCount(3);
+  await expect(log.locator('[data-notice-row]')).toHaveCount(0);
+  await expect(users.nth(0)).toContainText('Pasted summary');
+  await expect(users.nth(1)).toContainText('Set model to Example');
+  await expect(users.nth(2)).toContainText('secret extra instruction');
+  await expect(users.nth(2)).toContainText('<command-name>/model</command-name>');
+});
+
 // B1: a harness notice is its own compact row — status and summary, detail on
 // expand — and never the human's bubble; a human who MENTIONS the tag, or types
 // a slash command, stays one.
