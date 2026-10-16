@@ -283,13 +283,14 @@ func agentCard(a AgentCardView) g.Node {
 		// descendants, so a boosted click here would swap the standalone detail
 		// document into #agents-list (the wrong target) — the URL changes but the
 		// detail UI never renders. Disabling boost makes it a plain navigation that
-		// ignores the inherited target and loads the detail page reliably. It
-		// reserves right padding so it never sits under the controls.
+		// ignores the inherited target and loads the detail page reliably. Its
+		// right padding (pr-28, see cardControls) keeps the title out from under
+		// the controls.
 		A(
 			Href("/agents/"+a.Name),
 			hx("hx-boost", "false"),
 			cardSlot("body"),
-			Class("flex flex-col gap-3 p-4 pr-20"),
+			Class("flex flex-col gap-3 p-4 pr-28"),
 			Div(
 				cardSlot("header"),
 				Class("flex flex-wrap items-center gap-2"),
@@ -358,7 +359,11 @@ func cardSlot(name string) g.Node { return g.Attr("data-card-slot", name) }
 
 // cardControls is a card's control cluster: positioned over its top-right
 // corner, OUTSIDE the card's nav anchor, so tapping a control never opens the
-// card. The anchor reserves right padding (pr-20) so it never sits under them.
+// card. Each card's nav anchor reserves pr-28 (112 px) on its right: the
+// cluster is right-3 (12 px) plus two 44 px controls and a 4 px gap, 104 px,
+// so a long title wraps before it reaches the first control, and a tap on the
+// title's end opens the card rather than a control. A third control needs a
+// wider reservation.
 func cardControls(children ...g.Node) g.Node {
 	return Div(append([]g.Node{cardSlot("controls"), Class("absolute right-3 top-3 z-10 flex items-center gap-1")}, children...)...)
 }

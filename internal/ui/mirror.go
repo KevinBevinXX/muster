@@ -178,7 +178,7 @@ func mirrorCard(m MirrorCardView) g.Node {
 			Href(MirrorCardHref(m)),
 			hx("hx-boost", "false"),
 			cardSlot("body"),
-			Class("flex flex-col gap-3 p-4 pr-20"),
+			Class("flex flex-col gap-3 p-4 pr-28"),
 			Div(
 				cardSlot("header"),
 				Class("flex flex-wrap items-center gap-2"),

@@ -338,6 +338,56 @@ test('an agent card and a mirrored card share one layout: no preview, the last a
   }
 });
 
+// The control cluster (two 44 px buttons and a gap, 12 px in) is 104 px wide,
+// and the card's nav anchor reserved only 80 px for it: a long title ran under
+// the mirrored mark, where a tap opens the mark's tooltip instead of the card.
+// At an iPhone's 390 px, on BOTH card kinds, a title long enough to wrap must
+// end left of the first control.
+test('at 390 px a long title wraps before the card controls, on both card kinds', async ({ page }) => {
+  const long = 'a-long-session-name-that-runs-well-past-the-width-of-a-phone-card';
+  try {
+    await stopMirror();
+    mirrorProc = startMirror(false, undefined, { MUSTER_MIRROR_E2E_SESSIONS: `main,${long}` });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await login(page);
+    await waitForCards(page, true);
+    await page.goto(origin + '/agents');
+    const m = card(page, long);
+    const a = page.locator('#agents-list article[id^="agent-"]').first();
+    await expect(m).toBeVisible();
+    await expect(a).toBeVisible();
+    // Title and first control, measured in ONE evaluate. The agent's title is
+    // a short seeded name, so it is lengthened in place first — what is under
+    // test is the card's layout, not the data — and measured in the same task,
+    // before any list re-render can replace it.
+    const measure = (loc: typeof m, title: string, text?: string) =>
+      loc.evaluate(
+        (el, [title, text]) => {
+          const t = el.querySelector<HTMLElement>(title)!;
+          if (text) t.textContent = text;
+          const tr = t.getBoundingClientRect();
+          const c = el.querySelector<HTMLElement>('[data-card-slot="controls"] button')!.getBoundingClientRect();
+          const lh = parseFloat(getComputedStyle(t).lineHeight);
+          return { titleRight: tr.right, titleLines: Math.round(tr.height / lh), controlLeft: c.left, vw: window.innerWidth };
+        },
+        [title, text] as const,
+      );
+    for (const [name, got] of [
+      ['mirrored', await measure(m, '[data-mirror-name]')],
+      ['agent', await measure(a, '[data-card-slot="header"] > span.mr-auto', 'a-long-agent-display-name-that-runs-well-past-the-width-of-a-phone-card')],
+    ] as const) {
+      expect(got.vw, 'the viewport is 390 px').toBe(390);
+      // Positive control: the title wrapped, so it is long enough to have
+      // reached the controls had the anchor not stopped it.
+      expect(got.titleLines, `${name} card: the long title wraps`).toBeGreaterThanOrEqual(2);
+      expect(got.titleRight, `${name} card: the title ends left of the first control`).toBeLessThanOrEqual(got.controlLeft);
+    }
+    await noHorizontalScroll(page);
+  } finally {
+    await stopMirror();
+  }
+});
+
 test('an -interactive host offers the switch and types into the session', async ({ page }) => {
   mirrorProc = startMirror(true);
   await login(page);
