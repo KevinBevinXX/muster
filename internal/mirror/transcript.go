@@ -273,6 +273,30 @@ func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, windo
 	if !hc.interactive {
 		return fmt.Errorf("%w (host %q)", ErrInteractiveRefused, host)
 	}
+	// The window's status time NOW, before the paste is written: the turn
+	// this paste starts is a status write newer than it (turns.go).
+	held := hc.statusSince(session, windowID)
+	err = h.pasteTo(ctx, hc, session, windowID, text, anyPane)
+	if err == nil || errors.Is(err, ErrPasteUnconfirmed) {
+		h.notePaste(owner, host, session, windowID, held)
+	}
+	return err
+}
+
+// statusSince is the StatusSince hc lists for (session, window id), 0 for none.
+func (hc *hostConn) statusSince(session, id string) int64 {
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	for _, w := range hc.windows {
+		if w.Session == session && w.ID == id {
+			return w.StatusSince
+		}
+	}
+	return 0
+}
+
+// pasteTo hands text to hc for (session, window id) and waits for the answer.
+func (h *Hub) pasteTo(ctx context.Context, hc *hostConn, session, windowID, text string, anyPane bool) error {
 	hc.mu.Lock()
 	hc.next++
 	id := hc.next

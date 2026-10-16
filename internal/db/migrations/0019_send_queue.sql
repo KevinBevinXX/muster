@@ -17,9 +17,22 @@
 -- queued → sending happens in one UPDATE conditional on the row still being
 -- queued; at most one row per window is 'sending' (the partial unique index),
 -- so two dispatchers cannot both deliver one window's head. A row left
--- 'sending' by a process that died mid-send is moved to 'failed' at the next
--- start (with may_have_delivered = true), never back to 'queued': the message
--- may have been pasted, and pasting it twice is the worse failure.
+-- 'sending' by a process that died mid-send is moved to 'failed' (with
+-- may_have_delivered = true), never back to 'queued': the message may have
+-- been pasted, and pasting it twice is the worse failure.
+--
+-- 🔴 A CLAIM IS A LEASE. The claiming process writes its instance id
+-- (claimed_by) and lease_until, and renews lease_until while it sends; only a
+-- row whose lease has EXPIRED is failed as abandoned, and only the claimant
+-- finishes its row. During a rolling update two muster pods run at once, and
+-- the new one must not fail the old one's live send.
+--
+-- 🔴 after_since IS ON THE HOST'S CLOCK. It is the window's Claude Code
+-- status time (statusUpdatedAt, Unix ms, as the host reports it) that the hub
+-- held when a message was pasted into the window: the next message is released
+-- only after a NEWER one. It is compared only with other host times, never with
+-- muster's clock, so a host clock that is ahead or behind cannot stall the queue
+-- or release it early.
 --
 -- 🔴 stepup_at IS THE STEP-UP DECISION, STORED. A mirror send types into the
 -- operator's session and needs a FRESH sign-in (internal/stepup). It is checked
@@ -52,6 +65,14 @@ CREATE TABLE IF NOT EXISTS public.send_queue (
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     claimed_at         TIMESTAMPTZ,
     finished_at        TIMESTAMPTZ,
+    -- The host status time held at the latest paste into the window that this
+    -- row knows of (0: none): on a sent row, its own paste's; on a queued row,
+    -- the latest manual Send's while it waited.
+    after_since        BIGINT      NOT NULL DEFAULT 0,
+    -- The dispatcher instance that claimed the row, and until when its claim
+    -- holds unless renewed. Set on every claim.
+    claimed_by         TEXT,
+    lease_until        TIMESTAMPTZ,
     -- The wire's own bounds (internal/mirror ValidHost / ValidSession /
     -- ValidWindowID), as 0017 spells them; the store validates first.
     CONSTRAINT send_queue_mirror_host_cap CHECK (char_length(mirror_host) BETWEEN 1 AND 63),
@@ -62,7 +83,10 @@ CREATE TABLE IF NOT EXISTS public.send_queue (
     CONSTRAINT send_queue_state_check CHECK (state IN ('queued', 'sending', 'sent', 'failed', 'cancelled')),
     CONSTRAINT send_queue_detail_cap CHECK (octet_length(detail) <= 1024),
     CONSTRAINT send_queue_claimed_check CHECK (state IN ('queued', 'cancelled') OR claimed_at IS NOT NULL),
-    CONSTRAINT send_queue_finished_check CHECK ((state IN ('queued', 'sending')) = (finished_at IS NULL))
+    CONSTRAINT send_queue_finished_check CHECK ((state IN ('queued', 'sending')) = (finished_at IS NULL)),
+    CONSTRAINT send_queue_after_since_check CHECK (after_since >= 0),
+    CONSTRAINT send_queue_claimed_by_cap CHECK (claimed_by IS NULL OR octet_length(claimed_by) BETWEEN 1 AND 128),
+    CONSTRAINT send_queue_lease_check CHECK (state <> 'sending' OR (claimed_by IS NOT NULL AND lease_until IS NOT NULL))
 );
 
 -- At most ONE row per window is being sent: the claim's own guarantee, held by

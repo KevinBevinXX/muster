@@ -50,6 +50,11 @@ func mirrorItem(body string) Item {
 	return Item{Target: win, Body: body, StepUpAt: time.Now()}
 }
 
+// claimFor is instance by's claim at now, a minute's lease, no status time.
+func claimFor(by string, now time.Time) Claim {
+	return Claim{By: by, Until: now.Add(time.Minute)}
+}
+
 func mustEnqueue(t *testing.T, s *PGStore, uid int64, it Item) Item {
 	t.Helper()
 	out, err := s.Enqueue(as(uid), it)
@@ -141,16 +146,16 @@ func TestAClaimIsOnceAndOneTargetSendsOneAtATime(t *testing.T) {
 	other := mustEnqueue(t, s, 2, o)
 	now := time.Now()
 
-	if it, ok, err := s.Claim(sys, m1.ID, now); err != nil || !ok || it.State != Sending || it.ClaimedAt.IsZero() {
+	if it, ok, err := s.Claim(sys, m1.ID, now, claimFor("a", now)); err != nil || !ok || it.State != Sending || it.ClaimedAt.IsZero() {
 		t.Fatalf("first claim = %+v, %v, %v", it, ok, err)
 	}
-	if _, ok, err := s.Claim(sys, m1.ID, now); err != nil || ok {
+	if _, ok, err := s.Claim(sys, m1.ID, now, claimFor("a", now)); err != nil || ok {
 		t.Fatalf("a second claim of the same message = %v, %v; want refused", ok, err)
 	}
-	if _, ok, err := s.Claim(sys, m2.ID, now); err != nil || ok {
+	if _, ok, err := s.Claim(sys, m2.ID, now, claimFor("a", now)); err != nil || ok {
 		t.Fatalf("the target's next message claimed while one is sending = %v, %v; want refused", ok, err)
 	}
-	if _, ok, err := s.Claim(sys, other.ID, now); err != nil || !ok {
+	if _, ok, err := s.Claim(sys, other.ID, now, claimFor("a", now)); err != nil || !ok {
 		t.Fatalf("another target's message = %v, %v; want claimed", ok, err)
 	}
 	if _, err := s.Cancel(as(2), m1.ID, now); !errors.Is(err, ErrNotCancellable) {
@@ -164,13 +169,13 @@ func TestAClaimIsOnceAndOneTargetSendsOneAtATime(t *testing.T) {
 	if _, err := s.Cancel(as(2), cancelled.ID, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := s.Claim(sys, cancelled.ID, now); err != nil || ok {
+	if _, ok, err := s.Claim(sys, cancelled.ID, now, claimFor("a", now)); err != nil || ok {
 		t.Fatalf("claiming a cancelled message = %v, %v; want refused", ok, err)
 	}
-	if err := s.Finish(sys, m1.ID, Outcome{Sent: true, Detail: "Sent."}, now); err != nil {
+	if err := s.Finish(sys, m1.ID, "a", Outcome{Sent: true, Detail: "Sent."}, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := s.Claim(sys, m2.ID, now); err != nil || !ok {
+	if _, ok, err := s.Claim(sys, m2.ID, now, claimFor("a", now)); err != nil || !ok {
 		t.Fatalf("the next message after the first finished = %v, %v; want claimed", ok, err)
 	}
 	got, _ := s.Get(as(2), m1.ID)
@@ -179,17 +184,18 @@ func TestAClaimIsOnceAndOneTargetSendsOneAtATime(t *testing.T) {
 	}
 }
 
-// TestRecoverFailsAMessageLeftSendingAndNeverRequeuesIt: a row a dead process
-// left 'sending' is failed, may have been delivered, with the reason — never
-// back to queued — and is then what the target's next message waits behind
-// (Head.LastAttempt).
+// TestRecoverFailsAMessageLeftSendingAndNeverRequeuesIt: a row whose sender
+// stopped — 'sending', its lease expired — is failed, may have been
+// delivered, with the reason, never back to queued; and the status time its
+// claim recorded is then what the target's next message waits behind
+// (Head.TurnAfter).
 func TestRecoverFailsAMessageLeftSendingAndNeverRequeuesIt(t *testing.T) {
 	s, _ := pgStore(t)
 	sys := context.Background()
 	m1 := mustEnqueue(t, s, 2, mirrorItem("one"))
 	m2 := mustEnqueue(t, s, 2, mirrorItem("two"))
 	claimed := time.Now().Add(-time.Minute).Truncate(time.Microsecond)
-	if _, ok, err := s.Claim(sys, m1.ID, claimed); err != nil || !ok {
+	if _, ok, err := s.Claim(sys, m1.ID, claimed, Claim{By: "a", Until: claimed.Add(30 * time.Second), Since: 1234}); err != nil || !ok {
 		t.Fatal(ok, err)
 	}
 	n, err := s.Recover(sys, time.Now())
@@ -201,15 +207,15 @@ func TestRecoverFailsAMessageLeftSendingAndNeverRequeuesIt(t *testing.T) {
 		t.Fatalf("the recovered message = %+v", got)
 	}
 	heads, err := s.Heads(sys)
-	if err != nil || len(heads) != 1 || heads[0].ID != m2.ID || !heads[0].LastAttempt.Equal(claimed) {
-		t.Fatalf("heads after recovery = %+v, %v; want m2 behind the recovered claim at %v", heads, err, claimed)
+	if err != nil || len(heads) != 1 || heads[0].ID != m2.ID || heads[0].TurnAfter != 1234 {
+		t.Fatalf("heads after recovery = %+v, %v; want m2 behind the recovered claim's status time 1234", heads, err)
 	}
 	if n, _ := s.Recover(sys, time.Now()); n != 0 {
 		t.Fatalf("a second Recover moved %d rows", n)
 	}
 	// A sender that outlived the recovery (it was only slow) finishing late
 	// does not rewrite the outcome: only a row still being sent is finished.
-	if err := s.Finish(sys, m1.ID, Outcome{Sent: true, Detail: "late"}, time.Now()); err != nil {
+	if err := s.Finish(sys, m1.ID, "a", Outcome{Sent: true, Detail: "late"}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := s.Get(as(2), m1.ID); got.State != Failed || got.Detail != RecoveredDetail {
@@ -217,34 +223,63 @@ func TestRecoverFailsAMessageLeftSendingAndNeverRequeuesIt(t *testing.T) {
 	}
 }
 
-// TestTheLastAttemptIsASendThatMayHaveLanded: Head.LastAttempt is the latest
-// claim of a message that was sent or failed after it may have been delivered,
-// and NOT one that failed before reaching the target — that one started no
-// turn to wait for.
-func TestTheLastAttemptIsASendThatMayHaveLanded(t *testing.T) {
+// TestTheTurnAfterIsThePasteThatMayHaveLanded: Head.TurnAfter is the newest
+// status time recorded at a paste that may have reached the window — a
+// claim's of a message that was sent or failed after it may have been
+// delivered, NOT one that failed before reaching the target (it started no
+// turn) — or the head's own: queued with one (Enqueue's AfterSince), or
+// raised by a person's Send while it waited (NotePaste), which never lowers it.
+func TestTheTurnAfterIsThePasteThatMayHaveLanded(t *testing.T) {
 	s, _ := pgStore(t)
 	sys := context.Background()
 	t0 := time.Now().Add(-time.Hour).Truncate(time.Microsecond)
-	claimFinish := func(at time.Time, o Outcome) {
+	claimFinish := func(at time.Time, since int64, o Outcome) {
 		t.Helper()
 		it := mustEnqueue(t, s, 2, mirrorItem("x"))
-		if _, ok, err := s.Claim(sys, it.ID, at); err != nil || !ok {
+		if _, ok, err := s.Claim(sys, it.ID, at, Claim{By: "a", Until: at.Add(time.Minute), Since: since}); err != nil || !ok {
 			t.Fatal(ok, err)
 		}
-		if err := s.Finish(sys, it.ID, o, at); err != nil {
+		if err := s.Finish(sys, it.ID, "a", o, at); err != nil {
 			t.Fatal(err)
 		}
 	}
-	claimFinish(t0, Outcome{Sent: true})
-	claimFinish(t0.Add(time.Minute), Outcome{MayHaveDelivered: true, Detail: "unconfirmed"})
-	claimFinish(t0.Add(2*time.Minute), Outcome{Detail: "refused before the host"})
-	next := mustEnqueue(t, s, 2, mirrorItem("next"))
-	h, ok, err := s.HeadOf(as(2), win)
-	if err != nil || !ok || h.ID != next.ID {
-		t.Fatalf("head = %+v, %v, %v", h, ok, err)
+	claimFinish(t0, 1000, Outcome{Sent: true})
+	claimFinish(t0.Add(time.Minute), 2000, Outcome{MayHaveDelivered: true, Detail: "unconfirmed"})
+	claimFinish(t0.Add(2*time.Minute), 3000, Outcome{Detail: "refused before the host"})
+	next := mirrorItem("next")
+	next.AfterSince = 1500
+	n := mustEnqueue(t, s, 2, next)
+	turnAfter := func(when string, want int64) {
+		t.Helper()
+		h, ok, err := s.HeadOf(as(2), win)
+		if err != nil || !ok || h.ID != n.ID {
+			t.Fatalf("%s: head = %+v, %v, %v", when, h, ok, err)
+		}
+		if h.TurnAfter != want {
+			t.Fatalf("%s: TurnAfter = %d, want %d", when, h.TurnAfter, want)
+		}
 	}
-	if want := t0.Add(time.Minute); !h.LastAttempt.Equal(want) {
-		t.Fatalf("LastAttempt = %v, want %v (the unconfirmed one, not the refused one)", h.LastAttempt, want)
+	turnAfter("queued behind an older paste", 2000)
+	if err := s.NotePaste(as(2), win, 2500); err != nil {
+		t.Fatal(err)
+	}
+	turnAfter("after a Send at 2500", 2500)
+	if err := s.NotePaste(as(2), win, 2200); err != nil {
+		t.Fatal(err)
+	}
+	turnAfter("an older Send does not lower it", 2500)
+	// Another owner's Send into the same address is not this queue's.
+	if err := s.NotePaste(as(3), win, 9000); err != nil {
+		t.Fatal(err)
+	}
+	turnAfter("another owner's Send", 2500)
+	newer := mirrorItem("queued right after a Send")
+	newer.Target.Window = "@8"
+	newer.AfterSince = 4000
+	mustEnqueue(t, s, 2, newer)
+	h, ok, err := s.HeadOf(as(2), newer.Target)
+	if err != nil || !ok || h.TurnAfter != 4000 {
+		t.Fatalf("a message queued with the hub's paste time = %+v, %v, %v; want TurnAfter 4000", h, ok, err)
 	}
 }
 

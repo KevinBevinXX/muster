@@ -180,14 +180,18 @@ type Extensions struct {
 }
 
 // SendQueue is the send queue's store as this package consumes it:
-// *sendqueue.PGStore. The first five run under the request's principal; the
-// embedded DispatchStore is the dispatcher's (system scope).
+// *sendqueue.PGStore. The first six run under the request's principal;
+// CancelOwner and the embedded DispatchStore are the system scope's.
 type SendQueue interface {
 	Enqueue(ctx context.Context, it sendqueue.Item) (sendqueue.Item, error)
 	List(ctx context.Context, t sendqueue.Target) ([]sendqueue.Item, error)
 	Get(ctx context.Context, id int64) (sendqueue.Item, error)
 	Cancel(ctx context.Context, id int64, now time.Time) (sendqueue.Item, error)
 	HeadOf(ctx context.Context, t sendqueue.Target) (sendqueue.Head, bool, error)
+	NotePaste(ctx context.Context, t sendqueue.Target, since int64) error
+	// CancelOwner is the system scope's: a disable or a sign-out everywhere
+	// cancels the user's queued messages.
+	CancelOwner(ctx context.Context, owner int64, now time.Time, detail string) (int, error)
 	sendqueue.DispatchStore
 }
 

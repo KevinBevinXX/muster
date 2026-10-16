@@ -18,10 +18,11 @@ import (
 // either changes. Nothing here depends on a page being open, which is what lets
 // a queued message be sent after the page that queued it has closed.
 //
-// 🔴 "SINCE" IS THE CLI'S OWN TIMESTAMP, NOT WHEN MUSTER SAW IT. So a turn
-// that starts and ends between two host refreshes still moves it — the status
-// reads idle both times, and its time is newer — and a host reconnecting does
-// not restart anybody's clock.
+// 🔴 "SINCE" IS THE CLI'S OWN TIMESTAMP, ON THE HOST'S CLOCK. So a turn that
+// starts and ends between two host refreshes still moves it — the status reads
+// idle both times, and its time is newer. It is compared only with Pasted (also
+// a host time); how long the window has been idle is measured from Observed, on
+// muster's clock (turns.go).
 //
 // 🔴 UNKNOWN IS NOT IDLE. A host that never advertised StatusReport (an older
 // muster-mirror, or a per-session one), a window whose pane is not Claude Code,
@@ -46,9 +47,15 @@ var (
 type AgentState struct {
 	// Status is StatusBusy, StatusIdle or StatusWaiting; "" when unknown.
 	Status string
-	// Since is when Claude Code wrote Status (its statusUpdatedAt). Zero when
-	// unknown.
-	Since time.Time
+	// Since is when Claude Code wrote Status (its statusUpdatedAt), in Unix
+	// milliseconds ON THE HOST'S CLOCK. 0 when unknown.
+	Since int64
+	// Observed is when the hub first saw this (Status, Since) pair, on
+	// MUSTER's clock: what an idle duration is measured from.
+	Observed time.Time
+	// Pasted is the Since the window held at its latest paste through this
+	// hub (a Send or a queued message), on the host's clock; 0 for none.
+	Pasted int64
 	// Unknown is why Status is unknown; nil when it is known.
 	Unknown error
 }
@@ -86,7 +93,13 @@ func (h *Hub) AgentState(owner int64, host, session, window string) AgentState {
 		case w.StatusSince <= 0:
 			return AgentState{Unknown: fmt.Errorf("%w (host %q, session %q)", ErrNoStatusSince, host, session)}
 		}
-		return AgentState{Status: w.Status, Since: time.UnixMilli(w.StatusSince)}
+		st := AgentState{Status: w.Status, Since: w.StatusSince}
+		t := h.turn(owner, host, session, id)
+		if t.since == w.StatusSince && t.status == w.Status {
+			st.Observed = t.observed
+		}
+		st.Pasted = t.pasted
+		return st
 	}
 	return AgentState{Unknown: fmt.Errorf("%w (host %q, session %q)", ErrNoStatus, host, session)}
 }

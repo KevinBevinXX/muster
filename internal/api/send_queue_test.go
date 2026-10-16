@@ -103,6 +103,30 @@ func (m *memQueue) HeadOf(ctx context.Context, t sendqueue.Target) (sendqueue.He
 	return sendqueue.Head{}, false, nil
 }
 
+func (m *memQueue) NotePaste(ctx context.Context, t sendqueue.Target, since int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, it := range m.items {
+		if it.Owner == queueUser(ctx) && it.Target == t && it.State.Open() && it.AfterSince < since {
+			m.items[i].AfterSince = since
+		}
+	}
+	return nil
+}
+
+func (m *memQueue) CancelOwner(_ context.Context, owner int64, _ time.Time, detail string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for i, it := range m.items {
+		if it.Owner == owner && it.State == sendqueue.Queued {
+			m.items[i].State, m.items[i].Detail = sendqueue.Cancelled, detail
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (m *memQueue) all() []sendqueue.Item {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -355,7 +379,9 @@ func TestTheProbeFailsClosed(t *testing.T) {
 	s, _ := queueServer(t, fm, &memQueue{}, &turnGateway{})
 	h := sendqueue.Head{Item: sendqueue.Item{Owner: 1, Target: sendqueue.Target{Host: "ws", Session: "main", Window: "@1"}}}
 	user1 := asQueueUser(1, time.Now())
-	since := time.Now().Add(-time.Hour)
+	since := time.Now().Add(-time.Hour).UnixMilli() // the host's clock
+	observed := time.Now().Add(-time.Minute)        // muster's
+	const pasted = int64(1792000004444)
 	for _, c := range []struct {
 		st   *mirror.AgentState
 		idle bool
@@ -366,13 +392,14 @@ func TestTheProbeFailsClosed(t *testing.T) {
 		{&mirror.AgentState{Status: mirror.StatusWaiting, Since: since}, false, "waiting for you"},
 		{&mirror.AgentState{Unknown: mirror.ErrNotClaude}, false, "no Claude Code session"},
 		{&mirror.AgentState{Unknown: mirror.ErrNoStatusSince}, false, "does not report since when"},
-		{&mirror.AgentState{Status: mirror.StatusIdle, Since: since}, true, ""},
+		{&mirror.AgentState{Status: mirror.StatusIdle, Since: since, Observed: observed, Pasted: pasted}, true, ""},
 	} {
 		fm.mu.Lock()
 		fm.agentState = c.st
 		fm.mu.Unlock()
 		got := s.sendQueueProbe(user1, h)
-		if got.Idle != c.idle || (c.idle && !got.Since.Equal(since)) || !strings.Contains(got.Why, c.says) {
+		if got.Idle != c.idle || (c.idle && (got.Since != since || !got.Observed.Equal(observed) || got.Pasted != pasted)) ||
+			!strings.Contains(got.Why, c.says) {
 			t.Errorf("host state %+v → probe %+v; want idle=%v saying %q", c.st, got, c.idle, c.says)
 		}
 	}
@@ -390,7 +417,7 @@ func TestTheProbeFailsClosed(t *testing.T) {
 // dispatcher's own probe of the same head, which is ViaQueue.
 func TestTheQueueListReadsAsTheRequestNotAsTheQueue(t *testing.T) {
 	fm := queueMirror()
-	fm.agentState = &mirror.AgentState{Status: mirror.StatusBusy, Since: time.Now()}
+	fm.agentState = &mirror.AgentState{Status: mirror.StatusBusy, Since: time.Now().UnixMilli()}
 	q := &memQueue{}
 	s, ts := queueServer(t, fm, q, &turnGateway{})
 	if _, err := q.Enqueue(asQueueUser(1, time.Now()), sendqueue.Item{Target: sendqueue.Target{Host: "ws", Session: "main", Window: "@1"},

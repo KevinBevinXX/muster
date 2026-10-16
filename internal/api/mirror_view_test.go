@@ -95,6 +95,13 @@ func (f *fakeMirror) PasteWindow(ctx context.Context, host, session, window, tex
 	if f.user(ctx) != 1 {
 		return mirror.ErrHostOffline
 	}
+	if f.v2.pasteErr == nil {
+		f.mu.Lock()
+		if f.onPaste != nil {
+			f.onPaste()
+		}
+		f.mu.Unlock()
+	}
 	return f.v2.pasteErr
 }
 

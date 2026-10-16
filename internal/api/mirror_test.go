@@ -103,6 +103,9 @@ type fakeMirror struct {
 	statusReport bool
 	// agentStateVias is the principal's door on each AgentState call.
 	agentStateVias []authz.Via
+	// onPaste, when set, runs (under mu) after each paste the host accepted:
+	// a test's stand-in for the hub recording the paste (AgentState.Pasted).
+	onPaste func()
 }
 
 func (f *fakeMirror) ServeConnect(w http.ResponseWriter, _ *http.Request) {

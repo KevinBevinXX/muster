@@ -900,6 +900,9 @@ func (s *Server) DisableUser(ctx context.Context, id int64, disabled bool) error
 	return SetUserDisabled(ctx, s.gt.GoTrueAuth, id, disabled, func() {
 		s.gt.forgetUser(id)
 		s.gt.setDisabled(id, disabled)
+		if disabled {
+			s.cancelQueuedFor(ctx, id, SendQueueCancelDisabled)
+		}
 	})
 }
 
@@ -913,6 +916,11 @@ func (s *Server) DisableUserAs(ctx context.Context, by users.Actor, id int64, di
 	return SetUserDisabledAs(ctx, s.gt.GoTrueAuth, &by, id, disabled, func() {
 		s.gt.forgetUser(id)
 		s.gt.setDisabled(id, disabled)
+		// The account's queued messages go with it (the delivery re-checks
+		// the account as well: sendQueueOwnerRefusal).
+		if disabled {
+			s.cancelQueuedFor(ctx, id, SendQueueCancelDisabled)
+		}
 	})
 }
 

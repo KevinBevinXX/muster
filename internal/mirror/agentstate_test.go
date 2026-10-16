@@ -55,7 +55,7 @@ func TestAHostThatDoesNotAdvertiseStatusIsNeverIdle(t *testing.T) {
 		r.online(t, 1, c.host, "work")
 		st := r.svc.AgentState(asUser(1), c.host, "work", "@1")
 		if c.want == nil {
-			if st.Unknown != nil || st.Status != mirror.StatusIdle || !st.Since.Equal(time.UnixMilli(t1)) {
+			if st.Unknown != nil || st.Status != mirror.StatusIdle || st.Since != t1 {
 				t.Fatalf("host %s (advertised): %+v, want idle since the CLI's %d", c.host, st, t1)
 			}
 			continue
@@ -96,11 +96,11 @@ func TestTheAgentStateIsTheCLIsOwnStatusAndTime(t *testing.T) {
 	}
 	r.online(t, 1, "h", "work")
 	at := func(window string) mirror.AgentState { return r.svc.AgentState(asUser(1), "h", "work", window) }
-	if st := at("@1"); st.Status != mirror.StatusIdle || !st.Since.Equal(time.UnixMilli(t1)) {
+	if st := at("@1"); st.Status != mirror.StatusIdle || st.Since != t1 {
 		t.Fatalf("first = %+v, want idle since %d", st, t1)
 	}
 	// The session address resolves to its active window, @1.
-	if st := at(""); st.Status != mirror.StatusIdle || !st.Since.Equal(time.UnixMilli(t1)) {
+	if st := at(""); st.Status != mirror.StatusIdle || st.Since != t1 {
 		t.Fatalf("the session's address = %+v, want @1's state", st)
 	}
 	send := func(status string, since, activity int64) {
@@ -113,7 +113,7 @@ func TestTheAgentStateIsTheCLIsOwnStatusAndTime(t *testing.T) {
 		t.Helper()
 		eventually(t, what, func() bool {
 			st := at("@1")
-			return st.Unknown == nil && st.Status == status && st.Since.Equal(time.UnixMilli(since))
+			return st.Unknown == nil && st.Status == status && st.Since == since
 		})
 	}
 	send(mirror.StatusBusy, t2, 0)
@@ -124,7 +124,7 @@ func TestTheAgentStateIsTheCLIsOwnStatusAndTime(t *testing.T) {
 	// A change that is not the status, with the same time: Since stays.
 	send(mirror.StatusIdle, t3, time.Now().Unix())
 	time.Sleep(50 * time.Millisecond)
-	if st := at("@1"); !st.Since.Equal(time.UnixMilli(t3)) {
+	if st := at("@1"); st.Since != t3 {
 		t.Fatalf("an unchanged status and time moved Since to %v", st.Since)
 	}
 	// A turn too short for any report to see busy: idle both times, the time
@@ -135,7 +135,7 @@ func TestTheAgentStateIsTheCLIsOwnStatusAndTime(t *testing.T) {
 	// A status without its time.
 	send(mirror.StatusIdle, 0, 0)
 	eventually(t, "a status with no time is unknown", func() bool { return errors.Is(at("@1").Unknown, mirror.ErrNoStatusSince) })
-	if st := at("@1"); st.Status != "" || !st.Since.IsZero() {
+	if st := at("@1"); st.Status != "" || st.Since != 0 {
 		t.Fatalf("a status with no time = %+v, want unknown", st)
 	}
 	if st := at("@2"); !errors.Is(st.Unknown, mirror.ErrNotClaude) {
@@ -175,7 +175,7 @@ func TestARealHostReportsItsClaudeStatus(t *testing.T) {
 	is := func(status string, since int64) func() bool {
 		return func() bool {
 			st := r.svc.AgentState(asUser(1), "rep", "work", "@1")
-			return st.Status == status && st.Since.Equal(time.UnixMilli(since))
+			return st.Status == status && st.Since == since
 		}
 	}
 	eventually(t, "busy since t1", is(mirror.StatusBusy, t1))

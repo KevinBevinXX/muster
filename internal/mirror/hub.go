@@ -130,6 +130,11 @@ type Hub struct {
 	// notifyPending is whether one is already scheduled.
 	debounce      time.Duration
 	notifyPending map[int64]bool
+
+	// turns is, per window, its status as first observed and the status time
+	// it held at its latest paste (turns.go). Under turnsMu.
+	turnsMu sync.Mutex
+	turns   map[turnKey]*turnState
 }
 
 // notifyDebounce is the window change nudges are coalesced in: however fast
@@ -434,6 +439,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 	hc := &hostConn{key: key, ws: ws, ctx: ctx, cancel: cancel, interactive: hello.Interactive, version: hello.Version,
 		streams: map[uint32]*stream{}, watches: map[uint32]*watch{}, pastes: map[uint32]chan error{}}
 	hc.sessions, hc.windows, hc.claude, hc.labels, hc.activity = hc.list(hello, h.now().Unix())
+	h.observe(owner, host, hc.windows, h.now())
 	if hc.version >= 2 {
 		// A read-only host cannot be pasted into whatever it claims.
 		hc.panePaste = hello.PanePaste && hello.Interactive
@@ -522,6 +528,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				same := slices.Equal(hc.sessions, list) && slices.Equal(hc.claude, claude) && maps.Equal(hc.labels, labels) && sameWindows(hc.windows, windows)
 				hc.sessions, hc.windows, hc.labels, hc.activity, hc.claude = list, windows, labels, activity, claude
 				hc.mu.Unlock()
+				h.observe(hc.key.owner, hc.key.host, windows, h.now())
 				// 🔴 ONLY A CHANGE SOMEBODY CAN SEE NUDGES THE OPEN VIEWS. Activity
 				// moves all the time; a host re-sends it once per ActivityBucket
 				// while a session stays busy, and most of those leave the list in
@@ -563,6 +570,7 @@ func (h *Hub) drop(hc *hostConn) {
 			// A revoked host is GONE, not offline: nothing it listed stays on
 			// anyone's view.
 			delete(h.offline, hc.key)
+			defer h.forgetTurns(hc.key.owner, hc.key.host)
 		} else {
 			hc.mu.Lock()
 			claude := append([]string(nil), hc.claude...)

@@ -49,15 +49,22 @@ no Queue.
   Send.
 - **What idle means.** Claude Code's own session status and the time it wrote
   it (`status` and `statusUpdatedAt` in its sessions file), which
-  `muster-mirror` reports per window. "Idle for 30 s" is measured from that
-  time. `busy` and `waiting` (a prompt or a question for you) both hold the
-  queue.
-- **One at a time.** After one is sent, the next waits until Claude Code
-  reports idle since a time later than that send, which is the turn the message
-  started, ended. That holds however short the turn was, even one that started
-  and finished between two of the host's 5-second refreshes. There is no
-  time-based fallback. A window that never reports a newer idle keeps its queue
-  held.
+  `muster-mirror` reports per window. "Idle for 30 s" is measured on
+  muster's own clock, from when muster first saw that status. `busy` and
+  `waiting` (a prompt or a question for you) both hold the queue.
+- **One at a time, after every paste.** Whenever anything is pasted into the
+  window (a queued message, or your own Send), muster records the status time
+  the window held then. The next queued message waits until Claude Code reports
+  a status time newer than that, which is the turn the paste started, ended.
+  That holds however short the turn was, even one that started and finished
+  between two of the host's 5-second refreshes. There is no time-based
+  fallback. A window that never reports a newer status keeps its queue held. A
+  paste into another pane of a Claude Code window (from the Terminal view)
+  holds the queue the same way, until Claude Code's next turn.
+- **Clock skew does not matter.** Status times are the host's clock and are
+  compared only with each other, and the idle time is measured on muster's
+  clock. A host whose clock is ahead or behind neither stalls the queue nor
+  releases a message early.
 - 🔴 **Unknown is not idle.** Nothing queued is sent to a window muster cannot
   read. For a `muster-mirror` that does not report the status (an older one) or
   a window whose pane is not Claude Code, Queue is drawn disabled saying why and
@@ -67,9 +74,11 @@ no Queue.
 - **At most 20** messages can wait per window. Finished ones are shown for a
   while and deleted after 7 days.
 - **Never twice.** A message is claimed (`queued` → `sending`) before it is sent
-  and never put back. If muster stops in the middle of a send, the message is
-  marked failed ("may or may not have been delivered") at the next start and is
-  not sent again.
+  and never put back. The claim is a 30-second lease that the sending muster
+  renews while it sends. If that muster stops in the middle of a send, the
+  message is marked failed ("may or may not have been delivered") once the
+  lease has run out, and is not sent again. During a rolling update two muster
+  pods overlap, and neither fails or finishes the other's send.
 
 🔴 **Step-up for a queued message is decided when you QUEUE it.** Queueing
 needs the same fresh sign-in a Send needs (the dialog, or the plain confirm page
@@ -78,8 +87,15 @@ session that queued it. When the message is sent, exactly that time is presented
 to the same gate, the plugin's own check included. So a queued message is sent
 only while the sign-in that queued it is still inside the step-up window. After
 that it fails, saying so, and is not sent. The queue never refreshes or extends
-the time. Signing out of that session does not withdraw what it queued. Cancel
-the message instead.
+the time.
+
+🔴 **A queued message does not outlive the account that queued it.** Disabling
+the account, or **Sign out everywhere**, cancels every message it has queued
+("Cancelled: …"). When a message is sent, the server also checks the account
+again: if it is disabled, or the sign-in that queued the message is at or before
+the account's session cutoff (moved by a disable or a password reset), the
+message fails, saying why, and nothing is pasted. Signing out of just the one
+session that queued it does not withdraw it; Cancel the message instead.
 
 ## It works without JavaScript, and a message is delivered once
 

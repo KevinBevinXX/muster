@@ -87,6 +87,12 @@ func (c *clock) set(t time.Time) {
 
 const idle = 30 * time.Second
 
+// idleSince is a target idle since t, with no clock skew: the host's status
+// time is t, and the server first saw it at t.
+func idleSince(t time.Time) AgentState {
+	return AgentState{Idle: true, Since: t.UnixMilli(), Observed: t}
+}
+
 func newDispatcher(s *PGStore, f *fakeTarget, c *clock) *Dispatcher {
 	return &Dispatcher{Store: s, Probe: f.probe, Send: f.send, AsOwner: f.asOwner, IdleFor: idle, Now: c.now,
 		Logger: log.New(io.Discard, "", 0)}
@@ -123,7 +129,7 @@ func TestTheDispatcherSendsOneMessagePerIdleStretch(t *testing.T) {
 	s, _ := pgStore(t)
 	t0 := time.Now().Truncate(time.Second)
 	c := &clock{t: t0}
-	f := &fakeTarget{st: AgentState{Idle: true, Since: t0}}
+	f := &fakeTarget{st: idleSince(t0)}
 	d := newDispatcher(s, f, c)
 	for _, b := range []string{"one", "two", "three"} {
 		mustEnqueue(t, s, 2, mirrorItem(b))
@@ -151,7 +157,7 @@ func TestTheDispatcherSendsOneMessagePerIdleStretch(t *testing.T) {
 
 	// Idle again — but not for IdleFor yet.
 	idleAgain := busyAt.Add(time.Minute)
-	f.set(AgentState{Idle: true, Since: idleAgain})
+	f.set(idleSince(idleAgain))
 	c.set(idleAgain.Add(idle - time.Second))
 	tick(t, d)
 	wantSent(t, f, "idle again 29 s", "one")
@@ -188,7 +194,7 @@ func TestAnUnknownTargetIsNeverSentTo(t *testing.T) {
 		t.Fatalf("Decide = %+v; want held, saying %q", dec, why)
 	}
 	// The positive control: the same message, once the target is known idle.
-	f.set(AgentState{Idle: true, Since: c.now()})
+	f.set(idleSince(c.now()))
 	c.set(c.now().Add(idle))
 	tick(t, d)
 	wantSent(t, f, "the same target, known idle", "held")
@@ -206,11 +212,13 @@ func TestARestartMidSendDoesNotResend(t *testing.T) {
 	m1 := mustEnqueue(t, s, 2, mirrorItem("in flight"))
 	mustEnqueue(t, s, 2, mirrorItem("next"))
 	// The first process: claimed, then died (no Finish).
-	if _, ok, err := s.Claim(context.Background(), m1.ID, t0); err != nil || !ok {
+	// Its lease ran out at t0+30s and nobody renewed it.
+	if _, ok, err := s.Claim(context.Background(), m1.ID, t0, Claim{By: "dead", Until: t0.Add(DefaultLease),
+		Since: t0.Add(-time.Hour).UnixMilli()}); err != nil || !ok {
 		t.Fatal(ok, err)
 	}
 
-	f := &fakeTarget{st: AgentState{Idle: true, Since: t0.Add(-time.Hour)}}
+	f := &fakeTarget{st: idleSince(t0.Add(-time.Hour))}
 	d := newDispatcher(s, f, c)
 	c.set(t0.Add(time.Minute))
 	if err := d.Start(context.Background()); err != nil {
@@ -224,7 +232,7 @@ func TestARestartMidSendDoesNotResend(t *testing.T) {
 	}
 	// A turn after the claim, then idle: the NEXT message goes; the recovered
 	// one never does.
-	f.set(AgentState{Idle: true, Since: t0.Add(2 * time.Hour)})
+	f.set(idleSince(t0.Add(2 * time.Hour)))
 	c.set(t0.Add(2*time.Hour + idle))
 	tick(t, d)
 	tick(t, d)
@@ -237,7 +245,7 @@ func TestACancelledMessageIsNeverSent(t *testing.T) {
 	s, _ := pgStore(t)
 	t0 := time.Now().Truncate(time.Second)
 	c := &clock{t: t0}
-	f := &fakeTarget{st: AgentState{Idle: true, Since: t0}}
+	f := &fakeTarget{st: idleSince(t0)}
 	d := newDispatcher(s, f, c)
 	m1 := mustEnqueue(t, s, 2, mirrorItem("cancel me"))
 	mustEnqueue(t, s, 2, mirrorItem("keep me"))
@@ -266,7 +274,7 @@ func TestAFailureThatDidNotDeliverDoesNotWaitForATurn(t *testing.T) {
 			s, _ := pgStore(t)
 			t0 := time.Now().Truncate(time.Second)
 			clk := &clock{t: t0}
-			f := &fakeTarget{st: AgentState{Idle: true, Since: t0}, outcome: &Outcome{MayHaveDelivered: c.may, Detail: "not sent"}}
+			f := &fakeTarget{st: idleSince(t0), outcome: &Outcome{MayHaveDelivered: c.may, Detail: "not sent"}}
 			d := newDispatcher(s, f, clk)
 			mustEnqueue(t, s, 2, mirrorItem("first"))
 			mustEnqueue(t, s, 2, mirrorItem("second"))
@@ -294,20 +302,22 @@ func TestTargetsAreIndependent(t *testing.T) {
 		if h.Target.Window == "@1" {
 			return AgentState{Why: "busy"}
 		}
-		return AgentState{Idle: true, Since: t0}
+		return idleSince(t0)
 	}
 	tick(t, d)
 	wantSent(t, f, "one busy, one idle target", "to the idle window")
 }
 
 // TestDecide is the rule, case by case, at its boundaries. There is NO time
-// fallback: a target idle since before the previous message is held however
-// long it stays so (a day later here), and an idle target whose time is
-// unknown is not idle for any time.
+// fallback: a target whose status is no newer than the one held at the last
+// paste is held however long it stays so (a day later here), and an idle
+// target whose time is unknown — or that the server has not observed — is not
+// idle for any time.
 func TestDecide(t *testing.T) {
-	t0 := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	m0 := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
 	queued := Head{Item: Item{State: Queued}}
-	after := Head{Item: Item{State: Queued}, LastAttempt: t0.Add(time.Minute)}
+	// A paste was made while the window's status time was m0+1min.
+	after := Head{Item: Item{State: Queued}, TurnAfter: m0.Add(time.Minute).UnixMilli()}
 	for _, c := range []struct {
 		name string
 		h    Head
@@ -315,16 +325,22 @@ func TestDecide(t *testing.T) {
 		now  time.Time
 		send bool
 	}{
-		{"being sent", Head{Item: Item{State: Sending}}, AgentState{Idle: true, Since: t0}, t0.Add(time.Hour), false},
-		{"not idle", queued, AgentState{Why: "busy"}, t0.Add(time.Hour), false},
-		{"idle 29s", queued, AgentState{Idle: true, Since: t0}, t0.Add(29 * time.Second), false},
-		{"idle 30s", queued, AgentState{Idle: true, Since: t0}, t0.Add(30 * time.Second), true},
-		{"idle since an unknown time", queued, AgentState{Idle: true}, t0.Add(time.Hour), false},
-		{"idle since before the last attempt", after, AgentState{Idle: true, Since: t0}, t0.Add(time.Hour), false},
-		{"idle since before the last attempt, a day later", after, AgentState{Idle: true, Since: t0}, t0.Add(24 * time.Hour), false},
-		{"idle since exactly the last attempt", after, AgentState{Idle: true, Since: t0.Add(time.Minute)}, t0.Add(time.Hour), false},
-		{"idle since after the last attempt, 29s", after, AgentState{Idle: true, Since: t0.Add(2 * time.Minute)}, t0.Add(2*time.Minute + 29*time.Second), false},
-		{"idle since after the last attempt, 30s", after, AgentState{Idle: true, Since: t0.Add(2 * time.Minute)}, t0.Add(2*time.Minute + 30*time.Second), true},
+		{"being sent", Head{Item: Item{State: Sending}}, idleSince(m0), m0.Add(time.Hour), false},
+		{"not idle", queued, AgentState{Why: "busy"}, m0.Add(time.Hour), false},
+		{"idle 29s", queued, idleSince(m0), m0.Add(29 * time.Second), false},
+		{"idle 30s", queued, idleSince(m0), m0.Add(30 * time.Second), true},
+		{"idle since an unknown time", queued, AgentState{Idle: true, Observed: m0}, m0.Add(time.Hour), false},
+		{"idle, never observed", queued, AgentState{Idle: true, Since: m0.UnixMilli()}, m0.Add(time.Hour), false},
+		{"status older than the last paste's", after, idleSince(m0), m0.Add(time.Hour), false},
+		{"status older than the last paste's, a day later", after, idleSince(m0), m0.Add(24 * time.Hour), false},
+		{"status exactly the last paste's", after, idleSince(m0.Add(time.Minute)), m0.Add(time.Hour), false},
+		{"status newer than the last paste's, 29s", after, idleSince(m0.Add(2 * time.Minute)), m0.Add(2*time.Minute + 29*time.Second), false},
+		{"status newer than the last paste's, 30s", after, idleSince(m0.Add(2 * time.Minute)), m0.Add(2*time.Minute + 30*time.Second), true},
+		// The same, with the paste known only to the hub (a person's Send).
+		{"hub paste: status exactly it", queued, withPasted(idleSince(m0.Add(time.Minute)), m0.Add(time.Minute)), m0.Add(time.Hour), false},
+		{"hub paste: status newer, 30s", queued, withPasted(idleSince(m0.Add(2*time.Minute)), m0.Add(time.Minute)), m0.Add(2*time.Minute + 30*time.Second), true},
+		// The larger of the two wins.
+		{"hub paste newer than the table's", after, withPasted(idleSince(m0.Add(2*time.Minute)), m0.Add(3*time.Minute)), m0.Add(time.Hour), false},
 	} {
 		got := Decide(c.h, c.st, c.now, idle)
 		if got.Send != c.send {
@@ -332,6 +348,73 @@ func TestDecide(t *testing.T) {
 		}
 		if !got.Send && got.Why == "" {
 			t.Errorf("%s: held with no reason", c.name)
+		}
+	}
+}
+
+func withPasted(st AgentState, at time.Time) AgentState {
+	st.Pasted = at.UnixMilli()
+	return st
+}
+
+// TestDecideUnderClockSkew is why the rule never mixes the two clocks. A
+// message is pasted at muster time P while the window holds status time S0
+// (host clock); the turn it starts lasts L and ends with a status write at
+// host time P+L+skew; the server observes that write 2 s later, at muster
+// time O. With the host 60 s BEHIND (a 20 s turn and a 70 s turn), 60 s
+// AHEAD, and in step: before the turn ends the next message is held; it is
+// held 29 s after O and sent 30 s after O — IdleFor on muster's own clock —
+// and a day later it is still sendable, so nothing stalls. Both ways the paste
+// can be known: on the row (TurnAfter) and only to the hub (Pasted).
+//
+// The rule this replaced compared the host's time with muster's: 60 s behind,
+// a 20 s turn's end read as "before the paste" and the queue stalled forever,
+// and a 70 s turn released the next message at once instead of 30 s later; 60
+// s ahead it waited 90 s.
+func TestDecideUnderClockSkew(t *testing.T) {
+	p := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		name string
+		skew time.Duration // host clock minus muster's
+		turn time.Duration
+	}{
+		{"in step, 20 s turn", 0, 20 * time.Second},
+		{"in step, 70 s turn", 0, 70 * time.Second},
+		{"host 60 s behind, 20 s turn", -time.Minute, 20 * time.Second},
+		{"host 60 s behind, 70 s turn", -time.Minute, 70 * time.Second},
+		{"host 60 s ahead, 20 s turn", time.Minute, 20 * time.Second},
+		{"host 60 s ahead, 70 s turn", time.Minute, 70 * time.Second},
+	} {
+		host := func(m time.Time) int64 { return m.Add(c.skew).UnixMilli() }
+		s0 := host(p.Add(-5 * time.Minute)) // the idle the paste was made in
+		ended := host(p.Add(c.turn))        // the turn's own idle write
+		observed := p.Add(c.turn + 2*time.Second)
+		for _, known := range []string{"on the row", "to the hub only"} {
+			h := Head{Item: Item{State: Queued}}
+			pasted := int64(0)
+			if known == "on the row" {
+				h.TurnAfter = s0
+			} else {
+				pasted = s0
+			}
+			before := AgentState{Idle: true, Since: s0, Observed: p.Add(-5 * time.Minute), Pasted: pasted}
+			afterTurn := AgentState{Idle: true, Since: ended, Observed: observed, Pasted: pasted}
+			for _, step := range []struct {
+				what string
+				st   AgentState
+				now  time.Time
+				send bool
+			}{
+				{"the turn has not ended", before, p.Add(c.turn), false},
+				{"the turn has not ended, a day later", before, p.Add(24 * time.Hour), false},
+				{"29 s after the server saw it end", afterTurn, observed.Add(29 * time.Second), false},
+				{"30 s after the server saw it end", afterTurn, observed.Add(30 * time.Second), true},
+				{"a day after", afterTurn, observed.Add(24 * time.Hour), true},
+			} {
+				if got := Decide(h, step.st, step.now, idle); got.Send != step.send {
+					t.Errorf("%s, paste known %s, %s: Decide = %+v, want send=%v", c.name, known, step.what, got, step.send)
+				}
+			}
 		}
 	}
 }
@@ -345,7 +428,7 @@ func TestATurnNobodySawBusyStillReleasesTheNext(t *testing.T) {
 	s, _ := pgStore(t)
 	t0 := time.Now().Truncate(time.Second)
 	c := &clock{t: t0.Add(idle)}
-	f := &fakeTarget{st: AgentState{Idle: true, Since: t0}}
+	f := &fakeTarget{st: idleSince(t0)}
 	d := newDispatcher(s, f, c)
 	mustEnqueue(t, s, 2, mirrorItem("one"))
 	mustEnqueue(t, s, 2, mirrorItem("two"))
@@ -356,7 +439,7 @@ func TestATurnNobodySawBusyStillReleasesTheNext(t *testing.T) {
 	wantSent(t, f, "the same idle-since a day later", "one")
 	// The turn "one" started ran and ended unseen: idle both times, newer time.
 	turnEnded := t0.Add(24*time.Hour + time.Second)
-	f.set(AgentState{Idle: true, Since: turnEnded})
+	f.set(idleSince(turnEnded))
 	c.set(turnEnded.Add(idle - time.Second))
 	tick(t, d)
 	wantSent(t, f, "a newer idle-since, 29 s", "one")
@@ -373,7 +456,7 @@ func TestTheHooksActAsTheMessagesOwner(t *testing.T) {
 	s, _ := pgStore(t)
 	t0 := time.Now().Truncate(time.Second)
 	c := &clock{t: t0.Add(idle)}
-	f := &fakeTarget{st: AgentState{Idle: true, Since: t0}}
+	f := &fakeTarget{st: idleSince(t0)}
 	d := newDispatcher(s, f, c)
 	mustEnqueue(t, s, 2, mirrorItem("user 2's"))
 	mustEnqueue(t, s, 3, mirrorItem("user 3's"))

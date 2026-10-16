@@ -436,7 +436,21 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 // 🔴 THE SAME MESSAGE TWICE IS DELIVERED ONCE (sendNonces): the composer's
 // script hands a send whose answer was lost to the browser's own submit, and
 // the first may have been pasted.
+//
+// 🔴 EVERY PASTE THAT MAY HAVE LANDED HOLDS THE SEND QUEUE FOR ITS TURN. The
+// hub records the window's status time at the paste (mirror's turns.go), and
+// this records it on the window's open queue rows too (sendQueueNotePaste), so
+// a queued message waits for the turn a person's own Send started — across a
+// restart as well.
 func (s *Server) mirrorPaste(ctx context.Context, host, session, window, text, nonce string, target mirror.PasteTarget) (repeat bool, err error) {
+	repeat, err = s.mirrorPasteOnce(ctx, host, session, window, text, nonce, target)
+	if !repeat && (err == nil || errors.Is(err, mirror.ErrPasteUnconfirmed)) {
+		s.sendQueueNotePaste(ctx, host, session, window)
+	}
+	return repeat, err
+}
+
+func (s *Server) mirrorPasteOnce(ctx context.Context, host, session, window, text, nonce string, target mirror.PasteTarget) (repeat bool, err error) {
 	repeat, finish := s.sends.begin(requestOwner(ctx), nonce, text)
 	if repeat {
 		return true, nil

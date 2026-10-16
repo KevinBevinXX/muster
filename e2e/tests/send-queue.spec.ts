@@ -294,6 +294,31 @@ test.describe('desktop 1280×800', () => {
     ]);
   });
 
+  // 🔴 Y1, EVERY PASTE HOLDS THE QUEUE: a person's own Send starts a turn too,
+  // so a message queued right after it waits for a status NEWER than the one
+  // the Send was made in, not just for idle.
+  test('a message queued after a Send waits for the turn that Send started', async ({ page }) => {
+    setStatus('idle');
+    await new Promise((r) => setTimeout(r, 6_500)); // the host reports the idle
+    fs.rmSync(tr + '.pasted', { force: true });
+    await openView(page, newHost);
+    await page.locator('#mv-input').fill('sent by hand');
+    await page.locator('#mv-send').click();
+    await expect.poll(pasted, { message: 'Send pastes at once' }).toEqual([`${pane} sent by hand`]);
+    await queue(page, 'queued after the hand send', false);
+    // Idle all along, on the status the Send was made in: its turn has not
+    // ended. Long enough for a wrong send (refresh 5 s + idle 2 s + a tick).
+    await new Promise((r) => setTimeout(r, 12_000));
+    expect(pasted(), "the queued message waits for the Send's turn").toEqual([`${pane} sent by hand`]);
+    await expect(page.locator('#mv-queue-waiting')).toContainText("previous message's turn");
+    // The Send's turn ends: a newer status time releases it.
+    setStatus('idle');
+    await expect.poll(pasted, { message: "sent after the Send's turn", timeout: 30_000 }).toEqual([
+      `${pane} sent by hand`,
+      `${pane} queued after the hand send`,
+    ]);
+  });
+
   // 🔴 FAIL CLOSED ON A STATUS WITHOUT ITS TIME: a host that says idle but not
   // since when is held, saying why — never released by a time guess. The
   // positive control is the same message, sent once the time is reported.
