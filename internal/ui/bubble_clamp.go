@@ -32,6 +32,19 @@ import (
 // newest message never leaves the reader above the bottom. The page scripts'
 // own "at the end" state follows, because a scroll to the bottom IS the end.
 //
+// 🔴 AN OPENED MESSAGE STAYS OPEN ACROSS A REDRAW. The agent chat page swaps
+// #chat-log's whole content on sse:chat.reply, task:changed and agent.changed
+// (chatLogTrigger), so every bubble is a NEW element after each swap. A bubble
+// carrying data-msg-id (a persisted message's row id, chatBubble) is remembered
+// by that id when it finishes opening or closing, and a new bubble with a
+// remembered-open id is drawn open at once — no animation, no stick-to-bottom.
+// A bubble with no id (a mirrored one, a live one) is not remembered.
+//
+// 🔴 A TAP ON A CONTROL INSIDE A BUBBLE IS THAT CONTROL'S, NOT THE BUBBLE'S. A
+// tap whose target is inside a link, a <summary>/<details> (a fenced code
+// block is a collapsed <details>), a button, a form field or anything marked
+// [data-no-clamp] within the bubble never toggles the bubble.
+//
 // It is re-executable: the observers and the delegated handler are bound once
 // per document, on window.muClamp, and a re-run rescans.
 func bubbleClampScript() g.Node {
@@ -39,8 +52,19 @@ func bubbleClampScript() g.Node {
 (function () {
   if (window.muClamp) { window.muClamp.scan(document); return; }
   var LINES = 12;       // "about 12 lines"
+  // What a tap inside a bubble belongs to instead of the bubble.
+  var CONTROLS = 'a, summary, details, button, input, textarea, select, label, [data-no-clamp]';
   var reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)');
   var seen = new WeakSet();
+  // The data-msg-id of every bubble the reader left open, for this document.
+  var opened = new Set();
+  function idOf(el) { return el.getAttribute('data-msg-id') || ''; }
+  // remember records el's settled state under its id (none = not remembered).
+  function remember(el) {
+    var id = idOf(el);
+    if (!id) return;
+    if (el.getAttribute('data-clamp') === 'open') opened.add(id); else opened.delete(id);
+  }
 
   // The clamped height: LINES of the bubble's own line-height, plus its padding.
   function limit(el) {
@@ -77,7 +101,12 @@ func bubbleClampScript() g.Node {
     var max = limit(el);
     // A line of slack, so a bubble a few pixels over is not clamped to hide half a line.
     var need = el.scrollHeight > max + parseFloat(getComputedStyle(el).lineHeight || '20');
-    if (need) {
+    if (need && opened.has(idOf(el))) {
+      // A redrawn copy of a message the reader opened: open at once, unanimated.
+      el.style.maxHeight = 'none';
+      el.setAttribute('data-clamp', 'open');
+      setToggle(el, true);
+    } else if (need) {
       el.style.maxHeight = max + 'px';
       el.setAttribute('data-clamp', 'closed');
       setToggle(el, false);
@@ -118,6 +147,7 @@ func bubbleClampScript() g.Node {
       cancelAnimationFrame(frame);
       el.removeEventListener('transitionend', onEnd);
       done();
+      remember(el);
       follow();
     }
     function onEnd(e) { if (e.target === el && e.propertyName === 'max-height') finish(); }
@@ -154,10 +184,12 @@ func bubbleClampScript() g.Node {
       if (prev && prev.hasAttribute('data-clamp')) toggle(prev);
       return;
     }
-    // A tap on the bubble itself — but not on a link in it, and not the end
-    // of a text selection.
+    // A tap on the bubble itself — but not on a control inside it (see the
+    // comment above bubbleClampScript), and not the end of a text selection.
     var el = t.closest('[data-clamp]');
-    if (!el || t.closest('a')) return;
+    if (!el) return;
+    var ctl = t.closest(CONTROLS);
+    if (ctl && el.contains(ctl)) return;
     var sel = window.getSelection && window.getSelection();
     if (sel && !sel.isCollapsed && el.contains(sel.anchorNode)) return;
     toggle(el);

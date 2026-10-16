@@ -208,6 +208,8 @@ build tag, which the Playwright suite uses. The shipped binaries do not read the
 | `MUSTER_TEST_REQUIRE_DB` | off | in CI | Turns a missing database into a failure instead of a skip. |
 | `MUSTER_E2E_SUB` | none | for `e2e/mkmember` | A GoTrue user id for the e2e member fixture. |
 | `MUSTER_E2E_EMAIL` | none | for `e2e/mkmember` | That fixture user's email. |
+| `MUSTER_E2E_AGENT` | none | for `e2e/mkchat` | The name of the agent the mirror-chat spec's chat fixture creates (or deletes). |
+| `MUSTER_E2E_DELETE` | off | no | (`e2e/mkchat`) `1` deletes that agent instead of creating it. |
 | `MUSTER_E2E_HOLD_READY_DIR` | none | no | (`e2eterm`) Holds fake instances not-ready until a file named after each instance appears in this directory. |
 | `MUSTER_E2E_TERM_WINDOW` | none | no | (`e2eterm`) The `CxR` window size the fake agent pod reports. |
 | `MUSTER_MIRROR_E2E_SESSIONS` | none | no | (`e2emirror`) The fake tmux server's session names, comma-separated. |

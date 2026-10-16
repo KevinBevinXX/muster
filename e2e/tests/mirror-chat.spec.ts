@@ -288,30 +288,137 @@ test('with reduced motion the clamp opens with no transition', async ({ page }) 
   expect(Math.abs(h - sh)).toBeLessThanOrEqual(1);
 });
 
-// The SAME clamp on the dispatched-agent chat (bubbleClampScript is on that
-// page too). Its seeded transcript (e2e/seed) is short, so it is checked as
-// drawn — no clamp — and a long bubble in chatBubbleOf's markup is then added
-// to #chat-log the way the chat-log refresh adds one, and is clamped and opened
-// by a tap. (Adding it through a real send would persist a message into the
-// seeded agent other specs count.)
-test('the agent chat clamps a long bubble and leaves its short seeded ones alone', async ({ page }) => {
+// B2 round 1: a tap on a control INSIDE a bubble is the control's. A fenced
+// code block in a mirrored reply is a collapsed <details> (internal/ui/
+// markdown.go); tapping its summary opens the code block and leaves the
+// clamped bubble alone.
+test('tapping a code block summary inside a clamped bubble toggles only the code block', async ({ page }) => {
+  const tr = newTranscript(prompt('show me') + reply('```\ncode line one\ncode line two\n```\n\n' + lines(30, 'after the code')));
+  await openView(page, tr);
+  const b = page.locator('#mv-log [data-bubble="assistant"]').first();
+  await expect(b).toHaveAttribute('data-clamp', 'closed');
+  const code = b.locator('details').first();
+  await expect(code).not.toHaveAttribute('open', '');
+  await code.locator('summary').tap();
+  await expect(code).toHaveAttribute('open', '');
+  await expect(code.locator('pre')).toContainText('code line two');
+  // Past the expand's own 600ms finish timer: the bubble never moved.
+  await page.waitForTimeout(700);
+  await expect(b).toHaveAttribute('data-clamp', 'closed');
+  // A tap in the open code block's body is the code block's too.
+  await code.locator('pre').tap();
+  await page.waitForTimeout(700);
+  await expect(b).toHaveAttribute('data-clamp', 'closed');
+  await code.locator('summary').tap();
+  await expect(code).not.toHaveAttribute('open', '');
+  await expect(b).toHaveAttribute('data-clamp', 'closed');
+  // The bubble itself still toggles.
+  await b.locator('p').last().tap();
+  await expect(b).toHaveAttribute('data-clamp', 'open');
+});
+
+// The agent chat specs below drive an agent of their OWN (e2e/mkchat) with a
+// persisted chat, so their bubbles are the server's real chatBubble markup
+// (data-md, data-msg-id) without adding rows to a seeded agent other specs
+// count. It is deleted after.
+const chatAgent = 'e2e-clamp-' + Date.now().toString(36);
+const longAgentMsg = Array.from({ length: 30 }, (_, i) => `agent line ${i + 1}`).join('\n');
+let chatAgentMade = false;
+function mkchat(extra: NodeJS.ProcessEnv, input = '') {
+  execFileSync('go', ['run', './e2e/mkchat'], { cwd: repoRoot, input, env: { ...process.env, DATABASE_URL: dsn, MUSTER_E2E_AGENT: chatAgent, ...extra } });
+}
+function makeChatAgent() {
+  if (chatAgentMade) return;
+  mkchat({}, JSON.stringify([
+    { role: 'user', content: 'Check the docs build.' },
+    { role: 'assistant', content: 'The build passes.' },
+    { role: 'user', content: longAgentMsg },
+  ]));
+  chatAgentMade = true;
+}
+test.afterAll(() => {
+  if (chatAgentMade) mkchat({ MUSTER_E2E_DELETE: '1' });
+});
+
+// refreshChatLog fires task:changed on <body>, as the completion banner's
+// Mark-complete does, and resolves once #chat-log has been swapped.
+async function refreshChatLog(page: Page) {
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        const on = (e: Event) => {
+          if ((e as CustomEvent).detail?.target?.id !== 'chat-log') return;
+          document.body.removeEventListener('htmx:afterSwap', on);
+          // After the swap's own mutation callbacks (the clamp's measure) ran.
+          requestAnimationFrame(() => resolve());
+        };
+        document.body.addEventListener('htmx:afterSwap', on);
+        document.body.dispatchEvent(new Event('task:changed'));
+      }),
+  );
+}
+
+// B2 round 1: the agent chat page swaps #chat-log's whole content on
+// sse:chat.reply / task:changed / agent.changed (chatLogTrigger), so every
+// bubble is a new element after it. A persisted message the reader opened is
+// drawn open again at once, by its row id, without animating.
+test('an opened persisted message stays open across a chat-log refresh', async ({ page }) => {
+  makeChatAgent();
   await login(page);
-  await page.goto(origin + '/agents/docs-sweeper');
+  await page.goto(origin + '/agents/' + chatAgent);
+  const log = page.locator('#chat-log');
+  const long = log.locator('[data-bubble="user"]').last();
+  await expect(long).toHaveAttribute('data-msg-id', /^[1-9][0-9]*$/);
+  const id = await long.getAttribute('data-msg-id');
+  await expect(long).toHaveAttribute('data-clamp', 'closed');
+  await long.tap();
+  await expect(long).toHaveAttribute('data-clamp', 'open');
+
+  // Mark the drawn element, record every clamp state the redrawn one passes
+  // through, then refresh the way the completion banner does.
+  await log.evaluate((l, id) => {
+    (l.querySelector(`[data-msg-id="${id}"]`) as any).__old = true;
+    (window as any).__states = [];
+    new MutationObserver((ms) => ms.forEach((m) => {
+      const t = m.target as Element;
+      if (m.type === 'attributes' && t.hasAttribute('data-msg-id')) (window as any).__states.push(t.getAttribute('data-clamp'));
+    })).observe(l, { subtree: true, attributes: true, attributeFilter: ['data-clamp'] });
+  }, id);
+  await refreshChatLog(page);
+  const fresh = log.locator(`[data-msg-id="${id}"]`);
+  await expect(fresh).toHaveCount(1);
+  expect(await fresh.evaluate((e) => !(e as any).__old), 'the bubble was redrawn').toBe(true);
+  await expect(fresh).toHaveAttribute('data-clamp', 'open');
+  const [h, sh] = await fresh.evaluate((e) => [e.clientHeight, e.scrollHeight]);
+  expect(Math.abs(h - sh), 'drawn at its full height').toBeLessThanOrEqual(1);
+  expect(await page.evaluate(() => (window as any).__states), 'no animation: never "moving"').not.toContain('moving');
+  await expect(fresh.locator('xpath=following-sibling::*[1]')).toHaveText('Show less');
+
+  // Collapsing it is remembered too.
+  await fresh.tap();
+  await expect(fresh).toHaveAttribute('data-clamp', 'closed');
+  await refreshChatLog(page);
+  await expect(log.locator(`[data-msg-id="${id}"]`)).toHaveAttribute('data-clamp', 'closed');
+});
+
+// The SAME clamp on the dispatched-agent chat (bubbleClampScript is on that
+// page too), on real server-rendered bubbles: the short persisted ones are
+// drawn as they are — no clamp — and the long one is clamped and opened by a
+// tap.
+test('the agent chat clamps a long bubble and leaves its short seeded ones alone', async ({ page }) => {
+  makeChatAgent();
+  await login(page);
+  await page.goto(origin + '/agents/' + chatAgent);
   const log = page.locator('#chat-log');
   const seeded = log.locator('[data-bubble="user"]').first();
   await expect(seeded).toContainText('Check the docs build.');
+  await expect(seeded).toHaveAttribute('data-md-done', '');
   await expect(seeded).not.toHaveAttribute('data-clamp', /.*/);
-  await log.evaluate((l, text) => {
-    const d = document.createElement('div');
-    d.setAttribute('data-bubble', 'user');
-    d.className = 'max-w-[85%] break-words rounded-2xl px-3 py-2 text-sm bg-accent/15 text-fg self-end ring-1 ring-inset ring-accent/30';
-    d.textContent = text;
-    d.style.whiteSpace = 'pre-wrap';
-    l.appendChild(d);
-    l.scrollTop = l.scrollHeight;
-  }, Array.from({ length: 30 }, (_, i) => `agent line ${i + 1}`).join('\n'));
   const long = log.locator('[data-bubble="user"]').last();
+  await expect(long).toHaveAttribute('data-md', '');
+  await expect(long).toContainText('agent line 30');
   await expect(long).toHaveAttribute('data-clamp', 'closed');
+  await expect.poll(() => fromBottom(page, '#chat-log'), { message: 'the agent log opened at the bottom' }).toBeLessThan(2);
   await long.tap();
   await expect(long).toHaveAttribute('data-clamp', 'open');
   const [h, sh] = await long.evaluate((e) => [e.clientHeight, e.scrollHeight]);
