@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -239,6 +240,41 @@ func TestTheRenderedViewStreamsTheTranscriptLive(t *testing.T) {
 	if st, _ := os.Stat(tr.path); last != st.Size() {
 		t.Fatalf("final offset %d, want the file's end %d", last, st.Size())
 	}
+}
+
+// CONTEXT USAGE CROSSES THE WIRE (B4): a turn's usage rides on its first
+// event and the session's model attachment is a KindModel event, through the
+// real host, tunnel and hub — backfilled and live.
+func TestContextUsageCrossesTheWire(t *testing.T) {
+	r := newRig(t)
+	tok, _ := r.store.mint(t, 1, "ws")
+	model := `{"type":"attachment","attachment":{"type":"model","identity":{"modelId":"claude-opus-5-5[1m]"}}}` + "\n"
+	turn := func(text string, read int) string {
+		return `{"type":"assistant","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"` + text +
+			`"}],"usage":{"input_tokens":3,"cache_creation_input_tokens":40,"cache_read_input_tokens":` + strconv.Itoa(read) + `,"output_tokens":9}}}` + "\n"
+	}
+	tr := newTranscript(t, model, promptLine("q"), turn("first", 1000))
+	b := newClaudeBackend("main")
+	b.setPane("main", mirrorhost.ClaudePane{Pane: "%3", PID: 42, Transcript: tr.path, Gen: "gen-u"})
+	r.connect(t, "ws", tok, b, true)
+	r.online(t, 1, "ws", "main")
+	eventually(t, "main is a Claude pane", func() bool { h := r.svc.Hosts(asUser(1)); return len(h) == 1 && h[0].Rendered })
+
+	rec, _, _ := watchAs(t, asUser(1), r.svc, "ws", "main", "", 0)
+	eventually(t, "the backfilled model and usage", func() bool {
+		return rec.has(func(e cctranscript.Event) bool {
+			return e.Kind == cctranscript.KindModel && e.Model == "claude-opus-5-5[1m]"
+		}) &&
+			rec.has(func(e cctranscript.Event) bool {
+				return e.Kind == cctranscript.KindText && e.Text == "first" && e.Usage != nil && *e.Usage == cctranscript.Usage{Model: "claude-opus-5-5", Tokens: 1043}
+			})
+	})
+	tr.write(turn("second", 500000))
+	eventually(t, "the live usage", func() bool {
+		return rec.has(func(e cctranscript.Event) bool {
+			return e.Text == "second" && e.Usage != nil && e.Usage.Tokens == 500043
+		})
+	})
 }
 
 // A browser reconnecting with (gen, offset) gets only what came after it — no

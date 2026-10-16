@@ -92,6 +92,9 @@ type mirrorViewBatch struct {
 	// Index is the transcript's prompt index (mirror.Msg.PromptIndex), bounded
 	// again here; absent from a host that predates it.
 	Index *ui.MirrorIndex `json:"index,omitempty"`
+	// Context is the header's context-usage readout, present only when this
+	// batch changed it (ui.MirrorTranscript.TakeContext).
+	Context *ui.ContextView `json:"context,omitempty"`
 }
 
 // handleMirrorViewWS is the view's socket: ?gen=&offset= resume.
@@ -130,6 +133,8 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 			drawn.Reset()
 		}
 		b := mirrorViewBatch{Type: "batch", Reset: m.Reset, Gen: m.Gen, Offset: m.Offset, Busy: m.Busy, Ops: drawn.Ops(m.Events)}
+		// After Ops: Ops is what records the usage TakeContext reports.
+		b.Context = drawn.TakeContext()
 		if m.PromptIndex {
 			refs, dropped := mirror.BoundPrompts(m.Prompts)
 			b.Index = ui.NewMirrorIndex(refs, m.PromptsMore+dropped)

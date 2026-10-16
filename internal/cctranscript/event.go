@@ -21,6 +21,9 @@ const (
 	// notice.go. Notice names its source, Status a task's status, Text its
 	// one-line summary and Output the detail shown when the row is expanded.
 	KindNotice = "notice"
+	// KindModel is the session's model attachment: Model is its id, which says
+	// the window ("claude-opus-5-5[1m]"; usage.go). Nothing is drawn for it.
+	KindModel = "model"
 )
 
 // The size caps. An Event never carries a field past these, so a batch of
@@ -81,6 +84,12 @@ type Event struct {
 	// stateless, cannot — and Prompts names the same prompt by the same number,
 	// which is how the message index finds a prompt's bubble. 0 = not known.
 	Line int64 `json:"line,omitempty"`
+	// Usage is the context an assistant turn used (usage.go), on the FIRST
+	// event its record contributes; nil on every other event, and from a host
+	// that predates it.
+	Usage *Usage `json:"usage,omitempty"`
+	// Model is a KindModel event's model id.
+	Model string `json:"model,omitempty"`
 }
 
 // Events is what one record contributes to the rendered view, in order. It is
@@ -143,7 +152,17 @@ func Events(r Record) []Event {
 			}
 			// "thinking" (and "redacted_thinking"): dropped, always.
 		}
+		if len(out) > 0 {
+			// A thinking-only record contributes no event and so no usage; the
+			// SAME message's next record (its text or tool call) carries the
+			// same usage block, so nothing is lost.
+			out[0].Usage = usageOf(r)
+		}
 		return out
+	case "attachment":
+		if r.Attachment.Type == "model" && r.Attachment.Identity.ModelID != "" {
+			return []Event{{Kind: KindModel, Model: r.Attachment.Identity.ModelID}}
+		}
 	}
 	return nil
 }

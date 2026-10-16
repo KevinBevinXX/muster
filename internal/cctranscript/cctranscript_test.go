@@ -84,12 +84,12 @@ func TestEventsFromARealToolTurn(t *testing.T) {
 	got := allEvents(readFixture(t))
 	want := []Event{
 		{Kind: KindPrompt, Text: "an earlier prompt"},
-		{Kind: KindText, Text: "AN EARLIER REPLY that is not this turn"},
+		{Kind: KindText, Text: "AN EARLIER REPLY that is not this turn", Usage: &Usage{Model: "claude-sonnet-5-5", Tokens: 248773}},
 		{Kind: KindPrompt, Text: "list the workspace"},
-		{Kind: KindText, Text: "First segment: I will list the workspace."},
-		{Kind: KindToolCall, ToolID: "toolu_fixture1", Tool: "Bash", Target: "ls", Input: `{"command":"ls","description":"List files"}`},
+		{Kind: KindText, Text: "First segment: I will list the workspace.", Usage: &Usage{Model: "claude-sonnet-5-5", Tokens: 248773}},
+		{Kind: KindToolCall, ToolID: "toolu_fixture1", Tool: "Bash", Target: "ls", Input: `{"command":"ls","description":"List files"}`, Usage: &Usage{Model: "claude-sonnet-5-5", Tokens: 248773}},
 		{Kind: KindToolResult, ToolID: "toolu_fixture1", OK: true, Output: "file-a\nfile-b"},
-		{Kind: KindText, Text: "Second segment: the workspace holds file-a and file-b."},
+		{Kind: KindText, Text: "Second segment: the workspace holds file-a and file-b.", Usage: &Usage{Model: "claude-sonnet-5-5", Tokens: 249972}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("events:\n got %+v\nwant %+v", got, want)

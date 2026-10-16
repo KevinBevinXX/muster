@@ -567,3 +567,44 @@ test('against a host that predates the index, the list is the loaded messages an
   // Its bubbles carry no transcript place, so the index named them itself.
   expect(await sheet.locator('[data-chat-index-item]').first().getAttribute('data-chat-index-item')).toMatch(/^chat-umsg-\d+$/);
 });
+
+// An assistant record with the CLI's usage block, and the session's model
+// attachment (the one record that says which window is in use).
+const replyUsage = (t: string, model: string, cacheRead: number) =>
+  rec({
+    type: 'assistant',
+    message: { model, content: [{ type: 'text', text: t }], usage: { input_tokens: 3, cache_creation_input_tokens: 497, cache_read_input_tokens: cacheRead, output_tokens: 900 } },
+  });
+const modelAttachment = (id: string) => rec({ type: 'attachment', attachment: { type: 'model', identity: { modelId: id } } });
+
+// B4: the header shows the context the latest turn used, over the window the
+// transcript says is in use — read by the real host and carried over the real
+// tunnel — and nothing at all until a turn has reported usage.
+test('the header shows context usage from the host, follows it live, and is hidden when absent', async ({ page }) => {
+  const tr = newTranscript(prompt('hello') + reply('a reply with no usage block'));
+  await openView(page, tr);
+  const ctx = page.locator('#mv-context');
+  await expect(page.locator('#mv-log [data-bubble="assistant"]')).toHaveCount(1);
+  await expect(ctx).toBeHidden();
+
+  // The session says it runs in the 1M window; a turn reports its usage.
+  fs.appendFileSync(tr, modelAttachment('claude-opus-5-5[1m]') + prompt('more') + replyUsage('first', 'claude-opus-5-5', 249_500));
+  await expect(ctx).toBeVisible();
+  await expect(ctx).toHaveText('250k / 1M · 25%');
+  await expect(ctx).toHaveAttribute('data-context-pct', '25');
+  // Live: the next turn's usage replaces it.
+  fs.appendFileSync(tr, prompt('again') + replyUsage('second', 'claude-opus-5-5', 611_500));
+  await expect(ctx).toHaveText('612k / 1M · 61%');
+  // It fits the phone's header with nothing scrolling sideways.
+  const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+  expect(sw).toBeLessThanOrEqual(cw);
+});
+
+// With no record saying which window runs, the readout is the tokens alone.
+test('with no record naming the window the header shows tokens only', async ({ page }) => {
+  const tr = newTranscript(prompt('hello') + replyUsage('a reply', 'claude-opus-5-5', 123_500));
+  await openView(page, tr);
+  const ctx = page.locator('#mv-context');
+  await expect(ctx).toHaveText('124k tokens');
+  await expect(ctx).toHaveAttribute('data-context-pct', '-1');
+});

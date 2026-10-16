@@ -117,7 +117,14 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 						Class("min-w-0 flex-1"),
 						H1(Class("truncate text-sm font-semibold"), mirrorEntryTitle(v.Label, v.Title, v.Session, v.Qualifier, ""),
 							Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge("Mirrored · "+v.Host))),
-						P(ID("mv-status"), Class("truncate text-xs text-muted"), g.Attr("aria-live", "polite"), g.Text("Connecting…")),
+						Div(
+							Class("flex min-w-0 items-center gap-2"),
+							P(ID("mv-status"), Class("truncate text-xs text-muted"), g.Attr("aria-live", "polite"), g.Text("Connecting…")),
+							// The context readout (TakeContext): hidden until a turn
+							// has reported usage, and again after a reset.
+							Span(ID("mv-context"), g.Attr("hidden", ""), g.Attr("title", "Context used"),
+								Class("shrink-0 rounded-full bg-s2 px-2 py-0.5 text-[11px] tabular-nums text-fg2 ring-1 ring-inset ring-line")),
+						),
 					),
 					chatIndexButton("mv-log"),
 					viewToggle(true, ref.ViewPath(), ref.TerminalPath()),
@@ -195,6 +202,12 @@ type MirrorOp struct {
 type MirrorTranscript struct {
 	calls map[string]ChatLine
 	order []string
+	// model is the session's model attachment id (cctranscript.KindModel),
+	// usage the latest turn's context use, and fresh whether usage changed
+	// since TakeContext last reported it.
+	model string
+	usage *cctranscript.Usage
+	fresh bool
 }
 
 const maxDrawnCalls = 2048
@@ -228,7 +241,64 @@ func NewMirrorIndex(refs []cctranscript.PromptRef, more int) *MirrorIndex {
 }
 
 // Reset forgets every drawn call (the view starts over).
-func (t *MirrorTranscript) Reset() { t.calls, t.order = nil, nil }
+func (t *MirrorTranscript) Reset() {
+	t.calls, t.order = nil, nil
+	t.model, t.usage, t.fresh = "", nil, false
+}
+
+// ContextView is the header's context-usage readout (mirrorViewBatch.Context).
+type ContextView struct {
+	Tokens int64 `json:"tokens"`
+	// Window is 0 when it is unknown (cctranscript.ContextWindow); Pct is then
+	// -1, and Label names the tokens alone.
+	Window int64  `json:"window"`
+	Pct    int    `json:"pct"`
+	Label  string `json:"label"`
+}
+
+// TakeContext is the context readout when Ops has drawn a newer one since the
+// last call, else nil — so a batch carries it only when it changed.
+func (t *MirrorTranscript) TakeContext() *ContextView {
+	if !t.fresh || t.usage == nil {
+		return nil
+	}
+	t.fresh = false
+	window, known := int64(0), false
+	// The attachment's id says the window only for the model that is running:
+	// a turn on another model (a /model switch the backfill cut the attachment
+	// for) falls back to what the turn's own model says.
+	if t.model != "" && cctranscript.BaseModel(t.model) == t.usage.Model {
+		window, known = cctranscript.ContextWindow(t.model)
+	}
+	if !known {
+		window, known = cctranscript.ContextWindow(t.usage.Model)
+	}
+	return contextView(t.usage.Tokens, window, known)
+}
+
+// contextView is the readout for tokens of a window ("124k / 200k · 62%"), or
+// the tokens alone ("124k tokens") when the window is not known.
+func contextView(tokens, window int64, known bool) *ContextView {
+	if !known || window <= 0 {
+		return &ContextView{Tokens: tokens, Pct: -1, Label: tokenCount(tokens) + " tokens"}
+	}
+	pct := int(tokens * 100 / window)
+	return &ContextView{Tokens: tokens, Window: window, Pct: pct,
+		Label: tokenCount(tokens) + " / " + tokenCount(window) + " · " + strconv.Itoa(pct) + "%"}
+}
+
+// tokenCount is n tokens, short: 950, 12k, 124k, 1M, 1.2M.
+func tokenCount(n int64) string {
+	switch {
+	case n < 1000:
+		return strconv.FormatInt(n, 10)
+	case n < 999_500: // past it, rounding to k would print "1000k"
+		return strconv.FormatInt((n+500)/1000, 10) + "k"
+	default:
+		s := strconv.FormatFloat(float64(n)/1_000_000, 'f', 1, 64)
+		return strings.TrimSuffix(s, ".0") + "M"
+	}
+}
 
 // toolRowID is a tool row's element id: the tool id hashed, since it is the
 // host's text.
@@ -250,7 +320,12 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 	}
 	var ops []MirrorOp
 	for _, ev := range events {
+		if ev.Usage != nil {
+			t.usage, t.fresh = ev.Usage, true
+		}
 		switch ev.Kind {
+		case cctranscript.KindModel:
+			t.model, t.fresh = ev.Model, t.usage != nil
 		case cctranscript.KindPrompt:
 			// The bubble's id is the prompt's place in its transcript, the id the
 			// prompt index names it by (MirrorPromptID). A host that sends no Line
@@ -354,6 +429,7 @@ func mirrorViewScript() g.Node {
   var errEl = document.getElementById('mv-error');
   var errText = document.getElementById('mv-error-text');
   var working = document.getElementById('mv-working');
+  var ctxEl = document.getElementById('mv-context');
   var gen = '', offset = 0, retry = 0, closed = false, sock = null;
 
   function showError(msg) { errText.textContent = msg; errEl.hidden = false; }
@@ -366,9 +442,16 @@ func mirrorViewScript() g.Node {
     // The prompt index (chatIndexScript reads it): a Reset starts a transcript
     // over, so its index is gone until the host sends the new one — and a host
     // that predates it never does.
-    if (m.reset) { log.innerHTML = ''; window.muMirrorIndex = null; }
+    if (m.reset) { log.innerHTML = ''; window.muMirrorIndex = null; ctxEl.hidden = true; ctxEl.textContent = ''; }
     if (m.index) { window.muMirrorIndex = m.index; }
     if (m.reset || m.index) document.dispatchEvent(new CustomEvent('muster:chat-index'));
+    // Context usage: only a batch whose usage changed carries it; an older
+    // muster or host sends none and the readout stays hidden.
+    if (m.context && m.context.label) {
+      ctxEl.textContent = m.context.label;
+      ctxEl.setAttribute('data-context-pct', String(m.context.pct));
+      ctxEl.hidden = false;
+    }
     (m.ops || []).forEach(function (op) {
       if (op.op === 'replace' && op.id) {
         var old = document.getElementById(op.id);

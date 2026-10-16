@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -168,5 +169,95 @@ func TestTheMessageIndexIsOnTheMirroredViewOnly(t *testing.T) {
 	}
 	if strings.Contains(b.String(), "chat-index") {
 		t.Error("the chief panel carries the message index")
+	}
+}
+
+// The header's context readout: the latest turn's tokens over its window,
+// the window ONLY from what the transcript says, tokens alone otherwise.
+func TestTakeContextReadsTheWindowOnlyFromTheTranscript(t *testing.T) {
+	use := func(model string, n int64) cctranscript.Event {
+		return cctranscript.Event{Kind: cctranscript.KindText, Text: "x", Usage: &cctranscript.Usage{Model: model, Tokens: n}}
+	}
+	cases := []struct {
+		name   string
+		events []cctranscript.Event
+		want   *ContextView
+	}{
+		{"a one-window model", []cctranscript.Event{use("claude-haiku-4-5", 124_400)},
+			&ContextView{Tokens: 124_400, Window: 200_000, Pct: 62, Label: "124k / 200k · 62%"}},
+		{"a model with a 1M variant and no attachment: tokens only", []cctranscript.Event{use("claude-opus-5-5", 124_400)},
+			&ContextView{Tokens: 124_400, Pct: -1, Label: "124k tokens"}},
+		{"the attachment says 1M for the model that runs", []cctranscript.Event{{Kind: cctranscript.KindModel, Model: "claude-opus-5-5[1m]"}, use("claude-opus-5-5", 966_483)},
+			&ContextView{Tokens: 966_483, Window: 1_000_000, Pct: 96, Label: "966k / 1M · 96%"}},
+		{"an attachment for ANOTHER model says nothing about this one", []cctranscript.Event{{Kind: cctranscript.KindModel, Model: "claude-opus-5-5[1m]"}, use("claude-sonnet-5-5", 50_000)},
+			&ContextView{Tokens: 50_000, Pct: -1, Label: "50k tokens"}},
+		{"the LATEST turn wins", []cctranscript.Event{use("claude-haiku-4-5", 10_000), use("claude-haiku-4-5", 20_000)},
+			&ContextView{Tokens: 20_000, Window: 200_000, Pct: 10, Label: "20k / 200k · 10%"}},
+		{"no usage at all (an older host): nothing", []cctranscript.Event{{Kind: cctranscript.KindText, Text: "x"}, {Kind: cctranscript.KindPrompt, Text: "y"}}, nil},
+	}
+	for _, c := range cases {
+		var tr MirrorTranscript
+		tr.Ops(c.events)
+		got := tr.TakeContext()
+		if (got == nil) != (c.want == nil) || (got != nil && *got != *c.want) {
+			t.Errorf("%s: got %+v, want %+v", c.name, got, c.want)
+		}
+	}
+
+	// Reported once; again only when a batch changes it; a Reset forgets it.
+	var tr MirrorTranscript
+	tr.Ops([]cctranscript.Event{use("claude-haiku-4-5", 1000)})
+	if tr.TakeContext() == nil || tr.TakeContext() != nil {
+		t.Error("a readout is not reported exactly once")
+	}
+	tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindText, Text: "no usage"}})
+	if tr.TakeContext() != nil {
+		t.Error("a batch that did not change the usage reported it again")
+	}
+	tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindModel, Model: "claude-haiku-4-5"}})
+	if tr.TakeContext() == nil {
+		t.Error("a model change did not re-report the readout")
+	}
+	tr.Reset()
+	tr.Ops(nil)
+	if tr.TakeContext() != nil {
+		t.Error("a Reset kept the old readout")
+	}
+}
+
+// An events message from an OLDER host — the same JSON with no usage and no
+// model events, as one sends it — draws as before and leaves the readout off.
+func TestAnOldHostsEventsCarryNoReadout(t *testing.T) {
+	var m struct {
+		Events []cctranscript.Event `json:"events"`
+	}
+	if err := json.Unmarshal([]byte(`{"type":"events","events":[{"kind":"prompt","text":"q"},{"kind":"text","text":"a"}]}`), &m); err != nil {
+		t.Fatal(err)
+	}
+	var tr MirrorTranscript
+	if ops := tr.Ops(m.Events); len(ops) != 2 {
+		t.Fatalf("ops = %d, want 2", len(ops))
+	}
+	if c := tr.TakeContext(); c != nil {
+		t.Fatalf("an old host produced a readout: %+v", c)
+	}
+}
+
+func TestTokenCount(t *testing.T) {
+	for n, want := range map[int64]string{0: "0", 950: "950", 1000: "1k", 12_345: "12k", 124_500: "125k", 999_499: "999k", 999_500: "1M", 1_000_000: "1M", 1_234_567: "1.2M"} {
+		if got := tokenCount(n); got != want {
+			t.Errorf("tokenCount(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
+
+// The readout's home: in the header, hidden until a batch carries one.
+func TestTheViewHeaderHasAHiddenContextReadout(t *testing.T) {
+	html := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main"}))
+	if !strings.Contains(html, `<span id="mv-context" hidden`) {
+		t.Errorf("no hidden #mv-context in the view:\n%s", html)
+	}
+	if !strings.Contains(html, "if (m.context && m.context.label) {") {
+		t.Error("the view script does not apply a batch's context")
 	}
 }
