@@ -2,7 +2,6 @@ package ui
 
 import (
 	"encoding/json"
-	"sort"
 	"strings"
 
 	g "maragu.dev/gomponents"
@@ -40,12 +39,15 @@ import (
 //
 //	word            [data-filter*="word"]       anywhere on the card (as before)
 //	"two words"     [data-filter*="two words"]  a phrase
-//	host:tower      [data-f-host*="tower"]      that field only
+//	host:tower      [data-f-host*="tower"]      that field only, as a substring
+//	host=tower      [data-f-host="tower"]       that field only, EXACTLY
 //	kind:"claude code"                          a quoted value may hold spaces
 //
-// Terms are whitespace-separated and ALL must match. A field value matches as a
-// case-insensitive SUBSTRING of that field — the same rule as a free word, so
-// `host:tow` behaves like typing `tow`, only narrower. A token whose prefix is
+// Terms are whitespace-separated and ALL must match. A `field:value` matches as
+// a case-insensitive SUBSTRING of that field — the same rule as a free word, so
+// `host:tow` behaves like typing `tow`, only narrower. A `field=value` matches
+// the whole field: it is what a select writes (below), so choosing host "mac"
+// does not also show host "macbook". A token whose prefix is
 // NOT a registered field is free text, colon and all: a window called
 // "Gold:8" is found by typing `gold:8`, and that must keep working. A known
 // field with nothing after the colon (`host:` mid-typing) is no term yet, so the
@@ -61,24 +63,21 @@ import (
 // adds no history entries). On load a `?q=` wins over the session's remembered
 // copy, so a shared link reproduces the filter.
 //
-// CONTROLS. Nobody has to type `host:tower`: the bar has one <select> per
-// facet field (facetFields: host, type, status, kind), whose options are
-// derived SERVER-SIDE from the cards the list currently holds (agentsFacets,
-// refreshed out-of-band with every list render), and the box is plain text.
+// CONTROLS. Nobody has to type `host=tower`: the bar has one <select> per
+// facet field (facetFields: host, type, status, kind) and the box is plain
+// text. The script fills each select's options from the cards the list holds
+// now — the distinct `data-f-<field>` values, labelled by `data-l-<field>`
+// where the value had to be lower-cased — and refills them whenever the list
+// re-renders.
 //
 // 🔴 THE CONTROLS ARE A VIEW OF THE SAME TOKEN STRING, NOT A SECOND FILTER. The
-// script's ONE string (composeQ) is the selects' tokens followed by the box's
-// text; that string — unchanged in grammar — is what the hide rules, the
-// count, `?q=` and sessionStorage all read and write. Going the other way,
-// split() hands the FIRST token of each facet field in a `?q=` to its select
-// and leaves everything else (free words, `session:`, a second `host:`) in the
-// box, so an old link and a typed token keep working, and `?q=host:x` shows x
-// selected. Active selections are drawn as removable chips beside a "Clear all"
-// and the "N of M" count.
-//
-// ⚠ A SELECTED VALUE STILL MATCHES AS A SUBSTRING, the grammar's one rule: host
-// "mac" also shows host "macbook". Selecting exactly would need a new token
-// operator, which this change deliberately does not add.
+// script's ONE string (composeQ) is the selects' `field=value` tokens followed
+// by the box's text; that string is what the hide rules, the count, `?q=` and
+// sessionStorage all read and write. Going the other way, split() hands a
+// `field=value` token to its select when that select is still empty and has an
+// option of exactly that value; everything else (free words, a typed
+// `host:tow`, `session:`, a value no card has) stays in the box, where it
+// filters just the same. So an old link and a typed token keep working.
 
 // cardFields is what a card can be filtered by, one value per field. Empty
 // fields write no attribute.
@@ -135,13 +134,22 @@ func cardFieldKeysJSON() string {
 func fieldValue(v string) string { return strings.Join(strings.Fields(strings.ToLower(v)), " ") }
 
 // cardFilterAttrs is EVERY filter attribute of a card, for both card kinds:
-// the free-text `data-filter` haystack (exactly filterHaystack of the parts)
-// and one `data-f-<field>` per non-empty field.
+// the free-text `data-filter` haystack (exactly filterHaystack of the parts),
+// one `data-f-<field>` per non-empty field and, for a facet field whose value
+// lower-casing changed, `data-l-<field>`: the value as the card spells it,
+// which is what the field's select option says ("Claude Code", not "claude
+// code").
 func cardFilterAttrs(f cardFields, haystack ...string) g.Node {
 	attrs := g.Group{g.Attr("data-filter", filterHaystack(haystack...))}
 	for _, fd := range cardFieldRegistry {
-		if v := fieldValue(fd.Of(f)); v != "" {
-			attrs = append(attrs, g.Attr("data-f-"+fd.Key, v))
+		raw := strings.Join(strings.Fields(fd.Of(f)), " ")
+		v := fieldValue(raw)
+		if v == "" {
+			continue
+		}
+		attrs = append(attrs, g.Attr("data-f-"+fd.Key, v))
+		if raw != v && isFacet(fd.Key) {
+			attrs = append(attrs, g.Attr("data-l-"+fd.Key, raw))
 		}
 	}
 	return attrs
@@ -167,105 +175,21 @@ func filterHaystack(parts ...string) string {
 // draws them. Each must be a registered field (TestEveryFacetIsARegisteredField).
 var facetFields = []string{"host", "type", "status", "kind"}
 
-// facetOption is one option of a facet's <select>: V is the value as written in
-// the card's data-f-<field> (fieldValue), L what the option says.
-type facetOption struct {
-	V string `json:"v"`
-	L string `json:"l"`
-}
-
-// agentsFacets is every facet field's options, derived from the cards the list
-// holds now: each distinct value once, from the SAME cardFields the cards'
-// attributes are written from (agentFields, mirrorFields), so an option can
-// never name a value no card carries. Sorted by label, then value.
-func agentsFacets(list []AgentCardView, mirrors []MirrorCardView) map[string][]facetOption {
-	byKey := map[string]func(cardFields) string{}
-	for _, fd := range cardFieldRegistry {
-		byKey[fd.Key] = fd.Of
-	}
-	seen := map[string]map[string]string{}
-	add := func(f cardFields) {
-		for _, key := range facetFields {
-			raw := strings.TrimSpace(byKey[key](f))
-			v := fieldValue(raw)
-			if v == "" {
-				continue
-			}
-			if seen[key] == nil {
-				seen[key] = map[string]string{}
-			}
-			if _, ok := seen[key][v]; !ok {
-				seen[key][v] = facetLabel(key, raw)
-			}
+// isFacet reports whether key is one of facetFields.
+func isFacet(key string) bool {
+	for _, f := range facetFields {
+		if f == key {
+			return true
 		}
 	}
-	for _, a := range list {
-		add(agentFields(a))
-	}
-	for _, m := range mirrors {
-		add(mirrorFields(m))
-	}
-	out := map[string][]facetOption{}
-	for _, key := range facetFields {
-		opts := []facetOption{}
-		for v, l := range seen[key] {
-			opts = append(opts, facetOption{V: v, L: l})
-		}
-		sort.Slice(opts, func(i, j int) bool {
-			li, lj := strings.ToLower(opts[i].L), strings.ToLower(opts[j].L)
-			if li != lj {
-				return li < lj
-			}
-			return opts[i].V < opts[j].V
-		})
-		out[key] = opts
-	}
-	return out
-}
-
-// facetLabel is what an option says: the value as the card spells it, with the
-// two card types named as a person would.
-func facetLabel(key, raw string) string {
-	if key == "type" {
-		switch raw {
-		case "agent":
-			return "Agent"
-		case "mirrored":
-			return "Mirrored"
-		}
-	}
-	return raw
-}
-
-// agentsFacetsID is the element that carries the options to the script.
-const agentsFacetsID = "agents-facets"
-
-// agentsFacetsNode carries the facets, as JSON in an attribute, to the bar's
-// script. The shell draws it empty; every /ui/agents render sends it again
-// OUT OF BAND (oob), because the bar sits OUTSIDE #agents-list and the list's
-// own swap never reaches it — and #agents-list may hold only cards (the
-// filter's `#agents-list > article` rule).
-func agentsFacetsNode(f map[string][]facetOption, oob bool) g.Node {
-	b, _ := json.Marshal(f)
-	return Div(
-		ID(agentsFacetsID),
-		g.Attr("hidden", ""),
-		g.Attr("data-facets", string(b)),
-		g.If(oob, hx("hx-swap-oob", "true")),
-	)
-}
-
-// AgentsListPartial is the /ui/agents response: the cards (AgentsCardsWithMirrors)
-// and, out of band, the filter's options derived from those same cards.
-func AgentsListPartial(list []AgentCardView, mirrors []MirrorCardView) g.Node {
-	return g.Group{AgentsCardsWithMirrors(list, mirrors), agentsFacetsNode(agentsFacets(list, mirrors), true)}
+	return false
 }
 
 // facetAny is a facet select's first option, which selects nothing.
 var facetAny = map[string]string{"host": "Any host", "type": "Any type", "status": "Any status", "kind": "Any kind"}
 
 // facetSelect is one facet's control. Its options beyond "Any …" are filled by
-// the script from agentsFacetsNode. text-base: 16px, so iOS does not zoom; a
+// the script from the cards (syncOptions). text-base: 16px, so iOS does not zoom; a
 // 44px target. ⚠ data-[active] (set by the script while a value is chosen) is
 // the selected look; no display utility fights anything here.
 func facetSelect(key string) g.Node {
@@ -280,8 +204,7 @@ func facetSelect(key string) g.Node {
 }
 
 // agentsFilterBar is the filter: a plain search box (and its clear button),
-// one select per facet field, the active filters as removable chips with a
-// "Clear all", and the "N of M" count. It sits in the Agents panel ABOVE
+// one select per facet field, a "Clear all", and the "N of M" count. It sits in the Agents panel ABOVE
 // #agents-list, outside what a refresh re-renders.
 func agentsFilterBar() g.Node {
 	return g.Group{
@@ -328,8 +251,6 @@ func agentsFilterBar() g.Node {
 			),
 			Div(
 				Class("flex flex-wrap items-center gap-2"),
-				// The script draws one removable chip per active filter here.
-				Div(ID("agents-active"), Class("flex flex-wrap items-center gap-2")),
 				// ⚠ No display utility, for the same reason as the box's ×.
 				Button(
 					ID("agents-filter-clear"),
@@ -340,7 +261,6 @@ func agentsFilterBar() g.Node {
 				),
 				Span(ID("agents-count"), g.Attr("aria-live", "polite"), Class("ml-auto shrink-0 text-sm font-medium tabular-nums text-fg2")),
 			),
-			agentsFacetsNode(agentsFacets(nil, nil), false),
 		),
 		P(ID("agents-nomatch"), g.Attr("hidden", ""), Class("mb-3 text-sm text-muted"), g.Text("Nothing matches that filter.")),
 	}
@@ -351,9 +271,6 @@ func facetFieldsJSON() string {
 	b, _ := json.Marshal(facetFields)
 	return string(b)
 }
-
-// filterChipClass is a removable active-filter chip, built by the script.
-const filterChipClass = "press inline-flex min-h-[44px] max-w-full items-center gap-1.5 rounded-full bg-accent/15 px-3 text-sm font-medium text-fg ring-1 ring-inset ring-accent/40 transition hover:bg-accent/25"
 
 // agentsFilterScript applies the filter. Bound once per document, like every
 // other shell script (htmx re-executes in-body scripts on a boosted swap), and
@@ -368,28 +285,40 @@ func agentsFilterScript() g.Node {
   var FIELDS = ` + cardFieldKeysJSON() + `;
   function el(id) { return document.getElementById(id); }
   function norm(v) { return String(v || '').replace(/\s+/g, ' ').trim(); }
-  // terms parses the box into what must ALL match: {attr, value} each, attr
-  // being data-filter (free text) or data-f-<registered field>.
-  function terms(v) {
-    var out = [], s = String(v || '').toLowerCase(), m;
-    var re = /([^\s:"]+):"([^"]*)"?|"([^"]*)"?|\S+/g;
-    function free(t) { t = norm(t); if (t) out.push({ attr: 'data-filter', value: t }); }
-    function field(f, t) { t = norm(t); if (t) out.push({ attr: 'data-f-' + f, value: t }); }
+  // tokens is a string in the grammar, term by term and in order: {raw, f, exact,
+  // v} each — f a registered field (lower-cased) or null for free text, exact
+  // true for field=value, v the value as written.
+  function tokens(s) {
+    var out = [], m, re = /([^\s:="]+)([:=])"([^"]*)"?|"([^"]*)"?|\S+/g;
+    s = String(s || '');
     while ((m = re.exec(s))) {
-      if (m[1] !== undefined) {
-        if (FIELDS.indexOf(m[1]) >= 0) field(m[1], m[2]); else free(m[1] + ':' + m[2]);
-      } else if (m[3] !== undefined) {
-        free(m[3]);
-      } else {
-        var i = m[0].indexOf(':');
-        if (i > 0 && FIELDS.indexOf(m[0].slice(0, i)) >= 0) field(m[0].slice(0, i), m[0].slice(i + 1)); else free(m[0]);
+      var f = null, sep = '', v = m[0];
+      if (m[1] !== undefined) { f = m[1]; sep = m[2]; v = m[3]; }
+      else if (m[4] !== undefined) { v = m[4]; }
+      else {
+        var i = m[0].search(/[:=]/);
+        if (i > 0) { f = m[0].slice(0, i); sep = m[0][i]; v = m[0].slice(i + 1); }
       }
+      if (f !== null && FIELDS.indexOf(f.toLowerCase()) < 0) { v = m[1] !== undefined ? f + sep + v : m[0]; f = null; }
+      out.push({ raw: m[0], f: f === null ? null : f.toLowerCase(), exact: f !== null && sep === '=', v: v });
     }
     return out;
   }
+  // terms parses the filter into what must ALL match: {attr, value, exact}
+  // each, attr being data-filter (free text) or data-f-<registered field>. A
+  // field with nothing after its separator (host: mid-typing) is no term yet.
+  function terms(q) {
+    var out = [];
+    tokens(String(q || '').toLowerCase()).forEach(function (t) {
+      var v = norm(t.v);
+      if (v) out.push(t.f ? { attr: 'data-f-' + t.f, value: v, exact: t.exact } : { attr: 'data-filter', value: v });
+    });
+    return out;
+  }
   // sel is the attribute selector for ONE term, its value a CSS double-quoted
-  // string. The rule that hides and the query that counts are both built from it.
-  function sel(t) { return '[' + t.attr + '*="' + t.value.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]'; }
+  // string: [a="v"] for an exact term, [a*="v"] for every other. The rule that
+  // hides and the query that counts are both built from it.
+  function sel(t) { return '[' + t.attr + (t.exact ? '=' : '*=') + '"' + t.value.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]'; }
   function onAgents() { return location.pathname === '/agents'; }
   // syncURL writes the text into ?q= — replaceState, so typing is not history.
   function syncURL(v) {
@@ -405,11 +334,11 @@ func agentsFilterScript() g.Node {
   }
   // The facet fields the bar has a <select> for (facetFields), id agents-f-<field>.
   var CONTROLS = ` + facetFieldsJSON() + `;
-  var CHIP = '` + filterChipClass + `';
   function control(f) { return el('agents-f-' + f); }
-  // tok spells one select's value as a token: quoted when it holds a space. A
-  // double quote cannot be spelled in the grammar, so it is dropped.
-  function tok(f, v) { v = norm(v).replace(/"/g, ''); return /\s/.test(v) ? f + ':"' + v + '"' : f + ':' + v; }
+  function hasOption(c, v) { return !!v && [].some.call(c.options, function (o) { return o.value === v; }); }
+  // tok spells one select's value as an EXACT token: quoted when it holds a
+  // space. A double quote cannot be spelled in the grammar, so it is dropped.
+  function tok(f, v) { v = norm(v).replace(/"/g, ''); return /\s/.test(v) ? f + '="' + v + '"' : f + '=' + v; }
   // composeQ is the filter's ONE token string: the selects' tokens, then the
   // box's text as typed. Everything below reads and writes this.
   function composeQ() {
@@ -420,113 +349,74 @@ func agentsFilterScript() g.Node {
     if (box.trim()) parts.push(box);
     return parts.join(' ');
   }
-  // split is a token string as the bar holds it: the FIRST token of each facet
-  // field goes to that field's select; every other token — a free word, a
-  // non-facet field like session:, a second host: — stays in the box, in
-  // order. With no facet token at all the box gets the string untouched.
+  // split is a token string as the bar holds it. A facet field's field=value
+  // token goes to that field's select when it is the field's ONLY exact token
+  // and the select has an option of exactly that value; every other token — a
+  // free word, a typed host:tow, session:, a value no card has — stays in the
+  // box, in order, and filters from there just the same. With nothing taken
+  // the box gets the string untouched.
   function split(q) {
-    var s = String(q || ''), fields = {}, text = [], m, any = false;
-    var re = /([^\s:"]+):"([^"]*)"?|"([^"]*)"?|\S+/g;
-    while ((m = re.exec(s))) {
-      var f = null, v = null;
-      if (m[1] !== undefined) { f = m[1].toLowerCase(); v = m[2]; }
-      else if (m[3] === undefined) {
-        var i = m[0].indexOf(':');
-        if (i > 0) { f = m[0].slice(0, i).toLowerCase(); v = m[0].slice(i + 1); }
-      }
-      if (f !== null && CONTROLS.indexOf(f) >= 0 && norm(v) && !(f in fields)) {
-        fields[f] = norm(v).toLowerCase();
-        any = true;
-        continue;
-      }
-      text.push(m[0]);
-    }
+    var s = String(q || ''), ts = tokens(s), n = {}, fields = {}, text = [], any = false;
+    ts.forEach(function (t) { if (t.exact) n[t.f] = (n[t.f] || 0) + 1; });
+    ts.forEach(function (t) {
+      var v = norm(t.v).toLowerCase(), c = t.exact && n[t.f] === 1 && CONTROLS.indexOf(t.f) >= 0 ? control(t.f) : null;
+      if (c && hasOption(c, v)) { fields[t.f] = v; any = true; return; }
+      text.push(t.raw);
+    });
     return { fields: fields, text: any ? text.join(' ') : s };
-  }
-  // setControl selects v in c. A value no card offers (a partial host:tow from
-  // a link, a host that is not listed now) is added as an option of its own, so
-  // the link still shows what it asks for.
-  function setControl(c, v) {
-    if (v && ![].some.call(c.options, function (o) { return o.value === v; })) {
-      var o = document.createElement('option');
-      o.value = v;
-      o.textContent = v;
-      c.appendChild(o);
-    }
-    c.value = v || '';
   }
   function distribute(q) {
     var p = split(q);
-    CONTROLS.forEach(function (f) { var c = control(f); if (c) setControl(c, p.fields[f] || ''); });
+    CONTROLS.forEach(function (f) { var c = control(f); if (c) c.value = p.fields[f] || ''; });
     var input = el('agents-search');
     if (input && input.value !== p.text) input.value = p.text;
   }
-  // syncFacets fills each select's options from the server's facets
-  // (agentsFacetsNode, sent out of band with every list render), keeping what
-  // is selected. A select remembers which facets it was built from, so an
-  // unchanged list rebuilds nothing.
-  function syncFacets() {
-    var d = el('` + agentsFacetsID + `');
-    if (!d) return;
-    var raw = d.getAttribute('data-facets') || '{}', fx = null;
+  // syncOptions fills each select from the cards the list holds now: every
+  // distinct data-f-<field> once, saying its data-l-<field> when it has one,
+  // sorted by what it says. A select remembers what it was built from, so an
+  // unchanged list rebuilds nothing. A chosen value no card carries any more is
+  // NOT kept as an option of its own: its token moves to the box, so the filter
+  // that was asked for is still applied, and visibly.
+  function syncOptions() {
+    var list = el('agents-list');
+    if (!list) return;
+    var moved = [];
     CONTROLS.forEach(function (f) {
       var c = control(f);
-      if (!c || c.getAttribute('data-facets-of') === raw) return;
-      if (fx === null) { try { fx = JSON.parse(raw) || {}; } catch (e) { fx = {}; } }
+      if (!c) return;
+      var seen = Object.create(null), opts = [];
+      [].forEach.call(list.querySelectorAll(':scope > article[data-f-' + f + ']'), function (a) {
+        var v = a.getAttribute('data-f-' + f);
+        if (seen[v]) return;
+        seen[v] = true;
+        opts.push({ v: v, l: a.getAttribute('data-l-' + f) || v });
+      });
+      opts.sort(function (x, y) {
+        var a = x.l.toLowerCase(), b = y.l.toLowerCase();
+        if (a !== b) return a < b ? -1 : 1;
+        return x.v < y.v ? -1 : x.v > y.v ? 1 : 0;
+      });
+      var sig = JSON.stringify(opts);
+      if (c.getAttribute('data-options-of') === sig) return;
       var cur = c.value;
       while (c.options.length > 1) c.remove(1);
-      (fx[f] || []).forEach(function (o) {
+      opts.forEach(function (o) {
         var op = document.createElement('option');
         op.value = o.v;
         op.textContent = o.l;
         c.appendChild(op);
       });
-      setControl(c, cur);
-      c.setAttribute('data-facets-of', raw);
-    });
-  }
-  // renderActive draws one removable chip per active filter — each chosen
-  // select, and the box's text — and shows "Clear all" while any is active.
-  // Rebuilt only when what it shows changes.
-  function renderActive() {
-    var box = el('agents-active');
-    if (!box) return;
-    var want = [];
-    CONTROLS.forEach(function (f) {
-      var c = control(f);
-      if (c && c.value) want.push({ key: f, label: f + ': ' + (c.selectedIndex >= 0 ? c.options[c.selectedIndex].textContent : c.value) });
+      c.setAttribute('data-options-of', sig);
+      if (cur && !seen[cur]) moved.push(tok(f, cur));
+      c.value = cur && seen[cur] ? cur : '';
     });
     var input = el('agents-search');
-    if (input && input.value.trim()) want.push({ key: 'text', label: '“' + input.value.trim() + '”' });
-    var sig = JSON.stringify(want);
-    if (box.getAttribute('data-sig') !== sig) {
-      box.setAttribute('data-sig', sig);
-      box.textContent = '';
-      want.forEach(function (w) {
-        var b = document.createElement('button');
-        b.type = 'button';
-        b.className = CHIP;
-        b.setAttribute('data-filter-chip', w.key);
-        b.setAttribute('aria-label', 'Remove filter ' + w.label);
-        var t = document.createElement('span');
-        t.className = 'truncate';
-        t.textContent = w.label;
-        var x = document.createElement('span');
-        x.setAttribute('aria-hidden', 'true');
-        x.className = 'text-base leading-none text-muted';
-        x.textContent = '×';
-        b.appendChild(t);
-        b.appendChild(x);
-        box.appendChild(b);
-      });
-    }
-    var all = el('agents-filter-clear');
-    if (all) all.hidden = !want.length;
+    if (moved.length && input) input.value = moved.concat(input.value.trim() ? [input.value] : []).join(' ');
   }
   function apply() {
     var input = el('agents-search'), list = el('agents-list');
     if (!input || !list) return;
-    syncFacets();
+    syncOptions();
     var q = composeQ();
     var ts = terms(q);
     var style = el('agents-filter-style');
@@ -541,26 +431,33 @@ func agentsFilterScript() g.Node {
     }).join('\n');
     var all = list.querySelectorAll(':scope > article');
     var shown = ts.length ? list.querySelectorAll(':scope > article' + ts.map(sel).join('')) : all;
-    var count = el('agents-count'), clear = el('agents-search-clear'), none = el('agents-nomatch');
+    var count = el('agents-count'), clear = el('agents-search-clear'), none = el('agents-nomatch'), clearAll = el('agents-filter-clear');
     if (count) count.textContent = all.length ? shown.length + ' of ' + all.length : '';
     if (clear) clear.hidden = !input.value;
+    if (clearAll) clearAll.hidden = !q.trim();
     if (none) none.hidden = !(ts.length && all.length && !shown.length);
     CONTROLS.forEach(function (f) { var c = control(f); if (c) c.toggleAttribute('data-active', !!c.value); });
-    renderActive();
     try { sessionStorage.setItem(KEY, q); } catch (e) {}
     syncURL(q);
   }
   // restore: a ?q= wins (a shared link); otherwise the session's copy fills an
-  // empty filter. It is only distributed when it differs from what the bar
-  // already holds, so a list refresh (which lands here via htmx:load) never
+  // empty filter. It is distributed when it differs from what the bar holds, OR
+  // when one of its tokens has found its option since — the options arrive with
+  // the list, after a link was first read, so a host=… waits in the box until
+  // then. Otherwise nothing is touched, so a list refresh (which lands here) never
   // moves the caret.
   function restore() {
     var input = el('agents-search');
     if (!input) return;
-    syncFacets();
+    syncOptions();
     var q = urlQ();
-    if (q !== null) { if (composeQ() !== q) distribute(q); }
-    else if (!composeQ()) { try { distribute(sessionStorage.getItem(KEY) || ''); } catch (e) {} }
+    if (q === null) {
+      q = composeQ();
+      if (!q) { try { q = sessionStorage.getItem(KEY) || ''; } catch (e) {} }
+    }
+    var p = split(q);
+    var taken = CONTROLS.some(function (f) { var c = control(f); return c && (p.fields[f] || '') !== c.value; });
+    if (composeQ() !== q || taken) distribute(q);
     apply();
   }
   document.addEventListener('input', function (e) {
@@ -584,14 +481,6 @@ func agentsFilterScript() g.Node {
       input.focus();
       return;
     }
-    var chip = t.closest('[data-filter-chip]');
-    if (chip) {
-      var key = chip.getAttribute('data-filter-chip');
-      if (key === 'text') { if (input) input.value = ''; }
-      else { var c = control(key); if (c) c.value = ''; }
-      apply();
-      return;
-    }
     if (t.closest('#agents-filter-clear')) {
       CONTROLS.forEach(function (f) { var c = control(f); if (c) c.value = ''; });
       if (input) input.value = '';
@@ -599,13 +488,10 @@ func agentsFilterScript() g.Node {
     }
   });
   // The list re-renders itself; the rule above already hides what should be
-  // hidden, so all that is left is the count — and the options, which arrive
-  // out of band with the same render.
+  // hidden, so all that is left is the count and the options — and a link's
+  // token that was waiting in the box for its option (restore).
   document.addEventListener('htmx:afterSettle', function (e) {
-    if (e.target && e.target.id === 'agents-list') apply();
-  });
-  document.addEventListener('htmx:oobAfterSwap', function (e) {
-    if (e.target && e.target.id === '` + agentsFacetsID + `') apply();
+    if (e.target && e.target.id === 'agents-list') restore();
   });
   document.addEventListener('htmx:load', restore);
   // Back on the Agents tab (switchTab pushed a bare /agents): put the filter's

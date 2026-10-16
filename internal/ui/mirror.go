@@ -193,10 +193,10 @@ func mirrorCard(m MirrorCardView) g.Node {
 	)
 }
 
-// mirrorFields is what a mirrored card is filtered by — its data-f-*
-// attributes and its share of the filter's options (agentsFacets).
+// mirrorFields is what a mirrored card is filtered by: its data-f-* (and
+// data-l-*) attributes, which the filter's options are read from.
 func mirrorFields(m MirrorCardView) cardFields {
-	f := cardFields{Host: m.Host, Type: "mirrored", Name: displayOr(m.Label, displayOr(m.Title, m.Session)),
+	f := cardFields{Host: m.Host, Type: "Mirrored", Name: displayOr(m.Label, displayOr(m.Title, m.Session)),
 		Session: m.Session, Status: "running", Kind: m.Kind}
 	if !m.Online {
 		f.Status, f.State = "stopped", "offline"

@@ -117,9 +117,9 @@ func TestTheFilterHidesWithOneRulePerWordAndCountsWithTheSameSelector(t *testing
 	for name, want := range map[string]string{
 		"the rule hides a card lacking the term": `'#agents-list > article:not(' + sel(t) + '){display:none !important}'`,
 		"the count uses the same selector":       `list.querySelectorAll(':scope > article' + ts.map(sel).join(''))`,
-		"the terms are lower-cased and parsed":   `var out = [], s = String(v || '').toLowerCase(), m;`,
+		"the terms are lower-cased and parsed":   `tokens(String(q || '').toLowerCase()).forEach(`,
 		"typing replaces the URL, never pushes":  `history.replaceState(history.state, '', next)`,
-		"it re-counts when the list settles":     `if (e.target && e.target.id === 'agents-list') apply();`,
+		"it re-counts when the list settles":     `if (e.target && e.target.id === 'agents-list') restore();`,
 		"it remembers the text for the session":  `sessionStorage.setItem(KEY, q)`,
 	} {
 		if !strings.Contains(script, want) {

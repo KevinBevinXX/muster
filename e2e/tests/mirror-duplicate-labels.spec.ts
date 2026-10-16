@@ -26,6 +26,9 @@ const origin = `http://localhost:${dupLabelsPort}`;
 const stamp = Date.now().toString(36);
 const hostA = 'e2e-dupa-' + stamp;
 const hostB = 'e2e-dupb-' + stamp;
+// A third host whose name CONTAINS host A's: what a substring match cannot tell
+// apart (the second test).
+const hostC = hostA + 'book';
 const mirrorBin = path.join(binDir, 'muster-mirror-e2e-dup');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mirror-dup-labels-'));
 const transcript = path.join(dir, 'cccccccc-0001.jsonl');
@@ -49,6 +52,8 @@ const aMango: Win = { session: 'mango', id: '@1', index: 1, active: true, comman
 const aKiwi: Win = { session: 'kiwi', id: '@3', index: 2, active: true, command: 'zsh', activity: now - 600 };
 // Host B: mango:1 is a shell (its card opens the TERMINAL).
 const bMango: Win = { session: 'mango', id: '@5', index: 1, active: true, command: 'zsh', activity: now - 120 };
+// Host C: one window.
+const cFig: Win = { session: 'fig', id: '@2', index: 1, active: true, command: 'zsh', activity: now - 300 };
 
 const windowsFile = (host: string) => path.join(dir, host + '.windows');
 function writeWindows(host: string, ws: Win[]) {
@@ -85,6 +90,7 @@ function startHost(host: string, token: string) {
 }
 
 let tokenB = '';
+let tokenC = '';
 test.beforeAll(async () => {
   execFileSync('go', ['build', '-tags', 'e2emirror', '-o', mirrorBin, './cmd/muster-mirror'], { cwd: repoRoot, stdio: 'inherit' });
   server = await startServer(versionTerm, dupLabelsPort, {
@@ -100,6 +106,8 @@ test.beforeAll(async () => {
   writeWindows(hostB, [bMango]);
   startHost(hostA, mint(hostA));
   tokenB = mint(hostB); // host B connects later, inside the test
+  writeWindows(hostC, [cFig]);
+  tokenC = mint(hostC); // host C connects in the second test
 });
 
 test.afterAll(async () => {
@@ -208,4 +216,51 @@ test('two hosts with the same label: two distinct titles, live, and each page is
   writeWindows(hostB, [{ ...bMango, session: 'other', id: '@6' }]);
   await expect.poll(() => shownTitle(mangoCard(page, hostA)), { timeout: 20_000 }).toBe('mango:1');
   await expect(mangoCard(page, hostB)).toHaveCount(0);
+});
+
+// A HOST CHOSEN FROM THE DROPDOWN MATCHES EXACTLY. Host C's name contains host
+// A's ("…book"), so a substring match on host A shows C's window too — which is
+// how choosing host "mac" used to show "macbook". A select writes host=<value>,
+// the whole field; a TYPED host:<value> stays a substring.
+//
+// 🔴 A REGRESSION TEST: on the commit before, the select wrote host:<A> and C's
+// card stayed visible.
+test('a host chosen from the dropdown matches exactly; a typed host: is still a substring', async ({ page }) => {
+  await page.goto(origin + '/login');
+  await page.fill('#muster-password', password);
+  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  startHost(hostC, tokenC);
+  await page.goto(origin + '/agents');
+  await expect(cardsOf(page, hostC), `host C's card (log:\n${mirrorLog})`).toHaveCount(1, { timeout: 20_000 });
+  await expect(cardsOf(page, hostA)).toHaveCount(2);
+  const visible = (h: string) => cardsOf(page, h).filter({ visible: true });
+  const hostSel = page.locator('#agents-f-host');
+  await expect.poll(() => hostSel.locator('option').allTextContents(), { timeout: 20_000 }).toEqual(expect.arrayContaining([hostA, hostC]));
+
+  // Chosen: host A's two cards, and NOT host C's.
+  await hostSel.selectOption(hostA);
+  await expect(visible(hostA)).toHaveCount(2);
+  await expect(visible(hostC), 'host C contains host A but is not host A').toHaveCount(0);
+  expect(new URL(page.url()).searchParams.get('q')).toBe(`host=${hostA}`);
+  // Positive control: choosing C shows C, so the hiding above is the match and
+  // not a card that never rendered.
+  await hostSel.selectOption(hostC);
+  await expect(visible(hostC)).toHaveCount(1);
+  await expect(visible(hostA)).toHaveCount(0);
+
+  // Typed: a substring, as it always was — both hosts.
+  await hostSel.selectOption('');
+  await page.locator('#agents-search').fill(`host:${hostA}`);
+  await expect(visible(hostA)).toHaveCount(2);
+  await expect(visible(hostC)).toHaveCount(1);
+
+  // The exact token survives a link, and a reload.
+  await page.goto(origin + '/agents?q=' + encodeURIComponent(`host=${hostA}`));
+  await expect(hostSel).toHaveValue(hostA, { timeout: 20_000 });
+  await expect(visible(hostA)).toHaveCount(2);
+  await expect(visible(hostC)).toHaveCount(0);
+  await page.reload();
+  await expect(hostSel).toHaveValue(hostA, { timeout: 20_000 });
+  await expect(visible(hostC)).toHaveCount(0);
+  await expect(visible(hostA)).toHaveCount(2);
 });

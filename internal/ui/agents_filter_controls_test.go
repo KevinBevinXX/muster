@@ -1,9 +1,7 @@
 package ui
 
 import (
-	"encoding/json"
 	"html"
-	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -22,7 +20,7 @@ import (
 // agents' host, which is the literal podHost.
 func facetFixture() ([]AgentCardView, []MirrorCardView) {
 	list := []AgentCardView{
-		{ID: 1, Name: "keen-wren", Status: "running", Kind: agents.KindClaudeCode, CCAccount: "alpha"},
+		{ID: 1, Name: "keen-wren", Status: "running", Kind: agents.KindClaudeCode, CCAccount: "Alpha"},
 		{ID: 2, Name: "slow-heron", Status: "error"},
 	}
 	mirrors := []MirrorCardView{
@@ -33,39 +31,77 @@ func facetFixture() ([]AgentCardView, []MirrorCardView) {
 	return list, mirrors
 }
 
-// TestTheFacetsAreTheCardsOwnValues: every option is a value some card in the
-// list carries — in the card's own data-f-<field> spelling as V, its display
-// spelling as L — once per value, sorted by label. Red before: there were no
-// facets.
-func TestTheFacetsAreTheCardsOwnValues(t *testing.T) {
+// TestTheCardsCarryTheirOptionsLabels: the script reads a select's options off
+// the cards — the value from data-f-<field>, what the option says from
+// data-l-<field> — so a facet value that lower-casing changed carries its
+// spelling as the card writes it, and one it did not change carries none. Only
+// facet fields get a label (nothing reads one elsewhere). Red before: no card
+// carried a data-l-* attribute.
+func TestTheCardsCarryTheirOptionsLabels(t *testing.T) {
 	list, mirrors := facetFixture()
-	got := agentsFacets(list, mirrors)
-	want := map[string][]facetOption{
-		"host":   {{"cluster", "cluster"}, {"laptop", "laptop"}, {"tower", "Tower"}},
-		"type":   {{"agent", "Agent"}, {"mirrored", "Mirrored"}},
-		"status": {{"error", "error"}, {"running", "running"}, {"stopped", "stopped"}},
-		// slow-heron has no kind: the default, labelled Standard.
-		"kind": {{"claude code", "Claude Code"}, {"opencode", "opencode"}, {"shell", "shell"}, {"standard", "Standard"}},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("facets =\n%v\nwant\n%v", got, want)
-	}
-	// Each option's V is exactly what some card's attribute says, so selecting
-	// it can match: read the attributes off the rendered cards themselves.
 	cards := renderNode(t, AgentsCardsWithMirrors(list, mirrors))
-	for field, opts := range got {
-		for _, o := range opts {
-			if !strings.Contains(cards, ` data-f-`+field+`="`+o.V+`"`) {
-				t.Errorf("option %s=%q is carried by no card", field, o.V)
-			}
+	attr := func(card, name string) (string, bool) {
+		m := regexp.MustCompile(` ` + regexp.QuoteMeta(name) + `="([^"]*)"`).FindStringSubmatch(card)
+		if m == nil {
+			return "", false
+		}
+		return html.UnescapeString(m[1]), true
+	}
+	for _, c := range []struct {
+		marker, field, value, label string
+	}{
+		{`id="agent-1"`, "kind", "claude code", "Claude Code"},
+		{`id="agent-1"`, "type", "agent", "Agent"},
+		{`id="agent-2"`, "kind", "standard", "Standard"},
+		{`data-mirror-card`, "host", "tower", "Tower"},
+		{`data-mirror-card`, "type", "mirrored", "Mirrored"},
+	} {
+		card := articleWith(t, cards, c.marker)
+		if v, _ := attr(card, "data-f-"+c.field); v != c.value {
+			t.Errorf("%s: data-f-%s = %q, want %q", c.marker, c.field, v, c.value)
+		}
+		if l, _ := attr(card, "data-l-"+c.field); l != c.label {
+			t.Errorf("%s: data-l-%s = %q, want %q", c.marker, c.field, l, c.label)
 		}
 	}
-	// An empty list offers nothing (and still says so as JSON objects, not null).
-	for _, f := range facetFields {
-		if opts := agentsFacets(nil, nil)[f]; opts == nil || len(opts) != 0 {
-			t.Errorf("an empty list's %s facet = %#v, want an empty list", f, opts)
-		}
+	// A value lower-casing left alone carries no label: the option says the value.
+	laptop := articleWith(t, cards, `data-f-host="laptop"`)
+	if l, ok := attr(laptop, "data-l-host"); ok {
+		t.Errorf("an already lower-case host carries data-l-host=%q", l)
 	}
+	if v, _ := attr(laptop, "data-f-kind"); v != "shell" {
+		t.Fatalf("instrument check: the laptop card's data-f-kind = %q, want shell", v)
+	}
+	// A non-facet field is never labelled, whatever its case (account "Alpha").
+	if strings.Contains(cards, "data-l-account") || strings.Contains(cards, "data-l-name") || strings.Contains(cards, "data-l-session") {
+		t.Errorf("a non-facet field carries a label:\n%s", cards)
+	}
+	if !strings.Contains(cards, `data-f-account="alpha"`) {
+		t.Fatalf("instrument check: the account field is not on the card at all:\n%s", cards)
+	}
+	// The list's partial is the cards and nothing else (no out-of-band options).
+	var b strings.Builder
+	if err := RenderAgentsList(&b, list, mirrors); err != nil {
+		t.Fatal(err)
+	}
+	if b.String() != cards {
+		t.Error("the /ui/agents partial is not exactly the cards")
+	}
+}
+
+// articleWith is the <article> in markup that contains marker.
+func articleWith(t *testing.T, markup, marker string) string {
+	t.Helper()
+	i := strings.Index(markup, marker)
+	if i < 0 {
+		t.Fatalf("no card with %q in:\n%s", marker, markup)
+	}
+	start := strings.LastIndex(markup[:i], "<article")
+	rest := markup[start:]
+	if j := strings.Index(rest, "</article>"); j >= 0 {
+		rest = rest[:j]
+	}
+	return rest
 }
 
 // TestEveryFacetIsARegisteredField: a facet the registry does not know would be
@@ -82,65 +118,9 @@ func TestEveryFacetIsARegisteredField(t *testing.T) {
 	}
 }
 
-var facetsDiv = regexp.MustCompile(`<div id="agents-facets"([^>]*)>`)
-
-// facetsOf parses the facets element out of markup: its attributes and its
-// decoded JSON.
-func facetsOf(t *testing.T, markup string) (string, map[string][]facetOption) {
-	t.Helper()
-	m := facetsDiv.FindAllStringSubmatch(markup, -1)
-	if len(m) != 1 {
-		t.Fatalf("want exactly one #agents-facets, got %d in:\n%s", len(m), markup)
-	}
-	data := regexp.MustCompile(`data-facets="([^"]*)"`).FindStringSubmatch(m[0][1])
-	if data == nil {
-		t.Fatalf("#agents-facets carries no data-facets: %s", m[0][0])
-	}
-	var f map[string][]facetOption
-	if err := json.Unmarshal([]byte(html.UnescapeString(data[1])), &f); err != nil {
-		t.Fatalf("data-facets is not JSON: %v (%s)", err, data[1])
-	}
-	return m[0][1], f
-}
-
-// TestTheListPartialCarriesItsFacetsOutOfBand: the /ui/agents response is the
-// cards and, OUT OF BAND, the facets derived from those same cards — the bar is
-// outside #agents-list, which the response's main swap fills. The facets are
-// not an <article>, and the cards are unchanged by them.
-func TestTheListPartialCarriesItsFacetsOutOfBand(t *testing.T) {
-	list, mirrors := facetFixture()
-	var b strings.Builder
-	if err := RenderAgentsList(&b, list, mirrors); err != nil {
-		t.Fatal(err)
-	}
-	out := b.String()
-	attrs, got := facetsOf(t, out)
-	if !strings.Contains(attrs, `hx-swap-oob="true"`) {
-		t.Errorf("the list's facets are not swapped out of band: %s", attrs)
-	}
-	if !reflect.DeepEqual(got, agentsFacets(list, mirrors)) {
-		t.Errorf("the partial's facets are not agentsFacets of its own cards: %v", got)
-	}
-	if !strings.HasPrefix(out, renderNode(t, AgentsCardsWithMirrors(list, mirrors))) {
-		t.Error("the cards are not the partial's leading content, unchanged")
-	}
-	// The shell's copy is the swap target: present, empty, and NOT out of band.
-	panel := renderNode(t, AgentsPanel(true))
-	shellAttrs, shell := facetsOf(t, panel)
-	if strings.Contains(shellAttrs, "hx-swap-oob") {
-		t.Errorf("the shell's facets element is itself out of band: %s", shellAttrs)
-	}
-	if len(shell) != len(facetFields) {
-		t.Errorf("the shell's facets = %v, want an empty list per facet", shell)
-	}
-	if strings.Index(panel, `id="agents-facets"`) > strings.Index(panel, `id="agents-list"`) {
-		t.Error("the facets element is inside or after #agents-list")
-	}
-}
-
 // TestTheBarHasAControlPerFacetOutsideTheList: one select per facet, its first
-// option selecting nothing, each a 16px 44px target; the chips' container,
-// "Clear all" and the count — all OUTSIDE #agents-list (a refresh never touches
+// option selecting nothing, each a 16px 44px target; "Clear all" and the
+// count — all OUTSIDE #agents-list (a refresh never touches
 // them). "Clear all" is hidden by ATTRIBUTE, so it carries no display utility.
 func TestTheBarHasAControlPerFacetOutsideTheList(t *testing.T) {
 	panel := renderNode(t, AgentsPanel(true))
@@ -169,7 +149,6 @@ func TestTheBarHasAControlPerFacetOutsideTheList(t *testing.T) {
 			t.Errorf("the %s control's first option is not %q", f, facetAny[f])
 		}
 	}
-	tag("agents-active")
 	tag("agents-count")
 	clear := tag("agents-filter-clear")
 	if !strings.Contains(clear, ` hidden=""`) || !strings.Contains(clear, "min-h-[44px]") {
@@ -195,8 +174,9 @@ func TestTheControlsWriteTheSameTokenString(t *testing.T) {
 		"the hide rules read the one string": "var q = composeQ();\n    var ts = terms(q);",
 		"it is remembered as is":             "sessionStorage.setItem(KEY, q)",
 		"it is the URL's ?q=":                "syncURL(q);",
-		"a ?q= is split into the controls":   "if (composeQ() !== q) distribute(q);",
-		"the facets come from the server":    "var d = el('" + agentsFacetsID + "');",
+		"a ?q= is split into the controls":   "if (composeQ() !== q || taken) distribute(q);",
+		"the options come from the cards":    "list.querySelectorAll(':scope > article[data-f-' + f + ']')",
+		"a select writes an EXACT token":     "return /\\s/.test(v) ? f + '=\"' + v + '\"' : f + '=' + v;",
 		"the controls are the facet fields":  "var CONTROLS = " + facetFieldsJSON() + ";",
 	} {
 		if !strings.Contains(script, want) {

@@ -330,10 +330,10 @@ func agentCard(a AgentCardView) g.Node {
 	)
 }
 
-// agentFields is what an agent card is filtered by — its data-f-* attributes
-// and its share of the filter's options (agentsFacets) both come from here.
+// agentFields is what an agent card is filtered by: its data-f-* (and data-l-*)
+// attributes, which the filter's options are read from.
 func agentFields(a AgentCardView) cardFields {
-	return cardFields{Host: podHost, Type: "agent", Name: filterHaystack(a.DisplayName, a.Name),
+	return cardFields{Host: podHost, Type: "Agent", Name: filterHaystack(a.DisplayName, a.Name),
 		Status: a.Status, Kind: agents.KindLabel(a.Kind), Repo: a.Repo, Account: a.CCAccount, NS: a.Namespace}
 }
 
