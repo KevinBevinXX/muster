@@ -10,15 +10,17 @@ import (
 // the bubble or the control animates it open to its full height; another tap
 // closes it again.
 //
-// 🔴 ONE SCRIPT FOR EVERY CHAT SURFACE, BECAUSE THE BUBBLES ARE ONE COMPONENT.
-// It acts on any [data-bubble] element in the document — the mirrored view's
-// (MirrorTranscript.Ops), the agent chat's server-rendered transcript
-// (chatBubbleOf) and the agent chat's own live user bubbles — wherever and
-// whenever it appears: a MutationObserver on <body> (which survives hx-boost
-// swaps and the chat-log refresh) finds new ones, and a ResizeObserver per
-// bubble re-measures it when its width or content changes, so a bubble that is
-// markdown-converted after insertion, or that was in a closed panel, is
-// measured when it actually has a size.
+// 🔴 ONE SCRIPT FOR BOTH CLAMPED SURFACES, BECAUSE THE BUBBLES ARE ONE
+// COMPONENT. It acts on any [data-bubble] element in the document — the mirrored
+// view's (MirrorTranscript.Ops), the agent chat page's server-rendered
+// transcript (chatBubbleOf) and its own live user bubbles — wherever and
+// whenever it appears: a MutationObserver on <body> (which survives the
+// chat-log refresh) finds new ones, and a ResizeObserver per bubble re-measures
+// it when its width or content changes, so a bubble that is markdown-converted
+// after insertion is measured when it actually has a size.
+//
+// ⚠ THE CHIEF PANEL IS NOT CLAMPED, deliberately: chiefPanelBody does not
+// include this script, and the shell it lives in includes it nowhere else.
 //
 // ⚠ A STREAMING ASSISTANT REPLY IS NOT CLAMPED, deliberately: the agent chat's
 // live reply bubbles carry no data-bubble (agentChatScript's ensureText), so
@@ -30,9 +32,8 @@ import (
 // newest message never leaves the reader above the bottom. The page scripts'
 // own "at the end" state follows, because a scroll to the bottom IS the end.
 //
-// It is re-executable (the chief panel re-runs its body's scripts on every
-// swap): the observers and the delegated handler are bound once per document,
-// on window.muClamp.
+// It is re-executable: the observers and the delegated handler are bound once
+// per document, on window.muClamp, and a re-run rescans.
 func bubbleClampScript() g.Node {
 	return Script(g.Raw(`
 (function () {

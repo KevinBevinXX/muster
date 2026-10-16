@@ -72,10 +72,11 @@ func TestNoticeRowSourcesAndStatuses(t *testing.T) {
 	}
 }
 
-// Every chat surface carries the bubble clamp, and every bubble it should act
-// on is marked for it: the server-rendered bubble (chatBubbleOf) and the agent
-// chat's live one (agentChatScript's bubble()).
-func TestEveryChatSurfaceCarriesTheBubbleClamp(t *testing.T) {
+// Both clamped chat surfaces — the mirrored view and the agent chat page —
+// carry the bubble clamp, and every bubble it should act on is marked for it:
+// the server-rendered bubble (chatBubbleOf) and the agent chat's live one
+// (agentChatScript's bubble()).
+func TestBothClampedChatSurfacesCarryTheBubbleClamp(t *testing.T) {
 	pages := map[string]string{
 		"mirror view": renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main"})),
 	}
@@ -84,13 +85,6 @@ func TestEveryChatSurfaceCarriesTheBubbleClamp(t *testing.T) {
 		t.Fatal(err)
 	}
 	pages["agent chat"] = b.String()
-	b.Reset()
-	cv := sampleAgentDetailView()
-	cv.Surface = ChatSurfaceChiefPanel
-	if err := RenderChiefPanelBody(&b, ChiefPanelView{Configured: true, Chat: cv}); err != nil {
-		t.Fatal(err)
-	}
-	pages["chief panel"] = b.String()
 	for name, html := range pages {
 		if strings.Count(html, "window.muClamp = {") != 1 {
 			t.Errorf("%s: carries the bubble clamp %d times, want 1", name, strings.Count(html, "window.muClamp = {"))
@@ -101,5 +95,22 @@ func TestEveryChatSurfaceCarriesTheBubbleClamp(t *testing.T) {
 	}
 	if !strings.Contains(pages["agent chat"], "d.setAttribute('data-bubble', role);") {
 		t.Error("the agent chat's live bubble() is not marked data-bubble")
+	}
+}
+
+// The chief panel is deliberately NOT clamped: neither its body nor its frame
+// carries the clamp script.
+func TestTheChiefPanelCarriesNoBubbleClamp(t *testing.T) {
+	cv := sampleAgentDetailView()
+	cv.Surface = ChatSurfaceChiefPanel
+	var b strings.Builder
+	if err := RenderChiefPanelBody(&b, ChiefPanelView{Configured: true, Chat: cv}); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(b.String(), "window.muClamp"); n != 0 {
+		t.Errorf("the chief panel body carries the bubble clamp (%d)", n)
+	}
+	if n := strings.Count(renderString(t, ChiefPanel()), "window.muClamp"); n != 0 {
+		t.Errorf("the chief panel frame carries the bubble clamp (%d)", n)
 	}
 }
