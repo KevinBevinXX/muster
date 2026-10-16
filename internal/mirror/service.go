@@ -298,13 +298,25 @@ func (s *Service) PasteWindow(ctx context.Context, host, session, window, text s
 	return s.hub.PasteWindow(ctx, o, host, session, window, text, target)
 }
 
+// ScrollWindow scrolls the active pane of one window of one of the viewing
+// principal's host sessions through its history (tmux copy-mode); window == ""
+// is the session's active window. See Hub.ScrollWindow — and why it needs no
+// fresh sign-in.
+func (s *Service) ScrollWindow(ctx context.Context, host, session, window string, lines int) error {
+	o, err := owner(ctx)
+	if err != nil {
+		return err
+	}
+	return s.hub.ScrollWindow(ctx, o, host, session, window, lines)
+}
+
 // IsAttachRefusal reports whether err is one of the plugin's own refusals,
 // whose text is written for the operator and is passed to the browser as is.
 func IsAttachRefusal(err error) bool {
 	for _, e := range []error{ErrHostOffline, ErrSessionGone, ErrWindowGone, ErrHostDisconnected, ErrOverrun,
 		ErrInteractiveRefused, ErrTooManyStreams, ErrNoPrincipal, ErrStepUpRequired,
 		ErrNoRenderedView, ErrNotClaude, ErrViewOverrun, ErrTooManyWatches, ErrPasteTimeout, ErrPasteRefused, ErrBadPaste,
-		ErrPanePasteUnsupported} {
+		ErrPanePasteUnsupported, ErrScrollUnsupported, ErrScrollRefused, ErrScrollTimeout, ErrBadScroll} {
 		if errors.Is(err, e) {
 			return true
 		}

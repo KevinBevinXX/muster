@@ -140,6 +140,12 @@ const (
 	TypeEvents = "events"
 	TypePaste  = "paste"
 	TypePasted = "pasted"
+
+	// Scrolling a pane's history (tmux copy-mode). muster → host: scroll. Host →
+	// muster: scrolled (its outcome). Sent only to a host that advertised
+	// Msg.PaneScroll — see that field for the compatibility.
+	TypeScroll   = "scroll"
+	TypeScrolled = "scrolled"
 )
 
 // Msg is every control message on the tunnel, as one JSON text frame.
@@ -190,6 +196,19 @@ type Msg struct {
 	// REFUSES a pane that is not Claude Code. The failure direction is "not
 	// sent", never "sent somewhere unintended".
 	PanePaste bool `json:"panePaste,omitempty"`
+	// PaneScroll (hello) is the host ADVERTISING that it scrolls a window's
+	// active pane through its history in tmux COPY-MODE (scroll / scrolled):
+	// what the Terminal view's drag-to-scroll needs, since the viewer's own tmux
+	// client paints only the visible screen and so the browser holds no history.
+	// Only an -interactive v2 host whose backend can do it sets it.
+	//
+	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS, like PanePaste: an older
+	// muster ignores the field and never asks; an older host never sets it, so
+	// muster never sends it a scroll and the page draws no gesture at all. (An
+	// older host that somehow got one would ignore the unknown type — its read
+	// loop has no default case — and muster's wait would time out; it is never
+	// sent one.)
+	PaneScroll bool `json:"paneScroll,omitempty"`
 	// ID names one terminal stream (open, resize, close, closed).
 	ID uint32 `json:"id,omitempty"`
 	// Session is the tmux session an open attaches to.
@@ -228,6 +247,11 @@ type Msg struct {
 	// a pane it resolves as Claude Code NOW, and refuses otherwise: the rendered
 	// view's send must never land a prompt meant for Claude in a shell.
 	AnyPane bool `json:"anyPane,omitempty"`
+	// Lines (scroll) is how far to scroll the pane's history: positive is BACK
+	// (tmux scroll-up, older output), negative is forward (scroll-down, toward
+	// the live screen). 0 and anything beyond MaxScrollLines either way is
+	// refused (ClampScroll is the bound both halves apply).
+	Lines int `json:"lines,omitempty"`
 
 	// ---- per-window registration ----
 
@@ -301,7 +325,21 @@ const (
 	BackfillWindow    = 4 << 20
 	// MaxPaste bounds a paste's text.
 	MaxPaste = 16 << 10
+	// MaxScrollLines bounds one scroll request either way: a page coalesces a
+	// drag into one request per animation frame, and a frame's worth of a fast
+	// fling is tens of lines, not hundreds.
+	MaxScrollLines = 200
 )
+
+// ClampScroll is n bounded to [-MaxScrollLines, MaxScrollLines], and ok=false
+// for 0 (nothing to scroll). Both halves apply it: muster to what a browser
+// asked for, the host again to what muster sent.
+func ClampScroll(n int) (int, bool) {
+	if n == 0 {
+		return 0, false
+	}
+	return max(-MaxScrollLines, min(MaxScrollLines, n)), true
+}
 
 // dataHeader is the stream id prefixed to every binary frame.
 const dataHeader = 4

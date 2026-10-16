@@ -8,6 +8,7 @@ import (
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
 
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/termsize"
 )
 
@@ -103,7 +104,18 @@ type AgentTerminalView struct {
 	// StepUp — a send refused as stale asks through the same dialog. nil = no
 	// composer (an agent pod's terminal, a read-only host).
 	Composer *MirrorComposerView
+	// ScrollForm, when set, turns on drag-to-scroll: a vertical drag on the
+	// terminal (and the mouse wheel) scrolls the session's pane through its
+	// tmux history, by POSTing ScrollForm plus `lines` to
+	// MirrorTerminalScrollPath. A host that cannot scroll (an older
+	// muster-mirror, a read-only host) leaves it "", and the page then has no
+	// gesture handlers at all — touch pans #term-scroll exactly as before.
+	ScrollForm string
 }
+
+// MirrorTerminalScrollPath is where the Terminal view's drag-to-scroll posts
+// (internal/api's handleMirrorTerminalScroll).
+const MirrorTerminalScrollPath = "/mirror/terminal/scroll"
 
 // The Live keys switch's words, and the status line's. Exported so a test pins
 // the page against the same strings rather than a copy of them.
@@ -283,6 +295,10 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 								g.If(v.Unavailable != "", g.Attr("data-unavailable", "")),
 								g.Attr("data-size-osc", strconv.Itoa(termsize.ReportOSC)),
 								stepUpAttrs(v.StepUp),
+								g.If(v.ScrollForm != "", g.Group([]g.Node{
+									g.Attr("data-scroll", MirrorTerminalScrollPath),
+									g.Attr("data-scroll-form", v.ScrollForm),
+								})),
 								Class("h-full w-full"),
 							),
 						),
@@ -653,6 +669,132 @@ func agentTerminalScript() g.Node {
       scheduleLayout();
     });
   }
+  // --- drag-to-scroll (a mirrored host that can: data-scroll) ---------------
+  // 🔴 THE HISTORY IS TMUX'S, NOT THIS TERMINAL'S. The viewer's tmux client
+  // paints only the visible screen, so xterm's own scrollback holds no real
+  // history. A vertical drag (or the mouse wheel) is turned into whole lines
+  // and posted; the host scrolls the pane in tmux copy-mode, and the scrolled
+  // view arrives on the socket like any other output. Without data-scroll (an
+  // older muster-mirror, a read-only host, an agent pod) none of this is wired
+  // and touch pans #term-scroll exactly as it always did.
+  //
+  // Coalesced: a drag accumulates pixels, whole lines are sent at most once per
+  // animation frame, and only one request is in flight (the next waits for its
+  // answer), so the order of scrolls is the order of the drag.
+  var scrollPath = host.getAttribute('data-scroll');
+  if (scrollPath) (function () {
+    var form = host.getAttribute('data-scroll-form') || '';
+    var maxLines = ` + strconv.Itoa(mirror.MaxScrollLines) + `;
+    var px = 0, lines = 0, sent = 0, inFlight = false, frame = false, dead = false;
+    function cellHeight() {
+      // The drawn height (Fit width scales it), per row.
+      var sc = host.querySelector('.xterm-screen');
+      var h = sc ? sc.getBoundingClientRect().height / term.rows : 0;
+      return h > 0 ? h : 16;
+    }
+    function schedule() {
+      if (frame || dead) return;
+      frame = true;
+      requestAnimationFrame(function () { frame = false; flush(); });
+    }
+    function addLines(n) { if (n) { lines += n; schedule(); } }
+    function addPx(d) {
+      // d > 0 is back in history.
+      px += d;
+      var c = cellHeight();
+      var n = px > 0 ? Math.floor(px / c) : Math.ceil(px / c);
+      px -= n * c;
+      addLines(n);
+    }
+    function flush() {
+      if (inFlight || dead || !lines) return;
+      var n = Math.max(-maxLines, Math.min(maxLines, lines));
+      lines -= n;
+      inFlight = true;
+      fetch(scrollPath, {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: form + '&lines=' + n
+      }).then(function (r) {
+        if (r.status === 204) {
+          sent += n;
+          host.setAttribute('data-scroll-sent', String(sent));
+        } else if (r.status === 404 || r.status === 409) {
+          // The host cannot scroll (any more): stop asking.
+          stop();
+        }
+        // Anything else (429, a slow host) drops this one; the drag goes on.
+      }, function () {}).then(function () {
+        inFlight = false;
+        if (lines) schedule();
+      });
+    }
+    // A far side taller than the page: the scroll area takes a drag first,
+    // and only what is left of it scrolls the history.
+    function panArea(d) {
+      if (scrollEl.scrollHeight <= scrollEl.clientHeight) return d;
+      var before = scrollEl.scrollTop;
+      scrollEl.scrollTop = before - d;
+      return d - (before - scrollEl.scrollTop);
+    }
+    // Touch: the AXIS IS DECIDED AT THE GESTURE'S START. A horizontal start is
+    // left to the browser (touch-action pan-x: #term-scroll pans as before);
+    // a vertical one is ours, and never reaches xterm, whose own touch scroll
+    // has nothing real to show. Two fingers are a pinch, never a scroll.
+    var start = null, axis = '', lastY = 0;
+    function onStart(ev) {
+      start = null;
+      if (ev.touches.length !== 1) return;
+      start = { x: ev.touches[0].clientX, y: ev.touches[0].clientY };
+      axis = '';
+    }
+    function onMove(ev) {
+      if (!start) return;
+      if (ev.touches.length !== 1) { start = null; return; }
+      var t = ev.touches[0];
+      if (!axis) {
+        var dx = t.clientX - start.x, dy = t.clientY - start.y;
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+        axis = Math.abs(dy) > Math.abs(dx) ? 'y' : 'x';
+        lastY = start.y;
+      }
+      if (axis !== 'y') return;
+      ev.stopPropagation();
+      var d = panArea(t.clientY - lastY);
+      lastY = t.clientY;
+      if (d) addPx(d);
+    }
+    function onEnd() { start = null; }
+    // The wheel: vertical only (a sideways one pans #term-scroll as before).
+    function onWheel(ev) {
+      if (Math.abs(ev.deltaX) > Math.abs(ev.deltaY) || !ev.deltaY) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (ev.deltaMode === 1) addLines(-Math.round(ev.deltaY));
+      else if (ev.deltaMode === 2) addLines(-Math.round(ev.deltaY) * term.rows);
+      else addPx(panArea(-ev.deltaY));
+    }
+    var touchTargets = [scrollEl, host.querySelector('.xterm-viewport')];
+    function stop() {
+      dead = true;
+      scrollEl.removeEventListener('touchstart', onStart, true);
+      scrollEl.removeEventListener('touchmove', onMove, true);
+      scrollEl.removeEventListener('touchend', onEnd, true);
+      scrollEl.removeEventListener('touchcancel', onEnd, true);
+      scrollEl.removeEventListener('wheel', onWheel, true);
+      touchTargets.forEach(function (el) { if (el) el.style.touchAction = ''; });
+      host.removeAttribute('data-scroll-on');
+    }
+    touchTargets.forEach(function (el) { if (el) el.style.touchAction = 'pan-x pinch-zoom'; });
+    scrollEl.addEventListener('touchstart', onStart, { capture: true, passive: true });
+    scrollEl.addEventListener('touchmove', onMove, { capture: true, passive: true });
+    scrollEl.addEventListener('touchend', onEnd, { capture: true, passive: true });
+    scrollEl.addEventListener('touchcancel', onEnd, { capture: true, passive: true });
+    scrollEl.addEventListener('wheel', onWheel, { capture: true, passive: false });
+    // An instrument for the browser suite: the handlers are wired.
+    host.setAttribute('data-scroll-on', '1');
+  })();
+
   // Leaving the page ends the stream now rather than when the socket times out.
   window.addEventListener('pagehide', function () { if (ws) { ws.onclose = null; ws.close(); } });
 

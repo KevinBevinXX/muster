@@ -138,6 +138,7 @@ var routeVias = map[authz.Via][]string{
 		"GET /mirror/view/ws",
 		"POST /mirror/view/send",
 		"POST /mirror/terminal/send",
+		"POST /mirror/terminal/scroll",
 		"GET /mirror/view/send",
 		"GET /mirror/terminal/send",
 		"POST /mirror/confirm-send",

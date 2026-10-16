@@ -125,6 +125,9 @@ type Server struct {
 
 	// loginRate throttles password attempts on the human tier.
 	loginRate rateLimiter
+	// scrollRate throttles the Terminal view's drag-to-scroll, per user
+	// (mirror_scroll.go).
+	scrollRate keyedRate
 
 	// gt is the GoTrue wiring (accounts PR 4); nil unless UseGoTrue was
 	// called. See accounts.go.

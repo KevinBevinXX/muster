@@ -194,6 +194,10 @@ type Mirror interface {
 	// The caller has already required the step-up; the plugin requires it
 	// again.
 	PasteWindow(ctx context.Context, host, session, window, text string, target mirror.PasteTarget) error
+	// ScrollWindow scrolls that window's active pane through its history in
+	// tmux copy-mode by lines (positive is back). No step-up: see
+	// mirror.Hub.ScrollWindow.
+	ScrollWindow(ctx context.Context, host, session, window string, lines int) error
 }
 
 // GitHubOAuthConfig holds the OAuth App credentials + the public base URL used

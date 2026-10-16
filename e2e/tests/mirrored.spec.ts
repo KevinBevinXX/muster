@@ -837,3 +837,153 @@ test('a read-only host’s Terminal view draws its composer disabled and says wh
   await stopMirror();
   mirrorProc = startMirror(false);
 });
+
+// ---------------------------------------------------------------------------
+// DRAG-TO-SCROLL: a vertical drag on the Terminal scrolls the session's tmux
+// HISTORY. The viewer's tmux client paints only the visible screen, so the
+// browser holds none; the host scrolls the pane in tmux copy-mode and the view
+// arrives on the socket. The fake host plays copy-mode and records every scroll
+// in MUSTER_MIRROR_E2E_SCROLL_FILE (`<pane> <lines> pos=<lines back>`); unset,
+// it is an OLDER muster-mirror that cannot scroll.
+//
+// 🔴 REAL TOUCH: the drags are Chrome touch events (CDP Input.dispatchTouchEvent),
+// which go through the browser's own gesture handling — touch-action, native
+// panning of #term-scroll — exactly as a finger does. A scripted scrollTop or a
+// synthetic TouchEvent would bypass precisely what is under test.
+// ---------------------------------------------------------------------------
+type Pt = { x: number; y: number };
+async function touchDrag(page: Page, from: Pt, to: Pt, steps = 12) {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: from.x, y: from.y }] });
+  for (let i = 1; i <= steps; i++) {
+    const x = from.x + ((to.x - from.x) * i) / steps;
+    const y = from.y + ((to.y - from.y) * i) / steps;
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y }] });
+    await page.waitForTimeout(16);
+  }
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await cdp.detach();
+}
+
+// scrollLog is the fake host's record: each scroll's lines and the position
+// after it, and the cancels.
+function scrollLog(file: string) {
+  const lines = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean) : [];
+  const scrolls = lines.filter((l) => !l.endsWith(' cancel')).map((l) => {
+    const [pane, n, pos] = l.split(' ');
+    return { pane, lines: Number(n), pos: Number(pos.slice('pos='.length)) };
+  });
+  return { scrolls, cancels: lines.filter((l) => l.endsWith(' cancel')) };
+}
+
+test.describe('drag-to-scroll on a phone (412×915, touch)', () => {
+  test('a vertical drag scrolls tmux history through the host’s copy-mode, a sideways one still pans, and an older host has no gesture', async ({ page }) => {
+    await stopMirror();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'muster-e2e-scroll-'));
+    const scrollFile = path.join(dir, 'scrolls');
+    // 200 columns: wider than the phone, so #term-scroll has something to pan
+    // sideways. 20 rows fit its height, so a vertical drag is never the area's.
+    mirrorProc = startMirror(true, undefined, { MUSTER_MIRROR_E2E_SCROLL_FILE: scrollFile, MUSTER_MIRROR_E2E_WINDOW: '200x20' });
+    const posts: number[] = [];
+    page.on('response', (r) => {
+      if (new URL(r.url()).pathname === '/mirror/terminal/scroll') posts.push(r.status());
+    });
+    try {
+      await login(page);
+      await waitForCards(page, true);
+      await page.goto(origin + termPath('scratch'));
+      await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch mode=ro');
+      const term = page.locator('#term');
+      await expect(term, 'the gesture is wired for a host that can scroll').toHaveAttribute('data-scroll-on', '1');
+      await expect(term, 'fixture: the far side is wider than the phone').toHaveAttribute('data-overflow', '1');
+      const box = (await page.locator('#term-scroll').boundingBox())!;
+      const mid = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+      const left0 = await page.locator('#term-scroll').evaluate((el) => el.scrollLeft);
+
+      // Finger DOWN: back into history (tmux scroll-up), in whole lines.
+      await touchDrag(page, { x: mid.x, y: mid.y - 120 }, { x: mid.x, y: mid.y + 120 });
+      await expect.poll(() => scrollLog(scrollFile).scrolls.reduce((a, s) => a + s.lines, 0), { message: `a drag down scrolled back (muster-mirror log:\n${mirrorLog})` }).toBeGreaterThan(5);
+      const down = scrollLog(scrollFile).scrolls;
+      expect(down.every((s) => s.pane === '%e2e-scratch' && s.lines > 0), `every scroll was back, into scratch's pane: ${JSON.stringify(down)}`).toBe(true);
+      const back = down[down.length - 1].pos;
+      // The page's own count agrees with the host's: nothing dropped.
+      await expect(term).toHaveAttribute('data-scroll-sent', String(back));
+      expect(posts.every((s) => s === 204), `every scroll answered 204: ${posts}`).toBe(true);
+      expect(await page.locator('#term-scroll').evaluate((el) => el.scrollLeft), 'a vertical drag did not pan sideways').toBe(left0);
+      // Live keys stayed off and nothing was typed into the session.
+      await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
+      await expect(screen(page)).not.toContainText('in=');
+
+      // Finger UP past where it started: forward again, out of copy-mode at
+      // the bottom (the fake's -e).
+      await touchDrag(page, { x: mid.x, y: mid.y + 150 }, { x: mid.x, y: mid.y - 150 });
+      await expect.poll(() => { const s = scrollLog(scrollFile).scrolls; return s[s.length - 1].pos; }, { message: 'a drag up scrolled back to the bottom' }).toBe(0);
+      expect(scrollLog(scrollFile).scrolls.slice(down.length).every((s) => s.lines < 0), 'the drag up only scrolled forward').toBe(true);
+
+      // SIDEWAYS: the scroll area pans as it always did, and no scroll is sent.
+      // Every scroll the host recorded has had its answer (a late one would
+      // otherwise land in the sideways count below).
+      await expect.poll(() => posts.length, { message: 'every scroll answered' }).toBe(scrollLog(scrollFile).scrolls.length);
+      const before = scrollLog(scrollFile).scrolls.length;
+      const sent = posts.length;
+      await touchDrag(page, { x: mid.x + 120, y: mid.y }, { x: mid.x - 120, y: mid.y + 40 });
+      await expect.poll(() => page.locator('#term-scroll').evaluate((el) => el.scrollLeft), { message: 'a sideways drag pans #term-scroll' }).toBeGreaterThan(left0 + 40);
+      await page.waitForTimeout(300);
+      expect(scrollLog(scrollFile).scrolls.length, 'a sideways drag scrolled no history').toBe(before);
+      expect(posts.length, 'a sideways drag posted nothing').toBe(sent);
+
+      // An OLDER muster-mirror: no gesture, no note, and the area still pans.
+      await stopMirror();
+      mirrorProc = startMirror(true, undefined, { MUSTER_MIRROR_E2E_WINDOW: '200x20' });
+      await waitForCards(page, true);
+      await page.goto(origin + termPath('scratch'));
+      await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch mode=ro');
+      await expect(term).not.toHaveAttribute('data-scroll', /.*/);
+      await expect(term).not.toHaveAttribute('data-scroll-on', /.*/);
+      const postsBefore = posts.length;
+      const l1 = await page.locator('#term-scroll').evaluate((el) => el.scrollLeft);
+      await touchDrag(page, { x: mid.x, y: mid.y - 120 }, { x: mid.x, y: mid.y + 120 });
+      await touchDrag(page, { x: mid.x + 120, y: mid.y }, { x: mid.x - 120, y: mid.y + 40 });
+      await expect.poll(() => page.locator('#term-scroll').evaluate((el) => el.scrollLeft), { message: 'an older host’s page still pans sideways' }).toBeGreaterThan(l1 + 40);
+      await page.waitForTimeout(300);
+      expect(posts.length, 'an older host’s page posted no scroll').toBe(postsBefore);
+      expect(await readOnlyShown(page), 'and no note about it').toEqual([]);
+      await noHorizontalScroll(page);
+    } finally {
+      await stopMirror();
+      fs.rmSync(dir, { recursive: true, force: true });
+      mirrorProc = startMirror(false);
+    }
+  });
+});
+
+test.describe('drag-to-scroll on a desktop (1280×900, mouse)', () => {
+  test.use({ viewport: { width: 1280, height: 900 }, hasTouch: false, isMobile: false });
+
+  test('the mouse wheel scrolls tmux history the same way', async ({ page }) => {
+    await stopMirror();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'muster-e2e-wheel-'));
+    const scrollFile = path.join(dir, 'scrolls');
+    mirrorProc = startMirror(true, undefined, { MUSTER_MIRROR_E2E_SCROLL_FILE: scrollFile });
+    try {
+      await login(page);
+      await waitForCards(page, true);
+      await page.goto(origin + termPath('main'));
+      await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=ro');
+      await expect(page.locator('#term')).toHaveAttribute('data-scroll-on', '1');
+      const box = (await page.locator('#term-scroll').boundingBox())!;
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      // Wheel UP is back.
+      for (let i = 0; i < 4; i++) await page.mouse.wheel(0, -120);
+      await expect.poll(() => scrollLog(scrollFile).scrolls.reduce((a, s) => a + s.lines, 0), { message: 'the wheel scrolled back' }).toBeGreaterThan(3);
+      expect(scrollLog(scrollFile).scrolls.every((s) => s.pane === '%e2e-main' && s.lines > 0)).toBe(true);
+      // Wheel DOWN, further than it went up: back at the bottom.
+      for (let i = 0; i < 8; i++) await page.mouse.wheel(0, 120);
+      await expect.poll(() => { const s = scrollLog(scrollFile).scrolls; return s[s.length - 1].pos; }, { message: 'the wheel scrolled back to the bottom' }).toBe(0);
+    } finally {
+      await stopMirror();
+      fs.rmSync(dir, { recursive: true, force: true });
+      mirrorProc = startMirror(false);
+    }
+  });
+});

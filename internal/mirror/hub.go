@@ -104,6 +104,10 @@ type HostView struct {
 	// pane whatever runs there (Msg.PanePaste). False for an older muster-mirror
 	// and for an offline host.
 	PanePaste bool
+	// PaneScroll: the host advertised that it scrolls a window's pane through
+	// its history in copy-mode (Msg.PaneScroll). False for an older
+	// muster-mirror and for an offline host.
+	PaneScroll bool
 }
 
 // Hub is the set of connected hosts, their session lists and their live
@@ -202,6 +206,9 @@ type hostConn struct {
 	// panePaste: the host advertised Msg.PanePaste (and speaks v2, where paste
 	// exists at all).
 	panePaste bool
+	// paneScroll: the host advertised Msg.PaneScroll (and speaks v2, and is
+	// -interactive).
+	paneScroll bool
 	// version is the tunnel version this connection speaks (its hello's).
 	version int
 
@@ -216,7 +223,10 @@ type hostConn struct {
 	streams  map[uint32]*stream
 	watches  map[uint32]*watch
 	pastes   map[uint32]chan error
-	next     uint32
+	// scrolls are the scroll requests waiting for the host's scrolled, by id
+	// (the same id space as streams and pastes).
+	scrolls map[uint32]chan error
+	next    uint32
 }
 
 type stream struct {
@@ -245,7 +255,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		}
 		hc.mu.Lock()
 		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
-			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste})
+			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll})
 		hc.mu.Unlock()
 	}
 	now := h.now()
@@ -422,11 +432,14 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 
 	key := hostKey{owner, host}
 	hc := &hostConn{key: key, ws: ws, ctx: ctx, cancel: cancel, interactive: hello.Interactive, version: hello.Version,
-		streams: map[uint32]*stream{}, watches: map[uint32]*watch{}, pastes: map[uint32]chan error{}}
+		streams: map[uint32]*stream{}, watches: map[uint32]*watch{}, pastes: map[uint32]chan error{}, scrolls: map[uint32]chan error{}}
 	hc.sessions, hc.windows, hc.claude, hc.labels, hc.activity = hc.list(hello, h.now().Unix())
 	if hc.version >= 2 {
 		// A read-only host cannot be pasted into whatever it claims.
 		hc.panePaste = hello.PanePaste && hello.Interactive
+		// Nor scrolled: copy-mode is a change to the pane its operator sees,
+		// which a read-only host did not opt into.
+		hc.paneScroll = hello.PaneScroll && hello.Interactive
 	}
 	h.mu.Lock()
 	old := h.hosts[key]
@@ -526,6 +539,10 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				if hc.version >= 2 {
 					hc.pasted(m.ID, m.Error)
 				}
+			case TypeScrolled:
+				if hc.version >= 2 {
+					hc.scrolled(m.ID, m.Error)
+				}
 			case TypeClosed:
 				var why error
 				if m.Error != "" {
@@ -574,6 +591,10 @@ func (h *Hub) drop(hc *hostConn) {
 	for id, ch := range hc.pastes {
 		ch <- ErrHostDisconnected
 		delete(hc.pastes, id)
+	}
+	for id, ch := range hc.scrolls {
+		ch <- ErrHostDisconnected
+		delete(hc.scrolls, id)
 	}
 	hc.mu.Unlock()
 	if current {

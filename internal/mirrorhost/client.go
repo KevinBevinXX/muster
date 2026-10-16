@@ -79,6 +79,10 @@ type Config struct {
 	// the token travels in the Authorization header of every connect.
 	AllowHTTP bool
 	Logger    *log.Logger
+	// ScrollIdle is how long a pane this host put in copy-mode for a scroll
+	// stays there with no further scroll before it is cancelled (default
+	// DefaultScrollIdle). A test shortens it.
+	ScrollIdle time.Duration
 }
 
 // ErrUnauthorized: muster refused the token (unknown, revoked, or not a mirror
@@ -217,6 +221,9 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	defer cancel()
 	conn := &hostSide{c: c, ws: ws, ctx: ctx, version: version, streams: map[uint32]*hostStream{},
 		listed: map[string]bool{}, listedWindows: map[windowKey]bool{}, watches: map[uint32]context.CancelFunc{}}
+	if sb, ok := ScrollOf(c.cfg.Backend); ok {
+		conn.scroller = newScroller(sb, c.cfg.ScrollIdle, c.log)
+	}
 	defer conn.closeAll()
 
 	first, ok := conn.read()
@@ -227,6 +234,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	conn.setListed(first)
 	hello := first.msg(mirror.TypeHello)
 	hello.Version, hello.Host, hello.Interactive, hello.PanePaste = version, c.cfg.Host, c.cfg.Interactive, conn.panePaste()
+	hello.PaneScroll = conn.paneScroll()
 	if err := conn.send(hello); err != nil {
 		return err
 	}
@@ -290,6 +298,10 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 				if conn.version >= 2 {
 					go conn.paste(m)
 				}
+			case mirror.TypeScroll:
+				if conn.version >= 2 {
+					go conn.scroll(m)
+				}
 			}
 		}
 	}
@@ -339,6 +351,9 @@ type hostSide struct {
 	activityErr string
 	// windowsErr is labelErr for a per-window host's one read.
 	windowsErr string
+	// scroller is this connection's copy-mode scrolls; nil when the backend
+	// cannot scroll.
+	scroller *scroller
 }
 
 // windowKey addresses one window: its session and its tmux window id.
@@ -654,6 +669,9 @@ func (h *hostSide) closeAll() {
 	h.mu.Unlock()
 	for _, t := range all {
 		_ = t.Close()
+	}
+	if h.scroller != nil {
+		h.scroller.closeAll()
 	}
 }
 

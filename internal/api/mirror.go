@@ -61,6 +61,10 @@ func (s *Server) registerMirrorRoutes(mux Mux) {
 	// pane (mirror_view.go's mirrorSend — the rendered view's send, with the
 	// other target).
 	mux.HandleFunc("POST /mirror/terminal/send", s.requireOperatorWrite(s.handleMirrorTerminalSend))
+	// Drag-to-scroll: the window's pane through its tmux history, in copy-mode
+	// (mirror_scroll.go). The same tier as the page, same-origin like every
+	// write, and NO step-up — see the handler for why.
+	mux.HandleFunc("POST "+ui.MirrorTerminalScrollPath, s.requireOperatorWrite(s.handleMirrorTerminalScroll))
 	// "Confirm it's you" (stepup.go): the fresh sign-in an INTERACTIVE attach or
 	// a send needs — the password again, or a passkey. Registered whether or
 	// not the plugin is on — they are auth routes, and their consumers today
@@ -143,7 +147,7 @@ func (s *Server) mirrorEntry(r *http.Request, host, session, window string) (h m
 	e, listed = h.Find(session, window)
 	if !listed {
 		e = mirror.SessionView{Host: h.Host, Session: session, Window: window, Online: h.Online, Interactive: h.Interactive,
-			Rendered: h.Rendered, PanePaste: h.PanePaste}
+			Rendered: h.Rendered, PanePaste: h.PanePaste, PaneScroll: h.PaneScroll}
 	}
 	return h, mirror.Qualified(hosts, e), listed, listed && window == "" && e.Window != "", true
 }
@@ -223,6 +227,11 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 	}
 	if e.HasRenderedView() {
 		v.RenderedHref = mirrorRef(e).ViewPath()
+	}
+	// Drag-to-scroll only where the host can do it: an older muster-mirror (or
+	// a read-only host) gets a page with no gesture at all, not one that fails.
+	if e.CanScroll() {
+		v.ScrollForm = mirrorRef(e).ScrollForm()
 	}
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

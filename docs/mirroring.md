@@ -182,6 +182,34 @@ read-only viewer can see. It does not limit an attached interactive client.
 With `-interactive`, both views get a message box. Typing into one requires a
 recent sign-in. See [sending-and-step-up.md](sending-and-step-up.md).
 
+## Scrolling history
+
+The Terminal view's own tmux client draws only the visible screen, so the
+browser holds no history. On a host that can, **a vertical drag on the terminal
+scrolls the pane's tmux history** (on a desktop, so does the mouse wheel). A
+sideways drag still pans a far side wider than the page.
+
+The host does it with tmux **copy-mode** on the window's active pane. It runs
+`copy-mode -e` if the pane is not already in copy-mode, then
+`send-keys -X -N <n> scroll-up` or `scroll-down`. The scrolled view arrives on
+the page like any other output.
+
+- **The pane leaves copy-mode on its own.** `-e` exits when you scroll back to
+  the bottom. If nobody scrolls that pane for 30 seconds, the host sends
+  `-X cancel`. A disconnect cancels at once. Copy-mode the operator entered
+  themselves is scrolled but never cancelled.
+- **No step-up is asked for.** While a pane is in copy-mode, tmux sends input to
+  copy-mode, not to the program. Scrolling sends nothing but copy-mode's own
+  commands, so nothing reaches the program. The route still requires a signed-in
+  session, a same-origin request and an `-interactive` host that advertised it.
+  Each request moves at most 200 lines, and each user gets 40 requests a second.
+- ⚠ **Copy-mode is the pane's, not the viewer's.** Everyone attached to that pane
+  sees it scrolled. Someone typing at the pane during copy-mode types into
+  copy-mode (its key table), not into the program, until it exits.
+
+A read-only host, or a `muster-mirror` that predates scrolling, advertises
+nothing. Its page wires no gesture, and touch pans the terminal as before.
+
 ## Tokens, revocation, rate limits
 
 - muster re-checks each host's token every 30 seconds. A **revoked** token ends
@@ -200,7 +228,8 @@ view. A v2 `muster-mirror` falls back to v1 against an older muster, so either
 side can be upgraded first.
 
 Newer capabilities are announced in the host's hello, without a version bump:
-pasting into non-Claude panes, and per-window registration. An older host is
+pasting into non-Claude panes, per-window registration, and scrolling a pane's
+history. An older host is
 never asked for them, and an older muster never asks. A host that registers
 windows still sends a per-session list too, so an older muster shows one card per
 session as before. An older, per-session host is capped at 64 sessions.
