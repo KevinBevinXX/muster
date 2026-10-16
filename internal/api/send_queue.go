@@ -532,8 +532,8 @@ func atOrBefore(at time.Time, cut *time.Time) bool {
 func (s *Server) signedOutEverywhere(ctx context.Context, uid int64) {
 	if s.gt != nil && s.gt.Users != nil {
 		if _, err := s.gt.Users.RecordSignOutEverywhere(ctx, uid); err != nil {
-			s.logger.Printf("logout: record user %d's sign-out everywhere: %v (their queued messages are cancelled, "+
-				"but one queued by a request still in flight may be sent)", uid, err)
+			s.logger.Printf("logout: record user %d's sign-out everywhere: %v (only the cancel below now stops "+
+				"their queued messages; one queued by a request still in flight is not stopped)", uid, err)
 		}
 	}
 	s.cancelQueuedFor(ctx, uid, SendQueueCancelSignOut)
@@ -547,8 +547,10 @@ func (s *Server) cancelQueuedFor(ctx context.Context, uid int64, detail string) 
 	}
 	n, err := s.ext.SendQueue.CancelOwner(ctx, uid, s.sendQueueNow(), detail)
 	if err != nil {
-		// Not a hole: the delivery re-checks the account (sendQueueOwnerRefusal).
-		s.logger.Printf("sendqueue: cancel user %d's queued messages: %v (the delivery still refuses them)", uid, err)
+		// The cancel is not what stops them: the delivery re-checks the
+		// account (sendQueueOwnerRefusal) against the recorded disable or
+		// sign-out.
+		s.logger.Printf("sendqueue: cancel user %d's queued messages: %v (left queued; the delivery's account check refuses them)", uid, err)
 		return
 	}
 	if n > 0 {
