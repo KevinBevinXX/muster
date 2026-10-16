@@ -674,9 +674,11 @@ func TestReadPathsRefuseAWorkloadTheyDidNotCreate(t *testing.T) {
 			assertRefusal(t, "Endpoint of a foreign workload", err, true)
 		})
 
-		t.Run("TailLogs", func(t *testing.T) {
-			_, err := d.TailLogs(ctx, ref, 10)
-			assertRefusal(t, "TailLogs of a foreign workload — its output is not muster's to serve",
+		t.Run("StreamLogs", func(t *testing.T) {
+			err := d.StreamLogs(ctx, ref, func(string) {
+				t.Error("StreamLogs emitted a line of a foreign workload's output")
+			})
+			assertRefusal(t, "StreamLogs of a foreign workload — its output is not muster's to serve",
 				err, true)
 		})
 
@@ -705,8 +707,8 @@ func TestReadPathsRefuseAWorkloadTheyDidNotCreate(t *testing.T) {
 			if _, err := d.Endpoint(ctx, spec.Ref); err != nil {
 				t.Errorf("control: Endpoint of muster's own instance: %v", err)
 			}
-			if _, err := d.TailLogs(ctx, spec.Ref, 10); err != nil {
-				t.Errorf("control: TailLogs of muster's own instance: %v", err)
+			if err := d.StreamLogs(ctx, spec.Ref, func(string) {}); err != nil {
+				t.Errorf("control: StreamLogs of muster's own instance: %v", err)
 			}
 		})
 	})

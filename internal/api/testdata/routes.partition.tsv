@@ -85,8 +85,12 @@
 #
 # counts: muster=69 router=63 shared=14 total=146
 #
-#   muster + router + shared = 70 + 63 + 14 = 147
-#   muster's projected post-carve registration count = 70 + 14 = 84
+#   muster + router + shared = 69 + 63 + 14 = 146
+#   muster's projected post-carve registration count = 69 + 14 = 83
+#
+#   ⚠ 70 / 147 / 84 UNTIL THE CARDS LOST THEIR PREVIEW. GET
+#   /ui/agents/{id}/recent served only the cards' lazy recent-log slot and was
+#   deleted with it (operator decision: no previews on cards).
 #
 #   ⚠ 67 / 66 / 81 UNTIL muster GREW ITS OWN WEB PUSH. The three /api/push/*
 #   rows moved router → muster then: muster holds its own VAPID key and

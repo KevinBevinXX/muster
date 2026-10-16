@@ -793,11 +793,6 @@ func (a *Adapter) Instances(ctx context.Context) ([]provision.Instance, error) {
 	return a.driver.List(ctx)
 }
 
-// TailLogs returns the last `lines` lines of the agent's instance.
-func (a *Adapter) TailLogs(ctx context.Context, ag agents.Agent, lines int64) (string, error) {
-	return a.driver.TailLogs(ctx, agents.RefOf(ag), lines)
-}
-
 // StreamLogs follows the agent's instance output, calling emit per line.
 func (a *Adapter) StreamLogs(ctx context.Context, ag agents.Agent, emit func(string)) error {
 	return a.driver.StreamLogs(ctx, agents.RefOf(ag), emit)

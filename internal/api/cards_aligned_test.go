@@ -1,8 +1,6 @@
 package api
 
 import (
-	"net/http"
-	"net/http/httptest"
 	"regexp"
 	"strconv"
 	"strings"
@@ -50,32 +48,6 @@ func TestAMirroredCardWithNoActivityPrintsNone(t *testing.T) {
 	}
 	if !strings.Contains(card, `data-mirror-host=""`) {
 		t.Errorf("instrument check FAILED: the card has no footer at all:\n%s", card)
-	}
-}
-
-// TestTheCardPreviewRouteIsGone: the cards' lazy chat preview was its only
-// consumer, and it went with it (operator decision: no previews on cards).
-func TestTheCardPreviewRouteIsGone(t *testing.T) {
-	s, h := pinServer(t, nil, nil)
-	get := func(path string) int {
-		req := httptest.NewRequest(http.MethodGet, path, nil)
-		admit(s, req)
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
-		return rec.Code
-	}
-	if got := get("/ui/agents/5/recent"); got != http.StatusNotFound {
-		t.Errorf("GET /ui/agents/5/recent = %d, want 404", got)
-	}
-	// Control: a registered sibling route on the same id is NOT a 404 (this
-	// fixture's store answers it with a 500, which is beside the point), so the
-	// 404 above is the route's absence and not a refused session.
-	if got := get("/ui/agents/5/status"); got == http.StatusNotFound {
-		t.Errorf("control: GET /ui/agents/5/status = 404 too — the instrument cannot see a registered route")
-	}
-	body := getOwed(t, s, h, "/ui/agents").Body.String()
-	if strings.Contains(body, "/recent") || strings.Contains(body, "agent-recent-") {
-		t.Errorf("the list still wires a card preview")
 	}
 }
 

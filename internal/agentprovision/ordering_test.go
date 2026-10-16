@@ -277,7 +277,7 @@ func TestATimedOutDestroyStillDELETESTheRow(t *testing.T) {
 //   - Dispatch(kickoff=false) — makes NO driver call, so this test's own `di < 0`
 //     positive control would fire. Its guard is
 //     TestDispatchWithoutAKickoffCreatesNothing.
-//   - Instances, TailLogs, StreamLogs — touch no store, so there is no order.
+//   - Instances, StreamLogs — touch no store, so there is no order.
 //   - ReapplyProfiles — DOES write before its driver call (ensureHooksToken, then
 //     driver.Update), but writes no STATUS, so the `si < 0` control would fire. Its
 //     guard is TestReapplyProfilesMintsAMissingToken. ⚠ The write-then-Update order

@@ -85,55 +85,18 @@ func TestNoopRecordsRatherThanDiscards(t *testing.T) {
 		t.Fatalf("Scale: %v", err)
 	}
 
-	logs, err := n.TailLogs(ctx, spec.Ref, 0)
-	if err != nil {
-		t.Fatalf("TailLogs: %v", err)
-	}
-	// The whole normalised line, not a keyword: a guard on a WORD is walkable
-	// by rewording.
-	wantCreate := "2001-02-03T04:05:06Z created recorder replicas=1 image=\"ghcr.io/muster-example/agent:1\""
-	wantScale := "2001-02-03T04:05:06Z scaled recorder to 0"
-	for _, want := range []string{wantCreate, wantScale} {
-		if !strings.Contains(logs, want) {
-			t.Errorf("recorded log missing line\n  want: %s\n  got:\n%s", want, logs)
-		}
-	}
-
 	var streamed []string
 	if err := n.StreamLogs(ctx, spec.Ref, func(l string) { streamed = append(streamed, l) }); err != nil {
 		t.Fatalf("StreamLogs: %v", err)
 	}
-	if len(streamed) != 2 {
-		t.Fatalf("StreamLogs emitted %d lines, want 2: %v", len(streamed), streamed)
+	// The whole normalised line, not a keyword: a guard on a WORD is walkable
+	// by rewording.
+	want := []string{
+		"2001-02-03T04:05:06Z created recorder replicas=1 image=\"ghcr.io/muster-example/agent:1\"",
+		"2001-02-03T04:05:06Z scaled recorder to 0",
 	}
-}
-
-// TestNoopTailLogsHonoursTheLineLimit picks a limit that is neither the total
-// nor a divisor of it, so an implementation that ignored it, or that returned
-// the FIRST n lines instead of the last, both fail.
-func TestNoopTailLogsHonoursTheLineLimit(t *testing.T) {
-	n := provision.MustNewNoop()
-	ctx := context.Background()
-	spec := provisiontest.MinimalSpec("tailer")
-	if err := n.Create(ctx, spec); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	for i := 0; i < 4; i++ {
-		if err := n.Scale(ctx, spec.Ref, i%2); err != nil {
-			t.Fatalf("Scale: %v", err)
-		}
-	}
-	// 5 lines recorded (1 create + 4 scales); ask for 3.
-	out, err := n.TailLogs(ctx, spec.Ref, 3)
-	if err != nil {
-		t.Fatalf("TailLogs: %v", err)
-	}
-	lines := strings.Split(out, "\n")
-	if len(lines) != 3 {
-		t.Fatalf("TailLogs(3) returned %d lines: %q", len(lines), out)
-	}
-	if strings.Contains(out, "created") {
-		t.Fatalf("TailLogs(3) returned the FIRST 3 lines, not the last 3: %q", out)
+	if strings.Join(streamed, "\n") != strings.Join(want, "\n") {
+		t.Errorf("StreamLogs emitted\n%s\nwant\n%s", strings.Join(streamed, "\n"), strings.Join(want, "\n"))
 	}
 }
 

@@ -294,9 +294,6 @@ func (stubProvisioner) Destroy(context.Context, int64) error        { return nil
 func (stubProvisioner) Instances(context.Context) ([]provision.Instance, error) {
 	return nil, nil
 }
-func (stubProvisioner) TailLogs(context.Context, agents.Agent, int64) (string, error) {
-	return "", nil
-}
 func (stubProvisioner) StreamLogs(context.Context, agents.Agent, func(string)) error { return nil }
 
 // AttachTerminal REFUSES, as the interface requires of anything that attaches

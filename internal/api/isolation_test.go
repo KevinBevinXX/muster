@@ -1906,9 +1906,6 @@ func (p *isoProvisioner) Destroy(ctx context.Context, id int64) error { return p
 func (p *isoProvisioner) Instances(context.Context) ([]provision.Instance, error) {
 	return nil, nil
 }
-func (p *isoProvisioner) TailLogs(_ context.Context, a agents.Agent, _ int64) (string, error) {
-	return "logs of " + a.Name, nil
-}
 func (p *isoProvisioner) StreamLogs(_ context.Context, a agents.Agent, emit func(string)) error {
 	emit("log of " + a.Name)
 	return nil

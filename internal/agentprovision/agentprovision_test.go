@@ -622,7 +622,7 @@ func TestDispatchCreatesTheInstanceAndMintsTheAgentsOwnToken(t *testing.T) {
 	// DRAFT OF THIS COMMENT CLAIMED OTHERWISE. Measured by mutation: changing
 	// agents.RefOf to key on the namespace leaves this test GREEN, because Create's ref
 	// comes from the spec the builder produced and agents.RefOf is used only by
-	// Scale/Destroy/TailLogs/StreamLogs. The claim it used to make is checked by
+	// Scale/Destroy/StreamLogs. The claim it used to make is checked by
 	// TestTheDriverReferenceIsTheAgentsNameNotItsNamespace instead.
 	if insts[0].Ref.Name != fixtureAgentName {
 		t.Errorf("instance Ref.Name = %q, want %q (the agent's slug, NOT its namespace %q)",
@@ -918,10 +918,6 @@ func TestTheDriverReferenceIsTheAgentsNameNotItsNamespace(t *testing.T) {
 	}{
 		{"Stop", func(a *Adapter) error { return a.Stop(context.Background(), fixtureAgentID) }},
 		{"Destroy", func(a *Adapter) error { return a.Destroy(context.Background(), fixtureAgentID) }},
-		{"TailLogs", func(a *Adapter) error {
-			_, err := a.TailLogs(context.Background(), fixtureAgent(), 4)
-			return err
-		}},
 		{"StreamLogs", func(a *Adapter) error {
 			return a.StreamLogs(context.Background(), fixtureAgent(), func(string) {})
 		}},

@@ -469,7 +469,6 @@ func TestTheWriteHelperLedgerIsComplete(t *testing.T) {
 			"List":                2,
 			"Get":                 1,
 			"podFor":              1,
-			"TailLogs":            1,
 			"StreamLogs":          1,
 		},
 		// Every write that CAN collide returns through applyFailed, which is

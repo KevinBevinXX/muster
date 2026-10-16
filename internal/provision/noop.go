@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 )
@@ -352,27 +351,6 @@ func (n *Noop) Endpoint(ctx context.Context, ref Ref) (Endpoint, error) {
 		inst.spec.PortNumber(DefaultPortName),
 		"http",
 	)
-}
-
-// TailLogs implements Provisioner, returning the recorded lifecycle log.
-func (n *Noop) TailLogs(ctx context.Context, ref Ref, lines int64) (string, error) {
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	if n.blind {
-		return "", fmt.Errorf("%w: noop driver is blind", ErrBlind)
-	}
-	inst, ok := n.instances[ref.Name]
-	if !ok {
-		return "", fmt.Errorf("%w: %q", ErrNotFound, ref.Name)
-	}
-	logs := inst.logs
-	if lines > 0 && int64(len(logs)) > lines {
-		logs = logs[int64(len(logs))-lines:]
-	}
-	return strings.Join(logs, "\n"), nil
 }
 
 // StreamLogs implements Provisioner. The recorded log is finite, so the stream

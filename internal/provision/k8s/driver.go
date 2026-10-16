@@ -1359,40 +1359,11 @@ func (d *Driver) podFor(ctx context.Context, ref provision.Ref) (string, string,
 	return ns, pod.Name, nil
 }
 
-// TailLogs implements provision.Provisioner.
-//
-// An instance with no pod yet returns "" and no error: "there is nothing to
-// read yet" is not a failure. An instance that does not exist is ErrNotFound.
-func (d *Driver) TailLogs(ctx context.Context, ref provision.Ref, lines int64) (string, error) {
-	ns, pod, err := d.podFor(ctx, ref)
-	if err != nil {
-		return "", err
-	}
-	if pod == "" {
-		return "", nil
-	}
-	opts := &corev1.PodLogOptions{
-		// 🔴 THE CONTAINER IS NAMED. The project this came from never passed
-		// one, so every log read silently returned whichever container happened
-		// to be first — which was fine until the day it was not.
-		Container: containerName,
-	}
-	if lines > 0 {
-		opts.TailLines = &lines
-	}
-	rc, err := d.cfg.Client.CoreV1().Pods(ns).GetLogs(pod, opts).Stream(ctx)
-	if err != nil {
-		return "", blind("stream logs for "+ref.Name, err)
-	}
-	defer rc.Close()
-	b, err := io.ReadAll(rc)
-	if err != nil {
-		return "", fmt.Errorf("read logs for %s: %w", ref.Name, err)
-	}
-	return strings.TrimRight(string(b), "\n"), nil
-}
-
 // StreamLogs implements provision.Provisioner.
+//
+// An instance with no pod yet streams nothing and returns no error: "there is
+// nothing to read yet" is not a failure. An instance that does not exist is
+// ErrNotFound.
 func (d *Driver) StreamLogs(ctx context.Context, ref provision.Ref, emit func(string)) error {
 	ns, pod, err := d.podFor(ctx, ref)
 	if err != nil {
@@ -1403,6 +1374,9 @@ func (d *Driver) StreamLogs(ctx context.Context, ref provision.Ref, emit func(st
 	}
 	tail := int64(100)
 	rc, err := d.cfg.Client.CoreV1().Pods(ns).GetLogs(pod, &corev1.PodLogOptions{
+		// 🔴 THE CONTAINER IS NAMED. The project this came from never passed
+		// one, so every log read silently returned whichever container happened
+		// to be first — which was fine until the day it was not.
 		Container: containerName,
 		Follow:    true,
 		TailLines: &tail,
