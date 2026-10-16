@@ -63,19 +63,19 @@ func TestUpsertGetAndRecordError(t *testing.T) {
 		t.Fatalf("before: %v %v", ok, err)
 	}
 	f, err := s.Upsert(as(2), sub, Write{Title: "Ship it", Description: "Release prep.", Source: SourceSummarizer,
-		Fingerprint: Fingerprint("tail"), Model: "scaledown/summarize"})
+		Fingerprint: Fingerprint("tail")})
 	if err != nil || f.Title != "Ship it" || f.Owner != 2 {
 		t.Fatalf("upsert: %+v %v", f, err)
 	}
 	// A second write is an update of the same row, not a second row.
-	if _, err := s.Upsert(as(2), sub, Write{Title: "Ship it now", Source: SourceSelf}); err != nil {
+	if _, err := s.Upsert(as(2), sub, Write{Title: "Ship it now", Source: SourceSummarizer}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordError(as(2), sub, "focus: the summarizer answered 500"); err != nil {
+	if err := s.RecordError(as(2), sub, Reason(&HTTPError{Status: 500})); err != nil {
 		t.Fatal(err)
 	}
 	got, ok, err := s.Get(as(2), sub)
-	if err != nil || !ok || got.Title != "Ship it now" || got.Source != SourceSelf || got.LastError == "" || got.ErrorAt.IsZero() {
+	if err != nil || !ok || got.Title != "Ship it now" || got.Source != SourceSummarizer || got.LastError == "" || got.ErrorAt.IsZero() {
 		t.Fatalf("after error: %+v %v %v", got, ok, err)
 	}
 	all, _ := s.List(as(2))
@@ -91,7 +91,7 @@ func TestUpsertGetAndRecordError(t *testing.T) {
 		t.Fatalf("error-only row: %+v %v", got, ok)
 	}
 	// An empty title is refused before the database.
-	if _, err := s.Upsert(as(2), m, Write{Title: "  ", Source: SourceSelf}); !errors.Is(err, ErrEmpty) {
+	if _, err := s.Upsert(as(2), m, Write{Title: "  ", Source: SourceSummarizer}); !errors.Is(err, ErrEmpty) {
 		t.Fatalf("empty title: %v", err)
 	}
 }
@@ -102,7 +102,7 @@ func TestFocusIsPerOwner(t *testing.T) {
 	s, pool := pgStore(t)
 	a := mustAgent(t, pool, 2, "focus-own")
 	sub := AgentSubject(a.ID)
-	if _, err := s.Upsert(as(2), sub, Write{Title: "Mine", Source: SourceSelf}); err != nil {
+	if _, err := s.Upsert(as(2), sub, Write{Title: "Mine", Source: SourceSummarizer}); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, _ := s.Get(as(3), sub); ok {
@@ -111,7 +111,7 @@ func TestFocusIsPerOwner(t *testing.T) {
 	if hits, _ := s.Search(as(3), "mine", 10); len(hits) != 0 {
 		t.Fatalf("user 3 searches user 2's focus: %+v", hits)
 	}
-	if _, err := s.Upsert(as(3), sub, Write{Title: "Theirs", Source: SourceSelf}); err == nil {
+	if _, err := s.Upsert(as(3), sub, Write{Title: "Theirs", Source: SourceSummarizer}); err == nil {
 		t.Fatal("user 3 wrote a focus for user 2's agent")
 	}
 	if got, _, _ := s.Get(as(2), sub); got.Title != "Mine" {
@@ -135,7 +135,7 @@ func TestSearchRanksTheRightFocusFirst(t *testing.T) {
 		"mirror-billing":  {Title: "Stripe invoice reconciliation", Description: "Matching payouts against the ledger export.", Source: SourceSummarizer},
 		"mirror-kernel":   {Title: "Kernel upgrade on the GPU node", Description: "Draining workloads before the reboot.", Source: SourceSummarizer},
 		"mirror-docs":     {Title: "Docs pass on the mirroring page", Description: "Rewording the invoice example and the kernel note.", Source: SourceSummarizer},
-		"mirror-unrelate": {Title: "Lunch order", Description: "Sandwiches.", Source: SourceSelf},
+		"mirror-unrelate": {Title: "Lunch order", Description: "Sandwiches.", Source: SourceSummarizer},
 	}
 	for key, w := range fixtures {
 		if _, err := s.Upsert(as(2), MirrorSubject(key), w); err != nil {

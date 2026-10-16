@@ -73,9 +73,6 @@ func TestScaleDownHappyPathJSONStringContent(t *testing.T) {
 	if s.Title != "Wire session focus into the agent cards" || s.Description != "Adding a popover to each card. Tests are next." {
 		t.Fatalf("summary = %+v", s)
 	}
-	if s.Model != "scaledown/summarize" {
-		t.Errorf("model = %q", s.Model)
-	}
 	if c.auth != "Bearer owner-seven-fake" {
 		t.Errorf("auth = %q", c.auth)
 	}

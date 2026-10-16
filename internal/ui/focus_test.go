@@ -69,3 +69,42 @@ func TestFocusPopoverIDsAreUniquePerCard(t *testing.T) {
 		ids[id] = true
 	}
 }
+
+// TestAMissingOrStaleFocusSaysWhy: no focus but a recorded failure draws an
+// "unavailable" chip whose popover gives the reason; a focus whose latest
+// refresh failed keeps its text and adds the failure — on both card kinds.
+func TestAMissingOrStaleFocusSaysWhy(t *testing.T) {
+	at := time.Now().Add(-2 * time.Minute)
+	missing := &FocusView{Problem: "no OpenRouter key", ProblemAt: at}
+	stale := &FocusView{Title: "Porting the importer", UpdatedAt: at.Add(-time.Hour), Problem: "rate-limited", ProblemAt: at}
+	for name, c := range map[string]struct {
+		html string
+		want []string
+		not  []string
+	}{
+		"agent, missing": {renderString(t, agentCard(AgentCardView{ID: 7, Name: "otter", Status: "running", Focus: missing})),
+			[]string{"data-focus-stale", `aria-label="Focus unavailable: no OpenRouter key"`, ">unavailable</span>", "No focus: no OpenRouter key", "data-focus-problem"},
+			[]string{"data-focus-title", "data-focus-updated"}},
+		"mirror, missing": {renderString(t, mirrorCard(MirrorCardView{Host: "tower", Session: "work", Window: "@3", Claude: true, Online: true, Focus: missing})),
+			[]string{"data-focus-stale", "No focus: no OpenRouter key"}, []string{"data-focus-title"}},
+		"agent, stale": {renderString(t, agentCard(AgentCardView{ID: 7, Name: "otter", Status: "running", Focus: stale})),
+			[]string{"data-focus-stale", "Porting the importer", "Last refresh failed: rate-limited", "data-focus-updated"}, []string{"No focus:"}},
+		"mirror, stale": {renderString(t, mirrorCard(MirrorCardView{Host: "tower", Session: "work", Window: "@3", Claude: true, Online: true, Focus: stale})),
+			[]string{"data-focus-stale", "Last refresh failed: rate-limited"}, []string{"No focus:"}},
+	} {
+		for _, w := range c.want {
+			if !strings.Contains(c.html, w) {
+				t.Errorf("%s: missing %q", name, w)
+			}
+		}
+		for _, n := range c.not {
+			if strings.Contains(c.html, n) {
+				t.Errorf("%s: carries %q", name, n)
+			}
+		}
+	}
+	current := renderString(t, agentCard(AgentCardView{ID: 7, Name: "otter", Focus: &FocusView{Title: "ok", UpdatedAt: at}}))
+	if strings.Contains(current, "data-focus-stale") || strings.Contains(current, "data-focus-problem") {
+		t.Fatal("a current focus is drawn as stale")
+	}
+}

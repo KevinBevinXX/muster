@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/focus"
@@ -28,7 +29,7 @@ func (f *fakeFocusSummarizer) Summarize(_ context.Context, _ int64, tail string)
 	defer f.mu.Unlock()
 	f.calls++
 	f.tails = append(f.tails, tail)
-	return focus.Summary{Title: "Reconciling the Stripe invoices", Description: "Matching payouts to the ledger.", Model: "scaledown/summarize"}, nil
+	return focus.Summary{Title: "Reconciling the Stripe invoices", Description: "Matching payouts to the ledger."}, nil
 }
 
 // surfaces calls tool as agent a on each transport and returns each answer's
@@ -48,35 +49,13 @@ func (g *gatedFixture) surfaces(t *testing.T, a agents.Agent, token, tool, args 
 	return out
 }
 
-func TestFocusSetOnBothSurfacesWritesTheCallersOwnFocus(t *testing.T) {
-	g := newGatedFixture(t)
-	for surface, text := range g.surfaces(t, g.worker, g.workerTok, "focus_set",
-		`{"title":"Porting the CSV importer","description":"Half the columns map. Dates next."}`) {
-		var res struct{ Subject, Title string }
-		if err := json.Unmarshal([]byte(text), &res); err != nil || res.Subject != "agent:"+strconv.FormatInt(g.worker.ID, 10) ||
-			res.Title != "Porting the CSV importer" {
-			t.Fatalf("%s: %s", surface, text)
-		}
-	}
-	f, ok, err := g.focus.Get(g.asOwner, focus.AgentSubject(g.worker.ID))
-	if err != nil || !ok || f.Source != focus.SourceSelf || f.Description != "Half the columns map. Dates next." {
-		t.Fatalf("stored: %+v %v %v", f, ok, err)
-	}
-	// An empty title is refused on both, and changes nothing.
-	for surface, text := range g.surfaces(t, g.worker, g.workerTok, "focus_set", `{"title":"  "}`) {
-		if !isToolErr(text) {
-			t.Fatalf("%s: an empty title was accepted: %s", surface, text)
-		}
-	}
-}
-
 func TestAgentsListAndFocusSearchOnBothSurfaces(t *testing.T) {
 	g := newGatedFixture(t)
 	if _, err := g.focus.Upsert(g.asOwner, focus.AgentSubject(g.worker.ID), focus.Write{Title: "Kernel upgrade on the GPU node",
 		Description: "Draining workloads first.", Source: focus.SourceSummarizer}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.focus.Upsert(g.asOwner, focus.AgentSubject(g.chief.ID), focus.Write{Title: "Triage the inbox", Source: focus.SourceSelf}); err != nil {
+	if _, err := g.focus.Upsert(g.asOwner, focus.AgentSubject(g.chief.ID), focus.Write{Title: "Triage the inbox", Source: focus.SourceSummarizer}); err != nil {
 		t.Fatal(err)
 	}
 	workerID := "agent:" + strconv.FormatInt(g.worker.ID, 10)
@@ -167,6 +146,80 @@ func TestTheFocusChiefToolsRefuseAWorker(t *testing.T) {
 		if c := g.surfaces(t, g.chief, g.chiefTok, tool, `{"query":"x"}`); strings.Contains(c["gateway"], "chief agent only") ||
 			strings.HasPrefix(c["mcp"], "rpc-error") {
 			t.Errorf("the chief was refused %s: %v", tool, c)
+		}
+	}
+}
+
+// TestFocusRefreshRequiresASubject: there is no whole-owner form (the periodic
+// pass covers it); with no subject both surfaces refuse, and nothing runs.
+func TestFocusRefreshRequiresASubject(t *testing.T) {
+	g := newGatedFixture(t)
+	for _, args := range []string{`{}`, `{"subject":"  "}`} {
+		for surface, text := range g.surfaces(t, g.chief, g.chiefTok, "focus_refresh", args) {
+			if text != toolErr("subject is required: the session to refresh (agent:<id> or mirror:<claude session id>)") {
+				t.Errorf("%s %s: %s", surface, args, text)
+			}
+		}
+	}
+	if g.summ.calls != 0 {
+		t.Fatalf("a refresh with no subject called the summarizer %d time(s)", g.summ.calls)
+	}
+	for _, d := range g.srv.AgentToolDefsFor(g.asOwner, g.chief) {
+		if d.Name == "focus_refresh" {
+			if req, _ := d.Parameters["required"].([]string); len(req) != 1 || req[0] != "subject" {
+				t.Fatalf("focus_refresh's schema does not require subject: %v", d.Parameters)
+			}
+		}
+	}
+}
+
+// TestAgentsListSaysWhyAFocusIsMissingOrStale: a session whose only refresh
+// failed lists the reason and no focus; one whose refresh failed AFTER its
+// focus lists both; a current focus lists no problem — on both surfaces.
+func TestAgentsListSaysWhyAFocusIsMissingOrStale(t *testing.T) {
+	g := newGatedFixture(t)
+	worker, chief := focus.AgentSubject(g.worker.ID), focus.AgentSubject(g.chief.ID)
+	if err := g.focus.RecordError(g.asOwner, worker, focus.Reason(focus.ErrNoKey)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.focus.Upsert(g.asOwner, chief, focus.Write{Title: "Triage the inbox", Source: focus.SourceSummarizer}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	if err := g.focus.RecordError(g.asOwner, chief, focus.Reason(focus.ErrRateLimited)); err != nil {
+		t.Fatal(err)
+	}
+	for surface, text := range g.surfaces(t, g.chief, g.chiefTok, "agents_list", `{}`) {
+		var res struct {
+			Sessions []agentsListRow `json:"sessions"`
+		}
+		if err := json.Unmarshal([]byte(text), &res); err != nil {
+			t.Fatalf("%s: %s", surface, text)
+		}
+		got := map[string]agentsListRow{}
+		for _, r := range res.Sessions {
+			got[r.ID] = r
+		}
+		if r := got[worker.String()]; r.Focus != "" || r.FocusProblem != focus.ReasonNoKey {
+			t.Errorf("%s: missing focus row = %+v", surface, r)
+		}
+		if r := got[chief.String()]; r.Focus != "Triage the inbox" || r.FocusProblem != focus.ReasonRateLimited {
+			t.Errorf("%s: stale focus row = %+v", surface, r)
+		}
+	}
+	// A later success clears it.
+	if _, err := g.focus.Upsert(g.asOwner, chief, focus.Write{Title: "Triage the inbox", Source: focus.SourceSummarizer}); err != nil {
+		t.Fatal(err)
+	}
+	var after struct {
+		Sessions []agentsListRow `json:"sessions"`
+	}
+	if err := json.Unmarshal([]byte(g.srv.AgentToolDispatch(g.asOwner, g.chief)("agents_list", `{}`)), &after); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range after.Sessions {
+		if r.ID == chief.String() && (r.FocusProblem != "" || r.Focus != "Triage the inbox") {
+			t.Fatalf("after a success the row still lists a problem: %+v", r)
 		}
 	}
 }

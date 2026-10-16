@@ -2,11 +2,11 @@
 // sessions — a dispatched agent or a mirrored Claude Code window — a short title
 // and a one-to-three-sentence description of what it is working on now.
 //
-// Focus is written three ways (Source): by muster's own SERVER-SIDE refresh
-// (Refresher), which tails the session's transcript and asks a Summarizer; by
-// the session itself (the focus_set tool, SourceSelf); and, reserved in the
-// schema for an operator edit, SourceManual (no writer yet). The chief READS it
-// — focus_search, agents_list — and never spends a token computing it.
+// Focus has ONE writer: muster's own SERVER-SIDE refresh (Refresher), which
+// tails the session's transcript and asks a Summarizer (SourceSummarizer). The
+// chief READS it — focus_search, agents_list — and never spends a token
+// computing it. A refresh that fails keeps the focus and records WHY, as a short
+// non-secret reason (Reason) the card and agents_list show.
 //
 // 🔴 A MIRRORED SESSION IS KEYED BY ITS CLAUDE CODE SESSION ID, NOT ITS TMUX
 // WINDOW. tmux reissues window ids ("@12") on a server restart and an operator
@@ -41,8 +41,6 @@ type Source string
 
 const (
 	SourceSummarizer Source = "summarizer"
-	SourceSelf       Source = "self"
-	SourceManual     Source = "manual"
 )
 
 // The bounds of what is stored (migration 0020's CHECKs say the same).
@@ -130,9 +128,9 @@ type Focus struct {
 	Description string
 	Source      Source
 	Fingerprint string
-	Model       string
 	UpdatedAt   time.Time
-	// LastError is the latest refresh's failure ("" after a success), at ErrorAt.
+	// LastError is the latest refresh's failure as a Reason ("" after a
+	// success), at ErrorAt.
 	LastError string
 	ErrorAt   time.Time
 }
@@ -140,6 +138,55 @@ type Focus struct {
 // Has reports whether f holds a focus at all (a row that only recorded a
 // failed first refresh does not).
 func (f Focus) Has() bool { return f.Title != "" }
+
+// Problem is why f is missing or stale — its recorded Reason — when the latest
+// refresh failed AFTER the focus was written (or there is no focus at all), and
+// "" otherwise. A failure followed by a success is cleared by the success.
+func (f Focus) Problem() string {
+	if f.LastError == "" || (f.Has() && !f.ErrorAt.After(f.UpdatedAt)) {
+		return ""
+	}
+	return f.LastError
+}
+
+// ErrNoSession is a subject whose transcript cannot be read now: an agent the
+// owner does not have, or a Claude session no online mirrored window shows.
+var ErrNoSession = errors.New("focus: no such session is visible now")
+
+// The reasons a refresh records (Reason). Each is short, fixed and carries
+// nothing from the transcript, the key or the provider's error body, so the
+// card, agents_list and the database may show it as is.
+const (
+	ReasonNoKey       = "no OpenRouter key"
+	ReasonRateLimited = "rate-limited"
+	ReasonUnusable    = "the summarizer's answer was unusable"
+	ReasonNoSession   = "the session is not visible now"
+	ReasonUnreachable = "the summarizer could not be reached"
+	ReasonFailed      = "the refresh failed"
+)
+
+// Reason is err as a short, non-secret reason (the Reason* constants, or
+// "summarizer error (HTTP <status>)"), for a refresh failure.
+func Reason(err error) string {
+	var he *HTTPError
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, ErrNoKey):
+		return ReasonNoKey
+	case errors.Is(err, ErrRateLimited), errors.Is(err, ErrCapped):
+		return ReasonRateLimited
+	case errors.As(err, &he):
+		return "summarizer error (HTTP " + strconv.Itoa(he.Status) + ")"
+	case errors.Is(err, ErrMalformed), errors.Is(err, ErrOversized), errors.Is(err, ErrEmpty):
+		return ReasonUnusable
+	case errors.Is(err, ErrNoSession):
+		return ReasonNoSession
+	case errors.Is(err, ErrUnreachable):
+		return ReasonUnreachable
+	}
+	return ReasonFailed
+}
 
 // Hit is one focus_search result: what the chief needs to pick a session, and
 // nothing more.

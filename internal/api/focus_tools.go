@@ -12,34 +12,30 @@ import (
 )
 
 // THE FOCUS TOOLS (internal/focus): how the chief finds the session working on
-// something, and how a session says what it is working on.
-//
-//   - agents_list, focus_search, focus_refresh — CHIEF-ONLY. They enumerate (or
-//     spend summarizer budget on) the owner's WHOLE fleet, which is the chief's
-//     job and no worker's. Token-efficient by design: ids, kinds, names,
-//     statuses and titles only; a search hit carries a snippet of at most
-//     focus.MaxSnippetRunes.
-//   - focus_set — ANY agent, for ITSELF only (source "self"): the subject is
-//     the calling agent, never a parameter.
-//
-// All four are on MCP too, so a claude-code chief (or worker) reaches them.
+// something. agents_list, focus_search, focus_refresh — all CHIEF-ONLY: they
+// enumerate (or spend summarizer budget on) the owner's WHOLE fleet, which is
+// the chief's job and no worker's. Token-efficient by design: ids, kinds,
+// names, statuses, titles and — where a session has no focus or a stale one —
+// the short reason why; a search hit carries a snippet of at most
+// focus.MaxSnippetRunes. All three are on MCP too, so a claude-code chief
+// reaches them. Focus itself has ONE writer, muster's own refresh.
 
 const (
 	agentsListToolName   = "agents_list"
 	focusSearchToolName  = "focus_search"
 	focusRefreshToolName = "focus_refresh"
-	focusSetToolName     = "focus_set"
 	// focusRefreshTimeout bounds focus_refresh on one subject: a tail read and
 	// one summarizer call.
 	focusRefreshTimeout = 90 * time.Second
 )
 
-func focusToolDefs() (chief []agents.ToolDef, anyAgent []agents.ToolDef) {
+func focusToolDefs() []agents.ToolDef {
 	subject := strProp(`A session id as agents_list and focus_search return it: "agent:<id>" or "mirror:<claude session id>".`)
-	chief = []agents.ToolDef{
+	return []agents.ToolDef{
 		{Type: "function", Name: agentsListToolName,
 			Description: "List your owner's sessions — dispatched agents and mirrored Claude Code windows — compactly: " +
-				"id, kind, name, status and focus title (what it is working on). Use focus_search to find one by topic.",
+				"id, kind, name, status, focus title (what it is working on) and, when a session has no focus or a stale one, " +
+				"focus_problem: the short reason (e.g. no OpenRouter key, rate-limited). Use focus_search to find one by topic.",
 			Parameters: objSchema(map[string]any{})},
 		{Type: "function", Name: focusSearchToolName,
 			Description: "Full-text search over your owner's sessions' focus (what each is working on). Returns the best " +
@@ -49,21 +45,11 @@ func focusToolDefs() (chief []agents.ToolDef, anyAgent []agents.ToolDef) {
 				"limit": map[string]any{"type": "integer", "description": "At most this many results (1-20, default 5)."},
 			}, "query")},
 		{Type: "function", Name: focusRefreshToolName,
-			Description: "Recompute focus now. With a subject, that session's (waits for it); without, every session of your " +
-				"owner's that has moved (runs in the background). muster computes it — it costs you no tokens — and skips a " +
-				"session whose transcript has not changed.",
-			Parameters: objSchema(map[string]any{"subject": subject})},
+			Description: "Recompute one session's focus now and wait for it. muster computes it — it costs you no tokens — " +
+				"and skips a session whose transcript has not changed. Every session that moved is refreshed on its own " +
+				"every few minutes; use this only when you need one NOW.",
+			Parameters: objSchema(map[string]any{"subject": subject}, "subject")},
 	}
-	anyAgent = []agents.ToolDef{
-		{Type: "function", Name: focusSetToolName,
-			Description: "Say what YOU are working on now: a short title (at most 80 characters) and one to three sentences. " +
-				"Your owner sees it on your card and your owner's chief finds you by it.",
-			Parameters: objSchema(map[string]any{
-				"title":       strProp("What you are working on, at most 80 characters."),
-				"description": strProp("One to three sentences: the current task and where it stands."),
-			}, "title")},
-	}
-	return chief, anyAgent
 }
 
 // agentsListRow is one agents_list row: nothing a decision does not need.
@@ -73,6 +59,10 @@ type agentsListRow struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
 	Focus  string `json:"focus,omitempty"`
+	// FocusProblem is why the session has no focus, or a stale one: the
+	// latest refresh's short, non-secret reason (focus.Reason). Absent when
+	// the focus is current.
+	FocusProblem string `json:"focus_problem,omitempty"`
 }
 
 func (s *Server) toolAgentsList(ctx context.Context) string {
@@ -87,7 +77,7 @@ func (s *Server) toolAgentsList(ctx context.Context) string {
 		for _, a := range list {
 			sub := focus.AgentSubject(a.ID)
 			rows = append(rows, agentsListRow{ID: sub.String(), Kind: agents.ResolveKind(a.Kind),
-				Name: firstNonBlank(a.DisplayName, a.Name), Status: liveStatusIndexed(a, idx), Focus: fi[sub].Title})
+				Name: firstNonBlank(a.DisplayName, a.Name), Status: liveStatusIndexed(a, idx), Focus: fi[sub].Title, FocusProblem: fi[sub].Problem()})
 		}
 	}
 	seen := map[string]bool{}
@@ -103,7 +93,7 @@ func (s *Server) toolAgentsList(ctx context.Context) string {
 			status = "unknown"
 		}
 		rows = append(rows, agentsListRow{ID: sub.String(), Kind: "mirror", Name: e.DisplayTitle() + " @ " + e.Host,
-			Status: status, Focus: fi[sub].Title})
+			Status: status, Focus: fi[sub].Title, FocusProblem: fi[sub].Problem()})
 	}
 	return toolJSON(map[string]any{"sessions": rows})
 }
@@ -147,15 +137,10 @@ func (s *Server) toolFocusRefresh(ctx context.Context, a agents.Agent, arguments
 	}
 	_ = json.Unmarshal([]byte(orEmptyJSON(arguments)), &in)
 	owner := agentOwnerID(a)
+	// 🔴 A SUBJECT IS REQUIRED. There is no whole-owner form: the periodic pass
+	// already refreshes every session that moved.
 	if strings.TrimSpace(in.Subject) == "" {
-		safeGo(s.logger, "focus: refresh an owner", func() {
-			bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Minute)
-			defer cancel()
-			if _, err := r.RefreshOwner(bctx, owner, false); err != nil {
-				s.logger.Printf("focus: refresh for owner %d: %v", owner, err)
-			}
-		})
-		return toolJSON(map[string]any{"started": true, "next": "Focus is being recomputed in the background; read it with agents_list or focus_search in a minute."})
+		return toolErr("subject is required: the session to refresh (agent:<id> or mirror:<claude session id>)")
 	}
 	sub, err := focus.ParseSubject(in.Subject)
 	if err != nil {
@@ -163,41 +148,21 @@ func (s *Server) toolFocusRefresh(ctx context.Context, a agents.Agent, arguments
 	}
 	ctx, cancel := context.WithTimeout(ctx, focusRefreshTimeout)
 	defer cancel()
-	o, err := r.Refresh(ctx, owner, sub, true)
+	o, err := r.Refresh(ctx, owner, sub)
 	switch {
 	case errors.Is(err, focus.ErrCapped):
 		return toolErr("%s", strings.TrimPrefix(err.Error(), "focus: "))
-	case errors.Is(err, errNoSession):
+	case errors.Is(err, focus.ErrNoSession):
 		return toolErr("%s is not a session of your owner's that muster can see now", sub)
 	case err != nil:
-		return toolJSON(map[string]any{"subject": sub.String(), "outcome": string(o), "error": "the refresh failed; the previous focus is kept"})
+		return toolJSON(map[string]any{"subject": sub.String(), "outcome": string(o), "focus_problem": focus.Reason(err),
+			"error": "the refresh failed; the previous focus is kept"})
 	}
 	res := map[string]any{"subject": sub.String(), "outcome": string(o)}
 	if f, ok, _ := s.ext.Focus.Get(ctx, sub); ok && f.Has() {
 		res["title"], res["description"] = f.Title, f.Description
 	}
 	return toolJSON(res)
-}
-
-func (s *Server) toolFocusSet(ctx context.Context, a agents.Agent, arguments string) string {
-	var in struct {
-		Title       string `json:"title"`
-		Description string `json:"description"`
-	}
-	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &in); err != nil {
-		return toolErr("arguments are {title, description}")
-	}
-	f, err := s.ext.Focus.Upsert(ctx, focus.AgentSubject(a.ID), focus.Write{Title: in.Title, Description: in.Description, Source: focus.SourceSelf})
-	switch {
-	case errors.Is(err, focus.ErrEmpty):
-		return toolErr("title is required")
-	case err != nil:
-		s.logger.Printf("focus: agent %d focus_set: %v", a.ID, err)
-		return toolErr("the focus could not be stored")
-	}
-	// The card's focus chip changed: the owner's open lists re-render.
-	s.broadcast(ctx, EventAgentChanged, a.Name)
-	return toolJSON(map[string]any{"subject": f.Subject.String(), "title": f.Title, "description": f.Description})
 }
 
 // firstNonBlank is name when it is not blank, else fallback.

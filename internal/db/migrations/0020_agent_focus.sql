@@ -19,7 +19,8 @@
 -- `search @@ query` and ts_rank orders the matches.
 --
 -- 🔴 A FAILED REFRESH KEEPS THE LAST GOOD FOCUS. last_error / error_at record
--- the failure beside it; title and description are only ever written with a
+-- the failure beside it — a short, fixed, non-secret reason (focus.Reason),
+-- which the card and agents_list show as why a focus is missing or stale; title and description are only ever written with a
 -- validated summary. title may be '' only on a row that has never held one (a
 -- first refresh that failed), and the readers skip such rows.
 --
@@ -42,7 +43,6 @@ CREATE TABLE IF NOT EXISTS public.agent_focus (
     -- sha256 (hex) of the bounded transcript tail the focus was computed from:
     -- a refresh whose tail hashes the same skips the summarizer call.
     fingerprint  TEXT        NOT NULL DEFAULT '',
-    model        TEXT        NOT NULL DEFAULT '',
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_error   TEXT        NOT NULL DEFAULT '',
     error_at     TIMESTAMPTZ,
@@ -50,7 +50,8 @@ CREATE TABLE IF NOT EXISTS public.agent_focus (
                      setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
                      setweight(to_tsvector('english', coalesce(description, '')), 'B')) STORED,
     CONSTRAINT agent_focus_kind_check CHECK (subject_kind IN ('agent', 'mirror')),
-    CONSTRAINT agent_focus_source_check CHECK (source IN ('summarizer', 'self', 'manual')),
+    -- One writer: muster's own refresh (internal/focus.Refresher).
+    CONSTRAINT agent_focus_source_check CHECK (source = 'summarizer'),
     -- An agent row names its agent, and its key IS that id; a mirror row names
     -- no agent and is keyed by a Claude Code session id (mirror.ValidClaudeSession).
     CONSTRAINT agent_focus_subject_check CHECK (
@@ -60,7 +61,6 @@ CREATE TABLE IF NOT EXISTS public.agent_focus (
     CONSTRAINT agent_focus_title_cap CHECK (char_length(title) <= 80),
     CONSTRAINT agent_focus_description_cap CHECK (char_length(description) <= 600),
     CONSTRAINT agent_focus_fingerprint_check CHECK (fingerprint = '' OR fingerprint ~ '^[0-9a-f]{64}$'),
-    CONSTRAINT agent_focus_model_cap CHECK (octet_length(model) <= 128),
     CONSTRAINT agent_focus_error_cap CHECK (octet_length(last_error) <= 1024)
 );
 

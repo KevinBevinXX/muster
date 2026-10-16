@@ -31,25 +31,30 @@ reads a transcript through the host's own transcript stream instead (below).
 
 ## How focus is written
 
-1. **By muster, server-side.** A periodic pass (`MUSTER_FOCUS_INTERVAL`,
-   default `15m`) and the chief's `focus_refresh` both:
-   - take a **bounded tail** of the session's transcript: at most 40 entries
-     (prompts, replies, tool calls by name and target), 1 KiB each, 16 KiB in
-     all. A dispatched agent's tail is its newest chat. A mirrored window's is
-     the backfill the host sends when muster opens its transcript stream, the
-     same one the rendered view opens, closed again at once;
-   - **skip the summarizer when the tail has not changed**: the tail's sha256
-     is stored with the focus, and an equal one makes no call;
-   - otherwise ask the summarizer (below) for a title and a description, clean
-     them (one line, no markup or control characters, at most 80 characters
-     and three sentences), and store them;
-   - on any failure, keep the previous focus and record the error beside it.
+Only muster writes it, server-side. A periodic pass (`MUSTER_FOCUS_INTERVAL`,
+default `15m`) and the chief's `focus_refresh` both:
+- take a **bounded tail** of the session's transcript: at most 40 entries
+  (prompts, replies, tool calls by name and target), 1 KiB each, 16 KiB in
+  all. A dispatched agent's tail is its newest chat. A mirrored window's is
+  the backfill the host sends when muster opens its transcript stream, the
+  same one the rendered view opens, closed again at once;
+- **skip the summarizer when the tail has not changed**: the tail's sha256
+  is stored with the focus, and an equal one makes no call;
+- otherwise ask the summarizer (below) for a title and a description, clean
+  them (one line, no markup or control characters, at most 80 characters
+  and three sentences), and store them;
+- on any failure, keep the previous focus and record **why** beside it, as a
+  short fixed reason: `no OpenRouter key`, `rate-limited`,
+  `summarizer error (HTTP <status>)`, `the summarizer's answer was
+  unusable`, `the session is not visible now`, `the summarizer could not be
+  reached`. Nothing from the transcript, the key or the provider's error
+  text is stored or shown. The card's popover says it ("No focus: …", or
+  "Last refresh failed: …" on a focus that is now stale), and so does
+  `agents_list` (`focus_problem`). The next successful refresh clears it.
 
-   A pass only looks at sessions that were active since their focus was
-   written, at most 20 per user. Calls are capped at 60 per user and 300 in all
-   per hour, two at a time.
-2. **By the session itself.** `focus_set(title, description)` sets the calling
-   agent's own focus. A summary does not overwrite it for two hours.
+A pass only looks at sessions that were active since their focus was
+written, at most 20 per user. Calls are capped at 60 per user and 300 in all
+per hour, two at a time.
 
 ## The summarizer
 
@@ -68,11 +73,10 @@ commands, secrets or host names in the summary, but the input is not redacted.
 
 | tool | who | what |
 |---|---|---|
-| `agents_list` | chief | every session: id, kind, name, status, focus title |
+| `agents_list` | chief | every session: id, kind, name, status, focus title, and `focus_problem` (the reason) when its focus is missing or stale |
 | `focus_search(query, limit)` | chief | full-text search over titles (weighted higher) and descriptions; id, kind, title and a 120-character snippet per hit |
-| `focus_refresh(subject?)` | chief | one session now (it waits), or every session that moved (in the background) |
-| `focus_set(title, description)` | any agent | its own focus |
+| `focus_refresh(subject)` | chief | one session now (it waits); the periodic pass covers the rest |
 
-All four are on the agent gateway and on `/mcp`. A subject is spelled
+All three are on the agent gateway and on `/mcp`. A subject is spelled
 `agent:<id>` or `mirror:<claude session id>`, as `agents_list` and
 `focus_search` return it.

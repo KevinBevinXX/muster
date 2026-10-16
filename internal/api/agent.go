@@ -235,10 +235,10 @@ const agentSystemPrompt = `You are a muster worker agent. You have native tools 
 // BROWSER-FLOW TOOLS HAVE IT (the flow tools only FILE a request the owner
 // must approve; flow_tools.go), AND SO DO task_create_gated (it only files a
 // task gated on the owner's approval; gated_task_tool.go), reply_draft (it
-// only files a draft the owner must approve; reply_draft_tool.go) AND THE FOUR
-// FOCUS TOOLS (focus_tools.go: they read and write the owner's own focus rows
-// and spend no credential the pod was not granted — a refresh runs the
-// summarizer server-side, on the owner's model credential).
+// only files a draft the owner must approve; reply_draft_tool.go) AND THE THREE
+// FOCUS TOOLS (focus_tools.go: they read the owner's own focus rows and spend
+// no credential the pod was not granted — a refresh runs the summarizer
+// server-side, on the owner's model credential).
 // /mcp is served on the connect listener — the ONE muster port a claude-code
 // pod's network policy lets it reach — and that listener's contract is "the
 // connector surface and nothing else" (OnlyConnectSurface). The other tools stay
@@ -309,16 +309,11 @@ func (s *Server) agentTools() []agentTool {
 		tools = append(tools, agentTool{def: replyDraftToolDef(), mcp: true, chiefOnly: true})
 	}
 	// Session focus (focus_tools.go): the chief lists, searches and refreshes
-	// its owner's sessions' focus; any agent sets its OWN (focus_set). MCP too,
-	// so a claude-code chief or worker reaches them. agents_list, focus_search
-	// and focus_refresh are chief-only: they reach the owner's whole fleet.
+	// its owner's sessions' focus. MCP too, so a claude-code chief reaches them.
+	// All three are chief-only: they reach the owner's whole fleet.
 	if s.ext.Focus != nil {
-		chief, anyAgent := focusToolDefs()
-		for _, d := range chief {
+		for _, d := range focusToolDefs() {
 			tools = append(tools, agentTool{def: d, mcp: true, chiefOnly: true})
-		}
-		for _, d := range anyAgent {
-			tools = append(tools, agentTool{def: d, mcp: true})
 		}
 	}
 	return tools
@@ -558,8 +553,6 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return s.toolFocusSearch(ctx, arguments)
 	case focusRefreshToolName:
 		return s.toolFocusRefresh(ctx, a, arguments)
-	case focusSetToolName:
-		return s.toolFocusSet(ctx, a, arguments)
 	case "connector_status":
 		var in struct {
 			Name        string `json:"name"`

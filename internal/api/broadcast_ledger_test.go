@@ -58,8 +58,6 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		"(*Server).handleAgentTaskComment → broadcast(r.Context())",
 		"(*Server).handleAgentTaskStatus → broadcast(r.Context())",
 		"(*Server).persistTurn → broadcast(ctx)",
-		// focus_set (focus_tools.go): the calling agent's own focus; ctx is the tool turn's.
-		"(*Server).toolFocusSet → broadcast(ctx)",
 		"(*Server).handleConnectorCreate → broadcast(r.Context())",
 		"(*Server).handleConnectorCreate → broadcast(r.Context())",
 		"(*Server).handleConnectorDelete → broadcast(r.Context())",

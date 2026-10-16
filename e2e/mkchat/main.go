@@ -12,6 +12,7 @@
 // is invented fixture data.
 //
 // With MUSTER_E2E_FOCUS set to a JSON array of {"subject","title","description"}
+// (or {"subject","error"}: a failed refresh's reason, and no focus)
 // it also writes session FOCUS (internal/focus) after the agent is committed:
 // subject "self" is the agent it made, "mirror:<claude session id>" a mirrored
 // session. Deleting deletes the agent (its focus goes with it) and every
@@ -99,6 +100,9 @@ type focusSpec struct {
 	Subject     string `json:"subject"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
+	// Error, when set, records a failed refresh with this reason instead of
+	// writing a focus (what the card shows as why there is none).
+	Error string `json:"error"`
 }
 
 func focusSpecs() ([]focusSpec, error) {
@@ -131,7 +135,13 @@ func writeFocus(ctx context.Context, pool *pgxpool.Pool, as *agents.PGStore, nam
 				return err
 			}
 		}
-		if _, err := fs.Upsert(ctx, sub, focus.Write{Title: sp.Title, Description: sp.Description, Source: focus.SourceManual}); err != nil {
+		if sp.Error != "" {
+			if err := fs.RecordError(ctx, sub, sp.Error); err != nil {
+				return fmt.Errorf("focus error %s: %w", sub, err)
+			}
+			continue
+		}
+		if _, err := fs.Upsert(ctx, sub, focus.Write{Title: sp.Title, Description: sp.Description, Source: focus.SourceSummarizer}); err != nil {
 			return fmt.Errorf("focus %s: %w", sub, err)
 		}
 	}

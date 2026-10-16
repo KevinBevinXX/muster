@@ -34,7 +34,7 @@ func (m *memStore) Upsert(_ context.Context, s Subject, w Write) (Focus, error) 
 	if err != nil {
 		return Focus{}, err
 	}
-	f := Focus{Subject: s, Title: t, Description: d, Source: w.Source, Fingerprint: w.Fingerprint, Model: w.Model, UpdatedAt: time.Now()}
+	f := Focus{Subject: s, Title: t, Description: d, Source: w.Source, Fingerprint: w.Fingerprint, UpdatedAt: time.Now()}
 	m.rows[s] = f
 	delete(m.errs, s)
 	return f, nil
@@ -69,7 +69,7 @@ func (f *fakeSummarizer) Summarize(context.Context, int64, string) (Summary, err
 func fixture() (*Refresher, *memStore, *fakeSource, *fakeSummarizer, Subject) {
 	sub := AgentSubject(5)
 	st, src := newMem(), &fakeSource{tails: map[Subject][]Entry{sub: {{Role: "user", Text: "fix the build"}, {Role: "assistant", Text: "patching"}}}}
-	sm := &fakeSummarizer{sum: Summary{Title: "Fixing the build", Description: "Patching the Makefile.", Model: "scaledown/summarize"}}
+	sm := &fakeSummarizer{sum: Summary{Title: "Fixing the build", Description: "Patching the Makefile."}}
 	return &Refresher{Store: st, Sessions: src, Summarizer: sm}, st, src, sm, sub
 }
 
@@ -78,13 +78,13 @@ func fixture() (*Refresher, *memStore, *fakeSource, *fakeSummarizer, Subject) {
 func TestTheFingerprintSkipCallsNoSummarizer(t *testing.T) {
 	r, st, src, sm, sub := fixture()
 	ctx := context.Background()
-	if o, err := r.Refresh(ctx, 1, sub, false); err != nil || o != OutcomeUpdated {
+	if o, err := r.Refresh(ctx, 1, sub); err != nil || o != OutcomeUpdated {
 		t.Fatalf("first refresh: %v %v", o, err)
 	}
 	if sm.calls != 1 || st.rows[sub].Title != "Fixing the build" {
 		t.Fatalf("positive control: calls=%d row=%+v", sm.calls, st.rows[sub])
 	}
-	o, err := r.Refresh(ctx, 1, sub, true)
+	o, err := r.Refresh(ctx, 1, sub)
 	if err != nil || o != OutcomeUnchanged {
 		t.Fatalf("unchanged refresh: %v %v, want %s", o, err, OutcomeUnchanged)
 	}
@@ -92,7 +92,7 @@ func TestTheFingerprintSkipCallsNoSummarizer(t *testing.T) {
 		t.Fatalf("the fingerprint skip did not hold: %d summarizer calls, want 1", sm.calls)
 	}
 	src.tails[sub] = append(src.tails[sub], Entry{Role: "assistant", Text: "tests green"})
-	if o, _ := r.Refresh(ctx, 1, sub, false); o != OutcomeUpdated || sm.calls != 2 {
+	if o, _ := r.Refresh(ctx, 1, sub); o != OutcomeUpdated || sm.calls != 2 {
 		t.Fatalf("moved tail: outcome %s, calls %d; want updated, 2", o, sm.calls)
 	}
 }
@@ -101,32 +101,19 @@ func TestTheFingerprintSkipCallsNoSummarizer(t *testing.T) {
 func TestAFailedRefreshKeepsTheFocusAndRecordsTheError(t *testing.T) {
 	r, st, src, sm, sub := fixture()
 	ctx := context.Background()
-	if _, err := r.Refresh(ctx, 1, sub, false); err != nil {
+	if _, err := r.Refresh(ctx, 1, sub); err != nil {
 		t.Fatal(err)
 	}
 	src.tails[sub] = append(src.tails[sub], Entry{Role: "user", Text: "more"})
 	sm.err = ErrRateLimited
-	if o, err := r.Refresh(ctx, 1, sub, false); o != OutcomeFailed || !errors.Is(err, ErrRateLimited) {
+	if o, err := r.Refresh(ctx, 1, sub); o != OutcomeFailed || !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("got %v %v", o, err)
 	}
 	if st.rows[sub].Title != "Fixing the build" {
 		t.Errorf("the previous focus was not kept: %+v", st.rows[sub])
 	}
-	if !strings.Contains(st.errs[sub], "429") {
-		t.Errorf("the failure was not recorded: %q", st.errs[sub])
-	}
-}
-
-// TestASelfFocusIsHeldFromTheSummarizer: a session's own focus_set is not
-// overwritten by a periodic refresh inside SelfHold; force refreshes it.
-func TestASelfFocusIsHeldFromTheSummarizer(t *testing.T) {
-	r, st, _, sm, sub := fixture()
-	st.rows[sub] = Focus{Subject: sub, Title: "My own words", Source: SourceSelf, UpdatedAt: time.Now()}
-	if o, _ := r.Refresh(context.Background(), 1, sub, false); o != OutcomeHeld || sm.calls != 0 {
-		t.Fatalf("outcome %s calls %d, want held 0", o, sm.calls)
-	}
-	if o, _ := r.Refresh(context.Background(), 1, sub, true); o != OutcomeUpdated || sm.calls != 1 {
-		t.Fatalf("forced: outcome %s calls %d", o, sm.calls)
+	if st.errs[sub] != ReasonRateLimited {
+		t.Errorf("the failure was not recorded as its reason: %q", st.errs[sub])
 	}
 }
 
@@ -141,24 +128,24 @@ func TestTheRateCapsHold(t *testing.T) {
 	for i := 0; i < PerOwnerPerHour; i++ {
 		s := AgentSubject(int64(100 + i))
 		src.tails[s] = []Entry{{Role: "user", Text: "x"}}
-		if _, err := r.Refresh(ctx, 1, s, false); err != nil {
+		if _, err := r.Refresh(ctx, 1, s); err != nil {
 			t.Fatalf("call %d: %v", i, err)
 		}
 	}
 	over := AgentSubject(999)
 	src.tails[over] = []Entry{{Role: "user", Text: "y"}}
-	if _, err := r.Refresh(ctx, 1, over, false); !errors.Is(err, ErrCapped) {
+	if _, err := r.Refresh(ctx, 1, over); !errors.Is(err, ErrCapped) {
 		t.Fatalf("past the per-owner cap: err = %v, want ErrCapped", err)
 	}
 	if sm.calls != PerOwnerPerHour {
 		t.Fatalf("%d calls, want %d", sm.calls, PerOwnerPerHour)
 	}
-	if _, err := r.Refresh(ctx, 2, over, false); err != nil {
+	if _, err := r.Refresh(ctx, 2, over); err != nil {
 		t.Fatalf("another owner was capped too: %v", err)
 	}
 	now = now.Add(time.Hour + time.Second)
 	src.tails[AgentSubject(997)] = []Entry{{Role: "user", Text: "z"}}
-	if _, err := r.Refresh(ctx, 1, AgentSubject(997), false); err != nil {
+	if _, err := r.Refresh(ctx, 1, AgentSubject(997)); err != nil {
 		t.Fatalf("an hour later: %v", err)
 	}
 }
@@ -176,7 +163,7 @@ func TestRefreshOwnerSkipsSubjectsThatHaveNotMoved(t *testing.T) {
 	for _, s := range []Subject{a, b, c} {
 		src.tails[s] = []Entry{{Role: "user", Text: s.String()}}
 	}
-	res, err := r.RefreshOwner(context.Background(), 1, false)
+	res, err := r.RefreshOwner(context.Background(), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +218,7 @@ func TestAnOwnerWithNoKeyCostsNoTailRead(t *testing.T) {
 	src := &countingSource{fakeSource: fakeSource{tails: map[Subject][]Entry{sub: {{Role: "user", Text: "x"}}}}}
 	sm := &keyless{}
 	r := &Refresher{Store: st, Sessions: src, Summarizer: sm}
-	if o, err := r.Refresh(context.Background(), 1, sub, true); o != OutcomeFailed || !errors.Is(err, ErrNoKey) {
+	if o, err := r.Refresh(context.Background(), 1, sub); o != OutcomeFailed || !errors.Is(err, ErrNoKey) {
 		t.Fatalf("got %s %v", o, err)
 	}
 	if src.reads != 0 || sm.calls != 0 || st.errs[sub] == "" {

@@ -57,8 +57,15 @@ func (m *memFocus) Upsert(_ context.Context, s focus.Subject, w focus.Write) (fo
 	m.rows[s] = f
 	return f, nil
 }
-func (m *memFocus) RecordError(context.Context, focus.Subject, string) error { return nil }
-func (m *memFocus) Owners(context.Context) ([]int64, error)                  { return []int64{1}, nil }
+func (m *memFocus) RecordError(_ context.Context, s focus.Subject, msg string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	f := m.rows[s]
+	f.Subject, f.LastError, f.ErrorAt = s, msg, time.Now()
+	m.rows[s] = f
+	return nil
+}
+func (m *memFocus) Owners(context.Context) ([]int64, error) { return []int64{1}, nil }
 
 func focusMirrorServer(t *testing.T, fm *fakeMirror, store *memFocus, summ focus.Summarizer) (*Server, *httptest.Server) {
 	t.Helper()
@@ -137,7 +144,7 @@ func TestAMirroredSessionsFocusIsRefreshedFromItsTranscriptStream(t *testing.T) 
 	}}, windows: claudeWindows()}
 	s, ts := focusMirrorServer(t, fm, store, summ)
 	start := time.Now()
-	o, err := s.refresher().Refresh(operatorCtx(), 1, focus.MirrorSubject(focusSID), true)
+	o, err := s.refresher().Refresh(operatorCtx(), 1, focus.MirrorSubject(focusSID))
 	if err != nil || o != focus.OutcomeUpdated {
 		t.Fatalf("refresh: %v %v", o, err)
 	}
@@ -214,3 +221,41 @@ func TestThePeriodicPassRunsAsEachOwner(t *testing.T) {
 type noAgents struct{ agents.Store }
 
 func (noAgents) List(context.Context) ([]agents.Agent, error) { return nil, nil }
+
+type failingSummarizer struct{ err error }
+
+func (f failingSummarizer) Summarize(context.Context, int64, string) (focus.Summary, error) {
+	return focus.Summary{}, f.err
+}
+
+// TestAFailedRefreshShowsItsReasonOnTheCard: the summarizer's failure reaches
+// the mirror card as its short reason — never the provider's text — first as
+// "no focus", then, after a success, as a stale one.
+func TestAFailedRefreshShowsItsReasonOnTheCard(t *testing.T) {
+	store := &memFocus{rows: map[focus.Subject]focus.Focus{}}
+	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{batches: []mirror.Msg{
+		{Type: mirror.TypeEvents, Reset: true, Events: []cctranscript.Event{{Kind: cctranscript.KindPrompt, Text: "hello"}}},
+		{Type: mirror.TypeEvents, PromptIndex: true},
+	}}, windows: claudeWindows()}
+	s, ts := focusMirrorServer(t, fm, store, failingSummarizer{err: &focus.HTTPError{Status: 502, Body: "sk-or-v1-provider-secret"}})
+	if _, err := s.refresher().Refresh(operatorCtx(), 1, focus.MirrorSubject(focusSID)); err == nil {
+		t.Fatal("the failing refresh succeeded")
+	}
+	_, body := mirrorGet(t, s, ts, "/ui/agents")
+	if !strings.Contains(body, "No focus: summarizer error (HTTP 502)") || !strings.Contains(body, "data-focus-stale") {
+		t.Fatalf("the card does not say why there is no focus:\n%s", body)
+	}
+	if strings.Contains(body, "sk-or-v1") {
+		t.Fatal("the provider's error text reached the page")
+	}
+	// A focus, then a later failure: the card shows both.
+	store.mu.Lock()
+	f := store.rows[focus.MirrorSubject(focusSID)]
+	f.Title, f.UpdatedAt = "Fixing the reconnect", f.ErrorAt.Add(-time.Minute)
+	store.rows[focus.MirrorSubject(focusSID)] = f
+	store.mu.Unlock()
+	_, body = mirrorGet(t, s, ts, "/ui/agents")
+	if !strings.Contains(body, "Fixing the reconnect") || !strings.Contains(body, "Last refresh failed: summarizer error (HTTP 502)") {
+		t.Fatalf("a stale focus does not say its refresh failed:\n%s", body)
+	}
+}

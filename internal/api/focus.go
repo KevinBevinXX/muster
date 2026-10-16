@@ -274,20 +274,30 @@ func (s *Server) focusIndex(ctx context.Context) focusIndex {
 	}
 	out := focusIndex{}
 	for _, f := range list {
-		if f.Has() {
+		// A row with no focus is kept when it says WHY (its last error): the
+		// card shows the reason instead of nothing.
+		if f.Has() || f.Problem() != "" {
 			out[f.Subject] = f
 		}
 	}
 	return out
 }
 
-// view is sub's focus as a card shows it, nil for none.
+// view is sub's focus as a card shows it — with why it is missing or stale,
+// when the latest refresh failed — nil for neither.
 func (fi focusIndex) view(sub focus.Subject) *ui.FocusView {
 	f, ok := fi[sub]
 	if !ok {
 		return nil
 	}
-	return &ui.FocusView{Title: f.Title, Description: f.Description, UpdatedAt: f.UpdatedAt}
+	v := &ui.FocusView{Title: f.Title, Description: f.Description, UpdatedAt: f.UpdatedAt}
+	if !f.Has() {
+		v.UpdatedAt = time.Time{}
+	}
+	if p := f.Problem(); p != "" {
+		v.Problem, v.ProblemAt = p, f.ErrorAt
+	}
+	return v
 }
 
 // mirrorFocus is a mirrored entry's focus view: its Claude session's, nil

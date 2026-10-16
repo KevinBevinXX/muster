@@ -28,7 +28,7 @@ import (
 var (
 	mcpLedger = []string{"connectors_list", "connector_request", "connector_status",
 		"browser_flow_request", "browser_flow_status", "task_create_gated", "reply_draft",
-		"agents_list", "focus_search", "focus_refresh", "focus_set"}
+		"agents_list", "focus_search", "focus_refresh"}
 	gatewayOnlyLedger = []string{"agent_get_task", "agent_comment_task", "agent_set_task_status",
 		"agent_list_pull_requests"}
 	// 🔴 chiefOnlyLedger IS PINNED THE SAME WAY: a tool joining it is offered to

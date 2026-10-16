@@ -15,8 +15,8 @@ import (
 // focus_refresh tool) both come here.
 //
 // One refresh of one subject:
-//  1. a self- or manual-written focus younger than SelfHold is left alone (a
-//     session's own word outranks a summary of it) unless forced;
+//  1. an owner the summarizer cannot serve (no key) is refused before anything
+//     is read;
 //  2. the session's tail is read (Sessions.Tail) and rendered (RenderTail) — at
 //     most MaxTailBytes — and fingerprinted;
 //  3. 🔴 THE FINGERPRINT SKIP: when it equals the stored focus's fingerprint,
@@ -50,9 +50,6 @@ type Sessions interface {
 
 // The refresher's bounds.
 const (
-	// SelfHold is how long a session's own focus (focus_set) or a manual one is
-	// kept from the summarizer.
-	SelfHold = 2 * time.Hour
 	// MaxConcurrent bounds summarizer calls in flight, across every owner.
 	MaxConcurrent = 2
 	// PerOwnerPerHour and GlobalPerHour cap summarizer calls in any hour.
@@ -70,7 +67,6 @@ type Outcome string
 const (
 	OutcomeUpdated   Outcome = "updated"
 	OutcomeUnchanged Outcome = "unchanged" // the fingerprint skip: no summarizer call
-	OutcomeHeld      Outcome = "held"      // a fresh self/manual focus was left alone
 	OutcomeEmpty     Outcome = "empty"     // no transcript to summarize
 	OutcomeFailed    Outcome = "failed"    // recorded on the row; the old focus stays
 )
@@ -148,15 +144,11 @@ func (r *Refresher) acquire(ctx context.Context) error {
 func (r *Refresher) release() { <-r.sem }
 
 // Refresh refreshes sub for owner, as owner (ctx must already act as owner).
-// force skips the self hold (never the fingerprint skip: an unchanged tail
-// gives an unchanged focus whoever asks).
-func (r *Refresher) Refresh(ctx context.Context, owner int64, sub Subject, force bool) (Outcome, error) {
+// Whoever asks, an unchanged tail is the fingerprint skip: no summarizer call.
+func (r *Refresher) Refresh(ctx context.Context, owner int64, sub Subject) (Outcome, error) {
 	cur, has, err := r.Store.Get(ctx, sub)
 	if err != nil {
 		return OutcomeFailed, err
-	}
-	if has && !force && cur.Has() && (cur.Source == SourceSelf || cur.Source == SourceManual) && r.now().Sub(cur.UpdatedAt) < SelfHold {
-		return OutcomeHeld, nil
 	}
 	// An owner the summarizer cannot serve (no OpenRouter key) costs no tail
 	// read: a mirrored tail opens a transcript stream on the host.
@@ -179,6 +171,7 @@ func (r *Refresher) Refresh(ctx context.Context, owner int64, sub Subject, force
 		return OutcomeUnchanged, nil
 	}
 	if !r.take(owner) {
+		r.record(ctx, sub, ErrCapped)
 		return OutcomeFailed, ErrCapped
 	}
 	if err := r.acquire(ctx); err != nil {
@@ -191,15 +184,18 @@ func (r *Refresher) Refresh(ctx context.Context, owner int64, sub Subject, force
 		return OutcomeFailed, err
 	}
 	if _, err := r.Store.Upsert(ctx, sub, Write{Title: sum.Title, Description: sum.Description, Source: SourceSummarizer,
-		Fingerprint: fp, Model: sum.Model}); err != nil {
+		Fingerprint: fp}); err != nil {
 		r.record(ctx, sub, err)
 		return OutcomeFailed, err
 	}
 	return OutcomeUpdated, nil
 }
 
+// record stores cause's Reason — never its text, which can carry a provider's
+// error body — and logs the full cause.
 func (r *Refresher) record(ctx context.Context, sub Subject, cause error) {
-	if err := r.Store.RecordError(context.WithoutCancel(ctx), sub, cause.Error()); err != nil {
+	r.logf("focus: %s: refresh failed: %v", sub, cause)
+	if err := r.Store.RecordError(context.WithoutCancel(ctx), sub, Reason(cause)); err != nil {
 		r.logf("focus: %s: record the failure (%v): %v", sub, cause, err)
 	}
 }
@@ -207,7 +203,7 @@ func (r *Refresher) record(ctx context.Context, sub Subject, cause error) {
 // RefreshOwner refreshes owner's subjects that may have moved since their
 // focus was written — active after it, or with none — at most MaxPerPass of
 // them, most recently active first. ctx acts as owner.
-func (r *Refresher) RefreshOwner(ctx context.Context, owner int64, force bool) (map[Outcome]int, error) {
+func (r *Refresher) RefreshOwner(ctx context.Context, owner int64) (map[Outcome]int, error) {
 	cands, err := r.Sessions.Candidates(ctx)
 	if err != nil {
 		return nil, err
@@ -229,11 +225,11 @@ func (r *Refresher) RefreshOwner(ctx context.Context, owner int64, force bool) (
 		if n >= MaxPerPass || ctx.Err() != nil {
 			break
 		}
-		if at, ok := updated[c.Subject]; ok && !force && !c.ActiveAt.IsZero() && !c.ActiveAt.After(at) {
+		if at, ok := updated[c.Subject]; ok && !c.ActiveAt.IsZero() && !c.ActiveAt.After(at) {
 			continue
 		}
 		n++
-		o, err := r.Refresh(ctx, owner, c.Subject, force)
+		o, err := r.Refresh(ctx, owner, c.Subject)
 		if errors.Is(err, ErrCapped) {
 			out[OutcomeFailed]++
 			break
@@ -256,7 +252,7 @@ func (r *Refresher) Pass(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		res, err := r.RefreshOwner(r.AsOwner(ctx, o), o, false)
+		res, err := r.RefreshOwner(r.AsOwner(ctx, o), o)
 		if err != nil {
 			r.logf("focus: owner %d: %v", o, err)
 			continue

@@ -743,7 +743,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(recentStore.VisitAgent(ua, w.a.agent.ID), "a agent visit")
 	must(recentStore.VisitMirror(ua, pins.MirrorKey{Host: w.canary + "-host", Session: "main", Window: "@1"}), "a mirror visit")
 	// A's session focus (0020): B's tools and pages read and write B's own.
-	_, ferr := focus.NewPG(pool).Upsert(ua, focus.AgentSubject(w.a.agent.ID), focus.Write{Title: w.canary + " focus", Source: focus.SourceSelf})
+	_, ferr := focus.NewPG(pool).Upsert(ua, focus.AgentSubject(w.a.agent.ID), focus.Write{Title: w.canary + " focus", Source: focus.SourceSummarizer})
 	must(ferr, "a focus")
 
 	// A's queued message (0019), for a window on A's mirrored host, its body

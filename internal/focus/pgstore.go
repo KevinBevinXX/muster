@@ -35,7 +35,6 @@ type Write struct {
 	Source             Source
 	// Fingerprint is the tail it was computed from ("" for a self or manual write).
 	Fingerprint string
-	Model       string
 }
 
 // MaxSearchResults bounds focus_search.
@@ -49,13 +48,13 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 
 var _ Store = (*PGStore)(nil)
 
-const cols = `subject_kind, subject_key, owner_id, title, description, source, fingerprint, model, updated_at,
+const cols = `subject_kind, subject_key, owner_id, title, description, source, fingerprint, updated_at,
 	last_error, coalesce(error_at, 'epoch'::timestamptz)`
 
 func scan(row pgx.Row) (Focus, error) {
 	var f Focus
 	var kind, src string
-	err := row.Scan(&kind, &f.Subject.Key, &f.Owner, &f.Title, &f.Description, &src, &f.Fingerprint, &f.Model, &f.UpdatedAt,
+	err := row.Scan(&kind, &f.Subject.Key, &f.Owner, &f.Title, &f.Description, &src, &f.Fingerprint, &f.UpdatedAt,
 		&f.LastError, &f.ErrorAt)
 	f.Subject.Kind, f.Source = Kind(kind), Source(src)
 	if f.ErrorAt.Unix() == 0 {
@@ -147,28 +146,24 @@ func (s *PGStore) Upsert(ctx context.Context, sub Subject, w Write) (Focus, erro
 	if err != nil {
 		return Focus{}, err
 	}
-	switch w.Source {
-	case SourceSummarizer, SourceSelf, SourceManual:
-	default:
+	if w.Source != SourceSummarizer {
 		return Focus{}, errf("unknown source %q", w.Source)
 	}
-	if len(w.Model) > 128 {
-		w.Model = w.Model[:128]
-	}
 	f, err := scan(s.pool.QueryRow(ctx, `INSERT INTO agent_focus (subject_kind, subject_key, agent_id, title, description,
-			source, fingerprint, model, updated_at, last_error, error_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), '', NULL)
+			source, fingerprint, updated_at, last_error, error_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now(), '', NULL)
 		ON CONFLICT (owner_id, subject_kind, subject_key) DO UPDATE SET title = EXCLUDED.title,
 			description = EXCLUDED.description, source = EXCLUDED.source, fingerprint = EXCLUDED.fingerprint,
-			model = EXCLUDED.model, updated_at = now(), last_error = '', error_at = NULL
-		RETURNING `+cols, string(sub.Kind), sub.Key, agentArg(sub), title, desc, string(w.Source), w.Fingerprint, w.Model))
+			updated_at = now(), last_error = '', error_at = NULL
+		RETURNING `+cols, string(sub.Kind), sub.Key, agentArg(sub), title, desc, string(w.Source), w.Fingerprint))
 	if err != nil {
 		return Focus{}, errf("upsert: %w", err)
 	}
 	return f, nil
 }
 
-// RecordError records a failed refresh for sub, leaving the focus it holds.
+// RecordError records a failed refresh for sub — msg should be a Reason —
+// leaving the focus it holds.
 func (s *PGStore) RecordError(ctx context.Context, sub Subject, msg string) error {
 	if err := sub.Valid(); err != nil {
 		return err

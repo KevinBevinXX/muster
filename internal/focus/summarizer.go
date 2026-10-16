@@ -16,8 +16,6 @@ import (
 // Summary is what a Summarizer made of a transcript tail, already Clean.
 type Summary struct {
 	Title, Description string
-	// Model is the model that wrote it, as the API reported it.
-	Model string
 }
 
 // Summarizer turns a transcript tail into a focus. owner is whose session it
@@ -65,6 +63,7 @@ var (
 	ErrNoKey       = errors.New("focus: no OpenRouter key for this owner")
 	ErrOversized   = errors.New("focus: the summarizer's output is larger than a focus can be")
 	ErrMalformed   = errors.New("focus: the summarizer's response is not a chat completion with a summary")
+	ErrUnreachable = errors.New("focus: the summarizer could not be reached")
 )
 
 // HTTPError is a non-2xx answer.
@@ -149,7 +148,7 @@ func (s *ScaleDown) Summarize(ctx context.Context, owner int64, tail string) (Su
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return Summary{}, fmt.Errorf("focus: the summarizer could not be reached: %w", err)
+		return Summary{}, fmt.Errorf("%w: %v", ErrUnreachable, err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
@@ -172,7 +171,6 @@ func (s *ScaleDown) Summarize(ctx context.Context, owner int64, tail string) (Su
 // ParseCompletion reads a chat completion's summary into a Summary.
 func ParseCompletion(raw []byte) (Summary, error) {
 	var c struct {
-		Model   string `json:"model"`
 		Choices []struct {
 			Message struct {
 				Content *string `json:"content"`
@@ -190,7 +188,7 @@ func ParseCompletion(raw []byte) (Summary, error) {
 	if err != nil {
 		return Summary{}, err
 	}
-	return Summary{Title: title, Description: desc, Model: c.Model}, nil
+	return Summary{Title: title, Description: desc}, nil
 }
 
 // SummaryText is a completion's content as text: the `summary` field when the

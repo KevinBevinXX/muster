@@ -190,9 +190,8 @@ type Extensions struct {
 	// and the focus tools are not offered.
 	Focus focus.Store
 	// FocusSummarizer computes a focus from a transcript tail (the ScaleDown
-	// summarizer through OpenRouter). nil: focus is only ever written by a
-	// session itself (focus_set); RunFocusRefresh does nothing and
-	// focus_refresh says why.
+	// summarizer through OpenRouter) — focus's only writer. nil: no focus is
+	// ever written; RunFocusRefresh does nothing and focus_refresh says why.
 	FocusSummarizer focus.Summarizer
 }
 
