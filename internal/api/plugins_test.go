@@ -183,10 +183,19 @@ func TestThePluginDoorRefusesEveryOtherCredential(t *testing.T) {
 	if len(got) != 2 || got[0] != "Authenticate as system" || got[1] != "Submit as plugin" {
 		t.Fatalf("CONTROL: the plugin's own token made store calls %v; want [Authenticate as system, Submit as plugin]", got)
 	}
-	// CONTROL on the two draft routes: the plugin's own token reaches the store.
+	// CONTROL on the other routes: the plugin's own token gets past the door. A
+	// route that reaches no plugin-store method (reaches "") must still have been
+	// authenticated, and answer its own code: the task route answers 503 here
+	// because this server wires no task store.
 	for _, door := range pluginDoorRoutes[1:] {
 		f.reset()
 		rec := pServe(h, "POST", door.path, door.body, pBearer(pgnTok))
+		if door.reaches == "" {
+			if got := f.snapshot(); rec.Code != door.ownCode || len(got) != 1 || got[0] != "Authenticate as system" {
+				t.Errorf("CONTROL %s: %d, store calls %v; want %d after only the token lookup", door.path, rec.Code, got, door.ownCode)
+			}
+			continue
+		}
 		if got := f.snapshot(); rec.Code != door.ownCode || len(got) < 2 || got[0] != "Authenticate as system" || got[len(got)-1] != door.reaches+" as plugin" {
 			t.Errorf("CONTROL %s: %d, store calls %v; want %d reaching %s as the plugin", door.path, rec.Code, got, door.ownCode, door.reaches)
 		}
@@ -202,6 +211,32 @@ var pluginDoorRoutes = []struct {
 	{"/plugin/v1/messages", pgnMsg, "Submit", http.StatusAccepted},
 	{"/plugin/v1/drafts/claim", `{"wait_seconds":0}`, "ClaimDraft", http.StatusNoContent},
 	{"/plugin/v1/drafts/5/result", `{"ok":true}`, "FinishDraft", http.StatusNotFound},
+	{"/plugin/v1/tasks", `{"key":"tracker:abc","comment":"x"}`, "", http.StatusServiceUnavailable},
+}
+
+// TestPluginDoorRoutesListsEveryPluginRoute: pluginDoorRoutes is a hand list that
+// the refusal test above walks, so a plugin route missing from it is a route
+// whose credential refusal nobody checks. Pin it against routeVias, both ways.
+func TestPluginDoorRoutesListsEveryPluginRoute(t *testing.T) {
+	listed := map[string]bool{}
+	for _, d := range pluginDoorRoutes {
+		listed["POST "+strings.Replace(d.path, "/5/", "/{id}/", 1)] = true
+	}
+	want := map[string]bool{}
+	for _, pattern := range routeVias[authz.ViaPlugin] {
+		want[pattern] = true
+		if !listed[pattern] {
+			t.Errorf("plugin route %s is not in pluginDoorRoutes, so its credential refusal is untested", pattern)
+		}
+	}
+	for pattern := range listed {
+		if !want[pattern] {
+			t.Errorf("pluginDoorRoutes lists %s, which routeVias does not classify as a plugin route", pattern)
+		}
+	}
+	if len(want) < 4 {
+		t.Fatalf("CONTROL: routeVias[ViaPlugin] has %d routes; want at least the 4 this file knows", len(want))
+	}
 }
 
 // TestAPluginTokenIsRefusedOnEveryOtherRoute: a plugin token opens nothing but
@@ -269,6 +304,7 @@ func TestPluginsOffIsNotFound(t *testing.T) {
 		{"POST", "/plugins/drafts/1/approve", ""},
 		{"POST", "/plugins/drafts/1/reject", ""},
 		{"POST", "/plugin/v1/drafts/claim", `{"wait_seconds":0}`}, {"POST", "/plugin/v1/drafts/1/result", `{"ok":true}`},
+		{"POST", "/plugin/v1/tasks", `{"key":"tracker:abc","comment":"x"}`},
 	} {
 		for name, c := range map[string]pluginCred{"plugin token": pBearer(pgnTok), "session": session,
 			"hook token": pBearer(tokTestHook), "none": func(*http.Request) {}} {

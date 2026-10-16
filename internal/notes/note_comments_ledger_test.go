@@ -83,6 +83,14 @@ var wantCommentSites = map[string]commentSite{
 	// sweep would post a fresh one — a retract/repost loop. Behavioural case:
 	// TestFlagIdleStaysSuppressedByARetractedReapComment.
 	"FlagIdle": {liveOnly: true, commentCols: false},
+	// Write + a NON-BODY-RETURNING probe: the plugin task route's idempotent
+	// comment. It INSERTs (liveOnly, AddComment's rule) and its `NOT EXISTS`
+	// compares author and body to decide whether the comment is already there.
+	// It RETURNS no comment column, so nothing can leak; and it deliberately
+	// does NOT filter `deleted_at IS NULL`, so a comment the owner retracted is
+	// not written again by a retry — the same reasoning as FlagIdle's.
+	// Behavioural case: TestAddCommentOnceWritesOnceAndRespectsRetraction.
+	"AddCommentOnce": {liveOnly: true, commentCols: false},
 	// NOT a comment read: the board's ACTIVITY ORDERING. Its lateral selects
 	// `max(note_comments.created_at)` and no comment column at all, so there is no
 	// body for commentCols to redact — which is why commentCols is false here and

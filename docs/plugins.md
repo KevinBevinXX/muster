@@ -24,7 +24,7 @@ The whole loop:
 | door | who | routes |
 |---|---|---|
 | The **page** | you, signed in | `/plugins`: create and revoke plugin tokens; approve or reject reply drafts |
-| The **plugin** | an `mpl_` plugin token | `POST /plugin/v1/messages`, `POST /plugin/v1/drafts/claim`, `POST /plugin/v1/drafts/{id}/result` |
+| The **plugin** | an `mpl_` plugin token | `POST /plugin/v1/messages`, `POST /plugin/v1/drafts/claim`, `POST /plugin/v1/drafts/{id}/result`, `POST /plugin/v1/tasks` |
 
 A plugin token is shown once, when you create it. muster stores only its
 sha256. The token acts as you, and only on `/plugin/v1/*`:
@@ -170,6 +170,55 @@ So a plugin should:
    offers one twice either; a new reply always has a new `draft_id`);
 3. post the result as soon as it knows, and post it again if it did not see an
    answer (a repeat is safe).
+
+### `POST /plugin/v1/tasks`: one task per upstream record
+
+Some upstreams send **notices about a record** rather than messages for your
+chief to judge, such as "ticket 4711 was assigned to you". Each notice maps
+to exactly one task, so the plugin files it here directly. Nothing reaches
+the chief.
+
+```json
+{"key": "tracker:4711",
+ "create": {"title": "Rotate the build key", "body": "…"},
+ "comment": "status: open → in progress (upstream message 41)"}
+```
+
+| field | required | rule |
+|---|---|---|
+| `key` | yes | `<namespace>:<id>`, already a normalized tag, in one of the namespaces `MUSTER_PLUGIN_TASK_NAMESPACES` lists. It becomes the task's tag. |
+| `create` | no | File a task if no live task of yours carries `key`. `body` is 1 byte to 16 KiB; `title` is up to 512 characters. |
+| `comment` | no | Up to 16 KiB. It is appended to the task that **already** carries `key`. |
+
+Give `create`, `comment`, or both. Unknown fields are refused.
+
+| answer | meaning |
+|---|---|
+| `201 {"id", "created": true, "commented": false}` | A task was filed, tagged with `key`. `comment` is not added: put what it says in `body`. |
+| `200 {"id", "created": false, "commented": true\|false}` | A live task already carries `key`. `commented` says whether the comment was appended. |
+| `200 {"id": null, "created": false, "commented": false}` | No task carries `key` and `create` was not given. Nothing was written. |
+| `400 {"error"}` | A field breaks a rule above. |
+| `503 {"error"}` | This server lists no namespaces (`MUSTER_PLUGIN_TASK_NAMESPACES` is unset). Keep the notice and retry; do not drop it. |
+
+The namespaces are the deployment's, set in
+[configuration](configuration.md). Each one names an upstream's records, like
+`clickup:`, so its tags are kept out of the board's filter row. A namespace
+muster already uses (`gate`, `auto`, `initiative`, `project`,
+`superseded-by`) is refused at boot.
+
+It is idempotent, so a plugin can always resend:
+
+- **One live task per key.** Two calls racing on one key file one task.
+- **A comment is added once.** If the thread already holds a comment from
+  this plugin with the same text, it is not added again. That includes a
+  comment you retracted. Make each comment unique per upstream event, for
+  example by naming the upstream's message id in it.
+- **Dismissed tasks do not count.** After you dismiss the task, the next
+  `create` for its key files a new one.
+
+The task is filed the way `POST /api/tasks` files one, and you get the usual
+"New task" push. It has no `gate:` or `auto:` tag, so nothing dispatches it
+until you do. The comment's author is `plugin:<plugin name>`.
 
 ## Delivery to your chief
 

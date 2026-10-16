@@ -401,6 +401,11 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// the deployment's own names (MUSTER_FLOW_AGENT_DENY_WORDS): the same
 		// "agent text bound for an outside party" (internal/plugins/drafts.go).
 		ext.Plugins = plugins.NewPG(a.pool).WithAgentDenyWords(cfg.FlowAgentDenyWords)
+		// The namespaces POST /plugin/v1/tasks files tasks by; validated at boot
+		// (config.validate), so this cannot fail on a config that got here.
+		if err := notes.SetPluginTaskNamespaces(cfg.PluginTaskNamespaces); err != nil {
+			return nil, err
+		}
 		if gw != nil {
 			ext.PluginGateway = gw
 		}
@@ -989,6 +994,17 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	default:
 		l.Printf("plugins: OFF — %s is unset (or there is no database), so every /plugin/* route and /plugins "+
 			"answer 404", envPlugins)
+	}
+	switch nss := a.cfg.PluginTaskNamespaces; {
+	case len(nss) > 0 && ext.Plugins != nil:
+		l.Printf("plugin tasks: ON — POST /plugin/v1/tasks files one task per key in namespace(s) %s (%s)",
+			strings.Join(nss, ", "), envPluginTaskNamespaces)
+	case len(nss) > 0:
+		l.Printf("plugin tasks: INERT — %s is set but the plugin interface is off, so nothing reads it",
+			envPluginTaskNamespaces)
+	default:
+		l.Printf("plugin tasks: OFF — %s is unset, so POST /plugin/v1/tasks answers 503 when plugins are on",
+			envPluginTaskNamespaces)
 	}
 
 	// The agent door to browser flows. The deployment's own names are

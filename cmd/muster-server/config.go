@@ -19,6 +19,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/ccpool"
+	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/stepup"
 )
@@ -97,6 +98,9 @@ const (
 	// The optional PLUGIN interface (internal/plugins): "1" turns it on, with a
 	// database. Off, every /plugin/* route and /plugins answer 404.
 	envPlugins = "MUSTER_PLUGINS"
+	// envPluginTaskNamespaces lists the tag namespaces POST /plugin/v1/tasks
+	// accepts keys in (internal/api/plugin_tasks.go), comma-separated.
+	envPluginTaskNamespaces = "MUSTER_PLUGIN_TASK_NAMESPACES"
 	// How long a sign-in stays fresh enough to TYPE into a mirrored session
 	// (internal/stepup): a Go duration, 12h when unset, refused outside
 	// 1m–24h. Freshness is per browser session, never per user.
@@ -378,6 +382,8 @@ type config struct {
 	Mirror bool
 	// Plugins turns the plugin interface on (MUSTER_PLUGINS=1).
 	Plugins bool
+	// PluginTaskNamespaces is MUSTER_PLUGIN_TASK_NAMESPACES, split on commas.
+	PluginTaskNamespaces []string
 	// StepUpWindow is internal/stepup's freshness window (MUSTER_STEPUP_WINDOW;
 	// stepup.DefaultWindow when unset). loadConfig refuses an out-of-bounds one.
 	StepUpWindow time.Duration
@@ -714,40 +720,41 @@ func envFlag(getenv func(string) string, name string) bool {
 // the wiring happens to reach. See config.validate.
 func loadConfig(getenv func(string) string) (config, error) {
 	c := config{
-		Port:               defaultPort,
-		Database:           strings.TrimSpace(getenv(envDatabase)),
-		UIPassword:         getenv(envUIPassword),
-		HookToken:          getenv(envHookToken),
-		ServiceToken:       getenv(envServiceToken),
-		SecureCookies:      envFlag(getenv, envSecureCookies),
-		AuthMode:           strings.ToLower(strings.TrimSpace(getenv(envAuthMode))),
-		GoTrueURL:          strings.TrimRight(strings.TrimSpace(getenv(envGoTrueURL)), "/"),
-		GoTrueSecret:       strings.TrimSpace(getenv(envGoTrueSecret)),
-		GitHubToken:        strings.TrimSpace(getenv(envGitHubToken)),
-		PublicURL:          strings.TrimSpace(getenv(envPublicURL)),
-		GitHubClientID:     strings.TrimSpace(getenv(envGitHubClientID)),
-		GitHubClientSecret: strings.TrimSpace(getenv(envGitHubClientSec)),
-		FaroURL:            strings.TrimSpace(getenv(envFaroURL)),
-		FaroKey:            strings.TrimSpace(getenv(envFaroKey)),
-		FaroTracing:        envFlag(getenv, envFaroTracing),
-		TagAutoDispatch:    envFlag(getenv, envTagAutoDispatch),
-		Mirror:             envFlag(getenv, envMirror),
-		Plugins:            envFlag(getenv, envPlugins),
-		FlowAgentDenyWords: splitList(getenv(envFlowAgentDenyWords)),
-		MemoURL:            strings.TrimRight(strings.TrimSpace(getenv(envMemoURL)), "/"),
-		MemoToken:          strings.TrimSpace(getenv(envMemoToken)),
-		MemoScopeMap:       strings.TrimSpace(getenv(envMemoScopeMap)),
-		STTURL:             strings.TrimRight(strings.TrimSpace(getenv(envSTTURL)), "/"),
-		STTToken:           strings.TrimSpace(getenv(envSTTToken)),
-		RouterURL:          strings.TrimSpace(getenv(envRouterURL)),
-		RouterToken:        strings.TrimSpace(getenv(envRouterToken)),
-		RouterActor:        strings.TrimSpace(getenv(envRouterActor)),
-		Standalone:         envFlag(getenv, envStandalone),
-		ApprovalGateURL:    strings.TrimSpace(getenv(envApprovalGateURL)),
-		ApprovalGateToken:  strings.TrimSpace(getenv(envApprovalGateToken)),
-		VAPIDPublicKey:     strings.TrimSpace(getenv(envVAPIDPublicKey)),
-		VAPIDPrivateKey:    strings.TrimSpace(getenv(envVAPIDPrivateKey)),
-		VAPIDSubject:       strings.TrimSpace(getenv(envVAPIDSubject)),
+		Port:                 defaultPort,
+		Database:             strings.TrimSpace(getenv(envDatabase)),
+		UIPassword:           getenv(envUIPassword),
+		HookToken:            getenv(envHookToken),
+		ServiceToken:         getenv(envServiceToken),
+		SecureCookies:        envFlag(getenv, envSecureCookies),
+		AuthMode:             strings.ToLower(strings.TrimSpace(getenv(envAuthMode))),
+		GoTrueURL:            strings.TrimRight(strings.TrimSpace(getenv(envGoTrueURL)), "/"),
+		GoTrueSecret:         strings.TrimSpace(getenv(envGoTrueSecret)),
+		GitHubToken:          strings.TrimSpace(getenv(envGitHubToken)),
+		PublicURL:            strings.TrimSpace(getenv(envPublicURL)),
+		GitHubClientID:       strings.TrimSpace(getenv(envGitHubClientID)),
+		GitHubClientSecret:   strings.TrimSpace(getenv(envGitHubClientSec)),
+		FaroURL:              strings.TrimSpace(getenv(envFaroURL)),
+		FaroKey:              strings.TrimSpace(getenv(envFaroKey)),
+		FaroTracing:          envFlag(getenv, envFaroTracing),
+		TagAutoDispatch:      envFlag(getenv, envTagAutoDispatch),
+		Mirror:               envFlag(getenv, envMirror),
+		Plugins:              envFlag(getenv, envPlugins),
+		PluginTaskNamespaces: splitList(getenv(envPluginTaskNamespaces)),
+		FlowAgentDenyWords:   splitList(getenv(envFlowAgentDenyWords)),
+		MemoURL:              strings.TrimRight(strings.TrimSpace(getenv(envMemoURL)), "/"),
+		MemoToken:            strings.TrimSpace(getenv(envMemoToken)),
+		MemoScopeMap:         strings.TrimSpace(getenv(envMemoScopeMap)),
+		STTURL:               strings.TrimRight(strings.TrimSpace(getenv(envSTTURL)), "/"),
+		STTToken:             strings.TrimSpace(getenv(envSTTToken)),
+		RouterURL:            strings.TrimSpace(getenv(envRouterURL)),
+		RouterToken:          strings.TrimSpace(getenv(envRouterToken)),
+		RouterActor:          strings.TrimSpace(getenv(envRouterActor)),
+		Standalone:           envFlag(getenv, envStandalone),
+		ApprovalGateURL:      strings.TrimSpace(getenv(envApprovalGateURL)),
+		ApprovalGateToken:    strings.TrimSpace(getenv(envApprovalGateToken)),
+		VAPIDPublicKey:       strings.TrimSpace(getenv(envVAPIDPublicKey)),
+		VAPIDPrivateKey:      strings.TrimSpace(getenv(envVAPIDPrivateKey)),
+		VAPIDSubject:         strings.TrimSpace(getenv(envVAPIDSubject)),
 
 		AgentProvisioner:  strings.ToLower(strings.TrimSpace(getenv(envAgentProvisioner))),
 		AgentGateway:      strings.ToLower(strings.TrimSpace(getenv(envAgentGateway))),
@@ -1127,6 +1134,9 @@ func (c config) validate() error {
 	}
 	if err := c.validateAuthMode(); err != nil {
 		return err
+	}
+	if err := notes.ValidatePluginTaskNamespaces(c.PluginTaskNamespaces); err != nil {
+		return fmt.Errorf("%s: %w", envPluginTaskNamespaces, err)
 	}
 	return c.validateProvisioner()
 }

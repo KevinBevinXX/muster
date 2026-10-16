@@ -194,6 +194,7 @@ POST /mirror/view/send
 POST /plugin/v1/drafts/claim
 POST /plugin/v1/drafts/{id}/result
 POST /plugin/v1/messages
+POST /plugin/v1/tasks
 POST /plugins
 POST /plugins/drafts/{id}/approve
 POST /plugins/drafts/{id}/reject

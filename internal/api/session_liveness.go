@@ -200,6 +200,12 @@ func (l *liveNotes) Create(ctx context.Context, n notes.Note) (notes.Note, error
 	return l.resolveOne(ctx, out, err)
 }
 
+func (l *liveNotes) CreateOnceByTag(ctx context.Context, key string, n notes.Note) (notes.Note, bool, error) {
+	out, created, err := l.Store.CreateOnceByTag(ctx, key, n)
+	out, err = l.resolveOne(ctx, out, err)
+	return out, created, err
+}
+
 func (l *liveNotes) Restore(ctx context.Context, id int64) (notes.Note, error) {
 	n, err := l.Store.Restore(ctx, id)
 	return l.resolveOne(ctx, n, err)

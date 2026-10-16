@@ -425,6 +425,20 @@ type Store interface {
 	TasksForSession(ctx context.Context, sessionID string) ([]TaskLink, error)
 	// AddComment appends a comment to a task's thread.
 	AddComment(ctx context.Context, c Comment) (Comment, error)
+	// CreateOnceByTag creates n unless a LIVE task the caller can see already
+	// carries key (an already-normalized tag), and returns that task either way:
+	// created reports which. Two concurrent calls for one key create ONE task
+	// (serialised on a transaction-scoped advisory lock on the key), so a
+	// producer that retries, or two that race, cannot file it twice. key is added
+	// to n's tags. A task that was dismissed does not count: a later call files a
+	// new one.
+	CreateOnceByTag(ctx context.Context, key string, n Note) (note Note, created bool, err error)
+	// AddCommentOnce appends c unless the task's thread already holds a comment
+	// with the same author and the same body (a retracted one included, so a
+	// retraction is not undone by a retry), and reports whether it wrote.
+	// Concurrent calls for one comment write it once (the note row is locked
+	// first). Unknown or dismissed task → pgx.ErrNoRows.
+	AddCommentOnce(ctx context.Context, c Comment) (wrote bool, err error)
 	// FlagIdle records ONE idle-reap on a task: it set-UNIONs tag into the task's
 	// tags AND appends body as a comment authored by ReapCommentAuthor — both or
 	// neither — and reports whether it actually wrote. It is the retention

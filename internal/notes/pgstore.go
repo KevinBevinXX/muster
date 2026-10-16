@@ -671,6 +671,95 @@ func (s *PGStore) AddComment(ctx context.Context, c Comment) (Comment, error) {
 	return c, nil
 }
 
+// onceKeyLockPrefix namespaces CreateOnceByTag's advisory-lock key, so it cannot
+// share a lock id with any other user of pg_advisory_xact_lock(bigint).
+const onceKeyLockPrefix = "muster.notes.once-by-tag:"
+
+// CreateOnceByTag: see the Store interface.
+//
+// 🔴 THE LOCK IS WHAT MAKES "ONCE" TRUE; THE LOOKUP ALONE IS A RACE. Two callers
+// that both run the SELECT before either INSERT commits both see nothing and both
+// insert. The transaction-scoped advisory lock on the key serialises them, and the
+// SELECT is a NEW command after the lock is granted, so at READ COMMITTED it sees
+// the winner's committed row. TestCreateOnceByTagCreatesOneUnderConcurrency is the
+// property; deleting the lock statement fails it.
+//
+// The lock is keyed on the tag alone, not the owner: two owners filing the same
+// key only wait for each other. Row-level security still confines the lookup to
+// the caller's own tasks, so each owner gets their own task.
+func (s *PGStore) CreateOnceByTag(ctx context.Context, key string, n Note) (Note, bool, error) {
+	if k := NormalizeTag(key); k == "" || k != key {
+		return Note{}, false, fmt.Errorf("notes: once-key %q is not a normalized tag", key)
+	}
+	n.Tags = MergeTags(n.Tags, []string{key})
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return Note{}, false, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, onceKeyLockPrefix+key); err != nil {
+		return Note{}, false, err
+	}
+	var found Note
+	err = tx.QueryRow(ctx, `SELECT `+noteCols+` FROM notes WHERE tags @> ARRAY[$1]::text[] AND `+liveOnly+`
+		ORDER BY id LIMIT 1`, key).Scan(scanNoteInto(&found)...)
+	switch {
+	case err == nil:
+		return found, false, tx.Commit(ctx)
+	case !errors.Is(err, pgx.ErrNoRows):
+		return Note{}, false, err
+	}
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO notes (directory, title, body, model, repo, repo_branch, tags, source_type, source_session_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		RETURNING `+noteCols,
+		n.Directory, n.Title, n.Body, n.Model, n.Repo, n.RepoBranch, n.Tags, n.SourceType, n.SourceSessionID).
+		Scan(scanNoteInto(&n)...); err != nil {
+		return Note{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Note{}, false, err
+	}
+	return n, true, nil
+}
+
+// AddCommentOnce: see the Store interface. The same two-command shape as
+// FlagIdle, for the same reason (its comment explains why a bare NOT EXISTS is
+// not enough): command 1 locks the note row, command 2 — a new snapshot — checks
+// for the comment and inserts it. The insert keeps AddComment's live-parent guard
+// and its same-statement updated_at bump.
+//
+// The duplicate probe deliberately reads retracted comments too: a comment the
+// owner retracted must not come back because its producer retried.
+func (s *PGStore) AddCommentOnce(ctx context.Context, c Comment) (bool, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	var locked int64
+	if err := tx.QueryRow(ctx, `SELECT id FROM notes WHERE id=$1 AND `+liveOnly+` FOR UPDATE`, c.NoteID).Scan(&locked); err != nil {
+		return false, err
+	}
+	var wrote int64
+	if err := tx.QueryRow(ctx, `
+		WITH ins AS (
+			INSERT INTO note_comments (note_id, owner_id, author, body)
+			SELECT id, owner_id, $2, $3 FROM notes WHERE id=$1 AND `+liveOnly+`
+			   AND NOT EXISTS (SELECT 1 FROM note_comments c WHERE c.note_id = notes.id AND c.author = $2 AND c.body = $3)
+			RETURNING note_id
+		), bump AS (
+			UPDATE notes SET updated_at=now() WHERE id=(SELECT note_id FROM ins)
+		)
+		SELECT count(*) FROM ins`, c.NoteID, c.Author, c.Body).Scan(&wrote); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return wrote > 0, nil
+}
+
 // FlagIdle tags an idle task and posts ONE reap comment, at most once per idle
 // period, WITHOUT touching updated_at. See the Store interface for the full
 // rationale; the two things to keep in view while reading the SQL:
