@@ -40,7 +40,12 @@
     "tests/pins.spec.ts": 30.0,
     "tests/recent-agents.spec.ts": 10.0,
     "tests/mirror-chat.spec.ts": 30.0,
-    "tests/send-queue.spec.ts": 150.0
+    "tests/send-queue.spec.ts": 150.0,
+    "tests/cls.spec.ts": 90.0,
+    "tests/composer-autosize.spec.ts": 25.0,
+    "tests/tool-groups.spec.ts": 10.0,
+    "tests/agents-search.spec.ts": 15.0,
+    "tests/chief-thread-search.spec.ts": 5.0
   },
   "legs": {
     "1": [
@@ -58,7 +63,9 @@
       "tests/tool-rows.spec.ts",
       "tests/mirror-windows.spec.ts",
       "tests/dictation.spec.ts",
-      "tests/mirror-chat.spec.ts"
+      "tests/mirror-chat.spec.ts",
+      "tests/cls.spec.ts",
+      "tests/chief-thread-search.spec.ts"
     ],
     "2": [
       "tests/provisioning-indicator.spec.ts",
@@ -81,7 +88,10 @@
       "tests/plugins.spec.ts",
       "tests/pins.spec.ts",
       "tests/recent-agents.spec.ts",
-      "tests/send-queue.spec.ts"
+      "tests/send-queue.spec.ts",
+      "tests/composer-autosize.spec.ts",
+      "tests/tool-groups.spec.ts",
+      "tests/agents-search.spec.ts"
     ]
   }
 }

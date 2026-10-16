@@ -109,7 +109,11 @@ type ComboOption struct {
 // the FAB and dispatch modal live in the shell (Page) so the 4s status refresh
 // never rebuilds them. The card list uses morph swaps so live updates patch in
 // place (no scroll jump, no teardown of hover/expanded state).
-func AgentsPanel(active bool) g.Node {
+func AgentsPanel(active bool) g.Node { return agentsPanel(active, nil) }
+
+// agentsPanel is AgentsPanel with the "Recently viewed" strip's entries drawn on
+// the first paint (ShellData).
+func agentsPanel(active bool, recent []recentItem) g.Node {
 	return Div(
 		ID(panelID("agents")),
 		g.Attr("role", "tabpanel"),
@@ -136,9 +140,10 @@ func AgentsPanel(active bool) g.Node {
 		),
 		// Recently viewed (recents.go): above the filter and OUTSIDE #agents-list —
 		// the filter's `#agents-list > article` rule assumes every child is a card,
-		// and the strip is navigation, not something to filter. Filled out of band
-		// by every list render.
-		recentStrip(nil, false),
+		// and the strip is navigation, not something to filter. Drawn with its
+		// entries when the shell has them (ShellData — so its arrival moves nothing
+		// below it), and replaced out of band by every list render.
+		recentStrip(recent, false),
 		// The filter: a search box that narrows the cards as you type. OUTSIDE
 		// #agents-list, so the list's own refresh never touches it (agents_filter.go).
 		agentsFilterBar(),
@@ -339,7 +344,8 @@ func agentCard(a AgentCardView) g.Node {
 // attributes, which the filter's options are read from.
 func agentFields(a AgentCardView) cardFields {
 	return cardFields{Host: podHost, Type: "Agent", Name: filterHaystack(a.DisplayName, a.Name),
-		Status: a.Status, Kind: agents.KindLabel(a.Kind), Repo: a.Repo, Account: a.CCAccount, NS: a.Namespace}
+		Status: a.Status, Kind: agents.KindLabel(a.Kind), Repo: a.Repo, Account: a.CCAccount, NS: a.Namespace,
+		Titles: []string{a.DisplayName, a.Name}}
 }
 
 // agentCardFooter renders the card's bottom meta row: age (CreatedAt) + last

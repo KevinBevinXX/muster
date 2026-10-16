@@ -200,7 +200,33 @@ func tabHeading(tab string) string {
 //	WHO CHECKS IT: the reviewer of the API-carve pull request, against that
 //	  derived test.
 func Page(activeTab string, feat Features) g.Node {
-	return Doctype(shell(activeTab, feat, g.Text("")))
+	return PageWith(activeTab, feat, ShellData{})
+}
+
+// PageWith is Page with state drawn on the first paint (ShellData).
+func PageWith(activeTab string, feat Features, data ShellData) g.Node {
+	return Doctype(shell(activeTab, feat, g.Text(""), data))
+}
+
+// ShellData is state a shell draws on its FIRST PAINT, rather than after the
+// panel's own load, because drawing it later would move what is below it.
+//
+// 🔴 IT EXISTS FOR LAYOUT SHIFT, AND ITS ONE FIELD IS THE MEASURED CASE. The
+// Agents tab's "Recently viewed" strip is drawn empty and hidden by the shell
+// and filled out of band by the list's first load — and when it appeared it
+// pushed the filter bar and every card down: 0.011 at 1280×800 on its own,
+// measured by e2e/tests/cls.spec.ts. Drawn here, the strip is already where it
+// will be when the list lands, and the out-of-band copy replaces it in place.
+// The zero value draws what the shell always drew (an empty, hidden strip).
+type ShellData struct {
+	recent []recentItem
+}
+
+// WithRecent resolves the strip's entries the way RenderAgentsList does —
+// against the same cards, so "exists" and "pinned" agree with the list.
+func (d ShellData) WithRecent(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRef) ShellData {
+	d.recent = recentItems(list, mirrors, refs)
+	return d
 }
 
 // shell is the <html> element of every shell document, with one extra
@@ -208,7 +234,7 @@ func Page(activeTab string, feat Features) g.Node {
 // ComposePage both go through here, so they cannot differ in anything but that
 // node. (Each wraps it in its own Doctype so the document registry in
 // documents_test.go sees two documents rather than one helper.)
-func shell(activeTab string, feat Features, extra g.Node) g.Node {
+func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node {
 	activeTab = normalizeVisibleTab(activeTab, feat)
 	return g.Group{
 		HTML(Class("dark"), Lang("en"),
@@ -304,7 +330,7 @@ func shell(activeTab string, feat Features, extra g.Node) g.Node {
 							// it is what makes the tab's absence honest instead of making
 							// its presence noisy.
 							NotesPanel(activeTab == "tasks"),
-							AgentsPanel(activeTab == "agents"),
+							agentsPanel(activeTab == "agents", data.recent),
 							g.If(feat.GitHub, ReposPanel(activeTab == "repos")),
 							g.If(feat.Connectors, ConnectorsPanel(activeTab == "connectors")),
 						),
@@ -1042,14 +1068,13 @@ func sidebarTab(tab, label, icon string, active, current, hasPanels bool) g.Node
 // links work), the per-tab floating action buttons, and the header badge's
 // quick-manage popover. No framework — minimal vanilla JS.
 // navRegistryJS emits the JavaScript values the SPA router needs — the ordered
-// tab list, the tab→heading map, the panel selector and the default tab — from
-// musterTabs.
+// tab list, the tab→heading map and the default tab — from musterTabs.
 //
 // 🔴 THIS IS THE FOURTH CONSUMER OF THE REGISTRY, AND UPSTREAM'S HAND-WRITTEN
 // VERSION OF IT IS THE ONE THAT ROTS SILENTLY. A Go-side tab missing from the
 // JS list is not a compile error and not a render error: the server paints the
 // deep-linked tab correctly and only an in-page switch onto it misbehaves —
-// `TABS.indexOf(tab)` returns -1 so the swipe gesture skips it, and
+// `TABS.indexOf(tab)` returns -1 so switchTab refuses it, and
 // `HEADINGS[tab]` is undefined so the <h1> keeps announcing the PREVIOUS tab's
 // subject. Deriving both from musterTabs makes the disagreement impossible
 // rather than detectable.
@@ -1058,16 +1083,16 @@ func sidebarTab(tab, label, icon string, active, current, hasPanels bool) g.Node
 // ("Today's runs") pasted into a single-quoted JS literal ends the string and
 // produces a syntax error that kills the WHOLE script — sidebar, tab routing,
 // toasts and FABs — with nothing on screen to say why.
-// 🔴 IT EMITS THE VISIBLE TABS, NOT THE WHOLE REGISTRY, AND THE THREE VALUES
-// MUST AGREE WITH WHAT WAS DRAWN. A tab in TABS whose panel this document did
-// not render is a tab the swipe gesture can select and switchTab can restore
-// from localStorage, landing the operator on a document with every panel hidden;
-// and PANEL_SELECTOR is used to find the panels that exist, so naming a missing
-// one there makes every query it feeds shorter by an element that was never
-// there. Deriving all three from visibleTabs is what keeps the browser's model
-// of the shell equal to the shell.
+// 🔴 IT EMITS THE VISIBLE TABS, NOT THE WHOLE REGISTRY, AND THE VALUES MUST
+// AGREE WITH WHAT WAS DRAWN. A tab in TABS whose panel this document did not
+// render is a tab switchTab can restore from localStorage, landing the operator
+// on a document with every panel hidden. Deriving them from visibleTabs is what
+// keeps the browser's model of the shell equal to the shell.
 //
-// 🔴 DEFAULT_TAB IS THE FOURTH, AND IT IS THE ONE THAT WAS MISSING. It is the
+// ⚠ THERE WAS A PANEL_SELECTOR TOO. Its only consumer was the tab-switch swipe,
+// which is gone (see the touch gesture block in appScript), so it went with it.
+//
+// 🔴 DEFAULT_TAB IS THE LAST, AND IT IS THE ONE THAT WAS MISSING. It is the
 // tab `/` shows, and it comes from defaultVisibleTab — the same function the
 // shell clamps with — so it is always a member of TABS. See that function for
 // what a script-side default of its own cost.
@@ -1075,19 +1100,15 @@ func navRegistryJS(feat Features) string {
 	visible := visibleTabs(feat)
 	keys := make([]string, 0, len(visible))
 	headingMap := make(map[string]string, len(visible))
-	sel := make([]string, 0, len(visible))
 	for _, t := range visible {
 		keys = append(keys, t.Key)
 		headingMap[t.Key] = t.Heading
-		sel = append(sel, "#"+panelID(t.Key))
 	}
 	keysJSON, _ := json.Marshal(keys)
 	headings, _ := json.Marshal(headingMap)
-	panels, _ := json.Marshal(strings.Join(sel, ", "))
 	def, _ := json.Marshal(defaultVisibleTab(feat))
 	return "  var TABS = " + string(keysJSON) + ";\n" +
 		"  var HEADINGS = " + string(headings) + ";\n" +
-		"  var PANEL_SELECTOR = " + string(panels) + ";\n" +
 		"  var DEFAULT_TAB = " + string(def) + ";\n"
 }
 
@@ -1469,8 +1490,7 @@ func appScript(feat Features) g.Node {
         switchTab(sel);
       });
     });
-    // Segmented [Requests | Tasks] control: same shared router as the sidebar +
-    // swipe. Bound once per button (data-cg-bound). These always target a present
+    // Segmented [Requests | Tasks] control: same shared router as the sidebar. Bound once per button (data-cg-bound). These always target a present
     // panel (they only render on the home shell), so they always intercept.
     document.querySelectorAll('[data-seg-tab]').forEach(function (seg) {
       if (seg.hasAttribute('data-cg-bound')) return;
@@ -1516,13 +1536,13 @@ func appScript(feat Features) g.Node {
   // tab, but no tab's link points at it, so nothing here returns it.
   function pathForTab(t) { return '/' + t; }
 
-  // switchTab is the shared tab router used by the sidebar tabs, the segmented
-  // [Requests | Tasks] control, AND the horizontal swipe — so all three drive the
-  // exact same pushState + panel show/hide state (no forked routing). It is a
-  // no-op on a page without the target panel (agent-detail/operator).
+  // switchTab is the shared tab router used by the sidebar tabs and the
+  // segmented [Requests | Tasks] control — so both drive the exact same
+  // pushState + panel show/hide state (no forked routing). It is a no-op on a
+  // page without the target panel (agent-detail/operator).
   // The 'replace' flag is set ONLY by restoreNav, which is re-painting state the operator
   // already had rather than navigating: it must not manufacture a history entry.
-  // Every human-driven caller (sidebar, segmented control, swipe) leaves it unset
+  // Every human-driven caller (sidebar, segmented control) leaves it unset
   // and keeps the pushState that Back depends on.
   function switchTab(sel, replace) {
     if (TABS.indexOf(sel) < 0) return;
@@ -2039,33 +2059,32 @@ func appScript(feat Features) g.Node {
     }
   });
 
-  // --- Touch gestures: sidebar open/close + Requests<->Tasks panel switch ---
-  // Two independent horizontal gestures share one touchstart/touchend pair:
-  //   1. SIDEBAR (mobile only, < lg where the sidebar is a slide-out overlay):
-  //      an edge-swipe from the left OPENS it; a left-swipe on the open sidebar
-  //      CLOSES it. Edge-origin gestures are OWNED by the sidebar (they suppress
-  //      the panel switch) so the two never fight. setOpen drives the same
-  //      data-open attribute the hamburger/backdrop use; prefers-reduced-motion
-  //      collapses the slide transition via CSS, so no JS motion branch is needed.
-  //   2. PANEL SWITCH: a left-swipe on Requests advances to Tasks; a right-swipe
-  //      on Tasks goes back. Reuses switchTab (same as tapping a segment).
-  // Both ignore mostly-vertical gestures so they never hijack scrolling. Bound
+  // --- Touch gesture: the mobile sidebar's edge-swipe ---
+  // Below lg the sidebar is a slide-out overlay: an edge-swipe from the left
+  // OPENS it; a left-swipe on the open sidebar CLOSES it. setOpen drives the
+  // same data-open attribute the hamburger/backdrop use; prefers-reduced-motion
+  // collapses the slide transition via CSS, so no JS motion branch is needed.
+  // Mostly-vertical gestures are ignored so it never hijacks scrolling. Bound
   // once (initGlobal).
-  var swipeX = 0, swipeY = 0, swipeTracking = false;
-  var SWIPE_MIN_X = 60; // px of horizontal travel required for a panel switch
+  //
+  // 🔴 THERE IS NO TAB-SWITCH SWIPE ANY MORE, AND THAT IS DELIBERATE. A
+  // horizontal swipe anywhere over a tabpanel used to walk the tab order. It was
+  // unused, and it fired on gestures meant for something else: swiping the
+  // recent-agents strip sideways switched the PARENT tab. Tabs change by a tap
+  // on the sidebar or a segment, and nothing else. TestNoTabSwitchSwipe pins
+  // its absence; recent-agents.spec.ts pins the strip.
   var sbX = 0, sbY = 0, sbMode = null; // 'open' | 'close' | null for this gesture
   var SB_EDGE = 28;     // px from the left edge that begins an open-swipe
   var SB_MIN_X = 45;    // px of horizontal travel to open/close the sidebar
   function sbMobile() { return window.innerWidth < 1024; }
   function sbIsOpen() { var r = document.getElementById('sidebar-root'); return !!(r && r.getAttribute('data-open') === 'true'); }
   document.addEventListener('touchstart', function (e) {
-    if (!e.touches || e.touches.length !== 1) { swipeTracking = false; sbMode = null; return; }
+    sbMode = null;
+    if (!e.touches || e.touches.length !== 1) return;
     var t = e.target;
     var x = e.touches[0].clientX, y = e.touches[0].clientY;
-    // Sidebar gesture arming (mobile only). Close: gesture starts inside the open
-    // sidebar panel. Open: gesture starts within SB_EDGE px of the left edge while
-    // the sidebar is closed.
-    sbMode = null;
+    // Close: the gesture starts inside the open sidebar panel. Open: it starts
+    // within SB_EDGE px of the left edge while the sidebar is closed.
     if (sbMobile()) {
       if (sbIsOpen()) {
         if (t && t.closest && t.closest('#sidebar')) sbMode = 'close';
@@ -2073,47 +2092,16 @@ func appScript(feat Features) g.Node {
         sbMode = 'open';
       }
     }
-    // Only track panel gestures that begin over a tabpanel's content (min-h
-    // fills the viewport so empty lists still register). An edge-origin OPEN
-    // gesture is owned by the sidebar, so suppress the panel switch for it.
-    //
-    // PANEL_SELECTOR is derived from musterTabs — see navRegistryJS. Upstream
-    // hard-coded two panel ids here, which is why its swipe worked on exactly
-    // two of its eight tabs.
-    swipeTracking = !!(t && t.closest && t.closest(PANEL_SELECTOR)) && sbMode !== 'open';
-    swipeX = x; swipeY = y; sbX = x; sbY = y;
+    sbX = x; sbY = y;
   }, { passive: true });
   document.addEventListener('touchend', function (e) {
     var ct = (e.changedTouches && e.changedTouches[0]);
-    // Sidebar gesture first — it wins over the panel switch when armed.
-    if (sbMode && ct) {
-      var mode = sbMode; sbMode = null;
-      var sdx = ct.clientX - sbX, sdy = ct.clientY - sbY;
-      if (Math.abs(sdx) >= SB_MIN_X && Math.abs(sdx) > Math.abs(sdy) * 1.2) {
-        if (mode === 'open' && sdx > 0) { swipeTracking = false; setOpen(true); return; }
-        if (mode === 'close' && sdx < 0) { swipeTracking = false; setOpen(false); return; }
-      }
-    }
-    sbMode = null;
-    if (!swipeTracking) return;
-    swipeTracking = false;
-    if (!ct) return;
-    var dx = ct.clientX - swipeX;
-    var dy = ct.clientY - swipeY;
-    // Require a clear, mostly-horizontal swipe (|dx| dominates |dy|).
-    if (Math.abs(dx) < SWIPE_MIN_X || Math.abs(dx) <= Math.abs(dy) * 1.5) return;
-    // Walk the tab order rather than toggling a hard-coded pair. tabFromPath
-    // returns '' off a tab page, and indexOf('') is -1, so neither branch fires
-    // there — the same no-op as before.
-    //
-    // 🔴 IT DOES NOT WRAP, AND THAT IS DELIBERATE. A wrapping carousel means a
-    // left-swipe on the last tab lands on the first, which reads as the app
-    // jumping rather than as reaching the end. Clamping at both ends makes the
-    // edges feel like edges.
-    var cur = TABS.indexOf(tabFromPath(location.pathname));
-    if (cur < 0) return;
-    var next = dx < 0 ? cur + 1 : cur - 1;   // left-swipe → forward, right-swipe → back
-    if (next >= 0 && next < TABS.length) switchTab(TABS[next]);
+    var mode = sbMode; sbMode = null;
+    if (!mode || !ct) return;
+    var sdx = ct.clientX - sbX, sdy = ct.clientY - sbY;
+    if (Math.abs(sdx) < SB_MIN_X || Math.abs(sdx) <= Math.abs(sdy) * 1.2) return;
+    if (mode === 'open' && sdx > 0) setOpen(true);
+    else if (mode === 'close' && sdx < 0) setOpen(false);
   }, { passive: true });
 
   // Keyboard activation for label-buttons.

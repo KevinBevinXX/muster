@@ -1,6 +1,7 @@
 import { Browser, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { baseURL, password } from '../lib/env';
+import { touchDrag } from '../lib/touch';
 
 // RECENTLY VIEWED, in a real browser on the shared server: a strip above the
 // Agents list of the entries the operator last opened, newest first, one tap
@@ -109,4 +110,33 @@ test('a visit shows in the strip, newest first, one tap to open; it persists to 
   pinnedID = '';
   await openList(page);
   await expect.poll(async () => (await hrefs(page))[0]).toBe('/agents/docs-sweeper');
+});
+
+// 🔴 A REGRESSION TEST: swiping the strip sideways switched the PARENT tab. A
+// horizontal swipe anywhere over a tabpanel used to walk the tab order
+// (appScript's touch handler), and the strip — a sideways-scrolling row — is
+// exactly where a thumb swipes sideways. The tab-switch swipe is gone; the
+// sidebar's edge-swipe stays, and is pinned here in the same breath so the fix
+// cannot have been "delete every touch gesture".
+test('a sideways swipe on the strip does not switch the tab; an edge-swipe still opens the sidebar', async ({ page }) => {
+  await openAgent(page, 'docs-sweeper');
+  await openAgent(page, 'release-helper');
+  await openList(page);
+  await expect(strip(page)).toBeVisible();
+  const sb = (await strip(page).boundingBox())!;
+  const y = sb.y + sb.height - 22;
+
+  // Both directions, each well past the old 60px threshold and flat.
+  for (const [from, to] of [[sb.x + sb.width - 30, sb.x + 30], [sb.x + 30, sb.x + sb.width - 30]]) {
+    await touchDrag(page, { x: from, y }, { x: to, y });
+    await page.waitForTimeout(250);
+    expect(new URL(page.url()).pathname, 'the swipe left the tab alone').toBe('/agents');
+    await expect(page.locator('#panel-agents')).toBeVisible();
+  }
+
+  // The sidebar's edge-swipe: from the left edge, rightwards.
+  await expect(page.locator('#sidebar-root')).not.toHaveAttribute('data-open', 'true');
+  await touchDrag(page, { x: 4, y: 400 }, { x: 220, y: 404 });
+  await expect(page.locator('#sidebar-root')).toHaveAttribute('data-open', 'true');
+  expect(new URL(page.url()).pathname).toBe('/agents');
 });

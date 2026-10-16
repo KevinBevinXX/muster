@@ -3,6 +3,7 @@ package ui
 import (
 	"encoding/json"
 	"strings"
+	"unicode"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -95,6 +96,10 @@ import (
 // exists to make. `ns:` is the finer cut for pods.
 type cardFields struct {
 	Host, Type, Name, Status, Kind, Repo, Account, Session, NS, Mode, State string
+	// Titles are what the card is CALLED — an agent's display name and name, a
+	// window's label, title and session — in the order the card shows them. They
+	// rank a match (rankAttrs); they filter nothing.
+	Titles []string
 }
 
 // podHost is a dispatched agent's host field.
@@ -159,7 +164,80 @@ func cardFilterAttrs(f cardFields, haystack ...string) g.Node {
 			attrs = append(attrs, g.Attr("data-l-"+fd.Key, raw))
 		}
 	}
-	return attrs
+	return append(attrs, rankAttrs(f.Titles)...)
+}
+
+// RANKING. While a free-text word is typed the shown cards are REORDERED, best
+// match first:
+//
+//	0  a title STARTS with the word                 ("gold" → "Gold:8")
+//	1  a WORD in a title starts with it             ("sweep" → "docs-sweeper")
+//	2  the word is anywhere else on the card        (the substring match that shows it)
+//
+// and cards of one rank keep the list's own order (pins first, then activity),
+// which is what clearing the box restores.
+//
+// 🔴 THE ORDER IS A STYLESHEET RULE, FOR THE SAME REASON THE HIDING IS. The list
+// morphs itself on every host nudge; a script that moved cards in the DOM would
+// have its order morphed back to the server's on each refresh and re-applied a
+// frame later, a reshuffle the reader sees. #agents-list is a grid, so the
+// script writes `order:` rules keyed on the two attributes below, and a card a
+// refresh brings in is ranked by the same rule the moment it exists.
+//
+//	#agents-list > article{order:2}
+//	#agents-list > article[data-rank-words*="\a word"]{order:1}
+//	#agents-list > article[data-rank-title*="\a word"]{order:0}
+//
+// ⚠ VISUAL ORDER ONLY. `order` moves boxes, not the DOM, so keyboard focus and
+// a screen reader still walk the list's own order. That is the price of a rank
+// that survives the refresh; it is the order the reader had before typing.
+//
+// rankAttrs are those two attributes, both newline-led so a `*=` on a newline
+// plus the word can only match at the start of a title (data-rank-title) or at
+// the start of a word in one (data-rank-words, every suffix of a title that
+// begins at a word boundary). A newline cannot be typed into the box, so no
+// query reaches across two titles. Values are lower-cased and their whitespace
+// collapsed: what the script does to the typed word.
+func rankAttrs(titles []string) []g.Node {
+	var heads, words []string
+	seenHead, seenWord := map[string]bool{}, map[string]bool{}
+	for _, t := range titles {
+		v := fieldValue(t)
+		if v == "" || seenHead[v] {
+			continue
+		}
+		seenHead[v] = true
+		heads = append(heads, v)
+		for _, w := range wordStarts(v) {
+			if !seenWord[w] {
+				seenWord[w] = true
+				words = append(words, w)
+			}
+		}
+	}
+	if len(heads) == 0 {
+		return nil
+	}
+	return []g.Node{
+		g.Attr("data-rank-title", "\n"+strings.Join(heads, "\n")),
+		g.Attr("data-rank-words", "\n"+strings.Join(words, "\n")),
+	}
+}
+
+// wordStarts is every suffix of v that begins a word: at the start, or after a
+// character that is not a letter or a digit ("docs-sweeper" → "docs-sweeper",
+// "sweeper"; "Gold:8" → "gold:8", "8").
+func wordStarts(v string) []string {
+	var out []string
+	prevWord := false
+	for i, r := range v {
+		w := unicode.IsLetter(r) || unicode.IsDigit(r)
+		if w && !prevWord {
+			out = append(out, v[i:])
+		}
+		prevWord = w
+	}
+	return out
 }
 
 // agentsFilterStorageKey is where the filter's text is kept for the browser
@@ -257,7 +335,11 @@ func agentsFilterBar() g.Node {
 				g.Group(g.Map(facetFields, facetSelect)),
 			),
 			Div(
-				Class("flex flex-wrap items-center gap-2"),
+				// min-h-5: the row is one line of the count's text-sm tall BEFORE the
+				// script writes the count. Empty, it was 0px, and the count's first
+				// write pushed the list 20px down — a layout shift on every Agents
+				// load (e2e/tests/cls.spec.ts).
+				Class("flex min-h-5 flex-wrap items-center gap-2"),
 				// ⚠ No display utility, for the same reason as the box's ×.
 				Button(
 					ID("agents-filter-clear"),
@@ -329,6 +411,22 @@ func agentsFilterScript() g.Node {
   // string: [a="v"] for an exact term, [a*="v"] for every other. The rule that
   // hides and the query that counts are both built from it.
   function sel(t) { return '[' + t.attr + (t.exact ? '=' : '*=') + '"' + t.value.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]'; }
+  // rankRules orders the shown cards by how well they match the first
+  // free-text term (rankAttrs in Go): 0 a title starts with it, 1 a word in a
+  // title does, 2 anything else. Equal orders keep the list's own, and no
+  // free-text term means no rule — the list's order, as before typing. The
+  // CSS \00000a is the newline the attributes lead each title and word with.
+  function rankRules(ts) {
+    var w = null;
+    for (var i = 0; i < ts.length; i++) if (ts[i].attr === 'data-filter') { w = ts[i].value; break; }
+    if (!w) return [];
+    var v = '\\00000a' + w.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    return [
+      '#agents-list > article{order:2}',
+      '#agents-list > article[data-rank-words*="' + v + '"]{order:1}',
+      '#agents-list > article[data-rank-title*="' + v + '"]{order:0}',
+    ];
+  }
   function onAgents() { return location.pathname === '/agents'; }
   // syncURL writes the text into ?q= — replaceState, so typing is not history.
   function syncURL(v) {
@@ -446,9 +544,10 @@ func agentsFilterScript() g.Node {
       document.head.appendChild(style);
     }
     // One rule per term: a card lacking ANY of them is hidden, so the terms AND.
+    // Then the rank (rankAttrs): by the FIRST free-text word, best match first.
     style.textContent = ts.map(function (t) {
       return '#agents-list > article:not(' + sel(t) + '){display:none !important}';
-    }).join('\n');
+    }).concat(rankRules(ts)).join('\n');
     var all = list.querySelectorAll(':scope > article');
     var shown = ts.length ? list.querySelectorAll(':scope > article' + ts.map(sel).join('')) : all;
     var count = el('agents-count'), clear = el('agents-search-clear'), none = el('agents-nomatch'), clearAll = el('agents-filter-clear');

@@ -62,6 +62,11 @@ func faroHead() g.Node {
 // standard web instrumentations (page views, web vitals, errors, navigation),
 // optionally registers the tracing instrumentation, and exposes window.cgTrack —
 // a guarded helper that forwards custom events to faro.api.pushEvent.
+//
+// Real users' layout shift is therefore already reported: the web-vitals
+// instrumentation sends CLS as a `web-vitals` measurement, and the vendored SDK
+// (1.19) attaches its attribution — the element of the largest shift — unless
+// told not to. The lab gate for the same number is e2e/tests/cls.spec.ts.
 func faroInitScript() g.Node {
 	cfg := struct {
 		URL     string `json:"url"`

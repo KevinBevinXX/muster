@@ -96,6 +96,18 @@ export const pinsPort = port + 36;
 // The mirrored chat spec's own server (the e2eterm binary with the mirror plugin
 // on): notices, bubble clamps, the message index and context usage.
 export const mirrorChatPort = port + 50;
+// Layout shift (cls.spec.ts): the FULL server (every optional store built) and
+// its connector listener, and a gotrue-mode server's two listeners for the
+// public sign-in pages.
+export const clsFullPort = port + 37;
+export const clsConnectPort = port + 46;
+export const clsGotrueMainPort = port + 43;
+export const clsGotrueBrowserPort = port + 44;
+// The composer-autosize, tool-group and agents-search specs' own servers (each
+// the e2eterm binary with the mirror plugin on and a fake mirrored host).
+export const composerFitPort = port + 38;
+export const toolGroupsPort = port + 39;
+export const agentsSearchPort = port + 47;
 // The send queue: its own server (the e2eterm binary, mirror plugin on, a short
 // MUSTER_SEND_QUEUE_IDLE) and its two mirrored hosts — one that reports Claude
 // Code's status and one that plays an older muster-mirror.

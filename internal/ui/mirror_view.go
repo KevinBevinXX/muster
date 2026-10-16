@@ -186,13 +186,22 @@ func viewToggle(rendered bool, renderedHref, terminalHref string) g.Node {
 	)
 }
 
-// MirrorOp is one DOM operation the rendered view's page applies: append a node
-// to the conversation, or replace the node with id (a running tool row whose
-// result arrived).
+// MirrorOp is one DOM operation the rendered view's page applies:
+//
+//   - append: add HTML to the conversation — or, with Into, to the element of
+//     that id (a tool-call group's body);
+//   - replace: put HTML in place of the element with ID (a running tool row
+//     whose result arrived; a group's summary as its count ticks up);
+//   - wrap: put HTML (a tool-call group) in place of the element with ID and
+//     move that element into the group's body — the second call of a run;
+//   - attr: set attribute Name to Value on the element with ID (a group's state).
 type MirrorOp struct {
-	Op   string `json:"op"` // "append" | "replace"
-	ID   string `json:"id,omitempty"`
-	HTML string `json:"html"`
+	Op    string `json:"op"` // "append" | "replace" | "wrap" | "attr"
+	ID    string `json:"id,omitempty"`
+	HTML  string `json:"html,omitempty"`
+	Into  string `json:"into,omitempty"`
+	Name  string `json:"name,omitempty"`
+	Value string `json:"value,omitempty"`
 }
 
 // MirrorTranscript is one rendered-view socket's drawing state: the tool calls
@@ -204,6 +213,15 @@ type MirrorOp struct {
 type MirrorTranscript struct {
 	calls map[string]ChatLine
 	order []string
+	// The tool-call grouping (tool_groups.go): each drawn row's state, the
+	// group a row was drawn into, and the run the conversation currently ends
+	// in — the rows since the last thing that was not a tool row, and their
+	// group once there are two. Bounded with calls (forget).
+	states  map[string]string
+	groupOf map[string]string
+	groups  map[string][]string
+	run     []string
+	runGrp  string
 	// usage is the latest turn's context use, and fresh whether it changed
 	// since TakeContext last reported it.
 	usage *cctranscript.Usage
@@ -243,7 +261,79 @@ func NewMirrorIndex(refs []cctranscript.PromptRef, more int) *MirrorIndex {
 // Reset forgets every drawn call (the view starts over).
 func (t *MirrorTranscript) Reset() {
 	t.calls, t.order = nil, nil
+	t.states, t.groupOf, t.groups, t.run, t.runGrp = nil, nil, nil, nil, ""
 	t.usage, t.fresh = nil, false
+}
+
+// endRun records that something other than a tool row was drawn: the next
+// call starts a run of its own.
+func (t *MirrorTranscript) endRun() { t.run, t.runGrp = nil, "" }
+
+// forget drops a call evicted past maxDrawnCalls from every map that names it.
+func (t *MirrorTranscript) forget(toolID string) {
+	delete(t.calls, toolID)
+	delete(t.states, toolID)
+	if gid, ok := t.groupOf[toolID]; ok {
+		delete(t.groupOf, toolID)
+		rows := t.groups[gid]
+		for i, r := range rows {
+			if r == toolID {
+				rows = append(rows[:i:i], rows[i+1:]...)
+				break
+			}
+		}
+		if len(rows) == 0 {
+			delete(t.groups, gid)
+		} else {
+			t.groups[gid] = rows
+		}
+	}
+}
+
+// groupStateOps redraws group gid's summary and state from its rows' states.
+func (t *MirrorTranscript) groupStateOps(gid string) []MirrorOp {
+	rows := t.groups[gid]
+	states := make([]string, 0, len(rows))
+	for _, r := range rows {
+		states = append(states, t.states[r])
+	}
+	st := toolGroupState(states)
+	return []MirrorOp{
+		{Op: "replace", ID: gid + "-s", HTML: render(toolGroupSummary(gid, len(rows), st))},
+		{Op: "attr", ID: gid, Name: "data-tool-status", Value: st},
+	}
+}
+
+// appendRow draws a NEW tool row at the end of the conversation, by the
+// grouping rule (tool_groups.go): the first of a run is a plain row; the second
+// wraps the first in a group and joins it; every later one joins the group, and
+// the group's count and state are redrawn.
+func (t *MirrorTranscript) appendRow(toolID, state string, row g.Node) []MirrorOp {
+	id := toolRowID(toolID)
+	t.states[toolID] = state
+	html := render(row)
+	switch len(t.run) {
+	case 0:
+		t.run = []string{toolID}
+		return []MirrorOp{{Op: "append", ID: id, HTML: html}}
+	case 1:
+		first := t.run[0]
+		gid := toolGroupID(first)
+		t.run = append(t.run, toolID)
+		t.runGrp = gid
+		t.groups[gid] = []string{first, toolID}
+		t.groupOf[first], t.groupOf[toolID] = gid, gid
+		return []MirrorOp{
+			{Op: "wrap", ID: toolRowID(first), HTML: render(toolGroup(gid, []string{t.states[first], state}))},
+			{Op: "append", Into: gid + "-b", ID: id, HTML: html},
+		}
+	default:
+		gid := t.runGrp
+		t.run = append(t.run, toolID)
+		t.groups[gid] = append(t.groups[gid], toolID)
+		t.groupOf[toolID] = gid
+		return append([]MirrorOp{{Op: "append", Into: gid + "-b", ID: id, HTML: html}}, t.groupStateOps(gid)...)
+	}
 }
 
 // ContextView is the header's context-usage readout (mirrorViewBatch.Context):
@@ -294,6 +384,9 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 	if t.calls == nil {
 		t.calls = map[string]ChatLine{}
 	}
+	if t.states == nil {
+		t.states, t.groupOf, t.groups = map[string]string{}, map[string]string{}, map[string][]string{}
+	}
 	var ops []MirrorOp
 	for _, ev := range events {
 		if ev.Usage != nil {
@@ -305,39 +398,64 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 			// prompt index names it by (MirrorPromptID). A host that sends no Line
 			// gets none here, and the message index gives the bubble a
 			// page-unique one (chatIndexScript).
+			t.endRun()
 			ops = append(ops, MirrorOp{Op: "append", HTML: render(chatBubbleOf("user",
 				g.If(ev.Line > 0, ID(MirrorPromptID(ev.Line))), g.Attr("data-md-rendered", ""), renderMarkdown(ev.Text)))})
 		case cctranscript.KindText:
+			t.endRun()
 			ops = append(ops, MirrorOp{Op: "append", HTML: render(chatBubbleOf("assistant", g.Attr("data-md-rendered", ""), renderMarkdown(ev.Text)))})
 		case cctranscript.KindError:
+			t.endRun()
 			ops = append(ops, MirrorOp{Op: "append", HTML: render(Div(
 				g.Attr("data-mirror-error", ""),
 				Class("max-w-[85%] self-start break-words rounded-2xl bg-danger/15 px-3 py-2 text-sm text-fg ring-1 ring-inset ring-danger/40"),
 				g.Text("⚠ "+ev.Text)))})
 		case cctranscript.KindNotice:
+			// A notice is drawn in the tool rows' frame but is not a call: it ends
+			// a run like text does.
+			t.endRun()
 			ops = append(ops, MirrorOp{Op: "append", HTML: render(noticeRow(ev))})
 		case cctranscript.KindToolCall:
 			call := ChatLine{Kind: "tool_call", ToolID: ev.ToolID, ToolName: ev.Tool, ToolTarget: ev.Target, Content: ev.Input}
 			id := toolRowID(ev.ToolID)
-			if _, seen := t.calls[ev.ToolID]; !seen {
-				t.order = append(t.order, ev.ToolID)
-				if len(t.order) > maxDrawnCalls {
-					delete(t.calls, t.order[0])
-					t.order = t.order[1:]
+			if _, seen := t.calls[ev.ToolID]; seen {
+				// The same call again: redrawn where it is, run and group untouched.
+				t.calls[ev.ToolID] = call
+				ops = append(ops, MirrorOp{Op: "replace", ID: id, HTML: render(toolChip(call, nil, id))})
+				t.states[ev.ToolID] = toolStateRunning
+				if gid, ok := t.groupOf[ev.ToolID]; ok {
+					ops = append(ops, t.groupStateOps(gid)...)
 				}
+				continue
+			}
+			t.order = append(t.order, ev.ToolID)
+			if len(t.order) > maxDrawnCalls {
+				t.forget(t.order[0])
+				t.order = t.order[1:]
 			}
 			t.calls[ev.ToolID] = call
-			ops = append(ops, MirrorOp{Op: "append", ID: id, HTML: render(toolChip(call, nil, id))})
+			ops = append(ops, t.appendRow(ev.ToolID, toolStateRunning, toolChip(call, nil, id))...)
 		case cctranscript.KindToolResult:
 			result := ChatLine{Kind: "tool_result", ToolID: ev.ToolID, ToolOK: ev.OK, Content: ev.Output}
 			id := toolRowID(ev.ToolID)
 			call, ok := t.calls[ev.ToolID]
 			if !ok {
-				// Its call fell before the backfill window: a row of its own.
-				ops = append(ops, MirrorOp{Op: "append", ID: id, HTML: render(toolChip(ChatLine{Kind: "tool_call", ToolID: ev.ToolID}, &result, id))})
+				// Its call fell before the backfill window: a row of its own, drawn
+				// at the end like any new row (and bounded with the calls).
+				t.order = append(t.order, ev.ToolID)
+				if len(t.order) > maxDrawnCalls {
+					t.forget(t.order[0])
+					t.order = t.order[1:]
+				}
+				ops = append(ops, t.appendRow(ev.ToolID, toolChipState(&result),
+					toolChip(ChatLine{Kind: "tool_call", ToolID: ev.ToolID}, &result, id))...)
 				continue
 			}
 			ops = append(ops, MirrorOp{Op: "replace", ID: id, HTML: render(toolChip(call, &result, id))})
+			t.states[ev.ToolID] = toolChipState(&result)
+			if gid, ok := t.groupOf[ev.ToolID]; ok {
+				ops = append(ops, t.groupStateOps(gid)...)
+			}
 		}
 	}
 	return ops
@@ -426,6 +544,23 @@ func mirrorViewScript() g.Node {
       ctxEl.hidden = false;
     }
     (m.ops || []).forEach(function (op) {
+      // A group's state (tool_groups.go): one attribute, on the group.
+      if (op.op === 'attr') {
+        var at = op.id && document.getElementById(op.id);
+        if (at) at.setAttribute(op.name, op.value);
+        return;
+      }
+      // The second call of a run: the group takes the first row's place and the
+      // row moves into its body (the call itself is the next op, appended into it).
+      if (op.op === 'wrap' && op.id) {
+        var first = document.getElementById(op.id);
+        if (first) {
+          var grp = frag(op.html).firstElementChild;
+          first.replaceWith(grp);
+          grp.querySelector('[data-tool-group-body]').appendChild(first);
+          return;
+        }
+      }
       if (op.op === 'replace' && op.id) {
         var old = document.getElementById(op.id);
         if (old) {
@@ -436,7 +571,8 @@ func mirrorViewScript() g.Node {
         }
       }
       if (op.id) { var dup = document.getElementById(op.id); if (dup) dup.remove(); }
-      log.appendChild(frag(op.html));
+      // Into a group's body when it is on the page; else at the end, as before.
+      ((op.into && document.getElementById(op.into)) || log).appendChild(frag(op.html));
     });
     if (m.gen) gen = m.gen;
     if (typeof m.offset === 'number') offset = m.offset;

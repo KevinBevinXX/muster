@@ -550,9 +550,29 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if err := ui.RenderPage(w, tabFromPath(r.URL.Path), s.shellFeatures(r.Context())); err != nil {
+	tab := tabFromPath(r.URL.Path)
+	if err := ui.RenderPageWith(w, tab, s.shellFeatures(r.Context()), s.shellData(r.Context(), tab)); err != nil {
 		s.logger.Printf("error rendering index page: %v", err)
 	}
+}
+
+// shellData is what the shell draws on its first paint (ui.ShellData): on the
+// Agents tab, the "Recently viewed" strip, so it is not filled in above the list
+// a moment later and push everything below it down. Any other tab draws its
+// Agents panel hidden, where a late strip moves nothing on screen.
+//
+// ⚠ A FAILED READ DRAWS THE OLD WAY (an empty strip the list's own load fills),
+// not an error: the list's load reports its own failure.
+func (s *Server) shellData(ctx context.Context, tab string) ui.ShellData {
+	if tab != "agents" || s.ext.Agents == nil {
+		return ui.ShellData{}
+	}
+	cards, mirrors, err := s.agentsListCards(ctx)
+	if err != nil {
+		s.logger.Printf("agents: shell recents: %v", err)
+		return ui.ShellData{}
+	}
+	return ui.ShellData{}.WithRecent(cards, mirrors, s.recentRefs(ctx))
 }
 
 // tabFromPath maps a request path to a tab key.

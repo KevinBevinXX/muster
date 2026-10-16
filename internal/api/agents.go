@@ -186,11 +186,26 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 // with live pods) plus the FAB + dispatch modal.
 func (s *Server) handleAgentsContent(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	list, err := s.ext.Agents.List(ctx)
+	cards, mirrors, err := s.agentsListCards(ctx)
 	if err != nil {
 		s.logger.Printf("agents: list: %v", err)
 		http.Error(w, "could not load agents", http.StatusInternalServerError)
 		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := ui.RenderAgentsList(w, cards, mirrors, s.recentRefs(ctx)); err != nil {
+		s.logger.Printf("agents: render: %v", err)
+	}
+}
+
+// agentsListCards is the Agents list's cards as the viewer sees them: agents
+// most recently active first, pins marked, and the viewer's mirrored sessions.
+// The list partial renders them, and the shell resolves the "Recently viewed"
+// strip against them (handleIndex), so both read the one list.
+func (s *Server) agentsListCards(ctx context.Context) ([]ui.AgentCardView, []ui.MirrorCardView, error) {
+	list, err := s.ext.Agents.List(ctx)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	instIdx := s.instanceIndex(ctx)
@@ -212,13 +227,9 @@ func (s *Server) handleAgentsContent(w http.ResponseWriter, r *http.Request) {
 	for _, a := range list {
 		cards = append(cards, s.cardViewIndexed(a, instIdx, lastMsg[a.ID], isChief, pinned))
 	}
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// The viewer's mirrored sessions (internal/mirror), after the agents: from
 	// the plugin's in-memory hub, scoped to this request's principal.
-	if err := ui.RenderAgentsList(w, cards, s.mirrorCards(ctx, pinned), s.recentRefs(ctx)); err != nil {
-		s.logger.Printf("agents: render: %v", err)
-	}
+	return cards, s.mirrorCards(ctx, pinned), nil
 }
 
 // handleAgentNewModal serves the /ui/agents/new partial: the dispatch form. It

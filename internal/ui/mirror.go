@@ -201,7 +201,7 @@ func mirrorCard(m MirrorCardView) g.Node {
 // data-l-*) attributes, which the filter's options are read from.
 func mirrorFields(m MirrorCardView) cardFields {
 	f := cardFields{Host: m.Host, Type: "Mirrored", Name: displayOr(m.Label, displayOr(m.Title, m.Session)),
-		Session: m.Session, Status: "running", Kind: m.Kind}
+		Session: m.Session, Status: "running", Kind: m.Kind, Titles: []string{m.Label, m.Title, m.Session}}
 	if !m.Online {
 		f.Status, f.State = "stopped", "offline"
 	}

@@ -72,6 +72,12 @@ Create the `_e2e` database first, for example with
 `MUSTER_E2E_PORT` moves the whole port block (default 18181), so two checkouts
 can run side by side.
 
+**Layout shift** is gated in the browser suite too. `e2e/tests/cls.spec.ts`
+loads every page at 390×844 (touch) and 1280×800, lets its htmx loads land, and
+fails if the summed `layout-shift` entries (input-caused ones excluded) reach
+0.01. Its page list comes from `internal/api/testdata/routes.golden`, so a new
+`GET` route fails the spec until it is measured there or named as not a page.
+
 `e2e/verdict.mjs` fails the run on any skip, or on fewer passes than its floor.
 In CI the suite runs as parallel legs, each with its own Postgres
 (`e2e/legs.json`). The `e2e` check aggregates them, and refuses a spec that ran

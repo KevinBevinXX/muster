@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 
@@ -168,5 +169,45 @@ func TestTheListDrawsTheRecentStrip(t *testing.T) {
 		amp(ref("chief", "@2").TerminalPath()), "/agents/chatting-oldest"}
 	if !eqStrings(got, want) {
 		t.Errorf("unpinned strip = %v, want %v", got, want)
+	}
+}
+
+// TestTheAgentsShellDrawsTheStripOnFirstPaint: GET /agents draws the strip WITH
+// its entries in the document itself (ui.ShellData), so the list's first load
+// replaces it in place instead of filling an empty, hidden one above the list —
+// which pushed the filter and every card down (a layout shift, e2e/tests/
+// cls.spec.ts). Same resolution as the list's out-of-band copy. Any other tab
+// draws the old empty target: its Agents panel is hidden, where nothing moves.
+func TestTheAgentsShellDrawsTheStripOnFirstPaint(t *testing.T) {
+	mem := &memRecents{}
+	mem.put(recents.Entry{AgentID: 5})
+	mem.put(recents.Entry{AgentID: 6}) // pinned: left out
+	mem.put(recents.Entry{AgentID: 7})
+	mp := &memPins{}
+	s, h := pinServer(t, &fakeMirror{online: true, windows: pinWindows()}, mp)
+	s.ext.Recents = mem
+	mp.pinFor(1).Agents[6] = true
+
+	strip := regexp.MustCompile(`(?s)<nav id="agents-recent"[^>]*>.*?</nav>`)
+	body := getOwed(t, s, h, "/agents").Body.String()
+	nav := strip.FindString(body)
+	if nav == "" {
+		t.Fatalf("no strip in the /agents document:\n%s", body)
+	}
+	if strings.Contains(nav[:strings.Index(nav, ">")], "hidden") {
+		t.Errorf("the /agents shell's strip is drawn hidden, to be filled later: %s", nav[:strings.Index(nav, ">")+1])
+	}
+	var got []string
+	for _, m := range recentEntryHref.FindAllStringSubmatch(nav, -1) {
+		got = append(got, m[1])
+	}
+	if want := []string{"/agents/idle-newest", "/agents/chatting-oldest"}; !eqStrings(got, want) { // 7, then 5
+		t.Errorf("first-paint strip = %v, want %v (newest first, the pinned 6 left out)", got, want)
+	}
+
+	// Control: the board draws the old empty, hidden target.
+	nav = strip.FindString(getOwed(t, s, h, "/tasks").Body.String())
+	if nav == "" || !strings.Contains(nav[:strings.Index(nav, ">")], `hidden`) || recentEntryHref.MatchString(nav) {
+		t.Errorf("the /tasks shell's strip should be the empty hidden target, got: %s", nav)
 	}
 }

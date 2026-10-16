@@ -1114,9 +1114,9 @@ func chiefPanelScript() g.Node {
         // Enter-to-send lives on a keydown handler, so text CONTAINING a newline
         // sends nothing by itself.
         input.value = draft.trim() === '' ? prompt : draft.replace(/\s+$/, '') + '\n' + prompt;
-        // An 'input' event so the chat script's own listeners (autosize, the send
-        // button's enabled state) see the change. A value assigned by script fires
-        // nothing on its own.
+        // An 'input' event so the box's listeners see the change — the composer's
+        // autosize fallback (composer_fit.go) among them. A value assigned by script
+        // fires nothing on its own.
         try { input.dispatchEvent(new Event('input', { bubbles: true })); } catch (err) {}
         input.focus();
         // Caret at the end, so a follow-on keystroke appends rather than replacing

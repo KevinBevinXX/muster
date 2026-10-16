@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -450,6 +451,10 @@ func (s *PGStore) SearchSessions(ctx context.Context, agentID int64, q string, l
 		limit = SearchSessionsMaxLimit
 	}
 	pattern := "%" + db.LikeEscape(q) + "%"
+	// The RANK (see the ORDER BY): the title STARTS with q, else a word in the
+	// title does, else the match is elsewhere (a substring, or the body only).
+	prefix := db.LikeEscape(q) + "%"
+	wordStart := `(^|[^[:alnum:]])` + regexpLiteral(q)
 	// The LATERAL picks the NEWEST matching body row per session and cuts the
 	// excerpt in SQL (see SearchSnippetRadius). `m.snippet IS NOT NULL` in the
 	// WHERE is what makes the join an OR over title-or-body rather than a filter.
@@ -472,9 +477,14 @@ func (s *PGStore) SearchSessions(ctx context.Context, agentID int64, q string, l
 		) m ON TRUE
 		WHERE s.agent_id = $1
 		  AND (s.title ILIKE $3 ESCAPE '\' OR m.snippet IS NOT NULL)
-		ORDER BY s.updated_at DESC, s.id DESC
+		ORDER BY CASE
+		           WHEN s.title ILIKE $7 ESCAPE '\' THEN 0
+		           WHEN s.title ~* $8 THEN 1
+		           ELSE 2
+		         END,
+		         s.updated_at DESC, s.id DESC
 		LIMIT $6`,
-		agentID, q, pattern, SearchSnippetRadius, SearchSnippetLen, limit)
+		agentID, q, pattern, SearchSnippetRadius, SearchSnippetLen, limit, prefix, wordStart)
 	if err != nil {
 		return nil, err
 	}
@@ -490,6 +500,23 @@ func (s *PGStore) SearchSessions(ctx context.Context, agentID int64, q string, l
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// regexpLiteral is q as a Postgres regular expression that matches q itself:
+// every character that is not a letter or a digit is backslash-escaped.
+//
+// ⚠ ONLY THOSE. In an ARE a backslash before a letter or digit is an escape of
+// its own (\d, \w, \1), so escaping everything would turn "d" into a digit
+// class; a backslash before anything else is that character, literally.
+func regexpLiteral(q string) string {
+	var b strings.Builder
+	for _, r := range q {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 func (s *PGStore) GetSession(ctx context.Context, sessionID int64) (ChatSession, error) {
