@@ -120,7 +120,7 @@ func TestTheFilterHidesWithOneRulePerWordAndCountsWithTheSameSelector(t *testing
 		"the terms are lower-cased and parsed":   `var out = [], s = String(v || '').toLowerCase(), m;`,
 		"typing replaces the URL, never pushes":  `history.replaceState(history.state, '', next)`,
 		"it re-counts when the list settles":     `if (e.target && e.target.id === 'agents-list') apply();`,
-		"it remembers the text for the session":  `sessionStorage.setItem(KEY, input.value)`,
+		"it remembers the text for the session":  `sessionStorage.setItem(KEY, q)`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("%s: the filter script no longer contains %s", name, want)

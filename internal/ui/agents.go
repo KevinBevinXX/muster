@@ -267,8 +267,7 @@ func agentCard(a AgentCardView) g.Node {
 		ID("agent-"+ids),
 		g.If(a.Pinned, g.Attr("data-pinned", "")),
 		// What the list's filter finds this card by (agents_filter.go).
-		cardFilterAttrs(cardFields{Host: podHost, Type: "agent", Name: filterHaystack(a.DisplayName, a.Name),
-			Status: a.Status, Kind: agents.KindLabel(a.Kind), Repo: a.Repo, Account: a.CCAccount, NS: a.Namespace},
+		cardFilterAttrs(agentFields(a),
 			displayOr(a.DisplayName, a.Name), a.Name, a.Repo, agents.KindLabel(a.Kind), a.CCAccount, a.Status, "agent"),
 		Class("group relative overflow-hidden rounded-2xl border border-line bg-s1/70 shadow-lg shadow-black/20 ring-1 ring-line"),
 		// The control cluster (rename + ⋯ menu) is positioned over the card's
@@ -329,6 +328,13 @@ func agentCard(a AgentCardView) g.Node {
 		// task, a "Task #<id>" badge linking to the Tasks tab.
 		agentCardFooter(a),
 	)
+}
+
+// agentFields is what an agent card is filtered by — its data-f-* attributes
+// and its share of the filter's options (agentsFacets) both come from here.
+func agentFields(a AgentCardView) cardFields {
+	return cardFields{Host: podHost, Type: "agent", Name: filterHaystack(a.DisplayName, a.Name),
+		Status: a.Status, Kind: agents.KindLabel(a.Kind), Repo: a.Repo, Account: a.CCAccount, NS: a.Namespace}
 }
 
 // agentCardFooter renders the card's bottom meta row: age (CreatedAt) + last

@@ -139,21 +139,8 @@ func mirrorCardID(m MirrorCardView) string {
 // classes, so it adds nothing to the committed stylesheet.
 // TestAgentAndMirrorCardsRenderTheSameSlots pins the shape.
 func mirrorCard(m MirrorCardView) g.Node {
-	status := "running"
-	if !m.Online {
-		status = "stopped"
-	}
-	kind := m.Kind
-	if m.Claude {
-		kind = "Claude Code"
-	}
-	mode, state := "", ""
-	if m.Interactive {
-		mode = "interactive"
-	}
-	if !m.Online {
-		state = "offline"
-	}
+	f := mirrorFields(m)
+	status, kind, mode, state := f.Status, f.Kind, f.Mode, f.State
 	id := mirrorCardID(m)
 	return Article(
 		ID(id),
@@ -162,8 +149,7 @@ func mirrorCard(m MirrorCardView) g.Node {
 		// What the list's filter finds this card by (agents_filter.go): its title
 		// ("Gold:8"), the title as shown — with its qualifier ("Gold:8 · laptop")
 		// — its raw tmux session name, its host, and what runs in it.
-		cardFilterAttrs(cardFields{Host: m.Host, Type: "mirrored", Name: displayOr(m.Label, displayOr(m.Title, m.Session)),
-			Session: m.Session, Status: status, Kind: kind, Mode: mode, State: state},
+		cardFilterAttrs(f,
 			m.Label, m.Title, mirrorQualified(displayOr(m.Label, displayOr(m.Title, m.Session)), m.Qualifier),
 			m.Session, m.Host, kind, "mirrored", mode, state),
 		Class("group relative overflow-hidden rounded-2xl border border-line bg-s1/70 shadow-lg shadow-black/20 ring-1 ring-line"),
@@ -205,6 +191,23 @@ func mirrorCard(m MirrorCardView) g.Node {
 			cardActivity(m.ActiveAt),
 		),
 	)
+}
+
+// mirrorFields is what a mirrored card is filtered by — its data-f-*
+// attributes and its share of the filter's options (agentsFacets).
+func mirrorFields(m MirrorCardView) cardFields {
+	f := cardFields{Host: m.Host, Type: "mirrored", Name: displayOr(m.Label, displayOr(m.Title, m.Session)),
+		Session: m.Session, Status: "running", Kind: m.Kind}
+	if !m.Online {
+		f.Status, f.State = "stopped", "offline"
+	}
+	if m.Claude {
+		f.Kind = "Claude Code"
+	}
+	if m.Interactive {
+		f.Mode = "interactive"
+	}
+	return f
 }
 
 // mirroredMark is the icon that says "this card is a mirrored tmux window, not
