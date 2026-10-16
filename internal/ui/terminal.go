@@ -117,6 +117,10 @@ type AgentTerminalView struct {
 // (internal/api's handleMirrorTerminalScroll).
 const MirrorTerminalScrollPath = "/mirror/terminal/scroll"
 
+// ScrollGaveUpNote is what the Terminal view says when scrolls stopped reaching
+// the host and the page dropped what it had not sent.
+const ScrollGaveUpNote = "Scrolling is not reaching the host. Drag again to retry."
+
 // The Live keys switch's words, and the status line's. Exported so a test pins
 // the page against the same strings rather than a copy of them.
 const (
@@ -303,6 +307,16 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 							),
 						),
 					),
+					// Drag-to-scroll's note: shown when scrolls stopped reaching
+					// the host and the page gave up on them (see the script). Only
+					// a page that can scroll has it.
+					g.If(v.ScrollForm != "", P(
+						ID("term-scroll-note"),
+						g.Attr("role", "status"),
+						g.Attr("hidden", ""),
+						Class("pointer-events-none absolute inset-x-2 top-2 z-10 rounded-md bg-s2 px-2 py-1 text-xs text-fg ring-1 ring-inset ring-line"),
+						g.Text(ScrollGaveUpNote),
+					)),
 				),
 				quickKeyBar(v.Composer == nil),
 				terminalComposer(v.Composer),
@@ -681,11 +695,23 @@ func agentTerminalScript() g.Node {
   // Coalesced: a drag accumulates pixels, whole lines are sent at most once per
   // animation frame, and only one request is in flight (the next waits for its
   // answer), so the order of scrolls is the order of the drag.
+  //
+  // 🔴 A SCROLL THAT DID NOT LAND IS PUT BACK, NOT DROPPED. Any answer but a 2xx
+  // (a 429, a slow host's 504, a 502) and a network failure return the request's
+  // lines to the pending count, to be sent again: on the next frame the first
+  // time, then after 100, 200 and 400 ms. After scrollMaxFails failures in a
+  // row the page gives up: it drops what is pending and shows
+  // #term-scroll-note until a scroll lands again. A 404 or 409 (the host cannot
+  // scroll any more) stops the gesture instead.
   var scrollPath = host.getAttribute('data-scroll');
   if (scrollPath) (function () {
     var form = host.getAttribute('data-scroll-form') || '';
+    var note = document.getElementById('term-scroll-note');
     var maxLines = ` + strconv.Itoa(mirror.MaxScrollLines) + `;
-    var px = 0, lines = 0, sent = 0, inFlight = false, frame = false, dead = false;
+    var scrollMaxFails = 5;
+    var px = 0, lines = 0, sent = 0, asked = 0, fails = 0;
+    var inFlight = false, frame = false, dead = false, waiting = false;
+    function showNote(on) { if (note) note.hidden = !on; }
     function cellHeight() {
       // The drawn height (Fit width scales it), per row.
       var sc = host.querySelector('.xterm-screen');
@@ -697,7 +723,14 @@ func agentTerminalScript() g.Node {
       frame = true;
       requestAnimationFrame(function () { frame = false; flush(); });
     }
-    function addLines(n) { if (n) { lines += n; schedule(); } }
+    function addLines(n) {
+      if (!n) return;
+      lines += n;
+      // An instrument for the browser suite: every line a gesture asked for.
+      asked += n;
+      host.setAttribute('data-scroll-asked', String(asked));
+      schedule();
+    }
     function addPx(d) {
       // d > 0 is back in history.
       px += d;
@@ -707,7 +740,7 @@ func agentTerminalScript() g.Node {
       addLines(n);
     }
     function flush() {
-      if (inFlight || dead || !lines) return;
+      if (inFlight || waiting || dead || !lines) return;
       var n = Math.max(-maxLines, Math.min(maxLines, lines));
       lines -= n;
       inFlight = true;
@@ -716,16 +749,36 @@ func agentTerminalScript() g.Node {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: form + '&lines=' + n
       }).then(function (r) {
-        if (r.status === 204) {
-          sent += n;
-          host.setAttribute('data-scroll-sent', String(sent));
-        } else if (r.status === 404 || r.status === 409) {
-          // The host cannot scroll (any more): stop asking.
-          stop();
-        }
-        // Anything else (429, a slow host) drops this one; the drag goes on.
-      }, function () {}).then(function () {
+        if (r.ok) return 'landed';
+        // The host cannot scroll (any more): stop asking.
+        if (r.status === 404 || r.status === 409) return 'stop';
+        return 'retry';
+      }, function () { return 'retry'; }).then(function (how) {
         inFlight = false;
+        if (how === 'landed') {
+          sent += n;
+          fails = 0;
+          host.setAttribute('data-scroll-sent', String(sent));
+          showNote(false);
+        } else if (how === 'stop') {
+          stop();
+          return;
+        } else {
+          lines += n;
+          fails++;
+          if (fails >= scrollMaxFails) {
+            lines = 0;
+            px = 0;
+            fails = 0;
+            showNote(true);
+            return;
+          }
+          if (fails > 1) {
+            waiting = true;
+            setTimeout(function () { waiting = false; schedule(); }, 100 * Math.pow(2, fails - 2));
+            return;
+          }
+        }
         if (lines) schedule();
       });
     }

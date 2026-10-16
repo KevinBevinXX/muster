@@ -26,11 +26,16 @@ import (
 // a host the principal owns that advertised scrolling and is -interactive, a
 // line count mirror.ClampScroll accepts, and this route's rate limit.
 
-// scrollRateBurst and scrollRateWindow bound one user's scroll requests. A page
-// sends at most one per animation frame and only one at a time (it waits for
-// each answer), so a person dragging stays well under it; a script does not.
+// scrollRateBurst and scrollRateWindow bound one user's scroll requests. The
+// limit must sit ABOVE the page's own fastest cadence, because a 429 costs the
+// page a retry (internal/ui's terminal script puts the lines back and sends
+// them again). A page sends at most one request per animation frame and only
+// one at a time (it waits for each answer), so on a 120 Hz screen with an
+// instant round trip it sends 120 a second. The window is fixed, not sliding,
+// so the limit is twice that: a page at full speed is never refused, and a
+// script sending without waiting for answers is.
 const (
-	scrollRateBurst  = 40
+	scrollRateBurst  = 240
 	scrollRateWindow = time.Second
 )
 

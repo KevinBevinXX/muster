@@ -57,6 +57,9 @@
   to it. Keys typed at that pane meanwhile go to copy-mode, not to the program,
   until it exits (at the bottom, on `q`, or after 30 seconds without a scroll).
   ([mirroring.md](mirroring.md#scrolling-history))
+- **Drag-to-scroll is for mirrored windows only.** A dispatched agent pod's
+  Terminal view has none in this release. Its page wires no scroll gesture and
+  sends no scroll requests.
 - **Per host:** 512 windows, 8 terminals, 8 rendered views. **Per server:** 64
   hosts.
 - **Dispatched agents' terminals and sends are not step-up gated.** Only mirrored

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/mirror"
 )
@@ -61,7 +62,41 @@ func TestTheTerminalPageWiresDragScrollOnlyWhereTheHostCanScroll(t *testing.T) {
 	}
 }
 
-// TestAScrollNeedsNoStepUpAndIsClamped: a same-origin scroll from a signed-in
+// TestAnAgentPodsTerminalPageWiresNoDragScroll: RECORDED EXCLUSION (the
+// operator's decision) — drag-to-scroll is for mirrored windows only, so an
+// agent pod's Terminal page, served by its real route, carries no scroll route,
+// no address and no scroll note, and with them the page's script wires no
+// gesture (it wires one only on data-scroll). The control is a mirrored
+// session's page from the same kind of server, which has all three.
+func TestAnAgentPodsTerminalPageWiresNoDragScroll(t *testing.T) {
+	s, ts := sendServer(t, newSendAgents(), &turnGateway{})
+	resp, page := mirrorGet(t, s, ts, "/agents/keen-wren/terminal")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the agent's terminal page = %d", resp.StatusCode)
+	}
+	term := tagOf(page, "term")
+	if term == "" {
+		t.Fatal("fixture: no #term on the agent's terminal page")
+	}
+	for _, attr := range []string{"data-scroll", "data-scroll-form"} {
+		if strings.Contains(term, attr+"=") {
+			t.Errorf("an agent pod's #term carries %s: %s", attr, term)
+		}
+	}
+	if strings.Contains(page, `id="term-scroll-note"`) {
+		t.Error("an agent pod's terminal page has the scroll note")
+	}
+
+	fm := &fakeMirror{online: true, interactive: true, scroll: true, v2: &fakeMirrorV2{}}
+	ms, mts := viewServer(t, fm)
+	_, control := mirrorGet(t, ms, mts, chiefTermPage)
+	if c := tagOf(control, "term"); !strings.Contains(c, `data-scroll="/mirror/terminal/scroll"`) || !strings.Contains(c, "data-scroll-form=") ||
+		!strings.Contains(control, `id="term-scroll-note"`) {
+		t.Fatalf("control: a mirrored session's page lacks the scroll wiring this test looks for: %s", c)
+	}
+}
+
+// TestAScrollNeedsNoStepUpAndIsClamped:a same-origin scroll from a signed-in
 // session reaches the plugin with its line count — from a STALE sign-in too
 // (the operator's decision: copy-mode reaches no program) — and a count beyond
 // MaxScrollLines either way is clamped, not refused.
@@ -124,8 +159,8 @@ func TestAScrollIsRefusedBeforeThePluginIsAsked(t *testing.T) {
 }
 
 // TestTheHostsAnswerIsMappedToAStatus: what the plugin answers decides the
-// status the page reads (409 stops its gesture, anything else is one dropped
-// scroll).
+// status the page reads (404 or 409 stops its gesture; anything else is put
+// back and sent again).
 func TestTheHostsAnswerIsMappedToAStatus(t *testing.T) {
 	for _, c := range []struct {
 		err    error
@@ -167,5 +202,55 @@ func TestScrollIsRateLimitedPerUser(t *testing.T) {
 	}
 	if hdr.Get("Retry-After") != "1" {
 		t.Errorf("a 429 without Retry-After: %v", hdr)
+	}
+}
+
+// TestTheScrollLimitPassesAFullSpeedPageAndStopsAFlood: the limit sits ABOVE
+// the page's own fastest cadence — one request per animation frame on a 120 Hz
+// screen, so 120 a second, spread evenly — for several seconds running, and it
+// still refuses a script that sends 1000 in a tenth of a second. The clock is
+// synthetic, so neither half depends on how fast the runner is. 120 and 1000
+// are literals: they are the page's cadence and a flood, not the constant.
+func TestTheScrollLimitPassesAFullSpeedPageAndStopsAFlood(t *testing.T) {
+	var k keyedRate
+	start := time.Unix(1_700_000_000, 0)
+	const perSecond, seconds = 120, 4
+	for i := 0; i < perSecond*seconds; i++ {
+		now := start.Add(time.Duration(i) * time.Second / perSecond)
+		if !k.allow(7, now, scrollRateBurst, scrollRateWindow) {
+			t.Fatalf("a page sending %d a second was refused at request %d (%v in)", perSecond, i, now.Sub(start))
+		}
+	}
+	flood := start.Add(time.Hour)
+	allowed := 0
+	for i := 0; i < 1000; i++ {
+		if k.allow(8, flood.Add(time.Duration(i)*100*time.Millisecond/1000), scrollRateBurst, scrollRateWindow) {
+			allowed++
+		}
+	}
+	if allowed == 1000 || allowed < perSecond {
+		t.Fatalf("a flood of 1000 in 100ms: %d allowed; want it limited, yet at least %d through", allowed, perSecond)
+	}
+	// Per user: user 8's flood did not spend user 7's allowance.
+	if !k.allow(7, flood, scrollRateBurst, scrollRateWindow) {
+		t.Error("one user's flood limited another user")
+	}
+}
+
+// TestASecondOfAFullSpeedPageIsNeverRefusedThroughTheRoute: 120 scrolls — a
+// 120 Hz page's second — back to back through the real mux and limiter, each
+// answered 204. They arrive faster than a page sends them (a page waits for
+// each answer AND for the next frame), so this is the harder case.
+func TestASecondOfAFullSpeedPageIsNeverRefusedThroughTheRoute(t *testing.T) {
+	fm := &fakeMirror{online: true, interactive: true, scroll: true, v2: &fakeMirrorV2{}}
+	s, ts := viewServer(t, fm)
+	cookie := sessionCookieFor(s)
+	for i := 0; i < 120; i++ {
+		if code, body, _ := postSend(t, ts.URL, termScrollPath, cookie, "", scrollForm("chief", "1")); code != http.StatusNoContent {
+			t.Fatalf("scroll %d of a full-speed page: %d %q, want 204", i+1, code, body)
+		}
+	}
+	if got := len(fm.scrolled()); got != 120 {
+		t.Fatalf("the plugin was asked %d times, want 120", got)
 	}
 }

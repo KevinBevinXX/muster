@@ -202,13 +202,21 @@ the page like any other output.
   copy-mode, not to the program. Scrolling sends nothing but copy-mode's own
   commands, so nothing reaches the program. The route still requires a signed-in
   session, a same-origin request and an `-interactive` host that advertised it.
-  Each request moves at most 200 lines, and each user gets 40 requests a second.
+  Each request moves at most 200 lines, and each user gets 240 requests a second:
+  twice what a page sends at full speed (one per frame on a 120 Hz screen).
+- **A scroll that does not land is sent again.** On any answer but success, or a
+  network failure, the page puts the lines back and retries: on the next frame,
+  then after 100, 200 and 400 ms. After five failures in a row it drops what is
+  pending and says *Scrolling is not reaching the host*.
 - ⚠ **Copy-mode is the pane's, not the viewer's.** Everyone attached to that pane
   sees it scrolled. Someone typing at the pane during copy-mode types into
   copy-mode (its key table), not into the program, until it exits.
 
 A read-only host, or a `muster-mirror` that predates scrolling, advertises
 nothing. Its page wires no gesture, and touch pans the terminal as before.
+
+An agent pod's Terminal view has no drag-to-scroll in this release. Only
+mirrored windows do.
 
 ## Tokens, revocation, rate limits
 

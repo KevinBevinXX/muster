@@ -6,6 +6,7 @@ import { BrowserContext, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { binDir, dsn, hookToken, mirrorPort, password, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
+import { touchDrag } from '../lib/touch';
 
 // MIRRORED sessions at a phone's width (412×915), against a REAL muster-server
 // with MUSTER_MIRROR=1 and a REAL muster-mirror binary dialling it over the
@@ -846,24 +847,10 @@ test('a read-only host’s Terminal view draws its composer disabled and says wh
 // in MUSTER_MIRROR_E2E_SCROLL_FILE (`<pane> <lines> pos=<lines back>`); unset,
 // it is an OLDER muster-mirror that cannot scroll.
 //
-// 🔴 REAL TOUCH: the drags are Chrome touch events (CDP Input.dispatchTouchEvent),
-// which go through the browser's own gesture handling — touch-action, native
-// panning of #term-scroll — exactly as a finger does. A scripted scrollTop or a
-// synthetic TouchEvent would bypass precisely what is under test.
+// 🔴 REAL TOUCH: the drags are Chrome touch events (../lib/touch.ts), which go
+// through the browser's own gesture handling — touch-action, native panning of
+// #term-scroll — exactly as a finger does.
 // ---------------------------------------------------------------------------
-type Pt = { x: number; y: number };
-async function touchDrag(page: Page, from: Pt, to: Pt, steps = 12) {
-  const cdp = await page.context().newCDPSession(page);
-  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: from.x, y: from.y }] });
-  for (let i = 1; i <= steps; i++) {
-    const x = from.x + ((to.x - from.x) * i) / steps;
-    const y = from.y + ((to.y - from.y) * i) / steps;
-    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y }] });
-    await page.waitForTimeout(16);
-  }
-  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-  await cdp.detach();
-}
 
 // scrollLog is the fake host's record: each scroll's lines and the position
 // after it, and the cancels.
@@ -876,6 +863,21 @@ function scrollLog(file: string) {
   return { scrolls, cancels: lines.filter((l) => l.endsWith(' cancel')) };
 }
 
+// reportScrollTiming prints (and attaches to the test) the scroll requests'
+// round trips and the most requests the page sent in any one second.
+function reportScrollTiming(rtts: number[], sentAt: number[]) {
+  const s = [...rtts].sort((a, b) => a - b);
+  const q = (p: number) => (s.length ? s[Math.min(s.length - 1, Math.floor(p * s.length))].toFixed(1) : 'n/a');
+  let peak = 0;
+  for (let i = 0, j = 0; i < sentAt.length; i++) {
+    while (sentAt[i] - sentAt[j] >= 1000) j++;
+    peak = Math.max(peak, i - j + 1);
+  }
+  const line = `scroll round trip over ${s.length} requests: min ${q(0)} ms, median ${q(0.5)} ms, p95 ${q(0.95)} ms, max ${q(1)} ms; peak ${peak} requests in one second`;
+  console.log(line);
+  test.info().annotations.push({ type: 'scroll-timing', description: line });
+}
+
 test.describe('drag-to-scroll on a phone (412×915, touch)', () => {
   test('a vertical drag scrolls tmux history through the host’s copy-mode, a sideways one still pans, and an older host has no gesture', async ({ page }) => {
     await stopMirror();
@@ -885,8 +887,13 @@ test.describe('drag-to-scroll on a phone (412×915, touch)', () => {
     // sideways. 20 rows fit its height, so a vertical drag is never the area's.
     mirrorProc = startMirror(true, undefined, { MUSTER_MIRROR_E2E_SCROLL_FILE: scrollFile, MUSTER_MIRROR_E2E_WINDOW: '200x20' });
     const posts: number[] = [];
+    const sentAt: number[] = [];
+    page.on('request', (r) => {
+      if (new URL(r.url()).pathname === '/mirror/terminal/scroll') sentAt.push(Date.now());
+    });
     page.on('response', (r) => {
-      if (new URL(r.url()).pathname === '/mirror/terminal/scroll') posts.push(r.status());
+      if (new URL(r.url()).pathname !== '/mirror/terminal/scroll') return;
+      posts.push(r.status());
     });
     try {
       await login(page);
@@ -925,6 +932,17 @@ test.describe('drag-to-scroll on a phone (412×915, touch)', () => {
       // otherwise land in the sideways count below).
       // Both sides are re-read on every poll: a scroll still landing moves both.
       await expect.poll(() => posts.length - scrollLog(scrollFile).scrolls.length, { message: 'every scroll answered' }).toBe(0);
+      // THE MEASURED ROUND TRIP and the page's cadence through this real stack
+      // (browser → muster-server → tunnel → muster-mirror → the fake's
+      // copy-mode), for the rate limit's headroom. Reported, not asserted: a
+      // number about this host, not a contract.
+      // The browser's own Resource Timing (fetch start to response end), not
+      // Playwright's event times. It must have seen every scroll posted.
+      const rtts = await page.evaluate(() => performance.getEntriesByType('resource')
+        .filter((e) => new URL(e.name).pathname === '/mirror/terminal/scroll').map((e) => e.duration));
+      expect(rtts.length, 'the round-trip instrument saw every scroll').toBe(posts.length);
+      reportScrollTiming(rtts, sentAt);
+      await expect(page.locator('#term-scroll-note'), 'nothing failed, so no note').toBeHidden();
       const before = scrollLog(scrollFile).scrolls.length;
       const sent = posts.length;
       await touchDrag(page, { x: mid.x + 120, y: mid.y }, { x: mid.x - 120, y: mid.y + 40 });
@@ -949,8 +967,89 @@ test.describe('drag-to-scroll on a phone (412×915, touch)', () => {
       await page.waitForTimeout(300);
       expect(posts.length, 'an older host’s page posted no scroll').toBe(postsBefore);
       expect(await readOnlyShown(page), 'and no note about it').toEqual([]);
+      await expect(page.locator('#term-scroll-note'), 'an older host’s page has no scroll note').toHaveCount(0);
       await noHorizontalScroll(page);
     } finally {
+      await stopMirror();
+      fs.rmSync(dir, { recursive: true, force: true });
+      mirrorProc = startMirror(false);
+    }
+  });
+});
+
+// A SCROLL THAT DID NOT LAND IS PUT BACK. page.route plays the failures (a 429,
+// a network failure, a 504, then a host that keeps refusing); everything else
+// is the real stack. `asked` is the page's own count of the lines its gestures
+// asked for, `sent` of those that landed, and the fake host's log is what
+// arrived.
+test.describe('drag-to-scroll when scrolls fail (412×915, touch)', () => {
+  test('a scroll that did not land is sent again, and one that keeps failing gives up with a note', async ({ page }) => {
+    await stopMirror();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'muster-e2e-scrollfail-'));
+    const scrollFile = path.join(dir, 'scrolls');
+    mirrorProc = startMirror(true, undefined, { MUSTER_MIRROR_E2E_SCROLL_FILE: scrollFile, MUSTER_MIRROR_E2E_WINDOW: '200x20' });
+    // Each scroll request takes the next fault in `plan`, or `always` once the
+    // plan is spent; '' passes it through to the real server.
+    let plan: string[] = [];
+    let always = '';
+    let attempts = 0;
+    let faulted = 0;
+    const hostLines = () => scrollLog(scrollFile).scrolls.reduce((a, s) => a + s.lines, 0);
+    const attr = async (name: string) => Number((await page.locator('#term').getAttribute(name)) ?? '0');
+    try {
+      await login(page);
+      await waitForCards(page, true);
+      await page.route('**/mirror/terminal/scroll', async (route) => {
+        attempts++;
+        const f = plan.length ? plan.shift()! : always;
+        if (f) faulted++;
+        if (f === 'abort') return route.abort('failed');
+        if (f === '429') return route.fulfill({ status: 429, headers: { 'Retry-After': '1' }, body: 'scrolling too fast' });
+        if (f) return route.fulfill({ status: Number(f), body: 'fault' });
+        return route.continue();
+      });
+      await page.goto(origin + termPath('scratch'));
+      await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch mode=ro');
+      const term = page.locator('#term');
+      await expect(term).toHaveAttribute('data-scroll-on', '1');
+      const note = page.locator('#term-scroll-note');
+      await expect(note).toBeHidden();
+      const box = (await page.locator('#term-scroll').boundingBox())!;
+      const mid = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+
+      // 1. Three failures, then the real host: nothing the drag asked for is lost.
+      plan = ['429', 'abort', '504'];
+      await touchDrag(page, { x: mid.x, y: mid.y - 120 }, { x: mid.x, y: mid.y + 120 });
+      // Both sides re-read on every poll.
+      await expect.poll(async () => {
+        const asked = await attr('data-scroll-asked');
+        return `host-asked=${hostLines() - asked} sent-asked=${(await attr('data-scroll-sent')) - asked}`;
+      }, { message: `every line asked for arrived (muster-mirror log:\n${mirrorLog})` }).toBe('host-asked=0 sent-asked=0');
+      expect(faulted, 'fixture: the three faults were served').toBe(3);
+      const asked1 = await attr('data-scroll-asked');
+      expect(asked1, 'fixture: the drag asked for some history').toBeGreaterThan(5);
+      expect(hostLines(), 'after the retries the host has every line').toBe(asked1);
+      await expect(note, 'retries that succeeded leave no note').toBeHidden();
+
+      // 2. A host that keeps failing: a bounded number of tries, then the note.
+      always = '503';
+      const tries0 = attempts;
+      const host0 = hostLines();
+      await touchDrag(page, { x: mid.x, y: mid.y - 60 }, { x: mid.x, y: mid.y + 60 });
+      await expect(note, 'the page gave up and says so').toBeVisible();
+      await expect(note).toHaveText('Scrolling is not reaching the host. Drag again to retry.');
+      await page.waitForTimeout(1500);
+      expect(attempts - tries0, 'tries before giving up').toBe(5);
+      expect(hostLines(), 'nothing reached the host').toBe(host0);
+
+      // 3. The host recovers: the next drag lands and the note goes.
+      always = '';
+      await touchDrag(page, { x: mid.x, y: mid.y + 120 }, { x: mid.x, y: mid.y - 120 });
+      await expect(note, 'a scroll that lands clears the note').toBeHidden();
+      await expect.poll(async () => hostLines() - (await attr('data-scroll-sent')), { message: 'the page and the host agree again' }).toBe(0);
+      expect(hostLines(), 'the recovered drag scrolled forward').toBeLessThan(host0);
+    } finally {
+      await page.unroute('**/mirror/terminal/scroll');
       await stopMirror();
       fs.rmSync(dir, { recursive: true, force: true });
       mirrorProc = startMirror(false);
