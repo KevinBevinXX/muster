@@ -94,7 +94,8 @@ func (s *Server) mirrorCards(ctx context.Context, pinned pins.Set) []ui.MirrorCa
 	for _, m := range mirror.Ordered(s.ext.Mirror.Hosts(ctx)) {
 		out = append(out, ui.MirrorCardView{Host: m.Host, Session: m.Session, Window: m.Window, Title: mirrorTitle(m), Label: m.Label,
 			Qualifier: m.Qualifier, Kind: m.Kind(), Online: m.Online, Interactive: m.Interactive, Claude: m.Claude,
-			Pinned: pinned.Mirror(pins.MirrorKey{Host: m.Host, Session: m.Session, Window: m.Window})})
+			ActiveAt: m.ActiveAt(),
+			Pinned:   pinned.Mirror(pins.MirrorKey{Host: m.Host, Session: m.Session, Window: m.Window})})
 	}
 	return out
 }
@@ -166,6 +167,8 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		http.Redirect(w, r, keepNotice(r, mirrorRef(e).TerminalPath()), http.StatusSeeOther)
 		return
 	}
+	// The viewer opened this window (best-effort).
+	s.recordMirrorVisit(r.Context(), h.Host, e.Session, e.Window)
 	session := e.Session
 	rawName := ""
 	if e.Label != "" && e.Label != session {

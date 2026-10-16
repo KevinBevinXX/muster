@@ -61,7 +61,7 @@ function writeWindows(ws: Win[]) {
 const q = (w: Win) => `host=${encodeURIComponent(host)}&session=${encodeURIComponent(w.session)}&window=${encodeURIComponent(w.id)}`;
 const viewPath = (w: Win) => '/mirror/view?' + q(w);
 const termPath = (w: Win) => '/mirror/terminal?' + q(w);
-const cards = (page: Page) => page.locator(`#agents-list article[data-mirror-card]:has([data-mirror-badge]:has-text("Mirrored · ${host}"))`);
+const cards = (page: Page) => page.locator(`#agents-list article[data-mirror-card]:has([data-mirror-badge][aria-label="Mirrored · ${host}"])`);
 const cardOf = (page: Page, href: string) => page.locator(`#agents-list article[data-mirror-card]:has(a[href="${href}"])`);
 const screen = (page: Page) => page.locator('#term .xterm-rows');
 const read = (f: string) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '');
@@ -172,7 +172,7 @@ for (const vp of [
       await expect(eight.locator('[data-mirror-claude]')).toContainText('Claude Code');
       await expect(shell.locator('[data-mirror-kind]')).toContainText('shell');
       await expect(solo.locator('[data-mirror-kind]')).toContainText('opencode');
-      for (const c of [eleven, eight, shell, solo]) await expect(c.locator('[data-mirror-badge]')).toContainText(`Mirrored · ${host}`);
+      for (const c of [eleven, eight, shell, solo]) await expect(c.locator('[data-mirror-host]')).toHaveText(host);
 
       // One flat list, most recently active first — two windows of ONE session
       // sit either side of another session's.
@@ -436,9 +436,11 @@ for (const vp of [
       // This tab remembers a filter of its own…
       await box.fill('gold');
       await expect(cards(page).filter({ visible: true })).toHaveCount(3);
-      // …and a link with another one wins over it, on first paint.
+      // …and a link with another one wins over it, on first paint. Its tokens
+      // are TYPED ones (field:value, a substring), so they stay in the box.
       await page.goto(origin + '/agents?q=' + encodeURIComponent(`host:${host} kind:opencode`));
       await expect(box).toHaveValue(`host:${host} kind:opencode`);
+      await expect(page.locator('#agents-f-host')).toHaveValue('');
       await expect(cards(page).filter({ visible: true })).toHaveCount(1, { timeout: 20_000 });
       expect(await names()).toEqual(['solo:3']);
       // Clearing it takes it out of the URL.
@@ -470,6 +472,128 @@ for (const vp of [
       expect(back.pathname + back.search, 'back on Agents, the URL carries the filter at once').toBe('/agents?q=solo');
       expect(await page.evaluate(() => history.length), 'two tab switches, two history entries').toBe(hist + 2);
       await expect(box).toHaveValue('solo');
+      await noHorizontalScroll(page);
+    });
+
+    // THE FILTER'S CONTROLS: nobody types `host=x`. One select per facet (host,
+    // type, status, kind) whose options the script reads off the cards; the
+    // choices combine, show a Clear all and a visible "N of M", and they are the
+    // SAME token string as before — so `?q=` and the session's copy carry them.
+    // A select writes an EXACT token (field=value); a typed field:value stays a
+    // substring, in the box.
+    //
+    // 🔴 A REGRESSION TEST: on the commit before there is no #agents-f-host.
+    test('the filter controls select, combine, round-trip ?q= and survive a reload', async ({ page }) => {
+      await openList(page, 4);
+      const press = (l: ReturnType<Page['locator']>) => (vp.use.hasTouch ? l.tap() : l.click());
+      const sel = (f: string) => page.locator('#agents-f-' + f);
+      const box = page.locator('#agents-search');
+      const count = page.locator('#agents-count');
+      const clearAll = page.locator('#agents-filter-clear');
+      const qOf = () => new URL(page.url()).searchParams.get('q');
+      const names = async () =>
+        (await cards(page).filter({ visible: true }).evaluateAll((els) => els.map((e) => ((e.querySelector('[data-mirror-label]') ?? e.querySelector('[data-mirror-name]')) as HTMLElement).textContent))).sort();
+      const all = await page.locator('#agents-list > article').count();
+      await expect(count).toBeVisible();
+      await expect(count).toHaveText(`${all} of ${all}`);
+      await expect(clearAll).toBeHidden();
+
+      // The options are the cards' own values, labelled as the cards spell them.
+      const opts = (f: string) => sel(f).locator('option').allTextContents();
+      await expect.poll(() => opts('host'), { timeout: 20_000 }).toEqual(expect.arrayContaining(['Any host', 'cluster', host]));
+      expect(await opts('type')).toEqual(['Any type', 'Agent', 'Mirrored']);
+      expect(await opts('kind')).toEqual(expect.arrayContaining(['Any kind', 'Claude Code', 'opencode', 'shell']));
+      // (Which statuses besides running exist depends on what earlier specs did to the seed.)
+      expect(await opts('status')).toEqual(expect.arrayContaining(['Any status', 'running']));
+
+      // Thumb-friendly: each control a 44px, 16px-text target inside the viewport.
+      for (const f of ['host', 'type', 'status', 'kind']) {
+        const bb = (await sel(f).boundingBox())!;
+        expect(bb.height, `${f} is a 44px target`).toBeGreaterThanOrEqual(44);
+        expect(bb.x + bb.width, `${f} fits the viewport`).toBeLessThanOrEqual(vp.use.viewport.width);
+        expect(await sel(f).evaluate((e) => parseFloat(getComputedStyle(e).fontSize)), `${f} has 16px text`).toBeGreaterThanOrEqual(16);
+      }
+
+      // Select a host: this host's windows only, written as the exact token.
+      await sel('host').selectOption(host);
+      expect(qOf()).toBe(`host=${host}`);
+      expect(await names()).toEqual(['Gold:1', 'Gold:11', 'Gold:8', 'solo:3']);
+      await expect(page.locator('#agents-list > article:not([data-mirror-card])').filter({ visible: true })).toHaveCount(0);
+      await expect(count).toHaveText(`4 of ${all}`);
+      await expect(clearAll).toBeVisible();
+      expect((await clearAll.boundingBox())!.height, 'Clear all is a 44px target').toBeGreaterThanOrEqual(44);
+
+      // Combine: a kind with a space in it, then a word in the box.
+      await sel('kind').selectOption('claude code');
+      expect(qOf()).toBe(`host=${host} kind="claude code"`);
+      expect(await names()).toEqual(['Gold:11', 'Gold:8']);
+      await box.fill('11');
+      expect(qOf()).toBe(`host=${host} kind="claude code" 11`);
+      expect(await names()).toEqual(['Gold:11']);
+      await expect(count).toHaveText(`1 of ${all}`);
+
+      // Take one back: its "Any …" option, and the box's ×.
+      await sel('kind').selectOption('');
+      expect(qOf()).toBe(`host=${host} 11`);
+      expect(await names()).toEqual(['Gold:11']);
+      await press(page.locator('#agents-search-clear'));
+      await expect(box).toHaveValue('');
+      expect(qOf()).toBe(`host=${host}`);
+      expect(await names()).toEqual(['Gold:1', 'Gold:11', 'Gold:8', 'solo:3']);
+
+      // Clear all: every control and the box, and the URL.
+      await box.fill('gold');
+      await press(clearAll);
+      await expect(sel('host')).toHaveValue('');
+      await expect(box).toHaveValue('');
+      await expect(clearAll).toBeHidden();
+      expect(qOf()).toBeNull();
+      await expect(count).toHaveText(`${all} of ${all}`);
+
+      // Type + status: this host's online windows, and no pod agent.
+      await sel('type').selectOption('mirrored');
+      await sel('status').selectOption('running');
+      expect(await names()).toEqual(['Gold:1', 'Gold:11', 'Gold:8', 'solo:3']);
+      await expect(page.locator('#agents-list > article:not([data-mirror-card])').filter({ visible: true })).toHaveCount(0);
+      expect(qOf()).toBe('type=mirrored status=running');
+      // A control and a typed field token AND as well: the pod agents are on host
+      // "cluster", so asking for agents typed on top leaves nothing.
+      await box.fill('host:cluster');
+      await expect(page.locator('#agents-list > article').filter({ visible: true })).toHaveCount(0);
+      await expect(page.locator('#agents-nomatch')).toBeVisible();
+      await press(clearAll);
+
+      // A ?q= link with exact tokens shows them SELECTED and filters on first
+      // paint — the options arrive with the list, after the link was read.
+      await page.goto(origin + '/agents?q=' + encodeURIComponent(`host=${host} kind=opencode`));
+      await expect(sel('host')).toHaveValue(host, { timeout: 20_000 });
+      await expect(sel('kind')).toHaveValue('opencode');
+      await expect(box).toHaveValue('');
+      await expect.poll(names, { timeout: 20_000 }).toEqual(['solo:3']);
+      // A reload is the same filter…
+      await page.reload();
+      await expect(sel('host')).toHaveValue(host, { timeout: 20_000 });
+      await expect(sel('kind')).toHaveValue('opencode');
+      await expect.poll(names, { timeout: 20_000 }).toEqual(['solo:3']);
+      // …and so is coming back with no ?q= at all: the session's copy.
+      await page.goto(origin + '/agents');
+      await expect(sel('host')).toHaveValue(host, { timeout: 20_000 });
+      await expect.poll(names, { timeout: 20_000 }).toEqual(['solo:3']);
+      expect(qOf(), 'the remembered filter is put back on the URL').toBe(`host=${host} kind=opencode`);
+      // A link asking for a value no card has (a partial host) gets no made-up
+      // option: its token stays in the box, and it is still exact, so nothing
+      // matches. Typed with a colon, the same partial is a substring again.
+      const part = host.slice(0, host.length - 2);
+      await page.goto(origin + '/agents?q=' + encodeURIComponent(`host=${part}`));
+      await expect.poll(() => opts('host'), { timeout: 20_000 }).toEqual(expect.arrayContaining([host]));
+      await expect(sel('host')).toHaveValue('');
+      expect(await opts('host'), 'no option was made up for the partial host').not.toContain(part);
+      await expect(box).toHaveValue(`host=${part}`);
+      await expect(page.locator('#agents-nomatch')).toBeVisible();
+      await box.fill(`host:${part}`);
+      await expect.poll(names).toEqual(['Gold:1', 'Gold:11', 'Gold:8', 'solo:3']);
+      await press(clearAll);
+      expect(qOf()).toBeNull();
       await noHorizontalScroll(page);
     });
 

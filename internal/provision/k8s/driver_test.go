@@ -1009,7 +1009,7 @@ func TestEndpointOfAPortlessInstance(t *testing.T) {
 // Logs
 // --------------------------------------------------------------------------
 
-func TestTailLogsOfAnInstanceWithNoPodYet(t *testing.T) {
+func TestStreamLogsOfAnInstanceWithNoPodYet(t *testing.T) {
 	eachMode(t, func(t *testing.T, m nsMode) {
 		d, _ := newDriver(t, m, nil)
 		ctx := context.Background()
@@ -1017,12 +1017,13 @@ func TestTailLogsOfAnInstanceWithNoPodYet(t *testing.T) {
 		if err := d.Create(ctx, spec); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
-		out, err := d.TailLogs(ctx, spec.Ref, 10)
+		var lines []string
+		err := d.StreamLogs(ctx, spec.Ref, func(l string) { lines = append(lines, l) })
 		if err != nil {
 			t.Fatalf("an instance with no pod yet is not a failure: %v", err)
 		}
-		if out != "" {
-			t.Fatalf("want empty output, got %q", out)
+		if len(lines) != 0 {
+			t.Fatalf("want no output, got %q", lines)
 		}
 	})
 }

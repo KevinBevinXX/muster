@@ -198,6 +198,16 @@ const manifestPath = "testdata/routes.partition.tsv"
 //	----
 //	  75   routeFloor
 //
+// ⚠ AND RE-DERIVED ONCE MORE WHEN THE CARDS LOST THEIR PREVIEW: the
+// GET /ui/agents/{id}/recent row went with the lazy recent-log slot it served
+// (an operator decision: no previews on cards), so the projection is 83
+// (69 + 14), same margin:
+//
+//	  83   manifest projection (69 muster + 14 shared)
+//	-  9   margin
+//	----
+//	  74   routeFloor
+//
 // routeFloorProjection is checked against the MANIFEST, not against the code,
 // by TestRoutePartitionManifestIsATotalPartition.
 //
@@ -209,8 +219,8 @@ const manifestPath = "testdata/routes.partition.tsv"
 // red the gate from the first route to the eightieth.
 // ---------------------------------------------------------------------------
 const (
-	routeFloorProjection = 84
-	routeFloor           = 75
+	routeFloorProjection = 83
+	routeFloor           = 74
 )
 
 // muxRecorder implements Mux and records patterns instead of routing.

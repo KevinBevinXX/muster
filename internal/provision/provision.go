@@ -193,9 +193,6 @@ type Provisioner interface {
 	// from outside the driver.
 	Endpoint(ctx context.Context, ref Ref) (Endpoint, error)
 
-	// TailLogs returns the last `lines` lines of the instance's output.
-	TailLogs(ctx context.Context, ref Ref, lines int64) (string, error)
-
 	// StreamLogs follows the instance's output, calling emit once per line,
 	// until ctx is cancelled or the stream ends. emit is called from the
 	// calling goroutine's stream and must not block indefinitely.

@@ -39,6 +39,7 @@ import (
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/push"
+	"github.com/ZacxDev/muster/internal/recents"
 	"github.com/ZacxDev/muster/internal/sse"
 	"github.com/ZacxDev/muster/internal/users"
 )
@@ -238,7 +239,6 @@ var isolationClasses = map[string]routeClass{
 	"GET /tasks/{id}":                          classParam,
 	"GET /tasks/{id}/attachments/{aid}":        classParam,
 	"GET /ui/agents/{id}/card":                 classParam,
-	"GET /ui/agents/{id}/recent":               classParam,
 	"GET /ui/agents/{id}/rename":               classParam,
 	"GET /ui/agents/{id}/status":               classParam,
 	"GET /ui/agents/{name}/chat-log":           classParam,
@@ -722,6 +722,11 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	pinStore := pins.NewPG(pool)
 	must(pinStore.PinAgent(ua, w.a.agent.ID), "a agent pin")
 	must(pinStore.PinMirror(ua, pins.MirrorKey{Host: w.canary + "-host", Session: "main", Window: "@1"}), "a mirror pin")
+	// A's recently viewed entries (0018): B's page visits record B's own rows,
+	// never A's (the snapshot holds them).
+	recentStore := recents.NewPG(pool)
+	must(recentStore.VisitAgent(ua, w.a.agent.ID), "a agent visit")
+	must(recentStore.VisitMirror(ua, pins.MirrorKey{Host: w.canary + "-host", Session: "main", Window: "@1"}), "a mirror visit")
 
 	w.aIdentities = []string{w.a.agent.Name, agents.ChiefNameFor(w.a.uid), w.aSessionLink, w.aTag, w.aProject}
 	w.opInvite, err = users.NewPG(pool).CreateInvite(ctx, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession},
@@ -776,6 +781,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		// B's and stays queued.
 		Plugins: plugins.NewPG(pool),
 		Pins:    pins.NewPG(pool),
+		Recents: recents.NewPG(pool),
 		Push:    push.NewService(pushStore, w.pusher, push.VAPIDConfig{PublicKey: "iso-walk-vapid-public"}, log.New(io.Discard, "", 0)),
 		ConnectorPolicy: connectors.Policy{AllowLoopback: true, InsecureHTTP: true,
 			Resolve: func(_ context.Context, host string) ([]netip.Addr, error) {
@@ -1149,7 +1155,7 @@ func (w *isoWorld) snapshot() map[string]string {
 	for _, tbl := range []string{"notes", "note_comments", "note_attachments", "task_sessions", "agents",
 		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "github_connection", "mirror_tokens",
 		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens", "push_subscriptions", "push_preferences", "flow_requests",
-		"plugins", "plugin_messages", "plugin_reply_drafts", "pins"} {
+		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "recents"} {
 		var js string
 		if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t.id)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
 			// task_sessions/github_connection have no `id` ordering column in every
@@ -1906,9 +1912,6 @@ func (p *isoProvisioner) Stop(ctx context.Context, id int64) error    { return p
 func (p *isoProvisioner) Destroy(ctx context.Context, id int64) error { return p.check(ctx, id) }
 func (p *isoProvisioner) Instances(context.Context) ([]provision.Instance, error) {
 	return nil, nil
-}
-func (p *isoProvisioner) TailLogs(_ context.Context, a agents.Agent, _ int64) (string, error) {
-	return "logs of " + a.Name, nil
 }
 func (p *isoProvisioner) StreamLogs(_ context.Context, a agents.Agent, emit func(string)) error {
 	emit("log of " + a.Name)

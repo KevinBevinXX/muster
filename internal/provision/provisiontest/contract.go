@@ -385,9 +385,6 @@ func testEndpointMissingIsNotFound(t *testing.T, h Harness) {
 func testLogsMissingIsNotFound(t *testing.T, h Harness) {
 	p := h.New(t)
 	ctx := context.Background()
-	if _, err := p.TailLogs(ctx, provision.Ref{Name: "absent"}, 10); !errors.Is(err, provision.ErrNotFound) {
-		t.Fatalf("TailLogs of a missing instance must be ErrNotFound, got %v", err)
-	}
 	err := p.StreamLogs(ctx, provision.Ref{Name: "absent"}, func(string) {
 		t.Error("StreamLogs emitted a line for an instance that does not exist")
 	})

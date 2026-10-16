@@ -16,6 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/recents"
 )
 
 // Extensions are the server's optional dependencies. A Server built without
@@ -166,6 +167,11 @@ type Extensions struct {
 	// nil (no database): nothing is pinned, no card is drawn pinned, and the pin
 	// routes answer 404.
 	Pins pins.Store
+
+	// Recents is the Agents list's per-user "recently viewed" entries
+	// (internal/recents, migration 0018). nil (no database): no visit is
+	// recorded and the strip is never drawn.
+	Recents recents.Store
 }
 
 // Mirror is the mirror plugin as this package consumes it. *mirror.Service
@@ -458,7 +464,7 @@ func (s *Server) requireGatewayProvisioner(next http.HandlerFunc) http.HandlerFu
 //
 // ⚠ ITS PREVIOUS WORDING WAS "re-applies an agent's granted-profile env/kubeconfig to
 // its running POD (a HELM UPGRADE; the pod rolls)" — the same helm-and-pod vocabulary
-// removed from Destroy, TailLogs and StreamLogs below, and missed in the same sweep
+// removed from Destroy and StreamLogs below, and missed in the same sweep
 // that removed them. It is false of the only implementation (which calls the driver's
 // Update), false for a driver with no pods, and it names a mechanism the provisioner
 // contract deliberately does not have.
@@ -559,8 +565,6 @@ type Provisioner interface {
 	// transitivity. The provisioner contract's own vocabulary is what lets
 	// agents.ComputeStatus answer for an agent running under any driver.
 	Instances(ctx context.Context) ([]provision.Instance, error)
-	// TailLogs returns the last N log lines of the agent's running instance.
-	TailLogs(ctx context.Context, a agents.Agent, lines int64) (string, error)
 	// StreamLogs follows the agent's instance output, invoking emit per line.
 	StreamLogs(ctx context.Context, a agents.Agent, emit func(string)) error
 	// AttachTerminal attaches a terminal to the agent's live session until ctx

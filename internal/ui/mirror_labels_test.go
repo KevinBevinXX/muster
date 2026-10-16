@@ -134,9 +134,10 @@ func TestAQualifiedMirrorTitleIsPartOfTheTitleEverywhere(t *testing.T) {
 	}
 }
 
-// THE HOST BADGE IS NOT THE GREY CHIP: on the card and on both pages it is the
-// tinted, bold mirrorBadge (with its screen icon), so the host stands out on a
-// phone among the kind/mode chips.
+// THE HOST BADGE IS NOT THE GREY CHIP: on both pages it is the tinted, bold
+// mirrorBadge (with its screen icon), so the host stands out on a phone among
+// the kind chips. (The CARD carries an icon instead —
+// TestTheMirroredMarkIsAnIconWithAnAccessibleTooltip.)
 func TestTheMirroredHostBadgeIsDistinctFromTheGenericChip(t *testing.T) {
 	const tint = "bg-st-progress-bg"
 	grey := renderNode(t, chip("kind", "x"))
@@ -152,7 +153,6 @@ func TestTheMirroredHostBadgeIsDistinctFromTheGenericChip(t *testing.T) {
 		return rest[:strings.Index(rest, "</span></span>")]
 	}
 	for name, got := range map[string]string{
-		"card": badge(renderNode(t, mirrorCard(MirrorCardView{Host: "tower", Session: "s", Online: true})), "data-mirror-badge"),
 		"view": badge(renderNode(t, MirrorViewPage(MirrorViewView{Host: "tower", Session: "s"})), "data-term-badge"),
 		"term": badge(renderNode(t, AgentTerminalPage(AgentTerminalView{Name: "s", Badge: "Mirrored · tower", BackHref: "/agents"})), "data-term-badge"),
 	} {

@@ -23,6 +23,7 @@ import (
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/recents"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -84,6 +85,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		Flows:           stubFlows{},
 		Plugins:         stubPlugins{},
 		Pins:            stubPins{},
+		Recents:         stubRecents{},
 		PluginGateway:   stubPluginGateway{},
 		Push:            stubPush{},
 		Transcriber:     stubTranscriber{},
@@ -103,6 +105,9 @@ type stubPlugins struct{ plugins.Store }
 
 // stubPins satisfies pins.Store for registration only; any method call panics.
 type stubPins struct{ pins.Store }
+
+// stubRecents satisfies recents.Store for registration only; any method call panics.
+type stubRecents struct{ recents.Store }
 
 // stubPluginGateway satisfies plugins.Gateway for registration only; any method call panics.
 type stubPluginGateway struct{ plugins.Gateway }
@@ -293,9 +298,6 @@ func (stubProvisioner) Stop(context.Context, int64) error           { return nil
 func (stubProvisioner) Destroy(context.Context, int64) error        { return nil }
 func (stubProvisioner) Instances(context.Context) ([]provision.Instance, error) {
 	return nil, nil
-}
-func (stubProvisioner) TailLogs(context.Context, agents.Agent, int64) (string, error) {
-	return "", nil
 }
 func (stubProvisioner) StreamLogs(context.Context, agents.Agent, func(string)) error { return nil }
 

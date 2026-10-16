@@ -126,12 +126,40 @@ type Hub struct {
 	// notifyPending is whether one is already scheduled.
 	debounce      time.Duration
 	notifyPending map[int64]bool
+	// activityEvery is the most often ONE OWNER's activity-only changes nudge
+	// its open views (activityNudgeEvery; a test shortens it), and activity is
+	// that throttle's state per owner. See activityMoved.
+	activityEvery time.Duration
+	activity      map[int64]*activityThrottle
+	// activityAfter is time.AfterFunc for activityMoved's trailing nudge (a
+	// test counts the timers it schedules).
+	activityAfter func(time.Duration, func()) *time.Timer
+}
+
+// activityThrottle is one owner's activity-only throttle: when its last such
+// nudge was sent, and the trailing nudge pending for the window's end (nil for
+// none). At most ONE is ever pending.
+type activityThrottle struct {
+	nudged   time.Time
+	trailing *time.Timer
 }
 
 // notifyDebounce is the window change nudges are coalesced in: however fast
 // hosts connect, drop or change their lists, open Agents views are told at most
 // once per window.
 const notifyDebounce = time.Second
+
+// activityNudgeEvery is the most often one OWNER's ACTIVITY-ONLY changes (a
+// card's "active … ago" moved; nothing else did) nudge its open views: once per
+// ActivityBucket, the granularity the time is carried at, however many of its
+// hosts are busy. A host re-sends whenever a session enters a newer bucket —
+// once per bucket for the sessions that stay busy, plus once for each that
+// wakes mid-bucket — so without it an owner whose sessions wake at different
+// moments re-renders every open page several times a minute. It is per OWNER,
+// not per host, because the cost is the owner's open pages: one Agents view
+// lists every host of its owner, so a per-host throttle would let 64 busy hosts
+// re-render it 64 times a minute.
+const activityNudgeEvery = ActivityBucket * time.Second
 
 // ErrTokenRevoked is the cause a connection ends with when its token is
 // revoked. Such a host is dropped from the view at once — not kept as offline.
@@ -152,7 +180,8 @@ func NewHub(logger *log.Logger) *Hub {
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &Hub{logger: logger, hosts: map[hostKey]*hostConn{}, offline: map[hostKey]offlineHost{}, now: time.Now, maxHosts: MaxHosts, debounce: notifyDebounce}
+	return &Hub{logger: logger, hosts: map[hostKey]*hostConn{}, offline: map[hostKey]offlineHost{}, now: time.Now, maxHosts: MaxHosts, debounce: notifyDebounce,
+		activityEvery: activityNudgeEvery, activity: map[int64]*activityThrottle{}, activityAfter: time.AfterFunc}
 }
 
 // SetNotify installs the change nudge (a host connected, disconnected or
@@ -359,9 +388,10 @@ func (hc *hostConn) list(m Msg, now int64) (sessions []string, windows []Window,
 	return sessions, nil, claude, NormalizeLabels(m.Labels, sessions), NormalizeActivity(m.Activity, sessions, now)
 }
 
-// sameWindows reports whether a and b differ in nothing a viewer can SEE:
-// everything but Activity, which moves all the time and matters only through
-// the order (orderKeys).
+// sameWindows reports whether a and b are the same windows in everything but
+// Activity. Activity is compared on its own, as the card prints it (listed):
+// it moves all the time, and a change in it is shown — in the card's "active …
+// ago" — but is throttled (activityMoved) rather than nudged at once.
 func sameWindows(a, b []Window) bool {
 	if (a == nil) != (b == nil) || len(a) != len(b) {
 		return false
@@ -374,6 +404,51 @@ func sameWindows(a, b []Window) bool {
 		}
 	}
 	return true
+}
+
+// activityMoved nudges owner's open views for an ACTIVITY-ONLY change, at most
+// once per activityEvery per owner. One inside the window is not dropped: it
+// schedules a trailing nudge for the window's end, so the last change of a
+// burst still reaches the cards — and only ONE, however many changes the
+// window holds: a change that finds one pending is already covered by it. The
+// trailing nudge stamps the window it opens, so a change just after it waits
+// for that window's end too. A disconnect cancels it (drop): the disconnect
+// nudges the owner's views itself, and a timer must not outlive what it is for.
+func (h *Hub) activityMoved(owner int64) {
+	h.mu.Lock()
+	now := h.now()
+	t := h.activity[owner]
+	if t == nil {
+		t = &activityThrottle{}
+		h.activity[owner] = t
+	}
+	if t.trailing != nil {
+		h.mu.Unlock()
+		return
+	}
+	wait := t.nudged.Add(h.activityEvery).Sub(now)
+	if wait <= 0 {
+		t.nudged = now
+		h.mu.Unlock()
+		h.changed(owner)
+		return
+	}
+	var timer *time.Timer
+	timer = h.activityAfter(wait, func() {
+		h.mu.Lock()
+		cur := h.activity[owner]
+		if cur == nil || cur.trailing != timer {
+			// Cancelled (drop) after it had already started.
+			h.mu.Unlock()
+			return
+		}
+		cur.trailing = nil
+		cur.nudged = h.now()
+		h.mu.Unlock()
+		h.changed(owner)
+	})
+	t.trailing = timer
+	h.mu.Unlock()
 }
 
 // normalizeSessions drops invalid and duplicate names, sorts, and caps the list.
@@ -505,18 +580,25 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				// changed with the same session set (the active window moved, a
 				// pane produced output) still lands here.
 				list, windows, claude, labels, activity := hc.list(m, h.now().Unix())
-				before := orderKeys(h.Hosts(hc.key.owner))
+				order, shown := listed(h.Hosts(hc.key.owner))
 				hc.mu.Lock()
 				same := slices.Equal(hc.sessions, list) && slices.Equal(hc.claude, claude) && maps.Equal(hc.labels, labels) && sameWindows(hc.windows, windows)
 				hc.sessions, hc.windows, hc.labels, hc.activity, hc.claude = list, windows, labels, activity, claude
 				hc.mu.Unlock()
-				// 🔴 ONLY A CHANGE SOMEBODY CAN SEE NUDGES THE OPEN VIEWS. Activity
-				// moves all the time; a host re-sends it once per ActivityBucket
-				// while a session stays busy, and most of those leave the list in
-				// the same order. Re-rendering the Agents view for each would move
-				// nothing and still cost every open page a re-fetch.
-				if !same || !slices.Equal(before, orderKeys(h.Hosts(hc.key.owner))) {
+				// 🔴 ONLY A CHANGE SOMEBODY CAN SEE NUDGES THE OPEN VIEWS, and an
+				// activity-only one is THROTTLED. A changed list or order nudges
+				// at once. A time that moved with nothing else (a busy window that
+				// stays where it is) still changes that card's "active … ago" — a
+				// view never told would show it going stale while the window works
+				// — so it nudges too, but at most once per activityEvery per owner
+				// (activityNudgeEvery says why). Both are read off the list the
+				// view renders (listed), never off the raw message.
+				orderAfter, shownAfter := listed(h.Hosts(hc.key.owner))
+				switch {
+				case !same || !slices.Equal(order, orderAfter):
 					h.changed(hc.key.owner)
+				case !slices.Equal(shown, shownAfter):
+					h.activityMoved(hc.key.owner)
 				}
 			case TypeEvents:
 				if hc.version >= 2 {
@@ -547,6 +629,16 @@ func (h *Hub) drop(hc *hostConn) {
 	current := h.hosts[hc.key] == hc
 	if current {
 		delete(h.hosts, hc.key)
+		// The disconnect nudges the owner's views below, which re-fetches every
+		// card's time: a pending trailing activity nudge has nothing left to do,
+		// so it is stopped, and the owner's throttle starts afresh (at most one
+		// extra activity nudge per disconnect, which already costs one).
+		if t := h.activity[hc.key.owner]; t != nil {
+			if t.trailing != nil {
+				t.trailing.Stop()
+			}
+			delete(h.activity, hc.key.owner)
+		}
 		if revoked {
 			// A revoked host is GONE, not offline: nothing it listed stays on
 			// anyone's view.

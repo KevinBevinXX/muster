@@ -51,11 +51,6 @@ type AgentCardView struct {
 	// Namespace is the agent's stored namespace, used only to spell the log command
 	// in the failed-kickoff remedy.
 	Namespace string
-	Recent    []string
-	// LazyRecent makes the card lazy-load its recent-log preview from
-	// /ui/agents/{id}/recent (htmx) instead of receiving Recent inline — so the
-	// agents-list path makes no per-agent k8s call. Set for running agents.
-	LazyRecent bool
 	// Model is the agent's configured model slug ("" = cluster default). Surfaced
 	// as a small read-only line on the card so it's visible at a glance.
 	Model string
@@ -124,7 +119,6 @@ func AgentsPanel(active bool) g.Node {
 		// INSIDE its body, one level down, and it was measured rather than argued:
 		//
 		//	agents.go cardStatusIcon    hx-target=this  innerHTML             load, every 10s
-		//	agents.go agentRecentSlot   hx-target=this  innerHTML             agents:changed
 		//	agents.go agentRenameButton #agent-<id>     outerHTML             click
 		//	agents.go agentDeleteConfirm #agent-<id>    outerHTML swap:200ms  click
 		//
@@ -140,6 +134,11 @@ func AgentsPanel(active bool) g.Node {
 			Class("mb-2 flex items-center gap-2"),
 			H2(Class("text-xs font-medium uppercase tracking-wide text-muted"), g.Text("Agents")),
 		),
+		// Recently viewed (recents.go): above the filter and OUTSIDE #agents-list —
+		// the filter's `#agents-list > article` rule assumes every child is a card,
+		// and the strip is navigation, not something to filter. Filled out of band
+		// by every list render.
+		recentStrip(nil, false),
 		// The filter: a search box that narrows the cards as you type. OUTSIDE
 		// #agents-list, so the list's own refresh never touches it (agents_filter.go).
 		agentsFilterBar(),
@@ -147,9 +146,8 @@ func AgentsPanel(active bool) g.Node {
 			ID("agents-list"),
 			Class("grid grid-cols-1 gap-3 lg:grid-cols-2"),
 			hx("hx-get", "/ui/agents"),
-			// Event-driven only — NO timer. A 4s poll used to morph each card's lazy
-			// recent-log slot back to its skeleton (stranding it) and churned the list
-			// constantly; status now stays live via each card's own status-icon poll
+			// Event-driven only — NO timer. A 4s poll churned the list constantly;
+			// status stays live via each card's own status-icon poll
 			// (cardStatusIcon), and the list re-renders on actual lifecycle changes.
 			//
 			// 🔴 THE TWO SSE EVENTS ARE WHAT MAKE THE ORDER LIVE, AND BEFORE THEM THE
@@ -164,12 +162,6 @@ func AgentsPanel(active bool) g.Node {
 			hx("hx-trigger", agentsListTrigger),
 			hx("hx-target", "#agents-list"),
 			hx("hx-swap", "morph:innerHTML"),
-			// Each card's lazy recent-log slot is re-fetched AFTER this list's morph
-			// has settled, never alongside it — see agentRecentSlot for how the old
-			// wiring stranded the slot once this list re-rendered on SSE. The guard
-			// scopes it to THIS element's swap: the slots' own innerHTML swaps bubble
-			// htmx:afterSettle up through here, and reacting to those would loop.
-			hx("hx-on::after-settle", agentsListAfterSettle),
 		),
 		// ⚠ AN "ADVANCED" DISCLOSURE USED TO SIT HERE, mounting the runbook and
 		// privilege-profile registries a second time. Both subsystems are removed.
@@ -262,26 +254,30 @@ func agentRenameForm(a AgentCardView) g.Node {
 }
 
 // agentCard is the per-agent card. The card BODY is a real boosted <a> that
-// opens the detail page on click/tap (status icon + name + repo chip + recent
-// preview). The interactive controls — the inline rename pencil and the ⋯
-// context menu (Start/Stop/Delete) — sit OUTSIDE that anchor in a top-right
-// control cluster, so tapping them never triggers card navigation. All
+// opens the detail page on click/tap (status icon + name + repo chip). There is
+// NO chat or log preview on a card — an operator decision: the list is for
+// finding an agent, the detail page for reading it. The interactive controls —
+// the inline rename pencil and the ⋯ context menu (Start/Stop/Delete) — sit
+// OUTSIDE that anchor in a top-right control cluster, so tapping them never
+// triggers card navigation. All
 // interactivity is boost-safe: a native popover menu (placed by
 // floatingMenuScript) and htmx.
+//
+// 🔴 ITS SHAPE IS mirrorCard's, SLOT FOR SLOT (cardSlot): controls, body,
+// header, footer. TestAgentAndMirrorCardsRenderTheSameSlots pins it, so the two
+// kinds of card cannot drift into two layouts again.
 func agentCard(a AgentCardView) g.Node {
 	ids := strconv.FormatInt(a.ID, 10)
 	return Article(
 		ID("agent-"+ids),
 		g.If(a.Pinned, g.Attr("data-pinned", "")),
 		// What the list's filter finds this card by (agents_filter.go).
-		cardFilterAttrs(cardFields{Host: podHost, Type: "agent", Name: filterHaystack(a.DisplayName, a.Name),
-			Status: a.Status, Kind: agents.KindLabel(a.Kind), Repo: a.Repo, Account: a.CCAccount, NS: a.Namespace},
+		cardFilterAttrs(agentFields(a),
 			displayOr(a.DisplayName, a.Name), a.Name, a.Repo, agents.KindLabel(a.Kind), a.CCAccount, a.Status, "agent"),
 		Class("group relative overflow-hidden rounded-2xl border border-line bg-s1/70 shadow-lg shadow-black/20 ring-1 ring-line"),
 		// The control cluster (rename + ⋯ menu) is positioned over the card's
 		// top-right corner, OUTSIDE the nav anchor, so its clicks don't navigate.
-		Div(
-			Class("absolute right-3 top-3 z-10 flex items-center gap-1"),
+		cardControls(
 			agentRenameButton(ids),
 			agentMenu(a),
 		),
@@ -291,13 +287,16 @@ func agentCard(a AgentCardView) g.Node {
 		// descendants, so a boosted click here would swap the standalone detail
 		// document into #agents-list (the wrong target) — the URL changes but the
 		// detail UI never renders. Disabling boost makes it a plain navigation that
-		// ignores the inherited target and loads the detail page reliably. It
-		// reserves right padding so it never sits under the controls.
+		// ignores the inherited target and loads the detail page reliably. Its
+		// right padding (pr-28, see cardControls) keeps the title out from under
+		// the controls.
 		A(
 			Href("/agents/"+a.Name),
 			hx("hx-boost", "false"),
-			Class("flex flex-col gap-3 p-4 pr-20"),
+			cardSlot("body"),
+			Class("flex flex-col gap-3 p-4 pr-28"),
 			Div(
+				cardSlot("header"),
 				Class("flex flex-wrap items-center gap-2"),
 				cardStatusIcon(a),
 				g.If(a.Pinned, pinnedGlyph()),
@@ -327,7 +326,6 @@ func agentCard(a AgentCardView) g.Node {
 			),
 			g.If(a.KickoffFailed, kickoffFailureDetail(a.KickoffFailure,
 				KickoffFailedRemedy(a.KickoffResendSafe, a.Namespace, a.Name))),
-			agentRecentSlot(a),
 		),
 		// Card footer (OUTSIDE the nav anchor so its task-badge link doesn't nest
 		// inside the card's <a> and its clicks don't trigger card navigation): the
@@ -335,6 +333,13 @@ func agentCard(a AgentCardView) g.Node {
 		// task, a "Task #<id>" badge linking to the Tasks tab.
 		agentCardFooter(a),
 	)
+}
+
+// agentFields is what an agent card is filtered by: its data-f-* (and data-l-*)
+// attributes, which the filter's options are read from.
+func agentFields(a AgentCardView) cardFields {
+	return cardFields{Host: podHost, Type: "Agent", Name: filterHaystack(a.DisplayName, a.Name),
+		Status: a.Status, Kind: agents.KindLabel(a.Kind), Repo: a.Repo, Account: a.CCAccount, NS: a.Namespace}
 }
 
 // agentCardFooter renders the card's bottom meta row: age (CreatedAt) + last
@@ -350,21 +355,59 @@ func agentCardFooter(a AgentCardView) g.Node {
 	if a.NoteID != nil {
 		taskBadge = taskSourceBadge(*a.NoteID)
 	}
-	return Div(
-		Class("flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-4 py-2 text-xs text-muted"),
-		g.If(!a.CreatedAt.IsZero(), Span(
-			Class("inline-flex items-center gap-1"),
-			Span(Class("text-muted"), g.Text("age")),
-			cardTime(a.CreatedAt),
-		)),
-		g.If(!a.lastActive().IsZero(), Span(
-			Class("inline-flex items-center gap-1"),
-			Span(Class("text-muted"), g.Text("active")),
-			cardTime(a.lastActive()),
-			Span(Class("text-muted"), g.Text("ago")),
-		)),
+	return cardFooter(
+		g.If(!a.CreatedAt.IsZero(), cardMeta("age", cardTime(a.CreatedAt))),
+		cardActivity(a.lastActive()),
 		Span(Class("flex-1")),
 		taskBadge,
+	)
+}
+
+// cardSlot names one structural region of a list card: "controls", "body",
+// "header" or "footer". Both card kinds are built from the same slots
+// (agentCard, mirrorCard), and the attribute is what a test compares them by.
+func cardSlot(name string) g.Node { return g.Attr("data-card-slot", name) }
+
+// cardControls is a card's control cluster: positioned over its top-right
+// corner, OUTSIDE the card's nav anchor, so tapping a control never opens the
+// card. Each card's nav anchor reserves pr-28 (112 px) on its right: the
+// cluster is right-3 (12 px) plus two 44 px controls and a 4 px gap, 104 px,
+// so a long title wraps before it reaches the first control, and a tap on the
+// title's end opens the card rather than a control. A third control needs a
+// wider reservation.
+func cardControls(children ...g.Node) g.Node {
+	return Div(append([]g.Node{cardSlot("controls"), Class("absolute right-3 top-3 z-10 flex items-center gap-1")}, children...)...)
+}
+
+// cardFooter is a card's bottom meta row, OUTSIDE the nav anchor so a link in
+// it (the task badge) is not a nested anchor and its taps do not open the card.
+func cardFooter(children ...g.Node) g.Node {
+	return Div(append([]g.Node{cardSlot("footer"),
+		Class("flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-4 py-2 text-xs text-muted")}, children...)...)
+}
+
+// cardMeta is one labelled item of a card footer: "age 3h", "host tower".
+func cardMeta(label string, value g.Node) g.Node {
+	return Span(
+		Class("inline-flex items-center gap-1"),
+		Span(Class("text-muted"), g.Text(label)),
+		value,
+	)
+}
+
+// cardActivity is the footer's "active <relative time> ago", for BOTH card
+// kinds: an agent's agents.LastActivity, a mirrored window's host-reported
+// activity. Nothing for a zero time (the host did not say).
+func cardActivity(t time.Time) g.Node {
+	if t.IsZero() {
+		return g.Text("")
+	}
+	return Span(
+		g.Attr("data-card-active", ""),
+		Class("inline-flex items-center gap-1"),
+		Span(Class("text-muted"), g.Text("active")),
+		cardTime(t),
+		Span(Class("text-muted"), g.Text("ago")),
 	)
 }
 
@@ -676,85 +719,10 @@ func statusLabel(status string) string {
 	}
 }
 
-func agentRecent(lines []string) g.Node {
-	return Pre(
-		Class("max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-bg/80 p-3 text-[12px] leading-relaxed text-muted ring-1 ring-inset ring-line"),
-		Code(g.Text(strings.Join(lines, "\n"))),
-	)
-}
-
-// agentRecentSlot is the per-card recent-log preview. For a running agent it
-// lazy-loads /ui/agents/{id}/recent (htmx) into an animated skeleton ONCE on
-// swap-in — so the agents-list path itself makes no per-agent k8s call and the
-// preview does not poll (the list container's own refresh keeps status live).
-// Non-running agents render nothing (an empty placeholder), matching the
-// previous behaviour. Any inline Recent (e.g. a test/server-rendered preview)
-// still renders directly.
-func agentRecentSlot(a AgentCardView) g.Node {
-	ids := strconv.FormatInt(a.ID, 10)
-	if len(a.Recent) > 0 {
-		return agentRecent(a.Recent)
-	}
-	if !a.LazyRecent {
-		return g.Text("")
-	}
-	return Div(
-		ID("agent-recent-"+ids),
-		hx("hx-get", "/ui/agents/"+ids+"/recent"),
-		// Loads on first render, and re-fetches when the list it sits in has
-		// re-rendered (agentsListAfterSettle fires recentRefreshEvent at it) — NOT
-		// on a timer, and NOT on the list's own trigger event.
-		//
-		// 🔴 IT USED TO LISTEN TO agents:changed DIRECTLY, AND THAT STRANDS IT ONCE
-		// THE LIST RE-RENDERS ON SSE. The list renders this slot as a SKELETON and
-		// morphs it in over the loaded lines; a retained node does not fire `load`
-		// again, and the SSE events the list now hears are not agents:changed — so
-		// the slot stayed a skeleton. MEASURED, not argued: with the old trigger
-		// e2e/tests/claude-code-polish.spec.ts's second server-driven re-render
-		// leaves the skeleton in place (red at both widths); with this one it does
-		// not. Refreshing after the list has SETTLED also orders the two requests,
-		// which the old shared trigger did not.
-		hx("hx-trigger", "load, "+recentRefreshEvent),
-		hx("hx-target", "this"),
-		hx("hx-swap", "innerHTML"),
-		recentSkeleton(),
-	)
-}
-
 // agentsListTrigger is #agents-list's hx-trigger: first load, a local
 // lifecycle action's HX-Trigger, and the two server events that change what the
 // list shows or how it is ordered. See AgentsPanel.
 const agentsListTrigger = "load, agents:changed from:body, sse:agent.changed from:body, sse:chat.reply from:body, muster:resync from:body"
-
-// recentRefreshEvent is what a card's recent-log slot re-fetches on; only
-// agentsListAfterSettle fires it.
-const recentRefreshEvent = "muster:recent-refresh"
-
-// agentsListAfterSettle re-fetches every recent-log slot once #agents-list's own
-// swap has settled (event.target===this excludes the slots' bubbling swaps). A
-// slot already mid-request (htmx-request — a NEW slot whose `load` has just
-// fired) is skipped, so a first render costs one fetch per card, not two.
-const agentsListAfterSettle = "if(event.target===this){this.querySelectorAll('[id^=\"agent-recent-\"]').forEach(function(e){if(!e.classList.contains('htmx-request')){htmx.trigger(e,'" + recentRefreshEvent + "')}})}"
-
-// recentSkeleton is the animated placeholder shown until an agent's recent-log
-// preview loads.
-func recentSkeleton() g.Node {
-	return Pre(
-		Class("max-h-28 overflow-hidden rounded-xl bg-bg/80 p-3 ring-1 ring-inset ring-line"),
-		Div(Class("mb-1.5 h-3 w-3/4 animate-pulse rounded bg-s3/60")),
-		Div(Class("mb-1.5 h-3 w-1/2 animate-pulse rounded bg-s3/60")),
-		Div(Class("h-3 w-2/3 animate-pulse rounded bg-s3/60")),
-	)
-}
-
-// RenderAgentRecent writes the /ui/agents/{id}/recent partial: the recent-log
-// <pre> (or nothing when there are no lines). Swapped into the card's recent slot.
-func RenderAgentRecent(w io.Writer, lines []string) error {
-	if len(lines) == 0 {
-		return g.Text("").Render(w)
-	}
-	return agentRecent(lines).Render(w)
-}
 
 // agentModalShell is the static (always-present, hidden) dispatch modal. Its
 // body is loaded on demand by the FAB so it stays out of the 4s poll cycle.
