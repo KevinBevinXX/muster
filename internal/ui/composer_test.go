@@ -114,7 +114,7 @@ func TestTheComposerDrawsANoticeTheServerGaveIt(t *testing.T) {
 // exactly once, and the same form element; they differ in the route, the
 // address fields and the placeholder.
 func TestEveryMessageBoxIsOneComposer(t *testing.T) {
-	const marker = "function native() { HTMLFormElement.prototype.submit.call(form); }"
+	const marker = "HTMLFormElement.prototype.submit.call(form);"
 	pages := map[string]string{
 		"a mirrored session's rendered view": renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main", Interactive: true, StepUp: stepUpFixture()})),
 		"a mirrored session's terminal": renderString(t, AgentTerminalPage(AgentTerminalView{Name: "main", StepUp: stepUpFixture(),

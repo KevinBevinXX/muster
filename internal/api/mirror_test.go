@@ -103,6 +103,15 @@ type fakeMirror struct {
 	scroll    bool
 	scrolls   []string
 	scrollErr error
+	// agentState is what AgentState answers (send_queue_fakes_test.go); nil =
+	// a host that reports no status. statusReport is HostView.StatusReport.
+	agentState   *mirror.AgentState
+	statusReport bool
+	// agentStateVias is the principal's door on each AgentState call.
+	agentStateVias []authz.Via
+	// onPaste, when set, runs (under mu) after each paste the host accepted:
+	// a test's stand-in for the hub recording the paste (AgentState.Pasted).
+	onPaste func()
 }
 
 func (f *fakeMirror) ServeConnect(w http.ResponseWriter, _ *http.Request) {
@@ -124,6 +133,7 @@ func (f *fakeMirror) Hosts(ctx context.Context) []mirror.HostView {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	hv := mirror.HostView{Host: "ws", Sessions: []string{"chief", "main"}, Labels: f.labels, Activity: f.activity, Online: f.online, Interactive: f.interactive}
+	hv.StatusReport = f.statusReport && f.online
 	if f.v2 != nil {
 		hv.Rendered, hv.Claude = f.online, []string{"main"}
 		hv.PanePaste = f.online && f.interactive && !f.oldMirror

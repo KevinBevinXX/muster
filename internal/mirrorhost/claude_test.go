@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // fakeProc is a /proc tree: <pid>/stat, <pid>/cmdline and <pid>/cwd, enough for
@@ -104,10 +106,10 @@ func TestLocateWalksThePaneTreeToClaudeAndReadsItsSessionFile(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("located %+v, want work and other only", got)
 	}
-	if w := got["work"]; w.Pane != "%1" || w.PID != 400 || w.Transcript != pa || w.Gen != "sess-a" || !w.Busy {
+	if w := got["work"]; w.Pane != "%1" || w.PID != 400 || w.Transcript != pa || w.Gen != "sess-a" || !w.Busy || w.Status != mirror.StatusBusy {
 		t.Fatalf("work = %+v, want pane %%1 pid 400 %s sess-a busy", w, pa)
 	}
-	if o := got["other"]; o.PID != 600 || o.Transcript != pb || o.Gen != "sess-b" || o.Busy {
+	if o := got["other"]; o.PID != 600 || o.Transcript != pb || o.Gen != "sess-b" || o.Busy || o.Status != mirror.StatusIdle {
 		t.Fatalf("other = %+v, want pid 600 %s sess-b idle", o, pb)
 	}
 	if _, ok := got["shell"]; ok {
@@ -129,6 +131,11 @@ func TestLocateFallbackAndAFreshSession(t *testing.T) {
 	got := loc.Locate([]pane{{Session: "s", ID: "%0", PID: 10}})
 	if p := got["s"]; p.Transcript != newest || p.Gen != "newest" {
 		t.Fatalf("fallback = %+v, want the newest transcript", p)
+	}
+	// A guessed transcript has no sessions file to read a status from: unknown,
+	// never idle (the send queue sends nothing to an unknown pane).
+	if p := got["s"]; p.Status != "" || p.Busy {
+		t.Fatalf("a guessed pane reports status %q (busy %v); want unknown", p.Status, p.Busy)
 	}
 	home.session(10, "not-written-yet", cwd, "idle")
 	if p, ok := loc.Locate([]pane{{Session: "s", ID: "%0", PID: 10}})["s"]; ok {
@@ -164,5 +171,27 @@ func TestParseActivePanesTakesEachSessionsActivePane(t *testing.T) {
 	want := []pane{{Session: "main", ID: "%2", PID: 222}, {Session: "my session: x", ID: "%3", PID: 333}}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("got %+v want %+v", got, want)
+	}
+}
+
+// TestThePaneStatusIsClaudeCodesOwnAndAnythingElseIsUnknown: a pane's Status is
+// what the CLI's sessions file says — busy, idle or waiting, each kept as such
+// — and a status this side does not know is UNKNOWN (""), never idle: the send
+// queue would otherwise paste into a session it cannot read.
+func TestThePaneStatusIsClaudeCodesOwnAndAnythingElseIsUnknown(t *testing.T) {
+	for file, want := range map[string]string{"busy": mirror.StatusBusy, "idle": mirror.StatusIdle,
+		"waiting": mirror.StatusWaiting, "compacting": "", "": ""} {
+		proc, home := newFakeProc(t), newFakeHome(t)
+		const cwd = "/w"
+		proc.add(10, 1, "claude", cwd, "claude")
+		home.session(10, "sess", cwd, file)
+		home.transcript(cwd, "sess", time.Now())
+		got, ok := ClaudeLocator{Proc: proc.root, Home: home.root}.Locate([]pane{{Session: "s", ID: "%0", PID: 10}})["s"]
+		if !ok || got.Gen != "sess" {
+			t.Fatalf("status %q: the pane did not resolve to its session: %+v", file, got)
+		}
+		if got.Status != want || got.Busy != (want == mirror.StatusBusy) {
+			t.Errorf("sessions file status %q → Status %q, Busy %v; want %q", file, got.Status, got.Busy, want)
+		}
 	}
 }

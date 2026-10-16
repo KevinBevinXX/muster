@@ -32,7 +32,7 @@ func TestBothMirrorViewsShareOneComposerAndOneConfirm(t *testing.T) {
 		Composer: &MirrorComposerView{SendPath: MirrorTerminalSendPath, Host: "host-a", Session: "main", Placeholder: "Message…", Aria: "Send a message into this session"}}))
 	view := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main", Interactive: true, StepUp: stepUpFixture()}))
 
-	for _, marker := range []string{"window.musterStepUp = (function", "stepUp.ask('', post)"} {
+	for _, marker := range []string{"window.musterStepUp = (function", "stepUp.ask('', function () { return post(sub); })"} {
 		if a, b := strings.Count(term, marker), strings.Count(view, marker); a != 1 || b != 1 {
 			t.Fatalf("%q appears %d time(s) on the Terminal page and %d on the Rendered view; want once each", marker, a, b)
 		}

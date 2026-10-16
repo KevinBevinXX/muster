@@ -92,8 +92,9 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //     inbound messages); plugin_reply_drafts (0016, its reply drafts).
 //   - pins (0017, the Agents list's pinned entries).
 //   - recents (0018, the Agents list's recently viewed entries).
+//   - send_queue (0019, the server-side send queue).
 var ownedAfter0006 = []string{"cc_account_marks", "flow_jobs", "flow_requests", "flow_runner_tokens", "mirror_tokens",
-	"pins", "plugin_messages", "plugin_reply_drafts", "plugins", "push_preferences", "push_subscriptions", "recents", "user_credentials"}
+	"pins", "plugin_messages", "plugin_reply_drafts", "plugins", "push_preferences", "push_subscriptions", "recents", "send_queue", "user_credentials"}
 
 // rlsTables is every owned table today: ownedTables plus ownedAfter0006.
 func rlsTables() []string { return append(slices.Clone(ownedTables), ownedAfter0006...) }
@@ -164,6 +165,7 @@ var wantForeignKeys = []string{
 	"plugins|plugins_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"push_preferences|push_preferences_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"push_subscriptions|push_subscriptions_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"send_queue|send_queue_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"task_sessions|task_sessions_note_owner_fkey|FOREIGN KEY (note_id, owner_id) REFERENCES notes(id, owner_id) ON DELETE CASCADE",
 	"task_sessions|task_sessions_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"user_credentials|user_credentials_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",

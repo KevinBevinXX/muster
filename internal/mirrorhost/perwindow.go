@@ -73,6 +73,28 @@ type WindowAttacher interface {
 	AttachWindow(ctx context.Context, session, window string, readOnly bool, cols, rows uint16) (Terminal, error)
 }
 
+// StatusReporter is a WindowLister that fills each Claude window's
+// ClaudePane.Status from Claude Code's own sessions file — what a hello's
+// Msg.StatusReport advertises, and what muster's send queue waits on. Tmux is
+// one. A backend that is not is believed about no status (muster sends nothing
+// queued to it).
+type StatusReporter interface {
+	ReportsStatus() bool
+}
+
+// ReportsStatus implements StatusReporter: ClaudeLocator reads the status from
+// the sessions file the CLI writes for its peers.
+func (Tmux) ReportsStatus() bool { return true }
+
+// reportsStatus is whether b is a per-window backend that reports status.
+func reportsStatus(b Backend) bool {
+	if _, ok := WindowListerOf(b); !ok {
+		return false
+	}
+	sr, ok := capabilityOf[StatusReporter](b)
+	return ok && sr.ReportsStatus()
+}
+
 // WindowListerOf is b's WindowLister, looking through wrappers (see ClaudeOf).
 func WindowListerOf(b Backend) (WindowLister, bool) { return capabilityOf[WindowLister](b) }
 
@@ -173,14 +195,17 @@ func FindWindow(windows []WindowInfo, session, window string) (WindowInfo, bool)
 }
 
 // WireWindows is windows as a host SENDS them: labelled from codenames
-// ("<codename>:<index>" for a session that has one), with Claude kept only when
-// claude is set (a tunnel that carries no rendered view carries no claim of
-// one), through mirror.NormalizeWindows.
+// ("<codename>:<index>" for a session that has one), with Claude — and the
+// Claude session's Status — kept only when claude is set (a tunnel that carries
+// no rendered view carries no claim of one), through mirror.NormalizeWindows.
 func WireWindows(windows []WindowInfo, codenames map[string]string, claude bool, now time.Time) []mirror.Window {
 	out := make([]mirror.Window, 0, len(windows))
 	for _, w := range windows {
 		m := mirror.Window{Session: w.Session, ID: w.ID, Index: w.Index, Active: w.Active,
 			Activity: w.Activity, Command: w.Command, Claude: claude && w.Claude != nil}
+		if m.Claude {
+			m.Status, m.StatusSince = w.Claude.Status, w.Claude.StatusSince
+		}
 		if name, ok := codenames[w.Session]; ok {
 			m.Label = name + ":" + strconv.Itoa(w.Index)
 		}

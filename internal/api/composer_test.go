@@ -3,6 +3,8 @@ package api
 import (
 	"net/http"
 	"net/url"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -116,18 +118,20 @@ func TestANoticeIsACodeThePageTranslatesNeverTextFromTheLink(t *testing.T) {
 			t.Errorf("notice=%q drew something: %q", junk, got)
 		}
 	}
-	// Every code has a sentence, and exactly one of them is good news.
-	good := 0
+	// Every code has a sentence, and exactly these are good news: a message
+	// sent, queued (send_queue.go), or a queued one cancelled.
+	var good []string
 	for code, n := range composerNotices {
 		if strings.TrimSpace(n.text) == "" {
 			t.Errorf("notice %q has no text", code)
 		}
 		if n.ok {
-			good++
+			good = append(good, code)
 		}
 	}
-	if good != 1 || !composerNotices[noticeSent].ok {
-		t.Errorf("%d notices are marked as good news; only %q is", good, noticeSent)
+	sort.Strings(good)
+	if want := []string{noticeCancelled, noticeQueued, noticeSent}; !slices.Equal(good, want) {
+		t.Errorf("the notices marked as good news are %q; want exactly %q", good, want)
 	}
 }
 

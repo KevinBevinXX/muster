@@ -298,12 +298,12 @@ func (s *Service) Paste(ctx context.Context, host, session, text string, target 
 
 // PasteWindow is Paste into one window of the session; window == "" is the
 // session's active window. See Hub.PasteWindow.
-func (s *Service) PasteWindow(ctx context.Context, host, session, window, text string, target PasteTarget) error {
+func (s *Service) PasteWindow(ctx context.Context, host, session, window, text string, target PasteTarget, opts ...PasteOption) error {
 	o, err := owner(ctx)
 	if err != nil {
 		return err
 	}
-	return s.hub.PasteWindow(ctx, o, host, session, window, text, target)
+	return s.hub.PasteWindow(ctx, o, host, session, window, text, target, opts...)
 }
 
 // ScrollWindow scrolls the active pane of one window of one of the viewing

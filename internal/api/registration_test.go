@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
@@ -86,9 +87,12 @@ func fullyWiredServer(t *testing.T) *Server {
 		Plugins:         stubPlugins{},
 		Pins:            stubPins{},
 		Recents:         stubRecents{},
-		PluginGateway:   stubPluginGateway{},
-		Push:            stubPush{},
-		Transcriber:     stubTranscriber{},
+		SendQueue:       stubSendQueue{},
+		// NON-ZERO on purpose: the zero value is the default.
+		SendQueueIdle: time.Second,
+		PluginGateway: stubPluginGateway{},
+		Push:          stubPush{},
+		Transcriber:   stubTranscriber{},
 	})
 	s.UseRouter(stubRouter{})
 	return s
@@ -108,6 +112,9 @@ type stubPins struct{ pins.Store }
 
 // stubRecents satisfies recents.Store for registration only; any method call panics.
 type stubRecents struct{ recents.Store }
+
+// stubSendQueue satisfies SendQueue for registration only; any method call panics.
+type stubSendQueue struct{ SendQueue }
 
 // stubPluginGateway satisfies plugins.Gateway for registration only; any method call panics.
 type stubPluginGateway struct{ plugins.Gateway }

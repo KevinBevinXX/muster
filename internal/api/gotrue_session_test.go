@@ -37,6 +37,8 @@ type memUsers struct {
 	rows     map[int64]*users.User
 	invites  map[string]*memInvite
 	bindFail error
+	// signOutErr makes RecordSignOutEverywhere fail.
+	signOutErr error
 	// lookupErr makes BySub fail as a database outage would.
 	lookupErr error
 	// lookupFailures makes only the next N BySub calls fail (a blip).
@@ -127,6 +129,23 @@ func (m *memUsers) ByID(_ context.Context, id int64) (users.User, error) {
 		return *u, nil
 	}
 	return users.User{}, users.ErrNotFound
+}
+
+func (m *memUsers) RecordSignOutEverywhere(_ context.Context, id int64) (time.Time, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	u, ok := m.rows[id]
+	if !ok {
+		return time.Time{}, users.ErrNotFound
+	}
+	if m.signOutErr != nil {
+		return time.Time{}, m.signOutErr
+	}
+	now := time.Now()
+	if u.SignedOutAt == nil || now.After(*u.SignedOutAt) {
+		u.SignedOutAt = &now
+	}
+	return *u.SignedOutAt, nil
 }
 
 func (m *memUsers) SetDisabled(_ context.Context, id int64, disabled bool) (users.User, error) {

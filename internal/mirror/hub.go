@@ -108,6 +108,10 @@ type HostView struct {
 	// its history in copy-mode (Msg.PaneScroll). False for an older
 	// muster-mirror and for an offline host.
 	PaneScroll bool
+	// StatusReport: the host advertised that it reports each window's Claude
+	// Code status (Msg.StatusReport), which is what a queued message waits on.
+	// False for an older muster-mirror and for an offline host.
+	StatusReport bool
 }
 
 // Hub is the set of connected hosts, their session lists and their live
@@ -138,6 +142,11 @@ type Hub struct {
 	// activityAfter is time.AfterFunc for activityMoved's trailing nudge (a
 	// test counts the timers it schedules).
 	activityAfter func(time.Duration, func()) *time.Timer
+
+	// turns is, per window, its status as first observed and the status time
+	// it held at its latest paste (turns.go). Under turnsMu.
+	turnsMu sync.Mutex
+	turns   map[turnKey]*turnState
 }
 
 // activityThrottle is one owner's activity-only throttle: when its last such
@@ -240,6 +249,9 @@ type hostConn struct {
 	paneScroll bool
 	// version is the tunnel version this connection speaks (its hello's).
 	version int
+	// statusReport: the host advertised Msg.StatusReport, speaks v2 and
+	// registers per window — the only shape whose Window.Status is believed.
+	statusReport bool
 
 	mu       sync.Mutex
 	sessions []string
@@ -284,7 +296,8 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		}
 		hc.mu.Lock()
 		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
-			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll})
+			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
+			StatusReport: hc.statusReport})
 		hc.mu.Unlock()
 	}
 	now := h.now()
@@ -382,7 +395,7 @@ func (hc *hostConn) list(m Msg, now int64) (sessions []string, windows []Window,
 		if hc.version < 2 {
 			// A v1 host has no rendered view whatever it claims.
 			for i := range windows {
-				windows[i].Claude = false
+				windows[i].Claude, windows[i].Status, windows[i].StatusSince = false, "", 0
 			}
 		}
 		sessions, claude, labels, activity = SessionsOf(windows)
@@ -402,6 +415,8 @@ func (hc *hostConn) list(m Msg, now int64) (sessions []string, windows []Window,
 // Activity. Activity is compared on its own, as the card prints it (listed):
 // it moves all the time, and a change in it is shown — in the card's "active …
 // ago" — but is throttled (activityMoved) rather than nudged at once.
+// Status and StatusSince are ignored too: no card draws them and they move
+// with every turn (the send queue reads them, through AgentState).
 func sameWindows(a, b []Window) bool {
 	if (a == nil) != (b == nil) || len(a) != len(b) {
 		return false
@@ -409,6 +424,7 @@ func sameWindows(a, b []Window) bool {
 	for i := range a {
 		x, y := a[i], b[i]
 		x.Activity, y.Activity = 0, 0
+		x.Status, y.Status, x.StatusSince, y.StatusSince = "", "", 0, 0
 		if x != y {
 			return false
 		}
@@ -509,12 +525,15 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 	hc := &hostConn{key: key, ws: ws, ctx: ctx, cancel: cancel, interactive: hello.Interactive, version: hello.Version,
 		streams: map[uint32]*stream{}, watches: map[uint32]*watch{}, pastes: map[uint32]chan error{}, scrolls: map[uint32]chan error{}}
 	hc.sessions, hc.windows, hc.claude, hc.labels, hc.activity = hc.list(hello, h.now().Unix())
+	h.observe(owner, host, hc.windows, h.now())
 	if hc.version >= 2 {
 		// A read-only host cannot be pasted into whatever it claims.
 		hc.panePaste = hello.PanePaste && hello.Interactive
 		// Nor scrolled: copy-mode is a change to the pane its operator sees,
 		// which a read-only host did not opt into.
 		hc.paneScroll = hello.PaneScroll && hello.Interactive
+		// Believed only of a window (AgentState requires a per-window list).
+		hc.statusReport = hello.StatusReport
 	}
 	h.mu.Lock()
 	old := h.hosts[key]
@@ -598,6 +617,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				same := slices.Equal(hc.sessions, list) && slices.Equal(hc.claude, claude) && maps.Equal(hc.labels, labels) && sameWindows(hc.windows, windows)
 				hc.sessions, hc.windows, hc.labels, hc.activity, hc.claude = list, windows, labels, activity, claude
 				hc.mu.Unlock()
+				h.observe(hc.key.owner, hc.key.host, windows, h.now())
 				// 🔴 ONLY A CHANGE SOMEBODY CAN SEE NUDGES THE OPEN VIEWS, and an
 				// activity-only one is THROTTLED. A changed list or order nudges
 				// at once. A time that moved with nothing else (a busy window that
@@ -660,6 +680,7 @@ func (h *Hub) drop(hc *hostConn) {
 			// A revoked host is GONE, not offline: nothing it listed stays on
 			// anyone's view.
 			delete(h.offline, hc.key)
+			defer h.forgetTurns(hc.key.owner, hc.key.host)
 		} else {
 			hc.mu.Lock()
 			claude := append([]string(nil), hc.claude...)

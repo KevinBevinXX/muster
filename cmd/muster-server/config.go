@@ -20,6 +20,7 @@ import (
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/push"
+	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/stepup"
 )
 
@@ -90,6 +91,10 @@ const (
 
 	envTagAutoDispatch = "MUSTER_TAG_AUTODISPATCH"
 	envTaskReapAfter   = "MUSTER_TASK_REAP_AFTER"
+	// The send queue (internal/sendqueue): how long a target must have been idle
+	// before a queued message is sent to it. A Go duration, 30s when unset,
+	// refused outside 1s–1h.
+	envSendQueueIdle = "MUSTER_SEND_QUEUE_IDLE"
 
 	// The optional MIRRORED-sessions plugin (internal/mirror): "1" turns it on.
 	// Off, GET /mirror/connect answers 404 and nothing mirrored is listed.
@@ -373,6 +378,9 @@ type config struct {
 
 	TagAutoDispatch bool
 	TaskReapAfter   time.Duration
+	// SendQueueIdle is MUSTER_SEND_QUEUE_IDLE (sendqueue.DefaultIdleFor when
+	// unset).
+	SendQueueIdle time.Duration
 
 	// Mirror turns the mirrored-sessions plugin on (MUSTER_MIRROR=1).
 	Mirror bool
@@ -866,6 +874,15 @@ func loadConfig(getenv func(string) string) (config, error) {
 			return config{}, fmt.Errorf("invalid %s %q: must be positive", envTaskReapAfter, v)
 		}
 		c.TaskReapAfter = d
+	}
+	c.SendQueueIdle = sendqueue.DefaultIdleFor
+	if v := strings.TrimSpace(getenv(envSendQueueIdle)); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < sendqueue.MinIdleFor || d > sendqueue.MaxIdleFor {
+			return config{}, fmt.Errorf("invalid %s %q: want a Go duration between %s and %s (e.g. 30s)",
+				envSendQueueIdle, v, sendqueue.MinIdleFor, sendqueue.MaxIdleFor)
+		}
+		c.SendQueueIdle = d
 	}
 
 	if v := strings.TrimSpace(getenv(envGitHubEncKey)); v != "" {

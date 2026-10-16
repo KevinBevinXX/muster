@@ -210,6 +210,14 @@ type Msg struct {
 	// loop has no default case — and muster's wait would time out; it is never
 	// sent one.)
 	PaneScroll bool `json:"paneScroll,omitempty"`
+	// StatusReport (hello) is the host ADVERTISING that it reports each window's
+	// Claude Code status (Window.Status). Only a per-window v2 host sets it.
+	//
+	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS, like PanePaste: an older
+	// muster ignores it; an older host never sets it, and muster then treats
+	// every one of its windows' status as unknown — so nothing queued for it is
+	// sent (Hub.AgentState says why).
+	StatusReport bool `json:"statusReport,omitempty"`
 	// ID names one terminal stream (open, resize, close, closed).
 	ID uint32 `json:"id,omitempty"`
 	// Session is the tmux session an open attaches to.
@@ -328,6 +336,51 @@ type Window struct {
 	// Command is what runs in the window's active pane (#{pane_current_command}:
 	// "zsh", "opencode", "vim"), "" for unknown. Display and search only.
 	Command string `json:"command,omitempty"`
+	// Status is what the Claude Code session in the window's pane reports about
+	// itself (StatusBusy, StatusIdle, StatusWaiting), "" when unknown — no Claude
+	// pane, or one whose status the host cannot read. It is what decides when a
+	// QUEUED message may be sent (internal/sendqueue), and only a host that
+	// advertised Msg.StatusReport is believed about it.
+	//
+	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS, like Labels: an older
+	// muster ignores the field; an older host never sends it, and never sets
+	// StatusReport, so muster treats every window of it as UNKNOWN — and a queued
+	// message for it is NOT sent (it fails closed), never sent on a guess.
+	Status string `json:"status,omitempty"`
+	// StatusSince is WHEN Claude Code last wrote Status, in Unix milliseconds:
+	// its sessions file's own statusUpdatedAt, the CLI's clock, not muster's
+	// or the host's guess. 0 when unknown. The send queue reads an idle window
+	// as idle SINCE this, and sends the next message only once it is later than
+	// the last one was handed over: a turn the message started and finished
+	// between two host refreshes still moves it.
+	//
+	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS, like Status: an older
+	// muster ignores it; a host that sends a Status without it is UNKNOWN to the
+	// send queue (Hub.AgentState: ErrNoStatusSince) — held, never timed out on a
+	// guess.
+	StatusSince int64 `json:"statusSince,omitempty"`
+}
+
+// The values of Window.Status: Claude Code's own session status, as its
+// sessions file spells it.
+const (
+	// StatusBusy: a turn is running.
+	StatusBusy = "busy"
+	// StatusIdle: no turn is running and nothing is being asked of the person.
+	StatusIdle = "idle"
+	// StatusWaiting: the session is waiting on the person (a permission prompt,
+	// a question). Not idle: a message pasted now would answer the prompt.
+	StatusWaiting = "waiting"
+)
+
+// NormalizeStatus is status when it is one of the three Window.Status values,
+// else "" (unknown). Both halves apply it.
+func NormalizeStatus(status string) string {
+	switch status {
+	case StatusBusy, StatusIdle, StatusWaiting:
+		return status
+	}
+	return ""
 }
 
 // The v2 bounds. Each is a property of the wire, so both halves read it here.
@@ -608,6 +661,14 @@ func NormalizeWindows(in []Window, now int64) []Window {
 			w.Label = ""
 		}
 		w.Command = validCommand(w.Command)
+		// A status describes a Claude pane; a window without one has none.
+		if w.Status = NormalizeStatus(w.Status); !w.Claude {
+			w.Status = ""
+		}
+		// And so does its time: none without a status, none before 1970.
+		if w.Status == "" || w.StatusSince < 0 {
+			w.StatusSince = 0
+		}
 		if w.Activity < 0 {
 			w.Activity = 0
 		}
