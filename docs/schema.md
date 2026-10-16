@@ -19,7 +19,7 @@ the set grows **or** shrinks.
 | browser flows | `flow_jobs`, `flow_runner_tokens`, `flow_requests` |
 | push | `push_subscriptions`, `push_preferences` |
 | plugins | `plugins`, `plugin_messages`, `plugin_reply_drafts` |
-| Agents list | `pins`: the entries each user pinned to the top |
+| Agents list | `pins`: the entries each user pinned to the top; `recents`: the entries each user recently opened |
 | GitHub | `github_connection`, one row per owner |
 
 `notes` is the task table. The name is historical. It is kept because every id in
@@ -45,6 +45,7 @@ buys only a word.
 | `0015` | `plugins` and `plugin_messages`: the [plugin interface](plugins.md). A message's input cannot be changed after it is written. |
 | `0016` | `plugin_reply_drafts` (a draft's body cannot be changed after it is written; the claim, lease and result rules) and `plugin_messages.no_reply`, which cannot be changed and refuses any reply draft for its message. |
 | `0017` | `pins`: a user's pinned Agents-list entries, each naming an agent (deleted with it) or a mirrored window by `(host, session, tmux window id)`. Owned, under row-level security; the agent a pin names must be the pin's owner's. |
+| `0018` | `recents`: a user's recently opened Agents-list entries, keyed as `pins` are, one row per entry (a visit moves its time), at most 50 per user (the oldest pruned). Owned, under row-level security. |
 
 To change the schema, add a new numbered file.
 

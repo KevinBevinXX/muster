@@ -79,13 +79,14 @@ func TestTheCardsCarryTheirOptionsLabels(t *testing.T) {
 	if !strings.Contains(cards, `data-f-account="alpha"`) {
 		t.Fatalf("instrument check: the account field is not on the card at all:\n%s", cards)
 	}
-	// The list's partial is the cards and nothing else (no out-of-band options).
+	// The list's partial is the cards and the recent strip, and nothing else
+	// (no out-of-band options).
 	var b strings.Builder
-	if err := RenderAgentsList(&b, list, mirrors); err != nil {
+	if err := RenderAgentsList(&b, list, mirrors, nil); err != nil {
 		t.Fatal(err)
 	}
-	if b.String() != cards {
-		t.Error("the /ui/agents partial is not exactly the cards")
+	if b.String() != cards+renderNode(t, recentStrip(recentItems(list, mirrors, nil), true)) {
+		t.Error("the /ui/agents partial is not exactly the cards and the strip")
 	}
 }
 

@@ -112,6 +112,12 @@ BEGIN
         ALTER TABLE public.pins DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.pins ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0018 (recents), when this schema has it; same reason as 0011.
+    IF to_regclass('public.recents') IS NOT NULL THEN
+        ALTER TABLE public.recents NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.recents DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.recents ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
 END
 $$;
 

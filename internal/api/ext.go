@@ -16,6 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/recents"
 )
 
 // Extensions are the server's optional dependencies. A Server built without
@@ -166,6 +167,11 @@ type Extensions struct {
 	// nil (no database): nothing is pinned, no card is drawn pinned, and the pin
 	// routes answer 404.
 	Pins pins.Store
+
+	// Recents is the Agents list's per-user "recently viewed" entries
+	// (internal/recents, migration 0018). nil (no database): no visit is
+	// recorded and the strip is never drawn.
+	Recents recents.Store
 }
 
 // Mirror is the mirror plugin as this package consumes it. *mirror.Service

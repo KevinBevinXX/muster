@@ -216,7 +216,7 @@ func (s *Server) handleAgentsContent(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// The viewer's mirrored sessions (internal/mirror), after the agents: from
 	// the plugin's in-memory hub, scoped to this request's principal.
-	if err := ui.RenderAgentsList(w, cards, s.mirrorCards(ctx, pinned)); err != nil {
+	if err := ui.RenderAgentsList(w, cards, s.mirrorCards(ctx, pinned), s.recentRefs(ctx)); err != nil {
 		s.logger.Printf("agents: render: %v", err)
 	}
 }
@@ -1223,6 +1223,8 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/agents/"+a.Name+"?session="+strconv.FormatInt(active.ID, 10), http.StatusSeeOther)
 		return
 	}
+	// The viewer opened this agent: its "recently viewed" entry (best-effort).
+	s.recordAgentVisit(ctx, a.ID)
 	// Opening a session clears its unread replies (best-effort).
 	if err := s.ext.Agents.MarkSessionRead(ctx, active.ID); err != nil {
 		s.logger.Printf("agents: mark session %d read on detail: %v", active.ID, err)

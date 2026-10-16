@@ -145,6 +145,10 @@ var pgBackedPackages = []string{
 	// security and a foreign key cascade.
 	"internal/pins",
 	"internal/plugins",
+	// Recents (migration 0018). "Another user cannot see or write your recently
+	// viewed entries", "a visit upserts" and "the oldest past the bound are
+	// pruned" are claims about row-level security and SQL.
+	"internal/recents",
 	// muster-native Web Push (migration 0013). "A member's principal (and the
 	// admin's) reads and writes only its own subscriptions", "a claim moves a
 	// shared device and nothing else" and "a stale handle cannot touch a row

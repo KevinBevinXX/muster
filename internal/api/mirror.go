@@ -167,6 +167,8 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		http.Redirect(w, r, keepNotice(r, mirrorRef(e).TerminalPath()), http.StatusSeeOther)
 		return
 	}
+	// The viewer opened this window (best-effort).
+	s.recordMirrorVisit(r.Context(), h.Host, e.Session, e.Window)
 	session := e.Session
 	rawName := ""
 	if e.Label != "" && e.Label != session {

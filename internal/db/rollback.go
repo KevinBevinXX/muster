@@ -71,6 +71,10 @@ const pluginRepliesMigrationVersion = 16
 // and under the same row-level security; same treatment again.
 const pinsMigrationVersion = 17
 
+// recentsMigrationVersion is 0018: recents (the Agents list's recently viewed
+// entries), owned and under the same row-level security; same treatment again.
+const recentsMigrationVersion = 18
+
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the
 // principal, the role and its grants — and 0008's for mirror_tokens when that
@@ -81,7 +85,7 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		return err
 	}
 	ctx = asMigrator(ctx)
-	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasPushSubscriptions, hasFlowRequests, hasPlugins, hasPluginReplies, hasPins bool
+	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasPushSubscriptions, hasFlowRequests, hasPlugins, hasPluginReplies, hasPins, hasRecents bool
 	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.mirror_tokens') IS NOT NULL,
 		to_regclass('public.user_credentials') IS NOT NULL,
 		to_regclass('public.flow_jobs') IS NOT NULL,
@@ -89,8 +93,9 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		to_regclass('public.flow_requests') IS NOT NULL,
 		to_regclass('public.plugins') IS NOT NULL,
 		to_regclass('public.plugin_reply_drafts') IS NOT NULL,
-		to_regclass('public.pins') IS NOT NULL`).Scan(&hasMirrorTokens, &hasUserCredentials,
-		&hasFlowJobs, &hasPushSubscriptions, &hasFlowRequests, &hasPlugins, &hasPluginReplies, &hasPins); err != nil {
+		to_regclass('public.pins') IS NOT NULL,
+		to_regclass('public.recents') IS NOT NULL`).Scan(&hasMirrorTokens, &hasUserCredentials,
+		&hasFlowJobs, &hasPushSubscriptions, &hasFlowRequests, &hasPlugins, &hasPluginReplies, &hasPins, &hasRecents); err != nil {
 		return fmt.Errorf("rls on: %w", err)
 	}
 	applied := false
@@ -102,7 +107,8 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 			!(m.version == flowRequestsMigrationVersion && hasFlowRequests) &&
 			!(m.version == pluginsMigrationVersion && hasPlugins) &&
 			!(m.version == pluginRepliesMigrationVersion && hasPluginReplies) &&
-			!(m.version == pinsMigrationVersion && hasPins) {
+			!(m.version == pinsMigrationVersion && hasPins) &&
+			!(m.version == recentsMigrationVersion && hasRecents) {
 			continue
 		}
 		tx, err := pool.Begin(ctx)

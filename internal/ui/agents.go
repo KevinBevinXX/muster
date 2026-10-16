@@ -134,6 +134,11 @@ func AgentsPanel(active bool) g.Node {
 			Class("mb-2 flex items-center gap-2"),
 			H2(Class("text-xs font-medium uppercase tracking-wide text-muted"), g.Text("Agents")),
 		),
+		// Recently viewed (recents.go): above the filter and OUTSIDE #agents-list —
+		// the filter's `#agents-list > article` rule assumes every child is a card,
+		// and the strip is navigation, not something to filter. Filled out of band
+		// by every list render.
+		recentStrip(nil, false),
 		// The filter: a search box that narrows the cards as you type. OUTSIDE
 		// #agents-list, so the list's own refresh never touches it (agents_filter.go).
 		agentsFilterBar(),
