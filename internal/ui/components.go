@@ -2523,6 +2523,12 @@ func taskModalScript() g.Node {
   window.cgModalOpen = function (id) {
     var b = document.getElementById(id + '-body');
     if (b) b.textContent = '';
+    window.cgModalShow(id);
+  };
+  // cgModalShow is the open WITHOUT the emptying: for a body that was loaded on
+  // purpose before the sheet was shown (composeOnLoad, which opens the sheet only
+  // once its body has landed, so it does not grow on screen — a layout shift).
+  window.cgModalShow = function (id) {
     var d = discardBar(id); if (d) d.classList.add('hidden');
     var m = document.getElementById(id); if (m) m.classList.remove('hidden');
   };

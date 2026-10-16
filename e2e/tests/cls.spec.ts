@@ -25,25 +25,28 @@ import { clsInit, readCls, resetCls, settle, ClsResult } from '../lib/cls';
 // than dropped, so the gap is visible here and not only in a PR description.
 
 type Where = 'shared' | 'login' | 'full' | 'public';
-const PAGES: Record<string, { where: Where; url: string }> = {
-  'GET /{$}': { where: 'shared', url: '/' },
-  'GET /tasks': { where: 'shared', url: '/tasks' },
-  'GET /agents': { where: 'shared', url: '/agents' },
+// `ready` is what the page is FOR, asserted visible after the measurement: a
+// page that failed to draw its content shifts nothing, and must not pass as
+// still. (The share sheet once did exactly that: opened empty, measured 0.)
+const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
+  'GET /{$}': { where: 'shared', url: '/', ready: '#tasks-list article' },
+  'GET /tasks': { where: 'shared', url: '/tasks', ready: '#tasks-list article' },
+  'GET /agents': { where: 'shared', url: '/agents', ready: '#agents-recent a[data-recent-entry]' },
   // The shared server builds neither store, so its /repos and /connectors fall
   // back to the board; the full server below builds both and draws the real tabs.
-  'GET /repos': { where: 'full', url: '/repos' },
-  'GET /connectors': { where: 'full', url: '/connectors' },
+  'GET /repos': { where: 'full', url: '/repos', ready: '#panel-repos p' },
+  'GET /connectors': { where: 'full', url: '/connectors', ready: '#panel-connectors button' },
   'GET /flows': { where: 'shared', url: '/flows' },
-  'GET /share': { where: 'shared', url: '/share?title=Layout%20probe&text=hello' },
+  'GET /share': { where: 'shared', url: '/share?title=Layout%20probe&text=hello', ready: '#task-modal textarea[name="body"]' },
   'GET /account': { where: 'shared', url: '/account' },
   'GET /account/credentials': { where: 'shared', url: '/account/credentials' },
   'GET /account/tokens': { where: 'shared', url: '/account/tokens' },
-  'GET /tasks/{id}': { where: 'shared', url: '/tasks/1' },
-  'GET /agents/{name}': { where: 'shared', url: '/agents/docs-sweeper' },
+  'GET /tasks/{id}': { where: 'shared', url: '/tasks/1', ready: '#task-1' },
+  'GET /agents/{name}': { where: 'shared', url: '/agents/docs-sweeper', ready: '#chat-log [data-tool-group]' },
   'GET /login': { where: 'login', url: '/login' },
-  'GET /mirror/view': { where: 'full', url: 'VIEW' },
-  'GET /mirror/terminal': { where: 'full', url: 'TERMINAL' },
-  'GET /agents/{name}/terminal': { where: 'full', url: 'AGENT_TERMINAL' },
+  'GET /mirror/view': { where: 'full', url: 'VIEW', ready: '#mv-log [data-tool-row]' },
+  'GET /mirror/terminal': { where: 'full', url: 'TERMINAL', ready: '#mv-input' },
+  'GET /agents/{name}/terminal': { where: 'full', url: 'AGENT_TERMINAL', ready: '#term' },
   'GET /invite': { where: 'public', url: '/invite' },
   'GET /auth/claim': { where: 'public', url: '/auth/claim' },
   'GET /auth/reset': { where: 'public', url: '/auth/reset' },
@@ -111,10 +114,12 @@ function report(label: string, r: ClsResult): string {
   return `${label}: ${r.total} — ${JSON.stringify(r.shifts)}`;
 }
 
-async function measure(page: Page, url: string): Promise<ClsResult> {
+async function measure(page: Page, url: string, ready?: string): Promise<ClsResult> {
   await page.goto(url);
   await settle(page);
-  return readCls(page);
+  const r = await readCls(page);
+  if (ready) await expect(page.locator(ready).first(), `${url} drew its content (${ready})`).toBeVisible();
+  return r;
 }
 
 // A chief agent with threads, so the panel's open state is a real one (intro,
@@ -166,7 +171,7 @@ for (const vp of viewports) {
       await settle(page);
       for (const [route, p] of Object.entries(PAGES)) {
         if (p.where !== 'shared') continue;
-        const r = await measure(page, p.url);
+        const r = await measure(page, p.url, p.ready);
         seen.push(`${route} ${r.total}`);
         if (r.total >= BAR) bad.push(report(`${route} (${p.url})`, r));
       }
@@ -349,7 +354,7 @@ test.describe('the full server', () => {
         const urls: Record<string, string> = { VIEW: view, TERMINAL: term, AGENT_TERMINAL: `/agents/${ccAgent}/terminal` };
         for (const [route, p] of Object.entries(PAGES)) {
           if (p.where !== 'full') continue;
-          const r = await measure(page, morigin + (urls[p.url] ?? p.url));
+          const r = await measure(page, morigin + (urls[p.url] ?? p.url), p.ready);
           console.log(`[cls ${vp.name}] ${route} ${r.total}`);
           if (r.total >= BAR) bad.push(report(`${vp.name} ${route}`, r));
         }
