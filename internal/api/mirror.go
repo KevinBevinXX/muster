@@ -94,20 +94,10 @@ func (s *Server) mirrorCards(ctx context.Context, pinned pins.Set) []ui.MirrorCa
 	for _, m := range mirror.Ordered(s.ext.Mirror.Hosts(ctx)) {
 		out = append(out, ui.MirrorCardView{Host: m.Host, Session: m.Session, Window: m.Window, Title: mirrorTitle(m), Label: m.Label,
 			Qualifier: m.Qualifier, Kind: m.Kind(), Online: m.Online, Interactive: m.Interactive, Claude: m.Claude,
-			ActiveAt: mirrorActiveAt(m.Activity),
+			ActiveAt: m.ActiveAt(),
 			Pinned:   pinned.Mirror(pins.MirrorKey{Host: m.Host, Session: m.Session, Window: m.Window})})
 	}
 	return out
-}
-
-// mirrorActiveAt is a host-reported activity (Unix seconds, 0 = unknown) as
-// the card's time: zero for unknown, so the card prints no "active" at all
-// rather than "active 56y ago".
-func mirrorActiveAt(unix int64) time.Time {
-	if unix <= 0 {
-		return time.Time{}
-	}
-	return time.Unix(unix, 0)
 }
 
 // mirrorTitle is what an entry with no label is called, for the ui views'

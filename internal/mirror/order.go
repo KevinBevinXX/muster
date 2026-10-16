@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // SessionView is one mirrored entry as a LIST or a page shows it — a WINDOW of
@@ -185,6 +186,20 @@ func (s SessionView) Kind() string {
 	return s.Command
 }
 
+// ActiveAt is the time the entry's card prints as "active … ago": its
+// Activity (already floored to ActivityBucket by NormalizeActivity /
+// NormalizeWindows), or zero for unknown so the card prints no "active" at all
+// rather than "active 56y ago".
+//
+// 🔴 ONE RULE, ONE PLACE: the Agents view's card takes its time from here, and
+// the hub decides from here (listed) whether an update moved a card's time.
+func (s SessionView) ActiveAt() time.Time {
+	if s.Activity <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(s.Activity, 0)
+}
+
 // Entries is every entry of the host, in its own stable order: a per-window
 // host's windows (session, then index), a per-session host's sessions (name).
 func (h HostView) Entries() []SessionView {
@@ -255,9 +270,10 @@ func (v HostView) CanPaste(session string) bool {
 // activity anywhere the result is exactly the old list.
 //
 // 🔴 ONE RULE, ONE PLACE. The Agents view renders this list and the hub
-// decides from this same list whether a host's update changed the order, the
-// change it re-renders for at once (orderKeys); a second copy of the comparison would let the two
-// disagree about what "the order changed" means.
+// decides from this same list (listed) whether a host's update changed what the
+// view shows: the order, which it re-renders for at once, and each entry's
+// ActiveAt, which it re-renders for throttled. A second copy of either
+// comparison would let the two disagree about what "changed" means.
 func Ordered(hosts []HostView) []SessionView {
 	var out []SessionView
 	for _, h := range hosts {
@@ -268,12 +284,18 @@ func Ordered(hosts []HostView) []SessionView {
 	return out
 }
 
-// orderKeys is Ordered's sequence as comparable keys: which entry is where.
-func orderKeys(hosts []HostView) []string {
+// listed is what Ordered shows, as comparables: keys is which entry is where,
+// and activeAt[i] is the time keys[i]'s card prints (SessionView.ActiveAt, as
+// Unix seconds; 0 = it prints none).
+func listed(hosts []HostView) (keys []string, activeAt []int64) {
 	list := Ordered(hosts)
-	keys := make([]string, len(list))
+	keys = make([]string, len(list))
+	activeAt = make([]int64, len(list))
 	for i, s := range list {
 		keys[i] = s.Host + "\x00" + s.Session + "\x00" + s.Window
+		if t := s.ActiveAt(); !t.IsZero() {
+			activeAt[i] = t.Unix()
+		}
 	}
-	return keys
+	return keys, activeAt
 }

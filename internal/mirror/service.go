@@ -85,7 +85,7 @@ func (s *Service) SetNotifyDebounce(d time.Duration) {
 	s.hub.mu.Unlock()
 }
 
-// SetActivityNudgeEvery overrides activityNudgeEvery, the per-host throttle on
+// SetActivityNudgeEvery overrides activityNudgeEvery, the per-owner throttle on
 // activity-only nudges (tests).
 func (s *Service) SetActivityNudgeEvery(d time.Duration) {
 	s.hub.mu.Lock()

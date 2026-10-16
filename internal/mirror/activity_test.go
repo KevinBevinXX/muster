@@ -24,7 +24,7 @@ import (
 // It orders the list and is printed on each card ("active … ago"), optional
 // on the wire in both directions, bounded and floored (mirror.ActivityBucket) —
 // and a host's update re-renders open Agents views at once when the ORDER
-// comes out different, and at most once per throttle window per host when
+// comes out different, and at most once per throttle window per OWNER when
 // only a card's shown time moved.
 // ---------------------------------------------------------------------------
 
@@ -201,10 +201,10 @@ func TestAnOfflineHostKeepsItsLastActivity(t *testing.T) {
 	}
 }
 
-// TestAnActivityUpdateNudgesOpenViewsThrottledPerHost is the hub's nudge
+// TestAnActivityUpdateNudgesOpenViewsThrottled is the hub's nudge
 // policy for activity: a card prints its time ("active … ago"), so a time that
 // moves a bucket re-renders the open views even when the order stays put — but
-// an activity-only change nudges at most once per throttle window per host,
+// an activity-only change nudges at most once per throttle window per owner,
 // one inside the window becomes ONE trailing nudge at its end (not none, not
 // one each), a raw time that moved within its bucket is no change at all, and
 // an order change nudges at once, throttle or not.
@@ -214,7 +214,7 @@ func TestAnOfflineHostKeepsItsLastActivity(t *testing.T) {
 // on the same connection has landed), so "no nudge" is never "the message had
 // not arrived yet"; and the connect is the positive control — the counter can
 // see a nudge.
-func TestAnActivityUpdateNudgesOpenViewsThrottledPerHost(t *testing.T) {
+func TestAnActivityUpdateNudgesOpenViewsThrottled(t *testing.T) {
 	r := newRig(t)
 	r.svc.SetNotifyDebounce(5 * time.Millisecond)
 	// Long enough that a settle() (120 ms) fits inside it many times over,

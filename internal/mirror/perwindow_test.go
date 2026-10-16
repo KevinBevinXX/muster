@@ -454,7 +454,7 @@ func orderOfWindows(hosts []mirror.HostView) []string {
 // list is ONE order across hosts and windows — most recently active first, two
 // windows of one session far apart when their activity is. And each visible
 // change nudges once: a time moving without the order changing (the card's
-// "active … ago" — throttled per host, see
+// "active … ago" — throttled per owner, see
 // TestABusyWindowThatStaysFirstRefreshesItsCardWithinTheThrottle), a changed
 // order, a renumbered window with its new label.
 //
