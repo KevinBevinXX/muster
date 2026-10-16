@@ -3,6 +3,7 @@ package ui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/cctranscript"
 )
@@ -112,5 +113,68 @@ func TestTheChiefPanelCarriesNoBubbleClamp(t *testing.T) {
 	}
 	if n := strings.Count(renderString(t, ChiefPanel()), "window.muClamp"); n != 0 {
 		t.Errorf("the chief panel frame carries the bubble clamp (%d)", n)
+	}
+}
+
+// A user bubble carries what the message index reads — a persisted message's
+// row id and when it was written — and an assistant bubble carries neither.
+func TestUserBubblesCarryTheirIndexMeta(t *testing.T) {
+	at := time.Date(2026, 1, 2, 10, 3, 0, 0, time.FixedZone("x", 3600))
+	v := sampleAgentDetailView()
+	v.Messages = []ChatLine{{Role: "user", Content: "hello", ID: 41, At: at}, {Role: "assistant", Content: "hi", ID: 42, At: at}}
+	html := render(chatLogInner(v))
+	if !strings.Contains(html, `data-bubble="user"`) {
+		t.Fatalf("no user bubble:\n%s", html)
+	}
+	for _, want := range []string{`id="chat-msg-41"`, `data-at="2026-01-02T09:03:00Z"`} {
+		if !strings.Contains(html, want) {
+			t.Errorf("user bubble lacks %s:\n%s", want, html)
+		}
+	}
+	if strings.Contains(html, `chat-msg-42`) || strings.Count(html, "data-at=") != 1 {
+		t.Errorf("an assistant bubble carries index meta:\n%s", html)
+	}
+
+	var tr MirrorTranscript
+	ops := tr.Ops([]cctranscript.Event{
+		{Kind: cctranscript.KindPrompt, Text: "timed", At: "2026-01-02T10:03:00.123Z"},
+		{Kind: cctranscript.KindPrompt, Text: "garbled time", At: "yesterday"},
+		{Kind: cctranscript.KindText, Text: "reply"},
+	})
+	if !strings.Contains(ops[0].HTML, `data-at="2026-01-02T10:03:00Z"`) {
+		t.Errorf("a timed prompt lacks its data-at:\n%s", ops[0].HTML)
+	}
+	if strings.Contains(ops[1].HTML, "data-at") || strings.Contains(ops[1].HTML, "yesterday") {
+		t.Errorf("an unparseable At was drawn:\n%s", ops[1].HTML)
+	}
+	if strings.Contains(ops[2].HTML, "data-at") {
+		t.Errorf("a reply carries data-at:\n%s", ops[2].HTML)
+	}
+}
+
+// The index (its header button, its sheet, its script) is on the mirrored view
+// and the agent chat page — once each — and deliberately not in the chief panel.
+func TestTheMessageIndexIsOnBothChatPages(t *testing.T) {
+	mirror := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main"}))
+	var b strings.Builder
+	if err := RenderAgentDetail(&b, sampleAgentDetailView(), featuresAllOn); err != nil {
+		t.Fatal(err)
+	}
+	agent := b.String()
+	for name, c := range map[string]struct{ html, log string }{"mirror": {mirror, "mv-log"}, "agent": {agent, "chat-log"}} {
+		for _, want := range []string{`id="chat-index-open" data-chat-index-log="` + c.log + `"`, `id="chat-index" hidden`, "window.muIndex = {"} {
+			if n := strings.Count(c.html, want); n != 1 {
+				t.Errorf("%s: %q appears %d times, want 1", name, want, n)
+			}
+		}
+	}
+	b.Reset()
+	cv := sampleAgentDetailView()
+	cv.Surface = ChatSurfaceChiefPanel
+	if err := RenderChiefPanelBody(&b, ChiefPanelView{Configured: true, Chat: cv}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(b.String(), "chat-index") {
+		t.Error("the chief panel carries the message index (its title bar has no room for it; see chat_index.go)")
 	}
 }

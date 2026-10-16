@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"strings"
+	"time"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -118,6 +119,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 							Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge("Mirrored · "+v.Host))),
 						P(ID("mv-status"), Class("truncate text-xs text-muted"), g.Attr("aria-live", "polite"), g.Text("Connecting…")),
 					),
+					chatIndexButton("mv-log"),
 					viewToggle(true, ref.ViewPath(), ref.TerminalPath()),
 				),
 				Div(
@@ -145,6 +147,8 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				g.If(v.Interactive, stepUpScript()),
 				mirrorViewScript(),
 				bubbleClampScript(),
+				chatIndexSheet(),
+				chatIndexScript(),
 				mirrorComposerScript(),
 				pwaChrome(),
 			),
@@ -220,7 +224,11 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 	for _, ev := range events {
 		switch ev.Kind {
 		case cctranscript.KindPrompt:
-			ops = append(ops, MirrorOp{Op: "append", HTML: render(chatBubbleOf("user", g.Attr("data-md-rendered", ""), renderMarkdown(ev.Text)))})
+			// No id: a mirrored transcript has no row id, so the message index
+			// gives the bubble a page-unique one (chatIndexScript). An At the
+			// host sent that is not RFC 3339 is dropped, never drawn.
+			at, _ := time.Parse(time.RFC3339Nano, ev.At)
+			ops = append(ops, MirrorOp{Op: "append", HTML: render(chatBubbleOf("user", bubbleMeta("user", 0, at), g.Attr("data-md-rendered", ""), renderMarkdown(ev.Text)))})
 		case cctranscript.KindText:
 			ops = append(ops, MirrorOp{Op: "append", HTML: render(chatBubbleOf("assistant", g.Attr("data-md-rendered", ""), renderMarkdown(ev.Text)))})
 		case cctranscript.KindError:

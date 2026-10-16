@@ -1264,10 +1264,7 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 		s.logger.Printf("agents: mark session %d read on detail: %v", active.ID, err)
 	}
 	msgs, _ := s.ext.Agents.ListRecentChatMessages(ctx, active.ID, chatHistoryCap)
-	lines := make([]ui.ChatLine, 0, len(msgs))
-	for _, m := range msgs {
-		lines = append(lines, ui.ChatLine{Role: m.Role, Content: m.Content, Kind: m.Kind, ToolID: m.ToolID, ToolName: m.ToolName, ToolOK: m.ToolOK, ID: m.ID})
-	}
+	lines := chatLines(msgs)
 	noteID, taskStatus := s.agentTaskStatus(ctx, a)
 	view := ui.AgentDetailView{
 		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, Status: status, Repo: a.Repo, Model: a.Model,
@@ -1310,6 +1307,18 @@ func (s *Server) agentTaskStatus(ctx context.Context, a agents.Agent) (*int64, s
 // session. The detail page re-fetches it on sse:chat.reply so a kickoff turn (which
 // persists server-side, off this page's WS) shows live. Status is computed the same
 // way as handleAgentDetail so the provisioning indicator self-clears once running.
+// chatLines is a transcript's rows as the chat draws them. The ONE conversion:
+// the detail page, the chat-log refresh and the chief panel all draw through
+// it, so a field one of them carried and another dropped cannot recur.
+func chatLines(msgs []agents.ChatMessage) []ui.ChatLine {
+	lines := make([]ui.ChatLine, 0, len(msgs))
+	for _, m := range msgs {
+		lines = append(lines, ui.ChatLine{Role: m.Role, Content: m.Content, Kind: m.Kind, ToolID: m.ToolID, ToolName: m.ToolName, ToolOK: m.ToolOK,
+			ID: m.ID, At: m.CreatedAt})
+	}
+	return lines
+}
+
 func (s *Server) handleAgentChatLog(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	a, err := s.ext.Agents.GetByName(ctx, r.PathValue("name"))
@@ -1325,10 +1334,7 @@ func (s *Server) handleAgentChatLog(w http.ResponseWriter, r *http.Request) {
 	status := s.liveStatus(ctx, a)
 	active, _ := s.resolveSession(ctx, a, r.URL.Query().Get("session"))
 	msgs, _ := s.ext.Agents.ListRecentChatMessages(ctx, active.ID, chatHistoryCap)
-	lines := make([]ui.ChatLine, 0, len(msgs))
-	for _, m := range msgs {
-		lines = append(lines, ui.ChatLine{Role: m.Role, Content: m.Content, Kind: m.Kind, ToolID: m.ToolID, ToolName: m.ToolName, ToolOK: m.ToolOK, ID: m.ID})
-	}
+	lines := chatLines(msgs)
 	noteID, taskStatus := s.agentTaskStatus(ctx, a)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.RenderAgentChatLog(w, ui.AgentDetailView{

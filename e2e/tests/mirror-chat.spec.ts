@@ -432,3 +432,97 @@ test('the agent chat clamps a long bubble and leaves its short seeded ones alone
   expect(Math.abs(h - sh)).toBeLessThanOrEqual(1);
   expect(await fromBottom(page, '#chat-log'), 'the agent log stays at the bottom').toBeLessThan(2);
 });
+
+// A prompt record with the CLI's timestamp field.
+const promptAt = (t: string, at: string) =>
+  rec({ type: 'user', promptId: 'p', origin: { kind: 'human' }, timestamp: at, message: { role: 'user', content: t } });
+
+// Is el's box inside its log's visible box?
+const inLogView = (page: Page, el: ReturnType<Page['locator']>, logSel: string) =>
+  el.evaluate((e, sel) => {
+    const l = document.querySelector(sel)!.getBoundingClientRect();
+    const r = e.getBoundingClientRect();
+    return r.top >= l.top - 1 && r.top < l.bottom && r.bottom > l.top;
+  }, logSel);
+
+// B3: a header button opens every message the reader sent (first line, time);
+// a tap on one scrolls to it, opens it if clamped and highlights it — and the
+// list keeps up with messages that stream in.
+test('the message index lists every sent message and a tap jumps to it, as messages stream in', async ({ page }) => {
+  let body = '';
+  for (let i = 1; i <= 20; i++) {
+    const text = i === 3 ? `message number ${i}\n\n` + lines(30, 'long three') : `message number ${i}`;
+    body += promptAt(text, `2026-01-02T10:${String(i).padStart(2, '0')}:00.000Z`) + reply(lines(6, `reply to ${i}`));
+  }
+  const tr = newTranscript(body);
+  await openView(page, tr);
+  const log = page.locator('#mv-log');
+  await expect(log.locator('[data-bubble="user"]')).toHaveCount(20);
+
+  const openBtn = page.locator('#chat-index-open');
+  const sheet = page.locator('#chat-index');
+  const items = sheet.locator('[data-chat-index-item]');
+  await expect(sheet).toBeHidden();
+  await openBtn.tap();
+  await expect(sheet).toBeVisible();
+  await expect(openBtn).toHaveAttribute('aria-expanded', 'true');
+  await expect(items).toHaveCount(20);
+  // First line and a time; every item a 44px target.
+  await expect(items.nth(2)).toContainText('message number 3');
+  await expect(items.nth(2)).not.toContainText('long three');
+  expect((await items.nth(2).locator('span').last().textContent())!.trim(), 'a time is shown').toMatch(/\d/);
+  expect((await items.nth(2).boundingBox())!.height).toBeGreaterThanOrEqual(44);
+
+  // Jump to N = 3: far above the bottom the view opened at, and clamped.
+  const third = log.locator('[data-bubble="user"]').nth(2);
+  await expect(third).toHaveAttribute('data-clamp', 'closed');
+  expect(await inLogView(page, third, '#mv-log'), 'message 3 starts out of view').toBe(false);
+  await items.nth(2).tap();
+  await expect(sheet).toBeHidden();
+  // Highlighted briefly (asserted first: it is gone 1.6s later).
+  await expect(third).toHaveAttribute('data-flash', '');
+  await expect.poll(() => inLogView(page, third, '#mv-log'), { message: 'message 3 is in the viewport' }).toBe(true);
+  await expect(third).toHaveAttribute('data-clamp', 'open');
+  await expect(third).not.toHaveAttribute('data-flash', /.*/, { timeout: 5_000 });
+  // The bubble's id is the one the item named.
+  const id = await third.getAttribute('id');
+  expect(id).toBeTruthy();
+
+  // Messages stream in while the sheet is open: the list keeps up.
+  await openBtn.tap();
+  await expect(items).toHaveCount(20);
+  fs.appendFileSync(tr, promptAt('a fresh message', '2026-01-02T11:00:00.000Z') + reply('ok'));
+  await expect(items).toHaveCount(21);
+  await expect(items.last()).toContainText('a fresh message');
+  // …and the earlier bubble kept its id.
+  await expect(third).toHaveAttribute('id', id!);
+  // Jump to N = 1 (the top), then to the newest.
+  await items.first().tap();
+  const first = log.locator('[data-bubble="user"]').first();
+  await expect.poll(() => inLogView(page, first, '#mv-log'), { message: 'message 1 is in the viewport' }).toBe(true);
+  await openBtn.tap();
+  await items.last().tap();
+  await expect.poll(() => inLogView(page, log.locator('[data-bubble="user"]').last(), '#mv-log')).toBe(true);
+  // The backdrop closes it, and nothing scrolls sideways.
+  await openBtn.tap();
+  await page.locator('#chat-index > [data-chat-index-close]').tap({ position: { x: 20, y: 20 } });
+  await expect(sheet).toBeHidden();
+  const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+  expect(sw).toBeLessThanOrEqual(cw);
+});
+
+// The same index on the dispatched-agent chat, over its REAL persisted
+// transcript: the seeded message carries its row id.
+test('the agent chat has the message index, keyed by the persisted message id', async ({ page }) => {
+  await login(page);
+  await page.goto(origin + '/agents/docs-sweeper');
+  await page.locator('#chat-index-open').tap();
+  const items = page.locator('#chat-index [data-chat-index-item]');
+  await expect(items).toHaveCount(1);
+  await expect(items.first()).toContainText('Check the docs build.');
+  expect(await items.first().getAttribute('data-chat-index-item')).toMatch(/^chat-msg-\d+$/);
+  await items.first().tap();
+  const b = page.locator('#chat-log [data-bubble="user"]').first();
+  await expect(b).toHaveAttribute('data-flash', '');
+  await expect.poll(() => inLogView(page, b, '#chat-log')).toBe(true);
+});

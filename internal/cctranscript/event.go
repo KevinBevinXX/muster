@@ -76,6 +76,9 @@ type Event struct {
 	// "killed"…), "" when it gave none.
 	Notice string `json:"notice,omitempty"`
 	Status string `json:"status,omitempty"`
+	// At is a prompt's record timestamp as the CLI wrote it ("" when it wrote
+	// none): the message index's time. Only a prompt carries it.
+	At string `json:"at,omitempty"`
 }
 
 // Events is what one record contributes to the rendered view, in order. It is
@@ -103,7 +106,7 @@ func Events(r Record) []Event {
 			if cmd, ok := slashCommand(text); ok {
 				text = cmd
 			}
-			return []Event{{Kind: KindPrompt, Text: Cap(text, MaxText)}}
+			return []Event{{Kind: KindPrompt, Text: Cap(text, MaxText), At: r.Timestamp}}
 		}
 		if r.IsMeta || r.IsCompactSummary {
 			return nil

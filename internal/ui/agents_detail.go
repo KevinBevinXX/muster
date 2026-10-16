@@ -39,9 +39,12 @@ type ChatLine struct {
 	// persisted row does; the mirrored view sets it from the host's own reading.
 	ToolTarget string
 	// ID is the persisted message's row id (0 = none): a bubble's
-	// data-msg-id, the same after the chat-log refresh redraws the transcript,
-	// so the bubble clamp keeps a message the reader opened open (bubble_clamp.go).
+	// data-msg-id — the key the bubble clamp keeps a message the reader opened
+	// open by (bubble_clamp.go) — and a user bubble's element id (chatMsgID),
+	// both the same after the chat-log refresh redraws the transcript.
 	ID int64
+	// At is when it was written (zero = unknown): the message index's time.
+	At time.Time
 }
 
 // ChatSurface names WHERE a chat pane is being rendered.
@@ -238,6 +241,8 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				Div(ID("task-modal")),
 				agentChatScript(v.Name),
 				bubbleClampScript(),
+				chatIndexSheet(),
+				chatIndexScript(),
 				// appScript wires the sidebar open/close + the SPA tab router AND the
 				// model combobox (its combobox copy supports the hidden-mode autosave
 				// used by the header model form). It is now the SINGLE combobox
@@ -277,6 +282,7 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 				// is task-linked, the title is a button that opens the full task detail in
 				// a modal (hx-loads /ui/agents/{name}/task into #task-modal).
 				agentTitle(v),
+				chatIndexButton("chat-log"),
 				newChatButton(v.ID),
 				chatHistoryButton(sessionDrawerID),
 			),
@@ -949,7 +955,7 @@ func chatLogInner(v AgentDetailView) g.Node {
 			if m.Role == "assistant" && isSentinelReply(m.Content) {
 				continue
 			}
-			msgs = append(msgs, chatBubble(m.Role, m.Content, m.ID))
+			msgs = append(msgs, chatBubble(m))
 		}
 	}
 	return g.Group{
@@ -1184,16 +1190,36 @@ func agentTaskBanner(v AgentDetailView) g.Node {
 	)
 }
 
-func chatBubble(role, content string, id int64) g.Node {
-	return chatBubbleOf(role,
+func chatBubble(m ChatLine) g.Node {
+	return chatBubbleOf(m.Role,
+		bubbleMeta(m.Role, m.ID, m.At),
 		// data-msg-id: the stable key the bubble clamp remembers an opened
 		// message by across the chat-log refresh (bubble_clamp.go).
-		g.If(id > 0, g.Attr("data-msg-id", strconv.FormatInt(id, 10))),
+		g.If(m.ID > 0, g.Attr("data-msg-id", strconv.FormatInt(m.ID, 10))),
 		// data-md: rendered as markdown client-side (mdConvert in agentChatScript);
 		// g.Text keeps the raw text as a safe textContent fallback before JS runs.
 		g.Attr("data-md", ""),
-		g.Text(content),
+		g.Text(m.Content),
 	)
+}
+
+// chatMsgID is a persisted user bubble's element id: the message index
+// (chatIndexScript) jumps to it, and it is the same id after the chat-log
+// refresh redraws the transcript.
+func chatMsgID(id int64) string { return "chat-msg-" + strconv.FormatInt(id, 10) }
+
+// bubbleMeta is what the message index reads off a USER bubble: its stable id
+// (id 0 = none; the index script gives a bubble without one a page-unique id)
+// and data-at, when it was written (RFC 3339, drawn in the viewer's own time
+// zone). An assistant bubble carries neither.
+func bubbleMeta(role string, id int64, at time.Time) g.Node {
+	if role != "user" {
+		return nil
+	}
+	return g.Group{
+		g.If(id > 0, ID(chatMsgID(id))),
+		g.If(!at.IsZero(), g.Attr("data-at", at.UTC().Format(time.RFC3339))),
+	}
 }
 
 // chatBubbleOf is the chat bubble's frame — a user's on the right, an
@@ -1524,7 +1550,9 @@ func agentChatScript(name string) g.Node {
     // data-bubble, like chatBubbleOf's: what bubbleClampScript clamps. (The
     // streamed reply's bubble, ensureText, deliberately has none.)
     d.setAttribute('data-bubble', role);
-    d.className ='max-w-[85%] break-words rounded-2xl px-3 py-2 text-sm ' +
+    // When it was sent, for the message index (bubbleMeta's data-at).
+    if (mine) d.setAttribute('data-at', new Date().toISOString());
+    d.className = 'max-w-[85%] break-words rounded-2xl px-3 py-2 text-sm ' +
       (mine ? 'bg-accent/15 text-fg self-end ring-1 ring-inset ring-accent/30'
             : 'bg-s2 text-fg self-start');
     var w = workingEl();

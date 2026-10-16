@@ -402,3 +402,17 @@
     transition: none;
   }
 }
+
+/*
+ * The message index's jump target (internal/ui/chat_index.go): the bubble it
+ * scrolled to pulses with the accent ring a new card uses, once.
+ */
+[data-flash] {
+  animation: card-highlight 1400ms ease-out both;
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-flash] {
+    animation: none;
+    box-shadow: 0 0 0 2px rgb(var(--mu-accent) / 0.5);
+  }
+}

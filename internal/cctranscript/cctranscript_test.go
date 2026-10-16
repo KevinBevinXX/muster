@@ -36,9 +36,9 @@ func allEvents(b []byte) []Event {
 func TestEventsFromARealToolTurn(t *testing.T) {
 	got := allEvents(readFixture(t))
 	want := []Event{
-		{Kind: KindPrompt, Text: "an earlier prompt"},
+		{Kind: KindPrompt, Text: "an earlier prompt", At: "2000-01-01T00:00:06.000Z"},
 		{Kind: KindText, Text: "AN EARLIER REPLY that is not this turn"},
-		{Kind: KindPrompt, Text: "list the workspace"},
+		{Kind: KindPrompt, Text: "list the workspace", At: "2000-01-01T00:00:06.000Z"},
 		{Kind: KindText, Text: "First segment: I will list the workspace."},
 		{Kind: KindToolCall, ToolID: "toolu_fixture1", Tool: "Bash", Target: "ls", Input: `{"command":"ls","description":"List files"}`},
 		{Kind: KindToolResult, ToolID: "toolu_fixture1", OK: true, Output: "file-a\nfile-b"},

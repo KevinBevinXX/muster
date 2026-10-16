@@ -106,10 +106,7 @@ func (s *Server) writeChiefPanelBodyFor(ctx context.Context, w http.ResponseWrit
 		s.logger.Printf("chief: mark session %d read: %v", active.ID, err)
 	}
 	msgs, _ := s.ext.Agents.ListRecentChatMessages(ctx, active.ID, chatHistoryCap)
-	lines := make([]ui.ChatLine, 0, len(msgs))
-	for _, m := range msgs {
-		lines = append(lines, ui.ChatLine{Role: m.Role, Content: m.Content, Kind: m.Kind, ToolID: m.ToolID, ToolName: m.ToolName, ToolOK: m.ToolOK, ID: m.ID})
-	}
+	lines := chatLines(msgs)
 	noteID, taskStatus := s.agentTaskStatus(ctx, a)
 
 	write(ui.ChiefPanelView{

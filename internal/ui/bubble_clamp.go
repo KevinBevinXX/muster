@@ -133,8 +133,8 @@ func bubbleClampScript() g.Node {
   // animate moves el's max-height from its current height to target (px, or
   // null = its full height), keeping its log at the bottom throughout when it
   // was there, and calls done after.
-  function animate(el, target, done) {
-    var log = logOf(el), stick = atBottom(log);
+  function animate(el, target, done, noFollow) {
+    var log = logOf(el), stick = !noFollow && atBottom(log);
     var to = target == null ? el.scrollHeight : target;
     el.setAttribute('data-clamp', 'moving');
     el.style.maxHeight = el.getBoundingClientRect().height + 'px';
@@ -159,10 +159,12 @@ func bubbleClampScript() g.Node {
     setTimeout(finish, 600); // a transition that never ends (display:none, no change) still finishes
   }
 
-  function expand(el) {
+  // expand opens el. opts.follow === false skips stick-to-bottom: the message
+  // index opens a bubble it is jumping TO, not one at the end.
+  function expand(el, opts) {
     if (el.getAttribute('data-clamp') !== 'closed') return;
     setToggle(el, true);
-    animate(el, null, function () { el.style.maxHeight = 'none'; el.setAttribute('data-clamp', 'open'); });
+    animate(el, null, function () { el.style.maxHeight = 'none'; el.setAttribute('data-clamp', 'open'); }, opts && opts.follow === false);
   }
   function collapse(el) {
     if (el.getAttribute('data-clamp') !== 'open') return;
