@@ -119,8 +119,9 @@ async function openView(page: Page, transcript: string) {
 }
 
 // B1: a harness notice is its own compact row — status and summary, detail on
-// expand — and never the human's bubble; a human who MENTIONS the tag stays one.
-test('a task notification is a compact collapsible row, not a user bubble; a prompt that mentions the tag is still a bubble', async ({ page }) => {
+// expand — and never the human's bubble; a human who MENTIONS the tag, or types
+// a slash command, stays one.
+test('a task notification is a compact collapsible row, not a user bubble; a prompt that mentions the tag, or a slash command, is still a bubble', async ({ page }) => {
   const tr = newTranscript(
     prompt('audit the widget in the background') +
       reply('Started an agent on it.') +
@@ -153,10 +154,13 @@ test('a task notification is a compact collapsible row, not a user bubble; a pro
   const box = (await row.boundingBox())!;
   expect(box.x + box.width, 'the notice row fits 412px').toBeLessThanOrEqual(412);
 
-  // Live: a slash command arrives while the view is open, drawn the same way.
+  // Live: a slash command and a failed task arrive while the view is open. The
+  // command is the HUMAN's (they typed it): their bubble, reading what they
+  // typed, never a notice row and never the raw tags.
   fs.appendFileSync(tr, command('/model') + taskNotice('failed', 'Agent "Second" failed', 'boom'));
-  await expect(log.locator('[data-notice-row="command"] [data-notice-text]')).toHaveText('/model');
   const failed = log.locator('[data-notice-row="task"][data-notice-status="failed"]');
   await expect(failed.locator('summary [aria-label="status: failed"]')).toHaveText('✗');
-  await expect(users).toHaveCount(2);
+  await expect(users).toHaveCount(3);
+  await expect(users.nth(2)).toHaveText('/model');
+  await expect(log.locator('[data-notice-row]')).toHaveCount(2);
 });

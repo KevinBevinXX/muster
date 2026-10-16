@@ -41,10 +41,14 @@ func TestEventsClassifiesHarnessNotices(t *testing.T) {
 			Event{Kind: KindNotice, Notice: NoticeTask, Text: `Monitor event: "CI on the example PR"`, Output: "ci/unit: success\nci/lint: failure"}},
 		{"a tagless task notification is told by its origin", "Background agent \"Audit the widget\" was stopped by the user.", "task-notification",
 			Event{Kind: KindNotice, Notice: NoticeTask, Text: "Background agent \"Audit the widget\" was stopped by the user.", Output: "Background agent \"Audit the widget\" was stopped by the user."}},
-		{"a slash command (name first)", "<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args>sonnet</command-args>", "",
-			Event{Kind: KindNotice, Notice: NoticeCommand, Text: "/model sonnet"}},
-		{"a slash command (message first, human origin)", "<command-message>handoff</command-message>\n<command-name>/handoff</command-name>", "human",
-			Event{Kind: KindNotice, Notice: NoticeCommand, Text: "/handoff"}},
+		// 🔴 A SLASH COMMAND IS THE HUMAN'S: a prompt bubble showing what they
+		// typed, never a notice row and never the raw tags.
+		{"a slash command (name first) is the human's prompt", "<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args>sonnet</command-args>", "",
+			Event{Kind: KindPrompt, Text: "/model sonnet"}},
+		{"a slash command (message first, human origin) is the human's prompt", "<command-message>handoff</command-message>\n<command-name>/handoff</command-name>", "human",
+			Event{Kind: KindPrompt, Text: "/handoff"}},
+		{"a prompt that pastes command tags and writes under them keeps its text", "<command-name>/model</command-name>\nwhy?", "human",
+			Event{Kind: KindPrompt, Text: "<command-name>/model</command-name>\nwhy?"}},
 		{"a local command's output, escapes stripped", "<local-command-stdout>Set model to \x1b[1mExample\x1b[22m\nsaved</local-command-stdout>", "",
 			Event{Kind: KindNotice, Notice: NoticeCommandOutput, Text: "Set model to Example", Output: "Set model to Example\nsaved"}},
 

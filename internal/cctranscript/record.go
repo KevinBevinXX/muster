@@ -25,9 +25,10 @@
 //   - an API failure: an assistant record with "isApiErrorMessage":true
 //   - the end of a turn: {"type":"system","subtype":"turn_duration"}
 //   - injected context (skill bodies, caveats): a user record with "isMeta":true
-//   - a harness notice (a background task finishing, a slash command): a user
-//     record with a prompt's shape whose text is wholly <tag>…</tag> blocks, or
-//     whose "origin" is {"kind":"task-notification"} (notice.go)
+//   - a harness notice (a background task finishing, a local command's
+//     output): a user record with a prompt's shape whose text is wholly
+//     <tag>…</tag> blocks, or whose "origin" is {"kind":"task-notification"}
+//     (notice.go). A slash command has the first shape but is the human's.
 //   - a subagent's records: "isSidechain":true
 package cctranscript
 
@@ -99,7 +100,7 @@ func (r Record) Blocks() []Block {
 // PromptText is a prompt-shaped record's text, and whether r is one at all.
 //
 // ⚠ PROMPT-SHAPED, NOT NECESSARILY HUMAN: a record the harness injected (a
-// task notification, a slash command) has exactly this shape. Events tells the
+// task notification, a local command's output) has exactly this shape. Events tells the
 // two apart (notice.go) and draws only a human's as a prompt.
 //
 // A prompt is a main-conversation user record that is not injected context

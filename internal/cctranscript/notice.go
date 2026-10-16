@@ -6,9 +6,9 @@ import (
 )
 
 // A NOTICE is a user record the HARNESS wrote, not the human: a background
-// task finishing, a slash command, a local command's output. Claude Code writes
-// each as a plain main-conversation user record (no isMeta), so without this
-// it reads exactly like a prompt and is drawn as the human's own bubble.
+// task finishing, or a local command's output. Claude Code writes each as a
+// plain main-conversation user record (no isMeta), so without this it reads
+// exactly like a prompt and is drawn as the human's own bubble.
 //
 // 🔴 CHOSEN FROM THE RECORD'S STRUCTURE, NEVER FROM A WORD IN IT. A record is a
 // notice when EITHER
@@ -28,28 +28,26 @@ import (
 // The tags, from those transcripts (counts of leading occurrences):
 //
 //	task-notification     11025  a background task / agent / monitor reported
-//	command-message         526  a slash command (with command-name, -args)
-//	command-name            155  the same, in the other order
 //	local-command-stdout    151  what a local command (/model, /cost) printed
 //
 // <system-reminder> and <local-command-caveat> lead only isMeta records, which
-// are dropped before this is asked. local-command-stderr is listed beside its
-// stdout sibling.
+// are dropped before this is asked.
+//
+// ⚠ A SLASH COMMAND IS NOT A NOTICE. Its record is wholly <command-name>,
+// <command-message> and <command-args> blocks (526 + 155 leading in the same
+// survey), but the HUMAN typed it (origin "human"), so it is the human's bubble:
+// slashCommand turns those blocks back into the "/name args" they typed.
 
 // The notice sources: Event.Notice.
 const (
 	NoticeTask          = "task"
-	NoticeCommand       = "command"
 	NoticeCommandOutput = "command-output"
 )
 
 // noticeTags maps a leading tag to its source.
 var noticeTags = map[string]string{
 	"task-notification":    NoticeTask,
-	"command-name":         NoticeCommand,
-	"command-message":      NoticeCommand,
 	"local-command-stdout": NoticeCommandOutput,
-	"local-command-stderr": NoticeCommandOutput,
 }
 
 // tagBlock is one <tag>…</tag> block at the start of a string. Go's RE2 has no
@@ -129,31 +127,38 @@ func noticeOf(r Record, text string) (Event, bool) {
 		}
 		return Event{Kind: KindNotice, Notice: NoticeTask, Status: innerTag(body, "status"),
 			Text: Cap(summary, MaxText), Output: Cap(detail, MaxOutput)}, true
-	case NoticeCommand:
-		var name, args string
-		for _, b := range blocks {
-			switch b[0] {
-			case "command-name":
-				name = strings.TrimSpace(b[1])
-			case "command-args":
-				args = strings.TrimSpace(b[1])
-			}
-		}
-		if name == "" {
-			for _, b := range blocks {
-				if b[0] == "command-message" {
-					name = "/" + strings.TrimSpace(b[1])
-				}
-			}
-		}
-		return Event{Kind: KindNotice, Notice: NoticeCommand, Text: Cap(strings.TrimSpace(name+" "+args), MaxText)}, true
 	case NoticeCommandOutput:
 		out := strings.TrimSpace(ansi.ReplaceAllString(blocks[0][1], ""))
-		status := ""
-		if blocks[0][0] == "local-command-stderr" {
-			status = "error"
-		}
-		return Event{Kind: KindNotice, Notice: NoticeCommandOutput, Status: status, Text: Cap(firstLine(out), MaxText), Output: Cap(out, MaxOutput)}, true
+		return Event{Kind: KindNotice, Notice: NoticeCommandOutput, Text: Cap(firstLine(out), MaxText), Output: Cap(out, MaxOutput)}, true
 	}
 	return Event{}, false
+}
+
+// slashCommand is the "/name args" a human typed, when text is the record the
+// CLI writes for a slash command (wholly tag blocks, the first <command-name> or
+// <command-message>), and false for anything else — so a prompt that merely
+// mentions or pastes the tags keeps its own text.
+func slashCommand(text string) (string, bool) {
+	blocks, whole := tagBlocks(text)
+	if !whole || (blocks[0][0] != "command-name" && blocks[0][0] != "command-message") {
+		return "", false
+	}
+	var name, msg, args string
+	for _, b := range blocks {
+		switch b[0] {
+		case "command-name":
+			name = strings.TrimSpace(b[1])
+		case "command-message":
+			msg = strings.TrimSpace(b[1])
+		case "command-args":
+			args = strings.TrimSpace(b[1])
+		}
+	}
+	if name == "" && msg != "" {
+		name = "/" + msg
+	}
+	if name == "" {
+		return "", false
+	}
+	return strings.TrimSpace(name + " " + args), true
 }

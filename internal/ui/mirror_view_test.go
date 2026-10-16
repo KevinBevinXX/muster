@@ -52,8 +52,8 @@ func TestNoticeRowSourcesAndStatuses(t *testing.T) {
 			[]string{`data-notice-status="failed"`, "✗", ">task<"}, []string{"✓", ">detail<"}},
 		{cctranscript.Event{Kind: cctranscript.KindNotice, Notice: cctranscript.NoticeTask, Status: "killed", Text: "x killed"},
 			[]string{`data-notice-status="killed"`, ">killed<"}, []string{"✓", "✗"}},
-		{cctranscript.Event{Kind: cctranscript.KindNotice, Notice: cctranscript.NoticeCommand, Text: "/model sonnet"},
-			[]string{`data-notice-row="command"`, ">command<", "/model sonnet"}, []string{"data-notice-status", ">detail<"}},
+		{cctranscript.Event{Kind: cctranscript.KindNotice, Notice: cctranscript.NoticeTask, Text: "x stopped"},
+			[]string{`data-notice-row="task"`, "x stopped"}, []string{"data-notice-status", ">detail<"}},
 		{cctranscript.Event{Kind: cctranscript.KindNotice, Notice: cctranscript.NoticeCommandOutput, Text: "line one", Output: "line one\nline two"},
 			[]string{`data-notice-row="command-output"`, ">output<", "line two", ">detail<"}, nil},
 	}

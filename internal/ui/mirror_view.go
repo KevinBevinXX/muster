@@ -259,17 +259,14 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 // noticeRow draws a harness notice (cctranscript.KindNotice) as a compact
 // collapsed row in the tool rows' frame — never as the human's bubble: an icon
 // for its source, its one-line summary, and a task's status; expanding shows
-// the detail (a task's result, a command's output).
+// the detail (a task's result, a local command's output).
 //
 // ⚠ ONLY THE MIRRORED VIEW DRAWS ONE. A dispatched agent's chat is muster's own
 // persisted messages plus ccd's reply stream, which carries a turn's text and
 // tool calls and nothing the harness injects, so no notice ever reaches it.
 func noticeRow(ev cctranscript.Event) g.Node {
 	icon, label := "🔔", "task"
-	switch ev.Notice {
-	case cctranscript.NoticeCommand:
-		icon, label = "⌘", "command"
-	case cctranscript.NoticeCommandOutput:
+	if ev.Notice == cctranscript.NoticeCommandOutput {
 		icon, label = "▸", "output"
 	}
 	// The status as the harness wrote it, drawn the tool rows' way: a known
