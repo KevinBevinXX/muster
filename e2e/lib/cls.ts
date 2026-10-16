@@ -13,7 +13,7 @@
 import { Page } from '@playwright/test';
 
 export const clsInit = `(() => {
-  window.__cls = { total: 0, shifts: [], inflight: 0, last: performance.now() };
+  window.__cls = { total: 0, excluded: 0, shifts: [], inflight: 0, last: performance.now() };
   const S = window.__cls;
   const name = (n) => {
     if (!n || n.nodeType !== 1) return n && n.nodeName ? n.nodeName : '?';
@@ -26,7 +26,7 @@ export const clsInit = `(() => {
   try {
     new PerformanceObserver((list) => {
       for (const e of list.getEntries()) {
-        if (e.hadRecentInput) continue;
+        if (e.hadRecentInput) { S.excluded += e.value; S.last = performance.now(); continue; }
         S.total += e.value;
         S.last = performance.now();
         S.shifts.push({ value: +e.value.toFixed(5), at: Math.round(e.startTime), sources: (e.sources || []).map((x) => name(x.node)) });
@@ -42,6 +42,9 @@ export const clsInit = `(() => {
 
 export interface ClsResult {
   total: number;
+  // excluded is the shift that hadRecentInput kept out of total: the page
+  // answering the reader's own tap.
+  excluded: number;
   shifts: { value: number; at: number; sources: string[] }[];
   unsupported?: string;
 }
@@ -65,7 +68,7 @@ export async function settle(page: Page, quietMs = 1000, maxMs = 12_000): Promis
 export async function readCls(page: Page): Promise<ClsResult> {
   return page.evaluate(() => {
     const S = (window as any).__cls;
-    return { total: +S.total.toFixed(5), shifts: S.shifts, unsupported: S.unsupported };
+    return { total: +S.total.toFixed(5), excluded: +S.excluded.toFixed(5), shifts: S.shifts, unsupported: S.unsupported };
   });
 }
 
@@ -75,6 +78,7 @@ export async function resetCls(page: Page): Promise<void> {
   await page.evaluate(() => {
     const S = (window as any).__cls;
     S.total = 0;
+    S.excluded = 0;
     S.shifts = [];
     S.last = performance.now();
   });

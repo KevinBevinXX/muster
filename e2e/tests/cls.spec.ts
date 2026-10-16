@@ -192,6 +192,32 @@ for (const vp of viewports) {
       }
     });
 
+    // A tool group's height animates open (tool_groups.go), moving what is
+    // below it. Opened by a TAP that is the page answering the reader, which CLS
+    // excludes — and this spec must exclude it the same way, while still
+    // counting the very same movement when no input caused it.
+    test('a tapped tool-group expand is not counted; the same expand without input is', async ({ page }) => {
+      await measure(page, '/agents/docs-sweeper', '#chat-log [data-tool-group]');
+      const group = page.locator('#chat-log [data-tool-group]').first();
+      await resetCls(page);
+      await group.locator(':scope > summary').click();
+      await expect(group).toHaveAttribute('open', '');
+      await settle(page, 700);
+      const tapped = await readCls(page);
+      expect(tapped.total, report('tapped expand', tapped)).toBeLessThan(BAR);
+      expect(tapped.excluded, 'the expand did move content — and it was excluded as input').toBeGreaterThan(0);
+      // Closed again, then opened by script: no input, so it counts.
+      await group.locator(':scope > summary').click();
+      await expect(group).not.toHaveAttribute('open', '');
+      await page.waitForTimeout(700);
+      await resetCls(page);
+      await group.evaluate((d) => (d.querySelector(':scope > summary') as HTMLElement).click());
+      await expect(group).toHaveAttribute('open', '');
+      await settle(page, 700);
+      const scripted = await readCls(page);
+      expect(scripted.total, report('scripted expand (positive control)', scripted)).toBeGreaterThan(0);
+    });
+
     test(`the chief panel, opened and restored open, shifts less than ${BAR}`, async ({ page }) => {
       test.setTimeout(120_000);
       mkchief(true);

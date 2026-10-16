@@ -136,6 +136,43 @@ test('history: a run of calls is one row; text and a single call stay where they
   }
 });
 
+// The group's HEIGHT animates, opening and closing (tool_groups.go). The
+// animation is paused half-way and the box measured there: strictly between
+// the closed and the open height — a snap would read one or the other.
+test('a group grows and shrinks smoothly: half-way its height is between closed and open', async ({ page, baseURL }) => {
+  await signIn(page, baseURL!);
+  await page.goto(`${baseURL}/agents/${agent}`);
+  const g3 = page.locator('#chat-log [data-tool-group]').first();
+  const height = () => g3.evaluate((d) => d.getBoundingClientRect().height);
+  // half pauses the group's own height animation at its midpoint and reads the
+  // box there, then lets it finish.
+  const half = () =>
+    g3.evaluate((d) => {
+      const a = d.getAnimations().find((x) => !(x as CSSAnimation).animationName);
+      if (!a) return -1;
+      a.pause();
+      a.currentTime = Number((a.effect!.getTiming().duration as number) / 2);
+      const h = d.getBoundingClientRect().height;
+      a.finish();
+      return h;
+    });
+  const closed = await height();
+  await g3.locator(':scope > summary').tap();
+  const midOpen = await half();
+  await expect(g3).toHaveAttribute('open', '');
+  const open = await height();
+  expect(open, 'open is taller than closed').toBeGreaterThan(closed + 60);
+  expect(midOpen, `opening, half-way (${closed} → ${open})`).toBeGreaterThan(closed + 5);
+  expect(midOpen).toBeLessThan(open - 5);
+
+  await g3.locator(':scope > summary').tap();
+  const midClose = await half();
+  await expect(g3).not.toHaveAttribute('open', '');
+  expect(midClose, `closing, half-way (${open} → ${closed})`).toBeGreaterThan(closed + 5);
+  expect(midClose).toBeLessThan(open - 5);
+  expect(Math.abs((await height()) - closed), 'closed again at its closed height').toBeLessThanOrEqual(1);
+});
+
 test('reduced motion: a group opens with no animation', async ({ page, baseURL }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await signIn(page, baseURL!);
@@ -144,6 +181,7 @@ test('reduced motion: a group opens with no animation', async ({ page, baseURL }
   await g3.locator(':scope > summary').tap();
   await expect(g3).toHaveAttribute('open', '');
   expect(await g3.locator(':scope > [data-tool-group-body]').evaluate((b) => getComputedStyle(b).animationName)).toBe('none');
+  expect(await g3.evaluate((d) => d.getAnimations().length), 'and its height is not animated').toBe(0);
 });
 
 test('live: the streamed turn groups the same way as the history, its count ticking up as calls arrive', async ({ page, baseURL }) => {

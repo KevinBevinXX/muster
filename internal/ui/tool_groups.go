@@ -39,6 +39,9 @@ import (
 // not store it. A call, then thinking, then a call is two runs live and one run
 // after the reload replaces the stream with the persisted transcript.
 
+// toolGroupAnimMS is how long a group's height takes to open or close.
+const toolGroupAnimMS = "220"
+
 // Tool-row states, as data-tool-status spells them on a row and on a group.
 const (
 	toolStateRunning = "running"
@@ -220,6 +223,39 @@ func toolGroupScript() g.Node {
     return gr;
   }
   window.musterToolGroups = { adopt: adopt, refresh: refresh };
+
+  // THE GROUP'S HEIGHT ANIMATES, OPENING AND CLOSING. A <details> snaps: its
+  // box jumps to the open height and everything below it with it. So a tap on
+  // a group's summary is taken over — the box is held at its current height
+  // and animated to the other one (the Web Animations API, which every browser
+  // we serve has; CSS cannot animate a <details> closed, its content is gone the
+  // instant [open] is), and only then is [open] removed on a close. Reduced
+  // motion leaves the native snap. A second tap mid-way reverses from where the
+  // box is. Delegated on document, so every group — persisted, live, mirrored —
+  // is covered, including ones drawn after this ran.
+  var GROUP_MS = ` + toolGroupAnimMS + `;
+  function still() { return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches; }
+  document.addEventListener('click', function (e) {
+    var s = e.target && e.target.closest ? e.target.closest('summary') : null;
+    var d = s && s.parentElement;
+    if (!has(d, 'data-tool-group') || still() || typeof d.animate !== 'function') return;
+    e.preventDefault();
+    var from = d.getBoundingClientRect().height;
+    if (d.__groupAnim) { d.__groupAnim.cancel(); d.__groupAnim = null; }
+    var opening = !(d.open && !d.__closing);
+    d.__closing = !opening;
+    d.open = true;
+    var to = opening ? d.getBoundingClientRect().height : s.getBoundingClientRect().height;
+    d.style.overflow = 'hidden';
+    var a = d.animate([{ height: from + 'px' }, { height: to + 'px' }], { duration: GROUP_MS, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' });
+    d.__groupAnim = a;
+    a.onfinish = function () {
+      if (d.__groupAnim !== a) return;
+      d.__groupAnim = null;
+      d.style.overflow = '';
+      if (d.__closing) { d.__closing = false; d.open = false; }
+    };
+  });
 })();
 `))
 }

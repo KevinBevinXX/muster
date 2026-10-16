@@ -155,6 +155,8 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				g.If(v.Interactive, confirmDialog(v.StepUp)),
 				g.If(v.Interactive, stepUpScript()),
 				mirrorViewScript(),
+				// The tool groups' open/close animation (tool_groups.go).
+				toolGroupScript(),
 				bubbleClampScript(),
 				chatIndexSheet(),
 				chatIndexScript(),
