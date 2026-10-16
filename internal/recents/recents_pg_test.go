@@ -2,7 +2,6 @@ package recents
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -60,7 +59,7 @@ func mustAgent(t *testing.T, pool *pgxpool.Pool, uid int64, name string) agents.
 // order is a list as "a<id>" / "m<session><window>" labels, newest first.
 func order(t *testing.T, s *PGStore, uid int64) []string {
 	t.Helper()
-	es, err := s.List(as(uid), MaxPerOwner)
+	es, err := s.List(as(uid))
 	if err != nil {
 		t.Fatalf("list as %d: %v", uid, err)
 	}
@@ -129,10 +128,6 @@ func TestAVisitUpsertsAndMovesToTheFront(t *testing.T) {
 	if got := order(t, s, 2); got[0] != "mscratch2" || len(got) != 4 {
 		t.Errorf("a per-session visit = %v, want it a fourth entry, first", got)
 	}
-	// List honours its limit.
-	if es, err := s.List(as(2), 2); err != nil || len(es) != 2 {
-		t.Errorf("List(2) = %d entries (%v), want 2", len(es), err)
-	}
 }
 
 // TestARecentIsInvisibleToAnotherOwner: B reads none of A's rows, B's visits
@@ -154,8 +149,8 @@ func TestARecentIsInvisibleToAnotherOwner(t *testing.T) {
 	if got := order(t, s, 3); len(got) != 0 {
 		t.Fatalf("B sees A's recents: %v", got)
 	}
-	if err := s.VisitAgent(as(3), a.ID); !errors.Is(err, ErrNoSuchAgent) {
-		t.Fatalf("B visiting A's agent: %v, want ErrNoSuchAgent", err)
+	if err := s.VisitAgent(as(3), a.ID); err == nil {
+		t.Fatal("B recorded a visit to A's agent")
 	}
 	// B visits the same window, and more than the bound of others: its prune
 	// runs every time and must reach none of A's rows.
@@ -234,8 +229,8 @@ func TestARecentDiesWithItsAgent(t *testing.T) {
 // TestAVisitToAnAbsentAgentOrABadAddressIsRefused: no row for either.
 func TestAVisitToAnAbsentAgentOrABadAddressIsRefused(t *testing.T) {
 	s, pool := pgStore(t)
-	if err := s.VisitAgent(as(2), 987654321); !errors.Is(err, ErrNoSuchAgent) {
-		t.Errorf("an absent agent: %v, want ErrNoSuchAgent", err)
+	if err := s.VisitAgent(as(2), 987654321); err == nil {
+		t.Error("a visit to an absent agent was recorded")
 	}
 	for _, k := range []pins.MirrorKey{
 		{Host: "", Session: "s"},

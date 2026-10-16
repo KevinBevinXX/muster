@@ -11,12 +11,9 @@ package recents
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/pins"
@@ -25,26 +22,23 @@ import (
 // Entry is one recently opened subject: an agent (AgentID, Mirror zero) or a
 // mirrored entry (Mirror, AgentID 0).
 type Entry struct {
-	AgentID   int64
-	Mirror    pins.MirrorKey
-	VisitedAt time.Time
+	AgentID int64
+	Mirror  pins.MirrorKey
 }
 
 // IsMirror reports whether e names a mirrored entry.
 func (e Entry) IsMirror() bool { return e.AgentID == 0 }
 
 // MaxPerOwner bounds one user's rows. Each visit prunes the oldest past it, so
-// a mirror row whose window is gone ages out rather than piling up.
+// a mirror row whose window is gone ages out rather than piling up. Two
+// concurrent visits may leave one row past it until the next visit: a strip
+// that shows six does not care.
 const MaxPerOwner = 50
-
-// ErrNoSuchAgent refuses a visit to an agent the caller cannot see (absent, or
-// another user's — the two answer identically).
-var ErrNoSuchAgent = errors.New("recents: no such agent")
 
 // Store is the recents persistence.
 type Store interface {
-	// List is the caller's entries, most recently visited first, at most limit.
-	List(ctx context.Context, limit int) ([]Entry, error)
+	// List is the caller's entries, most recently visited first.
+	List(ctx context.Context) ([]Entry, error)
 	VisitAgent(ctx context.Context, agentID int64) error
 	VisitMirror(ctx context.Context, k pins.MirrorKey) error
 }
@@ -55,14 +49,12 @@ type PGStore struct{ pool *pgxpool.Pool }
 // NewPG returns a Store on pool.
 func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 
-// List is the caller's entries, newest first. Ties (one transaction's two
-// visits) break by id, the later row first.
-func (s *PGStore) List(ctx context.Context, limit int) ([]Entry, error) {
-	if limit <= 0 || limit > MaxPerOwner {
-		limit = MaxPerOwner
-	}
-	rows, err := s.pool.Query(ctx, `SELECT kind, agent_id, mirror_host, mirror_session, mirror_window, visited_at
-		FROM recents ORDER BY visited_at DESC, id DESC LIMIT $1`, limit)
+// List is the caller's entries, newest first — all of them, which the prune
+// keeps to about MaxPerOwner. Ties (one transaction's two visits) break by id,
+// the later row first.
+func (s *PGStore) List(ctx context.Context) ([]Entry, error) {
+	rows, err := s.pool.Query(ctx, `SELECT kind, agent_id, mirror_host, mirror_session, mirror_window
+		FROM recents ORDER BY visited_at DESC, id DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("recents: list: %w", err)
 	}
@@ -72,22 +64,22 @@ func (s *PGStore) List(ctx context.Context, limit int) ([]Entry, error) {
 		var kind string
 		var agentID *int64
 		var host, session, window *string
-		var at time.Time
-		if err := rows.Scan(&kind, &agentID, &host, &session, &window, &at); err != nil {
+		if err := rows.Scan(&kind, &agentID, &host, &session, &window); err != nil {
 			return nil, fmt.Errorf("recents: list: %w", err)
 		}
 		switch {
 		case kind == "agent" && agentID != nil:
-			out = append(out, Entry{AgentID: *agentID, VisitedAt: at})
+			out = append(out, Entry{AgentID: *agentID})
 		case kind == "mirror" && host != nil && session != nil && window != nil:
-			out = append(out, Entry{Mirror: pins.MirrorKey{Host: *host, Session: *session, Window: *window}, VisitedAt: at})
+			out = append(out, Entry{Mirror: pins.MirrorKey{Host: *host, Session: *session, Window: *window}})
 		}
 	}
 	return out, rows.Err()
 }
 
 // VisitAgent records that the caller opened agent id now. An agent the caller
-// cannot see is ErrNoSuchAgent.
+// cannot see (absent, or another user's) is refused by the owner trigger or the
+// foreign key, and that error is returned as is.
 func (s *PGStore) VisitAgent(ctx context.Context, agentID int64) error {
 	return s.visit(ctx, `INSERT INTO recents (kind, agent_id) VALUES ('agent', $1)
 		ON CONFLICT (owner_id, agent_id) WHERE kind = 'agent' DO UPDATE SET visited_at = clock_timestamp()`, agentID)
@@ -105,23 +97,11 @@ func (s *PGStore) VisitMirror(ctx context.Context, k pins.MirrorKey) error {
 }
 
 // visit runs one upsert and prunes the caller's rows to MaxPerOwner, in one
-// transaction serialised per owner by an advisory lock — so two concurrent
-// visits cannot interleave their prunes, and the newest row is never the one
-// pruned.
+// transaction. The prune orders by visited_at, so the row just upserted (the
+// newest) is never the one it removes.
 func (s *PGStore) visit(ctx context.Context, q string, args ...any) error {
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('recents.visit'),
-			coalesce(nullif(current_setting('muster.uid', true), '')::int, 0))`); err != nil {
-			return fmt.Errorf("recents: lock: %w", err)
-		}
 		if _, err := tx.Exec(ctx, q, args...); err != nil {
-			var pg *pgconn.PgError
-			// The owner trigger refuses an absent agent and another owner's with
-			// 23514 (no constraint name); an agent deleted concurrently fails the
-			// foreign key, 23503 — the cases internal/pins measured.
-			if errors.As(err, &pg) && (pg.Code == "23503" || (pg.Code == "23514" && pg.ConstraintName == "")) {
-				return ErrNoSuchAgent
-			}
 			return fmt.Errorf("recents: visit: %w", err)
 		}
 		// Under RLS this sees only the caller's rows, so it prunes only them.

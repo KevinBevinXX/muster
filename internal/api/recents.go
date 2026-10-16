@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/ZacxDev/muster/internal/pins"
-	"github.com/ZacxDev/muster/internal/recents"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -42,14 +41,14 @@ func (s *Server) recordMirrorVisit(ctx context.Context, host, session, window st
 
 // recentRefs is the viewer's recently opened entries, newest first, for the
 // strip; ui.recentItems drops those that are gone or pinned and keeps
-// ui.RecentMax. The store's whole bound is read so that dropping cannot leave
-// the strip short while older entries exist. No store, or a failed read
-// (logged), is "nothing recent".
+// ui.RecentMax. Every stored entry is read so that dropping cannot leave the
+// strip short while older entries exist. No store, or a failed read (logged),
+// is "nothing recent".
 func (s *Server) recentRefs(ctx context.Context) []ui.RecentRef {
 	if s.ext.Recents == nil {
 		return nil
 	}
-	es, err := s.ext.Recents.List(ctx, recents.MaxPerOwner)
+	es, err := s.ext.Recents.List(ctx)
 	if err != nil {
 		s.logger.Printf("recents: list: %v", err)
 		return nil

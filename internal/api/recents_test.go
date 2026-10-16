@@ -34,13 +34,10 @@ func (m *memRecents) put(e recents.Entry) {
 	m.es = out
 }
 
-func (m *memRecents) List(_ context.Context, limit int) ([]recents.Entry, error) {
+func (m *memRecents) List(context.Context) ([]recents.Entry, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if limit > len(m.es) {
-		limit = len(m.es)
-	}
-	return append([]recents.Entry(nil), m.es[:limit]...), nil
+	return append([]recents.Entry(nil), m.es...), nil
 }
 
 func (m *memRecents) VisitAgent(_ context.Context, id int64) error {
