@@ -19,8 +19,11 @@ import "time"
 // 🔴 A QUEUED PASTE IS REFUSED IF ANOTHER PASTE GOT IN FIRST. It carries the
 // turn it was decided on (ExpectTurn); beginPaste admits it only if no other
 // paste is in flight and the window's Since and Pasted are still that turn's,
-// in the same critical section that admits a person's Send — so the two are
-// never both pasted into one turn.
+// in the same critical section that admits a person's Send. So a queued paste
+// never follows a Send into its turn. The reverse is NOT prevented: a person's
+// Send is never refused, so a Send made while an admitted queued paste is
+// still in flight (handed to the host, not yet answered: one paste round-trip)
+// is pasted too, and the two can land in one turn.
 //
 // They are kept on the hub, not on a connection, so a host that reconnects
 // keeps them; a revoked host's go with it, and a window the host no longer
@@ -106,10 +109,11 @@ func (h *Hub) turn(owner int64, host, session, window string) turnState {
 // (a queued paste, decided on that turn) it is refused — ErrSuperseded, nothing
 // admitted — when another paste into the window is in flight, or the window's
 // Since or Pasted is no longer expect's. The check and the admission are one
-// critical section under turnsMu, so a person's Send and a queued message
-// cannot both be admitted on one turn: whichever is second either is the Send
-// (never refused) and supersedes the queued one if it has not been admitted
-// yet, or is the queued one and is refused.
+// critical section under turnsMu, so a queued message is never admitted after
+// a person's Send on its turn. A Send is never refused, though: one that
+// arrives while an admitted queued paste is still in flight (within that
+// paste's round-trip to the host) is admitted as well, and both can land in
+// the same turn.
 func (h *Hub) beginPaste(owner int64, host, session, window string, since int64, expect *Turn) (int64, error) {
 	if window == "" {
 		// A per-session host's session: no turns are kept (no status report).

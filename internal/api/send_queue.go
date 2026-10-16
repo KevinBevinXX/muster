@@ -512,6 +512,11 @@ func (s *Server) sendQueueOwnerRefusal(ctx context.Context, it sendqueue.Item) s
 		return SendQueueOwnerUnchecked
 	case u.Disabled():
 		return SendQueueOwnerDisabled
+	// StepUpAt is GoTrue's clock (the signed amr time) and both cutoffs are
+	// Postgres's: a GoTrue clock AHEAD lets a sign-in from just before the
+	// cutoff through by the skew, one BEHIND refuses one just after it.
+	// Accepted: the session tier compares GoTrue's iat with the same cutoff
+	// the same way, and amr is GoTrue-signed, so no client can move it.
 	case atOrBefore(it.StepUpAt, u.SessionsNotBefore), atOrBefore(it.StepUpAt, u.SignedOutAt):
 		return SendQueueOwnerCutoff
 	}

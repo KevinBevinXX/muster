@@ -211,3 +211,56 @@ func TestAQueuedPasteIsRefusedWhenAnotherPasteGotInFirst(t *testing.T) {
 	// A queued paste decided before that Send landed is refused, carrying it.
 	superseded("decided before the in-flight Send landed", queued("queued", mirror.Turn{Since: t2, Pasted: t1}), t2, 3)
 }
+
+// TestAPasteToTheActiveWindowReportsTheWindowItResolvedTo (M1): a paste to
+// window "" goes to the session's active window, and ReportWindow writes THAT
+// window's id, the one internal/api keys the queued message's turn on. The
+// active window is @7, not the first one listed, and the destination starts
+// holding a value the hub cannot produce, so neither an unwritten destination
+// nor a hardcoded first window passes. The control: without ReportWindow the
+// paste still lands.
+func TestAPasteToTheActiveWindowReportsTheWindowItResolvedTo(t *testing.T) {
+	r := newRig(t)
+	tok, _ := r.store.mint(t, 1, "h")
+	m := winHello("h", true,
+		mirror.Window{Session: "work", ID: "@1", Index: 0, Claude: true, Status: mirror.StatusIdle, StatusSince: t1},
+		mirror.Window{Session: "work", ID: "@7", Index: 1, Active: true, Claude: true, Status: mirror.StatusIdle, StatusSince: t2})
+	m.StatusReport = true
+	raw, err := r.rawConnect(t, tok, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.online(t, 1, "h", "work")
+	pastes := func() int { return len(raw.of(mirror.TypePaste)) }
+	answer := func(n int) {
+		go func() {
+			eventually(t, "the paste", func() bool { return pastes() == n })
+			raw.write(t, mirror.Msg{Type: mirror.TypePasted, ID: raw.of(mirror.TypePaste)[n-1].ID})
+		}()
+	}
+
+	resolved := "not written"
+	answer(1)
+	if err := r.svc.PasteWindow(asUser(1), "h", "work", "", "to the active window", mirror.PasteClaude, mirror.ReportWindow(&resolved)); err != nil {
+		t.Fatal(err)
+	}
+	if resolved != "@7" {
+		t.Fatalf("a paste to window \"\" reported window %q, want the active window @7", resolved)
+	}
+	// The turn it recorded is the active window's, not the first one's.
+	if p := r.svc.AgentState(asUser(1), "h", "work", "@7").Pasted; p != t2 {
+		t.Fatalf("the active window's Pasted = %d, want %d", p, t2)
+	}
+	if p := r.svc.AgentState(asUser(1), "h", "work", "@1").Pasted; p != 0 {
+		t.Fatalf("the window that is not active recorded Pasted = %d", p)
+	}
+
+	// CONTROL: no ReportWindow, the paste still lands.
+	answer(2)
+	if err := r.svc.PasteWindow(asUser(1), "h", "work", "", "no report", mirror.PasteClaude); err != nil {
+		t.Fatalf("CONTROL: a paste without ReportWindow = %v", err)
+	}
+	if n := pastes(); n != 2 {
+		t.Fatalf("CONTROL: the host received %d paste(s), want 2", n)
+	}
+}

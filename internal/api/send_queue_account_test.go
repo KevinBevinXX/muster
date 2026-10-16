@@ -277,6 +277,19 @@ func TestSigningOutEverywhereHoldsAtSendTimeWhateverTheCancel(t *testing.T) {
 	if o := r.deliver(late); o.Sent || o.Detail != SendQueueOwnerCutoff {
 		t.Fatalf("delivery of a message committed after the sign-out = %+v; want failed, %q", o, SendQueueOwnerCutoff)
 	}
+	// A sign-in in the sign-out's own second (after it, sub-second) is refused:
+	// the cutoff is "at or before, in whole seconds", as for a token. This is
+	// the signed_out_at branch alone: the sign-out leaves the session cutoff
+	// unset, so nothing else refuses it.
+	u, _ := r.store.ByID(context.Background(), 1)
+	if u.SignedOutAt == nil || u.SessionsNotBefore != nil {
+		t.Fatalf("after the sign-out: signed_out_at %v, sessions_not_before %v; want set, unset", u.SignedOutAt, u.SessionsNotBefore)
+	}
+	sameSecond := u.SignedOutAt.Truncate(time.Second).Add(999 * time.Millisecond)
+	if o := r.deliver(sendqueue.Item{ID: 98, Owner: 1, Target: queueTarget, Body: "same second", StepUpAt: sameSecond}); o.Sent ||
+		o.Detail != SendQueueOwnerCutoff {
+		t.Fatalf("delivery under a sign-in in the sign-out's own second = %+v; want failed, %q", o, SendQueueOwnerCutoff)
+	}
 	if n := r.pastes(); n != 0 {
 		t.Fatalf("%d paste(s) after a sign-out everywhere", n)
 	}
