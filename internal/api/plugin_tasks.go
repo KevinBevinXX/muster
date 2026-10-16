@@ -25,7 +25,7 @@ import (
 //
 // 🔴 IDEMPOTENT BY CONSTRUCTION, BECAUSE PLUGINS RETRY. A plugin re-posts when it
 // did not see an answer (docs/plugins.md), and the same upstream record can be
-// noticed many times. So: at most one live task per key per owner
+// noticed many times. So: at most one OPEN task per key per owner (not dismissed, complete or merged away)
 // (notes.Store.CreateOnceByTag, serialised on an advisory lock), and a comment
 // identical to one the thread already holds from this plugin is not appended
 // again (notes.Store.AddCommentOnce). A plugin makes each comment unique per
@@ -37,8 +37,9 @@ import (
 // MUSTER_PLUGIN_TASK_NAMESPACES names is accepted (notes.SetPluginTaskNamespaces
 // refuses the reserved ones at boot), and each is an external-id namespace, so
 // its one-task tags stay out of the board's filter row. With none configured the
-// route answers 503: a plugin holds the notice and retries, rather than dropping
-// it on a 400.
+// route answers 503, which is not a permanent refusal: a consumer should try the
+// notice again later (how it holds or sets it aside meanwhile is its choice),
+// whereas a 400 says the same bytes will never be accepted.
 //
 // The task is created UNGATED and with no `auto:` tag: nothing dispatches it on
 // its own (there is no per-owner dispatch policy to apply), and the owner — who
@@ -60,7 +61,32 @@ type pluginTaskIn struct {
 	Comment string `json:"comment"`
 }
 
-// validatePluginTask returns a 400 message, or "".
+// truncBytes cuts s to at most n bytes, on a rune boundary.
+func truncBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	s = s[:n]
+	for len(s) > 0 && !utf8.ValidString(s) {
+		s = s[:len(s)-1]
+	}
+	return s
+}
+
+// normalizePluginTask trims the comment (whitespace-only is no comment, as on
+// the machine comment route) and TRUNCATES an oversize body, comment or title,
+// never refusing one: the machine comment route's "truncate, never reject",
+// and a consumer reads a 400 as permanent.
+func normalizePluginTask(in *pluginTaskIn) {
+	in.Comment = truncBytes(strings.TrimSpace(in.Comment), plugins.MaxBodyBytes)
+	if in.Create != nil {
+		in.Create.Body = truncBytes(in.Create.Body, plugins.MaxBodyBytes)
+		in.Create.Title = capRunes(in.Create.Title, maxTaskFieldLen)
+	}
+}
+
+// validatePluginTask returns a 400 message, or "". It runs after
+// normalizePluginTask.
 func validatePluginTask(in pluginTaskIn) string {
 	ns, val := notes.ParseTag(in.Key)
 	switch {
@@ -74,23 +100,14 @@ func validatePluginTask(in pluginTaskIn) string {
 		return "key: " + err.Error()
 	}
 	if in.Create == nil && in.Comment == "" {
-		return "nothing to do: give create, comment or both"
+		return "nothing to do: give create, a non-blank comment, or both"
 	}
 	fields := map[string]string{"comment": in.Comment}
 	if in.Create != nil {
 		if strings.TrimSpace(in.Create.Body) == "" {
 			return "create.body is required"
 		}
-		if len(in.Create.Body) > plugins.MaxBodyBytes {
-			return "create.body is over " + strconv.Itoa(plugins.MaxBodyBytes) + " bytes"
-		}
-		if utf8.RuneCountInString(in.Create.Title) > maxTaskFieldLen {
-			return "create.title is over " + strconv.Itoa(maxTaskFieldLen) + " characters"
-		}
 		fields["title"], fields["body"] = in.Create.Title, in.Create.Body
-	}
-	if len(in.Comment) > plugins.MaxBodyBytes {
-		return "comment is over " + strconv.Itoa(plugins.MaxBodyBytes) + " bytes"
 	}
 	for _, name := range []string{"title", "body", "comment"} {
 		if v, ok := fields[name]; ok && (!utf8.ValidString(v) || strings.ContainsRune(v, 0)) {
@@ -101,17 +118,18 @@ func validatePluginTask(in pluginTaskIn) string {
 }
 
 // pluginCommentAuthor is the author of a comment this route writes: the plugin's
-// own name, so the thread says which plugin wrote it and AddCommentOnce's
-// duplicate check is per plugin.
+// own name, so the thread says which plugin wrote it and the duplicate check is
+// per plugin.
 func pluginCommentAuthor(p plugins.Plugin) string { return "plugin:" + p.Name }
 
 // handlePluginTask is POST /plugin/v1/tasks {key, create?, comment?}:
 //
-//   - a live task carries key: comment (if given) is appended to it unless the
+//   - an OPEN task carries key: comment (if given) is appended to it unless the
 //     thread already holds it; 200 {id, created:false, commented};
 //   - none does and create is given: the task is filed with create's title and
-//     body and the key as its tag (comment is not added: the body carries it);
-//     201 {id, created:true, commented:false};
+//     body and the key as its tag, and the comment (if given) is recorded on it
+//     IN THE SAME TRANSACTION, so a resend of the same request finds both and
+//     adds nothing; 201 {id, created:true, commented};
 //   - none does and create is absent: nothing is written; 200 {id:null, ...}.
 func (s *Server) handlePluginTask(w http.ResponseWriter, r *http.Request) {
 	if s.ext.Notes == nil {
@@ -132,6 +150,7 @@ func (s *Server) handlePluginTask(w http.ResponseWriter, r *http.Request) {
 			"error": "the body is {\"key\", \"create\": {\"title\", \"body\"}, \"comment\"}"})
 		return
 	}
+	normalizePluginTask(&in)
 	if msg := validatePluginTask(in); msg != "" {
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": msg})
 		return
@@ -141,10 +160,14 @@ func (s *Server) handlePluginTask(w http.ResponseWriter, r *http.Request) {
 	answer := func(code int, id *int64, created, commented bool) {
 		s.writeJSON(w, code, map[string]any{"id": id, "created": created, "commented": commented})
 	}
+	var comment *notes.Comment
+	if in.Comment != "" {
+		comment = &notes.Comment{Author: pluginCommentAuthor(p), Body: in.Comment}
+	}
 
-	var note notes.Note
 	if in.Create != nil {
-		n, created, err := s.createTaskOnce(ctx, taskCreateInput{Title: in.Create.Title, Body: in.Create.Body, Source: "api"}, in.Key, nil)
+		n, created, commented, err := s.createTaskOnce(ctx,
+			taskCreateInput{Title: in.Create.Title, Body: in.Create.Body, Source: "api"}, in.Key, comment, nil)
 		var ve errTagValidation
 		switch {
 		case err == nil:
@@ -157,28 +180,27 @@ func (s *Server) handlePluginTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if created {
-			answer(http.StatusCreated, &n.ID, true, false)
+			answer(http.StatusCreated, &n.ID, true, commented)
 			return
 		}
-		note = n
-	} else {
-		found, ok, err := s.ext.Notes.FindLiveByTag(ctx, in.Key)
-		if err != nil {
-			s.logger.Printf("plugins: plugin %d task %s: lookup: %v", p.ID, in.Key, err)
-			s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the task could not be looked up"})
-			return
+		if commented {
+			s.broadcast(ctx, EventTaskChanged, strconv.FormatInt(n.ID, 10))
 		}
-		if !ok {
-			answer(http.StatusOK, nil, false, false)
-			return
-		}
-		note = found
-	}
-	if in.Comment == "" {
-		answer(http.StatusOK, &note.ID, false, false)
+		answer(http.StatusOK, &n.ID, false, commented)
 		return
 	}
-	wrote, err := s.ext.Notes.AddCommentOnce(ctx, notes.Comment{NoteID: note.ID, Author: pluginCommentAuthor(p), Body: in.Comment})
+	found, ok, err := s.ext.Notes.FindLiveByTag(ctx, in.Key)
+	if err != nil {
+		s.logger.Printf("plugins: plugin %d task %s: lookup: %v", p.ID, in.Key, err)
+		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the task could not be looked up"})
+		return
+	}
+	if !ok {
+		answer(http.StatusOK, nil, false, false)
+		return
+	}
+	comment.NoteID = found.ID
+	wrote, err := s.ext.Notes.AddCommentOnce(ctx, *comment)
 	switch {
 	case err == nil:
 	case errors.Is(err, pgx.ErrNoRows):
@@ -186,12 +208,12 @@ func (s *Server) handlePluginTask(w http.ResponseWriter, r *http.Request) {
 		answer(http.StatusOK, nil, false, false)
 		return
 	default:
-		s.logger.Printf("plugins: plugin %d task %d: comment: %v", p.ID, note.ID, err)
+		s.logger.Printf("plugins: plugin %d task %d: comment: %v", p.ID, found.ID, err)
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the comment could not be added"})
 		return
 	}
 	if wrote {
-		s.broadcast(ctx, EventTaskChanged, strconv.FormatInt(note.ID, 10))
+		s.broadcast(ctx, EventTaskChanged, strconv.FormatInt(found.ID, 10))
 	}
-	answer(http.StatusOK, &note.ID, false, wrote)
+	answer(http.StatusOK, &found.ID, false, wrote)
 }

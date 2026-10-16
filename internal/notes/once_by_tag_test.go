@@ -39,7 +39,7 @@ func TestCreateOnceByTagCreatesOneUnderConcurrency(t *testing.T) {
 			go func(w int) {
 				defer wg.Done()
 				<-start
-				got[w], created[w], errs[w] = store.CreateOnceByTag(ctx, key, Note{Title: "from upstream", Body: "body " + strconv.Itoa(w)})
+				got[w], created[w], _, errs[w] = store.CreateOnceByTag(ctx, key, Note{Title: "from upstream", Body: "body " + strconv.Itoa(w)}, nil)
 			}(w)
 		}
 		close(start)
@@ -81,7 +81,7 @@ func TestCreateOnceByTagCreatesOneUnderConcurrency(t *testing.T) {
 func TestCreateOnceByTagIsSequentiallyIdempotent(t *testing.T) {
 	store, ctx := flagIdleStore(t)
 	key := onceKey(t)
-	first, created, err := store.CreateOnceByTag(ctx, key, Note{Title: "one", Body: "first body", Tags: []string{"inbox"}})
+	first, created, _, err := store.CreateOnceByTag(ctx, key, Note{Title: "one", Body: "first body", Tags: []string{"inbox"}}, nil)
 	if err != nil || !created {
 		t.Fatalf("first call: created=%v err=%v; want a new task", created, err)
 	}
@@ -89,13 +89,13 @@ func TestCreateOnceByTagIsSequentiallyIdempotent(t *testing.T) {
 	if !HasAllTags(first.Tags, []string{key, "inbox"}) || len(first.Tags) != 2 {
 		t.Fatalf("tags %v; want exactly [%s inbox]", first.Tags, key)
 	}
-	again, created, err := store.CreateOnceByTag(ctx, key, Note{Title: "two", Body: "second body"})
+	again, created, _, err := store.CreateOnceByTag(ctx, key, Note{Title: "two", Body: "second body"}, nil)
 	if err != nil || created || again.ID != first.ID || again.Body != "first body" {
 		t.Fatalf("second call: id %d (first %d) created=%v body=%q err=%v; want the first task back, unchanged",
 			again.ID, first.ID, created, again.Body, err)
 	}
 	// CONTROL: a different key is a different task.
-	other, created, err := store.CreateOnceByTag(ctx, key+"x", Note{Body: "other"})
+	other, created, _, err := store.CreateOnceByTag(ctx, key+"x", Note{Body: "other"}, nil)
 	if err != nil || !created || other.ID == first.ID {
 		t.Fatalf("a different key: id %d created=%v err=%v; want a second task", other.ID, created, err)
 	}
@@ -104,13 +104,13 @@ func TestCreateOnceByTagIsSequentiallyIdempotent(t *testing.T) {
 	if err := store.SoftDelete(ctx, first.ID); err != nil {
 		t.Fatal(err)
 	}
-	fresh, created, err := store.CreateOnceByTag(ctx, key, Note{Body: "after dismissal"})
+	fresh, created, _, err := store.CreateOnceByTag(ctx, key, Note{Body: "after dismissal"}, nil)
 	if err != nil || !created || fresh.ID == first.ID {
 		t.Fatalf("after dismissal: id %d created=%v err=%v; want a new task", fresh.ID, created, err)
 	}
 	defer store.Delete(ctx, fresh.ID)
 	for _, bad := range []string{"", "TRACKER:abc", " tracker:abc"} {
-		if _, _, err := store.CreateOnceByTag(ctx, bad, Note{Body: "x"}); err == nil {
+		if _, _, _, err := store.CreateOnceByTag(ctx, bad, Note{Body: "x"}, nil); err == nil {
 			t.Errorf("key %q was accepted; want a refusal", bad)
 		}
 	}
@@ -218,7 +218,7 @@ func TestFindLiveByTagAndCreateOnceByTagNameTheSameTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	found, ok, err := store.FindLiveByTag(ctx, key)
-	once, created, err2 := store.CreateOnceByTag(ctx, key, Note{Body: "x"})
+	once, created, _, err2 := store.CreateOnceByTag(ctx, key, Note{Body: "x"}, nil)
 	if err != nil || err2 != nil || !ok || created || found.ID != older.ID || once.ID != older.ID {
 		t.Fatalf("two live tasks: FindLiveByTag=%d ok=%v, CreateOnceByTag=%d created=%v (%v %v); want both %d (the oldest)",
 			found.ID, ok, once.ID, created, err, err2, older.ID)
@@ -227,9 +227,52 @@ func TestFindLiveByTagAndCreateOnceByTagNameTheSameTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	found, _, _ = store.FindLiveByTag(ctx, key)
-	once, created, _ = store.CreateOnceByTag(ctx, key, Note{Body: "x"})
+	once, created, _, _ = store.CreateOnceByTag(ctx, key, Note{Body: "x"}, nil)
 	if found.ID != newer.ID || once.ID != newer.ID || created {
 		t.Fatalf("after dismissing the oldest: FindLiveByTag=%d CreateOnceByTag=%d created=%v; want both %d",
 			found.ID, once.ID, created, newer.ID)
 	}
+}
+
+// M2 at the store: only an OPEN task — not dismissed, not complete, not a merge
+// loser (`superseded-by:`) — is the task for a key, in the ONE shared lookup,
+// so FindLiveByTag and CreateOnceByTag agree. CONTROL: an in-progress task is
+// still open.
+func TestTheTaskForAKeyIsAnOpenOne(t *testing.T) {
+	store, ctx := flagIdleStore(t)
+	key := onceKey(t)
+	n, created, _, err := store.CreateOnceByTag(ctx, key, Note{Body: "x"}, nil)
+	if err != nil || !created {
+		t.Fatal(err)
+	}
+	defer store.Delete(ctx, n.ID)
+	if _, err := store.SetStatus(ctx, n.ID, "in_progress"); err != nil {
+		t.Fatal(err)
+	}
+	if f, ok, _ := store.FindLiveByTag(ctx, key); !ok || f.ID != n.ID {
+		t.Fatal("CONTROL: an in-progress task is not found for its key")
+	}
+	if _, err := store.SetStatus(ctx, n.ID, "complete"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := store.FindLiveByTag(ctx, key); ok {
+		t.Fatal("a complete task is found as the task for its key")
+	}
+	n2, created, _, err := store.CreateOnceByTag(ctx, key, Note{Body: "y"}, nil)
+	if err != nil || !created || n2.ID == n.ID {
+		t.Fatalf("create after completion: id %d created=%v (%v); want a new task", n2.ID, created, err)
+	}
+	defer store.Delete(ctx, n2.ID)
+	// A merge loser that is NOT complete (status set back by hand) still is not open.
+	if _, err := store.AddTags(ctx, n2.ID, []string{NSSupersededBy + ":1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := store.FindLiveByTag(ctx, key); ok {
+		t.Fatal("a superseded-by task is found as the task for its key")
+	}
+	n3, created, _, err := store.CreateOnceByTag(ctx, key, Note{Body: "z"}, nil)
+	if err != nil || !created || n3.ID == n2.ID {
+		t.Fatalf("create after supersession: id %d created=%v (%v); want a new task", n3.ID, created, err)
+	}
+	defer store.Delete(ctx, n3.ID)
 }

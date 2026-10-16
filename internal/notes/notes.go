@@ -425,17 +425,22 @@ type Store interface {
 	TasksForSession(ctx context.Context, sessionID string) ([]TaskLink, error)
 	// AddComment appends a comment to a task's thread.
 	AddComment(ctx context.Context, c Comment) (Comment, error)
-	// CreateOnceByTag creates n unless a LIVE task the caller can see already
+	// CreateOnceByTag creates n unless an OPEN task the caller can see already
 	// carries key (an already-normalized tag), and returns that task either way:
-	// created reports which. Two concurrent calls for one key create ONE task
-	// (serialised on a transaction-scoped advisory lock on the key), so a
-	// producer that retries, or two that race, cannot file it twice. key is added
-	// to n's tags. A task that was dismissed does not count: a later call files a
-	// new one.
-	CreateOnceByTag(ctx context.Context, key string, n Note) (note Note, created bool, err error)
-	// FindLiveByTag returns the live task CreateOnceByTag treats as the one
-	// carrying key (the oldest the caller can see), and whether there is one.
-	// Both go through ONE lookup, so they can never disagree.
+	// created reports which. "Open" is FindLiveByTag's: not dismissed, not
+	// complete, not a merge loser (`superseded-by:`); a task that is none of
+	// those makes a later call file a new one. Two concurrent calls for one key
+	// create ONE task (serialised on a transaction-scoped advisory lock on the
+	// key), so a producer that retries, or two that race, cannot file it twice.
+	// key is added to n's tags. c, when non-nil, is recorded once on whichever
+	// task that is (AddCommentOnce's rule) IN THE SAME TRANSACTION — so a resend
+	// of the same create-with-comment finds the comment and adds nothing; its
+	// NoteID is ignored; commented reports whether it was written.
+	CreateOnceByTag(ctx context.Context, key string, n Note, c *Comment) (note Note, created, commented bool, err error)
+	// FindLiveByTag returns the OPEN task CreateOnceByTag treats as the one
+	// carrying key — the oldest the caller can see that is not dismissed, not
+	// complete and not a merge loser (`superseded-by:`) — and whether there is
+	// one. Both go through ONE lookup, so they can never disagree.
 	FindLiveByTag(ctx context.Context, key string) (note Note, ok bool, err error)
 	// AddCommentOnce appends c unless the task's thread already holds a comment
 	// with the same author and the same body (a retracted one included, so a

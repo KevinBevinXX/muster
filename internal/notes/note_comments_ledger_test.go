@@ -90,7 +90,9 @@ var wantCommentSites = map[string]commentSite{
 	// does NOT filter `deleted_at IS NULL`, so a comment the owner retracted is
 	// not written again by a retry — the same reasoning as FlagIdle's.
 	// Behavioural case: TestAddCommentOnceWritesOnceAndRespectsRetraction.
-	"AddCommentOnce": {liveOnly: true, commentCols: false},
+	// It lives in addCommentOnceTx, shared by AddCommentOnce and
+	// CreateOnceByTag (which records a create's comment in its own transaction).
+	"addCommentOnceTx": {liveOnly: true, commentCols: false},
 	// NOT a comment read: the board's ACTIVITY ORDERING. Its lateral selects
 	// `max(note_comments.created_at)` and no comment column at all, so there is no
 	// body for commentCols to redact — which is why commentCols is false here and

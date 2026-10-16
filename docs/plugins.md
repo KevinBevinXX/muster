@@ -187,18 +187,25 @@ the chief.
 | field | required | rule |
 |---|---|---|
 | `key` | yes | `<namespace>:<id>`, already a normalized tag, in one of the namespaces `MUSTER_PLUGIN_TASK_NAMESPACES` lists. It becomes the task's tag. |
-| `create` | no | File a task if no live task of yours carries `key`. `body` is 1 byte to 16 KiB; `title` is up to 512 characters. |
-| `comment` | no | Up to 16 KiB. It is appended to the task that **already** carries `key`. |
+| `create` | no | File a task if no **open** task of yours carries `key` (below). `body` must not be blank. |
+| `comment` | no | Recorded on the task for `key`: the open one that already carries it, or the one `create` files. Surrounding whitespace is trimmed; a blank comment is no comment. |
 
-Give `create`, `comment`, or both. Unknown fields are refused.
+Give `create`, a non-blank `comment`, or both. Unknown fields are refused.
+Text over the limits is **cut, never refused**: `body` and `comment` at
+16 KiB (on a character boundary), `title` at 512 characters.
+
+**The open task** for a key is the oldest of yours that carries it and is not
+dismissed, not `complete`, and not the loser of a merge (`superseded-by:`).
+After a merge, the winner carries the loser's tags, so later notices go to
+the winner.
 
 | answer | meaning |
 |---|---|
-| `201 {"id", "created": true, "commented": false}` | A task was filed, tagged with `key`. `comment` is not added: put what it says in `body`. |
-| `200 {"id", "created": false, "commented": true\|false}` | A live task already carries `key`. `commented` says whether the comment was appended. |
-| `200 {"id": null, "created": false, "commented": false}` | No task carries `key` and `create` was not given. Nothing was written. |
-| `400 {"error"}` | A field breaks a rule above. |
-| `503 {"error"}` | This server lists no namespaces (`MUSTER_PLUGIN_TASK_NAMESPACES` is unset). Keep the notice and retry; do not drop it. |
+| `201 {"id", "created": true, "commented"}` | A task was filed, tagged with `key`, with the comment (if given) in the same step. |
+| `200 {"id", "created": false, "commented": true\|false}` | An open task already carries `key`. `commented` says whether the comment was appended. |
+| `200 {"id": null, "created": false, "commented": false}` | No open task carries `key` and `create` was not given. Nothing was written. |
+| `400 {"error"}` | A field breaks a rule above. The same request will never be accepted. |
+| `503 {"error"}` | This server lists no namespaces (`MUSTER_PLUGIN_TASK_NAMESPACES` is unset). Not permanent: try the notice again later. How your plugin holds or sets it aside meanwhile is up to it. |
 
 The namespaces are the deployment's, set in
 [configuration](configuration.md). Each one names an upstream's records, like
@@ -208,13 +215,16 @@ muster already uses (`gate`, `auto`, `initiative`, `project`,
 
 It is idempotent, so a plugin can always resend:
 
-- **One live task per key.** Two calls racing on one key file one task.
+- **One open task per key.** Two calls racing on one key file one task.
+- **A create with a comment is one step.** Sending the same request again
+  finds the task and the comment, and adds neither.
 - **A comment is added once.** If the thread already holds a comment from
   this plugin with the same text, it is not added again. That includes a
   comment you retracted. Make each comment unique per upstream event, for
   example by naming the upstream's message id in it.
-- **Dismissed tasks do not count.** After you dismiss the task, the next
-  `create` for its key files a new one.
+- **Closed tasks do not count.** After the task is dismissed, completed or
+  merged away (and the winner does not carry the key), the next `create` for
+  its key files a new one, and a comment alone writes nothing.
 
 The task is filed the way `POST /api/tasks` files one, and you get the usual
 "New task" push. It has no `gate:` or `auto:` tag, so nothing dispatches it
