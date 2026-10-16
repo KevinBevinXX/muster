@@ -287,14 +287,19 @@ func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, windo
 	if err := writeJSON(ctx, hc.ws, Msg{Type: TypePaste, ID: id, Session: session, Window: windowID, Text: text, AnyPane: anyPane}); err != nil {
 		return fmt.Errorf("mirror: send the message to the host: %w", err)
 	}
+	// From here the host has the message: an answer that never comes is
+	// UNCONFIRMED (ErrPasteUnconfirmed), not "not sent" — it may have landed.
 	t := time.NewTimer(pasteTimeout)
 	defer t.Stop()
 	select {
 	case err := <-ch:
+		if errors.Is(err, ErrHostDisconnected) {
+			return unconfirmed{err}
+		}
 		return err
 	case <-ctx.Done():
-		return ctx.Err()
+		return unconfirmed{ctx.Err()}
 	case <-t.C:
-		return ErrPasteTimeout
+		return unconfirmed{ErrPasteTimeout}
 	}
 }

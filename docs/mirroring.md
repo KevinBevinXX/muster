@@ -200,7 +200,10 @@ view. A v2 `muster-mirror` falls back to v1 against an older muster, so either
 side can be upgraded first.
 
 Newer capabilities are announced in the host's hello, without a version bump:
-pasting into non-Claude panes, and per-window registration. An older host is
+pasting into non-Claude panes, per-window registration, and reporting each
+Claude Code window's status (`busy`, `idle`, `waiting`), which the
+[send queue](sending-and-step-up.md#queue-send-when-the-agent-is-idle) waits on.
+A host that does not report status is never sent a queued message. An older host is
 never asked for them, and an older muster never asks. A host that registers
 windows still sends a per-session list too, so an older muster shows one card per
 session as before. An older, per-session host is capped at 64 sessions.

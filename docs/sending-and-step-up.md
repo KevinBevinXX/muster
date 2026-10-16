@@ -34,6 +34,46 @@ Each box can also have a microphone; see [dictation.md](dictation.md).
   why.
 - A failed turn is stored in the conversation, where the reply would have been.
 
+## Queue: send when the agent is idle
+
+Beside **Send**, a mirrored Claude Code window's message box (Rendered or
+Terminal view) and a dispatched agent's Terminal view have **Queue**. A queued
+message is kept by the server (`send_queue`, migration `0019`) and sent there,
+so it is sent with the page closed, and every device of yours shows the same
+queue under the box, with a **Cancel** for each message not yet being sent.
+
+- **When.** A message is sent once its target has been idle for
+  `MUSTER_SEND_QUEUE_IDLE` (default `30s`), through the same path as Send.
+- **One at a time.** After one is sent, the next waits until the target has been
+  seen busy (the turn that message started) and then idle for the same time
+  again. A target never seen busy afterwards (a turn shorter than the host's
+  5-second refresh) is taken to have finished after 10 minutes idle.
+- **What idle means.** For a mirrored window: Claude Code's own session status,
+  which `muster-mirror` reports per window. `busy` and `waiting` (a prompt or a
+  question for you) both hold the queue. For a dispatched agent: running, with
+  no turn in flight.
+- 🔴 **Unknown is not idle.** Nothing queued is sent to a target muster cannot
+  read. For a `muster-mirror` that does not report the status (an older one) or
+  a window whose pane is not Claude Code, Queue is drawn disabled saying why and
+  a queue post is refused saying why. A message already queued for such a
+  target, or for an agent that is not running, is held with the reason shown.
+- **At most 20** messages can wait per target. Finished ones are shown for a
+  while and deleted after 7 days.
+- **Never twice.** A message is claimed (`queued` → `sending`) before it is sent
+  and never put back. If muster stops in the middle of a send, the message is
+  marked failed ("may or may not have been delivered") at the next start and is
+  not sent again.
+
+🔴 **Step-up for a queued mirror message is decided when you QUEUE it.** Queueing
+needs the same fresh sign-in a Send needs (the dialog, or the plain confirm page
+at `POST /send-queue/confirm`), and the server records the sign-in time of the
+session that queued it. When the message is sent, exactly that time is presented
+to the same gate, the plugin's own check included. So a queued message is sent
+only while the sign-in that queued it is still inside the step-up window. After
+that it fails, saying so, and is not sent. The queue never refreshes or extends
+the time. Signing out of that session does not withdraw what it queued. Cancel
+the message instead.
+
 ## It works without JavaScript, and a message is delivered once
 
 Every message box is a real `<form method="post">`.

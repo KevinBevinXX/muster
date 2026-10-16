@@ -95,7 +95,11 @@ func (s *Server) handleAgentTerminalPage(w http.ResponseWriter, r *http.Request)
 	c := ui.ComposerView{SendPath: ui.AgentSendPath(a.Name),
 		Extra:       []ui.ComposerField{{Name: "from", Value: ui.AgentSendFromTerminal}},
 		Placeholder: "Message the agent…", Aria: "Send a message to this agent", DisabledPlaceholder: "Cannot be sent a message",
-		Nonce: newSendNonce(), Dictate: s.dictatePath()}
+		Nonce: newSendNonce(), Dictate: s.dictatePath(), Queue: s.agentComposerQueue(r.Context(), a)}
+	if c.Queue != nil {
+		// The send queue names the agent in its form (send_queue.go).
+		c.Extra = append(c.Extra, ui.ComposerField{Name: "agent", Value: a.Name})
+	}
 	c.Notice, c.NoticeOK = composerNotice(r)
 	switch {
 	case s.ext.Gateway == nil:

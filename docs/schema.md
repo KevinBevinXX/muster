@@ -20,6 +20,7 @@ the set grows **or** shrinks.
 | push | `push_subscriptions`, `push_preferences` |
 | plugins | `plugins`, `plugin_messages`, `plugin_reply_drafts` |
 | Agents list | `pins`: the entries each user pinned to the top |
+| send queue | `send_queue`: messages each user queued for an agent or a mirrored window, sent one at a time when it is idle |
 | GitHub | `github_connection`, one row per owner |
 
 `notes` is the task table. The name is historical. It is kept because every id in
@@ -45,6 +46,7 @@ buys only a word.
 | `0015` | `plugins` and `plugin_messages`: the [plugin interface](plugins.md). A message's input cannot be changed after it is written. |
 | `0016` | `plugin_reply_drafts` (a draft's body cannot be changed after it is written; the claim, lease and result rules) and `plugin_messages.no_reply`, which cannot be changed and refuses any reply draft for its message. |
 | `0017` | `pins`: a user's pinned Agents-list entries, each naming an agent (deleted with it) or a mirrored window by `(host, session, tmux window id)`. Owned, under row-level security; the agent a pin names must be the pin's owner's. |
+| `0019` | `send_queue`: the server-side send queue. Each row names an agent (deleted with it) or a mirrored window, and carries the message, its state (`queued`, `sending`, `sent`, `failed`, `cancelled`) and, for a mirror, the sign-in time of the session that queued it. At most one row per target is `sending`. Owned, under row-level security. |
 
 To change the schema, add a new numbered file.
 

@@ -112,6 +112,12 @@ BEGIN
         ALTER TABLE public.pins DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.pins ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0019 (send_queue), when this schema has it; same reason as 0011.
+    IF to_regclass('public.send_queue') IS NOT NULL THEN
+        ALTER TABLE public.send_queue NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.send_queue DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.send_queue ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
 END
 $$;
 

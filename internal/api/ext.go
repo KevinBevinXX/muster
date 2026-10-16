@@ -5,6 +5,7 @@ import (
 	"github.com/ZacxDev/muster/internal/users"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/apitokens"
@@ -16,6 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/sendqueue"
 )
 
 // Extensions are the server's optional dependencies. A Server built without
@@ -166,6 +168,27 @@ type Extensions struct {
 	// nil (no database): nothing is pinned, no card is drawn pinned, and the pin
 	// routes answer 404.
 	Pins pins.Store
+
+	// SendQueue is the server-side send queue (internal/sendqueue, migration
+	// 0019). nil (no database): no composer draws Queue, the queue routes answer
+	// 404, and RunSendQueue does nothing.
+	SendQueue SendQueue
+	// SendQueueIdle is how long a target must have been idle before a queued
+	// message is sent to it (MUSTER_SEND_QUEUE_IDLE); 0 is
+	// sendqueue.DefaultIdleFor.
+	SendQueueIdle time.Duration
+}
+
+// SendQueue is the send queue's store as this package consumes it:
+// *sendqueue.PGStore. The first five run under the request's principal; the
+// embedded DispatchStore is the dispatcher's (system scope).
+type SendQueue interface {
+	Enqueue(ctx context.Context, it sendqueue.Item) (sendqueue.Item, error)
+	List(ctx context.Context, t sendqueue.Target) ([]sendqueue.Item, error)
+	Get(ctx context.Context, id int64) (sendqueue.Item, error)
+	Cancel(ctx context.Context, id int64, now time.Time) (sendqueue.Item, error)
+	HeadOf(ctx context.Context, t sendqueue.Target) (sendqueue.Head, bool, error)
+	sendqueue.DispatchStore
 }
 
 // Mirror is the mirror plugin as this package consumes it. *mirror.Service
@@ -194,6 +217,10 @@ type Mirror interface {
 	// The caller has already required the step-up; the plugin requires it
 	// again.
 	PasteWindow(ctx context.Context, host, session, window, text string, target mirror.PasteTarget) error
+	// AgentState is whether the Claude Code session in that window is busy,
+	// idle or waiting, and since when — or why it is unknown (an older
+	// muster-mirror reports none). What the send queue waits on.
+	AgentState(ctx context.Context, host, session, window string) mirror.AgentState
 }
 
 // GitHubOAuthConfig holds the OAuth App credentials + the public base URL used

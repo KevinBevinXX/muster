@@ -64,6 +64,8 @@ type MirrorViewView struct {
 	Nonce    string
 	// Dictate is the composer's (ComposerView.Dictate).
 	Dictate string
+	// Queue is the composer's send queue (ComposerView.Queue); nil for none.
+	Queue *ComposerQueue
 }
 
 // MirrorReadOnlyNote is what a read-only host's composer says instead of
@@ -78,7 +80,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 	ref := MirrorRef{Host: v.Host, Session: v.Session, Window: v.Window}
 	composer := ComposerView{SendPath: MirrorSendPath, Host: v.Host, Session: v.Session, Window: v.Window,
 		Placeholder: "Message Claude…", Aria: "Message Claude in this session", DisabledPlaceholder: "Read-only host",
-		Notice: v.Notice, NoticeOK: v.NoticeOK, Nonce: v.Nonce, Dictate: v.Dictate,
+		Notice: v.Notice, NoticeOK: v.NoticeOK, Nonce: v.Nonce, Dictate: v.Dictate, Queue: v.Queue,
 		// Pinned to the visible viewport, not in flow at the bottom of the body:
 		// on a phone the body's bottom can be under the browser's chrome, and
 		// this page cannot be scrolled to bring it back (composerPinScript).

@@ -55,12 +55,27 @@ func (s *Server) markAgentIdle(name string) {
 	if name == "" {
 		return
 	}
+	now := s.activeAgentsNow()
 	s.activeAgentsMu.Lock()
 	if st, ok := s.activeAgents[name]; ok {
 		st.inFlight = false
 		s.activeAgents[name] = st
 	}
+	if s.turnEnded == nil {
+		s.turnEnded = map[string]time.Time{}
+	}
+	s.turnEnded[name] = now
 	s.activeAgentsMu.Unlock()
+}
+
+// agentTurnState is whether agent name has a turn in flight, and when its last
+// turn ended (zero: none since this process started). The send queue's view
+// of a dispatched agent (send_queue.go). Unlike activeAgentsList it is not
+// windowed: an agent idle for an hour is idle since its turn ended an hour ago.
+func (s *Server) agentTurnState(name string) (inFlight bool, ended time.Time) {
+	s.activeAgentsMu.Lock()
+	defer s.activeAgentsMu.Unlock()
+	return s.activeAgents[name].inFlight, s.turnEnded[name]
 }
 
 // activeAgentsList returns the agents to show in the ACTIVE section: every

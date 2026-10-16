@@ -93,6 +93,7 @@ GET /mirror/view/ws
 GET /plugins
 GET /readyz
 GET /repos
+GET /send-queue
 GET /share
 GET /static/
 GET /sw.js
@@ -201,6 +202,9 @@ POST /plugins/{id}/revoke
 POST /runner/flows/claim
 POST /runner/flows/{id}/heartbeat
 POST /runner/flows/{id}/result
+POST /send-queue
+POST /send-queue/confirm
+POST /send-queue/{id}/cancel
 POST /tasks
 POST /tasks/merge
 POST /tasks/{id}/comments

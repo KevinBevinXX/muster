@@ -54,6 +54,13 @@ import (
 // exactly as MUSTER_MIRROR_E2E_CLAUDE's session does; a paste into such a
 // window is recorded in <transcript>.pasted, and one into any other window in
 // MUSTER_MIRROR_E2E_PASTE_FILE — each with the pane it reached.
+//
+// THE CLAUDE STATUS (the send queue): a per-window host's Claude window reports
+// Claude Code's session status — busy while <transcript>.busy exists, waiting
+// while <transcript>.waiting exists, idle otherwise — and the host advertises
+// that it reports it (Msg.StatusReport). With MUSTER_MIRROR_E2E_NO_STATUS=1 it
+// advertises nothing, which is what an older muster-mirror's hello says: muster
+// must then send nothing queued to it.
 func init() {
 	e2eBackend = func() mirrorhost.Backend {
 		if f := os.Getenv("MUSTER_MIRROR_E2E_WINDOWS_FILE"); f != "" {
@@ -296,13 +303,25 @@ func (w windowFake) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
 			Activity: activity, Pane: windowFakePane(f[0], f[1]), PanePID: 1}
 		if f[6] != "" {
 			_, busy := os.Stat(f[6] + ".busy")
+			_, waiting := os.Stat(f[6] + ".waiting")
+			status := "idle"
+			switch {
+			case busy == nil:
+				status = "busy"
+			case waiting == nil:
+				status = "waiting"
+			}
 			info.Claude = &mirrorhost.ClaudePane{Pane: info.Pane, PID: 1, Transcript: f[6],
-				Gen: strings.TrimSuffix(filepath.Base(f[6]), ".jsonl"), Busy: busy == nil}
+				Gen: strings.TrimSuffix(filepath.Base(f[6]), ".jsonl"), Busy: busy == nil, Status: status}
 		}
 		out = append(out, info)
 	}
 	return out, nil
 }
+
+// ReportsStatus implements mirrorhost.StatusReporter: yes, unless the spec
+// plays an older muster-mirror (MUSTER_MIRROR_E2E_NO_STATUS=1).
+func (windowFake) ReportsStatus() bool { return os.Getenv("MUSTER_MIRROR_E2E_NO_STATUS") == "" }
 
 // List is the windows' sessions: what a per-session reader of this host sees.
 func (w windowFake) List(ctx context.Context) ([]string, error) {

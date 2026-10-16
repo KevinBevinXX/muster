@@ -121,24 +121,41 @@ func (s *Server) handleAgentSend(w http.ResponseWriter, r *http.Request) {
 		refuse(http.StatusConflict, AgentNotRunningNotice, noticeNotRunning)
 		return
 	}
-	session, err := s.resolveSession(ctx, a, sessionParam)
+	repeat, session, err := s.agentSendTurn(ctx, a, sessionParam, text, nonce)
 	if err != nil {
 		s.logger.Printf("agents: send session for %q: %v", a.Name, err)
 		refuse(http.StatusInternalServerError, "could not open a chat session for that agent", noticeFailed)
 		return
 	}
-	repeat, finish := s.sends.begin(requestOwner(ctx), nonce, text)
 	if repeat {
 		s.logger.Printf("agents: a repeat of a message to %s was not sent again", a.Name)
 		sent()
 		return
 	}
+	s.logger.Printf("agents: sent a message to %s (session %d)", a.Name, session)
+	sent()
+}
+
+// agentSendTurn is the DELIVERY of a message to an agent — what a POSTed send
+// (handleAgentSend) and a queued one (sendQueueToAgent) both run once their
+// gates have passed: resolve the chat session (sessionParam, else the
+// agent's latest), claim the nonce, and start the turn. repeat is a nonce
+// already delivered, which starts no second turn. session is the chat
+// session's id.
+func (s *Server) agentSendTurn(ctx context.Context, a agents.Agent, sessionParam, text, nonce string) (repeat bool, session int64, err error) {
+	sess, err := s.resolveSession(ctx, a, sessionParam)
+	if err != nil {
+		return false, 0, err
+	}
+	repeat, finish := s.sends.begin(requestOwner(ctx), nonce, text)
+	if repeat {
+		return true, sess.ID, nil
+	}
 	// Accepted: from here the message is the turn's. The claim is kept whatever
 	// the turn then does — a repeat of this post must not start a second turn.
 	finish(true)
-	s.startAgentTurn(ctx, a, session, text)
-	s.logger.Printf("agents: sent a message to %s (session %d)", a.Name, session.ID)
-	sent()
+	s.startAgentTurn(ctx, a, sess, text)
+	return false, sess.ID, nil
 }
 
 // agentCanBeSent reports whether an agent whose displayed status is status can

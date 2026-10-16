@@ -71,6 +71,7 @@ import (
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/router"
+	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/sse"
 	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -270,6 +271,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.Flows = flows.NewPG(pool).WithAgentDenyWords(cfg.FlowAgentDenyWords)
 		// The Agents list's per-user pins (migration 0017).
 		ext.Pins = pins.NewPG(pool)
+		// The server-side send queue (migration 0019); RunSendQueue delivers it.
+		ext.SendQueue = sendqueue.NewPG(pool)
+		ext.SendQueueIdle = cfg.SendQueueIdle
 
 		if len(cfg.ConnectorEncKey) > 0 {
 			cs, err := connectors.NewPG(pool, cfg.ConnectorEncKey)
@@ -691,6 +695,10 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	// the reaper had effectively never run. api.TaskReapInterval carries the
 	// measurement.
 	go a.srv.RunTaskReap(ctx, api.TaskReapInterval)
+	// The send queue's dispatcher. ONE replica: its startup recovery fails any
+	// message a previous process left mid-send, which would be a peer's live
+	// send with two (the mirror hub is single-replica state already).
+	go a.srv.RunSendQueue(ctx, sendqueue.DefaultInterval)
 }
 
 // shutdown drains in-flight requests and the kickoff deliverer, then waits for

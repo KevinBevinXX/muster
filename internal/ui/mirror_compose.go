@@ -102,6 +102,11 @@ type ComposerView struct {
 	// adds composerPinScript. The page must reserve the room it takes
 	// (pinnedShellClass on its body). See composerPinScript for why.
 	Pinned bool
+	// Queue, when set, draws the send queue: a Queue button beside Send and the
+	// target's queue above the input (send_queue.go). nil — no database, or a
+	// target that cannot be queued for — draws neither. A disabled composer
+	// draws neither either.
+	Queue *ComposerQueue
 }
 
 // MirrorComposerView is ComposerView under the name it had while only mirrored
@@ -198,6 +203,7 @@ func mirrorComposer(v ComposerView) g.Node {
 		// send's, so a recording's timer and a send's outcome never overwrite
 		// each other.
 		dictateNote(dictate, "mv-dictate-note", "px-3 pt-2"),
+		sendQueueBox(v.Queue, off),
 		Form(
 			ID("mv-form"),
 			// 🔴 method + action: without the script this is still a form the
@@ -225,6 +231,7 @@ func mirrorComposer(v ComposerView) g.Node {
 				Class(composerInputClass),
 			),
 			dictateControl(dictate, "mv-input", "mv-dictate-note", "mv-dictate"),
+			sendQueueButton(v.Queue, off),
 			Button(
 				ID("mv-send"),
 				Type("submit"),
@@ -346,6 +353,7 @@ func mirrorComposerScript() g.Node {
   var note = document.getElementById('mv-note');
   var nonce = document.getElementById('mv-nonce');
   function say(msg) { note.textContent = msg || ''; note.hidden = !msg; note.removeAttribute('data-ok'); }
+  function sayOK(msg) { say(msg); note.setAttribute('data-ok', ''); }
   // A message that was sent is done with its nonce: the next one is a new
   // message, and must not be taken for a repeat of this one.
   function renew() {
@@ -368,42 +376,75 @@ func mirrorComposerScript() g.Node {
       history.replaceState(history.state, '', here.pathname + here.search + here.hash);
     }
   } catch (e) {}
+  // The Queue button (send_queue.go), when the composer has one: a submit
+  // whose formaction is the queue route and whose name/value says which queue.
+  var queueBtn = document.getElementById('mv-queue-send');
+  // Drawn disabled (the server cannot tell when this agent is idle): it stays
+  // so, whatever a send re-enables.
+  var queueOff = !!(queueBtn && queueBtn.disabled);
+  // 🔴 WHICH BUTTON SUBMITTED, WHERE e.submitter IS MISSING (older Safari):
+  // the last one clicked. Guessing "Send" for a Queue tap would deliver the
+  // message NOW, which is the one thing the person asked not to happen.
+  var clicked = null;
+  if (queueBtn) queueBtn.addEventListener('click', function () { clicked = queueBtn; });
+  send.addEventListener('click', function () { clicked = null; });
   // native hands the send to the browser: an ordinary form submission, which
-  // the server answers with a redirect back to this view.
-  function native() { HTMLFormElement.prototype.submit.call(form); }
-  function body() {
+  // the server answers with a redirect back to this view. sub is the button
+  // that submitted (Queue, or none for Send): the browser's submit() ignores a
+  // submitter, so its route and its name/value are put on the form here.
+  function native(sub) {
+    if (sub && sub.getAttribute('formaction')) {
+      form.setAttribute('action', sub.getAttribute('formaction'));
+      var h = document.createElement('input');
+      h.type = 'hidden'; h.name = sub.name; h.value = sub.value;
+      form.appendChild(h);
+    }
+    HTMLFormElement.prototype.submit.call(form);
+  }
+  function body(sub) {
     var b = new URLSearchParams();
     for (var i = 0; i < form.elements.length; i++) {
       var el = form.elements[i];
+      // A button is form data only as the submitter.
+      if (el.type === 'submit' || el.type === 'button') continue;
       if (el.name && !el.disabled) b.append(el.name, el.value);
     }
+    if (sub && sub.name) b.append(sub.name, sub.value);
     return b;
   }
-  function post() {
+  function post(sub) {
     send.disabled = true;
+    if (queueBtn) queueBtn.disabled = true;
+    var queued = !!(sub && sub === queueBtn);
+    var to = queued ? sub.getAttribute('formaction') : form.getAttribute('action');
     // What is being sent: the box is emptied afterwards only if it still holds
     // this, so text typed while the request was out is not thrown away.
     var sent = input.value;
     var req;
     try {
-      req = fetch(form.getAttribute('action'), { method: 'POST', body: body(), credentials: 'same-origin',
+      req = fetch(to, { method: 'POST', body: body(sub), credentials: 'same-origin',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' } });
-    } catch (e) { native(); return; }
+    } catch (e) { native(sub); return; }
     return req.then(function (r) {
-        if (r.ok) { if (input.value === sent) input.value = ''; say(''); renew(); return; }
-        if (r.status === 403 && r.headers.get('X-Muster-Step-Up')) {
-          var stepUp = window.musterStepUp;
-          if (!stepUp) { native(); return; }
-          stepUp.stale();
-          stepUp.ask('', post);
+        if (r.ok) {
+          if (input.value === sent) input.value = '';
+          renew();
+          if (queued) { sayOK('Queued.'); document.dispatchEvent(new Event('mv-queued')); } else { say(''); }
           return;
         }
-        return r.text().then(function (t) { say(t.trim() || ('Not sent (HTTP ' + r.status + ')')); });
+        if (r.status === 403 && r.headers.get('X-Muster-Step-Up')) {
+          var stepUp = window.musterStepUp;
+          if (!stepUp) { native(sub); return; }
+          stepUp.stale();
+          stepUp.ask('', function () { return post(sub); });
+          return;
+        }
+        return r.text().then(function (t) { say(t.trim() || ((queued ? 'Not queued' : 'Not sent') + ' (HTTP ' + r.status + ')')); });
       }, function () {
         if (navigator.onLine === false) { say(form.getAttribute('data-down')); return; }
-        native();
+        native(sub);
       })
-      .then(function () { send.disabled = false; }, function () { native(); });
+      .then(function () { send.disabled = false; if (queueBtn) queueBtn.disabled = queueOff; }, function () { native(sub); });
   }
   form.addEventListener('submit', function (e) {
     // From here on a failure of THIS handler leaves the event alone, and the
@@ -413,7 +454,9 @@ func mirrorComposerScript() g.Node {
     if (typeof fetch !== 'function' || typeof URLSearchParams !== 'function') return;
     e.preventDefault();
     say('');
-    try { post(); } catch (err) { native(); }
+    var sub = ('submitter' in e) ? e.submitter : clicked;
+    clicked = null;
+    try { post(sub); } catch (err) { native(sub); }
   });
   input.addEventListener('input', function () { if (input.value.trim()) say(''); });
   input.addEventListener('keydown', function (e) {

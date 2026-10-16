@@ -83,6 +83,12 @@ const (
 	// on the /plugin/v1/* routes only. It acts as the token's OWNER, so row-level
 	// security confines the plugin to that owner's plugin rows.
 	ViaPlugin Via = "plugin"
+	// ViaQueue is the SERVER-SIDE SEND QUEUE delivering a message its owner
+	// queued from a signed-in session earlier (internal/sendqueue): the deferred
+	// end of that owner's own request, acting as the OWNER only. One site mints
+	// it — internal/api's queuedPrincipal — and it is a request door in the
+	// sense that matters here: one user, never everybody.
+	ViaQueue Via = "send-queue"
 	// ViaSystem is a background loop acting for every user. Only System sets
 	// it.
 	ViaSystem Via = "system"
@@ -97,6 +103,7 @@ const (
 var requestVias = map[Via]bool{
 	ViaSession: true, ViaHook: true, ViaService: true,
 	ViaAgent: true, ViaConnect: true, ViaRelay: true, ViaToken: true, ViaRunner: true, ViaPlugin: true,
+	ViaQueue: true,
 }
 
 // OperatorUserID is the user every principal names today: the operator, the

@@ -50,6 +50,7 @@ import (
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
+	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/sse"
 	"github.com/ZacxDev/muster/internal/ui"
 	"github.com/ZacxDev/muster/web"
@@ -146,6 +147,16 @@ type Server struct {
 	activeAgentsMu  sync.Mutex
 	activeAgents    map[string]agentPhase
 	activeAgentsNow func() time.Time
+	// turnEnded is when each agent's last turn ended (markAgentIdle), never
+	// pruned: what the send queue reads as "idle since" (send_queue.go).
+	turnEnded map[string]time.Time
+
+	// sendQueue is the send queue's dispatcher (send_queue.go); nil until
+	// RunSendQueue starts it.
+	sendQueueMu sync.Mutex
+	sendQueue   *sendqueue.Dispatcher
+	// sendQueueClock is the queue's clock; nil is time.Now (a test sets it).
+	sendQueueClock func() time.Time
 
 	// listPullRequests is the GitHub PR read, injectable for tests.
 	listPullRequests func(ctx context.Context, token, repo, state string) ([]github.PullRequest, error)
@@ -459,6 +470,8 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerAgentRoutes(mux)
 	// Pins (internal/pins): the Agents list's pin toggles, 404 without a store.
 	s.registerPinRoutes(mux)
+	// The send queue (internal/sendqueue): Queue, its list, Cancel; 404 without a store.
+	s.registerSendQueueRoutes(mux)
 	s.registerAgentSelfServiceRoutes(mux)
 	s.registerConnectorRoutes(mux)
 	s.registerCredentialRoutes(mux)

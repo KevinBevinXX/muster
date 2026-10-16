@@ -617,7 +617,9 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 			// 128 bytes of session name, unique per window, all escaped six-fold.
 			name := strings.Repeat("<", 128-len(itoa(i))) + itoa(i)
 			out = append(out, WindowInfo{Session: name, ID: "@" + strings.Repeat("9", 10), Index: 1 << 20, Active: true,
-				Pane: "%1", PanePID: 1, Activity: 1791903960, Command: strings.Repeat(">", mirror.MaxCommand), Claude: &ClaudePane{}})
+				Pane: "%1", PanePID: 1, Activity: 1791903960, Command: strings.Repeat(">", mirror.MaxCommand),
+				// The longest status (the send queue's): "waiting".
+				Claude: &ClaudePane{Status: mirror.StatusWaiting}})
 		}
 		return out
 	}
@@ -639,12 +641,12 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 			t.Fatalf("a host with %d windows registers %d, want %d", n, len(l.windows), want)
 		}
 		for _, w := range l.windows {
-			if w.Label == "" || w.Command == "" || !w.Claude {
+			if w.Label == "" || w.Command == "" || !w.Claude || w.Status != mirror.StatusWaiting {
 				t.Fatalf("instrument check: a worst-case field was dropped by normalisation, so this is not the worst case: %+v", w)
 			}
 		}
 		m := l.msg(mirror.TypeHello)
-		m.Version, m.Host, m.Interactive, m.PanePaste = mirror.ProtocolVersion, strings.Repeat("h", 63), true, true
+		m.Version, m.Host, m.Interactive, m.PanePaste, m.StatusReport = mirror.ProtocolVersion, strings.Repeat("h", 63), true, true, true
 		b, err := json.Marshal(m)
 		if err != nil {
 			t.Fatal(err)
