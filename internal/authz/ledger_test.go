@@ -142,6 +142,9 @@ var (
 		// `muster-server mirror token create|ls|revoke`: the operator's tokens.
 		"cmd/muster-server.runMirrorCLI",
 		"e2e/seed.run",
+		// The mirror-chat browser spec's own agent + chat (e2e/mkchat): fixture
+		// rows filed under the operator, as the seed's are.
+		"e2e/mkchat.run",
 		"internal/dbtest.AsOperator",
 		// The cairn memo relay: it presents the OPERATOR's cairn credential, so it
 		// serves the operator's agents and must be handed nobody else's. Running as

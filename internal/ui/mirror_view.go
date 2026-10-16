@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"strconv"
+	"strings"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -115,8 +117,16 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 						Class("min-w-0 flex-1"),
 						H1(Class("truncate text-sm font-semibold"), mirrorEntryTitle(v.Label, v.Title, v.Session, v.Qualifier, ""),
 							Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge("Mirrored · "+v.Host))),
-						P(ID("mv-status"), Class("truncate text-xs text-muted"), g.Attr("aria-live", "polite"), g.Text("Connecting…")),
+						Div(
+							Class("flex min-w-0 items-center gap-2"),
+							P(ID("mv-status"), Class("truncate text-xs text-muted"), g.Attr("aria-live", "polite"), g.Text("Connecting…")),
+							// The context readout (TakeContext): hidden until a turn
+							// has reported usage, and again after a reset.
+							Span(ID("mv-context"), g.Attr("hidden", ""), g.Attr("title", "Context used"),
+								Class("shrink-0 rounded-full bg-s2 px-2 py-0.5 text-[11px] tabular-nums text-fg2 ring-1 ring-inset ring-line")),
+						),
 					),
+					chatIndexButton("mv-log"),
 					viewToggle(true, ref.ViewPath(), ref.TerminalPath()),
 				),
 				Div(
@@ -143,6 +153,9 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				g.If(v.Interactive, confirmDialog(v.StepUp)),
 				g.If(v.Interactive, stepUpScript()),
 				mirrorViewScript(),
+				bubbleClampScript(),
+				chatIndexSheet(),
+				chatIndexScript(),
 				mirrorComposerScript(),
 				pwaChrome(),
 			),
@@ -189,12 +202,77 @@ type MirrorOp struct {
 type MirrorTranscript struct {
 	calls map[string]ChatLine
 	order []string
+	// usage is the latest turn's context use, and fresh whether it changed
+	// since TakeContext last reported it.
+	usage *cctranscript.Usage
+	fresh bool
 }
 
 const maxDrawnCalls = 2048
 
+// MirrorPromptID is a mirrored prompt's element id, from its Event.Line: the
+// ONE spelling both its bubble (Ops) and its prompt-index entry
+// (NewMirrorIndex) use, so the message index finds the bubble a prompt has.
+func MirrorPromptID(line int64) string { return "mv-p-" + strconv.FormatInt(line, 10) }
+
+// MirrorIndex is the prompt index as the view's socket sends it: every prompt
+// the host's transcript holds (the newest it kept), each with its bubble's
+// element id, and how many earlier ones the host left out.
+type MirrorIndex struct {
+	Items []MirrorIndexItem `json:"items"`
+	More  int               `json:"more"`
+}
+
+// MirrorIndexItem is one prompt: its bubble's id and its first line.
+type MirrorIndexItem struct {
+	ID   string `json:"id"`
+	Text string `json:"text"`
+}
+
+// NewMirrorIndex is refs as the view's index.
+func NewMirrorIndex(refs []cctranscript.PromptRef, more int) *MirrorIndex {
+	idx := &MirrorIndex{Items: make([]MirrorIndexItem, 0, len(refs)), More: max(more, 0)}
+	for _, r := range refs {
+		idx.Items = append(idx.Items, MirrorIndexItem{ID: MirrorPromptID(r.Line), Text: r.Text})
+	}
+	return idx
+}
+
 // Reset forgets every drawn call (the view starts over).
-func (t *MirrorTranscript) Reset() { t.calls, t.order = nil, nil }
+func (t *MirrorTranscript) Reset() {
+	t.calls, t.order = nil, nil
+	t.usage, t.fresh = nil, false
+}
+
+// ContextView is the header's context-usage readout (mirrorViewBatch.Context):
+// the latest turn's context, as a count ("124k context").
+type ContextView struct {
+	Tokens int64  `json:"tokens"`
+	Label  string `json:"label"`
+}
+
+// TakeContext is the context readout when Ops has drawn a newer one since the
+// last call, else nil — so a batch carries it only when it changed.
+func (t *MirrorTranscript) TakeContext() *ContextView {
+	if !t.fresh || t.usage == nil {
+		return nil
+	}
+	t.fresh = false
+	return &ContextView{Tokens: t.usage.Tokens, Label: tokenCount(t.usage.Tokens) + " context"}
+}
+
+// tokenCount is n tokens, short: 950, 12k, 124k, 1M, 1.2M.
+func tokenCount(n int64) string {
+	switch {
+	case n < 1000:
+		return strconv.FormatInt(n, 10)
+	case n < 999_500: // past it, rounding to k would print "1000k"
+		return strconv.FormatInt((n+500)/1000, 10) + "k"
+	default:
+		s := strconv.FormatFloat(float64(n)/1_000_000, 'f', 1, 64)
+		return strings.TrimSuffix(s, ".0") + "M"
+	}
+}
 
 // toolRowID is a tool row's element id: the tool id hashed, since it is the
 // host's text.
@@ -216,9 +294,17 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 	}
 	var ops []MirrorOp
 	for _, ev := range events {
+		if ev.Usage != nil {
+			t.usage, t.fresh = ev.Usage, true
+		}
 		switch ev.Kind {
 		case cctranscript.KindPrompt:
-			ops = append(ops, MirrorOp{Op: "append", HTML: render(chatBubbleOf("user", g.Attr("data-md-rendered", ""), renderMarkdown(ev.Text)))})
+			// The bubble's id is the prompt's place in its transcript, the id the
+			// prompt index names it by (MirrorPromptID). A host that sends no Line
+			// gets none here, and the message index gives the bubble a
+			// page-unique one (chatIndexScript).
+			ops = append(ops, MirrorOp{Op: "append", HTML: render(chatBubbleOf("user",
+				g.If(ev.Line > 0, ID(MirrorPromptID(ev.Line))), g.Attr("data-md-rendered", ""), renderMarkdown(ev.Text)))})
 		case cctranscript.KindText:
 			ops = append(ops, MirrorOp{Op: "append", HTML: render(chatBubbleOf("assistant", g.Attr("data-md-rendered", ""), renderMarkdown(ev.Text)))})
 		case cctranscript.KindError:
@@ -226,6 +312,8 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 				g.Attr("data-mirror-error", ""),
 				Class("max-w-[85%] self-start break-words rounded-2xl bg-danger/15 px-3 py-2 text-sm text-fg ring-1 ring-inset ring-danger/40"),
 				g.Text("⚠ "+ev.Text)))})
+		case cctranscript.KindNotice:
+			ops = append(ops, MirrorOp{Op: "append", HTML: render(noticeRow(ev))})
 		case cctranscript.KindToolCall:
 			call := ChatLine{Kind: "tool_call", ToolID: ev.ToolID, ToolName: ev.Tool, ToolTarget: ev.Target, Content: ev.Input}
 			id := toolRowID(ev.ToolID)
@@ -253,6 +341,50 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 	return ops
 }
 
+// noticeRow draws a harness notice (cctranscript.KindNotice) as a compact
+// collapsed row in the tool rows' frame — never as the human's bubble: an icon
+// for its source, its one-line summary, and a task's status; expanding shows
+// the detail (a task's result, a local command's output).
+//
+// ⚠ ONLY THE MIRRORED VIEW DRAWS ONE. A dispatched agent's chat is muster's own
+// persisted messages plus ccd's reply stream, which carries a turn's text and
+// tool calls and nothing the harness injects, so no notice ever reaches it.
+func noticeRow(ev cctranscript.Event) g.Node {
+	icon, label := "🔔", "task"
+	if ev.Notice == cctranscript.NoticeCommandOutput {
+		icon, label = "▸", "output"
+	}
+	// The status as the harness wrote it, drawn the tool rows' way: a known
+	// good one ✓, a known bad one ✗, anything else by name.
+	var status g.Node
+	switch ev.Status {
+	case "":
+	case "completed", "success":
+		status = Span(Class("ml-auto shrink-0 font-semibold text-accent"), g.Attr("aria-label", "status: "+ev.Status), g.Text("✓"))
+	case "failed", "error":
+		status = Span(Class("ml-auto shrink-0 font-semibold text-st-error-fg"), g.Attr("aria-label", "status: "+ev.Status), g.Text("✗"))
+	default:
+		status = Span(Class("ml-auto shrink-0 text-muted"), g.Text(ev.Status))
+	}
+	var body g.Node
+	if strings.TrimSpace(ev.Output) != "" && ev.Output != ev.Text {
+		body = Div(Class("flex flex-col gap-1 px-3 pb-2 pt-0"), toolPre("detail", ev.Output))
+	}
+	return Details(
+		g.Attr("data-notice-row", ev.Notice),
+		g.If(ev.Status != "", g.Attr("data-notice-status", ev.Status)),
+		Class("w-full max-w-[92%] min-w-0 self-start rounded-xl bg-bg/50 text-xs ring-1 ring-inset ring-line"),
+		Summary(
+			Class("flex min-h-[44px] min-w-0 cursor-pointer select-none items-center gap-2 px-3 py-2 font-medium text-fg2 hover:text-fg"),
+			Span(Class("shrink-0"), g.Attr("aria-hidden", "true"), g.Text(icon)),
+			Span(Class("shrink-0 font-mono text-muted"), g.Text(label)),
+			Span(g.Attr("data-notice-text", ""), Class("min-w-0 truncate"), g.Text(ev.Text)),
+			status,
+		),
+		body,
+	)
+}
+
 // mirrorViewScript connects the transcript socket and applies its batches, and
 // reconnects resuming from the last offset. The composer is its own script
 // (mirrorComposerScript), shared with the Terminal view.
@@ -269,6 +401,7 @@ func mirrorViewScript() g.Node {
   var errEl = document.getElementById('mv-error');
   var errText = document.getElementById('mv-error-text');
   var working = document.getElementById('mv-working');
+  var ctxEl = document.getElementById('mv-context');
   var gen = '', offset = 0, retry = 0, closed = false, sock = null;
 
   function showError(msg) { errText.textContent = msg; errEl.hidden = false; }
@@ -278,7 +411,18 @@ func mirrorViewScript() g.Node {
 
   function apply(m) {
     var stick = nearBottom() || m.reset;
-    if (m.reset) { log.innerHTML = ''; }
+    // The prompt index (chatIndexScript reads it): a Reset starts a transcript
+    // over, so its index is gone until the host sends the new one — and a host
+    // that predates it never does.
+    if (m.reset) { log.innerHTML = ''; window.muMirrorIndex = null; ctxEl.hidden = true; ctxEl.textContent = ''; }
+    if (m.index) { window.muMirrorIndex = m.index; }
+    if (m.reset || m.index) document.dispatchEvent(new CustomEvent('muster:chat-index'));
+    // Context usage: only a batch whose usage changed carries it; an older
+    // muster or host sends none and the readout stays hidden.
+    if (m.context && m.context.label) {
+      ctxEl.textContent = m.context.label;
+      ctxEl.hidden = false;
+    }
     (m.ops || []).forEach(function (op) {
       if (op.op === 'replace' && op.id) {
         var old = document.getElementById(op.id);

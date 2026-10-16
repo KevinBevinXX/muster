@@ -25,7 +25,7 @@
 //	  - cleanup: removes the chief and the owner's plugins (their messages and
 //	    drafts cascade), so later specs on the shared database see neither.
 //
-// 🔴 IT REFUSES ANY DATABASE WHOSE NAME DOES NOT END IN "_e2e", like e2e/seed:
+// 🔴 IT REFUSES ANY DATABASE WHOSE NAME DOES NOT END IN "_e2e" (e2edb.Check):
 // it writes as the login role with row-level security's scope set to all, which
 // nothing outside a fixture may do.
 package main
@@ -33,13 +33,13 @@ package main
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/ZacxDev/muster/e2e/internal/e2edb"
 )
 
 func main() {
@@ -51,9 +51,8 @@ func main() {
 
 func run(args []string) error {
 	dsn := os.Getenv("DATABASE_URL")
-	u, err := url.Parse(dsn)
-	if err != nil || !strings.HasSuffix(strings.TrimPrefix(u.Path, "/"), "_e2e") {
-		return fmt.Errorf("refusing: DATABASE_URL must name a database ending in _e2e")
+	if err := e2edb.Check(dsn); err != nil {
+		return err
 	}
 	if len(args) == 0 {
 		return fmt.Errorf("usage: pluginfix chief|delivering|lapse|cleanup …")

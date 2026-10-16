@@ -38,7 +38,8 @@
     "tests/mirror-duplicate-labels.spec.ts": 20.0,
     "tests/plugins.spec.ts": 60.0,
     "tests/pins.spec.ts": 30.0,
-    "tests/recent-agents.spec.ts": 10.0
+    "tests/recent-agents.spec.ts": 10.0,
+    "tests/mirror-chat.spec.ts": 30.0
   },
   "legs": {
     "1": [
@@ -55,7 +56,8 @@
       "tests/mirror-stepup.spec.ts",
       "tests/tool-rows.spec.ts",
       "tests/mirror-windows.spec.ts",
-      "tests/dictation.spec.ts"
+      "tests/dictation.spec.ts",
+      "tests/mirror-chat.spec.ts"
     ],
     "2": [
       "tests/provisioning-indicator.spec.ts",

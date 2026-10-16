@@ -61,6 +61,11 @@ func ReadLines(r io.ReaderAt, off, size int64, maxBytes int) ([]Line, int64, err
 		pos += int64(len(line)) + 1
 		if rec, ok := DecodeLine(line); ok {
 			if evs := Events(rec); len(evs) > 0 {
+				for i := range evs {
+					if evs[i].Kind == KindPrompt {
+						evs[i].Line = pos // what Prompts names it by
+					}
+				}
 				out = append(out, Line{Events: evs, End: pos})
 			}
 		}

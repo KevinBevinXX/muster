@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/db"
@@ -23,10 +24,22 @@ import (
 const ownerOfAgent = `COALESCE((SELECT owner_id FROM agents WHERE id = $1), nullif(current_setting('muster.uid', true), '')::bigint)`
 
 // PGStore is the Postgres-backed agents Store.
-type PGStore struct{ pool *pgxpool.Pool }
+type PGStore struct{ pool querier }
+
+// querier is what every PGStore statement goes through: a pool, or one
+// transaction (NewPGTx).
+type querier interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
 
 // NewPG constructs a Postgres-backed agents Store.
 func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
+
+// NewPGTx is a Store whose every statement runs inside tx, so several calls
+// commit or roll back together. The caller owns tx (Commit / Rollback).
+func NewPGTx(tx pgx.Tx) *PGStore { return &PGStore{pool: tx} }
 
 const agentCols = `id, name, namespace, display_name, repo, repo_branch, note_id, note_text,
 	pending_note, model, status, hooks_token, kicked_off, last_output, error_message, created_at, updated_at,
