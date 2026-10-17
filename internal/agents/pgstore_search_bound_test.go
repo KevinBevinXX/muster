@@ -1,13 +1,16 @@
 package agents
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/db"
+	"github.com/jackc/pgx/v5"
 )
 
 // messageLoops runs EXPLAIN (ANALYZE, FORMAT JSON) of query and sums the
@@ -43,15 +46,17 @@ func messageLoops(t *testing.T, query string, args ...any) int {
 	return loops
 }
 
-// TestSearchSessionsReadsABoundedNumberOfMessageSets pins what makes thread
-// search cheap: neither read looks at more sessions' messages than the limit,
-// however many sessions match.
+// TestSearchSessionsReadsABoundedNumberOfMessageSets: when every session
+// matches, ONE ranked read looks at ≤ limit+1 sessions' messages and ONE recent
+// read at ≤ its batch — counted from EXPLAIN ANALYZE's loops.
 //
-// 🔴 A ROW-COUNT GUARD, NOT A CLOCK. Ranking the whole title-or-body match set
-// in one query made Postgres read the messages of EVERY session before its
-// LIMIT applied (measured: 3000 sessions, ~1.8 ms → ~200 ms warm). Here 1000
-// sessions all match and the limit is 10: each read must touch ≤ 10 sessions'
-// messages — the one-scan shape touches 1000.
+// ⚠ WHAT IT DOES NOT PROVE. (1) It reads the plan the test server chose for this
+// fixture; on PG16 the recent read's plan is bounded with or without the LIMIT
+// inside the subquery, so it does not pin that LIMIT as the cause, nor the bound
+// under another plan. (2) It is PER READ: a search with fewer matches than the
+// limit walks recent reads until the sessions run out, so its total work is the
+// agent's whole history (see nextRecentBatch; TestTheRecentWalkTakesFewRoundTrips).
+// The one-scan ranked shape this replaced touches all 1000 here.
 func TestSearchSessionsReadsABoundedNumberOfMessageSets(t *testing.T) {
 	s, pool, ctx := searchStore(t)
 	const limit, n = 10, 1000
@@ -143,5 +148,54 @@ func TestSearchSessionsIsTheTwoBoundedReads(t *testing.T) {
 	}
 	if len(stray) != 0 {
 		t.Errorf("SearchSessions sends a statement that is not one of the two bounded reads: %v", stray)
+	}
+}
+
+// countingQuerier counts the recent reads SearchSessions sends.
+type countingQuerier struct {
+	querier
+	recent int
+}
+
+func (c *countingQuerier) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	if sql == searchRecentSQL {
+		c.recent++
+	}
+	return c.querier.Query(ctx, sql, args...)
+}
+
+// 🔴 A REGRESSION TEST: a search with fewer matches than the limit walks the
+// recent reads until the sessions run out, and a FIXED batch of 2×limit made
+// that one round trip per 2×limit sessions (measured: 114–144 ms for no match
+// at 3000 sessions, against main's 60–72 ms). Here 1000 sessions, limit 10, one
+// match in the OLDEST session: the walk must still find it (the work is the
+// whole history — that is not what is bounded) in 6 reads, where the fixed
+// batch took 51.
+func TestTheRecentWalkTakesFewRoundTrips(t *testing.T) {
+	s, pool, ctx := searchStore(t)
+	const limit, n = 10, 1000
+	a := searchAgent(t, s, pool, ctx, "walk")
+	if _, err := pool.Exec(ctx, `
+		WITH s AS (
+			INSERT INTO chat_sessions (agent_id, session_key, title, updated_at)
+			SELECT $1, $2 || g, 'thread ' || g, now() - make_interval(mins => g) FROM generate_series(1, $3::int) g
+			RETURNING id, agent_id, updated_at, title)
+		INSERT INTO chat_messages (agent_id, session_id, role, content, kind, created_at)
+		SELECT s.agent_id, s.id, 'user',
+		       CASE WHEN s.title = 'thread ' || $3::int THEN 'the oldest says walrus' ELSE 'nothing to see' END,
+		       'text', s.updated_at
+		FROM s`, a.ID, a.Name+"-", n); err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	c := &countingQuerier{querier: s.pool}
+	got, err := (&PGStore{pool: c}).SearchSessions(ctx, a.ID, "walrus", limit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Title != fmt.Sprintf("thread %d", n) {
+		t.Fatalf("got %+v, want the oldest session's one match", got)
+	}
+	if c.recent != 6 {
+		t.Errorf("the walk sent %d recent reads over %d sessions at limit %d; want 6 (20, 40, … doubling)", c.recent, n, limit)
 	}
 }
