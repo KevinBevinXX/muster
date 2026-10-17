@@ -715,7 +715,9 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	// The AskUserQuestion store's expiry (askq.Store.RunSweep): a held question
 	// whose hook died is withdrawn within one tick, so its window stops reading
 	// "waiting" without waiting for a page to ask. In memory, no database.
-	go a.srv.RunAskSweep(ctx, askq.SweepEvery)
+	if a.srv != nil {
+		go a.srv.RunAskSweep(ctx, askq.SweepEvery)
+	}
 	if a.pool == nil {
 		return
 	}
