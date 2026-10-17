@@ -218,7 +218,9 @@ func TestAnAskRaisedOverMCPIsAnsweredFromTheViewAndTheWaitReturnsIt(t *testing.T
 		if got.text != `{"answer":"ship it","answered_by":"operator","id":`+strconv.FormatInt(id, 10)+`,"question":"Ship the migration tonight?","status":"answered"}` {
 			t.Fatalf("wait returned %s", got.text)
 		}
-		if got.took > 5*time.Second {
+		// Woken by the answer, not by the waiter's own 2s re-read (attentionPoll):
+		// the answer lands ~200ms in.
+		if got.took > 1500*time.Millisecond {
 			t.Fatalf("the wait took %s: it did not wake on the answer", got.took)
 		}
 	case <-time.After(20 * time.Second):
@@ -478,6 +480,16 @@ func TestTheReadModelHasEachSource(t *testing.T) {
 	}
 	f.mirror.mu.Lock()
 	f.mirror.windows, f.mirror.online = attnWindows(mirror.StatusWaiting), false
+	f.mirror.mu.Unlock()
+	if got := kinds(); len(got["session"]) != 0 {
+		t.Fatalf("an offline host's window is listed: %v", got)
+	}
+	// A host that is offline yet still says it reports status is not believed
+	// either (the hub keeps a disconnected host's last list for a while).
+	f.mirror.mu.Lock()
+	f.mirror.online = true
+	f.mirror.windows = attnWindows(mirror.StatusIdle)
+	f.mirror.others = []mirror.HostView{{Host: "gone", Online: false, StatusReport: true, Windows: mirror.NormalizeWindows(attnWindows(mirror.StatusWaiting), 0)}}
 	f.mirror.mu.Unlock()
 	if got := kinds(); len(got["session"]) != 0 {
 		t.Fatalf("an offline host's window is listed: %v", got)
