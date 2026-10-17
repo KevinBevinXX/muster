@@ -384,3 +384,41 @@ test.describe('held behind the pill: off screen', () => {
     expect(c.total, `nothing in view moved: ${JSON.stringify(c.shifts)}`).toBeLessThan(0.01);
   });
 });
+
+// 🔴 A REGRESSION TEST (round-1 audit 🔴): the pill was built once and kept in
+// a variable. A boosted navigation swaps the body and Back restores a snapshot
+// of it, so on the SECOND boosted entry to the Agents tab the variable named a
+// detached node: an arrival was held hidden with no pill in the document to tap.
+test.describe('held behind the pill: across navigations', () => {
+  test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false });
+
+  test('after detail → Agents → Back → Agents, a held arrival still has its pill, and the tap applies it', async ({ page }) => {
+    test.setTimeout(120_000);
+    await freshList(page, [windowLine('qbase', '@1', 'zsh', 3000), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000)], ['mqtail', 'old-qdock', 'qbase']);
+    const agentsLink = page.locator('.sidebar-tab[data-tab="agents"]');
+    // A detail page, by a full load: no Agents panel, so its Agents link is a
+    // boosted navigation that swaps the body.
+    await page.goto(rig.origin + '/tasks/1');
+    await expect(agentsLink).toBeVisible();
+    for (const step of ['first entry', 'second entry']) {
+      await agentsLink.click();
+      await expect(page, step).toHaveURL(/\/agents$/);
+      await expect.poll(() => sessionsOrder(page), { message: step }).toEqual(['mqtail', 'old-qdock', 'qbase']);
+      if (step === 'first entry') {
+        await page.goBack();
+        await expect(page).toHaveURL(/\/tasks\/1$/);
+        await expect(agentsLink).toBeVisible();
+      }
+    }
+    // An arrival and a re-order, from the host: held, with ONE pill to tap.
+    fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', 'vim', 0), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000), windowLine('qzest', '@4', 'zsh', 5)].join('\n') + '\n');
+    const zest = page.locator('#agents-list > article[data-f-session="qzest"]');
+    await expect(zest, 'the arrival reached the list').toHaveCount(1, { timeout: 30_000 });
+    await expect(zest, 'held').toBeHidden();
+    await expect(page.locator('#agents-new-pill'), 'one pill in the document').toHaveCount(1);
+    await expect(page.locator('#agents-new-pill'), 'the held arrival has its pill').toHaveText('2 new ↑');
+    await page.locator('#agents-new-pill').click();
+    await expect(zest, 'the tap drew it').toBeVisible();
+    await expect(page.locator('#agents-new-pill')).toBeHidden();
+  });
+});

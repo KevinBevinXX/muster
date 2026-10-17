@@ -686,26 +686,38 @@ func agentsFilterScript() g.Node {
   // A refresh the reader caused (agents:changed, after their own rename or pin)
   // and the first load apply at once. A filter's rank still orders the cards;
   // ties fall back to the HELD order (data-list-i), so the two never fight.
-  var heldOrder = null, liveOrder = null, pill = null;
+  var heldOrder = null, liveOrder = null;
   function cardsOf(list) { return [].slice.call(list.querySelectorAll(':scope > article')); }
   function background(e) {
     var cfg = e.detail && e.detail.requestConfig, t = cfg && cfg.triggeringEvent;
     var type = t && t.type || '';
     return type.indexOf('sse:') === 0 || type === 'muster:resync';
   }
-  function showPill(n) {
-    if (!pill) {
-      pill = document.createElement('button');
-      pill.type = 'button';
-      pill.id = 'agents-new-pill';
-      pill.setAttribute('aria-live', 'polite');
-      pill.className = 'press fixed left-1/2 top-20 z-30 inline-flex min-h-[44px] -translate-x-1/2 items-center gap-1 rounded-full bg-accent px-4 text-sm font-semibold text-on-accent shadow-lg shadow-black/30';
-      // A tap must not take focus: the box keeps its caret (and the phone its
-      // keyboard), a focused card stays focused.
-      pill.addEventListener('mousedown', function (e) { e.preventDefault(); });
-      pill.addEventListener('click', applyLive);
-      document.body.appendChild(pill);
+  // 🔴 THE PILL IS LOOKED UP, NEVER CACHED. A boosted navigation swaps the
+  // body and an htmx history restore puts back a SNAPSHOT of it, so a node
+  // kept from an earlier visit is detached (it was updated, unseen, while the
+  // arrival sat hidden with nothing to tap) — and a restored copy is a clone
+  // that carries no listeners. So the live one is found by id each time, made
+  // if missing, and its tap is handled by delegation on document.
+  function pillEl() {
+    var p = el('agents-new-pill');
+    if (!p) {
+      p = document.createElement('button');
+      p.type = 'button';
+      p.id = 'agents-new-pill';
+      p.setAttribute('aria-live', 'polite');
+      p.className = 'press fixed left-1/2 top-20 z-30 inline-flex min-h-[44px] -translate-x-1/2 items-center gap-1 rounded-full bg-accent px-4 text-sm font-semibold text-on-accent shadow-lg shadow-black/30';
+      document.body.appendChild(p);
     }
+    return p;
+  }
+  function onPill(e) { return e.target && e.target.closest && e.target.closest('#agents-new-pill'); }
+  // A tap must not take focus: the box keeps its caret (and the phone its
+  // keyboard), a focused card stays focused.
+  document.addEventListener('mousedown', function (e) { if (onPill(e)) e.preventDefault(); });
+  document.addEventListener('click', function (e) { if (onPill(e)) applyLive(); });
+  function showPill(n) {
+    var pill = pillEl();
     pill.textContent = n + ' new ↑';
     pill.setAttribute('data-count', String(n));
     pill.hidden = n === 0;
