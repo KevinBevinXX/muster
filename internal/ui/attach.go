@@ -176,12 +176,6 @@ func attachScript(path string) g.Node {
   var composed = [];
   function say(msg) { if (!note) return; note.textContent = msg || ''; note.hidden = !msg; note.removeAttribute('data-ok'); }
   function sync() { box.hidden = items.length === 0; }
-  function field(name) { var el = form.elements[name]; return el && el.value ? el.value : ''; }
-  // The agent a composer posts to is in its action: /agents/<name>/send.
-  function agentName() {
-    var m = /^\/agents\/([^\/?]+)\/send/.exec(form.getAttribute('action') || '');
-    return m ? decodeURIComponent(m[1]) : '';
-  }
   function text(t, cls) { var s = document.createElement('span'); s.className = cls; s.textContent = t; return s; }
   function chip(item) {
     var el = document.createElement('span');
@@ -226,8 +220,6 @@ func attachScript(path string) g.Node {
     say('');
     var fd = new FormData();
     fd.append('file', file, file.name || 'pasted');
-    ['host', 'session', 'window'].forEach(function (k) { if (field(k)) fd.append(k, field(k)); });
-    if (agentName()) fd.append('agent', agentName());
     fetch(path, { method: 'POST', body: fd, credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
       .then(function (r) {
         if (!r.ok) return r.text().then(function (t) { throw new Error(t.trim() || M.failed); });

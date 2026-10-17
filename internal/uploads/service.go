@@ -1,9 +1,9 @@
 package uploads
 
 import (
+	"bufio"
+	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -16,8 +16,9 @@ import (
 const (
 	// DefaultMaxBytes caps one file (MUSTER_UPLOAD_MAX_BYTES).
 	DefaultMaxBytes int64 = 25 << 20
-	// MaxMaxBytes is the most MUSTER_UPLOAD_MAX_BYTES may say: a file is held
-	// whole in memory while it is sniffed, digested and stored.
+	// MaxMaxBytes is the most MUSTER_UPLOAD_MAX_BYTES may say. A file is
+	// STREAMED to the store (at most about two PartSize buffers held at once),
+	// so this bounds the bucket, not memory.
 	MaxMaxBytes int64 = 100 << 20
 	// DefaultLinkTTL is how long a link works (MUSTER_UPLOAD_LINK_TTL).
 	DefaultLinkTTL = 24 * time.Hour
@@ -69,43 +70,97 @@ func (s *Service) Describe(u Upload) Stored {
 	return Stored{Upload: u, Name: name, URL: link, Line: AgentLine(name, u.ContentType, u.Size, link)}
 }
 
-// Put stores one file: data is the WHOLE file (the caller has already bounded
-// it by MaxBytes), filename the browser's name for it, target which composer it
-// was attached in. It runs under the caller's principal (the row's owner).
+// errOverCap is what capReader answers once more than its cap was read.
+var errOverCap = errors.New("uploads: over the size cap")
+
+// capReader counts what it reads and fails, with errOverCap, as soon as more
+// than max bytes have come through — so a file over the cap aborts the write
+// it is streamed into rather than being stored.
+type capReader struct {
+	r    io.Reader
+	n    int64
+	max  int64
+	over bool
+}
+
+func (c *capReader) Read(p []byte) (int, error) {
+	if c.over {
+		return 0, errOverCap
+	}
+	if room := c.max + 1 - c.n; int64(len(p)) > room {
+		p = p[:room]
+	}
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	if c.n > c.max {
+		c.over = true
+		return n, errOverCap
+	}
+	return n, err
+}
+
+// Put stores one file, read from r, under the caller's principal (the row's
+// owner). filename is the browser's name for it.
+//
+// 🔴 THE FILE IS STREAMED, NEVER HELD WHOLE. Its type is sniffed from the
+// first SniffBytes; then up to one PartSize is read. A file that ends within
+// it is written in one request of known size; a longer one is written as a
+// multipart stream (size -1), so at most about two parts are in memory
+// whatever MaxBytes says. One byte over MaxBytes fails the read the store is
+// consuming, which aborts the write: ErrTooLarge, and nothing is stored.
 //
 // The object is written FIRST and the row second; a row that cannot be written
-// takes its object away again, so a failure leaves no link and no orphan the
-// service knows how to make.
-func (s *Service) Put(ctx context.Context, data []byte, filename, targetKind, target string) (Stored, error) {
-	if len(data) == 0 {
+// takes its object away again.
+func (s *Service) Put(ctx context.Context, r io.Reader, filename string) (Stored, error) {
+	br := bufio.NewReaderSize(r, SniffBytes)
+	head, perr := br.Peek(SniffBytes)
+	if len(head) == 0 {
+		if perr != nil && !errors.Is(perr, io.EOF) {
+			return Stored{}, perr
+		}
 		return Stored{}, ErrEmpty
 	}
-	if int64(len(data)) > s.MaxBytes {
-		return Stored{}, ErrTooLarge
-	}
+	contentType := Sniff(head)
 	id, err := NewPublicID()
 	if err != nil {
 		return Stored{}, err
 	}
-	sum := sha256.Sum256(data)
+	key := ObjectKeyFor(id)
+	cr := &capReader{r: br, max: s.MaxBytes}
+	first := make([]byte, min(int64(PartSize), s.MaxBytes+1))
+	n, rerr := io.ReadFull(cr, first)
+	served := ServeAs(contentType).ContentType
+	switch {
+	case cr.over:
+		return Stored{}, ErrTooLarge
+	case errors.Is(rerr, io.EOF) || errors.Is(rerr, io.ErrUnexpectedEOF):
+		err = s.Objects.Put(ctx, key, bytes.NewReader(first[:n]), int64(n), served)
+	case rerr != nil:
+		return Stored{}, rerr
+	default:
+		err = s.Objects.Put(ctx, key, io.MultiReader(bytes.NewReader(first), cr), -1, served)
+	}
+	if err != nil {
+		if cr.over {
+			// Aborted by the cap mid-stream. A store that kept a partial
+			// object anyway loses it here.
+			_ = s.Objects.Delete(context.WithoutCancel(ctx), key)
+			return Stored{}, ErrTooLarge
+		}
+		return Stored{}, err
+	}
 	u := Upload{
 		PublicID:    id,
-		ObjectKey:   ObjectKeyFor(id),
+		ObjectKey:   key,
 		Filename:    CleanFilename(filename),
-		ContentType: Sniff(data),
-		Size:        int64(len(data)),
-		SHA256:      hex.EncodeToString(sum[:]),
-		TargetKind:  targetKind,
-		Target:      target,
+		ContentType: contentType,
+		Size:        cr.n,
 		ExpiresAt:   s.now().Add(s.LinkTTL).Truncate(time.Second),
-	}
-	if err := s.Objects.Put(ctx, u.ObjectKey, data, ServeAs(u.ContentType).ContentType); err != nil {
-		return Stored{}, err
 	}
 	row, err := s.Store.Create(ctx, u)
 	if err != nil {
-		if derr := s.Objects.Delete(context.WithoutCancel(ctx), u.ObjectKey); derr != nil && s.Logger != nil {
-			s.Logger.Printf("uploads: object %s outlived its failed row: %v", u.PublicID, derr)
+		if derr := s.Objects.Delete(context.WithoutCancel(ctx), key); derr != nil && s.Logger != nil {
+			s.Logger.Printf("uploads: object %s outlived its failed row: %v", id, derr)
 		}
 		return Stored{}, err
 	}
@@ -115,31 +170,55 @@ func (s *Service) Put(ctx context.Context, data []byte, filename, targetKind, ta
 // Opened is a file ready to stream.
 type Opened struct {
 	Upload
+	// Body is nil for a Stat (a HEAD).
 	Body io.ReadCloser
-	// Size is the object's length as the store reports it (-1 unknown).
+	// Size is the object's length as the store reports it.
 	Size int64
 }
 
-// OpenLink checks a signed link — the signature, its expiry, and that the
-// upload exists and is not revoked — and opens the file. Every refusal is
-// ErrNotFound, ErrBadLink, ErrBadSig or ErrLinkExpired; the handler answers
-// them all alike.
-func (s *Service) OpenLink(ctx context.Context, publicID string, q url.Values) (Opened, error) {
+// linkTarget checks a signed link — the signature, its expiry, and that the
+// upload exists and is not revoked — and returns its row.
+func (s *Service) linkTarget(ctx context.Context, publicID string, q url.Values) (Upload, error) {
 	if err := s.Signer.Verify(publicID, q, s.now()); err != nil {
-		return Opened{}, err
+		return Upload{}, err
 	}
 	u, err := s.Store.LinkTarget(ctx, publicID)
 	if err != nil {
-		return Opened{}, err
+		return Upload{}, err
 	}
 	if u.Revoked() {
-		return Opened{}, ErrNotFound
+		return Upload{}, ErrNotFound
+	}
+	return u, nil
+}
+
+// OpenLink checks a signed link and opens the file. Every refusal is
+// ErrNotFound, ErrBadLink, ErrBadSig or ErrLinkExpired; the handler answers
+// them all alike.
+func (s *Service) OpenLink(ctx context.Context, publicID string, q url.Values) (Opened, error) {
+	u, err := s.linkTarget(ctx, publicID, q)
+	if err != nil {
+		return Opened{}, err
 	}
 	return s.open(ctx, u)
 }
 
-// OpenOwned opens the caller's own upload (the owner's preview), revoked or
-// not until its object is gone.
+// StatLink checks a signed link exactly as OpenLink does and reports the
+// file's size WITHOUT fetching its body (a HEAD).
+func (s *Service) StatLink(ctx context.Context, publicID string, q url.Values) (Opened, error) {
+	u, err := s.linkTarget(ctx, publicID, q)
+	if err != nil {
+		return Opened{}, err
+	}
+	size, err := s.Objects.Stat(ctx, u.ObjectKey)
+	if err != nil {
+		return Opened{}, err
+	}
+	return Opened{Upload: u, Size: size}, nil
+}
+
+// OpenOwned opens the caller's own upload (the owner's preview), until it is
+// revoked.
 func (s *Service) OpenOwned(ctx context.Context, publicID string) (Opened, error) {
 	u, err := s.Store.Get(ctx, publicID)
 	if err != nil {

@@ -43,13 +43,15 @@ type upWorld struct {
 	rows  *uploadstest.Store
 	objs  *uploadstest.Objects
 	clock *upClock
+	logs  *syncBuf
 }
 
 func uploadServer(t *testing.T, on bool, max int64) *upWorld {
 	t.Helper()
-	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(io.Discard, "", 0))
+	logs := &syncBuf{}
+	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(logs, "", 0))
 	ext := Extensions{Notes: stubNotesStore{}, Agents: stubAgentsStore{}, SessionLiveness: stubLiveness{}}
-	w := &upWorld{s: s, rows: &uploadstest.Store{}, objs: &uploadstest.Objects{}, clock: &upClock{t: time.Now()}}
+	w := &upWorld{s: s, rows: &uploadstest.Store{}, objs: &uploadstest.Objects{}, clock: &upClock{t: time.Now()}, logs: logs}
 	if on {
 		sg, err := uploads.NewSigner("api-upload-test-key-0123456789abcdef")
 		if err != nil {
@@ -170,7 +172,7 @@ func TestAnUploadIsStoredAndAnsweredWithItsLine(t *testing.T) {
 		t.Errorf("the line does not parse back: %+v", refs)
 	}
 	rows := w.rows.Rows()
-	if len(rows) != 1 || rows[0].TargetKind != "mirror" || rows[0].Target != "laptop/work/@1" || rows[0].Filename != "Screen Shot.txt" {
+	if len(rows) != 1 || rows[0].Filename != "Screen Shot.txt" || rows[0].Size != int64(len(pngBytes)) {
 		t.Fatalf("rows = %+v", rows)
 	}
 	if keys := w.objs.Keys(); len(keys) != 1 || keys[0] != "uploads/"+rep.ID {

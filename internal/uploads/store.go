@@ -41,13 +41,13 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 // id, made only after the link's HMAC has been verified.
 func sys(ctx context.Context) context.Context { return authz.System(ctx) }
 
-const uploadCols = `id, owner_id, public_id, object_key, filename, content_type, size_bytes, sha256,
-	target_kind, target, created_at, expires_at, revoked_at`
+const uploadCols = `id, owner_id, public_id, object_key, filename, content_type, size_bytes,
+	created_at, expires_at, revoked_at`
 
 func scanUpload(row pgx.Row) (Upload, error) {
 	var u Upload
-	err := row.Scan(&u.ID, &u.OwnerID, &u.PublicID, &u.ObjectKey, &u.Filename, &u.ContentType, &u.Size, &u.SHA256,
-		&u.TargetKind, &u.Target, &u.CreatedAt, &u.ExpiresAt, &u.RevokedAt)
+	err := row.Scan(&u.ID, &u.OwnerID, &u.PublicID, &u.ObjectKey, &u.Filename, &u.ContentType, &u.Size,
+		&u.CreatedAt, &u.ExpiresAt, &u.RevokedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Upload{}, ErrNotFound
 	}
@@ -57,10 +57,10 @@ func scanUpload(row pgx.Row) (Upload, error) {
 // Create inserts u (its ID, OwnerID, CreatedAt and RevokedAt are ignored).
 func (s *PGStore) Create(ctx context.Context, u Upload) (Upload, error) {
 	out, err := scanUpload(s.pool.QueryRow(ctx, `INSERT INTO uploads
-		(public_id, object_key, filename, content_type, size_bytes, sha256, target_kind, target, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		(public_id, object_key, filename, content_type, size_bytes, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING `+uploadCols,
-		u.PublicID, u.ObjectKey, u.Filename, u.ContentType, u.Size, u.SHA256, u.TargetKind, u.Target, u.ExpiresAt.UTC()))
+		u.PublicID, u.ObjectKey, u.Filename, u.ContentType, u.Size, u.ExpiresAt.UTC()))
 	if err != nil {
 		return Upload{}, fmt.Errorf("uploads: create: %w", err)
 	}

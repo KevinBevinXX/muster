@@ -49,15 +49,7 @@ type Upload struct {
 	// client's.
 	ContentType string
 	Size        int64
-	// SHA256 is the hex digest of the bytes as stored.
-	SHA256 string
-	// TargetKind and Target say which composer the file was attached in:
-	// "mirror" + "host/session/window", "agent" + the agent's name, or "" + "".
-	// Informational (an audit of where a file was meant to go); nothing is
-	// authorised by it.
-	TargetKind string
-	Target     string
-	CreatedAt  time.Time
+	CreatedAt   time.Time
 	// ExpiresAt is when the link minted at upload stops working.
 	ExpiresAt time.Time
 	// RevokedAt is set when the owner revoked the link; nil while it works.

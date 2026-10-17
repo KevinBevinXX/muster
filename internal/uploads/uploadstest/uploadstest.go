@@ -100,33 +100,65 @@ func (s *Store) Rows() []uploads.Upload {
 type Objects struct {
 	mu   sync.Mutex
 	objs map[string][]byte
-	// Types is the Content-Type each object was stored with.
+	// Types is the Content-Type each object was stored with, and Sizes the
+	// size Put was told (-1: streamed with no length).
 	Types map[string]string
+	Sizes map[string]int64
+	// Gets and Stats count the calls of each.
+	Gets, Stats int
+	// Rules and RulesErr are what ExpiryRules answers.
+	Rules    int
+	RulesErr error
 	// FailPut, when set, is what Put answers.
 	FailPut error
 }
 
 var _ uploads.ObjectStore = (*Objects)(nil)
 
-// Put stores a copy of data.
-func (o *Objects) Put(_ context.Context, key string, data []byte, ct string) error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
+// Put reads r to its end and stores what it read. A read error aborts it
+// (nothing is stored), as a real store aborts the write.
+func (o *Objects) Put(_ context.Context, key string, r io.Reader, size int64, ct string) error {
 	if o.FailPut != nil {
 		return o.FailPut
 	}
-	if o.objs == nil {
-		o.objs, o.Types = map[string][]byte{}, map[string]string{}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return err
 	}
-	o.objs[key] = append([]byte(nil), data...)
+	if size >= 0 && int64(len(data)) != size {
+		return io.ErrUnexpectedEOF
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.objs == nil {
+		o.objs, o.Types, o.Sizes = map[string][]byte{}, map[string]string{}, map[string]int64{}
+	}
+	o.objs[key] = data
 	o.Types[key] = ct
+	o.Sizes[key] = size
 	return nil
 }
+
+// Stat is a stored object's length, without reading it.
+func (o *Objects) Stat(_ context.Context, key string) (int64, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.Stats++
+	b, ok := o.objs[key]
+	if !ok {
+		return 0, uploads.ErrNotFound
+	}
+	return int64(len(b)), nil
+}
+
+// ExpiryRules answers Rules, or RulesErr.
+func (o *Objects) ExpiryRules(context.Context) (int, error) { return o.Rules, o.RulesErr }
 
 // Get opens a stored object.
 func (o *Objects) Get(_ context.Context, key string) (io.ReadCloser, int64, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	o.Gets++
 	b, ok := o.objs[key]
 	if !ok {
 		return nil, 0, uploads.ErrNotFound

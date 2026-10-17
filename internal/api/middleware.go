@@ -131,7 +131,9 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 		next.ServeHTTP(sw, r)
 		dur := time.Since(start)
 		metrics.ObserveHTTP(routeLabel(r), r.Method, sw.status, dur)
-		s.logger.Printf("%s %s %d %s", r.Method, loggedPath(r.URL.Path), sw.status, dur.Round(time.Millisecond))
+		// The ESCAPED path: a decoded one is attacker-chosen text (a %0A in
+		// it would start a forged line of its own in this log).
+		s.logger.Printf("%s %s %d %s", r.Method, loggedPath(r.URL.EscapedPath()), sw.status, dur.Round(time.Millisecond))
 	})
 }
 

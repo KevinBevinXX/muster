@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/url"
 	"strconv"
@@ -120,13 +121,32 @@ func checkUploadBucket(svc *uploads.Service, logger *log.Logger) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		if err := svc.Objects.Check(ctx); err != nil {
-			logger.Printf("uploads: WARNING — the bucket could not be reached at boot (%v); attaching a file "+
-				"will fail until it can. Check %s, %s and the access key's policy", err, envS3Endpoint, envS3Bucket)
-			return
-		}
-		logger.Printf("uploads: the bucket answered at boot")
+		logUploadBucketCheck(ctx, svc.Objects, logger)
 	}()
+}
+
+// logUploadBucketCheck is checkUploadBucket's body: the bucket, then whether a
+// lifecycle rule expires its uploads/ objects. An expired link leaves its
+// object behind, so without such a rule the bucket only grows.
+func logUploadBucketCheck(ctx context.Context, objects uploads.ObjectStore, logger *log.Logger) {
+	if err := objects.Check(ctx); err != nil {
+		logger.Printf("uploads: WARNING — the bucket could not be reached at boot (%v); attaching a file "+
+			"will fail until it can. Check %s, %s and the access key's policy", err, envS3Endpoint, envS3Bucket)
+		return
+	}
+	n, err := objects.ExpiryRules(ctx)
+	switch {
+	case errors.Is(err, uploads.ErrLifecycleUnreadable):
+		logger.Printf("uploads: the bucket answered at boot; its lifecycle could NOT be read with this key " +
+			"(grant s3:GetLifecycleConfiguration to check it), so whether expired files are ever removed is unknown")
+	case err != nil:
+		logger.Printf("uploads: the bucket answered at boot; reading its lifecycle failed (%v)", err)
+	case n == 0:
+		logger.Printf("uploads: WARNING — the bucket has NO lifecycle rule expiring uploads/ objects. An expired " +
+			"link leaves its file behind, so the bucket only grows. Add one (docs/uploads.md)")
+	default:
+		logger.Printf("uploads: the bucket answered at boot; %d lifecycle rule(s) expire its uploads/ objects", n)
+	}
 }
 
 // logUploadsBanner states the attachments' posture in both directions. It

@@ -782,7 +782,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(err, "upload signer")
 	w.uploadSvc = &uploads.Service{Store: uploads.NewPG(pool), Objects: w.uploads, Signer: upSigner,
 		PublicURL: "https://muster.test", MaxBytes: 1 << 20, LinkTTL: time.Hour}
-	aUpload, err := w.uploadSvc.Put(ua, []byte(w.canary+" attached notes\n"), w.canary+"-notes.txt", "agent", w.a.agent.Name)
+	aUpload, err := w.uploadSvc.Put(ua, strings.NewReader(w.canary+" attached notes\n"), w.canary+"-notes.txt")
 	must(err, "a upload")
 
 	aQueued, err := sendqueue.NewPG(pool).Enqueue(ua, sendqueue.Item{

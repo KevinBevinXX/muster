@@ -38,7 +38,7 @@ The access key needs only this, on the bucket (S3/MinIO policy):
   "Statement": [
     {"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
      "Resource": ["arn:aws:s3:::<bucket>/uploads/*"]},
-    {"Effect": "Allow", "Action": ["s3:ListBucket", "s3:GetBucketLocation"],
+    {"Effect": "Allow", "Action": ["s3:ListBucket", "s3:GetBucketLocation", "s3:GetLifecycleConfiguration"],
      "Resource": ["arn:aws:s3:::<bucket>"]}
   ]
 }
@@ -47,7 +47,10 @@ The access key needs only this, on the bucket (S3/MinIO policy):
 An expired link stops working, but its object stays in the bucket. Give the
 bucket a lifecycle rule that expires `uploads/` objects after longer than the
 link lifetime, for example `mc ilm rule add --prefix uploads/ --expire-days 8
-<alias>/<bucket>` with the default 24-hour links.
+<alias>/<bucket>` with the default 24-hour links. At boot muster reads the
+bucket's lifecycle (that is what `s3:GetLifecycleConfiguration` is for) and
+logs a WARNING when no rule expires `uploads/`. Without that permission it logs
+that it could not tell.
 
 ## Behaviour
 
@@ -70,8 +73,13 @@ link lifetime, for example `mc ilm rule add --prefix uploads/ --expire-days 8
   revoked, so its link answers 404 at once, and deletes the object.
 - **Thumbnails** are served through `GET /uploads/{id}/file`, which only the
   owner's session can read, never through the signed link.
-- **Limits:** 25 MiB per file by default. Each user can upload 30 files a
-  minute, and the server holds at most 4 uploads in memory at once.
+- **Limits:** 25 MiB per file by default (up to 100 MiB). A file is streamed to
+  the store in 5 MiB parts, never held whole. Each user can have 2 uploads in
+  progress at once, under a server-wide ceiling of 8, and a request has 3
+  minutes to deliver its body before it is cut off (408).
+- **Downloads are not time-limited.** A slow agent gets the whole file: only
+  the store's first response is bounded (30 s), never the transfer. `HEAD` on a
+  link answers from the object's metadata without fetching it.
 
 ## Not done
 

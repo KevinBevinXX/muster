@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"log"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/uploads"
+	"github.com/ZacxDev/muster/internal/uploads/uploadstest"
 )
 
 // uploadEnv is a complete, valid upload configuration.
@@ -118,6 +120,28 @@ func TestTheUploadBannerNeverPrintsAKey(t *testing.T) {
 	for _, secret := range []string{env[envS3SecretKey], env[envUploadSigningKey], env[envS3AccessKey]} {
 		if strings.Contains(line, secret) {
 			t.Errorf("the banner prints a credential (%q): %s", secret, line)
+		}
+	}
+}
+
+// TestTheBootCheckWarnsWhenNothingExpiresTheUploads: a bucket with no lifecycle
+// rule for uploads/ grows for ever (an expired link leaves its file behind),
+// and the boot log says so; a key that may not read the lifecycle says THAT,
+// rather than claiming either answer.
+func TestTheBootCheckWarnsWhenNothingExpiresTheUploads(t *testing.T) {
+	for name, tc := range map[string]struct {
+		rules int
+		err   error
+		want  string
+	}{
+		"no rule":    {0, nil, "WARNING — the bucket has NO lifecycle rule"},
+		"unreadable": {0, uploads.ErrLifecycleUnreadable, "could NOT be read with this key"},
+		"a rule":     {1, nil, "1 lifecycle rule(s) expire its uploads/ objects"},
+	} {
+		var buf bytes.Buffer
+		logUploadBucketCheck(context.Background(), &uploadstest.Objects{Rules: tc.rules, RulesErr: tc.err}, log.New(&buf, "", 0))
+		if !strings.Contains(buf.String(), tc.want) {
+			t.Errorf("%s: logged %q; want %q", name, buf.String(), tc.want)
 		}
 	}
 }

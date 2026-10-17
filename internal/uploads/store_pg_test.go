@@ -46,8 +46,7 @@ func row(t *testing.T) Upload {
 		t.Fatal(err)
 	}
 	return Upload{PublicID: id, ObjectKey: ObjectKeyFor(id), Filename: "shot.png", ContentType: "image/png", Size: 42,
-		SHA256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", TargetKind: "mirror",
-		Target: "laptop/work/@1", ExpiresAt: time.Now().Add(time.Hour)}
+		ExpiresAt: time.Now().Add(time.Hour)}
 }
 
 // TestAnUploadIsItsOwnersAlone: user 2's upload is created as user 2 (the

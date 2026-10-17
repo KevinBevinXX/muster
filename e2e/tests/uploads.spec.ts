@@ -49,36 +49,65 @@ const PNG = Buffer.from(
 );
 
 // --- the fake S3 ---------------------------------------------------------------
+// Path-style, one bucket, what minio-go (internal/uploads) sends: HEAD bucket,
+// ?lifecycle, PUT (aws-chunked when the payload is streamed), HEAD, GET and
+// DELETE object. Multipart uploads are not played: every file here is far
+// under one part.
 const objects = new Map<string, Buffer>();
 const s3Log: string[] = [];
+const xmlErr = (res: http.ServerResponse, status: number, code: string) =>
+  res.writeHead(status, { 'Content-Type': 'application/xml' }).end(`<?xml version="1.0" encoding="UTF-8"?><Error><Code>${code}</Code><Message>${code}</Message></Error>`);
+// unchunk decodes an aws-chunked body: `<hex size>[;chunk-signature=…]\r\n<data>\r\n` … `0…`.
+function unchunk(b: Buffer): Buffer {
+  const out: Buffer[] = [];
+  let at = 0;
+  for (;;) {
+    const eol = b.indexOf('\r\n', at);
+    if (eol < 0) break;
+    const size = parseInt(b.subarray(at, eol).toString('latin1').split(';')[0], 16);
+    if (!size) break;
+    out.push(b.subarray(eol + 2, eol + 2 + size));
+    at = eol + 2 + size + 2;
+  }
+  return Buffer.concat(out);
+}
+const objHeaders = (b: Buffer) => ({
+  'Content-Length': String(b.length),
+  ETag: '"' + crypto.createHash('md5').update(b).digest('hex') + '"',
+  'Last-Modified': new Date().toUTCString(),
+  'Content-Type': 'application/octet-stream',
+});
 const s3 = http.createServer((req, res) => {
   const chunks: Buffer[] = [];
   req.on('data', (c) => chunks.push(c));
   req.on('end', () => {
-    const body = Buffer.concat(chunks);
-    const p = decodeURIComponent((req.url ?? '').split('?')[0]);
-    s3Log.push(`${req.method} ${p}`);
-    if (!(req.headers.authorization ?? '').startsWith(`AWS4-HMAC-SHA256 Credential=${ACCESS}/`)) {
-      res.writeHead(403).end('<Error><Code>AccessDenied</Code></Error>');
-      return;
+    let body = Buffer.concat(chunks);
+    const [rawPath, query = ''] = (req.url ?? '').split('?');
+    const p = decodeURIComponent(rawPath);
+    s3Log.push(`${req.method} ${p}${query ? '?' + query : ''}`);
+    if (!(req.headers.authorization ?? '').startsWith(`AWS4-HMAC-SHA256 Credential=${ACCESS}/`)) return xmlErr(res, 403, 'AccessDenied');
+    if (!p.startsWith('/muster-e2e')) return xmlErr(res, 404, 'NoSuchBucket');
+    const key = p.replace(/^\/muster-e2e\/?/, '');
+    if (key === '') {
+      if (req.method === 'HEAD') return void res.writeHead(200).end();
+      if (query.startsWith('lifecycle')) return xmlErr(res, 404, 'NoSuchLifecycleConfiguration');
+      if (query.startsWith('location')) return void res.writeHead(200, { 'Content-Type': 'application/xml' }).end('<LocationConstraint>us-east-1</LocationConstraint>');
+      return xmlErr(res, 400, 'NotImplemented');
     }
-    if (!p.startsWith('/muster-e2e/')) {
-      res.writeHead(404).end('<Error><Code>NoSuchBucket</Code></Error>');
-      return;
-    }
-    const key = p.slice('/muster-e2e/'.length);
-    if (req.method === 'HEAD' && key === '') return void res.writeHead(200).end();
     if (req.method === 'PUT') {
-      const sum = crypto.createHash('sha256').update(body).digest('hex');
-      if (sum !== req.headers['x-amz-content-sha256']) return void res.writeHead(400).end('<Error><Code>XAmzContentSHA256Mismatch</Code></Error>');
+      const declared = String(req.headers['x-amz-content-sha256'] ?? '');
+      if (declared.startsWith('STREAMING')) {
+        body = unchunk(body);
+        if (String(body.length) !== String(req.headers['x-amz-decoded-content-length'])) return xmlErr(res, 400, 'IncompleteBody');
+      } else if (declared !== 'UNSIGNED-PAYLOAD' && declared !== crypto.createHash('sha256').update(body).digest('hex')) {
+        return xmlErr(res, 400, 'XAmzContentSHA256Mismatch');
+      }
       objects.set(key, body);
-      return void res.writeHead(200).end();
+      return void res.writeHead(200, { ETag: objHeaders(body).ETag }).end();
     }
-    if (req.method === 'GET') {
-      const b = objects.get(key);
-      if (!b) return void res.writeHead(404).end('<Error><Code>NoSuchKey</Code></Error>');
-      return void res.writeHead(200, { 'Content-Length': String(b.length) }).end(b);
-    }
+    const b = objects.get(key);
+    if (req.method === 'HEAD') return b ? void res.writeHead(200, objHeaders(b)).end() : void res.writeHead(404).end();
+    if (req.method === 'GET') return b ? void res.writeHead(200, objHeaders(b)).end(b) : xmlErr(res, 404, 'NoSuchKey');
     if (req.method === 'DELETE') {
       objects.delete(key);
       return void res.writeHead(204).end();
@@ -238,6 +267,16 @@ test('an attached image is a thumbnail chip; Send pastes a signed link; the tran
   expect(got.headers['content-type']).toBe('image/png');
   expect(got.headers['x-content-type-options']).toBe('nosniff');
   expect(got.headers['cache-control']).toBe('private, no-store');
+  // HEAD: the same headers, from the object's metadata — the store is asked
+  // for a HEAD, not the bytes.
+  const gets = s3Log.filter((l) => l === `GET /muster-e2e/uploads/${id}`).length;
+  const hctx = await pwRequest.newContext();
+  const head = await hctx.head(link);
+  expect(head.status()).toBe(200);
+  expect(head.headers()['content-length']).toBe(String(PNG.length));
+  await hctx.dispose();
+  expect(s3Log).toContain(`HEAD /muster-e2e/uploads/${id}`);
+  expect(s3Log.filter((l) => l === `GET /muster-e2e/uploads/${id}`).length, 'a HEAD fetched no body').toBe(gets);
 
   // Tampered: 404.
   const u = new URL(link);

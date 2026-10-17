@@ -3,8 +3,6 @@ package uploads
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
@@ -12,201 +10,114 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
+
+	"github.com/minio/minio-go/v7/pkg/lifecycle"
 )
 
 func timeAt(unix int64) time.Time { return time.Unix(unix, 0) }
 
-// AWS's own published Signature Version 4 examples for S3 (the "Examples:
-// Signature Calculations in AWS Signature Version 4" page of the S3 API
-// reference): the credential, the request and the expected signature are
-// AWS's, so this pins signV4 to the specification rather than to a second copy
-// of itself.
-const (
-	// AWS's own documented placeholder key id, spelled in two halves so the
-	// leak gate's key-id shape rule (tests/leakscan.py) — which has no
-	// exceptions — does not read the published example as a credential.
-	awsAccessKey = "AKIA" + "IOSFODNN7EXAMPLE"
-	awsSecretKey = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-)
-
-var awsExampleTime = time.Date(2013, 5, 24, 0, 0, 0, 0, time.UTC)
-
-func sigOf(t *testing.T, req *http.Request) string {
-	t.Helper()
-	auth := req.Header.Get("Authorization")
-	i := strings.Index(auth, "Signature=")
-	if i < 0 {
-		t.Fatalf("no signature in %q", auth)
-	}
-	return auth[i+len("Signature="):]
+// slowS3 answers a path-style GET of one object: its headers at once (or
+// after headerDelay), then the body in `chunks` pieces `gap` apart. PUTs are
+// refused AccessDenied, as a store refuses a wrong key.
+type slowS3 struct {
+	body        []byte
+	chunks      int
+	gap         time.Duration
+	headerDelay time.Duration
 }
 
-// TestSigV4MatchesAWSsGetObjectExample: GET /test.txt with a Range header.
-func TestSigV4MatchesAWSsGetObjectExample(t *testing.T) {
-	req, _ := http.NewRequest(http.MethodGet, "https://examplebucket.s3.amazonaws.com/test.txt", nil)
-	req.Header.Set("Range", "bytes=0-9")
-	req.Header.Set("X-Amz-Content-Sha256", emptySHA256)
-	signV4(req, emptySHA256, awsAccessKey, awsSecretKey, "us-east-1", awsExampleTime)
-	if got, want := sigOf(t, req), "f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41"; got != want {
-		t.Errorf("signature = %s; want AWS's %s", got, want)
-	}
-	if !strings.Contains(req.Header.Get("Authorization"), "Credential="+awsAccessKey+"/20130524/us-east-1/s3/aws4_request, SignedHeaders=host;range;x-amz-content-sha256;x-amz-date,") {
-		t.Errorf("Authorization = %q", req.Header.Get("Authorization"))
-	}
-}
-
-// TestSigV4MatchesAWSsPutObjectExample: PUT /test$file.text — a key that needs
-// URI-encoding — with a payload hash and a signed Date header.
-func TestSigV4MatchesAWSsPutObjectExample(t *testing.T) {
-	body := []byte("Welcome to Amazon S3.")
-	sum := sha256.Sum256(body)
-	payload := hex.EncodeToString(sum[:])
-	if payload != "44ce7dd67c959e0d3524ffac1771dfbba87d2b6b4b4e99e42034a8b803f8b072" {
-		t.Fatalf("payload hash %s does not match AWS's example", payload)
-	}
-	req, _ := http.NewRequest(http.MethodPut, "https://examplebucket.s3.amazonaws.com/test$file.text", bytes.NewReader(body))
-	req.Header.Set("Date", "Fri, 24 May 2013 00:00:00 GMT")
-	req.Header.Set("X-Amz-Storage-Class", "REDUCED_REDUNDANCY")
-	req.Header.Set("X-Amz-Content-Sha256", payload)
-	signV4(req, payload, awsAccessKey, awsSecretKey, "us-east-1", awsExampleTime)
-	if got, want := sigOf(t, req), "98ad721746da40c64f1a55b78f14c238d841ea1380cd77a1b5971af0ece108bd"; got != want {
-		t.Errorf("signature = %s; want AWS's %s", got, want)
-	}
-}
-
-// fakeS3 is a path-style S3 for one bucket. It refuses a PUT whose body does
-// not hash to its x-amz-content-sha256 (as S3 and MinIO do) and any request
-// not signed with SigV4 for its access key.
-type fakeS3 struct {
-	mu     sync.Mutex
-	bucket string
-	objs   map[string][]byte
-	types  map[string]string
-	reqs   []string
-}
-
-func newFakeS3(t *testing.T, bucket string) (*fakeS3, *httptest.Server) {
-	f := &fakeS3{bucket: bucket, objs: map[string][]byte{}, types: map[string]string{}}
-	ts := httptest.NewServer(f)
-	t.Cleanup(ts.Close)
-	return f, ts
-}
-
-func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.reqs = append(f.reqs, r.Method+" "+r.URL.EscapedPath())
-	if !strings.HasPrefix(r.Header.Get("Authorization"), "AWS4-HMAC-SHA256 Credential=test-access/") {
+func (f *slowS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPut {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusForbidden)
-		_, _ = io.WriteString(w, "<Error><Code>AccessDenied</Code></Error>")
+		_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?><Error><Code>AccessDenied</Code><Message>Access Denied.</Message></Error>`)
 		return
 	}
-	prefix := "/" + f.bucket + "/"
-	if !strings.HasPrefix(r.URL.Path, prefix) {
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = io.WriteString(w, "<Error><Code>NoSuchBucket</Code></Error>")
-		return
+	time.Sleep(f.headerDelay)
+	w.Header().Set("Content-Length", strconv.Itoa(len(f.body)))
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("ETag", `"0123456789abcdef0123456789abcdef"`)
+	w.Header().Set("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
+	w.WriteHeader(http.StatusOK)
+	step := (len(f.body) + f.chunks - 1) / f.chunks
+	for i := 0; i < len(f.body); i += step {
+		end := min(i+step, len(f.body))
+		_, _ = w.Write(f.body[i:end])
+		w.(http.Flusher).Flush()
+		time.Sleep(f.gap)
 	}
-	key := strings.TrimPrefix(r.URL.Path, prefix)
-	switch r.Method {
-	case http.MethodHead:
-		if key == "" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-	case http.MethodPut:
-		b, _ := io.ReadAll(r.Body)
-		sum := sha256.Sum256(b)
-		if hex.EncodeToString(sum[:]) != r.Header.Get("X-Amz-Content-Sha256") {
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = io.WriteString(w, "<Error><Code>XAmzContentSHA256Mismatch</Code></Error>")
-			return
-		}
-		f.objs[key], f.types[key] = b, r.Header.Get("Content-Type")
-		w.WriteHeader(http.StatusOK)
-		return
-	case http.MethodGet:
-		b, ok := f.objs[key]
-		if !ok {
-			w.WriteHeader(http.StatusNotFound)
-			_, _ = io.WriteString(w, "<Error><Code>NoSuchKey</Code></Error>")
-			return
-		}
-		w.Header().Set("Content-Length", strconv.Itoa(len(b)))
-		_, _ = w.Write(b)
-		return
-	case http.MethodDelete:
-		delete(f.objs, key)
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	w.WriteHeader(http.StatusMethodNotAllowed)
 }
 
-func testS3(t *testing.T, endpoint, access string) *S3 {
+func testS3(t *testing.T, endpoint string, header time.Duration) *S3 {
 	t.Helper()
-	c, err := NewS3(S3Config{Endpoint: endpoint, Bucket: "muster-uploads", AccessKey: access, SecretKey: "test-secret"})
+	c, err := NewS3(S3Config{Endpoint: endpoint, Bucket: "muster-uploads", AccessKey: "test-access", SecretKey: "test-secret",
+		HeaderTimeout: header})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return c
 }
 
-// TestTheS3ClientPutsGetsAndDeletes, against a fake that checks the payload
-// hash and the signature's presence.
-func TestTheS3ClientPutsGetsAndDeletes(t *testing.T) {
-	f, ts := newFakeS3(t, "muster-uploads")
-	c := testS3(t, ts.URL, "test-access")
-	ctx := context.Background()
-	if err := c.Check(ctx); err != nil {
-		t.Fatalf("Check: %v", err)
-	}
-	data := append([]byte(nil), pngHead...)
-	if err := c.Put(ctx, "uploads/"+sid, data, "image/png"); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-	if f.types["uploads/"+sid] != "image/png" {
-		t.Errorf("stored type %q", f.types["uploads/"+sid])
-	}
-	body, size, err := c.Get(ctx, "uploads/"+sid)
+// TestASlowDownloadIsNotCutOffMidFile: the store's client bounds only the wait
+// for HEADERS. A body that takes many times that header timeout to arrive —
+// an agent reading slowly through GET /f/{id} — still arrives whole.
+// (Measured against the old client, whose total 2-minute Timeout covered the
+// body: with that bound set to the header timeout here, this read fails.)
+func TestASlowDownloadIsNotCutOffMidFile(t *testing.T) {
+	body := bytes.Repeat([]byte("0123456789"), 4000)
+	ts := httptest.NewServer(&slowS3{body: body, chunks: 8, gap: 100 * time.Millisecond})
+	t.Cleanup(ts.Close)
+	c := testS3(t, ts.URL, 150*time.Millisecond)
+	start := time.Now()
+	rc, size, err := c.Get(context.Background(), "uploads/"+sid)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	got, _ := io.ReadAll(body)
-	body.Close()
-	if !bytes.Equal(got, data) || size != int64(len(data)) {
-		t.Errorf("Get = %d bytes (size %d); want the %d put", len(got), size, len(data))
+	got, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil || !bytes.Equal(got, body) || size != int64(len(body)) {
+		t.Fatalf("read %d of %d bytes (size %d), err %v", len(got), len(body), size, err)
 	}
-	if err := c.Delete(ctx, "uploads/"+sid); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-	if _, _, err := c.Get(ctx, "uploads/"+sid); !errors.Is(err, ErrNotFound) {
-		t.Errorf("Get after Delete: %v; want ErrNotFound", err)
-	}
-	if want := []string{"HEAD /muster-uploads/", "PUT /muster-uploads/uploads/" + sid, "GET /muster-uploads/uploads/" + sid,
-		"DELETE /muster-uploads/uploads/" + sid, "GET /muster-uploads/uploads/" + sid}; strings.Join(f.reqs, "|") != strings.Join(want, "|") {
-		t.Errorf("requests = %v; want %v", f.reqs, want)
+	if took := time.Since(start); took < 4*150*time.Millisecond {
+		t.Fatalf("CONTROL: the body arrived in %v, not slower than the header timeout, so this proves nothing", took)
 	}
 }
 
-// TestAnS3RefusalIsAnErrorNamingItsCode: a refused credential is an S3Error
+// TestAStoreThatNeverAnswersFailsAtTheHeaderTimeout: the other half — the
+// header timeout is real.
+func TestAStoreThatNeverAnswersFailsAtTheHeaderTimeout(t *testing.T) {
+	ts := httptest.NewServer(&slowS3{body: []byte("x"), chunks: 1, headerDelay: 5 * time.Second})
+	t.Cleanup(ts.Close)
+	c := testS3(t, ts.URL, 150*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	start := time.Now()
+	if _, _, err := c.Get(ctx, "uploads/"+sid); err == nil {
+		t.Fatal("Get from a store that never answers succeeded")
+	}
+	// Three tries of 150ms each, and minio-go's backoff between them: well
+	// under the 5s the store stays silent for.
+	if took := time.Since(start); took > 4*time.Second {
+		t.Errorf("a silent store was waited on for %v; the header timeout is 150ms (×3 tries)", took)
+	}
+}
+
+// TestAnS3RefusalIsAnErrorNamingItsCode: the store's refusal is an S3Error
 // carrying S3's code, and the secret is in no error.
 func TestAnS3RefusalIsAnErrorNamingItsCode(t *testing.T) {
-	_, ts := newFakeS3(t, "muster-uploads")
-	c := testS3(t, ts.URL, "wrong-access")
-	err := c.Put(context.Background(), "uploads/"+sid, []byte("x"), "text/plain")
+	ts := httptest.NewServer(&slowS3{body: []byte("x"), chunks: 1})
+	t.Cleanup(ts.Close)
+	c := testS3(t, ts.URL, 0)
+	err := c.Put(context.Background(), "uploads/"+sid, bytes.NewReader([]byte("hello")), 5, "text/plain")
 	var se *S3Error
 	if !errors.As(err, &se) || se.Status != http.StatusForbidden || se.Code != "AccessDenied" {
-		t.Fatalf("Put with a wrong key: %v; want S3Error 403 AccessDenied", err)
+		t.Fatalf("a refused Put: %v; want S3Error 403 AccessDenied", err)
 	}
 	if strings.Contains(err.Error(), "test-secret") {
 		t.Errorf("the error carries the secret: %v", err)
-	}
-	if err := c.Check(context.Background()); err == nil {
-		t.Error("Check with a wrong key answered nil")
 	}
 }
 
@@ -234,18 +145,40 @@ func TestNewS3RefusesABadConfiguration(t *testing.T) {
 	}
 }
 
+// TestCountExpiryRules: only an ENABLED rule WITH an expiration whose prefix
+// covers uploads/ counts.
+func TestCountExpiryRules(t *testing.T) {
+	exp := lifecycle.Expiration{Days: 8}
+	for name, tc := range map[string]struct {
+		rules []lifecycle.Rule
+		want  int
+	}{
+		"none":                {nil, 0},
+		"whole bucket":        {[]lifecycle.Rule{{ID: "a", Status: "Enabled", Expiration: exp}}, 1},
+		"uploads prefix":      {[]lifecycle.Rule{{ID: "a", Status: "Enabled", Expiration: exp, RuleFilter: lifecycle.Filter{Prefix: "uploads/"}}}, 1},
+		"another prefix":      {[]lifecycle.Rule{{ID: "a", Status: "Enabled", Expiration: exp, RuleFilter: lifecycle.Filter{Prefix: "backups/"}}}, 0},
+		"disabled":            {[]lifecycle.Rule{{ID: "a", Status: "Disabled", Expiration: exp}}, 0},
+		"no expiration":       {[]lifecycle.Rule{{ID: "a", Status: "Enabled"}}, 0},
+		"legacy prefix field": {[]lifecycle.Rule{{ID: "a", Status: "Enabled", Expiration: exp, Prefix: "uploads/"}}, 1},
+	} {
+		if got := CountExpiryRules(&lifecycle.Configuration{Rules: tc.rules}); got != tc.want {
+			t.Errorf("%s: %d; want %d", name, got, tc.want)
+		}
+	}
+}
+
 // TestAgainstARealS3 runs the client against a REAL S3-compatible server when
-// one is named, and skips otherwise. It is the live control behind the fake
+// one is named, and skips otherwise. It is the live control behind the fakes
 // above, run by hand (docs/testing.md):
 //
 //	MUSTER_TEST_S3_ENDPOINT=http://127.0.0.1:9000 MUSTER_TEST_S3_BUCKET=muster-test \
 //	  MUSTER_TEST_S3_ACCESS_KEY=… MUSTER_TEST_S3_SECRET_KEY=… \
 //	  go test -run TestAgainstARealS3 -v ./internal/uploads/
 //
-// (any S3-compatible server on loopback; the bucket must exist).
-//
-// A wrong secret must be REFUSED by the server: the negative control that the
-// server really checks the signature this file computes.
+// (any S3-compatible server on loopback; the bucket must exist). It writes a
+// small file in one request AND a file over PartSize as a multipart stream of
+// unknown length, reads both back, HEADs them, and checks that a wrong secret
+// is REFUSED by the server.
 func TestAgainstARealS3(t *testing.T) {
 	cfg := S3Config{Endpoint: os.Getenv("MUSTER_TEST_S3_ENDPOINT"), Bucket: os.Getenv("MUSTER_TEST_S3_BUCKET"),
 		AccessKey: os.Getenv("MUSTER_TEST_S3_ACCESS_KEY"), SecretKey: os.Getenv("MUSTER_TEST_S3_SECRET_KEY")}
@@ -260,33 +193,49 @@ func TestAgainstARealS3(t *testing.T) {
 	if err := c.Check(ctx); err != nil {
 		t.Fatalf("Check: %v", err)
 	}
-	id, _ := NewPublicID()
-	key := ObjectKeyFor(id)
-	data := bytes.Repeat(pngHead, 4096) // ~120 KB
-	if err := c.Put(ctx, key, data, "image/png"); err != nil {
-		t.Fatalf("Put: %v", err)
+	for name, tc := range map[string]struct {
+		data []byte
+		size int64
+	}{
+		"one request": {bytes.Repeat(pngHead, 64), int64(len(pngHead) * 64)},
+		"multipart":   {bytes.Repeat([]byte("0123456789abcdef"), (PartSize+PartSize/2)/16), -1},
+	} {
+		id, _ := NewPublicID()
+		key := ObjectKeyFor(id)
+		if err := c.Put(ctx, key, io.MultiReader(bytes.NewReader(tc.data)), tc.size, "application/octet-stream"); err != nil {
+			t.Fatalf("%s: Put: %v", name, err)
+		}
+		if n, err := c.Stat(ctx, key); err != nil || n != int64(len(tc.data)) {
+			t.Errorf("%s: Stat = %d, %v; want %d", name, n, err, len(tc.data))
+		}
+		body, size, err := c.Get(ctx, key)
+		if err != nil {
+			t.Fatalf("%s: Get: %v", name, err)
+		}
+		got, _ := io.ReadAll(body)
+		body.Close()
+		if !bytes.Equal(got, tc.data) || size != int64(len(tc.data)) {
+			t.Errorf("%s: Get: %d bytes (size %d); want the %d put", name, len(got), size, len(tc.data))
+		}
+		if err := c.Delete(ctx, key); err != nil {
+			t.Fatalf("%s: Delete: %v", name, err)
+		}
+		if _, _, err := c.Get(ctx, key); !errors.Is(err, ErrNotFound) {
+			t.Errorf("%s: Get after Delete: %v; want ErrNotFound", name, err)
+		}
+		if _, err := c.Stat(ctx, key); !errors.Is(err, ErrNotFound) {
+			t.Errorf("%s: Stat after Delete: %v; want ErrNotFound", name, err)
+		}
 	}
-	body, size, err := c.Get(ctx, key)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	got, _ := io.ReadAll(body)
-	body.Close()
-	if !bytes.Equal(got, data) || size != int64(len(data)) {
-		t.Errorf("Get: %d bytes (size %d); want the %d put", len(got), size, len(data))
-	}
-	if err := c.Delete(ctx, key); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-	if _, _, err := c.Get(ctx, key); !errors.Is(err, ErrNotFound) {
-		t.Errorf("Get after Delete: %v; want ErrNotFound", err)
-	}
+	n, lerr := c.ExpiryRules(ctx)
+	t.Logf("ExpiryRules on %s: %d, %v", cfg.Bucket, n, lerr)
 	bad := cfg
 	bad.SecretKey += "-wrong"
 	wrong, _ := NewS3(bad)
 	var se *S3Error
-	if err := wrong.Put(ctx, key, data, "image/png"); !errors.As(err, &se) || se.Status != http.StatusForbidden {
+	err = wrong.Put(ctx, ObjectKeyFor(sid), bytes.NewReader([]byte("x")), 1, "text/plain")
+	if !errors.As(err, &se) || se.Status != http.StatusForbidden {
 		t.Errorf("NEGATIVE CONTROL: a wrong secret was answered %v; want a 403 from the server", err)
 	}
-	t.Logf("real S3 at %s: put/get/delete of %d bytes OK; a wrong secret answered %v", cfg.Endpoint, len(data), se)
+	t.Logf("real S3 at %s: one-request and multipart put/stat/get/delete OK; a wrong secret answered %v", cfg.Endpoint, se)
 }

@@ -21,10 +21,11 @@ into a hard failure that names itself. CI sets it; set it locally too.
 
 `MUSTER_TEST_PG_PORT=55433 make test-db` gives a second checkout its own database.
 
-**File attachments' S3 client** (`internal/uploads`) is tested against AWS's own
-published signature examples and an in-process fake S3. The fake cannot check a
-signature, so `TestAgainstARealS3` runs the client against a real S3-compatible
-server, and skips unless you name one:
+**File attachments' object store** (`internal/uploads`, minio-go) is faked in
+process by `internal/uploads/uploadstest` for the service and route tests, and
+its timeouts are tested against a small HTTP fake. Neither checks a signature or
+a multipart upload, so `TestAgainstARealS3` runs the client against a real
+S3-compatible server, and skips unless you name one:
 
 ```sh
 MUSTER_TEST_S3_ENDPOINT=http://127.0.0.1:9000 MUSTER_TEST_S3_BUCKET=muster-test \

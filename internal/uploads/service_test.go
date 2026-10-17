@@ -25,6 +25,10 @@ type clock struct{ t time.Time }
 
 func (c *clock) now() time.Time { return c.t }
 
+// rd is data as an upload's body: a plain reader (never a *bytes.Reader the
+// service could size or seek).
+func rd(data []byte) io.Reader { return io.MultiReader(bytes.NewReader(data)) }
+
 func newService(t *testing.T, max int64) (*uploads.Service, *uploadstest.Store, *uploadstest.Objects, *clock) {
 	t.Helper()
 	sg, err := uploads.NewSigner("service-test-key-0123456789abcdef-xyz")
@@ -61,11 +65,11 @@ func read(t *testing.T, o uploads.Opened) []byte {
 func TestTheSizeCapIsInclusive(t *testing.T) {
 	svc, st, obj, _ := newService(t, 64)
 	ok := bytes.Repeat([]byte("a"), 64)
-	if _, err := svc.Put(as(2), ok, "a.txt", "", ""); err != nil {
+	if _, err := svc.Put(as(2), rd(ok), "a.txt"); err != nil {
 		t.Fatalf("a file of exactly the cap: %v", err)
 	}
 	over := bytes.Repeat([]byte("a"), 65)
-	if _, err := svc.Put(as(2), over, "b.txt", "", ""); !errors.Is(err, uploads.ErrTooLarge) {
+	if _, err := svc.Put(as(2), rd(over), "b.txt"); !errors.Is(err, uploads.ErrTooLarge) {
 		t.Fatalf("one byte over the cap: %v; want ErrTooLarge", err)
 	}
 	if n := len(st.Rows()); n != 1 {
@@ -74,7 +78,7 @@ func TestTheSizeCapIsInclusive(t *testing.T) {
 	if n := len(obj.Keys()); n != 1 {
 		t.Errorf("%d objects; want only the one under the cap", n)
 	}
-	if _, err := svc.Put(as(2), nil, "c.txt", "", ""); !errors.Is(err, uploads.ErrEmpty) {
+	if _, err := svc.Put(as(2), rd(nil), "c.txt"); !errors.Is(err, uploads.ErrEmpty) {
 		t.Errorf("an empty file: %v; want ErrEmpty", err)
 	}
 }
@@ -84,7 +88,7 @@ func TestTheSizeCapIsInclusive(t *testing.T) {
 // name nor anything of it is in the object key.
 func TestTheTypeIsSniffedAndTheKeyIsRandom(t *testing.T) {
 	svc, _, obj, _ := newService(t, 1<<20)
-	st, err := svc.Put(as(2), []byte("<html><script>alert(1)</script></html>"), "cute.png", "mirror", "laptop/work/@1")
+	st, err := svc.Put(as(2), rd([]byte("<html><script>alert(1)</script></html>")), "cute.png")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +101,7 @@ func TestTheTypeIsSniffedAndTheKeyIsRandom(t *testing.T) {
 	if ct := obj.Types[st.ObjectKey]; ct != "application/octet-stream" {
 		t.Errorf("stored with Content-Type %q; want application/octet-stream", ct)
 	}
-	if st.Filename != "cute.png" || st.Name != "cute.png" || st.TargetKind != "mirror" || st.Target != "laptop/work/@1" {
+	if st.Filename != "cute.png" || st.Name != "cute.png" {
 		t.Errorf("row = %+v", st.Upload)
 	}
 	if !strings.Contains(st.Line, st.URL) || !strings.HasPrefix(st.Line, "[attached: cute.png (text/html; charset=utf-8, ") {
@@ -110,7 +114,7 @@ func TestTheTypeIsSniffedAndTheKeyIsRandom(t *testing.T) {
 // object.
 func TestALinkOpensUntilItExpiresOrIsRevoked(t *testing.T) {
 	svc, _, obj, c := newService(t, 1<<20)
-	st, err := svc.Put(as(2), png, "shot.png", "", "")
+	st, err := svc.Put(as(2), rd(png), "shot.png")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +160,7 @@ func TestALinkOpensUntilItExpiresOrIsRevoked(t *testing.T) {
 // TestTheOwnersViewIsTheOwnersOnly.
 func TestTheOwnersViewIsTheOwnersOnly(t *testing.T) {
 	svc, _, _, _ := newService(t, 1<<20)
-	st, err := svc.Put(as(2), png, "shot.png", "", "")
+	st, err := svc.Put(as(2), rd(png), "shot.png")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +179,7 @@ func TestTheOwnersViewIsTheOwnersOnly(t *testing.T) {
 func TestAFailedRowTakesItsObjectAway(t *testing.T) {
 	svc, _, obj, _ := newService(t, 1<<20)
 	svc.Store = failingStore{svc.Store}
-	if _, err := svc.Put(as(2), png, "shot.png", "", ""); err == nil {
+	if _, err := svc.Put(as(2), rd(png), "shot.png"); err == nil {
 		t.Fatal("Put succeeded with a failing store")
 	}
 	if keys := obj.Keys(); len(keys) != 0 {
@@ -188,7 +192,7 @@ func TestAFailedRowTakesItsObjectAway(t *testing.T) {
 // still there, so only the revoked check stands between it and the caller.
 func TestARevokedLinkIsRefusedEvenWhenItsObjectSurvives(t *testing.T) {
 	svc, _, obj, _ := newService(t, 1<<20)
-	st, err := svc.Put(as(2), png, "shot.png", "", "")
+	st, err := svc.Put(as(2), rd(png), "shot.png")
 	if err != nil {
 		t.Fatal(err)
 	}
