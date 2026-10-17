@@ -426,10 +426,14 @@ func agentsFilterScript() g.Node {
   // re-appends them all, in order: by moveBefore where the browser has it
   // (focus and an open popover survive the move), else by appendChild — which
   // DETACHES each card, so a focused one blurs (it is handed focus back below)
-  // and an open popover inside one closes. A held background refresh comes
-  // here with nothing out of place: its markup is put in the drawn order before
-  // the morph (keepDrawnOrder) and reorder sorts its held arrivals last, so the
-  // early return below is taken and nothing moves.
+  // and an open popover inside one closes. A held background refresh does not
+  // come here: its markup is put in the drawn order before the morph
+  // (keepDrawnOrder), and a held swap is not re-ranked (apply(held), so a
+  // rename elsewhere that changes a drawn card's rank moves nothing until the
+  // tap). When reorder does run — the reader typing, the tap — held arrivals
+  // sort last, so they move nothing. ⚠ What a held refresh CAN still change in
+  // view: a drawn card whose new text stops (or starts) matching the typed
+  // filter is hidden (or shown) at once — content, not order, and still open.
   function arrange(list, cards, order) {
     if (!order.some(function (c, i) { return cards[i] !== c; })) return;
     var focused = document.activeElement;
@@ -548,7 +552,13 @@ func agentsFilterScript() g.Node {
     input.value = lead + (input.value.trim() ? input.value : '');
     if (typing && a !== null) input.setSelectionRange(a + lead.length, b + lead.length);
   }
-  function apply() {
+  // apply(held): held is true for a background refresh the hold kept back.
+  // That refresh is NOT re-ranked: its markup came in the drawn order
+  // (keepDrawnOrder), and re-ranking it would move a drawn card whose rank
+  // the refresh changed (another client renamed it while a filter is typed).
+  // The rank is applied with everything else on the tap (applyLive), and on
+  // the reader's own typing.
+  function apply(held) {
     var input = el('agents-search'), list = el('agents-list');
     if (!input || !list) return;
     syncOptions();
@@ -565,7 +575,7 @@ func agentsFilterScript() g.Node {
     style.textContent = ['#agents-list > article[data-held]{display:none !important}'].concat(ts.map(function (t) {
       return '#agents-list > article:not(' + sel(t) + '){display:none !important}';
     })).join('\n');
-    reorder(ts);
+    if (!held) reorder(ts);
     var all = list.querySelectorAll(':scope > article:not([data-held])');
     var shown = ts.length ? list.querySelectorAll(':scope > article:not([data-held])' + ts.map(sel).join('')) : all;
     var count = el('agents-count'), clear = el('agents-search-clear'), none = el('agents-nomatch'), clearAll = el('agents-filter-clear');
@@ -646,7 +656,7 @@ func agentsFilterScript() g.Node {
         takeFromBox(f);
       });
     }
-    apply();
+    apply(swapHeld);
   }
   document.addEventListener('input', function (e) {
     if (e.target && e.target.id === 'agents-search') { pending = Object.create(null); apply(); }
@@ -796,6 +806,9 @@ func agentsFilterScript() g.Node {
   // swapPlan is beforeSwap's reading of the swap afterSwap finishes: the server's
   // (live) order and the decision.
   var swapPlan = null;
+  // swapHeld: whether the list's last swap was held — settled() re-applies the
+  // filter after it and must not re-rank it either (see apply).
+  var swapHeld = false;
   function hold(e) {
     var list = e.target;
     var p = swapPlan;
@@ -806,7 +819,7 @@ func agentsFilterScript() g.Node {
       heldOrder = liveOrder.slice();
       stamp(list, heldOrder);
       showPill(0);
-      return;
+      return false;
     }
     var known = {};
     heldOrder.forEach(function (id) { known[id] = true; });
@@ -824,6 +837,7 @@ func agentsFilterScript() g.Node {
     var risen = 0;
     liveKnown.forEach(function (id, i) { if (i < heldOrder.indexOf(id)) risen++; });
     showPill(arrived.length + risen);
+    return true;
   }
   // keepDrawnOrder rewrites a held refresh's markup so its cards come in the
   // order they are DRAWN (cards it no longer has dropped, arrivals after), and
@@ -868,7 +882,7 @@ func agentsFilterScript() g.Node {
     if (!swapPlan.apply) keepDrawnOrder(e, drawn.map(function (c) { return c.id; }));
   });
   document.addEventListener('htmx:afterSwap', function (e) {
-    if (e.target && e.target.id === 'agents-list') { hold(e); apply(); }
+    if (e.target && e.target.id === 'agents-list') { swapHeld = hold(e); apply(swapHeld); }
   });
   document.addEventListener('htmx:afterSettle', function (e) {
     if (e.target && e.target.id === 'agents-list') settled();

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { Page } from '@playwright/test';
 import { test, expect, takeNew } from '../lib/fixtures';
 import { agentsSearchPort, baseURL, password } from '../lib/env';
-import { MirrorRig } from '../lib/mirrorhost';
+import { MirrorRig, mkchat } from '../lib/mirrorhost';
 import { clsInit, readCls, resetCls } from '../lib/cls';
 
 // THE AGENTS FILTER RANKS WHILE TYPING (internal/ui/agents_filter.go rankAttrs):
@@ -586,3 +586,67 @@ for (const leg of [
     });
   });
 }
+
+// 🔴 A REGRESSION TEST (#124 round-2 audit 🟡): a held background refresh can
+// still change a DRAWN card's rank — another client renames an agent while a
+// filter is typed — and the filter's re-rank then moved every card (arrange
+// re-appends). A held refresh does not re-rank: the drawn cards keep their
+// place, and the tap applies the new rank with the rest.
+test.describe('held behind the pill: a rename elsewhere', () => {
+  test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false });
+
+  test('with a filter typed, a rename that changes a drawn card’s rank moves no card until the tap', async ({ page }) => {
+    test.setTimeout(180_000);
+    const stamp = Date.now().toString(36).replace(/w/g, 'x');
+    // Each is in exactly one rank for "wren": a prefix, a word start, inside a word.
+    const [first, second, third] = [`wren-one-${stamp}`, `big-wren-${stamp}`, `awrenx-${stamp}`];
+    const arrival = `zzheld-${stamp}`;
+    for (const n of [first, second, third]) mkchat(n, [{ role: 'user', content: 'a wren card' }]);
+    try {
+      await rig.login(page);
+      await page.goto(rig.origin + '/agents');
+      const card = (n: string) => page.locator(`#agents-list > article[data-f-name="${n}"]`);
+      await expect(card(third)).toHaveCount(1, { timeout: 30_000 });
+      await takeNew(page);
+      // By card id: the rename changes the card's name, not its id.
+      const ids = await Promise.all([first, second, third].map(async (n) => (await card(n).getAttribute('id'))!));
+      const [idFirst, idSecond, idThird] = ids;
+      const shown = () =>
+        page.locator('#agents-list > article:not([data-held])').evaluateAll((els, want) =>
+          els.filter((e) => (e as HTMLElement).offsetHeight > 0).map((e) => e.id).filter((i) => (want as string[]).includes(i)), ids);
+      await page.locator('#agents-search').fill('wren');
+      await expect.poll(shown).toEqual([idFirst, idSecond, idThird]);
+      await page.evaluate(() => {
+        const w = window as unknown as { __removed: number };
+        w.__removed = 0;
+        new MutationObserver((ms) => ms.forEach((m) => m.removedNodes.forEach((n) => { if ((n as Element).tagName === 'ARTICLE') w.__removed++; })))
+          .observe(document.getElementById('agents-list')!, { childList: true });
+      });
+
+      // The list is HELD: an agent arrives (newest, so above every card).
+      mkchat(arrival, [{ role: 'user', content: 'arrived' }]);
+      await page.evaluate(() => (window as any).htmx.trigger(document.body, 'sse:agent.changed'));
+      await expect(page.locator('#agents-new-pill'), 'held').toBeVisible({ timeout: 30_000 });
+      await page.evaluate(() => { (window as unknown as { __removed: number }).__removed = 0; });
+
+      // Another client renames the worst-ranked card to a PREFIX match (and so
+      // perhaps the most recently active), then this tab's list refreshes in
+      // the background.
+      const id = idThird.replace('agent-', '');
+      const r = await page.request.post(`${rig.origin}/agents/${id}/name`, { form: { name: 'wren renamed' }, headers: { Origin: rig.origin } });
+      expect(r.status(), await r.text()).toBe(200);
+      await page.evaluate(() => (window as any).htmx.trigger(document.body, 'sse:agent.changed'));
+      await expect(page.locator(`#${idThird}`), 'the refresh brought the new name').toHaveAttribute('data-rank-title', /wren renamed/, { timeout: 30_000 });
+      await expect(page.locator('#agents-new-pill'), 'the change waits').toBeVisible();
+      const removed = await page.evaluate(() => (window as unknown as { __removed: number }).__removed);
+      expect(removed, 'no card was removed and re-added').toBe(0);
+      expect(await shown(), 'the drawn cards kept their place').toEqual([idFirst, idSecond, idThird]);
+
+      // The tap applies it: the renamed card now ranks with the prefix match.
+      await page.locator('#agents-new-pill').click();
+      await expect.poll(async () => { const a = await shown(); return a.indexOf(idThird) < a.indexOf(idSecond); }, { message: 'the tap applied the new rank: the renamed card above the word-start match' }).toBe(true);
+    } finally {
+      for (const n of [first, second, third, arrival]) mkchat(n, null);
+    }
+  });
+});

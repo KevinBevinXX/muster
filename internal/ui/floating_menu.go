@@ -32,8 +32,10 @@ import (
 //     lifecycle and chat event, and the server orders cards by last activity, so
 //     a reply RE-ORDERS them. (While the "N new ↑" pill holds the order — the
 //     usual case for a background refresh — the morph is handed the cards in
-//     the DRAWN order (agentsFilterScript's keepDrawnOrder) and the filter's
-//     reorder sorts held arrivals last, so neither moves a drawn card. A
+//     the DRAWN order (agentsFilterScript's keepDrawnOrder) and is not
+//     re-ranked, and held arrivals sort last, so the held refresh itself moves
+//     no drawn card. (It can still HIDE one whose new text stops matching a
+//     typed filter — an open gap.) A
 //     re-order that is applied still moves cards: by moveBefore where the
 //     browser has it, which keeps the popover open; by appendChild where it
 //     does not, which CLOSES it.) An open popover stays open through a
