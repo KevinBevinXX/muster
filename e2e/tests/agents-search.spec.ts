@@ -243,14 +243,14 @@ test.describe('held behind the pill', () => {
     expect(await domOrder(), 'held: no card moved').toEqual(['mqtail', 'old-qdock', 'qbase']);
     await expect(page.locator('#agents-list > article[data-f-session="qbase"]'), 'its content updated in place').toHaveAttribute('data-f-kind', 'vim');
 
-    // An arrival: kept out of view, counted — and its kind (a command no other
-    // card runs) is NOT offered by the kind select while it is held: choosing
-    // it would show nothing.
+    // An arrival: kept out of view, counted by the pill — and NOT counted by
+    // its host's tab while it is held: a tab counts what is drawn.
+    const hostCount = page.locator(`#agents-hosts [role="tab"][data-host="${rig.host}"] [data-tab-count]`);
+    await expect(hostCount, 'positive control: the host tab counts its drawn cards').toHaveText('3');
     fs.appendFileSync(windowsFile, windowLine('qzest', '@4', 'qtool', 0) + '\n');
     await expect(pill).toHaveText('2 new ↑', { timeout: 30_000 });
     await expect(page.locator('#agents-list > article[data-f-session="qzest"]')).toBeHidden();
-    const qtoolOption = page.locator('#agents-f-kind option[value="qtool"]');
-    await expect(qtoolOption, 'a held arrival offers no kind').toHaveCount(0);
+    await expect(hostCount, 'a held arrival is not counted by its host tab').toHaveText('3');
     expect(await domOrder()).toEqual(['mqtail', 'old-qdock', 'qbase']);
     const held = await readCls(page);
     expect(held.total, `nothing moved while held: ${JSON.stringify(held.shifts)}`).toBeLessThan(0.01);
@@ -266,7 +266,7 @@ test.describe('held behind the pill', () => {
     await pill.tap();
     await expect(pill).toBeHidden();
     await expect.poll(domOrder, { message: 'the live order, applied' }).toEqual(['qbase', 'qzest', 'mqtail', 'old-qdock']);
-    await expect(qtoolOption, 'drawn, its kind is offered').toHaveCount(1);
+    await expect(hostCount, 'drawn, it is counted').toHaveText('4');
   });
 });
 
@@ -600,7 +600,10 @@ test.describe('held behind the pill: a rename elsewhere', () => {
     const stamp = Date.now().toString(36).replace(/w/g, 'x');
     // Each is in exactly one rank for "wren": a prefix, a word start, inside a word.
     const [first, second, third] = [`wren-one-${stamp}`, `big-wren-${stamp}`, `awrenx-${stamp}`];
-    const arrival = `zzheld-${stamp}`;
+    // The arrival MATCHES the filter: an arrival the filter hides moves nothing
+    // in view, so it is applied at once and holds nothing (agents_filter.go
+    // decide) — the hold this test needs is one the reader can see.
+    const arrival = `zzwrenheld-${stamp}`;
     for (const n of [first, second, third]) mkchat(n, [{ role: 'user', content: 'a wren card' }]);
     try {
       await rig.login(page);

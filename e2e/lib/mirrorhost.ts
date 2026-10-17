@@ -105,7 +105,38 @@ export class MirrorRig {
     await done;
   }
 
+  // extraHost connects ANOTHER fake host to the same server, under its own
+  // name and token, for a spec that needs several hosts at once; stop() stops
+  // it with the rest. It returns a stop function of its own.
+  private extras: ChildProcess[] = [];
+  extraHost(name: string, env: NodeJS.ProcessEnv): () => Promise<void> {
+    const token = execFileSync(serverBinary(versionTerm), ['mirror', 'token', 'create', name], { env: { ...process.env, DATABASE_URL: dsn } })
+      .toString()
+      .trim();
+    expect(token.startsWith('mmt_'), 'a mirror token was minted').toBe(true);
+    const p = spawn(mirrorBin, [], {
+      env: { ...process.env, MUSTER_MIRROR_URL: this.origin, MUSTER_MIRROR_ALLOW_HTTP: '1', MUSTER_MIRROR_TOKEN: token, MUSTER_MIRROR_HOST: name, ...env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    p.stdout?.on('data', (d) => (this.log += d));
+    p.stderr?.on('data', (d) => (this.log += d));
+    this.extras.push(p);
+    return async () => {
+      if (p.exitCode !== null || p.signalCode !== null) return;
+      const done = new Promise((r) => p.once('exit', r));
+      p.kill('SIGTERM');
+      await done;
+    };
+  }
+
   async stop(): Promise<void> {
+    for (const p of this.extras) {
+      if (p.exitCode === null && p.signalCode === null) {
+        const done = new Promise((r) => p.once('exit', r));
+        p.kill('SIGTERM');
+        await done;
+      }
+    }
     await this.stopHost();
     await this.server?.stop();
     fs.rmSync(this.dir, { recursive: true, force: true });
