@@ -350,13 +350,19 @@ test.describe('desktop 1280×800, a held arrival', () => {
     await openList(page);
     const pill = page.locator('#agents-new-pill');
     await expect(pill).toBeHidden();
+    // Narrow the list to the zebrafish windows, so the cards in view are ones
+    // the newest arrival lands ABOVE — whatever else (pod agents from other
+    // specs) the shared database has put on the list — and it is held.
+    await page.locator('#agents-search').fill('zebrafish');
+    await expect(page.locator('#agents-list > article').filter({ visible: true })).toHaveCount(2);
     rig.extraHost(hostD, { MUSTER_MIRROR_E2E_WINDOWS_FILE: filesD });
-    await expect(pill, `host D's arrival waits behind the pill (log:\n${rig.log})`).toHaveText(/^\d+ new ↑$/, { timeout: 30_000 });
-    await expect(cardsOn(page, hostD), 'its card is in the list, held').toHaveCount(1);
-    await expect(cardsOn(page, hostD)).toBeHidden();
+    await expect(cardsOn(page, hostD), `host D's card is in the list (log:\n${rig.log})`).toHaveCount(1, { timeout: 30_000 });
+    await expect(pill, "host D's arrival waits behind the pill").toHaveText(/^\d+ new ↑$/);
+    await expect(cardsOn(page, hostD)).toHaveAttribute('data-held', '');
     await expect(tab(page, hostD), 'a held arrival offers no tab').toHaveCount(0);
-    const total = await page.locator('#agents-list > article:not([data-held])').count();
-    expect(await countOf(allTab(page)), 'nor is it counted by All').toBe(String(total));
+    expect(await countOf(allTab(page)), 'nor is it counted by All').toBe('2');
+    await page.locator('#agents-search-clear').click();
+    await expect(tab(page, hostD), 'still none with the box cleared').toHaveCount(0);
     await pill.click();
     await expect(tab(page, hostD), 'drawn, it has its tab').toHaveCount(1);
     expect(await countOf(tab(page, hostD))).toBe('1');
