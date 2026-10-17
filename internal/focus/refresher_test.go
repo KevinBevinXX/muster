@@ -15,6 +15,8 @@ type memStore struct {
 	owners       []int64
 	touched      []Subject
 	prunedBefore time.Time
+	// historyPrunedBefore is what the retention sweep last asked PruneHistory for.
+	historyPrunedBefore time.Time
 }
 
 func newMem() *memStore { return &memStore{rows: map[Subject]Focus{}, errs: map[Subject]string{}} }
@@ -53,6 +55,13 @@ func (m *memStore) Touch(_ context.Context, subs []Subject) error {
 func (m *memStore) PruneAll(_ context.Context, before time.Time) (int, error) {
 	m.prunedBefore = before
 	return 0, nil
+}
+func (m *memStore) PruneHistory(_ context.Context, before time.Time) (int, error) {
+	m.historyPrunedBefore = before
+	return 0, nil
+}
+func (m *memStore) History(context.Context, Subject, string, int) (HistoryPage, error) {
+	return HistoryPage{}, nil
 }
 
 type fakeSource struct {

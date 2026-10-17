@@ -167,18 +167,23 @@ func mirrorCard(m MirrorCardView) g.Node {
 			mirroredMark(id, m.Host),
 			mirrorPinToggle(m),
 		),
+		// With a focus, it heads the card (cardFocusTitle): a popover trigger
+		// OUTSIDE the nav anchor, and the window's title below — with its muted
+		// session line — becomes its subtitle.
+		cardFocusTitle(id, m.Focus),
 		A(
 			Href(MirrorCardHref(m)),
 			hx("hx-boost", "false"),
 			cardSlot("body"),
-			Class("flex flex-col gap-3 p-4 pr-28"),
+			Class(cardBodyClass(m.Focus)),
 			Div(
 				cardSlot("header"),
 				Class("flex flex-wrap items-center gap-2"),
 				statusIcon(status),
 				g.If(m.Pinned, pinnedGlyph()),
-				mirrorEntryTitle(m.Label, m.Title, m.Session, m.Qualifier,
-					"mr-auto break-all text-base font-semibold leading-tight text-fg group-hover:text-accent"),
+				g.If(!cardHasFocusTitle(m.Focus), mirrorEntryTitle(m.Label, m.Title, m.Session, m.Qualifier, cardTitleClass)),
+				g.If(cardHasFocusTitle(m.Focus), Span(g.Attr("data-card-subtitle", ""), Class("contents"),
+					mirrorEntryTitle(m.Label, m.Title, m.Session, m.Qualifier, cardSubtitleClass))),
 				g.If(m.Claude, Span(g.Attr("data-mirror-claude", ""), chip("kind", "Claude Code"))),
 				// What else runs there (a shell, opencode, another TUI): the
 				// host's reading of the pane's command.

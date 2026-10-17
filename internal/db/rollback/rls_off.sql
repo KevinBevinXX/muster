@@ -136,6 +136,12 @@ BEGIN
         ALTER TABLE public.session_routes DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.session_routes ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0022 (agent_focus_history), when this schema has it; same reason as 0011.
+    IF to_regclass('public.agent_focus_history') IS NOT NULL THEN
+        ALTER TABLE public.agent_focus_history NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.agent_focus_history DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.agent_focus_history ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
 END
 $$;
 

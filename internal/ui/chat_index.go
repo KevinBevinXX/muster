@@ -25,6 +25,12 @@ import (
 // given a page-unique one the first time the index sees it, never reused.
 //
 // It is on the mirrored Rendered view only.
+//
+// 🔴 THE SHEET IS TABBED (tabs.go): "Your messages" and "Focus history" — the
+// session's past focus, newest first (focus_history.go). The tab chosen is
+// kept per session in localStorage (the Tabs key, which the page derives from
+// the window's address), and the sheet is a FIXED height, so neither switching
+// tabs nor a history page arriving moves anything outside the list.
 
 // chatIndexButton is the header control that opens the index for the log with
 // id logID.
@@ -33,8 +39,8 @@ func chatIndexButton(logID string) g.Node {
 		Type("button"),
 		ID("chat-index-open"),
 		g.Attr("data-chat-index-log", logID),
-		g.Attr("aria-label", "Your messages"),
-		g.Attr("title", "Your messages"),
+		g.Attr("aria-label", "Your messages and focus history"),
+		g.Attr("title", "Your messages and focus history"),
 		g.Attr("aria-haspopup", "dialog"),
 		g.Attr("aria-controls", "chat-index"),
 		g.Attr("aria-expanded", "false"),
@@ -43,22 +49,29 @@ func chatIndexButton(logID string) g.Node {
 	)
 }
 
-// chatIndexSheet is the index's sheet, closed: a bottom sheet over a backdrop.
-// Its rows are built by chatIndexScript.
-func chatIndexSheet() g.Node {
-	return Div(
+// chatIndexSheet is the index's sheet, closed: a bottom sheet over a backdrop,
+// with two tabs — the reader's messages (built by chatIndexScript) and the
+// session's focus history (historyPath, FocusHistoryPath of its newest page;
+// "" = the host reports no Claude session, so there is none). tabsKey is what
+// the tab choice is stored under.
+func chatIndexSheet(historyPath, tabsKey string) g.Node {
+	tabs := Tabs("chat-index-tabs", tabsKey, "Session index",
+		Tab{ID: "messages", Label: "Your messages", Panel: chatIndexMessages()},
+		Tab{ID: "focus", Label: "Focus history", Panel: focusHistoryList(historyPath)},
+	)
+	return g.Group{Div(
 		ID("chat-index"),
 		g.Attr("hidden", ""),
 		g.Attr("role", "dialog"),
 		g.Attr("aria-modal", "true"),
-		g.Attr("aria-labelledby", "chat-index-title"),
+		g.Attr("aria-label", "Your messages and focus history"),
 		Class("fixed inset-0 z-50 flex items-end justify-center sm:items-center"),
 		Div(g.Attr("data-chat-index-close", ""), Class("absolute inset-0 bg-black/60")),
 		Div(
-			Class("relative z-10 flex max-h-[70dvh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl bg-s1 shadow-2xl ring-1 ring-line sm:rounded-2xl"),
+			Class("relative z-10 flex h-[70dvh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl bg-s1 shadow-2xl ring-1 ring-line sm:rounded-2xl"),
 			Div(
-				Class("flex items-center gap-2 border-b border-line px-4 py-2"),
-				H2(ID("chat-index-title"), Class("flex-1 text-sm font-semibold text-fg"), g.Text("Your messages")),
+				Class("flex items-center gap-2 border-b border-line pl-2 pr-2"),
+				tabs.List,
 				Button(
 					Type("button"),
 					g.Attr("data-chat-index-close", ""),
@@ -67,16 +80,24 @@ func chatIndexSheet() g.Node {
 					g.Raw(`<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>`),
 				),
 			),
-			// ⚠ Shown when the host sent no prompt index (it predates it, or its
-			// scan failed): the list is only what this page loaded.
-			P(ID("chat-index-partial"), g.Attr("hidden", ""), Class("border-b border-line px-4 py-2 text-xs text-muted"),
-				g.Text("Only loaded messages shown: this host's muster-mirror does not send the full list.")),
-			// The host's bound dropped the oldest prompts: how many.
-			P(ID("chat-index-more"), g.Attr("hidden", ""), Class("border-b border-line px-4 py-2 text-xs text-muted")),
-			Ol(ID("chat-index-list"), Class("flex-1 overflow-y-auto overscroll-contain py-1")),
-			P(ID("chat-index-empty"), g.Attr("hidden", ""), Class("px-4 py-6 text-center text-sm text-muted"), g.Text("You have not sent anything yet.")),
+			tabs.Panels,
 		),
-	)
+	), tabsScript(), focusHistoryScript()}
+}
+
+// chatIndexMessages is the "Your messages" tab's panel: the rows
+// chatIndexScript builds, and its notes.
+func chatIndexMessages() g.Node {
+	return g.Group{
+		// ⚠ Shown when the host sent no prompt index (it predates it, or its
+		// scan failed): the list is only what this page loaded.
+		P(ID("chat-index-partial"), g.Attr("hidden", ""), Class("border-b border-line px-4 py-2 text-xs text-muted"),
+			g.Text("Only loaded messages shown: this host's muster-mirror does not send the full list.")),
+		// The host's bound dropped the oldest prompts: how many.
+		P(ID("chat-index-more"), g.Attr("hidden", ""), Class("border-b border-line px-4 py-2 text-xs text-muted")),
+		Ol(ID("chat-index-list"), Class("py-1")),
+		P(ID("chat-index-empty"), g.Attr("hidden", ""), Class("px-4 py-6 text-center text-sm text-muted"), g.Text("You have not sent anything yet.")),
+	}
 }
 
 // chatIndexScript builds the sheet's rows and jumps. Bound once per document

@@ -91,8 +91,9 @@ func (s *Server) RunFocusRetention(ctx context.Context) {
 	if r == nil {
 		return
 	}
-	s.logger.Printf("focus: a mirrored session's focus is deleted %s after the session was last seen (MUSTER_FOCUS_RETENTION); swept every %s",
-		r.Retention, focus.RetentionSweepInterval)
+	s.logger.Printf("focus: a mirrored session's focus is deleted %s after the session was last seen (MUSTER_FOCUS_RETENTION), "+
+		"and focus history %s after it was written (a subject's current focus is kept while it has one); swept every %s",
+		r.Retention, focus.DefaultHistoryRetention, focus.RetentionSweepInterval)
 	r.Run(ctx, focus.RetentionSweepInterval)
 }
 

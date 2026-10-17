@@ -60,6 +60,14 @@ import (
 // until it is shown), so the markup carries `invisible` and place() is the only
 // thing that makes it visible; closing drops the inline style again.
 //
+// A trigger that DECLARES aria-expanded (the focus title, cardFocusTitle) is
+// kept in step with its popover on every toggle, open and close, whatever
+// closed it (a tap outside, Escape, a second tap) — AND after every htmx swap:
+// #agents-list's morph rewrites the trigger's attributes to the server's
+// aria-expanded="false" while its popover stays open, and no toggle fires, so
+// the chevron and highlight (both keyed on aria-expanded) would drop under an
+// open popover. A trigger without the attribute is left without it.
+//
 // A request started from inside a menu closes it as the request STARTS, so a
 // request that fails (and morphs nothing) does not leave it open. Closing — by
 // any route — also closes the nested Delete step, so reopening starts at step 1.
@@ -120,9 +128,15 @@ func floatingMenuScript() g.Node {
   // flashing at this one's stale coordinates) and reset the Delete step. The
   // style observer is NOT stopped — MutationObserver has no per-node unobserve —
   // and does nothing for a closed menu (its callback checks isOpen).
+  function expanded(m, open) {
+    if (!m.id) return;
+    var ts = document.querySelectorAll('[popovertarget="' + m.id + '"][aria-expanded]');
+    for (var i = 0; i < ts.length; i++) ts[i].setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
   document.addEventListener('toggle', function (e) {
     var m = e.target;
     if (!m || !m.matches || !m.matches('[data-floating-menu]')) return;
+    expanded(m, isOpen(m));
     if (isOpen(m)) {
       grew.observe(m);
       stripped.observe(m, { attributes: true, attributeFilter: ['style'] });
@@ -134,6 +148,10 @@ func floatingMenuScript() g.Node {
     var ds = m.querySelectorAll('details[open]');
     for (var i = 0; i < ds.length; i++) ds[i].open = false;
   }, true);
+  document.addEventListener('htmx:afterSettle', function () {
+    var ms = document.querySelectorAll('[data-floating-menu]');
+    for (var i = 0; i < ms.length; i++) expanded(ms[i], isOpen(ms[i]));
+  });
   window.addEventListener('resize', placeAll);
   document.addEventListener('scroll', placeAll, { capture: true, passive: true });
   document.addEventListener('htmx:beforeRequest', function (e) {

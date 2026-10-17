@@ -6,8 +6,9 @@ import (
 	"time"
 )
 
-// The focus chip on BOTH card kinds: present with a focus, absent without, a
-// native popover (the ⋯ menu's pattern) in the footer, and found by the filter.
+// The focus on BOTH card kinds: the card's title when there is one — a
+// popover trigger with the ⋯ menu's native-popover pattern, in its own slot
+// OUTSIDE the nav anchor — absent without, and found by the filter.
 
 func TestBothCardKindsShowTheirFocusInAPopover(t *testing.T) {
 	f := &FocusView{Title: "Reconciling invoices", Description: "Matching payouts to the ledger.", UpdatedAt: time.Now().Add(-3 * time.Minute)}
@@ -25,10 +26,18 @@ func TestBothCardKindsShowTheirFocusInAPopover(t *testing.T) {
 					t.Errorf("missing %q", want)
 				}
 			}
-			// The chip and its popover are in the FOOTER, outside the nav anchor.
-			footer := html[strings.Index(html, `data-card-slot="footer"`):]
-			if !strings.Contains(footer, "data-card-focus") || !strings.Contains(footer, "data-focus-popover") {
-				t.Error("the focus chip is not in the card footer")
+			// The trigger and its popover are in the FOCUS slot, before the nav
+			// anchor (the body), and not in the footer.
+			focusAt, bodyAt := strings.Index(html, `data-card-slot="focus"`), strings.Index(html, `data-card-slot="body"`)
+			if focusAt < 0 || bodyAt < focusAt {
+				t.Fatalf("the focus slot is missing or not before the body (focus %d, body %d)", focusAt, bodyAt)
+			}
+			seg := html[focusAt:bodyAt]
+			if !strings.Contains(seg, "data-card-focus") || !strings.Contains(seg, "data-focus-popover") {
+				t.Error("the focus trigger and popover are not in the focus slot")
+			}
+			if footer := html[strings.Index(html, `data-card-slot="footer"`):]; strings.Contains(footer, "data-card-focus") {
+				t.Error("a card headed by its focus still draws the footer chip")
 			}
 			// The filter finds the card by its focus.
 			if !strings.Contains(html, "reconciling invoices") || !strings.Contains(html, "matching payouts to the ledger.") {

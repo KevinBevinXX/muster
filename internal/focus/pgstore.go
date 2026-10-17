@@ -14,19 +14,23 @@ import (
 
 // Store is focus persistence.
 //
-// 🔴 EVERY METHOD BUT Owners AND PruneAll RUNS UNDER THE CALLER'S PRINCIPAL.
+// 🔴 EVERY METHOD BUT Owners, PruneAll AND PruneHistory RUNS UNDER THE CALLER'S PRINCIPAL.
 // agent_focus is under FORCE row-level security, so a caller reads and writes
 // only its own user's rows, and a row's owner is the principal's user
 // (owner_id's default), never a parameter. The refresher acts as each owner in
 // turn (internal/api's focusPrincipal); only Owners — which owners have
-// anything to refresh — and PruneAll — the retention sweep, which deletes by
-// age alone and returns a count — reach across users, under the system scope.
+// anything to refresh — and PruneAll and PruneHistory — the retention sweep,
+// which deletes by age alone and returns a count — reach across users, under
+// the system scope.
 type Store interface {
 	Get(ctx context.Context, s Subject) (Focus, bool, error)
 	List(ctx context.Context) ([]Focus, error)
 	// Search: live is the caller's mirrored sessions visible now; a mirrored
 	// row outside it is never a hit.
 	Search(ctx context.Context, query string, live []string, limit int) ([]Hit, error)
+	// Upsert writes the focus and, in the same transaction, appends it to the
+	// subject's history when its title or description differs from the newest
+	// history row (migration 0022).
 	Upsert(ctx context.Context, s Subject, w Write) (Focus, error)
 	RecordError(ctx context.Context, s Subject, msg string) error
 	// Touch marks the caller's mirrored subjects seen now; PruneAll deletes
@@ -34,6 +38,12 @@ type Store interface {
 	Touch(ctx context.Context, subs []Subject) error
 	PruneAll(ctx context.Context, before time.Time) (int, error)
 	Owners(ctx context.Context) ([]int64, error)
+	// History is one page of the caller's focus history for s, newest first,
+	// starting after the cursor ("" = the newest).
+	History(ctx context.Context, s Subject, cursor string, limit int) (HistoryPage, error)
+	// PruneHistory deletes EVERY owner's history rows written before before
+	// (the retention sweep, under the system scope).
+	PruneHistory(ctx context.Context, before time.Time) (int, error)
 }
 
 // Write is one focus to store. Title and Description go through Clean.
@@ -148,7 +158,10 @@ func (s *PGStore) Search(ctx context.Context, query string, live []string, limit
 	return out, rows.Err()
 }
 
-// Upsert stores w as the caller's focus for sub, clearing any recorded error.
+// Upsert stores w as the caller's focus for sub, clearing any recorded error,
+// and appends it to sub's history when it changed (appendHistorySQL) — in ONE
+// transaction, so a focus is never stored without its history row or the
+// reverse.
 func (s *PGStore) Upsert(ctx context.Context, sub Subject, w Write) (Focus, error) {
 	if err := sub.Valid(); err != nil {
 		return Focus{}, err
@@ -160,18 +173,52 @@ func (s *PGStore) Upsert(ctx context.Context, sub Subject, w Write) (Focus, erro
 	if w.Source != SourceSummarizer {
 		return Focus{}, errf("unknown source %q", w.Source)
 	}
-	f, err := scan(s.pool.QueryRow(ctx, `INSERT INTO agent_focus (subject_kind, subject_key, agent_id, title, description,
-			source, fingerprint, updated_at, last_error, error_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now(), '', NULL)
-		ON CONFLICT (owner_id, subject_kind, subject_key) DO UPDATE SET seen_at = now(), title = EXCLUDED.title,
-			description = EXCLUDED.description, source = EXCLUDED.source, fingerprint = EXCLUDED.fingerprint,
-			updated_at = now(), last_error = '', error_at = NULL
-		RETURNING `+cols, string(sub.Kind), sub.Key, agentArg(sub), title, desc, string(w.Source), w.Fingerprint))
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Focus{}, errf("upsert: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	f, err := scan(tx.QueryRow(ctx, upsertFocusSQL, string(sub.Kind), sub.Key, agentArg(sub), title, desc, string(w.Source), w.Fingerprint))
 	if err != nil {
 		return Focus{}, errf("upsert: %w", err)
 	}
+	if _, err := tx.Exec(ctx, appendHistorySQL, string(sub.Kind), sub.Key, agentArg(sub), f.Title, f.Description, f.Owner); err != nil {
+		return Focus{}, errf("upsert: history: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Focus{}, errf("upsert: commit: %w", err)
+	}
 	return f, nil
 }
+
+// upsertFocusSQL writes the caller's focus for one subject, clearing any
+// recorded error: ($1 kind, $2 key, $3 agent id or NULL, $4 title, $5
+// description, $6 source, $7 fingerprint).
+const upsertFocusSQL = `INSERT INTO agent_focus (subject_kind, subject_key, agent_id, title, description,
+		source, fingerprint, updated_at, last_error, error_at)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, now(), '', NULL)
+	ON CONFLICT (owner_id, subject_kind, subject_key) DO UPDATE SET seen_at = now(), title = EXCLUDED.title,
+		description = EXCLUDED.description, source = EXCLUDED.source, fingerprint = EXCLUDED.fingerprint,
+		updated_at = now(), last_error = '', error_at = NULL
+	RETURNING ` + cols
+
+// appendHistorySQL appends a focus to its subject's history unless the
+// subject's NEWEST history row already says exactly that (title and
+// description): an identical refresh writes nothing.
+//
+// 🔴 IT RUNS AFTER THE UPSERT, IN ITS TRANSACTION, so the agent_focus row lock
+// the upsert took serialises two writers of one subject: the second one's
+// statement (a fresh READ COMMITTED snapshot) sees the first one's row. And
+// created_at is clock_timestamp(), not now(): now() is when the TRANSACTION
+// began, before that lock wait, so a writer that waited would stamp its row
+// EARLIER than the row it waited for and "newest" would name the wrong one.
+const appendHistorySQL = `INSERT INTO agent_focus_history (subject_kind, subject_key, agent_id, title, description, created_at)
+	SELECT $1, $2, $3, $4, $5, clock_timestamp()
+	WHERE NOT EXISTS (
+		SELECT 1 FROM (SELECT title, description FROM agent_focus_history
+			WHERE owner_id = $6 AND subject_kind = $1 AND subject_key = $2
+			ORDER BY created_at DESC, id DESC LIMIT 1) newest
+		WHERE newest.title = $4 AND newest.description = $5)`
 
 // RecordError records a failed refresh for sub — msg should be a Reason —
 // leaving the focus it holds.
@@ -217,6 +264,77 @@ func (s *PGStore) PruneAll(ctx context.Context, before time.Time) (int, error) {
 		return 0, errf("prune: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
+}
+
+// PruneHistory deletes EVERY owner's focus history rows written before before,
+// and reports how many: the retention sweep (Retainer), under the system scope,
+// as PruneAll is.
+//
+// 🔴 EXCEPT A SUBJECT'S CURRENT FOCUS. A focus unchanged for longer than the
+// retention has exactly one history row — itself — and deleting it would show
+// "No focus history yet" beside a card headed by that very focus. So a
+// subject's NEWEST row is kept while the subject still HAS a focus row. Once
+// the focus row is gone (a mirrored session pruned, unseen for a week) the
+// newest row ages out like the rest: keeping it then would keep every dead
+// session's last focus forever.
+func (s *PGStore) PruneHistory(ctx context.Context, before time.Time) (int, error) {
+	tag, err := s.pool.Exec(sys(ctx), `DELETE FROM agent_focus_history h WHERE h.created_at < $1
+		AND (EXISTS (SELECT 1 FROM agent_focus_history n
+				WHERE n.owner_id = h.owner_id AND n.subject_kind = h.subject_kind AND n.subject_key = h.subject_key
+				AND (n.created_at, n.id) > (h.created_at, h.id))
+			OR NOT EXISTS (SELECT 1 FROM agent_focus f
+				WHERE f.owner_id = h.owner_id AND f.subject_kind = h.subject_kind AND f.subject_key = h.subject_key
+				AND f.title <> ''))`, before)
+	if err != nil {
+		return 0, errf("prune history: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// History is one page of the caller's history for sub, newest first: at most
+// limit rows (bounded by MaxHistoryPage; <= 0 is DefaultHistoryPage) after
+// cursor ("" = from the newest), and the cursor of the next page ("" = this
+// is the oldest page). Another owner's subject reads as no rows (row-level
+// security); telling "none" from "not yours" is the caller's job.
+func (s *PGStore) History(ctx context.Context, sub Subject, cursor string, limit int) (HistoryPage, error) {
+	if err := sub.Valid(); err != nil {
+		return HistoryPage{}, err
+	}
+	c, err := parseHistoryCursor(cursor)
+	if err != nil {
+		return HistoryPage{}, err
+	}
+	if limit <= 0 {
+		limit = DefaultHistoryPage
+	}
+	if limit > MaxHistoryPage {
+		limit = MaxHistoryPage
+	}
+	// One more than the page, to know whether there is a next one.
+	rows, err := s.pool.Query(ctx, `SELECT id, title, description, created_at FROM agent_focus_history
+		WHERE subject_kind = $1 AND subject_key = $2 AND (NOT $3 OR (created_at, id) < ($4, $5))
+		ORDER BY created_at DESC, id DESC LIMIT $6`,
+		string(sub.Kind), sub.Key, c.set, c.at, c.id, limit+1)
+	if err != nil {
+		return HistoryPage{}, errf("history: %w", err)
+	}
+	defer rows.Close()
+	page := HistoryPage{Entries: []HistoryEntry{}}
+	for rows.Next() {
+		var e HistoryEntry
+		if err := rows.Scan(&e.ID, &e.Title, &e.Description, &e.CreatedAt); err != nil {
+			return HistoryPage{}, errf("history: %w", err)
+		}
+		page.Entries = append(page.Entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		return HistoryPage{}, errf("history: %w", err)
+	}
+	if len(page.Entries) > limit {
+		page.Entries = page.Entries[:limit]
+		page.Next = historyCursorOf(page.Entries[limit-1])
+	}
+	return page, nil
 }
 
 // Owners is every ENABLED user with something focus could describe: an agent,

@@ -241,6 +241,7 @@ var isolationClasses = map[string]routeClass{
 	"GET /tasks/{id}":                          classParam,
 	"GET /tasks/{id}/attachments/{aid}":        classParam,
 	"GET /ui/agents/{id}/card":                 classParam,
+	"GET /ui/focus/history":                    classParam,
 	"GET /ui/agents/{id}/rename":               classParam,
 	"GET /ui/agents/{id}/status":               classParam,
 	"GET /ui/agents/{name}/chat-log":           classParam,
@@ -1130,6 +1131,10 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		}
 		path += "?" + url.Values{"host": {o.mirrorHost}, "session": {o.mirrorSession}}.Encode()
 	}
+	if path == "/ui/focus/history" {
+		// Focus history (0022) names its session by a query parameter: A's agent.
+		path += "?" + url.Values{"subject": {"agent:" + strconv.FormatInt(o.agent, 10)}}.Encode()
+	}
 	if method == http.MethodGet || method == http.MethodDelete {
 		if strings.HasPrefix(path, "/github/callback") {
 			path += "?state=x&code=y"
@@ -1200,7 +1205,7 @@ func (w *isoWorld) snapshot() map[string]string {
 	for _, tbl := range []string{"notes", "note_comments", "note_attachments", "task_sessions", "agents",
 		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "github_connection", "mirror_tokens",
 		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens", "push_subscriptions", "push_preferences", "flow_requests",
-		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "recents", "send_queue", "agent_focus", "session_routes"} {
+		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "recents", "send_queue", "agent_focus", "agent_focus_history", "session_routes"} {
 		var js string
 		if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t.id)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
 			// task_sessions/github_connection have no `id` ordering column in every
@@ -1286,7 +1291,14 @@ func namesObject(route string) bool {
 		strings.HasPrefix(route, "GET /mirror/terminal") || strings.HasPrefix(route, "GET /mirror/view") ||
 		route == "POST /mirror/view/send" || route == "POST /mirror/terminal/send" || route == "POST /mirror/confirm-send" ||
 		route == "POST /mirror/terminal/scroll" ||
-		route == "GET /send-queue" || route == "POST /send-queue" || route == "POST /send-queue/confirm"
+		route == "GET /send-queue" || route == "POST /send-queue" || route == "POST /send-queue/confirm" ||
+		// Focus history (0022) names its session in the query (?subject=agent:<id>),
+		// so it is held to the object routes' rules: B's answer about A's agent
+		// must be its answer about a ghost, and A's own walk must reach it. (That
+		// B gets a 404 rather than an empty 200 is pinned by
+		// TestFocusHistoryRouteIs404ForAnotherOwnersSession, not here: both
+		// answers are indistinguishable either way.)
+		route == "GET /ui/focus/history"
 }
 
 var paramRE = regexp.MustCompile(`\{[a-z]`)

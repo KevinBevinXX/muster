@@ -291,6 +291,9 @@ func agentCard(a AgentCardView) g.Node {
 			agentRenameButton(ids),
 			agentMenu(a),
 		),
+		// With a focus, it heads the card (cardFocusTitle): a popover trigger
+		// OUTSIDE the nav anchor, and the name below becomes its subtitle.
+		cardFocusTitle("agent-"+ids, a.Focus),
 		// The card body is the navigation surface: a REAL-load link to the detail
 		// page (hx-boost="false"). The card sits inside #agents-list, which carries
 		// hx-get/hx-target="#agents-list"/hx-swap; htmx attrs are INHERITED by
@@ -304,7 +307,7 @@ func agentCard(a AgentCardView) g.Node {
 			Href("/agents/"+a.Name),
 			hx("hx-boost", "false"),
 			cardSlot("body"),
-			Class("flex flex-col gap-3 p-4 pr-28"),
+			Class(cardBodyClass(a.Focus)),
 			Div(
 				cardSlot("header"),
 				Class("flex flex-wrap items-center gap-2"),
@@ -319,7 +322,8 @@ func agentCard(a AgentCardView) g.Node {
 				// Same placement, same reason: a sibling of the polling span.
 				g.If(a.KickoffFailed, kickoffFailedBadge()),
 				Span(
-					Class("mr-auto break-all text-base font-semibold leading-tight text-fg group-hover:text-accent"),
+					Class(cardNameClass(a.Focus)),
+					g.If(cardHasFocusTitle(a.Focus), g.Attr("data-card-subtitle", "")),
 					// markdownPlain, exactly as agentTitle on the detail page does. A
 					// task-derived display name routinely carries `**bold**` and `code`,
 					// and this rendered it RAW while the detail header rendered it as

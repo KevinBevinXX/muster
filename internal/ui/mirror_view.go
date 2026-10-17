@@ -68,6 +68,10 @@ type MirrorViewView struct {
 	Dictate string
 	// Queue is the composer's send queue (ComposerView.Queue); nil for none.
 	Queue *ComposerQueue
+	// FocusHistory is the session's focus history, the newest page
+	// (FocusHistoryPath); "" when the host reports no Claude session for the
+	// window, which then has none. The index sheet's second tab.
+	FocusHistory string
 }
 
 // MirrorReadOnlyNote is what a read-only host's composer says instead of
@@ -158,7 +162,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				// The tool groups' open/close animation (tool_groups.go).
 				toolGroupScript(),
 				bubbleClampScript(),
-				chatIndexSheet(),
+				chatIndexSheet(v.FocusHistory, "mirror-view:"+ref.query()),
 				chatIndexScript(),
 				mirrorComposerScript(),
 				pwaChrome(),
