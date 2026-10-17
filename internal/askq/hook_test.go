@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -199,18 +200,28 @@ func TestTheHookFailsOpenOnEveryFailure(t *testing.T) {
 	t.Run("answers that do not fit the questions", func(t *testing.T) {
 		f := &fakeMuster{store: New()}
 		mux := http.NewServeMux()
+		var polled atomic.Int32
 		mux.HandleFunc("POST /mirror/ask", func(w http.ResponseWriter, r *http.Request) {
+			var req struct {
+				ID string `json:"id"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
 			w.WriteHeader(http.StatusCreated)
-			_, _ = w.Write([]byte(`{"id":"x","state":"pending"}`))
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": req.ID, "state": "pending"})
 		})
-		mux.HandleFunc("GET /mirror/ask/x", func(w http.ResponseWriter, r *http.Request) {
-			_, _ = w.Write([]byte(`{"id":"x","state":"answered","answers":{"Which color do you prefer?":"Red"}}`))
+		// A partial answer: one of the two questions.
+		mux.HandleFunc("GET /mirror/ask/{id}", func(w http.ResponseWriter, r *http.Request) {
+			polled.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": r.PathValue("id"), "state": "answered", "answers": map[string]string{"Which color do you prefer?": "Red"}})
 		})
-		mux.HandleFunc("DELETE /mirror/ask/x", func(w http.ResponseWriter, r *http.Request) { f.gone = append(f.gone, "x") })
+		mux.HandleFunc("DELETE /mirror/ask/{id}", func(w http.ResponseWriter, r *http.Request) { f.gone = append(f.gone, r.PathValue("id")) })
 		srv := httptest.NewServer(mux)
 		defer srv.Close()
 		if out := testHook(srv.URL).Run(context.Background(), gatePayload(t)); out != nil {
 			t.Fatalf("printed %s for a partial answer", out)
+		}
+		if polled.Load() == 0 {
+			t.Fatal("the hook never read the answers: this case tests nothing")
 		}
 	})
 	t.Run("interrupted", func(t *testing.T) {
