@@ -784,13 +784,13 @@ func agentsFilterScript() g.Node {
     while (p < heldOrder.length && heldOrder[p] === live[p]) p++;
     return !heldOrder.slice(p).some(inView);
   }
-  // pending is beforeSwap's reading of the swap afterSwap finishes: the server's
+  // swapPlan is beforeSwap's reading of the swap afterSwap finishes: the server's
   // (live) order and the decision.
-  var pending = null;
+  var swapPlan = null;
   function hold(e) {
     var list = e.target;
-    var p = pending;
-    pending = null;
+    var p = swapPlan;
+    swapPlan = null;
     liveOrder = p ? p.live : cardsOf(list).map(function (c) { return c.id; });
     var apply_ = p ? p.apply : decide(e, liveOrder);
     if (apply_) {
@@ -849,14 +849,14 @@ func agentsFilterScript() g.Node {
       var r = c.getBoundingClientRect();
       seen[c.id] = { top: r.top, bottom: r.bottom, h: r.height };
     });
-    pending = null;
+    swapPlan = null;
     if (typeof e.detail.serverResponse !== 'string') return;
     var tpl = document.createElement('template');
     tpl.innerHTML = e.detail.serverResponse;
     var live = [].filter.call(tpl.content.children, function (c) { return c.tagName === 'ARTICLE' && c.id; })
       .map(function (c) { return c.id; });
-    pending = { live: live, apply: decide(e, live) };
-    if (!pending.apply) keepDrawnOrder(e, drawn.map(function (c) { return c.id; }));
+    swapPlan = { live: live, apply: decide(e, live) };
+    if (!swapPlan.apply) keepDrawnOrder(e, drawn.map(function (c) { return c.id; }));
   });
   document.addEventListener('htmx:afterSwap', function (e) {
     if (e.target && e.target.id === 'agents-list') { hold(e); apply(); }

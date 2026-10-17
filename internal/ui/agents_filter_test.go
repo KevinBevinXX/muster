@@ -270,6 +270,21 @@ func TestTheFilterScriptDeclaresEachFunctionOnce(t *testing.T) {
 	for _, m := range regexp.MustCompile(`(?m)^  function (\w+)\s*\(`).FindAllStringSubmatch(b.String(), -1) {
 		seen[m[1]]++
 	}
+	// The same trap for a top-level `var`: two of them are ONE variable. The
+	// hold's "pending" swap plan took over the link-token move's "pending"
+	// map, and a ?q=host=… link no longer selected its host.
+	vars := map[string]int{}
+	for _, m := range regexp.MustCompile(`(?m)^  var (\w+)`).FindAllStringSubmatch(b.String(), -1) {
+		vars[m[1]]++
+	}
+	if len(vars) < 5 {
+		t.Fatalf("found only %d top-level vars — the pattern no longer matches the script", len(vars))
+	}
+	for name, n := range vars {
+		if n > 1 {
+			t.Errorf("var %s is declared %d times in agentsFilterScript; both are one variable", name, n)
+		}
+	}
 	if len(seen) < 10 {
 		t.Fatalf("found only %d top-level functions — the pattern no longer matches the script", len(seen))
 	}
