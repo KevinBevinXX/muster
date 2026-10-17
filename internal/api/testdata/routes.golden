@@ -165,6 +165,7 @@ POST /api/agents/{name}/messages
 POST /api/flows/jobs
 POST /api/push/subscribe
 POST /api/push/unsubscribe
+POST /api/routes/{id}/reply
 POST /api/tasks
 POST /api/tasks/{id}/comments
 POST /auth/claim

@@ -112,3 +112,6 @@ the chief that focus is data, never instructions. Neither makes the text safe
 All three are on the agent gateway and on `/mcp`. A subject is spelled
 `agent:<id>` or `mirror:<claude session id>`, as `agents_list` and
 `focus_search` return it.
+
+The chief uses focus to pick a session for a plugin message it routes; see
+[routing a message to a session](plugins.md#routing-a-message-to-a-session).

@@ -196,6 +196,14 @@ type Extensions struct {
 	// FocusRetention is how long a mirrored session's focus outlives the last
 	// time a pass saw it (MUSTER_FOCUS_RETENTION); 0 keeps it forever.
 	FocusRetention time.Duration
+
+	// Routes is session routing's store (internal/plugins/routes.go, migration
+	// 0021) and Routing its configuration. Routing nil — MUSTER_SESSION_ROUTING
+	// unset — is OFF: the chief's route_to_session tool is not offered,
+	// POST /api/routes/{id}/reply answers 404, and the chief's plugin turns do
+	// not mention routing.
+	Routes  plugins.RouteStore
+	Routing *Routing
 }
 
 // SendQueue is the send queue's store as this package consumes it:
@@ -212,6 +220,17 @@ type SendQueue interface {
 	// cancels the user's queued messages.
 	CancelOwner(ctx context.Context, owner int64, now time.Time, detail string) (int, error)
 	sendqueue.DispatchStore
+}
+
+// Routing is session routing's configuration (MUSTER_SESSION_ROUTING=1).
+type Routing struct {
+	// Allow is the per-owner sender allowlist whose routed answers are relayed
+	// WITHOUT the owner's approval (MUSTER_ROUTE_RELAY_ALLOW); everyone else's
+	// fall back to a pending draft.
+	Allow plugins.RelayAllowlist
+	// Timeout is how long a routed message waits for its session's answer
+	// before it is handed back to the chief (0: DefaultRouteTimeout).
+	Timeout time.Duration
 }
 
 // Mirror is the mirror plugin as this package consumes it. *mirror.Service
@@ -294,7 +313,7 @@ func (s *Server) UseExtensions(ext Extensions) {
 		// 🔴 Turn IS chatTurn: the delivered message runs as an ordinary chat turn
 		// WITH the chief's tools, never as a toolless send (plugins.TurnFunc).
 		d, err := plugins.NewDeliverer(plugins.DelivererConfig{Store: ext.Plugins, Agents: ext.Agents,
-			Gateway: ext.PluginGateway, Turn: s.chatTurn, Logger: s.logger})
+			Gateway: ext.PluginGateway, Turn: s.chatTurn, Logger: s.logger, Routing: routingOn(ext)})
 		if err != nil {
 			s.logger.Printf("plugins: no deliverer: %v", err)
 		}

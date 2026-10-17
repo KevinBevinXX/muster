@@ -118,6 +118,10 @@ type Item struct {
 	// folded into AfterSince when the row finishes (or is recovered), dropped
 	// when the send was superseded and the row goes back to queued.
 	ClaimSince int64
+	// RouteID marks a ROUTED message (session routing, internal/plugins'
+	// session_routes): "" for a person's. Its delivery is gated on the route,
+	// not on a sign-in (internal/api's sendQueueSend).
+	RouteID string
 }
 
 // MaxOpenPerTarget bounds the messages one target may have queued (or being
@@ -159,13 +163,13 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 // cols is every column an Item is read from, in scanItem's order.
 const cols = `id, owner_id, mirror_host, mirror_session, mirror_window, body, stepup_at, state, detail,
 	may_have_delivered, created_at, coalesce(claimed_at, 'epoch'::timestamptz), coalesce(finished_at, 'epoch'::timestamptz),
-	after_since, coalesce(claimed_by, ''), coalesce(lease_until, 'epoch'::timestamptz), claim_since`
+	after_since, coalesce(claimed_by, ''), coalesce(lease_until, 'epoch'::timestamptz), claim_since, coalesce(route_id, '')`
 
 // itemDests is where cols scan into it, with its state into state.
 func itemDests(it *Item, state *string) []any {
 	return []any{&it.ID, &it.Owner, &it.Target.Host, &it.Target.Session, &it.Target.Window,
 		&it.Body, &it.StepUpAt, state, &it.Detail, &it.MayHaveDelivered, &it.CreatedAt, &it.ClaimedAt, &it.FinishedAt,
-		&it.AfterSince, &it.ClaimedBy, &it.LeaseUntil, &it.ClaimSince}
+		&it.AfterSince, &it.ClaimedBy, &it.LeaseUntil, &it.ClaimSince, &it.RouteID}
 }
 
 // settle finishes a scanned item: its state, and the epoch placeholders back to
@@ -195,8 +199,9 @@ func targetWhere(t Target, n int) (string, []any) {
 }
 
 // Enqueue queues it for its target, as the caller, and returns the stored row.
-// Only its Target, Body, StepUpAt and AfterSince (the status time the window
-// held at its latest paste, as the hub knows it; 0 for none) are read.
+// Only its Target, Body, StepUpAt, AfterSince (the status time the window
+// held at its latest paste, as the hub knows it; 0 for none) and RouteID (a
+// routed message's route, "" for a person's) are read.
 //
 // The per-target bound is checked AFTER the insert, in the same transaction,
 // serialised per owner by an advisory lock, so two concurrent messages cannot
@@ -217,9 +222,9 @@ func (s *PGStore) Enqueue(ctx context.Context, it Item) (Item, error) {
 		// sign-in time that admitted it could never be sent.
 		return Item{}, errors.New("sendqueue: a queued message needs the sign-in time of the session that queued it")
 	}
-	q := `INSERT INTO send_queue (mirror_host, mirror_session, mirror_window, body, stepup_at, after_since)
-		VALUES ($1, $2, $3, $4, $5, $6) RETURNING ` + cols
-	args := []any{it.Target.Host, it.Target.Session, it.Target.Window, text, it.StepUpAt, max(it.AfterSince, 0)}
+	q := `INSERT INTO send_queue (mirror_host, mirror_session, mirror_window, body, stepup_at, after_since, route_id)
+		VALUES ($1, $2, $3, $4, $5, $6, nullif($7, '')) RETURNING ` + cols
+	args := []any{it.Target.Host, it.Target.Session, it.Target.Window, text, it.StepUpAt, max(it.AfterSince, 0), it.RouteID}
 	var out Item
 	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('sendqueue.enqueue'),

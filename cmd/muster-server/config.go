@@ -21,6 +21,7 @@ import (
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/stepup"
@@ -115,6 +116,16 @@ const (
 	// envPluginTaskNamespaces lists the tag namespaces POST /plugin/v1/tasks
 	// accepts keys in (internal/api/plugin_tasks.go), comma-separated.
 	envPluginTaskNamespaces = "MUSTER_PLUGIN_TASK_NAMESPACES"
+	// SESSION ROUTING (internal/plugins/routes.go): "1" lets the chief hand a
+	// plugin message to one of its owner's sessions (route_to_session) and relay
+	// the session's answer. Needs the plugin interface on. Off, the routing
+	// tools are not offered and POST /api/routes/{id}/reply answers 404.
+	envSessionRouting = "MUSTER_SESSION_ROUTING"
+	// The per-owner sender allowlist whose routed answers are relayed WITHOUT
+	// the owner's approval: "<user id>:<plugin>:<address or *@domain>,…", each
+	// matched only on mail that plugin marked sender_verified. Unset: every
+	// routed answer becomes a pending draft the owner approves.
+	envRouteRelayAllow = "MUSTER_ROUTE_RELAY_ALLOW"
 	// How long a sign-in stays fresh enough to TYPE into a mirrored session
 	// (internal/stepup): a Go duration, 12h when unset, refused outside
 	// 1m–24h. Freshness is per browser session, never per user.
@@ -406,6 +417,11 @@ type config struct {
 	Plugins bool
 	// PluginTaskNamespaces is MUSTER_PLUGIN_TASK_NAMESPACES, split on commas.
 	PluginTaskNamespaces []string
+	// SessionRouting is MUSTER_SESSION_ROUTING=1; RouteRelayAllow is
+	// MUSTER_ROUTE_RELAY_ALLOW, parsed (validate refuses one that does not parse).
+	SessionRouting     bool
+	RouteRelayAllowRaw string
+	RouteRelayAllow    plugins.RelayAllowlist
 	// StepUpWindow is internal/stepup's freshness window (MUSTER_STEPUP_WINDOW;
 	// stepup.DefaultWindow when unset). loadConfig refuses an out-of-bounds one.
 	StepUpWindow time.Duration
@@ -762,6 +778,8 @@ func loadConfig(getenv func(string) string) (config, error) {
 		Mirror:               envFlag(getenv, envMirror),
 		Plugins:              envFlag(getenv, envPlugins),
 		PluginTaskNamespaces: splitList(getenv(envPluginTaskNamespaces)),
+		SessionRouting:       envFlag(getenv, envSessionRouting),
+		RouteRelayAllowRaw:   strings.TrimSpace(getenv(envRouteRelayAllow)),
 		FlowAgentDenyWords:   splitList(getenv(envFlowAgentDenyWords)),
 		MemoURL:              strings.TrimRight(strings.TrimSpace(getenv(envMemoURL)), "/"),
 		MemoToken:            strings.TrimSpace(getenv(envMemoToken)),
@@ -920,6 +938,13 @@ func loadConfig(getenv func(string) string) (config, error) {
 			return config{}, fmt.Errorf("invalid %s %q: want a Go duration between 1h and 2160h (e.g. 168h)", envFocusRetention, v)
 		}
 		c.FocusRetention = d
+	}
+	if c.RouteRelayAllowRaw != "" {
+		l, err := plugins.ParseRelayAllowlist(c.RouteRelayAllowRaw)
+		if err != nil {
+			return config{}, fmt.Errorf("invalid %s: %v (want <user id>:<plugin>:<ASCII address or *@domain>, comma-separated)", envRouteRelayAllow, err)
+		}
+		c.RouteRelayAllow = l
 	}
 
 	if v := strings.TrimSpace(getenv(envGitHubEncKey)); v != "" {

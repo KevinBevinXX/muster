@@ -354,6 +354,12 @@ var bannerLedger = []string{
 	// plugin that files tasks holds its notices, so the operator must be told
 	// which state this is (and which namespaces are accepted).
 	envPluginTaskNamespaces,
+	// 🔴 SESSION ROUTING IS LEDGERED: ON, the chief can put an outside party's
+	// message into the operator's own sessions and relay the answer without
+	// approval to allowlisted senders, so the log must say which state this is
+	// and how many owners have an allowlist.
+	envSessionRouting,
+	envRouteRelayAllow,
 	// 🔴 THE AGENT-FLOW DENY WORDS ARE LEDGERED: unset, the agent door screens
 	// agent-composed text with the generic patterns only, and that fail-open
 	// state must be a loud line, not a silence (the operator's audit of #76).
@@ -660,6 +666,9 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		VAPIDPublicKey:  bannerVAPIDPub,
 		VAPIDPrivateKey: bannerVAPIDPriv,
 		VAPIDSubject:    "mailto:ops@example.com",
+		// Session routing: the banner branches on ext.Routing (below).
+		SessionRouting:     true,
+		RouteRelayAllowRaw: "1:example-inbox:someone@example.invalid",
 	}
 	onOut = renderBannerWithPool(t, on, api.Extensions{
 		Mirror:      mirror.NewService(nil, nil),
@@ -672,15 +681,42 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		// Plugins: the banner branches on ext.Plugins and ext.PluginGateway.
 		Plugins:       bannerStubPlugins{},
 		PluginGateway: bannerStubPluginGateway{},
+		Routes:        bannerStubRoutes{},
+		Routing:       &api.Routing{Allow: bannerAllowlist(t)},
 	}, &pgxpool.Pool{})
 	offOut = renderBannerWithPool(t, config{}, api.Extensions{}, nil)
 	return onOut, offOut
+}
+
+func bannerAllowlist(t *testing.T) plugins.RelayAllowlist {
+	t.Helper()
+	l, err := plugins.ParseRelayAllowlist("1:example-inbox:someone@example.invalid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l
+}
+
+// 🟢 Routing ON with no MUSTER_HOOK_TOKEN: a session answering on the shared
+// hook credential is refused (503), so its routes time out — a loud line.
+// With the token set (the control), no warning.
+func TestTheBannerWarnsWhenRoutingIsOnWithoutAHookToken(t *testing.T) {
+	ext := api.Extensions{Plugins: bannerStubPlugins{}, PluginGateway: bannerStubPluginGateway{},
+		Routes: bannerStubRoutes{}, Routing: &api.Routing{Allow: bannerAllowlist(t)}}
+	const warn = "WARNING — session routing: " + envHookToken + " is unset"
+	if out := renderBanner(t, config{SessionRouting: true, Plugins: true}, ext); !strings.Contains(out, warn) {
+		t.Errorf("routing on, no hook token: no warning.\nbanner:\n%s", out)
+	}
+	if out := renderBanner(t, config{SessionRouting: true, Plugins: true, HookToken: "hook"}, ext); strings.Contains(out, warn) {
+		t.Errorf("routing on WITH a hook token still warns.\nbanner:\n%s", out)
+	}
 }
 
 // bannerStubPlugins and bannerStubPluginGateway are present-but-inert: the
 // banner only asks whether they are wired.
 type bannerStubPlugins struct{ plugins.Store }
 type bannerStubPluginGateway struct{ plugins.Gateway }
+type bannerStubRoutes struct{ plugins.RouteStore }
 
 func TestTheBannerAnnouncesEveryLedgeredVariableInBothDirections(t *testing.T) {
 	onOut, offOut := bannerBothDirections(t)

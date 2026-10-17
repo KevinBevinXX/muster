@@ -316,6 +316,12 @@ func (s *Server) agentTools() []agentTool {
 			tools = append(tools, agentTool{def: d, mcp: true, chiefOnly: true})
 		}
 	}
+	// Session routing (session_routes.go), only with MUSTER_SESSION_ROUTING on:
+	// the chief hands a plugin message to a mirrored session (chief-only, like
+	// reply_draft). The session answers through POST /api/routes/{id}/reply.
+	if routingOn(s.ext) {
+		tools = append(tools, agentTool{def: routeToolDef(), mcp: true, chiefOnly: true})
+	}
 	return tools
 }
 
@@ -553,6 +559,8 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return s.toolFocusSearch(ctx, arguments)
 	case focusRefreshToolName:
 		return s.toolFocusRefresh(ctx, a, arguments)
+	case routeToSessionToolName:
+		return s.toolRouteToSession(ctx, a, arguments)
 	case "connector_status":
 		var in struct {
 			Name        string `json:"name"`

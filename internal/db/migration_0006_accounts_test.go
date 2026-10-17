@@ -93,10 +93,11 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - pins (0017, the Agents list's pinned entries).
 //   - recents (0018, the Agents list's recently viewed entries).
 //   - send_queue (0019, the server-side send queue).
+//   - session_routes (0021, the chief's routed plugin messages).
 //   - agent_focus (0020, each session's focus).
 var ownedAfter0006 = []string{"agent_focus", "cc_account_marks", "flow_jobs", "flow_requests", "flow_runner_tokens",
 	"mirror_tokens", "pins", "plugin_messages", "plugin_reply_drafts", "plugins", "push_preferences",
-	"push_subscriptions", "recents", "send_queue", "user_credentials"}
+	"push_subscriptions", "recents", "send_queue", "session_routes", "user_credentials"}
 
 // rlsTables is every owned table today: ownedTables plus ownedAfter0006.
 func rlsTables() []string { return append(slices.Clone(ownedTables), ownedAfter0006...) }
@@ -169,6 +170,10 @@ var wantForeignKeys = []string{
 	"plugins|plugins_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"push_preferences|push_preferences_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"push_subscriptions|push_subscriptions_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"session_routes|session_routes_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL",
+	"session_routes|session_routes_draft_id_fkey|FOREIGN KEY (draft_id) REFERENCES plugin_reply_drafts(id) ON DELETE SET NULL",
+	"session_routes|session_routes_message_owner_fkey|FOREIGN KEY (plugin_message_id, owner_id) REFERENCES plugin_messages(id, owner_id) ON DELETE CASCADE",
+	"session_routes|session_routes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"send_queue|send_queue_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"task_sessions|task_sessions_note_owner_fkey|FOREIGN KEY (note_id, owner_id) REFERENCES notes(id, owner_id) ON DELETE CASCADE",
 	"task_sessions|task_sessions_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",

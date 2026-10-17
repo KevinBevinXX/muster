@@ -74,6 +74,9 @@ type DelivererConfig struct {
 	Gateway Gateway
 	Turn    TurnFunc
 	Logger  *log.Logger
+	// Routing: session routing is on, so the turn says when to route
+	// (RoutingSentence).
+	Routing bool
 }
 
 // Deliverer hands one stored message to the owner's chief as a fenced turn: the
@@ -91,6 +94,8 @@ type Deliverer struct {
 	run    TurnFunc
 	log    *log.Logger
 	turn   time.Duration
+	// routing: DelivererConfig.Routing.
+	routing bool
 	// owner names this process in an agent's session claim.
 	owner string
 }
@@ -107,7 +112,8 @@ func NewDeliverer(cfg DelivererConfig) (*Deliverer, error) {
 	case cfg.Turn == nil:
 		return nil, errors.New("plugins: DelivererConfig.Turn is required (the tool-capable chat turn a message is delivered as)")
 	}
-	d := &Deliverer{store: cfg.Store, agents: cfg.Agents, gw: cfg.Gateway, run: cfg.Turn, log: cfg.Logger, turn: DefaultTurnTimeout}
+	d := &Deliverer{store: cfg.Store, agents: cfg.Agents, gw: cfg.Gateway, run: cfg.Turn, log: cfg.Logger, turn: DefaultTurnTimeout,
+		routing: cfg.Routing}
 	if d.log == nil {
 		d.log = log.New(io.Discard, "", 0)
 	}
@@ -224,7 +230,7 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 		return Result{Outcome: OutcomeSettled}
 	}
 
-	message := RenderMessage(p, m)
+	message := RenderMessage(p, m, d.routing)
 	pc := &agents.PartCollector{}
 	reply, err := d.run(ctx, fresh, sess.SessionKey, message, pc.Observe)
 

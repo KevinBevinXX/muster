@@ -115,13 +115,13 @@ func scanPlugin(row pgx.Row) (Plugin, error) {
 }
 
 const messageCols = `id, owner_id, plugin_id, external_id, sender, subject, body, received_at, created_at, status,
-	attempts, last_attempt_at, delivered_at, agent_id, no_reply`
+	attempts, last_attempt_at, delivered_at, agent_id, no_reply, sender_verified`
 
 func scanMessage(row pgx.Row) (Message, error) {
 	var m Message
 	var st string
 	err := row.Scan(&m.ID, &m.OwnerID, &m.PluginID, &m.ExternalID, &m.Sender, &m.Subject, &m.Body, &m.ReceivedAt,
-		&m.CreatedAt, &st, &m.Attempts, &m.LastAttemptAt, &m.DeliveredAt, &m.AgentID, &m.NoReply)
+		&m.CreatedAt, &st, &m.Attempts, &m.LastAttemptAt, &m.DeliveredAt, &m.AgentID, &m.NoReply, &m.SenderVerified)
 	m.Status = Status(st)
 	return m, err
 }
@@ -293,9 +293,9 @@ func (s *PGStore) Submit(ctx context.Context, pluginID int64, in MessageIn) (Mes
 			return ErrQueueFull
 		}
 		m, err = scanMessage(tx.QueryRow(ctx, `
-			INSERT INTO plugin_messages (plugin_id, external_id, sender, subject, body, received_at, no_reply)
-			VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING `+messageCols,
-			pluginID, in.ExternalID, in.Sender, in.Subject, in.Body, in.ReceivedAt, in.NoReply))
+			INSERT INTO plugin_messages (plugin_id, external_id, sender, subject, body, received_at, no_reply, sender_verified)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING `+messageCols,
+			pluginID, in.ExternalID, in.Sender, in.Subject, in.Body, in.ReceivedAt, in.NoReply, in.SenderVerified))
 		if err != nil {
 			return err
 		}
