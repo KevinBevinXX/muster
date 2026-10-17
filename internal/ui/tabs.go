@@ -86,9 +86,8 @@ func Tabs(id, key, label string, tabs ...Tab) TabSet {
 
 // tabsScript switches every [data-tabs] tablist's panels: a click, and the
 // arrow keys, Home and End on a focused tab. Each switch is stored (when the
-// list has a data-tabs-key) and announced as a muster:tab event on the
-// tablist (detail: the tab's id), and the stored choice is restored on load
-// and after every htmx swap.
+// list has a data-tabs-key), and the stored choice is restored on load and
+// after every htmx swap.
 func tabsScript() g.Node {
 	return Script(g.Raw(`
 (function () {
@@ -109,7 +108,6 @@ func tabsScript() g.Node {
     if (opts.focus) tab.focus();
     var key = list.getAttribute('data-tabs-key');
     if (key && opts.persist) save(key, tab.getAttribute('data-tab'));
-    list.dispatchEvent(new CustomEvent('muster:tab', { bubbles: true, detail: tab.getAttribute('data-tab') }));
   }
   function restore(root) {
     var lists = (root || document).querySelectorAll('[data-tabs][data-tabs-key]');

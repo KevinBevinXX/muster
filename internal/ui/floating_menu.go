@@ -61,8 +61,11 @@ import (
 //
 // A trigger that DECLARES aria-expanded (the focus title, cardFocusTitle) is
 // kept in step with its popover on every toggle, open and close, whatever
-// closed it (a tap outside, Escape, a second tap). A trigger without the
-// attribute is left without it.
+// closed it (a tap outside, Escape, a second tap) — AND after every htmx swap:
+// #agents-list's morph rewrites the trigger's attributes to the server's
+// aria-expanded="false" while its popover stays open, and no toggle fires, so
+// the chevron and highlight (both keyed on aria-expanded) would drop under an
+// open popover. A trigger without the attribute is left without it.
 //
 // A request started from inside a menu closes it as the request STARTS, so a
 // request that fails (and morphs nothing) does not leave it open. Closing — by
@@ -144,6 +147,10 @@ func floatingMenuScript() g.Node {
     var ds = m.querySelectorAll('details[open]');
     for (var i = 0; i < ds.length; i++) ds[i].open = false;
   }, true);
+  document.addEventListener('htmx:afterSettle', function () {
+    var ms = document.querySelectorAll('[data-floating-menu]');
+    for (var i = 0; i < ms.length; i++) expanded(ms[i], isOpen(ms[i]));
+  });
   window.addEventListener('resize', placeAll);
   document.addEventListener('scroll', placeAll, { capture: true, passive: true });
   document.addEventListener('htmx:beforeRequest', function (e) {

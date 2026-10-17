@@ -253,3 +253,52 @@ func TestTheAgentPageHasAFocusHistoryDialog(t *testing.T) {
 		t.Error("an agent page with no focus store draws focus history")
 	}
 }
+
+// escapePayload is markup, an event handler, both quotes and an ampersand:
+// what a summarizer could be talked into writing into a focus.
+const escapePayload = `<img src=x onerror="alert(1)">"'&`
+
+// TestFocusTextIsEscapedEverywhereItIsDrawn: the payload in a focus title and
+// description is TEXT in a history row, in the card's focus title, in its
+// aria-label, and a URL carrying it is an attribute value in data-href — never
+// markup, never an attribute break-out. Each place is read back through a
+// parser (so the text round-trips exactly) and searched raw (so no tag leaks).
+func TestFocusTextIsEscapedEverywhereItIsDrawn(t *testing.T) {
+	href := FocusHistoryRoute + "?subject=" + escapePayload
+	var b strings.Builder
+	if err := RenderFocusHistoryPage(&b, FocusHistoryPageView{First: true, Next: href,
+		Entries: []FocusHistoryEntry{{Title: escapePayload, Description: escapePayload, At: time.Now()}}}); err != nil {
+		t.Fatal(err)
+	}
+	rows := b.String()
+	a := realisticAgent()
+	a.Focus = &FocusView{Title: escapePayload, Description: escapePayload, UpdatedAt: time.Now()}
+	card := renderNode(t, agentCard(a))
+	for name, markup := range map[string]string{"history rows": rows, "card": card} {
+		if strings.Contains(markup, "<img") || strings.Contains(markup, `onerror="alert`) {
+			t.Errorf("%s: the payload is markup:\n%s", name, markup)
+		}
+	}
+	doc := parseFragment(t, rows)
+	item := findAttr(doc, "data-focus-history-item")
+	if got := focusNodeText(findAttr(item, "data-focus-history-title")); got != escapePayload {
+		t.Errorf("history title reads %q", got)
+	}
+	if got := focusNodeText(findAttr(item, "data-focus-history-description")); got != escapePayload {
+		t.Errorf("history description reads %q", got)
+	}
+	if got := attrOf(findAttr(doc, "data-focus-history-more"), "data-href"); got != href {
+		t.Errorf("data-href reads %q, want %q", got, href)
+	}
+	art := parseArticle(t, card)
+	trigger := findAttr(art, "data-card-focus")
+	if got := focusNodeText(trigger); !strings.HasPrefix(got, escapePayload) {
+		t.Errorf("card focus title reads %q", got)
+	}
+	if got := attrOf(trigger, "aria-label"); got != "Focus: "+escapePayload+" — show details" {
+		t.Errorf("aria-label reads %q", got)
+	}
+	if n := len(allAttr(art, "onerror")); n != 0 {
+		t.Errorf("%d elements carry an onerror attribute", n)
+	}
+}

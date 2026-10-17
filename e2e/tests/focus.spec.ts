@@ -214,6 +214,44 @@ for (const vp of [
       });
     }
 
+    // A list refresh MORPHS the open card: the trigger's attributes are
+    // rewritten to the server's aria-expanded="false" while the popover stays
+    // open, and no toggle fires. The title must still say expanded — and keep
+    // the chevron turned and the highlight, both keyed on aria-expanded.
+    test('an open focus popover keeps its title expanded through a list refresh', async ({ page }) => {
+      await openList(page);
+      // Styles are read as end states: no transition caught half-way.
+      await page.addStyleTag({ content: '*, *::before, *::after { transition: none !important; }' });
+      const card = agentCard(page);
+      const chip = card.locator('[data-card-focus]');
+      const pop = card.locator('[data-focus-popover]');
+      const chevron = chip.locator('svg');
+      const closedBg = await chip.evaluate((e) => getComputedStyle(e).backgroundColor);
+      const closedTurn = await chevron.evaluate((e) => getComputedStyle(e).transform);
+      await chip.click();
+      await expect(pop).toBeVisible();
+      await expect(chip).toHaveAttribute('aria-expanded', 'true');
+      await page.mouse.move(0, 0); // no hover, so the highlight is aria-expanded's alone
+      const openBg = await chip.evaluate((e) => getComputedStyle(e).backgroundColor);
+      const openTurn = await chevron.evaluate((e) => getComputedStyle(e).transform);
+      expect(openBg, 'control: the open title is highlighted').not.toBe(closedBg);
+      expect(openTurn, 'control: the open chevron is turned').not.toBe(closedTurn);
+      // A refresh of the list, as an agent event would start it; wait for it to land.
+      const settled = page.evaluate(() => new Promise<void>((resolve) => {
+        document.body.addEventListener('htmx:afterSettle', (e) => {
+          if ((e.target as HTMLElement).id === 'agents-list') resolve();
+        });
+      }));
+      await page.evaluate(() => (window as any).htmx.trigger(document.body, 'agents:changed'));
+      await settled;
+      await expect(pop, 'the popover stays open through the morph').toBeVisible();
+      await expect(chip).toHaveAttribute('aria-expanded', 'true');
+      expect(await chip.evaluate((e) => getComputedStyle(e).backgroundColor), 'the highlight stays').toBe(openBg);
+      expect(await chevron.evaluate((e) => getComputedStyle(e).transform), 'the chevron stays turned').toBe(openTurn);
+      await page.keyboard.press('Escape');
+      await expect(chip).toHaveAttribute('aria-expanded', 'false');
+    });
+
     // 🔴 A DISCRIMINATING PAIR: "reconciling" is the START of the agent's FOCUS
     // TITLE and the start of a shell window's NAME ("reconciling:1"). Ranked by
     // names (data-rank-title), the window ranks first; were the visible heading
