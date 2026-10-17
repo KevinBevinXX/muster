@@ -455,6 +455,14 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	}
 	ext.Transcriber = transcriber
 
+	// File attachments: only with the whole MUSTER_S3_* set, a signing key, a
+	// public URL and a database. A partial set is OFF and said so in the
+	// banner (logUploadsBanner) — never a refusal to boot.
+	ext.Uploads = buildUploads(cfg, a.pool, logger)
+	if ext.Uploads != nil {
+		checkUploadBucket(ext.Uploads, logger)
+	}
+
 	srv := api.New(bus, cfg.authConfig(), logger)
 	srv.UseExtensions(ext)
 	if cfg.goTrueConfigured() && a.pool != nil {
@@ -1078,6 +1086,7 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	}
 	a.logMemoRelayBanner(ext)
 	a.logSTTBanner(ext)
+	a.logUploadsBanner(ext)
 
 	if ext.GitHub != nil {
 		l.Printf("github connection: ENCRYPTED AT REST (%s set). %s",

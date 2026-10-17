@@ -150,6 +150,20 @@ const (
 	// config.validateSTT.
 	envSTTURL   = "MUSTER_STT_URL"
 	envSTTToken = "MUSTER_STT_TOKEN"
+	// File attachments (internal/uploads; internal/api/uploads.go): the
+	// S3-compatible store the composer's files are kept in, the key the agent's
+	// links are signed with, and the two knobs. All five of endpoint, bucket,
+	// both keys and the signing key (plus MUSTER_PUBLIC_URL and a database)
+	// turn it on; a partial set leaves it OFF with a MISCONFIGURED banner line —
+	// it never refuses to boot. See buildUploads.
+	envS3Endpoint       = "MUSTER_S3_ENDPOINT"
+	envS3Bucket         = "MUSTER_S3_BUCKET"
+	envS3AccessKey      = "MUSTER_S3_ACCESS_KEY"
+	envS3SecretKey      = "MUSTER_S3_SECRET_KEY"
+	envS3Region         = "MUSTER_S3_REGION"
+	envUploadSigningKey = "MUSTER_UPLOAD_SIGNING_KEY"
+	envUploadMaxBytes   = "MUSTER_UPLOAD_MAX_BYTES"
+	envUploadLinkTTL    = "MUSTER_UPLOAD_LINK_TTL"
 
 	envRouterURL   = "MUSTER_ROUTER_URL"
 	envRouterToken = "MUSTER_ROUTER_TOKEN"
@@ -450,6 +464,16 @@ type config struct {
 	// exists), and a token with no URL refuses to boot.
 	STTURL   string
 	STTToken string
+	// Uploads: the raw MUSTER_S3_* / MUSTER_UPLOAD_* values. buildUploads
+	// parses and validates them; nothing here refuses to boot.
+	S3Endpoint       string
+	S3Bucket         string
+	S3AccessKey      string
+	S3SecretKey      string
+	S3Region         string
+	UploadSigningKey string
+	UploadMaxBytes   string
+	UploadLinkTTL    string
 
 	RouterURL   string
 	RouterToken string
@@ -795,6 +819,14 @@ func loadConfig(getenv func(string) string) (config, error) {
 		MemoScopeMap:         strings.TrimSpace(getenv(envMemoScopeMap)),
 		STTURL:               strings.TrimRight(strings.TrimSpace(getenv(envSTTURL)), "/"),
 		STTToken:             strings.TrimSpace(getenv(envSTTToken)),
+		S3Endpoint:           strings.TrimRight(strings.TrimSpace(getenv(envS3Endpoint)), "/"),
+		S3Bucket:             strings.TrimSpace(getenv(envS3Bucket)),
+		S3AccessKey:          strings.TrimSpace(getenv(envS3AccessKey)),
+		S3SecretKey:          strings.TrimSpace(getenv(envS3SecretKey)),
+		S3Region:             strings.TrimSpace(getenv(envS3Region)),
+		UploadSigningKey:     strings.TrimSpace(getenv(envUploadSigningKey)),
+		UploadMaxBytes:       strings.TrimSpace(getenv(envUploadMaxBytes)),
+		UploadLinkTTL:        strings.TrimSpace(getenv(envUploadLinkTTL)),
 		RouterURL:            strings.TrimSpace(getenv(envRouterURL)),
 		RouterToken:          strings.TrimSpace(getenv(envRouterToken)),
 		RouterActor:          strings.TrimSpace(getenv(envRouterActor)),
