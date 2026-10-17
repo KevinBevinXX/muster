@@ -414,15 +414,15 @@ func agentsFilterScript() g.Node {
     var w = rankWord(ts);
     var keyed = cards.map(function (c) { return { c: c, r: w ? cardRank(c, w) : 0, i: +c.getAttribute('data-list-i') }; });
     keyed.sort(function (a, b) { return a.r - b.r || a.i - b.i; });
-    place(list, cards, keyed.map(function (k) { return k.c; }));
+    arrange(list, cards, keyed.map(function (k) { return k.c; }));
   }
-  // place puts cards (in DOM order now) into order (the same nodes), moving
+  // arrange puts cards (in DOM order now) into order (the same nodes), moving
   // ONLY the ones out of place: the longest run already in order stays put, so
   // the card holding focus is not detached unless it must move. A node that
   // must move goes by moveBefore where the browser has it (focus and state
   // survive the move); otherwise by insertBefore, and the element that had
   // focus gets it back.
-  function place(list, cards, order) {
+  function arrange(list, cards, order) {
     var n = order.length;
     if (!n) return;
     var at = new Map();

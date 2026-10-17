@@ -256,3 +256,26 @@ func TestEveryFieldIsARegisteredSafeIdentifier(t *testing.T) {
 		}
 	}
 }
+
+// 🔴 A REGRESSION TEST: two `function place` declarations in the one IIFE —
+// the later one (the box-token placer) silently replaced the card mover, and
+// the reorder wrote the list element into the search box: every card hidden.
+// Function declarations hoist and the last one wins, with no error anywhere.
+func TestTheFilterScriptDeclaresEachFunctionOnce(t *testing.T) {
+	var b strings.Builder
+	if err := agentsFilterScript().Render(&b); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]int{}
+	for _, m := range regexp.MustCompile(`(?m)^  function (\w+)\s*\(`).FindAllStringSubmatch(b.String(), -1) {
+		seen[m[1]]++
+	}
+	if len(seen) < 10 {
+		t.Fatalf("found only %d top-level functions — the pattern no longer matches the script", len(seen))
+	}
+	for name, n := range seen {
+		if n > 1 {
+			t.Errorf("function %s is declared %d times in agentsFilterScript; the last silently wins", name, n)
+		}
+	}
+}
