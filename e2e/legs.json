@@ -3,7 +3,7 @@
     "dir": "tests",
     "suffix": ".spec.ts"
   },
-  "measured_at": "4bd2013: median of 19 green ci.yml runs, 2026-10-16/17 (7 on main, 12 PR runs; every file n>=4)",
+  "measured_at": "4bd2013: median of 19 green ci.yml runs, 2026-10-16/17 (7 on main, 12 PR runs; every file n>=4) -- EXCEPT send-queue, gotrue-login, passkeys and invites, re-measured after their fixed waits were replaced: n=1, PR #120 run 39007261761",
   "seconds": {
     "tests/claude-code-polish.spec.ts": 41.4,
     "tests/provisioning-indicator.spec.ts": 20.5,
@@ -21,15 +21,15 @@
     "tests/shortcuts.spec.ts": 1.0,
     "tests/sw.spec.ts": 0.6,
     "tests/mirrored.spec.ts": 40.3,
-    "tests/gotrue-login.spec.ts": 45.1,
+    "tests/gotrue-login.spec.ts": 13.5,
     "tests/byo-credentials.spec.ts": 5.8,
-    "tests/invites.spec.ts": 47.2,
+    "tests/invites.spec.ts": 16.2,
     "tests/api-tokens.spec.ts": 10.5,
     "tests/landing.spec.ts": 1.5,
     "tests/flows.spec.ts": 0.5,
     "tests/mirror-stepup.spec.ts": 20.2,
     "tests/terminal-overflow.spec.ts": 5.3,
-    "tests/passkeys.spec.ts": 47.7,
+    "tests/passkeys.spec.ts": 18.7,
     "tests/push.spec.ts": 1.8,
     "tests/tool-rows.spec.ts": 0.3,
     "tests/mirror-windows.spec.ts": 82.7,
@@ -40,7 +40,7 @@
     "tests/pins.spec.ts": 3.6,
     "tests/recent-agents.spec.ts": 2.2,
     "tests/mirror-chat.spec.ts": 14.3,
-    "tests/send-queue.spec.ts": 161.5,
+    "tests/send-queue.spec.ts": 60.9,
     "tests/focus.spec.ts": 5.9,
     "tests/session-routing.spec.ts": 3.6,
     "tests/cls.spec.ts": 88.9,
@@ -54,7 +54,6 @@
     "1": [
       "tests/claude-code-polish.spec.ts",
       "tests/badge.spec.ts",
-      "tests/terminal.spec.ts",
       "tests/kinds.spec.ts",
       "tests/connectors.spec.ts",
       "tests/shortcuts.spec.ts",
@@ -65,7 +64,6 @@
       "tests/mirror-stepup.spec.ts",
       "tests/tool-rows.spec.ts",
       "tests/mirror-windows.spec.ts",
-      "tests/dictation.spec.ts",
       "tests/mirror-chat.spec.ts",
       "tests/focus.spec.ts",
       "tests/session-routing.spec.ts",
@@ -97,7 +95,9 @@
       "tests/composer-autosize.spec.ts",
       "tests/tool-groups.spec.ts",
       "tests/agents-search.spec.ts",
-      "tests/pickers.spec.ts"
+      "tests/pickers.spec.ts",
+      "tests/dictation.spec.ts",
+      "tests/terminal.spec.ts"
     ]
   }
 }

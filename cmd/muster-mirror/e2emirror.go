@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/mirrorhost"
 	"github.com/ZacxDev/muster/internal/termsize"
@@ -76,7 +77,23 @@ import (
 // status (Msg.StatusReport). With MUSTER_MIRROR_E2E_NO_STATUS=1 it advertises
 // nothing, which is what an older muster-mirror's hello says: muster must then
 // send nothing queued to it.
+//
+// THE REFRESH: MUSTER_MIRROR_E2E_REFRESH (a Go duration) is how often the host
+// re-reads its windows, instead of mirrorhost's 5 s default, so the send-queue
+// spec waits for a status flip to reach muster rather than for a fixed 5 s
+// tick. A value that does not parse to a positive duration refuses to start.
 func init() {
+	e2eRefresh = func() time.Duration {
+		v := os.Getenv("MUSTER_MIRROR_E2E_REFRESH")
+		if v == "" {
+			return 0
+		}
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			panic(fmt.Sprintf("muster-mirror (e2emirror): MUSTER_MIRROR_E2E_REFRESH=%q is not a positive duration", v))
+		}
+		return d
+	}
 	e2eNoPromptIndex = func() bool { return os.Getenv("MUSTER_MIRROR_E2E_NO_PROMPT_INDEX") == "1" }
 	e2eWrap = func(b mirrorhost.Backend) mirrorhost.Backend {
 		if f := os.Getenv("MUSTER_MIRROR_E2E_SCROLL_FILE"); f != "" {

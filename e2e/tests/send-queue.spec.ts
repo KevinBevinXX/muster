@@ -8,7 +8,7 @@ import { binDir, dsn, password, repoRoot, sendQueuePort, versionTerm } from '../
 import { serverBinary, startServer, Running } from '../lib/server';
 
 // THE SERVER-SIDE SEND QUEUE, in a real browser, against a real muster-server
-// (MUSTER_MIRROR=1, MUSTER_SEND_QUEUE_IDLE=2s, its own port) and two real
+// (MUSTER_MIRROR=1, MUSTER_SEND_QUEUE_IDLE=1s, its own port) and two real
 // muster-mirror processes over the tunnel (the `-tags e2emirror` per-window
 // fake): one whose Claude window reports Claude Code's status and the time it
 // was written — from <transcript>.status, which this spec writes the way the
@@ -22,11 +22,17 @@ import { serverBinary, startServer, Running } from '../lib/server';
 // before anything is sent, and the queue is then read (and a message
 // cancelled) from a second, separate browser context.
 //
-// ⚠ TIMING: the fake host re-reads its windows every 5 s (mirrorhost's
-// default Refresh), so a busy flip reaches muster within ~5 s; the server sends
-// after 2 s idle and looks every 2 s. Every wait below is a poll with a bound,
-// never a sleep standing in for an event — except the one that asserts a
-// message is NOT sent, which must wait long enough for a wrong send to happen.
+// ⚠ TIMING: the fake host re-reads its windows every 250 ms
+// (MUSTER_MIRROR_E2E_REFRESH, an e2emirror-only knob; a shipped muster-mirror
+// re-reads every 5 s), so a status flip reaches muster within a fraction of a
+// second; the server sends after 1 s idle (MUSTER_SEND_QUEUE_IDLE, its minimum)
+// and looks every 2 s (sendqueue.DefaultInterval). Every wait below is a poll
+// on what the page or the host shows, with a bound — except two kinds of
+// duration, each named and sized from those numbers: seen() (nothing
+// observable says the server has a status the spec just wrote until something
+// is queued) and holdWindow() (a message asserted NOT sent: once the page
+// shows the server holding it, the wait is as long as a wrong send would take
+// to happen — the idle time plus two dispatcher passes — and no longer).
 
 const origin = `http://localhost:${sendQueuePort}`;
 const stamp = Date.now().toString(36);
@@ -41,19 +47,32 @@ let server: Running | undefined;
 const procs: ChildProcess[] = [];
 let mirrorLog = '';
 
+const refreshMs = 250;
+const idleMs = 1_000;
+const dispatchEveryMs = 2_000; // sendqueue.DefaultInterval
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// seen waits out a few host refreshes, so the server holds the status the spec
+// just wrote.
+const seen = () => sleep(4 * refreshMs + 500);
+// holdWindow is how long a WRONG send would take to land once the server holds
+// the state that should hold it: a host refresh, the idle time, and two
+// dispatcher passes, plus a margin. Call it only AFTER the page showed the
+// server's reason for holding (the same Decide the dispatcher runs), so the
+// window starts from a state the server is known to have.
+const holdWindow = () => sleep(refreshMs + idleMs + 2 * dispatchEveryMs + 500);
+
 const prompt = (text: string) => JSON.stringify({ type: 'user', promptId: 'p-' + text.length, message: { role: 'user', content: text } }) + '\n';
 const read = (f: string) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '');
 // setStatus is Claude Code writing its status: the status and NOW as its time.
 const setStatus = (status: string) => fs.writeFileSync(tr + '.status', JSON.stringify({ status, statusUpdatedAt: Date.now() }));
 const busy = (on: boolean) => setStatus(on ? 'busy' : 'idle');
 const viewPath = (host: string) => `/mirror/view?host=${encodeURIComponent(host)}&session=work&window=%401`;
-// busyAndSeen makes Claude busy and waits out one host refresh, so the server
-// has seen it before anything is queued. Nothing observable says "muster saw
-// busy" until a message is queued (the queue's own line does), so this is the
-// one wait that is a duration: the fake's Refresh (5 s) and a margin.
+// busyAndSeen makes Claude busy and waits until the server has seen it, before
+// anything is queued. Nothing observable says "muster saw busy" until a message
+// is queued (the queue's own line does), so this is a duration: seen().
 async function busyAndSeen() {
   busy(true);
-  await new Promise((r) => setTimeout(r, 6_500));
+  await seen();
 }
 // What the host was pasted, in order (the fake appends `<pane> <text>`).
 const pasted = () => read(tr + '.pasted').split('\n').filter((l) => l !== '');
@@ -74,6 +93,7 @@ function startMirror(host: string, transcript: string, extra: Record<string, str
       MUSTER_MIRROR_HOST: host,
       MUSTER_MIRROR_INTERACTIVE: '1',
       MUSTER_MIRROR_E2E_WINDOWS_FILE: windows,
+      MUSTER_MIRROR_E2E_REFRESH: `${refreshMs}ms`,
       ...extra,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -87,7 +107,7 @@ test.beforeAll(async () => {
   execFileSync('go', ['build', '-tags', 'e2emirror', '-o', mirrorBin, './cmd/muster-mirror'], { cwd: repoRoot, stdio: 'inherit' });
   server = await startServer(versionTerm, sendQueuePort, {
     MUSTER_MIRROR: '1',
-    MUSTER_SEND_QUEUE_IDLE: '2s',
+    MUSTER_SEND_QUEUE_IDLE: `${idleMs / 1000}s`,
     MUSTER_AGENT_PROVISIONER: 'noop',
     MUSTER_AGENT_IMAGE_REPO: 'registry.example.test/runtime',
     MUSTER_AGENT_API_URL: 'http://muster.example.test:8105',
@@ -177,18 +197,17 @@ test.describe('phone 390×844 touch', () => {
     busy(false);
     await expect.poll(pasted, { message: `the first message is sent once idle (log:\n${mirrorLog})`, timeout: 30_000 }).toEqual([`${pane} first queued`]);
 
-    // Still idle — since BEFORE the first was sent: its turn has not ended,
-    // so the second waits. Long enough for a wrong send to have happened
-    // (refresh 5 s + idle 2 s + a tick, twice over).
-    await new Promise((r) => setTimeout(r, 16_000));
-    expect(pasted(), 'one at a time: the second waits for the turn the first started').toEqual([`${pane} first queued`]);
-
     // Another device sees the queue: the first sent, the second waiting.
     const other = await otherDevice(browser);
     await openView(other.page, newHost);
     await expect(row(other.page, 'first queued')).toHaveAttribute('data-queue-state', 'sent');
     await expect(row(other.page, 'second queued')).toHaveAttribute('data-queue-state', 'queued');
+    // Still idle — since BEFORE the first was sent: its turn has not ended,
+    // so the second waits. The server says so, then holds it for as long as a
+    // wrong send would take.
     await expect(other.page.locator('#mv-queue-waiting')).toContainText("previous message's turn");
+    await holdWindow();
+    expect(pasted(), 'one at a time: the second waits for the turn the first started').toEqual([`${pane} first queued`]);
 
     // The first message's turn runs, then ends: the second is sent — and the
     // other device's list moves with it, live.
@@ -218,9 +237,14 @@ test.describe('phone 390×844 touch', () => {
     // The first device's list follows (it polls while anything is open).
     await expect(row(page, 'cancel me please'), 'the first device sees the cancel').toHaveAttribute('data-queue-state', 'cancelled', { timeout: 20_000 });
 
+    // Idle: had the cancel not held, the cancelled message would be the head and
+    // go first. A message queued after it is the observable — it is sent, and
+    // it is the only thing sent.
     busy(false);
-    await new Promise((r) => setTimeout(r, 12_000));
-    expect(pasted(), 'a cancelled message is never sent').toEqual([]);
+    await queue(page, 'queued after the cancel', true);
+    await expect.poll(pasted, { message: `a cancelled message is never sent (log:\n${mirrorLog})`, timeout: 30_000 }).toEqual([
+      `${pane} queued after the cancel`,
+    ]);
     await other.ctx.close();
   });
 
@@ -284,7 +308,8 @@ test.describe('desktop 1280×800', () => {
     await queue(page, 'short two', false);
     busy(false);
     await expect.poll(pasted, { message: `the first is sent once idle (log:\n${mirrorLog})`, timeout: 30_000 }).toEqual([`${pane} short one`]);
-    await new Promise((r) => setTimeout(r, 12_000));
+    await expect(page.locator('#mv-queue-waiting'), 'the server holds the second').toContainText("previous message's turn", { timeout: 20_000 });
+    await holdWindow();
     expect(pasted(), 'the second waits: idle since before the first was sent').toEqual([`${pane} short one`]);
     // The first message's turn, too short to be seen: idle again, a newer time.
     setStatus('idle');
@@ -299,7 +324,7 @@ test.describe('desktop 1280×800', () => {
   // the Send was made in, not just for idle.
   test('a message queued after a Send waits for the turn that Send started', async ({ page }) => {
     setStatus('idle');
-    await new Promise((r) => setTimeout(r, 6_500)); // the host reports the idle
+    await seen(); // the server has the idle
     fs.rmSync(tr + '.pasted', { force: true });
     await openView(page, newHost);
     await page.locator('#mv-input').fill('sent by hand');
@@ -307,10 +332,11 @@ test.describe('desktop 1280×800', () => {
     await expect.poll(pasted, { message: 'Send pastes at once' }).toEqual([`${pane} sent by hand`]);
     await queue(page, 'queued after the hand send', false);
     // Idle all along, on the status the Send was made in: its turn has not
-    // ended. Long enough for a wrong send (refresh 5 s + idle 2 s + a tick).
-    await new Promise((r) => setTimeout(r, 12_000));
-    expect(pasted(), "the queued message waits for the Send's turn").toEqual([`${pane} sent by hand`]);
+    // ended. The server says so, then holds it for as long as a wrong send
+    // would take.
     await expect(page.locator('#mv-queue-waiting')).toContainText("previous message's turn");
+    await holdWindow();
+    expect(pasted(), "the queued message waits for the Send's turn").toEqual([`${pane} sent by hand`]);
     // The Send's turn ends: a newer status time releases it.
     setStatus('idle');
     await expect.poll(pasted, { message: "sent after the Send's turn", timeout: 30_000 }).toEqual([
@@ -332,7 +358,7 @@ test.describe('desktop 1280×800', () => {
     await expect(page.locator('#mv-queue-waiting'), `the reason is shown (log:\n${mirrorLog})`).toContainText('does not report since when', {
       timeout: 20_000,
     });
-    await new Promise((r) => setTimeout(r, 8_000));
+    await holdWindow();
     expect(pasted(), 'nothing is sent to an idle with no time').toEqual([]);
     setStatus('idle');
     await expect.poll(pasted, { message: 'CONTROL: sent once the time is reported', timeout: 30_000 }).toEqual([`${pane} untimed`]);

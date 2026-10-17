@@ -43,6 +43,13 @@ var e2eBackend func() mirrorhost.Backend
 // shipped binary.
 var e2eNoPromptIndex func() bool
 
+// e2eRefresh, in a browser-test build, is how often the host re-reads its
+// windows (mirrorhost.Config.Refresh; 0 = mirrorhost's default) — so a spec
+// waiting for a status flip to reach muster waits a fraction of a second, not
+// the default refresh. nil in every shipped binary, which therefore has no way
+// to change its refresh at all (TestTheShippedBuildCannotChangeItsRefresh).
+var e2eRefresh func() time.Duration
+
 // e2eWrap, in a browser-test build, wraps the backend AFTER NoShrink: a
 // capability added there (e2emirror.go's copy-mode scroll) is found through the
 // wrapper chain without hiding what NoShrink asserts on the backend it wraps.
@@ -66,6 +73,15 @@ const (
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Getenv, os.Stdout, os.Stderr))
+}
+
+// refreshOverride is a browser-test build's refresh, or 0 (mirrorhost's
+// default) in every shipped binary.
+func refreshOverride() time.Duration {
+	if e2eRefresh == nil {
+		return 0
+	}
+	return e2eRefresh()
 }
 
 // defaultHost is this machine's short hostname, lowercased: what a token is
@@ -196,6 +212,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		URL: *url, Token: token, Host: *host, Backend: backend, Codenames: codenames,
 		Interactive: *interactive, AllowHTTP: *allowHTTP, Logger: logger,
 		NoPromptIndex: e2eNoPromptIndex != nil && e2eNoPromptIndex(),
+		Refresh:       refreshOverride(),
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, err)

@@ -3,8 +3,9 @@ import path from 'node:path';
 import type { BrowserContext, Page } from '@playwright/test';
 import { test, expect, expectShellShows } from '../lib/fixtures';
 import {
-  dsn, e2eRoot, gotrueSecret, passkeysBrowserPort, passkeysGotruePort, passkeysMainPort, repoRoot, versionA,
+  dsn, e2eRoot, gotrueSecret, passkeysBrowserPort, passkeysGotruePort, passkeysMainPort, repoRoot, versionA, versionTerm,
 } from '../lib/env';
+import { gotrueSkewEnv, outliveAccessToken } from '../lib/gotrue';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { authenticator, credentialCount } from '../lib/webauthn';
 
@@ -18,9 +19,12 @@ import { authenticator, credentialCount } from '../lib/webauthn';
 // passkey store, minus the human. Each browser context gets its own, so the
 // admin's and the member's passkeys never meet.
 //
-// ⚠ ~1.5 min ON PURPOSE: one step outlives an access token (JWT_EXP 5 s + the
-// verifier's 30 s skew, as gotrue-login.spec.ts) to prove a PASSKEY session
-// refreshes like a password one.
+// ⚠ One step outlives an access token (JWT_EXP 5 s + the e2e build's 1 s
+// verifier skew, as gotrue-login.spec.ts; e2e/lib/gotrue.ts) to prove a PASSKEY
+// session refreshes like a password one. muster's refresh code is the same for
+// both (resolveGoTrueSession does not ask how a session began); what only this
+// spec covers is the refresh token's provenance: the one GoTrue's passkey grant
+// issued, which passkeys.go wrote into muster_rt.
 
 const compose = path.join(e2eRoot, 'gotrue', 'compose.yml');
 const project = `muster-e2e-gotrue-${passkeysGotruePort}`;
@@ -53,7 +57,8 @@ test.beforeAll(async () => {
   execFileSync('go', ['run', './e2e/seed', '--accounts-only'], {
     cwd: repoRoot, stdio: 'inherit', env: { ...process.env, DATABASE_URL: dsn },
   });
-  server = await startServer(versionA, passkeysMainPort, {
+  server = await startServer(versionTerm, passkeysMainPort, {
+    ...gotrueSkewEnv,
     MUSTER_AUTH_MODE: 'gotrue',
     MUSTER_GOTRUE_URL: gotrueURL,
     MUSTER_GOTRUE_JWT_SECRET: gotrueSecret,
@@ -123,7 +128,7 @@ test('add a passkey, sign in with it, outlive the access token, sign out everywh
   // Outlive the access token: the PASSKEY session refreshes server-side.
   await page.goto(browserURL + '/tasks');
   const before = (await session(page.context())).at;
-  await page.waitForTimeout(37_000);
+  await outliveAccessToken(before!);
   await page.reload();
   await expect(page).toHaveURL(browserURL + '/tasks');
   await expect(page.locator('#fab-tasks')).toBeVisible();

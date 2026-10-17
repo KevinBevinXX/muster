@@ -14,8 +14,10 @@ export function serverBinary(version: string): string {
   return path.join(binDir, `muster-server-${version}`);
 }
 
-// tags are Go build tags. Only the terminal spec's binary has one (e2eterm),
-// and it is a separate binary so every other spec runs the shipped build.
+// tags are Go build tags. Only the e2eterm binary (versionTerm) has one, and it
+// is a separate binary so the specs that need none of its fixtures run the
+// shipped build. (The GoTrue specs run it for one fixture: a short verifier
+// skew, e2e/lib/gotrue.ts.)
 export function buildServer(version: string, tags: string[] = []): string {
   fs.mkdirSync(binDir, { recursive: true });
   const out = serverBinary(version);

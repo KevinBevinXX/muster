@@ -3,6 +3,7 @@ package mirrorhost
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/mirror"
 )
@@ -87,5 +88,19 @@ func TestTmuxEnvDropsTMUX(t *testing.T) {
 	}
 	if !strings.Contains(env, "TERM=xterm-256color") {
 		t.Fatal("tmuxEnv sets no TERM")
+	}
+}
+
+// TestTheDefaultRefreshIsFiveSeconds pins the production refresh: a Config
+// with no Refresh re-reads the windows every 5 s. The browser suite shortens
+// it only through an e2emirror build (MUSTER_MIRROR_E2E_REFRESH); this is the
+// value every shipped host runs.
+func TestTheDefaultRefreshIsFiveSeconds(t *testing.T) {
+	c, err := New(Config{URL: "https://muster.example.test", Token: mirror.TokenPrefix + "t", Host: "laptop", Backend: Tmux{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.cfg.Refresh != 5*time.Second {
+		t.Fatalf("default Refresh = %s, want 5s", c.cfg.Refresh)
 	}
 }

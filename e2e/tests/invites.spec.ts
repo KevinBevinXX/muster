@@ -3,8 +3,9 @@ import path from 'node:path';
 import { request as pwRequest } from '@playwright/test';
 import { test, expect, expectShellShows, navTabKey } from '../lib/fixtures';
 import {
-  dsn, e2eRoot, gotrueSecret, hookToken, invitesBrowserPort, invitesGotruePort, invitesMainPort, repoRoot, versionA,
+  dsn, e2eRoot, gotrueSecret, hookToken, invitesBrowserPort, invitesGotruePort, invitesMainPort, repoRoot, versionA, versionTerm,
 } from '../lib/env';
+import { gotrueSkewEnv, outliveAccessToken } from '../lib/gotrue';
 import { serverBinary, startServer, Running } from '../lib/server';
 
 // Accounts PR 5, end to end against the REAL GoTrue image (e2e/gotrue/compose.yml,
@@ -44,7 +45,8 @@ test.beforeAll(async () => {
   execFileSync('go', ['run', './e2e/seed', '--accounts-only'], {
     cwd: repoRoot, stdio: 'inherit', env: { ...process.env, DATABASE_URL: dsn },
   });
-  server = await startServer(versionA, invitesMainPort, {
+  server = await startServer(versionTerm, invitesMainPort, {
+    ...gotrueSkewEnv,
     MUSTER_AUTH_MODE: 'gotrue',
     MUSTER_GOTRUE_URL: gotrueURL,
     MUSTER_GOTRUE_JWT_SECRET: gotrueSecret,
@@ -260,15 +262,28 @@ test('an admin invites a member by link; the member sees only its own (empty) bo
   expect((await live.request.get(browserURL + '/ui/tasks/review-count', { headers: { 'HX-Request': 'true' } })).status(),
     'the pre-disable access token after enable').toBe(401);
   await live.close();
-  // Outlive the held access token (JWT_EXP 5 s + muster's 30 s skew + margin):
-  // muster would now have to REFRESH from the held refresh token.
-  await page.waitForTimeout(37_000);
+  // Outlive the held access token (JWT_EXP 5 s + the e2e build's 1 s skew +
+  // margin, from the token's own exp — e2e/lib/gotrue.ts): muster would now
+  // have to REFRESH from the held refresh token. The admin's own token is
+  // outlived too: it is the control below.
+  const adminAt = (await page.context().cookies(browserURL)).find((c) => c.name === 'muster_at')!.value;
+  await outliveAccessToken(held.find((c) => c.name === 'muster_at')!.value);
+  await outliveAccessToken(adminAt);
   const late = await browser.newContext({ viewport });
   await late.addCookies(held);
   const lp = await late.newPage();
   await lp.goto(browserURL + '/tasks');
   await expect(lp, 'the pre-disable refresh token after enable').toHaveURL(/\/login/);
   await late.close();
+  // CONTROL: the held cookies above are refused whether or not their access
+  // token has expired (the cutoff refuses a live one too), so /login alone
+  // cannot say the REFRESH path was reached. The admin's token is at least as
+  // old; reloading refreshes it — so this server refuses tokens that old, and
+  // the held one met the refresh path.
+  await page.reload();
+  await expect(page).toHaveURL(browserURL + '/admin/users');
+  expect((await page.context().cookies(browserURL)).find((c) => c.name === 'muster_at')!.value,
+    'CONTROL: a token as old as the held one is refreshed, not served').not.toBe(adminAt);
   // And GoTrue no longer holds it either: the disable signed the user out
   // everywhere there (a ban alone would not — an unban resurrects it).
   const heldRT = held.find((c) => c.name === 'muster_rt')!.value;

@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { test, expect, expectShellShows } from '../lib/fixtures';
-import { dsn, e2eRoot, gotrueBrowserPort, gotrueMainPort, gotruePort, gotrueSecret, hookToken, versionA } from '../lib/env';
+import { dsn, e2eRoot, gotrueBrowserPort, gotrueMainPort, gotruePort, gotrueSecret, hookToken, versionA, versionTerm } from '../lib/env';
+import { gotrueSkewEnv, outliveAccessToken } from '../lib/gotrue';
 import { serverBinary, startServer, Running } from '../lib/server';
 
 // Accounts PR 4, end to end against the REAL GoTrue image (e2e/gotrue/compose.yml,
@@ -13,11 +14,12 @@ import { serverBinary, startServer, Running } from '../lib/server';
 // rather than in the config so every other spec keeps measuring what it always
 // measured.
 //
-// ⚠ IT TAKES ~40 s ON PURPOSE. GoTrue's access tokens live 5 s here (the
-// compose file's only real deviation) and muster's verifier allows 30 s of
-// clock skew, so the earliest a token muster will refuse as expired exists is
-// 35 s after it was minted. The wait below is that, plus margin — shortening
-// it would test a token muster still accepts, i.e. not the refresh path at all.
+// ⚠ ONE WAIT, ON PURPOSE: GoTrue's access tokens live 5 s here (the compose
+// file's only real deviation), and the server is the `e2eterm` build with a
+// 1 s verifier skew (MUSTER_E2E_GOTRUE_SKEW; production's is 30 s and cannot be
+// changed — see e2e/lib/gotrue.ts), so a token is refused ~6 s after it was
+// minted. outliveAccessToken waits exactly that, from the token's own exp —
+// waiting less would test a token muster still accepts, not the refresh path.
 
 const compose = path.join(e2eRoot, 'gotrue', 'compose.yml');
 const project = `muster-e2e-gotrue-${gotruePort}`;
@@ -40,7 +42,8 @@ test.beforeAll(async () => {
   const health = await fetch(gotrueURL + '/health');
   expect(health.status, 'the real GoTrue is up').toBe(200);
   expect(((await health.json()) as { version?: string }).version).toBe('v2.197.0');
-  server = await startServer(versionA, gotrueMainPort, {
+  server = await startServer(versionTerm, gotrueMainPort, {
+    ...gotrueSkewEnv,
     MUSTER_AUTH_MODE: 'gotrue',
     MUSTER_GOTRUE_URL: gotrueURL,
     MUSTER_GOTRUE_JWT_SECRET: gotrueSecret,
@@ -110,9 +113,9 @@ test('claim the admin, sign in, survive an access-token expiry, sign out (real G
   await expect(page.locator('#fab-tasks')).toBeVisible();
   const before = (await page.context().cookies(browserURL)).find((c) => c.name === 'muster_at')!.value;
 
-  // 4. Outlive the access token (5 s + muster's 30 s skew), then reload: the
+  // 4. Outlive the access token (5 s + the verifier's skew), then reload: the
   // server refreshes from muster_rt and the board still renders.
-  await page.waitForTimeout(37_000);
+  await outliveAccessToken(before);
   await page.reload();
   await expect(page).toHaveURL(browserURL + '/tasks');
   await expect(page.locator('#fab-tasks')).toBeVisible();
