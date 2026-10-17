@@ -1,5 +1,5 @@
 import { request as pwRequest, Page } from '@playwright/test';
-import { test, expect } from '../lib/fixtures';
+import { test, expect, takeNew } from '../lib/fixtures';
 import { hookToken, password, polishPort, versionA } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 
@@ -182,12 +182,19 @@ for (const vp of [
       await expect
         .poll(async () => (await agentRows()).find((a) => a.id === oldest.id)?.status, { timeout: 30_000 })
         .toBe('running');
+      // The new order waits behind the "N new ↑" pill (nothing moves under the
+      // reader); a tap applies it.
+      await expect(page.locator('#agents-new-pill'), 'the re-order waits behind the pill').toBeVisible({ timeout: 20_000 });
+      expect(await cardOrder(page, ids), 'held: no card moved').toEqual([newest.id, middle.id, oldest.id]);
+      await takeNew(page);
       await expect.poll(() => cardOrder(page, ids), { timeout: 20_000 }).toEqual([oldest.id, newest.id, middle.id]);
       // Live, not reloaded: the page never navigated.
       expect(new URL(page.url()).pathname).toBe('/agents');
       // A SECOND server-driven re-render re-orders the list again.
       const res2 = await page.request.post(`${origin}/agents/${middle.id}/start`, { headers: { Origin: origin } });
       expect(res2.status()).toBe(200);
+      await expect(page.locator('#agents-new-pill')).toBeVisible({ timeout: 30_000 });
+      await takeNew(page);
       await expect.poll(() => cardOrder(page, ids), { timeout: 30_000 }).toEqual([middle.id, oldest.id, newest.id]);
     });
 

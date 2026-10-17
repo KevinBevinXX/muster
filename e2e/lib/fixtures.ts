@@ -126,3 +126,14 @@ export async function useSuiteSession(page: Page): Promise<void> {
   const state = JSON.parse(fs.readFileSync(authState, 'utf8')) as { cookies: Parameters<BrowserContext['addCookies']>[0] };
   await page.context().addCookies(state.cookies);
 }
+
+// takeNew taps the Agents list's "N new ↑" pill when it is up, applying the
+// order a background refresh held back (internal/ui/agents_filter.go hold), and
+// waits until no card is held. A spec that asserts the LIVE order of the open
+// list goes through this: an arrival or a re-order that would move a card in
+// view is not drawn until the reader asks for it.
+export async function takeNew(page: Page): Promise<void> {
+  const pill = page.locator('#agents-new-pill');
+  if (await pill.isVisible()) await pill.click();
+  await expect(page.locator('#agents-list > article[data-held]')).toHaveCount(0);
+}

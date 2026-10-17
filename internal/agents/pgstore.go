@@ -428,20 +428,6 @@ func (s *PGStore) ListSessions(ctx context.Context, agentID int64) ([]ChatSessio
 	return out, rows.Err()
 }
 
-// SearchSessions implements Store.
-//
-// 🔴 A PLAIN ILIKE AND NO INDEX, AND THE DECISION IS MEASURED RATHER THAN
-// ASSUMED. On the deployment this was extracted from: chat_messages held 34 rows
-// in total (12 of them kind='text'), and the whole relation — table plus its two
-// indexes — was 248 kB. A sequential scan of 248 kB is sub-millisecond, so an
-// index here would be pure cost. pg_trgm IS available on that server (1.6,
-// uninstalled) should the table ever grow enough to need one, but installing it
-// means CREATE EXTENSION in a migration, which is a privilege a managed Postgres
-// can refuse — so it is a deliberate later decision, not a default.
-//
-// ⚠ THE FIGURE TO RE-MEASURE BEFORE ADDING ONE IS THE kind='text' ROW COUNT,
-// not the total: the scan this query does is already restricted to those rows by
-// the subquery's predicate.
 // searchSnippetLateral picks the NEWEST matching text row of session s and
 // cuts the excerpt in SQL (see SearchSnippetRadius): $2 the query, $3 its
 // %pattern%, $4/$5 the radius and length. One copy, used by both reads.
@@ -467,11 +453,14 @@ const searchSnippetLateral = `
 //
 // 🔴 ONE RANKED SCAN OVER TITLE-OR-BODY WAS A REGRESSION, MEASURED. Ordering the
 // whole title-or-body match set by rank made Postgres evaluate the message
-// lateral for EVERY session of the agent before the LIMIT could apply: at 3000
-// sessions × 20 messages a query went from ~1.8 ms to ~200 ms warm. This read
-// touches only the agent's session titles before its LIMIT, and
-// searchRecentSQL keeps the original newest-first, stop-at-limit shape.
-// TestSearchSessionsReadsABoundedNumberOfMessageSets pins both bounds.
+// lateral for EVERY session of the agent before the LIMIT could apply. Measured
+// with EXPLAIN ANALYZE at 3000 sessions × 20 messages: that shape took 52–60 ms
+// warm (947 ms cold); this read 2.2–2.5 ms, one recent batch 1.5–2.2 ms. (An
+// earlier comment here said "~1.8 ms → ~200 ms"; that run was not reproduced,
+// and these are the figures the commit quotes.) This read touches only the
+// agent's session titles before its LIMIT. TestSearchSessionsReadsABoundedNumberOfMessageSets
+// counts the sessions' messages each read looked at, on the plan the test
+// server chose.
 const searchRankedTitlesSQL = `
 		WITH cand AS (
 			SELECT s.id, s.agent_id, s.session_key, s.title, s.created_at, s.updated_at, s.read_at,
@@ -494,13 +483,17 @@ const searchRankedTitlesSQL = `
 // (title or a text message). SearchSessions walks batches until it has its limit of
 // matches or the sessions run out.
 //
-// 🔴 THE BATCH'S LIMIT IS INSIDE THE SUBQUERY, AND THAT IS THE BOUND. The
-// query's original single-statement shape (title-or-body, ORDER BY updated_at,
-// LIMIT) stops early only when the planner walks idx_chat_sessions_agent; with
-// other agents' rows in the table it was MEASURED to choose a sequential scan
-// and a sort instead and read all 1000 sessions' messages for a limit of 10.
-// Here the lateral can only ever run over the ≤ $8 rows the subquery hands it,
-// whatever the plan. TestSearchSessionsReadsABoundedNumberOfMessageSets pins it.
+// THE BATCH'S LIMIT IS INSIDE THE SUBQUERY. The query's original
+// single-statement shape (title-or-body, ORDER BY updated_at, LIMIT) stops
+// early only when the planner walks idx_chat_sessions_agent; in one full
+// package run it was MEASURED to choose a sequential scan and a sort instead
+// and read all 1000 sessions' messages for a limit of 10. With the LIMIT in
+// the subquery the lateral is written over at most $8 rows.
+// ⚠ WHAT THE GUARD PROVES IS NARROWER: TestSearchSessionsReadsABoundedNumberOfMessageSets
+// counts the loops on the plan its server chose for this fixture, and on PG16
+// that plan is bounded for BOTH shapes — it does not pin the subquery's LIMIT as
+// the reason, nor the bound under another plan. TestSearchSessionsIsTheTwoBoundedReads
+// pins only that these are the statements SearchSessions sends.
 const searchRecentSQL = `
 		SELECT s.id, s.agent_id, s.session_key, s.title, s.created_at, s.updated_at, s.read_at,
 		       COALESCE(m.snippet, '') AS snippet,
@@ -515,9 +508,42 @@ const searchRecentSQL = `
 		) s` + searchSnippetLateral + `
 		ORDER BY s.updated_at DESC, s.id DESC`
 
-// searchRecentBatch is how many sessions one recent read looks at.
+// searchRecentBatch is how many sessions the FIRST recent read looks at;
+// nextRecentBatch is the next read's, doubling up to searchRecentMaxBatch.
+//
+// 🔴 GEOMETRIC, BECAUSE A SEARCH THAT FINDS FEW OR NOTHING READS EVERY SESSION.
+// With fewer matches than the limit the walk only stops when the sessions run
+// out, so its WORK is the agent's whole history whatever the batch — the same
+// as main's single query, which also read every session's messages for such a
+// search. What the batch size decides is the ROUND TRIPS: a fixed 2×limit was
+// 30 of them at 3000 sessions (measured 114–144 ms for no match vs main's
+// 60–72 ms). Doubling makes it logarithmic (5 at 3000 for limit 50), while a
+// search that fills its limit early still stops after the first small read.
 func searchRecentBatch(limit int) int { return 2 * limit }
 
+const searchRecentMaxBatch = 3200
+
+func nextRecentBatch(b int) int {
+	if b*2 > searchRecentMaxBatch {
+		return searchRecentMaxBatch
+	}
+	return b * 2
+}
+
+// SearchSessions implements Store.
+//
+// 🔴 A PLAIN ILIKE AND NO INDEX, AND THE DECISION IS MEASURED RATHER THAN
+// ASSUMED. On the deployment this was extracted from: chat_messages held 34 rows
+// in total (12 of them kind='text'), and the whole relation — table plus its two
+// indexes — was 248 kB. A sequential scan of 248 kB is sub-millisecond, so an
+// index here would be pure cost. pg_trgm IS available on that server (1.6,
+// uninstalled) should the table ever grow enough to need one, but installing it
+// means CREATE EXTENSION in a migration, which is a privilege a managed Postgres
+// can refuse — so it is a deliberate later decision, not a default.
+//
+// ⚠ THE FIGURE TO RE-MEASURE BEFORE ADDING ONE IS THE kind='text' ROW COUNT,
+// not the total: the scan this query does is already restricted to those rows by
+// the subquery's predicate.
 func (s *PGStore) SearchSessions(ctx context.Context, agentID int64, q string, limit int) ([]SessionMatch, error) {
 	q = strings.TrimSpace(q)
 	if q == "" || limit <= 0 {
@@ -580,6 +606,7 @@ func (s *PGStore) SearchSessions(ctx context.Context, agentID int64, q string, l
 			if n < batch {
 				break // the sessions ran out
 			}
+			batch = nextRecentBatch(batch)
 		}
 	}
 	return out, nil

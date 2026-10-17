@@ -83,15 +83,15 @@ at 390×844 (touch) and 1280×800. What it measures, exactly:
   it is measured there or named as not a page;
 - the chief panel opened, and restored open on a load;
 - **after a load**, started by script so nothing counts as input: the Agents
-  list re-rendering with nothing changed, an in-page tab switch, and a boosted
-  navigation and the loads it starts;
+  list re-rendering with nothing changed, an agent arriving while the list is
+  open (held behind the "N new ↑" pill, so nothing moves until the reader taps
+  it — with a positive control: a fresh arrival APPLIED at once must read a
+  shift above 0), an in-page tab switch, and a boosted navigation and the
+  loads it starts. ⚠ Chromium's layout-shift entries leave out a node MOVED in
+  the DOM, so a re-order done by moving cards reads 0 however far they jump;
+  the hold's own e2e (agents-search) pins the DOM order instead;
 - a tapped tool-group expand is excluded as input, and the same expand by
   script is counted (the spec's own check of its exclusion).
-
-One case is measured and **not** gated: an agent arriving while the Agents list
-is open. The list follows the activity order live, so the new card is drawn at
-the top and the cards below it move (about 0.08–0.10). It is reported in the
-run's output.
 
 `e2e/verdict.mjs` fails the run on any skip, or on fewer passes than its floor.
 In CI the suite runs as parallel legs, each with its own Postgres

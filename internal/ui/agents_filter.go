@@ -414,9 +414,26 @@ func agentsFilterScript() g.Node {
     var w = rankWord(ts);
     var keyed = cards.map(function (c) { return { c: c, r: w ? cardRank(c, w) : 0, i: +c.getAttribute('data-list-i') }; });
     keyed.sort(function (a, b) { return a.r - b.r || a.i - b.i; });
-    var moved = false;
-    keyed.forEach(function (k, i) { if (cards[i] !== k.c) moved = true; });
-    if (moved) keyed.forEach(function (k) { list.appendChild(k.c); });
+    arrange(list, cards, keyed.map(function (k) { return k.c; }));
+  }
+  // arrange puts cards (in DOM order now) into order (the same nodes), and
+  // touches nothing when they already are. When anything is out of place it
+  // re-appends them all, in order: by moveBefore where the browser has it
+  // (focus and an open popover survive the move), else by appendChild — which
+  // DETACHES each card, so a focused one blurs (it is handed focus back below)
+  // and an open popover inside one closes. A held background refresh does not
+  // come here at all: its markup is put in the drawn order before the morph
+  // (keepDrawnOrder), so it moves nothing.
+  function arrange(list, cards, order) {
+    if (!order.some(function (c, i) { return cards[i] !== c; })) return;
+    var focused = document.activeElement;
+    var move = typeof list.moveBefore === 'function'
+      ? function (c) { list.moveBefore(c, null); }
+      : function (c) { list.appendChild(c); };
+    order.forEach(move);
+    if (focused && focused !== document.activeElement && focused.isConnected && typeof focused.focus === 'function') {
+      focused.focus({ preventScroll: true });
+    }
   }
   function onAgents() { return location.pathname === '/agents'; }
   // syncURL writes the text into ?q= — replaceState, so typing is not history.
@@ -488,7 +505,10 @@ func agentsFilterScript() g.Node {
       var c = control(f);
       if (!c) return;
       var seen = Object.create(null), opts = [];
-      [].forEach.call(list.querySelectorAll(':scope > article[data-f-' + f + ']'), function (a) {
+      // Only DRAWN cards offer a value: an arrival held behind the pill is not
+      // on screen, so choosing a kind only it has would show nothing at all.
+      // (It is offered once the tap draws it — applyLive re-runs apply.)
+      [].forEach.call(list.querySelectorAll(':scope > article[data-f-' + f + ']:not([data-held])'), function (a) {
         var v = a.getAttribute('data-f-' + f);
         if (seen[v]) return;
         seen[v] = true;
@@ -536,12 +556,12 @@ func agentsFilterScript() g.Node {
     }
     // One rule per term: a card lacking ANY of them is hidden, so the terms AND.
     // Then the rank (reorder): by the FIRST free-text word, best match first.
-    style.textContent = ts.map(function (t) {
+    style.textContent = ['#agents-list > article[data-held]{display:none !important}'].concat(ts.map(function (t) {
       return '#agents-list > article:not(' + sel(t) + '){display:none !important}';
-    }).join('\n');
+    })).join('\n');
     reorder(ts);
-    var all = list.querySelectorAll(':scope > article');
-    var shown = ts.length ? list.querySelectorAll(':scope > article' + ts.map(sel).join('')) : all;
+    var all = list.querySelectorAll(':scope > article:not([data-held])');
+    var shown = ts.length ? list.querySelectorAll(':scope > article:not([data-held])' + ts.map(sel).join('')) : all;
     var count = el('agents-count'), clear = el('agents-search-clear'), none = el('agents-nomatch'), clearAll = el('agents-filter-clear');
     if (count) count.textContent = all.length ? shown.length + ' of ' + all.length : '';
     if (clear) clear.hidden = !input.value;
@@ -654,8 +674,195 @@ func agentsFilterScript() g.Node {
   // token that was waiting in the box for its option (settled).
   // A refresh morphed the list into the server's order: rank it again before
   // anything is painted (see reorder).
+  // HOLD, AND SHOW "N new ↑" (Zach's call; applying ONLY on a tap, even at the
+  // top, was this change's own resolution, since confirmed by him). A list that
+  // re-renders itself in the background — an SSE nudge (sse:agent.changed / sse:chat.reply) or a
+  // resync — must not move a card the reader can see: the list is ordered by
+  // activity, so an arriving agent is drawn on top and pushes every card down
+  // (with no input to excuse it — e2e/tests/cls.spec.ts measures that shift on
+  // every run, as the positive control of its arrival case).
+  // So a background refresh is HELD: the cards keep the order they had, a card
+  // that arrived is kept out of view (data-held), and the pill counts what is
+  // waiting — arrivals plus cards the live order puts higher. Tapping it applies the
+  // live order (a tap is input, so what it moves is the page answering it).
+  // Status dots and labels are NOT held: the morph has already updated them in
+  // place; only order and insertion wait.
+  //
+  // 🔴 HELD EVEN AT THE TOP: applying without a tap moves the cards in view
+  // whatever the scroll position — scrolling back up is not input either — so
+  // the only shift-free apply of a change in view is the reader's own tap. A
+  // change that moves nothing in view (an arrival at the end, a reorder wholly
+  // below the screen, a list on a hidden tab) is applied at once.
+  //
+  // A refresh the reader caused (agents:changed, after their own rename or pin)
+  // and the first load apply at once. A filter's rank still orders the cards;
+  // ties fall back to the HELD order (data-list-i), so the two never fight.
+  var heldOrder = null, liveOrder = null;
+  function cardsOf(list) { return [].slice.call(list.querySelectorAll(':scope > article')); }
+  function background(e) {
+    var cfg = e.detail && e.detail.requestConfig, t = cfg && cfg.triggeringEvent;
+    var type = t && t.type || '';
+    return type.indexOf('sse:') === 0 || type === 'muster:resync';
+  }
+  // 🔴 THE PILL IS LOOKED UP, NEVER CACHED. A boosted navigation swaps the
+  // body and an htmx history restore puts back a SNAPSHOT of it, so a node
+  // kept from an earlier visit is detached (it was updated, unseen, while the
+  // arrival sat hidden with nothing to tap) — and a restored copy is a clone
+  // that carries no listeners. So the live one is found by id each time, made
+  // if missing, and its tap is handled by delegation on document.
+  function pillEl() {
+    var p = el('agents-new-pill');
+    if (!p) {
+      p = document.createElement('button');
+      p.type = 'button';
+      p.id = 'agents-new-pill';
+      p.setAttribute('aria-live', 'polite');
+      p.className = 'press fixed left-1/2 top-20 z-30 inline-flex min-h-[44px] -translate-x-1/2 items-center gap-1 rounded-full bg-accent px-4 text-sm font-semibold text-on-accent shadow-lg shadow-black/30';
+      document.body.appendChild(p);
+    }
+    return p;
+  }
+  function onPill(e) { return e.target && e.target.closest && e.target.closest('#agents-new-pill'); }
+  // A tap must not take focus: the box keeps its caret (and the phone its
+  // keyboard), a focused card stays focused.
+  document.addEventListener('mousedown', function (e) { if (onPill(e)) e.preventDefault(); });
+  document.addEventListener('click', function (e) { if (onPill(e)) applyLive(); });
+  // The pill is fixed on <body>, so it would float over whatever tab is shown:
+  // it is drawn only while the Agents panel is, and comes back with its count
+  // when the tab does (muster:tabshown, popstate).
+  var pillCount = 0;
+  function agentsShown() {
+    var panel = el('panel-agents');
+    return !!panel && !panel.classList.contains('hidden');
+  }
+  function syncPill() {
+    if (!pillCount && !el('agents-new-pill')) return;
+    var pill = pillEl();
+    pill.textContent = pillCount + ' new ↑';
+    pill.setAttribute('data-count', String(pillCount));
+    pill.hidden = pillCount === 0 || !agentsShown();
+  }
+  function showPill(n) {
+    pillCount = n;
+    syncPill();
+  }
+  // A new body (a boosted navigation, or Back restoring one) holds a list this
+  // state was not computed for: start over — its first load applies at once.
+  function forget() { heldOrder = null; liveOrder = null; pillCount = 0; }
+  document.addEventListener('htmx:historyRestore', forget);
+  document.addEventListener('htmx:beforeSwap', function (e) { if (e.target === document.body) forget(); });
+  function stamp(list, order) {
+    var at = {};
+    order.forEach(function (id, i) { at[id] = i; });
+    cardsOf(list).forEach(function (c) {
+      if (c.id in at) { c.setAttribute('data-list-i', String(at[c.id])); c.removeAttribute('data-held'); }
+    });
+  }
+  function applyLive() {
+    var list = el('agents-list');
+    if (list && liveOrder) {
+      heldOrder = liveOrder.slice();
+      stamp(list, heldOrder);
+    }
+    showPill(0);
+    apply();
+    if (list && list.getBoundingClientRect().top < 0) list.scrollIntoView({ block: 'start' });
+  }
+  // seen is where each card was ON SCREEN just before a swap (beforeSwap), so
+  // hold can tell whether applying the new order would move one in view.
+  var seen = {};
+  function inView(id) {
+    var r = seen[id];
+    return !!r && r.h > 0 && r.bottom > 0 && r.top < window.innerHeight;
+  }
+  // decide answers, for a swap of the list whose server order is live, whether
+  // it is applied at once (true) or held.
+  function decide(e, live) {
+    if (!heldOrder || !background(e) || !heldOrder.length) return true;
+    // What applying would move: every drawn card from the first place the
+    // held and the live order differ. An arrival at the END moves nothing; a
+    // change wholly below the screen (or on a hidden tab) moves nothing in
+    // view. Either is applied at once; anything else is held.
+    var p = 0;
+    while (p < heldOrder.length && heldOrder[p] === live[p]) p++;
+    return !heldOrder.slice(p).some(inView);
+  }
+  // swapPlan is beforeSwap's reading of the swap afterSwap finishes: the server's
+  // (live) order and the decision.
+  var swapPlan = null;
+  function hold(e) {
+    var list = e.target;
+    var p = swapPlan;
+    swapPlan = null;
+    liveOrder = p ? p.live : cardsOf(list).map(function (c) { return c.id; });
+    var apply_ = p ? p.apply : decide(e, liveOrder);
+    if (apply_) {
+      heldOrder = liveOrder.slice();
+      stamp(list, heldOrder);
+      showPill(0);
+      return;
+    }
+    var known = {};
+    heldOrder.forEach(function (id) { known[id] = true; });
+    // The held order, without cards that are gone; arrivals after it, held.
+    heldOrder = heldOrder.filter(function (id) { return liveOrder.indexOf(id) >= 0; });
+    var arrived = liveOrder.filter(function (id) { return !known[id]; });
+    stamp(list, heldOrder);
+    arrived.forEach(function (id, i) {
+      var c = document.getElementById(id);
+      if (c) { c.setAttribute('data-held', ''); c.setAttribute('data-list-i', String(heldOrder.length + i)); }
+    });
+    // What waits: each arrival, and each card the live order puts HIGHER than
+    // it is drawn (one card overtaking three is one change, not four).
+    var liveKnown = liveOrder.filter(function (id) { return known[id]; });
+    var risen = 0;
+    liveKnown.forEach(function (id, i) { if (i < heldOrder.indexOf(id)) risen++; });
+    showPill(arrived.length + risen);
+  }
+  // keepDrawnOrder rewrites a held refresh's markup so its cards come in the
+  // order they are DRAWN (cards it no longer has dropped, arrivals after), and
+  // idiomorph then morphs every card in place: nothing is moved, so nothing is
+  // detached — an open popover stays open, a focused element is not blurred,
+  // in every browser. (Morphed into the live order and put back, every card
+  // moved on every refresh while the pill was up.)
+  function keepDrawnOrder(e, drawn) {
+    var tpl = document.createElement('template');
+    tpl.innerHTML = e.detail.serverResponse;
+    var arts = [].filter.call(tpl.content.children, function (c) { return c.tagName === 'ARTICLE' && c.id; });
+    if (!arts.length) return;
+    var byId = {};
+    arts.forEach(function (a) { byId[a.id] = a; });
+    var order = drawn.filter(function (id) { return byId[id]; });
+    var kept = {};
+    order.forEach(function (id) { kept[id] = true; });
+    arts.forEach(function (a) { if (!kept[a.id]) order.push(a.id); });
+    if (!order.some(function (id, i) { return arts[i].id !== id; })) return;
+    var mark = document.createComment('');
+    arts[0].parentNode.insertBefore(mark, arts[0]);
+    arts.forEach(function (a) { a.remove(); });
+    order.forEach(function (id) { mark.parentNode.insertBefore(byId[id], mark); });
+    mark.remove();
+    e.detail.serverResponse = tpl.innerHTML;
+  }
+  document.addEventListener('htmx:beforeSwap', function (e) {
+    if (!e.target || e.target.id !== 'agents-list') return;
+    seen = {};
+    var drawn = cardsOf(e.target);
+    drawn.forEach(function (c) {
+      var r = c.getBoundingClientRect();
+      seen[c.id] = { top: r.top, bottom: r.bottom, h: r.height };
+    });
+    swapPlan = null;
+    if (typeof e.detail.serverResponse !== 'string') return;
+    var tpl = document.createElement('template');
+    tpl.innerHTML = e.detail.serverResponse;
+    var live = [].filter.call(tpl.content.children, function (c) { return c.tagName === 'ARTICLE' && c.id; })
+      .map(function (c) { return c.id; });
+    swapPlan = { live: live, apply: decide(e, live) };
+    if (!swapPlan.apply) keepDrawnOrder(e, drawn.map(function (c) { return c.id; }));
+  });
   document.addEventListener('htmx:afterSwap', function (e) {
-    if (e.target && e.target.id === 'agents-list') apply();
+    if (e.target && e.target.id === 'agents-list') { hold(e); apply(); }
   });
   document.addEventListener('htmx:afterSettle', function (e) {
     if (e.target && e.target.id === 'agents-list') settled();
@@ -664,12 +871,15 @@ func agentsFilterScript() g.Node {
   // Back on the Agents tab (switchTab pushed a bare /agents): put the filter's
   // ?q= back on it at once — a replace, so the switch is still one entry.
   document.addEventListener('muster:tabshown', function (e) {
+    syncPill();
     var input = el('agents-search');
     if (input && e.detail && e.detail.tab === 'agents') syncURL(composeQ());
   });
   // Back/forward onto an /agents entry: its ?q= is the filter it had.
   // (An entry with no ?q= leaves the bar as it is, and apply writes it back.)
   window.addEventListener('popstate', function () {
+    // The shell's own popstate handler shows the tab; after it, the pill follows.
+    setTimeout(syncPill, 0);
     var q = urlQ();
     if (q !== null && el('agents-search')) { syncOptions(); place(q); }
     apply();

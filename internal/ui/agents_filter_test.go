@@ -116,7 +116,8 @@ func TestTheFilterHidesWithOneRulePerWordAndCountsWithTheSameSelector(t *testing
 	script := scriptWith(t, page, "__musterAgentsFilter")
 	for name, want := range map[string]string{
 		"the rule hides a card lacking the term": `'#agents-list > article:not(' + sel(t) + '){display:none !important}'`,
-		"the count uses the same selector":       `list.querySelectorAll(':scope > article' + ts.map(sel).join(''))`,
+		"the count uses the same selector":       `list.querySelectorAll(':scope > article:not([data-held])' + ts.map(sel).join(''))`,
+		"a held arrival is hidden and uncounted": `'#agents-list > article[data-held]{display:none !important}'`,
 		"the terms are lower-cased and parsed":   `tokens(String(q || '').toLowerCase()).forEach(`,
 		"typing replaces the URL, never pushes":  `history.replaceState(history.state, '', next)`,
 		"it re-counts when the list settles":     `if (e.target && e.target.id === 'agents-list') settled();`,
@@ -252,6 +253,44 @@ func TestEveryFieldIsARegisteredSafeIdentifier(t *testing.T) {
 			if !seen[k] {
 				t.Errorf("a %s card writes unregistered data-f-%s", what, k)
 			}
+		}
+	}
+}
+
+// 🔴 A REGRESSION TEST: two `function place` declarations in the one IIFE —
+// the later one (the box-token placer) silently replaced the card mover, and
+// the reorder wrote the list element into the search box: every card hidden.
+// Function declarations hoist and the last one wins, with no error anywhere.
+func TestTheFilterScriptDeclaresEachFunctionOnce(t *testing.T) {
+	var b strings.Builder
+	if err := agentsFilterScript().Render(&b); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]int{}
+	for _, m := range regexp.MustCompile(`(?m)^  function (\w+)\s*\(`).FindAllStringSubmatch(b.String(), -1) {
+		seen[m[1]]++
+	}
+	// The same trap for a top-level `var`: two of them are ONE variable. The
+	// hold's "pending" swap plan took over the link-token move's "pending"
+	// map, and a ?q=host=… link no longer selected its host.
+	vars := map[string]int{}
+	for _, m := range regexp.MustCompile(`(?m)^  var (\w+)`).FindAllStringSubmatch(b.String(), -1) {
+		vars[m[1]]++
+	}
+	if len(vars) < 5 {
+		t.Fatalf("found only %d top-level vars — the pattern no longer matches the script", len(vars))
+	}
+	for name, n := range vars {
+		if n > 1 {
+			t.Errorf("var %s is declared %d times in agentsFilterScript; both are one variable", name, n)
+		}
+	}
+	if len(seen) < 10 {
+		t.Fatalf("found only %d top-level functions — the pattern no longer matches the script", len(seen))
+	}
+	for name, n := range seen {
+		if n > 1 {
+			t.Errorf("function %s is declared %d times in agentsFilterScript; the last silently wins", name, n)
 		}
 	}
 }

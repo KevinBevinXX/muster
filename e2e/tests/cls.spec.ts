@@ -221,7 +221,7 @@ for (const vp of viewports) {
     // panel in place, and a boosted navigation swaps the body and then loads its
     // lists. Each is started by SCRIPT here (a scripted event or click is not
     // input), so every shift it causes is counted.
-    test(`after the load: a list refresh, a tab switch and a boosted navigation each shift less than ${BAR} (an arriving agent is measured)`, async ({ page }) => {
+    test(`after the load: a list refresh, an arriving agent, a tab switch and a boosted navigation each shift less than ${BAR}`, async ({ page }) => {
       test.setTimeout(120_000);
       const results: Record<string, ClsResult> = {};
       const nudge = () => page.evaluate(() => (window as any).htmx.trigger(document.body, 'sse:agent.changed'));
@@ -239,6 +239,7 @@ for (const vp of viewports) {
       results['refresh, nothing changed'] = await readCls(page);
 
       const added = 'e2e-cls-added-' + Date.now().toString(36);
+      const control = 'e2e-cls-control-' + Date.now().toString(36);
       mkchat(added, null);
       mkchat(added, [{ role: 'user', content: 'arrived while the list was open' }]);
       try {
@@ -247,10 +248,40 @@ for (const vp of viewports) {
         await nudge();
         await done;
         await settle(page);
-        await expect(page.locator(`#agents-list > article[data-f-name="${added}"]`), 'the new agent is drawn').toHaveCount(1);
+        // Held behind the pill (Zach's call; tap-only, confirmed): nothing in view moves.
+        await expect(page.locator('#agents-new-pill'), 'the arrival waits behind the pill').toHaveText('1 new ↑');
+        await expect(page.locator(`#agents-list > article[data-f-name="${added}"]`)).toBeHidden();
         results['refresh, an agent added'] = await readCls(page);
+        // A tap applies it.
+        await page.locator('#agents-new-pill').click();
+        await expect(page.locator(`#agents-list > article[data-f-name="${added}"]`), 'the tap drew the new agent').toBeVisible();
+        await settle(page);
+
+        // 🔴 THE POSITIVE CONTROL: an arrival APPLIED at once — by a refresh
+        // the reader caused (agents:changed, which the hold never holds),
+        // started by script, so not input. It must read a shift: a zero here
+        // would mean the instrument cannot see an arrival at all, and the held
+        // zero above would prove nothing.
+        // ⚠ A FRESH agent, not the held one: Chromium's layout-shift entries
+        // leave out a node that was MOVED in the DOM (it is laid out anew), and
+        // a held arrival is already in the list, so applying it moves nodes —
+        // measured, that reads 0 while the cards visibly jump. A new card is
+        // INSERTED, and the cards it pushes down are the shift being measured.
+        mkchat(control, null);
+        mkchat(control, [{ role: 'user', content: 'arrived, and applied at once' }]);
+        await resetCls(page);
+        done = refreshed();
+        await page.evaluate(() => (window as any).htmx.trigger(document.body, 'agents:changed'));
+        await done;
+        await settle(page);
+        await expect(page.locator(`#agents-list > article[data-f-name="${control}"]`), 'applied: the control agent is drawn').toBeVisible();
+        await expect(page.locator('#agents-new-pill'), 'and nothing waits').toBeHidden();
+        const c = await readCls(page);
+        console.log(`[cls ${vp.name}] arrival applied (positive control): ${c.total}`);
+        expect(c.total, report('an arrival applied without the hold (positive control)', c)).toBeGreaterThan(0);
       } finally {
         mkchat(added, null);
+        mkchat(control, null);
       }
 
       // An in-page tab switch: /tasks → Agents, by the sidebar's own link.
@@ -272,18 +303,12 @@ for (const vp of viewports) {
       results['boosted navigation agent → tasks'] = await readCls(page);
 
       console.log(`[cls ${vp.name}] after the load: ` + Object.entries(results).map(([k, r]) => `${k} ${r.total}`).join(' | '));
-      // ⚠ ONE CASE IS MEASURED AND NOT GATED: an agent ARRIVING while the list is
-      // open. The list is ordered most recently active first and follows that
-      // order live (mirrored.spec.ts pins "the open list follows"), so a new
-      // agent is drawn at the top and every card below it moves: 0.08 at a
-      // phone, 0.10 at a desktop, measured. Holding the order still while a list
-      // is open would remove the shift and the live order with it — a product
-      // decision, raised on the PR, not taken here. The number is reported and
-      // attached so it stays visible.
-      test.info().annotations.push({ type: 'cls-ungated', description: `${vp.name}: an agent arriving moves the open list by ${results['refresh, an agent added'].total}` });
-      const bad = Object.entries(results).filter(([k, r]) => k !== 'refresh, an agent added' && r.total >= BAR).map(([k, r]) => report(k, r));
+      // 🔴 THE ARRIVAL IS GATED TOO. Applied, it moves the open list (the
+      // positive control above measures and logs by how much, every run); it is
+      // held behind the "N new ↑" pill (agentsFilterScript's hold) and moves
+      // nothing until the reader taps.
+      const bad = Object.entries(results).filter(([, r]) => r.total >= BAR).map(([k, r]) => report(k, r));
       expect(bad).toEqual([]);
-      expect(results['refresh, an agent added'].total, 'positive control: the arrival case did measure a movement').toBeGreaterThan(0);
     });
 
     test(`the chief panel, opened and restored open, shifts less than ${BAR}`, async ({ page }) => {

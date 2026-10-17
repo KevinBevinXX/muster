@@ -488,3 +488,45 @@ func (m *isoMirror) PasteWindow(ctx context.Context, host, _, _, _ string, _ mir
 	}
 	return mirror.ErrNoRenderedView
 }
+
+// 🔴 THE RESUME WIRING (handleMirrorViewWS sets drawn.Resumed from ?gen=&offset=):
+// a socket that RESUMES draws onto a page that already holds the earlier
+// socket's rows, so a result whose call this socket never drew is a `result`
+// op INTO that row; a fresh socket (no resume point) has no such row and draws
+// the result as a row of its own. The ui tier pins the Resumed branch itself;
+// this pins that the handler sets it — forcing drawn.Resumed = false (or true)
+// in mirror_view.go turns one of the two cases below red.
+func TestTheViewSocketMarksAResumeSoAnEarlierCallsResultFillsItsRow(t *testing.T) {
+	result := mirror.Msg{Type: mirror.TypeEvents, Gen: "g1", Offset: 300, Events: []cctranscript.Event{
+		{Kind: cctranscript.KindToolResult, ToolID: "tu-earlier", OK: true, Output: "ok"},
+	}}
+	for _, tc := range []struct {
+		name, query, wantOp string
+	}{
+		{"resumed", "&gen=g1&offset=200", "result"},
+		{"fresh", "", "append"},
+		{"a gen with no offset is not a resume", "&gen=g1", "append"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fm := &fakeMirror{online: true, v2: &fakeMirrorV2{batches: []mirror.Msg{result}}}
+			s, ts := viewServer(t, fm)
+			c, _, err := dialTerm(t, s, ts, ui.MirrorViewWSPath("ws", "main")+tc.query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.CloseNow()
+			b := readBatch(t, c)
+			ops, _ := b["ops"].([]any)
+			if len(ops) == 0 {
+				t.Fatalf("control: the result drew no op: %v", b)
+			}
+			var got []string
+			for _, o := range ops {
+				got = append(got, o.(map[string]any)["op"].(string))
+			}
+			if got[0] != tc.wantOp {
+				t.Errorf("ops %v, want the first to be %q", got, tc.wantOp)
+			}
+		})
+	}
+}

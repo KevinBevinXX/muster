@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Locator, Page } from '@playwright/test';
-import { test, expect } from '../lib/fixtures';
+import { test, expect, takeNew } from '../lib/fixtures';
 import { binDir, dsn, dupLabelsPort, password, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 
@@ -375,6 +375,8 @@ test('a kind holding a double quote and a backslash can be chosen, matches its c
   const kindSel = page.locator('#agents-f-kind');
   const plumCard = cardsOf(page, hostA).filter({ has: page.locator('[data-mirror-name]', { hasText: 'plum:3' }) });
   await expect(plumCard, `the plum window (log:\n${mirrorLog})`).toHaveCount(1, { timeout: 20_000 });
+  // It may have registered after the first paint, and wait behind the pill.
+  await takeNew(page);
   await expect.poll(() => kindSel.locator('option').allTextContents(), { timeout: 20_000 }).toContain(odd);
   const shown = page.locator('#agents-list > article').filter({ visible: true });
 
