@@ -156,6 +156,12 @@
    "q": "\u00a0gpt\u0085",
    "tier": 0,
    "why": "no-break space and NEL around a query are white space"
+  },
+  {
+   "label": "οδος",
+   "q": "οδοσ",
+   "tier": 0,
+   "why": "a label written with the final-sigma letter itself matches the plain sigma"
   }
  ]
 }
