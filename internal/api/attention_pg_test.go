@@ -100,7 +100,9 @@ func (f *attnFixture) agentFor(t *testing.T, owner int64, name, display, token s
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM agents WHERE id = $1`, a.ID) })
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM agents WHERE id = $1`, a.ID)
+	})
 	return a
 }
 
@@ -387,7 +389,9 @@ func TestTheTaskToolsWorkTheOwnersBoardAndNoOneElses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM notes WHERE id = $1`, theirs.ID) })
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM notes WHERE id = $1`, theirs.ID)
+	})
 	text, _, _ := f.tool(t, f.workerTok, tasksListTool, map[string]any{})
 	if !strings.Contains(text, `"id":`+strconv.FormatInt(mine.ID, 10)) || strings.Contains(text, "attn theirs") {
 		t.Fatalf("list: %s", text)
@@ -447,7 +451,9 @@ func TestTheReadModelHasEachSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM plugin_messages WHERE id = $1`, m.ID) })
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM plugin_messages WHERE id = $1`, m.ID)
+	})
 
 	kinds := func() map[string][]string {
 		items, err := f.srv.attentionItems(ctx)
