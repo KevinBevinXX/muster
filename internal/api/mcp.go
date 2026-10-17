@@ -63,11 +63,14 @@ const mcpGitNote = "For git, plain `git clone/fetch/push https://<host>/...` goe
 // the registry's one spelling of a failed tool call — so MCP can flag it isError.
 func isToolErr(text string) bool {
 	var m map[string]json.RawMessage
-	if json.Unmarshal([]byte(text), &m) != nil || len(m) != 1 {
+	if json.Unmarshal([]byte(text), &m) != nil {
 		return false
 	}
 	_, ok := m["error"]
-	return ok
+	// toolErr's {error}, or a structured refusal's {error, refused}
+	// (session_routes.go's routeRefusal) — nothing else.
+	_, refused := m["refused"]
+	return ok && (len(m) == 1 || (len(m) == 2 && refused))
 }
 
 func (s *Server) writeMCP(w http.ResponseWriter, id json.RawMessage, result any, rpcErr *mcpError) {

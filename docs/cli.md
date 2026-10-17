@@ -18,6 +18,7 @@ The verb set is pinned in two places:
 | agents | `agent ls`, `agent messages`, `agent resolve`, `chief ask` |
 | browser flows | `flow enqueue`, `flow ls`, `flow status` |
 | credentials | `token ls`, `token revoke`, `whoami` |
+| session routing | `route reply` (a mirrored session's answer to a [routed message](plugins.md#routing-a-message-to-a-session)) |
 
 Global flags: `--api-url`, `--token`, `--env-file` (default
 `~/.muster/muster.env`) and `--timeout`.

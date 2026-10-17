@@ -61,6 +61,7 @@ import (
 	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/flows"
+	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/gotrue"
 	"github.com/ZacxDev/muster/internal/memorelay"
@@ -277,6 +278,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// The server-side send queue (migration 0019); RunSendQueue delivers it.
 		ext.SendQueue = sendqueue.NewPG(pool)
 		ext.SendQueueIdle = cfg.SendQueueIdle
+		// Session focus (migration 0020). Its summarizer is wired below, once
+		// the credential plane that decides whose OpenRouter key it spends exists.
+		ext.Focus = focus.NewPG(pool)
 
 		if len(cfg.ConnectorEncKey) > 0 {
 			cs, err := connectors.NewPG(pool, cfg.ConnectorEncKey)
@@ -359,6 +363,13 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if credStore != nil {
 		ext.Credentials = credentialPage{PGStore: credStore, plane: plane}
 	}
+	// The focus summarizer: ScaleDown through OpenRouter, on the OWNER's
+	// OpenRouter key exactly as that owner's gateway pods get it (the plane: the
+	// environment's for an admin, the member's own otherwise, none refused).
+	if ext.Focus != nil {
+		ext.FocusSummarizer = &focus.ScaleDown{Key: plane.OpenRouterKey, Missing: credentials.IsNoCredential}
+		ext.FocusRetention = cfg.FocusRetention
+	}
 	ccPool, err := buildClaudePool(cfg, plane, marks)
 	if err != nil {
 		a.Close()
@@ -407,7 +418,14 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// A reply draft is screened with the browser-flow agent screen's list of
 		// the deployment's own names (MUSTER_FLOW_AGENT_DENY_WORDS): the same
 		// "agent text bound for an outside party" (internal/plugins/drafts.go).
-		ext.Plugins = plugins.NewPG(a.pool).WithAgentDenyWords(cfg.FlowAgentDenyWords)
+		pluginStore := plugins.NewPG(a.pool).WithAgentDenyWords(cfg.FlowAgentDenyWords)
+		ext.Plugins = pluginStore
+		// Session routing (MUSTER_SESSION_ROUTING=1): the same store's routes
+		// half, and the allowlist whose routed answers relay without approval.
+		if cfg.SessionRouting {
+			ext.Routes = pluginStore
+			ext.Routing = &api.Routing{Allow: cfg.RouteRelayAllow}
+		}
 		// The namespaces POST /plugin/v1/tasks files tasks by; validated at boot
 		// (config.validate), so this cannot fail on a config that got here.
 		if err := notes.SetPluginTaskNamespaces(cfg.PluginTaskNamespaces); err != nil {
@@ -707,6 +725,14 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	// message a previous process left mid-send, which would be a peer's live
 	// send with two (the mirror hub is single-replica state already).
 	go a.srv.RunSendQueue(ctx, sendqueue.DefaultInterval)
+	// Session focus's periodic refresh (MUSTER_FOCUS_INTERVAL; 0 = off), and
+	// its retention sweep, which runs whether or not the refresh does.
+	if a.cfg.FocusInterval > 0 {
+		go a.srv.RunFocusRefresh(ctx, a.cfg.FocusInterval)
+	}
+	go a.srv.RunFocusRetention(ctx)
+	// Session routing's deadline: due routes are timed out and handed back.
+	go a.srv.RunRouteTimeouts(ctx, api.RouteSweepInterval)
 }
 
 // shutdown drains in-flight requests and the kickoff deliverer, then waits for
@@ -1005,6 +1031,24 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	default:
 		l.Printf("plugins: OFF — %s is unset (or there is no database), so every /plugin/* route and /plugins "+
 			"answer 404", envPlugins)
+	}
+	switch {
+	case ext.Routing != nil:
+		l.Printf("session routing: ON (%s=1) — the chief may hand a plugin message to one of its owner's sessions "+
+			"(route_to_session); a mirrored window gets it through the send queue, its row marked and gated on its ROUTE "+
+			"instead of a sign-in (see internal/api/session_routes.go); %d owner(s) have plugin-bound senders whose verified "+
+			"answers relay without approval (%s)",
+			envSessionRouting, ext.Routing.Allow.Owners(), envRouteRelayAllow)
+		if a.cfg.HookToken == "" {
+			l.Printf("WARNING — session routing: %s is unset, so a session answers a route (POST /api/routes/{id}/reply) "+
+				"ONLY with a personal API token; a host on the shared hook credential is refused (503) and its routes time "+
+				"out back to the chief", envHookToken)
+		}
+	case a.cfg.SessionRouting:
+		l.Printf("session routing: INERT — %s=1 but the plugin interface is off, so nothing is routed", envSessionRouting)
+	default:
+		l.Printf("session routing: OFF — %s is unset, so the chief has no route_to_session and POST /api/routes/{id}/reply "+
+			"answers 404 (%s is not read)", envSessionRouting, envRouteRelayAllow)
 	}
 	switch nss := a.cfg.PluginTaskNamespaces; {
 	case len(nss) > 0 && ext.Plugins != nil:

@@ -147,6 +147,10 @@ var pgBackedPackages = []string{
 	// Pins (migration 0017). "Another user cannot see, delete or make a pin of
 	// yours" and "deleting an agent deletes its pin" are claims about row-level
 	// security and a foreign key cascade.
+	// Session focus (migration 0020). "Another user cannot see or write your
+	// focus", "an upsert keeps one row" and "full-text search ranks the right
+	// focus first" are claims about row-level security and SQL.
+	"internal/focus",
 	"internal/pins",
 	// The send queue (migration 0019). "Another user cannot see, queue into or
 	// cancel your queue", "one row per target is sending" and "a claim is never

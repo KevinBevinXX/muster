@@ -133,6 +133,16 @@ var (
 		// ended its session. Every query through it filters on an explicit owner
 		// (or a row handle carrying one) — see internal/push.Store.
 		"internal/push.sys",
+		// Session focus (migration 0020): which owners have anything to refresh
+		// (focus.PGStore.Owners — owner ids only; the refresher and the retention
+		// sweep then act as each owner, withPrincipalLedger's focusPrincipal), and
+		// the retention delete across every owner (focus.PGStore.PruneAll — a
+		// delete by age that returns only a count).
+		"internal/focus.sys",
+		// Session routing (migration 0021): the timeout sweep's read of which
+		// routes are past their deadline (ids and owners only); each is then
+		// timed out as its owner (withPrincipalLedger's routePrincipal).
+		"internal/plugins.(*PGStore).ExpiredRoutes",
 	}
 	// operatorLedger: work done as the OPERATOR (user 1) with no request —
 	// the boot-time GitHub connect of the operator's own static token, and the
@@ -166,6 +176,14 @@ var (
 	withPrincipalLedger = []string{
 		"internal/api.(*Server).admit",
 		"internal/api.(*Server).queuedPrincipal",
+		// The session focus refresher (internal/focus): each owner's sessions
+		// are read and their focus written as that owner, through
+		// authz.ViaFocus, after focus.PGStore.Owners read the owner ids.
+		"internal/api.(*Server).focusPrincipal",
+		// Session routing's timeout sweep: each due route is timed out, its
+		// queued injection cancelled and its message handed back to the chief as
+		// the route's owner, through authz.ViaRoute.
+		"internal/api.(*Server).routePrincipal",
 	}
 	// admitLedger: every authentication wrapper.
 	admitLedger = []string{
@@ -187,7 +205,7 @@ var (
 	// new door until someone has decided it is not.
 	authzExports = []string{
 		"From", "MustFrom", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
-		"System", "Via", "ViaAgent", "ViaConnect", "ViaHook", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaRelay", "ViaRunner", "ViaService",
+		"System", "Via", "ViaAgent", "ViaConnect", "ViaFocus", "ViaHook", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
 		"ViaSession", "ViaSystem", "ViaToken", "WithPrincipal",
 	}
 )

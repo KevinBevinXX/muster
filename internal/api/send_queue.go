@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ZacxDev/muster/internal/plugins"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -450,6 +451,15 @@ func (s *Server) sendQueueSend(ctx context.Context, it sendqueue.Item, st sendqu
 	if why := s.sendQueueOwnerRefusal(ctx, it); why != "" {
 		return sendqueue.Outcome{Detail: why}
 	}
+	if it.RouteID != "" {
+		why := s.sendQueueRoutedGate(ctx, it)
+		if why != "" {
+			return sendqueue.Outcome{Detail: why}
+		}
+		// The route gates it, not a sign-in (see session_routes.go): the
+		// delivery moment is the auth time the paste's freshness check sees.
+		ctx = stepup.WithAuthTime(ctx, s.stepUpNow())
+	}
 	var h mirror.HostView
 	found := false
 	for _, x := range s.ext.Mirror.Hosts(ctx) {
@@ -482,6 +492,51 @@ func (s *Server) sendQueueSend(ctx context.Context, it sendqueue.Item, st sendqu
 			Detail: "Not sent: " + unprefixed(err)}
 	}
 	return sendqueue.Outcome{Sent: true, Detail: "Sent."}
+}
+
+// Why a routed queued message is not sent (sendQueueRoutedGate).
+const (
+	SendQueueRouteClosed  = "Not sent: its route is no longer waiting for an answer"
+	SendQueueRouteMoved   = "Not sent: the window no longer holds the conversation the message was routed to; it went back to the chief."
+	SendQueueRouteUnknown = "Not sent: its route could not be read."
+)
+
+// sendQueueRoutedGate is why routed row it may not be pasted now, "" when it
+// may: its route (send_queue.route_id) must still be `routed` — so the row
+// never outlives its route, whether or not its cancel happened — and the
+// window must still hold the Claude session the route PINNED (the route's
+// target key). A window that moved on fails the route and hands it back to
+// the chief. ctx is the row's owner.
+func (s *Server) sendQueueRoutedGate(ctx context.Context, it sendqueue.Item) string {
+	if s.ext.Routes == nil {
+		return SendQueueRouteUnknown
+	}
+	r, err := s.ext.Routes.Route(ctx, it.RouteID)
+	switch {
+	case err != nil:
+		s.logger.Printf("sendqueue: message %d: read route %s: %v", it.ID, it.RouteID, err)
+		return SendQueueRouteUnknown
+	case r.State != plugins.RouteRouted:
+		return SendQueueRouteClosed + " (" + string(r.State) + ")."
+	}
+	holds := ""
+	for _, e := range s.mirrorClaudeEntries(ctx) {
+		if e.Host == it.Target.Host && e.Session == it.Target.Session && e.Window == it.Target.Window {
+			holds = e.ClaudeSession
+		}
+	}
+	if holds == r.TargetKey {
+		return ""
+	}
+	why := "the window no longer holds the Claude session it was routed to"
+	if _, err := s.ext.Routes.FailRoute(context.WithoutCancel(ctx), r.RouteID, why, why); err != nil {
+		s.logger.Printf("routes: %s: fail on a moved window: %v", r.RouteID, err)
+		return SendQueueRouteMoved
+	}
+	// The failure owes the chief a hand-back, which the route sweep delivers.
+	s.logger.Printf("routes: %s: %s (it holds %q)", r.RouteID, why, holds)
+	s.kickRouteSweep()
+	return SendQueueRouteMoved
 }
 
 // Why a queued message is not sent because of its owner's account

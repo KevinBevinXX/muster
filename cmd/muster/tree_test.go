@@ -44,7 +44,7 @@ import (
 // status/comment, agent ls/resolve/messages, agent task get/comment/status, and
 // chief ask. If a thirteenth is genuinely wanted, change this number, add its
 // ledger row, and say so in the commit — do not discover it in a diff.
-const wantVerbCount = 18
+const wantVerbCount = 19
 
 // minRunnableCommands is a hardcoded floor BELOW wantVerbCount. It exists so
 // that a tree wired to NOTHING cannot pass this file vacuously: a tree that lost
@@ -88,6 +88,8 @@ var wiring = []struct {
 	{"flow enqueue", []string{"flow", "enqueue", "muse.poll", "--param", "thread=Side chat"}, "POST /api/flows/jobs"},
 	{"flow ls", []string{"flow", "ls"}, "GET /api/flows/jobs"},
 	{"flow status", []string{"flow", "status", "9"}, "GET /api/flows/jobs/9"},
+	// Session routing: a mirrored session's reply_to_chief (route.go).
+	{"route reply", []string{"route", "reply", "rt_0123456789abcdef01234567", "--body", "x"}, "POST /api/routes/rt_0123456789abcdef01234567/reply"},
 }
 
 // runnableCommands walks the tree and returns the full path of every command
@@ -191,6 +193,7 @@ func TestEveryCommandReachesItsRoute(t *testing.T) {
 			h.json("POST /api/flows/jobs", http.StatusCreated, `{"id":9,"flow":"muse.poll","status":"queued"}`)
 			h.json("GET /api/flows/jobs", http.StatusOK, `[]`)
 			h.json("GET /api/flows/jobs/9", http.StatusOK, `{"id":9,"status":"done"}`)
+			h.json("POST /api/routes/rt_0123456789abcdef01234567/reply", http.StatusOK, `{"route_id":"rt_0123456789abcdef01234567","state":"relayed","nested":{"a":1}}`)
 
 			got := h.runCLI(w.args...)
 			if got.code != exitOK {

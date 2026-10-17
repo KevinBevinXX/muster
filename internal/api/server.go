@@ -47,6 +47,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
@@ -114,6 +115,10 @@ type Server struct {
 	// draftWake wakes waiting claims when this process approves a draft.
 	pluginRetrying sync.Map
 	draftWake      draftSignal
+	// routeKick wakes the route sweep (RunRouteTimeouts) early: a route just
+	// ended owing its chief a hand-back.
+	routeKick     chan struct{}
+	routeKickOnce sync.Once
 
 	// terminals is every live agent terminal, so a shutdown can end them and
 	// wait for their releases. See EndTerminals.
@@ -157,6 +162,10 @@ type Server struct {
 	sendQueue   *sendqueue.Dispatcher
 	// sendQueueClock is the queue's clock; nil is time.Now (a test sets it).
 	sendQueueClock func() time.Time
+	// focusRefresher runs session focus refreshes (focus.go); built once, on
+	// first use, from the extensions.
+	focusOnce      sync.Once
+	focusRefresher *focus.Refresher
 
 	// listPullRequests is the GitHub PR read, injectable for tests.
 	listPullRequests func(ctx context.Context, token, repo, state string) ([]github.PullRequest, error)

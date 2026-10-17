@@ -21,6 +21,8 @@ the set grows **or** shrinks.
 | plugins | `plugins`, `plugin_messages`, `plugin_reply_drafts` |
 | Agents list | `pins`: the entries each user pinned to the top; `recents`: the entries each user recently opened |
 | send queue | `send_queue`: messages each user queued for a mirrored Claude Code window, sent one at a time when it is idle |
+| session focus | `agent_focus`: what each of a user's sessions is working on ([focus.md](focus.md)) |
+| session routing | `session_routes`: plugin messages the chief routed to a session, and how each route ended ([plugins.md](plugins.md#routing-a-message-to-a-session)) |
 | GitHub | `github_connection`, one row per owner |
 
 `notes` is the task table. The name is historical. It is kept because every id in
@@ -48,6 +50,8 @@ buys only a word.
 | `0017` | `pins`: a user's pinned Agents-list entries, each naming an agent (deleted with it) or a mirrored window by `(host, session, tmux window id)`. Owned, under row-level security; the agent a pin names must be the pin's owner's. |
 | `0018` | `recents`: a user's recently opened Agents-list entries, keyed as `pins` are, one row per entry (a visit moves its time), at most 50 per user (the oldest pruned). Owned, under row-level security. |
 | `0019` | `send_queue`: the server-side send queue. Each row names a mirrored window (host, tmux session, window id) and carries the message, its state (`queued`, `sending`, `sent`, `failed`, `cancelled`) and the sign-in time of the session that queued it. At most one row per window is `sending`; its claim is a lease kept on the database's clock. Owned, under row-level security. Also `users.signed_out_at`: the latest "sign out everywhere", which the queue's delivery checks. |
+| `0020` | `agent_focus`: each session's [focus](focus.md), one row per (owner, subject). A subject is an agent (by id, deleted with it) or a mirrored Claude Code session (by its Claude session id). Title, description, its source (`summarizer`, the only writer), the fingerprint of the transcript tail it was computed from, and the last refresh failure as a short non-secret reason, with its time. A generated `tsvector` over title (weight A) and description (B) with a GIN index serves `focus_search`. Owned, under row-level security. |
+| `0021` | `session_routes`: one row per routed plugin message — its route id, the chief, the target session, the send-queue row that carried it, its state (`routed`, `answered`, `relayed`, `timed_out`, `fallback`, `failed`), the answer and the reply draft it became. At most one open route per message. Also `plugin_reply_drafts.route_id`, unique, so a route becomes at most one draft; `send_queue.route_id`, which marks a routed queue row (gated on its route at delivery); `session_routes.handback`, the hand-back an ended route still owes its chief (cleared by the sweep that delivers it); and `plugin_messages.sender_verified`, the plugin's immutable claim that it authenticated the sender. Owned, under row-level security. |
 
 To change the schema, add a new numbered file.
 

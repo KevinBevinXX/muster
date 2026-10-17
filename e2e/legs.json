@@ -40,7 +40,9 @@
     "tests/pins.spec.ts": 30.0,
     "tests/recent-agents.spec.ts": 10.0,
     "tests/mirror-chat.spec.ts": 30.0,
-    "tests/send-queue.spec.ts": 150.0
+    "tests/send-queue.spec.ts": 150.0,
+    "tests/focus.spec.ts": 30.0,
+    "tests/session-routing.spec.ts": 30.0
   },
   "legs": {
     "1": [
@@ -58,7 +60,9 @@
       "tests/tool-rows.spec.ts",
       "tests/mirror-windows.spec.ts",
       "tests/dictation.spec.ts",
-      "tests/mirror-chat.spec.ts"
+      "tests/mirror-chat.spec.ts",
+      "tests/focus.spec.ts",
+      "tests/session-routing.spec.ts"
     ],
     "2": [
       "tests/provisioning-indicator.spec.ts",

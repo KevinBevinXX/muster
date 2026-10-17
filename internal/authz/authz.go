@@ -90,6 +90,19 @@ const (
 	// queuedPrincipal, called only by the dispatcher — and it is a request door
 	// in the sense that matters here: one user, never everybody.
 	ViaQueue Via = "send-queue"
+	// ViaFocus is the SESSION FOCUS refresher (internal/focus) reading one
+	// owner's sessions and writing their focus: a background job acting as the
+	// OWNER only, never as everybody. One site mints it — internal/api's
+	// focusPrincipal, called only by the refresher and the retention sweep
+	// (their AsOwner), handed each owner after focus.PGStore.Owners read the
+	// owner ids under System.
+	ViaFocus Via = "focus"
+	// ViaRoute is SESSION ROUTING's timeout sweep (internal/plugins/routes.go)
+	// timing a route out and handing its message back to the chief: a
+	// background job acting as the route's OWNER only. One site mints it —
+	// internal/api's routePrincipal, called only by the sweep, handed each owner
+	// after plugins.PGStore.ExpiredRoutes read the due routes under System.
+	ViaRoute Via = "session-route"
 	// ViaSystem is a background loop acting for every user. Only System sets
 	// it.
 	ViaSystem Via = "system"
@@ -105,6 +118,12 @@ var requestVias = map[Via]bool{
 	ViaSession: true, ViaHook: true, ViaService: true,
 	ViaAgent: true, ViaConnect: true, ViaRelay: true, ViaToken: true, ViaRunner: true, ViaPlugin: true,
 	ViaQueue: true,
+	// The session focus refresher's per-owner door (internal/api's
+	// focusPrincipal). Without it the refresher's first pass PANICS here.
+	ViaFocus: true,
+	// Session routing's timeout sweep, per owner (internal/api's
+	// routePrincipal). Without it the sweep PANICS here.
+	ViaRoute: true,
 }
 
 // OperatorUserID is the user every principal names today: the operator, the

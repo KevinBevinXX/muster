@@ -124,6 +124,18 @@ BEGIN
         ALTER TABLE public.send_queue DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.send_queue ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0020 (agent_focus), when this schema has it; same reason as 0011.
+    IF to_regclass('public.agent_focus') IS NOT NULL THEN
+        ALTER TABLE public.agent_focus NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.agent_focus DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.agent_focus ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0021 (session_routes), when this schema has it; same reason as 0011.
+    IF to_regclass('public.session_routes') IS NOT NULL THEN
+        ALTER TABLE public.session_routes NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.session_routes DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.session_routes ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
 END
 $$;
 

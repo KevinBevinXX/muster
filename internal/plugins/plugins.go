@@ -122,6 +122,11 @@ type MessageIn struct {
 	// sender): no reply draft can be filed for it (migration 0016 refuses one),
 	// and the chief's turn says so. Optional; false when absent.
 	NoReply bool `json:"no_reply"`
+	// SenderVerified is the plugin's assertion that it AUTHENTICATED Sender
+	// (DKIM/DMARC-aligned mail, a verified signature, the platform's
+	// equivalent). Only with it can a routed answer be auto-approved
+	// (RelayAllowlist). Optional; false when absent. Immutable once stored.
+	SenderVerified bool `json:"sender_verified"`
 }
 
 // Message is one row of plugin_messages.
@@ -141,6 +146,8 @@ type Message struct {
 	DeliveredAt   *time.Time `json:"deliveredAt,omitempty"`
 	AgentID       *int64     `json:"-"`
 	NoReply       bool       `json:"noReply"`
+	// SenderVerified: the plugin asserted the sender is authenticated.
+	SenderVerified bool `json:"senderVerified"`
 }
 
 // Errors the API maps to status codes.
