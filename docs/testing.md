@@ -85,7 +85,11 @@ at 390×844 (touch) and 1280×800. What it measures, exactly:
 - **after a load**, started by script so nothing counts as input: the Agents
   list re-rendering with nothing changed, an agent arriving while the list is
   open (held behind the "N new ↑" pill, so nothing moves until the reader taps
-  it), an in-page tab switch, and a boosted navigation and the loads it starts;
+  it — with a positive control: a fresh arrival APPLIED at once must read a
+  shift above 0), an in-page tab switch, and a boosted navigation and the
+  loads it starts. ⚠ Chromium's layout-shift entries leave out a node MOVED in
+  the DOM, so a re-order done by moving cards reads 0 however far they jump;
+  the hold's own e2e (agents-search) pins the DOM order instead;
 - a tapped tool-group expand is excluded as input, and the same expand by
   script is counted (the spec's own check of its exclusion).
 

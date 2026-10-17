@@ -676,7 +676,8 @@ func agentsFilterScript() g.Node {
   // re-renders itself in the background — an SSE nudge (sse:agent.changed / sse:chat.reply) or a
   // resync — must not move a card the reader can see: the list is ordered by
   // activity, so an arriving agent is drawn on top and pushes every card down
-  // (measured: 0.08 at a phone, 0.18 at a desktop, with no input to excuse it).
+  // (with no input to excuse it — e2e/tests/cls.spec.ts measures that shift on
+  // every run, as the positive control of its arrival case).
   // So a background refresh is HELD: the cards keep the order they had, a card
   // that arrived is kept out of view (data-held), and the pill counts what is
   // waiting — arrivals plus cards the live order puts higher. Tapping it applies the
