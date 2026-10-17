@@ -45,6 +45,11 @@ type Candidate struct {
 // agents table and the mirror hub). ctx acts as one owner.
 type Sessions interface {
 	Candidates(ctx context.Context) ([]Candidate, error)
+	// Visible is nil when s is a session of the owner's that can be read NOW,
+	// and ErrNoSession otherwise. It reads no transcript.
+	Visible(ctx context.Context, s Subject) error
+	// Tail is s's conversation, newest last; ErrNoSession when it turned out
+	// not to be readable (or to be another conversation) after all.
 	Tail(ctx context.Context, s Subject) ([]Entry, error)
 }
 
@@ -59,6 +64,10 @@ const (
 	MaxPerPass = 20
 	// DefaultInterval is the periodic pass (MUSTER_FOCUS_INTERVAL).
 	DefaultInterval = 15 * time.Minute
+	// DefaultRetention (MUSTER_FOCUS_RETENTION): a Claude session id is never
+	// reused, so one unseen on every host for a week is a conversation that
+	// ended; a week also outlasts a laptop left closed over a long weekend.
+	DefaultRetention = 7 * 24 * time.Hour
 )
 
 // Outcome is what one refresh did.
@@ -71,7 +80,8 @@ const (
 	OutcomeFailed    Outcome = "failed"    // recorded on the row; the old focus stays
 )
 
-// ErrCapped is a refresh the rate caps refused: nothing was called or recorded.
+// ErrCapped is a refresh the rate caps refused: nothing was called, and the
+// refusal is recorded as rate-limited on the subject's row.
 var ErrCapped = errors.New("focus: the summarizer rate cap is reached; try again later")
 
 // Refresher runs refreshes.
@@ -83,6 +93,10 @@ type Refresher struct {
 	AsOwner func(ctx context.Context, owner int64) context.Context
 	Logger  *log.Logger
 	Now     func() time.Time
+	// Retention is how long a MIRRORED session's focus is kept after its
+	// session was last seen on any host (MUSTER_FOCUS_RETENTION); 0 keeps
+	// them. An agent's row dies with the agent instead.
+	Retention time.Duration
 
 	sem     chan struct{}
 	semOnce sync.Once
@@ -146,6 +160,12 @@ func (r *Refresher) release() { <-r.sem }
 // Refresh refreshes sub for owner, as owner (ctx must already act as owner).
 // Whoever asks, an unchanged tail is the fingerprint skip: no summarizer call.
 func (r *Refresher) Refresh(ctx context.Context, owner int64, sub Subject) (Outcome, error) {
+	// 🔴 A SUBJECT NOBODY CAN SEE GETS NO ROW. Visibility is decided before
+	// anything — even the key check — can record a failure, so a caller naming
+	// arbitrary (well-formed) ids cannot grow agent_focus.
+	if err := r.Sessions.Visible(ctx, sub); err != nil {
+		return OutcomeFailed, err
+	}
 	cur, has, err := r.Store.Get(ctx, sub)
 	if err != nil {
 		return OutcomeFailed, err
@@ -160,7 +180,9 @@ func (r *Refresher) Refresh(ctx context.Context, owner int64, sub Subject) (Outc
 	}
 	entries, err := r.Sessions.Tail(ctx, sub)
 	if err != nil {
-		r.record(ctx, sub, err)
+		if !errors.Is(err, ErrNoSession) {
+			r.record(ctx, sub, err)
+		}
 		return OutcomeFailed, err
 	}
 	tail, fp := RenderTail(entries)
@@ -216,6 +238,24 @@ func (r *Refresher) RefreshOwner(ctx context.Context, owner int64) (map[Outcome]
 	for _, f := range have {
 		if f.Has() {
 			updated[f.Subject] = f.UpdatedAt
+		}
+	}
+	// Every mirrored session the owner can see now is SEEN: retention prunes
+	// only the ones that stopped being seen.
+	var mirrors []Subject
+	for _, c := range cands {
+		if c.Subject.Kind == KindMirror {
+			mirrors = append(mirrors, c.Subject)
+		}
+	}
+	if err := r.Store.Touch(ctx, mirrors); err != nil {
+		r.logf("focus: owner %d: mark seen: %v", owner, err)
+	}
+	if r.Retention > 0 {
+		if n, err := r.Store.Prune(ctx, r.now().Add(-r.Retention)); err != nil {
+			r.logf("focus: owner %d: prune: %v", owner, err)
+		} else if n > 0 {
+			r.logf("focus: owner %d: pruned %d mirrored session(s) not seen for %s", owner, n, r.Retention)
 		}
 	}
 	sort.SliceStable(cands, func(i, j int) bool { return cands[i].ActiveAt.After(cands[j].ActiveAt) })

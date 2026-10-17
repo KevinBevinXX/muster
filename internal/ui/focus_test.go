@@ -108,3 +108,24 @@ func TestAMissingOrStaleFocusSaysWhy(t *testing.T) {
 		t.Fatal("a current focus is drawn as stale")
 	}
 }
+
+// TestFocusTextIsEscapedInTheCardAndPopover: a title and description carrying
+// markup and quotes are drawn as text — on both card kinds.
+func TestFocusTextIsEscapedInTheCardAndPopover(t *testing.T) {
+	f := &FocusView{Title: `<script>alert(1)</script> "t"`, Description: `<img src=x onerror="x()"> "d"`, UpdatedAt: time.Now()}
+	for _, html := range []string{
+		renderString(t, agentCard(AgentCardView{ID: 7, Name: "otter", Focus: f})),
+		renderString(t, mirrorCard(MirrorCardView{Host: "h", Session: "s", Window: "@1", Focus: f})),
+	} {
+		for _, raw := range []string{"<script>", "<img", `onerror="x()"`} {
+			if strings.Contains(html, raw) {
+				t.Fatalf("unescaped %q in:\n%s", raw, html)
+			}
+		}
+		for _, want := range []string{"&lt;script&gt;alert(1)&lt;/script&gt; &#34;t&#34;", "&lt;img src=x onerror=&#34;x()&#34;&gt; &#34;d&#34;"} {
+			if !strings.Contains(html, want) {
+				t.Fatalf("missing escaped %q in:\n%s", want, html)
+			}
+		}
+	}
+}

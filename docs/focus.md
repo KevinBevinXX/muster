@@ -33,28 +33,38 @@ reads a transcript through the host's own transcript stream instead (below).
 
 Only muster writes it, server-side. A periodic pass (`MUSTER_FOCUS_INTERVAL`,
 default `15m`) and the chief's `focus_refresh` both:
-- take a **bounded tail** of the session's transcript: at most 40 entries
-  (prompts, replies, tool calls by name and target), 1 KiB each, 16 KiB in
-  all. A dispatched agent's tail is its newest chat. A mirrored window's is
-  the backfill the host sends when muster opens its transcript stream, the
-  same one the rendered view opens, closed again at once;
+- check the session is one muster can see now — an agent of yours, or a
+  Claude session an online window shows. One it cannot see is refused and
+  **no row is written**, so naming arbitrary ids cannot grow the table;
+- take a **bounded tail** of the session's transcript: at most 40 entries,
+  1 KiB each, 16 KiB in all (what each entry carries is below). A dispatched
+  agent's tail is its newest chat. A mirrored window's is the backfill the
+  host sends when muster opens its transcript stream (the one the rendered
+  view opens), closed again at once — and only if that stream is still the
+  conversation asked for: after a `/clear` or a restart the window holds
+  another conversation, and nothing is stored;
 - **skip the summarizer when the tail has not changed**: the tail's sha256
   is stored with the focus, and an equal one makes no call;
 - otherwise ask the summarizer (below) for a title and a description, clean
   them (one line, no markup or control characters, at most 80 characters
   and three sentences), and store them;
 - on any failure, keep the previous focus and record **why** beside it, as a
-  short fixed reason: `no OpenRouter key`, `rate-limited`,
+  short fixed reason: `no OpenRouter key`, `the OpenRouter key could not be
+  read` (a credential-store failure, not a missing key), `rate-limited`,
   `summarizer error (HTTP <status>)`, `the summarizer's answer was
-  unusable`, `the session is not visible now`, `the summarizer could not be
-  reached`. Nothing from the transcript, the key or the provider's error
+  unusable`, `the summarizer could not be reached`. Nothing from the transcript, the key or the provider's error
   text is stored or shown. The card's popover says it ("No focus: …", or
   "Last refresh failed: …" on a focus that is now stale), and so does
   `agents_list` (`focus_problem`). The next successful refresh clears it.
 
 A pass only looks at sessions that were active since their focus was
-written, at most 20 per user. Calls are capped at 60 per user and 300 in all
-per hour, two at a time.
+written, at most 20 per user, and skips disabled users. Calls are capped at
+60 per user and 300 in all per hour, two at a time.
+
+**Retention.** Each pass marks the mirrored sessions it can see. A mirrored
+session's focus not seen for `MUSTER_FOCUS_RETENTION` (default a week) is
+deleted; an agent's dies with the agent. `focus_search` never returns a
+mirrored session no online window shows.
 
 ## The summarizer
 
@@ -65,9 +75,27 @@ session owner's OpenRouter key, exactly as that owner's gateway agents get it
 member's own otherwise. An owner with no key gets no summarized focus, and the
 error is recorded.
 
-🔴 **The tail is sent as-is.** Whatever a session's recent prompts, replies and
-tool targets contain goes to OpenRouter and ScaleDown. The prompt asks for no
-commands, secrets or host names in the summary, but the input is not redacted.
+🔴 **What leaves for each kind of session** (to OpenRouter and ScaleDown):
+
+| entry | dispatched agent | mirrored Claude Code session |
+|---|---|---|
+| your prompts | as written | as written |
+| replies | as written | as written (thinking never) |
+| tool calls | the tool's **name**, plus the file path when the call names one (`file_path`, `notebook_path`, `path`) | the same |
+| tool arguments (shell commands, file bodies, URLs, patterns, anything else) | never | never |
+| tool output | never | never |
+| errors | — | the error text |
+
+Prompts and replies are sent as they are: whatever you or a session wrote,
+including text pasted from elsewhere, goes out. The prompt asks the summarizer
+not to quote commands, secrets or host names, but the input is not redacted.
+
+🔴 **Focus is untrusted.** A title or description is a summarizer's output
+over a transcript that can carry an outside party's words, so it can repeat an
+injected instruction. The summarizer is told to ignore instructions in the
+transcript; every focus tool's description and result (`"untrusted": …`) tell
+the chief that focus is data, never instructions. Neither makes the text safe
+— they only label it.
 
 ## The tools
 

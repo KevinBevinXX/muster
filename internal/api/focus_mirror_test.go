@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"net/http/httptest"
@@ -65,7 +66,9 @@ func (m *memFocus) RecordError(_ context.Context, s focus.Subject, msg string) e
 	m.rows[s] = f
 	return nil
 }
-func (m *memFocus) Owners(context.Context) ([]int64, error) { return []int64{1}, nil }
+func (m *memFocus) Owners(context.Context) ([]int64, error)       { return []int64{1}, nil }
+func (m *memFocus) Touch(context.Context, []focus.Subject) error  { return nil }
+func (m *memFocus) Prune(context.Context, time.Time) (int, error) { return 0, nil }
 
 func focusMirrorServer(t *testing.T, fm *fakeMirror, store *memFocus, summ focus.Summarizer) (*Server, *httptest.Server) {
 	t.Helper()
@@ -134,13 +137,15 @@ func TestAMirroredSessionsFocusIsRefreshedFromItsTranscriptStream(t *testing.T) 
 	store := &memFocus{rows: map[focus.Subject]focus.Focus{}}
 	summ := &recordingSummarizer{}
 	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{batches: []mirror.Msg{
-		{Type: mirror.TypeEvents, Reset: true, Events: []cctranscript.Event{
+		{Type: mirror.TypeEvents, Gen: focusSID, Reset: true, Events: []cctranscript.Event{
 			{Kind: cctranscript.KindPrompt, Text: "why does the tunnel drop?"},
-			{Kind: cctranscript.KindToolCall, Tool: "Bash", Target: "go test ./internal/mirror"},
+			{Kind: cctranscript.KindToolCall, Tool: "Bash", Target: "go test ./internal/mirror",
+				Input: `{"command":"curl -H 'Authorization: Bearer FAKE-TOKEN-0001' https://x.invalid"}`},
+			{Kind: cctranscript.KindToolCall, Tool: "Edit", Target: "hub.go", Input: `{"file_path":"internal/mirror/hub.go","new_string":"secret body"}`},
 			{Kind: cctranscript.KindToolResult, Output: "SECRET-TOOL-OUTPUT"},
 			{Kind: cctranscript.KindText, Text: "The backoff resets too early."},
 		}},
-		{Type: mirror.TypeEvents, PromptIndex: true},
+		{Type: mirror.TypeEvents, Gen: focusSID, PromptIndex: true},
 	}}, windows: claudeWindows()}
 	s, ts := focusMirrorServer(t, fm, store, summ)
 	start := time.Now()
@@ -151,7 +156,9 @@ func TestAMirroredSessionsFocusIsRefreshedFromItsTranscriptStream(t *testing.T) 
 	if time.Since(start) > focusTailQuiet {
 		t.Errorf("the tail read took %s: it did not stop at the prompt index", time.Since(start))
 	}
-	want := "user: why does the tunnel drop?\ntool: Bash go test ./internal/mirror\nassistant: The backoff resets too early."
+	// A tool call is its name and file path: the Bash command line (with its
+	// bearer token) and the Edit's body never leave.
+	want := "user: why does the tunnel drop?\ntool: Bash\ntool: Edit internal/mirror/hub.go\nassistant: The backoff resets too early."
 	if len(summ.tails) != 1 || summ.tails[0] != want {
 		t.Fatalf("tail = %q, want %q", summ.tails, want)
 	}
@@ -169,7 +176,7 @@ func TestAMirroredSessionsFocusIsRefreshedFromItsTranscriptStream(t *testing.T) 
 // has been quiet for focusTailQuiet.
 func TestAMirroredTailFromAnOlderHostEndsOnQuiet(t *testing.T) {
 	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{batches: []mirror.Msg{
-		{Type: mirror.TypeEvents, Reset: true, Events: []cctranscript.Event{{Kind: cctranscript.KindPrompt, Text: "hello"}}},
+		{Type: mirror.TypeEvents, Gen: focusSID, Reset: true, Events: []cctranscript.Event{{Kind: cctranscript.KindPrompt, Text: "hello"}}},
 	}}, windows: claudeWindows()}
 	s, _ := focusMirrorServer(t, fm, &memFocus{rows: map[focus.Subject]focus.Focus{}}, nil)
 	e, ok := s.mirrorEntryForSession(operatorCtx(), focusSID)
@@ -177,7 +184,7 @@ func TestAMirroredTailFromAnOlderHostEndsOnQuiet(t *testing.T) {
 		t.Fatal("no entry for the session id")
 	}
 	start := time.Now()
-	got, err := s.mirrorTail(operatorCtx(), e)
+	got, err := s.mirrorTail(operatorCtx(), e, focusSID)
 	if err != nil || len(got) != 1 || got[0].Text != "hello" {
 		t.Fatalf("tail = %+v, %v", got, err)
 	}
@@ -201,8 +208,8 @@ func TestThePeriodicPassRunsAsEachOwner(t *testing.T) {
 	store := &memFocus{rows: map[focus.Subject]focus.Focus{}}
 	summ := &recordingSummarizer{}
 	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{batches: []mirror.Msg{
-		{Type: mirror.TypeEvents, Reset: true, Events: []cctranscript.Event{{Kind: cctranscript.KindPrompt, Text: "fix the reconnect"}}},
-		{Type: mirror.TypeEvents, PromptIndex: true},
+		{Type: mirror.TypeEvents, Gen: focusSID, Reset: true, Events: []cctranscript.Event{{Kind: cctranscript.KindPrompt, Text: "fix the reconnect"}}},
+		{Type: mirror.TypeEvents, Gen: focusSID, PromptIndex: true},
 	}}, windows: claudeWindows()}
 	s, _ := focusMirrorServer(t, fm, store, summ)
 	// No dispatched agents: this pass is about the mirrored owner (the stub the
@@ -234,8 +241,8 @@ func (f failingSummarizer) Summarize(context.Context, int64, string) (focus.Summ
 func TestAFailedRefreshShowsItsReasonOnTheCard(t *testing.T) {
 	store := &memFocus{rows: map[focus.Subject]focus.Focus{}}
 	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{batches: []mirror.Msg{
-		{Type: mirror.TypeEvents, Reset: true, Events: []cctranscript.Event{{Kind: cctranscript.KindPrompt, Text: "hello"}}},
-		{Type: mirror.TypeEvents, PromptIndex: true},
+		{Type: mirror.TypeEvents, Gen: focusSID, Reset: true, Events: []cctranscript.Event{{Kind: cctranscript.KindPrompt, Text: "hello"}}},
+		{Type: mirror.TypeEvents, Gen: focusSID, PromptIndex: true},
 	}}, windows: claudeWindows()}
 	s, ts := focusMirrorServer(t, fm, store, failingSummarizer{err: &focus.HTTPError{Status: 502, Body: "sk-or-v1-provider-secret"}})
 	if _, err := s.refresher().Refresh(operatorCtx(), 1, focus.MirrorSubject(focusSID)); err == nil {
@@ -257,5 +264,26 @@ func TestAFailedRefreshShowsItsReasonOnTheCard(t *testing.T) {
 	_, body = mirrorGet(t, s, ts, "/ui/agents")
 	if !strings.Contains(body, "Fixing the reconnect") || !strings.Contains(body, "Last refresh failed: summarizer error (HTTP 502)") {
 		t.Fatalf("a stale focus does not say its refresh failed:\n%s", body)
+	}
+}
+
+// TestAWindowHoldingAnotherConversationStoresNothing: the watch's transcript
+// (Gen) is not the requested Claude session — a /clear or restart between the
+// listing and the watch — so the read fails as not visible and NO focus is
+// stored under the requested id, not even an error.
+func TestAWindowHoldingAnotherConversationStoresNothing(t *testing.T) {
+	store := &memFocus{rows: map[focus.Subject]focus.Focus{}}
+	summ := &recordingSummarizer{}
+	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{batches: []mirror.Msg{
+		{Type: mirror.TypeEvents, Gen: "ffffffff-another-conversation", Reset: true, Events: []cctranscript.Event{{Kind: cctranscript.KindPrompt, Text: "a different conversation"}}},
+		{Type: mirror.TypeEvents, Gen: "ffffffff-another-conversation", PromptIndex: true},
+	}}, windows: claudeWindows()}
+	s, _ := focusMirrorServer(t, fm, store, summ)
+	_, err := s.refresher().Refresh(operatorCtx(), 1, focus.MirrorSubject(focusSID))
+	if !errors.Is(err, focus.ErrNoSession) {
+		t.Fatalf("err = %v, want ErrNoSession", err)
+	}
+	if len(summ.tails) != 0 || len(store.rows) != 0 {
+		t.Fatalf("summarized %q, stored %+v", summ.tails, store.rows)
 	}
 }

@@ -44,6 +44,9 @@ CREATE TABLE IF NOT EXISTS public.agent_focus (
     -- a refresh whose tail hashes the same skips the summarizer call.
     fingerprint  TEXT        NOT NULL DEFAULT '',
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- When a refresh pass last SAW the session (a mirrored one on any host):
+    -- retention deletes mirror rows not seen for MUSTER_FOCUS_RETENTION.
+    seen_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_error   TEXT        NOT NULL DEFAULT '',
     error_at     TIMESTAMPTZ,
     search       tsvector GENERATED ALWAYS AS (
@@ -69,6 +72,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS agent_focus_owner_subject
     ON public.agent_focus (owner_id, subject_kind, subject_key);
 CREATE INDEX IF NOT EXISTS idx_agent_focus_search ON public.agent_focus USING GIN (search);
 -- The cascade from agents looks rows up by agent.
+CREATE INDEX IF NOT EXISTS idx_agent_focus_seen ON public.agent_focus (seen_at) WHERE subject_kind = 'mirror';
 CREATE INDEX IF NOT EXISTS idx_agent_focus_agent ON public.agent_focus (agent_id) WHERE agent_id IS NOT NULL;
 
 DROP TRIGGER IF EXISTS agent_focus_owner_is_agents_owner ON public.agent_focus;

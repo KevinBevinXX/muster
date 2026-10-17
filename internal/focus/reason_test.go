@@ -27,7 +27,7 @@ func TestReasonIsShortFixedAndNonSecret(t *testing.T) {
 		{ErrOversized, ReasonUnusable},
 		{ErrEmpty, ReasonUnusable},
 		{fmt.Errorf("%w: %s", ErrUnreachable, secret), ReasonUnreachable},
-		{ErrNoSession, ReasonNoSession},
+		{fmt.Errorf("%w: %s", ErrKeyLookup, secret), ReasonKeyLookup},
 		{errors.New(secret), ReasonFailed},
 	} {
 		got := Reason(c.err)

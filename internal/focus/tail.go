@@ -3,12 +3,15 @@ package focus
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"strings"
 )
 
 // The BOUNDED TRANSCRIPT TAIL a refresh summarizes: the newest entries of the
 // session's conversation, each capped, the whole capped. It is what is sent to
-// the summarizer (operator decision: as-is), and what the fingerprint hashes.
+// the summarizer and what the fingerprint hashes: prompts and replies as they
+// are (operator decision), a tool call as its name and file path only
+// (ToolLine) — never its command, content or other arguments.
 const (
 	// MaxTailEntries bounds how many entries (prompts, replies, tool calls) the
 	// tail holds: the newest are kept.
@@ -61,4 +64,36 @@ func RenderTail(entries []Entry) (string, string) {
 func Fingerprint(tail string) string {
 	sum := sha256.Sum256([]byte(tail))
 	return hex.EncodeToString(sum[:])
+}
+
+// toolPathKeys are the only tool arguments a tail entry may name: the FILE a
+// tool acts on. Never a command (Bash's is a shell line that can carry a
+// credential), never content (Write's body), never a URL, pattern or query.
+var toolPathKeys = []string{"file_path", "notebook_path", "path"}
+
+// MaxToolPath bounds the path a tool entry names.
+const MaxToolPath = 200
+
+// ToolLine is one tool call as the summarizer sees it, for EITHER kind of
+// session: the tool's name, and — when its input names a file — that path.
+// input is the call's argument JSON (an agent's stored args, a transcript
+// event's capped Input); anything else in it never leaves.
+func ToolLine(tool, input string) string {
+	tool = oneLine(tool)
+	var m map[string]json.RawMessage
+	if json.Unmarshal([]byte(strings.TrimSpace(input)), &m) != nil {
+		return tool
+	}
+	for _, k := range toolPathKeys {
+		var v string
+		if raw, ok := m[k]; ok && json.Unmarshal(raw, &v) == nil {
+			if v = oneLine(v); v != "" {
+				if len(v) > MaxToolPath {
+					v = strings.ToValidUTF8(v[:MaxToolPath], "") + "…"
+				}
+				return strings.TrimSpace(tool + " " + v)
+			}
+		}
+	}
+	return tool
 }

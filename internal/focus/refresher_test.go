@@ -10,9 +10,11 @@ import (
 
 // memStore is Store in memory, for one owner.
 type memStore struct {
-	rows   map[Subject]Focus
-	errs   map[Subject]string
-	owners []int64
+	rows         map[Subject]Focus
+	errs         map[Subject]string
+	owners       []int64
+	touched      []Subject
+	prunedBefore time.Time
 }
 
 func newMem() *memStore { return &memStore{rows: map[Subject]Focus{}, errs: map[Subject]string{}} }
@@ -44,6 +46,14 @@ func (m *memStore) RecordError(_ context.Context, s Subject, msg string) error {
 	return nil
 }
 func (m *memStore) Owners(context.Context) ([]int64, error) { return m.owners, nil }
+func (m *memStore) Touch(_ context.Context, subs []Subject) error {
+	m.touched = append(m.touched, subs...)
+	return nil
+}
+func (m *memStore) Prune(_ context.Context, before time.Time) (int, error) {
+	m.prunedBefore = before
+	return 0, nil
+}
 
 type fakeSource struct {
 	cands []Candidate
@@ -51,6 +61,14 @@ type fakeSource struct {
 }
 
 func (f *fakeSource) Candidates(context.Context) ([]Candidate, error) { return f.cands, nil }
+
+// Visible: a subject is visible when the source has a tail for it (or lists it).
+func (f *fakeSource) Visible(_ context.Context, s Subject) error {
+	if _, ok := f.tails[s]; ok {
+		return nil
+	}
+	return ErrNoSession
+}
 func (f *fakeSource) Tail(_ context.Context, s Subject) ([]Entry, error) {
 	return f.tails[s], nil
 }

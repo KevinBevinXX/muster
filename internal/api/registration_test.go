@@ -90,6 +90,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		Recents:         stubRecents{},
 		Focus:           stubFocus{},
 		FocusSummarizer: stubSummarizer{},
+		FocusRetention:  time.Hour,
 		SendQueue:       stubSendQueue{},
 		// NON-ZERO on purpose: the zero value is the default.
 		SendQueueIdle: time.Second,

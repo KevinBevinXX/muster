@@ -371,9 +371,10 @@ type Window struct {
 	// have no focus. Only an id ValidClaudeSession accepts is kept.
 	//
 	// ⚠ THE TRANSCRIPT PATH IS DELIBERATELY NOT ON THE WIRE. The window list is
-	// ONE message within MaxFrame, and its worst case already measured 92% of
-	// it (TestTheLargestWindowListFitsOneFrame) — a host path per window does
-	// not fit beside it. muster never needs the path: it reads a transcript
+	// ONE message within MaxFrame, and with this field at its 64-byte bound its
+	// worst case measures 96% of it (1,010,303 of 1,048,576 bytes:
+	// TestTheLargestWindowListFitsOneFrame, which logs the figure) — a host path
+	// per window does not fit beside it. muster never needs the path: it reads a transcript
 	// through the host's own watch (Hub.WatchWindow), which resolves the path
 	// on the host.
 	ClaudeSession string `json:"claudeSession,omitempty"`

@@ -108,6 +108,9 @@ func TestFocusIsPerOwner(t *testing.T) {
 	if _, ok, _ := s.Get(as(3), sub); ok {
 		t.Fatal("user 3 reads user 2's focus")
 	}
+	if all, _ := s.List(as(3)); len(all) != 0 {
+		t.Fatalf("user 3 lists user 2's focus: %+v", all)
+	}
 	if hits, _ := s.Search(as(3), "mine", 10); len(hits) != 0 {
 		t.Fatalf("user 3 searches user 2's focus: %+v", hits)
 	}
@@ -193,5 +196,68 @@ func TestOwnersIsEveryOwnerWithSomethingToDescribe(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("owners %v lack 3", owners)
+	}
+}
+
+// TestOwnersSkipsDisabledOwners: a disabled user's sessions are not refreshed.
+func TestOwnersSkipsDisabledOwners(t *testing.T) {
+	s, pool := pgStore(t)
+	mustAgent(t, pool, 3, "focus-disabled")
+	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE users SET disabled_at = now() WHERE id = 3`)
+	t.Cleanup(func() { dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE users SET disabled_at = NULL WHERE id = 3`) })
+	owners, err := s.Owners(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range owners {
+		if o == 3 {
+			t.Fatalf("owners %v include the disabled user 3", owners)
+		}
+	}
+	mustAgent(t, pool, 2, "focus-enabled")
+	if owners, _ = s.Owners(context.Background()); !containsOwner(owners, 2) {
+		t.Fatalf("positive control: owners %v lack the enabled user 2", owners)
+	}
+}
+
+func containsOwner(owners []int64, o int64) bool {
+	for _, x := range owners {
+		if x == o {
+			return true
+		}
+	}
+	return false
+}
+
+// TestTouchAndPruneKeepSeenMirrorsAndAgents: Prune deletes the caller's mirror
+// rows last seen before the cut — never a row Touch just marked, never an
+// agent's, never another owner's.
+func TestTouchAndPruneKeepSeenMirrorsAndAgents(t *testing.T) {
+	s, pool := pgStore(t)
+	a := mustAgent(t, pool, 2, "focus-prune")
+	live, dead := MirrorSubject("0b2c3d4e-live"), MirrorSubject("0b2c3d4e-dead")
+	for _, sub := range []Subject{live, dead, AgentSubject(a.ID)} {
+		if _, err := s.Upsert(as(2), sub, Write{Title: "t " + sub.Key, Source: SourceSummarizer}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Upsert(as(3), dead, Write{Title: "other owner", Source: SourceSummarizer}); err != nil {
+		t.Fatal(err)
+	}
+	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE agent_focus SET seen_at = now() - interval '10 days'`)
+	if err := s.Touch(as(2), []Subject{live}); err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.Prune(as(2), time.Now().Add(-7*24*time.Hour))
+	if err != nil || n != 1 {
+		t.Fatalf("pruned %d (%v), want 1", n, err)
+	}
+	for sub, want := range map[Subject]bool{live: true, dead: false, AgentSubject(a.ID): true} {
+		if _, ok, _ := s.Get(as(2), sub); ok != want {
+			t.Errorf("%s present=%v, want %v", sub, ok, want)
+		}
+	}
+	if _, ok, _ := s.Get(as(3), dead); !ok {
+		t.Error("another owner's row was pruned")
 	}
 }

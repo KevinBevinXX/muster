@@ -367,7 +367,8 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// OpenRouter key exactly as that owner's gateway pods get it (the plane: the
 	// environment's for an admin, the member's own otherwise, none refused).
 	if ext.Focus != nil {
-		ext.FocusSummarizer = &focus.ScaleDown{Key: plane.OpenRouterKey}
+		ext.FocusSummarizer = &focus.ScaleDown{Key: plane.OpenRouterKey, Missing: credentials.IsNoCredential}
+		ext.FocusRetention = cfg.FocusRetention
 	}
 	ccPool, err := buildClaudePool(cfg, plane, marks)
 	if err != nil {

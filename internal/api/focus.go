@@ -2,8 +2,7 @@ package api
 
 import (
 	"context"
-	"errors"
-	"strings"
+	"fmt"
 	"sync"
 	"time"
 
@@ -60,7 +59,7 @@ func (s *Server) refresher() *focus.Refresher {
 			return
 		}
 		s.focusRefresher = &focus.Refresher{Store: s.ext.Focus, Sessions: focusSessions{s}, Summarizer: s.ext.FocusSummarizer,
-			AsOwner: s.focusPrincipal, Logger: s.logger}
+			AsOwner: s.focusPrincipal, Logger: s.logger, Retention: s.ext.FocusRetention}
 	})
 	return s.focusRefresher
 }
@@ -140,7 +139,28 @@ func (s *Server) mirrorEntryForSession(ctx context.Context, sid string) (mirror.
 
 // errNoSession is a subject focus cannot read: an agent the owner does not
 // have, or a Claude session no online window shows.
-var errNoSession = errors.New("focus: no such session is visible now (an agent you do not have, or a Claude session no online mirrored window shows)")
+var errNoSession = fmt.Errorf("%w (an agent you do not have, or a Claude session no online mirrored window shows)", focus.ErrNoSession)
+
+// Visible is nil when sub can be read now: an agent of the owner's, or a
+// Claude session an online mirrored window shows.
+func (f focusSessions) Visible(ctx context.Context, sub focus.Subject) error {
+	switch sub.Kind {
+	case focus.KindAgent:
+		if f.s.ext.Agents == nil {
+			return errNoSession
+		}
+		if _, err := f.s.ext.Agents.Get(ctx, sub.AgentID()); err != nil {
+			return errNoSession
+		}
+		return nil
+	case focus.KindMirror:
+		if _, ok := f.s.mirrorEntryForSession(ctx, sub.Key); !ok {
+			return errNoSession
+		}
+		return nil
+	}
+	return focus.ErrBadSubject
+}
 
 // Tail is sub's conversation, newest last.
 func (f focusSessions) Tail(ctx context.Context, sub focus.Subject) ([]focus.Entry, error) {
@@ -152,7 +172,7 @@ func (f focusSessions) Tail(ctx context.Context, sub focus.Subject) ([]focus.Ent
 		if !ok {
 			return nil, errNoSession
 		}
-		return f.s.mirrorTail(ctx, e)
+		return f.s.mirrorTail(ctx, e, sub.Key)
 	}
 	return nil, focus.ErrBadSubject
 }
@@ -178,7 +198,8 @@ func (s *Server) agentTail(ctx context.Context, id int64) ([]focus.Entry, error)
 	for _, m := range msgs {
 		switch m.Kind {
 		case "tool_call":
-			out = append(out, focus.Entry{Role: "tool", Text: m.ToolName + " " + m.Content})
+			// Name and file path only: m.Content is the raw argument JSON.
+			out = append(out, focus.Entry{Role: "tool", Text: focus.ToolLine(m.ToolName, m.Content)})
 		case "tool_result":
 		default:
 			out = append(out, focus.Entry{Role: m.Role, Text: m.Content})
@@ -189,16 +210,29 @@ func (s *Server) agentTail(ctx context.Context, id int64) ([]focus.Entry, error)
 
 // mirrorTail is the bounded backfill of e's transcript, read through the host's
 // watch and closed.
-func (s *Server) mirrorTail(ctx context.Context, e mirror.SessionView) ([]focus.Entry, error) {
+//
+// 🔴 THE STREAM MUST BE CONVERSATION sid. The window was chosen because it
+// listed sid, but a /clear or a restart between that listing and this watch
+// puts ANOTHER conversation in it — whose summary would then be stored under
+// mirror:sid. Every batch names its transcript (Msg.Gen); one that is not sid
+// (or names none) ends the read as errNoSession, and nothing is stored.
+func (s *Server) mirrorTail(ctx context.Context, e mirror.SessionView, sid string) ([]focus.Entry, error) {
 	ctx, cancel := context.WithTimeout(ctx, focusTailTimeout)
 	defer cancel()
 	var mu sync.Mutex
 	var out []focus.Entry
+	var otherConversation bool
 	got := make(chan struct{}, 1)
 	done := make(chan error, 1)
 	safeGo(s.logger, "focus: read a mirrored tail", func() {
 		done <- s.ext.Mirror.WatchWindow(ctx, e.Host, e.Session, e.Window, "", 0, func(m mirror.Msg) error {
 			mu.Lock()
+			if m.Gen != sid {
+				otherConversation = true
+				mu.Unlock()
+				cancel()
+				return nil
+			}
 			if m.Reset {
 				out = out[:0]
 			}
@@ -237,6 +271,10 @@ loop:
 	}
 	mu.Lock()
 	defer mu.Unlock()
+	if otherConversation {
+		s.logger.Printf("focus: %s@%s %s%s holds another conversation now, not %s; nothing stored", e.Session, e.Host, e.Session, e.Window, sid)
+		return nil, errNoSession
+	}
 	if len(out) == 0 && err != nil {
 		return nil, err
 	}
@@ -252,7 +290,9 @@ func focusEntryOf(ev cctranscript.Event) (focus.Entry, bool) {
 	case cctranscript.KindText:
 		return focus.Entry{Role: "assistant", Text: ev.Text}, true
 	case cctranscript.KindToolCall:
-		return focus.Entry{Role: "tool", Text: strings.TrimSpace(ev.Tool + " " + ev.Target)}, true
+		// Name and file path only (focus.ToolLine), from the call's input:
+		// never ev.Target, which for Bash IS the command line.
+		return focus.Entry{Role: "tool", Text: focus.ToolLine(ev.Tool, ev.Input)}, true
 	case cctranscript.KindError:
 		return focus.Entry{Role: "error", Text: ev.Text}, true
 	}

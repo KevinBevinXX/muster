@@ -26,6 +26,10 @@ type Store interface {
 	Search(ctx context.Context, query string, limit int) ([]Hit, error)
 	Upsert(ctx context.Context, s Subject, w Write) (Focus, error)
 	RecordError(ctx context.Context, s Subject, msg string) error
+	// Touch marks the caller's mirrored subjects seen now; Prune deletes the
+	// caller's mirrored rows last seen before before.
+	Touch(ctx context.Context, subs []Subject) error
+	Prune(ctx context.Context, before time.Time) (int, error)
 	Owners(ctx context.Context) ([]int64, error)
 }
 
@@ -152,7 +156,7 @@ func (s *PGStore) Upsert(ctx context.Context, sub Subject, w Write) (Focus, erro
 	f, err := scan(s.pool.QueryRow(ctx, `INSERT INTO agent_focus (subject_kind, subject_key, agent_id, title, description,
 			source, fingerprint, updated_at, last_error, error_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, now(), '', NULL)
-		ON CONFLICT (owner_id, subject_kind, subject_key) DO UPDATE SET title = EXCLUDED.title,
+		ON CONFLICT (owner_id, subject_kind, subject_key) DO UPDATE SET seen_at = now(), title = EXCLUDED.title,
 			description = EXCLUDED.description, source = EXCLUDED.source, fingerprint = EXCLUDED.fingerprint,
 			updated_at = now(), last_error = '', error_at = NULL
 		RETURNING `+cols, string(sub.Kind), sub.Key, agentArg(sub), title, desc, string(w.Source), w.Fingerprint))
@@ -170,20 +174,52 @@ func (s *PGStore) RecordError(ctx context.Context, sub Subject, msg string) erro
 	}
 	if _, err := s.pool.Exec(ctx, `INSERT INTO agent_focus (subject_kind, subject_key, agent_id, last_error, error_at)
 		VALUES ($1, $2, $3, $4, now())
-		ON CONFLICT (owner_id, subject_kind, subject_key) DO UPDATE SET last_error = EXCLUDED.last_error, error_at = now()`,
+		ON CONFLICT (owner_id, subject_kind, subject_key) DO UPDATE SET last_error = EXCLUDED.last_error, error_at = now(),
+			seen_at = now()`,
 		string(sub.Kind), sub.Key, agentArg(sub), clampError(msg)); err != nil {
 		return errf("record error: %w", err)
 	}
 	return nil
 }
 
-// Owners is every user with something focus could describe: an agent, or a
-// live mirror token. Under the system scope (internal/authz's ledger names
+// Touch marks the caller's mirrored subjects seen now.
+func (s *PGStore) Touch(ctx context.Context, subs []Subject) error {
+	var keys []string
+	for _, sub := range subs {
+		if sub.Kind == KindMirror && sub.Valid() == nil {
+			keys = append(keys, sub.Key)
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE agent_focus SET seen_at = now()
+		WHERE subject_kind = 'mirror' AND subject_key = ANY($1)`, keys); err != nil {
+		return errf("touch: %w", err)
+	}
+	return nil
+}
+
+// Prune deletes the caller's MIRRORED rows last seen before before, and
+// reports how many. An agent's row is never pruned: it dies with its agent.
+func (s *PGStore) Prune(ctx context.Context, before time.Time) (int, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM agent_focus WHERE subject_kind = 'mirror' AND seen_at < $1`, before)
+	if err != nil {
+		return 0, errf("prune: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// Owners is every ENABLED user with something focus could describe: an agent,
+// or a live mirror token. Under the system scope (internal/authz's ledger names
 // this one helper): it yields only owner ids, and the refresher then acts as
 // each of them.
 func (s *PGStore) Owners(ctx context.Context) ([]int64, error) {
-	rows, err := s.pool.Query(sys(ctx), `SELECT owner_id FROM agents
-		UNION SELECT owner_id FROM mirror_tokens WHERE revoked_at IS NULL ORDER BY 1`)
+	// A DISABLED owner is not refreshed: their sessions would spend their key
+	// on an account that cannot sign in to read the result.
+	rows, err := s.pool.Query(sys(ctx), `SELECT o FROM (SELECT owner_id AS o FROM agents
+			UNION SELECT owner_id FROM mirror_tokens WHERE revoked_at IS NULL) x
+		JOIN users u ON u.id = x.o WHERE u.disabled_at IS NULL ORDER BY 1`)
 	if err != nil {
 		return nil, errf("owners: %w", err)
 	}
