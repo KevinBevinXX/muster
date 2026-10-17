@@ -86,7 +86,13 @@
             || pkgs.lib.hasPrefix "cmd/" rel || pkgs.lib.hasPrefix "internal/" rel
             || rel == "web/static" || pkgs.lib.hasPrefix "web/static/" rel
           ))
-          || (rel == "web/static.go")
+          # Every `.go` file directly in `web/`, not one named file: the row used
+          # to be `web/static.go` alone, and when `web/asset.go` (web.Asset, the
+          # content-hashed /static/ URLs) was added, every package that renders a
+          # page failed with `undefined: web.Asset` — in nix only, since a real
+          # checkout has every file. CI's `nix` job is the gate that caught it.
+          || (pkgs.lib.hasPrefix "web/" rel && pkgs.lib.hasSuffix ".go" rel
+              && !(pkgs.lib.hasInfix "/" (pkgs.lib.removePrefix "web/" rel)))
           || (pkgs.lib.hasPrefix "web/static/" rel)
           || (rel == "go.mod")
           # 🔴 `go.sum` IS NAMED EXPLICITLY. `buildGoModule` with a real
