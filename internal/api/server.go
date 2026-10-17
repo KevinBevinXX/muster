@@ -482,6 +482,8 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerPinRoutes(mux)
 	// The send queue (internal/sendqueue): Queue, its list, Cancel; 404 without a store.
 	s.registerSendQueueRoutes(mux)
+	// Focus history (internal/focus): one page of a session's past focus; 404 without a store.
+	s.registerFocusHistoryRoutes(mux)
 	s.registerAgentSelfServiceRoutes(mux)
 	s.registerConnectorRoutes(mux)
 	s.registerCredentialRoutes(mux)

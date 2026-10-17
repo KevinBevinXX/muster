@@ -1261,6 +1261,8 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 		SendNonce: newSendNonce(),
 		// The chat form's microphone (transcribe.go); "" when there is none.
 		Dictate: s.dictatePath(),
+		// The agent's focus history (focus_history.go); "" without a store.
+		FocusHistory: s.focusHistoryPath(focus.AgentSubject(a.ID)),
 	}
 	view.SendNotice, view.SendNoticeOK = composerNotice(r)
 	formDocument(w)

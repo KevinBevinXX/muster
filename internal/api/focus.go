@@ -91,8 +91,9 @@ func (s *Server) RunFocusRetention(ctx context.Context) {
 	if r == nil {
 		return
 	}
-	s.logger.Printf("focus: a mirrored session's focus is deleted %s after the session was last seen (MUSTER_FOCUS_RETENTION); swept every %s",
-		r.Retention, focus.RetentionSweepInterval)
+	s.logger.Printf("focus: a mirrored session's focus is deleted %s after the session was last seen (MUSTER_FOCUS_RETENTION), "+
+		"and focus history %s after it was written (MUSTER_FOCUS_HISTORY_RETENTION); swept every %s",
+		r.Retention, r.HistoryRetention, focus.RetentionSweepInterval)
 	r.Run(ctx, focus.RetentionSweepInterval)
 }
 
@@ -106,8 +107,12 @@ func (s *Server) focusRetainer() *focus.Retainer {
 	if ret <= 0 {
 		ret = focus.DefaultRetention
 	}
+	hist := s.ext.FocusHistoryRetention
+	if hist <= 0 {
+		hist = focus.DefaultHistoryRetention
+	}
 	return &focus.Retainer{Store: s.ext.Focus, Sessions: focusSessions{s}, AsOwner: s.focusPrincipal,
-		Retention: ret, Logger: s.logger}
+		Retention: ret, HistoryRetention: hist, Logger: s.logger}
 }
 
 // focusSessions is focus.Sessions over this server: the owner's agents and

@@ -33,7 +33,7 @@ func pgStore(t *testing.T) (*PGStore, *pgxpool.Pool) {
 		t.Fatalf("migrate: %v", err)
 	}
 	dbtest.OwnerExec(t, dsn, `INSERT INTO users (id, role) OVERRIDING SYSTEM VALUE VALUES (2, 'member'), (3, 'member') ON CONFLICT (id) DO NOTHING`)
-	dbtest.OwnerExec(t, dsn, `TRUNCATE agent_focus`)
+	dbtest.OwnerExec(t, dsn, `TRUNCATE agent_focus, agent_focus_history`)
 	dbtest.OwnerExec(t, dsn, `DELETE FROM agents WHERE name LIKE 'focus-%'`)
 	return NewPG(pool), pool
 }

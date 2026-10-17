@@ -12,7 +12,9 @@ const RetentionSweepInterval = time.Hour
 // Retainer keeps mirrored sessions' focus only while the session is seen:
 // each pass marks every ENABLED owner's visible mirrored sessions seen
 // (Store.Touch, as that owner), then deletes every owner's mirrored rows not
-// seen for Retention (Store.PruneAll, under the system scope).
+// seen for Retention (Store.PruneAll, under the system scope) — their history
+// goes with them, by migration 0022's cascade — and then every owner's history
+// rows older than HistoryRetention (Store.PruneHistory).
 //
 // 🔴 IT IS ITS OWN LOOP, NOT PART OF THE REFRESH PASS. The refresh pass runs
 // only with a summarizer and MUSTER_FOCUS_INTERVAL > 0, and only for the owners
@@ -29,8 +31,11 @@ type Retainer struct {
 	// Retention is how long a mirrored session's focus is kept after it was
 	// last seen (MUSTER_FOCUS_RETENTION); <= 0 is DefaultRetention.
 	Retention time.Duration
-	Now       func() time.Time
-	Logger    *log.Logger
+	// HistoryRetention is how long a focus history row is kept
+	// (MUSTER_FOCUS_HISTORY_RETENTION); <= 0 is DefaultHistoryRetention.
+	HistoryRetention time.Duration
+	Now              func() time.Time
+	Logger           *log.Logger
 }
 
 func (r *Retainer) retention() time.Duration {
@@ -38,6 +43,13 @@ func (r *Retainer) retention() time.Duration {
 		return r.Retention
 	}
 	return DefaultRetention
+}
+
+func (r *Retainer) historyRetention() time.Duration {
+	if r.HistoryRetention > 0 {
+		return r.HistoryRetention
+	}
+	return DefaultHistoryRetention
 }
 
 func (r *Retainer) now() time.Time {
@@ -53,7 +65,8 @@ func (r *Retainer) logf(format string, args ...any) {
 	}
 }
 
-// Pass marks what is seen, then prunes, and returns how many rows it deleted.
+// Pass marks what is seen, then prunes, and returns how many FOCUS rows it
+// deleted (the history rows it deletes are logged).
 // A failure to mark one owner's sessions is logged and the prune still runs:
 // a row it then deletes was last seen more than Retention ago anyway.
 func (r *Retainer) Pass(ctx context.Context) (int, error) {
@@ -81,12 +94,20 @@ func (r *Retainer) Pass(ctx context.Context) (int, error) {
 			r.logf("focus: retention: owner %d: mark seen: %v", o, err)
 		}
 	}
-	n, err := r.Store.PruneAll(ctx, r.now().Add(-r.retention()))
+	now := r.now()
+	n, err := r.Store.PruneAll(ctx, now.Add(-r.retention()))
 	if err != nil {
 		return 0, err
 	}
 	if n > 0 {
 		r.logf("focus: retention: deleted %d mirrored session(s) not seen for %s", n, r.retention())
+	}
+	h, err := r.Store.PruneHistory(ctx, now.Add(-r.historyRetention()))
+	if err != nil {
+		return n, err
+	}
+	if h > 0 {
+		r.logf("focus: retention: deleted %d focus history row(s) older than %s", h, r.historyRetention())
 	}
 	return n, nil
 }

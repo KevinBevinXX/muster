@@ -115,6 +115,7 @@ GET /ui/connector-requests
 GET /ui/connectors
 GET /ui/connectors/new
 GET /ui/connectors/{name}/rotate
+GET /ui/focus/history
 GET /ui/notifications
 GET /ui/repos
 GET /ui/tags

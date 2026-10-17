@@ -68,9 +68,13 @@ func (m *memFocus) RecordError(_ context.Context, s focus.Subject, msg string) e
 	m.rows[s] = f
 	return nil
 }
-func (m *memFocus) Owners(context.Context) ([]int64, error)          { return []int64{1}, nil }
-func (m *memFocus) Touch(context.Context, []focus.Subject) error     { return nil }
-func (m *memFocus) PruneAll(context.Context, time.Time) (int, error) { return 0, nil }
+func (m *memFocus) Owners(context.Context) ([]int64, error)              { return []int64{1}, nil }
+func (m *memFocus) Touch(context.Context, []focus.Subject) error         { return nil }
+func (m *memFocus) PruneAll(context.Context, time.Time) (int, error)     { return 0, nil }
+func (m *memFocus) PruneHistory(context.Context, time.Time) (int, error) { return 0, nil }
+func (m *memFocus) History(context.Context, focus.Subject, string, int) (focus.HistoryPage, error) {
+	return focus.HistoryPage{}, nil
+}
 
 func focusMirrorServer(t *testing.T, fm *fakeMirror, store *memFocus, summ focus.Summarizer) (*Server, *httptest.Server) {
 	t.Helper()

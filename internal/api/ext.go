@@ -196,6 +196,9 @@ type Extensions struct {
 	// FocusRetention is how long a mirrored session's focus outlives the last
 	// time a pass saw it (MUSTER_FOCUS_RETENTION); 0 keeps it forever.
 	FocusRetention time.Duration
+	// FocusHistoryRetention is how long a focus history row is kept
+	// (MUSTER_FOCUS_HISTORY_RETENTION); 0 is focus.DefaultHistoryRetention.
+	FocusHistoryRetention time.Duration
 
 	// Routes is session routing's store (internal/plugins/routes.go, migration
 	// 0021) and Routing its configuration. Routing nil — MUSTER_SESSION_ROUTING

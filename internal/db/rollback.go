@@ -87,6 +87,11 @@ const agentFocusMigrationVersion = 20
 // and under the same row-level security; same treatment again.
 const sessionRoutesMigrationVersion = 21
 
+// agentFocusHistoryMigrationVersion is 0022: agent_focus_history (every focus a
+// session has had), owned and under the same row-level security; same
+// treatment again.
+const agentFocusHistoryMigrationVersion = 22
+
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the
 // principal, the role and its grants — and 0008's for mirror_tokens when that
@@ -97,7 +102,7 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		return err
 	}
 	ctx = asMigrator(ctx)
-	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasPushSubscriptions, hasFlowRequests, hasPlugins, hasPluginReplies, hasPins, hasRecents, hasSendQueue, hasAgentFocus, hasSessionRoutes bool
+	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasPushSubscriptions, hasFlowRequests, hasPlugins, hasPluginReplies, hasPins, hasRecents, hasSendQueue, hasAgentFocus, hasSessionRoutes, hasAgentFocusHistory bool
 	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.mirror_tokens') IS NOT NULL,
 		to_regclass('public.user_credentials') IS NOT NULL,
 		to_regclass('public.flow_jobs') IS NOT NULL,
@@ -109,8 +114,9 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		to_regclass('public.recents') IS NOT NULL,
 		to_regclass('public.send_queue') IS NOT NULL,
 		to_regclass('public.agent_focus') IS NOT NULL,
-		to_regclass('public.session_routes') IS NOT NULL`).Scan(&hasMirrorTokens, &hasUserCredentials,
-		&hasFlowJobs, &hasPushSubscriptions, &hasFlowRequests, &hasPlugins, &hasPluginReplies, &hasPins, &hasRecents, &hasSendQueue, &hasAgentFocus, &hasSessionRoutes); err != nil {
+		to_regclass('public.session_routes') IS NOT NULL,
+		to_regclass('public.agent_focus_history') IS NOT NULL`).Scan(&hasMirrorTokens, &hasUserCredentials,
+		&hasFlowJobs, &hasPushSubscriptions, &hasFlowRequests, &hasPlugins, &hasPluginReplies, &hasPins, &hasRecents, &hasSendQueue, &hasAgentFocus, &hasSessionRoutes, &hasAgentFocusHistory); err != nil {
 		return fmt.Errorf("rls on: %w", err)
 	}
 	applied := false
@@ -126,7 +132,8 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 			!(m.version == recentsMigrationVersion && hasRecents) &&
 			!(m.version == sendQueueMigrationVersion && hasSendQueue) &&
 			!(m.version == agentFocusMigrationVersion && hasAgentFocus) &&
-			!(m.version == sessionRoutesMigrationVersion && hasSessionRoutes) {
+			!(m.version == sessionRoutesMigrationVersion && hasSessionRoutes) &&
+			!(m.version == agentFocusHistoryMigrationVersion && hasAgentFocusHistory) {
 			continue
 		}
 		tx, err := pool.Begin(ctx)

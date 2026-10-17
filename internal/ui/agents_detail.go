@@ -106,6 +106,9 @@ type AgentDetailView struct {
 	// Dictate is where the chat form's microphone posts a recording
 	// (TranscribePath), or "" for none. See dictate.go.
 	Dictate string
+	// FocusHistory is the agent's focus history, the newest page
+	// (FocusHistoryPath); "" = no focus store, and no header control for it.
+	FocusHistory string
 }
 
 // SessionView is one chat session in the switcher.
@@ -236,6 +239,10 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// hx-get /ui/agents/{name}/task). position:fixed inside overflow-hidden
 				// body is fine — fixed escapes overflow clipping (no ancestor transform).
 				Div(ID("task-modal")),
+				// The agent's focus history (focus_history.go): a dialog the header's
+				// focusHistoryButton opens.
+				g.If(v.FocusHistory != "", focusHistoryDialog(v.FocusHistory)),
+				g.If(v.FocusHistory != "", focusHistoryScript()),
 				agentChatScript(v.Name),
 				bubbleClampScript(),
 				// appScript wires the sidebar open/close + the SPA tab router AND the
@@ -279,6 +286,7 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 				agentTitle(v),
 				newChatButton(v.ID),
 				chatHistoryButton(sessionDrawerID),
+				g.If(v.FocusHistory != "", focusHistoryButton()),
 			),
 			g.If(agents.ResolveKind(v.Kind) != agents.KindClaudeCode, agentModelControl(v)),
 			// 🔴 THE CHAT IS THE RENDERED VIEW, AND IT IS THE DEFAULT: an agent's

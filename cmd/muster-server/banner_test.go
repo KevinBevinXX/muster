@@ -449,6 +449,8 @@ var bannerExempt = map[string]string{
 		"with no database there is no queue and nothing reads it, and an out-of-bounds value refuses to boot",
 	envFocusRetention: "the focus refresher's pruning logs each prune with the VALUE (internal/focus: \"pruned %d " +
 		"mirrored session(s) not seen for %s\"); an out-of-bounds value refuses to boot",
+	envFocusHistoryRetention: "the focus retention sweep announces the VALUE when it starts (internal/api/focus.go: " +
+		"\"…and focus history %s after it was written…\") and logs each prune with it; an out-of-bounds value refuses to boot",
 	envFocusInterval: "the focus refresher announces its own state with the VALUE when it starts " +
 		"(internal/api/focus.go: \"focus: refresh every %s …\"); with no database or no " +
 		"summarizer nothing reads it, and an out-of-bounds value refuses to boot",
