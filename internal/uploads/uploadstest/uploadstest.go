@@ -9,6 +9,7 @@ package uploadstest
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"time"
@@ -106,28 +107,106 @@ type Objects struct {
 	Sizes map[string]int64
 	// Gets and Stats count the calls of each.
 	Gets, Stats int
-	// Rules and RulesErr are what ExpiryRules answers.
-	Rules    int
+	// Coverage and RulesErr are what Lifecycle answers.
+	Coverage uploads.LifecycleCoverage
 	RulesErr error
+	// SkipAbort makes a failed multipart Put leave its upload behind even with
+	// a live context (the store's own abort request failed); FailCleanup is
+	// what Cleanup answers. Each lets a test pin ONE of the two layers that
+	// remove a failed write.
+	SkipAbort   bool
+	FailCleanup error
+	// incomplete counts the initiated, unfinished multipart uploads per key.
+	incomplete map[string]int
 	// FailPut, when set, is what Put answers.
 	FailPut error
 }
 
 var _ uploads.ObjectStore = (*Objects)(nil)
 
-// Put reads r to its end and stores what it read. A read error aborts it
-// (nothing is stored), as a real store aborts the write.
-func (o *Objects) Put(_ context.Context, key string, r io.Reader, size int64, ct string) error {
+// AbortLatency is how long the fake's AbortMultipartUpload "round trip"
+// takes. minio-go aborts a failed multipart write under the SAME context the
+// write ran under; if that context is cancelled meanwhile — a request whose
+// client went away — the abort never arrives and the parts stay.
+var AbortLatency = 20 * time.Millisecond
+
+// Put stores what it reads from r. A known size is ONE request; an unknown
+// size (-1) is a MULTIPART upload, modelled as a real store keeps one: it is
+// initiated, each uploads.PartSize part is sent under ctx, and it stays listed
+// (Incomplete) until it is completed or aborted. A failure aborts it only if
+// ctx survives the abort's round trip.
+func (o *Objects) Put(ctx context.Context, key string, r io.Reader, size int64, ct string) error {
 	if o.FailPut != nil {
 		return o.FailPut
 	}
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return err
+	if size >= 0 {
+		data, err := io.ReadAll(r)
+		if err != nil {
+			return err
+		}
+		if int64(len(data)) != size {
+			return io.ErrUnexpectedEOF
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		o.store(key, data, ct, size)
+		return nil
 	}
-	if size >= 0 && int64(len(data)) != size {
-		return io.ErrUnexpectedEOF
+	o.mu.Lock()
+	if o.incomplete == nil {
+		o.incomplete = map[string]int{}
 	}
+	o.incomplete[key]++
+	o.mu.Unlock()
+	var data []byte
+	buf := make([]byte, uploads.PartSize)
+	for {
+		n, err := io.ReadFull(r, buf)
+		if n > 0 {
+			if cerr := ctx.Err(); cerr != nil {
+				return o.fail(ctx, key, cerr)
+			}
+			data = append(data, buf[:n]...)
+		}
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			break
+		}
+		if err != nil {
+			return o.fail(ctx, key, err)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return o.fail(ctx, key, err)
+	}
+	o.mu.Lock()
+	o.finish(key)
+	o.mu.Unlock()
+	o.store(key, data, ct, -1)
+	return nil
+}
+
+// fail is minio-go's deferred abort: sent under ctx, after a round trip.
+func (o *Objects) fail(ctx context.Context, key string, err error) error {
+	select {
+	case <-ctx.Done():
+	case <-time.After(AbortLatency):
+		if ctx.Err() == nil && !o.SkipAbort {
+			o.mu.Lock()
+			o.finish(key)
+			o.mu.Unlock()
+		}
+	}
+	return err
+}
+
+func (o *Objects) finish(key string) {
+	if o.incomplete[key]--; o.incomplete[key] <= 0 {
+		delete(o.incomplete, key)
+	}
+}
+
+func (o *Objects) store(key string, data []byte, ct string, size int64) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.objs == nil {
@@ -136,6 +215,32 @@ func (o *Objects) Put(_ context.Context, key string, r io.Reader, size int64, ct
 	o.objs[key] = data
 	o.Types[key] = ct
 	o.Sizes[key] = size
+}
+
+// Incomplete lists the keys with a multipart upload initiated and neither
+// completed nor aborted — what a failed write orphans.
+func (o *Objects) Incomplete() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	var out []string
+	for k := range o.incomplete {
+		out = append(out, k)
+	}
+	return out
+}
+
+// Cleanup aborts key's incomplete uploads and deletes key, under ctx.
+func (o *Objects) Cleanup(ctx context.Context, key string) error {
+	if o.FailCleanup != nil {
+		return o.FailCleanup
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	delete(o.incomplete, key)
+	delete(o.objs, key)
 	return nil
 }
 
@@ -151,8 +256,10 @@ func (o *Objects) Stat(_ context.Context, key string) (int64, error) {
 	return int64(len(b)), nil
 }
 
-// ExpiryRules answers Rules, or RulesErr.
-func (o *Objects) ExpiryRules(context.Context) (int, error) { return o.Rules, o.RulesErr }
+// Lifecycle answers Coverage, or RulesErr.
+func (o *Objects) Lifecycle(context.Context) (uploads.LifecycleCoverage, error) {
+	return o.Coverage, o.RulesErr
+}
 
 // Get opens a stored object.
 func (o *Objects) Get(_ context.Context, key string) (io.ReadCloser, int64, error) {

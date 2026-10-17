@@ -182,3 +182,26 @@ func TestARefusedLinkCannotForgeALogLineOrFloodTheLog(t *testing.T) {
 		t.Errorf("CONTROL: the first refusal was not logged at all:\n%s", logs)
 	}
 }
+
+// TestTheAccessLogRedactsTokensHoweverTheyAreSpelled: a single-use link's
+// token is redacted from the access log whether the path is spelled
+// canonically or percent-encoded (the mux routes on the DECODED path, so
+// /auth/%63laim/… is the claim route), and what is logged stays escaped.
+func TestTheAccessLogRedactsTokensHoweverTheyAreSpelled(t *testing.T) {
+	w := uploadServer(t, false, 0)
+	const token = "SecretClaimToken0123456789"
+	for _, p := range []string{"/auth/claim/" + token, "/auth/%63laim/" + token, "/%69nvite/" + token, "/auth/reset/" + token} {
+		w.do(t, http.MethodGet, p, false)
+	}
+	logs := w.logs.String()
+	if strings.Contains(logs, token) {
+		t.Errorf("a token reached the access log:\n%s", logs)
+	}
+	if n := strings.Count(logs, "[redacted]"); n != 4 {
+		t.Errorf("%d redacted lines; want 4 (one per spelling):\n%s", n, logs)
+	}
+	w.do(t, http.MethodGet, "/no%0Asuch%20line", false)
+	if !strings.Contains(w.logs.String(), "GET /no%0Asuch%20line ") {
+		t.Errorf("an unredacted path was not logged escaped:\n%s", w.logs.String())
+	}
+}

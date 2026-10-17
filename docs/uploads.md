@@ -36,21 +36,49 @@ The access key needs only this, on the bucket (S3/MinIO policy):
 {
   "Version": "2012-10-17",
   "Statement": [
-    {"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+    {"Effect": "Allow",
+     "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"],
      "Resource": ["arn:aws:s3:::<bucket>/uploads/*"]},
-    {"Effect": "Allow", "Action": ["s3:ListBucket", "s3:GetBucketLocation", "s3:GetLifecycleConfiguration"],
+    {"Effect": "Allow",
+     "Action": ["s3:ListBucket", "s3:GetBucketLocation", "s3:GetLifecycleConfiguration",
+                "s3:ListBucketMultipartUploads"],
      "Resource": ["arn:aws:s3:::<bucket>"]}
   ]
 }
 ```
 
-An expired link stops working, but its object stays in the bucket. Give the
-bucket a lifecycle rule that expires `uploads/` objects after longer than the
-link lifetime, for example `mc ilm rule add --prefix uploads/ --expire-days 8
-<alias>/<bucket>` with the default 24-hour links. At boot muster reads the
-bucket's lifecycle (that is what `s3:GetLifecycleConfiguration` is for) and
-logs a WARNING when no rule expires `uploads/`. Without that permission it logs
-that it could not tell.
+`s3:AbortMultipartUpload` and `s3:ListBucketMultipartUploads` are what let a
+failed upload be cleaned up. A file over 5 MiB is written as a multipart
+upload, and when the upload fails (the client goes away, the read deadline
+passes, the file is over the cap) muster aborts it and removes anything it
+left. Without these two permissions the parts stay in the bucket.
+(`s3:ListMultipartUploadParts` is not needed: measured against MinIO, cleanup
+works without it.)
+
+Give the bucket a lifecycle rule for `uploads/` that does both of these:
+
+- **expires objects** after longer than the link lifetime. An expired link
+  stops working, but its object stays in the bucket.
+- **aborts incomplete multipart uploads**, for a muster process killed in the
+  middle of an upload, which cannot clean up after itself.
+
+```json
+{"Rules": [{"ID": "muster-uploads", "Status": "Enabled", "Filter": {"Prefix": "uploads/"},
+            "Expiration": {"Days": 8},
+            "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 1}}]}
+```
+
+Apply it with `mc ilm import <alias>/<bucket> < rule.json`, or your store's
+equivalent. ⚠ **MinIO accepts the rule but drops its
+`AbortIncompleteMultipartUpload` action** (measured: `mc ilm export` returns
+the rule without it). On MinIO, abandoned uploads are removed by the server's
+own `api stale_uploads_expiry` (24h by default) instead.
+
+At boot muster reads the bucket's lifecycle (that is what
+`s3:GetLifecycleConfiguration` is for). It logs a WARNING for each action that
+no rule covers on `uploads/`, so on MinIO the incomplete-upload warning always
+appears and names `stale_uploads_expiry`. Without the permission, it logs that
+it could not tell.
 
 ## Behaviour
 
@@ -76,7 +104,8 @@ that it could not tell.
 - **Limits:** 25 MiB per file by default (up to 100 MiB). A file is streamed to
   the store in 5 MiB parts, never held whole. Each user can have 2 uploads in
   progress at once, under a server-wide ceiling of 8, and a request has 3
-  minutes to deliver its body before it is cut off (408).
+  minutes to deliver its body before it is cut off (408). A body that ends
+  before its boundary is refused (400), never stored truncated.
 - **Downloads are not time-limited.** A slow agent gets the whole file: only
   the store's first response is bounded (30 s), never the transfer. `HEAD` on a
   link answers from the object's metadata without fetching it.

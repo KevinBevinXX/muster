@@ -39,12 +39,23 @@ type ObjectStore interface {
 	// Stat is key's size, without its body. A missing key is ErrNotFound.
 	Stat(ctx context.Context, key string) (size int64, err error)
 	Delete(ctx context.Context, key string) error
+	// Cleanup removes whatever a failed Put left at key: any incomplete
+	// multipart upload (aborted) and any object.
+	Cleanup(ctx context.Context, key string) error
 	// Check reaches the bucket with the configured credential.
 	Check(ctx context.Context) error
-	// ExpiryRules counts the bucket's enabled lifecycle rules that expire
-	// objects under the uploads/ prefix. ErrLifecycleUnreadable when the
-	// credential may not read the configuration.
-	ExpiryRules(ctx context.Context) (int, error)
+	// Lifecycle reports which of the bucket's enabled lifecycle rules cover
+	// the uploads/ prefix. ErrLifecycleUnreadable when the credential may not
+	// read the configuration.
+	Lifecycle(ctx context.Context) (LifecycleCoverage, error)
+}
+
+// LifecycleCoverage counts the enabled lifecycle rules covering uploads/: those
+// that EXPIRE objects (an expired link's file), and those that ABORT incomplete
+// multipart uploads (a failed stream's parts).
+type LifecycleCoverage struct {
+	Expire          int
+	AbortIncomplete int
 }
 
 // ErrLifecycleUnreadable is a lifecycle configuration the credential may not
@@ -211,6 +222,26 @@ func (c *S3) Delete(ctx context.Context, key string) error {
 	return err
 }
 
+// Cleanup aborts every incomplete multipart upload of key and deletes key.
+func (c *S3) Cleanup(ctx context.Context, key string) error {
+	if err := mapErr("abort", c.mc.RemoveIncompleteUpload(ctx, c.cfg.Bucket, key)); err != nil && !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	return c.Delete(ctx, key)
+}
+
+// Incomplete counts the incomplete multipart uploads under prefix.
+func (c *S3) Incomplete(ctx context.Context, prefix string) (int, error) {
+	n := 0
+	for m := range c.mc.ListIncompleteUploads(ctx, c.cfg.Bucket, prefix, true) {
+		if m.Err != nil {
+			return n, mapErr("list uploads", m.Err)
+		}
+		n++
+	}
+	return n, nil
+}
+
 // Check is HEAD on the bucket.
 func (c *S3) Check(ctx context.Context) error {
 	ok, err := c.mc.BucketExists(ctx, c.cfg.Bucket)
@@ -223,31 +254,32 @@ func (c *S3) Check(ctx context.Context) error {
 	return nil
 }
 
-// ExpiryRules reads the bucket's lifecycle and counts the enabled rules with
-// an expiration that apply to the uploads/ prefix.
-func (c *S3) ExpiryRules(ctx context.Context) (int, error) {
+// Lifecycle reads the bucket's lifecycle and counts the enabled rules that
+// cover the uploads/ prefix, by action.
+func (c *S3) Lifecycle(ctx context.Context) (LifecycleCoverage, error) {
 	cfg, err := c.mc.GetBucketLifecycle(ctx, c.cfg.Bucket)
 	if err != nil {
 		switch minio.ToErrorResponse(err).Code {
 		case "NoSuchLifecycleConfiguration":
-			return 0, nil
+			return LifecycleCoverage{}, nil
 		case "AccessDenied":
-			return 0, ErrLifecycleUnreadable
+			return LifecycleCoverage{}, ErrLifecycleUnreadable
 		}
-		return 0, mapErr("get lifecycle", err)
+		return LifecycleCoverage{}, mapErr("get lifecycle", err)
 	}
-	return CountExpiryRules(cfg), nil
+	return Coverage(cfg), nil
 }
 
-// CountExpiryRules counts cfg's enabled rules with an expiration whose prefix
-// (none, or one the uploads/ keys start with) covers the uploads/ objects.
-func CountExpiryRules(cfg *lifecycle.Configuration) int {
+// Coverage counts cfg's enabled rules whose prefix (none, or one the uploads/
+// keys start with) covers the uploads/ objects: those with an expiration, and
+// those that abort incomplete multipart uploads.
+func Coverage(cfg *lifecycle.Configuration) LifecycleCoverage {
+	var out LifecycleCoverage
 	if cfg == nil {
-		return 0
+		return out
 	}
-	n := 0
 	for _, r := range cfg.Rules {
-		if r.Status != "Enabled" || r.Expiration.IsNull() {
+		if r.Status != "Enabled" {
 			continue
 		}
 		prefix := r.Prefix
@@ -256,9 +288,15 @@ func CountExpiryRules(cfg *lifecycle.Configuration) int {
 		} else if r.RuleFilter.And.Prefix != "" {
 			prefix = r.RuleFilter.And.Prefix
 		}
-		if strings.HasPrefix(objectKeyPrefix, prefix) {
-			n++
+		if !strings.HasPrefix(objectKeyPrefix, prefix) {
+			continue
+		}
+		if !r.Expiration.IsNull() {
+			out.Expire++
+		}
+		if !r.AbortIncompleteMultipartUpload.IsDaysNull() {
+			out.AbortIncomplete++
 		}
 	}
-	return n
+	return out
 }

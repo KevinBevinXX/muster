@@ -124,24 +124,37 @@ func TestTheUploadBannerNeverPrintsAKey(t *testing.T) {
 	}
 }
 
-// TestTheBootCheckWarnsWhenNothingExpiresTheUploads: a bucket with no lifecycle
-// rule for uploads/ grows for ever (an expired link leaves its file behind),
-// and the boot log says so; a key that may not read the lifecycle says THAT,
-// rather than claiming either answer.
+// TestTheBootCheckWarnsWhenNothingExpiresTheUploads: a bucket with no rule
+// expiring uploads/ grows for ever (an expired link leaves its file behind),
+// and one with no rule aborting incomplete uploads keeps a killed upload's
+// parts — the boot log says each; a key that may not read the lifecycle says
+// THAT, rather than claiming either answer.
 func TestTheBootCheckWarnsWhenNothingExpiresTheUploads(t *testing.T) {
+	expire := "NO lifecycle rule expiring uploads/"
+	abort := "NO lifecycle rule aborting incomplete multipart uploads"
 	for name, tc := range map[string]struct {
-		rules int
-		err   error
-		want  string
+		cov     uploads.LifecycleCoverage
+		err     error
+		want    []string
+		wantNot []string
 	}{
-		"no rule":    {0, nil, "WARNING — the bucket has NO lifecycle rule"},
-		"unreadable": {0, uploads.ErrLifecycleUnreadable, "could NOT be read with this key"},
-		"a rule":     {1, nil, "1 lifecycle rule(s) expire its uploads/ objects"},
+		"no rule":     {uploads.LifecycleCoverage{}, nil, []string{expire, abort}, nil},
+		"expiry only": {uploads.LifecycleCoverage{Expire: 1}, nil, []string{abort}, []string{expire}},
+		"abort only":  {uploads.LifecycleCoverage{AbortIncomplete: 1}, nil, []string{expire}, []string{abort}},
+		"both":        {uploads.LifecycleCoverage{Expire: 1, AbortIncomplete: 1}, nil, []string{"expires uploads/ objects (1 rule(s)) and aborts incomplete uploads (1 rule(s))"}, []string{expire, abort}},
+		"unreadable":  {uploads.LifecycleCoverage{}, uploads.ErrLifecycleUnreadable, []string{"could NOT be read with this key"}, []string{expire, abort}},
 	} {
 		var buf bytes.Buffer
-		logUploadBucketCheck(context.Background(), &uploadstest.Objects{Rules: tc.rules, RulesErr: tc.err}, log.New(&buf, "", 0))
-		if !strings.Contains(buf.String(), tc.want) {
-			t.Errorf("%s: logged %q; want %q", name, buf.String(), tc.want)
+		logUploadBucketCheck(context.Background(), &uploadstest.Objects{Coverage: tc.cov, RulesErr: tc.err}, log.New(&buf, "", 0))
+		for _, w := range tc.want {
+			if !strings.Contains(buf.String(), w) {
+				t.Errorf("%s: logged %q; want %q", name, buf.String(), w)
+			}
+		}
+		for _, w := range tc.wantNot {
+			if strings.Contains(buf.String(), w) {
+				t.Errorf("%s: logged %q, which it should not", name, w)
+			}
 		}
 	}
 }

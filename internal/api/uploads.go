@@ -71,6 +71,7 @@ const (
 	UploadBusy        = "Other files of yours are still uploading. Try again when they finish."
 	UploadServerBusy  = "Too many files are being stored right now. Try again in a moment."
 	UploadTooSlow     = "The file did not arrive in time, so nothing was attached. Try again."
+	UploadCutOff      = "The file did not arrive whole, so nothing was attached. Try again."
 	UploadStoreFailed = "The file could not be stored, so nothing was attached. Try again in a moment."
 )
 
@@ -262,6 +263,8 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 				tooLarge()
 			case errors.Is(err, uploads.ErrEmpty):
 				say(http.StatusBadRequest, UploadEmpty)
+			case errors.Is(err, uploads.ErrTruncated):
+				say(http.StatusBadRequest, UploadCutOff)
 			case isTimeout(err):
 				say(http.StatusRequestTimeout, UploadTooSlow)
 			default:

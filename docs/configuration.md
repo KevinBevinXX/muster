@@ -75,7 +75,7 @@ See [auth.md](auth.md).
 | `MUSTER_STT_TOKEN` | none | no | The bearer token for that service. Setting it turns dictation on. A token without a URL refuses to boot. |
 | `MUSTER_S3_ENDPOINT` | none | for [file attachments](uploads.md) | The S3-compatible store attached files are kept in, as `http(s)://host[:port]` (path-style; MinIO works). Attachments are on only when this, `MUSTER_S3_BUCKET`, both keys, `MUSTER_UPLOAD_SIGNING_KEY`, `MUSTER_PUBLIC_URL` and a database are all set. A partial or invalid set leaves them **off**, says why in the boot banner, and never refuses to boot. |
 | `MUSTER_S3_BUCKET` | none | for file attachments | The bucket. Objects are written under `uploads/<random id>`. |
-| `MUSTER_S3_ACCESS_KEY` | none | for file attachments | An access key that may `PutObject`, `GetObject` and `DeleteObject` under `uploads/` in that bucket, and `ListBucket` and `GetLifecycleConfiguration` on it for the boot check ([policy](uploads.md#configuration)). |
+| `MUSTER_S3_ACCESS_KEY` | none | for file attachments | An access key that may `PutObject`, `GetObject`, `DeleteObject` and `AbortMultipartUpload` under `uploads/` in that bucket, plus `ListBucket`, `ListBucketMultipartUploads` and `GetLifecycleConfiguration` on the bucket ([policy](uploads.md#configuration)). |
 | `MUSTER_S3_SECRET_KEY` | none | for file attachments | Its secret key. |
 | `MUSTER_S3_REGION` | `us-east-1` | no | The signing region. |
 | `MUSTER_UPLOAD_SIGNING_KEY` | none | for file attachments | At least 32 bytes. The key the links handed to agents are signed with (HMAC-SHA256). Rotating it ends every link already given out. |

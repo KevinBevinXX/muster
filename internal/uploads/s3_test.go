@@ -145,26 +145,52 @@ func TestNewS3RefusesABadConfiguration(t *testing.T) {
 	}
 }
 
-// TestCountExpiryRules: only an ENABLED rule WITH an expiration whose prefix
-// covers uploads/ counts.
-func TestCountExpiryRules(t *testing.T) {
+// TestCoverage: only an ENABLED rule whose prefix covers uploads/ counts, per
+// action — expiring objects, and aborting incomplete multipart uploads.
+func TestCoverage(t *testing.T) {
 	exp := lifecycle.Expiration{Days: 8}
+	abort := lifecycle.AbortIncompleteMultipartUpload{DaysAfterInitiation: 1}
 	for name, tc := range map[string]struct {
 		rules []lifecycle.Rule
-		want  int
+		want  LifecycleCoverage
 	}{
-		"none":                {nil, 0},
-		"whole bucket":        {[]lifecycle.Rule{{ID: "a", Status: "Enabled", Expiration: exp}}, 1},
-		"uploads prefix":      {[]lifecycle.Rule{{ID: "a", Status: "Enabled", Expiration: exp, RuleFilter: lifecycle.Filter{Prefix: "uploads/"}}}, 1},
-		"another prefix":      {[]lifecycle.Rule{{ID: "a", Status: "Enabled", Expiration: exp, RuleFilter: lifecycle.Filter{Prefix: "backups/"}}}, 0},
-		"disabled":            {[]lifecycle.Rule{{ID: "a", Status: "Disabled", Expiration: exp}}, 0},
-		"no expiration":       {[]lifecycle.Rule{{ID: "a", Status: "Enabled"}}, 0},
-		"legacy prefix field": {[]lifecycle.Rule{{ID: "a", Status: "Enabled", Expiration: exp, Prefix: "uploads/"}}, 1},
+		"none":                {nil, LifecycleCoverage{}},
+		"whole bucket":        {[]lifecycle.Rule{{ID: "a", Status: "Enabled", Expiration: exp}}, LifecycleCoverage{Expire: 1}},
+		"uploads prefix":      {[]lifecycle.Rule{{ID: "a", Status: "Enabled", Expiration: exp, RuleFilter: lifecycle.Filter{Prefix: "uploads/"}}}, LifecycleCoverage{Expire: 1}},
+		"both in one rule":    {[]lifecycle.Rule{{ID: "a", Status: "Enabled", Expiration: exp, AbortIncompleteMultipartUpload: abort, RuleFilter: lifecycle.Filter{Prefix: "uploads/"}}}, LifecycleCoverage{Expire: 1, AbortIncomplete: 1}},
+		"abort only":          {[]lifecycle.Rule{{ID: "a", Status: "Enabled", AbortIncompleteMultipartUpload: abort}}, LifecycleCoverage{AbortIncomplete: 1}},
+		"another prefix":      {[]lifecycle.Rule{{ID: "a", Status: "Enabled", Expiration: exp, AbortIncompleteMultipartUpload: abort, RuleFilter: lifecycle.Filter{Prefix: "backups/"}}}, LifecycleCoverage{}},
+		"disabled":            {[]lifecycle.Rule{{ID: "a", Status: "Disabled", Expiration: exp, AbortIncompleteMultipartUpload: abort}}, LifecycleCoverage{}},
+		"no action":           {[]lifecycle.Rule{{ID: "a", Status: "Enabled"}}, LifecycleCoverage{}},
+		"legacy prefix field": {[]lifecycle.Rule{{ID: "a", Status: "Enabled", Expiration: exp, Prefix: "uploads/"}}, LifecycleCoverage{Expire: 1}},
 	} {
-		if got := CountExpiryRules(&lifecycle.Configuration{Rules: tc.rules}); got != tc.want {
-			t.Errorf("%s: %d; want %d", name, got, tc.want)
+		if got := Coverage(&lifecycle.Configuration{Rules: tc.rules}); got != tc.want {
+			t.Errorf("%s: %+v; want %+v", name, got, tc.want)
 		}
 	}
+}
+
+// failAfter yields n bytes of data, then fails with err (calling hook first).
+type failAfter struct {
+	n    int
+	err  error
+	hook func()
+}
+
+func (f *failAfter) Read(p []byte) (int, error) {
+	if f.n <= 0 {
+		if f.hook != nil {
+			f.hook()
+			f.hook = nil
+		}
+		return 0, f.err
+	}
+	k := min(len(p), f.n)
+	for i := range p[:k] {
+		p[i] = byte('a' + i%26)
+	}
+	f.n -= k
+	return k, nil
 }
 
 // TestAgainstARealS3 runs the client against a REAL S3-compatible server when
@@ -227,8 +253,39 @@ func TestAgainstARealS3(t *testing.T) {
 			t.Errorf("%s: Stat after Delete: %v; want ErrNotFound", name, err)
 		}
 	}
-	n, lerr := c.ExpiryRules(ctx)
-	t.Logf("ExpiryRules on %s: %d, %v", cfg.Bucket, n, lerr)
+	cov, lerr := c.Lifecycle(ctx)
+	t.Logf("Lifecycle on %s: %+v, %v", cfg.Bucket, cov, lerr)
+
+	// A multipart write whose READER fails, its context alive: minio-go aborts
+	// it, nothing incomplete is left.
+	id, _ := NewPublicID()
+	key := ObjectKeyFor(id)
+	err = c.Put(ctx, key, &failAfter{n: PartSize + PartSize/2, err: errors.New("client went away")}, -1, "application/octet-stream")
+	if err == nil {
+		t.Fatal("a Put whose reader failed succeeded")
+	}
+	if n, err := c.Incomplete(ctx, key); err != nil || n != 0 {
+		t.Errorf("after a failed read with a live context: %d incomplete upload(s), %v; want 0", n, err)
+	}
+	// The same, but the context is cancelled as the reader fails — a request
+	// whose client went away: minio-go's own abort cannot go out, and the
+	// upload is left incomplete. Cleanup under a fresh context removes it.
+	id, _ = NewPublicID()
+	key = ObjectKeyFor(id)
+	cctx, cancel := context.WithCancel(ctx)
+	err = c.Put(cctx, key, &failAfter{n: PartSize + PartSize/2, err: errors.New("client went away"), hook: cancel}, -1, "application/octet-stream")
+	cancel()
+	if err == nil {
+		t.Fatal("a Put whose context was cancelled succeeded")
+	}
+	orphans, err := c.Incomplete(ctx, key)
+	t.Logf("after a cancelled write: %d incomplete upload(s) (%v) — what the request context used to orphan", orphans, err)
+	if err := c.Cleanup(ctx, key); err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	if n, err := c.Incomplete(ctx, key); err != nil || n != 0 {
+		t.Errorf("after Cleanup: %d incomplete upload(s), %v; want 0", n, err)
+	}
 	bad := cfg
 	bad.SecretKey += "-wrong"
 	wrong, _ := NewS3(bad)

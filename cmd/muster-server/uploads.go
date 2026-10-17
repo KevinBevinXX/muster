@@ -134,18 +134,29 @@ func logUploadBucketCheck(ctx context.Context, objects uploads.ObjectStore, logg
 			"will fail until it can. Check %s, %s and the access key's policy", err, envS3Endpoint, envS3Bucket)
 		return
 	}
-	n, err := objects.ExpiryRules(ctx)
+	c, err := objects.Lifecycle(ctx)
 	switch {
 	case errors.Is(err, uploads.ErrLifecycleUnreadable):
 		logger.Printf("uploads: the bucket answered at boot; its lifecycle could NOT be read with this key " +
-			"(grant s3:GetLifecycleConfiguration to check it), so whether expired files are ever removed is unknown")
+			"(grant s3:GetLifecycleConfiguration to check it), so whether expired files and abandoned " +
+			"multipart uploads are ever removed is unknown")
+		return
 	case err != nil:
 		logger.Printf("uploads: the bucket answered at boot; reading its lifecycle failed (%v)", err)
-	case n == 0:
+		return
+	}
+	if c.Expire == 0 {
 		logger.Printf("uploads: WARNING — the bucket has NO lifecycle rule expiring uploads/ objects. An expired " +
 			"link leaves its file behind, so the bucket only grows. Add one (docs/uploads.md)")
-	default:
-		logger.Printf("uploads: the bucket answered at boot; %d lifecycle rule(s) expire its uploads/ objects", n)
+	}
+	if c.AbortIncomplete == 0 {
+		logger.Printf("uploads: WARNING — the bucket has NO lifecycle rule aborting incomplete multipart uploads " +
+			"under uploads/. muster aborts a failed upload itself; a process killed mid-upload leaves its parts " +
+			"behind (MinIO ignores this rule and expires stale uploads itself, after api stale_uploads_expiry)")
+	}
+	if c.Expire > 0 && c.AbortIncomplete > 0 {
+		logger.Printf("uploads: the bucket answered at boot; its lifecycle expires uploads/ objects (%d rule(s)) "+
+			"and aborts incomplete uploads (%d rule(s))", c.Expire, c.AbortIncomplete)
 	}
 }
 

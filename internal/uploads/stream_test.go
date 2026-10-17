@@ -129,3 +129,90 @@ func TestALinkHEADStatsWithoutFetching(t *testing.T) {
 		t.Errorf("a forged HEAD: %v; want a refusal", err)
 	}
 }
+
+// cancelAfter yields n bytes, then cancels its context and fails — a client
+// that went away mid-upload, as Go reports it to a handler.
+type cancelAfter struct {
+	n      int
+	cancel context.CancelFunc
+}
+
+func (c *cancelAfter) Read(p []byte) (int, error) {
+	if c.n <= 0 {
+		c.cancel()
+		return 0, io.ErrUnexpectedEOF
+	}
+	k := min(len(p), c.n)
+	c.n -= k
+	return k, nil
+}
+
+// TestAFailedWriteLeavesNoIncompleteUpload: a multipart write that fails —
+// its request cancelled as the client went away, or the cap overflowed —
+// leaves NO incomplete multipart upload and no object behind.
+func TestAFailedWriteLeavesNoIncompleteUpload(t *testing.T) {
+	t.Run("client gone, request cancelled", func(t *testing.T) {
+		svc, _, obj, _ := newService(t, 100<<20)
+		ctx, cancel := context.WithCancel(as(2))
+		defer cancel()
+		if _, err := svc.Put(ctx, &cancelAfter{n: uploads.PartSize + uploads.PartSize/2, cancel: cancel}, "gone.bin"); err == nil {
+			t.Fatal("a Put whose client went away succeeded")
+		}
+		if inc := obj.Incomplete(); len(inc) != 0 {
+			t.Errorf("incomplete uploads left behind: %v", inc)
+		}
+		if keys := obj.Keys(); len(keys) != 0 {
+			t.Errorf("objects left behind: %v", keys)
+		}
+	})
+	t.Run("small file cut off: nothing stored as if whole", func(t *testing.T) {
+		svc, rows, obj, _ := newService(t, 100<<20)
+		ctx, cancel := context.WithCancel(as(2))
+		defer cancel()
+		if _, err := svc.Put(ctx, &cancelAfter{n: 1000, cancel: cancel}, "cut.bin"); !errors.Is(err, uploads.ErrTruncated) {
+			t.Fatalf("a small file cut off: %v; want ErrTruncated", err)
+		}
+		if keys := obj.Keys(); len(keys) != 0 || len(rows.Rows()) != 0 {
+			t.Errorf("a cut-off file was stored: objects %v, rows %d", keys, len(rows.Rows()))
+		}
+	})
+	t.Run("cap overflow mid-stream", func(t *testing.T) {
+		svc, _, obj, _ := newService(t, int64(2*uploads.PartSize+5))
+		body, _ := producer(t, 3*uploads.PartSize)
+		if _, err := svc.Put(as(2), body, "over.bin"); !errors.Is(err, uploads.ErrTooLarge) {
+			t.Fatalf("over the cap: %v; want ErrTooLarge", err)
+		}
+		if inc := obj.Incomplete(); len(inc) != 0 {
+			t.Errorf("incomplete uploads left behind: %v", inc)
+		}
+	})
+	// The two layers, each pinned alone.
+	t.Run("the write outlives its request's cancellation (cleanup failing)", func(t *testing.T) {
+		svc, _, obj, _ := newService(t, 100<<20)
+		obj.FailCleanup = errors.New("store unreachable")
+		ctx, cancel := context.WithCancel(as(2))
+		defer cancel()
+		_, _ = svc.Put(ctx, &cancelAfter{n: uploads.PartSize + uploads.PartSize/2, cancel: cancel}, "gone.bin")
+		if inc := obj.Incomplete(); len(inc) != 0 {
+			t.Errorf("with clean-up failing, the write's own abort did not go out: %v", inc)
+		}
+	})
+	t.Run("a failed write is cleaned up when the store's own abort did not happen", func(t *testing.T) {
+		svc, _, obj, _ := newService(t, 100<<20)
+		obj.SkipAbort = true
+		ctx, cancel := context.WithCancel(as(2))
+		defer cancel()
+		_, _ = svc.Put(ctx, &cancelAfter{n: uploads.PartSize + uploads.PartSize/2, cancel: cancel}, "gone.bin")
+		if inc := obj.Incomplete(); len(inc) != 0 {
+			t.Errorf("the explicit clean-up did not remove the incomplete upload: %v", inc)
+		}
+	})
+	t.Run("CONTROL: the fake does orphan a cancelled write", func(t *testing.T) {
+		obj := &uploadstest.Objects{}
+		ctx, cancel := context.WithCancel(context.Background())
+		_ = obj.Put(ctx, "uploads/x", &cancelAfter{n: uploads.PartSize + 10, cancel: cancel}, -1, "x")
+		if len(obj.Incomplete()) != 1 {
+			t.Fatal("the fake did not keep an upload whose abort's context was cancelled; the tests above prove nothing")
+		}
+	})
+}

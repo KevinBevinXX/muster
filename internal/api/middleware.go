@@ -131,9 +131,7 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 		next.ServeHTTP(sw, r)
 		dur := time.Since(start)
 		metrics.ObserveHTTP(routeLabel(r), r.Method, sw.status, dur)
-		// The ESCAPED path: a decoded one is attacker-chosen text (a %0A in
-		// it would start a forged line of its own in this log).
-		s.logger.Printf("%s %s %d %s", r.Method, loggedPath(r.URL.EscapedPath()), sw.status, dur.Round(time.Millisecond))
+		s.logger.Printf("%s %s %d %s", r.Method, accessLogPath(r.URL), sw.status, dur.Round(time.Millisecond))
 	})
 }
 
@@ -144,6 +142,20 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 //
 // The same holds for the invite and reset links (accounts PR 5): their tokens
 // ride in the fragment too, and a hand-made path form is cut the same way.
+// accessLogPath is a request's path as the access log writes it.
+//
+// 🔴 REDACT ON THE DECODED PATH, THEN ESCAPE. Redaction must see the path the
+// mux routes on — the DECODED one — or `/auth/%63laim/<token>` (which reaches
+// the claim route) would log its token. And what is logged must be ESCAPED: a
+// decoded path is attacker-chosen text, and a %0A in it would start a forged
+// line of its own in this log.
+func accessLogPath(u *url.URL) string {
+	if red := loggedPath(u.Path); red != u.Path {
+		return red // a fixed prefix plus "[redacted]": nothing of the request's
+	}
+	return u.EscapedPath()
+}
+
 func loggedPath(p string) string {
 	for _, prefix := range []string{"/auth/claim/", "/invite/", "/auth/reset/"} {
 		if strings.HasPrefix(p, prefix) {

@@ -37,7 +37,10 @@ type Service struct {
 	PublicURL string
 	MaxBytes  int64
 	LinkTTL   time.Duration
-	Logger    *log.Logger
+	// WriteTimeout bounds one file's write to the store; 0 is
+	// DefaultWriteTimeout.
+	WriteTimeout time.Duration
+	Logger       *log.Logger
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
 }
@@ -70,6 +73,10 @@ func (s *Service) Describe(u Upload) Stored {
 	return Stored{Upload: u, Name: name, URL: link, Line: AgentLine(name, u.ContentType, u.Size, link)}
 }
 
+// ErrTruncated is a file whose body ended before its multipart boundary: the
+// client went away mid-upload.
+var ErrTruncated = errors.New("uploads: the file did not arrive whole")
+
 // errOverCap is what capReader answers once more than its cap was read.
 var errOverCap = errors.New("uploads: over the size cap")
 
@@ -91,6 +98,14 @@ func (c *capReader) Read(p []byte) (int, error) {
 		p = p[:room]
 	}
 	n, err := c.r.Read(p)
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		// 🔴 A BODY THAT ENDS EARLY IS A FAILURE, NOT A SHORT FILE. A client
+		// that went away mid-upload reaches the reader as io.ErrUnexpectedEOF —
+		// the very error io.ReadFull (and minio-go's part reader) use to mean
+		// "the last part is short". Passed through, a cut-off file would be
+		// stored, truncated, as if whole.
+		err = ErrTruncated
+	}
 	c.n += int64(n)
 	if c.n > c.max {
 		c.over = true
@@ -111,6 +126,16 @@ func (c *capReader) Read(p []byte) (int, error) {
 //
 // The object is written FIRST and the row second; a row that cannot be written
 // takes its object away again.
+//
+// 🔴 THE STORE IS WRITTEN UNDER ITS OWN CONTEXT, NOT THE REQUEST'S. Go cancels a
+// request's context when its client goes away (and the handler's read can fail
+// first, on a disconnect or the read deadline). A multipart write cancelled that
+// way cannot send its own AbortMultipartUpload — the abort rides the same dead
+// context — and the parts already written stay in the bucket, orphaned. So the
+// write runs under context.WithoutCancel with its own bound (WriteTimeout); it
+// still ends when the BODY fails, because the body is what it reads. And every
+// failed write is cleaned up explicitly (abort any incomplete upload, delete
+// any object) under a fresh bounded context.
 func (s *Service) Put(ctx context.Context, r io.Reader, filename string) (Stored, error) {
 	br := bufio.NewReaderSize(r, SniffBytes)
 	head, perr := br.Peek(SniffBytes)
@@ -130,21 +155,21 @@ func (s *Service) Put(ctx context.Context, r io.Reader, filename string) (Stored
 	first := make([]byte, min(int64(PartSize), s.MaxBytes+1))
 	n, rerr := io.ReadFull(cr, first)
 	served := ServeAs(contentType).ContentType
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.writeTimeout())
+	defer cancel()
 	switch {
 	case cr.over:
 		return Stored{}, ErrTooLarge
 	case errors.Is(rerr, io.EOF) || errors.Is(rerr, io.ErrUnexpectedEOF):
-		err = s.Objects.Put(ctx, key, bytes.NewReader(first[:n]), int64(n), served)
+		err = s.Objects.Put(wctx, key, bytes.NewReader(first[:n]), int64(n), served)
 	case rerr != nil:
 		return Stored{}, rerr
 	default:
-		err = s.Objects.Put(ctx, key, io.MultiReader(bytes.NewReader(first), cr), -1, served)
+		err = s.Objects.Put(wctx, key, io.MultiReader(bytes.NewReader(first), cr), -1, served)
 	}
 	if err != nil {
+		s.cleanup(ctx, key)
 		if cr.over {
-			// Aborted by the cap mid-stream. A store that kept a partial
-			// object anyway loses it here.
-			_ = s.Objects.Delete(context.WithoutCancel(ctx), key)
 			return Stored{}, ErrTooLarge
 		}
 		return Stored{}, err
@@ -159,12 +184,34 @@ func (s *Service) Put(ctx context.Context, r io.Reader, filename string) (Stored
 	}
 	row, err := s.Store.Create(ctx, u)
 	if err != nil {
-		if derr := s.Objects.Delete(context.WithoutCancel(ctx), key); derr != nil && s.Logger != nil {
-			s.Logger.Printf("uploads: object %s outlived its failed row: %v", id, derr)
-		}
+		s.cleanup(ctx, key)
 		return Stored{}, err
 	}
 	return s.Describe(row), nil
+}
+
+// cleanupTimeout bounds the clean-up of a failed write.
+const cleanupTimeout = 30 * time.Second
+
+// DefaultWriteTimeout bounds one file's write to the store.
+const DefaultWriteTimeout = 10 * time.Minute
+
+func (s *Service) writeTimeout() time.Duration {
+	if s.WriteTimeout > 0 {
+		return s.WriteTimeout
+	}
+	return DefaultWriteTimeout
+}
+
+// cleanup removes what a failed write may have left at key — an incomplete
+// multipart upload, or an object — under a FRESH bounded context: ctx may be
+// the cancelled context of a request whose client went away.
+func (s *Service) cleanup(ctx context.Context, key string) {
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+	defer cancel()
+	if err := s.Objects.Cleanup(cctx, key); err != nil && s.Logger != nil {
+		s.Logger.Printf("uploads: %s could not be cleaned up after a failed write: %v", key, err)
+	}
 }
 
 // Opened is a file ready to stream.
