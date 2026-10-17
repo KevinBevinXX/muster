@@ -600,7 +600,10 @@ test.describe('held behind the pill: a rename elsewhere', () => {
     const stamp = Date.now().toString(36).replace(/w/g, 'x');
     // Each is in exactly one rank for "wren": a prefix, a word start, inside a word.
     const [first, second, third] = [`wren-one-${stamp}`, `big-wren-${stamp}`, `awrenx-${stamp}`];
-    const arrival = `zzheld-${stamp}`;
+    // The arrival MATCHES the filter: an arrival the filter hides moves nothing
+    // in view, so it is applied at once and holds nothing (agents_filter.go
+    // decide) — the hold this test needs is one the reader can see.
+    const arrival = `zzwrenheld-${stamp}`;
     for (const n of [first, second, third]) mkchat(n, [{ role: 'user', content: 'a wren card' }]);
     try {
       await rig.login(page);

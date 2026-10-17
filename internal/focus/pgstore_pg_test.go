@@ -102,7 +102,7 @@ func TestUpsertGetAndRecordError(t *testing.T) {
 // TestALongTitleIsStoredAndReadBackWhole: a 122-rune title (past the old
 // 80-rune clamp and the 80-character CHECKs of 0020 and 0022) goes through
 // Upsert into the focus row AND its history row, and both read back exactly as
-// written. Red before 0026 + the raised MaxTitleRunes: Clean cut it to 80 runes
+// written. Red before 0023 + the raised MaxTitleRunes: Clean cut it to 80 runes
 // ending in "…".
 func TestALongTitleIsStoredAndReadBackWhole(t *testing.T) {
 	s, pool := pgStore(t)
@@ -120,7 +120,7 @@ func TestALongTitleIsStoredAndReadBackWhole(t *testing.T) {
 	if err != nil || len(page.Entries) != 1 || page.Entries[0].Title != title {
 		t.Fatalf("history = %+v (%v), want one row titled whole", page.Entries, err)
 	}
-	// 🔴 THE SEAM: Clean's guard and migration 0026's CHECKs are one number. A
+	// 🔴 THE SEAM: Clean's guard and migration 0023's CHECKs are one number. A
 	// runaway title is cut by Clean to what the database accepts — stored, not
 	// refused — in both tables.
 	runaway := strings.Repeat("word ", 100)

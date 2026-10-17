@@ -175,11 +175,17 @@ func TestTheHostTabIsAnExactTermAndedWithTheBox(t *testing.T) {
 		"the box alone is ?q= and the session":    "var q = input.value;",
 		"tabs come from the DRAWN cards":          "var drawn = list.querySelectorAll(':scope > article:not([data-held])');",
 		"the choice is stored under tabs' prefix": "var HOST_KEY = 'muster:tabs:agents-host';",
-		"a vanished host falls back to All":       "if (h && !seen[h] && drawn.length) { chooseHost(''); h = ''; }",
+		"an absent host SHOWS All":                "var on = h && seen[h] ? h : '';",
+		"the hold reads the filter":               "var h = heldOrder.filter(function (id) { return inLive[id] && shows(byId(id)); });",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("%s: the filter script no longer contains %q", name, want)
 		}
+	}
+	// The stored choice is written by the reader's picks ONLY (a click, a key)
+	// — never by a refresh: chooseHost's definition and its two callers.
+	if n := strings.Count(script, "chooseHost("); n != 3 {
+		t.Errorf("chooseHost( appears %d times, want 3 (its definition, the click, the keys): something else now changes the stored tab", n)
 	}
 	if strings.Contains(script, "syncURL(q + ") || strings.Contains(script, "host=' + ") {
 		t.Error("the host tab is written into ?q=")

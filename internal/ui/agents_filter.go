@@ -79,9 +79,12 @@ import (
 //
 // The choice is the browser's, not the link's: it is kept in localStorage
 // ("muster:tabs:agents-host", the prefix tabs.go uses) and is NOT part of ?q=.
-// When the remembered host is no longer on the list, the list falls back to
-// All — and forgets the choice, so a host that reconnects later does not pull
-// the view out from under the reader.
+// While the remembered host is not on the list (a restart, a laptop asleep)
+// the list SHOWS All and keeps the choice, and is filtered to that host again
+// when it is back; only the reader's own pick changes it. A link carrying its
+// own ?q= opens on All. The "N new ↑" hold counts only cards the filter (tab
+// AND box) shows, so a refresh that changes only hidden ones is applied at
+// once and the other hosts' tabs and counts stay live.
 //
 // The tabs are tabs.go's WAI-ARIA tabs in markup, look (tabClass) and keys —
 // role=tablist/tab, aria-selected on exactly one, a roving tabindex, Left/Right
@@ -459,18 +462,30 @@ func agentsFilterScript() g.Node {
     try { return new URL(location.href).searchParams.get('q'); } catch (e) { return null; }
   }
   // THE HOST TABS (agentsHostTabs). chosenHost is the tab the reader chose:
-  // read from localStorage once, written on every choice, '' for All.
+  // read from localStorage once, written ONLY when the reader picks a tab, ''
+  // for All. shownHost is the host the list is filtered to now. linkAll is set
+  // for a page opened from a link carrying its own ?q= (boot): that load starts
+  // on All, so the link shows what it was shared to show, and the stored
+  // choice is left as it is.
   var HOST_KEY = '` + agentsHostTabsStorageKey + `';
-  var chosenHost = null;
+  var chosenHost = null, shownHost = '', linkAll = false;
   function hostChosen() {
     if (chosenHost === null) { try { chosenHost = localStorage.getItem(HOST_KEY) || ''; } catch (e) { chosenHost = ''; } }
     return chosenHost;
   }
   function chooseHost(h) {
     chosenHost = h;
+    linkAll = false;
     try { if (h) localStorage.setItem(HOST_KEY, h); else localStorage.removeItem(HOST_KEY); } catch (e) {}
   }
   function hostTabs(s) { return [].slice.call(s.querySelectorAll('[role="tab"]')); }
+  // revealTab scrolls the strip — only the strip, never the page — so tab t
+  // is inside it (a phone's strip scrolls sideways).
+  function revealTab(s, t) {
+    var sr = s.getBoundingClientRect(), tr = t.getBoundingClientRect();
+    if (tr.left < sr.left) s.scrollLeft += tr.left - sr.left;
+    else if (tr.right > sr.right) s.scrollLeft += tr.right - sr.right;
+  }
   // syncHosts makes the strip say what the list DRAWS now — a tab per distinct
   // data-f-host of a drawn card (an arrival held behind the pill is not drawn,
   // so it offers no tab yet), labelled by its data-l-host, sorted by label —
@@ -478,15 +493,23 @@ func agentsFilterScript() g.Node {
   // is how many drawn cards of that host the box's terms (ts) show; All's is
   // all of them.
   //
-  // A tab that stays is the SAME node (reused by its data-host, and moved
-  // only when the order changed), so a focused tab keeps focus through a
-  // refresh. A new one is a CLONE of the server's All tab: one markup, one
-  // look (tabClass).
+  // A tab that stays is the SAME node (reused by its data-host); when the
+  // order changes they are put in order by arrange — moveBefore where the
+  // browser has it, and a focused tab is handed its focus back. A new one is
+  // a CLONE of the server's All tab: one markup, one look (tabClass).
   //
-  // 🔴 THE FALLBACK. A remembered host the list no longer draws is not shown
-  // as an empty tab: the list falls back to All and the choice is forgotten —
-  // decided only once the list has drawn cards, so a page whose list has not
-  // arrived yet does not forget it.
+  // 🔴 THE CHOICE IS KEPT, THE VIEW FALLS BACK. A remembered host the list
+  // does not draw now (a restart, a laptop asleep) is not drawn as an empty
+  // tab: the list SHOWS All — and keeps the choice, so when that host is back
+  // the list is filtered to it again. Only the reader's own pick changes it.
+  //
+  // 🔴 A HELD REFRESH NEVER SWITCHES THE VIEW, and needs no branch here to
+  // keep it so: the hold counts only what the filter shows (decide), so a
+  // refresh is held only when a SHOWN card that stays on the list would move —
+  // a card of the shown host, still drawn, so the shown host stays seen. And a
+  // remembered host coming back arrives as held cards, which are not drawn, so
+  // it is restored only when the refresh is applied (the tap, or the next
+  // applied one).
   function syncHosts(list, ts) {
     var s = el('agents-hosts');
     if (!s) return '';
@@ -499,6 +522,8 @@ func agentsFilterScript() g.Node {
       seen[v] = true;
       hosts.push({ v: v, l: a.getAttribute('data-l-host') || v });
     });
+    var h = linkAll ? '' : hostChosen();
+    var on = h && seen[h] ? h : '';
     hosts.sort(function (x, y) {
       var a = x.l.toLowerCase(), b = y.l.toLowerCase();
       if (a !== b) return a < b ? -1 : 1;
@@ -515,34 +540,40 @@ func agentsFilterScript() g.Node {
           t = all.cloneNode(true);
           t.removeAttribute('id');
           t.setAttribute('data-host', h.v);
+          s.appendChild(t);
         }
         var lab = t.querySelector('[data-tab-label]');
         if (lab && lab.textContent !== h.l) lab.textContent = h.l;
         return t;
       }));
       Object.keys(have).forEach(function (k) { have[k].remove(); });
-      var cur = hostTabs(s);
-      if (want.some(function (t, i) { return cur[i] !== t; })) want.forEach(function (t) { s.appendChild(t); });
+      arrange(s, hostTabs(s), want);
       s.setAttribute('data-hosts-of', sig);
     }
-    var h = hostChosen();
-    if (h && !seen[h] && drawn.length) { chooseHost(''); h = ''; }
-    var on = h && seen[h] ? h : '';
     var n = Object.create(null), total = 0;
     [].forEach.call(list.querySelectorAll(':scope > article:not([data-held])' + ts.map(sel).join('')), function (a) {
       var v = a.getAttribute('data-f-host') || '';
       n[v] = (n[v] || 0) + 1;
       total++;
     });
+    var picked = null;
     hostTabs(s).forEach(function (t) {
       var v = t.getAttribute('data-host') || '', sel_ = v === on;
       if (t.getAttribute('aria-selected') !== String(sel_)) t.setAttribute('aria-selected', String(sel_));
       t.setAttribute('tabindex', sel_ ? '0' : '-1');
+      if (sel_) picked = t;
       var c = t.querySelector('[data-tab-count]'), k = String(v ? n[v] || 0 : total);
       if (c && c.textContent !== k) c.textContent = k;
     });
+    if (picked && on !== shownHost) revealTab(s, picked);
+    shownHost = on;
     return on;
   }
+  // curSel is the selector of everything the filter asks (tab AND box), as of
+  // the last apply: what the hold reads to tell a change the reader can see
+  // from one they cannot (shows).
+  var curSel = '';
+  function shows(el_) { return !!el_ && (!curSel || el_.matches(curSel)); }
   // apply(held): held is true for a background refresh the hold kept back.
   // That refresh is NOT re-ranked: its markup came in the drawn order
   // (keepDrawnOrder), and re-ranking it would move a drawn card whose rank
@@ -557,6 +588,7 @@ func agentsFilterScript() g.Node {
     // The host tab is one more EXACT term, ANDed with the box's.
     var host = syncHosts(list, ts);
     var all_ = host ? ts.concat([{ attr: 'data-f-host', value: host, exact: true }]) : ts;
+    curSel = all_.map(sel).join('');
     var style = el('agents-filter-style');
     if (!style) {
       style = document.createElement('style');
@@ -591,10 +623,14 @@ func agentsFilterScript() g.Node {
   function boot() {
     var input = el('agents-search');
     if (!input) return;
-    var q = urlQ();
-    if (q === null) { try { q = sessionStorage.getItem(KEY) || ''; } catch (e) { q = ''; } }
+    var q = urlQ(), mine = null;
+    try { mine = sessionStorage.getItem(KEY); } catch (e) {}
+    if (q === null) q = mine || '';
     if (input.__musterFilterBar && (input.value || !q)) return;
     input.__musterFilterBar = true;
+    // A ?q= this tab did not write (a shared link: this session's copy says
+    // otherwise) starts on All. A reload of this tab's own filter is not a link.
+    linkAll = !!urlQ() && urlQ() !== mine;
     place(q);
     apply();
   }
@@ -746,16 +782,30 @@ func agentsFilterScript() g.Node {
   }
   // decide answers, for a swap of the list whose server order is live, whether
   // it is applied at once (true) or held.
-  function decide(e, live) {
+  //
+  // 🔴 ONLY WHAT THE FILTER SHOWS COUNTS. byId maps a live card's id to its
+  // element in the refresh (shows reads the filter — tab AND box — off it). A
+  // card the filter hides is neither in view nor about to be: an arrival on
+  // another host's tab, or a re-order among hidden cards, moves nothing the
+  // reader can see, so a refresh that changes only those is applied at once —
+  // and the hidden hosts' tabs and counts follow it live. A card that is GONE
+  // is not a reason to hold either: holding cannot keep it, it leaves the
+  // screen whichever way the refresh goes.
+  function decide(e, live, byId) {
     if (!heldOrder || !background(e) || !heldOrder.length) return true;
-    // What applying would move: every drawn card from the first place the
+    var inLive = {};
+    live.forEach(function (id) { inLive[id] = true; });
+    var h = heldOrder.filter(function (id) { return inLive[id] && shows(byId(id)); });
+    var l = live.filter(function (id) { return shows(byId(id)); });
+    // What applying would move: every SHOWN card from the first place the
     // held and the live order differ. An arrival at the END moves nothing; a
     // change wholly below the screen (or on a hidden tab) moves nothing in
     // view. Either is applied at once; anything else is held.
     var p = 0;
-    while (p < heldOrder.length && heldOrder[p] === live[p]) p++;
-    return !heldOrder.slice(p).some(inView);
+    while (p < h.length && h[p] === l[p]) p++;
+    return !h.slice(p).some(inView);
   }
+  function domById(id) { return document.getElementById(id); }
   // swapPlan is beforeSwap's reading of the swap afterSwap finishes: the server's
   // (live) order and the decision.
   var swapPlan = null;
@@ -767,7 +817,7 @@ func agentsFilterScript() g.Node {
     var p = swapPlan;
     swapPlan = null;
     liveOrder = p ? p.live : cardsOf(list).map(function (c) { return c.id; });
-    var apply_ = p ? p.apply : decide(e, liveOrder);
+    var apply_ = p ? p.apply : decide(e, liveOrder, domById);
     if (apply_) {
       heldOrder = liveOrder.slice();
       stamp(list, heldOrder);
@@ -785,11 +835,14 @@ func agentsFilterScript() g.Node {
       if (c) { c.setAttribute('data-held', ''); c.setAttribute('data-list-i', String(heldOrder.length + i)); }
     });
     // What waits: each arrival, and each card the live order puts HIGHER than
-    // it is drawn (one card overtaking three is one change, not four).
-    var liveKnown = liveOrder.filter(function (id) { return known[id]; });
+    // it is drawn (one card overtaking three is one change, not four) — of the
+    // cards the filter SHOWS only (decide): what it hides is not waiting.
+    var shown = function (id) { return shows(domById(id)); };
+    var heldShown = heldOrder.filter(shown);
+    var liveKnown = liveOrder.filter(function (id) { return known[id] && shown(id); });
     var risen = 0;
-    liveKnown.forEach(function (id, i) { if (i < heldOrder.indexOf(id)) risen++; });
-    showPill(arrived.length + risen);
+    liveKnown.forEach(function (id, i) { if (i < heldShown.indexOf(id)) risen++; });
+    showPill(arrived.filter(shown).length + risen);
     return true;
   }
   // keepDrawnOrder rewrites a held refresh's markup so its cards come in the
@@ -829,9 +882,11 @@ func agentsFilterScript() g.Node {
     if (typeof e.detail.serverResponse !== 'string') return;
     var tpl = document.createElement('template');
     tpl.innerHTML = e.detail.serverResponse;
-    var live = [].filter.call(tpl.content.children, function (c) { return c.tagName === 'ARTICLE' && c.id; })
-      .map(function (c) { return c.id; });
-    swapPlan = { live: live, apply: decide(e, live) };
+    var arts = [].filter.call(tpl.content.children, function (c) { return c.tagName === 'ARTICLE' && c.id; });
+    var byId = {};
+    arts.forEach(function (c) { byId[c.id] = c; });
+    var live = arts.map(function (c) { return c.id; });
+    swapPlan = { live: live, apply: decide(e, live, function (id) { return byId[id]; }) };
     if (!swapPlan.apply) keepDrawnOrder(e, drawn.map(function (c) { return c.id; }));
   });
   document.addEventListener('htmx:afterSwap', function (e) {

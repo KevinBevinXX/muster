@@ -53,7 +53,7 @@ default `15m`) and the chief's `focus_refresh` both:
   is stored with the focus, and an equal one makes no call;
 - otherwise ask the summarizer (below) for a title and a description, clean
   them (one line, no markup or control characters, three sentences; a title is
-  kept whole, cut only past a 300-character storage guard — migration 0026 —
+  kept whole, cut only past a 300-character storage guard — migration 0023 —
   while the prompt asks for 3 to 8 words), and store them;
 - on any failure, keep the previous focus and record **why** beside it, as a
   short fixed reason: `no OpenRouter key`, `the OpenRouter key could not be

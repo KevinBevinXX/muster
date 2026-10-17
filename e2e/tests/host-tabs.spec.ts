@@ -31,6 +31,8 @@ const hostA = rig.host;
 const hostB = rig.host.replace('e2e-tabs-a-', 'e2e-tabs-b-');
 const hostC = rig.host.replace('e2e-tabs-a-', 'e2e-tabs-c-');
 const hostD = rig.host.replace('e2e-tabs-a-', 'e2e-tabs-d-');
+// Sorts between host A and host B ('-' < 'b').
+const hostAB = rig.host.replace('e2e-tabs-a-', 'e2e-tabs-ab-');
 const agentName = 'e2e-tabs-' + Date.now().toString(36);
 // 120 characters: past the old 80-character clamp, under the 300 storage guard.
 const LONG = 'Untangling the reconnect backoff so a flapping tunnel stops resetting its retry window, then proving it with a soak test';
@@ -42,6 +44,7 @@ let filesA = '';
 let filesB = '';
 let filesC = '';
 let filesD = '';
+let filesAB = '';
 const writeTo = (f: string, lines: string[]) => {
   fs.writeFileSync(f + '.tmp', lines.length ? lines.join('\n') + '\n' : '');
   fs.renameSync(f + '.tmp', f); // atomic: the host never reads half a list
@@ -68,7 +71,9 @@ test.beforeAll(async () => {
   // Host D's one window is the NEWEST, so its arrival lands on top, among the
   // cards in view, and is held behind the "N new ↑" pill.
   filesD = rig.transcript('', 'windows-d');
-  writeTo(filesD, [line('dateplum', '@1', 0)]);
+  writeTo(filesD, [line('zebrafishd', '@1', 0)]);
+  filesAB = rig.transcript('', 'windows-ab');
+  writeTo(filesAB, [line('abacus', '@1', 0)]);
   await rig.startHost({ MUSTER_MIRROR_E2E_WINDOWS_FILE: filesA });
   rig.extraHost(hostB, { MUSTER_MIRROR_E2E_WINDOWS_FILE: filesB });
 });
@@ -118,59 +123,6 @@ for (const vp of [
     test.use(vp.use);
     const press = (l: Locator) => (vp.use.hasTouch ? l.tap() : l.click());
 
-    test('one tab per host with its count; a tab filters the list exactly; the dropdowns are gone', async ({ page }) => {
-      await openList(page);
-      await expect(page.locator('#agents-filter select'), 'no dropdown filter is left').toHaveCount(0);
-      // All, then each host by name — the pod agents under "cluster".
-      await expect.poll(() => labels(page)).toEqual(['All', 'cluster', hostA, hostB]);
-      await expect(allTab(page)).toHaveAttribute('aria-selected', 'true');
-      // Each count is that host's cards; All's is every card.
-      const total = await page.locator('#agents-list > article').count();
-      const pods = await cardsOn(page, 'cluster').count();
-      expect(pods, 'the agent (and any seeded pod agents) are on "cluster"').toBeGreaterThanOrEqual(1);
-      expect(await countOf(allTab(page))).toBe(String(total));
-      expect(await countOf(tab(page, 'cluster'))).toBe(String(pods));
-      expect(await countOf(tab(page, hostA))).toBe('2');
-      expect(await countOf(tab(page, hostB))).toBe('2');
-
-      // Each tab a 44px target (measured before any is pressed: the press
-      // feedback scales a tapped one for a moment).
-      for (const t of await page.locator('#agents-hosts [role="tab"]').all()) {
-        expect((await t.boundingBox())!.height, 'a tab is a 44px target').toBeGreaterThanOrEqual(44);
-      }
-
-      // Host A: its two windows, nothing else.
-      await press(tab(page, hostA));
-      await expect(tab(page, hostA)).toHaveAttribute('aria-selected', 'true');
-      await expect(allTab(page)).toHaveAttribute('aria-selected', 'false');
-      await expect(shownOn(page, hostA)).toHaveCount(2);
-      await expect(shownOn(page, hostB)).toHaveCount(0);
-      await expect(shownOn(page, 'cluster')).toHaveCount(0);
-      await expect(page.locator('#agents-count')).toHaveText(`2 of ${total}`);
-      expect(new URL(page.url()).searchParams.get('q'), 'the tab is not part of ?q=').toBeNull();
-      // "cluster": the dispatched agent, and no mirrored window.
-      await press(tab(page, 'cluster'));
-      await expect(agentCard(page)).toBeVisible();
-      await expect(page.locator('#agents-list > article[data-mirror-card]').filter({ visible: true })).toHaveCount(0);
-      // Exactly one tab is selected, and it alone is in the tab order.
-      await expect(page.locator('#agents-hosts [role="tab"][aria-selected="true"]')).toHaveCount(1);
-      await expect(page.locator('#agents-hosts [role="tab"][tabindex="0"]')).toHaveCount(1);
-
-      // Thumb-friendly, and at a phone's width the strip scrolls inside itself.
-      const [sw, cw] = await strip(page).evaluate((e) => [e.scrollWidth, e.clientWidth]);
-      if (vp.use.isMobile) expect(sw, 'positive control: at 390px the tabs overflow the strip').toBeGreaterThan(cw);
-      expect(await strip(page).evaluate((e) => getComputedStyle(e).overflowX)).toBe('auto');
-      await noPageOverflow(page);
-      // The last tab is reachable by scrolling the strip, and works.
-      await tab(page, hostB).scrollIntoViewIfNeeded();
-      await press(tab(page, hostB));
-      await expect(shownOn(page, hostB)).toHaveCount(2);
-      await expect(shownOn(page, hostA)).toHaveCount(0);
-      await noPageOverflow(page);
-      await press(allTab(page));
-      await expect(page.locator('#agents-list > article').filter({ visible: true })).toHaveCount(total);
-    });
-
     test('the agent card shows its 120-character focus title whole, wrapped, in the card and its popover', async ({ page }) => {
       await openList(page);
       const card = agentCard(page);
@@ -215,6 +167,86 @@ for (const vp of [
     });
   });
 }
+
+test.describe('phone 390×844, the strip', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  const tapOn = (l: Locator) => l.tap();
+
+test('one tab per host with its count; a tab filters; the dropdowns are gone; the strip scrolls, not the page', async ({ page }) => {
+    await openList(page);
+    await expect(page.locator('#agents-filter select'), 'no dropdown filter is left').toHaveCount(0);
+    // All, then each host by name — the pod agents under "cluster".
+    await expect.poll(() => labels(page)).toEqual(['All', 'cluster', hostA, hostB]);
+    await expect(allTab(page)).toHaveAttribute('aria-selected', 'true');
+    // Each count is that host's cards; All's is every card.
+    const total = await page.locator('#agents-list > article').count();
+    const pods = await cardsOn(page, 'cluster').count();
+    expect(pods, 'the agent (and any seeded pod agents) are on "cluster"').toBeGreaterThanOrEqual(1);
+    expect(await countOf(allTab(page))).toBe(String(total));
+    expect(await countOf(tab(page, 'cluster'))).toBe(String(pods));
+    expect(await countOf(tab(page, hostA))).toBe('2');
+    expect(await countOf(tab(page, hostB))).toBe('2');
+
+    // Each tab a 44px target (measured before any is pressed: the press
+    // feedback scales a tapped one for a moment).
+    for (const t of await page.locator('#agents-hosts [role="tab"]').all()) {
+      expect((await t.boundingBox())!.height, 'a tab is a 44px target').toBeGreaterThanOrEqual(44);
+    }
+
+    // Host A: its two windows, nothing else.
+    await tapOn(tab(page, hostA));
+    await expect(tab(page, hostA)).toHaveAttribute('aria-selected', 'true');
+    await expect(allTab(page)).toHaveAttribute('aria-selected', 'false');
+    await expect(shownOn(page, hostA)).toHaveCount(2);
+    await expect(shownOn(page, hostB)).toHaveCount(0);
+    await expect(shownOn(page, 'cluster')).toHaveCount(0);
+    await expect(page.locator('#agents-count')).toHaveText(`2 of ${total}`);
+    expect(new URL(page.url()).searchParams.get('q'), 'the tab is not part of ?q=').toBeNull();
+    // "cluster": the dispatched agent, and no mirrored window.
+    await tapOn(tab(page, 'cluster'));
+    await expect(agentCard(page)).toBeVisible();
+    await expect(page.locator('#agents-list > article[data-mirror-card]').filter({ visible: true })).toHaveCount(0);
+    // Exactly one tab is selected, and it alone is in the tab order.
+    await expect(page.locator('#agents-hosts [role="tab"][aria-selected="true"]')).toHaveCount(1);
+    await expect(page.locator('#agents-hosts [role="tab"][tabindex="0"]')).toHaveCount(1);
+
+    // Thumb-friendly, and at a phone's width the strip scrolls inside itself.
+    const [sw, cw] = await strip(page).evaluate((e) => [e.scrollWidth, e.clientWidth]);
+    expect(sw, 'positive control: at 390px the tabs overflow the strip').toBeGreaterThan(cw);
+    expect(await strip(page).evaluate((e) => getComputedStyle(e).overflowX)).toBe('auto');
+    await noPageOverflow(page);
+    // The last tab is reachable by scrolling the strip, and works.
+    await tab(page, hostB).scrollIntoViewIfNeeded();
+    await tapOn(tab(page, hostB));
+    await expect(shownOn(page, hostB)).toHaveCount(2);
+    await expect(shownOn(page, hostA)).toHaveCount(0);
+    await noPageOverflow(page);
+    await tapOn(allTab(page));
+    await expect(page.locator('#agents-list > article').filter({ visible: true })).toHaveCount(total);
+  });
+
+  // The selected tab is scrolled into the strip — the strip only, not the
+  // page — when it is chosen and when a load restores it.
+  test('the selected tab is brought into the strip on load, without scrolling the page', async ({ page }) => {
+    await openList(page);
+    await tab(page, hostB).scrollIntoViewIfNeeded();
+    await tab(page, hostB).tap();
+    await page.reload();
+    await expect(tab(page, hostB)).toHaveAttribute('aria-selected', 'true', { timeout: 20_000 });
+    const inside = () =>
+      page.evaluate((h) => {
+        const s = document.getElementById('agents-hosts')!;
+        const t = s.querySelector(`[role="tab"][data-host="${h}"]`)!;
+        const sr = s.getBoundingClientRect(), tr = t.getBoundingClientRect();
+        return [s.scrollLeft > 0, tr.left >= sr.left - 1 && tr.right <= sr.right + 1, window.scrollY];
+      }, hostB);
+    expect(await inside(), 'scrolled into the strip, the page not scrolled').toEqual([true, true, 0]);
+    // Picking a tab off the strip's left edge brings it in too.
+    await strip(page).evaluate((e) => (e.scrollLeft = e.scrollWidth));
+    await allTab(page).evaluate((e) => (e as HTMLElement).click());
+    expect(await strip(page).evaluate((e) => e.scrollLeft), 'All, the first tab, is scrolled back into view').toBe(0);
+  });
+});
 
 test.describe('desktop 1280×800, behaviour', () => {
   test.use({ viewport: { width: 1280, height: 800 } });
@@ -273,7 +305,7 @@ test.describe('desktop 1280×800, behaviour', () => {
     await allTab(page).click();
   });
 
-  test('the chosen tab survives a reload and a new visit; a remembered host that is gone falls back to All', async ({ page }) => {
+  test('the chosen tab survives a reload and a new visit; a remembered host that is absent shows All and is kept', async ({ page }) => {
     await openList(page);
     await tab(page, hostB).click();
     expect(await stored(page)).toBe(hostB);
@@ -286,7 +318,8 @@ test.describe('desktop 1280×800, behaviour', () => {
     await expect(tab(page, hostB)).toHaveAttribute('aria-selected', 'true', { timeout: 20_000 });
     await expect(shownOn(page, hostA)).toHaveCount(0);
 
-    // A remembered host no card is on: All, and the choice is forgotten.
+    // A remembered host no card is on: the list SHOWS All, and the choice is
+    // kept for when that host is back.
     await page.evaluate(() => localStorage.setItem('muster:tabs:agents-host', 'e2e-tabs-gone-host'));
     await page.reload();
     await expect(cardsOn(page, hostA)).toHaveCount(2, { timeout: 20_000 });
@@ -294,10 +327,37 @@ test.describe('desktop 1280×800, behaviour', () => {
     await expect(tab(page, 'e2e-tabs-gone-host'), 'no tab is made up for it').toHaveCount(0);
     await expect(shownOn(page, hostA)).toHaveCount(2);
     await expect(shownOn(page, hostB)).toHaveCount(2);
-    await expect.poll(() => stored(page)).toBeNull();
+    expect(await stored(page), 'the choice is kept').toBe('e2e-tabs-gone-host');
+    // Only the reader's pick changes it.
+    await allTab(page).click();
+    expect(await stored(page)).toBeNull();
   });
 
-  test('the chosen host going away live falls back to All; coming back gives its tab back without choosing it', async ({ page }) => {
+  // A LINK WITH ITS OWN ?q= starts on All, so it shows what it was shared to
+  // show; the stored tab is left as it is. A reload of this tab's own filter is
+  // not a link.
+  test('a shared ?q= link starts on All and keeps the stored tab; a reload of your own filter keeps the tab', async ({ page }) => {
+    await openList(page);
+    await tab(page, hostB).click();
+    await page.goto(rig.origin + '/agents?q=zebrafish');
+    await expect(cardsOn(page, hostA)).toHaveCount(2, { timeout: 20_000 });
+    await expect(allTab(page)).toHaveAttribute('aria-selected', 'true');
+    await expect(shownOn(page, hostA)).toHaveCount(1);
+    await expect(shownOn(page, hostB)).toHaveCount(1);
+    expect(await stored(page), 'the stored tab is untouched').toBe(hostB);
+    // The same URL again is this tab's own filter now: the stored tab applies.
+    await page.reload();
+    await expect(tab(page, hostB)).toHaveAttribute('aria-selected', 'true', { timeout: 20_000 });
+    await expect(shownOn(page, hostB)).toHaveCount(1);
+    await expect(shownOn(page, hostA)).toHaveCount(0);
+    await page.locator('#agents-search-clear').click();
+    await allTab(page).click();
+  });
+
+  // THE DISCONNECT-THEN-RECONNECT CASE (a restart, a laptop asleep): the
+  // chosen host's windows go away, the list shows All with the choice KEPT,
+  // and when the host is back the list is filtered to it again.
+  test('the chosen host going away shows All and keeps the choice; coming back restores its tab', async ({ page }) => {
     await openList(page);
     await page.evaluate(() => ((window as unknown as { __noReload: number }).__noReload = 1));
     await tab(page, hostB).click();
@@ -307,18 +367,24 @@ test.describe('desktop 1280×800, behaviour', () => {
     await expect(tab(page, hostB), 'its tab is gone').toHaveCount(0);
     await expect(allTab(page)).toHaveAttribute('aria-selected', 'true');
     await expect(shownOn(page, hostA)).toHaveCount(2);
-    await expect.poll(() => stored(page)).toBeNull();
-    // Back: the tab returns, and All stays chosen.
+    expect(await stored(page), 'the choice is kept').toBe(hostB);
+    // Back: its tab returns and is the view again (once drawn).
     writeTo(filesB, windowsB());
+    await expect(cardsOn(page, hostB), `host B's windows are back (log:\n${rig.log})`).toHaveCount(2, { timeout: 30_000 });
+    // Back among cards in view, they may wait behind the pill; the tap (or the
+    // refresh, if nothing in view moved) draws them, and the choice applies.
+    // (A bounded click: the pill can go between seeing it and pressing it.)
+    const pill = page.locator('#agents-new-pill');
     await expect
       .poll(async () => {
-        await takeNew(page);
-        return tab(page, hostB).count();
-      }, { timeout: 30_000 })
-      .toBe(1);
-    await expect(allTab(page)).toHaveAttribute('aria-selected', 'true');
+        if (await pill.isVisible()) await pill.click({ timeout: 2_000 }).catch(() => {});
+        return tab(page, hostB).getAttribute('aria-selected');
+      }, { timeout: 20_000 })
+      .toBe('true');
     await expect(shownOn(page, hostB)).toHaveCount(2);
+    await expect(shownOn(page, hostA)).toHaveCount(0);
     expect(await page.evaluate(() => (window as unknown as { __noReload?: number }).__noReload), 'no reload happened').toBe(1);
+    await allTab(page).click();
   });
 
   test('a host that connects gets a tab, live, in its place', async ({ page }) => {
@@ -339,6 +405,36 @@ test.describe('desktop 1280×800, behaviour', () => {
     expect(await page.evaluate(() => (window as unknown as { __noReload?: number }).__noReload), 'no reload happened').toBe(1);
     await allTab(page).click();
   });
+
+  // 🔴 THE PILL AND THE HOLD COUNT ONLY WHAT THE FILTER SHOWS. On host B's tab,
+  // an arrival on host A and a whole new host move nothing the reader can see:
+  // no pill, the refresh is applied at once, and the hidden tabs and counts
+  // follow it live. The new tab lands mid-strip, and the focused tab keeps
+  // its focus through the move.
+  test("on one host's tab, changes on other hosts apply at once: no pill, their counts and a new host's tab update live", async ({ page }) => {
+    await openList(page);
+    const pill = page.locator('#agents-new-pill');
+    await tab(page, hostB).click();
+    await expect(tab(page, hostB)).toBeFocused();
+    await expect(shownOn(page, hostA)).toHaveCount(0);
+    // An arrival on host A, newest on the list (it would be drawn on top).
+    writeTo(filesA, [...windowsA(), line('apricot', '@3', 0)]);
+    await expect(tab(page, hostA).locator('[data-tab-count]'), `host A's count follows (log:\n${rig.log})`).toHaveText('3', { timeout: 30_000 });
+    await expect(pill, 'nothing the filter shows changed: no pill').toBeHidden();
+    await expect(page.locator('#agents-list > article[data-held]')).toHaveCount(0);
+    // A new host, newest too, whose name sorts between A and B.
+    rig.extraHost(hostAB, { MUSTER_MIRROR_E2E_WINDOWS_FILE: filesAB });
+    await expect(tab(page, hostAB), `host AB's tab, at once (log:\n${rig.log})`).toHaveCount(1, { timeout: 30_000 });
+    await expect(pill).toBeHidden();
+    const ls = await labels(page);
+    expect(ls.indexOf(hostAB), `host AB's tab sits between A's and B's: ${ls}`).toBe(ls.indexOf(hostA) + 1);
+    expect(ls.indexOf(hostB)).toBe(ls.indexOf(hostAB) + 1);
+    await expect(tab(page, hostB), 'the focused tab kept focus through the move').toBeFocused();
+    await expect(shownOn(page, hostB)).toHaveCount(2);
+    await expect(shownOn(page, hostAB)).toHaveCount(0);
+    writeTo(filesA, windowsA());
+    await allTab(page).click();
+  });
 });
 
 test.describe('desktop 1280×800, a held arrival', () => {
@@ -351,8 +447,9 @@ test.describe('desktop 1280×800, a held arrival', () => {
     const pill = page.locator('#agents-new-pill');
     await expect(pill).toBeHidden();
     // Narrow the list to the zebrafish windows, so the cards in view are ones
-    // the newest arrival lands ABOVE — whatever else (pod agents from other
-    // specs) the shared database has put on the list — and it is held.
+    // the newest arrival (host D's zebrafishd, which the search shows too)
+    // lands ABOVE — whatever else (pod agents from other specs) the shared
+    // database has put on the list — and it is held.
     await page.locator('#agents-search').fill('zebrafish');
     await expect(page.locator('#agents-list > article').filter({ visible: true })).toHaveCount(2);
     rig.extraHost(hostD, { MUSTER_MIRROR_E2E_WINDOWS_FILE: filesD });
@@ -366,5 +463,26 @@ test.describe('desktop 1280×800, a held arrival', () => {
     await pill.click();
     await expect(tab(page, hostD), 'drawn, it has its tab').toHaveCount(1);
     expect(await countOf(tab(page, hostD))).toBe('1');
+  });
+
+  // The pill counts what WAITS for the reader — of the cards the filter shows.
+  // One refresh both lifts a shown card (host B's zebrafish becomes the newest)
+  // and brings a card the search hides (kiwiberry): one waits, not two.
+  test('with a search typed, the pill counts only what the search shows', async ({ page }) => {
+    await openList(page);
+    const pill = page.locator('#agents-new-pill');
+    await page.locator('#agents-search').fill('session=zebrafish');
+    await expect(page.locator('#agents-list > article').filter({ visible: true })).toHaveCount(2);
+    const before = await page.locator('#agents-list > article').filter({ visible: true }).evaluateAll((els) => els.map((e) => e.getAttribute('data-f-host')));
+    expect(before, 'host A\'s zebrafish is drawn first').toEqual([hostA, hostB]);
+    writeTo(filesB, [line('beta', '@1', 150), line('zebrafish', '@2', 0), line('kiwiberry', '@3', 0)]);
+    await expect(cardsOn(page, hostB), `host B's new window is listed (log:\n${rig.log})`).toHaveCount(3, { timeout: 30_000 });
+    await expect(pill).toHaveText('1 new ↑');
+    await pill.click();
+    await expect(pill).toBeHidden();
+    const after = await page.locator('#agents-list > article').filter({ visible: true }).evaluateAll((els) => els.map((e) => e.getAttribute('data-f-host')));
+    expect(after, 'the tap applied the lift').toEqual([hostB, hostA]);
+    writeTo(filesB, windowsB());
+    await page.locator('#agents-search-clear').click();
   });
 });

@@ -1,4 +1,4 @@
--- muster 0026 — A FOCUS TITLE IS SHOWN WHOLE: its cap is a storage guard, not
+-- muster 0023 — A FOCUS TITLE IS SHOWN WHOLE: its cap is a storage guard, not
 -- a display truncation.
 --
 -- 0020 and 0022 capped a focus title at 80 characters (focus.MaxTitleRunes),

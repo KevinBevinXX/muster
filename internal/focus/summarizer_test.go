@@ -263,7 +263,7 @@ func TestCleanClamps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 300 is a literal on purpose: the storage guard migration 0026 pins.
+	// 300 is a literal on purpose: the storage guard migration 0023 pins.
 	if n := utf8.RuneCountInString(title); n != 300 || MaxTitleRunes != 300 {
 		t.Errorf("title is %d runes (MaxTitleRunes %d), want 300", n, MaxTitleRunes)
 	}

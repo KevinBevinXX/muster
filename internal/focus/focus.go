@@ -48,7 +48,7 @@ const (
 	// MaxTitleRunes bounds a title as STORED — a guard against a runaway
 	// summary, NOT a display length: a card shows its focus title whole,
 	// wrapped, and the summarizer is asked for a short one
-	// (SummaryInstructions). Migration 0026 holds the same number.
+	// (SummaryInstructions). Migration 0023 holds the same number.
 	MaxTitleRunes = 300
 	// MaxDescriptionRunes bounds a description: one to three sentences.
 	MaxDescriptionRunes = 600

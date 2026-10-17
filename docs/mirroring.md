@@ -88,9 +88,12 @@ the route checks its own tokens.
 - **Host tabs.** Above the box: **All**, then one tab per host on the list
   (dispatched pod agents under **cluster**), each counting its cards that match
   the box. A tab narrows the list to that host exactly, together with the box.
-  The chosen tab is remembered by the browser (not in `?q=`); if its host is no
-  longer listed the list falls back to **All**. On a phone the strip scrolls
-  sideways.
+  The chosen tab is remembered by the browser (not in `?q=`). While its host is
+  not listed (a restart, a laptop asleep) the list shows **All**, and goes back
+  to that host when it returns; only picking another tab changes the choice. A
+  shared link carrying its own `?q=` opens on **All**. A refresh that changes
+  only cards the current tab and search hide is applied at once, with no
+  "N new ↑". On a phone the strip scrolls sideways.
 
 ![The Agents list filtered with the search box](img/agents-filter.png)
 
