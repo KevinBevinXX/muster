@@ -1,6 +1,6 @@
 // Package uploads is the message composer's file attachments (migration 0024):
 // a file the operator attaches is stored in an S3-compatible object store
-// (homelab MinIO), and the agent it is sent to is handed a SHORT-LIVED,
+// (e.g. MinIO), and the agent it is sent to is handed a SHORT-LIVED,
 // muster-SIGNED link to it on muster's public URL — never the object store's
 // own address, which is LAN-only.
 //

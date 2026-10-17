@@ -172,6 +172,8 @@ func attachScript(path string) g.Node {
   var input = document.getElementById('mv-input');
   var path = btn.getAttribute('data-upload');
   var items = [];
+  // composed is what the last compose() put in a message.
+  var composed = [];
   function say(msg) { if (!note) return; note.textContent = msg || ''; note.hidden = !msg; note.removeAttribute('data-ok'); }
   function sync() { box.hidden = items.length === 0; }
   function field(name) { var el = form.elements[name]; return el && el.value ? el.value : ''; }
@@ -277,12 +279,14 @@ func attachScript(path string) g.Node {
     // compose is the message as sent: the text, then one line per attachment.
     compose: function (t) {
       var lines = [];
-      for (var i = 0; i < items.length; i++) if (items[i].reply) lines.push(items[i].reply.line);
+      composed = [];
+      for (var i = 0; i < items.length; i++) if (items[i].reply) { lines.push(items[i].reply.line); composed.push(items[i]); }
       if (!lines.length) return t;
       return (t && t.trim() ? t.replace(/\s+$/, '') + '\n' : '') + lines.join('\n');
     },
-    // sent clears the composer's attachments: they went with the message.
-    sent: function () { while (items.length) remove(items[0], false); }
+    // sent clears the attachments that went with the message — only those: one
+    // attached while the send was out stays for the next.
+    sent: function () { var done = composed; composed = []; for (var i = 0; i < done.length; i++) remove(done[i], false); }
   };
 })();
 (function () {

@@ -1,5 +1,5 @@
 -- muster 0024 — UPLOADS (internal/uploads): a file attached in a message
--- composer. The BYTES are in an S3-compatible object store (homelab MinIO) at
+-- composer. The BYTES are in an S3-compatible object store (e.g. MinIO) at
 -- object_key; this row is the metadata, and what a muster-signed link
 -- (GET /f/{public_id}?exp=…&sig=…) is checked against: a revoked row's link
 -- answers 404 inside its expiry.

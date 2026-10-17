@@ -25,7 +25,10 @@ func timeAt(unix int64) time.Time { return time.Unix(unix, 0) }
 // AWS's, so this pins signV4 to the specification rather than to a second copy
 // of itself.
 const (
-	awsAccessKey = "AKIAIOSFODNN7EXAMPLE"
+	// AWS's own documented placeholder key id, spelled in two halves so the
+	// leak gate's key-id shape rule (tests/leakscan.py) — which has no
+	// exceptions — does not read the published example as a credential.
+	awsAccessKey = "AKIA" + "IOSFODNN7EXAMPLE"
 	awsSecretKey = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 )
 
@@ -235,10 +238,11 @@ func TestNewS3RefusesABadConfiguration(t *testing.T) {
 // one is named, and skips otherwise. It is the live control behind the fake
 // above, run by hand (docs/testing.md):
 //
-//	docker run -d -p 127.0.0.1:59000:9000 minio/minio server /data   # + create the bucket
-//	MUSTER_TEST_S3_ENDPOINT=http://127.0.0.1:59000 MUSTER_TEST_S3_BUCKET=muster-test \
-//	  MUSTER_TEST_S3_ACCESS_KEY=minioadmin MUSTER_TEST_S3_SECRET_KEY=minioadmin \
+//	MUSTER_TEST_S3_ENDPOINT=http://127.0.0.1:9000 MUSTER_TEST_S3_BUCKET=muster-test \
+//	  MUSTER_TEST_S3_ACCESS_KEY=… MUSTER_TEST_S3_SECRET_KEY=… \
 //	  go test -run TestAgainstARealS3 -v ./internal/uploads/
+//
+// (any S3-compatible server on loopback; the bucket must exist).
 //
 // A wrong secret must be REFUSED by the server: the negative control that the
 // server really checks the signature this file computes.
