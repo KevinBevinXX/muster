@@ -30,6 +30,7 @@ const rig = new MirrorRig(hostTabsPort, 'e2e-tabs-a', { MUSTER_FOCUS_INTERVAL: '
 const hostA = rig.host;
 const hostB = rig.host.replace('e2e-tabs-a-', 'e2e-tabs-b-');
 const hostC = rig.host.replace('e2e-tabs-a-', 'e2e-tabs-c-');
+const hostD = rig.host.replace('e2e-tabs-a-', 'e2e-tabs-d-');
 const agentName = 'e2e-tabs-' + Date.now().toString(36);
 // 120 characters: past the old 80-character clamp, under the 300 storage guard.
 const LONG = 'Untangling the reconnect backoff so a flapping tunnel stops resetting its retry window, then proving it with a soak test';
@@ -40,6 +41,7 @@ const line = (session: string, id: string, ago: number) => `${session}|${id}|1|1
 let filesA = '';
 let filesB = '';
 let filesC = '';
+let filesD = '';
 const writeTo = (f: string, lines: string[]) => {
   fs.writeFileSync(f + '.tmp', lines.length ? lines.join('\n') + '\n' : '');
   fs.renameSync(f + '.tmp', f); // atomic: the host never reads half a list
@@ -63,6 +65,10 @@ test.beforeAll(async () => {
   // Host C's one window is the OLDEST on the list, so its arrival lands at the
   // end and is drawn at once rather than held behind the pill.
   writeTo(filesC, [line('citrus', '@1', 90 * 86400)]);
+  // Host D's one window is the NEWEST, so its arrival lands on top, among the
+  // cards in view, and is held behind the "N new ↑" pill.
+  filesD = rig.transcript('', 'windows-d');
+  writeTo(filesD, [line('dateplum', '@1', 0)]);
   await rig.startHost({ MUSTER_MIRROR_E2E_WINDOWS_FILE: filesA });
   rig.extraHost(hostB, { MUSTER_MIRROR_E2E_WINDOWS_FILE: filesB });
 });
@@ -332,5 +338,27 @@ test.describe('desktop 1280×800, behaviour', () => {
     await expect(shownOn(page, hostA)).toHaveCount(0);
     expect(await page.evaluate(() => (window as unknown as { __noReload?: number }).__noReload), 'no reload happened').toBe(1);
     await allTab(page).click();
+  });
+});
+
+test.describe('desktop 1280×800, a held arrival', () => {
+  test.use({ viewport: { width: 1280, height: 800 } });
+
+  // A tab counts and offers only what is DRAWN: a host whose only card is an
+  // arrival held behind the pill would be a tab that shows nothing.
+  test("a host whose card is held behind the pill gets no tab until the tap draws it", async ({ page }) => {
+    await openList(page);
+    const pill = page.locator('#agents-new-pill');
+    await expect(pill).toBeHidden();
+    rig.extraHost(hostD, { MUSTER_MIRROR_E2E_WINDOWS_FILE: filesD });
+    await expect(pill, `host D's arrival waits behind the pill (log:\n${rig.log})`).toHaveText(/^\d+ new ↑$/, { timeout: 30_000 });
+    await expect(cardsOn(page, hostD), 'its card is in the list, held').toHaveCount(1);
+    await expect(cardsOn(page, hostD)).toBeHidden();
+    await expect(tab(page, hostD), 'a held arrival offers no tab').toHaveCount(0);
+    const total = await page.locator('#agents-list > article:not([data-held])').count();
+    expect(await countOf(allTab(page)), 'nor is it counted by All').toBe(String(total));
+    await pill.click();
+    await expect(tab(page, hostD), 'drawn, it has its tab').toHaveCount(1);
+    expect(await countOf(tab(page, hostD))).toBe('1');
   });
 });

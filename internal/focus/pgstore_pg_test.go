@@ -120,6 +120,17 @@ func TestALongTitleIsStoredAndReadBackWhole(t *testing.T) {
 	if err != nil || len(page.Entries) != 1 || page.Entries[0].Title != title {
 		t.Fatalf("history = %+v (%v), want one row titled whole", page.Entries, err)
 	}
+	// 🔴 THE SEAM: Clean's guard and migration 0026's CHECKs are one number. A
+	// runaway title is cut by Clean to what the database accepts — stored, not
+	// refused — in both tables.
+	runaway := strings.Repeat("word ", 100)
+	if _, err := s.Upsert(as(2), sub, Write{Title: runaway, Source: SourceSummarizer}); err != nil {
+		t.Fatalf("a runaway title was refused rather than cut: %v", err)
+	}
+	got, _, _ = s.Get(as(2), sub)
+	if n := utf8.RuneCountInString(got.Title); n > 300 || n < 290 || !strings.HasSuffix(got.Title, "…") {
+		t.Errorf("a runaway title stored as %d runes (%q), want cut to the 300 guard with an ellipsis", n, got.Title)
+	}
 }
 
 // TestFocusIsPerOwner: another user neither reads nor overwrites your focus,
