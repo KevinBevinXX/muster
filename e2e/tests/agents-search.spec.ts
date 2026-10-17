@@ -132,12 +132,16 @@ for (const vp of [
       expect(reached, 'Tab reaches the cards best match first').toEqual(['qbase', 'old-qdock', 'mqtail']);
       // A refresh morphs the list back into the server's order; it is ranked
       // again before anything is drawn.
-      const swapped = page.evaluate(() => new Promise<void>((r) => document.addEventListener('htmx:afterSettle', (e) => {
-        if ((e.target as Element).id === 'agents-list') r();
-      })));
+      // The order is read at the FIRST frame after the swap, before htmx settles:
+      // ranked there means no frame showed the server's order.
+      const firstFrame = page.evaluate((ns) => new Promise<string[]>((r) => document.addEventListener('htmx:afterSwap', (e) => {
+        if ((e.target as Element).id !== 'agents-list') return;
+        const list = e.target as Element;
+        requestAnimationFrame(() => r([...list.querySelectorAll(':scope > article')].map((c) => c.getAttribute('data-f-session') || '').filter((n) => ns.includes(n))));
+      })), names);
       await page.evaluate(() => (window as any).htmx.trigger(document.body, 'agents:changed'));
-      await swapped;
-      expect(await domOrder(), 'still ranked after a refresh').toEqual(['qbase', 'old-qdock', 'mqtail']);
+      expect(await firstFrame, 'ranked in the first frame after a refresh').toEqual(['qbase', 'old-qdock', 'mqtail']);
+      await expect.poll(domOrder, { message: 'still ranked after a refresh' }).toEqual(['qbase', 'old-qdock', 'mqtail']);
       // Cleared: the list's own order again.
       await page.locator('#agents-search').fill('');
       await expect.poll(domOrder, { message: 'clearing restores the order' }).toEqual(['mqtail', 'old-qdock', 'qbase']);
