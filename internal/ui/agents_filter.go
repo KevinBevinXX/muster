@@ -46,8 +46,8 @@ import (
 // Terms are whitespace-separated and ALL must match. A `field:value` matches as
 // a case-insensitive SUBSTRING of that field — the same rule as a free word, so
 // `host:tow` behaves like typing `tow`, only narrower. A `field=value` matches
-// the whole field: it is what a select writes (below), so choosing host "mac"
-// does not also show host "macbook". A token whose prefix is
+// the whole field, so `host=mac` does not also show host "macbook" (the host
+// TABS below match the same way). A token whose prefix is
 // NOT a registered field is free text, colon and all: a window called
 // "Gold:8" is found by typing `gold:8`, and that must keep working. A known
 // field with nothing after the colon (`host:` mid-typing) is no term yet, so the
@@ -63,28 +63,34 @@ import (
 // adds no history entries). On load a `?q=` wins over the session's remembered
 // copy, so a shared link reproduces the filter.
 //
-// CONTROLS. Nobody has to type `host=tower`: the bar has one <select> per
-// facet field (facetFields: host, type, status, kind) and the box is plain
-// text. The script fills each select's options from the cards the list holds
-// now — the distinct `data-f-<field>` values, labelled by `data-l-<field>`
-// where the value had to be lower-cased — and refills them whenever the list
-// re-renders.
+// HOST TABS. Above the box, one tab per host the list holds — "All", then
+// each host's name (dispatched pod agents are the host "cluster", podHost) —
+// each with how many of its cards match the box. A tab is a FILTER OVER THE ONE
+// LIST, not a panel of its own: choosing one adds one more hide rule,
 //
-// 🔴 THE CONTROLS ARE A VIEW OF THE SAME TOKEN STRING, NOT A SECOND FILTER. The
-// script's ONE string (composeQ) is the selects' `field=value` tokens followed
-// by the box's text; that string is what the hide rules, the count, `?q=` and
-// sessionStorage all read and write. Going the other way — for a link, the
-// session's copy or a history entry ONLY, never for a list refresh and never
-// while the box has focus (place / settled in the script) — split() hands a
-// `field=value` token to its select when that select is still empty and has an
-// option of exactly that value; everything else (free words, a typed
-// `host:tow`, `session:`, a value no card has) stays in the box, where it
-// filters just the same. So an old link and a typed token keep working, and a
-// `host=x` typed by hand stays where it was typed.
+//	#agents-list > article:not([data-f-host="tower"]) { display: none }
 //
-// A select's value is spelled `field=value` when it is bare-safe, else
-// `field="value"` with `\"` and `\\` escaped; inside quotes the grammar reads
-// those two escapes back, so any value a card carries round-trips through `?q=`.
+// EXACT (a host "mac" never shows "macbook"), ANDed with the box's terms the
+// same way the box's terms AND with each other, so it survives a refresh for
+// the same reason they do. The tabs are built by the script from the cards the
+// list DRAWS now (an arrival held behind the "N new ↑" pill offers no tab until
+// it is drawn) and rebuilt whenever the list re-renders, so a host that
+// connects gets a tab and one that leaves loses it.
+//
+// The choice is the browser's, not the link's: it is kept in localStorage
+// ("muster:tabs:agents-host", the prefix tabs.go uses) and is NOT part of ?q=.
+// When the remembered host is no longer on the list, the list falls back to
+// All — and forgets the choice, so a host that reconnects later does not pull
+// the view out from under the reader.
+//
+// The tabs are tabs.go's WAI-ARIA tabs in markup, look (tabClass) and keys —
+// role=tablist/tab, aria-selected on exactly one, a roving tabindex, Left/Right
+// and Home/End move AND select — but NOT its script: tabs.go hides the panel
+// each tab aria-controls, and every host tab controls the same list.
+//
+// The box keeps the whole token grammar above (`host:tow`, `kind=shell`, …);
+// the four dropdowns (host, type, status, kind) that once wrote it for you are
+// gone — the host is the tab, and the rest are a typed token.
 
 // cardFields is what a card can be filtered by, one value per field. Empty
 // fields write no attribute.
@@ -146,10 +152,10 @@ func fieldValue(v string) string { return strings.Join(strings.Fields(strings.To
 
 // cardFilterAttrs is EVERY filter attribute of a card, for both card kinds:
 // the free-text `data-filter` haystack (exactly filterHaystack of the parts),
-// one `data-f-<field>` per non-empty field and, for a facet field whose value
-// lower-casing changed, `data-l-<field>`: the value as the card spells it,
-// which is what the field's select option says ("Claude Code", not "claude
-// code").
+// one `data-f-<field>` per non-empty field and, for a labelled field
+// (labelledFields) whose value lower-casing changed, `data-l-<field>`: the
+// value as the card spells it, which is what its host tab says ("Tower", not
+// "tower").
 func cardFilterAttrs(f cardFields, haystack ...string) g.Node {
 	attrs := g.Group{g.Attr("data-filter", filterHaystack(haystack...))}
 	for _, fd := range cardFieldRegistry {
@@ -159,7 +165,7 @@ func cardFilterAttrs(f cardFields, haystack ...string) g.Node {
 			continue
 		}
 		attrs = append(attrs, g.Attr("data-f-"+fd.Key, v))
-		if raw != v && isFacet(fd.Key) {
+		if raw != v && isLabelled(fd.Key) {
 			attrs = append(attrs, g.Attr("data-l-"+fd.Key, raw))
 		}
 	}
@@ -220,13 +226,15 @@ func filterHaystack(parts ...string) string {
 	return strings.Join(b, " ")
 }
 
-// facetFields are the fields the bar offers as controls, in the order it
-// draws them. Each must be a registered field (TestEveryFacetIsARegisteredField).
-var facetFields = []string{"host", "type", "status", "kind"}
+// labelledFields are the fields whose value, where lower-casing changed it,
+// is written as it was spelled too (data-l-<field>): what a host TAB says
+// ("Tower", not "tower"). Each must be a registered field
+// (TestEveryLabelledFieldIsARegisteredField).
+var labelledFields = []string{"host"}
 
-// isFacet reports whether key is one of facetFields.
-func isFacet(key string) bool {
-	for _, f := range facetFields {
+// isLabelled reports whether key is one of labelledFields.
+func isLabelled(key string) bool {
+	for _, f := range labelledFields {
 		if f == key {
 			return true
 		}
@@ -234,32 +242,45 @@ func isFacet(key string) bool {
 	return false
 }
 
-// facetAny is a facet select's first option, which selects nothing.
-var facetAny = map[string]string{"host": "Any host", "type": "Any type", "status": "Any status", "kind": "Any kind"}
+// agentsHostTabsStorageKey is where the chosen host tab is kept (localStorage,
+// under tabs.go's prefix).
+const agentsHostTabsStorageKey = "muster:tabs:agents-host"
 
-// facetSelect is one facet's control. Its options beyond "Any …" are filled by
-// the script from the cards (syncOptions). text-base: 16px, so iOS does not zoom; a
-// 44px target. ⚠ data-[active] (set by the script while a value is chosen) is
-// the selected look; no display utility fights anything here.
-func facetSelect(key string) g.Node {
-	return Select(
-		ID("agents-f-"+key),
-		g.Attr("data-filter-field", key),
-		g.Attr("aria-label", "Filter by "+key),
-		g.Attr("aria-controls", "agents-list"),
-		Class("min-h-[44px] w-full min-w-0 rounded-xl border-0 bg-s2 px-3 py-2 text-base text-fg ring-1 ring-inset ring-line focus:outline-none focus:ring-2 focus:ring-focus data-[active]:font-semibold data-[active]:ring-2 data-[active]:ring-accent"),
-		Option(Value(""), g.Text(facetAny[key])),
+// agentsHostTabs is the host tab strip, drawn with its one fixed tab, "All".
+// The script adds a tab per host by CLONING that one (so the markup and look
+// live here once), and keeps the counts. It is one 44px row whatever it holds,
+// so its tabs arriving shift nothing below it; at a phone's width it scrolls
+// sideways inside itself, never the page.
+func agentsHostTabs() g.Node {
+	return Div(
+		ID("agents-hosts"),
+		g.Attr("role", "tablist"),
+		g.Attr("aria-label", "Hosts"),
+		Class("flex min-h-[44px] min-w-0 max-w-full flex-nowrap items-end gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain border-b border-line [scrollbar-width:none]"),
+		Button(
+			Type("button"),
+			ID("agents-host-all"),
+			g.Attr("role", "tab"),
+			g.Attr("data-host", ""),
+			g.Attr("aria-controls", "agents-list"),
+			g.Attr("aria-selected", "true"),
+			g.Attr("tabindex", "0"),
+			Class(tabClass),
+			Span(g.Attr("data-tab-label", ""), g.Text("All")),
+			Span(g.Attr("data-tab-count", ""), Class("ml-1.5 min-w-[1.25rem] rounded-full bg-s2 px-1.5 text-center text-xs tabular-nums text-fg2")),
+		),
 	)
 }
 
-// agentsFilterBar is the filter: a plain search box (and its clear button),
-// one select per facet field, a "Clear all", and the "N of M" count. It sits in the Agents panel ABOVE
+// agentsFilterBar is the filter: the host tabs, a plain search box (and its
+// clear button), and the "N of M" count. It sits in the Agents panel ABOVE
 // #agents-list, outside what a refresh re-renders.
 func agentsFilterBar() g.Node {
 	return g.Group{
 		Div(
 			ID("agents-filter"),
-			Class("mb-3 flex flex-col gap-2"),
+			Class("mb-3 flex min-w-0 flex-col gap-2"),
+			agentsHostTabs(),
 			Div(
 				Class("relative min-w-0"),
 				Input(
@@ -291,38 +312,17 @@ func agentsFilterBar() g.Node {
 					g.Text("×"),
 				),
 			),
-			// Two columns at a phone's width, four from sm up: each a full-width
-			// 44px target.
-			Div(
-				ID("agents-filter-controls"),
-				Class("grid grid-cols-2 gap-2 sm:grid-cols-4"),
-				g.Group(g.Map(facetFields, facetSelect)),
-			),
 			Div(
 				// min-h-5: the row is one line of the count's text-sm tall BEFORE the
 				// script writes the count. Empty, it was 0px, and the count's first
 				// write pushed the list 20px down — a layout shift on every Agents
 				// load (e2e/tests/cls.spec.ts).
 				Class("flex min-h-5 flex-wrap items-center gap-2"),
-				// ⚠ No display utility, for the same reason as the box's ×.
-				Button(
-					ID("agents-filter-clear"),
-					Type("button"),
-					g.Attr("hidden", ""),
-					Class("press min-h-[44px] rounded-xl px-3 text-sm font-medium text-accent transition hover:bg-s2"),
-					g.Text("Clear all"),
-				),
 				Span(ID("agents-count"), g.Attr("aria-live", "polite"), Class("ml-auto shrink-0 text-sm font-medium tabular-nums text-fg2")),
 			),
 		),
 		P(ID("agents-nomatch"), g.Attr("hidden", ""), Class("mb-3 text-sm text-muted"), g.Text("Nothing matches that filter.")),
 	}
-}
-
-// facetFieldsJSON is facetFields as a JS array literal.
-func facetFieldsJSON() string {
-	b, _ := json.Marshal(facetFields)
-	return string(b)
 }
 
 // agentsFilterScript applies the filter. Bound once per document, like every
@@ -341,8 +341,8 @@ func agentsFilterScript() g.Node {
   // tokens is a string in the grammar, term by term and in order: {raw, f, exact,
   // v} each — f a registered field (lower-cased) or null for free text, exact
   // true for field=value, v the value as written. Inside double quotes a
-  // backslash escapes a double quote or a backslash (\" and \\, what tok
-  // writes); any other backslash is itself. Outside quotes nothing is escaped.
+  // backslash escapes a double quote or a backslash (\" and \\); any other
+  // backslash is itself. Outside quotes nothing is escaped.
   function unq(v) { return v.replace(/\\(["\\])/g, '$1'); }
   function tokens(s) {
     var out = [], m, re = /([^\s:="]+)([:=])"((?:[^"\\]|\\.)*)"?|"((?:[^"\\]|\\.)*)"?|\S+/g;
@@ -458,99 +458,90 @@ func agentsFilterScript() g.Node {
     if (!onAgents()) return null;
     try { return new URL(location.href).searchParams.get('q'); } catch (e) { return null; }
   }
-  // The facet fields the bar has a <select> for (facetFields), id agents-f-<field>.
-  var CONTROLS = ` + facetFieldsJSON() + `;
-  function control(f) { return el('agents-f-' + f); }
-  function hasOption(c, v) { return !!v && [].some.call(c.options, function (o) { return o.value === v; }); }
-  // tok spells one select's value as an EXACT token that tokens() reads back
-  // as the same value: bare when it holds no space, double quote or backslash,
-  // else quoted with \" and \\ escaped (so a kind such as say"hi survives ?q=).
-  function tok(f, v) {
-    v = norm(v);
-    return /[\s"\\]/.test(v) ? f + '="' + v.replace(/["\\]/g, '\\$&') + '"' : f + '=' + v;
+  // THE HOST TABS (agentsHostTabs). chosenHost is the tab the reader chose:
+  // read from localStorage once, written on every choice, '' for All.
+  var HOST_KEY = '` + agentsHostTabsStorageKey + `';
+  var chosenHost = null;
+  function hostChosen() {
+    if (chosenHost === null) { try { chosenHost = localStorage.getItem(HOST_KEY) || ''; } catch (e) { chosenHost = ''; } }
+    return chosenHost;
   }
-  // composeQ is the filter's ONE token string: the selects' tokens, then the
-  // box's text as typed. Everything below reads and writes this.
-  function composeQ() {
-    var parts = [];
-    CONTROLS.forEach(function (f) { var c = control(f); if (c && c.value) parts.push(tok(f, c.value)); });
-    var input = el('agents-search'), box = input ? input.value : '';
-    if (!parts.length) return box;
-    if (box.trim()) parts.push(box);
-    return parts.join(' ');
+  function chooseHost(h) {
+    chosenHost = h;
+    try { if (h) localStorage.setItem(HOST_KEY, h); else localStorage.removeItem(HOST_KEY); } catch (e) {}
   }
-  // split is a token string as the bar holds it. A facet field's field=value
-  // token goes to that field's select when it is the field's ONLY exact token
-  // and the select has an option of exactly that value; every other token — a
-  // free word, a typed host:tow, session:, a value no card has — stays in the
-  // box, in order, and filters from there just the same. With nothing taken
-  // the box gets the string untouched.
-  function split(q) {
-    var s = String(q || ''), ts = tokens(s), n = {}, fields = {}, text = [], any = false;
-    ts.forEach(function (t) { if (t.exact) n[t.f] = (n[t.f] || 0) + 1; });
-    ts.forEach(function (t) {
-      var v = norm(t.v).toLowerCase(), c = t.exact && n[t.f] === 1 && CONTROLS.indexOf(t.f) >= 0 ? control(t.f) : null;
-      if (c && hasOption(c, v)) { fields[t.f] = v; any = true; return; }
-      text.push(t.raw);
+  function hostTabs(s) { return [].slice.call(s.querySelectorAll('[role="tab"]')); }
+  // syncHosts makes the strip say what the list DRAWS now — a tab per distinct
+  // data-f-host of a drawn card (an arrival held behind the pill is not drawn,
+  // so it offers no tab yet), labelled by its data-l-host, sorted by label —
+  // and returns the host the list is filtered to ('' = All). Each tab's count
+  // is how many drawn cards of that host the box's terms (ts) show; All's is
+  // all of them.
+  //
+  // A tab that stays is the SAME node (reused by its data-host, and moved
+  // only when the order changed), so a focused tab keeps focus through a
+  // refresh. A new one is a CLONE of the server's All tab: one markup, one
+  // look (tabClass).
+  //
+  // 🔴 THE FALLBACK. A remembered host the list no longer draws is not shown
+  // as an empty tab: the list falls back to All and the choice is forgotten —
+  // decided only once the list has drawn cards, so a page whose list has not
+  // arrived yet does not forget it.
+  function syncHosts(list, ts) {
+    var s = el('agents-hosts');
+    if (!s) return '';
+    var all = s.querySelector('[data-host=""]');
+    var drawn = list.querySelectorAll(':scope > article:not([data-held])');
+    var seen = Object.create(null), hosts = [];
+    [].forEach.call(drawn, function (a) {
+      var v = a.getAttribute('data-f-host');
+      if (!v || seen[v]) return;
+      seen[v] = true;
+      hosts.push({ v: v, l: a.getAttribute('data-l-host') || v });
     });
-    return { fields: fields, text: any ? text.join(' ') : s };
-  }
-  function distribute(q) {
-    var p = split(q);
-    CONTROLS.forEach(function (f) { var c = control(f); if (c) c.value = p.fields[f] || ''; });
-    var input = el('agents-search');
-    if (input && input.value !== p.text) input.value = p.text;
-  }
-  // syncOptions fills each select from the cards the list holds now: every
-  // distinct data-f-<field> once, saying its data-l-<field> when it has one,
-  // sorted by what it says. A select remembers what it was built from, so an
-  // unchanged list rebuilds nothing. A chosen value no card carries any more is
-  // NOT kept as an option of its own: its token moves to the box, so the filter
-  // that was asked for is still applied, and visibly.
-  function syncOptions() {
-    var list = el('agents-list');
-    if (!list) return;
-    var moved = [];
-    CONTROLS.forEach(function (f) {
-      var c = control(f);
-      if (!c) return;
-      var seen = Object.create(null), opts = [];
-      // Only DRAWN cards offer a value: an arrival held behind the pill is not
-      // on screen, so choosing a kind only it has would show nothing at all.
-      // (It is offered once the tap draws it — applyLive re-runs apply.)
-      [].forEach.call(list.querySelectorAll(':scope > article[data-f-' + f + ']:not([data-held])'), function (a) {
-        var v = a.getAttribute('data-f-' + f);
-        if (seen[v]) return;
-        seen[v] = true;
-        opts.push({ v: v, l: a.getAttribute('data-l-' + f) || v });
-      });
-      opts.sort(function (x, y) {
-        var a = x.l.toLowerCase(), b = y.l.toLowerCase();
-        if (a !== b) return a < b ? -1 : 1;
-        return x.v < y.v ? -1 : x.v > y.v ? 1 : 0;
-      });
-      var sig = JSON.stringify(opts);
-      if (c.getAttribute('data-options-of') === sig) return;
-      var cur = c.value;
-      while (c.options.length > 1) c.remove(1);
-      opts.forEach(function (o) {
-        var op = document.createElement('option');
-        op.value = o.v;
-        op.textContent = o.l;
-        c.appendChild(op);
-      });
-      c.setAttribute('data-options-of', sig);
-      if (cur && !seen[cur]) moved.push(tok(f, cur));
-      c.value = cur && seen[cur] ? cur : '';
+    hosts.sort(function (x, y) {
+      var a = x.l.toLowerCase(), b = y.l.toLowerCase();
+      if (a !== b) return a < b ? -1 : 1;
+      return x.v < y.v ? -1 : x.v > y.v ? 1 : 0;
     });
-    var input = el('agents-search');
-    if (!moved.length || !input) return;
-    // The moved tokens go in FRONT (where composeQ had them), so a caret in
-    // the box keeps its place in what was typed.
-    var lead = moved.join(' ') + (input.value.trim() ? ' ' : ''), typing = focused();
-    var a = input.selectionStart, b = input.selectionEnd;
-    input.value = lead + (input.value.trim() ? input.value : '');
-    if (typing && a !== null) input.setSelectionRange(a + lead.length, b + lead.length);
+    var sig = JSON.stringify(hosts);
+    if (all && s.getAttribute('data-hosts-of') !== sig) {
+      var have = {};
+      hostTabs(s).forEach(function (t) { if (t !== all) have[t.getAttribute('data-host')] = t; });
+      var want = [all].concat(hosts.map(function (h) {
+        var t = have[h.v];
+        delete have[h.v];
+        if (!t) {
+          t = all.cloneNode(true);
+          t.removeAttribute('id');
+          t.setAttribute('data-host', h.v);
+        }
+        var lab = t.querySelector('[data-tab-label]');
+        if (lab && lab.textContent !== h.l) lab.textContent = h.l;
+        return t;
+      }));
+      Object.keys(have).forEach(function (k) { have[k].remove(); });
+      var cur = hostTabs(s);
+      if (want.some(function (t, i) { return cur[i] !== t; })) want.forEach(function (t) { s.appendChild(t); });
+      s.setAttribute('data-hosts-of', sig);
+    }
+    var h = hostChosen();
+    if (h && !seen[h] && drawn.length) { chooseHost(''); h = ''; }
+    var on = h && seen[h] ? h : '';
+    var n = Object.create(null), total = 0;
+    [].forEach.call(list.querySelectorAll(':scope > article:not([data-held])' + ts.map(sel).join('')), function (a) {
+      var v = a.getAttribute('data-f-host') || '';
+      n[v] = (n[v] || 0) + 1;
+      total++;
+    });
+    hostTabs(s).forEach(function (t) {
+      var v = t.getAttribute('data-host') || '', sel_ = v === on;
+      if (t.getAttribute('aria-selected') !== String(sel_)) t.setAttribute('aria-selected', String(sel_));
+      t.setAttribute('tabindex', sel_ ? '0' : '-1');
+      var c = t.querySelector('[data-tab-count]'), k = String(v ? n[v] || 0 : total);
+      if (c && c.textContent !== k) c.textContent = k;
+    });
+    return on;
   }
   // apply(held): held is true for a background refresh the hold kept back.
   // That refresh is NOT re-ranked: its markup came in the drawn order
@@ -561,9 +552,11 @@ func agentsFilterScript() g.Node {
   function apply(held) {
     var input = el('agents-search'), list = el('agents-list');
     if (!input || !list) return;
-    syncOptions();
-    var q = composeQ();
+    var q = input.value;
     var ts = terms(q);
+    // The host tab is one more EXACT term, ANDed with the box's.
+    var host = syncHosts(list, ts);
+    var all_ = host ? ts.concat([{ attr: 'data-f-host', value: host, exact: true }]) : ts;
     var style = el('agents-filter-style');
     if (!style) {
       style = document.createElement('style');
@@ -572,62 +565,25 @@ func agentsFilterScript() g.Node {
     }
     // One rule per term: a card lacking ANY of them is hidden, so the terms AND.
     // Then the rank (reorder): by the FIRST free-text word, best match first.
-    style.textContent = ['#agents-list > article[data-held]{display:none !important}'].concat(ts.map(function (t) {
+    style.textContent = ['#agents-list > article[data-held]{display:none !important}'].concat(all_.map(function (t) {
       return '#agents-list > article:not(' + sel(t) + '){display:none !important}';
     })).join('\n');
     if (!held) reorder(ts);
     var all = list.querySelectorAll(':scope > article:not([data-held])');
-    var shown = ts.length ? list.querySelectorAll(':scope > article:not([data-held])' + ts.map(sel).join('')) : all;
-    var count = el('agents-count'), clear = el('agents-search-clear'), none = el('agents-nomatch'), clearAll = el('agents-filter-clear');
+    var shown = all_.length ? list.querySelectorAll(':scope > article:not([data-held])' + all_.map(sel).join('')) : all;
+    var count = el('agents-count'), clear = el('agents-search-clear'), none = el('agents-nomatch');
     if (count) count.textContent = all.length ? shown.length + ' of ' + all.length : '';
     if (clear) clear.hidden = !input.value;
-    if (clearAll) clearAll.hidden = !q.trim();
-    if (none) none.hidden = !(ts.length && all.length && !shown.length);
-    CONTROLS.forEach(function (f) { var c = control(f); if (c) c.toggleAttribute('data-active', !!c.value); });
+    if (none) none.hidden = !(all_.length && all.length && !shown.length);
     try { sessionStorage.setItem(KEY, q); } catch (e) {}
     syncURL(q);
   }
-  // 🔴 WHEN A TOKEN MOVES FROM THE BOX TO ITS SELECT — and when it never does.
-  // ?q= is rewritten on every keystroke, so it is not a link's filter but the
-  // one being typed: re-splitting it on a list refresh took a hand-typed
-  // host=macbook out of the box mid-word (the caret jumped, and what was typed
-  // next landed in a different string), and with host "mac" selected and
-  // host=macbook typed it cleared the select. So a refresh NEVER re-splits.
-  // Tokens move only:
-  //   - place(): when a bar is first seen (page load, or a swap that brought a
-  //     new one) and on back/forward — the filter of a link, the session's copy
-  //     or a history entry;
-  //   - settled(): the token place() left in the box because its select had no
-  //     such option YET (the options arrive with the list, after a link was
-  //     read), once, at the first list render after which that select has
-  //     options — and not while the box has focus (it waits; typing in the box
-  //     cancels it, the text being the user's now).
-  // place() itself moves nothing while the box has focus: it puts the whole
-  // string in the box, which filters the same.
-  var pending = Object.create(null);
-  function focused() { var i = el('agents-search'); return !!i && document.activeElement === i; }
+  // place puts a filter in the box: a link's ?q=, the session's copy, or a
+  // history entry's. A list refresh never calls it — ?q= follows every
+  // keystroke, so re-reading it on a refresh would rewrite what is being typed.
   function place(q) {
     var input = el('agents-search');
-    if (!input) return;
-    pending = Object.create(null);
-    if (focused()) {
-      CONTROLS.forEach(function (f) { var c = control(f); if (c) c.value = ''; });
-      if (input.value !== q) input.value = q;
-    } else distribute(q);
-    tokens(input.value).forEach(function (t) { if (t.exact && CONTROLS.indexOf(t.f) >= 0) pending[t.f] = true; });
-  }
-  // takeFromBox moves field f's exact token from the box to f's select, by the
-  // same rule as split(): the box's only exact token of f, f's select empty,
-  // and an option of exactly that value.
-  function takeFromBox(f) {
-    var input = el('agents-search'), c = control(f);
-    if (!input || !c || c.value) return;
-    var ts = tokens(input.value), mine = ts.filter(function (t) { return t.exact && t.f === f; });
-    if (mine.length !== 1) return;
-    var v = norm(mine[0].v).toLowerCase();
-    if (!hasOption(c, v)) return;
-    c.value = v;
-    input.value = ts.filter(function (t) { return t !== mine[0]; }).map(function (t) { return t.raw; }).join(' ');
+    if (input && input.value !== q) input.value = q;
   }
   // boot: a bar not seen before (or one a swap emptied while a filter is
   // remembered) is given its filter — a ?q= wins (a shared link), else the
@@ -637,37 +593,20 @@ func agentsFilterScript() g.Node {
     if (!input) return;
     var q = urlQ();
     if (q === null) { try { q = sessionStorage.getItem(KEY) || ''; } catch (e) { q = ''; } }
-    if (input.__musterFilterBar && (composeQ() || !q)) return;
+    if (input.__musterFilterBar && (input.value || !q)) return;
     input.__musterFilterBar = true;
-    syncOptions();
     place(q);
     apply();
   }
-  // settled: the list rendered. The options and the count follow it; a pending
-  // token may now find its option. Nothing else in the bar is touched.
+  // settled: the list rendered. The tabs and the counts follow it; nothing in
+  // the box is touched.
   function settled() {
     boot();
-    syncOptions();
-    if (!focused()) {
-      CONTROLS.forEach(function (f) {
-        var c = control(f);
-        if (!pending[f] || !c || c.options.length < 2) return;
-        delete pending[f];
-        takeFromBox(f);
-      });
-    }
     apply(swapHeld);
   }
   document.addEventListener('input', function (e) {
-    if (e.target && e.target.id === 'agents-search') { pending = Object.create(null); apply(); }
+    if (e.target && e.target.id === 'agents-search') apply();
   });
-  // A select reports a choice with change (and input, in some browsers): both
-  // apply, which is idempotent.
-  function onSelect(e) {
-    if (e.target && e.target.hasAttribute && e.target.hasAttribute('data-filter-field')) apply();
-  }
-  document.addEventListener('change', onSelect);
-  document.addEventListener('input', onSelect);
   document.addEventListener('click', function (e) {
     var t = e.target && e.target.closest ? e.target : null;
     if (!t) return;
@@ -679,15 +618,29 @@ func agentsFilterScript() g.Node {
       input.focus();
       return;
     }
-    if (t.closest('#agents-filter-clear')) {
-      CONTROLS.forEach(function (f) { var c = control(f); if (c) c.value = ''; });
-      if (input) input.value = '';
-      apply();
+    var tab = t.closest('#agents-hosts [role="tab"]');
+    if (tab) { chooseHost(tab.getAttribute('data-host') || ''); apply(); }
+  });
+  // The host tabs' keys, as tabs.go's: Left/Right (wrapping), Home and End
+  // move to a tab AND choose it.
+  document.addEventListener('keydown', function (e) {
+    var tab = e.target && e.target.closest && e.target.closest('#agents-hosts [role="tab"]');
+    if (!tab) return;
+    var ts = hostTabs(tab.parentNode), i = ts.indexOf(tab), next = -1;
+    switch (e.key) {
+      case 'ArrowRight': next = (i + 1) % ts.length; break;
+      case 'ArrowLeft': next = (i - 1 + ts.length) % ts.length; break;
+      case 'Home': next = 0; break;
+      case 'End': next = ts.length - 1; break;
+      default: return;
     }
+    e.preventDefault();
+    chooseHost(ts[next].getAttribute('data-host') || '');
+    apply();
+    ts[next].focus();
   });
   // The list re-renders itself; the rule above already hides what should be
-  // hidden, so all that is left is the count and the options — and a link's
-  // token that was waiting in the box for its option (settled).
+  // hidden, so all that is left is the count and the host tabs.
   // A refresh morphed the list into the server's order: rank it again before
   // anything is painted (see reorder).
   // HOLD, AND SHOW "N new ↑" (Zach's call; applying ONLY on a tap, even at the
@@ -893,7 +846,7 @@ func agentsFilterScript() g.Node {
   document.addEventListener('muster:tabshown', function (e) {
     syncPill();
     var input = el('agents-search');
-    if (input && e.detail && e.detail.tab === 'agents') syncURL(composeQ());
+    if (input && e.detail && e.detail.tab === 'agents') syncURL(input.value);
   });
   // Back/forward onto an /agents entry: its ?q= is the filter it had.
   // (An entry with no ?q= leaves the bar as it is, and apply writes it back.)
@@ -901,7 +854,7 @@ func agentsFilterScript() g.Node {
     // The shell's own popstate handler shows the tab; after it, the pill follows.
     setTimeout(syncPill, 0);
     var q = urlQ();
-    if (q !== null && el('agents-search')) { syncOptions(); place(q); }
+    if (q !== null) place(q);
     apply();
   });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();

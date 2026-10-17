@@ -134,6 +134,10 @@ export const routingConnectPort = port + 57;
 // plugin on) and two mirrored hosts — one that reports its catalog and one
 // that plays an older muster-mirror.
 export const composerMenuPort = port + 58;
+// The Agents list's host tabs (host-tabs.spec.ts): its own server (the
+// e2eterm binary, mirror plugin on) and up to three mirrored hosts. A high
+// offset, clear of the specs being added beside it.
+export const hostTabsPort = port + 64;
 // The fake service's bearer token. Invented, like every value here.
 export const sttToken = 'e2e-stt-token-not-a-real-one';
 // The docs screenshots (e2e/docshots, `make screenshots`, never in the suite):

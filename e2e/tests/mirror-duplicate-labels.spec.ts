@@ -156,6 +156,10 @@ test('two hosts with the same label: two distinct titles, live, and each page is
   startHost(hostB, tokenB);
   const b = mangoCard(page, hostB);
   await expect(b, `host B's card (log:\n${mirrorLog})`).toHaveCount(1, { timeout: 20_000 });
+  // Its arrival lands among cards in view, so it waits behind the "N new ↑"
+  // pill (agents_filter.go hold) — whether it does depends on how much of the
+  // list fits above the fold, which the filter bar's height decides. Take it.
+  await takeNew(page);
   await expect.poll(() => shownTitle(a), { timeout: 20_000 }).toBe(`mango:1 · ${hostA}`);
   await expect.poll(() => shownTitle(b)).toBe(`mango:1 · ${hostB}`);
   const titles = [await shownTitle(a), await shownTitle(b)];
@@ -218,14 +222,16 @@ test('two hosts with the same label: two distinct titles, live, and each page is
   await expect(mangoCard(page, hostB)).toHaveCount(0);
 });
 
-// A HOST CHOSEN FROM THE DROPDOWN MATCHES EXACTLY. Host C's name contains host
-// A's ("…book"), so a substring match on host A shows C's window too — which is
-// how choosing host "mac" used to show "macbook". A select writes host=<value>,
-// the whole field; a TYPED host:<value> stays a substring.
+// A HOST TAB MATCHES EXACTLY. Host C's name contains host A's ("…book"), so a
+// substring match on host A shows C's window too — which is how choosing host
+// "mac" once showed "macbook". The tab filters on the whole host field; a TYPED
+// host:<value> stays a substring.
 //
-// 🔴 A REGRESSION TEST: on the commit before, the select wrote host:<A> and C's
-// card stayed visible.
-test('a host chosen from the dropdown matches exactly; a typed host: is still a substring', async ({ page }) => {
+// 🔴 A REGRESSION TEST (ported from the host dropdown the tabs replaced): with
+// the tab's term made a substring (internal/ui/agents_filter.go, `exact: true`
+// dropped), C's card stays visible under A's tab.
+const hostTab = (page: Page, h: string) => page.locator(`#agents-hosts [role="tab"][data-host="${h}"]`);
+test('a host tab matches exactly; a typed host: is still a substring', async ({ page }) => {
   await page.goto(origin + '/login');
   await page.fill('#muster-password', password);
   await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
@@ -233,36 +239,35 @@ test('a host chosen from the dropdown matches exactly; a typed host: is still a 
   await page.goto(origin + '/agents');
   await expect(cardsOf(page, hostC), `host C's card (log:\n${mirrorLog})`).toHaveCount(1, { timeout: 20_000 });
   await expect(cardsOf(page, hostA)).toHaveCount(2);
+  await takeNew(page);
   const visible = (h: string) => cardsOf(page, h).filter({ visible: true });
-  const hostSel = page.locator('#agents-f-host');
-  await expect.poll(() => hostSel.locator('option').allTextContents(), { timeout: 20_000 }).toEqual(expect.arrayContaining([hostA, hostC]));
+  await expect(hostTab(page, hostC)).toHaveCount(1, { timeout: 20_000 });
 
   // Chosen: host A's two cards, and NOT host C's.
-  await hostSel.selectOption(hostA);
+  await hostTab(page, hostA).tap();
   await expect(visible(hostA)).toHaveCount(2);
   await expect(visible(hostC), 'host C contains host A but is not host A').toHaveCount(0);
-  expect(new URL(page.url()).searchParams.get('q')).toBe(`host=${hostA}`);
+  await expect(hostTab(page, hostA).locator('[data-tab-count]')).toHaveText('2');
   // Positive control: choosing C shows C, so the hiding above is the match and
   // not a card that never rendered.
-  await hostSel.selectOption(hostC);
+  await hostTab(page, hostC).tap();
   await expect(visible(hostC)).toHaveCount(1);
   await expect(visible(hostA)).toHaveCount(0);
 
-  // Typed: a substring, as it always was — both hosts.
-  await hostSel.selectOption('');
+  // Typed on All: a substring, as it always was — both hosts.
+  await hostTab(page, '').tap();
   await page.locator('#agents-search').fill(`host:${hostA}`);
   await expect(visible(hostA)).toHaveCount(2);
   await expect(visible(hostC)).toHaveCount(1);
+  await page.locator('#agents-search-clear').tap();
 
-  // The exact token survives a link, and a reload.
-  await page.goto(origin + '/agents?q=' + encodeURIComponent(`host=${hostA}`));
-  await expect(hostSel).toHaveValue(hostA, { timeout: 20_000 });
-  await expect(visible(hostA)).toHaveCount(2);
-  await expect(visible(hostC)).toHaveCount(0);
+  // The chosen tab survives a reload, still exact.
+  await hostTab(page, hostA).tap();
   await page.reload();
-  await expect(hostSel).toHaveValue(hostA, { timeout: 20_000 });
+  await expect(hostTab(page, hostA)).toHaveAttribute('aria-selected', 'true', { timeout: 20_000 });
   await expect(visible(hostC)).toHaveCount(0);
   await expect(visible(hostA)).toHaveCount(2);
+  await hostTab(page, '').tap();
 });
 
 async function signIn(page: Page) {
@@ -279,32 +284,31 @@ function startCOnce() {
   startHost(hostC, tokenC);
 }
 
-// A LIST REFRESH NEVER MOVES WHAT IS BEING TYPED. ?q= follows every keystroke,
-// so re-splitting it on a refresh took a hand-typed exact token out of the box
-// mid-word and into its select — the caret jumped, and the next keystroke landed
-// in another string — and with a host selected and another host=… typed it
-// cleared the select.
+// A LIST REFRESH NEVER MOVES WHAT IS BEING TYPED, AND NEVER UNDOES A CHOSEN
+// TAB. ?q= follows every keystroke, so re-reading it on a refresh would rewrite
+// the box mid-word (the caret jumps, and the next keystroke lands in another
+// string); and the tabs are rebuilt on every refresh, which must not reset the
+// chosen one.
 //
-// 🔴 REGRESSION TESTS: at b58779b the first refresh moves host=<A> into the
-// select (the box is emptied), and in the second test resets the select to
-// "Any host".
+// 🔴 REGRESSION TESTS: at b58779b the first refresh took a typed host=<A> out
+// of the box (into the dropdown that was there then).
 async function openRefreshable(page: Page) {
   await signIn(page);
   startCOnce();
   await page.goto(origin + '/agents');
   await expect(cardsOf(page, hostC), `host C's card (log:\n${mirrorLog})`).toHaveCount(1, { timeout: 20_000 });
+  await takeNew(page);
   const box = page.locator('#agents-search');
-  const hostSel = page.locator('#agents-f-host');
   const visible = (h: string) => cardsOf(page, h).filter({ visible: true });
   const qOf = () => new URL(page.url()).searchParams.get('q');
-  await expect.poll(() => hostSel.locator('option').allTextContents(), { timeout: 20_000 }).toEqual(expect.arrayContaining([hostA, hostC]));
+  await expect(hostTab(page, hostC)).toHaveCount(1, { timeout: 20_000 });
   const kiwiTitle = () => shownTitle(cardsOf(page, hostA).filter({ hasNot: page.locator('[data-mirror-label]') }));
   await page.evaluate(() => ((window as unknown as { __noReload: number }).__noReload = 1));
-  return { box, hostSel, visible, qOf, kiwiTitle };
+  return { box, visible, qOf, kiwiTitle };
 }
 
 test('a refresh leaves a typed exact token in the box, caret and all', async ({ page }) => {
-  const { box, hostSel, visible, qOf, kiwiTitle } = await openRefreshable(page);
+  const { box, visible, qOf, kiwiTitle } = await openRefreshable(page);
   // Typed by hand, focused, the caret mid-token.
   await box.tap();
   await box.pressSequentially(`host=${hostA}`);
@@ -318,7 +322,7 @@ test('a refresh leaves a typed exact token in the box, caret and all', async ({ 
   // The positive control that this settle ran the script: the count follows it.
   await expect(page.locator('#agents-count')).toHaveText(/^2 of \d+$/);
   await expect(box, 'the typed token stayed in the box').toHaveValue(`host=${hostA}`);
-  await expect(hostSel, 'and did not move to the select').toHaveValue('');
+  await expect(hostTab(page, ''), 'and chose no tab').toHaveAttribute('aria-selected', 'true');
   await expect(box).toBeFocused();
   expect(await box.evaluate((e: HTMLInputElement) => [e.selectionStart, e.selectionEnd]), 'the caret did not move').toEqual([3, 3]);
   // Typing on lands where the caret is, in the same string.
@@ -326,215 +330,120 @@ test('a refresh leaves a typed exact token in the box, caret and all', async ({ 
   await page.keyboard.type(' mango');
   await expect(box).toHaveValue(`host=${hostA} mango`);
   await expect(visible(hostA)).toHaveCount(1);
-  await page.locator('#agents-filter-clear').tap();
+  await page.locator('#agents-search-clear').tap();
   writeWindows(hostA, [aMango, aKiwi]);
 });
 
-test('a refresh never undoes a chosen value; a link still fills the select', async ({ page }) => {
-  const { box, hostSel, visible, qOf, kiwiTitle } = await openRefreshable(page);
+test('a refresh never undoes a chosen tab; a link fills the box', async ({ page }) => {
+  const { box, visible, qOf, kiwiTitle } = await openRefreshable(page);
   // A chosen host, and ANOTHER exact host typed (blurred, so it is the refresh
   // and not the focus that must leave it alone): nothing matches both, and a
   // refresh must keep both exactly as they are.
-  await hostSel.selectOption(hostA);
+  await hostTab(page, hostA).tap();
   await box.fill(`host=${hostC}`);
   await box.blur();
-  expect(qOf()).toBe(`host=${hostA} host=${hostC}`);
+  expect(qOf()).toBe(`host=${hostC}`);
   await expect(visible(hostA)).toHaveCount(0);
   await expect(visible(hostC)).toHaveCount(0);
   writeWindows(hostA, [aMango, { ...aKiwi, index: 5 }]);
   await expect.poll(kiwiTitle, { message: `the list refreshed (log:\n${mirrorLog})`, timeout: 20_000 }).toBe('kiwi:5');
-  await expect(hostSel, 'the refresh did not undo the select').toHaveValue(hostA);
+  await expect(hostTab(page, hostA), 'the refresh did not undo the tab').toHaveAttribute('aria-selected', 'true');
   await expect(box).toHaveValue(`host=${hostC}`);
-  expect(qOf()).toBe(`host=${hostA} host=${hostC}`);
+  expect(qOf()).toBe(`host=${hostC}`);
   await expect(visible(hostC)).toHaveCount(0);
   expect(await page.evaluate(() => (window as unknown as { __noReload?: number }).__noReload), 'no reload happened').toBe(1);
 
-  // Load still moves a link's exact token into its select (the case the
-  // re-split existed for).
+  // A link's token lands in the box and filters (on All).
+  await hostTab(page, '').tap();
   await page.goto(origin + '/agents?q=' + encodeURIComponent(`host=${hostC}`));
-  await expect(hostSel).toHaveValue(hostC, { timeout: 20_000 });
-  await expect(box).toHaveValue('');
-  await expect(visible(hostC)).toHaveCount(1);
+  await expect(box).toHaveValue(`host=${hostC}`);
+  await expect(visible(hostC)).toHaveCount(1, { timeout: 20_000 });
   await expect(visible(hostA)).toHaveCount(0);
-  await page.locator('#agents-filter-clear').tap();
+  await page.locator('#agents-search-clear').tap();
   writeWindows(hostA, [aMango, aKiwi]);
 });
 
-// A VALUE WITH A DOUBLE QUOTE (AND A BACKSLASH) CAN BE CHOSEN AND MATCHES. A
+// A VALUE WITH A DOUBLE QUOTE (AND A BACKSLASH) CAN BE TYPED AND MATCHES. A
 // mirrored window's kind is its pane's command when muster has no name for it,
-// so it can hold any printable character.
+// so it can hold any printable character; a quoted exact token reads `\"` and
+// `\\` back, so the value round-trips through ?q=.
 //
-// 🔴 A REGRESSION TEST: at b58779b the select wrote the value with its quote
-// dropped (kind=odd\cmd), which no card carries, so choosing it hid everything.
-test('a kind holding a double quote and a backslash can be chosen, matches its card, and round-trips ?q=', async ({ page }) => {
+// 🔴 A REGRESSION TEST (ported from the kind dropdown): at b58779b the quote was
+// dropped (kind=odd\cmd), which no card carries, so the filter hid everything.
+test('a kind holding a double quote and a backslash, typed as a quoted token, matches its card and round-trips ?q=', async ({ page }) => {
   const odd = 'odd\\"cmd'; // odd\"cmd
   const plum: Win = { session: 'plum', id: '@8', index: 3, active: true, command: odd, activity: now - 30 };
   writeWindows(hostA, [aMango, aKiwi, plum]);
   await signIn(page);
   await page.goto(origin + '/agents');
-  const kindSel = page.locator('#agents-f-kind');
   const plumCard = cardsOf(page, hostA).filter({ has: page.locator('[data-mirror-name]', { hasText: 'plum:3' }) });
   await expect(plumCard, `the plum window (log:\n${mirrorLog})`).toHaveCount(1, { timeout: 20_000 });
   // It may have registered after the first paint, and wait behind the pill.
   await takeNew(page);
-  await expect.poll(() => kindSel.locator('option').allTextContents(), { timeout: 20_000 }).toContain(odd);
   const shown = page.locator('#agents-list > article').filter({ visible: true });
+  const token = 'kind="odd\\\\\\"cmd"'; // kind="odd\\\"cmd"
+  const box = page.locator('#agents-search');
 
-  await kindSel.selectOption(odd);
-  await expect(plumCard, 'the chosen kind matches its card').toBeVisible();
+  await box.fill(token);
+  await expect(plumCard, 'the typed kind matches its card').toBeVisible();
   await expect(shown, 'only the plum window').toHaveCount(1);
-  expect(new URL(page.url()).searchParams.get('q')).toBe('kind="odd\\\\\\"cmd"'); // kind="odd\\\"cmd"
-  // A reload reads the token back into the same choice.
+  expect(new URL(page.url()).searchParams.get('q')).toBe(token);
+  // A reload reads the token back into the same filter.
   await page.reload();
-  await expect(kindSel).toHaveValue(odd, { timeout: 20_000 });
-  await expect(page.locator('#agents-search')).toHaveValue('');
-  await expect(plumCard).toBeVisible();
+  await expect(box).toHaveValue(token);
+  await expect(plumCard).toBeVisible({ timeout: 20_000 });
   await expect(shown).toHaveCount(1);
 
-  // The window closes while the box is being typed in: no card carries the
-  // chosen kind any more, so its token moves to the FRONT of the box (still
-  // applied, and visibly) — and the caret stays where it was in what was typed.
-  const box = page.locator('#agents-search');
-  await box.tap();
-  await box.pressSequentially('plum');
-  await box.evaluate((e: HTMLInputElement) => e.setSelectionRange(2, 2));
+  // The window closes: the token stays in the box, still applied, and says so.
   writeWindows(hostA, [aMango, aKiwi]);
   await expect(plumCard, `the plum window closed (log:\n${mirrorLog})`).toHaveCount(0, { timeout: 20_000 });
-  const lead = 'kind="odd\\\\\\"cmd" ';
-  await expect(box).toHaveValue(lead + 'plum');
-  await expect(kindSel).toHaveValue('');
-  await expect(box).toBeFocused();
-  expect(await box.evaluate((e: HTMLInputElement) => [e.selectionStart, e.selectionEnd]), 'the caret kept its place in the typed text').toEqual([lead.length + 2, lead.length + 2]);
-  await page.locator('#agents-filter-clear').tap();
+  await expect(box).toHaveValue(token);
+  await expect(page.locator('#agents-nomatch')).toBeVisible();
+  await page.locator('#agents-search-clear').tap();
 });
 
-// A LINK'S TOKEN WAITS WHILE THE BOX HAS FOCUS. A link's exact token (host=<A>)
-// moves into its select only once that select has its options, which arrive
-// with the list. If the operator is already in the box when they arrive, the
-// token stays put (moving it would yank text out from under the caret), and it
-// moves at the next refresh that finds the box unfocused. Typing in the box
-// first cancels the move: what was typed is the operator's, not the link's.
-//
-// The first /ui/agents fetch is held so the box can take focus BEFORE the
-// options exist — the only order in which the move is pending while focused.
-//
-// 🔴 MUTATION-PINNED (internal/ui/agents_filter.go): with settled()'s
-// !focused() guard dropped, the first test's "no move while focused" fails;
-// with the box's input listener no longer clearing `pending`, the second
-// test's "typed text stays" fails.
-async function openWithHeldList(page: Page) {
-  await signIn(page);
-  startCOnce();
-  await page.goto(origin + '/agents');
-  await expect(cardsOf(page, hostC), `host C's card (log:\n${mirrorLog})`).toHaveCount(1, { timeout: 20_000 });
-  let release!: () => void;
-  const gate = new Promise<void>((r) => (release = r));
-  let held = 0;
-  await page.route('**/ui/agents', async (r) => {
-    if (held++ === 0) await gate;
-    await r.continue();
-  });
-  await page.goto(origin + '/agents?q=' + encodeURIComponent(`host=${hostA}`));
-  const box = page.locator('#agents-search');
-  const hostSel = page.locator('#agents-f-host');
-  const visible = (h: string) => cardsOf(page, h).filter({ visible: true });
-  const kiwiTitle = () => shownTitle(cardsOf(page, hostA).filter({ hasNot: page.locator('[data-mirror-label]') }));
-  const unhold = () => page.unroute('**/ui/agents');
-  return { box, hostSel, visible, kiwiTitle, release: () => release(), unhold };
-}
-
-test('a link token does not move into its select while the box has focus, and moves at the next unfocused refresh', async ({ page }) => {
-  const { box, hostSel, visible, kiwiTitle, release, unhold } = await openWithHeldList(page);
-  await expect(box).toHaveValue(`host=${hostA}`);
-  await box.tap();
-  await expect(box).toBeFocused();
-  release();
-  await expect(cardsOf(page, hostA)).toHaveCount(2, { timeout: 20_000 });
-  await expect.poll(() => hostSel.locator('option').count(), { message: 'the select has its options' }).toBeGreaterThan(1);
-  // The positive control that the settle ran the script: the count follows it.
-  await expect(page.locator('#agents-count')).toHaveText(/^2 of \d+$/);
-  await expect(box, 'no move while focused').toHaveValue(`host=${hostA}`);
-  await expect(hostSel).toHaveValue('');
-  await expect(visible(hostC), 'the token still applies from the box').toHaveCount(0);
-
-  await box.blur();
-  await unhold();
-  writeWindows(hostA, [aMango, { ...aKiwi, index: 7 }]);
-  await expect.poll(kiwiTitle, { message: `the list refreshed (log:\n${mirrorLog})`, timeout: 20_000 }).toBe('kiwi:7');
-  await expect(hostSel, 'moved at the next unfocused refresh').toHaveValue(hostA);
-  await expect(box).toHaveValue('');
-  await expect(visible(hostA)).toHaveCount(2);
-  await expect(visible(hostC)).toHaveCount(0);
-  await page.locator('#agents-filter-clear').tap();
-  writeWindows(hostA, [aMango, aKiwi]);
-  await expect.poll(kiwiTitle, { timeout: 20_000 }).toBe('kiwi:2');
-});
-
-test('typing in the box cancels a link token\'s pending move', async ({ page }) => {
-  const { box, hostSel, kiwiTitle, release, unhold } = await openWithHeldList(page);
-  await box.tap();
-  await page.keyboard.press('End');
-  await page.keyboard.type(' m');
-  release();
-  await expect(cardsOf(page, hostA)).toHaveCount(2, { timeout: 20_000 });
-  await expect.poll(() => hostSel.locator('option').count(), { message: 'the select has its options' }).toBeGreaterThan(1);
-  await box.blur();
-  await unhold();
-  writeWindows(hostA, [aMango, { ...aKiwi, index: 8 }]);
-  await expect.poll(kiwiTitle, { message: `the list refreshed (log:\n${mirrorLog})`, timeout: 20_000 }).toBe('kiwi:8');
-  await expect(box, 'typed text stays').toHaveValue(`host=${hostA} m`);
-  await expect(hostSel).toHaveValue('');
-  await page.locator('#agents-filter-clear').tap();
-  writeWindows(hostA, [aMango, aKiwi]);
-  await expect.poll(kiwiTitle, { timeout: 20_000 }).toBe('kiwi:2');
-});
-
-// BACK/FORWARD RESTORES THE FILTER EACH /agents ENTRY HAD. The bar is changed on
-// a newer entry (another host chosen, a word typed); going back onto the older
-// entry puts back ITS select and box, not the newer ones, and forward again
-// puts the newer ones back.
+// BACK/FORWARD RESTORES THE FILTER EACH /agents ENTRY HAD. The box is changed
+// on a newer entry; going back onto the older entry puts back ITS text, not
+// the newer one, and forward again puts the newer one back. (The host tab is
+// the browser's choice, not a history entry's.)
 //
 // 🔴 MUTATION-PINNED: with the popstate handler no longer placing the entry's
-// ?q= (internal/ui/agents_filter.go), the bar keeps the newer filter and writes
+// ?q= (internal/ui/agents_filter.go), the box keeps the newer filter and writes
 // it over the older entry's URL, so "the older entry keeps its own ?q=" fails.
 test('back and forward restore the filter each /agents entry had', async ({ page }) => {
   await signIn(page);
   startCOnce();
   await page.goto(origin + '/agents');
   await expect(cardsOf(page, hostC), `host C's card (log:\n${mirrorLog})`).toHaveCount(1, { timeout: 20_000 });
+  await takeNew(page);
   const box = page.locator('#agents-search');
-  const hostSel = page.locator('#agents-f-host');
   const visible = (h: string) => cardsOf(page, h).filter({ visible: true });
   const qOf = () => new URL(page.url()).searchParams.get('q');
-  await expect.poll(() => hostSel.locator('option').allTextContents(), { timeout: 20_000 }).toEqual(expect.arrayContaining([hostA, hostC]));
-  await hostSel.selectOption(hostA);
+  await box.fill(`host=${hostA}`);
   expect(qOf()).toBe(`host=${hostA}`);
   const tab = (t: string) => page.evaluate((t) => (document.querySelector(`#sidebar a[data-tab="${t}"]`) as HTMLElement).click(), t);
   await tab('tasks');
   await page.waitForURL((u) => u.pathname === '/tasks');
   await tab('agents');
   await page.waitForURL((u) => u.pathname === '/agents' && u.searchParams.get('q') === `host=${hostA}`);
-  // The newer entry: another host chosen AND a word typed.
-  await hostSel.selectOption(hostC);
-  await box.fill('fig');
+  // The newer entry: another host and a word.
+  await box.fill(`host=${hostC} fig`);
   expect(qOf()).toBe(`host=${hostC} fig`);
 
   await page.goBack();
   await page.waitForURL((u) => u.pathname === '/tasks');
   await page.goBack();
   await page.waitForURL((u) => u.pathname === '/agents');
-  expect(qOf(), 'the older entry keeps its own ?q= (the newer bar is not written over it)').toBe(`host=${hostA}`);
-  await expect(hostSel, 'the older entry restores its select').toHaveValue(hostA);
-  await expect(box, 'and its box').toHaveValue('');
+  expect(qOf(), 'the older entry keeps its own ?q= (the newer box is not written over it)').toBe(`host=${hostA}`);
+  await expect(box, 'the older entry restores its box').toHaveValue(`host=${hostA}`);
   await expect(visible(hostA)).toHaveCount(2);
   await expect(visible(hostC)).toHaveCount(0);
 
   await page.goForward();
   await page.goForward();
   await page.waitForURL((u) => u.pathname === '/agents' && u.searchParams.get('q') === `host=${hostC} fig`);
-  await expect(hostSel, 'forward restores the newer select').toHaveValue(hostC);
-  await expect(box).toHaveValue('fig');
+  await expect(box, 'forward restores the newer box').toHaveValue(`host=${hostC} fig`);
   await expect(visible(hostC)).toHaveCount(1);
   await expect(visible(hostA)).toHaveCount(0);
-  await page.locator('#agents-filter-clear').tap();
+  await page.locator('#agents-search-clear').tap();
 });

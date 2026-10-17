@@ -215,19 +215,59 @@ func TestParseSummaryShapes(t *testing.T) {
 	}
 }
 
+// TestCleanKeepsALongTitleWhole: a title well past the old 80-rune display
+// clamp but under the storage guard is stored EXACTLY as written — no cut, no
+// ellipsis — because the card shows it whole. Red before: the title came back
+// cut to 80 runes, ending in "…".
+func TestCleanKeepsALongTitleWhole(t *testing.T) {
+	// 122 runes, multi-byte, with word boundaries everywhere a clamp would cut.
+	title := strings.Repeat("Résumé ", 17) + "end"
+	if n := utf8.RuneCountInString(title); n != 122 {
+		t.Fatalf("instrument check: the fixture is %d runes, want 122", n)
+	}
+	got, _, err := Clean(title, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != title {
+		t.Errorf("a %d-rune title was changed:\n got %q\nwant %q", utf8.RuneCountInString(title), got, title)
+	}
+	// And through the summarizer's own parse.
+	got, _, err = ParseSummary("Title: " + title + "\nDescription: Working.")
+	if err != nil || got != title {
+		t.Errorf("ParseSummary title = %q (%v), want it whole", got, err)
+	}
+}
+
+// TestThePromptAsksForAShortWholeTitle pins the title line of the prompt
+// WHOLE: with no display clamp left, keeping titles short is the prompt's job,
+// and a reworded line that drops "shown in full" or the length would pass a
+// keyword check.
+func TestThePromptAsksForAShortWholeTitle(t *testing.T) {
+	const want = "\nLine 1: \"Title: \" then a short title of 3 to 8 words (under 60 characters), complete in itself: " +
+		"it is shown in full, so never trail off, abbreviate or end it with an ellipsis.\n"
+	if !strings.Contains(SummaryInstructions, want) {
+		t.Errorf("the title line of SummaryInstructions changed:\n%s", SummaryInstructions)
+	}
+	if strings.Contains(SummaryInstructions, "80 characters") {
+		t.Error("the prompt still names the old 80-character bound")
+	}
+}
+
 // TestCleanClamps: the title is at most MaxTitleRunes, the description at most
 // three sentences and MaxDescriptionRunes, control characters and line breaks
 // are gone — measured on inputs well past each bound, in multi-byte runes.
 func TestCleanClamps(t *testing.T) {
-	longTitle := strings.Repeat("é", 300)
+	longTitle := strings.Repeat("é", 400)
 	title, _, err := Clean(longTitle, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := utf8.RuneCountInString(title); n != MaxTitleRunes {
-		t.Errorf("title is %d runes, want %d", n, MaxTitleRunes)
+	// 300 is a literal on purpose: the storage guard migration 0026 pins.
+	if n := utf8.RuneCountInString(title); n != 300 || MaxTitleRunes != 300 {
+		t.Errorf("title is %d runes (MaxTitleRunes %d), want 300", n, MaxTitleRunes)
 	}
-	words := strings.TrimSpace(strings.Repeat("token ", 60))
+	words := strings.TrimSpace(strings.Repeat("token ", 70))
 	title, _, _ = Clean(words, "")
 	if n := utf8.RuneCountInString(title); n > MaxTitleRunes || !strings.HasSuffix(title, "…") {
 		t.Errorf("worded title = %q (%d runes)", title, n)

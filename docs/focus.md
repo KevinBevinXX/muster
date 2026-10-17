@@ -1,8 +1,8 @@
 # Session focus
 
 Every session on the Agents list — a dispatched agent or a mirrored Claude Code
-window — can carry a **focus**: a short title (at most 80 characters) and one to
-three sentences saying what it is working on now. A card with a focus is
+window — can carry a **focus**: a short title (shown whole, wrapped — never cut with an
+ellipsis) and one to three sentences saying what it is working on now. A card with a focus is
 headed by its focus title, with the card's usual name (the agent's name, or the
 mirrored window's title and session) as a subtitle under it. The title is a
 button, marked with a chevron: a tap opens a popover with the description and
@@ -52,8 +52,9 @@ default `15m`) and the chief's `focus_refresh` both:
 - **skip the summarizer when the tail has not changed**: the tail's sha256
   is stored with the focus, and an equal one makes no call;
 - otherwise ask the summarizer (below) for a title and a description, clean
-  them (one line, no markup or control characters, at most 80 characters
-  and three sentences), and store them;
+  them (one line, no markup or control characters, three sentences; a title is
+  kept whole, cut only past a 300-character storage guard — migration 0026 —
+  while the prompt asks for 3 to 8 words), and store them;
 - on any failure, keep the previous focus and record **why** beside it, as a
   short fixed reason: `no OpenRouter key`, `the OpenRouter key could not be
   read` (a credential-store failure, not a missing key), `rate-limited`,

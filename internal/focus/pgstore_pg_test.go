@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -94,6 +96,29 @@ func TestUpsertGetAndRecordError(t *testing.T) {
 	// An empty title is refused before the database.
 	if _, err := s.Upsert(as(2), m, Write{Title: "  ", Source: SourceSummarizer}); !errors.Is(err, ErrEmpty) {
 		t.Fatalf("empty title: %v", err)
+	}
+}
+
+// TestALongTitleIsStoredAndReadBackWhole: a 122-rune title (past the old
+// 80-rune clamp and the 80-character CHECKs of 0020 and 0022) goes through
+// Upsert into the focus row AND its history row, and both read back exactly as
+// written. Red before 0026 + the raised MaxTitleRunes: Clean cut it to 80 runes
+// ending in "…".
+func TestALongTitleIsStoredAndReadBackWhole(t *testing.T) {
+	s, pool := pgStore(t)
+	a := mustAgent(t, pool, 2, "focus-long")
+	sub := AgentSubject(a.ID)
+	title := strings.Repeat("Résumé ", 17) + "end"
+	if _, err := s.Upsert(as(2), sub, Write{Title: title, Description: "Long.", Source: SourceSummarizer}); err != nil {
+		t.Fatalf("upsert a %d-rune title: %v", utf8.RuneCountInString(title), err)
+	}
+	got, ok, err := s.Get(as(2), sub)
+	if err != nil || !ok || got.Title != title {
+		t.Fatalf("focus row title = %q (%v %v), want it whole: %q", got.Title, ok, err, title)
+	}
+	page, err := s.History(as(2), sub, "", 5)
+	if err != nil || len(page.Entries) != 1 || page.Entries[0].Title != title {
+		t.Fatalf("history = %+v (%v), want one row titled whole", page.Entries, err)
 	}
 }
 
