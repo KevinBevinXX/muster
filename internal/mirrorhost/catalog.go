@@ -164,22 +164,34 @@ func (s *CatalogScanner) Scan(cwd string) mirror.Catalog {
 	projects := s.projectDirs(cwd)
 	for _, p := range projects {
 		root := filepath.Join(p, ".claude")
-		cmds = append(cmds, s.commands(filepath.Join(root, "commands"), "", mirror.SourceProject)...)
-		cmds = append(cmds, s.skills(filepath.Join(root, "skills"), "", mirror.SourceProject)...)
+		allow := allowedRoots(p)
+		cmds = append(cmds, s.commands(filepath.Join(root, "commands"), "", mirror.SourceProject, allow)...)
+		cmds = append(cmds, s.skills(filepath.Join(root, "skills"), "", mirror.SourceProject, allow)...)
 	}
 	cfg := s.config()
-	cmds = append(cmds, s.commands(filepath.Join(cfg, "commands"), "", mirror.SourceUser)...)
-	cmds = append(cmds, s.skills(filepath.Join(cfg, "skills"), "", mirror.SourceUser)...)
+	allow := allowedRoots(cfg)
+	cmds = append(cmds, s.commands(filepath.Join(cfg, "commands"), "", mirror.SourceUser, allow)...)
+	cmds = append(cmds, s.skills(filepath.Join(cfg, "skills"), "", mirror.SourceUser, allow)...)
 	for _, pl := range s.plugins(cfg, projects) {
-		cmds = append(cmds, s.commands(filepath.Join(pl.path, "commands"), pl.name, mirror.SourcePlugin)...)
-		cmds = append(cmds, s.skills(filepath.Join(pl.path, "skills"), pl.name, mirror.SourcePlugin)...)
+		allow := allowedRoots(pl.path)
+		cmds = append(cmds, s.commands(filepath.Join(pl.path, "commands"), pl.name, mirror.SourcePlugin, allow)...)
+		cmds = append(cmds, s.skills(filepath.Join(pl.path, "skills"), pl.name, mirror.SourcePlugin, allow)...)
 	}
 	return mirror.NormalizeCatalog(mirror.Catalog{Commands: cmds, Snippets: s.snippets()})
 }
 
 // projectDirs is cwd and the directories above it whose .claude is a
-// PROJECT's, nearest first: up to and including the first holding .git, never
-// the home directory or the filesystem root, at most maxProjectDepth.
+// PROJECT's, nearest first, at most maxProjectDepth:
+//
+//   - in a repository: up to and including its root (the first holding .git),
+//     and never the home directory;
+//   - outside one, under home: up to, not including, the home directory (whose
+//     .claude IS the user's);
+//   - outside one AND outside home: the cwd ALONE. Walking up from /tmp/x would
+//     otherwise read whatever any account left in /tmp/.claude, a directory
+//     anyone on the machine can write.
+//
+// Never the filesystem root.
 func (s *CatalogScanner) projectDirs(cwd string) []string {
 	if cwd == "" || !filepath.IsAbs(cwd) {
 		return nil
@@ -187,29 +199,76 @@ func (s *CatalogScanner) projectDirs(cwd string) []string {
 	home := filepath.Clean(s.homeDir())
 	var out []string
 	d := filepath.Clean(cwd)
+	repo := false
 	for i := 0; i < maxProjectDepth; i++ {
 		if d == home || d == filepath.Dir(d) {
 			break
 		}
 		out = append(out, d)
 		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
+			repo = true
 			break
 		}
 		d = filepath.Dir(d)
 	}
+	if !repo && len(out) > 1 && !withinDir(filepath.Clean(cwd), home) {
+		out = out[:1]
+	}
 	return out
+}
+
+// storeRoot is the Nix store: immutable, written only by the build, and where
+// home-manager links ~/.claude/skills and a dotfiles repo's commands. A file
+// that resolves there is followed from any source.
+const storeRoot = "/nix/store"
+
+// allowedRoots is where a file found under root's .claude may RESOLVE to and
+// still be read: root itself (a project's directory, the config directory, a
+// plugin's install directory) and the Nix store.
+//
+// ⚠ ROOT, NOT root/.claude, MEASURED: devrc's own .claude/commands is a link
+// to ../claude/commands (inside the repository, outside .claude), and every
+// ~/.claude/skills/*/SKILL.md resolves into /nix/store. A rule narrower than
+// this drops both — the operator's real skills — while a link out of the
+// project or the config directory (to /etc, another user's home) is refused.
+func allowedRoots(root string) []string {
+	out := []string{storeRoot}
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		out = append(out, r)
+	}
+	return append(out, filepath.Clean(root))
+}
+
+// withinDir reports whether path is dir or below it.
+func withinDir(path, dir string) bool {
+	return path == dir || strings.HasPrefix(path, strings.TrimSuffix(dir, "/")+"/")
+}
+
+// resolveAllowed is path with every symlink resolved, and false when it
+// resolves outside allow.
+func resolveAllowed(path string, allow []string) (string, bool) {
+	r, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", false
+	}
+	for _, a := range allow {
+		if withinDir(r, a) {
+			return r, true
+		}
+	}
+	return "", false
 }
 
 // commands is dir's *.md files — and those one directory down, named
 // "<sub>:<name>" — as commands, each prefixed "<plugin>:" when plugin is set.
-func (s *CatalogScanner) commands(dir, plugin, source string) []mirror.CatalogEntry {
+func (s *CatalogScanner) commands(dir, plugin, source string, allow []string) []mirror.CatalogEntry {
 	ents, err := readDirBounded(dir)
 	if err != nil {
 		return nil
 	}
 	var out []mirror.CatalogEntry
 	add := func(path, name string) {
-		h, ok := s.head(path, true)
+		h, ok := s.head(path, true, allow)
 		if !ok || h.hidden {
 			return
 		}
@@ -241,7 +300,7 @@ func (s *CatalogScanner) commands(dir, plugin, source string) []mirror.CatalogEn
 
 // skills is every <dir>/<name>/SKILL.md as a skill, named by its front
 // matter's `name` (else the directory), prefixed "<plugin>:" when plugin is set.
-func (s *CatalogScanner) skills(dir, plugin, source string) []mirror.CatalogEntry {
+func (s *CatalogScanner) skills(dir, plugin, source string, allow []string) []mirror.CatalogEntry {
 	ents, err := readDirBounded(dir)
 	if err != nil {
 		return nil
@@ -249,7 +308,7 @@ func (s *CatalogScanner) skills(dir, plugin, source string) []mirror.CatalogEntr
 	var out []mirror.CatalogEntry
 	for _, e := range ents {
 		p := filepath.Join(dir, e.Name(), "SKILL.md")
-		h, ok := s.head(p, false)
+		h, ok := s.head(p, false, allow)
 		if !ok || h.hidden {
 			continue
 		}
@@ -294,19 +353,30 @@ func isDir(p string) bool {
 
 // head is path's front matter, from the cache when the file has not changed.
 // firstLine: a file with no description is described by its first line of
-// text (a command); a skill without one has none.
-func (s *CatalogScanner) head(path string, firstLine bool) (entryHead, bool) {
-	st, err := os.Stat(path)
+// text (a command); a skill without one has none. A file that resolves outside
+// allow is not read (allowedRoots).
+//
+// 🔴 THE CACHE IS KEYED ON THE RESOLVED PATH, NOT THE PATH FOUND. home-manager
+// links these files into /nix/store, where every mtime is 1970: keyed on the
+// link's path, a switch that changed a description without changing its length
+// was never re-read. A changed store file is a different store PATH, so keying
+// on where the link resolves (plus its time and size) re-reads it.
+func (s *CatalogScanner) head(path string, firstLine bool, allow []string) (entryHead, bool) {
+	real, ok := resolveAllowed(path, allow)
+	if !ok {
+		return entryHead{}, false
+	}
+	st, err := os.Stat(real)
 	if err != nil || !st.Mode().IsRegular() {
 		return entryHead{}, false
 	}
 	s.mu.Lock()
-	c, ok := s.files[path]
+	c, ok := s.files[real]
 	s.mu.Unlock()
 	if ok && c.mod.Equal(st.ModTime()) && c.size == st.Size() {
 		return c.head, true
 	}
-	f, err := os.Open(path)
+	f, err := os.Open(real)
 	if err != nil {
 		return entryHead{}, false
 	}
@@ -320,7 +390,7 @@ func (s *CatalogScanner) head(path string, firstLine bool) (entryHead, bool) {
 	if s.files == nil {
 		s.files = map[string]cachedEntry{}
 	}
-	s.files[path] = cachedEntry{mod: st.ModTime(), size: st.Size(), head: h}
+	s.files[real] = cachedEntry{mod: st.ModTime(), size: st.Size(), head: h}
 	s.mu.Unlock()
 	return h, true
 }
@@ -389,6 +459,10 @@ func parseHead(b []byte, firstLine bool) entryHead {
 			}
 		}
 	}
+	// What is cached and sent is the cleaned, bounded text — never the raw
+	// (up to maxCatalogHead) block a description can be.
+	h.name = mirror.CleanText(h.name, mirror.MaxCatalogName)
+	h.description = mirror.CleanText(h.description, mirror.MaxCatalogDescription)
 	return h
 }
 
@@ -490,8 +564,12 @@ func sortPlugins(p []plugin) {
 	}
 }
 
-// readBounded reads at most max bytes of path, refusing a larger file.
+// readBounded reads at most max bytes of path, refusing a larger file and
+// anything that is not a regular file (a FIFO would block the read forever).
 func readBounded(path string, max int64) ([]byte, error) {
+	if st, err := os.Stat(path); err != nil || !st.Mode().IsRegular() {
+		return nil, errors.New("not a regular file")
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -514,6 +592,11 @@ func (s *CatalogScanner) snippets() []mirror.Snippet {
 	path := s.snippetsFile()
 	if path == "" {
 		return nil
+	}
+	// Keyed on where the file RESOLVES, for head's reason: home-manager links
+	// it into /nix/store, where mtime is always 1970.
+	if r, err := filepath.EvalSymlinks(path); err == nil {
+		path = r
 	}
 	st, err := os.Stat(path)
 	if err != nil || !st.Mode().IsRegular() {

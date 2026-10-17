@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -275,11 +276,11 @@ func TestTheScanIsBounded(t *testing.T) {
 	write(t, filepath.Join(f.cfg, "skills", "far", "SKILL.md"), "---\nname: far\n"+strings.Repeat("x: y\n", maxCatalogHead/5)+"description: beyond the head\n---\n")
 	// The directory cap, read below the wire's own count cap (which
 	// mirror.NormalizeCatalog applies, and its tests measure).
-	if n := len(f.s.commands(dir, "", mirror.SourceUser)); n != maxCatalogFiles {
+	if n := len(f.s.commands(dir, "", mirror.SourceUser, allowedRoots(f.cfg))); n != maxCatalogFiles {
 		t.Fatalf("%d commands read from a directory of %d, want the cap %d", n, maxCatalogFiles+40, maxCatalogFiles)
 	}
 	m := map[string]mirror.CatalogEntry{}
-	for _, e := range f.s.skills(filepath.Join(f.cfg, "skills"), "", mirror.SourceUser) {
+	for _, e := range f.s.skills(filepath.Join(f.cfg, "skills"), "", mirror.SourceUser, allowedRoots(f.cfg)) {
 		m[e.Name] = mirror.NormalizeCatalog(mirror.Catalog{Commands: []mirror.CatalogEntry{e}}).Commands[0]
 	}
 	if d := m["long"].Description; len([]rune(d)) != mirror.MaxCatalogDescription || !strings.HasSuffix(d, "…") {
@@ -304,7 +305,9 @@ func TestDefaultSnippetsFileFollowsXDG(t *testing.T) {
 	}
 }
 
-// TestParseHeadReadsTheFrontMatterSubset: the scalar forms, a literal block,
+// TestParseHeadReadsTheFrontMatterSubset: what is returned (and cached) is the
+// CLEANED text — a tab or a block's newlines are a space, as the wire carries
+// them — for the scalar forms, a literal block,
 // a trailing comment, and a file whose front matter never closes (no front
 // matter at all: its first line describes a command).
 func TestParseHeadReadsTheFrontMatterSubset(t *testing.T) {
@@ -313,8 +316,8 @@ func TestParseHeadReadsTheFrontMatterSubset(t *testing.T) {
 		first, hidden  bool
 	}{
 		{in: "---\nname: a\ndescription: plain # a comment\n---\n", name: "a", desc: "plain"},
-		{in: "---\nname: \"q\"\ndescription: \"tab\\tand \\\"quotes\\\"\"\n---\n", name: "q", desc: "tab\tand \"quotes\""},
-		{in: "---\ndescription: |\n  line one\n  line two\nname: lit\n---\n", name: "lit", desc: "line one\nline two"},
+		{in: "---\nname: \"q\"\ndescription: \"tab\\tand \\\"quotes\\\"\"\n---\n", name: "q", desc: "tab and \"quotes\""},
+		{in: "---\ndescription: |\n  line one\n  line two\nname: lit\n---\n", name: "lit", desc: "line one line two"},
 		{in: "---\nname: never closed\ndescription: x\n", desc: "---", first: true},
 		{in: "---\r\nname: crlf\r\ndescription: windows\r\n---\r\n", name: "crlf", desc: "windows"},
 		{in: "---\nname: h\nuser-invocable: False\n---\n", name: "h", hidden: true},
@@ -323,5 +326,126 @@ func TestParseHeadReadsTheFrontMatterSubset(t *testing.T) {
 		if h.name != c.name || h.description != c.desc || h.hidden != c.hidden {
 			t.Errorf("parseHead(%q) = %+v, want name=%q desc=%q hidden=%v", c.in, h, c.name, c.desc, c.hidden)
 		}
+	}
+}
+
+// TestASwappedLinkIsReReadEvenAtTheSameSizeAndTime: home-manager links skills
+// and the snippets file into /nix/store, where every mtime is 1970. A switch
+// that changes a description (or a snippet) without changing its length swaps
+// the link to a new target of the same size and time — and must be re-read.
+func TestASwappedLinkIsReReadEvenAtTheSameSizeAndTime(t *testing.T) {
+	f := newFixture(t)
+	epoch := time.Unix(1, 0)
+	gen := func(name, skillDesc, snipBody string) string {
+		d := filepath.Join(f.cfg, ".generations", name)
+		write(t, filepath.Join(d, "skill", "SKILL.md"), skill("linked", skillDesc))
+		write(t, filepath.Join(d, "snippets.json"), `[{"trigger":":s","label":"L","body":"`+snipBody+`"}]`)
+		for _, p := range []string{filepath.Join(d, "skill", "SKILL.md"), filepath.Join(d, "snippets.json")} {
+			_ = os.Chtimes(p, epoch, epoch)
+		}
+		return d
+	}
+	a, b := gen("a", "AAAA", "body-one"), gen("b", "BBBB", "body-two")
+	link := func(target, at string) {
+		_ = os.Remove(at)
+		if err := os.MkdirAll(filepath.Dir(at), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link(filepath.Join(a, "skill"), filepath.Join(f.cfg, "skills", "linked"))
+	link(filepath.Join(a, "snippets.json"), f.s.SnippetsFile)
+	c := f.s.Scan("")
+	if d := byName(c)["linked"].Description; d != "AAAA" || len(c.Snippets) != 1 || c.Snippets[0].Body != "body-one" {
+		t.Fatalf("first generation: %q %+v", d, c.Snippets)
+	}
+	link(filepath.Join(b, "skill"), filepath.Join(f.cfg, "skills", "linked"))
+	link(filepath.Join(b, "snippets.json"), f.s.SnippetsFile)
+	c = f.s.Scan("")
+	if d := byName(c)["linked"].Description; d != "BBBB" {
+		t.Fatalf("after the switch the skill reads %q, want BBBB: the cache answered for a link that now points elsewhere", d)
+	}
+	if len(c.Snippets) != 1 || c.Snippets[0].Body != "body-two" {
+		t.Fatalf("after the switch the snippets are %+v, want body-two", c.Snippets)
+	}
+}
+
+// TestALinkOutOfItsTreeIsNotFollowed: a command or skill whose link resolves
+// outside the directory it was found in (and outside the Nix store) is not
+// read; the same link kept inside the tree is (the positive control).
+func TestALinkOutOfItsTreeIsNotFollowed(t *testing.T) {
+	f := newFixture(t)
+	outside := t.TempDir()
+	write(t, filepath.Join(outside, "evil", "SKILL.md"), skill("evil", "read from outside"))
+	write(t, filepath.Join(outside, "evil.md"), "---\ndescription: outside command\n---\n")
+	write(t, filepath.Join(f.cfg, "kept", "SKILL.md"), skill("kept", "inside the tree"))
+	for target, at := range map[string]string{
+		filepath.Join(outside, "evil"):    filepath.Join(f.cfg, "skills", "evil"),
+		filepath.Join(outside, "evil.md"): filepath.Join(f.cfg, "commands", "evil-cmd.md"),
+		filepath.Join(f.cfg, "kept"):      filepath.Join(f.cfg, "skills", "kept"),
+	} {
+		if err := os.MkdirAll(filepath.Dir(at), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := byName(f.s.Scan(""))
+	if _, ok := m["evil"]; ok {
+		t.Error("a skill linked from outside the config directory was read")
+	}
+	if _, ok := m["evil-cmd"]; ok {
+		t.Error("a command linked from outside the config directory was read")
+	}
+	if m["kept"].Description != "inside the tree" {
+		t.Errorf("a link inside the tree was not followed: %q", names(f.s.Scan("")))
+	}
+}
+
+// TestOutsideHomeAndAnyRepositoryOnlyTheCwdIsAProject: with no repository root
+// and a cwd outside home, the cwd's own .claude is read and no ancestor's — a
+// world-writable /tmp/.claude must never be offered for cwd /tmp/x.
+func TestOutsideHomeAndAnyRepositoryOnlyTheCwdIsAProject(t *testing.T) {
+	f := newFixture(t)
+	tmp := t.TempDir() // not under f.homeDir
+	cwd := filepath.Join(tmp, "x")
+	write(t, filepath.Join(tmp, ".claude", "commands", "planted.md"), "---\ndescription: planted above the cwd\n---\n")
+	write(t, filepath.Join(cwd, ".claude", "commands", "here.md"), "---\ndescription: the cwd's own\n---\n")
+	m := byName(f.s.Scan(cwd))
+	if _, ok := m["planted"]; ok {
+		t.Fatalf("an ancestor's .claude outside home and any repository was read: %q", names(f.s.Scan(cwd)))
+	}
+	if m["here"].Source != mirror.SourceProject {
+		t.Fatalf("the cwd's own .claude was not read: %q", names(f.s.Scan(cwd)))
+	}
+	if got := f.s.projectDirs(cwd); !slices.Equal(got, []string{cwd}) {
+		t.Fatalf("projectDirs(%s) = %q, want the cwd alone", cwd, got)
+	}
+}
+
+// TestAFIFOWhereAConfigFileShouldBeDoesNotBlockTheScan: settings.json and
+// installed_plugins.json are read through readBounded; a FIFO there would
+// block the read (and the host's answer) forever.
+func TestAFIFOWhereAConfigFileShouldBeDoesNotBlockTheScan(t *testing.T) {
+	f := newFixture(t)
+	write(t, filepath.Join(f.cfg, "skills", "still", "SKILL.md"), skill("still", "answered"))
+	if err := os.MkdirAll(filepath.Join(f.cfg, "plugins"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(f.cfg, "plugins", "installed_plugins.json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan mirror.Catalog, 1)
+	go func() { done <- f.s.Scan("") }()
+	select {
+	case c := <-done:
+		if byName(c)["still"].Description != "answered" {
+			t.Fatalf("the rest was not answered: %q", names(c))
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the scan blocked on a FIFO")
 	}
 }
