@@ -100,6 +100,9 @@ export const mirrorChatPort = port + 50;
 // MUSTER_SEND_QUEUE_IDLE) and its two mirrored hosts — one that reports Claude
 // Code's status and one that plays an older muster-mirror.
 export const sendQueuePort = port + 45;
+// Session focus (focus.spec.ts): its own server (the e2eterm binary, mirror
+// plugin on) and one mirrored host whose Claude window reports a session id.
+export const focusPort = port + 55;
 // The fake service's bearer token. Invented, like every value here.
 export const sttToken = 'e2e-stt-token-not-a-real-one';
 // The docs screenshots (e2e/docshots, `make screenshots`, never in the suite):

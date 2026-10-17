@@ -90,7 +90,7 @@ func (s *Server) handleMirrorConnect(w http.ResponseWriter, r *http.Request) {
 // pinned is the viewer's pins: an entry whose address is pinned is marked. A
 // pin whose window is not listed matches nothing here and draws nothing — it
 // stays dormant until the window is listed again.
-func (s *Server) mirrorCards(ctx context.Context, pinned pins.Set) []ui.MirrorCardView {
+func (s *Server) mirrorCards(ctx context.Context, pinned pins.Set, focused focusIndex) []ui.MirrorCardView {
 	if s.ext.Mirror == nil {
 		return nil
 	}
@@ -98,8 +98,8 @@ func (s *Server) mirrorCards(ctx context.Context, pinned pins.Set) []ui.MirrorCa
 	for _, m := range mirror.Ordered(s.ext.Mirror.Hosts(ctx)) {
 		out = append(out, ui.MirrorCardView{Host: m.Host, Session: m.Session, Window: m.Window, Title: mirrorTitle(m), Label: m.Label,
 			Qualifier: m.Qualifier, Kind: m.Kind(), Online: m.Online, Interactive: m.Interactive, Claude: m.Claude,
-			ActiveAt: m.ActiveAt(),
-			Pinned:   pinned.Mirror(pins.MirrorKey{Host: m.Host, Session: m.Session, Window: m.Window})})
+			ActiveAt: m.ActiveAt(), Focus: focused.mirrorFocus(m.ClaudeSession),
+			Pinned: pinned.Mirror(pins.MirrorKey{Host: m.Host, Session: m.Session, Window: m.Window})})
 	}
 	return out
 }

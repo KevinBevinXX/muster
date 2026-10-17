@@ -395,7 +395,7 @@ func (hc *hostConn) list(m Msg, now int64) (sessions []string, windows []Window,
 		if hc.version < 2 {
 			// A v1 host has no rendered view whatever it claims.
 			for i := range windows {
-				windows[i].Claude, windows[i].Status, windows[i].StatusSince = false, "", 0
+				windows[i].Claude, windows[i].Status, windows[i].StatusSince, windows[i].ClaudeSession = false, "", 0, ""
 			}
 		}
 		sessions, claude, labels, activity = SessionsOf(windows)

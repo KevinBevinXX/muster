@@ -74,6 +74,10 @@ type AgentCardView struct {
 	// pinned entries first (AgentsCardsWithMirrors), the card a pin glyph, and the
 	// ⋯ menu offers Unpin instead of Pin. Composed in cardViewIndexed.
 	Pinned bool
+	// Focus is what the agent is working on (internal/focus), nil for none.
+	// Composed in cardViewIndexed; shown as the footer's focus chip, and found
+	// by the filter.
+	Focus *FocusView
 }
 
 // lastActive is the card's "active" time: LastActiveAt, or UpdatedAt when the
@@ -272,8 +276,9 @@ func agentCard(a AgentCardView) g.Node {
 		ID("agent-"+ids),
 		g.If(a.Pinned, g.Attr("data-pinned", "")),
 		// What the list's filter finds this card by (agents_filter.go).
-		cardFilterAttrs(agentFields(a),
-			displayOr(a.DisplayName, a.Name), a.Name, a.Repo, agents.KindLabel(a.Kind), a.CCAccount, a.Status, "agent"),
+		cardFilterAttrs(agentFields(a), append([]string{
+			displayOr(a.DisplayName, a.Name), a.Name, a.Repo, agents.KindLabel(a.Kind), a.CCAccount, a.Status, "agent"},
+			focusHaystack(a.Focus)...)...),
 		Class("group relative overflow-hidden rounded-2xl border border-line bg-s1/70 shadow-lg shadow-black/20 ring-1 ring-line"),
 		// The control cluster (rename + ⋯ menu) is positioned over the card's
 		// top-right corner, OUTSIDE the nav anchor, so its clicks don't navigate.
@@ -347,7 +352,7 @@ func agentFields(a AgentCardView) cardFields {
 // when the agent was dispatched from a task. Renders nothing when there's no
 // timestamp and no source task (keeps test/minimal views clean).
 func agentCardFooter(a AgentCardView) g.Node {
-	if a.CreatedAt.IsZero() && a.lastActive().IsZero() && a.NoteID == nil {
+	if a.CreatedAt.IsZero() && a.lastActive().IsZero() && a.NoteID == nil && a.Focus == nil {
 		return g.Text("")
 	}
 	// Nil-guard the badge (g.If evaluates its node arg eagerly, so build it first).
@@ -358,6 +363,7 @@ func agentCardFooter(a AgentCardView) g.Node {
 	return cardFooter(
 		g.If(!a.CreatedAt.IsZero(), cardMeta("age", cardTime(a.CreatedAt))),
 		cardActivity(a.lastActive()),
+		cardFocus("agent-"+strconv.FormatInt(a.ID, 10), a.Focus),
 		Span(Class("flex-1")),
 		taskBadge,
 	)

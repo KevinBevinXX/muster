@@ -15,6 +15,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
@@ -33,6 +34,10 @@ type gatedFixture struct {
 	workerTok string
 	plugins   *plugins.PGStore
 	notes     notes.Store
+	// focus is the session focus store, and summ the fake summarizer the
+	// focus tools' refresher calls (focus_tools_pg_test.go).
+	focus *focus.PGStore
+	summ  *fakeFocusSummarizer
 }
 
 func newGatedFixture(t *testing.T) *gatedFixture {
@@ -42,6 +47,8 @@ func newGatedFixture(t *testing.T) *gatedFixture {
 		g.plugins = plugins.NewPG(pool)
 		g.notes = notes.NewPG(pool)
 		ext.Plugins, ext.Notes = g.plugins, g.notes
+		g.focus, g.summ = focus.NewPG(pool), &fakeFocusSummarizer{}
+		ext.Focus, ext.FocusSummarizer = g.focus, g.summ
 	})
 	g.owner = g.newMember(t)
 	g.asOwner = g.as(g.owner)

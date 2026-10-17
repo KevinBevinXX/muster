@@ -22,13 +22,18 @@
 // 🔴 A SECRET IS NEVER RETURNED TO A BROWSER. The listing ([Summary]) carries a
 // name, a fingerprint and timestamps — nothing a page could echo back. Opening
 // a secret is [PGStore.ClaudeTokens] and [PGStore.OpenRouterKey], whose only
-// callers are the pod-spec path (internal/agentprovision, through [Plane]).
+// callers are the pod-spec path (internal/agentprovision, through [Plane]) and,
+// for the OpenRouter key, session focus's server-side summarizer (also through
+// [Plane]). Neither hands it to a page.
 //
 // # OpenRouter: an ordinary API key, used as entered
 //
 // The member pastes an ordinary OpenRouter API key (operator decision on #69);
 // it is sealed like a setup-token and placed, as entered, in the member's
-// gateway pods as OPENROUTER_API_KEY. muster makes no OpenRouter call with it.
+// gateway pods as OPENROUTER_API_KEY. muster's ONE OpenRouter call with it is
+// session focus's summarizer (internal/focus.ScaleDown, through
+// [Plane.OpenRouterKey]): it summarizes that member's own sessions' transcripts,
+// server-side, on their key.
 package credentials
 
 import (

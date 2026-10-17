@@ -266,6 +266,9 @@ Code wrote it (`statusSince`, from its sessions file's `statusUpdatedAt`), which
 the [send queue](sending-and-step-up.md#queue-send-when-claude-code-is-idle)
 waits on. A host that does not report status, or reports it without its time,
 is never sent a queued message.
+The same way, a host reports each Claude Code window's **session id**
+(`claudeSession`), which its [focus](focus.md) is keyed by. A host that does not
+report it still works; its windows have no focus.
 
 The time is Claude Code's, measured on Claude Code 2.1.289 (2026-10-15, one
 Linux host, about 40 minutes of every live sessions file, read-only). The

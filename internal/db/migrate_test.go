@@ -24,13 +24,14 @@ import (
 // applied. (0005 dropped the five privilege and runbook tables 0001 created;
 // 0006 added users, invites, api_tokens and audit_log; 0008 added mirror_tokens;
 // 0011 added user_credentials; 0012 added flow_jobs and flow_runner_tokens;
-// 0013 added push_subscriptions and push_preferences; 0014 added flow_requests; 0015 added plugins and plugin_messages; 0016 added plugin_reply_drafts; 0017 added pins; 0018 added recents; 0019 added send_queue.)
+// 0013 added push_subscriptions and push_preferences; 0014 added flow_requests; 0015 added plugins and plugin_messages; 0016 added plugin_reply_drafts; 0017 added pins; 0018 added recents; 0019 added send_queue; 0020 added agent_focus.)
 //
 // 🔴 A LEDGER, NOT A SPOT CHECK. It fails when the set GROWS or SHRINKS, so a
 // table quietly dropped from 0001 reddens here and a table added without a
 // decision does too. A "does `notes` exist" check would pass against a
 // migration that created one table and lost twelve.
 var tablesThisSchemaMustHave = []string{
+	"agent_focus",
 	"agent_retired_names",
 	"agents",
 	"api_tokens",

@@ -204,7 +204,7 @@ func WireWindows(windows []WindowInfo, codenames map[string]string, claude bool,
 		m := mirror.Window{Session: w.Session, ID: w.ID, Index: w.Index, Active: w.Active,
 			Activity: w.Activity, Command: w.Command, Claude: claude && w.Claude != nil}
 		if m.Claude {
-			m.Status, m.StatusSince = w.Claude.Status, w.Claude.StatusSince
+			m.Status, m.StatusSince, m.ClaudeSession = w.Claude.Status, w.Claude.StatusSince, w.Claude.Gen
 		}
 		if name, ok := codenames[w.Session]; ok {
 			m.Label = name + ":" + strconv.Itoa(w.Index)

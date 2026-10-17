@@ -433,7 +433,7 @@ func TestAPerWindowHostRegistersEveryWindowFromOneReadPerRefresh(t *testing.T) {
 	hello := d.of(mirror.TypeHello)[0]
 	if got, want := hello.Windows, []mirror.Window{
 		{Session: "scratch2", ID: "@4", Index: 1, Label: "Gold:1", Command: "zsh"},
-		{Session: "scratch2", ID: "@7", Index: 8, Active: true, Label: "Gold:8", Claude: true, Command: "claude"},
+		{Session: "scratch2", ID: "@7", Index: 8, Active: true, Label: "Gold:8", Claude: true, Command: "claude", ClaudeSession: "g7"},
 		{Session: "solo", ID: "@9", Index: 0, Active: true, Command: "vim"},
 	}; !slices.Equal(got, want) {
 		t.Fatalf("hello.Windows =\n  %+v\nwant\n  %+v", got, want)
@@ -621,7 +621,8 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 				Pane: "%1", PanePID: 1, Activity: 1791903960, Command: strings.Repeat(">", mirror.MaxCommand),
 				// The longest status (the send queue's): "waiting", and the longest
 				// time the wire lets through (no bound but int64's).
-				Claude: &ClaudePane{Status: mirror.StatusWaiting, StatusSince: math.MaxInt64}})
+				// And the longest Claude session id the wire keeps (64 bytes).
+				Claude: &ClaudePane{Status: mirror.StatusWaiting, StatusSince: math.MaxInt64, Gen: strings.Repeat("f", 64)}})
 		}
 		return out
 	}
@@ -643,7 +644,7 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 			t.Fatalf("a host with %d windows registers %d, want %d", n, len(l.windows), want)
 		}
 		for _, w := range l.windows {
-			if w.Label == "" || w.Command == "" || !w.Claude || w.Status != mirror.StatusWaiting || w.StatusSince != math.MaxInt64 {
+			if w.Label == "" || w.Command == "" || !w.Claude || w.Status != mirror.StatusWaiting || w.StatusSince != math.MaxInt64 || len(w.ClaudeSession) != 64 {
 				t.Fatalf("instrument check: a worst-case field was dropped by normalisation, so this is not the worst case: %+v", w)
 			}
 		}

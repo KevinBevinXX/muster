@@ -19,6 +19,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/ccpool"
+	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/sendqueue"
@@ -96,6 +97,14 @@ const (
 	// before a queued message is sent to it. A Go duration, 30s when unset,
 	// refused outside 1s–1h.
 	envSendQueueIdle = "MUSTER_SEND_QUEUE_IDLE"
+	// Session focus (internal/focus): how often the server recomputes each
+	// session's focus. A Go duration, 15m when unset, "0" turns the periodic
+	// pass off (focus_refresh still works), refused outside 1m–24h otherwise.
+	envFocusInterval = "MUSTER_FOCUS_INTERVAL"
+	// How long a mirrored session's focus is kept after a pass last saw the
+	// session on any host. A Go duration, 168h when unset, refused outside
+	// 1h–2160h (90 days).
+	envFocusRetention = "MUSTER_FOCUS_RETENTION"
 
 	// The optional MIRRORED-sessions plugin (internal/mirror): "1" turns it on.
 	// Off, GET /mirror/connect answers 404 and nothing mirrored is listed.
@@ -385,6 +394,11 @@ type config struct {
 	// SendQueueIdle is MUSTER_SEND_QUEUE_IDLE (sendqueue.DefaultIdleFor when
 	// unset).
 	SendQueueIdle time.Duration
+	// FocusInterval is MUSTER_FOCUS_INTERVAL (focus.DefaultInterval when
+	// unset; 0 = no periodic pass).
+	FocusInterval time.Duration
+	// FocusRetention is MUSTER_FOCUS_RETENTION (focus.DefaultRetention unset).
+	FocusRetention time.Duration
 
 	// Mirror turns the mirrored-sessions plugin on (MUSTER_MIRROR=1).
 	Mirror bool
@@ -890,6 +904,22 @@ func loadConfig(getenv func(string) string) (config, error) {
 				envSendQueueIdle, v, sendqueue.MinIdleFor, sendqueue.MaxIdleFor)
 		}
 		c.SendQueueIdle = d
+	}
+	c.FocusInterval = focus.DefaultInterval
+	if v := strings.TrimSpace(getenv(envFocusInterval)); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || (d != 0 && (d < time.Minute || d > 24*time.Hour)) {
+			return config{}, fmt.Errorf("invalid %s %q: want 0 (off) or a Go duration between 1m and 24h (e.g. 15m)", envFocusInterval, v)
+		}
+		c.FocusInterval = d
+	}
+	c.FocusRetention = focus.DefaultRetention
+	if v := strings.TrimSpace(getenv(envFocusRetention)); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < time.Hour || d > 90*24*time.Hour {
+			return config{}, fmt.Errorf("invalid %s %q: want a Go duration between 1h and 2160h (e.g. 168h)", envFocusRetention, v)
+		}
+		c.FocusRetention = d
 	}
 
 	if v := strings.TrimSpace(getenv(envGitHubEncKey)); v != "" {
