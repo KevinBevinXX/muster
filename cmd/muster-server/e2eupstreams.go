@@ -15,6 +15,7 @@ import (
 // (e2e/tests/pickers.spec.ts), so the pickers can be driven end to end with
 // fixture data. Unset, both stay the real ones.
 func init() {
+	e2eUpstreamHooks = true
 	if u := os.Getenv(envE2EGitHubAPI); u != "" {
 		github.UseAPIBaseURL(u)
 	}
