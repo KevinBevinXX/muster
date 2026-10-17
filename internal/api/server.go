@@ -559,9 +559,52 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if err := ui.RenderPage(w, tabFromPath(r.URL.Path), s.shellFeatures(r.Context())); err != nil {
+	tab := tabFromPath(r.URL.Path)
+	if err := ui.RenderPageWith(w, tab, s.shellFeatures(r.Context()), s.shellData(r.Context(), tab)); err != nil {
 		s.logger.Printf("error rendering index page: %v", err)
 	}
+}
+
+// shellData is what the shell draws on its first paint (ui.ShellData): on the
+// Agents tab, the "Recently viewed" strip, so it is not filled in above the list
+// a moment later and push everything below it down. Any other tab draws its
+// Agents panel hidden, where a late strip moves nothing on screen.
+//
+// 🔴 IT IS NOT THE LIST'S BUILD, AND MUST NOT BE. agentsListCards asks the
+// provisioner for live instances (a Kubernetes read) and reads every agent's
+// last message; the shell's first byte waited on both, and GET /agents then
+// built the whole list a second time for /ui/agents. The strip needs only
+// which agents exist, what they are called and which are pinned — one store
+// read — plus the mirror hub's cards, which are in memory. The live status
+// arrives with the list's own load, which replaces the strip out of band
+// moments later: an icon swap that moves nothing.
+// TestTheAgentsShellReadsNoInstances counts the provisioner calls.
+//
+// ⚠ A FAILED READ DRAWS THE OLD WAY (an empty strip the list's own load fills),
+// not an error: the list's load reports its own failure.
+func (s *Server) shellData(ctx context.Context, tab string) ui.ShellData {
+	if tab != "agents" || s.ext.Agents == nil {
+		return ui.ShellData{}
+	}
+	list, err := s.ext.Agents.List(ctx)
+	if err != nil {
+		s.logger.Printf("agents: shell recents: %v", err)
+		return ui.ShellData{}
+	}
+	pinned := s.pinSet(ctx)
+	cards := make([]ui.AgentCardView, 0, len(list))
+	for _, a := range list {
+		// NO Status: a card's status is composed in ONE place, against the live
+		// instances (cardViewIndexed; TestOneCardComposerFeedsEverySurface), and
+		// this path must not ask for them. The entry's dot is drawn unknown for
+		// the moment until the list's own load replaces the strip — the same 12px
+		// box, so nothing moves.
+		cards = append(cards, ui.AgentCardView{ID: a.ID, Name: a.Name, DisplayName: a.DisplayName,
+			Pinned: pinned.Agent(a.ID)})
+	}
+	// No focus index: the strip draws no focus (ui/recents.go), and reading it
+	// would be a second store read on the shell's first byte.
+	return ui.ShellData{}.WithRecent(cards, s.mirrorCards(ctx, pinned, nil), s.recentRefs(ctx))
 }
 
 // tabFromPath maps a request path to a tab key.

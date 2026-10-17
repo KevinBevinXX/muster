@@ -1,0 +1,173 @@
+{
+ "comment": "Every search's rank (internal/searchrank), compared after Fold. Read by searchrank_test.go AND by e2e/tests/pickers.spec.ts, which runs the browser's window.musterRank over the same rows: one table, two implementations held to it. The non-ASCII rows are where the two disagreed before Fold.",
+ "cases": [
+  {
+   "label": "gpt-4o",
+   "q": "gpt",
+   "tier": 0,
+   "why": "prefix"
+  },
+  {
+   "label": "GPT-4o",
+   "q": "gpt",
+   "tier": 0,
+   "why": "case-insensitive prefix"
+  },
+  {
+   "label": "gpt-4o",
+   "q": "4o",
+   "tier": 1,
+   "why": "word start after a hyphen"
+  },
+  {
+   "label": "openai/gpt-4o",
+   "q": "gpt",
+   "tier": 1,
+   "why": "word start after a slash"
+  },
+  {
+   "label": "docs sweeper",
+   "q": "sweep",
+   "tier": 1,
+   "why": "word start after a space"
+  },
+  {
+   "label": "gpt-4o",
+   "q": "pt",
+   "tier": 2,
+   "why": "substring inside a word"
+  },
+  {
+   "label": "banana",
+   "q": "ana",
+   "tier": 2,
+   "why": "a later occurrence is no word start either"
+  },
+  {
+   "label": "ana-banana",
+   "q": "ban",
+   "tier": 1,
+   "why": "the second word starts with it"
+  },
+  {
+   "label": "xbanana ana",
+   "q": "ana",
+   "tier": 1,
+   "why": "a LATER occurrence is a word start"
+  },
+  {
+   "label": "gpt-4o",
+   "q": "g4o",
+   "tier": 3,
+   "why": "letters in order"
+  },
+  {
+   "label": "/srv/projects/muster",
+   "q": "mstr",
+   "tier": 3,
+   "why": "an abbreviation"
+  },
+  {
+   "label": "gpt-4o",
+   "q": "o4",
+   "tier": -1,
+   "why": "letters out of order"
+  },
+  {
+   "label": "gpt-4o",
+   "q": "gpt5",
+   "tier": -1,
+   "why": "a letter that is not there"
+  },
+  {
+   "label": "gpt-4o",
+   "q": "",
+   "tier": 0,
+   "why": "an empty query matches everything"
+  },
+  {
+   "label": "gpt-4o",
+   "q": "  ",
+   "tier": 0,
+   "why": "spaces are an empty query"
+  },
+  {
+   "label": "a_b",
+   "q": "_b",
+   "tier": 2,
+   "why": "punctuation inside: preceded by a letter, so a substring"
+  },
+  {
+   "label": "Zürich-Bern",
+   "q": "bern",
+   "tier": 1,
+   "why": "word start in a non-ASCII label"
+  },
+  {
+   "label": "Zürich-Bern",
+   "q": "ürich",
+   "tier": 2,
+   "why": "substring after a non-ASCII letter"
+  },
+  {
+   "label": "sweeper",
+   "q": "",
+   "tier": 0,
+   "why": "empty"
+  },
+  {
+   "label": "İstanbul",
+   "q": "istanbul",
+   "tier": 0,
+   "why": "dotted capital I folds to i (Go lower-cased it to i, the browser to i + combining dot)"
+  },
+  {
+   "label": "ΟΔΟΣ",
+   "q": "οδοσ",
+   "tier": 0,
+   "why": "final sigma: the browser lower-cases a word-final Σ to ς, Fold makes it σ"
+  },
+  {
+   "label": "x²abc",
+   "q": "abc",
+   "tier": 2,
+   "why": "superscript two is the digit 2 after NFKD, so abc does not start a word"
+  },
+  {
+   "label": "𝐀bc runner",
+   "q": "bc",
+   "tier": 2,
+   "why": "a letter outside the BMP is one letter (A), not two UTF-16 units"
+  },
+  {
+   "label": "abc",
+   "q": "\ufeffabc",
+   "tier": 0,
+   "why": "a BOM pasted with the query is not a character"
+  },
+  {
+   "label": "café au lait",
+   "q": "cafe",
+   "tier": 0,
+   "why": "accents fold away: é is e"
+  },
+  {
+   "label": "gpt-4o",
+   "q": "\u00a0gpt\u0085",
+   "tier": 0,
+   "why": "no-break space and NEL around a query are white space"
+  },
+  {
+   "label": "οδος",
+   "q": "οδοσ",
+   "tier": 0,
+   "why": "a label written with the final-sigma letter itself matches the plain sigma"
+  },
+  {
+   "label": "𠀋bc runner",
+   "q": "bc",
+   "tier": 2,
+   "why": "a letter outside the BMP that NFKD leaves alone is still one letter (two UTF-16 units in the browser)"
+  }
+ ]
+}

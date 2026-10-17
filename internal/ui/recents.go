@@ -82,6 +82,9 @@ func recentStrip(items []recentItem, oob bool) g.Node {
 		g.If(len(items) == 0, g.Attr("hidden", "")),
 		g.If(oob, hx("hx-swap-oob", "true")),
 		Class("mb-3 min-w-0"),
+		// A sideways swipe here is the strip's, not the sidebar edge-swipe's
+		// (appScript's ownsSideways): the strip starts inside the 28px edge zone.
+		g.Attr("data-own-swipe", ""),
 		g.If(len(items) > 0, g.Group{
 			H3(Class("mb-1 text-[11px] font-medium uppercase tracking-wide text-muted"), g.Text("Recent")),
 			Div(

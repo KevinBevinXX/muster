@@ -1,11 +1,11 @@
-import { execFileSync, spawn, ChildProcess } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { BrowserContext, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { binDir, dsn, mirrorChatPort, password, repoRoot, versionTerm } from '../lib/env';
-import { serverBinary, startServer, Running } from '../lib/server';
+import { dsn, mirrorChatPort, password, repoRoot } from '../lib/env';
+import { MirrorRig } from '../lib/mirrorhost';
 
 // THE MIRRORED RENDERED VIEW'S CHAT, on a phone with touch (412×915), against a
 // REAL muster-server and a REAL muster-mirror built with `-tags e2emirror`
@@ -15,53 +15,22 @@ import { serverBinary, startServer, Running } from '../lib/server';
 // is invented.
 test.use({ viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true, storageState: { cookies: [], origins: [] } });
 
-const origin = `http://localhost:${mirrorChatPort}`;
-const host = 'e2e-chat-' + Date.now().toString(36);
-const mirrorBin = path.join(binDir, 'muster-mirror-e2e');
-let server: Running | undefined;
-let mirrorProc: ChildProcess | undefined;
-// mirrorLog is the CURRENT muster-mirror process's output only (startMirror
-// resets it), so a line in it is about this test's host connection.
-let mirrorLog = '';
-let token = '';
+// The server, its mirror token and the fake host are e2e/lib/mirrorhost.ts's.
+const rig = new MirrorRig(mirrorChatPort, 'e2e-chat');
+const origin = rig.origin;
+const host = rig.host;
 
-function startMirror(transcript: string, extra: NodeJS.ProcessEnv = {}): ChildProcess {
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    ...extra,
-    MUSTER_MIRROR_URL: origin,
-    MUSTER_MIRROR_ALLOW_HTTP: '1',
-    MUSTER_MIRROR_TOKEN: token,
-    MUSTER_MIRROR_HOST: host,
-    MUSTER_MIRROR_E2E_SESSIONS: 'main',
-    MUSTER_MIRROR_E2E_CLAUDE: 'main=' + transcript,
-  };
-  mirrorLog = '';
-  const p = spawn(mirrorBin, [], { env, stdio: ['ignore', 'pipe', 'pipe'] });
-  p.stdout?.on('data', (d) => (mirrorLog += d));
-  p.stderr?.on('data', (d) => (mirrorLog += d));
-  return p;
+// startMirror (re)starts the host with session main as a Claude Code pane
+// writing transcript. rig.log is the CURRENT process's output only (a restart
+// clears it), so a wait on "connected" cannot be satisfied by an earlier one.
+async function startMirror(transcript: string, extra: NodeJS.ProcessEnv = {}): Promise<void> {
+  await rig.startHost({ ...extra, MUSTER_MIRROR_E2E_SESSIONS: 'main', MUSTER_MIRROR_E2E_CLAUDE: 'main=' + transcript });
 }
 
-async function stopMirror() {
-  if (!mirrorProc || mirrorProc.exitCode !== null) return;
-  const done = new Promise((r) => mirrorProc!.once('exit', r));
-  mirrorProc.kill('SIGTERM');
-  await done;
-}
+const stopMirror = () => rig.stopHost();
 
 test.beforeAll(async () => {
-  execFileSync('go', ['build', '-tags', 'e2emirror', '-o', mirrorBin, './cmd/muster-mirror'], { cwd: repoRoot, stdio: 'inherit' });
-  server = await startServer(versionTerm, mirrorChatPort, {
-    MUSTER_MIRROR: '1',
-    MUSTER_AGENT_PROVISIONER: 'noop',
-    MUSTER_AGENT_IMAGE_REPO: 'registry.example.test/runtime',
-    MUSTER_AGENT_API_URL: 'http://muster.example.test:8105',
-  });
-  token = execFileSync(serverBinary(versionTerm), ['mirror', 'token', 'create', host], { env: { ...process.env, DATABASE_URL: dsn } })
-    .toString()
-    .trim();
-  expect(token.startsWith('mmt_'), 'a mirror token was minted').toBe(true);
+  await rig.start();
 });
 
 test.afterEach(async () => {
@@ -69,7 +38,7 @@ test.afterEach(async () => {
 });
 
 test.afterAll(async () => {
-  await server?.stop();
+  await rig.stop();
 });
 
 let signedIn: Awaited<ReturnType<BrowserContext['cookies']>> | undefined;
@@ -122,18 +91,18 @@ const viewPath = `/mirror/view?host=${encodeURIComponent(host)}&session=main`;
 // the connection BEFORE it sends the welcome that line follows, so once it is
 // logged the view resolves to this connection. The card must also be online.
 async function openView(page: Page, transcript: string, extra: NodeJS.ProcessEnv = {}) {
-  mirrorProc = startMirror(transcript, extra);
+  await startMirror(transcript, extra);
   await login(page);
   await expect
     .poll(
       async () => {
-        if (!mirrorLog.includes('muster-mirror: connected to ')) return 'muster-mirror not connected yet';
+        if (!rig.log.includes('muster-mirror: connected to ')) return 'muster-mirror not connected yet';
         const html = await (await page.request.get(origin + '/ui/agents')).text();
         if (!html.includes('data-mirror-claude')) return 'main not reported as a Claude pane';
         if (html.includes('data-mirror-offline')) return 'the host is listed offline';
         return 'ready';
       },
-      { message: `this test's muster-mirror connected, main online as a Claude pane (muster-mirror log:\n${mirrorLog})`, timeout: 20_000 },
+      { message: `this test's muster-mirror connected, main online as a Claude pane (muster-mirror log:\n${rig.log})`, timeout: 20_000 },
     )
     .toBe('ready');
   await page.goto(origin + viewPath);

@@ -264,7 +264,7 @@ func ComposeURL(body string) string {
 // other create uses — one write path, one session check, one broadcast. A GET
 // that wrote would be a create-by-link.
 func ComposePage(feat Features, body string) g.Node {
-	return Doctype(shell("tasks", feat, composeOnLoad(body)))
+	return Doctype(shell("tasks", feat, composeOnLoad(body), ShellData{}))
 }
 
 // RenderComposePage writes ComposePage.
@@ -284,11 +284,19 @@ func composeOnLoad(body string) g.Node {
   function go() {
     var el = document.getElementById('compose-on-load');
     if (!el) return;
-    if (!window.htmx || !window.cgModalOpen) { if (++tries < 100) setTimeout(go, 50); return; }
+    if (!window.htmx || !window.cgModalShow) { if (++tries < 100) setTimeout(go, 50); return; }
     var u = el.getAttribute('data-compose-url');
     el.remove();
-    window.cgModalOpen('task-modal');
-    window.htmx.ajax('GET', u, { target: '#task-modal-body', swap: 'innerHTML' });
+    // 🔴 THE SHEET OPENS WHEN ITS BODY HAS LANDED, NOT BEFORE. Opened first, an
+    // empty sheet appeared and then grew to the form's height — and a centred
+    // sheet growing moves its top: a layout shift of 0.045 at 1280×800, with no
+    // tap to excuse it (e2e/tests/cls.spec.ts). Opened after, it appears whole.
+    // A failed load still opens it, so the failure is seen rather than nothing.
+    // cgModalShow, NOT cgModalOpen: Open empties the body, which here is the
+    // composer that was just loaded into it.
+    var open = function () { window.cgModalShow('task-modal'); };
+    var req = window.htmx.ajax('GET', u, { target: '#task-modal-body', swap: 'innerHTML' });
+    if (req && typeof req.then === 'function') req.then(open, open); else open();
     try { history.replaceState(history.state, '', '/tasks'); } catch (e) {}
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', go); else go();

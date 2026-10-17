@@ -65,9 +65,8 @@ func NotesPanel(active bool) g.Node {
 	return Div(
 		ID(panelID("tasks")),
 		g.Attr("role", "tabpanel"),
-		// min-h fills the viewport below the header so the horizontal swipe-to-
-		// switch-tabs gesture registers even over the empty area (see appScript's
-		// touchstart handler). Inert while `hidden`.
+		// min-h fills the viewport below the header, so an empty board still
+		// owns the page's height. Inert while `hidden`.
 		// destructiveSwap=true — AND THE PANEL'S OWN hx-target IS NOT WHY. Only the
 		// inner #tasks-list refreshes, with morph:innerHTML. What destroys nodes
 		// inside this panel is wired one level further down, in the card body:
@@ -138,6 +137,19 @@ func NotesPanel(active bool) g.Node {
 	)
 }
 
+// tasksListSkeletonID is the skeleton's id.
+//
+// 🔴 IT HAS ONE SO THE FIRST LOAD REPLACES IT RATHER THAN MORPHING IT.
+// #tasks-list swaps with morph:innerHTML, and idiomorph "soft-matches" an old
+// node to a new one of the same tag unless the OLD node has an id the new one
+// lacks. Without the id, the skeleton's wrapper and its children were REUSED as
+// the board's first rows — a skeleton card became the select toolbar, the pill
+// row a filter row — and those reused nodes moving to their new places is a
+// layout shift: 0.21 on the board at 1280×800, measured by e2e/tests/
+// cls.spec.ts. With the id nothing is reused: the skeleton is removed and the
+// board inserted, and an inserted node shifts nothing.
+const tasksListSkeletonID = "tasks-list-skeleton"
+
 // tasksListSkeleton is the height-reserving placeholder rendered as #tasks-list's
 // initial child. It reuses the app's existing skeleton idiom (animate-pulse surface
 // bars, same as recentSkeleton) at the collapsed task-card's shape, so the
@@ -179,6 +191,7 @@ func tasksListSkeleton() g.Node {
 		return Div(Class("h-11 " + w + " shrink-0 animate-pulse rounded-full bg-s3/50"))
 	}
 	return Div(
+		ID(tasksListSkeletonID),
 		g.Attr("data-tasks-skeleton", ""),
 		g.Attr("aria-hidden", "true"),
 		Class("flex flex-col gap-3"),

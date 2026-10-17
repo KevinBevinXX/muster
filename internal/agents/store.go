@@ -409,8 +409,11 @@ type Store interface {
 	// ListSessions returns an agent's sessions most-recently-active first.
 	ListSessions(ctx context.Context, agentID int64) ([]ChatSession, error)
 	// SearchSessions returns the agent's sessions whose TITLE or whose kind='text'
-	// message content contains q (case-insensitive substring), most-recently-active
-	// first, each carrying one excerpt around the newest body match. A session
+	// message content contains q (case-insensitive substring), RANKED: a title that
+	// starts with q first, then a title with a word that starts with q, then every
+	// other match — most-recently-active first within each rank — each carrying
+	// one excerpt around the newest body match. The rank is applied before the
+	// limit, so a prefix match is never cut off by a page of newer substrings. A session
 	// matched by title alone carries an EMPTY Snippet — the title is already on
 	// screen, and repeating it would claim a body match that does not exist.
 	//

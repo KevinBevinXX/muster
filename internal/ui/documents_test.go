@@ -56,8 +56,14 @@ type documentRenderer struct {
 // green run that examined almost nothing.
 var standaloneDocuments = []documentRenderer{
 	{
-		fn: "Page", label: "the app shell (/)",
-		render:      func(w io.Writer) error { return RenderPage(w, "tasks", featuresAllOn) },
+		// PageWith is where the shell's Doctype is (Page calls it with no
+		// ShellData). The full render is the Agents tab with a "Recently viewed"
+		// strip drawn on first paint, so the strip's entries are in the sweep.
+		fn: "PageWith", label: "the app shell (/)",
+		render: func(w io.Writer) error {
+			list := []AgentCardView{{ID: 1, Name: "keen-wren", DisplayName: "#12 · **fix** the `chip` row", Status: "running"}}
+			return RenderPageWith(w, "agents", featuresAllOn, ShellData{}.WithRecent(list, nil, []RecentRef{{AgentID: 1}}))
+		},
 		renderEmpty: func(w io.Writer) error { return RenderPage(w, "", featuresAllOn) },
 	},
 	{
@@ -434,7 +440,7 @@ func featureShapes() []featureShape {
 // 🔴 A GO-SIDE TAB MISSING FROM THE BROWSER SCRIPT IS SILENT IN EVERY WAY THAT
 // MATTERS: the server paints a deep-linked tab correctly, so the page looks
 // right. Only an in-page switch onto it misbehaves — the heading keeps
-// announcing the PREVIOUS tab's subject, and the swipe gesture skips it.
+// announcing the PREVIOUS tab's subject, and switchTab refuses it.
 //
 // 🔴 IT READS THE THREE EMITTED VALUES SEPARATELY, AND A MUTANT IS WHY. The
 // first version searched the WHOLE script for each tab key. That is walkable
@@ -467,11 +473,10 @@ func TestTheBrowserScriptsTabRegistryMatchesGos(t *testing.T) {
 
 			tabsJS := jsValueAfter(t, js, "var TABS =")
 			headingsJS := jsValueAfter(t, js, "var HEADINGS =")
-			panelsJS := jsValueAfter(t, js, "var PANEL_SELECTOR =")
 
 			// POSITIVE CONTROL: the extractor must have found real content, or every
 			// assertion below is a comparison against an empty string.
-			for name, v := range map[string]string{"TABS": tabsJS, "HEADINGS": headingsJS, "PANEL_SELECTOR": panelsJS} {
+			for name, v := range map[string]string{"TABS": tabsJS, "HEADINGS": headingsJS} {
 				if len(v) < 3 {
 					t.Fatalf("extracted %q for %s — the script no longer emits it under that name, so nothing "+
 						"below is a claim about the browser's copy of the registry", v, name)
@@ -484,26 +489,21 @@ func TestTheBrowserScriptsTabRegistryMatchesGos(t *testing.T) {
 				}
 				if !strings.Contains(tabsJS, `"`+tb.Key+`"`) {
 					t.Errorf("the document draws #%s but the script's TABS array (%s) does not name %q — "+
-						"switchTab and the swipe gesture both index into that array, so the tab is "+
-						"unreachable in-page", panelID(tb.Key), tabsJS, tb.Key)
+						"switchTab indexes into that array, so the tab is unreachable in-page",
+						panelID(tb.Key), tabsJS, tb.Key)
 				}
 				if !strings.Contains(headingsJS, `"`+tb.Heading+`"`) {
 					t.Errorf("heading %q for tab %q is not in the script's HEADINGS map — an SPA switch onto that "+
 						"tab leaves the PREVIOUS tab's <h1> in place, announcing the wrong subject",
 						tb.Heading, tb.Key)
 				}
-				if !strings.Contains(panelsJS, "#"+panelID(tb.Key)) {
-					t.Errorf("PANEL_SELECTOR does not cover %s — the swipe gesture will not arm over that panel",
-						panelID(tb.Key))
-				}
 			}
 
 			// 🔴 THE SHRINK ARM, AND IT IS DERIVED RATHER THAN LISTED. A tab this
 			// shape does NOT draw must not survive in any of the three values, or
 			// the browser router can switch onto a panel that was never rendered —
-			// restoring it from localStorage on a cold start, or walking onto it
-			// with the swipe gesture — and the operator lands on a shell with every
-			// panel hidden.
+			// restoring it from localStorage on a cold start — and the operator
+			// lands on a shell with every panel hidden.
 			for _, tb := range musterTabs {
 				if drawn[tb.Key] {
 					continue
@@ -511,9 +511,6 @@ func TestTheBrowserScriptsTabRegistryMatchesGos(t *testing.T) {
 				if strings.Contains(tabsJS, `"`+tb.Key+`"`) {
 					t.Errorf("the script's TABS array names %q, which this shape does not draw — switchTab "+
 						"would toggle #%s, which is not in the document", tb.Key, panelID(tb.Key))
-				}
-				if strings.Contains(panelsJS, "#"+panelID(tb.Key)) {
-					t.Errorf("PANEL_SELECTOR names #%s, which this shape does not render", panelID(tb.Key))
 				}
 			}
 

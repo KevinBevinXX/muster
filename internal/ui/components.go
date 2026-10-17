@@ -200,7 +200,33 @@ func tabHeading(tab string) string {
 //	WHO CHECKS IT: the reviewer of the API-carve pull request, against that
 //	  derived test.
 func Page(activeTab string, feat Features) g.Node {
-	return Doctype(shell(activeTab, feat, g.Text("")))
+	return PageWith(activeTab, feat, ShellData{})
+}
+
+// PageWith is Page with state drawn on the first paint (ShellData).
+func PageWith(activeTab string, feat Features, data ShellData) g.Node {
+	return Doctype(shell(activeTab, feat, g.Text(""), data))
+}
+
+// ShellData is state a shell draws on its FIRST PAINT, rather than after the
+// panel's own load, because drawing it later would move what is below it.
+//
+// 🔴 IT EXISTS FOR LAYOUT SHIFT, AND ITS ONE FIELD IS THE MEASURED CASE. The
+// Agents tab's "Recently viewed" strip is drawn empty and hidden by the shell
+// and filled out of band by the list's first load — and when it appeared it
+// pushed the filter bar and every card down: 0.011 at 1280×800 on its own,
+// measured by e2e/tests/cls.spec.ts. Drawn here, the strip is already where it
+// will be when the list lands, and the out-of-band copy replaces it in place.
+// The zero value draws what the shell always drew (an empty, hidden strip).
+type ShellData struct {
+	recent []recentItem
+}
+
+// WithRecent resolves the strip's entries the way RenderAgentsList does —
+// against the same cards, so "exists" and "pinned" agree with the list.
+func (d ShellData) WithRecent(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRef) ShellData {
+	d.recent = recentItems(list, mirrors, refs)
+	return d
 }
 
 // shell is the <html> element of every shell document, with one extra
@@ -208,7 +234,7 @@ func Page(activeTab string, feat Features) g.Node {
 // ComposePage both go through here, so they cannot differ in anything but that
 // node. (Each wraps it in its own Doctype so the document registry in
 // documents_test.go sees two documents rather than one helper.)
-func shell(activeTab string, feat Features, extra g.Node) g.Node {
+func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node {
 	activeTab = normalizeVisibleTab(activeTab, feat)
 	return g.Group{
 		HTML(Class("dark"), Lang("en"),
@@ -304,7 +330,7 @@ func shell(activeTab string, feat Features, extra g.Node) g.Node {
 							// it is what makes the tab's absence honest instead of making
 							// its presence noisy.
 							NotesPanel(activeTab == "tasks"),
-							AgentsPanel(activeTab == "agents"),
+							agentsPanel(activeTab == "agents", data.recent),
 							g.If(feat.GitHub, ReposPanel(activeTab == "repos")),
 							g.If(feat.Connectors, ConnectorsPanel(activeTab == "connectors")),
 						),
@@ -1042,14 +1068,13 @@ func sidebarTab(tab, label, icon string, active, current, hasPanels bool) g.Node
 // links work), the per-tab floating action buttons, and the header badge's
 // quick-manage popover. No framework — minimal vanilla JS.
 // navRegistryJS emits the JavaScript values the SPA router needs — the ordered
-// tab list, the tab→heading map, the panel selector and the default tab — from
-// musterTabs.
+// tab list, the tab→heading map and the default tab — from musterTabs.
 //
 // 🔴 THIS IS THE FOURTH CONSUMER OF THE REGISTRY, AND UPSTREAM'S HAND-WRITTEN
 // VERSION OF IT IS THE ONE THAT ROTS SILENTLY. A Go-side tab missing from the
 // JS list is not a compile error and not a render error: the server paints the
 // deep-linked tab correctly and only an in-page switch onto it misbehaves —
-// `TABS.indexOf(tab)` returns -1 so the swipe gesture skips it, and
+// `TABS.indexOf(tab)` returns -1 so switchTab refuses it, and
 // `HEADINGS[tab]` is undefined so the <h1> keeps announcing the PREVIOUS tab's
 // subject. Deriving both from musterTabs makes the disagreement impossible
 // rather than detectable.
@@ -1058,16 +1083,16 @@ func sidebarTab(tab, label, icon string, active, current, hasPanels bool) g.Node
 // ("Today's runs") pasted into a single-quoted JS literal ends the string and
 // produces a syntax error that kills the WHOLE script — sidebar, tab routing,
 // toasts and FABs — with nothing on screen to say why.
-// 🔴 IT EMITS THE VISIBLE TABS, NOT THE WHOLE REGISTRY, AND THE THREE VALUES
-// MUST AGREE WITH WHAT WAS DRAWN. A tab in TABS whose panel this document did
-// not render is a tab the swipe gesture can select and switchTab can restore
-// from localStorage, landing the operator on a document with every panel hidden;
-// and PANEL_SELECTOR is used to find the panels that exist, so naming a missing
-// one there makes every query it feeds shorter by an element that was never
-// there. Deriving all three from visibleTabs is what keeps the browser's model
-// of the shell equal to the shell.
+// 🔴 IT EMITS THE VISIBLE TABS, NOT THE WHOLE REGISTRY, AND THE VALUES MUST
+// AGREE WITH WHAT WAS DRAWN. A tab in TABS whose panel this document did not
+// render is a tab switchTab can restore from localStorage, landing the operator
+// on a document with every panel hidden. Deriving them from visibleTabs is what
+// keeps the browser's model of the shell equal to the shell.
 //
-// 🔴 DEFAULT_TAB IS THE FOURTH, AND IT IS THE ONE THAT WAS MISSING. It is the
+// ⚠ THERE WAS A PANEL_SELECTOR TOO. Its only consumer was the tab-switch swipe,
+// which is gone (see the touch gesture block in appScript), so it went with it.
+//
+// 🔴 DEFAULT_TAB IS THE LAST, AND IT IS THE ONE THAT WAS MISSING. It is the
 // tab `/` shows, and it comes from defaultVisibleTab — the same function the
 // shell clamps with — so it is always a member of TABS. See that function for
 // what a script-side default of its own cost.
@@ -1075,19 +1100,15 @@ func navRegistryJS(feat Features) string {
 	visible := visibleTabs(feat)
 	keys := make([]string, 0, len(visible))
 	headingMap := make(map[string]string, len(visible))
-	sel := make([]string, 0, len(visible))
 	for _, t := range visible {
 		keys = append(keys, t.Key)
 		headingMap[t.Key] = t.Heading
-		sel = append(sel, "#"+panelID(t.Key))
 	}
 	keysJSON, _ := json.Marshal(keys)
 	headings, _ := json.Marshal(headingMap)
-	panels, _ := json.Marshal(strings.Join(sel, ", "))
 	def, _ := json.Marshal(defaultVisibleTab(feat))
 	return "  var TABS = " + string(keysJSON) + ";\n" +
 		"  var HEADINGS = " + string(headings) + ";\n" +
-		"  var PANEL_SELECTOR = " + string(panels) + ";\n" +
 		"  var DEFAULT_TAB = " + string(def) + ";\n"
 }
 
@@ -1469,8 +1490,7 @@ func appScript(feat Features) g.Node {
         switchTab(sel);
       });
     });
-    // Segmented [Requests | Tasks] control: same shared router as the sidebar +
-    // swipe. Bound once per button (data-cg-bound). These always target a present
+    // Segmented [Requests | Tasks] control: same shared router as the sidebar. Bound once per button (data-cg-bound). These always target a present
     // panel (they only render on the home shell), so they always intercept.
     document.querySelectorAll('[data-seg-tab]').forEach(function (seg) {
       if (seg.hasAttribute('data-cg-bound')) return;
@@ -1516,13 +1536,13 @@ func appScript(feat Features) g.Node {
   // tab, but no tab's link points at it, so nothing here returns it.
   function pathForTab(t) { return '/' + t; }
 
-  // switchTab is the shared tab router used by the sidebar tabs, the segmented
-  // [Requests | Tasks] control, AND the horizontal swipe — so all three drive the
-  // exact same pushState + panel show/hide state (no forked routing). It is a
-  // no-op on a page without the target panel (agent-detail/operator).
+  // switchTab is the shared tab router used by the sidebar tabs and the
+  // segmented [Requests | Tasks] control — so both drive the exact same
+  // pushState + panel show/hide state (no forked routing). It is a no-op on a
+  // page without the target panel (agent-detail/operator).
   // The 'replace' flag is set ONLY by restoreNav, which is re-painting state the operator
   // already had rather than navigating: it must not manufacture a history entry.
-  // Every human-driven caller (sidebar, segmented control, swipe) leaves it unset
+  // Every human-driven caller (sidebar, segmented control) leaves it unset
   // and keeps the pushState that Back depends on.
   function switchTab(sel, replace) {
     if (TABS.indexOf(sel) < 0) return;
@@ -1836,15 +1856,48 @@ func appScript(feat Features) g.Node {
   function cbHidden(box) { return box.querySelector('[data-combobox-hidden]'); }
   function cbList(box) { return box.querySelector('[data-combobox-list]'); }
   function cbOptions(box) { return Array.prototype.slice.call(box.querySelectorAll('[data-combobox-option]')); }
-  // cbFuzzy: subsequence match — every char of q appears in label in order
-  // (defensively lower-cased). Empty q matches everything.
-  function cbFuzzy(label, q) {
-    if (!q) return true;
-    label = label.toLowerCase(); q = q.toLowerCase();
-    var i = 0;
-    for (var j = 0; j < label.length && i < q.length; j++) { if (label.charAt(j) === q.charAt(i)) i++; }
-    return i === q.length;
-  }
+  // window.musterRank is EVERY search picker's rank — 0 the label starts with
+  // the query, 1 a word in it does, 2 it is anywhere in it, 3 its letters are
+  // in it in order, -1 no match — the browser's copy of internal/searchrank.
+  // ONE table holds both copies to the same answers: internal/searchrank/
+  // testdata/cases.json, read by the Go test and run through this function by
+  // e2e/tests/pickers.spec.ts. Tier 3 is the letters-in-order match these
+  // pickers always had, kept LAST (searchrank's doc says why it stays).
+  // window.musterFold is searchrank.Fold, step for step: NFKD, combining marks
+  // and U+FEFF dropped, lower case, final sigma as sigma, white space trimmed
+  // (U+0085 included, as Go's unicode.IsSpace does). Code points, never UTF-16
+  // units: a letter outside the BMP is one letter here as it is in Go.
+  var RANK_MARK = (function () { try { return new RegExp('\\p{M}', 'gu'); } catch (e) { return /[\u0300-\u036f]/g; } })();
+  var RANK_WORD = (function () { try { return new RegExp('^[\\p{L}\\p{N}]$', 'u'); } catch (e) { return /^[a-z0-9\u00c0-\uffff]$/i; } })();
+  window.musterFold = function (s) {
+    s = String(s == null ? '' : s);
+    if (s.normalize) s = s.normalize('NFKD');
+    return s.replace(RANK_MARK, '').replace(/\uFEFF/g, '').toLowerCase().replace(/\u03c2/g, '\u03c3')
+      .replace(/^[\s\u0085]+|[\s\u0085]+$/g, '');
+  };
+  window.musterRank = function (label, query) {
+    var q = Array.from(window.musterFold(query));
+    if (!q.length) return 0;
+    var l = Array.from(window.musterFold(label));
+    function at(i) {
+      if (i + q.length > l.length) return false;
+      for (var j = 0; j < q.length; j++) if (l[i + j] !== q[j]) return false;
+      return true;
+    }
+    if (at(0)) return 0;
+    var found = false;
+    for (var i = 1; i + q.length <= l.length; i++) {
+      if (at(i)) {
+        found = true;
+        if (!RANK_WORD.test(l[i - 1])) return 1;
+      }
+    }
+    if (found) return 2;
+    var k = 0;
+    for (var m = 0; m < l.length; m++) if (k < q.length && l[m] === q[k]) k++;
+    return k === q.length ? 3 : -1;
+  };
+  function cbMatches(label, q) { return window.musterRank(label, q) >= 0; }
   // cbModelLabel: trim the leading "openrouter/" provider prefix for DISPLAY only
   // (the full slug stays the option value). No-op for values without the prefix.
   function cbModelLabel(val) { return val.indexOf('openrouter/') === 0 ? val.slice('openrouter/'.length) : val; }
@@ -1868,7 +1921,7 @@ func appScript(feat Features) g.Node {
     Array.prototype.slice.call(ul.querySelectorAll('[data-combobox-option]')).forEach(function (o) {
       if (o.hasAttribute('data-combobox-seed')) {
         var label = (o.getAttribute('data-label') || '').toLowerCase();
-        o.classList.toggle('hidden', !cbFuzzy(label, q));
+        o.classList.toggle('hidden', !cbMatches(label, q));
         seeds[o.getAttribute('data-value') || ''] = true;
       } else {
         o.parentNode && o.parentNode.removeChild(o);
@@ -1916,20 +1969,37 @@ func appScript(feat Features) g.Node {
     arr.unshift(val); arr = arr.slice(0, 8);
     try { localStorage.setItem(k, JSON.stringify(arr)); } catch (e) {}
   }
-  function cbReorderRecents(box) {
+  // cbArrange puts the list in order. With a query: by rank (musterRank), and
+  // within a rank recently-picked first, then the order the options arrived in
+  // (seeds before a search's results). Without one: recently-picked first, then
+  // arrival order — what the list showed before it was ranked. A remote
+  // result the rule does not match at all (the other side matched it by its own
+  // rule) goes after every ranked one rather than vanishing.
+  function cbArrange(box) {
     var ul = cbList(box); if (!ul) return;
-    var recents = cbGetRecents(box); if (!recents.length) return;
+    var input = cbInput(box);
+    var q = (input && input.value || '').trim();
+    var recents = cbGetRecents(box);
+    var remote = !!cbRemote(box);
     var opts = cbOptions(box);
-    recents.slice().reverse().forEach(function (val) {
-      var opt = opts.filter(function (o) { return o.getAttribute('data-value') === val; })[0];
-      if (opt) ul.insertBefore(opt, ul.firstChild);
+    opts.forEach(function (o) {
+      if (!o.hasAttribute('data-cb-seq')) { box.__cbSeq = (box.__cbSeq || 0) + 1; o.setAttribute('data-cb-seq', String(box.__cbSeq)); }
     });
+    function key(o) {
+      var t = q ? window.musterRank(o.getAttribute('data-label') || '', q) : 0;
+      if (t < 0) t = remote && !o.hasAttribute('data-combobox-seed') ? 4 : 5;
+      var r = recents.indexOf(o.getAttribute('data-value') || '');
+      return [t, r < 0 ? 1e6 : r, +o.getAttribute('data-cb-seq')];
+    }
+    var keyed = opts.map(function (o) { return { o: o, k: key(o) }; });
+    keyed.sort(function (a, b) { return a.k[0] - b.k[0] || a.k[1] - b.k[1] || a.k[2] - b.k[2]; });
+    keyed.forEach(function (x) { ul.appendChild(x.o); });
   }
 
   function cbOpen(box, open) {
     var list = cbList(box), input = cbInput(box);
     if (!list) return;
-    if (open) cbReorderRecents(box);
+    if (open) cbArrange(box);
     list.classList.toggle('hidden', !open);
     if (input) input.setAttribute('aria-expanded', open ? 'true' : 'false');
     if (!open) cbSetActive(box, null);
@@ -1950,7 +2020,7 @@ func appScript(feat Features) g.Node {
     var any = false;
     cbOptions(box).forEach(function (o) {
       var label = (o.getAttribute('data-label') || '').toLowerCase();
-      var match = cbFuzzy(label, q);
+      var match = cbMatches(label, q);
       o.classList.toggle('hidden', !match);
       if (match) any = true;
     });
@@ -2039,81 +2109,63 @@ func appScript(feat Features) g.Node {
     }
   });
 
-  // --- Touch gestures: sidebar open/close + Requests<->Tasks panel switch ---
-  // Two independent horizontal gestures share one touchstart/touchend pair:
-  //   1. SIDEBAR (mobile only, < lg where the sidebar is a slide-out overlay):
-  //      an edge-swipe from the left OPENS it; a left-swipe on the open sidebar
-  //      CLOSES it. Edge-origin gestures are OWNED by the sidebar (they suppress
-  //      the panel switch) so the two never fight. setOpen drives the same
-  //      data-open attribute the hamburger/backdrop use; prefers-reduced-motion
-  //      collapses the slide transition via CSS, so no JS motion branch is needed.
-  //   2. PANEL SWITCH: a left-swipe on Requests advances to Tasks; a right-swipe
-  //      on Tasks goes back. Reuses switchTab (same as tapping a segment).
-  // Both ignore mostly-vertical gestures so they never hijack scrolling. Bound
+  // --- Touch gesture: the mobile sidebar's edge-swipe ---
+  // Below lg the sidebar is a slide-out overlay: an edge-swipe from the left
+  // OPENS it; a left-swipe on the open sidebar CLOSES it. setOpen drives the
+  // same data-open attribute the hamburger/backdrop use; prefers-reduced-motion
+  // collapses the slide transition via CSS, so no JS motion branch is needed.
+  // Mostly-vertical gestures are ignored so it never hijacks scrolling. Bound
   // once (initGlobal).
-  var swipeX = 0, swipeY = 0, swipeTracking = false;
-  var SWIPE_MIN_X = 60; // px of horizontal travel required for a panel switch
+  //
+  // 🔴 THERE IS NO TAB-SWITCH SWIPE ANY MORE, AND THAT IS DELIBERATE. A
+  // horizontal swipe anywhere over a tabpanel used to walk the tab order. It was
+  // unused, and it fired on gestures meant for something else: swiping the
+  // recent-agents strip sideways switched the PARENT tab. Tabs change by a tap
+  // on the sidebar or a segment, and nothing else. TestNoTabSwitchSwipe pins
+  // its absence; recent-agents.spec.ts pins the strip.
   var sbX = 0, sbY = 0, sbMode = null; // 'open' | 'close' | null for this gesture
   var SB_EDGE = 28;     // px from the left edge that begins an open-swipe
   var SB_MIN_X = 45;    // px of horizontal travel to open/close the sidebar
   function sbMobile() { return window.innerWidth < 1024; }
+  // ownsSideways: the touch began on something that takes a sideways swipe for
+  // itself — an element marked [data-own-swipe] (the recent-agents strip, which
+  // starts 12px from the edge at a phone's width) or any ancestor that scrolls
+  // sideways — so a swipe there is that thing's, never the sidebar's.
+  function ownsSideways(t) {
+    for (var el = t; el && el.nodeType === 1 && el !== document.body; el = el.parentElement) {
+      if (el.hasAttribute('data-own-swipe')) return true;
+      if (el.scrollWidth > el.clientWidth + 1) {
+        var ox = getComputedStyle(el).overflowX;
+        if (ox === 'auto' || ox === 'scroll') return true;
+      }
+    }
+    return false;
+  }
   function sbIsOpen() { var r = document.getElementById('sidebar-root'); return !!(r && r.getAttribute('data-open') === 'true'); }
   document.addEventListener('touchstart', function (e) {
-    if (!e.touches || e.touches.length !== 1) { swipeTracking = false; sbMode = null; return; }
+    sbMode = null;
+    if (!e.touches || e.touches.length !== 1) return;
     var t = e.target;
     var x = e.touches[0].clientX, y = e.touches[0].clientY;
-    // Sidebar gesture arming (mobile only). Close: gesture starts inside the open
-    // sidebar panel. Open: gesture starts within SB_EDGE px of the left edge while
-    // the sidebar is closed.
-    sbMode = null;
+    // Close: the gesture starts inside the open sidebar panel. Open: it starts
+    // within SB_EDGE px of the left edge while the sidebar is closed.
     if (sbMobile()) {
       if (sbIsOpen()) {
         if (t && t.closest && t.closest('#sidebar')) sbMode = 'close';
-      } else if (x <= SB_EDGE) {
+      } else if (x <= SB_EDGE && !ownsSideways(t)) {
         sbMode = 'open';
       }
     }
-    // Only track panel gestures that begin over a tabpanel's content (min-h
-    // fills the viewport so empty lists still register). An edge-origin OPEN
-    // gesture is owned by the sidebar, so suppress the panel switch for it.
-    //
-    // PANEL_SELECTOR is derived from musterTabs — see navRegistryJS. Upstream
-    // hard-coded two panel ids here, which is why its swipe worked on exactly
-    // two of its eight tabs.
-    swipeTracking = !!(t && t.closest && t.closest(PANEL_SELECTOR)) && sbMode !== 'open';
-    swipeX = x; swipeY = y; sbX = x; sbY = y;
+    sbX = x; sbY = y;
   }, { passive: true });
   document.addEventListener('touchend', function (e) {
     var ct = (e.changedTouches && e.changedTouches[0]);
-    // Sidebar gesture first — it wins over the panel switch when armed.
-    if (sbMode && ct) {
-      var mode = sbMode; sbMode = null;
-      var sdx = ct.clientX - sbX, sdy = ct.clientY - sbY;
-      if (Math.abs(sdx) >= SB_MIN_X && Math.abs(sdx) > Math.abs(sdy) * 1.2) {
-        if (mode === 'open' && sdx > 0) { swipeTracking = false; setOpen(true); return; }
-        if (mode === 'close' && sdx < 0) { swipeTracking = false; setOpen(false); return; }
-      }
-    }
-    sbMode = null;
-    if (!swipeTracking) return;
-    swipeTracking = false;
-    if (!ct) return;
-    var dx = ct.clientX - swipeX;
-    var dy = ct.clientY - swipeY;
-    // Require a clear, mostly-horizontal swipe (|dx| dominates |dy|).
-    if (Math.abs(dx) < SWIPE_MIN_X || Math.abs(dx) <= Math.abs(dy) * 1.5) return;
-    // Walk the tab order rather than toggling a hard-coded pair. tabFromPath
-    // returns '' off a tab page, and indexOf('') is -1, so neither branch fires
-    // there — the same no-op as before.
-    //
-    // 🔴 IT DOES NOT WRAP, AND THAT IS DELIBERATE. A wrapping carousel means a
-    // left-swipe on the last tab lands on the first, which reads as the app
-    // jumping rather than as reaching the end. Clamping at both ends makes the
-    // edges feel like edges.
-    var cur = TABS.indexOf(tabFromPath(location.pathname));
-    if (cur < 0) return;
-    var next = dx < 0 ? cur + 1 : cur - 1;   // left-swipe → forward, right-swipe → back
-    if (next >= 0 && next < TABS.length) switchTab(TABS[next]);
+    var mode = sbMode; sbMode = null;
+    if (!mode || !ct) return;
+    var sdx = ct.clientX - sbX, sdy = ct.clientY - sbY;
+    if (Math.abs(sdx) < SB_MIN_X || Math.abs(sdx) <= Math.abs(sdy) * 1.2) return;
+    if (mode === 'open' && sdx > 0) setOpen(true);
+    else if (mode === 'close' && sdx < 0) setOpen(false);
   }, { passive: true });
 
   // Keyboard activation for label-buttons.
@@ -2535,6 +2587,12 @@ func taskModalScript() g.Node {
   window.cgModalOpen = function (id) {
     var b = document.getElementById(id + '-body');
     if (b) b.textContent = '';
+    window.cgModalShow(id);
+  };
+  // cgModalShow is the open WITHOUT the emptying: for a body that was loaded on
+  // purpose before the sheet was shown (composeOnLoad, which opens the sheet only
+  // once its body has landed, so it does not grow on screen — a layout shift).
+  window.cgModalShow = function (id) {
     var d = discardBar(id); if (d) d.classList.add('hidden');
     var m = document.getElementById(id); if (m) m.classList.remove('hidden');
   };
