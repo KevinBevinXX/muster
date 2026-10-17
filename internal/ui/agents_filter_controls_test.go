@@ -176,7 +176,7 @@ func TestTheControlsWriteTheSameTokenString(t *testing.T) {
 		"it is remembered as is":                  "sessionStorage.setItem(KEY, q)",
 		"it is the URL's ?q=":                     "syncURL(q);",
 		"a link's ?q= is split into the controls": "} else distribute(q);",
-		"the options come from the cards":         "list.querySelectorAll(':scope > article[data-f-' + f + ']')",
+		"the options come from the drawn cards":   "list.querySelectorAll(':scope > article[data-f-' + f + ']:not([data-held])')",
 		"a select writes an EXACT token":          "return /[\\s\"\\\\]/.test(v) ? f + '=\"' + v.replace(/[\"\\\\]/g, '\\\\$&') + '\"' : f + '=' + v;",
 		"the controls are the facet fields":       "var CONTROLS = " + facetFieldsJSON() + ";",
 	} {

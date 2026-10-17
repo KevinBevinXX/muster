@@ -505,7 +505,10 @@ func agentsFilterScript() g.Node {
       var c = control(f);
       if (!c) return;
       var seen = Object.create(null), opts = [];
-      [].forEach.call(list.querySelectorAll(':scope > article[data-f-' + f + ']'), function (a) {
+      // Only DRAWN cards offer a value: an arrival held behind the pill is not
+      // on screen, so choosing a kind only it has would show nothing at all.
+      // (It is offered once the tap draws it — applyLive re-runs apply.)
+      [].forEach.call(list.querySelectorAll(':scope > article[data-f-' + f + ']:not([data-held])'), function (a) {
         var v = a.getAttribute('data-f-' + f);
         if (seen[v]) return;
         seen[v] = true;
