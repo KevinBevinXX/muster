@@ -412,8 +412,13 @@ func agentsFilterScript() g.Node {
       cards.forEach(function (c, i) { c.setAttribute('data-list-i', String(i)); });
     }
     var w = rankWord(ts);
-    var keyed = cards.map(function (c) { return { c: c, r: w ? cardRank(c, w) : 0, i: +c.getAttribute('data-list-i') }; });
-    keyed.sort(function (a, b) { return a.r - b.r || a.i - b.i; });
+    // A HELD arrival sorts LAST, whatever its rank: it is hidden, and ranking
+    // it above a drawn card would move every drawn card behind it (with a
+    // filter typed, a held arrival that matches it best did exactly that).
+    var keyed = cards.map(function (c) {
+      return { c: c, h: c.hasAttribute('data-held') ? 1 : 0, r: w ? cardRank(c, w) : 0, i: +c.getAttribute('data-list-i') };
+    });
+    keyed.sort(function (a, b) { return a.h - b.h || a.r - b.r || a.i - b.i; });
     arrange(list, cards, keyed.map(function (k) { return k.c; }));
   }
   // arrange puts cards (in DOM order now) into order (the same nodes), and
@@ -421,9 +426,10 @@ func agentsFilterScript() g.Node {
   // re-appends them all, in order: by moveBefore where the browser has it
   // (focus and an open popover survive the move), else by appendChild — which
   // DETACHES each card, so a focused one blurs (it is handed focus back below)
-  // and an open popover inside one closes. A held background refresh does not
-  // come here at all: its markup is put in the drawn order before the morph
-  // (keepDrawnOrder), so it moves nothing.
+  // and an open popover inside one closes. A held background refresh comes
+  // here with nothing out of place: its markup is put in the drawn order before
+  // the morph (keepDrawnOrder) and reorder sorts its held arrivals last, so the
+  // early return below is taken and nothing moves.
   function arrange(list, cards, order) {
     if (!order.some(function (c, i) { return cards[i] !== c; })) return;
     var focused = document.activeElement;

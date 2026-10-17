@@ -257,40 +257,83 @@ func TestEveryFieldIsARegisteredSafeIdentifier(t *testing.T) {
 	}
 }
 
-// 🔴 A REGRESSION TEST: two `function place` declarations in the one IIFE —
-// the later one (the box-token placer) silently replaced the card mover, and
-// the reorder wrote the list element into the search box: every card hidden.
-// Function declarations hoist and the last one wins, with no error anywhere.
-func TestTheFilterScriptDeclaresEachFunctionOnce(t *testing.T) {
+// 🔴 ONE NAMESPACE, EACH NAME DECLARED ONCE, at the top level of
+// agentsFilterScript's IIFE (its two-space-indented `function NAME(` and
+// every name in each two-space-indented `var a = …, b = …;` list). Hoisting
+// makes a repeat silent: a later `function` replaces an earlier one, two `var`s
+// are one variable, and a `var` beside a `function` of the same name rebinds
+// the function. Each bit us: a second `function place` hid every card; a second
+// `var pending` broke ?q= links. Names declared inside a nested function are
+// local and not checked here.
+func TestTheFilterScriptDeclaresEachNameOnce(t *testing.T) {
 	var b strings.Builder
 	if err := agentsFilterScript().Render(&b); err != nil {
 		t.Fatal(err)
 	}
-	seen := map[string]int{}
-	for _, m := range regexp.MustCompile(`(?m)^  function (\w+)\s*\(`).FindAllStringSubmatch(b.String(), -1) {
-		seen[m[1]]++
-	}
-	// The same trap for a top-level `var`: two of them are ONE variable. The
-	// hold's "pending" swap plan took over the link-token move's "pending"
-	// map, and a ?q=host=… link no longer selected its host.
-	vars := map[string]int{}
-	for _, m := range regexp.MustCompile(`(?m)^  var (\w+)`).FindAllStringSubmatch(b.String(), -1) {
-		vars[m[1]]++
-	}
-	if len(vars) < 5 {
-		t.Fatalf("found only %d top-level vars — the pattern no longer matches the script", len(vars))
-	}
-	for name, n := range vars {
-		if n > 1 {
-			t.Errorf("var %s is declared %d times in agentsFilterScript; both are one variable", name, n)
+	decls := topLevelDeclarations(b.String())
+	// Positive control: names the parse must find, including a SECOND name of
+	// a comma list and both kinds.
+	for _, want := range []string{"function place", "var pending", "var heldOrder", "var liveOrder", "function arrange"} {
+		kind, name, _ := strings.Cut(want, " ")
+		found := false
+		for _, k := range decls[name] {
+			found = found || k == kind
+		}
+		if !found {
+			t.Fatalf("control: %q not found — the parse no longer reads the script (got %d names)", want, len(decls))
 		}
 	}
-	if len(seen) < 10 {
-		t.Fatalf("found only %d top-level functions — the pattern no longer matches the script", len(seen))
-	}
-	for name, n := range seen {
-		if n > 1 {
-			t.Errorf("function %s is declared %d times in agentsFilterScript; the last silently wins", name, n)
+	for name, kinds := range decls {
+		if len(kinds) > 1 {
+			t.Errorf("%s is declared %d times at the top level of agentsFilterScript (%s); hoisting makes them one binding", name, len(kinds), strings.Join(kinds, ", "))
 		}
 	}
+}
+
+// topLevelDeclarations maps each name declared at the IIFE's top level of
+// script to the kinds of its declarations ("function", "var"). A `var`
+// statement is split on the commas at bracket depth 0 outside strings, so
+// `var a = f(x, y), b = [1, 2];` declares a and b.
+func topLevelDeclarations(script string) map[string][]string {
+	out := map[string][]string{}
+	for _, m := range regexp.MustCompile(`(?m)^  function (\w+)\s*\(`).FindAllStringSubmatch(script, -1) {
+		out[m[1]] = append(out[m[1]], "function")
+	}
+	ident := regexp.MustCompile(`^\s*([A-Za-z_$][\w$]*)`)
+	for _, loc := range regexp.MustCompile(`(?m)^  var `).FindAllStringIndex(script, -1) {
+		rest := script[loc[1]:]
+		depth, start := 0, 0
+		var quote byte
+		var parts []string
+	scan:
+		for i := 0; i < len(rest); i++ {
+			c := rest[i]
+			switch {
+			case quote != 0:
+				if c == '\\' {
+					i++
+				} else if c == quote {
+					quote = 0
+				}
+			case c == '\'' || c == '"' || c == '`':
+				quote = c
+			case c == '(' || c == '[' || c == '{':
+				depth++
+			case c == ')' || c == ']' || c == '}':
+				depth--
+			case c == ',' && depth == 0:
+				parts = append(parts, rest[start:i])
+				start = i + 1
+			case c == ';' && depth == 0:
+				parts = append(parts, rest[start:i])
+				break scan
+			}
+		}
+		for _, p := range parts {
+			if m := ident.FindStringSubmatch(p); m != nil {
+				out[m[1]] = append(out[m[1]], "var")
+			}
+		}
+	}
+	return out
 }
