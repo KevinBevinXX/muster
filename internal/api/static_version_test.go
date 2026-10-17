@@ -111,17 +111,27 @@ func TestOnlyACurrentlyVersionedStaticURLIsImmutable(t *testing.T) {
 
 // 🔴 THE WRAPPING IS PINNED AT THE SOURCE, TOO: every /static/ file a view in
 // internal/ui names is passed through web.Asset. A new view that spells a bare
-// Href("/static/…") would render an unversioned link this test sees before any
-// cache does — the rendered-page check above only covers the pages it renders.
+// path would render an unversioned link this test sees before any cache does —
+// the rendered-page check above only covers the pages it renders.
+//
+// It reads the path in ANY quoting, not only a Go "…" literal: a script built in
+// a raw string (`s.src = '/static/vendor/sse.js'`, a JS template literal) is as
+// much a link as Href(…) — the first version of this guard only matched "…" and
+// such a line survived the whole package. Full-line comments (Go's, and a raw
+// string's JS ones) are skipped; "web/static/…" (a repository path) is not a URL.
 func TestEveryStaticPathInTheViewsGoesThroughWebAsset(t *testing.T) {
+	// Positive control: the scan finds a bare path however it is quoted, and
+	// passes a wrapped one.
+	fixture := "s.src = '/static/vendor/sse.js';\nx = `/static/a.css`;\nHref(\"/static/b.css\")\nweb.Asset(\"/static/ok.js\")\n// /static/in-a-comment.js\nweb/static/app.css\n"
+	if got := unwrappedStatic(fixture); strings.Join(got, ",") != "/static/vendor/sse.js,/static/a.css,/static/b.css" {
+		t.Fatalf("control: the scan found %v in the fixture, want the three bare paths", got)
+	}
 	dir := filepath.Join("..", "ui")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	lit := regexp.MustCompile(`"/static/[A-Za-z0-9._/-]+\.[A-Za-z0-9]+"`)
-	wrapped := regexp.MustCompile(`web\.Asset\("/static/[A-Za-z0-9._/-]+\.[A-Za-z0-9]+"\)`)
-	seen := 0
+	wrapped := 0
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
@@ -131,14 +141,34 @@ func TestEveryStaticPathInTheViewsGoesThroughWebAsset(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		src := string(b)
-		all, ok := len(lit.FindAllString(src, -1)), len(wrapped.FindAllString(src, -1))
-		seen += all
-		if all != ok {
-			t.Errorf("internal/ui/%s names %d /static/ files and passes %d through web.Asset", name, all, ok)
+		wrapped += strings.Count(string(b), `web.Asset("/static/`)
+		for _, p := range unwrappedStatic(string(b)) {
+			t.Errorf("internal/ui/%s names %s without web.Asset: an unversioned link", name, p)
 		}
 	}
-	if seen < 10 {
-		t.Fatalf("control: found only %d /static/ literals in internal/ui — the pattern no longer reads the views", seen)
+	if wrapped < 10 {
+		t.Fatalf("control: found only %d web.Asset(\"/static/…\") calls in internal/ui — the scan no longer reads the views", wrapped)
 	}
+}
+
+// staticPathAnyQuote is a /static/<file>.<ext> URL path in any context; the
+// character before it must not be one that makes it part of a longer path
+// ("web/static/…").
+var staticPathAnyQuote = regexp.MustCompile(`(^|[^A-Za-z0-9_./-])(/static/[A-Za-z0-9._/-]+\.[A-Za-z0-9]+)`)
+
+// unwrappedStatic is every /static/ path in src, outside full-line comments,
+// that is not the argument of web.Asset("…").
+func unwrappedStatic(src string) []string {
+	var out []string
+	for _, line := range strings.Split(src, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "//") {
+			continue
+		}
+		for _, m := range staticPathAnyQuote.FindAllStringSubmatchIndex(line, -1) {
+			if !strings.HasSuffix(line[:m[4]], `web.Asset("`) {
+				out = append(out, line[m[4]:m[5]])
+			}
+		}
+	}
+	return out
 }
