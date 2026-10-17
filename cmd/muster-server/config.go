@@ -246,6 +246,11 @@ const (
 	// window-size query (internal/termsize's no-shrink rule); unset, the query
 	// fails as on a pod with no session. Read only by e2eterm.go.
 	envE2ETermWindow = "MUSTER_E2E_TERM_WINDOW"
+	// A fake GitHub API base and a fake OpenRouter model list, so the dispatch
+	// dialog's repo and model pickers can be driven with fixture data. Read only
+	// by e2eupstreams.go.
+	envE2EGitHubAPI        = "MUSTER_E2E_GITHUB_API"
+	envE2EOpenRouterModels = "MUSTER_E2E_OPENROUTER_MODELS"
 )
 
 // The values MUSTER_AGENT_PROVISIONER accepts.

@@ -1,11 +1,10 @@
-import { execFileSync, spawn, ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { BrowserContext, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { binDir, dsn, hookToken, mirrorPort, password, repoRoot, versionTerm } from '../lib/env';
-import { serverBinary, startServer, Running } from '../lib/server';
+import { hookToken, mirrorPort, password } from '../lib/env';
+import { MirrorRig } from '../lib/mirrorhost';
 import { touchDrag } from '../lib/touch';
 
 // MIRRORED sessions at a phone's width (412×915), against a REAL muster-server
@@ -20,62 +19,31 @@ import { touchDrag } from '../lib/touch';
 // of its own on the Agents view, rendered from the hub's memory.
 test.use({ viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true, storageState: { cookies: [], origins: [] } });
 
-const origin = `http://localhost:${mirrorPort}`;
-const host = 'e2e-' + Date.now().toString(36);
-const mirrorBin = path.join(binDir, 'muster-mirror-e2e');
-let server: Running | undefined;
-let mirrorProc: ChildProcess | undefined;
-let mirrorLog = '';
-let token = '';
+// The server, its mirror token and the fake host are e2e/lib/mirrorhost.ts's.
+const rig = new MirrorRig(mirrorPort, 'e2e');
+const origin = rig.origin;
+const host = rig.host;
 
-// startMirror runs the host binary; read-only unless interactive. The e2e
-// server is plain http on localhost, so the TEST-ONLY -allow-http is set here.
-// claude, when given, makes session main a Claude Code pane writing that
+// startMirror (re)starts the host binary; read-only unless interactive. The e2e
+// server is plain http on localhost, so the TEST-ONLY -allow-http is set (by the
+// rig). claude, when given, makes session main a Claude Code pane writing that
 // transcript (the rendered view; cmd/muster-mirror/e2emirror.go).
-function startMirror(interactive: boolean, claude?: string, extra?: NodeJS.ProcessEnv): ChildProcess {
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    MUSTER_MIRROR_URL: origin,
-    MUSTER_MIRROR_ALLOW_HTTP: '1',
-    MUSTER_MIRROR_TOKEN: token,
-    MUSTER_MIRROR_HOST: host,
-    MUSTER_MIRROR_E2E_SESSIONS: 'main,scratch',
-  };
+async function startMirror(interactive: boolean, claude?: string, extra?: NodeJS.ProcessEnv): Promise<void> {
+  const env: NodeJS.ProcessEnv = { MUSTER_MIRROR_E2E_SESSIONS: 'main,scratch' };
   if (interactive) env.MUSTER_MIRROR_INTERACTIVE = '1';
   if (claude) env.MUSTER_MIRROR_E2E_CLAUDE = 'main=' + claude;
   Object.assign(env, extra);
-  const p = spawn(mirrorBin, [], { env, stdio: ['ignore', 'pipe', 'pipe'] });
-  p.stdout?.on('data', (d) => (mirrorLog += d));
-  p.stderr?.on('data', (d) => (mirrorLog += d));
-  return p;
+  await rig.startHost(env);
 }
 
-async function stopMirror() {
-  if (!mirrorProc || mirrorProc.exitCode !== null) return;
-  const done = new Promise((r) => mirrorProc!.once('exit', r));
-  mirrorProc.kill('SIGTERM');
-  await done;
-}
+const stopMirror = () => rig.stopHost();
 
 test.beforeAll(async () => {
-  execFileSync('go', ['build', '-tags', 'e2emirror', '-o', mirrorBin, './cmd/muster-mirror'], { cwd: repoRoot, stdio: 'inherit' });
-  server = await startServer(versionTerm, mirrorPort, {
-    MUSTER_MIRROR: '1',
-    MUSTER_AGENT_PROVISIONER: 'noop',
-    MUSTER_AGENT_IMAGE_REPO: 'registry.example.test/runtime',
-    MUSTER_AGENT_API_URL: 'http://muster.example.test:8105',
-  });
-  token = execFileSync(serverBinary(versionTerm), ['mirror', 'token', 'create', host], {
-    env: { ...process.env, DATABASE_URL: dsn },
-  })
-    .toString()
-    .trim();
-  expect(token.startsWith('mmt_'), 'a mirror token was minted').toBe(true);
+  await rig.start();
 });
 
 test.afterAll(async () => {
-  await stopMirror();
-  await server?.stop();
+  await rig.stop();
 });
 
 // login signs the page's (fresh) context in. The FORM is driven once per run of
@@ -115,13 +83,13 @@ async function waitForCards(page: Page, online: boolean) {
         const has = html.includes(`Mirrored · ${host}`);
         return has && html.includes('data-mirror-offline') === !online;
       },
-      { message: `this host's cards, online=${online} (muster-mirror log:\n${mirrorLog})`, timeout: 15_000 },
+      { message: `this host's cards, online=${online} (muster-mirror log:\n${rig.log})`, timeout: 15_000 },
     )
     .toBe(true);
 }
 
 test('a read-only host’s sessions appear as Mirrored cards and open the shared terminal with no Interactive switch', async ({ page }) => {
-  mirrorProc = startMirror(false);
+  await startMirror(false);
   await login(page);
   await waitForCards(page, true);
 
@@ -176,7 +144,7 @@ test('a labelled session shows its pretty name, follows the active window, and s
   fs.writeFileSync(labelsFile, JSON.stringify({ main: 'Mango' }));
   fs.writeFileSync(activeFile, 'main=1\nscratch=4\n');
   try {
-    mirrorProc = startMirror(false, undefined, { MUSTER_MIRROR_LABELS_FILE: labelsFile, MUSTER_MIRROR_E2E_ACTIVE_FILE: activeFile });
+    await startMirror(false, undefined, { MUSTER_MIRROR_LABELS_FILE: labelsFile, MUSTER_MIRROR_E2E_ACTIVE_FILE: activeFile });
     await login(page);
     await waitForCards(page, true);
     await page.goto(origin + '/agents');
@@ -192,7 +160,7 @@ test('a labelled session shows its pretty name, follows the active window, and s
     // The operator moves main to window 3; the session SET is unchanged. The
     // open page follows without a reload.
     fs.writeFileSync(activeFile, 'main=3\nscratch=4\n');
-    await expect(main.locator('[data-mirror-label]'), `the card follows the window (muster-mirror log:\n${mirrorLog})`).toHaveText('Mango:3', { timeout: 20_000 });
+    await expect(main.locator('[data-mirror-label]'), `the card follows the window (muster-mirror log:\n${rig.log})`).toHaveText('Mango:3', { timeout: 20_000 });
     await noHorizontalScroll(page);
 
     await main.locator('a').first().click();
@@ -227,17 +195,17 @@ test('mirrored sessions are listed most recently active first, and the open list
   fs.writeFileSync(activityFile, `scratch=${t0 - 120}\nmain=${t0 - 3600}\n`);
   try {
     await stopMirror();
-    mirrorProc = startMirror(false, undefined, { MUSTER_MIRROR_E2E_ACTIVITY_FILE: activityFile });
+    await startMirror(false, undefined, { MUSTER_MIRROR_E2E_ACTIVITY_FILE: activityFile });
     await login(page);
     await waitForCards(page, true);
     await page.goto(origin + '/agents');
     const order = () =>
       page.locator('#agents-list article[data-mirror-card]').filter({ has: page.locator(`[data-mirror-badge][aria-label="Mirrored · ${host}"]`) }).locator('[data-mirror-name]').allTextContents();
-    await expect.poll(order, { message: `scratch was active last (muster-mirror log:\n${mirrorLog})`, timeout: 20_000 }).toEqual(['scratch', 'main']);
+    await expect.poll(order, { message: `scratch was active last (muster-mirror log:\n${rig.log})`, timeout: 20_000 }).toEqual(['scratch', 'main']);
 
     // main's pane produces output now; scratch has not moved.
     fs.writeFileSync(activityFile, `scratch=${t0 - 120}\nmain=${Math.floor(Date.now() / 1000) - 5}\n`);
-    await expect.poll(order, { message: `the open list follows main becoming the most recent (muster-mirror log:\n${mirrorLog})`, timeout: 20_000 }).toEqual(['main', 'scratch']);
+    await expect.poll(order, { message: `the open list follows main becoming the most recent (muster-mirror log:\n${rig.log})`, timeout: 20_000 }).toEqual(['main', 'scratch']);
     await noHorizontalScroll(page);
   } finally {
     await stopMirror();
@@ -263,7 +231,7 @@ test('an agent card and a mirrored card share one layout: no preview, the last a
   });
   try {
     await stopMirror();
-    mirrorProc = startMirror(true, undefined, { MUSTER_MIRROR_E2E_ACTIVITY_FILE: activityFile });
+    await startMirror(true, undefined, { MUSTER_MIRROR_E2E_ACTIVITY_FILE: activityFile });
     await login(page);
     await waitForCards(page, true);
     await page.goto(origin + '/agents');
@@ -348,7 +316,7 @@ test('at 390 px a long title wraps before the card controls, on both card kinds'
   const long = 'a-long-session-name-that-runs-well-past-the-width-of-a-phone-card';
   try {
     await stopMirror();
-    mirrorProc = startMirror(false, undefined, { MUSTER_MIRROR_E2E_SESSIONS: `main,${long}` });
+    await startMirror(false, undefined, { MUSTER_MIRROR_E2E_SESSIONS: `main,${long}` });
     await page.setViewportSize({ width: 390, height: 844 });
     await login(page);
     await waitForCards(page, true);
@@ -390,7 +358,7 @@ test('at 390 px a long title wraps before the card controls, on both card kinds'
 });
 
 test('an -interactive host offers the switch and types into the session', async ({ page }) => {
-  mirrorProc = startMirror(true);
+  await startMirror(true);
   await login(page);
   await waitForCards(page, true);
   await page.goto(origin + termPath('main'));
@@ -437,7 +405,7 @@ async function readOnlyShown(page: Page, except: string[] = []): Promise<string[
 // could. Red at origin/main 5252925, green at HEAD.
 test('the terminal never says read-only where its composer can send; a read-only host explains once, in its composer’s note', async ({ page }) => {
   await stopMirror();
-  mirrorProc = startMirror(true);
+  await startMirror(true);
   await login(page);
   await waitForCards(page, true);
   for (const session of ['main', 'scratch']) {
@@ -461,7 +429,7 @@ test('the terminal never says read-only where its composer can send; a read-only
   // A host that genuinely cannot be sent to: no switch, and the composer's own
   // disabled note is the ONE place the page says so.
   await stopMirror();
-  mirrorProc = startMirror(false);
+  await startMirror(false);
   await waitForCards(page, true);
   await page.goto(origin + termPath('scratch'));
   await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch mode=ro');
@@ -475,7 +443,7 @@ test('the terminal never says read-only where its composer can send; a read-only
 });
 
 test('a host that disconnects reads offline and its terminal says why', async ({ page }) => {
-  if (!mirrorProc || mirrorProc.exitCode !== null) mirrorProc = startMirror(false);
+  if (!rig.running()) await startMirror(false);
   await login(page);
   await waitForCards(page, true);
   await stopMirror();
@@ -490,7 +458,7 @@ test('a host that disconnects reads offline and its terminal says why', async ({
   await expect(page.locator('#term-error-text')).toContainText('the host is offline');
   await noHorizontalScroll(page);
 
-  mirrorProc = startMirror(false);
+  await startMirror(false);
   await waitForCards(page, true);
 });
 
@@ -528,7 +496,7 @@ function newTranscript(): string {
 async function waitForClaude(page: Page) {
   await expect
     .poll(async () => (await (await page.request.get(origin + '/ui/agents')).text()).includes('data-mirror-claude'), {
-      message: `main reported as a Claude pane (muster-mirror log:\n${mirrorLog})`,
+      message: `main reported as a Claude pane (muster-mirror log:\n${rig.log})`,
       timeout: 20_000,
     })
     .toBe(true);
@@ -539,7 +507,7 @@ const viewCard = (page: Page, session: string) => page.locator(`#agents-list art
 test('a mirrored Claude pane opens in the rendered view: collapsed tool rows, live updates, a Terminal toggle, no send on a read-only host', async ({ page }) => {
   await stopMirror();
   const tr = newTranscript();
-  mirrorProc = startMirror(false, tr);
+  await startMirror(false, tr);
   await login(page);
   await waitForClaude(page);
 
@@ -614,7 +582,7 @@ test('a mirrored Claude pane opens in the rendered view: collapsed tool rows, li
 test('an interactive host offers the composer: a fresh sign-in sends into the pane, and a stale one is asked to confirm and then sent', async ({ page }) => {
   await stopMirror();
   const tr = newTranscript();
-  mirrorProc = startMirror(true, tr);
+  await startMirror(true, tr);
   await login(page);
   await waitForClaude(page);
   await page.goto(origin + viewPath('main'));
@@ -665,7 +633,7 @@ test('an interactive host offers the composer: a fresh sign-in sends into the pa
   await page.unroute('**/mirror/view/send?*');
   await noHorizontalScroll(page);
   await stopMirror();
-  mirrorProc = startMirror(false);
+  await startMirror(false);
 });
 
 // ---------------------------------------------------------------------------
@@ -693,7 +661,7 @@ test('the Rendered composer stays on screen at a phone size: pinned to the viewp
   let more = '';
   for (let i = 1; i <= 30; i++) more += prompt(`question ${i}`) + reply(`answer number ${i}`);
   fs.appendFileSync(tr, more);
-  mirrorProc = startMirror(true, tr);
+  await startMirror(true, tr);
   const W = 412;
   const H = 915;
   const lastAnswer = () => page.locator('#mv-log [data-bubble="assistant"]').last();
@@ -793,7 +761,7 @@ test('the Rendered composer stays on screen at a phone size: pinned to the viewp
   // the 65px interactive composer above fits inside the fallback either way.
   // A fresh page: the stubbed visualViewport above is that page's alone.
   await stopMirror();
-  mirrorProc = startMirror(false, tr);
+  await startMirror(false, tr);
   const ro = await page.context().newPage();
   await ro.goto(origin + viewPath('main'));
   await expect(ro.locator('#mv-readonly')).toBeVisible();
@@ -810,7 +778,7 @@ test('the Rendered composer stays on screen at a phone size: pinned to the viewp
     .toBeLessThanOrEqual(0);
   await ro.close();
   await stopMirror();
-  mirrorProc = startMirror(false);
+  await startMirror(false);
 });
 
 // ---------------------------------------------------------------------------
@@ -840,7 +808,7 @@ for (const size of [
       const pasteFile = path.join(dir, 'pasted');
       const tr = newTranscript();
       const pasted = () => (fs.existsSync(pasteFile) ? fs.readFileSync(pasteFile, 'utf8') : '');
-      mirrorProc = startMirror(true, tr, { MUSTER_MIRROR_E2E_PASTE_FILE: pasteFile });
+      await startMirror(true, tr, { MUSTER_MIRROR_E2E_PASTE_FILE: pasteFile });
       const rw: string[] = [];
       const sends: number[] = [];
       page.on('websocket', (ws) => {
@@ -941,7 +909,7 @@ for (const size of [
       } finally {
         await stopMirror();
         fs.rmSync(dir, { recursive: true, force: true });
-        mirrorProc = startMirror(false);
+        await startMirror(false);
       }
     });
   });
@@ -952,7 +920,7 @@ test('a read-only host’s Terminal view draws its composer disabled and says wh
   const tr = newTranscript();
   // Read-only: the Terminal page of either kind of session has the message
   // box, disabled, with the reason under it (it used to have none at all).
-  mirrorProc = startMirror(false, tr);
+  await startMirror(false, tr);
   await login(page);
   await waitForClaude(page);
   for (const session of ['scratch', 'main']) {
@@ -967,7 +935,7 @@ test('a read-only host’s Terminal view draws its composer disabled and says wh
   // Interactive: the SAME composer on the rendered view answers an empty Send
   // (it used to do nothing at all, silently).
   await stopMirror();
-  mirrorProc = startMirror(true, tr);
+  await startMirror(true, tr);
   await waitForClaude(page);
   await page.goto(origin + viewPath('main'));
   await expect(page.locator('#mv-input')).toBeEnabled();
@@ -981,7 +949,7 @@ test('a read-only host’s Terminal view draws its composer disabled and says wh
   expect(await page.locator('#mv-input').evaluate((el) => parseFloat(getComputedStyle(el).fontSize)), 'the rendered view’s input is 16px too').toBeGreaterThanOrEqual(16);
   await noHorizontalScroll(page);
   await stopMirror();
-  mirrorProc = startMirror(false);
+  await startMirror(false);
 });
 
 // ---------------------------------------------------------------------------
@@ -1030,7 +998,7 @@ test.describe('drag-to-scroll on a phone (412×915, touch)', () => {
     const scrollFile = path.join(dir, 'scrolls');
     // 200 columns: wider than the phone, so #term-scroll has something to pan
     // sideways. 20 rows fit its height, so a vertical drag is never the area's.
-    mirrorProc = startMirror(true, undefined, { MUSTER_MIRROR_E2E_SCROLL_FILE: scrollFile, MUSTER_MIRROR_E2E_WINDOW: '200x20' });
+    await startMirror(true, undefined, { MUSTER_MIRROR_E2E_SCROLL_FILE: scrollFile, MUSTER_MIRROR_E2E_WINDOW: '200x20' });
     const posts: number[] = [];
     const sentAt: number[] = [];
     page.on('request', (r) => {
@@ -1054,11 +1022,20 @@ test.describe('drag-to-scroll on a phone (412×915, touch)', () => {
 
       // Finger DOWN: back into history (tmux scroll-up), in whole lines.
       await touchDrag(page, { x: mid.x, y: mid.y - 120 }, { x: mid.x, y: mid.y + 120 });
-      await expect.poll(() => scrollLog(scrollFile).scrolls.reduce((a, s) => a + s.lines, 0), { message: `a drag down scrolled back (muster-mirror log:\n${mirrorLog})` }).toBeGreaterThan(5);
+      await expect.poll(() => scrollLog(scrollFile).scrolls.reduce((a, s) => a + s.lines, 0), { message: `a drag down scrolled back (muster-mirror log:\n${rig.log})` }).toBeGreaterThan(5);
+      // The page's own count agrees with the host's: nothing dropped. Compared
+      // once BOTH have settled — the drag's later scrolls are still landing when
+      // the poll above first passes, and a snapshot taken then raced them
+      // (measured: the host's log read pos=6 while the page went on to send 16).
+      await expect
+        .poll(async () => {
+          const s = scrollLog(scrollFile).scrolls;
+          return `${s.length ? s[s.length - 1].pos : -1} = ${await term.getAttribute('data-scroll-sent')}`;
+        }, { message: 'the host\'s last position equals the page\'s sent count' })
+        .toMatch(/^(\d+) = \1$/);
       const down = scrollLog(scrollFile).scrolls;
       expect(down.every((s) => s.pane === '%e2e-scratch' && s.lines > 0), `every scroll was back, into scratch's pane: ${JSON.stringify(down)}`).toBe(true);
       const back = down[down.length - 1].pos;
-      // The page's own count agrees with the host's: nothing dropped.
       await expect(term).toHaveAttribute('data-scroll-sent', String(back));
       expect(posts.every((s) => s === 204), `every scroll answered 204: ${posts}`).toBe(true);
       expect(await page.locator('#term-scroll').evaluate((el) => el.scrollLeft), 'a vertical drag did not pan sideways').toBe(left0);
@@ -1083,9 +1060,14 @@ test.describe('drag-to-scroll on a phone (412×915, touch)', () => {
       // number about this host, not a contract.
       // The browser's own Resource Timing (fetch start to response end), not
       // Playwright's event times. It must have seen every scroll posted.
-      const rtts = await page.evaluate(() => performance.getEntriesByType('resource')
+      // ⚠ POLLED: Playwright counts a `response` when its HEADERS arrive, and a
+      // Resource Timing entry lands only when the fetch ENDS — so a scroll that is
+      // answered but still finishing is in `posts` and not yet here (measured:
+      // 24 vs 23). Waiting until the two agree still requires every scroll seen.
+      const scrollEntries = () => page.evaluate(() => performance.getEntriesByType('resource')
         .filter((e) => new URL(e.name).pathname === '/mirror/terminal/scroll').map((e) => e.duration));
-      expect(rtts.length, 'the round-trip instrument saw every scroll').toBe(posts.length);
+      await expect.poll(async () => (await scrollEntries()).length, { message: 'the round-trip instrument saw every scroll' }).toBe(posts.length);
+      const rtts = await scrollEntries();
       reportScrollTiming(rtts, sentAt);
       await expect(page.locator('#term-scroll-note'), 'nothing failed, so no note').toBeHidden();
       const before = scrollLog(scrollFile).scrolls.length;
@@ -1098,7 +1080,7 @@ test.describe('drag-to-scroll on a phone (412×915, touch)', () => {
 
       // An OLDER muster-mirror: no gesture, no note, and the area still pans.
       await stopMirror();
-      mirrorProc = startMirror(true, undefined, { MUSTER_MIRROR_E2E_WINDOW: '200x20' });
+      await startMirror(true, undefined, { MUSTER_MIRROR_E2E_WINDOW: '200x20' });
       await waitForCards(page, true);
       await page.goto(origin + termPath('scratch'));
       await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch mode=ro');
@@ -1117,7 +1099,7 @@ test.describe('drag-to-scroll on a phone (412×915, touch)', () => {
     } finally {
       await stopMirror();
       fs.rmSync(dir, { recursive: true, force: true });
-      mirrorProc = startMirror(false);
+      await startMirror(false);
     }
   });
 });
@@ -1132,7 +1114,7 @@ test.describe('drag-to-scroll when scrolls fail (412×915, touch)', () => {
     await stopMirror();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'muster-e2e-scrollfail-'));
     const scrollFile = path.join(dir, 'scrolls');
-    mirrorProc = startMirror(true, undefined, { MUSTER_MIRROR_E2E_SCROLL_FILE: scrollFile, MUSTER_MIRROR_E2E_WINDOW: '200x20' });
+    await startMirror(true, undefined, { MUSTER_MIRROR_E2E_SCROLL_FILE: scrollFile, MUSTER_MIRROR_E2E_WINDOW: '200x20' });
     // Each scroll request takes the next fault in `plan`, or `always` once the
     // plan is spent; '' passes it through to the real server.
     let plan: string[] = [];
@@ -1169,7 +1151,7 @@ test.describe('drag-to-scroll when scrolls fail (412×915, touch)', () => {
       await expect.poll(async () => {
         const asked = await attr('data-scroll-asked');
         return `host-asked=${hostLines() - asked} sent-asked=${(await attr('data-scroll-sent')) - asked}`;
-      }, { message: `every line asked for arrived (muster-mirror log:\n${mirrorLog})` }).toBe('host-asked=0 sent-asked=0');
+      }, { message: `every line asked for arrived (muster-mirror log:\n${rig.log})` }).toBe('host-asked=0 sent-asked=0');
       expect(faulted, 'fixture: the three faults were served').toBe(3);
       const asked1 = await attr('data-scroll-asked');
       expect(asked1, 'fixture: the drag asked for some history').toBeGreaterThan(5);
@@ -1197,7 +1179,7 @@ test.describe('drag-to-scroll when scrolls fail (412×915, touch)', () => {
       await page.unroute('**/mirror/terminal/scroll');
       await stopMirror();
       fs.rmSync(dir, { recursive: true, force: true });
-      mirrorProc = startMirror(false);
+      await startMirror(false);
     }
   });
 });
@@ -1215,7 +1197,7 @@ test.describe('drag-to-scroll when the host refuses (412×915, touch)', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'muster-e2e-scrollrefuse-'));
     const scrollFile = path.join(dir, 'scrolls');
     const env = { MUSTER_MIRROR_E2E_SCROLL_FILE: scrollFile, MUSTER_MIRROR_E2E_WINDOW: '200x20' };
-    mirrorProc = startMirror(true, undefined, env);
+    await startMirror(true, undefined, env);
     // Every scroll request is answered with `fault` while it is set ('' = the
     // real server).
     let fault: { status: number; code: string } | null = null;
@@ -1241,7 +1223,7 @@ test.describe('drag-to-scroll when the host refuses (412×915, touch)', () => {
       const lands = async (what: string) => {
         const before = hostLines();
         await down();
-        await expect.poll(hostLines, { message: `${what}: a later drag scrolled (muster-mirror log:\n${mirrorLog})` }).toBeGreaterThan(before);
+        await expect.poll(hostLines, { message: `${what}: a later drag scrolled (muster-mirror log:\n${rig.log})` }).toBeGreaterThan(before);
         await expect(note, `${what}: a scroll that lands clears the note`).toBeHidden();
         await expect(term, `${what}: the gesture is wired`).toHaveAttribute('data-scroll-on', '1');
       };
@@ -1284,7 +1266,7 @@ test.describe('drag-to-scroll when the host refuses (412×915, touch)', () => {
       await stopMirror();
       await waitForCards(page, false);
       await refusedWith('a host that went offline', 'Host reconnecting. Drag again once it is back.');
-      mirrorProc = startMirror(true, undefined, env);
+      await startMirror(true, undefined, env);
       await waitForCards(page, true);
       await page.locator('#term-reconnect').click();
       await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch mode=ro');
@@ -1303,7 +1285,7 @@ test.describe('drag-to-scroll when the host refuses (412×915, touch)', () => {
       fault = null;
       await stopMirror();
       await expect(page.locator('#term-reconnect')).toBeVisible();
-      mirrorProc = startMirror(true, undefined, env);
+      await startMirror(true, undefined, env);
       await waitForCards(page, true);
       await page.locator('#term-reconnect').click();
       await expect(term, 'Reconnect wires the gesture again').toHaveAttribute('data-scroll-on', '1');
@@ -1312,7 +1294,7 @@ test.describe('drag-to-scroll when the host refuses (412×915, touch)', () => {
       await page.unroute('**/mirror/terminal/scroll');
       await stopMirror();
       fs.rmSync(dir, { recursive: true, force: true });
-      mirrorProc = startMirror(false);
+      await startMirror(false);
     }
   });
 });
@@ -1324,7 +1306,7 @@ test.describe('drag-to-scroll on a desktop (1280×900, mouse)', () => {
     await stopMirror();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'muster-e2e-wheel-'));
     const scrollFile = path.join(dir, 'scrolls');
-    mirrorProc = startMirror(true, undefined, { MUSTER_MIRROR_E2E_SCROLL_FILE: scrollFile });
+    await startMirror(true, undefined, { MUSTER_MIRROR_E2E_SCROLL_FILE: scrollFile });
     try {
       await login(page);
       await waitForCards(page, true);
@@ -1343,7 +1325,7 @@ test.describe('drag-to-scroll on a desktop (1280×900, mouse)', () => {
     } finally {
       await stopMirror();
       fs.rmSync(dir, { recursive: true, force: true });
-      mirrorProc = startMirror(false);
+      await startMirror(false);
     }
   });
 });

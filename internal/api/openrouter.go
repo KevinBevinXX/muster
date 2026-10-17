@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/searchrank"
 )
 
 // OpenRouter model-search proxy. The dispatch modal's model field queries this
@@ -16,8 +18,16 @@ import (
 // catalogue; we cache it and filter by the query. Results are returned as the
 // agent-runtime slug form (`openrouter/<id>`) so the value is submit-ready.
 
+// openRouterModelsURL is OpenRouter's public model list. A var so a browser-test
+// binary (cmd/muster-server, `-tags e2eterm`) can point it at a fake with
+// UseOpenRouterModelsURL; nothing else does.
+var openRouterModelsURL = "https://openrouter.ai/api/v1/models"
+
+// UseOpenRouterModelsURL points the model search at another catalogue. Only the
+// e2eterm build calls it (its fake upstream); a deployable binary never does.
+func UseOpenRouterModelsURL(u string) { openRouterModelsURL = u }
+
 const (
-	openRouterModelsURL = "https://openrouter.ai/api/v1/models"
 	openRouterCacheTTL  = time.Hour
 	openRouterMaxResult = 25
 )
@@ -81,18 +91,33 @@ func fetchOpenRouterModels(ctx context.Context) ([]string, error) {
 }
 
 // handleOpenRouterModels serves GET /api/openrouter/models?q=…: a JSON array of
-// matching agent-runtime model slugs (case-insensitive substring), capped.
+// the agent-runtime model slugs that match q, BEST FIRST, capped.
+//
+// 🔴 RANKED BEFORE THE CAP, BY THE PICKERS' OWN RULE (internal/searchrank), on
+// the name the picker shows (the slug without "openrouter/"). Capping first, in
+// alphabetical order, answered a common query with a page of substrings and cut
+// the model whose name STARTS with it — and the picker can only rank what it was
+// sent. Ties keep the alphabetical order.
 func (s *Server) handleOpenRouterModels(w http.ResponseWriter, r *http.Request) {
-	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	all := orCache.models(r.Context())
-	out := make([]string, 0, openRouterMaxResult)
+	type hit struct {
+		id   string
+		tier int
+	}
+	hits := make([]hit, 0, len(all))
 	for _, id := range all {
-		if q == "" || strings.Contains(strings.ToLower(id), q) {
-			out = append(out, id)
-			if len(out) >= openRouterMaxResult {
-				break
-			}
+		if t := searchrank.Tier(strings.TrimPrefix(id, "openrouter/"), q); t >= 0 {
+			hits = append(hits, hit{id, t})
 		}
+	}
+	sort.SliceStable(hits, func(i, j int) bool { return hits[i].tier < hits[j].tier })
+	out := make([]string, 0, openRouterMaxResult)
+	for _, h := range hits {
+		if len(out) >= openRouterMaxResult {
+			break
+		}
+		out = append(out, h.id)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "private, max-age=300")

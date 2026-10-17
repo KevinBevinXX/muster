@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -396,5 +397,97 @@ func TestSearchSessionsOrdersMostRecentlyActiveFirst(t *testing.T) {
 	if got[0].ID != newer.ID {
 		t.Errorf("results are ordered %v; the most-recently-active thread (%d) must come first",
 			matchIDs(got), newer.ID)
+	}
+}
+
+// TestSearchSessionsRanksPrefixThenWordStartThenSubstring — the order the panel
+// shows WHILE TYPING: a title that starts with the query, then a title with a
+// word that does, then every other match (a substring of the title, or the body
+// only); recency inside each rank.
+//
+// 🔴 THE FIXTURES ARE AGED AGAINST THE RANK. The prefix threads are the OLDEST,
+// the substring and body-only ones the NEWEST, so the recency order the query
+// used to have is the exact reverse of the ranked one — no tier can be "right"
+// by coming out of updated_at. Each fixture is in exactly one tier, and the
+// expected order is written out as a literal, not derived from the query.
+//
+// It runs at a multi-character query AND at one character, since a one-letter
+// query is where every title matches something and the rank does all the work.
+func TestSearchSessionsRanksPrefixThenWordStartThenSubstring(t *testing.T) {
+	s, pool, ctx := searchStore(t)
+	a := searchAgent(t, s, pool, ctx, "rank")
+
+	age := func(sess ChatSession, hoursAgo int) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `UPDATE chat_sessions SET updated_at = now() - make_interval(hours => $1) WHERE id=$2`,
+			hoursAgo, sess.ID); err != nil {
+			t.Fatalf("age thread: %v", err)
+		}
+	}
+	prefixOld := searchThread(t, s, pool, ctx, a, "Kestrel notes")     // rank 0, oldest
+	prefixNew := searchThread(t, s, pool, ctx, a, "kestrel follow-up") // rank 0, newer
+	word := searchThread(t, s, pool, ctx, a, "about the kestrel")      // rank 1
+	sub := searchThread(t, s, pool, ctx, a, "mykestrel")               // rank 2 (inside a word)
+	body := searchThread(t, s, pool, ctx, a, "unrelated",              // rank 2 (body only)
+		ChatMessage{Role: "user", Kind: "text", Content: "the kestrel came back"})
+	none := searchThread(t, s, pool, ctx, a, "nothing here")
+	age(prefixOld, 50)
+	age(prefixNew, 40)
+	age(word, 30)
+	age(sub, 20)
+	age(body, 10)
+	age(none, 1)
+
+	want := []int64{prefixNew.ID, prefixOld.ID, word.ID, body.ID, sub.ID}
+	for _, q := range []string{"kestrel", "KEST", "k"} {
+		got, err := s.SearchSessions(ctx, a.ID, q, 10)
+		if err != nil {
+			t.Fatalf("SearchSessions(%q): %v", q, err)
+		}
+		if ids := matchIDs(got); fmt.Sprint(ids) != fmt.Sprint(want) {
+			t.Errorf("q=%q: order %v, want %v (prefix new, prefix old, word start, body, substring — ids: "+
+				"prefixNew=%d prefixOld=%d word=%d body=%d sub=%d none=%d)",
+				q, ids, want, prefixNew.ID, prefixOld.ID, word.ID, body.ID, sub.ID, none.ID)
+		}
+	}
+}
+
+// TestSearchSessionsRankEscapesLIKEAndRegexpMetacharacters — the two rank
+// predicates take the query too, and each must treat it as text: `_` is a LIKE
+// wildcard and `.` a regexp one, and either unescaped would promote a title
+// that does not start with (or have a word starting with) what was typed.
+func TestSearchSessionsRankEscapesLIKEAndRegexpMetacharacters(t *testing.T) {
+	s, pool, ctx := searchStore(t)
+	a := searchAgent(t, s, pool, ctx, "rankesc")
+
+	for _, c := range []struct {
+		q              string
+		real, impostor string // real ranks above impostor; impostor is OLDER-ranked only by a wildcard
+	}{
+		// `_x` as LIKE: "ax_x…" would match the prefix pattern `_x%` (any char, then x).
+		{q: "_x", real: "_x is how it starts", impostor: "ax_x in the middle"},
+		// `a.c` as a regexp: "zz abc a.c" would match `(^|[^[:alnum:]])a.c` at "abc".
+		{q: "a.c", real: "zz a.c word", impostor: "zza.c abc"},
+	} {
+		real := searchThread(t, s, pool, ctx, a, c.real)
+		impostor := searchThread(t, s, pool, ctx, a, c.impostor)
+		// The impostor is NEWER, so only a rank above it can put real first.
+		if _, err := pool.Exec(ctx, `UPDATE chat_sessions SET updated_at = now() - interval '1 day' WHERE id=$1`, real.ID); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.SearchSessions(ctx, a.ID, c.q, 10)
+		if err != nil {
+			t.Fatalf("SearchSessions(%q): %v", c.q, err)
+		}
+		ids := matchIDs(got)
+		if len(ids) < 2 || ids[0] != real.ID || !containsID(ids, impostor.ID) {
+			t.Errorf("q=%q: order %v; %q (%d) must rank above %q (%d), which matches the rank only "+
+				"through an unescaped metacharacter", c.q, ids, c.real, real.ID, c.impostor, impostor.ID)
+		}
+		for _, sess := range []ChatSession{real, impostor} {
+			if _, err := pool.Exec(ctx, `DELETE FROM chat_sessions WHERE id=$1`, sess.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 }

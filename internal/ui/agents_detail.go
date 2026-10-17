@@ -705,7 +705,7 @@ func agentChatPane(v AgentDetailView) g.Node {
 					Rows("1"),
 					g.Attr("enterkeyhint", "send"),
 					Placeholder("Message the agent…"),
-					Class("max-h-32 "+composerInputClass),
+					Class(composerInputClass),
 				),
 				dictateControl(v.Dictate, "chat-input", "chat-dictate-note", "chat-dictate"),
 				Button(
@@ -720,6 +720,12 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// which renders this pane into another page — gets it too. It is built
 		// to run again on every swap (dictate.go).
 		dictateScript(v.Dictate),
+		// The box grows with its text (composer_fit.go), the same one script as
+		// the mirrored composer's — it travels with the pane for the chief panel.
+		composerFitScript(),
+		// The live stream's tool-call grouping (tool_groups.go): with the pane, so
+		// the chief panel's copy of it groups too.
+		toolGroupScript(),
 	)
 }
 
@@ -915,7 +921,9 @@ func isSentinelReply(s string) bool {
 }
 
 func chatLogInner(v AgentDetailView) g.Node {
-	msgs := make([]g.Node, 0, len(v.Messages)+2)
+	// items, not nodes: a run of consecutive tool rows is collapsed into one
+	// group once the whole transcript is laid out (groupToolRuns, tool_groups.go).
+	items := make([]logItem, 0, len(v.Messages)+2)
 	paired := map[int]bool{} // tool_result rows already drawn with their call
 	for i := 0; i < len(v.Messages); i++ {
 		m := v.Messages[i]
@@ -934,14 +942,14 @@ func chatLogInner(v AgentDetailView) g.Node {
 					break
 				}
 			}
-			msgs = append(msgs, chatToolChip(m, result))
+			items = append(items, logItem{chatToolChip(m, result), toolChipState(result)})
 		case "tool_result":
 			if paired[i] {
 				continue // drawn with its call
 			}
 			// Defensive: an unpaired result still renders as its own chip.
 			r := m
-			msgs = append(msgs, chatToolChip(ChatLine{Kind: "tool_call", ToolID: m.ToolID, ToolName: m.ToolName}, &r))
+			items = append(items, logItem{chatToolChip(ChatLine{Kind: "tool_call", ToolID: m.ToolID, ToolName: m.ToolName}, &r), toolChipState(&r)})
 		default:
 			// Skip an assistant "no reply" sentinel (or an empty bubble): the agent
 			// gateway emits a marker (e.g. NO_REPLY) when the turn finished via tool
@@ -949,9 +957,10 @@ func chatLogInner(v AgentDetailView) g.Node {
 			if m.Role == "assistant" && isSentinelReply(m.Content) {
 				continue
 			}
-			msgs = append(msgs, chatBubble(m.Role, m.Content, m.ID))
+			items = append(items, logItem{node: chatBubble(m.Role, m.Content, m.ID)})
 		}
 	}
+	msgs := groupToolRuns(items)
 	return g.Group{
 		// 🔴 THE CHIEF INTRO IS INSIDE #chat-log AND NOT IN chiefPanelBody, AND THAT
 		// PLACEMENT IS WHAT MAKES IT DISAPPEAR. The panel body is fetched on OPEN
@@ -1232,13 +1241,13 @@ func toolChip(call ChatLine, result *ChatLine, id string) g.Node {
 	if target == "" {
 		target = cctranscript.ToolTarget(name, call.Content)
 	}
-	status, statusClass, state := "…", "ml-auto shrink-0 text-muted", "running"
-	if result != nil {
-		if result.ToolOK {
-			status, statusClass, state = "✓", "ml-auto shrink-0 font-semibold text-accent", "ok"
-		} else {
-			status, statusClass, state = "✗", "ml-auto shrink-0 font-semibold text-st-error-fg", "error"
-		}
+	state := toolChipState(result)
+	status, statusClass := "…", "ml-auto shrink-0 text-muted"
+	switch state {
+	case toolStateOK:
+		status, statusClass = "✓", "ml-auto shrink-0 font-semibold text-accent"
+	case toolStateError:
+		status, statusClass = "✗", "ml-auto shrink-0 font-semibold text-st-error-fg"
 	}
 	body := []g.Node{}
 	if strings.TrimSpace(call.Content) != "" {
@@ -1263,6 +1272,19 @@ func toolChip(call ChatLine, result *ChatLine, id string) g.Node {
 		),
 		Div(Class("flex flex-col gap-1 px-3 pb-2 pt-0"), g.Group(body)),
 	)
+}
+
+// toolChipState is a row's state: running until its result exists, then ok or
+// error by the result.
+func toolChipState(result *ChatLine) string {
+	switch {
+	case result == nil:
+		return toolStateRunning
+	case result.ToolOK:
+		return toolStateOK
+	default:
+		return toolStateError
+	}
 }
 
 // toolPre is one labeled, scrollable code block inside a persisted tool chip
@@ -1433,6 +1455,7 @@ func agentChatScript(name string) g.Node {
     // Tear down the kickoff-stream EventSource too, so a boosted navigate-away
     // doesn't leak it (mirrors the WS teardown).
     try { if (c.es) { c.es.close(); } } catch (e) {}
+    try { if (c.ro) { c.ro.disconnect(); } } catch (e) {}
     window.__cgChat = null;
   }
 
@@ -1493,6 +1516,13 @@ func agentChatScript(name string) g.Node {
   function nearBottom() { return logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 48; }
   logEl.addEventListener('scroll', function () { session.stick = nearBottom(); }, { passive: true });
   function scroll() { if (session.stick) logEl.scrollTop = logEl.scrollHeight; }
+  // The log's box shrinks when the composer grows (composer_fit.go) or the
+  // keyboard opens: a reader at the end stays at the end, rather than the last
+  // message sliding under the composer. (mirrorViewScript does the same.)
+  if (typeof ResizeObserver !== 'undefined') {
+    session.ro = new ResizeObserver(function () { scroll(); });
+    session.ro.observe(logEl);
+  }
   // forceScroll jumps to the bottom and re-engages stick — used when the user's
   // OWN message is (re)rendered (kickoff after provisioning, or a sent message):
   // their turn should always bring the latest into view regardless of prior scroll.
@@ -1538,6 +1568,8 @@ func agentChatScript(name string) g.Node {
   function newTurn() {
     var t = document.createElement('div');
     t.className = 'flex max-w-[92%] flex-col gap-1.5 self-start';
+    // Names the streamed turn (tool-groups.spec.ts reads its layout).
+    t.setAttribute('data-chat-turn', '');
     var w = workingEl();
     logEl.insertBefore(t, (w && w.parentNode === logEl) ? w : null);
     return t;
@@ -1600,6 +1632,10 @@ func agentChatScript(name string) g.Node {
     var body = document.createElement('div'); body.className = 'flex flex-col gap-1 px-3 pb-2 pt-0';
     d.appendChild(s); d.appendChild(body);
     turn.appendChild(d);
+    // A second call in a row joins the first in one "N tool calls" row, and
+    // every call after that ticks its count up (tool_groups.go — the same rule
+    // and the same markup the persisted transcript is drawn with).
+    if (window.musterToolGroups) window.musterToolGroups.adopt(d);
     var chip = { details: d, status: stat, body: body, args: null, result: null };
     tools[id] = chip;
     return chip;
@@ -1659,6 +1695,7 @@ func agentChatScript(name string) g.Node {
         r.status.textContent = msg.ok ? '✓' : '✗';
         r.status.className = 'ml-auto shrink-0 font-semibold ' + (msg.ok ? 'text-accent' : 'text-st-error-fg');
         r.details.setAttribute('data-tool-status', msg.ok ? 'ok' : 'error');
+        if (window.musterToolGroups) window.musterToolGroups.refresh(r.details);
         if (r.result) r.result.remove();
         r.result = pre('result', clip(msg.output));
         r.body.appendChild(r.result);
@@ -1791,6 +1828,7 @@ func agentChatScript(name string) g.Node {
     ws.send(JSON.stringify({ type: 'message', text: t }));
     try { window.cgTrack('chat.sent', { agent: (form.getAttribute('data-agent') || '') }); } catch (e) {}
     input.value = '';
+    if (window.musterComposerFit) window.musterComposerFit(input);
     renewNonce();
     sendBtn.disabled = true;
     session.streaming = true;

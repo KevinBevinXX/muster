@@ -33,6 +33,11 @@ func RenderPage(w io.Writer, activeTab string, feat Features) error {
 	return Page(activeTab, feat).Render(w)
 }
 
+// RenderPageWith is RenderPage with state drawn on the first paint (ShellData).
+func RenderPageWith(w io.Writer, activeTab string, feat Features, data ShellData) error {
+	return PageWith(activeTab, feat, data).Render(w)
+}
+
 // compile-time assertion that the shell is a renderable node, so a refactor
 // that changes Page's return type fails here rather than at every call site.
 var _ func(string, Features) g.Node = Page

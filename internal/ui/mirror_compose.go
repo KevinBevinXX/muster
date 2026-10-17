@@ -157,9 +157,9 @@ const (
 // composerInputClass and composerSendClass are the composer's look: a 16px
 // input (iOS zooms the page on focusing anything smaller) and 44px targets.
 // The agent chat's own form wears the same two, so every message box in the
-// app is one design.
+// app is one design — and grows the same way (composerFitClass, composer_fit.go).
 const (
-	composerInputClass = "min-h-[44px] min-w-0 flex-1 resize-none rounded-xl border-0 bg-s2 px-3 py-2.5 text-base text-fg ring-1 ring-inset ring-line placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus disabled:opacity-50"
+	composerInputClass = "composer-fit min-h-[44px] min-w-0 flex-1 resize-none rounded-xl border-0 bg-s2 px-3 py-2.5 text-base text-fg ring-1 ring-inset ring-line placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus disabled:opacity-50"
 	composerSendClass  = "press min-h-[44px] shrink-0 rounded-xl bg-accent px-4 text-sm font-semibold text-on-accent transition disabled:opacity-40"
 )
 
@@ -243,6 +243,7 @@ func mirrorComposer(v ComposerView) g.Node {
 		),
 		g.If(off, P(ID("mv-readonly"), Class("px-3 pb-2 text-[11px] text-muted"), g.Text(v.Disabled))),
 		dictateScript(dictate),
+		composerFitScript(),
 		g.If(v.Pinned, composerPinScript()),
 	)
 }
@@ -419,7 +420,7 @@ func mirrorComposerScript() g.Node {
     } catch (e) { native(sub); return; }
     return req.then(function (r) {
         if (r.ok) {
-          if (input.value === sent) input.value = '';
+          if (input.value === sent) { input.value = ''; if (window.musterComposerFit) window.musterComposerFit(input); }
           renew();
           if (queued) { sayOK('Queued.'); document.dispatchEvent(new Event('mv-queued')); } else { say(''); }
           return;

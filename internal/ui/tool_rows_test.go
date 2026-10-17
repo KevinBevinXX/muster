@@ -24,9 +24,11 @@ func TestParallelToolCallsPairWithTheirOwnResults(t *testing.T) {
 	}
 	html := b.String()
 	// <details> counts rows however they are marked, so this half also reads
-	// the same against the pre-pairing renderer (which drew four).
-	if n := strings.Count(html, "<details"); n != 2 {
-		t.Fatalf("%d rows (<details>), want 2:\n%s", n, html)
+	// the same against the pre-pairing renderer (which drew four). The two calls
+	// are consecutive, so they are drawn inside ONE group (tool_groups.go): two
+	// rows and the group around them.
+	if n, grp := strings.Count(html, "<details"), strings.Count(html, "data-tool-group=\"\""); n-grp != 2 || grp != 1 {
+		t.Fatalf("%d <details>, %d of them groups; want 2 rows in 1 group:\n%s", n, grp, html)
 	}
 	if n := strings.Count(html, "data-tool-row"); n != 2 {
 		t.Fatalf("%d tool rows, want 2:\n%s", n, html)

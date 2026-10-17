@@ -49,7 +49,7 @@ type Features struct {
 // draw.
 //
 // 🔴 EVERY CONSUMER OF THE TAB REGISTRY THAT DRAWS SOMETHING GOES THROUGH HERE —
-// the sidebar links, the shell's panels, and the three values navRegistryJS
+// the sidebar links, the shell's panels, and the values navRegistryJS
 // hands the browser router. They must agree or the failure is silent in both
 // directions: a link with no panel shows nothing when clicked, and a panel with
 // no link is unreachable. ui.TabKeys() deliberately does NOT go through here; it

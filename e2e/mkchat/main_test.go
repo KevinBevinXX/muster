@@ -62,3 +62,47 @@ func TestARefusedMessageLeavesNoAgent(t *testing.T) {
 		t.Fatalf("after a refused message the agent is still there (lookup err %v); want it rolled back", err)
 	}
 }
+
+// Threads mode writes one session per entry with the title, recency and display
+// name asked for — the shape the chief thread-search spec reads its order from.
+func TestThreadsGetTheirTitlesRecencyAndDisplayName(t *testing.T) {
+	dsn := dbtest.DSN(t)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), time.Minute)
+	t.Cleanup(cancel)
+	pool, err := db.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	if err := db.Migrate(ctx, pool, log.New(io.Discard, "", 0)); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	dbtest.OwnerExec(t, dsn, `DELETE FROM agents WHERE name LIKE 'mkchat-%'`)
+	as := agents.NewPG(pool)
+
+	threads := []thread{
+		{Title: "older one", HoursAgo: 30, Messages: []agents.ChatMessage{{Role: "user", Content: "a"}}},
+		{Title: "newer one", HoursAgo: 2, Messages: []agents.ChatMessage{{Role: "user", Content: "b"}}},
+	}
+	if err := createThreads(ctx, pool, "mkchat-threads", "Chief", threads); err != nil {
+		t.Fatalf("createThreads: %v", err)
+	}
+	a, err := as.GetByName(ctx, "mkchat-threads")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.DisplayName != "Chief" {
+		t.Errorf("display name %q, want Chief", a.DisplayName)
+	}
+	list, err := as.ListSessions(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var titles []string
+	for _, s := range list {
+		titles = append(titles, s.Title)
+	}
+	if len(titles) != 2 || titles[0] != "newer one" || titles[1] != "older one" {
+		t.Errorf("sessions (most recent first) = %q, want [newer one, older one]", titles)
+	}
+}

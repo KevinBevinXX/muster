@@ -18,6 +18,10 @@ var httpClient = &http.Client{Timeout: 15 * time.Second}
 // an httptest server.
 var apiBaseURL = "https://api.github.com"
 
+// UseAPIBaseURL points every GitHub call at another API base. Only the e2eterm
+// browser-test build calls it (its fake GitHub); a deployable binary never does.
+func UseAPIBaseURL(u string) { apiBaseURL = u }
+
 // Repo is a repository as listed for the Repos tab and the dispatch modal.
 type Repo struct {
 	FullName string `json:"full_name"`
@@ -81,7 +85,7 @@ func FetchLogin(ctx context.Context, token string) (string, error) {
 	var u struct {
 		Login string `json:"login"`
 	}
-	if err := apiGet(ctx, token, "https://api.github.com/user", &u); err != nil {
+	if err := apiGet(ctx, token, apiBaseURL+"/user", &u); err != nil {
 		return "", err
 	}
 	return u.Login, nil
@@ -93,7 +97,7 @@ func ListRepos(ctx context.Context, token string) ([]Repo, error) {
 	var all []Repo
 	for page := 1; page <= 5; page++ {
 		var batch []Repo
-		u := "https://api.github.com/user/repos?per_page=100&sort=updated&page=" + strconv.Itoa(page)
+		u := apiBaseURL + "/user/repos?per_page=100&sort=updated&page=" + strconv.Itoa(page)
 		if err := apiGet(ctx, token, u, &batch); err != nil {
 			return nil, err
 		}
