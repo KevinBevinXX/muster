@@ -28,6 +28,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -156,7 +157,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	if e2eWrap != nil {
 		backend = e2eWrap(backend)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, stop := runContext()
 	defer stop()
 	logger := log.New(stderr, "", log.LstdFlags)
 	codenames := loadCodenames(*labelsFile, logger)
@@ -255,6 +256,20 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		mode = "INTERACTIVE (-interactive)"
 	}
 	logger.Printf("muster-mirror %s: host %s → %s, %s", buildRevision, *host, *url, mode)
+	// Record where muster is for `muster-mirror ask` (hookconfig.go), whose
+	// Claude Code hook does not inherit this service's environment. Not in a
+	// browser-test build, whose fake host must never repoint the real hook.
+	if e2eBackend == nil {
+		hc := hookConfig{URL: *url, AllowHTTP: *allowHTTP}
+		if *tokenFile != "" {
+			if abs, err := filepath.Abs(expandHome(*tokenFile)); err == nil {
+				hc.TokenFile = abs
+			}
+		}
+		if p := hookConfigPath(getenv); writeHookConfig(p, hc) != nil {
+			logger.Printf("muster-mirror: could not record %s for `muster-mirror ask` (the hook then needs -url)", p)
+		}
+	}
 	// A muster-mirror that was killed between creating a viewer session and
 	// attaching to it left that session behind; nothing else would remove it.
 	if vc, ok := mirrorhost.ViewCleanerOf(backend); ok {
@@ -273,6 +288,12 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return 1
 	}
 	return 0
+}
+
+// runContext is the daemon's life: until SIGINT or SIGTERM. A test replaces it
+// to end a daemon it started.
+var runContext = func() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 }
 
 // newTmuxBackend is tmuxBackend; a test replaces it to see what run passes.

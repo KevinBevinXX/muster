@@ -55,6 +55,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentstatus"
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/apitokens"
+	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/connectors"
@@ -711,6 +712,10 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	if a.memo != nil {
 		go a.memo.Run(ctx, memorelay.DefaultInterval)
 	}
+	// The AskUserQuestion store's expiry (askq.Store.RunSweep): a held question
+	// whose hook died is withdrawn within one tick, so its window stops reading
+	// "waiting" without waiting for a page to ask. In memory, no database.
+	go a.srv.RunAskSweep(ctx, askq.SweepEvery)
 	if a.pool == nil {
 		return
 	}

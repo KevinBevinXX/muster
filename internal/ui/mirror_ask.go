@@ -150,6 +150,9 @@ type MirrorAskLiveView struct {
 	Answers   map[string]string
 	// Error is a refused submit's reason, drawn above the form.
 	Error string
+	// Stopped: a withdrawn question's hook stopped waiting (it was killed, or
+	// lost muster) rather than giving up on its own.
+	Stopped bool
 }
 
 // MirrorAskLive is one card of the live region.
@@ -165,9 +168,13 @@ func MirrorAskLive(v MirrorAskLiveView) g.Node {
 			P(g.Attr("role", "status"), Class("text-xs text-accent"), g.Text("Answered here — sent to Claude."))}
 	default:
 		label = "back in the terminal"
+		why := "Nobody answered here in time, so the question went back to the terminal — answer it there. "
+		if v.Stopped {
+			why = "The session stopped waiting for an answer here — answer it in the terminal. "
+		}
 		body = g.Group{askReadOnly(v.Questions, nil),
 			P(g.Attr("role", "status"), Class("text-xs text-muted"),
-				g.Text("Nobody answered here in time, so the question went back to the terminal — answer it there. "),
+				g.Text(why),
 				A(Href(v.Ref.TerminalPath()), hx("hx-boost", "false"), Class("font-semibold text-accent underline"), g.Text("Open the terminal")))}
 	}
 	return Section(

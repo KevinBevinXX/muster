@@ -2,13 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"github.com/ZacxDev/muster/internal/mirrorhost"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // `muster-mirror ask` as the CLI runs it: it reads the hook payload on stdin
@@ -31,19 +34,26 @@ func fakeAskMuster(t *testing.T, answers map[string]string, seen *[]string) *htt
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /mirror/ask", func(w http.ResponseWriter, r *http.Request) {
 		*seen = append(*seen, r.Header.Get("Authorization"))
+		var req struct {
+			ID string `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"id":"q1","state":"pending"}`))
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": req.ID, "state": "pending"})
 	})
-	mux.HandleFunc("GET /mirror/ask/q1", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": "q1", "state": "answered", "answers": answers})
+	mux.HandleFunc("GET /mirror/ask/{id}", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": r.PathValue("id"), "state": "answered", "answers": answers})
 	})
-	mux.HandleFunc("DELETE /mirror/ask/q1", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	mux.HandleFunc("DELETE /mirror/ask/{id}", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": r.PathValue("id"), "state": "withdrawn"})
+	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
 }
 
 func TestAskPrintsTheAnswersAndExitsZero(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	var seen []string
 	srv := fakeAskMuster(t, map[string]string{"Which color do you prefer?": "Blue", "Which pets do you have?": "Fish"}, &seen)
 	tok := filepath.Join(t.TempDir(), "token")
@@ -79,6 +89,8 @@ func TestAskPrintsTheAnswersAndExitsZero(t *testing.T) {
 // http:// URL without -allow-http, or an unreadable token file — nothing on
 // stdout (the picker), exit 0, and muster never contacted.
 func TestAskPrintsNothingWithoutASafeConfiguration(t *testing.T) {
+	// A HOME with no recorded config and no default token file.
+	t.Setenv("HOME", t.TempDir())
 	var seen []string
 	srv := fakeAskMuster(t, map[string]string{"Which color do you prefer?": "Blue", "Which pets do you have?": "Fish"}, &seen)
 	cases := map[string]struct {
@@ -110,6 +122,7 @@ func TestAskPrintsNothingWithoutASafeConfiguration(t *testing.T) {
 }
 
 func TestRunDispatchesAsk(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	var out, errb bytes.Buffer
 	old := stdin
 	stdin = strings.NewReader(`{"tool_name":"Bash"}`)
@@ -120,5 +133,110 @@ func TestRunDispatchesAsk(t *testing.T) {
 	// Proof it reached ask, not the host daemon (which would demand -url).
 	if strings.Contains(errb.String(), "-url (") {
 		t.Fatalf("run treated ask as the daemon: %s", errb.String())
+	}
+}
+
+// TestAskNeedsNoFlagsOnAHostWhoseMirrorRecordedItsConfig (audit round 0): the
+// settings entry is just `muster-mirror ask`. The daemon records its URL and
+// token file (hookconfig.go); with no flag and no environment the hook uses
+// exactly those.
+func TestAskNeedsNoFlagsOnAHostWhoseMirrorRecordedItsConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	var seen []string
+	srv := fakeAskMuster(t, map[string]string{"Which color do you prefer?": "Blue", "Which pets do you have?": "Fish"}, &seen)
+	tok := filepath.Join(home, "elsewhere", "tok")
+	if err := os.MkdirAll(filepath.Dir(tok), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tok, []byte("mmt_recorded\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeHookConfig(filepath.Join(home, ".muster", "mirror-hook.json"), hookConfig{URL: srv.URL, AllowHTTP: true, TokenFile: tok}); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	runAsk(nil, env(nil), bytes.NewReader(askPayload(t)), &out, &errb)
+	if !strings.Contains(out.String(), `"answers"`) || len(seen) != 1 || seen[0] != "Bearer mmt_recorded" {
+		t.Fatalf("no-flag hook: stdout %q, tokens sent %q, stderr %s", out.String(), seen, errb.String())
+	}
+}
+
+// TestAskDefaultsToTheHostsTokenPath: with no recorded token file the hook
+// reads ~/.muster/mirror-token — the path the host's service uses.
+func TestAskDefaultsToTheHostsTokenPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	var seen []string
+	srv := fakeAskMuster(t, map[string]string{"Which color do you prefer?": "Blue", "Which pets do you have?": "Fish"}, &seen)
+	if err := os.MkdirAll(filepath.Join(home, ".muster"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".muster", "mirror-token"), []byte("mmt_default\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	runAsk([]string{"-url", srv.URL, "-allow-http"}, env(nil), bytes.NewReader(askPayload(t)), &out, &bytes.Buffer{})
+	if len(seen) != 1 || seen[0] != "Bearer mmt_default" {
+		t.Fatalf("tokens sent %q, want the default path's", seen)
+	}
+}
+
+// TestAskSaysWhichTokenFileItCannotRead: one stderr line naming the path
+// (invisible to the picker, in Claude Code's debug log), nothing on stdout.
+func TestAskSaysWhichTokenFileItCannotRead(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	var out, errb bytes.Buffer
+	code := runAsk([]string{"-url", "https://m.example"}, env(nil), bytes.NewReader(askPayload(t)), &out, &errb)
+	want := filepath.Join(home, ".muster", "mirror-token")
+	if code != 0 || out.Len() != 0 || !strings.Contains(errb.String(), "cannot read the mirror token file") || !strings.Contains(errb.String(), "mirror-token") {
+		t.Fatalf("exit %d stdout %q stderr %q (want a line naming %s)", code, out.String(), errb.String(), want)
+	}
+}
+
+// TestTheDaemonRecordsItsConfigForTheHook: the host daemon, started as its
+// service starts it (URL and token file from the environment), records them
+// where the hook reads them — the token file as an absolute path, and no token.
+func TestTheDaemonRecordsItsConfigForTheHook(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	refuse := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "no", http.StatusUnauthorized) // ends the daemon's Run
+	}))
+	defer refuse.Close()
+	old := newTmuxBackend
+	newTmuxBackend = func(string, string, string) mirrorhost.Backend { return listBackend{} }
+	defer func() { newTmuxBackend = old }()
+	tok := filepath.Join(home, ".muster", "mirror-token")
+	_ = os.MkdirAll(filepath.Dir(tok), 0o700)
+	if err := os.WriteFile(tok, []byte("mmt_"+strings.Repeat("a", 43)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The daemon runs until its context ends: end it once it has recorded.
+	cfgPath := filepath.Join(home, ".muster", "mirror-hook.json")
+	ctx, cancel := context.WithCancel(context.Background())
+	oldCtx := runContext
+	runContext = func() (context.Context, context.CancelFunc) { return ctx, cancel }
+	defer func() { runContext = oldCtx }()
+	go func() {
+		for i := 0; i < 1000; i++ {
+			if _, err := os.Stat(cfgPath); err == nil {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		cancel()
+	}()
+	if rc, _, errs := runWith(t, map[string]string{envURL: refuse.URL, envAllowHTTP: "1", envTokenFile: tok, envHost: "laptop"}); rc == 2 {
+		t.Fatalf("the daemon did not start: %s", errs)
+	}
+	c, err := readHookConfig(filepath.Join(home, ".muster", "mirror-hook.json"))
+	if err != nil || c.URL != refuse.URL || !c.AllowHTTP || c.TokenFile != tok {
+		t.Fatalf("recorded %+v (%v), want url %s, allowHttp, token file %s", c, err, refuse.URL, tok)
+	}
+	b, _ := os.ReadFile(filepath.Join(home, ".muster", "mirror-hook.json"))
+	if strings.Contains(string(b), "mmt_") {
+		t.Fatalf("the recorded config holds the token: %s", b)
 	}
 }

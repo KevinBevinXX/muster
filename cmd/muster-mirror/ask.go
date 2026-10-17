@@ -22,7 +22,7 @@ import (
 // it in Claude Code's settings.json (docs/mirroring.md, "Answering questions"):
 //
 //	"PreToolUse": [{"matcher": "AskUserQuestion", "hooks": [{"type": "command",
-//	  "command": "muster-mirror ask -url https://muster.example.com -token-file ~/.config/muster-mirror/token",
+//	  "command": "muster-mirror ask",
 //	  "timeout": 660}]}]
 //
 // 🔴 IT ALWAYS EXITS 0, AND PRINTS ONLY ANSWERS A PERSON GAVE. Every failure —
@@ -52,8 +52,8 @@ func runAsk(args []string, getenv func(string) string, in io.Reader, stdout, std
 	fs := flag.NewFlagSet("muster-mirror ask", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	envBool := func(k string) bool { v := getenv(k); return v == "1" || strings.EqualFold(v, "true") }
-	base := fs.String("url", getenv(envURL), "muster's base URL, https://… ("+envURL+")")
-	tokenFile := fs.String("token-file", getenv(envTokenFile), "file holding this host's mirror token ("+envTokenFile+"; or the token itself in "+envToken+")")
+	base := fs.String("url", getenv(envURL), "muster's base URL, https://… ("+envURL+"; default: the URL the host's muster-mirror recorded in "+defaultHookConfig+")")
+	tokenFile := fs.String("token-file", getenv(envTokenFile), "file holding this host's mirror token ("+envTokenFile+"; or the token itself in "+envToken+"; default: the file the host's muster-mirror recorded, else "+DefaultTokenFile+")")
 	allowHTTP := fs.Bool("allow-http", envBool(envAllowHTTP), "TESTS AND LOCAL DEVELOPMENT ONLY: permit a plain http:// muster URL ("+envAllowHTTP+")")
 	timeout := fs.Duration("timeout", envDurationOr(getenv(envAskTimeout), defaultAskTimeout), "how long to hold the question for an answer in muster before the terminal's picker gets it ("+envAskTimeout+"); keep it under the hook entry's timeout")
 	if err := fs.Parse(args); err != nil {
@@ -64,11 +64,26 @@ func runAsk(args []string, getenv func(string) string, in io.Reader, stdout, std
 		logf("read stdin: %v; leaving the question to the terminal", err)
 		return 0
 	}
+	// What the host's muster-mirror recorded (hookconfig.go): the defaults for
+	// whatever no flag or environment variable gave.
+	if *base == "" || *tokenFile == "" {
+		if hc, err := readHookConfig(hookConfigPath(getenv)); err == nil {
+			if *base == "" {
+				*base, *allowHTTP = hc.URL, *allowHTTP || hc.AllowHTTP
+			}
+			if *tokenFile == "" && hc.TokenFile != "" && strings.TrimSpace(getenv(envToken)) == "" {
+				*tokenFile = hc.TokenFile
+			}
+		} else if *base == "" {
+			logf("no -url, no %s, and no URL recorded by muster-mirror (%v)", envURL, err)
+		}
+	}
 	token := strings.TrimSpace(getenv(envToken))
-	if *tokenFile != "" {
-		b, err := os.ReadFile(expandHome(*tokenFile))
+	if f := tokenFileOr(*tokenFile, getenv); f != "" {
+		b, err := os.ReadFile(expandHome(f))
 		if err != nil {
-			logf("read the token file: %v; leaving the question to the terminal", err)
+			// stderr: invisible to the picker, but in Claude Code's debug log.
+			logf("cannot read the mirror token file %s: %v; leaving the question to the terminal", f, err)
 			return 0
 		}
 		token = strings.TrimSpace(string(b))
@@ -78,7 +93,7 @@ func runAsk(args []string, getenv func(string) string, in io.Reader, stdout, std
 		logf("needs an https:// -url and a token (-token-file); leaving the question to the terminal")
 		return 0
 	}
-	wait := 20 * time.Second
+	wait := askq.HookWait
 	h := askq.Hook{
 		Base: *base, Path: "/mirror/ask",
 		Auth:   func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+token) },
@@ -101,15 +116,4 @@ func envDurationOr(v string, d time.Duration) time.Duration {
 		return x
 	}
 	return d
-}
-
-// expandHome expands a leading ~/, for a token path given where no shell
-// expanded it (an environment variable).
-func expandHome(p string) string {
-	if rest, ok := strings.CutPrefix(p, "~/"); ok {
-		if h, err := os.UserHomeDir(); err == nil {
-			return h + "/" + rest
-		}
-	}
-	return p
 }

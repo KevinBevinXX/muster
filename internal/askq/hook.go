@@ -96,57 +96,79 @@ func (h Hook) Run(ctx context.Context, payload []byte) []byte {
 		hold = MaxHold
 	}
 	deadline := h.now().Add(hold)
-	var st hookState
-	status, err := h.call(ctx, http.MethodPost, h.Path, map[string]any{
-		"sessionId": p.SessionID, "toolUseId": p.ToolUseID, "toolInput": p.ToolInput,
-		"holdSeconds": int(hold / time.Second),
-	}, &st)
-	if err != nil || status != http.StatusCreated || st.ID == "" {
-		h.logf("muster did not take the question (status %d, %v); leaving it to the terminal", status, err)
-		return nil
-	}
-	id := st.ID
-	answered := false
-	defer func() {
-		if answered {
-			return
-		}
-		// Let muster know the terminal has it now — including on a signal.
+	// 🔴 THE HOOK NAMES ITS QUESTION ITSELF, so a registration whose answer
+	// was lost (a timeout after muster created it) can still be withdrawn —
+	// and a retry is the same question, not a second one.
+	id := NewID()
+	out := []byte(nil)
+	settled := false
+	// giveUp withdraws the question and reads what the withdraw returns: an
+	// answer a person gave in the moment before is delivered after all, so
+	// muster never says "sent to Claude" for answers dropped here. Every path
+	// that does not end in a delivered answer or a question muster no longer
+	// has runs it — a signal included.
+	giveUp := func(why string, a ...any) []byte {
+		settled = true
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		_, _ = h.call(cctx, http.MethodDelete, h.Path+"/"+url.PathEscape(id), nil, nil)
+		var got hookState
+		status, err := h.call(cctx, http.MethodDelete, h.Path+"/"+url.PathEscape(id), nil, &got)
+		if err == nil && status == http.StatusOK && got.State == Answered {
+			if o := h.deliver(qs, p.ToolInput, got.Answers); o != nil {
+				h.logf("answered in muster just before the hook let go")
+				return o
+			}
+		}
+		h.logf(why+"; leaving the question to the terminal", a...)
+		return nil
+	}
+	defer func() {
+		if !settled {
+			giveUp("interrupted")
+		}
 	}()
+	var st hookState
+	status, err := h.call(ctx, http.MethodPost, h.Path, map[string]any{
+		"id": id, "sessionId": p.SessionID, "toolUseId": p.ToolUseID, "toolInput": p.ToolInput,
+		"holdSeconds": int(hold / time.Second),
+	}, &st)
+	switch {
+	case err != nil || transient(status):
+		// muster may have created it before the answer was lost.
+		return giveUp("muster did not confirm the question (status %d, %v)", status, err)
+	case status != http.StatusCreated || st.ID != id:
+		settled = true // refused: nothing was created
+		h.logf("muster did not take the question (status %d); leaving it to the terminal", status)
+		return nil
+	}
 	wait := h.Wait
 	if wait <= 0 {
-		wait = 20 * time.Second
+		wait = HookWait
 	}
-	giveUp := h.GiveUpAfter
-	if giveUp <= 0 {
-		giveUp = 30 * time.Second
+	giveUpAfter := h.GiveUpAfter
+	if giveUpAfter <= 0 {
+		giveUpAfter = 30 * time.Second
 	}
 	var failingSince time.Time
 	for {
 		if ctx.Err() != nil {
-			h.logf("interrupted; leaving the question to the terminal")
-			return nil
+			return giveUp("interrupted")
 		}
 		left := deadline.Sub(h.now())
 		if left <= 0 {
-			h.logf("no answer within %s; leaving the question to the terminal", hold)
-			return nil
+			return giveUp("no answer within %s", hold)
 		}
 		w := min(wait, left)
 		secs := int((w + time.Second - 1) / time.Second)
 		var got hookState
 		status, err := h.call(ctx, http.MethodGet, fmt.Sprintf("%s/%s?wait=%d", h.Path, url.PathEscape(id), secs), nil, &got)
 		switch {
-		case err != nil || status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusTooManyRequests:
+		case err != nil || transient(status):
 			if failingSince.IsZero() {
 				failingSince = h.now()
 			}
-			if h.now().Sub(failingSince) > giveUp {
-				h.logf("muster unreachable for %s (%v, status %d); leaving the question to the terminal", giveUp, err, status)
-				return nil
+			if h.now().Sub(failingSince) > giveUpAfter {
+				return giveUp("muster unreachable for %s (%v, status %d)", giveUpAfter, err, status)
 			}
 			select {
 			case <-ctx.Done():
@@ -154,38 +176,58 @@ func (h Hook) Run(ctx context.Context, payload []byte) []byte {
 			}
 			continue
 		case status == http.StatusNotFound:
-			answered = true // nothing to withdraw
+			settled = true // nothing to withdraw
 			h.logf("muster no longer has the question; leaving it to the terminal")
 			return nil
 		case status != http.StatusOK:
-			h.logf("unexpected status %d; leaving the question to the terminal", status)
-			return nil
+			return giveUp("unexpected status %d", status)
 		}
 		failingSince = time.Time{}
 		switch got.State {
 		case Pending:
 			continue
 		case Answered:
-			// 🔴 Checked HERE, against the questions this hook holds, before
-			// anything reaches the CLI.
-			if err := CheckAnswers(qs, got.Answers); err != nil {
-				h.logf("muster's answers do not fit the questions (%v); leaving the question to the terminal", err)
-				return nil
+			settled = true
+			if out = h.deliver(qs, p.ToolInput, got.Answers); out != nil {
+				h.logf("answered in muster")
 			}
-			out, err := HookOutput(p.ToolInput, got.Answers)
-			if err != nil {
-				h.logf("%v; leaving the question to the terminal", err)
-				return nil
-			}
-			answered = true
-			h.logf("answered in muster")
 			return out
 		default:
-			answered = got.State == Withdrawn
+			settled = true
 			h.logf("the question is %s; leaving it to the terminal", got.State)
 			return nil
 		}
 	}
+}
+
+// deliver is the hook output for answers muster says a person gave — checked
+// HERE, against the questions this hook holds, before anything reaches the
+// CLI — or nil when they do not fit.
+func (h Hook) deliver(qs []Question, toolInput json.RawMessage, answers map[string]string) []byte {
+	if err := CheckAnswers(qs, answers); err != nil {
+		h.logf("muster's answers do not fit the questions (%v)", err)
+		return nil
+	}
+	out, err := HookOutput(toolInput, answers)
+	if err != nil {
+		h.logf("%v", err)
+		return nil
+	}
+	return out
+}
+
+// transient reports whether a status is worth retrying: muster (or a proxy in
+// front of it) is restarting, overloaded or briefly unreachable. 500 is
+// included: behind the public path a proxy answers it for an upstream that is
+// down, and muster's own 500 (a panic recovered) on a poll is safe to retry —
+// a poll changes nothing but the hook's liveness.
+func transient(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway,
+		http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	return false
 }
 
 // call sends one request; out is decoded from a 2xx answer.

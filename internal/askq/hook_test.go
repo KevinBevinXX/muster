@@ -36,6 +36,7 @@ func (f *fakeMuster) handler(t *testing.T) http.Handler {
 			return
 		}
 		var req struct {
+			ID          string          `json:"id"`
 			SessionID   string          `json:"sessionId"`
 			ToolUseID   string          `json:"toolUseId"`
 			ToolInput   json.RawMessage `json:"toolInput"`
@@ -55,7 +56,7 @@ func (f *fakeMuster) handler(t *testing.T) http.Handler {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		e, err := f.store.Open(Key{Owner: 1, Source: "mirror", Scope: "laptop", Session: req.SessionID, ToolUseID: req.ToolUseID}, qs, time.Duration(req.HoldSeconds)*time.Second)
+		e, err := f.store.Open(Key{Owner: 1, Source: "mirror", Scope: "laptop", Session: req.SessionID, ToolUseID: req.ToolUseID}, qs, time.Duration(req.HoldSeconds)*time.Second, req.ID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -87,8 +88,12 @@ func (f *fakeMuster) handler(t *testing.T) http.Handler {
 		f.mu.Lock()
 		f.gone = append(f.gone, r.PathValue("id"))
 		f.mu.Unlock()
-		_ = f.store.Withdraw(r.PathValue("id"), 1, "mirror", "laptop")
-		w.WriteHeader(http.StatusNoContent)
+		e, err := f.store.Withdraw(r.PathValue("id"), 1, "mirror", "laptop")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": e.ID, "state": e.State, "answers": e.Answers})
 	})
 	return mux
 }

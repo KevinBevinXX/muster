@@ -187,7 +187,7 @@ recent sign-in. See [sending-and-step-up.md](sending-and-step-up.md).
 When Claude Code calls `AskUserQuestion`, the Rendered view can show the
 questions as a form and send your answers back to the session. This needs a
 Claude Code hook on the host: `muster-mirror ask`. Add it to that machine's
-Claude Code `settings.json`:
+Claude Code `settings.json`, with no flags:
 
 ```json
 "PreToolUse": [
@@ -196,7 +196,7 @@ Claude Code `settings.json`:
     "hooks": [
       {
         "type": "command",
-        "command": "muster-mirror ask -url https://muster.example.com -token-file ~/.config/muster-mirror/token",
+        "command": "muster-mirror ask",
         "timeout": 660
       }
     ]
@@ -204,8 +204,16 @@ Claude Code `settings.json`:
 ]
 ```
 
-It uses the host's own mirror token (the same file `muster-mirror` runs with).
-It does not replace any `PermissionRequest` hook you already have, such as an
+It needs no flags because it uses what the host's `muster-mirror` service runs
+with. A Claude Code hook does not inherit that service's environment, so when
+`muster-mirror` starts it writes its URL and token file path (never the token)
+to `~/.muster/mirror-hook.json` (`MUSTER_MIRROR_HOOK_CONFIG`). The hook reads
+that file. With no recorded token file it reads `~/.muster/mirror-token`. A
+flag (`-url`, `-token-file`) or the matching environment variable always wins.
+If the token file cannot be read, the hook writes one line to stderr, which
+appears in Claude Code's debug log, and leaves the question to the terminal.
+
+The hook does not replace any `PermissionRequest` hook you already have, such as an
 approval router. The `PreToolUse` hook runs first. When it answers, the call is
 already allowed, so no permission prompt or `PermissionRequest` hook runs for
 it. When it does not answer, the `PermissionRequest` hook runs as it does
@@ -230,6 +238,14 @@ How it works:
   time, or the hook being stopped. In each case the hook prints nothing and
   Claude Code shows its own picker. The card then says the question went back to
   the terminal. The hook never answers on its own.
+- **muster takes an answer only while the hook is still waiting.** The hook
+  polls; a question whose hook has not polled for 30 seconds is withdrawn and
+  its card says the session stopped waiting (the hook was stopped, or lost
+  muster). When the hook gives up, it first asks muster to withdraw the
+  question and reads what muster says: answers you gave just before are still
+  delivered. The one case it cannot cover is a network cut that lasts past both
+  sides' limits. Then muster may have taken an answer in the last 30 seconds
+  that the hook never received, and the terminal shows the picker.
 - Answering has the same rules as sending: you must own the host, the host must
   be `-interactive`, and your sign-in must be recent. A read-only host's hook
   does not hold the call at all.

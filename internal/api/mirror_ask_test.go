@@ -294,8 +294,8 @@ func TestOnlyTheAskingHostReadsOrWithdrawsItsQuestion(t *testing.T) {
 	if c, b := hookReq(t, ts, http.MethodGet, "/mirror/ask/"+id, "mmt_ws", nil); c != http.StatusOK || !strings.Contains(string(b), `"state":"pending"`) {
 		t.Fatalf("its own poll: %d %s", c, b)
 	}
-	if c, _ := hookReq(t, ts, http.MethodDelete, "/mirror/ask/"+id, "mmt_ws", nil); c != http.StatusNoContent {
-		t.Fatalf("its own withdraw: %d", c)
+	if c, b := hookReq(t, ts, http.MethodDelete, "/mirror/ask/"+id, "mmt_ws", nil); c != http.StatusOK || !strings.Contains(string(b), `"state":"withdrawn"`) {
+		t.Fatalf("its own withdraw: %d %s", c, b)
 	}
 	// Withdrawn: the card says the terminal has it, and an answer is refused.
 	_, card := mirrorGet(t, s, ts, asksPath)
@@ -395,5 +395,93 @@ func TestTheLiveRegionIsTheOwnersWindowOnly(t *testing.T) {
 	s.handleMirrorAsks(rec, req.WithContext(authz.WithPrincipal(context.Background(), authz.Principal{UserID: 2, Role: authz.RoleMember, Via: authz.ViaSession})))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("user 2 reading user 1's region: %d", rec.Code)
+	}
+}
+
+// TestAnAnswerAfterTheHookStoppedIsRefusedAndSaysSo (audit scenario B
+// through the mux): the hook registered, then stopped polling (killed, or
+// partitioned) for longer than PollGrace. The answer is refused — never
+// "sent to Claude" — and the card says the session stopped waiting.
+func TestAnAnswerAfterTheHookStoppedIsRefusedAndSaysSo(t *testing.T) {
+	_, s, ts := askServer(t, true)
+	var mu sync.Mutex
+	now := time.Now()
+	s.asks.SetNow(func() time.Time { mu.Lock(); defer mu.Unlock(); return now })
+	if code, _ := openAsk(t, ts, "mmt_ws", "sess-1", "toolu_1", gateInput(t)); code != http.StatusCreated {
+		t.Fatalf("open: %d", code)
+	}
+	mu.Lock()
+	now = now.Add(askq.PollGrace + time.Second)
+	mu.Unlock()
+	resp, body := answerReq(t, s, ts, answerForm("toolu_1", "a0", "Red", "a1", "Cat"), "", "")
+	if resp.StatusCode != http.StatusConflict || resp.Header.Get("X-Ask-State") != ui.AskStateWithdrawn ||
+		!strings.Contains(body, "stopped waiting") || strings.Contains(body, "sent to Claude") {
+		t.Fatalf("an answer after the hook stopped: %d %s %s", resp.StatusCode, resp.Header.Get("X-Ask-State"), body)
+	}
+	_, card := mirrorGet(t, s, ts, asksPath)
+	if !strings.Contains(card, "stopped waiting") {
+		t.Fatalf("the region does not say the session stopped waiting: %s", card)
+	}
+}
+
+// TestTheHookChoosesItsQuestionsID (audit scenario C through the mux): the
+// registration carries the hook's own id, a retry of it is the same question,
+// and that id withdraws it.
+func TestTheHookChoosesItsQuestionsID(t *testing.T) {
+	_, _, ts := askServer(t, true)
+	id := askq.NewID()
+	body := map[string]any{"id": id, "sessionId": "sess-1", "toolUseId": "toolu_1", "toolInput": gateInput(t), "holdSeconds": 60}
+	for i := 0; i < 2; i++ {
+		code, b := hookReq(t, ts, http.MethodPost, "/mirror/ask", "mmt_ws", body)
+		if code != http.StatusCreated || !strings.Contains(string(b), `"id":"`+id+`"`) {
+			t.Fatalf("registration %d: %d %s", i+1, code, b)
+		}
+	}
+	if c, b := hookReq(t, ts, http.MethodDelete, "/mirror/ask/"+id, "mmt_ws", nil); c != http.StatusOK || !strings.Contains(string(b), `"state":"withdrawn"`) {
+		t.Fatalf("withdraw by the hook's id: %d %s", c, b)
+	}
+}
+
+// TestTheAskSweepRunsWithTheServerAndNudges (audit 🟢3): RunAskSweep, run as
+// the server's background loop, withdraws a question whose hook died with no
+// request asking, nudges its owner's views, and stops with its context.
+func TestTheAskSweepRunsWithTheServerAndNudges(t *testing.T) {
+	am, s, ts := askServer(t, true)
+	var mu sync.Mutex
+	now := time.Now()
+	s.asks.SetNow(func() time.Time { mu.Lock(); defer mu.Unlock(); return now })
+	if code, _ := openAsk(t, ts, "mmt_ws", "sess-1", "toolu_1", gateInput(t)); code != http.StatusCreated {
+		t.Fatalf("open: %d", code)
+	}
+	am.amu.Lock()
+	before := am.nudges[1]
+	am.amu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() { s.RunAskSweep(ctx, 5*time.Millisecond); close(stopped) }()
+	mu.Lock()
+	now = now.Add(askq.PollGrace + time.Second)
+	mu.Unlock()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		am.amu.Lock()
+		n := am.nudges[1]
+		am.amu.Unlock()
+		if n > before {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the sweep never nudged the owner for the expired question")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if am.isWaiting(1, "ws", "sess-1") {
+		t.Fatal("the expired question still marks its window waiting")
+	}
+	cancel()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunAskSweep did not stop with the server's context")
 	}
 }

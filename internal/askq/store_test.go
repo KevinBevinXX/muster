@@ -41,11 +41,11 @@ var someAnswers = map[string]string{"Which color?": "Red", "Which pets?": "Cat, 
 
 func TestOpenIsIdempotentWhilePending(t *testing.T) {
 	s, _ := testStore(t)
-	a, err := s.Open(key(1), twoQs, time.Minute)
+	a, err := s.Open(key(1), twoQs, time.Minute, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := s.Open(key(1), twoQs, time.Minute)
+	b, err := s.Open(key(1), twoQs, time.Minute, "")
 	if err != nil || b.ID != a.ID {
 		t.Fatalf("a retried Open is a new entry: %v %v", a.ID, b.ID)
 	}
@@ -60,7 +60,7 @@ func TestOpenIsIdempotentWhilePending(t *testing.T) {
 // TestAnswerIsTheOwnersAloneAndReplaySafe pins the store's authz and idempotency.
 func TestAnswerIsTheOwnersAloneAndReplaySafe(t *testing.T) {
 	s, _ := testStore(t)
-	if _, err := s.Open(key(1), twoQs, time.Minute); err != nil {
+	if _, err := s.Open(key(1), twoQs, time.Minute, ""); err != nil {
 		t.Fatal(err)
 	}
 	// Another owner, same everything else: not found.
@@ -88,7 +88,7 @@ func TestAnswerIsTheOwnersAloneAndReplaySafe(t *testing.T) {
 
 func TestPollWakesOnTheAnswerAndChecksTheHolder(t *testing.T) {
 	s, _ := testStore(t)
-	e, _ := s.Open(key(1), twoQs, time.Minute)
+	e, _ := s.Open(key(1), twoQs, time.Minute, "")
 	if _, err := s.Poll(context.Background(), e.ID, 2, "mirror", "laptop", 0); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("another owner polled: %v", err)
 	}
@@ -116,18 +116,18 @@ func TestPollWakesOnTheAnswerAndChecksTheHolder(t *testing.T) {
 
 func TestWithdrawSendsItBackToTheTerminal(t *testing.T) {
 	s, _ := testStore(t)
-	e, _ := s.Open(key(1), twoQs, time.Minute)
-	if err := s.Withdraw(e.ID, 2, "mirror", "laptop"); !errors.Is(err, ErrNotFound) {
+	e, _ := s.Open(key(1), twoQs, time.Minute, "")
+	if _, err := s.Withdraw(e.ID, 2, "mirror", "laptop"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("another owner withdrew: %v", err)
 	}
-	if err := s.Withdraw(e.ID, 1, "mirror", "laptop"); err != nil {
+	if _, err := s.Withdraw(e.ID, 1, "mirror", "laptop"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Answer(key(1), someAnswers); !errors.Is(err, ErrNotPending) {
 		t.Fatalf("answering a withdrawn question: %v, want ErrNotPending", err)
 	}
 	// The same call asked again is a new, pending entry.
-	again, err := s.Open(key(1), twoQs, time.Minute)
+	again, err := s.Open(key(1), twoQs, time.Minute, "")
 	if err != nil || again.ID == e.ID || again.State != Pending {
 		t.Fatalf("re-asked: %+v %v", again, err)
 	}
@@ -137,18 +137,18 @@ func TestWithdrawSendsItBackToTheTerminal(t *testing.T) {
 // (the CLI's own timeout, a Ctrl-C) must not leave the session "waiting".
 func TestAHookThatStopsPollingIsWithdrawn(t *testing.T) {
 	s, c := testStore(t)
-	e, _ := s.Open(key(1), twoQs, time.Hour)
-	c.add(StaleAfter - time.Second)
+	e, _ := s.Open(key(1), twoQs, time.Hour, "")
+	c.add(PollGrace - time.Second)
 	if _, err := s.Poll(context.Background(), e.ID, 1, "mirror", "laptop", 0); err != nil {
 		t.Fatal(err)
 	}
-	c.add(StaleAfter - time.Second)
+	c.add(PollGrace - time.Second)
 	if !s.Waiting(1, "mirror", "laptop", "s-1") {
-		t.Fatal("a hook that polled within StaleAfter was taken for dead")
+		t.Fatal("a hook that polled within PollGrace was taken for dead")
 	}
 	c.add(2 * time.Second)
 	if s.Waiting(1, "mirror", "laptop", "s-1") {
-		t.Fatal("a hook silent past StaleAfter still marks its session waiting")
+		t.Fatal("a hook silent past PollGrace still marks its session waiting")
 	}
 	if got, _ := s.Get(e.ID); got.State != Withdrawn {
 		t.Fatalf("state %s, want withdrawn", got.State)
@@ -157,13 +157,13 @@ func TestAHookThatStopsPollingIsWithdrawn(t *testing.T) {
 
 func TestTheDeadlineWithdraws(t *testing.T) {
 	s, c := testStore(t)
-	e, _ := s.Open(key(1), twoQs, 30*time.Second)
+	e, _ := s.Open(key(1), twoQs, 30*time.Second, "")
 	c.add(31 * time.Second)
 	if got, _ := s.Get(e.ID); got.State != Withdrawn {
 		t.Fatalf("state %s past the deadline, want withdrawn", got.State)
 	}
 	// A hold past MaxHold is capped.
-	f, _ := s.Open(Key{Owner: 1, Source: "mirror", Scope: "laptop", Session: "s-1", ToolUseID: "toolu_2"}, twoQs, 10*time.Hour)
+	f, _ := s.Open(Key{Owner: 1, Source: "mirror", Scope: "laptop", Session: "s-1", ToolUseID: "toolu_2"}, twoQs, 10*time.Hour, "")
 	if d := f.Deadline.Sub(f.Created); d != MaxHold {
 		t.Fatalf("hold %s, want MaxHold", d)
 	}
@@ -174,16 +174,16 @@ func TestPendingIsBoundedPerOwner(t *testing.T) {
 	for i := 0; i < MaxPendingPerOwner; i++ {
 		k := key(1)
 		k.ToolUseID = "toolu_" + string(rune('a'+i%26)) + string(rune('a'+i/26))
-		if _, err := s.Open(k, twoQs, time.Minute); err != nil {
+		if _, err := s.Open(k, twoQs, time.Minute, ""); err != nil {
 			t.Fatalf("%d: %v", i, err)
 		}
 	}
 	k := key(1)
 	k.ToolUseID = "toolu_over"
-	if _, err := s.Open(k, twoQs, time.Minute); !errors.Is(err, ErrFull) {
+	if _, err := s.Open(k, twoQs, time.Minute, ""); !errors.Is(err, ErrFull) {
 		t.Fatalf("past the bound: %v, want ErrFull", err)
 	}
-	if _, err := s.Open(key(2), twoQs, time.Minute); err != nil {
+	if _, err := s.Open(key(2), twoQs, time.Minute, ""); err != nil {
 		t.Fatalf("another owner is not bounded by owner 1's questions: %v", err)
 	}
 	if n := len(s.Pending(1)); n != MaxPendingPerOwner {
@@ -196,9 +196,9 @@ func TestOnChangeSeesEveryTransition(t *testing.T) {
 	var mu sync.Mutex
 	var seen []State
 	s.OnChange(func(e Entry) { mu.Lock(); seen = append(seen, e.State); mu.Unlock() })
-	e, _ := s.Open(key(1), twoQs, time.Minute)
+	e, _ := s.Open(key(1), twoQs, time.Minute, "")
 	_, _ = s.Answer(key(1), someAnswers)
-	_ = s.Withdraw(e.ID, 1, "mirror", "laptop") // already answered: no change
+	_, _ = s.Withdraw(e.ID, 1, "mirror", "laptop") // already answered: no change
 	mu.Lock()
 	defer mu.Unlock()
 	if len(seen) != 2 || seen[0] != Pending || seen[1] != Answered {

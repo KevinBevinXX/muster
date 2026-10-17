@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -89,6 +90,15 @@ var toolUseIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 // questions with Questions().Pending(owner).
 func (s *Server) Questions() *askq.Store { return s.asks }
 
+// RunAskSweep runs the question store's expiry every interval until ctx ends
+// (askq.Store.RunSweep): an expired question fires the store's change callback,
+// which nudges its owner's views.
+func (s *Server) RunAskSweep(ctx context.Context, interval time.Duration) {
+	if s.asks != nil {
+		s.asks.RunSweep(ctx, interval)
+	}
+}
+
 // wireAsks connects the question store to the mirror plugin: a pending
 // question marks its window WAITING (Claude Code itself says "busy" while the
 // hook holds the call), and every change nudges the owner's open views.
@@ -137,6 +147,10 @@ func (s *Server) askHost(w http.ResponseWriter, r *http.Request) (a mirrorAsker,
 // mirrorAskOpenRequest is the hook's registration: the PreToolUse payload's
 // session_id, tool_use_id and tool_input, and how long it will hold the call.
 type mirrorAskOpenRequest struct {
+	// ID is the question's id, the hook's own choice (askq.NewID), so a
+	// registration whose answer was lost can still be polled and withdrawn.
+	// "" lets muster choose (a hook that predates it).
+	ID          string          `json:"id"`
 	SessionID   string          `json:"sessionId"`
 	ToolUseID   string          `json:"toolUseId"`
 	ToolInput   json.RawMessage `json:"toolInput"`
@@ -189,11 +203,14 @@ func (s *Server) handleMirrorAskOpen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	e, err := s.asks.Open(askq.Key{Owner: owner, Source: askSourceMirror, Scope: host, Session: req.SessionID, ToolUseID: req.ToolUseID},
-		qs, time.Duration(req.HoldSeconds)*time.Second)
+		qs, time.Duration(req.HoldSeconds)*time.Second, req.ID)
 	if err != nil {
 		status := http.StatusBadRequest
-		if errors.Is(err, askq.ErrFull) {
+		switch {
+		case errors.Is(err, askq.ErrFull):
 			status = http.StatusServiceUnavailable
+		case errors.Is(err, askq.ErrIDTaken):
+			status = http.StatusConflict
 		}
 		http.Error(w, err.Error(), status)
 		return
@@ -226,17 +243,25 @@ func (s *Server) handleMirrorAskPoll(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMirrorAskWithdraw is DELETE /mirror/ask/{id}: the hook gave up holding
-// the call (the terminal's picker has it now).
+// the call (the terminal's picker has it now). 200 with the question's state
+// after: Answered when a person answered before the withdraw arrived.
 func (s *Server) handleMirrorAskWithdraw(w http.ResponseWriter, r *http.Request) {
 	_, owner, host, ok := s.askHost(w, r)
 	if !ok {
 		return
 	}
-	if err := s.asks.Withdraw(r.PathValue("id"), owner, askSourceMirror, host); err != nil {
+	e, err := s.asks.Withdraw(r.PathValue("id"), owner, askSourceMirror, host)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	// The state AFTER the withdraw: answers a person gave just before it are
+	// still the hook's to deliver (askq.Hook's giveUp).
+	out := mirrorAskState{ID: e.ID, State: e.State}
+	if e.State == askq.Answered {
+		out.Answers = e.Answers
+	}
+	s.writeJSON(w, http.StatusOK, out)
 }
 
 // askWindow resolves a card request's (host, session, window) against the
@@ -303,7 +328,8 @@ func (s *Server) handleMirrorAsks(w http.ResponseWriter, r *http.Request) {
 	var vs []ui.MirrorAskLiveView
 	if e.ClaudeSession != "" {
 		for _, x := range s.asks.ForSession(requestOwner(r.Context()), askSourceMirror, h.Host, e.ClaudeSession, mirrorAskShownFor) {
-			vs = append(vs, ui.MirrorAskLiveView{Ref: mirrorRef(e), ToolID: x.Key.ToolUseID, State: askLiveState(x.State), Questions: x.Questions, Answers: x.Answers})
+			vs = append(vs, ui.MirrorAskLiveView{Ref: mirrorRef(e), ToolID: x.Key.ToolUseID, State: askLiveState(x.State), Stopped: x.Reason == askq.ReasonStopped,
+				Questions: x.Questions, Answers: x.Answers})
 		}
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -352,7 +378,7 @@ func (s *Server) handleMirrorAskAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	v := ui.MirrorAskLiveView{Ref: mirrorRef(e), ToolID: key.ToolUseID, Questions: entry.Questions}
 	if entry.State == askq.Withdrawn {
-		v.State = ui.AskStateWithdrawn
+		v.State, v.Stopped = ui.AskStateWithdrawn, entry.Reason == askq.ReasonStopped
 		s.writeAskLive(w, http.StatusConflict, v)
 		return
 	}
@@ -371,7 +397,7 @@ func (s *Server) handleMirrorAskAnswer(w http.ResponseWriter, r *http.Request) {
 		v.State, v.Answers = ui.AskStateAnswered, got.Answers
 		s.writeAskLive(w, http.StatusConflict, v)
 	case errors.Is(err, askq.ErrNotPending):
-		v.State = ui.AskStateWithdrawn
+		v.State, v.Stopped = ui.AskStateWithdrawn, got.Reason == askq.ReasonStopped
 		s.writeAskLive(w, http.StatusConflict, v)
 	case errors.Is(err, askq.ErrNotFound):
 		http.NotFound(w, r)
