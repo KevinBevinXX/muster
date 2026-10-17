@@ -407,26 +407,32 @@ test.describe('held behind the pill: across navigations', () => {
     // boosted navigation that swaps the body.
     await page.goto(rig.origin + '/tasks/1');
     await expect(agentsLink).toBeVisible();
-    for (const step of ['first entry', 'second entry']) {
-      await agentsLink.click();
-      await expect(page, step).toHaveURL(/\/agents$/);
-      await expect.poll(() => sessionsOrder(page), { message: step }).toEqual(['mqtail', 'old-qdock', 'qbase']);
-      if (step === 'first entry') {
-        await page.goBack();
-        await expect(page).toHaveURL(/\/tasks\/1$/);
-        await expect(agentsLink).toBeVisible();
-      }
-    }
+    const pill = page.locator('#agents-new-pill');
+    // First entry: a held change, so the pill is MADE on this body, and tapped.
+    await agentsLink.click();
+    await expect(page, 'first entry').toHaveURL(/\/agents$/);
+    await expect.poll(() => sessionsOrder(page), { message: 'first entry' }).toEqual(['mqtail', 'old-qdock', 'qbase']);
+    fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', 'vim', 0), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000)].join('\n') + '\n');
+    await expect(pill, 'the first entry made its pill').toHaveText('1 new ↑', { timeout: 30_000 });
+    await pill.click();
+    await expect.poll(() => sessionsOrder(page)).toEqual(['qbase', 'mqtail', 'old-qdock']);
+    // Back to the detail page (a history restore), and Agents again (boosted).
+    await page.goBack();
+    await expect(page).toHaveURL(/\/tasks\/1$/);
+    await expect(agentsLink).toBeVisible();
+    await agentsLink.click();
+    await expect(page, 'second entry').toHaveURL(/\/agents$/);
+    await expect.poll(() => sessionsOrder(page), { message: 'second entry' }).toEqual(['qbase', 'mqtail', 'old-qdock']);
     // An arrival and a re-order, from the host: held, with ONE pill to tap.
-    fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', 'vim', 0), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000), windowLine('qzest', '@4', 'zsh', 5)].join('\n') + '\n');
+    fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', 'vim', 600), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 0), windowLine('qzest', '@4', 'zsh', 5)].join('\n') + '\n');
     const zest = page.locator('#agents-list > article[data-f-session="qzest"]');
     await expect(zest, 'the arrival reached the list').toHaveCount(1, { timeout: 30_000 });
     await expect(zest, 'held').toBeHidden();
-    await expect(page.locator('#agents-new-pill'), 'one pill in the document').toHaveCount(1);
-    await expect(page.locator('#agents-new-pill'), 'the held arrival has its pill').toHaveText('2 new ↑');
-    await page.locator('#agents-new-pill').click();
+    await expect(pill, 'one pill in the document').toHaveCount(1);
+    await expect(pill, 'the held arrival has its pill').toHaveText('2 new ↑');
+    await pill.click();
     await expect(zest, 'the tap drew it').toBeVisible();
-    await expect(page.locator('#agents-new-pill')).toBeHidden();
+    await expect(pill).toBeHidden();
   });
 });
 
