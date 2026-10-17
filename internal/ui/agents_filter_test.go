@@ -116,7 +116,8 @@ func TestTheFilterHidesWithOneRulePerWordAndCountsWithTheSameSelector(t *testing
 	script := scriptWith(t, page, "__musterAgentsFilter")
 	for name, want := range map[string]string{
 		"the rule hides a card lacking the term": `'#agents-list > article:not(' + sel(t) + '){display:none !important}'`,
-		"the count uses the same selector":       `list.querySelectorAll(':scope > article' + ts.map(sel).join(''))`,
+		"the count uses the same selector":       `list.querySelectorAll(':scope > article:not([data-held])' + ts.map(sel).join(''))`,
+		"a held arrival is hidden and uncounted": `'#agents-list > article[data-held]{display:none !important}'`,
 		"the terms are lower-cased and parsed":   `tokens(String(q || '').toLowerCase()).forEach(`,
 		"typing replaces the URL, never pushes":  `history.replaceState(history.state, '', next)`,
 		"it re-counts when the list settles":     `if (e.target && e.target.id === 'agents-list') settled();`,

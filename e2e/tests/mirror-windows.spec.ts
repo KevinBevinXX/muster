@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { BrowserContext, Page } from '@playwright/test';
-import { test, expect } from '../lib/fixtures';
+import { test, expect, takeNew } from '../lib/fixtures';
 import { binDir, dsn, password, repoRoot, versionTerm, windowsPort } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 
@@ -133,6 +133,8 @@ async function openList(page: Page, want: number) {
   await login(page);
   await page.goto(origin + '/agents');
   await expect(cards(page), `this host's cards (muster-mirror log:\n${mirrorLog})`).toHaveCount(want, { timeout: 20_000 });
+  // A window that registered after the first paint waits behind the pill.
+  await takeNew(page);
 }
 
 for (const vp of [
@@ -321,7 +323,13 @@ for (const vp of [
       const twelve: Win = { session: 'scratch2', id: '@12', index: 12, active: false, command: 'zsh', activity: now - 30 };
       writeWindows([shellWin, eightWin, { ...elevenWin, index: 2 }, soloWin, twelve]);
       await expect(cardOf(page, viewPath(elevenWin)).locator('[data-mirror-label]'), `the list refreshed (log:\n${mirrorLog})`).toHaveText('Gold:2', { timeout: 20_000 });
-      await expect(cardOf(page, termPath(twelve))).toBeVisible({ timeout: 20_000 });
+      // The new window lands above the cards in view: it waits behind the pill,
+      // uncounted, and a tap — which does not take focus from the box — draws it.
+      await expect(page.locator(`#agents-list article[data-mirror-card]:has(a[href="${termPath(twelve)}"])`)).toHaveCount(1, { timeout: 20_000 });
+      await expect(cardOf(page, termPath(twelve))).toBeHidden();
+      await expect(count).toHaveText(`3 of ${all}`);
+      await page.locator('#agents-new-pill').click();
+      await expect(cardOf(page, termPath(twelve))).toBeVisible();
       expect(await names()).toEqual(['Gold:1', 'Gold:12', 'Gold:2', 'Gold:8']);
       await expect(cardOf(page, termPath(soloWin)), 'a card the filter hides stays hidden through the refresh').toBeHidden();
       await expect(count).toHaveText(`4 of ${all + 1}`);
@@ -415,6 +423,7 @@ for (const vp of [
       writeWindows([shellWin, eightWin, elevenWin, soloWin, { ...trap, index: 2 }, extra]);
       await expect(trapCard.locator('[data-mirror-name]'), `the list refreshed (log:\n${mirrorLog})`).toHaveText('cluster-notes:2', { timeout: 20_000 });
       await expect(page.locator(`#agents-list article[data-mirror-card]:has(a[href="${termPath(extra)}"])`)).toHaveCount(1, { timeout: 20_000 });
+      await takeNew(page);
       await expect(trapCard, 'a refreshed card the token hides stays hidden').toBeHidden();
       await expect(page.locator('#agents-list > article[data-mirror-card]').filter({ visible: true })).toHaveCount(0);
       await expect(pods.filter({ visible: true })).toHaveCount(podCount);

@@ -3,6 +3,7 @@ import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { agentsSearchPort, baseURL, password } from '../lib/env';
 import { MirrorRig } from '../lib/mirrorhost';
+import { clsInit, readCls, resetCls } from '../lib/cls';
 
 // THE AGENTS FILTER RANKS WHILE TYPING (internal/ui/agents_filter.go rankAttrs):
 // a one-letter query already filters, and the cards it shows are REORDERED —
@@ -26,11 +27,15 @@ const rig = new MirrorRig(agentsSearchPort, 'e2e-search', {}, { decimalHost: tru
 
 test.use({ storageState: { cookies: [], origins: [] } });
 
+let windowsFile = '';
+const t0 = Math.floor(Date.now() / 1000);
+const windowLine = (session: string, id: string, command: string, ago: number) => `${session}|${id}|1|1|${command}|${t0 - ago}|`;
+
 test.beforeAll(async () => {
   test.setTimeout(120_000);
   await rig.start();
-  const now = Math.floor(Date.now() / 1000);
-  const windowsFile = rig.transcript('', 'windows');
+  const now = t0;
+  windowsFile = rig.transcript('', 'windows');
   // session|id|index|active|command|activity|claude-transcript — newest first by activity.
   fs.writeFileSync(
     windowsFile,
@@ -208,4 +213,54 @@ test('agent cards: one letter ranks a name prefix above a word start', async ({ 
   // "r": release-helper STARTS with r (rank 0); docs-sweeper only contains one.
   await page.locator('#agents-search').fill('r');
   await expect.poll(async () => (await order())[0]).toBe('release-helper');
+});
+
+// HELD, NOT MOVED (Zach's decision): a background refresh of the open list — an
+// activity change, an arrival — moves no card. The new order waits behind an
+// "N new ↑" pill, a tap applies it, and a filter's ranking still orders what is
+// shown. A card's own content still updates in place. Runs LAST: it rewrites
+// the host's windows.
+test.describe('held behind the pill', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  test('an activity change and an arrival wait behind "N new ↑"; nothing moves; content updates in place; a tap applies', async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.addInitScript(clsInit);
+    await rig.login(page);
+    await rig.waitListed(page, 'mqtail');
+    await page.goto(rig.origin + '/agents');
+    const domOrder = () =>
+      page.locator('#agents-list > article:not([data-held])').evaluateAll((els, ns) =>
+        els.map((e) => e.getAttribute('data-f-session') || '').filter((n) => (ns as string[]).includes(n)), [...names, 'qzest']);
+    await expect.poll(domOrder).toEqual(['mqtail', 'old-qdock', 'qbase']);
+    const pill = page.locator('#agents-new-pill');
+    await expect(pill).toBeHidden();
+    await resetCls(page);
+
+    // qbase becomes the most recently active, and its command changes.
+    fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', 'vim', 0), windowLine('old-qdock', '@2', 'zsh', 2040), windowLine('mqtail', '@3', 'zsh', 1020)].join('\n') + '\n');
+    await expect(pill, 'the change waits behind the pill').toHaveText('1 new ↑', { timeout: 30_000 });
+    expect(await domOrder(), 'held: no card moved').toEqual(['mqtail', 'old-qdock', 'qbase']);
+    await expect(page.locator('#agents-list > article[data-f-session="qbase"]'), 'its content updated in place').toHaveAttribute('data-f-kind', 'vim');
+
+    // An arrival: kept out of view, counted.
+    fs.appendFileSync(windowsFile, windowLine('qzest', '@4', 'zsh', 0) + '\n');
+    await expect(pill).toHaveText('2 new ↑', { timeout: 30_000 });
+    await expect(page.locator('#agents-list > article[data-f-session="qzest"]')).toBeHidden();
+    expect(await domOrder()).toEqual(['mqtail', 'old-qdock', 'qbase']);
+    const held = await readCls(page);
+    expect(held.total, `nothing moved while held: ${JSON.stringify(held.shifts)}`).toBeLessThan(0.01);
+
+    // With a filter: the ranking orders what is shown, and the pill still waits.
+    await page.locator('#agents-search').fill('q');
+    await expect.poll(domOrder).toEqual(['qbase', 'old-qdock', 'mqtail']);
+    await expect(pill).toHaveText('2 new ↑');
+    await page.locator('#agents-search').fill('');
+    await expect.poll(domOrder).toEqual(['mqtail', 'old-qdock', 'qbase']);
+
+    // A tap applies the live order, arrival included, and the pill goes.
+    await pill.tap();
+    await expect(pill).toBeHidden();
+    await expect.poll(domOrder, { message: 'the live order, applied' }).toEqual(['qbase', 'qzest', 'mqtail', 'old-qdock']);
+  });
 });

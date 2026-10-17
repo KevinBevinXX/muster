@@ -414,9 +414,42 @@ func agentsFilterScript() g.Node {
     var w = rankWord(ts);
     var keyed = cards.map(function (c) { return { c: c, r: w ? cardRank(c, w) : 0, i: +c.getAttribute('data-list-i') }; });
     keyed.sort(function (a, b) { return a.r - b.r || a.i - b.i; });
-    var moved = false;
-    keyed.forEach(function (k, i) { if (cards[i] !== k.c) moved = true; });
-    if (moved) keyed.forEach(function (k) { list.appendChild(k.c); });
+    place(list, cards, keyed.map(function (k) { return k.c; }));
+  }
+  // place puts cards (in DOM order now) into order (the same nodes), moving
+  // ONLY the ones out of place: the longest run already in order stays put, so
+  // the card holding focus is not detached unless it must move. A node that
+  // must move goes by moveBefore where the browser has it (focus and state
+  // survive the move); otherwise by insertBefore, and the element that had
+  // focus gets it back.
+  function place(list, cards, order) {
+    var n = order.length;
+    if (!n) return;
+    var at = new Map();
+    cards.forEach(function (c, i) { at.set(c, i); });
+    var p = order.map(function (c) { return at.get(c); });
+    // stay = an increasing subsequence of p of greatest length (patience sort).
+    var tails = [], prev = new Array(n), tailAt = [];
+    p.forEach(function (v, j) {
+      var lo = 0, hi = tails.length;
+      while (lo < hi) { var m = (lo + hi) >> 1; if (tails[m] < v) lo = m + 1; else hi = m; }
+      tails[lo] = v; tailAt[lo] = j; prev[j] = lo ? tailAt[lo - 1] : -1;
+    });
+    var stay = new Set();
+    for (var j = tails.length ? tailAt[tails.length - 1] : -1; j >= 0; j = prev[j]) stay.add(order[j]);
+    if (stay.size === n) return;
+    var focused = document.activeElement;
+    var next = cards[cards.length - 1].nextSibling;
+    for (var i = n - 1; i >= 0; i--) {
+      var c = order[i];
+      if (!stay.has(c)) {
+        if (typeof list.moveBefore === 'function') list.moveBefore(c, next); else list.insertBefore(c, next);
+      }
+      next = c;
+    }
+    if (focused && focused !== document.activeElement && focused.isConnected && typeof focused.focus === 'function') {
+      focused.focus({ preventScroll: true });
+    }
   }
   function onAgents() { return location.pathname === '/agents'; }
   // syncURL writes the text into ?q= — replaceState, so typing is not history.
@@ -536,12 +569,12 @@ func agentsFilterScript() g.Node {
     }
     // One rule per term: a card lacking ANY of them is hidden, so the terms AND.
     // Then the rank (reorder): by the FIRST free-text word, best match first.
-    style.textContent = ts.map(function (t) {
+    style.textContent = ['#agents-list > article[data-held]{display:none !important}'].concat(ts.map(function (t) {
       return '#agents-list > article:not(' + sel(t) + '){display:none !important}';
-    }).join('\n');
+    })).join('\n');
     reorder(ts);
-    var all = list.querySelectorAll(':scope > article');
-    var shown = ts.length ? list.querySelectorAll(':scope > article' + ts.map(sel).join('')) : all;
+    var all = list.querySelectorAll(':scope > article:not([data-held])');
+    var shown = ts.length ? list.querySelectorAll(':scope > article:not([data-held])' + ts.map(sel).join('')) : all;
     var count = el('agents-count'), clear = el('agents-search-clear'), none = el('agents-nomatch'), clearAll = el('agents-filter-clear');
     if (count) count.textContent = all.length ? shown.length + ' of ' + all.length : '';
     if (clear) clear.hidden = !input.value;
@@ -654,8 +687,122 @@ func agentsFilterScript() g.Node {
   // token that was waiting in the box for its option (settled).
   // A refresh morphed the list into the server's order: rank it again before
   // anything is painted (see reorder).
+  // HOLD, AND SHOW "N new ↑" (Zach's decision). A list that re-renders itself
+  // in the background — an SSE nudge (sse:agent.changed / sse:chat.reply) or a
+  // resync — must not move a card the reader can see: the list is ordered by
+  // activity, so an arriving agent is drawn on top and pushes every card down
+  // (measured: 0.08 at a phone, 0.18 at a desktop, with no input to excuse it).
+  // So a background refresh is HELD: the cards keep the order they had, a card
+  // that arrived is kept out of view (data-held), and the pill counts what is
+  // waiting — arrivals plus cards the live order puts higher. Tapping it applies the
+  // live order (a tap is input, so what it moves is the page answering it).
+  // Status dots and labels are NOT held: the morph has already updated them in
+  // place; only order and insertion wait.
+  //
+  // 🔴 HELD EVEN AT THE TOP: applying without a tap moves the cards in view
+  // whatever the scroll position — scrolling back up is not input either — so
+  // the only shift-free apply of a change in view is the reader's own tap. A
+  // change that moves nothing in view (an arrival at the end, a reorder wholly
+  // below the screen, a list on a hidden tab) is applied at once.
+  //
+  // A refresh the reader caused (agents:changed, after their own rename or pin)
+  // and the first load apply at once. A filter's rank still orders the cards;
+  // ties fall back to the HELD order (data-list-i), so the two never fight.
+  var heldOrder = null, liveOrder = null, pill = null;
+  function cardsOf(list) { return [].slice.call(list.querySelectorAll(':scope > article')); }
+  function background(e) {
+    var cfg = e.detail && e.detail.requestConfig, t = cfg && cfg.triggeringEvent;
+    var type = t && t.type || '';
+    return type.indexOf('sse:') === 0 || type === 'muster:resync';
+  }
+  function showPill(n) {
+    if (!pill) {
+      pill = document.createElement('button');
+      pill.type = 'button';
+      pill.id = 'agents-new-pill';
+      pill.setAttribute('aria-live', 'polite');
+      pill.className = 'press fixed left-1/2 top-20 z-30 inline-flex min-h-[44px] -translate-x-1/2 items-center gap-1 rounded-full bg-accent px-4 text-sm font-semibold text-on-accent shadow-lg shadow-black/30';
+      // A tap must not take focus: the box keeps its caret (and the phone its
+      // keyboard), a focused card stays focused.
+      pill.addEventListener('mousedown', function (e) { e.preventDefault(); });
+      pill.addEventListener('click', applyLive);
+      document.body.appendChild(pill);
+    }
+    pill.textContent = n + ' new ↑';
+    pill.setAttribute('data-count', String(n));
+    pill.hidden = n === 0;
+  }
+  function stamp(list, order) {
+    var at = {};
+    order.forEach(function (id, i) { at[id] = i; });
+    cardsOf(list).forEach(function (c) {
+      if (c.id in at) { c.setAttribute('data-list-i', String(at[c.id])); c.removeAttribute('data-held'); }
+    });
+  }
+  function applyLive() {
+    var list = el('agents-list');
+    if (list && liveOrder) {
+      heldOrder = liveOrder.slice();
+      stamp(list, heldOrder);
+    }
+    showPill(0);
+    apply();
+    if (list && list.getBoundingClientRect().top < 0) list.scrollIntoView({ block: 'start' });
+  }
+  // seen is where each card was ON SCREEN just before a swap (beforeSwap), so
+  // hold can tell whether applying the new order would move one in view.
+  var seen = {};
+  function inView(id) {
+    var r = seen[id];
+    return !!r && r.h > 0 && r.bottom > 0 && r.top < window.innerHeight;
+  }
+  function hold(e) {
+    var list = e.target;
+    var cards = cardsOf(list);
+    liveOrder = cards.map(function (c) { return c.id; });
+    var apply_ = !heldOrder || !background(e) || !heldOrder.length;
+    if (!apply_) {
+      // What applying would move: every drawn card from the first place the
+      // held and the live order differ. An arrival at the END moves nothing; a
+      // change wholly below the screen (or on a hidden tab) moves nothing in
+      // view. Either is applied at once; anything else is held.
+      var p = 0;
+      while (p < heldOrder.length && heldOrder[p] === liveOrder[p]) p++;
+      apply_ = !heldOrder.slice(p).some(inView);
+    }
+    if (apply_) {
+      heldOrder = liveOrder.slice();
+      stamp(list, heldOrder);
+      showPill(0);
+      return;
+    }
+    var known = {};
+    heldOrder.forEach(function (id) { known[id] = true; });
+    // The held order, without cards that are gone; arrivals after it, held.
+    heldOrder = heldOrder.filter(function (id) { return liveOrder.indexOf(id) >= 0; });
+    var arrived = liveOrder.filter(function (id) { return !known[id]; });
+    stamp(list, heldOrder);
+    arrived.forEach(function (id, i) {
+      var c = document.getElementById(id);
+      if (c) { c.setAttribute('data-held', ''); c.setAttribute('data-list-i', String(heldOrder.length + i)); }
+    });
+    // What waits: each arrival, and each card the live order puts HIGHER than
+    // it is drawn (one card overtaking three is one change, not four).
+    var liveKnown = liveOrder.filter(function (id) { return known[id]; });
+    var risen = 0;
+    liveKnown.forEach(function (id, i) { if (i < heldOrder.indexOf(id)) risen++; });
+    showPill(arrived.length + risen);
+  }
+  document.addEventListener('htmx:beforeSwap', function (e) {
+    if (!e.target || e.target.id !== 'agents-list') return;
+    seen = {};
+    cardsOf(e.target).forEach(function (c) {
+      var r = c.getBoundingClientRect();
+      seen[c.id] = { top: r.top, bottom: r.bottom, h: r.height };
+    });
+  });
   document.addEventListener('htmx:afterSwap', function (e) {
-    if (e.target && e.target.id === 'agents-list') apply();
+    if (e.target && e.target.id === 'agents-list') { hold(e); apply(); }
   });
   document.addEventListener('htmx:afterSettle', function (e) {
     if (e.target && e.target.id === 'agents-list') settled();

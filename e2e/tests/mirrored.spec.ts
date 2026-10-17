@@ -203,9 +203,16 @@ test('mirrored sessions are listed most recently active first, and the open list
       page.locator('#agents-list article[data-mirror-card]').filter({ has: page.locator(`[data-mirror-badge][aria-label="Mirrored · ${host}"]`) }).locator('[data-mirror-name]').allTextContents();
     await expect.poll(order, { message: `scratch was active last (muster-mirror log:\n${rig.log})`, timeout: 20_000 }).toEqual(['scratch', 'main']);
 
-    // main's pane produces output now; scratch has not moved.
+    // main's pane produces output now; scratch has not moved. The open list
+    // HOLDS its order (nothing moves under the reader) and offers the new one
+    // behind the "N new ↑" pill; a tap applies it.
     fs.writeFileSync(activityFile, `scratch=${t0 - 120}\nmain=${Math.floor(Date.now() / 1000) - 5}\n`);
-    await expect.poll(order, { message: `the open list follows main becoming the most recent (muster-mirror log:\n${rig.log})`, timeout: 20_000 }).toEqual(['main', 'scratch']);
+    const pill = page.locator('#agents-new-pill');
+    await expect(pill, `the new order waits behind the pill (muster-mirror log:\n${rig.log})`).toBeVisible({ timeout: 20_000 });
+    expect(await order(), 'held: the open list did not move').toEqual(['scratch', 'main']);
+    await pill.tap();
+    await expect.poll(order, { message: 'the tap applied main becoming the most recent' }).toEqual(['main', 'scratch']);
+    await expect(pill).toBeHidden();
     await noHorizontalScroll(page);
   } finally {
     await stopMirror();
