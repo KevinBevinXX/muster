@@ -9,6 +9,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/auth"
 	"github.com/ZacxDev/muster/internal/ui"
+	"github.com/ZacxDev/muster/web"
 )
 
 // --- The human login tier ----------------------------------------------------
@@ -260,7 +261,7 @@ func writeAuthDocument(w http.ResponseWriter, code int, title, inner string) {
 ` + ui.ThemeHeadHTML() + `
 <meta name="robots" content="noindex">
 <title>` + html.EscapeString(title) + ` · muster</title>
-<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="` + html.EscapeString(web.Asset("/static/app.css")) + `">
 </head>
 <body class="flex min-h-dvh items-center justify-center bg-bg px-4 text-fg antialiased">
 <main class="w-full max-w-sm">

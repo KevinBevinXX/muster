@@ -17,6 +17,8 @@ import (
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
+
+	"github.com/ZacxDev/muster/web"
 )
 
 // hx is a thin helper for htmx (and other non-standard) attributes, which the
@@ -249,15 +251,15 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 				Meta(Name("apple-mobile-web-app-title"), Content("muster")),
 				TitleEl(g.Text("muster")),
 				manifestLink(),
-				Link(Rel("icon"), g.Attr("type", "image/png"), g.Attr("sizes", "192x192"), Href("/static/icons/icon-192.png")),
-				Link(Rel("apple-touch-icon"), Href("/static/icons/icon-192.png")),
-				Link(Rel("stylesheet"), Href("/static/app.css")),
-				Script(Src("/static/vendor/htmx.min.js"), Defer()),
+				Link(Rel("icon"), g.Attr("type", "image/png"), g.Attr("sizes", "192x192"), Href(web.Asset("/static/icons/icon-192.png"))),
+				Link(Rel("apple-touch-icon"), Href(web.Asset("/static/icons/icon-192.png"))),
+				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
+				Script(Src(web.Asset("/static/vendor/htmx.min.js")), Defer()),
 				// idiomorph: morph-style swaps so live list updates patch the DOM
 				// in place (no teardown) — preserves scroll, focus, hover, open
 				// <details>, and typed text instead of flashing/jumping.
-				Script(Src("/static/vendor/idiomorph-ext.min.js"), Defer()),
-				Script(Src("/static/vendor/sse.js"), Defer()),
+				Script(Src(web.Asset("/static/vendor/idiomorph-ext.min.js")), Defer()),
+				Script(Src(web.Asset("/static/vendor/sse.js")), Defer()),
 				// Frontend RUM (Grafana Faro). Renders nothing when MUSTER_FARO_URL
 				// is unset (local/e2e) — zero telemetry surface.
 				faroHead(),

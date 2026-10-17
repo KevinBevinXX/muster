@@ -3,6 +3,8 @@ package ui
 import (
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
+
+	"github.com/ZacxDev/muster/web"
 )
 
 // TaskNotFoundPage is the styled 404 for GET /tasks/{id} when the task is
@@ -37,8 +39,8 @@ func TaskNotFoundPage(id string, feat Features) g.Node {
 				ThemeHead(),
 				manifestLink(),
 				TitleEl(g.Text(label+" not found · muster")),
-				Link(Rel("stylesheet"), Href("/static/app.css")),
-				Script(Src("/static/vendor/htmx.min.js"), Defer()),
+				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
+				Script(Src(web.Asset("/static/vendor/htmx.min.js")), Defer()),
 			),
 			Body(
 				Class("min-h-dvh bg-bg text-fg antialiased selection:bg-accent/30"),

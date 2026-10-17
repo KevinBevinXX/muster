@@ -45,10 +45,16 @@ const BUILD = "__MUSTER_BUILD__";
 // and only then deletes the older shell caches.
 const CACHE_PREFIX = 'muster-shell-';
 const CACHE = CACHE_PREFIX + BUILD;
+// The stylesheet's URL as the pages link it: /static/app.css?v=<content hash>,
+// replaced by the server like BUILD (exactly once). The shell precaches THAT
+// URL, so it holds this build's stylesheet under the key the cached pages ask
+// for — the bare /static/app.css could come back from an edge cache that still
+// holds the last release's copy.
+const APP_CSS = "__MUSTER_APP_CSS__";
 // The minimal shell: the document and the compiled CSS. Vendored JS is fetched
 // fresh (it is small and benefits from normal HTTP caching) to avoid serving a
 // stale htmx during development.
-const SHELL = ['/', '/static/app.css', '/manifest.webmanifest'];
+const SHELL = ['/', APP_CSS, '/manifest.webmanifest'];
 
 // usable reports whether a response may be stored as (or kept as) a shell
 // entry: a same-origin 200 that was not reached through a redirect. A signed-out

@@ -172,14 +172,23 @@ func ServiceWorkerSource() ([]byte, error) {
 	if bytes.Count(data, []byte(swBuildPlaceholder)) != 1 {
 		return nil, errSWPlaceholder
 	}
+	if bytes.Count(data, []byte(swAppCSSPlaceholder)) != 1 {
+		return nil, errSWPlaceholder
+	}
 	v, _ := json.Marshal(BuildVersion) // a JSON string is a valid JS string literal
-	return bytes.Replace(data, []byte(swBuildPlaceholder), v, 1), nil
+	css, _ := json.Marshal(web.Asset("/static/app.css"))
+	data = bytes.Replace(data, []byte(swBuildPlaceholder), v, 1)
+	return bytes.Replace(data, []byte(swAppCSSPlaceholder), css, 1), nil
 }
+
+// swAppCSSPlaceholder is the literal sw.js carries where the stylesheet's
+// versioned URL (web.Asset) goes: the shell precaches the URL pages link.
+const swAppCSSPlaceholder = `"__MUSTER_APP_CSS__"`
 
 type swPlaceholderError struct{}
 
 func (swPlaceholderError) Error() string {
-	return "web/static/sw.js must contain the build placeholder exactly once"
+	return "web/static/sw.js must contain each placeholder (build, app.css) exactly once"
 }
 
 var errSWPlaceholder error = swPlaceholderError{}

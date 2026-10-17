@@ -524,7 +524,26 @@ func staticHandler() http.Handler {
 		// bug, not a runtime condition.
 		panic("api: embedded static fs missing 'static' dir: " + err.Error())
 	}
-	return http.StripPrefix("/static/", http.FileServerFS(sub))
+	files := http.StripPrefix("/static/", http.FileServerFS(sub))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", staticCacheControl(r.URL.Path, r.URL.Query().Get("v")))
+		files.ServeHTTP(w, r)
+	})
+}
+
+// staticCacheControl is the Cache-Control for a /static/ request.
+//
+// 🔴 ONLY A URL CARRYING THE FILE'S CURRENT HASH IS CACHED FOR LONG. Pages link
+// web.Asset's /static/<file>?v=<content hash>: that URL names these exact
+// bytes, so it is immutable. Anything else — the bare path, or a ?v= from an
+// older build — is "no-cache" (stored, but revalidated): with no header at
+// all, the edge applied its own max-age=14400 and served 0.43.0 the previous
+// release's app.css for hours.
+func staticCacheControl(path, v string) string {
+	if h := web.AssetHash(path); h != "" && v == h {
+		return "public, max-age=31536000, immutable"
+	}
+	return "no-cache"
 }
 
 // shellFeatures says which optional subsystems this server holds, for the

@@ -5,6 +5,8 @@ import (
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
+
+	"github.com/ZacxDev/muster/web"
 )
 
 // FaroSettings holds the frontend RUM (Grafana Faro) configuration surfaced into
@@ -48,10 +50,10 @@ func faroHead() g.Node {
 		return g.Text("")
 	}
 	nodes := []g.Node{
-		Script(Src("/static/vendor/faro-web-sdk.iife.js")),
+		Script(Src(web.Asset("/static/vendor/faro-web-sdk.iife.js"))),
 	}
 	if faroConfig.Tracing {
-		nodes = append(nodes, Script(Src("/static/vendor/faro-web-tracing.iife.js")))
+		nodes = append(nodes, Script(Src(web.Asset("/static/vendor/faro-web-tracing.iife.js"))))
 	}
 	nodes = append(nodes, faroInitScript())
 	return g.Group(nodes)

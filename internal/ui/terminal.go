@@ -10,6 +10,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/termsize"
+	"github.com/ZacxDev/muster/web"
 )
 
 // The vendored terminal emulator, served from /static/vendor/ like htmx.
@@ -24,10 +25,10 @@ import (
 //
 // The trailing sourceMappingURL comments point at .map files that are not
 // vendored; a browser's devtools 404 on them and nothing else asks.
-const (
-	xtermJS    = "/static/vendor/xterm.js"
-	xtermCSS   = "/static/vendor/xterm.css"
-	xtermFitJS = "/static/vendor/addon-fit.js"
+var (
+	xtermJS    = web.Asset("/static/vendor/xterm.js")
+	xtermCSS   = web.Asset("/static/vendor/xterm.css")
+	xtermFitJS = web.Asset("/static/vendor/addon-fit.js")
 )
 
 // QuickKey is one button on the terminal's quick-key bar: a key a phone's
@@ -233,7 +234,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 				ThemeHead(),
 				manifestLink(),
 				TitleEl(g.Text("Terminal · "+mirrorQualified(markdownPlain(title), v.TitleQualifier)+" · muster")),
-				Link(Rel("stylesheet"), Href("/static/app.css")),
+				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				Link(Rel("stylesheet"), Href(xtermCSS)),
 				Script(Src(xtermJS)),
 				Script(Src(xtermFitJS)),
