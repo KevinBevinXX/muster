@@ -368,6 +368,9 @@ var isolationClasses = map[string]routeClass{
 	"GET /mirror/terminal/send": classMirror,
 	// The plain confirm page's form: the same address fields, plus `kind`.
 	"POST /mirror/confirm-send": classMirror,
+	// The Rendered view composer's `/` and `:` menu data: the same address in
+	// the query; B asking for A's window's catalog must 404 before the plugin.
+	"GET /mirror/view/complete": classMirror,
 	// A message to an agent as a form post, and the GET it can come back as.
 	"POST /agents/{name}/send": classParam,
 	"GET /agents/{name}/send":  classParam,

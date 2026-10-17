@@ -73,6 +73,8 @@ func (s *Server) registerMirrorRoutes(mux Mux) {
 	mux.HandleFunc("POST /auth/confirm/passkey/options", s.requireSession(s.handleStepUpPasskeyOptions))
 	mux.HandleFunc("POST /auth/confirm/passkey/verify", s.requireSession(s.handleStepUpPasskeyVerify))
 	s.registerMirrorViewRoutes(mux)
+	// The Rendered view composer's `/` and `:` menu (mirror_complete.go).
+	s.registerMirrorCompleteRoutes(mux)
 }
 
 func (s *Server) handleMirrorConnect(w http.ResponseWriter, r *http.Request) {

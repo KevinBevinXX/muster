@@ -78,6 +78,7 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /mirror/connect': 'the mirror host tunnel',
   'GET /mirror/terminal/send': 'a redirect back to the view',
   'GET /mirror/terminal/ws': 'websocket',
+  'GET /mirror/view/complete': 'JSON (the composer menu data)',
   'GET /mirror/view/send': 'a redirect back to the view',
   'GET /mirror/view/ws': 'websocket',
   'GET /send-queue': 'an htmx partial (the queue list)',

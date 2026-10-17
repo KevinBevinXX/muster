@@ -318,13 +318,27 @@ func (s *Service) ScrollWindow(ctx context.Context, host, session, window string
 	return s.hub.ScrollWindow(ctx, o, host, session, window, lines)
 }
 
+// CatalogWindow is the composer menu's catalog of one window of one of the
+// viewing principal's host sessions (window == "" is the session's active
+// window): its commands, skills and the host's snippets, as the host reports
+// them. See Hub.CatalogWindow. No step-up: it reads names and descriptions,
+// and types nothing.
+func (s *Service) CatalogWindow(ctx context.Context, host, session, window string) (Catalog, error) {
+	o, err := owner(ctx)
+	if err != nil {
+		return Catalog{}, err
+	}
+	return s.hub.CatalogWindow(ctx, o, host, session, window)
+}
+
 // IsAttachRefusal reports whether err is one of the plugin's own refusals,
 // whose text is written for the operator and is passed to the browser as is.
 func IsAttachRefusal(err error) bool {
 	for _, e := range []error{ErrHostOffline, ErrSessionGone, ErrWindowGone, ErrHostDisconnected, ErrOverrun,
 		ErrInteractiveRefused, ErrTooManyStreams, ErrNoPrincipal, ErrStepUpRequired,
 		ErrNoRenderedView, ErrNotClaude, ErrViewOverrun, ErrTooManyWatches, ErrPasteTimeout, ErrPasteRefused, ErrBadPaste,
-		ErrPanePasteUnsupported, ErrScrollUnsupported, ErrScrollRefused, ErrScrollPaneInMode, ErrScrollTimeout, ErrBadScroll} {
+		ErrPanePasteUnsupported, ErrScrollUnsupported, ErrScrollRefused, ErrScrollPaneInMode, ErrScrollTimeout, ErrBadScroll,
+		ErrCatalogUnsupported, ErrCatalogRefused, ErrCatalogTimeout} {
 		if errors.Is(err, e) {
 			return true
 		}

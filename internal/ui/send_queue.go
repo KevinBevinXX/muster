@@ -8,7 +8,8 @@ import (
 )
 
 // THE SEND QUEUE in a mirrored window's Rendered view (internal/sendqueue): a
-// Queue button beside Send, and the window's queue under the status line — what is waiting, what
+// "Queue for when idle" item behind Send's caret (composer_menu.go), and the
+// window's queue under the status line — what is waiting, what
 // it is waiting for, a Cancel for each message not yet being sent, and the
 // last few outcomes.
 //
@@ -19,8 +20,9 @@ import (
 // is open and on every Queue, so a message queued or cancelled elsewhere
 // shows up here too.
 //
-// IT WORKS WITHOUT SCRIPT, like Send: Queue is a submit button whose
-// formaction is the queue route (the browser posts the same form there and is
+// IT WORKS WITHOUT SCRIPT, like Send: the caret's menu is a popover the
+// browser opens itself, Queue in it is a submit button whose formaction is the
+// queue route (the browser posts the same form there and is
 // redirected back with a notice), the list is drawn into the page by the
 // server, and each Cancel is a form of its own.
 
@@ -146,12 +148,18 @@ func SendQueueList(v SendQueueListView) g.Node {
 	)
 }
 
-// sendQueueButtonClass is Queue's look: Send's size, second in weight.
-const sendQueueButtonClass = "press min-h-[44px] shrink-0 rounded-xl bg-s2 px-3 text-sm font-semibold text-fg ring-1 ring-inset ring-line transition disabled:opacity-40"
+// sendQueueButtonClass is Queue's look: the one item of Send's caret menu
+// (composer_menu.go's sendSplit), a full-width 44px row.
+const sendQueueButtonClass = "press flex min-h-[44px] w-full items-center rounded-lg px-3 text-left text-sm font-semibold text-fg transition hover:bg-s2 focus:bg-s2 focus:outline-none disabled:opacity-40"
 
-// sendQueueButton is the composer's Queue button: a submit with its own
-// formaction, so the browser posts the composer's form (the window's address
-// and the text) to the queue route when no script runs.
+// SendQueueLabel is Queue's text in the caret menu.
+const SendQueueLabel = "Queue for when idle"
+
+// sendQueueButton is the composer's Queue: the menu item behind Send's caret,
+// and a submit with its own formaction, so the browser posts the composer's
+// form (the window's address and the text) to the queue route when no script
+// runs. Disabled (and saying why under the list) when the host cannot tell
+// when Claude Code is idle.
 func sendQueueButton(q *ComposerQueue, off bool) g.Node {
 	if q == nil || off {
 		return nil
@@ -159,17 +167,22 @@ func sendQueueButton(q *ComposerQueue, off bool) g.Node {
 	return Button(
 		ID("mv-queue-send"),
 		Type("submit"),
+		g.Attr("role", "menuitem"),
 		g.Attr("formaction", SendQueuePath),
 		g.If(q.Disabled != "", g.Attr("disabled", "")),
 		g.Attr("aria-label", "Queue: send when Claude Code is idle"),
 		g.If(q.Disabled == "", g.Attr("title", "Send when Claude Code has been idle for a while — even after this page is closed")),
 		g.If(q.Disabled != "", g.Attr("title", q.Disabled)),
 		Class(sendQueueButtonClass),
-		g.Text("Queue"),
+		g.Text(SendQueueLabel),
 	)
 }
 
-// sendQueueBox is the queue's place in the composer and its script.
+// sendQueueBox is the queue's place in the composer. Its script
+// (sendQueueScript) is drawn after the composer's form, with the composer's
+// other scripts (mirrorComposer): a script inside the composer, before its
+// form, lets the browser paint the composer half-parsed — one row high — and
+// the row it then grows by is a layout shift.
 func sendQueueBox(q *ComposerQueue, off bool) g.Node {
 	if q == nil || off {
 		return nil
@@ -178,7 +191,6 @@ func sendQueueBox(q *ComposerQueue, off bool) g.Node {
 		Div(ID("mv-queue"), g.Attr("data-src", q.Src), g.Attr("aria-live", "polite"), SendQueueList(q.List)),
 		g.If(q.Disabled != "", P(ID("mv-queue-off"), Class("px-3 pt-2 text-[11px] text-muted [overflow-wrap:anywhere]"),
 			g.Text("Queue is off here: "+q.Disabled))),
-		sendQueueScript(),
 	})
 }
 

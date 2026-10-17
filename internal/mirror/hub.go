@@ -252,6 +252,8 @@ type hostConn struct {
 	// statusReport: the host advertised Msg.StatusReport, speaks v2 and
 	// registers per window — the only shape whose Window.Status is believed.
 	statusReport bool
+	// catalogReport: the host advertised Msg.CatalogReport and speaks v2.
+	catalogReport bool
 
 	mu       sync.Mutex
 	sessions []string
@@ -267,7 +269,10 @@ type hostConn struct {
 	// scrolls are the scroll requests waiting for the host's scrolled, by id
 	// (the same id space as streams and pastes).
 	scrolls map[uint32]chan error
-	next    uint32
+	// catalogs are the catalog requests waiting for the host's cataloged, by
+	// id (the same id space).
+	catalogs map[uint32]chan catalogAnswer
+	next     uint32
 }
 
 type stream struct {
@@ -523,7 +528,8 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 
 	key := hostKey{owner, host}
 	hc := &hostConn{key: key, ws: ws, ctx: ctx, cancel: cancel, interactive: hello.Interactive, version: hello.Version,
-		streams: map[uint32]*stream{}, watches: map[uint32]*watch{}, pastes: map[uint32]chan error{}, scrolls: map[uint32]chan error{}}
+		streams: map[uint32]*stream{}, watches: map[uint32]*watch{}, pastes: map[uint32]chan error{}, scrolls: map[uint32]chan error{},
+		catalogs: map[uint32]chan catalogAnswer{}}
 	hc.sessions, hc.windows, hc.claude, hc.labels, hc.activity = hc.list(hello, h.now().Unix())
 	h.observe(owner, host, hc.windows, h.now())
 	if hc.version >= 2 {
@@ -534,6 +540,9 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		hc.paneScroll = hello.PaneScroll && hello.Interactive
 		// Believed only of a window (AgentState requires a per-window list).
 		hc.statusReport = hello.StatusReport
+		// Read-only or not: the catalog is names and descriptions shown to the
+		// host's own owner, never a write into the pane.
+		hc.catalogReport = hello.CatalogReport
 	}
 	h.mu.Lock()
 	old := h.hosts[key]
@@ -645,6 +654,10 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				if hc.version >= 2 {
 					hc.scrolled(m.ID, m.Error, m.Refusal)
 				}
+			case TypeCataloged:
+				if hc.version >= 2 {
+					hc.cataloged(m)
+				}
 			case TypeClosed:
 				var why error
 				if m.Error != "" {
@@ -708,6 +721,10 @@ func (h *Hub) drop(hc *hostConn) {
 	for id, ch := range hc.scrolls {
 		ch <- ErrHostDisconnected
 		delete(hc.scrolls, id)
+	}
+	for id, ch := range hc.catalogs {
+		ch <- catalogAnswer{err: ErrHostDisconnected}
+		delete(hc.catalogs, id)
 	}
 	hc.mu.Unlock()
 	if current {

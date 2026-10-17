@@ -218,6 +218,18 @@ type Msg struct {
 	// every one of its windows' status as unknown — so nothing queued for it is
 	// sent (Hub.AgentState says why).
 	StatusReport bool `json:"statusReport,omitempty"`
+	// CatalogReport (hello) is the host ADVERTISING that it answers a catalog
+	// request (TypeCatalog): a window's Claude Code commands, skills and the
+	// operator's snippets, for the composer's `/` and `:` menu (catalog.go).
+	// Only a v2 host sets it.
+	//
+	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS, like PaneScroll: an older
+	// muster ignores it and never asks; an older host never sets it, so muster
+	// never asks it and the composer offers the built-in commands alone.
+	CatalogReport bool `json:"catalogReport,omitempty"`
+	// Catalog (cataloged) is the answer to catalog request ID; nil with Error
+	// set when the host refused it.
+	Catalog *Catalog `json:"catalog,omitempty"`
 	// ID names one terminal stream (open, resize, close, closed).
 	ID uint32 `json:"id,omitempty"`
 	// Session is the tmux session an open attaches to.
