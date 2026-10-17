@@ -609,6 +609,7 @@ func agentsFilterScript() g.Node {
     if (none) none.hidden = !(all_.length && all.length && !shown.length);
     try { sessionStorage.setItem(KEY, q); } catch (e) {}
     syncURL(q);
+    recountPill();
   }
   // place puts a filter in the box: a link's ?q=, the session's copy, or a
   // history entry's. A list refresh never calls it — ?q= follows every
@@ -791,8 +792,18 @@ func agentsFilterScript() g.Node {
   // and the hidden hosts' tabs and counts follow it live. A card that is GONE
   // is not a reason to hold either: holding cannot keep it, it leaves the
   // screen whichever way the refresh goes.
+  //
+  // 🔴 A REFRESH THAT WOULD SWITCH THE SHOWN TAB IS HELD, wherever its cards
+  // land. The remembered host coming back (wouldShow) turns All into that
+  // host's tab: every card the reader was looking at but that host's would go,
+  // with no input — even when its own cards land off screen or under the
+  // search, which the order check below cannot see. Held, its cards are
+  // arrivals (not drawn, so the tab stays All), the pill offers it
+  // (recountPill), and the tap applies it.
   function decide(e, live, byId) {
     if (!heldOrder || !background(e) || !heldOrder.length) return true;
+    var w = wouldShow(live, byId);
+    if (w && w !== shownHost) return false;
     var inLive = {};
     live.forEach(function (id) { inLive[id] = true; });
     var h = heldOrder.filter(function (id) { return inLive[id] && shows(byId(id)); });
@@ -806,6 +817,16 @@ func agentsFilterScript() g.Node {
     return !h.slice(p).some(inView);
   }
   function domById(id) { return document.getElementById(id); }
+  // wouldShow is the host the list would be filtered to if the refresh with
+  // these cards were drawn whole — syncHosts's rule — so decide can hold one
+  // that would switch it. A shown host whose cards are all GONE is not held:
+  // they leave the screen whichever way the refresh goes (see decide), and the
+  // list shows All.
+  function wouldShow(live, byId) {
+    var h = linkAll ? '' : hostChosen();
+    if (!h) return '';
+    return live.some(function (id) { var c = byId(id); return !!c && c.getAttribute('data-f-host') === h; }) ? h : '';
+  }
   // swapPlan is beforeSwap's reading of the swap afterSwap finishes: the server's
   // (live) order and the decision.
   var swapPlan = null;
@@ -834,16 +855,28 @@ func agentsFilterScript() g.Node {
       var c = document.getElementById(id);
       if (c) { c.setAttribute('data-held', ''); c.setAttribute('data-list-i', String(heldOrder.length + i)); }
     });
-    // What waits: each arrival, and each card the live order puts HIGHER than
-    // it is drawn (one card overtaking three is one change, not four) — of the
-    // cards the filter SHOWS only (decide): what it hides is not waiting.
+    // The pill's count is apply's (recountPill), which follows right after.
+    return true;
+  }
+  // recountPill is what WAITS for the reader, against the filter as it is
+  // NOW — so changing the tab or the search during a hold recounts it: each
+  // held arrival, and each card the live order puts HIGHER than it is drawn
+  // (one card overtaking three is one change, not four), of the cards the
+  // filter SHOWS only (decide); what it hides is not waiting. A held switch of
+  // the shown tab (wouldShow) waits too: at least one.
+  function recountPill() {
+    var list = el('agents-list');
+    if (!list || !heldOrder || !liveOrder) return;
     var shown = function (id) { return shows(domById(id)); };
+    var arrived = cardsOf(list).filter(function (c) { return c.hasAttribute('data-held') && shows(c); }).length;
+    var inHeld = {};
+    heldOrder.forEach(function (id) { inHeld[id] = true; });
     var heldShown = heldOrder.filter(shown);
-    var liveKnown = liveOrder.filter(function (id) { return known[id] && shown(id); });
+    var liveKnown = liveOrder.filter(function (id) { return inHeld[id] && shown(id); });
     var risen = 0;
     liveKnown.forEach(function (id, i) { if (i < heldShown.indexOf(id)) risen++; });
-    showPill(arrived.filter(shown).length + risen);
-    return true;
+    var n = arrived + risen, w = wouldShow(liveOrder, domById);
+    showPill(w && w !== shownHost && !n ? 1 : n);
   }
   // keepDrawnOrder rewrites a held refresh's markup so its cards come in the
   // order they are DRAWN (cards it no longer has dropped, arrivals after), and

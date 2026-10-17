@@ -368,19 +368,26 @@ test.describe('desktop 1280×800, behaviour', () => {
     await expect(allTab(page)).toHaveAttribute('aria-selected', 'true');
     await expect(shownOn(page, hostA)).toHaveCount(2);
     expect(await stored(page), 'the choice is kept').toBe(hostB);
-    // Back: its tab returns and is the view again (once drawn).
+    // Back — while the reader is looking at host A's alpha window through a
+    // search that hides B's. Switching the view to B now would take alpha away
+    // with no input, so the refresh is HELD: B's cards wait (not drawn), the
+    // tab stays All, alpha stays, and the pill offers the change.
+    const box = page.locator('#agents-search');
+    const pill = page.locator('#agents-new-pill');
+    await box.fill('alpha');
+    await expect(page.locator('#agents-list > article').filter({ visible: true })).toHaveCount(1);
     writeTo(filesB, windowsB());
     await expect(cardsOn(page, hostB), `host B's windows are back (log:\n${rig.log})`).toHaveCount(2, { timeout: 30_000 });
-    // Back among cards in view, they may wait behind the pill; the tap (or the
-    // refresh, if nothing in view moved) draws them, and the choice applies.
-    // (A bounded click: the pill can go between seeing it and pressing it.)
-    const pill = page.locator('#agents-new-pill');
-    await expect
-      .poll(async () => {
-        if (await pill.isVisible()) await pill.click({ timeout: 2_000 }).catch(() => {});
-        return tab(page, hostB).getAttribute('aria-selected');
-      }, { timeout: 20_000 })
-      .toBe('true');
+    await expect(pill, 'the switch waits behind the pill').toHaveText('1 new ↑');
+    await expect(allTab(page), 'no switch until the tap').toHaveAttribute('aria-selected', 'true');
+    await expect(shownOn(page, hostA), 'what the reader was looking at stays').toHaveCount(1);
+    await expect(cardsOn(page, hostB).first()).toHaveAttribute('data-held', '');
+    expect(await stored(page)).toBe(hostB);
+    // The tap applies it: B's tab is the view again.
+    await pill.click();
+    await expect(tab(page, hostB)).toHaveAttribute('aria-selected', 'true');
+    await expect(pill).toBeHidden();
+    await page.locator('#agents-search-clear').click();
     await expect(shownOn(page, hostB)).toHaveCount(2);
     await expect(shownOn(page, hostA)).toHaveCount(0);
     expect(await page.evaluate(() => (window as unknown as { __noReload?: number }).__noReload), 'no reload happened').toBe(1);
@@ -478,6 +485,12 @@ test.describe('desktop 1280×800, a held arrival', () => {
     writeTo(filesB, [line('beta', '@1', 150), line('zebrafish', '@2', 0), line('kiwiberry', '@3', 0)]);
     await expect(cardsOn(page, hostB), `host B's new window is listed (log:\n${rig.log})`).toHaveCount(3, { timeout: 30_000 });
     await expect(pill).toHaveText('1 new ↑');
+    // The count follows the filter DURING the hold: with the search cleared
+    // the arrival it hid waits too; typed back, it does not.
+    await page.locator('#agents-search').fill('');
+    await expect(pill, 'recounted for the cleared search').toHaveText('2 new ↑');
+    await page.locator('#agents-search').fill('session=zebrafish');
+    await expect(pill, 'recounted for the search typed back').toHaveText('1 new ↑');
     await pill.click();
     await expect(pill).toBeHidden();
     const after = await page.locator('#agents-list > article').filter({ visible: true }).evaluateAll((els) => els.map((e) => e.getAttribute('data-f-host')));

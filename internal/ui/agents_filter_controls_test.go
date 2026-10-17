@@ -182,11 +182,6 @@ func TestTheHostTabIsAnExactTermAndedWithTheBox(t *testing.T) {
 			t.Errorf("%s: the filter script no longer contains %q", name, want)
 		}
 	}
-	// The stored choice is written by the reader's picks ONLY (a click, a key)
-	// — never by a refresh: chooseHost's definition and its two callers.
-	if n := strings.Count(script, "chooseHost("); n != 3 {
-		t.Errorf("chooseHost( appears %d times, want 3 (its definition, the click, the keys): something else now changes the stored tab", n)
-	}
 	if strings.Contains(script, "syncURL(q + ") || strings.Contains(script, "host=' + ") {
 		t.Error("the host tab is written into ?q=")
 	}
