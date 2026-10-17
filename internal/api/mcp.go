@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/agents"
 )
 
 // muster's MCP server: the connector store's tools for agents, over MCP's
@@ -97,15 +99,34 @@ func (s *Server) writeMCP(w http.ResponseWriter, id json.RawMessage, result any,
 	s.writeJSON(w, http.StatusOK, body)
 }
 
-// handleMCP serves POST /mcp.
+// handleMCP serves POST /mcp: the calling agent's tools.
 func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
+	a, _ := agentFromContext(r.Context())
+	s.serveMCP(w, r, mcpSurface{
+		tools:        func() []agents.ToolDef { return s.MCPToolDefsFor(r.Context(), a) },
+		call:         func(name, args string) string { return s.dispatchAgentTool(r.Context(), a, name, args) },
+		instructions: s.mcpInstructionsFor(),
+	})
+}
+
+// mcpSurface is one MCP door's tool set: what tools/list answers, how a
+// tools/call runs, and the initialize instructions. POST /mcp (an agent's
+// token) and POST /mirror/mcp (a mirrored session, through its host's token)
+// are two surfaces over the ONE protocol implementation below.
+type mcpSurface struct {
+	tools        func() []agents.ToolDef
+	call         func(name, args string) string
+	instructions string
+}
+
+// serveMCP speaks MCP's streamable-HTTP transport for one surface.
+func (s *Server) serveMCP(w http.ResponseWriter, r *http.Request, surface mcpSurface) {
 	// A browser page must not be able to drive an agent's tools (DNS-rebinding
 	// defence the transport asks servers to apply). Agent clients send no Origin.
 	if r.Header.Get("Origin") != "" {
 		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": "cross-origin MCP requests are refused"})
 		return
 	}
-	a, _ := agentFromContext(r.Context())
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
 	if err != nil {
 		s.writeMCP(w, nil, nil, &mcpError{Code: -32700, Message: "could not read the request"})
@@ -137,12 +158,12 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 			"protocolVersion": version,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
 			"serverInfo":      map[string]any{"name": "muster", "version": BuildVersion},
-			"instructions":    s.mcpInstructionsFor(),
+			"instructions":    surface.instructions,
 		}, nil)
 	case "ping":
 		s.writeMCP(w, req.ID, map[string]any{}, nil)
 	case "tools/list":
-		defs := s.MCPToolDefsFor(r.Context(), a)
+		defs := surface.tools()
 		tools := make([]map[string]any, 0, len(defs))
 		for _, d := range defs {
 			tools = append(tools, map[string]any{"name": d.Name, "description": d.Description, "inputSchema": d.Parameters})
@@ -157,17 +178,17 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 			s.writeMCP(w, req.ID, nil, &mcpError{Code: -32602, Message: "invalid tools/call params"})
 			return
 		}
-		// Only a tool this transport LISTS may be called through it: a gateway-only
+		// Only a tool this surface LISTS may be called through it: a gateway-only
 		// tool's name is as unknown here as a made-up one.
 		listed := false
-		for _, d := range s.MCPToolDefsFor(r.Context(), a) {
+		for _, d := range surface.tools() {
 			listed = listed || d.Name == p.Name
 		}
 		if !listed {
 			s.writeMCP(w, req.ID, nil, &mcpError{Code: -32602, Message: "unknown tool " + p.Name})
 			return
 		}
-		s.writeMCPToolResult(w, req.ID, func() string { return s.dispatchAgentTool(r.Context(), a, p.Name, string(p.Arguments)) })
+		s.writeMCPToolResult(w, req.ID, func() string { return surface.call(p.Name, string(p.Arguments)) })
 	default:
 		s.writeMCP(w, req.ID, nil, &mcpError{Code: -32601, Message: "method not found: " + req.Method})
 	}

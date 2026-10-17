@@ -33,6 +33,7 @@ type attnFixture struct {
 	notes   notes.Store
 	pusher  *payloadPusher
 	mirror  *fakeMirror
+	tokens  fakeMirrorTokens
 	// The operator's (user 1's) two non-chief agents: the asker, and another.
 	op, op2       agents.Agent
 	opTok, op2Tok string
@@ -53,13 +54,14 @@ func attnWindows(status string) []mirror.Window {
 
 func newAttnFixture(t *testing.T) *attnFixture {
 	t.Helper()
-	f := &attnFixture{pusher: &payloadPusher{},
+	f := &attnFixture{pusher: &payloadPusher{}, tokens: fakeMirrorTokens{},
 		mirror: &fakeMirror{online: true, interactive: true, statusReport: true, v2: &fakeMirrorV2{}, windows: attnWindows(mirror.StatusWaiting)}}
 	store := &memPush{}
 	f.connFixture = newConnFixtureWith(t, func(ext *Extensions, pool *pgxpool.Pool) {
 		f.attn, f.plugins, f.notes = attention.NewPG(pool), plugins.NewPG(pool), notes.NewPG(pool)
 		ext.Attention, ext.Plugins, ext.Notes, ext.Focus, ext.Mirror = f.attn, f.plugins, f.notes, focus.NewPG(pool), f.mirror
 		ext.Push = push.NewService(store, f.pusher, push.VAPIDConfig{PublicKey: "k"}, nil)
+		ext.MirrorTokens = f.tokens
 	})
 	claim(t, store, 1, ep("attn-operator"))
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)

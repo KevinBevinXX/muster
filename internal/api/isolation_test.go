@@ -115,6 +115,11 @@ const (
 	// credential opens it, and a plugin token acts as its owner — so B's plugin
 	// must reach nothing of A's.
 	classPlugin routeClass = "plugin"
+	// classMirrorHost is a mirror HOST token's MCP door (POST /mirror/mcp): no
+	// other credential opens it, and it names no object in its path — a session
+	// is claimed by header and checked against the token's own host
+	// (mirror_mcp_pg_test.go walks that refusal across hosts and owners).
+	classMirrorHost routeClass = "mirror-host"
 )
 
 // isolationClasses classifies EVERY route in routes.golden. Exhaustive both
@@ -302,6 +307,7 @@ var isolationClasses = map[string]routeClass{
 	// the principal walk (only a mirror token opens it): B's credentials must
 	// open nothing on it and leak nothing.
 	"GET /mirror/connect":     classPublic,
+	"POST /mirror/mcp":        classMirrorHost,
 	"GET /mirror/terminal":    classMirror,
 	"GET /mirror/terminal/ws": classMirror,
 

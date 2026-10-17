@@ -17,6 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/flows"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
 
@@ -44,6 +45,8 @@ const (
 	// pPluginToken is shaped like a minted plugin token (plugins.TokenShapeOK);
 	// principalPlugins resolves it to user 1.
 	pPluginToken = "mpl_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	// A mirror host token's shape (mirror.TokenShapeOK): mmt_ + 43 base64url.
+	pMirrorToken = "mmt_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 )
 
 // publicRoutes are served with no credential and therefore no Principal.
@@ -298,6 +301,10 @@ var routeVias = map[authz.Via][]string{
 		"POST /runner/flows/{id}/heartbeat",
 		"POST /runner/flows/{id}/result",
 	},
+	// A MIRROR HOST token opens exactly the mirrored sessions' MCP door.
+	authz.ViaMirrorHost: {
+		"POST /mirror/mcp",
+	},
 	// A PLUGIN token (0015) opens exactly the plugin door.
 	authz.ViaPlugin: {
 		"POST /plugin/v1/messages",
@@ -360,6 +367,16 @@ func (principalPlugins) Authenticate(_ context.Context, tok string) (plugins.Plu
 	return plugins.Plugin{}, plugins.ErrBadToken
 }
 
+// principalMirrorTokens resolves the one test mirror token to user 1's host.
+type principalMirrorTokens struct{}
+
+func (principalMirrorTokens) Authenticate(_ context.Context, tok string) (mirror.Token, error) {
+	if tok == pMirrorToken {
+		return mirror.Token{ID: 4, OwnerID: authz.OperatorUserID, Host: "principal-test"}, nil
+	}
+	return mirror.Token{}, mirror.ErrBadToken
+}
+
 // principalAPITokens resolves the one test personal token to user 1.
 type principalAPITokens struct{ apitokens.Store }
 
@@ -399,7 +416,7 @@ func newPrincipalTestServerWith(t *testing.T, cfg AuthConfig) (*Server, http.Han
 	t.Helper()
 	s := New(nil, cfg, log.New(io.Discard, "", 0))
 	s.UseExtensions(Extensions{Agents: principalAgents{}, Connectors: principalConnectors{}, APITokens: principalAPITokens{},
-		Flows: principalFlows{}, Plugins: principalPlugins{}})
+		Flows: principalFlows{}, Plugins: principalPlugins{}, MirrorTokens: principalMirrorTokens{}})
 	seen := &[]authz.Principal{}
 	s.principalProbe = func(r *http.Request) {
 		p, ok := authz.From(r.Context())
@@ -455,6 +472,8 @@ func credential(s *Server, req *http.Request, via authz.Via) {
 		req.Header.Set("Authorization", "Bearer "+pRunnerToken)
 	case authz.ViaPlugin:
 		req.Header.Set("Authorization", "Bearer "+pPluginToken)
+	case authz.ViaMirrorHost:
+		req.Header.Set("Authorization", "Bearer "+pMirrorToken)
 	}
 }
 
@@ -592,7 +611,7 @@ func TestAnUnarmedHookTierStillActsAsTheMachineUser(t *testing.T) {
 // prove nothing — a mislabelled route simply refuses and attaches nothing.)
 func TestPublicRoutesAreServedWithoutAPrincipal(t *testing.T) {
 	s, h, seen := newPrincipalTestServer(t)
-	doors := []authz.Via{authz.ViaSession, authz.ViaHook, authz.ViaService, authz.ViaAgent, authz.ViaToken, authz.ViaRunner, authz.ViaPlugin}
+	doors := []authz.Via{authz.ViaSession, authz.ViaHook, authz.ViaService, authz.ViaAgent, authz.ViaToken, authz.ViaRunner, authz.ViaPlugin, authz.ViaMirrorHost}
 	for _, pattern := range publicRoutes {
 		method, path := concretePath(pattern)
 		for _, via := range doors {

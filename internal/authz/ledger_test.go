@@ -122,6 +122,10 @@ var (
 		// runnerTokenFor (plugins is under FORCE RLS); only the row's owner and
 		// the plugin's own record are handed on.
 		"internal/api.(*Server).pluginFor",
+		// The mirrored sessions' MCP door (POST /mirror/mcp): a MIRROR token's
+		// lookup by hash (mirror_tokens is under FORCE RLS), the same shape as
+		// pluginFor; only the token's owner and host are handed on.
+		"internal/api.(*Server).mirrorHostFor",
 		// The send queue (migration 0019): the dispatcher's one helper. It reads
 		// every owner's next queued message and moves rows between states; each
 		// message is then probed and delivered as its own owner
@@ -204,8 +208,9 @@ var (
 		"internal/api.(*Server).requireHookOrServiceToken",
 		"internal/api.(*Server).requireHookToken",
 		"internal/api.(*Server).requireRelayAgent",
-		"internal/api.(*Server).requirePluginToken", // plugin tokens (0015): /plugin/v1/*
-		"internal/api.(*Server).requireRunnerToken", // browser-flow runner tokens (0012): /runner/flows/*
+		"internal/api.(*Server).requireMirrorHostToken", // mirror host tokens: POST /mirror/mcp
+		"internal/api.(*Server).requirePluginToken",     // plugin tokens (0015): /plugin/v1/*
+		"internal/api.(*Server).requireRunnerToken",     // browser-flow runner tokens (0012): /runner/flows/*
 		"internal/api.(*Server).requireSession",
 	}
 	// authzExports is authz's whole exported package scope. A new exported
@@ -213,7 +218,7 @@ var (
 	// new door until someone has decided it is not.
 	authzExports = []string{
 		"From", "MustFrom", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
-		"System", "Via", "ViaAgent", "ViaAttention", "ViaConnect", "ViaFocus", "ViaHook", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
+		"System", "Via", "ViaAgent", "ViaAttention", "ViaConnect", "ViaFocus", "ViaHook", "ViaMirrorHost", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
 		"ViaSession", "ViaSystem", "ViaToken", "WithPrincipal",
 	}
 )

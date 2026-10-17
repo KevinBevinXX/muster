@@ -3,7 +3,9 @@
 // only on the machines whose sessions muster should show, and only against a
 // muster running with MUSTER_MIRROR=1.
 //
-// It dials OUT to muster and opens no listener. Its one credential is this
+// It dials OUT to muster and opens no listener — unless -mcp-listen is set,
+// which serves a LOOPBACK-only MCP endpoint for this host's own Claude Code
+// sessions (internal/mirrorhost's MCPProxy; docs/attention.md). Its one credential is this
 // host's mirror token, minted on the muster side with
 //
 //	muster-server mirror token create <host>
@@ -75,6 +77,8 @@ const (
 	envLabelsFile  = "MUSTER_MIRROR_LABELS_FILE"
 	envPaneMapDir  = "MUSTER_MIRROR_PANE_MAP_DIR"
 	envSnippets    = "MUSTER_MIRROR_SNIPPETS_FILE"
+	envMCPListen   = "MUSTER_MIRROR_MCP_LISTEN"
+	envMCPSecret   = "MUSTER_MIRROR_MCP_SECRET_FILE"
 )
 
 func main() {
@@ -121,6 +125,8 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	labelsFile := fs.String("labels-file", getenv(envLabelsFile), "JSON object {\"<session>\": \"<codename>\"}: muster shows such a session as <codename>:<active window index> instead of its name; unreadable or invalid = no labels, logged, never fatal ("+envLabelsFile+")")
 	paneMapDir := fs.String("pane-map-dir", getenv(envPaneMapDir), "directory of per-pane Claude Code records (claude-p<N>.json for pane %N, written by a hook on every event) that the rendered view resolves a pane's transcript from FIRST, each validated against the process in the pane; empty = not consulted ("+envPaneMapDir+")")
 	snippetsFile := fs.String("snippets-file", getenv(envSnippets), "JSON array of {\"trigger\", \"label\", \"body\"}: the prewritten messages muster's message bar offers after `:`; re-read when it changes; missing or invalid = none, never fatal (default "+mirrorhost.DefaultSnippetsFile()+"; "+envSnippets+")")
+	mcpListen := fs.String("mcp-listen", getenv(envMCPListen), "serve muster's attention and task tools to this host's Claude Code sessions as an MCP endpoint at http://<addr>/mcp — a LOOPBACK address only, e.g. 127.0.0.1:47823; each call needs the secret in -mcp-secret-file and names its session with X-Muster-Pane: ${TMUX_PANE}; empty = off ("+envMCPListen+")")
+	mcpSecretFile := fs.String("mcp-secret-file", or(getenv(envMCPSecret), mirrorhost.DefaultMCPSecretFile()), "the local MCP endpoint's secret, created (0600) when missing ("+envMCPSecret+")")
 	catalog := fs.Bool("catalog", false, "print the composer menu's catalog this host would report for a pane whose working directory is the current one — commands, skills (source and name) and snippet triggers — and exit")
 	list := fs.Bool("list", false, "print the sessions this host would register, and exit (a labelled session's line ends in a label=<label> column)")
 	listClaude := fs.Bool("claude", false, "with -list: print, for each WINDOW whose active pane runs Claude Code, what its rendered view would stream (one line each: session, window id, index, claude, pane, state, session id, transcript, source = pane-map|sessions|guessed, then label=<label>); per session on a backend that does not list windows")
@@ -241,6 +247,26 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 2
+	}
+	if *mcpListen != "" {
+		secret, err := mirrorhost.EnsureMCPSecret(*mcpSecretFile)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
+		l, err := mirrorhost.ListenMCP(*mcpListen)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
+		wl, _ := mirrorhost.WindowListerOf(backend)
+		proxy := &mirrorhost.MCPProxy{URL: *url, Token: token, AllowHTTP: *allowHTTP, Secret: secret, Windows: wl, Logger: logger}
+		logger.Printf("muster-mirror: MCP endpoint for this host's Claude Code sessions at http://%s/mcp (secret in %s)", l.Addr(), *mcpSecretFile)
+		go func() {
+			if err := mirrorhost.ServeMCP(ctx, l, proxy); err != nil {
+				logger.Printf("muster-mirror: MCP endpoint: %v", err)
+			}
+		}()
 	}
 	mode := "read-only"
 	if *interactive {

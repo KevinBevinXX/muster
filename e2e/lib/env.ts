@@ -139,6 +139,8 @@ export const composerMenuPort = port + 58;
 // one mirrored host whose Claude window is waiting on the person.
 export const attentionPort = port + 62;
 export const attentionConnectPort = port + 63;
+// …and the mirrored host's own loopback MCP endpoint (muster-mirror -mcp-listen).
+export const attentionMirrorMCPPort = port + 64;
 // The fake service's bearer token. Invented, like every value here.
 export const sttToken = 'e2e-stt-token-not-a-real-one';
 // The docs screenshots (e2e/docshots, `make screenshots`, never in the suite):

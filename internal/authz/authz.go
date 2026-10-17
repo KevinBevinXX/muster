@@ -110,6 +110,11 @@ const (
 	// attentionPrincipal — handed the owner by the mirror hub's change nudge
 	// or by attention.PGStore.ExpireDue's row.
 	ViaAttention Via = "attention"
+	// ViaMirrorHost is a mirror host's token (`mmt_…`) on the mirrored
+	// sessions' MCP door (POST /mirror/mcp): a Claude Code session on that host,
+	// through the host's muster-mirror, acting as the token's owner — and only
+	// for a session that host lists now. internal/api's requireMirrorHostToken.
+	ViaMirrorHost Via = "mirror-host"
 	// ViaSystem is a background loop acting for every user. Only System sets
 	// it.
 	ViaSystem Via = "system"
@@ -134,6 +139,8 @@ var requestVias = map[Via]bool{
 	// The attention queue's per-owner background work (internal/api's
 	// attentionPrincipal). Without it the first mirror nudge PANICS here.
 	ViaAttention: true,
+	// A mirrored session's MCP door (internal/api's requireMirrorHostToken).
+	ViaMirrorHost: true,
 }
 
 // OperatorUserID is the user every principal names today: the operator, the

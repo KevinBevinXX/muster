@@ -72,6 +72,65 @@ paragraph:
 > until it returns the answer, then continue. Your owner sees the question in
 > muster's Attention view and on their phone.
 
+## Mirrored Claude Code sessions
+
+A Claude Code session in a mirrored tmux window gets the **every agent** tools
+too, through its host's `muster-mirror`:
+
+1. `muster-mirror -mcp-listen 127.0.0.1:47823` (or `MUSTER_MIRROR_MCP_LISTEN`)
+   serves MCP at `http://127.0.0.1:47823/mcp`. Only a literal loopback address
+   is accepted. Every call must carry the host's local secret
+   (`Authorization: Bearer <secret>`), kept in `-mcp-secret-file` (default
+   `$XDG_CONFIG_HOME/muster-mirror/mcp-secret`, created 0600 on first start), so
+   another user on the machine cannot use it. A request with an `Origin` header
+   is refused.
+2. The session names itself with `X-Muster-Pane: ${TMUX_PANE}`. Claude Code
+   inherits its pane's `TMUX_PANE` and expands `${…}` in an MCP server's
+   headers; the host maps the pane to the Claude session running in it now
+   (`X-Muster-Claude-Session: <id>` also works).
+3. The host forwards the call to muster's `POST /mirror/mcp` with its mirror
+   token and that Claude session id. muster acts as the token's owner, and only
+   if **that host** lists a window running **that session** right now — another
+   host's session, a session no window shows, or another owner's token is
+   refused (403) before any tool runs. The tool set is exactly `attention_*`
+   and the task tools; the chief's tools are not on it.
+
+An ask made this way is shown under the window's title and host, and only that
+session can wait on, read or cancel it.
+
+### Client configuration
+
+In the Claude Code MCP configuration of the user who runs the sessions (for
+example `~/.claude.json`'s `mcpServers`, or a project's `.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "muster": {
+      "type": "http",
+      "url": "http://127.0.0.1:47823/mcp",
+      "headers": {
+        "Authorization": "Bearer ${MUSTER_MIRROR_MCP_SECRET}",
+        "X-Muster-Pane": "${TMUX_PANE}"
+      }
+    }
+  }
+}
+```
+
+with `MUSTER_MIRROR_MCP_SECRET` exported from the secret file in the shell that
+starts Claude Code (`export MUSTER_MIRROR_MCP_SECRET="$(cat ~/.config/muster-mirror/mcp-secret)"`),
+and this paragraph in the sessions' instructions (a `CLAUDE.md`):
+
+> If you need the operator's input — a decision, a missing fact, an approval —
+> do not stop and wait for a reply: call the muster tool `attention_ask` with
+> the question (and `options` when it is a choice), then call `attention_wait`
+> with its id, again while it answers "pending", until it returns the answer.
+> Then continue with that answer.
+
+If muster sits behind an auth proxy, `POST /mirror/mcp` must bypass it, as
+`GET /mirror/connect` does.
+
 ## The API
 
 On the hook tier (the operator's hook token, or a personal API token, acting as
