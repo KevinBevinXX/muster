@@ -192,7 +192,15 @@ test('a tap mid-way reverses the group, from where it is, both ways', async ({ p
       a.currentTime = Number((a.effect!.getTiming().duration as number) / 2);
       return d.getBoundingClientRect().height;
     });
-  const finish = () => g3.evaluate((d) => d.getAnimations().forEach((a) => a.finish()));
+  // finish ends the animations and waits for their finish handlers (which is
+  // where a close removes [open]) before anything is read.
+  const finish = () => g3.evaluate(async (d) => {
+    const anims = d.getAnimations();
+    anims.forEach((a) => a.finish());
+    await Promise.all(anims.map((a) => a.finished.catch(() => undefined)));
+    await new Promise((r) => setTimeout(r, 50));
+  });
+  const isOpen = () => g3.evaluate((d) => (d as HTMLDetailsElement).open);
 
   const closed = await height();
   await g3.locator(':scope > summary').tap(); // open…
@@ -201,7 +209,7 @@ test('a tap mid-way reverses the group, from where it is, both ways', async ({ p
   const from = await g3.evaluate((d) => d.getBoundingClientRect().height);
   expect(Math.abs(from - mid), 'the reversal starts from where the box was').toBeLessThanOrEqual(2);
   await finish();
-  await expect(g3, 'opening, reversed: it ends closed').not.toHaveAttribute('open', '');
+  expect(await isOpen(), 'opening, reversed: it ends closed').toBe(false);
   await expect.poll(height).toBeLessThanOrEqual(closed + 1);
 
   await g3.locator(':scope > summary').tap(); // open fully
@@ -212,7 +220,7 @@ test('a tap mid-way reverses the group, from where it is, both ways', async ({ p
   await pauseHalf();
   await g3.locator(':scope > summary').tap(); // …reversed half-way
   await finish();
-  await expect(g3, 'closing, reversed: it ends open').toHaveAttribute('open', '');
+  expect(await isOpen(), 'closing, reversed: it ends open').toBe(true);
   await expect.poll(height).toBeGreaterThanOrEqual(open - 1);
 });
 

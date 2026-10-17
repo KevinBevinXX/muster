@@ -162,6 +162,12 @@
    "q": "οδοσ",
    "tier": 0,
    "why": "a label written with the final-sigma letter itself matches the plain sigma"
+  },
+  {
+   "label": "𠀋bc runner",
+   "q": "bc",
+   "tier": 2,
+   "why": "a letter outside the BMP that NFKD leaves alone is still one letter (two UTF-16 units in the browser)"
   }
  ]
 }
