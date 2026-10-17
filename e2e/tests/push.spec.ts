@@ -117,7 +117,7 @@ test('Enable subscribes with the server key and the device appears on the accoun
 
   await page.goto(origin + '/account');
   await expect(page.locator('[data-testid="push-device"]')).toHaveCount(1);
-  await expect(page.locator('[data-testid="push-preferences"] input[type=checkbox]:checked')).toHaveCount(7); // every push.Events toggle, on by default (plugin: PR C)
+  await expect(page.locator('[data-testid="push-preferences"] input[type=checkbox]:checked')).toHaveCount(8); // every push.Events toggle, on by default (plugin: PR C; attention: the attention queue)
 });
 
 test('a subscription made with an old VAPID key is replaced with one on the current key', async ({ page }) => {
@@ -151,4 +151,62 @@ test.describe('on an iPhone Safari tab', () => {
     await expect(status).not.toContainText('not supported');
     await expect(page.locator('#enable-push')).toBeHidden();
   });
+});
+
+// The ATTENTION notification, the service worker's half: a new item is shown
+// with its per-item tag and a tap target on /attention, and the "resolved"
+// message carrying the same tag closes it. The payloads are EXACTLY what the
+// server sends — internal/api's TestTheAttentionPayloadsAreWhatTheWorkerReads
+// pins the same two JSON documents — delivered to the REAL worker's push
+// handler through the browser's own push path (CDP
+// ServiceWorker.deliverPushMessage), since headless Chromium has no vendor push
+// service.
+//
+// ⚠ THE NOTIFICATION SINK IS STUBBED, in the worker (as pushManager is stubbed
+// in the page above): headless Chromium refuses showNotification outright
+// ("No notification permission has been granted", whatever permission the
+// context is given — measured). So registration.showNotification and
+// getNotifications are replaced by a recorder; what is real is the push event,
+// the worker's handler and its branch on the payload.
+test('an attention notification is shown with its tag and link, and its resolved message closes it', async ({ page, context }) => {
+  await signIn(page);
+  const registered = context.serviceWorkers().length ? Promise.resolve(context.serviceWorkers()[0]) : context.waitForEvent('serviceworker');
+  await page.goto(origin + '/tasks');
+  const worker = await registered;
+  await page.evaluate(async () => {
+    await navigator.serviceWorker.ready;
+  });
+  await worker.evaluate(() => {
+    type Note = { title: string; body: string; tag: string; url: string; open: boolean; close: () => void };
+    const sink: Note[] = [];
+    (self as unknown as { __notes: Note[] }).__notes = sink;
+    const reg = (self as unknown as { registration: ServiceWorkerRegistration }).registration;
+    reg.showNotification = async (title: string, o?: NotificationOptions) => {
+      const n: Note = { title, body: o?.body ?? '', tag: o?.tag ?? '', url: (o?.data || {}).url, open: true, close: () => (n.open = false) };
+      sink.push(n);
+    };
+    reg.getNotifications = (async (f?: { tag?: string }) =>
+      sink.filter((n) => n.open && (!f?.tag || n.tag === f.tag))) as unknown as typeof reg.getNotifications;
+  });
+  const cdp = await context.newCDPSession(page);
+  const regs: { registrationId: string; scopeURL: string; isDeleted?: boolean }[] = [];
+  cdp.on('ServiceWorker.workerRegistrationUpdated', (e) => regs.push(...e.registrations));
+  await cdp.send('ServiceWorker.enable');
+  await expect.poll(() => regs.find((r) => r.scopeURL === origin + '/' && !r.isDeleted)?.registrationId ?? '').not.toBe('');
+  const registrationId = regs.find((r) => r.scopeURL === origin + '/' && !r.isDeleted)!.registrationId;
+  const shown = () =>
+    worker.evaluate(() =>
+      (self as unknown as { __notes: { title: string; body: string; tag: string; url: string; open: boolean }[] }).__notes.map((n) => ({
+        title: n.title, body: n.body, tag: n.tag, url: n.url, open: n.open,
+      })),
+    );
+  const deliver = (data: string) => cdp.send('ServiceWorker.deliverPushMessage', { origin, registrationId, data });
+
+  await deliver(
+    '{"type":"attention","id":"ask-41","title":"An agent needs your input","body":"worker-7: Deploy the importer now?","tag":"attention-ask-41","data":{"url":"/attention#ask-41"}}',
+  );
+  const note = { title: 'An agent needs your input', body: 'worker-7: Deploy the importer now?', tag: 'attention-ask-41', url: '/attention#ask-41' };
+  await expect.poll(shown).toEqual([{ ...note, open: true }]);
+  await deliver('{"type":"resolved","id":"ask-41","tag":"attention-ask-41"}');
+  await expect.poll(shown).toEqual([{ ...note, open: false }]);
 });

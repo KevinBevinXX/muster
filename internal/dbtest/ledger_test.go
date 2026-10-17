@@ -157,6 +157,11 @@ var pgBackedPackages = []string{
 	// retried" are claims about row-level security, a unique index and a
 	// conditional UPDATE.
 	"internal/sendqueue",
+	// The attention queue (migration 0023). "Another user cannot read, answer or
+	// cancel your asks", "an answer and a cancel cannot both land" and "an
+	// agent names only its owner's agent" are claims about row-level security, a
+	// conditional UPDATE and a trigger.
+	"internal/attention",
 	"internal/plugins",
 	// Recents (migration 0018). "Another user cannot see or write your recently
 	// viewed entries", "a visit upserts" and "the oldest past the bound are

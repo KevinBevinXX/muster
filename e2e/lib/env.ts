@@ -134,6 +134,11 @@ export const routingConnectPort = port + 57;
 // plugin on) and two mirrored hosts — one that reports its catalog and one
 // that plays an older muster-mirror.
 export const composerMenuPort = port + 58;
+// The attention queue (attention.spec.ts): its own server (the e2eterm binary,
+// mirror plugin on) with its connect listener (the asking agent's /mcp door) and
+// one mirrored host whose Claude window is waiting on the person.
+export const attentionPort = port + 62;
+export const attentionConnectPort = port + 63;
 // The fake service's bearer token. Invented, like every value here.
 export const sttToken = 'e2e-stt-token-not-a-real-one';
 // The docs screenshots (e2e/docshots, `make screenshots`, never in the suite):
