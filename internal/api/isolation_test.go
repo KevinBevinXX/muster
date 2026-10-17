@@ -24,6 +24,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/apitokens"
+	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/connectors"
@@ -374,6 +375,18 @@ var isolationClasses = map[string]routeClass{
 	// A message to an agent as a form post, and the GET it can come back as.
 	"POST /agents/{name}/send": classParam,
 	"GET /agents/{name}/send":  classParam,
+	// The attention queue (0023). The page, its live list and the badge name
+	// no object (each reads the caller's own queue); the answer and dismiss
+	// forms and their API twins name A's ask by id. The machine API is the
+	// hook tier (user 1), like the task API.
+	"GET /attention":                   classList,
+	"GET /attention/items":             classList,
+	"GET /attention/badge":             classList,
+	"POST /attention/asks/{id}/answer": classParam,
+	"POST /attention/asks/{id}/cancel": classParam,
+	"GET /api/attention":               classAdmin,
+	"POST /api/attention/{id}/answer":  classAdmin,
+	"POST /api/attention/{id}/cancel":  classAdmin,
 	// Dictation (transcribe.go) names no object: it turns the caller's recording
 	// into text for the caller and reads or writes no row.
 	"POST /transcribe": classList,
@@ -763,6 +776,10 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	aQueued, err := sendqueue.NewPG(pool).Enqueue(ua, sendqueue.Item{
 		Target: sendqueue.Target{Host: w.canary + "-host", Session: "main", Window: "@1"}, Body: w.canary + " queued", StepUpAt: time.Now()})
 	must(err, "a queued message")
+	// A's open ask (0023), asked by A's agent, its question carrying the canary.
+	aAsk, err := attention.NewPG(pool).Create(ua, attention.New{Asker: attention.Asker{AgentID: w.a.agent.ID, Label: w.a.agent.Name},
+		Question: w.canary + " asks", Options: []string{"yes", "no"}})
+	must(err, "an ask")
 
 	w.aIdentities = []string{w.a.agent.Name, agents.ChiefNameFor(w.a.uid), w.aSessionLink, w.aTag, w.aProject}
 	w.opInvite, err = users.NewPG(pool).CreateInvite(ctx, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession},
@@ -772,7 +789,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		attach: w.aAttachment.ID, chat: w.aChatSession.ID, agentName: w.a.agent.Name, connName: w.aConnName,
 		tag: w.aTag, link: w.aSessionLink, mirrorHost: w.canary + "-host", mirrorSession: "main", token: w.aToken2.ID,
 		pushDevice: w.objA.pushDevice, flowJob: w.aJob.ID, runnerTok: w.aRunner2.ID, flowReq: w.aFlowReq.ID,
-		plugin: w.aPlugin2.ID, draft: w.aDraft.ID, queued: aQueued.ID, route: aRoute.RouteID}
+		plugin: w.aPlugin2.ID, draft: w.aDraft.ID, queued: aQueued.ID, route: aRoute.RouteID, ask: aAsk.ID}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
 	const ghostID = 9_000_000_000
@@ -780,7 +797,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		agentName: "ghost-agent" + w.suffix, connName: "ghostconn" + w.suffix, tag: "ghosttag", link: "ghost-sess-" + w.suffix,
 		mirrorHost: "ghost-host", mirrorSession: "main", ccAccount: "ghostacct", token: ghostID, pushDevice: ghostID,
 		flowJob: ghostID, runnerTok: ghostID, flowReq: ghostID, plugin: ghostID, draft: ghostID, passkey: "00000000-0000-4000-a000-00000000ghost",
-		queued: ghostID, route: "rt_000000000000000000000000"}
+		queued: ghostID, route: "rt_000000000000000000000000", ask: ghostID}
 
 	// A's push device: through the real store, as the claim the subscribe route
 	// makes. Its user agent and endpoint carry the canary.
@@ -824,6 +841,8 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		Routing:   &Routing{},
 		Focus:     focus.NewPG(pool),
 		SendQueue: sendqueue.NewPG(pool),
+		// The attention queue (0023): A's ask is a real object B must not reach.
+		Attention: attention.NewPG(pool),
 		Push:      push.NewService(pushStore, w.pusher, push.VAPIDConfig{PublicKey: "iso-walk-vapid-public"}, log.New(io.Discard, "", 0)),
 		ConnectorPolicy: connectors.Policy{AllowLoopback: true, InsecureHTTP: true,
 			Resolve: func(_ context.Context, host string) ([]netip.Addr, error) {
@@ -1061,6 +1080,7 @@ type isoObjs struct {
 	mirrorHost, mirrorSession                 string
 	queued                                    int64  // a queued message's id (0019)
 	route                                     string // a session route's id (0021)
+	ask                                       int64  // an attention ask's id (0023)
 }
 
 // fill turns a route pattern into a concrete request naming objects o, with a
@@ -1108,6 +1128,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		id = strconv.FormatInt(o.queued, 10)
 	case strings.HasPrefix(path, "/api/routes/{id}"):
 		id = o.route
+	case strings.HasPrefix(path, "/attention/asks/{id}") || strings.HasPrefix(path, "/api/attention/{id}"):
+		id = strconv.FormatInt(o.ask, 10)
 	}
 	name := o.agentName
 	if strings.Contains(path, "connectors/{name}") {
@@ -1156,7 +1178,7 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		// The runner door's fields ride along: a claim naming the instance A's
 		// jobs are queued on (a one-second wait), and a result's outcome.
 		return method, path, `{"jsonrpc":"2.0","id":1,"method":"tools/list","title":"iso-write","body":"iso-write",` +
-			`"status":"in_progress","message":"iso-write","reason":"iso-write","blocked":true,"tool":"Bash","command":"ls",` +
+			`"status":"in_progress","message":"iso-write","answer":"iso-write","reason":"iso-write","blocked":true,"tool":"Bash","command":"ls",` +
 			`"instances":["isoinst"],"waitSeconds":1,"outcome":"done"}`
 	}
 	winner := actor.task.ID
@@ -1166,7 +1188,7 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 	f := url.Values{
 		"title": {"iso-write"}, "body": {"iso-write"}, "status": {"in_progress"}, "tags": {"isowrite"},
 		"name": {"iso-name"}, "model": {""}, "secret": {"iso-rotated-secret-0123456789"},
-		"note_text": {"iso"}, "directory": {"/tmp"},
+		"note_text": {"iso"}, "directory": {"/tmp"}, "answer": {"iso-write"},
 		// Cross-user links attempted through FORM fields, not the path: the
 		// actor's own task wins a merge whose loser is o's task, and a dispatch
 		// names o's task.
@@ -1208,7 +1230,7 @@ func (w *isoWorld) snapshot() map[string]string {
 	for _, tbl := range []string{"notes", "note_comments", "note_attachments", "task_sessions", "agents",
 		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "github_connection", "mirror_tokens",
 		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens", "push_subscriptions", "push_preferences", "flow_requests",
-		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "recents", "send_queue", "agent_focus", "agent_focus_history", "session_routes"} {
+		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "recents", "send_queue", "agent_focus", "agent_focus_history", "session_routes", "attention_asks"} {
 		var js string
 		if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t.id)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
 			// task_sessions/github_connection have no `id` ordering column in every

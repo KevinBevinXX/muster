@@ -62,9 +62,11 @@ func focusToolDefs() []agents.ToolDef {
 
 // agentsListRow is one agents_list row: nothing a decision does not need.
 type agentsListRow struct {
-	ID     string `json:"id"`
-	Kind   string `json:"kind"`
-	Name   string `json:"name"`
+	ID   string `json:"id"`
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+	// Host is a mirrored session's host ("" for a dispatched agent).
+	Host   string `json:"host,omitempty"`
 	Status string `json:"status"`
 	Focus  string `json:"focus,omitempty"`
 	// FocusProblem is why the session has no focus, or a stale one: the
@@ -100,7 +102,7 @@ func (s *Server) toolAgentsList(ctx context.Context) string {
 		if status == "" {
 			status = "unknown"
 		}
-		rows = append(rows, agentsListRow{ID: sub.String(), Kind: "mirror", Name: e.DisplayTitle() + " @ " + e.Host,
+		rows = append(rows, agentsListRow{ID: sub.String(), Kind: "mirror", Name: e.DisplayTitle() + " @ " + e.Host, Host: e.Host,
 			Status: status, Focus: fi[sub].Title, FocusProblem: fi[sub].Problem()})
 	}
 	return toolJSON(map[string]any{"untrusted": focus.UntrustedNote, "sessions": rows})

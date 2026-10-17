@@ -16,6 +16,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -281,6 +282,12 @@ func (s *Server) decideDraft(w http.ResponseWriter, r *http.Request, how string)
 	if d.Status == plugins.DraftApproved {
 		s.draftWake.signal()
 	}
+	// Decided: it leaves the attention queue, and its `plugin` notification is
+	// cleared on the owner's other devices (the tag notifyDraftAwaiting set).
+	owner := requestOwner(r.Context())
+	s.goNotify(owner, push.EventResolved, RouterNotification{Type: push.TypeResolved, ID: strconv.FormatInt(d.ID, 10),
+		Tag: "plugin-draft-" + strconv.FormatInt(d.ID, 10)}, nil)
+	s.attentionChanged(owner, draftKey(d.ID))
 	http.Redirect(w, r, pluginsPath+"#"+draftCardAnchor(d.ID), http.StatusSeeOther)
 }
 

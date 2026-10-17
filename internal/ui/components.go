@@ -964,6 +964,8 @@ func sidebar(activeTab, currentTab string, hasPanels bool, feat Features) g.Node
 				g.Map(visibleTabs(feat), func(t tab) g.Node {
 					return sidebarTab(t.Key, t.Label, t.Icon, activeTab == t.Key, currentTab == t.Key, hasPanels)
 				}),
+				// The attention queue (attention.go): a standalone page, not a tab.
+				attentionLink(feat),
 			),
 			// Device preferences, pinned to the bottom of the panel and clear of
 			// the home indicator. They are per-device (localStorage), so they live

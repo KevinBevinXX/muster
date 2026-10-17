@@ -56,6 +56,7 @@ GET /agents/{name}/terminal/ws
 GET /agents/{name}/ws
 GET /api/agents
 GET /api/agents/{name}/messages
+GET /api/attention
 GET /api/directories
 GET /api/flows/jobs
 GET /api/flows/jobs/{id}
@@ -70,6 +71,9 @@ GET /api/tokens
 GET /api/whoami
 GET /apple-touch-icon-precomposed.png
 GET /apple-touch-icon.png
+GET /attention
+GET /attention/badge
+GET /attention/items
 GET /auth/claim
 GET /auth/reset
 GET /connectors
@@ -164,12 +168,16 @@ POST /agents/{id}/start
 POST /agents/{id}/stop
 POST /agents/{name}/send
 POST /api/agents/{name}/messages
+POST /api/attention/{id}/answer
+POST /api/attention/{id}/cancel
 POST /api/flows/jobs
 POST /api/push/subscribe
 POST /api/push/unsubscribe
 POST /api/routes/{id}/reply
 POST /api/tasks
 POST /api/tasks/{id}/comments
+POST /attention/asks/{id}/answer
+POST /attention/asks/{id}/cancel
 POST /auth/claim
 POST /auth/confirm
 POST /auth/confirm/passkey/options

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"time"
 )
 
 // muster's MCP server: the connector store's tools for agents, over MCP's
@@ -51,6 +52,16 @@ func mcpInstructions() string {
 	return "muster's connector store. To reach an external platform (e.g. GitHub), call connector_request " +
 		"for it, wait for the operator's approval with connector_status, then call it through muster's proxy: " +
 		ProxyRecipe("<connector>", "<host>") + " You never see the credential. " + mcpGitNote
+}
+
+// mcpInstructionsFor is the initialize instructions this server gives: the
+// connector store's, and the attention queue's paragraph when its tools are
+// offered (attention_tools.go's attentionInstruction).
+func (s *Server) mcpInstructionsFor() string {
+	if s.attentionToolsOn() {
+		return mcpInstructions() + " " + attentionInstruction
+	}
+	return mcpInstructions()
 }
 
 // mcpGitNote tells a claude-code agent how git follows a grant.
@@ -126,7 +137,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 			"protocolVersion": version,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
 			"serverInfo":      map[string]any{"name": "muster", "version": BuildVersion},
-			"instructions":    mcpInstructions(),
+			"instructions":    s.mcpInstructionsFor(),
 		}, nil)
 	case "ping":
 		s.writeMCP(w, req.ID, map[string]any{}, nil)
@@ -156,13 +167,69 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 			s.writeMCP(w, req.ID, nil, &mcpError{Code: -32602, Message: "unknown tool " + p.Name})
 			return
 		}
-		text := s.dispatchAgentTool(r.Context(), a, p.Name, string(p.Arguments))
-		result := map[string]any{"content": []map[string]any{{"type": "text", "text": text}}}
-		if isToolErr(text) {
-			result["isError"] = true
-		}
-		s.writeMCP(w, req.ID, result, nil)
+		s.writeMCPToolResult(w, req.ID, func() string { return s.dispatchAgentTool(r.Context(), a, p.Name, string(p.Arguments)) })
 	default:
 		s.writeMCP(w, req.ID, nil, &mcpError{Code: -32601, Message: "method not found: " + req.Method})
+	}
+}
+
+// mcpHeartbeatEvery is how often a tool call still running writes a keep-alive
+// byte. A var so a test can shorten it.
+var mcpHeartbeatEvery = 15 * time.Second
+
+// toolResult is a dispatched tool's text as an MCP tools/call result.
+func toolResult(text string) map[string]any {
+	result := map[string]any{"content": []map[string]any{{"type": "text", "text": text}}}
+	if isToolErr(text) {
+		result["isError"] = true
+	}
+	return result
+}
+
+// writeMCPToolResult runs one tool call and writes its JSON-RPC answer.
+//
+// 🔴 A LONG CALL KEEPS THE CONNECTION ALIVE WITH WHITESPACE. attention_wait
+// blocks for up to ten minutes, longer than the idle timeout of any proxy
+// between an agent and muster (and connector_status for fifty seconds). So once
+// a call has run for mcpHeartbeatEvery, the response's status and
+// Content-Type are sent and a newline follows every mcpHeartbeatEvery until the
+// answer, which is then written after them. Leading whitespace is legal JSON
+// (RFC 8259 §2), so the body still parses as the one JSON-RPC response the
+// transport promises; a call that finishes sooner is written exactly as before.
+func (s *Server) writeMCPToolResult(w http.ResponseWriter, id json.RawMessage, run func() string) {
+	done := make(chan string, 1)
+	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				s.logger.Printf("PANIC in MCP tool call: %v", rec)
+				done <- toolErr("the tool failed")
+			}
+		}()
+		done <- run()
+	}()
+	t := time.NewTicker(mcpHeartbeatEvery)
+	defer t.Stop()
+	rc := http.NewResponseController(w)
+	started := false
+	for {
+		select {
+		case text := <-done:
+			if !started {
+				s.writeMCP(w, id, toolResult(text), nil)
+				return
+			}
+			if err := json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": id, "result": toolResult(text)}); err != nil {
+				s.logger.Printf("mcp: write a long call's answer: %v", err)
+			}
+			return
+		case <-t.C:
+			if !started {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				started = true
+			}
+			_, _ = w.Write([]byte("\n"))
+			_ = rc.Flush()
+		}
 	}
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/apitokens"
+	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
@@ -204,6 +205,11 @@ type Extensions struct {
 	// not mention routing.
 	Routes  plugins.RouteStore
 	Routing *Routing
+
+	// Attention is the attention queue's explicit asks (internal/attention,
+	// migration 0023). nil (no database): the attention tools are not offered,
+	// /attention and /api/attention answer 404, and no link is drawn.
+	Attention attention.Store
 }
 
 // SendQueue is the send queue's store as this package consumes it:

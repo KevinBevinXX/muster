@@ -143,6 +143,10 @@ var (
 		// routes are past their deadline (ids and owners only); each is then
 		// timed out as its owner (withPrincipalLedger's routePrincipal).
 		"internal/plugins.(*PGStore).ExpiredRoutes",
+		// The attention queue (migration 0023): the expiry sweep moves every
+		// owner's lapsed asks and hands each back with its owner, whose devices
+		// alone are then told (attention.PGStore.ExpireDue's one helper).
+		"internal/attention.sys",
 	}
 	// operatorLedger: work done as the OPERATOR (user 1) with no request —
 	// the boot-time GitHub connect of the operator's own static token, and the
@@ -184,6 +188,10 @@ var (
 		// queued injection cancelled and its message handed back to the chief as
 		// the route's owner, through authz.ViaRoute.
 		"internal/api.(*Server).routePrincipal",
+		// The attention queue: which of an owner's mirrored windows wait on the
+		// person, read as that owner after the hub's nudge named them, through
+		// authz.ViaAttention.
+		"internal/api.(*Server).attentionPrincipal",
 	}
 	// admitLedger: every authentication wrapper.
 	admitLedger = []string{
@@ -205,7 +213,7 @@ var (
 	// new door until someone has decided it is not.
 	authzExports = []string{
 		"From", "MustFrom", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
-		"System", "Via", "ViaAgent", "ViaConnect", "ViaFocus", "ViaHook", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
+		"System", "Via", "ViaAgent", "ViaAttention", "ViaConnect", "ViaFocus", "ViaHook", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
 		"ViaSession", "ViaSystem", "ViaToken", "WithPrincipal",
 	}
 )

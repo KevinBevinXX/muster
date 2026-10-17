@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/flows"
@@ -92,6 +93,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		FocusSummarizer: stubSummarizer{},
 		FocusRetention:  time.Hour,
 		Routes:          stubRoutes{},
+		Attention:       stubAttention{},
 		Routing:         &Routing{},
 		SendQueue:       stubSendQueue{},
 		// NON-ZERO on purpose: the zero value is the default.
@@ -127,6 +129,7 @@ type stubSummarizer struct{ focus.Summarizer }
 
 // stubRoutes satisfies plugins.RouteStore for registration only; any method call panics.
 type stubRoutes struct{ plugins.RouteStore }
+type stubAttention struct{ attention.Store }
 
 // stubSendQueue satisfies SendQueue for registration only; any method call panics.
 type stubSendQueue struct{ SendQueue }

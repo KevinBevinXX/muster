@@ -74,6 +74,10 @@ const (
 	EventChatReply = "chat.reply"
 	// EventConnectorChanged announces a connector request, decision or change.
 	EventConnectorChanged = "connector.changed"
+	// EventAttentionChanged announces that something entered or left the
+	// owner's attention queue (attention.go). Spelled with "_queue" so it can
+	// never be read as the router's own attention events on a mirrored bus.
+	EventAttentionChanged = "attention_queue.changed"
 )
 
 // Server is muster's HTTP application.
@@ -120,6 +124,9 @@ type Server struct {
 	// ended owing its chief a hand-back.
 	routeKick     chan struct{}
 	routeKickOnce sync.Once
+	// attention is the attention queue's process state (attention.go): the
+	// waiters' wake-up and each owner's last-seen waiting sessions.
+	attention attentionState
 
 	// terminals is every live agent terminal, so a shutdown can end them and
 	// wait for their releases. See EndTerminals.
@@ -495,6 +502,8 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerFlowRoutes(mux)
 	// Plugins (internal/plugins): /plugins and /plugin/v1/*, 404 while off.
 	s.registerPluginRoutes(mux)
+	// The attention queue (attention.go): /attention, its badge and /api/attention; 404 without a store.
+	s.registerAttentionRoutes(mux)
 	// muster-native Web Push (push_routes.go): the subscribe flow and the
 	// account page's Notifications section.
 	s.registerPushRoutes(mux)
@@ -568,7 +577,7 @@ func staticCacheControl(path, v string) string {
 func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 	p, _ := authz.From(ctx)
 	return ui.Features{GitHub: s.ext.GitHub != nil, Connectors: s.ext.Connectors != nil,
-		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed(), Push: s.pushServed()}
+		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed(), Push: s.pushServed(), Attention: s.ext.Attention != nil}
 }
 
 // handleIndex serves the document shell. The active tab is derived from the
@@ -1017,7 +1026,9 @@ func (s *Server) goNotify(owner int64, event string, n RouterNotification, onDel
 			}
 		}
 		// The router knows nothing of "resolved" (it closes its own cards).
-		if s.router == nil || event == push.EventResolved || !s.routerServes(owner) {
+		// Nor of the attention queue's items: it has no attention card, and its
+		// own notifications for a waiting session are its own (attention.go).
+		if s.router == nil || event == push.EventResolved || event == push.EventAttention || !s.routerServes(owner) {
 			return
 		}
 		if err := s.router.Notify(ctx, n); err != nil {
@@ -1079,6 +1090,9 @@ func (s *Server) BroadcastAgentsChangedFor(owner int64) {
 		return
 	}
 	s.broadcastTo(owner, EventAgentChanged, "")
+	// The same nudge is how the attention queue learns a mirrored session
+	// started (or stopped) waiting on the person.
+	s.attentionMirrorChanged(owner)
 }
 
 // agentChangedFor is BroadcastAgentChanged for an owner already known.

@@ -43,6 +43,10 @@ type Features struct {
 	// no subscribe script: the routes behind them would only answer 503, and an
 	// Enable button over a 503 asks for the OS permission and then fails.
 	Push bool
+	// Attention is true when the server holds the attention queue's store
+	// (internal/attention). False draws no Attention link and no badge: the
+	// routes behind them would only answer 404.
+	Attention bool
 }
 
 // visibleTabs is the subset of musterTabs a document with these features may

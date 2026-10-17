@@ -14,6 +14,7 @@ const (
 	EventCreated   = "created"   // a machine (producer) created tasks
 	EventComment   = "comment"   // an external (machine) comment on a task
 	EventPlugin    = "plugin"    // a plugin reply draft awaits its owner's approval
+	EventAttention = "attention" // something new in the attention queue: an agent's question, a session waiting
 )
 
 // Event is one toggle.
@@ -31,6 +32,7 @@ var Events = []Event{
 	{EventCreated, "A machine created tasks"},
 	{EventComment, "A machine commented on a task"},
 	{EventPlugin, "A reply draft awaits your approval"},
+	{EventAttention, "An agent asks you something, or a session is waiting on you"},
 }
 
 // KnownEvent reports whether name is in Events.

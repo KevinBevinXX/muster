@@ -103,6 +103,13 @@ const (
 	// internal/api's routePrincipal, called only by the sweep, handed each owner
 	// after plugins.PGStore.ExpiredRoutes read the due routes under System.
 	ViaRoute Via = "session-route"
+	// ViaAttention is the ATTENTION QUEUE's background work acting as one
+	// owner: reading that owner's mirrored windows to see which became (or
+	// stopped) waiting on the person, and telling that owner's devices about
+	// an ask the expiry sweep closed. One site mints it — internal/api's
+	// attentionPrincipal — handed the owner by the mirror hub's change nudge
+	// or by attention.PGStore.ExpireDue's row.
+	ViaAttention Via = "attention"
 	// ViaSystem is a background loop acting for every user. Only System sets
 	// it.
 	ViaSystem Via = "system"
@@ -124,6 +131,9 @@ var requestVias = map[Via]bool{
 	// Session routing's timeout sweep, per owner (internal/api's
 	// routePrincipal). Without it the sweep PANICS here.
 	ViaRoute: true,
+	// The attention queue's per-owner background work (internal/api's
+	// attentionPrincipal). Without it the first mirror nudge PANICS here.
+	ViaAttention: true,
 }
 
 // OperatorUserID is the user every principal names today: the operator, the
