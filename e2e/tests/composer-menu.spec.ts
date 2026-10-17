@@ -71,6 +71,10 @@ function fixtures() {
     { trigger: ':eos', label: 'End of session ritual', body: 'reflect on work done, then write the handoff FIRST' },
     { trigger: ':kickoff', label: 'Kickoff message for next session', body: 'give the kickoff message for next session' },
     { trigger: ':mt', label: 'Meantime: tee up independent parallel work', body: 'tee up what we can do in the meantime' },
+    // Two the measured misfires reached through the old rules: ":D" (letters in
+    // order / label) and ":P" (":par").
+    { trigger: ':dacq', label: 'Process feedback: dispatch subagent + elicit scope', body: 'do light recon and ask clarifying questions' },
+    { trigger: ':par', label: 'Proceed as recommended', body: 'proceed as recommended' },
   ]));
 }
 
@@ -278,6 +282,11 @@ test.describe('desktop 1280×800', () => {
     await page.keyboard.press('Backspace');
     await page.keyboard.type('hdf');
     await expect.poll(() => optionNames(page)).toEqual(['handoff']);
+    // Moved to with an arrow, an item is taken by Enter even though "hdf" is
+    // not a prefix of it (only typing that is not a choice is sent).
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('Enter');
+    await expect(input(page)).toHaveValue('/handoff ');
 
     // Arrows move the active option; Enter inserts "/name " and sends nothing.
     await input(page).fill('');
@@ -315,9 +324,13 @@ test.describe('desktop 1280×800', () => {
     await input(page).click();
     await page.keyboard.type('please :');
     await expect(menu(page)).toBeVisible();
-    await expect.poll(() => optionNames(page)).toEqual([':eos', ':kickoff', ':mt']);
+    await expect.poll(() => optionNames(page)).toEqual([':eos', ':kickoff', ':mt', ':dacq', ':par']);
+    // By the trigger's prefix alone — a label word ("meantime") is not a match.
     await page.keyboard.type('meant');
-    await expect.poll(() => optionNames(page), 'a label word matches').toEqual([':mt']);
+    await expect(menu(page), 'a label word opens nothing').toBeHidden();
+    for (let i = 0; i < 5; i++) await page.keyboard.press('Backspace');
+    await page.keyboard.type('mt');
+    await expect.poll(() => optionNames(page)).toEqual([':mt']);
     await page.keyboard.press('Enter');
     await expect(input(page)).toHaveValue('please tee up what we can do in the meantime');
     await expect(menu(page)).toBeHidden();
@@ -330,6 +343,59 @@ test.describe('desktop 1280×800', () => {
     await page.locator('#mv-complete [data-trigger=":kickoff"]').click();
     await expect(input(page)).toHaveValue('give the kickoff message for next session');
     await expect(input(page)).toBeFocused();
+  });
+
+  test('Enter sends ordinary text the menu could have rewritten — "thanks :D", "ok :P", "ok :p", "see /etc" — and completes only a typed prefix', async ({ page }) => {
+    await openView(page);
+    const sends: number[] = [];
+    page.on('response', (r) => {
+      if (new URL(r.url()).pathname === '/mirror/view/send') sends.push(r.status());
+    });
+    const before = pasted();
+    const sent: string[] = [];
+    for (const text of ['thanks :D', 'ok :P', 'ok :p', 'see /etc', 'see /tmp']) {
+      await input(page).fill('');
+      await input(page).click();
+      await page.keyboard.type(text);
+      // Nothing is offered for a face or a path; ":p" may offer ":par", and
+      // Enter must still send it.
+      if (text !== 'ok :p') await expect(menu(page), `"${text}" offers nothing`).toBeHidden();
+      await page.keyboard.press('Enter');
+      sent.push(`${pane} ${text}`);
+      await expect.poll(pasted, `"${text}" + Enter is sent as typed`).toEqual([...before, ...sent]);
+      await expect(input(page)).toHaveValue('');
+    }
+    // The positive control: a typed PREFIX of the highlighted item is completed.
+    await page.keyboard.type('/hand');
+    await page.keyboard.press('Enter');
+    await expect(input(page)).toHaveValue('/handoff ');
+    await input(page).fill('');
+    await page.keyboard.type('note :ki');
+    await expect.poll(() => optionNames(page)).toEqual([':kickoff']);
+    await page.keyboard.press('Enter');
+    await expect(input(page)).toHaveValue('note give the kickoff message for next session');
+    expect(pasted(), 'no completion was sent').toEqual([...before, ...sent]);
+    // "/etc" offers no letters-in-order match at all.
+    await input(page).fill('');
+    await page.keyboard.type('see /etc');
+    await expect(menu(page)).toBeHidden();
+  });
+
+  test('an inserted command or snippet is undone by Ctrl+Z', async ({ page }) => {
+    await openView(page);
+    await input(page).click();
+    await page.keyboard.type('/hand');
+    await expect(menu(page)).toBeVisible();
+    await page.keyboard.press('Tab');
+    await expect(input(page)).toHaveValue('/handoff ');
+    await page.keyboard.press('Control+z');
+    await expect(input(page)).toHaveValue('/hand');
+    await input(page).fill('');
+    await page.keyboard.type('do :eo');
+    await page.keyboard.press('Enter');
+    await expect(input(page)).toHaveValue('do reflect on work done, then write the handoff FIRST');
+    await page.keyboard.press('Control+z');
+    await expect(input(page)).toHaveValue('do :eo');
   });
 
   test('/ in the middle of a word or a path does not open the menu; Escape closes it and it stays closed for that word', async ({ page }) => {
@@ -513,18 +579,13 @@ for (const vp of [{ width: 390, height: 844 }, { width: 1280, height: 800 }]) {
       expect(r.total, `shifts: ${JSON.stringify(r.shifts)}`).toBeLessThan(0.01);
 
       // The positive control: a shift the page did not ask for IS counted — a
-      // tall block in the conversation, then another pushed in above it, with
-      // no input within 500 ms.
-      await page.evaluate(() => {
-        const d = document.createElement('div');
-        d.style.cssText = 'height:300px;flex:none;background:#888';
-        document.getElementById('mv-log')!.prepend(d);
-      });
-      await page.waitForTimeout(700);
+      // block pushed in above the header (the page's column is not a scroller,
+      // so no scroll anchoring can absorb it), with no input within 500 ms.
+      await page.waitForTimeout(600);
       await page.evaluate(() => {
         const d = document.createElement('div');
         d.style.cssText = 'height:150px;flex:none';
-        document.getElementById('mv-log')!.prepend(d);
+        document.body.prepend(d);
       });
       await page.waitForTimeout(300);
       expect((await readCls(page)).total, 'the instrument sees a shift').toBeGreaterThan(0.01);

@@ -27,7 +27,10 @@ import (
 //     snippets, filtered by window.musterRank (internal/searchrank's browser
 //     copy, rankJS). Arrow keys move, Enter or Tab insert, Escape closes, a tap
 //     inserts. A command inserts "/name " for the rest to be typed; a snippet
-//     inserts its text, which stays editable before it is sent.
+//     inserts its text, which stays editable before it is sent, and Ctrl+Z
+//     undoes the insertion. ENTER INSERTS ONLY WHAT IS PLAINLY BEING COMPLETED
+//     (an item moved to with the arrows, or one the typed word is a prefix of);
+//     any other Enter closes the menu and sends, so "thanks :D" is a message.
 //
 //     🔴 THE RULE FOR WHEN IT OPENS IS CLAUDE CODE'S OWN, MEASURED, NOT GUESSED.
 //     In Claude Code 2.1.289 (a real pane, 2026-10-17): "/co" at the start of
@@ -223,6 +226,10 @@ func composerMenuScript(src string) g.Node {
   var src = box.getAttribute('data-src');
   var data = null, loading = false;
   var token = null, shown = [], active = -1, dismissed = -1;
+  // chosen: the person moved through the list (an arrow key), so Enter takes
+  // the highlighted item whatever was typed. inserting: our own edit is in
+  // flight, and its input event is not typing.
+  var chosen = false, inserting = false;
   var SOURCE = { project: 0, user: 1, plugin: 2, builtin: 3 };
   var MAX = 50;
   input.setAttribute('aria-autocomplete', 'list');
@@ -256,27 +263,40 @@ func composerMenuScript(src string) g.Node {
     return { kind: k, start: i, end: c, q: q };
   }
 
+  // pathLike: a '/' word that reads as a filesystem path ("/etc", "/tmp"),
+  // which is offered prefix matches only — never "/stripe:test-cards" for
+  // "/etc" by its letters in order.
+  var PATHY = /^(etc|tmp|usr|var|home|opt|bin|sbin|dev|proc|sys|nix|run|srv|mnt|root|lib|boot|media|private|users)$/i;
+  function pathLike(q) { return PATHY.test(q) || q.indexOf('/') >= 0 || q.indexOf('.') >= 0; }
+
+  // prefixOf: q is a non-empty prefix of what item m is typed as — its name
+  // (folded, as musterRank compares) or its trigger after the ':' (exactly:
+  // espanso's triggers are case-sensitive, and ":D" is not ":dacq").
+  function prefixOf(m, q) {
+    if (!q) return false;
+    if (m.e) return window.musterRank(m.e.name, q) === 0;
+    return m.s.trigger.slice(1).indexOf(q) === 0;
+  }
+
   function matches(t) {
     var out = [];
     if (t.kind === '/') {
+      var strict = pathLike(t.q);
       (data.commands || []).forEach(function (e, n) {
         var r = window.musterRank(e.name, t.q);
-        if (r >= 0) out.push({ e: e, r: r, n: n });
+        if (r >= 0 && (!strict || r === 0)) out.push({ e: e, r: r, n: n });
       });
       out.sort(function (a, b) {
         return a.r - b.r || (t.q ? a.e.name.length - b.e.name.length : 0) ||
           (SOURCE[a.e.source] - SOURCE[b.e.source]) || (a.e.name < b.e.name ? -1 : a.e.name > b.e.name ? 1 : 0);
       });
     } else {
+      // A snippet by its TRIGGER'S PREFIX alone, case and all (":e" ->
+      // ":eos"). Never by letters in order or by its label: ":D" and ":P" end
+      // ordinary sentences, and must not turn into somebody's prompt.
       (data.snippets || []).forEach(function (s, n) {
-        // The trigger by the full rule; the label only by a prefix, word or
-        // substring — its letters-in-order (tier 3) would match most labels.
-        var a = window.musterRank(s.trigger.slice(1), t.q), b = window.musterRank(s.label || '', t.q);
-        if (b > 2) b = -1;
-        var r = a < 0 ? b : (b < 0 ? a : Math.min(a, b));
-        if (r >= 0) out.push({ s: s, r: r, n: n });
+        if (s.trigger.slice(1).indexOf(t.q) === 0) out.push({ s: s, r: 0, n: n });
       });
-      out.sort(function (a, b) { return a.r - b.r || a.n - b.n; });
     }
     return out.slice(0, MAX);
   }
@@ -341,6 +361,7 @@ func composerMenuScript(src string) g.Node {
   }
 
   function refresh() {
+    if (inserting) return;
     var t = tokenAt();
     if (!t) { dismissed = -1; close(); return; }
     if (t.start === dismissed) { close(); return; }
@@ -350,7 +371,7 @@ func composerMenuScript(src string) g.Node {
     var same = token && token.kind === t.kind && token.start === t.start && token.q === t.q;
     token = t;
     if (!same) {
-      shown = found; active = 0;
+      shown = found; active = 0; chosen = false;
       render(t, found);
     }
     var msg = t.kind === '/' ? (data.note || '') : '';
@@ -364,10 +385,19 @@ func composerMenuScript(src string) g.Node {
     var m = shown[i], t = token;
     if (!m || !t) return;
     var text = m.e ? '/' + m.e.name + ' ' : m.s.body;
-    var v = input.value;
-    input.value = v.slice(0, t.start) + text + v.slice(t.end);
-    var at = t.start + text.length;
-    input.setSelectionRange(at, at);
+    // As an EDIT, not an assignment: insertText goes on the textarea's undo
+    // stack, so Ctrl+Z gives back what was typed. (setRangeText where the
+    // browser has no insertText — undoable there only as far as it is.)
+    input.focus();
+    input.setSelectionRange(t.start, t.end);
+    inserting = true;
+    var done = false;
+    try { done = !!(document.execCommand && document.execCommand('insertText', false, text)); } catch (err) {}
+    if (!done) {
+      input.setRangeText(text, t.start, t.end, 'end');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    inserting = false;
     // What was inserted is not typed: it must not reopen the menu (a snippet
     // whose text ends in a ':word').
     var nt = tokenAt();
@@ -386,9 +416,21 @@ func composerMenuScript(src string) g.Node {
     if (e.target !== input || box.hidden || !token || e.isComposing) return;
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { close(); return; }
     var n = shown.length;
-    if (e.key === 'ArrowDown') { e.preventDefault(); e.stopPropagation(); active = (active + 1) % n; mark(); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); e.stopPropagation(); active = (active - 1 + n) % n; mark(); }
-    else if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') { e.preventDefault(); e.stopPropagation(); insert(active); }
+    if (e.key === 'ArrowDown') { e.preventDefault(); e.stopPropagation(); active = (active + 1) % n; chosen = true; mark(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); e.stopPropagation(); active = (active - 1 + n) % n; chosen = true; mark(); }
+    else if (e.key === 'Tab') { e.preventDefault(); e.stopPropagation(); insert(active); }
+    else if (e.key === 'Enter' && !e.shiftKey) {
+      // 🔴 ENTER SENDS UNLESS THE PERSON IS PLAINLY COMPLETING: the highlighted
+      // item was moved to, or what is typed is a non-empty prefix of it (for a
+      // snippet, two characters at least — ":p" and ":o" are faces, not
+      // ":par"). Otherwise the menu closes and the message is SENT as typed:
+      // "thanks :D", "ok :P", "see /etc" are messages, not completions. Tab
+      // and a tap always insert.
+      var m = shown[active];
+      if (m && (chosen || (prefixOf(m, token.q) && (m.e || token.q.length >= 2)))) {
+        e.preventDefault(); e.stopPropagation(); insert(active);
+      } else close();
+    }
     else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); dismissed = token.start; close(); }
   }, true);
   // A tap or click picks the option; the mousedown is kept from moving focus,
