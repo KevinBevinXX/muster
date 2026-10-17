@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { Page } from '@playwright/test';
-import { test, expect } from '../lib/fixtures';
-import { password, toolGroupsPort } from '../lib/env';
+import { test, expect, useSuiteSession } from '../lib/fixtures';
+import { toolGroupsPort } from '../lib/env';
 import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
 
 // CONSECUTIVE TOOL CALLS COLLAPSE INTO ONE "N tool calls" ROW (internal/ui/
@@ -90,10 +90,8 @@ const shapeJS = (root: Element) => {
   return out.join(' ');
 };
 
-async function signIn(page: Page, baseURL: string) {
-  await page.goto(`${baseURL}/login`);
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+async function signIn(page: Page, _baseURL: string) {
+  await useSuiteSession(page);
 }
 
 test('history: a run of calls is one row; text and a single call stay where they were; a group opens to its rows', async ({ page, baseURL }) => {

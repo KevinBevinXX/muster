@@ -1,6 +1,6 @@
 import { Page } from '@playwright/test';
-import { test, expect } from '../lib/fixtures';
-import { composerFitPort, password } from '../lib/env';
+import { test, expect, useSuiteSession } from '../lib/fixtures';
+import { composerFitPort } from '../lib/env';
 import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
 
 // THE COMPOSERS GROW WITH THEIR TEXT (internal/ui/composer_fit.go): both message
@@ -134,9 +134,7 @@ for (const vp of [
 
       test('the agent chat box grows, caps at 40%, scrolls, and shrinks after a send', async ({ page, baseURL }) => {
         // Signed in on the shared server, where the agent is.
-        await page.goto(`${baseURL}/login`);
-        await page.fill('#muster-password', password);
-        await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+        await useSuiteSession(page);
         // A socket that accepts the message and finishes the turn: the send path
         // that empties the box is the WebSocket one.
         const sent: string[] = [];

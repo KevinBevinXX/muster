@@ -1,6 +1,6 @@
 // The suite's shared test object: signed in, phone-sized, with a machine API
 // helper. Every spec imports `test` and `expect` from here.
-import { test as base, expect, APIRequestContext, Page, request as pwRequest } from '@playwright/test';
+import { test as base, expect, APIRequestContext, BrowserContext, Page, request as pwRequest } from '@playwright/test';
 import fs from 'node:fs';
 import { authState, baseURL, hookToken, stateDir } from './env';
 
@@ -115,4 +115,14 @@ export async function expectAgentsDestroyed(
       timeout: 10_000,
     })
     .toEqual([]);
+}
+
+// useSuiteSession signs a page's context in on the SHARED server with the
+// session global-setup saved (lib/env authState), instead of the sign-in form.
+// 🔴 The form is throttled to 10 attempts a minute per server
+// (internal/api/login.go), and a spec that signed in for every test of a
+// matrix crossed it — the 11th sign-in never left /login.
+export async function useSuiteSession(page: Page): Promise<void> {
+  const state = JSON.parse(fs.readFileSync(authState, 'utf8')) as { cookies: Parameters<BrowserContext['addCookies']>[0] };
+  await page.context().addCookies(state.cookies);
 }

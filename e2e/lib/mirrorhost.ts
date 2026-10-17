@@ -111,10 +111,21 @@ export class MirrorRig {
     fs.rmSync(this.dir, { recursive: true, force: true });
   }
 
+  // login signs the page's context in — through the form ONCE per rig, then by
+  // the session cookies that sign-in set. 🔴 The server throttles sign-in to 10
+  // attempts a minute (internal/api/login.go loginRateBurst), and a spec that
+  // signs in for every test of a size-by-mode matrix crossed it: the 11th
+  // sign-in never left /login and timed out.
+  private session?: Awaited<ReturnType<ReturnType<Page['context']>['cookies']>>;
   async login(page: Page): Promise<void> {
+    if (this.session) {
+      await page.context().addCookies(this.session);
+      return;
+    }
     await page.goto(this.origin + '/login');
     await page.fill('#muster-password', password);
     await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+    this.session = await page.context().cookies(this.origin);
   }
 
   // waitListed waits until the host's sessions are on the Agents list (the
