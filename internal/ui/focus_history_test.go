@@ -203,7 +203,9 @@ func TestTheRenderedViewTabsYourMessagesWithFocusHistory(t *testing.T) {
 	if !strings.Contains(page, "window.muTabs") || !strings.Contains(page, "window.muFocusHistory") {
 		t.Error("the page lacks the tabs or history script")
 	}
-	if !strings.Contains(attrOf(findAttr(sheet, "data-chat-index-close").NextSibling, "class"), "h-[70dvh]") {
+	// The class TOKEN, not a substring: "max-h-[70dvh]" contains "h-[70dvh]"
+	// and lets the sheet grow.
+	if !nodeHasClass(findAttr(sheet, "data-chat-index-close").NextSibling, "h-[70dvh]") {
 		t.Error("the sheet is not a fixed height (a page arriving would move it)")
 	}
 	// No Claude session reported: the history tab says there is none, and

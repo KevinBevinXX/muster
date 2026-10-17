@@ -1291,7 +1291,14 @@ func namesObject(route string) bool {
 		strings.HasPrefix(route, "GET /mirror/terminal") || strings.HasPrefix(route, "GET /mirror/view") ||
 		route == "POST /mirror/view/send" || route == "POST /mirror/terminal/send" || route == "POST /mirror/confirm-send" ||
 		route == "POST /mirror/terminal/scroll" ||
-		route == "GET /send-queue" || route == "POST /send-queue" || route == "POST /send-queue/confirm"
+		route == "GET /send-queue" || route == "POST /send-queue" || route == "POST /send-queue/confirm" ||
+		// Focus history (0022) names its session in the query (?subject=agent:<id>),
+		// so it is held to the object routes' rules: B's answer about A's agent
+		// must be its answer about a ghost, and A's own walk must reach it. (That
+		// B gets a 404 rather than an empty 200 is pinned by
+		// TestFocusHistoryRouteIs404ForAnotherOwnersSession, not here: both
+		// answers are indistinguishable either way.)
+		route == "GET /ui/focus/history"
 }
 
 var paramRE = regexp.MustCompile(`\{[a-z]`)
