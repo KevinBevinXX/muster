@@ -35,6 +35,7 @@ const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   // back to the board; the full server below builds both and draws the real tabs.
   'GET /repos': { where: 'full', url: '/repos', ready: '#panel-repos :is(p, li, button)' },
   'GET /connectors': { where: 'full', url: '/connectors', ready: '#panel-connectors button' },
+  'GET /attention': { where: 'shared', url: '/attention', ready: '[data-testid="attention-items"] li' },
   'GET /flows': { where: 'shared', url: '/flows', ready: 'main form button[type="submit"], main form button:not([type])' },
   'GET /share': { where: 'shared', url: '/share?title=Layout%20probe&text=hello', ready: '#task-modal textarea[name="body"]' },
   'GET /account': { where: 'shared', url: '/account', ready: '#notifications' },
@@ -82,6 +83,8 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /mirror/view/send': 'a redirect back to the view',
   'GET /mirror/view/ws': 'websocket',
   'GET /send-queue': 'an htmx partial (the queue list)',
+  'GET /attention/items': 'an html partial (the attention list)',
+  'GET /attention/badge': 'an htmx partial (the attention count badge)',
   'GET /static/': 'static files',
   'GET /sw.js': 'service worker script',
   'GET /tasks/{id}/attachments/{aid}': 'a file download',
