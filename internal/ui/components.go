@@ -1863,21 +1863,39 @@ func appScript(feat Features) g.Node {
   // testdata/cases.json, read by the Go test and run through this function by
   // e2e/tests/pickers.spec.ts. Tier 3 is the letters-in-order match these
   // pickers always had, kept LAST (searchrank's doc says why it stays).
-  var RANK_WORD = (function () { try { return new RegExp('[\\p{L}\\p{N}]', 'u'); } catch (e) { return /[a-z0-9\u00c0-\uffff]/i; } })();
+  // window.musterFold is searchrank.Fold, step for step: NFKD, combining marks
+  // and U+FEFF dropped, lower case, final sigma as sigma, white space trimmed
+  // (U+0085 included, as Go's unicode.IsSpace does). Code points, never UTF-16
+  // units: a letter outside the BMP is one letter here as it is in Go.
+  var RANK_MARK = (function () { try { return new RegExp('\\p{M}', 'gu'); } catch (e) { return /[\u0300-\u036f]/g; } })();
+  var RANK_WORD = (function () { try { return new RegExp('^[\\p{L}\\p{N}]$', 'u'); } catch (e) { return /^[a-z0-9\u00c0-\uffff]$/i; } })();
+  window.musterFold = function (s) {
+    s = String(s == null ? '' : s);
+    if (s.normalize) s = s.normalize('NFKD');
+    return s.replace(RANK_MARK, '').replace(/\uFEFF/g, '').toLowerCase().replace(/\u03c2/g, '\u03c3')
+      .replace(/^[\s\u0085]+|[\s\u0085]+$/g, '');
+  };
   window.musterRank = function (label, query) {
-    var q = String(query == null ? '' : query).trim().toLowerCase();
-    if (!q) return 0;
-    var l = String(label == null ? '' : label).toLowerCase();
-    if (l.indexOf(q) === 0) return 0;
+    var q = Array.from(window.musterFold(query));
+    if (!q.length) return 0;
+    var l = Array.from(window.musterFold(label));
+    function at(i) {
+      if (i + q.length > l.length) return false;
+      for (var j = 0; j < q.length; j++) if (l[i + j] !== q[j]) return false;
+      return true;
+    }
+    if (at(0)) return 0;
     var found = false;
-    for (var at = l.indexOf(q); at >= 0; at = l.indexOf(q, at + 1)) {
-      found = true;
-      if (at > 0 && !RANK_WORD.test(l.charAt(at - 1))) return 1;
+    for (var i = 1; i + q.length <= l.length; i++) {
+      if (at(i)) {
+        found = true;
+        if (!RANK_WORD.test(l[i - 1])) return 1;
+      }
     }
     if (found) return 2;
-    var i = 0;
-    for (var j = 0; j < l.length && i < q.length; j++) { if (l.charAt(j) === q.charAt(i)) i++; }
-    return i === q.length ? 3 : -1;
+    var k = 0;
+    for (var m = 0; m < l.length; m++) if (k < q.length && l[m] === q[k]) k++;
+    return k === q.length ? 3 : -1;
   };
   function cbMatches(label, q) { return window.musterRank(label, q) >= 0; }
   // cbModelLabel: trim the leading "openrouter/" provider prefix for DISPLAY only

@@ -104,6 +104,45 @@ for (const vp of [
       await expect(page.locator('#agents-count')).toHaveText(`${cards} of ${cards}`);
     });
 
+    // 🔴 THE DOM ITSELF IS REORDERED, not only the boxes: Tab and a screen
+    // reader walk the cards in ranked order. Typing never takes focus from the
+    // box, and clearing it puts the cards back in the list's own order.
+    test('typing reorders the cards in the DOM: Tab follows the ranking, focus stays in the box, clearing restores', async ({ page }) => {
+      await rig.login(page);
+      await rig.waitListed(page, 'mqtail');
+      await page.goto(rig.origin + '/agents');
+      const domOrder = () =>
+        page.locator('#agents-list > article').evaluateAll((els, ns) =>
+          els.map((e) => e.getAttribute('data-f-session') || '').filter((n) => (ns as string[]).includes(n)), names);
+      await expect.poll(domOrder).toEqual(['mqtail', 'old-qdock', 'qbase']);
+      await page.locator('#agents-search').focus();
+      await page.keyboard.type('q');
+      await expect.poll(domOrder, { message: 'the DOM order is the ranked order' }).toEqual(['qbase', 'old-qdock', 'mqtail']);
+      expect(await page.evaluate(() => document.activeElement && document.activeElement.id), 'focus stayed in the box').toBe('agents-search');
+      // Tab from the box into the list: the cards' controls come in ranked order.
+      const reached: string[] = [];
+      for (let i = 0; i < 80 && reached.length < 3; i++) {
+        await page.keyboard.press('Tab');
+        const s = await page.evaluate(() => {
+          const a = document.activeElement && document.activeElement.closest('#agents-list > article');
+          return a ? a.getAttribute('data-f-session') || '' : '';
+        });
+        if (s && names.includes(s) && !reached.includes(s)) reached.push(s);
+      }
+      expect(reached, 'Tab reaches the cards best match first').toEqual(['qbase', 'old-qdock', 'mqtail']);
+      // A refresh morphs the list back into the server's order; it is ranked
+      // again before anything is drawn.
+      const swapped = page.evaluate(() => new Promise<void>((r) => document.addEventListener('htmx:afterSettle', (e) => {
+        if ((e.target as Element).id === 'agents-list') r();
+      })));
+      await page.evaluate(() => (window as any).htmx.trigger(document.body, 'agents:changed'));
+      await swapped;
+      expect(await domOrder(), 'still ranked after a refresh').toEqual(['qbase', 'old-qdock', 'mqtail']);
+      // Cleared: the list's own order again.
+      await page.locator('#agents-search').fill('');
+      await expect.poll(domOrder, { message: 'clearing restores the order' }).toEqual(['mqtail', 'old-qdock', 'qbase']);
+    });
+
     test('pins keep their place within a rank, and never lift a card above a better match', async ({ page }) => {
       await rig.login(page);
       await rig.waitListed(page, 'mqtail');

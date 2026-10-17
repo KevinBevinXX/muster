@@ -3,7 +3,6 @@ package ui
 import (
 	"encoding/json"
 	"strings"
-	"unicode"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -172,72 +171,37 @@ func cardFilterAttrs(f cardFields, haystack ...string) g.Node {
 //
 //	0  a title STARTS with the word                 ("gold" → "Gold:8")
 //	1  a WORD in a title starts with it             ("sweep" → "docs-sweeper")
-//	2  the word is anywhere else on the card        (the substring match that shows it)
+//	2  the word is anywhere else on the card        (the match that shows it)
 //
 // and cards of one rank keep the list's own order (pins first, then activity),
-// which is what clearing the box restores.
+// which is what clearing the box restores. Tiers 0 and 1 are window.musterRank
+// over the card's titles — the rule every search picker uses
+// (internal/searchrank), held to its shared table.
 //
-// 🔴 THE ORDER IS A STYLESHEET RULE, FOR THE SAME REASON THE HIDING IS. The list
-// morphs itself on every host nudge; a script that moved cards in the DOM would
-// have its order morphed back to the server's on each refresh and re-applied a
-// frame later, a reshuffle the reader sees. #agents-list is a grid, so the
-// script writes `order:` rules keyed on the two attributes below, and a card a
-// refresh brings in is ranked by the same rule the moment it exists.
+// 🔴 THE CARDS THEMSELVES MOVE (agentsFilterScript's reorder), so Tab and a
+// screen reader follow the ranking. An earlier version reordered with CSS
+// `order` rules, which survive a refresh but move only the boxes: the ranking
+// was visual only. The list's refresh morphs it back into the server's order;
+// the script re-ranks on htmx:afterSwap, in the same task, so no frame shows
+// the unranked order.
 //
-//	#agents-list > article{order:2}
-//	#agents-list > article[data-rank-words*="\a word"]{order:1}
-//	#agents-list > article[data-rank-title*="\a word"]{order:0}
-//
-// ⚠ VISUAL ORDER ONLY. `order` moves boxes, not the DOM, so keyboard focus and
-// a screen reader still walk the list's own order. That is the price of a rank
-// that survives the refresh; it is the order the reader had before typing.
-//
-// rankAttrs are those two attributes, both newline-led so a `*=` on a newline
-// plus the word can only match at the start of a title (data-rank-title) or at
-// the start of a word in one (data-rank-words, every suffix of a title that
-// begins at a word boundary). A newline cannot be typed into the box, so no
-// query reaches across two titles. Values are lower-cased and their whitespace
-// collapsed: what the script does to the typed word.
+// rankAttrs is the attribute the script ranks by: every title, newline-led
+// (a newline cannot be typed into the box).
 func rankAttrs(titles []string) []g.Node {
-	var heads, words []string
-	seenHead, seenWord := map[string]bool{}, map[string]bool{}
+	var heads []string
+	seen := map[string]bool{}
 	for _, t := range titles {
-		v := fieldValue(t)
-		if v == "" || seenHead[v] {
+		v := strings.Join(strings.Fields(t), " ")
+		if v == "" || seen[v] {
 			continue
 		}
-		seenHead[v] = true
+		seen[v] = true
 		heads = append(heads, v)
-		for _, w := range wordStarts(v) {
-			if !seenWord[w] {
-				seenWord[w] = true
-				words = append(words, w)
-			}
-		}
 	}
 	if len(heads) == 0 {
 		return nil
 	}
-	return []g.Node{
-		g.Attr("data-rank-title", "\n"+strings.Join(heads, "\n")),
-		g.Attr("data-rank-words", "\n"+strings.Join(words, "\n")),
-	}
-}
-
-// wordStarts is every suffix of v that begins a word: at the start, or after a
-// character that is not a letter or a digit ("docs-sweeper" → "docs-sweeper",
-// "sweeper"; "Gold:8" → "gold:8", "8").
-func wordStarts(v string) []string {
-	var out []string
-	prevWord := false
-	for i, r := range v {
-		w := unicode.IsLetter(r) || unicode.IsDigit(r)
-		if w && !prevWord {
-			out = append(out, v[i:])
-		}
-		prevWord = w
-	}
-	return out
+	return []g.Node{g.Attr("data-rank-title", "\n"+strings.Join(heads, "\n"))}
 }
 
 // agentsFilterStorageKey is where the filter's text is kept for the browser
@@ -411,21 +375,48 @@ func agentsFilterScript() g.Node {
   // string: [a="v"] for an exact term, [a*="v"] for every other. The rule that
   // hides and the query that counts are both built from it.
   function sel(t) { return '[' + t.attr + (t.exact ? '=' : '*=') + '"' + t.value.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]'; }
-  // rankRules orders the shown cards by how well they match the first
-  // free-text term (rankAttrs in Go): 0 a title starts with it, 1 a word in a
-  // title does, 2 anything else. Equal orders keep the list's own, and no
-  // free-text term means no rule — the list's order, as before typing. The
-  // CSS \00000a is the newline the attributes lead each title and word with.
-  function rankRules(ts) {
-    var w = null;
-    for (var i = 0; i < ts.length; i++) if (ts[i].attr === 'data-filter') { w = ts[i].value; break; }
-    if (!w) return [];
-    var v = '\\00000a' + w.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    return [
-      '#agents-list > article{order:2}',
-      '#agents-list > article[data-rank-words*="' + v + '"]{order:1}',
-      '#agents-list > article[data-rank-title*="' + v + '"]{order:0}',
-    ];
+  // reorder MOVES the cards into rank order for the first free-text term — the
+  // DOM itself, so Tab and a screen reader follow the ranking, not only the
+  // eye. A card's rank is the best window.musterRank (the pickers' rule,
+  // internal/searchrank) over its titles (data-rank-title): 0 a title starts
+  // with the word, 1 a word in one does, else 2 — the card is shown, so it
+  // matches the word somewhere. Equal ranks keep the list's own order
+  // (data-list-i, taken from the server's order), and with no free-text term
+  // that order comes back.
+  //
+  // 🔴 IT RUNS ON htmx:afterSwap TOO, BEFORE THE BROWSER PAINTS. A refresh
+  // morphs the list back into the server's order (and drops data-list-i, which
+  // the server does not send, so it is retaken from that fresh order); re-ranking
+  // in the same task means no frame ever shows the unranked order. It moves
+  // nothing outside #agents-list and calls no focus(), so typing in the box is
+  // never interrupted.
+  function rankWord(ts) {
+    for (var i = 0; i < ts.length; i++) if (ts[i].attr === 'data-filter') return ts[i].value;
+    return '';
+  }
+  function cardRank(card, w) {
+    var best = 2;
+    (card.getAttribute('data-rank-title') || '').split('\n').forEach(function (t) {
+      if (!t || !window.musterRank) return;
+      var r = window.musterRank(t, w);
+      if (r === 0 || r === 1) best = Math.min(best, r);
+    });
+    return best;
+  }
+  function reorder(ts) {
+    var list = el('agents-list');
+    if (!list) return;
+    var cards = [].slice.call(list.querySelectorAll(':scope > article'));
+    if (cards.some(function (c) { return !c.hasAttribute('data-list-i'); })) {
+      // Fresh from the server (first load or a morph): this IS its order.
+      cards.forEach(function (c, i) { c.setAttribute('data-list-i', String(i)); });
+    }
+    var w = rankWord(ts);
+    var keyed = cards.map(function (c) { return { c: c, r: w ? cardRank(c, w) : 0, i: +c.getAttribute('data-list-i') }; });
+    keyed.sort(function (a, b) { return a.r - b.r || a.i - b.i; });
+    var moved = false;
+    keyed.forEach(function (k, i) { if (cards[i] !== k.c) moved = true; });
+    if (moved) keyed.forEach(function (k) { list.appendChild(k.c); });
   }
   function onAgents() { return location.pathname === '/agents'; }
   // syncURL writes the text into ?q= — replaceState, so typing is not history.
@@ -544,10 +535,11 @@ func agentsFilterScript() g.Node {
       document.head.appendChild(style);
     }
     // One rule per term: a card lacking ANY of them is hidden, so the terms AND.
-    // Then the rank (rankAttrs): by the FIRST free-text word, best match first.
+    // Then the rank (reorder): by the FIRST free-text word, best match first.
     style.textContent = ts.map(function (t) {
       return '#agents-list > article:not(' + sel(t) + '){display:none !important}';
-    }).concat(rankRules(ts)).join('\n');
+    }).join('\n');
+    reorder(ts);
     var all = list.querySelectorAll(':scope > article');
     var shown = ts.length ? list.querySelectorAll(':scope > article' + ts.map(sel).join('')) : all;
     var count = el('agents-count'), clear = el('agents-search-clear'), none = el('agents-nomatch'), clearAll = el('agents-filter-clear');
@@ -660,6 +652,11 @@ func agentsFilterScript() g.Node {
   // The list re-renders itself; the rule above already hides what should be
   // hidden, so all that is left is the count and the options — and a link's
   // token that was waiting in the box for its option (settled).
+  // A refresh morphed the list into the server's order: rank it again before
+  // anything is painted (see reorder).
+  document.addEventListener('htmx:afterSwap', function (e) {
+    if (e.target && e.target.id === 'agents-list') apply();
+  });
   document.addEventListener('htmx:afterSettle', function (e) {
     if (e.target && e.target.id === 'agents-list') settled();
   });
