@@ -1449,7 +1449,7 @@ func goTrueAuth(cfg config, pool *pgxpool.Pool) api.GoTrueAuth {
 	store := users.NewPG(pool)
 	return api.GoTrueAuth{
 		Client:   &gotrue.Client{BaseURL: cfg.GoTrueURL, Secret: secret, Issuer: gotrueIssuer},
-		Verifier: gotrue.Verifier{Secret: secret, Issuer: gotrueIssuer, Audience: gotrueAudience},
+		Verifier: gotrue.Verifier{Secret: secret, Issuer: gotrueIssuer, Audience: gotrueAudience, Skew: goTrueSkew()},
 		Users:    store,
 		Accounts: store,
 	}

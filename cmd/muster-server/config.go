@@ -251,6 +251,10 @@ const (
 	// by e2eupstreams.go.
 	envE2EGitHubAPI        = "MUSTER_E2E_GITHUB_API"
 	envE2EOpenRouterModels = "MUSTER_E2E_OPENROUTER_MODELS"
+	// The GoTrue verifier's clock skew (a Go duration) instead of
+	// gotrue.DefaultSkew, so the specs that outlive an access token wait
+	// seconds rather than 35 s. Read only by e2egotrue.go.
+	envE2EGoTrueSkew = "MUSTER_E2E_GOTRUE_SKEW"
 )
 
 // The values MUSTER_AGENT_PROVISIONER accepts.

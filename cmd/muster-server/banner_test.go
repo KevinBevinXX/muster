@@ -409,6 +409,8 @@ var bannerExempt = map[string]string{
 		"pointing GitHub calls at the pickers spec's fake; the shipped binary has no reader",
 	envE2EOpenRouterModels: "the same: a browser-test fixture read ONLY by a `-tags e2eterm` build (e2eupstreams.go), " +
 		"pointing the model search at the pickers spec's fake catalogue; the shipped binary has no reader",
+	envE2EGoTrueSkew: "the same: a browser-test fixture read ONLY by a `-tags e2eterm` build (e2egotrue.go), " +
+		"shortening the GoTrue verifier's clock skew for the specs that outlive an access token; the shipped binary has no reader",
 	envAgentGatewayModel: "the CHAT: WIRED line prints it beside the scheme, and there is no " +
 		"off-direction line to write: validate refuses a named gateway with no sentinel, so the " +
 		"only states that reach a banner are \"wired, and the value is on the line\" and \"no " +

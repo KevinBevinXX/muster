@@ -3,8 +3,9 @@ import path from 'node:path';
 import { request as pwRequest } from '@playwright/test';
 import { test, expect, expectShellShows, navTabKey } from '../lib/fixtures';
 import {
-  dsn, e2eRoot, gotrueSecret, hookToken, invitesBrowserPort, invitesGotruePort, invitesMainPort, repoRoot, versionA,
+  dsn, e2eRoot, gotrueSecret, hookToken, invitesBrowserPort, invitesGotruePort, invitesMainPort, repoRoot, versionA, versionTerm,
 } from '../lib/env';
+import { gotrueSkewEnv, outliveAccessToken } from '../lib/gotrue';
 import { serverBinary, startServer, Running } from '../lib/server';
 
 // Accounts PR 5, end to end against the REAL GoTrue image (e2e/gotrue/compose.yml,
@@ -44,7 +45,8 @@ test.beforeAll(async () => {
   execFileSync('go', ['run', './e2e/seed', '--accounts-only'], {
     cwd: repoRoot, stdio: 'inherit', env: { ...process.env, DATABASE_URL: dsn },
   });
-  server = await startServer(versionA, invitesMainPort, {
+  server = await startServer(versionTerm, invitesMainPort, {
+    ...gotrueSkewEnv,
     MUSTER_AUTH_MODE: 'gotrue',
     MUSTER_GOTRUE_URL: gotrueURL,
     MUSTER_GOTRUE_JWT_SECRET: gotrueSecret,
@@ -260,9 +262,10 @@ test('an admin invites a member by link; the member sees only its own (empty) bo
   expect((await live.request.get(browserURL + '/ui/tasks/review-count', { headers: { 'HX-Request': 'true' } })).status(),
     'the pre-disable access token after enable').toBe(401);
   await live.close();
-  // Outlive the held access token (JWT_EXP 5 s + muster's 30 s skew + margin):
-  // muster would now have to REFRESH from the held refresh token.
-  await page.waitForTimeout(37_000);
+  // Outlive the held access token (JWT_EXP 5 s + the e2e build's 1 s skew +
+  // margin, from the token's own exp — e2e/lib/gotrue.ts): muster would now
+  // have to REFRESH from the held refresh token.
+  await outliveAccessToken(held.find((c) => c.name === 'muster_at')!.value);
   const late = await browser.newContext({ viewport });
   await late.addCookies(held);
   const lp = await late.newPage();
