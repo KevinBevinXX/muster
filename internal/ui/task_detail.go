@@ -5,6 +5,8 @@ import (
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
+
+	"github.com/ZacxDev/muster/web"
 )
 
 // 🔴 THIS DOCUMENT DELIBERATELY STAMPS NOTHING ON ITS REQUESTS.
@@ -52,14 +54,14 @@ func TaskDetailPage(v TaskCardView, feat Features) g.Node {
 				ThemeHead(),
 				manifestLink(),
 				TitleEl(g.Text(heading+" · muster")),
-				Link(Rel("stylesheet"), Href("/static/app.css")),
-				Script(Src("/static/vendor/htmx.min.js"), Defer()),
+				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
+				Script(Src(web.Asset("/static/vendor/htmx.min.js")), Defer()),
 				// idiomorph: the card's own mutation swaps are `morph:outerHTML`, and
 				// that is load-bearing rather than cosmetic — a plain outerHTML swap
 				// re-creates the nested comment form and drops its htmx submit
 				// binding, so the NEXT comment posts as a native form navigation.
-				Script(Src("/static/vendor/idiomorph-ext.min.js"), Defer()),
-				Script(Src("/static/vendor/sse.js"), Defer()),
+				Script(Src(web.Asset("/static/vendor/idiomorph-ext.min.js")), Defer()),
+				Script(Src(web.Asset("/static/vendor/sse.js")), Defer()),
 				faroHead(),
 			),
 			Body(

@@ -11,6 +11,7 @@ import (
 	. "maragu.dev/gomponents/html"
 
 	"github.com/ZacxDev/muster/internal/cctranscript"
+	"github.com/ZacxDev/muster/web"
 )
 
 // THE RENDERED VIEW of a mirrored tmux session whose pane runs Claude Code:
@@ -103,7 +104,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				ThemeHead(),
 				manifestLink(),
 				TitleEl(g.Text(mirrorQualified(markdownPlain(displayOr(v.Label, displayOr(v.Title, v.Session))), v.Qualifier)+" · Mirrored · muster")),
-				Link(Rel("stylesheet"), Href("/static/app.css")),
+				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				faroHead(),
 			),
 			Body(

@@ -415,11 +415,13 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) registerAll(mux Mux) {
 	// --- Open: no app auth. Health, metrics, assets, PWA. ---
 	//
-	// ⚠ "Open" here means muster asks for no session. On the PUBLIC host the edge
-	// still gates every one of these except the PWA metadata it deliberately
-	// lets through (GET/HEAD /manifest.webmanifest, /static/icons/*.png, /sw.js —
-	// see pwa.go for why, and for the rule that keeps those three free of
-	// anything per-user).
+	// ⚠ "Open" here means muster asks for no session — and do not assume an edge
+	// in front of it asks either. A deployment that relies on muster's own
+	// sign-in (per-user accounts, invites) has no forward-auth gate: its edge may
+	// refuse /metrics, /readyz, /mcp, /agent/ and /connect/ and rate-limit the
+	// sign-in routes, but /health, /static/, /manifest.webmanifest and /sw.js
+	// are then reachable by anyone. Keep every one of them free of anything
+	// per-user (pwa.go).
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /readyz", s.handleReady)
 	mux.Handle("GET /metrics", promhttp.Handler())
@@ -524,7 +526,26 @@ func staticHandler() http.Handler {
 		// bug, not a runtime condition.
 		panic("api: embedded static fs missing 'static' dir: " + err.Error())
 	}
-	return http.StripPrefix("/static/", http.FileServerFS(sub))
+	files := http.StripPrefix("/static/", http.FileServerFS(sub))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", staticCacheControl(r.URL.Path, r.URL.Query().Get("v")))
+		files.ServeHTTP(w, r)
+	})
+}
+
+// staticCacheControl is the Cache-Control for a /static/ request.
+//
+// 🔴 ONLY A URL CARRYING THE FILE'S CURRENT HASH IS CACHED FOR LONG. Pages link
+// web.Asset's /static/<file>?v=<content hash>: that URL names these exact
+// bytes, so it is immutable. Anything else — the bare path, or a ?v= from an
+// older build — is "no-cache" (stored, but revalidated): with no header at
+// all, the edge applied its own max-age=14400 and served 0.43.0 the previous
+// release's app.css for hours.
+func staticCacheControl(path, v string) string {
+	if h := web.AssetHash(path); h != "" && v == h {
+		return "public, max-age=31536000, immutable"
+	}
+	return "no-cache"
 }
 
 // shellFeatures says which optional subsystems this server holds, for the

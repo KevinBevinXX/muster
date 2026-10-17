@@ -5,6 +5,8 @@ import (
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
+
+	"github.com/ZacxDev/muster/web"
 )
 
 // "CONFIRM IT'S YOU" — the one dialog and the one script behind every step-up
@@ -196,7 +198,7 @@ func StepUpFormPage(v StepUpFormView) g.Node {
 				ThemeHead(),
 				manifestLink(),
 				TitleEl(g.Text("Confirm it's you · muster")),
-				Link(Rel("stylesheet"), Href("/static/app.css")),
+				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				faroHead(),
 			),
 			Body(

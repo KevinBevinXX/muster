@@ -45,10 +45,16 @@ const BUILD = "__MUSTER_BUILD__";
 // and only then deletes the older shell caches.
 const CACHE_PREFIX = 'muster-shell-';
 const CACHE = CACHE_PREFIX + BUILD;
+// The stylesheet's URL as the pages link it: /static/app.css?v=<content hash>,
+// replaced by the server like BUILD (exactly once). The shell precaches THAT
+// URL, so it holds this build's stylesheet under the key the cached pages ask
+// for — the bare /static/app.css could come back from an edge cache that still
+// holds the last release's copy.
+const APP_CSS = "__MUSTER_APP_CSS__";
 // The minimal shell: the document and the compiled CSS. Vendored JS is fetched
 // fresh (it is small and benefits from normal HTTP caching) to avoid serving a
 // stale htmx during development.
-const SHELL = ['/', '/static/app.css', '/manifest.webmanifest'];
+const SHELL = ['/', APP_CSS, '/manifest.webmanifest'];
 
 // usable reports whether a response may be stored as (or kept as) a shell
 // entry: a same-origin 200 that was not reached through a redirect. A signed-out
@@ -96,9 +102,27 @@ self.addEventListener('message', (event) => {
 // fetch "/", so this build's cache has no shell document. Deleting the older
 // caches at that point used to leave the device with NO offline shell at all.
 // Each SHELL entry this build lacks is copied from an older shell cache that
-// holds a usable one (in reverse caches.keys() order); only then are the
-// older shell caches deleted, by which point no usable SHELL entry exists
-// only in them.
+// holds a usable one (in reverse caches.keys() order) — and so is the
+// stylesheet the shell document it ends up with LINKS (shellStylesheet): a
+// carried "/" from an older build links that build's /static/app.css?v=<old
+// hash> (or the bare path, from before the hash), which is not this build's
+// APP_CSS. Only then are the older shell caches deleted.
+//
+// ⚠ WHY CARRY THE OLD STYLESHEET, NOT MATCH ANY (ignoreSearch). Offline, the
+// fallback below matches the EXACT URL the document asks for, so an older
+// document gets the stylesheet it was built against. An ignoreSearch match
+// would hand it whichever app.css the cache holds — this build's, newer than
+// the document — and a class the older markup uses but the newer build no
+// longer emits would silently go unstyled.
+// shellStylesheet is the /static/app.css URL (with its ?v=, if any) that the
+// cached shell document in cache links, or null.
+async function shellStylesheet(cache) {
+  const doc = await cache.match('/');
+  if (!usable(doc)) return null;
+  const m = (await doc.clone().text()).match(/href="(\/static\/app\.css[^"]*)"/);
+  return m ? m[1].replace(/&amp;/g, '&') : null;
+}
+
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     (async () => {
@@ -110,6 +134,16 @@ self.addEventListener('activate', (event) => {
           const res = await (await caches.open(k)).match(path);
           if (usable(res)) {
             await cache.put(path, res);
+            break;
+          }
+        }
+      }
+      const css = await shellStylesheet(cache);
+      if (css && !usable(await cache.match(css))) {
+        for (const k of older) {
+          const res = await (await caches.open(k)).match(css);
+          if (usable(res)) {
+            await cache.put(css, res);
             break;
           }
         }

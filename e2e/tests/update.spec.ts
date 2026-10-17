@@ -168,6 +168,77 @@ test('an update installed while signed out keeps the offline shell', async ({ pa
   await expect.poll(() => page.evaluate(shellCaches).catch(() => null)).toEqual({ ['muster-shell-' + versionB]: goodShell });
 });
 
+// 🔴 A REGRESSION TEST (#126 audit F1): the carried shell keeps its stylesheet.
+// A deploy installed while signed out carries the older build's "/" forward —
+// and that document links the OLDER build's /static/app.css?v=<old hash>, a key
+// only the older cache held. Activate deleted that cache, the offline fallback
+// matches the exact URL, and the offline shell rendered unstyled.
+//
+// Both e2e builds compile the same app.css, so the older build's hash is made
+// here: build A's worker is handed a "/" that links ?v=0ld0ld0ld0ld (its own
+// precache fetch, routed), and the page then asks for that stylesheet through
+// the worker, which caches it under that URL — the cache an older release
+// leaves behind.
+test('an update installed while signed out keeps the offline shell styled', async ({ page, context }) => {
+  server = await startServer(versionA, updatePort);
+  const origin = `http://localhost:${updatePort}`;
+  const oldCSS = '/static/app.css?v=0ld0ld0ld0ld';
+  let routed = 0;
+  await context.route(origin + '/', async (route) => {
+    if (!route.request().serviceWorker()) return route.continue();
+    const res = await route.fetch();
+    const html = await res.text();
+    routed++;
+    return route.fulfill({ response: res, body: html.replace(/\/static\/app\.css\?v=[0-9a-f]+/, oldCSS) });
+  });
+  await page.goto(origin + '/tasks');
+  await waitControlled(page);
+  await expect.poll(() => page.evaluate(shellCaches)).toEqual({ ['muster-shell-' + versionA]: goodShell });
+  expect(routed, "control: the worker's precache of / was the routed one").toBeGreaterThan(0);
+  await context.unroute(origin + '/');
+  // A's shell links the old stylesheet, and A's cache holds it under that URL.
+  const before = await page.evaluate(async ([build, old]) => {
+    await fetch(old);
+    const c = await caches.open('muster-shell-' + build);
+    const doc = await c.match('/');
+    return { links: (await doc!.text()).includes('href="' + old + '"'), cached: !!(await c.match(old)) };
+  }, [versionA, oldCSS]);
+  expect(before).toEqual({ links: true, cached: true });
+
+  await context.clearCookies();
+  await deployB();
+  await page.evaluate(checkForUpdate);
+  await expect(page.locator('#sw-update-toast')).toBeVisible();
+  await page.locator('[data-sw-reload]').click();
+  await expect
+    .poll(() => page.evaluate(controllerBuild).catch(() => null), { timeout: 15_000 })
+    .toBe(versionB);
+  await expect.poll(() => page.evaluate(shellCaches).catch(() => null)).toEqual({ ['muster-shell-' + versionB]: goodShell });
+
+  // Offline: the carried "/" (linking the OLD stylesheet) is the page, and its
+  // stylesheet loads — from the carried entry, not the network. The browser's
+  // HTTP cache is cleared first: it also holds that stylesheet (the fetch
+  // above).
+  // And the SERVER is stopped: the worker's own fetch is not reliably cut by
+  // the page's offline emulation (measured: with it alone, the no-carry mutant
+  // still read styled), so the network answer is taken away for real.
+  const cdp = await context.newCDPSession(page);
+  await cdp.send('Network.clearBrowserCache');
+  await server!.stop();
+  server = undefined;
+  await context.setOffline(true);
+  await page.goto(origin + '/agents');
+  const sheet = await page.evaluate(() => {
+    const l = document.querySelector('link[rel="stylesheet"][href*="/static/app.css"]') as HTMLLinkElement | null;
+    let rules = -1;
+    try { rules = l?.sheet ? l.sheet.cssRules.length : 0; } catch { rules = -2; }
+    return { href: l?.getAttribute('href') ?? null, rules };
+  });
+  expect(sheet.href, 'the carried shell links the older stylesheet').toBe(oldCSS);
+  expect(sheet.rules, 'the offline shell is styled').toBeGreaterThan(0);
+  await context.setOffline(false);
+});
+
 // F2, the edge's shape: behind a forward-auth edge an expired session's "/" is
 // a REDIRECT to a login page that answers 200. A followed redirect must not be
 // cached as the shell. The route answers only the WORKER's fetch of "/", so the

@@ -261,8 +261,10 @@ func TestEveryFieldIsARegisteredSafeIdentifier(t *testing.T) {
 // agentsFilterScript's IIFE (its two-space-indented `function NAME(` and
 // every name in each two-space-indented `var a = …, b = …;` list). Hoisting
 // makes a repeat silent: a later `function` replaces an earlier one, two `var`s
-// are one variable, and a `var` beside a `function` of the same name rebinds
-// the function. Each bit us: a second `function place` hid every card; a second
+// are one variable, and a `var` beside a `function` of the same name shares its
+// binding — rebinding it when the `var` has an initializer and that line runs
+// (a bare `var x;` leaves the function in place, and is still flagged: one
+// name, two declarations). Each bit us: a second `function place` hid every card; a second
 // `var pending` broke ?q= links. Names declared inside a nested function are
 // local and not checked here.
 func TestTheFilterScriptDeclaresEachNameOnce(t *testing.T) {

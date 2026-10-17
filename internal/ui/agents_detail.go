@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/web"
 )
 
 // ChatLine is one persisted chat message rendered in the detail transcript. For
@@ -169,9 +170,9 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// title reading `**fix** the `+"`chip`"+` row · muster` is the same defect in
 				// a third place.
 				TitleEl(g.Text(markdownPlain(displayOr(v.DisplayName, v.Name))+" · muster")),
-				Link(Rel("stylesheet"), Href("/static/app.css")),
-				Script(Src("/static/vendor/htmx.min.js"), Defer()),
-				Script(Src("/static/vendor/sse.js"), Defer()),
+				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
+				Script(Src(web.Asset("/static/vendor/htmx.min.js")), Defer()),
+				Script(Src(web.Asset("/static/vendor/sse.js")), Defer()),
 				faroHead(),
 			),
 			Body(
