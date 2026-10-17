@@ -24,6 +24,8 @@ func TestTheRelayAllowlistIsPerOwnerAndExact(t *testing.T) {
 		{1, "", false},
 		{1, "not an address", false},
 		{1, "alice@example.invalid, mallory@evil.invalid", false},
+		{1, "x<carol@corp.example.invalid", false}, // a From that did not parse is not an address at corp
+		{1, "carol@corp.example.invalid>", false},
 	} {
 		if got := l.Allows(c.owner, "mail", c.sender, true); got != c.want {
 			t.Errorf("owner %d, %q: %v, want %v", c.owner, c.sender, got, c.want)
@@ -39,6 +41,7 @@ func TestTheRelayAllowlistIsPerOwnerAndExact(t *testing.T) {
 		"1:Not A Plugin:a@b", "1::a@b",
 		"1:mail:Kate@example.invalid", // the Kelvin sign: not ASCII, refused
 		"1:mail:ada@exämple.invalid",
+		"1:mail:<ada@example.invalid>", "1:mail:x<a@corp.example.invalid",
 	} {
 		if _, err := ParseRelayAllowlist(bad); err == nil {
 			t.Errorf("%q parsed", bad)

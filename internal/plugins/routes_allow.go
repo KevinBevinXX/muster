@@ -33,13 +33,14 @@ type relayEntry struct {
 }
 
 // asciiAddress is the shape of an address the allowlist compares: printable
-// ASCII only. Case folding is ASCII's alone (strings.ToLower over ASCII), so no
+// ASCII only, and no angle bracket (isASCIIAddress) — "x<a@corp" is a From
+// line that did not parse, not an address at corp. Case folding is ASCII's alone (strings.ToLower over ASCII), so no
 // Unicode fold — the Kelvin sign K (U+212A) folding to "k" — can make two
 // different addresses equal; a non-ASCII address never matches.
 var asciiAddress = regexp.MustCompile(`^[\x21-\x7e]+@[\x21-\x7e]+$`)
 
 func isASCIIAddress(s string) bool {
-	return asciiAddress.MatchString(s) && strings.Count(s, "@") == 1
+	return asciiAddress.MatchString(s) && strings.Count(s, "@") == 1 && !strings.ContainsAny(s, "<>")
 }
 
 // asciiLower is s lower-cased in ASCII only.

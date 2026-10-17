@@ -435,7 +435,10 @@ turn for each message says when to do this.
      another plugin, an address that is not plain ASCII — it is an ordinary
      **pending** draft that you approve on `/plugins`, with the usual push. It
      counts toward the chief's 20 pending drafts, like any draft; at that limit
-     the route fails and the chief is told.
+     the route fails and the message is handed back to the chief (a turn, or
+     a note when it is not running), as when a route times out. A relay that
+     cannot be made for another reason (the message became `no_reply`, a reply
+     to it is already on its way) is handed back the same way.
 
    Allowlist entries are `<user id>:<plugin name>:<address>` or
    `<user id>:<plugin name>:*@<domain>`. Addresses are compared in ASCII only
@@ -447,13 +450,15 @@ turn for each message says when to do this.
    short note saying what happened. If the relay fails for a passing reason
    (the database is briefly unavailable), the reply call answers `202` with the
    answer kept, and the timeout sweep relays it a minute later.
-
-   A draft names its route (`plugin_reply_drafts.route_id`, unique), so a route
-   can never become two replies. The chief's conversation for the plugin gets a
-   short note saying what happened.
 5. **No answer by the deadline:** the route times out, a still-queued injection
    is cancelled, and the message is handed back to the chief in a turn (or a
    note, when it is not running or already mid-turn).
+
+   Every route that ends without the chief already knowing why owes it exactly
+   one hand-back: it timed out, its window moved on, or its answer could not
+   be sent. The debt is recorded in the same transaction that ends the route.
+   The route sweep, which runs every 30 seconds and at once when a route
+   fails, is the only place it is delivered.
 
 Every step writes a `session_route.*` audit row (`routed`, `answered`,
 `relayed`, `fallback`, `timed_out`, `failed`), plus the draft's own

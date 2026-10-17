@@ -46,7 +46,12 @@ type RouteStore interface {
 	CreateRoute(ctx context.Context, chiefID, ownerID, messageID int64, target RouteTarget, timeout time.Duration) (Route, error)
 	Route(ctx context.Context, routeID string) (Route, error)
 	SetRouteQueued(ctx context.Context, routeID string, sendQueueID int64) error
-	FailRoute(ctx context.Context, routeID, why string) (Route, error)
+	// FailRoute ends an open route as failed; handBack, when not "", is the
+	// reason it is owed back to the chief (TakeHandBack delivers it).
+	FailRoute(ctx context.Context, routeID, why, handBack string) (Route, error)
+	// TakeHandBack clears and returns the hand-back routeID owes its chief,
+	// exactly once: ok is false when none is owed (or another taker won).
+	TakeHandBack(ctx context.Context, routeID string) (r Route, reason string, ok bool, err error)
 	AnswerRoute(ctx context.Context, routeID, body string) (Route, bool, error)
 	RelayRoute(ctx context.Context, routeID, agentName string, approve bool) (Route, Draft, error)
 	TimeOutRoute(ctx context.Context, routeID string) (Route, bool, error)
@@ -219,9 +224,10 @@ func lockRoute(ctx context.Context, tx pgx.Tx, routeID string) (Route, error) {
 }
 
 // FailRoute ends an OPEN route as failed, recording why (the message could not
-// be put into the session, or its answer could not be relayed). A route that is
-// no longer open is returned unchanged.
-func (s *PGStore) FailRoute(ctx context.Context, routeID, why string) (Route, error) {
+// be put into the session, or its window moved on) and, when handBack is not
+// "", the hand-back it owes the chief. A route that is no longer open is
+// returned unchanged, and owes nothing new.
+func (s *PGStore) FailRoute(ctx context.Context, routeID, why, handBack string) (Route, error) {
 	var r Route
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		cur, err := lockRoute(ctx, tx, routeID)
@@ -232,13 +238,21 @@ func (s *PGStore) FailRoute(ctx context.Context, routeID, why string) (Route, er
 		if cur.State != RouteRouted && cur.State != RouteAnswered {
 			return nil
 		}
-		if r, err = scanRoute(tx.QueryRow(ctx, `UPDATE session_routes SET state = 'failed', finished_at = now(), error = $2
-			WHERE route_id = $1 RETURNING `+routeCols, routeID, clampRouteError(why))); err != nil {
-			return err
-		}
-		return audit(ctx, tx, "session_route.failed", RouteObject(routeID), map[string]any{"from": string(cur.State), "why": clampRouteError(why)})
+		r, err = failRouteTx(ctx, tx, cur, why, handBack)
+		return err
 	})
 	return r, err
+}
+
+// failRouteTx ends cur — locked by the caller, and open — as failed, in tx,
+// owing the chief handBack ("" for nothing).
+func failRouteTx(ctx context.Context, tx pgx.Tx, cur Route, why, handBack string) (Route, error) {
+	r, err := scanRoute(tx.QueryRow(ctx, `UPDATE session_routes SET state = 'failed', finished_at = now(), error = $2,
+		handback = nullif($3, '') WHERE route_id = $1 RETURNING `+routeCols, cur.RouteID, clampRouteError(why), clampHandBack(handBack)))
+	if err != nil {
+		return Route{}, err
+	}
+	return r, audit(ctx, tx, "session_route.failed", RouteObject(cur.RouteID), map[string]any{"from": string(cur.State), "why": clampRouteError(why)})
 }
 
 // AnswerRoute records body as routeID's answer. fresh is false when the route
@@ -282,8 +296,9 @@ func (s *PGStore) AnswerRoute(ctx context.Context, routeID, body string) (r Rout
 // takes it, the owner is not asked), otherwise PENDING for the owner
 // (fallback). A route that already became a draft returns that draft and
 // files nothing (exactly once). A relay that cannot be made — the chief is
-// gone, the message is no_reply, another reply to it is already in flight —
-// fails the route, saying why.
+// gone, the message is no_reply, another reply to it is already in flight, a
+// pending draft would pass MaxPendingDraftsPerAgent — fails the route, saying
+// why, in the same transaction (ErrRouteClosed: exactly one caller gets it).
 func (s *PGStore) RelayRoute(ctx context.Context, routeID, agentName string, approve bool) (Route, Draft, error) {
 	if err := s.sweep(ctx); err != nil {
 		return Route{}, Draft{}, err
@@ -344,7 +359,11 @@ func (s *PGStore) RelayRoute(ctx context.Context, routeID, agentName string, app
 			}
 		}
 		if failWhy != "" {
-			return nil
+			// Failed IN THIS TRANSACTION, under the route's lock: a second relay
+			// waiting on it then finds the route failed (ErrRouteNotAnswered),
+			// so exactly one caller sees the failure happen.
+			r, err = failRouteTx(ctx, tx, cur, failWhy, "its answer could not be sent ("+failWhy+")")
+			return err
 		}
 		// FileDraft's supersede, with FileDraft's accounting: the count on the
 		// filing's audit row.
@@ -387,11 +406,7 @@ func (s *PGStore) RelayRoute(ctx context.Context, routeID, agentName string, app
 		return r, d, err
 	}
 	if failWhy != "" {
-		r, err = s.FailRoute(ctx, routeID, failWhy)
-		if err == nil {
-			err = fmt.Errorf("%w: %s", ErrRouteClosed, failWhy)
-		}
-		return r, Draft{}, err
+		return r, Draft{}, fmt.Errorf("%w: %s", ErrRouteClosed, failWhy)
 	}
 	return r, d, nil
 }
@@ -414,7 +429,8 @@ func (s *PGStore) TimeOutRoute(ctx context.Context, routeID string) (r Route, ti
 			return nil
 		}
 		if r, err = scanRoute(tx.QueryRow(ctx, `UPDATE session_routes SET state = 'timed_out', finished_at = now(),
-			error = 'no answer before the deadline' WHERE route_id = $1 RETURNING `+routeCols, routeID)); err != nil {
+			error = 'no answer before the deadline', handback = $2 WHERE route_id = $1 RETURNING `+routeCols,
+			routeID, "no answer came by "+cur.TimeoutAt.UTC().Format(time.RFC3339))); err != nil {
 			return err
 		}
 		timedOut = true
@@ -425,14 +441,16 @@ func (s *PGStore) TimeOutRoute(ctx context.Context, routeID string) (r Route, ti
 }
 
 // DueRoute is one route the sweep must act on, and whose: a ROUTED one past
-// its deadline (time it out), or an ANSWERED one whose relay never happened —
+// its deadline (time it out), an ANSWERED one whose relay never happened —
 // a crash or an error between the answer's commit and the relay — which would
 // otherwise hold the message's one open route forever (relay it again: the
-// relay is idempotent).
+// relay is idempotent), or an ended one that still OWES its chief a hand-back
+// (HandBack; deliver it).
 type DueRoute struct {
-	RouteID string
-	OwnerID int64
-	State   RouteState
+	RouteID  string
+	OwnerID  int64
+	State    RouteState
+	HandBack bool
 }
 
 // RelayGrace is how long an answered route may wait for its relay before the
@@ -443,9 +461,10 @@ const RelayGrace = time.Minute
 // owner — ids, owners and states only. Under the system scope (internal/authz's ledger
 // names this one method): each is then timed out AS ITS OWNER (TimeOutRoute).
 func (s *PGStore) ExpiredRoutes(ctx context.Context) ([]DueRoute, error) {
-	rows, err := s.pool.Query(authz.System(ctx), `SELECT route_id, owner_id, state FROM session_routes
+	rows, err := s.pool.Query(authz.System(ctx), `SELECT route_id, owner_id, state, handback IS NOT NULL FROM session_routes
 		WHERE (state = 'routed' AND timeout_at <= now())
 		   OR (state = 'answered' AND answered_at <= now() - make_interval(secs => $1))
+		   OR handback IS NOT NULL
 		ORDER BY id`, RelayGrace.Seconds())
 	if err != nil {
 		return nil, err
@@ -453,8 +472,44 @@ func (s *PGStore) ExpiredRoutes(ctx context.Context) ([]DueRoute, error) {
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (DueRoute, error) {
 		var d DueRoute
 		var st string
-		err := row.Scan(&d.RouteID, &d.OwnerID, &st)
+		err := row.Scan(&d.RouteID, &d.OwnerID, &st, &d.HandBack)
 		d.State = RouteState(st)
 		return d, err
 	})
+}
+
+// MaxHandBack bounds a recorded hand-back reason (0021's cap).
+const MaxHandBack = 2048
+
+func clampHandBack(s string) string {
+	if len(s) <= MaxHandBack {
+		return s
+	}
+	return strings.ToValidUTF8(s[:MaxHandBack], "")
+}
+
+// TakeHandBack clears routeID's owed hand-back and returns it with the route,
+// under the route's lock: of two takers, exactly one gets ok.
+func (s *PGStore) TakeHandBack(ctx context.Context, routeID string) (Route, string, bool, error) {
+	var r Route
+	var reason *string
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		cur, err := lockRoute(ctx, tx, routeID)
+		if err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, `SELECT handback FROM session_routes WHERE id = $1`, cur.ID).Scan(&reason); err != nil {
+			return err
+		}
+		if reason == nil {
+			return nil
+		}
+		r = cur
+		_, err = tx.Exec(ctx, `UPDATE session_routes SET handback = NULL WHERE id = $1`, cur.ID)
+		return err
+	})
+	if err != nil || reason == nil {
+		return Route{}, "", false, err
+	}
+	return r, *reason, true, nil
 }

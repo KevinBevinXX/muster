@@ -55,6 +55,12 @@ CREATE TABLE IF NOT EXISTS public.session_routes (
     reply_body        TEXT,
     draft_id          BIGINT      REFERENCES public.plugin_reply_drafts (id) ON DELETE SET NULL,
     error             TEXT        NOT NULL DEFAULT '',
+    -- 🔴 A HAND-BACK OWED TO THE CHIEF: why the message is back with it (the
+    -- route timed out, its window moved on, its answer could not be sent),
+    -- written in the SAME transaction that ended the route, and cleared by the
+    -- one sweep that delivers it — so every ended route is handed back exactly
+    -- once, and no request path runs the chief's turn itself. NULL: none owed.
+    handback          TEXT,
     CONSTRAINT session_routes_message_owner_fkey FOREIGN KEY (plugin_message_id, owner_id)
         REFERENCES public.plugin_messages (id, owner_id) ON DELETE CASCADE,
     CONSTRAINT session_routes_route_id_check CHECK (route_id ~ '^rt_[0-9a-f]{24}$'),
@@ -68,7 +74,8 @@ CREATE TABLE IF NOT EXISTS public.session_routes (
     CONSTRAINT session_routes_answer_check CHECK (
         (state IN ('answered', 'relayed', 'fallback')) <= (reply_body IS NOT NULL AND answered_at IS NOT NULL)),
     CONSTRAINT session_routes_body_cap CHECK (reply_body IS NULL OR octet_length(reply_body) BETWEEN 1 AND 16384),
-    CONSTRAINT session_routes_error_cap CHECK (octet_length(error) <= 1024)
+    CONSTRAINT session_routes_error_cap CHECK (octet_length(error) <= 1024),
+    CONSTRAINT session_routes_handback_cap CHECK (handback IS NULL OR octet_length(handback) BETWEEN 1 AND 2048)
 );
 
 -- At most one OPEN route per message: a message is routed to one session at a time.
@@ -78,6 +85,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS session_routes_one_open
 CREATE INDEX IF NOT EXISTS idx_session_routes_due ON public.session_routes (timeout_at) WHERE state = 'routed';
 CREATE INDEX IF NOT EXISTS idx_session_routes_message ON public.session_routes (plugin_message_id);
 CREATE INDEX IF NOT EXISTS idx_session_routes_agent ON public.session_routes (agent_id) WHERE agent_id IS NOT NULL;
+-- The sweep: hand-backs still owed.
+CREATE INDEX IF NOT EXISTS idx_session_routes_handback ON public.session_routes (id) WHERE handback IS NOT NULL;
 
 DROP TRIGGER IF EXISTS session_routes_owner_is_agents_owner ON public.session_routes;
 CREATE TRIGGER session_routes_owner_is_agents_owner BEFORE INSERT OR UPDATE OF owner_id, agent_id

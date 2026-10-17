@@ -115,6 +115,10 @@ type Server struct {
 	// draftWake wakes waiting claims when this process approves a draft.
 	pluginRetrying sync.Map
 	draftWake      draftSignal
+	// routeKick wakes the route sweep (RunRouteTimeouts) early: a route just
+	// ended owing its chief a hand-back.
+	routeKick     chan struct{}
+	routeKickOnce sync.Once
 
 	// terminals is every live agent terminal, so a shutdown can end them and
 	// wait for their releases. See EndTerminals.

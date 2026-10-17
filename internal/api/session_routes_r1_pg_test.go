@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,11 +33,11 @@ var errFlaky = errors.New("plugins: connection reset by peer")
 
 func (f *flakyRoutes) RelayRoute(ctx context.Context, routeID, agentName string, approve bool) (plugins.Route, plugins.Draft, error) {
 	if f.failRelay.Load() {
-		r, _ := f.RouteStore.Route(ctx, routeID)
+		// As the real store does on an early failure: no route at all.
 		if f.relayErr != nil {
-			return r, plugins.Draft{}, f.relayErr
+			return plugins.Route{}, plugins.Draft{}, f.relayErr
 		}
-		return r, plugins.Draft{}, errFlaky
+		return plugins.Route{}, plugins.Draft{}, errFlaky
 	}
 	return f.RouteStore.RelayRoute(ctx, routeID, agentName, approve)
 }
@@ -118,8 +119,8 @@ func TestARetryableRelayFailureIsAcceptedAndTheSweepRelaysIt(t *testing.T) {
 	id := f.route(t, m)
 	flaky.failRelay.Store(true)
 	code, out := f.reply(t, f.token, id, "Noon works.")
-	if code != http.StatusAccepted || out["state"] != "answered" {
-		t.Fatalf("a retryable relay failure: %d %v, want 202 answered", code, out)
+	if code != http.StatusAccepted || out["state"] != "answered" || out["route_id"] != id {
+		t.Fatalf("a retryable relay failure: %d %v, want 202 answered naming route %s", code, out, id)
 	}
 	if r := f.routeState(t, id); r.State != plugins.RouteAnswered || r.ReplyBody != "Noon works." {
 		t.Fatalf("the answer was not kept: %+v", r)
@@ -154,6 +155,93 @@ func TestARelayOfAnEndedRouteIsFinal(t *testing.T) {
 	}
 }
 
+// 🟡 round 2: an answer that cannot become a draft — here the chief's
+// pending-draft cap — fails the route AND goes back to the chief. Before, the
+// answer vanished: no draft, no push, no note.
+func TestAnAnswerRefusedAtTheDraftCapGoesBackToTheChief(t *testing.T) {
+	f := newRouteFixture(t)
+	p, m := f.pluginMessage(t, "example-inbox", "r2-cap", "someone@example.test", false)
+	sess := f.chiefSession(t, p)
+	for i := 0; i < plugins.MaxPendingDraftsPerAgent; i++ {
+		_, mi := f.pluginMessage(t, "example-inbox", "r2-cap-fill-"+strconv.Itoa(i), "someone@example.test", false)
+		if _, _, err := f.plugins.FileDraft(f.asOwner, f.chief.ID, f.owner, f.chief.Name, mi.ID, "pending "+strconv.Itoa(i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	id := f.route(t, m)
+	code, out := f.reply(t, f.token, id, "From the session.")
+	if code != http.StatusConflict || out["route_id"] != id {
+		t.Fatalf("an answer at the cap: %d %v, want 409", code, out)
+	}
+	if r := f.routeState(t, id); r.State != plugins.RouteFailed {
+		t.Fatalf("the route is %s, want failed", r.State)
+	}
+	// The failure owes the chief a hand-back; the route sweep delivers it, ONCE.
+	for i := 0; i < 2; i++ {
+		if _, err := f.srv.RouteTimeoutPass(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	msgs, _ := f.srv.ext.Agents.ListChatMessages(f.asOwner, sess.ID)
+	if len(msgs) != 1 || !strings.Contains(msgs[0].Content, "Route "+id) || !strings.Contains(msgs[0].Content, "back with you") ||
+		!strings.Contains(msgs[0].Content, "await the owner") {
+		t.Fatalf("the chief was not handed the message back: %+v", msgs)
+	}
+}
+
+// 🟡 round 2: a route that fails owing a hand-back WAKES the running sweep —
+// the chief hears now, not at the next tick (here an hour away). Both
+// request-time failures: an answer refused at the draft cap, and a window that
+// moved on.
+func TestAnOwedHandBackWakesTheSweep(t *testing.T) {
+	f := newRouteFixture(t)
+	p, m := f.pluginMessage(t, "example-inbox", "r2-kick", "someone@example.test", false)
+	sess := f.chiefSession(t, p)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); f.srv.RunRouteTimeouts(ctx, time.Hour) }()
+	defer func() { cancel(); <-done }()
+	waitNotes := func(n int) []agents.ChatMessage {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			msgs, _ := f.srv.ext.Agents.ListChatMessages(f.asOwner, sess.ID)
+			if len(msgs) >= n || time.Now().After(deadline) {
+				return msgs
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+
+	// A window that moved on.
+	id := f.route(t, m)
+	f.mirror.set(func(m *routeMirror) { m.claudeSession = "5e55a1d0-0000-4000-8000-0000000000ee" })
+	if out := f.deliver(t); out.Detail != SendQueueRouteMoved {
+		t.Fatalf("delivery: %+v", out)
+	}
+	if msgs := waitNotes(1); len(msgs) != 1 || !strings.Contains(msgs[0].Content, "Route "+id) {
+		t.Fatalf("the moved window's hand-back did not arrive before the next tick: %+v", msgs)
+	}
+	f.mirror.set(func(m *routeMirror) { m.claudeSession = "" })
+
+	// An answer refused at the draft cap.
+	for i := 0; i < plugins.MaxPendingDraftsPerAgent; i++ {
+		_, mi := f.pluginMessage(t, "example-inbox", "r2-kick-fill-"+strconv.Itoa(i), "someone@example.test", false)
+		if _, _, err := f.plugins.FileDraft(f.asOwner, f.chief.ID, f.owner, f.chief.Name, mi.ID, "pending "+strconv.Itoa(i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, m2 := f.pluginMessage(t, "example-inbox", "r2-kick-cap", "someone@example.test", false)
+	id2 := f.route(t, m2)
+	if code, _ := f.reply(t, f.token, id2, "From the session."); code != http.StatusConflict {
+		t.Fatalf("an answer at the cap: %d", code)
+	}
+	if msgs := waitNotes(2); len(msgs) != 2 || !strings.Contains(msgs[1].Content, "Route "+id2) {
+		t.Fatalf("the cap's hand-back did not arrive before the next tick: %+v", msgs)
+	}
+}
+
 // 🟡3: a route whose queued row could not be recorded on it fails, and the
 // row is cancelled — nothing is left that a later delivery would paste.
 func TestAnUnrecordedInjectionLeavesNoPasteableRow(t *testing.T) {
@@ -179,7 +267,7 @@ func TestARoutedRowIsNotPastedAfterItsRouteEnds(t *testing.T) {
 	_, m := f.pluginMessage(t, "example-inbox", "r1-closed", "someone@example.test", false)
 	id := f.route(t, m)
 	// The route ends with its row still queued (a lost cancel).
-	if _, err := f.plugins.FailRoute(f.asOwner, id, "ended elsewhere"); err != nil {
+	if _, err := f.plugins.FailRoute(f.asOwner, id, "ended elsewhere", ""); err != nil {
 		t.Fatal(err)
 	}
 	out := f.deliver(t)
@@ -209,6 +297,10 @@ func TestARoutedRowIsRefusedWhenTheWindowHoldsAnotherConversation(t *testing.T) 
 	}
 	if r := f.routeState(t, id); r.State != plugins.RouteFailed {
 		t.Fatalf("the route is %s, want failed", r.State)
+	}
+	// The hand-back is owed, and the route sweep delivers it.
+	if _, err := f.srv.RouteTimeoutPass(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 	msgs, _ := f.srv.ext.Agents.ListChatMessages(f.asOwner, sess.ID)
 	if len(msgs) == 0 || !strings.Contains(msgs[len(msgs)-1].Content, "Route "+id) ||

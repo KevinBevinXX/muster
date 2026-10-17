@@ -219,7 +219,8 @@ func (s *Server) toolRouteToSession(ctx context.Context, chief agents.Agent, arg
 	}
 	s.logger.Printf("routes: %s: message %d routed by agent %d to %s (%s), timeout %s", r.RouteID, m.ID, chief.ID, sub, t.label, r.TimeoutAt.UTC().Format(time.RFC3339))
 	if why := s.injectRoute(ctx, r, p, m, t); why != "" {
-		if _, ferr := s.ext.Routes.FailRoute(context.WithoutCancel(ctx), r.RouteID, why); ferr != nil {
+		// No hand-back: the chief is told now, by this tool's own answer.
+		if _, ferr := s.ext.Routes.FailRoute(context.WithoutCancel(ctx), r.RouteID, why, ""); ferr != nil {
 			s.logger.Printf("routes: %s: record the failed injection: %v", r.RouteID, ferr)
 		}
 		s.logger.Printf("routes: %s: failed: %s", r.RouteID, why)
@@ -369,7 +370,9 @@ func (s *Server) answerRoute(ctx context.Context, r plugins.Route, body string) 
 		s.logger.Printf("routes: %s: answered (%d bytes)", r.RouteID, len(a.ReplyBody))
 	}
 	relayed, d, err := s.relayRoute(ctx, a)
-	out := map[string]any{"route_id": relayed.RouteID, "state": string(relayed.State)}
+	// The route named is the one answered: a relay that failed early returns
+	// no route at all.
+	out := map[string]any{"route_id": a.RouteID, "state": string(relayed.State)}
 	if d.ID != 0 {
 		out["draft_id"], out["draft_status"] = d.ID, string(d.Status)
 	}
@@ -413,6 +416,15 @@ func (s *Server) relayRoute(ctx context.Context, r plugins.Route) (plugins.Route
 	got, d, err := s.ext.Routes.RelayRoute(ctx, r.RouteID, chiefName, approve)
 	if err != nil {
 		s.logger.Printf("routes: %s: relay: %v (state %s)", r.RouteID, err, got.State)
+		if errors.Is(err, plugins.ErrRouteClosed) {
+			// 🔴 A TERMINAL RELAY FAILURE GOES BACK TO THE CHIEF. The route
+			// failed (the pending-draft cap, no_reply, a reply already in
+			// flight) owing the chief a hand-back, in the same transaction; no
+			// draft exists and no push went out, so without it the message
+			// would be answered by nobody and nobody would know. The sweep
+			// delivers it — woken now — never this request.
+			s.kickRouteSweep()
+		}
 		return got, d, err
 	}
 	switch {
@@ -468,9 +480,12 @@ func (s *Server) routePrincipal(ctx context.Context, owner int64) context.Contex
 	return authz.WithPrincipal(ctx, s.principalFor(ctx, owner, authz.ViaRoute))
 }
 
-// RouteTimeoutPass times out every route past its deadline: the route becomes
-// timed_out, its injection is cancelled if it is still queued, and the message
-// is handed back to the chief. It returns how many it timed out.
+// RouteTimeoutPass is the route sweep. It times out every route past its
+// deadline (the route becomes timed_out and its injection is cancelled if it
+// is still queued), relays every answered route whose relay never happened,
+// and delivers every hand-back an ended route owes its chief — the ONLY place
+// a hand-back is delivered (plugins.RouteStore.TakeHandBack: exactly once). It
+// returns how many it timed out.
 func (s *Server) RouteTimeoutPass(ctx context.Context) (int, error) {
 	if !routingOn(s.ext) {
 		return 0, nil
@@ -482,6 +497,10 @@ func (s *Server) RouteTimeoutPass(ctx context.Context) (int, error) {
 	n := 0
 	for _, d := range due {
 		octx := s.routePrincipal(ctx, d.OwnerID)
+		if d.HandBack {
+			s.deliverHandBack(octx, d.RouteID)
+			continue
+		}
 		if d.State == plugins.RouteAnswered {
 			// An answer whose relay never happened: relay it now (idempotent).
 			if r, err := s.ext.Routes.Route(octx, d.RouteID); err == nil {
@@ -491,6 +510,7 @@ func (s *Server) RouteTimeoutPass(ctx context.Context) (int, error) {
 					s.logger.Printf("routes: %s: relayed on retry", d.RouteID)
 				}
 			}
+			s.deliverHandBack(octx, d.RouteID)
 			continue
 		}
 		r, timedOut, err := s.ext.Routes.TimeOutRoute(octx, d.RouteID)
@@ -515,9 +535,38 @@ func (s *Server) RouteTimeoutPass(ctx context.Context) (int, error) {
 				s.logger.Printf("routes: %s: cancel queued message %d: %v (its route gate refuses it)", r.RouteID, *r.SendQueueID, err)
 			}
 		}
-		s.handBackRoute(octx, r, "no answer came by "+r.TimeoutAt.UTC().Format(time.RFC3339)+", so the message is back with you: "+routeHandBackChoices)
+		s.deliverHandBack(octx, r.RouteID)
 	}
 	return n, nil
+}
+
+// deliverHandBack hands routeID's message back to its chief if the route owes
+// that, exactly once (TakeHandBack). ctx acts as the route's owner.
+func (s *Server) deliverHandBack(ctx context.Context, routeID string) {
+	r, reason, ok, err := s.ext.Routes.TakeHandBack(ctx, routeID)
+	if err != nil {
+		s.logger.Printf("routes: %s: take the hand-back: %v", routeID, err)
+		return
+	}
+	if !ok {
+		return
+	}
+	s.logger.Printf("routes: %s: handing message %d back to the chief (%s)", routeID, r.MessageID, reason)
+	s.handBackRoute(ctx, r, reason+", so the message is back with you: "+routeHandBackChoices)
+}
+
+// routeKickCh is the sweep's wake-up channel (one pending kick at most).
+func (s *Server) routeKickCh() chan struct{} {
+	s.routeKickOnce.Do(func() { s.routeKick = make(chan struct{}, 1) })
+	return s.routeKick
+}
+
+// kickRouteSweep wakes the route sweep now rather than at its next tick.
+func (s *Server) kickRouteSweep() {
+	select {
+	case s.routeKickCh() <- struct{}{}:
+	default:
+	}
 }
 
 // routeHandBackChoices ends every hand-back: what the chief may do now.
@@ -589,11 +638,13 @@ func (s *Server) RunRouteTimeouts(ctx context.Context, interval time.Duration) {
 		"answers to allowlisted senders are relayed without approval (MUSTER_ROUTE_RELAY_ALLOW)", s.routeTimeout())
 	t := time.NewTicker(interval)
 	defer t.Stop()
+	kick := s.routeKickCh()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		case <-kick:
 		}
 		if _, err := s.RouteTimeoutPass(ctx); err != nil && ctx.Err() == nil {
 			s.logger.Printf("routes: timeout pass: %v", err)

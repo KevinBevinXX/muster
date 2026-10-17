@@ -529,15 +529,13 @@ func (s *Server) sendQueueRoutedGate(ctx context.Context, it sendqueue.Item) str
 		return ""
 	}
 	why := "the window no longer holds the Claude session it was routed to"
-	failed, err := s.ext.Routes.FailRoute(context.WithoutCancel(ctx), r.RouteID, why)
-	if err != nil {
+	if _, err := s.ext.Routes.FailRoute(context.WithoutCancel(ctx), r.RouteID, why, why); err != nil {
 		s.logger.Printf("routes: %s: fail on a moved window: %v", r.RouteID, err)
 		return SendQueueRouteMoved
 	}
-	if r.State == plugins.RouteRouted && failed.State == plugins.RouteFailed {
-		s.logger.Printf("routes: %s: %s (it holds %q); handing message %d back", r.RouteID, why, holds, r.MessageID)
-		s.handBackRoute(ctx, failed, why+", so the message is back with you: "+routeHandBackChoices)
-	}
+	// The failure owes the chief a hand-back, which the route sweep delivers.
+	s.logger.Printf("routes: %s: %s (it holds %q)", r.RouteID, why, holds)
+	s.kickRouteSweep()
 	return SendQueueRouteMoved
 }
 
