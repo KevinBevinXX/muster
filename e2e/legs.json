@@ -49,7 +49,7 @@
     "tests/agents-search.spec.ts": 5.9,
     "tests/chief-thread-search.spec.ts": 2.4,
     "tests/pickers.spec.ts": 2.6,
-    "tests/composer-menu.spec.ts": 30.0
+    "tests/composer-menu.spec.ts": 15.0
   },
   "legs": {
     "1": [

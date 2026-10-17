@@ -347,6 +347,14 @@ test.describe('desktop 1280×800', () => {
     await page.keyboard.type('/');
     await expect(input(page)).toHaveValue('a/b');
     await expect(menu(page)).toBeHidden();
+    // A `/` typed at the START of an existing word: the caret is not at the
+    // end of the word it begins, so it is not a command being typed.
+    await input(page).fill('');
+    await page.keyboard.type('compact');
+    await page.keyboard.press('Home');
+    await page.keyboard.type('/');
+    await expect(input(page)).toHaveValue('/compact');
+    await expect(menu(page)).toBeHidden();
     // After white space it opens (Claude Code's own rule).
     await input(page).fill('');
     await page.keyboard.type('hello /co');
