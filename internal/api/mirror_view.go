@@ -131,6 +131,9 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	ctx = c.CloseRead(ctx)
 
 	var drawn ui.MirrorTranscript
+	// A reconnect that resumes (gen + offset) draws onto a page that already
+	// holds the conversation so far; see ui.MirrorTranscript.Resumed.
+	drawn.Resumed = gen != "" && offset > 0
 	err = s.ext.Mirror.WatchWindow(ctx, host, session, window, gen, offset, func(m mirror.Msg) error {
 		if m.Reset {
 			drawn.Reset()

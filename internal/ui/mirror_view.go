@@ -196,9 +196,12 @@ func viewToggle(rendered bool, renderedHref, terminalHref string) g.Node {
 //     whose result arrived; a group's summary as its count ticks up);
 //   - wrap: put HTML (a tool-call group) in place of the element with ID and
 //     move that element into the group's body — the second call of a run;
-//   - attr: set attribute Name to Value on the element with ID (a group's state).
+//   - attr: set attribute Name to Value on the element with ID (a group's state);
+//   - result: a tool row's result for a call an EARLIER socket drew (Resumed):
+//     the row with ID takes HTML's status and output and keeps the rest; with
+//     no such row on the page, it is an append.
 type MirrorOp struct {
-	Op    string `json:"op"` // "append" | "replace" | "wrap" | "attr"
+	Op    string `json:"op"` // "append" | "replace" | "wrap" | "attr" | "result"
 	ID    string `json:"id,omitempty"`
 	HTML  string `json:"html,omitempty"`
 	Into  string `json:"into,omitempty"`
@@ -224,6 +227,20 @@ type MirrorTranscript struct {
 	groups  map[string][]string
 	run     []string
 	runGrp  string
+	// Resumed says the page this socket draws for already holds a conversation
+	// drawn by an EARLIER socket (it reconnected with gen and offset, and no
+	// Reset came). This transcript has none of that page's calls, so a result
+	// for one of them is not an orphan to draw at the end: it is redrawn where
+	// the page has it (a `replace`), and no run is started from it.
+	//
+	// 🔴 WITHOUT IT A RESUME SCRAMBLED A RUN: calls a, b, c drawn as one group,
+	// the socket dropped and resumed, then results a, b, c arrived — each taken
+	// for an orphan and appended by the grouping rule, so b and c were MOVED out
+	// of the group into a new one at the end (the client's dedupe removes the old
+	// row before an append) under the SAME group id as the first: a duplicate id
+	// and a split, reordered run. The page refreshes a redrawn row's group count
+	// and state itself (toolGroupScript's refresh).
+	Resumed bool
 	// usage is the latest turn's context use, and fresh whether it changed
 	// since TakeContext last reported it.
 	usage *cctranscript.Usage
@@ -264,6 +281,7 @@ func NewMirrorIndex(refs []cctranscript.PromptRef, more int) *MirrorIndex {
 func (t *MirrorTranscript) Reset() {
 	t.calls, t.order = nil, nil
 	t.states, t.groupOf, t.groups, t.run, t.runGrp = nil, nil, nil, nil, ""
+	t.Resumed = false
 	t.usage, t.fresh = nil, false
 }
 
@@ -441,6 +459,16 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 			result := ChatLine{Kind: "tool_result", ToolID: ev.ToolID, ToolOK: ev.OK, Content: ev.Output}
 			id := toolRowID(ev.ToolID)
 			call, ok := t.calls[ev.ToolID]
+			if !ok && t.Resumed {
+				// Its call was drawn by the socket before this one: the result is
+				// put INTO the row where the page has it (a `result`: its status and
+				// output; the row keeps the name, target and args only the earlier
+				// socket knew), appended only if the page has none, and no run is
+				// started from it — see Resumed.
+				ops = append(ops, MirrorOp{Op: "result", ID: id,
+					HTML: render(toolChip(ChatLine{Kind: "tool_call", ToolID: ev.ToolID}, &result, id))})
+				continue
+			}
 			if !ok {
 				// Its call fell before the backfill window: a row of its own, drawn
 				// at the end like any new row (and bounded with the calls).
@@ -563,12 +591,29 @@ func mirrorViewScript() g.Node {
           return;
         }
       }
+      if (op.op === 'result' && op.id) {
+        var row = document.getElementById(op.id);
+        if (row) {
+          var got = frag(op.html).firstElementChild;
+          row.setAttribute('data-tool-status', got.getAttribute('data-tool-status') || '');
+          var st = row.querySelector(':scope > summary [aria-label^="status:"]');
+          var nst = got.querySelector(':scope > summary [aria-label^="status:"]');
+          if (st && nst) st.replaceWith(nst);
+          var body = row.querySelector(':scope > div'), nbody = got.querySelector(':scope > div');
+          if (body && nbody) while (nbody.firstChild) body.appendChild(nbody.firstChild);
+          if (window.musterToolGroups) window.musterToolGroups.refresh(row);
+          return;
+        }
+      }
       if (op.op === 'replace' && op.id) {
         var old = document.getElementById(op.id);
         if (old) {
           var f = frag(op.html), el = f.firstElementChild;
           if (el && old.open) el.open = true; // keep a row the reader expanded
           old.replaceWith(f);
+          // A row redrawn inside a group: the group's count and state follow it
+          // (a resumed socket cannot redraw a group it never drew).
+          if (el && window.musterToolGroups) window.musterToolGroups.refresh(el);
           return;
         }
       }

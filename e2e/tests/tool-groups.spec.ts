@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { password, toolGroupsPort } from '../lib/env';
@@ -173,6 +174,48 @@ test('a group grows and shrinks smoothly: half-way its height is between closed 
   expect(Math.abs((await height()) - closed), 'closed again at its closed height').toBeLessThanOrEqual(1);
 });
 
+// A second tap MID-WAY reverses the box from where it is: opening then tapped
+// half-way closes (and ends closed), closing then tapped half-way opens (and
+// ends open). The handler must know a box that is still [open] can be on its
+// way CLOSED — `opening = !d.open` alone would read a half-closed box as open
+// and close it again.
+test('a tap mid-way reverses the group, from where it is, both ways', async ({ page, baseURL }) => {
+  await signIn(page, baseURL!);
+  await page.goto(`${baseURL}/agents/${agent}`);
+  const g3 = page.locator('#chat-log [data-tool-group]').first();
+  const height = () => g3.evaluate((d) => d.getBoundingClientRect().height);
+  // pauseHalf holds the group's height animation at its midpoint.
+  const pauseHalf = () =>
+    g3.evaluate((d) => {
+      const a = d.getAnimations().find((x) => !(x as CSSAnimation).animationName)!;
+      a.pause();
+      a.currentTime = Number((a.effect!.getTiming().duration as number) / 2);
+      return d.getBoundingClientRect().height;
+    });
+  const finish = () => g3.evaluate((d) => d.getAnimations().forEach((a) => a.finish()));
+
+  const closed = await height();
+  await g3.locator(':scope > summary').tap(); // open…
+  const mid = await pauseHalf();
+  await g3.locator(':scope > summary').tap(); // …reversed half-way
+  const from = await g3.evaluate((d) => d.getBoundingClientRect().height);
+  expect(Math.abs(from - mid), 'the reversal starts from where the box was').toBeLessThanOrEqual(2);
+  await finish();
+  await expect(g3, 'opening, reversed: it ends closed').not.toHaveAttribute('open', '');
+  await expect.poll(height).toBeLessThanOrEqual(closed + 1);
+
+  await g3.locator(':scope > summary').tap(); // open fully
+  await finish();
+  await expect(g3).toHaveAttribute('open', '');
+  const open = await height();
+  await g3.locator(':scope > summary').tap(); // close…
+  await pauseHalf();
+  await g3.locator(':scope > summary').tap(); // …reversed half-way
+  await finish();
+  await expect(g3, 'closing, reversed: it ends open').toHaveAttribute('open', '');
+  await expect.poll(height).toBeGreaterThanOrEqual(open - 1);
+});
+
 test('reduced motion: a group opens with no animation', async ({ page, baseURL }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await signIn(page, baseURL!);
@@ -242,4 +285,45 @@ test('mirror: the pane transcript groups the same way, and a notice ends a run',
   const g3 = log.locator('[data-tool-group]').first();
   await g3.locator(':scope > summary').tap();
   await expect(g3.locator('[data-tool-row]').first()).toBeVisible();
+});
+
+// 🔴 A RESUMED SOCKET MUST NOT SCRAMBLE A RUN (ui.MirrorTranscript.Resumed).
+// Calls a, b, c are drawn as one group; the view's socket drops and resumes
+// (gen + offset, no reset); THEN their results arrive, then a call d. The
+// results go into the rows where they are; nothing is moved, no group id is
+// drawn twice, and the order stays a, b, c, d.
+test('mirror: a socket that drops and resumes keeps the run in place, with no duplicate ids', async ({ page }) => {
+  const tr = rig.transcript(cc.prompt('resume me') + cc.toolUse('ra', 'Bash', { command: cmd('ra') }) +
+    cc.toolUse('rb', 'Bash', { command: cmd('rb') }) + cc.toolUse('rc', 'Bash', { command: cmd('rc') }), 'resume');
+  await rig.startHost({ MUSTER_MIRROR_E2E_SESSIONS: 'main', MUSTER_MIRROR_E2E_CLAUDE: 'main=' + tr });
+  const sockets: { close: () => Promise<void> }[] = [];
+  await page.routeWebSocket(/\/mirror\/view\/ws/, (ws) => {
+    ws.connectToServer();
+    sockets.push(ws);
+  });
+  await rig.login(page);
+  await rig.waitListed(page, 'data-mirror-claude');
+  await page.goto(rig.origin + rig.viewPath('main'));
+  const log = page.locator('#mv-log');
+  await expect.poll(() => log.evaluate(shapeJS), { timeout: 15_000 }).toBe('T G3[running](ra,rb,rc)');
+
+  // Drop the socket; the page reconnects on its own, resuming from its offset.
+  await sockets[0].close();
+  await expect.poll(() => sockets.length, { message: 'the page reconnected', timeout: 15_000 }).toBe(2);
+  await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 15_000 });
+
+  fs.appendFileSync(tr, cc.toolResult('ra', 'out ra') + cc.toolResult('rb', 'out rb') + cc.toolResult('rc', 'out rc', true) +
+    cc.toolUse('rd', 'Bash', { command: cmd('rd') }));
+  await expect.poll(() => log.evaluate(shapeJS), { message: 'the run stayed where it was; d after it' }).toBe('T G3[error](ra,rb,rc) R:rd');
+  const dupes = await page.evaluate(() => {
+    const seen: Record<string, number> = {};
+    document.querySelectorAll('[id]').forEach((e) => (seen[e.id] = (seen[e.id] || 0) + 1));
+    return Object.keys(seen).filter((k) => seen[k] > 1);
+  });
+  expect(dupes, 'no element id is drawn twice').toEqual([]);
+  // The rows kept what only the first socket knew (their targets), and took the results.
+  const rb = log.locator('[data-tool-row]').nth(1);
+  await expect(rb.locator('[data-tool-target]')).toHaveText('echo rb');
+  await expect(rb).toHaveAttribute('data-tool-status', 'ok');
+  await expect(log.locator('[data-tool-group] > summary [data-tool-group-count]')).toHaveText('3 tool calls');
 });

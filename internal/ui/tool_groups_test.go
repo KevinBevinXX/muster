@@ -299,3 +299,47 @@ func TestToolGroupShellIsTheServersMarkup(t *testing.T) {
 		t.Error("the script's count label and toolGroupLabel disagree")
 	}
 }
+
+// TestAResumedSocketKeepsTheRunWhereItIs: calls a, b, c drawn as one group by
+// one socket; the socket drops and RESUMES (gen + offset, no Reset), and the
+// new socket's transcript has never seen a, b or c. Their results must go INTO
+// the rows the page has (`result` ops) — never be appended as new rows, never
+// wrapped into a group (whose id would be the first socket's again), never
+// moved. A call after the resume starts its own run.
+func TestAResumedSocketKeepsTheRunWhereItIs(t *testing.T) {
+	call := func(id string) cctranscript.Event {
+		return cctranscript.Event{Kind: cctranscript.KindToolCall, ToolID: id, Tool: "Bash", Target: id}
+	}
+	res := func(id string, ok bool) cctranscript.Event {
+		return cctranscript.Event{Kind: cctranscript.KindToolResult, ToolID: id, OK: ok, Output: "out " + id}
+	}
+	names := map[string]string{}
+	for _, id := range []string{"a", "b", "c", "d", "e"} {
+		names[toolRowID(id)] = id
+		names[toolGroupID(id)] = "G(" + id + ")"
+		names[toolGroupID(id)+"-b"] = "G(" + id + ")-b"
+		names[toolGroupID(id)+"-s"] = "G(" + id + ")-s"
+	}
+	var first MirrorTranscript
+	before := opsShape(first.Ops([]cctranscript.Event{call("a"), call("b"), call("c")}), names)
+	if fmt.Sprint(before) != fmt.Sprint([]string{"append a", "wrap a", "append b into G(a)-b", "append c into G(a)-b",
+		"replace G(a)-s (3)", "attr G(a) data-tool-status=running"}) {
+		t.Fatalf("control: the first socket drew %q", before)
+	}
+
+	resumed := MirrorTranscript{Resumed: true}
+	ops := resumed.Ops([]cctranscript.Event{res("a", true), res("b", true), res("c", false), call("d"), call("e")})
+	got := opsShape(ops, names)
+	want := []string{"result a", "result b", "result c", "append d", "wrap d", "append e into G(d)-b"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("resumed ops\n  got  %q\n  want %q", got, want)
+	}
+	for _, o := range ops {
+		if o.ID == toolGroupID("a") || o.Into == toolGroupID("a")+"-b" || strings.Contains(o.HTML, `id="`+toolGroupID("a")+`"`) {
+			t.Errorf("the resumed socket drew the first socket's group %s again: %+v", toolGroupID("a"), o)
+		}
+		if o.Op == "result" && !strings.Contains(o.HTML, "out ") {
+			t.Errorf("a result op carries no output: %+v", o)
+		}
+	}
+}
