@@ -13,7 +13,7 @@ import (
 
 // The testdata payloads were captured from a real Claude Code 2.1.289 session
 // (interactive, a scratch directory, a PreToolUse hook on AskUserQuestion; the
-// home directory in transcript_path replaced). pretooluse-output-proven.json is
+// claude config directory in transcript_path replaced). pretooluse-output-proven.json is
 // the hook output that session ACCEPTED: the call was answered with no picker
 // on screen, and the model's tool result read `Your questions have been
 // answered: "Which color do you prefer?"="Red", "Which pets do you have?"="Cat,
