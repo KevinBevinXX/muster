@@ -9,7 +9,7 @@ import { serverBinary, startServer, Running } from '../lib/server';
 
 // ONE ROUTED-MAIL ROUND TRIP, end to end, every hop a real route:
 //
-//   a plugin POSTs a message from an ALLOWLISTED sender → the chief (a fixture
+//   a plugin POSTs a message from a VERIFIED sender ALLOWLISTED for it → the chief (a fixture
 //   row; the e2e harness runs no agent runtime — see plugins.spec.ts) is being
 //   handed it → the chief calls route_to_session over the real /mcp door → the
 //   SEND QUEUE pastes the fenced block into the mirrored Claude Code window (a
@@ -51,7 +51,7 @@ test.beforeAll(async () => {
     MUSTER_MIRROR: '1',
     MUSTER_PLUGINS: '1',
     MUSTER_SESSION_ROUTING: '1',
-    MUSTER_ROUTE_RELAY_ALLOW: '1:ada@example.invalid',
+    MUSTER_ROUTE_RELAY_ALLOW: '1:route-inbox:ada@example.invalid',
     MUSTER_SEND_QUEUE_IDLE: '1s',
     MUSTER_FOCUS_INTERVAL: '0',
     MUSTER_CONNECTOR_ENCRYPTION_KEY: FAKE_KEY,
@@ -128,9 +128,10 @@ test('a routed message reaches the mirrored session, its answer is auto-approved
   expect(token).toMatch(/^mpl_/);
   plugin = await pwRequest.newContext({ baseURL: origin, extraHTTPHeaders: { Authorization: `Bearer ${token}` } });
 
-  // 1. The plugin posts a message from the allowlisted sender.
+  // 1. The plugin posts a message from the allowlisted sender, which it verified.
   const posted = await plugin.post('/plugin/v1/messages', {
-    data: { external_id: 'route-msg-1', sender: 'Ada <ada@example.invalid>', subject: 'standup', body: 'Can we move standup to 10?' },
+    data: { external_id: 'route-msg-1', sender: 'Ada <ada@example.invalid>', subject: 'standup', body: 'Can we move standup to 10?',
+      sender_verified: true },
   });
   expect(posted.status(), await posted.text()).toBe(202);
   const messageID = ((await posted.json()) as { id: number }).id;

@@ -199,7 +199,7 @@ type Extensions struct {
 
 	// Routes is session routing's store (internal/plugins/routes.go, migration
 	// 0021) and Routing its configuration. Routing nil — MUSTER_SESSION_ROUTING
-	// unset — is OFF: route_to_session and reply_to_chief are not offered,
+	// unset — is OFF: the chief's route_to_session tool is not offered,
 	// POST /api/routes/{id}/reply answers 404, and the chief's plugin turns do
 	// not mention routing.
 	Routes  plugins.RouteStore

@@ -18,8 +18,9 @@ import (
 // It posts to POST /api/routes/{route_id}/reply with the host's ordinary muster
 // credential — a personal API token (or the shared hook token), which acts as the
 // OWNER: the route is that owner's, and row-level security answers another
-// owner's route as not found. A dispatched agent answers with the reply_to_chief
-// TOOL instead.
+// owner's route as not found. "reply_to_chief" is the name the routed block
+// gives this answer; there is no such agent tool — only a mirrored session can
+// be routed to (a dispatched agent is not a target).
 
 const routeReplyRoute = "/api/routes/{id}/reply"
 

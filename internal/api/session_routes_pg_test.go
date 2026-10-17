@@ -35,13 +35,22 @@ type routeMirror struct {
 	mu           sync.Mutex
 	interactive  bool
 	statusReport bool
+	// claudeSession is the conversation window @4 holds ("" = routeSID); label
+	// its host-given display name.
+	claudeSession string
+	label         string
+	pasted        int
 }
 
 func (m *routeMirror) Hosts(context.Context) []mirror.HostView {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	sid := m.claudeSession
+	if sid == "" {
+		sid = routeSID
+	}
 	ws := mirror.NormalizeWindows([]mirror.Window{{Session: "work", ID: "@4", Index: 1, Active: true, Claude: true,
-		ClaudeSession: routeSID, Status: mirror.StatusIdle, StatusSince: 1}}, 0)
+		ClaudeSession: sid, Label: m.label, Status: mirror.StatusIdle, StatusSince: 1}}, 0)
 	h := mirror.HostView{Host: "tower", Windows: ws, Online: true, Rendered: true, Interactive: m.interactive,
 		PanePaste: m.interactive, StatusReport: m.statusReport}
 	h.Sessions, h.Claude, h.Labels, h.Activity = mirror.SessionsOf(ws)
@@ -58,7 +67,24 @@ func (m *routeMirror) WatchWindow(context.Context, string, string, string, strin
 	return nil
 }
 func (m *routeMirror) PasteWindow(context.Context, string, string, string, string, mirror.PasteTarget, ...mirror.PasteOption) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pasted++
 	return nil
+}
+
+// set changes a knob under the lock.
+func (m *routeMirror) set(f func(*routeMirror)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	f(m)
+}
+
+// pastes is how many pastes reached the host.
+func (m *routeMirror) pastes() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.pasted
 }
 func (m *routeMirror) ScrollWindow(context.Context, string, string, string, int) error { return nil }
 
@@ -114,6 +140,55 @@ func (f *routeFixture) queued(t *testing.T) []sendqueue.Item {
 		t.Fatal(err)
 	}
 	return items
+}
+
+// pluginMessage stores one message through the owner's plugin named name
+// (created on first use) from sender, marked verified or not, and settles it
+// as delivered to the chief.
+func (f *routeFixture) pluginMessage(t *testing.T, name, external, sender string, verified bool) (plugins.Plugin, plugins.Message) {
+	t.Helper()
+	ctx := f.as(f.owner)
+	ps, err := f.plugins.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p plugins.Plugin
+	for _, x := range ps {
+		if x.Name == name {
+			p = x
+		}
+	}
+	if p.ID == 0 {
+		if _, p, err = f.plugins.Create(ctx, name, "Example "+name, name+"-data"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, _, err := f.plugins.Submit(ctx, p.ID, plugins.MessageIn{ExternalID: external, Sender: sender, Subject: "hello",
+		Body: "please do a thing", SenderVerified: verified})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := f.plugins.BeginDelivery(ctx, m.ID, f.chief.ID); err != nil || !ok {
+		t.Fatalf("begin delivery: %v %v", ok, err)
+	}
+	if ok, err := f.plugins.RecordDelivery(ctx, m.ID, f.chief.ID, plugins.StatusDelivered); err != nil || !ok {
+		t.Fatalf("record delivery: %v %v", ok, err)
+	}
+	return p, m
+}
+
+// allow sets the owner's relay allowlist from entries ("<plugin>:<sender>").
+func (f *routeFixture) allow(t *testing.T, entries ...string) {
+	t.Helper()
+	raw := ""
+	for _, e := range entries {
+		raw += strconv.FormatInt(f.owner, 10) + ":" + e + ","
+	}
+	l, err := plugins.ParseRelayAllowlist(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.routing.Allow = l
 }
 
 func (f *routeFixture) reply(t *testing.T, token, routeID, body string) (int, map[string]any) {
@@ -251,22 +326,21 @@ func (f *routeFixture) route(t *testing.T, m plugins.Message) string {
 	return res.RouteID
 }
 
-// TestTheAnswerIsRelayedPerTheAllowlist: an allowlisted sender's answer becomes
-// an APPROVED draft the plugin's claim takes; anyone else's a PENDING one. The
-// same answer again is the stored result; a different one is refused; another
-// user's credential cannot answer.
+// TestTheAnswerIsRelayedPerTheAllowlist: a VERIFIED sender allowlisted for the
+// message's own plugin gets an APPROVED draft the plugin's claim takes; anyone
+// else a PENDING one. The same answer again is the stored result; a different
+// one is refused; another user's credential cannot answer.
 func TestTheAnswerIsRelayedPerTheAllowlist(t *testing.T) {
 	f := newRouteFixture(t)
-	f.routing.Allow = plugins.RelayAllowlist{f.owner: {"someone@example.test"}}
-	allowed := f.deliveredMessage(t, f.owner, f.chief.ID, "route-allowed")
+	f.allow(t, "example-inbox:someone@example.test")
+	p, allowed := f.pluginMessage(t, "example-inbox", "route-allowed", "someone@example.test", true)
 	id := f.route(t, allowed)
 	code, out := f.reply(t, f.token, id, "Noon works for us.")
 	if code != 200 || out["state"] != "relayed" || out["draft_status"] != "approved" {
 		t.Fatalf("allowlisted answer: %d %v", code, out)
 	}
 	draftID := int64(out["draft_id"].(float64))
-	ps, _ := f.plugins.List(f.asOwner)
-	c, ok, err := f.plugins.ClaimDraft(f.as(f.owner), ps[0].ID)
+	c, ok, err := f.plugins.ClaimDraft(f.as(f.owner), p.ID)
 	if err != nil || !ok || c.DraftID != draftID || c.Body != "Noon works for us." || c.MessageExternalID != "route-allowed" {
 		t.Fatalf("the plugin's claim: %+v %v %v", c, ok, err)
 	}
@@ -279,14 +353,14 @@ func TestTheAnswerIsRelayedPerTheAllowlist(t *testing.T) {
 	}
 
 	// Not allowlisted: the same path ends in a pending draft.
-	f.routing.Allow = plugins.RelayAllowlist{f.owner: {"someone-else@example.test"}}
-	other := f.deliveredMessage(t, f.owner, f.chief.ID, "route-fallback")
+	f.allow(t, "example-inbox:someone-else@example.test")
+	_, other := f.pluginMessage(t, "example-inbox", "route-fallback", "someone@example.test", true)
 	id2 := f.route(t, other)
 	code, out = f.reply(t, f.token, id2, "Let me check and get back to you.")
 	if code != 200 || out["state"] != "fallback" || out["draft_status"] != "pending" {
 		t.Fatalf("non-allowlisted answer: %d %v", code, out)
 	}
-	if _, ok, _ := f.plugins.ClaimDraft(f.as(f.owner), ps[0].ID); ok {
+	if _, ok, _ := f.plugins.ClaimDraft(f.as(f.owner), p.ID); ok {
 		t.Fatal("a fallback draft was claimable before the owner approved it")
 	}
 

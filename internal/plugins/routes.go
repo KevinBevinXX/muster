@@ -326,13 +326,34 @@ func (s *PGStore) RelayRoute(ctx context.Context, routeID, agentName string, app
 		case inFlight != nil:
 			failWhy = "another reply to the message is already approved and on its way"
 		}
+		if failWhy == "" && !approve {
+			// FileDraft's cap: a PENDING draft awaits the owner, and one agent may
+			// have at most MaxPendingDraftsPerAgent of them (this message's own
+			// pending one, superseded below, not counted). Serialised as FileDraft
+			// serialises it.
+			if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('plugin_reply_drafts.file'), $1::int)`, int32(*cur.AgentID)); err != nil {
+				return err
+			}
+			var pending int
+			if err := tx.QueryRow(ctx, `SELECT count(*) FROM plugin_reply_drafts
+				WHERE agent_id = $1 AND status = 'pending' AND message_id <> $2`, *cur.AgentID, messageID).Scan(&pending); err != nil {
+				return err
+			}
+			if pending >= MaxPendingDraftsPerAgent {
+				failWhy = fmt.Sprintf("%d reply drafts already await the owner (the limit is %d)", pending, MaxPendingDraftsPerAgent)
+			}
+		}
 		if failWhy != "" {
 			return nil
 		}
-		if _, err := tx.Exec(ctx, `UPDATE plugin_reply_drafts SET status = 'superseded', decided_at = now()
-			WHERE message_id = $1 AND status = 'pending'`, messageID); err != nil {
+		// FileDraft's supersede, with FileDraft's accounting: the count on the
+		// filing's audit row.
+		tag, err := tx.Exec(ctx, `UPDATE plugin_reply_drafts SET status = 'superseded', decided_at = now()
+			WHERE message_id = $1 AND status = 'pending'`, messageID)
+		if err != nil {
 			return err
 		}
+		superseded := int(tag.RowsAffected())
 		status, q := DraftPending, `INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at, route_id)
 			VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6), $7) RETURNING `+draftCols
 		if approve {
@@ -345,7 +366,7 @@ func (s *PGStore) RelayRoute(ctx context.Context, routeID, agentName string, app
 			return err
 		}
 		if err := audit(ctx, tx, "plugin.draft.filed", DraftObject(d.ID), map[string]any{
-			"message_id": messageID, "agent_id": *cur.AgentID, "route_id": routeID}); err != nil {
+			"message_id": messageID, "agent_id": *cur.AgentID, "route_id": routeID, "superseded": superseded}); err != nil {
 			return err
 		}
 		next := RouteFallback
@@ -403,24 +424,37 @@ func (s *PGStore) TimeOutRoute(ctx context.Context, routeID string) (r Route, ti
 	return r, timedOut, err
 }
 
-// DueRoute is one route the timeout sweep must time out, and whose.
+// DueRoute is one route the sweep must act on, and whose: a ROUTED one past
+// its deadline (time it out), or an ANSWERED one whose relay never happened —
+// a crash or an error between the answer's commit and the relay — which would
+// otherwise hold the message's one open route forever (relay it again: the
+// relay is idempotent).
 type DueRoute struct {
 	RouteID string
 	OwnerID int64
+	State   RouteState
 }
 
-// ExpiredRoutes is every OPEN, routed route past its deadline, across every
-// owner — ids and owners only. Under the system scope (internal/authz's ledger
+// RelayGrace is how long an answered route may wait for its relay before the
+// sweep retries it: longer than any relay that is merely in progress.
+const RelayGrace = time.Minute
+
+// ExpiredRoutes is every route the sweep must act on (DueRoute), across every
+// owner — ids, owners and states only. Under the system scope (internal/authz's ledger
 // names this one method): each is then timed out AS ITS OWNER (TimeOutRoute).
 func (s *PGStore) ExpiredRoutes(ctx context.Context) ([]DueRoute, error) {
-	rows, err := s.pool.Query(authz.System(ctx), `SELECT route_id, owner_id FROM session_routes
-		WHERE state = 'routed' AND timeout_at <= now() ORDER BY timeout_at, id`)
+	rows, err := s.pool.Query(authz.System(ctx), `SELECT route_id, owner_id, state FROM session_routes
+		WHERE (state = 'routed' AND timeout_at <= now())
+		   OR (state = 'answered' AND answered_at <= now() - make_interval(secs => $1))
+		ORDER BY id`, RelayGrace.Seconds())
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (DueRoute, error) {
 		var d DueRoute
-		err := row.Scan(&d.RouteID, &d.OwnerID)
+		var st string
+		err := row.Scan(&d.RouteID, &d.OwnerID, &st)
+		d.State = RouteState(st)
 		return d, err
 	})
 }

@@ -55,7 +55,7 @@ JSON. On every route:
 ```json
 {"external_id": "msg-0001", "sender": "someone@example.invalid",
  "subject": "hello", "body": "…", "received_at": "2000-01-02T03:04:05Z",
- "no_reply": false}
+ "no_reply": false, "sender_verified": false}
 ```
 
 | field | required | rule |
@@ -65,6 +65,7 @@ JSON. On every route:
 | `sender`, `subject` | no | 200 characters each |
 | `received_at` | no | RFC 3339 |
 | `no_reply` | no | `true` marks a message nobody may answer (see below). Default `false`. |
+| `sender_verified` | no | `true` asserts that YOU authenticated `sender` (see below). Default `false`. |
 
 | answer | meaning |
 |---|---|
@@ -88,6 +89,25 @@ from an address that does not take replies. Then:
 - `reply_draft` refuses that message;
 - the database refuses any reply draft for it, whatever writes it;
 - the mark cannot be changed once the message is stored.
+
+#### `sender_verified`
+
+Set `sender_verified: true` only when your plugin has **authenticated** the
+sender: the address in `sender` is proven to be the one that sent the message,
+not merely what its From line says. It is what lets an answer to that sender be
+relayed without the owner's approval (`MUSTER_ROUTE_RELAY_ALLOW`, below); a
+message without it always waits for approval. Before setting it, check:
+
+- **mail**: the message passed DMARC, or DKIM with a signing domain aligned to
+  the From domain (SPF alone authenticates the envelope, not From), and you are
+  reporting that From address;
+- **a signed protocol**: the message's signature verified against keys the
+  sender's owner published, and `sender` is the identity those keys belong to;
+- **anything else**: an equivalent proof bound to the exact address you report.
+
+When in doubt, leave it `false`. muster cannot check your claim: an entry on
+the allowlist names your plugin, so only messages **your** plugin marked
+verified match it, and the mark cannot be changed once the message is stored.
 
 ### `POST /plugin/v1/drafts/claim`: collect an approved reply
 
@@ -406,18 +426,34 @@ turn for each message says when to do this.
    yours; the same answer again changes nothing; a different second answer is
    refused.
 4. **Back to the sender**, exactly once, as the message's reply draft:
-   - from a sender on your allowlist (`MUSTER_ROUTE_RELAY_ALLOW`), the draft is
-     filed **already approved** — you are not asked — and the plugin's next
-     claim sends it through the usual claim and result routes;
-   - from anyone else, it is an ordinary **pending** draft that you approve on
-     `/plugins`, with the usual push.
+   - when the message's sender is on your allowlist (`MUSTER_ROUTE_RELAY_ALLOW`)
+     **for the plugin that delivered it**, and that plugin marked the sender
+     verified (`sender_verified`), the draft is filed **already approved** —
+     you are not asked — and the plugin's next claim sends it through the usual
+     claim and result routes;
+   - otherwise — an unverified sender, the same address arriving through
+     another plugin, an address that is not plain ASCII — it is an ordinary
+     **pending** draft that you approve on `/plugins`, with the usual push. It
+     counts toward the chief's 20 pending drafts, like any draft; at that limit
+     the route fails and the chief is told.
+
+   Allowlist entries are `<user id>:<plugin name>:<address>` or
+   `<user id>:<plugin name>:*@<domain>`. Addresses are compared in ASCII only
+   (no Unicode case folding), so a look-alike such as the Kelvin sign `K` never
+   matches `k`.
+
+   A draft names its route (`plugin_reply_drafts.route_id`, unique), so a route
+   can never become two replies. The chief's conversation for the plugin gets a
+   short note saying what happened. If the relay fails for a passing reason
+   (the database is briefly unavailable), the reply call answers `202` with the
+   answer kept, and the timeout sweep relays it a minute later.
 
    A draft names its route (`plugin_reply_drafts.route_id`, unique), so a route
    can never become two replies. The chief's conversation for the plugin gets a
    short note saying what happened.
 5. **No answer by the deadline:** the route times out, a still-queued injection
    is cancelled, and the message is handed back to the chief in a turn (or a
-   note, when it is not running).
+   note, when it is not running or already mid-turn).
 
 Every step writes a `session_route.*` audit row (`routed`, `answered`,
 `relayed`, `fallback`, `timed_out`, `failed`), plus the draft's own
@@ -425,12 +461,25 @@ Every step writes a `session_route.*` audit row (`routed`, `answered`,
 
 🔴 **What stands in for the step-up.** A message you queue carries the sign-in
 time of the browser session that queued it, and is sent only while that sign-in
-is fresh. A routed message has no browser session: its queue row carries the
-route's own time, which stays inside the step-up window for as long as the route
-can live. What gates it instead: routing is off unless the deployment turns it
-on, only your chief can route, only an `-interactive` host that reports Claude
-Code's status is a target, the account check at delivery still applies, and the
-row is visible and cancellable in the window's queue.
+is fresh. A routed message has no browser session, so its queue row is
+**marked** with its route (`send_queue.route_id`) and is exempt from the
+step-up window. Instead, at the moment of the paste, muster checks that:
+
+- the route is still waiting for an answer — so a row is never pasted after its
+  route answered, timed out or failed, even if cancelling the row failed;
+- the window still holds the Claude Code conversation it was routed to — if it
+  now holds another, nothing is pasted, the route fails and the message goes
+  back to the chief.
+
+The other gates hold as for anyone: routing is off unless the deployment turns
+it on, only your chief can route, only an `-interactive` host that reports
+Claude Code's status is a target, the account check at delivery still applies
+(the row carries the route's time, so a sign-out everywhere after the route
+refuses it), and the row is visible and cancellable in the window's queue.
+
+The answer comes back on `POST /api/routes/{route_id}/reply` with a personal
+API token or the hook token. With `MUSTER_HOOK_TOKEN` unset, only a personal
+token works, and the boot banner warns.
 
 ⚠ **The send queue does not see a half-typed prompt.** Claude Code reports
 `idle` while text sits unsent in its input box; a routed paste then lands after
@@ -438,4 +487,4 @@ that text, and Enter sends both. The idle delay is the only protection.
 
 ⚠ **An answer is sent as written.** It is screened like any reply draft (no
 hidden characters, addresses, credentials or the deployment's own names), and
-for an allowlisted sender that screen is the only check before it goes.
+for a verified, allowlisted sender that screen is the only check before it goes.

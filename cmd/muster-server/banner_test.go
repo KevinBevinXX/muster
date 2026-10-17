@@ -668,7 +668,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		VAPIDSubject:    "mailto:ops@example.com",
 		// Session routing: the banner branches on ext.Routing (below).
 		SessionRouting:     true,
-		RouteRelayAllowRaw: "1:someone@example.invalid",
+		RouteRelayAllowRaw: "1:example-inbox:someone@example.invalid",
 	}
 	onOut = renderBannerWithPool(t, on, api.Extensions{
 		Mirror:      mirror.NewService(nil, nil),
@@ -682,10 +682,34 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		Plugins:       bannerStubPlugins{},
 		PluginGateway: bannerStubPluginGateway{},
 		Routes:        bannerStubRoutes{},
-		Routing:       &api.Routing{Allow: plugins.RelayAllowlist{1: {"someone@example.invalid"}}},
+		Routing:       &api.Routing{Allow: bannerAllowlist(t)},
 	}, &pgxpool.Pool{})
 	offOut = renderBannerWithPool(t, config{}, api.Extensions{}, nil)
 	return onOut, offOut
+}
+
+func bannerAllowlist(t *testing.T) plugins.RelayAllowlist {
+	t.Helper()
+	l, err := plugins.ParseRelayAllowlist("1:example-inbox:someone@example.invalid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l
+}
+
+// 🟢 Routing ON with no MUSTER_HOOK_TOKEN: a session answering on the shared
+// hook credential is refused (503), so its routes time out — a loud line.
+// With the token set (the control), no warning.
+func TestTheBannerWarnsWhenRoutingIsOnWithoutAHookToken(t *testing.T) {
+	ext := api.Extensions{Plugins: bannerStubPlugins{}, PluginGateway: bannerStubPluginGateway{},
+		Routes: bannerStubRoutes{}, Routing: &api.Routing{Allow: bannerAllowlist(t)}}
+	const warn = "WARNING — session routing: " + envHookToken + " is unset"
+	if out := renderBanner(t, config{SessionRouting: true, Plugins: true}, ext); !strings.Contains(out, warn) {
+		t.Errorf("routing on, no hook token: no warning.\nbanner:\n%s", out)
+	}
+	if out := renderBanner(t, config{SessionRouting: true, Plugins: true, HookToken: "hook"}, ext); strings.Contains(out, warn) {
+		t.Errorf("routing on WITH a hook token still warns.\nbanner:\n%s", out)
+	}
 }
 
 // bannerStubPlugins and bannerStubPluginGateway are present-but-inert: the

@@ -83,6 +83,34 @@ DROP TRIGGER IF EXISTS session_routes_owner_is_agents_owner ON public.session_ro
 CREATE TRIGGER session_routes_owner_is_agents_owner BEFORE INSERT OR UPDATE OF owner_id, agent_id
     ON public.session_routes FOR EACH ROW EXECUTE FUNCTION public.plugin_rows_owner_is_agents_owner('nullable');
 
+-- 🔴 sender_verified: the PLUGIN's assertion that it authenticated the sender
+-- (DKIM/DMARC-aligned mail, a signature it verified, the platform's
+-- equivalent) — what a routed answer may be auto-approved on, together with
+-- the owner's allowlist naming that plugin. Absent (every plugin today) is
+-- false. Part of what arrived: immutable, like the body (0015) and no_reply.
+ALTER TABLE public.plugin_messages ADD COLUMN IF NOT EXISTS sender_verified BOOLEAN NOT NULL DEFAULT false;
+
+CREATE OR REPLACE FUNCTION public.plugin_messages_sender_verified_immutable() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.sender_verified IS DISTINCT FROM OLD.sender_verified THEN
+        RAISE EXCEPTION 'plugin_messages: a message''s sender_verified mark is immutable (id %)', OLD.id
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+DROP TRIGGER IF EXISTS plugin_messages_sender_verified_immutable ON public.plugin_messages;
+CREATE TRIGGER plugin_messages_sender_verified_immutable BEFORE UPDATE OF sender_verified ON public.plugin_messages
+    FOR EACH ROW EXECUTE FUNCTION public.plugin_messages_sender_verified_immutable();
+
+-- 🔴 send_queue.route_id MARKS A ROUTED ROW (internal/api/session_routes.go):
+-- its delivery checks the route is still waiting and still bound to the same
+-- Claude session, and that check — not a browser sign-in — is its gate. NULL is
+-- a person's queued message, gated by its sign-in as before (0019).
+ALTER TABLE public.send_queue ADD COLUMN IF NOT EXISTS route_id TEXT;
+
 -- The reply draft a route became names it, for the audit trail — and at most
 -- one draft may name a route: the exactly-once relay, held by the schema.
 ALTER TABLE public.plugin_reply_drafts ADD COLUMN IF NOT EXISTS route_id TEXT;

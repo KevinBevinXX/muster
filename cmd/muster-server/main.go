@@ -1035,9 +1035,15 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	switch {
 	case ext.Routing != nil:
 		l.Printf("session routing: ON (%s=1) — the chief may hand a plugin message to one of its owner's sessions "+
-			"(route_to_session); a mirrored window gets it through the send queue with the ROUTE's time standing in for a "+
-			"sign-in (see internal/api/session_routes.go); %d owner(s) have senders whose answers relay without approval (%s)",
-			envSessionRouting, len(ext.Routing.Allow), envRouteRelayAllow)
+			"(route_to_session); a mirrored window gets it through the send queue, its row marked and gated on its ROUTE "+
+			"instead of a sign-in (see internal/api/session_routes.go); %d owner(s) have plugin-bound senders whose verified "+
+			"answers relay without approval (%s)",
+			envSessionRouting, ext.Routing.Allow.Owners(), envRouteRelayAllow)
+		if a.cfg.HookToken == "" {
+			l.Printf("WARNING — session routing: %s is unset, so a session answers a route (POST /api/routes/{id}/reply) "+
+				"ONLY with a personal API token; a host on the shared hook credential is refused (503) and its routes time "+
+				"out back to the chief", envHookToken)
+		}
 	case a.cfg.SessionRouting:
 		l.Printf("session routing: INERT — %s=1 but the plugin interface is off, so nothing is routed", envSessionRouting)
 	default:

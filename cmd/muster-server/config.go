@@ -122,7 +122,8 @@ const (
 	// tools are not offered and POST /api/routes/{id}/reply answers 404.
 	envSessionRouting = "MUSTER_SESSION_ROUTING"
 	// The per-owner sender allowlist whose routed answers are relayed WITHOUT
-	// the owner's approval: "<user id>:<address or *@domain>,…". Unset: every
+	// the owner's approval: "<user id>:<plugin>:<address or *@domain>,…", each
+	// matched only on mail that plugin marked sender_verified. Unset: every
 	// routed answer becomes a pending draft the owner approves.
 	envRouteRelayAllow = "MUSTER_ROUTE_RELAY_ALLOW"
 	// How long a sign-in stays fresh enough to TYPE into a mirrored session
@@ -941,7 +942,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if c.RouteRelayAllowRaw != "" {
 		l, err := plugins.ParseRelayAllowlist(c.RouteRelayAllowRaw)
 		if err != nil {
-			return config{}, fmt.Errorf("invalid %s: %v (want <user id>:<address or *@domain>, comma-separated)", envRouteRelayAllow, err)
+			return config{}, fmt.Errorf("invalid %s: %v (want <user id>:<plugin>:<ASCII address or *@domain>, comma-separated)", envRouteRelayAllow, err)
 		}
 		c.RouteRelayAllow = l
 	}
