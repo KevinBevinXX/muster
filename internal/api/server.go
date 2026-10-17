@@ -415,13 +415,13 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) registerAll(mux Mux) {
 	// --- Open: no app auth. Health, metrics, assets, PWA. ---
 	//
-	// ⚠ "Open" here means muster asks for no session — and on the PUBLIC host
-	// (muster.zacx.dev) nothing in front of it asks either: the edge has no
-	// Authelia (homelab clusters/production/apps/nebula/gateway/
-	// muster-ingress.yaml). Its only gates are a 403 for /metrics, /readyz,
-	// /mcp, /agent/ and /connect/, and a rate limit on the sign-in routes; so
-	// /health, /static/, /manifest.webmanifest and /sw.js are reachable by
-	// anyone. Keep every one of them free of anything per-user (pwa.go).
+	// ⚠ "Open" here means muster asks for no session — and do not assume an edge
+	// in front of it asks either. A deployment that relies on muster's own
+	// sign-in (per-user accounts, invites) has no forward-auth gate: its edge may
+	// refuse /metrics, /readyz, /mcp, /agent/ and /connect/ and rate-limit the
+	// sign-in routes, but /health, /static/, /manifest.webmanifest and /sw.js
+	// are then reachable by anyone. Keep every one of them free of anything
+	// per-user (pwa.go).
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /readyz", s.handleReady)
 	mux.Handle("GET /metrics", promhttp.Handler())
