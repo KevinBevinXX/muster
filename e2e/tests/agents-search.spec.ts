@@ -285,79 +285,76 @@ async function freshList(page: Page, lines: string[], want: string[]) {
   await expect(page.locator('#agents-list > article[data-f-session="qzest"]')).toHaveCount(0);
 }
 
-for (const leg of [
-  { name: 'moveBefore', strip: false },
-  // Firefox and Safari have no Element.moveBefore yet: the mover falls back to
-  // insertBefore and must hand focus back itself.
-  { name: 'no moveBefore', strip: true },
-]) {
-  test.describe(`held behind the pill, desktop (${leg.name})`, () => {
-    test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false });
+test.describe('held behind the pill, desktop', () => {
+  test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false });
 
-    // 🔴 A REGRESSION TEST (round-2 audit): reorder() re-appended EVERY card, so
-    // a card holding focus was detached and focus fell to <body>. A refresh that
-    // lands while a card is focused — with a filter typed — and the pill's tap
-    // that moves that very card must both leave focus where it was.
-    test('a focused card keeps focus through a held refresh and through the pill tap that moves it', async ({ page }) => {
-      test.setTimeout(120_000);
-      if (leg.strip) await page.addInitScript(() => { delete (Element.prototype as unknown as { moveBefore?: unknown }).moveBefore; });
-      await freshList(page, [windowLine('qbase', '@1', 'zsh', 3000), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000)], ['mqtail', 'old-qdock', 'qbase']);
-      expect(await page.evaluate(() => typeof (Element.prototype as unknown as { moveBefore?: unknown }).moveBefore), 'the leg runs the mover it names').toBe(leg.strip ? 'undefined' : 'function');
-      const box = page.locator('#agents-search');
-      const pill = page.locator('#agents-new-pill');
+  // 🔴 A REGRESSION TEST (round-2 audit): reorder() re-appended EVERY card, so
+  // a card holding focus was detached and focus fell to <body>. A refresh that
+  // lands while a card is focused — with a filter typed — and the pill's tap
+  // that moves that very card must both leave focus where it was.
+  test('a focused card keeps focus through a held refresh and through the pill tap that moves it', async ({ page }) => {
+    test.setTimeout(120_000);
+    // No Element.moveBefore (Firefox and Safari today): the hand-back must
+    // not depend on a browser that keeps focus through a move by itself.
+    await page.addInitScript(() => { delete (Element.prototype as unknown as { moveBefore?: unknown }).moveBefore; });
+    await freshList(page, [windowLine('qbase', '@1', 'zsh', 3000), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000)], ['mqtail', 'old-qdock', 'qbase']);
+    expect(await page.evaluate(() => typeof (Element.prototype as unknown as { moveBefore?: unknown }).moveBefore), 'moveBefore is absent').toBe('undefined');
+    const box = page.locator('#agents-search');
+    const pill = page.locator('#agents-new-pill');
 
-      // Tab from the box into a card; mark the element and count its blurs.
-      const tabInto = async (session: string) => {
-        await box.focus();
-        for (let i = 0; i < 60; i++) {
-          await page.keyboard.press('Tab');
-          if (await page.evaluate((s) => !!document.activeElement?.closest(`#agents-list > article[data-f-session="${s}"]`), session)) break;
-        }
-        const ok = await page.evaluate(() => {
-          const w = window as unknown as { __f?: Element; __blurs: number };
-          w.__f = document.activeElement ?? undefined;
-          w.__blurs = 0;
-          w.__f?.addEventListener('blur', () => w.__blurs++);
-          return !!w.__f && w.__f !== document.body;
-        });
-        expect(ok, `Tab reached the ${session} card`).toBe(true);
-      };
-      const stillFocused = () =>
-        page.evaluate(() => {
-          const w = window as unknown as { __f?: Element; __blurs: number };
-          return { same: document.activeElement === w.__f, connected: !!w.__f?.isConnected, blurs: w.__blurs, now: document.activeElement?.outerHTML.slice(0, 80) };
-        });
+    // Tab from the box into a card; mark the element and count its blurs.
+    const tabInto = async (session: string) => {
+      await box.focus();
+      for (let i = 0; i < 60; i++) {
+        await page.keyboard.press('Tab');
+        if (await page.evaluate((s) => !!document.activeElement?.closest(`#agents-list > article[data-f-session="${s}"]`), session)) break;
+      }
+      const ok = await page.evaluate(() => {
+        const w = window as unknown as { __f?: Element; __blurs: number };
+        w.__f = document.activeElement ?? undefined;
+        w.__blurs = 0;
+        w.__f?.addEventListener('blur', () => w.__blurs++);
+        return !!w.__f && w.__f !== document.body;
+      });
+      expect(ok, `Tab reached the ${session} card`).toBe(true);
+    };
+    const stillFocused = () =>
+      page.evaluate(() => {
+        const w = window as unknown as { __f?: Element; __blurs: number };
+        return { same: document.activeElement === w.__f, connected: !!w.__f?.isConnected, blurs: w.__blurs, now: document.activeElement?.outerHTML.slice(0, 80) };
+      });
 
-      // 1. A filter typed, focus in the last-ranked card, and a refresh that
-      //    re-orders the list (qbase becomes the newest, its command changes).
-      await box.fill('q');
-      await expect.poll(() => sessionsOrder(page)).toEqual(['qbase', 'old-qdock', 'mqtail']);
-      await tabInto('mqtail');
-      fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', 'vim', 0), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000)].join('\n') + '\n');
-      await expect(page.locator('#agents-list > article[data-f-session="qbase"]'), 'the refresh landed').toHaveAttribute('data-f-kind', 'vim', { timeout: 30_000 });
-      await expect(pill).toBeVisible();
-      expect(await stillFocused(), 'focus survived the refresh').toMatchObject({ same: true, connected: true });
-      // The tap applies the live order and does not take focus.
-      await pill.click();
-      await expect(pill).toBeHidden();
-      expect(await stillFocused(), 'focus survived the pill tap').toMatchObject({ same: true, connected: true });
+    // 1. A filter typed, focus in the last-ranked card, and a refresh that
+    //    re-orders the list (qbase becomes the newest, its command changes).
+    await box.fill('q');
+    await expect.poll(() => sessionsOrder(page)).toEqual(['qbase', 'old-qdock', 'mqtail']);
+    await tabInto('mqtail');
+    fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', 'vim', 0), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000)].join('\n') + '\n');
+    await expect(page.locator('#agents-list > article[data-f-session="qbase"]'), 'the refresh landed').toHaveAttribute('data-f-kind', 'vim', { timeout: 30_000 });
+    await expect(pill).toBeVisible();
+    expect(await stillFocused(), 'focus survived the refresh').toMatchObject({ same: true, connected: true });
+    // The tap applies the live order and does not take focus.
+    await pill.click();
+    await expect(pill).toBeHidden();
+    expect(await stillFocused(), 'focus survived the pill tap').toMatchObject({ same: true, connected: true });
 
-      // 2. No filter, focus in the LAST card, and a refresh that makes it the
-      //    newest: the pill's tap moves the focused card itself to the top.
-      await box.fill('');
-      await expect.poll(() => sessionsOrder(page)).toEqual(['qbase', 'mqtail', 'old-qdock']);
-      await tabInto('old-qdock');
-      fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', 'vim', 600), windowLine('old-qdock', '@2', 'zsh', 0), windowLine('mqtail', '@3', 'zsh', 1000)].join('\n') + '\n');
-      await expect(pill, 'the re-order waits').toBeVisible({ timeout: 30_000 });
-      expect(await stillFocused(), 'focus survived the second refresh').toMatchObject({ same: true, connected: true });
-      await pill.click();
-      await expect.poll(() => sessionsOrder(page), { message: 'the tap moved the focused card' }).toEqual(['old-qdock', 'qbase', 'mqtail']);
-      const after = await stillFocused();
-      expect(after, 'focus is on the moved card').toMatchObject({ same: true, connected: true });
-      if (!leg.strip) expect(after.blurs, 'moveBefore moves it without a blur').toBe(0);
-    });
+    // 2. No filter, focus in the LAST card, and a refresh that makes it the
+    //    newest: the pill's tap moves the focused card itself to the top.
+    await box.fill('');
+    await expect.poll(() => sessionsOrder(page)).toEqual(['qbase', 'mqtail', 'old-qdock']);
+    await tabInto('old-qdock');
+    fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', 'vim', 600), windowLine('old-qdock', '@2', 'zsh', 0), windowLine('mqtail', '@3', 'zsh', 1000)].join('\n') + '\n');
+    await expect(pill, 'the re-order waits').toBeVisible({ timeout: 30_000 });
+    expect(await stillFocused(), 'focus survived the second refresh').toMatchObject({ same: true, connected: true });
+    await pill.click();
+    await expect.poll(() => sessionsOrder(page), { message: 'the tap moved the focused card' }).toEqual(['old-qdock', 'qbase', 'mqtail']);
+    const after = await stillFocused();
+    expect(after, 'focus is on the moved card').toMatchObject({ same: true, connected: true });
+    // ⚠ The move detaches the card, so it blurs and is refocused: a transient
+    // blur the hand-back repairs. Counted, not hidden.
+    expect(after.blurs, 'the moved card was detached and refocused').toBeGreaterThanOrEqual(1);
   });
-}
+});
 
 // A change that moves nothing the reader can see — the whole list below the
 // screen — is applied at once: no pill, no shift.

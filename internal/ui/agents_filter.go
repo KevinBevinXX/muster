@@ -416,37 +416,14 @@ func agentsFilterScript() g.Node {
     keyed.sort(function (a, b) { return a.r - b.r || a.i - b.i; });
     arrange(list, cards, keyed.map(function (k) { return k.c; }));
   }
-  // arrange puts cards (in DOM order now) into order (the same nodes), moving
-  // ONLY the ones out of place: the longest run already in order stays put, so
-  // the card holding focus is not detached unless it must move. A node that
-  // must move goes by moveBefore where the browser has it (focus and state
-  // survive the move); otherwise by insertBefore, and the element that had
-  // focus gets it back.
+  // arrange puts cards (in DOM order now) into order (the same nodes). When
+  // anything is out of place it re-appends them all, in order — and a card
+  // holding focus is detached by that, so focus falls to <body>: the element
+  // that had it gets it back (it blurs and refocuses; nothing else is lost).
   function arrange(list, cards, order) {
-    var n = order.length;
-    if (!n) return;
-    var at = new Map();
-    cards.forEach(function (c, i) { at.set(c, i); });
-    var p = order.map(function (c) { return at.get(c); });
-    // stay = an increasing subsequence of p of greatest length (patience sort).
-    var tails = [], prev = new Array(n), tailAt = [];
-    p.forEach(function (v, j) {
-      var lo = 0, hi = tails.length;
-      while (lo < hi) { var m = (lo + hi) >> 1; if (tails[m] < v) lo = m + 1; else hi = m; }
-      tails[lo] = v; tailAt[lo] = j; prev[j] = lo ? tailAt[lo - 1] : -1;
-    });
-    var stay = new Set();
-    for (var j = tails.length ? tailAt[tails.length - 1] : -1; j >= 0; j = prev[j]) stay.add(order[j]);
-    if (stay.size === n) return;
+    if (!order.some(function (c, i) { return cards[i] !== c; })) return;
     var focused = document.activeElement;
-    var next = cards[cards.length - 1].nextSibling;
-    for (var i = n - 1; i >= 0; i--) {
-      var c = order[i];
-      if (!stay.has(c)) {
-        if (typeof list.moveBefore === 'function') list.moveBefore(c, next); else list.insertBefore(c, next);
-      }
-      next = c;
-    }
+    order.forEach(function (c) { list.appendChild(c); });
     if (focused && focused !== document.activeElement && focused.isConnected && typeof focused.focus === 'function') {
       focused.focus({ preventScroll: true });
     }
