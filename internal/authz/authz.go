@@ -93,8 +93,9 @@ const (
 	// ViaFocus is the SESSION FOCUS refresher (internal/focus) reading one
 	// owner's sessions and writing their focus: a background job acting as the
 	// OWNER only, never as everybody. One site mints it — internal/api's
-	// focusPrincipal, called only by the refresher (its AsOwner), handed each
-	// owner after focus.PGStore.Owners read the owner ids under System.
+	// focusPrincipal, called only by the refresher and the retention sweep
+	// (their AsOwner), handed each owner after focus.PGStore.Owners read the
+	// owner ids under System.
 	ViaFocus Via = "focus"
 	// ViaSystem is a background loop acting for every user. Only System sets
 	// it.

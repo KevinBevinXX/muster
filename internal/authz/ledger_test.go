@@ -134,8 +134,10 @@ var (
 		// (or a row handle carrying one) — see internal/push.Store.
 		"internal/push.sys",
 		// Session focus (migration 0020): which owners have anything to refresh
-		// (focus.PGStore.Owners). It yields owner ids only; the refresher then acts
-		// as each owner (withPrincipalLedger's focusPrincipal).
+		// (focus.PGStore.Owners — owner ids only; the refresher and the retention
+		// sweep then act as each owner, withPrincipalLedger's focusPrincipal), and
+		// the retention delete across every owner (focus.PGStore.PruneAll — a
+		// delete by age that returns only a count).
 		"internal/focus.sys",
 	}
 	// operatorLedger: work done as the OPERATOR (user 1) with no request —

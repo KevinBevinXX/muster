@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -10,7 +11,9 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/focus"
+	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // THE FOCUS TOOLS, on BOTH transports: the gateway's in-process dispatch
@@ -284,6 +287,95 @@ func TestFocusSearchLeavesOutSessionsNobodyCanSee(t *testing.T) {
 		if strings.Contains(text, "0b2c3d4e-gone") || !strings.Contains(text, "agent:"+strconv.FormatInt(g.worker.ID, 10)) {
 			t.Errorf("%s: %s", surface, text)
 		}
+	}
+}
+
+// 🔴 TestFocusSearchIsNotStarvedByDeadSessions: more than MaxSearchResults
+// dead mirrored rows that outrank a live agent do not leave the chief with
+// nothing — the store leaves them out before its limit.
+func TestFocusSearchIsNotStarvedByDeadSessions(t *testing.T) {
+	g := newGatedFixture(t)
+	for i := 0; i < focus.MaxSearchResults+1; i++ {
+		if _, err := g.focus.Upsert(g.asOwner, focus.MirrorSubject(fmt.Sprintf("0b2c3d4e-gone-%02d", i)),
+			focus.Write{Title: "Kernel upgrade kernel rollout", Source: focus.SourceSummarizer}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := g.focus.Upsert(g.asOwner, focus.AgentSubject(g.worker.ID),
+		focus.Write{Title: "Errands", Description: "and a kernel note", Source: focus.SourceSummarizer}); err != nil {
+		t.Fatal(err)
+	}
+	for surface, text := range g.surfaces(t, g.chief, g.chiefTok, "focus_search", `{"query":"kernel"}`) {
+		if strings.Contains(text, "0b2c3d4e-gone") || !strings.Contains(text, "agent:"+strconv.FormatInt(g.worker.ID, 10)) {
+			t.Errorf("%s: %s", surface, text)
+		}
+	}
+}
+
+// oneLiveWindow is a mirror whose one host shows one Claude Code window
+// holding conversation sid.
+type oneLiveWindow struct {
+	Mirror
+	sid string
+}
+
+func (m oneLiveWindow) Hosts(context.Context) []mirror.HostView {
+	ws := mirror.NormalizeWindows([]mirror.Window{{Session: "work", ID: "@1", Index: 1, Active: true, Claude: true,
+		ClaudeSession: m.sid}}, 0)
+	h := mirror.HostView{Host: "tower", Windows: ws, Online: true, Rendered: true}
+	h.Sessions, h.Claude, h.Labels, h.Activity = mirror.SessionsOf(ws)
+	return []mirror.HostView{h}
+}
+
+// TestFocusSearchReturnsALiveMirroredSession: the positive half of the live
+// filter — a mirrored session an online window shows IS a hit, beside the dead
+// ones it outranks.
+func TestFocusSearchReturnsALiveMirroredSession(t *testing.T) {
+	g := newGatedFixture(t)
+	const sid = "0b2c3d4e-live-window"
+	g.srv.ext.Mirror = oneLiveWindow{sid: sid}
+	for i := 0; i < focus.MaxSearchResults+1; i++ {
+		if _, err := g.focus.Upsert(g.asOwner, focus.MirrorSubject(fmt.Sprintf("0b2c3d4e-gone-%02d", i)),
+			focus.Write{Title: "Kernel upgrade kernel rollout", Source: focus.SourceSummarizer}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := g.focus.Upsert(g.asOwner, focus.MirrorSubject(sid),
+		focus.Write{Title: "Lunch", Description: "and a kernel note", Source: focus.SourceSummarizer}); err != nil {
+		t.Fatal(err)
+	}
+	for surface, text := range g.surfaces(t, g.chief, g.chiefTok, "focus_search", `{"query":"kernel"}`) {
+		if strings.Contains(text, "0b2c3d4e-gone") || !strings.Contains(text, "mirror:"+sid) {
+			t.Errorf("%s: %s", surface, text)
+		}
+	}
+}
+
+// 🟢 TestTheRetentionSweepNeedsNoRefreshPass: with no summarizer (so no
+// refresh pass, the state MUSTER_FOCUS_INTERVAL=0 also gives) the retention
+// sweep still deletes a mirrored session's focus that nothing has seen.
+func TestTheRetentionSweepNeedsNoRefreshPass(t *testing.T) {
+	g := newGatedFixture(t)
+	g.srv.ext.FocusSummarizer = nil
+	stale, fresh := focus.MirrorSubject("0b2c3d4e-stale"), focus.MirrorSubject("0b2c3d4e-fresh")
+	for _, sub := range []focus.Subject{stale, fresh} {
+		if _, err := g.focus.Upsert(g.asOwner, sub, focus.Write{Title: "t", Source: focus.SourceSummarizer}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE agent_focus SET seen_at = now() - interval '30 days' WHERE subject_key = '0b2c3d4e-stale'`)
+	r := g.srv.focusRetainer()
+	if r == nil {
+		t.Fatal("no retention sweep without a summarizer")
+	}
+	if _, err := r.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := g.focus.Get(g.asOwner, stale); ok {
+		t.Error("the stale mirrored focus was kept")
+	}
+	if _, ok, _ := g.focus.Get(g.asOwner, fresh); !ok {
+		t.Error("the control: a recently written focus was deleted")
 	}
 }
 

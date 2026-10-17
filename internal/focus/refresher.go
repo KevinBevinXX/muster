@@ -93,11 +93,6 @@ type Refresher struct {
 	AsOwner func(ctx context.Context, owner int64) context.Context
 	Logger  *log.Logger
 	Now     func() time.Time
-	// Retention is how long a MIRRORED session's focus is kept after its
-	// session was last seen on any host (MUSTER_FOCUS_RETENTION); 0 keeps
-	// them. An agent's row dies with the agent instead.
-	Retention time.Duration
-
 	sem     chan struct{}
 	semOnce sync.Once
 	mu      sync.Mutex
@@ -238,24 +233,6 @@ func (r *Refresher) RefreshOwner(ctx context.Context, owner int64) (map[Outcome]
 	for _, f := range have {
 		if f.Has() {
 			updated[f.Subject] = f.UpdatedAt
-		}
-	}
-	// Every mirrored session the owner can see now is SEEN: retention prunes
-	// only the ones that stopped being seen.
-	var mirrors []Subject
-	for _, c := range cands {
-		if c.Subject.Kind == KindMirror {
-			mirrors = append(mirrors, c.Subject)
-		}
-	}
-	if err := r.Store.Touch(ctx, mirrors); err != nil {
-		r.logf("focus: owner %d: mark seen: %v", owner, err)
-	}
-	if r.Retention > 0 {
-		if n, err := r.Store.Prune(ctx, r.now().Add(-r.Retention)); err != nil {
-			r.logf("focus: owner %d: prune: %v", owner, err)
-		} else if n > 0 {
-			r.logf("focus: owner %d: pruned %d mirrored session(s) not seen for %s", owner, n, r.Retention)
 		}
 	}
 	sort.SliceStable(cands, func(i, j int) bool { return cands[i].ActiveAt.After(cands[j].ActiveAt) })

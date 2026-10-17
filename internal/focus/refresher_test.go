@@ -30,7 +30,7 @@ func (m *memStore) List(context.Context) ([]Focus, error) {
 	}
 	return out, nil
 }
-func (m *memStore) Search(context.Context, string, int) ([]Hit, error) { return nil, nil }
+func (m *memStore) Search(context.Context, string, []string, int) ([]Hit, error) { return nil, nil }
 func (m *memStore) Upsert(_ context.Context, s Subject, w Write) (Focus, error) {
 	t, d, err := Clean(w.Title, w.Description)
 	if err != nil {
@@ -50,7 +50,7 @@ func (m *memStore) Touch(_ context.Context, subs []Subject) error {
 	m.touched = append(m.touched, subs...)
 	return nil
 }
-func (m *memStore) Prune(_ context.Context, before time.Time) (int, error) {
+func (m *memStore) PruneAll(_ context.Context, before time.Time) (int, error) {
 	m.prunedBefore = before
 	return 0, nil
 }

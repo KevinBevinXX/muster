@@ -46,7 +46,9 @@ func (m *memFocus) List(context.Context) ([]focus.Focus, error) {
 	}
 	return out, nil
 }
-func (m *memFocus) Search(context.Context, string, int) ([]focus.Hit, error) { return nil, nil }
+func (m *memFocus) Search(context.Context, string, []string, int) ([]focus.Hit, error) {
+	return nil, nil
+}
 func (m *memFocus) Upsert(_ context.Context, s focus.Subject, w focus.Write) (focus.Focus, error) {
 	t, d, err := focus.Clean(w.Title, w.Description)
 	if err != nil {
@@ -66,9 +68,9 @@ func (m *memFocus) RecordError(_ context.Context, s focus.Subject, msg string) e
 	m.rows[s] = f
 	return nil
 }
-func (m *memFocus) Owners(context.Context) ([]int64, error)       { return []int64{1}, nil }
-func (m *memFocus) Touch(context.Context, []focus.Subject) error  { return nil }
-func (m *memFocus) Prune(context.Context, time.Time) (int, error) { return 0, nil }
+func (m *memFocus) Owners(context.Context) ([]int64, error)          { return []int64{1}, nil }
+func (m *memFocus) Touch(context.Context, []focus.Subject) error     { return nil }
+func (m *memFocus) PruneAll(context.Context, time.Time) (int, error) { return 0, nil }
 
 func focusMirrorServer(t *testing.T, fm *fakeMirror, store *memFocus, summ focus.Summarizer) (*Server, *httptest.Server) {
 	t.Helper()

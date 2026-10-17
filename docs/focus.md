@@ -61,10 +61,14 @@ A pass only looks at sessions that were active since their focus was
 written, at most 20 per user, and skips disabled users. Calls are capped at
 60 per user and 300 in all per hour, two at a time.
 
-**Retention.** Each pass marks the mirrored sessions it can see. A mirrored
-session's focus not seen for `MUSTER_FOCUS_RETENTION` (default a week) is
-deleted; an agent's dies with the agent. `focus_search` never returns a
-mirrored session no online window shows.
+**Retention.** A sweep runs at startup and then hourly. It runs whether or not
+the refresh pass does: with no summarizer, or with `MUSTER_FOCUS_INTERVAL=0`.
+It marks every enabled user's visible mirrored sessions as seen, then deletes
+every user's mirrored focus not seen for `MUSTER_FOCUS_RETENTION` (default a
+week). A disabled user's sessions are never marked, so their focus ages out.
+An agent's focus dies with the agent. `focus_search` never returns a mirrored
+session that no online window shows; the store leaves such sessions out before
+it applies its result limit.
 
 ## The summarizer
 

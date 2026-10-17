@@ -718,10 +718,12 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	// message a previous process left mid-send, which would be a peer's live
 	// send with two (the mirror hub is single-replica state already).
 	go a.srv.RunSendQueue(ctx, sendqueue.DefaultInterval)
-	// Session focus's periodic refresh (MUSTER_FOCUS_INTERVAL; 0 = off).
+	// Session focus's periodic refresh (MUSTER_FOCUS_INTERVAL; 0 = off), and
+	// its retention sweep, which runs whether or not the refresh does.
 	if a.cfg.FocusInterval > 0 {
 		go a.srv.RunFocusRefresh(ctx, a.cfg.FocusInterval)
 	}
+	go a.srv.RunFocusRetention(ctx)
 }
 
 // shutdown drains in-flight requests and the kickoff deliverer, then waits for

@@ -3,6 +3,7 @@ package focus
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"testing"
@@ -111,7 +112,7 @@ func TestFocusIsPerOwner(t *testing.T) {
 	if all, _ := s.List(as(3)); len(all) != 0 {
 		t.Fatalf("user 3 lists user 2's focus: %+v", all)
 	}
-	if hits, _ := s.Search(as(3), "mine", 10); len(hits) != 0 {
+	if hits, _ := s.Search(as(3), "mine", nil, 10); len(hits) != 0 {
 		t.Fatalf("user 3 searches user 2's focus: %+v", hits)
 	}
 	if _, err := s.Upsert(as(3), sub, Write{Title: "Theirs", Source: SourceSummarizer}); err == nil {
@@ -153,7 +154,7 @@ func TestSearchRanksTheRightFocusFirst(t *testing.T) {
 		{"kernel upgrade", "mirror-kernel", 1},
 		{"mirroring", "mirror-docs", 1},
 	} {
-		hits, err := s.Search(as(2), c.q, 10)
+		hits, err := s.Search(as(2), c.q, searchLive, 10)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -174,9 +175,47 @@ func TestSearchRanksTheRightFocusFirst(t *testing.T) {
 	}
 }
 
+// searchLive is TestSearchRanksTheRightFocusFirst's mirrored sessions, all live.
+var searchLive = []string{"mirror-billing", "mirror-kernel", "mirror-docs", "mirror-unrelate"}
+
+// 🔴 TestSearchLeavesOutDeadMirrorsBeforeTheLimit: more than the limit of DEAD
+// mirrored rows outranking a live session and an agent do not crowd them out.
+// Filtering after the LIMIT returned nothing at all here.
+func TestSearchLeavesOutDeadMirrorsBeforeTheLimit(t *testing.T) {
+	s, pool := pgStore(t)
+	a := mustAgent(t, pool, 2, "focus-crowded")
+	for i := 0; i < MaxSearchResults+5; i++ {
+		if _, err := s.Upsert(as(2), MirrorSubject(fmt.Sprintf("0b2c3d4e-dead-%02d", i)),
+			Write{Title: "Kernel upgrade kernel rollout", Source: SourceSummarizer}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	live := MirrorSubject("0b2c3d4e-live")
+	if _, err := s.Upsert(as(2), live, Write{Title: "Lunch", Description: "and a kernel note", Source: SourceSummarizer}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Upsert(as(2), AgentSubject(a.ID), Write{Title: "Errands", Description: "a kernel note too", Source: SourceSummarizer}); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := s.Search(as(2), "kernel", []string{live.Key}, MaxSearchResults)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[Subject]bool{}
+	for _, h := range hits {
+		got[h.Subject] = true
+		if h.Subject.Kind == KindMirror && h.Subject != live {
+			t.Errorf("a dead mirrored session is a hit: %s", h.Subject)
+		}
+	}
+	if len(hits) != 2 || !got[live] || !got[AgentSubject(a.ID)] {
+		t.Fatalf("hits %+v, want exactly the live session and the agent", hits)
+	}
+}
+
 func mustSearch(t *testing.T, s *PGStore, q string) []Hit {
 	t.Helper()
-	hits, err := s.Search(as(2), q, 10)
+	hits, err := s.Search(as(2), q, searchLive, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,9 +268,9 @@ func containsOwner(owners []int64, o int64) bool {
 	return false
 }
 
-// TestTouchAndPruneKeepSeenMirrorsAndAgents: Prune deletes the caller's mirror
-// rows last seen before the cut — never a row Touch just marked, never an
-// agent's, never another owner's.
+// TestTouchAndPruneKeepSeenMirrorsAndAgents: PruneAll deletes EVERY owner's
+// mirror rows last seen before the cut — a DISABLED owner's included, which no
+// owner pass reaches — and never a row Touch just marked, never an agent's.
 func TestTouchAndPruneKeepSeenMirrorsAndAgents(t *testing.T) {
 	s, pool := pgStore(t)
 	a := mustAgent(t, pool, 2, "focus-prune")
@@ -245,19 +284,21 @@ func TestTouchAndPruneKeepSeenMirrorsAndAgents(t *testing.T) {
 		t.Fatal(err)
 	}
 	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE agent_focus SET seen_at = now() - interval '10 days'`)
+	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE users SET disabled_at = now() WHERE id = 3`)
+	t.Cleanup(func() { dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE users SET disabled_at = NULL WHERE id = 3`) })
 	if err := s.Touch(as(2), []Subject{live}); err != nil {
 		t.Fatal(err)
 	}
-	n, err := s.Prune(as(2), time.Now().Add(-7*24*time.Hour))
-	if err != nil || n != 1 {
-		t.Fatalf("pruned %d (%v), want 1", n, err)
+	n, err := s.PruneAll(context.Background(), time.Now().Add(-7*24*time.Hour))
+	if err != nil || n != 2 {
+		t.Fatalf("pruned %d (%v), want 2 (owner 2's dead row and disabled owner 3's)", n, err)
 	}
 	for sub, want := range map[Subject]bool{live: true, dead: false, AgentSubject(a.ID): true} {
 		if _, ok, _ := s.Get(as(2), sub); ok != want {
 			t.Errorf("%s present=%v, want %v", sub, ok, want)
 		}
 	}
-	if _, ok, _ := s.Get(as(3), dead); !ok {
-		t.Error("another owner's row was pruned")
+	if _, ok, _ := s.Get(as(3), dead); ok {
+		t.Error("the disabled owner's stale row was kept")
 	}
 }

@@ -14,22 +14,25 @@ import (
 
 // Store is focus persistence.
 //
-// 🔴 EVERY METHOD BUT Owners RUNS UNDER THE CALLER'S PRINCIPAL. agent_focus is
-// under FORCE row-level security, so a caller reads and writes only its own
-// user's rows, and a row's owner is the principal's user (owner_id's default),
-// never a parameter. The refresher acts as each owner in turn
-// (internal/api's focusPrincipal); only Owners — which owners have anything to
-// refresh — reads across users, under the system scope.
+// 🔴 EVERY METHOD BUT Owners AND PruneAll RUNS UNDER THE CALLER'S PRINCIPAL.
+// agent_focus is under FORCE row-level security, so a caller reads and writes
+// only its own user's rows, and a row's owner is the principal's user
+// (owner_id's default), never a parameter. The refresher acts as each owner in
+// turn (internal/api's focusPrincipal); only Owners — which owners have
+// anything to refresh — and PruneAll — the retention sweep, which deletes by
+// age alone and returns a count — reach across users, under the system scope.
 type Store interface {
 	Get(ctx context.Context, s Subject) (Focus, bool, error)
 	List(ctx context.Context) ([]Focus, error)
-	Search(ctx context.Context, query string, limit int) ([]Hit, error)
+	// Search: live is the caller's mirrored sessions visible now; a mirrored
+	// row outside it is never a hit.
+	Search(ctx context.Context, query string, live []string, limit int) ([]Hit, error)
 	Upsert(ctx context.Context, s Subject, w Write) (Focus, error)
 	RecordError(ctx context.Context, s Subject, msg string) error
-	// Touch marks the caller's mirrored subjects seen now; Prune deletes the
-	// caller's mirrored rows last seen before before.
+	// Touch marks the caller's mirrored subjects seen now; PruneAll deletes
+	// EVERY owner's mirrored rows last seen before before (the retention sweep).
 	Touch(ctx context.Context, subs []Subject) error
-	Prune(ctx context.Context, before time.Time) (int, error)
+	PruneAll(ctx context.Context, before time.Time) (int, error)
 	Owners(ctx context.Context) ([]int64, error)
 }
 
@@ -112,7 +115,11 @@ func (s *PGStore) List(ctx context.Context) ([]Focus, error) {
 // Search is the caller's focuses matching query, best first (ts_rank over the
 // generated tsvector: title weighs A, description B), at most limit (bounded by
 // MaxSearchResults). A query with no searchable word matches nothing.
-func (s *PGStore) Search(ctx context.Context, query string, limit int) ([]Hit, error) {
+//
+// 🔴 A MIRRORED ROW MATCHES ONLY WHILE ITS SESSION IS LIVE (in live), AND THAT
+// IS DECIDED IN SQL, BEFORE THE LIMIT. Filtering after it let dead sessions
+// that outrank a live one fill every slot, and the search came back empty.
+func (s *PGStore) Search(ctx context.Context, query string, live []string, limit int) ([]Hit, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return []Hit{}, nil
@@ -122,8 +129,8 @@ func (s *PGStore) Search(ctx context.Context, query string, limit int) ([]Hit, e
 	}
 	rows, err := s.pool.Query(ctx, `SELECT subject_kind, subject_key, title, description, ts_rank(search, q) AS rank
 		FROM agent_focus, websearch_to_tsquery('english', $1) q
-		WHERE title <> '' AND search @@ q
-		ORDER BY rank DESC, updated_at DESC, id DESC LIMIT $2`, query, limit)
+		WHERE title <> '' AND search @@ q AND (subject_kind <> 'mirror' OR subject_key = ANY($3::text[]))
+		ORDER BY rank DESC, updated_at DESC, id DESC LIMIT $2`, query, limit, live)
 	if err != nil {
 		return nil, errf("search: %w", err)
 	}
@@ -200,10 +207,12 @@ func (s *PGStore) Touch(ctx context.Context, subs []Subject) error {
 	return nil
 }
 
-// Prune deletes the caller's MIRRORED rows last seen before before, and
-// reports how many. An agent's row is never pruned: it dies with its agent.
-func (s *PGStore) Prune(ctx context.Context, before time.Time) (int, error) {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM agent_focus WHERE subject_kind = 'mirror' AND seen_at < $1`, before)
+// PruneAll deletes EVERY owner's MIRRORED rows last seen before before, and
+// reports how many: the retention sweep (Retainer), under the system scope, so
+// a disabled owner's rows — or any owner no pass reaches — age out too. An
+// agent's row is never pruned: it dies with its agent.
+func (s *PGStore) PruneAll(ctx context.Context, before time.Time) (int, error) {
+	tag, err := s.pool.Exec(sys(ctx), `DELETE FROM agent_focus WHERE subject_kind = 'mirror' AND seen_at < $1`, before)
 	if err != nil {
 		return 0, errf("prune: %w", err)
 	}
@@ -226,5 +235,5 @@ func (s *PGStore) Owners(ctx context.Context) ([]int64, error) {
 	return pgx.CollectRows(rows, pgx.RowTo[int64])
 }
 
-// sys is ctx under the system principal: Owners only.
+// sys is ctx under the system principal: Owners and PruneAll only.
 func sys(ctx context.Context) context.Context { return authz.System(ctx) }

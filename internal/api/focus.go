@@ -44,9 +44,9 @@ const (
 )
 
 // focusPrincipal is ctx acting as owner, through authz.ViaFocus: how the
-// refresher reads one owner's sessions and writes their focus. Its one caller
-// is the refresher (its AsOwner), which learned the owner ids from
-// focus.PGStore.Owners; internal/authz's withPrincipalLedger lists it.
+// refresher reads one owner's sessions and writes their focus. Its callers
+// are the refresher and the retention sweep (their AsOwner), which learned the
+// owner ids from focus.PGStore.Owners; internal/authz's withPrincipalLedger lists it.
 func (s *Server) focusPrincipal(ctx context.Context, owner int64) context.Context {
 	return authz.WithPrincipal(ctx, s.principalFor(ctx, owner, authz.ViaFocus))
 }
@@ -59,7 +59,7 @@ func (s *Server) refresher() *focus.Refresher {
 			return
 		}
 		s.focusRefresher = &focus.Refresher{Store: s.ext.Focus, Sessions: focusSessions{s}, Summarizer: s.ext.FocusSummarizer,
-			AsOwner: s.focusPrincipal, Logger: s.logger, Retention: s.ext.FocusRetention}
+			AsOwner: s.focusPrincipal, Logger: s.logger}
 	})
 	return s.focusRefresher
 }
@@ -79,6 +79,35 @@ func (s *Server) RunFocusRefresh(ctx context.Context, interval time.Duration) {
 		"%d at once; a session whose transcript has not moved is not summarized again",
 		interval, focus.PerOwnerPerHour, focus.GlobalPerHour, focus.MaxConcurrent)
 	r.Run(ctx, interval)
+}
+
+// RunFocusRetention runs the focus retention sweep (focus.Retainer) now and
+// every focus.RetentionSweepInterval until ctx ends. It needs only the focus
+// store — not a summarizer, not MUSTER_FOCUS_INTERVAL — so a mirrored
+// session's focus is deleted MUSTER_FOCUS_RETENTION after it was last seen
+// whether or not the refresh pass runs. Started by cmd/muster-server.
+func (s *Server) RunFocusRetention(ctx context.Context) {
+	r := s.focusRetainer()
+	if r == nil {
+		return
+	}
+	s.logger.Printf("focus: a mirrored session's focus is deleted %s after the session was last seen (MUSTER_FOCUS_RETENTION); swept every %s",
+		r.Retention, focus.RetentionSweepInterval)
+	r.Run(ctx, focus.RetentionSweepInterval)
+}
+
+// focusRetainer is the retention sweep over this server, or nil with no focus
+// store.
+func (s *Server) focusRetainer() *focus.Retainer {
+	if s.ext.Focus == nil {
+		return nil
+	}
+	ret := s.ext.FocusRetention
+	if ret <= 0 {
+		ret = focus.DefaultRetention
+	}
+	return &focus.Retainer{Store: s.ext.Focus, Sessions: focusSessions{s}, AsOwner: s.focusPrincipal,
+		Retention: ret, Logger: s.logger}
 }
 
 // focusSessions is focus.Sessions over this server: the owner's agents and

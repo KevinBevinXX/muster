@@ -108,15 +108,18 @@ func TestAPassRefreshesAtMostMaxPerPassPerOwner(t *testing.T) {
 	}
 }
 
-// TestAPassMarksMirroredSessionsSeenAndPrunesTheRest: every visible mirrored
-// candidate is touched, and rows unseen for Retention are pruned.
-func TestAPassMarksMirroredSessionsSeenAndPrunesTheRest(t *testing.T) {
-	r, st, src, _, _ := fixture()
+// TestARetentionPassMarksMirroredSessionsSeenAndPrunesTheRest: every visible
+// mirrored candidate of every owner is touched, and rows unseen for Retention
+// are pruned — with no summarizer and no refresh pass at all.
+func TestARetentionPassMarksMirroredSessionsSeenAndPrunesTheRest(t *testing.T) {
+	_, st, src, _, _ := fixture()
+	st.owners = []int64{1}
 	now := time.Unix(4_000_000, 0)
-	r.Now, r.Retention = func() time.Time { return now }, 72*time.Hour
+	r := &Retainer{Store: st, Sessions: src, AsOwner: func(ctx context.Context, _ int64) context.Context { return ctx },
+		Retention: 72 * time.Hour, Now: func() time.Time { return now }}
 	m := MirrorSubject("0b2c3d4e-live")
 	src.cands = []Candidate{{Subject: m, ActiveAt: now}, {Subject: AgentSubject(5), ActiveAt: now}}
-	if _, err := r.RefreshOwner(context.Background(), 1); err != nil {
+	if _, err := r.Pass(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if len(st.touched) != 1 || st.touched[0] != m {

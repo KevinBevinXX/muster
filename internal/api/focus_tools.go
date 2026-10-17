@@ -118,8 +118,13 @@ func (s *Server) toolFocusSearch(ctx context.Context, arguments string) string {
 		in.Limit = 5
 	}
 	// Dead mirrored sessions (a window closed, a conversation ended) are left
-	// out: a chief must not route to one. Ask for the most, filter, then cut.
-	hits, err := s.ext.Focus.Search(ctx, in.Query, focus.MaxSearchResults)
+	// out — by the store, BEFORE its limit (Store.Search): a chief must not
+	// route to one, and dead rows must not crowd out a live one.
+	var live []string
+	for _, e := range s.mirrorClaudeEntries(ctx) {
+		live = append(live, e.ClaudeSession)
+	}
+	hits, err := s.ext.Focus.Search(ctx, in.Query, live, min(max(in.Limit, 1), focus.MaxSearchResults))
 	if err != nil {
 		s.logger.Printf("focus: search: %v", err)
 		return toolErr("the search failed")
@@ -130,18 +135,8 @@ func (s *Server) toolFocusSearch(ctx context.Context, arguments string) string {
 		Title   string `json:"title"`
 		Snippet string `json:"snippet,omitempty"`
 	}
-	live := map[string]bool{}
-	for _, e := range s.mirrorClaudeEntries(ctx) {
-		live[e.ClaudeSession] = true
-	}
 	out := make([]row, 0, len(hits))
 	for _, h := range hits {
-		if h.Subject.Kind == focus.KindMirror && !live[h.Subject.Key] {
-			continue
-		}
-		if len(out) >= min(max(in.Limit, 1), focus.MaxSearchResults) {
-			break
-		}
 		out = append(out, row{ID: h.Subject.String(), Kind: string(h.Subject.Kind), Title: h.Title, Snippet: h.Snippet})
 	}
 	return toolJSON(map[string]any{"untrusted": focus.UntrustedNote, "results": out})
