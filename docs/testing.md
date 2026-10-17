@@ -131,8 +131,6 @@ a separate generator, for the PWA manifest's install-sheet screenshots.
   anything already in the store, and can print "running 0 flake checks / all
   checks passed!". It answers "does every output evaluate". So CI's `nix` job runs
   `nix build` on the named outputs, and keeps `flake check` as a separate step.
-- **`e2e-unit` is a stub.** It runs nothing, says so, and fails as soon as a
-  `*.unit.mjs` harness test appears.
 - **The live-environment controls are not in CI.** `make test-liveenv` needs a
   real coding-agent session and a reachable agent runtime. It is the only thing
   that proves a real runtime accepts muster's chat protocol.

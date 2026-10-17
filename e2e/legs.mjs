@@ -9,10 +9,13 @@
 // `fullyParallel: false`, Playwright shards whole files balanced by TEST COUNT,
 // and count is a poor proxy here: claude-code-polish.spec.ts is 10 tests and
 // ~42 s, provisioning-indicator.spec.ts is 2 tests and ~20 s, sw.spec.ts is 2
-// tests and under 1 s. legs.json's `seconds` are per-file wall times read off a
-// main run's list reporter (the delta between successive completion timestamps,
-// so a file's own beforeAll server start is in its number), pinned to the commit
-// in `measured_at`. They are a balancing input only — nothing asserts them.
+// tests and under 1 s. legs.json's `seconds` are per-file wall times read off
+// green CI runs' list reporter (the delta between successive completion
+// timestamps, so a file's own beforeAll server start is in its number), the
+// MEDIAN over the runs `measured_at` names — one run is not enough: cls.spec.ts
+// measured 67–110 s across six. They are a balancing input only — nothing
+// asserts them, so a spec added without a measured number unbalances the legs
+// silently; re-measure and re-split when the legs' times drift apart.
 //
 // ⚠ TWO LEGS, NOT THREE. Split, the e2e path is no longer the run's longest:
 // `test (postgres)` is, and three legs measured no faster than two at that job's
