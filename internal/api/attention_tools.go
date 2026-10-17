@@ -121,7 +121,7 @@ func attentionToolDefs() []agents.ToolDef {
 				"cancelled or expired — or, when wait_seconds pass first, status \"pending\": then call it again.",
 			Parameters: objSchema(map[string]any{
 				"id":           id,
-				"wait_seconds": intProp("How long to wait in this call (default 300, at most 600).", 0, int(attentionMaxWait/time.Second)),
+				"wait_seconds": intProp("How long to wait in this call (default 240, at most 600; keep it under 300 if your MCP client gives up on a silent call after 5 minutes).", 0, int(attentionMaxWait/time.Second)),
 			}, "id")},
 		{Type: "function", Name: attentionGetTool,
 			Description: "Read one of your asks now, without waiting: its status (pending, answered, cancelled, expired) and the answer if there is one.",

@@ -36,7 +36,7 @@ claude-code agent — whenever muster has a database.
 | tool | does |
 |---|---|
 | `attention_ask {question, options?, timeout_seconds?}` | Files a question. `options` (at most 10) become buttons; you can still answer in free text. Open for 24 hours by default (60 s to 7 days), then it expires. Returns `{id, status: "pending"}`. |
-| `attention_wait {id, wait_seconds?}` | Blocks until the ask is answered, cancelled or expired, or `wait_seconds` (default 300, at most 600) pass — then answers `status: "pending"` and the agent calls it again. |
+| `attention_wait {id, wait_seconds?}` | Blocks until the ask is answered, cancelled or expired, or `wait_seconds` (default 240, at most 600) pass — then answers `status: "pending"` and the agent calls it again. |
 | `attention_get {id}` | The same answer without waiting. |
 | `attention_cancel {id}` | Withdraws an open ask. |
 | `tasks_list {status?}`, `task_get {id}`, `task_comment {id, body}`, `task_set_status {id, status}` | The owner's task board, as row-level security scopes it. An agent may set `open`, `in_progress` or `ready_for_review`, never `complete`. |
@@ -56,7 +56,10 @@ called by name):
 
 A long `attention_wait` keeps its connection alive: after 15 seconds the MCP
 response's headers are sent and a newline follows every 15 seconds until the
-answer (leading whitespace is valid JSON).
+answer (leading whitespace is valid JSON). Claude Code abandons an HTTP MCP call
+that has answered nothing for `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT` (5 minutes by
+default); whether those newlines reset it is not documented, which is why the
+default wait is 240 seconds.
 
 ### What agents are told
 

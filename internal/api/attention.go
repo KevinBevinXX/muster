@@ -52,8 +52,12 @@ const (
 	attentionSweepInterval = 30 * time.Second
 	// attentionMaxWait bounds one attention_wait call (the long poll).
 	attentionMaxWait = 10 * time.Minute
-	// attentionDefaultWait is attention_wait's wait when it names none.
-	attentionDefaultWait = 5 * time.Minute
+	// attentionDefaultWait is attention_wait's wait when it names none. Under
+	// five minutes on purpose: Claude Code aborts an HTTP MCP call that has
+	// answered nothing for CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT (5 minutes by
+	// default), and whether the keep-alive whitespace counts as an answer is not
+	// documented.
+	attentionDefaultWait = 4 * time.Minute
 	// attentionPoll is how often a waiter re-reads its ask even without a
 	// wake-up: another muster replica may have answered it.
 	attentionPoll = 2 * time.Second
