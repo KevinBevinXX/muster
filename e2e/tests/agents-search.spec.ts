@@ -422,3 +422,39 @@ test.describe('held behind the pill: across navigations', () => {
     await expect(page.locator('#agents-new-pill')).toBeHidden();
   });
 });
+
+// 🔴 A REGRESSION TEST (round-1 audit 🟡): the pill is fixed on <body>, and
+// nothing hid it when the Agents tab was: after switching to Tasks it floated
+// over the board until the next refresh. It must go with the tab, and come
+// back with its count when the tab does — by the sidebar and by Back.
+test.describe('held behind the pill: other tabs', () => {
+  test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false });
+
+  test('the pill hides on another tab and comes back, count intact, with the Agents tab', async ({ page }) => {
+    test.setTimeout(120_000);
+    await freshList(page, [windowLine('qbase', '@1', 'zsh', 3000), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000)], ['mqtail', 'old-qdock', 'qbase']);
+    const pill = page.locator('#agents-new-pill');
+    fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', 'zsh', 3000), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000), windowLine('qzest', '@4', 'zsh', 5)].join('\n') + '\n');
+    await expect(pill, 'the arrival waits').toHaveText('1 new ↑', { timeout: 30_000 });
+    await expect(pill).toBeVisible();
+
+    await page.locator('.sidebar-tab[data-tab="tasks"]').click();
+    await expect(page).toHaveURL(/\/tasks$/);
+    await expect(page.locator('#panel-tasks')).toBeVisible();
+    await expect(pill, 'not over the Tasks board').toBeHidden();
+
+    await page.locator('.sidebar-tab[data-tab="agents"]').click();
+    await expect(page).toHaveURL(/\/agents$/);
+    await expect(pill, 'back with the tab').toBeVisible();
+    await expect(pill, 'its count intact').toHaveText('1 new ↑');
+
+    // Back (to Tasks) and Forward (to Agents) do the same.
+    await page.goBack();
+    await expect(page).toHaveURL(/\/tasks$/);
+    await expect(pill, 'not over the Tasks board after Back').toBeHidden();
+    await page.goForward();
+    await expect(page).toHaveURL(/\/agents$/);
+    await expect(pill, 'back after Forward').toHaveText('1 new ↑');
+    await expect(pill).toBeVisible();
+  });
+});

@@ -716,12 +716,30 @@ func agentsFilterScript() g.Node {
   // keyboard), a focused card stays focused.
   document.addEventListener('mousedown', function (e) { if (onPill(e)) e.preventDefault(); });
   document.addEventListener('click', function (e) { if (onPill(e)) applyLive(); });
-  function showPill(n) {
-    var pill = pillEl();
-    pill.textContent = n + ' new ↑';
-    pill.setAttribute('data-count', String(n));
-    pill.hidden = n === 0;
+  // The pill is fixed on <body>, so it would float over whatever tab is shown:
+  // it is drawn only while the Agents panel is, and comes back with its count
+  // when the tab does (muster:tabshown, popstate).
+  var pillCount = 0;
+  function agentsShown() {
+    var panel = el('panel-agents');
+    return !!panel && !panel.classList.contains('hidden');
   }
+  function syncPill() {
+    if (!pillCount && !el('agents-new-pill')) return;
+    var pill = pillEl();
+    pill.textContent = pillCount + ' new ↑';
+    pill.setAttribute('data-count', String(pillCount));
+    pill.hidden = pillCount === 0 || !agentsShown();
+  }
+  function showPill(n) {
+    pillCount = n;
+    syncPill();
+  }
+  // A new body (a boosted navigation, or Back restoring one) holds a list this
+  // state was not computed for: start over — its first load applies at once.
+  function forget() { heldOrder = null; liveOrder = null; pillCount = 0; }
+  document.addEventListener('htmx:historyRestore', forget);
+  document.addEventListener('htmx:beforeSwap', function (e) { if (e.target === document.body) forget(); });
   function stamp(list, order) {
     var at = {};
     order.forEach(function (id, i) { at[id] = i; });
@@ -801,12 +819,15 @@ func agentsFilterScript() g.Node {
   // Back on the Agents tab (switchTab pushed a bare /agents): put the filter's
   // ?q= back on it at once — a replace, so the switch is still one entry.
   document.addEventListener('muster:tabshown', function (e) {
+    syncPill();
     var input = el('agents-search');
     if (input && e.detail && e.detail.tab === 'agents') syncURL(composeQ());
   });
   // Back/forward onto an /agents entry: its ?q= is the filter it had.
   // (An entry with no ?q= leaves the bar as it is, and apply writes it back.)
   window.addEventListener('popstate', function () {
+    // The shell's own popstate handler shows the tab; after it, the pill follows.
+    setTimeout(syncPill, 0);
     var q = urlQ();
     if (q !== null && el('agents-search')) { syncOptions(); place(q); }
     apply();
