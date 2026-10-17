@@ -35,20 +35,20 @@ const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   // back to the board; the full server below builds both and draws the real tabs.
   'GET /repos': { where: 'full', url: '/repos', ready: '#panel-repos :is(p, li, button)' },
   'GET /connectors': { where: 'full', url: '/connectors', ready: '#panel-connectors button' },
-  'GET /flows': { where: 'shared', url: '/flows' },
+  'GET /flows': { where: 'shared', url: '/flows', ready: 'main form button[type="submit"], main form button:not([type])' },
   'GET /share': { where: 'shared', url: '/share?title=Layout%20probe&text=hello', ready: '#task-modal textarea[name="body"]' },
-  'GET /account': { where: 'shared', url: '/account' },
-  'GET /account/credentials': { where: 'shared', url: '/account/credentials' },
-  'GET /account/tokens': { where: 'shared', url: '/account/tokens' },
+  'GET /account': { where: 'shared', url: '/account', ready: '#notifications' },
+  'GET /account/credentials': { where: 'shared', url: '/account/credentials', ready: 'main :is(form, section)' },
+  'GET /account/tokens': { where: 'shared', url: '/account/tokens', ready: '#token-name' },
   'GET /tasks/{id}': { where: 'shared', url: '/tasks/1', ready: '#task-1' },
   'GET /agents/{name}': { where: 'shared', url: '/agents/docs-sweeper', ready: '#chat-log [data-tool-group]' },
-  'GET /login': { where: 'login', url: '/login' },
+  'GET /login': { where: 'login', url: '/login', ready: '#muster-password' },
   'GET /mirror/view': { where: 'full', url: 'VIEW', ready: '#mv-log [data-tool-row]' },
   'GET /mirror/terminal': { where: 'full', url: 'TERMINAL', ready: '#mv-input' },
   'GET /agents/{name}/terminal': { where: 'full', url: 'AGENT_TERMINAL', ready: '#term' },
-  'GET /invite': { where: 'public', url: '/invite' },
-  'GET /auth/claim': { where: 'public', url: '/auth/claim' },
-  'GET /auth/reset': { where: 'public', url: '/auth/reset' },
+  'GET /invite': { where: 'public', url: '/invite', ready: '#frag-form' },
+  'GET /auth/claim': { where: 'public', url: '/auth/claim', ready: '#claim-form' },
+  'GET /auth/reset': { where: 'public', url: '/auth/reset', ready: '#frag-form' },
   // Signed in as a GoTrue admin, against a real GoTrue (passkeys on, plugins on).
   'GET /account/passkeys': { where: 'signed-in', url: '/account/passkeys', ready: '#passkey-add' },
   'GET /plugins': { where: 'signed-in', url: '/plugins', ready: 'h1' },
@@ -182,7 +182,7 @@ for (const vp of viewports) {
       try {
         const page = await ctx.newPage();
         await page.addInitScript(clsInit);
-        const r = await measure(page, '/login');
+        const r = await measure(page, '/login', PAGES['GET /login'].ready);
         console.log(`[cls ${vp.name}] GET /login ${r.total}`);
         expect(r.total, report('/login', r)).toBeLessThan(BAR);
       } finally {
@@ -214,6 +214,76 @@ for (const vp of viewports) {
       await settle(page, 700);
       const scripted = await readCls(page);
       expect(scripted.total, report('scripted expand (positive control)', scripted)).toBeGreaterThan(0);
+    });
+
+    // AFTER THE LOAD. A page does not stop moving when it has loaded: the Agents
+    // list re-renders itself on every sse:agent.changed, a tab switch draws a
+    // panel in place, and a boosted navigation swaps the body and then loads its
+    // lists. Each is started by SCRIPT here (a scripted event or click is not
+    // input), so every shift it causes is counted.
+    test(`after the load: a list refresh, a tab switch and a boosted navigation each shift less than ${BAR} (an arriving agent is measured)`, async ({ page }) => {
+      test.setTimeout(120_000);
+      const results: Record<string, ClsResult> = {};
+      const nudge = () => page.evaluate(() => (window as any).htmx.trigger(document.body, 'sse:agent.changed'));
+      const refreshed = () => page.evaluate(() => new Promise<void>((r) => document.addEventListener('htmx:afterSettle', (e) => {
+        if ((e.target as Element).id === 'agents-list') r();
+      })));
+
+      await page.goto('/agents/docs-sweeper'); // a recent entry, so the strip is drawn
+      await measure(page, '/agents', '#agents-list > article');
+      await resetCls(page);
+      let done = refreshed();
+      await nudge();
+      await done;
+      await settle(page);
+      results['refresh, nothing changed'] = await readCls(page);
+
+      const added = 'e2e-cls-added-' + Date.now().toString(36);
+      mkchat(added, null);
+      mkchat(added, [{ role: 'user', content: 'arrived while the list was open' }]);
+      try {
+        await resetCls(page);
+        done = refreshed();
+        await nudge();
+        await done;
+        await settle(page);
+        await expect(page.locator(`#agents-list > article[data-f-name="${added}"]`), 'the new agent is drawn').toHaveCount(1);
+        results['refresh, an agent added'] = await readCls(page);
+      } finally {
+        mkchat(added, null);
+      }
+
+      // An in-page tab switch: /tasks → Agents, by the sidebar's own link.
+      await measure(page, '/tasks', '#tasks-list article');
+      await resetCls(page);
+      await page.evaluate(() => (document.querySelector('.sidebar-tab[data-tab="agents"]') as HTMLElement).click());
+      await expect(page).toHaveURL(/\/agents$/);
+      await settle(page);
+      await expect(page.locator('#agents-list > article').first()).toBeVisible();
+      results['tab switch tasks → agents'] = await readCls(page);
+
+      // A boosted navigation: from an agent's page (no panels) to the board.
+      await measure(page, '/agents/docs-sweeper', '#chat-log');
+      await resetCls(page);
+      await page.evaluate(() => (document.querySelector('.sidebar-tab[data-tab="tasks"]') as HTMLElement).click());
+      await expect(page).toHaveURL(/\/tasks$/);
+      await settle(page);
+      await expect(page.locator('#tasks-list article').first()).toBeVisible();
+      results['boosted navigation agent → tasks'] = await readCls(page);
+
+      console.log(`[cls ${vp.name}] after the load: ` + Object.entries(results).map(([k, r]) => `${k} ${r.total}`).join(' | '));
+      // ⚠ ONE CASE IS MEASURED AND NOT GATED: an agent ARRIVING while the list is
+      // open. The list is ordered most recently active first and follows that
+      // order live (mirrored.spec.ts pins "the open list follows"), so a new
+      // agent is drawn at the top and every card below it moves: 0.08 at a
+      // phone, 0.10 at a desktop, measured. Holding the order still while a list
+      // is open would remove the shift and the live order with it — a product
+      // decision, raised on the PR, not taken here. The number is reported and
+      // attached so it stays visible.
+      test.info().annotations.push({ type: 'cls-ungated', description: `${vp.name}: an agent arriving moves the open list by ${results['refresh, an agent added'].total}` });
+      const bad = Object.entries(results).filter(([k, r]) => k !== 'refresh, an agent added' && r.total >= BAR).map(([k, r]) => report(k, r));
+      expect(bad).toEqual([]);
+      expect(results['refresh, an agent added'].total, 'positive control: the arrival case did measure a movement').toBeGreaterThan(0);
     });
 
     test(`the chief panel, opened and restored open, shifts less than ${BAR}`, async ({ page }) => {
@@ -382,7 +452,7 @@ test.describe('public pages in gotrue mode', () => {
         await page.addInitScript(clsInit);
         for (const [route, p] of Object.entries(PAGES)) {
           if (p.where !== 'public') continue;
-          const r = await measure(page, `http://localhost:${gbrowser}${p.url}`);
+          const r = await measure(page, `http://localhost:${gbrowser}${p.url}`, p.ready);
           console.log(`[cls ${vp.name}] ${route} ${r.total}`);
           if (r.total >= BAR) bad.push(report(`${vp.name} ${route}`, r));
         }

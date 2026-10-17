@@ -169,6 +169,29 @@ for (const vp of [
         }
       });
 
+      // 🔴 THE VISUAL VIEWPORT ALONE. A phone's keyboard shrinks
+      // window.visualViewport and leaves the layout viewport (and 40dvh, the CSS
+      // fallback) where it was — so a resize of the whole viewport cannot tell
+      // the script's cap from the fallback. Here only visualViewport reports a
+      // shorter height (400px) and fires its resize, as a keyboard opening does:
+      // the cap must follow it (160px) while innerHeight stays put.
+      test('the cap follows the visual viewport alone (an on-screen keyboard)', async ({ page }) => {
+        await rig.login(page);
+        await rig.waitListed(page, 'data-mirror-claude');
+        await page.goto(rig.origin + rig.viewPath('main'));
+        await page.locator('#mv-input').fill(lines(60));
+        const before = await box(page, '#mv-input');
+        expect(Math.abs(before.h - Math.round(before.vvh * 0.4)), 'capped at 40% before').toBeLessThanOrEqual(1);
+        const inner = await page.evaluate(() => {
+          const vv = window.visualViewport!;
+          Object.defineProperty(vv, 'height', { configurable: true, get: () => 400 });
+          vv.dispatchEvent(new Event('resize'));
+          return window.innerHeight;
+        });
+        expect(inner, 'the layout viewport did not change').toBe(vp.use.viewport.height);
+        await expect.poll(async () => Math.round((await box(page, '#mv-input')).h), { message: 'the cap is 40% of the VISUAL viewport' }).toBe(160);
+      });
+
       test('the cap follows the visible viewport when it changes', async ({ page }) => {
         await rig.login(page);
         await rig.waitListed(page, 'data-mirror-claude');

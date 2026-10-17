@@ -1060,9 +1060,14 @@ test.describe('drag-to-scroll on a phone (412×915, touch)', () => {
       // number about this host, not a contract.
       // The browser's own Resource Timing (fetch start to response end), not
       // Playwright's event times. It must have seen every scroll posted.
-      const rtts = await page.evaluate(() => performance.getEntriesByType('resource')
+      // ⚠ POLLED: Playwright counts a `response` when its HEADERS arrive, and a
+      // Resource Timing entry lands only when the fetch ENDS — so a scroll that is
+      // answered but still finishing is in `posts` and not yet here (measured:
+      // 24 vs 23). Waiting until the two agree still requires every scroll seen.
+      const scrollEntries = () => page.evaluate(() => performance.getEntriesByType('resource')
         .filter((e) => new URL(e.name).pathname === '/mirror/terminal/scroll').map((e) => e.duration));
-      expect(rtts.length, 'the round-trip instrument saw every scroll').toBe(posts.length);
+      await expect.poll(async () => (await scrollEntries()).length, { message: 'the round-trip instrument saw every scroll' }).toBe(posts.length);
+      const rtts = await scrollEntries();
       reportScrollTiming(rtts, sentAt);
       await expect(page.locator('#term-scroll-note'), 'nothing failed, so no note').toBeHidden();
       const before = scrollLog(scrollFile).scrolls.length;

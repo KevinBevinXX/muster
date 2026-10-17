@@ -72,11 +72,26 @@ Create the `_e2e` database first, for example with
 `MUSTER_E2E_PORT` moves the whole port block (default 18181), so two checkouts
 can run side by side.
 
-**Layout shift** is gated in the browser suite too. `e2e/tests/cls.spec.ts`
-loads every page at 390×844 (touch) and 1280×800, lets its htmx loads land, and
-fails if the summed `layout-shift` entries (input-caused ones excluded) reach
-0.01. Its page list comes from `internal/api/testdata/routes.golden`, so a new
-`GET` route fails the spec until it is measured there or named as not a page.
+**Layout shift** is gated in the browser suite too, by `e2e/tests/cls.spec.ts`,
+at 390×844 (touch) and 1280×800. What it measures, exactly:
+
+- every page's **load**: the page is opened, its htmx loads are let land, and
+  the summed `layout-shift` entries (input-caused ones excluded) must stay under
+  0.01. Each page must also show the content it is for, so a page that drew
+  nothing cannot pass as still. The page list comes from
+  `internal/api/testdata/routes.golden`: a new `GET` route fails the spec until
+  it is measured there or named as not a page;
+- the chief panel opened, and restored open on a load;
+- **after a load**, started by script so nothing counts as input: the Agents
+  list re-rendering with nothing changed, an in-page tab switch, and a boosted
+  navigation and the loads it starts;
+- a tapped tool-group expand is excluded as input, and the same expand by
+  script is counted (the spec's own check of its exclusion).
+
+One case is measured and **not** gated: an agent arriving while the Agents list
+is open. The list follows the activity order live, so the new card is drawn at
+the top and the cards below it move (about 0.08–0.10). It is reported in the
+run's output.
 
 `e2e/verdict.mjs` fails the run on any skip, or on fewer passes than its floor.
 In CI the suite runs as parallel legs, each with its own Postgres
