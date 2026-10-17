@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/pins"
+	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/recents"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -209,5 +210,46 @@ func TestTheAgentsShellDrawsTheStripOnFirstPaint(t *testing.T) {
 	nav = strip.FindString(getOwed(t, s, h, "/tasks").Body.String())
 	if nav == "" || !strings.Contains(nav[:strings.Index(nav, ">")], `hidden`) || recentEntryHref.MatchString(nav) {
 		t.Errorf("the /tasks shell's strip should be the empty hidden target, got: %s", nav)
+	}
+}
+
+// countingInstances is a Provisioner that counts its Instances reads (the
+// Kubernetes call the Agents list's live status needs).
+type countingInstances struct {
+	Provisioner
+	n int
+}
+
+func (c *countingInstances) Instances(ctx context.Context) ([]provision.Instance, error) {
+	c.n++
+	return c.Provisioner.Instances(ctx)
+}
+
+// TestTheAgentsShellReadsNoInstances: GET /agents draws the "Recently viewed"
+// strip on its first paint, and must do it WITHOUT the list's live build — no
+// provisioner read in the document's path (its first byte would wait on
+// Kubernetes, and the list was built twice per load). The list partial, which
+// shows live status, is the one read.
+func TestTheAgentsShellReadsNoInstances(t *testing.T) {
+	mem := &memRecents{}
+	mem.put(recents.Entry{AgentID: 5})
+	mem.put(recents.Entry{AgentID: 7})
+	mp := &memPins{}
+	s, _ := pinServer(t, &fakeMirror{online: true, windows: pinWindows()}, mp)
+	prov := &countingInstances{Provisioner: newFakeTerminal()}
+	s.ext.Recents = mem
+	s.ext.Provisioner = prov
+	h := s.Handler()
+
+	body := getOwed(t, s, h, "/agents").Body.String()
+	if !recentEntryHref.MatchString(body) {
+		t.Fatalf("control: the shell drew no strip entries:\n%s", body)
+	}
+	if prov.n != 0 {
+		t.Errorf("GET /agents read the provisioner's instances %d time(s); the document must read none", prov.n)
+	}
+	getOwed(t, s, h, "/ui/agents")
+	if prov.n != 1 {
+		t.Errorf("GET /ui/agents read the instances %d time(s), want exactly 1 (the list's live status)", prov.n)
 	}
 }
