@@ -106,10 +106,6 @@ const (
 	// session on any host. A Go duration, 168h when unset, refused outside
 	// 1h–2160h (90 days).
 	envFocusRetention = "MUSTER_FOCUS_RETENTION"
-	// How long a row of a session's focus HISTORY is kept after it was
-	// written. A Go duration, 720h (30 days) when unset, refused outside
-	// 1h–2160h (90 days).
-	envFocusHistoryRetention = "MUSTER_FOCUS_HISTORY_RETENTION"
 
 	// The optional MIRRORED-sessions plugin (internal/mirror): "1" turns it on.
 	// Off, GET /mirror/connect answers 404 and nothing mirrored is listed.
@@ -423,9 +419,6 @@ type config struct {
 	FocusInterval time.Duration
 	// FocusRetention is MUSTER_FOCUS_RETENTION (focus.DefaultRetention unset).
 	FocusRetention time.Duration
-	// FocusHistoryRetention is MUSTER_FOCUS_HISTORY_RETENTION
-	// (focus.DefaultHistoryRetention unset).
-	FocusHistoryRetention time.Duration
 
 	// Mirror turns the mirrored-sessions plugin on (MUSTER_MIRROR=1).
 	Mirror bool
@@ -954,14 +947,6 @@ func loadConfig(getenv func(string) string) (config, error) {
 			return config{}, fmt.Errorf("invalid %s %q: want a Go duration between 1h and 2160h (e.g. 168h)", envFocusRetention, v)
 		}
 		c.FocusRetention = d
-	}
-	c.FocusHistoryRetention = focus.DefaultHistoryRetention
-	if v := strings.TrimSpace(getenv(envFocusHistoryRetention)); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil || d < time.Hour || d > 90*24*time.Hour {
-			return config{}, fmt.Errorf("invalid %s %q: want a Go duration between 1h and 2160h (e.g. 720h)", envFocusHistoryRetention, v)
-		}
-		c.FocusHistoryRetention = d
 	}
 	if c.RouteRelayAllowRaw != "" {
 		l, err := plugins.ParseRelayAllowlist(c.RouteRelayAllowRaw)

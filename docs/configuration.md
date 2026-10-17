@@ -43,7 +43,6 @@ saying whether that feature is on, off or degraded, and why.
 | `MUSTER_TASK_REAP_AFTER` | `168h` | no | How long a task can sit idle before the reaper tags it `stale`. The reaper runs every 30 minutes. |
 | `MUSTER_SEND_QUEUE_IDLE` | `30s` | no | How long a mirrored Claude Code session must have been idle (by Claude Code's own `statusUpdatedAt`) before the next queued message is sent to it. Range: `1s`–`1h`. |
 | `MUSTER_FOCUS_INTERVAL` | `15m` | no | How often the server recomputes each session's [focus](focus.md) with the summarizer. `0` turns the periodic pass off (the chief's `focus_refresh` still works). Range otherwise: `1m`–`24h`. |
-| `MUSTER_FOCUS_HISTORY_RETENTION` | `720h` | no | How long a row of a session's [focus history](focus.md#focus-history) is kept after it was written. The same hourly sweep deletes older rows. Range: `1h`–`2160h`. |
 | `MUSTER_FOCUS_RETENTION` | `168h` | no | How long a mirrored session's [focus](focus.md) is kept after it was last seen on any host. An hourly sweep deletes it, whether or not the refresh pass runs. A Claude session id is never reused, so a week unseen is a finished conversation (and still outlasts a laptop closed over a long weekend). Range: `1h`–`2160h`. |
 | `MUSTER_TAG_AUTODISPATCH` | off | no | Reserved. When on, eligible tasks are logged and counted in a metric. Nothing is dispatched. |
 

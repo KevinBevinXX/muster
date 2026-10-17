@@ -5,17 +5,19 @@
 -- APPEND-ONLY, ONE ROW PER CHANGE (operator decision: "every change, 30 days").
 -- focus.PGStore.Upsert writes a row in the SAME TRANSACTION as the agent_focus
 -- upsert, and only when the title or description differs from the subject's
--- newest history row: an identical refresh writes nothing. Rows older than
--- MUSTER_FOCUS_HISTORY_RETENTION (default 720h) are deleted by the hourly focus
--- retention sweep (focus.Retainer).
+-- newest history row: an identical refresh writes nothing. Rows older than 30
+-- days (focus.DefaultHistoryRetention) are deleted by the hourly focus
+-- retention sweep (focus.Retainer) — except the row that IS a subject's
+-- current focus, kept while its focus row exists (PruneHistory).
 --
--- 🔴 A SUBJECT'S HISTORY DIES WITH ITS FOCUS ROW, BY FOREIGN KEY. (owner_id,
--- subject_kind, subject_key) references agent_focus's unique key ON DELETE
--- CASCADE, so both ways a focus row goes — an agent deleted (0020's cascade
--- from agents) and a mirrored session's row pruned by the retention sweep —
--- take its history with them, with no second delete to forget. The same key
--- pins a history row to its focus row's OWNER: a row cannot name a subject its
--- owner has no focus for.
+-- 🔴 HISTORY OUTLIVES THE FOCUS ROW (operator decision: "keep 30 days
+-- regardless"). It is keyed by (owner_id, subject_kind, subject_key) with NO
+-- foreign key to agent_focus: the retention sweep deletes a mirrored
+-- session's focus row a week after it was last seen, and its history must stay
+-- for its own 30 days. Only two things delete a history row: the history
+-- sweep (focus.PGStore.PruneHistory), and the AGENT itself being deleted —
+-- agent_id references agents ON DELETE CASCADE, so an owner who deletes an
+-- agent deletes its history with it, as it deletes its focus (0020).
 --
 -- 🔴 OWNED AND UNDER FORCED ROW-LEVEL SECURITY, IN 0020's SHAPE, with the agent
 -- an agent row names pinned to the same owner by 0015's
@@ -39,8 +41,6 @@ CREATE TABLE IF NOT EXISTS public.agent_focus_history (
     title        TEXT        NOT NULL,
     description  TEXT        NOT NULL DEFAULT '',
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT agent_focus_history_focus_fkey FOREIGN KEY (owner_id, subject_kind, subject_key)
-        REFERENCES public.agent_focus (owner_id, subject_kind, subject_key) ON DELETE CASCADE,
     CONSTRAINT agent_focus_history_kind_check CHECK (subject_kind IN ('agent', 'mirror')),
     -- 0020's agent_focus_subject_check, row for row.
     CONSTRAINT agent_focus_history_subject_check CHECK (

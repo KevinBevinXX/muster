@@ -178,13 +178,7 @@ func (s *PGStore) Upsert(ctx context.Context, sub Subject, w Write) (Focus, erro
 		return Focus{}, errf("upsert: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	f, err := scan(tx.QueryRow(ctx, `INSERT INTO agent_focus (subject_kind, subject_key, agent_id, title, description,
-			source, fingerprint, updated_at, last_error, error_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now(), '', NULL)
-		ON CONFLICT (owner_id, subject_kind, subject_key) DO UPDATE SET seen_at = now(), title = EXCLUDED.title,
-			description = EXCLUDED.description, source = EXCLUDED.source, fingerprint = EXCLUDED.fingerprint,
-			updated_at = now(), last_error = '', error_at = NULL
-		RETURNING `+cols, string(sub.Kind), sub.Key, agentArg(sub), title, desc, string(w.Source), w.Fingerprint))
+	f, err := scan(tx.QueryRow(ctx, upsertFocusSQL, string(sub.Kind), sub.Key, agentArg(sub), title, desc, string(w.Source), w.Fingerprint))
 	if err != nil {
 		return Focus{}, errf("upsert: %w", err)
 	}
@@ -196,6 +190,17 @@ func (s *PGStore) Upsert(ctx context.Context, sub Subject, w Write) (Focus, erro
 	}
 	return f, nil
 }
+
+// upsertFocusSQL writes the caller's focus for one subject, clearing any
+// recorded error: ($1 kind, $2 key, $3 agent id or NULL, $4 title, $5
+// description, $6 source, $7 fingerprint).
+const upsertFocusSQL = `INSERT INTO agent_focus (subject_kind, subject_key, agent_id, title, description,
+		source, fingerprint, updated_at, last_error, error_at)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, now(), '', NULL)
+	ON CONFLICT (owner_id, subject_kind, subject_key) DO UPDATE SET seen_at = now(), title = EXCLUDED.title,
+		description = EXCLUDED.description, source = EXCLUDED.source, fingerprint = EXCLUDED.fingerprint,
+		updated_at = now(), last_error = '', error_at = NULL
+	RETURNING ` + cols
 
 // appendHistorySQL appends a focus to its subject's history unless the
 // subject's NEWEST history row already says exactly that (title and
@@ -264,8 +269,22 @@ func (s *PGStore) PruneAll(ctx context.Context, before time.Time) (int, error) {
 // PruneHistory deletes EVERY owner's focus history rows written before before,
 // and reports how many: the retention sweep (Retainer), under the system scope,
 // as PruneAll is.
+//
+// 🔴 EXCEPT A SUBJECT'S CURRENT FOCUS. A focus unchanged for longer than the
+// retention has exactly one history row — itself — and deleting it would show
+// "No focus history yet" beside a card headed by that very focus. So a
+// subject's NEWEST row is kept while the subject still HAS a focus row. Once
+// the focus row is gone (a mirrored session pruned, unseen for a week) the
+// newest row ages out like the rest: keeping it then would keep every dead
+// session's last focus forever.
 func (s *PGStore) PruneHistory(ctx context.Context, before time.Time) (int, error) {
-	tag, err := s.pool.Exec(sys(ctx), `DELETE FROM agent_focus_history WHERE created_at < $1`, before)
+	tag, err := s.pool.Exec(sys(ctx), `DELETE FROM agent_focus_history h WHERE h.created_at < $1
+		AND (EXISTS (SELECT 1 FROM agent_focus_history n
+				WHERE n.owner_id = h.owner_id AND n.subject_kind = h.subject_kind AND n.subject_key = h.subject_key
+				AND (n.created_at, n.id) > (h.created_at, h.id))
+			OR NOT EXISTS (SELECT 1 FROM agent_focus f
+				WHERE f.owner_id = h.owner_id AND f.subject_kind = h.subject_kind AND f.subject_key = h.subject_key
+				AND f.title <> ''))`, before)
 	if err != nil {
 		return 0, errf("prune history: %w", err)
 	}

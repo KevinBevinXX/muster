@@ -42,10 +42,11 @@ func newHistoryFixture(t *testing.T) *historyFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		for _, q := range []string{`DELETE FROM agent_focus WHERE owner_id = $1`, `DELETE FROM agents WHERE owner_id = $1`, `DELETE FROM users WHERE id = $1`} {
+		for _, q := range []string{`DELETE FROM agent_focus_history WHERE owner_id = $1`, `DELETE FROM agent_focus WHERE owner_id = $1`, `DELETE FROM agents WHERE owner_id = $1`, `DELETE FROM users WHERE id = $1`} {
 			_, _ = h.pool.Exec(sys, q, h.member)
 		}
 		_, _ = h.pool.Exec(sys, `DELETE FROM agent_focus WHERE owner_id = 1 AND subject_key LIKE 'hist%'`)
+		_, _ = h.pool.Exec(sys, `DELETE FROM agent_focus_history WHERE owner_id = 1 AND subject_key LIKE 'hist%'`)
 	})
 	return h
 }
@@ -121,6 +122,14 @@ func TestFocusHistoryRoutePagesTheCallersOwnHistory(t *testing.T) {
 	if code, body := h.get(t, ui.FocusHistoryPath(sid.String(), "")); code != http.StatusOK || len(historyTitle.FindAllString(body, -1)) != 2 {
 		t.Fatalf("own mirrored session: %d %s", code, body)
 	}
+	// Its focus row pruned (a week unseen): the history outlives it (0022), and
+	// is still the caller's to read.
+	if _, err := h.pool.Exec(authz.System(context.Background()), `DELETE FROM agent_focus WHERE owner_id = 1 AND subject_key = $1`, sid.Key); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := h.get(t, ui.FocusHistoryPath(sid.String(), "")); code != http.StatusOK || len(historyTitle.FindAllString(body, -1)) != 2 {
+		t.Fatalf("own mirrored session, focus row pruned: %d %s", code, body)
+	}
 	// An agent of the caller's with no history yet: 200, the empty state.
 	empty := focus.AgentSubject(h.agent(t, 1, "hist-empty-"+strconv.FormatInt(time.Now().UnixNano(), 36)).ID)
 	if code, body := h.get(t, ui.FocusHistoryPath(empty.String(), "")); code != http.StatusOK || !strings.Contains(body, "data-focus-history-empty") {
@@ -142,7 +151,14 @@ func TestFocusHistoryRouteIs404ForAnotherOwnersSession(t *testing.T) {
 	if p, err := h.store.History(asUser(h.member), theirs, "", 10); err != nil || len(p.Entries) != 2 {
 		t.Fatalf("control: the member reads %d rows (%v), want 2", len(p.Entries), err)
 	}
+	// The member's other mirrored session: history only, its focus row pruned.
+	theirPruned := focus.MirrorSubject("histp-" + strconv.FormatInt(time.Now().UnixNano(), 36))
+	h.focusN(t, h.member, theirPruned, 2)
+	if _, err := h.pool.Exec(authz.System(context.Background()), `DELETE FROM agent_focus WHERE subject_key = $1`, theirPruned.Key); err != nil {
+		t.Fatal(err)
+	}
 	for name, sub := range map[string]string{
+		"another owner's pruned session":   theirPruned.String(),
 		"another owner's agent":            theirs.String(),
 		"another owner's mirrored session": theirSID.String(),
 		"no such agent":                    "agent:987654321",

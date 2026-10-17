@@ -72,8 +72,7 @@ written, at most 20 per user, and skips disabled users. Calls are capped at
 the refresh pass does: with no summarizer, or with `MUSTER_FOCUS_INTERVAL=0`.
 It marks every enabled user's visible mirrored sessions as seen, then deletes
 every user's mirrored focus not seen for `MUSTER_FOCUS_RETENTION` (default a
-week), and every focus history row older than `MUSTER_FOCUS_HISTORY_RETENTION`
-(default 30 days). A disabled user's sessions are never marked, so their focus ages out.
+week), and every focus history row older than 30 days. A disabled user's sessions are never marked, so their focus ages out.
 An agent's focus dies with the agent. `focus_search` never returns a mirrored
 session that no online window shows; the store leaves such sessions out before
 it applies its result limit.
@@ -98,13 +97,16 @@ You can scroll back through it:
 Both list the newest first, 20 at a time, and load older pages as you scroll
 (or with **Load older**). Pages come from `GET /ui/focus/history`, which reads
 under your own row-level security and answers 404 for a session that is not
-yours.
+yours (a mirrored session is yours while you hold its focus, its history, or an
+online window of it).
 
-History rows are deleted:
-- after `MUSTER_FOCUS_HISTORY_RETENTION` (default `720h`, 30 days), by the
-  hourly retention sweep (see "Retention" above);
-- with their session's focus row, by a foreign key: when the agent is deleted,
-  or when the sweep deletes a mirrored session's focus.
+History is kept for **30 days**, whatever happens to the session's focus. A
+mirrored session's focus is deleted a week after it was last seen, but its
+history stays, and you can still open it. History rows are deleted:
+- after 30 days, by the hourly retention sweep (see "Retention" above). The
+  row that is a session's current focus is kept past that while the session
+  still has a focus, so the history never reads empty beside a focus;
+- when an agent is deleted: its history goes with it.
 
 ## The summarizer
 

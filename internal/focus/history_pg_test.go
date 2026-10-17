@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/dbtest"
 )
@@ -94,88 +96,110 @@ func TestAnIdenticalRefreshWritesNoHistory(t *testing.T) {
 	}
 }
 
-// TestHistoryPruneIsByAgeAcrossOwners: PruneHistory deletes every owner's rows
-// written before the cut, and only those.
-func TestHistoryPruneIsByAgeAcrossOwners(t *testing.T) {
+// TestHistoryPruneKeepsThirtyDaysAndTheCurrentFocus: PruneHistory deletes
+// every owner's rows older than the cut — except a subject's NEWEST row while
+// the subject still has a focus row (it IS the current focus); once the focus
+// row is gone, the newest row ages out too.
+func TestHistoryPruneKeepsThirtyDaysAndTheCurrentFocus(t *testing.T) {
 	s, pool := pgStore(t)
 	mine := AgentSubject(mustAgent(t, pool, 2, "focus-hist-prune2").ID)
-	theirs := AgentSubject(mustAgent(t, pool, 3, "focus-hist-prune3").ID)
+	lone := AgentSubject(mustAgent(t, pool, 3, "focus-hist-prune3").ID)
+	pair := AgentSubject(mustAgent(t, pool, 3, "focus-hist-prune3b").ID)
+	gone := MirrorSubject("0b2c3d4e-hist-prune-gone")
 	write(t, s, 2, mine, "old 2", "", "")
-	write(t, s, 3, theirs, "old 3", "", "")
-	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE agent_focus_history SET created_at = now() - interval '31 days'`)
 	write(t, s, 2, mine, "new 2", "", "")
-	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE agent_focus_history SET created_at = now() - interval '29 days' WHERE title = 'new 2'`)
+	write(t, s, 3, lone, "only focus", "", "")
+	write(t, s, 3, pair, "pair older", "", "")
+	write(t, s, 3, pair, "pair newer", "", "")
+	write(t, s, 2, gone, "gone session", "", "")
+	dsn := dbtest.DSN(t)
+	dbtest.OwnerExec(t, dsn, `UPDATE agent_focus_history SET created_at = now() - interval '40 days' WHERE title <> 'new 2'`)
+	dbtest.OwnerExec(t, dsn, `UPDATE agent_focus_history SET created_at = now() - interval '29 days' WHERE title = 'new 2'`)
+	// The pair's two rows must stay ordered: the newer one a minute newer.
+	dbtest.OwnerExec(t, dsn, `UPDATE agent_focus_history SET created_at = created_at + interval '1 minute' WHERE title = 'pair newer'`)
+	// The mirrored session's focus row was pruned: its history has no current focus.
+	dbtest.OwnerExec(t, dsn, `DELETE FROM agent_focus WHERE subject_key = $1`, gone.Key)
+
 	n, err := s.PruneHistory(context.Background(), time.Now().Add(-DefaultHistoryRetention))
-	if err != nil || n != 2 {
-		t.Fatalf("pruned %d (%v), want 2: one 31-day-old row per owner", n, err)
+	if err != nil || n != 3 {
+		t.Fatalf("pruned %d (%v), want 3: owner 2's 40-day row, the pair's older row, the pruned session's row", n, err)
 	}
-	if got := titles(t, s, 2, mine); !eq(got, []string{"new 2|"}) {
-		t.Fatalf("owner 2's history %q, want only the 29-day-old row", got)
-	}
-	if got := titles(t, s, 3, theirs); len(got) != 0 {
-		t.Fatalf("owner 3's old row survived: %q", got)
-	}
-	// The focus rows themselves are not history: they stay.
-	if _, ok, _ := s.Get(as(3), theirs); !ok {
-		t.Fatal("pruning history deleted a focus")
-	}
-}
-
-// TestRetainerPrunesHistoryAfterThirtyDaysByDefault: the hourly sweep asks for
-// history older than 720h, or the configured HistoryRetention.
-func TestRetainerPrunesHistoryAfterThirtyDaysByDefault(t *testing.T) {
-	now := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
 	for _, c := range []struct {
-		set, want time.Duration
-	}{{0, 720 * time.Hour}, {48 * time.Hour, 48 * time.Hour}} {
-		m := newMem()
-		r := &Retainer{Store: m, Sessions: &fakeSource{}, AsOwner: func(ctx context.Context, _ int64) context.Context { return ctx },
-			HistoryRetention: c.set, Now: func() time.Time { return now }}
-		if _, err := r.Pass(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		if got := now.Sub(m.historyPrunedBefore); got != c.want {
-			t.Errorf("HistoryRetention %s: pruned history before now-%s, want now-%s", c.set, got, c.want)
+		uid  int64
+		sub  Subject
+		want []string
+	}{
+		{2, mine, []string{"new 2|"}},
+		{3, lone, []string{"only focus|"}}, // 40 days old, and still the current focus
+		{3, pair, []string{"pair newer|"}},
+		{2, gone, nil},
+	} {
+		if got := titles(t, s, c.uid, c.sub); !eq(got, c.want) {
+			t.Errorf("%s: history %q, want %q", c.sub, got, c.want)
 		}
 	}
 }
 
-// TestHistoryDiesWithItsFocusRow: both ways a focus row goes — the retention
-// sweep pruning a mirrored session, and an agent's deletion cascading — take
-// the subject's history with them, and nobody else's.
-func TestHistoryDiesWithItsFocusRow(t *testing.T) {
-	s, pool := pgStore(t)
-	dead, live := MirrorSubject("0b2c3d4e-hist-dead"), MirrorSubject("0b2c3d4e-hist-live")
-	a := mustAgent(t, pool, 2, "focus-hist-cascade")
-	keep := mustAgent(t, pool, 2, "focus-hist-keep")
-	for _, sub := range []Subject{dead, live, AgentSubject(a.ID), AgentSubject(keep.ID)} {
-		write(t, s, 2, sub, "one "+sub.Key, "", "")
-		write(t, s, 2, sub, "two "+sub.Key, "", "")
+// TestRetainerPrunesHistoryAfterThirtyDays: the hourly sweep asks for history
+// older than 720h — fixed, not configurable (operator decision).
+func TestRetainerPrunesHistoryAfterThirtyDays(t *testing.T) {
+	now := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+	m := newMem()
+	r := &Retainer{Store: m, Sessions: &fakeSource{}, AsOwner: func(ctx context.Context, _ int64) context.Context { return ctx },
+		Now: func() time.Time { return now }}
+	if _, err := r.Pass(context.Background()); err != nil {
+		t.Fatal(err)
 	}
-	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE agent_focus SET seen_at = now() - interval '10 days' WHERE subject_key = $1`, dead.Key)
-	if n, err := s.PruneAll(context.Background(), time.Now().Add(-7*24*time.Hour)); err != nil || n != 1 {
-		t.Fatalf("pruned %d (%v), want the one dead session", n, err)
+	if got := now.Sub(m.historyPrunedBefore); got != 720*time.Hour {
+		t.Errorf("pruned history before now-%s, want now-720h", got)
+	}
+}
+
+// TestHistoryOutlivesItsFocusRowButNotItsAgent (operator decision: "keep 30
+// days regardless"): a mirrored session whose focus row the week-unseen sweep
+// deletes at day 8 keeps its history, readable, until day 30; deleting an
+// agent deletes its history at once.
+func TestHistoryOutlivesItsFocusRowButNotItsAgent(t *testing.T) {
+	s, pool := pgStore(t)
+	dsn := dbtest.DSN(t)
+	m := MirrorSubject("0b2c3d4e-hist-outlives")
+	write(t, s, 2, m, "one", "", "")
+	write(t, s, 2, m, "two", "", "")
+	dbtest.OwnerExec(t, dsn, `UPDATE agent_focus SET seen_at = now() - interval '8 days' WHERE subject_key = $1`, m.Key)
+	dbtest.OwnerExec(t, dsn, `UPDATE agent_focus_history SET created_at = created_at - interval '8 days' WHERE subject_key = $1`, m.Key)
+	if n, err := s.PruneAll(context.Background(), time.Now().Add(-DefaultRetention)); err != nil || n != 1 {
+		t.Fatalf("day 8: pruned %d focus rows (%v), want the session's one", n, err)
+	}
+	if _, ok, _ := s.Get(as(2), m); ok {
+		t.Fatal("day 8: the focus row survived the week-unseen prune: this test proves nothing")
+	}
+	if _, err := s.PruneHistory(context.Background(), time.Now().Add(-DefaultHistoryRetention)); err != nil {
+		t.Fatal(err)
+	}
+	if got := titles(t, s, 2, m); !eq(got, []string{"two|", "one|"}) {
+		t.Fatalf("day 8, focus row pruned: history %q, want both rows kept", got)
+	}
+	// Day 31: the history's own 30 days are up.
+	dbtest.OwnerExec(t, dsn, `UPDATE agent_focus_history SET created_at = created_at - interval '23 days' WHERE subject_key = $1`, m.Key)
+	if n, err := s.PruneHistory(context.Background(), time.Now().Add(-DefaultHistoryRetention)); err != nil || n != 2 {
+		t.Fatalf("day 31: pruned %d history rows (%v), want both", n, err)
+	}
+
+	a := mustAgent(t, pool, 2, "focus-hist-agent-del")
+	keep := mustAgent(t, pool, 2, "focus-hist-agent-keep")
+	for _, ag := range []Subject{AgentSubject(a.ID), AgentSubject(keep.ID)} {
+		write(t, s, 2, ag, "focus of "+ag.Key, "", "")
 	}
 	if _, err := pool.Exec(as(2), `DELETE FROM agents WHERE id = $1`, a.ID); err != nil {
 		t.Fatal(err)
 	}
-	left := map[string]int{}
-	rows, err := pool.Query(authz.System(context.Background()), `SELECT subject_key, count(*) FROM agent_focus_history GROUP BY 1`)
-	if err != nil {
-		t.Fatal(err)
+	var left int
+	if err := pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM agent_focus_history WHERE subject_kind = 'agent' AND subject_key = $1`,
+		AgentSubject(a.ID).Key).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("the deleted agent's history: %d rows (%v), want 0", left, err)
 	}
-	for rows.Next() {
-		var k string
-		var n int
-		if err := rows.Scan(&k, &n); err != nil {
-			t.Fatal(err)
-		}
-		left[k] = n
-	}
-	rows.Close()
-	want := map[string]int{live.Key: 2, AgentSubject(keep.ID).Key: 2}
-	if fmt.Sprint(left) != fmt.Sprint(want) {
-		t.Fatalf("history rows by subject %v, want %v (the pruned session's and the deleted agent's gone, the rest kept)", left, want)
+	if got := titles(t, s, 2, AgentSubject(keep.ID)); len(got) != 1 {
+		t.Fatalf("control: the kept agent's history %q, want its row", got)
 	}
 }
 
@@ -196,17 +220,20 @@ func TestHistoryIsPerOwner(t *testing.T) {
 	if err := pool.QueryRow(as(3), `SELECT count(*) FROM agent_focus_history`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("user 3 counts %d history rows (%v), want 0", n, err)
 	}
-	// A raw insert as user 3 naming user 2's subject: the row would be user 3's
-	// (owner_id defaults to the principal), and user 3 has no focus row for it,
-	// so the foreign key refuses it; naming owner 2 outright fails the policy.
-	if _, err := pool.Exec(as(3), `INSERT INTO agent_focus_history (subject_kind, subject_key, title) VALUES ('mirror', $1, 'forged')`, sub.Key); err == nil {
-		t.Fatal("user 3 appended to a history it has no focus for")
-	}
+	// A raw insert as user 3 naming owner 2 outright fails the policy; one
+	// naming no owner lands as user 3's OWN row (owner_id defaults to the
+	// principal), never in user 2's history.
 	if _, err := pool.Exec(as(3), `INSERT INTO agent_focus_history (owner_id, subject_kind, subject_key, title) VALUES (2, 'mirror', $1, 'forged')`, sub.Key); err == nil {
 		t.Fatal("user 3 appended to user 2's history")
 	}
+	if _, err := pool.Exec(as(3), `INSERT INTO agent_focus_history (subject_kind, subject_key, title) VALUES ('mirror', $1, 'forged')`, sub.Key); err != nil {
+		t.Fatalf("user 3's insert into its own history: %v", err)
+	}
 	if got := titles(t, s, 2, sub); !eq(got, []string{"Mine|private"}) {
 		t.Fatalf("user 2's history after user 3's attempts: %q", got)
+	}
+	if got := titles(t, s, 3, sub); !eq(got, []string{"forged|"}) {
+		t.Fatalf("user 3's own row: %q", got)
 	}
 }
 
@@ -273,5 +300,89 @@ func TestHistoryPagesAtTheirBoundaries(t *testing.T) {
 		if _, err := s.History(as(2), sub, bad, 3); !errors.Is(err, ErrBadCursor) {
 			t.Errorf("cursor %q: %v, want ErrBadCursor", bad, err)
 		}
+	}
+}
+
+// TestTheNewestHistoryRowIsTheCurrentFocusUnderInterleavedWriters: two
+// writers of one subject on two connections, the one that BEGAN first made to
+// wait on the row lock the other holds, so it writes LAST. Its focus is the
+// one that stands — so its history row must be the newest. That is what
+// appendHistorySQL's clock_timestamp() is for: now() is when the transaction
+// BEGAN, before the wait, and would stamp the last writer's row older than
+// the row it waited for (the now() mutant is this test's control).
+func TestTheNewestHistoryRowIsTheCurrentFocusUnderInterleavedWriters(t *testing.T) {
+	s, pool := pgStore(t)
+	sub := MirrorSubject("0b2c3d4e-hist-interleave")
+	write(t, s, 2, sub, "start", "", "")
+	ctx := as(2)
+	upsert := func(tx pgx.Tx, title string) error {
+		f, err := scan(tx.QueryRow(ctx, upsertFocusSQL, string(sub.Kind), sub.Key, nil, title, "", string(SourceSummarizer), ""))
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, appendHistorySQL, string(sub.Kind), sub.Key, nil, f.Title, f.Description, f.Owner)
+		return err
+	}
+	// The EARLY writer begins first; its transaction start is now() for it.
+	early, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = early.Rollback(context.Background()) }()
+	if _, err := early.Exec(ctx, `SELECT 1`); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	// The LATE writer begins after it, takes the row lock and writes first.
+	late, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = late.Rollback(context.Background()) }()
+	if err := upsert(late, "written by the late starter"); err != nil {
+		t.Fatal(err)
+	}
+	// The early writer now blocks on that lock…
+	done := make(chan error, 1)
+	go func() {
+		if err := upsert(early, "written by the early starter"); err != nil {
+			done <- err
+			return
+		}
+		done <- early.Commit(ctx)
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		if err := pool.QueryRow(authz.System(context.Background()),
+			`SELECT count(*) FROM pg_locks WHERE NOT granted`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the early writer never waited on the row lock: the interleaving was not built")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// …until the late one commits; then it writes, and its focus stands.
+	if err := late.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	cur, _, err := s.Get(ctx, sub)
+	if err != nil || cur.Title != "written by the early starter" {
+		t.Fatalf("control: the current focus is %q (%v), want the early starter's (it wrote last)", cur.Title, err)
+	}
+	page, err := s.History(ctx, sub, "", 1)
+	if err != nil || len(page.Entries) != 1 {
+		t.Fatalf("history: %+v %v", page, err)
+	}
+	if page.Entries[0].Title != cur.Title {
+		t.Fatalf("the newest history row is %q but the current focus is %q: a writer that waited stamped its row older than the one it waited for",
+			page.Entries[0].Title, cur.Title)
 	}
 }

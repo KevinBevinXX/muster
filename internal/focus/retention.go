@@ -13,8 +13,8 @@ const RetentionSweepInterval = time.Hour
 // each pass marks every ENABLED owner's visible mirrored sessions seen
 // (Store.Touch, as that owner), then deletes every owner's mirrored rows not
 // seen for Retention (Store.PruneAll, under the system scope) — their history
-// goes with them, by migration 0022's cascade — and then every owner's history
-// rows older than HistoryRetention (Store.PruneHistory).
+// does NOT go with them: it is kept for its own DefaultHistoryRetention, and
+// then pruned (Store.PruneHistory).
 //
 // 🔴 IT IS ITS OWN LOOP, NOT PART OF THE REFRESH PASS. The refresh pass runs
 // only with a summarizer and MUSTER_FOCUS_INTERVAL > 0, and only for the owners
@@ -31,11 +31,8 @@ type Retainer struct {
 	// Retention is how long a mirrored session's focus is kept after it was
 	// last seen (MUSTER_FOCUS_RETENTION); <= 0 is DefaultRetention.
 	Retention time.Duration
-	// HistoryRetention is how long a focus history row is kept
-	// (MUSTER_FOCUS_HISTORY_RETENTION); <= 0 is DefaultHistoryRetention.
-	HistoryRetention time.Duration
-	Now              func() time.Time
-	Logger           *log.Logger
+	Now       func() time.Time
+	Logger    *log.Logger
 }
 
 func (r *Retainer) retention() time.Duration {
@@ -43,13 +40,6 @@ func (r *Retainer) retention() time.Duration {
 		return r.Retention
 	}
 	return DefaultRetention
-}
-
-func (r *Retainer) historyRetention() time.Duration {
-	if r.HistoryRetention > 0 {
-		return r.HistoryRetention
-	}
-	return DefaultHistoryRetention
 }
 
 func (r *Retainer) now() time.Time {
@@ -102,12 +92,12 @@ func (r *Retainer) Pass(ctx context.Context) (int, error) {
 	if n > 0 {
 		r.logf("focus: retention: deleted %d mirrored session(s) not seen for %s", n, r.retention())
 	}
-	h, err := r.Store.PruneHistory(ctx, now.Add(-r.historyRetention()))
+	h, err := r.Store.PruneHistory(ctx, now.Add(-DefaultHistoryRetention))
 	if err != nil {
 		return n, err
 	}
 	if h > 0 {
-		r.logf("focus: retention: deleted %d focus history row(s) older than %s", h, r.historyRetention())
+		r.logf("focus: retention: deleted %d focus history row(s) older than %s", h, DefaultHistoryRetention)
 	}
 	return n, nil
 }

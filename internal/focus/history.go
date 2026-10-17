@@ -12,8 +12,10 @@ import (
 // at a time, and pruned after HistoryRetention by the retention sweep.
 
 const (
-	// DefaultHistoryRetention is how long a history row is kept
-	// (MUSTER_FOCUS_HISTORY_RETENTION unset): 30 days, the operator's call.
+	// DefaultHistoryRetention is how long a history row is kept: 30 days, the
+	// operator's call ("keep 30 days regardless"), and not configurable. A
+	// subject's newest row is kept past it while its focus row exists, since
+	// it IS the current focus (PGStore.PruneHistory).
 	DefaultHistoryRetention = 30 * 24 * time.Hour
 	// DefaultHistoryPage is a history page's size when the caller names none.
 	DefaultHistoryPage = 20

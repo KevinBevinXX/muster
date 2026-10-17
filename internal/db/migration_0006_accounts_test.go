@@ -159,7 +159,6 @@ var wantForeignKeys = []string{
 	"agent_focus|agent_focus_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE",
 	"agent_focus|agent_focus_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"agent_focus_history|agent_focus_history_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE",
-	"agent_focus_history|agent_focus_history_focus_fkey|FOREIGN KEY (owner_id, subject_kind, subject_key) REFERENCES agent_focus(owner_id, subject_kind, subject_key) ON DELETE CASCADE",
 	"agent_focus_history|agent_focus_history_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"pins|pins_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE",
 	"pins|pins_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",

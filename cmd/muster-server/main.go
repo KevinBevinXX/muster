@@ -369,7 +369,6 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if ext.Focus != nil {
 		ext.FocusSummarizer = &focus.ScaleDown{Key: plane.OpenRouterKey, Missing: credentials.IsNoCredential}
 		ext.FocusRetention = cfg.FocusRetention
-		ext.FocusHistoryRetention = cfg.FocusHistoryRetention
 	}
 	ccPool, err := buildClaudePool(cfg, plane, marks)
 	if err != nil {
