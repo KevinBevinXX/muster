@@ -30,8 +30,14 @@ import (
 //   - THE TRIGGER MOVED. Scroll and resize.
 //   - A MORPH STRIPPED THE POSITION. #agents-list morphs in place on every
 //     lifecycle and chat event, and the server orders cards by last activity, so
-//     a reply RE-ORDERS them. An open popover stays open through that (its state
-//     is not an attribute), but when idiomorph moves its card it rewrites the
+//     a reply RE-ORDERS them. (While the "N new ↑" pill holds the order — the
+//     usual case for a background refresh — the morph is handed the cards in
+//     the DRAWN order and moves none: agentsFilterScript's keepDrawnOrder. A
+//     re-order that is applied still moves cards: by moveBefore where the
+//     browser has it, which keeps the popover open; by appendChild where it
+//     does not, which CLOSES it.) An open popover stays open through a
+//     moveBefore move (its state is not an attribute), but when idiomorph
+//     moves its card it rewrites the
 //     element's attributes to the server's — which carry no inline style — and the
 //     menu fell to the popover default corner (measured: 0,0) with Start/Delete
 //     still live, nowhere near its trigger. Its SIZE does not change, so the

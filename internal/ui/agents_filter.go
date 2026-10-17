@@ -416,14 +416,21 @@ func agentsFilterScript() g.Node {
     keyed.sort(function (a, b) { return a.r - b.r || a.i - b.i; });
     arrange(list, cards, keyed.map(function (k) { return k.c; }));
   }
-  // arrange puts cards (in DOM order now) into order (the same nodes). When
-  // anything is out of place it re-appends them all, in order — and a card
-  // holding focus is detached by that, so focus falls to <body>: the element
-  // that had it gets it back (it blurs and refocuses; nothing else is lost).
+  // arrange puts cards (in DOM order now) into order (the same nodes), and
+  // touches nothing when they already are. When anything is out of place it
+  // re-appends them all, in order: by moveBefore where the browser has it
+  // (focus and an open popover survive the move), else by appendChild — which
+  // DETACHES each card, so a focused one blurs (it is handed focus back below)
+  // and an open popover inside one closes. A held background refresh does not
+  // come here at all: its markup is put in the drawn order before the morph
+  // (keepDrawnOrder), so it moves nothing.
   function arrange(list, cards, order) {
     if (!order.some(function (c, i) { return cards[i] !== c; })) return;
     var focused = document.activeElement;
-    order.forEach(function (c) { list.appendChild(c); });
+    var move = typeof list.moveBefore === 'function'
+      ? function (c) { list.moveBefore(c, null); }
+      : function (c) { list.appendChild(c); };
+    order.forEach(move);
     if (focused && focused !== document.activeElement && focused.isConnected && typeof focused.focus === 'function') {
       focused.focus({ preventScroll: true });
     }
@@ -764,20 +771,27 @@ func agentsFilterScript() g.Node {
     var r = seen[id];
     return !!r && r.h > 0 && r.bottom > 0 && r.top < window.innerHeight;
   }
+  // decide answers, for a swap of the list whose server order is live, whether
+  // it is applied at once (true) or held.
+  function decide(e, live) {
+    if (!heldOrder || !background(e) || !heldOrder.length) return true;
+    // What applying would move: every drawn card from the first place the
+    // held and the live order differ. An arrival at the END moves nothing; a
+    // change wholly below the screen (or on a hidden tab) moves nothing in
+    // view. Either is applied at once; anything else is held.
+    var p = 0;
+    while (p < heldOrder.length && heldOrder[p] === live[p]) p++;
+    return !heldOrder.slice(p).some(inView);
+  }
+  // pending is beforeSwap's reading of the swap afterSwap finishes: the server's
+  // (live) order and the decision.
+  var pending = null;
   function hold(e) {
     var list = e.target;
-    var cards = cardsOf(list);
-    liveOrder = cards.map(function (c) { return c.id; });
-    var apply_ = !heldOrder || !background(e) || !heldOrder.length;
-    if (!apply_) {
-      // What applying would move: every drawn card from the first place the
-      // held and the live order differ. An arrival at the END moves nothing; a
-      // change wholly below the screen (or on a hidden tab) moves nothing in
-      // view. Either is applied at once; anything else is held.
-      var p = 0;
-      while (p < heldOrder.length && heldOrder[p] === liveOrder[p]) p++;
-      apply_ = !heldOrder.slice(p).some(inView);
-    }
+    var p = pending;
+    pending = null;
+    liveOrder = p ? p.live : cardsOf(list).map(function (c) { return c.id; });
+    var apply_ = p ? p.apply : decide(e, liveOrder);
     if (apply_) {
       heldOrder = liveOrder.slice();
       stamp(list, heldOrder);
@@ -801,13 +815,47 @@ func agentsFilterScript() g.Node {
     liveKnown.forEach(function (id, i) { if (i < heldOrder.indexOf(id)) risen++; });
     showPill(arrived.length + risen);
   }
+  // keepDrawnOrder rewrites a held refresh's markup so its cards come in the
+  // order they are DRAWN (cards it no longer has dropped, arrivals after), and
+  // idiomorph then morphs every card in place: nothing is moved, so nothing is
+  // detached — an open popover stays open, a focused element is not blurred,
+  // in every browser. (Morphed into the live order and put back, every card
+  // moved on every refresh while the pill was up.)
+  function keepDrawnOrder(e, drawn) {
+    var tpl = document.createElement('template');
+    tpl.innerHTML = e.detail.serverResponse;
+    var arts = [].filter.call(tpl.content.children, function (c) { return c.tagName === 'ARTICLE' && c.id; });
+    if (!arts.length) return;
+    var byId = {};
+    arts.forEach(function (a) { byId[a.id] = a; });
+    var order = drawn.filter(function (id) { return byId[id]; });
+    var kept = {};
+    order.forEach(function (id) { kept[id] = true; });
+    arts.forEach(function (a) { if (!kept[a.id]) order.push(a.id); });
+    if (!order.some(function (id, i) { return arts[i].id !== id; })) return;
+    var mark = document.createComment('');
+    arts[0].parentNode.insertBefore(mark, arts[0]);
+    arts.forEach(function (a) { a.remove(); });
+    order.forEach(function (id) { mark.parentNode.insertBefore(byId[id], mark); });
+    mark.remove();
+    e.detail.serverResponse = tpl.innerHTML;
+  }
   document.addEventListener('htmx:beforeSwap', function (e) {
     if (!e.target || e.target.id !== 'agents-list') return;
     seen = {};
-    cardsOf(e.target).forEach(function (c) {
+    var drawn = cardsOf(e.target);
+    drawn.forEach(function (c) {
       var r = c.getBoundingClientRect();
       seen[c.id] = { top: r.top, bottom: r.bottom, h: r.height };
     });
+    pending = null;
+    if (typeof e.detail.serverResponse !== 'string') return;
+    var tpl = document.createElement('template');
+    tpl.innerHTML = e.detail.serverResponse;
+    var live = [].filter.call(tpl.content.children, function (c) { return c.tagName === 'ARTICLE' && c.id; })
+      .map(function (c) { return c.id; });
+    pending = { live: live, apply: decide(e, live) };
+    if (!pending.apply) keepDrawnOrder(e, drawn.map(function (c) { return c.id; }));
   });
   document.addEventListener('htmx:afterSwap', function (e) {
     if (e.target && e.target.id === 'agents-list') { hold(e); apply(); }
