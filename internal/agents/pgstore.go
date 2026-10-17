@@ -442,26 +442,10 @@ func (s *PGStore) ListSessions(ctx context.Context, agentID int64) ([]ChatSessio
 // ⚠ THE FIGURE TO RE-MEASURE BEFORE ADDING ONE IS THE kind='text' ROW COUNT,
 // not the total: the scan this query does is already restricted to those rows by
 // the subquery's predicate.
-func (s *PGStore) SearchSessions(ctx context.Context, agentID int64, q string, limit int) ([]SessionMatch, error) {
-	q = strings.TrimSpace(q)
-	if q == "" || limit <= 0 {
-		return []SessionMatch{}, nil
-	}
-	if limit > SearchSessionsMaxLimit {
-		limit = SearchSessionsMaxLimit
-	}
-	pattern := "%" + db.LikeEscape(q) + "%"
-	// The RANK (see the ORDER BY): the title STARTS with q, else a word in the
-	// title does, else the match is elsewhere (a substring, or the body only).
-	prefix := db.LikeEscape(q) + "%"
-	wordStart := `(^|[^[:alnum:]])` + regexpLiteral(q)
-	// The LATERAL picks the NEWEST matching body row per session and cuts the
-	// excerpt in SQL (see SearchSnippetRadius). `m.snippet IS NOT NULL` in the
-	// WHERE is what makes the join an OR over title-or-body rather than a filter.
-	rows, err := s.pool.Query(ctx, `
-		SELECT s.id, s.agent_id, s.session_key, s.title, s.created_at, s.updated_at, s.read_at,
-		       COALESCE(m.snippet, '') AS snippet
-		FROM chat_sessions s
+// searchSnippetLateral picks the NEWEST matching text row of session s and
+// cuts the excerpt in SQL (see SearchSnippetRadius): $2 the query, $3 its
+// %pattern%, $4/$5 the radius and length. One copy, used by both reads.
+const searchSnippetLateral = `
 		LEFT JOIN LATERAL (
 			SELECT substring(
 			           cm.content
@@ -474,17 +458,136 @@ func (s *PGStore) SearchSessions(ctx context.Context, agentID int64, q string, l
 			  AND cm.content ILIKE $3 ESCAPE '\'
 			ORDER BY cm.created_at DESC, cm.id DESC
 			LIMIT 1
-		) m ON TRUE
-		WHERE s.agent_id = $1
-		  AND (s.title ILIKE $3 ESCAPE '\' OR m.snippet IS NOT NULL)
-		ORDER BY CASE
-		           WHEN s.title ILIKE $7 ESCAPE '\' THEN 0
-		           WHEN s.title ~* $8 THEN 1
-		           ELSE 2
-		         END,
-		         s.updated_at DESC, s.id DESC
-		LIMIT $6`,
+		) m ON TRUE`
+
+// searchRankedTitlesSQL is the RANKED read: the sessions whose TITLE starts
+// with the query ($7, rank 0) or has a word that does ($8, rank 1), best then
+// newest, at most $6 — and only those $6 have their messages read (the
+// snippet's lateral runs over the bounded candidates, not every session).
+//
+// 🔴 ONE RANKED SCAN OVER TITLE-OR-BODY WAS A REGRESSION, MEASURED. Ordering the
+// whole title-or-body match set by rank made Postgres evaluate the message
+// lateral for EVERY session of the agent before the LIMIT could apply: at 3000
+// sessions × 20 messages a query went from ~1.8 ms to ~200 ms warm. This read
+// touches only the agent's session titles before its LIMIT, and
+// searchRecentSQL keeps the original newest-first, stop-at-limit shape.
+// TestSearchSessionsReadsABoundedNumberOfMessageSets pins both bounds.
+const searchRankedTitlesSQL = `
+		WITH cand AS (
+			SELECT s.id, s.agent_id, s.session_key, s.title, s.created_at, s.updated_at, s.read_at,
+			       CASE WHEN s.title ILIKE $7 ESCAPE '\' THEN 0 ELSE 1 END AS rank
+			FROM chat_sessions s
+			WHERE s.agent_id = $1
+			  AND s.title ILIKE $3 ESCAPE '\'
+			  AND (s.title ILIKE $7 ESCAPE '\' OR s.title ~* $8)
+			ORDER BY rank, s.updated_at DESC, s.id DESC
+			LIMIT $6
+		)
+		SELECT s.id, s.agent_id, s.session_key, s.title, s.created_at, s.updated_at, s.read_at,
+		       COALESCE(m.snippet, '') AS snippet
+		FROM cand s` + searchSnippetLateral + `
+		ORDER BY s.rank, s.updated_at DESC, s.id DESC`
+
+// searchRecentSQL is the RECENT read: ONE BATCH of the agent's sessions,
+// newest first, after the keyset cursor ($6 updated_at, $7 id; NULL for the
+// first), at most $8 of them — each with its snippet and whether it matches
+// (title or a text message). SearchSessions walks batches until it has its limit of
+// matches or the sessions run out.
+//
+// 🔴 THE BATCH'S LIMIT IS INSIDE THE SUBQUERY, AND THAT IS THE BOUND. The
+// query's original single-statement shape (title-or-body, ORDER BY updated_at,
+// LIMIT) stops early only when the planner walks idx_chat_sessions_agent; with
+// other agents' rows in the table it was MEASURED to choose a sequential scan
+// and a sort instead and read all 1000 sessions' messages for a limit of 10.
+// Here the lateral can only ever run over the ≤ $8 rows the subquery hands it,
+// whatever the plan. TestSearchSessionsReadsABoundedNumberOfMessageSets pins it.
+const searchRecentSQL = `
+		SELECT s.id, s.agent_id, s.session_key, s.title, s.created_at, s.updated_at, s.read_at,
+		       COALESCE(m.snippet, '') AS snippet,
+		       (s.title ILIKE $3 ESCAPE '\' OR m.snippet IS NOT NULL) AS matched
+		FROM (
+			SELECT id, agent_id, session_key, title, created_at, updated_at, read_at
+			FROM chat_sessions
+			WHERE agent_id = $1
+			  AND ($6::timestamptz IS NULL OR (updated_at, id) < ($6::timestamptz, $7::bigint))
+			ORDER BY updated_at DESC, id DESC
+			LIMIT $8
+		) s` + searchSnippetLateral + `
+		ORDER BY s.updated_at DESC, s.id DESC`
+
+// searchRecentBatch is how many sessions one recent read looks at.
+func searchRecentBatch(limit int) int { return 2 * limit }
+
+func (s *PGStore) SearchSessions(ctx context.Context, agentID int64, q string, limit int) ([]SessionMatch, error) {
+	q = strings.TrimSpace(q)
+	if q == "" || limit <= 0 {
+		return []SessionMatch{}, nil
+	}
+	if limit > SearchSessionsMaxLimit {
+		limit = SearchSessionsMaxLimit
+	}
+	pattern := "%" + db.LikeEscape(q) + "%"
+	prefix := db.LikeEscape(q) + "%"
+	wordStart := `(^|[^[:alnum:]])` + regexpLiteral(q)
+
+	// TWO BOUNDED READS, NOT ONE RANKED SCAN — see searchRankedTitlesSQL. The
+	// ranked read answers the title matches that rank 0 and 1, at most `limit`;
+	// the recent read answers title-or-body matches newest first, at most
+	// `limit`, stopping as soon as it has them (idx_chat_sessions_agent). What
+	// the first did not answer is rank 2, in the second's (recency) order.
+	ranked, err := s.searchRows(ctx, searchRankedTitlesSQL,
 		agentID, q, pattern, SearchSnippetRadius, SearchSnippetLen, limit, prefix, wordStart)
+	if err != nil {
+		return nil, err
+	}
+	out := ranked
+	if len(out) < limit {
+		seen := make(map[int64]bool, len(out))
+		for _, m := range out {
+			seen[m.ID] = true
+		}
+		var after *time.Time
+		var afterID int64
+		batch := searchRecentBatch(limit)
+		for len(out) < limit {
+			rows, err := s.pool.Query(ctx, searchRecentSQL,
+				agentID, q, pattern, SearchSnippetRadius, SearchSnippetLen, after, afterID, batch)
+			if err != nil {
+				return nil, err
+			}
+			n := 0
+			for rows.Next() {
+				var m SessionMatch
+				var matched bool
+				if err := rows.Scan(&m.ID, &m.AgentID, &m.SessionKey, &m.Title,
+					&m.CreatedAt, &m.UpdatedAt, &m.ReadAt, &m.Snippet, &matched); err != nil {
+					rows.Close()
+					return nil, err
+				}
+				n++
+				at := m.UpdatedAt
+				after, afterID = &at, m.ID
+				if matched && !seen[m.ID] && len(out) < limit {
+					m.Snippet = strings.Join(strings.Fields(m.Snippet), " ")
+					seen[m.ID] = true
+					out = append(out, m)
+				}
+			}
+			rows.Close()
+			if err := rows.Err(); err != nil {
+				return nil, err
+			}
+			if n < batch {
+				break // the sessions ran out
+			}
+		}
+	}
+	return out, nil
+}
+
+// searchRows runs one of the two search reads and scans its rows.
+func (s *PGStore) searchRows(ctx context.Context, query string, args ...any) ([]SessionMatch, error) {
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
