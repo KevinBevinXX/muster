@@ -163,9 +163,15 @@ async function openView(page: Page, host: string) {
   await expect(page.locator('#mv-input'), `the rendered view (log:\n${mirrorLog})`).toBeEnabled({ timeout: 20_000 });
 }
 
+// queue queues text through Send's caret: the caret opens its menu, and the
+// menu's one item is Queue (composer_menu.go; Send's face never queues).
 async function queue(page: Page, text: string, touch: boolean) {
   await page.locator('#mv-input').fill(text);
+  const more = page.locator('#mv-send-more');
   const btn = page.locator('#mv-queue-send');
+  if (touch) await more.tap();
+  else await more.click();
+  await expect(btn).toBeVisible();
   if (touch) await btn.tap();
   else await btn.click();
   await expect(page.locator('#mv-input'), 'the box clears once queued').toHaveValue('');
@@ -280,7 +286,7 @@ test.describe('phone 390×844 touch', () => {
 test.describe('desktop 1280×800', () => {
   test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false, storageState: { cookies: [], origins: [] } });
 
-  test('Queue is a button beside Send that does not send now; Send still sends now', async ({ page }) => {
+  test('Queue is behind Send’s caret and does not send now; Send still sends now', async ({ page }) => {
     await busyAndSeen();
     fs.rmSync(tr + '.pasted', { force: true });
     await openView(page, newHost);
@@ -372,9 +378,10 @@ test.describe('desktop 1280×800', () => {
     await expect(page.locator('#mv-input'), 'the Terminal view draws its composer').toBeVisible({ timeout: 20_000 });
     await expect(page.locator('#mv-queue-send')).toHaveCount(0);
     await expect(page.locator('#mv-queue')).toHaveCount(0);
-    // CONTROL: the Rendered view of the same window does.
+    // CONTROL: the Rendered view of the same window does, behind Send's caret.
     await page.goto(origin + viewPath(newHost));
-    await expect(page.locator('#mv-queue-send')).toBeVisible({ timeout: 20_000 });
+    await page.locator('#mv-send-more').click({ timeout: 20_000 });
+    await expect(page.locator('#mv-queue-send')).toBeVisible();
   });
 
   // 🔴 WHERE THE BROWSER HAS NO SubmitEvent.submitter (older Safari), the

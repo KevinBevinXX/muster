@@ -178,7 +178,11 @@ func sendQueueButton(q *ComposerQueue, off bool) g.Node {
 	)
 }
 
-// sendQueueBox is the queue's place in the composer and its script.
+// sendQueueBox is the queue's place in the composer. Its script
+// (sendQueueScript) is drawn after the composer's form, with the composer's
+// other scripts (mirrorComposer): a script inside the composer, before its
+// form, lets the browser paint the composer half-parsed — one row high — and
+// the row it then grows by is a layout shift.
 func sendQueueBox(q *ComposerQueue, off bool) g.Node {
 	if q == nil || off {
 		return nil
@@ -187,7 +191,6 @@ func sendQueueBox(q *ComposerQueue, off bool) g.Node {
 		Div(ID("mv-queue"), g.Attr("data-src", q.Src), g.Attr("aria-live", "polite"), SendQueueList(q.List)),
 		g.If(q.Disabled != "", P(ID("mv-queue-off"), Class("px-3 pt-2 text-[11px] text-muted [overflow-wrap:anywhere]"),
 			g.Text("Queue is off here: "+q.Disabled))),
-		sendQueueScript(),
 	})
 }
 

@@ -129,6 +129,11 @@ export const focusPort = port + 55;
 // plugin and routing on) and its connect listener (the chief's /mcp door).
 export const routingPort = port + 56;
 export const routingConnectPort = port + 57;
+// The Rendered view composer's split Send/Queue button and its `/` and `:`
+// menu (composer-menu.spec.ts): its own server (the e2eterm binary, mirror
+// plugin on) and two mirrored hosts — one that reports its catalog and one
+// that plays an older muster-mirror.
+export const composerMenuPort = port + 58;
 // The fake service's bearer token. Invented, like every value here.
 export const sttToken = 'e2e-stt-token-not-a-real-one';
 // The docs screenshots (e2e/docshots, `make screenshots`, never in the suite):

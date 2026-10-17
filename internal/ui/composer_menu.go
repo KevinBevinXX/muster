@@ -96,7 +96,6 @@ func sendSplit(q *ComposerQueue, off bool) g.Node {
 			Class("m-0 min-w-[14rem] rounded-xl border-0 bg-s1 p-1 text-fg shadow-lg ring-1 ring-line"),
 			sendQueueButton(q, off),
 		),
-		sendMenuScript(),
 	)
 }
 
@@ -129,10 +128,13 @@ func sendMenuScript() g.Node {
     menu.style.bottom = Math.max(8, Math.round(window.innerHeight - r.top + 6 - (window.innerHeight - bottom))) + 'px';
   }
   var focusFirst = false;
+  // Placed BEFORE it is shown (beforetoggle): placed on toggle, it is painted
+  // once at the popover's default place first and then jumps — a layout shift.
+  menu.addEventListener('beforetoggle', function (e) { if (e.newState === 'open') place(); });
   menu.addEventListener('toggle', function (e) {
     var open = e.newState ? e.newState === 'open' : menu.matches(':popover-open');
     more.setAttribute('aria-expanded', open ? 'true' : 'false');
-    if (open) { place(); if (focusFirst) focusItem(0); focusFirst = false; }
+    if (open) { if (!e.newState) place(); if (focusFirst) focusItem(0); focusFirst = false; }
   });
   // A pointer open focuses the item too: the menu is one item, and a keyboard
   // user who clicked the caret should land in it.
@@ -267,7 +269,10 @@ func composerMenuScript(src string) g.Node {
       });
     } else {
       (data.snippets || []).forEach(function (s, n) {
+        // The trigger by the full rule; the label only by a prefix, word or
+        // substring — its letters-in-order (tier 3) would match most labels.
         var a = window.musterRank(s.trigger.slice(1), t.q), b = window.musterRank(s.label || '', t.q);
+        if (b > 2) b = -1;
         var r = a < 0 ? b : (b < 0 ? a : Math.min(a, b));
         if (r >= 0) out.push({ s: s, r: r, n: n });
       });

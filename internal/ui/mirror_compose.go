@@ -246,6 +246,12 @@ func mirrorComposer(v ComposerView) g.Node {
 			sendSplit(v.Queue, off),
 		),
 		g.If(off, P(ID("mv-readonly"), Class("px-3 pb-2 text-[11px] text-muted"), g.Text(v.Disabled))),
+		// 🔴 EVERY SCRIPT OF THE COMPOSER IS AFTER ITS FORM. One inside it lets
+		// the browser paint the composer half-parsed, and the height it then
+		// grows by is a layout shift (measured: 0.006–0.014 at 390×844 with the
+		// queue's script before the form).
+		g.If(v.Queue != nil && !off, sendQueueScript()),
+		g.If(v.Queue != nil && !off, sendMenuScript()),
 		dictateScript(dictate),
 		composerFitScript(),
 		composerMenuScript(menu),
