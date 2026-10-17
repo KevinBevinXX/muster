@@ -65,9 +65,9 @@ const (
 	MaxSnippetBody = 4096
 	// MaxCatalogBytes bounds a whole catalog ENCODED. A count is not a size —
 	// JSON writes `<` as <, six bytes — so the bound that keeps one answer
-	// inside MaxFrame is this one: entries past it are dropped (Truncated), the
-	// built-ins and the commands first in order kept. TestTheLargestCatalog
-	// FitsOneFrame measures it.
+	// inside MaxFrame is this one: entries past it are dropped (Truncated) —
+	// the snippets kept within half of it, the commands within the rest, each
+	// in order. TestTheLargestCatalogFitsOneFrame measures it.
 	MaxCatalogBytes = 256 << 10
 )
 
@@ -140,11 +140,11 @@ func ValidSnippetTrigger(trigger string) bool {
 // make a description read differently from what it says turned into a space,
 // runs of white space collapsed, trimmed, and cut to max runes with "…".
 func CleanText(s string, max int) string {
-	s = strings.ToValidUTF8(s, "�")
+	s = strings.ToValidUTF8(s, "\uFFFD")
 	var b strings.Builder
 	space := false
 	for _, r := range s {
-		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) || isBidiControl(r) || r == ' ' || r == ' ' {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) || isBidiControl(r) || r == ' ' || r == '\u00a0' {
 			space = true
 			continue
 		}
@@ -173,7 +173,7 @@ func isBidiControl(r rune) bool {
 // what SanitizePaste would refuse once the message is sent — and at most
 // MaxSnippetBody bytes ("" when that leaves nothing).
 func cleanBody(s string) string {
-	s = strings.ToValidUTF8(s, "�")
+	s = strings.ToValidUTF8(s, "\uFFFD")
 	s = strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\r", "\n")
 	s = strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\t' {
@@ -216,8 +216,9 @@ func sourceRank(s string) int {
 //   - every description and label is CleanText'd to MaxCatalogDescription;
 //   - commands are sorted by name, snippets kept in the order given (the
 //     operator's own order), and both counts are capped;
-//   - finally the whole is cut to MaxCatalogBytes ENCODED: entries past the
-//     budget are dropped, commands before snippets.
+//   - finally the whole is cut to MaxCatalogBytes ENCODED: the snippets kept
+//     within half of it, the commands within what is left; entries past the
+//     budget are dropped.
 //
 // Truncated says anything was dropped for a bound (not for being invalid).
 func NormalizeCatalog(c Catalog) Catalog {
@@ -259,7 +260,19 @@ func NormalizeCatalog(c Catalog) Catalog {
 		out.Snippets, out.Truncated = out.Snippets[:MaxCatalogSnippets], true
 	}
 	// The byte budget: the size of each entry as it is encoded, plus a comma.
+	// Snippets are counted FIRST, within half of it — they are the operator's
+	// own few, and a host with hundreds of plugin skills must not push them
+	// out — and commands get what is left.
 	size := 64
+	keepS := 0
+	for _, s := range out.Snippets {
+		b, _ := json.Marshal(s)
+		if size+len(b)+1 > MaxCatalogBytes/2 {
+			break
+		}
+		size += len(b) + 1
+		keepS++
+	}
 	keepC := 0
 	for _, e := range out.Commands {
 		b, _ := json.Marshal(e)
@@ -268,17 +281,6 @@ func NormalizeCatalog(c Catalog) Catalog {
 		}
 		size += len(b) + 1
 		keepC++
-	}
-	keepS := 0
-	if keepC == len(out.Commands) {
-		for _, s := range out.Snippets {
-			b, _ := json.Marshal(s)
-			if size+len(b)+1 > MaxCatalogBytes {
-				break
-			}
-			size += len(b) + 1
-			keepS++
-		}
 	}
 	if keepC < len(out.Commands) || keepS < len(out.Snippets) {
 		out.Truncated = true

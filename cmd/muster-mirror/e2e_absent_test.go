@@ -20,3 +20,12 @@ func TestTheShippedBuildCannotChangeItsRefresh(t *testing.T) {
 		t.Fatalf("refreshOverride() = %s in a shipped build, want 0 (mirrorhost's default)", got)
 	}
 }
+
+// TestTheShippedBuildAlwaysOffersItsCatalog: without the e2emirror tag nothing
+// can make a shipped muster-mirror play an older host that hides its catalog.
+func TestTheShippedBuildAlwaysOffersItsCatalog(t *testing.T) {
+	t.Setenv("MUSTER_MIRROR_E2E_NO_CATALOG", "1")
+	if e2eNoCatalog != nil {
+		t.Fatal("e2eNoCatalog is set in a build without -tags e2emirror; a shipped muster-mirror could advertise no catalog")
+	}
+}
