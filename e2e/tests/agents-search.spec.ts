@@ -547,5 +547,42 @@ for (const leg of [
       expect(await sessionsOrder(page), 'still held').toEqual(['mqtail', 'old-qdock', 'qbase']);
       await expect(pill).toHaveText('1 new ↑');
     });
+
+    // 🔴 A REGRESSION TEST (round-2 audit 🟡): with a FREE-TEXT filter typed,
+    // the rank sorted a held (hidden) arrival that matches the filter above
+    // worse-ranked drawn cards, so arrange re-appended every card — without
+    // moveBefore that closed an open popover (audit: 7 nodes removed, filter
+    // "q"). A held arrival is sorted last, so nothing drawn moves.
+    test('with a filter typed, a held matching arrival moves no card and an open popover stays open', async ({ page }) => {
+      test.setTimeout(120_000);
+      if (leg.strip) await page.addInitScript(() => { delete (Element.prototype as unknown as { moveBefore?: unknown }).moveBefore; });
+      await freshList(page, [windowLine('qbase', '@1', 'zsh', 3000), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000)], ['mqtail', 'old-qdock', 'qbase']);
+      const pill = page.locator('#agents-new-pill');
+      const card = (s: string) => page.locator(`#agents-list > article[data-f-session="${s}"]`);
+      // A held state first (qbase becomes the newest), then the filter.
+      fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', 'zsh', 10), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000)].join('\n') + '\n');
+      await expect(pill).toHaveText('1 new ↑', { timeout: 30_000 });
+      await page.locator('#agents-search').fill('q');
+      await expect.poll(() => sessionsOrder(page)).toEqual(['qbase', 'old-qdock', 'mqtail']);
+      // A popover open on the worst-ranked card, and every card removal counted.
+      await card('mqtail').locator('[popovertarget]').first().click();
+      const open = () => card('mqtail').locator(':popover-open').count();
+      expect(await open(), 'control: the popover opened').toBe(1);
+      await page.evaluate(() => {
+        const w = window as unknown as { __removed: number };
+        w.__removed = 0;
+        new MutationObserver((ms) => ms.forEach((m) => m.removedNodes.forEach((n) => { if ((n as Element).tagName === 'ARTICLE') w.__removed++; })))
+          .observe(document.getElementById('agents-list')!, { childList: true });
+      });
+      // The arrival: "qzest" STARTS with q, the best rank there is — held.
+      fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', 'zsh', 10), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000), windowLine('qzest', '@4', 'zsh', 0)].join('\n') + '\n');
+      await expect(card('qzest'), 'the arrival reached the list').toHaveCount(1, { timeout: 30_000 });
+      await expect(card('qzest'), 'held').toBeHidden();
+      await expect(pill).toHaveText('2 new ↑');
+      const removed = await page.evaluate(() => (window as unknown as { __removed: number }).__removed);
+      expect(await open(), 'the popover survived the held arrival').toBe(1);
+      expect(removed, 'no card was removed and re-added').toBe(0);
+      expect(await sessionsOrder(page), 'the drawn cards did not move').toEqual(['qbase', 'old-qdock', 'mqtail']);
+    });
   });
 }
