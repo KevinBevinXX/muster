@@ -155,8 +155,10 @@ Each setting is also a flag (`-url`, `-token-file`, …). See
 | `MUSTER_MIRROR_TMUX_SOCKET_PATH` | none | no | `tmux -S <path>`. It wins over the socket name. |
 | `MUSTER_MIRROR_LABELS_FILE` | none | no | A JSON object `{"<session>": "<codename>"}` of display labels. |
 | `MUSTER_MIRROR_PANE_MAP_DIR` | none | no | A directory of per-pane Claude Code records, kept current by a hook. |
+| `MUSTER_MIRROR_SNIPPETS_FILE` | `$XDG_CONFIG_HOME/muster-mirror/snippets.json` | no | A JSON array of `{trigger, label, body}`: the prewritten messages the Rendered view's message bar offers after `:`. Re-read when it changes; missing or invalid = none. |
+| `XDG_CONFIG_HOME` | `~/.config` | no | Where the default snippets file is looked for. |
 | `MUSTER_MIRROR_ALLOW_HTTP` | off | no | Allows a plain-`http` muster URL. Use it for tests only. |
-| `CLAUDE_CONFIG_DIR` | `~/.claude` | no | Claude Code's config directory, where `sessions/` and `projects/` are read from. `ccd` reads it too. |
+| `CLAUDE_CONFIG_DIR` | `~/.claude` | no | Claude Code's config directory, where `sessions/` and `projects/` are read from, and the user's `skills/`, `commands/` and enabled plugins the composer's `/` menu lists. `ccd` reads it too. |
 
 ## muster (CLI)
 
@@ -229,6 +231,8 @@ build tag, which the Playwright suite uses. The shipped binaries do not read the
 | `MUSTER_MIRROR_E2E_WINDOWS_FILE` | none | no | (`e2emirror`) A per-window fake. Each line is `session\|@id\|index\|active\|command\|activity\|transcript`. |
 | `MUSTER_MIRROR_E2E_CLAUDE` | none | no | (`e2emirror`) `<session>=<transcript path>`: plays that session as a Claude Code pane. |
 | `MUSTER_MIRROR_E2E_NO_PROMPT_INDEX` | unset | no | (`e2emirror`) `1`: the host sends no prompt index and no prompt places, as one that predates them (`mirrorhost.Config.NoPromptIndex`). |
+| `MUSTER_MIRROR_E2E_NO_CATALOG` | unset | no | (`e2emirror`) `1`: the host advertises no composer-menu catalog and answers no request, as one that predates it (`mirrorhost.Config.NoCatalog`). |
+| `MUSTER_MIRROR_E2E_CWD` | unset | no | (`e2emirror`) The working directory of every window of the per-window fake: where its project `.claude` is found. |
 | `MUSTER_MIRROR_E2E_PASTE_FILE` | none | no | (`e2emirror`) Where pastes into non-Claude panes are recorded. |
 | `MUSTER_MIRROR_E2E_ACTIVE_FILE` | none | no | (`e2emirror`) `session=index` lines: each session's active window. |
 | `MUSTER_MIRROR_E2E_ACTIVITY_FILE` | none | no | (`e2emirror`) `session=<unix seconds>` lines: each session's last activity. |

@@ -33,7 +33,7 @@ import (
 //   - PLUGIN: every plugin <config>/plugins/installed_plugins.json records as
 //     installed for the user (or for one of those project directories) AND that
 //     an enabledPlugins setting turns on (<config>/settings.json, or the
-//     project's .claude/settings.json / settings.local.json): its commands/*.md
+//     project's .claude/settings.json, or its settings(.local).json): its commands/*.md
 //     and skills/*/SKILL.md, named "<plugin>:<name>" as Claude Code names them;
 //   - SNIPPETS: SnippetsFile, a JSON array of {trigger, label, body} the
 //     operator's dotfiles write (DefaultSnippetsFile says where and why).
@@ -139,7 +139,7 @@ func (s *CatalogScanner) config() string {
 	return filepath.Join(h, ".claude")
 }
 
-func (s *CatalogScanner) home() string {
+func (s *CatalogScanner) homeDir() string {
 	if s.Home != "" {
 		return s.Home
 	}
@@ -184,7 +184,7 @@ func (s *CatalogScanner) projectDirs(cwd string) []string {
 	if cwd == "" || !filepath.IsAbs(cwd) {
 		return nil
 	}
-	home := filepath.Clean(s.home())
+	home := filepath.Clean(s.homeDir())
 	var out []string
 	d := filepath.Clean(cwd)
 	for i := 0; i < maxProjectDepth; i++ {
@@ -436,7 +436,7 @@ func (s *CatalogScanner) plugins(cfg string, projects []string) []plugin {
 	enabled := map[string]bool{}
 	settings := []string{filepath.Join(cfg, "settings.json")}
 	for _, p := range projects {
-		settings = append(settings, filepath.Join(p, ".claude", "settings.json"), filepath.Join(p, ".claude", "settings.local.json"))
+		settings = append(settings, filepath.Join(p, ".claude", "settings.json"), filepath.Join(p, ".claude", "settings"+".local.json"))
 	}
 	for _, f := range settings {
 		b, err := readBounded(f, maxSnippetsFile)

@@ -48,7 +48,8 @@
     "tests/tool-groups.spec.ts": 4.4,
     "tests/agents-search.spec.ts": 5.9,
     "tests/chief-thread-search.spec.ts": 2.4,
-    "tests/pickers.spec.ts": 2.6
+    "tests/pickers.spec.ts": 2.6,
+    "tests/composer-menu.spec.ts": 30.0
   },
   "legs": {
     "1": [
@@ -70,7 +71,8 @@
       "tests/cls.spec.ts",
       "tests/chief-thread-search.spec.ts",
       "tests/passkeys.spec.ts",
-      "tests/plugins.spec.ts"
+      "tests/plugins.spec.ts",
+      "tests/composer-menu.spec.ts"
     ],
     "2": [
       "tests/provisioning-indicator.spec.ts",

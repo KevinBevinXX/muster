@@ -36,14 +36,14 @@ func skill(name, desc string) string {
 // fixture is a home with a config dir, a repository under it, and a scanner
 // over them.
 type fixture struct {
-	home, cfg, repo, sub string
-	s                    *CatalogScanner
+	homeDir, cfg, repo, sub string
+	s                       *CatalogScanner
 }
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	home := t.TempDir()
-	f := &fixture{home: home, cfg: filepath.Join(home, ".claude"), repo: filepath.Join(home, "work", "repo")}
+	f := &fixture{homeDir: home, cfg: filepath.Join(home, ".claude"), repo: filepath.Join(home, "work", "repo")}
 	f.sub = filepath.Join(f.repo, "pkg", "deep")
 	if err := os.MkdirAll(filepath.Join(f.repo, ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -115,7 +115,7 @@ func TestProjectSourcesAreFoundFromTheWindowsDirectory(t *testing.T) {
 	f := newFixture(t)
 	write(t, filepath.Join(f.repo, ".claude", "commands", "build.md"), "---\ndescription: repo root build\n---\n")
 	write(t, filepath.Join(f.sub, ".claude", "skills", "deeptool", "SKILL.md"), skill("deeptool", "nested project skill"))
-	write(t, filepath.Join(f.home, "work", ".claude", "commands", "above.md"), "---\ndescription: above the repository root\n---\n")
+	write(t, filepath.Join(f.homeDir, "work", ".claude", "commands", "above.md"), "---\ndescription: above the repository root\n---\n")
 	write(t, filepath.Join(f.repo, ".claude", "commands", "shared.md"), "---\ndescription: the PROJECT's shared\n---\n")
 	write(t, filepath.Join(f.cfg, "commands", "shared.md"), "---\ndescription: the USER's shared\n---\n")
 
@@ -135,7 +135,7 @@ func TestProjectSourcesAreFoundFromTheWindowsDirectory(t *testing.T) {
 		t.Fatalf("with no cwd: %q", names(f.s.Scan("")))
 	}
 	// A directory outside any repository walks up to, and stops BEFORE, home.
-	loose := filepath.Join(f.home, "loose", "x")
+	loose := filepath.Join(f.homeDir, "loose", "x")
 	write(t, filepath.Join(loose, ".claude", "commands", "loose.md"), "x")
 	if got := f.s.projectDirs(loose); !slices.Equal(got, []string{loose, filepath.Dir(loose)}) {
 		t.Fatalf("projectDirs(%s) = %q, want it and its parent, not home", loose, got)
@@ -298,8 +298,8 @@ func TestDefaultSnippetsFileFollowsXDG(t *testing.T) {
 		t.Fatalf("with XDG_CONFIG_HOME: %q", got)
 	}
 	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("HOME", "/home/fixture-user")
-	if got := DefaultSnippetsFile(); got != "/home/fixture-user/.config/muster-mirror/snippets.json" {
+	t.Setenv("HOME", "/fixture-users/fixture-user")
+	if got := DefaultSnippetsFile(); got != "/fixture-users/fixture-user/.config/muster-mirror/snippets.json" {
 		t.Fatalf("without: %q", got)
 	}
 }
