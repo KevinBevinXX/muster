@@ -64,8 +64,12 @@ func TestTheAttentionMuteSilencesTheItemButNotItsClear(t *testing.T) {
 // (internal/ui) names the SSE event this package publishes. Two spellings in
 // two packages: a drift would leave the badge refreshing only once a minute.
 func TestTheBadgeListensForTheEventTheServerSends(t *testing.T) {
-	if !strings.Contains(ui.AttentionBadgeHTML(0), "sse:"+EventAttentionChanged+" ") {
-		t.Fatalf("the badge does not listen for %q: %s", EventAttentionChanged, ui.AttentionBadgeHTML(0))
+	var page strings.Builder
+	if err := ui.RenderPage(&page, "tasks", ui.Features{Attention: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(page.String(), "sse:"+EventAttentionChanged+" ") {
+		t.Fatalf("the badge does not listen for %q", EventAttentionChanged)
 	}
 	if !strings.Contains(attentionPageScript, "'"+EventAttentionChanged+"'") {
 		t.Fatal("the page's script does not listen for the queue's event")

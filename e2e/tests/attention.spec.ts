@@ -125,9 +125,18 @@ test('an agent asks over MCP, the operator answers in the Attention view, and th
 
   // The shell's badge counts the ask and the waiting window (the host's
   // status reaches muster on its own schedule, so poll).
+  // The badge refreshes on its triggers only — never by re-triggering itself
+  // (a fragment with its own `load` trigger once polled every ~25ms).
+  let badgeFetches = 0;
+  page.on('request', (r) => {
+    if (new URL(r.url()).pathname === '/attention/badge') badgeFetches++;
+  });
   await page.goto(origin + '/tasks');
   const badge = page.locator('#attention-badge');
   await expect(badge, mirrorLog).toHaveAttribute('data-count', '2', { timeout: 30_000 });
+  const settled = badgeFetches;
+  await page.waitForTimeout(1500); // a bounded observation window: a loop would add ~60 here
+  expect(badgeFetches - settled, 'badge requests while nothing changed').toBeLessThanOrEqual(1);
 
   await page.goto(origin + '/attention');
   const askItem = page.locator(`#ask-${id}`);

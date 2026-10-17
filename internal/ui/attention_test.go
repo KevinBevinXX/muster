@@ -23,17 +23,21 @@ func TestTheAttentionLinkIsDrawnOnlyWithTheQueue(t *testing.T) {
 	}
 }
 
-// TestTheBadgeFragmentKeepsListening: the fragment the badge route answers
-// replaces the badge (outerHTML), so it must carry the same refresh wiring —
-// a fragment without it would leave a badge that never moves again. Hidden
-// at zero, the count shown otherwise.
-func TestTheBadgeFragmentKeepsListening(t *testing.T) {
+// TestTheBadgeFragmentCannotRetriggerItself: the route's fragment replaces
+// the slot's CONTENT and carries no htmx wiring — a fragment with a `load`
+// trigger re-requests itself on every swap (measured: one request every
+// ~25ms). The slot carries the wiring and swaps innerHTML. Hidden at zero.
+func TestTheBadgeFragmentCannotRetriggerItself(t *testing.T) {
 	zero, three := AttentionBadgeHTML(0), AttentionBadgeHTML(3)
 	for _, b := range []string{zero, three} {
-		for _, want := range []string{`hx-get="` + AttentionBadgePath + `"`, `hx-trigger="` + attentionBadgeTrigger + `"`, `hx-swap="outerHTML"`, `id="attention-badge"`} {
-			if !strings.Contains(b, want) {
-				t.Fatalf("%s lacks %s", b, want)
-			}
+		if strings.Contains(b, "hx-") {
+			t.Fatalf("the fragment carries htmx wiring: %s", b)
+		}
+	}
+	slot := renderString(t, attentionBadgeSlot())
+	for _, want := range []string{`hx-get="` + AttentionBadgePath + `"`, `hx-trigger="` + attentionBadgeTrigger + `"`, `hx-swap="innerHTML"`, `id="attention-badge-slot"`} {
+		if !strings.Contains(slot, want) {
+			t.Fatalf("the slot lacks %s: %s", want, slot)
 		}
 	}
 	if !strings.Contains(zero, " hidden>") || strings.Contains(three, " hidden") || !strings.Contains(three, `>3</span>`) {
