@@ -206,6 +206,10 @@ test('mirrored sessions are listed most recently active first, and the open list
     // main's pane produces output now; scratch has not moved. The open list
     // HOLDS its order (nothing moves under the reader) and offers the new one
     // behind the "N new ↑" pill; a tap applies it.
+    // The two cards are put IN VIEW first: a re-order wholly below the screen
+    // moves nothing the reader sees and is applied at once (no pill), and how
+    // far down they sit depends on how many cards this shared server holds.
+    await page.locator('#agents-list article[data-mirror-card]').filter({ hasText: 'scratch' }).first().scrollIntoViewIfNeeded();
     fs.writeFileSync(activityFile, `scratch=${t0 - 120}\nmain=${Math.floor(Date.now() / 1000) - 5}\n`);
     const pill = page.locator('#agents-new-pill');
     await expect(pill, `the new order waits behind the pill (muster-mirror log:\n${rig.log})`).toBeVisible({ timeout: 20_000 });
