@@ -54,6 +54,11 @@ const MirrorSendPath = "/mirror/view/send"
 // into the session's active pane, whatever runs in it.
 const MirrorTerminalSendPath = "/mirror/terminal/send"
 
+// MirrorCompletePath is the Rendered view composer's menu data: the window's
+// `/` commands and skills and `:` snippets, as JSON (internal/api's
+// handleMirrorComplete), fetched by composerMenuScript.
+const MirrorCompletePath = "/mirror/view/complete"
+
 // ComposerView is one composer.
 type ComposerView struct {
 	// SendPath is the route the form posts to.
@@ -102,8 +107,9 @@ type ComposerView struct {
 	// adds composerPinScript. The page must reserve the room it takes
 	// (pinnedShellClass on its body). See composerPinScript for why.
 	Pinned bool
-	// Queue, when set, draws the send queue: a Queue button beside Send and the
-	// window's queue above the input (send_queue.go). Only a mirrored window's
+	// Queue, when set, draws the send queue: "Queue for when idle" behind a
+	// caret beside Send (composer_menu.go's sendSplit) and the window's queue
+	// above the input (send_queue.go). Only a mirrored window's
 	// Rendered view sets it; nil — no database, or any other composer — draws
 	// neither. A disabled composer draws neither either.
 	Queue *ComposerQueue
@@ -184,7 +190,11 @@ func mirrorComposer(v ComposerView) g.Node {
 	for _, f := range v.fields() {
 		hidden = append(hidden, Input(Type("hidden"), Name(f.Name), Value(f.Value)))
 	}
+	menu := composerMenuSrc(v)
 	place := "flex-none"
+	if menu != "" {
+		place += " relative"
+	}
 	if v.Pinned {
 		place = "fixed inset-x-0 bottom-0 z-20"
 	}
@@ -204,6 +214,8 @@ func mirrorComposer(v ComposerView) g.Node {
 		// each other.
 		dictateNote(dictate, "mv-dictate-note", "px-3 pt-2"),
 		sendQueueBox(v.Queue, off),
+		// The `/` and `:` menu: over the composer, never over its input.
+		composerMenuBox(menu),
 		Form(
 			ID("mv-form"),
 			// 🔴 method + action: without the script this is still a form the
@@ -231,19 +243,12 @@ func mirrorComposer(v ComposerView) g.Node {
 				Class(composerInputClass),
 			),
 			dictateControl(dictate, "mv-input", "mv-dictate-note", "mv-dictate"),
-			sendQueueButton(v.Queue, off),
-			Button(
-				ID("mv-send"),
-				Type("submit"),
-				g.If(off, g.Attr("disabled", "")),
-				g.Attr("aria-label", "Send"),
-				Class(composerSendClass),
-				g.Text("Send"),
-			),
+			sendSplit(v.Queue, off),
 		),
 		g.If(off, P(ID("mv-readonly"), Class("px-3 pb-2 text-[11px] text-muted"), g.Text(v.Disabled))),
 		dictateScript(dictate),
 		composerFitScript(),
+		composerMenuScript(menu),
 		g.If(v.Pinned, composerPinScript()),
 	)
 }

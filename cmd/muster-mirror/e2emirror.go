@@ -78,6 +78,16 @@ import (
 // nothing, which is what an older muster-mirror's hello says: muster must then
 // send nothing queued to it.
 //
+// THE COMPOSER MENU'S CATALOG: the host's catalog is read by the REAL scanner
+// (mirrorhost.CatalogScanner) from the real places — CLAUDE_CONFIG_DIR for the
+// user's and the plugins' commands and skills, MUSTER_MIRROR_SNIPPETS_FILE for
+// the snippets — so a spec points those at fixture directories. A per-window
+// fake's every window runs in MUSTER_MIRROR_E2E_CWD (its PROJECT's .claude is
+// found from there; unset, no window has a working directory). With
+// MUSTER_MIRROR_E2E_NO_CATALOG=1 the host advertises no catalog and answers no
+// request, which is what an older muster-mirror does: muster must then offer
+// the built-in commands alone.
+//
 // THE REFRESH: MUSTER_MIRROR_E2E_REFRESH (a Go duration) is how often the host
 // re-reads its windows, instead of mirrorhost's 5 s default, so the send-queue
 // spec waits for a status flip to reach muster rather than for a fixed 5 s
@@ -95,6 +105,7 @@ func init() {
 		return d
 	}
 	e2eNoPromptIndex = func() bool { return os.Getenv("MUSTER_MIRROR_E2E_NO_PROMPT_INDEX") == "1" }
+	e2eNoCatalog = func() bool { return os.Getenv("MUSTER_MIRROR_E2E_NO_CATALOG") == "1" }
 	e2eWrap = func(b mirrorhost.Backend) mirrorhost.Backend {
 		if f := os.Getenv("MUSTER_MIRROR_E2E_SCROLL_FILE"); f != "" {
 			return &scrollFake{Backend: b, file: f, pos: map[string]int{}}
@@ -377,6 +388,14 @@ func windowFakeStatus(transcript string) (status string, since int64) {
 
 // ReportsStatus implements mirrorhost.StatusReporter: yes, unless the spec
 // plays an older muster-mirror (MUSTER_MIRROR_E2E_NO_STATUS=1).
+// WindowCwd plays every window's working directory: MUSTER_MIRROR_E2E_CWD.
+func (windowFake) WindowCwd(context.Context, string, string) (string, error) {
+	if d := os.Getenv("MUSTER_MIRROR_E2E_CWD"); d != "" {
+		return d, nil
+	}
+	return "", fmt.Errorf("e2e fake: no MUSTER_MIRROR_E2E_CWD")
+}
+
 func (windowFake) ReportsStatus() bool { return os.Getenv("MUSTER_MIRROR_E2E_NO_STATUS") == "" }
 
 // List is the windows' sessions: what a per-session reader of this host sees.

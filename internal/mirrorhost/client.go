@@ -88,6 +88,17 @@ type Config struct {
 	// stays there with no further scroll before it is cancelled (default
 	// DefaultScrollIdle). A test shortens it.
 	ScrollIdle time.Duration
+	// Catalog reads the composer menu's catalog (catalog.go); nil = the real
+	// locations, with SnippetsFile as the snippets file ("" = the default).
+	Catalog *CatalogScanner
+	// SnippetsFile is the operator's snippets JSON (MUSTER_MIRROR_SNIPPETS_FILE;
+	// "" = DefaultSnippetsFile). Used only when Catalog is nil.
+	SnippetsFile string
+	// NoCatalog makes this host behave as one that predates the catalog
+	// (mirror.Msg.CatalogReport): it advertises none and answers no request.
+	// FOR THE BROWSER SUITE'S OLDER-HOST CASE ONLY (cmd/muster-mirror's
+	// e2emirror build); no flag sets it.
+	NoCatalog bool
 }
 
 // ErrUnauthorized: muster refused the token (unknown, revoked, or not a mirror
@@ -126,6 +137,8 @@ type Client struct {
 	cfg Config
 	url string
 	log *log.Logger
+	// catalog outlives each connection, so its cache does too.
+	catalog *CatalogScanner
 }
 
 // New validates cfg and builds a client.
@@ -152,7 +165,11 @@ func New(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{cfg: cfg, url: u, log: cfg.Logger}, nil
+	cat := cfg.Catalog
+	if cat == nil {
+		cat = &CatalogScanner{SnippetsFile: cfg.SnippetsFile}
+	}
+	return &Client{cfg: cfg, url: u, log: cfg.Logger, catalog: cat}, nil
 }
 
 // Run connects, and reconnects with jittered exponential backoff (1s → 60s),
@@ -241,6 +258,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	hello.Version, hello.Host, hello.Interactive, hello.PanePaste = version, c.cfg.Host, c.cfg.Interactive, conn.panePaste()
 	hello.PaneScroll = conn.paneScroll()
 	hello.StatusReport = reportsStatus(c.cfg.Backend)
+	hello.CatalogReport = version >= 2 && !c.cfg.NoCatalog
 	if err := conn.send(hello); err != nil {
 		return err
 	}
@@ -307,6 +325,10 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 			case mirror.TypeScroll:
 				if conn.version >= 2 {
 					go conn.scroll(m)
+				}
+			case mirror.TypeCatalog:
+				if conn.version >= 2 && !c.cfg.NoCatalog {
+					go conn.catalog(m)
 				}
 			}
 		}

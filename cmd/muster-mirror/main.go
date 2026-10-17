@@ -43,6 +43,11 @@ var e2eBackend func() mirrorhost.Backend
 // shipped binary.
 var e2eNoPromptIndex func() bool
 
+// e2eNoCatalog, in a browser-test build, makes the host behave as one that
+// predates the composer menu's catalog (mirrorhost.Config.NoCatalog). nil in
+// every shipped binary.
+var e2eNoCatalog func() bool
+
 // e2eRefresh, in a browser-test build, is how often the host re-reads its
 // windows (mirrorhost.Config.Refresh; 0 = mirrorhost's default) — so a spec
 // waiting for a status flip to reach muster waits a fraction of a second, not
@@ -69,6 +74,7 @@ const (
 	envAllowHTTP   = "MUSTER_MIRROR_ALLOW_HTTP"
 	envLabelsFile  = "MUSTER_MIRROR_LABELS_FILE"
 	envPaneMapDir  = "MUSTER_MIRROR_PANE_MAP_DIR"
+	envSnippets    = "MUSTER_MIRROR_SNIPPETS_FILE"
 )
 
 func main() {
@@ -114,6 +120,8 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	allowHTTP := fs.Bool("allow-http", envBool(envAllowHTTP), "TESTS AND LOCAL DEVELOPMENT ONLY: permit a plain http:// muster URL, which sends the token in cleartext ("+envAllowHTTP+")")
 	labelsFile := fs.String("labels-file", getenv(envLabelsFile), "JSON object {\"<session>\": \"<codename>\"}: muster shows such a session as <codename>:<active window index> instead of its name; unreadable or invalid = no labels, logged, never fatal ("+envLabelsFile+")")
 	paneMapDir := fs.String("pane-map-dir", getenv(envPaneMapDir), "directory of per-pane Claude Code records (claude-p<N>.json for pane %N, written by a hook on every event) that the rendered view resolves a pane's transcript from FIRST, each validated against the process in the pane; empty = not consulted ("+envPaneMapDir+")")
+	snippetsFile := fs.String("snippets-file", getenv(envSnippets), "JSON array of {\"trigger\", \"label\", \"body\"}: the prewritten messages muster's message bar offers after `:`; re-read when it changes; missing or invalid = none, never fatal (default "+mirrorhost.DefaultSnippetsFile()+"; "+envSnippets+")")
+	catalog := fs.Bool("catalog", false, "print the composer menu's catalog this host would report for a pane whose working directory is the current one — commands, skills (source and name) and snippet triggers — and exit")
 	list := fs.Bool("list", false, "print the sessions this host would register, and exit (a labelled session's line ends in a label=<label> column)")
 	listClaude := fs.Bool("claude", false, "with -list: print, for each WINDOW whose active pane runs Claude Code, what its rendered view would stream (one line each: session, window id, index, claude, pane, state, session id, transcript, source = pane-map|sessions|guessed, then label=<label>); per session on a backend that does not list windows")
 	listWindows := fs.Bool("windows", false, "with -list: print every WINDOW this host would register instead (one line each: session, window id, index, active|-, command, then claude <pane> <state> <session id> <transcript> <source> for a Claude Code window, then label=<label>)")
@@ -145,6 +153,20 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	logger := log.New(stderr, "", log.LstdFlags)
 	codenames := loadCodenames(*labelsFile, logger)
 
+	if *catalog {
+		cwd, _ := os.Getwd()
+		c := (&mirrorhost.CatalogScanner{SnippetsFile: *snippetsFile}).Scan(cwd)
+		for _, e := range c.Commands {
+			fmt.Fprintf(stdout, "%s\t%s\t/%s\t%s\n", e.Source, e.Kind, e.Name, e.Description)
+		}
+		for _, sn := range c.Snippets {
+			fmt.Fprintf(stdout, "snippet\t%s\t%s\n", sn.Trigger, sn.Label)
+		}
+		if c.Truncated {
+			fmt.Fprintln(stdout, "# truncated to the wire's bounds")
+		}
+		return 0
+	}
 	if *list && *listWindows {
 		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
@@ -212,6 +234,8 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		URL: *url, Token: token, Host: *host, Backend: backend, Codenames: codenames,
 		Interactive: *interactive, AllowHTTP: *allowHTTP, Logger: logger,
 		NoPromptIndex: e2eNoPromptIndex != nil && e2eNoPromptIndex(),
+		NoCatalog:     e2eNoCatalog != nil && e2eNoCatalog(),
+		SnippetsFile:  *snippetsFile,
 		Refresh:       refreshOverride(),
 	})
 	if err != nil {
