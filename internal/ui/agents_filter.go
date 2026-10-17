@@ -664,8 +664,9 @@ func agentsFilterScript() g.Node {
   // token that was waiting in the box for its option (settled).
   // A refresh morphed the list into the server's order: rank it again before
   // anything is painted (see reorder).
-  // HOLD, AND SHOW "N new ↑" (Zach's decision). A list that re-renders itself
-  // in the background — an SSE nudge (sse:agent.changed / sse:chat.reply) or a
+  // HOLD, AND SHOW "N new ↑" (Zach's call; applying ONLY on a tap, even at the
+  // top, was this change's own resolution, since confirmed by him). A list that
+  // re-renders itself in the background — an SSE nudge (sse:agent.changed / sse:chat.reply) or a
   // resync — must not move a card the reader can see: the list is ordered by
   // activity, so an arriving agent is drawn on top and pushes every card down
   // (measured: 0.08 at a phone, 0.18 at a desktop, with no input to excuse it).

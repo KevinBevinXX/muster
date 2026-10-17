@@ -215,8 +215,8 @@ test('agent cards: one letter ranks a name prefix above a word start', async ({ 
   await expect.poll(async () => (await order())[0]).toBe('release-helper');
 });
 
-// HELD, NOT MOVED (Zach's decision): a background refresh of the open list — an
-// activity change, an arrival — moves no card. The new order waits behind an
+// HELD, NOT MOVED (Zach's call; tap-only, even at the top, confirmed): a
+// background refresh of the open list — an activity change, an arrival — moves no card. The new order waits behind an
 // "N new ↑" pill, a tap applies it, and a filter's ranking still orders what is
 // shown. A card's own content still updates in place. Runs LAST: it rewrites
 // the host's windows.

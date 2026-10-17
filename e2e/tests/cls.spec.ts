@@ -247,7 +247,7 @@ for (const vp of viewports) {
         await nudge();
         await done;
         await settle(page);
-        // Held behind the pill (Zach's decision): nothing in view moves.
+        // Held behind the pill (Zach's call; tap-only, confirmed): nothing in view moves.
         await expect(page.locator('#agents-new-pill'), 'the arrival waits behind the pill').toHaveText('1 new ↑');
         await expect(page.locator(`#agents-list > article[data-f-name="${added}"]`)).toBeHidden();
         results['refresh, an agent added'] = await readCls(page);
