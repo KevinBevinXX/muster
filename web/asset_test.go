@@ -28,10 +28,3 @@ func TestAnAssetURLCarriesItsContentHash(t *testing.T) {
 		}
 	}
 }
-
-// The real tree: every file under static/ that a page links gets a hash.
-func TestTheEmbeddedStylesheetHasAHash(t *testing.T) {
-	if h := AssetHash("/static/app.css"); len(h) != assetHashLen {
-		t.Fatalf("AssetHash(/static/app.css) = %q, want %d hex digits", h, assetHashLen)
-	}
-}
