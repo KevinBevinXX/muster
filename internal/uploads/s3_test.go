@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -228,4 +229,60 @@ func TestNewS3RefusesABadConfiguration(t *testing.T) {
 			t.Errorf("%s: accepted", name)
 		}
 	}
+}
+
+// TestAgainstARealS3 runs the client against a REAL S3-compatible server when
+// one is named, and skips otherwise. It is the live control behind the fake
+// above, run by hand (docs/testing.md):
+//
+//	docker run -d -p 127.0.0.1:59000:9000 minio/minio server /data   # + create the bucket
+//	MUSTER_TEST_S3_ENDPOINT=http://127.0.0.1:59000 MUSTER_TEST_S3_BUCKET=muster-test \
+//	  MUSTER_TEST_S3_ACCESS_KEY=minioadmin MUSTER_TEST_S3_SECRET_KEY=minioadmin \
+//	  go test -run TestAgainstARealS3 -v ./internal/uploads/
+//
+// A wrong secret must be REFUSED by the server: the negative control that the
+// server really checks the signature this file computes.
+func TestAgainstARealS3(t *testing.T) {
+	cfg := S3Config{Endpoint: os.Getenv("MUSTER_TEST_S3_ENDPOINT"), Bucket: os.Getenv("MUSTER_TEST_S3_BUCKET"),
+		AccessKey: os.Getenv("MUSTER_TEST_S3_ACCESS_KEY"), SecretKey: os.Getenv("MUSTER_TEST_S3_SECRET_KEY")}
+	if cfg.Endpoint == "" {
+		t.Skip("MUSTER_TEST_S3_ENDPOINT is unset: no real S3 to run against")
+	}
+	c, err := NewS3(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := c.Check(ctx); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	id, _ := NewPublicID()
+	key := ObjectKeyFor(id)
+	data := bytes.Repeat(pngHead, 4096) // ~120 KB
+	if err := c.Put(ctx, key, data, "image/png"); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	body, size, err := c.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	got, _ := io.ReadAll(body)
+	body.Close()
+	if !bytes.Equal(got, data) || size != int64(len(data)) {
+		t.Errorf("Get: %d bytes (size %d); want the %d put", len(got), size, len(data))
+	}
+	if err := c.Delete(ctx, key); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, _, err := c.Get(ctx, key); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Get after Delete: %v; want ErrNotFound", err)
+	}
+	bad := cfg
+	bad.SecretKey += "-wrong"
+	wrong, _ := NewS3(bad)
+	var se *S3Error
+	if err := wrong.Put(ctx, key, data, "image/png"); !errors.As(err, &se) || se.Status != http.StatusForbidden {
+		t.Errorf("NEGATIVE CONTROL: a wrong secret was answered %v; want a 403 from the server", err)
+	}
+	t.Logf("real S3 at %s: put/get/delete of %d bytes OK; a wrong secret answered %v", cfg.Endpoint, len(data), se)
 }

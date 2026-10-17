@@ -183,6 +183,33 @@ func TestAFailedRowTakesItsObjectAway(t *testing.T) {
 	}
 }
 
+// TestARevokedLinkIsRefusedEvenWhenItsObjectSurvives: the ROW decides. A
+// revocation whose object delete failed still ends the link — the object is
+// still there, so only the revoked check stands between it and the caller.
+func TestARevokedLinkIsRefusedEvenWhenItsObjectSurvives(t *testing.T) {
+	svc, _, obj, _ := newService(t, 1<<20)
+	st, err := svc.Put(as(2), png, "shot.png", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Objects = undeletable{obj}
+	objErr, err := svc.Revoke(as(2), st.PublicID)
+	if err != nil || objErr == nil {
+		t.Fatalf("revoke with a failing delete: err=%v objErr=%v; want a revocation that reports the object", err, objErr)
+	}
+	if !obj.Has(st.ObjectKey) {
+		t.Fatal("CONTROL: the object is gone, so this test proves nothing about the row")
+	}
+	id, q := linkParts(t, st.URL)
+	if _, err := svc.OpenLink(context.Background(), id, q); !errors.Is(err, uploads.ErrNotFound) {
+		t.Errorf("a revoked link whose object survives: %v; want ErrNotFound", err)
+	}
+}
+
+type undeletable struct{ *uploadstest.Objects }
+
+func (undeletable) Delete(context.Context, string) error { return errors.New("store unreachable") }
+
 type failingStore struct{ uploads.Store }
 
 func (failingStore) Create(context.Context, uploads.Upload) (uploads.Upload, error) {

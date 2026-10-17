@@ -134,6 +134,12 @@ export const routingConnectPort = port + 57;
 // plugin on) and two mirrored hosts — one that reports its catalog and one
 // that plays an older muster-mirror.
 export const composerMenuPort = port + 58;
+// File attachments (uploads.spec.ts): the server with S3 configured, the one
+// without, and the fake S3. Far from the others so a sibling spec added in the
+// meantime is unlikely to land on them.
+export const uploadsPort = port + 70;
+export const uploadsOffPort = port + 71;
+export const fakeS3Port = port + 72;
 // The fake service's bearer token. Invented, like every value here.
 export const sttToken = 'e2e-stt-token-not-a-real-one';
 // The docs screenshots (e2e/docshots, `make screenshots`, never in the suite):

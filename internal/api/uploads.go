@@ -210,6 +210,8 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 			seenFile = true
 			filename = part.FileName()
 			var buf bytes.Buffer
+			// One byte past the cap is read, never more: enough for the
+			// service to refuse the file as too large (uploads.ErrTooLarge).
 			n, err := io.Copy(&buf, io.LimitReader(part, svc.MaxBytes+1))
 			size = n
 			if err != nil {
@@ -219,10 +221,6 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				say(http.StatusBadRequest, UploadNoFile)
-				return
-			}
-			if n > svc.MaxBytes {
-				tooLarge()
 				return
 			}
 			data = buf.Bytes()
