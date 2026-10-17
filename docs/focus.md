@@ -97,8 +97,8 @@ You can scroll back through it:
 Both list the newest first, 20 at a time, and load older pages as you scroll
 (or with **Load older**). Pages come from `GET /ui/focus/history`, which reads
 under your own row-level security and answers 404 for a session that is not
-yours (a mirrored session is yours while you hold its focus, its history, or an
-online window of it).
+yours (a mirrored session is yours while you hold its history or an online
+window of it).
 
 History is kept for **30 days**, whatever happens to the session's focus. A
 mirrored session's focus is deleted a week after it was last seen, but its

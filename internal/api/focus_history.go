@@ -21,7 +21,7 @@ import (
 // returns no other owner's row — but "no rows" is also what a session with no
 // history yet reads as. So the subject is checked first: an agent the caller
 // has (agents' own row-level security), or a mirrored Claude session the caller
-// has a focus row or history for, or an online window of theirs shows. Anything else —
+// has history for, or an online window of theirs shows. Anything else —
 // another owner's agent or session, or one that does not exist — is a 404,
 // the same answer for both, so the route does not say which ids exist.
 // ---------------------------------------------------------------------------
@@ -97,8 +97,8 @@ func (s *Server) handleFocusHistory(w http.ResponseWriter, r *http.Request) {
 }
 
 // focusHistoryVisible reports whether the caller may read sub's history: an
-// agent of theirs, or a mirrored Claude session they hold a focus or history
-// for, or an online window of theirs shows. A lookup that FAILED (not "no such row") is
+// agent of theirs, or a mirrored Claude session they hold history for, or an
+// online window of theirs shows. A lookup that FAILED (not "no such row") is
 // an error, never a "no".
 func (s *Server) focusHistoryVisible(ctx context.Context, sub focus.Subject) (bool, error) {
 	switch sub.Kind {
@@ -114,11 +114,9 @@ func (s *Server) focusHistoryVisible(ctx context.Context, sub focus.Subject) (bo
 		}
 		return true, nil
 	case focus.KindMirror:
-		if _, has, err := s.ext.Focus.Get(ctx, sub); err != nil || has {
-			return has, err
-		}
-		// History outlives the focus row (0022): a session whose focus was
-		// pruned still has its history to read.
+		// Its history, not its focus row: every focus written has a history row,
+		// and history outlives the focus row (0022), so a session whose focus was
+		// pruned is still the caller's to read.
 		if p, err := s.ext.Focus.History(ctx, sub, "", 1); err != nil || len(p.Entries) > 0 {
 			return len(p.Entries) > 0, err
 		}

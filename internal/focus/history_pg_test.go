@@ -106,12 +106,16 @@ func TestHistoryPruneKeepsThirtyDaysAndTheCurrentFocus(t *testing.T) {
 	lone := AgentSubject(mustAgent(t, pool, 3, "focus-hist-prune3").ID)
 	pair := AgentSubject(mustAgent(t, pool, 3, "focus-hist-prune3b").ID)
 	gone := MirrorSubject("0b2c3d4e-hist-prune-gone")
+	// Pruned, then seen again with a refresh that FAILED: its focus row is back
+	// with no title (an error only), so it has no current focus to keep.
+	back := MirrorSubject("0b2c3d4e-hist-prune-back")
 	write(t, s, 2, mine, "old 2", "", "")
 	write(t, s, 2, mine, "new 2", "", "")
 	write(t, s, 3, lone, "only focus", "", "")
 	write(t, s, 3, pair, "pair older", "", "")
 	write(t, s, 3, pair, "pair newer", "", "")
 	write(t, s, 2, gone, "gone session", "", "")
+	write(t, s, 2, back, "back session", "", "")
 	dsn := dbtest.DSN(t)
 	dbtest.OwnerExec(t, dsn, `UPDATE agent_focus_history SET created_at = now() - interval '40 days' WHERE title <> 'new 2'`)
 	dbtest.OwnerExec(t, dsn, `UPDATE agent_focus_history SET created_at = now() - interval '29 days' WHERE title = 'new 2'`)
@@ -119,10 +123,14 @@ func TestHistoryPruneKeepsThirtyDaysAndTheCurrentFocus(t *testing.T) {
 	dbtest.OwnerExec(t, dsn, `UPDATE agent_focus_history SET created_at = created_at + interval '1 minute' WHERE title = 'pair newer'`)
 	// The mirrored session's focus row was pruned: its history has no current focus.
 	dbtest.OwnerExec(t, dsn, `DELETE FROM agent_focus WHERE subject_key = $1`, gone.Key)
+	dbtest.OwnerExec(t, dsn, `DELETE FROM agent_focus WHERE subject_key = $1`, back.Key)
+	if err := s.RecordError(as(2), back, ReasonNoKey); err != nil {
+		t.Fatal(err)
+	}
 
 	n, err := s.PruneHistory(context.Background(), time.Now().Add(-DefaultHistoryRetention))
-	if err != nil || n != 3 {
-		t.Fatalf("pruned %d (%v), want 3: owner 2's 40-day row, the pair's older row, the pruned session's row", n, err)
+	if err != nil || n != 4 {
+		t.Fatalf("pruned %d (%v), want 4: owner 2's 40-day row, the pair's older row, the pruned session's, the error-only session's", n, err)
 	}
 	for _, c := range []struct {
 		uid  int64
@@ -133,6 +141,7 @@ func TestHistoryPruneKeepsThirtyDaysAndTheCurrentFocus(t *testing.T) {
 		{3, lone, []string{"only focus|"}}, // 40 days old, and still the current focus
 		{3, pair, []string{"pair newer|"}},
 		{2, gone, nil},
+		{2, back, nil},
 	} {
 		if got := titles(t, s, c.uid, c.sub); !eq(got, c.want) {
 			t.Errorf("%s: history %q, want %q", c.sub, got, c.want)
