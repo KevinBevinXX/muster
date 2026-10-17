@@ -122,6 +122,10 @@ type focusSpec struct {
 	// Error, when set, records a failed refresh with this reason instead of
 	// writing a focus (what the card shows as why there is none).
 	Error string `json:"error"`
+	// History, when > 0, writes that many EARLIER focuses first ("Earlier
+	// focus 01" … oldest first), each a change, so the session's focus history
+	// (migration 0022) holds History+1 rows, the focus itself newest.
+	History int `json:"history"`
 }
 
 func focusSpecs() ([]focusSpec, error) {
@@ -160,6 +164,12 @@ func writeFocus(ctx context.Context, pool *pgxpool.Pool, as *agents.PGStore, nam
 			}
 			continue
 		}
+		for i := 1; i <= sp.History; i++ {
+			if _, err := fs.Upsert(ctx, sub, focus.Write{Title: fmt.Sprintf("Earlier focus %02d", i),
+				Description: fmt.Sprintf("What the session was doing at step %d.", i), Source: focus.SourceSummarizer}); err != nil {
+				return fmt.Errorf("focus history %s: %w", sub, err)
+			}
+		}
 		if _, err := fs.Upsert(ctx, sub, focus.Write{Title: sp.Title, Description: sp.Description, Source: focus.SourceSummarizer}); err != nil {
 			return fmt.Errorf("focus %s: %w", sub, err)
 		}
@@ -167,7 +177,8 @@ func writeFocus(ctx context.Context, pool *pgxpool.Pool, as *agents.PGStore, nam
 	return nil
 }
 
-// deleteMirrorFocus deletes the mirror focus rows MUSTER_E2E_FOCUS names.
+// deleteMirrorFocus deletes the mirror focus rows MUSTER_E2E_FOCUS names (their
+// history goes with them, by migration 0022's foreign key).
 func deleteMirrorFocus(ctx context.Context, pool *pgxpool.Pool) error {
 	specs, err := focusSpecs()
 	if err != nil {
