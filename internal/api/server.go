@@ -45,6 +45,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/focus"
@@ -593,14 +594,16 @@ func (s *Server) shellData(ctx context.Context, tab string) ui.ShellData {
 	}
 	pinned := s.pinSet(ctx)
 	cards := make([]ui.AgentCardView, 0, len(list))
+	notChief := func(agents.Agent) bool { return false }
 	for _, a := range list {
-		// NO Status: a card's status is composed in ONE place, against the live
-		// instances (cardViewIndexed; TestOneCardComposerFeedsEverySurface), and
-		// this path must not ask for them. The entry's dot is drawn unknown for
-		// the moment until the list's own load replaces the strip — the same 12px
-		// box, so nothing moves.
-		cards = append(cards, ui.AgentCardView{ID: a.ID, Name: a.Name, DisplayName: a.DisplayName,
-			Pinned: pinned.Agent(a.ID)})
+		// The ONE card composer (cardViewIndexed; TestOneCardComposerFeedsEverySurface)
+		// with a NIL instance index: liveStatusIndexed then answers the STORED
+		// status, with no provisioner read on the document's path
+		// (TestTheAgentsShellReadsNoInstances). The list's own load replaces the
+		// strip with the live one; a stored status that has since moved changes
+		// colour in the same 12px box, which moves nothing. Chief and focus are
+		// left zero: the strip draws neither.
+		cards = append(cards, s.cardViewIndexed(a, nil, time.Time{}, notChief, pinned, nil))
 	}
 	// No focus index: the strip draws no focus (ui/recents.go), and reading it
 	// would be a second store read on the shell's first byte.

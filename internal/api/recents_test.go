@@ -253,3 +253,27 @@ func TestTheAgentsShellReadsNoInstances(t *testing.T) {
 		t.Errorf("GET /ui/agents read the instances %d time(s), want exactly 1 (the list's live status)", prov.n)
 	}
 }
+
+// 🔴 A REGRESSION TEST: the shell's first paint built the strip's cards with NO
+// Status, so statusLabel("") drew every agent "pending" until the list's load
+// replaced the strip. It must draw the STORED status (no provisioner read —
+// TestTheAgentsShellReadsNoInstances pins that half). The fixture's two agents
+// are stored running and stopped, two different answers, neither "pending".
+func TestTheShellStripDrawsTheStoredStatusOnFirstPaint(t *testing.T) {
+	mem := &memRecents{}
+	mem.put(recents.Entry{AgentID: 5})
+	mem.put(recents.Entry{AgentID: 7})
+	s, _ := pinServer(t, &fakeMirror{online: true, windows: pinWindows()}, &memPins{})
+	s.ext.Recents = mem
+	s.ext.Provisioner = &countingInstances{Provisioner: newFakeTerminal()}
+	body := getOwed(t, s, s.Handler(), "/agents").Body.String()
+	for name, want := range map[string]string{"chatting-oldest": "running", "idle-newest": "stopped"} {
+		m := regexp.MustCompile(`<a href="/agents/` + name + `"[^>]*data-recent-entry="agent"[\s\S]*?</a>`).FindString(body)
+		if m == "" {
+			t.Fatalf("control: no strip entry for %s on first paint:\n%s", name, body)
+		}
+		if !strings.Contains(m, `aria-label="Status: `+want+`"`) {
+			t.Errorf("strip entry %s on first paint does not draw its stored status %q:\n%s", name, want, m)
+		}
+	}
+}
