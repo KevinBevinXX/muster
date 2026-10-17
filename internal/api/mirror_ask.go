@@ -240,16 +240,17 @@ func (s *Server) handleMirrorAskWithdraw(w http.ResponseWriter, r *http.Request)
 }
 
 // askWindow resolves a card request's (host, session, window) against the
-// viewing principal's hosts: the window's Claude session, and the entry and
-// its host. ok false has answered (404: not the principal's host, not a
-// listed window, or no Claude session there).
+// viewing principal's hosts: the entry (whose ClaudeSession keys its
+// questions; "" for a window with no Claude session, which has none) and its
+// host. ok false has answered (404: not the principal's host, or not a listed
+// window).
 func (s *Server) askWindow(w http.ResponseWriter, r *http.Request, host, session, window string) (h mirror.HostView, e mirror.SessionView, ok bool) {
 	if s.ext.Mirror == nil || s.asks == nil {
 		http.NotFound(w, r)
 		return h, e, false
 	}
 	h, e, listed, _, found := s.mirrorEntry(r, host, session, window)
-	if !found || !listed || e.ClaudeSession == "" {
+	if !found || !listed {
 		http.NotFound(w, r)
 		return h, e, false
 	}
@@ -300,8 +301,10 @@ func (s *Server) handleMirrorAsks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var vs []ui.MirrorAskLiveView
-	for _, x := range s.asks.ForSession(requestOwner(r.Context()), askSourceMirror, h.Host, e.ClaudeSession, mirrorAskShownFor) {
-		vs = append(vs, ui.MirrorAskLiveView{Ref: mirrorRef(e), ToolID: x.Key.ToolUseID, State: askLiveState(x.State), Questions: x.Questions, Answers: x.Answers})
+	if e.ClaudeSession != "" {
+		for _, x := range s.asks.ForSession(requestOwner(r.Context()), askSourceMirror, h.Host, e.ClaudeSession, mirrorAskShownFor) {
+			vs = append(vs, ui.MirrorAskLiveView{Ref: mirrorRef(e), ToolID: x.Key.ToolUseID, State: askLiveState(x.State), Questions: x.Questions, Answers: x.Answers})
+		}
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
@@ -324,12 +327,6 @@ func (s *Server) handleMirrorAskAnswer(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	tool := r.PostFormValue("tool")
-	if !toolUseIDPattern.MatchString(tool) {
-		http.NotFound(w, r)
-		return
-	}
-	key := askKey(r, h, e, tool)
 	if !h.Interactive {
 		http.Error(w, mirror.ErrInteractiveRefused.Error(), http.StatusConflict)
 		return
@@ -338,6 +335,16 @@ func (s *Server) handleMirrorAskAnswer(w http.ResponseWriter, r *http.Request) {
 		refuseStale(w)
 		return
 	}
+	tool := r.PostFormValue("tool")
+	if !toolUseIDPattern.MatchString(tool) {
+		http.Error(w, "an answer names the call it answers (tool)", http.StatusBadRequest)
+		return
+	}
+	if e.ClaudeSession == "" {
+		http.NotFound(w, r)
+		return
+	}
+	key := askKey(r, h, e, tool)
 	entry, found := s.asks.Find(key)
 	if !found {
 		http.NotFound(w, r)

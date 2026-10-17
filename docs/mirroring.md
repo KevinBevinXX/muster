@@ -182,6 +182,65 @@ read-only viewer can see. It does not limit an attached interactive client.
 With `-interactive`, both views get a message box. Typing into one requires a
 recent sign-in. See [sending-and-step-up.md](sending-and-step-up.md).
 
+## Answering Claude's questions
+
+When Claude Code calls `AskUserQuestion`, the Rendered view can show the
+questions as a form and send your answers back to the session. This needs a
+Claude Code hook on the host: `muster-mirror ask`. Add it to that machine's
+Claude Code `settings.json`:
+
+```json
+"PreToolUse": [
+  {
+    "matcher": "AskUserQuestion",
+    "hooks": [
+      {
+        "type": "command",
+        "command": "muster-mirror ask -url https://muster.example.com -token-file ~/.config/muster-mirror/token",
+        "timeout": 660
+      }
+    ]
+  }
+]
+```
+
+It uses the host's own mirror token (the same file `muster-mirror` runs with).
+It does not replace any `PermissionRequest` hook you already have, such as an
+approval router. The `PreToolUse` hook runs first. When it answers, the call is
+already allowed, so no permission prompt or `PermissionRequest` hook runs for
+it. When it does not answer, the `PermissionRequest` hook runs as it does
+today.
+
+How it works:
+
+- The hook registers the questions with muster and holds the call. The window's
+  Rendered view shows a card above the message box with one section per
+  question. Each section has the question's header, its options with their
+  descriptions (radio buttons, or checkboxes for a multi-select question), and
+  an **Other** box for your own answer. One **Submit** sends every answer.
+- The hook passes your answers to Claude Code as the call's answers. A
+  multi-select answer is its options joined by `, `, in the question's order.
+  Text you type is passed as typed.
+- 🔴 **While the hook holds the call, the terminal shows no picker.** Answer in
+  muster, or wait out the hook's `-timeout` (default `10m`,
+  `MUSTER_MIRROR_ASK_TIMEOUT`). The hook entry's own `timeout` (660 s above) must
+  be longer than `-timeout`.
+- **Every failure leaves the question to the terminal.** This covers muster
+  being unreachable, an unknown session, a read-only host, nobody answering in
+  time, or the hook being stopped. In each case the hook prints nothing and
+  Claude Code shows its own picker. The card then says the question went back to
+  the terminal. The hook never answers on its own.
+- Answering has the same rules as sending: you must own the host, the host must
+  be `-interactive`, and your sign-in must be recent. A read-only host's hook
+  does not hold the call at all.
+- While a question is held, muster reports the window's status as `waiting`.
+  Claude Code itself reports `busy` for as long as a hook runs.
+- Afterwards the conversation shows the call read-only, with the answers it
+  was given, whether you answered in muster or in the terminal.
+
+Pending questions live in muster's memory only. A restart forgets them, and
+the hook then leaves the question to the terminal.
+
 ## Scrolling history
 
 The Terminal view's own tmux client draws only the visible screen, so the

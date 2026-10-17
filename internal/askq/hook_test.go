@@ -150,12 +150,15 @@ func TestTheHookFailsOpenOnEveryFailure(t *testing.T) {
 		defer srv.Close()
 		h := testHook(srv.URL)
 		h.Hold = 400 * time.Millisecond
-		start := time.Now()
-		if out := h.Run(context.Background(), gatePayload(t)); out != nil {
-			t.Fatalf("printed %s", out)
-		}
-		if d := time.Since(start); d > 3*time.Second {
-			t.Fatalf("held %s past a 400ms hold", d)
+		done := make(chan []byte, 1)
+		go func() { done <- h.Run(context.Background(), gatePayload(t)) }()
+		select {
+		case out := <-done:
+			if out != nil {
+				t.Fatalf("printed %s", out)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("held past a 400ms hold")
 		}
 		if len(f.gone) != 1 {
 			t.Fatalf("the timed-out question was not withdrawn: %v", f.gone)

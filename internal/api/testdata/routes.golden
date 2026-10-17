@@ -90,7 +90,7 @@ GET /mirror/terminal
 GET /mirror/terminal/send
 GET /mirror/terminal/ws
 GET /mirror/view
-GET /mirror/view/ask
+GET /mirror/view/asks
 GET /mirror/view/complete
 GET /mirror/view/send
 GET /mirror/view/ws
