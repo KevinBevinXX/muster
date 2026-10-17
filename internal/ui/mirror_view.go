@@ -10,6 +10,7 @@ import (
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
 
+	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/web"
 )
@@ -149,6 +150,8 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 					g.Attr("aria-label", "Conversation"),
 					Class("flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overflow-x-hidden px-3 py-3"),
 				),
+				// The questions the window's ask hook is holding (mirror_ask.go).
+				mirrorAsksRegion(ref),
 				Div(
 					ID("mv-working"),
 					g.Attr("hidden", ""),
@@ -160,6 +163,8 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				g.If(v.Interactive, confirmDialog(v.StepUp)),
 				g.If(v.Interactive, stepUpScript()),
 				mirrorViewScript(),
+				// The question cards' poll and submit (mirror_ask.go).
+				askScript(),
 				// The tool groups' open/close animation (tool_groups.go).
 				toolGroupScript(),
 				bubbleClampScript(),
@@ -250,6 +255,10 @@ type MirrorTranscript struct {
 	// since TakeContext last reported it.
 	usage *cctranscript.Usage
 	fresh bool
+	// asks is the AskUserQuestion calls drawn as question cards (mirror_ask.go),
+	// with their questions: a result for one redraws its card. Bounded with
+	// calls (forget).
+	asks map[string][]askq.Question
 }
 
 const maxDrawnCalls = 2048
@@ -284,7 +293,7 @@ func NewMirrorIndex(refs []cctranscript.PromptRef, more int) *MirrorIndex {
 
 // Reset forgets every drawn call (the view starts over).
 func (t *MirrorTranscript) Reset() {
-	t.calls, t.order = nil, nil
+	t.calls, t.order, t.asks = nil, nil, nil
 	t.states, t.groupOf, t.groups, t.run, t.runGrp = nil, nil, nil, nil, ""
 	t.Resumed = false
 	t.usage, t.fresh = nil, false
@@ -297,6 +306,7 @@ func (t *MirrorTranscript) endRun() { t.run, t.runGrp = nil, "" }
 // forget drops a call evicted past maxDrawnCalls from every map that names it.
 func (t *MirrorTranscript) forget(toolID string) {
 	delete(t.calls, toolID)
+	delete(t.asks, toolID)
 	delete(t.states, toolID)
 	if gid, ok := t.groupOf[toolID]; ok {
 		delete(t.groupOf, toolID)
@@ -441,6 +451,10 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 			t.endRun()
 			ops = append(ops, MirrorOp{Op: "append", HTML: render(noticeRow(ev))})
 		case cctranscript.KindToolCall:
+			if ev.Ask != nil && len(ev.Ask.Questions) > 0 {
+				ops = append(ops, t.askCall(ev)...)
+				continue
+			}
 			call := ChatLine{Kind: "tool_call", ToolID: ev.ToolID, ToolName: ev.Tool, ToolTarget: ev.Target, Content: ev.Input}
 			id := toolRowID(ev.ToolID)
 			if _, seen := t.calls[ev.ToolID]; seen {
@@ -461,6 +475,10 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 			t.calls[ev.ToolID] = call
 			ops = append(ops, t.appendRow(ev.ToolID, toolStateRunning, toolChip(call, nil, id))...)
 		case cctranscript.KindToolResult:
+			if qs, isAsk := t.asks[ev.ToolID]; isAsk || (ev.Ask != nil && len(ev.Ask.Questions) > 0) {
+				ops = append(ops, t.askResult(ev, qs, isAsk)...)
+				continue
+			}
 			result := ChatLine{Kind: "tool_result", ToolID: ev.ToolID, ToolOK: ev.OK, Content: ev.Output}
 			id := toolRowID(ev.ToolID)
 			call, ok := t.calls[ev.ToolID]
@@ -494,6 +512,67 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 		}
 	}
 	return ops
+}
+
+// track records toolID as drawn (bounded with every other call).
+func (t *MirrorTranscript) track(toolID string) {
+	if _, seen := t.calls[toolID]; seen {
+		return
+	}
+	t.order = append(t.order, toolID)
+	if len(t.order) > maxDrawnCalls {
+		t.forget(t.order[0])
+		t.order = t.order[1:]
+	}
+}
+
+// askCall draws an AskUserQuestion call as its question card: NOT a tool row,
+// so it ends a run (a card is never folded into a collapsed group) and is
+// never grouped itself.
+func (t *MirrorTranscript) askCall(ev cctranscript.Event) []MirrorOp {
+	if t.asks == nil {
+		t.asks = map[string][]askq.Question{}
+	}
+	id := toolRowID(ev.ToolID)
+	html := render(MirrorAskCall(id, ev.Ask.Questions))
+	_, seen := t.calls[ev.ToolID]
+	t.track(ev.ToolID)
+	t.calls[ev.ToolID] = ChatLine{Kind: "tool_call", ToolID: ev.ToolID, ToolName: ev.Tool}
+	t.asks[ev.ToolID] = ev.Ask.Questions
+	t.endRun()
+	if seen {
+		return []MirrorOp{{Op: "replace", ID: id, HTML: html}}
+	}
+	return []MirrorOp{{Op: "append", ID: id, HTML: html}}
+}
+
+// askResult draws an AskUserQuestion call's result as its card, read-only: the
+// questions and answers the result records (Event.Ask, from the transcript's
+// toolUseResult), else the call's own questions with no answer and the
+// result's text (a picker dismissed in the terminal). In place of the call's
+// card when it is on the page — a resumed socket's included: a "replace" of a
+// row the page does not have is an append.
+func (t *MirrorTranscript) askResult(ev cctranscript.Event, callQs []askq.Question, drawn bool) []MirrorOp {
+	qs, answers, note := callQs, map[string]string(nil), ""
+	if ev.Ask != nil && len(ev.Ask.Questions) > 0 {
+		qs, answers = ev.Ask.Questions, ev.Ask.Answers
+	}
+	if len(answers) == 0 {
+		note = ev.Output
+	}
+	id := toolRowID(ev.ToolID)
+	html := render(MirrorAskResult(id, qs, answers, note))
+	if drawn || t.Resumed {
+		return []MirrorOp{{Op: "replace", ID: id, HTML: html}}
+	}
+	if t.asks == nil {
+		t.asks = map[string][]askq.Question{}
+	}
+	t.track(ev.ToolID)
+	t.calls[ev.ToolID] = ChatLine{Kind: "tool_call", ToolID: ev.ToolID, ToolName: askq.ToolName}
+	t.asks[ev.ToolID] = qs
+	t.endRun()
+	return []MirrorOp{{Op: "append", ID: id, HTML: html}}
 }
 
 // noticeRow draws a harness notice (cctranscript.KindNotice) as a compact

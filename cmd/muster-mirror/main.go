@@ -12,6 +12,9 @@
 //
 //	muster-mirror -url https://muster.example.com -token-file ~/.config/muster-mirror/token
 //
+// `muster-mirror ask` is a different, short-lived command: Claude Code's
+// PreToolUse hook for AskUserQuestion (ask.go).
+//
 // Every flag also reads an environment variable (named in -help), so a systemd
 // unit can configure it without putting the token in argv.
 package main
@@ -102,6 +105,11 @@ func defaultHost() string {
 }
 
 func run(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
+	// `muster-mirror ask`: the AskUserQuestion hook (ask.go), a short-lived
+	// command of its own — not the host daemon.
+	if len(args) > 0 && args[0] == "ask" {
+		return runAsk(args[1:], getenv, stdin, stdout, stderr)
+	}
 	fs := flag.NewFlagSet("muster-mirror", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	envBool := func(k string) bool { v := getenv(k); return v == "1" || strings.EqualFold(v, "true") }
