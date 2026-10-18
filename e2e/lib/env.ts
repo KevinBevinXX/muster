@@ -134,6 +134,10 @@ export const routingConnectPort = port + 57;
 // plugin on) and two mirrored hosts — one that reports its catalog and one
 // that plays an older muster-mirror.
 export const composerMenuPort = port + 58;
+// The Agents list's host tabs (host-tabs.spec.ts): its own server (the
+// e2eterm binary, mirror plugin on) and up to three mirrored hosts. A high
+// offset, clear of the specs being added beside it.
+export const hostTabsPort = port + 64;
 // AskUserQuestion answered from the Rendered view (mirror-ask.spec.ts): its own
 // server (the e2eterm binary, mirror plugin on) and one interactive mirrored
 // host, with `muster-mirror ask` run as the hook.
