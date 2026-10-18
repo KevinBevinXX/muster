@@ -14,8 +14,9 @@ import (
 	"time"
 )
 
-// `muster-mirror ask` as the CLI runs it: it reads the hook payload on stdin
-// and ALWAYS exits 0, printing only answers muster says a person gave.
+// `muster-mirror ask` as the CLI runs it: it reads the hook payload on stdin,
+// registers the call with muster, and ALWAYS exits 0 printing NOTHING — the
+// terminal's picker shows at once, whatever muster does.
 
 func askPayload(t *testing.T) []byte {
 	t.Helper()
@@ -28,8 +29,9 @@ func askPayload(t *testing.T) []byte {
 
 func env(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
 
-// fakeAskMuster answers every question with answers at the first poll.
-func fakeAskMuster(t *testing.T, answers map[string]string, seen *[]string) *httptest.Server {
+// fakeAskMuster takes every registration, recording its bearer token. The
+// answers argument is unused: muster never answers through the hook any more.
+func fakeAskMuster(t *testing.T, _ map[string]string, seen *[]string) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /mirror/ask", func(w http.ResponseWriter, r *http.Request) {
@@ -41,48 +43,36 @@ func fakeAskMuster(t *testing.T, answers map[string]string, seen *[]string) *htt
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": req.ID, "state": "pending"})
 	})
-	mux.HandleFunc("GET /mirror/ask/{id}", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": r.PathValue("id"), "state": "answered", "answers": answers})
-	})
-	mux.HandleFunc("DELETE /mirror/ask/{id}", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": r.PathValue("id"), "state": "withdrawn"})
-	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
 }
 
-func TestAskPrintsTheAnswersAndExitsZero(t *testing.T) {
+// registered reports whether muster was sent the call on token, and nothing
+// was printed.
+func registered(t *testing.T, seen []string, token string, out *bytes.Buffer) {
+	t.Helper()
+	if out.Len() != 0 {
+		t.Fatalf("the hook printed %q: it must print nothing (the picker is the CLI's)", out.String())
+	}
+	if len(seen) != 1 || seen[0] != "Bearer "+token {
+		t.Fatalf("tokens sent %q, want one registration on %s", seen, token)
+	}
+}
+
+func TestAskRegistersTheCallPrintsNothingAndExitsZero(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	var seen []string
-	srv := fakeAskMuster(t, map[string]string{"Which color do you prefer?": "Blue", "Which pets do you have?": "Fish"}, &seen)
+	srv := fakeAskMuster(t, nil, &seen)
 	tok := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(tok, []byte("mmt_secret\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var out, errb bytes.Buffer
-	code := runAsk([]string{"-url", srv.URL, "-allow-http", "-token-file", tok, "-timeout", "5s"}, env(nil), bytes.NewReader(askPayload(t)), &out, &errb)
-	if code != 0 {
+	if code := runAsk([]string{"-url", srv.URL, "-allow-http", "-token-file", tok}, env(nil), bytes.NewReader(askPayload(t)), &out, &errb); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
-	if len(seen) != 1 || seen[0] != "Bearer mmt_secret" {
-		t.Fatalf("the token sent: %q", seen)
-	}
-	var got struct {
-		HSO struct {
-			Event        string `json:"hookEventName"`
-			Decision     string `json:"permissionDecision"`
-			UpdatedInput struct {
-				Answers map[string]string `json:"answers"`
-			} `json:"updatedInput"`
-		} `json:"hookSpecificOutput"`
-	}
-	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
-		t.Fatalf("stdout is not the hook output: %q (%v; stderr %s)", out.String(), err, errb.String())
-	}
-	if got.HSO.Event != "PreToolUse" || got.HSO.Decision != "allow" || got.HSO.UpdatedInput.Answers["Which pets do you have?"] != "Fish" {
-		t.Fatalf("output %s", out.String())
-	}
+	registered(t, seen, "mmt_secret", &out)
 }
 
 // TestAskPrintsNothingWithoutASafeConfiguration: no URL, no token, a plain
@@ -116,9 +106,7 @@ func TestAskPrintsNothingWithoutASafeConfiguration(t *testing.T) {
 	// it) is a safe configuration.
 	var out bytes.Buffer
 	runAsk(nil, env(map[string]string{envURL: srv.URL, envAllowHTTP: "1", envToken: "mmt_x"}), bytes.NewReader(askPayload(t)), &out, &bytes.Buffer{})
-	if !strings.Contains(out.String(), `"answers"`) || len(seen) != 1 {
-		t.Fatalf("the env-configured control printed %q (contacted %d)", out.String(), len(seen))
-	}
+	registered(t, seen, "mmt_x", &out)
 }
 
 func TestRunDispatchesAsk(t *testing.T) {
@@ -157,9 +145,7 @@ func TestAskNeedsNoFlagsOnAHostWhoseMirrorRecordedItsConfig(t *testing.T) {
 	}
 	var out, errb bytes.Buffer
 	runAsk(nil, env(nil), bytes.NewReader(askPayload(t)), &out, &errb)
-	if !strings.Contains(out.String(), `"answers"`) || len(seen) != 1 || seen[0] != "Bearer mmt_recorded" {
-		t.Fatalf("no-flag hook: stdout %q, tokens sent %q, stderr %s", out.String(), seen, errb.String())
-	}
+	registered(t, seen, "mmt_recorded", &out)
 }
 
 // TestAskDefaultsToTheHostsTokenPath: with no recorded token file the hook

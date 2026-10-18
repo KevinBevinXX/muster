@@ -546,6 +546,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	return a, nil
 }
 
+// askSweepEvery is how often the question store's expiry runs
+// (askq.SweepEvery; a test shortens it).
+var askSweepEvery = askq.SweepEvery
+
 // approvalGateFor builds the gate the claude-code approval relay files through:
 // a client for MUSTER_APPROVAL_GATE_URL + _TOKEN, asserting RouterActor, or nil
 // when they are unset (the relay then answers 503 and prompts fall back to the
@@ -733,7 +737,7 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	// the attention queue) without waiting for a page to ask. In memory, no
 	// database.
 	if a.srv != nil {
-		go a.srv.RunAskSweep(ctx, askq.SweepEvery)
+		go a.srv.RunAskSweep(ctx, askSweepEvery)
 	}
 	if a.pool == nil {
 		return

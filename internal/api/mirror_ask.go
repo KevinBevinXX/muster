@@ -387,12 +387,23 @@ type askWatchKey struct {
 
 // askWatchRetry is how long a watch waits before looking again for the window
 // (not listed yet, host offline) or after its stream ended.
-var askWatchRetry = 2 * time.Second
+const askWatchRetry = 2 * time.Second
 
 // askWatchers is the set of running watches.
 type askWatchers struct {
 	mu      sync.Mutex
 	running map[askWatchKey]bool
+	// retry replaces askWatchRetry (tests; 0 = default).
+	retry time.Duration
+}
+
+func (w *askWatchers) retryEvery() time.Duration {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.retry > 0 {
+		return w.retry
+	}
+	return askWatchRetry
 }
 
 // askPrincipal is ctx acting as owner, through authz.ViaAsk: how the watcher
@@ -440,8 +451,8 @@ func (s *Server) runAskWatch(ctx context.Context, k askWatchKey) {
 			wctx, cancel := context.WithCancel(ctx)
 			// Stop once nothing is open (resolved here, or expired).
 			stop := make(chan struct{})
-			go func() {
-				t := time.NewTicker(askWatchRetry)
+			safeGo(s.logger, "mirror: end a question watch", func() {
+				t := time.NewTicker(s.askWatch.retryEvery())
 				defer t.Stop()
 				for {
 					select {
@@ -454,7 +465,7 @@ func (s *Server) runAskWatch(ctx context.Context, k askWatchKey) {
 						}
 					}
 				}
-			}()
+			})
 			_ = s.ext.Mirror.WatchWindow(wctx, e.Host, e.Session, e.Window, "", 0, func(m mirror.Msg) error {
 				if m.Gen != "" && m.Gen != k.session {
 					cancel() // another conversation is in the window now
@@ -471,7 +482,7 @@ func (s *Server) runAskWatch(ctx context.Context, k askWatchKey) {
 		}
 		select {
 		case <-ctx.Done():
-		case <-time.After(askWatchRetry):
+		case <-time.After(s.askWatch.retryEvery()):
 		}
 	}
 }

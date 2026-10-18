@@ -3,7 +3,6 @@ package api
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -37,11 +36,11 @@ func TestAHeldQuestionIsOneItemLinkedToItsSessionsView(t *testing.T) {
 	qs := []askq.Question{{Question: "Which database?", Header: "DB", Options: []askq.Option{{Label: "postgres"}, {Label: "sqlite"}}},
 		{Question: "Migrate now?", Options: []askq.Option{{Label: "yes"}, {Label: "no"}}}}
 	e, err := f.srv.Questions().Open(askq.Key{Owner: 1, Source: askSourceMirror, Scope: "ws", Session: focusSID, ToolUseID: "toolu_attn1"},
-		qs, time.Minute, askq.NewID())
+		qs, askq.NewID())
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The window reports waiting (as the overlay makes it) AND a question is held: one item.
+	// The window reports waiting (Claude Code does, with its picker up) AND a question is open: one item.
 	got := items()
 	if len(got) != 1 || got[0].Key != key || got[0].Kind != attentionKindQuestion || got[0].Text != "Which database? (+1 more)" || got[0].Link != view {
 		t.Fatalf("held + waiting: %+v", got)
@@ -55,8 +54,9 @@ func TestAHeldQuestionIsOneItemLinkedToItsSessionsView(t *testing.T) {
 		t.Fatalf("held + idle: %+v", got)
 	}
 	// Answered: no question; the idle window is no item at all.
-	if _, err := f.srv.Questions().Answer(e.Key, map[string]string{"Which database?": "postgres", "Migrate now?": "yes"}); err != nil {
-		t.Fatal(err)
+	if _, ok := f.srv.Questions().Resolve(e.Key.Owner, e.Key.Source, e.Key.Scope, e.Key.Session, e.Key.ToolUseID,
+		map[string]string{"Which database?": "postgres", "Migrate now?": "yes"}); !ok {
+		t.Fatal("not resolved")
 	}
 	if got := items(); len(got) != 0 {
 		t.Fatalf("answered + idle: %+v", got)
@@ -68,7 +68,7 @@ func TestAHeldQuestionIsOneItemLinkedToItsSessionsView(t *testing.T) {
 	}
 	// Another owner's held question is not the operator's item.
 	if _, err := f.srv.Questions().Open(askq.Key{Owner: f.member, Source: askSourceMirror, Scope: "ws", Session: focusSID, ToolUseID: "toolu_attn2"},
-		qs, time.Minute, askq.NewID()); err != nil {
+		qs, askq.NewID()); err != nil {
 		t.Fatal(err)
 	}
 	if got := items(); len(got) != 1 || got[0].Kind != attentionKindSession {
