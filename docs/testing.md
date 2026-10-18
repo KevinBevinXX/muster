@@ -25,12 +25,12 @@ into a hard failure that names itself. CI sets it; set it locally too.
 process by `internal/uploads/uploadstest` for the service and route tests, and
 its timeouts are tested against a small HTTP fake. Neither checks a signature or
 a multipart upload, so `TestAgainstARealS3` runs the client against a real
-S3-compatible server, and skips unless you name one:
+S3-compatible server, behind the `s3live` build tag. Built with the tag it fails, rather than skips, when no server is named:
 
 ```sh
 MUSTER_TEST_S3_ENDPOINT=http://127.0.0.1:9000 MUSTER_TEST_S3_BUCKET=muster-test \
 MUSTER_TEST_S3_ACCESS_KEY=… MUSTER_TEST_S3_SECRET_KEY=… \
-  go test -run TestAgainstARealS3 -v ./internal/uploads/
+  go test -tags s3live -run TestAgainstARealS3 -v ./internal/uploads/
 ```
 
 The bucket must exist. The test also checks that a wrong secret is refused by
