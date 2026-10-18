@@ -275,7 +275,7 @@ func TestTheFilterScriptDeclaresEachNameOnce(t *testing.T) {
 	decls := topLevelDeclarations(b.String())
 	// Positive control: names the parse must find, including a SECOND name of
 	// a comma list and both kinds.
-	for _, want := range []string{"function place", "var pending", "var heldOrder", "var liveOrder", "function arrange"} {
+	for _, want := range []string{"function place", "var chosenHost", "var heldOrder", "var liveOrder", "function arrange"} {
 		kind, name, _ := strings.Cut(want, " ")
 		found := false
 		for _, k := range decls[name] {

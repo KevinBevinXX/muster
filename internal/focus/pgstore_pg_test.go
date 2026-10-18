@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -94,6 +96,40 @@ func TestUpsertGetAndRecordError(t *testing.T) {
 	// An empty title is refused before the database.
 	if _, err := s.Upsert(as(2), m, Write{Title: "  ", Source: SourceSummarizer}); !errors.Is(err, ErrEmpty) {
 		t.Fatalf("empty title: %v", err)
+	}
+}
+
+// TestALongTitleIsStoredAndReadBackWhole: a 122-rune title (past the old
+// 80-rune clamp and the 80-character CHECKs of 0020 and 0022) goes through
+// Upsert into the focus row AND its history row, and both read back exactly as
+// written. Red before 0023 + the raised MaxTitleRunes: Clean cut it to 80 runes
+// ending in "…".
+func TestALongTitleIsStoredAndReadBackWhole(t *testing.T) {
+	s, pool := pgStore(t)
+	a := mustAgent(t, pool, 2, "focus-long")
+	sub := AgentSubject(a.ID)
+	title := strings.Repeat("Résumé ", 17) + "end"
+	if _, err := s.Upsert(as(2), sub, Write{Title: title, Description: "Long.", Source: SourceSummarizer}); err != nil {
+		t.Fatalf("upsert a %d-rune title: %v", utf8.RuneCountInString(title), err)
+	}
+	got, ok, err := s.Get(as(2), sub)
+	if err != nil || !ok || got.Title != title {
+		t.Fatalf("focus row title = %q (%v %v), want it whole: %q", got.Title, ok, err, title)
+	}
+	page, err := s.History(as(2), sub, "", 5)
+	if err != nil || len(page.Entries) != 1 || page.Entries[0].Title != title {
+		t.Fatalf("history = %+v (%v), want one row titled whole", page.Entries, err)
+	}
+	// 🔴 THE SEAM: Clean's guard and migration 0023's CHECKs are one number. A
+	// runaway title is cut by Clean to what the database accepts — stored, not
+	// refused — in both tables.
+	runaway := strings.Repeat("word ", 100)
+	if _, err := s.Upsert(as(2), sub, Write{Title: runaway, Source: SourceSummarizer}); err != nil {
+		t.Fatalf("a runaway title was refused rather than cut: %v", err)
+	}
+	got, _, _ = s.Get(as(2), sub)
+	if n := utf8.RuneCountInString(got.Title); n > 300 || n < 290 || !strings.HasSuffix(got.Title, "…") {
+		t.Errorf("a runaway title stored as %d runes (%q), want cut to the 300 guard with an ellipsis", n, got.Title)
 	}
 }
 

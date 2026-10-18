@@ -85,6 +85,8 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /static/': 'static files',
   'GET /sw.js': 'service worker script',
   'GET /tasks/{id}/attachments/{aid}': 'a file download',
+  'GET /f/{id}': 'a file download (the signed link an agent fetches)',
+  'GET /uploads/{id}/file': 'a file download (the owner\'s attachment thumbnail)',
 };
 
 const BAR = 0.01;
