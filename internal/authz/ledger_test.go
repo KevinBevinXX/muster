@@ -147,10 +147,20 @@ var (
 		// routes are past their deadline (ids and owners only); each is then
 		// timed out as its owner (withPrincipalLedger's routePrincipal).
 		"internal/plugins.(*PGStore).ExpiredRoutes",
+		// File attachments (migration 0024): a signed link's read of ONE row by
+		// its public id (uploads.PGStore.LinkTarget), made only after the link's
+		// HMAC and expiry have been verified — the link is the credential, and
+		// there is no principal to run as. Only what serving the file needs is
+		// handed on (its key, type, name, and whether it was revoked).
+		"internal/uploads.sys",
 		// The attention queue (migration 0023): the expiry sweep moves every
 		// owner's lapsed asks and hands each back with its owner, whose devices
 		// alone are then told (attention.PGStore.ExpireDue's one helper).
 		"internal/attention.sys",
+		// …and its draft half: every owner's PENDING reply drafts (ids, owners,
+		// deadlines; no body), read once per process so a notification shown
+		// before a restart is still withdrawn when its draft expires.
+		"internal/plugins.(*PGStore).PendingDrafts",
 	}
 	// operatorLedger: work done as the OPERATOR (user 1) with no request —
 	// the boot-time GitHub connect of the operator's own static token, and the

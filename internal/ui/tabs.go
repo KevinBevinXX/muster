@@ -40,6 +40,13 @@ type TabSet struct {
 	Panels g.Node
 }
 
+// tabClass is a tab's look, shared by every tablist in the app (Tabs here, and
+// the Agents list's host tabs, agentsHostTabs). The selected tab is underlined
+// in the accent; every tab carries the border (transparent), so selecting one
+// moves nothing. It is styled by aria-selected, so a script that sets the
+// attribute restyles the tab with no class of its own.
+const tabClass = "press inline-flex min-h-[44px] shrink-0 items-center whitespace-nowrap border-b-2 border-transparent px-3 text-sm font-medium text-muted transition hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus aria-selected:border-accent aria-selected:text-fg"
+
 // Tabs is a tablist over tabs' panels, the first selected. id names the
 // instance (element ids are id+"-tab-"+Tab.ID and id+"-panel-"+Tab.ID); key is
 // what the choice is stored under ("" = not stored); label is the tablist's
@@ -65,9 +72,7 @@ func Tabs(id, key, label string, tabs ...Tab) TabSet {
 			g.Attr("aria-controls", panelID),
 			g.Attr("aria-selected", selected),
 			g.Attr("tabindex", tabIndex),
-			// The selected tab is underlined in the accent; every tab carries
-			// the border (transparent), so selecting one moves nothing.
-			Class("press inline-flex min-h-[44px] items-center whitespace-nowrap border-b-2 border-transparent px-3 text-sm font-medium text-muted transition hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus aria-selected:border-accent aria-selected:text-fg"),
+			Class(tabClass),
 			g.Text(t.Label),
 		))
 		panels = append(panels, Div(

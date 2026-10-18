@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -28,22 +27,24 @@ import (
 //
 // 🔴 THREE SOURCES, ONE READ MODEL, AND ONLY ONE OF THEM IS STORED.
 //   - "ask": an agent's explicit question (attention_ask), stored in
-//     attention_asks (internal/attention, migration 0023).
+//     attention_asks (internal/attention, migration 0025).
 //   - "session": a mirrored Claude Code window whose session reports
 //     mirror.StatusWaiting (a permission prompt, a question) — read LIVE from
 //     the hub's window list, never copied anywhere.
 //   - "plugin": a reply draft awaiting its owner's approval — read LIVE from
 //     plugin_reply_drafts.
 // attentionItems is the one function that merges them; the page, the badge,
-// the JSON API and the chief's attention_list all read it, so they cannot
+// and the chief's attention_list all read it, so they cannot
 // disagree about what is waiting.
 //
 // 🔴 A NOTIFICATION PER NEW ITEM, CLEARED BY TAG WHEN IT RESOLVES. An ask
 // pushes when it is filed and sends the "resolved" control message (same tag)
 // when it is answered, cancelled or expires. A session pushes when the hub's
-// change nudge first shows it waiting and clears when it stops. A plugin draft
+// change nudge first shows it waiting (not on a host's first observation, nor
+// within attentionRepushAfter of its last push) and clears when it stops. A plugin draft
 // keeps its existing `plugin` push (it IS that item's notification; a second
-// one would double-buzz) and now also clears when the draft is decided.
+// one would double-buzz), withdrawn when the draft is decided, superseded or
+// expires (attention_drafts.go).
 // ---------------------------------------------------------------------------
 
 const (
@@ -76,12 +77,44 @@ const (
 
 // attentionState is the queue's per-process state.
 type attentionState struct {
-	// wake wakes every attention_wait when this process changes an ask.
-	wake draftSignal
-	mu   sync.Mutex
+	mu sync.Mutex
+	// wakes wakes each OWNER's attention_wait calls when this process changes
+	// one of that owner's asks — per owner, so a change for one owner does not
+	// make every other owner's waiters re-read the database.
+	wakes map[int64]*draftSignal
+	// waits counts the attention_wait calls in flight, per asker and per owner
+	// (attentionWaitSlot).
+	waitsByAsker map[string]int
+	waitsByOwner map[int64]int
 	// waiting is each owner's waiting sessions as last seen, by item key: what
 	// a hub nudge is diffed against to push a new one and clear a gone one.
 	waiting map[int64]map[string]attentionItem
+	// seenHosts is each owner's hosts this process has already observed: a
+	// host's FIRST observation seeds its waiting sessions without pushing, so a
+	// restart (or the double rollout, or a host reconnecting) re-notifies none.
+	seenHosts map[int64]map[string]bool
+	// pushedAt is when each session item was last pushed: a session that goes
+	// waiting again within attentionRepushAfter is not pushed again.
+	pushedAt map[string]time.Time
+	// drafts are the reply drafts whose `plugin` notification may be showing,
+	// by draft id: what an expiry or a supersede clears (attention_drafts.go).
+	drafts       map[int64]draftNote
+	draftsSeeded bool
+}
+
+// wakeFor is owner's wake-up signal.
+func (st *attentionState) wakeFor(owner int64) *draftSignal {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.wakes == nil {
+		st.wakes = map[int64]*draftSignal{}
+	}
+	w := st.wakes[owner]
+	if w == nil {
+		w = &draftSignal{}
+		st.wakes[owner] = w
+	}
+	return w
 }
 
 // attentionItem is one entry of the unified read model.
@@ -98,8 +131,10 @@ type attentionItem struct {
 	Since   time.Time `json:"since"`
 	// Link is where the owner acts on it.
 	Link string `json:"link"`
-	// AskID is the ask's id ("ask" items only): what attention_answer takes.
+	// AskID is the ask's id ("ask" items only).
 	AskID int64 `json:"ask_id,omitempty"`
+	// host is a session item's host (its first observation seeds silently).
+	host string
 }
 
 // attentionPrincipal is ctx acting as owner, through authz.ViaAttention: how
@@ -166,7 +201,7 @@ func (s *Server) waitingSessions(ctx context.Context) []attentionItem {
 		if !ok {
 			continue
 		}
-		it := attentionItem{Key: k, Kind: attentionKindSession, Source: e.DisplayTitle() + " @ " + e.Host, Text: sessionWaitingText,
+		it := attentionItem{Key: k, Kind: attentionKindSession, Source: e.DisplayTitle() + " @ " + e.Host, Text: sessionWaitingText, host: e.Host,
 			Link: ui.MirrorRef{Host: e.Host, Session: e.Session, Window: e.Window}.ViewPath()}
 		if ms > 0 {
 			it.Since = time.UnixMilli(ms)
@@ -224,13 +259,14 @@ func (s *Server) attentionItems(ctx context.Context) ([]attentionItem, error) {
 
 // --- changes: SSE, push, waiters ---------------------------------------------
 
-// attentionChanged tells owner's open views the queue moved and wakes this
-// process's waiters.
+// attentionChanged tells owner's open views the queue moved and wakes that
+// owner's waiters in this process.
 func (s *Server) attentionChanged(owner int64, key string) {
-	s.attention.wake.signal()
-	if owner > 0 {
-		s.broadcastTo(owner, EventAttentionChanged, key)
+	if owner <= 0 {
+		return
 	}
+	s.attention.wakeFor(owner).signal()
+	s.broadcastTo(owner, EventAttentionChanged, key)
 }
 
 // attentionNotify pushes one new item to owner's devices, under the
@@ -262,45 +298,83 @@ func (s *Server) askSettled(a attention.Ask) {
 	s.attentionChanged(a.Owner, askKey(a.ID))
 }
 
+// attentionRepushAfter: a session that goes waiting again within this long of
+// its last push is not pushed again (waiting → busy → waiting is one episode).
+const attentionRepushAfter = 2 * time.Minute
+
 // attentionMirrorChanged diffs owner's waiting sessions against the last
-// nudge's: a session that started waiting is pushed, one that stopped is
-// cleared. Called on the hub's change nudge (BroadcastAgentsChangedFor).
+// nudge's. A session that started waiting is pushed — unless its host is
+// observed for the first time in this process (seeded silently: a restart or a
+// reconnect re-notifies nothing) or it was pushed within attentionRepushAfter;
+// one that stopped is cleared. Called on the hub's change nudge
+// (BroadcastAgentsChangedFor).
 func (s *Server) attentionMirrorChanged(owner int64) {
 	if s.ext.Mirror == nil || owner <= 0 {
 		return
 	}
 	now := map[string]attentionItem{}
+	hosts := map[string]bool{}
+	for _, h := range s.ext.Mirror.Hosts(s.attentionPrincipal(context.Background(), owner)) {
+		if h.Online {
+			hosts[h.Host] = true
+		}
+	}
 	for _, it := range s.waitingSessions(s.attentionPrincipal(context.Background(), owner)) {
 		now[it.Key] = it
 	}
+	at := s.now()
+	var push []attentionItem
+	var clear []string
 	s.attention.mu.Lock()
 	if s.attention.waiting == nil {
 		s.attention.waiting = map[int64]map[string]attentionItem{}
+		s.attention.seenHosts = map[int64]map[string]bool{}
+		s.attention.pushedAt = map[string]time.Time{}
 	}
 	before := s.attention.waiting[owner]
+	seen := s.attention.seenHosts[owner]
+	if seen == nil {
+		seen = map[string]bool{}
+		s.attention.seenHosts[owner] = seen
+	}
 	s.attention.waiting[owner] = now
-	s.attention.mu.Unlock()
-	moved := false
 	for k, it := range now {
-		if _, ok := before[k]; !ok {
-			s.attentionNotify(owner, it)
-			moved = true
+		if _, ok := before[k]; ok {
+			continue
 		}
+		if !seen[it.host] {
+			continue // the host's first observation: seed, do not push
+		}
+		if last, ok := s.attention.pushedAt[k]; ok && at.Sub(last) < attentionRepushAfter {
+			continue // the same episode, back again
+		}
+		s.attention.pushedAt[k] = at
+		push = append(push, it)
 	}
 	for k := range before {
 		if _, ok := now[k]; !ok {
-			s.attentionClear(owner, k)
-			moved = true
+			clear = append(clear, k)
 		}
 	}
-	if moved {
+	for h := range hosts {
+		seen[h] = true
+	}
+	s.attention.mu.Unlock()
+	for _, it := range push {
+		s.attentionNotify(owner, it)
+	}
+	for _, k := range clear {
+		s.attentionClear(owner, k)
+	}
+	if len(push) > 0 || len(clear) > 0 || len(now) != len(before) {
 		s.attentionChanged(owner, "")
 	}
 }
 
 // RunAttentionSweep expires lapsed asks until ctx ends (interval <= 0: every
 // 30s): each is cleared from its owner's devices and views, and its waiters
-// woken. Started by cmd/muster-server beside the other background loops; it
+// woken. It also clears the notification of a reply draft that expired
+// (expireDraftNotes). Started by cmd/muster-server beside the other background loops; it
 // does nothing without a store.
 func (s *Server) RunAttentionSweep(ctx context.Context, interval time.Duration) {
 	if s.ext.Attention == nil {
@@ -313,6 +387,7 @@ func (s *Server) RunAttentionSweep(ctx context.Context, interval time.Duration) 
 	defer t.Stop()
 	for {
 		s.expireAsks(ctx)
+		s.expireDraftNotes(ctx)
 		select {
 		case <-ctx.Done():
 			return
@@ -341,11 +416,6 @@ func (s *Server) registerAttentionRoutes(mux Mux) {
 	mux.HandleFunc("GET "+ui.AttentionBadgePath, s.requireSession(s.handleAttentionBadge))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/answer", s.requireOperatorWrite(s.handleAttentionAnswerForm))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/cancel", s.requireOperatorWrite(s.handleAttentionCancelForm))
-	// The machine API: the same read model and the same two decisions, on the
-	// hook tier (the operator's hook token or a personal API token).
-	mux.HandleFunc("GET /api/attention", s.requireHookToken(s.handleAPIAttentionList))
-	mux.HandleFunc("POST /api/attention/{id}/answer", s.requireHookToken(s.handleAPIAttentionAnswer))
-	mux.HandleFunc("POST /api/attention/{id}/cancel", s.requireHookToken(s.handleAPIAttentionCancel))
 }
 
 func (s *Server) handleAttentionPage(w http.ResponseWriter, r *http.Request) {
@@ -506,9 +576,9 @@ func askIDParam(r *http.Request) (int64, bool) {
 	return id, err == nil && id > 0
 }
 
-// answerAsk records the owner's (or the chief's) answer and settles it.
-func (s *Server) answerAsk(ctx context.Context, id int64, answer, by string) (attention.Ask, error) {
-	a, err := s.ext.Attention.Answer(ctx, id, answer, by)
+// answerAsk records the operator's answer and settles it.
+func (s *Server) answerAsk(ctx context.Context, id int64, answer string) (attention.Ask, error) {
+	a, err := s.ext.Attention.Answer(ctx, id, answer)
 	if err == nil {
 		s.askSettled(a)
 	}
@@ -564,7 +634,7 @@ func (s *Server) handleAttentionAnswerForm(w http.ResponseWriter, r *http.Reques
 	if strings.TrimSpace(answer) == "" {
 		answer = r.PostFormValue("answer")
 	}
-	a, err := s.answerAsk(r.Context(), id, answer, attention.ByOperator)
+	a, err := s.answerAsk(r.Context(), id, answer)
 	if err != nil {
 		if attentionErrCode(err) == http.StatusInternalServerError {
 			s.logger.Printf("attention: answer %d: %v", id, err)
@@ -593,66 +663,9 @@ func (s *Server) handleAttentionCancelForm(w http.ResponseWriter, r *http.Reques
 	http.Redirect(w, r, attentionPath, http.StatusSeeOther)
 }
 
-func (s *Server) handleAPIAttentionList(w http.ResponseWriter, r *http.Request) {
-	if s.ext.Attention == nil {
-		http.NotFound(w, r)
-		return
-	}
-	items, err := s.attentionItems(r.Context())
-	res := map[string]any{"items": nonNilItems(items)}
-	if err != nil {
-		s.logger.Printf("attention: api list: %v", err)
-		res["partial"] = true
-	}
-	s.writeJSON(w, http.StatusOK, res)
-}
-
 func nonNilItems(items []attentionItem) []attentionItem {
 	if items == nil {
 		return []attentionItem{}
 	}
 	return items
-}
-
-func (s *Server) handleAPIAttentionAnswer(w http.ResponseWriter, r *http.Request) {
-	if s.ext.Attention == nil {
-		http.NotFound(w, r)
-		return
-	}
-	id, ok := askIDParam(r)
-	if !ok {
-		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such ask"})
-		return
-	}
-	var in struct {
-		Answer string `json:"answer"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&in); err != nil {
-		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
-		return
-	}
-	a, err := s.answerAsk(r.Context(), id, in.Answer, attention.ByOperator)
-	if err != nil {
-		s.writeJSON(w, attentionErrCode(err), map[string]any{"error": attentionErrText(err, a)})
-		return
-	}
-	s.writeJSON(w, http.StatusOK, a)
-}
-
-func (s *Server) handleAPIAttentionCancel(w http.ResponseWriter, r *http.Request) {
-	if s.ext.Attention == nil {
-		http.NotFound(w, r)
-		return
-	}
-	id, ok := askIDParam(r)
-	if !ok {
-		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such ask"})
-		return
-	}
-	a, err := s.cancelAsk(r.Context(), id)
-	if err != nil {
-		s.writeJSON(w, attentionErrCode(err), map[string]any{"error": attentionErrText(err, a)})
-		return
-	}
-	s.writeJSON(w, http.StatusOK, a)
 }

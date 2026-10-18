@@ -136,6 +136,8 @@ type Server struct {
 	sends sendNonces
 	// transcribe throttles the message box's microphone (transcribe.go).
 	transcribe transcribeLimits
+	// uploadLimits throttles the composer's attach button (uploads.go).
+	uploadLimits uploadLimits
 
 	// loginRate throttles password attempts on the human tier.
 	loginRate rateLimiter
@@ -502,7 +504,7 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerFlowRoutes(mux)
 	// Plugins (internal/plugins): /plugins and /plugin/v1/*, 404 while off.
 	s.registerPluginRoutes(mux)
-	// The attention queue (attention.go): /attention, its badge and /api/attention; 404 without a store.
+	// The attention queue (attention.go): /attention, its list and its badge; 404 without a store.
 	s.registerAttentionRoutes(mux)
 	// The mirrored sessions' MCP door (mirror_mcp.go): a host's token, its own sessions; 404 without the mirror plugin.
 	s.registerMirrorMCPRoutes(mux)
@@ -511,6 +513,8 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerPushRoutes(mux)
 	// Dictation (transcribe.go): the message box's microphone.
 	s.registerTranscribeRoutes(mux)
+	// File attachments (uploads.go): the attach button, and the signed link.
+	s.registerUploadRoutes(mux)
 }
 
 // registerAgentSelfServiceRoutes wires the agent callback API. These are

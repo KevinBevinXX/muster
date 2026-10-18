@@ -10,14 +10,13 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// THE FILTER'S CONTROLS: one select per facet, options from the cards.
+// THE FILTER'S CONTROLS: host tabs built from the cards, and the search box.
 // ---------------------------------------------------------------------------
 
-// facetFixture is a list whose every facet value is pairwise distinct across
+// facetFixture is a list whose every field value is pairwise distinct across
 // fields and cards, with one DUPLICATE per field (two "tower" windows, two
-// running cards, two opencode panes) so a facet that lists a value per card
-// rather than per value is red. Nothing in it spells "cluster" except the pod
-// agents' host, which is the literal podHost.
+// running cards, two opencode panes). Nothing in it spells "cluster" except the
+// pod agents' host, which is the literal podHost.
 func facetFixture() ([]AgentCardView, []MirrorCardView) {
 	list := []AgentCardView{
 		{ID: 1, Name: "keen-wren", Status: "running", Kind: agents.KindClaudeCode, CCAccount: "Alpha"},
@@ -31,13 +30,13 @@ func facetFixture() ([]AgentCardView, []MirrorCardView) {
 	return list, mirrors
 }
 
-// TestTheCardsCarryTheirOptionsLabels: the script reads a select's options off
-// the cards — the value from data-f-<field>, what the option says from
-// data-l-<field> — so a facet value that lower-casing changed carries its
-// spelling as the card writes it, and one it did not change carries none. Only
-// facet fields get a label (nothing reads one elsewhere). Red before: no card
-// carried a data-l-* attribute.
-func TestTheCardsCarryTheirOptionsLabels(t *testing.T) {
+// TestTheCardsCarryTheirHostLabel: the script builds a host TAB off the cards
+// — its value from data-f-host, what it says from data-l-host — so a host that
+// lower-casing changed carries its spelling as the card writes it, and one it
+// did not change carries none. Only the host is labelled now: the type, status
+// and kind dropdowns that read data-l-type/-kind are gone, and a label nothing
+// reads is dead weight on every card.
+func TestTheCardsCarryTheirHostLabel(t *testing.T) {
 	list, mirrors := facetFixture()
 	cards := renderNode(t, AgentsCardsWithMirrors(list, mirrors))
 	attr := func(card, name string) (string, bool) {
@@ -47,40 +46,33 @@ func TestTheCardsCarryTheirOptionsLabels(t *testing.T) {
 		}
 		return html.UnescapeString(m[1]), true
 	}
-	for _, c := range []struct {
-		marker, field, value, label string
-	}{
-		{`id="agent-1"`, "kind", "claude code", "Claude Code"},
-		{`id="agent-1"`, "type", "agent", "Agent"},
-		{`id="agent-2"`, "kind", "standard", "Standard"},
-		{`data-mirror-card`, "host", "tower", "Tower"},
-		{`data-mirror-card`, "type", "mirrored", "Mirrored"},
-	} {
-		card := articleWith(t, cards, c.marker)
-		if v, _ := attr(card, "data-f-"+c.field); v != c.value {
-			t.Errorf("%s: data-f-%s = %q, want %q", c.marker, c.field, v, c.value)
-		}
-		if l, _ := attr(card, "data-l-"+c.field); l != c.label {
-			t.Errorf("%s: data-l-%s = %q, want %q", c.marker, c.field, l, c.label)
-		}
+	tower := articleWith(t, cards, `data-mirror-card`)
+	if v, _ := attr(tower, "data-f-host"); v != "tower" {
+		t.Errorf("data-f-host = %q, want tower", v)
 	}
-	// A value lower-casing left alone carries no label: the option says the value.
-	laptop := articleWith(t, cards, `data-f-host="laptop"`)
-	if l, ok := attr(laptop, "data-l-host"); ok {
+	if l, _ := attr(tower, "data-l-host"); l != "Tower" {
+		t.Errorf("data-l-host = %q, want Tower", l)
+	}
+	// A pod agent is on host "cluster", already lower-case: no label.
+	agent := articleWith(t, cards, `id="agent-1"`)
+	if v, _ := attr(agent, "data-f-host"); v != podHost {
+		t.Errorf("a pod agent's data-f-host = %q, want %q", v, podHost)
+	}
+	if l, ok := attr(agent, "data-l-host"); ok {
 		t.Errorf("an already lower-case host carries data-l-host=%q", l)
 	}
-	if v, _ := attr(laptop, "data-f-kind"); v != "shell" {
-		t.Fatalf("instrument check: the laptop card's data-f-kind = %q, want shell", v)
+	// Its kind changed under lower-casing ("Claude Code") and is still a field,
+	// but is not labelled any more.
+	if v, _ := attr(agent, "data-f-kind"); v != "claude code" {
+		t.Fatalf("instrument check: the agent's data-f-kind = %q, want claude code", v)
 	}
-	// A non-facet field is never labelled, whatever its case (account "Alpha").
-	if strings.Contains(cards, "data-l-account") || strings.Contains(cards, "data-l-name") || strings.Contains(cards, "data-l-session") {
-		t.Errorf("a non-facet field carries a label:\n%s", cards)
-	}
-	if !strings.Contains(cards, `data-f-account="alpha"`) {
-		t.Fatalf("instrument check: the account field is not on the card at all:\n%s", cards)
+	for _, f := range []string{"data-l-kind", "data-l-type", "data-l-status", "data-l-account", "data-l-name", "data-l-session"} {
+		if strings.Contains(cards, f) {
+			t.Errorf("a card carries %s, which nothing reads:\n%s", f, cards)
+		}
 	}
 	// The list's partial is the cards and the recent strip, and nothing else
-	// (no out-of-band options).
+	// (no out-of-band tabs: the script builds them from the cards).
 	var b strings.Builder
 	if err := RenderAgentsList(&b, list, mirrors, nil); err != nil {
 		t.Fatal(err)
@@ -105,25 +97,27 @@ func articleWith(t *testing.T, markup, marker string) string {
 	return rest
 }
 
-// TestEveryFacetIsARegisteredField: a facet the registry does not know would be
-// a select whose token the script treats as free text.
-func TestEveryFacetIsARegisteredField(t *testing.T) {
+// TestEveryLabelledFieldIsARegisteredField: a label for a field the registry
+// does not know would never be written.
+func TestEveryLabelledFieldIsARegisteredField(t *testing.T) {
 	known := map[string]bool{}
 	for _, f := range cardFieldRegistry {
 		known[f.Key] = true
 	}
-	for _, f := range facetFields {
+	for _, f := range labelledFields {
 		if !known[f] {
-			t.Errorf("facet %q is not in cardFieldRegistry", f)
+			t.Errorf("labelled field %q is not in cardFieldRegistry", f)
 		}
 	}
 }
 
-// TestTheBarHasAControlPerFacetOutsideTheList: one select per facet, its first
-// option selecting nothing, each a 16px 44px target; "Clear all" and the
-// count — all OUTSIDE #agents-list (a refresh never touches
-// them). "Clear all" is hidden by ATTRIBUTE, so it carries no display utility.
-func TestTheBarHasAControlPerFacetOutsideTheList(t *testing.T) {
+// TestTheBarHasHostTabsAndNoDropdowns: the four facet <select>s are gone; in
+// their place, ABOVE the box and OUTSIDE #agents-list (a refresh never touches
+// it), is a tablist whose one server-drawn tab is "All" — selected, in the
+// roving tabindex, controlling the list, and drawn with the app's tab look
+// (tabClass, which the script's clones inherit). The strip scrolls sideways
+// inside itself and is one 44px row however many tabs it holds.
+func TestTheBarHasHostTabsAndNoDropdowns(t *testing.T) {
 	panel := renderNode(t, AgentsPanel(true))
 	list := strings.Index(panel, `id="agents-list"`)
 	tag := func(id string) string {
@@ -137,51 +131,58 @@ func TestTheBarHasAControlPerFacetOutsideTheList(t *testing.T) {
 		start := strings.LastIndex(panel[:i], "<")
 		return panel[start : i+strings.Index(panel[i:], ">")]
 	}
-	for _, f := range facetFields {
-		s := tag("agents-f-" + f)
-		for _, want := range []string{"<select", `data-filter-field="` + f + `"`, " text-base ", "min-h-[44px]", `aria-label="Filter by ` + f + `"`} {
-			if !strings.Contains(s, want) {
-				t.Errorf("the %s control lacks %q: %s", f, want, s)
-			}
+	for _, gone := range []string{"<select", `id="agents-f-`, "agents-filter-controls", "agents-filter-clear", "data-filter-field"} {
+		if strings.Contains(panel, gone) {
+			t.Errorf("the Agents panel still has %q", gone)
 		}
-		i := strings.Index(panel, `id="agents-f-`+f+`"`)
-		first := regexp.MustCompile(`<option value="">([^<]*)</option>`).FindStringSubmatch(panel[i:])
-		if first == nil || first[1] != facetAny[f] {
-			t.Errorf("the %s control's first option is not %q", f, facetAny[f])
+	}
+	strip := tag("agents-hosts")
+	for _, want := range []string{`role="tablist"`, `aria-label="Hosts"`, "overflow-x-auto", "flex-nowrap", "min-h-[44px]"} {
+		if !strings.Contains(strip, want) {
+			t.Errorf("the host strip lacks %q: %s", want, strip)
 		}
+	}
+	all := tag("agents-host-all")
+	for _, want := range []string{`role="tab"`, `data-host=""`, `aria-controls="agents-list"`, `aria-selected="true"`, `tabindex="0"`, `class="` + tabClass + `"`} {
+		if !strings.Contains(all, want) {
+			t.Errorf("the All tab lacks %q: %s", want, all)
+		}
+	}
+	if strings.Index(panel, `id="agents-hosts"`) > strings.Index(panel, `id="agents-search"`) {
+		t.Error("the host tabs are below the search box, not above it")
+	}
+	i := strings.Index(panel, `id="agents-host-all"`)
+	rest := panel[i:]
+	rest = rest[:strings.Index(rest, "</button>")]
+	if !strings.Contains(rest, `<span data-tab-label="">All</span>`) || !strings.Contains(rest, `data-tab-count=""`) {
+		t.Errorf("the All tab has no label/count slots for its clones: %s", rest)
 	}
 	tag("agents-count")
-	clear := tag("agents-filter-clear")
-	if !strings.Contains(clear, ` hidden=""`) || !strings.Contains(clear, "min-h-[44px]") {
-		t.Errorf("Clear all is not a hidden 44px target: %s", clear)
-	}
-	for _, display := range []string{"inline-flex", " flex ", " grid ", " block "} {
-		if strings.Contains(clear, display) {
-			t.Errorf("Clear all carries %q, which beats its hidden attribute: %s", display, clear)
-		}
-	}
 	if count := tag("agents-count"); strings.Contains(count, "text-xs") {
 		t.Errorf("the count is still the small muted print: %s", count)
 	}
 }
 
-// TestTheControlsWriteTheSameTokenString pins where the script's ONE string
-// comes from and goes, so a rewrite cannot quietly give the controls a filter
-// of their own: the hide rules are built from composeQ, sessionStorage and the
-// URL are written with it, and a ?q= is split back into the controls.
-func TestTheControlsWriteTheSameTokenString(t *testing.T) {
+// TestTheHostTabIsAnExactTermAndedWithTheBox pins the shape of the script's
+// host filter, so a rewrite cannot quietly make the tab a substring match (a
+// host "mac" showing "macbook"), a filter of its own instead of one more ANDed
+// term, part of ?q=, or built from held arrivals. Behaviour: e2e/tests/host-tabs.spec.ts.
+func TestTheHostTabIsAnExactTermAndedWithTheBox(t *testing.T) {
 	script := scriptWith(t, renderString(t, Page("agents", featuresAllOn)), "__musterAgentsFilter")
 	for name, want := range map[string]string{
-		"the hide rules read the one string":      "var q = composeQ();\n    var ts = terms(q);",
-		"it is remembered as is":                  "sessionStorage.setItem(KEY, q)",
-		"it is the URL's ?q=":                     "syncURL(q);",
-		"a link's ?q= is split into the controls": "} else distribute(q);",
-		"the options come from the drawn cards":   "list.querySelectorAll(':scope > article[data-f-' + f + ']:not([data-held])')",
-		"a select writes an EXACT token":          "return /[\\s\"\\\\]/.test(v) ? f + '=\"' + v.replace(/[\"\\\\]/g, '\\\\$&') + '\"' : f + '=' + v;",
-		"the controls are the facet fields":       "var CONTROLS = " + facetFieldsJSON() + ";",
+		"the tab is one more EXACT term, ANDed":   "var all_ = host ? ts.concat([{ attr: 'data-f-host', value: host, exact: true }]) : ts;",
+		"every term hides":                        "style.textContent = ['#agents-list > article[data-held]{display:none !important}'].concat(all_.map(",
+		"the box alone is ?q= and the session":    "var q = input.value;",
+		"tabs come from the DRAWN cards":          "var drawn = list.querySelectorAll(':scope > article:not([data-held])');",
+		"the choice is stored under tabs' prefix": "var HOST_KEY = 'muster:tabs:agents-host';",
+		"an absent host SHOWS All":                "var on = h && seen[h] ? h : '';",
+		"the hold reads the filter":               "var h = heldOrder.filter(function (id) { return inLive[id] && shows(byId(id)); });",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("%s: the filter script no longer contains %q", name, want)
 		}
+	}
+	if strings.Contains(script, "syncURL(q + ") || strings.Contains(script, "host=' + ") {
+		t.Error("the host tab is written into ?q=")
 	}
 }

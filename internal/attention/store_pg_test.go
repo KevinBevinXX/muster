@@ -72,11 +72,11 @@ func TestAnAskIsAnsweredOnceAndReadsBackWithItsAnswer(t *testing.T) {
 	if err != nil || len(open) != 1 || open[0].ID != a.ID {
 		t.Fatalf("open: %v %+v", err, open)
 	}
-	got, err := s.Answer(as(2), a.ID, "wait", ByOperator)
+	got, err := s.Answer(as(2), a.ID, "wait")
 	if err != nil || got.Status != Answered || got.Answer != "wait" || got.AnsweredBy != ByOperator || got.ResolvedAt.IsZero() {
 		t.Fatalf("answer: %v %+v", err, got)
 	}
-	if again, err := s.Answer(as(2), a.ID, "now", ByChief); !errors.Is(err, ErrNotOpen) || again.Answer != "wait" {
+	if again, err := s.Answer(as(2), a.ID, "now"); !errors.Is(err, ErrNotOpen) || again.Answer != "wait" {
 		t.Fatalf("second answer: %v %+v", err, again)
 	}
 	if _, err := s.Cancel(as(2), a.ID); !errors.Is(err, ErrNotOpen) {
@@ -98,7 +98,7 @@ func TestRowLevelSecurityKeepsAsksToTheirOwner(t *testing.T) {
 	if open, err := s.Open(as(3)); err != nil || len(open) != 0 {
 		t.Fatalf("open as 3: %v %+v", err, open)
 	}
-	if _, err := s.Answer(as(3), a.ID, "main", ByOperator); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Answer(as(3), a.ID, "main"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("answer as 3: %v", err)
 	}
 	if _, err := s.Cancel(as(3), a.ID); !errors.Is(err, ErrNotFound) {
@@ -110,7 +110,7 @@ func TestRowLevelSecurityKeepsAsksToTheirOwner(t *testing.T) {
 }
 
 // TestAnAgentAskNamesOnlyItsOwnersAgent: an ask naming an agent of another
-// owner is refused by 0023's owner trigger.
+// owner is refused by 0025's owner trigger.
 func TestAnAgentAskNamesOnlyItsOwnersAgent(t *testing.T) {
 	s, pool, _ := pgStore(t)
 	var agent int64
@@ -139,7 +139,7 @@ func TestCancelAndExpiry(t *testing.T) {
 	if got, err := s.Cancel(as(2), c.ID); err != nil || got.Status != Cancelled || got.ResolvedAt.IsZero() {
 		t.Fatalf("cancel: %v %+v", err, got)
 	}
-	if _, err := s.Answer(as(2), c.ID, "too late", ByOperator); !errors.Is(err, ErrNotOpen) {
+	if _, err := s.Answer(as(2), c.ID, "too late"); !errors.Is(err, ErrNotOpen) {
 		t.Fatalf("answer after cancel: %v", err)
 	}
 	e := mustAsk(t, s, 2, New{Asker: session, Question: "expire me", Timeout: MinTimeout})
@@ -156,7 +156,7 @@ func TestCancelAndExpiry(t *testing.T) {
 	if open, _ := s.Open(as(2)); len(open) != 0 {
 		t.Fatalf("a lapsed ask is listed open: %+v", open)
 	}
-	if _, err := s.Answer(as(2), e.ID, "late", ByOperator); !errors.Is(err, ErrNotOpen) {
+	if _, err := s.Answer(as(2), e.ID, "late"); !errors.Is(err, ErrNotOpen) {
 		t.Fatalf("answer after expiry: %v", err)
 	}
 	due, err := s.ExpireDue(context.Background())
@@ -182,7 +182,7 @@ func TestAnswerAndCancelRaceToOneOutcome(t *testing.T) {
 			defer wg.Done()
 			var err error
 			if i%2 == 0 {
-				_, err = s.Answer(as(2), a.ID, "yes", ByOperator)
+				_, err = s.Answer(as(2), a.ID, "yes")
 			} else {
 				_, err = s.Cancel(as(2), a.ID)
 			}

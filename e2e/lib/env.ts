@@ -139,8 +139,18 @@ export const composerMenuPort = port + 58;
 // one mirrored host whose Claude window is waiting on the person.
 export const attentionPort = port + 62;
 export const attentionConnectPort = port + 63;
+// File attachments (uploads.spec.ts): the server with S3 configured, the one
+// without, and the fake S3. Far from the others so a sibling spec added in the
+// meantime is unlikely to land on them.
+export const uploadsPort = port + 70;
+export const uploadsOffPort = port + 71;
+export const fakeS3Port = port + 72;
+// The Agents list's host tabs (host-tabs.spec.ts): its own server (the
+// e2eterm binary, mirror plugin on) and up to three mirrored hosts. A high
+// offset, clear of the specs being added beside it.
+export const hostTabsPort = port + 64;
 // …and the mirrored host's own loopback MCP endpoint (muster-mirror -mcp-listen).
-export const attentionMirrorMCPPort = port + 64;
+export const attentionMirrorMCPPort = port + 65;
 // The fake service's bearer token. Invented, like every value here.
 export const sttToken = 'e2e-stt-token-not-a-real-one';
 // The docs screenshots (e2e/docshots, `make screenshots`, never in the suite):

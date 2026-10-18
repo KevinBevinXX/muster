@@ -95,7 +95,7 @@ func (s *Server) handleAgentTerminalPage(w http.ResponseWriter, r *http.Request)
 	c := ui.ComposerView{SendPath: ui.AgentSendPath(a.Name),
 		Extra:       []ui.ComposerField{{Name: "from", Value: ui.AgentSendFromTerminal}},
 		Placeholder: "Message the agent…", Aria: "Send a message to this agent", DisabledPlaceholder: "Cannot be sent a message",
-		Nonce: newSendNonce(), Dictate: s.dictatePath()}
+		Nonce: newSendNonce(), Dictate: s.dictatePath(), Upload: s.uploadPath()}
 	c.Notice, c.NoticeOK = composerNotice(r)
 	switch {
 	case s.ext.Gateway == nil:

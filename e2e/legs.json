@@ -47,9 +47,11 @@
     "tests/composer-autosize.spec.ts": 8.2,
     "tests/tool-groups.spec.ts": 4.4,
     "tests/agents-search.spec.ts": 5.9,
+    "tests/host-tabs.spec.ts": 25.0,
     "tests/chief-thread-search.spec.ts": 2.4,
     "tests/pickers.spec.ts": 2.6,
     "tests/composer-menu.spec.ts": 15.0,
+    "tests/uploads.spec.ts": 10.0,
     "tests/attention.spec.ts": 20.0
   },
   "legs": {
@@ -101,7 +103,9 @@
       "tests/agents-search.spec.ts",
       "tests/pickers.spec.ts",
       "tests/dictation.spec.ts",
-      "tests/terminal.spec.ts"
+      "tests/terminal.spec.ts",
+      "tests/uploads.spec.ts",
+      "tests/host-tabs.spec.ts"
     ]
   }
 }

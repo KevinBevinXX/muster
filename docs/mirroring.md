@@ -84,7 +84,17 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   `session:`, `ns:`, `mode:`, `state:`, `type:` (`agent` or `mirrored`). Quote a
   value with a space in it: `kind:"claude code"`. A term whose prefix is not one
   of those fields is plain text, so `gold:8` still finds a window called
-  `Gold:8`. The filter is kept in the page's `?q=`, so a link reproduces it.
+  `Gold:8`. `field=value` matches the whole field instead of a substring. The
+  filter is kept in the page's `?q=`, so a link reproduces it.
+- **Host tabs.** Above the box: **All**, then one tab per host on the list
+  (dispatched pod agents under **cluster**), each counting its cards that match
+  the box. A tab narrows the list to that host exactly, together with the box.
+  The chosen tab is remembered by the browser (not in `?q=`). While its host is
+  not listed (a restart, a laptop asleep) the list shows **All**, and goes back
+  to that host when it returns; only picking another tab changes the choice. A
+  shared link carrying its own `?q=` opens on **All**. A refresh that changes
+  only cards the current tab and search hide is applied at once, with no
+  "N new ↑". On a phone the strip scrolls sideways.
 
 ![The Agents list filtered with the search box](img/agents-filter.png)
 

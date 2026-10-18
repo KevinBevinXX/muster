@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"io"
 	"log"
 	"os"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/router"
+	"github.com/ZacxDev/muster/internal/uploads"
 )
 
 // ---------------------------------------------------------------------------
@@ -295,6 +297,17 @@ var bannerLedger = []string{
 	// Its off-state — no microphone on any message box — errors nowhere.
 	envSTTURL,
 	envSTTToken,
+	// File attachments: the `file attachments:` line names all eight in both
+	// directions (ON / OFF). Its off-state — no paperclip, every upload route
+	// 404 — errors nowhere, and a MISCONFIGURED set is off, not a refusal.
+	envS3Endpoint,
+	envS3Bucket,
+	envS3AccessKey,
+	envS3SecretKey,
+	envS3Region,
+	envUploadSigningKey,
+	envUploadMaxBytes,
+	envUploadLinkTTL,
 	// muster-native Web Push: the `web push:` line names all three in both
 	// directions (ENABLED / OFF). Its off-state — no Enable button, nothing
 	// sent — is otherwise invisible: nothing errors when push is off.
@@ -668,6 +681,17 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		// Dictation: the banner branches on ext.Transcriber (below).
 		STTURL:   "http://stt.example.invalid:8000",
 		STTToken: "stt-credential-fixture",
+		// File attachments: the banner branches on ext.Uploads (below), built by
+		// the real buildUploads over these values and the pool.
+		PublicURL:        "https://muster.example.test",
+		S3Endpoint:       "http://minio.example.invalid:9000",
+		S3Bucket:         "muster-uploads",
+		S3AccessKey:      "s3-access-fixture",
+		S3SecretKey:      "s3-secret-fixture",
+		S3Region:         "us-east-1",
+		UploadSigningKey: strings.Repeat("u", 40),
+		UploadMaxBytes:   "1048576",
+		UploadLinkTTL:    "2h",
 		// Web Push: the banner branches on ext.Push (below), as for connectors.
 		VAPIDPublicKey:  bannerVAPIDPub,
 		VAPIDPrivateKey: bannerVAPIDPriv,
@@ -684,6 +708,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		Provisioner: bannerProvisioner(t, on),
 		Gateway:     bannerGateway(t, on),
 		Transcriber: bannerTranscriber(t, on),
+		Uploads:     bannerUploads(t, on),
 		// Plugins: the banner branches on ext.Plugins and ext.PluginGateway.
 		Plugins:       bannerStubPlugins{},
 		PluginGateway: bannerStubPluginGateway{},
@@ -1061,6 +1086,17 @@ var bannerVAPIDPriv, bannerVAPIDPub = func() (string, string) {
 	}
 	return priv, pub
 }()
+
+// bannerUploads is the REAL builder over cfg (with a pool), so the ON render
+// is the arm a deployment with that configuration would print.
+func bannerUploads(t *testing.T, cfg config) *uploads.Service {
+	t.Helper()
+	svc := buildUploads(cfg, &pgxpool.Pool{}, log.New(io.Discard, "", 0))
+	if svc == nil {
+		t.Fatalf("buildUploads = nil for the ON fixture: %s", parseUploads(cfg, true).off)
+	}
+	return svc
+}
 
 // bannerTranscriber is the REAL builder over cfg, so the ON render is the arm a
 // deployment with that configuration would print.

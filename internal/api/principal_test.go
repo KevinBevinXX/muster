@@ -79,6 +79,12 @@ var publicRoutes = []string{
 	// under. It 404s with the plugin off.
 	"GET /mirror/connect",
 	"GET /readyz",
+	// ⚠ NOT UNAUTHENTICATED EITHER: a file attachment's signed link (uploads.go).
+	// No door admits it and no Principal is attached — the HMAC over the id and
+	// expiry in its query IS the credential (internal/uploads.Signer.Verify),
+	// and the one row it names is read under the system principal after that.
+	// It 404s with uploads off.
+	"GET /f/{id}",
 	"GET /static/",
 	"GET /sw.js",
 	"POST /login",
@@ -157,6 +163,11 @@ var routeVias = map[authz.Via][]string{
 		"POST /agents/{name}/send",
 		// Dictation: the session tier only (requireOperatorWrite), like a send.
 		"POST /transcribe",
+		// File attachments (uploads.go): the upload and the revoke are
+		// requireOperatorWrite, the owner's view requireSession.
+		"POST /uploads",
+		"GET /uploads/{id}/file",
+		"POST /uploads/{id}/revoke",
 		"DELETE /connector-grants/{id}",
 		"DELETE /connectors/{name}",
 		"DELETE /tasks/{id}",
@@ -255,9 +266,6 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/tasks/{id}/comments",
 		"GET /api/whoami",
 		"POST /api/routes/{id}/reply",
-		"GET /api/attention",
-		"POST /api/attention/{id}/answer",
-		"POST /api/attention/{id}/cancel",
 	},
 	authz.ViaService: {
 		"GET /api/tasks",
@@ -286,9 +294,6 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/tasks",
 		"POST /api/tasks/{id}/comments",
 		"POST /api/routes/{id}/reply",
-		"GET /api/attention",
-		"POST /api/attention/{id}/answer",
-		"POST /api/attention/{id}/cancel",
 		// Browser flows (0012): a personal token ONLY — the hook and service
 		// tiers are absent above on purpose (requireAPIToken).
 		"GET /api/flows/jobs",

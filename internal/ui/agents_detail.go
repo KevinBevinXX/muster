@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/uploads"
 	"github.com/ZacxDev/muster/web"
 )
 
@@ -1203,6 +1204,15 @@ func agentTaskBanner(v AgentDetailView) g.Node {
 }
 
 func chatBubble(role, content string, id int64) g.Node {
+	// A message carrying an attachment line (attach.go) is drawn on the server,
+	// its line as a chip: the raw signed URL is never what the bubble shows.
+	if role == "user" && len(uploads.FindRefs(content)) > 0 {
+		return chatBubbleOf(role,
+			g.If(id > 0, g.Attr("data-msg-id", strconv.FormatInt(id, 10))),
+			g.Attr("data-md-rendered", ""),
+			promptBody(content),
+		)
+	}
 	return chatBubbleOf(role,
 		// data-msg-id: the stable key the bubble clamp remembers an opened
 		// message by across the chat-log refresh (bubble_clamp.go).

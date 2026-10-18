@@ -102,6 +102,10 @@ type ComposerView struct {
 	// composer draws none either way: there is nothing its text could be sent
 	// to. See dictate.go.
 	Dictate string
+	// Upload is where the paperclip posts a file (UploadPath), or "" for no
+	// attachments — uploads are not configured. A disabled composer draws none
+	// either way. See attach.go.
+	Upload string
 	// Pinned draws the composer position:fixed to the bottom of the VISIBLE
 	// viewport instead of as the last in-flow child of the page's column, and
 	// adds composerPinScript. The page must reserve the room it takes
@@ -172,9 +176,9 @@ const (
 // mirrorComposer is the composer's markup: a status line, then the input row.
 func mirrorComposer(v ComposerView) g.Node {
 	off := v.Disabled != ""
-	dictate := v.Dictate
+	dictate, upload := v.Dictate, v.Upload
 	if off {
-		dictate = ""
+		dictate, upload = "", ""
 	}
 	placeholder := v.Placeholder
 	if off {
@@ -216,6 +220,8 @@ func mirrorComposer(v ComposerView) g.Node {
 		sendQueueBox(v.Queue, off),
 		// The `/` and `:` menu: over the composer, never over its input.
 		composerMenuBox(menu),
+		// The attachments' chips (attach.go): above the input, hidden while empty.
+		attachBox(upload),
 		Form(
 			ID("mv-form"),
 			// 🔴 method + action: without the script this is still a form the
@@ -231,6 +237,7 @@ func mirrorComposer(v ComposerView) g.Node {
 			Class("flex items-end gap-2 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2"),
 			g.Group(hidden),
 			g.If(v.Nonce != "", Input(ID("mv-nonce"), Type("hidden"), Name("nonce"), Value(v.Nonce))),
+			attachControl(upload),
 			Textarea(
 				ID("mv-input"),
 				Name("text"),
@@ -253,6 +260,7 @@ func mirrorComposer(v ComposerView) g.Node {
 		g.If(v.Queue != nil && !off, sendQueueScript()),
 		g.If(v.Queue != nil && !off, sendMenuScript()),
 		dictateScript(dictate),
+		attachScript(upload),
 		composerFitScript(),
 		composerMenuScript(menu),
 		g.If(v.Pinned, composerPinScript()),
@@ -406,13 +414,18 @@ func mirrorComposerScript() g.Node {
   // submitter, so its route is put on the form here.
   function native(sub) {
     if (sub && sub.getAttribute('formaction')) form.setAttribute('action', sub.getAttribute('formaction'));
+    // Attachments (attach.go) ride in the text: the browser's own submit
+    // carries only the form's fields.
+    if (window.musterAttach) input.value = window.musterAttach.compose(input.value);
     HTMLFormElement.prototype.submit.call(form);
   }
   function body() {
     var b = new URLSearchParams();
     for (var i = 0; i < form.elements.length; i++) {
       var el = form.elements[i];
-      if (el.name && !el.disabled) b.append(el.name, el.value);
+      if (!el.name || el.disabled) continue;
+      // The message is the text plus one line per attachment (attach.go).
+      b.append(el.name, el === input && window.musterAttach ? window.musterAttach.compose(el.value) : el.value);
     }
     return b;
   }
@@ -432,6 +445,7 @@ func mirrorComposerScript() g.Node {
     return req.then(function (r) {
         if (r.ok) {
           if (input.value === sent) { input.value = ''; if (window.musterComposerFit) window.musterComposerFit(input); }
+          if (window.musterAttach) window.musterAttach.sent();
           renew();
           if (queued) { sayOK('Queued.'); document.dispatchEvent(new Event('mv-queued')); } else { say(''); }
           return;
@@ -454,7 +468,9 @@ func mirrorComposerScript() g.Node {
     // From here on a failure of THIS handler leaves the event alone, and the
     // browser submits the form itself.
     if (input.disabled) { e.preventDefault(); return; }
-    if (!input.value.trim()) { e.preventDefault(); say(form.getAttribute('data-empty')); input.focus(); return; }
+    var att = window.musterAttach;
+    if (att && att.pending()) { e.preventDefault(); say(att.pendingMessage); return; }
+    if (!input.value.trim() && !(att && att.count())) { e.preventDefault(); say(form.getAttribute('data-empty')); input.focus(); return; }
     if (typeof fetch !== 'function' || typeof URLSearchParams !== 'function') return;
     e.preventDefault();
     say('');

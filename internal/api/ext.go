@@ -21,6 +21,7 @@ import (
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/recents"
 	"github.com/ZacxDev/muster/internal/sendqueue"
+	"github.com/ZacxDev/muster/internal/uploads"
 )
 
 // Extensions are the server's optional dependencies. A Server built without
@@ -132,6 +133,13 @@ type Extensions struct {
 	// message box and POST /transcribe answers 404.
 	Transcriber Transcriber
 
+	// Uploads is the composer's file attachments (internal/uploads, migration
+	// 0024; uploads.go). nil: not configured (the MUSTER_S3_* / signing key /
+	// public URL set is incomplete, or there is no database) — no composer
+	// draws an attach button and every upload route, the signed link
+	// included, answers 404.
+	Uploads *uploads.Service
+
 	// Credentials is the per-owner model-provider credential store behind
 	// Account → Credentials (internal/credentials). nil: none configured — the
 	// page says so, and every member then has no credential (never the
@@ -207,8 +215,8 @@ type Extensions struct {
 	Routing *Routing
 
 	// Attention is the attention queue's explicit asks (internal/attention,
-	// migration 0023). nil (no database): the attention tools are not offered,
-	// /attention and /api/attention answer 404, and no link is drawn.
+	// migration 0025). nil (no database): the attention tools are not offered,
+	// /attention answers 404, and no link is drawn.
 	Attention attention.Store
 	// MirrorTokens authenticates a mirror host's token for the mirrored
 	// sessions' MCP door (mirror_mcp.go) — *mirror.PGStore, the same table

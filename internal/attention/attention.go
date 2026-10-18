@@ -1,4 +1,4 @@
-// Package attention is the ATTENTION QUEUE's explicit asks (migration 0023): a
+// Package attention is the ATTENTION QUEUE's explicit asks (migration 0025): a
 // question an agent — a dispatched agent or a mirrored Claude Code session —
 // puts to its owner, and the owner's answer.
 //
@@ -46,13 +46,11 @@ const (
 	Expired   Status = "expired"
 )
 
-// Who answered an ask.
-const (
-	ByOperator = "operator"
-	ByChief    = "chief"
-)
+// ByOperator is who answers an ask: the operator, on the attention view. No
+// agent answers one — not even the chief.
+const ByOperator = "operator"
 
-// The bounds, each also a CHECK in 0023.
+// The bounds, each also a CHECK in 0025.
 const (
 	MaxQuestionRunes = 4000
 	MaxOptions       = 10
@@ -215,8 +213,8 @@ type Store interface {
 	Get(ctx context.Context, id int64) (Ask, error)
 	// Open is the caller's open, unexpired asks, oldest first.
 	Open(ctx context.Context) ([]Ask, error)
-	// Answer records the answer to an open ask. by is ByOperator or ByChief.
-	Answer(ctx context.Context, id int64, answer, by string) (Ask, error)
+	// Answer records the operator's answer to an open ask.
+	Answer(ctx context.Context, id int64, answer string) (Ask, error)
 	// Cancel withdraws an open ask.
 	Cancel(ctx context.Context, id int64) (Ask, error)
 	// ExpireDue moves every owner's lapsed open asks to Expired and returns
@@ -357,16 +355,13 @@ func (s *PGStore) settle(ctx context.Context, id int64, q string, args ...any) (
 	return cur, ErrNotOpen
 }
 
-func (s *PGStore) Answer(ctx context.Context, id int64, answer, by string) (Ask, error) {
+func (s *PGStore) Answer(ctx context.Context, id int64, answer string) (Ask, error) {
 	answer, err := CleanAnswer(answer)
 	if err != nil {
 		return Ask{}, err
 	}
-	if by != ByOperator && by != ByChief {
-		return Ask{}, fmt.Errorf("%w: answered by %q", ErrInvalid, by)
-	}
 	return s.settle(ctx, id, `UPDATE attention_asks SET status = 'answered', answer = $2, answered_by = $3, resolved_at = now()
-		WHERE id = $1 AND status = 'open' AND expires_at > now() RETURNING `+cols, id, answer, by)
+		WHERE id = $1 AND status = 'open' AND expires_at > now() RETURNING `+cols, id, answer, ByOperator)
 }
 
 func (s *PGStore) Cancel(ctx context.Context, id int64) (Ask, error) {

@@ -56,7 +56,6 @@ GET /agents/{name}/terminal/ws
 GET /agents/{name}/ws
 GET /api/agents
 GET /api/agents/{name}/messages
-GET /api/attention
 GET /api/directories
 GET /api/flows/jobs
 GET /api/flows/jobs/{id}
@@ -78,6 +77,7 @@ GET /auth/claim
 GET /auth/reset
 GET /connectors
 GET /events
+GET /f/{id}
 GET /favicon.ico
 GET /flows
 GET /github/callback
@@ -129,6 +129,7 @@ GET /ui/tasks/new
 GET /ui/tasks/review-count
 GET /ui/tasks/{id}/card
 GET /ui/tasks/{id}/edit
+GET /uploads/{id}/file
 GET /{$}
 PATCH /agent/task/status
 PATCH /api/tasks/{id}
@@ -168,8 +169,6 @@ POST /agents/{id}/start
 POST /agents/{id}/stop
 POST /agents/{name}/send
 POST /api/agents/{name}/messages
-POST /api/attention/{id}/answer
-POST /api/attention/{id}/cancel
 POST /api/flows/jobs
 POST /api/push/subscribe
 POST /api/push/unsubscribe
@@ -226,3 +225,5 @@ POST /tasks/{id}/tags
 POST /transcribe
 POST /ui/connector-requests/{id}/approve
 POST /ui/connector-requests/{id}/deny
+POST /uploads
+POST /uploads/{id}/revoke

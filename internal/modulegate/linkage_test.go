@@ -62,6 +62,9 @@ var notLinkedLedger = map[string]string{
 	"internal/gotrue/gotruetest": "the in-memory GoTrue the Go tests drive the session tier " +
 		"against. Imported only by _test.go files: a fake identity provider linked into the " +
 		"server would be a way to mint sessions.",
+	"internal/uploads/uploadstest": "in-memory fakes of the upload row store and object store, for the " +
+		"route tests. Imported only by _test.go files: a row store with no row-level security linked " +
+		"into the server would be a way round the uploads table's owner isolation.",
 
 	"e2e/seed": "the browser suite's fixture loader (`go run ./e2e/seed`). It TRUNCATES " +
 		"the board before seeding, so it must never be reachable from a shipped binary; it " +
