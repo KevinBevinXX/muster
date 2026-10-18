@@ -302,6 +302,15 @@ func (s *Server) askSettled(a attention.Ask) {
 // its last push is not pushed again (waiting → busy → waiting is one episode).
 const attentionRepushAfter = 2 * time.Minute
 
+// AttentionMirrorChanged is attentionMirrorChanged for the mirror hub's
+// waiting-set hook (mirror.Service.SetWaitingNotify; cmd/muster-server).
+func (s *Server) AttentionMirrorChanged(owner int64) {
+	if s == nil {
+		return
+	}
+	s.attentionMirrorChanged(owner)
+}
+
 // attentionMirrorChanged diffs owner's waiting sessions against the last
 // nudge's. A session that started waiting is pushed — unless its host is
 // observed for the first time in this process (seeded silently: a restart or a
