@@ -73,14 +73,25 @@ the shared hook token (on an armed server) or your personal token.
   the plan, and the CLI prints it and exits 2.
 - **It refuses (409, nothing changed)** when:
   - a turn is in flight to the chief: a plugin delivery, its kickoff or a memo
-    holds the chief's session claim;
-  - a plugin message is still `delivering` to it. Deleting the chief would
-    leave that message with no agent, and nothing could ever settle it;
+    holds the chief's session claim, or one of your chat turns to it is
+    running. While the swap runs, new chat turns to the old chief are refused;
   - another of your agents is also labelled `chief`. The new row would have the
     highest id, so the older one would keep answering;
   - the create would be refused anyway: a kind that is not enabled, a model
     for a `claude-code` chief, or a `claude-code` chief on a server with no
-    MCP door.
+    MCP door;
+  - the Claude account is marked auth-failed for its current token (a pin
+    skips that check at dispatch, so the swap checks it itself);
+  - the chief is already on the requested kind and account, and `--model`
+    names a different model. A kept chief is not rebuilt with a new model;
+    change it with the agent's model setting instead;
+  - another replacement removed the chief after this call read it.
+- **A plugin message left `delivering` by a crashed process** does not block
+  the swap. Holding the chief's session claim, the swap knows no delivery is in
+  progress, so it settles such a message as `unconfirmed` (as the next
+  delivery's crash recovery would: never resent) and reports its id under
+  `deleted.settledUnconfirmed`. Deleting the chief without that would leave the
+  message with no agent, and nothing could settle it.
 - **It is safe to re-run.** Each call works from the agent table:
   - the slug is on another kind or account: delete it, then create;
   - the slug is already on the requested kind and account: re-apply it, delete

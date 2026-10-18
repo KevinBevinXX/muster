@@ -1662,6 +1662,13 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 // them down). Two copies would be two transcripts' worth of disagreement about
 // what is stored.
 func (s *Server) runUserTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, emit agents.StreamEmit) ([]agents.TurnPart, error) {
+	// Counted so the chief replacement can refuse while a turn is in flight, and
+	// refused BEFORE the message is stored when the agent is being replaced
+	// (turn_gate.go).
+	if !s.turns.enter(a.ID) {
+		return nil, ErrAgentBeingReplaced
+	}
+	defer s.turns.leave(a.ID)
 	_, _ = s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{AgentID: a.ID, SessionID: session.ID, Role: "user", Content: text})
 
 	// Mark active immediately (a turn always starts thinking) so the agent

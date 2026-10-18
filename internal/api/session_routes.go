@@ -598,17 +598,24 @@ func (s *Server) handBackRoute(ctx context.Context, r plugins.Route, what string
 	}
 }
 
+// routeHandbackClaimTTL is the hand-back's session claim: one minute past the
+// turn budget it guards.
+func routeHandbackClaimTTL(budget time.Duration) time.Duration { return budget + time.Minute }
+
 // startClaimedChiefTurn runs one turn of the chief's under its SESSION CLAIM
 // (agents.Store.ClaimKickoff — the claim a delivered plugin message and a first
 // turn hold), so a hand-back never overlaps another turn. False, with nothing
 // started, when the claim is held.
 func (s *Server) startClaimedChiefTurn(ctx context.Context, chief agents.Agent, sess agents.ChatSession, routeID, text string) bool {
 	owner := "route-handback/" + routeID
-	won, err := s.ext.Agents.ClaimKickoff(ctx, chief.ID, owner, agentTurnTimeout+time.Minute)
+	// The claim outlives the turn's own budget (agentTurnBudget: 37m for a
+	// claude-code chief), so it cannot lapse while the turn still runs.
+	budget := agentTurnBudget(chief.Kind)
+	won, err := s.ext.Agents.ClaimKickoff(ctx, chief.ID, owner, routeHandbackClaimTTL(budget))
 	if err != nil || !won {
 		return false
 	}
-	tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), agentTurnTimeout)
+	tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget)
 	safeGo(s.logger, "route hand-back turn", func() {
 		defer cancel()
 		defer func() {

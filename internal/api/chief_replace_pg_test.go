@@ -180,42 +180,47 @@ func TestReplacingTheChiefNeedsConfirmAndDeletesOnlyThen(t *testing.T) {
 	}
 }
 
-// TestReplacingTheChiefRefusesWhileAPluginMessageIsDelivering: a message
-// `delivering` to the old chief refuses the swap (409, its id reported) and
-// nothing is destroyed; the swap's own session claim is RELEASED on that
-// refusal; once the message settles the same call goes through.
-func TestReplacingTheChiefRefusesWhileAPluginMessageIsDelivering(t *testing.T) {
+// TestASwapSettlesADeliveryADeadProcessLeftAndProceeds: a message left
+// `delivering` to the old chief (its process died mid-turn — no live delivery can
+// hold it while the swap holds the claim) does not block the swap: it is settled
+// unconfirmed, reported under deleted.settledUnconfirmed, and the swap goes
+// through. A message to ANOTHER agent is untouched.
+func TestASwapSettlesADeliveryADeadProcessLeftAndProceeds(t *testing.T) {
 	f := newReplaceFixture(t, nil)
 	_, p, err := f.plugins.Create(asUser(f.owner), "replace-inbox", "Replace inbox", "replace-inbox")
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, _, err := f.plugins.Submit(asUser(f.owner), p.ID, plugins.MessageIn{ExternalID: "rp-1", Sender: "a@example.test", Subject: "s", Body: "b"})
-	if err != nil {
-		t.Fatal(err)
+	submit := func(ext string) plugins.Message {
+		m, _, err := f.plugins.Submit(asUser(f.owner), p.ID, plugins.MessageIn{ExternalID: ext, Sender: "a@example.test", Subject: "s", Body: "b"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
 	}
-	if ok, err := f.plugins.BeginDelivery(asUser(f.owner), m.ID, f.old.ID); err != nil || !ok {
-		t.Fatalf("begin: %v %v", ok, err)
+	dead, elsewhere := submit("rp-dead"), submit("rp-elsewhere")
+	other := f.agentFor(t, f.owner, "replace-other-"+strconv.FormatInt(time.Now().UnixNano(), 36), "", "replace-other-tok-"+strconv.FormatInt(time.Now().UnixNano(), 36))
+	for _, c := range []struct{ m, agent int64 }{{dead.ID, f.old.ID}, {elsewhere.ID, other.ID}} {
+		if ok, err := f.plugins.BeginDelivery(asUser(f.owner), c.m, c.agent); err != nil || !ok {
+			t.Fatalf("begin %d: %v %v", c.m, ok, err)
+		}
 	}
-	slug := agents.ChiefNameFor(f.owner)
-	code, out := f.replace(ccReq(slug))
-	ids, _ := out["delivering"].([]int64)
-	if code != http.StatusConflict || len(ids) != 1 || ids[0] != m.ID {
-		t.Fatalf("with a message delivering: %d %v; want 409 naming message %d", code, out, m.ID)
+	code, out := f.replace(ccReq(agents.ChiefNameFor(f.owner)))
+	if code != http.StatusOK {
+		t.Fatalf("with a dead process's delivery left behind: %d %v; want the swap to go through", code, out)
 	}
-	if d := f.prov.destroyedIDs(); len(d) != 0 {
-		t.Fatalf("destroyed %v while a message was delivering", d)
+	deleted, _ := out["deleted"].(map[string]any)
+	if ids, _ := deleted["settledUnconfirmed"].([]int64); len(ids) != 1 || ids[0] != dead.ID {
+		t.Fatalf("settledUnconfirmed = %v, want [%d]", deleted["settledUnconfirmed"], dead.ID)
 	}
-	won, err := agents.NewPG(f.pool).ClaimKickoff(asUser(f.owner), f.old.ID, "a-later-delivery", time.Minute)
-	if err != nil || !won {
-		t.Fatalf("the refused swap left the chief's session claimed (won=%v err=%v)", won, err)
+	if got, _ := f.plugins.Message(asUser(f.owner), dead.ID); got.Status != plugins.StatusUnconfirmed {
+		t.Fatalf("the dead process's message is %q, want unconfirmed (never resent)", got.Status)
 	}
-	_ = agents.NewPG(f.pool).ReleaseKickoffClaim(asUser(f.owner), f.old.ID, "a-later-delivery")
-	if ok, err := f.plugins.RecordDelivery(asUser(f.owner), m.ID, f.old.ID, plugins.StatusDelivered); err != nil || !ok {
-		t.Fatalf("settle: %v %v", ok, err)
+	if got, _ := f.plugins.Message(asUser(f.owner), elsewhere.ID); got.Status != plugins.StatusDelivering {
+		t.Fatalf("another agent's delivery was touched: %q", got.Status)
 	}
-	if code, out := f.replace(ccReq(slug)); code != http.StatusOK {
-		t.Fatalf("after the message settled: %d %v", code, out)
+	if d := f.prov.destroyedIDs(); len(d) != 1 || d[0] != f.old.ID {
+		t.Fatalf("destroyed %v", d)
 	}
 	f.waitDispatch(t)
 }
@@ -358,5 +363,140 @@ func TestTheReplaceRouteIsTheHookTierAndChangesNothingWithoutConfirm(t *testing.
 	}
 	if d := f.prov.destroyedIDs(); len(d) != 0 {
 		t.Fatalf("destroyed %v", d)
+	}
+}
+
+// TestReplacingTheChiefRefusesWhileAChatTurnRunsAndBlocksNewOnes: an operator's
+// chat turn holds no session claim, so the swap counts chat turns itself. While
+// one runs: 409, nothing destroyed, and the claim the swap took is RELEASED (a
+// later delivery can take it). While the swap holds the gate, a chat turn to the
+// old chief is refused before its message is stored.
+func TestReplacingTheChiefRefusesWhileAChatTurnRunsAndBlocksNewOnes(t *testing.T) {
+	f := newReplaceFixture(t, nil)
+	slug := agents.ChiefNameFor(f.owner)
+	if !f.srv.turns.enter(f.old.ID) {
+		t.Fatal("control: the gate refused a turn with no swap running")
+	}
+	code, out := f.replace(ccReq(slug))
+	if code != http.StatusConflict || !strings.Contains(out["error"].(string), "a chat turn to the chief is running") {
+		t.Fatalf("with a chat turn running: %d %v", code, out)
+	}
+	if d := f.prov.destroyedIDs(); len(d) != 0 {
+		t.Fatalf("destroyed %v mid-chat", d)
+	}
+	won, err := agents.NewPG(f.pool).ClaimKickoff(asUser(f.owner), f.old.ID, "a-later-delivery", time.Minute)
+	if err != nil || !won {
+		t.Fatalf("the refused swap left the chief's session claimed (won=%v err=%v)", won, err)
+	}
+	_ = agents.NewPG(f.pool).ReleaseKickoffClaim(asUser(f.owner), f.old.ID, "a-later-delivery")
+	f.srv.turns.leave(f.old.ID)
+
+	// The other direction: a closed gate refuses a turn before anything is stored.
+	if !f.srv.turns.close(f.old.ID) {
+		t.Fatal("control: could not close an idle gate")
+	}
+	sess, err := agents.NewPG(f.pool).CreateSession(asUser(f.owner), f.old.ID, f.old.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.srv.runUserTurn(asUser(f.owner), f.old, sess, "are you there?", nil); !errors.Is(err, ErrAgentBeingReplaced) {
+		t.Fatalf("a chat turn during the swap: %v, want ErrAgentBeingReplaced", err)
+	}
+	if msgs, _ := agents.NewPG(f.pool).ListChatMessages(asUser(f.owner), sess.ID); len(msgs) != 0 {
+		t.Fatalf("the refused turn stored %d message(s)", len(msgs))
+	}
+	f.srv.turns.reopen(f.old.ID)
+	if code, out := f.replace(ccReq(slug)); code != http.StatusOK {
+		t.Fatalf("once the chat turn ended: %d %v", code, out)
+	}
+	f.waitDispatch(t)
+}
+
+// healthKinds is stubKinds that also answers ClaudeAccountHealth.
+type healthKinds struct {
+	stubKinds
+	why string
+	err error
+}
+
+func (h healthKinds) ClaudeAccountAuthFailure(context.Context, int64, string) (string, error) {
+	return h.why, h.err
+}
+
+// TestReplacingTheChiefRefusesADeadClaudeAccountBeforeDeleting: a pinned
+// account whose current token is marked auth-failed — or whose health cannot be
+// read — is refused (409, its reason in the message) before the old chief is
+// touched; a healthy one goes through.
+func TestReplacingTheChiefRefusesADeadClaudeAccountBeforeDeleting(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		k    healthKinds
+		want string
+	}{
+		{"auth failed", healthKinds{why: `Claude account "acct-x" failed authentication at 2000-01-02T03:04:05Z (401)`}, "failed authentication"},
+		{"unreadable", healthKinds{err: errors.New("marks table unreachable")}, "could not confirm Claude account"},
+	} {
+		f := newReplaceFixture(t, func(ext *Extensions) { ext.Kinds = c.k })
+		code, out := f.replace(ccReq(agents.ChiefNameFor(f.owner)))
+		if code != http.StatusConflict || !strings.Contains(out["error"].(string), c.want) {
+			t.Fatalf("%s: %d %v", c.name, code, out)
+		}
+		if d := f.prov.destroyedIDs(); len(d) != 0 {
+			t.Fatalf("%s: destroyed %v", c.name, d)
+		}
+		if row, ok := f.chiefRow(t); !ok || row.ID != f.old.ID {
+			t.Fatalf("%s: the old chief changed: %+v", c.name, row)
+		}
+	}
+	f := newReplaceFixture(t, func(ext *Extensions) { ext.Kinds = healthKinds{} })
+	if code, out := f.replace(ccReq(agents.ChiefNameFor(f.owner))); code != http.StatusOK {
+		t.Fatalf("control, a healthy account: %d %v", code, out)
+	}
+	f.waitDispatch(t)
+}
+
+// TestAModelForAKeptGatewayChiefIsRefusedNotIgnored: gateway→gateway keeps the
+// chief, so a different --model would be silently ignored; it is refused,
+// pointing at the model setting, and nothing is started. The same model, or
+// none, keeps and re-applies as before.
+func TestAModelForAKeptGatewayChiefIsRefusedNotIgnored(t *testing.T) {
+	f := newReplaceFixture(t, nil)
+	slug := agents.ChiefNameFor(f.owner)
+	code, out := f.replace(chiefReplaceRequest{Kind: agents.KindGateway, Model: "openrouter/some-model-x", Confirm: slug})
+	if code != http.StatusConflict || !strings.Contains(out["error"].(string), "/agents/"+strconv.FormatInt(f.old.ID, 10)+"/model") {
+		t.Fatalf("a new model on a kept chief: %d %v", code, out)
+	}
+	f.prov.mu.Lock()
+	started := len(f.prov.started)
+	f.prov.mu.Unlock()
+	if started != 0 || len(f.prov.destroyedIDs()) != 0 {
+		t.Fatalf("the refused call started %d / destroyed %v", started, f.prov.destroyedIDs())
+	}
+	if code, out := f.replace(chiefReplaceRequest{Kind: agents.KindGateway, Confirm: slug}); code != http.StatusOK || out["started"] != true {
+		t.Fatalf("control, no model: %d %v", code, out)
+	}
+}
+
+// goneOnClaimAgents deletes the chief's row the moment the swap tries to claim
+// it — the state a second replacement meets when the first already destroyed it.
+type goneOnClaimAgents struct {
+	agents.Store
+	pool *pgxpool.Pool
+}
+
+func (g goneOnClaimAgents) ClaimKickoff(ctx context.Context, id int64, owner string, ttl time.Duration) (bool, error) {
+	_, _ = g.pool.Exec(authz.System(context.Background()), `DELETE FROM agents WHERE id = $1`, id)
+	return g.Store.ClaimKickoff(ctx, id, owner, ttl)
+}
+
+// TestASecondReplacementAfterTheFirstDestroyedTheRowSaysSo: the claim fails
+// because the row is gone, not because a turn holds it — the message says which.
+func TestASecondReplacementAfterTheFirstDestroyedTheRowSaysSo(t *testing.T) {
+	f := newReplaceFixture(t, nil)
+	f.srv.ext.Agents = goneOnClaimAgents{Store: agents.NewPG(f.pool), pool: f.pool}
+	code, out := f.replace(ccReq(agents.ChiefNameFor(f.owner)))
+	msg, _ := out["error"].(string)
+	if code != http.StatusConflict || !strings.Contains(msg, "was removed after this call read it") || strings.Contains(msg, "a turn is being delivered") {
+		t.Fatalf("a second replacement: %d %q", code, msg)
 	}
 }

@@ -174,6 +174,9 @@ type Server struct {
 	activeAgentsMu  sync.Mutex
 	activeAgents    map[string]agentPhase
 	activeAgentsNow func() time.Time
+	// turns counts chat turns per agent and lets the chief replacement close
+	// one (turn_gate.go).
+	turns turnGate
 
 	// sendQueue is the send queue's dispatcher (send_queue.go); nil until
 	// RunSendQueue starts it.

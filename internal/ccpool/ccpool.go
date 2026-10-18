@@ -279,6 +279,36 @@ func (p *Pool) Select(ctx context.Context, owner int64, pin string) (string, err
 	return Choose(names, tokens, marks, live)
 }
 
+// AuthFailure reports why owner's account cannot authenticate: a non-empty
+// sentence when its CURRENT token is marked auth-failed (the mark's fingerprint
+// matches it, exactly as [Choose] skips it), "" when it is usable. An unknown
+// account is [ErrUnknownAccount].
+//
+// ⚠ Select's PIN PATH DELIBERATELY DOES NOT CALL THIS: a pin is the operator's
+// override (TestSelectHonoursAPinOverEverySelectionRule). A caller that must not
+// spend an irreversible step on a dead account — the chief replacement, which
+// deletes the old chief first — asks here itself.
+func (p *Pool) AuthFailure(ctx context.Context, owner int64, account string) (string, error) {
+	tokens, _, err := p.accounts(ctx, owner)
+	if err != nil {
+		return "", err
+	}
+	tok, ok := tokens[account]
+	if !ok || tok == "" {
+		return "", fmt.Errorf("%w %q for user %d", ErrUnknownAccount, account, owner)
+	}
+	marks, err := p.store.Marks(ctx, owner)
+	if err != nil {
+		return "", fmt.Errorf("ccpool: read account marks: %w", err)
+	}
+	m := marks[account]
+	if m.AuthFailedAt.IsZero() || m.AuthFailedToken == "" || m.AuthFailedToken != Fingerprint(tok) {
+		return "", nil
+	}
+	return fmt.Sprintf("Claude account %q failed authentication at %s (%s); replace its token first",
+		account, m.AuthFailedAt.UTC().Format(time.RFC3339), m.AuthFailedDetail), nil
+}
+
 // Choose is the selection algorithm (see the package doc), pure.
 func Choose(names []string, tokens map[string]string, marks map[string]Mark, live map[string]int) (string, error) {
 	type cand struct {

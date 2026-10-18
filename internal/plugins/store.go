@@ -68,8 +68,9 @@ type Store interface {
 	// DeliveringTo is the ids of the messages still `delivering` to agentID,
 	// oldest first. It writes nothing. Deleting an agent with such a row strands
 	// it: agent_id goes NULL (ON DELETE SET NULL) and RecoverDeliveries, keyed on
-	// the agent, can then never settle it — so the chief replacement refuses
-	// while this is non-empty.
+	// the agent, can then never settle it — so the chief replacement, holding the
+	// chief's session claim, settles them (RecoverDeliveries) and reports these ids
+	// before it deletes.
 	DeliveringTo(ctx context.Context, agentID int64) ([]int64, error)
 	// ReserveGatedTask spends one unit of an agent's gated-task budget (gated.go),
 	// or returns ErrGatedTaskCap.

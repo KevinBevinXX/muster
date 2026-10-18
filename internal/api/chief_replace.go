@@ -29,13 +29,21 @@ import (
 // exactly what the confirmed call does. TestEveryDestroyCallSiteIsChiefGuarded
 // ledgers replaceChief as the single deliberate bypass of the chief guard.
 //
-// 🔴 IT REFUSES WHILE A TURN IS IN FLIGHT TO THE OLD CHIEF, IN TWO STEPS. First it
-// takes the old chief's SESSION CLAIM (agents.Store.ClaimKickoff — the claim a
-// plugin delivery, a kickoff and a memo turn each hold for their whole turn): a
-// claim it cannot take means such a turn is running, and it refuses. Holding the
-// claim, no NEW delivery can begin to that chief, so the second check cannot race:
-// any plugin message still `delivering` to it refuses the swap, because deleting
-// the row would set that message's agent_id NULL and nothing could ever settle it.
+// 🔴 IT REFUSES WHILE A TURN IS IN FLIGHT TO THE OLD CHIEF. It takes the old
+// chief's SESSION CLAIM (agents.Store.ClaimKickoff — the claim a plugin delivery,
+// a kickoff and a memo turn each hold for their whole turn) and refuses when it
+// cannot; it closes the chief's TURN GATE (turn_gate.go — an operator's chat
+// turn holds no claim) and refuses when a chat turn is running. Holding both,
+// no turn can start, so any plugin message still `delivering` to the chief was
+// left by a process that died mid-turn: it is settled unconfirmed exactly as
+// crash recovery settles it (never resent) and reported, rather than stranded
+// by the delete (agent_id ON DELETE SET NULL).
+//
+// 🔴 IT REFUSES, BEFORE ANYTHING IS TOUCHED, WHAT WOULD LEAVE NO WORKING CHIEF:
+// a kind/model/account the create would refuse, a Claude account marked
+// auth-failed (a pin skips that check at dispatch), no MCP door for a
+// claude-code chief, another agent labelled chief — and a model it would ignore
+// on a chief it keeps.
 //
 // 🔴 IT IS RETRY-SAFE BY READING STATE, NOT BY REMEMBERING IT. Every call
 // re-derives the plan from the agent table: the reserved slug present on another
@@ -129,6 +137,21 @@ func (s *Server) replaceChief(ctx context.Context, owner int64, req chiefReplace
 	if err := agents.ValidateModelCredential(req.Model); err != nil {
 		return refuse(http.StatusBadRequest, "%v", err)
 	}
+	// 🔴 A PINNED ACCOUNT IS NOT CHECKED BY SELECTION (a pin is an override at
+	// dispatch, ccpool.Select), so a dead one is refused HERE, before the old
+	// chief is touched: deleting it to create a chief that cannot authenticate
+	// leaves the owner with no working chief.
+	if kind == agents.KindClaudeCode && account != "" {
+		if h, ok := s.ext.Kinds.(ClaudeAccountHealth); ok {
+			why, err := h.ClaudeAccountAuthFailure(ctx, callerID(ctx), account)
+			if err != nil {
+				return refuse(http.StatusConflict, "could not confirm Claude account %q can authenticate; nothing was changed: %v", account, err)
+			}
+			if why != "" {
+				return refuse(http.StatusConflict, "%s; nothing was changed", why)
+			}
+		}
+	}
 	if kind == agents.KindClaudeCode && s.ext.Connectors == nil {
 		// A claude-code chief reaches every chief tool over POST /mcp, which is
 		// served only with the connector store.
@@ -161,6 +184,13 @@ func (s *Server) replaceChief(ctx context.Context, owner int64, req chiefReplace
 	}
 
 	keep := hasOld && agents.ResolveKind(old.Kind) == kind && (req.CCAccount == "" || old.CCAccount == req.CCAccount)
+	// A kept chief is re-applied as it is, so a model it would IGNORE is refused
+	// rather than answered 200 with nothing done. The model has its own writer.
+	if keep && req.Model != "" && req.Model != old.Model {
+		return refuse(http.StatusConflict, "%s (id %d) is already a %s chief, so a replacement would keep it and not apply "+
+			"model %q; change its model with its own model setting (POST /agents/%d/model) instead. Nothing was changed.",
+			old.Name, old.ID, kind, req.Model, old.ID)
+	}
 	plan := map[string]any{"name": chiefName, "kind": kind}
 	if account != "" {
 		plan["ccAccount"] = account
@@ -224,6 +254,13 @@ func (s *Server) replaceChief(ctx context.Context, owner int64, req chiefReplace
 			return refuse(http.StatusInternalServerError, "could not take the chief's session claim; nothing was changed: %v", err)
 		}
 		if !won {
+			// ClaimKickoff also answers false for a row that is GONE: a second
+			// replacement arriving after the first already destroyed it. Say which.
+			if _, gerr := s.ext.Agents.Get(ctx, old.ID); gerr != nil {
+				return refuse(http.StatusConflict, "the chief %s (id %d) was removed after this call read it — another "+
+					"replacement is running or just finished; nothing was changed here. Re-run to see the current plan.",
+					old.Name, old.ID)
+			}
 			return refuse(http.StatusConflict, "a turn is being delivered to the chief right now (a plugin message, its "+
 				"kickoff or a memo); nothing was changed — retry when it finishes")
 		}
@@ -232,22 +269,43 @@ func (s *Server) replaceChief(ctx context.Context, owner int64, req chiefReplace
 			defer cancel()
 			_ = s.ext.Agents.ReleaseKickoffClaim(rctx, old.ID, claimOwner)
 		}
+		// 🔴 AND NO CHAT TURN: an operator's chat does not take the session claim,
+		// so the turn gate (turn_gate.go) is closed too — refused while a chat turn
+		// is running, and no new one starts until the swap is over. Reopened on
+		// every exit; after a destroy the id is gone and reopening is harmless.
+		if !s.turns.close(old.ID) {
+			release()
+			return refuse(http.StatusConflict, "a chat turn to the chief is running right now; nothing was changed — "+
+				"retry when it finishes")
+		}
+		defer s.turns.reopen(old.ID)
+		// 🔴 A ROW STILL `delivering` TO THE CHIEF NOW WAS LEFT BY A DEAD PROCESS.
+		// Every live delivery holds this chief's session claim for its whole turn
+		// and settles its row before releasing it (plugins.Deliverer.Deliver), and
+		// WE hold the claim — so no delivery is in progress, and a `delivering`
+		// row can only be a crashed one's. It is settled exactly as the next
+		// delivery's crash recovery would settle it (unconfirmed, audited, never
+		// resent), and reported. Refusing instead would block the swap until a
+		// delivery to the OLD chief recovered it — possibly forever.
+		var recovered []int64
 		if s.ext.Plugins != nil {
 			ids, err := s.ext.Plugins.DeliveringTo(ctx, old.ID)
+			if err == nil && len(ids) > 0 {
+				_, err = s.ext.Plugins.RecoverDeliveries(ctx, old.ID)
+			}
 			if err != nil {
 				release()
-				return refuse(http.StatusInternalServerError, "could not read the chief's plugin deliveries; nothing was changed: %v", err)
+				return refuse(http.StatusInternalServerError, "could not settle the chief's interrupted plugin deliveries; "+
+					"nothing was changed: %v", err)
 			}
-			if len(ids) > 0 {
-				release()
-				return http.StatusConflict, map[string]any{
-					"error": fmt.Sprintf("%d plugin message(s) are still `delivering` to the chief; deleting it now would strand "+
-						"them for good. Nothing was changed.", len(ids)),
-					"delivering": ids,
-				}
-			}
+			recovered = ids
 		}
 		deleted = chiefReplaceBrief(old)
+		if len(recovered) > 0 {
+			deleted["settledUnconfirmed"] = recovered
+			s.logger.Printf("chief replace: %s: settled %d delivery(ies) a dead process left mid-turn as unconfirmed: %v",
+				old.Name, len(recovered), recovered)
+		}
 		if sessions, err := s.ext.Agents.ListSessions(ctx, old.ID); err == nil {
 			deleted["chatSessions"] = len(sessions)
 		}
