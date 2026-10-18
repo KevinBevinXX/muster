@@ -40,8 +40,9 @@ import (
 // gets "no such ask" exactly as for an id that does not exist.
 //
 // 🔴 THE TASK TOOLS ARE THE CALLER'S OWN TASKS (operator decision "own task +
-// its tasks"): a worker's dispatched task (its NoteID) and the tasks it
-// created; the chief, the owner's whole board. Every other task answers "no
+// its tasks"): a worker's dispatched task (its NoteID); the chief, the owner's
+// whole board. (No agent can create a task, so there are no "tasks it
+// created" for a dispatched agent.) Every other task answers "no
 // such task" — the same words as an id that does not exist, so nothing says
 // whether it does. No agent may set a task complete, nor move one out of
 // complete (agentStatusRefusal).
@@ -154,7 +155,7 @@ func taskToolDefs() []agents.ToolDef {
 	id := intProp("The task's id.", 1, 1<<53)
 	return []agents.ToolDef{
 		{Type: "function", Name: tasksListTool,
-			Description: "List your tasks — the one you were dispatched for and the ones you created (the chief: the whole board) — newest activity first, at most 50: id, title, status.",
+			Description: "List your tasks — a dispatched agent: the one it was dispatched for; a mirrored Claude Code session: the ones it created with `muster task create`; the chief: the whole board — newest activity first, at most 50: id, title, status.",
 			Parameters: objSchema(map[string]any{
 				"status": map[string]any{"type": "string", "enum": taskstatus.All(), "description": "Only tasks in this status."},
 			})},
@@ -395,11 +396,10 @@ type taskScope struct {
 func (sc taskScope) has(id int64) bool { return sc.all || sc.ids[id] }
 
 // taskScopeOf is c's task scope: the chief's whole board; a dispatched
-// agent's own task (its NoteID) and the tasks it created — no agent tool
-// creates a task today, so a worker's scope is its NoteID; a mirrored Claude
-// Code session's (mirror_mcp.go), the tasks that session created (its
-// task_sessions link of role "created", which the CLI's task-create records
-// from the session's id).
+// agent's own task (its NoteID); a mirrored Claude Code session's
+// (mirror_mcp.go), the tasks that session created (its task_sessions link of
+// role "created", which the CLI's task-create records from the session's id);
+// any other caller, no task.
 func (s *Server) taskScopeOf(ctx context.Context, c toolCaller) (taskScope, error) {
 	sc := taskScope{ids: map[int64]bool{}}
 	if c.agent == nil {
@@ -582,7 +582,10 @@ func (s *Server) toolTaskSetStatus(ctx context.Context, c toolCaller, arguments 
 	if why := agentStatusRefusal(cur.Status, in.Status); why != "" {
 		return toolErr("%s", why)
 	}
-	n, err := s.setNoteStatus(ctx, writerTaskTool, in.ID, in.Status)
+	n, err := s.setNoteStatus(notes.ForAgent(ctx), writerTaskTool, in.ID, in.Status)
+	if errors.Is(err, notes.ErrCompleteLocked) {
+		return toolErr("%s", agentStatusRefusal(notes.StatusComplete, in.Status))
+	}
 	if err != nil {
 		return s.taskErr(in.ID, err, "set the status of")
 	}
