@@ -47,17 +47,22 @@ const TokenPrefix = "mpl_"
 // truncated: the plugin is the only party that can decide what to drop, and a
 // silently cut message would be delivered as if whole.
 const (
-	MaxBodyBytes      = 16 << 10
-	MaxSenderRunes    = 200
-	MaxSubjectRunes   = 200
-	MaxExternalIDLen  = 200
-	MaxLabelRunes     = 80
-	maxRequestBytes   = 6*MaxBodyBytes + 12*MaxSenderRunes + 12*MaxSubjectRunes + 6*MaxExternalIDLen + requestOverhead
-	requestOverhead   = 1024
-	MaxPerHour        = 60
-	MaxQueued         = 200
-	rateWindow        = time.Hour
-	nameAndScopeShape = `^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`
+	MaxBodyBytes     = 16 << 10
+	MaxSenderRunes   = 200
+	MaxSubjectRunes  = 200
+	MaxExternalIDLen = 200
+	MaxLabelRunes    = 80
+	maxRequestBytes  = 6*MaxBodyBytes + 12*MaxSenderRunes + 12*MaxSubjectRunes + 6*MaxExternalIDLen + requestOverhead
+	requestOverhead  = 1024
+	MaxPerHour       = 60
+	MaxQueued        = 200
+	// Task events (task_events.go) have their OWN allowance, counted apart from
+	// the chief mail above, so a burst of task notices can never get ordinary
+	// chief mail answered 429, nor chief mail crowd out a task event.
+	MaxTaskEventsPerHour = 120
+	MaxTaskEventsQueued  = 300
+	rateWindow           = time.Hour
+	nameAndScopeShape    = `^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`
 )
 
 // MaxRequestBytes bounds what the message route reads at all; the per-field caps

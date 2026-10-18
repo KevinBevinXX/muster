@@ -48,9 +48,9 @@ const (
 
 // TaskEvent is the stored body of a task event.
 type TaskEvent struct {
-	// Event is muster's own word for why the task was handed over: "new" (the
-	// notice filed it) or "update" (a change on a task a live agent works);
-	// internal/api/task_routing.go decides. Never plugin-supplied.
+	// Event is the plugin's notice kind that brought the task to the chief:
+	// "assigned", or "update" (a change on a task a live agent works) — one of
+	// muster's fixed words, validated (internal/api/task_routing.go).
 	Event  string `json:"event"`
 	TaskID int64  `json:"task_id"`
 	// Key is the task's plugin key (its external-id tag).

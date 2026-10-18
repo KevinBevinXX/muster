@@ -304,17 +304,27 @@ func (s *PGStore) submit(ctx context.Context, pluginID int64, in MessageIn, task
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
+		// 🔴 TWO ALLOWANCES, COUNTED APART: chief mail (task_id NULL) against
+		// MaxPerHour / MaxQueued, task events (task_id set) against
+		// MaxTaskEventsPerHour / MaxTaskEventsQueued. Counted together, a burst
+		// of task notices got the plugin's ordinary chief mail answered 429
+		// (audit round 1).
+		perHour, maxQueued := MaxPerHour, MaxQueued
+		if taskID != nil {
+			perHour, maxQueued = MaxTaskEventsPerHour, MaxTaskEventsQueued
+		}
 		var lastHour, queued int
 		if err := tx.QueryRow(ctx, `SELECT
 				count(*) FILTER (WHERE created_at > now() - make_interval(secs => $2)),
 				count(*) FILTER (WHERE status = 'queued')
-			  FROM plugin_messages WHERE plugin_id = $1`, pluginID, rateWindow.Seconds()).Scan(&lastHour, &queued); err != nil {
+			  FROM plugin_messages WHERE plugin_id = $1 AND (task_id IS NOT NULL) = $3`,
+			pluginID, rateWindow.Seconds(), taskID != nil).Scan(&lastHour, &queued); err != nil {
 			return err
 		}
 		switch {
-		case lastHour >= MaxPerHour:
+		case lastHour >= perHour:
 			return ErrRateLimited
-		case queued >= MaxQueued:
+		case queued >= maxQueued:
 			return ErrQueueFull
 		}
 		m, err = scanMessage(tx.QueryRow(ctx, `

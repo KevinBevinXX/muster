@@ -72,7 +72,7 @@ JSON. On every route:
 | `202 {"id", "status": "queued"}` | stored; delivery to your chief has started |
 | `200 {"id", "status"}` | this plugin already sent this `external_id`. The stored message is the answer, and nothing is stored or delivered again, **whatever the new body or `no_reply` says**. `status` is `queued`, `delivered` or `unconfirmed`. |
 | `400 {"error"}` | a field breaks a rule above |
-| `429 {"error"}` | 60 new messages in the last hour, or 200 not yet delivered. Retry after the `Retry-After` header. |
+| `429 {"error"}` | 60 new messages in the last hour, or 200 not yet delivered. Retry after the `Retry-After` header. Task events ([routing a task](#routing-a-task-to-the-chief)) have their own allowance — 120 an hour, 300 undelivered — so they never count here, nor these toward them. |
 
 A plugin that did not see an answer should send the same message again. A
 repeat is answered even while the plugin is rate-limited. Advance your upstream
@@ -211,7 +211,8 @@ runs task routing ([below](#routing-a-task-to-the-chief)).
 | `key` | yes | `<namespace>:<id>`, already a normalized tag, in one of the namespaces `MUSTER_PLUGIN_TASK_NAMESPACES` lists. It becomes the task's tag. |
 | `create` | no | File a task if no **open** task of yours carries `key` (below). `body` must not be blank. |
 | `comment` | no | Recorded on the task for `key`: the open one that already carries it, or the one `create` files. Surrounding whitespace is trimmed; a blank comment is no comment. |
-| `route_to_chief` | no | `true` asks muster to hand the task to your chief as a task event ([below](#routing-a-task-to-the-chief)). muster decides: a notice that files the task is handed over; any other notice only while a live agent works the task. Needs a non-blank `comment`, which names the event (a `400` without one, whether or not the server runs task routing). When muster does not hand it over the task is still filed and the answer says `"routed": false`. |
+| `route_to_chief` | no | `true` asks muster to route the notice ([below](#routing-a-task-to-the-chief)): to your chief, to the agent working the task, or to your attention queue, by `notice`. Needs a non-blank `comment`, which names the event, and a `notice` (a `400` without either, whether or not the server runs task routing). When muster routes it nowhere the task is still filed and the answer says `"routed": false`. |
+| `notice` | with `route_to_chief` | What the notice is, by the plugin's reading: exactly `assigned`, `mentioned` or `update` (a comment or a status change). Anything else, or a `notice` without `route_to_chief`, is a `400`. |
 
 Give `create`, a non-blank `comment`, or both. Unknown fields are refused.
 Text over the limits is **cut, never refused**: `body` and `comment` at
@@ -230,12 +231,13 @@ the winner.
 | `400 {"error"}` | A field breaks a rule above. The same request will never be accepted. |
 | `503 {"error"}` | This server lists no namespaces (`MUSTER_PLUGIN_TASK_NAMESPACES` is unset). Not permanent: try the notice again later. How your plugin holds or sets it aside meanwhile is up to it. |
 
-With `route_to_chief`, every `2xx` answer also carries `"routed"`: `true` when
-the task event is stored for your chief (or already was), `false` when there
-was no task to hand over, muster's rule did not route this notice (a change on
-a task no live agent works), or the server does not run task routing. A task that
-was filed but could not be handed over answers `503` (or `429` when your
-plugin's message caps are full) with its `id`: send the same request again. A
+With `route_to_chief`, every `2xx` answer also carries `"routed"`: where the
+notice went — `"chief"` (a task event is stored for your chief, or already
+was), `"agent"` (delivered to the agent working the task), `"attention"` (an
+ask on your attention queue) — or `false`: there was no task, the rule routes
+this notice nowhere, or the server does not run task routing. A task that
+was filed but whose notice could not be routed answers `503` (or `429` when
+your plugin's task-event caps are full) with its `id`: send the same request again. A
 `409` means your plugin already posted a message under the event's own
 external_id; resending will not help.
 The task is not filed twice, and the event is not handed over twice.
@@ -272,20 +274,31 @@ With `MUSTER_TASK_ROUTING=1`, a plugin that files a task with
 it. The flow:
 
 1. The plugin calls `POST /plugin/v1/tasks` as usual, with `route_to_chief`
-   (a plugin may send it on every notice: muster decides which are routed).
-2. muster files or finds the task and decides whether to hand it over:
-   - a notice that **filed** the task is handed over (also when it is sent
-     again after a hand-off that failed: its comment is the task's first);
-   - any other notice (a comment, a status change, a mention) is handed over
-     **only while a live agent** (pending, provisioning or running) works the
-     task, so the chief can pass it on with `task_forward`. Otherwise it is
-     filed on the task and not handed over (`"routed": false`).
-3. A notice it hands over becomes one **task event** for your
+   and the `notice` kind (a plugin may send it on every notice).
+2. muster files or finds the task and routes the notice by its kind. "A live
+   agent" is one bound to the task that is pending, provisioning or running.
+   - **`assigned`** goes to your **chief** as a task event, whether or not the
+     task already existed (a task a mention filed is routed when it is later
+     assigned). The chief picks attention, forward or dispatch.
+   - **`mentioned`** does **not** go through the chief. With a live agent on
+     the task, it is delivered to that agent (the newest) the way
+     `task_forward` delivers: a muster message naming the task with the notice
+     fenced as data; its turn starts if the agent is running, and is only
+     stored while the agent is still starting. Otherwise, a task `in_progress`
+     gets an ask on your attention queue naming the task, raised by your chief
+     (no chief: filed only). Otherwise it is **filed only** (`"routed":
+     false`) — a case the operator left unspecified, so this is the default.
+     A mention resent is not delivered or asked twice (a `task.notice_routed`
+     audit row).
+   - **`update`** (a comment, a status change) goes to your chief only while
+     a live agent works the task, so the chief can pass it on with
+     `task_forward`; otherwise it is filed only.
+3. A notice for the chief becomes one **task event** for your
    chief: a message muster writes itself, never the plugin. It is delivered
    like any plugin message (the same queue, session, retries and crash
    recovery), and no reply can be drafted to it.
 4. The chief's turn is a structured record, not mail: muster's event name
-   (`new` or `update`), the task's id, key,
+   (`assigned` or `update`), the task's id, key,
    status, gate, the agents already working it, and two fields from outside
    (the task's title and the change line) on fenced lines. muster's preface
    names the three tools below and says the block is data.

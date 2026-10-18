@@ -80,6 +80,12 @@ type DispatchStore interface {
 	// limit, that the chief has not acted on: not being delivered right now,
 	// and with no routing or start recorded for their task since the event.
 	UnroutedTaskEvents(ctx context.Context, limit int) ([]Message, error)
+	// NoticeRouted reports where a notice (noticeID, a task event external id)
+	// that did not go to the chief was already taken for taskID, if it was.
+	NoticeRouted(ctx context.Context, taskID int64, noticeID string) (string, bool, error)
+	// RecordNoticeRouted records that noticeID went to `to` (an
+	// ActionNoticeRouted row), so a resend does not deliver it again.
+	RecordNoticeRouted(ctx context.Context, taskID int64, noticeID, to string) error
 }
 
 var _ DispatchStore = (*PGStore)(nil)
@@ -99,6 +105,11 @@ const pendingAgentWindow = 10 * time.Minute
 // already_dispatched while an agent is running on the task): what takes the task off
 // the attention queue's "Task to route" list once its event was delivered.
 const ActionTaskRouted = "task.chief_routed"
+
+// ActionNoticeRouted records a plugin notice muster took somewhere other than
+// the chief (a mention to the agent on the task, or to the attention queue):
+// detail {"notice_id", "to"}. It is what makes that route once per notice.
+const ActionNoticeRouted = "task.notice_routed"
 
 // ReserveChiefDispatch: see DispatchStore.
 //
@@ -125,17 +136,21 @@ func (s *PGStore) ReserveChiefDispatch(ctx context.Context, taskID int64, check 
 			strconv.FormatInt(p.UserID, 10)); err != nil {
 			return err
 		}
+		// 🔴 EVERY LEDGER READ NAMES THE OWNER (user_id = $n / owner_id = $n),
+		// not only row-level security: with RLS rolled back (db.RLSOff) another
+		// owner's start for the same task id read as this owner's, and its live
+		// agents and day's starts spent this owner's caps (audit round 1).
 		var prior int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE action = $1 AND object = $2`,
-			ActionChiefDispatch, NoteObject(taskID)).Scan(&prior); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE action = $1 AND object = $2 AND user_id = $3`,
+			ActionChiefDispatch, NoteObject(taskID), p.UserID).Scan(&prior); err != nil {
 			return err
 		}
 		if prior > 0 {
 			out.Prior = true
 			var agentID int64
 			err := tx.QueryRow(ctx, `SELECT (detail->>'agent_id')::bigint FROM audit_log
-				WHERE action = $1 AND object = $2 ORDER BY id DESC LIMIT 1`,
-				ActionChiefDispatchAgent, NoteObject(taskID)).Scan(&agentID)
+				WHERE action = $1 AND object = $2 AND user_id = $3 ORDER BY id DESC LIMIT 1`,
+				ActionChiefDispatchAgent, NoteObject(taskID), p.UserID).Scan(&agentID)
 			switch {
 			case err == nil:
 				out.AgentID = &agentID
@@ -156,11 +171,11 @@ func (s *PGStore) ReserveChiefDispatch(ctx context.Context, taskID int64, check 
 		if err := tx.QueryRow(ctx, `SELECT
 			  (SELECT count(*) FROM agents
 			    WHERE status = ANY($2) AND id IN (
-			      SELECT (detail->>'agent_id')::bigint FROM audit_log WHERE action = $1))
+			      SELECT (detail->>'agent_id')::bigint FROM audit_log WHERE action = $1 AND user_id = $5))
 			+ (SELECT count(*) FROM audit_log r
-			    WHERE r.action = $3 AND r.at > now() - make_interval(secs => $4)
-			      AND NOT EXISTS (SELECT 1 FROM audit_log g WHERE g.action = $1 AND g.object = r.object))`,
-			ActionChiefDispatchAgent, liveAgentStatuses, ActionChiefDispatch, pendingAgentWindow.Seconds()).Scan(&live); err != nil {
+			    WHERE r.action = $3 AND r.user_id = $5 AND r.at > now() - make_interval(secs => $4)
+			      AND NOT EXISTS (SELECT 1 FROM audit_log g WHERE g.action = $1 AND g.user_id = $5 AND g.object = r.object))`,
+			ActionChiefDispatchAgent, liveAgentStatuses, ActionChiefDispatch, pendingAgentWindow.Seconds(), p.UserID).Scan(&live); err != nil {
 			return err
 		}
 		if live >= MaxChiefLiveAgents {
@@ -168,8 +183,8 @@ func (s *PGStore) ReserveChiefDispatch(ctx context.Context, taskID int64, check 
 		}
 		var today int
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM audit_log
-			WHERE action = $1 AND at > now() - make_interval(secs => $2)`,
-			ActionChiefDispatch, ChiefDispatchWindow.Seconds()).Scan(&today); err != nil {
+			WHERE action = $1 AND user_id = $3 AND at > now() - make_interval(secs => $2)`,
+			ActionChiefDispatch, ChiefDispatchWindow.Seconds(), p.UserID).Scan(&today); err != nil {
 			return err
 		}
 		if today >= MaxChiefDispatchesPerDay {
@@ -212,12 +227,20 @@ func (s *PGStore) UnroutedTaskEvents(ctx context.Context, limit int) ([]Message,
 	if limit <= 0 {
 		return []Message{}, nil
 	}
+	p, ok := authz.From(ctx)
+	if !ok || p.UserID <= 0 {
+		return nil, errors.New("plugins: unrouted task events need a user principal")
+	}
+	// 🔴 THE OWNER IS IN THE WHERE, BEFORE THE LIMIT, not only in row-level
+	// security: with RLS rolled back, other owners' newer events filled the
+	// LIMIT and hid this owner's (audit round 1).
 	rows, err := s.pool.Query(ctx, `SELECT `+prefixed("m", messageCols)+`
 		  FROM plugin_messages m
-		 WHERE m.task_id IS NOT NULL AND m.status <> 'delivering'
+		 WHERE m.owner_id = $4 AND m.task_id IS NOT NULL AND m.status <> 'delivering'
 		   AND NOT EXISTS (SELECT 1 FROM audit_log a
-		                    WHERE a.action IN ($1, $2) AND a.object = 'note:' || m.task_id AND a.at >= m.created_at)
-		 ORDER BY m.id DESC LIMIT $3`, ActionTaskRouted, ActionChiefDispatchAgent, limit)
+		                    WHERE a.action IN ($1, $2) AND a.user_id = m.owner_id
+		                      AND a.object = 'note:' || m.task_id AND a.at >= m.created_at)
+		 ORDER BY m.id DESC LIMIT $3`, ActionTaskRouted, ActionChiefDispatchAgent, limit, p.UserID)
 	if err != nil {
 		return nil, err
 	}
@@ -231,4 +254,31 @@ func (s *PGStore) UnroutedTaskEvents(ctx context.Context, limit int) ([]Message,
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// NoticeRouted: see DispatchStore. Filtered to the principal's rows in SQL,
+// as every ledger read is.
+func (s *PGStore) NoticeRouted(ctx context.Context, taskID int64, noticeID string) (string, bool, error) {
+	p, ok := authz.From(ctx)
+	if !ok || p.UserID <= 0 {
+		return "", false, errors.New("plugins: a notice lookup needs a user principal")
+	}
+	var to string
+	err := s.pool.QueryRow(ctx, `SELECT detail->>'to' FROM audit_log
+		WHERE action = $1 AND object = $2 AND user_id = $3 AND detail->>'notice_id' = $4 ORDER BY id LIMIT 1`,
+		ActionNoticeRouted, NoteObject(taskID), p.UserID, noticeID).Scan(&to)
+	switch {
+	case err == nil:
+		return to, true, nil
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", false, nil
+	}
+	return "", false, err
+}
+
+// RecordNoticeRouted: see DispatchStore.
+func (s *PGStore) RecordNoticeRouted(ctx context.Context, taskID int64, noticeID, to string) error {
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		return audit(ctx, tx, ActionNoticeRouted, NoteObject(taskID), map[string]any{"notice_id": noticeID, "to": to})
+	})
 }
