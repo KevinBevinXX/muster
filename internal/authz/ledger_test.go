@@ -147,6 +147,10 @@ var (
 		// owner's lapsed asks and hands each back with its owner, whose devices
 		// alone are then told (attention.PGStore.ExpireDue's one helper).
 		"internal/attention.sys",
+		// …and its draft half: every owner's PENDING reply drafts (ids, owners,
+		// deadlines; no body), read once per process so a notification shown
+		// before a restart is still withdrawn when its draft expires.
+		"internal/plugins.(*PGStore).PendingDrafts",
 	}
 	// operatorLedger: work done as the OPERATOR (user 1) with no request —
 	// the boot-time GitHub connect of the operator's own static token, and the

@@ -56,7 +56,6 @@ GET /agents/{name}/terminal/ws
 GET /agents/{name}/ws
 GET /api/agents
 GET /api/agents/{name}/messages
-GET /api/attention
 GET /api/directories
 GET /api/flows/jobs
 GET /api/flows/jobs/{id}
@@ -168,8 +167,6 @@ POST /agents/{id}/start
 POST /agents/{id}/stop
 POST /agents/{name}/send
 POST /api/agents/{name}/messages
-POST /api/attention/{id}/answer
-POST /api/attention/{id}/cancel
 POST /api/flows/jobs
 POST /api/push/subscribe
 POST /api/push/unsubscribe

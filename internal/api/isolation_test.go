@@ -377,16 +377,12 @@ var isolationClasses = map[string]routeClass{
 	"GET /agents/{name}/send":  classParam,
 	// The attention queue (0025). The page, its live list and the badge name
 	// no object (each reads the caller's own queue); the answer and dismiss
-	// forms and their API twins name A's ask by id. The machine API is the
-	// hook tier (user 1), like the task API.
+	// forms name A's ask by id.
 	"GET /attention":                   classList,
 	"GET /attention/items":             classList,
 	"GET /attention/badge":             classList,
 	"POST /attention/asks/{id}/answer": classParam,
 	"POST /attention/asks/{id}/cancel": classParam,
-	"GET /api/attention":               classAdmin,
-	"POST /api/attention/{id}/answer":  classAdmin,
-	"POST /api/attention/{id}/cancel":  classAdmin,
 	// Dictation (transcribe.go) names no object: it turns the caller's recording
 	// into text for the caller and reads or writes no row.
 	"POST /transcribe": classList,
@@ -1128,7 +1124,7 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		id = strconv.FormatInt(o.queued, 10)
 	case strings.HasPrefix(path, "/api/routes/{id}"):
 		id = o.route
-	case strings.HasPrefix(path, "/attention/asks/{id}") || strings.HasPrefix(path, "/api/attention/{id}"):
+	case strings.HasPrefix(path, "/attention/asks/{id}"):
 		id = strconv.FormatInt(o.ask, 10)
 	}
 	name := o.agentName

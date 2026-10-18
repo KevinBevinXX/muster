@@ -502,7 +502,7 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerFlowRoutes(mux)
 	// Plugins (internal/plugins): /plugins and /plugin/v1/*, 404 while off.
 	s.registerPluginRoutes(mux)
-	// The attention queue (attention.go): /attention, its badge and /api/attention; 404 without a store.
+	// The attention queue (attention.go): /attention, its list and its badge; 404 without a store.
 	s.registerAttentionRoutes(mux)
 	// muster-native Web Push (push_routes.go): the subscribe flow and the
 	// account page's Notifications section.

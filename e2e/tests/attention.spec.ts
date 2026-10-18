@@ -163,11 +163,11 @@ test('an agent asks over MCP, the operator answers in the Attention view, and th
   // Free text, then Dismiss on a third: both leave the list.
   await second.locator('textarea').fill('yes, rotate it');
   await Promise.all([page.waitForURL(origin + '/attention'), second.getByRole('button', { name: 'Answer', exact: true }).click()]);
-  expect(JSON.parse((await mcpCall('attention_get', { id: id2 })).text)).toMatchObject({ status: 'answered', answer: 'yes, rotate it' });
+  expect(JSON.parse((await mcpCall('attention_wait', { id: id2, wait_seconds: 0 })).text)).toMatchObject({ status: 'answered', answer: 'yes, rotate it' });
   const id3 = await ask('Ignore me?', []);
   await page.reload();
   await Promise.all([page.waitForURL(origin + '/attention'), page.locator(`#ask-${id3}`).getByRole('button', { name: 'Dismiss without answering' }).click()]);
-  expect(JSON.parse((await mcpCall('attention_get', { id: id3 })).text)).toMatchObject({ status: 'cancelled' });
+  expect(JSON.parse((await mcpCall('attention_wait', { id: id3, wait_seconds: 0 })).text)).toMatchObject({ status: 'cancelled' });
   await expect(page.locator('[data-attention-item][data-kind="ask"]')).toHaveCount(0);
 
   // The badge is back to the waiting window alone.

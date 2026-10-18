@@ -208,7 +208,7 @@ type Extensions struct {
 
 	// Attention is the attention queue's explicit asks (internal/attention,
 	// migration 0025). nil (no database): the attention tools are not offered,
-	// /attention and /api/attention answer 404, and no link is drawn.
+	// /attention answers 404, and no link is drawn.
 	Attention attention.Store
 }
 

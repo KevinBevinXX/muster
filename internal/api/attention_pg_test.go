@@ -217,7 +217,7 @@ func TestAnAskRaisedOverMCPIsAnsweredFromTheViewAndTheWaitReturnsIt(t *testing.T
 	}
 	select {
 	case got := <-done:
-		if got.text != `{"answer":"ship it","answered_by":"operator","id":`+strconv.FormatInt(id, 10)+`,"question":"Ship the migration tonight?","status":"answered"}` {
+		if got.text != `{"answer":"ship it","id":`+strconv.FormatInt(id, 10)+`,"question":"Ship the migration tonight?","status":"answered"}` {
 			t.Fatalf("wait returned %s", got.text)
 		}
 		// Woken by the answer, not by the waiter's own 2s re-read (attentionPoll):
@@ -258,7 +258,7 @@ func TestAttentionWaitReturnsPendingWhenItsWaitRunsOut(t *testing.T) {
 	if took < time.Second || took > 4*time.Second {
 		t.Fatalf("a 1s wait took %s", took)
 	}
-	if text, _, _ := f.tool(t, f.opTok, attentionGetTool, map[string]any{"id": id}); !strings.Contains(text, `"status":"pending"`) {
+	if text, _, _ := f.tool(t, f.opTok, attentionWaitTool, map[string]any{"id": id, "wait_seconds": 0}); !strings.Contains(text, `"status":"pending"`) {
 		t.Fatalf("get: %s", text)
 	}
 }
@@ -289,7 +289,7 @@ func TestALongWaitKeepsTheConnectionAliveAndStillParses(t *testing.T) {
 func TestAnAskIsOnlyItsAskersToWaitOnOrCancel(t *testing.T) {
 	f := newAttnFixture(t)
 	id := f.ask(t, f.opTok, "Mine only?")
-	for _, tool := range []string{attentionGetTool, attentionWaitTool, attentionCancelTool} {
+	for _, tool := range []string{attentionWaitTool, attentionCancelTool} {
 		text, isErr, rpc := f.tool(t, f.op2Tok, tool, map[string]any{"id": id, "wait_seconds": 0})
 		if rpc != nil || !isErr || !strings.Contains(text, "no such ask") {
 			t.Fatalf("%s by another agent: %v %s", tool, rpc, text)
@@ -312,8 +312,8 @@ func TestAnAskIsOnlyItsAskersToWaitOnOrCancel(t *testing.T) {
 // name is refused on BOTH transports; the chief is offered and served them.
 func TestTheChiefOnlyToolsAreRefusedToEveryoneElse(t *testing.T) {
 	f := newAttnFixture(t)
-	chiefOnly := []string{attentionListTool, attentionAnswerTool, sessionTranscript}
-	allAgents := []string{attentionAskTool, attentionWaitTool, attentionGetTool, attentionCancelTool, tasksListTool, taskGetTool, taskCommentTool, taskSetStatusTool}
+	chiefOnly := []string{attentionListTool, sessionTranscript}
+	allAgents := []string{attentionAskTool, attentionWaitTool, attentionCancelTool, tasksListTool, taskGetTool, taskCommentTool, taskSetStatusTool}
 	wl, cl := f.listed(t, f.workerTok), f.listed(t, f.chiefTok)
 	for _, n := range chiefOnly {
 		if wl[n] || !cl[n] {
@@ -337,19 +337,22 @@ func TestTheChiefOnlyToolsAreRefusedToEveryoneElse(t *testing.T) {
 			t.Fatalf("gateway %s by a worker: %s", n, got)
 		}
 	}
+	// No agent answers an ask — the chief included: there is no such tool.
+	for _, n := range []string{"attention_answer", "attention_get"} {
+		if _, _, rpc := f.tool(t, f.chiefTok, n, args); rpc == nil || rpc.Code != -32602 {
+			t.Fatalf("MCP %s by the chief: %+v", n, rpc)
+		}
+		raw, _ := json.Marshal(args)
+		if got := f.srv.AgentToolDispatch(asUser(f.member), f.chief)(n, string(raw)); !strings.Contains(got, "unknown tool") {
+			t.Fatalf("gateway %s by the chief: %s", n, got)
+		}
+	}
 	if a, _ := f.attn.Get(asUser(f.member), id); a.Status != attention.Open {
-		t.Fatalf("a refused answer moved the ask: %+v", a)
+		t.Fatalf("an agent moved the ask: %+v", a)
 	}
 	text, _, _ := f.tool(t, f.chiefTok, attentionListTool, map[string]any{})
 	if !strings.Contains(text, `"ask_id":`+strconv.FormatInt(id, 10)) || !strings.Contains(text, "Which region?") {
 		t.Fatalf("chief list: %s", text)
-	}
-	text, _, _ = f.tool(t, f.chiefTok, attentionAnswerTool, map[string]any{"id": id, "answer": "eu"})
-	if !strings.Contains(text, `"answered_by":"chief"`) || !strings.Contains(text, `"answer":"eu"`) {
-		t.Fatalf("chief answer: %s", text)
-	}
-	if text, _, _ := f.tool(t, f.workerTok, attentionGetTool, map[string]any{"id": id}); !strings.Contains(text, `"answer":"eu"`) {
-		t.Fatalf("the worker's get: %s", text)
 	}
 	// session_transcript: the worker's own conversation, size-capped.
 	sess, err := agents.NewPG(f.pool).CreateSession(asUser(f.member), f.worker.ID, f.worker.Name)
@@ -377,11 +380,19 @@ func TestTheChiefOnlyToolsAreRefusedToEveryoneElse(t *testing.T) {
 	}
 }
 
-// TestTheTaskToolsWorkTheOwnersBoardAndNoOneElses: list, get, comment and set
-// status on the owner's task; never complete; another owner's task is not found.
-func TestTheTaskToolsWorkTheOwnersBoardAndNoOneElses(t *testing.T) {
+// TestATaskToolTouchesOnlyTheCallersOwnTasks: a worker reads, comments on and
+// sets the status of the task it was dispatched for — on BOTH transports —
+// and nothing else: its owner's other task and another owner's task each
+// answer exactly what a task that does not exist answers, and are untouched.
+// tasks_list lists its own task alone; the chief's lists the whole board. No
+// agent moves a task into or out of complete.
+func TestATaskToolTouchesOnlyTheCallersOwnTasks(t *testing.T) {
 	f := newAttnFixture(t)
-	mine, err := f.notes.Create(asUser(f.member), notes.Note{Title: "attn mine", Body: "the member's task", Status: notes.StatusOpen})
+	mine, err := f.notes.Create(asUser(f.member), notes.Note{Title: "attn mine", Body: "the worker's own task", Status: notes.StatusOpen})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sibling, err := f.notes.Create(asUser(f.member), notes.Note{Title: "attn sibling", Body: "the same owner's other task", Status: notes.StatusOpen})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,30 +403,98 @@ func TestTheTaskToolsWorkTheOwnersBoardAndNoOneElses(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM notes WHERE id = $1`, theirs.ID)
 	})
-	text, _, _ := f.tool(t, f.workerTok, tasksListTool, map[string]any{})
-	if !strings.Contains(text, `"id":`+strconv.FormatInt(mine.ID, 10)) || strings.Contains(text, "attn theirs") {
-		t.Fatalf("list: %s", text)
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
+	tok := "attn-scoped-token-" + suffix
+	worker, err := agents.NewPG(f.pool).Create(asUser(f.member), agents.Agent{Name: "attnscoped-" + suffix, Namespace: "devpod-attnscoped-" + suffix,
+		Status: agents.StatusRunning, HooksToken: tok, NoteID: &mine.ID})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if text, _, _ := f.tool(t, f.workerTok, taskGetTool, map[string]any{"id": mine.ID}); !strings.Contains(text, "the member's task") {
-		t.Fatalf("get: %s", text)
+	const ghost = int64(9_000_000_123)
+	gateway := f.srv.AgentToolDispatch(asUser(f.member), worker)
+	both := func(name string, args map[string]any) map[string]string {
+		raw, _ := json.Marshal(args)
+		text, _, rpc := f.tool(t, tok, name, args)
+		if rpc != nil {
+			text = "rpc " + rpc.Message
+		}
+		return map[string]string{"mcp": text, "gateway": gateway(name, string(raw))}
 	}
-	if text, _, _ := f.tool(t, f.workerTok, taskCommentTool, map[string]any{"id": mine.ID, "body": "on it"}); !strings.Contains(text, `"body":"on it"`) {
-		t.Fatalf("comment: %s", text)
+	for surface, text := range both(tasksListTool, map[string]any{}) {
+		var res struct{ Tasks []struct{ ID int64 } }
+		if err := json.Unmarshal([]byte(text), &res); err != nil || len(res.Tasks) != 1 || res.Tasks[0].ID != mine.ID {
+			t.Fatalf("%s list: %s", surface, text)
+		}
 	}
-	if text, _, _ := f.tool(t, f.workerTok, taskSetStatusTool, map[string]any{"id": mine.ID, "status": "in_progress"}); !strings.Contains(text, `"status":"in_progress"`) {
-		t.Fatalf("status: %s", text)
+	for surface, text := range both(taskGetTool, map[string]any{"id": mine.ID}) {
+		if !strings.Contains(text, "the worker's own task") {
+			t.Fatalf("%s get own: %s", surface, text)
+		}
 	}
-	if text, isErr, _ := f.tool(t, f.workerTok, taskSetStatusTool, map[string]any{"id": mine.ID, "status": "complete"}); !isErr || !strings.Contains(text, "may not set") {
-		t.Fatalf("complete: %s", text)
+	for surface, text := range both(taskCommentTool, map[string]any{"id": mine.ID, "body": "on it"}) {
+		if !strings.Contains(text, `"body":"on it"`) {
+			t.Fatalf("%s comment own: %s", surface, text)
+		}
 	}
-	for _, n := range []string{taskGetTool, taskCommentTool, taskSetStatusTool} {
-		text, isErr, _ := f.tool(t, f.workerTok, n, map[string]any{"id": theirs.ID, "body": "x", "status": "in_progress"})
-		if !isErr || !strings.Contains(text, "no such task") {
-			t.Fatalf("%s on another owner's task: %s", n, text)
+	for surface, text := range both(taskSetStatusTool, map[string]any{"id": mine.ID, "status": "in_progress"}) {
+		if !strings.Contains(text, `"status":"in_progress"`) {
+			t.Fatalf("%s status own: %s", surface, text)
+		}
+	}
+	for _, name := range []string{taskGetTool, taskCommentTool, taskSetStatusTool} {
+		for _, id := range []int64{sibling.ID, theirs.ID, ghost} {
+			for surface, text := range both(name, map[string]any{"id": id, "body": "x", "status": "in_progress"}) {
+				if text != `{"error":"no such task: `+strconv.FormatInt(id, 10)+`"}` {
+					t.Fatalf("%s %s on %d: %s", surface, name, id, text)
+				}
+			}
+		}
+	}
+	for _, id := range []int64{sibling.ID} {
+		if n, _ := f.notes.Get(asUser(f.member), id); n.Status != notes.StatusOpen || len(n.Comments) != 0 {
+			t.Fatalf("an out-of-scope task moved: %+v", n)
 		}
 	}
 	if n, _ := f.notes.Get(asUser(1), theirs.ID); n.Status != notes.StatusOpen || len(n.Comments) != 0 {
 		t.Fatalf("another owner's task moved: %+v", n)
+	}
+	for surface, text := range both(taskSetStatusTool, map[string]any{"id": mine.ID, "status": "complete"}) {
+		if !strings.Contains(text, "may not set") {
+			t.Fatalf("%s into complete: %s", surface, text)
+		}
+	}
+	// The operator completes it; no agent reopens it.
+	if _, err := f.notes.SetStatus(asUser(f.member), mine.ID, notes.StatusComplete); err != nil {
+		t.Fatal(err)
+	}
+	for surface, text := range both(taskSetStatusTool, map[string]any{"id": mine.ID, "status": "in_progress"}) {
+		if !strings.Contains(text, "may not change a completed task") {
+			t.Fatalf("%s out of complete: %s", surface, text)
+		}
+	}
+	// The bound task's own tool and HTTP route obey the same rule.
+	if got := gateway("agent_set_task_status", `{"status":"in_progress"}`); !strings.Contains(got, "may not change a completed task") {
+		t.Fatalf("agent_set_task_status out of complete: %s", got)
+	}
+	w := f.call(t, "PATCH", "/agent/task/status", strings.NewReader(`{"status":"in_progress"}`),
+		map[string]string{"X-Muster-Token": tok, "Content-Type": "application/json"})
+	if w.Code != 403 || !strings.Contains(w.Body.String(), "may not change a completed task") {
+		t.Fatalf("PATCH /agent/task/status out of complete: %d %s", w.Code, w.Body)
+	}
+	if n, _ := f.notes.Get(asUser(f.member), mine.ID); n.Status != notes.StatusComplete {
+		t.Fatalf("a completed task was reopened: %s", n.Status)
+	}
+	// The chief: the whole board of its owner, and never another owner's.
+	text, _, _ := f.tool(t, f.chiefTok, tasksListTool, map[string]any{})
+	if !strings.Contains(text, `"id":`+strconv.FormatInt(sibling.ID, 10)) || !strings.Contains(text, `"id":`+strconv.FormatInt(mine.ID, 10)) ||
+		strings.Contains(text, `"id":`+strconv.FormatInt(theirs.ID, 10)+",") {
+		t.Fatalf("chief list: %s", text)
+	}
+	if text, _, _ := f.tool(t, f.chiefTok, taskCommentTool, map[string]any{"id": sibling.ID, "body": "chief note"}); !strings.Contains(text, `"body":"chief note"`) {
+		t.Fatalf("chief comment: %s", text)
+	}
+	if text, _, _ := f.tool(t, f.chiefTok, taskGetTool, map[string]any{"id": theirs.ID}); text != `{"error":"no such task: `+strconv.FormatInt(theirs.ID, 10)+`"}` {
+		t.Fatalf("chief on another owner's task: %s", text)
 	}
 }
 
@@ -521,23 +600,67 @@ func containsStr(list []string, s string) bool {
 	return false
 }
 
-// TestAWaitingSessionPushesOnceAndClearsWhenItStops: the hub's nudge pushes a
-// window that started waiting once, however many nudges follow, and clears it
-// when it stops.
-func TestAWaitingSessionPushesOnceAndClearsWhenItStops(t *testing.T) {
-	f := newAttnFixture(t)
-	tag := "attention-" + sessionKey("ws", "main", "@1")
-	f.srv.BroadcastAgentsChangedFor(1)
-	f.srv.BroadcastAgentsChangedFor(1)
-	if got := f.pushes(); len(got) != 1 || got[0] != "attention "+tag {
-		t.Fatalf("after two nudges: %v", got)
-	}
+// setWindows sets the fake host's @1 window to status.
+func (f *attnFixture) setWindows(status string) {
 	f.mirror.mu.Lock()
-	f.mirror.windows = attnWindows(mirror.StatusBusy)
+	f.mirror.windows = attnWindows(status)
 	f.mirror.mu.Unlock()
-	f.srv.BroadcastAgentsChangedFor(1)
-	if got := f.pushes(); len(got) != 2 || got[1] != "resolved "+tag {
-		t.Fatalf("after it stopped: %v", got)
+}
+
+// TestAWaitingSessionIsPushedOncePerEpisode: a host's first observation in
+// this process seeds its waiting window SILENTLY (a restart re-notifies
+// nothing); a window that starts waiting later is pushed once, however many
+// nudges follow, and cleared when it stops; waiting again within
+// attentionRepushAfter of its last push is the same episode (no push); after
+// it, a new one (pushed).
+func TestAWaitingSessionIsPushedOncePerEpisode(t *testing.T) {
+	f := newAttnFixture(t)
+	clock := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+	f.srv.now = func() time.Time { return clock }
+	tag := "attention-" + sessionKey("ws", "main", "@1")
+	// Each nudge's pushes are delivered before the next, so their order is the
+	// order the windows changed in.
+	nudge := func() {
+		f.srv.BroadcastAgentsChangedFor(1)
+		f.srv.WaitForPushes()
+	}
+	nudge() // the host's first observation: @1 is already waiting
+	if got := f.pushes(); len(got) != 0 {
+		t.Fatalf("the first observation pushed %v", got)
+	}
+	f.setWindows(mirror.StatusBusy)
+	nudge()
+	f.setWindows(mirror.StatusWaiting)
+	nudge()
+	nudge()
+	if got := f.pushes(); len(got) != 2 || got[0] != "resolved "+tag || got[1] != "attention "+tag {
+		t.Fatalf("seeded, stopped, waiting again: %v", got)
+	}
+	// Busy and back within the re-push window: cleared, not pushed again.
+	clock = clock.Add(time.Minute)
+	f.setWindows(mirror.StatusBusy)
+	nudge()
+	f.setWindows(mirror.StatusWaiting)
+	nudge()
+	if got := f.pushes(); len(got) != 3 || got[2] != "resolved "+tag {
+		t.Fatalf("a re-entry within %s: %v", attentionRepushAfter, got)
+	}
+	// After it: a new episode.
+	clock = clock.Add(attentionRepushAfter)
+	f.setWindows(mirror.StatusBusy)
+	nudge()
+	f.setWindows(mirror.StatusWaiting)
+	nudge()
+	if got := f.pushes(); len(got) != 5 || got[4] != "attention "+tag {
+		t.Fatalf("a re-entry after %s: %v", attentionRepushAfter, got)
+	}
+	// A restart (this process's attention state gone) with @1 still waiting:
+	// the reconnecting host is seeded, nothing is pushed.
+	f.srv.attention = attentionState{}
+	nudge()
+	nudge()
+	if got := f.pushes(); len(got) != 5 {
+		t.Fatalf("after a restart: %v", got)
 	}
 }
 
@@ -556,32 +679,6 @@ func TestAnExpiredAskIsClearedAndItsWaitReturns(t *testing.T) {
 	}
 	if text, _, _ := f.tool(t, f.opTok, attentionWaitTool, map[string]any{"id": id, "wait_seconds": 5}); !strings.Contains(text, `"status":"expired"`) {
 		t.Fatalf("wait: %s", text)
-	}
-}
-
-// TestTheJSONAPIListsAnswersAndCancels: the hook tier's twin of the view.
-func TestTheJSONAPIListsAnswersAndCancels(t *testing.T) {
-	f := newAttnFixture(t)
-	a := f.ask(t, f.opTok, "API one?")
-	b := f.ask(t, f.opTok, "API two?")
-	hook := map[string]string{"Authorization": "Bearer " + connTestHookToken, "Content-Type": "application/json"}
-	w := f.call(t, http.MethodGet, "/api/attention", nil, hook)
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"ask_id":`+strconv.FormatInt(a, 10)) {
-		t.Fatalf("list: %d %s", w.Code, w.Body)
-	}
-	w = f.call(t, http.MethodPost, "/api/attention/"+strconv.FormatInt(a, 10)+"/answer", strings.NewReader(`{"answer":"yes"}`), hook)
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"status":"answered"`) {
-		t.Fatalf("answer: %d %s", w.Code, w.Body)
-	}
-	w = f.call(t, http.MethodPost, "/api/attention/"+strconv.FormatInt(b, 10)+"/cancel", nil, hook)
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"status":"cancelled"`) {
-		t.Fatalf("cancel: %d %s", w.Code, w.Body)
-	}
-	if w := f.call(t, http.MethodPost, "/api/attention/"+strconv.FormatInt(b, 10)+"/answer", strings.NewReader(`{"answer":"late"}`), hook); w.Code != http.StatusConflict {
-		t.Fatalf("answer after cancel: %d", w.Code)
-	}
-	if w := f.call(t, http.MethodPost, "/api/attention/"+strconv.FormatInt(a, 10)+"/answer", strings.NewReader(`{"answer":"x"}`), map[string]string{"Content-Type": "application/json"}); w.Code != http.StatusUnauthorized {
-		t.Fatalf("no credential: %d", w.Code)
 	}
 }
 

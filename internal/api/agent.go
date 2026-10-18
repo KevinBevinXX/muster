@@ -147,6 +147,13 @@ func (s *Server) handleAgentTaskStatus(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// …nor move a task OUT of complete (agentStatusRefusal, the one rule).
+	if cur, err := s.ext.Notes.Get(r.Context(), id); err == nil {
+		if why := agentStatusRefusal(cur.Status, body.Status); why != "" {
+			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": why})
+			return
+		}
+	}
 	note, err := s.setNoteStatus(r.Context(), writerAgentRoute, id, body.Status)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -251,13 +258,14 @@ const agentSystemPrompt = `You are a muster worker agent. You have native tools 
 // sets.
 //
 // 🔴 EXCEPT THE ATTENTION QUEUE'S TOOLS (attention_tools.go), WHICH ARE ON MCP BY
-// OPERATOR DECISION: "all agents" ask their owner (attention_ask/wait/get/cancel)
-// and read and work the owner's task board (tasks_list, task_get, task_comment,
-// task_set_status — never `complete`), and the chief alone lists and answers the
-// queue and reads any session's transcript. That deliberately widens what a
-// claude-code pod reaches on the connect listener from its connectors to its
-// OWNER's tasks and questions; the bound task's agent_* tools above stay
-// gateway-only as they were.
+// OPERATOR DECISION: "all agents" ask their owner (attention_ask/wait/cancel)
+// and work their OWN tasks — the dispatched one and the ones they created
+// (tasks_list, task_get, task_comment, task_set_status; never into or out of
+// `complete`) — and the chief alone lists the queue (read-only: only the
+// operator answers) and reads any session's transcript, and works the whole
+// board. That deliberately widens what a claude-code pod reaches on the connect
+// listener from its connectors to its own task and its questions; the bound
+// task's agent_* tools above stay gateway-only as they were.
 //
 // 🔴 chiefOnly IS A SECOND, ORTHOGONAL AXIS: WHO, NOT WHICH TRANSPORT. A
 // chief-only tool is offered (on both transports) to the owner's CHIEF agent and
@@ -549,11 +557,12 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		}
 		var in struct{ Status string }
 		_ = arg(&in)
-		if !notes.ValidStatus(in.Status) {
-			return toolErr("invalid status %q", in.Status)
+		cur, err := s.ext.Notes.Get(ctx, *a.NoteID)
+		if err != nil {
+			return toolErr("could not load task: %v", err)
 		}
-		if !notes.StatusAllowedForAgent(in.Status) {
-			return toolErr("agents may not set %q; only the operator/human can mark a task complete", in.Status)
+		if why := agentStatusRefusal(cur.Status, in.Status); why != "" {
+			return toolErr("%s", why)
 		}
 		n, err := s.setNoteStatus(ctx, writerAgentTool, *a.NoteID, in.Status)
 		if err != nil {
@@ -595,7 +604,9 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		_ = arg(&in)
 		return s.toolConnectorStatus(ctx, a, in.Name, in.WaitSeconds)
 	default:
-		if text, ok := s.dispatchCallerTool(ctx, callerOfAgent(a), name, arguments); ok && s.attentionToolsOn() {
+		// dispatchCallerTool runs nothing without the attention store (it
+		// answers false before touching it).
+		if text, ok := s.dispatchCallerTool(ctx, callerOfAgent(a), name, arguments); ok {
 			return text
 		}
 		return toolErr("unknown tool %q", name)

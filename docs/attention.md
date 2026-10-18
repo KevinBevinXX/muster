@@ -23,8 +23,18 @@ the field.
 
 **Notifications** (event `attention` on Account → Notifications, on by default):
 one per new question or newly waiting session, withdrawn when the item is
-answered, dismissed, expires or stops waiting. A reply draft keeps its own
-`plugin` notification, which is now also withdrawn when you decide the draft.
+answered, dismissed, expires or stops waiting. Each item has one tag, so a
+notification is replaced, never stacked. A session is not re-notified:
+
+- when muster restarts (or a host reconnects): the first time this process
+  sees a host, its sessions that are already waiting are recorded silently;
+- when it goes waiting again within 2 minutes of its last notification (busy
+  and back is one episode).
+
+A reply draft keeps its own `plugin` notification, which is withdrawn when you
+decide the draft, when a newer draft for the same message supersedes it, and
+when it expires (checked every 30 seconds, including drafts notified before a
+restart).
 
 ## The agent tools
 
@@ -36,10 +46,9 @@ claude-code agent — whenever muster has a database.
 | tool | does |
 |---|---|
 | `attention_ask {question, options?, timeout_seconds?}` | Files a question. `options` (at most 10) become buttons; you can still answer in free text. Open for 24 hours by default (60 s to 7 days), then it expires. Returns `{id, status: "pending"}`. |
-| `attention_wait {id, wait_seconds?}` | Blocks until the ask is answered, cancelled or expired, or `wait_seconds` (default 240, at most 600) pass — then answers `status: "pending"` and the agent calls it again. |
-| `attention_get {id}` | The same answer without waiting. |
+| `attention_wait {id, wait_seconds?}` | Blocks until the ask is answered, cancelled or expired, or `wait_seconds` (default 240, at most 600) pass — then answers `status: "pending"` and the agent calls it again. `wait_seconds: 0` reads it without waiting. At most 2 waits per agent and 20 per owner are open at once; past that a wait is refused at once. |
 | `attention_cancel {id}` | Withdraws an open ask. |
-| `tasks_list {status?}`, `task_get {id}`, `task_comment {id, body}`, `task_set_status {id, status}` | The owner's task board, as row-level security scopes it. An agent may set `open`, `in_progress` or `ready_for_review`, never `complete`. |
+| `tasks_list {status?}`, `task_get {id}`, `task_comment {id, body}`, `task_set_status {id, status}` | The agent's OWN tasks: the one it was dispatched for and the ones it created (no agent tool creates a task today, so a worker's is its dispatched task). The chief's: the owner's whole board. Any other task answers exactly what a task that does not exist answers. An agent may set `open`, `in_progress` or `ready_for_review` — never `complete`, and never on a task that is already complete. |
 
 An ask belongs to the agent that raised it: another agent (even the same
 owner's) reads "no such ask" for it.
@@ -49,8 +58,7 @@ called by name):
 
 | tool | does |
 |---|---|
-| `attention_list` | The whole queue, as the view shows it (`ask_id` on questions). |
-| `attention_answer {id, answer}` | Answers a question on the owner's behalf; recorded as answered by `chief`. |
+| `attention_list` | The whole queue, as the view shows it. Read-only: only the operator answers an ask. |
 | `session_transcript {subject, max_entries?}` | The recent conversation of one of the owner's sessions (`agent:<id>` or `mirror:<claude session id>`, as `agents_list` returns them): oldest first, at most 200 entries, each at most 2000 characters, 48 KiB in all; tool calls by name, tool output left out. |
 | `agents_list` | (Existing.) Now also carries a mirrored session's `host`. |
 
@@ -72,16 +80,8 @@ paragraph:
 > until it returns the answer, then continue. Your owner sees the question in
 > muster's Attention view and on their phone.
 
-## The API
+## Answering
 
-On the hook tier (the operator's hook token, or a personal API token, acting as
-its owner):
-
-- `GET /api/attention` — `{items: [...]}`, the same read model.
-- `POST /api/attention/{id}/answer` `{"answer": "..."}` — 404 for no such ask,
-  409 if it is no longer open.
-- `POST /api/attention/{id}/cancel`.
-
-The page's own forms are `POST /attention/asks/{id}/answer` (`option` or
-`answer`) and `POST /attention/asks/{id}/cancel`, session-authenticated and
-same-origin.
+Only the operator answers, on `/attention`: `POST /attention/asks/{id}/answer`
+(`option` or `answer`) and `POST /attention/asks/{id}/cancel`,
+session-authenticated and same-origin. No agent tool answers an ask.

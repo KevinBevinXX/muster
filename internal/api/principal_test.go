@@ -252,9 +252,6 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/tasks/{id}/comments",
 		"GET /api/whoami",
 		"POST /api/routes/{id}/reply",
-		"GET /api/attention",
-		"POST /api/attention/{id}/answer",
-		"POST /api/attention/{id}/cancel",
 	},
 	authz.ViaService: {
 		"GET /api/tasks",
@@ -283,9 +280,6 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/tasks",
 		"POST /api/tasks/{id}/comments",
 		"POST /api/routes/{id}/reply",
-		"GET /api/attention",
-		"POST /api/attention/{id}/answer",
-		"POST /api/attention/{id}/cancel",
 		// Browser flows (0012): a personal token ONLY — the hook and service
 		// tiers are absent above on purpose (requireAPIToken).
 		"GET /api/flows/jobs",
