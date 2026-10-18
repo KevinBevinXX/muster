@@ -1,7 +1,6 @@
 package askq
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"net/url"
@@ -11,13 +10,9 @@ import (
 	"testing"
 )
 
-// The testdata payloads were captured from a real Claude Code 2.1.289 session
+// The testdata payload was captured from a real Claude Code 2.1.289 session
 // (interactive, a scratch directory, a PreToolUse hook on AskUserQuestion; the
-// claude config directory in transcript_path replaced). pretooluse-output-proven.json is
-// the hook output that session ACCEPTED: the call was answered with no picker
-// on screen, and the model's tool result read `Your questions have been
-// answered: "Which color do you prefer?"="Red", "Which pets do you have?"="Cat,
-// Dog". …`.
+// claude config directory in transcript_path replaced).
 
 func readPayload(t *testing.T) HookPayload {
 	t.Helper()
@@ -30,46 +25,6 @@ func readPayload(t *testing.T) HookPayload {
 		t.Fatal(err)
 	}
 	return p
-}
-
-func sameJSON(t *testing.T, got, want []byte) {
-	t.Helper()
-	var g, w any
-	if err := json.Unmarshal(got, &g); err != nil {
-		t.Fatalf("got is not JSON: %v\n%s", err, got)
-	}
-	if err := json.Unmarshal(want, &w); err != nil {
-		t.Fatalf("want is not JSON: %v", err)
-	}
-	if !reflect.DeepEqual(g, w) {
-		t.Fatalf("JSON differs\n got: %s\nwant: %s", got, want)
-	}
-}
-
-// TestHookOutputIsTheProvenPayload: the answers a person gave, for the real
-// call, produce EXACTLY the output the CLI was measured to accept.
-func TestHookOutputIsTheProvenPayload(t *testing.T) {
-	p := readPayload(t)
-	out, err := HookOutput(p.ToolInput, map[string]string{"Which color do you prefer?": "Red", "Which pets do you have?": "Cat, Dog"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want, err := os.ReadFile("testdata/pretooluse-output-proven.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	sameJSON(t, out, bytes.TrimSpace(want))
-}
-
-// TestHookOutputKeepsEveryInputField: updatedInput REPLACES the call's input,
-// so a field muster does not know (metadata, a preview) must survive.
-func TestHookOutputKeepsEveryInputField(t *testing.T) {
-	in := json.RawMessage(`{"questions":[{"question":"Q?","header":"H","options":[{"label":"A","preview":"<b>x</b>"},{"label":"B"}]}],"metadata":{"source":"remember"}}`)
-	out, err := HookOutput(in, map[string]string{"Q?": "A"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sameJSON(t, out, []byte(`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"questions":[{"question":"Q?","header":"H","options":[{"label":"A","preview":"<b>x</b>"},{"label":"B"}]}],"metadata":{"source":"remember"},"answers":{"Q?":"A"}}}}`))
 }
 
 func gateQuestions(t *testing.T) []Question {
@@ -134,22 +89,30 @@ func form(kv ...string) url.Values {
 // passed through as typed.
 func TestFromFormBuildsTheAnswersTheCLITakes(t *testing.T) {
 	qs := gateQuestions(t)
-	got, err := FromForm(qs, form("a0", "Red", "a1", "Fish", "a1", "Cat"))
+	cs, got, err := FromForm(qs, form("a0", "Red", "a1", "Fish", "a1", "Cat"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := map[string]string{"Which color do you prefer?": "Red", "Which pets do you have?": "Cat, Fish"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %q", got)
 	}
-	got, err = FromForm(qs, form("a0", OtherValue, "o0", "  teal, mostly  ", "a1", "Dog", "a1", OtherValue, "o1", "a hamster"))
+	// The same answers as the picker takes them: option indexes in the
+	// question's order.
+	if want := []Choice{{Picks: []int{0}}, {Picks: []int{0, 2}}}; !reflect.DeepEqual(cs, want) {
+		t.Fatalf("choices %+v", cs)
+	}
+	cs, got, err = FromForm(qs, form("a0", OtherValue, "o0", "  teal, mostly  ", "a1", "Dog", "a1", OtherValue, "o1", "a hamster"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := map[string]string{"Which color do you prefer?": "teal, mostly", "Which pets do you have?": "Dog, a hamster"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %q", got)
 	}
+	if want := []Choice{{Other: "teal, mostly"}, {Picks: []int{1}, Other: "a hamster"}}; !reflect.DeepEqual(cs, want) {
+		t.Fatalf("choices %+v", cs)
+	}
 	// Text typed beside a chosen option is not the answer unless Other is chosen.
-	got, err = FromForm(qs, form("a0", "Blue", "o0", "ignored", "a1", "Cat"))
+	_, got, err = FromForm(qs, form("a0", "Blue", "o0", "ignored", "a1", "Cat"))
 	if err != nil || got["Which color do you prefer?"] != "Blue" {
 		t.Fatalf("got %q, %v", got, err)
 	}
@@ -168,9 +131,12 @@ func TestFromFormRefusesWhatTheQuestionsDoNotAllow(t *testing.T) {
 		"other with no text":        form("a0", OtherValue, "a1", "Cat"),
 		"other text too long":       form("a0", OtherValue, "o0", strings.Repeat("x", MaxFreeText+1), "a1", "Cat"),
 		"other text with a control": form("a0", OtherValue, "o0", "a\x1bb", "a1", "Cat"),
+		// Typed into the picker's one-line text row: no line break, no tab.
+		"other text on two lines": form("a0", OtherValue, "o0", "two\nlines", "a1", "Cat"),
+		"other text with a tab":   form("a0", OtherValue, "o0", "a\tb", "a1", "Cat"),
 	}
 	for name, v := range cases {
-		if _, err := FromForm(qs, v); !errors.Is(err, ErrInvalid) {
+		if _, _, err := FromForm(qs, v); !errors.Is(err, ErrInvalid) {
 			t.Errorf("%s: err %v, want ErrInvalid", name, err)
 		}
 	}

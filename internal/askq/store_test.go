@@ -3,6 +3,7 @@ package askq
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -22,7 +23,7 @@ func (c *clock) add(d time.Duration) {
 
 func testStore(t *testing.T) (*Store, *clock) {
 	t.Helper()
-	c := &clock{t: time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)}
+	c := &clock{t: time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)}
 	s := New()
 	s.SetNow(c.now)
 	return s, c
@@ -37,171 +38,362 @@ func key(owner int64) Key {
 	return Key{Owner: owner, Source: "mirror", Scope: "laptop", Session: "s-1", ToolUseID: "toolu_1"}
 }
 
-var someAnswers = map[string]string{"Which color?": "Red", "Which pets?": "Cat, Dog"}
+var (
+	someAnswers  = map[string]string{"Which color?": "Red", "Which pets?": "Cat, Dog"}
+	otherAnswers = map[string]string{"Which color?": "Blue", "Which pets?": "Cat"}
+)
 
-func TestOpenIsIdempotentWhilePending(t *testing.T) {
+func resolve(s *Store, owner int64, answers map[string]string) (Entry, bool) {
+	k := key(owner)
+	return s.Resolve(k.Owner, k.Source, k.Scope, k.Session, k.ToolUseID, answers)
+}
+
+func TestOpenIsIdempotentWhileOpen(t *testing.T) {
 	s, _ := testStore(t)
-	a, err := s.Open(key(1), twoQs, time.Minute, "")
-	if err != nil {
-		t.Fatal(err)
+	a, err := s.Open(key(1), twoQs, "")
+	if err != nil || a.State != Pending {
+		t.Fatalf("open: %+v %v", a, err)
 	}
-	b, err := s.Open(key(1), twoQs, time.Minute, "")
-	if err != nil || b.ID != a.ID {
+	if b, err := s.Open(key(1), twoQs, ""); err != nil || b.ID != a.ID {
 		t.Fatalf("a retried Open is a new entry: %v %v", a.ID, b.ID)
 	}
-	if !s.Waiting(1, "mirror", "laptop", "s-1") {
-		t.Fatal("a pending question does not mark its session waiting")
+	if got := s.Pending(1); len(got) != 1 || got[0].ID != a.ID {
+		t.Fatalf("Pending(1) = %+v", got)
 	}
-	if s.Waiting(2, "mirror", "laptop", "s-1") || s.Waiting(1, "mirror", "other-host", "s-1") || s.Waiting(1, "mirror", "laptop", "s-2") {
-		t.Fatal("waiting leaked to another owner, host or session")
+	if got := s.Pending(2); len(got) != 0 {
+		t.Fatalf("Pending(2) = %+v", got)
 	}
 }
 
-// TestAnswerIsTheOwnersAloneAndReplaySafe pins the store's authz and idempotency.
-func TestAnswerIsTheOwnersAloneAndReplaySafe(t *testing.T) {
+// TestTheHooksOwnIDIsIdempotent: the id the hook chose names the question; a
+// retried registration is the same entry, another call cannot take the id.
+func TestTheHooksOwnIDIsIdempotent(t *testing.T) {
 	s, _ := testStore(t)
-	if _, err := s.Open(key(1), twoQs, time.Minute, ""); err != nil {
+	id := NewID()
+	if a, err := s.Open(key(1), twoQs, id); err != nil || a.ID != id {
+		t.Fatalf("open: %+v %v", a, err)
+	}
+	if b, err := s.Open(key(1), twoQs, id); err != nil || b.ID != id {
+		t.Fatalf("retry: %+v %v", b, err)
+	}
+	other := key(1)
+	other.ToolUseID = "toolu_other"
+	if _, err := s.Open(other, twoQs, id); !errors.Is(err, ErrIDTaken) {
+		t.Fatalf("another call took the id: %v", err)
+	}
+	if _, err := s.Open(key(1), twoQs, "NOT-HEX"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a malformed id: %v", err)
+	}
+}
+
+// TestBeginTypingIsTheOwnersAloneAndOnceOnly pins the typing gate: another
+// owner's question is not found; answers must fit; a second, different answer
+// while one is being typed is refused (ErrBusy); the SAME again is `again`
+// (never typed twice).
+func TestBeginTypingIsTheOwnersAloneAndOnceOnly(t *testing.T) {
+	s, _ := testStore(t)
+	if _, err := s.Open(key(1), twoQs, ""); err != nil {
 		t.Fatal(err)
 	}
-	// Another owner, same everything else: not found.
-	if _, err := s.Answer(key(2), someAnswers); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("another owner's answer: %v, want ErrNotFound", err)
+	if _, _, err := s.BeginTyping(key(2), someAnswers); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("another owner: %v, want ErrNotFound", err)
 	}
-	// Answers that do not fit the questions: refused, still pending.
-	if _, err := s.Answer(key(1), map[string]string{"Which color?": "Red"}); !errors.Is(err, ErrInvalid) {
+	if _, _, err := s.BeginTyping(key(1), map[string]string{"Which color?": "Red"}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("a partial answer: %v", err)
 	}
-	e, err := s.Answer(key(1), someAnswers)
-	if err != nil || e.State != Answered {
-		t.Fatalf("answer: %+v %v", e, err)
+	e, again, err := s.BeginTyping(key(1), someAnswers)
+	if err != nil || again || e.State != Typing {
+		t.Fatalf("begin: %+v again=%v %v", e, again, err)
 	}
-	if _, err := s.Answer(key(1), someAnswers); err != nil {
-		t.Fatalf("the same answers again (a double submit) must succeed: %v", err)
+	if _, again, err := s.BeginTyping(key(1), someAnswers); err != nil || !again {
+		t.Fatalf("the same answers again (a double submit): again=%v %v", again, err)
 	}
-	if _, err := s.Answer(key(1), map[string]string{"Which color?": "Blue", "Which pets?": "Cat"}); !errors.Is(err, ErrAnswered) {
-		t.Fatalf("different answers after the first: %v, want ErrAnswered", err)
+	if _, _, err := s.BeginTyping(key(1), otherAnswers); !errors.Is(err, ErrBusy) {
+		t.Fatalf("other answers while typing: %v, want ErrBusy", err)
 	}
-	if s.Waiting(1, "mirror", "laptop", "s-1") {
-		t.Fatal("an answered question still marks its session waiting")
-	}
-}
-
-func TestPollWakesOnTheAnswerAndChecksTheHolder(t *testing.T) {
-	s, _ := testStore(t)
-	e, _ := s.Open(key(1), twoQs, time.Minute, "")
-	if _, err := s.Poll(context.Background(), e.ID, 2, "mirror", "laptop", 0); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("another owner polled: %v", err)
-	}
-	if _, err := s.Poll(context.Background(), e.ID, 1, "mirror", "other-host", 0); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("another host polled: %v", err)
-	}
-	got := make(chan Entry, 1)
-	go func() {
-		p, _ := s.Poll(context.Background(), e.ID, 1, "mirror", "laptop", 10*time.Second)
-		got <- p
-	}()
-	time.Sleep(50 * time.Millisecond)
-	if _, err := s.Answer(key(1), someAnswers); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case p := <-got:
-		if p.State != Answered || p.Answers["Which pets?"] != "Cat, Dog" {
-			t.Fatalf("poll woke with %+v", p)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the long-poll did not wake on the answer")
+	// Still open while typing: the attention queue keeps it.
+	if got := s.Pending(1); len(got) != 1 {
+		t.Fatalf("a question being typed left Pending: %+v", got)
 	}
 }
 
-func TestWithdrawSendsItBackToTheTerminal(t *testing.T) {
-	s, _ := testStore(t)
-	e, _ := s.Open(key(1), twoQs, time.Minute, "")
-	if _, err := s.Withdraw(e.ID, 2, "mirror", "laptop"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("another owner withdrew: %v", err)
-	}
-	if _, err := s.Withdraw(e.ID, 1, "mirror", "laptop"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Answer(key(1), someAnswers); !errors.Is(err, ErrNotPending) {
-		t.Fatalf("answering a withdrawn question: %v, want ErrNotPending", err)
-	}
-	// The same call asked again is a new, pending entry.
-	again, err := s.Open(key(1), twoQs, time.Minute, "")
-	if err != nil || again.ID == e.ID || again.State != Pending {
-		t.Fatalf("re-asked: %+v %v", again, err)
-	}
-}
-
-// TestAHookThatStopsPollingIsWithdrawn: a hook killed without its DELETE
-// (the CLI's own timeout, a Ctrl-C) must not leave the session "waiting".
-func TestAHookThatStopsPollingIsWithdrawn(t *testing.T) {
+// TestNoSecondDriveUntilTheFirstsOutcomeIsKnown: a typing that ended WITHOUT
+// the host's outcome (unsettled) leaves the question Failed but refuses a new
+// typing (ErrBusy) until MaxDrive after the first began — the host may still
+// be typing it. The controls: a settled failure may be retried at once, and
+// so may an unsettled one once MaxDrive has passed.
+func TestNoSecondDriveUntilTheFirstsOutcomeIsKnown(t *testing.T) {
 	s, c := testStore(t)
-	e, _ := s.Open(key(1), twoQs, time.Hour, "")
-	c.add(PollGrace - time.Second)
-	if _, err := s.Poll(context.Background(), e.ID, 1, "mirror", "laptop", 0); err != nil {
-		t.Fatal(err)
+	_, _ = s.Open(key(1), twoQs, "")
+	_, _, _ = s.BeginTyping(key(1), someAnswers)
+	c.add(10 * time.Second)
+	if e, _ := s.TypingFailed(key(1), "the host did not report", false); e.State != Failed {
+		t.Fatalf("an unsettled failure: %+v", e)
 	}
-	c.add(PollGrace - time.Second)
-	if !s.Waiting(1, "mirror", "laptop", "s-1") {
-		t.Fatal("a hook that polled within PollGrace was taken for dead")
+	if _, _, err := s.BeginTyping(key(1), otherAnswers); !errors.Is(err, ErrBusy) {
+		t.Fatalf("a new typing while the host may still type: %v, want ErrBusy", err)
 	}
-	c.add(2 * time.Second)
-	if s.Waiting(1, "mirror", "laptop", "s-1") {
-		t.Fatal("a hook silent past PollGrace still marks its session waiting")
+	c.add(MaxDrive)
+	if e, _, err := s.BeginTyping(key(1), otherAnswers); err != nil || e.State != Typing {
+		t.Fatalf("a new typing once MaxDrive passed: %+v %v", e, err)
 	}
-	if got, _ := s.Get(e.ID); got.State != Withdrawn {
-		t.Fatalf("state %s, want withdrawn", got.State)
+	// Settled: the host reported; a retry may begin at once.
+	s, _ = testStore(t)
+	_, _ = s.Open(key(1), twoQs, "")
+	_, _, _ = s.BeginTyping(key(1), someAnswers)
+	_, _ = s.TypingFailed(key(1), "no picker", true)
+	if _, _, err := s.BeginTyping(key(1), otherAnswers); err != nil {
+		t.Fatalf("a retry after a reported failure: %v", err)
+	}
+	// TypingDone settles too: a failure reported after it does not hold the
+	// question.
+	s, _ = testStore(t)
+	_, _ = s.Open(key(1), twoQs, "")
+	_, _, _ = s.BeginTyping(key(1), someAnswers)
+	s.TypingDone(key(1))
+	_, _ = s.TypingFailed(key(1), "late", false)
+	if _, _, err := s.BeginTyping(key(1), otherAnswers); err != nil {
+		t.Fatalf("a retry after the host reported it typed: %v", err)
 	}
 }
 
-func TestTheDeadlineWithdraws(t *testing.T) {
-	s, c := testStore(t)
-	e, _ := s.Open(key(1), twoQs, 30*time.Second, "")
-	c.add(31 * time.Second)
-	if got, _ := s.Get(e.ID); got.State != Withdrawn {
-		t.Fatalf("state %s past the deadline, want withdrawn", got.State)
+// TestANewerQuestionReplacesTheOlder: a newer question in the same Claude
+// session supersedes the older open ones — closed, never typed into — while a
+// question of another session stays open. A late result for the superseded
+// call is still recorded.
+func TestANewerQuestionReplacesTheOlder(t *testing.T) {
+	s, _ := testStore(t)
+	old := key(1)
+	other := key(1)
+	other.Session, other.ToolUseID = "s-2", "toolu_9"
+	_, _ = s.Open(old, twoQs, "")
+	_, _ = s.Open(other, twoQs, "")
+	newer := key(1)
+	newer.ToolUseID = "toolu_2"
+	if _, err := s.Open(newer, twoQs, ""); err != nil {
+		t.Fatal(err)
 	}
-	// A hold past MaxHold is capped.
-	f, _ := s.Open(Key{Owner: 1, Source: "mirror", Scope: "laptop", Session: "s-1", ToolUseID: "toolu_2"}, twoQs, 10*time.Hour, "")
-	if d := f.Deadline.Sub(f.Created); d != MaxHold {
-		t.Fatalf("hold %s, want MaxHold", d)
+	if e, _ := s.Find(old); e.State != Superseded {
+		t.Fatalf("the older question: %+v, want superseded", e)
+	}
+	if _, _, err := s.BeginTyping(old, someAnswers); !errors.Is(err, ErrClosed) {
+		t.Fatalf("typing into a superseded question: %v, want ErrClosed", err)
+	}
+	if e, _ := s.Find(other); e.State != Pending {
+		t.Fatalf("another session's question: %+v", e)
+	}
+	if e, _ := s.Find(newer); e.State != Pending {
+		t.Fatalf("the newer question: %+v", e)
+	}
+	if e, ok := s.Resolve(old.Owner, old.Source, old.Scope, old.Session, old.ToolUseID, someAnswers); !ok || e.State != Answered {
+		t.Fatalf("a late result for the superseded call: %+v %v", e, ok)
+	}
+}
+
+// TestGoneExpiresTheSessionsOpenQuestions: Gone expires the session's open
+// questions with the note, and leaves other sessions' alone.
+func TestGoneExpiresTheSessionsOpenQuestions(t *testing.T) {
+	s, _ := testStore(t)
+	other := key(1)
+	other.Session = "s-2"
+	_, _ = s.Open(key(1), twoQs, "")
+	_, _ = s.Open(other, twoQs, "")
+	if n := s.Gone(1, "mirror", "laptop", "s-1", "it ended"); n != 1 {
+		t.Fatalf("Gone expired %d", n)
+	}
+	if e, _ := s.Find(key(1)); e.State != Expired || e.Note != "it ended" {
+		t.Fatalf("the gone session's question: %+v", e)
+	}
+	if e, _ := s.Find(other); e.State != Pending {
+		t.Fatalf("another session's question: %+v", e)
+	}
+	if got := s.Pending(1); len(got) != 1 {
+		t.Fatalf("pending after Gone: %+v", got)
+	}
+}
+
+// TestTheCLIsRecordSaysWhoWon: the result muster typed is "answered here"; any
+// other result is the terminal's — whoever got there first, the CLI's record
+// decides.
+func TestTheCLIsRecordSaysWhoWon(t *testing.T) {
+	// Muster's answer landed.
+	s, _ := testStore(t)
+	_, _ = s.Open(key(1), twoQs, "")
+	_, _, _ = s.BeginTyping(key(1), someAnswers)
+	if e, ok := resolve(s, 1, someAnswers); !ok || e.State != Answered || e.By != ByMuster {
+		t.Fatalf("muster's answer recorded: %+v %v", e, ok)
+	}
+	// The terminal got there first, though muster was typing.
+	s, _ = testStore(t)
+	_, _ = s.Open(key(1), twoQs, "")
+	_, _, _ = s.BeginTyping(key(1), someAnswers)
+	if e, ok := resolve(s, 1, otherAnswers); !ok || e.State != Answered || e.By != ByTerminal || e.Answers["Which color?"] != "Blue" {
+		t.Fatalf("the terminal's answer recorded: %+v %v", e, ok)
+	}
+	// Answered only in the terminal.
+	s, _ = testStore(t)
+	_, _ = s.Open(key(1), twoQs, "")
+	if e, ok := resolve(s, 1, otherAnswers); !ok || e.By != ByTerminal {
+		t.Fatalf("a terminal-only answer: %+v %v", e, ok)
+	}
+	// Then: begin typing a resolved question is refused, resolving again is a
+	// no-op, and it leaves Pending.
+	if _, _, err := s.BeginTyping(key(1), someAnswers); !errors.Is(err, ErrClosed) {
+		t.Fatalf("typing into an answered question: %v, want ErrClosed", err)
+	}
+	if _, ok := resolve(s, 1, someAnswers); ok {
+		t.Fatal("a resolved question resolved again")
+	}
+	if got := s.Pending(1); len(got) != 0 {
+		t.Fatalf("an answered question is still pending: %+v", got)
+	}
+	// Dismissed in the terminal: no answers.
+	s, _ = testStore(t)
+	_, _ = s.Open(key(1), twoQs, "")
+	if e, ok := resolve(s, 1, nil); !ok || e.State != Declined {
+		t.Fatalf("a dismissed picker: %+v %v", e, ok)
+	}
+	// ...and a dismissed question is not typed into either.
+	if _, _, err := s.BeginTyping(key(1), someAnswers); !errors.Is(err, ErrClosed) {
+		t.Fatalf("typing into a dismissed question: %v, want ErrClosed", err)
+	}
+	// A result for a call the store never asked about changes nothing.
+	if _, ok := s.Resolve(1, "mirror", "laptop", "s-1", "toolu_unknown", someAnswers); ok {
+		t.Fatal("an unknown call resolved")
+	}
+}
+
+func TestTypingFailedLeavesItToTheTerminal(t *testing.T) {
+	s, _ := testStore(t)
+	_, _ = s.Open(key(1), twoQs, "")
+	_, _, _ = s.BeginTyping(key(1), someAnswers)
+	e, err := s.TypingFailed(key(1), "no picker", true)
+	if err != nil || e.State != Failed || e.Note != "no picker" {
+		t.Fatalf("failed: %+v %v", e, err)
+	}
+	// Still open: the terminal answers it, or muster may try again.
+	if e, ok := resolve(s, 1, otherAnswers); !ok || e.By != ByTerminal {
+		t.Fatalf("the terminal's answer after a failed typing: %+v %v", e, ok)
+	}
+	// A failure reported after the CLI resolved it does not undo that.
+	s, _ = testStore(t)
+	_, _ = s.Open(key(1), twoQs, "")
+	_, _, _ = s.BeginTyping(key(1), someAnswers)
+	_, _ = resolve(s, 1, otherAnswers)
+	if e, _ := s.TypingFailed(key(1), "late", true); e.State != Answered {
+		t.Fatalf("a late failure overwrote the result: %+v", e)
+	}
+}
+
+func TestAnOpenQuestionExpires(t *testing.T) {
+	s, c := testStore(t)
+	e, _ := s.Open(key(1), twoQs, "")
+	c.add(MaxOpen - time.Minute)
+	if got, _ := s.Get(e.ID); got.State != Pending {
+		t.Fatalf("expired early: %s", got.State)
+	}
+	c.add(2 * time.Minute)
+	if got, _ := s.Get(e.ID); got.State != Expired {
+		t.Fatalf("state %s past MaxOpen, want expired", got.State)
+	}
+	if len(s.Pending(1)) != 0 {
+		t.Fatal("an expired question is still pending")
 	}
 }
 
 func TestPendingIsBoundedPerOwner(t *testing.T) {
 	s, _ := testStore(t)
+	// One question per Claude session: a newer one in the SAME session
+	// supersedes the older (TestANewerQuestionReplacesTheOlder).
 	for i := 0; i < MaxPendingPerOwner; i++ {
 		k := key(1)
-		k.ToolUseID = "toolu_" + string(rune('a'+i%26)) + string(rune('a'+i/26))
-		if _, err := s.Open(k, twoQs, time.Minute, ""); err != nil {
+		k.Session, k.ToolUseID = fmt.Sprintf("s-%d", i), fmt.Sprintf("toolu_%d", i)
+		if _, err := s.Open(k, twoQs, ""); err != nil {
 			t.Fatalf("%d: %v", i, err)
 		}
 	}
 	k := key(1)
-	k.ToolUseID = "toolu_over"
-	if _, err := s.Open(k, twoQs, time.Minute, ""); !errors.Is(err, ErrFull) {
+	k.Session, k.ToolUseID = "s-over", "toolu_over"
+	if _, err := s.Open(k, twoQs, ""); !errors.Is(err, ErrFull) {
 		t.Fatalf("past the bound: %v, want ErrFull", err)
 	}
-	if _, err := s.Open(key(2), twoQs, time.Minute, ""); err != nil {
+	if _, err := s.Open(key(2), twoQs, ""); err != nil {
 		t.Fatalf("another owner is not bounded by owner 1's questions: %v", err)
 	}
-	if n := len(s.Pending(1)); n != MaxPendingPerOwner {
-		t.Fatalf("Pending(1) = %d", n)
+}
+
+// TestOneOwnerCannotFillTheStore: owner 1 asking and resolving past every
+// bound never makes the store refuse owner 2.
+func TestOneOwnerCannotFillTheStore(t *testing.T) {
+	s, _ := testStore(t)
+	for i := 0; i < MaxEntries+500; i++ {
+		k := key(1)
+		k.ToolUseID = fmt.Sprintf("toolu_%d", i)
+		if _, err := s.Open(k, twoQs, ""); err != nil {
+			t.Fatalf("owner 1's question %d: %v", i, err)
+		}
+		_, _ = s.Resolve(k.Owner, k.Source, k.Scope, k.Session, k.ToolUseID, someAnswers)
+		if i%499 == 0 {
+			k2 := key(2)
+			k2.ToolUseID = fmt.Sprintf("toolu_two_%d", i)
+			if _, err := s.Open(k2, twoQs, ""); err != nil {
+				t.Fatalf("after owner 1's %d questions, owner 2 is refused: %v", i+1, err)
+			}
+		}
+	}
+	s.mu.Lock()
+	n := 0
+	for _, e := range s.byID {
+		if e.Key.Owner == 1 {
+			n++
+		}
+	}
+	s.mu.Unlock()
+	if n > MaxEntriesPerOwner {
+		t.Fatalf("owner 1 holds %d entries, past MaxEntriesPerOwner %d", n, MaxEntriesPerOwner)
 	}
 }
 
 func TestOnChangeSeesEveryTransition(t *testing.T) {
-	s, _ := testStore(t)
+	s, c := testStore(t)
 	var mu sync.Mutex
 	var seen []State
 	s.OnChange(func(e Entry) { mu.Lock(); seen = append(seen, e.State); mu.Unlock() })
-	e, _ := s.Open(key(1), twoQs, time.Minute, "")
-	_, _ = s.Answer(key(1), someAnswers)
-	_, _ = s.Withdraw(e.ID, 1, "mirror", "laptop") // already answered: no change
+	_, _ = s.Open(key(1), twoQs, "")
+	_, _, _ = s.BeginTyping(key(1), someAnswers)
+	_, _ = s.TypingFailed(key(1), "x", true)
+	_, _ = resolve(s, 1, otherAnswers)
+	k := key(1)
+	k.ToolUseID = "toolu_2"
+	_, _ = s.Open(k, twoQs, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.RunSweep(ctx, 5*time.Millisecond)
+	c.add(MaxOpen + time.Minute)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		n := len(seen)
+		last := State("")
+		if n > 0 {
+			last = seen[n-1]
+		}
+		mu.Unlock()
+		if n == 6 && last == Expired {
+			break
+		}
+		if time.Now().After(deadline) {
+			mu.Lock()
+			t.Fatalf("changes %v, want [pending typing failed answered pending expired]", seen)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(seen) != 2 || seen[0] != Pending || seen[1] != Answered {
-		t.Fatalf("changes %v, want [pending answered]", seen)
+	want := []State{Pending, Typing, Failed, Answered, Pending, Expired}
+	for i := range want {
+		if seen[i] != want[i] {
+			t.Fatalf("changes %v, want %v", seen, want)
+		}
 	}
 }

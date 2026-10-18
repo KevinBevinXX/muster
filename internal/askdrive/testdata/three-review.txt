@@ -1,0 +1,22 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Color  ☒ Pets  ☒ Name  ✔ Submit  →
+
+Review your answers
+
+ ● Which color do you prefer?                     
+   → teal, mostly
+ ● Which pets do you have?
+   → Dog, a hamster 
+ ● What should the project be called?                                                                                   
+   → Beta              
+
+Ready to submit your answers?                                                                                           
+                    
+❯ 1. Submit answers
+  2. Cancel
+
+
+
+
+
+

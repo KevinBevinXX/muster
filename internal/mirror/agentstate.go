@@ -67,7 +67,6 @@ type AgentState struct {
 func (h *Hub) AgentState(owner int64, host, session, window string) AgentState {
 	h.mu.Lock()
 	hc := h.hosts[hostKey{owner, host}]
-	waiting := h.waiting
 	h.mu.Unlock()
 	if hc == nil {
 		return AgentState{Unknown: fmt.Errorf("%w (host %q)", ErrHostOffline, host)}
@@ -95,11 +94,6 @@ func (h *Hub) AgentState(owner int64, host, session, window string) AgentState {
 			return AgentState{Unknown: fmt.Errorf("%w (host %q, session %q)", ErrNoStatusSince, host, session)}
 		}
 		st := AgentState{Status: w.Status, Since: w.StatusSince}
-		// A question held by the ask hook: waiting on a person, whatever Claude
-		// Code's own file says (Hub.SetWaiting).
-		if waiting != nil && w.ClaudeSession != "" && waiting(owner, host, w.ClaudeSession) {
-			st.Status = StatusWaiting
-		}
 		t := h.turn(owner, host, session, id)
 		if t.since == w.StatusSince && t.status == w.Status {
 			st.Observed = t.observed

@@ -5,7 +5,7 @@ package mirrorhost
 // muster-mirror's tmux backend against REAL tmux, on a PRIVATE socket (-L) with
 // $TMUX scrubbed, so nothing here can touch the operator's own server. Like
 // cmd/ccd's real-tmux suite it never skips: no tmux is a failure. CI runs it in
-// the `ccd-tmux` job (`go test -tags tmuxit -run '^TestTmux'`).
+// the `mirror-tmux` job (`go test -tags tmuxit -run '^TestTmux'`), against the hosts' tmux.
 
 import (
 	"context"

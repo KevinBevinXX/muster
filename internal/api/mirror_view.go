@@ -134,6 +134,23 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	// A reconnect that resumes (gen + offset) draws onto a page that already
 	// holds the conversation so far; see ui.MirrorTranscript.Resumed.
 	drawn.Resumed = gen != "" && offset > 0
+	// The window's questions changed (mirror_ask.go): tell the page at once,
+	// so a question shows here the moment its hook registers it. The page's
+	// own poll is the fallback.
+	if h, e, _, _, ok := s.mirrorEntry(r, host, session, window); ok && e.ClaudeSession != "" {
+		changed, stop := s.askSubscribe(askWatchKey{requestOwner(r.Context()), h.Host, e.ClaudeSession})
+		defer stop()
+		safeGo(s.logger, "mirror: tell a rendered view its questions changed", func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-changed:
+					_ = terminalWriteJSON(ctx, c, map[string]string{"type": "asks"})
+				}
+			}
+		})
+	}
 	err = s.ext.Mirror.WatchWindow(ctx, host, session, window, gen, offset, func(m mirror.Msg) error {
 		if m.Reset {
 			drawn.Reset()

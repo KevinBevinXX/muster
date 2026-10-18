@@ -85,13 +85,14 @@ const (
 type Server struct {
 	bus    *sse.Broadcaster
 	logger *log.Logger
-	// asks is the pending-question store (mirror_ask.go): the AskUserQuestion
-	// calls a hook is holding for an answer from muster.
+	// asks is the question store (mirror_ask.go): the AskUserQuestion calls the
+	// muster-mirror ask hook registered, shown in the rendered view while the
+	// terminal shows its own picker, until the CLI's record resolves them.
 	asks *askq.Store
-	// askListWaitOverride replaces mirrorAskListWait (tests; 0 = default).
-	askListWaitOverride time.Duration
-	auth                AuthConfig
-	router              RouterPort
+	// askWatch is the running question watches (mirror_ask.go).
+	askWatch askWatchers
+	auth     AuthConfig
+	router   RouterPort
 
 	// streams ends every open SSE stream when shutdown begins. See EndStreams.
 	streams streamEnd

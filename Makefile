@@ -34,7 +34,7 @@ export MUSTER_TEST_PG_PORT
 # database, which is the specific failure that file's header is about.
 TEST_DSN := postgres://muster:muster@127.0.0.1:$(MUSTER_TEST_PG_PORT)/muster_test?sslmode=disable
 
-.PHONY: build vet run image test test-db test-db-down leakscan css css-check check help verb-ledger icons e2e screenshots
+.PHONY: build vet run image test test-db test-db-down test-liveclaude leakscan css css-check check help verb-ledger icons e2e screenshots
 
 # The stylesheet the UI serves, and the classes that prove each Tailwind content
 # entry is still matching something. See css-check.
@@ -106,6 +106,7 @@ help:
 	@echo "  make e2e          the Playwright suite (needs MUSTER_E2E_DATABASE_URL=…/<name>_e2e)"
 	@echo "  make screenshots  regenerate docs/img/*.png from fixture data (same database, plus Docker)"
 	@echo "  make test-db-down stop and remove the throwaway Postgres"
+	@echo "  make test-liveclaude  answer a REAL Claude Code's AskUserQuestion pickers (run on every Claude Code upgrade)"
 
 build:
 	go build ./...
@@ -147,6 +148,15 @@ test:
 	MUSTER_TEST_DATABASE_URL="$${MUSTER_TEST_DATABASE_URL:-$(TEST_DSN)}" \
 	MUSTER_TEST_REQUIRE_DB=1 \
 	go test -race -cover ./...
+
+# Drive a REAL Claude Code's AskUserQuestion picker (internal/askdrive) in a
+# scratch tmux server: every shape of question, the CLI's record checked, the
+# redraw lag re-measured. 🔴 RUN IT ON EVERY CLAUDE CODE UPGRADE — the driver
+# reads the picker's screen, and a changed layout shows up here first (and in
+# muster as an "unrecognised" answer, muster_mirror_ask_typing_total). Needs a
+# logged-in `claude` on PATH; spends a few model turns. Never in CI.
+test-liveclaude:
+	tests/liveclaude.sh
 
 # Start the throwaway Postgres, wait for it, and migrate the TEMPLATE once.
 #

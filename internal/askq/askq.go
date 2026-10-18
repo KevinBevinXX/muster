@@ -1,28 +1,18 @@
-// Package askq is Claude Code's AskUserQuestion tool as muster answers it: the
-// question set's shape and bounds, the answers a person may give to it, and the
-// PreToolUse hook output that hands those answers to the CLI.
+// Package askq is Claude Code's AskUserQuestion tool as muster shows it: the
+// question set's shape and bounds, the answers a person may give to it in
+// muster, and the store of the questions sessions are asking.
 //
 // It is SURFACE-NEUTRAL. Nothing here knows about mirrored hosts or dispatched
-// agents: a pending question is keyed by (owner, source, scope, Claude session,
+// agents: a question is keyed by (owner, source, scope, Claude session,
 // tool_use id) — Key — and the mirror plugin's hook (`muster-mirror ask`) is
-// only the first source. A later `ccd ask` reuses the same store and the same
-// payload.
+// only the first source.
 //
-// THE PAYLOAD IS MEASURED, NOT ASSUMED (Claude Code 2.1.289, an interactive
-// session in a scratch directory, PR "ask-user-question"): a PreToolUse hook on
-// AskUserQuestion that prints
-//
-//	{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow",
-//	 "updatedInput":{"questions":<the call's own questions>,"answers":{"<question text>":"<answer>"}}}}
-//
-// answers the call with no picker on screen, in both the default and the auto
-// permission modes; the model's tool result reads `Your questions have been
-// answered: "Q"="A", …`. A multi-select answer is its labels joined by ", " (the
-// CLI's own schema: "multi-select answers are comma-separated"), and an answer
-// that is none of the options (the picker's "Type something") is passed as
-// typed. A hook that prints nothing leaves the picker on screen — which is how
-// every failure here falls back to the terminal (HookOutput is printed only for
-// answers a person gave).
+// A question is shown IN BOTH PLACES AT ONCE (an operator decision): the
+// terminal draws its own picker the moment the call is made, and muster draws
+// the same question. Whichever is answered first wins. An answer given in
+// muster is TYPED into the terminal's picker by the host (internal/askdrive),
+// never handed to the CLI any other way; the CLI's own record of the call's
+// result (the transcript's toolUseResult) is what says which answer won.
 package askq
 
 import (
@@ -166,17 +156,27 @@ func ParseInput(input json.RawMessage) ([]Question, error) {
 	return ParseQuestions(in.Questions)
 }
 
+// Choice is one question's answer as the picker takes it: the options chosen
+// (0-based indexes into its Options) and the person's own text ("" for none).
+type Choice struct {
+	Picks []int  `json:"picks,omitempty"`
+	Other string `json:"other,omitempty"`
+}
+
 // FromForm builds the answers to qs from a submitted form: for question i (from
 // 0), the values a<i> are the chosen option labels — or OtherValue, whose text
-// is o<i> — and o<i> is the person's own answer.
+// is o<i> — and o<i> is the person's own answer. It returns them both as the
+// picker takes them (choices) and as the CLI records them (answers, keyed by
+// question text).
 //
 // Every question must be answered. A single-select question takes exactly one
 // choice; a multi-select one at least one, its answer being the chosen labels in
 // the question's own order, joined by MultiJoin, then the person's own text. A
 // field naming a question qs does not have, a label that is not one of the
-// question's options, a repeated choice, OtherValue with no text, and text past
-// MaxFreeText are refused.
-func FromForm(qs []Question, form url.Values) (map[string]string, error) {
+// question's options, a repeated choice, OtherValue with no text, text past
+// MaxFreeText, and text with a line break or a tab (the terminal's picker takes
+// one line, and the answer is typed into it) are refused.
+func FromForm(qs []Question, form url.Values) ([]Choice, map[string]string, error) {
 	for k := range form {
 		var n string
 		switch {
@@ -192,61 +192,68 @@ func FromForm(qs []Question, form url.Values) (map[string]string, error) {
 			continue
 		}
 		if i < 0 || i >= len(qs) {
-			return nil, invalid("the answer names question %d, which this ask does not have", i+1)
+			return nil, nil, invalid("the answer names question %d, which this ask does not have", i+1)
 		}
 	}
 	answers := make(map[string]string, len(qs))
+	choices := make([]Choice, 0, len(qs))
 	for i, q := range qs {
 		idx := strconv.Itoa(i)
 		picks := form["a"+idx]
-		other := strings.TrimSpace(strings.ReplaceAll(form.Get("o"+idx), "\r\n", "\n"))
+		other := strings.TrimSpace(form.Get("o" + idx))
 		chosen := map[string]bool{}
 		otherOn := false
 		for _, p := range picks {
 			if chosen[p] || (p == OtherValue && otherOn) {
-				return nil, invalid("question %d: %q is chosen twice", i+1, p)
+				return nil, nil, invalid("question %d: %q is chosen twice", i+1, p)
 			}
 			if p == OtherValue {
 				otherOn = true
 				continue
 			}
 			if !q.hasLabel(p) {
-				return nil, invalid("question %d: %q is not one of its options", i+1, p)
+				return nil, nil, invalid("question %d: %q is not one of its options", i+1, p)
 			}
 			chosen[p] = true
 		}
 		n := len(chosen)
 		if otherOn {
 			n++
-			if other == "" {
-				return nil, invalid("question %d: type your own answer, or choose an option", i+1)
-			}
-			if len(other) > MaxFreeText || !textOK(other) {
-				return nil, invalid("question %d: your own answer must be at most %d bytes of text", i+1, MaxFreeText)
+			switch {
+			case other == "":
+				return nil, nil, invalid("question %d: type your own answer, or choose an option", i+1)
+			case len(other) > MaxFreeText || !textOK(other):
+				return nil, nil, invalid("question %d: your own answer must be at most %d bytes of text", i+1, MaxFreeText)
+			case strings.ContainsAny(other, "\n\t"):
+				return nil, nil, invalid("question %d: write your own answer on one line — it is typed into the terminal's picker, which takes one", i+1)
 			}
 		}
 		switch {
 		case n == 0:
-			return nil, invalid("question %d is not answered", i+1)
+			return nil, nil, invalid("question %d is not answered", i+1)
 		case !q.MultiSelect && n > 1:
-			return nil, invalid("question %d takes one answer", i+1)
+			return nil, nil, invalid("question %d takes one answer", i+1)
 		}
 		var parts []string
-		for _, o := range q.Options {
+		var c Choice
+		for j, o := range q.Options {
 			if chosen[o.Label] {
 				parts = append(parts, o.Label)
+				c.Picks = append(c.Picks, j)
 			}
 		}
 		if otherOn {
 			parts = append(parts, other)
+			c.Other = other
 		}
 		a := strings.Join(parts, MultiJoin)
 		if len(a) > MaxAnswer {
-			return nil, invalid("question %d's answer is longer than %d bytes", i+1, MaxAnswer)
+			return nil, nil, invalid("question %d's answer is longer than %d bytes", i+1, MaxAnswer)
 		}
 		answers[q.Question] = a
+		choices = append(choices, c)
 	}
-	return answers, nil
+	return choices, answers, nil
 }
 
 func (q Question) hasLabel(l string) bool {
@@ -260,7 +267,7 @@ func (q Question) hasLabel(l string) bool {
 
 // CheckAnswers verifies answers against qs: exactly one non-empty answer per
 // question, keyed by its text, each within MaxAnswer and free of control
-// characters. It is what the hook checks before it hands anything to the CLI.
+// characters.
 func CheckAnswers(qs []Question, answers map[string]string) error {
 	if len(answers) != len(qs) {
 		return invalid("%d answers for %d questions", len(answers), len(qs))
@@ -275,26 +282,6 @@ func CheckAnswers(qs []Question, answers map[string]string) error {
 		}
 	}
 	return nil
-}
-
-// HookOutput is the PreToolUse hook's stdout that answers the call whose input
-// was toolInput: the input itself, every field kept, with `answers` set — the
-// shape measured against the CLI (see the package doc).
-func HookOutput(toolInput json.RawMessage, answers map[string]string) ([]byte, error) {
-	var in map[string]json.RawMessage
-	if err := json.Unmarshal(toolInput, &in); err != nil || in == nil {
-		return nil, invalid("the tool input is not a JSON object")
-	}
-	a, err := json.Marshal(answers)
-	if err != nil {
-		return nil, err
-	}
-	in["answers"] = a
-	return json.Marshal(map[string]any{"hookSpecificOutput": map[string]any{
-		"hookEventName":      "PreToolUse",
-		"permissionDecision": "allow",
-		"updatedInput":       in,
-	}})
 }
 
 // Result is a call's outcome as the transcript records it (the user record's
