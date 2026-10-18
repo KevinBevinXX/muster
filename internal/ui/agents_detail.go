@@ -745,6 +745,12 @@ func agentChatPane(v AgentDetailView) g.Node {
 //   - sse:chat.reply — a turn was persisted (the kickoff turn included).
 //   - task:changed — the completion banner's Mark-complete button.
 //   - sse:agent.changed for THIS agent — its status moved.
+//   - htmx:sseOpen — the page's /events stream (re)opened. 🔴 A broadcast is
+//     sent ONCE; one fired before this page's stream was open (a turn stored in
+//     the moment between the page rendering and its stream connecting, or while
+//     it was reconnecting) never arrives, and the page showed "working" for
+//     ever. Re-fetching when the stream opens catches up on whatever it missed
+//     (e2e agent-composer: "a reply stored before the event stream connects").
 //
 // 🔴 THE agent.changed ARM IS WHAT CLEARS "Provisioning agent…" WHEN NO MESSAGE
 // EVER ARRIVES. The provisioning row and the empty state are both decided
@@ -780,7 +786,8 @@ func chatNoteTone(ok bool) string {
 func chatLogTrigger(agentName string) string {
 	quoted, _ := json.Marshal(agentName) // a string always marshals
 	return "sse:chat.reply from:body, task:changed from:body, " +
-		"sse:agent.changed[JSON.parse(detail.data).id===" + string(quoted) + "] from:body"
+		"sse:agent.changed[JSON.parse(detail.data).id===" + string(quoted) + "] from:body, " +
+		"htmx:sseOpen from:body"
 }
 
 // sessionDrawer renders the previous-sessions UI as a slide-out RIGHT-side

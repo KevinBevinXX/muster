@@ -236,6 +236,55 @@ for (const vp of [
       await expect(page.locator('#chat-log')).toContainText(viaForm);
     });
 
+    // 🔴 A REPLY THAT LANDS BEFORE THE PAGE'S EVENT STREAM IS CONNECTED IS
+    // STILL SHOWN. The conversation re-fetches on `chat.reply`, which the server
+    // broadcasts once, when the turn is stored; a page whose /events was not
+    // connected yet missed it and showed "working" for ever (a CI failure of
+    // the test above: the failed turn's note was stored in the ~200 ms between
+    // the page rendering and its stream opening). Here the stream is HELD until
+    // the reply is stored, so the miss is certain, not a race; the page must
+    // catch up when the stream opens.
+    test('a reply stored before the event stream connects is still shown', async ({ page }) => {
+      test.setTimeout(120_000);
+      await login(page);
+      const agent = await saveAgent(page, 'claude-code');
+      const started = await page.request.post(`${origin}/agents/${agent.id}/start`);
+      expect(started.status(), await started.text()).toBe(200);
+      await expect.poll(() => storedStatus(agent.name), { timeout: 45_000 }).toBe('running');
+
+      let release!: () => void;
+      const held = new Promise<void>((r) => (release = r));
+      let heldStreams = 0;
+      await page.route(/\/events(\?|$)/, async (route) => {
+        heldStreams++;
+        await held;
+        await route.continue();
+      });
+      await page.goto(`${origin}/agents/${agent.name}`);
+      await expect.poll(() => heldStreams, 'control: the event stream was held').toBeGreaterThan(0);
+
+      // A message sent the Terminal composer's way: the turn runs on the server
+      // and is stored (with its "not answered" note, no pod being there) while
+      // this page's stream is still held.
+      const text = `before the stream (${vp.name})`;
+      const sent = await page.request.post(`${origin}/agents/${agent.name}/send?from=terminal`, {
+        form: { text },
+        headers: { Origin: origin, 'X-Requested-With': 'XMLHttpRequest' },
+      });
+      expect(sent.status(), await sent.text()).toBe(204);
+      await expect
+        .poll(async () => (await (await page.request.get(`${origin}/ui/agents/${agent.name}/chat-log`)).text()).includes('This message was not answered'), {
+          message: 'the failed turn is stored',
+          timeout: 60_000,
+        })
+        .toBe(true);
+      await expect(page.locator('#chat-log'), 'the page has not seen it yet').not.toContainText('This message was not answered');
+
+      release();
+      await expect(page.locator('#chat-log')).toContainText('This message was not answered', { timeout: 15_000 });
+      await expect(page.locator('#chat-log')).toContainText(text);
+    });
+
     // The chat form without its script: it used to have no action and no method,
     // so a page whose script had not run could not send at all.
     test('with no script at all, the chat form and the Terminal’s composer still send', async ({ page, browser }) => {
