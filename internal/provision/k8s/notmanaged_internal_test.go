@@ -459,9 +459,9 @@ func TestTheWriteHelperLedgerIsComplete(t *testing.T) {
 		// tail call is the one exception and is how a non-refusal reaches
 		// blind() from a collision path.
 		"blind": {
-			"applyFailed":         1,
-			"getOwnedDeployment":  1,
-			"Create":              1,
+			"applyFailed":        1,
+			"getOwnedDeployment": 1,
+			"Create":             1,
 			// The third is the deadline on a namespace still terminating
 			// from an earlier Destroy: not a refusal, a state that clears by
 			// itself — the classification network.go gives the same cause.

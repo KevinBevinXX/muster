@@ -248,8 +248,9 @@ func TestAHalfFinishedReplacementIsFinishedByRunningItAgain(t *testing.T) {
 
 	f.prov.destroyErr = errors.New("apiserver unreachable")
 	code, out := f.replace(ccReq(slug))
-	if code != http.StatusBadGateway || out["created"] != false {
-		t.Fatalf("a failed destroy: %d %v; want 502 and nothing created", code, out)
+	if code != http.StatusBadGateway || out["created"] != false || out["deleted"] != nil ||
+		!strings.Contains(out["error"].(string), "the old chief could not be removed, so no new one was created") {
+		t.Fatalf("a failed destroy: %d %v; want 502 naming the failed removal, nothing deleted or created", code, out)
 	}
 	if row, ok := f.chiefRow(t); !ok || row.ID != f.old.ID {
 		t.Fatalf("a failed destroy lost the old chief row: %+v %v", row, ok)
