@@ -56,6 +56,7 @@ const (
 	AskStateAnsweredTerminal = "answered-terminal"
 	AskStateDeclined         = "declined"
 	AskStateExpired          = "expired"
+	AskStateSuperseded       = "superseded"
 	AskStateHistory          = "history"
 	AskStateWaiting          = "waiting"
 )
@@ -203,9 +204,16 @@ func MirrorAskLive(v MirrorAskLiveView) g.Node {
 	case AskStateDeclined:
 		label = "dismissed"
 		body = g.Group{askReadOnly(v.Questions, nil), status("text-muted", "Dismissed in the terminal — not answered.", false)}
+	case AskStateSuperseded:
+		label = "replaced"
+		body = g.Group{askReadOnly(v.Questions, nil), status("text-muted", "Claude asked a newer question in this session, so this one is no longer on the terminal's screen.", false)}
 	default:
 		label = "no answer seen"
-		body = g.Group{askReadOnly(v.Questions, nil), status("text-muted", "No answer was seen for a long time; if it is still on the terminal's screen, answer it there.", true)}
+		why := "No answer was seen for a long time; if it is still on the terminal's screen, answer it there."
+		if v.Note != "" {
+			why = v.Note
+		}
+		body = g.Group{askReadOnly(v.Questions, nil), status("text-muted", why, true)}
 	}
 	return Section(
 		g.Attr("data-ask-live", ""),

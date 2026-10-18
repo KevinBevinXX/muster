@@ -38,7 +38,7 @@ func TestAnAnswerReachesTheHostAndItsRefusalComesBack(t *testing.T) {
 		t.Fatalf("the host's AskAnswer is not in its view: %+v", hs)
 	}
 	choices := []askq.Choice{{Picks: []int{1}}}
-	all := []error{mirror.ErrAskNoPicker, mirror.ErrAskTouched, mirror.ErrAskLost, mirror.ErrAskUnsupported, mirror.ErrAskRefused}
+	all := []error{mirror.ErrAskNoPicker, mirror.ErrAskTouched, mirror.ErrAskLost, mirror.ErrAskUnsupported, mirror.ErrAskUnrecognised, mirror.ErrAskRefused}
 	for _, tc := range []struct {
 		why, refusal string
 		want         error
@@ -48,6 +48,7 @@ func TestAnAnswerReachesTheHostAndItsRefusalComesBack(t *testing.T) {
 		{"someone typed", mirror.AskRefusalTouched, mirror.ErrAskTouched},
 		{"moved", mirror.AskRefusalLost, mirror.ErrAskLost},
 		{"cannot", mirror.AskRefusalUnsupported, mirror.ErrAskUnsupported},
+		{"cannot read it", mirror.AskRefusalUnrecognised, mirror.ErrAskUnrecognised},
 		{"what", "a-kind-this-muster-does-not-know", mirror.ErrAskRefused},
 	} {
 		seen := len(raw.of(mirror.TypeAnswer))
@@ -71,6 +72,10 @@ func TestAnAnswerReachesTheHostAndItsRefusalComesBack(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatalf("refusal %q: the answer never returned", tc.refusal)
 		}
+		// Every outcome the host reported is a known one: it is not typing.
+		if !mirror.AskOutcomeKnown(got) {
+			t.Errorf("refusal %q: %v is not a known outcome", tc.refusal, got)
+		}
 		if tc.want == nil {
 			if got != nil {
 				t.Errorf("success: %v", got)
@@ -86,8 +91,9 @@ func TestAnAnswerReachesTheHostAndItsRefusalComesBack(t *testing.T) {
 	}
 	// A stale sign-in: refused here too, before the host hears anything.
 	seen := len(raw.of(mirror.TypeAnswer))
-	if err := r.svc.AnswerWindow(asStaleUser(1), "hd", "work", "@1", askQs, choices); !errors.Is(err, mirror.ErrStepUpRequired) {
-		t.Fatalf("a stale sign-in: %v", err)
+	err = r.svc.AnswerWindow(asStaleUser(1), "hd", "work", "@1", askQs, choices)
+	if !errors.Is(err, mirror.ErrStepUpRequired) || !errors.Is(err, mirror.ErrAskNotSent) || !mirror.AskOutcomeKnown(err) {
+		t.Fatalf("a stale sign-in: %v (want a step-up refusal, not sent)", err)
 	}
 	if len(raw.of(mirror.TypeAnswer)) != seen {
 		t.Fatal("a stale answer reached the host")
@@ -156,5 +162,21 @@ func TestAuthenticateHostIsTheConnectDoor(t *testing.T) {
 		if !ok && rec.Code != http.StatusUnauthorized {
 			t.Fatalf("token %q refused with %d", c.token, rec.Code)
 		}
+	}
+}
+
+// TestAnOutcomeNeverReportedIsUnknown: an answer sent whose outcome the host
+// never reported — the hub's timeout, the host dropping after it was sent, a
+// cancelled wait — may still be being typed. Refusals before sending may not.
+func TestAnOutcomeNeverReportedIsUnknown(t *testing.T) {
+	for _, err := range []error{mirror.ErrAskTimeout, mirror.ErrHostDisconnected, context.Canceled, errors.New("mirror: send the answer to the host: broken pipe")} {
+		if mirror.AskOutcomeKnown(err) {
+			t.Errorf("%v: known, want unknown", err)
+		}
+	}
+	r := newRig(t)
+	err := r.svc.AnswerWindow(asUser(1), "nohost", "work", "@1", askQs, []askq.Choice{{Picks: []int{0}}})
+	if !errors.Is(err, mirror.ErrHostOffline) || !errors.Is(err, mirror.ErrAskNotSent) || !mirror.AskOutcomeKnown(err) {
+		t.Fatalf("an offline host: %v (want offline, not sent)", err)
 	}
 }

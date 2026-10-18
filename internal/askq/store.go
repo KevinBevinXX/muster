@@ -42,8 +42,12 @@ const (
 	// Declined: the CLI recorded the call ended with no answers (the picker
 	// was dismissed in the terminal).
 	Declined State = "declined"
-	// Expired: no result was seen within MaxOpen.
+	// Expired: no result was seen within MaxOpen, or the session went away
+	// (Gone; Note says so).
 	Expired State = "expired"
+	// Superseded: a newer question was asked in the same Claude session, so
+	// this one's picker is no longer on screen; it is never typed into.
+	Superseded State = "superseded"
 )
 
 // Open reports whether a question in state s is still unanswered.
@@ -129,7 +133,15 @@ var (
 
 type entry struct {
 	Entry
+	// driveUntil: a host may still be typing this question's answer until
+	// then — its last typing ended without the host's outcome
+	// (TypingFailed, settled false). Zero once the outcome is known.
+	driveUntil time.Time
 }
+
+// MaxDrive bounds how long a host can be typing one answer: longer than the
+// hub waits for the host's outcome (60 s) and the host's own bound (50 s).
+const MaxDrive = 90 * time.Second
 
 // Store is the question store. The zero value is not usable; New.
 type Store struct {
@@ -294,6 +306,17 @@ func (s *Store) Open(key Key, qs []Question, id string) (Entry, error) {
 	if id == "" {
 		id = NewID()
 	}
+	// 🔴 A NEWER QUESTION IN THE SESSION REPLACES THE OLDER ONES: Claude Code
+	// shows one picker at a time, so theirs is gone — and the driver matches a
+	// picker by its text, so an older card must never type into a newer
+	// picker that asks the same thing.
+	for _, o := range s.byID {
+		if o.Key.Owner == key.Owner && o.Key.Source == key.Source && o.Key.Scope == key.Scope && o.Key.Session == key.Session &&
+			o.Key.ToolUseID != key.ToolUseID && o.State.Open() {
+			o.State, o.Resolved = Superseded, s.now()
+			s.touch(o, &fire)
+		}
+	}
 	e := &entry{Entry: Entry{ID: id, Key: key, Questions: append([]Question(nil), qs...), State: Pending,
 		Created: s.now()}}
 	s.byID[e.ID] = e
@@ -363,18 +386,38 @@ func (s *Store) BeginTyping(key Key, answers map[string]string) (e Entry, again 
 			return en.snapshot(), true, nil
 		}
 		return en.snapshot(), false, ErrClosed
-	case Declined, Expired:
+	case Declined, Expired, Superseded:
 		return en.snapshot(), false, ErrClosed
+	case Failed:
+		// 🔴 A HOST MAY STILL BE TYPING the last answer (its outcome never
+		// came back): no second drive into the same picker until it is known
+		// or MaxDrive has passed.
+		if s.now().Before(en.driveUntil) {
+			return en.snapshot(), false, ErrBusy
+		}
 	}
 	en.State, en.Typed, en.Note = Typing, maps.Clone(answers), ""
+	en.driveUntil = s.now().Add(MaxDrive)
 	s.touch(en, &fire)
 	return en.snapshot(), false, nil
 }
 
+// TypingDone records that the host reported it typed the answer in: the
+// CLI's record will resolve the question; no drive is running.
+func (s *Store) TypingDone(key Key) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if en, ok := s.byID[s.byKey[key]]; ok {
+		en.driveUntil = time.Time{}
+	}
+}
+
 // TypingFailed records that muster could not type the answer in (why): a
 // Typing question becomes Failed, still the terminal's to answer. A question
-// the CLI resolved meanwhile is left as it is.
-func (s *Store) TypingFailed(key Key, why string) (Entry, error) {
+// the CLI resolved meanwhile is left as it is. settled says the host reported
+// its outcome (it is not typing); unsettled, no new typing may begin until
+// MaxDrive after the last began (BeginTyping's ErrBusy).
+func (s *Store) TypingFailed(key Key, why string, settled bool) (Entry, error) {
 	var fire []Entry
 	defer func() { s.notify(fire) }()
 	s.mu.Lock()
@@ -383,6 +426,9 @@ func (s *Store) TypingFailed(key Key, why string) (Entry, error) {
 	if !ok {
 		return Entry{}, ErrNotFound
 	}
+	if settled {
+		en.driveUntil = time.Time{}
+	}
 	if en.State == Typing {
 		en.State, en.Note = Failed, why
 		s.touch(en, &fire)
@@ -390,11 +436,31 @@ func (s *Store) TypingFailed(key Key, why string) (Entry, error) {
 	return en.snapshot(), nil
 }
 
+// Gone expires every open question of (owner, source, scope, session) — the
+// session is no longer running anywhere its host lists — with why as the
+// Note. It returns how many it expired.
+func (s *Store) Gone(owner int64, source, scope, session, why string) int {
+	var fire []Entry
+	defer func() { s.notify(fire) }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, e := range s.byID {
+		if e.Key.Owner == owner && e.Key.Source == source && e.Key.Scope == scope && e.Key.Session == session && e.State.Open() {
+			e.State, e.Note, e.Resolved = Expired, why, s.now()
+			s.touch(e, &fire)
+			n++
+		}
+	}
+	return n
+}
+
 // Resolve records the call's result as the CLI recorded it: answers (nil when
 // it ended with none — dismissed). An answered question is By muster when
 // muster typed exactly these answers, else By the terminal. Resolving a
-// resolved question changes nothing. ok is false when the store has no open
-// question for the call.
+// resolved question changes nothing — except a Superseded one, whose result
+// can still arrive and is recorded. ok is false when the store has no open
+// (or superseded) question for the call.
 func (s *Store) Resolve(owner int64, source, scope, session, toolUseID string, answers map[string]string) (Entry, bool) {
 	var fire []Entry
 	defer func() { s.notify(fire) }()
@@ -402,7 +468,7 @@ func (s *Store) Resolve(owner int64, source, scope, session, toolUseID string, a
 	defer s.mu.Unlock()
 	key := Key{Owner: owner, Source: source, Scope: scope, Session: session, ToolUseID: toolUseID}
 	en, ok := s.byID[s.byKey[key]]
-	if !ok || !en.State.Open() {
+	if !ok || !(en.State.Open() || en.State == Superseded) {
 		return Entry{}, false
 	}
 	en.Resolved = s.now()

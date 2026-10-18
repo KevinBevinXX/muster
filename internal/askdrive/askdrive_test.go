@@ -174,7 +174,7 @@ func (f *fakePane) Send(_ context.Context, k string) error {
 	return nil
 }
 
-var fast = Options{Settle: 500 * time.Millisecond, Poll: time.Millisecond}
+var fast = Options{Settle: 500 * time.Millisecond, Poll: time.Millisecond, Steady: time.Millisecond}
 
 // TestDriveAnswersTheFakePicker: every shape, end to end, submits exactly the
 // answers asked for.
@@ -320,7 +320,9 @@ func TestEveryKeyIsPrecededByALook(t *testing.T) {
 	p := NewFakePicker([]askq.Question{pets})
 	lp := &lookPane{fakePane: &fakePane{p: p}}
 	lp.look = func(n int) {
-		if n == 5 { // looks: before key 1, after it, before key 2, after it, before key 3
+		// Looks: two before key 1, one after it, two before key 2, one after
+		// it — the 7th is the first before key 3.
+		if n == 7 {
 			p.Type("2")
 		}
 	}
@@ -332,6 +334,115 @@ func TestEveryKeyIsPrecededByALook(t *testing.T) {
 		t.Fatalf("keys sent into a picker that changed between them: %q", lp.sent)
 	}
 }
+
+// TestAKeyNotYetDrawnIsSeenByTheSecondLook: the person ticks a box just
+// before the drive's look before its third key, and the CLI draws it 100 ms
+// later (a slow redraw): the first look still shows the old screen; the
+// second, Steady (250 ms) later, shows the tick — and the third key is not
+// sent.
+func TestAKeyNotYetDrawnIsSeenByTheSecondLook(t *testing.T) {
+	p := NewFakePicker([]askq.Question{pets})
+	dp := &delayedPane{fakePane: &fakePane{p: p}, lag: 100 * time.Millisecond}
+	dp.look = func(n int) {
+		if n == 7 {
+			dp.typeUndrawn("2")
+		}
+	}
+	opt := fast
+	opt.Steady = SteadyDefault
+	err := Drive(context.Background(), dp, []askq.Question{pets}, []Choice{{Picks: []int{0, 2}}}, opt)
+	if !errors.Is(err, ErrLost) || !strings.Contains(err.Error(), "before key 3") || !strings.Contains(err.Error(), "screen changed") {
+		t.Fatalf("a key not yet drawn: %v", err)
+	}
+	if !reflect.DeepEqual(dp.sent, []string{"1", "3"}) {
+		t.Fatalf("keys sent while someone's key was being drawn: %q", dp.sent)
+	}
+}
+
+// delayedPane is lookPane whose screen lags a key typed by typeUndrawn: until
+// lag has passed, Capture shows the screen from before it.
+type delayedPane struct {
+	*fakePane
+	looks   int
+	look    func(n int)
+	lag     time.Duration
+	stale   string
+	drawsAt time.Time
+}
+
+func (d *delayedPane) typeUndrawn(k string) {
+	d.stale = d.p.Screen()
+	d.drawsAt = time.Now().Add(d.lag)
+	d.p.Type(k)
+}
+
+func (d *delayedPane) Capture(ctx context.Context) (string, error) {
+	d.looks++
+	if d.look != nil {
+		d.look(d.looks)
+	}
+	if time.Now().Before(d.drawsAt) {
+		return d.stale, nil
+	}
+	return d.fakePane.Capture(ctx)
+}
+
+// activePane is fakePane that says someone typed into the terminal once its
+// typing is set.
+type activePane struct {
+	*fakePane
+	typing func(sent int) bool
+}
+
+func (a *activePane) RecentInput(context.Context) (bool, error) { return a.typing(len(a.sent)), nil }
+
+// TestNoKeyWhileSomeoneTypes: someone typed into the terminal in the last
+// couple of seconds — before the first key, nothing is sent and the picker
+// counts as touched; mid-drive, the drive stops before the next key.
+func TestNoKeyWhileSomeoneTypes(t *testing.T) {
+	ap := &activePane{fakePane: &fakePane{p: NewFakePicker([]askq.Question{pets})}, typing: func(int) bool { return true }}
+	if err := Drive(context.Background(), ap, []askq.Question{pets}, []Choice{{Picks: []int{0}}}, fast); !errors.Is(err, ErrNotUntouched) || len(ap.sent) != 0 {
+		t.Fatalf("someone typing before the first key: %v, sent %q", err, ap.sent)
+	}
+	ap = &activePane{fakePane: &fakePane{p: NewFakePicker([]askq.Question{pets})}, typing: func(sent int) bool { return sent == 2 }}
+	if err := Drive(context.Background(), ap, []askq.Question{pets}, []Choice{{Picks: []int{0, 2}}}, fast); !errors.Is(err, ErrLost) || len(ap.sent) != 2 {
+		t.Fatalf("someone typing mid-drive: %v, sent %q", err, ap.sent)
+	}
+	// The control: nobody typing, the same drive answers.
+	ap = &activePane{fakePane: &fakePane{p: NewFakePicker([]askq.Question{pets})}, typing: func(int) bool { return false }}
+	if err := Drive(context.Background(), ap, []askq.Question{pets}, []Choice{{Picks: []int{0, 2}}}, fast); err != nil {
+		t.Fatalf("nobody typing: %v", err)
+	}
+}
+
+// TestAPickerItCannotReadIsNamed: the footer is there but the layout is not
+// one it knows — refused as unrecognised, nothing sent; a prompt with no
+// picker at all is "no picker".
+func TestAPickerItCannotReadIsNamed(t *testing.T) {
+	changed := strings.Replace(NewFakePicker([]askq.Question{pets}).Screen(), "1. [ ] Cat", "1) ( ) Cat", 1)
+	changed = strings.Replace(changed, "2. [ ] Dog", "2) ( ) Dog", 1)
+	changed = strings.Replace(changed, "3. [ ] Fish", "3) ( ) Fish", 1)
+	changed = strings.Replace(changed, "4. [ ] Type something", "4) ( ) Type something", 1)
+	if got := Parse(changed).Kind; got != Unknown {
+		t.Fatalf("a changed layout parses as %v, want Unknown:\n%s", got, changed)
+	}
+	sp := &staticPane{screen: changed}
+	if err := Drive(context.Background(), sp, []askq.Question{pets}, []Choice{{Picks: []int{0}}}, fast); !errors.Is(err, ErrUnrecognised) || sp.sent != 0 {
+		t.Fatalf("an unrecognised picker: %v, sent %d", err, sp.sent)
+	}
+	sp = &staticPane{screen: "❯ \n──────\n  ? for shortcuts\n"}
+	if err := Drive(context.Background(), sp, []askq.Question{pets}, []Choice{{Picks: []int{0}}}, fast); !errors.Is(err, ErrNoPicker) || errors.Is(err, ErrUnrecognised) {
+		t.Fatalf("a prompt: %v", err)
+	}
+}
+
+type staticPane struct {
+	screen string
+	sent   int
+}
+
+func (s *staticPane) Capture(context.Context) (string, error) { return s.screen, nil }
+func (s *staticPane) Send(context.Context, string) error      { s.sent++; return nil }
 
 // TestALostLastKeyIsNotASuccess: the submit never reaches the picker (the
 // pane dropped it); the drive says so instead of reporting it answered.

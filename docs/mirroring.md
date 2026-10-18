@@ -250,11 +250,18 @@ How it works:
   attention queue.
 - **Answering in muster types your answer into the terminal's picker.** The
   host's `muster-mirror` sends the picker the keys a person would press (digits
-  for options, the arrow keys, your own words, Enter), and before every key it
-  reads the pane to check the picker shows what the last key should have
-  produced. The keys go in with tmux `paste-buffer`, which works while muster's
-  read-only viewer is attached (`send-keys` is refused then). A multi-select
-  answer is its options joined by `, `, in the question's order.
+  for options, the arrow keys, your own words, Enter). Before every key it
+  reads the pane twice, a quarter of a second apart, and needs the picker in
+  exactly the state the last key should have produced both times — Claude
+  Code redraws a key in 6–72 ms (measured), so a key someone typed but the
+  screen has not drawn yet shows up in the second look. It also refuses while
+  anyone has typed into that pane through a tmux client in the last 2–3
+  seconds (muster's own read-only viewer does not count). Only one answer is
+  typed into a pane at a time. The keys go in with tmux `paste-buffer -S`,
+  which works while muster's read-only viewer is attached; a tmux without
+  `-S` cannot type answers, and the host then says so in its log and offers
+  none. A multi-select answer is its options joined by `, `, in the question's
+  order.
 - **The card follows what Claude Code recorded.** muster reads the call's result
   from the conversation's transcript: answered with the answers you typed in
   muster, the card says *Answered here*; with other answers, *Answered in the
@@ -262,7 +269,27 @@ How it works:
 - 🔴 **Never half an answer.** If someone has started answering in the terminal,
   or the picker is gone or changes while muster types, muster stops before the
   next key, nothing is submitted, and the card says to answer in the terminal.
-  An answer that arrives after the terminal's is refused, and nothing is typed.
+  When muster had already typed part of it, the card also says the picker may
+  be partly filled in: check what it shows before you submit it there. An
+  answer that arrives after the terminal's is refused, and nothing is typed.
+- **One answer at a time.** Once you submit, closing the page does not stop
+  it: muster waits for the host to report how it went. No second answer for
+  the question starts until it has (or until 90 seconds have passed, when the
+  host never reports).
+- **A newer question replaces an older one.** Claude Code shows one picker at a
+  time, so when the same session asks again, the older card says it was
+  replaced and can no longer be answered.
+- **A session that ends takes its questions with it.** When Claude exits or its
+  window closes before the question is answered, the card says so about 30
+  seconds later (time for the host to reconnect) and the question leaves the
+  attention queue.
+- **When Claude Code changes its picker.** If the host cannot read the picker,
+  the card says *couldn't recognise the terminal picker (Claude Code may have
+  changed); answer in the terminal*, the host logs it, and muster counts it in
+  `muster_mirror_ask_typing_total{result="unrecognised"}` (all outcomes are
+  counted there). Run `make test-liveclaude` on every Claude Code upgrade: it
+  answers a real Claude Code's pickers in a scratch tmux server, checks the
+  CLI recorded those answers, and re-measures the redraw lag.
 - Answering has the same rules as sending: you must own the host, the host must
   be `-interactive`, and your sign-in must be recent. A read-only host's card
   shows the questions without a form.

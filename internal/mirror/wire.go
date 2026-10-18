@@ -963,4 +963,7 @@ const (
 	AskRefusalLost = "lost"
 	// AskRefusalUnsupported: this host cannot type answers at all.
 	AskRefusalUnsupported = "unsupported"
+	// AskRefusalUnrecognised: the pane shows something like the picker that
+	// the host cannot read — Claude Code's layout has probably changed.
+	AskRefusalUnrecognised = "unrecognised"
 )

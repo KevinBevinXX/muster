@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ZacxDev/muster/internal/askdrive"
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/cctranscript"
+	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -45,7 +45,7 @@ import (
 // GATES A SEND PASSES (mirrorSend): a same-origin request from the session's
 // owner (another owner's host is not found), a host that advertised
 // -interactive, and a FRESH sign-in (internal/stepup). Only then are the answers
-// read and checked against the question set (askq.FromForm, askdrive.Plan).
+// read and checked against the question set (askq.FromForm).
 //
 // 🔴 WHICH ANSWER WON IS THE CLI'S WORD. Muster's answer is "typing" until the
 // transcript records the call's result; if the person in the terminal got there
@@ -218,6 +218,8 @@ func questionCard(h mirror.HostView, e mirror.SessionView, x askq.Entry) ui.Mirr
 		}
 	case askq.Declined:
 		v.State = ui.AskStateDeclined
+	case askq.Superseded:
+		v.State = ui.AskStateSuperseded
 	default:
 		v.State = ui.AskStateExpired
 	}
@@ -266,22 +268,58 @@ func (s *Server) handleMirrorAsks(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// askPartlyFilled ends a failure note when muster may have typed part of the
+// answer before it stopped.
+const askPartlyFilled = " The picker may be partly filled in — check what it shows before you submit it in the terminal."
+
 // askTypeFailure is what a card says when muster could not type the answer
-// in: what happened, and that the terminal has the question.
+// in: what happened, and that the terminal has the question — and, when keys
+// may have been typed before it stopped, that the picker may be partly filled
+// in.
 func askTypeFailure(err error) string {
 	switch {
 	case errors.Is(err, mirror.ErrAskNoPicker):
 		return "The question is no longer on the terminal's screen — it was answered or dismissed there."
 	case errors.Is(err, mirror.ErrAskTouched):
 		return "Someone has started answering it in the terminal — finish it there."
+	case errors.Is(err, mirror.ErrAskUnrecognised):
+		return "Couldn't recognise the terminal's picker (Claude Code may have changed) — answer it in the terminal."
 	case errors.Is(err, mirror.ErrAskLost):
-		return "Couldn't type it in: the terminal's picker changed while typing, and nothing was submitted. Answer it in the terminal."
+		return "Couldn't type it in: the terminal's picker changed while typing, and nothing was submitted." + askPartlyFilled
 	case errors.Is(err, mirror.ErrAskUnsupported):
 		return "This host's muster-mirror cannot type an answer into the terminal — answer it there."
+	case errors.Is(err, mirror.ErrAskNotSent) && (errors.Is(err, mirror.ErrHostOffline) || errors.Is(err, mirror.ErrHostDisconnected)):
+		return "The host is offline — answer it in the terminal."
+	case errors.Is(err, mirror.ErrAskNotSent):
+		return "Couldn't send the answer to the host — answer it in the terminal."
 	case errors.Is(err, mirror.ErrHostOffline), errors.Is(err, mirror.ErrHostDisconnected):
-		return "The host went offline — answer it in the terminal."
+		return "The host went offline while typing." + askPartlyFilled
 	}
-	return "Couldn't type it in — answer it in the terminal."
+	return "Couldn't type it in." + askPartlyFilled
+}
+
+// askTypingResult is the muster_mirror_ask_typing_total label for an
+// AnswerWindow outcome.
+func askTypingResult(err error) string {
+	switch {
+	case err == nil:
+		return "typed"
+	case errors.Is(err, mirror.ErrAskNotSent):
+		return "not-sent"
+	case errors.Is(err, mirror.ErrAskNoPicker):
+		return "no-picker"
+	case errors.Is(err, mirror.ErrAskTouched):
+		return "touched"
+	case errors.Is(err, mirror.ErrAskLost):
+		return "lost"
+	case errors.Is(err, mirror.ErrAskUnrecognised):
+		return "unrecognised"
+	case errors.Is(err, mirror.ErrAskUnsupported):
+		return "unsupported"
+	case errors.Is(err, mirror.ErrAskTimeout):
+		return "timeout"
+	}
+	return "error"
 }
 
 // handleMirrorAskAnswer is POST ui.MirrorAskPath: a person's answers, typed
@@ -332,14 +370,6 @@ func (s *Server) handleMirrorAskAnswer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	// Defensive: FromForm is stricter than the driver today (it trims, caps
-	// the text and the question set caps options below the nine rows a digit
-	// reaches), so no form reaches this — it keeps the two from drifting
-	// apart into an answer the host would refuse only after "typing…".
-	if _, err := askdrive.Plan(entry.Questions, choices); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
 	a, can := s.ext.Mirror.(mirrorAsker)
 	if !can || !h.AskAnswer {
 		http.Error(w, mirror.ErrAskUnsupported.Error(), http.StatusConflict)
@@ -362,12 +392,19 @@ func (s *Server) handleMirrorAskAnswer(w http.ResponseWriter, r *http.Request) {
 		s.writeAskLive(w, http.StatusOK, questionCard(h, e, got))
 		return
 	}
-	if err := a.AnswerWindow(r.Context(), h.Host, e.Session, e.Window, entry.Questions, choices); err != nil {
+	// 🔴 NOT THE REQUEST'S CONTEXT: a page that goes away (a dropped
+	// connection, a closed tab) must not end the wait while the host may
+	// still be typing — that would mark the answer failed and let another
+	// drive start into the same picker. The hub bounds the wait itself.
+	err = a.AnswerWindow(context.WithoutCancel(r.Context()), h.Host, e.Session, e.Window, entry.Questions, choices)
+	metrics.MirrorAskTyping.WithLabelValues(askTypingResult(err)).Inc()
+	if err != nil {
 		s.logger.Printf("mirror: typing an answer into %s/%s%s failed: %v", h.Host, e.Session, e.Window, err)
-		failed, _ := s.asks.TypingFailed(key, askTypeFailure(err))
+		failed, _ := s.asks.TypingFailed(key, askTypeFailure(err), mirror.AskOutcomeKnown(err))
 		s.writeAskLive(w, http.StatusConflict, questionCard(h, e, failed))
 		return
 	}
+	s.asks.TypingDone(key)
 	s.logger.Printf("mirror: typed an answer into %s/%s%s (%s)", h.Host, e.Session, e.Window, got.ID)
 	// The watcher resolves it from the CLI's record; a page reading this
 	// before then shows "typing".
@@ -394,15 +431,32 @@ type askWatchKey struct {
 // (not listed yet, host offline) or after its stream ended.
 const askWatchRetry = 2 * time.Second
 
+// askGoneGrace is how long a session with open questions may be missing from
+// its host's windows (the host reconnecting, Claude restarting) before its
+// questions are expired as gone.
+const askGoneGrace = 30 * time.Second
+
+// askGoneNote is the card's note for a question whose session went away.
+const askGoneNote = "Claude's session in this window ended (or the window closed) before the question was answered."
+
 // askWatchers is the set of running watches.
 type askWatchers struct {
 	mu      sync.Mutex
 	running map[askWatchKey]bool
-	// retry replaces askWatchRetry (tests; 0 = default).
-	retry time.Duration
+	// retry replaces askWatchRetry, grace askGoneGrace (tests; 0 = default).
+	retry, grace time.Duration
 	// subs are the rendered views' sockets listening for k's questions
 	// (askSubscribe).
 	subs map[askWatchKey]map[chan struct{}]bool
+}
+
+func (w *askWatchers) goneGrace() time.Duration {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.grace > 0 {
+		return w.grace
+	}
+	return askGoneGrace
 }
 
 func (w *askWatchers) retryEvery() time.Duration {
@@ -451,10 +505,27 @@ func (s *Server) watchAsks(owner int64, host, claudeSession string) {
 
 // runAskWatch is one session's watch, until it has no open question or the
 // server ends.
+//
+// 🔴 A SESSION THAT GOES AWAY TAKES ITS QUESTIONS WITH IT: once no window of
+// the host has listed the Claude session for askGoneGrace (Claude exited, the
+// window closed, the host stayed away), its open questions are expired with
+// askGoneNote — not left "asking" until MaxOpen.
 func (s *Server) runAskWatch(ctx context.Context, k askWatchKey) {
 	open := func() bool { return len(s.asks.OpenIn(k.owner, askSourceMirror, k.host, k.session)) > 0 }
+	var missingSince time.Time
 	for ctx.Err() == nil && open() {
 		e, found := s.askSessionWindow(ctx, k)
+		switch {
+		case found:
+			missingSince = time.Time{}
+		case missingSince.IsZero():
+			missingSince = time.Now()
+		case time.Since(missingSince) >= s.askWatch.goneGrace():
+			if n := s.asks.Gone(k.owner, askSourceMirror, k.host, k.session, askGoneNote); n > 0 {
+				s.logger.Printf("mirror: %d question(s) of a Claude session on %s expired: the session is gone", n, k.host)
+			}
+			continue
+		}
 		if found {
 			wctx, cancel := context.WithCancel(ctx)
 			// Stop once nothing is open (resolved here, or expired).
@@ -467,7 +538,9 @@ func (s *Server) runAskWatch(ctx context.Context, k askWatchKey) {
 					case <-stop:
 						return
 					case <-t.C:
-						if !open() {
+						// Nothing open any more, or the session left its
+						// window: end this watch (the loop above decides).
+						if _, listed := s.askSessionWindow(ctx, k); !open() || !listed {
 							cancel()
 							return
 						}

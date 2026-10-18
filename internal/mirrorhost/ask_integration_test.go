@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/askdrive"
 	"github.com/ZacxDev/muster/internal/askq"
@@ -116,5 +117,96 @@ func TestTmuxAnswerAskNeverTypesIntoATouchedPicker(t *testing.T) {
 	}
 	if _, ok := readResult(t, result); ok {
 		t.Fatal("a touched picker was submitted")
+	}
+}
+
+// TestTmuxNoKeyWhileSomeoneTypes: a person types into the session through an
+// ordinary (read-write) client — a key the picker ignores, so the picker
+// itself is untouched — and the answer is refused before any key: their
+// next key could land at once. muster's own read-only viewer is attached
+// throughout and does not count. The control: once the client has been idle
+// past the window, the same answer types.
+func TestTmuxNoKeyWhileSomeoneTypes(t *testing.T) {
+	r := newTmuxRig(t)
+	qs := []askq.Question{{Question: "Which pets do you have?", Header: "Pets", MultiSelect: true, Options: []askq.Option{{Label: "Cat"}, {Label: "Dog"}}}}
+	pane, result := r.pickerSession("typing", qs)
+	b := Tmux{Socket: r.sock}
+	ro, err := b.Attach(context.Background(), "typing", true, 100, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro.Close()
+	go func() { _, _ = io.Copy(io.Discard, ro) }()
+	rw, err := b.Attach(context.Background(), "typing", false, 100, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rw.Close()
+	go func() { _, _ = io.Copy(io.Discard, rw) }()
+	waitFor(t, "both clients", func() bool { return strings.Count(r.run("list-clients", "-F", "#{client_readonly}"), "\n") == 2 })
+	// Let the clients' attach-time activity age out, then type.
+	time.Sleep(typingWithin + 1500*time.Millisecond)
+	if p := (tmuxPane{t: b, id: pane}); func() bool { busy, _ := p.RecentInput(context.Background()); return busy }() {
+		t.Fatal("an idle client counts as typing")
+	}
+	if _, err := rw.Write([]byte("z")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the keystroke", func() bool { busy, _ := (tmuxPane{t: b, id: pane}).RecentInput(context.Background()); return busy })
+	before := r.pane("typing")
+	err = b.AnswerAsk(context.Background(), pane, qs, []askq.Choice{{Picks: []int{0}}})
+	if !errors.Is(err, askdrive.ErrNotUntouched) || !strings.Contains(err.Error(), "typed in the terminal") {
+		t.Fatalf("an answer while someone types: %v", err)
+	}
+	if after := r.pane("typing"); after != before {
+		t.Fatalf("keys were typed while someone was typing:\n%s", after)
+	}
+	// The control: idle again, the answer types — with a read-only viewer
+	// that attached just now (its activity is this second): a viewer cannot
+	// type, so it does not count.
+	time.Sleep(typingWithin + 1500*time.Millisecond)
+	ro2, err := b.Attach(context.Background(), "typing", true, 100, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro2.Close()
+	go func() { _, _ = io.Copy(io.Discard, ro2) }()
+	waitFor(t, "the new viewer", func() bool { return strings.Count(r.run("list-clients", "-F", "#{client_readonly}"), "\n") == 3 })
+	if err := b.AnswerAsk(context.Background(), pane, qs, []askq.Choice{{Picks: []int{0}}}); err != nil {
+		t.Fatalf("an answer once nobody types: %v\n%s", err, r.pane("typing"))
+	}
+	waitFor(t, "the picker's result", func() bool { _, ok := readResult(t, result); return ok })
+}
+
+// TestTmuxLeftoverBuffersAreDropped: a buffer a dead muster-mirror left
+// between load-buffer and paste-buffer is deleted before the next drive; an
+// operator's own buffers are not. And this tmux has paste-buffer -S.
+func TestTmuxLeftoverBuffersAreDropped(t *testing.T) {
+	r := newTmuxRig(t)
+	qs := []askq.Question{{Question: "Which color?", Header: "Color", Options: []askq.Option{{Label: "Red"}, {Label: "Blue"}}}}
+	pane, _ := r.pickerSession("buffers", qs)
+	r.run("set-buffer", "-b", askBufferPrefix+"0123456789ab", "left behind")
+	r.run("set-buffer", "-b", "operators-own", "keep me")
+	// One of this process's own keys in flight (another pane's drive): kept.
+	live := askBufferPrefix + "1111111111ff"
+	r.run("set-buffer", "-b", live, "in flight")
+	liveBuffers.Lock()
+	liveBuffers.names[live] = true
+	liveBuffers.Unlock()
+	defer func() {
+		liveBuffers.Lock()
+		delete(liveBuffers.names, live)
+		liveBuffers.Unlock()
+	}()
+	b := Tmux{Socket: r.sock}
+	if !b.PastesRawKeys(context.Background()) {
+		t.Fatal("this tmux reports no paste-buffer -S")
+	}
+	if err := b.AnswerAsk(context.Background(), pane, qs, []askq.Choice{{Picks: []int{1}}}); err != nil {
+		t.Fatal(err)
+	}
+	got := r.run("list-buffers", "-F", "#{buffer_name}")
+	if strings.Contains(got, askBufferPrefix+"0123456789ab") || !strings.Contains(got, "operators-own") || !strings.Contains(got, live) {
+		t.Fatalf("buffers after a drive: %q", got)
 	}
 }

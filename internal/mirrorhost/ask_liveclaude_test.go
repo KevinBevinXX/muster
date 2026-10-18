@@ -18,13 +18,17 @@ import (
 )
 
 // THE DRIVER AGAINST A REAL CLAUDE CODE PICKER. Opt-in (needs a logged-in
-// claude and spends model turns), never in CI:
+// claude and spends model turns), never in CI — and 🔴 RUN IT ON EVERY CLAUDE
+// CODE UPGRADE: `make test-liveclaude` (tests/liveclaude.sh starts a
+// scratch claude in a private tmux server and runs this). By hand:
 //
 //	MUSTER_LIVE_SOCKET=<tmux -L name> MUSTER_LIVE_SESSION=<session> \
 //	MUSTER_LIVE_PROJECT=<~/.claude/projects/<slug>> \
 //	go test -tags liveclaude -run TestLiveClaudePicker ./internal/mirrorhost/
 //
 // The session's pane must run `claude` at its prompt in a scratch directory.
+// Before the multi-select case is driven it also re-measures the picker's
+// redraw lag, and fails if the worst is not well under askdrive.SteadyDefault.
 // Each case asks Claude to call AskUserQuestion, waits for the picker, drives
 // it with Tmux.AnswerAsk, and reads the transcript's toolUseResult: the answers
 // the CLI recorded must be the ones driven.
@@ -90,6 +94,9 @@ func TestLiveClaudePicker(t *testing.T) {
 					t.Fatalf("no picker for %s:\n%s", c.name, scr)
 				}
 				time.Sleep(200 * time.Millisecond)
+			}
+			if c.name == "multi-select" {
+				measureRedraw(t, ctx, p)
 			}
 			start := time.Now()
 			if err := tm.AnswerAsk(ctx, pane, c.qs, c.cs); err != nil {
@@ -161,4 +168,40 @@ func liveResults(t *testing.T, proj string) map[string]map[string]string {
 		}
 	}
 	return out
+}
+
+// measureRedraw toggles the first option 20 times (an even number: the picker
+// ends untouched), timing each from the key pasted to the screen changed, and
+// fails if the worst is not under a third of askdrive.SteadyDefault — the
+// margin the driver's second look relies on.
+func measureRedraw(t *testing.T, ctx context.Context, p tmuxPane) {
+	t.Helper()
+	var worst time.Duration
+	var all []time.Duration
+	for i := 0; i < 20; i++ {
+		before, _ := p.Capture(ctx)
+		start := time.Now()
+		if err := p.Send(ctx, "1"); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			s, _ := p.Capture(ctx)
+			if s != before {
+				break
+			}
+			if time.Since(start) > 2*time.Second {
+				t.Fatalf("key %d never drew", i+1)
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+		d := time.Since(start)
+		all = append(all, d)
+		worst = max(worst, d)
+		time.Sleep(100 * time.Millisecond)
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i] < all[j] })
+	t.Logf("redraw lag over %d keys: median %s, worst %s (Steady %s)", len(all), all[len(all)/2].Round(time.Millisecond), worst.Round(time.Millisecond), askdrive.SteadyDefault)
+	if worst*3 > askdrive.SteadyDefault {
+		t.Fatalf("the picker's worst redraw lag (%s) is over a third of askdrive.SteadyDefault (%s): re-measure and raise it", worst, askdrive.SteadyDefault)
+	}
 }

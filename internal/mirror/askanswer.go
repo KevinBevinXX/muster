@@ -36,7 +36,29 @@ var (
 	ErrAskRefused = errors.New("mirror: the host could not type the answer in")
 	// ErrAskTimeout: the host did not answer in time.
 	ErrAskTimeout = errors.New("mirror: the host did not report the answer in time")
+	// ErrAskUnrecognised: the host could not read the terminal's picker —
+	// Claude Code's layout has probably changed. Nothing was typed.
+	ErrAskUnrecognised = errors.New("mirror: the host could not recognise the terminal's picker (Claude Code may have changed)")
+	// ErrAskNotSent wraps an AnswerWindow error from BEFORE the answer was
+	// sent to the host: nothing can be being typed.
+	ErrAskNotSent = errors.New("mirror: the answer was not sent to the host")
 )
+
+// AskOutcomeKnown reports whether err (from AnswerWindow) means the host is
+// NOT typing any more: nil (typed), a refusal the host reported, or an
+// answer never sent. False — the host may still be typing — for a timeout, a
+// host that dropped after the answer was sent, or a send that failed part way.
+func AskOutcomeKnown(err error) bool {
+	if err == nil {
+		return true
+	}
+	for _, e := range []error{ErrAskNotSent, ErrAskNoPicker, ErrAskTouched, ErrAskLost, ErrAskUnsupported, ErrAskUnrecognised, ErrAskRefused} {
+		if errors.Is(err, e) {
+			return true
+		}
+	}
+	return false
+}
 
 // askAnswerTimeout bounds one answer end to end: a few dozen keys, each
 // waiting at most a few seconds for its screen.
@@ -46,36 +68,15 @@ const askAnswerTimeout = 60 * time.Second
 // Claude pane of one WINDOW of owner's host's session (its tmux window id; ""
 // = the session's active window), and waits for the host's outcome.
 func (h *Hub) AnswerWindow(ctx context.Context, owner int64, host, session, window string, qs []askq.Question, choices []askq.Choice) error {
-	h.mu.Lock()
-	hc := h.hosts[hostKey{owner, host}]
-	h.mu.Unlock()
-	if hc == nil {
-		return fmt.Errorf("%w (host %q)", ErrHostOffline, host)
-	}
-	windowID, _, err := hc.target(session, window)
+	ch, id, hc, m, err := h.prepareAnswer(ctx, owner, host, session, window, qs, choices)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrAskNotSent, err)
 	}
-	if !hc.askAnswer || !hc.interactive {
-		return fmt.Errorf("%w (host %q)", ErrAskUnsupported, host)
-	}
-	// The same freshness gate as a paste, checked again here whatever the
-	// caller did.
-	if !stepup.Fresh(ctx, h.now()) {
-		return ErrStepUpRequired
-	}
-	hc.mu.Lock()
-	hc.next++
-	id := hc.next
-	ch := make(chan error, 1)
-	hc.answers[id] = ch
-	hc.mu.Unlock()
 	defer func() {
 		hc.mu.Lock()
 		delete(hc.answers, id)
 		hc.mu.Unlock()
 	}()
-	m := Msg{Type: TypeAnswer, ID: id, Session: session, Window: windowID, Ask: &AskTyping{Questions: qs, Choices: choices}}
 	if err := writeJSON(ctx, hc.ws, m); err != nil {
 		return fmt.Errorf("mirror: send the answer to the host: %w", err)
 	}
@@ -89,6 +90,36 @@ func (h *Hub) AnswerWindow(ctx context.Context, owner int64, host, session, wind
 	case <-t.C:
 		return ErrAskTimeout
 	}
+}
+
+// prepareAnswer is AnswerWindow's gates, and the answer frame with the
+// channel its outcome arrives on (registered in hc.answers).
+func (h *Hub) prepareAnswer(ctx context.Context, owner int64, host, session, window string, qs []askq.Question, choices []askq.Choice) (chan error, uint32, *hostConn, Msg, error) {
+	h.mu.Lock()
+	hc := h.hosts[hostKey{owner, host}]
+	h.mu.Unlock()
+	if hc == nil {
+		return nil, 0, nil, Msg{}, fmt.Errorf("%w (host %q)", ErrHostOffline, host)
+	}
+	windowID, _, err := hc.target(session, window)
+	if err != nil {
+		return nil, 0, nil, Msg{}, err
+	}
+	if !hc.askAnswer || !hc.interactive {
+		return nil, 0, nil, Msg{}, fmt.Errorf("%w (host %q)", ErrAskUnsupported, host)
+	}
+	// The same freshness gate as a paste, checked again here whatever the
+	// caller did.
+	if !stepup.Fresh(ctx, h.now()) {
+		return nil, 0, nil, Msg{}, ErrStepUpRequired
+	}
+	hc.mu.Lock()
+	hc.next++
+	id := hc.next
+	ch := make(chan error, 1)
+	hc.answers[id] = ch
+	hc.mu.Unlock()
+	return ch, id, hc, Msg{Type: TypeAnswer, ID: id, Session: session, Window: windowID, Ask: &AskTyping{Questions: qs, Choices: choices}}, nil
 }
 
 // answered hands the host's outcome to the answer waiting on id.
@@ -118,6 +149,8 @@ func askAnswerError(why, refusal string) error {
 		return fmt.Errorf("%w: %s", ErrAskLost, why)
 	case AskRefusalUnsupported:
 		return fmt.Errorf("%w: %s", ErrAskUnsupported, why)
+	case AskRefusalUnrecognised:
+		return fmt.Errorf("%w: %s", ErrAskUnrecognised, why)
 	}
 	return fmt.Errorf("%w: %s", ErrAskRefused, why)
 }

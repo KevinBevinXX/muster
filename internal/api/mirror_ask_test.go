@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,9 +16,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/cctranscript"
+	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -38,11 +42,16 @@ import (
 // recorded and answers typeErr.
 type askMirror struct {
 	*fakeMirror
-	amu       sync.Mutex
-	nudges    map[int64]int
-	typed     []string
-	typeErr   error
-	noAnswer  bool // the host does not advertise AskAnswer
+	amu      sync.Mutex
+	nudges   map[int64]int
+	typed    []string
+	typeErr  error
+	noAnswer bool // the host does not advertise AskAnswer
+	// hold, when set, keeps AnswerWindow typing until it is closed (or the
+	// call's ctx ends, which is then its error); typingCtx is the last call's
+	// ctx.
+	hold      chan struct{}
+	typingCtx context.Context
 	feedCh    chan mirror.Msg
 	watchSeen int
 }
@@ -79,9 +88,18 @@ func (a *askMirror) AuthenticateHost(w http.ResponseWriter, r *http.Request) (in
 func (a *askMirror) AnswerWindow(ctx context.Context, host, session, window string, qs []askq.Question, cs []askq.Choice) error {
 	b, _ := json.Marshal(cs)
 	a.amu.Lock()
-	defer a.amu.Unlock()
 	a.typed = append(a.typed, host+" "+session+" "+window+" "+string(b))
-	return a.typeErr
+	hold, err := a.hold, a.typeErr
+	a.typingCtx = ctx
+	a.amu.Unlock()
+	if hold != nil {
+		select {
+		case <-hold:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return err
 }
 
 func (a *askMirror) Nudge(owner int64) {
@@ -612,5 +630,202 @@ func TestTheRenderedViewIsToldAtOnce(t *testing.T) {
 	register(t, ts)
 	if !asks(2 * time.Second) {
 		t.Fatal("the view was not told a question registered")
+	}
+}
+
+// TestADroppedPageDoesNotEndTheTyping: the page that sent an answer goes away
+// while the host is typing it. The wait goes on (its ctx is not the
+// request's): the question stays "typing", not failed — so no second answer
+// can start a drive into the same picker — and the host's outcome, when it
+// comes, is what counts.
+func TestADroppedPageDoesNotEndTheTyping(t *testing.T) {
+	am, s, ts := askServer(t, true)
+	register(t, ts)
+	region(t, s, ts, `data-ask-state="pending"`)
+	hold := make(chan struct{})
+	am.amu.Lock()
+	am.hold = hold
+	am.amu.Unlock()
+	form := answerForm(gateTool, "a0", "Red", "a1", "Cat")
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+ui.MirrorAskPath, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Cookie", sessionCookieFor(s))
+	req.Header.Set("Origin", ts.URL)
+	if resp, err := http.DefaultClient.Do(req); err == nil {
+		resp.Body.Close()
+		t.Fatalf("the held answer returned %d", resp.StatusCode)
+	}
+	time.Sleep(300 * time.Millisecond) // the server sees the page gone
+	am.amu.Lock()
+	tctx := am.typingCtx
+	am.amu.Unlock()
+	if tctx == nil || tctx.Err() != nil {
+		t.Fatalf("the typing's wait ended with the page: %v", tctx)
+	}
+	if e, _ := s.Questions().Find(askq.Key{Owner: 1, Source: askSourceMirror, Scope: "ws", Session: "sess-1", ToolUseID: gateTool}); e.State != askq.Typing {
+		t.Fatalf("with the page gone the question is %s, want typing", e.State)
+	}
+	// Another answer meanwhile: refused, nothing more typed.
+	if resp, _ := answerReq(t, s, ts, answerForm(gateTool, "a0", "Blue", "a1", "Cat"), "", ""); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("a second answer while the first is typed: %d", resp.StatusCode)
+	}
+	if got := am.typedSoFar(); len(got) != 1 {
+		t.Fatalf("typed %q, want one drive", got)
+	}
+	close(hold)
+	am.feed(gateTool, gateQs(t), map[string]string{"Which color do you prefer?": "Red", "Which pets do you have?": "Cat"})
+	region(t, s, ts, `data-ask-state="answered"`)
+}
+
+// TestAnUnknownOutcomeHoldsTheQuestion: the host's outcome never came back
+// (a timeout): the card says the picker may be partly filled in, and a new
+// answer is refused — the host may still be typing. The control: a refusal
+// the host reported (no picker) is retried.
+func TestAnUnknownOutcomeHoldsTheQuestion(t *testing.T) {
+	am, s, ts := askServer(t, true)
+	register(t, ts)
+	region(t, s, ts, `data-ask-state="pending"`)
+	am.amu.Lock()
+	am.typeErr = mirror.ErrAskTimeout
+	am.amu.Unlock()
+	resp, body := answerReq(t, s, ts, answerForm(gateTool, "a0", "Red", "a1", "Cat"), "", "")
+	if resp.StatusCode != http.StatusConflict || resp.Header.Get("X-Ask-State") != ui.AskStateFailed || !strings.Contains(body, "may be partly filled in") {
+		t.Fatalf("a typing with no outcome: %d %s\n%s", resp.StatusCode, resp.Header.Get("X-Ask-State"), body)
+	}
+	am.amu.Lock()
+	am.typeErr = nil
+	am.amu.Unlock()
+	if resp, _ := answerReq(t, s, ts, answerForm(gateTool, "a0", "Blue", "a1", "Cat"), "", ""); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("a new answer while the host may still type: %d, want 409", resp.StatusCode)
+	}
+	if got := am.typedSoFar(); len(got) != 1 {
+		t.Fatalf("typed %q, want one drive", got)
+	}
+
+	am2, s2, ts2 := askServer(t, true)
+	register(t, ts2)
+	region(t, s2, ts2, `data-ask-state="pending"`)
+	am2.amu.Lock()
+	am2.typeErr = fmt.Errorf("%w: gone", mirror.ErrAskNoPicker)
+	am2.amu.Unlock()
+	_, _ = answerReq(t, s2, ts2, answerForm(gateTool, "a0", "Red", "a1", "Cat"), "", "")
+	am2.amu.Lock()
+	am2.typeErr = nil
+	am2.amu.Unlock()
+	if resp, _ := answerReq(t, s2, ts2, answerForm(gateTool, "a0", "Blue", "a1", "Cat"), "", ""); resp.StatusCode != http.StatusOK {
+		t.Fatalf("a retry after a reported refusal: %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestEachFailureSaysWhatTheTerminalHas: the card's note for every outcome —
+// "partly filled in" exactly where keys may have been typed.
+func TestEachFailureSaysWhatTheTerminalHas(t *testing.T) {
+	for _, c := range []struct {
+		err     error
+		says    string
+		partial bool
+	}{
+		{fmt.Errorf("%w: x", mirror.ErrAskNoPicker), "no longer on the terminal's screen", false},
+		{fmt.Errorf("%w: x", mirror.ErrAskTouched), "Someone has started answering it", false},
+		{fmt.Errorf("%w: x", mirror.ErrAskUnrecognised), "Couldn't recognise the terminal's picker (Claude Code may have changed) — answer it in the terminal.", false},
+		{fmt.Errorf("%w: x", mirror.ErrAskLost), "changed while typing", true},
+		{fmt.Errorf("%w: %w", mirror.ErrAskNotSent, mirror.ErrHostOffline), "The host is offline", false},
+		{mirror.ErrHostDisconnected, "went offline while typing", true},
+		{mirror.ErrAskTimeout, "Couldn't type it in.", true},
+	} {
+		got := askTypeFailure(c.err)
+		if !strings.Contains(got, c.says) || strings.Contains(got, "partly filled in") != c.partial {
+			t.Errorf("%v: %q", c.err, got)
+		}
+	}
+}
+
+// TestAnUnrecognisedPickerIsCounted: the outcome counter moves for an
+// unrecognised picker (the signal that Claude Code's layout changed).
+func TestAnUnrecognisedPickerIsCounted(t *testing.T) {
+	am, s, ts := askServer(t, true)
+	register(t, ts)
+	region(t, s, ts, `data-ask-state="pending"`)
+	before := testutil.ToFloat64(metrics.MirrorAskTyping.WithLabelValues("unrecognised"))
+	am.amu.Lock()
+	am.typeErr = fmt.Errorf("%w: x", mirror.ErrAskUnrecognised)
+	am.amu.Unlock()
+	if _, body := answerReq(t, s, ts, answerForm(gateTool, "a0", "Red", "a1", "Cat"), "", ""); !strings.Contains(body, "Couldn&#39;t recognise the terminal&#39;s picker") {
+		t.Fatalf("the card:\n%s", body)
+	}
+	if got := testutil.ToFloat64(metrics.MirrorAskTyping.WithLabelValues("unrecognised")) - before; got != 1 {
+		t.Fatalf("the unrecognised count moved by %v", got)
+	}
+}
+
+// TestAGoneSessionsQuestionExpires: the Claude session leaves its host's
+// windows (Claude exited); after the grace its question expires, saying so,
+// and leaves the attention queue. The control: while the window is listed, it
+// stays open past the same grace.
+func TestAGoneSessionsQuestionExpires(t *testing.T) {
+	am, s, ts := askServer(t, true)
+	s.askWatch.mu.Lock()
+	s.askWatch.grace = 400 * time.Millisecond
+	s.askWatch.mu.Unlock()
+	register(t, ts)
+	region(t, s, ts, `data-ask-state="pending"`)
+	am.fakeMirror.mu.Lock()
+	ws := am.fakeMirror.windows
+	am.fakeMirror.mu.Unlock()
+	setWindows := func(w []mirror.Window) {
+		am.fakeMirror.mu.Lock()
+		am.fakeMirror.windows = w
+		am.fakeMirror.mu.Unlock()
+	}
+	gone := []mirror.Window{{Session: "main", ID: "@1", Index: 0, Active: true}} // Claude is not in it
+	// A blip shorter than the grace (a host reconnecting): still open.
+	setWindows(gone)
+	time.Sleep(100 * time.Millisecond)
+	setWindows(ws)
+	time.Sleep(800 * time.Millisecond)
+	if got := s.Questions().Pending(1); len(got) != 1 {
+		t.Fatalf("a listed session's question did not stay open: %+v", got)
+	}
+	setWindows(gone)
+	defer func() {
+		am.fakeMirror.mu.Lock()
+		am.fakeMirror.windows = ws
+		am.fakeMirror.mu.Unlock()
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(s.Questions().Pending(1)) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("a gone session's question is still open")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	e, _ := s.Questions().Find(askq.Key{Owner: 1, Source: askSourceMirror, Scope: "ws", Session: "sess-1", ToolUseID: gateTool})
+	if e.State != askq.Expired || e.Note != askGoneNote {
+		t.Fatalf("the gone session's question: %+v", e)
+	}
+}
+
+// TestANewerQuestionReplacesTheOldCard: Claude asks again in the same
+// session; the older card says it was replaced, and an answer to it is
+// refused with nothing typed.
+func TestANewerQuestionReplacesTheOldCard(t *testing.T) {
+	am, s, ts := askServer(t, true)
+	register(t, ts)
+	region(t, s, ts, `data-ask-state="pending"`)
+	if code := openAsk(t, ts, "mmt_ws", "sess-1", "toolu_again", gateInput(t)); code != http.StatusCreated {
+		t.Fatal(code)
+	}
+	card := region(t, s, ts, `data-ask-state="superseded"`)
+	if !strings.Contains(card, "newer question") {
+		t.Fatalf("the replaced card:\n%s", card)
+	}
+	resp, _ := answerReq(t, s, ts, answerForm(gateTool, "a0", "Red", "a1", "Cat"), "", "")
+	if resp.StatusCode != http.StatusConflict || resp.Header.Get("X-Ask-State") != ui.AskStateSuperseded {
+		t.Fatalf("an answer to the replaced card: %d %s", resp.StatusCode, resp.Header.Get("X-Ask-State"))
+	}
+	if got := am.typedSoFar(); len(got) != 0 {
+		t.Fatalf("typed into a replaced question: %q", got)
 	}
 }

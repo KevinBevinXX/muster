@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"time"
 
@@ -29,13 +30,32 @@ var (
 	// ErrLost: mid-drive, the screen is not what the last key should have
 	// produced. Nothing more is sent; the picker is left unsubmitted.
 	ErrLost = errors.New("askdrive: the picker did not show what the last key should have produced")
+	// ErrUnrecognised: the pane shows something like the picker that does not
+	// parse (Kind Unknown) — Claude Code's layout has probably changed.
+	// Nothing is sent.
+	ErrUnrecognised = errors.New("askdrive: could not recognise the terminal's picker (Claude Code may have changed)")
 )
+
+// Activity is a Pane that can tell whether a person typed into it lately.
+type Activity interface {
+	// RecentInput reports whether someone typed into the pane's terminal in
+	// the last couple of seconds — the driver's own keys not counted.
+	RecentInput(ctx context.Context) (bool, error)
+}
+
+// SteadyDefault is Options.Steady's default: over three times the worst
+// redraw lag measured (72 ms, every core busy — see the package doc).
+const SteadyDefault = 250 * time.Millisecond
 
 // Options tunes a drive.
 type Options struct {
 	// Settle bounds the wait for one key's screen (default 3 s); Poll is how
 	// often the pane is re-read meanwhile (default 40 ms).
 	Settle, Poll time.Duration
+	// Steady is how far apart the two looks before every key are (default
+	// SteadyDefault): a key typed in the terminal but not drawn yet at the
+	// first look is drawn by the second.
+	Steady time.Duration
 }
 
 // Drive types choices into the picker in p, verifying the screen before and
@@ -53,23 +73,62 @@ func Drive(ctx context.Context, p Pane, qs []askq.Question, choices []Choice, op
 	if opt.Poll <= 0 {
 		opt.Poll = 40 * time.Millisecond
 	}
+	if opt.Steady <= 0 {
+		opt.Steady = SteadyDefault
+	}
 	answers := Answers(qs, choices)
 	want := Start()
+	act, _ := p.(Activity)
 	for i, st := range steps {
-		// 🔴 RE-READ RIGHT BEFORE THE KEY: the terminal may have answered (or
-		// moved) the picker since the last look.
+		// refuse is the error for a screen (or a person) not as wanted before
+		// key i: before the first key nothing of ours is in the picker.
+		refuse := func(why error) error {
+			if i == 0 {
+				return fmt.Errorf("%w: %v", ErrNotUntouched, why)
+			}
+			return fmt.Errorf("%w (before key %d, wanted %s): %v", ErrLost, i+1, want, why)
+		}
+		// 🔴 SOMEONE TYPING IN THE TERMINAL: their key may not be drawn yet.
+		if act != nil {
+			typing, err := act.RecentInput(ctx)
+			if err != nil {
+				return err
+			}
+			if typing {
+				return refuse(errors.New("someone typed in the terminal in the last couple of seconds"))
+			}
+		}
+		// 🔴 RE-READ RIGHT BEFORE THE KEY, TWICE, Steady apart: the terminal
+		// may have answered (or moved) the picker since the last look, or be
+		// drawing a key someone just typed.
 		scr, err := p.Capture(ctx)
 		if err != nil {
 			return err
 		}
 		if err := Match(Parse(scr), want, qs, answers); err != nil {
 			if i == 0 {
-				if Parse(scr).Kind == None {
+				switch Parse(scr).Kind {
+				case None:
 					return fmt.Errorf("%w: %v", ErrNoPicker, err)
+				case Unknown:
+					return fmt.Errorf("%w: %v", ErrUnrecognised, err)
 				}
-				return fmt.Errorf("%w: %v", ErrNotUntouched, err)
 			}
-			return fmt.Errorf("%w (before key %d, wanted %s): %v", ErrLost, i+1, want, err)
+			return refuse(err)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(opt.Steady):
+		}
+		again, err := p.Capture(ctx)
+		if err != nil {
+			return err
+		}
+		// The PICKER must be unchanged; the rest of the pane (the CLI's own
+		// status lines) may change on its own.
+		if !reflect.DeepEqual(Parse(again), Parse(scr)) {
+			return refuse(errors.New("the screen changed while it was being read — someone is typing in the terminal"))
 		}
 		if err := p.Send(ctx, st.Keys); err != nil {
 			return err

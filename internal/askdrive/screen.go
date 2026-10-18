@@ -13,7 +13,13 @@
 //     options to match what muster was asked;
 //   - before EVERY key it re-reads the pane and requires the state the previous
 //     key was meant to produce — a person answering in the terminal meanwhile
-//     closes or changes the picker, and the driver stops without a key;
+//     closes or changes the picker, and the driver stops without a key. It
+//     reads it TWICE, Options.Steady apart, and requires the same screen both
+//     times: a key someone typed that the CLI has not drawn yet shows up in the
+//     second look (Claude Code's redraw lag is measured below);
+//   - before every key, when the pane can tell (Activity), it refuses if a
+//     person typed into the terminal in the last couple of seconds — muster's
+//     own pasted keys do not count;
 //   - after every key it waits for the screen that key must produce; anything
 //     else stops it.
 //
@@ -24,16 +30,24 @@
 //
 // The picker's behaviour is MEASURED, Claude Code 2.1.289 (the PR's gate):
 //
+//   - redraw lag, key pasted to screen changed (capture-pane every 2 ms, an
+//     80x23 pane): idle, median 8–9 ms and at most 19 ms over 55 keys; with
+//     every core of a 24-core host busy, median 14 ms and at most 72 ms over 40
+//     keys. Options.Steady (250 ms) is over three times the worst of those;
+//
 //   - single-select: a digit chooses its option; it answers the question (and
 //     submits a one-question ask, which has no review screen);
+//
 //   - multi-select: a digit toggles its option and leaves the cursor where it
 //     was; the rows are the options, the "Type something" row, then "Next"
 //     (or "Submit" on a one-question ask), reached with Down and taken with
 //     Enter;
+//
 //   - the "Type something" row (option k+1): on a single-select question its
 //     digit focuses it for typing; on a multi-select question Down moves onto
 //     it; typed text is the answer (and checks it, multi-select); in that row
 //     digits and letters are TEXT;
+//
 //   - an ask with several questions (or a multi-select one) ends on a review
 //     screen listing every "question → answer"; "1" submits it.
 package askdrive
@@ -54,6 +68,10 @@ const (
 	Question
 	// Review: the review screen of a multi-question (or multi-select) ask.
 	Review
+	// Unknown: something that looks like the picker (its footer's words, or
+	// the review's Submit row) that does not parse as either screen — the
+	// CLI's layout has probably changed (ErrUnrecognised).
+	Unknown
 )
 
 // Row is one numbered row of a question screen.
@@ -118,6 +136,34 @@ func trimRight(s string) string { return strings.TrimRight(s, " \t") }
 // above a footer ("Enter to select · …") or a review screen's Submit row.
 // Anything that does not parse as one of the two screens is None.
 func Parse(capture string) Screen {
+	s := parse(capture)
+	if s.Kind == None && looksLikeAPicker(capture) {
+		s.Kind = Unknown
+	}
+	return s
+}
+
+// pickerWords are words the picker's bottom lines carry (its footer, the
+// review's rows) that a prompt screen does not.
+var pickerWords = []string{"Enter to select", "Esc to cancel", "Submit answers", "Review your answers"}
+
+// looksLikeAPicker reports whether the bottom of capture carries the picker's
+// words.
+func looksLikeAPicker(capture string) bool {
+	lines := strings.Split(strings.TrimRight(strings.ReplaceAll(capture, "\r", ""), "\n "), "\n")
+	if len(lines) > 6 {
+		lines = lines[len(lines)-6:]
+	}
+	tail := strings.Join(lines, "\n")
+	for _, w := range pickerWords {
+		if strings.Contains(tail, w) {
+			return true
+		}
+	}
+	return false
+}
+
+func parse(capture string) Screen {
 	lines := strings.Split(strings.ReplaceAll(capture, "\r", ""), "\n")
 	for i := range lines {
 		lines[i] = trimRight(lines[i])
@@ -175,6 +221,9 @@ func Parse(capture string) Screen {
 	for ; i < len(body); i++ {
 		if rowRE.MatchString(body[i]) {
 			break
+		}
+		if sepRE.MatchString(body[i]) {
+			return Screen{} // no option rows above the separator
 		}
 		if t := strings.TrimSpace(body[i]); t != "" {
 			q = append(q, t)

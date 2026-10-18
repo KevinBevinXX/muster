@@ -80,6 +80,23 @@ var (
 		Help: "Web Push notifications not sent, by reason (muted|throttled).",
 	}, []string{"reason"})
 
+	// MirrorAskTyping counts answers muster typed into a mirrored session's
+	// AskUserQuestion picker, by outcome:
+	//   typed        — every key landed (the CLI's record says whose answer won)
+	//   not-sent     — refused before the host was asked (offline, step-up, …)
+	//   no-picker    — the picker was gone (answered or dismissed in the terminal)
+	//   touched      — someone was answering in the terminal; nothing typed
+	//   lost         — the picker changed mid-way; stopped, nothing submitted
+	//   unrecognised — the host could not read the picker: Claude Code's layout
+	//                  has probably changed — ANY of these is worth a look
+	//                  (`make test-liveclaude`)
+	//   unsupported  — the host cannot type answers
+	//   timeout, error — the host's outcome never came back
+	MirrorAskTyping = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_mirror_ask_typing_total",
+		Help: "Answers typed into a mirrored session's AskUserQuestion picker, by outcome.",
+	}, []string{"result"})
+
 	// AgentProvision counts agent provisioning attempts.
 	AgentProvision = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "muster_agent_provision_total",

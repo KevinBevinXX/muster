@@ -117,6 +117,101 @@ func TestBeginTypingIsTheOwnersAloneAndOnceOnly(t *testing.T) {
 	}
 }
 
+// TestNoSecondDriveUntilTheFirstsOutcomeIsKnown: a typing that ended WITHOUT
+// the host's outcome (unsettled) leaves the question Failed but refuses a new
+// typing (ErrBusy) until MaxDrive after the first began — the host may still
+// be typing it. The controls: a settled failure may be retried at once, and
+// so may an unsettled one once MaxDrive has passed.
+func TestNoSecondDriveUntilTheFirstsOutcomeIsKnown(t *testing.T) {
+	s, c := testStore(t)
+	_, _ = s.Open(key(1), twoQs, "")
+	_, _, _ = s.BeginTyping(key(1), someAnswers)
+	c.add(10 * time.Second)
+	if e, _ := s.TypingFailed(key(1), "the host did not report", false); e.State != Failed {
+		t.Fatalf("an unsettled failure: %+v", e)
+	}
+	if _, _, err := s.BeginTyping(key(1), otherAnswers); !errors.Is(err, ErrBusy) {
+		t.Fatalf("a new typing while the host may still type: %v, want ErrBusy", err)
+	}
+	c.add(MaxDrive)
+	if e, _, err := s.BeginTyping(key(1), otherAnswers); err != nil || e.State != Typing {
+		t.Fatalf("a new typing once MaxDrive passed: %+v %v", e, err)
+	}
+	// Settled: the host reported; a retry may begin at once.
+	s, _ = testStore(t)
+	_, _ = s.Open(key(1), twoQs, "")
+	_, _, _ = s.BeginTyping(key(1), someAnswers)
+	_, _ = s.TypingFailed(key(1), "no picker", true)
+	if _, _, err := s.BeginTyping(key(1), otherAnswers); err != nil {
+		t.Fatalf("a retry after a reported failure: %v", err)
+	}
+	// TypingDone settles too: a failure reported after it does not hold the
+	// question.
+	s, _ = testStore(t)
+	_, _ = s.Open(key(1), twoQs, "")
+	_, _, _ = s.BeginTyping(key(1), someAnswers)
+	s.TypingDone(key(1))
+	_, _ = s.TypingFailed(key(1), "late", false)
+	if _, _, err := s.BeginTyping(key(1), otherAnswers); err != nil {
+		t.Fatalf("a retry after the host reported it typed: %v", err)
+	}
+}
+
+// TestANewerQuestionReplacesTheOlder: a newer question in the same Claude
+// session supersedes the older open ones — closed, never typed into — while a
+// question of another session stays open. A late result for the superseded
+// call is still recorded.
+func TestANewerQuestionReplacesTheOlder(t *testing.T) {
+	s, _ := testStore(t)
+	old := key(1)
+	other := key(1)
+	other.Session, other.ToolUseID = "s-2", "toolu_9"
+	_, _ = s.Open(old, twoQs, "")
+	_, _ = s.Open(other, twoQs, "")
+	newer := key(1)
+	newer.ToolUseID = "toolu_2"
+	if _, err := s.Open(newer, twoQs, ""); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := s.Find(old); e.State != Superseded {
+		t.Fatalf("the older question: %+v, want superseded", e)
+	}
+	if _, _, err := s.BeginTyping(old, someAnswers); !errors.Is(err, ErrClosed) {
+		t.Fatalf("typing into a superseded question: %v, want ErrClosed", err)
+	}
+	if e, _ := s.Find(other); e.State != Pending {
+		t.Fatalf("another session's question: %+v", e)
+	}
+	if e, _ := s.Find(newer); e.State != Pending {
+		t.Fatalf("the newer question: %+v", e)
+	}
+	if e, ok := s.Resolve(old.Owner, old.Source, old.Scope, old.Session, old.ToolUseID, someAnswers); !ok || e.State != Answered {
+		t.Fatalf("a late result for the superseded call: %+v %v", e, ok)
+	}
+}
+
+// TestGoneExpiresTheSessionsOpenQuestions: Gone expires the session's open
+// questions with the note, and leaves other sessions' alone.
+func TestGoneExpiresTheSessionsOpenQuestions(t *testing.T) {
+	s, _ := testStore(t)
+	other := key(1)
+	other.Session = "s-2"
+	_, _ = s.Open(key(1), twoQs, "")
+	_, _ = s.Open(other, twoQs, "")
+	if n := s.Gone(1, "mirror", "laptop", "s-1", "it ended"); n != 1 {
+		t.Fatalf("Gone expired %d", n)
+	}
+	if e, _ := s.Find(key(1)); e.State != Expired || e.Note != "it ended" {
+		t.Fatalf("the gone session's question: %+v", e)
+	}
+	if e, _ := s.Find(other); e.State != Pending {
+		t.Fatalf("another session's question: %+v", e)
+	}
+	if got := s.Pending(1); len(got) != 1 {
+		t.Fatalf("pending after Gone: %+v", got)
+	}
+}
+
 // TestTheCLIsRecordSaysWhoWon: the result muster typed is "answered here"; any
 // other result is the terminal's — whoever got there first, the CLI's record
 // decides.
@@ -172,7 +267,7 @@ func TestTypingFailedLeavesItToTheTerminal(t *testing.T) {
 	s, _ := testStore(t)
 	_, _ = s.Open(key(1), twoQs, "")
 	_, _, _ = s.BeginTyping(key(1), someAnswers)
-	e, err := s.TypingFailed(key(1), "no picker")
+	e, err := s.TypingFailed(key(1), "no picker", true)
 	if err != nil || e.State != Failed || e.Note != "no picker" {
 		t.Fatalf("failed: %+v %v", e, err)
 	}
@@ -185,7 +280,7 @@ func TestTypingFailedLeavesItToTheTerminal(t *testing.T) {
 	_, _ = s.Open(key(1), twoQs, "")
 	_, _, _ = s.BeginTyping(key(1), someAnswers)
 	_, _ = resolve(s, 1, otherAnswers)
-	if e, _ := s.TypingFailed(key(1), "late"); e.State != Answered {
+	if e, _ := s.TypingFailed(key(1), "late", true); e.State != Answered {
 		t.Fatalf("a late failure overwrote the result: %+v", e)
 	}
 }
@@ -208,15 +303,17 @@ func TestAnOpenQuestionExpires(t *testing.T) {
 
 func TestPendingIsBoundedPerOwner(t *testing.T) {
 	s, _ := testStore(t)
+	// One question per Claude session: a newer one in the SAME session
+	// supersedes the older (TestANewerQuestionReplacesTheOlder).
 	for i := 0; i < MaxPendingPerOwner; i++ {
 		k := key(1)
-		k.ToolUseID = fmt.Sprintf("toolu_%d", i)
+		k.Session, k.ToolUseID = fmt.Sprintf("s-%d", i), fmt.Sprintf("toolu_%d", i)
 		if _, err := s.Open(k, twoQs, ""); err != nil {
 			t.Fatalf("%d: %v", i, err)
 		}
 	}
 	k := key(1)
-	k.ToolUseID = "toolu_over"
+	k.Session, k.ToolUseID = "s-over", "toolu_over"
 	if _, err := s.Open(k, twoQs, ""); !errors.Is(err, ErrFull) {
 		t.Fatalf("past the bound: %v, want ErrFull", err)
 	}
@@ -264,7 +361,7 @@ func TestOnChangeSeesEveryTransition(t *testing.T) {
 	s.OnChange(func(e Entry) { mu.Lock(); seen = append(seen, e.State); mu.Unlock() })
 	_, _ = s.Open(key(1), twoQs, "")
 	_, _, _ = s.BeginTyping(key(1), someAnswers)
-	_, _ = s.TypingFailed(key(1), "x")
+	_, _ = s.TypingFailed(key(1), "x", true)
 	_, _ = resolve(s, 1, otherAnswers)
 	k := key(1)
 	k.ToolUseID = "toolu_2"
