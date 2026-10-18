@@ -283,7 +283,9 @@ var isolationClasses = map[string]routeClass{
 	"PATCH /api/tasks/{id}":                 classAdmin,
 	"PATCH /api/tasks/{id}/status":          classAdmin,
 	"POST /api/agents/{name}/messages":      classAdmin,
-	"POST /api/tasks":                       classAdmin,
+	// Chief replacement (chief_replace.go), hook tier, acting as the caller.
+	"POST /api/chief/replace": classAdmin,
+	"POST /api/tasks":         classAdmin,
 	// Session routing (0021): a mirrored session's answer, on the hook tier
 	// (requireArmedHookToken), acting as the route's owner.
 	"POST /api/routes/{id}/reply":   classAdmin,

@@ -111,8 +111,10 @@ user 1 and `chief-<id>` for any other user, so each user has their own.
 - The chief panel (`/ui/chief/panel`) is the agent chat view mounted in a side
   panel.
 - `muster chief ask` sends it a question from the CLI.
-- Only the chief receives the cairn coordinates (`MUSTER_AGENT_CAIRN_URL` and
+- Only a `gateway` chief receives the cairn coordinates (`MUSTER_AGENT_CAIRN_URL` and
   `MUSTER_AGENT_CAIRN_TOKEN`).
+- It can run on either kind, and `muster chief replace` moves it from one kind
+  to another. See [chief.md](chief.md).
 
 ## The provisioner seam (`internal/provision`)
 

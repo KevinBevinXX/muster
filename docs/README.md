@@ -13,6 +13,7 @@ Start with the [project README](../README.md) for the pitch and a quickstart.
 - [uploads.md](uploads.md) — attaching files in the composer; the signed link an agent downloads them through
 - [push.md](push.md) — Web Push and the installable app
 - [provisioner.md](provisioner.md) — dispatching agents, agent kinds, the chief, the provisioner seam
+- [chief.md](chief.md) — the chief on each agent kind, and replacing it (runbook)
 - [browser-flows.md](browser-flows.md) — the browser-job queue and its runner protocol
 - [connectors.md](connectors.md) — credentials agents use without seeing them
 - [memo-relay.md](memo-relay.md) — cairn memos delivered to dispatched agents

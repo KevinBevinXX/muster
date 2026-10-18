@@ -136,6 +136,7 @@ var provisionerDeps = []provisionerDep{
 			"POST /agents",
 			"POST /agents/{id}/start",
 			"POST /agents/{id}/stop",
+			"POST /api/chief/replace",
 			"POST /chief/provision",
 		},
 		callers: []string{
@@ -147,6 +148,7 @@ var provisionerDeps = []provisionerDep{
 			"(*Server).handleAgentStop",        // Stop
 			"(*Server).handleAgentTerminalWS",  // AttachTerminal
 			"(*Server).handleChiefProvision",   // Start
+			"(*Server).replaceChief",           // Destroy + Start; reached from handleChiefReplace
 		},
 	},
 	{

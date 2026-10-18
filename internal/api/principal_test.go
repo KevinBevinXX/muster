@@ -271,6 +271,7 @@ var routeVias = map[authz.Via][]string{
 		"PATCH /api/tasks/{id}",
 		"PATCH /api/tasks/{id}/status",
 		"POST /api/agents/{name}/messages",
+		"POST /api/chief/replace",
 		"POST /api/tasks",
 		"POST /api/tasks/{id}/comments",
 		"GET /api/whoami",
@@ -300,6 +301,7 @@ var routeVias = map[authz.Via][]string{
 		"PATCH /api/tasks/{id}",
 		"PATCH /api/tasks/{id}/status",
 		"POST /api/agents/{name}/messages",
+		"POST /api/chief/replace",
 		"POST /api/tasks",
 		"POST /api/tasks/{id}/comments",
 		"POST /api/routes/{id}/reply",
@@ -598,7 +600,8 @@ func TestAnUnarmedHookTierStillActsAsTheMachineUser(t *testing.T) {
 	_, h, seen := newPrincipalTestServerWith(t, AuthConfig{UIPassword: pPassword})
 	// The fail-closed (requireArmedHookToken) routes: the agent-steering write,
 	// and session routing's answer (it decides what an outside party is sent).
-	armed := map[string]bool{"POST /api/agents/{name}/messages": true, "POST /api/routes/{id}/reply": true}
+	armed := map[string]bool{"POST /api/agents/{name}/messages": true, "POST /api/routes/{id}/reply": true,
+		"POST /api/chief/replace": true}
 	for _, pattern := range routeVias[authz.ViaHook] {
 		method, path := concretePath(pattern)
 		t.Run(pattern, func(t *testing.T) {

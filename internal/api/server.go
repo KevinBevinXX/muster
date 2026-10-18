@@ -495,6 +495,11 @@ func (s *Server) registerAll(mux Mux) {
 	mux.HandleFunc("GET /ui/chief/threads/search", s.requireSession(s.handleChiefThreadSearch))
 	// chief is the reserved-name agent; nothing else can create one.
 	mux.HandleFunc("POST /chief/provision", s.requireSession(s.requireLifecycleProvisioner(s.handleChiefProvision)))
+	// Replacing the chief (chief_replace.go): delete + re-create on another kind,
+	// behind an explicit confirm. requireArmedHookToken: a machine write that
+	// destroys an agent must not be served open on an unarmed server; a personal
+	// token acts as its owner.
+	mux.HandleFunc("POST /api/chief/replace", s.requireArmedHookToken(s.requireLifecycleProvisioner(s.handleChiefReplace)))
 
 	s.registerNotesRoutes(mux)
 	s.registerGitHubRoutes(mux)

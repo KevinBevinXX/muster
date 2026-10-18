@@ -208,6 +208,14 @@ const manifestPath = "testdata/routes.partition.tsv"
 //	----
 //	  74   routeFloor
 //
+// ⚠ AND AGAIN WHEN THE CHIEF COULD BE REPLACED: POST /api/chief/replace is a
+// new muster row, so the projection is 84 (70 + 14), same margin:
+//
+//	  84   manifest projection (70 muster + 14 shared)
+//	-  9   margin
+//	----
+//	  75   routeFloor
+//
 // routeFloorProjection is checked against the MANIFEST, not against the code,
 // by TestRoutePartitionManifestIsATotalPartition.
 //
@@ -219,8 +227,8 @@ const manifestPath = "testdata/routes.partition.tsv"
 // red the gate from the first route to the eightieth.
 // ---------------------------------------------------------------------------
 const (
-	routeFloorProjection = 83
-	routeFloor           = 74
+	routeFloorProjection = 84
+	routeFloor           = 75
 )
 
 // muxRecorder implements Mux and records patterns instead of routing.

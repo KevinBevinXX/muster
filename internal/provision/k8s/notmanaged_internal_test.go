@@ -462,7 +462,10 @@ func TestTheWriteHelperLedgerIsComplete(t *testing.T) {
 			"applyFailed":         1,
 			"getOwnedDeployment":  1,
 			"Create":              1,
-			"ensureNamespace":     2,
+			// The third is the deadline on a namespace still terminating
+			// from an earlier Destroy: not a refusal, a state that clears by
+			// itself — the classification network.go gives the same cause.
+			"ensureNamespace":     3,
 			"checkNamespaceOwned": 1,
 			"Scale":               1,
 			"Destroy":             1,

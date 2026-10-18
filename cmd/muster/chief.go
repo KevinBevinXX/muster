@@ -34,7 +34,7 @@ const chiefAskRoute = "/api/agents/{name}/messages"
 // not the taste.
 const chiefDefaultName = "chief"
 
-// newChiefCmd is deliberately one verb wide.
+// newChiefCmd held one verb (ask) until `replace` arrived.
 //
 // 🔴 THE FAMILY IS A DIRECTION, NOT A SERVICE, AND ONLY ONE OF ITS TWO
 // DIRECTIONS LIVES HERE. Upstream `chief` held both: ASKING (operator -> agent)
@@ -46,9 +46,57 @@ const chiefDefaultName = "chief"
 func newChiefCmd(a *app) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "chief",
-		Short: "Ask an agent a question and print its reply",
+		Short: "Ask an agent a question, or replace the chief agent",
 	}
-	cmd.AddCommand(newChiefAskCmd(a))
+	cmd.AddCommand(newChiefAskCmd(a), newChiefReplaceCmd(a))
+	return cmd
+}
+
+// chiefReplaceRoute is the server's chief replacement.
+const chiefReplaceRoute = "/api/chief/replace"
+
+func newChiefReplaceCmd(a *app) *cobra.Command {
+	var kind, account, model, confirm string
+	cmd := &cobra.Command{
+		Use:   "replace",
+		Short: "POST " + chiefReplaceRoute + " — delete the chief and re-create it on another agent kind",
+		Long: `Replace your chief agent: DELETE the agent holding your reserved chief slug
+(with its chat history, focus, connectors and workspace volume) and create a new
+one under the same slug on --kind (and --cc-account for claude-code).
+
+Without --confirm NOTHING is changed: the server answers with the plan — what it
+would delete and what it would create — and this exits ` + "2" + `. Re-run with
+--confirm set to the slug the plan names (` + chiefDefaultName + ` for the operator) to apply it.
+
+The server refuses (exit 5, nothing changed) while a turn is being delivered to
+the chief, while any plugin message is still ` + "`delivering`" + ` to it, or while another
+agent is labelled "chief". It is safe to re-run: if a previous run deleted the old
+chief and failed to create the new one, the same command creates it; if the chief
+is already on the requested kind and account, it is re-applied, not deleted.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if strings.TrimSpace(kind) == "" {
+				return failf(exitUsage, "--kind is required (gateway or claude-code).")
+			}
+			raw, err := a.call(cmd.Context(), request{
+				method: http.MethodPost,
+				path:   chiefReplaceRoute,
+				body: map[string]any{
+					"kind": strings.TrimSpace(kind), "cc_account": strings.TrimSpace(account),
+					"model": strings.TrimSpace(model), "confirm": strings.TrimSpace(confirm),
+				},
+				cred: credHook,
+			})
+			if err != nil {
+				return err
+			}
+			return a.emit(raw)
+		},
+	}
+	cmd.Flags().StringVar(&kind, "kind", "", "the new chief's agent kind: gateway or claude-code (required)")
+	cmd.Flags().StringVar(&account, "cc-account", "", "claude-code only: the Claude account to pin (empty lets the pool choose)")
+	cmd.Flags().StringVar(&model, "model", "", "gateway only: the model (empty = the deployment default)")
+	cmd.Flags().StringVar(&confirm, "confirm", "", "the chief slug being replaced; without it nothing is changed")
 	return cmd
 }
 

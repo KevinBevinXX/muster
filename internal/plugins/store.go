@@ -65,6 +65,12 @@ type Store interface {
 	// that agent is in flight: such a row was left by a process that died
 	// mid-turn, and it may have been pasted.
 	RecoverDeliveries(ctx context.Context, agentID int64) (int, error)
+	// DeliveringTo is the ids of the messages still `delivering` to agentID,
+	// oldest first. It writes nothing. Deleting an agent with such a row strands
+	// it: agent_id goes NULL (ON DELETE SET NULL) and RecoverDeliveries, keyed on
+	// the agent, can then never settle it — so the chief replacement refuses
+	// while this is non-empty.
+	DeliveringTo(ctx context.Context, agentID int64) ([]int64, error)
 	// ReserveGatedTask spends one unit of an agent's gated-task budget (gated.go),
 	// or returns ErrGatedTaskCap.
 	ReserveGatedTask(ctx context.Context, agentID int64, messageID *int64) error
@@ -391,6 +397,24 @@ func (s *PGStore) RecordDelivery(ctx context.Context, messageID, agentID int64, 
 		})
 	})
 	return settled, err
+}
+
+func (s *PGStore) DeliveringTo(ctx context.Context, agentID int64) ([]int64, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id FROM plugin_messages
+		WHERE agent_id = $1 AND status = 'delivering' ORDER BY id`, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 func (s *PGStore) RecoverDeliveries(ctx context.Context, agentID int64) (int, error) {
