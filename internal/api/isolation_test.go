@@ -44,6 +44,8 @@ import (
 	"github.com/ZacxDev/muster/internal/recents"
 	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/sse"
+	"github.com/ZacxDev/muster/internal/uploads"
+	"github.com/ZacxDev/muster/internal/uploads/uploadstest"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -386,6 +388,14 @@ var isolationClasses = map[string]routeClass{
 	// Dictation (transcribe.go) names no object: it turns the caller's recording
 	// into text for the caller and reads or writes no row.
 	"POST /transcribe": classList,
+	// File attachments (uploads.go). The upload names no object (it creates the
+	// caller's own); the owner's view and the revoke name A's upload by its
+	// public id; the signed link is public — its HMAC is the credential, which
+	// no walker holds (sideEffectControlled).
+	"POST /uploads":             classList,
+	"GET /uploads/{id}/file":    classParam,
+	"POST /uploads/{id}/revoke": classParam,
+	"GET /f/{id}":               classPublic,
 }
 
 // wantCanaryForA: list routes that render A's data to A. The negative control
@@ -472,6 +482,11 @@ type isoUser struct {
 }
 
 type isoWorld struct {
+	// uploads and uploadSvc are the file attachments' object store and service
+	// (0024): A's upload's bytes live in the former.
+	uploads   *uploadstest.Objects
+	uploadSvc *uploads.Service
+
 	t        *testing.T
 	pool     *pgxpool.Pool
 	srv      *Server
@@ -769,6 +784,16 @@ func newIsoWorld(t *testing.T) *isoWorld {
 
 	// A's queued message (0019), for a window on A's mirrored host, its body
 	// carrying the canary.
+	// A's file attachment (0024): its bytes and its filename carry the canary,
+	// so A's own view of it is told apart from the ghost's by the body.
+	w.uploads = &uploadstest.Objects{}
+	upSigner, err := uploads.NewSigner("iso-walk-upload-signing-key-0123456789abcdef")
+	must(err, "upload signer")
+	w.uploadSvc = &uploads.Service{Store: uploads.NewPG(pool), Objects: w.uploads, Signer: upSigner,
+		PublicURL: "https://muster.test", MaxBytes: 1 << 20, LinkTTL: time.Hour}
+	aUpload, err := w.uploadSvc.Put(ua, strings.NewReader(w.canary+" attached notes\n"), w.canary+"-notes.txt")
+	must(err, "a upload")
+
 	aQueued, err := sendqueue.NewPG(pool).Enqueue(ua, sendqueue.Item{
 		Target: sendqueue.Target{Host: w.canary + "-host", Session: "main", Window: "@1"}, Body: w.canary + " queued", StepUpAt: time.Now()})
 	must(err, "a queued message")
@@ -785,7 +810,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		attach: w.aAttachment.ID, chat: w.aChatSession.ID, agentName: w.a.agent.Name, connName: w.aConnName,
 		tag: w.aTag, link: w.aSessionLink, mirrorHost: w.canary + "-host", mirrorSession: "main", token: w.aToken2.ID,
 		pushDevice: w.objA.pushDevice, flowJob: w.aJob.ID, runnerTok: w.aRunner2.ID, flowReq: w.aFlowReq.ID,
-		plugin: w.aPlugin2.ID, draft: w.aDraft.ID, queued: aQueued.ID, route: aRoute.RouteID, ask: aAsk.ID}
+		plugin: w.aPlugin2.ID, draft: w.aDraft.ID, queued: aQueued.ID, route: aRoute.RouteID, upload: aUpload.PublicID, ask: aAsk.ID}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
 	const ghostID = 9_000_000_000
@@ -793,7 +818,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		agentName: "ghost-agent" + w.suffix, connName: "ghostconn" + w.suffix, tag: "ghosttag", link: "ghost-sess-" + w.suffix,
 		mirrorHost: "ghost-host", mirrorSession: "main", ccAccount: "ghostacct", token: ghostID, pushDevice: ghostID,
 		flowJob: ghostID, runnerTok: ghostID, flowReq: ghostID, plugin: ghostID, draft: ghostID, passkey: "00000000-0000-4000-a000-00000000ghost",
-		queued: ghostID, route: "rt_000000000000000000000000", ask: ghostID}
+		queued: ghostID, route: "rt_000000000000000000000000", upload: "GhostGhostGhostGhost00", ask: ghostID}
 
 	// A's push device: through the real store, as the claim the subscribe route
 	// makes. Its user agent and endpoint carry the canary.
@@ -837,6 +862,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		Routing:   &Routing{},
 		Focus:     focus.NewPG(pool),
 		SendQueue: sendqueue.NewPG(pool),
+		Uploads:   w.uploadSvc,
 		// The attention queue (0025): A's ask is a real object B must not reach.
 		Attention: attention.NewPG(pool),
 		Push:      push.NewService(pushStore, w.pusher, push.VAPIDConfig{PublicKey: "iso-walk-vapid-public"}, log.New(io.Discard, "", 0)),
@@ -1075,6 +1101,7 @@ type isoObjs struct {
 	agentName, connName, tag, link            string
 	mirrorHost, mirrorSession                 string
 	queued                                    int64  // a queued message's id (0019)
+	upload                                    string // a file attachment's public id (0024)
 	route                                     string // a session route's id (0021)
 	ask                                       int64  // an attention ask's id (0025)
 }
@@ -1124,6 +1151,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		id = strconv.FormatInt(o.queued, 10)
 	case strings.HasPrefix(path, "/api/routes/{id}"):
 		id = o.route
+	case strings.HasPrefix(path, "/uploads/{id}") || strings.HasPrefix(path, "/f/{id}"):
+		id = o.upload
 	case strings.HasPrefix(path, "/attention/asks/{id}"):
 		id = strconv.FormatInt(o.ask, 10)
 	}
@@ -1226,7 +1255,7 @@ func (w *isoWorld) snapshot() map[string]string {
 	for _, tbl := range []string{"notes", "note_comments", "note_attachments", "task_sessions", "agents",
 		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "github_connection", "mirror_tokens",
 		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens", "push_subscriptions", "push_preferences", "flow_requests",
-		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "recents", "send_queue", "agent_focus", "agent_focus_history", "session_routes", "attention_asks"} {
+		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "recents", "send_queue", "agent_focus", "agent_focus_history", "session_routes", "uploads", "attention_asks"} {
 		var js string
 		if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t.id)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
 			// task_sessions/github_connection have no `id` ordering column in every
@@ -1357,7 +1386,14 @@ func sortedRoutes() []string {
 // control cannot be read off the status. Each has its control asserted on the
 // side effect instead, at the end of the walk.
 var sideEffectControlled = map[string]string{
-	"POST /agents/{id}/start":               "the provisioner acted for A (isoProvisioner records it), never for B",
+	"POST /agents/{id}/start": "the provisioner acted for A (isoProvisioner records it), never for B",
+	// 🔴 A BEARER CAPABILITY, NOT A SIDE EFFECT: the signed link's credential is
+	// the HMAC in its query, which no walker holds — the walk sends the bare
+	// path, so A's own answer is the ghost's 404, as it must be. Its control is
+	// TestTheSignedLinkServesTheFileAndNothingElse (uploads_test.go): the SAME
+	// route with A's valid signature serves A's bytes, and unsigned, tampered,
+	// expired or revoked it is that 404.
+	"GET /f/{id}":                           "a signed link (uploads.go): its credential is the HMAC no walker holds; controlled in uploads_test.go",
 	"POST /agents/{id}/stop":                "as start",
 	"DELETE /agents/{id}":                   "as start (Destroy)",
 	"POST /agents/sessions/{sid}/read":      "A's chat_sessions.read_at moved; the mutation leg shows B's did not",

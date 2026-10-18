@@ -136,6 +136,8 @@ type Server struct {
 	sends sendNonces
 	// transcribe throttles the message box's microphone (transcribe.go).
 	transcribe transcribeLimits
+	// uploadLimits throttles the composer's attach button (uploads.go).
+	uploadLimits uploadLimits
 
 	// loginRate throttles password attempts on the human tier.
 	loginRate rateLimiter
@@ -509,6 +511,8 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerPushRoutes(mux)
 	// Dictation (transcribe.go): the message box's microphone.
 	s.registerTranscribeRoutes(mux)
+	// File attachments (uploads.go): the attach button, and the signed link.
+	s.registerUploadRoutes(mux)
 }
 
 // registerAgentSelfServiceRoutes wires the agent callback API. These are

@@ -21,6 +21,7 @@ import (
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/recents"
 	"github.com/ZacxDev/muster/internal/sendqueue"
+	"github.com/ZacxDev/muster/internal/uploads"
 )
 
 // Extensions are the server's optional dependencies. A Server built without
@@ -131,6 +132,13 @@ type Extensions struct {
 	// configured (MUSTER_STT_TOKEN unset) — no microphone is drawn on any
 	// message box and POST /transcribe answers 404.
 	Transcriber Transcriber
+
+	// Uploads is the composer's file attachments (internal/uploads, migration
+	// 0024; uploads.go). nil: not configured (the MUSTER_S3_* / signing key /
+	// public URL set is incomplete, or there is no database) — no composer
+	// draws an attach button and every upload route, the signed link
+	// included, answers 404.
+	Uploads *uploads.Service
 
 	// Credentials is the per-owner model-provider credential store behind
 	// Account → Credentials (internal/credentials). nil: none configured — the

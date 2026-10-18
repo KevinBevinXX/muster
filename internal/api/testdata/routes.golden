@@ -77,6 +77,7 @@ GET /auth/claim
 GET /auth/reset
 GET /connectors
 GET /events
+GET /f/{id}
 GET /favicon.ico
 GET /flows
 GET /github/callback
@@ -128,6 +129,7 @@ GET /ui/tasks/new
 GET /ui/tasks/review-count
 GET /ui/tasks/{id}/card
 GET /ui/tasks/{id}/edit
+GET /uploads/{id}/file
 GET /{$}
 PATCH /agent/task/status
 PATCH /api/tasks/{id}
@@ -222,3 +224,5 @@ POST /tasks/{id}/tags
 POST /transcribe
 POST /ui/connector-requests/{id}/approve
 POST /ui/connector-requests/{id}/deny
+POST /uploads
+POST /uploads/{id}/revoke

@@ -163,6 +163,11 @@ var pgBackedPackages = []string{
 	// conditional UPDATE and a trigger.
 	"internal/attention",
 	"internal/plugins",
+	// File attachments (migration 0024). "Another user cannot read or revoke
+	// your upload", "the signed link's read finds any owner's" and "the object
+	// key is the id and nothing else" are claims about row-level security and a
+	// CHECK constraint.
+	"internal/uploads",
 	// Recents (migration 0018). "Another user cannot see or write your recently
 	// viewed entries", "a visit upserts" and "the oldest past the bound are
 	// pruned" are claims about row-level security and SQL.

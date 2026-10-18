@@ -21,6 +21,21 @@ into a hard failure that names itself. CI sets it; set it locally too.
 
 `MUSTER_TEST_PG_PORT=55433 make test-db` gives a second checkout its own database.
 
+**File attachments' object store** (`internal/uploads`, minio-go) is faked in
+process by `internal/uploads/uploadstest` for the service and route tests, and
+its timeouts are tested against a small HTTP fake. Neither checks a signature or
+a multipart upload, so `TestAgainstARealS3` runs the client against a real
+S3-compatible server, behind the `s3live` build tag. Built with the tag it fails, rather than skips, when no server is named:
+
+```sh
+MUSTER_TEST_S3_ENDPOINT=http://127.0.0.1:9000 MUSTER_TEST_S3_BUCKET=muster-test \
+MUSTER_TEST_S3_ACCESS_KEY=… MUSTER_TEST_S3_SECRET_KEY=… \
+  go test -tags s3live -run TestAgainstARealS3 -v ./internal/uploads/
+```
+
+The bucket must exist. The test also checks that a wrong secret is refused by
+the server. CI does not run it.
+
 `internal/dbtest` gives every Postgres-backed test **package** its own database,
 created with `CREATE DATABASE … TEMPLATE` from the one your DSN names. So a
 package inherits an already-migrated schema instead of rebuilding it, and nothing
