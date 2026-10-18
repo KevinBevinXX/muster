@@ -230,10 +230,11 @@ func (s *Server) waitingSessions(ctx context.Context) []attentionItem {
 	if s.ext.Mirror == nil {
 		return nil
 	}
-	// The questions a session's AskUserQuestion holds (internal/askq, the
-	// muster-mirror ask hook), by host and Claude session: such a window is
-	// ONE item — the question, with its text — never a "session waiting" item
-	// beside a question item (the hub's waiting overlay marks it waiting too).
+	// The open questions of a session's AskUserQuestion (internal/askq,
+	// registered by the muster-mirror ask hook), by host and Claude session:
+	// such a window is ONE item — the question, with its text — never a
+	// "session waiting" item beside a question item (Claude Code reports the
+	// window waiting while its picker shows).
 	held := map[string]askq.Entry{}
 	if owner := requestOwner(ctx); owner > 0 && s.asks != nil {
 		for _, e := range s.asks.Pending(owner) {

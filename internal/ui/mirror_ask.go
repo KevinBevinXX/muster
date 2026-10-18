@@ -11,27 +11,33 @@ import (
 
 // THE QUESTION CARDS — Claude Code's AskUserQuestion in the rendered view.
 //
-// TWO PLACES DRAW A QUESTION, BECAUSE THE TRANSCRIPT CANNOT SHOW A HELD ONE.
-// Measured (CLI 2.1.289): the call's tool_use record is written to the
-// transcript only AFTER the PreToolUse hook returns — while `muster-mirror ask`
-// holds the call, the transcript has nothing for the conversation to draw. So:
+// A question is on screen IN BOTH PLACES AT ONCE: the terminal's own picker,
+// and here. Whichever is answered first wins; the other side shows it.
+//
+// TWO PLACES ON THIS PAGE DRAW A QUESTION, BECAUSE THE TRANSCRIPT CANNOT SHOW AN
+// OPEN ONE. Measured (CLI 2.1.289): while the picker is on screen the call's
+// tool_use record is not in the transcript yet — it is written with the
+// answer. So:
 //
 //   - THE LIVE REGION (#mv-asks, above the composer) draws what the SERVER
-//     knows: every question the window's ask hook is holding, as a form — one
-//     fieldset per question (header and text), radio buttons for a
-//     single-select question and checkboxes for a multi-select one (each
-//     option with its description), an "Other" choice with a text box for the
-//     person's own answer, and ONE Submit for every question. The page polls it
-//     (MirrorAsksPath); a card stays a few minutes after it is answered here or
-//     goes back to the terminal, until the conversation draws the call itself.
+//     knows (the window's `muster-mirror ask` hook registered it): every open
+//     question as a form — one fieldset per question (header and text), radio
+//     buttons for a single-select question and checkboxes for a multi-select
+//     one (each option with its description), an "Other" choice with a text box
+//     for the person's own answer, and ONE Submit for every question. A submit
+//     is TYPED into the terminal's picker by the host; the card then shows
+//     "typing", and how it ended once the CLI recorded it — answered here,
+//     answered in the terminal (with the answers), dismissed, or that it
+//     could not be typed in. The page polls it (MirrorAsksPath); a card stays a
+//     few minutes after it ends, until the conversation draws the call itself.
 //   - THE CONVERSATION draws the call from the transcript once it is there:
 //     read-only, with the answers its result records (the toolUseResult) —
-//     however it was answered, here or in the terminal's own picker.
+//     however it was answered.
 //
 // 🔴 THE PAGE NEVER DECIDES ANYTHING. Which state a card is in is the server's
 // answer to the poll; a submit is refused server-side unless the question is
-// still pending, the host is -interactive and the sign-in is fresh, exactly
-// like a Send.
+// still open, the host is -interactive and the sign-in is fresh, exactly like
+// a Send.
 
 // MirrorAskPath takes a card's answers (POST); MirrorAsksPath is the window's
 // live region (GET).
@@ -41,13 +47,18 @@ const (
 )
 
 // The states a card can be in, as data-ask-state carries them.
-// AskStateHistory is a card drawn from the transcript.
+// AskStateHistory and AskStateWaiting are cards drawn from the transcript.
 const (
-	AskStatePending   = "pending"
-	AskStateAnswered  = "answered"
-	AskStateWithdrawn = "withdrawn"
-	AskStateHistory   = "history"
-	AskStateWaiting   = "waiting"
+	AskStatePending          = "pending"
+	AskStateTyping           = "typing"
+	AskStateFailed           = "failed"
+	AskStateAnswered         = "answered"
+	AskStateAnsweredTerminal = "answered-terminal"
+	AskStateDeclined         = "declined"
+	AskStateExpired          = "expired"
+	AskStateSuperseded       = "superseded"
+	AskStateHistory          = "history"
+	AskStateWaiting          = "waiting"
 )
 
 // MirrorAsksSrc is the live region's URL for the window ref.
@@ -100,8 +111,9 @@ func askReadOnly(qs []askq.Question, answers map[string]string) g.Node {
 }
 
 // MirrorAskCall is a call the transcript holds with no result yet: its
-// questions, read-only. A call reaches the transcript only once no hook holds
-// it — the terminal's picker is showing it.
+// questions, read-only. Claude Code 2.1.289 writes the call together with its
+// result (measured: neither is in the transcript while the picker shows), so
+// this is drawn only for a transcript cut between the two.
 func MirrorAskCall(rowID string, qs []askq.Question) g.Node {
 	return Section(
 		g.If(rowID != "", ID(rowID)),
@@ -139,43 +151,69 @@ func MirrorAskResult(rowID string, qs []askq.Question, answers map[string]string
 	)
 }
 
-// MirrorAskLiveView is one question set the window's ask hook asked, as the
-// server knows it.
+// MirrorAskLiveView is one question a window's session is asking (or asked
+// lately), as the server knows it.
 type MirrorAskLiveView struct {
 	Ref    MirrorRef
 	ToolID string
-	// State is AskStatePending, AskStateAnswered or AskStateWithdrawn.
+	// State is one of the AskState* of a live card.
 	State     string
 	Questions []askq.Question
-	Answers   map[string]string
+	// Answers is the answers recorded (answered) or being typed (typing).
+	Answers map[string]string
+	// Note is why typing failed (failed).
+	Note string
+	// Unanswerable, when set, is why this question cannot be answered from
+	// here (a read-only or older host): the card says it in place of a form.
+	Unanswerable string
 	// Error is a refused submit's reason, drawn above the form.
 	Error string
-	// Stopped: a withdrawn question's hook stopped waiting (it was killed, or
-	// lost muster) rather than giving up on its own.
-	Stopped bool
+}
+
+// askTerminalLink is the card's link to the window's terminal.
+func askTerminalLink(v MirrorAskLiveView) g.Node {
+	return A(Href(v.Ref.TerminalPath()), hx("hx-boost", "false"), Class("font-semibold text-accent underline"), g.Text("Open the terminal"))
 }
 
 // MirrorAskLive is one card of the live region.
 func MirrorAskLive(v MirrorAskLiveView) g.Node {
 	label := "Claude is asking"
+	status := func(cls, text string, link bool) g.Node {
+		return P(g.Attr("role", "status"), Class("text-xs "+cls), g.Text(text), g.If(link, g.Group{g.Text(" "), askTerminalLink(v)}))
+	}
 	var body g.Node
 	switch v.State {
 	case AskStatePending:
-		body = askForm(v)
+		if v.Unanswerable != "" {
+			body = g.Group{askReadOnly(v.Questions, nil), status("text-muted", v.Unanswerable+" The terminal shows this question too.", true)}
+		} else {
+			body = askForm(v)
+		}
+	case AskStateTyping:
+		label = "typing it in…"
+		body = g.Group{askReadOnly(v.Questions, v.Answers), status("text-fg2", "Typing your answer into the terminal…", false)}
+	case AskStateFailed:
+		label = "answer in the terminal"
+		body = g.Group{askReadOnly(v.Questions, nil), status("text-muted", v.Note, true)}
 	case AskStateAnswered:
 		label = "answered here"
-		body = g.Group{askReadOnly(v.Questions, v.Answers),
-			P(g.Attr("role", "status"), Class("text-xs text-accent"), g.Text("Answered here — sent to Claude."))}
+		body = g.Group{askReadOnly(v.Questions, v.Answers), status("text-accent", "Answered here — Claude has it.", false)}
+	case AskStateAnsweredTerminal:
+		label = "answered in the terminal"
+		body = g.Group{askReadOnly(v.Questions, v.Answers), status("text-muted", "Answered in the terminal.", false)}
+	case AskStateDeclined:
+		label = "dismissed"
+		body = g.Group{askReadOnly(v.Questions, nil), status("text-muted", "Dismissed in the terminal — not answered.", false)}
+	case AskStateSuperseded:
+		label = "replaced"
+		body = g.Group{askReadOnly(v.Questions, nil), status("text-muted", "Claude asked a newer question in this session, so this one is no longer on the terminal's screen.", false)}
 	default:
-		label = "back in the terminal"
-		why := "Nobody answered here in time, so the question went back to the terminal — answer it there. "
-		if v.Stopped {
-			why = "The session stopped waiting for an answer here — answer it in the terminal. "
+		label = "no answer seen"
+		why := "No answer was seen for a long time; if it is still on the terminal's screen, answer it there."
+		if v.Note != "" {
+			why = v.Note
 		}
-		body = g.Group{askReadOnly(v.Questions, nil),
-			P(g.Attr("role", "status"), Class("text-xs text-muted"),
-				g.Text(why),
-				A(Href(v.Ref.TerminalPath()), hx("hx-boost", "false"), Class("font-semibold text-accent underline"), g.Text("Open the terminal")))}
+		body = g.Group{askReadOnly(v.Questions, nil), status("text-muted", why, true)}
 	}
 	return Section(
 		g.Attr("data-ask-live", ""),
@@ -262,7 +300,7 @@ func askForm(v MirrorAskLiveView) g.Node {
 		g.Group(sets),
 		Div(Class("flex flex-wrap items-center gap-2"),
 			Button(Type("submit"), g.Attr("data-ask-submit", ""), Class(composerSendClass), g.Text("Submit answers")),
-			Span(Class("text-xs text-muted"), g.Text("Claude is waiting — the terminal shows no picker while it waits here."))),
+			Span(Class("text-xs text-muted"), g.Text("The terminal shows this question too — whichever is answered first counts."))),
 	)
 }
 
@@ -270,30 +308,27 @@ func askForm(v MirrorAskLiveView) g.Node {
 //
 // 🔴 A PENDING CARD IS NEVER REDRAWN WHILE IT STAYS PENDING: a poll that lists
 // it as pending again leaves it alone, so what a person has chosen or typed is
-// not thrown away. Any other state (answered on another device, gone back to
-// the terminal) replaces it — it cannot be answered here any more — and a card
-// whose call the conversation has drawn (an element with its data-ask-row id
-// in #mv-log) is removed: the conversation shows it from then on.
+// not thrown away. Any other state (typing, answered here or in the terminal,
+// dismissed) replaces it; a card the server no longer lists (a few minutes
+// after it ended) is removed.
+//
+// It polls when the page's socket says the window's questions changed (a
+// message of type "asks"), so a question shows the moment its hook registers
+// it — and every few seconds besides, for a socket that is down.
 func askScript() g.Node {
 	return Script(g.Raw(`
 (function () {
   var region = document.getElementById('mv-asks');
   if (!region) return;
-  var log = document.getElementById('mv-log');
-  var busy = false;
+  var busy = false, again = false;
   function frag(html) { var t = document.createElement('template'); t.innerHTML = html; return t.content; }
-  function drawn(row) { return !!(row && log && log.querySelector('[id="' + row + '"]')); }
-  function tidy() {
-    region.querySelectorAll('[data-ask-live]').forEach(function (c) { if (drawn(c.getAttribute('data-ask-row'))) c.remove(); });
-    region.hidden = !region.querySelector('[data-ask-live]');
-  }
+  function tidy() { region.hidden = !region.querySelector('[data-ask-live]'); }
   function merge(html) {
     var got = frag(html), seen = {};
     Array.prototype.slice.call(got.querySelectorAll('[data-ask-live]')).forEach(function (card) {
       var tool = card.getAttribute('data-ask-tool');
       seen[tool] = true;
       var cur = region.querySelector('[data-ask-live][data-ask-tool="' + CSS.escape(tool) + '"]');
-      if (drawn(card.getAttribute('data-ask-row'))) { if (cur) cur.remove(); return; }
       if (!cur) { region.appendChild(card); return; }
       if (cur.getAttribute('data-ask-state') === card.getAttribute('data-ask-state')) return;
       cur.replaceWith(card);
@@ -307,12 +342,14 @@ func askScript() g.Node {
     fetch(region.getAttribute('data-src'), { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
       .then(function (r) { return r.ok ? r.text().then(merge) : null; })
       .catch(function () {})
-      .then(function () { busy = false; });
+      .then(function () { busy = false; if (again) { again = false; poll(); } });
   }
-  setInterval(poll, 2000);
+  // The socket says when the window's questions change (type "asks"); the
+  // interval is the fallback for a socket that is down.
+  window.musterAskPoll = function () { if (busy) { again = true; return; } poll(); };
+  setInterval(poll, 3000);
   document.addEventListener('visibilitychange', poll);
   poll();
-  if (log && typeof MutationObserver !== 'undefined') new MutationObserver(tidy).observe(log, { childList: true, subtree: true });
   function send(form) {
     var card = form.closest('[data-ask-live]');
     var err = form.querySelector('[data-ask-error]');

@@ -82,8 +82,6 @@ var publicRoutes = []string{
 	// (mirror_ask.go). Like /mirror/connect, the plugin authenticates its own
 	// mirror token (mirror.Service.AuthenticateHost); no request Principal.
 	"POST /mirror/ask",
-	"GET /mirror/ask/{id}",
-	"DELETE /mirror/ask/{id}",
 	"GET /readyz",
 	// ⚠ NOT UNAUTHENTICATED EITHER: a file attachment's signed link (uploads.go).
 	// No door admits it and no Principal is attached — the HMAC over the id and

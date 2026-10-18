@@ -1,0 +1,23 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Color  ☒ Pets  ☐ Name  ✔ Submit  →                                                                                 
+                  
+Which pets do you have?                                                                                                 
+
+  1. [ ] Cat                                                                                                            
+         Feline                                   
+  2. [✔] Dog
+         Canine
+  3. [ ] Fish
+         Aquatic
+❯ 4. [ ] Type something
+     Next                                                                                                               
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · ctrl+g to edit in Nvim · Esc to cancel
+
+
+
+
+
+
