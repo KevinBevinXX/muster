@@ -7,7 +7,9 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -304,11 +306,51 @@ func TestFailedMirrorTokenChecksAreLimitedAndARevokedTokenIsRefused(t *testing.T
 	if code, _, _ := f.mirrorRPC(t, mirrorAs("junk", focusSID), list); code != http.StatusTooManyRequests {
 		t.Fatalf("a malformed token past the limit: %d", code)
 	}
+	f.srv.mirrorMCPFails = boundedWindow{} // the limit's window, passed
 	if code, _, body := f.mirrorRPC(t, mirrorAs(ws, focusSID), list); code != http.StatusOK {
-		t.Fatalf("a valid token was refused by the limit: %d %s", code, body)
+		t.Fatalf("a valid token once the window passed: %d %s", code, body)
 	}
 	delete(f.tokens, ws) // revoked
 	if code, _, _ := f.mirrorRPC(t, mirrorAs(ws, focusSID), list); code == http.StatusOK {
 		t.Fatal("a revoked token was still served")
+	}
+}
+
+// countingTokens counts token lookups.
+type countingTokens struct {
+	MirrorTokenAuth
+	n *atomic.Int64
+}
+
+func (c countingTokens) Authenticate(ctx context.Context, tok string) (mirror.Token, error) {
+	c.n.Add(1)
+	return c.MirrorTokenAuth.Authenticate(ctx, tok)
+}
+
+// TestAnAddressPastTheFailureLimitIsRefusedBeforeAnyLookup: past the limit
+// every token from that address — a valid one too — is answered 429 WITHOUT a
+// token lookup, and once the window has passed the valid token is served.
+func TestAnAddressPastTheFailureLimitIsRefusedBeforeAnyLookup(t *testing.T) {
+	f, ws, _, _ := newMirrorMCPFixture(t)
+	var n atomic.Int64
+	f.srv.ext.MirrorTokens = countingTokens{MirrorTokenAuth: f.tokens, n: &n}
+	clock := time.Now()
+	f.srv.now = func() time.Time { return clock }
+	list := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
+	for i := 0; i < mirrorMCPFailLimit; i++ {
+		if code, _, _ := f.mirrorRPC(t, mirrorAs(mirrorTok('z'), focusSID), list); code != http.StatusUnauthorized {
+			t.Fatalf("failure %d: %d", i+1, code)
+		}
+	}
+	before := n.Load()
+	if code, _, _ := f.mirrorRPC(t, mirrorAs(ws, focusSID), list); code != http.StatusTooManyRequests {
+		t.Fatalf("a valid token past the limit: %d", code)
+	}
+	if n.Load() != before {
+		t.Fatalf("a request past the limit looked its token up (%d lookups)", n.Load()-before)
+	}
+	clock = clock.Add(mirrorMCPFailWindow + time.Second)
+	if code, _, body := f.mirrorRPC(t, mirrorAs(ws, focusSID), list); code != http.StatusOK {
+		t.Fatalf("the valid token after the window: %d %s", code, body)
 	}
 }

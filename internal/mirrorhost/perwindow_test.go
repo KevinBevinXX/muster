@@ -757,3 +757,25 @@ func TestParseWindowsKeepsEveryPaneOfASplit(t *testing.T) {
 		t.Fatalf("other panes: %+v / %+v", got[0].panes, got[1].panes)
 	}
 }
+
+// TestASplitPaneNeverTakesItsWindowsClaude: the active pane and a split pane
+// of one window run Claude Code in ONE directory with no sessions files, so
+// both GUESS the same transcript. The active pane keeps it — its window's
+// Claude flag and rendered view, as before split panes were looked at — and
+// the ambiguous split pane is left out.
+func TestASplitPaneNeverTakesItsWindowsClaude(t *testing.T) {
+	proc, home := newFakeProc(t), newFakeHome(t)
+	const cwd = "/work/repo"
+	proc.add(10, 1, "claude", cwd, "claude")
+	proc.add(20, 1, "claude", cwd, "claude")
+	guess := home.transcript(cwd, "the-newest-here", time.Now())
+	loc := ClaudeLocator{Proc: proc.root, Home: home.root}
+	ws := []WindowInfo{{Session: "work", ID: "@1", Pane: "%1", PanePID: 10, panes: []pane{{Session: "work", ID: "%2", PID: 20}}}}
+	attachClaude(ws, loc.LocatePanes)
+	if ws[0].Claude == nil || ws[0].Claude.Transcript != guess {
+		t.Fatalf("the active pane lost its Claude: %+v", ws[0].Claude)
+	}
+	if len(ws[0].Others) != 0 {
+		t.Fatalf("the ambiguous split pane was kept: %+v", ws[0].Others)
+	}
+}

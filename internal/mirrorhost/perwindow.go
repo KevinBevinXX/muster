@@ -133,23 +133,46 @@ func (t Tmux) Windows(ctx context.Context) ([]WindowInfo, error) {
 		return nil, fmt.Errorf("tmux list-panes: %v: %s", err, strings.TrimSpace(msg))
 	}
 	windows := parseWindows(out.String())
-	panes := make([]pane, 0, len(windows))
+	attachClaude(windows, t.Claude.LocatePanes)
+	return windows, nil
+}
+
+// attachClaude sets each window's Claude (its active pane's session) and
+// Others (its other panes') from locate.
+//
+// 🔴 THE ACTIVE PANES ARE LOCATED ON THEIR OWN, EXACTLY AS BEFORE OTHER PANES
+// WERE LOOKED AT. A GUESSED transcript two panes share is dropped for both
+// (LocatePanes), so locating a split pane in the same lookup could take the
+// active pane's guess away — and with it its window's Claude flag and rendered
+// view. Other panes are located in a second lookup, and one whose guess is an
+// active pane's transcript is left out: it is ambiguous, and it only ever
+// served the MCP pane map.
+func attachClaude(windows []WindowInfo, locate func([]pane) map[string]ClaudePane) {
+	active := make([]pane, 0, len(windows))
+	var others []pane
 	for _, w := range windows {
-		panes = append(panes, pane{Session: w.Session, ID: w.Pane, PID: w.PanePID})
-		panes = append(panes, w.panes...)
+		active = append(active, pane{Session: w.Session, ID: w.Pane, PID: w.PanePID})
+		others = append(others, w.panes...)
 	}
-	claude := t.Claude.LocatePanes(panes)
+	main := locate(active)
+	taken := map[string]bool{}
+	for _, cp := range main {
+		taken[cp.Transcript] = true
+	}
+	var split map[string]ClaudePane
+	if len(others) > 0 {
+		split = locate(others)
+	}
 	for i := range windows {
-		if cp, ok := claude[windows[i].Pane]; ok {
+		if cp, ok := main[windows[i].Pane]; ok {
 			windows[i].Claude = &cp
 		}
 		for _, p := range windows[i].panes {
-			if cp, ok := claude[p.ID]; ok {
+			if cp, ok := split[p.ID]; ok && !(cp.Source == SourceGuessed && taken[cp.Transcript]) {
 				windows[i].Others = append(windows[i].Others, cp)
 			}
 		}
 	}
-	return windows, nil
 }
 
 // parseWindows reads Windows' list-panes output: one WindowInfo per (session,

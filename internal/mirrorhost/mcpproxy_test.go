@@ -3,6 +3,7 @@ package mirrorhost
 import (
 	"bufio"
 	"context"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"io"
 	"net"
 	"net/http"
@@ -291,5 +292,99 @@ func TestTheMCPSecretIsCreatedOnceUnderConcurrency(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(filepath.Dir(path)); len(entries) != 1 {
 		t.Fatalf("temp files left behind: %v", entries)
+	}
+}
+
+// ensureWithin runs EnsureMCPSecret(path) under a short deadline: a hang is a
+// failure, not a stuck suite.
+func ensureWithin(t *testing.T, path string) (string, error) {
+	t.Helper()
+	type res struct {
+		s   string
+		err error
+	}
+	done := make(chan res, 1)
+	go func() {
+		s, err := EnsureMCPSecret(path)
+		done <- res{s, err}
+	}()
+	select {
+	case r := <-done:
+		return r.s, r.err
+	case <-time.After(2 * time.Second):
+		t.Fatalf("EnsureMCPSecret(%s) did not return within 2s", path)
+		return "", nil
+	}
+}
+
+// TestASymlinkedMCPSecretIsRefusedAtOnce: a dangling symlink (which Stat reads
+// as missing, and the create then collides with) and a symlink to a real file
+// are both refused, promptly, and no temp file is left behind.
+func TestASymlinkedMCPSecretIsRefusedAtOnce(t *testing.T) {
+	dir := t.TempDir()
+	dangling := filepath.Join(dir, "dangling")
+	if err := os.Symlink(filepath.Join(dir, "nowhere"), dangling); err != nil {
+		t.Fatal(err)
+	}
+	real := filepath.Join(dir, "real")
+	if err := os.WriteFile(real, []byte(strings.Repeat("a", 64)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	toReal := filepath.Join(dir, "to-real")
+	if err := os.Symlink(real, toReal); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{dangling, toReal} {
+		if _, err := ensureWithin(t, p); err == nil || !strings.Contains(err.Error(), "symlink") {
+			t.Fatalf("%s: %v", p, err)
+		}
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".mcp-secret-") {
+			t.Fatalf("a temp file was left behind: %s", e.Name())
+		}
+	}
+}
+
+// TestAStrayTempFileDoesNotStopTheSecret: a leftover temp file beside the
+// secret (a crash mid-create) neither blocks creating it nor is taken for it.
+func TestAStrayTempFileDoesNotStopTheSecret(t *testing.T) {
+	dir := t.TempDir()
+	stray := filepath.Join(dir, ".mcp-secret-123456")
+	if err := os.WriteFile(stray, []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := ensureWithin(t, filepath.Join(dir, "mcp-secret"))
+	if err != nil || len(s) != 64 || s == "partial" {
+		t.Fatalf("%q %v", s, err)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 2 {
+		t.Fatalf("want the secret and the stray only: %v", entries)
+	}
+}
+
+// TestASplitPaneBeyondTheBoundIsRefusedWithTheReason: the proxy applies the
+// wire's bound (MaxOtherClaudePerWindow other panes per window) and says so,
+// rather than forwarding a session muster was never told about.
+func TestASplitPaneBeyondTheBoundIsRefusedWithTheReason(t *testing.T) {
+	up, srv := newUpstream(t, func(w http.ResponseWriter) { _, _ = io.WriteString(w, `{}`) })
+	var others []ClaudePane
+	for i := 0; i <= mirror.MaxOtherClaudePerWindow; i++ {
+		others = append(others, ClaudePane{Pane: "%" + itoa(20+i), Gen: itoa(i) + strings.Repeat("d", 35)})
+	}
+	p := proxyFor(srv.URL)
+	p.Windows = &windowsBackend{windows: []WindowInfo{{Session: "work", ID: "@1", Pane: "%7", Claude: &ClaudePane{Pane: "%7", Gen: proxySID}, Others: others}}}
+	last := "%" + itoa(20+mirror.MaxOtherClaudePerWindow)
+	w := post(t, p, map[string]string{"Authorization": "Bearer " + proxySecret, MCPPaneHeader: last, MCPTmuxHeader: proxyTMUX})
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "at most") {
+		t.Fatalf("the pane past the bound: %d %s", w.Code, w.Body)
+	}
+	if w := post(t, p, map[string]string{"Authorization": "Bearer " + proxySecret, MCPPaneHeader: "%20", MCPTmuxHeader: proxyTMUX}); w.Code != http.StatusOK {
+		t.Fatalf("a pane within the bound: %d %s", w.Code, w.Body)
+	}
+	if up.n() != 1 {
+		t.Fatalf("%d forwards, want 1", up.n())
 	}
 }

@@ -93,14 +93,18 @@ too, through its host's `muster-mirror`:
    `$XDG_CONFIG_HOME/muster-mirror/mcp-secret`, created 0600 on first start —
    written to a temp file and linked into place, so nobody reads a partial
    one), so another user on the machine cannot use it. A request with an
-   `Origin` header is refused. The endpoint is optional: if it cannot start
-   (the port is taken, the secret file is readable by others), the host logs
-   why and mirrors without it.
+   `Origin` header is refused. A symlink at the secret's path is refused. The
+   endpoint is optional and set up beside mirroring, never before it: if it
+   cannot start (the port is taken, the secret file is a symlink or readable by
+   others), the host logs `the MCP endpoint is OFF … <reason>` — in its log
+   only — and mirrors without it.
 2. The session names itself with its tmux pane and tmux server:
    `X-Muster-Pane: ${TMUX_PANE:-}` and `X-Muster-Tmux: ${TMUX:-}`. The host
    refuses a server that is not the one it mirrors (pane ids are per server),
    then maps the pane to the Claude session running in it now — any pane of a
-   window, not only its active one.
+   window, not only its active one, up to 4 other panes per window and 32 per
+   host (what the host reports to muster; a pane past that is refused with that
+   reason).
 3. The host forwards the call to muster's `POST /mirror/mcp` with its mirror
    token and that Claude session id. muster acts as the token's owner, and only
    if **that host** lists a window running **that session** (in any pane) right
@@ -108,8 +112,9 @@ too, through its host's `muster-mirror`:
    token is refused (403) before any tool runs. The tool set is exactly
    `attention_ask`, `attention_wait`, `attention_cancel` and the task tools; the
    chief's tools are not on it. The token is checked on every call (a revoked
-   one is refused at its next call); more than 10 failed token checks from one
-   address in a minute are answered 429, while a valid token is never refused.
+   one is refused at its next call). After 10 failed token checks from one
+   address within a minute, that address is answered 429 — without a token
+   lookup, a valid token included — until the minute has passed.
 
 An ask made this way is shown under the window's title and host, and only that
 session can wait on or cancel it. The task tools act on **the tasks that

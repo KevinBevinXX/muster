@@ -266,3 +266,50 @@ func TestAnMCPSetupFailureDoesNotStopMirroring(t *testing.T) {
 		t.Fatal("run did not stop")
 	}
 }
+
+// TestADanglingSymlinkSecretNeverDelaysMirroring: with the MCP secret file a
+// dangling symlink, the host still dials muster at once (the endpoint is off,
+// and says so) — setting MCP up never stands between the host and mirroring.
+func TestADanglingSymlinkSecretNeverDelaysMirroring(t *testing.T) {
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "mcp-secret")
+	if err := os.Symlink(filepath.Join(dir, "nowhere"), secret); err != nil {
+		t.Fatal(err)
+	}
+	dialled := make(chan struct{}, 1)
+	muster := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/mirror/connect" {
+			select {
+			case dialled <- struct{}{}:
+			default:
+			}
+		}
+		http.Error(w, "no", http.StatusUnauthorized)
+	}))
+	defer muster.Close()
+	prevB, prevC := newTmuxBackend, runContext
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() { newTmuxBackend, runContext = prevB, prevC; cancel() })
+	newTmuxBackend = func(string, string, string) mirrorhost.Backend { return listBackend{} }
+	runContext = func() (context.Context, context.CancelFunc) { return ctx, cancel }
+	done := make(chan string, 1)
+	go func() {
+		_, _, errs := runWith(t, map[string]string{envURL: muster.URL, envToken: "mmt_" + strings.Repeat("A", 43), envHost: "laptop",
+			envAllowHTTP: "1", envMCPListen: "127.0.0.1:0", envMCPSecret: secret})
+		done <- errs
+	}()
+	select {
+	case <-dialled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the host did not dial muster within 5s")
+	}
+	cancel()
+	select {
+	case errs := <-done:
+		if !strings.Contains(errs, "symlink") {
+			t.Fatalf("the reason MCP is off was not logged: %s", errs)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not stop")
+	}
+}

@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // THE LOCAL MCP ENDPOINT: how a Claude Code session in one of this host's tmux
@@ -134,9 +136,24 @@ func (p *MCPProxy) session(ctx context.Context, r *http.Request) (string, error)
 	if err != nil {
 		return "", fmt.Errorf("list windows: %w", err)
 	}
+	// What muster will be told, bounds applied (WireWindows: at most
+	// MaxOtherClaudePerWindow other panes per window, MaxOtherClaude in all):
+	// a pane past them is refused HERE, with the reason, rather than by
+	// muster's "not this host's session".
+	listed := map[string]bool{}
+	for _, w := range WireWindows(ws, nil, true, time.Now()) {
+		listed[w.ClaudeSession] = true
+		for _, id := range w.OtherClaude {
+			listed[id] = true
+		}
+	}
 	for _, w := range ws {
 		for _, c := range append([]ClaudePane{derefClaude(w.Claude)}, w.Others...) {
 			if c.Pane == pane && c.Gen != "" {
+				if !listed[c.Gen] {
+					return "", fmt.Errorf("pane %s runs Claude Code, but muster tracks at most %d other Claude panes per window (%d per host) and this one is past that",
+						pane, mirror.MaxOtherClaudePerWindow, mirror.MaxOtherClaude)
+				}
 				return c.Gen, nil
 			}
 		}
@@ -273,59 +290,90 @@ func EnsureMCPSecret(path string) (string, error) {
 	if path == "" {
 		return "", errors.New("muster-mirror: no MCP secret file (set -mcp-secret-file)")
 	}
-	if fi, err := os.Stat(path); err == nil {
-		if fi.Mode().Perm()&0o077 != 0 {
-			return "", fmt.Errorf("muster-mirror: %s is readable by others (mode %v); chmod 600 it", path, fi.Mode().Perm())
+	// Bounded: a create races another creator at most once (the loser then
+	// reads the winner's file); anything still failing after that is an error,
+	// never a loop.
+	for attempt := 0; attempt < 3; attempt++ {
+		fi, err := os.Lstat(path)
+		switch {
+		case err == nil && fi.Mode()&os.ModeSymlink != 0:
+			// 🔴 A SYMLINK IS REFUSED, dangling or not: Stat would follow it
+			// (a dangling one reads as missing, then the create collides with
+			// the link itself), and the secret must be a file this user owns.
+			return "", fmt.Errorf("muster-mirror: %s is a symlink; the MCP secret must be a regular file", path)
+		case err == nil && !fi.Mode().IsRegular():
+			return "", fmt.Errorf("muster-mirror: %s is not a regular file", path)
+		case err == nil:
+			return readMCPSecret(path, fi)
+		case !errors.Is(err, os.ErrNotExist):
+			return "", err
 		}
-		b, err := os.ReadFile(path)
+		secret, created, err := createMCPSecret(path)
 		if err != nil {
 			return "", err
 		}
-		s := strings.TrimSpace(string(b))
-		if len(s) < 32 {
-			return "", fmt.Errorf("muster-mirror: %s holds no usable secret", path)
+		if created {
+			return secret, nil
 		}
-		return s, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
+	}
+	return "", fmt.Errorf("muster-mirror: could not create or read %s", path)
+}
+
+// readMCPSecret reads an existing secret file.
+func readMCPSecret(path string, fi os.FileInfo) (string, error) {
+	if fi.Mode().Perm()&0o077 != 0 {
+		return "", fmt.Errorf("muster-mirror: %s is readable by others (mode %v); chmod 600 it", path, fi.Mode().Perm())
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
 		return "", err
 	}
+	s := strings.TrimSpace(string(b))
+	if len(s) < 32 {
+		return "", fmt.Errorf("muster-mirror: %s holds no usable secret", path)
+	}
+	return s, nil
+}
+
+// createMCPSecret writes a fresh secret ATOMICALLY: whole, to a private temp
+// file, then LINKED into place, which fails if anything already has the name —
+// so no reader ever sees a partial secret, and of two creators exactly one
+// wins (created false: the caller re-reads). The temp file is removed on every
+// path.
+func createMCPSecret(path string) (secret string, created bool, err error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return "", err
+		return "", false, err
 	}
 	var b [32]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
+		return "", false, err
 	}
-	secret := hex.EncodeToString(b[:])
-	// 🔴 ATOMIC: written whole to a private temp file, then LINKED into place,
-	// which fails if the file exists. No reader ever sees a partial or empty
-	// secret, and of two hosts starting at once exactly one secret wins — the
-	// loser reads it.
+	secret = hex.EncodeToString(b[:])
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".mcp-secret-*")
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	defer os.Remove(tmp.Name())
 	if err := tmp.Chmod(0o600); err != nil {
 		tmp.Close()
-		return "", err
+		return "", false, err
 	}
 	if _, err := tmp.WriteString(secret + "\n"); err != nil {
 		tmp.Close()
-		return "", err
+		return "", false, err
 	}
 	if err := tmp.Sync(); err != nil {
 		tmp.Close()
-		return "", err
+		return "", false, err
 	}
 	if err := tmp.Close(); err != nil {
-		return "", err
+		return "", false, err
 	}
 	if err := os.Link(tmp.Name(), path); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			return EnsureMCPSecret(path)
+			return "", false, nil
 		}
-		return "", err
+		return "", false, err
 	}
-	return secret, nil
+	return secret, true, nil
 }

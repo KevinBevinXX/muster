@@ -60,16 +60,18 @@ func (s *Server) requireMirrorHostToken(next http.HandlerFunc) http.HandlerFunc 
 			http.NotFound(w, r)
 			return
 		}
-		// The failure limit, ServeConnect's shape: only FAILED token checks
-		// count, per client address, and a valid token is never refused by it —
-		// the count turns an address's further failures into 429s.
+		// The failure limit, checked BEFORE the lookup: only FAILED token
+		// checks count, per client address, and an address past the limit gets
+		// 429 without touching the database — every token, a valid one
+		// included, until its window (mirrorMCPFailWindow) has passed; then it
+		// is served again. Nothing locks an address out for longer.
 		addr := clientIP(r)
+		if s.mirrorMCPFails.count(addr, s.now(), mirrorMCPFailWindow) >= mirrorMCPFailLimit {
+			s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "too many failed mirror token checks from this address; wait a minute"})
+			return
+		}
 		refuse := func() {
 			s.mirrorMCPFails.add(addr, s.now(), mirrorMCPFailWindow)
-			if s.mirrorMCPFails.count(addr, s.now(), mirrorMCPFailWindow) > mirrorMCPFailLimit {
-				s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "too many failed mirror token checks from this address; wait a minute"})
-				return
-			}
 			s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "this route takes a mirror host token (mmt_…)"})
 		}
 		tok := hookTokenFromRequest(r)
