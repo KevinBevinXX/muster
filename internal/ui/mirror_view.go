@@ -67,6 +67,8 @@ type MirrorViewView struct {
 	Nonce    string
 	// Dictate is the composer's (ComposerView.Dictate).
 	Dictate string
+	// Upload is the composer's (ComposerView.Upload).
+	Upload string
 	// Queue is the composer's send queue (ComposerView.Queue); nil for none.
 	Queue *ComposerQueue
 	// FocusHistory is the session's focus history, the newest page
@@ -87,7 +89,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 	ref := MirrorRef{Host: v.Host, Session: v.Session, Window: v.Window}
 	composer := ComposerView{SendPath: MirrorSendPath, Host: v.Host, Session: v.Session, Window: v.Window,
 		Placeholder: "Message Claude…", Aria: "Message Claude in this session", DisabledPlaceholder: "Read-only host",
-		Notice: v.Notice, NoticeOK: v.NoticeOK, Nonce: v.Nonce, Dictate: v.Dictate, Queue: v.Queue,
+		Notice: v.Notice, NoticeOK: v.NoticeOK, Nonce: v.Nonce, Dictate: v.Dictate, Upload: v.Upload, Queue: v.Queue,
 		// Pinned to the visible viewport, not in flow at the bottom of the body:
 		// on a phone the body's bottom can be under the browser's chrome, and
 		// this page cannot be scrolled to bring it back (composerPinScript).
@@ -425,7 +427,7 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 			// page-unique one (chatIndexScript).
 			t.endRun()
 			ops = append(ops, MirrorOp{Op: "append", HTML: render(chatBubbleOf("user",
-				g.If(ev.Line > 0, ID(MirrorPromptID(ev.Line))), g.Attr("data-md-rendered", ""), renderMarkdown(ev.Text)))})
+				g.If(ev.Line > 0, ID(MirrorPromptID(ev.Line))), g.Attr("data-md-rendered", ""), promptBody(ev.Text)))})
 		case cctranscript.KindText:
 			t.endRun()
 			ops = append(ops, MirrorOp{Op: "append", HTML: render(chatBubbleOf("assistant", g.Attr("data-md-rendered", ""), renderMarkdown(ev.Text)))})

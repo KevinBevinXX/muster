@@ -27,6 +27,7 @@ import (
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/recents"
 	"github.com/ZacxDev/muster/internal/ui"
+	"github.com/ZacxDev/muster/internal/uploads"
 )
 
 // ---------------------------------------------------------------------------
@@ -99,6 +100,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		PluginGateway: stubPluginGateway{},
 		Push:          stubPush{},
 		Transcriber:   stubTranscriber{},
+		Uploads:       &uploads.Service{},
 	})
 	s.UseRouter(stubRouter{})
 	return s

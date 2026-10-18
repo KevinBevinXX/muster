@@ -143,6 +143,12 @@ var (
 		// routes are past their deadline (ids and owners only); each is then
 		// timed out as its owner (withPrincipalLedger's routePrincipal).
 		"internal/plugins.(*PGStore).ExpiredRoutes",
+		// File attachments (migration 0024): a signed link's read of ONE row by
+		// its public id (uploads.PGStore.LinkTarget), made only after the link's
+		// HMAC and expiry have been verified — the link is the credential, and
+		// there is no principal to run as. Only what serving the file needs is
+		// handed on (its key, type, name, and whether it was revoked).
+		"internal/uploads.sys",
 	}
 	// operatorLedger: work done as the OPERATOR (user 1) with no request —
 	// the boot-time GitHub connect of the operator's own static token, and the

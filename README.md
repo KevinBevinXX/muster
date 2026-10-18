@@ -34,6 +34,9 @@ out from each of your machines, so muster never needs an inbound route to them.
   → [docs/sending-and-step-up.md](docs/sending-and-step-up.md)
 - **Dictation.** A microphone on every message box, transcribed by a
   speech-to-text service you choose. → [docs/dictation.md](docs/dictation.md)
+- **File attachments.** Attach a file in the message box; the agent gets a
+  short-lived link signed by muster, and the transcript shows a thumbnail, not
+  the link. Needs an S3-compatible store. → [docs/uploads.md](docs/uploads.md)
 - **Agent dispatch.** muster can provision agents on Kubernetes. It is opt-in
   and off by default. One of these agents can be a "chief" that reports on the
   rest of the fleet. → [docs/provisioner.md](docs/provisioner.md)
