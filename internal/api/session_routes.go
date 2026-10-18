@@ -435,7 +435,7 @@ func (s *Server) relayRoute(ctx context.Context, r plugins.Route) (plugins.Route
 			", approved automatically (a verified sender your owner allowlisted for this plugin); the plugin sends it.")
 	case got.State == plugins.RouteFallback && r.State == plugins.RouteAnswered:
 		s.logger.Printf("routes: %s: relayed as PENDING draft %d (the sender is not verified and allowlisted for this plugin)", r.RouteID, d.ID)
-		s.notifyDraftAwaiting(r.OwnerID, d)
+		s.notifyDraftAwaiting(ctx, r.OwnerID, d, m)
 		s.noteToChief(ctx, got, m, "its answer was filed as reply draft "+strconv.FormatInt(d.ID, 10)+
 			", which awaits your owner's approval (the sender is not a verified, allowlisted one for this plugin).")
 	}

@@ -63,7 +63,7 @@ const (
 	// attentionPoll is how often a waiter re-reads its ask even without a
 	// wake-up: another muster replica may have answered it.
 	attentionPoll = 2 * time.Second
-	// attentionPushBodyMax bounds a question quoted on a lock screen.
+	// attentionPushBodyMax bounds a notification body (who and where, never what).
 	attentionPushBodyMax = 120
 	// attentionNotificationType is the push payload type for a new item.
 	attentionNotificationType = "attention"
@@ -136,16 +136,32 @@ type attentionItem struct {
 	// Source names who is waiting: the asking agent or session, the window,
 	// the plugin.
 	Source string `json:"source"`
-	// Text is the question, or what the item is waiting for.
-	Text    string    `json:"text"`
-	Options []string  `json:"options,omitempty"`
-	Since   time.Time `json:"since"`
+	// Text is the item's SUBSTANCE in one line or a few: the question; what a
+	// waiting session waits on (its pending action, mirror.Pending.Summary —
+	// sessionWaitingText when its host says nothing); a held AskUserQuestion's
+	// questions; a reply draft's inbound message ("<sender>: <excerpt>").
+	Text    string   `json:"text"`
+	Options []string `json:"options,omitempty"`
+	// Detail is the second line, "" for none: the last thing a waiting
+	// session's Claude said (mirror.Pending.Last); a draft's reply excerpt.
+	Detail string `json:"detail,omitempty"`
+	// Focus is a mirrored session's focus title (internal/focus), "" for none.
+	Focus string `json:"focus,omitempty"`
+	// Since is when the item started waiting: an ask's or a draft's creation, a
+	// session's status time (when it went waiting), a held question's creation.
+	// The queue is NEWEST FIRST by it (sortAttentionItems).
+	Since time.Time `json:"since"`
 	// Link is where the owner acts on it.
 	Link string `json:"link"`
 	// AskID is the ask's id ("ask" items only).
 	AskID int64 `json:"ask_id,omitempty"`
-	// host is a session item's host (its first observation seeds silently).
-	host string
+	// Offline: a session item whose host dropped within attentionOfflineGrace,
+	// shown as last seen.
+	Offline bool `json:"offline,omitempty"`
+	// host is a session item's host (its first observation seeds silently);
+	// claudeSession its Claude session id (its focus); tool the NAME of the
+	// tool it waits on (mirror.Pending.Tool) — all a push may say of it.
+	host, claudeSession, tool string
 }
 
 // attentionPrincipal is ctx acting as owner, through authz.ViaAttention: how
@@ -182,13 +198,34 @@ func askItem(a attention.Ask) attentionItem {
 		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + attentionAskKey(a.ID), AskID: a.ID}
 }
 
-// sessionWaitingText is a waiting session's text: muster's own words — the
-// prompt itself is in the session, one tap away.
+// sessionWaitingText is a waiting session's text when its host says nothing
+// of what it waits on (an older muster-mirror, a transcript it could not read):
+// muster's own words — the prompt itself is in the session, one tap away.
 const sessionWaitingText = "Waiting on you: a permission prompt or a question in the session."
 
+// attentionOfflineGrace is how long a host that dropped keeps its waiting
+// sessions in the queue, as last seen: a blip (a muster-mirror restart, a
+// network hiccup) neither drops them from the view nor clears their
+// notification — and when it comes back they are not pushed again. A host gone
+// longer is gone from the queue and its notifications are cleared.
+const attentionOfflineGrace = 5 * time.Minute
+
+// attentionHostBelieved is THE ONE RULE for whose waiting windows the queue
+// lists, read by the view and by the push diff alike (attentionMirrorChanged
+// takes its items from waitingSessions), so the page and the phone cannot
+// disagree: an online host that reports status (HostView.StatusReport), or a
+// host that dropped less than attentionOfflineGrace ago (the hub keeps an
+// offline host's statuses only when it reported them).
+func attentionHostBelieved(h mirror.HostView, now time.Time) bool {
+	if h.Online {
+		return h.StatusReport
+	}
+	return !h.OfflineSince.IsZero() && now.Sub(h.OfflineSince) < attentionOfflineGrace
+}
+
 // waitingSessions is ctx's principal's mirrored windows whose Claude Code
-// session reports StatusWaiting, in the Agents list's order. Only an online
-// host that reports status (HostView.StatusReport) is believed.
+// session reports StatusWaiting, in the Agents list's order, for every host
+// attentionHostBelieved believes.
 func (s *Server) waitingSessions(ctx context.Context) []attentionItem {
 	if s.ext.Mirror == nil {
 		return nil
@@ -208,12 +245,15 @@ func (s *Server) waitingSessions(ctx context.Context) []attentionItem {
 	}
 	hs := s.ext.Mirror.Hosts(ctx)
 	type wait struct {
-		since int64
-		q     *askq.Entry
+		since   int64
+		q       *askq.Entry
+		pending *mirror.Pending
+		offline bool
 	}
+	now := s.now()
 	waiting := map[string]wait{}
 	for _, h := range hs {
-		if !h.Online || !h.StatusReport {
+		if !attentionHostBelieved(h, now) {
 			continue
 		}
 		for _, w := range h.Windows {
@@ -222,9 +262,9 @@ func (s *Server) waitingSessions(ctx context.Context) []attentionItem {
 			}
 			k := sessionKey(h.Host, w.Session, w.ID)
 			if e, ok := held[h.Host+"\x00"+w.ClaudeSession]; ok && w.ClaudeSession != "" {
-				waiting[k] = wait{since: e.Created.UnixMilli(), q: &e}
+				waiting[k] = wait{since: e.Created.UnixMilli(), q: &e, offline: !h.Online}
 			} else if w.Status == mirror.StatusWaiting {
-				waiting[k] = wait{since: w.StatusSince}
+				waiting[k] = wait{since: w.StatusSince, pending: w.Pending, offline: !h.Online}
 			}
 		}
 	}
@@ -236,9 +276,17 @@ func (s *Server) waitingSessions(ctx context.Context) []attentionItem {
 			continue
 		}
 		it := attentionItem{Key: k, Kind: attentionKindSession, Source: e.DisplayTitle() + " @ " + e.Host, Text: sessionWaitingText, host: e.Host,
-			Link: ui.MirrorRef{Host: e.Host, Session: e.Session, Window: e.Window}.ViewPath()}
-		if wt.q != nil {
+			claudeSession: e.ClaudeSession, Offline: wt.offline, Link: ui.MirrorRef{Host: e.Host, Session: e.Session, Window: e.Window}.ViewPath()}
+		switch {
+		case wt.q != nil:
 			it.Kind, it.Text = attentionKindQuestion, heldQuestionText(*wt.q)
+		case wt.pending != nil:
+			// The host's words, already cleaned and capped on both sides
+			// (mirror.CleanPending); the generic line when it names no action.
+			if wt.pending.Summary != "" {
+				it.Text = wt.pending.Summary
+			}
+			it.Detail, it.tool = wt.pending.Last, wt.pending.Tool
 		}
 		if wt.since > 0 {
 			it.Since = time.UnixMilli(wt.since)
@@ -249,16 +297,44 @@ func (s *Server) waitingSessions(ctx context.Context) []attentionItem {
 }
 
 // heldQuestionText is a held AskUserQuestion's text as an item shows it: its
-// first question, and how many more it asks.
+// question, or — when it asks several — each question's first line, numbered,
+// one per line (a push quotes the first line alone).
 func heldQuestionText(e askq.Entry) string {
-	if len(e.Questions) == 0 {
+	switch len(e.Questions) {
+	case 0:
 		return sessionWaitingText
+	case 1:
+		return e.Questions[0].Question
 	}
-	t := e.Questions[0].Question
-	if n := len(e.Questions) - 1; n > 0 {
-		t += " (+" + strconv.Itoa(n) + " more)"
+	lines := make([]string, 0, len(e.Questions))
+	for i, q := range e.Questions {
+		lines = append(lines, strconv.Itoa(i+1)+". "+mirror.OneLine(firstLine(strings.TrimSpace(q.Question)), heldQuestionLineMax))
 	}
-	return t
+	return strings.Join(lines, "\n")
+}
+
+// heldQuestionLineMax bounds each line of a multi-question item.
+const heldQuestionLineMax = 120
+
+// Draft excerpts (pendingDraftItems): the inbound message's first
+// draftInboundMax runes, the reply's first draftReplyMax.
+const (
+	draftInboundMax = 160
+	draftReplyMax   = 160
+)
+
+// draftInboundText is a draft's inbound message as one line: who sent it and
+// the start of what they wrote (its subject when the body is empty).
+func draftInboundText(m plugins.Message) string {
+	body := m.Body
+	if strings.TrimSpace(body) == "" {
+		body = m.Subject
+	}
+	who := mirror.OneLine(m.Sender, 80)
+	if who == "" {
+		who = "unknown sender"
+	}
+	return who + ": " + mirror.OneLine(body, draftInboundMax)
 }
 
 // pendingDraftItems is ctx's principal's reply drafts awaiting approval.
@@ -277,12 +353,14 @@ func (s *Server) pendingDraftItems(ctx context.Context) ([]attentionItem, error)
 			continue
 		}
 		out = append(out, attentionItem{Key: draftKey(c.Draft.ID), Kind: attentionKindPlugin, Source: c.PluginLabel,
-			Text: DraftPushTitle, Since: c.Draft.CreatedAt, Link: pluginsPath + "#" + draftCardAnchor(c.Draft.ID)})
+			Text: draftInboundText(c.Message), Detail: "Draft reply: " + mirror.OneLine(c.Draft.Body, draftReplyMax),
+			Since: c.Draft.CreatedAt, Link: pluginsPath + "#" + draftCardAnchor(c.Draft.ID)})
 	}
 	return out, nil
 }
 
-// attentionItems is the unified read model for ctx's principal, oldest first.
+// attentionItems is the unified read model for ctx's principal, NEWEST first
+// (sortAttentionItems).
 // A source that cannot be read is left out and named in the error; the rest
 // are still returned.
 func (s *Server) attentionItems(ctx context.Context) ([]attentionItem, error) {
@@ -303,8 +381,40 @@ func (s *Server) attentionItems(ctx context.Context) ([]attentionItem, error) {
 		errs = append(errs, fmt.Errorf("reply drafts: %w", err))
 	}
 	out = append(out, drafts...)
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Since.Before(out[j].Since) })
+	sortAttentionItems(out)
 	return out, errors.Join(errs...)
+}
+
+// sortAttentionItems orders items NEWEST FIRST across every source, by each
+// item's own Since (an item with none last), ties broken by Key so the order
+// never depends on which source was read first.
+func sortAttentionItems(items []attentionItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		a, b := items[i], items[j]
+		if !a.Since.Equal(b.Since) {
+			return a.Since.After(b.Since)
+		}
+		return a.Key < b.Key
+	})
+}
+
+// withFocus sets each mirrored item's focus title (its Claude session's
+// focus, internal/focus): read once, only when an item has a session, and
+// only for the surfaces that show it (the page, the list, attention_list).
+func (s *Server) withFocus(ctx context.Context, items []attentionItem) {
+	need := false
+	for _, it := range items {
+		need = need || it.claudeSession != ""
+	}
+	if !need {
+		return
+	}
+	fi := s.focusIndex(ctx)
+	for i := range items {
+		if v := fi.mirrorFocus(items[i].claudeSession); v != nil {
+			items[i].Focus = v.Title
+		}
+	}
 }
 
 // --- changes: SSE, push, waiters ---------------------------------------------
@@ -324,16 +434,34 @@ func (s *Server) attentionChanged(owner int64, key string) {
 // attention card, and its notifications are its own.
 func (s *Server) attentionNotify(owner int64, it attentionItem) {
 	title := "An agent needs your input"
-	body := truncate(notificationText(it.Source+": "+firstLine(it.Text)), attentionPushBodyMax)
-	switch it.Kind {
-	case attentionKindSession:
+	if it.Kind == attentionKindSession {
 		title = "A session is waiting on you"
-		body = truncate(it.Source, attentionPushBodyMax)
-	case attentionKindQuestion:
+	} else if it.Kind == attentionKindQuestion {
 		title = "A session asks you a question"
 	}
-	s.goNotify(owner, push.EventAttention, RouterNotification{Type: attentionNotificationType, ID: it.Key, Title: title, Body: body,
+	s.goNotify(owner, push.EventAttention, RouterNotification{Type: attentionNotificationType, ID: it.Key, Title: title, Body: attentionPushBody(it),
 		Tag: attentionTag(it.Key), Data: map[string]string{"url": attentionPath + "#" + it.Key}}, nil)
+}
+
+// attentionPushBody is an item's notification body: WHO and WHERE, never WHAT.
+//
+// 🔴 A LOCK SCREEN SHOWS IT TO ANYONE HOLDING THE PHONE (operator decision
+// "Summary only"): no question text, no command, path or URL, no message —
+// those are on the queue page, behind the sign-in. An ask or a held question:
+// "<asker> is asking". A waiting session: "Waiting: <tool name> · <window> @
+// <host>", or "Waiting: <window> @ <host>" when its host names no tool.
+func attentionPushBody(it attentionItem) string {
+	var body string
+	switch it.Kind {
+	case attentionKindSession:
+		body = "Waiting: " + it.Source
+		if tool := mirror.OneLine(it.tool, mirror.MaxPendingTool); tool != "" {
+			body = "Waiting: " + tool + " · " + it.Source
+		}
+	default:
+		body = it.Source + " is asking"
+	}
+	return truncate(mirror.OneLine(body, attentionPushBodyMax*2), attentionPushBodyMax)
 }
 
 // attentionClear closes an item's notification on owner's devices.
@@ -377,13 +505,10 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 	s.attention.diffMu.Lock()
 	defer s.attention.diffMu.Unlock()
 	now := map[string]attentionItem{}
-	hosts := map[string]bool{}    // online now
-	retained := map[string]bool{} // disconnected, still listed (offlineRetention)
+	hosts := map[string]bool{} // online now
 	for _, h := range s.ext.Mirror.Hosts(s.attentionPrincipal(context.Background(), owner)) {
 		if h.Online {
 			hosts[h.Host] = true
-		} else {
-			retained[h.Host] = true
 		}
 	}
 	for _, it := range s.waitingSessions(s.attentionPrincipal(context.Background(), owner)) {
@@ -408,14 +533,11 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 		s.attention.seenHosts[owner] = seen
 	}
 	// 🔴 A HOST THAT DROPPED (a blip, a restart of its muster-mirror) is not a
-	// session that stopped waiting: its items are KEPT while the hub still lists
-	// it as disconnected — no clear — and it is forgotten as seen, so when it
-	// comes back its waiting sessions are seeded silently again.
-	for k, it := range before {
-		if retained[it.host] && !hosts[it.host] {
-			now[k] = it
-		}
-	}
+	// session that stopped waiting: waitingSessions keeps its items for
+	// attentionOfflineGrace (attentionHostBelieved — the SAME rule the view
+	// reads, so the page and the notification agree), so they are not cleared
+	// here; and it is forgotten as seen, so when it comes back its waiting
+	// sessions are seeded silently again. Past the grace they leave both.
 	for h := range seen {
 		if !hosts[h] {
 			delete(seen, h)
@@ -438,9 +560,13 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 		s.attention.pushedAt[k] = at
 		push = append(push, it)
 	}
-	for k := range before {
-		if _, ok := now[k]; !ok {
+	moved := false // an item still waiting whose substance changed
+	for k, old := range before {
+		cur, ok := now[k]
+		if !ok {
 			clear = append(clear, k)
+		} else if cur.Text != old.Text || cur.Detail != old.Detail || cur.Offline != old.Offline {
+			moved = true
 		}
 	}
 	for h := range hosts {
@@ -453,8 +579,29 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 	for _, k := range clear {
 		s.attentionClear(owner, k)
 	}
-	if len(push) > 0 || len(clear) > 0 || len(now) != len(before) {
+	if len(push) > 0 || len(clear) > 0 || len(now) != len(before) || moved {
 		s.attentionChanged(owner, "")
+	}
+}
+
+// recheckOfflineHosts re-runs the diff for every owner with an item of a host
+// that dropped: nothing nudges for a host that is gone, so without this its
+// items would outlive attentionOfflineGrace on the owner's devices. On the
+// attention sweep.
+func (s *Server) recheckOfflineHosts() {
+	var owners []int64
+	s.attention.mu.Lock()
+	for owner, items := range s.attention.waiting {
+		for _, it := range items {
+			if it.Offline {
+				owners = append(owners, owner)
+				break
+			}
+		}
+	}
+	s.attention.mu.Unlock()
+	for _, o := range owners {
+		s.attentionMirrorChanged(o)
 	}
 }
 
@@ -475,6 +622,7 @@ func (s *Server) RunAttentionSweep(ctx context.Context, interval time.Duration) 
 	for {
 		s.expireAsks(ctx)
 		s.expireDraftNotes(ctx)
+		s.recheckOfflineHosts()
 		select {
 		case <-ctx.Done():
 			return
@@ -515,6 +663,7 @@ func (s *Server) handleAttentionPage(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) renderAttentionPage(w http.ResponseWriter, r *http.Request, code int, problem string) {
 	items, err := s.attentionItems(r.Context())
+	s.withFocus(r.Context(), items)
 	if err != nil {
 		s.logger.Printf("attention: page: %v", err)
 		if problem == "" {
@@ -578,6 +727,7 @@ func (s *Server) handleAttentionItems(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.logger.Printf("attention: items: %v", err)
 	}
+	s.withFocus(r.Context(), items)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write([]byte(attentionItemsHTML(items, time.Now())))
@@ -611,10 +761,23 @@ func attentionItemsHTML(items []attentionItem, now time.Time) string {
 		if !it.Since.IsZero() {
 			age = ` · <time datetime="` + it.Since.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(it.Since))) + `</time>`
 		}
+		offline := ""
+		if it.Offline {
+			offline = ` · <span data-attention-offline>host offline</span>`
+		}
 		b.WriteString(`<li id="` + esc(it.Key) + `" class="` + flowsCardClass + `" data-attention-item data-kind="` + esc(it.Kind) + `">
-<span class="text-xs text-fg2"><span class="font-semibold">` + esc(kind) + `</span> · <span data-attention-source>` + esc(it.Source) + `</span>` + age + `</span>
-<p class="whitespace-pre-wrap break-words text-sm text-fg" data-attention-text>` + esc(it.Text) + `</p>
+<span class="text-xs text-fg2"><span class="font-semibold">` + esc(kind) + `</span> · <span data-attention-source>` + esc(it.Source) + `</span>` + age + offline + `</span>
 `)
+		if it.Focus != "" {
+			b.WriteString(`<span class="break-words text-xs font-semibold text-fg2" data-attention-focus>` + esc(it.Focus) + `</span>
+`)
+		}
+		b.WriteString(`<p class="whitespace-pre-wrap break-words text-sm text-fg" data-attention-text>` + esc(it.Text) + `</p>
+`)
+		if it.Detail != "" {
+			b.WriteString(`<p class="break-words text-sm text-fg2" data-attention-detail>` + esc(it.Detail) + `</p>
+`)
+		}
 		switch it.Kind {
 		case attentionKindAsk:
 			id := strconv.FormatInt(it.AskID, 10)
@@ -759,4 +922,62 @@ func nonNilItems(items []attentionItem) []attentionItem {
 		return []attentionItem{}
 	}
 	return items
+}
+
+// --- answered in the session -------------------------------------------------
+
+// askerAddressed is the operator writing to an asker DIRECTLY — a message
+// pasted into a mirrored session's window (mirrorDeliver), queued for it
+// (sendQueueAdd), or sent to a dispatched agent's chat (handleAgentSend,
+// handleAgentWS): every ask that asker raised before the message that is still
+// open leaves the queue as
+// answered_in_session, the message (capped) its answer — its notification
+// cleared, its waiters woken (askSettled), so the asker's attention_wait
+// returns {status: "answered_in_session", answer}.
+//
+// 🔴 ONLY THE OPERATOR'S OWN MESSAGES CALL THIS. A routed message (session
+// routing's send-queue rows), the chief's hand-back turn, a machine-token
+// message and anything an agent sends are not the operator answering, and
+// none of those paths call it. ctx is the operator's principal (row-level
+// security keeps it to their own asks).
+func (s *Server) askerAddressed(ctx context.Context, asker attention.Asker, message string) {
+	s.askerAddressedBy(ctx, asker, message, 0)
+}
+
+// askerAddressedBy is askerAddressed, recording the send-queue row (queueID,
+// 0 = none) the message is, so that row can say it answered a question.
+func (s *Server) askerAddressedBy(ctx context.Context, asker attention.Asker, message string, queueID int64) {
+	if s.ext.Attention == nil || asker.Valid() != nil {
+		return
+	}
+	asks, err := s.ext.Attention.AnswerInSession(context.WithoutCancel(ctx), asker, message, queueID)
+	if err != nil {
+		s.logger.Printf("attention: answered in session by a message to %s: %v", askerName(asker), err)
+		return
+	}
+	for _, a := range asks {
+		s.logger.Printf("attention: ask %d answered in session (a message to %s)", a.ID, askerName(asker))
+		s.askSettled(a)
+	}
+}
+
+// mirrorAddressed is askerAddressed for a mirrored window's Claude Code
+// session — ONLY for a message pasted into that session's CLAUDE PANE
+// (mirror.PasteClaude: the rendered view's Send, a queued message). A Terminal
+// send goes to the window's ACTIVE pane, which may be a shell beside Claude
+// Code, so it answers nothing. queueID is the send-queue row the message is,
+// 0 for a direct Send. Nothing for a window that runs no Claude Code.
+func (s *Server) mirrorAddressed(ctx context.Context, host string, e mirror.SessionView, target mirror.PasteTarget, message string, queueID int64) {
+	if target != mirror.PasteClaude || !e.Claude || e.ClaudeSession == "" {
+		return
+	}
+	s.askerAddressedBy(ctx, attention.Asker{MirrorHost: host, MirrorSession: e.ClaudeSession}, message, queueID)
+}
+
+// askerName names an asker in the log: its ids, never its label.
+func askerName(a attention.Asker) string {
+	if a.AgentID > 0 {
+		return "agent " + strconv.FormatInt(a.AgentID, 10)
+	}
+	return "session " + a.MirrorSession + " @ " + a.MirrorHost
 }

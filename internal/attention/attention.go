@@ -44,6 +44,11 @@ const (
 	Answered  Status = "answered"
 	Cancelled Status = "cancelled"
 	Expired   Status = "expired"
+	// AnsweredInSession: the operator wrote to the asker directly — a message
+	// into the mirrored session's window, or to the dispatched agent's chat —
+	// after the ask was raised (AnswerInSession, migration 0026). The message is
+	// the answer.
+	AnsweredInSession Status = "answered_in_session"
 )
 
 // ByOperator is who answers an ask: the operator, on the attention view. No
@@ -217,6 +222,15 @@ type Store interface {
 	Answer(ctx context.Context, id int64, answer string) (Ask, error)
 	// Cancel withdraws an open ask.
 	Cancel(ctx context.Context, id int64) (Ask, error)
+	// AnswerInSession settles as AnsweredInSession every open ask asker raised
+	// before this statement began (created_at < statement_timestamp()), with
+	// message (capped at MaxAnswerRunes) as the answer and queueID (0 = none)
+	// as the send-queue row that carried it, and returns them; none for a
+	// blank message.
+	AnswerInSession(ctx context.Context, asker Asker, message string, queueID int64) ([]Ask, error)
+	// AnsweredByQueue is, for each of ids that answered asks in session, the
+	// label of the asker it answered.
+	AnsweredByQueue(ctx context.Context, ids []int64) (map[int64]string, error)
 	// ExpireDue moves every owner's lapsed open asks to Expired and returns
 	// them (system scope).
 	ExpireDue(ctx context.Context) ([]Ask, error)
@@ -367,6 +381,67 @@ func (s *PGStore) Answer(ctx context.Context, id int64, answer string) (Ask, err
 func (s *PGStore) Cancel(ctx context.Context, id int64) (Ask, error) {
 	return s.settle(ctx, id, `UPDATE attention_asks SET status = 'cancelled', resolved_at = now()
 		WHERE id = $1 AND status = 'open' AND expires_at > now() RETURNING `+cols, id)
+}
+
+// AnswerInSession runs under the caller's principal, like Answer: row-level
+// security keeps it to the caller's own asks.
+//
+// 🔴 ONLY ASKS RAISED BEFORE THE MESSAGE: the caller runs it as the message is
+// sent (or queued), and an ask is answered only when its created_at is before
+// this UPDATE's statement_timestamp() — the time the statement began.
+func (s *PGStore) AnswerInSession(ctx context.Context, asker Asker, message string, queueID int64) ([]Ask, error) {
+	message = truncateRunes(strings.TrimSpace(message), MaxAnswerRunes)
+	if message == "" || asker.Valid() != nil {
+		return nil, nil
+	}
+	var agent any
+	if asker.AgentID > 0 {
+		agent = asker.AgentID
+	}
+	var queue any
+	if queueID > 0 {
+		queue = queueID
+	}
+	return collect(s.pool.Query(ctx, `UPDATE attention_asks SET status = 'answered_in_session', answer = $1, answered_by = $2, resolved_at = now(),
+		  answer_queue_id = $6::bigint
+		WHERE status = 'open' AND expires_at > now() AND created_at < statement_timestamp()
+		  AND agent_id IS NOT DISTINCT FROM $3::bigint AND mirror_host IS NOT DISTINCT FROM $4::text AND mirror_session IS NOT DISTINCT FROM $5::text
+		RETURNING `+cols, message, ByOperator, agent, nullable(asker.MirrorHost), nullable(asker.MirrorSession), queue))
+}
+
+// AnsweredByQueue runs under the caller's principal (row-level security keeps
+// it to their own asks).
+func (s *PGStore) AnsweredByQueue(ctx context.Context, ids []int64) (map[int64]string, error) {
+	out := map[int64]string{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT DISTINCT ON (answer_queue_id) answer_queue_id, asker_label, coalesce(agent_id, 0), coalesce(mirror_session, '')
+		FROM attention_asks WHERE answer_queue_id = ANY($1) AND status = 'answered_in_session' ORDER BY answer_queue_id, id`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, agent int64
+		var label, session string
+		if err := rows.Scan(&id, &label, &agent, &session); err != nil {
+			return nil, err
+		}
+		if label == "" {
+			label = askerLabelOf(Asker{AgentID: agent, MirrorSession: session})
+		}
+		out[id] = label
+	}
+	return out, rows.Err()
+}
+
+// askerLabelOf names an asker that has no label.
+func askerLabelOf(a Asker) string {
+	if a.AgentID > 0 {
+		return fmt.Sprintf("agent %d", a.AgentID)
+	}
+	return "session " + a.MirrorSession
 }
 
 func (s *PGStore) ExpireDue(ctx context.Context) ([]Ask, error) {

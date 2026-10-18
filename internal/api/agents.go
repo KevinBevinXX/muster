@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/focus"
@@ -1636,6 +1637,8 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		if err := json.Unmarshal(data, &in); err != nil || in.Type != "message" || strings.TrimSpace(in.Text) == "" {
 			continue
 		}
+		// The operator wrote to the agent: its open asks are answered here.
+		s.askerAddressed(ctx, attention.Asker{AgentID: a.ID}, in.Text)
 		parts, err := s.runUserTurn(ctx, a, session, in.Text, wsStreamEmit(ctx, c, s, a.Name))
 		if err != nil {
 			_ = wsWriteJSON(ctx, c, map[string]string{"type": "error", "content": err.Error()})

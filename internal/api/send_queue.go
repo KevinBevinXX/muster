@@ -209,6 +209,10 @@ func (s *Server) sendQueueAdd(w http.ResponseWriter, r *http.Request, ctx contex
 		return
 	}
 	s.logger.Printf("sendqueue: queued message %d (%d bytes) for %s", stored.ID, len(stored.Body), q.t)
+	// The operator wrote to the session — when they QUEUED it, not when it is
+	// pasted: a session blocked in attention_wait is busy, and a queued message
+	// waits for idle, so it would never be pasted while the ask held it.
+	s.mirrorAddressed(ctx, q.h.Host, q.e, mirror.PasteClaude, text, stored.ID)
 	s.kickSendQueue()
 	if nav {
 		http.Redirect(w, r, withNotice(q.back, noticeQueued), http.StatusSeeOther)
@@ -294,6 +298,7 @@ func (s *Server) sendQueueListView(ctx context.Context, t sendqueue.Target) ui.S
 		return ui.SendQueueListView{Error: "The queue could not be read."}
 	}
 	var v ui.SendQueueListView
+	answered := s.queueAnswered(ctx, items)
 	for _, it := range items {
 		preview := it.Body
 		if len(preview) > sendQueuePreview {
@@ -301,7 +306,7 @@ func (s *Server) sendQueueListView(ctx context.Context, t sendqueue.Target) ui.S
 			preview = strings.ToValidUTF8(preview[:sendQueuePreview], "") + "…"
 		}
 		v.Items = append(v.Items, ui.SendQueueItem{ID: it.ID, State: string(it.State), Preview: preview,
-			Detail: it.Detail, Cancellable: it.State == sendqueue.Queued})
+			Detail: it.Detail, Cancellable: it.State == sendqueue.Queued, Answered: answered[it.ID]})
 	}
 	if h, ok, err := s.ext.SendQueue.HeadOf(ctx, t); err == nil && ok {
 		if d := s.sendQueueDecide(h, s.sendQueueProbe(ctx, h)); !d.Send {
@@ -311,6 +316,24 @@ func (s *Server) sendQueueListView(ctx context.Context, t sendqueue.Target) ui.S
 		}
 	}
 	return v
+}
+
+// queueAnswered is, for each of items that answered a question in its session
+// when it was queued (attention.go's mirrorAddressed), the asker's label.
+func (s *Server) queueAnswered(ctx context.Context, items []sendqueue.Item) map[int64]string {
+	if s.ext.Attention == nil || len(items) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(items))
+	for _, it := range items {
+		ids = append(ids, it.ID)
+	}
+	out, err := s.ext.Attention.AnsweredByQueue(ctx, ids)
+	if err != nil {
+		s.logger.Printf("sendqueue: which messages answered a question: %v", err)
+		return nil
+	}
+	return out
 }
 
 // handleSendQueueCancel is POST /send-queue/{id}/cancel: cancel one of the
@@ -350,6 +373,17 @@ func (s *Server) handleSendQueueCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logger.Printf("sendqueue: cancelled message %d for %s", id, it.Target)
+	// 🔴 A CANCEL DOES NOT UN-SEND AN ANSWER: a queued message answers its
+	// session's asks when it is queued, and that answer is already delivered.
+	if asker, ok := s.queueAnswered(ctx, []sendqueue.Item{it})[id]; ok {
+		if nav {
+			http.Redirect(w, r, withNotice(back, noticeCancelledAnswered), http.StatusSeeOther)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte(SendQueueCancelledAnsweredText(asker)))
+		return
+	}
 	if nav {
 		http.Redirect(w, r, withNotice(back, noticeCancelled), http.StatusSeeOther)
 		return

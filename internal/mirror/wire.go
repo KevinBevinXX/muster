@@ -420,6 +420,10 @@ type Window struct {
 	// (TestTheLargestWindowListFitsOneFrame encodes it at its bound).
 	// Backward-compatible both ways, like ClaudeSession.
 	OtherClaude []string `json:"otherClaude,omitempty"`
+	// Pending is what a WAITING Claude session waits on (pending.go): nil
+	// unless Claude and StatusWaiting, and on at most MaxPendingWindows windows
+	// of a list. Backward-compatible both ways, like ClaudeSession.
+	Pending *Pending `json:"pending,omitempty"`
 }
 
 // The OtherClaude bounds.
@@ -784,6 +788,7 @@ func NormalizeWindows(in []Window, now int64) []Window {
 		}
 		others += len(out[i].OtherClaude)
 	}
+	boundPending(out)
 	active := map[string]bool{}
 	for i := range out {
 		if out[i].Active {
@@ -939,7 +944,8 @@ func validOtherClaude(ids []string, active string) []string {
 func (w Window) Equal(o Window) bool {
 	return w.Session == o.Session && w.ID == o.ID && w.Index == o.Index && w.Active == o.Active && w.Label == o.Label &&
 		w.Activity == o.Activity && w.Claude == o.Claude && w.Command == o.Command && w.Status == o.Status &&
-		w.StatusSince == o.StatusSince && w.ClaudeSession == o.ClaudeSession && slices.Equal(w.OtherClaude, o.OtherClaude)
+		w.StatusSince == o.StatusSince && w.ClaudeSession == o.ClaudeSession && slices.Equal(w.OtherClaude, o.OtherClaude) &&
+		pendingEqual(w.Pending, o.Pending)
 }
 
 // AskTyping is an answer to type into an AskUserQuestion picker (Msg.Ask):

@@ -625,7 +625,12 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 				// The longest status (the send queue's): "waiting", and the longest
 				// time the wire lets through (no bound but int64's).
 				// And the longest Claude session id the wire keeps (64 bytes).
-				Claude: &ClaudePane{Status: mirror.StatusWaiting, StatusSince: math.MaxInt64, Gen: strings.Repeat("f", 64)},
+				// And what it waits on at both fields' rune bounds, every rune one
+				// JSON writes six-fold; the list-wide bound (MaxPendingWindows)
+				// keeps the first windows' alone.
+				Claude: &ClaudePane{Status: mirror.StatusWaiting, StatusSince: math.MaxInt64, Gen: strings.Repeat("f", 64),
+					Pending: &mirror.Pending{Summary: strings.Repeat("<", mirror.MaxPendingSummary), Tool: strings.Repeat("&", mirror.MaxPendingTool),
+						Last: strings.Repeat(">", mirror.MaxPendingLast)}},
 				// Every window with its other panes' Claude sessions at their
 				// per-window bound; the list-wide bound (MaxOtherClaude) keeps
 				// the first windows' alone.
@@ -656,6 +661,18 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 		}
 		if others != mirror.MaxOtherClaude {
 			t.Fatalf("instrument check: %d other-pane sessions on the wire, want the bound %d", others, mirror.MaxOtherClaude)
+		}
+		pending := 0
+		for _, w := range l.windows {
+			if p := w.Pending; p != nil {
+				if len(p.Summary) != mirror.MaxPendingSummary || len(p.Tool) != mirror.MaxPendingTool || len(p.Last) != mirror.MaxPendingLast {
+					t.Fatalf("instrument check: a pending field was cut, so this is not the worst case: %+v", p)
+				}
+				pending++
+			}
+		}
+		if pending != mirror.MaxPendingWindows {
+			t.Fatalf("instrument check: %d windows carry what they wait on, want the bound %d", pending, mirror.MaxPendingWindows)
 		}
 		for _, w := range l.windows {
 			if w.Label == "" || w.Command == "" || !w.Claude || w.Status != mirror.StatusWaiting || w.StatusSince != math.MaxInt64 || len(w.ClaudeSession) != 64 {

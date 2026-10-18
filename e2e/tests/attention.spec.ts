@@ -17,6 +17,12 @@ import { serverBinary, startServer, Running } from '../lib/server';
 //   page is open appears without a reload (the queue's SSE event), and Dismiss
 //   withdraws it.
 //
+//   The waiting window shows WHAT it waits on — its pending tool call and the
+//   last thing Claude said, read by the real muster-mirror from the session's
+//   transcript (mirror.Pending) — and the queue is newest first. A message the
+//   operator sends into a session that asked answers its ask in the session:
+//   the item leaves the open queue live and the session's wait returns it.
+//
 // A password-mode server: the operator (user 1) owns the agent and the host.
 
 const origin = `http://localhost:${attentionPort}`;
@@ -66,7 +72,22 @@ test.beforeAll(async () => {
     .toString()
     .trim();
   expect(token.startsWith('mmt_'), 'a mirror token was minted').toBe(true);
-  fs.writeFileSync(tr, JSON.stringify({ type: 'user', message: { role: 'user', content: 'deploying the importer' } }) + '\n');
+  // The session's transcript: a prompt, Claude's words, and a tool call it is
+  // waiting on the person to allow (no result yet) — what the host reads as
+  // the window's pending action.
+  fs.writeFileSync(
+    tr,
+    [
+      { type: 'user', message: { role: 'user', content: 'deploying the importer' } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Tests pass.\n\nPublishing   the importer now.' }] } },
+      {
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_e2e_pub', name: 'Bash', input: { command: 'npm publish --tag next\nnpm dist-tag ls' } }] },
+      },
+    ]
+      .map((r) => JSON.stringify(r))
+      .join('\n') + '\n',
+  );
   // Claude Code waiting on the person, as its sessions file says it.
   fs.writeFileSync(tr + '.status', JSON.stringify({ status: 'waiting', statusUpdatedAt: Date.now() - 30_000 }));
   const windows = path.join(dir, 'windows');
@@ -158,6 +179,13 @@ test('an agent asks over MCP, the operator answers in the Attention view, and th
   const session = page.locator('[data-attention-item][data-kind="session"]');
   await expect(session).toHaveCount(1);
   await expect(session.locator('[data-attention-source]')).toContainText(host);
+  // What it waits on — not a generic line: the pending command (its first
+  // line only) and Claude's last words, whitespace-collapsed.
+  await expect(session.locator('[data-attention-text]')).toHaveText('Bash: npm publish --tag next');
+  await expect(session.locator('[data-attention-detail]')).toHaveText('Tests pass. Publishing the importer now.');
+  // Newest first: the ask (just now) above the window (waiting since 30 s ago).
+  await expect(page.locator('[data-attention-item]').first()).toHaveAttribute('id', `ask-${id}`);
+  await expect(page.locator('[data-attention-item]').nth(1)).toHaveAttribute('data-kind', 'session');
   await expect(session.getByRole('link', { name: 'Open the session' })).toHaveAttribute('href', /^\/mirror\/view\?host=e2e-attn-/);
 
   // The operator taps an option.
@@ -241,4 +269,87 @@ test('a mirrored Claude Code session asks through its host and gets the operator
   expect(splitId).toBeGreaterThan(0);
   await page.reload();
   await expect(page.locator(`#ask-${splitId} [data-attention-source]`)).toContainText('@ ' + host);
+});
+
+// ANSWERED IN THE SESSION: the mirrored session asks and waits; the operator,
+// with the queue open, writes to that session from its rendered view instead
+// of answering in the queue. The ask leaves the open queue without a reload,
+// and the session's wait returns answered_in_session with the message.
+test('a message sent to the asking session answers its ask, live', async ({ page }) => {
+  test.setTimeout(120_000);
+  const secret = fs.readFileSync(mcpSecretFile, 'utf8').trim();
+  const auth = { Authorization: 'Bearer ' + secret, 'X-Muster-Pane': '%e2e-work-@1', 'X-Muster-Tmux': fakeTMUX };
+  const asked = (await (await localCall('attention_ask', { question: 'Tag the release latest too?' }, auth)).json()) as {
+    result: { content: { text: string }[] };
+  };
+  const id = (JSON.parse(asked.result.content[0].text) as { id: number }).id;
+  expect(id).toBeGreaterThan(0);
+  const waited = localCall('attention_wait', { id, wait_seconds: 90 }, auth).then((r) => r.json());
+
+  await page.goto(origin + '/login');
+  await page.fill('#muster-password', password);
+  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await page.goto(origin + '/attention');
+  const item = page.locator(`#ask-${id}`);
+  await expect(item.locator('[data-attention-text]')).toHaveText('Tag the release latest too?');
+  // Newest first: this ask heads the list.
+  await expect(page.locator('[data-attention-item]').first()).toHaveAttribute('id', `ask-${id}`);
+
+  // The operator answers in the session: its rendered view, in another tab.
+  const view = await page.context().newPage();
+  await view.goto(origin + `/mirror/view?host=${encodeURIComponent(host)}&session=work&window=%401`);
+  await expect(view.locator('#mv-input'), mirrorLog).toBeEnabled({ timeout: 20_000 });
+  await view.locator('#mv-input').fill('only next for now');
+  await view.locator('#mv-send').click();
+  await expect(view.locator('#mv-input')).toHaveValue('');
+
+  // The queue tab, untouched: the ask leaves it live.
+  await expect(item).toHaveCount(0, { timeout: 15_000 });
+  const got = (await waited) as { result: { content: { text: string }[] } };
+  expect(JSON.parse(got.result.content[0].text)).toMatchObject({ id, status: 'answered_in_session', answer: 'only next for now' });
+  await view.close();
+
+  // A waiting SESSION clears itself the same way, through its status: when
+  // Claude Code stops waiting, the host's next report (its refresh, ~5 s)
+  // takes the item out of the open queue — measured, not assumed.
+  const session = page.locator('[data-attention-item][data-kind="session"]');
+  await expect(session).toHaveCount(1);
+  fs.writeFileSync(tr + '.status', JSON.stringify({ status: 'busy', statusUpdatedAt: Date.now() }));
+  const flipped = Date.now();
+  await expect(session).toHaveCount(0, { timeout: 15_000 });
+  const took = Date.now() - flipped;
+  console.log(`attention: a session that stopped waiting left the open queue in ${took} ms`);
+  expect(took, 'the waiting window left within one host refresh and the queue nudge').toBeLessThan(12_000);
+});
+
+// A QUEUED message answers the ask too — when it is queued (a session blocked
+// on the answer is busy, and a queued message waits for idle). The queue row
+// says so, and cancelling it warns that the answer cannot be un-sent.
+test('a queued message answers the ask, and its Cancel says the answer stays', async ({ page }) => {
+  test.setTimeout(120_000);
+  const secret = fs.readFileSync(mcpSecretFile, 'utf8').trim();
+  const auth = { Authorization: 'Bearer ' + secret, 'X-Muster-Pane': '%e2e-work-@1', 'X-Muster-Tmux': fakeTMUX };
+  const asked = (await (await localCall('attention_ask', { question: 'Bump the minor version?' }, auth)).json()) as {
+    result: { content: { text: string }[] };
+  };
+  const id = (JSON.parse(asked.result.content[0].text) as { id: number }).id;
+  const waited = localCall('attention_wait', { id, wait_seconds: 90 }, auth).then((r) => r.json());
+
+  await page.goto(origin + '/login');
+  await page.fill('#muster-password', password);
+  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await page.goto(origin + `/mirror/view?host=${encodeURIComponent(host)}&session=work&window=%401`);
+  await expect(page.locator('#mv-input'), mirrorLog).toBeEnabled({ timeout: 20_000 });
+  await page.locator('#mv-input').fill('yes, a minor bump');
+  await page.locator('#mv-send-more').click();
+  await page.locator('#mv-queue-send').click();
+  await expect(page.locator('#mv-note')).toHaveText('Queued.');
+
+  const got = (await waited) as { result: { content: { text: string }[] } };
+  expect(JSON.parse(got.result.content[0].text)).toMatchObject({ id, status: 'answered_in_session', answer: 'yes, a minor bump' });
+  const row = page.locator('#mv-queue [data-queue-id]', { hasText: 'yes, a minor bump' });
+  await expect(row.locator('[data-queue-answered]')).toHaveText(/^Already answered .+'s question\.$/, { timeout: 20_000 });
+  await row.getByRole('button', { name: 'Cancel this queued message' }).click();
+  await expect(page.locator('#mv-note')).toHaveText(/^Cancelled — but this message had already answered .+'s question, and that answer was delivered: it can't be un-sent\.$/);
+  await expect(row).toHaveAttribute('data-queue-state', 'cancelled');
 });
