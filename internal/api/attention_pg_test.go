@@ -52,7 +52,7 @@ func attnWindows(status string) []mirror.Window {
 	}
 }
 
-func newAttnFixture(t *testing.T) *attnFixture {
+func newAttnFixture(t *testing.T, more ...func(*Extensions, *pgxpool.Pool)) *attnFixture {
 	t.Helper()
 	f := &attnFixture{pusher: &payloadPusher{}, tokens: fakeMirrorTokens{},
 		mirror: &fakeMirror{online: true, interactive: true, statusReport: true, v2: &fakeMirrorV2{}, windows: attnWindows(mirror.StatusWaiting)}}
@@ -62,6 +62,9 @@ func newAttnFixture(t *testing.T) *attnFixture {
 		ext.Attention, ext.Plugins, ext.Notes, ext.Focus, ext.Mirror = f.attn, f.plugins, f.notes, focus.NewPG(pool), f.mirror
 		ext.Push = push.NewService(store, f.pusher, push.VAPIDConfig{PublicKey: "k"}, nil)
 		ext.MirrorTokens = f.tokens
+		for _, m := range more {
+			m(ext, pool)
+		}
 	})
 	claim(t, store, 1, ep("attn-operator"))
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)

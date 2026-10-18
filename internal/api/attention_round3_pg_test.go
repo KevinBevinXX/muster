@@ -36,7 +36,7 @@ func TestAHostBlipReNotifiesNothing(t *testing.T) {
 	}
 	setOnline := func(on bool) {
 		f.mirror.mu.Lock()
-		f.mirror.online = on
+		f.mirror.online, f.mirror.offlineSince = on, clock // the hub stamps a drop
 		f.mirror.mu.Unlock()
 	}
 	nudge() // first observation: @1 already waiting, seeded

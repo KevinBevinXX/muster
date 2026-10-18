@@ -44,6 +44,11 @@ const (
 	Answered  Status = "answered"
 	Cancelled Status = "cancelled"
 	Expired   Status = "expired"
+	// AnsweredInSession: the operator wrote to the asker directly — a message
+	// into the mirrored session's window, or to the dispatched agent's chat —
+	// after the ask was raised (AnswerInSession, migration 0026). The message is
+	// the answer.
+	AnsweredInSession Status = "answered_in_session"
 )
 
 // ByOperator is who answers an ask: the operator, on the attention view. No
@@ -217,6 +222,10 @@ type Store interface {
 	Answer(ctx context.Context, id int64, answer string) (Ask, error)
 	// Cancel withdraws an open ask.
 	Cancel(ctx context.Context, id int64) (Ask, error)
+	// AnswerInSession settles every open ask asker raised before now as
+	// AnsweredInSession, with message (capped at MaxAnswerRunes) as the
+	// answer, and returns them; none for a blank message.
+	AnswerInSession(ctx context.Context, asker Asker, message string) ([]Ask, error)
 	// ExpireDue moves every owner's lapsed open asks to Expired and returns
 	// them (system scope).
 	ExpireDue(ctx context.Context) ([]Ask, error)
@@ -367,6 +376,27 @@ func (s *PGStore) Answer(ctx context.Context, id int64, answer string) (Ask, err
 func (s *PGStore) Cancel(ctx context.Context, id int64) (Ask, error) {
 	return s.settle(ctx, id, `UPDATE attention_asks SET status = 'cancelled', resolved_at = now()
 		WHERE id = $1 AND status = 'open' AND expires_at > now() RETURNING `+cols, id)
+}
+
+// AnswerInSession runs under the caller's principal, like Answer: row-level
+// security keeps it to the caller's own asks.
+//
+// 🔴 ONLY ASKS RAISED BEFORE THE MESSAGE: the caller runs it as the message is
+// sent (or queued), and only an ask created before this statement's time —
+// one the operator could have seen — is answered by it.
+func (s *PGStore) AnswerInSession(ctx context.Context, asker Asker, message string) ([]Ask, error) {
+	message = truncateRunes(strings.TrimSpace(message), MaxAnswerRunes)
+	if message == "" || asker.Valid() != nil {
+		return nil, nil
+	}
+	var agent any
+	if asker.AgentID > 0 {
+		agent = asker.AgentID
+	}
+	return collect(s.pool.Query(ctx, `UPDATE attention_asks SET status = 'answered_in_session', answer = $1, answered_by = $2, resolved_at = now()
+		WHERE status = 'open' AND expires_at > now() AND created_at < statement_timestamp()
+		  AND agent_id IS NOT DISTINCT FROM $3::bigint AND mirror_host IS NOT DISTINCT FROM $4::text AND mirror_session IS NOT DISTINCT FROM $5::text
+		RETURNING `+cols, message, ByOperator, agent, nullable(asker.MirrorHost), nullable(asker.MirrorSession)))
 }
 
 func (s *PGStore) ExpireDue(ctx context.Context) ([]Ask, error) {

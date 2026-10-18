@@ -382,6 +382,8 @@ type hostSide struct {
 	// scroller is this connection's copy-mode scrolls; nil when the backend
 	// cannot scroll.
 	scroller *scroller
+	// pending reads what each waiting window waits on (pending.go).
+	pending pendingReader
 }
 
 // windowKey addresses one window: its session and its tmux window id.
@@ -436,6 +438,7 @@ func (h *hostSide) read() (listing, bool) {
 	if err != nil {
 		return listing{}, false
 	}
+	h.pending.attachPending(raw)
 	windows := WireWindows(raw, h.c.cfg.Codenames, h.version >= 2, time.Now())
 	l := listing{windows: windows}
 	l.sessions, l.claude, l.labels, l.activity = mirror.SessionsOf(windows)

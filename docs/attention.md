@@ -5,36 +5,58 @@ to ask you something and wait for the answer instead of stopping.
 
 ## What is in it
 
-`/attention` (the **Attention** link in the menu, with a live count) lists, oldest
-first:
+`/attention` (the **Attention** link in the menu, with a live count) lists,
+**newest first** across every kind — by when each item started waiting (an
+ask's or a draft's creation, a session's own status time, a held question's
+creation), ties broken by the item's key:
 
 | kind | what | where it comes from | how you act on it |
 |---|---|---|---|
 | Question | An agent called `attention_ask`. | `attention_asks` (migration 0025) | Tap one of the agent's options, or type an answer. **Dismiss without answering** withdraws it. |
-| Session waiting | A mirrored Claude Code window whose session reports `waiting` (a permission prompt, a question). | The mirror hub's live window list; nothing is stored. | **Open the session** (the rendered view). It leaves the list when the session stops waiting. |
-| Session question | A mirrored session's `AskUserQuestion` held by the `muster-mirror ask` hook. | The held question (`internal/askq`), live. Such a window is this ONE item — its first question, and how many more — never also "Session waiting". | **Answer in the session**: the rendered view, where the question card is. |
-| Reply draft | Your chief drafted a reply to a plugin message. | `plugin_reply_drafts`, pending ones; nothing is copied. | **Review the draft** on `/plugins`. |
+| Session waiting | A mirrored Claude Code window whose session reports `waiting` (a permission prompt, a question). Shown with **what it waits on** (below), its focus title, its window @ host and its age. | The mirror hub's live window list; nothing is stored. | **Open the session** (the rendered view). It leaves the list when the session stops waiting. |
+| Session question | A mirrored session's `AskUserQuestion` held by the `muster-mirror ask` hook. | The held question (`internal/askq`), live. Such a window is this ONE item — its question, or, when it asks several, each one's first line, numbered — never also "Session waiting". | **Answer in the session**: the rendered view, where the question card is. |
+| Reply draft | Your chief drafted a reply to a plugin message. Shown as the message's sender and its first 160 characters, and the draft reply's first 160. | `plugin_reply_drafts`, pending ones; nothing is copied. | **Review the draft** on `/plugins`. |
 
-Only a host whose `muster-mirror` reports Claude Code's status (and is online)
-counts toward "Session waiting".
+**What a waiting session waits on** is read by its host's `muster-mirror`
+from the session's own transcript (muster holds none): the last tool call since
+the last prompt that has no result yet, as one line — `Bash: <the command's
+first line>`, `Edit <path>` / `Write <path>` / `Read <path>` (a long path keeps
+its end), `WebFetch <the URL's host>`, `MCP <server>/<tool>`, an
+`AskUserQuestion`'s first question, else the tool's name — and the last thing
+Claude said. Each is one line, control characters removed, at most 120 and 200
+characters; nothing more of the tool's input is sent. It rides the host's
+window report (`mirror.Window.Pending`) for at most 8 waiting windows per host
+(the most recently waiting). An older `muster-mirror` sends none, and the item
+then reads "Waiting on you: a permission prompt or a question in the session."
+
+Only a host whose `muster-mirror` reports Claude Code's status counts toward
+"Session waiting": an online one, or one that disconnected **less than 5
+minutes ago** — its windows are kept as last seen, marked *host offline*, so a
+blip neither drops them nor clears their notification. Past that they leave
+the list and their notification is cleared. The list and the notifications
+follow this one rule.
 
 The list updates live (the `attention_queue.changed` event on `/events`). It
 does not refresh while you are typing an answer; it catches up when you leave
 the field.
 
 **Notifications** (event `attention` on Account → Notifications, on by default):
-one per new question or newly waiting session, withdrawn when the item is
-answered, dismissed, expires or stops waiting. Each item has one tag, so a
+one per new question or newly waiting session — a session's says what it waits
+on and where (`Bash: npm publish · main:1 @ laptop`) — withdrawn when the item is
+answered (on `/attention` or in the session), dismissed, expires or stops
+waiting. Each item has one tag, so a
 notification is replaced, never stacked. A session is not re-notified:
 
 - when muster restarts or a host reconnects: the first time this process sees
   a host — and again each time it comes back after disconnecting — its
   sessions that are already waiting are recorded silently. While a host is
-  briefly disconnected its items stay (no clear);
+  disconnected for less than 5 minutes its items stay (no clear);
 - when it goes waiting again within 2 minutes of its last notification or of
   being recorded (busy and back is one episode).
 
-A reply draft keeps its own `plugin` notification, which is withdrawn when you
+A reply draft keeps its own `plugin` notification — its title muster's, its
+body the sender, the start of the message and the start of the draft, each one
+line and short — which is withdrawn when you
 decide the draft, when a newer draft for the same message supersedes it, and
 when it expires (checked every 30 seconds, including drafts notified before a
 restart).
@@ -49,7 +71,7 @@ claude-code agent — whenever muster has a database.
 | tool | does |
 |---|---|
 | `attention_ask {question, options?, timeout_seconds?}` | Files a question. `options` (at most 10) become buttons; you can still answer in free text. Open for 24 hours by default (60 s to 7 days), then it expires. Returns `{id, status: "pending"}`. |
-| `attention_wait {id, wait_seconds?}` | Blocks until the ask is answered, cancelled or expired, or `wait_seconds` (default 240, at most 600) pass — then answers `status: "pending"` and the agent calls it again. `wait_seconds: 0` reads it without waiting. At most 2 waits per agent and 20 per owner are open at once; past that a wait is refused at once. |
+| `attention_wait {id, wait_seconds?}` | Blocks until the ask is answered (`status: "answered"`, `answer`), answered in the session (`status: "answered_in_session"`, `answer` — see [Answering](#answering)), cancelled or expired, or `wait_seconds` (default 240, at most 600) pass — then answers `status: "pending"` and the agent calls it again. `wait_seconds: 0` reads it without waiting. At most 2 waits per agent and 20 per owner are open at once; past that a wait is refused at once. |
 | `attention_cancel {id}` | Withdraws an open ask. |
 | `tasks_list {status?}`, `task_get {id}`, `task_comment {id, body}`, `task_set_status {id, status}` | The agent's OWN task: the one it was dispatched for. The chief's: the owner's whole board. Any other task answers exactly what a task that does not exist answers. An agent may set `open`, `in_progress` or `ready_for_review` — never `complete`, and never on a task that is already complete (checked in the update itself). The same rule holds on `PATCH /api/tasks/{id}/status` when the caller is an agent (the chief asserting its name through the service credential); the operator's tokens are unchanged. |
 
@@ -61,7 +83,7 @@ called by name):
 
 | tool | does |
 |---|---|
-| `attention_list` | The whole queue, as the view shows it. Read-only: only the operator answers an ask. |
+| `attention_list` | The whole queue, as the view shows it, newest first: each item's `text` (the question; what a session waits on; a draft's inbound message), `detail` (a session's last words; the draft) and `focus`. Read-only: only the operator answers an ask. |
 | `session_transcript {subject, max_entries?}` | The recent conversation of one of the owner's sessions (`agent:<id>` or `mirror:<claude session id>`, as `agents_list` returns them): oldest first, at most 200 entries, each at most 2000 characters, 48 KiB in all; tool calls by name, tool output left out. |
 | `agents_list` | (Existing.) Now also carries a mirrored session's `host`. |
 
@@ -179,3 +201,18 @@ If muster sits behind an auth proxy, `POST /mirror/mcp` must bypass it, as
 Only the operator answers, on `/attention`: `POST /attention/asks/{id}/answer`
 (`option` or `answer`) and `POST /attention/asks/{id}/cancel`,
 session-authenticated and same-origin. No agent tool answers an ask.
+
+**Or in the session.** Writing to the asker directly answers it too: a message
+you send into a mirrored session's window (the rendered view's or the
+Terminal's Send) or queue for it (the send queue — at the moment you queue it,
+since a session blocked in `attention_wait` is busy and a queued message waits
+for idle), or a message to a dispatched agent's chat (its page or its
+Terminal's composer). Every ask that asker raised before your message and that
+is still open becomes `answered_in_session` (migration 0026): it leaves the
+queue, its notification is cleared, and the asker's `attention_wait` returns
+`{status: "answered_in_session", answer: <your message>}` (capped at 8000
+characters). The message also reaches the session or agent as an ordinary
+message. Only your own messages count: a message routed by the chief, the
+chief's hand-back turn, a message over the machine door
+(`POST /api/agents/{name}/messages`) and anything an agent sends do not. A
+reply draft decided outside muster is not cleared by this (it is not an ask).

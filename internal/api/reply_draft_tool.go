@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
 )
@@ -67,7 +68,13 @@ func (s *Server) toolReplyDraft(ctx context.Context, a agents.Agent, arguments s
 		s.logger.Printf("plugins: agent %d reply draft: %v", a.ID, err)
 		return toolErr("the draft could not be filed")
 	}
-	s.notifyDraftAwaiting(agentOwnerID(a), d)
+	// The message, for the notification's excerpt; without it the push says
+	// only muster's own words.
+	m, merr := s.ext.Plugins.Message(ctx, d.MessageID)
+	if merr != nil {
+		m = plugins.Message{}
+	}
+	s.notifyDraftAwaiting(agentOwnerID(a), d, m)
 	// It is also an item of the owner's attention queue; it supersedes the
 	// message's earlier pending draft, whose notification is withdrawn.
 	s.draftFiled(agentOwnerID(a), d)
@@ -82,22 +89,43 @@ func draftCardAnchor(id int64) string { return "draft-" + strconv.FormatInt(id, 
 
 // notifyDraftAwaiting pushes the `plugin` event to the draft's owner.
 //
-// 🔴 EVERY WORD OF IT IS MUSTER'S. The draft is the chief's text and the message
-// an outside party's; a notification is shown on a lock screen with no fence
-// around it, so neither is quoted — not even the sender.
-func (s *Server) notifyDraftAwaiting(owner int64, d plugins.Draft) {
+// 🔴 THE TITLE IS MUSTER'S; THE BODY QUOTES, SHORT AND ATTRIBUTED. It used to
+// quote nothing (the message is an outside party's text, the draft the
+// chief's, and a lock screen has no fence around either). The operator chose
+// substance over that (the attention queue's "what is it", PR attention-ux):
+// the body names the sender and quotes the start of the message and of the
+// draft — each one line, control characters stripped, capped (draftPushBody)
+// — so it can be triaged from the lock screen. Without the message (m.ID 0)
+// it is muster's fixed sentence, as before.
+func (s *Server) notifyDraftAwaiting(owner int64, d plugins.Draft, m plugins.Message) {
 	id := strconv.FormatInt(d.ID, 10)
 	s.goNotify(owner, push.EventPlugin, RouterNotification{
 		Type:  "plugin",
 		ID:    id,
 		Title: DraftPushTitle,
-		Body:  DraftPushBody,
+		Body:  draftPushBody(m, d),
 		Tag:   "plugin-draft-" + id,
 		Data:  map[string]string{"url": pluginsPath + "#" + draftCardAnchor(d.ID)},
 	}, nil)
 }
 
-// The `plugin` push's text: fixed, muster-authored.
+// draftPushBody is a draft notification's body: "<sender>: <message start> ·
+// Draft: <reply start>", short; DraftPushBody without the message.
+func draftPushBody(m plugins.Message, d plugins.Draft) string {
+	if m.ID == 0 {
+		return DraftPushBody
+	}
+	return mirror.OneLine(draftInboundText(m), draftPushInboundMax) + " · Draft: " + mirror.OneLine(d.Body, draftPushReplyMax)
+}
+
+// The draft notification's excerpt bounds, in runes.
+const (
+	draftPushInboundMax = 80
+	draftPushReplyMax   = 40
+)
+
+// The `plugin` push's title (muster's), and its body when the message cannot
+// be read.
 const (
 	DraftPushTitle = "A reply draft awaits your approval"
 	DraftPushBody  = "Your chief drafted a reply to a plugin message. Nothing is sent until you approve it."

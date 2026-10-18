@@ -209,6 +209,10 @@ func (s *Server) sendQueueAdd(w http.ResponseWriter, r *http.Request, ctx contex
 		return
 	}
 	s.logger.Printf("sendqueue: queued message %d (%d bytes) for %s", stored.ID, len(stored.Body), q.t)
+	// The operator wrote to the session — when they QUEUED it, not when it is
+	// pasted: a session blocked in attention_wait is busy, and a queued message
+	// waits for idle, so it would never be pasted while the ask held it.
+	s.mirrorAddressed(ctx, q.h.Host, q.e, text)
 	s.kickSendQueue()
 	if nav {
 		http.Redirect(w, r, withNotice(q.back, noticeQueued), http.StatusSeeOther)
