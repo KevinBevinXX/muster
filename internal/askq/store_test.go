@@ -158,6 +158,10 @@ func TestTheCLIsRecordSaysWhoWon(t *testing.T) {
 	if e, ok := resolve(s, 1, nil); !ok || e.State != Declined {
 		t.Fatalf("a dismissed picker: %+v %v", e, ok)
 	}
+	// ...and a dismissed question is not typed into either.
+	if _, _, err := s.BeginTyping(key(1), someAnswers); !errors.Is(err, ErrClosed) {
+		t.Fatalf("typing into a dismissed question: %v, want ErrClosed", err)
+	}
 	// A result for a call the store never asked about changes nothing.
 	if _, ok := s.Resolve(1, "mirror", "laptop", "s-1", "toolu_unknown", someAnswers); ok {
 		t.Fatal("an unknown call resolved")

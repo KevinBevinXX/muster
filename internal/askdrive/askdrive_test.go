@@ -285,3 +285,84 @@ func TestTheReviewMustShowTheAnswersBeforeTheSubmit(t *testing.T) {
 		t.Fatal("a review with other answers was submitted")
 	}
 }
+
+// lookPane is fakePane whose look hook runs before the n-th Capture (from 1):
+// the terminal changing the picker BETWEEN two keys — after the drive saw its
+// last key land, before it sends the next. drop, when set, names a Send (from
+// 0) the picker never receives.
+type lookPane struct {
+	*fakePane
+	looks int
+	look  func(n int)
+	drop  func(n int) bool
+}
+
+func (l *lookPane) Capture(ctx context.Context) (string, error) {
+	l.looks++
+	if l.look != nil {
+		l.look(l.looks)
+	}
+	return l.fakePane.Capture(ctx)
+}
+
+func (l *lookPane) Send(ctx context.Context, k string) error {
+	if l.drop != nil && l.drop(len(l.sent)) {
+		l.sent = append(l.sent, k)
+		return nil
+	}
+	return l.fakePane.Send(ctx, k)
+}
+
+// TestEveryKeyIsPrecededByALook: the person ticks a box in the terminal after
+// the drive's second key has landed; the drive's look before its third key
+// sees it and sends nothing more.
+func TestEveryKeyIsPrecededByALook(t *testing.T) {
+	p := NewFakePicker([]askq.Question{pets})
+	lp := &lookPane{fakePane: &fakePane{p: p}}
+	lp.look = func(n int) {
+		if n == 5 { // looks: before key 1, after it, before key 2, after it, before key 3
+			p.Type("2")
+		}
+	}
+	err := Drive(context.Background(), lp, []askq.Question{pets}, []Choice{{Picks: []int{0, 2}}}, fast)
+	if !errors.Is(err, ErrLost) || !strings.Contains(err.Error(), "before key 3") {
+		t.Fatalf("a picker changed between keys: %v", err)
+	}
+	if !reflect.DeepEqual(lp.sent, []string{"1", "3"}) {
+		t.Fatalf("keys sent into a picker that changed between them: %q", lp.sent)
+	}
+}
+
+// TestALostLastKeyIsNotASuccess: the submit never reaches the picker (the
+// pane dropped it); the drive says so instead of reporting it answered.
+func TestALostLastKeyIsNotASuccess(t *testing.T) {
+	p := NewFakePicker([]askq.Question{pets})
+	lp := &lookPane{fakePane: &fakePane{p: p}}
+	lp.drop = func(n int) bool { return n == 7 } // the review's "1"
+	err := Drive(context.Background(), lp, []askq.Question{pets}, []Choice{{Picks: []int{0, 2}}}, fast)
+	if !errors.Is(err, ErrLost) || !strings.Contains(err.Error(), "after key 8") {
+		t.Fatalf("a submit that never landed: %v (sent %q)", err, lp.sent)
+	}
+	if _, _, done := p.Result(); done {
+		t.Fatal("the control: the picker submitted")
+	}
+}
+
+// TestNineRowsIsTheMostADigitReaches: own words go on the row after the
+// options, chosen by its digit — so eight options is the most that can take
+// own words, and nine refuse them.
+func TestNineRowsIsTheMostADigitReaches(t *testing.T) {
+	q := func(n int) askq.Question {
+		qq := askq.Question{Question: "Which?", Header: "Which"}
+		for i := 0; i < n; i++ {
+			qq.Options = append(qq.Options, askq.Option{Label: string(rune('A' + i))})
+		}
+		return qq
+	}
+	if _, err := Plan([]askq.Question{q(8)}, []Choice{{Other: "mine"}}); err != nil {
+		t.Fatalf("eight options and own words: %v", err)
+	}
+	if _, err := Plan([]askq.Question{q(9)}, []Choice{{Other: "mine"}}); !errors.Is(err, ErrUntypeable) {
+		t.Fatalf("nine options and own words: %v", err)
+	}
+}

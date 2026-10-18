@@ -332,6 +332,10 @@ func (s *Server) handleMirrorAskAnswer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Defensive: FromForm is stricter than the driver today (it trims, caps
+	// the text and the question set caps options below the nine rows a digit
+	// reaches), so no form reaches this — it keeps the two from drifting
+	// apart into an answer the host would refuse only after "typing…".
 	if _, err := askdrive.Plan(entry.Questions, choices); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

@@ -43,14 +43,14 @@ type askMirror struct {
 	typed     []string
 	typeErr   error
 	noAnswer  bool // the host does not advertise AskAnswer
-	feedCh    chan []cctranscript.Event
+	feedCh    chan mirror.Msg
 	watchSeen int
 }
 
 func newAskMirror(interactive bool) *askMirror {
 	fm := &fakeMirror{online: true, interactive: interactive, v2: &fakeMirrorV2{},
 		windows: []mirror.Window{{Session: "main", ID: "@1", Index: 0, Active: true, Claude: true, ClaudeSession: "sess-1"}}}
-	return &askMirror{fakeMirror: fm, nudges: map[int64]int{}, feedCh: make(chan []cctranscript.Event, 16)}
+	return &askMirror{fakeMirror: fm, nudges: map[int64]int{}, feedCh: make(chan mirror.Msg, 16)}
 }
 
 func (a *askMirror) Hosts(ctx context.Context) []mirror.HostView {
@@ -103,8 +103,8 @@ func (a *askMirror) WatchWindow(ctx context.Context, host, session, window, gen 
 		select {
 		case <-ctx.Done():
 			return nil
-		case evs := <-a.feedCh:
-			if err := out(mirror.Msg{Type: mirror.TypeEvents, Gen: "sess-1", Events: evs}); err != nil {
+		case m := <-a.feedCh:
+			if err := out(m); err != nil {
 				return err
 			}
 		}
@@ -113,14 +113,19 @@ func (a *askMirror) WatchWindow(ctx context.Context, host, session, window, gen 
 
 // feed is the CLI writing the call's result: answers (nil = dismissed).
 func (a *askMirror) feed(tool string, qs []askq.Question, answers map[string]string) {
+	a.feedFrom("sess-1", tool, qs, answers)
+}
+
+// feedFrom is feed from the transcript of Claude session gen.
+func (a *askMirror) feedFrom(gen, tool string, qs []askq.Question, answers map[string]string) {
 	ev := cctranscript.Event{Kind: cctranscript.KindToolResult, ToolID: tool, OK: answers != nil}
 	if answers != nil {
 		ev.Ask = &cctranscript.Ask{Questions: qs, Answers: answers}
 	}
-	a.feedCh <- []cctranscript.Event{
+	a.feedCh <- mirror.Msg{Type: mirror.TypeEvents, Gen: gen, Events: []cctranscript.Event{
 		{Kind: cctranscript.KindToolCall, ToolID: tool, Tool: askq.ToolName, Ask: &cctranscript.Ask{Questions: qs}},
 		ev,
-	}
+	}}
 }
 
 func (a *askMirror) typedSoFar() []string {
@@ -294,6 +299,15 @@ func TestAnAnswerIsTypedAndTheCLIsRecordConfirmsIt(t *testing.T) {
 	if got := am.typedSoFar(); !reflect.DeepEqual(got, []string{`ws main @1 [{"picks":[0]},{"picks":[1,2]}]`}) {
 		t.Fatalf("typed %q", got)
 	}
+	// A double submit while it is being typed: the typing card, nothing typed
+	// twice.
+	if resp, _ := answerReq(t, s, ts, answerForm(gateTool, "a0", "Red", "a1", "Fish", "a1", "Dog"), "", ""); resp.StatusCode != http.StatusOK ||
+		resp.Header.Get("X-Ask-State") != ui.AskStateTyping {
+		t.Fatalf("a double submit while typing: %d %s", resp.StatusCode, resp.Header.Get("X-Ask-State"))
+	}
+	if got := am.typedSoFar(); len(got) != 1 {
+		t.Fatalf("a double submit while typing typed again: %q", got)
+	}
 	am.feed(gateTool, gateQs(t), map[string]string{"Which color do you prefer?": "Red", "Which pets do you have?": "Dog, Fish"})
 	card := region(t, s, ts, `data-ask-state="answered"`)
 	if !strings.Contains(card, "Answered here") {
@@ -342,6 +356,23 @@ func TestTheTerminalWinsTheRace(t *testing.T) {
 	}
 	am2.feed(gateTool, gateQs(t), map[string]string{"Which color do you prefer?": "Blue", "Which pets do you have?": "Cat"})
 	region(t, s2, ts2, `data-ask-state="answered-terminal"`)
+}
+
+// TestAnotherConversationsResultIsNotTheAnswer: the window now runs another
+// Claude session (its transcript, its generation); a result there with the
+// same call id resolves nothing. The control: the question's own session's
+// result does.
+func TestAnotherConversationsResultIsNotTheAnswer(t *testing.T) {
+	am, s, ts := askServer(t, true)
+	register(t, ts)
+	region(t, s, ts, `data-ask-state="pending"`)
+	am.feedFrom("sess-other", gateTool, gateQs(t), map[string]string{"Which color do you prefer?": "Blue", "Which pets do you have?": "Cat"})
+	time.Sleep(300 * time.Millisecond)
+	if got := s.Questions().Pending(1); len(got) != 1 {
+		t.Fatalf("another conversation's result resolved the question: %+v", got)
+	}
+	am.feed(gateTool, gateQs(t), map[string]string{"Which color do you prefer?": "Blue", "Which pets do you have?": "Cat"})
+	region(t, s, ts, `data-ask-state="answered-terminal"`)
 }
 
 func TestADismissedPickerIsDeclined(t *testing.T) {
@@ -474,8 +505,8 @@ func TestAnAnswerPassesEveryGate(t *testing.T) {
 	am.fakeMirror.mu.Lock()
 	am.fakeMirror.interactive = false
 	am.fakeMirror.mu.Unlock()
-	if resp, _ := answerReq(t, s, ts, good, "", ""); resp.StatusCode != http.StatusConflict {
-		t.Fatalf("a read-only host: %d, want 409", resp.StatusCode)
+	if resp, body := answerReq(t, s, ts, good, "", ""); resp.StatusCode != http.StatusConflict || !strings.Contains(body, mirror.ErrInteractiveRefused.Error()) {
+		t.Fatalf("a read-only host: %d %q, want 409 saying it is read-only", resp.StatusCode, body)
 	}
 }
 
