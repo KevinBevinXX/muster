@@ -426,11 +426,13 @@ func sameWindows(a, b []Window) bool {
 	if (a == nil) != (b == nil) || len(a) != len(b) {
 		return false
 	}
+	// OtherClaude is ignored too: no card draws it (the MCP door reads it).
+	card := func(w Window) Window {
+		w.Activity, w.Status, w.StatusSince, w.OtherClaude = 0, "", 0, nil
+		return w
+	}
 	for i := range a {
-		x, y := a[i], b[i]
-		x.Activity, y.Activity = 0, 0
-		x.Status, y.Status, x.StatusSince, y.StatusSince = "", "", 0, 0
-		if x != y {
+		if !card(a[i]).Equal(card(b[i])) {
 			return false
 		}
 	}

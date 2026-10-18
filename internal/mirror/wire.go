@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -384,13 +385,30 @@ type Window struct {
 	//
 	// ⚠ THE TRANSCRIPT PATH IS DELIBERATELY NOT ON THE WIRE. The window list is
 	// ONE message within MaxFrame, and with this field at its 64-byte bound its
-	// worst case measures 96% of it (1,010,303 of 1,048,576 bytes:
+	// worst case measures 96% of it (1,010,303 of 1,048,576 bytes before OtherClaude, 1,012,575 with it:
 	// TestTheLargestWindowListFitsOneFrame, which logs the figure) — a host path
 	// per window does not fit beside it. muster never needs the path: it reads a transcript
 	// through the host's own watch (Hub.WatchWindow), which resolves the path
 	// on the host.
 	ClaudeSession string `json:"claudeSession,omitempty"`
+	// OtherClaude are the Claude Code session ids running in the window's
+	// OTHER panes (a split), "" never. Only so a session in a non-active pane
+	// is recognised as this host's by the mirrored sessions' MCP door
+	// (internal/api's mirrorSessionOf); nothing renders them.
+	//
+	// 🔴 BOUNDED LIST-WIDE, NOT PER WINDOW: at most MaxOtherClaudePerWindow per
+	// window and MaxOtherClaude across the whole list (NormalizeWindows), so the
+	// list's worst case grows by a few KiB of the frame's last 4%
+	// (TestTheLargestWindowListFitsOneFrame encodes it at its bound).
+	// Backward-compatible both ways, like ClaudeSession.
+	OtherClaude []string `json:"otherClaude,omitempty"`
 }
+
+// The OtherClaude bounds.
+const (
+	MaxOtherClaudePerWindow = 4
+	MaxOtherClaude          = 32
+)
 
 // claudeSessionPattern is a Claude Code session id as the wire carries one: a
 // UUID in practice, bounded so the window list's worst case stays inside
@@ -712,6 +730,7 @@ func NormalizeWindows(in []Window, now int64) []Window {
 		if !w.Claude || !ValidClaudeSession(w.ClaudeSession) {
 			w.ClaudeSession = ""
 		}
+		w.OtherClaude = validOtherClaude(w.OtherClaude, w.ClaudeSession)
 		if w.Activity < 0 {
 			w.Activity = 0
 		}
@@ -733,6 +752,19 @@ func NormalizeWindows(in []Window, now int64) []Window {
 	})
 	if len(out) > MaxWindows {
 		out = out[:MaxWindows]
+	}
+	// The list-wide OtherClaude bound, after the sort, so which windows keep
+	// theirs does not depend on the host's order.
+	others := 0
+	for i := range out {
+		if others >= MaxOtherClaude {
+			out[i].OtherClaude = nil
+			continue
+		}
+		if n := MaxOtherClaude - others; len(out[i].OtherClaude) > n {
+			out[i].OtherClaude = out[i].OtherClaude[:n]
+		}
+		others += len(out[i].OtherClaude)
 	}
 	active := map[string]bool{}
 	for i := range out {
@@ -864,4 +896,30 @@ func SanitizePaste(text string) (string, error) {
 		}
 	}
 	return text, nil
+}
+
+// validOtherClaude is ids with the invalid, the duplicates and the window's own
+// active-pane session dropped, at most MaxOtherClaudePerWindow; nil for none.
+func validOtherClaude(ids []string, active string) []string {
+	var out []string
+	seen := map[string]bool{active: true}
+	for _, id := range ids {
+		if len(out) == MaxOtherClaudePerWindow {
+			break
+		}
+		if !ValidClaudeSession(id) || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
+
+// Equal reports whether w and o are the same window in every field (Window
+// holds a slice, so it has no ==).
+func (w Window) Equal(o Window) bool {
+	return w.Session == o.Session && w.ID == o.ID && w.Index == o.Index && w.Active == o.Active && w.Label == o.Label &&
+		w.Activity == o.Activity && w.Claude == o.Claude && w.Command == o.Command && w.Status == o.Status &&
+		w.StatusSince == o.StatusSince && w.ClaudeSession == o.ClaudeSession && slices.Equal(w.OtherClaude, o.OtherClaude)
 }

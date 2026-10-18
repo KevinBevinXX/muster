@@ -19,15 +19,25 @@ const (
 	proxySecret = "local-secret-0123456789abcdef0123456789abcdef"
 	proxyToken  = "mmt_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	proxySID    = "0b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b"
+	splitSID    = "1c3d4e5f-6071-4829-9bac-1d2e3f4a5b6c"
+	proxySocket = "/run/user/1000/tmux-1000/default"
+	// proxyTMUX is $TMUX in a pane of that server.
+	proxyTMUX = proxySocket + ",4242,0"
 )
 
-// paneWindows is a WindowLister with one Claude pane (%7 → proxySID) and one
-// shell pane (%8).
+// fakeSocket is a ServerSocketer naming proxySocket.
+type fakeSocket struct{}
+
+func (fakeSocket) ServerSocket(context.Context) (string, error) { return proxySocket, nil }
+
+// paneWindows is a WindowLister with one Claude pane (%7 → proxySID, the
+// window's active pane, with a split whose %9 runs splitSID) and one shell
+// pane (%8).
 type paneWindows struct{}
 
 func (paneWindows) Windows(context.Context) ([]WindowInfo, error) {
 	return []WindowInfo{
-		{Session: "work", ID: "@1", Pane: "%7", Claude: &ClaudePane{Pane: "%7", Gen: proxySID}},
+		{Session: "work", ID: "@1", Pane: "%7", Claude: &ClaudePane{Pane: "%7", Gen: proxySID}, Others: []ClaudePane{{Pane: "%9", Gen: splitSID}}},
 		{Session: "work", ID: "@2", Pane: "%8"},
 	}, nil
 }
@@ -61,7 +71,7 @@ func (u *upstream) n() int {
 }
 
 func proxyFor(base string) *MCPProxy {
-	return &MCPProxy{URL: base, Token: proxyToken, AllowHTTP: true, Secret: proxySecret, Windows: paneWindows{}}
+	return &MCPProxy{URL: base, Token: proxyToken, AllowHTTP: true, Secret: proxySecret, Windows: paneWindows{}, Socket: fakeSocket{}}
 }
 
 func post(t *testing.T, h http.Handler, hdr map[string]string) *httptest.ResponseRecorder {
@@ -105,10 +115,10 @@ func TestTheMCPEndpointRefusesWithoutTheSecret(t *testing.T) {
 		hdr  map[string]string
 		want int
 	}{
-		"no secret":      {map[string]string{MCPPaneHeader: "%7"}, http.StatusUnauthorized},
-		"wrong secret":   {map[string]string{"Authorization": "Bearer " + proxySecret + "x", MCPPaneHeader: "%7"}, http.StatusUnauthorized},
-		"the mirror tok": {map[string]string{"Authorization": "Bearer " + proxyToken, MCPPaneHeader: "%7"}, http.StatusUnauthorized},
-		"an Origin":      {map[string]string{"Authorization": "Bearer " + proxySecret, MCPPaneHeader: "%7", "Origin": "http://evil.example"}, http.StatusForbidden},
+		"no secret":      {map[string]string{MCPPaneHeader: "%7", MCPTmuxHeader: proxyTMUX}, http.StatusUnauthorized},
+		"wrong secret":   {map[string]string{"Authorization": "Bearer " + proxySecret + "x", MCPPaneHeader: "%7", MCPTmuxHeader: proxyTMUX}, http.StatusUnauthorized},
+		"the mirror tok": {map[string]string{"Authorization": "Bearer " + proxyToken, MCPPaneHeader: "%7", MCPTmuxHeader: proxyTMUX}, http.StatusUnauthorized},
+		"an Origin":      {map[string]string{"Authorization": "Bearer " + proxySecret, MCPPaneHeader: "%7", MCPTmuxHeader: proxyTMUX, "Origin": "http://evil.example"}, http.StatusForbidden},
 	} {
 		if w := post(t, p, c.hdr); w.Code != c.want {
 			t.Errorf("%s: %d %s", name, w.Code, w.Body)
@@ -119,7 +129,7 @@ func TestTheMCPEndpointRefusesWithoutTheSecret(t *testing.T) {
 	}
 	// An empty configured secret refuses everyone, an empty presented one included.
 	p.Secret = ""
-	if w := post(t, p, map[string]string{"Authorization": "Bearer ", MCPPaneHeader: "%7"}); w.Code != http.StatusUnauthorized {
+	if w := post(t, p, map[string]string{"Authorization": "Bearer ", MCPPaneHeader: "%7", MCPTmuxHeader: proxyTMUX}); w.Code != http.StatusUnauthorized {
 		t.Fatalf("empty secret: %d", w.Code)
 	}
 }
@@ -134,7 +144,7 @@ func TestTheMCPEndpointForwardsTheCallersIdentity(t *testing.T) {
 		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`)
 	})
 	p := proxyFor(srv.URL + "/base/")
-	w := post(t, p, map[string]string{"Authorization": "Bearer " + proxySecret, MCPPaneHeader: "%7"})
+	w := post(t, p, map[string]string{"Authorization": "Bearer " + proxySecret, MCPPaneHeader: "%7", MCPTmuxHeader: proxyTMUX})
 	if w.Code != http.StatusTeapot || w.Body.String() != `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}` || w.Header().Get("Content-Type") != "application/json" {
 		t.Fatalf("%d %q %s", w.Code, w.Header().Get("Content-Type"), w.Body)
 	}
@@ -150,16 +160,22 @@ func TestTheMCPEndpointForwardsTheCallersIdentity(t *testing.T) {
 	if strings.Contains(r.Header.Get("Authorization"), proxySecret) {
 		t.Fatal("the local secret was forwarded")
 	}
-	// A session header is forwarded as given; a pane with no Claude, a bad id
-	// and no name at all are refused here.
-	if w := post(t, p, map[string]string{"Authorization": "Bearer " + proxySecret, MCPSessionHeader: proxySID}); w.Code != http.StatusTeapot {
-		t.Fatalf("session header: %d", w.Code)
+	// A pane in a split (not the window's active one) is its own session.
+	if w := post(t, p, map[string]string{"Authorization": "Bearer " + proxySecret, MCPPaneHeader: "%9", MCPTmuxHeader: proxyTMUX}); w.Code != http.StatusTeapot {
+		t.Fatalf("a split pane: %d %s", w.Code, w.Body)
 	}
+	if got := up.calls[1].Header.Get(MCPSessionHeader); got != splitSID {
+		t.Fatalf("the split pane forwarded session %q, want %q", got, splitSID)
+	}
+	// A shell pane, an unknown pane, a session id with no pane, another tmux
+	// server's pane, and no tmux at all are refused here.
 	for name, hdr := range map[string]map[string]string{
-		"a shell pane":    {MCPPaneHeader: "%8"},
-		"an unknown pane": {MCPPaneHeader: "%99"},
-		"a bad id":        {MCPSessionHeader: "../x"},
-		"no name":         {},
+		"a shell pane":          {MCPPaneHeader: "%8", MCPTmuxHeader: proxyTMUX},
+		"an unknown pane":       {MCPPaneHeader: "%99", MCPTmuxHeader: proxyTMUX},
+		"a session id, no pane": {MCPSessionHeader: proxySID, MCPTmuxHeader: proxyTMUX},
+		"another tmux server":   {MCPPaneHeader: "%7", MCPTmuxHeader: "/tmp/tmux-1000/other,99,0"},
+		"no tmux":               {MCPPaneHeader: "%7"},
+		"no name":               {},
 	} {
 		hdr["Authorization"] = "Bearer " + proxySecret
 		if w := post(t, p, hdr); w.Code != http.StatusBadRequest {
@@ -193,6 +209,7 @@ func TestTheMCPEndpointPassesAKeepAliveThrough(t *testing.T) {
 		req, _ := http.NewRequest(http.MethodPost, local.URL+"/mcp", strings.NewReader(`{}`))
 		req.Header.Set("Authorization", "Bearer "+proxySecret)
 		req.Header.Set(MCPPaneHeader, "%7")
+		req.Header.Set(MCPTmuxHeader, proxyTMUX)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			got <- "error: " + err.Error()
@@ -231,5 +248,48 @@ func TestTheMCPSecretIsCreatedPrivateAndReused(t *testing.T) {
 	}
 	if _, err := EnsureMCPSecret(path); err == nil || !strings.Contains(err.Error(), "readable by others") {
 		t.Fatalf("a world-readable secret: %v", err)
+	}
+}
+
+// TestTheMCPSecretIsCreatedOnceUnderConcurrency: hosts starting at once all
+// read the ONE secret that won, and none ever reads an empty one.
+func TestTheMCPSecretIsCreatedOnceUnderConcurrency(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "muster-mirror", "mcp-secret")
+	const n = 16
+	got := make(chan string, n)
+	errs := make(chan error, n)
+	var wg sync.WaitGroup
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s, err := EnsureMCPSecret(path)
+			if err != nil {
+				errs <- err
+				return
+			}
+			got <- s
+		}()
+	}
+	wg.Wait()
+	close(got)
+	close(errs)
+	for err := range errs {
+		t.Fatalf("a concurrent create failed: %v", err)
+	}
+	var first string
+	for s := range got {
+		if len(s) != 64 {
+			t.Fatalf("a reader saw %q", s)
+		}
+		if first == "" {
+			first = s
+		}
+		if s != first {
+			t.Fatalf("two secrets: %q and %q", first, s)
+		}
+	}
+	if entries, _ := os.ReadDir(filepath.Dir(path)); len(entries) != 1 {
+		t.Fatalf("temp files left behind: %v", entries)
 	}
 }

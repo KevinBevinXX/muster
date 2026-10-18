@@ -344,7 +344,7 @@ func (w windowFake) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
 	var out []mirrorhost.WindowInfo
 	for _, line := range strings.Split(string(b), "\n") {
 		f := strings.Split(strings.TrimSpace(line), "|")
-		if len(f) != 7 {
+		if len(f) != 7 && len(f) != 8 {
 			continue
 		}
 		index, _ := strconv.Atoi(f[2])
@@ -355,6 +355,12 @@ func (w windowFake) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
 			status, since := windowFakeStatus(f[6])
 			info.Claude = &mirrorhost.ClaudePane{Pane: info.Pane, PID: 1, Transcript: f[6],
 				Gen: strings.TrimSuffix(filepath.Base(f[6]), ".jsonl"), Busy: status == "busy", Status: status, StatusSince: since}
+		}
+		// An 8th field: the transcript of a Claude Code session in the window's
+		// SECOND (non-active) pane, "<window pane>-split".
+		if len(f) == 8 && f[7] != "" {
+			info.Others = []mirrorhost.ClaudePane{{Pane: info.Pane + "-split", PID: 1, Transcript: f[7],
+				Gen: strings.TrimSuffix(filepath.Base(f[7]), ".jsonl")}}
 		}
 		out = append(out, info)
 	}
@@ -511,3 +517,10 @@ func (s *scrollFake) CancelCopyMode(_ context.Context, pane string) error {
 	delete(s.pos, pane)
 	return s.record(pane + " cancel")
 }
+
+// E2ETmuxSocket is the fake tmux server's socket path: what a spec sends as
+// X-Muster-Tmux (its $TMUX) to the host's MCP endpoint.
+const E2ETmuxSocket = "/tmp/muster-e2e-fake-tmux/default"
+
+// ServerSocket implements mirrorhost.ServerSocketer.
+func (w windowFake) ServerSocket(context.Context) (string, error) { return E2ETmuxSocket, nil }

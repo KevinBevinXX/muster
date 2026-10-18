@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
@@ -20,16 +22,20 @@ import (
 // MCP endpoint (internal/mirrorhost's MCPProxy) that forwards each call here
 // with the HOST's mirror token and the calling session's Claude session id
 // (X-Muster-Claude-Session) — so the session gets the "all agents" tools:
-// attention_ask/wait/get/cancel and the owner's task tools.
+// attention_ask/wait/cancel, and the task tools over the tasks THAT SESSION
+// created (taskScopeOf).
 //
 // 🔴 A MIRROR TOKEN NOW OPENS A SECOND ROUTE, AND THIS ONE IS NARROW. Until this
 // door, mmt_ opened /mirror/connect and nothing else. Here it opens exactly the
 // all-agents tool set (mirrorTools) and nothing else: no chief tool (they are
 // not listed, and serveMCP refuses an unlisted name), no connector, no flow.
+// So a LEAKED mmt_ reaches, beyond what /mirror/connect already gives, the
+// asks of that host's sessions (file, wait, cancel) and the tasks those
+// sessions created — never another task, another host's session or the chief.
 //
 // 🔴 A HOST ACTS ONLY AS ITS OWN SESSIONS. The token names its host; the
 // session id is the caller's claim, and it is believed only when THAT host is
-// connected now and lists a window whose Claude session it is
+// connected now and lists a window running that Claude session in any pane
 // (mirrorSessionOf). Another host's session, a session no window shows, or a
 // token of another owner is refused before any tool runs (403), so one host
 // cannot ask, wait or read as another host's session.
@@ -54,16 +60,30 @@ func (s *Server) requireMirrorHostToken(next http.HandlerFunc) http.HandlerFunc 
 			http.NotFound(w, r)
 			return
 		}
+		// The failure limit, ServeConnect's shape: only FAILED token checks
+		// count, per client address, and a valid token is never refused by it —
+		// the count turns an address's further failures into 429s.
+		addr := clientIP(r)
+		refuse := func() {
+			s.mirrorMCPFails.add(addr, s.now(), mirrorMCPFailWindow)
+			if s.mirrorMCPFails.count(addr, s.now(), mirrorMCPFailWindow) > mirrorMCPFailLimit {
+				s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "too many failed mirror token checks from this address; wait a minute"})
+				return
+			}
+			s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "this route takes a mirror host token (mmt_…)"})
+		}
 		tok := hookTokenFromRequest(r)
 		if !mirror.TokenShapeOK(tok) {
-			s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "this route takes a mirror host token (mmt_…)"})
+			refuse()
 			return
 		}
+		// Looked up on EVERY call: a revoked token is refused at its next call,
+		// and a wait already in flight is bounded by attentionMaxWait.
 		t, err := s.mirrorHostFor(r.Context(), tok)
 		switch {
 		case err == nil:
 		case errors.Is(err, mirror.ErrBadToken):
-			s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "this route takes a mirror host token (mmt_…)"})
+			refuse()
 			return
 		default:
 			s.logger.Printf("mirror mcp: token lookup failed: %v", err)
@@ -85,15 +105,38 @@ func (s *Server) mirrorHostFor(ctx context.Context, tok string) (mirror.Token, e
 	return s.ext.MirrorTokens.Authenticate(authz.System(ctx), tok)
 }
 
-// mirrorSessionOf is the window of the principal's host `host` that runs
-// Claude session sid now, and whether there is one: the host must be online
-// and list it.
+// The /mirror/mcp failure limit: more than this many failed token checks per
+// address within the window are answered 429.
+const (
+	mirrorMCPFailLimit  = 10
+	mirrorMCPFailWindow = time.Minute
+)
+
+// mirrorSessionOf is the window of the principal's host `host` running Claude
+// session sid now — in its active pane or in another pane of it (a split) —
+// and whether there is one: the host must be online and list it.
 func (s *Server) mirrorSessionOf(ctx context.Context, host, sid string) (mirror.SessionView, bool) {
 	if s.ext.Mirror == nil || !mirror.ValidClaudeSession(sid) {
 		return mirror.SessionView{}, false
 	}
-	for _, e := range s.mirrorClaudeEntries(ctx) {
-		if e.Host == host && e.ClaudeSession == sid {
+	hosts := s.ext.Mirror.Hosts(ctx)
+	var window string
+	found := false
+	for _, h := range hosts {
+		if h.Host != host || !h.Online {
+			continue
+		}
+		for _, w := range h.Windows {
+			if (w.Claude && w.ClaudeSession == sid) || slices.Contains(w.OtherClaude, sid) {
+				window, found = w.Session+"\x00"+w.ID, true
+			}
+		}
+	}
+	if !found {
+		return mirror.SessionView{}, false
+	}
+	for _, e := range mirror.Ordered(hosts) {
+		if e.Host == host && e.Session+"\x00"+e.Window == window {
 			return e, true
 		}
 	}

@@ -395,12 +395,26 @@ type taskScope struct {
 func (sc taskScope) has(id int64) bool { return sc.all || sc.ids[id] }
 
 // taskScopeOf is c's task scope: the chief's whole board; a dispatched
-// agent's own task (its NoteID) and the tasks it created. No agent tool
-// creates a task today, so a worker's scope is its NoteID; a caller that is
-// not an agent touches no task.
+// agent's own task (its NoteID) and the tasks it created — no agent tool
+// creates a task today, so a worker's scope is its NoteID; a mirrored Claude
+// Code session's (mirror_mcp.go), the tasks that session created (its
+// task_sessions link of role "created", which the CLI's task-create records
+// from the session's id).
 func (s *Server) taskScopeOf(ctx context.Context, c toolCaller) (taskScope, error) {
 	sc := taskScope{ids: map[int64]bool{}}
 	if c.agent == nil {
+		if c.asker.MirrorSession == "" {
+			return sc, nil
+		}
+		links, err := s.ext.Notes.TasksForSession(ctx, c.asker.MirrorSession)
+		if err != nil {
+			return sc, err
+		}
+		for _, l := range links {
+			if l.Role == notes.RoleCreated {
+				sc.ids[l.NoteID] = true
+			}
+		}
 		return sc, nil
 	}
 	if s.isChiefAgent(ctx, *c.agent) {

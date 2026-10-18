@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/mirrorhost"
 )
@@ -207,5 +211,58 @@ func TestCatalogPrintsWhatTheHostWouldReport(t *testing.T) {
 		if !strings.Contains(out, "user\tskill\t/printed\tshown by -catalog\n") || !strings.Contains(out, "snippet\t:pc\tPrinted snippet\n") {
 			t.Fatalf("%v printed:\n%s", args, out)
 		}
+	}
+}
+
+// TestAnMCPSetupFailureDoesNotStopMirroring: with the opt-in MCP endpoint's
+// port already taken, the host still dials muster — it mirrors without the
+// endpoint and says so — and stops cleanly when told to.
+func TestAnMCPSetupFailureDoesNotStopMirroring(t *testing.T) {
+	taken, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taken.Close()
+	dialled := make(chan struct{}, 1)
+	muster := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/mirror/connect" {
+			select {
+			case dialled <- struct{}{}:
+			default:
+			}
+		}
+		http.Error(w, "no", http.StatusUnauthorized)
+	}))
+	defer muster.Close()
+	prevB, prevC := newTmuxBackend, runContext
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() { newTmuxBackend, runContext = prevB, prevC; cancel() })
+	newTmuxBackend = func(string, string, string) mirrorhost.Backend { return listBackend{} }
+	runContext = func() context.Context { return ctx }
+	type result struct {
+		rc        int
+		out, errs string
+	}
+	done := make(chan result, 1)
+	go func() {
+		rc, out, errs := runWith(t, map[string]string{envURL: muster.URL, envToken: "mmt_" + strings.Repeat("A", 43), envHost: "laptop",
+			envAllowHTTP: "1", envMCPListen: taken.Addr().String(), envMCPSecret: filepath.Join(t.TempDir(), "mcp-secret")})
+		done <- result{rc, out, errs}
+	}()
+	select {
+	case <-dialled:
+	case r := <-done:
+		t.Fatalf("run ended before dialling muster: rc %d %s", r.rc, r.errs)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the host never dialled muster")
+	}
+	cancel()
+	select {
+	case r := <-done:
+		if r.rc != 0 || !strings.Contains(r.errs, "MCP endpoint is OFF, mirroring continues") {
+			t.Fatalf("rc %d, log: %s", r.rc, r.errs)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not stop")
 	}
 }

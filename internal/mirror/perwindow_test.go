@@ -379,7 +379,7 @@ func TestNormalizeWindowsKeepsWhatTheTunnelCarries(t *testing.T) {
 		{Session: "b", ID: "@1", Index: 0, Active: true},
 		{Session: "b", ID: "@3", Index: 2, Label: "ok:2", Command: "zsh", Activity: 1791903899 - 1791903899%mirror.ActivityBucket},
 	}
-	if !slices.Equal(got, want) {
+	if !slices.EqualFunc(got, want, mirror.Window.Equal) {
 		t.Fatalf("NormalizeWindows =\n  %+v\nwant\n  %+v", got, want)
 	}
 	if mirror.NormalizeWindows(nil, now) != nil {

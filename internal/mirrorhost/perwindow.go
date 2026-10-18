@@ -55,6 +55,14 @@ type WindowInfo struct {
 	Command string
 	// Claude is the Claude Code session in the active pane; nil for none.
 	Claude *ClaudePane
+	// Others are the Claude Code sessions in the window's OTHER panes (a
+	// split), by pane: what lets a session in a non-active pane be resolved
+	// from its pane (MCPProxy) and recognised by muster (mirror.Window's
+	// OtherClaude). Nothing renders them.
+	Others []ClaudePane
+	// panes is every non-active pane of the window, as the listing read them:
+	// what Windows locates Others from.
+	panes []pane
 }
 
 // WindowLister is a Backend that can list every window of every session, from
@@ -128,24 +136,38 @@ func (t Tmux) Windows(ctx context.Context) ([]WindowInfo, error) {
 	panes := make([]pane, 0, len(windows))
 	for _, w := range windows {
 		panes = append(panes, pane{Session: w.Session, ID: w.Pane, PID: w.PanePID})
+		panes = append(panes, w.panes...)
 	}
 	claude := t.Claude.LocatePanes(panes)
 	for i := range windows {
 		if cp, ok := claude[windows[i].Pane]; ok {
 			windows[i].Claude = &cp
 		}
+		for _, p := range windows[i].panes {
+			if cp, ok := claude[p.ID]; ok {
+				windows[i].Others = append(windows[i].Others, cp)
+			}
+		}
 	}
 	return windows, nil
 }
 
 // parseWindows reads Windows' list-panes output: one WindowInfo per (session,
-// window) — its ACTIVE pane's line — sorted by session, then index, then id. A
-// line that does not parse, a window with no usable id, and every window of a
-// viewer session are skipped.
+// window) — its ACTIVE pane's line, with the window's other panes in panes —
+// sorted by session, then index, then id. A line that does not parse, a window
+// with no usable id, and every window of a viewer session are skipped.
 func parseWindows(out string) []WindowInfo {
 	var list []WindowInfo
+	type wkey struct{ session, id string }
+	others := map[wkey][]pane{}
 	for _, line := range strings.Split(out, "\n") {
 		f := strings.SplitN(strings.TrimRight(line, "\r"), "\t", 10)
+		if len(f) == 10 && f[0] != "1" && strings.HasPrefix(f[4], "%") {
+			if pid, err := strconv.Atoi(f[5]); err == nil && pid > 0 {
+				others[wkey{f[9], f[1]}] = append(others[wkey{f[9], f[1]}], pane{Session: f[9], ID: f[4], PID: pid})
+			}
+			continue
+		}
 		if len(f) != 10 || f[0] != "1" {
 			continue
 		}
@@ -170,6 +192,9 @@ func parseWindows(out string) []WindowInfo {
 			}
 		}
 		list = append(list, w)
+	}
+	for i := range list {
+		list[i].panes = others[wkey{list[i].Session, list[i].ID}]
 	}
 	sort.SliceStable(list, func(i, j int) bool {
 		a, b := list[i], list[j]
@@ -205,6 +230,11 @@ func WireWindows(windows []WindowInfo, codenames map[string]string, claude bool,
 			Activity: w.Activity, Command: w.Command, Claude: claude && w.Claude != nil}
 		if m.Claude {
 			m.Status, m.StatusSince, m.ClaudeSession = w.Claude.Status, w.Claude.StatusSince, w.Claude.Gen
+		}
+		if claude {
+			for _, o := range w.Others {
+				m.OtherClaude = append(m.OtherClaude, o.Gen)
+			}
 		}
 		if name, ok := codenames[w.Session]; ok {
 			m.Label = name + ":" + strconv.Itoa(w.Index)

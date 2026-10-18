@@ -154,7 +154,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	if e2eWrap != nil {
 		backend = e2eWrap(backend)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(runContext(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	logger := log.New(stderr, "", log.LstdFlags)
 	codenames := loadCodenames(*labelsFile, logger)
@@ -249,24 +249,12 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return 2
 	}
 	if *mcpListen != "" {
-		secret, err := mirrorhost.EnsureMCPSecret(*mcpSecretFile)
-		if err != nil {
-			fmt.Fprintln(stderr, err)
-			return 2
+		// 🔴 OPT-IN, SO NEVER FATAL: a port in use, a secret file with the wrong
+		// mode or anything else that stops the MCP endpoint is logged and the
+		// host mirrors without it — mirroring is the job this process exists for.
+		if err := startMCP(ctx, *mcpListen, *mcpSecretFile, backend, &mirrorhost.MCPProxy{URL: *url, Token: token, AllowHTTP: *allowHTTP, Logger: logger}, logger); err != nil {
+			logger.Printf("muster-mirror: the MCP endpoint is OFF, mirroring continues without it: %v", err)
 		}
-		l, err := mirrorhost.ListenMCP(*mcpListen)
-		if err != nil {
-			fmt.Fprintln(stderr, err)
-			return 2
-		}
-		wl, _ := mirrorhost.WindowListerOf(backend)
-		proxy := &mirrorhost.MCPProxy{URL: *url, Token: token, AllowHTTP: *allowHTTP, Secret: secret, Windows: wl, Logger: logger}
-		logger.Printf("muster-mirror: MCP endpoint for this host's Claude Code sessions at http://%s/mcp (secret in %s)", l.Addr(), *mcpSecretFile)
-		go func() {
-			if err := mirrorhost.ServeMCP(ctx, l, proxy); err != nil {
-				logger.Printf("muster-mirror: MCP endpoint: %v", err)
-			}
-		}()
 	}
 	mode := "read-only"
 	if *interactive {
@@ -367,4 +355,31 @@ func loadCodenames(path string, logger *log.Logger) map[string]string {
 	}
 	logger.Printf("muster-mirror: %d session label(s) from %s", len(codenames), path)
 	return codenames
+}
+
+// runContext is the context run starts from; a test replaces it to stop run.
+var runContext = context.Background
+
+// startMCP serves the local MCP endpoint (internal/mirrorhost's MCPProxy) on
+// listen until ctx ends, completing proxy with the secret and the backend's
+// window and tmux-server lookups. An error means the endpoint is not served.
+func startMCP(ctx context.Context, listen, secretFile string, backend mirrorhost.Backend, proxy *mirrorhost.MCPProxy, logger *log.Logger) error {
+	secret, err := mirrorhost.EnsureMCPSecret(secretFile)
+	if err != nil {
+		return err
+	}
+	l, err := mirrorhost.ListenMCP(listen)
+	if err != nil {
+		return err
+	}
+	proxy.Secret = secret
+	proxy.Windows, _ = mirrorhost.WindowListerOf(backend)
+	proxy.Socket, _ = mirrorhost.ServerSocketOf(backend)
+	logger.Printf("muster-mirror: MCP endpoint for this host's Claude Code sessions at http://%s/mcp (secret in %s)", l.Addr(), secretFile)
+	go func() {
+		if err := mirrorhost.ServeMCP(ctx, l, proxy); err != nil {
+			logger.Printf("muster-mirror: MCP endpoint: %v", err)
+		}
+	}()
+	return nil
 }

@@ -18,7 +18,7 @@ import (
 // the operator's prewritten agent-prompt snippets.
 //
 // 🔴 IT IS A REQUEST, NOT A FIELD OF THE WINDOW LIST. The window list travels in
-// ONE message whose worst case already measures 96% of MaxFrame
+// ONE message whose worst case already measures 97% of MaxFrame
 // (TestTheLargestWindowListFitsOneFrame); a command list per window does not
 // fit beside it, and it would be re-sent on every refresh for a menu almost
 // nobody opens. So muster ASKS for one window's catalog when a composer needs it

@@ -16,8 +16,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // THE LOCAL MCP ENDPOINT: how a Claude Code session in one of this host's tmux
@@ -38,14 +36,17 @@ import (
 // is refused: a web page cannot drive it, even one that guessed the secret.
 //
 // HOW A SESSION NAMES ITSELF. The MCP client config sends X-Muster-Pane:
-// ${TMUX_PANE} — Claude Code inherits its pane's TMUX_PANE, and expands it in
-// the config's headers — and the proxy maps that pane to the Claude session
-// running in it NOW (a /clear or restart changes the id; the pane stays). A
-// client that knows its session id may send X-Muster-Claude-Session instead.
+// ${TMUX_PANE:-} and X-Muster-Tmux: ${TMUX:-} — Claude Code inherits both from
+// its pane and expands them in the config's headers — and the proxy maps that
+// pane, in that tmux server, to the Claude session running in it NOW (a /clear
+// or restart changes the id; the pane stays). Any pane of a window counts, not
+// only its active one.
 
-// MCPPaneHeader and MCPSessionHeader are how a caller names itself.
+// MCPPaneHeader and MCPTmuxHeader are how a caller names itself: its pane and
+// its tmux server. MCPSessionHeader is what the proxy tells muster.
 const (
 	MCPPaneHeader    = "X-Muster-Pane"
+	MCPTmuxHeader    = "X-Muster-Tmux"
 	MCPSessionHeader = "X-Muster-Claude-Session"
 	// MCPPath is muster's mirrored-sessions MCP door.
 	MCPPath = "/mirror/mcp"
@@ -63,8 +64,11 @@ type MCPProxy struct {
 	// Secret is what a local caller must present.
 	Secret string
 	// Windows lists this host's windows: how a pane is resolved to its Claude
-	// session. Required for X-Muster-Pane; nil accepts only a session header.
+	// session. nil resolves none.
 	Windows WindowLister
+	// Socket is this host's tmux server: a caller's $TMUX must name it. nil
+	// (a backend that is not tmux) skips the check.
+	Socket ServerSocketer
 	// Client sends the forwarded request; nil is a client with no overall
 	// timeout (attention_wait long-polls for up to ten minutes).
 	Client *http.Client
@@ -103,30 +107,48 @@ func mcpRefuse(w http.ResponseWriter, code int, msg string) {
 	_, _ = fmt.Fprintf(w, "{\"error\":%q}\n", msg)
 }
 
-// session is the calling Claude session's id: the pane's, or the header's.
+// session is the calling Claude session's id, resolved from its tmux pane —
+// ANY pane of a mirrored window, the active one or another in a split — after
+// checking the caller's tmux server is the one this host mirrors (pane ids are
+// per server: %3 on another server is another pane).
 func (p *MCPProxy) session(ctx context.Context, r *http.Request) (string, error) {
-	if pane := strings.TrimSpace(r.Header.Get(MCPPaneHeader)); pane != "" {
-		if p.Windows == nil {
-			return "", errors.New("this host cannot resolve a tmux pane")
-		}
-		ws, err := p.Windows.Windows(ctx)
+	pane := strings.TrimSpace(r.Header.Get(MCPPaneHeader))
+	if pane == "" {
+		return "", fmt.Errorf("name the calling session: send %s: ${TMUX_PANE:-} from inside the mirrored tmux server", MCPPaneHeader)
+	}
+	if p.Windows == nil {
+		return "", errors.New("this host cannot resolve a tmux pane")
+	}
+	if p.Socket != nil {
+		want, err := p.Socket.ServerSocket(ctx)
 		if err != nil {
-			return "", fmt.Errorf("list windows: %w", err)
+			return "", fmt.Errorf("read this host's tmux server: %w", err)
 		}
-		for _, w := range ws {
-			if w.Claude != nil && w.Claude.Pane == pane && w.Claude.Gen != "" {
-				return w.Claude.Gen, nil
+		// $TMUX is "<socket path>,<server pid>,<session index>".
+		got, _, _ := strings.Cut(strings.TrimSpace(r.Header.Get(MCPTmuxHeader)), ",")
+		if got == "" || got != want {
+			return "", fmt.Errorf("the caller is not in the tmux server this host mirrors (send %s: ${TMUX:-})", MCPTmuxHeader)
+		}
+	}
+	ws, err := p.Windows.Windows(ctx)
+	if err != nil {
+		return "", fmt.Errorf("list windows: %w", err)
+	}
+	for _, w := range ws {
+		for _, c := range append([]ClaudePane{derefClaude(w.Claude)}, w.Others...) {
+			if c.Pane == pane && c.Gen != "" {
+				return c.Gen, nil
 			}
 		}
-		return "", fmt.Errorf("no Claude Code session runs in pane %s", pane)
 	}
-	if sid := strings.TrimSpace(r.Header.Get(MCPSessionHeader)); sid != "" {
-		if !mirror.ValidClaudeSession(sid) {
-			return "", errors.New("not a Claude session id")
-		}
-		return sid, nil
+	return "", fmt.Errorf("no Claude Code session runs in pane %s", pane)
+}
+
+func derefClaude(c *ClaudePane) ClaudePane {
+	if c == nil {
+		return ClaudePane{}
 	}
-	return "", fmt.Errorf("name the calling session: send %s: ${TMUX_PANE} (or %s)", MCPPaneHeader, MCPSessionHeader)
+	return *c
 }
 
 func (p *MCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -274,14 +296,36 @@ func EnsureMCPSecret(path string) (string, error) {
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", err
 	}
-	s := hex.EncodeToString(b[:])
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	secret := hex.EncodeToString(b[:])
+	// 🔴 ATOMIC: written whole to a private temp file, then LINKED into place,
+	// which fails if the file exists. No reader ever sees a partial or empty
+	// secret, and of two hosts starting at once exactly one secret wins — the
+	// loser reads it.
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".mcp-secret-*")
 	if err != nil {
 		return "", err
 	}
-	if _, err := f.WriteString(s + "\n"); err != nil {
-		f.Close()
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
 		return "", err
 	}
-	return s, f.Close()
+	if _, err := tmp.WriteString(secret + "\n"); err != nil {
+		tmp.Close()
+		return "", err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Link(tmp.Name(), path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return EnsureMCPSecret(path)
+		}
+		return "", err
+	}
+	return secret, nil
 }
