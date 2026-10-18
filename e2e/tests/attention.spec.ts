@@ -242,6 +242,22 @@ test('a mirrored Claude Code session asks through its host and gets the operator
   // A chief tool is not on this surface.
   const chief = (await (await localCall('attention_list', {}, auth)).json()) as { error?: { code: number } };
   expect(chief.error?.code).toBe(-32602);
+  // A session that has no Claude session to show yet — Claude Code connecting
+  // as it starts — still connects: initialize and tools/list reach muster. Its
+  // CALL is a tool error naming the pane, not a failed connection.
+  const fresh = { ...auth, 'X-Muster-Pane': '%e2e-not-claude-yet' };
+  const init = await fetch(localMCP, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...fresh },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } }),
+  });
+  expect(init.status).toBe(200);
+  expect(((await init.json()) as { result: { instructions: string } }).result.instructions).toContain('attention_ask');
+  const unbound = (await (await localCall('attention_ask', { question: 'too early?' }, fresh)).json()) as {
+    result: { isError: boolean; content: { text: string }[] };
+  };
+  expect(unbound.result.isError).toBe(true);
+  expect(unbound.result.content[0].text).toContain('no Claude Code session runs in pane');
 
   const asked = (await (await localCall('attention_ask', { question: 'Merge the schema change?', options: ['merge', 'hold'] }, auth)).json()) as {
     result: { content: { text: string }[] };

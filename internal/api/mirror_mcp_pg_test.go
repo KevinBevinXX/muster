@@ -158,30 +158,49 @@ func TestAMirroredSessionAsksAndItsWaitReturnsTheAnswer(t *testing.T) {
 	}
 }
 
-// TestAHostActsOnlyAsItsOwnSessions: a session the token's host does not
-// list — another host's, a made-up one, or none — is refused before any tool
-// runs, and so is another owner's token naming the same host name; nothing is
-// asked. Credentials that are not a mirror token are 401.
+// TestAHostActsOnlyAsItsOwnSessions: a CALL naming a session the token's host
+// does not list — another host's, a made-up one, or none — is refused as a
+// tool error before the tool runs, and so is another owner's token naming the
+// same host name; nothing is asked. initialize and tools/list need no session
+// (Claude Code connects before its session can be listed). Credentials that
+// are not a mirror token are 401 for everything.
 func TestAHostActsOnlyAsItsOwnSessions(t *testing.T) {
 	f, ws, laptop, members := newMirrorMCPFixture(t)
+	prev := mirrorBindWait
+	mirrorBindWait = 100 * time.Millisecond
+	t.Cleanup(func() { mirrorBindWait = prev })
 	ask := mcpToolCall(attentionAskTool, map[string]any{"question": "smuggled?"})
-	for name, c := range map[string]struct {
-		hdr  map[string]string
-		want int
-	}{
-		"another host's token, ws's session": {mirrorAs(laptop, focusSID), http.StatusForbidden},
-		"a session no window shows":          {mirrorAs(ws, "0f0f0f0f-0000-4000-8000-000000000000"), http.StatusForbidden},
-		"no session header":                  {mirrorAs(ws, ""), http.StatusForbidden},
-		"a malformed session":                {mirrorAs(ws, "../etc"), http.StatusForbidden},
-		"another owner's token, same name":   {mirrorAs(members, focusSID), http.StatusForbidden},
-		"no credential":                      {map[string]string{mirrorSessionHeader: focusSID}, http.StatusUnauthorized},
-		"an unknown mirror token":            {mirrorAs(mirrorTok('z'), focusSID), http.StatusUnauthorized},
-		"the hook token":                     {mirrorAs(connTestHookToken, focusSID), http.StatusUnauthorized},
-		"an agent's token":                   {mirrorAs(f.opTok, focusSID), http.StatusUnauthorized},
+	for name, hdr := range map[string]map[string]string{
+		"another host's token, ws's session": mirrorAs(laptop, focusSID),
+		"a session no window shows":          mirrorAs(ws, "0f0f0f0f-0000-4000-8000-000000000000"),
+		"no session header":                  mirrorAs(ws, ""),
+		"a malformed session":                mirrorAs(ws, "../etc"),
+		"another owner's token, same name":   mirrorAs(members, focusSID),
 	} {
-		code, _, body := f.mirrorRPC(t, c.hdr, ask)
-		if code != c.want {
-			t.Errorf("%s: %d %s, want %d", name, code, body, c.want)
+		code, r, body := f.mirrorRPC(t, hdr, ask)
+		if code != http.StatusOK || r == nil {
+			t.Errorf("%s: %d %s", name, code, body)
+			continue
+		}
+		if text, isErr := toolText(t, r); !isErr || !strings.Contains(text, "lists no window running Claude session") {
+			t.Errorf("%s: %s", name, text)
+		}
+		for _, m := range []string{`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`} {
+			if code, r, body := f.mirrorRPC(t, hdr, m); code != http.StatusOK || r == nil || r.Error != nil {
+				t.Errorf("%s: %s: %d %s", name, m, code, body)
+			}
+		}
+	}
+	for name, hdr := range map[string]map[string]string{
+		"no credential":           {mirrorSessionHeader: focusSID},
+		"an unknown mirror token": mirrorAs(mirrorTok('z'), focusSID),
+		"the hook token":          mirrorAs(connTestHookToken, focusSID),
+		"an agent's token":        mirrorAs(f.opTok, focusSID),
+	} {
+		for _, m := range []string{ask, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`} {
+			if code, _, body := f.mirrorRPC(t, hdr, m); code != http.StatusUnauthorized {
+				t.Errorf("%s: %d %s, want 401", name, code, body)
+			}
 		}
 	}
 	var n int
@@ -201,6 +220,33 @@ func TestAHostActsOnlyAsItsOwnSessions(t *testing.T) {
 	h["Origin"] = "http://evil.example"
 	if code, _, _ := f.mirrorRPC(t, h, ask); code != http.StatusForbidden {
 		t.Fatalf("cross-origin: %d", code)
+	}
+}
+
+// TestASessionListedJustAfterItsCallArrivesIsBound is the startup race on
+// muster's side: the host pushes its listing right before it forwards a call,
+// so the call can arrive first. A call naming a session the host does not list
+// YET waits (mirrorBindWait) and is bound once the listing shows it.
+func TestASessionListedJustAfterItsCallArrivesIsBound(t *testing.T) {
+	f, ws, _, _ := newMirrorMCPFixture(t)
+	const fresh = "4f607182-93a4-4b52-8edf-4a5b6c7d8e9f"
+	if code, r, body := f.mirrorRPC(t, mirrorAs(ws, fresh), `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`); code != 200 || r == nil || r.Error != nil {
+		t.Fatalf("initialize from a session no window shows yet: %d %s", code, body)
+	}
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		f.mirror.mu.Lock()
+		f.mirror.windows = append(f.mirror.windows, mirror.Window{Session: "fresh", ID: "@9", Index: 0, Active: true, Claude: true, ClaudeSession: fresh,
+			Status: mirror.StatusIdle, StatusSince: attnSince, Activity: 1_700_000_000})
+		f.mirror.mu.Unlock()
+	}()
+	code, r, body := f.mirrorRPC(t, mirrorAs(ws, fresh), mcpToolCall(attentionAskTool, map[string]any{"question": "Listed late?"}))
+	if code != 200 || r == nil {
+		t.Fatalf("%d %s", code, body)
+	}
+	text, isErr := toolText(t, r)
+	if isErr || !strings.Contains(text, `"status":"pending"`) {
+		t.Fatalf("the call was not bound once the listing showed the session: %s", text)
 	}
 }
 

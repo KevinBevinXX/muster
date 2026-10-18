@@ -139,6 +139,42 @@ type Client struct {
 	log *log.Logger
 	// catalog outlives each connection, so its cache does too.
 	catalog *CatalogScanner
+
+	// cur is the live connection (nil between connections): what RefreshNow
+	// asks for an immediate listing.
+	curMu sync.Mutex
+	cur   *hostSide
+}
+
+// RefreshNow re-reads this host's windows and, if they changed, sends them to
+// muster NOW rather than at the next Refresh — returning once that is done
+// (or ctx ends). The MCP endpoint calls it before forwarding a tool call, so
+// muster hears of a Claude session that started since the last refresh
+// before the call arrives. The read and send run in the connection's own
+// refresh goroutine, the only one that sends listings.
+func (c *Client) RefreshNow(ctx context.Context) error {
+	c.curMu.Lock()
+	h := c.cur
+	c.curMu.Unlock()
+	if h == nil {
+		return errors.New("muster-mirror: not connected to muster")
+	}
+	done := make(chan struct{})
+	select {
+	case h.kick <- done:
+	case <-h.ctx.Done():
+		return errors.New("muster-mirror: the connection to muster ended")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-done:
+		return nil
+	case <-h.ctx.Done():
+		return errors.New("muster-mirror: the connection to muster ended")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // New validates cfg and builds a client.
@@ -242,7 +278,8 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	conn := &hostSide{c: c, ws: ws, ctx: ctx, version: version, streams: map[uint32]*hostStream{},
-		listed: map[string]bool{}, listedWindows: map[windowKey]bool{}, watches: map[uint32]context.CancelFunc{}}
+		listed: map[string]bool{}, listedWindows: map[windowKey]bool{}, watches: map[uint32]context.CancelFunc{},
+		kick: make(chan chan struct{})}
 	if sb, ok := ScrollOf(c.cfg.Backend); ok {
 		conn.scroller = newScroller(sb, c.cfg.ScrollIdle, c.log)
 	}
@@ -287,6 +324,16 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 
 	go conn.refresh(first)
 	go conn.keepalive(cancel)
+	c.curMu.Lock()
+	c.cur = conn
+	c.curMu.Unlock()
+	defer func() {
+		c.curMu.Lock()
+		if c.cur == conn {
+			c.cur = nil
+		}
+		c.curMu.Unlock()
+	}()
 	for {
 		typ, data, err := ws.Read(ctx)
 		if err != nil {
@@ -389,6 +436,9 @@ type hostSide struct {
 	scroller *scroller
 	// pending reads what each waiting window waits on (pending.go).
 	pending pendingReader
+	// kick asks the refresh goroutine for a read-and-send now
+	// (Client.RefreshNow); it closes the channel it receives when done.
+	kick chan chan struct{}
 }
 
 // windowKey addresses one window: its session and its tmux window id.
@@ -741,21 +791,36 @@ func (h *hostSide) refresh(last listing) {
 		case <-h.ctx.Done():
 			return
 		case <-t.C:
-			now, ok := h.read()
-			if !ok || now.equal(last) {
-				continue
-			}
-			// The allowlist moves BEFORE muster hears of a new session, so an open
-			// for it is never refused for being unlisted; a session that ended
-			// is unattachable from this instant.
-			h.setListed(now)
-			h.closeGone()
-			if err := h.send(now.msg(mirror.TypeSessions)); err != nil {
+			if !h.refreshOnce(&last) {
 				return
 			}
-			last = now
+		case done := <-h.kick:
+			ok := h.refreshOnce(&last)
+			close(done)
+			if !ok {
+				return
+			}
 		}
 	}
+}
+
+// refreshOnce reads the listing and sends it when it changed; false when the
+// send failed (the connection is gone).
+func (h *hostSide) refreshOnce(last *listing) bool {
+	now, ok := h.read()
+	if !ok || now.equal(*last) {
+		return true
+	}
+	// The allowlist moves BEFORE muster hears of a new session, so an open
+	// for it is never refused for being unlisted; a session that ended
+	// is unattachable from this instant.
+	h.setListed(now)
+	h.closeGone()
+	if err := h.send(now.msg(mirror.TypeSessions)); err != nil {
+		return false
+	}
+	*last = now
+	return true
 }
 
 func (h *hostSide) keepalive(cancel context.CancelFunc) {
