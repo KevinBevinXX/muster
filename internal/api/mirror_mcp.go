@@ -128,7 +128,7 @@ func (s *Server) mirrorSessionOf(ctx context.Context, host, sid string) (mirror.
 		}
 		for _, w := range h.Windows {
 			if (w.Claude && w.ClaudeSession == sid) || slices.Contains(w.OtherClaude, sid) {
-				window, found = w.Session+"\x00"+w.ID, true
+				window, found = h.Host+"\x00"+w.Session+"\x00"+w.ID, true
 			}
 		}
 	}
@@ -136,7 +136,7 @@ func (s *Server) mirrorSessionOf(ctx context.Context, host, sid string) (mirror.
 		return mirror.SessionView{}, false
 	}
 	for _, e := range mirror.Ordered(hosts) {
-		if e.Host == host && e.Session+"\x00"+e.Window == window {
+		if e.Host+"\x00"+e.Session+"\x00"+e.Window == window {
 			return e, true
 		}
 	}
