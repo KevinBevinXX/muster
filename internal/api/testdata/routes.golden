@@ -71,6 +71,9 @@ GET /api/tokens
 GET /api/whoami
 GET /apple-touch-icon-precomposed.png
 GET /apple-touch-icon.png
+GET /attention
+GET /attention/badge
+GET /attention/items
 GET /auth/claim
 GET /auth/reset
 GET /connectors
@@ -175,6 +178,8 @@ POST /api/push/unsubscribe
 POST /api/routes/{id}/reply
 POST /api/tasks
 POST /api/tasks/{id}/comments
+POST /attention/asks/{id}/answer
+POST /attention/asks/{id}/cancel
 POST /auth/claim
 POST /auth/confirm
 POST /auth/confirm/passkey/options

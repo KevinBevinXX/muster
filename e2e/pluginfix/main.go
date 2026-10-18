@@ -55,7 +55,7 @@ func run(args []string) error {
 		return err
 	}
 	if len(args) == 0 {
-		return fmt.Errorf("usage: pluginfix chief|delivering|lapse|cleanup …")
+		return fmt.Errorf("usage: pluginfix chief|agent|delivering|lapse|cleanup …")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -91,6 +91,18 @@ func run(args []string) error {
 		var id int64
 		if err := conn.QueryRow(ctx, `INSERT INTO agents (owner_id, name, namespace, display_name, status, hooks_token, kicked_off)
 			VALUES ($1, $2, $3, 'chief', 'running', $4, true) RETURNING id`, owner, args[2], "devpod-"+args[2], args[3]).Scan(&id); err != nil {
+			return err
+		}
+		fmt.Println(id)
+	case "agent":
+		// A running, NON-chief agent with its own token: the attention spec's asker.
+		owner, err := num(1)
+		if err != nil || len(args) != 4 {
+			return fmt.Errorf("usage: agent <owner-id> <name> <token>")
+		}
+		var id int64
+		if err := conn.QueryRow(ctx, `INSERT INTO agents (owner_id, name, namespace, display_name, status, hooks_token, kicked_off)
+			VALUES ($1, $2, $3, $2, 'running', $4, true) RETURNING id`, owner, args[2], "devpod-"+args[2], args[3]).Scan(&id); err != nil {
 			return err
 		}
 		fmt.Println(id)

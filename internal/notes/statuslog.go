@@ -2,6 +2,7 @@ package notes
 
 import (
 	"context"
+	"errors"
 	"log"
 	"strings"
 
@@ -85,6 +86,23 @@ const UnlabelledWriter = "UNLABELLED"
 // status and taskstatus.Rank ranks it -1, so it can never be mistaken for a
 // downgrade.
 const unknownStatus = "UNKNOWN"
+
+// agentWriteKey marks a status write made for an AGENT (ForAgent).
+type agentWriteKey struct{}
+
+// ErrCompleteLocked: an agent's status write on a task that is complete. Only
+// the operator/human reopens one.
+var ErrCompleteLocked = errors.New("notes: agents may not change a completed task; only the operator/human can reopen it")
+
+// ForAgent marks ctx's status writes as an AGENT's: PGStore.SetStatus then
+// moves the row only while it is not complete — in the UPDATE itself, so no
+// read-then-write race can reopen a task the operator just completed — and
+// answers ErrCompleteLocked when it is.
+func ForAgent(ctx context.Context) context.Context {
+	return context.WithValue(ctx, agentWriteKey{}, true)
+}
+
+func forAgent(ctx context.Context) bool { v, _ := ctx.Value(agentWriteKey{}).(bool); return v }
 
 // WithWriter returns ctx carrying label as the identity of whoever is about to
 // write a task status on it.

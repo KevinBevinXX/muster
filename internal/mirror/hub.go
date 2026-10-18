@@ -127,7 +127,10 @@ type Hub struct {
 	hosts   map[hostKey]*hostConn
 	offline map[hostKey]offlineHost
 	notify  func(owner int64)
-	now     func() time.Time
+	// waitingNotify is called with a host's owner whenever the set of its
+	// windows whose Claude Code waits on the person changes (SetWaitingNotify).
+	waitingNotify func(owner int64)
+	now           func() time.Time
 	// maxHosts is MaxHosts; a test lowers it.
 	maxHosts int
 	// debounce coalesces change nudges (notifyDebounce; a test shortens it), and
@@ -209,6 +212,29 @@ func (h *Hub) SetNotify(fn func(owner int64)) {
 	h.mu.Lock()
 	h.notify = fn
 	h.mu.Unlock()
+}
+
+// SetWaitingNotify installs the hook called (on its own goroutine) with a
+// host's owner whenever the set of that host's windows whose Claude Code
+// session reports StatusWaiting changes — a change no card draws, so the
+// ordinary nudge (SetNotify) does not fire for it.
+func (h *Hub) SetWaitingNotify(fn func(owner int64)) {
+	h.mu.Lock()
+	h.waitingNotify = fn
+	h.mu.Unlock()
+}
+
+// waitingWindows is the sorted addresses of ws's windows whose Claude Code
+// session reports StatusWaiting.
+func waitingWindows(ws []Window) []string {
+	var out []string
+	for _, w := range ws {
+		if w.Claude && w.Status == StatusWaiting {
+			out = append(out, w.Session+"\x00"+w.ID)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // changed schedules ONE nudge for the end of the debounce window, unless one is
@@ -687,8 +713,20 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				order, shown := listed(h.Hosts(hc.key.owner))
 				hc.mu.Lock()
 				same := slices.Equal(hc.sessions, list) && slices.Equal(hc.claude, claude) && maps.Equal(hc.labels, labels) && sameWindows(hc.windows, windows)
+				waitingMoved := !slices.Equal(waitingWindows(hc.windows), waitingWindows(windows))
 				hc.sessions, hc.windows, hc.labels, hc.activity, hc.claude = list, windows, labels, activity, claude
 				hc.mu.Unlock()
+				// 🔴 A STATUS-ONLY CHANGE NUDGES NO CARD (sameWindows ignores
+				// Status), so it gets its own hook: the attention queue must hear
+				// that a window started — or stopped — waiting on the person.
+				if waitingMoved {
+					h.mu.Lock()
+					fn := h.waitingNotify
+					h.mu.Unlock()
+					if fn != nil {
+						go fn(hc.key.owner)
+					}
+				}
 				h.observe(hc.key.owner, hc.key.host, windows, h.now())
 				// 🔴 ONLY A CHANGE SOMEBODY CAN SEE NUDGES THE OPEN VIEWS, and an
 				// activity-only one is THROTTLED. A changed list or order nudges

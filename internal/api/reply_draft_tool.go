@@ -68,6 +68,9 @@ func (s *Server) toolReplyDraft(ctx context.Context, a agents.Agent, arguments s
 		return toolErr("the draft could not be filed")
 	}
 	s.notifyDraftAwaiting(agentOwnerID(a), d)
+	// It is also an item of the owner's attention queue; it supersedes the
+	// message's earlier pending draft, whose notification is withdrawn.
+	s.draftFiled(agentOwnerID(a), d)
 	return toolJSON(map[string]any{
 		"draft_id": d.ID, "status": string(d.Status), "superseded": superseded,
 		"next": "Your owner must approve this draft in muster; nothing is sent until they do. Do not file it again.",

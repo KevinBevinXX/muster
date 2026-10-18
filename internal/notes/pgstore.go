@@ -565,11 +565,21 @@ func (s *PGStore) listCommentsForNotes(ctx context.Context, ids []int64) ([]Comm
 // the refreshed note. The caller is responsible for authorizing the transition
 // (e.g. only the operator/human may set StatusComplete).
 func (s *PGStore) SetStatus(ctx context.Context, id int64, status string) (Note, error) {
-	tag, err := s.pool.Exec(ctx, `UPDATE notes SET status=$2, updated_at=now() WHERE id=$1 AND `+liveOnly, id, status)
+	q := `UPDATE notes SET status=$2, updated_at=now() WHERE id=$1 AND ` + liveOnly
+	if forAgent(ctx) {
+		// An agent's write: never out of complete, decided by the row itself.
+		q += ` AND status <> '` + StatusComplete + `'`
+	}
+	tag, err := s.pool.Exec(ctx, q, id, status)
 	if err != nil {
 		return Note{}, err
 	}
 	if tag.RowsAffected() == 0 {
+		if forAgent(ctx) {
+			if cur, gerr := s.Get(ctx, id); gerr == nil && cur.Status == StatusComplete {
+				return cur, ErrCompleteLocked
+			}
+		}
 		return Note{}, pgx.ErrNoRows
 	}
 	return s.Get(ctx, id)

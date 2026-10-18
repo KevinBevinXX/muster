@@ -432,6 +432,18 @@ func TestARejectNeedsNoFreshSignInAndAClaimWaitsForAnApproval(t *testing.T) {
 	if got := d.draft(id); got.Status != plugins.DraftRejected {
 		t.Fatalf("the rejected draft is %s", got.Status)
 	}
+	// The decision withdraws the draft's `plugin` notification from A's devices
+	// (the attention queue's clear): the tag the push that announced it set.
+	d.srv.WaitForPushes()
+	var resolved int
+	for _, p := range d.pusher.to(ep("draft-a")) {
+		if p.Type == push.TypeResolved && p.Tag == "plugin-draft-"+strconv.FormatInt(id, 10) {
+			resolved++
+		}
+	}
+	if resolved != 1 {
+		t.Fatalf("rejecting draft %d sent %d resolved message(s); want 1: %+v", id, resolved, d.pusher.to(ep("draft-a")))
+	}
 	id2, _ := d.replyDraft(chief, m, "Maybe.")
 	done := make(chan *httptest.ResponseRecorder, 1)
 	start := time.Now()

@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/notes"
@@ -49,6 +50,8 @@ func newGatedFixture(t *testing.T) *gatedFixture {
 		ext.Plugins, ext.Notes = g.plugins, g.notes
 		g.focus, g.summ = focus.NewPG(pool), &fakeFocusSummarizer{}
 		ext.Focus, ext.FocusSummarizer = g.focus, g.summ
+		// The attention queue: its tools join the registry the ledgers pin.
+		ext.Attention = attention.NewPG(pool)
 	})
 	g.owner = g.newMember(t)
 	g.asOwner = g.as(g.owner)

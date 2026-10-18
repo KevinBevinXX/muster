@@ -95,9 +95,10 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - send_queue (0019, the server-side send queue).
 //   - session_routes (0021, the chief's routed plugin messages).
 //   - agent_focus_history (0022, every focus a session has had).
+//   - attention_asks (0025, the attention queue's explicit asks).
 //   - agent_focus (0020, each session's focus).
 //   - uploads (0024, the composer's attached files).
-var ownedAfter0006 = []string{"agent_focus", "agent_focus_history", "cc_account_marks", "flow_jobs", "flow_requests", "flow_runner_tokens",
+var ownedAfter0006 = []string{"agent_focus", "agent_focus_history", "attention_asks", "cc_account_marks", "flow_jobs", "flow_requests", "flow_runner_tokens",
 	"mirror_tokens", "pins", "plugin_messages", "plugin_reply_drafts", "plugins", "push_preferences",
 	"push_subscriptions", "recents", "send_queue", "session_routes", "uploads", "user_credentials"}
 
@@ -161,6 +162,8 @@ var wantForeignKeys = []string{
 	"agent_focus|agent_focus_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"agent_focus_history|agent_focus_history_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE",
 	"agent_focus_history|agent_focus_history_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"attention_asks|attention_asks_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE",
+	"attention_asks|attention_asks_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"pins|pins_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE",
 	"pins|pins_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"uploads|uploads_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",

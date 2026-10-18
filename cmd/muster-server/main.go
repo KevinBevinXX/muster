@@ -56,6 +56,7 @@ import (
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/apitokens"
 	"github.com/ZacxDev/muster/internal/askq"
+	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/connectors"
@@ -282,6 +283,8 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// Session focus (migration 0020). Its summarizer is wired below, once
 		// the credential plane that decides whose OpenRouter key it spends exists.
 		ext.Focus = focus.NewPG(pool)
+		// The attention queue's explicit asks (migration 0023); RunAttentionSweep expires them.
+		ext.Attention = attention.NewPG(pool)
 
 		if len(cfg.ConnectorEncKey) > 0 {
 			cs, err := connectors.NewPG(pool, cfg.ConnectorEncKey)
@@ -475,6 +478,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// event reaches its owner's streams alone (accounts PR 3b), so a nudge
 		// with no owner would reach nobody.
 		mirrorSvc.SetNotify(srv.BroadcastAgentsChangedFor)
+		// A window starting (or stopping) to wait on the person changes no
+		// card, so the attention queue hears it through its own hook.
+		mirrorSvc.SetWaitingNotify(srv.AttentionMirrorChanged)
 	}
 	if port.Configured() {
 		srv.UseRouter(port)
@@ -748,6 +754,8 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	go a.srv.RunFocusRetention(ctx)
 	// Session routing's deadline: due routes are timed out and handed back.
 	go a.srv.RunRouteTimeouts(ctx, api.RouteSweepInterval)
+	// The attention queue: lapsed asks expire and leave the owner's devices.
+	go a.srv.RunAttentionSweep(ctx, 0)
 }
 
 // shutdown drains in-flight requests and the kickoff deliverer, then waits for

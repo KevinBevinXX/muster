@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/flows"
 )
 
@@ -682,6 +683,29 @@ func (s *PGStore) QueuedCounts(ctx context.Context) (map[int64]int, error) {
 		out[id] = n
 	}
 	return out, rows.Err()
+}
+
+// PendingDraft is a pending draft's identity and deadline: what the attention
+// queue needs to withdraw its notification when it expires unseen.
+type PendingDraft struct {
+	ID, OwnerID, MessageID int64
+	ExpiresAt              time.Time
+}
+
+// PendingDrafts is EVERY owner's pending drafts (system scope): read once by
+// the attention sweep when a process starts, so a draft notified before a
+// restart still has its notification withdrawn when it expires. Ids, owners
+// and deadlines only — no body is read.
+func (s *PGStore) PendingDrafts(ctx context.Context) ([]PendingDraft, error) {
+	rows, err := s.pool.Query(authz.System(ctx), `SELECT id, owner_id, message_id, expires_at FROM plugin_reply_drafts WHERE status = 'pending'`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (PendingDraft, error) {
+		var d PendingDraft
+		err := r.Scan(&d.ID, &d.OwnerID, &d.MessageID, &d.ExpiresAt)
+		return d, err
+	})
 }
 
 // cutRunes keeps at most n runes of s.

@@ -56,6 +56,9 @@ const (
 	// writerMachineAPI is PATCH /api/tasks/{id}/status — the hook-token machine
 	// route (what `muster task status` reaches).
 	writerMachineAPI statusWriter = "machine-api"
+	// writerTaskTool is the all-agents tool `task_set_status` (attention_tools.go):
+	// one of the calling agent's own tasks, by id, over the gateway or MCP.
+	writerTaskTool statusWriter = "task_set_status"
 	// 🔴 TWO LABELS WERE DELETED HERE (upstream task #653 phase two), and the
 	// deletion-tracking note matters more than usual because these are LOG VALUES:
 	//

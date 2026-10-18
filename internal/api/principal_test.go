@@ -104,6 +104,12 @@ var routeVias = map[authz.Via][]string{
 		"POST /plugins/{id}/revoke",
 		"POST /plugins/drafts/{id}/approve",
 		"POST /plugins/drafts/{id}/reject",
+		// The attention queue (0023): the page, its list, the badge and the forms.
+		"GET /attention",
+		"GET /attention/items",
+		"GET /attention/badge",
+		"POST /attention/asks/{id}/answer",
+		"POST /attention/asks/{id}/cancel",
 		"GET /account",
 		// The step-up confirm (stepup.go): the SESSION's user, re-proven.
 		"POST /auth/confirm",

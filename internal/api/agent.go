@@ -147,8 +147,28 @@ func (s *Server) handleAgentTaskStatus(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	note, err := s.setNoteStatus(r.Context(), writerAgentRoute, id, body.Status)
+	// …nor move a task OUT of complete (agentStatusRefusal, the one rule). The
+	// read FAILS CLOSED: a task whose status cannot be read is not written.
+	cur, err := s.ext.Notes.Get(r.Context(), id)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "task not found"})
+			return
+		}
+		s.logger.Printf("agent: read task %d before a status write: %v", id, err)
+		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not read the task"})
+		return
+	}
+	if why := agentStatusRefusal(cur.Status, body.Status); why != "" {
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": why})
+		return
+	}
+	note, err := s.setNoteStatus(notes.ForAgent(r.Context()), writerAgentRoute, id, body.Status)
+	if err != nil {
+		if errors.Is(err, notes.ErrCompleteLocked) {
+			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": agentStatusRefusal(notes.StatusComplete, body.Status)})
+			return
+		}
 		if errors.Is(err, pgx.ErrNoRows) {
 			s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "task not found"})
 			return
@@ -220,7 +240,7 @@ func orEmptyJSON(s string) string {
 
 // agentSystemPrompt is the worker's system prompt for the tool loop. The tools
 // carry their own schemas; this frames when to use them.
-const agentSystemPrompt = `You are a muster worker agent. You have native tools to read and update YOUR assigned task. Use them: call agent_get_task to read your task before starting; agent_set_task_status to set "in_progress" when you begin and "ready_for_review" when done (you CANNOT set "complete" — only the operator/human can); agent_comment_task to post progress notes. Then do the work.`
+const agentSystemPrompt = `You are a muster worker agent. You have native tools to read and update YOUR assigned task. Use them: call agent_get_task to read your task before starting; agent_set_task_status to set "in_progress" when you begin and "ready_for_review" when done (you CANNOT set "complete", and you cannot change a task once it is complete — only the operator/human can; if you think a completed task needs reopening, ask with attention_ask); agent_comment_task to post progress notes. Then do the work.`
 
 // agentTool is one entry of muster's ONE agent tool registry.
 //
@@ -249,6 +269,16 @@ const agentSystemPrompt = `You are a muster worker agent. You have native tools 
 // which would let a pod read through a credential it was never granted under the
 // per-agent connector model. TestTheMCPToolsAreTheRegistrysMCPSubset pins both
 // sets.
+//
+// 🔴 EXCEPT THE ATTENTION QUEUE'S TOOLS (attention_tools.go), WHICH ARE ON MCP BY
+// OPERATOR DECISION: "all agents" ask their owner (attention_ask/wait/cancel)
+// and work their OWN tasks — the dispatched one and the ones they created
+// (tasks_list, task_get, task_comment, task_set_status; never into or out of
+// `complete`) — and the chief alone lists the queue (read-only: only the
+// operator answers) and reads any session's transcript, and works the whole
+// board. That deliberately widens what a claude-code pod reaches on the connect
+// listener from its connectors to its own task and its questions; the bound
+// task's agent_* tools above stay gateway-only as they were.
 //
 // 🔴 chiefOnly IS A SECOND, ORTHOGONAL AXIS: WHO, NOT WHICH TRANSPORT. A
 // chief-only tool is offered (on both transports) to the owner's CHIEF agent and
@@ -321,6 +351,20 @@ func (s *Server) agentTools() []agentTool {
 	// reply_draft). The session answers through POST /api/routes/{id}/reply.
 	if routingOn(s.ext) {
 		tools = append(tools, agentTool{def: routeToolDef(), mcp: true, chiefOnly: true})
+	}
+	// The attention queue (attention_tools.go), present with its store: every
+	// agent may ask its owner and work the owner's tasks; the chief alone lists
+	// and answers the queue and reads a session's transcript. All on MCP too.
+	if s.attentionToolsOn() {
+		for _, d := range attentionToolDefs() {
+			tools = append(tools, agentTool{def: d, mcp: true})
+		}
+		for _, d := range taskToolDefs() {
+			tools = append(tools, agentTool{def: d, mcp: true})
+		}
+		for _, d := range chiefAttentionToolDefs() {
+			tools = append(tools, agentTool{def: d, mcp: true, chiefOnly: true})
+		}
 	}
 	return tools
 }
@@ -440,6 +484,9 @@ func (s *Server) AgentInstructions(a agents.Agent) string {
 		b += "\n\nTo have your owner's logged-in browser run a named flow (" + strings.Join(flows.Names(), ", ") +
 			"), call browser_flow_request; your owner approves each run in muster, then poll browser_flow_status."
 	}
+	if s.attentionToolsOn() {
+		b += "\n\n" + attentionInstruction
+	}
 	b += "\n\nWhen asked what you can do, describe ONLY these real capabilities: your task tools (above), reading/writing files + git + shell in your workspace" +
 		". Do NOT claim messaging (Signal/Telegram/WhatsApp/Discord), paired devices/cameras/location, image/video generation, web browsing, or calendar/email — you do not have those here."
 	return b
@@ -523,13 +570,17 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		}
 		var in struct{ Status string }
 		_ = arg(&in)
-		if !notes.ValidStatus(in.Status) {
-			return toolErr("invalid status %q", in.Status)
+		cur, err := s.ext.Notes.Get(ctx, *a.NoteID)
+		if err != nil {
+			return toolErr("could not load task: %v", err)
 		}
-		if !notes.StatusAllowedForAgent(in.Status) {
-			return toolErr("agents may not set %q; only the operator/human can mark a task complete", in.Status)
+		if why := agentStatusRefusal(cur.Status, in.Status); why != "" {
+			return toolErr("%s", why)
 		}
-		n, err := s.setNoteStatus(ctx, writerAgentTool, *a.NoteID, in.Status)
+		n, err := s.setNoteStatus(notes.ForAgent(ctx), writerAgentTool, *a.NoteID, in.Status)
+		if errors.Is(err, notes.ErrCompleteLocked) {
+			return toolErr("%s", agentStatusRefusal(notes.StatusComplete, in.Status))
+		}
 		if err != nil {
 			return toolErr("could not set status: %v", err)
 		}
@@ -569,6 +620,11 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		_ = arg(&in)
 		return s.toolConnectorStatus(ctx, a, in.Name, in.WaitSeconds)
 	default:
+		// dispatchCallerTool runs nothing without the attention store (it
+		// answers false before touching it).
+		if text, ok := s.dispatchCallerTool(ctx, callerOfAgent(a), name, arguments); ok {
+			return text
+		}
 		return toolErr("unknown tool %q", name)
 	}
 }

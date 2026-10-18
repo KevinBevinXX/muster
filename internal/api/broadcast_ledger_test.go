@@ -43,6 +43,10 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		"(*Server).dismissTask → broadcast(ctx)",
 		"(*Server).dispatchAgentTool → broadcast(ctx)",
 		"(*Server).dispatchAgentTool → broadcast(ctx)",
+		// The all-agents task tools (attention_tools.go): ctx is the calling
+		// agent's (or mirrored session's) owner.
+		"(*Server).toolTaskComment → broadcast(ctx)",
+		"(*Server).toolTaskSetStatus → broadcast(ctx)",
 		"(*Server).handleAPITaskComment → broadcast(r.Context())",
 		// The machine-path task create (moved out of handleAPITaskCreate so a
 		// second door cannot skip a side effect); ctx is the request's. Its
@@ -77,6 +81,9 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		"(*Server).BroadcastAgentChanged → agentChangedFor(s.agentOwner(agentName))",
 		// the mirror plugin's host nudge: the hub names the host's owner.
 		"(*Server).BroadcastAgentsChangedFor → broadcastTo(owner)",
+		// the attention queue (attention.go): every change names its owner — the
+		// ask's row, the hub nudge's owner, or the request's principal.
+		"(*Server).attentionChanged → broadcastTo(owner)",
 		// plumbing.
 		"(*Server).agentChangedFor → broadcastTo(owner)",
 		"(*Server).broadcast → broadcastTo(requestOwner(ctx))",

@@ -72,6 +72,8 @@ var expectedStatusWriterLedger = map[string][]string{
 	// therefore produces no request log line — the path the original incident
 	// could not distinguish, and the reason this seam exists at all.
 	"dispatchAgentTool": {"writerAgentTool"},
+	// The all-agents tool `task_set_status` (any of the owner's tasks, by id).
+	"toolTaskSetStatus": {"writerTaskTool"},
 }
 
 // TestEveryStatusWriterIsLabelled pins every caller of setNoteStatus to the

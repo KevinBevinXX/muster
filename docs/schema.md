@@ -23,6 +23,7 @@ the set grows **or** shrinks.
 | send queue | `send_queue`: messages each user queued for a mirrored Claude Code window, sent one at a time when it is idle |
 | session focus | `agent_focus`: what each of a user's sessions is working on ([focus.md](focus.md)); `agent_focus_history`: every focus each session has had |
 | session routing | `session_routes`: plugin messages the chief routed to a session, and how each route ended ([plugins.md](plugins.md#routing-a-message-to-a-session)) |
+| attention queue | `attention_asks`: questions agents put to their owner and the answers ([attention.md](attention.md)) |
 | GitHub | `github_connection`, one row per owner |
 
 `notes` is the task table. The name is historical. It is kept because every id in
@@ -53,6 +54,7 @@ buys only a word.
 | `0020` | `agent_focus`: each session's [focus](focus.md), one row per (owner, subject). A subject is an agent (by id, deleted with it) or a mirrored Claude Code session (by its Claude session id). Title, description, its source (`summarizer`, the only writer), the fingerprint of the transcript tail it was computed from, and the last refresh failure as a short non-secret reason, with its time. A generated `tsvector` over title (weight A) and description (B) with a GIN index serves `focus_search`. Owned, under row-level security. |
 | `0021` | `session_routes`: one row per routed plugin message — its route id, the chief, the target session, the send-queue row that carried it, its state (`routed`, `answered`, `relayed`, `timed_out`, `fallback`, `failed`), the answer and the reply draft it became. At most one open route per message. Also `plugin_reply_drafts.route_id`, unique, so a route becomes at most one draft; `send_queue.route_id`, which marks a routed queue row (gated on its route at delivery); `session_routes.handback`, the hand-back an ended route still owes its chief (cleared by the sweep that delivers it); and `plugin_messages.sender_verified`, the plugin's immutable claim that it authenticated the sender. Owned, under row-level security. |
 | `0022` | `agent_focus_history`: append-only, one row each time a session's focus title or description changes (title, description, when), written in the focus upsert's transaction. It has no foreign key to `agent_focus`: a session's history outlives its focus row, and is deleted after 30 days by the hourly sweep (a subject's newest row is kept while its focus row exists) or with its agent (`agent_id`, `ON DELETE CASCADE`). Existing focus rows seed one history row each. Owned, under row-level security. |
+| `0025` | `attention_asks`: one row per question an agent (`agent_id`, deleted with it) or a mirrored Claude Code session (`mirror_host` + its Claude session id) put to its owner — the question, the options it offered, its state (`open`, `answered`, `cancelled`, `expired`), the answer (only the operator answers), when it expires. Each move out of `open` is one conditional update, so an answer and a cancel cannot both land. Owned, under row-level security. |
 
 To change the schema, add a new numbered file.
 

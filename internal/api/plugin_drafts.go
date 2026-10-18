@@ -281,6 +281,9 @@ func (s *Server) decideDraft(w http.ResponseWriter, r *http.Request, how string)
 	if d.Status == plugins.DraftApproved {
 		s.draftWake.signal()
 	}
+	// Decided: it leaves the attention queue, and its `plugin` notification is
+	// cleared on the owner's other devices (the tag notifyDraftAwaiting set).
+	s.draftSettled(requestOwner(r.Context()), d.ID)
 	http.Redirect(w, r, pluginsPath+"#"+draftCardAnchor(d.ID), http.StatusSeeOther)
 }
 

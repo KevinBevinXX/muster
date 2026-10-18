@@ -28,13 +28,19 @@ import (
 var (
 	mcpLedger = []string{"connectors_list", "connector_request", "connector_status",
 		"browser_flow_request", "browser_flow_status", "task_create_gated", "reply_draft",
-		"agents_list", "focus_search", "focus_refresh"}
+		"agents_list", "focus_search", "focus_refresh",
+		// The attention queue (attention_tools.go): every agent asks and works the
+		// owner's tasks; the chief alone lists, answers and reads transcripts.
+		"attention_ask", "attention_wait", "attention_cancel",
+		"tasks_list", "task_get", "task_comment", "task_set_status",
+		"attention_list", "session_transcript"}
 	gatewayOnlyLedger = []string{"agent_get_task", "agent_comment_task", "agent_set_task_status",
 		"agent_list_pull_requests"}
 	// 🔴 chiefOnlyLedger IS PINNED THE SAME WAY: a tool joining it is offered to
 	// one agent per owner and refused to every other, and a tool LEAVING it is
 	// offered to every worker in the fleet. Either is a decision to review here.
-	chiefOnlyLedger = []string{"task_create_gated", "reply_draft", "agents_list", "focus_search", "focus_refresh"}
+	chiefOnlyLedger = []string{"task_create_gated", "reply_draft", "agents_list", "focus_search", "focus_refresh",
+		"attention_list", "session_transcript"}
 )
 
 // without returns list minus the names in drop, in order.
