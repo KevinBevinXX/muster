@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
 )
@@ -67,7 +68,13 @@ func (s *Server) toolReplyDraft(ctx context.Context, a agents.Agent, arguments s
 		s.logger.Printf("plugins: agent %d reply draft: %v", a.ID, err)
 		return toolErr("the draft could not be filed")
 	}
-	s.notifyDraftAwaiting(agentOwnerID(a), d)
+	// The message, for the notification's excerpt; without it the push says
+	// only muster's own words.
+	m, merr := s.ext.Plugins.Message(ctx, d.MessageID)
+	if merr != nil {
+		m = plugins.Message{}
+	}
+	s.notifyDraftAwaiting(ctx, agentOwnerID(a), d, m)
 	// It is also an item of the owner's attention queue; it supersedes the
 	// message's earlier pending draft, whose notification is withdrawn.
 	s.draftFiled(agentOwnerID(a), d)
@@ -82,22 +89,68 @@ func draftCardAnchor(id int64) string { return "draft-" + strconv.FormatInt(id, 
 
 // notifyDraftAwaiting pushes the `plugin` event to the draft's owner.
 //
-// 🔴 EVERY WORD OF IT IS MUSTER'S. The draft is the chief's text and the message
-// an outside party's; a notification is shown on a lock screen with no fence
-// around it, so neither is quoted — not even the sender.
-func (s *Server) notifyDraftAwaiting(owner int64, d plugins.Draft) {
+// 🔴 WHO AND WHERE, NEVER WHAT (operator decision "Summary only"): the title is
+// muster's; the body is "Reply draft: <sender's name> (<plugin label>)"
+// (draftPushBody) — no word of the message or of the draft, which are an
+// outside party's and the chief's text on a lock screen with no fence. The
+// queue page and /plugins show them, behind the sign-in. Without the message
+// (m.ID 0) it is muster's fixed sentence.
+func (s *Server) notifyDraftAwaiting(ctx context.Context, owner int64, d plugins.Draft, m plugins.Message) {
 	id := strconv.FormatInt(d.ID, 10)
+	label := ""
+	if m.ID != 0 {
+		if p, err := s.ext.Plugins.Plugin(ctx, m.PluginID); err == nil {
+			label = p.Label
+		}
+	}
 	s.goNotify(owner, push.EventPlugin, RouterNotification{
 		Type:  "plugin",
 		ID:    id,
 		Title: DraftPushTitle,
-		Body:  DraftPushBody,
+		Body:  draftPushBody(m, label),
 		Tag:   "plugin-draft-" + id,
 		Data:  map[string]string{"url": pluginsPath + "#" + draftCardAnchor(d.ID)},
 	}, nil)
 }
 
-// The `plugin` push's text: fixed, muster-authored.
+// draftPushBody is a draft notification's body: "Reply draft: <sender's
+// display name> (<plugin label>)". The name is shown only when the plugin
+// VERIFIED the sender (Message.SenderVerified); otherwise it is what the sender
+// claims to be, and the body says "unverified sender" instead. DraftPushBody
+// without the message.
+func draftPushBody(m plugins.Message, pluginLabel string) string {
+	if m.ID == 0 {
+		return DraftPushBody
+	}
+	who := "unverified sender"
+	if m.SenderVerified {
+		if name := senderDisplayName(m.Sender); name != "" {
+			who = name
+		}
+	}
+	body := "Reply draft: " + who
+	if l := mirror.OneLine(pluginLabel, plugins.MaxLabelRunes); l != "" {
+		body += " (" + l + ")"
+	}
+	return truncate(body, attentionPushBodyMax)
+}
+
+// senderDisplayName is a sender as a name: "Ada" of "Ada <ada@example.test>",
+// else the sender itself — one line, at most draftPushNameMax runes.
+func senderDisplayName(sender string) string {
+	if i := strings.Index(sender, "<"); i > 0 {
+		if name := strings.Trim(strings.TrimSpace(sender[:i]), `"'`); name != "" {
+			sender = name
+		}
+	}
+	return mirror.OneLine(sender, draftPushNameMax)
+}
+
+// draftPushNameMax bounds the sender's name in a draft notification.
+const draftPushNameMax = 60
+
+// The `plugin` push's title (muster's), and its body when the message cannot
+// be read.
 const (
 	DraftPushTitle = "A reply draft awaits your approval"
 	DraftPushBody  = "Your chief drafted a reply to a plugin message. Nothing is sent until you approve it."

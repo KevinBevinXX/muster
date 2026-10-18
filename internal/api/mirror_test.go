@@ -107,6 +107,9 @@ type fakeMirror struct {
 	// a host that reports no status. statusReport is HostView.StatusReport.
 	agentState   *mirror.AgentState
 	statusReport bool
+	// offlineSince is HostView.OfflineSince while offline (as the hub sets it
+	// for a host that dropped); zero = a host that never was online here.
+	offlineSince time.Time
 	// agentStateVias is the principal's door on each AgentState call.
 	agentStateVias []authz.Via
 	// onPaste, when set, runs (under mu) after each paste the host accepted:
@@ -134,6 +137,9 @@ func (f *fakeMirror) Hosts(ctx context.Context) []mirror.HostView {
 	defer f.mu.Unlock()
 	hv := mirror.HostView{Host: "ws", Sessions: []string{"chief", "main"}, Labels: f.labels, Activity: f.activity, Online: f.online, Interactive: f.interactive}
 	hv.StatusReport = f.statusReport && f.online
+	if !f.online {
+		hv.OfflineSince = f.offlineSince
+	}
 	if f.v2 != nil {
 		hv.Rendered, hv.Claude = f.online, []string{"main"}
 		hv.PanePaste = f.online && f.interactive && !f.oldMirror

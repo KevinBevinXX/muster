@@ -52,7 +52,7 @@ func attnWindows(status string) []mirror.Window {
 	}
 }
 
-func newAttnFixture(t *testing.T) *attnFixture {
+func newAttnFixture(t *testing.T, more ...func(*Extensions, *pgxpool.Pool)) *attnFixture {
 	t.Helper()
 	f := &attnFixture{pusher: &payloadPusher{}, tokens: fakeMirrorTokens{},
 		mirror: &fakeMirror{online: true, interactive: true, statusReport: true, v2: &fakeMirrorV2{}, windows: attnWindows(mirror.StatusWaiting)}}
@@ -62,6 +62,9 @@ func newAttnFixture(t *testing.T) *attnFixture {
 		ext.Attention, ext.Plugins, ext.Notes, ext.Focus, ext.Mirror = f.attn, f.plugins, f.notes, focus.NewPG(pool), f.mirror
 		ext.Push = push.NewService(store, f.pusher, push.VAPIDConfig{PublicKey: "k"}, nil)
 		ext.MirrorTokens = f.tokens
+		for _, m := range more {
+			m(ext, pool)
+		}
 	})
 	claim(t, store, 1, ep("attn-operator"))
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
@@ -187,7 +190,8 @@ func TestAnAskRaisedOverMCPIsAnsweredFromTheViewAndTheWaitReturnsIt(t *testing.T
 	if got := f.pushes(); len(got) != 1 || got[0] != "attention attention-"+key {
 		t.Fatalf("pushes after the ask: %v", got)
 	}
-	if p := f.pusher.to(ep("attn-operator"))[0]; p.Data["url"] != "/attention#"+key || !strings.Contains(p.Body, "Ship the migration tonight?") {
+	// Who is asking, never what (the question is on the page, behind the sign-in).
+	if p := f.pusher.to(ep("attn-operator"))[0]; p.Data["url"] != "/attention#"+key || p.Body != f.op.Name+" is asking" {
 		t.Fatalf("payload %+v", p)
 	}
 	body := f.page(t, "/attention")

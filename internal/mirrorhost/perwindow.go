@@ -252,7 +252,7 @@ func WireWindows(windows []WindowInfo, codenames map[string]string, claude bool,
 		m := mirror.Window{Session: w.Session, ID: w.ID, Index: w.Index, Active: w.Active,
 			Activity: w.Activity, Command: w.Command, Claude: claude && w.Claude != nil}
 		if m.Claude {
-			m.Status, m.StatusSince, m.ClaudeSession = w.Claude.Status, w.Claude.StatusSince, w.Claude.Gen
+			m.Status, m.StatusSince, m.ClaudeSession, m.Pending = w.Claude.Status, w.Claude.StatusSince, w.Claude.Gen, w.Claude.Pending
 		}
 		if claude {
 			for _, o := range w.Others {

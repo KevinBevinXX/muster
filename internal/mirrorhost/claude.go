@@ -94,6 +94,10 @@ type ClaudePane struct {
 	// statusUpdatedAt, Unix milliseconds — 0 when it states none (and whenever
 	// Status is ""). The send queue reads idle-since from it.
 	StatusSince int64
+	// Pending is what the session waits on while Status is waiting
+	// (pending.go: read from the transcript's tail by the host's listing, not
+	// by the locator); nil otherwise.
+	Pending *mirror.Pending
 	// Source says how Transcript was found: SourcePaneMap, SourceSessions or
 	// SourceGuessed (see ClaudeLocator).
 	Source string

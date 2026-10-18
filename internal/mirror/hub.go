@@ -112,6 +112,11 @@ type HostView struct {
 	// Code status (Msg.StatusReport), which is what a queued message waits on.
 	// False for an older muster-mirror and for an offline host.
 	StatusReport bool
+	// OfflineSince is when an offline host disconnected; zero while Online.
+	// Its Windows keep the Status they last reported only when it reported
+	// status (StatusReport) — the attention queue keeps such a host's waiting
+	// windows for a short grace, so a blip neither drops nor re-notifies them.
+	OfflineSince time.Time
 }
 
 // Hub is the set of connected hosts, their session lists and their live
@@ -230,7 +235,13 @@ func waitingWindows(ws []Window) []string {
 	var out []string
 	for _, w := range ws {
 		if w.Claude && w.Status == StatusWaiting {
-			out = append(out, w.Session+"\x00"+w.ID)
+			k := w.Session + "\x00" + w.ID
+			// What it waits on is part of the item: a pending action that
+			// arrives (or changes) after the status does still updates the queue.
+			if p := w.Pending; p != nil {
+				k += "\x00" + p.Summary + "\x00" + p.Tool + "\x00" + p.Last
+			}
+			out = append(out, k)
 		}
 	}
 	slices.Sort(out)
@@ -342,7 +353,8 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		}
 		if k.owner == owner {
 			out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), o.sessions...), Windows: slices.Clone(o.windows),
-				Claude: append([]string(nil), o.claude...), Labels: maps.Clone(o.labels), Activity: maps.Clone(o.activity), Interactive: o.interactive})
+				Claude: append([]string(nil), o.claude...), Labels: maps.Clone(o.labels), Activity: maps.Clone(o.activity), Interactive: o.interactive,
+				OfflineSince: o.since})
 		}
 	}
 	waiting := h.waiting
@@ -489,7 +501,7 @@ func (hc *hostConn) list(m Msg, now int64) (sessions []string, windows []Window,
 		if hc.version < 2 {
 			// A v1 host has no rendered view whatever it claims.
 			for i := range windows {
-				windows[i].Claude, windows[i].Status, windows[i].StatusSince, windows[i].ClaudeSession = false, "", 0, ""
+				windows[i].Claude, windows[i].Status, windows[i].StatusSince, windows[i].ClaudeSession, windows[i].Pending = false, "", 0, "", nil
 			}
 		}
 		sessions, claude, labels, activity = SessionsOf(windows)
@@ -515,9 +527,10 @@ func sameWindows(a, b []Window) bool {
 	if (a == nil) != (b == nil) || len(a) != len(b) {
 		return false
 	}
-	// OtherClaude is ignored too: no card draws it (the MCP door reads it).
+	// OtherClaude is ignored too: no card draws it (the MCP door reads it). So
+	// is Pending: only the attention queue draws it (waitingWindows nudges it).
 	card := func(w Window) Window {
-		w.Activity, w.Status, w.StatusSince, w.OtherClaude = 0, "", 0, nil
+		w.Activity, w.Status, w.StatusSince, w.OtherClaude, w.Pending = 0, "", 0, nil, nil
 		return w
 	}
 	for i := range a {
@@ -803,6 +816,13 @@ func (h *Hub) drop(hc *hostConn) {
 			labels := maps.Clone(hc.labels)
 			activity := maps.Clone(hc.activity)
 			windows := slices.Clone(hc.windows)
+			if !hc.statusReport {
+				// A status is believed only from a host that reports it: what an
+				// offline host's last list keeps is what it was believed about.
+				for i := range windows {
+					windows[i].Status, windows[i].StatusSince, windows[i].Pending = "", 0, nil
+				}
+			}
 			hc.mu.Unlock()
 			h.offline[hc.key] = offlineHost{sessions: hc.sessionsCopy(), windows: windows, claude: claude, labels: labels, activity: activity, interactive: hc.interactive, since: h.now()}
 		}
