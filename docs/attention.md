@@ -114,9 +114,11 @@ too, through its host's `muster-mirror`:
    token is refused (403) before any tool runs. The tool set is exactly
    `attention_ask`, `attention_wait`, `attention_cancel` and the task tools; the
    chief's tools are not on it. The token is checked on every call (a revoked
-   one is refused at its next call). After 10 failed token checks from one
-   address within a minute, that address is answered 429 — without a token
-   lookup, a valid token included — until the minute has passed.
+   one is refused at its next call). After 10 failed checks of one token from
+   one address within a minute, that token from that address is answered 429 —
+   without a token lookup — until the minute has passed. Another token from the
+   same address (hosts behind one NAT or Cloudflare edge share one) is checked
+   as usual, so a host with a stale token never locks out another host.
 
 An ask made this way is shown under the window's title and host, and only that
 session can wait on or cancel it. The task tools act on **the tasks that

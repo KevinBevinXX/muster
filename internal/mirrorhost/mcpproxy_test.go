@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -386,5 +387,45 @@ func TestASplitPaneBeyondTheBoundIsRefusedWithTheReason(t *testing.T) {
 	}
 	if up.n() != 1 {
 		t.Fatalf("%d forwards, want 1", up.n())
+	}
+}
+
+// TestTheSecretReadChecksTheOpenedFile: readMCPSecret is what runs after
+// EnsureMCPSecret's Lstat, so a path swapped in between must still be refused
+// by the read itself — a symlink (even to a private, valid secret) does not
+// open, a FIFO is not read (and does not hang), a file readable by others is
+// refused, and a private regular file is read.
+func TestTheSecretReadChecksTheOpenedFile(t *testing.T) {
+	dir := t.TempDir()
+	good := filepath.Join(dir, "good")
+	if err := os.WriteFile(good, []byte(strings.Repeat("b", 64)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(good, link); err != nil {
+		t.Fatal(err)
+	}
+	open := filepath.Join(dir, "open")
+	if err := os.WriteFile(open, []byte(strings.Repeat("c", 64)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fifo := filepath.Join(dir, "fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]string{link: "symlink", open: "readable by others", fifo: "not a regular file"} {
+		done := make(chan error, 1)
+		go func() { _, err := readMCPSecret(path); done <- err }()
+		select {
+		case err := <-done:
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("%s: %v, want %q", filepath.Base(path), err, want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s: the read hung", filepath.Base(path))
+		}
+	}
+	if s, err := readMCPSecret(good); err != nil || s != strings.Repeat("b", 64) {
+		t.Fatalf("the private file: %q %v", s, err)
 	}
 }

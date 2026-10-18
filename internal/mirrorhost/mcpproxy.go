@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -304,7 +305,7 @@ func EnsureMCPSecret(path string) (string, error) {
 		case err == nil && !fi.Mode().IsRegular():
 			return "", fmt.Errorf("muster-mirror: %s is not a regular file", path)
 		case err == nil:
-			return readMCPSecret(path, fi)
+			return readMCPSecret(path)
 		case !errors.Is(err, os.ErrNotExist):
 			return "", err
 		}
@@ -320,11 +321,30 @@ func EnsureMCPSecret(path string) (string, error) {
 }
 
 // readMCPSecret reads an existing secret file.
-func readMCPSecret(path string, fi os.FileInfo) (string, error) {
+//
+// 🔴 THE CHECKS ARE ON THE OPENED FILE, NOT THE PATH: opened with O_NOFOLLOW
+// (a symlink swapped in after the caller's Lstat fails to open) and its type
+// and mode read from the open descriptor, so what is checked is what is read.
+func readMCPSecret(path string) (string, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if errors.Is(err, syscall.ELOOP) {
+		return "", fmt.Errorf("muster-mirror: %s is a symlink; the MCP secret must be a regular file", path)
+	}
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !fi.Mode().IsRegular() {
+		return "", fmt.Errorf("muster-mirror: %s is not a regular file", path)
+	}
 	if fi.Mode().Perm()&0o077 != 0 {
 		return "", fmt.Errorf("muster-mirror: %s is readable by others (mode %v); chmod 600 it", path, fi.Mode().Perm())
 	}
-	b, err := os.ReadFile(path)
+	b, err := io.ReadAll(io.LimitReader(f, 4096))
 	if err != nil {
 		return "", err
 	}

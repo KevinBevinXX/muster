@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"slices"
@@ -61,20 +63,22 @@ func (s *Server) requireMirrorHostToken(next http.HandlerFunc) http.HandlerFunc 
 			return
 		}
 		// The failure limit, checked BEFORE the lookup: only FAILED token
-		// checks count, per client address, and an address past the limit gets
-		// 429 without touching the database — every token, a valid one
-		// included, until its window (mirrorMCPFailWindow) has passed; then it
-		// is served again. Nothing locks an address out for longer.
-		addr := clientIP(r)
-		if s.mirrorMCPFails.count(addr, s.now(), mirrorMCPFailWindow) >= mirrorMCPFailLimit {
-			s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "too many failed mirror token checks from this address; wait a minute"})
+		// checks count, per (client address, presented token), and that pair
+		// past the limit gets 429 without touching the database until its
+		// window (mirrorMCPFailWindow) has passed. 🔴 PER TOKEN, NOT PER
+		// ADDRESS: hosts behind one NAT or one Cloudflare edge share an
+		// address, so a stale token on one host must never refuse another
+		// host's valid token.
+		tok := hookTokenFromRequest(r)
+		key := mirrorMCPFailKey(clientIP(r), tok)
+		if s.mirrorMCPFails.count(key, s.now(), mirrorMCPFailWindow) >= mirrorMCPFailLimit {
+			s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "too many failed checks of this mirror token from this address; wait a minute"})
 			return
 		}
 		refuse := func() {
-			s.mirrorMCPFails.add(addr, s.now(), mirrorMCPFailWindow)
+			s.mirrorMCPFails.add(key, s.now(), mirrorMCPFailWindow)
 			s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "this route takes a mirror host token (mmt_…)"})
 		}
-		tok := hookTokenFromRequest(r)
 		if !mirror.TokenShapeOK(tok) {
 			refuse()
 			return
@@ -107,12 +111,21 @@ func (s *Server) mirrorHostFor(ctx context.Context, tok string) (mirror.Token, e
 	return s.ext.MirrorTokens.Authenticate(authz.System(ctx), tok)
 }
 
-// The /mirror/mcp failure limit: more than this many failed token checks per
-// address within the window are answered 429.
+// The /mirror/mcp failure limit: past this many failed checks of one token
+// from one address within the window, that token from that address is
+// answered 429.
 const (
 	mirrorMCPFailLimit  = 10
 	mirrorMCPFailWindow = time.Minute
 )
+
+// mirrorMCPFailKey is the failure counter's key: the client address and a
+// hash of the presented token (never the token itself, so the map holds no
+// credential). The map stays capped (boundedWindow).
+func mirrorMCPFailKey(addr, tok string) string {
+	sum := sha256.Sum256([]byte(tok))
+	return addr + " " + hex.EncodeToString(sum[:16])
+}
 
 // mirrorSessionOf is the window of the principal's host `host` running Claude
 // session sid now — in its active pane or in another pane of it (a split) —

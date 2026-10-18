@@ -289,11 +289,14 @@ func TestAMirroredSessionWorksOnlyTheTasksItCreated(t *testing.T) {
 }
 
 // TestFailedMirrorTokenChecksAreLimitedAndARevokedTokenIsRefused: past the
-// failure limit an address's bad tokens are answered 429 — a valid token from
-// it still works — and a token revoked between two calls is refused at the
-// next one.
+// failure limit a bad token from an address is answered 429 — another token
+// from the same address (a different bad one, or a valid one) is not — the
+// bad token is checked again once the window has passed, and a token revoked
+// between two calls is refused at the next one.
 func TestFailedMirrorTokenChecksAreLimitedAndARevokedTokenIsRefused(t *testing.T) {
 	f, ws, _, _ := newMirrorMCPFixture(t)
+	clock := time.Now()
+	f.srv.now = func() time.Time { return clock }
 	list := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
 	for i := 0; i < mirrorMCPFailLimit; i++ {
 		if code, _, _ := f.mirrorRPC(t, mirrorAs(mirrorTok('z'), focusSID), list); code != http.StatusUnauthorized {
@@ -301,14 +304,17 @@ func TestFailedMirrorTokenChecksAreLimitedAndARevokedTokenIsRefused(t *testing.T
 		}
 	}
 	if code, _, _ := f.mirrorRPC(t, mirrorAs(mirrorTok('z'), focusSID), list); code != http.StatusTooManyRequests {
-		t.Fatalf("past the limit: %d", code)
+		t.Fatalf("the bad token past the limit: %d", code)
 	}
-	if code, _, _ := f.mirrorRPC(t, mirrorAs("junk", focusSID), list); code != http.StatusTooManyRequests {
-		t.Fatalf("a malformed token past the limit: %d", code)
+	if code, _, _ := f.mirrorRPC(t, mirrorAs("junk", focusSID), list); code != http.StatusUnauthorized {
+		t.Fatalf("another bad token from the same address: %d, want its own 401", code)
 	}
-	f.srv.mirrorMCPFails = boundedWindow{} // the limit's window, passed
 	if code, _, body := f.mirrorRPC(t, mirrorAs(ws, focusSID), list); code != http.StatusOK {
-		t.Fatalf("a valid token once the window passed: %d %s", code, body)
+		t.Fatalf("a valid token from the same address: %d %s", code, body)
+	}
+	clock = clock.Add(mirrorMCPFailWindow + time.Second)
+	if code, _, _ := f.mirrorRPC(t, mirrorAs(mirrorTok('z'), focusSID), list); code != http.StatusUnauthorized {
+		t.Fatalf("the bad token once the window passed: %d, want 401", code)
 	}
 	delete(f.tokens, ws) // revoked
 	if code, _, _ := f.mirrorRPC(t, mirrorAs(ws, focusSID), list); code == http.StatusOK {
@@ -327,9 +333,11 @@ func (c countingTokens) Authenticate(ctx context.Context, tok string) (mirror.To
 	return c.MirrorTokenAuth.Authenticate(ctx, tok)
 }
 
-// TestAnAddressPastTheFailureLimitIsRefusedBeforeAnyLookup: past the limit
-// every token from that address — a valid one too — is answered 429 WITHOUT a
-// token lookup, and once the window has passed the valid token is served.
+// TestAnAddressPastTheFailureLimitIsRefusedBeforeAnyLookup: two hosts share
+// one client address (one NAT, one Cloudflare edge). One host's stale token
+// fails past the limit: it is answered 429 WITHOUT a token lookup, while the
+// other host's valid token from that same address is looked up and served.
+// The failure counter's key holds a hash of the token, never the token.
 func TestAnAddressPastTheFailureLimitIsRefusedBeforeAnyLookup(t *testing.T) {
 	f, ws, _, _ := newMirrorMCPFixture(t)
 	var n atomic.Int64
@@ -337,20 +345,29 @@ func TestAnAddressPastTheFailureLimitIsRefusedBeforeAnyLookup(t *testing.T) {
 	clock := time.Now()
 	f.srv.now = func() time.Time { return clock }
 	list := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
+	stale := mirrorTok('z')
 	for i := 0; i < mirrorMCPFailLimit; i++ {
-		if code, _, _ := f.mirrorRPC(t, mirrorAs(mirrorTok('z'), focusSID), list); code != http.StatusUnauthorized {
+		if code, _, _ := f.mirrorRPC(t, mirrorAs(stale, focusSID), list); code != http.StatusUnauthorized {
 			t.Fatalf("failure %d: %d", i+1, code)
 		}
 	}
 	before := n.Load()
-	if code, _, _ := f.mirrorRPC(t, mirrorAs(ws, focusSID), list); code != http.StatusTooManyRequests {
-		t.Fatalf("a valid token past the limit: %d", code)
+	if code, _, _ := f.mirrorRPC(t, mirrorAs(stale, focusSID), list); code != http.StatusTooManyRequests {
+		t.Fatalf("the stale token past the limit: %d", code)
 	}
 	if n.Load() != before {
 		t.Fatalf("a request past the limit looked its token up (%d lookups)", n.Load()-before)
 	}
-	clock = clock.Add(mirrorMCPFailWindow + time.Second)
 	if code, _, body := f.mirrorRPC(t, mirrorAs(ws, focusSID), list); code != http.StatusOK {
-		t.Fatalf("the valid token after the window: %d %s", code, body)
+		t.Fatalf("the other host's valid token on the shared address: %d %s", code, body)
+	}
+	if n.Load() != before+1 {
+		t.Fatalf("the valid token was not looked up (%d lookups)", n.Load()-before)
+	}
+	if k := mirrorMCPFailKey("192.0.2.1", stale); strings.Contains(k, stale) || strings.Contains(k, stale[4:20]) {
+		t.Fatalf("the failure key holds the token: %q", k)
+	}
+	if mirrorMCPFailKey("192.0.2.1", stale) == mirrorMCPFailKey("192.0.2.1", ws) || mirrorMCPFailKey("192.0.2.1", stale) == mirrorMCPFailKey("192.0.2.2", stale) {
+		t.Fatal("the failure key does not separate tokens and addresses")
 	}
 }

@@ -134,7 +134,7 @@ type Server struct {
 	// waiters' wake-up and each owner's last-seen waiting sessions.
 	attention attentionState
 	// mirrorMCPFails counts failed mirror-token checks on /mirror/mcp, per
-	// address (mirror_mcp.go).
+	// (address, token hash) (mirror_mcp.go).
 	mirrorMCPFails boundedWindow
 
 	// terminals is every live agent terminal, so a shutdown can end them and
