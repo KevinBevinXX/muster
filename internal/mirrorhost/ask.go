@@ -1,0 +1,83 @@
+package mirrorhost
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"os/exec"
+	"strings"
+
+	"github.com/ZacxDev/muster/internal/askdrive"
+	"github.com/ZacxDev/muster/internal/askq"
+)
+
+// ANSWERING AN AskUserQuestion PICKER FROM MUSTER: the keys go to the pane the
+// way they would from a keyboard, through internal/askdrive, which reads the
+// pane before and after every one.
+//
+// 🔴 THE KEYS ARE PASTED, UNSANITIZED (`paste-buffer -S`), NEVER `send-keys`.
+// Measured (tmux 3.7c): with a read-only client attached to the session —
+// which muster's own Terminal view is — `send-keys` is refused with "client is
+// read-only", for a pane target as for a session one. `paste-buffer` has no
+// such check; without -S it SANITIZES control characters (an arrow arrived as
+// nothing and a Backspace as the text "^?"), with -S the bytes arrive as the
+// keys they are. No -p: a bracketed paste is text to the picker, not keys.
+
+// AskBackend answers an AskUserQuestion picker in a pane.
+type AskBackend interface {
+	AnswerAsk(ctx context.Context, pane string, qs []askq.Question, choices []askdrive.Choice) error
+}
+
+// AskOf is b's AskBackend, if it has one (through any wrapper).
+func AskOf(b Backend) (AskBackend, bool) { return capabilityOf[AskBackend](b) }
+
+// AnswerAsk implements AskBackend: askdrive.Drive on the pane.
+func (t Tmux) AnswerAsk(ctx context.Context, pane string, qs []askq.Question, choices []askdrive.Choice) error {
+	if !strings.HasPrefix(pane, "%") {
+		return fmt.Errorf("muster-mirror: %q is not a tmux pane id", pane)
+	}
+	return askdrive.Drive(ctx, tmuxPane{t: t, id: pane}, qs, choices, askdrive.Options{})
+}
+
+// tmuxPane is a tmux pane as an askdrive.Pane.
+type tmuxPane struct {
+	t  Tmux
+	id string
+}
+
+func (p tmuxPane) run(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, p.t.bin(), append(p.t.server(), args...)...)
+	cmd.Env = tmuxEnv()
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
+	}
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("tmux %s: %v: %s", args[0], err, strings.TrimSpace(errb.String()))
+	}
+	return out.Bytes(), nil
+}
+
+// Capture is the pane's screen with wrapped lines joined.
+func (p tmuxPane) Capture(ctx context.Context) (string, error) {
+	b, err := p.run(ctx, nil, "capture-pane", "-p", "-J", "-t", p.id)
+	return string(b), err
+}
+
+// Send pastes keys unsanitized and unbracketed (see the file comment).
+func (p tmuxPane) Send(ctx context.Context, keys string) error {
+	var rnd [6]byte
+	_, _ = rand.Read(rnd[:])
+	buf := "muster-mirror-ask-" + hex.EncodeToString(rnd[:])
+	if _, err := p.run(ctx, []byte(keys), "load-buffer", "-b", buf, "-"); err != nil {
+		return err
+	}
+	if _, err := p.run(ctx, nil, "paste-buffer", "-S", "-d", "-b", buf, "-t", p.id); err != nil {
+		_, _ = p.run(ctx, nil, "delete-buffer", "-b", buf)
+		return err
+	}
+	return nil
+}

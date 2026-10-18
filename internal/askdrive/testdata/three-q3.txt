@@ -1,0 +1,23 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Color  ☒ Pets  ☐ Name  ✔ Submit  →                                                                                 
+                  
+What should the project be called?                                                                                      
+
+❯ 1. Alpha                                                                                                              
+     First                                        
+  2. Beta   
+     Second    
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this   
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel                                                            
+                    
+
+
+
+
+
+
+
+
