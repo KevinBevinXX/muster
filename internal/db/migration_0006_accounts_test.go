@@ -96,9 +96,10 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - session_routes (0021, the chief's routed plugin messages).
 //   - agent_focus_history (0022, every focus a session has had).
 //   - agent_focus (0020, each session's focus).
+//   - uploads (0024, the composer's attached files).
 var ownedAfter0006 = []string{"agent_focus", "agent_focus_history", "cc_account_marks", "flow_jobs", "flow_requests", "flow_runner_tokens",
 	"mirror_tokens", "pins", "plugin_messages", "plugin_reply_drafts", "plugins", "push_preferences",
-	"push_subscriptions", "recents", "send_queue", "session_routes", "user_credentials"}
+	"push_subscriptions", "recents", "send_queue", "session_routes", "uploads", "user_credentials"}
 
 // rlsTables is every owned table today: ownedTables plus ownedAfter0006.
 func rlsTables() []string { return append(slices.Clone(ownedTables), ownedAfter0006...) }
@@ -162,6 +163,7 @@ var wantForeignKeys = []string{
 	"agent_focus_history|agent_focus_history_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"pins|pins_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE",
 	"pins|pins_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"uploads|uploads_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"recents|recents_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE",
 	"recents|recents_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"plugin_messages|plugin_messages_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL",

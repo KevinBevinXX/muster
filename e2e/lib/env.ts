@@ -134,6 +134,12 @@ export const routingConnectPort = port + 57;
 // plugin on) and two mirrored hosts — one that reports its catalog and one
 // that plays an older muster-mirror.
 export const composerMenuPort = port + 58;
+// File attachments (uploads.spec.ts): the server with S3 configured, the one
+// without, and the fake S3. Far from the others so a sibling spec added in the
+// meantime is unlikely to land on them.
+export const uploadsPort = port + 70;
+export const uploadsOffPort = port + 71;
+export const fakeS3Port = port + 72;
 // The Agents list's host tabs (host-tabs.spec.ts): its own server (the
 // e2eterm binary, mirror plugin on) and up to three mirrored hosts. A high
 // offset, clear of the specs being added beside it.

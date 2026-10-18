@@ -9,6 +9,7 @@ Start with the [project README](../README.md) for the pitch and a quickstart.
 - [focus.md](focus.md) — what each session is working on, and how the chief finds one
 - [sending-and-step-up.md](sending-and-step-up.md) — the message box, and the step-up check that guards it
 - [dictation.md](dictation.md) — the microphone on every message box
+- [uploads.md](uploads.md) — attaching files in the composer; the signed link an agent downloads them through
 - [push.md](push.md) — Web Push and the installable app
 - [provisioner.md](provisioner.md) — dispatching agents, agent kinds, the chief, the provisioner seam
 - [browser-flows.md](browser-flows.md) — the browser-job queue and its runner protocol
