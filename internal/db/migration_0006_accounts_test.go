@@ -95,7 +95,7 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - send_queue (0019, the server-side send queue).
 //   - session_routes (0021, the chief's routed plugin messages).
 //   - agent_focus_history (0022, every focus a session has had).
-//   - attention_asks (0023, the attention queue's explicit asks).
+//   - attention_asks (0025, the attention queue's explicit asks).
 //   - agent_focus (0020, each session's focus).
 var ownedAfter0006 = []string{"agent_focus", "agent_focus_history", "attention_asks", "cc_account_marks", "flow_jobs", "flow_requests", "flow_runner_tokens",
 	"mirror_tokens", "pins", "plugin_messages", "plugin_reply_drafts", "plugins", "push_preferences",

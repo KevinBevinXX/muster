@@ -449,7 +449,7 @@ for (const vp of [
       // are TYPED ones (field:value, a substring), so they stay in the box.
       await page.goto(origin + '/agents?q=' + encodeURIComponent(`host:${host} kind:opencode`));
       await expect(box).toHaveValue(`host:${host} kind:opencode`);
-      await expect(page.locator('#agents-f-host')).toHaveValue('');
+      await expect(page.locator('#agents-hosts [role="tab"][aria-selected="true"]'), 'a link chooses no host tab').toHaveAttribute('data-host', '');
       await expect(cards(page).filter({ visible: true })).toHaveCount(1, { timeout: 20_000 });
       expect(await names()).toEqual(['solo:3']);
       // Clearing it takes it out of the URL.
@@ -484,124 +484,101 @@ for (const vp of [
       await noHorizontalScroll(page);
     });
 
-    // THE FILTER'S CONTROLS: nobody types `host=x`. One select per facet (host,
-    // type, status, kind) whose options the script reads off the cards; the
-    // choices combine, show a Clear all and a visible "N of M", and they are the
-    // SAME token string as before — so `?q=` and the session's copy carry them.
-    // A select writes an EXACT token (field=value); a typed field:value stays a
-    // substring, in the box.
+    // THE FILTER'S CONTROLS: the host is a TAB — All, "cluster" (the pod
+    // agents), this host — each with its count; type, status and kind are typed
+    // tokens (`kind=opencode`), which AND with the tab. The tab is the
+    // browser's (localStorage) and is NOT in ?q=; the box's text is, as typed.
+    // (Ported from the four facet dropdowns this replaced.)
     //
-    // 🔴 A REGRESSION TEST: on the commit before there is no #agents-f-host.
-    test('the filter controls select, combine, round-trip ?q= and survive a reload', async ({ page }) => {
+    // 🔴 A REGRESSION TEST: on the commit before there is no #agents-hosts.
+    test('the host tabs filter, combine with typed tokens, round-trip ?q= and survive a reload', async ({ page }) => {
       await openList(page, 4);
       const press = (l: ReturnType<Page['locator']>) => (vp.use.hasTouch ? l.tap() : l.click());
-      const sel = (f: string) => page.locator('#agents-f-' + f);
+      const hostTab = (h: string) => page.locator(`#agents-hosts [role="tab"][data-host="${h}"]`);
       const box = page.locator('#agents-search');
       const count = page.locator('#agents-count');
-      const clearAll = page.locator('#agents-filter-clear');
+      const clear = page.locator('#agents-search-clear');
+      const pods = page.locator('#agents-list > article:not([data-mirror-card])');
       const qOf = () => new URL(page.url()).searchParams.get('q');
       const names = async () =>
         (await cards(page).filter({ visible: true }).evaluateAll((els) => els.map((e) => ((e.querySelector('[data-mirror-label]') ?? e.querySelector('[data-mirror-name]')) as HTMLElement).textContent))).sort();
       const all = await page.locator('#agents-list > article').count();
+      const podCount = await pods.count();
+      expect(podCount, 'the seeded pod agents are listed').toBeGreaterThanOrEqual(3);
       await expect(count).toBeVisible();
       await expect(count).toHaveText(`${all} of ${all}`);
-      await expect(clearAll).toBeHidden();
 
-      // The options are the cards' own values, labelled as the cards spell them.
-      const opts = (f: string) => sel(f).locator('option').allTextContents();
-      await expect.poll(() => opts('host'), { timeout: 20_000 }).toEqual(expect.arrayContaining(['Any host', 'cluster', host]));
-      expect(await opts('type')).toEqual(['Any type', 'Agent', 'Mirrored']);
-      expect(await opts('kind')).toEqual(expect.arrayContaining(['Any kind', 'Claude Code', 'opencode', 'shell']));
-      // (Which statuses besides running exist depends on what earlier specs did to the seed.)
-      expect(await opts('status')).toEqual(expect.arrayContaining(['Any status', 'running']));
-
-      // Thumb-friendly: each control a 44px, 16px-text target inside the viewport.
-      for (const f of ['host', 'type', 'status', 'kind']) {
-        const bb = (await sel(f).boundingBox())!;
-        expect(bb.height, `${f} is a 44px target`).toBeGreaterThanOrEqual(44);
-        expect(bb.x + bb.width, `${f} fits the viewport`).toBeLessThanOrEqual(vp.use.viewport.width);
-        expect(await sel(f).evaluate((e) => parseFloat(getComputedStyle(e).fontSize)), `${f} has 16px text`).toBeGreaterThanOrEqual(16);
+      // The tabs are the cards' own hosts, each counting its cards.
+      await expect.poll(() => page.locator('#agents-hosts [data-tab-label]').allTextContents(), { timeout: 20_000 }).toEqual(['All', 'cluster', host]);
+      await expect(hostTab('').locator('[data-tab-count]')).toHaveText(String(all));
+      await expect(hostTab('cluster').locator('[data-tab-count]')).toHaveText(String(podCount));
+      await expect(hostTab(host).locator('[data-tab-count]')).toHaveText('4');
+      // Thumb-friendly: each tab a 44px target (measured before any is pressed).
+      for (const t of await page.locator('#agents-hosts [role="tab"]').all()) {
+        expect((await t.boundingBox())!.height, 'a tab is a 44px target').toBeGreaterThanOrEqual(44);
       }
 
-      // Select a host: this host's windows only, written as the exact token.
-      await sel('host').selectOption(host);
-      expect(qOf()).toBe(`host=${host}`);
+      // This host's tab: its windows only, and the tab writes nothing to ?q=.
+      await press(hostTab(host));
+      await expect(hostTab(host)).toHaveAttribute('aria-selected', 'true');
+      expect(qOf()).toBeNull();
       expect(await names()).toEqual(['Gold:1', 'Gold:11', 'Gold:8', 'solo:3']);
-      await expect(page.locator('#agents-list > article:not([data-mirror-card])').filter({ visible: true })).toHaveCount(0);
+      await expect(pods.filter({ visible: true })).toHaveCount(0);
       await expect(count).toHaveText(`4 of ${all}`);
-      await expect(clearAll).toBeVisible();
-      expect((await clearAll.boundingBox())!.height, 'Clear all is a 44px target').toBeGreaterThanOrEqual(44);
 
-      // Combine: a kind with a space in it, then a word in the box.
-      await sel('kind').selectOption('claude code');
-      expect(qOf()).toBe(`host=${host} kind="claude code"`);
+      // Combine: a typed kind with a space in it, then a word too.
+      await box.fill('kind="claude code"');
+      expect(qOf()).toBe('kind="claude code"');
       expect(await names()).toEqual(['Gold:11', 'Gold:8']);
-      await box.fill('11');
-      expect(qOf()).toBe(`host=${host} kind="claude code" 11`);
+      await expect(hostTab(host).locator('[data-tab-count]'), 'the tab counts what the box shows').toHaveText('2');
+      await box.fill('kind="claude code" 11');
       expect(await names()).toEqual(['Gold:11']);
       await expect(count).toHaveText(`1 of ${all}`);
-
-      // Take one back: its "Any …" option, and the box's ×.
-      await sel('kind').selectOption('');
-      expect(qOf()).toBe(`host=${host} 11`);
-      expect(await names()).toEqual(['Gold:11']);
-      await press(page.locator('#agents-search-clear'));
+      // The box's × clears the box and keeps the tab.
+      await press(clear);
       await expect(box).toHaveValue('');
-      expect(qOf()).toBe(`host=${host}`);
-      expect(await names()).toEqual(['Gold:1', 'Gold:11', 'Gold:8', 'solo:3']);
-
-      // Clear all: every control and the box, and the URL.
-      await box.fill('gold');
-      await press(clearAll);
-      await expect(sel('host')).toHaveValue('');
-      await expect(box).toHaveValue('');
-      await expect(clearAll).toBeHidden();
       expect(qOf()).toBeNull();
-      await expect(count).toHaveText(`${all} of ${all}`);
-
-      // Type + status: this host's online windows, and no pod agent.
-      await sel('type').selectOption('mirrored');
-      await sel('status').selectOption('running');
       expect(await names()).toEqual(['Gold:1', 'Gold:11', 'Gold:8', 'solo:3']);
-      await expect(page.locator('#agents-list > article:not([data-mirror-card])').filter({ visible: true })).toHaveCount(0);
-      expect(qOf()).toBe('type=mirrored status=running');
-      // A control and a typed field token AND as well: the pod agents are on host
-      // "cluster", so asking for agents typed on top leaves nothing.
-      await box.fill('host:cluster');
+      await expect(hostTab(host)).toHaveAttribute('aria-selected', 'true');
+
+      // Type + status, typed on All: this host's online windows, no pod agent.
+      await press(hostTab(''));
+      await box.fill('type=mirrored status=running');
+      expect(await names()).toEqual(['Gold:1', 'Gold:11', 'Gold:8', 'solo:3']);
+      await expect(pods.filter({ visible: true })).toHaveCount(0);
+      // A typed token and the tab AND: the "cluster" tab holds no mirrored window.
+      await press(hostTab('cluster'));
       await expect(page.locator('#agents-list > article').filter({ visible: true })).toHaveCount(0);
       await expect(page.locator('#agents-nomatch')).toBeVisible();
-      await press(clearAll);
+      await press(clear);
+      await expect(pods.filter({ visible: true })).toHaveCount(podCount);
 
-      // A ?q= link with exact tokens shows them SELECTED and filters on first
-      // paint — the options arrive with the list, after the link was read.
-      await page.goto(origin + '/agents?q=' + encodeURIComponent(`host=${host} kind=opencode`));
-      await expect(sel('host')).toHaveValue(host, { timeout: 20_000 });
-      await expect(sel('kind')).toHaveValue('opencode');
-      await expect(box).toHaveValue('');
-      await expect.poll(names, { timeout: 20_000 }).toEqual(['solo:3']);
-      // A reload is the same filter…
+      // A reload brings back the tab (localStorage) and the box (?q=).
+      await press(hostTab(host));
+      await box.fill('opencode');
+      expect(await names()).toEqual(['solo:3']);
       await page.reload();
-      await expect(sel('host')).toHaveValue(host, { timeout: 20_000 });
-      await expect(sel('kind')).toHaveValue('opencode');
+      await expect(hostTab(host)).toHaveAttribute('aria-selected', 'true', { timeout: 20_000 });
+      await expect(box).toHaveValue('opencode');
       await expect.poll(names, { timeout: 20_000 }).toEqual(['solo:3']);
-      // …and so is coming back with no ?q= at all: the session's copy.
+      // A ?q= link with exact tokens filters on first paint, from the box.
+      await page.goto(origin + '/agents?q=' + encodeURIComponent('kind=opencode'));
+      await expect(box).toHaveValue('kind=opencode');
+      await expect.poll(names, { timeout: 20_000 }).toEqual(['solo:3']);
+      // …and coming back with no ?q= at all is the session's copy.
       await page.goto(origin + '/agents');
-      await expect(sel('host')).toHaveValue(host, { timeout: 20_000 });
+      await expect(box).toHaveValue('kind=opencode');
       await expect.poll(names, { timeout: 20_000 }).toEqual(['solo:3']);
-      expect(qOf(), 'the remembered filter is put back on the URL').toBe(`host=${host} kind=opencode`);
-      // A link asking for a value no card has (a partial host) gets no made-up
-      // option: its token stays in the box, and it is still exact, so nothing
-      // matches. Typed with a colon, the same partial is a substring again.
+      expect(qOf(), 'the remembered filter is put back on the URL').toBe('kind=opencode');
+      // A partial host typed EXACTLY matches nothing; typed with a colon it is
+      // a substring again.
+      await press(hostTab(''));
       const part = host.slice(0, host.length - 2);
-      await page.goto(origin + '/agents?q=' + encodeURIComponent(`host=${part}`));
-      await expect.poll(() => opts('host'), { timeout: 20_000 }).toEqual(expect.arrayContaining([host]));
-      await expect(sel('host')).toHaveValue('');
-      expect(await opts('host'), 'no option was made up for the partial host').not.toContain(part);
-      await expect(box).toHaveValue(`host=${part}`);
+      await box.fill(`host=${part}`);
       await expect(page.locator('#agents-nomatch')).toBeVisible();
       await box.fill(`host:${part}`);
       await expect.poll(names).toEqual(['Gold:1', 'Gold:11', 'Gold:8', 'solo:3']);
-      await press(clearAll);
+      await press(clear);
       expect(qOf()).toBeNull();
       await noHorizontalScroll(page);
     });

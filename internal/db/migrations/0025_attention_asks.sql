@@ -1,4 +1,4 @@
--- muster 0023 — THE ATTENTION QUEUE's explicit asks (internal/attention): a
+-- muster 0025 — THE ATTENTION QUEUE's explicit asks (internal/attention): a
 -- question an agent put to its owner (attention_ask), waiting for an answer.
 --
 -- 🔴 ONLY THE EXPLICIT ASKS ARE STORED. The attention view also lists mirrored
@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS public.attention_asks (
     options        JSONB       NOT NULL DEFAULT '[]'::jsonb,
     status         TEXT        NOT NULL DEFAULT 'open',
     answer         TEXT,
-    -- Who answered: 'operator' (the attention view or the API) or 'chief'.
+    -- Who answered: 'operator' (the attention view) — the only answerer.
     answered_by    TEXT,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at     TIMESTAMPTZ NOT NULL,
@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS public.attention_asks (
     CONSTRAINT attention_asks_answer_cap CHECK (answer IS NULL OR char_length(answer) BETWEEN 1 AND 8000),
     CONSTRAINT attention_asks_status_check CHECK (status IN ('open', 'answered', 'cancelled', 'expired')),
     CONSTRAINT attention_asks_answered_check CHECK ((status = 'answered') = (answer IS NOT NULL AND answered_by IS NOT NULL)),
-    CONSTRAINT attention_asks_answered_by_check CHECK (answered_by IS NULL OR answered_by IN ('operator', 'chief')),
+    CONSTRAINT attention_asks_answered_by_check CHECK (answered_by IS NULL OR answered_by = 'operator'),
     CONSTRAINT attention_asks_resolved_check CHECK ((status = 'open') = (resolved_at IS NULL)),
     CONSTRAINT attention_asks_expiry_check CHECK (expires_at > created_at)
 );

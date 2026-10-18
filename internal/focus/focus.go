@@ -45,8 +45,11 @@ const (
 
 // The bounds of what is stored (migration 0020's CHECKs say the same).
 const (
-	// MaxTitleRunes bounds a title: one line on a card.
-	MaxTitleRunes = 80
+	// MaxTitleRunes bounds a title as STORED — a guard against a runaway
+	// summary, NOT a display length: a card shows its focus title whole,
+	// wrapped, and the summarizer is asked for a short one
+	// (SummaryInstructions). Migration 0023 holds the same number.
+	MaxTitleRunes = 300
 	// MaxDescriptionRunes bounds a description: one to three sentences.
 	MaxDescriptionRunes = 600
 	// MaxDescriptionSentences is the "one to three sentences" rule.
@@ -205,7 +208,7 @@ var ErrEmpty = errors.New("focus: a focus needs a title")
 
 // Clean is a title and description ready to store: control and format
 // characters dropped, whitespace folded, markdown emphasis stripped, the title
-// to one line of at most MaxTitleRunes, the description to at most
+// to one line (cut only past the MaxTitleRunes storage guard), the description to at most
 // MaxDescriptionSentences sentences and MaxDescriptionRunes runes. A title that
 // is empty after that is ErrEmpty.
 func Clean(title, description string) (string, string, error) {

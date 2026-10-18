@@ -375,7 +375,7 @@ var isolationClasses = map[string]routeClass{
 	// A message to an agent as a form post, and the GET it can come back as.
 	"POST /agents/{name}/send": classParam,
 	"GET /agents/{name}/send":  classParam,
-	// The attention queue (0023). The page, its live list and the badge name
+	// The attention queue (0025). The page, its live list and the badge name
 	// no object (each reads the caller's own queue); the answer and dismiss
 	// forms and their API twins name A's ask by id. The machine API is the
 	// hook tier (user 1), like the task API.
@@ -776,7 +776,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	aQueued, err := sendqueue.NewPG(pool).Enqueue(ua, sendqueue.Item{
 		Target: sendqueue.Target{Host: w.canary + "-host", Session: "main", Window: "@1"}, Body: w.canary + " queued", StepUpAt: time.Now()})
 	must(err, "a queued message")
-	// A's open ask (0023), asked by A's agent, its question carrying the canary.
+	// A's open ask (0025), asked by A's agent, its question carrying the canary.
 	aAsk, err := attention.NewPG(pool).Create(ua, attention.New{Asker: attention.Asker{AgentID: w.a.agent.ID, Label: w.a.agent.Name},
 		Question: w.canary + " asks", Options: []string{"yes", "no"}})
 	must(err, "an ask")
@@ -841,7 +841,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		Routing:   &Routing{},
 		Focus:     focus.NewPG(pool),
 		SendQueue: sendqueue.NewPG(pool),
-		// The attention queue (0023): A's ask is a real object B must not reach.
+		// The attention queue (0025): A's ask is a real object B must not reach.
 		Attention: attention.NewPG(pool),
 		Push:      push.NewService(pushStore, w.pusher, push.VAPIDConfig{PublicKey: "iso-walk-vapid-public"}, log.New(io.Discard, "", 0)),
 		ConnectorPolicy: connectors.Policy{AllowLoopback: true, InsecureHTTP: true,
@@ -1080,7 +1080,7 @@ type isoObjs struct {
 	mirrorHost, mirrorSession                 string
 	queued                                    int64  // a queued message's id (0019)
 	route                                     string // a session route's id (0021)
-	ask                                       int64  // an attention ask's id (0023)
+	ask                                       int64  // an attention ask's id (0025)
 }
 
 // fill turns a route pattern into a concrete request naming objects o, with a

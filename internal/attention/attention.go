@@ -1,4 +1,4 @@
-// Package attention is the ATTENTION QUEUE's explicit asks (migration 0023): a
+// Package attention is the ATTENTION QUEUE's explicit asks (migration 0025): a
 // question an agent — a dispatched agent or a mirrored Claude Code session —
 // puts to its owner, and the owner's answer.
 //
@@ -52,7 +52,7 @@ const (
 	ByChief    = "chief"
 )
 
-// The bounds, each also a CHECK in 0023.
+// The bounds, each also a CHECK in 0025.
 const (
 	MaxQuestionRunes = 4000
 	MaxOptions       = 10

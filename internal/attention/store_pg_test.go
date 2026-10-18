@@ -110,7 +110,7 @@ func TestRowLevelSecurityKeepsAsksToTheirOwner(t *testing.T) {
 }
 
 // TestAnAgentAskNamesOnlyItsOwnersAgent: an ask naming an agent of another
-// owner is refused by 0023's owner trigger.
+// owner is refused by 0025's owner trigger.
 func TestAnAgentAskNamesOnlyItsOwnersAgent(t *testing.T) {
 	s, pool, _ := pgStore(t)
 	var agent int64

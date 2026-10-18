@@ -10,7 +10,7 @@ first:
 
 | kind | what | where it comes from | how you act on it |
 |---|---|---|---|
-| Question | An agent called `attention_ask`. | `attention_asks` (migration 0023) | Tap one of the agent's options, or type an answer. **Dismiss without answering** withdraws it. |
+| Question | An agent called `attention_ask`. | `attention_asks` (migration 0025) | Tap one of the agent's options, or type an answer. **Dismiss without answering** withdraws it. |
 | Session waiting | A mirrored Claude Code window whose session reports `waiting` (a permission prompt, a question). | The mirror hub's live window list; nothing is stored. | **Open the session** (the rendered view). It leaves the list when the session stops waiting. |
 | Reply draft | Your chief drafted a reply to a plugin message. | `plugin_reply_drafts`, pending ones; nothing is copied. | **Review the draft** on `/plugins`. |
 

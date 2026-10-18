@@ -92,10 +92,10 @@ const sessionRoutesMigrationVersion = 21
 // treatment again.
 const agentFocusHistoryMigrationVersion = 22
 
-// attentionAsksMigrationVersion is 0023: attention_asks (the attention queue's
+// attentionAsksMigrationVersion is 0025: attention_asks (the attention queue's
 // explicit asks), owned and under the same row-level security; same treatment
 // again.
-const attentionAsksMigrationVersion = 23
+const attentionAsksMigrationVersion = 25
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the

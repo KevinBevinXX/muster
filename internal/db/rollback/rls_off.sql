@@ -142,7 +142,7 @@ BEGIN
         ALTER TABLE public.agent_focus_history DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.agent_focus_history ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
-    -- 0023 (attention_asks), when this schema has it; same reason as 0011.
+    -- 0025 (attention_asks), when this schema has it; same reason as 0011.
     IF to_regclass('public.attention_asks') IS NOT NULL THEN
         ALTER TABLE public.attention_asks NO FORCE ROW LEVEL SECURITY;
         ALTER TABLE public.attention_asks DISABLE ROW LEVEL SECURITY;

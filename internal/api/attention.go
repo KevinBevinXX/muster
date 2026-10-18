@@ -28,7 +28,7 @@ import (
 //
 // 🔴 THREE SOURCES, ONE READ MODEL, AND ONLY ONE OF THEM IS STORED.
 //   - "ask": an agent's explicit question (attention_ask), stored in
-//     attention_asks (internal/attention, migration 0023).
+//     attention_asks (internal/attention, migration 0025).
 //   - "session": a mirrored Claude Code window whose session reports
 //     mirror.StatusWaiting (a permission prompt, a question) — read LIVE from
 //     the hub's window list, never copied anywhere.
