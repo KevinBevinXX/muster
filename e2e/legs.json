@@ -52,6 +52,7 @@
     "tests/pickers.spec.ts": 2.6,
     "tests/composer-menu.spec.ts": 15.0,
     "tests/uploads.spec.ts": 10.0,
+    "tests/mirror-ask.spec.ts": 14.1,
     "tests/attention.spec.ts": 20.0
   },
   "legs": {
@@ -105,7 +106,8 @@
       "tests/dictation.spec.ts",
       "tests/terminal.spec.ts",
       "tests/uploads.spec.ts",
-      "tests/host-tabs.spec.ts"
+      "tests/host-tabs.spec.ts",
+      "tests/mirror-ask.spec.ts"
     ]
   }
 }

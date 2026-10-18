@@ -132,10 +132,10 @@ func clientAddr(r *http.Request) string {
 // 🔴 THE TOKEN IS THE ONLY DOOR, AND IT IS A MIRROR TOKEN OR NOTHING. The route
 // is not behind the browser session or the hook token: a host is neither. It is
 // looked up by hash in mirror_tokens and nowhere else, so the hook, service and
-// agent tokens are refused here. A mirror token opens ONE other route: POST
-// /mirror/mcp (internal/api's mirror_mcp.go), the attention and task tools of
-// that host's own Claude Code sessions — asks, and only the tasks those
-// sessions created. No other tier consults this table.
+// agent tokens are refused here. A mirror token also opens the AskUserQuestion
+// hook's routes (/mirror/ask, internal/api's mirror_ask.go) and POST
+// /mirror/mcp (mirror_mcp.go): the attention and task tools of that host's own
+// Claude Code sessions — asks, and only the tasks those sessions created.
 //
 // 🔴 THE LOOKUP RUNS UNDER authz.System: mirror_tokens is under row-level
 // security and nobody is known until the token is found. What the token yields
@@ -157,28 +157,8 @@ func clientAddr(r *http.Request) string {
 //     hammering, not a lock on anyone. The secret's strength (256 bits) is the
 //     guessing defence.
 func (s *Service) ServeConnect(w http.ResponseWriter, r *http.Request) {
-	addr := clientAddr(r)
-	refuse := func() {
-		s.limiter.fail(addr)
-		if s.limiter.blocked(addr) {
-			http.Error(w, "mirror: too many failed token checks from this address; wait a minute", http.StatusTooManyRequests)
-			return
-		}
-		http.Error(w, ErrBadToken.Error(), http.StatusUnauthorized)
-	}
-	presented := bearer(r)
-	if !TokenShapeOK(presented) {
-		refuse()
-		return
-	}
-	tok, err := s.store.Authenticate(authz.System(r.Context()), presented)
-	if err != nil {
-		if errors.Is(err, ErrBadToken) {
-			refuse()
-			return
-		}
-		s.logger.Printf("mirror: authenticate: %v", err)
-		http.Error(w, "mirror: could not check the token", http.StatusServiceUnavailable)
+	tok, ok := s.authenticate(w, r)
+	if !ok {
 		return
 	}
 	// No OriginPatterns: a host sends no Origin, and a browser page cannot set
@@ -200,6 +180,70 @@ func (s *Service) ServeConnect(w http.ResponseWriter, r *http.Request) {
 	err = s.hub.ServeConn(ctx, tok.OwnerID, tok.Host, ws)
 	s.logger.Printf("mirror: host %s connection ended: %v", tok.Host, err)
 }
+
+// authenticate checks the request's mirror token (ServeConnect's rules: the
+// shape first, the lookup under authz.System, only FAILURES counted against the
+// address) and answers the refusal itself when there is one.
+func (s *Service) authenticate(w http.ResponseWriter, r *http.Request) (Token, bool) {
+	addr := clientAddr(r)
+	refuse := func() {
+		s.limiter.fail(addr)
+		if s.limiter.blocked(addr) {
+			http.Error(w, "mirror: too many failed token checks from this address; wait a minute", http.StatusTooManyRequests)
+			return
+		}
+		http.Error(w, ErrBadToken.Error(), http.StatusUnauthorized)
+	}
+	presented := bearer(r)
+	if !TokenShapeOK(presented) {
+		refuse()
+		return Token{}, false
+	}
+	tok, err := s.store.Authenticate(authz.System(r.Context()), presented)
+	if err != nil {
+		if errors.Is(err, ErrBadToken) {
+			refuse()
+			return Token{}, false
+		}
+		s.logger.Printf("mirror: authenticate: %v", err)
+		http.Error(w, "mirror: could not check the token", http.StatusServiceUnavailable)
+		return Token{}, false
+	}
+	return tok, true
+}
+
+// AuthenticateHost is the ASK HOOK's door (`muster-mirror ask`, internal/api's
+// mirror_ask.go): the request's mirror token, checked exactly as
+// /mirror/connect checks it, yielding the OWNER and HOST it was minted for.
+// ok false: the refusal (401, 429 or 503) has been written.
+//
+// 🔴 A MIRROR TOKEN OPENS THIS AND /mirror/connect, AND NOTHING ELSE. The ask
+// routes act only on what the token's host itself registered, under its owner,
+// and only for a Claude session that host lists now (HostClaudeSession).
+func (s *Service) AuthenticateHost(w http.ResponseWriter, r *http.Request) (owner int64, host string, ok bool) {
+	tok, ok := s.authenticate(w, r)
+	if !ok {
+		return 0, "", false
+	}
+	return tok.OwnerID, tok.Host, true
+}
+
+// HostClaudeSession reports whether owner's host is CONNECTED and lists a
+// window whose pane runs the Claude Code session claudeSession, and whether
+// the host advertised -interactive.
+func (s *Service) HostClaudeSession(owner int64, host, claudeSession string) (listed, interactive bool) {
+	return s.hub.HostClaudeSession(owner, host, claudeSession)
+}
+
+// SetWaiting installs the overlay that marks a window WAITING while something
+// outside the host knows it is waiting on a person (a question its ask hook is
+// holding: Claude Code itself reports "busy" while a PreToolUse hook runs).
+func (s *Service) SetWaiting(fn func(owner int64, host, claudeSession string) bool) {
+	s.hub.SetWaiting(fn)
+}
+
+// Nudge tells owner's open views to re-fetch (the hub's own debounced nudge).
+func (s *Service) Nudge(owner int64) { s.hub.changed(owner) }
 
 // watchToken ends the connection once its token is revoked — or once it cannot
 // be re-verified RecheckFailClosedAfter times in a row (fail closed). Ending the

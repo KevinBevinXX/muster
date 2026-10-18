@@ -33,6 +33,7 @@ DELETE /api/tasks/{id}/comments/{cid}
 DELETE /api/tokens/{id}
 DELETE /connector-grants/{id}
 DELETE /connectors/{name}
+DELETE /mirror/ask/{id}
 DELETE /tasks/{id}
 DELETE /tasks/{id}/comments/{cid}
 DELETE /tasks/{id}/tags/{tag}
@@ -87,11 +88,13 @@ GET /invite
 GET /login
 GET /manifest.webmanifest
 GET /metrics
+GET /mirror/ask/{id}
 GET /mirror/connect
 GET /mirror/terminal
 GET /mirror/terminal/send
 GET /mirror/terminal/ws
 GET /mirror/view
+GET /mirror/view/asks
 GET /mirror/view/complete
 GET /mirror/view/send
 GET /mirror/view/ws
@@ -198,10 +201,12 @@ POST /invite
 POST /login
 POST /logout
 POST /mcp
+POST /mirror/ask
 POST /mirror/confirm-send
 POST /mirror/mcp
 POST /mirror/terminal/scroll
 POST /mirror/terminal/send
+POST /mirror/view/ask
 POST /mirror/view/send
 POST /plugin/v1/drafts/claim
 POST /plugin/v1/drafts/{id}/result

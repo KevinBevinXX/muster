@@ -168,6 +168,9 @@ Each setting is also a flag (`-url`, `-token-file`, …). See
 | `MUSTER_MIRROR_MCP_SECRET_FILE` | `$XDG_CONFIG_HOME/muster-mirror/mcp-secret` | no | The local MCP endpoint's secret, which every call must present. Created (0600, in a 0700 directory) when missing; a file readable by others is refused. |
 | `XDG_CONFIG_HOME` | `~/.config` | no | Where the default snippets file is looked for. |
 | `MUSTER_MIRROR_ALLOW_HTTP` | off | no | Allows a plain-`http` muster URL. Use it for tests only. |
+| `MUSTER_MIRROR_WRITE_HOOK_CONFIG` | off | no | Set it on the host's managed `muster-mirror` service only (or pass `-write-hook-config`). It makes the daemon record its URL and token file path for `muster-mirror ask` when it starts. |
+| `MUSTER_MIRROR_HOOK_CONFIG` | `~/.muster/mirror-hook.json` | no | Where `muster-mirror` records its URL and token file path (never the token) for `muster-mirror ask`, and where the hook reads them. |
+| `MUSTER_MIRROR_ASK_TIMEOUT` | `10m` | no | `muster-mirror ask` only: how long the AskUserQuestion hook holds a question for an answer in muster before the terminal's picker gets it. Keep it under the hook entry's own `timeout`. See [mirroring.md](mirroring.md#answering-claudes-questions). |
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | no | Claude Code's config directory, where `sessions/` and `projects/` are read from, and the user's `skills/`, `commands/` and enabled plugins the composer's `/` menu lists. `ccd` reads it too. |
 
 ## muster (CLI)

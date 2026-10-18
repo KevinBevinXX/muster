@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/ZacxDev/muster/internal/askq"
 )
 
 // The Event kinds: what the rendered view draws. There is no "thinking" kind,
@@ -85,6 +87,19 @@ type Event struct {
 	// event its record contributes; nil on every other event, and from a host
 	// that predates it.
 	Usage *Usage `json:"usage,omitempty"`
+	// Ask is an AskUserQuestion call's questions (on its tool_call) or its
+	// outcome — the questions and the answers given — (on its tool_result,
+	// from the record's toolUseResult), each within askq's bounds; nil for any
+	// other tool, for a question set past those bounds, and from a host that
+	// predates it. Input cannot stand in for it: MaxInput cuts a real question
+	// set's input to "…".
+	Ask *Ask `json:"ask,omitempty"`
+}
+
+// Ask is Event.Ask.
+type Ask struct {
+	Questions []askq.Question   `json:"questions,omitempty"`
+	Answers   map[string]string `json:"answers,omitempty"`
 }
 
 // Events is what one record contributes to the rendered view, in order. It is
@@ -129,6 +144,13 @@ func Events(r Record) []Event {
 				out = append(out, Event{Kind: KindToolResult, ToolID: b.ToolUseID, OK: !b.IsError, Output: Cap(b.ResultText(), MaxOutput)})
 			}
 		}
+		// The record's toolUseResult is ITS call's: believed only when the
+		// record carries exactly one result.
+		if len(out) == 1 && len(r.ToolUseResult) > 0 {
+			if res, ok := askq.ParseResult(r.ToolUseResult); ok {
+				out[0].Ask = &Ask{Questions: res.Questions, Answers: res.Answers}
+			}
+		}
 		return out
 	case "assistant":
 		var out []Event
@@ -148,8 +170,14 @@ func Events(r Record) []Event {
 					out = append(out, Event{Kind: KindText, Text: Cap(b.Text, MaxText)})
 				}
 			case "tool_use":
-				out = append(out, Event{Kind: KindToolCall, ToolID: b.ID, Tool: b.Name,
-					Target: ToolTarget(b.Name, string(b.Input)), Input: CapInput(string(b.Input))})
+				ev := Event{Kind: KindToolCall, ToolID: b.ID, Tool: b.Name,
+					Target: ToolTarget(b.Name, string(b.Input)), Input: CapInput(string(b.Input))}
+				if b.Name == askq.ToolName {
+					if qs, err := askq.ParseInput(b.Input); err == nil {
+						ev.Ask = &Ask{Questions: qs}
+					}
+				}
+				out = append(out, ev)
 			}
 			// "thinking" (and "redacted_thinking"): dropped, always.
 		}

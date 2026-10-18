@@ -253,7 +253,7 @@ func (s *Server) toolAttentionAsk(ctx context.Context, c toolCaller, arguments s
 		return toolErr("the question could not be filed")
 	}
 	s.attentionNotify(a.Owner, askItem(a))
-	s.attentionChanged(a.Owner, askKey(a.ID))
+	s.attentionChanged(a.Owner, attentionAskKey(a.ID))
 	return toolJSON(map[string]any{"id": a.ID, "status": "pending", "expires_at": a.ExpiresAt.UTC().Format(time.RFC3339),
 		"next": "Call attention_wait{id: " + strconv.FormatInt(a.ID, 10) + "} now, and again while it answers pending."})
 }

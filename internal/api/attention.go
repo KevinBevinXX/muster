@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -73,6 +74,9 @@ const (
 	attentionKindAsk     = "ask"
 	attentionKindSession = "session"
 	attentionKindPlugin  = "plugin"
+	// attentionKindQuestion is a session's held AskUserQuestion: answered on
+	// the rendered view's question card.
+	attentionKindQuestion = "question"
 )
 
 // attentionState is the queue's per-process state.
@@ -144,7 +148,7 @@ func (s *Server) attentionPrincipal(ctx context.Context, owner int64) context.Co
 	return authz.WithPrincipal(ctx, s.principalFor(ctx, owner, authz.ViaAttention))
 }
 
-func askKey(id int64) string { return "ask-" + strconv.FormatInt(id, 10) }
+func attentionAskKey(id int64) string { return "ask-" + strconv.FormatInt(id, 10) }
 
 func draftKey(id int64) string { return "draft-" + strconv.FormatInt(id, 10) }
 
@@ -167,8 +171,8 @@ func askerLabel(a attention.Ask) string {
 }
 
 func askItem(a attention.Ask) attentionItem {
-	return attentionItem{Key: askKey(a.ID), Kind: attentionKindAsk, Source: askerLabel(a), Text: a.Question,
-		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + askKey(a.ID), AskID: a.ID}
+	return attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: askerLabel(a), Text: a.Question,
+		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + attentionAskKey(a.ID), AskID: a.ID}
 }
 
 // sessionWaitingText is a waiting session's text: muster's own words — the
@@ -182,33 +186,71 @@ func (s *Server) waitingSessions(ctx context.Context) []attentionItem {
 	if s.ext.Mirror == nil {
 		return nil
 	}
-	hosts := s.ext.Mirror.Hosts(ctx)
-	since := map[string]int64{}
-	for _, h := range hosts {
+	// The questions a session's AskUserQuestion holds (internal/askq, the
+	// muster-mirror ask hook), by host and Claude session: such a window is
+	// ONE item — the question, with its text — never a "session waiting" item
+	// beside a question item (the hub's waiting overlay marks it waiting too).
+	held := map[string]askq.Entry{}
+	if owner := requestOwner(ctx); owner > 0 && s.asks != nil {
+		for _, e := range s.asks.Pending(owner) {
+			if e.Key.Source == askSourceMirror {
+				held[e.Key.Scope+"\x00"+e.Key.Session] = e
+			}
+		}
+	}
+	hs := s.ext.Mirror.Hosts(ctx)
+	type wait struct {
+		since int64
+		q     *askq.Entry
+	}
+	waiting := map[string]wait{}
+	for _, h := range hs {
 		if !h.Online || !h.StatusReport {
 			continue
 		}
 		for _, w := range h.Windows {
-			if w.Claude && w.Status == mirror.StatusWaiting {
-				since[sessionKey(h.Host, w.Session, w.ID)] = w.StatusSince
+			if !w.Claude {
+				continue
+			}
+			k := sessionKey(h.Host, w.Session, w.ID)
+			if e, ok := held[h.Host+"\x00"+w.ClaudeSession]; ok && w.ClaudeSession != "" {
+				waiting[k] = wait{since: e.Created.UnixMilli(), q: &e}
+			} else if w.Status == mirror.StatusWaiting {
+				waiting[k] = wait{since: w.StatusSince}
 			}
 		}
 	}
 	var out []attentionItem
-	for _, e := range mirror.Ordered(hosts) {
+	for _, e := range mirror.Ordered(hs) {
 		k := sessionKey(e.Host, e.Session, e.Window)
-		ms, ok := since[k]
+		wt, ok := waiting[k]
 		if !ok {
 			continue
 		}
 		it := attentionItem{Key: k, Kind: attentionKindSession, Source: e.DisplayTitle() + " @ " + e.Host, Text: sessionWaitingText, host: e.Host,
 			Link: ui.MirrorRef{Host: e.Host, Session: e.Session, Window: e.Window}.ViewPath()}
-		if ms > 0 {
-			it.Since = time.UnixMilli(ms)
+		if wt.q != nil {
+			it.Kind, it.Text = attentionKindQuestion, heldQuestionText(*wt.q)
+		}
+		if wt.since > 0 {
+			it.Since = time.UnixMilli(wt.since)
 		}
 		out = append(out, it)
 	}
 	return out
+}
+
+// heldQuestionText is a held AskUserQuestion's text as an item shows it: its
+// first question, and how many more it asks.
+func heldQuestionText(e askq.Entry) string {
+	if len(e.Questions) == 0 {
+		return sessionWaitingText
+	}
+	t := e.Questions[0].Question
+	if n := len(e.Questions) - 1; n > 0 {
+		t += " (+" + strconv.Itoa(n) + " more)"
+	}
+	return t
 }
 
 // pendingDraftItems is ctx's principal's reply drafts awaiting approval.
@@ -275,9 +317,12 @@ func (s *Server) attentionChanged(owner int64, key string) {
 func (s *Server) attentionNotify(owner int64, it attentionItem) {
 	title := "An agent needs your input"
 	body := truncate(notificationText(it.Source+": "+firstLine(it.Text)), attentionPushBodyMax)
-	if it.Kind == attentionKindSession {
+	switch it.Kind {
+	case attentionKindSession:
 		title = "A session is waiting on you"
 		body = truncate(it.Source, attentionPushBodyMax)
+	case attentionKindQuestion:
+		title = "A session asks you a question"
 	}
 	s.goNotify(owner, push.EventAttention, RouterNotification{Type: attentionNotificationType, ID: it.Key, Title: title, Body: body,
 		Tag: attentionTag(it.Key), Data: map[string]string{"url": attentionPath + "#" + it.Key}}, nil)
@@ -294,8 +339,8 @@ func attentionTag(key string) string { return "attention-" + key }
 // askSettled is every path that moved an ask out of open: clear its
 // notification, update the views, wake the waiters.
 func (s *Server) askSettled(a attention.Ask) {
-	s.attentionClear(a.Owner, askKey(a.ID))
-	s.attentionChanged(a.Owner, askKey(a.ID))
+	s.attentionClear(a.Owner, attentionAskKey(a.ID))
+	s.attentionChanged(a.Owner, attentionAskKey(a.ID))
 }
 
 // attentionRepushAfter: a session that goes waiting again within this long of
@@ -527,7 +572,8 @@ func attentionItemsHTML(items []attentionItem, now time.Time) string {
 	}
 	var b strings.Builder
 	for _, it := range items {
-		kind := map[string]string{attentionKindAsk: "Question", attentionKindSession: "Session waiting", attentionKindPlugin: "Reply draft"}[it.Kind]
+		kind := map[string]string{attentionKindAsk: "Question", attentionKindSession: "Session waiting", attentionKindPlugin: "Reply draft",
+			attentionKindQuestion: "Session question"}[it.Kind]
 		age := ""
 		if !it.Since.IsZero() {
 			age = ` · <time datetime="` + it.Since.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(it.Since))) + `</time>`
@@ -556,6 +602,9 @@ func attentionItemsHTML(items []attentionItem, now time.Time) string {
 `)
 		case attentionKindSession:
 			b.WriteString(`<a href="` + esc(it.Link) + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Open the session</a>
+`)
+		case attentionKindQuestion:
+			b.WriteString(`<a href="` + esc(it.Link) + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Answer in the session</a>
 `)
 		case attentionKindPlugin:
 			b.WriteString(`<a href="` + esc(it.Link) + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Review the draft</a>

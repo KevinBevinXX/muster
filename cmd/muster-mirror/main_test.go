@@ -238,7 +238,7 @@ func TestAnMCPSetupFailureDoesNotStopMirroring(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() { newTmuxBackend, runContext = prevB, prevC; cancel() })
 	newTmuxBackend = func(string, string, string) mirrorhost.Backend { return listBackend{} }
-	runContext = func() context.Context { return ctx }
+	runContext = func() (context.Context, context.CancelFunc) { return ctx, cancel }
 	type result struct {
 		rc        int
 		out, errs string

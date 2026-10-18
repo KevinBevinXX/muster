@@ -78,6 +78,12 @@ var publicRoutes = []string{
 	// authz.System), and the token's OWNER is what its sessions are registered
 	// under. It 404s with the plugin off.
 	"GET /mirror/connect",
+	// ⚠ NOT UNAUTHENTICATED either: the AskUserQuestion hook's door
+	// (mirror_ask.go). Like /mirror/connect, the plugin authenticates its own
+	// mirror token (mirror.Service.AuthenticateHost); no request Principal.
+	"POST /mirror/ask",
+	"GET /mirror/ask/{id}",
+	"DELETE /mirror/ask/{id}",
 	"GET /readyz",
 	// ⚠ NOT UNAUTHENTICATED EITHER: a file attachment's signed link (uploads.go).
 	// No door admits it and no Principal is attached — the HMAC over the id and
@@ -159,6 +165,9 @@ var routeVias = map[authz.Via][]string{
 		"GET /mirror/view/send",
 		"GET /mirror/terminal/send",
 		"POST /mirror/confirm-send",
+		// AskUserQuestion: the live region and the answers (mirror_ask.go).
+		"GET /mirror/view/asks",
+		"POST /mirror/view/ask",
 		"GET /agents/{name}/send",
 		"POST /agents/{name}/send",
 		// Dictation: the session tier only (requireOperatorWrite), like a send.
