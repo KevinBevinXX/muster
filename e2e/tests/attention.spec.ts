@@ -321,3 +321,35 @@ test('a message sent to the asking session answers its ask, live', async ({ page
   console.log(`attention: a session that stopped waiting left the open queue in ${took} ms`);
   expect(took, 'the waiting window left within one host refresh and the queue nudge').toBeLessThan(12_000);
 });
+
+// A QUEUED message answers the ask too — when it is queued (a session blocked
+// on the answer is busy, and a queued message waits for idle). The queue row
+// says so, and cancelling it warns that the answer cannot be un-sent.
+test('a queued message answers the ask, and its Cancel says the answer stays', async ({ page }) => {
+  test.setTimeout(120_000);
+  const secret = fs.readFileSync(mcpSecretFile, 'utf8').trim();
+  const auth = { Authorization: 'Bearer ' + secret, 'X-Muster-Pane': '%e2e-work-@1', 'X-Muster-Tmux': fakeTMUX };
+  const asked = (await (await localCall('attention_ask', { question: 'Bump the minor version?' }, auth)).json()) as {
+    result: { content: { text: string }[] };
+  };
+  const id = (JSON.parse(asked.result.content[0].text) as { id: number }).id;
+  const waited = localCall('attention_wait', { id, wait_seconds: 90 }, auth).then((r) => r.json());
+
+  await page.goto(origin + '/login');
+  await page.fill('#muster-password', password);
+  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await page.goto(origin + `/mirror/view?host=${encodeURIComponent(host)}&session=work&window=%401`);
+  await expect(page.locator('#mv-input'), mirrorLog).toBeEnabled({ timeout: 20_000 });
+  await page.locator('#mv-input').fill('yes, a minor bump');
+  await page.locator('#mv-send-more').click();
+  await page.locator('#mv-queue-send').click();
+  await expect(page.locator('#mv-note')).toHaveText('Queued.');
+
+  const got = (await waited) as { result: { content: { text: string }[] } };
+  expect(JSON.parse(got.result.content[0].text)).toMatchObject({ id, status: 'answered_in_session', answer: 'yes, a minor bump' });
+  const row = page.locator('#mv-queue [data-queue-id]', { hasText: 'yes, a minor bump' });
+  await expect(row.locator('[data-queue-answered]')).toHaveText(/^Already answered .+'s question\.$/, { timeout: 20_000 });
+  await row.getByRole('button', { name: 'Cancel this queued message' }).click();
+  await expect(page.locator('#mv-note')).toHaveText(/^Cancelled — but this message had already answered .+'s question, and that answer was delivered: it can't be un-sent\.$/);
+  await expect(row).toHaveAttribute('data-queue-state', 'cancelled');
+});

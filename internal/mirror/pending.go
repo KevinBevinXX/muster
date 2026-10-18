@@ -14,17 +14,22 @@ import (
 //   - Summary is the pending action in one short line: the last tool call that
 //     has no result yet ("Bash: npm publish", "Edit internal/api/x.go", the
 //     question an AskUserQuestion asks), "" when the transcript shows none.
+//   - Tool is that call's tool as a NAME only ("Bash", "Edit", "MCP
+//     server/tool"), "" when there is none: what a notification may say.
 //   - Last is the last thing Claude said (its last text), whitespace-collapsed.
 //
-// 🔴 TEXT FROM THE SESSION, SHOWN ON A PHONE: both fields are capped in RUNES
-// (MaxPendingSummary, MaxPendingLast), stripped of every control character and
-// whitespace-collapsed (CleanPending) — by the host before sending and by muster
-// again on receipt — and never carry a tool's raw input beyond that.
+// 🔴 TEXT FROM THE SESSION, SHOWN ON A PAGE: every field is capped in RUNES
+// (MaxPendingSummary, MaxPendingTool, MaxPendingLast), stripped of every
+// control and format character and whitespace-collapsed (CleanPending) — by
+// the host before sending and by muster again on receipt. The host also
+// redacts what looks like a secret before it sends (internal/mirrorhost's
+// redactSecrets). Only Tool ever reaches a lock screen: the summary and the
+// last words are shown on the queue page, never in a push.
 //
 // 🔴 BOUNDED LIST-WIDE, LIKE OtherClaude: only a window that is Claude and
 // StatusWaiting keeps one, and at most MaxPendingWindows windows of a list
 // (the most recently waiting) carry one, so the window list's worst case grows
-// by a fixed ~16 KiB of the frame's last few percent: 1,028,215 of 1,048,576
+// by a fixed ~17 KiB of the frame's last few percent: 1,030,215 of 1,048,576
 // bytes with it (TestTheLargestWindowListFitsOneFrame encodes it at its bound).
 //
 // 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS: an older muster ignores
@@ -32,6 +37,7 @@ import (
 // shows its own generic line.
 type Pending struct {
 	Summary string `json:"summary,omitempty"`
+	Tool    string `json:"tool,omitempty"`
 	Last    string `json:"last,omitempty"`
 }
 
@@ -39,33 +45,41 @@ type Pending struct {
 const (
 	// MaxPendingSummary bounds Pending.Summary, in runes.
 	MaxPendingSummary = 120
+	// MaxPendingTool bounds Pending.Tool, in runes.
+	MaxPendingTool = 40
 	// MaxPendingLast bounds Pending.Last, in runes.
 	MaxPendingLast = 200
 	// MaxPendingWindows bounds how many windows of ONE list carry a Pending.
 	MaxPendingWindows = 8
 )
 
-// CleanPending is p as the wire carries it: each field with every control
-// character (C0, DEL, C1, and the Unicode line/paragraph separators) turned
-// into a space, invalid UTF-8 dropped, whitespace collapsed, and capped at its
-// rune bound (a cut ends "…"). nil when nothing is left of either field.
+// CleanPending is p as the wire carries it: each field through cleanLine and
+// capped at its rune bound (a cut ends "…"). nil when nothing is left of any
+// field.
 func CleanPending(p *Pending) *Pending {
 	if p == nil {
 		return nil
 	}
-	out := Pending{Summary: cleanLine(p.Summary, MaxPendingSummary), Last: cleanLine(p.Last, MaxPendingLast)}
-	if out.Summary == "" && out.Last == "" {
+	out := Pending{Summary: cleanLine(p.Summary, MaxPendingSummary), Tool: cleanLine(p.Tool, MaxPendingTool), Last: cleanLine(p.Last, MaxPendingLast)}
+	if out.Summary == "" && out.Tool == "" && out.Last == "" {
 		return nil
 	}
 	return &out
 }
 
-// cleanLine is s on one line: control characters as spaces, whitespace
-// collapsed, at most max runes.
+// cleanLine is s as one phone-safe line: invalid UTF-8 dropped; every control
+// character (C0, DEL, C1) and every Unicode space or line/paragraph separator
+// turned into a space; every FORMAT character (Unicode category Cf: the bidi
+// embeddings and isolates U+202A–202E and U+2066–2069, the zero-width
+// characters, U+FEFF) removed, so none can reorder or hide what is shown;
+// whitespace collapsed; at most max runes (a cut ends "…").
 func cleanLine(s string, max int) string {
 	s = strings.ToValidUTF8(s, "")
 	s = strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) || r == '\u2028' || r == '\u2029' || unicode.IsSpace(r) {
+		switch {
+		case unicode.Is(unicode.Cf, r):
+			return -1
+		case r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) || r == '\u2028' || r == '\u2029' || unicode.IsSpace(r):
 			return ' '
 		}
 		return r

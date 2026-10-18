@@ -39,6 +39,19 @@ func TestMigration0026AddsAnsweredInSession(t *testing.T) {
 		!strings.Contains(err.Error(), "attention_asks_status_check") {
 		t.Errorf("after 0026, an unknown status was not refused: %v", err)
 	}
+	// The queued message that answered it is recorded only on an ask answered
+	// in session.
+	inQ := ask()
+	if err := inSession(inQ, "queued"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE attention_asks SET answer_queue_id = 42 WHERE id = $1`, inQ); err != nil {
+		t.Errorf("after 0026, an in-session answer's queue row: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE attention_asks SET status = 'answered', answer = 'x', answered_by = 'operator', resolved_at = now(), answer_queue_id = 42 WHERE id = $1`, ask()); err == nil ||
+		!strings.Contains(err.Error(), "attention_asks_answer_queue_check") {
+		t.Errorf("after 0026, a queue row on a plain answer was not refused: %v", err)
+	}
 	// The original exits still hold.
 	if _, err := pool.Exec(ctx, `UPDATE attention_asks SET status = 'answered', answer = 'x', answered_by = 'operator', resolved_at = now() WHERE id = $1`, ask()); err != nil {
 		t.Errorf("after 0026, a plain answer: %v", err)

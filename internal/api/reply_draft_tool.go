@@ -74,7 +74,7 @@ func (s *Server) toolReplyDraft(ctx context.Context, a agents.Agent, arguments s
 	if merr != nil {
 		m = plugins.Message{}
 	}
-	s.notifyDraftAwaiting(agentOwnerID(a), d, m)
+	s.notifyDraftAwaiting(ctx, agentOwnerID(a), d, m)
 	// It is also an item of the owner's attention queue; it supersedes the
 	// message's earlier pending draft, whose notification is withdrawn.
 	s.draftFiled(agentOwnerID(a), d)
@@ -89,40 +89,65 @@ func draftCardAnchor(id int64) string { return "draft-" + strconv.FormatInt(id, 
 
 // notifyDraftAwaiting pushes the `plugin` event to the draft's owner.
 //
-// 🔴 THE TITLE IS MUSTER'S; THE BODY QUOTES, SHORT AND ATTRIBUTED. It used to
-// quote nothing (the message is an outside party's text, the draft the
-// chief's, and a lock screen has no fence around either). The operator chose
-// substance over that (the attention queue's "what is it", PR attention-ux):
-// the body names the sender and quotes the start of the message and of the
-// draft — each one line, control characters stripped, capped (draftPushBody)
-// — so it can be triaged from the lock screen. Without the message (m.ID 0)
-// it is muster's fixed sentence, as before.
-func (s *Server) notifyDraftAwaiting(owner int64, d plugins.Draft, m plugins.Message) {
+// 🔴 WHO AND WHERE, NEVER WHAT (operator decision "Summary only"): the title is
+// muster's; the body is "Reply draft: <sender's name> (<plugin label>)"
+// (draftPushBody) — no word of the message or of the draft, which are an
+// outside party's and the chief's text on a lock screen with no fence. The
+// queue page and /plugins show them, behind the sign-in. Without the message
+// (m.ID 0) it is muster's fixed sentence.
+func (s *Server) notifyDraftAwaiting(ctx context.Context, owner int64, d plugins.Draft, m plugins.Message) {
 	id := strconv.FormatInt(d.ID, 10)
+	label := ""
+	if m.ID != 0 {
+		if p, err := s.ext.Plugins.Plugin(ctx, m.PluginID); err == nil {
+			label = p.Label
+		}
+	}
 	s.goNotify(owner, push.EventPlugin, RouterNotification{
 		Type:  "plugin",
 		ID:    id,
 		Title: DraftPushTitle,
-		Body:  draftPushBody(m, d),
+		Body:  draftPushBody(m, label),
 		Tag:   "plugin-draft-" + id,
 		Data:  map[string]string{"url": pluginsPath + "#" + draftCardAnchor(d.ID)},
 	}, nil)
 }
 
-// draftPushBody is a draft notification's body: "<sender>: <message start> ·
-// Draft: <reply start>", short; DraftPushBody without the message.
-func draftPushBody(m plugins.Message, d plugins.Draft) string {
+// draftPushBody is a draft notification's body: "Reply draft: <sender's
+// display name> (<plugin label>)". The name is shown only when the plugin
+// VERIFIED the sender (Message.SenderVerified); otherwise it is what the sender
+// claims to be, and the body says "unverified sender" instead. DraftPushBody
+// without the message.
+func draftPushBody(m plugins.Message, pluginLabel string) string {
 	if m.ID == 0 {
 		return DraftPushBody
 	}
-	return mirror.OneLine(draftInboundText(m), draftPushInboundMax) + " · Draft: " + mirror.OneLine(d.Body, draftPushReplyMax)
+	who := "unverified sender"
+	if m.SenderVerified {
+		if name := senderDisplayName(m.Sender); name != "" {
+			who = name
+		}
+	}
+	body := "Reply draft: " + who
+	if l := mirror.OneLine(pluginLabel, plugins.MaxLabelRunes); l != "" {
+		body += " (" + l + ")"
+	}
+	return truncate(body, attentionPushBodyMax)
 }
 
-// The draft notification's excerpt bounds, in runes.
-const (
-	draftPushInboundMax = 80
-	draftPushReplyMax   = 40
-)
+// senderDisplayName is a sender as a name: "Ada" of "Ada <ada@example.test>",
+// else the sender itself — one line, at most draftPushNameMax runes.
+func senderDisplayName(sender string) string {
+	if i := strings.Index(sender, "<"); i > 0 {
+		if name := strings.Trim(strings.TrimSpace(sender[:i]), `"'`); name != "" {
+			sender = name
+		}
+	}
+	return mirror.OneLine(sender, draftPushNameMax)
+}
+
+// draftPushNameMax bounds the sender's name in a draft notification.
+const draftPushNameMax = 60
 
 // The `plugin` push's title (muster's), and its body when the message cannot
 // be read.

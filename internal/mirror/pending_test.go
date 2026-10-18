@@ -111,3 +111,18 @@ func TestWhatAWindowWaitsOnMovesTheWaitingSet(t *testing.T) {
 		t.Fatal("a pending that arrived did not move the waiting set")
 	}
 }
+
+// TestCleanLineRemovesFormatCharacters: bidi embeddings/overrides/isolates,
+// zero-width characters and the BOM (Unicode category Cf) are removed, so
+// nothing shown can be reordered or hide a character; the visible text is
+// kept, and each field (Tool too) gets the same rule.
+func TestCleanLineRemovesFormatCharacters(t *testing.T) {
+	in := "Bash: rm \u202Egnp.exe\u202C \u2066x\u2069 a\u200Bb\u200Cc\u200Dd\u2060e \uFEFFf\u00ADg"
+	got := CleanPending(&Pending{Summary: in, Tool: "Ba\u200Bsh", Last: "\u202Bok\u202C"})
+	if got == nil || got.Summary != "Bash: rm gnp.exe x abcde fg" || got.Tool != "Bash" || got.Last != "ok" {
+		t.Fatalf("cleaned %+v", got)
+	}
+	if CleanPending(&Pending{Summary: "\u200B\u2066\uFEFF"}) != nil {
+		t.Fatal("a field of format characters alone survived")
+	}
+}

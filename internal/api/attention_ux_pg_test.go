@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -147,7 +148,7 @@ func TestAWaitingSessionShowsWhatItWaitsOn(t *testing.T) {
 
 	f.mirror.mu.Lock()
 	f.mirror.windows = attnWindows(mirror.StatusWaiting)
-	f.mirror.windows[0].Pending = &mirror.Pending{Summary: "Bash: npm publish --tag next", Last: "Tests pass. Publishing \x1b[31mnow\x1b[0m."}
+	f.mirror.windows[0].Pending = &mirror.Pending{Summary: "Bash: npm publish --tag next", Tool: "Bash", Last: "Tests pass. Publishing \x1b[31mnow\x1b[0m."}
 	f.mirror.mu.Unlock()
 	f.srv.BroadcastAgentsChangedFor(1)
 
@@ -168,7 +169,8 @@ func TestAWaitingSessionShowsWhatItWaitsOn(t *testing.T) {
 			body = p.Body
 		}
 	}
-	if body != "Bash: npm publish --tag next · main:1 @ ws" {
+	// The lock screen says who and where, never the command (the page has it).
+	if body != "Waiting: Bash · main:1 @ ws" {
 		t.Fatalf("the push body: %q", body)
 	}
 }
@@ -212,8 +214,19 @@ func TestAMessageToTheSessionAnswersItsAsks(t *testing.T) {
 	if w := f.call(t, http.MethodPost, "/mirror/view/send", rd, merge(f.operator(), hdr)); w.Code != http.StatusNoContent {
 		t.Fatalf("send: %d %s", w.Code, w.Body)
 	}
-	if got := recv(t, waited); got != `{"answer":"yes, publish it","id":`+strconv.FormatInt(a.ID, 10)+`,"question":"Publish to npm now?","status":"answered_in_session"}` {
+	// The whole result pinned: the answer, and the note that it is only the
+	// owner's next message — not necessarily an answer, and not consent.
+	note, _ := json.Marshal(answeredInSessionNote)
+	if got := recv(t, waited); got != `{"answer":"yes, publish it","id":`+strconv.FormatInt(a.ID, 10)+`,"note":`+string(note)+`,"question":"Publish to npm now?","status":"answered_in_session"}` {
 		t.Fatalf("attention_wait returned %s", got)
+	}
+	if answeredInSessionNote != "your owner wrote to you directly — in your session or your chat — instead of answering in the Attention view, "+
+		"and answer is that message (it also reaches you as an ordinary message). It is your owner's NEXT MESSAGE, not necessarily an answer to "+
+		"your question and NOT consent: if it does not clearly address the question, ask again with attention_ask" {
+		t.Fatalf("the note's wording moved: %q", answeredInSessionNote)
+	}
+	if desc := attentionToolDefs()[1].Description; !strings.Contains(desc, `(status "answered_in_session": `+answeredInSessionNote+`)`) {
+		t.Fatalf("attention_wait's description does not carry the note: %s", desc)
 	}
 	if st := f.askStatus(t, a.ID); st.Status != attention.AnsweredInSession || st.AnsweredBy != attention.ByOperator {
 		t.Fatalf("the ask: %+v", st)
@@ -250,7 +263,7 @@ func TestAMessageToTheSessionAnswersItsAsks(t *testing.T) {
 func TestAQueuedMessageToTheSessionAnswersItsAsks(t *testing.T) {
 	f := newAttnFixture(t, func(ext *Extensions, pool *pgxpool.Pool) { ext.SendQueue = sendqueue.NewPG(pool) })
 	t.Cleanup(func() {
-		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM send_queue WHERE owner_id = 1 AND host = 'ws'`)
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM send_queue WHERE owner_id = 1 AND mirror_host = 'ws'`)
 	})
 	a := f.mirrorAsk(t, "Rotate the key?")
 	waited := f.waitAs(attention.Asker{MirrorHost: "ws", MirrorSession: focusSID}, a.ID)
@@ -261,6 +274,59 @@ func TestAQueuedMessageToTheSessionAnswersItsAsks(t *testing.T) {
 	}
 	if got := recv(t, waited); !strings.Contains(got, `"status":"answered_in_session"`) || !strings.Contains(got, `"answer":"rotate it after the deploy"`) {
 		t.Fatalf("attention_wait returned %s", got)
+	}
+	// The queue says the message already answered the question…
+	list := f.page(t, "/send-queue?host=ws&session=main&window=%401")
+	if strings.Count(list, "data-queue-answered") != 1 || !strings.Contains(list, ">Already answered main:1 @ ws&#39;s question.</p>") {
+		t.Fatalf("the queue does not say the message answered a question: %s", list)
+	}
+	var queued int64
+	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT answer_queue_id FROM attention_asks WHERE id = $1`, a.ID).Scan(&queued); err != nil || queued <= 0 {
+		t.Fatalf("the ask does not name the queued message: %d %v", queued, err)
+	}
+	// …and its Cancel warns that the answer cannot be un-sent (script and form).
+	w := f.call(t, http.MethodPost, "/send-queue/"+strconv.FormatInt(queued, 10)+"/cancel", nil, merge(f.operator(), map[string]string{"X-Requested-With": "XMLHttpRequest"}))
+	if w.Code != http.StatusOK || w.Body.String() != "Cancelled — but this message had already answered main:1 @ ws's question, and that answer was delivered: it can't be un-sent." {
+		t.Fatalf("cancel: %d %q", w.Code, w.Body)
+	}
+	// Control: a queued message that answered nothing cancels quietly; as a
+	// form, the one that did is redirected with the warning notice.
+	rd, hdr = form(url.Values{"host": {"ws"}, "session": {"main"}, "window": {"@1"}, "text": {"and one more thing"}})
+	if w := f.call(t, http.MethodPost, "/send-queue", rd, merge(f.operator(), hdr)); w.Code != http.StatusNoContent {
+		t.Fatalf("queue 2: %d %s", w.Code, w.Body)
+	}
+	var second int64
+	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT max(id) FROM send_queue WHERE owner_id = 1 AND mirror_host = 'ws'`).Scan(&second); err != nil {
+		t.Fatal(err)
+	}
+	if w := f.call(t, http.MethodPost, "/send-queue/"+strconv.FormatInt(second, 10)+"/cancel", nil, merge(f.operator(), map[string]string{"X-Requested-With": "XMLHttpRequest"})); w.Code != http.StatusNoContent {
+		t.Fatalf("a plain cancel: %d %q", w.Code, w.Body)
+	}
+	if composerNotices[noticeCancelledAnswered].text != "Cancelled — but this message had already answered a question in that session, and that answer was delivered: it can't be un-sent." {
+		t.Fatalf("the form's notice: %q", composerNotices[noticeCancelledAnswered].text)
+	}
+}
+
+// TestATerminalSendDoesNotAnswerAnAsk: only a message to the asker's CLAUDE
+// PANE answers its ask. A Terminal send goes to the window's active pane —
+// possibly a shell beside Claude Code — and answers nothing; the control is the
+// rendered view's Send to the same window, which does.
+func TestATerminalSendDoesNotAnswerAnAsk(t *testing.T) {
+	f := newAttnFixture(t)
+	a := f.mirrorAsk(t, "Run the migration?")
+	rd, hdr := form(url.Values{"host": {"ws"}, "session": {"main"}, "window": {"@1"}, "text": {"ls -la"}})
+	if w := f.call(t, http.MethodPost, "/mirror/terminal/send", rd, merge(f.operator(), hdr)); w.Code != http.StatusNoContent {
+		t.Fatalf("terminal send: %d %s", w.Code, w.Body)
+	}
+	if st := f.askStatus(t, a.ID); st.Status != attention.Open {
+		t.Fatalf("a terminal send answered the ask: %s", st.Status)
+	}
+	rd, hdr = form(url.Values{"host": {"ws"}, "session": {"main"}, "window": {"@1"}, "text": {"yes"}})
+	if w := f.call(t, http.MethodPost, "/mirror/view/send", rd, merge(f.operator(), hdr)); w.Code != http.StatusNoContent {
+		t.Fatalf("view send: %d %s", w.Code, w.Body)
+	}
+	if st := f.askStatus(t, a.ID); st.Status != attention.AnsweredInSession {
+		t.Fatalf("control: the view's Send did not answer: %s", st.Status)
 	}
 }
 
@@ -278,7 +344,8 @@ func TestAMessageToTheAgentAnswersItsAsks(t *testing.T) {
 	if w := f.call(t, http.MethodPost, "/agents/"+f.op.Name+"/send", rd, merge(f.operator(), hdr)); w.Code != http.StatusNoContent {
 		t.Fatalf("send: %d %s", w.Code, w.Body)
 	}
-	if got := recv(t, waited); got != `{"answer":"use main","id":`+strconv.FormatInt(mine, 10)+`,"question":"Which branch?","status":"answered_in_session"}` {
+	note, _ := json.Marshal(answeredInSessionNote)
+	if got := recv(t, waited); got != `{"answer":"use main","id":`+strconv.FormatInt(mine, 10)+`,"note":`+string(note)+`,"question":"Which branch?","status":"answered_in_session"}` {
 		t.Fatalf("attention_wait returned %s", got)
 	}
 	if st := f.askStatus(t, theirs); st.Status != attention.Open {

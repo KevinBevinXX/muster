@@ -27,3 +27,19 @@ ALTER TABLE public.attention_asks DROP CONSTRAINT IF EXISTS attention_asks_answe
 ALTER TABLE public.attention_asks
     ADD CONSTRAINT attention_asks_answered_check
     CHECK ((status IN ('answered', 'answered_in_session')) = (answer IS NOT NULL AND answered_by IS NOT NULL));
+
+-- The send-queue row whose message answered the ask, when it was a QUEUED one
+-- (a queued message answers its session's asks as it is queued: a session
+-- blocked waiting for an answer never goes idle, so it would never be sent).
+-- The queue shows the row "already answered <asker>'s question", and its
+-- Cancel warns that the answer was delivered and cannot be un-sent.
+-- Deliberately NO foreign key: it is a display link, read only for the rows a
+-- queue lists (and only through the asks' own row-level security), so a queue
+-- row pruned later leaves a harmless dangling number — and the schema's owned
+-- links are all composite (owner, id) FKs (0006), which this need not join.
+ALTER TABLE public.attention_asks ADD COLUMN IF NOT EXISTS answer_queue_id BIGINT;
+ALTER TABLE public.attention_asks DROP CONSTRAINT IF EXISTS attention_asks_answer_queue_check;
+ALTER TABLE public.attention_asks
+    ADD CONSTRAINT attention_asks_answer_queue_check
+    CHECK (answer_queue_id IS NULL OR status = 'answered_in_session');
+CREATE INDEX IF NOT EXISTS idx_attention_asks_answer_queue ON public.attention_asks (answer_queue_id) WHERE answer_queue_id IS NOT NULL;

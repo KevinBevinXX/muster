@@ -58,6 +58,10 @@ const (
 	noticeQueueFull    = "queue-full"
 	noticeCancelled    = "cancelled"
 	noticeNotCancelled = "not-cancelled"
+	// noticeCancelledAnswered: cancelled, but the message had already answered
+	// a question in the session (attention.go's askerAddressed) — that answer
+	// was delivered and stays.
+	noticeCancelledAnswered = "cancelled-answered"
 )
 
 // ComposerNoticeAgain is what a send that came back as a GET is told: it was
@@ -73,24 +77,36 @@ var composerNotices = map[string]struct {
 	text string
 	ok   bool
 }{
-	noticeSent:         {"Sent.", true},
-	noticeEmpty:        {ui.MirrorComposeEmpty, false},
-	noticeAgain:        {ComposerNoticeAgain, false},
-	noticeOffline:      {unprefixed(mirror.ErrHostOffline), false},
-	noticeGone:         {unprefixed(mirror.ErrSessionGone), false},
-	noticeWindowGone:   {unprefixed(mirror.ErrWindowGone), false},
-	noticeReadOnly:     {unprefixed(mirror.ErrInteractiveRefused), false},
-	noticeNotClaude:    {unprefixed(mirror.ErrNotClaude), false},
-	noticeUpgrade:      {unprefixed(mirror.ErrPanePasteUnsupported), false},
-	noticeBadText:      {"Not sent: a message is plain text (newlines and tabs only), up to 16 KiB.", false},
-	noticeFailed:       {"Not sent: the message could not be delivered.", false},
-	noticeNotRunning:   {AgentNotRunningNotice, false},
-	noticeNoGateway:    {"Not sent: this server has no agent gateway to deliver a message through.", false},
-	noticeQueued:       {"Queued: it is sent when Claude Code has been idle for a while, even if you close this page.", true},
-	noticeQueueOff:     {"Not queued: muster cannot tell when this Claude Code session is idle, so it cannot queue for it. Send it now, or upgrade muster-mirror.", false},
-	noticeQueueFull:    {"Not queued: " + strings.TrimPrefix(sendqueue.ErrFull.Error(), "sendqueue: ") + ".", false},
-	noticeCancelled:    {"Cancelled: that queued message will not be sent.", true},
-	noticeNotCancelled: {"Not cancelled: that message is already being sent, or has been.", false},
+	noticeSent:              {"Sent.", true},
+	noticeEmpty:             {ui.MirrorComposeEmpty, false},
+	noticeAgain:             {ComposerNoticeAgain, false},
+	noticeOffline:           {unprefixed(mirror.ErrHostOffline), false},
+	noticeGone:              {unprefixed(mirror.ErrSessionGone), false},
+	noticeWindowGone:        {unprefixed(mirror.ErrWindowGone), false},
+	noticeReadOnly:          {unprefixed(mirror.ErrInteractiveRefused), false},
+	noticeNotClaude:         {unprefixed(mirror.ErrNotClaude), false},
+	noticeUpgrade:           {unprefixed(mirror.ErrPanePasteUnsupported), false},
+	noticeBadText:           {"Not sent: a message is plain text (newlines and tabs only), up to 16 KiB.", false},
+	noticeFailed:            {"Not sent: the message could not be delivered.", false},
+	noticeNotRunning:        {AgentNotRunningNotice, false},
+	noticeNoGateway:         {"Not sent: this server has no agent gateway to deliver a message through.", false},
+	noticeQueued:            {"Queued: it is sent when Claude Code has been idle for a while, even if you close this page.", true},
+	noticeQueueOff:          {"Not queued: muster cannot tell when this Claude Code session is idle, so it cannot queue for it. Send it now, or upgrade muster-mirror.", false},
+	noticeQueueFull:         {"Not queued: " + strings.TrimPrefix(sendqueue.ErrFull.Error(), "sendqueue: ") + ".", false},
+	noticeCancelled:         {"Cancelled: that queued message will not be sent.", true},
+	noticeNotCancelled:      {"Not cancelled: that message is already being sent, or has been.", false},
+	noticeCancelledAnswered: {SendQueueCancelledAnsweredText(""), false},
+}
+
+// SendQueueCancelledAnsweredText is what a Cancel of a queued message that
+// had already answered asker's question says ("" = the asker unnamed): the
+// queued paste is cancelled, the answer is not.
+func SendQueueCancelledAnsweredText(asker string) string {
+	whose := "a question in that session"
+	if asker != "" {
+		whose = asker + "'s question"
+	}
+	return "Cancelled — but this message had already answered " + whose + ", and that answer was delivered: it can't be un-sent."
 }
 
 func unprefixed(err error) string {

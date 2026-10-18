@@ -629,7 +629,8 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 				// JSON writes six-fold; the list-wide bound (MaxPendingWindows)
 				// keeps the first windows' alone.
 				Claude: &ClaudePane{Status: mirror.StatusWaiting, StatusSince: math.MaxInt64, Gen: strings.Repeat("f", 64),
-					Pending: &mirror.Pending{Summary: strings.Repeat("<", mirror.MaxPendingSummary), Last: strings.Repeat(">", mirror.MaxPendingLast)}},
+					Pending: &mirror.Pending{Summary: strings.Repeat("<", mirror.MaxPendingSummary), Tool: strings.Repeat("&", mirror.MaxPendingTool),
+						Last: strings.Repeat(">", mirror.MaxPendingLast)}},
 				// Every window with its other panes' Claude sessions at their
 				// per-window bound; the list-wide bound (MaxOtherClaude) keeps
 				// the first windows' alone.
@@ -664,7 +665,7 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 		pending := 0
 		for _, w := range l.windows {
 			if p := w.Pending; p != nil {
-				if len(p.Summary) != mirror.MaxPendingSummary || len(p.Last) != mirror.MaxPendingLast {
+				if len(p.Summary) != mirror.MaxPendingSummary || len(p.Tool) != mirror.MaxPendingTool || len(p.Last) != mirror.MaxPendingLast {
 					t.Fatalf("instrument check: a pending field was cut, so this is not the worst case: %+v", p)
 				}
 				pending++

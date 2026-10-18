@@ -22,9 +22,19 @@ from the session's own transcript (muster holds none): the last tool call since
 the last prompt that has no result yet, as one line — `Bash: <the command's
 first line>`, `Edit <path>` / `Write <path>` / `Read <path>` (a long path keeps
 its end), `WebFetch <the URL's host>`, `MCP <server>/<tool>`, an
-`AskUserQuestion`'s first question, else the tool's name — and the last thing
-Claude said. Each is one line, control characters removed, at most 120 and 200
-characters; nothing more of the tool's input is sent. It rides the host's
+`AskUserQuestion`'s first question, else the tool's name — the tool's name on
+its own, and the last thing Claude said. Each is one line with control and
+format characters (bidi controls, zero-width characters) removed, at most 120,
+40 and 200 characters; nothing more of the tool's input is sent. **Before it
+leaves the host, anything that looks like a secret is replaced by
+`«redacted»`:** Authorization / Bearer / Basic credentials, the values of
+`-p`, `--password`, `--token`-style flags (and a `-u user:password`),
+assignments to `*_KEY`, `*_TOKEN`, `*_SECRET`, `PASSWORD`, `PGPASSWORD` and the
+like, a URL's userinfo and its `token`/`key`/`secret`/`sig`/`password` query
+parameters, and tokens with well-known prefixes (`ghp_`, `github_pat_`, `sk-`,
+`xoxb-`, `AKIA…`, `glpat-`, `mst_`, `mmt_`, `mpl_`). It is a heuristic: a
+secret in a shape it does not know passes, which is one reason no notification
+carries any of this. It rides the host's
 window report (`mirror.Window.Pending`) for at most 8 waiting windows per host
 (the most recently waiting). An older `muster-mirror` sends none, and the item
 then reads "Waiting on you: a permission prompt or a question in the session."
@@ -41,10 +51,12 @@ does not refresh while you are typing an answer; it catches up when you leave
 the field.
 
 **Notifications** (event `attention` on Account → Notifications, on by default):
-one per new question or newly waiting session — a session's says what it waits
-on and where (`Bash: npm publish · main:1 @ laptop`) — withdrawn when the item is
+one per new question or newly waiting session, withdrawn when the item is
 answered (on `/attention` or in the session), dismissed, expires or stops
-waiting. Each item has one tag, so a
+waiting. **A notification says WHO and WHERE, never WHAT** — a lock screen shows
+it to anyone holding the phone: `<asker> is asking` for a question, `Waiting:
+<tool name> · <window> @ <host>` for a session (no command, path or URL). The
+question, the command and the message are on the page. Each item has one tag, so a
 notification is replaced, never stacked. A session is not re-notified:
 
 - when muster restarts or a host reconnects: the first time this process sees
@@ -54,9 +66,10 @@ notification is replaced, never stacked. A session is not re-notified:
 - when it goes waiting again within 2 minutes of its last notification or of
   being recorded (busy and back is one episode).
 
-A reply draft keeps its own `plugin` notification — its title muster's, its
-body the sender, the start of the message and the start of the draft, each one
-line and short — which is withdrawn when you
+A reply draft keeps its own `plugin` notification — `Reply draft: <sender's
+name> (<plugin>)`, the name only when the plugin verified the sender
+(`unverified sender` otherwise), never a word of the message or the draft —
+which is withdrawn when you
 decide the draft, when a newer draft for the same message supersedes it, and
 when it expires (checked every 30 seconds, including drafts notified before a
 restart).
@@ -203,15 +216,19 @@ Only the operator answers, on `/attention`: `POST /attention/asks/{id}/answer`
 session-authenticated and same-origin. No agent tool answers an ask.
 
 **Or in the session.** Writing to the asker directly answers it too: a message
-you send into a mirrored session's window (the rendered view's or the
-Terminal's Send) or queue for it (the send queue — at the moment you queue it,
-since a session blocked in `attention_wait` is busy and a queued message waits
-for idle), or a message to a dispatched agent's chat (its page or its
-Terminal's composer). Every ask that asker raised before your message and that
+you send into a mirrored session's Claude Code pane (the rendered view's Send —
+not the Terminal's, which types into whatever pane is active, possibly a
+shell) or queue for it (the send queue — at the moment you queue it, since a
+session blocked in `attention_wait` is busy and a queued message waits for
+idle; the queued message then says *Already answered …'s question*, and
+cancelling it warns that the answer was delivered and can't be un-sent), or a
+message to a dispatched agent's chat (its page or its Terminal's composer). Every ask that asker raised before your message and that
 is still open becomes `answered_in_session` (migration 0026): it leaves the
 queue, its notification is cleared, and the asker's `attention_wait` returns
-`{status: "answered_in_session", answer: <your message>}` (capped at 8000
-characters). The message also reaches the session or agent as an ordinary
+`{status: "answered_in_session", answer: <your message>, note}` (capped at 8000
+characters), where `note` — and the tool's description — tells the agent this
+is your next message, not necessarily an answer and not consent, and to ask
+again if it does not clearly address the question. The message also reaches the session or agent as an ordinary
 message. Only your own messages count: a message routed by the chief, the
 chief's hand-back turn, a message over the machine door
 (`POST /api/agents/{name}/messages`) and anything an agent sends do not. A

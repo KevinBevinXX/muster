@@ -36,7 +36,7 @@ func TestTheAttentionPayloadsAreWhatTheWorkerReads(t *testing.T) {
 		got = append(got, string(b))
 	}
 	want := []string{
-		`{"type":"attention","id":"ask-41","title":"An agent needs your input","body":"worker-7: Deploy the importer now?","tag":"attention-ask-41","data":{"url":"/attention#ask-41"}}`,
+		`{"type":"attention","id":"ask-41","title":"An agent needs your input","body":"worker-7 is asking","tag":"attention-ask-41","data":{"url":"/attention#ask-41"}}`,
 		`{"type":"resolved","id":"ask-41","tag":"attention-ask-41"}`,
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {

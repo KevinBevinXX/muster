@@ -366,7 +366,8 @@ The same way, a host reports each Claude Code window's **session id**
 (`claudeSession`), which its [focus](focus.md) is keyed by. A host that does not
 report it still works; its windows have no focus.
 And a waiting window's **pending action** (`pending`: a one-line summary of the
-tool call it waits on and the last thing Claude said, each capped, on at most 8
+tool call it waits on, its tool's name, and the last thing Claude said — each
+capped, with anything that looks like a secret redacted on the host — on at most 8
 windows per report), which the [attention queue](attention.md#what-is-in-it)
 shows. An older muster ignores it; a host that does not send it gets muster's
 generic "waiting" line.

@@ -442,7 +442,7 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 	}
 	s.logger.Printf("mirror: sent a message to %s/%s%s", host, session, p.window)
 	// The operator wrote to the session: its open asks are answered here.
-	s.mirrorAddressed(ctx, host, p.e, p.text)
+	s.mirrorAddressed(ctx, host, p.e, p.target, p.text, 0)
 	sent()
 }
 

@@ -48,11 +48,11 @@ func TestAnAskIsAnsweredInSessionOnlyForItsAskerAndItsOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got, err := s.AnswerInSession(as(2), session, " \n\t "); err != nil || len(got) != 0 {
+	if got, err := s.AnswerInSession(as(2), session, " \n\t ", 0); err != nil || len(got) != 0 {
 		t.Fatalf("a blank message settled %d asks: %v", len(got), err)
 	}
 	msg := "  " + strings.Repeat("é", MaxAnswerRunes+10) + "  "
-	got, err := s.AnswerInSession(as(2), session, msg)
+	got, err := s.AnswerInSession(as(2), session, msg, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestAnAskIsAnsweredInSessionOnlyForItsAskerAndItsOwner(t *testing.T) {
 		}
 	}
 	// The agent's own asker answers the agent's ask, and only that.
-	if got, err := s.AnswerInSession(as(2), Asker{AgentID: agent}, "go"); err != nil || len(got) != 1 || got[0].ID != agentAsk.ID {
+	if got, err := s.AnswerInSession(as(2), Asker{AgentID: agent}, "go", 0); err != nil || len(got) != 1 || got[0].ID != agentAsk.ID {
 		t.Fatalf("the agent asker: %v %+v", err, got)
 	}
 	// An ask raised after the message is not answered by it.

@@ -89,6 +89,14 @@ const attentionInstruction = "If you need your owner's input — a decision, a m
 	"call attention_ask{question, options?} and then attention_wait{id} (repeat it while it answers \"pending\") until it returns the answer, then continue. " +
 	"Your owner sees the question in muster's Attention view and on their phone."
 
+// answeredInSessionNote is what attention_wait says of an answered_in_session
+// ask — in its description and in the result itself: the answer is only the
+// owner's next message, so the agent must not read it as a reply or a consent
+// it does not clearly give.
+const answeredInSessionNote = "your owner wrote to you directly — in your session or your chat — instead of answering in the Attention view, " +
+	"and answer is that message (it also reaches you as an ordinary message). It is your owner's NEXT MESSAGE, not necessarily an answer to " +
+	"your question and NOT consent: if it does not clearly address the question, ask again with attention_ask"
+
 // toolCaller is who is calling a tool.
 type toolCaller struct {
 	// agent is the calling dispatched agent; nil for a caller that is not one.
@@ -138,8 +146,7 @@ func attentionToolDefs() []agents.ToolDef {
 			}, "question")},
 		{Type: "function", Name: attentionWaitTool,
 			Description: "Wait for the answer to one of your asks. Returns as soon as it is answered (status \"answered\" with the answer), " +
-				"answered in the session (status \"answered_in_session\": your owner wrote to you directly — in your session or your chat — instead of " +
-				"in the Attention view; answer is that message, which also reaches you as an ordinary message), " +
+				"answered in the session (status \"answered_in_session\": " + answeredInSessionNote + "), " +
 				"cancelled or expired — or, when wait_seconds pass first, status \"pending\": then call it again. wait_seconds 0 reads it without waiting. " +
 				"At most 2 of your waits may be open at once.",
 			Parameters: objSchema(map[string]any{
@@ -200,6 +207,9 @@ func askView(a attention.Ask) map[string]any {
 	out := map[string]any{"id": a.ID, "status": status, "question": a.Question}
 	if a.Status == attention.Answered || a.Status == attention.AnsweredInSession {
 		out["answer"] = a.Answer
+	}
+	if a.Status == attention.AnsweredInSession {
+		out["note"] = answeredInSessionNote
 	}
 	return out
 }

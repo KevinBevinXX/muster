@@ -190,7 +190,8 @@ func TestAnAskRaisedOverMCPIsAnsweredFromTheViewAndTheWaitReturnsIt(t *testing.T
 	if got := f.pushes(); len(got) != 1 || got[0] != "attention attention-"+key {
 		t.Fatalf("pushes after the ask: %v", got)
 	}
-	if p := f.pusher.to(ep("attn-operator"))[0]; p.Data["url"] != "/attention#"+key || !strings.Contains(p.Body, "Ship the migration tonight?") {
+	// Who is asking, never what (the question is on the page, behind the sign-in).
+	if p := f.pusher.to(ep("attn-operator"))[0]; p.Data["url"] != "/attention#"+key || p.Body != f.op.Name+" is asking" {
 		t.Fatalf("payload %+v", p)
 	}
 	body := f.page(t, "/attention")

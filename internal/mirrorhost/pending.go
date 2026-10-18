@@ -34,8 +34,9 @@ const maxPathRunes = 100
 // PendingOf is what a waiting session waits on, from its transcript's events
 // (oldest first): the last tool call AFTER THE LAST PROMPT that has no result
 // (an earlier one was interrupted, not pending), summarised, and the last text
-// Claude wrote. nil when there is neither. Both are cleaned and capped
-// (mirror.CleanPending).
+// Claude wrote, each with what looks like a secret redacted (redactSecrets),
+// and the call's tool as a name (toolName). nil when there is neither. All are
+// cleaned and capped (mirror.CleanPending).
 func PendingOf(events []cctranscript.Event) *mirror.Pending {
 	start := 0
 	for i := len(events) - 1; i >= 0; i-- {
@@ -53,24 +54,40 @@ func PendingOf(events []cctranscript.Event) *mirror.Pending {
 	var p mirror.Pending
 	for i := len(events) - 1; i >= start; i-- {
 		if ev := events[i]; ev.Kind == cctranscript.KindToolCall && !answered[ev.ToolID] {
-			p.Summary = summarizeTool(ev.Tool, ev.Input, ev.Ask)
+			p.Summary, p.Tool = summarizeTool(ev.Tool, ev.Input, ev.Ask), toolName(ev.Tool)
 			break
 		}
 	}
 	for i := len(events) - 1; i >= 0; i-- {
 		if events[i].Kind == cctranscript.KindText {
-			p.Last = events[i].Text
+			p.Last = redactSecrets(events[i].Text)
 			break
 		}
 	}
 	return mirror.CleanPending(&p)
 }
 
+// toolName is a tool as a notification may name it: its name, an MCP tool's
+// "MCP server/tool" — never any of its input.
+func toolName(tool string) string {
+	if rest, ok := strings.CutPrefix(tool, "mcp__"); ok {
+		if server, name, ok := strings.Cut(rest, "__"); ok && server != "" && name != "" {
+			return "MCP " + server + "/" + name
+		}
+	}
+	return tool
+}
+
 // summarizeTool is one tool call as a pending action: the command a Bash runs
 // (its first line), the path a file tool touches, the host a WebFetch reaches,
 // an MCP tool's server/tool, the question an AskUserQuestion asks — else the
-// tool's name. Never more of the input than that.
+// tool's name — with what looks like a secret replaced by «redacted»
+// (redactSecrets) BEFORE it leaves the host. Never more of the input than that.
 func summarizeTool(tool, input string, ask *cctranscript.Ask) string {
+	return redactSecrets(summarizeRaw(tool, input, ask))
+}
+
+func summarizeRaw(tool, input string, ask *cctranscript.Ask) string {
 	str := func(key string) string {
 		var m map[string]json.RawMessage
 		if json.Unmarshal([]byte(input), &m) != nil {
@@ -107,12 +124,7 @@ func summarizeTool(tool, input string, ask *cctranscript.Ask) string {
 			return firstNonBlankLine(qs[0].Question)
 		}
 	}
-	if rest, ok := strings.CutPrefix(tool, "mcp__"); ok {
-		if server, name, ok := strings.Cut(rest, "__"); ok && server != "" && name != "" {
-			return "MCP " + server + "/" + name
-		}
-	}
-	return tool
+	return toolName(tool)
 }
 
 // firstNonBlankLine is s's first line with anything on it, trimmed.

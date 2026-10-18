@@ -239,7 +239,7 @@ func waitingWindows(ws []Window) []string {
 			// What it waits on is part of the item: a pending action that
 			// arrives (or changes) after the status does still updates the queue.
 			if p := w.Pending; p != nil {
-				k += "\x00" + p.Summary + "\x00" + p.Last
+				k += "\x00" + p.Summary + "\x00" + p.Tool + "\x00" + p.Last
 			}
 			out = append(out, k)
 		}

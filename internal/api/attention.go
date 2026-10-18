@@ -63,7 +63,7 @@ const (
 	// attentionPoll is how often a waiter re-reads its ask even without a
 	// wake-up: another muster replica may have answered it.
 	attentionPoll = 2 * time.Second
-	// attentionPushBodyMax bounds a question quoted on a lock screen.
+	// attentionPushBodyMax bounds a notification body (who and where, never what).
 	attentionPushBodyMax = 120
 	// attentionNotificationType is the push payload type for a new item.
 	attentionNotificationType = "attention"
@@ -159,8 +159,9 @@ type attentionItem struct {
 	// shown as last seen.
 	Offline bool `json:"offline,omitempty"`
 	// host is a session item's host (its first observation seeds silently);
-	// claudeSession its Claude session id (its focus).
-	host, claudeSession string
+	// claudeSession its Claude session id (its focus); tool the NAME of the
+	// tool it waits on (mirror.Pending.Tool) — all a push may say of it.
+	host, claudeSession, tool string
 }
 
 // attentionPrincipal is ctx acting as owner, through authz.ViaAttention: how
@@ -284,7 +285,7 @@ func (s *Server) waitingSessions(ctx context.Context) []attentionItem {
 			if wt.pending.Summary != "" {
 				it.Text = wt.pending.Summary
 			}
-			it.Detail = wt.pending.Last
+			it.Detail, it.tool = wt.pending.Last, wt.pending.Tool
 		}
 		if wt.since > 0 {
 			it.Since = time.UnixMilli(wt.since)
@@ -432,22 +433,34 @@ func (s *Server) attentionChanged(owner int64, key string) {
 // attention card, and its notifications are its own.
 func (s *Server) attentionNotify(owner int64, it attentionItem) {
 	title := "An agent needs your input"
-	body := truncate(notificationText(it.Source+": "+firstLine(it.Text)), attentionPushBodyMax)
-	switch it.Kind {
-	case attentionKindSession:
+	if it.Kind == attentionKindSession {
 		title = "A session is waiting on you"
-		// What it waits on, then where — "Bash: npm publish · Gold:8 @ host" —
-		// or the window alone when its host says nothing.
-		body = it.Source
-		if it.Text != sessionWaitingText {
-			body = it.Text + " · " + it.Source
-		}
-		body = truncate(body, attentionPushBodyMax)
-	case attentionKindQuestion:
+	} else if it.Kind == attentionKindQuestion {
 		title = "A session asks you a question"
 	}
-	s.goNotify(owner, push.EventAttention, RouterNotification{Type: attentionNotificationType, ID: it.Key, Title: title, Body: body,
+	s.goNotify(owner, push.EventAttention, RouterNotification{Type: attentionNotificationType, ID: it.Key, Title: title, Body: attentionPushBody(it),
 		Tag: attentionTag(it.Key), Data: map[string]string{"url": attentionPath + "#" + it.Key}}, nil)
+}
+
+// attentionPushBody is an item's notification body: WHO and WHERE, never WHAT.
+//
+// 🔴 A LOCK SCREEN SHOWS IT TO ANYONE HOLDING THE PHONE (operator decision
+// "Summary only"): no question text, no command, path or URL, no message —
+// those are on the queue page, behind the sign-in. An ask or a held question:
+// "<asker> is asking". A waiting session: "Waiting: <tool name> · <window> @
+// <host>", or "Waiting: <window> @ <host>" when its host names no tool.
+func attentionPushBody(it attentionItem) string {
+	var body string
+	switch it.Kind {
+	case attentionKindSession:
+		body = "Waiting: " + it.Source
+		if tool := mirror.OneLine(it.tool, mirror.MaxPendingTool); tool != "" {
+			body = "Waiting: " + tool + " · " + it.Source
+		}
+	default:
+		body = it.Source + " is asking"
+	}
+	return truncate(mirror.OneLine(body, attentionPushBodyMax*2), attentionPushBodyMax)
 }
 
 // attentionClear closes an item's notification on owner's devices.
@@ -927,10 +940,16 @@ func nonNilItems(items []attentionItem) []attentionItem {
 // none of those paths call it. ctx is the operator's principal (row-level
 // security keeps it to their own asks).
 func (s *Server) askerAddressed(ctx context.Context, asker attention.Asker, message string) {
+	s.askerAddressedBy(ctx, asker, message, 0)
+}
+
+// askerAddressedBy is askerAddressed, recording the send-queue row (queueID,
+// 0 = none) the message is, so that row can say it answered a question.
+func (s *Server) askerAddressedBy(ctx context.Context, asker attention.Asker, message string, queueID int64) {
 	if s.ext.Attention == nil || asker.Valid() != nil {
 		return
 	}
-	asks, err := s.ext.Attention.AnswerInSession(context.WithoutCancel(ctx), asker, message)
+	asks, err := s.ext.Attention.AnswerInSession(context.WithoutCancel(ctx), asker, message, queueID)
 	if err != nil {
 		s.logger.Printf("attention: answered in session by a message to %s: %v", askerName(asker), err)
 		return
@@ -942,12 +961,16 @@ func (s *Server) askerAddressed(ctx context.Context, asker attention.Asker, mess
 }
 
 // mirrorAddressed is askerAddressed for a mirrored window's Claude Code
-// session; nothing for a window that runs none.
-func (s *Server) mirrorAddressed(ctx context.Context, host string, e mirror.SessionView, message string) {
-	if !e.Claude || e.ClaudeSession == "" {
+// session — ONLY for a message pasted into that session's CLAUDE PANE
+// (mirror.PasteClaude: the rendered view's Send, a queued message). A Terminal
+// send goes to the window's ACTIVE pane, which may be a shell beside Claude
+// Code, so it answers nothing. queueID is the send-queue row the message is,
+// 0 for a direct Send. Nothing for a window that runs no Claude Code.
+func (s *Server) mirrorAddressed(ctx context.Context, host string, e mirror.SessionView, target mirror.PasteTarget, message string, queueID int64) {
+	if target != mirror.PasteClaude || !e.Claude || e.ClaudeSession == "" {
 		return
 	}
-	s.askerAddressed(ctx, attention.Asker{MirrorHost: host, MirrorSession: e.ClaudeSession}, message)
+	s.askerAddressedBy(ctx, attention.Asker{MirrorHost: host, MirrorSession: e.ClaudeSession}, message, queueID)
 }
 
 // askerName names an asker in the log: its ids, never its label.
