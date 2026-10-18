@@ -41,7 +41,11 @@ type gatedFixture struct {
 	summ  *fakeFocusSummarizer
 }
 
-func newGatedFixture(t *testing.T) *gatedFixture {
+func newGatedFixture(t *testing.T) *gatedFixture { return newGatedFixtureWith(t, nil) }
+
+// newGatedFixtureWith is newGatedFixture with extra wiring applied after the
+// fixture's own (task_routing_pg_test.go wires task routing through it).
+func newGatedFixtureWith(t *testing.T, extra func(g *gatedFixture, ext *Extensions)) *gatedFixture {
 	t.Helper()
 	g := &gatedFixture{}
 	g.connFixture = newConnFixtureWith(t, func(ext *Extensions, pool *pgxpool.Pool) {
@@ -52,6 +56,9 @@ func newGatedFixture(t *testing.T) *gatedFixture {
 		ext.Focus, ext.FocusSummarizer = g.focus, g.summ
 		// The attention queue: its tools join the registry the ledgers pin.
 		ext.Attention = attention.NewPG(pool)
+		if extra != nil {
+			extra(g, ext)
+		}
 	})
 	g.owner = g.newMember(t)
 	g.asOwner = g.as(g.owner)

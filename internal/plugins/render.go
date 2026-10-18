@@ -54,7 +54,13 @@ const NoReplySentence = "This message cannot be replied to: do not draft a reply
 // RenderMessage is the whole turn delivered to the chief for one plugin message,
 // with a fresh nonce. routing says session routing is on (the chief has
 // route_to_session), which adds RoutingSentence to the preface.
+//
+// A TASK EVENT (m.TaskID set, task_events.go) is rendered as one: muster's
+// structured event, never as mail.
 func RenderMessage(p Plugin, m Message, routing bool) string {
+	if IsTaskEvent(m) {
+		return renderTaskEvent(p, m, fence.NewNonce())
+	}
 	return renderMessage(p, m, fence.NewNonce(), routing)
 }
 

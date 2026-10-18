@@ -35,6 +35,9 @@ type Store interface {
 	// whatever the new body says — and that answer wins over the rate caps, so a
 	// plugin retrying a POST it did not see answered is never refused for it.
 	Submit(ctx context.Context, pluginID int64, in MessageIn) (m Message, created bool, err error)
+	// SubmitTaskEvent stores muster's own message handing task taskID to the
+	// chief (task_events.go): no_reply, and the only writer of task_id.
+	SubmitTaskEvent(ctx context.Context, pluginID, taskID int64, in MessageIn) (m Message, created bool, err error)
 	// Message reads one message.
 	Message(ctx context.Context, id int64) (Message, error)
 	// Plugin reads one plugin.
@@ -115,13 +118,21 @@ func scanPlugin(row pgx.Row) (Plugin, error) {
 }
 
 const messageCols = `id, owner_id, plugin_id, external_id, sender, subject, body, received_at, created_at, status,
-	attempts, last_attempt_at, delivered_at, agent_id, no_reply, sender_verified`
+	attempts, last_attempt_at, delivered_at, agent_id, no_reply, sender_verified, task_id`
+
+// messageDest is the scan destinations for messageCols, in its order, with the
+// status into *st. THE ONE COPY: every reader of messageCols scans through it,
+// so a column added to the list cannot be left out of a scan (DraftCards had
+// its own copy, which a new column broke).
+func messageDest(m *Message, st *string) []any {
+	return []any{&m.ID, &m.OwnerID, &m.PluginID, &m.ExternalID, &m.Sender, &m.Subject, &m.Body, &m.ReceivedAt,
+		&m.CreatedAt, st, &m.Attempts, &m.LastAttemptAt, &m.DeliveredAt, &m.AgentID, &m.NoReply, &m.SenderVerified, &m.TaskID}
+}
 
 func scanMessage(row pgx.Row) (Message, error) {
 	var m Message
 	var st string
-	err := row.Scan(&m.ID, &m.OwnerID, &m.PluginID, &m.ExternalID, &m.Sender, &m.Subject, &m.Body, &m.ReceivedAt,
-		&m.CreatedAt, &st, &m.Attempts, &m.LastAttemptAt, &m.DeliveredAt, &m.AgentID, &m.NoReply, &m.SenderVerified)
+	err := row.Scan(messageDest(&m, &st)...)
 	m.Status = Status(st)
 	return m, err
 }
@@ -254,6 +265,13 @@ func (s *PGStore) Authenticate(ctx context.Context, token string) (Plugin, error
 }
 
 func (s *PGStore) Submit(ctx context.Context, pluginID int64, in MessageIn) (Message, bool, error) {
+	return s.submit(ctx, pluginID, in, nil)
+}
+
+// submit is Submit, and SubmitTaskEvent when taskID is set. One body, so a task
+// event is held to every rule an inbound message is: the plugin row lock, the
+// external_id idempotency, the rate caps and the field bounds.
+func (s *PGStore) submit(ctx context.Context, pluginID int64, in MessageIn, taskID *int64) (Message, bool, error) {
 	if err := in.Validate(); err != nil {
 		return Message{}, false, err
 	}
@@ -293,9 +311,9 @@ func (s *PGStore) Submit(ctx context.Context, pluginID int64, in MessageIn) (Mes
 			return ErrQueueFull
 		}
 		m, err = scanMessage(tx.QueryRow(ctx, `
-			INSERT INTO plugin_messages (plugin_id, external_id, sender, subject, body, received_at, no_reply, sender_verified)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING `+messageCols,
-			pluginID, in.ExternalID, in.Sender, in.Subject, in.Body, in.ReceivedAt, in.NoReply, in.SenderVerified))
+			INSERT INTO plugin_messages (plugin_id, external_id, sender, subject, body, received_at, no_reply, sender_verified, task_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING `+messageCols,
+			pluginID, in.ExternalID, in.Sender, in.Subject, in.Body, in.ReceivedAt, in.NoReply, in.SenderVerified, taskID))
 		if err != nil {
 			return err
 		}

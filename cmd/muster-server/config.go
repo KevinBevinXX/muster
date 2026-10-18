@@ -126,6 +126,17 @@ const (
 	// matched only on mail that plugin marked sender_verified. Unset: every
 	// routed answer becomes a pending draft the owner approves.
 	envRouteRelayAllow = "MUSTER_ROUTE_RELAY_ALLOW"
+	// TASK ROUTING (internal/api/task_routing.go): "1" lets a plugin hand a task
+	// it files (POST /plugin/v1/tasks, route_to_chief) to the owner's chief,
+	// which routes it with task_route_attention / task_forward. Needs the plugin
+	// interface on. Off, route_to_chief is ignored and the tools are not offered.
+	envTaskRouting = "MUSTER_TASK_ROUTING"
+	// "1" (with task routing on) also offers the chief task_dispatch: start an
+	// agent on a task, for the owners MUSTER_CHIEF_DISPATCH_OWNERS lists only.
+	envChiefDispatch = "MUSTER_CHIEF_DISPATCH"
+	// The users (ids, comma-separated) who opted in to their chief starting
+	// agents. Empty: nobody has, and task_dispatch refuses every chief.
+	envChiefDispatchOwners = "MUSTER_CHIEF_DISPATCH_OWNERS"
 	// How long a sign-in stays fresh enough to TYPE into a mirrored session
 	// (internal/stepup): a Go duration, 12h when unset, refused outside
 	// 1m–24h. Freshness is per browser session, never per user.
@@ -445,6 +456,13 @@ type config struct {
 	SessionRouting     bool
 	RouteRelayAllowRaw string
 	RouteRelayAllow    plugins.RelayAllowlist
+	// TaskRouting is MUSTER_TASK_ROUTING=1; ChiefDispatch MUSTER_CHIEF_DISPATCH=1;
+	// ChiefDispatchOwners MUSTER_CHIEF_DISPATCH_OWNERS, parsed (loadConfig
+	// refuses one that does not parse).
+	TaskRouting            bool
+	ChiefDispatch          bool
+	ChiefDispatchOwnersRaw string
+	ChiefDispatchOwners    map[int64]bool
 	// StepUpWindow is internal/stepup's freshness window (MUSTER_STEPUP_WINDOW;
 	// stepup.DefaultWindow when unset). loadConfig refuses an out-of-bounds one.
 	StepUpWindow time.Duration
@@ -772,6 +790,23 @@ func splitList(v string) []string {
 	return out
 }
 
+// parseOwnerIDs parses a comma list of positive user ids. Empty is no owners.
+func parseOwnerIDs(v string) (map[int64]bool, error) {
+	out := map[int64]bool{}
+	for _, part := range strings.Split(v, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(part, 10, 64)
+		if err != nil || id <= 0 {
+			return nil, fmt.Errorf("%q is not a user id", part)
+		}
+		out[id] = true
+	}
+	return out, nil
+}
+
 // envFlag reads a boolean env switch. Anything other than an explicit
 // affirmative is FALSE — an unset, empty or misspelled value must never arm
 // something, and a permissive parse is how a typo turns into an armed surface.
@@ -987,6 +1022,14 @@ func loadConfig(getenv func(string) string) (config, error) {
 		}
 		c.RouteRelayAllow = l
 	}
+	c.TaskRouting = envFlag(getenv, envTaskRouting)
+	c.ChiefDispatch = envFlag(getenv, envChiefDispatch)
+	c.ChiefDispatchOwnersRaw = strings.TrimSpace(getenv(envChiefDispatchOwners))
+	owners, err := parseOwnerIDs(c.ChiefDispatchOwnersRaw)
+	if err != nil {
+		return config{}, fmt.Errorf("invalid %s: %v (want user ids, comma-separated)", envChiefDispatchOwners, err)
+	}
+	c.ChiefDispatchOwners = owners
 
 	if v := strings.TrimSpace(getenv(envGitHubEncKey)); v != "" {
 		key, err := decodeEncryptionKey(v)

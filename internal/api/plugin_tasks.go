@@ -59,6 +59,14 @@ type pluginTaskIn struct {
 		Body  string `json:"body"`
 	} `json:"create"`
 	Comment string `json:"comment"`
+	// RouteToChief asks muster to hand the task to the owner's chief as a task
+	// event (task_routing.go). Honoured only with MUSTER_TASK_ROUTING on;
+	// otherwise the task is filed and the answer's `routed` is false. It needs a
+	// comment EITHER WAY (a 400 without one, routing on or off): the comment
+	// names the event, and is what makes a resend the same event.
+	RouteToChief bool `json:"route_to_chief"`
+	// Event names the upstream event for the chief ("assigned"); optional.
+	Event string `json:"event"`
 }
 
 // truncBytes cuts s to at most n bytes, on a rune boundary.
@@ -101,6 +109,12 @@ func validatePluginTask(in pluginTaskIn) string {
 	}
 	if in.Create == nil && in.Comment == "" {
 		return "nothing to do: give create, a non-blank comment, or both"
+	}
+	if in.RouteToChief && in.Comment == "" {
+		return "route_to_chief needs a non-blank comment: it names the event"
+	}
+	if in.Event != "" && (!in.RouteToChief || !taskEventRe.MatchString(in.Event)) {
+		return "event is only for route_to_chief, and is 1-32 of a-z, 0-9, _ and -, starting with a letter"
 	}
 	fields := map[string]string{"comment": in.Comment}
 	if in.Create != nil {
@@ -158,7 +172,44 @@ func (s *Server) handlePluginTask(w http.ResponseWriter, r *http.Request) {
 	p := pluginFromContext(r.Context())
 	ctx := r.Context()
 	answer := func(code int, id *int64, created, commented bool) {
-		s.writeJSON(w, code, map[string]any{"id": id, "created": created, "commented": commented})
+		out := map[string]any{"id": id, "created": created, "commented": commented}
+		if in.RouteToChief {
+			// 🔴 ROUTED ON EVERY ANSWER THAT NAMES A TASK, A RESEND INCLUDED. The
+			// event's external_id is a function of the key and the comment, so a
+			// resend finds the stored event and delivers nothing twice — and a
+			// plugin resending after a hand-off that failed (or a muster that
+			// stopped between the task and the hand-off) gets it handed off.
+			routed := false
+			if id != nil && taskRoutingOn(s.ext) {
+				event := in.Event
+				if event == "" {
+					event = defaultTaskEvent
+				}
+				err := s.routeTaskToChief(r, p, *id, in.Key, event, in.Comment)
+				switch {
+				case err == nil:
+					routed = true
+				case errors.Is(err, plugins.ErrTaskEventIDTaken):
+					// Permanent: the plugin itself posted a message under the
+					// event's id. Resending cannot help, so not a 503.
+					s.writeJSON(w, http.StatusConflict, map[string]any{
+						"error": "the task is filed, but this plugin already holds a message under the task event's external_id", "id": id})
+					return
+				case errors.Is(err, errRouteRateLimited):
+					w.Header().Set("Retry-After", "60")
+					s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": err.Error(), "id": id})
+					return
+				default:
+					s.logger.Printf("plugins: plugin %d task %d: hand to the chief: %v", p.ID, *id, err)
+					w.Header().Set("Retry-After", "60")
+					s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+						"error": "the task is filed but was not handed to the chief; send it again", "id": id})
+					return
+				}
+			}
+			out["routed"] = routed
+		}
+		s.writeJSON(w, code, out)
 	}
 	var comment *notes.Comment
 	if in.Comment != "" {

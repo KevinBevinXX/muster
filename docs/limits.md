@@ -45,7 +45,11 @@
   NetworkPolicy is only a declaration: the cluster's network plugin enforces it
   or does not, and muster cannot tell which.
 - **`MUSTER_TAG_AUTODISPATCH` dispatches nothing.** It only logs and counts
-  eligible tasks.
+  eligible tasks. The one automatic start is the chief's `task_dispatch`
+  ([task routing](plugins.md#task_dispatch-the-guards)), off by default.
+- **"Draft pull requests only" is an instruction to the agent the chief
+  starts, not a check.** muster does not inspect the pull request an agent
+  opens; the `github` connector's approval is the control.
 
 ## Mirroring
 

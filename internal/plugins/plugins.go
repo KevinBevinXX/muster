@@ -148,6 +148,9 @@ type Message struct {
 	NoReply       bool       `json:"noReply"`
 	// SenderVerified: the plugin asserted the sender is authenticated.
 	SenderVerified bool `json:"senderVerified"`
+	// TaskID is set on a TASK EVENT (migration 0027, task_events.go): muster's
+	// own message handing that task to the chief. nil on every inbound message.
+	TaskID *int64 `json:"taskId,omitempty"`
 }
 
 // Errors the API maps to status codes.

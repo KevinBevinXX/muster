@@ -121,6 +121,10 @@ type Server struct {
 	// outcome; pluginDeliverer is built by UseExtensions (nil: none wired).
 	pluginInFlight  sync.WaitGroup
 	pluginDeliverer *plugins.Deliverer
+	// taskForwardTurn starts the turn a task_forward hands an agent
+	// (task_routing.go); built by UseExtensions only when a gateway is wired
+	// (nil: the forward is stored and no turn starts).
+	taskForwardTurn func(ctx context.Context, a agents.Agent, session agents.ChatSession, text string)
 	// pluginRetrying holds the owners whose queued messages a claim is
 	// retrying now (plugin_drafts.go), so concurrent claims start one retry;
 	// draftWake wakes waiting claims when this process approves a draft.
