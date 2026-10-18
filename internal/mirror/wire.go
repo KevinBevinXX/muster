@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ZacxDev/muster/internal/askq"
 	"regexp"
 	"slices"
 	"sort"
@@ -147,6 +148,13 @@ const (
 	// Msg.PaneScroll — see that field for the compatibility.
 	TypeScroll   = "scroll"
 	TypeScrolled = "scrolled"
+
+	// Answering an AskUserQuestion picker by keys (askanswer.go). muster →
+	// host: answer (Msg.Ask). Host → muster: answered (its outcome, with
+	// Msg.Refusal naming the kind of refusal). Sent only to a host that
+	// advertised Msg.AskAnswer.
+	TypeAnswer   = "answer"
+	TypeAnswered = "answered"
 )
 
 // Msg is every control message on the tunnel, as one JSON text frame.
@@ -295,6 +303,16 @@ type Msg struct {
 	// older host sends — which muster then treats as a plain refusal, never as
 	// "this host cannot scroll"). Backward-compatible both ways, like PaneScroll.
 	Refusal string `json:"refusal,omitempty"`
+	// AskAnswer (hello) is the host ADVERTISING that it types answers into
+	// Claude Code's AskUserQuestion picker (TypeAnswer) — an -interactive host
+	// whose muster-mirror can. 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH
+	// WAYS, like PaneScroll: an older muster ignores it, and an older host
+	// never sets it, so muster never sends it an answer (the question is the
+	// terminal's to answer there).
+	AskAnswer bool `json:"askAnswer,omitempty"`
+	// Ask (answer) is what to type: the questions as muster showed them, and
+	// one choice per question.
+	Ask *AskTyping `json:"ask,omitempty"`
 
 	// ---- per-window registration ----
 
@@ -923,3 +941,26 @@ func (w Window) Equal(o Window) bool {
 		w.Activity == o.Activity && w.Claude == o.Claude && w.Command == o.Command && w.Status == o.Status &&
 		w.StatusSince == o.StatusSince && w.ClaudeSession == o.ClaudeSession && slices.Equal(w.OtherClaude, o.OtherClaude)
 }
+
+// AskTyping is an answer to type into an AskUserQuestion picker (Msg.Ask):
+// the call's questions as muster showed them — which the host checks the
+// picker against before every key — and one choice per question.
+type AskTyping struct {
+	Questions []askq.Question `json:"questions"`
+	Choices   []askq.Choice   `json:"choices"`
+}
+
+// The kinds of answer refusal a host names (Msg.Refusal on answered).
+const (
+	// AskRefusalNoPicker: the question's picker is not on screen — answered
+	// or dismissed in the terminal already.
+	AskRefusalNoPicker = "no-picker"
+	// AskRefusalTouched: the picker shows the question but someone has started
+	// answering it in the terminal.
+	AskRefusalTouched = "touched"
+	// AskRefusalLost: typing stopped mid-way (the picker changed under it);
+	// nothing was submitted.
+	AskRefusalLost = "lost"
+	// AskRefusalUnsupported: this host cannot type answers at all.
+	AskRefusalUnsupported = "unsupported"
+)

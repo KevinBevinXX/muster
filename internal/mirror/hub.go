@@ -112,6 +112,10 @@ type HostView struct {
 	// Code status (Msg.StatusReport), which is what a queued message waits on.
 	// False for an older muster-mirror and for an offline host.
 	StatusReport bool
+	// AskAnswer: the host advertised that it types answers into Claude Code's
+	// AskUserQuestion picker (Msg.AskAnswer) and is -interactive. False for an
+	// older or read-only muster-mirror and for an offline host.
+	AskAnswer bool
 }
 
 // Hub is the set of connected hosts, their session lists and their live
@@ -145,10 +149,6 @@ type Hub struct {
 	// activityAfter is time.AfterFunc for activityMoved's trailing nudge (a
 	// test counts the timers it schedules).
 	activityAfter func(time.Duration, func()) *time.Timer
-
-	// waiting, when set, says a window's Claude session is WAITING on a person
-	// whatever the host reports (SetWaiting). Under mu.
-	waiting func(owner int64, host, claudeSession string) bool
 
 	// turns is, per window, its status as first observed and the status time
 	// it held at its latest paste (turns.go). Under turnsMu.
@@ -284,6 +284,9 @@ type hostConn struct {
 	statusReport bool
 	// catalogReport: the host advertised Msg.CatalogReport and speaks v2.
 	catalogReport bool
+	// askAnswer: the host advertised Msg.AskAnswer, speaks v2 and is
+	// -interactive.
+	askAnswer bool
 
 	mu       sync.Mutex
 	sessions []string
@@ -302,7 +305,10 @@ type hostConn struct {
 	// catalogs are the catalog requests waiting for the host's cataloged, by
 	// id (the same id space).
 	catalogs map[uint32]chan catalogAnswer
-	next     uint32
+	// answers are the AskUserQuestion answers waiting for the host's
+	// answered, by id (the same id space).
+	answers map[uint32]chan error
+	next    uint32
 }
 
 type stream struct {
@@ -331,7 +337,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		hc.mu.Lock()
 		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
 			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
-			StatusReport: hc.statusReport})
+			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer})
 		hc.mu.Unlock()
 	}
 	now := h.now()
@@ -345,68 +351,9 @@ func (h *Hub) Hosts(owner int64) []HostView {
 				Claude: append([]string(nil), o.claude...), Labels: maps.Clone(o.labels), Activity: maps.Clone(o.activity), Interactive: o.interactive})
 		}
 	}
-	waiting := h.waiting
 	h.mu.Unlock()
-	// Outside the hub's lock: the overlay is another package's state.
-	for i := range out {
-		if out[i].Online {
-			out[i].Windows = overlayWaiting(waiting, owner, out[i].Host, out[i].Windows)
-		}
-	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Host < out[j].Host })
 	return out
-}
-
-// SetWaiting installs the waiting overlay: fn(owner, host, claudeSession)
-// true marks every window of that host whose pane runs that Claude session as
-// StatusWaiting — in Hosts and in AgentState — whatever the host reported.
-//
-// Why: an AskUserQuestion held by `muster-mirror ask` (a PreToolUse hook) is
-// waiting on a person, but Claude Code's own sessions file says "busy" for as
-// long as a hook runs (measured, CLI 2.1.289: busy for the whole 40 s hold,
-// "waiting" only once the hook returned and the picker was drawn). fn must not
-// call back into the hub.
-func (h *Hub) SetWaiting(fn func(owner int64, host, claudeSession string) bool) {
-	h.mu.Lock()
-	h.waiting = fn
-	h.mu.Unlock()
-}
-
-// overlayWaiting is ws with the waiting overlay applied (ws is the caller's
-// copy, changed in place).
-func overlayWaiting(waiting func(int64, string, string) bool, owner int64, host string, ws []Window) []Window {
-	if waiting == nil {
-		return ws
-	}
-	for i := range ws {
-		if ws[i].ClaudeSession != "" && waiting(owner, host, ws[i].ClaudeSession) {
-			ws[i].Status = StatusWaiting
-		}
-	}
-	return ws
-}
-
-// HostClaudeSession reports whether owner's host is connected and lists a
-// window whose pane runs Claude session claudeSession, and whether the host is
-// -interactive.
-func (h *Hub) HostClaudeSession(owner int64, host, claudeSession string) (listed, interactive bool) {
-	if claudeSession == "" {
-		return false, false
-	}
-	h.mu.Lock()
-	hc := h.hosts[hostKey{owner, host}]
-	h.mu.Unlock()
-	if hc == nil {
-		return false, false
-	}
-	hc.mu.Lock()
-	defer hc.mu.Unlock()
-	for _, w := range hc.windows {
-		if w.Claude && w.ClaudeSession == claudeSession {
-			return true, hc.interactive
-		}
-	}
-	return false, hc.interactive
 }
 
 // Online reports whether owner's host is connected and lists session.
@@ -620,7 +567,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 	key := hostKey{owner, host}
 	hc := &hostConn{key: key, ws: ws, ctx: ctx, cancel: cancel, interactive: hello.Interactive, version: hello.Version,
 		streams: map[uint32]*stream{}, watches: map[uint32]*watch{}, pastes: map[uint32]chan error{}, scrolls: map[uint32]chan error{},
-		catalogs: map[uint32]chan catalogAnswer{}}
+		catalogs: map[uint32]chan catalogAnswer{}, answers: map[uint32]chan error{}}
 	hc.sessions, hc.windows, hc.claude, hc.labels, hc.activity = hc.list(hello, h.now().Unix())
 	h.observe(owner, host, hc.windows, h.now())
 	if hc.version >= 2 {
@@ -634,6 +581,8 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		// Read-only or not: the catalog is names and descriptions shown to the
 		// host's own owner, never a write into the pane.
 		hc.catalogReport = hello.CatalogReport
+		// Typing an answer is a write into the pane: -interactive hosts only.
+		hc.askAnswer = hello.AskAnswer && hello.Interactive
 	}
 	h.mu.Lock()
 	old := h.hosts[key]
@@ -761,6 +710,10 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				if hc.version >= 2 {
 					hc.cataloged(m)
 				}
+			case TypeAnswered:
+				if hc.version >= 2 {
+					hc.answered(m.ID, m.Error, m.Refusal)
+				}
 			case TypeClosed:
 				var why error
 				if m.Error != "" {
@@ -828,6 +781,10 @@ func (h *Hub) drop(hc *hostConn) {
 	for id, ch := range hc.catalogs {
 		ch <- catalogAnswer{err: ErrHostDisconnected}
 		delete(hc.catalogs, id)
+	}
+	for id, ch := range hc.answers {
+		ch <- ErrHostDisconnected
+		delete(hc.answers, id)
 	}
 	hc.mu.Unlock()
 	if current {

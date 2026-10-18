@@ -12,64 +12,47 @@ import (
 	"time"
 )
 
-// THE PENDING-QUESTION STORE: the questions a hook is holding a Claude Code
-// session on, waiting for a person to answer them in muster.
+// THE QUESTION STORE: the AskUserQuestion calls sessions are asking — each on
+// screen in its terminal's picker AND in muster at once — and how each ended.
 //
-// 🔴 IN MEMORY, AND THAT IS THE FAIL-OPEN PATH, NOT A GAP. A question is only
-// ever pending while ONE hook process holds its call (bounded by the hook's
-// own deadline), and the hook polls. A muster restart forgets every pending
-// question; the hook's next poll gets 404 and it leaves the call to the
-// terminal's own picker — exactly what it does when muster cannot be reached.
-// Nothing here is a record anyone needs later: the transcript is the history
-// (the call's toolUseResult holds the questions and the answers).
+// 🔴 IN MEMORY, AND NOTHING HERE IS NEEDED TO ANSWER. The terminal's picker is
+// always there; the store is what lets muster show the question and type an
+// answer into that picker. A muster restart forgets the open questions: their
+// pickers stay on screen, unaffected. The transcript is the history.
 //
-// 🔴 THE HOOK IS THE ONLY WRITER OF A QUESTION, A PERSON THE ONLY WRITER OF AN
-// ANSWER. Open is the hook's (authenticated by its source as an owner and a
-// scope); Answer takes the owner of the request that answers it, and refuses an
-// entry of any other owner as not found. Nothing answers a question on its own.
-//
-// 🔴 AN ANSWER IS TAKEN ONLY WHILE THE HOOK APPEARS TO BE WAITING FOR IT. A
-// question is ALIVE only while its hook has a poll in flight or polled within
-// PollGrace; past that it is withdrawn (Reason ReasonStopped: the hook was
-// killed, or lost muster) and an answer is refused. The other half is the
-// hook's: before it gives up it withdraws the question and reads the state the
-// withdraw returns — answers that arrived in that window are still delivered
-// (hook.go).
-//
-// ⚠ WHAT THIS DOES NOT GUARANTEE. "Alive" is muster's view of the poll, not
-// the hook process. A killed hook's in-flight poll ends only when muster sees
-// its connection close; a proxy in front of muster that does not pass the
-// client's disconnect on keeps that poll open to its own end, so a killed hook
-// can look alive for up to one long-poll (the server caps it at 25 s) plus
-// PollGrace — and an answer taken in that span says "sent to Claude" though no
-// hook collects it (the terminal shows its picker). Likewise a network cut
-// longer than both sides' limits (the hook's give-up, PollGrace).
+// 🔴 HOW A QUESTION ENDS IS THE CLI'S WORD, NOT MUSTER'S. Resolve records what
+// the transcript says the call returned (its toolUseResult); an answer typed
+// from muster is only "typing" until then. Whichever answer the CLI took is the
+// answer shown — muster's, or the one given in the terminal first.
 
 // State is where a question is.
 type State string
 
 const (
-	// Pending: a hook is holding the call; nobody has answered.
+	// Pending: the picker is on screen; nobody has answered.
 	Pending State = "pending"
-	// Answered: a person answered it in muster; the hook hands the answers to
-	// the CLI.
+	// Typing: muster is typing a person's answer into the picker; the CLI has
+	// not recorded a result yet.
+	Typing State = "typing"
+	// Failed: muster could not type the answer in (Note says why); the picker
+	// is still the terminal's to answer.
+	Failed State = "failed"
+	// Answered: the CLI recorded answers (By says whose they were).
 	Answered State = "answered"
-	// Withdrawn: the hook gave up holding the call (its deadline, a signal,
-	// or it stopped polling), so the terminal's own picker is showing it — it is
-	// answered there, if at all.
-	Withdrawn State = "withdrawn"
+	// Declined: the CLI recorded the call ended with no answers (the picker
+	// was dismissed in the terminal).
+	Declined State = "declined"
+	// Expired: no result was seen within MaxOpen.
+	Expired State = "expired"
 )
 
-// Why a question was withdrawn (Entry.Reason).
+// Open reports whether a question in state s is still unanswered.
+func (s State) Open() bool { return s == Pending || s == Typing || s == Failed }
+
+// Who answered (Entry.By).
 const (
-	// ReasonGaveUp: the hook withdrew it (its hold ended, a signal, or it
-	// could not reach muster).
-	ReasonGaveUp = "gave-up"
-	// ReasonTimeout: its hold's deadline passed.
-	ReasonTimeout = "timeout"
-	// ReasonStopped: the hook stopped polling — it was killed, or cannot reach
-	// muster — so the session stopped waiting here.
-	ReasonStopped = "stopped"
+	ByMuster   = "muster"
+	ByTerminal = "terminal"
 )
 
 // Key names one question set: whose it is, which surface asked (Source:
@@ -89,30 +72,27 @@ type Entry struct {
 	Key       Key
 	Questions []Question
 	State     State
-	// Reason is why a Withdrawn entry was withdrawn ("" otherwise).
-	Reason string
-	// Answers is set once State is Answered.
-	Answers  map[string]string
+	// Answers is the recorded answers (Answered); Typed the answers muster is
+	// typing or typed (Typing, and kept after); By who answered (Answered).
+	Answers map[string]string
+	Typed   map[string]string
+	By      string
+	// Note is why typing failed (Failed).
+	Note     string
 	Created  time.Time
-	Deadline time.Time
 	Resolved time.Time
 }
 
 // The store's bounds and clocks.
 const (
-	// MaxHold bounds how long a hook may hold one call.
-	MaxHold = 30 * time.Minute
-	// HookWait is the long-poll the hook asks for, and PollGrace how long a
-	// hook may go with no poll in flight before the question is taken to be
-	// abandoned: 1.5 × HookWait.
-	HookWait  = 20 * time.Second
-	PollGrace = HookWait * 3 / 2
+	// MaxOpen is how long a question stays open with no result seen.
+	MaxOpen = 6 * time.Hour
 	// Retain is how long a resolved question is kept, so a page that loads
-	// after the answer still shows how it went.
+	// after it still shows how it went.
 	Retain = 15 * time.Minute
-	// MaxPendingPerOwner bounds one owner's pending questions,
-	// MaxEntriesPerOwner all of one owner's entries (pending and resolved),
-	// and MaxEntries the store's whole size.
+	// MaxPendingPerOwner bounds one owner's open questions,
+	// MaxEntriesPerOwner all of one owner's entries (open and resolved), and
+	// MaxEntries the store's whole size.
 	MaxPendingPerOwner = 32
 	MaxEntriesPerOwner = 256
 	MaxEntries         = 4096
@@ -137,11 +117,11 @@ func NewID() string {
 var (
 	// ErrNotFound: no such question this caller may see.
 	ErrNotFound = errors.New("askq: no such question")
-	// ErrNotPending: the question was withdrawn (it went back to the terminal).
-	ErrNotPending = errors.New("askq: this question went back to the terminal, so it can only be answered there")
-	// ErrAnswered: the question was already answered, differently.
-	ErrAnswered = errors.New("askq: this question was already answered")
-	// ErrFull: too many questions are pending.
+	// ErrClosed: the question was answered (or dismissed) already.
+	ErrClosed = errors.New("askq: this question was already answered")
+	// ErrBusy: an answer is being typed in for it already.
+	ErrBusy = errors.New("askq: an answer is already being typed in for this question")
+	// ErrFull: too many questions are open.
 	ErrFull = errors.New("askq: too many questions are waiting")
 	// ErrIDTaken: the id a hook chose names another question.
 	ErrIDTaken = errors.New("askq: that question id is taken")
@@ -149,17 +129,9 @@ var (
 
 type entry struct {
 	Entry
-	lastSeen time.Time
-	polling  int           // polls in flight
-	changed  chan struct{} // closed (and replaced) on every change
 }
 
-// alive: the entry's hook has a poll in flight or polled within PollGrace.
-func (e *entry) alive(now time.Time) bool {
-	return e.polling > 0 || now.Sub(e.lastSeen) <= PollGrace
-}
-
-// Store is the pending-question store. The zero value is not usable; New.
+// Store is the question store. The zero value is not usable; New.
 type Store struct {
 	mu    sync.Mutex
 	byID  map[string]*entry
@@ -182,8 +154,7 @@ func (s *Store) SetNow(now func() time.Time) {
 	s.mu.Unlock()
 }
 
-// OnChange installs the change callback: a question was opened, answered or
-// withdrawn.
+// OnChange installs the change callback: a question was opened or changed.
 func (s *Store) OnChange(fn func(Entry)) {
 	s.mu.Lock()
 	s.onChange = fn
@@ -194,13 +165,12 @@ func (e *entry) snapshot() Entry {
 	out := e.Entry
 	out.Questions = append([]Question(nil), e.Questions...)
 	out.Answers = maps.Clone(e.Answers)
+	out.Typed = maps.Clone(e.Typed)
 	return out
 }
 
-// touch records a change: wakes waiters and queues the callback.
+// touch records a change: queues the callback.
 func (s *Store) touch(e *entry, fire *[]Entry) {
-	close(e.changed)
-	e.changed = make(chan struct{})
 	*fire = append(*fire, e.snapshot())
 }
 
@@ -216,22 +186,16 @@ func (s *Store) notify(fire []Entry) {
 	}
 }
 
-func (s *Store) withdrawLocked(e *entry, reason string, fire *[]Entry) {
-	e.State, e.Reason, e.Resolved = Withdrawn, reason, s.now()
-	s.touch(e, fire)
-}
-
-// sweepLocked withdraws pending entries past their deadline or whose hook has
-// stopped polling, and forgets resolved ones past Retain.
+// sweepLocked expires open questions past MaxOpen and forgets resolved ones
+// past Retain.
 func (s *Store) sweepLocked(fire *[]Entry) {
 	now := s.now()
 	for id, e := range s.byID {
 		switch {
-		case e.State == Pending && now.After(e.Deadline):
-			s.withdrawLocked(e, ReasonTimeout, fire)
-		case e.State == Pending && !e.alive(now):
-			s.withdrawLocked(e, ReasonStopped, fire)
-		case e.State != Pending && now.Sub(e.Resolved) > Retain:
+		case e.State.Open() && now.Sub(e.Created) > MaxOpen:
+			e.State, e.Resolved = Expired, now
+			s.touch(e, fire)
+		case !e.State.Open() && now.Sub(e.Resolved) > Retain:
 			s.removeLocked(id, e)
 		}
 	}
@@ -246,16 +210,16 @@ func (s *Store) removeLocked(id string, e *entry) {
 
 // evictLocked makes room for one more entry of owner: past
 // MaxEntriesPerOwner it drops THAT owner's oldest resolved entries, and past
-// MaxEntries the store's oldest resolved ones. A pending entry is never
+// MaxEntries the store's oldest resolved ones. An open entry is never
 // evicted; with no resolved entry to drop, it refuses (ErrFull). One owner can
 // therefore never fill the store against another: its own resolved entries go
-// first, and its pending ones are bounded by MaxPendingPerOwner.
+// first, and its open ones are bounded by MaxPendingPerOwner.
 func (s *Store) evictLocked(owner int64) error {
 	oldest := func(match func(*entry) bool) (string, *entry) {
 		var id string
 		var o *entry
 		for i, e := range s.byID {
-			if e.State != Pending && match(e) && (o == nil || e.Resolved.Before(o.Resolved)) {
+			if !e.State.Open() && match(e) && (o == nil || e.Resolved.Before(o.Resolved)) {
 				id, o = i, e
 			}
 		}
@@ -285,21 +249,20 @@ func (s *Store) evictLocked(owner int64) error {
 		}
 		s.removeLocked(id, e)
 	}
-	if count(func(e *entry) bool { return mine(e) && e.State == Pending }) >= MaxPendingPerOwner {
+	if count(func(e *entry) bool { return mine(e) && e.State.Open() }) >= MaxPendingPerOwner {
 		return ErrFull
 	}
 	return nil
 }
 
-// Open registers qs for key under id — the hook's own choice, so a retried or
-// timed-out registration names the same entry and can be withdrawn; "" lets the
-// store choose — held for at most hold (capped at MaxHold).
+// Open registers qs for key under id — the hook's own choice, so a retried
+// registration names the same entry; "" lets the store choose.
 //
-// Opening an id that already names key's entry returns it, whatever its state
-// (the hook's retry reads it); an id naming another key is ErrIDTaken. Opening
-// a key that is already PENDING under another id returns that entry; opening
-// one that was resolved starts a new entry (the same call asked again).
-func (s *Store) Open(key Key, qs []Question, hold time.Duration, id string) (Entry, error) {
+// Opening an id that already names key's entry returns it, whatever its state;
+// an id naming another key is ErrIDTaken. Opening a key that is already OPEN
+// under another id returns that entry; opening one that was resolved starts a
+// new entry (the same call asked again).
+func (s *Store) Open(key Key, qs []Question, id string) (Entry, error) {
 	if key.Owner <= 0 || key.Source == "" || key.Session == "" || key.ToolUseID == "" {
 		return Entry{}, invalid("a question needs an owner, a source, a session and a tool_use id")
 	}
@@ -309,27 +272,19 @@ func (s *Store) Open(key Key, qs []Question, hold time.Duration, id string) (Ent
 	if id != "" && !ValidID(id) {
 		return Entry{}, invalid("a question id is 32 lowercase hex digits")
 	}
-	if hold <= 0 || hold > MaxHold {
-		hold = MaxHold
-	}
 	var fire []Entry
 	defer func() { s.notify(fire) }()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sweepLocked(&fire)
-	now := s.now()
 	if e, ok := s.byID[id]; ok && id != "" {
 		if e.Key != key {
 			return Entry{}, ErrIDTaken
 		}
-		if e.State == Pending {
-			e.lastSeen = now
-		}
 		return e.snapshot(), nil
 	}
 	if cur, ok := s.byKey[key]; ok {
-		if e := s.byID[cur]; e != nil && e.State == Pending {
-			e.lastSeen = now
+		if e := s.byID[cur]; e != nil && e.State.Open() {
 			return e.snapshot(), nil
 		}
 	}
@@ -340,7 +295,7 @@ func (s *Store) Open(key Key, qs []Question, hold time.Duration, id string) (Ent
 		id = NewID()
 	}
 	e := &entry{Entry: Entry{ID: id, Key: key, Questions: append([]Question(nil), qs...), State: Pending,
-		Created: now, Deadline: now.Add(hold)}, lastSeen: now, changed: make(chan struct{})}
+		Created: s.now()}}
 	s.byID[e.ID] = e
 	s.byKey[key] = e.ID
 	fire = append(fire, e.snapshot())
@@ -361,75 +316,6 @@ func (s *Store) Get(id string) (Entry, bool) {
 	return e.snapshot(), true
 }
 
-// holds reports whether e is the question of the holder (owner, source,
-// scope).
-func (e *entry) holds(owner int64, source, scope string) bool {
-	return e.Key.Owner == owner && e.Key.Source == source && e.Key.Scope == scope
-}
-
-// Poll is the hook's read of entry id, as the holder of key's owner and scope:
-// it marks the hook alive (for as long as the poll is in flight), then waits up
-// to wait for the entry to leave Pending. A key that does not match is
-// ErrNotFound, like an unknown id.
-func (s *Store) Poll(ctx context.Context, id string, owner int64, source, scope string, wait time.Duration) (Entry, error) {
-	var fire []Entry
-	s.mu.Lock()
-	s.sweepLocked(&fire)
-	e, ok := s.byID[id]
-	if !ok || !e.holds(owner, source, scope) {
-		s.mu.Unlock()
-		s.notify(fire)
-		return Entry{}, ErrNotFound
-	}
-	e.lastSeen = s.now()
-	snap, ch := e.snapshot(), e.changed
-	if snap.State != Pending || wait <= 0 {
-		s.mu.Unlock()
-		s.notify(fire)
-		return snap, nil
-	}
-	e.polling++
-	s.mu.Unlock()
-	s.notify(fire)
-	t := time.NewTimer(wait)
-	defer t.Stop()
-	select {
-	case <-ch:
-	case <-t.C:
-	case <-ctx.Done():
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e.polling--
-	// A poll the hook abandoned (its connection closed) is no sign of life.
-	if ctx.Err() == nil {
-		e.lastSeen = s.now()
-	}
-	if cur, ok := s.byID[id]; ok {
-		return cur.snapshot(), nil
-	}
-	return Entry{}, ErrNotFound
-}
-
-// Withdraw is the hook giving up on entry id (as the holder of owner, source
-// and scope): a pending entry becomes Withdrawn. It returns the entry as it is
-// after — an entry a person ANSWERED before the withdraw arrived stays
-// Answered, and the hook hands those answers to the CLI after all.
-func (s *Store) Withdraw(id string, owner int64, source, scope string) (Entry, error) {
-	var fire []Entry
-	defer func() { s.notify(fire) }()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.byID[id]
-	if !ok || !e.holds(owner, source, scope) {
-		return Entry{}, ErrNotFound
-	}
-	if e.State == Pending {
-		s.withdrawLocked(e, ReasonGaveUp, &fire)
-	}
-	return e.snapshot(), nil
-}
-
 // Find is key's newest entry, if the store has one.
 func (s *Store) Find(key Key) (Entry, bool) {
 	var fire []Entry
@@ -444,44 +330,95 @@ func (s *Store) Find(key Key) (Entry, bool) {
 	return e.snapshot(), true
 }
 
-// Answer records answers to the entry at key, as owner (key.Owner is the
-// request's own owner; another owner's entry is ErrNotFound). The answers must
-// already have been checked against the entry's questions (FromForm); they are
-// checked again here.
+// BeginTyping marks the question at key (key.Owner is the request's own owner;
+// another owner's entry is ErrNotFound) as being answered from muster with
+// answers, which must fit its questions. Only a Pending question — or one whose
+// last typing Failed — may begin: a question already being typed is ErrBusy,
+// one the CLI has resolved ErrClosed.
 //
-// 🔴 REPLAY-SAFE: answering an Answered entry again with the SAME answers is
-// success (a double submit, a retry whose first response was lost); with
-// different ones it is ErrAnswered. A Withdrawn entry — including one whose
-// hook stopped polling (the sweep below withdraws it first) — is
-// ErrNotPending: the terminal has it now.
-func (s *Store) Answer(key Key, answers map[string]string) (Entry, error) {
+// 🔴 REPLAY-SAFE: beginning again with the SAME answers while they are being
+// typed, or once the CLI took them, returns the entry and no error and `again`
+// true — the caller must then NOT type them a second time.
+func (s *Store) BeginTyping(key Key, answers map[string]string) (e Entry, again bool, err error) {
 	var fire []Entry
 	defer func() { s.notify(fire) }()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sweepLocked(&fire)
-	e, ok := s.byID[s.byKey[key]]
+	en, ok := s.byID[s.byKey[key]]
+	if !ok {
+		return Entry{}, false, ErrNotFound
+	}
+	if err := CheckAnswers(en.Questions, answers); err != nil {
+		return Entry{}, false, err
+	}
+	switch en.State {
+	case Typing:
+		if maps.Equal(en.Typed, answers) {
+			return en.snapshot(), true, nil
+		}
+		return en.snapshot(), false, ErrBusy
+	case Answered:
+		if en.By == ByMuster && maps.Equal(en.Answers, answers) {
+			return en.snapshot(), true, nil
+		}
+		return en.snapshot(), false, ErrClosed
+	case Declined, Expired:
+		return en.snapshot(), false, ErrClosed
+	}
+	en.State, en.Typed, en.Note = Typing, maps.Clone(answers), ""
+	s.touch(en, &fire)
+	return en.snapshot(), false, nil
+}
+
+// TypingFailed records that muster could not type the answer in (why): a
+// Typing question becomes Failed, still the terminal's to answer. A question
+// the CLI resolved meanwhile is left as it is.
+func (s *Store) TypingFailed(key Key, why string) (Entry, error) {
+	var fire []Entry
+	defer func() { s.notify(fire) }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	en, ok := s.byID[s.byKey[key]]
 	if !ok {
 		return Entry{}, ErrNotFound
 	}
-	if err := CheckAnswers(e.Questions, answers); err != nil {
-		return Entry{}, err
+	if en.State == Typing {
+		en.State, en.Note = Failed, why
+		s.touch(en, &fire)
 	}
-	switch e.State {
-	case Answered:
-		if maps.Equal(e.Answers, answers) {
-			return e.snapshot(), nil
-		}
-		return e.snapshot(), ErrAnswered
-	case Withdrawn:
-		return e.snapshot(), ErrNotPending
-	}
-	e.State, e.Answers, e.Resolved = Answered, maps.Clone(answers), s.now()
-	s.touch(e, &fire)
-	return e.snapshot(), nil
+	return en.snapshot(), nil
 }
 
-// Pending is owner's pending questions, oldest first: what an attention view
+// Resolve records the call's result as the CLI recorded it: answers (nil when
+// it ended with none — dismissed). An answered question is By muster when
+// muster typed exactly these answers, else By the terminal. Resolving a
+// resolved question changes nothing. ok is false when the store has no open
+// question for the call.
+func (s *Store) Resolve(owner int64, source, scope, session, toolUseID string, answers map[string]string) (Entry, bool) {
+	var fire []Entry
+	defer func() { s.notify(fire) }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := Key{Owner: owner, Source: source, Scope: scope, Session: session, ToolUseID: toolUseID}
+	en, ok := s.byID[s.byKey[key]]
+	if !ok || !en.State.Open() {
+		return Entry{}, false
+	}
+	en.Resolved = s.now()
+	if answers == nil {
+		en.State = Declined
+	} else {
+		en.State, en.Answers, en.By = Answered, maps.Clone(answers), ByTerminal
+		if en.Typed != nil && maps.Equal(en.Typed, answers) {
+			en.By = ByMuster
+		}
+	}
+	s.touch(en, &fire)
+	return en.snapshot(), true
+}
+
+// Pending is owner's open questions, oldest first: what an attention view
 // lists as "waiting on you".
 func (s *Store) Pending(owner int64) []Entry {
 	var fire []Entry
@@ -491,7 +428,7 @@ func (s *Store) Pending(owner int64) []Entry {
 	s.sweepLocked(&fire)
 	var out []Entry
 	for _, e := range s.byID {
-		if e.Key.Owner == owner && e.State == Pending {
+		if e.Key.Owner == owner && e.State.Open() {
 			out = append(out, e.snapshot())
 		}
 	}
@@ -499,9 +436,21 @@ func (s *Store) Pending(owner int64) []Entry {
 	return out
 }
 
-// ForSession is owner's questions in (source, scope, session) that are
-// pending, or were resolved within the last shownFor — oldest first: what a
-// view of that session shows.
+// OpenIn is the open questions of (owner, source, scope, session), oldest
+// first: what a watcher of that session waits on.
+func (s *Store) OpenIn(owner int64, source, scope, session string) []Entry {
+	var out []Entry
+	for _, e := range s.Pending(owner) {
+		if e.Key.Source == source && e.Key.Scope == scope && e.Key.Session == session {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// ForSession is owner's questions in (source, scope, session) that are open,
+// or were resolved within the last shownFor — oldest first: what a view of
+// that session shows.
 func (s *Store) ForSession(owner int64, source, scope, session string, shownFor time.Duration) []Entry {
 	var fire []Entry
 	defer func() { s.notify(fire) }()
@@ -514,7 +463,7 @@ func (s *Store) ForSession(owner int64, source, scope, session string, shownFor 
 		if e.Key.Owner != owner || e.Key.Source != source || e.Key.Scope != scope || e.Key.Session != session {
 			continue
 		}
-		if e.State == Pending || now.Sub(e.Resolved) <= shownFor {
+		if e.State.Open() || now.Sub(e.Resolved) <= shownFor {
 			out = append(out, e.snapshot())
 		}
 	}
@@ -522,24 +471,8 @@ func (s *Store) ForSession(owner int64, source, scope, session string, shownFor 
 	return out
 }
 
-// Waiting reports whether owner has a pending question in (source, scope,
-// session) whose hook is still waiting: the session is waiting on a person.
-func (s *Store) Waiting(owner int64, source, scope, session string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	now := s.now()
-	for _, e := range s.byID {
-		if e.State == Pending && e.Key.Owner == owner && e.Key.Source == source && e.Key.Scope == scope && e.Key.Session == session &&
-			!now.After(e.Deadline) && e.alive(now) {
-			return true
-		}
-	}
-	return false
-}
-
 // Sweep runs the expiry rules now, firing OnChange for every question it
-// withdraws — so a view that shows "waiting" learns promptly that a hook died
-// between reads (RunSweep runs it on a ticker).
+// expires.
 func (s *Store) Sweep() {
 	var fire []Entry
 	s.mu.Lock()
@@ -549,7 +482,7 @@ func (s *Store) Sweep() {
 }
 
 // SweepEvery is RunSweep's period.
-const SweepEvery = 5 * time.Second
+const SweepEvery = time.Minute
 
 // RunSweep runs Sweep every interval until ctx ends.
 func (s *Store) RunSweep(ctx context.Context, interval time.Duration) {

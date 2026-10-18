@@ -88,10 +88,10 @@ type Server struct {
 	// asks is the pending-question store (mirror_ask.go): the AskUserQuestion
 	// calls a hook is holding for an answer from muster.
 	asks *askq.Store
-	// askListWaitOverride replaces mirrorAskListWait (tests; 0 = default).
-	askListWaitOverride time.Duration
-	auth                AuthConfig
-	router              RouterPort
+	// askWatch is the running question watches (mirror_ask.go).
+	askWatch askWatchers
+	auth     AuthConfig
+	router   RouterPort
 
 	// streams ends every open SSE stream when shutdown begins. See EndStreams.
 	streams streamEnd

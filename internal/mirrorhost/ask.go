@@ -3,9 +3,13 @@ package mirrorhost
 import (
 	"bytes"
 	"context"
+	"errors"
+	"time"
+
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"os/exec"
 	"strings"
 
@@ -81,3 +85,73 @@ func (p tmuxPane) Send(ctx context.Context, keys string) error {
 	}
 	return nil
 }
+
+// askAnswer is what this host advertises as Msg.AskAnswer: an -interactive
+// host whose backend can both type into a picker and find a Claude pane.
+func (h *hostSide) askAnswer() bool {
+	_, ask := AskOf(h.c.cfg.Backend)
+	_, claude := h.claudeBackend()
+	return ask && claude && h.c.cfg.Interactive
+}
+
+// answer types m.Ask into the AskUserQuestion picker of the Claude pane of
+// what m names, and answers answered.
+//
+// 🔴 REFUSED UNLESS THIS HOST OPTED IN (-interactive), whatever muster asks —
+// muster refuses it too — and only for a listed session, into a pane that
+// runs Claude Code NOW (re-resolved here, as for a paste to the rendered view).
+// The driver itself refuses to touch a picker that is not this question,
+// untouched (internal/askdrive).
+func (h *hostSide) answer(m mirror.Msg) {
+	reply := func(err error) {
+		ans := mirror.Msg{Type: mirror.TypeAnswered, ID: m.ID}
+		if err != nil {
+			ans.Error = err.Error()
+			switch {
+			case errors.Is(err, askdrive.ErrNoPicker):
+				ans.Refusal = mirror.AskRefusalNoPicker
+			case errors.Is(err, askdrive.ErrNotUntouched):
+				ans.Refusal = mirror.AskRefusalTouched
+			case errors.Is(err, askdrive.ErrLost):
+				ans.Refusal = mirror.AskRefusalLost
+			case errors.Is(err, errCannotAnswer):
+				ans.Refusal = mirror.AskRefusalUnsupported
+			}
+			h.c.log.Printf("muster-mirror: answer in %q%s refused: %v", m.Session, windowSuffix(m.Window), err)
+		} else {
+			h.c.log.Printf("muster-mirror: typed an answer into %q%s", m.Session, windowSuffix(m.Window))
+		}
+		_ = h.send(ans)
+	}
+	if !h.c.cfg.Interactive {
+		reply(fmt.Errorf("%w: this host is read-only (muster-mirror was not started with -interactive)", errCannotAnswer))
+		return
+	}
+	if err := h.allowed(m); err != nil {
+		reply(err)
+		return
+	}
+	if m.Ask == nil || len(m.Ask.Questions) == 0 {
+		reply(errors.New("no answer to type"))
+		return
+	}
+	ab, ok := AskOf(h.c.cfg.Backend)
+	cb, okc := h.claudeBackend()
+	if !ok || !okc {
+		reply(fmt.Errorf("%w: this host cannot type into a picker", errCannotAnswer))
+		return
+	}
+	ctx, cancel := context.WithTimeout(h.ctx, 50*time.Second)
+	defer cancel()
+	p, ok := h.claudePaneOf(cb, m)(ctx)
+	if !ok {
+		reply(fmt.Errorf("%w: %v", askdrive.ErrNoPicker, errNotClaudeNow))
+		return
+	}
+	h.leaveCopyModeFor(p.Pane)
+	reply(ab.AnswerAsk(ctx, p.Pane, m.Ask.Questions, m.Ask.Choices))
+}
+
+// errCannotAnswer marks a refusal that means this host cannot type answers at
+// all (mirror.AskRefusalUnsupported).
+var errCannotAnswer = errors.New("muster-mirror: cannot type an answer")

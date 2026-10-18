@@ -16,14 +16,11 @@ const (
 	KeyDown  = "\x1b[B"
 )
 
-// Choice is the answer to one question: the options chosen (0-based indexes
-// into its Options; one for a single-select question, any number for a
-// multi-select one) and the person's own text ("" for none). A single-select
-// question takes exactly one of the two.
-type Choice struct {
-	Picks []int
-	Other string
-}
+// Choice is the answer to one question (askq.Choice): the options chosen
+// (0-based indexes into its Options; one for a single-select question, any
+// number for a multi-select one) and the person's own text ("" for none). A
+// single-select question takes exactly one of the two.
+type Choice = askq.Choice
 
 // Want is the screen a step must leave the pane in — and, re-read, the state
 // the NEXT step requires before it sends anything.

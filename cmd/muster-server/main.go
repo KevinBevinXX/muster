@@ -728,9 +728,10 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	if a.memo != nil {
 		go a.memo.Run(ctx, memorelay.DefaultInterval)
 	}
-	// The AskUserQuestion store's expiry (askq.Store.RunSweep): a held question
-	// whose hook died is withdrawn within one tick, so its window stops reading
-	// "waiting" without waiting for a page to ask. In memory, no database.
+	// The AskUserQuestion store's expiry (askq.Store.RunSweep): an open
+	// question with no result seen in askq.MaxOpen ends as expired (and leaves
+	// the attention queue) without waiting for a page to ask. In memory, no
+	// database.
 	if a.srv != nil {
 		go a.srv.RunAskSweep(ctx, askq.SweepEvery)
 	}

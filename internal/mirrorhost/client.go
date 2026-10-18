@@ -257,6 +257,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	hello := first.msg(mirror.TypeHello)
 	hello.Version, hello.Host, hello.Interactive, hello.PanePaste = version, c.cfg.Host, c.cfg.Interactive, conn.panePaste()
 	hello.PaneScroll = conn.paneScroll()
+	hello.AskAnswer = conn.askAnswer()
 	hello.StatusReport = reportsStatus(c.cfg.Backend)
 	hello.CatalogReport = version >= 2 && !c.cfg.NoCatalog
 	if err := conn.send(hello); err != nil {
@@ -325,6 +326,10 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 			case mirror.TypeScroll:
 				if conn.version >= 2 {
 					go conn.scroll(m)
+				}
+			case mirror.TypeAnswer:
+				if conn.version >= 2 {
+					go conn.answer(m)
 				}
 			case mirror.TypeCatalog:
 				if conn.version >= 2 && !c.cfg.NoCatalog {
