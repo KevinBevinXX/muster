@@ -354,7 +354,7 @@ func (s *Server) agentTools() []agentTool {
 	}
 	// Task routing (task_routing.go), only with MUSTER_TASK_ROUTING on: the
 	// chief decides what happens to a task a plugin handed it — the attention
-	// queue, a forward, or (MUSTER_CHIEF_DISPATCH) a new agent. Chief-only and
+	// queue, a forward, or (MUSTER_CHIEF_DISPATCH_OWNERS) a new agent. Chief-only and
 	// on MCP, like route_to_session.
 	if taskRoutingOn(s.ext) {
 		for _, d := range taskRoutingToolDefs(chiefDispatchOn(s.ext)) {

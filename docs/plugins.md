@@ -211,8 +211,7 @@ runs task routing ([below](#routing-a-task-to-the-chief)).
 | `key` | yes | `<namespace>:<id>`, already a normalized tag, in one of the namespaces `MUSTER_PLUGIN_TASK_NAMESPACES` lists. It becomes the task's tag. |
 | `create` | no | File a task if no **open** task of yours carries `key` (below). `body` must not be blank. |
 | `comment` | no | Recorded on the task for `key`: the open one that already carries it, or the one `create` files. Surrounding whitespace is trimmed; a blank comment is no comment. |
-| `route_to_chief` | no | `true` also hands the task to your chief as a task event ([below](#routing-a-task-to-the-chief)). Needs a non-blank `comment`, which names the event (a `400` without one, whether or not the server runs task routing). When the server does not run task routing the task is still filed and the answer says `"routed": false`. |
-| `event` | no | With `route_to_chief`: the upstream event's name for the chief, such as `assigned`. 1 to 32 of `a-z`, `0-9`, `_`, `-`, starting with a letter. Default `routed`. |
+| `route_to_chief` | no | `true` asks muster to hand the task to your chief as a task event ([below](#routing-a-task-to-the-chief)). muster decides: a notice that files the task is handed over; any other notice only while a live agent works the task. Needs a non-blank `comment`, which names the event (a `400` without one, whether or not the server runs task routing). When muster does not hand it over the task is still filed and the answer says `"routed": false`. |
 
 Give `create`, a non-blank `comment`, or both. Unknown fields are refused.
 Text over the limits is **cut, never refused**: `body` and `comment` at
@@ -233,7 +232,8 @@ the winner.
 
 With `route_to_chief`, every `2xx` answer also carries `"routed"`: `true` when
 the task event is stored for your chief (or already was), `false` when there
-was no task to hand over or the server does not run task routing. A task that
+was no task to hand over, muster's rule did not route this notice (a change on
+a task no live agent works), or the server does not run task routing. A task that
 was filed but could not be handed over answers `503` (or `429` when your
 plugin's message caps are full) with its `id`: send the same request again. A
 `409` means your plugin already posted a message under the event's own
@@ -272,22 +272,30 @@ With `MUSTER_TASK_ROUTING=1`, a plugin that files a task with
 it. The flow:
 
 1. The plugin calls `POST /plugin/v1/tasks` as usual, with `route_to_chief`
-   and an `event` such as `assigned`.
-2. muster files or finds the task, then stores one **task event** for your
+   (a plugin may send it on every notice: muster decides which are routed).
+2. muster files or finds the task and decides whether to hand it over:
+   - a notice that **filed** the task is handed over (also when it is sent
+     again after a hand-off that failed: its comment is the task's first);
+   - any other notice (a comment, a status change, a mention) is handed over
+     **only while a live agent** (pending, provisioning or running) works the
+     task, so the chief can pass it on with `task_forward`. Otherwise it is
+     filed on the task and not handed over (`"routed": false`).
+3. A notice it hands over becomes one **task event** for your
    chief: a message muster writes itself, never the plugin. It is delivered
    like any plugin message (the same queue, session, retries and crash
    recovery), and no reply can be drafted to it.
-3. The chief's turn is a structured record, not mail: the task's id, key,
+4. The chief's turn is a structured record, not mail: muster's event name
+   (`new` or `update`), the task's id, key,
    status, gate, the agents already working it, and two fields from outside
    (the task's title and the change line) on fenced lines. muster's preface
    names the three tools below and says the block is data.
-4. The chief calls **one** of them:
+5. The chief calls **one** of them:
 
 | tool | does | refused when |
 |---|---|---|
-| `task_route_attention {task_id, note}` | Puts the task in front of you: an ask on `/attention` and a notification, with the chief's note. With dispatch on for you, the ask offers "Start an agent on it". | the task is not yours |
+| `task_route_attention {task_id, note}` | Puts the task in front of you: an ask on `/attention` and a notification, with the chief's note. | the task is not yours |
 | `task_forward {task_id, note}` | Sends the agent already working the task (the newest running one) a message from muster naming the task, with the chief's note fenced as data. The agent re-reads the task itself. | the task is not yours; no running agent works it |
-| `task_dispatch {task_id, repo?}` | Starts a new agent on the task, with the task's repository, branch and model. A task with no repository (a plugin's task has none) can be given one with `repo`, which must be one of your connected GitHub repositories; without one the agent cannot open a pull request. Offered only with `MUSTER_CHIEF_DISPATCH=1`. | see below |
+| `task_dispatch {task_id, repo?}` | Starts a new agent on the task, with the task's repository, branch and model. A task with no repository (a plugin's task has none) can be given one with `repo`, which must be one of your connected GitHub repositories; without one the agent cannot open a pull request. Offered only when `MUSTER_CHIEF_DISPATCH_OWNERS` lists at least one user. | see below |
 
 All three are chief-only, on the agent gateway and over `/mcp`. Handing a task
 to the chief never starts anything by itself: only `task_dispatch` does.
@@ -307,8 +315,8 @@ again until the chief routes it.
 
 Each refusal has its own sentence, in this order:
 
-1. `MUSTER_CHIEF_DISPATCH` is off: the tool is not offered, and refused if
-   called by name.
+1. `MUSTER_CHIEF_DISPATCH_OWNERS` is empty: the tool is not offered, and
+   refused if called by name.
 2. Your user id is not in `MUSTER_CHIEF_DISPATCH_OWNERS`: you have not opted
    in.
 3. The deployment cannot start agents (no provisioner, or a first message

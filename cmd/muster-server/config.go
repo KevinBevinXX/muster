@@ -131,11 +131,9 @@ const (
 	// which routes it with task_route_attention / task_forward. Needs the plugin
 	// interface on. Off, route_to_chief is ignored and the tools are not offered.
 	envTaskRouting = "MUSTER_TASK_ROUTING"
-	// "1" (with task routing on) also offers the chief task_dispatch: start an
-	// agent on a task, for the owners MUSTER_CHIEF_DISPATCH_OWNERS lists only.
-	envChiefDispatch = "MUSTER_CHIEF_DISPATCH"
 	// The users (ids, comma-separated) who opted in to their chief starting
-	// agents. Empty: nobody has, and task_dispatch refuses every chief.
+	// agents. Non-empty (with task routing on) is what offers the chief
+	// task_dispatch, for the listed owners only; empty, it is not offered.
 	envChiefDispatchOwners = "MUSTER_CHIEF_DISPATCH_OWNERS"
 	// How long a sign-in stays fresh enough to TYPE into a mirrored session
 	// (internal/stepup): a Go duration, 12h when unset, refused outside
@@ -456,11 +454,10 @@ type config struct {
 	SessionRouting     bool
 	RouteRelayAllowRaw string
 	RouteRelayAllow    plugins.RelayAllowlist
-	// TaskRouting is MUSTER_TASK_ROUTING=1; ChiefDispatch MUSTER_CHIEF_DISPATCH=1;
-	// ChiefDispatchOwners MUSTER_CHIEF_DISPATCH_OWNERS, parsed (loadConfig
-	// refuses one that does not parse).
+	// TaskRouting is MUSTER_TASK_ROUTING=1; ChiefDispatchOwners
+	// MUSTER_CHIEF_DISPATCH_OWNERS, parsed (loadConfig refuses one that does not
+	// parse) — non-empty turns task_dispatch on.
 	TaskRouting            bool
-	ChiefDispatch          bool
 	ChiefDispatchOwnersRaw string
 	ChiefDispatchOwners    map[int64]bool
 	// StepUpWindow is internal/stepup's freshness window (MUSTER_STEPUP_WINDOW;
@@ -1023,7 +1020,6 @@ func loadConfig(getenv func(string) string) (config, error) {
 		c.RouteRelayAllow = l
 	}
 	c.TaskRouting = envFlag(getenv, envTaskRouting)
-	c.ChiefDispatch = envFlag(getenv, envChiefDispatch)
 	c.ChiefDispatchOwnersRaw = strings.TrimSpace(getenv(envChiefDispatchOwners))
 	owners, err := parseOwnerIDs(c.ChiefDispatchOwnersRaw)
 	if err != nil {

@@ -32,8 +32,8 @@ import (
 //
 //	task_route_attention  put it in front of the owner (an ask on /attention)
 //	task_forward          pass the change to the agent already working it
-//	task_dispatch         start a new agent on it (MUSTER_CHIEF_DISPATCH, opt-in
-//	                      per owner, capped, idempotent per task)
+//	task_dispatch         start a new agent on it (MUSTER_CHIEF_DISPATCH_OWNERS:
+//	                      opt-in per owner, capped, idempotent per task)
 //
 // Until the chief ROUTES a task — there is no chief, it is stopped, busy or
 // unreachable (the event stays queued, retried at each plugin claim), or it took
@@ -51,10 +51,9 @@ import (
 
 // TaskRouting is task routing's configuration.
 type TaskRouting struct {
-	// Dispatch is MUSTER_CHIEF_DISPATCH=1: task_dispatch is offered.
-	Dispatch bool
 	// DispatchOwners is MUSTER_CHIEF_DISPATCH_OWNERS: the users who opted in to
-	// their chief starting agents. Empty: nobody has.
+	// their chief starting agents. Non-empty is what turns task_dispatch on;
+	// empty: nobody has, and the tool is not offered.
 	DispatchOwners map[int64]bool
 }
 
@@ -75,7 +74,7 @@ const (
 // The refusals, each its own sentence so a test (and the chief) can tell them
 // apart.
 const (
-	chiefDispatchOffText   = "task_dispatch is off on this deployment (MUSTER_CHIEF_DISPATCH): use task_route_attention"
+	chiefDispatchOffText   = "task_dispatch is off on this deployment (MUSTER_CHIEF_DISPATCH_OWNERS is empty): use task_route_attention"
 	chiefDispatchOptOut    = "your owner has not opted in to their chief starting agents: use task_route_attention"
 	chiefDispatchNoTask    = "no such task"
 	chiefDispatchLiveCap   = "you already have the most live agents you may start; use task_route_attention"
@@ -103,9 +102,10 @@ func taskRoutingOn(ext Extensions) bool {
 	return ext.TaskRouting != nil && ext.Plugins != nil && ext.Notes != nil
 }
 
-// chiefDispatchOn reports whether task_dispatch is offered.
+// chiefDispatchOn reports whether task_dispatch is offered: task routing on and
+// at least one owner opted in (MUSTER_CHIEF_DISPATCH_OWNERS non-empty).
 func chiefDispatchOn(ext Extensions) bool {
-	return taskRoutingOn(ext) && ext.TaskRouting.Dispatch && ext.ChiefDispatch != nil
+	return taskRoutingOn(ext) && len(ext.TaskRouting.DispatchOwners) > 0 && ext.ChiefDispatch != nil
 }
 
 func taskRoutingToolDefs(dispatch bool) []agents.ToolDef {
@@ -208,12 +208,7 @@ func (s *Server) toolTaskRouteAttention(ctx context.Context, a agents.Agent, tas
 	if c := cleanNote(note); c != "" {
 		q += "\n\nYour chief's note: " + c
 	}
-	var options []string
-	if chiefDispatchOn(s.ext) && s.ext.TaskRouting.DispatchOwners[agentOwnerID(a)] {
-		options = []string{"Start an agent on it", "I will handle it"}
-	}
-	ask, err := s.ext.Attention.Create(ctx, attention.New{Asker: callerOfAgent(a).asker, Question: fence.Cut(q, attention.MaxQuestionRunes),
-		Options: options})
+	ask, err := s.ext.Attention.Create(ctx, attention.New{Asker: callerOfAgent(a).asker, Question: fence.Cut(q, attention.MaxQuestionRunes)})
 	switch {
 	case err == nil:
 	case errors.Is(err, attention.ErrInvalid), errors.Is(err, attention.ErrTooMany):
@@ -494,52 +489,103 @@ func (s *Server) connectedRepo(ctx context.Context, repo string) string {
 
 // --- the plugin's hand-off -----------------------------------------------------
 
-// taskEventRe is what route_to_chief's event name may be.
-var taskEventRe = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
-
-// defaultTaskEvent is the event name when the plugin names none.
-const defaultTaskEvent = "routed"
+// The task event's name, muster's own word for why the task was handed over.
+const (
+	// taskEventNew: the request filed the task (or is a resend of the one that did).
+	taskEventNew = "new"
+	// taskEventUpdate: a change on a task a live agent works.
+	taskEventUpdate = "update"
+)
 
 // errRouteRateLimited marks a hand-off refused by the plugin's message caps.
 var errRouteRateLimited = errors.New("the chief's queue for this plugin is full; send it again later")
 
-// routeTaskToChief stores (once) and starts delivering the task event for task
-// id, as plugin p. A repeat of the same event (the same comment) stores and
-// delivers nothing: plugins.TaskEventExternalID makes it the same row.
-func (s *Server) routeTaskToChief(r *http.Request, p plugins.Plugin, id int64, key, event, comment string) error {
+// routeTaskToChief decides whether a route_to_chief request for task id is
+// handed to the chief and, if so, stores (once) and starts delivering its task
+// event, as plugin p. It reports whether the task was handed over.
+//
+// 🔴 THE RULE (operator decision, 2026-10-18): a plugin sends route_to_chief on
+// every notice it files; muster routes
+//
+//   - a task the request FILED: its comment is the task's first (this
+//     plugin's), which CreateOnceByTag writes in the task's own transaction —
+//     true of the request that filed it AND of a resend of it after a hand-off
+//     that failed (503/429), whose answer says created false. (Any other
+//     request carrying that comment is the same upstream event, so the same
+//     task event: TaskEventExternalID dedupes it.) And
+//   - any other change ONLY while a live agent (agentLive: pending,
+//     provisioning, running) is bound to the task — the case task_forward
+//     exists for.
+//
+// Anything else is filed and not routed: a change on a task nobody works is
+// the owner's, on the task, as before. A repeat of the same event (the same
+// comment) stores and delivers nothing: plugins.TaskEventExternalID makes it
+// the same row.
+func (s *Server) routeTaskToChief(r *http.Request, p plugins.Plugin, id int64, key, comment string) (bool, error) {
 	ctx := r.Context()
 	n, err := s.ext.Notes.Get(ctx, id)
 	if err != nil {
-		return err
+		return false, err
+	}
+	on, err := s.agentsOnTask(ctx, n.OwnerID, n.ID)
+	if err != nil {
+		return false, err
+	}
+	event := ""
+	first, err := s.firstCommentIs(ctx, n.ID, pluginCommentAuthor(p), comment)
+	if err != nil {
+		return false, err
+	}
+	if first {
+		event = taskEventNew
+	}
+	if event == "" {
+		for _, x := range on {
+			if agentLive(x.Status) {
+				event = taskEventUpdate
+				break
+			}
+		}
+	}
+	if event == "" {
+		return false, nil
 	}
 	ev := plugins.TaskEvent{Event: event, TaskID: n.ID, Key: key, Status: n.Status, Title: taskLabel(n), Change: comment}
 	if reason, gated := notes.GateReason(n.Tags); gated {
 		ev.Gate = reason
-	}
-	on, err := s.agentsOnTask(ctx, n.OwnerID, n.ID)
-	if err != nil {
-		return err
 	}
 	for _, x := range on {
 		ev.Agents = append(ev.Agents, plugins.TaskEventAgent{ID: x.ID, Name: firstNonBlank(x.DisplayName, x.Name), Status: x.Status})
 	}
 	in, err := plugins.NewTaskEventIn(ev, key+"\x00"+comment)
 	if err != nil {
-		return err
+		return false, err
 	}
 	m, created, err := s.ext.Plugins.SubmitTaskEvent(ctx, p.ID, n.ID, in)
 	switch {
 	case err == nil:
 	case errors.Is(err, plugins.ErrRateLimited), errors.Is(err, plugins.ErrQueueFull):
-		return errRouteRateLimited
+		return false, errRouteRateLimited
 	default:
-		return err // ErrTaskEventIDTaken included: the caller answers it 409
+		return false, err // ErrTaskEventIDTaken included: the caller answers it 409
 	}
 	if created {
 		s.deliverPluginMessage(r, p, m)
 		s.attentionChanged(n.OwnerID, unroutedTaskKey(m.ID))
 	}
-	return nil
+	return true, nil
+}
+
+// firstCommentIs reports whether task id's first comment is (author, body):
+// the comment CreateOnceByTag wrote in the same transaction as the task, so a
+// request carrying it is the one that filed the task. (A retracted first
+// comment comes back with an empty body, which no route_to_chief comment is.)
+func (s *Server) firstCommentIs(ctx context.Context, id int64, author, body string) (bool, error) {
+	cs, err := s.ext.Notes.ListComments(ctx, id)
+	if err != nil || len(cs) == 0 {
+		return false, err
+	}
+	return cs[0].Author == author && cs[0].Body == body, nil
 }
 
 // --- the attention queue: a task the chief has not taken ----------------------

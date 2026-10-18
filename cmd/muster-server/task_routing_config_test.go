@@ -13,11 +13,11 @@ func TestTaskRoutingConfigIsOffByDefaultAndTheOwnersMustParse(t *testing.T) {
 		return loadConfig(func(n string) string { return env[n] })
 	}
 	cfg, err := load(nil)
-	if err != nil || cfg.TaskRouting || cfg.ChiefDispatch || len(cfg.ChiefDispatchOwners) != 0 {
+	if err != nil || cfg.TaskRouting || len(cfg.ChiefDispatchOwners) != 0 {
 		t.Fatalf("unset: %+v %v", cfg.ChiefDispatchOwners, err)
 	}
-	cfg, err = load(map[string]string{envTaskRouting: "1", envChiefDispatch: "1", envChiefDispatchOwners: " 2, 7 ,"})
-	if err != nil || !cfg.TaskRouting || !cfg.ChiefDispatch || len(cfg.ChiefDispatchOwners) != 2 ||
+	cfg, err = load(map[string]string{envTaskRouting: "1", envChiefDispatchOwners: " 2, 7 ,"})
+	if err != nil || !cfg.TaskRouting || len(cfg.ChiefDispatchOwners) != 2 ||
 		!cfg.ChiefDispatchOwners[2] || !cfg.ChiefDispatchOwners[7] {
 		t.Fatalf("set: %+v %v", cfg.ChiefDispatchOwners, err)
 	}

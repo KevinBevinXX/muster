@@ -98,7 +98,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		MirrorTokens:    stubMirrorTokens{},
 		Routing:         &Routing{},
 		// NON-ZERO on purpose: the zero TaskRouting offers no task_dispatch.
-		TaskRouting:   &TaskRouting{Dispatch: true, DispatchOwners: map[int64]bool{1: true}},
+		TaskRouting:   &TaskRouting{DispatchOwners: map[int64]bool{1: true}},
 		ChiefDispatch: stubChiefDispatch{},
 		SendQueue:     stubSendQueue{},
 		// NON-ZERO on purpose: the zero value is the default.

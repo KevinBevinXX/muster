@@ -60,13 +60,13 @@ type pluginTaskIn struct {
 	} `json:"create"`
 	Comment string `json:"comment"`
 	// RouteToChief asks muster to hand the task to the owner's chief as a task
-	// event (task_routing.go). Honoured only with MUSTER_TASK_ROUTING on;
-	// otherwise the task is filed and the answer's `routed` is false. It needs a
-	// comment EITHER WAY (a 400 without one, routing on or off): the comment
-	// names the event, and is what makes a resend the same event.
+	// event (task_routing.go). Honoured only with MUSTER_TASK_ROUTING on, and
+	// then only for a task this request filed or one a live agent works
+	// (routeTaskToChief decides); otherwise the task is filed and the answer's
+	// `routed` is false. It needs a comment EITHER WAY (a 400 without one,
+	// routing on or off): the comment names the event, and is what makes a
+	// resend the same event.
 	RouteToChief bool `json:"route_to_chief"`
-	// Event names the upstream event for the chief ("assigned"); optional.
-	Event string `json:"event"`
 }
 
 // truncBytes cuts s to at most n bytes, on a rune boundary.
@@ -112,9 +112,6 @@ func validatePluginTask(in pluginTaskIn) string {
 	}
 	if in.RouteToChief && in.Comment == "" {
 		return "route_to_chief needs a non-blank comment: it names the event"
-	}
-	if in.Event != "" && (!in.RouteToChief || !taskEventRe.MatchString(in.Event)) {
-		return "event is only for route_to_chief, and is 1-32 of a-z, 0-9, _ and -, starting with a letter"
 	}
 	fields := map[string]string{"comment": in.Comment}
 	if in.Create != nil {
@@ -181,14 +178,10 @@ func (s *Server) handlePluginTask(w http.ResponseWriter, r *http.Request) {
 			// stopped between the task and the hand-off) gets it handed off.
 			routed := false
 			if id != nil && taskRoutingOn(s.ext) {
-				event := in.Event
-				if event == "" {
-					event = defaultTaskEvent
-				}
-				err := s.routeTaskToChief(r, p, *id, in.Key, event, in.Comment)
+				var err error
+				routed, err = s.routeTaskToChief(r, p, *id, in.Key, in.Comment)
 				switch {
 				case err == nil:
-					routed = true
 				case errors.Is(err, plugins.ErrTaskEventIDTaken):
 					// Permanent: the plugin itself posted a message under the
 					// event's id. Resending cannot help, so not a 503.

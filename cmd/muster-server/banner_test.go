@@ -401,9 +401,8 @@ var bannerLedger = []string{
 // GITHUB_CLIENT_ID and MUSTER_GITHUB_TOKEN and neither of the other two, so the
 // entries say what is actually true of them.
 var bannerExempt = map[string]string{
-	envChiefDispatch: "announced on the `task routing: ON with DISPATCH` line (with its owners count and caps); " +
-		"with task routing off nothing reads it, and the OFF line says the chief has no task-routing tools",
-	envChiefDispatchOwners: "counted on the `task routing: ON with DISPATCH` line; with dispatch off nothing reads it",
+	envChiefDispatchOwners: "counted on the `task routing: ON with DISPATCH` line (with the caps), named on the ON line " +
+		"when empty, and on a `chief dispatch: INERT` line when set with task routing off",
 	envStepUpWindow: "printed with its VALUE on the `mirrored sessions: ENABLED` line, the one plugin whose " +
 		"writes it gates; it has no OFF state (unset is the 12h default, an out-of-bounds value refuses to " +
 		"boot in loadConfig), and with the plugin off nothing reads it",
@@ -708,7 +707,6 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		RouteRelayAllowRaw: "1:example-inbox:someone@example.invalid",
 		// Task routing: the banner branches on ext.TaskRouting (below).
 		TaskRouting:            true,
-		ChiefDispatch:          true,
 		ChiefDispatchOwnersRaw: "1",
 		ChiefDispatchOwners:    map[int64]bool{1: true},
 	}
@@ -726,7 +724,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		PluginGateway: bannerStubPluginGateway{},
 		Routes:        bannerStubRoutes{},
 		Routing:       &api.Routing{Allow: bannerAllowlist(t)},
-		TaskRouting:   &api.TaskRouting{Dispatch: true, DispatchOwners: map[int64]bool{1: true}},
+		TaskRouting:   &api.TaskRouting{DispatchOwners: map[int64]bool{1: true}},
 	}, &pgxpool.Pool{})
 	offOut = renderBannerWithPool(t, config{}, api.Extensions{}, nil)
 	return onOut, offOut
