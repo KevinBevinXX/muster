@@ -54,7 +54,11 @@ type Record struct {
 	Origin struct {
 		Kind string `json:"kind"`
 	} `json:"origin"`
-	Message struct {
+	// ToolUseResult is the CLI's structured result of the record's tool call
+	// (a user record carrying a tool_result). Read only for AskUserQuestion,
+	// whose result holds the questions and the answers given (askq.Result).
+	ToolUseResult json.RawMessage `json:"toolUseResult"`
+	Message       struct {
 		Content json.RawMessage `json:"content"`
 		// Model and Usage are an assistant record's (usage.go): its model id
 		// only marks the CLI's own "<synthetic>" records.

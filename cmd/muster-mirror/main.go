@@ -12,6 +12,9 @@
 //
 //	muster-mirror -url https://muster.example.com -token-file ~/.config/muster-mirror/token
 //
+// `muster-mirror ask` is a different, short-lived command: Claude Code's
+// PreToolUse hook for AskUserQuestion (ask.go).
+//
 // Every flag also reads an environment variable (named in -help), so a systemd
 // unit can configure it without putting the token in argv.
 package main
@@ -25,6 +28,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -75,6 +79,9 @@ const (
 	envLabelsFile  = "MUSTER_MIRROR_LABELS_FILE"
 	envPaneMapDir  = "MUSTER_MIRROR_PANE_MAP_DIR"
 	envSnippets    = "MUSTER_MIRROR_SNIPPETS_FILE"
+	// envWriteHookConfig: record this daemon's URL and token file for
+	// `muster-mirror ask` (hookconfig.go). Set by the managed service only.
+	envWriteHookConfig = "MUSTER_MIRROR_WRITE_HOOK_CONFIG"
 )
 
 func main() {
@@ -102,6 +109,11 @@ func defaultHost() string {
 }
 
 func run(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
+	// `muster-mirror ask`: the AskUserQuestion hook (ask.go), a short-lived
+	// command of its own — not the host daemon.
+	if len(args) > 0 && args[0] == "ask" {
+		return runAsk(args[1:], getenv, stdin, stdout, stderr)
+	}
 	fs := flag.NewFlagSet("muster-mirror", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	envBool := func(k string) bool { v := getenv(k); return v == "1" || strings.EqualFold(v, "true") }
@@ -120,6 +132,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	allowHTTP := fs.Bool("allow-http", envBool(envAllowHTTP), "TESTS AND LOCAL DEVELOPMENT ONLY: permit a plain http:// muster URL, which sends the token in cleartext ("+envAllowHTTP+")")
 	labelsFile := fs.String("labels-file", getenv(envLabelsFile), "JSON object {\"<session>\": \"<codename>\"}: muster shows such a session as <codename>:<active window index> instead of its name; unreadable or invalid = no labels, logged, never fatal ("+envLabelsFile+")")
 	paneMapDir := fs.String("pane-map-dir", getenv(envPaneMapDir), "directory of per-pane Claude Code records (claude-p<N>.json for pane %N, written by a hook on every event) that the rendered view resolves a pane's transcript from FIRST, each validated against the process in the pane; empty = not consulted ("+envPaneMapDir+")")
+	writeHook := fs.Bool("write-hook-config", envBool(envWriteHookConfig), "record this daemon's URL and token file (never the token) for `muster-mirror ask`, in "+defaultHookConfig+" ("+envHookConfig+"); for the host's managed service only — an ad-hoc daemon must not repoint the hook ("+envWriteHookConfig+")")
 	snippetsFile := fs.String("snippets-file", getenv(envSnippets), "JSON array of {\"trigger\", \"label\", \"body\"}: the prewritten messages muster's message bar offers after `:`; re-read when it changes; missing or invalid = none, never fatal (default "+mirrorhost.DefaultSnippetsFile()+"; "+envSnippets+")")
 	catalog := fs.Bool("catalog", false, "print the composer menu's catalog this host would report for a pane whose working directory is the current one — commands, skills (source and name) and snippet triggers — and exit")
 	list := fs.Bool("list", false, "print the sessions this host would register, and exit (a labelled session's line ends in a label=<label> column)")
@@ -148,7 +161,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	if e2eWrap != nil {
 		backend = e2eWrap(backend)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, stop := runContext()
 	defer stop()
 	logger := log.New(stderr, "", log.LstdFlags)
 	codenames := loadCodenames(*labelsFile, logger)
@@ -247,6 +260,20 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		mode = "INTERACTIVE (-interactive)"
 	}
 	logger.Printf("muster-mirror %s: host %s → %s, %s", buildRevision, *host, *url, mode)
+	// Record where muster is for `muster-mirror ask` (hookconfig.go), whose
+	// Claude Code hook does not inherit this service's environment — only when
+	// told to (the managed service), and never in a browser-test build.
+	if *writeHook && e2eBackend == nil {
+		hc := hookConfig{URL: *url, AllowHTTP: *allowHTTP}
+		if *tokenFile != "" {
+			if abs, err := filepath.Abs(expandHome(*tokenFile)); err == nil {
+				hc.TokenFile = abs
+			}
+		}
+		if p := hookConfigPath(getenv); writeHookConfig(p, hc) != nil {
+			logger.Printf("muster-mirror: could not record %s for `muster-mirror ask` (the hook then needs -url)", p)
+		}
+	}
 	// A muster-mirror that was killed between creating a viewer session and
 	// attaching to it left that session behind; nothing else would remove it.
 	if vc, ok := mirrorhost.ViewCleanerOf(backend); ok {
@@ -265,6 +292,12 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return 1
 	}
 	return 0
+}
+
+// runContext is the daemon's life: until SIGINT or SIGTERM. A test replaces it
+// to end a daemon it started.
+var runContext = func() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 }
 
 // newTmuxBackend is tmuxBackend; a test replaces it to see what run passes.
