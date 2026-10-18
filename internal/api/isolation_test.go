@@ -283,7 +283,9 @@ var isolationClasses = map[string]routeClass{
 	"PATCH /api/tasks/{id}":                 classAdmin,
 	"PATCH /api/tasks/{id}/status":          classAdmin,
 	"POST /api/agents/{name}/messages":      classAdmin,
-	"POST /api/tasks":                       classAdmin,
+	// Chief replacement (chief_replace.go), hook tier, acting as the caller.
+	"POST /api/chief/replace": classAdmin,
+	"POST /api/tasks":         classAdmin,
 	// Session routing (0021): a mirrored session's answer, on the hook tier
 	// (requireArmedHookToken), acting as the route's owner.
 	"POST /api/routes/{id}/reply":   classAdmin,
@@ -311,8 +313,6 @@ var isolationClasses = map[string]routeClass{
 	"GET /mirror/connect": classPublic,
 	// The AskUserQuestion hook's door: like the tunnel, a mirror token only.
 	"POST /mirror/ask":        classPublic,
-	"GET /mirror/ask/{id}":    classPublic,
-	"DELETE /mirror/ask/{id}": classPublic,
 	"POST /mirror/mcp":        classMirrorHost,
 	"GET /mirror/terminal":    classMirror,
 	"GET /mirror/terminal/ws": classMirror,
@@ -1419,13 +1419,6 @@ var sideEffectControlled = map[string]string{
 	// passkey (303, gone from GoTrue), after a fresh session of B's was
 	// refused it (404, still there).
 	"POST /account/passkeys/{id}/delete": "fresh sessions: B's delete of A's passkey is refused and leaves it; A's removes it",
-	// The AskUserQuestion hook's door (mirror_ask.go) is a MIRROR TOKEN's, not
-	// a principal's, and this walk holds no mirror token. Its control is
-	// TestOnlyTheAskingHostReadsOrWithdrawsItsQuestion: the asking host's token
-	// reads and withdraws its question; another host's (the same owner's or
-	// another owner's) gets the 404 an unknown id gets, and changes nothing.
-	"GET /mirror/ask/{id}":    "mirror-token door: TestOnlyTheAskingHostReadsOrWithdrawsItsQuestion",
-	"DELETE /mirror/ask/{id}": "mirror-token door: TestOnlyTheAskingHostReadsOrWithdrawsItsQuestion",
 }
 
 // controlMarkers: a route whose owner and ghost answers share a status, where

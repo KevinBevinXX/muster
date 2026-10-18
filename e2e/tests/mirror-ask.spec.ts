@@ -7,18 +7,22 @@ import { test, expect } from '../lib/fixtures';
 import { binDir, dsn, mirrorAskPort, password, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 
-// ASKUSERQUESTION ANSWERED FROM THE RENDERED VIEW, in a real browser at phone
-// width, against a real muster-server (MUSTER_MIRROR=1, its own port), a real
+// ASKUSERQUESTION IN BOTH PLACES AT ONCE, in a real browser at phone width,
+// against a real muster-server (MUSTER_MIRROR=1, its own port), a real
 // muster-mirror over the tunnel (the `-tags e2emirror` per-window fake, its
 // window -interactive and running Claude session `ask-<stamp>`), and the REAL
 // hook: `muster-mirror ask`, fed the PreToolUse payload Claude Code 2.1.289
 // sends (the shape captured in internal/askq/testdata), playing the CLI's side.
-// Its stdout is what the CLI would read as the call's answer.
 //
-// What is measured about the CLI and so played here: while the hook holds the
-// call, the transcript does NOT have it (the tool_use record is written once the
-// hook returns) — so the live card is the only place the question is; and the
-// call and its result (with toolUseResult) are written together afterwards.
+// The hook only REGISTERS the question and returns at once, printing nothing,
+// so the terminal draws its own picker while the rendered view draws the card.
+// The terminal's picker is played by the fake host: while T.picker.json exists
+// the picker is on screen; an answer from muster is typed into askdrive's
+// FakePicker through the same verified driver the shipped binary uses, and the
+// CLI's record of the result (the call and its tool_result with toolUseResult)
+// is appended to the transcript. An answer "in the terminal" is the spec
+// appending that record itself. T.picker.touched is someone having started to
+// answer in the terminal.
 
 const origin = `http://localhost:${mirrorAskPort}`;
 const stamp = Date.now().toString(36);
@@ -91,13 +95,38 @@ const askResult = (id: string, answers: Record<string, string>) =>
   });
 
 interface Hook {
-  done: Promise<{ code: number | null; out: string; err: string }>;
+  done: Promise<{ code: number | null; out: string; err: string; ms: number }>;
 }
 
-// hook runs `muster-mirror ask` as the CLI would: the payload on stdin, the
-// mirror token, and the hold bound.
-function hook(toolUseID: string, timeout = '60s'): Hook {
-  const p = spawn(mirrorBin, ['ask', '-timeout', timeout], {
+// picker puts the call's picker on the terminal's screen (the CLI draws it as
+// soon as the hook returns); touched says someone has started answering it.
+const pickerFile = () => tr + '.picker.json';
+const touchedFile = () => tr + '.picker.touched';
+function picker(toolUseId: string, touched = false) {
+  fs.writeFileSync(pickerFile(), JSON.stringify({ toolUseId, questions }));
+  if (touched) fs.writeFileSync(touchedFile(), '');
+  else fs.rmSync(touchedFile(), { force: true });
+}
+// answerInTerminal is the CLI recording an answer given in the terminal.
+function answerInTerminal(id: string, answers: Record<string, string>) {
+  fs.rmSync(pickerFile(), { force: true });
+  fs.appendFileSync(tr, askUse(id) + askResult(id, answers));
+}
+
+// registered runs the hook for a question shown in both places and checks it
+// behaved as the CLI needs: quickly, with no output, exit 0.
+async function registered(toolUseID: string, opts: { touched?: boolean } = {}) {
+  picker(toolUseID, opts.touched);
+  const got = await hook(toolUseID).done;
+  expect(got.code, got.err).toBe(0);
+  expect(got.out, 'the hook printed something — the CLI would read it as the call\'s answer').toBe('');
+  expect(got.ms, 'the hook held the call: the terminal waits on it').toBeLessThan(3000);
+}
+
+// hook runs `muster-mirror ask` as the CLI would: the payload on stdin and
+// the mirror token.
+function hook(toolUseID: string): Hook {
+  const p = spawn(mirrorBin, ['ask'], {
     env: { ...process.env, MUSTER_MIRROR_URL: origin, MUSTER_MIRROR_ALLOW_HTTP: '1', MUSTER_MIRROR_TOKEN: token },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -106,8 +135,9 @@ function hook(toolUseID: string, timeout = '60s'): Hook {
   let err = '';
   p.stdout?.on('data', (d) => (out += d));
   p.stderr?.on('data', (d) => (err += d));
+  const start = Date.now();
   p.stdin?.end(payload(toolUseID));
-  return { done: new Promise((r) => p.once('exit', (code) => r({ code, out, err }))) };
+  return { done: new Promise((r) => p.once('exit', (code) => r({ code, out, err, ms: Date.now() - start }))) };
 }
 
 test.beforeAll(async () => {
@@ -176,86 +206,112 @@ async function openView(page: Page) {
 test.describe('phone 412×915 touch', () => {
   test.use({ viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true, storageState: { cookies: [], origins: [] } });
 
-  // 🔴 THE WHOLE CYCLE: a held three-question ask — one single-select, one
-  // multi-select, one answered in the person's own words — is drawn as a form,
-  // answered, and its answers reach the waiting hook, which prints them as the
-  // call's updatedInput; the card flips to answered; and once the CLI writes the
-  // call and its result, the conversation draws it read-only in its place.
-  test('a held multi-question ask is answered from the rendered view and the hook prints the answers', async ({ page }) => {
+  const card = (page: Page, id: string) => page.locator(`#mv-asks [data-ask-live][data-ask-tool="${id}"]`);
+
+  // 🔴 SHOWN AT ONCE, ANSWERED HERE: the hook returns at once with no output;
+  // the view's socket says the window's questions changed and the card is
+  // drawn; a three-question answer — one single-select by keyboard, one
+  // multi-select by touch, one in the person's own words — is typed into the
+  // terminal's picker, and the CLI's record of it flips the card to answered.
+  test('a question shows at once and an answer given here is typed into the terminal', async ({ page }) => {
     await openView(page);
+    const told: number[] = [];
+    page.on('websocket', (ws) =>
+      ws.on('framereceived', (f) => {
+        if (typeof f.payload === 'string' && f.payload.includes('"type":"asks"')) told.push(Date.now());
+      }),
+    );
+    // 🔴 The page's timers are paused, so its fallback poll never runs: the
+    // card can only be drawn because the socket said so.
+    await page.clock.install();
+    await page.reload();
+    await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 20_000 });
+    await page.clock.pauseAt(new Date(Date.now() + 1000));
     const toolID = 'toolu_e2e_' + stamp;
-    const h = hook(toolID);
-    const card = page.locator(`#mv-asks [data-ask-live][data-ask-tool="${toolID}"]`);
-    await expect(card, `the held question is drawn (log:\n${mirrorLog})`).toHaveAttribute('data-ask-state', 'pending', { timeout: 20_000 });
-    await expect(card.locator('fieldset')).toHaveCount(3);
-    await expect(card.getByText('Cool and calm')).toBeVisible();
-    await expect(card.getByRole('radio')).toHaveCount(4 + 3); // Q1: 3 + Other, Q3: 2 + Other
-    await expect(card.getByRole('checkbox')).toHaveCount(4); // Q2: 3 + Other
+    await registered(toolID);
+    const c = card(page, toolID);
+    await expect(c, `the question is drawn (log:\n${mirrorLog})`).toHaveAttribute('data-ask-state', 'pending', { timeout: 10_000 });
+    expect(told.length, 'the view\'s socket said the questions changed').toBeGreaterThan(0);
+    await page.clock.resume();
+    await expect(c.locator('fieldset')).toHaveCount(3);
+    await expect(c.getByText('Cool and calm')).toBeVisible();
+    await expect(c).toContainText('whichever is answered first counts');
     const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
     expect(sw, 'no horizontal scroll with the form drawn').toBeLessThanOrEqual(cw);
 
-    // Q1 by KEYBOARD: focus Red, arrow to Blue.
-    const q1 = card.locator('fieldset').nth(0);
+    const q1 = c.locator('fieldset').nth(0);
     await q1.getByRole('radio', { name: 'Red' }).focus();
     await page.keyboard.press('ArrowDown');
     await expect(q1.getByRole('radio', { name: 'Blue' })).toBeChecked();
-    // Q2 by touch: two options.
-    const q2 = card.locator('fieldset').nth(1);
+    const q2 = c.locator('fieldset').nth(1);
     await q2.getByText('Fish', { exact: true }).tap();
     await q2.getByText('Cat', { exact: true }).tap();
-    // Q3 in the person's own words: typing chooses Other.
-    const q3 = card.locator('fieldset').nth(2);
+    const q3 = c.locator('fieldset').nth(2);
     await q3.getByRole('textbox').fill('Gamma, the third');
     await expect(q3.getByRole('radio', { name: 'Other' })).toBeChecked();
 
-    // 🔴 A poll that finds the question still pending must leave the form
-    // alone: what was chosen and typed survives the next poll.
-    await page.waitForResponse((r) => r.url().includes('/mirror/view/asks'));
+    // 🔴 A poll that finds the question still pending leaves the form alone.
     await page.waitForResponse((r) => r.url().includes('/mirror/view/asks'));
     await expect(q1.getByRole('radio', { name: 'Blue' })).toBeChecked();
     await expect(q2.getByRole('checkbox', { name: 'Fish' })).toBeChecked();
     await expect(q3.getByRole('textbox')).toHaveValue('Gamma, the third');
 
-    await card.getByRole('button', { name: 'Submit answers' }).tap();
-    const answered = page.locator(`#mv-asks [data-ask-live][data-ask-tool="${toolID}"]`);
-    await expect(answered).toHaveAttribute('data-ask-state', 'answered');
-    await expect(answered).toContainText('Answered here');
-
-    const got = await h.done;
-    expect(got.code, got.err).toBe(0);
-    const out = JSON.parse(got.out);
-    expect(out.hookSpecificOutput.hookEventName).toBe('PreToolUse');
-    expect(out.hookSpecificOutput.permissionDecision).toBe('allow');
-    expect(out.hookSpecificOutput.updatedInput.questions).toEqual(questions);
-    expect(out.hookSpecificOutput.updatedInput.answers).toEqual({
+    await c.getByRole('button', { name: 'Submit answers' }).tap();
+    await expect(c).toHaveAttribute('data-ask-state', 'answered', { timeout: 10_000 });
+    await expect(c).toContainText('Answered here');
+    await expect(c.locator('form')).toHaveCount(0);
+    // What the terminal's picker submitted — the CLI's record.
+    const lines = fs.readFileSync(tr, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const result = lines.find((l) => l.toolUseResult && l.message?.content?.[0]?.tool_use_id === toolID);
+    expect(result?.toolUseResult?.answers).toEqual({
       'Which color do you prefer?': 'Blue',
       'Which pets do you have?': 'Cat, Fish',
       'What should the project be called?': 'Gamma, the third',
     });
-
-    // The CLI writes the call and its result: the conversation draws it, and
-    // the live card makes way.
-    fs.appendFileSync(tr, askUse(toolID) + askResult(toolID, out.hookSpecificOutput.updatedInput.answers));
-    const drawn = page.locator('#mv-log [data-ask][data-ask-state="history"]');
-    await expect(drawn).toContainText('Gamma, the third', { timeout: 20_000 });
-    await expect(page.locator('#mv-asks [data-ask-live]')).toHaveCount(0);
-    await expect(page.locator('#mv-asks')).toBeHidden();
+    expect(fs.existsSync(pickerFile()), 'the picker closed').toBe(false);
+    await expect(page.locator('#mv-log [data-ask][data-ask-state="history"]', { hasText: 'Gamma, the third' })).toBeVisible({ timeout: 20_000 });
   });
 
-  // Nobody answers before the hold ends: the hook prints NOTHING (the CLI then
-  // shows its own picker) and the card says the terminal has it.
-  test('an ask nobody answers goes back to the terminal', async ({ page }) => {
+  // ANSWERED IN THE TERMINAL: the card, form and all, flips to "answered in
+  // the terminal" with the answers chosen there, and nothing is typed.
+  test('an answer given in the terminal flips the card', async ({ page }) => {
     await openView(page);
-    const toolID = 'toolu_e2e_late_' + stamp;
-    const h = hook(toolID, '3s');
-    const card = page.locator(`#mv-asks [data-ask-live][data-ask-tool="${toolID}"]`);
-    await expect(card).toHaveAttribute('data-ask-state', 'pending', { timeout: 20_000 });
-    const got = await h.done;
-    expect(got.code).toBe(0);
-    expect(got.out, 'the hook printed an answer nobody gave').toBe('');
-    await expect(card).toHaveAttribute('data-ask-state', 'withdrawn', { timeout: 10_000 });
-    await expect(card).toContainText('went back to the terminal');
-    await expect(card.locator('form')).toHaveCount(0);
+    const toolID = 'toolu_e2e_term_' + stamp;
+    await registered(toolID);
+    const c = card(page, toolID);
+    await expect(c).toHaveAttribute('data-ask-state', 'pending', { timeout: 10_000 });
+    await c.locator('fieldset').nth(0).getByText('Red', { exact: true }).tap();
+    const before = fs.readFileSync(tr, 'utf8').length;
+    answerInTerminal(toolID, { 'Which color do you prefer?': 'Green', 'Which pets do you have?': 'Dog', 'What should the project be called?': 'Alpha' });
+    const added = fs.readFileSync(tr, 'utf8').length - before;
+    await expect(c).toHaveAttribute('data-ask-state', 'answered-terminal', { timeout: 10_000 });
+    await expect(c).toContainText('Answered in the terminal');
+    await expect(c).toContainText('Green');
+    await expect(c.locator('form')).toHaveCount(0);
+    expect(fs.readFileSync(tr, 'utf8').length - before, 'muster typed into an answered picker').toBe(added);
+  });
+
+  // 🔴 THE RACE: someone has started answering in the terminal when the answer
+  // from here arrives. Nothing is typed into that picker; the card says to
+  // finish it there; the terminal's answer then resolves it.
+  test('an answer that loses the race to the terminal types nothing', async ({ page }) => {
+    await openView(page);
+    const toolID = 'toolu_e2e_race_' + stamp;
+    await registered(toolID, { touched: true });
+    const c = card(page, toolID);
+    await expect(c).toHaveAttribute('data-ask-state', 'pending', { timeout: 10_000 });
+    await c.locator('fieldset').nth(0).getByText('Blue', { exact: true }).tap();
+    await c.locator('fieldset').nth(1).getByText('Dog', { exact: true }).tap();
+    await c.locator('fieldset').nth(2).getByText('Beta', { exact: true }).tap();
+    const before = fs.readFileSync(tr, 'utf8');
+    await c.getByRole('button', { name: 'Submit answers' }).tap();
+    await expect(c).toHaveAttribute('data-ask-state', 'failed', { timeout: 10_000 });
+    await expect(c).toContainText('Someone has started answering it in the terminal');
+    expect(fs.readFileSync(tr, 'utf8'), 'something was submitted into a touched picker').toBe(before);
+    expect(fs.existsSync(pickerFile()), 'the picker is still the terminal\'s').toBe(true);
+    answerInTerminal(toolID, { 'Which color do you prefer?': 'Green', 'Which pets do you have?': 'Cat', 'What should the project be called?': 'Beta' });
+    await expect(c).toHaveAttribute('data-ask-state', 'answered-terminal', { timeout: 10_000 });
+    await expect(c).toContainText('Answered in the terminal');
   });
 
   // An ask answered earlier is drawn from the transcript, read-only.
@@ -263,10 +319,10 @@ test.describe('phone 412×915 touch', () => {
     const id = 'toolu_e2e_hist_' + stamp;
     fs.appendFileSync(tr, askUse(id) + askResult(id, { 'Which color do you prefer?': 'Red', 'Which pets do you have?': 'Dog', 'What should the project be called?': 'Alpha' }));
     await openView(page);
-    const card = page.locator(`#mv-log [data-ask][data-ask-state="history"]`, { hasText: 'Answer: Red' });
-    await expect(card).toBeVisible({ timeout: 20_000 });
-    await expect(card).toContainText('Answer: Dog');
-    await expect(card).toContainText('Answer: Alpha');
-    await expect(card.locator('input, textarea, button, form')).toHaveCount(0);
+    const hc = page.locator(`#mv-log [data-ask][data-ask-state="history"]`, { hasText: 'Answer: Red' });
+    await expect(hc).toBeVisible({ timeout: 20_000 });
+    await expect(hc).toContainText('Answer: Dog');
+    await expect(hc).toContainText('Answer: Alpha');
+    await expect(hc.locator('input, textarea, button, form')).toHaveCount(0);
   });
 });

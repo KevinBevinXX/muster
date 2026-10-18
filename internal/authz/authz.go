@@ -110,6 +110,12 @@ const (
 	// attentionPrincipal — handed the owner by the mirror hub's change nudge
 	// or by attention.PGStore.ExpireDue's row.
 	ViaAttention Via = "attention"
+	// ViaAsk is the AskUserQuestion watcher (internal/api's question watch)
+	// acting as one owner: reading that owner's mirrored window's transcript
+	// for how a question it shows was answered. One site mints it —
+	// internal/api's askPrincipal — handed the owner of the question its host's
+	// hook registered.
+	ViaAsk Via = "ask"
 	// ViaMirrorHost is a mirror host's token (`mmt_…`) on the mirrored
 	// sessions' MCP door (POST /mirror/mcp): a Claude Code session on that host,
 	// through the host's muster-mirror, acting as the token's owner — and only
@@ -139,6 +145,9 @@ var requestVias = map[Via]bool{
 	// The attention queue's per-owner background work (internal/api's
 	// attentionPrincipal). Without it the first mirror nudge PANICS here.
 	ViaAttention: true,
+	// The question watcher, per owner (internal/api's askPrincipal). Without it
+	// the first watch PANICS here.
+	ViaAsk: true,
 	// A mirrored session's MCP door (internal/api's requireMirrorHostToken).
 	ViaMirrorHost: true,
 }

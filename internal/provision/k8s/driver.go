@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -791,29 +792,55 @@ func (d *Driver) apply(ctx context.Context, spec provision.Spec, ns string) erro
 // foreign-object refusal in this driver reports. ErrInvalidSpec, the
 // alternative that comment rejected, would still be wrong for the reason it
 // gave — it would blame the spec for the state of the cluster.
+//
+// 🔴 A NAMESPACE THAT IS STILL TERMINATING IS WAITED OUT, NOT ADOPTED. Destroy
+// deletes the per-instance namespace and returns while the apiserver is still
+// finalizing it, so re-creating an instance under the SAME name right after a
+// Destroy (the chief replacement: delete `chief`, create `chief`) used to find
+// the old namespace here, owned and Terminating, adopt it, and then fail every
+// object write with "namespace … is being terminated". This polls until it is
+// gone and then creates a fresh one, bounded by ctx; on the deadline it says
+// which namespace it was waiting on.
 func (d *Driver) ensureNamespace(ctx context.Context, instance, ns string) error {
 	nsObj := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
 		Name:   ns,
 		Labels: instanceLabels(instance),
 	}}
-	_, err := d.cfg.Client.CoreV1().Namespaces().Create(ctx, nsObj, metav1.CreateOptions{})
-	switch {
-	case err == nil:
-		return nil
-	case !apierrors.IsAlreadyExists(err):
-		return blind("create namespace "+ns, err)
+	for {
+		_, err := d.cfg.Client.CoreV1().Namespaces().Create(ctx, nsObj, metav1.CreateOptions{})
+		switch {
+		case err == nil:
+			return nil
+		case !apierrors.IsAlreadyExists(err):
+			return blind("create namespace "+ns, err)
+		}
+		cur, gerr := d.cfg.Client.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
+		if apierrors.IsNotFound(gerr) {
+			continue // it finished terminating between the two calls
+		}
+		if gerr != nil {
+			return blind("get namespace "+ns, gerr)
+		}
+		if !owned(cur.Labels) {
+			return fmt.Errorf("%w: namespace %q already exists and is not managed by muster (%s); "+
+				"refusing to adopt it, because Destroy deletes this namespace and everything in it",
+				provision.ErrNotManaged, ns, labelComplaint(cur.Labels))
+		}
+		if cur.Status.Phase != corev1.NamespaceTerminating && cur.DeletionTimestamp == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return blind("create namespace "+ns, fmt.Errorf("namespace %q is still terminating from an earlier "+
+				"destroy of this instance name: %w", ns, ctx.Err()))
+		case <-time.After(namespaceTerminatingPoll):
+		}
 	}
-	cur, gerr := d.cfg.Client.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
-	if gerr != nil {
-		return blind("get namespace "+ns, gerr)
-	}
-	if !owned(cur.Labels) {
-		return fmt.Errorf("%w: namespace %q already exists and is not managed by muster (%s); "+
-			"refusing to adopt it, because Destroy deletes this namespace and everything in it",
-			provision.ErrNotManaged, ns, labelComplaint(cur.Labels))
-	}
-	return nil
 }
+
+// namespaceTerminatingPoll is how often ensureNamespace re-checks a namespace
+// that is still terminating. A var so a test can shorten it.
+var namespaceTerminatingPoll = 2 * time.Second
 
 // checkNamespaceOwned is Destroy's PRE-FLIGHT over the per-instance namespace:
 // it reads the namespace and refuses one this driver did not create, WITHOUT

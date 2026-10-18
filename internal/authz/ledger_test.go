@@ -208,6 +208,10 @@ var (
 		// person, read as that owner after the hub's nudge named them, through
 		// authz.ViaAttention.
 		"internal/api.(*Server).attentionPrincipal",
+		// The AskUserQuestion watcher: the transcript of the window showing a
+		// question, read as the question's owner (its host's token's), through
+		// authz.ViaAsk.
+		"internal/api.(*Server).askPrincipal",
 	}
 	// admitLedger: every authentication wrapper.
 	admitLedger = []string{
@@ -230,7 +234,7 @@ var (
 	// new door until someone has decided it is not.
 	authzExports = []string{
 		"From", "MustFrom", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
-		"System", "Via", "ViaAgent", "ViaAttention", "ViaConnect", "ViaFocus", "ViaHook", "ViaMirrorHost", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
+		"System", "Via", "ViaAgent", "ViaAsk", "ViaAttention", "ViaConnect", "ViaFocus", "ViaHook", "ViaMirrorHost", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
 		"ViaSession", "ViaSystem", "ViaToken", "WithPrincipal",
 	}
 )

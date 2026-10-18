@@ -8,7 +8,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// THE TWO GO SUITES IN CI ARE PIPED INTO tests/verdict.py UNDER `pipefail`.
+// THE GO SUITES IN CI ARE PIPED INTO tests/verdict.py UNDER `pipefail`.
 //
 // 🔴 WHAT `set -o pipefail` CARRIES, AND WHY IT IS PINNED: verdict.py refuses a
 // skip, zero verdicts, and any `fail`/`build-fail` event, but it cannot see
@@ -32,10 +32,11 @@ import (
 var wantVerdictPipes = map[string]string{
 	"test": "go test -race -cover -json ./... | python3 -u tests/verdict.py --echo summary" +
 		" --require TestEveryRouteIsClassifiedForIsolation --require TestNoRouteLetsOneUserReachAnothersData --require TestAnotherUsersWritesNeverReachYourEventStream",
-	"ccd-tmux": "go test -tags tmuxit -race -run '^TestTmux' -json ./cmd/ccd/ ./internal/mirror/ ./internal/mirrorhost/ | python3 -u tests/verdict.py --echo all",
+	"ccd-tmux":    "go test -tags tmuxit -race -run '^TestTmux' -json ./cmd/ccd/ | python3 -u tests/verdict.py --echo all",
+	"mirror-tmux": "go test -tags tmuxit -race -run '^TestTmux' -json ./internal/mirror/ ./internal/mirrorhost/ | python3 -u tests/verdict.py --echo all",
 }
 
-// TestCIGoSuitesPipeIntoTheVerdictUnderPipefail pins both verdict steps.
+// TestCIGoSuitesPipeIntoTheVerdictUnderPipefail pins every verdict step.
 func TestCIGoSuitesPipeIntoTheVerdictUnderPipefail(t *testing.T) {
 	path := filepath.Join(moduleRoot(t), ".github", "workflows", "ci.yml")
 	b, err := os.ReadFile(path)

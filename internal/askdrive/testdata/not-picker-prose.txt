@@ -1,0 +1,12 @@
+● The picker's footer reads "Enter to select · ↑/↓ to navigate · Esc to cancel",
+  and its review screen has a "1. Submit answers" row.
+
+  1. Press Enter to select an option.
+  2. Press Esc to cancel.
+
+  ☐ write the parser   ☒ capture the screens
+
+────────────────────────────────────────────────────────────────────────────────
+❯ Enter to select · Esc to cancel
+────────────────────────────────────────────────────────────────────────────────
+  ? for shortcuts

@@ -85,13 +85,14 @@ const (
 type Server struct {
 	bus    *sse.Broadcaster
 	logger *log.Logger
-	// asks is the pending-question store (mirror_ask.go): the AskUserQuestion
-	// calls a hook is holding for an answer from muster.
+	// asks is the question store (mirror_ask.go): the AskUserQuestion calls the
+	// muster-mirror ask hook registered, shown in the rendered view while the
+	// terminal shows its own picker, until the CLI's record resolves them.
 	asks *askq.Store
-	// askListWaitOverride replaces mirrorAskListWait (tests; 0 = default).
-	askListWaitOverride time.Duration
-	auth                AuthConfig
-	router              RouterPort
+	// askWatch is the running question watches (mirror_ask.go).
+	askWatch askWatchers
+	auth     AuthConfig
+	router   RouterPort
 
 	// streams ends every open SSE stream when shutdown begins. See EndStreams.
 	streams streamEnd
@@ -178,6 +179,9 @@ type Server struct {
 	activeAgentsMu  sync.Mutex
 	activeAgents    map[string]agentPhase
 	activeAgentsNow func() time.Time
+	// turns counts chat turns per agent and lets the chief replacement close
+	// one (turn_gate.go).
+	turns turnGate
 
 	// sendQueue is the send queue's dispatcher (send_queue.go); nil until
 	// RunSendQueue starts it.
@@ -499,6 +503,11 @@ func (s *Server) registerAll(mux Mux) {
 	mux.HandleFunc("GET /ui/chief/threads/search", s.requireSession(s.handleChiefThreadSearch))
 	// chief is the reserved-name agent; nothing else can create one.
 	mux.HandleFunc("POST /chief/provision", s.requireSession(s.requireLifecycleProvisioner(s.handleChiefProvision)))
+	// Replacing the chief (chief_replace.go): delete + re-create on another kind,
+	// behind an explicit confirm. requireArmedHookToken: a machine write that
+	// destroys an agent must not be served open on an unarmed server; a personal
+	// token acts as its owner.
+	mux.HandleFunc("POST /api/chief/replace", s.requireArmedHookToken(s.requireLifecycleProvisioner(s.handleChiefReplace)))
 
 	s.registerNotesRoutes(mux)
 	s.registerGitHubRoutes(mux)

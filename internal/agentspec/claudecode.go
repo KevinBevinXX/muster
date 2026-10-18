@@ -96,11 +96,46 @@ func ClaudeCodeNetwork() provision.Network {
 // one allowance that lets the pod reach muster, and only that surface of it.
 func claudeCodeNetworkFor(cfg Config) provision.Network {
 	n := ClaudeCodeNetwork()
-	if cfg.ConnectURL != "" {
+	if cfg.ClaudeCodeMCPOffered() {
 		n.ControllerEgressTCPPorts = []int{cfg.ConnectPort}
 	}
 	return n
 }
+
+// ClaudeCodeMCPOffered reports whether a claude-code agent built from this
+// Config can reach muster's MCP server — its ONLY route to muster's tools (the
+// image carries no muster CLI). ccd registers that server exactly when the pod
+// carries [EnvConnectURL] (cmd/ccd/seed.go seedMCP), which claudeCodeEnv sets
+// from this same predicate, and the network policy's one controller allowance
+// is decided by it too. A caller writing prose that names those tools reads it
+// here rather than spelling `ConnectURL != ""` a second time.
+func (c Config) ClaudeCodeMCPOffered() bool { return c.ConnectURL != "" }
+
+// ClaudeCodeInstructionsPath is where a claude-code agent's [Options.Instructions]
+// is placed: the Claude Code CLI's MANAGED-POLICY memory file on Linux.
+//
+// Documented at https://code.claude.com/docs/en/memory ("Choose where to put
+// CLAUDE.md files": managed policy, "Linux and WSL: /etc/claude-code/CLAUDE.md";
+// and "Managed policy CLAUDE.md files cannot be excluded"). It is loaded at every
+// launch, first in load order, alongside — never instead of — any CLAUDE.md the
+// session's working directory holds. MEASURED in the pinned CLI (2.1.296, the
+// linux-x64 binary's bundled source): the "Managed" memory file is the managed
+// directory joined with "CLAUDE.md", and that directory's non-macOS, non-Windows
+// case returns "/etc/claude-code". Re-check it when CLAUDE_CODE_VERSION moves.
+//
+// 🔴 WHY THERE AND NOT THE WORKSPACE: /data/workspace is the agent's persistent
+// volume and whatever it holds is the session's. A project CLAUDE.md placed there
+// by a subPath mount would SHADOW a file of the same name the session wrote or a
+// repository brought in, and would itself be edited by nobody. The managed path
+// is outside every volume, so nothing the agent owns is touched, the file is
+// read-only to it, and the driver re-renders it from the spec on every apply
+// (the instance picks it up when its pod next starts — the same as the gateway
+// kind's AGENTS.md).
+//
+// ⚠ NOT --append-system-prompt: the CLI is launched by ccd's supervisor with a
+// fixed argv (`claude` / `claude --continue`), so a flag would mean an image
+// change, and the docs scope that flag to scripted use.
+const ClaudeCodeInstructionsPath = "/etc/claude-code/CLAUDE.md"
 
 // ClaudeCodePublicEgressPort is the one TCP port a claude-code agent may reach
 // on public addresses: HTTPS.
@@ -125,13 +160,11 @@ type ClaudeCodeConfig struct {
 // valid-looking Deployment — and would boot into a TUI that cannot answer one
 // turn (or a ccd that refuses to start), which reads on the card as a slow agent.
 //
-// ⚠ Options IS MOSTLY NOT APPLICABLE HERE, AND WHAT IS NOT APPLICABLE IS EITHER
-// IGNORED OR REFUSED, BY WHETHER IGNORING IT LIES. Instructions is ignored: the
-// task reaches a claude-code agent as its kickoff turn, and placing a read-only
-// instructions file inside the CLI's own workspace is a separate decision (it
-// would also need the CLI's name for it, CLAUDE.md). SeedFiles, ExtraEnv and
-// CairnEligible are REFUSED: a caller that asked for them would otherwise get an
-// agent silently without them.
+// ⚠ Options IS MOSTLY NOT APPLICABLE HERE, AND WHAT IS NOT APPLICABLE IS
+// REFUSED: SeedFiles, ExtraEnv and CairnEligible — a caller that asked for them
+// would otherwise get an agent silently without them. Instructions IS honoured:
+// it is placed at [ClaudeCodeInstructionsPath], the CLI's managed-policy
+// CLAUDE.md (see that constant for why there and not in the workspace).
 func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, error) {
 	cc := cfg.ClaudeCode
 	if cc == nil {
@@ -205,6 +238,9 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		Network:   claudeCodeNetworkFor(cfg),
 		Labels:    labels,
 	}
+	if opts.Instructions != "" {
+		spec.Files = []provision.File{{Path: ClaudeCodeInstructionsPath, Content: []byte(opts.Instructions)}}
+	}
 	if err := spec.Validate(); err != nil {
 		return provision.Spec{}, fmt.Errorf("agentspec: built an invalid spec for agent %q: %w", a.Name, err)
 	}
@@ -217,7 +253,7 @@ func claudeCodeEnv(cfg Config) []provision.EnvVar {
 		{Name: EnvAPIURL, Value: cfg.APIBaseURL},
 		{Name: EnvGitTerminalPrompt, Value: "0"},
 	}
-	if cfg.ConnectURL != "" {
+	if cfg.ClaudeCodeMCPOffered() {
 		env = append(env, provision.EnvVar{Name: EnvConnectURL, Value: cfg.ConnectURL})
 	}
 	return env

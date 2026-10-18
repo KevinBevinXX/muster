@@ -33,7 +33,6 @@ DELETE /api/tasks/{id}/comments/{cid}
 DELETE /api/tokens/{id}
 DELETE /connector-grants/{id}
 DELETE /connectors/{name}
-DELETE /mirror/ask/{id}
 DELETE /tasks/{id}
 DELETE /tasks/{id}/comments/{cid}
 DELETE /tasks/{id}/tags/{tag}
@@ -88,7 +87,6 @@ GET /invite
 GET /login
 GET /manifest.webmanifest
 GET /metrics
-GET /mirror/ask/{id}
 GET /mirror/connect
 GET /mirror/terminal
 GET /mirror/terminal/send
@@ -172,6 +170,7 @@ POST /agents/{id}/start
 POST /agents/{id}/stop
 POST /agents/{name}/send
 POST /api/agents/{name}/messages
+POST /api/chief/replace
 POST /api/flows/jobs
 POST /api/push/subscribe
 POST /api/push/unsubscribe

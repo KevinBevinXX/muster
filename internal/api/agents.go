@@ -1637,9 +1637,17 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		if err := json.Unmarshal(data, &in); err != nil || in.Type != "message" || strings.TrimSpace(in.Text) == "" {
 			continue
 		}
+		// 🔴 THE TURN GATE FIRST, THEN THE ASKS (chief replacement × #134): a
+		// message the gate refuses (the agent is being replaced) starts no turn,
+		// so it must not answer the agent's asks either.
+		if !s.turns.enter(a.ID) {
+			_ = wsWriteJSON(ctx, c, map[string]string{"type": "error", "content": ErrAgentBeingReplaced.Error()})
+			continue
+		}
 		// The operator wrote to the agent: its open asks are answered here.
 		s.askerAddressed(ctx, attention.Asker{AgentID: a.ID}, in.Text)
-		parts, err := s.runUserTurn(ctx, a, session, in.Text, wsStreamEmit(ctx, c, s, a.Name))
+		parts, err := s.runEnteredTurn(ctx, a, session, in.Text, wsStreamEmit(ctx, c, s, a.Name))
+		s.turns.leave(a.ID)
 		if err != nil {
 			_ = wsWriteJSON(ctx, c, map[string]string{"type": "error", "content": err.Error()})
 			continue
@@ -1665,6 +1673,20 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 // them down). Two copies would be two transcripts' worth of disagreement about
 // what is stored.
 func (s *Server) runUserTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, emit agents.StreamEmit) ([]agents.TurnPart, error) {
+	// Counted so the chief replacement can refuse while a turn is in flight, and
+	// refused BEFORE the message is stored when the agent is being replaced
+	// (turn_gate.go).
+	if !s.turns.enter(a.ID) {
+		return nil, ErrAgentBeingReplaced
+	}
+	defer s.turns.leave(a.ID)
+	return s.runEnteredTurn(ctx, a, session, text, emit)
+}
+
+// runEnteredTurn is runUserTurn for a caller that has ALREADY entered a's turn
+// gate (s.turns.enter) and leaves it afterwards: the operator's two doors, which
+// must know the turn is admitted before they answer the agent's asks.
+func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, emit agents.StreamEmit) ([]agents.TurnPart, error) {
 	_, _ = s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{AgentID: a.ID, SessionID: session.ID, Role: "user", Content: text})
 
 	// Mark active immediately (a turn always starts thinking) so the agent

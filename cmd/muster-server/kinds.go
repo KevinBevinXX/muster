@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/credentials"
 )
@@ -19,6 +20,10 @@ type kindSet struct {
 	pool  *ccpool.Pool
 	plane *credentials.Plane
 }
+
+// The chief replacement refuses a dead account only through this optional
+// interface; losing it here would silently drop that refusal.
+var _ api.ClaudeAccountHealth = kindSet{}
 
 // Enabled is in agents.Kinds order — gateway first — whatever order
 // MUSTER_AGENT_KINDS was written in: the picker checks its first option, and
@@ -49,6 +54,15 @@ func (k kindSet) SelectClaudeAccount(ctx context.Context, owner int64, pin strin
 		return "", ccpool.ErrNoUsableAccount
 	}
 	return k.pool.Select(ctx, owner, pin)
+}
+
+// ClaudeAccountAuthFailure is api.ClaudeAccountHealth: ccpool's mark read for
+// one account. With no pool there is no account to be healthy.
+func (k kindSet) ClaudeAccountAuthFailure(ctx context.Context, owner int64, account string) (string, error) {
+	if k.pool == nil {
+		return "", ccpool.ErrNoUsableAccount
+	}
+	return k.pool.AuthFailure(ctx, owner, account)
 }
 
 func (k kindSet) Unavailable(ctx context.Context, owner int64) map[string]string {

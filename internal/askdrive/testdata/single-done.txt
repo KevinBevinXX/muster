@@ -1,0 +1,13 @@
+● User answered Claude's questions:                           
+  ⎿  · Which color do you prefer? → Yellow
+
+● Your questions have been answered: "Which color do you prefer?"="Yellow". You can now continue with these answers in
+  mind.
+
+✻ Worked for 2s · done 12:08 PM    
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← 3 agents                                                   ◐ medium · /effort
+

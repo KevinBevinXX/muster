@@ -123,15 +123,42 @@ func TestThePendingFormOffersEveryQuestionsChoicesAndOther(t *testing.T) {
 	}
 }
 
+// TestTheLiveCardSaysHowItWent: every live state, its words, and that only a
+// pending, answerable question has a form.
 func TestTheLiveCardSaysHowItWent(t *testing.T) {
 	ref := MirrorRef{Host: "lap", Session: "work", Window: "@3"}
-	ans := render(MirrorAskLive(MirrorAskLiveView{Ref: ref, ToolID: "toolu_Q", State: AskStateAnswered, Questions: askQs[:1], Answers: map[string]string{"Which color do you prefer?": "Red"}}))
-	if !strings.Contains(ans, "Answered here") || !strings.Contains(ans, "Answer: </span>Red") || strings.Contains(ans, "<form") {
-		t.Fatalf("answered:\n%s", ans)
-	}
-	gone := render(MirrorAskLive(MirrorAskLiveView{Ref: ref, ToolID: "toolu_Q", State: AskStateWithdrawn, Questions: askQs[:1]}))
-	if !strings.Contains(gone, "went back to the terminal") || !strings.Contains(gone, `href="/mirror/terminal?host=lap&amp;session=work&amp;window=%403"`) || strings.Contains(gone, "<form") {
-		t.Fatalf("withdrawn:\n%s", gone)
+	red := map[string]string{"Which color do you prefer?": "Red"}
+	terminalLink := `href="/mirror/terminal?host=lap&amp;session=work&amp;window=%403"`
+	for _, c := range []struct {
+		v            MirrorAskLiveView
+		want         []string
+		form, linked bool
+	}{
+		{MirrorAskLiveView{State: AskStatePending}, []string{"whichever is answered first counts"}, true, false},
+		{MirrorAskLiveView{State: AskStatePending, Unanswerable: MirrorReadOnlyNote}, []string{"read-only", "The terminal shows this question too."}, false, true},
+		{MirrorAskLiveView{State: AskStateTyping, Answers: red}, []string{"Typing your answer into the terminal", "Answer: </span>Red"}, false, false},
+		{MirrorAskLiveView{State: AskStateFailed, Note: "Someone has started answering it in the terminal — finish it there."}, []string{"Someone has started answering"}, false, true},
+		{MirrorAskLiveView{State: AskStateAnswered, Answers: red}, []string{"Answered here", "Answer: </span>Red"}, false, false},
+		{MirrorAskLiveView{State: AskStateAnsweredTerminal, Answers: red}, []string{"Answered in the terminal", "Answer: </span>Red"}, false, false},
+		{MirrorAskLiveView{State: AskStateDeclined}, []string{"Dismissed in the terminal"}, false, false},
+		{MirrorAskLiveView{State: AskStateExpired}, []string{"No answer was seen"}, false, true},
+	} {
+		c.v.Ref, c.v.ToolID, c.v.Questions = ref, "toolu_Q", askQs[:1]
+		html := render(MirrorAskLive(c.v))
+		for _, w := range c.want {
+			if !strings.Contains(html, w) {
+				t.Errorf("%s: lacks %q:\n%s", c.v.State, w, html)
+			}
+		}
+		if strings.Contains(html, "<form") != c.form {
+			t.Errorf("%s: has a form = %v, want %v", c.v.State, !c.form, c.form)
+		}
+		if strings.Contains(html, terminalLink) != c.linked {
+			t.Errorf("%s: links the terminal = %v, want %v", c.v.State, !c.linked, c.linked)
+		}
+		if !strings.Contains(html, `data-ask-state="`+c.v.State+`"`) {
+			t.Errorf("%s: the card does not carry its state", c.v.State)
+		}
 	}
 }
 

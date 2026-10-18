@@ -66,6 +66,10 @@ var notLinkedLedger = map[string]string{
 		"route tests. Imported only by _test.go files: a row store with no row-level security linked " +
 		"into the server would be a way round the uploads table's owner isolation.",
 
+	"internal/askdrive/fakepicker": "a stand-in for Claude Code's AskUserQuestion picker on a raw tty, " +
+		"built by internal/mirrorhost's tmuxit suite to run in a real tmux pane. A test tool: no shipped " +
+		"binary types into a fake picker.",
+
 	"e2e/seed": "the browser suite's fixture loader (`go run ./e2e/seed`). It TRUNCATES " +
 		"the board before seeding, so it must never be reachable from a shipped binary; it " +
 		"also refuses any database whose name does not end in _e2e.",

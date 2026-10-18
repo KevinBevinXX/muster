@@ -218,28 +218,15 @@ func (s *Service) authenticate(w http.ResponseWriter, r *http.Request) (Token, b
 // ok false: the refusal (401, 429 or 503) has been written.
 //
 // 🔴 A MIRROR TOKEN OPENS THIS AND /mirror/connect, AND NOTHING ELSE. The ask
-// routes act only on what the token's host itself registered, under its owner,
-// and only for a Claude session that host lists now (HostClaudeSession).
+// route registers a question under the token's own owner and host, and
+// nowhere else: muster shows it only in a window that host lists as running
+// that Claude session, and only to that owner.
 func (s *Service) AuthenticateHost(w http.ResponseWriter, r *http.Request) (owner int64, host string, ok bool) {
 	tok, ok := s.authenticate(w, r)
 	if !ok {
 		return 0, "", false
 	}
 	return tok.OwnerID, tok.Host, true
-}
-
-// HostClaudeSession reports whether owner's host is CONNECTED and lists a
-// window whose pane runs the Claude Code session claudeSession, and whether
-// the host advertised -interactive.
-func (s *Service) HostClaudeSession(owner int64, host, claudeSession string) (listed, interactive bool) {
-	return s.hub.HostClaudeSession(owner, host, claudeSession)
-}
-
-// SetWaiting installs the overlay that marks a window WAITING while something
-// outside the host knows it is waiting on a person (a question its ask hook is
-// holding: Claude Code itself reports "busy" while a PreToolUse hook runs).
-func (s *Service) SetWaiting(fn func(owner int64, host, claudeSession string) bool) {
-	s.hub.SetWaiting(fn)
 }
 
 // Nudge tells owner's open views to re-fetch (the hub's own debounced nudge).
