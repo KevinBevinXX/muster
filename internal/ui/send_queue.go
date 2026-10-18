@@ -59,7 +59,14 @@ type SendQueueItem struct {
 	Detail string
 	// Cancellable: still queued.
 	Cancellable bool
+	// Answered is the asker whose question this message already answered when
+	// it was queued, "" for none: its Cancel cannot take that answer back.
+	Answered string
 }
+
+// SendQueueAnsweredText is what a queued message that answered asker's
+// question when it was queued says under its preview.
+func SendQueueAnsweredText(asker string) string { return "Already answered " + asker + "'s question." }
 
 // SendQueueListView is a target's queue.
 type SendQueueListView struct {
@@ -123,6 +130,8 @@ func SendQueueList(v SendQueueListView) g.Node {
 				P(Class("line-clamp-2 text-xs text-fg [overflow-wrap:anywhere]"), g.Text(it.Preview)),
 				g.If(it.Detail != "" && it.State != "queued" && it.State != "sending",
 					P(Class("text-[11px] text-muted [overflow-wrap:anywhere]"), g.Text(it.Detail))),
+				g.If(it.Answered != "", P(g.Attr("data-queue-answered", ""), Class("text-[11px] text-muted [overflow-wrap:anywhere]"),
+					g.Text(SendQueueAnsweredText(it.Answered)))),
 			),
 			g.If(it.Cancellable, Form(
 				Method("post"),
@@ -228,7 +237,12 @@ func sendQueueScript() g.Node {
     fetch(f.getAttribute('action'), { method: 'POST', credentials: 'same-origin',
       headers: { 'X-Requested-With': 'XMLHttpRequest' } })
       .then(function (r) {
-        if (r.ok) return;
+        if (r.status === 204) return;
+        if (r.ok) return r.text().then(function (t) {
+          // Cancelled, with a warning (an answer it already delivered).
+          var n = document.getElementById('mv-note');
+          if (n && t.trim()) { n.textContent = t.trim(); n.hidden = false; n.removeAttribute('data-ok'); }
+        });
         return r.text().then(function (t) {
           var n = document.getElementById('mv-note');
           if (n) { n.textContent = t.trim() || ('Not cancelled (HTTP ' + r.status + ')'); n.hidden = false; n.removeAttribute('data-ok'); }

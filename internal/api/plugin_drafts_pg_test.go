@@ -245,16 +245,18 @@ func TestAReplyDraftGoesFromTheChiefToThePluginOnceThroughTheRealPlane(t *testin
 		t.Fatalf("the runtime saw %d turns; want 1", n)
 	}
 
-	// 2. The chief drafts a reply; the owner is told, in muster's words.
+	// 2. The chief drafts a reply; the owner is told WHO and WHERE only — the
+	// sender is not verified, so not even the name it claims.
 	draftID, out := d.replyDraft(chief, m1, "Yes, noon works.")
 	if draftID == 0 || !strings.Contains(out, `"status":"pending"`) {
 		t.Fatalf("reply_draft: %s", out)
 	}
 	d.srv.WaitForPushes()
 	pl := d.pusher.to(ep("draft-a"))
-	if len(pl) != 1 || pl[0].Title != DraftPushTitle || pl[0].Body != DraftPushBody ||
+	const wantBody = "Reply draft: unverified sender (Example inbox)"
+	if len(pl) != 1 || pl[0].Title != DraftPushTitle || pl[0].Body != wantBody ||
 		pl[0].Data["url"] != "/plugins#draft-"+strconv.FormatInt(draftID, 10) || pl[0].Type != "plugin" {
-		t.Fatalf("the owner's push: %+v; want one `plugin` push in muster's words, linked to the card", pl)
+		t.Fatalf("the owner's push: %+v; want one `plugin` push naming who and where only, linked to the card", pl)
 	}
 	if got := d.pusher.to(ep("draft-b")); len(got) != 0 {
 		t.Fatalf("the other member got %d pushes", len(got))

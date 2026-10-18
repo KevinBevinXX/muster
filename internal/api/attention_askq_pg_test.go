@@ -43,7 +43,7 @@ func TestAHeldQuestionIsOneItemLinkedToItsSessionsView(t *testing.T) {
 	}
 	// The window reports waiting (as the overlay makes it) AND a question is held: one item.
 	got := items()
-	if len(got) != 1 || got[0].Key != key || got[0].Kind != attentionKindQuestion || got[0].Text != "Which database? (+1 more)" || got[0].Link != view {
+	if len(got) != 1 || got[0].Key != key || got[0].Kind != attentionKindQuestion || got[0].Text != "1. Which database?\n2. Migrate now?" || got[0].Link != view {
 		t.Fatalf("held + waiting: %+v", got)
 	}
 	if body := f.page(t, "/attention/items"); strings.Count(body, `id="`+key+`"`) != 1 || !strings.Contains(body, "Answer in the session") {

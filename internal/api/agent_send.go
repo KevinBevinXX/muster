@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -152,6 +153,8 @@ func (s *Server) handleAgentSend(w http.ResponseWriter, r *http.Request) {
 	// Accepted: from here the message is the turn's. The claim is kept whatever
 	// the turn then does — a repeat of this post must not start a second turn.
 	finish(true)
+	// The operator wrote to the agent: its open asks are answered here.
+	s.askerAddressed(ctx, attention.Asker{AgentID: a.ID}, text)
 	s.startAgentTurn(ctx, a, session, text)
 	s.logger.Printf("agents: sent a message to %s (session %d)", a.Name, session.ID)
 	sent()
