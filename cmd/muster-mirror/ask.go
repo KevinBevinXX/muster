@@ -53,7 +53,7 @@ func runAsk(args []string, getenv func(string) string, in io.Reader, stdout, std
 	fs.SetOutput(stderr)
 	envBool := func(k string) bool { v := getenv(k); return v == "1" || strings.EqualFold(v, "true") }
 	base := fs.String("url", getenv(envURL), "muster's base URL, https://… ("+envURL+"; default: the URL the host's muster-mirror recorded in "+defaultHookConfig+")")
-	tokenFile := fs.String("token-file", getenv(envTokenFile), "file holding this host's mirror token ("+envTokenFile+"; or the token itself in "+envToken+"; default: the file the host's muster-mirror recorded, else "+DefaultTokenFile+")")
+	tokenFile := fs.String("token-file", getenv(envTokenFile), "file holding this host's mirror token ("+envTokenFile+"; or the token itself in "+envToken+"; default, only with the recorded URL: the file the host's muster-mirror recorded, else "+DefaultTokenFile+")")
 	allowHTTP := fs.Bool("allow-http", envBool(envAllowHTTP), "TESTS AND LOCAL DEVELOPMENT ONLY: permit a plain http:// muster URL ("+envAllowHTTP+")")
 	timeout := fs.Duration("timeout", envDurationOr(getenv(envAskTimeout), defaultAskTimeout), "how long to hold the question for an answer in muster before the terminal's picker gets it ("+envAskTimeout+"); keep it under the hook entry's timeout")
 	if err := fs.Parse(args); err != nil {
@@ -64,29 +64,44 @@ func runAsk(args []string, getenv func(string) string, in io.Reader, stdout, std
 		logf("read stdin: %v; leaving the question to the terminal", err)
 		return 0
 	}
-	// What the host's muster-mirror recorded (hookconfig.go): the defaults for
-	// whatever no flag or environment variable gave.
-	if *base == "" || *tokenFile == "" {
-		if hc, err := readHookConfig(hookConfigPath(getenv)); err == nil {
-			if *base == "" {
-				*base, *allowHTTP = hc.URL, *allowHTTP || hc.AllowHTTP
-			}
-			if *tokenFile == "" && hc.TokenFile != "" && strings.TrimSpace(getenv(envToken)) == "" {
-				*tokenFile = hc.TokenFile
-			}
-		} else if *base == "" {
+	// What the host's muster-mirror recorded (hookconfig.go): the URL when no
+	// flag or environment variable gave one — and, ONLY THEN, its token.
+	// 🔴 THE RECORDED TOKEN GOES ONLY TO THE RECORDED URL: a hook pointed
+	// elsewhere by -url or MUSTER_MIRROR_URL must bring its own token
+	// (-token-file, MUSTER_MIRROR_TOKEN_FILE or MUSTER_MIRROR_TOKEN), or it
+	// fails open — it never sends this host's credential to a URL nobody
+	// recorded for it.
+	recordedURL := false
+	var rec hookConfig
+	if *base == "" {
+		var err error
+		if rec, err = readHookConfig(hookConfigPath(getenv)); err == nil && rec.URL != "" {
+			*base, *allowHTTP, recordedURL = rec.URL, *allowHTTP || rec.AllowHTTP, true
+		} else {
 			logf("no -url, no %s, and no URL recorded by muster-mirror (%v)", envURL, err)
 		}
 	}
 	token := strings.TrimSpace(getenv(envToken))
-	if f := tokenFileOr(*tokenFile, getenv); f != "" {
-		b, err := os.ReadFile(expandHome(f))
+	tokenPath := *tokenFile
+	if tokenPath == "" && token == "" && recordedURL {
+		tokenPath = rec.TokenFile
+		if tokenPath == "" {
+			tokenPath = DefaultTokenFile
+		}
+	}
+	if tokenPath != "" {
+		b, err := os.ReadFile(expandHome(tokenPath))
 		if err != nil {
 			// stderr: invisible to the picker, but in Claude Code's debug log.
-			logf("cannot read the mirror token file %s: %v; leaving the question to the terminal", f, err)
+			logf("cannot read the mirror token file %s: %v; leaving the question to the terminal", tokenPath, err)
 			return 0
 		}
 		token = strings.TrimSpace(string(b))
+	}
+	if token == "" && *base != "" {
+		logf("no mirror token for %s: a URL given by -url or %s needs its own token (-token-file, %s or %s); leaving the question to the terminal",
+			*base, envURL, envTokenFile, envToken)
+		return 0
 	}
 	u, err := url.Parse(*base)
 	if *base == "" || token == "" || err != nil || (u.Scheme != "https" && !(u.Scheme == "http" && *allowHTTP)) {

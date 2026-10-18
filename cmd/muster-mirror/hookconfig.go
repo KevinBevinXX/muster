@@ -13,17 +13,17 @@ import (
 // `muster-mirror ask`.
 //
 // The daemon is configured by its service's environment (MUSTER_MIRROR_URL,
-// MUSTER_MIRROR_TOKEN_FILE …), which a Claude Code hook does not inherit. So:
+// MUSTER_MIRROR_TOKEN_FILE …), which a Claude Code hook does not inherit. So
+// the managed service runs the daemon with MUSTER_MIRROR_WRITE_HOOK_CONFIG=1
+// (or -write-hook-config), and the daemon then RECORDS its URL and token file
+// (hookConfig, at hookConfigPath, 0600) when it starts. Only a daemon told to
+// writes it: an ad-hoc or development daemon never repoints the hook.
 //
-//   - the TOKEN FILE has one default for both: MUSTER_MIRROR_TOKEN_FILE, else
-//     DefaultTokenFile (~/.muster/mirror-token) — the path the host's service
-//     already uses;
-//   - the URL is RECORDED by the daemon when it starts (hookConfig, written to
-//     hookConfigPath, 0600, best-effort) and read by the hook when neither -url
-//     nor MUSTER_MIRROR_URL is given. What the hook uses is therefore exactly
-//     what the running daemon resolved, not a second guess at it.
-//
-// A flag or environment variable always wins over the recorded file.
+// The hook reads the record when neither -url nor MUSTER_MIRROR_URL is given.
+// Its TOKEN is then the recorded token file, else DefaultTokenFile — the hook's
+// own default, and the path the managed service's MUSTER_MIRROR_TOKEN_FILE
+// names (the daemon itself has no default token file). 🔴 A URL given by flag
+// or environment never gets that token: it needs its own (ask.go).
 
 // DefaultTokenFile is the mirror token's default path, for the daemon and the
 // hook alike.
@@ -52,33 +52,36 @@ func hookConfigPath(getenv func(string) string) string {
 	return expandHome(defaultHookConfig)
 }
 
-// tokenFileOr is the token file a command reads: the flag/env value given, else
-// DefaultTokenFile — unless the token itself is in MUSTER_MIRROR_TOKEN.
-func tokenFileOr(given string, getenv func(string) string) string {
-	if given != "" {
-		return given
-	}
-	if strings.TrimSpace(getenv(envToken)) != "" {
-		return ""
-	}
-	return DefaultTokenFile
-}
-
 // writeHookConfig records c for the hook (best-effort: an error is the
-// caller's to log, never fatal).
+// caller's to log, never fatal). Through a temp file UNIQUE to this write and
+// a rename, so concurrent writers never interleave: the record is always one
+// whole write — the last one's.
 func writeHookConfig(path string, c hookConfig) error {
 	b, err := json.Marshal(c)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(b, '\n'), 0o600); err != nil {
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp") // 0600
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmp := f.Name()
+	_, werr := f.Write(append(b, '\n'))
+	cerr := f.Close()
+	if werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Rename(tmp, path)
+	}
+	if werr != nil {
+		_ = os.Remove(tmp)
+	}
+	return werr
 }
 
 // readHookConfig reads what the daemon recorded.

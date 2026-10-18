@@ -79,6 +79,9 @@ const (
 	envLabelsFile  = "MUSTER_MIRROR_LABELS_FILE"
 	envPaneMapDir  = "MUSTER_MIRROR_PANE_MAP_DIR"
 	envSnippets    = "MUSTER_MIRROR_SNIPPETS_FILE"
+	// envWriteHookConfig: record this daemon's URL and token file for
+	// `muster-mirror ask` (hookconfig.go). Set by the managed service only.
+	envWriteHookConfig = "MUSTER_MIRROR_WRITE_HOOK_CONFIG"
 )
 
 func main() {
@@ -129,6 +132,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	allowHTTP := fs.Bool("allow-http", envBool(envAllowHTTP), "TESTS AND LOCAL DEVELOPMENT ONLY: permit a plain http:// muster URL, which sends the token in cleartext ("+envAllowHTTP+")")
 	labelsFile := fs.String("labels-file", getenv(envLabelsFile), "JSON object {\"<session>\": \"<codename>\"}: muster shows such a session as <codename>:<active window index> instead of its name; unreadable or invalid = no labels, logged, never fatal ("+envLabelsFile+")")
 	paneMapDir := fs.String("pane-map-dir", getenv(envPaneMapDir), "directory of per-pane Claude Code records (claude-p<N>.json for pane %N, written by a hook on every event) that the rendered view resolves a pane's transcript from FIRST, each validated against the process in the pane; empty = not consulted ("+envPaneMapDir+")")
+	writeHook := fs.Bool("write-hook-config", envBool(envWriteHookConfig), "record this daemon's URL and token file (never the token) for `muster-mirror ask`, in "+defaultHookConfig+" ("+envHookConfig+"); for the host's managed service only — an ad-hoc daemon must not repoint the hook ("+envWriteHookConfig+")")
 	snippetsFile := fs.String("snippets-file", getenv(envSnippets), "JSON array of {\"trigger\", \"label\", \"body\"}: the prewritten messages muster's message bar offers after `:`; re-read when it changes; missing or invalid = none, never fatal (default "+mirrorhost.DefaultSnippetsFile()+"; "+envSnippets+")")
 	catalog := fs.Bool("catalog", false, "print the composer menu's catalog this host would report for a pane whose working directory is the current one — commands, skills (source and name) and snippet triggers — and exit")
 	list := fs.Bool("list", false, "print the sessions this host would register, and exit (a labelled session's line ends in a label=<label> column)")
@@ -257,9 +261,9 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	}
 	logger.Printf("muster-mirror %s: host %s → %s, %s", buildRevision, *host, *url, mode)
 	// Record where muster is for `muster-mirror ask` (hookconfig.go), whose
-	// Claude Code hook does not inherit this service's environment. Not in a
-	// browser-test build, whose fake host must never repoint the real hook.
-	if e2eBackend == nil {
+	// Claude Code hook does not inherit this service's environment — only when
+	// told to (the managed service), and never in a browser-test build.
+	if *writeHook && e2eBackend == nil {
 		hc := hookConfig{URL: *url, AllowHTTP: *allowHTTP}
 		if *tokenFile != "" {
 			if abs, err := filepath.Abs(expandHome(*tokenFile)); err == nil {

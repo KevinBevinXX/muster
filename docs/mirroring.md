@@ -215,13 +215,21 @@ Claude Code `settings.json`, with no flags:
 ```
 
 It needs no flags because it uses what the host's `muster-mirror` service runs
-with. A Claude Code hook does not inherit that service's environment, so when
-`muster-mirror` starts it writes its URL and token file path (never the token)
-to `~/.muster/mirror-hook.json` (`MUSTER_MIRROR_HOOK_CONFIG`). The hook reads
-that file. With no recorded token file it reads `~/.muster/mirror-token`. A
-flag (`-url`, `-token-file`) or the matching environment variable always wins.
-If the token file cannot be read, the hook writes one line to stderr, which
-appears in Claude Code's debug log, and leaves the question to the terminal.
+with. A Claude Code hook does not inherit that service's environment, so the
+service runs `muster-mirror` with `MUSTER_MIRROR_WRITE_HOOK_CONFIG=1` (or
+`-write-hook-config`). The daemon then writes its URL and token file path
+(never the token) to `~/.muster/mirror-hook.json` (`MUSTER_MIRROR_HOOK_CONFIG`)
+when it starts. Only a daemon started that way writes the file, so an ad-hoc or
+development `muster-mirror` never repoints the hook. The hook reads the file
+when it has no `-url` and no `MUSTER_MIRROR_URL`. It then uses the recorded
+token file, or `~/.muster/mirror-token` when none is recorded.
+
+🔴 **The recorded token goes only to the recorded URL.** A hook given a URL by
+`-url` or `MUSTER_MIRROR_URL` must also be given its own token (`-token-file`,
+`MUSTER_MIRROR_TOKEN_FILE` or `MUSTER_MIRROR_TOKEN`); otherwise it leaves the
+question to the terminal. If the token file cannot be read, the hook writes one
+line to stderr, which appears in Claude Code's debug log, and leaves the question
+to the terminal.
 
 The hook does not replace any `PermissionRequest` hook you already have, such as an
 approval router. The `PreToolUse` hook runs first. When it answers, the call is
@@ -253,9 +261,11 @@ How it works:
   its card says the session stopped waiting (the hook was stopped, or lost
   muster). When the hook gives up, it first asks muster to withdraw the
   question and reads what muster says: answers you gave just before are still
-  delivered. The one case it cannot cover is a network cut that lasts past both
-  sides' limits. Then muster may have taken an answer in the last 30 seconds
-  that the hook never received, and the terminal shows the picker.
+  delivered. Two cases are not covered. One is a network cut that lasts past both
+  sides' limits. The other is a hook killed while a proxy in front of muster
+  keeps its last poll open. In both, muster can take an answer, for up to one
+  poll plus 30 seconds, that no hook collects, and the terminal shows the
+  picker.
 - Answering has the same rules as sending: you must own the host, the host must
   be `-interactive`, and your sign-in must be recent. A read-only host's hook
   does not hold the call at all.

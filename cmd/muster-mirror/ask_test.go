@@ -175,8 +175,13 @@ func TestAskDefaultsToTheHostsTokenPath(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, ".muster", "mirror-token"), []byte("mmt_default\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// The URL is the recorded one (with no recorded token file): the token
+	// is the host's default file.
+	if err := writeHookConfig(filepath.Join(home, ".muster", "mirror-hook.json"), hookConfig{URL: srv.URL, AllowHTTP: true}); err != nil {
+		t.Fatal(err)
+	}
 	var out bytes.Buffer
-	runAsk([]string{"-url", srv.URL, "-allow-http"}, env(nil), bytes.NewReader(askPayload(t)), &out, &bytes.Buffer{})
+	runAsk(nil, env(nil), bytes.NewReader(askPayload(t)), &out, &bytes.Buffer{})
 	if len(seen) != 1 || seen[0] != "Bearer mmt_default" {
 		t.Fatalf("tokens sent %q, want the default path's", seen)
 	}
@@ -187,8 +192,11 @@ func TestAskDefaultsToTheHostsTokenPath(t *testing.T) {
 func TestAskSaysWhichTokenFileItCannotRead(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	if err := writeHookConfig(filepath.Join(home, ".muster", "mirror-hook.json"), hookConfig{URL: "https://m.example"}); err != nil {
+		t.Fatal(err)
+	}
 	var out, errb bytes.Buffer
-	code := runAsk([]string{"-url", "https://m.example"}, env(nil), bytes.NewReader(askPayload(t)), &out, &errb)
+	code := runAsk(nil, env(nil), bytes.NewReader(askPayload(t)), &out, &errb)
 	want := filepath.Join(home, ".muster", "mirror-token")
 	if code != 0 || out.Len() != 0 || !strings.Contains(errb.String(), "cannot read the mirror token file") || !strings.Contains(errb.String(), "mirror-token") {
 		t.Fatalf("exit %d stdout %q stderr %q (want a line naming %s)", code, out.String(), errb.String(), want)
@@ -228,7 +236,7 @@ func TestTheDaemonRecordsItsConfigForTheHook(t *testing.T) {
 		}
 		cancel()
 	}()
-	if rc, _, errs := runWith(t, map[string]string{envURL: refuse.URL, envAllowHTTP: "1", envTokenFile: tok, envHost: "laptop"}); rc == 2 {
+	if rc, _, errs := runWith(t, map[string]string{envURL: refuse.URL, envAllowHTTP: "1", envTokenFile: tok, envHost: "laptop", envWriteHookConfig: "1"}); rc == 2 {
 		t.Fatalf("the daemon did not start: %s", errs)
 	}
 	c, err := readHookConfig(filepath.Join(home, ".muster", "mirror-hook.json"))

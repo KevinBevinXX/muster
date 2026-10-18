@@ -28,14 +28,22 @@ import (
 // scope); Answer takes the owner of the request that answers it, and refuses an
 // entry of any other owner as not found. Nothing answers a question on its own.
 //
-// 🔴 AN ANSWER IS TAKEN ONLY WHILE THE HOOK IS STILL WAITING FOR IT. muster
-// must never say "sent to Claude" for answers no hook will collect. So a
+// 🔴 AN ANSWER IS TAKEN ONLY WHILE THE HOOK APPEARS TO BE WAITING FOR IT. A
 // question is ALIVE only while its hook has a poll in flight or polled within
 // PollGrace; past that it is withdrawn (Reason ReasonStopped: the hook was
 // killed, or lost muster) and an answer is refused. The other half is the
 // hook's: before it gives up it withdraws the question and reads the state the
 // withdraw returns — answers that arrived in that window are still delivered
 // (hook.go).
+//
+// ⚠ WHAT THIS DOES NOT GUARANTEE. "Alive" is muster's view of the poll, not
+// the hook process. A killed hook's in-flight poll ends only when muster sees
+// its connection close; a proxy in front of muster that does not pass the
+// client's disconnect on keeps that poll open to its own end, so a killed hook
+// can look alive for up to one long-poll (the server caps it at 25 s) plus
+// PollGrace — and an answer taken in that span says "sent to Claude" though no
+// hook collects it (the terminal shows its picker). Likewise a network cut
+// longer than both sides' limits (the hook's give-up, PollGrace).
 
 // State is where a question is.
 type State string
