@@ -609,10 +609,11 @@ func (f *attnFixture) setWindows(status string) {
 
 // TestAWaitingSessionIsPushedOncePerEpisode: a host's first observation in
 // this process seeds its waiting window SILENTLY (a restart re-notifies
-// nothing); a window that starts waiting later is pushed once, however many
-// nudges follow, and cleared when it stops; waiting again within
-// attentionRepushAfter of its last push is the same episode (no push); after
-// it, a new one (pushed).
+// nothing), and the seed counts as that episode's push: stopping and waiting
+// again within attentionRepushAfter is not pushed. A window that starts
+// waiting after that is pushed once, however many nudges follow, and cleared
+// when it stops; waiting again within attentionRepushAfter of its last push is
+// the same episode (no push); after it, a new one (pushed).
 func TestAWaitingSessionIsPushedOncePerEpisode(t *testing.T) {
 	f := newAttnFixture(t)
 	clock := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
@@ -624,34 +625,37 @@ func TestAWaitingSessionIsPushedOncePerEpisode(t *testing.T) {
 		f.srv.BroadcastAgentsChangedFor(1)
 		f.srv.WaitForPushes()
 	}
+	cycle := func() { // busy, then waiting again (nudged twice)
+		f.setWindows(mirror.StatusBusy)
+		nudge()
+		f.setWindows(mirror.StatusWaiting)
+		nudge()
+		nudge()
+	}
 	nudge() // the host's first observation: @1 is already waiting
 	if got := f.pushes(); len(got) != 0 {
 		t.Fatalf("the first observation pushed %v", got)
 	}
-	f.setWindows(mirror.StatusBusy)
-	nudge()
-	f.setWindows(mirror.StatusWaiting)
-	nudge()
-	nudge()
-	if got := f.pushes(); len(got) != 2 || got[0] != "resolved "+tag || got[1] != "attention "+tag {
-		t.Fatalf("seeded, stopped, waiting again: %v", got)
+	cycle()
+	if got := f.pushes(); len(got) != 1 || got[0] != "resolved "+tag {
+		t.Fatalf("seeded, stopped, waiting again within %s: %v", attentionRepushAfter, got)
+	}
+	// Past the seed's window: a new episode, pushed once.
+	clock = clock.Add(attentionRepushAfter + time.Minute)
+	cycle()
+	if got := f.pushes(); len(got) != 3 || got[1] != "resolved "+tag || got[2] != "attention "+tag {
+		t.Fatalf("a re-entry after the seed's window: %v", got)
 	}
 	// Busy and back within the re-push window: cleared, not pushed again.
 	clock = clock.Add(time.Minute)
-	f.setWindows(mirror.StatusBusy)
-	nudge()
-	f.setWindows(mirror.StatusWaiting)
-	nudge()
-	if got := f.pushes(); len(got) != 3 || got[2] != "resolved "+tag {
+	cycle()
+	if got := f.pushes(); len(got) != 4 || got[3] != "resolved "+tag {
 		t.Fatalf("a re-entry within %s: %v", attentionRepushAfter, got)
 	}
 	// After it: a new episode.
 	clock = clock.Add(attentionRepushAfter)
-	f.setWindows(mirror.StatusBusy)
-	nudge()
-	f.setWindows(mirror.StatusWaiting)
-	nudge()
-	if got := f.pushes(); len(got) != 5 || got[4] != "attention "+tag {
+	cycle()
+	if got := f.pushes(); len(got) != 6 || got[5] != "attention "+tag {
 		t.Fatalf("a re-entry after %s: %v", attentionRepushAfter, got)
 	}
 	// A restart (this process's attention state gone) with @1 still waiting:
@@ -659,7 +663,7 @@ func TestAWaitingSessionIsPushedOncePerEpisode(t *testing.T) {
 	f.srv.attention = attentionState{}
 	nudge()
 	nudge()
-	if got := f.pushes(); len(got) != 5 {
+	if got := f.pushes(); len(got) != 6 {
 		t.Fatalf("after a restart: %v", got)
 	}
 }

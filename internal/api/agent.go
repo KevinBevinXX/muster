@@ -147,15 +147,28 @@ func (s *Server) handleAgentTaskStatus(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	// …nor move a task OUT of complete (agentStatusRefusal, the one rule).
-	if cur, err := s.ext.Notes.Get(r.Context(), id); err == nil {
-		if why := agentStatusRefusal(cur.Status, body.Status); why != "" {
-			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": why})
+	// …nor move a task OUT of complete (agentStatusRefusal, the one rule). The
+	// read FAILS CLOSED: a task whose status cannot be read is not written.
+	cur, err := s.ext.Notes.Get(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "task not found"})
 			return
 		}
+		s.logger.Printf("agent: read task %d before a status write: %v", id, err)
+		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not read the task"})
+		return
 	}
-	note, err := s.setNoteStatus(r.Context(), writerAgentRoute, id, body.Status)
+	if why := agentStatusRefusal(cur.Status, body.Status); why != "" {
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": why})
+		return
+	}
+	note, err := s.setNoteStatus(notes.ForAgent(r.Context()), writerAgentRoute, id, body.Status)
 	if err != nil {
+		if errors.Is(err, notes.ErrCompleteLocked) {
+			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": agentStatusRefusal(notes.StatusComplete, body.Status)})
+			return
+		}
 		if errors.Is(err, pgx.ErrNoRows) {
 			s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "task not found"})
 			return
@@ -227,7 +240,7 @@ func orEmptyJSON(s string) string {
 
 // agentSystemPrompt is the worker's system prompt for the tool loop. The tools
 // carry their own schemas; this frames when to use them.
-const agentSystemPrompt = `You are a muster worker agent. You have native tools to read and update YOUR assigned task. Use them: call agent_get_task to read your task before starting; agent_set_task_status to set "in_progress" when you begin and "ready_for_review" when done (you CANNOT set "complete" — only the operator/human can); agent_comment_task to post progress notes. Then do the work.`
+const agentSystemPrompt = `You are a muster worker agent. You have native tools to read and update YOUR assigned task. Use them: call agent_get_task to read your task before starting; agent_set_task_status to set "in_progress" when you begin and "ready_for_review" when done (you CANNOT set "complete", and you cannot change a task once it is complete — only the operator/human can; if you think a completed task needs reopening, ask with attention_ask); agent_comment_task to post progress notes. Then do the work.`
 
 // agentTool is one entry of muster's ONE agent tool registry.
 //
@@ -564,7 +577,10 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		if why := agentStatusRefusal(cur.Status, in.Status); why != "" {
 			return toolErr("%s", why)
 		}
-		n, err := s.setNoteStatus(ctx, writerAgentTool, *a.NoteID, in.Status)
+		n, err := s.setNoteStatus(notes.ForAgent(ctx), writerAgentTool, *a.NoteID, in.Status)
+		if errors.Is(err, notes.ErrCompleteLocked) {
+			return toolErr("%s", agentStatusRefusal(notes.StatusComplete, in.Status))
+		}
 		if err != nil {
 			return toolErr("could not set status: %v", err)
 		}

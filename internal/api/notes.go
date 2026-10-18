@@ -1550,9 +1550,25 @@ func (s *Server) handleAPITaskStatus(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
 		return
 	}
-	note, err := s.applyTaskStatus(r.Context(), writerMachineAPI, id, strings.TrimSpace(body.Status))
+	status := strings.TrimSpace(body.Status)
+	ctx := r.Context()
+	// 🔴 AN AGENT CALLER — the chief included, asserting its name through the
+	// service credential — obeys the ONE agent rule (agentStatusRefusal): never
+	// into complete, never out of it, the latter decided by the row itself
+	// (notes.ForAgent). The operator's hook token, a personal token and an
+	// attributed service that is not an agent are unchanged.
+	if actor, ok := serviceActorFromContext(ctx); ok && s.actorIsAgent(ctx, actor) {
+		if notes.ValidStatus(status) && !notes.StatusAllowedForAgent(status) {
+			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": agentStatusRefusal("", status)})
+			return
+		}
+		ctx = notes.ForAgent(ctx)
+	}
+	note, err := s.applyTaskStatus(ctx, writerMachineAPI, id, status)
 	if err != nil {
 		switch {
+		case errors.Is(err, notes.ErrCompleteLocked):
+			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": agentStatusRefusal(notes.StatusComplete, status)})
 		case errors.Is(err, errInvalidStatus):
 			s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid or missing status"})
 		case errors.Is(err, pgx.ErrNoRows):
@@ -2078,4 +2094,25 @@ func (s *Server) handleNoteAttachment(w http.ResponseWriter, r *http.Request) {
 // morphs into #notes-list.
 func (s *Server) renderNotesPanel(w http.ResponseWriter, r *http.Request) {
 	s.handleNotesContent(w, r)
+}
+
+// actorIsAgent reports whether a service caller's asserted name is one of the
+// principal's agents (its slug or its display name — the chief asserts
+// either). A list that cannot be read answers true: the agent rule is the
+// stricter one, so it fails closed.
+func (s *Server) actorIsAgent(ctx context.Context, actor string) bool {
+	if s.ext.Agents == nil || strings.TrimSpace(actor) == "" {
+		return false
+	}
+	list, err := s.ext.Agents.List(ctx)
+	if err != nil {
+		s.logger.Printf("notes: who is %q: %v", actor, err)
+		return true
+	}
+	for _, a := range list {
+		if strings.EqualFold(a.Name, actor) || (a.DisplayName != "" && strings.EqualFold(strings.TrimSpace(a.DisplayName), strings.TrimSpace(actor))) {
+			return true
+		}
+	}
+	return false
 }

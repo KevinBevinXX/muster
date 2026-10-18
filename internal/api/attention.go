@@ -104,7 +104,14 @@ type attentionState struct {
 	// by draft id: what an expiry or a supersede clears (attention_drafts.go).
 	drafts       map[int64]draftNote
 	draftsSeeded bool
+	// diffMu serialises attentionMirrorChanged's read-and-commit, so a
+	// recompute that read an older hub state can never commit after a newer one.
+	diffMu sync.Mutex
 }
+
+// attentionDiffHook, when set (tests), runs between a recompute's read of the
+// hub and its commit.
+var attentionDiffHook func()
 
 // wakeFor is owner's wake-up signal.
 func (st *attentionState) wakeFor(owner int64) *draftSignal {
@@ -366,15 +373,23 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 	if s.ext.Mirror == nil || owner <= 0 {
 		return
 	}
+	s.attention.diffMu.Lock()
+	defer s.attention.diffMu.Unlock()
 	now := map[string]attentionItem{}
-	hosts := map[string]bool{}
+	hosts := map[string]bool{}    // online now
+	retained := map[string]bool{} // disconnected, still listed (offlineRetention)
 	for _, h := range s.ext.Mirror.Hosts(s.attentionPrincipal(context.Background(), owner)) {
 		if h.Online {
 			hosts[h.Host] = true
+		} else {
+			retained[h.Host] = true
 		}
 	}
 	for _, it := range s.waitingSessions(s.attentionPrincipal(context.Background(), owner)) {
 		now[it.Key] = it
+	}
+	if attentionDiffHook != nil {
+		attentionDiffHook()
 	}
 	at := s.now()
 	var push []attentionItem
@@ -391,13 +406,30 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 		seen = map[string]bool{}
 		s.attention.seenHosts[owner] = seen
 	}
+	// 🔴 A HOST THAT DROPPED (a blip, a restart of its muster-mirror) is not a
+	// session that stopped waiting: its items are KEPT while the hub still lists
+	// it as disconnected — no clear — and it is forgotten as seen, so when it
+	// comes back its waiting sessions are seeded silently again.
+	for k, it := range before {
+		if retained[it.host] && !hosts[it.host] {
+			now[k] = it
+		}
+	}
+	for h := range seen {
+		if !hosts[h] {
+			delete(seen, h)
+		}
+	}
 	s.attention.waiting[owner] = now
 	for k, it := range now {
 		if _, ok := before[k]; ok {
 			continue
 		}
 		if !seen[it.host] {
-			continue // the host's first observation: seed, do not push
+			// The host's first observation: seed, do not push — and stamp it, so
+			// the re-push window covers a seeded session too.
+			s.attention.pushedAt[k] = at
+			continue
 		}
 		if last, ok := s.attention.pushedAt[k]; ok && at.Sub(last) < attentionRepushAfter {
 			continue // the same episode, back again

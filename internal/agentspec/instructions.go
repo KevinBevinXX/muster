@@ -99,7 +99,9 @@ muster agent task status in_progress
 ` + "```" + `
 Allowed values you may set: ` + "`open`, `in_progress`, `ready_for_review`" + `.
 You CANNOT set ` + "`complete`" + ` — only the operator/human marks a task done. The command
-refuses it before sending, and the server refuses it too.
+refuses it before sending, and the server refuses it too. Nor can you change a task once
+it is complete: if you think it needs reopening, ask the operator with the
+` + "`attention_ask`" + ` tool instead.
 
 Convention: set ` + "`in_progress`" + ` when you begin, and ` + "`ready_for_review`" + ` with a summary
 comment when you finish.

@@ -27,10 +27,12 @@ one per new question or newly waiting session, withdrawn when the item is
 answered, dismissed, expires or stops waiting. Each item has one tag, so a
 notification is replaced, never stacked. A session is not re-notified:
 
-- when muster restarts (or a host reconnects): the first time this process
-  sees a host, its sessions that are already waiting are recorded silently;
-- when it goes waiting again within 2 minutes of its last notification (busy
-  and back is one episode).
+- when muster restarts or a host reconnects: the first time this process sees
+  a host — and again each time it comes back after disconnecting — its
+  sessions that are already waiting are recorded silently. While a host is
+  briefly disconnected its items stay (no clear);
+- when it goes waiting again within 2 minutes of its last notification or of
+  being recorded (busy and back is one episode).
 
 A reply draft keeps its own `plugin` notification, which is withdrawn when you
 decide the draft, when a newer draft for the same message supersedes it, and
@@ -49,7 +51,7 @@ claude-code agent — whenever muster has a database.
 | `attention_ask {question, options?, timeout_seconds?}` | Files a question. `options` (at most 10) become buttons; you can still answer in free text. Open for 24 hours by default (60 s to 7 days), then it expires. Returns `{id, status: "pending"}`. |
 | `attention_wait {id, wait_seconds?}` | Blocks until the ask is answered, cancelled or expired, or `wait_seconds` (default 240, at most 600) pass — then answers `status: "pending"` and the agent calls it again. `wait_seconds: 0` reads it without waiting. At most 2 waits per agent and 20 per owner are open at once; past that a wait is refused at once. |
 | `attention_cancel {id}` | Withdraws an open ask. |
-| `tasks_list {status?}`, `task_get {id}`, `task_comment {id, body}`, `task_set_status {id, status}` | The agent's OWN tasks: the one it was dispatched for and the ones it created (no agent tool creates a task today, so a worker's is its dispatched task). The chief's: the owner's whole board. Any other task answers exactly what a task that does not exist answers. An agent may set `open`, `in_progress` or `ready_for_review` — never `complete`, and never on a task that is already complete. |
+| `tasks_list {status?}`, `task_get {id}`, `task_comment {id, body}`, `task_set_status {id, status}` | The agent's OWN task: the one it was dispatched for. The chief's: the owner's whole board. Any other task answers exactly what a task that does not exist answers. An agent may set `open`, `in_progress` or `ready_for_review` — never `complete`, and never on a task that is already complete (checked in the update itself). The same rule holds on `PATCH /api/tasks/{id}/status` when the caller is an agent (the chief asserting its name through the service credential); the operator's tokens are unchanged. |
 
 An ask belongs to the agent that raised it: another agent (even the same
 owner's) reads "no such ask" for it.
