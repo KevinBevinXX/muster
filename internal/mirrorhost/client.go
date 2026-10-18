@@ -405,7 +405,7 @@ type listing struct {
 func (l listing) equal(o listing) bool {
 	return slices.Equal(l.sessions, o.sessions) && slices.Equal(l.claude, o.claude) &&
 		maps.Equal(l.labels, o.labels) && maps.Equal(l.activity, o.activity) &&
-		(l.windows == nil) == (o.windows == nil) && slices.Equal(l.windows, o.windows)
+		(l.windows == nil) == (o.windows == nil) && slices.EqualFunc(l.windows, o.windows, mirror.Window.Equal)
 }
 
 // msg is the listing as a hello or sessions message.

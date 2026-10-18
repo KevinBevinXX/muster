@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -57,7 +58,9 @@ func TestParseWindowsIsOneEntryPerWindowFromItsActivePane(t *testing.T) {
 		{Session: "scratch2", ID: "@7", Index: 3, Active: true, Pane: "%21", PanePID: 4101, Activity: 1791903900, Command: "claude"},
 		{Session: "scratch2", ID: "@9", Index: 8, Pane: "%31", PanePID: 4104, Activity: 1791903650, Command: "opencode"},
 	}
-	if !slices.EqualFunc(got, want, func(a, b WindowInfo) bool { return a == b }) {
+	// The non-active panes are checked by TestParseWindowsKeepsEveryPaneOfASplit.
+	strip := func(w WindowInfo) WindowInfo { w.panes = nil; return w }
+	if !slices.EqualFunc(got, want, func(a, b WindowInfo) bool { return reflect.DeepEqual(strip(a), strip(b)) }) {
 		t.Fatalf("parseWindows =\n  %+v\nwant\n  %+v", got, want)
 	}
 }
@@ -161,7 +164,7 @@ func TestWireWindowsLabelsByCodenameAndWindowIndex(t *testing.T) {
 		{Session: "scratch2", ID: "@4", Index: 1, Label: "Gold:1", Activity: 1791903780, Command: "zsh"},
 		{Session: "scratch2", ID: "@7", Index: 8, Active: true, Label: "Gold:8", Activity: 1791903960, Claude: true, Command: "claude"},
 	}
-	if !slices.Equal(got, want) {
+	if !slices.EqualFunc(got, want, mirror.Window.Equal) {
 		t.Fatalf("WireWindows =\n  %+v\nwant\n  %+v", got, want)
 	}
 	for _, w := range WireWindows(raw, nil, false, now) {
@@ -435,7 +438,7 @@ func TestAPerWindowHostRegistersEveryWindowFromOneReadPerRefresh(t *testing.T) {
 		{Session: "scratch2", ID: "@4", Index: 1, Label: "Gold:1", Command: "zsh"},
 		{Session: "scratch2", ID: "@7", Index: 8, Active: true, Label: "Gold:8", Claude: true, Command: "claude", ClaudeSession: "g7"},
 		{Session: "solo", ID: "@9", Index: 0, Active: true, Command: "vim"},
-	}; !slices.Equal(got, want) {
+	}; !slices.EqualFunc(got, want, mirror.Window.Equal) {
 		t.Fatalf("hello.Windows =\n  %+v\nwant\n  %+v", got, want)
 	}
 	// What a muster from before windows is told: sessions, each by its active window.
@@ -622,7 +625,11 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 				// The longest status (the send queue's): "waiting", and the longest
 				// time the wire lets through (no bound but int64's).
 				// And the longest Claude session id the wire keeps (64 bytes).
-				Claude: &ClaudePane{Status: mirror.StatusWaiting, StatusSince: math.MaxInt64, Gen: strings.Repeat("f", 64)}})
+				Claude: &ClaudePane{Status: mirror.StatusWaiting, StatusSince: math.MaxInt64, Gen: strings.Repeat("f", 64)},
+				// Every window with its other panes' Claude sessions at their
+				// per-window bound; the list-wide bound (MaxOtherClaude) keeps
+				// the first windows' alone.
+				Others: otherClaudeAtBound(i)})
 		}
 		return out
 	}
@@ -642,6 +649,13 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 		}
 		if want := min(n, mirror.MaxWindows); len(l.windows) != want {
 			t.Fatalf("a host with %d windows registers %d, want %d", n, len(l.windows), want)
+		}
+		others := 0
+		for _, w := range l.windows {
+			others += len(w.OtherClaude)
+		}
+		if others != mirror.MaxOtherClaude {
+			t.Fatalf("instrument check: %d other-pane sessions on the wire, want the bound %d", others, mirror.MaxOtherClaude)
 		}
 		for _, w := range l.windows {
 			if w.Label == "" || w.Command == "" || !w.Claude || w.Status != mirror.StatusWaiting || w.StatusSince != math.MaxInt64 || len(w.ClaudeSession) != 64 {
@@ -711,4 +725,57 @@ func itoa(i int) string {
 		b = append([]byte{byte('0' + i%10)}, b...)
 	}
 	return string(b)
+}
+
+// otherClaudeAtBound is MaxOtherClaudePerWindow distinct 64-byte Claude
+// session ids for window i.
+func otherClaudeAtBound(i int) []ClaudePane {
+	var out []ClaudePane
+	for j := 0; j < mirror.MaxOtherClaudePerWindow; j++ {
+		id := itoa(i) + "x" + itoa(j)
+		out = append(out, ClaudePane{Gen: id + strings.Repeat("e", 64-len(id))})
+	}
+	return out
+}
+
+// TestParseWindowsKeepsEveryPaneOfASplit: a window's NON-active panes are kept
+// beside its active one (what Windows locates Claude sessions in, so one in a
+// split resolves), each in its own window; a malformed one is dropped.
+func TestParseWindowsKeepsEveryPaneOfASplit(t *testing.T) {
+	out := "0\t@3\t1\t1\t%9\t5009\t1\t1\tclaude\twork\n" +
+		"1\t@3\t1\t1\t%7\t5007\t1\t1\tzsh\twork\n" +
+		"0\t@3\t1\t1\t%10\t5010\t1\t1\tvim\twork\n" +
+		"0\t@4\t2\t0\t%11\t5011\t1\t1\tzsh\twork\n" +
+		"1\t@4\t2\t0\t%12\t5012\t1\t1\tzsh\twork\n" +
+		"0\t@3\t1\t1\tnotapane\t5013\t1\t1\tzsh\twork\n"
+	got := parseWindows(out)
+	if len(got) != 2 || got[0].Pane != "%7" || got[1].Pane != "%12" {
+		t.Fatalf("%+v", got)
+	}
+	if !reflect.DeepEqual(got[0].panes, []pane{{Session: "work", ID: "%9", PID: 5009}, {Session: "work", ID: "%10", PID: 5010}}) ||
+		!reflect.DeepEqual(got[1].panes, []pane{{Session: "work", ID: "%11", PID: 5011}}) {
+		t.Fatalf("other panes: %+v / %+v", got[0].panes, got[1].panes)
+	}
+}
+
+// TestASplitPaneNeverTakesItsWindowsClaude: the active pane and a split pane
+// of one window run Claude Code in ONE directory with no sessions files, so
+// both GUESS the same transcript. The active pane keeps it — its window's
+// Claude flag and rendered view, as before split panes were looked at — and
+// the ambiguous split pane is left out.
+func TestASplitPaneNeverTakesItsWindowsClaude(t *testing.T) {
+	proc, home := newFakeProc(t), newFakeHome(t)
+	const cwd = "/work/repo"
+	proc.add(10, 1, "claude", cwd, "claude")
+	proc.add(20, 1, "claude", cwd, "claude")
+	guess := home.transcript(cwd, "the-newest-here", time.Now())
+	loc := ClaudeLocator{Proc: proc.root, Home: home.root}
+	ws := []WindowInfo{{Session: "work", ID: "@1", Pane: "%1", PanePID: 10, panes: []pane{{Session: "work", ID: "%2", PID: 20}}}}
+	attachClaude(ws, loc.LocatePanes)
+	if ws[0].Claude == nil || ws[0].Claude.Transcript != guess {
+		t.Fatalf("the active pane lost its Claude: %+v", ws[0].Claude)
+	}
+	if len(ws[0].Others) != 0 {
+		t.Fatalf("the ambiguous split pane was kept: %+v", ws[0].Others)
+	}
 }

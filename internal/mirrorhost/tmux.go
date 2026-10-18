@@ -215,3 +215,24 @@ func (p *ptyTerm) Close() error {
 	})
 	return nil
 }
+
+// ServerSocketer is a backend that can name its tmux server's socket — what a
+// caller's $TMUX must name for the local MCP endpoint (MCPProxy) to believe its
+// pane.
+type ServerSocketer interface {
+	ServerSocket(ctx context.Context) (string, error)
+}
+
+// ServerSocketOf is b's ServerSocketer.
+func ServerSocketOf(b Backend) (ServerSocketer, bool) { return capabilityOf[ServerSocketer](b) }
+
+// ServerSocket is the socket path of the server this backend lists.
+func (t Tmux) ServerSocket(ctx context.Context) (string, error) {
+	cmd := exec.CommandContext(ctx, t.bin(), t.query("display-message", "-p", "#{socket_path}")...)
+	cmd.Env = tmuxEnv()
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("tmux display-message: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}

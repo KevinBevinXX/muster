@@ -203,6 +203,7 @@ POST /logout
 POST /mcp
 POST /mirror/ask
 POST /mirror/confirm-send
+POST /mirror/mcp
 POST /mirror/terminal/scroll
 POST /mirror/terminal/send
 POST /mirror/view/ask

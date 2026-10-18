@@ -218,6 +218,16 @@ type Extensions struct {
 	// migration 0025). nil (no database): the attention tools are not offered,
 	// /attention answers 404, and no link is drawn.
 	Attention attention.Store
+	// MirrorTokens authenticates a mirror host's token for the mirrored
+	// sessions' MCP door (mirror_mcp.go) — *mirror.PGStore, the same table
+	// /mirror/connect reads. nil: POST /mirror/mcp answers 404.
+	MirrorTokens MirrorTokenAuth
+}
+
+// MirrorTokenAuth resolves a presented mirror token to its row (ErrBadToken
+// for none, a revoked one included). It runs under the system scope.
+type MirrorTokenAuth interface {
+	Authenticate(ctx context.Context, token string) (mirror.Token, error)
 }
 
 // SendQueue is the send queue's store as this package consumes it:

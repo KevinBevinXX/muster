@@ -132,8 +132,10 @@ func clientAddr(r *http.Request) string {
 // 🔴 THE TOKEN IS THE ONLY DOOR, AND IT IS A MIRROR TOKEN OR NOTHING. The route
 // is not behind the browser session or the hook token: a host is neither. It is
 // looked up by hash in mirror_tokens and nowhere else, so the hook, service and
-// agent tokens are refused here, and a mirror token opens no other route (no
-// other tier consults this table).
+// agent tokens are refused here. A mirror token also opens the AskUserQuestion
+// hook's routes (/mirror/ask, internal/api's mirror_ask.go) and POST
+// /mirror/mcp (mirror_mcp.go): the attention and task tools of that host's own
+// Claude Code sessions — asks, and only the tasks those sessions created.
 //
 // 🔴 THE LOOKUP RUNS UNDER authz.System: mirror_tokens is under row-level
 // security and nobody is known until the token is found. What the token yields

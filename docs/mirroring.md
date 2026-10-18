@@ -38,7 +38,8 @@ Every flag can also be set as a `MUSTER_MIRROR_*` variable (the full list is in
 [configuration.md](configuration.md#muster-mirror-host-agent)). Use the variables
 when running under a systemd user unit, so the token never appears on a command
 line. If muster sits behind an auth proxy, `GET /mirror/connect` must bypass it:
-the route checks its own tokens.
+the route checks its own tokens. So must `POST /mirror/mcp` if you use the
+host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mirrored-claude-code-sessions)).
 
 ## What you see
 

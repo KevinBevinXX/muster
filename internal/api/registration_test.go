@@ -95,6 +95,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		FocusRetention:  time.Hour,
 		Routes:          stubRoutes{},
 		Attention:       stubAttention{},
+		MirrorTokens:    stubMirrorTokens{},
 		Routing:         &Routing{},
 		SendQueue:       stubSendQueue{},
 		// NON-ZERO on purpose: the zero value is the default.
@@ -132,6 +133,7 @@ type stubSummarizer struct{ focus.Summarizer }
 // stubRoutes satisfies plugins.RouteStore for registration only; any method call panics.
 type stubRoutes struct{ plugins.RouteStore }
 type stubAttention struct{ attention.Store }
+type stubMirrorTokens struct{ MirrorTokenAuth }
 
 // stubSendQueue satisfies SendQueue for registration only; any method call panics.
 type stubSendQueue struct{ SendQueue }

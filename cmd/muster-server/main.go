@@ -443,6 +443,8 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if cfg.Mirror && a.pool != nil {
 		mirrorSvc = mirror.NewService(mirror.NewPG(a.pool), logger)
 		ext.Mirror = mirrorSvc
+		// The mirrored sessions' MCP door (POST /mirror/mcp) checks the same tokens.
+		ext.MirrorTokens = mirror.NewPG(a.pool)
 	}
 
 	// muster-native Web Push: only with the VAPID triple AND a database (the

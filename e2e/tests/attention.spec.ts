@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test, expect } from '../lib/fixtures';
-import { attentionConnectPort, attentionPort, binDir, dsn, password, repoRoot, versionTerm } from '../lib/env';
+import { attentionConnectPort, attentionMirrorMCPPort, attentionPort, binDir, dsn, password, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 
 // THE ATTENTION QUEUE, the operator's click path, every hop real:
@@ -29,6 +29,14 @@ const agentToken = 'e2e-attn-agent-token-not-a-real-one-' + stamp;
 const mirrorBin = path.join(binDir, 'muster-mirror-e2e');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'attention-'));
 const tr = path.join(dir, sid + '.jsonl');
+// A second Claude Code session in the SAME window's other pane (a split).
+const splitSid = 'bbbbbbbb-' + stamp;
+const trSplit = path.join(dir, splitSid + '.jsonl');
+// The fake host's tmux server (cmd/muster-mirror/e2emirror.go's E2ETmuxSocket),
+// as $TMUX names it inside one of its panes.
+const fakeTMUX = '/tmp/muster-e2e-fake-tmux/default,1,0';
+const mcpSecretFile = path.join(dir, 'mcp-secret');
+const localMCP = `http://127.0.0.1:${attentionMirrorMCPPort}/mcp`;
 let server: Running | undefined;
 let mirrorProc: ChildProcess | undefined;
 let mirrorLog = '';
@@ -62,7 +70,8 @@ test.beforeAll(async () => {
   // Claude Code waiting on the person, as its sessions file says it.
   fs.writeFileSync(tr + '.status', JSON.stringify({ status: 'waiting', statusUpdatedAt: Date.now() - 30_000 }));
   const windows = path.join(dir, 'windows');
-  fs.writeFileSync(windows, `work|@1|0|1|claude|${Math.floor(Date.now() / 1000) - 60}|${tr}\n`);
+  fs.writeFileSync(trSplit, JSON.stringify({ type: 'user', message: { role: 'user', content: 'in the split' } }) + '\n');
+  fs.writeFileSync(windows, `work|@1|0|1|claude|${Math.floor(Date.now() / 1000) - 60}|${tr}|${trSplit}\n`);
   mirrorProc = spawn(mirrorBin, [], {
     env: {
       ...process.env,
@@ -72,6 +81,9 @@ test.beforeAll(async () => {
       MUSTER_MIRROR_HOST: host,
       MUSTER_MIRROR_INTERACTIVE: '1',
       MUSTER_MIRROR_E2E_WINDOWS_FILE: windows,
+      // The host's loopback MCP endpoint for its own Claude Code sessions.
+      MUSTER_MIRROR_MCP_LISTEN: `127.0.0.1:${attentionMirrorMCPPort}`,
+      MUSTER_MIRROR_MCP_SECRET_FILE: mcpSecretFile,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -173,4 +185,60 @@ test('an agent asks over MCP, the operator answers in the Attention view, and th
   // The badge is back to the waiting window alone.
   await page.goto(origin + '/tasks');
   await expect(page.locator('#attention-badge')).toHaveAttribute('data-count', '1', { timeout: 15_000 });
+});
+
+// THE MIRRORED SESSION'S half: a Claude Code session in the mirrored window
+// calls its host's LOOPBACK MCP endpoint (muster-mirror -mcp-listen) with the
+// host's local secret and its tmux pane (what ${TMUX_PANE} expands to in the
+// MCP config); the host forwards it to muster's /mirror/mcp with the host's
+// mirror token and the pane's Claude session id. The ask shows on /attention
+// as that window's, and the operator's answer reaches the session's wait.
+async function localCall(name: string, args: Record<string, unknown>, headers: Record<string, string> = {}): Promise<Response> {
+  return fetch(localMCP, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+  });
+}
+
+test('a mirrored Claude Code session asks through its host and gets the operator\'s answer', async ({ page }) => {
+  test.setTimeout(120_000);
+  const secret = fs.readFileSync(mcpSecretFile, 'utf8').trim();
+  expect((fs.statSync(mcpSecretFile).mode & 0o777).toString(8), 'the secret file is private').toBe('600');
+  const pane = '%e2e-work-@1';
+  const auth = { Authorization: 'Bearer ' + secret, 'X-Muster-Pane': pane, 'X-Muster-Tmux': fakeTMUX };
+  // Without the secret the endpoint refuses, and nothing is asked; nor from a
+  // pane of another tmux server.
+  expect((await localCall('attention_ask', { question: 'no secret?' }, { 'X-Muster-Pane': pane, 'X-Muster-Tmux': fakeTMUX })).status).toBe(401);
+  expect((await localCall('attention_ask', { question: 'other server?' }, { ...auth, 'X-Muster-Tmux': '/tmp/tmux-1/other,9,0' })).status).toBe(400);
+  // A chief tool is not on this surface.
+  const chief = (await (await localCall('attention_list', {}, auth)).json()) as { error?: { code: number } };
+  expect(chief.error?.code).toBe(-32602);
+
+  const asked = (await (await localCall('attention_ask', { question: 'Merge the schema change?', options: ['merge', 'hold'] }, auth)).json()) as {
+    result: { content: { text: string }[] };
+  };
+  const id = (JSON.parse(asked.result.content[0].text) as { id: number }).id;
+  expect(id).toBeGreaterThan(0);
+
+  await page.goto(origin + '/login');
+  await page.fill('#muster-password', password);
+  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  await page.goto(origin + '/attention');
+  const item = page.locator(`#ask-${id}`);
+  await expect(item.locator('[data-attention-text]')).toHaveText('Merge the schema change?');
+  await expect(item.locator('[data-attention-source]')).toContainText('@ ' + host);
+  const waited = localCall('attention_wait', { id, wait_seconds: 60 }, auth).then((r) => r.json());
+  await Promise.all([page.waitForURL(origin + '/attention'), item.getByRole('button', { name: 'hold' }).click()]);
+  const got = (await waited) as { result: { content: { text: string }[] } };
+  expect(JSON.parse(got.result.content[0].text)).toMatchObject({ id, status: 'answered', answer: 'hold' });
+
+  // The session in the window's OTHER pane asks too: it is this host's own.
+  const split = (await (await localCall('attention_ask', { question: 'From the split pane?' }, { ...auth, 'X-Muster-Pane': pane + '-split' })).json()) as {
+    result: { content: { text: string }[] };
+  };
+  const splitId = (JSON.parse(split.result.content[0].text) as { id: number }).id;
+  expect(splitId).toBeGreaterThan(0);
+  await page.reload();
+  await expect(page.locator(`#ask-${splitId} [data-attention-source]`)).toContainText('@ ' + host);
 });

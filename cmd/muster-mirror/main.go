@@ -3,7 +3,9 @@
 // only on the machines whose sessions muster should show, and only against a
 // muster running with MUSTER_MIRROR=1.
 //
-// It dials OUT to muster and opens no listener. Its one credential is this
+// It dials OUT to muster and opens no listener — unless -mcp-listen is set,
+// which serves a LOOPBACK-only MCP endpoint for this host's own Claude Code
+// sessions (internal/mirrorhost's MCPProxy; docs/attention.md). Its one credential is this
 // host's mirror token, minted on the muster side with
 //
 //	muster-server mirror token create <host>
@@ -79,6 +81,8 @@ const (
 	envLabelsFile  = "MUSTER_MIRROR_LABELS_FILE"
 	envPaneMapDir  = "MUSTER_MIRROR_PANE_MAP_DIR"
 	envSnippets    = "MUSTER_MIRROR_SNIPPETS_FILE"
+	envMCPListen   = "MUSTER_MIRROR_MCP_LISTEN"
+	envMCPSecret   = "MUSTER_MIRROR_MCP_SECRET_FILE"
 	// envWriteHookConfig: record this daemon's URL and token file for
 	// `muster-mirror ask` (hookconfig.go). Set by the managed service only.
 	envWriteHookConfig = "MUSTER_MIRROR_WRITE_HOOK_CONFIG"
@@ -134,6 +138,8 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	paneMapDir := fs.String("pane-map-dir", getenv(envPaneMapDir), "directory of per-pane Claude Code records (claude-p<N>.json for pane %N, written by a hook on every event) that the rendered view resolves a pane's transcript from FIRST, each validated against the process in the pane; empty = not consulted ("+envPaneMapDir+")")
 	writeHook := fs.Bool("write-hook-config", envBool(envWriteHookConfig), "record this daemon's URL and token file (never the token) for `muster-mirror ask`, in "+defaultHookConfig+" ("+envHookConfig+"); for the host's managed service only — an ad-hoc daemon must not repoint the hook ("+envWriteHookConfig+")")
 	snippetsFile := fs.String("snippets-file", getenv(envSnippets), "JSON array of {\"trigger\", \"label\", \"body\"}: the prewritten messages muster's message bar offers after `:`; re-read when it changes; missing or invalid = none, never fatal (default "+mirrorhost.DefaultSnippetsFile()+"; "+envSnippets+")")
+	mcpListen := fs.String("mcp-listen", getenv(envMCPListen), "serve muster's attention and task tools to this host's Claude Code sessions as an MCP endpoint at http://<addr>/mcp — a LOOPBACK address only, e.g. 127.0.0.1:47823; each call needs the secret in -mcp-secret-file (Authorization: Bearer ${MUSTER_MIRROR_MCP_SECRET:-}) and names its pane and tmux server with X-Muster-Pane: ${TMUX_PANE:-} and X-Muster-Tmux: ${TMUX:-}; empty = off ("+envMCPListen+")")
+	mcpSecretFile := fs.String("mcp-secret-file", or(getenv(envMCPSecret), mirrorhost.DefaultMCPSecretFile()), "the local MCP endpoint's secret, created (0600) when missing ("+envMCPSecret+")")
 	catalog := fs.Bool("catalog", false, "print the composer menu's catalog this host would report for a pane whose working directory is the current one — commands, skills (source and name) and snippet triggers — and exit")
 	list := fs.Bool("list", false, "print the sessions this host would register, and exit (a labelled session's line ends in a label=<label> column)")
 	listClaude := fs.Bool("claude", false, "with -list: print, for each WINDOW whose active pane runs Claude Code, what its rendered view would stream (one line each: session, window id, index, claude, pane, state, session id, transcript, source = pane-map|sessions|guessed, then label=<label>); per session on a backend that does not list windows")
@@ -255,6 +261,22 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
+	var mcpSettled chan struct{}
+	if *mcpListen != "" {
+		// 🔴 OPT-IN, SO NEVER FATAL: a port in use, a secret file with the wrong
+		// mode or anything else that stops the MCP endpoint is logged and the
+		// host mirrors without it — mirroring is the job this process exists for.
+		// 🔴 AND NEVER IN THE WAY: it runs on its own goroutine, so however
+		// long setting it up takes, mirroring starts now.
+		proxy := &mirrorhost.MCPProxy{URL: *url, Token: token, AllowHTTP: *allowHTTP, Logger: logger}
+		mcpSettled = make(chan struct{})
+		go func() {
+			defer close(mcpSettled)
+			if err := startMCP(ctx, *mcpListen, *mcpSecretFile, backend, proxy, logger); err != nil {
+				logger.Printf("muster-mirror: the MCP endpoint is OFF, mirroring continues without it: %v", err)
+			}
+		}()
+	}
 	mode := "read-only"
 	if *interactive {
 		mode = "INTERACTIVE (-interactive)"
@@ -287,7 +309,16 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			logger.Printf("muster-mirror: clean up stale viewer sessions: %v", err)
 		}
 	}
-	if err := c.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+	err = c.Run(ctx)
+	// Give the MCP setup a moment to settle (and say why it is off) before
+	// exiting; it never holds the exit longer than that.
+	if mcpSettled != nil {
+		select {
+		case <-mcpSettled:
+		case <-time.After(5 * time.Second):
+		}
+	}
+	if err != nil && !errors.Is(err, context.Canceled) {
 		logger.Printf("muster-mirror: %v", err)
 		return 1
 	}
@@ -374,4 +405,28 @@ func loadCodenames(path string, logger *log.Logger) map[string]string {
 	}
 	logger.Printf("muster-mirror: %d session label(s) from %s", len(codenames), path)
 	return codenames
+}
+
+// startMCP serves the local MCP endpoint (internal/mirrorhost's MCPProxy) on
+// listen until ctx ends, completing proxy with the secret and the backend's
+// window and tmux-server lookups. An error means the endpoint is not served.
+func startMCP(ctx context.Context, listen, secretFile string, backend mirrorhost.Backend, proxy *mirrorhost.MCPProxy, logger *log.Logger) error {
+	secret, err := mirrorhost.EnsureMCPSecret(secretFile)
+	if err != nil {
+		return err
+	}
+	l, err := mirrorhost.ListenMCP(listen)
+	if err != nil {
+		return err
+	}
+	proxy.Secret = secret
+	proxy.Windows, _ = mirrorhost.WindowListerOf(backend)
+	proxy.Socket, _ = mirrorhost.ServerSocketOf(backend)
+	logger.Printf("muster-mirror: MCP endpoint for this host's Claude Code sessions at http://%s/mcp (secret in %s)", l.Addr(), secretFile)
+	go func() {
+		if err := mirrorhost.ServeMCP(ctx, l, proxy); err != nil {
+			logger.Printf("muster-mirror: MCP endpoint: %v", err)
+		}
+	}()
+	return nil
 }
