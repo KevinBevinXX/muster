@@ -303,7 +303,11 @@ var isolationClasses = map[string]routeClass{
 	// and fill() puts A's mirrored host there. The tunnel door is public to
 	// the principal walk (only a mirror token opens it): B's credentials must
 	// open nothing on it and leak nothing.
-	"GET /mirror/connect":     classPublic,
+	"GET /mirror/connect": classPublic,
+	// The AskUserQuestion hook's door: like the tunnel, a mirror token only.
+	"POST /mirror/ask":        classPublic,
+	"GET /mirror/ask/{id}":    classPublic,
+	"DELETE /mirror/ask/{id}": classPublic,
 	"GET /mirror/terminal":    classMirror,
 	"GET /mirror/terminal/ws": classMirror,
 
@@ -371,6 +375,10 @@ var isolationClasses = map[string]routeClass{
 	"GET /mirror/terminal/send": classMirror,
 	// The plain confirm page's form: the same address fields, plus `kind`.
 	"POST /mirror/confirm-send": classMirror,
+	// AskUserQuestion (mirror_ask.go): the live region (address in the query)
+	// and the answers (address in the form, plus the call's tool id).
+	"GET /mirror/view/asks": classMirror,
+	"POST /mirror/view/ask": classMirror,
 	// The Rendered view composer's `/` and `:` menu data: the same address in
 	// the query; B asking for A's window's catalog must 404 before the plugin.
 	"GET /mirror/view/complete": classMirror,
@@ -1340,7 +1348,7 @@ func namesObject(route string) bool {
 	return paramRE.MatchString(route) || route == "POST /agents" || route == "POST /tasks/merge" ||
 		strings.HasPrefix(route, "GET /mirror/terminal") || strings.HasPrefix(route, "GET /mirror/view") ||
 		route == "POST /mirror/view/send" || route == "POST /mirror/terminal/send" || route == "POST /mirror/confirm-send" ||
-		route == "POST /mirror/terminal/scroll" ||
+		route == "POST /mirror/terminal/scroll" || route == "POST /mirror/view/ask" ||
 		route == "GET /send-queue" || route == "POST /send-queue" || route == "POST /send-queue/confirm" ||
 		// Focus history (0022) names its session in the query (?subject=agent:<id>),
 		// so it is held to the object routes' rules: B's answer about A's agent
@@ -1405,6 +1413,13 @@ var sideEffectControlled = map[string]string{
 	// passkey (303, gone from GoTrue), after a fresh session of B's was
 	// refused it (404, still there).
 	"POST /account/passkeys/{id}/delete": "fresh sessions: B's delete of A's passkey is refused and leaves it; A's removes it",
+	// The AskUserQuestion hook's door (mirror_ask.go) is a MIRROR TOKEN's, not
+	// a principal's, and this walk holds no mirror token. Its control is
+	// TestOnlyTheAskingHostReadsOrWithdrawsItsQuestion: the asking host's token
+	// reads and withdraws its question; another host's (the same owner's or
+	// another owner's) gets the 404 an unknown id gets, and changes nothing.
+	"GET /mirror/ask/{id}":    "mirror-token door: TestOnlyTheAskingHostReadsOrWithdrawsItsQuestion",
+	"DELETE /mirror/ask/{id}": "mirror-token door: TestOnlyTheAskingHostReadsOrWithdrawsItsQuestion",
 }
 
 // controlMarkers: a route whose owner and ghost answers share a status, where

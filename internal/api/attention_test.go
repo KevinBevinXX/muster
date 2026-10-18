@@ -28,7 +28,7 @@ func TestTheAttentionPayloadsAreWhatTheWorkerReads(t *testing.T) {
 		CreatedAt: time.Now()}
 	s.attentionNotify(1, askItem(a))
 	s.WaitForPushes()
-	s.attentionClear(1, askKey(41))
+	s.attentionClear(1, attentionAskKey(41))
 	s.WaitForPushes()
 	var got []string
 	for _, p := range pusher.to(ep("payload")) {
@@ -52,7 +52,7 @@ func TestTheAttentionMuteSilencesTheItemButNotItsClear(t *testing.T) {
 	s := New(nil, AuthConfig{}, log.New(io.Discard, "", 0))
 	s.UseExtensions(Extensions{Users: stubUsers{}, Push: push.NewService(store, pusher, push.VAPIDConfig{PublicKey: "k"}, log.New(io.Discard, "", 0))})
 	s.attentionNotify(1, askItem(attention.Ask{ID: 5, Owner: 1, Asker: attention.Asker{AgentID: 7}, Question: "q"}))
-	s.attentionClear(1, askKey(5))
+	s.attentionClear(1, attentionAskKey(5))
 	s.WaitForPushes()
 	got := pusher.to(ep("muted"))
 	if len(got) != 1 || got[0].Type != push.TypeResolved {

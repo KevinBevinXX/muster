@@ -35,6 +35,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/ZacxDev/muster/internal/askq"
 	"io/fs"
 	"log"
 	"net/http"
@@ -84,8 +85,13 @@ const (
 type Server struct {
 	bus    *sse.Broadcaster
 	logger *log.Logger
-	auth   AuthConfig
-	router RouterPort
+	// asks is the pending-question store (mirror_ask.go): the AskUserQuestion
+	// calls a hook is holding for an answer from muster.
+	asks *askq.Store
+	// askListWaitOverride replaces mirrorAskListWait (tests; 0 = default).
+	askListWaitOverride time.Duration
+	auth                AuthConfig
+	router              RouterPort
 
 	// streams ends every open SSE stream when shutdown begins. See EndStreams.
 	streams streamEnd
@@ -351,6 +357,7 @@ func New(bus *sse.Broadcaster, authCfg AuthConfig, logger *log.Logger) *Server {
 		logger = log.Default()
 	}
 	return &Server{
+		asks:                    askq.New(),
 		bus:                     bus,
 		logger:                  logger,
 		auth:                    authCfg,

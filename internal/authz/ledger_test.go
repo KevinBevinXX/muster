@@ -100,7 +100,9 @@ var (
 		// The mirror plugin's token lookup and its 30 s recheck: a host's token
 		// must be found by its hash before anyone is known (mirror_tokens is
 		// under RLS). What it yields — the token's owner — scopes everything after.
-		"internal/mirror.(*Service).ServeConnect",
+		// authenticate is that lookup, shared by /mirror/connect (ServeConnect)
+		// and the AskUserQuestion hook's door (AuthenticateHost).
+		"internal/mirror.(*Service).authenticate",
 		"internal/mirror.(*Service).watchToken",
 		// Accounts PR 4: the account store (users, invites). Both tables are
 		// under FORCE row-level security (0009), and every query there (except

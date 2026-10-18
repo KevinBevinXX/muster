@@ -322,6 +322,9 @@ func (s *Server) UseExtensions(ext Extensions) {
 	s.extDefects = ext.defects()
 	ext.Notes = withSessionLiveness(ext.Notes, ext.SessionLiveness)
 	s.ext = ext
+	if ext.Mirror != nil {
+		s.wireAsks(ext.Mirror)
+	}
 	s.pluginDeliverer = nil
 	if ext.Plugins != nil && ext.PluginGateway != nil && ext.Gateway != nil && ext.Agents != nil {
 		// 🔴 Turn IS chatTurn: the delivered message runs as an ordinary chat turn

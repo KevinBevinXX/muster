@@ -144,7 +144,7 @@ func (s *Server) attentionPrincipal(ctx context.Context, owner int64) context.Co
 	return authz.WithPrincipal(ctx, s.principalFor(ctx, owner, authz.ViaAttention))
 }
 
-func askKey(id int64) string { return "ask-" + strconv.FormatInt(id, 10) }
+func attentionAskKey(id int64) string { return "ask-" + strconv.FormatInt(id, 10) }
 
 func draftKey(id int64) string { return "draft-" + strconv.FormatInt(id, 10) }
 
@@ -167,8 +167,8 @@ func askerLabel(a attention.Ask) string {
 }
 
 func askItem(a attention.Ask) attentionItem {
-	return attentionItem{Key: askKey(a.ID), Kind: attentionKindAsk, Source: askerLabel(a), Text: a.Question,
-		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + askKey(a.ID), AskID: a.ID}
+	return attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: askerLabel(a), Text: a.Question,
+		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + attentionAskKey(a.ID), AskID: a.ID}
 }
 
 // sessionWaitingText is a waiting session's text: muster's own words — the
@@ -294,8 +294,8 @@ func attentionTag(key string) string { return "attention-" + key }
 // askSettled is every path that moved an ask out of open: clear its
 // notification, update the views, wake the waiters.
 func (s *Server) askSettled(a attention.Ask) {
-	s.attentionClear(a.Owner, askKey(a.ID))
-	s.attentionChanged(a.Owner, askKey(a.ID))
+	s.attentionClear(a.Owner, attentionAskKey(a.ID))
+	s.attentionChanged(a.Owner, attentionAskKey(a.ID))
 }
 
 // attentionRepushAfter: a session that goes waiting again within this long of

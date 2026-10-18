@@ -181,7 +181,7 @@ func (f *attnFixture) pushes() []string {
 func TestAnAskRaisedOverMCPIsAnsweredFromTheViewAndTheWaitReturnsIt(t *testing.T) {
 	f := newAttnFixture(t)
 	id := f.ask(t, f.opTok, "Ship the migration tonight?", "ship it", "wait for Monday")
-	key := askKey(id)
+	key := attentionAskKey(id)
 	if got := f.pushes(); len(got) != 1 || got[0] != "attention attention-"+key {
 		t.Fatalf("pushes after the ask: %v", got)
 	}
@@ -302,7 +302,7 @@ func TestAnAskIsOnlyItsAskersToWaitOnOrCancel(t *testing.T) {
 	if !strings.Contains(text, `"status":"cancelled"`) {
 		t.Fatalf("own cancel: %s", text)
 	}
-	if got := f.pushes(); len(got) != 2 || got[1] != "resolved attention-"+askKey(id) {
+	if got := f.pushes(); len(got) != 2 || got[1] != "resolved attention-"+attentionAskKey(id) {
 		t.Fatalf("pushes: %v", got)
 	}
 }
@@ -546,7 +546,7 @@ func TestTheReadModelHasEachSource(t *testing.T) {
 		return out
 	}
 	got := kinds()
-	if strings.Join(got["ask"], ",") != askKey(id) || len(got["session"]) != 1 || got["session"][0] != sessionKey("ws", "main", "@1") ||
+	if strings.Join(got["ask"], ",") != attentionAskKey(id) || len(got["session"]) != 1 || got["session"][0] != sessionKey("ws", "main", "@1") ||
 		!containsStr(got["plugin"], draftKey(d.ID)) {
 		t.Fatalf("items %v", got)
 	}
@@ -674,7 +674,7 @@ func TestAnExpiredAskIsClearedAndItsWaitReturns(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.srv.expireAsks(context.Background())
-	if got := f.pushes(); len(got) != 2 || got[1] != "resolved attention-"+askKey(id) {
+	if got := f.pushes(); len(got) != 2 || got[1] != "resolved attention-"+attentionAskKey(id) {
 		t.Fatalf("pushes: %v", got)
 	}
 	if text, _, _ := f.tool(t, f.opTok, attentionWaitTool, map[string]any{"id": id, "wait_seconds": 5}); !strings.Contains(text, `"status":"expired"`) {

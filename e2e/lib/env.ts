@@ -149,6 +149,10 @@ export const fakeS3Port = port + 72;
 // e2eterm binary, mirror plugin on) and up to three mirrored hosts. A high
 // offset, clear of the specs being added beside it.
 export const hostTabsPort = port + 64;
+// AskUserQuestion answered from the Rendered view (mirror-ask.spec.ts): its own
+// server (the e2eterm binary, mirror plugin on) and one interactive mirrored
+// host, with `muster-mirror ask` run as the hook.
+export const mirrorAskPort = port + 80;
 // The fake service's bearer token. Invented, like every value here.
 export const sttToken = 'e2e-stt-token-not-a-real-one';
 // The docs screenshots (e2e/docshots, `make screenshots`, never in the suite):
