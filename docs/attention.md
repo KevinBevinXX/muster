@@ -12,7 +12,7 @@ first:
 |---|---|---|---|
 | Question | An agent called `attention_ask`. | `attention_asks` (migration 0025) | Tap one of the agent's options, or type an answer. **Dismiss without answering** withdraws it. |
 | Session waiting | A mirrored Claude Code window whose session reports `waiting` (a permission prompt, a question). | The mirror hub's live window list; nothing is stored. | **Open the session** (the rendered view). It leaves the list when the session stops waiting. |
-| Session question | A mirrored session's `AskUserQuestion` held by the `muster-mirror ask` hook. | The held question (`internal/askq`), live. Such a window is this ONE item — its first question, and how many more — never also "Session waiting". | **Answer in the session**: the rendered view, where the question card is. |
+| Session question | A mirrored session's `AskUserQuestion`, registered by the `muster-mirror ask` hook and shown in the terminal and the rendered view at once. | The open question (`internal/askq`), live; it leaves the queue once answered in either place or dismissed. Such a window is this ONE item — its first question, and how many more — never also "Session waiting". | **Answer in the session**: the rendered view, where the question card is. |
 | Reply draft | Your chief drafted a reply to a plugin message. | `plugin_reply_drafts`, pending ones; nothing is copied. | **Review the draft** on `/plugins`. |
 
 Only a host whose `muster-mirror` reports Claude Code's status (and is online)

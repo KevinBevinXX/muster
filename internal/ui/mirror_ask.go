@@ -110,8 +110,9 @@ func askReadOnly(qs []askq.Question, answers map[string]string) g.Node {
 }
 
 // MirrorAskCall is a call the transcript holds with no result yet: its
-// questions, read-only. A call reaches the transcript only once no hook holds
-// it — the terminal's picker is showing it.
+// questions, read-only. Claude Code 2.1.289 writes the call together with its
+// result (measured: neither is in the transcript while the picker shows), so
+// this is drawn only for a transcript cut between the two.
 func MirrorAskCall(rowID string, qs []askq.Question) g.Node {
 	return Section(
 		g.If(rowID != "", ID(rowID)),

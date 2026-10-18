@@ -195,10 +195,12 @@ recent sign-in. See [sending-and-step-up.md](sending-and-step-up.md).
 
 ## Answering Claude's questions
 
-When Claude Code calls `AskUserQuestion`, the Rendered view can show the
-questions as a form and send your answers back to the session. This needs a
-Claude Code hook on the host: `muster-mirror ask`. Add it to that machine's
-Claude Code `settings.json`, with no flags:
+When Claude Code calls `AskUserQuestion`, the question shows in **both places
+at once**: the terminal draws its own picker, and the window's Rendered view
+draws the same questions as a form. Answer in either. Whichever is answered
+first counts, and the other side shows what happened. This needs a Claude Code
+hook on the host: `muster-mirror ask`. Add it to that machine's Claude Code
+`settings.json`, with no flags:
 
 ```json
 "PreToolUse": [
@@ -208,12 +210,18 @@ Claude Code `settings.json`, with no flags:
       {
         "type": "command",
         "command": "muster-mirror ask",
-        "timeout": 660
+        "timeout": 10
       }
     ]
   }
 ]
 ```
+
+The hook only tells muster about the question. It returns at once (it gives up
+after 3 seconds), prints nothing, and never answers or holds the call, so the
+terminal's picker appears as it would without it. It runs alongside any
+`PermissionRequest` hook you already have, such as an approval router, and that
+hook still runs for the call as it does today.
 
 It needs no flags because it uses what the host's `muster-mirror` service runs
 with. A Claude Code hook does not inherit that service's environment, so the
@@ -227,56 +235,42 @@ token file, or `~/.muster/mirror-token` when none is recorded.
 
 🔴 **The recorded token goes only to the recorded URL.** A hook given a URL by
 `-url` or `MUSTER_MIRROR_URL` must also be given its own token (`-token-file`,
-`MUSTER_MIRROR_TOKEN_FILE` or `MUSTER_MIRROR_TOKEN`); otherwise it leaves the
-question to the terminal. If the token file cannot be read, the hook writes one
-line to stderr, which appears in Claude Code's debug log, and leaves the question
-to the terminal.
-
-The hook does not replace any `PermissionRequest` hook you already have, such as an
-approval router. The `PreToolUse` hook runs first. When it answers, the call is
-already allowed, so no permission prompt or `PermissionRequest` hook runs for
-it. When it does not answer, the `PermissionRequest` hook runs as it does
-today.
+`MUSTER_MIRROR_TOKEN_FILE` or `MUSTER_MIRROR_TOKEN`); otherwise the question
+shows in the terminal only. If the token file cannot be read, the hook writes
+one line to stderr, which appears in Claude Code's debug log.
 
 How it works:
 
-- The hook registers the questions with muster and holds the call. The window's
-  Rendered view shows a card above the message box with one section per
-  question. Each section has the question's header, its options with their
-  descriptions (radio buttons, or checkboxes for a multi-select question), and
-  an **Other** box for your own answer. One **Submit** sends every answer.
-- The hook passes your answers to Claude Code as the call's answers. A
-  multi-select answer is its options joined by `, `, in the question's order.
-  Text you type is passed as typed.
-- 🔴 **While the hook holds the call, the terminal shows no picker.** Answer in
-  muster, or wait out the hook's `-timeout` (default `10m`,
-  `MUSTER_MIRROR_ASK_TIMEOUT`). The hook entry's own `timeout` (660 s above) must
-  be longer than `-timeout`.
-- **Every failure leaves the question to the terminal.** This covers muster
-  being unreachable, an unknown session, a read-only host, nobody answering in
-  time, or the hook being stopped. In each case the hook prints nothing and
-  Claude Code shows its own picker. The card then says the question went back to
-  the terminal. The hook never answers on its own.
-- **muster takes an answer only while the hook is still waiting.** The hook
-  polls; a question whose hook has not polled for 30 seconds is withdrawn and
-  its card says the session stopped waiting (the hook was stopped, or lost
-  muster). When the hook gives up, it first asks muster to withdraw the
-  question and reads what muster says: answers you gave just before are still
-  delivered. Two cases are not covered. One is a network cut that lasts past both
-  sides' limits. The other is a hook killed while a proxy in front of muster
-  keeps its last poll open. In both, muster can take an answer, for up to one
-  poll plus 30 seconds, that no hook collects, and the terminal shows the
-  picker.
+- The window's Rendered view shows a card above the message box as soon as the
+  hook registers the question (the view's connection is told; it does not wait
+  for a poll). It has one section per question: the question's header, its
+  options with their descriptions (radio buttons, or checkboxes for a
+  multi-select question), and an **Other** box for your own answer. One
+  **Submit** sends every answer. The question is also one item in the
+  attention queue.
+- **Answering in muster types your answer into the terminal's picker.** The
+  host's `muster-mirror` sends the picker the keys a person would press (digits
+  for options, the arrow keys, your own words, Enter), and before every key it
+  reads the pane to check the picker shows what the last key should have
+  produced. The keys go in with tmux `paste-buffer`, which works while muster's
+  read-only viewer is attached (`send-keys` is refused then). A multi-select
+  answer is its options joined by `, `, in the question's order.
+- **The card follows what Claude Code recorded.** muster reads the call's result
+  from the conversation's transcript: answered with the answers you typed in
+  muster, the card says *Answered here*; with other answers, *Answered in the
+  terminal*, with those answers; dismissed (Esc), *Dismissed in the terminal*.
+- 🔴 **Never half an answer.** If someone has started answering in the terminal,
+  or the picker is gone or changes while muster types, muster stops before the
+  next key, nothing is submitted, and the card says to answer in the terminal.
+  An answer that arrives after the terminal's is refused, and nothing is typed.
 - Answering has the same rules as sending: you must own the host, the host must
-  be `-interactive`, and your sign-in must be recent. A read-only host's hook
-  does not hold the call at all.
-- While a question is held, muster reports the window's status as `waiting`.
-  Claude Code itself reports `busy` for as long as a hook runs.
-- Afterwards the conversation shows the call read-only, with the answers it
-  was given, whether you answered in muster or in the terminal.
+  be `-interactive`, and your sign-in must be recent. A read-only host's card
+  shows the questions without a form.
+- Afterwards the conversation also shows the call read-only, with the answers it
+  was given, wherever they were given.
 
-Pending questions live in muster's memory only. A restart forgets them, and
-the hook then leaves the question to the terminal.
+Questions live in muster's memory only. A restart forgets them; the terminal's
+picker is unaffected.
 
 ## Scrolling history
 
