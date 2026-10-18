@@ -282,6 +282,8 @@ func askTypeFailure(err error) string {
 		return "The question is no longer on the terminal's screen — it was answered or dismissed there."
 	case errors.Is(err, mirror.ErrAskTouched):
 		return "Someone has started answering it in the terminal — finish it there."
+	case errors.Is(err, mirror.ErrAskBusy):
+		return "Another answer is being typed into this terminal — wait for it, or answer in the terminal."
 	case errors.Is(err, mirror.ErrAskUnrecognised):
 		return "Couldn't recognise the terminal's picker (Claude Code may have changed) — answer it in the terminal."
 	case errors.Is(err, mirror.ErrAskLost):
@@ -314,6 +316,8 @@ func askTypingResult(err error) string {
 		return "lost"
 	case errors.Is(err, mirror.ErrAskUnrecognised):
 		return "unrecognised"
+	case errors.Is(err, mirror.ErrAskBusy):
+		return "busy"
 	case errors.Is(err, mirror.ErrAskUnsupported):
 		return "unsupported"
 	case errors.Is(err, mirror.ErrAskTimeout):
@@ -506,25 +510,36 @@ func (s *Server) watchAsks(owner int64, host, claudeSession string) {
 // runAskWatch is one session's watch, until it has no open question or the
 // server ends.
 //
-// 🔴 A SESSION THAT GOES AWAY TAKES ITS QUESTIONS WITH IT: once no window of
-// the host has listed the Claude session for askGoneGrace (Claude exited, the
-// window closed, the host stayed away), its open questions are expired with
-// askGoneNote — not left "asking" until MaxOpen.
+// 🔴 A SESSION THAT GOES AWAY TAKES ITS QUESTIONS WITH IT: once the host has
+// been ONLINE and not listed the Claude session for askGoneGrace in all
+// (Claude exited, the window closed), its open questions are expired with
+// askGoneNote — not left "asking" until MaxOpen. Time the host is OFFLINE does
+// not count: a host reconnecting (its backoff reaches a minute) is not a
+// session ending. And an expired question is still watched while retained: a
+// result that turns up later (the session came back) still resolves it.
 func (s *Server) runAskWatch(ctx context.Context, k askWatchKey) {
 	open := func() bool { return len(s.asks.OpenIn(k.owner, askSourceMirror, k.host, k.session)) > 0 }
-	var missingSince time.Time
-	for ctx.Err() == nil && open() {
+	watched := func() bool { return len(s.asks.Watched(k.owner, askSourceMirror, k.host, k.session)) > 0 }
+	var missing time.Duration // online and not listing the session, in all
+	var missingAt time.Time   // when that was last seen (zero: not now)
+	for ctx.Err() == nil && watched() {
 		e, found := s.askSessionWindow(ctx, k)
+		now := time.Now()
 		switch {
 		case found:
-			missingSince = time.Time{}
-		case missingSince.IsZero():
-			missingSince = time.Now()
-		case time.Since(missingSince) >= s.askWatch.goneGrace():
-			if n := s.asks.Gone(k.owner, askSourceMirror, k.host, k.session, askGoneNote); n > 0 {
-				s.logger.Printf("mirror: %d question(s) of a Claude session on %s expired: the session is gone", n, k.host)
+			missing, missingAt = 0, time.Time{}
+		case !s.askHostOnline(ctx, k.host):
+			missingAt = time.Time{} // paused while the host is away
+		default:
+			if !missingAt.IsZero() {
+				missing += now.Sub(missingAt)
 			}
-			continue
+			missingAt = now
+			if missing >= s.askWatch.goneGrace() && open() {
+				if n := s.asks.Gone(k.owner, askSourceMirror, k.host, k.session, askGoneNote); n > 0 {
+					s.logger.Printf("mirror: %d question(s) of a Claude session on %s expired: the session is gone", n, k.host)
+				}
+			}
 		}
 		if found {
 			wctx, cancel := context.WithCancel(ctx)
@@ -540,7 +555,7 @@ func (s *Server) runAskWatch(ctx context.Context, k askWatchKey) {
 					case <-t.C:
 						// Nothing open any more, or the session left its
 						// window: end this watch (the loop above decides).
-						if _, listed := s.askSessionWindow(ctx, k); !open() || !listed {
+						if _, listed := s.askSessionWindow(ctx, k); !watched() || !listed {
 							cancel()
 							return
 						}
@@ -553,7 +568,7 @@ func (s *Server) runAskWatch(ctx context.Context, k askWatchKey) {
 					return nil
 				}
 				s.resolveAsks(k, m.Events)
-				if !open() {
+				if !watched() {
 					cancel()
 				}
 				return nil
@@ -566,6 +581,16 @@ func (s *Server) runAskWatch(ctx context.Context, k askWatchKey) {
 		case <-time.After(s.askWatch.retryEvery()):
 		}
 	}
+}
+
+// askHostOnline reports whether owner's host is online now.
+func (s *Server) askHostOnline(ctx context.Context, host string) bool {
+	for _, h := range s.ext.Mirror.Hosts(ctx) {
+		if h.Host == host {
+			return h.Online
+		}
+	}
+	return false
 }
 
 // askSessionWindow is the window of k's host that runs k's Claude session.

@@ -966,4 +966,6 @@ const (
 	// AskRefusalUnrecognised: the pane shows something like the picker that
 	// the host cannot read — Claude Code's layout has probably changed.
 	AskRefusalUnrecognised = "unrecognised"
+	// AskRefusalBusy: another answer is being typed into that pane.
+	AskRefusalBusy = "busy"
 )

@@ -254,14 +254,18 @@ How it works:
   reads the pane twice, a quarter of a second apart, and needs the picker in
   exactly the state the last key should have produced both times — Claude
   Code redraws a key in 6–72 ms (measured), so a key someone typed but the
-  screen has not drawn yet shows up in the second look. It also refuses while
-  anyone has typed into that pane through a tmux client in the last 2–3
-  seconds (muster's own read-only viewer does not count). Only one answer is
-  typed into a pane at a time. The keys go in with tmux `paste-buffer -S`,
-  which works while muster's read-only viewer is attached; a tmux without
-  `-S` cannot type answers, and the host then says so in its log and offers
-  none. A multi-select answer is its options joined by `, `, in the question's
-  order.
+  screen has not drawn yet shows up in the second look. Right before each key
+  it also reads when the terminal last had input from a tmux client that can
+  type (muster's own read-only viewer does not count); if a key from that
+  moment might not be drawn yet, it waits until it would be and looks again.
+  tmux's only such clock also moves for focus events and the mouse, so
+  switching to the terminal to watch does not stop it; a key that changes
+  the picker does. Only one answer is typed into a pane at a time (another
+  one is refused: *another answer is being typed*). The keys go in with tmux
+  `paste-buffer -S`, which works while muster's read-only viewer is attached.
+  🔴 **It needs tmux 3.7 or later** (3.7 added `-S`); on an older tmux the
+  host says so in its log and does not offer answering. A multi-select answer
+  is its options joined by `, `, in the question's order.
 - **The card follows what Claude Code recorded.** muster reads the call's result
   from the conversation's transcript: answered with the answers you typed in
   muster, the card says *Answered here*; with other answers, *Answered in the
@@ -280,9 +284,11 @@ How it works:
   time, so when the same session asks again, the older card says it was
   replaced and can no longer be answered.
 - **A session that ends takes its questions with it.** When Claude exits or its
-  window closes before the question is answered, the card says so about 30
-  seconds later (time for the host to reconnect) and the question leaves the
-  attention queue.
+  window closes before the question is answered, the card says so once the
+  host has been connected for 30 seconds without listing the session, and the
+  question leaves the attention queue. Time the host is disconnected does not
+  count. If the transcript later shows the question answered (the session came
+  back), the card still changes to that answer.
 - **When Claude Code changes its picker.** If the host cannot read the picker,
   the card says *couldn't recognise the terminal picker (Claude Code may have
   changed); answer in the terminal*, the host logs it, and muster counts it in

@@ -86,6 +86,7 @@ var (
 	//   not-sent     — refused before the host was asked (offline, step-up, …)
 	//   no-picker    — the picker was gone (answered or dismissed in the terminal)
 	//   touched      — someone was answering in the terminal; nothing typed
+	//   busy         — another answer was being typed into that pane
 	//   lost         — the picker changed mid-way; stopped, nothing submitted
 	//   unrecognised — the host could not read the picker: Claude Code's layout
 	//                  has probably changed — ANY of these is worth a look

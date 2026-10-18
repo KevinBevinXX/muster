@@ -38,7 +38,7 @@ func TestAnAnswerReachesTheHostAndItsRefusalComesBack(t *testing.T) {
 		t.Fatalf("the host's AskAnswer is not in its view: %+v", hs)
 	}
 	choices := []askq.Choice{{Picks: []int{1}}}
-	all := []error{mirror.ErrAskNoPicker, mirror.ErrAskTouched, mirror.ErrAskLost, mirror.ErrAskUnsupported, mirror.ErrAskUnrecognised, mirror.ErrAskRefused}
+	all := []error{mirror.ErrAskNoPicker, mirror.ErrAskTouched, mirror.ErrAskLost, mirror.ErrAskUnsupported, mirror.ErrAskUnrecognised, mirror.ErrAskBusy, mirror.ErrAskRefused}
 	for _, tc := range []struct {
 		why, refusal string
 		want         error
@@ -49,6 +49,7 @@ func TestAnAnswerReachesTheHostAndItsRefusalComesBack(t *testing.T) {
 		{"moved", mirror.AskRefusalLost, mirror.ErrAskLost},
 		{"cannot", mirror.AskRefusalUnsupported, mirror.ErrAskUnsupported},
 		{"cannot read it", mirror.AskRefusalUnrecognised, mirror.ErrAskUnrecognised},
+		{"another drive", mirror.AskRefusalBusy, mirror.ErrAskBusy},
 		{"what", "a-kind-this-muster-does-not-know", mirror.ErrAskRefused},
 	} {
 		seen := len(raw.of(mirror.TypeAnswer))

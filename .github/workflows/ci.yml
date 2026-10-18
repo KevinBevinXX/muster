@@ -305,6 +305,17 @@ jobs:
   # (internal/mirror and internal/mirrorhost: the mirrored-agents tunnel and
   # muster-mirror's tmux backend against real tmux, on private sockets.)
   #
+  # 🔴 TWO tmuxes, each the one its code meets in production:
+  #   - cmd/ccd runs in the claude-code-agent image (its tmux is 3.3a; the
+  #     runner's apt tmux, 3.4, behaves the same for what ccd's suite pins —
+  #     see CCD_TMUXIT_RAW_ESC below);
+  #   - muster-mirror runs on the operators' hosts, whose tmux is nixpkgs'
+  #     (3.7c when written). It types AskUserQuestion answers with
+  #     `paste-buffer -S`, which tmux 3.7 added (mirrorhost.MinRawPasteTmux);
+  #     on 3.4 that flag does not exist and `send-keys` is not refused for a
+  #     read-only viewer, so its suite runs against tmux from THIS FLAKE'S
+  #     locked nixpkgs, asserted to be at least 3.7 before any test.
+  #
   # 🔴 cmd/ccd's REAL-TMUX SUITE: ccd pastes into a real tmux pane running a fake
   # CLI, the image's real hook template calls the real `ccd hook`, and the turn is
   # sent through muster's own client. It is behind the `tmuxit` build tag so the
@@ -350,12 +361,41 @@ jobs:
       # ONE run, read by the verdict — see the `test` job for why the former
       # re-run is gone (it cost 65 s here) and why `set -o pipefail` is explicit.
       # `--echo all` re-renders the `-v` log this step used to print.
-      - name: go test (tmuxit), and assert the tmux tests ran and none skipped
+      - name: go test (tmuxit, cmd/ccd, the image's tmux), and assert the tmux tests ran and none skipped
         env:
           CCD_TMUXIT_RAW_ESC: "1"
         run: |
           set -o pipefail
-          go test -tags tmuxit -race -run '^TestTmux' -json ./cmd/ccd/ ./internal/mirror/ ./internal/mirrorhost/ | python3 -u tests/verdict.py --echo all
+          tmux -V
+          go test -tags tmuxit -race -run '^TestTmux' -json ./cmd/ccd/ | python3 -u tests/verdict.py --echo all
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      # The hosts' tmux: from the nixpkgs this flake locks (--inputs-from .),
+      # and at least the release that added paste-buffer -S — asserted here so
+      # an older one fails HERE, by name, not as four obscure test failures.
+      - name: tmux from the flake's nixpkgs, and fail unless it has paste-buffer -S (tmux >= 3.7)
+        run: |
+          bin="$(nix build --no-link --print-out-paths --inputs-from . 'nixpkgs#tmux^out')/bin"
+          v="$("$bin/tmux" -V)"
+          echo "$v"
+          python3 - "$v" <<'PY'
+          import re, sys
+          m = re.match(r"tmux (?:next-)?(\d+)\.(\d+)", sys.argv[1])
+          assert m, f"cannot read the tmux version {sys.argv[1]!r}"
+          assert (int(m[1]), int(m[2])) >= (3, 7), f"{sys.argv[1]} has no paste-buffer -S (added in tmux 3.7)"
+          PY
+          echo "HOST_TMUX_BIN=$bin" >> "$GITHUB_ENV"
+
+      - name: go test (tmuxit, muster-mirror, the hosts' tmux), and assert the tmux tests ran and none skipped
+        run: |
+          set -o pipefail
+          export PATH="$HOST_TMUX_BIN:$PATH"
+          tmux -V
+          go test -tags tmuxit -race -run '^TestTmux' -json ./internal/mirror/ ./internal/mirrorhost/ | python3 -u tests/verdict.py --echo all
 
   # Local: docker build -f images/claude-code-agent/Dockerfile -t claude-code-agent . \
   #          && docker run --rm claude-code-agent cc-smoke

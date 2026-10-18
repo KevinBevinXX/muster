@@ -387,31 +387,75 @@ func (d *delayedPane) Capture(ctx context.Context) (string, error) {
 	return d.fakePane.Capture(ctx)
 }
 
-// activePane is fakePane that says someone typed into the terminal once its
-// typing is set.
+// activePane is fakePane whose terminal last had input when input says,
+// given the keys sent so far (zero: never) — stamped the way tmux stamps it,
+// rounded down to the grain.
 type activePane struct {
 	*fakePane
-	typing func(sent int) bool
+	input func(sent int) time.Time
+	asked int
 }
 
-func (a *activePane) RecentInput(context.Context) (bool, error) { return a.typing(len(a.sent)), nil }
+func (a *activePane) LastInput(context.Context) (time.Time, error) {
+	a.asked++
+	return a.input(len(a.sent)).Truncate(activeGrain), nil
+}
 
-// TestNoKeyWhileSomeoneTypes: someone typed into the terminal in the last
-// couple of seconds — before the first key, nothing is sent and the picker
-// counts as touched; mid-drive, the drive stops before the next key.
-func TestNoKeyWhileSomeoneTypes(t *testing.T) {
-	ap := &activePane{fakePane: &fakePane{p: NewFakePicker([]askq.Question{pets})}, typing: func(int) bool { return true }}
-	if err := Drive(context.Background(), ap, []askq.Question{pets}, []Choice{{Picks: []int{0}}}, fast); !errors.Is(err, ErrNotUntouched) || len(ap.sent) != 0 {
-		t.Fatalf("someone typing before the first key: %v, sent %q", err, ap.sent)
+// activeGrain is the tests' Options.Grain (tmux's is 1 s).
+const activeGrain = 50 * time.Millisecond
+
+// TestInputThatChangesNothingDoesNotStopTheDrive: a focus event or the mouse
+// moves the terminal's input clock without changing the picker; the drive
+// waits until any key from then would be drawn, looks again, and completes.
+// A real key that changes the picker stops it, and input that never stops
+// stops it too.
+func TestInputThatChangesNothingDoesNotStopTheDrive(t *testing.T) {
+	opt := fast
+	opt.Grain = activeGrain
+	opt.Steady = 20 * time.Millisecond
+	// A focus-in as the third key is due: the clock moves, the picker does not.
+	var focusAt time.Time
+	p := NewFakePicker([]askq.Question{pets})
+	ap := &activePane{fakePane: &fakePane{p: p}, input: func(sent int) time.Time {
+		if sent >= 2 && focusAt.IsZero() {
+			focusAt = time.Now()
+		}
+		return focusAt
+	}}
+	if err := Drive(context.Background(), ap, []askq.Question{pets}, []Choice{{Picks: []int{0, 2}}}, opt); err != nil {
+		t.Fatalf("a focus event mid-drive: %v", err)
 	}
-	ap = &activePane{fakePane: &fakePane{p: NewFakePicker([]askq.Question{pets})}, typing: func(sent int) bool { return sent == 2 }}
-	if err := Drive(context.Background(), ap, []askq.Question{pets}, []Choice{{Picks: []int{0, 2}}}, fast); !errors.Is(err, ErrLost) || len(ap.sent) != 2 {
-		t.Fatalf("someone typing mid-drive: %v, sent %q", err, ap.sent)
+	if got, _, done := p.Result(); !done || got["Which pets do you have?"] != "Cat, Fish" {
+		t.Fatalf("the picker submitted %v (done %v)", got, done)
 	}
-	// The control: nobody typing, the same drive answers.
-	ap = &activePane{fakePane: &fakePane{p: NewFakePicker([]askq.Question{pets})}, typing: func(int) bool { return false }}
-	if err := Drive(context.Background(), ap, []askq.Question{pets}, []Choice{{Picks: []int{0, 2}}}, fast); err != nil {
-		t.Fatalf("nobody typing: %v", err)
+	if ap.asked <= len(ap.sent) {
+		t.Fatalf("the input clock was read %d times for %d keys: the drive never waited", ap.asked, len(ap.sent))
+	}
+	// A real key as the third key is due — it ticks Dog: the drive stops
+	// before its third key.
+	p = NewFakePicker([]askq.Question{pets})
+	var keyAt time.Time
+	ap = &activePane{fakePane: &fakePane{p: p}}
+	ap.input = func(sent int) time.Time {
+		if sent >= 2 && keyAt.IsZero() {
+			keyAt = time.Now()
+			p.Type("2")
+		}
+		return keyAt
+	}
+	if err := Drive(context.Background(), ap, []askq.Question{pets}, []Choice{{Picks: []int{0, 2}}}, opt); !errors.Is(err, ErrLost) || len(ap.sent) != 2 {
+		t.Fatalf("a key mid-drive: %v, sent %q", err, ap.sent)
+	}
+	// Input that never stops (someone is using the terminal): it gives up
+	// before the first key, as touched.
+	ap = &activePane{fakePane: &fakePane{p: NewFakePicker([]askq.Question{pets})}, input: func(int) time.Time { return time.Now() }}
+	if err := Drive(context.Background(), ap, []askq.Question{pets}, []Choice{{Picks: []int{0}}}, opt); !errors.Is(err, ErrNotUntouched) || len(ap.sent) != 0 || ap.asked != maxInputWaits+1 {
+		t.Fatalf("endless input: %v, sent %q, read the clock %d times (want %d)", err, ap.sent, ap.asked, maxInputWaits+1)
+	}
+	// Input long before the drive: no wait at all.
+	ap = &activePane{fakePane: &fakePane{p: NewFakePicker([]askq.Question{pets})}, input: func(int) time.Time { return time.Now().Add(-time.Minute) }}
+	if err := Drive(context.Background(), ap, []askq.Question{pets}, []Choice{{Picks: []int{0, 2}}}, opt); err != nil || ap.asked != len(ap.sent) {
+		t.Fatalf("old input: %v, read %d times for %d keys", err, ap.asked, len(ap.sent))
 	}
 }
 
@@ -433,6 +477,38 @@ func TestAPickerItCannotReadIsNamed(t *testing.T) {
 	sp = &staticPane{screen: "❯ \n──────\n  ? for shortcuts\n"}
 	if err := Drive(context.Background(), sp, []askq.Question{pets}, []Choice{{Picks: []int{0}}}, fast); !errors.Is(err, ErrNoPicker) || errors.Is(err, ErrUnrecognised) {
 		t.Fatalf("a prompt: %v", err)
+	}
+}
+
+// TestScreensThatAreNotThePickerAreNotUnknown: a permission prompt (it ends
+// "Esc to cancel · …" under numbered rows) and prose that quotes the picker's
+// footer and Submit row parse as no picker — NOT as a picker muster failed to
+// read. Both screens are CONSTRUCTED (testdata/not-picker-*.txt), shaped on
+// Claude Code's own; every REAL picker capture still parses as a picker.
+func TestScreensThatAreNotThePickerAreNotUnknown(t *testing.T) {
+	for _, f := range []string{"not-picker-permission", "not-picker-prose"} {
+		if got := Parse(fixture(t, f)).Kind; got != None {
+			t.Errorf("%s parses as %v, want None", f, got)
+		}
+	}
+	for _, f := range []string{"three-q1", "three-q2-toggled", "three-review", "single-q", "multi-q", "multi-review"} {
+		if got := Parse(fixture(t, f)).Kind; got == None || got == Unknown {
+			t.Errorf("the real capture %s parses as %v", f, got)
+		}
+	}
+	// A REAL capture with its rows in a layout the parser does not know (a
+	// Claude Code that changed them): Unknown, not None.
+	changed := fixture(t, "multi-q")
+	for _, r := range []string{"1. [ ] Cat", "2. [ ] Dog", "3. [ ] Fish", "4. [ ] Type something"} {
+		changed = strings.Replace(changed, r, strings.Replace(strings.Replace(r, ". [ ]", ") ( )", 1), "", "", 0), 1)
+	}
+	if got := Parse(changed).Kind; got != Unknown {
+		t.Errorf("a real capture with changed rows parses as %v, want Unknown:\n%s", got, changed)
+	}
+	review := strings.Replace(fixture(t, "multi-review"), "→", "=>", -1)
+	review = strings.Replace(review, "●", "*", -1)
+	if got := Parse(review).Kind; got != Review && got != Unknown {
+		t.Errorf("a real review with changed marks parses as %v", got)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,8 +42,9 @@ func AskOf(b Backend) (AskBackend, bool) { return capabilityOf[AskBackend](b) }
 // AnswerAsk implements AskBackend: askdrive.Drive on the pane.
 //
 // 🔴 ONE DRIVE PER PANE AT A TIME: a second answer for a pane being typed
-// into is refused (ErrPaneBusy, a kind of askdrive.ErrNotUntouched) before
-// any key — two drives' keys would interleave in one picker.
+// into is refused (ErrPaneBusy) before any key — two drives' keys would
+// interleave in one picker. And a tmux found to lack `paste-buffer -S` is
+// refused (ErrNoRawPaste) before any key: it cannot type a picker's keys.
 func (t Tmux) AnswerAsk(ctx context.Context, pane string, qs []askq.Question, choices []askdrive.Choice) error {
 	if !strings.HasPrefix(pane, "%") {
 		return fmt.Errorf("muster-mirror: %q is not a tmux pane id", pane)
@@ -52,12 +54,18 @@ func (t Tmux) AnswerAsk(ctx context.Context, pane string, qs []askq.Question, ch
 		return ErrPaneBusy
 	}
 	defer release()
+	if has, known := t.RawPaste(ctx); known && !has {
+		return ErrNoRawPaste
+	}
 	t.dropLeftoverBuffers(ctx)
 	return askdrive.Drive(ctx, tmuxPane{t: t, id: pane}, qs, choices, askdrive.Options{})
 }
 
 // ErrPaneBusy: another answer is being typed into the pane.
-var ErrPaneBusy = fmt.Errorf("%w: another answer is being typed into this pane", askdrive.ErrNotUntouched)
+var ErrPaneBusy = errors.New("muster-mirror: another answer is being typed into this pane")
+
+// ErrNoRawPaste: this tmux has no `paste-buffer -S` (MinRawPasteTmux).
+var ErrNoRawPaste = fmt.Errorf("%w: this tmux has no `paste-buffer -S` (added in tmux %s)", errCannotAnswer, MinRawPasteTmux)
 
 // drives is the panes being typed into (lockPane), by server and pane id.
 var drives = struct {
@@ -112,28 +120,67 @@ func (t Tmux) dropLeftoverBuffers(ctx context.Context) {
 	}
 }
 
-// PastesRawKeys reports whether this tmux has `paste-buffer -S` (pasting
-// without sanitizing control characters), which typing into a picker needs.
-// Probed, not read off a version: pasting a buffer that does not exist is
-// refused as "no buffer" by a tmux that knows -S, and as "unknown flag -S" by
-// one that does not. Nothing is pasted either way.
-func (t Tmux) PastesRawKeys(ctx context.Context) bool {
+// MinRawPasteTmux is the first tmux release with `paste-buffer -S`. Its
+// CHANGES, "CHANGES FROM 3.6b TO 3.7": "Pass paste buffer through vis(3) when
+// pasting to prevent buffers containing for example the bracket end sequence
+// causing issues, a new -S flag disables (reported by Mason Davis)." (Read
+// from the tmux 3.7c source; cmd-paste-buffer.c's args_has(args, 'S').)
+const MinRawPasteTmux = "3.7"
+
+// RawPaste reports whether this tmux has `paste-buffer -S` (pasting without
+// sanitizing control characters), which typing into a picker needs, and
+// whether that is KNOWN. Probed first: pasting a buffer that does not exist
+// is refused as "no buffer" by a tmux that knows -S, and as "unknown flag -S"
+// by one that does not — nothing is pasted either way. With no tmux server
+// running the probe cannot tell ("no server running"), so `tmux -V` is read
+// instead (MinRawPasteTmux); a version it cannot read is unknown, NOT "old":
+// the caller asks again later.
+func (t Tmux) RawPaste(ctx context.Context) (has, known bool) {
 	var rnd [6]byte
 	_, _ = rand.Read(rnd[:])
-	_, err := tmuxPane{t: t}.run(ctx, nil, "paste-buffer", "-S", "-b", askBufferPrefix+"probe-"+hex.EncodeToString(rnd[:]))
-	return err != nil && strings.Contains(err.Error(), "no buffer")
+	p := tmuxPane{t: t}
+	_, err := p.run(ctx, nil, "paste-buffer", "-S", "-b", askBufferPrefix+"probe-"+hex.EncodeToString(rnd[:]))
+	switch {
+	case err == nil:
+		return true, true // a buffer by that name existed and was pasted nowhere useful; -S is known
+	case strings.Contains(err.Error(), "no buffer"):
+		return true, true
+	case strings.Contains(err.Error(), "unknown flag"):
+		return false, true
+	}
+	cmd := exec.CommandContext(ctx, t.bin(), "-V")
+	cmd.Env = tmuxEnv()
+	out, verr := cmd.Output()
+	if verr != nil {
+		return false, false
+	}
+	return tmuxAtLeast(string(out), MinRawPasteTmux)
+}
+
+// tmuxVersionRE reads `tmux -V`: "tmux 3.7c", "tmux next-3.8", "tmux 3.4".
+var tmuxVersionRE = regexp.MustCompile(`^tmux (?:next-)?(\d+)\.(\d+)`)
+
+// tmuxAtLeast reports whether the `tmux -V` output v is at least min
+// ("major.minor"), and whether v could be read at all.
+func tmuxAtLeast(v, min string) (ok, known bool) {
+	m := tmuxVersionRE.FindStringSubmatch(strings.TrimSpace(v))
+	if m == nil {
+		return false, false
+	}
+	var wantMaj, wantMin int
+	if _, err := fmt.Sscanf(min, "%d.%d", &wantMaj, &wantMin); err != nil {
+		return false, false
+	}
+	maj, _ := strconv.Atoi(m[1])
+	mnr, _ := strconv.Atoi(m[2])
+	return maj > wantMaj || (maj == wantMaj && mnr >= wantMin), true
 }
 
 // rawPaster is a backend that can say whether it can paste raw keys
-// (Tmux.PastesRawKeys).
+// (Tmux.RawPaste).
 type rawPaster interface {
-	PastesRawKeys(ctx context.Context) bool
+	RawPaste(ctx context.Context) (has, known bool)
 }
-
-// typingWithin is how recently a person's keystroke into a terminal makes the
-// driver refuse to type (askdrive.Activity). tmux keeps client activity in
-// whole seconds, so this is 2–3 s in practice.
-const typingWithin = 2 * time.Second
 
 // tmuxPane is a tmux pane as an askdrive.Pane.
 type tmuxPane struct {
@@ -161,17 +208,19 @@ func (p tmuxPane) Capture(ctx context.Context) (string, error) {
 	return string(b), err
 }
 
-// RecentInput implements askdrive.Activity: whether a client that can type
-// (not read-only — muster's own viewer is one) whose current pane is this one
-// had input in the last typingWithin. Measured (tmux 3.7c): a keystroke
-// through a client moves its #{client_activity}; a paste-buffer (muster's own
-// keys) moves no client's.
-func (p tmuxPane) RecentInput(ctx context.Context) (bool, error) {
+// LastInput implements askdrive.Activity: the latest #{client_activity} of
+// the clients that can type (not read-only — muster's own viewer is one)
+// whose current pane is this one; zero when there are none. Measured (tmux
+// 3.7c): a keystroke through a client moves it, and so do a focus-in event
+// and mouse moves and clicks (tmux has no keystroke-only clock); a
+// paste-buffer (muster's own keys) moves no client's. It is whole seconds,
+// rounded down (askdrive.Options.Grain).
+func (p tmuxPane) LastInput(ctx context.Context) (time.Time, error) {
 	out, err := p.run(ctx, nil, "list-clients", "-F", "#{pane_id} #{client_readonly} #{client_activity}")
 	if err != nil {
-		return false, err
+		return time.Time{}, err
 	}
-	now := time.Now()
+	var last time.Time
 	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		f := strings.Fields(l)
 		if len(f) != 3 || f[0] != p.id || f[1] == "1" {
@@ -181,11 +230,11 @@ func (p tmuxPane) RecentInput(ctx context.Context) (bool, error) {
 		if err != nil {
 			continue
 		}
-		if now.Sub(time.Unix(at, 0)) <= typingWithin {
-			return true, nil
+		if t := time.Unix(at, 0); t.After(last) {
+			last = t
 		}
 	}
-	return false, nil
+	return last, nil
 }
 
 // Send pastes keys unsanitized and unbracketed (see the file comment).
@@ -225,8 +274,11 @@ func (h *hostSide) askAnswer() bool {
 	if rp, ok := ab.(rawPaster); ok {
 		ctx, cancel := context.WithTimeout(h.ctx, 5*time.Second)
 		defer cancel()
-		if !rp.PastesRawKeys(ctx) {
-			h.c.log.Printf("muster-mirror: this tmux has no `paste-buffer -S`, so answers cannot be typed into Claude Code's pickers from muster (upgrade tmux)")
+		// Not KNOWN (no tmux server yet, a version it cannot read) is not
+		// "old": it is advertised, and each answer asks again before typing
+		// (Tmux.AnswerAsk).
+		if has, known := rp.RawPaste(ctx); known && !has {
+			h.c.log.Printf("muster-mirror: this tmux has no `paste-buffer -S` (added in tmux %s), so muster cannot type answers into Claude Code's pickers on this host; upgrade tmux to %s or later", MinRawPasteTmux, MinRawPasteTmux)
 			return false
 		}
 		if t, ok := ab.(Tmux); ok {
@@ -252,6 +304,8 @@ func (h *hostSide) answer(m mirror.Msg) {
 			switch {
 			case errors.Is(err, askdrive.ErrNoPicker):
 				ans.Refusal = mirror.AskRefusalNoPicker
+			case errors.Is(err, ErrPaneBusy):
+				ans.Refusal = mirror.AskRefusalBusy
 			case errors.Is(err, askdrive.ErrNotUntouched):
 				ans.Refusal = mirror.AskRefusalTouched
 			case errors.Is(err, askdrive.ErrLost):

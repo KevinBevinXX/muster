@@ -17,9 +17,12 @@
 //     reads it TWICE, Options.Steady apart, and requires the same screen both
 //     times: a key someone typed that the CLI has not drawn yet shows up in the
 //     second look (Claude Code's redraw lag is measured below);
-//   - before every key, when the pane can tell (Activity), it refuses if a
-//     person typed into the terminal in the last couple of seconds — muster's
-//     own pasted keys do not count;
+//   - right before every key, when the pane can tell (Activity), it reads
+//     when the terminal last had input (muster's own pasted keys do not
+//     count); if a key from then might not be drawn by its second look, it
+//     waits until it would be and looks again. Input that changed nothing —
+//     a focus event, the mouse — does not stop it; a key that changed the
+//     picker does;
 //   - after every key it waits for the screen that key must produce; anything
 //     else stops it.
 //
@@ -143,24 +146,32 @@ func Parse(capture string) Screen {
 	return s
 }
 
-// pickerWords are words the picker's bottom lines carry (its footer, the
-// review's rows) that a prompt screen does not.
-var pickerWords = []string{"Enter to select", "Esc to cancel", "Submit answers", "Review your answers"}
-
-// looksLikeAPicker reports whether the bottom of capture carries the picker's
-// words.
+// looksLikeAPicker reports whether capture carries the AskUserQuestion
+// picker's STRUCTURE, not merely its words: its question tabs' ☐/☒ boxes AND,
+// as one of the last three lines, a line that BEGINS with its footer's
+// "Enter to select"; or its review screen (a "Review your answers"
+// line and a "Submit answers" row). A permission prompt ends "Esc to cancel ·
+// …" and prose can quote "Enter to select" (or draw ☐ boxes) — neither is a
+// picker muster failed to read.
 func looksLikeAPicker(capture string) bool {
 	lines := strings.Split(strings.TrimRight(strings.ReplaceAll(capture, "\r", ""), "\n "), "\n")
-	if len(lines) > 6 {
-		lines = lines[len(lines)-6:]
-	}
-	tail := strings.Join(lines, "\n")
-	for _, w := range pickerWords {
-		if strings.Contains(tail, w) {
-			return true
+	tabs, footer, review, submit := false, false, false, false
+	for i, l := range lines {
+		t := strings.TrimSpace(l)
+		if strings.ContainsAny(t, "☐☒") {
+			tabs = true
+		}
+		if i >= len(lines)-3 && strings.HasPrefix(t, "Enter to select") {
+			footer = true
+		}
+		if t == "Review your answers" {
+			review = true
+		}
+		if strings.HasSuffix(t, "Submit answers") {
+			submit = true
 		}
 	}
-	return false
+	return (tabs && footer) || (review && submit)
 }
 
 func parse(capture string) Screen {

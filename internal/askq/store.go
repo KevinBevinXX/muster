@@ -458,9 +458,10 @@ func (s *Store) Gone(owner int64, source, scope, session, why string) int {
 // Resolve records the call's result as the CLI recorded it: answers (nil when
 // it ended with none — dismissed). An answered question is By muster when
 // muster typed exactly these answers, else By the terminal. Resolving a
-// resolved question changes nothing — except a Superseded one, whose result
-// can still arrive and is recorded. ok is false when the store has no open
-// (or superseded) question for the call.
+// resolved question changes nothing — except a Superseded or Expired one,
+// whose result can still arrive (a session that came back, a late record) and
+// is recorded. ok is false when the store has no open, superseded or expired
+// question for the call.
 func (s *Store) Resolve(owner int64, source, scope, session, toolUseID string, answers map[string]string) (Entry, bool) {
 	var fire []Entry
 	defer func() { s.notify(fire) }()
@@ -468,7 +469,7 @@ func (s *Store) Resolve(owner int64, source, scope, session, toolUseID string, a
 	defer s.mu.Unlock()
 	key := Key{Owner: owner, Source: source, Scope: scope, Session: session, ToolUseID: toolUseID}
 	en, ok := s.byID[s.byKey[key]]
-	if !ok || !(en.State.Open() || en.State == Superseded) {
+	if !ok || !(en.State.Open() || en.State == Superseded || en.State == Expired) {
 		return Entry{}, false
 	}
 	en.Resolved = s.now()
@@ -509,6 +510,26 @@ func (s *Store) OpenIn(owner int64, source, scope, session string) []Entry {
 	for _, e := range s.Pending(owner) {
 		if e.Key.Source == source && e.Key.Scope == scope && e.Key.Session == session {
 			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// Watched is the questions of (owner, source, scope, session) whose result
+// can still be recorded: the open ones, and the superseded or expired ones
+// still retained (Retain) — what a watcher of that session keeps reading the
+// transcript for.
+func (s *Store) Watched(owner int64, source, scope, session string) []Entry {
+	var fire []Entry
+	defer func() { s.notify(fire) }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sweepLocked(&fire)
+	var out []Entry
+	for _, e := range s.byID {
+		if e.Key.Owner == owner && e.Key.Source == source && e.Key.Scope == scope && e.Key.Session == session &&
+			(e.State.Open() || e.State == Superseded || e.State == Expired) {
+			out = append(out, e.snapshot())
 		}
 	}
 	return out

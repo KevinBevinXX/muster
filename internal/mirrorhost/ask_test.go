@@ -43,13 +43,13 @@ func (b *askingBackend) snapshotCalls() []string {
 }
 
 // rawlessBackend is askingBackend whose tmux can (raw) or cannot paste raw
-// keys (Tmux.PastesRawKeys).
+// keys, as far as it knows (Tmux.RawPaste).
 type rawlessBackend struct {
 	*askingBackend
-	raw bool
+	raw, known bool
 }
 
-func (b *rawlessBackend) PastesRawKeys(context.Context) bool { return b.raw }
+func (b *rawlessBackend) RawPaste(context.Context) (has, known bool) { return b.raw, b.known }
 
 var hostAskQs = []askq.Question{{Question: "Which color?", Options: []askq.Option{{Label: "Red"}, {Label: "Blue"}}}}
 
@@ -63,8 +63,9 @@ func TestTheHostAdvertisesAnsweringOnlyWhenItCan(t *testing.T) {
 		{"interactive, can type", wrapped{&askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}}, true, true},
 		{"read-only", wrapped{&askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}}, false, false},
 		{"a backend that cannot type", wrapped{&windowsBackend{windows: threeWindows}}, true, false},
-		{"a tmux without paste-buffer -S", wrapped{&rawlessBackend{askingBackend: &askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}}}, true, false},
-		{"a tmux with paste-buffer -S", wrapped{&rawlessBackend{askingBackend: &askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}, raw: true}}, true, true},
+		{"a tmux without paste-buffer -S", wrapped{&rawlessBackend{askingBackend: &askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}, known: true}}, true, false},
+		{"a tmux with paste-buffer -S", wrapped{&rawlessBackend{askingBackend: &askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}, raw: true, known: true}}, true, true},
+		{"a tmux not known yet (no server)", wrapped{&rawlessBackend{askingBackend: &askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}}}, true, true},
 	} {
 		d := newDrivenMuster(t)
 		d.run(t, c.b, nil, c.interactive)
@@ -120,7 +121,8 @@ func TestAnAnswerIsTypedIntoTheClaudePaneOnly(t *testing.T) {
 		{fmt.Errorf("x: %w", askdrive.ErrNotUntouched), mirror.AskRefusalTouched},
 		{fmt.Errorf("x: %w", askdrive.ErrLost), mirror.AskRefusalLost},
 		{fmt.Errorf("x: %w", askdrive.ErrUnrecognised), mirror.AskRefusalUnrecognised},
-		{ErrPaneBusy, mirror.AskRefusalTouched},
+		{ErrPaneBusy, mirror.AskRefusalBusy},
+		{ErrNoRawPaste, mirror.AskRefusalUnsupported},
 		{errors.New("tmux broke"), ""},
 	} {
 		b.mu.Lock()
@@ -154,7 +156,7 @@ func TestOneDrivePerPane(t *testing.T) {
 		t.Fatal("the first drive could not take the pane")
 	}
 	err := tm.AnswerAsk(context.Background(), "%5", hostAskQs, []askq.Choice{{Picks: []int{0}}})
-	if !errors.Is(err, ErrPaneBusy) || !errors.Is(err, askdrive.ErrNotUntouched) {
+	if !errors.Is(err, ErrPaneBusy) {
 		t.Fatalf("a second drive of a busy pane: %v", err)
 	}
 	if err := tm.AnswerAsk(context.Background(), "%6", hostAskQs, []askq.Choice{{Picks: []int{0}}}); errors.Is(err, ErrPaneBusy) {
@@ -166,22 +168,42 @@ func TestOneDrivePerPane(t *testing.T) {
 	}
 }
 
-// TestTheRawPasteProbeReadsTmuxsAnswer: PastesRawKeys is true only for a tmux
-// that refuses the probe as "no buffer" (it knows -S), false for one that
-// refuses the flag. A fake tmux plays each.
+// TestTheRawPasteProbeReadsTmuxsAnswer: RawPaste is known-yes for a tmux that
+// refuses the probe as "no buffer" (it knows -S), known-no for one that
+// refuses the flag; with NO SERVER running it reads `tmux -V` instead — and a
+// version it cannot read is unknown, never "old". A fake tmux plays each.
 func TestTheRawPasteProbeReadsTmuxsAnswer(t *testing.T) {
 	dir := t.TempDir()
-	fake := func(name, says string) Tmux {
+	fake := func(name, probe, version string) Tmux {
 		p := filepath.Join(dir, name)
-		if err := os.WriteFile(p, []byte("#!/bin/sh\necho '"+says+"' >&2\nexit 1\n"), 0o755); err != nil {
+		script := "#!/bin/sh\ncase \"$*\" in\n*-V*) echo '" + version + "' ;;\n*) echo '" + probe + "' >&2; exit 1 ;;\nesac\n"
+		if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		return Tmux{Bin: p}
 	}
-	if !fake("new", "no buffer muster-mirror-ask-probe-x").PastesRawKeys(context.Background()) {
-		t.Error("a tmux with -S reads as without")
+	noServer := "no server running on /tmp/tmux-1000/default"
+	for _, c := range []struct {
+		name, probe, version string
+		has, known           bool
+	}{
+		{"new", "no buffer muster-mirror-ask-probe-x", "tmux 3.7c", true, true},
+		{"old", "command paste-buffer: unknown flag -S", "tmux 3.4", false, true},
+		{"no server, 3.7c", noServer, "tmux 3.7c", true, true},
+		{"no server, next-3.8", noServer, "tmux next-3.8", true, true},
+		{"no server, 4.0", noServer, "tmux 4.0", true, true},
+		{"no server, 3.6b", noServer, "tmux 3.6b", false, true},
+		{"no server, 3.4", noServer, "tmux 3.4", false, true},
+		{"no server, unreadable", noServer, "tmux master", false, false},
+	} {
+		has, known := fake(strings.ReplaceAll(c.name, " ", "_"), c.probe, c.version).RawPaste(context.Background())
+		if has != c.has || known != c.known {
+			t.Errorf("%s: has=%v known=%v, want %v %v", c.name, has, known, c.has, c.known)
+		}
 	}
-	if fake("old", "command paste-buffer: unknown flag -S").PastesRawKeys(context.Background()) {
-		t.Error("a tmux without -S reads as with")
+	// A tmux known to lack -S is refused before any key.
+	old := fake("old2", "command paste-buffer: unknown flag -S", "tmux 3.4")
+	if err := old.AnswerAsk(context.Background(), "%1", hostAskQs, []askq.Choice{{Picks: []int{0}}}); !errors.Is(err, ErrNoRawPaste) || !errors.Is(err, errCannotAnswer) {
+		t.Fatalf("an old tmux: %v", err)
 	}
 }

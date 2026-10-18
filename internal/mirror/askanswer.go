@@ -39,6 +39,9 @@ var (
 	// ErrAskUnrecognised: the host could not read the terminal's picker —
 	// Claude Code's layout has probably changed. Nothing was typed.
 	ErrAskUnrecognised = errors.New("mirror: the host could not recognise the terminal's picker (Claude Code may have changed)")
+	// ErrAskBusy: another answer is being typed into that terminal. Nothing
+	// was typed.
+	ErrAskBusy = errors.New("mirror: another answer is being typed into that terminal")
 	// ErrAskNotSent wraps an AnswerWindow error from BEFORE the answer was
 	// sent to the host: nothing can be being typed.
 	ErrAskNotSent = errors.New("mirror: the answer was not sent to the host")
@@ -52,7 +55,7 @@ func AskOutcomeKnown(err error) bool {
 	if err == nil {
 		return true
 	}
-	for _, e := range []error{ErrAskNotSent, ErrAskNoPicker, ErrAskTouched, ErrAskLost, ErrAskUnsupported, ErrAskUnrecognised, ErrAskRefused} {
+	for _, e := range []error{ErrAskNotSent, ErrAskNoPicker, ErrAskTouched, ErrAskLost, ErrAskUnsupported, ErrAskUnrecognised, ErrAskBusy, ErrAskRefused} {
 		if errors.Is(err, e) {
 			return true
 		}
@@ -151,6 +154,8 @@ func askAnswerError(why, refusal string) error {
 		return fmt.Errorf("%w: %s", ErrAskUnsupported, why)
 	case AskRefusalUnrecognised:
 		return fmt.Errorf("%w: %s", ErrAskUnrecognised, why)
+	case AskRefusalBusy:
+		return fmt.Errorf("%w: %s", ErrAskBusy, why)
 	}
 	return fmt.Errorf("%w: %s", ErrAskRefused, why)
 }

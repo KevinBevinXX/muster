@@ -729,6 +729,7 @@ func TestEachFailureSaysWhatTheTerminalHas(t *testing.T) {
 	}{
 		{fmt.Errorf("%w: x", mirror.ErrAskNoPicker), "no longer on the terminal's screen", false},
 		{fmt.Errorf("%w: x", mirror.ErrAskTouched), "Someone has started answering it", false},
+		{fmt.Errorf("%w: x", mirror.ErrAskBusy), "Another answer is being typed into this terminal", false},
 		{fmt.Errorf("%w: x", mirror.ErrAskUnrecognised), "Couldn't recognise the terminal's picker (Claude Code may have changed) — answer it in the terminal.", false},
 		{fmt.Errorf("%w: x", mirror.ErrAskLost), "changed while typing", true},
 		{fmt.Errorf("%w: %w", mirror.ErrAskNotSent, mirror.ErrHostOffline), "The host is offline", false},
@@ -745,6 +746,15 @@ func TestEachFailureSaysWhatTheTerminalHas(t *testing.T) {
 // TestAnUnrecognisedPickerIsCounted: the outcome counter moves for an
 // unrecognised picker (the signal that Claude Code's layout changed).
 func TestAnUnrecognisedPickerIsCounted(t *testing.T) {
+	for err, want := range map[error]string{
+		fmt.Errorf("%w: x", mirror.ErrAskBusy):    "busy",
+		fmt.Errorf("%w: x", mirror.ErrAskTouched): "touched",
+		nil: "typed",
+	} {
+		if got := askTypingResult(err); got != want {
+			t.Errorf("%v: label %q, want %q", err, got, want)
+		}
+	}
 	am, s, ts := askServer(t, true)
 	register(t, ts)
 	region(t, s, ts, `data-ask-state="pending"`)
@@ -805,6 +815,37 @@ func TestAGoneSessionsQuestionExpires(t *testing.T) {
 	if e.State != askq.Expired || e.Note != askGoneNote {
 		t.Fatalf("the gone session's question: %+v", e)
 	}
+	// The session comes back and its transcript shows the terminal's answer:
+	// the expired card still flips to it.
+	setWindows(ws)
+	am.feed(gateTool, gateQs(t), map[string]string{"Which color do you prefer?": "Green", "Which pets do you have?": "Dog"})
+	region(t, s, ts, `data-ask-state="answered-terminal"`)
+}
+
+// TestAHostAwayIsNotASessionGone: the host goes offline for far longer than
+// the grace (its reconnect backoff reaches a minute; scaled here: 4× the
+// grace) and comes back still listing the session: the question is still
+// live. Only time the host is ONLINE without the session counts.
+func TestAHostAwayIsNotASessionGone(t *testing.T) {
+	am, s, ts := askServer(t, true)
+	s.askWatch.mu.Lock()
+	s.askWatch.grace = 150 * time.Millisecond
+	s.askWatch.mu.Unlock()
+	register(t, ts)
+	region(t, s, ts, `data-ask-state="pending"`)
+	setOnline := func(on bool) {
+		am.fakeMirror.mu.Lock()
+		am.fakeMirror.online = on
+		am.fakeMirror.mu.Unlock()
+	}
+	setOnline(false)
+	time.Sleep(600 * time.Millisecond)
+	setOnline(true)
+	time.Sleep(300 * time.Millisecond)
+	if got := s.Questions().Pending(1); len(got) != 1 {
+		t.Fatalf("a question expired while its host was away: %+v", got)
+	}
+	region(t, s, ts, `data-ask-state="pending"`)
 }
 
 // TestANewerQuestionReplacesTheOldCard: Claude asks again in the same
