@@ -38,9 +38,11 @@ import (
 // 🔴 A HOST ACTS ONLY AS ITS OWN SESSIONS. The token names its host; the
 // session id is the caller's claim, and it is believed only when THAT host is
 // connected now and lists a window running that Claude session in any pane
-// (mirrorSessionOf). Another host's session, a session no window shows, or a
-// token of another owner is refused before any tool runs (403), so one host
-// cannot ask, wait or read as another host's session.
+// (mirrorSessionOf). It is checked at each tools/call (handleMirrorMCP), not
+// at connect: another host's session, a session no window shows, or a token
+// of another owner gets a tool error and the tool does not run, so one host
+// cannot ask, wait or read as another host's session. initialize and
+// tools/list need only the token: they say nothing session-specific.
 // ---------------------------------------------------------------------------
 
 // mirrorSessionHeader carries the calling Claude Code session's id.
@@ -174,20 +176,26 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 	}
 	t, _ := r.Context().Value(mirrorHostCtxKey{}).(mirror.Token)
 	sid := strings.TrimSpace(r.Header.Get(mirrorSessionHeader))
-	e, ok := s.mirrorSessionOf(r.Context(), t.Host, sid)
-	if !ok {
-		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": "host " + t.Host + " lists no window running Claude session " +
-			strings.TrimSpace(sid) + " now; a host acts only as its own sessions (send " + mirrorSessionHeader + ")"})
-		return
-	}
-	c := toolCaller{asker: attention.Asker{MirrorHost: t.Host, MirrorSession: sid, Label: e.DisplayTitle() + " @ " + t.Host}}
 	instructions := "muster's tools for a mirrored Claude Code session."
 	if s.attentionToolsOn() {
 		instructions += " " + attentionInstruction
 	}
+	// 🔴 THE SESSION IS BOUND AT tools/call, NOT AT CONNECT. initialize,
+	// tools/list, ping and notifications say nothing session-specific — the
+	// host's token (checked above) is all they need. Claude Code connects at
+	// startup, before its session has a transcript, so no host lists it yet;
+	// binding there failed the connection, and Claude Code never retries one.
+	// A call is bound to a window this host lists running that session — or
+	// refused as a TOOL error the model sees.
 	s.serveMCP(w, r, mcpSurface{
 		tools: s.mirrorTools,
 		call: func(name, args string) string {
+			e, ok := s.awaitMirrorSession(r.Context(), t.Host, sid)
+			if !ok {
+				return toolErr("host %s lists no window running Claude session %q now; a host acts only as its own sessions (its MCP endpoint sends %s)",
+					t.Host, sid, mirrorSessionHeader)
+			}
+			c := toolCaller{asker: attention.Asker{MirrorHost: t.Host, MirrorSession: sid, Label: e.DisplayTitle() + " @ " + t.Host}}
 			if text, ok := s.dispatchCallerTool(r.Context(), c, name, args); ok {
 				return text
 			}
@@ -195,4 +203,33 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 		},
 		instructions: instructions,
 	})
+}
+
+// mirrorBindWait bounds how long a tools/call waits for its host's listing to
+// show the calling session (a var so a test can shorten it). The host pushes
+// a fresh listing right before it forwards a call (mirrorhost.MCPProxy's
+// Refresh), so this covers only that message and this request crossing.
+var mirrorBindWait = 3 * time.Second
+
+// awaitMirrorSession is mirrorSessionOf, re-read until it holds or
+// mirrorBindWait (or the request) ends. A malformed or empty session id is
+// refused at once: no listing can ever show it.
+func (s *Server) awaitMirrorSession(ctx context.Context, host, sid string) (mirror.SessionView, bool) {
+	if !mirror.ValidClaudeSession(sid) {
+		return mirror.SessionView{}, false
+	}
+	deadline := time.Now().Add(mirrorBindWait)
+	for {
+		if e, ok := s.mirrorSessionOf(ctx, host, sid); ok {
+			return e, true
+		}
+		if !time.Now().Before(deadline) {
+			return mirror.SessionView{}, false
+		}
+		select {
+		case <-ctx.Done():
+			return mirror.SessionView{}, false
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }

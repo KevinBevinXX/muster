@@ -3,6 +3,7 @@ package mirrorhost
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"io"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -78,7 +80,15 @@ func proxyFor(base string) *MCPProxy {
 
 func post(t *testing.T, h http.Handler, hdr map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
-	r := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	return postBody(t, h, hdr, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+}
+
+// proxyCall is a tools/call body.
+const proxyCall = `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"attention_ask","arguments":{"question":"q?"}}}`
+
+func postBody(t *testing.T, h http.Handler, hdr map[string]string, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
 	for k, v := range hdr {
 		r.Header.Set(k, v)
 	}
@@ -136,9 +146,26 @@ func TestTheMCPEndpointRefusesWithoutTheSecret(t *testing.T) {
 	}
 }
 
-// TestTheMCPEndpointForwardsTheCallersIdentity: the pane resolves to its
-// Claude session, which goes to muster with the HOST's token and the body
-// unchanged; muster's answer comes back as it was.
+// toolErrorText is a tools/call answer's tool-error text, or fails.
+func toolErrorText(t *testing.T, w *httptest.ResponseRecorder) string {
+	t.Helper()
+	var r struct {
+		ID     json.RawMessage `json:"id"`
+		Result struct {
+			Content []struct{ Text string } `json:"content"`
+			IsError bool                    `json:"isError"`
+		} `json:"result"`
+	}
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &r) != nil || !r.Result.IsError || len(r.Result.Content) != 1 || string(r.ID) != "7" {
+		t.Fatalf("not a tool error for call 7: %d %s", w.Code, w.Body)
+	}
+	return r.Result.Content[0].Text
+}
+
+// TestTheMCPEndpointForwardsTheCallersIdentity: a tools/call's pane resolves
+// to its Claude session, which goes to muster with the HOST's token and the
+// body unchanged; muster's answer comes back as it was. Anything else is
+// forwarded with NO session (it needs none).
 func TestTheMCPEndpointForwardsTheCallersIdentity(t *testing.T) {
 	up, srv := newUpstream(t, func(w http.ResponseWriter) {
 		w.Header().Set("Content-Type", "application/json")
@@ -146,7 +173,8 @@ func TestTheMCPEndpointForwardsTheCallersIdentity(t *testing.T) {
 		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`)
 	})
 	p := proxyFor(srv.URL + "/base/")
-	w := post(t, p, map[string]string{"Authorization": "Bearer " + proxySecret, MCPPaneHeader: "%7", MCPTmuxHeader: proxyTMUX})
+	auth := func(h map[string]string) map[string]string { h["Authorization"] = "Bearer " + proxySecret; return h }
+	w := postBody(t, p, auth(map[string]string{MCPPaneHeader: "%7", MCPTmuxHeader: proxyTMUX}), proxyCall)
 	if w.Code != http.StatusTeapot || w.Body.String() != `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}` || w.Header().Get("Content-Type") != "application/json" {
 		t.Fatalf("%d %q %s", w.Code, w.Header().Get("Content-Type"), w.Body)
 	}
@@ -155,7 +183,7 @@ func TestTheMCPEndpointForwardsTheCallersIdentity(t *testing.T) {
 	}
 	r := up.calls[0]
 	if r.URL.Path != "/base/mirror/mcp" || r.Header.Get("Authorization") != "Bearer "+proxyToken || r.Header.Get(MCPSessionHeader) != proxySID ||
-		up.body[0] != `{"jsonrpc":"2.0","id":1,"method":"tools/list"}` {
+		up.body[0] != proxyCall {
 		t.Fatalf("forwarded %s %q %q %s", r.URL.Path, r.Header.Get("Authorization"), r.Header.Get(MCPSessionHeader), up.body[0])
 	}
 	// The local secret never leaves the machine.
@@ -163,29 +191,51 @@ func TestTheMCPEndpointForwardsTheCallersIdentity(t *testing.T) {
 		t.Fatal("the local secret was forwarded")
 	}
 	// A pane in a split (not the window's active one) is its own session.
-	if w := post(t, p, map[string]string{"Authorization": "Bearer " + proxySecret, MCPPaneHeader: "%9", MCPTmuxHeader: proxyTMUX}); w.Code != http.StatusTeapot {
+	if w := postBody(t, p, auth(map[string]string{MCPPaneHeader: "%9", MCPTmuxHeader: proxyTMUX}), proxyCall); w.Code != http.StatusTeapot {
 		t.Fatalf("a split pane: %d %s", w.Code, w.Body)
 	}
 	if got := up.calls[1].Header.Get(MCPSessionHeader); got != splitSID {
 		t.Fatalf("the split pane forwarded session %q, want %q", got, splitSID)
 	}
-	// A shell pane, an unknown pane, a session id with no pane, another tmux
-	// server's pane, and no tmux at all are refused here.
+	// A shell pane, an unknown pane, a session id with no pane and no pane at
+	// all: the CALL is refused here as a tool error, and not forwarded.
 	for name, hdr := range map[string]map[string]string{
 		"a shell pane":          {MCPPaneHeader: "%8", MCPTmuxHeader: proxyTMUX},
 		"an unknown pane":       {MCPPaneHeader: "%99", MCPTmuxHeader: proxyTMUX},
 		"a session id, no pane": {MCPSessionHeader: proxySID, MCPTmuxHeader: proxyTMUX},
-		"another tmux server":   {MCPPaneHeader: "%7", MCPTmuxHeader: "/tmp/tmux-1000/other,99,0"},
-		"no tmux":               {MCPPaneHeader: "%7"},
-		"no name":               {},
+		"no pane":               {MCPTmuxHeader: proxyTMUX},
 	} {
-		hdr["Authorization"] = "Bearer " + proxySecret
-		if w := post(t, p, hdr); w.Code != http.StatusBadRequest {
-			t.Errorf("%s: %d %s", name, w.Code, w.Body)
+		if text := toolErrorText(t, postBody(t, p, auth(hdr), proxyCall)); !strings.Contains(strings.ToLower(text), "pane") {
+			t.Errorf("%s: %s", name, text)
+		}
+	}
+	// Another tmux server's pane, and no tmux at all, are refused for ANY
+	// request: no pane there is this host's.
+	for name, hdr := range map[string]map[string]string{
+		"another tmux server": {MCPPaneHeader: "%7", MCPTmuxHeader: "/tmp/tmux-1000/other,99,0"},
+		"no tmux":             {MCPPaneHeader: "%7"},
+		"no name":             {},
+	} {
+		for _, body := range []string{proxyCall, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`} {
+			if w := postBody(t, p, auth(hdr), body); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "tmux server") {
+				t.Errorf("%s: %d %s", name, w.Code, w.Body)
+			}
 		}
 	}
 	if up.n() != 2 {
 		t.Fatalf("%d calls after the refusals, want 2", up.n())
+	}
+	// initialize, tools/list, a notification: forwarded from a pane with no
+	// Claude session (yet), with no session header.
+	for _, body := range []string{`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`} {
+		if w := postBody(t, p, auth(map[string]string{MCPPaneHeader: "%8", MCPTmuxHeader: proxyTMUX}), body); w.Code != http.StatusTeapot {
+			t.Fatalf("%s: %d %s", body, w.Code, w.Body)
+		}
+		last := up.calls[up.n()-1]
+		if _, set := last.Header[http.CanonicalHeaderKey(MCPSessionHeader)]; set {
+			t.Fatalf("%s was forwarded with a session %q", body, last.Header.Get(MCPSessionHeader))
+		}
 	}
 }
 
@@ -378,11 +428,11 @@ func TestASplitPaneBeyondTheBoundIsRefusedWithTheReason(t *testing.T) {
 	p := proxyFor(srv.URL)
 	p.Windows = &windowsBackend{windows: []WindowInfo{{Session: "work", ID: "@1", Pane: "%7", Claude: &ClaudePane{Pane: "%7", Gen: proxySID}, Others: others}}}
 	last := "%" + itoa(20+mirror.MaxOtherClaudePerWindow)
-	w := post(t, p, map[string]string{"Authorization": "Bearer " + proxySecret, MCPPaneHeader: last, MCPTmuxHeader: proxyTMUX})
-	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "at most") {
-		t.Fatalf("the pane past the bound: %d %s", w.Code, w.Body)
+	w := postBody(t, p, map[string]string{"Authorization": "Bearer " + proxySecret, MCPPaneHeader: last, MCPTmuxHeader: proxyTMUX}, proxyCall)
+	if text := toolErrorText(t, w); !strings.Contains(text, "at most") {
+		t.Fatalf("the pane past the bound: %s", text)
 	}
-	if w := post(t, p, map[string]string{"Authorization": "Bearer " + proxySecret, MCPPaneHeader: "%20", MCPTmuxHeader: proxyTMUX}); w.Code != http.StatusOK {
+	if w := postBody(t, p, map[string]string{"Authorization": "Bearer " + proxySecret, MCPPaneHeader: "%20", MCPTmuxHeader: proxyTMUX}, proxyCall); w.Code != http.StatusOK {
 		t.Fatalf("a pane within the bound: %d %s", w.Code, w.Body)
 	}
 	if up.n() != 1 {
@@ -427,5 +477,66 @@ func TestTheSecretReadChecksTheOpenedFile(t *testing.T) {
 	}
 	if s, err := readMCPSecret(good); err != nil || s != strings.Repeat("b", 64) {
 		t.Fatalf("the private file: %q %v", s, err)
+	}
+}
+
+// claudeCodeShows is how Claude Code 2.1.289 renders an MCP server's error
+// text (measured: "%110" showed as "pane 0"): every "%" + two hex digits is
+// decoded to that byte; anything else is left alone.
+func claudeCodeShows(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+2 < len(s) && isHex(s[i+1]) && isHex(s[i+2]) {
+			n, _ := strconv.ParseUint(s[i+1:i+3], 16, 8)
+			b.WriteByte(byte(n))
+			i += 2
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+func isHex(c byte) bool { return strings.IndexByte("0123456789abcdefABCDEF", c) >= 0 }
+
+// hundredPanes lists %110 running proxySID and %111 a shell.
+type hundredPanes struct{}
+
+func (hundredPanes) Windows(context.Context) ([]WindowInfo, error) {
+	return []WindowInfo{
+		{Session: "work", ID: "@40", Pane: "%110", Claude: &ClaudePane{Pane: "%110", Gen: proxySID}},
+		{Session: "work", ID: "@41", Pane: "%111"},
+	}, nil
+}
+
+// TestThePaneIsTheValueClaudeCodeSends: "X-Muster-Pane: %110", exactly as
+// Claude Code 2.1.289 sent it (captured from a real `claude` through its
+// headersHelper), names pane %110 — nothing decodes it on this side. A refusal
+// names the value as received AND its number without the "%", so the message
+// still reads right after Claude Code percent-decodes it for display.
+func TestThePaneIsTheValueClaudeCodeSends(t *testing.T) {
+	up, srv := newUpstream(t, func(w http.ResponseWriter) { _, _ = io.WriteString(w, `{}`) })
+	p := proxyFor(srv.URL)
+	p.Windows = hundredPanes{}
+	hdr := map[string]string{"Authorization": "Bearer " + proxySecret, MCPPaneHeader: "%110", MCPTmuxHeader: proxyTMUX}
+	if w := postBody(t, p, hdr, proxyCall); w.Code != http.StatusOK || up.n() != 1 || up.calls[0].Header.Get(MCPSessionHeader) != proxySID {
+		t.Fatalf("pane %%110: %d %s, %d forwards", w.Code, w.Body, up.n())
+	}
+	hdr[MCPPaneHeader] = "%111"
+	text := toolErrorText(t, postBody(t, p, hdr, proxyCall))
+	if !strings.Contains(text, `pane \"%111\" (tmux pane number 111)`) {
+		t.Fatalf("the refusal does not name the pane as received: %s", text)
+	}
+	if shown := claudeCodeShows(text); !strings.Contains(shown, "(tmux pane number 111)") {
+		t.Fatalf("as Claude Code shows it: %q", shown)
+	}
+	// CONTROL: the decoder really does what Claude Code did to "%110".
+	if got := claudeCodeShows("pane %110"); got != "pane \x110" {
+		t.Fatalf("instrument: %q", got)
+	}
+	// A value that is not a pane id is quoted as received, odd bytes visible.
+	hdr[MCPPaneHeader] = "x\x01y"
+	if text := toolErrorText(t, postBody(t, p, hdr, proxyCall)); !strings.Contains(text, `\"x\\x01y\"`) {
+		t.Fatalf("an odd value: %s", text)
 	}
 }

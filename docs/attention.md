@@ -137,19 +137,29 @@ too, through its host's `muster-mirror`:
    only — and mirrors without it.
 2. The session names itself with its tmux pane and tmux server:
    `X-Muster-Pane: ${TMUX_PANE:-}` and `X-Muster-Tmux: ${TMUX:-}`. The host
-   refuses a server that is not the one it mirrors (pane ids are per server),
-   then maps the pane to the Claude session running in it now — any pane of a
-   window, not only its active one, up to 4 other panes per window and 32 per
-   host (what the host reports to muster; a pane past that is refused with that
-   reason).
-3. The host forwards the call to muster's `POST /mirror/mcp` with its mirror
-   token and that Claude session id. muster acts as the token's owner, and only
-   if **that host** lists a window running **that session** (in any pane) right
-   now — another host's session, a session no window shows, or another owner's
-   token is refused (403) before any tool runs. The tool set is exactly
+   refuses any request from a server that is not the one it mirrors (pane ids
+   are per server).
+3. **The session is bound at each tool CALL, not when Claude Code connects.**
+   Claude Code connects as it starts, before its new session has written its
+   first message — so before anything can say which session runs in the pane —
+   and it does not retry a connection that failed. So `initialize`,
+   `tools/list` and notifications are forwarded with no session. For a
+   `tools/call` the host reads its panes afresh and maps the pane to the Claude
+   session running in it now — any pane of a window, not only its active one,
+   up to 4 other panes per window and 32 per host (what the host reports to
+   muster) — then sends muster its window list at once, and forwards the call.
+   A call it cannot bind (no Claude session in that pane yet, a pane past the
+   bound) is answered as a **tool error** naming the pane as received, which
+   the model reads; the connection stays up.
+4. The host forwards the call to muster's `POST /mirror/mcp` with its mirror
+   token and that Claude session id. muster acts as the token's owner, and runs
+   a call only if **that host** lists a window running **that session** (in
+   any pane) — waiting up to 3 seconds for the host's list to arrive. Another
+   host's session, a session no window shows, or another owner's token gets a
+   tool error and the tool does not run. The tool set is exactly
    `attention_ask`, `attention_wait`, `attention_cancel` and the task tools; the
    chief's tools are not on it. The token is checked on every call (a revoked
-   one is refused at its next call). After 10 failed checks of one token from
+   one is refused at its next call, `initialize` included). After 10 failed checks of one token from
    one address within a minute, that token from that address is answered 429 —
    without a token lookup — until the minute has passed. Another token from the
    same address (hosts behind one NAT or Cloudflare edge share one) is checked

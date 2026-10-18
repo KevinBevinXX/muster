@@ -268,7 +268,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		// host mirrors without it — mirroring is the job this process exists for.
 		// 🔴 AND NEVER IN THE WAY: it runs on its own goroutine, so however
 		// long setting it up takes, mirroring starts now.
-		proxy := &mirrorhost.MCPProxy{URL: *url, Token: token, AllowHTTP: *allowHTTP, Logger: logger}
+		proxy := &mirrorhost.MCPProxy{URL: *url, Token: token, AllowHTTP: *allowHTTP, Logger: logger, Refresh: c.RefreshNow}
 		mcpSettled = make(chan struct{})
 		go func() {
 			defer close(mcpSettled)
