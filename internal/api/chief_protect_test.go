@@ -391,12 +391,17 @@ func (s *Server) ledgerControlNarrow() {
 			"about that shape", controls)
 	}
 	sort.Strings(names)
-	if got, want := strings.Join(names, ","), "dismissTask,handleAgentDelete"; got != want {
+	if got, want := strings.Join(names, ","), "dismissTask,handleAgentDelete,replaceChief"; got != want {
 		t.Fatalf("declarations that can reach the provisioner's Destroy = %s, want %s — a destroy "+
 			"path was added or removed; guard it with agentIsChief and add its route to the tests above", got, want)
 	}
+	// 🔴 replaceChief IS THE ONE DELIBERATE BYPASS: it exists to destroy the
+	// chief, behind an explicit confirm (chief_replace.go;
+	// TestReplacingTheChiefNeedsConfirmAndDeletesOnlyThen pins the confirm). Every
+	// other destroy path must still ask agentIsChief.
+	bypass := map[string]bool{"replaceChief": true}
 	for _, n := range names {
-		if !users[n] {
+		if !bypass[n] && !users[n] {
 			t.Errorf("%s can reach the provisioner's Destroy without mentioning agentIsChief", n)
 		}
 	}

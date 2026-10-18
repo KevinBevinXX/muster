@@ -1032,6 +1032,9 @@ func (a *Adapter) buildSpec(ctx context.Context, ag agents.Agent) (provision.Spe
 	if err != nil {
 		return provision.Spec{}, err
 	}
+	if agents.ResolveKind(ag.Kind) == agents.KindClaudeCode {
+		return a.buildClaudeCodeSpec(ag, cfg)
+	}
 	if !agents.IsChiefName(ag.Name) {
 		return agentspec.Build(ag, cfg, agentspec.Options{
 			Instructions: agentspec.WorkerInstructions,
@@ -1041,6 +1044,45 @@ func (a *Adapter) buildSpec(ctx context.Context, ag agents.Agent) (provision.Spe
 	return agentspec.Build(ag, cfg, agentspec.Options{
 		Instructions:  agentspec.ChiefInstructions(store, cfg.Plugins),
 		CairnEligible: true,
+	})
+}
+
+// buildClaudeCodeSpec is buildSpec for a claude-code row.
+//
+// 🔴 A WORKER GETS NO INSTRUCTIONS, AS BEFORE — NOT WorkerInstructions. That prose
+// teaches the in-pod `muster` CLI and the autosave daemon's log, and the
+// claude-code image carries neither; now that agentspec PLACES a claude-code
+// agent's Instructions (the managed CLAUDE.md), passing it would ship a prompt
+// describing tools the instance does not have. A worker's task reaches it as its
+// kickoff turn. A claude-code worker prose is its own change.
+//
+// 🔴 THE CHIEF (the reserved slug) GETS ChiefInstructionsClaudeCode AND IS NEVER
+// CairnEligible. The subsystem-store client is a Python program installed by an
+// Init step, and a claude-code spec carries no Init (the image's apt list has no
+// python3 either); the instance's network policy admits public 443 only, so the
+// store would be out of reach regardless — the credential would
+// be a secret placed for nothing, and agentspec refuses CairnEligible for this
+// kind anyway. When the deployment HAS a store configured that is a capability the
+// gateway chief would have had, so it is said in the log rather than dropped
+// silently.
+//
+// 🔴 A CHIEF WITH NO MCP SERVER IS REFUSED. Every tool its prose names is an MCP
+// tool, and without [agentspec.Config.ClaudeCodeMCPOffered] ccd registers no
+// server: the chief would boot with no muster tools and a prompt promising them.
+func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config) (provision.Spec, error) {
+	if !agents.IsChiefName(ag.Name) {
+		return agentspec.Build(ag, cfg, agentspec.Options{})
+	}
+	if !cfg.ClaudeCodeMCPOffered() {
+		return provision.Spec{}, fmt.Errorf("agentprovision: chief %q is kind %s, which reaches muster's tools only "+
+			"over its MCP server, and this deployment offers none (MUSTER_AGENT_CONNECT_URL is unset)", ag.Name, agents.KindClaudeCode)
+	}
+	if cfg.CairnConfigured() {
+		a.log.Printf("agentprovision: chief %q is kind %s: the subsystem store (cairn) is configured but is SKIPPED "+
+			"for this kind — the client is not in its image and its network policy cannot reach the store", ag.Name, agents.KindClaudeCode)
+	}
+	return agentspec.Build(ag, cfg, agentspec.Options{
+		Instructions: agentspec.ChiefInstructionsClaudeCode(cfg.Plugins),
 	})
 }
 

@@ -170,6 +170,7 @@ POST /agents/{id}/start
 POST /agents/{id}/stop
 POST /agents/{name}/send
 POST /api/agents/{name}/messages
+POST /api/chief/replace
 POST /api/flows/jobs
 POST /api/push/subscribe
 POST /api/push/unsubscribe

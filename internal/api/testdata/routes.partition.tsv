@@ -83,10 +83,10 @@
 #
 # THIS FILE'S OWN COUNTS (re-derived, not copied from the plan)
 #
-# counts: muster=69 router=63 shared=14 total=146
+# counts: muster=70 router=63 shared=14 total=147
 #
-#   muster + router + shared = 69 + 63 + 14 = 146
-#   muster's projected post-carve registration count = 69 + 14 = 83
+#   muster + router + shared = 70 + 63 + 14 = 147
+#   muster's projected post-carve registration count = 70 + 14 = 84
 #
 #   ⚠ 70 / 147 / 84 UNTIL THE CARDS LOST THEIR PREVIEW. GET
 #   /ui/agents/{id}/recent served only the cards' lazy recent-log slot and was
@@ -265,6 +265,9 @@ router	attention.go:registerAttentionRoutes	POST /api/attention
 router	attention.go:registerAttentionRoutes	POST /api/attention/{id}/resolve
 router	server.go:registerRoutes	POST /api/auto-approve
 router	server.go:registerRoutes	POST /api/auto-approve-all
+# NOTE (POST /api/chief/replace): replacing the chief on another agent kind (chief_replace.go) — the agent
+# is muster's, so the route is too.
+muster	server.go:registerRoutes	POST /api/chief/replace
 router	layout.go:registerLayoutRoutes	POST /api/layout/views
 router	layout.go:registerLayoutRoutes	POST /api/layout/views/{name}/panels
 router	server.go:registerRoutes	POST /api/notify

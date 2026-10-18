@@ -361,6 +361,18 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 			want: "32f5b19be15dfa71914f63a810adcf3215136c034ad29c9a7c6ef234e10523e7",
 			min:  1000,
 		},
+		{
+			name: "chiefIdentityClaudeCode",
+			text: chiefIdentityClaudeCode,
+			want: "b6bb364754ec14646aac5c1789b750df82b3cccf564b88702d709f12749aa5de",
+			min:  1000,
+		},
+		{
+			name: "chiefPluginSectionClaudeCode",
+			text: chiefPluginSectionClaudeCode,
+			want: "d81b1176d0272da125db9558392393d537ade48dbcad0e8d7a9117b6323c2b16",
+			min:  1000,
+		},
 	} {
 		normalised := norm(p.text)
 		// Control: refuse a digest over a string too short to be the part it names.
@@ -413,6 +425,16 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 			name: "unconfigured, plugins on",
 			got:  ChiefInstructions(false, true),
 			want: chiefIdentity + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefPluginSection,
+		},
+		{
+			name: "claude-code",
+			got:  ChiefInstructionsClaudeCode(false),
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads,
+		},
+		{
+			name: "claude-code, plugins on",
+			got:  ChiefInstructionsClaudeCode(true),
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefPluginSectionClaudeCode,
 		},
 	} {
 		if c.got != c.want {
@@ -658,5 +680,54 @@ func TestThePluginSectionShipsOnlyWhenPluginsAreOn(t *testing.T) {
 		if !strings.Contains(strings.Join(strings.Fields(on), " "), claim) {
 			t.Errorf("the plugin section does not state %q", claim)
 		}
+	}
+}
+
+// TestTheClaudeCodePluginSectionIsTheGatewaysWithMCPNames pins the RELATIONSHIP
+// between the two plugin sections, not each side: the claude-code one is the
+// gateway one with exactly the two tool names replaced by their MCP spelling.
+// An edit to one section's claims that is not made to the other fails here —
+// the two runtimes would otherwise be told different rules about outside text.
+func TestTheClaudeCodePluginSectionIsTheGatewaysWithMCPNames(t *testing.T) {
+	derived := strings.NewReplacer(
+		"`task_create_gated`", "`mcp__muster__task_create_gated`",
+		"`reply_draft`", "`mcp__muster__reply_draft`",
+	).Replace(chiefPluginSection)
+	if derived == chiefPluginSection {
+		t.Fatal("control: the replacer changed nothing, so the comparison below would compare a section to itself")
+	}
+	if derived != chiefPluginSectionClaudeCode {
+		t.Fatalf("the claude-code plugin section is not the gateway's with the two MCP names:\n--- derived\n%s\n--- actual\n%s",
+			derived, chiefPluginSectionClaudeCode)
+	}
+}
+
+// TestTheClaudeCodeSupervisorProseIsTrueInItsImage: the claims that differ by
+// runtime, spelled here rather than read from the constants. The claude-code
+// prose names its MCP tools and never the muster CLI or the store; the gateway
+// prose is the reverse on the CLI.
+func TestTheClaudeCodeSupervisorProseIsTrueInItsImage(t *testing.T) {
+	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	for _, plugins := range []bool{true, false} {
+		cc := norm(ChiefInstructionsClaudeCode(plugins))
+		for _, must := range []string{
+			"You are NOT a task-executing worker.",
+			"In this session those tools are named `mcp__muster__<tool>`.",
+			"There is NO `muster` CLI in this instance",
+			"muster's MCP server did not connect",
+			"You have NO durable surface in this deployment.",
+		} {
+			if !strings.Contains(cc, must) {
+				t.Errorf("plugins=%v: the claude-code prose does not say %q", plugins, must)
+			}
+		}
+		for _, mustNot := range []string{"is on your PATH", "muster agent task get", "cairn", "AGENTS.md", "name: muster-supervisor"} {
+			if strings.Contains(cc, mustNot) {
+				t.Errorf("plugins=%v: the claude-code prose says %q, which is false in its image", plugins, mustNot)
+			}
+		}
+	}
+	if gw := norm(ChiefInstructions(false, true)); !strings.Contains(gw, "The `muster` CLI is on your PATH") || strings.Contains(gw, "mcp__muster__") {
+		t.Error("the gateway prose changed runtime: it must keep the CLI and must not name MCP tools")
 	}
 }

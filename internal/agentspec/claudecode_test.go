@@ -43,7 +43,7 @@ func ccAgent() agents.Agent {
 // checking, so a changed constant reddens here.
 func TestTheClaudeCodeSpecPinsItsProfile(t *testing.T) {
 	a := ccAgent()
-	spec := mustBuild(t, a, ccConfig(), Options{Instructions: "ignored for this kind"})
+	spec := mustBuild(t, a, ccConfig(), Options{})
 
 	if spec.Runtime.Image != "ghcr.io/example-org/claude-code-agent:0a1b2c3" {
 		t.Errorf("image = %q", spec.Runtime.Image)
@@ -323,5 +323,36 @@ func TestEveryClaudeCodeSpecIsIsolatedAndNoCallerCanShareItsPortList(t *testing.
 	second := mustBuild(t, ccAgent(), cfg, Options{Instructions: "anything"})
 	if want := (provision.Network{Isolate: true, PublicEgressTCPPorts: []int{443}}); !reflect.DeepEqual(second.Network, want) {
 		t.Fatalf("a second claude-code spec's network = %+v, want %+v: the first caller's edit leaked into it", second.Network, want)
+	}
+}
+
+// TestAClaudeCodeAgentsInstructionsAreItsManagedClaudeMD: Options.Instructions is
+// placed as exactly one file, at the CLI's managed-policy memory path (a literal
+// here, not the constant), carrying the text verbatim, non-secret, with the
+// driver's default mode — and with NO instructions there is no file at all. It is
+// outside /data, so nothing on the agent's volume (its workspace, a repository's
+// own CLAUDE.md) is shadowed.
+func TestAClaudeCodeAgentsInstructionsAreItsManagedClaudeMD(t *testing.T) {
+	const prose = "# a supervisor\nline two, distinct from every constant\n"
+	spec := mustBuild(t, ccAgent(), ccConfig(), Options{Instructions: prose})
+	want := []provision.File{{Path: "/etc/claude-code/CLAUDE.md", Content: []byte(prose)}}
+	if !reflect.DeepEqual(spec.Files, want) {
+		t.Fatalf("files = %+v, want %+v", spec.Files, want)
+	}
+	if strings.HasPrefix(spec.Files[0].Path, spec.Workspace.Path+"/") {
+		t.Fatalf("the instructions land on the agent's own volume (%s), where they would shadow its files", spec.Workspace.Path)
+	}
+	if none := mustBuild(t, ccAgent(), ccConfig(), Options{}); len(none.Files) != 0 {
+		t.Fatalf("no instructions, but files %+v", none.Files)
+	}
+	// The gateway kind still writes AGENTS.md in its workspace, not this path.
+	gw := mustBuild(t, fixtureAgent(), ccConfig(), Options{Instructions: prose})
+	for _, f := range gw.Files {
+		if f.Path == "/etc/claude-code/CLAUDE.md" {
+			t.Fatal("a gateway agent was given the claude-code managed CLAUDE.md")
+		}
+	}
+	if gw.Files[0].Path != "/workspace/AGENTS.md" && !strings.HasSuffix(gw.Files[0].Path, "/AGENTS.md") {
+		t.Fatalf("gateway instructions moved: %v", gw.Files[0].Path)
 	}
 }

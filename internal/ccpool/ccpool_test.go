@@ -331,3 +331,28 @@ func TestSelectChoosesOnlyAmongTheOwnersOwnAccounts(t *testing.T) {
 		t.Fatalf("a member's agent marking the admin's account: err = %v", err)
 	}
 }
+
+// TestAuthFailureNamesADeadAccountAndOnlyForItsCurrentToken: the chief
+// replacement's pre-flight. A mark against the CURRENT token's fingerprint is
+// a reason; a mark against a rotated-away token, a rate limit, or no mark is
+// not; an account the owner lacks is ErrUnknownAccount.
+func TestAuthFailureNamesADeadAccountAndOnlyForItsCurrentToken(t *testing.T) {
+	st := &fakeStore{marks: map[string]Mark{
+		"gamma": {AuthFailedAt: t0, AuthFailedDetail: "invalid x-api-key", AuthFailedToken: Fingerprint(tokGamma)},
+		"beta":  {AuthFailedAt: t0, AuthFailedToken: Fingerprint("a-token-since-rotated-away")},
+		"alpha": {RateLimitedAt: t0},
+	}}
+	p := newPool(t, st)
+	why, err := p.AuthFailure(context.Background(), opOwner, "gamma")
+	if err != nil || !strings.Contains(why, `"gamma" failed authentication`) || !strings.Contains(why, "invalid x-api-key") {
+		t.Fatalf("gamma: %q %v", why, err)
+	}
+	for _, n := range []string{"beta", "alpha"} {
+		if why, err := p.AuthFailure(context.Background(), opOwner, n); err != nil || why != "" {
+			t.Fatalf("%s: %q %v; want usable", n, why, err)
+		}
+	}
+	if _, err := p.AuthFailure(context.Background(), opOwner, "delta"); !errors.Is(err, ErrUnknownAccount) {
+		t.Fatalf("delta: %v", err)
+	}
+}

@@ -44,7 +44,7 @@ import (
 // status/comment, agent ls/resolve/messages, agent task get/comment/status, and
 // chief ask. If a thirteenth is genuinely wanted, change this number, add its
 // ledger row, and say so in the commit — do not discover it in a diff.
-const wantVerbCount = 19
+const wantVerbCount = 20
 
 // minRunnableCommands is a hardcoded floor BELOW wantVerbCount. It exists so
 // that a tree wired to NOTHING cannot pass this file vacuously: a tree that lost
@@ -80,6 +80,9 @@ var wiring = []struct {
 	// route asserted here is the SECOND of its two requests.
 	{"chief ask", []string{"chief", "ask", "--text", "how are things?"},
 		"POST /api/agents/chief/messages"},
+	// Replacing the chief (chief_replace.go): without --confirm the server
+	// changes nothing and answers the plan.
+	{"chief replace", []string{"chief", "replace", "--kind", "claude-code", "--cc-account", "acct", "--confirm", "chief"}, "POST /api/chief/replace"},
 	// Accounts PR 6: personal API tokens and the identity probe.
 	{"token ls", []string{"token", "ls"}, "GET /api/tokens"},
 	{"token revoke", []string{"token", "revoke", "9"}, "DELETE /api/tokens/9"},
@@ -194,6 +197,7 @@ func TestEveryCommandReachesItsRoute(t *testing.T) {
 			h.json("GET /api/flows/jobs", http.StatusOK, `[]`)
 			h.json("GET /api/flows/jobs/9", http.StatusOK, `{"id":9,"status":"done"}`)
 			h.json("POST /api/routes/rt_0123456789abcdef01234567/reply", http.StatusOK, `{"route_id":"rt_0123456789abcdef01234567","state":"relayed","nested":{"a":1}}`)
+			h.json("POST /api/chief/replace", http.StatusOK, `{"deleted":null,"created":true,"agent":{"id":2,"name":"chief"}}`)
 
 			got := h.runCLI(w.args...)
 			if got.code != exitOK {

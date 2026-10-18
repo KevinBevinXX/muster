@@ -143,10 +143,11 @@ func TestChiefAskFailsAtTheResolveStepWithoutWriting(t *testing.T) {
 	}
 }
 
-// TestChiefFamilyIsOneVerbWide is the structural half of the split decision: the
+// TestChiefFamilyIsAskAndReplace is the structural half of the split decision: the
 // approval-gated write verbs stayed with the upstream CLI, and this binary must
-// not grow them back without that being a deliberate, reviewed change.
-func TestChiefFamilyIsOneVerbWide(t *testing.T) {
+// not grow them back without that being a deliberate, reviewed change. `replace`
+// is that kind of change: it reaches muster's own POST /api/chief/replace.
+func TestChiefFamilyIsAskAndReplace(t *testing.T) {
 	root := newRootCmd(inspectApp())
 	var names []string
 	for _, c := range root.Commands() {
@@ -157,10 +158,64 @@ func TestChiefFamilyIsOneVerbWide(t *testing.T) {
 			names = append(names, sub.Name())
 		}
 	}
-	if len(names) != 1 || names[0] != "ask" {
-		t.Fatalf("the `chief` family has %v, want exactly [ask].\n"+
+	if strings.Join(names, ",") != "ask,replace" {
+		t.Fatalf("the `chief` family has %v, want exactly [ask replace].\n"+
 			"The approval-gated pane writes reach routes this project does not serve; a verb for "+
 			"one here would land on muster and 404 as exit 7 — 'this client is newer than the "+
 			"server' — which is a confident wrong diagnosis.", names)
+	}
+}
+
+// TestChiefReplaceSendsItsFlagsAndShowsThePlanWithoutConfirm: the verb sends
+// exactly its four fields (values pairwise distinct, so a swapped flag shows),
+// and the server's no-confirm answer — 428 with the plan in its error — exits
+// usage (nothing was changed) with that plan on stderr and nothing on stdout.
+func TestChiefReplaceSendsItsFlagsAndShowsThePlanWithoutConfirm(t *testing.T) {
+	h := newHarness(t)
+	h.json("POST /api/chief/replace", http.StatusPreconditionRequired,
+		`{"error":"nothing was changed: the confirmed call DELETES agent chief (id 104, kind gateway, status running). Repeat with confirm \"chief\" to apply it."}`)
+	got := h.runCLI("chief", "replace", "--kind", "claude-code", "--cc-account", "acct-one")
+	if got.code != exitUsage {
+		t.Fatalf("exit = %d, want %d (usage: nothing changed); stderr=%q", got.code, exitUsage, got.stderr)
+	}
+	if !strings.Contains(got.stderr, "DELETES agent chief (id 104") || got.stdout != "" {
+		t.Fatalf("the plan did not reach stderr, or stdout was written: stdout=%q stderr=%q", got.stdout, got.stderr)
+	}
+	reqs := h.nonHealthRequests()
+	if len(reqs) != 1 || reqs[0].method+" "+reqs[0].uri != "POST /api/chief/replace" || reqs[0].auth != "Bearer "+testToken {
+		t.Fatalf("requests = %+v", reqs)
+	}
+	var sent map[string]any
+	if err := json.Unmarshal([]byte(reqs[0].body), &sent); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"kind": "claude-code", "cc_account": "acct-one", "model": "", "confirm": ""}
+	if len(sent) != len(want) {
+		t.Fatalf("body = %v, want %v", sent, want)
+	}
+	for k, v := range want {
+		if sent[k] != v {
+			t.Fatalf("body[%s] = %v, want %v (body %v)", k, sent[k], v, sent)
+		}
+	}
+
+	h2 := newHarness(t)
+	h2.json("POST /api/chief/replace", http.StatusOK, `{"deleted":{"id":104},"created":true,"agent":{"id":105,"name":"chief"}}`)
+	got = h2.runCLI("chief", "replace", "--kind", "gateway", "--model", "m-two", "--confirm", "chief")
+	if got.code != exitOK || !strings.Contains(got.stdout, `"created": true`) {
+		t.Fatalf("confirmed run: exit %d stdout %q stderr %q", got.code, got.stdout, got.stderr)
+	}
+	if err := json.Unmarshal([]byte(h2.nonHealthRequests()[0].body), &sent); err != nil || sent["confirm"] != "chief" ||
+		sent["model"] != "m-two" || sent["kind"] != "gateway" {
+		t.Fatalf("confirmed body = %v (%v)", sent, err)
+	}
+}
+
+// TestChiefReplaceRefusesAMissingKindBeforeSending: no request without --kind.
+func TestChiefReplaceRefusesAMissingKindBeforeSending(t *testing.T) {
+	h := newHarness(t)
+	got := h.runCLI("chief", "replace", "--confirm", "chief")
+	if got.code != exitUsage || !strings.Contains(got.stderr, "--kind is required") || len(h.nonHealthRequests()) != 0 {
+		t.Fatalf("exit %d stderr %q requests %d", got.code, got.stderr, len(h.nonHealthRequests()))
 	}
 }

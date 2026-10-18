@@ -768,6 +768,15 @@ type AgentKinds interface {
 	Unavailable(ctx context.Context, owner int64) map[string]string
 }
 
+// ClaudeAccountHealth is an optional extension of [AgentKinds]: whether one of
+// owner's Claude accounts can authenticate. "" means usable; a sentence says why
+// not. The chief replacement asks it before deleting anything
+// (chief_replace.go); dispatch does not, because a pin there is an override.
+// cmd/muster-server's kindSet implements it (asserted there).
+type ClaudeAccountHealth interface {
+	ClaudeAccountAuthFailure(ctx context.Context, owner int64, account string) (string, error)
+}
+
 // enabledKinds is Extensions.Kinds.Enabled with the nil case resolved.
 func (e Extensions) enabledKinds() []string {
 	if e.Kinds == nil {
