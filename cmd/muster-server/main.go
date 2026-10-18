@@ -479,6 +479,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// event reaches its owner's streams alone (accounts PR 3b), so a nudge
 		// with no owner would reach nobody.
 		mirrorSvc.SetNotify(srv.BroadcastAgentsChangedFor)
+		// A window starting (or stopping) to wait on the person changes no
+		// card, so the attention queue hears it through its own hook.
+		mirrorSvc.SetWaitingNotify(srv.AttentionMirrorChanged)
 	}
 	if port.Configured() {
 		srv.UseRouter(port)

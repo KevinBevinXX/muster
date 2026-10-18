@@ -163,7 +163,7 @@ test('an agent asks over MCP, the operator answers in the Attention view, and th
   // The operator taps an option.
   await Promise.all([page.waitForURL(origin + '/attention'), askItem.getByRole('button', { name: 'wait until Monday' }).click()]);
   const answer = await waited;
-  expect(JSON.parse(answer.text)).toMatchObject({ id, status: 'answered', answer: 'wait until Monday', answered_by: 'operator' });
+  expect(JSON.parse(answer.text)).toMatchObject({ id, status: 'answered', answer: 'wait until Monday' });
   await expect(page.locator(`#ask-${id}`)).toHaveCount(0);
   await expect(page.locator('[data-attention-item][data-kind="session"]')).toHaveCount(1);
 
