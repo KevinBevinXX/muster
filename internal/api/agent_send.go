@@ -150,6 +150,15 @@ func (s *Server) handleAgentSend(w http.ResponseWriter, r *http.Request) {
 		sent()
 		return
 	}
+	// 🔴 THE TURN GATE FIRST, THEN THE ASKS (chief replacement × #134): a
+	// message refused because the agent is being replaced starts no turn, so it
+	// answers none of the agent's asks, and the nonce is released (finish(false))
+	// so the same text can be sent again to the new chief.
+	if !s.turns.enter(a.ID) {
+		finish(false)
+		refuse(http.StatusConflict, ErrAgentBeingReplaced.Error(), noticeNotRunning)
+		return
+	}
 	// Accepted: from here the message is the turn's. The claim is kept whatever
 	// the turn then does — a repeat of this post must not start a second turn.
 	finish(true)
@@ -171,11 +180,15 @@ func agentCanBeSent(status string) bool { return status == agents.StatusRunning 
 // A turn that fails has no socket to say so on, so the failure is stored in the
 // conversation where the reply would have been — the chat page shows it — and
 // logged.
+//
+// The caller has entered a's turn gate (s.turns.enter); this leaves it when the
+// turn ends.
 func (s *Server) startAgentTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string) {
 	tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), agentTurnBudget(a.Kind))
 	safeGo(s.logger, "agent turn (send)", func() {
 		defer cancel()
-		parts, err := s.runUserTurn(tctx, a, session, text, nil)
+		defer s.turns.leave(a.ID)
+		parts, err := s.runEnteredTurn(tctx, a, session, text, nil)
 		if err != nil {
 			s.logger.Printf("agents: a turn sent to %s failed: %v", a.Name, err)
 			parts = []agents.TurnPart{{Kind: "text", Content: AgentTurnFailedPrefix + err.Error()}}
