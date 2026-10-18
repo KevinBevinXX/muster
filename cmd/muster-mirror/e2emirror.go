@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/askdrive"
+	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/mirrorhost"
 	"github.com/ZacxDev/muster/internal/termsize"
 )
@@ -524,3 +526,74 @@ const E2ETmuxSocket = "/tmp/muster-e2e-fake-tmux/default"
 
 // ServerSocket implements mirrorhost.ServerSocketer.
 func (w windowFake) ServerSocket(context.Context) (string, error) { return E2ETmuxSocket, nil }
+
+// ANSWERING A PICKER (Msg.AskAnswer): a Claude window whose transcript is T
+// shows an AskUserQuestion picker while T.picker.json exists —
+// {"toolUseId", "questions"}, written by the spec as the CLI draws its picker —
+// and T.picker.touched, when it also exists, says someone has started answering
+// it in the terminal. AnswerAsk drives askdrive's FakePicker (the picker as
+// measured on Claude Code 2.1.289) through internal/askdrive's verified
+// driver, exactly as the shipped binary drives a pane; when it submits, the
+// call and its result are appended to T as the CLI writes them (a tool_use,
+// then a tool_result with toolUseResult {questions, answers}) and the picker
+// file is removed. A spec answers "in the terminal" by appending those records
+// itself and removing the picker file.
+func (w windowFake) AnswerAsk(ctx context.Context, pane string, qs []askq.Question, cs []askq.Choice) error {
+	ws, err := w.Windows(ctx)
+	if err != nil {
+		return err
+	}
+	transcript := ""
+	for _, win := range ws {
+		if win.Claude != nil && win.Claude.Pane == pane {
+			transcript = win.Claude.Transcript
+		}
+	}
+	if transcript == "" {
+		return fmt.Errorf("e2e fake: %w: no Claude window for pane %s", askdrive.ErrNoPicker, pane)
+	}
+	b, err := os.ReadFile(transcript + ".picker.json")
+	if err != nil {
+		return fmt.Errorf("e2e fake: %w: no picker on screen", askdrive.ErrNoPicker)
+	}
+	var shown struct {
+		ToolUseID string          `json:"toolUseId"`
+		Questions []askq.Question `json:"questions"`
+	}
+	if err := json.Unmarshal(b, &shown); err != nil {
+		return err
+	}
+	p := askdrive.NewFakePicker(shown.Questions)
+	if _, err := os.Stat(transcript + ".picker.touched"); err == nil {
+		p.Type("1") // someone in the terminal chose (or ticked) the first option
+	}
+	if err := askdrive.Drive(ctx, fakePickerPane{p}, qs, cs, askdrive.Options{}); err != nil {
+		return err
+	}
+	answers, cancelled, done := p.Result()
+	if !done || cancelled {
+		return fmt.Errorf("e2e fake: the picker did not submit")
+	}
+	use, _ := json.Marshal(map[string]any{"type": "assistant", "message": map[string]any{"content": []any{
+		map[string]any{"type": "tool_use", "id": shown.ToolUseID, "name": askq.ToolName, "input": map[string]any{"questions": shown.Questions}}}}})
+	res, _ := json.Marshal(map[string]any{"type": "user", "promptId": "p", "message": map[string]any{"content": []any{
+		map[string]any{"type": "tool_result", "tool_use_id": shown.ToolUseID, "content": "Your questions have been answered."}}},
+		"toolUseResult": map[string]any{"questions": shown.Questions, "answers": answers}})
+	f, err := os.OpenFile(transcript, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	_, werr := f.Write(append(append(use, '\n'), append(res, '\n')...))
+	_ = f.Close()
+	_ = os.Remove(transcript + ".picker.json")
+	return werr
+}
+
+// fakePickerPane is a FakePicker as the driver's pane.
+type fakePickerPane struct{ p *askdrive.FakePicker }
+
+func (f fakePickerPane) Capture(context.Context) (string, error) { return f.p.Screen(), nil }
+func (f fakePickerPane) Send(_ context.Context, keys string) error {
+	f.p.Type(keys)
+	return nil
+}

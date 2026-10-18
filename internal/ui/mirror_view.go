@@ -729,6 +729,8 @@ func mirrorViewScript() g.Node {
       var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
       if (m.type === 'batch') { clearError(); statusEl.textContent = 'Live'; apply(m); }
       else if (m.type === 'error') { showError(m.message || 'The view ended.'); }
+      // The window's questions changed (mirror_ask.go): read them now.
+      else if (m.type === 'asks') { if (window.musterAskPoll) window.musterAskPoll(); }
     };
     sock.onclose = function () {
       statusEl.textContent = 'Disconnected — reconnecting…';

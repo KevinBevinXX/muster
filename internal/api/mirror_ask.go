@@ -103,6 +103,7 @@ func (s *Server) wireAsks(m Mirror) {
 		if e.Key.Source == askSourceMirror {
 			a.Nudge(e.Key.Owner)
 			s.AttentionMirrorChanged(e.Key.Owner)
+			s.askNotify(askWatchKey{e.Key.Owner, e.Key.Scope, e.Key.Session})
 		}
 	})
 }
@@ -395,6 +396,9 @@ type askWatchers struct {
 	running map[askWatchKey]bool
 	// retry replaces askWatchRetry (tests; 0 = default).
 	retry time.Duration
+	// subs are the rendered views' sockets listening for k's questions
+	// (askSubscribe).
+	subs map[askWatchKey]map[chan struct{}]bool
 }
 
 func (w *askWatchers) retryEvery() time.Duration {
@@ -516,6 +520,41 @@ func (s *Server) resolveAsks(k askWatchKey, evs []cctranscript.Event) {
 		// tool id with no question, and Resolve leaves it alone.
 		if e, ok := s.asks.Resolve(k.owner, askSourceMirror, k.host, k.session, ev.ToolID, answers); ok {
 			s.logger.Printf("mirror: question %s in %s resolved: %s %s", e.ID, k.host, e.State, strings.TrimSpace(e.By))
+		}
+	}
+}
+
+// askSubscribe is a channel that receives (coalesced) whenever a question of
+// k changes, and its cancel: what a rendered view's socket listens on.
+func (s *Server) askSubscribe(k askWatchKey) (<-chan struct{}, func()) {
+	ch := make(chan struct{}, 1)
+	s.askWatch.mu.Lock()
+	if s.askWatch.subs == nil {
+		s.askWatch.subs = map[askWatchKey]map[chan struct{}]bool{}
+	}
+	if s.askWatch.subs[k] == nil {
+		s.askWatch.subs[k] = map[chan struct{}]bool{}
+	}
+	s.askWatch.subs[k][ch] = true
+	s.askWatch.mu.Unlock()
+	return ch, func() {
+		s.askWatch.mu.Lock()
+		delete(s.askWatch.subs[k], ch)
+		if len(s.askWatch.subs[k]) == 0 {
+			delete(s.askWatch.subs, k)
+		}
+		s.askWatch.mu.Unlock()
+	}
+}
+
+// askNotify tells k's subscribers that a question of k changed.
+func (s *Server) askNotify(k askWatchKey) {
+	s.askWatch.mu.Lock()
+	defer s.askWatch.mu.Unlock()
+	for ch := range s.askWatch.subs[k] {
+		select {
+		case ch <- struct{}{}:
+		default: // one pending signal is enough
 		}
 	}
 }

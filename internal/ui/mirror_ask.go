@@ -299,30 +299,27 @@ func askForm(v MirrorAskLiveView) g.Node {
 //
 // 🔴 A PENDING CARD IS NEVER REDRAWN WHILE IT STAYS PENDING: a poll that lists
 // it as pending again leaves it alone, so what a person has chosen or typed is
-// not thrown away. Any other state (answered on another device, gone back to
-// the terminal) replaces it — it cannot be answered here any more — and a card
-// whose call the conversation has drawn (an element with its data-ask-row id
-// in #mv-log) is removed: the conversation shows it from then on.
+// not thrown away. Any other state (typing, answered here or in the terminal,
+// dismissed) replaces it; a card the server no longer lists (a few minutes
+// after it ended) is removed.
+//
+// It polls when the page's socket says the window's questions changed (a
+// message of type "asks"), so a question shows the moment its hook registers
+// it — and every few seconds besides, for a socket that is down.
 func askScript() g.Node {
 	return Script(g.Raw(`
 (function () {
   var region = document.getElementById('mv-asks');
   if (!region) return;
-  var log = document.getElementById('mv-log');
-  var busy = false;
+  var busy = false, again = false;
   function frag(html) { var t = document.createElement('template'); t.innerHTML = html; return t.content; }
-  function drawn(row) { return !!(row && log && log.querySelector('[id="' + row + '"]')); }
-  function tidy() {
-    region.querySelectorAll('[data-ask-live]').forEach(function (c) { if (drawn(c.getAttribute('data-ask-row'))) c.remove(); });
-    region.hidden = !region.querySelector('[data-ask-live]');
-  }
+  function tidy() { region.hidden = !region.querySelector('[data-ask-live]'); }
   function merge(html) {
     var got = frag(html), seen = {};
     Array.prototype.slice.call(got.querySelectorAll('[data-ask-live]')).forEach(function (card) {
       var tool = card.getAttribute('data-ask-tool');
       seen[tool] = true;
       var cur = region.querySelector('[data-ask-live][data-ask-tool="' + CSS.escape(tool) + '"]');
-      if (drawn(card.getAttribute('data-ask-row'))) { if (cur) cur.remove(); return; }
       if (!cur) { region.appendChild(card); return; }
       if (cur.getAttribute('data-ask-state') === card.getAttribute('data-ask-state')) return;
       cur.replaceWith(card);
@@ -336,12 +333,14 @@ func askScript() g.Node {
     fetch(region.getAttribute('data-src'), { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
       .then(function (r) { return r.ok ? r.text().then(merge) : null; })
       .catch(function () {})
-      .then(function () { busy = false; });
+      .then(function () { busy = false; if (again) { again = false; poll(); } });
   }
-  setInterval(poll, 2000);
+  // The socket says when the window's questions change (type "asks"); the
+  // interval is the fallback for a socket that is down.
+  window.musterAskPoll = function () { if (busy) { again = true; return; } poll(); };
+  setInterval(poll, 3000);
   document.addEventListener('visibilitychange', poll);
   poll();
-  if (log && typeof MutationObserver !== 'undefined') new MutationObserver(tidy).observe(log, { childList: true, subtree: true });
   function send(form) {
     var card = form.closest('[data-ask-live]');
     var err = form.querySelector('[data-ask-error]');

@@ -522,3 +522,64 @@ func TestTheWatcherEndsWhenNothingIsOpen(t *testing.T) {
 	am.feed("toolu_next", gateQs(t), map[string]string{"Which color do you prefer?": "Red", "Which pets do you have?": "Cat"})
 	region(t, s, ts, `data-ask-state="answered-terminal"`)
 }
+
+// TestTheRenderedViewIsToldAtOnce: the window's rendered-view socket carries a
+// {"type":"asks"} frame when a question registers, so the page reads its
+// region then rather than on its next poll. The control: nothing is sent
+// before the question exists.
+func TestTheRenderedViewIsToldAtOnce(t *testing.T) {
+	_, s, ts := askServer(t, true)
+	c, _, err := dialTerm(t, s, ts, ui.MirrorRef{Host: "ws", Session: "main", Window: "@1"}.ViewWSPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	frames := make(chan string, 16)
+	go func() {
+		for {
+			_, data, err := c.Read(context.Background())
+			if err != nil {
+				close(frames)
+				return
+			}
+			frames <- string(data)
+		}
+	}()
+	asks := func(within time.Duration) bool {
+		deadline := time.After(within)
+		for {
+			select {
+			case f, ok := <-frames:
+				if !ok {
+					t.Fatal("the view's socket closed")
+				}
+				if strings.Contains(f, `"type":"asks"`) {
+					return true
+				}
+			case <-deadline:
+				return false
+			}
+		}
+	}
+	// The socket is subscribed once its handler has run; wait for that.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		s.askWatch.mu.Lock()
+		n := len(s.askWatch.subs)
+		s.askWatch.mu.Unlock()
+		if n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the view's socket never subscribed to its window's questions")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if asks(200 * time.Millisecond) {
+		t.Fatal("an asks frame before any question")
+	}
+	register(t, ts)
+	if !asks(2 * time.Second) {
+		t.Fatal("the view was not told a question registered")
+	}
+}
