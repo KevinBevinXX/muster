@@ -37,6 +37,7 @@ var DefaultNoopCapabilities = Capabilities{
 	ResourceLimits:   true,
 	Scale:            true,
 	NetworkIsolation: true,
+	Sidecar:          true,
 }
 
 // Noop is a provisioner that records instead of provisioning.

@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -176,4 +177,49 @@ func (s *Server) handleAgentSessionDefault(w http.ResponseWriter, r *http.Reques
 	}
 	w.Header().Set("HX-Redirect", "/agents/"+a.Name+"?session="+strconv.FormatInt(sess.ID, 10))
 	w.WriteHeader(http.StatusOK)
+}
+
+// turnInstructions is a turn's instructions: the agent's own (AgentInstructions)
+// — EXCEPT for a claude-code chief's session on the gateway runtime beside ccd.
+// That runtime has no standing file of the chief's (its prose is ccd's managed
+// CLAUDE.md, which only the Claude Code CLI reads), so the chief's prose,
+// written for function tools, travels with each turn
+// (agentspec.ChiefInstructionsFunctionTools).
+func (s *Server) turnInstructions(ctx context.Context, a agents.Agent) string {
+	if r, ok := agents.TurnRouteFrom(ctx); ok && r.Runtime == agents.SessionRuntimeGateway &&
+		agents.ResolveKind(a.Kind) == agents.KindClaudeCode {
+		return agentspec.ChiefInstructionsFunctionTools(s.ext.Plugins != nil)
+	}
+	return s.AgentInstructions(a)
+}
+
+// sessionViews renders a's sessions for a switcher: active marks the open one,
+// and on the CHIEF each session carries its runtime and model, the default mark
+// and the "make default" route — the one place a SessionView gets them, for the
+// panel's first paint and both of its search answers.
+func (s *Server) sessionViews(ctx context.Context, a agents.Agent, sessions []agents.ChatSession, activeID int64) []ui.SessionView {
+	_, defaults := s.sessionRuntimeStore()
+	chief := defaults && s.isChiefAgent(ctx, a)
+	views := make([]ui.SessionView, 0, len(sessions))
+	for _, sess := range sessions {
+		v := ui.SessionView{ID: sess.ID, Title: sess.Title, Active: sess.ID == activeID, LastActive: sess.UpdatedAt}
+		if chief {
+			v.Runtime, v.Model, v.IsDefault = sess.Runtime, sess.Model, sess.IsDefault
+			if sess.Runtime != "" {
+				v.RuntimeLabel = agents.SessionRuntimeLabel(sess.Runtime)
+			}
+			v.DefaultPath = "/agents/" + strconv.FormatInt(a.ID, 10) + "/sessions/" + strconv.FormatInt(sess.ID, 10) + "/default"
+		}
+		views = append(views, v)
+	}
+	return views
+}
+
+// pickerRuntimes is sessionRuntimesFor as the picker draws it.
+func (s *Server) pickerRuntimes(ctx context.Context, a agents.Agent) []ui.SessionRuntimeView {
+	var out []ui.SessionRuntimeView
+	for _, rt := range s.sessionRuntimesFor(ctx, a) {
+		out = append(out, ui.SessionRuntimeView{Runtime: rt, Label: agents.SessionRuntimeLabel(rt)})
+	}
+	return out
 }

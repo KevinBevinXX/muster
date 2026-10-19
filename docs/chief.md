@@ -65,8 +65,45 @@ started on a runtime and a model of its own, both fixed for the session's life:
 | `claude-code` | a Claude model (`opus`, `sonnet`, `haiku`, or a model id) | a Claude Code CLI of its own in the chief's pod, started with `--model`. Needs a `claude-code` chief. |
 | `gateway` | an OpenRouter model, as the model search returns it (`openrouter/<vendor>/<model>`) | the gateway runtime. On a `claude-code` chief that is the runtime beside `ccd` in the same pod, sharing the chief's instructions, tools and identity. |
 
-`POST /agents/{id}/sessions` with `runtime` and `model` form fields opens one.
-A session's runtime and model never change; open a new session to use another.
+Open one from the chief panel: its thread list has a **New session** picker
+(a Claude model for Claude Code; an OpenRouter model, searched, for OpenRouter).
+Each thread names its runtime and model. The route underneath is
+`POST /agents/{id}/sessions` with `runtime` and `model` form fields. A session's
+runtime and model never change; open a new session to use another.
+
+**How a `claude-code` chief runs both.** One pod, two containers:
+
+- `agent` (the Claude Code image): `ccd` on port 18789 — still the only port the
+  pod exposes. A turn for a `claude-code` session runs in a CLI of its own
+  (tmux session `cc-<id>`, started with the session's `--model`); a turn for a
+  session with no runtime runs in the original CLI, as before. At most
+  `CCD_MAX_SESSIONS` (3) such CLIs run at once.
+- `gateway` (the gateway runtime's image, built exactly as a `gateway`-kind
+  agent's): serves on **loopback** port 18791 only. `ccd` hands it a
+  `gateway` session's turn after checking the bearer. Its own memory budget
+  (512Mi request, 1536Mi limit), its own Secret (OpenRouter key and gateway
+  credential) — the Claude Code container never holds those, nor it the Claude
+  token. Its state lives in its own container, so a pod restart starts its
+  conversations afresh (muster keeps the transcript).
+
+The operator's install script (`MUSTER_AGENT_RUNTIME_INSTALL`) must start the
+runtime on loopback on the port in `MUSTER_GATEWAY_PORT` when that is set — and
+as before when it is not, which is every `gateway`-kind agent:
+
+```sh
+if [ -n "${MUSTER_GATEWAY_PORT:-}" ]; then
+  exec /usr/bin/tini -- <runtime> gateway --bind loopback --port "$MUSTER_GATEWAY_PORT"
+fi
+exec /usr/bin/tini -- <runtime> gateway --bind lan
+```
+
+`MUSTER_CHIEF_SESSION_RUNTIMES`
+naming `gateway` on a deployment with the `claude-code` kind needs that bundle
+configured (it refuses to boot otherwise). A running chief gains the sidecar on
+its next **Stop → Start** (Start re-applies its spec).
+
+A `gateway` session's turn carries the chief's instructions for function tools,
+since that runtime has no standing file of the chief's.
 
 **The default session.** One session per agent is its default. Plugin
 deliveries and `muster chief ask` go to it, so they share one conversation

@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"net"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -445,6 +446,43 @@ type Spec struct {
 	// operator's own selection. Drivers add their own and MUST NOT let these
 	// overwrite them.
 	Labels map[string]string
+
+	// Sidecar, when non-nil, is a second process run BESIDE the instance's own,
+	// sharing its network and its workspace, and nothing else. See the type.
+	//
+	// ⚠ omitempty, so a spec without one serialises exactly as before the field
+	// existed (agentspec's spec golden is a json.Marshal of a Spec).
+	Sidecar *Sidecar `json:",omitempty"`
+}
+
+// Sidecar is a second long-running process in the same instance: on Kubernetes
+// a second container in the same pod.
+//
+// 🔴 IT SHARES THE INSTANCE'S NETWORK NAMESPACE AND NOTHING ELSE, ON PURPOSE.
+// Same network: the instance's own process reaches it on loopback, so a sidecar
+// needs no port of its own and declares none — it is never exposed (no Service
+// port, no NetworkPolicy ingress rule names it). NOT the workspace: the volume
+// is the instance's, and whatever the sidecar writes there (a runtime's own
+// credential store, say) would be readable by the instance's process; its state
+// lives in its own container and is lost with the pod. Its environment,
+// confidential environment and files are ITS OWN: the instance's Secrets are not
+// exported into the sidecar, nor the sidecar's into the instance — each process
+// holds only the credentials it uses. Security and Network are the instance's
+// and apply to both processes.
+type Sidecar struct {
+	// Name names the container. A DNS label, and not the instance's own
+	// container's name.
+	Name string
+	// Runtime is what the sidecar runs. Image is required: a sidecar is a
+	// container.
+	Runtime Runtime
+	// Env, Secrets and Files are as Spec's, for the sidecar alone. File paths
+	// must not repeat the instance's.
+	Env     []EnvVar
+	Secrets []EnvVar
+	Files   []File
+	// Resources is the sidecar's own budget.
+	Resources Resources
 }
 
 // DesiredReplicas resolves Replicas' zero value per the rule stated on the
@@ -460,6 +498,9 @@ func (s Spec) DesiredReplicas() int {
 // regardless of which driver receives it. Capability-dependent refusals are
 // CheckSpec's job, and are separate on purpose: this one's answer does not
 // change when you switch drivers.
+// sidecarName is a DNS label (a container name).
+var sidecarName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
+
 func (s Spec) Validate() error {
 	if err := s.Ref.Validate(); err != nil {
 		return err
@@ -541,6 +582,23 @@ func (s Spec) Validate() error {
 			return fmt.Errorf("%w: network controller egress port %d appears twice", ErrInvalidSpec, p)
 		}
 		ctrl[p] = true
+	}
+	if sc := s.Sidecar; sc != nil {
+		if !sidecarName.MatchString(sc.Name) {
+			return fmt.Errorf("%w: sidecar name %q is not a DNS label", ErrInvalidSpec, sc.Name)
+		}
+		if sc.Runtime.Image == "" {
+			return fmt.Errorf("%w: sidecar %q has no image; a sidecar is a container", ErrInvalidSpec, sc.Name)
+		}
+		for _, f := range sc.Files {
+			if !strings.HasPrefix(f.Path, "/") {
+				return fmt.Errorf("%w: sidecar file path %q must be absolute", ErrInvalidSpec, f.Path)
+			}
+			if seen[f.Path] {
+				return fmt.Errorf("%w: file path %q appears twice (the instance and its sidecar, or the sidecar twice)", ErrInvalidSpec, f.Path)
+			}
+			seen[f.Path] = true
+		}
 	}
 	if s.Repo.URL != "" {
 		u, err := url.Parse(s.Repo.URL)

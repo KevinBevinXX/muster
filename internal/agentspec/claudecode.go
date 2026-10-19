@@ -164,7 +164,8 @@ type ClaudeCodeConfig struct {
 // REFUSED: SeedFiles, ExtraEnv and CairnEligible — a caller that asked for them
 // would otherwise get an agent silently without them. Instructions IS honoured:
 // it is placed at [ClaudeCodeInstructionsPath], the CLI's managed-policy
-// CLAUDE.md (see that constant for why there and not in the workspace).
+// CLAUDE.md (see that constant for why there and not in the workspace). So is
+// GatewaySidecar (chief_sidecar.go).
 func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, error) {
 	cc := cfg.ClaudeCode
 	if cc == nil {
@@ -216,6 +217,13 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	labels := buildLabels(a, cfg)
 	labels[LabelKind] = agents.KindClaudeCode
 
+	var sidecar *provision.Sidecar
+	if opts.GatewaySidecar != nil {
+		var err error
+		if sidecar, err = buildGatewaySidecar(a, cfg); err != nil {
+			return provision.Spec{}, err
+		}
+	}
 	spec := provision.Spec{
 		Ref: ref,
 		// ⚠ NO WorkingDir: the image's own WORKDIR (/data/workspace) is the shape
@@ -223,7 +231,7 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		// entrypoint's `ccd seed` creating the workspace as uid 1000 — and it
 		// worked. Overriding it here would be an unmeasured difference.
 		Runtime: provision.Runtime{Image: cc.Image},
-		Env:     claudeCodeEnv(cfg),
+		Env:     claudeCodeEnv(cfg, sidecar != nil),
 		// 🔴 THE ONLY PLACE EnvClaudeOAuthToken IS EVER WRITTEN.
 		Secrets: []provision.EnvVar{
 			{Name: EnvToken, Value: a.HooksToken},
@@ -237,6 +245,7 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		Security:  ClaudeCodeSecurity,
 		Network:   claudeCodeNetworkFor(cfg),
 		Labels:    labels,
+		Sidecar:   sidecar,
 	}
 	if opts.Instructions != "" {
 		spec.Files = []provision.File{{Path: ClaudeCodeInstructionsPath, Content: []byte(opts.Instructions)}}
@@ -247,14 +256,19 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	return spec, nil
 }
 
-// claudeCodeEnv is the claude-code kind's plain environment.
-func claudeCodeEnv(cfg Config) []provision.EnvVar {
+// claudeCodeEnv is the claude-code kind's plain environment. With the gateway
+// sidecar, ccd is told where it is (EnvCCDGatewayUpstream): the one thing that
+// turns a gateway session's turn from not_ready into a hand-off.
+func claudeCodeEnv(cfg Config, gatewaySidecar bool) []provision.EnvVar {
 	env := []provision.EnvVar{
 		{Name: EnvAPIURL, Value: cfg.APIBaseURL},
 		{Name: EnvGitTerminalPrompt, Value: "0"},
 	}
 	if cfg.ClaudeCodeMCPOffered() {
 		env = append(env, provision.EnvVar{Name: EnvConnectURL, Value: cfg.ConnectURL})
+	}
+	if gatewaySidecar {
+		env = append(env, provision.EnvVar{Name: EnvCCDGatewayUpstream, Value: gatewaySidecarUpstream()})
 	}
 	return env
 }

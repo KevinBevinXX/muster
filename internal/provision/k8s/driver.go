@@ -187,6 +187,7 @@ func (d *Driver) Capabilities() provision.Capabilities {
 		// instance if I cannot" — see provision.Capabilities.NetworkIsolation on
 		// why that is not a claim that anything enforces it.
 		NetworkIsolation: d.cfg.NetworkPolicy != nil,
+		Sidecar:          true,
 	}
 }
 
@@ -688,6 +689,7 @@ func (d *Driver) apply(ctx context.Context, spec provision.Spec, ns string) erro
 	}{
 		{"secret", envSecretName(name), d.renderEnvSecret},
 		{"secret", fileSecretName(name), d.renderFileSecret},
+		{"secret", sidecarEnvSecretName(name), d.renderSidecarEnvSecret},
 	} {
 		secName := s.name
 		labels := func() (map[string]string, error) {
@@ -1098,6 +1100,13 @@ func (d *Driver) Destroy(ctx context.Context, ref provision.Ref) error {
 			},
 			func() error {
 				return c.CoreV1().Secrets(ns).Delete(ctx, fileSecretName(name), metav1.DeleteOptions{})
+			}},
+		{"secret", sidecarEnvSecretName(name),
+			func() (map[string]string, error) {
+				return labelsOf(c.CoreV1().Secrets(ns).Get(ctx, sidecarEnvSecretName(name), metav1.GetOptions{}))
+			},
+			func() error {
+				return c.CoreV1().Secrets(ns).Delete(ctx, sidecarEnvSecretName(name), metav1.DeleteOptions{})
 			}},
 		{"pvc", pvcName(name),
 			func() (map[string]string, error) {

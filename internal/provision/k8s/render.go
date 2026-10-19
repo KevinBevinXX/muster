@@ -334,6 +334,21 @@ func envSecretName(instance string) string { return instance + "-env" }
 
 func fileSecretName(instance string) string { return instance + "-secret-files" }
 
+// sidecarEnvSecretName holds the SIDECAR's confidential environment: its own
+// object, envFrom'd by the sidecar container alone, so neither process is
+// handed the other's credentials (provision.Sidecar).
+func sidecarEnvSecretName(instance string) string { return instance + "-sidecar-env" }
+
+// allFiles is every file the instance's pod places: its own and its sidecar's.
+// They share the two file objects (keys are derived from distinct paths —
+// Spec.Validate refuses a repeat); each container MOUNTS only its own.
+func allFiles(spec provision.Spec) []provision.File {
+	if spec.Sidecar == nil || len(spec.Sidecar.Files) == 0 {
+		return spec.Files
+	}
+	return append(append([]provision.File(nil), spec.Files...), spec.Sidecar.Files...)
+}
+
 func pvcName(instance string) string { return instance + "-workspace" }
 
 // sortedFiles returns the spec's files split into non-secret and secret,
@@ -370,7 +385,7 @@ func (d *Driver) renderServiceAccount(spec provision.Spec, ns string) *corev1.Se
 // renderConfigMap holds the non-secret files. Returns nil when there are none,
 // so the driver does not create an empty object it would then have to delete.
 func (d *Driver) renderConfigMap(spec provision.Spec, ns string) *corev1.ConfigMap {
-	plain, _ := sortedFiles(spec.Files)
+	plain, _ := sortedFiles(allFiles(spec))
 	if len(plain) == 0 {
 		return nil
 	}
@@ -427,7 +442,7 @@ func (d *Driver) renderEnvSecret(spec provision.Spec, ns string) *corev1.Secret 
 // It is MOUNTED, never envFrom'd — see renderEnvSecret for why the two must not
 // be one object.
 func (d *Driver) renderFileSecret(spec provision.Spec, ns string) *corev1.Secret {
-	_, secretFiles := sortedFiles(spec.Files)
+	_, secretFiles := sortedFiles(allFiles(spec))
 	if len(secretFiles) == 0 {
 		return nil
 	}
@@ -438,6 +453,28 @@ func (d *Driver) renderFileSecret(spec provision.Spec, ns string) *corev1.Secret
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fileSecretName(spec.Ref.Name),
+			Namespace: ns,
+			Labels:    mergeLabels(instanceLabels(spec.Ref.Name), spec.Labels),
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: data,
+	}
+}
+
+// renderSidecarEnvSecret is renderEnvSecret for the sidecar's own Secrets
+// (sidecarEnvSecretName). Returns nil when there is no sidecar or it declares
+// none.
+func (d *Driver) renderSidecarEnvSecret(spec provision.Spec, ns string) *corev1.Secret {
+	if spec.Sidecar == nil || len(spec.Sidecar.Secrets) == 0 {
+		return nil
+	}
+	data := map[string][]byte{}
+	for _, e := range spec.Sidecar.Secrets {
+		data[e.Name] = []byte(e.Value)
+	}
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      sidecarEnvSecretName(spec.Ref.Name),
 			Namespace: ns,
 			Labels:    mergeLabels(instanceLabels(spec.Ref.Name), spec.Labels),
 		},
@@ -552,12 +589,15 @@ func (d *Driver) renderDeployment(spec provision.Spec, ns string) (*appsv1.Deplo
 		return nil, err
 	}
 
-	volumes, mounts := d.renderVolumes(spec)
+	volumes := d.renderVolumes(spec)
 
 	wsPath := spec.Workspace.Path
 	if wsPath == "" {
 		wsPath = DefaultWorkspacePath
 	}
+	// The instance's container mounts ONLY its own files (a sidecar's are in
+	// the same objects; renderSidecar mounts those).
+	mounts := fileMounts(spec.Files)
 	mounts = append(mounts, corev1.VolumeMount{Name: workspaceVolumeName, MountPath: wsPath})
 
 	ports := make([]corev1.ContainerPort, 0, len(spec.Ports))
@@ -610,9 +650,17 @@ func (d *Driver) renderDeployment(spec provision.Spec, ns string) (*appsv1.Deplo
 		})
 	}
 	container.SecurityContext = containerSecurity(spec.Security)
+	containers := []corev1.Container{container}
+	if spec.Sidecar != nil {
+		sc, err := d.renderSidecar(spec, ns)
+		if err != nil {
+			return nil, err
+		}
+		containers = append(containers, sc)
+	}
 	podSpec := corev1.PodSpec{
 		ServiceAccountName: spec.Ref.Name,
-		Containers:         []corev1.Container{container},
+		Containers:         containers,
 		Volumes:            volumes,
 		SecurityContext:    podSecurity(spec.Security),
 	}
@@ -765,16 +813,67 @@ func (d *Driver) renderInitContainer(spec provision.Spec, main corev1.Container)
 	}
 }
 
-// renderVolumes projects the spec's files.
-//
-// Each file gets its own volumeMount with a subPath, which is what places a
+// renderSidecar is the sidecar's container (provision.Sidecar): its own image,
+// command, environment, confidential environment (its own Secret) and files,
+// and the instance's container security. NOT the workspace volume (see the
+// type). No ports and no probes: it is reached on loopback by the instance's
+// process, which is what the pod's probes check, and the kubelet restarts it
+// on exit.
+func (d *Driver) renderSidecar(spec provision.Spec, ns string) (corev1.Container, error) {
+	sc := spec.Sidecar
+	if sc.Name == containerName || sc.Name == initContainerName {
+		return corev1.Container{}, fmt.Errorf("%w: sidecar name %q is the instance's own container's", provision.ErrInvalidSpec, sc.Name)
+	}
+	resources, err := renderResources(sc.Resources)
+	if err != nil {
+		return corev1.Container{}, err
+	}
+	env := make([]corev1.EnvVar, 0, len(sc.Env))
+	for _, e := range sc.Env {
+		env = append(env, corev1.EnvVar{Name: e.Name, Value: e.Value})
+	}
+	mounts := fileMounts(sc.Files)
+	c := corev1.Container{
+		Name:            sc.Name,
+		Image:           sc.Runtime.Image,
+		Command:         sc.Runtime.Command,
+		Args:            sc.Runtime.Args,
+		WorkingDir:      sc.Runtime.WorkingDir,
+		Env:             env,
+		Resources:       resources,
+		VolumeMounts:    mounts,
+		SecurityContext: containerSecurity(spec.Security),
+	}
+	if secret := d.renderSidecarEnvSecret(spec, ns); secret != nil {
+		c.EnvFrom = []corev1.EnvFromSource{{SecretRef: &corev1.SecretEnvSource{
+			LocalObjectReference: corev1.LocalObjectReference{Name: secret.Name}}}}
+	}
+	return c, nil
+}
+
+// fileMounts mounts files from the two file volumes (renderVolumes), each at
+// its path through a subPath of its key.
+func fileMounts(files []provision.File) []corev1.VolumeMount {
+	plain, secretFiles := sortedFiles(files)
+	var mounts []corev1.VolumeMount
+	for _, f := range plain {
+		mounts = append(mounts, corev1.VolumeMount{Name: filesVolumeName, MountPath: f.Path, SubPath: fileKey(f.Path), ReadOnly: true})
+	}
+	for _, f := range secretFiles {
+		mounts = append(mounts, corev1.VolumeMount{Name: secretFilesVolumeName, MountPath: f.Path, SubPath: fileKey(f.Path), ReadOnly: true})
+	}
+	return mounts
+}
+
+// renderVolumes projects the pod's files — the instance's and its sidecar's —
+// and its workspace. Each container mounts its own files from these
+// (fileMounts): one volumeMount per file with a subPath, which is what places a
 // single key at an arbitrary absolute path rather than turning its directory
 // into a mount point. Per-file modes travel on the volume's items.
-func (d *Driver) renderVolumes(spec provision.Spec) ([]corev1.Volume, []corev1.VolumeMount) {
-	plain, secretFiles := sortedFiles(spec.Files)
+func (d *Driver) renderVolumes(spec provision.Spec) []corev1.Volume {
+	plain, secretFiles := sortedFiles(allFiles(spec))
 
 	var volumes []corev1.Volume
-	var mounts []corev1.VolumeMount
 
 	if len(plain) > 0 {
 		items := make([]corev1.KeyToPath, 0, len(plain))
@@ -782,9 +881,6 @@ func (d *Driver) renderVolumes(spec provision.Spec) ([]corev1.Volume, []corev1.V
 			mode := int32(f.EffectiveMode())
 			key := fileKey(f.Path)
 			items = append(items, corev1.KeyToPath{Key: key, Path: key, Mode: &mode})
-			mounts = append(mounts, corev1.VolumeMount{
-				Name: filesVolumeName, MountPath: f.Path, SubPath: key, ReadOnly: true,
-			})
 		}
 		volumes = append(volumes, corev1.Volume{
 			Name: filesVolumeName,
@@ -803,9 +899,6 @@ func (d *Driver) renderVolumes(spec provision.Spec) ([]corev1.Volume, []corev1.V
 			mode := int32(f.EffectiveMode())
 			key := fileKey(f.Path)
 			items = append(items, corev1.KeyToPath{Key: key, Path: key, Mode: &mode})
-			mounts = append(mounts, corev1.VolumeMount{
-				Name: secretFilesVolumeName, MountPath: f.Path, SubPath: key, ReadOnly: true,
-			})
 		}
 		volumes = append(volumes, corev1.Volume{
 			Name: secretFilesVolumeName,
@@ -830,7 +923,7 @@ func (d *Driver) renderVolumes(spec provision.Spec) ([]corev1.Volume, []corev1.V
 	}
 	volumes = append(volumes, ws)
 
-	return volumes, mounts
+	return volumes
 }
 
 func renderResources(r provision.Resources) (corev1.ResourceRequirements, error) {

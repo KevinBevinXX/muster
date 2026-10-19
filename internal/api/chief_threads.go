@@ -120,14 +120,7 @@ func (s *Server) handleChiefThreadSearch(w http.ResponseWriter, r *http.Request)
 			failed()
 			return
 		}
-		views := make([]ui.SessionView, 0, len(list))
-		for _, sess := range list {
-			views = append(views, ui.SessionView{
-				ID: sess.ID, Title: sess.Title,
-				Active: sess.ID == activeID, LastActive: sess.UpdatedAt,
-			})
-		}
-		write(ui.ChiefThreadsView{Threads: views})
+		write(ui.ChiefThreadsView{Threads: s.sessionViews(ctx, a, list, activeID)})
 		return
 	}
 
@@ -137,13 +130,13 @@ func (s *Server) handleChiefThreadSearch(w http.ResponseWriter, r *http.Request)
 		failed()
 		return
 	}
-	views := make([]ui.SessionView, 0, len(matches))
+	found := make([]agents.ChatSession, 0, len(matches))
 	for _, m := range matches {
-		views = append(views, ui.SessionView{
-			ID: m.ID, Title: m.Title,
-			Active: m.ID == activeID, LastActive: m.UpdatedAt,
-			Snippet: m.Snippet,
-		})
+		found = append(found, m.ChatSession)
+	}
+	views := s.sessionViews(ctx, a, found, activeID)
+	for i, m := range matches {
+		views[i].Snippet = m.Snippet
 	}
 	write(ui.ChiefThreadsView{Threads: views, Query: q, Searched: true})
 }

@@ -404,5 +404,20 @@ func Fingerprint(s Spec) string {
 		}
 	}
 
+	// 🔴 THE SIDECAR COUNTS, AND ONLY WHEN DECLARED — Security's rule, for
+	// Security's reason: a spec with no sidecar keeps the fingerprint it had
+	// before the field existed, and one that gains (or changes) a sidecar is a
+	// different pod and moves.
+	if sc := s.Sidecar; sc != nil {
+		files := make([]string, 0, len(sc.Files))
+		for _, f := range sc.Files {
+			sum := sha256.Sum256(f.Content)
+			files = append(files, fmt.Sprintf("%s|%o|%t|%s", f.Path, f.EffectiveMode(), f.Secret, hex.EncodeToString(sum[:8])))
+		}
+		sort.Strings(files)
+		w("sidecar", sc.Name, sc.Runtime.Image, strings.Join(sc.Runtime.Command, "\x1f"), strings.Join(sc.Runtime.Args, "\x1f"),
+			sc.Runtime.WorkingDir, strings.Join(sortedEnvPairs(sc.Env), "\x1f"), strings.Join(sortedEnvPairs(sc.Secrets), "\x1f"),
+			strings.Join(files, "\x1f"), sc.Resources.CPURequest, sc.Resources.CPULimit, sc.Resources.MemoryRequest, sc.Resources.MemoryLimit)
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }

@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/http/httputil"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -119,6 +120,10 @@ type server struct {
 	// recordsPrimary: this is the primary's server, and its SessionStart's
 	// session id is recorded so the primary resumes ITS conversation (lanes.go).
 	recordsPrimary bool
+
+	// gateway hands a gateway-runtime turn to the runtime beside ccd
+	// (gateway.go); nil when the pod runs none.
+	gateway *httputil.ReverseProxy
 }
 
 // started reports whether the session has sent SessionStart (and no SessionEnd since).
@@ -163,6 +168,7 @@ func newServer(cfg serverConfig, term terminal, auth *authTracker) *server {
 func (s *server) gatewayHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/responses", s.handleResponses)
+	mux.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)
 	// `/` is the same check: muster's default agent health path is "/"
 	// (agentspec.DefaultGatewayHealthPath), which its renderer uses for the
 	// startup and liveness probes. A per-kind health path for this image is muster
@@ -550,6 +556,11 @@ func neutralizeInputMode(prompt string) string {
 }
 
 func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
+	// A turn for the gateway runtime beside ccd is handed over unread (gateway.go).
+	if isGatewayTurn(r) {
+		s.handleGatewayTurn(w, r)
+		return
+	}
 	if !bearerOK(r, s.cfg.Bearer) {
 		writeFailure(w, &failure{Status: http.StatusUnauthorized, Type: failUnauthorized,
 			Message: "missing or wrong bearer"})

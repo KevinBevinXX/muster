@@ -116,6 +116,14 @@ type AgentDetailView struct {
 // SessionView is one chat session in the switcher.
 type SessionView struct {
 	ID int64
+	// Runtime and Model are the session's (chief_sessions.go): Runtime "" is a
+	// session on the agent's own runtime, and draws no runtime line.
+	// RuntimeLabel is what the line calls the runtime.
+	Runtime, RuntimeLabel, Model string
+	// IsDefault marks the agent's default session; DefaultPath, when set, is
+	// where a non-default session's "Make default" control posts.
+	IsDefault   bool
+	DefaultPath string
 	// Title is the session's name, derived by the store from its first user message.
 	//
 	// 🔴 AN EMPTY TITLE RENDERS DIFFERENTLY ON THE TWO SURFACES THAT DRAW THESE ROWS,

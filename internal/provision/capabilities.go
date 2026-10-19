@@ -110,6 +110,10 @@ type Capabilities struct {
 	// is what enforces it or does not — true means "I will write it and refuse to
 	// start the instance if I cannot", NOT "I measured it enforced".
 	NetworkIsolation bool
+
+	// Sidecar: the driver runs Spec.Sidecar beside the instance, sharing its
+	// network and workspace (see provision.Sidecar).
+	Sidecar bool
 }
 
 // CheckSpec is THE capability branch. It is the answer to "Capabilities is
@@ -130,6 +134,18 @@ type Capabilities struct {
 func CheckSpec(caps Capabilities, s Spec) error {
 	if err := s.Validate(); err != nil {
 		return err
+	}
+	if s.Sidecar != nil {
+		if !caps.Sidecar {
+			return fmt.Errorf("%w: driver cannot run a sidecar, and the spec carries one (%q)", ErrUnsupported, s.Sidecar.Name)
+		}
+		// The sidecar's own secrets, files and budget need the same capabilities
+		// the instance's do: checked as if they were the instance's.
+		probe := Spec{Ref: s.Ref, Runtime: s.Sidecar.Runtime, Secrets: s.Sidecar.Secrets, Files: s.Sidecar.Files,
+			Resources: s.Sidecar.Resources}
+		if err := CheckSpec(caps, probe); err != nil {
+			return fmt.Errorf("sidecar %q: %w", s.Sidecar.Name, err)
+		}
 	}
 	if !caps.Files && len(s.Files) > 0 {
 		return fmt.Errorf("%w: driver cannot place files, and the spec carries %d (%s); placing them through Init would mean shell-quoting content this driver has no way to verify",

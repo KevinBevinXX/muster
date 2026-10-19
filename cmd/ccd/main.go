@@ -43,6 +43,9 @@
 //	                       exists, `claude` on a fresh volume (supervise.go). Without
 //	                       it ccd knows no pane id, so every turn is not_ready.
 //	CCD_CLAUDE_BIN         the CLI binary         (default claude)
+//	CCD_GATEWAY_UPSTREAM   the gateway runtime beside ccd, http://127.0.0.1:<port> (loopback
+//	                       only): a request with X-Muster-Runtime: gateway is handed to it
+//	                       (gateway.go). Unset: such a request is not_ready
 //	CCD_MAX_SESSIONS       how many CLIs ccd runs BESIDE the primary, one per explicit
 //	                       muster session (lanes.go; default 3, 0 = none: a request
 //	                       naming a session is then not_ready)
@@ -199,6 +202,11 @@ func serve() error {
 	// serves, so onHook never races its assignment.
 	if base, tok := strings.TrimRight(os.Getenv(envConnectURL), "/"), os.Getenv(envAgentToken); base != "" && tok != "" {
 		srv.blocked = newBlockedReporter(base, tok)
+	}
+	if up := os.Getenv("CCD_GATEWAY_UPSTREAM"); up != "" {
+		if srv.gateway, err = newGatewayProxy(up); err != nil {
+			return err
+		}
 	}
 	if os.Getenv("CCD_SUPERVISE") == "1" {
 		bin := envOr("CCD_CLAUDE_BIN", "claude")

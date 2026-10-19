@@ -53,7 +53,8 @@
     "tests/composer-menu.spec.ts": 15.0,
     "tests/uploads.spec.ts": 10.0,
     "tests/mirror-ask.spec.ts": 14.1,
-    "tests/attention.spec.ts": 20.0
+    "tests/attention.spec.ts": 20.0,
+    "chief-runtimes.spec.ts": 12.0
   },
   "legs": {
     "1": [
@@ -77,7 +78,8 @@
       "tests/passkeys.spec.ts",
       "tests/plugins.spec.ts",
       "tests/composer-menu.spec.ts",
-      "tests/attention.spec.ts"
+      "tests/attention.spec.ts",
+      "chief-runtimes.spec.ts"
     ],
     "2": [
       "tests/provisioning-indicator.spec.ts",

@@ -704,7 +704,7 @@ func moduleRoot(t *testing.T) string {
 //     GET /{$} is the same health check as /healthz, at muster's default agent
 //     health path ("/").
 var otherServerRoutes = map[string][]string{
-	"cmd/ccd": {"GET /healthz", "GET /{$}", "POST /hook/{event}", "POST /v1/responses"},
+	"cmd/ccd": {"GET /healthz", "GET /{$}", "POST /hook/{event}", "POST /v1/chat/completions", "POST /v1/responses"},
 }
 
 // TestOtherServersRouteLedger is the other half of the exemption above.

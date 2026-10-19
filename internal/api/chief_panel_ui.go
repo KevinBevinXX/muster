@@ -101,6 +101,15 @@ func (s *Server) writeChiefPanelBodyFor(ctx context.Context, w http.ResponseWrit
 	// "No threads yet." whenever ListSessions failed, which tells the operator their
 	// entire thread history is gone because one read broke. The search route already
 	// answered honestly; this one is where the operator lands first.
+	// The chief's DEFAULT session is elected here if it has none yet, so the list
+	// below can mark it: the panel's first paint already writes (the session it
+	// opens on), and the election is the store's one rule (agents.DefaultSession)
+	// rather than a second copy of it in the view. The search route only reads.
+	if st, ok := s.sessionRuntimeStore(); ok {
+		if _, err := st.DefaultSession(ctx, a.ID, a.Name); err != nil {
+			s.logger.Printf("chief: elect the default session of %d: %v", a.ID, err)
+		}
+	}
 	active, sessions, listErr := s.resolveSessions(ctx, a, sessionParam)
 	if err := s.ext.Agents.MarkSessionRead(ctx, active.ID); err != nil {
 		s.logger.Printf("chief: mark session %d read: %v", active.ID, err)
@@ -113,8 +122,10 @@ func (s *Server) writeChiefPanelBodyFor(ctx context.Context, w http.ResponseWrit
 	noteID, taskStatus := s.agentTaskStatus(ctx, a)
 
 	write(ui.ChiefPanelView{
-		Configured:    true,
-		ThreadsFailed: listErr != nil,
+		Configured:      true,
+		ThreadsFailed:   listErr != nil,
+		SessionRuntimes: s.pickerRuntimes(ctx, a),
+		ClaudeModels:    agents.ClaudeCodeModels,
 		Chat: ui.AgentDetailView{
 			ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, Status: status,
 			Repo: a.Repo, Model: a.Model,

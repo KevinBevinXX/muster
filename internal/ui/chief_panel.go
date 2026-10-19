@@ -209,6 +209,11 @@ type ChiefPanelView struct {
 	// the first paint did not, and the first paint is the path the operator takes first
 	// and most often.
 	ThreadsFailed bool
+	// SessionRuntimes are the runtimes a NEW session may be started on, and
+	// ClaudeModels the Claude Code models offered; none: no picker
+	// (chief_sessions.go).
+	SessionRuntimes []SessionRuntimeView
+	ClaudeModels    []string
 }
 
 // ChiefPanelToggle is the launcher, rendered by the tmux panel body.
@@ -638,7 +643,7 @@ func chiefThreadRows(v ChiefThreadsView) g.Node {
 			cls += "bg-s1 text-fg2 ring-line hover:bg-s2"
 		}
 		id := strconv.FormatInt(sess.ID, 10)
-		rows = append(rows, Button(
+		row := Button(
 			Type("button"),
 			g.Attr(chiefThreadAttr, id),
 			g.If(sess.Active, g.Attr("aria-current", "true")),
@@ -649,17 +654,27 @@ func chiefThreadRows(v ChiefThreadsView) g.Node {
 			Div(
 				Class("flex w-full items-baseline gap-2"),
 				Span(Class("mr-auto truncate"), g.Text(title)),
+				sessionDefaultBadge(sess),
 				g.If(!sess.LastActive.IsZero(),
 					Span(Class("shrink-0 text-xs text-muted"), g.Text(relTimeString(sess.LastActive)+" ago")),
 				),
 			),
+			// The session's runtime and model, when it was started on one.
+			sessionRuntimeLine(sess),
 			// The matched excerpt, body matches only. A title-only match renders no
 			// snippet — see SessionView.Snippet.
 			g.If(sess.Snippet != "", Span(
 				Class("line-clamp-2 w-full text-[11px] leading-snug text-muted [overflow-wrap:anywhere]"),
 				g.Text(sess.Snippet),
 			)),
-		))
+		)
+		// "Make default" sits BESIDE the row, never inside it: a form in a button is
+		// not valid HTML, and a tap meant to open the thread must not move the default.
+		if mk := makeDefaultControl(sess); mk != nil {
+			rows = append(rows, Div(Class("flex items-stretch gap-1"), row, mk))
+		} else {
+			rows = append(rows, row)
+		}
 	}
 	return Div(
 		ID(chiefThreadResultsID),
@@ -753,6 +768,8 @@ func chiefThreadList(p ChiefPanelView) g.Node {
 			),
 			Div(
 				Class("flex min-h-0 flex-1 flex-col gap-2 p-3"),
+				// A new session on a runtime and a model (chief_sessions.go).
+				chiefNewSessionPicker(v.ID, p.SessionRuntimes, p.ClaudeModels),
 				// 🔴 SERVER-SIDE SEARCH, DEBOUNCED WITH htmx's OWN `delay:` MODIFIER
 				// rather than a hand-rolled timer — the same idiom internal/ui/tmux.go
 				// already uses on its snapshot trigger. `search` is in the trigger list

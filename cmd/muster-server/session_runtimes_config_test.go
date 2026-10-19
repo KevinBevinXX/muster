@@ -22,7 +22,7 @@ func TestChiefSessionRuntimesConfig(t *testing.T) {
 	if cfg := load(nil); len(cfg.ChiefSessionRuntimes) != 0 || cfg.validateSessionRuntimes() != nil {
 		t.Fatalf("unset: %v", cfg.ChiefSessionRuntimes)
 	}
-	cc := map[string]string{envAgentKinds: "gateway,claude-code"}
+	cc := map[string]string{envAgentKinds: "gateway,claude-code", envAgentGateway: gatewayHooksSHA256}
 	with := func(v string, kinds bool) config {
 		env := map[string]string{envChiefSessionRuntimes: v}
 		if kinds {
@@ -38,6 +38,12 @@ func TestChiefSessionRuntimesConfig(t *testing.T) {
 	}
 	if err := with("gateway", false).validateSessionRuntimes(); err != nil {
 		t.Errorf("gateway alone on the gateway kind: %v", err)
+	}
+	// A claude-code chief runs the gateway runtime BESIDE ccd, built from the
+	// runtime bundle: with the kind on and no bundle, gateway sessions are refused.
+	noBundle := load(map[string]string{envChiefSessionRuntimes: "gateway", envAgentKinds: "gateway,claude-code"})
+	if err := noBundle.validateSessionRuntimes(); err == nil || !strings.Contains(err.Error(), envAgentGateway) {
+		t.Errorf("gateway sessions on a claude-code deployment with no runtime bundle: %v; want a refusal naming %s", err, envAgentGateway)
 	}
 	for _, bad := range []struct {
 		v     string

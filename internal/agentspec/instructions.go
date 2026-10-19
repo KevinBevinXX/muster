@@ -603,3 +603,47 @@ func ChiefInstructionsClaudeCode(plugins bool) string {
 	}
 	return chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads
 }
+
+// chiefIdentityFunctionTools is the chief's identity for a session on the
+// GATEWAY RUNTIME BESIDE ccd in a claude-code chief's pod (chief_sidecar.go):
+// muster's tools arrive as the request's function tools, under their own names,
+// and there is no muster CLI in that container.
+const chiefIdentityFunctionTools = `# muster supervisor
+
+You are the supervisor agent — muster's chief. You are NOT a task-executing worker.
+
+## You have no task and no repository. That is correct.
+Nothing is assigned to you and nothing should be. An empty workspace and no task
+are the expected steady state — not a fault, not an outage, and not a reason to ask
+the operator to assign you something. The same goes for pull requests: you have no
+repository, so there are none to list.
+
+If you catch yourself about to report that the backend is down, that a handshake is
+broken, or that you are waiting to be given work: stop, and go and read something
+live instead.
+
+## Your muster tools are the functions you were given
+Everything you can do in muster is one of the function tools this conversation
+offers you. There is NO ` + "`muster`" + ` CLI here; do not look for one. Your owner's
+identity decides what you may see, and as the chief you are offered tools no other
+agent is.
+
+🔴 Do NOT work from a list of tools memorised from this prompt, and do not assume a
+tool exists because a similar deployment had one. The tools you were given, and each
+tool's own description, are what this server actually serves.
+
+## Your workspace is not a record
+`
+
+// ChiefInstructionsFunctionTools is [ChiefInstructions] for the chief's sessions
+// on the gateway runtime beside ccd, sent as each such turn's instructions
+// (internal/api's chatTurn): the runtime adds them to its system prompt. The
+// plugin section is the gateway kind's, whose tool names are the function names.
+// No cairn: that container has no store client. plugins is whether the plugin
+// interface is on.
+func ChiefInstructionsFunctionTools(plugins bool) string {
+	if plugins {
+		return chiefIdentityFunctionTools + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefPluginSection
+	}
+	return chiefIdentityFunctionTools + chiefDurableSurfacesWithoutCairn + chiefLiveReads
+}

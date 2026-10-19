@@ -26,6 +26,9 @@
 //
 //	DATABASE_URL=…_e2e MUSTER_E2E_AGENT=<name> MUSTER_E2E_DISPLAY_NAME=chief MUSTER_E2E_THREADS=1 go run ./e2e/mkchat < threads.json
 //
+// MUSTER_E2E_KIND=claude-code with MUSTER_E2E_CC_ACCOUNT=<name> makes the agent
+// that kind (its account is only a name: nothing is provisioned).
+//
 // 🔴 IT REFUSES ANY DATABASE WHOSE NAME DOES NOT END IN "_e2e" (e2edb.Check).
 //
 // 🔴 THE AGENT, ITS SESSION AND EVERY MESSAGE ARE ONE TRANSACTION. A message
@@ -216,7 +219,10 @@ func create(ctx context.Context, pool *pgxpool.Pool, name string, msgs []agents.
 func createThreads(ctx context.Context, pool *pgxpool.Pool, name, display string, threads []thread) error {
 	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		as := agents.NewPGTx(tx)
-		a, err := as.Create(ctx, agents.Agent{Name: name, DisplayName: display, Namespace: "agents", Status: "running", KickedOff: true})
+		// MUSTER_E2E_KIND / MUSTER_E2E_CC_ACCOUNT make it a claude-code agent (the
+		// chief-runtimes spec's chief); unset, the default kind as before.
+		a, err := as.Create(ctx, agents.Agent{Name: name, DisplayName: display, Namespace: "agents", Status: "running", KickedOff: true,
+			Kind: os.Getenv("MUSTER_E2E_KIND"), CCAccount: os.Getenv("MUSTER_E2E_CC_ACCOUNT")})
 		if err != nil {
 			return fmt.Errorf("create agent: %w", err)
 		}

@@ -214,6 +214,7 @@ variables when it provisions an agent, so you normally never set them yourself.
 | `CCD_WORKSPACE` | the current directory | no | The CLI's working directory. |
 | `CCD_SUPERVISE` | off | no | With `1`, `ccd` creates the tmux session and keeps `claude` running in it. |
 | `CCD_CLAUDE_BIN` | `claude` | no | The path to the Claude Code CLI. |
+| `CCD_GATEWAY_UPSTREAM` | none | no | Where the gateway runtime beside `ccd` listens, as `http://127.0.0.1:<port>` (loopback only; muster sets it for a `claude-code` chief whose sessions may use the `gateway` runtime). A turn carrying `X-Muster-Runtime: gateway` is handed to it after `ccd` checks the bearer. Unset, such a turn is `not_ready`. |
 | `CCD_LANE` | none | no | Set by `ccd` itself in the environment of each extra Claude Code CLI it starts (one per chief session on the `claude-code` runtime), so `ccd hook` reports that CLI's hooks as that session's. Not for an operator to set. |
 | `CCD_MAX_SESSIONS` | `3` | no | How many Claude Code CLIs `ccd` runs **beside** the original one, one per chief session started on the `claude-code` runtime (each its own tmux session `cc-<id>`, started with that session's `--model`). At the cap, the least recently used idle one is stopped; its conversation resumes on its next turn. When all are mid-turn, a new session's turn is refused with a typed `capacity` 503. `0` turns this off: such a turn is `not_ready`. Each CLI costs roughly 250–550 MiB of the pod's 3 GiB. |
 | `CCD_SUBMIT_TIMEOUT` | `20s` | no | How long to wait for a pasted prompt to be accepted. |
@@ -238,6 +239,8 @@ build tag, which the Playwright suite uses. The shipped binaries do not read the
 | `MUSTER_E2E_FOCUS` | none | no | (`e2e/mkchat`) A JSON array of `{subject, title, description, history}` (or `{subject, error}`, a failed refresh's reason; `history` writes that many earlier focuses first, for the focus history): session focus to write for the agent it creates (`"self"`) or for a mirrored session (`"mirror:<claude session id>"`), used by the focus spec. Deleting also deletes the mirrored ones it names. |
 | `MUSTER_E2E_DISPLAY_NAME` | none | no | (`e2e/mkchat`) The agent's display name; `chief` makes it the chief panel's agent. |
 | `MUSTER_E2E_THREADS` | off | no | (`e2e/mkchat`) `1` reads several threads (title, age, messages) from stdin instead of one message list. |
+| `MUSTER_E2E_KIND` | the default kind | no | (`e2e/mkchat`) The agent's kind, e.g. `claude-code`. |
+| `MUSTER_E2E_CC_ACCOUNT` | none | no | (`e2e/mkchat`) The Claude account a `claude-code` agent names. Only a name: nothing is provisioned. |
 | `MUSTER_E2E_HOLD_READY_DIR` | none | no | (`e2eterm`) Holds fake instances not-ready until a file named after each instance appears in this directory. |
 | `MUSTER_E2E_TERM_WINDOW` | none | no | (`e2eterm`) The `CxR` window size the fake agent pod reports. |
 | `MUSTER_E2E_GITHUB_API` | none | no | (`e2eterm`) Points every GitHub API call at this base URL (a fake GitHub), so the dispatch dialog's repo picker can be driven with fixture repos. |

@@ -113,10 +113,14 @@
           # the embed, never naming the filter. That is the good direction and it
           # is still a trap: the message points at the code.
           #
-          # ⚠ `.sh` IS DELIBERATELY NOT CARRIED. `internal/agentspec/autosave.go`
-          # embeds `autosave.sh`, and no derivation here builds, vets or tests
-          # that package. The day one does, it fails to compile with
-          # `pattern autosave.sh: no matching files found` — add the suffix then.
+          # ⚠ `.sh` AS A SUFFIX IS STILL NOT CARRIED, BUT ONE `.sh` FILE IS.
+          # `internal/agentspec/autosave.go` embeds `autosave.sh`, and since the
+          # chief's sessions on more than one runtime, `internal/api` imports
+          # `internal/agentspec` (the chief's function-tool prose), so the CLI —
+          # which compiles `internal/api` — needs it: without its row below
+          # `nix build .#muster-cli` dies with `pattern autosave.sh: no matching
+          # files found`. That one file is named exactly, like `internal/focus/dict/`,
+          # rather than a `.sh` suffix that would carry any stray script into the store.
           #
           # ⚠ WHEN A NEW EMBEDDED FILE TYPE APPEARS IN A PACKAGE A DERIVATION
           # BUILDS OR TESTS, IT MUST BE ADDED HERE. There is no glob doing it for
@@ -132,6 +136,10 @@
           # directory rather than allowing `.txt`, which would carry any stray
           # text file under `cmd/` or `internal/` into the store.
           || pkgs.lib.hasPrefix "internal/focus/dict/" rel
+          # 🔴 ONE FILE, NOT A SUFFIX: `internal/agentspec/autosave.go` embeds it,
+          # and the CLI compiles `internal/agentspec` through `internal/api` (see
+          # the `.sh` note above).
+          || rel == "internal/agentspec/autosave.sh"
           # 🔴 `testdata/` IS CARRIED WHOLE, AND IT IS THE ONE ROW HERE THAT IS
           # NOT AN EXTENSION. ONE file under it is read by a test a `checkPhase` here
           # RUNS: `cmd/muster/one_service_test.go` opens

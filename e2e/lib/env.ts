@@ -165,6 +165,11 @@ export const docsGotruePort = Number(process.env.MUSTER_E2E_DOCS_GOTRUE_PORT ?? 
 // The seeded `docs-sweeper` agent's own token (e2e/seed). Invented, like every
 // value here.
 export const agentToken = 'e2e-agent-token-not-a-real-one';
+// The chief's sessions on more than one runtime (chief-runtimes.spec.ts): its
+// own server (the e2eterm binary, both kinds over the noop driver, both session
+// runtimes offered) and the fake OpenRouter model list it searches.
+export const chiefRuntimesPort = port + 90;
+export const chiefRuntimesFakePort = port + 91;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

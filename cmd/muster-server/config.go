@@ -1557,6 +1557,15 @@ func (c config) validateSessionRuntimes() error {
 		}
 		seen[rt] = true
 	}
+	// A claude-code chief's gateway sessions run on the gateway runtime BESIDE
+	// ccd, built from the same runtime bundle as a gateway-kind agent: without
+	// it, the chief's next Start would fail to build its spec.
+	if seen[agents.SessionRuntimeGateway] && c.claudeCodeEnabled() && c.agentGateway() == gatewayNone {
+		return fmt.Errorf("invalid %s: it names %s and %s enables %s, so a %s chief runs the gateway runtime beside "+
+			"ccd — and %s is %s, so there is no runtime bundle to build it from",
+			envChiefSessionRuntimes, agents.SessionRuntimeGateway, envAgentKinds, agents.KindClaudeCode,
+			agents.KindClaudeCode, envAgentGateway, gatewayNone)
+	}
 	if seen[agents.SessionRuntimeClaudeCode] && !c.claudeCodeEnabled() {
 		return fmt.Errorf("invalid %s: it names %s, but %s does not enable that kind, so no chief could run such a session",
 			envChiefSessionRuntimes, agents.SessionRuntimeClaudeCode, envAgentKinds)
