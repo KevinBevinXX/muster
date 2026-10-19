@@ -165,7 +165,7 @@ func TestTheChiefDispatchLedgerIsTheCallersWithoutRLS(t *testing.T) {
 	// Owner 3: a start for task 610 with a live agent, another live start, and
 	// a full day of starts.
 	for i, task := range []int64{shared, 611} {
-		if _, err := s.ReserveChiefDispatch(session(3), task, nil); err != nil {
+		if _, err := s.ReserveChiefDispatch(session(3), task, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 		a := mustAgent(t, dsn, 3, "plg-led-"+strconv.Itoa(i))
@@ -176,7 +176,7 @@ func TestTheChiefDispatchLedgerIsTheCallersWithoutRLS(t *testing.T) {
 	dbtest.OwnerExec(t, dsn, `INSERT INTO audit_log (user_id, action, object)
 		SELECT 3, $1, 'note:' || (700 + g) FROM generate_series(1, $2) g`, ActionChiefDispatch, MaxChiefDispatchesPerDay)
 	rlsOffForTest(t, pool, dsn, true)
-	r, err := s.ReserveChiefDispatch(session(2), shared, nil)
+	r, err := s.ReserveChiefDispatch(session(2), shared, nil, nil)
 	if err != nil || r.Prior {
 		t.Fatalf("owner 2's first start for task %d with RLS off: %+v %v; want a fresh reservation", shared, r, err)
 	}
@@ -193,11 +193,11 @@ func TestAnotherOwnersStartedAgentDoesNotFreeTheCallersPendingSlot(t *testing.T)
 	}
 	rlsOffForTest(t, pool, dsn, true)
 	for _, task := range []int64{620, 621} {
-		if r, err := s.ReserveChiefDispatch(session(2), task, nil); err != nil || r.Prior {
+		if r, err := s.ReserveChiefDispatch(session(2), task, nil, nil); err != nil || r.Prior {
 			t.Fatalf("reserve %d: %+v %v", task, r, err)
 		}
 	}
-	if _, err := s.ReserveChiefDispatch(session(2), 622, nil); !errors.Is(err, ErrChiefLiveCap) {
+	if _, err := s.ReserveChiefDispatch(session(2), 622, nil, nil); !errors.Is(err, ErrChiefLiveCap) {
 		t.Fatalf("a third start with two of the caller's in flight: %v; want ErrChiefLiveCap", err)
 	}
 }
@@ -208,14 +208,14 @@ func TestAnotherOwnersStartedAgentDoesNotFreeTheCallersPendingSlot(t *testing.T)
 func TestAPriorStartNamesOnlyTheCallersAgent(t *testing.T) {
 	s, pool, dsn := pgStore(t)
 	dbtest.OwnerExec(t, dsn, `DELETE FROM audit_log WHERE action LIKE 'task.chief_%'`)
-	if _, err := s.ReserveChiefDispatch(session(2), 630, nil); err != nil {
+	if _, err := s.ReserveChiefDispatch(session(2), 630, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RecordChiefDispatchAgent(session(3), 630, mustAgent(t, dsn, 3, "plg-led-y").ID); err != nil {
 		t.Fatal(err)
 	}
 	rlsOffForTest(t, pool, dsn, true)
-	r, err := s.ReserveChiefDispatch(session(2), 630, nil)
+	r, err := s.ReserveChiefDispatch(session(2), 630, nil, nil)
 	if err != nil || !r.Prior || r.AgentID != nil {
 		t.Fatalf("the caller's repeat: %+v %v; want Prior with no agent", r, err)
 	}

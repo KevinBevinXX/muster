@@ -909,19 +909,18 @@ const claudeCodeNoModel = "a claude-code agent has no per-agent model (the CLI's
 // or a claude-code pool with no usable account.
 var ErrDispatchRefused = errors.New("dispatch refused")
 
-// resolveKindAccount decides a new agent's kind and Claude account, BEFORE its
-// row exists.
-//
-// 🔴 THE ACCOUNT IS CHOSEN HERE, ONCE, AND STORED ON THE ROW — the agent keeps
-// it for life (migration 0003 refuses a change). Every later build of this
-// agent's spec reads the stored name; nothing re-selects.
-func (s *Server) resolveKindAccount(ctx context.Context, p dispatchParams) (kind, account string, err error) {
-	kind = agents.ResolveKind(strings.ToLower(p.Kind))
+// resolveKind is resolveKindAccount's kind half: the kind a dispatch names,
+// resolved, known, enabled on this deployment and usable by the caller — or the
+// refusal. The chief's task_dispatch asks it BEFORE it spends a reservation, so
+// a kind it can never start is refused without one; createAndDispatchAgent asks
+// it again, through resolveKindAccount.
+func (s *Server) resolveKind(ctx context.Context, want string) (string, error) {
+	kind := agents.ResolveKind(strings.ToLower(want))
 	if !agents.ValidKind(kind) {
-		return "", "", fmt.Errorf("%w: unknown agent kind %q", ErrDispatchRefused, p.Kind)
+		return "", fmt.Errorf("%w: unknown agent kind %q", ErrDispatchRefused, want)
 	}
 	if !s.ext.kindEnabled(kind) {
-		return "", "", fmt.Errorf("%w: agent kind %q is not enabled on this deployment (MUSTER_AGENT_KINDS)", ErrDispatchRefused, kind)
+		return "", fmt.Errorf("%w: agent kind %q is not enabled on this deployment (MUSTER_AGENT_KINDS)", ErrDispatchRefused, kind)
 	}
 	// 🔴 A KIND THE CALLER HAS NO CREDENTIAL FOR IS REFUSED HERE, BEFORE THE ROW,
 	// with the sentence that says what to add — never dispatched onto the
@@ -929,8 +928,22 @@ func (s *Server) resolveKindAccount(ctx context.Context, p dispatchParams) (kind
 	// own credentials: internal/agentprovision.specFor.)
 	if s.ext.Kinds != nil {
 		if why := s.ext.Kinds.Unavailable(ctx, callerID(ctx))[kind]; why != "" {
-			return "", "", fmt.Errorf("%w: %s", ErrDispatchRefused, why)
+			return "", fmt.Errorf("%w: %s", ErrDispatchRefused, why)
 		}
+	}
+	return kind, nil
+}
+
+// resolveKindAccount decides a new agent's kind and Claude account, BEFORE its
+// row exists.
+//
+// 🔴 THE ACCOUNT IS CHOSEN HERE, ONCE, AND STORED ON THE ROW — the agent keeps
+// it for life (migration 0003 refuses a change). Every later build of this
+// agent's spec reads the stored name; nothing re-selects.
+func (s *Server) resolveKindAccount(ctx context.Context, p dispatchParams) (kind, account string, err error) {
+	kind, err = s.resolveKind(ctx, p.Kind)
+	if err != nil {
+		return "", "", err
 	}
 	if kind != agents.KindClaudeCode {
 		if p.CCAccount != "" {

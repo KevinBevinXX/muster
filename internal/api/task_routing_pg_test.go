@@ -270,7 +270,7 @@ func TestTaskDispatchRefusesAtTheLiveCap(t *testing.T) {
 func TestTaskDispatchRefusesAtTheDailyCap(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true)
 	for i := 0; i < plugins.MaxChiefDispatchesPerDay; i++ {
-		if _, err := f.plugins.ReserveChiefDispatch(f.asOwner, int64(900000+i), nil); err != nil {
+		if _, err := f.plugins.ReserveChiefDispatch(f.asOwner, int64(900000+i), nil, nil); err != nil {
 			t.Fatalf("seed reservation %d: %v", i, err)
 		}
 		// A finished start: its agent recorded, and no longer live (no such row).
