@@ -30,12 +30,14 @@ const MaxKickoffAttempts = 3
 type ReconcileAction int
 
 const (
-	ActionNone             ReconcileAction = iota // no change needed
-	ActionPersistStatus                           // persist the computed status (it changed)
-	ActionRetryKickoff                            // instance ready but kickoff never sent → retry
-	ActionResendKickoff                           // kickoff was sent, but its recipient died → re-send
-	ActionError                                   // stuck too long → mark error
-	ActionErrorKickoffLost                        // re-send budget spent against a dying instance → mark error
+	ActionNone              ReconcileAction = iota // no change needed
+	ActionPersistStatus                            // persist the computed status (it changed)
+	ActionRetryKickoff                             // instance ready but kickoff never sent → retry
+	ActionResendKickoff                            // kickoff was sent, but its recipient died → re-send
+	ActionError                                    // stuck too long → mark error
+	ActionErrorKickoffLost                         // re-send budget spent against a dying instance → mark error
+	ActionWaitCheckout                             // first turn held: the repository checkout is coming (DecideFirstTurn)
+	ActionErrorCheckoutWait                        // the checkout wait outlived CheckoutWaitTimeout → mark error
 )
 
 // String names the action.
@@ -58,6 +60,10 @@ func (a ReconcileAction) String() string {
 		return "error"
 	case ActionErrorKickoffLost:
 		return "error-kickoff-lost"
+	case ActionWaitCheckout:
+		return "wait-checkout"
+	case ActionErrorCheckoutWait:
+		return "error-checkout-wait"
 	default:
 		return fmt.Sprintf("ReconcileAction(%d)", int(a))
 	}
@@ -248,6 +254,10 @@ func KickoffErrorSuffix(a Agent) string {
 // None is needed here: the claim is a conditional UPDATE on the agent's own row,
 // and the winner re-reads the row under it, so two replicas ticking against one
 // database cannot both pay one turn.
+//
+// ✅ ActionWaitCheckout AND ActionErrorCheckoutWait ARE DecideFirstTurn's (a
+// first turn waiting on a claude-code agent's repository checkout), and
+// internal/agentkickoff drives both, under the per-agent claim.
 //
 // ✅ ActionPersistStatus'S ONE MISSING TRANSITION NOW HAS A DRIVER:
 // internal/agentstatus promotes provisioning → running (PromoteToRunning). It was

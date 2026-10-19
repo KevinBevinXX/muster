@@ -142,6 +142,12 @@ func (g *kickoffGateway) Resolve(context.Context, agents.Agent) (agentgateway.Ta
 	return agentgateway.Target{}, nil
 }
 
+// Checkout is never reached: these agents are gateway agents, which never wait on
+// a repository checkout. An error, so a call reads as "unknown" rather than ready.
+func (g *kickoffGateway) Checkout(context.Context, agentgateway.Target) (agents.CheckoutStatus, error) {
+	return agents.CheckoutStatus{}, errors.New("kickoffGateway: Checkout is not expected for a gateway agent")
+}
+
 func (g *kickoffGateway) Send(_ context.Context, _ agentgateway.Target, _, message string, _ func(string)) (string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()

@@ -48,6 +48,12 @@ type AgentCardView struct {
 	// sent, so the remedy may say re-sending is safe. Otherwise the remedy says to
 	// check whether the agent is already working first. See KickoffFailedRemedy.
 	KickoffResendSafe bool
+	// KickoffAwaitingGrant is agents.KickoffAwaitingGrant: the first turn is held,
+	// unsent, until the owner approves this agent's github connector request (its
+	// repository cannot be checked out before). It renders as a "waiting for your
+	// github approval" line linking to Connectors — see kickoffAwaitingGrantNotice.
+	// Composed in internal/api's cardViewIndexed; only the boolean crosses.
+	KickoffAwaitingGrant bool
 	// Namespace is the agent's stored namespace, used only to spell the log command
 	// in the failed-kickoff remedy.
 	Namespace string
@@ -341,6 +347,9 @@ func agentCard(a AgentCardView) g.Node {
 			g.If(a.KickoffFailed, kickoffFailureDetail(a.KickoffFailure,
 				KickoffFailedRemedy(a.KickoffResendSafe, a.Namespace, a.Name))),
 		),
+		// OUTSIDE the nav anchor: it carries a link (Connectors), and an anchor
+		// nested in the card's <a> is invalid markup whose taps open the card.
+		g.If(a.KickoffAwaitingGrant, kickoffAwaitingGrantNotice()),
 		// Card footer (OUTSIDE the nav anchor so its task-badge link doesn't nest
 		// inside the card's <a> and its clicks don't trigger card navigation): the
 		// agent's age + last-activity relative times and, when dispatched from a
@@ -630,6 +639,27 @@ func kickoffFailedBadge() g.Node {
 		statusGlyph(glyphError, "h-3 w-3", false),
 		g.Text("kickoff failed"),
 	)
+}
+
+// kickoffAwaitingGrantNotice says why an owed first turn has not been sent: the
+// agent's repository cannot be checked out until the owner approves its github
+// connector request, and the turn is held (unsent, unstamped) until then —
+// agents.DecideFirstTurn, for at most agents.CheckoutWaitTimeout. The approval is
+// the owner's only move, so the line links straight to Connectors, where the
+// request is.
+//
+// Its text is FIXED: no part of the note or of ccd's detail is in it.
+func kickoffAwaitingGrantNotice() g.Node {
+	// The wrapper's padding matches the card body's (cardBodyClass), with classes
+	// already in the committed stylesheet (see kickoffOwedBadge on why that matters).
+	return Div(Class("px-4 pb-4"), P(
+		g.Attr("data-kickoff-awaiting-grant", ""),
+		Class("break-words rounded-lg bg-st-warning-bg px-3 py-2 text-xs text-st-warning-fg ring-1 ring-inset ring-st-warning-fg/40"),
+		Span(Class("font-semibold"), g.Text("Waiting for your github approval: ")),
+		g.Text("this agent's repository is checked out, and its first message sent, once you approve its "+
+			"github connector request. "),
+		A(Href("/connectors"), Class("font-semibold underline"), g.Text("Open Connectors")),
+	))
 }
 
 // kickoffFailureDetail renders the recorded failure and the remedy under the

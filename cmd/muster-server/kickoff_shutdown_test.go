@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -77,6 +78,11 @@ type heldGateway struct{ entered chan struct{} }
 
 func (g *heldGateway) Resolve(context.Context, agents.Agent) (agentgateway.Target, error) {
 	return agentgateway.Target{}, nil
+}
+
+// Checkout is never reached for the gateway agent these tests deliver to.
+func (g *heldGateway) Checkout(context.Context, agentgateway.Target) (agents.CheckoutStatus, error) {
+	return agents.CheckoutStatus{}, errors.New("heldGateway: Checkout is not expected for a gateway agent")
 }
 
 func (g *heldGateway) Send(ctx context.Context, _ agentgateway.Target, _, _ string, _ func(string)) (string, error) {

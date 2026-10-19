@@ -562,3 +562,32 @@ func TestBothTiersReportAFailedKickoffForTheSameRow(t *testing.T) {
 		t.Errorf("the single-card re-render of a failed kickoff drops the badge or its text:\n%s", single)
 	}
 }
+
+// TestTheCardSaysAHeldKickoffIsWaitingForTheGithubApproval pins the composer half
+// of the "waiting for your github approval" line: cardViewIndexed hands the view
+// agents.KickoffAwaitingGrant's answer for the row. Row 1 is owed; once the
+// deliverer records that its turn is held for the grant (the marker the kickoff
+// deliverer writes), its card carries the line and the Connectors link — and
+// before, and on a kicked-off row carrying the same text, it does not.
+func TestTheCardSaysAHeldKickoffIsWaitingForTheGithubApproval(t *testing.T) {
+	s, h, store := owedServer(t)
+	const line = "data-kickoff-awaiting-grant"
+	if card := getOwed(t, s, h, "/ui/agents/1/card").Body.String(); strings.Contains(card, line) {
+		t.Fatalf("an owed card with no recorded wait carries the waiting line:\n%s", card)
+	}
+	for i := range store.rows {
+		if store.rows[i].ID == 1 || store.rows[i].ID == 2 {
+			store.rows[i].KickoffError = agents.KickoffAwaitingGrantReason + ": approve-kt20"
+		}
+	}
+	card := getOwed(t, s, h, "/ui/agents/1/card").Body.String()
+	if !strings.Contains(card, line) || !strings.Contains(card, `href="/connectors"`) {
+		t.Errorf("a turn held for the github grant does not say so on its card.\ncard:\n%s", card)
+	}
+	if strings.Contains(card, "approve-kt20") {
+		t.Errorf("the card rendered ccd's detail text; only the fixed line may cross:\n%s", card)
+	}
+	if card := getOwed(t, s, h, "/ui/agents/2/card").Body.String(); strings.Contains(card, line) {
+		t.Errorf("a kicked-off row carries the waiting line:\n%s", card)
+	}
+}

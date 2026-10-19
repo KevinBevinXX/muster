@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/agents"
 )
 
 // The repository checkout, through the WHOLE `ccd serve` binary supervising a
@@ -51,6 +53,27 @@ func TestTmuxARepoAgentsCLIStartsInTheCheckout(t *testing.T) {
 		}
 	}
 	r.chat(t, "work in the repository")
+	// muster's own reader (agentgateway.Gateway.Checkout, what the kickoff
+	// deliverer gates on) reads this ccd's /healthz as ready.
+	if st := musterReadsCheckout(t, r.gwAddr); st.State != agents.CheckoutReady {
+		t.Fatalf("muster read the checkout as %+v, want ready", st)
+	}
+}
+
+// musterReadsCheckout is muster's kickoff deliverer's read of a ccd's checkout:
+// the real agentgateway.Gateway, Resolve then Checkout, over HTTP.
+func musterReadsCheckout(t *testing.T, addr string) agents.CheckoutStatus {
+	t.Helper()
+	gw := mustersGateway(t, "http://"+addr)
+	target, err := gw.Resolve(context.Background(), contractAgent)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	st, err := gw.Checkout(context.Background(), target)
+	if err != nil {
+		t.Fatalf("muster's checkout read: %v", err)
+	}
+	return st
 }
 
 // TestTmuxARepoThatCannotBeClonedKeepsTheCLIStoppedAndSaysWhy: the repository
@@ -67,8 +90,15 @@ func TestTmuxARepoThatCannotBeClonedKeepsTheCLIStoppedAndSaysWhy(t *testing.T) {
 			"MUSTER_HOOK_TOKEN=fixture-agent-token-5c2e")...)
 
 	h := r.waitHealth(t, "waiting on the checkout", func(h health) bool {
-		return h.Repo != nil && h.Repo.State == checkoutFailed && strings.Contains(h.Repo.Detail, "approve the request ccd filed")
+		return h.Repo != nil && h.Repo.State == checkoutAwaitingGrant && strings.Contains(h.Repo.Detail, "approve the request ccd filed")
 	})
+	// 🔴 THE SEAM: muster's reader sees awaiting_grant, the state its kickoff
+	// deliverer holds a first turn on (agents.DecideFirstTurn). A ccd that said
+	// "failed" here would have the turn sent into not_ready and recorded failed.
+	if st := musterReadsCheckout(t, r.gwAddr); st.State != agents.CheckoutAwaitingGrant ||
+		!strings.Contains(st.Detail, "approve the request ccd filed") {
+		t.Fatalf("muster read the checkout as %+v, want awaiting_grant with ccd's detail", st)
+	}
 	if !h.OK || h.Session == sessionStartedState {
 		t.Fatalf("health %+v", h)
 	}
@@ -96,6 +126,9 @@ func TestTmuxAnAgentWithNoRepoReportsNoCheckout(t *testing.T) {
 	h := r.waitHealth(t, "first start", func(h health) bool { return h.Session == sessionStartedState })
 	if h.Repo != nil {
 		t.Fatalf("a repo-less agent reports a checkout: %+v", h.Repo)
+	}
+	if st := musterReadsCheckout(t, r.gwAddr); st != (agents.CheckoutStatus{}) {
+		t.Fatalf("muster read a repo-less agent's checkout as %+v, want unknown", st)
 	}
 	if argv := r.argvLog(t); !strings.Contains(argv, "cwd="+r.ws+" skills=\n") {
 		t.Fatalf("the CLI did not start in the plain workspace %s:\n%s", r.ws, argv)

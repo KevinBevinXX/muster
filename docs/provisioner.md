@@ -117,6 +117,16 @@ same `--continue` resume.
   agent's request for it **once** (the same request the session's
   `connector_request` tool would file); approve it under Connectors and the
   next retry clones. A denied or revoked grant is not asked for again.
+- **The first turn waits for the checkout.** While `/healthz` reports the
+  checkout as `cloning` or `awaiting_grant` (the agent's `github` request is
+  pending), muster does not send the kickoff and does not mark it sent; it
+  looks again every 10 seconds. The card reads "Waiting for your github
+  approval" with a link to Connectors. Once the checkout is ready the kickoff
+  is delivered as usual, exactly once — no re-send by hand. After 24 hours of
+  waiting the agent goes to `error`: "the github grant was not approved". Any
+  other clone failure (`failed`: a denied or revoked grant, an approved grant
+  git cannot use) is not
+  waited on: the kickoff is sent, and its `not_ready` reason is recorded.
 - ⚠ **The repository's own `.claude/settings.json` applies to the session**
   (project settings: hooks, permissions, `env`). `ccd` strips `env` and
   `apiKeyHelper` only from the CLI's user settings, so dispatch only onto

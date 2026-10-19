@@ -296,7 +296,10 @@ func TestAFailedCloneFilesOneGithubRequestAndSaysWhatToDo(t *testing.T) {
 	defer cancel()
 	go c.run(ctx)
 
-	st := waitState(t, c, func(s checkoutState) bool { return s.State == checkoutFailed && len(fc.filed()) > 0 })
+	// 🔴 awaiting_grant, NOT failed: muster's kickoff deliverer holds the first
+	// turn on exactly this state (agents.CheckoutAwaitingGrant), so a request ccd
+	// just filed must read as one the owner's approval resolves.
+	st := waitState(t, c, func(s checkoutState) bool { return s.State == checkoutAwaitingGrant && len(fc.filed()) > 0 })
 	for _, w := range []string{"the repository example-org/private-app could not be cloned", "approve the request ccd filed",
 		"no github connector exists yet"} {
 		if !strings.Contains(st.Detail, w) {
@@ -310,7 +313,7 @@ func TestAFailedCloneFilesOneGithubRequestAndSaysWhatToDo(t *testing.T) {
 		t.Fatalf("requests filed: %+v", reqs)
 	}
 	waitState(t, c, func(s checkoutState) bool {
-		return strings.Contains(s.Detail, "approve this agent's request for the github connector")
+		return strings.Contains(s.Detail, "approve this agent's request for the github connector") && s.State == checkoutAwaitingGrant
 	})
 	if n := len(fc.filed()); n != 1 {
 		t.Fatalf("requests filed after the pending retry: %d", n)
@@ -340,6 +343,9 @@ func TestAFailedCloneFilesOneGithubRequestAndSaysWhatToDo(t *testing.T) {
 	if len(fc.filed()) != 1 {
 		t.Fatalf("requests filed: %+v", fc.filed())
 	}
+	if st := c.state(); st.State != checkoutReady {
+		t.Fatalf("after the clone: state %q, want ready", st.State)
+	}
 }
 
 // TestADeniedGrantIsNotAskedAgain: denied (or revoked) is reported with what
@@ -359,9 +365,13 @@ func TestADeniedGrantIsNotAskedAgain(t *testing.T) {
 		if err == nil {
 			t.Fatal("cloned a repository that does not exist")
 		}
-		d := c.explain(context.Background(), err)
+		d, awaiting := c.explain(context.Background(), err)
 		if !strings.Contains(d, "grant was "+grant+", and ccd does not ask again") || len(fc.filed()) != 0 {
 			t.Fatalf("%s: detail %q, filed %+v", grant, d, fc.filed())
+		}
+		// Not awaiting: no approval is coming, so muster must not hold the turn.
+		if awaiting {
+			t.Fatalf("%s: reported as awaiting the grant", grant)
 		}
 	}
 }
@@ -380,8 +390,8 @@ func TestAPodWithoutTheConnectorStoreSaysOnlyPublicReposClone(t *testing.T) {
 	if err == nil {
 		t.Fatal("cloned a repository that does not exist")
 	}
-	if d := c.explain(context.Background(), err); !strings.Contains(d, "only a public repository can be cloned") {
-		t.Fatalf("detail %q", d)
+	if d, awaiting := c.explain(context.Background(), err); !strings.Contains(d, "only a public repository can be cloned") || awaiting {
+		t.Fatalf("detail %q awaiting %t", d, awaiting)
 	}
 }
 
@@ -425,5 +435,8 @@ func TestARequestIsFiledOnceEvenIfTheGrantStaysNone(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if n := len(fc.filed()); n != 1 {
 		t.Fatalf("filed %d requests over the retries (detail %q); want 1", n, st.Detail)
+	}
+	if st.State != checkoutFailed {
+		t.Fatalf("a request no longer pending reads %q, want failed (nothing is coming)", st.State)
 	}
 }

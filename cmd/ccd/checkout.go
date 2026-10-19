@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/agents"
 )
 
 // The agent's repository, checked out BEFORE the CLI starts.
@@ -31,9 +33,12 @@ import (
 // empty directory would take its first turn without the repository and nothing
 // would say so. Until the clone succeeds:
 //   - every turn is `503 not_ready` whose message says WHY (the clone's error,
-//     and what the github connector needs) — muster's kickoff deliverer re-sends
-//     not_ready for a while and then records that message as the agent's
-//     kickoff error, which is what the operator sees on the card;
+//     and what the github connector needs);
+//   - muster's kickoff deliverer reads `repo.state` BEFORE it sends the first
+//     turn, and while it is `cloning` or `awaiting_grant` it holds the turn,
+//     unsent and unmarked, for up to a day (agents.DecideFirstTurn); on
+//     `failed` it sends, re-sends the not_ready for a while, and records the
+//     message as the agent's kickoff error, which the card shows;
 //   - /healthz stays 200 (the pod must not restart-loop while it waits for an
 //     operator) and reports the state under `repo`;
 //   - ccd retries the clone every checkoutRetry.
@@ -66,11 +71,19 @@ const (
 	checkoutTimeout = 10 * time.Minute
 )
 
-// The states /healthz reports under `repo`.
+// The states /healthz reports under `repo`. They ARE internal/agents' constants:
+// muster's kickoff deliverer reads this field (agents.DecideFirstTurn) and holds
+// an agent's first turn, unsent and unstamped, while it reads cloning or
+// awaiting_grant — so a spelling that drifted on either side would send the turn
+// into a checkout that does not exist yet.
 const (
-	checkoutCloning = "cloning"
-	checkoutFailed  = "failed"
-	checkoutReady   = "ready"
+	checkoutCloning = agents.CheckoutCloning
+	checkoutFailed  = agents.CheckoutFailed
+	checkoutReady   = agents.CheckoutReady
+	// checkoutAwaitingGrant: a clone failed and this agent's github connector
+	// request is pending (ccd just filed it, or it already was) — the one state
+	// the owner's approval alone resolves.
+	checkoutAwaitingGrant = agents.CheckoutAwaitingGrant
 )
 
 // githubCloneBase is where a repository is cloned from. A test points git at a
@@ -148,7 +161,7 @@ func (c *checkout) wait(ctx context.Context) bool {
 // notReady is the not_ready message a turn gets while there is no checkout.
 func (c *checkout) notReady() string {
 	st := c.state()
-	if st.State == checkoutFailed {
+	if st.State == checkoutFailed || st.State == checkoutAwaitingGrant {
 		return "the Claude Code session has not started: it starts only once the repository is checked out, and " + st.Detail
 	}
 	return fmt.Sprintf("the Claude Code session has not started: the repository %s is being cloned into %s", st.Repo, st.Dir)
@@ -168,9 +181,13 @@ func (c *checkout) run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		detail := c.explain(ctx, err)
+		detail, awaiting := c.explain(ctx, err)
+		state := checkoutFailed
+		if awaiting {
+			state = checkoutAwaitingGrant
+		}
 		c.mu.Lock()
-		c.st.State, c.st.Detail = checkoutFailed, detail
+		c.st.State, c.st.Detail = state, detail
 		c.mu.Unlock()
 		c.logf("ccd: checkout: %s; retrying in %s", detail, c.retry)
 		select {
@@ -290,44 +307,46 @@ func verifyHEAD(ctx context.Context, dir string) error {
 
 // explain is the operator-facing sentence for a failed clone: git's error, and
 // what the `github` connector needs — filing this agent's request for it when
-// it holds no grant (see the file comment).
-func (c *checkout) explain(ctx context.Context, cloneErr error) string {
+// it holds no grant (see the file comment). awaiting reports that the agent's
+// request for the connector is pending — the one case the owner's approval
+// alone resolves.
+func (c *checkout) explain(ctx context.Context, cloneErr error) (detail string, awaiting bool) {
 	what := c.repo
 	if c.branch != "" {
 		what += " (branch " + c.branch + ")"
 	}
 	msg := fmt.Sprintf("the repository %s could not be cloned: %v", what, cloneErr)
 	if c.connectBase == "" {
-		return msg + ". This pod is not offered muster's connector store, so only a public repository can be cloned"
+		return msg + ". This pod is not offered muster's connector store, so only a public repository can be cloned", false
 	}
 	rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	var conn agentConnector
 	if err := musterGET(rctx, c.connectBase, c.token, "/agent/connectors/"+githubConnector, &conn); err != nil {
-		return msg + fmt.Sprintf(". The %s connector's status could not be read (%v); ccd retries", githubConnector, err)
+		return msg + fmt.Sprintf(". The %s connector's status could not be read (%v); ccd retries", githubConnector, err), false
 	}
 	switch conn.Grant {
 	case "approved":
 		return msg + fmt.Sprintf(". This agent's %s connector grant is approved, so git goes through muster's proxy "+
 			"(within %s of the approval): check the repository and branch exist and that the connector's token can read them",
-			githubConnector, gitSyncInterval)
+			githubConnector, gitSyncInterval), false
 	case "pending":
 		return msg + fmt.Sprintf(". If it is private, approve this agent's request for the %s connector (Connectors); "+
-			"ccd retries every %s", githubConnector, c.retry)
+			"ccd retries every %s", githubConnector, c.retry), true
 	case "denied", "revoked":
 		return msg + fmt.Sprintf(". This agent's %s connector grant was %s, and ccd does not ask again: "+
-			"dispatch a new agent and approve its request, or use a public repository", githubConnector, conn.Grant)
+			"dispatch a new agent and approve its request, or use a public repository", githubConnector, conn.Grant), false
 	}
 	c.mu.Lock()
 	already := c.requested
 	c.mu.Unlock()
 	if already {
-		return msg + fmt.Sprintf(". A request for the %s connector was filed and is no longer pending (%q)", githubConnector, conn.Grant)
+		return msg + fmt.Sprintf(". A request for the %s connector was filed and is no longer pending (%q)", githubConnector, conn.Grant), false
 	}
 	reason := "clone " + c.repo + ": this agent was dispatched to work in it, and its Claude Code session starts only once it is checked out"
 	if err := musterPOST(rctx, c.connectBase, c.token, "/agent/connectors/"+githubConnector+"/request",
 		map[string]string{"reason": reason}); err != nil {
-		return msg + fmt.Sprintf(". Filing this agent's request for the %s connector failed (%v); ccd retries", githubConnector, err)
+		return msg + fmt.Sprintf(". Filing this agent's request for the %s connector failed (%v); ccd retries", githubConnector, err), false
 	}
 	c.mu.Lock()
 	c.requested = true
@@ -337,7 +356,7 @@ func (c *checkout) explain(ctx context.Context, cloneErr error) string {
 		exists = fmt.Sprintf(" (no %s connector exists yet: create one whose token can read the repository first)", githubConnector)
 	}
 	return msg + fmt.Sprintf(". If it is private, approve the request ccd filed for this agent for the %s connector "+
-		"(Connectors)%s; ccd retries every %s", githubConnector, exists, c.retry)
+		"(Connectors)%s; ccd retries every %s", githubConnector, exists, c.retry), true
 }
 
 // musterPOST sends a JSON body to one of muster's agent routes.

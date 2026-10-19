@@ -82,6 +82,10 @@ var notLinkedLedger = map[string]string{
 	"e2e/internal/e2edb": "the e2e fixture commands' one database guard (refuse any database " +
 		"not ending in _e2e, as pgx resolves the name). Imported only by the e2e/ commands above, " +
 		"which are themselves unreachable from a shipped binary.",
+	"e2e/heldfix": "the held-kickoff browser spec's fixture (`go run ./e2e/heldfix`): an agent row whose first " +
+		"turn the kickoff deliverer holds for its github grant, written as the login role with row-level " +
+		"security's scope set to all, so it must never be reachable from a shipped binary; it refuses any " +
+		"database not ending in _e2e.",
 	"e2e/sqfix": "the send-queue browser spec's fixture (`go run ./e2e/sqfix`): ages a queued message, or strands it " +
 		"mid-send, so the server's own dispatcher fails it; run by the spec, never linked into a binary.",
 	"e2e/pluginfix": "the plugins browser spec's fixture (`go run ./e2e/pluginfix`): a chief agent, a " +

@@ -216,6 +216,22 @@ type fakeGateway struct {
 	// (shutdown) or expires (turn budget), which is what the real gateway's HTTP
 	// client returns.
 	hold chan struct{}
+	// checkout / checkoutErr are what Checkout answers (ccd's /healthz repo).
+	checkout    agents.CheckoutStatus
+	checkoutErr error
+}
+
+func (g *fakeGateway) Checkout(context.Context, agentgateway.Target) (agents.CheckoutStatus, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.log.add(fmt.Sprintf("Checkout(%s)", g.resolved))
+	return g.checkout, g.checkoutErr
+}
+
+func (g *fakeGateway) setCheckout(st agents.CheckoutStatus, err error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.checkout, g.checkoutErr = st, err
 }
 
 func (g *fakeGateway) Resolve(_ context.Context, a agents.Agent) (agentgateway.Target, error) {

@@ -569,8 +569,10 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 		// Decided from the RAW kickoff_error (its muster-written prefix); only the
 		// boolean crosses into the view.
 		KickoffResendSafe: agents.KickoffResendSafe(a),
-		Namespace:         a.Namespace,
-		NoteID:            a.NoteID, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
+		// Decided from kickoff_error's muster-written prefix too; the boolean crosses.
+		KickoffAwaitingGrant: agents.KickoffAwaitingGrant(a),
+		Namespace:            a.Namespace,
+		NoteID:               a.NoteID, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
 		LastActiveAt: agents.LastActivity(a, lastMsg),
 		// The ONE chief predicate's answer (chief_agent.go), so the menu never
 		// offers a Delete the server would refuse.

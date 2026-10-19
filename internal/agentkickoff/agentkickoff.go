@@ -55,6 +55,13 @@
 // outlasts the bound is recorded as agents.KickoffNotAcceptedReason, also
 // resend-safe. Nothing is un-stamped.
 //
+// 🔴 A FIRST TURN THAT NEEDS A REPOSITORY CHECKOUT IS HELD UNTIL IT EXISTS. For a
+// claude-code agent dispatched with a repository, the last pre-stamp check reads
+// ccd's /healthz `repo.state` (agentgateway.Gateway.Checkout); while the checkout is
+// cloning or waiting for the owner's github grant, nothing is sent or stamped and
+// the row records why (agents.DecideFirstTurn, bounded by
+// agents.CheckoutWaitTimeout). See [Deliverer.deliver].
+//
 // 🔴 AND THAT UNRETRIED FAILURE IS VISIBLE, NOT JUST RECORDED (an operator
 // decision). The stamp clears the "kickoff owed" badge, so before this a failed
 // turn left a card reading healthy with the failure only in a column no page
@@ -137,9 +144,14 @@ type InstanceLister interface {
 // operator's message does. agentgateway.Gateway satisfies it.
 //
 // 🔴 THEY ARE SEPARATE SO RESOLVE CAN RUN BEFORE THE STAMP. See [Deliverer.deliver].
+//
+// Checkout reads a claude-code agent's repository checkout (ccd's /healthz) — the
+// last pre-stamp check for an agent dispatched with a repository; see
+// [Deliverer.deliver] and agents.DecideFirstTurn.
 type Gateway interface {
 	Resolve(ctx context.Context, a agents.Agent) (agentgateway.Target, error)
 	Send(ctx context.Context, t agentgateway.Target, sessionKey, message string, emit func(string)) (string, error)
+	Checkout(ctx context.Context, t agentgateway.Target) (agents.CheckoutStatus, error)
 }
 
 // Config is everything the deliverer needs.
@@ -343,6 +355,15 @@ func (d *Deliverer) Tick(ctx context.Context) error {
 	now := d.now()
 	for _, a := range owed {
 		inst := idx[a.Name]
+		// 🔴 A FIRST TURN THAT WAITS ON A REPOSITORY CHECKOUT IS DECIDED UNDER THE
+		// CLAIM, NOT HERE. Its verdict needs ccd's checkout state, read from the
+		// runtime; deciding from this snapshot alone would stuck-fail an agent at 15
+		// minutes that is legitimately waiting for its owner's github approval.
+		// deliver reads the state and applies agents.DecideFirstTurn.
+		if agents.CheckoutGates(a, inst) {
+			d.startDelivery(ctx, a, *inst)
+			continue
+		}
 		action, _ := agents.DecideReconcile(a, inst, now)
 		switch action {
 		case agents.ActionRetryKickoff:
@@ -397,9 +418,28 @@ func (d *Deliverer) startDelivery(ctx context.Context, a agents.Agent, inst prov
 // ⚠ THE LOG LINES ARE SCRUBBED OF THE PENDING NOTE, as recordError's is: msg carries
 // the last kickoff_error, which can quote a runtime's response body.
 func (d *Deliverer) failStuck(parent context.Context, a agents.Agent) {
-	msg := fmt.Sprintf("kickoff never delivered: the agent dwelt more than %s without a ready "+
-		"instance accepting its first turn", agents.ProvisioningStuckTimeout) +
-		agents.KickoffErrorSuffix(a)
+	d.markStuck(parent, a, fmt.Sprintf("kickoff never delivered: the agent dwelt more than %s without a ready "+
+		"instance accepting its first turn", agents.ProvisioningStuckTimeout)+
+		agents.KickoffErrorSuffix(a))
+}
+
+// failCheckoutWait marks an owed row `error` once its first turn has waited
+// agents.CheckoutWaitTimeout for a repository checkout that never arrived — the
+// visible end of the wait agents.DecideFirstTurn holds a turn in. The same
+// conditional write as [Deliverer.failStuck].
+func (d *Deliverer) failCheckoutWait(parent context.Context, a agents.Agent, st agents.CheckoutStatus) {
+	why := "the github grant was not approved"
+	if st.State == agents.CheckoutCloning || (st.State == agents.CheckoutUnknown &&
+		strings.HasPrefix(a.KickoffError, agents.KickoffAwaitingCloneReason)) {
+		why = "the repository was still being cloned"
+	}
+	d.markStuck(parent, a, fmt.Sprintf("kickoff never delivered: %s within %s, so the repository %s was "+
+		"never checked out and the Claude Code session never started", why, agents.CheckoutWaitTimeout, a.Repo)+
+		agents.KickoffErrorSuffix(a))
+}
+
+// markStuck is the conditional `error` write both stuck verdicts share.
+func (d *Deliverer) markStuck(parent context.Context, a agents.Agent, msg string) {
 	shown := agents.ScrubNote(msg, a.PendingNote)
 	ctx, cancel := bookkeeping(parent)
 	defer cancel()
@@ -446,10 +486,22 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	// A token-less row derives a well-formed WRONG bearer (agentgateway.reach), so
 	// it is refused here, before the stamp, and retried until the dwell bound.
 	if a.HooksToken == "" {
-		d.recordError(parent, a, "kickoff not sent: the agent has no hooks token yet, so no gateway "+
-			"credential can be derived (it is minted when the instance is created)")
+		if stuck := d.preStampFailure(parent, a, inst, "kickoff not sent: the agent has no hooks token yet, so no gateway "+
+			"credential can be derived (it is minted when the instance is created)"); stuck != nil {
+			stuck() // no claim is held yet
+		}
 		return
 	}
+
+	// after runs once the claim is RELEASED (it is deferred before the release, so
+	// it runs after it): a stuck verdict taken under the claim is written by
+	// agents.Store.MarkKickoffStuck, which refuses a row whose claim is held.
+	var after func()
+	defer func() {
+		if after != nil {
+			after()
+		}
+	}()
 
 	won, err := d.store.ClaimKickoff(ctx, a.ID, d.owner, turn+claimMargin)
 	if err != nil || !won {
@@ -485,7 +537,7 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	// nothing and is retried, whereas after the stamp it would strand the turn.
 	sess, err := d.store.LatestOrCreateSession(ctx, fresh.ID, fresh.Name)
 	if err != nil {
-		d.recordError(parent, fresh, "kickoff not sent: could not open a chat session: "+err.Error())
+		after = d.preStampFailure(parent, fresh, inst, "kickoff not sent: could not open a chat session: "+err.Error())
 		return
 	}
 
@@ -496,8 +548,47 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	// never sent. Pinned by TestAnUnresolvableAgentIsRetriedNotStamped.
 	target, err := d.gw.Resolve(ctx, fresh)
 	if err != nil {
-		d.recordError(parent, fresh, "kickoff not sent: could not resolve the agent's gateway: "+err.Error())
+		after = d.preStampFailure(parent, fresh, inst, "kickoff not sent: could not resolve the agent's gateway: "+err.Error())
 		return
+	}
+
+	// 🔴 THE REPOSITORY CHECKOUT IS THE LAST PRE-STAMP CHECK, AND IT IS TAKEN UNDER
+	// THE CLAIM FROM THE FRESH ROW. A claude-code agent with a repository starts
+	// its CLI only once ccd has cloned it, which can wait on the owner approving
+	// its github grant; a turn sent before that is refused not_ready and, after
+	// the bounded re-send, recorded as a failed kickoff the owner must re-send by
+	// hand. So while ccd says the checkout is coming, nothing is sent and nothing
+	// is stamped (agents.DecideFirstTurn); a later tick reads it again. Holding the
+	// claim while the wait is recorded is what keeps the marker off a row another
+	// replica is stamping. Pinned by TestAHeldFirstTurnIsDeliveredOnceAfterTheGrant.
+	if agents.CheckoutGates(fresh, &inst) {
+		st, err := d.gw.Checkout(ctx, target)
+		if err != nil {
+			d.log.Printf("agentkickoff: agent %d (%s): read repository checkout: %v", fresh.ID, fresh.Name, err)
+			st = agents.CheckoutStatus{}
+		}
+		switch agents.DecideFirstTurn(fresh, &inst, st.State, d.now()) {
+		case agents.ActionRetryKickoff:
+		case agents.ActionWaitCheckout:
+			d.recordCheckoutWait(parent, fresh, st)
+			return
+		case agents.ActionErrorCheckoutWait:
+			after = func() { d.failCheckoutWait(parent, fresh, st) }
+			return
+		case agents.ActionError:
+			after = func() { d.failStuck(parent, fresh) }
+			return
+		default:
+			return
+		}
+		// A held turn's marker comes off BEFORE the stamp: on a kicked-off row it
+		// would read as a failed kickoff (agents.KickoffFailed) for the whole turn.
+		if agents.WaitedForCheckout(fresh) {
+			if err := d.store.SetKickoffError(ctx, fresh.ID, ""); err != nil {
+				d.log.Printf("agentkickoff: agent %d (%s): clear the checkout wait: %v", fresh.ID, fresh.Name, err)
+				return
+			}
+		}
 	}
 
 	// ---- the point of no return: from here the turn is never re-run. ----
@@ -586,6 +677,74 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	})
 	d.log.Printf("agentkickoff: agent %d (%s): first turn delivered to %s (%d-byte reply)",
 		fresh.ID, fresh.Name, inst.InstanceID, len(reply))
+}
+
+// preStampFailure records a failure that happened before the stamp (nothing was
+// sent; a later tick retries) and returns the stuck verdict to write once the
+// claim is released, or nil.
+//
+// 🔴 FOR A ROW WHOSE FIRST TURN WAITS ON A CHECKOUT, THE DWELL BOUND IS APPLIED
+// HERE, BECAUSE Tick DOES NOT APPLY IT. Tick routes such a row to deliver without
+// a verdict (the verdict needs ccd's checkout state); a failure before that state
+// was read must still end in the table's bound, or a row whose gateway never
+// resolves would stay owed for ever. It is decided as an UNREAD checkout
+// (agents.DecideFirstTurn): DecideReconcile's 15 minutes for a row that never
+// waited, agents.CheckoutWaitTimeout for one that did.
+//
+// ⚠ A RECORDED WAIT IS NOT OVERWRITTEN. The marker is what keeps a held row on the
+// day-long bound; replacing it with a transient "could not resolve" would put the
+// row back on the 15-minute one at the next tick, and fail an agent hours into an
+// approved wait over one Kubernetes API blip. The failure is logged instead.
+func (d *Deliverer) preStampFailure(parent context.Context, a agents.Agent, inst provision.Instance, msg string) func() {
+	if !agents.CheckoutGates(a, &inst) {
+		d.recordError(parent, a, msg)
+		return nil
+	}
+	if agents.WaitedForCheckout(a) {
+		d.log.Printf("agentkickoff: agent %d (%s): %s (the recorded checkout wait is kept)",
+			a.ID, a.Name, agents.ScrubNote(msg, a.PendingNote))
+	} else {
+		d.recordError(parent, a, msg)
+		a.KickoffError = msg // the stuck verdict quotes the latest evidence
+	}
+	switch agents.DecideFirstTurn(a, &inst, agents.CheckoutUnknown, d.now()) {
+	case agents.ActionError:
+		return func() { d.failStuck(parent, a) }
+	case agents.ActionErrorCheckoutWait:
+		return func() { d.failCheckoutWait(parent, a, agents.CheckoutStatus{}) }
+	}
+	return nil
+}
+
+// recordCheckoutWait records that a first turn is held for its repository
+// checkout (agents.KickoffAwaitingGrantReason / KickoffAwaitingCloneReason, with
+// ccd's own detail), and tells open Agents lists when that is news — the card's
+// "waiting for your github approval" line comes from it.
+//
+// ⚠ IT WRITES ONLY ON A CHANGE OF STATE. A turn may be held for a day at one
+// tick every 10 s; rewriting the same marker and re-rendering every open list
+// each time is churn with nothing new to show. SetKickoffError does not move the
+// dwell clock, so the day is measured from the row's last real transition.
+func (d *Deliverer) recordCheckoutWait(parent context.Context, a agents.Agent, st agents.CheckoutStatus) {
+	reason := agents.KickoffAwaitingCloneReason
+	if st.State == agents.CheckoutAwaitingGrant {
+		reason = agents.KickoffAwaitingGrantReason
+	}
+	if st.State == agents.CheckoutUnknown || strings.HasPrefix(a.KickoffError, reason) {
+		return // unread (the recorded wait stands), or already recorded
+	}
+	msg := reason
+	if st.Detail != "" {
+		msg += ": " + st.Detail
+	}
+	d.log.Printf("agentkickoff: agent %d (%s): first turn held: %s", a.ID, a.Name, agents.ScrubNote(msg, a.PendingNote))
+	ctx, cancel := bookkeeping(parent)
+	defer cancel()
+	if err := d.store.SetKickoffError(ctx, a.ID, msg); err != nil {
+		d.log.Printf("agentkickoff: agent %d (%s): could not record the checkout wait: %v", a.ID, a.Name, err)
+		return
+	}
+	d.notify(a.Name)
 }
 
 // notReadyWait / notReadyPoll bound the in-delivery re-send of a typed
