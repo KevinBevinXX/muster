@@ -78,7 +78,8 @@ type DispatchStore interface {
 	RecordTaskRouted(ctx context.Context, taskID int64, tool string) error
 	// UnroutedTaskEvents is the principal's task events, newest first, at most
 	// limit, that the chief has not acted on: not being delivered right now,
-	// and with no routing or start recorded for their task since the event.
+	// and with no routing or start recorded for their task at or after the
+	// event's latest attempt, or its creation if it has had none (chiefActedOn).
 	UnroutedTaskEvents(ctx context.Context, limit int) ([]Message, error)
 	// ReserveNoticeRoute / CompleteNoticeRoute / ReleaseNoticeRoute: task_events.go.
 	ReserveNoticeRoute(ctx context.Context, pluginID, taskID int64, in MessageIn, to string) (Message, bool, error)
@@ -209,10 +210,17 @@ func (s *PGStore) RecordTaskRouted(ctx context.Context, taskID int64, tool strin
 // plugin_messages aliased m: a routing (ActionTaskRouted) or a started agent
 // (ActionChiefDispatchAgent — not the reservation, which a start that then
 // failed also wrote) recorded by the event's owner for its task AT OR AFTER
-// THE EVENT'S LATEST DELIVERY (last_attempt_at: BeginDelivery stamps it as the
-// chief's turn on this event starts), or, for an event never yet handed over,
-// at or after its creation. UnroutedTaskEvents lists the events it is false
-// for; Retry (retry.go) refuses the ones it is true for — one rule, one place.
+// THE EVENT'S LATEST ATTEMPT (last_attempt_at), delivered or not: BeginDelivery
+// stamps it as the chief's turn on this event starts, and RecordAttempt also
+// stamps it on a failed attempt that left the event queued. With no attempt
+// at all, the anchor is its creation (created_at). UnroutedTaskEvents lists
+// the events it is false for; Retry (retry.go) refuses the ones it is true for
+// — one rule, one place.
+//
+// ⚠ A CONSEQUENCE ON THE "TASK TO ROUTE" SIDE: a queued event hidden by an
+// action can reappear there after a later failed attempt moves its anchor
+// past that action. Retry is unaffected: an unconfirmed row always went
+// through BeginDelivery, so its anchor is the turn that handed it over.
 //
 // 🔴 PER EVENT, NOT PER TASK (audit round 5). Measured from created_at alone,
 // the chief's forward on one event of a task counted as an action on a SECOND
@@ -236,7 +244,8 @@ const chiefActedOn = `EXISTS (SELECT 1 FROM audit_log a
 // turn failed, it called no tool, its call was refused) stays listed until a
 // routing or a STARTED AGENT (ActionChiefDispatchAgent — not the reservation,
 // which a start that then failed also wrote; delta audit r2) is recorded for
-// the task after the event.
+// the task at or after the event's latest attempt, or its creation when it
+// has had none (chiefActedOn).
 func (s *PGStore) UnroutedTaskEvents(ctx context.Context, limit int) ([]Message, error) {
 	if limit <= 0 {
 		return []Message{}, nil

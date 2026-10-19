@@ -341,8 +341,11 @@ called no tool, or its call was refused). It leaves the list once the chief
 routes the task (`task_route_attention`, `task_forward`, or a `task_dispatch`
 answered `already_dispatched` while an agent is running on the task,
 recorded as a `task.chief_routed` audit row) or starts an agent on it, or once the task is
-complete or dismissed. A new event for a task already in progress is listed
-again until the chief routes it.
+complete or dismissed. "Routes" is measured per event, from the event's latest
+delivery attempt, successful or not, or from when it was stored if it has had
+none: an action before that does not count. So a new event for a task already
+in progress is listed again until the chief routes it, and a queued event can
+reappear on the list after a later failed attempt to hand it over.
 
 ### `task_dispatch`: the guards
 
@@ -441,9 +444,10 @@ a second click), being delivered or delivered; when your chief already drafted a
 reply to it that is pending, approved, sent or itself unconfirmed; when it was
 routed to a session that is still routed, answered or relayed; when it is a
 [task event](#routing-a-task-to-the-chief) your chief already acted on (routed
-the task, or started an agent on it, at or after the turn that handed it THIS
-event — an action on another event of the same task does not count; the same
-rule that takes it off "Task to route"); and when you have no chief. Another user's message answers 404.
+the task, or started an agent on it, at or after this event's latest delivery
+attempt — for a message that can be retried, the turn that handed it over — so
+an action on another event of the same task does not count; the same rule that
+takes it off "Task to route"); and when you have no chief. Another user's message answers 404.
 
 The data-scope sentence is **advisory**. The chief's own memory credential can
 write anywhere; only the preface asks it to keep what it records from plugin
