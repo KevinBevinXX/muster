@@ -208,14 +208,23 @@ func (s *PGStore) RecordTaskRouted(ctx context.Context, taskID int64, tool strin
 // chiefActedOn is THE "the chief acted on this task event" predicate over
 // plugin_messages aliased m: a routing (ActionTaskRouted) or a started agent
 // (ActionChiefDispatchAgent — not the reservation, which a start that then
-// failed also wrote) recorded by the event's owner for its task at or after
-// the event. UnroutedTaskEvents lists the events it is false for; Retry
-// (retry.go) refuses the ones it is true for — one rule, one place, so the
-// task the attention view says is routed is the one a retry will not send
-// twice (audit round 4).
+// failed also wrote) recorded by the event's owner for its task AT OR AFTER
+// THE EVENT'S LATEST DELIVERY (last_attempt_at: BeginDelivery stamps it as the
+// chief's turn on this event starts), or, for an event never yet handed over,
+// at or after its creation. UnroutedTaskEvents lists the events it is false
+// for; Retry (retry.go) refuses the ones it is true for — one rule, one place.
+//
+// 🔴 PER EVENT, NOT PER TASK (audit round 5). Measured from created_at alone,
+// the chief's forward on one event of a task counted as an action on a SECOND
+// event of that task it had not yet been handed — whose turn could then be cut
+// off, leaving it unconfirmed and refused by Retry for good. An action before
+// this event's delivery is the chief acting on something else. (It also
+// closes a window created_at left open: created_at is the inserting
+// transaction's start, which can precede an action committed while the insert
+// waited on the plugin-row lock.)
 const chiefActedOn = `EXISTS (SELECT 1 FROM audit_log a
 		WHERE a.action IN ('` + ActionTaskRouted + `', '` + ActionChiefDispatchAgent + `') AND a.user_id = m.owner_id
-		  AND a.object = 'note:' || m.task_id AND a.at >= m.created_at)`
+		  AND a.object = 'note:' || m.task_id AND a.at >= coalesce(m.last_attempt_at, m.created_at))`
 
 // UnroutedTaskEvents: see DispatchStore.
 //

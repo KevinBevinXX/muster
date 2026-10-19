@@ -119,9 +119,10 @@ func TestAForwardToARunningAgentIsStoredOnceOnTheRealTurnPath(t *testing.T) {
 	if got := f.rows(t, a, "user"); got != 1 || gw.count() != 1 {
 		t.Fatalf("after one mention: %d user row(s), %d turn(s); want 1 and 1", got, gw.count())
 	}
-	if got := f.running(a.ID); got != 0 {
-		t.Errorf("the turn gate still counts %d turn(s) after the turn; want 0", got)
-	}
+	// The reply row is written (persistTurn) BEFORE the turn's goroutine leaves
+	// the gate (a deferred leave), so the gate is waited on, with a deadline,
+	// rather than read once: it must reach 0, and a gate never left still fails.
+	waitUntil(t, "the turn to leave the gate (count 0)", func() bool { return f.running(a.ID) == 0 })
 	if text := f.call(f.chief, taskForwardTool, map[string]any{"task_id": taskID, "note": "heads up"}); !strings.Contains(text, `"turn_started":true`) {
 		t.Fatalf("task_forward: %s", text)
 	}

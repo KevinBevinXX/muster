@@ -735,6 +735,9 @@ func (s *Server) routeMention(ctx context.Context, p plugins.Plugin, n notes.Not
 		// Refused retryably instead, until a send after the window reclaims it
 		// (audit round 4).
 		if m.RoutedDoneAt == nil {
+			// One line, so a reservation stuck in flight can be seen.
+			s.logger.Printf("task routing: mention reservation %d on task %d is not completed (age %s): answered 503",
+				m.ID, n.ID, time.Since(m.CreatedAt).Round(time.Second))
 			return "", errNoticeInFlight
 		}
 		return *m.RoutedTo, nil
