@@ -170,6 +170,119 @@ func TestTheGatewayStreamIsPassedOnAsItComes(t *testing.T) {
 	}
 }
 
+// gatedBody yields first, then blocks until open is closed, then yields rest
+// in small pieces a few milliseconds apart (cmd/muster-server's
+// proxy_full_duplex_test.go measured why: released whole, the transport can read
+// the tail, EOF included, before ccd's head write takes the body, and a broken
+// proxy passes).
+type gatedBody struct {
+	first, rest []byte
+	open        <-chan struct{}
+	stage       int
+}
+
+func (g *gatedBody) Read(p []byte) (int, error) {
+	switch g.stage {
+	case 0:
+		g.stage = 1
+		return copy(p, g.first), nil
+	case 1:
+		select {
+		case <-g.open:
+		case <-time.After(30 * time.Second):
+			return 0, errors.New("gatedBody: never opened")
+		}
+		g.stage = 2
+		fallthrough
+	case 2:
+		if len(p) > 4<<10 {
+			p = p[:4<<10]
+		}
+		time.Sleep(10 * time.Millisecond)
+		n := copy(p, g.rest)
+		g.rest = g.rest[n:]
+		if len(g.rest) == 0 {
+			g.stage = 3
+		}
+		return n, nil
+	}
+	return 0, io.EOF
+}
+
+// 🔴 TestAGatewayTurnIsNotTornWhenTheRuntimeAnswersBeforeTheBodyEnds pins
+// handleGatewayTurn's EnableFullDuplex — the cause of
+// TestAGatewayTurnIsHandedToTheRuntimeBesideCcd's CI flake ("ReverseProxy read
+// error during body copy: … use of closed network connection", then the caller's
+// "unexpected EOF").
+//
+// net/http's HTTP/1 server, on writing a response head, consumes what is left
+// of the request body and CLOSES it unless the handler enabled full duplex. ccd
+// writes the head as soon as the runtime's arrives, while the transport handing
+// the body to the runtime may still owe a read of it — at least its trailing EOF
+// read, which comes AFTER the body is on the wire (the transport flushes the
+// head and writes the body straight to the socket). That read fails ("invalid
+// Read on closed Body"), the transport's write loop closes the runtime
+// connection, and the reply stream is cut mid-way. In CI it took a scheduling
+// gap between those two reads; here the order is FORCED: the runtime answers
+// before it reads the body, and the body's tail is released only after that.
+func TestAGatewayTurnIsNotTornWhenTheRuntimeAnswersBeforeTheBodyEnds(t *testing.T) {
+	answered := make(chan struct{}, 1)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: response.output_text.delta\ndata: {}\n\n")
+		w.(http.Flusher).Flush()
+		answered <- struct{}{}
+		n, err := io.Copy(io.Discard, r.Body)
+		fmt.Fprintf(w, "event: done\ndata: received=%d err=%v\n\n", n, err)
+	}))
+	t.Cleanup(up.Close)
+	bearer, _ := resolveBearer(knownHooksToken, "")
+	srv := newServer(serverConfig{Bearer: bearer, ConfigDir: t.TempDir()}, nil, newAuthTracker())
+	p, err := newGatewayProxy(up.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.gateway = p
+	gw := gatewayServer(t, srv)
+
+	const size = 64 << 10
+	payload := []byte(strings.Repeat("p", size))
+	open := make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(open) }) })
+	go func() {
+		select {
+		case <-answered:
+		case <-time.After(10 * time.Second):
+		}
+		// Long enough for ccd to have received the runtime's head and begun
+		// writing its own; a shorter wait can only make this pass on a broken
+		// ccd, never fail on a fixed one.
+		time.Sleep(300 * time.Millisecond)
+		once.Do(func() { close(open) })
+	}()
+	req, _ := http.NewRequest(http.MethodPost, gw.URL+"/v1/responses",
+		&gatedBody{first: payload[:1024], rest: payload[1024:], open: open})
+	req.ContentLength = size
+	req.Header.Set(headerRuntime, runtimeGateway)
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("a gateway turn: %v", err)
+	}
+	defer resp.Body.Close()
+	got, err := io.ReadAll(resp.Body)
+	want := fmt.Sprintf("data: received=%d err=<nil>", size)
+	if err != nil || resp.StatusCode != http.StatusOK || !strings.Contains(string(got), want) {
+		t.Fatalf("the gateway turn answered %d, %q (err %v); want 200 ending %q: ccd tore the exchange",
+			resp.StatusCode, got, err, want)
+	}
+}
+
 // TestTheChatCompletionsDoorIsTheGatewaysAlone: without the runtime header it is
 // the 404 it always was; with it, the request is handed over.
 func TestTheChatCompletionsDoorIsTheGatewaysAlone(t *testing.T) {

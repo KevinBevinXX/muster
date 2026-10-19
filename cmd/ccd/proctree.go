@@ -28,7 +28,8 @@ import (
 // nested CLI, which is met first on the way up.
 //
 // ⚠ IT GATES THE RECORD ONLY, AND THE FAILURE DIRECTION IS DELIBERATE. A hook
-// this cannot place (no pid, an unreadable /proc, no pane yet) is not recorded,
+// this cannot place (no pid, an unreadable /proc, no started pane within the
+// hook's wait — supervisor.startedRef) is not recorded,
 // and the primary then starts as it did before any record existed
 // (supervisor.argv's fallback) — never resuming a conversation it cannot prove
 // is its own. Every other effect of the hook on the primary's state is

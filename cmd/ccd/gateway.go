@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -74,6 +75,26 @@ func (s *server) handleGatewayTurn(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, &failure{Status: http.StatusServiceUnavailable, Type: failNotReady,
 			Message: "this pod runs no gateway runtime beside ccd (CCD_GATEWAY_UPSTREAM is unset)"})
 		return
+	}
+	// 🔴 FULL DUPLEX, OR THE TURN IS CUT MID-STREAM. net/http's HTTP/1 server,
+	// when it writes a response head, consumes what is left of the request body
+	// and CLOSES it unless the handler enabled full duplex. The proxy writes the
+	// head as soon as the runtime's arrives, while the transport handing the body
+	// to the runtime may still owe a read of it — at least its trailing EOF read,
+	// which follows the body onto the wire. That read then fails ("invalid Read
+	// on closed Body"), the transport's write loop closes the runtime connection,
+	// and the caller's stream ends in "unexpected EOF". Measured: CI's
+	// TestAGatewayTurnIsHandedToTheRuntimeBesideCcd flake ("ReverseProxy read
+	// error during body copy: … use of closed network connection"), and
+	// TestAGatewayTurnIsNotTornWhenTheRuntimeAnswersBeforeTheBodyEnds, which
+	// forces the order, red 10/10 without this call. The same fix and measurement
+	// for muster's connector proxy: internal/connectors/proxy.go.
+	//
+	// ccd's listener is a plain http.Server, so this answers nil; an error means
+	// a wrapper hides the server's writer and the race is open, said in the log.
+	if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
+		log.Printf("ccd: gateway turn: full duplex unavailable (%v); a request body still being handed "+
+			"to the runtime when it answers may cut the reply off", err)
 	}
 	s.gateway.ServeHTTP(w, r)
 }

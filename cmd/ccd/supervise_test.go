@@ -526,3 +526,53 @@ func TestASucceededRestartClearsTheEarlierRestartFailure(t *testing.T) {
 		t.Fatalf("a crash loop after a successful restart still blames the old failure: %q", st.Detail)
 	}
 }
+
+// 🔴 TestTheCLIsPIDWaitsForItsFirstStart: a SessionStart hook can reach ccd
+// before tmux new-session has returned the pane (the CLI runs, and hooks, before
+// tmux prints the id). cliPID must wait for that start, not read "no pane yet" —
+// which left the primary's session id unrecorded and was
+// TestTmuxLaneTwoSessionsRunInTheirOwnCLIsOnTheirOwnModels' CI flake. Red when
+// cliPID reads ref() directly.
+func TestTheCLIsPIDWaitsForItsFirstStart(t *testing.T) {
+	sup := newSupervisor(nil, "claude", t.TempDir(), "/w")
+	pane := paneRef{Server: "4242 1791600000", Pane: "%7"}
+	panePID := func(_ context.Context, ref paneRef) (int, error) {
+		if ref != pane {
+			return 0, fmt.Errorf("pane %+v, want %+v", ref, pane)
+		}
+		return 4343, nil
+	}
+
+	// No start yet: the caller's deadline ends the wait.
+	short, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if pid, err := sup.cliPID(short, panePID); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("before any start: pid %d, err %v; want the caller's deadline", pid, err)
+	}
+
+	// The hook asks first; the start lands while it waits.
+	type answer struct {
+		pid int
+		err error
+	}
+	got := make(chan answer, 1)
+	ctx, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel2()
+	go func() {
+		pid, err := sup.cliPID(ctx, panePID)
+		got <- answer{pid, err}
+	}()
+	select {
+	case a := <-got:
+		t.Fatalf("answered before the CLI's first start: pid %d, err %v", a.pid, a.err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	sup.started(pane, modeFresh)
+	if a := <-got; a.err != nil || a.pid != 4343 {
+		t.Fatalf("after the start: pid %d, err %v; want 4343", a.pid, a.err)
+	}
+	// Once started, an ask answers at once, even on a spent deadline.
+	if pid, err := sup.cliPID(context.Background(), panePID); err != nil || pid != 4343 {
+		t.Fatalf("a later ask: pid %d, err %v", pid, err)
+	}
+}

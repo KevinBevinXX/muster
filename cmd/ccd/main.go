@@ -222,7 +222,7 @@ func serve() error {
 		srv.sup = newSupervisor(term, bin, configDir, workspace)
 		srv.inputPane = srv.sup.inputPane
 		srv.recordsPrimary = true
-		srv.primaryPID = func(ctx context.Context) (int, error) { return term.PanePID(ctx, srv.sup.ref()) }
+		srv.primaryPID = func(ctx context.Context) (int, error) { return srv.sup.cliPID(ctx, term.PanePID) }
 		maxLanes, err := envCount("CCD_MAX_SESSIONS", defaultMaxLanes)
 		if err != nil {
 			return err

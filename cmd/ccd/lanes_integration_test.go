@@ -90,7 +90,7 @@ func (r *serveRig) primaryID(t *testing.T) string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(r.cfg, primaryRecordFile))
 	if err != nil {
-		t.Fatalf("no primary session id recorded: %v", err)
+		t.Fatalf("no primary session id recorded: %v; ccd log:\n%s", err, r.logs.String())
 	}
 	return strings.TrimSpace(string(b))
 }

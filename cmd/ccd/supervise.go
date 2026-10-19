@@ -149,6 +149,10 @@ type supervisor struct {
 	// counts another exit; without this the crash_loop detail would blame the
 	// CLI for exits that were really a restart ccd could not perform.
 	restartErr string
+
+	// firstStart is closed by the first started(): from then on paneID is the
+	// CLI's pane (startedRef).
+	firstStart chan struct{}
 }
 
 func newSupervisor(pane cliPane, bin, configDir, workspace string) *supervisor {
@@ -157,7 +161,8 @@ func newSupervisor(pane cliPane, bin, configDir, workspace string) *supervisor {
 		poll: time.Second, statusGrace: 2 * time.Second, backoffMin: time.Second, backoffMax: 30 * time.Second,
 		crashExits: 5, crashWindow: 2 * time.Minute,
 		now: time.Now, after: time.After,
-		st: cliState{CLI: cliStarting},
+		st:         cliState{CLI: cliStarting},
+		firstStart: make(chan struct{}),
 	}
 }
 
@@ -245,6 +250,37 @@ func (s *supervisor) ref() paneRef {
 	return s.paneID
 }
 
+// cliPID is the pid of the CLI's pane process, read with panePID
+// (tmuxTerminal.PanePID) — waiting, until ctx ends, for the CLI's first start
+// when it has not happened yet (startedRef).
+func (s *supervisor) cliPID(ctx context.Context, panePID func(context.Context, paneRef) (int, error)) (int, error) {
+	ref, err := s.startedRef(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return panePID(ctx, ref)
+}
+
+// startedRef is ref once the CLI has been started, waiting for that first start
+// (until ctx ends) when it has not been yet.
+//
+// 🔴 THE CLI CAN SPEAK BEFORE ccd KNOWS ITS PANE. tmux new-session starts the
+// CLI and only then prints the pane id that Start returns, so the CLI's first
+// SessionStart hook can reach ccd before started() has recorded the pane. Read
+// with ref(), that hook's pane was "no pane yet": the primary's session id went
+// unrecorded (primaryRecordFile), and the next primary restart fell back to
+// "the newest conversation" — which may be a lane's. Measured as
+// TestTmuxLaneTwoSessionsRunInTheirOwnCLIsOnTheirOwnModels' CI flake ("no
+// primary session id recorded").
+func (s *supervisor) startedRef(ctx context.Context) (paneRef, error) {
+	select {
+	case <-s.firstStart:
+		return s.ref(), nil
+	case <-ctx.Done():
+		return paneRef{}, fmt.Errorf("the CLI has not been started: %w", ctx.Err())
+	}
+}
+
 // lose latches terminal_lost (see the type comment): the supervisor can no longer
 // see the CLI it started.
 func (s *supervisor) lose(err error) {
@@ -266,6 +302,9 @@ func (s *supervisor) started(pane paneRef, mode string) {
 	}
 	s.st.Starts++
 	s.restartErr = ""
+	if s.st.Starts == 1 {
+		close(s.firstStart)
+	}
 }
 
 // restartFailed records and logs why an in-pod restart did not happen.
