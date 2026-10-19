@@ -63,6 +63,15 @@ func (m *memStore) PruneHistory(_ context.Context, before time.Time) (int, error
 func (m *memStore) History(context.Context, Subject, string, int) (HistoryPage, error) {
 	return HistoryPage{}, nil
 }
+func (m *memStore) SearchHistory(context.Context, string, Live, time.Time, int) ([]HistoryHit, error) {
+	return nil, nil
+}
+func (m *memStore) MatchHistory(context.Context, string, Live, time.Time, int, int) ([]Match, error) {
+	return nil, nil
+}
+func (m *memStore) RecentTitles(context.Context, Live, time.Time) (map[Subject][]TitleAt, error) {
+	return nil, nil
+}
 
 type fakeSource struct {
 	cands []Candidate

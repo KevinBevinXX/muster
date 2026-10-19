@@ -47,10 +47,14 @@ func focusToolDefs() []agents.ToolDef {
 		{Type: "function", Name: focusSearchToolName,
 			Description: "Full-text search over your owner's sessions' focus (what each is working on). Returns the best " +
 				"matches first: id, kind, title and a short snippet. Use it to find which session is best placed to handle something. " +
-				"Only sessions muster can see now are returned." + focusUntrustedTail,
+				"Only sessions muster can see now are returned. By default it searches each session's CURRENT focus; with since_hours " +
+				"it searches every focus each session had in that many past hours instead (a session's focus moves between subtasks " +
+				"of one job, so its current focus can miss what it has been on all along)." + focusUntrustedTail,
 			Parameters: objSchema(map[string]any{
 				"query": strProp("Words to look for, e.g. \"invoice reconciliation\"."),
 				"limit": map[string]any{"type": "integer", "description": "At most this many results (1-20, default 5)."},
+				"since_hours": intProp("Search the focus history of the last this-many hours instead of the current focus (1-24; "+
+					"omit for the current focus). Each hit is a session's best-matching past focus, with when it was written.", 1, focusSearchMaxHours),
 			}, "query")},
 		{Type: "function", Name: focusRefreshToolName,
 			Description: "Recompute one session's focus now and wait for it. muster computes it — it costs you no tokens — " +
@@ -110,11 +114,15 @@ func (s *Server) toolAgentsList(ctx context.Context) string {
 
 func (s *Server) toolFocusSearch(ctx context.Context, arguments string) string {
 	var in struct {
-		Query string `json:"query"`
-		Limit int    `json:"limit"`
+		Query      string `json:"query"`
+		Limit      int    `json:"limit"`
+		SinceHours int    `json:"since_hours"`
 	}
 	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &in); err != nil || strings.TrimSpace(in.Query) == "" {
-		return toolErr("arguments are {query, limit?}")
+		return toolErr("arguments are {query, limit?, since_hours?}")
+	}
+	if in.SinceHours < 0 || in.SinceHours > focusSearchMaxHours {
+		return toolErr("since_hours is 1 to %d (omit it to search the current focus)", focusSearchMaxHours)
 	}
 	if in.Limit <= 0 {
 		in.Limit = 5
@@ -126,7 +134,11 @@ func (s *Server) toolFocusSearch(ctx context.Context, arguments string) string {
 	for _, e := range s.mirrorClaudeEntries(ctx) {
 		live = append(live, e.ClaudeSession)
 	}
-	hits, err := s.ext.Focus.Search(ctx, in.Query, live, min(max(in.Limit, 1), focus.MaxSearchResults))
+	limit := min(max(in.Limit, 1), focus.MaxSearchResults)
+	if in.SinceHours > 0 {
+		return s.focusSearchHistory(ctx, in.Query, live, time.Duration(in.SinceHours)*time.Hour, limit)
+	}
+	hits, err := s.ext.Focus.Search(ctx, in.Query, live, limit)
 	if err != nil {
 		s.logger.Printf("focus: search: %v", err)
 		return toolErr("the search failed")
@@ -142,6 +154,48 @@ func (s *Server) toolFocusSearch(ctx context.Context, arguments string) string {
 		out = append(out, row{ID: h.Subject.String(), Kind: string(h.Subject.Kind), Title: h.Title, Snippet: h.Snippet})
 	}
 	return toolJSON(map[string]any{"untrusted": focus.UntrustedNote, "results": out})
+}
+
+// focusSearchMaxHours bounds focus_search's since_hours: a day. The window is
+// for finding who is on something NOW (the measured need was 6 h), not a trawl
+// through history's 30 days.
+const focusSearchMaxHours = 24
+
+// focusSearchHistory is focus_search with since_hours: each session's best
+// focus written in the last window, under the SAME liveness rule as the
+// current-focus search — a mirrored session only while an online window shows
+// it (liveMirrors), applied by the store before its limit — and every agent of
+// the owner's, as Store.Search leaves agents in.
+func (s *Server) focusSearchHistory(ctx context.Context, query string, liveMirrors []string, window time.Duration, limit int) string {
+	live := focus.Live{Mirrors: liveMirrors}
+	if s.ext.Agents != nil {
+		list, err := s.ext.Agents.List(ctx)
+		if err != nil {
+			s.logger.Printf("focus: search history: list agents: %v", err)
+			return toolErr("the search failed")
+		}
+		for _, a := range list {
+			live.Agents = append(live.Agents, a.ID)
+		}
+	}
+	hits, err := s.ext.Focus.SearchHistory(ctx, query, live, s.now().Add(-window), limit)
+	if err != nil {
+		s.logger.Printf("focus: search history: %v", err)
+		return toolErr("the search failed")
+	}
+	type row struct {
+		ID      string `json:"id"`
+		Kind    string `json:"kind"`
+		Title   string `json:"title"`
+		Snippet string `json:"snippet,omitempty"`
+		At      string `json:"at"`
+	}
+	out := make([]row, 0, len(hits))
+	for _, h := range hits {
+		out = append(out, row{ID: h.Subject.String(), Kind: string(h.Subject.Kind), Title: h.Title, Snippet: h.Snippet,
+			At: h.At.UTC().Format(time.RFC3339)})
+	}
+	return toolJSON(map[string]any{"untrusted": focus.UntrustedNote, "since": window.String(), "results": out})
 }
 
 func (s *Server) toolFocusRefresh(ctx context.Context, a agents.Agent, arguments string) string {

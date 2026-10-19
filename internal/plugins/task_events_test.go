@@ -47,7 +47,7 @@ func TestTheTaskEventTurnIsExactlyThisBlock(t *testing.T) {
 		t.Fatalf("the task-event turn:\n%s\nwant:\n%s", got, want)
 	}
 	// RenderMessage routes a task event to this renderer, never to the mail one.
-	if r := RenderMessage(Plugin{Label: "Example tracker"}, Message{ID: 42, Body: in.Body, TaskID: &task}, true); !strings.HasPrefix(r,
+	if r := RenderMessage(Plugin{Label: "Example tracker"}, Message{ID: 42, Body: in.Body, TaskID: &task}, true, Hints{}); !strings.HasPrefix(r,
 		"Plugin Example tracker: task event for task_id 812") || strings.Contains(r, "plugin-message") {
 		t.Fatalf("RenderMessage did not render the task event as one:\n%s", r)
 	}

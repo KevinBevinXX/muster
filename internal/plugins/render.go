@@ -53,15 +53,22 @@ const NoReplySentence = "This message cannot be replied to: do not draft a reply
 
 // RenderMessage is the whole turn delivered to the chief for one plugin message,
 // with a fresh nonce. routing says session routing is on (the chief has
-// route_to_session), which adds RoutingSentence to the preface.
+// route_to_session), which adds RoutingSentence to the preface. hints, when it
+// names any session, appends the session-hint block (renderHints) AFTER the
+// message's fence, under its own nonce; its routing line is left out for a
+// no_reply message, which route_to_session refuses.
 //
 // A TASK EVENT (m.TaskID set, task_events.go) is rendered as one: muster's
-// structured event, never as mail.
-func RenderMessage(p Plugin, m Message, routing bool) string {
+// structured event, never as mail — and WITHOUT a session hint. The event
+// already names its task and the agents bound to it from muster's own rows,
+// the chief routes it with the task tools, and it is no_reply, so the hint's
+// route_to_session line could never apply (the deliverer does not compute a
+// hint for one either).
+func RenderMessage(p Plugin, m Message, routing bool, hints Hints) string {
 	if IsTaskEvent(m) {
 		return renderTaskEvent(p, m, fence.NewNonce())
 	}
-	return renderMessage(p, m, fence.NewNonce(), routing)
+	return renderMessage(p, m, fence.NewNonce(), routing) + renderHints(hints, fence.NewNonce(), routing && !m.NoReply)
 }
 
 func renderMessage(p Plugin, m Message, nonce string, routing bool) string {

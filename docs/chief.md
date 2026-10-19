@@ -45,7 +45,7 @@ The chief is offered these tools, and no other agent is:
 | tool | needs |
 |---|---|
 | `task_create_gated`, `reply_draft` | plugins on |
-| `agents_list`, `focus_search`, `focus_refresh` | session focus |
+| `agents_list`, `focus_search`, `focus_refresh`, `sessions_overview` | session focus |
 | `route_to_session` | session routing |
 | `attention_list`, `session_transcript` | the attention queue |
 

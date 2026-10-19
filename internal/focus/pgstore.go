@@ -44,6 +44,11 @@ type Store interface {
 	// PruneHistory deletes EVERY owner's history rows written before before
 	// (the retention sweep, under the system scope).
 	PruneHistory(ctx context.Context, before time.Time) (int, error)
+	// SearchHistory, MatchHistory and RecentTitles read the caller's history
+	// written at or after since, for live sessions only (history_search.go).
+	SearchHistory(ctx context.Context, query string, live Live, since time.Time, limit int) ([]HistoryHit, error)
+	MatchHistory(ctx context.Context, text string, live Live, since time.Time, minTerms, limit int) ([]Match, error)
+	RecentTitles(ctx context.Context, live Live, since time.Time) (map[Subject][]TitleAt, error)
 }
 
 // Write is one focus to store. Title and Description go through Clean.

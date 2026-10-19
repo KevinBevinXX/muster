@@ -1,4 +1,12 @@
-package mirrorhost
+// Package redact is THE ONE secret redactor: what looks like a credential in a
+// line of text an agent or a page will be shown is replaced by [Mark].
+//
+// 🔴 ONE COPY, TWO CALLERS. It was internal/mirrorhost's (the pending-action
+// summary a waiting session sends, below) and moved here unchanged when the
+// chief's sessions_overview began quoting session transcripts
+// (internal/api's sessions_overview.go). A second redactor would drift from
+// this one — the shapes it knows are a list that grows — so both call this.
+package redact
 
 import (
 	"regexp"
@@ -6,7 +14,8 @@ import (
 	"unicode"
 )
 
-// REDACTION BEFORE A PENDING ACTION LEAVES THE HOST (summarizeTool, PendingOf).
+// REDACTION BEFORE A PENDING ACTION LEAVES THE HOST (internal/mirrorhost's
+// summarizeTool and PendingOf) AND BEFORE sessions_overview QUOTES A TRANSCRIPT.
 //
 // What a waiting session waits on is shown on muster's queue page and handed
 // to the chief's model by attention_list, so a command line pasted there must
@@ -28,8 +37,8 @@ import (
 // passes. It is a second line behind the first, which is that only one line
 // of a call's input is ever summarised, and that no push carries it.
 
-// redactedMark replaces each secret.
-const redactedMark = "«redacted»"
+// Mark replaces each secret.
+const Mark = "«redacted»"
 
 var (
 	reAuthHeader = regexp.MustCompile(`(?i)\b((?:proxy-)?authorization\s*[:=]\s*)(?:(?:bearer|basic|token|digest)\s+)?("[^"]*"|'[^']*'|[^\s'"]+)`)
@@ -41,33 +50,33 @@ var (
 	rePrefix     = regexp.MustCompile(`\b(?:gh[pousr]_|github_pat_|glpat-|xox[abposr]-|sk-|mst_|mmt_|mpl_)[A-Za-z0-9_-]{6,}|\bAKIA[A-Z0-9]{12,}`)
 )
 
-// redactSecrets is s with every value that looks like a secret replaced by
+// Secrets is s with every value that looks like a secret replaced by
 // «redacted» (see the comment above for the shapes).
-func redactSecrets(s string) string {
+func Secrets(s string) string {
 	if s == "" {
 		return s
 	}
-	s = reAuthHeader.ReplaceAllString(s, "${1}"+redactedMark)
+	s = reAuthHeader.ReplaceAllString(s, "${1}"+Mark)
 	s = reBearer.ReplaceAllStringFunc(s, func(m string) string {
 		sub := reBearer.FindStringSubmatch(m)
 		if !strings.ContainsFunc(sub[2], unicode.IsDigit) {
 			return m // "basic setup", not a credential
 		}
-		return sub[1] + " " + redactedMark
+		return sub[1] + " " + Mark
 	})
 	s = reFlag.ReplaceAllStringFunc(s, func(m string) string {
 		sub := reFlag.FindStringSubmatch(m)
 		if strings.EqualFold(sub[2], "-u") && !strings.Contains(sub[4], ":") {
 			return m // -u without user:password (git add -u, ps -u root)
 		}
-		if strings.HasPrefix(sub[4], redactedMark) {
+		if strings.HasPrefix(sub[4], Mark) {
 			return m
 		}
-		return sub[1] + sub[2] + sub[3] + redactedMark
+		return sub[1] + sub[2] + sub[3] + Mark
 	})
-	s = reAssign.ReplaceAllString(s, "${1}="+redactedMark)
-	s = reUserinfo.ReplaceAllString(s, "${1}"+redactedMark+"@")
-	s = reQuery.ReplaceAllString(s, "${1}"+redactedMark)
-	s = rePrefix.ReplaceAllString(s, redactedMark)
+	s = reAssign.ReplaceAllString(s, "${1}="+Mark)
+	s = reUserinfo.ReplaceAllString(s, "${1}"+Mark+"@")
+	s = reQuery.ReplaceAllString(s, "${1}"+Mark)
+	s = rePrefix.ReplaceAllString(s, Mark)
 	return s
 }

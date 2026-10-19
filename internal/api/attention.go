@@ -17,6 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
@@ -162,6 +163,10 @@ type attentionItem struct {
 	// claudeSession its Claude session id (its focus); tool the NAME of the
 	// tool it waits on (mirror.Pending.Tool) — all a push may say of it.
 	host, claudeSession, tool string
+	// subject is the session the item is about (an asking agent or mirrored
+	// session, a waiting window's Claude session); zero for a reply draft.
+	// sessions_overview reads it.
+	subject focus.Subject
 }
 
 // attentionPrincipal is ctx acting as owner, through authz.ViaAttention: how
@@ -194,8 +199,15 @@ func askerLabel(a attention.Ask) string {
 }
 
 func askItem(a attention.Ask) attentionItem {
-	return attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: askerLabel(a), Text: a.Question,
+	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: askerLabel(a), Text: a.Question,
 		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + attentionAskKey(a.ID), AskID: a.ID}
+	switch {
+	case a.Asker.AgentID > 0:
+		it.subject = focus.AgentSubject(a.Asker.AgentID)
+	case a.Asker.MirrorSession != "":
+		it.subject = focus.MirrorSubject(a.Asker.MirrorSession)
+	}
+	return it
 }
 
 // sessionWaitingText is a waiting session's text when its host says nothing
@@ -277,6 +289,9 @@ func (s *Server) waitingSessions(ctx context.Context) []attentionItem {
 		}
 		it := attentionItem{Key: k, Kind: attentionKindSession, Source: e.DisplayTitle() + " @ " + e.Host, Text: sessionWaitingText, host: e.Host,
 			claudeSession: e.ClaudeSession, Offline: wt.offline, Link: ui.MirrorRef{Host: e.Host, Session: e.Session, Window: e.Window}.ViewPath()}
+		if e.ClaudeSession != "" {
+			it.subject = focus.MirrorSubject(e.ClaudeSession)
+		}
 		switch {
 		case wt.q != nil:
 			it.Kind, it.Text = attentionKindQuestion, heldQuestionText(*wt.q)

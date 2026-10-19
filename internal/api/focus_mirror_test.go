@@ -75,6 +75,15 @@ func (m *memFocus) PruneHistory(context.Context, time.Time) (int, error) { retur
 func (m *memFocus) History(context.Context, focus.Subject, string, int) (focus.HistoryPage, error) {
 	return focus.HistoryPage{}, nil
 }
+func (m *memFocus) SearchHistory(context.Context, string, focus.Live, time.Time, int) ([]focus.HistoryHit, error) {
+	return nil, nil
+}
+func (m *memFocus) MatchHistory(context.Context, string, focus.Live, time.Time, int, int) ([]focus.Match, error) {
+	return nil, nil
+}
+func (m *memFocus) RecentTitles(context.Context, focus.Live, time.Time) (map[focus.Subject][]focus.TitleAt, error) {
+	return nil, nil
+}
 
 func focusMirrorServer(t *testing.T, fm *fakeMirror, store *memFocus, summ focus.Summarizer) (*Server, *httptest.Server) {
 	t.Helper()

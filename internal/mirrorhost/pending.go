@@ -11,6 +11,7 @@ import (
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/redact"
 )
 
 // WHAT A WAITING SESSION WAITS ON (mirror.Pending): read here, on the host,
@@ -34,7 +35,7 @@ const maxPathRunes = 100
 // PendingOf is what a waiting session waits on, from its transcript's events
 // (oldest first): the last tool call AFTER THE LAST PROMPT that has no result
 // (an earlier one was interrupted, not pending), summarised, and the last text
-// Claude wrote, each with what looks like a secret redacted (redactSecrets),
+// Claude wrote, each with what looks like a secret redacted (redact.Secrets),
 // and the call's tool as a name (toolName). nil when there is neither. All are
 // cleaned and capped (mirror.CleanPending).
 func PendingOf(events []cctranscript.Event) *mirror.Pending {
@@ -60,7 +61,7 @@ func PendingOf(events []cctranscript.Event) *mirror.Pending {
 	}
 	for i := len(events) - 1; i >= 0; i-- {
 		if events[i].Kind == cctranscript.KindText {
-			p.Last = redactSecrets(events[i].Text)
+			p.Last = redact.Secrets(events[i].Text)
 			break
 		}
 	}
@@ -82,9 +83,9 @@ func toolName(tool string) string {
 // (its first line), the path a file tool touches, the host a WebFetch reaches,
 // an MCP tool's server/tool, the question an AskUserQuestion asks — else the
 // tool's name — with what looks like a secret replaced by «redacted»
-// (redactSecrets) BEFORE it leaves the host. Never more of the input than that.
+// (redact.Secrets) BEFORE it leaves the host. Never more of the input than that.
 func summarizeTool(tool, input string, ask *cctranscript.Ask) string {
-	return redactSecrets(summarizeRaw(tool, input, ask))
+	return redact.Secrets(summarizeRaw(tool, input, ask))
 }
 
 func summarizeRaw(tool, input string, ask *cctranscript.Ask) string {

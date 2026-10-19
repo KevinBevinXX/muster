@@ -22,8 +22,8 @@ import (
 // (MaxPendingSummary, MaxPendingTool, MaxPendingLast), stripped of every
 // control and format character and whitespace-collapsed (CleanPending) — by
 // the host before sending and by muster again on receipt. The host also
-// redacts what looks like a secret before it sends (internal/mirrorhost's
-// redactSecrets). Only Tool ever reaches a lock screen: the summary and the
+// redacts what looks like a secret before it sends (internal/redact's
+// Secrets, called by internal/mirrorhost). Only Tool ever reaches a lock screen: the summary and the
 // last words are shown on the queue page, never in a push.
 //
 // 🔴 BOUNDED LIST-WIDE, LIKE OtherClaude: only a window that is Claude and

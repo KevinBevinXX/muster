@@ -77,6 +77,10 @@ type DelivererConfig struct {
 	// Routing: session routing is on, so the turn says when to route
 	// (RoutingSentence).
 	Routing bool
+	// Hints, when set, finds the sessions that may already be on a message's
+	// subject; the turn then lists them after the message (hints.go). Nil: no
+	// hint block, ever.
+	Hints HintFunc
 }
 
 // Deliverer hands one stored message to the owner's chief as a fenced turn: the
@@ -96,6 +100,8 @@ type Deliverer struct {
 	turn   time.Duration
 	// routing: DelivererConfig.Routing.
 	routing bool
+	// hints: DelivererConfig.Hints.
+	hints HintFunc
 	// owner names this process in an agent's session claim.
 	owner string
 }
@@ -113,7 +119,7 @@ func NewDeliverer(cfg DelivererConfig) (*Deliverer, error) {
 		return nil, errors.New("plugins: DelivererConfig.Turn is required (the tool-capable chat turn a message is delivered as)")
 	}
 	d := &Deliverer{store: cfg.Store, agents: cfg.Agents, gw: cfg.Gateway, run: cfg.Turn, log: cfg.Logger, turn: DefaultTurnTimeout,
-		routing: cfg.Routing}
+		routing: cfg.Routing, hints: cfg.Hints}
 	if d.log == nil {
 		d.log = log.New(io.Discard, "", 0)
 	}
@@ -230,7 +236,7 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 		return Result{Outcome: OutcomeSettled}
 	}
 
-	message := RenderMessage(p, m, d.routing)
+	message := RenderMessage(p, m, d.routing, d.hintsFor(ctx, fresh, m))
 	pc := &agents.PartCollector{}
 	reply, err := d.run(ctx, fresh, sess.SessionKey, message, pc.Observe)
 

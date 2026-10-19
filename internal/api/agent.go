@@ -345,6 +345,10 @@ func (s *Server) agentTools() []agentTool {
 		for _, d := range focusToolDefs() {
 			tools = append(tools, agentTool{def: d, mcp: true, chiefOnly: true})
 		}
+		// sessions_overview (sessions_overview.go): what every live session is
+		// doing now, transcripts included. Chief-only and on MCP for the focus
+		// tools' reasons; it reads the owner's whole fleet.
+		tools = append(tools, agentTool{def: sessionsOverviewToolDef(), mcp: true, chiefOnly: true})
 	}
 	// Session routing (session_routes.go), only with MUSTER_SESSION_ROUTING on:
 	// the chief hands a plugin message to a mirrored session (chief-only, like
@@ -619,6 +623,8 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return s.toolFocusSearch(ctx, arguments)
 	case focusRefreshToolName:
 		return s.toolFocusRefresh(ctx, a, arguments)
+	case sessionsOverviewToolName:
+		return s.toolSessionsOverview(ctx, a, arguments)
 	case routeToSessionToolName:
 		return s.toolRouteToSession(ctx, a, arguments)
 	case "connector_status":
