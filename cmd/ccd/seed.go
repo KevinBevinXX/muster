@@ -8,7 +8,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // `ccd seed` prepares CLAUDE_CONFIG_DIR so the interactive CLI starts straight at
@@ -81,7 +84,7 @@ func seed(o seedOpts, stderr io.Writer) error {
 		return err
 	}
 	for _, d := range []string{o.configDir, o.workspace} {
-		if err := os.MkdirAll(d, 0o700); err != nil {
+		if err := ensureWritableDir(d, 0o700, stderr); err != nil {
 			return err
 		}
 	}
@@ -132,6 +135,61 @@ func seed(o seedOpts, stderr io.Writer) error {
 	}
 	stripForbidden(have, setPath, stderr)
 	return writeJSONAtomic(setPath, have)
+}
+
+// ensureWritableDir makes dir exist as a directory this process can create files
+// in, as os.MkdirAll(dir, perm) does — except that an EMPTY directory on dir's path
+// that this process cannot write in, where it needs to, is replaced by one it
+// creates itself.
+//
+// 🔴 WHY: a container runtime creates an image's missing WORKDIR as ROOT, after
+// mounting the volumes. The claude-code-agent image up to 0.49.0 had
+// `WORKDIR /data/workspace`, so on a FRESH volume at /data the runtime made
+// /data/workspace root-owned, mode 0755 (fsGroup only sets its group). Nothing
+// failed while the CLI only ran there; once ccd cloned a repository into
+// /data/workspace/<repo>, every new agent dispatched with one crash-looped on
+// `mkdir /data/workspace/<repo>: permission denied`. The image no longer has that
+// WORKDIR, but volumes created by those images keep the root-owned directory —
+// this is what lets them start.
+//
+// The directory checked is the one that must be WRITTEN: dir itself when it
+// exists (the CLI works in it), else its deepest existing ancestor (MkdirAll
+// creates the rest inside it). Replacing it is os.Remove — rmdir — so it happens
+// only when it is empty and its parent is writable by this process: exactly the
+// directory this process could have created and removed itself, so no file and
+// no other process's directory is ever lost. Anything else (a non-empty
+// directory, a read-only parent, the volume's mount point) is an error naming
+// the directory, its owner and mode.
+func ensureWritableDir(dir string, perm os.FileMode, stderr io.Writer) error {
+	dir = filepath.Clean(dir)
+	p := dir
+	for {
+		if _, err := os.Lstat(p); err == nil {
+			break
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			break
+		}
+		p = parent
+	}
+	fi, err := os.Stat(p)
+	if err == nil && fi.IsDir() && unix.Access(p, unix.W_OK|unix.X_OK) != nil {
+		owner := ""
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+			owner = fmt.Sprintf("owner %d:%d, ", st.Uid, st.Gid)
+		}
+		if rerr := os.Remove(p); rerr != nil {
+			return fmt.Errorf("%s is a directory this process (uid %d) cannot create files in (%smode %s), and it "+
+				"could not be replaced (%v): make it writable by uid %d", p, os.Getuid(), owner, fi.Mode(), rerr, os.Getuid())
+		}
+		fmt.Fprintf(stderr, "ccd seed: replaced %s: it was an empty directory this process (uid %d) could not "+
+			"create files in (%smode %s) — a container runtime creates a missing image WORKDIR as root on a fresh volume\n",
+			p, os.Getuid(), owner, fi.Mode())
+	}
+	return os.MkdirAll(dir, perm)
 }
 
 // settingsForbidden are the settings.json keys REMOVED from the persisted file,

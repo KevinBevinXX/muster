@@ -227,10 +227,12 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	}
 	spec := provision.Spec{
 		Ref: ref,
-		// ⚠ NO WorkingDir: the image's own WORKDIR (/data/workspace) is the shape
-		// the operator's live check ran — a fresh 2Gi local-path PVC at /data, the
-		// entrypoint's `ccd seed` creating the workspace as uid 1000 — and it
-		// worked. Overriding it here would be an unmeasured difference.
+		// 🔴 NO WorkingDir, and the image has none under /data either: a container
+		// runtime creates a missing working directory as ROOT after mounting the
+		// volume, which on a fresh volume made /data/workspace root-owned 0755 and
+		// crash-looped every agent with a repository (0.49.0). The entrypoint's
+		// `ccd seed` creates the workspace as uid 1000 and cd's into CCD_WORKSPACE;
+		// ccd starts the CLI there (images/claude-code-agent/Dockerfile).
 		Runtime: provision.Runtime{Image: cc.Image},
 		Env:     claudeCodeEnv(cfg, sidecar != nil, repo),
 		// 🔴 THE ONLY PLACE EnvClaudeOAuthToken IS EVER WRITTEN.

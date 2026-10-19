@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
 # The image's built-in smoke test:
 #
-#   docker run --rm <image> cc-smoke
+#   docker run --rm --tmpfs /data:rw,exec,mode=2777,uid=0,gid=1000 -e CC_SMOKE_VOLUME=fresh <image> cc-smoke
+#
+# 🔴 IT NEEDS A VOLUME AT /data, as an agent's pod has one, and refuses to run
+# without it (step 0). The `legacy` shape (a volume an image up to 0.49.0 left a
+# root-owned /data/workspace on) is in .github/workflows/ci.yml's ccd-image job.
 #
 # It asserts, INSIDE the built image:
+#   0. on that volume, an agent's FIRST start with a repository (the old step 11,
+#      now at the production path /data/workspace/<name>) checks it out and starts
+#      the real CLI in it, leaving /data/workspace and the checkout owned and
+#      writable by uid 1000 — and on a fresh volume ccd had nothing to replace, on
+#      a legacy one it replaced the root-owned /data/workspace and said so;
 #   1. the container runs as uid 1000, not root;
 #   2. the pinned CLI is the one on PATH;
 #   3. ccd's /healthz answers 200 with JSON, and GET / answers the same status;
@@ -29,10 +38,11 @@
 #      an unreachable muster fails fast and writes no git routing; curl is present;
 #  10. the seeded settings pin default permission mode and the approval hooks,
 #      and `ccd approve` with muster unreachable makes no decision (prints nothing).
-#  11. with CCD_REPO (a local bare repository standing in for GitHub), ccd clones
-#      it into CCD_WORKSPACE before starting the CLI; the real CLI runs in the
-#      checkout and applies the repository's own .claude/ project settings
-#      (its SessionStart hook sees CLAUDE_PROJECT_DIR = the checkout);
+#  11. (runs FIRST, as part of step 0) with CCD_REPO (a local bare repository
+#      standing in for GitHub), ccd clones it into CCD_WORKSPACE before starting
+#      the CLI; the real CLI runs in the checkout and applies the repository's
+#      own .claude/ project settings (its SessionStart hook sees
+#      CLAUDE_PROJECT_DIR = the checkout);
 #  12. with a repository that cannot be cloned, /healthz stays 200 and reports
 #      why, and no CLI session is started.
 #
@@ -55,9 +65,6 @@ echo "cc-smoke: claude $got ok"
 
 export CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-sk-ant-oat01-SMOKE-DELIBERATELY-INVALID}"
 export HOOKS_TOKEN="${HOOKS_TOKEN:-smoke-hooks-token}"
-
-/usr/local/bin/cc-entrypoint >/tmp/cc-entrypoint.log 2>&1 &
-ep=$!
 
 # get PATH: prints "<status code> <body>". bash's /dev/tcp: the image carries no
 # curl, and needs none for this.
@@ -86,10 +93,103 @@ wait_for() {
   fail "/healthz never matched $1 within 120s; last: $body (the pane and ccd's log are above)"
 }
 
+# 0. The VOLUME at /data, as an agent's pod has one. 🔴 The smoke refuses to run
+# without it: with no volume mounted, /data is the image's own uid-1000
+# directories and the first-start ownership bug below cannot happen, so a pass
+# would say nothing about a real pod. CC_SMOKE_VOLUME names the shape:
+#   fresh  — an empty volume as local-path + fsGroup 1000 makes it (root:1000,
+#            mode 2777 at its root), on which nothing may have pre-created
+#            /data/workspace (the image has no WORKDIR there any more: a container
+#            runtime creates a missing WORKDIR as ROOT, after mounting volumes);
+#   legacy — a volume a claude-code-agent image up to 0.49.0 already started on:
+#            /data/workspace exists, root-owned, mode 0755 — `ccd seed` must
+#            replace it (seed.go ensureWritableDir) and say so.
+awk '$5 == "/data" { found = 1 } END { exit !found }' /proc/self/mountinfo \
+  || fail "/data is not a mount point: run with a volume there (see images/claude-code-agent/Dockerfile's header)"
+case "${CC_SMOKE_VOLUME:-}" in
+  fresh)
+    [[ "$(stat -c '%u:%g %a' /data)" == "0:1000 2777" ]] || fail "fresh volume: /data is $(stat -c '%u:%g %a' /data), want 0:1000 2777"
+    ;;
+  legacy)
+    [[ "$(stat -c '%u %a' /data/workspace 2>/dev/null)" == "0 2755" && ! -w /data/workspace ]] \
+      || fail "legacy volume: /data/workspace is '$(stat -c '%u %a' /data/workspace 2>&1)', want root-owned 2755 and unwritable"
+    ;;
+  *) fail "CC_SMOKE_VOLUME must be fresh or legacy, not '${CC_SMOKE_VOLUME:-}'" ;;
+esac
+echo "cc-smoke: $CC_SMOKE_VOLUME volume at /data: $(stat -c '%U:%G %a' /data)"
+
+# 0 (continued). A repository (CCD_REPO) — an agent's FIRST start, on that volume,
+# at the production paths: CCD_WORKSPACE=/data/workspace/<name> (agentspec
+# claudeCodeRepo). This ran as the old step 11 against a /tmp workspace and
+# passed while every real agent with a repository crash-looped on
+# `ccd seed: mkdir /data/workspace/<repo>: permission denied`.
+#
+# With the REAL CLI. A local bare repository stands in for GitHub through git's
+# url.<x>.insteadOf — the mechanism ccd's connector routing itself uses for
+# muster's proxy. The repository carries a CLAUDE.md, a project skill
+# (.claude/skills/smoke/SKILL.md) and a PROJECT settings file whose SessionStart
+# hook records $CLAUDE_PROJECT_DIR. ccd must clone it into CCD_WORKSPACE before
+# it starts the CLI, start the CLI there (trusted: SessionStart reaches ccd),
+# and the CLI must apply the repository's own .claude/ — its hook fires with
+# CLAUDE_PROJECT_DIR = the checkout. ⚠ That the CLI LOADS the skill is not
+# observable without a model turn; what is shown is that it reads project
+# configuration from the checkout's .claude/, where the skill lives.
+export GIT_CONFIG_GLOBAL=/tmp/smoke-gitconfig
+fake=/tmp/smoke-github src=/tmp/smoke-src ws=/data/workspace/app
+mkdir -p "$src/.claude/skills/smoke" "$fake/example-org"
+printf '# smoke project\n' >"$src/CLAUDE.md"
+printf -- '---\nname: smoke\ndescription: a fixture skill\n---\nbody\n' >"$src/.claude/skills/smoke/SKILL.md"
+cat >"$src/.claude/settings.json" <<'JSON'
+{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "printf %s \"$CLAUDE_PROJECT_DIR\" >/tmp/smoke-project-dir"}]}]}}
+JSON
+printf '[url "file://%s/"]\n\tinsteadOf = https://github.com/\n' "$fake" >"$GIT_CONFIG_GLOBAL"
+git -C "$src" init -q -b trunk
+git -C "$src" add CLAUDE.md .claude
+git -C "$src" -c user.name=smoke -c user.email=smoke@example.test commit -q -m fixture
+git clone -q --bare "$src" "$fake/example-org/app.git"
+CLAUDE_CONFIG_DIR=/tmp/smoke-repo-cfg CCD_WORKSPACE="$ws" CCD_REPO=example-org/app CCD_REPO_BRANCH=trunk \
+  /usr/local/bin/cc-entrypoint >/tmp/cc-entrypoint.log 2>&1 &
+ep=$!
+wait_for '200 {*"session":"started"*'
+[[ "$body" == *'"repo":{"repo":"example-org/app","branch":"trunk","dir":"'"$ws"'","state":"ready"}'* ]] \
+  || fail "/healthz does not report the checkout ready: $body"
+pid="$(tmux list-panes -t cc -F '#{pane_pid}')"
+[[ "$(readlink "/proc/$pid/cwd")" == "$ws" ]] || fail "the CLI (pid $pid) runs in $(readlink "/proc/$pid/cwd"), not the checkout $ws"
+[[ -f "$ws/CLAUDE.md" && -f "$ws/.claude/skills/smoke/SKILL.md" ]] || fail "the checkout lacks CLAUDE.md or the skill"
+for _ in $(seq 1 30); do [[ -s /tmp/smoke-project-dir ]] && break; sleep 1; done
+[[ "$(cat /tmp/smoke-project-dir 2>/dev/null)" == "$ws" ]] \
+  || fail "the repository's own SessionStart hook did not run with CLAUDE_PROJECT_DIR=$ws (got '$(cat /tmp/smoke-project-dir 2>/dev/null)')"
+[[ -O /data/workspace && -w /data/workspace && -O "$ws" && -w "$ws" ]] \
+  || fail "/data/workspace or the checkout is not owned and writable by uid 1000: $(stat -c '%n %U:%G %a' /data/workspace "$ws")"
+case "$CC_SMOKE_VOLUME" in
+  fresh)
+    # Nothing pre-created /data/workspace, so ccd had nothing to replace.
+    if grep -q 'ccd seed: replaced' /tmp/cc-entrypoint.log; then
+      fail "on a fresh volume ccd had to replace a directory something else created: $(grep 'ccd seed: replaced' /tmp/cc-entrypoint.log)"
+    fi ;;
+  legacy)
+    grep -q 'ccd seed: replaced /data/workspace: it was an empty directory' /tmp/cc-entrypoint.log \
+      || fail "ccd did not say it replaced the root-owned /data/workspace: $(cat /tmp/cc-entrypoint.log)" ;;
+esac
+echo "cc-smoke: first start with a repository on the $CC_SMOKE_VOLUME volume: checked out in $ws; the real CLI runs in it and applied its project settings"
+kill "$ep" 2>/dev/null || true
+tmux kill-server 2>/dev/null || true
+# Steps 1-10 run with the operator's own (empty) git configuration: step 9
+# asserts connect-git wrote no url.* routing.
+unset GIT_CONFIG_GLOBAL
+
+# 1-6. No repository: the CLI in /data/workspace itself.
+/usr/local/bin/cc-entrypoint >/tmp/cc-entrypoint.log 2>&1 &
+ep=$!
 wait_for '200 {*"session":"started"*'
 echo "cc-smoke: /healthz -> $body"
 [[ "$body" == *'"supervisor":{"cli":"running","cli_mode":"fresh","cli_starts":1'* ]] \
   || fail "expected one fresh supervised start: $body"
+# The CLI's working directory is the key its transcripts are filed under
+# (projects/-data-workspace): it must stay exactly /data/workspace.
+pid="$(tmux list-panes -t cc -F '#{pane_pid}')"
+[[ "$(readlink "/proc/$pid/cwd")" == /data/workspace && -O /data/workspace && -w /data/workspace ]] \
+  || fail "the CLI (pid $pid) runs in $(readlink "/proc/$pid/cwd"), want /data/workspace owned and writable by uid 1000"
 root="$(get /)"
 [[ "${root%% *}" == "200" && "${root#* }" == "{"* ]] || fail "GET / -> $root, expected 200 JSON like /healthz"
 echo "cc-smoke: session started (fresh); GET / ok"
@@ -184,49 +284,12 @@ out="$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"rm -rf x"},"per
 echo "cc-smoke: approval hook seeded; relay unreachable -> no decision (terminal prompt)"
 unset MUSTER_CONNECT_URL MUSTER_HOOK_TOKEN
 
-# 11. A repository (CCD_REPO), with the REAL CLI. A local bare repository stands
-# in for GitHub through git's url.<x>.insteadOf — the mechanism ccd's connector
-# routing itself uses for muster's proxy. The repository carries a CLAUDE.md, a
-# project skill (.claude/skills/smoke/SKILL.md) and a PROJECT settings file
-# whose SessionStart hook records $CLAUDE_PROJECT_DIR. ccd must clone it into
-# CCD_WORKSPACE before it starts the CLI, start the CLI there (trusted:
-# SessionStart reaches ccd), and the CLI must apply the repository's own
-# .claude/ — its hook fires with CLAUDE_PROJECT_DIR = the checkout. ⚠ That the
-# CLI LOADS the skill is not observable without a model turn; what is shown is
-# that it reads project configuration from the checkout's .claude/, where the
-# skill lives.
-tmux kill-server 2>/dev/null || true
-export GIT_CONFIG_GLOBAL=/tmp/smoke-gitconfig
-fake=/tmp/smoke-github src=/tmp/smoke-src ws=/tmp/smoke-ws/app
-mkdir -p "$src/.claude/skills/smoke" "$fake/example-org"
-printf '# smoke project\n' >"$src/CLAUDE.md"
-printf -- '---\nname: smoke\ndescription: a fixture skill\n---\nbody\n' >"$src/.claude/skills/smoke/SKILL.md"
-cat >"$src/.claude/settings.json" <<'JSON'
-{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "printf %s \"$CLAUDE_PROJECT_DIR\" >/tmp/smoke-project-dir"}]}]}}
-JSON
-printf '[url "file://%s/"]\n\tinsteadOf = https://github.com/\n' "$fake" >"$GIT_CONFIG_GLOBAL"
-git -C "$src" init -q -b trunk
-git -C "$src" add CLAUDE.md .claude
-git -C "$src" -c user.name=smoke -c user.email=smoke@example.test commit -q -m fixture
-git clone -q --bare "$src" "$fake/example-org/app.git"
-CLAUDE_CONFIG_DIR=/tmp/smoke-repo-cfg CCD_WORKSPACE="$ws" CCD_REPO=example-org/app CCD_REPO_BRANCH=trunk \
-  /usr/local/bin/cc-entrypoint >/tmp/cc-entrypoint.log 2>&1 &
-ep=$!
-wait_for '200 {*"session":"started"*'
-[[ "$body" == *'"repo":{"repo":"example-org/app","branch":"trunk","dir":"'"$ws"'","state":"ready"}'* ]] \
-  || fail "/healthz does not report the checkout ready: $body"
-pid="$(tmux list-panes -t cc -F '#{pane_pid}')"
-[[ "$(readlink "/proc/$pid/cwd")" == "$ws" ]] || fail "the CLI (pid $pid) runs in $(readlink "/proc/$pid/cwd"), not the checkout $ws"
-[[ -f "$ws/CLAUDE.md" && -f "$ws/.claude/skills/smoke/SKILL.md" ]] || fail "the checkout lacks CLAUDE.md or the skill"
-for _ in $(seq 1 30); do [[ -s /tmp/smoke-project-dir ]] && break; sleep 1; done
-[[ "$(cat /tmp/smoke-project-dir 2>/dev/null)" == "$ws" ]] \
-  || fail "the repository's own SessionStart hook did not run with CLAUDE_PROJECT_DIR=$ws (got '$(cat /tmp/smoke-project-dir 2>/dev/null)')"
-echo "cc-smoke: repository checked out; the real CLI runs in it and applied its project settings (CLAUDE_PROJECT_DIR=$ws)"
-kill "$ep" 2>/dev/null || true
-tmux kill-server 2>/dev/null || true
+# 11. is step 0, at the top: a repository's first start on the fresh volume.
 
 # 12. A repository that cannot be cloned: /healthz stays 200 and says so, and no
-# CLI is started.
+# CLI is started. (Step 0's git routing to the local fake GitHub, so nothing
+# here reaches the network.)
+export GIT_CONFIG_GLOBAL=/tmp/smoke-gitconfig
 CLAUDE_CONFIG_DIR=/tmp/smoke-missing-cfg CCD_WORKSPACE=/tmp/smoke-ws/missing CCD_REPO=example-org/missing \
   /usr/local/bin/cc-entrypoint >/tmp/cc-entrypoint.log 2>&1 &
 ep=$!

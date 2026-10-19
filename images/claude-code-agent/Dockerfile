@@ -1,7 +1,12 @@
 # claude-code-agent: an interactive Claude Code session in tmux, driven by ccd.
 #
 #   docker build -f images/claude-code-agent/Dockerfile -t claude-code-agent .
-#   docker run --rm claude-code-agent cc-smoke
+#   docker run --rm --tmpfs /data:rw,exec,mode=2777,uid=0,gid=1000 \
+#     -e CC_SMOKE_VOLUME=fresh claude-code-agent cc-smoke
+#
+# (a tmpfs, not a named volume: docker copies an image's /data into an empty
+# named volume, uid 1000 ownership included, which would hide what a fresh
+# Kubernetes volume looks like)
 #
 # The build context is the REPOSITORY ROOT: ccd is built from this module
 # (cmd/ccd), which is the point — its /v1/responses wire is tested against
@@ -61,6 +66,15 @@ RUN install -d -o 1000 -g 1000 -m 0700 /data /data/claude /data/workspace
 
 # uid 1000 is the base image's `node` user.
 USER 1000:1000
-WORKDIR /data/workspace
+# 🔴 NOT /data/workspace. A container runtime creates a missing WORKDIR as ROOT,
+# AFTER mounting volumes: on a fresh volume at /data that made /data/workspace
+# root-owned, mode 0755 (fsGroup sets only its group), and every agent with a
+# repository crash-looped on `ccd seed: mkdir /data/workspace/<repo>: permission
+# denied` (0.49.0). `ccd seed` creates the workspace as uid 1000 and replaces
+# such a root-owned EMPTY directory on volumes those images already started on
+# (cmd/ccd/seed.go ensureWritableDir); the entrypoint then cd's into
+# CCD_WORKSPACE, and ccd starts the CLI there, so the CLI's working directory —
+# the key its transcripts are filed under — is unchanged.
+WORKDIR /
 EXPOSE 18789
 ENTRYPOINT ["/usr/local/bin/cc-entrypoint"]
