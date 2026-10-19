@@ -398,7 +398,7 @@ func (l *lanes) newLane(id, key, model string) *lane {
 		return append(argv, "--session-id", uuid), modeFresh
 	}
 	srv := l.newServer(term)
-	srv.sup, srv.inputPane = sup, sup.inputPane
+	srv.supervisedBy(sup)
 	srv.blockedSrc = id
 	return &lane{id: id, key: key, model: model, srv: srv, sup: sup, term: term,
 		done: make(chan struct{}), lastUsed: l.now()}
@@ -461,7 +461,8 @@ func (l *lanes) touch(ln *lane) {
 
 // waitStarted waits until the lane's CLI is ready for a turn, its supervisor
 // gave up, or d passes. Ready is BOTH halves:
-//   - the CLI has sent SessionStart (it is at its prompt), and
+//   - the CLI has sent SessionStart (it is at its prompt) since the last exit
+//     the supervisor recorded (cliExited), and
 //   - the supervisor has recorded the start (its pane is the input pane).
 //
 // 🔴 EITHER CAN COME FIRST. tmux new-session runs the CLI before it prints the

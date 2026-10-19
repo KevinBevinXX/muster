@@ -140,7 +140,8 @@ type server struct {
 	gateway *httputil.ReverseProxy
 }
 
-// started reports whether the session has sent SessionStart (and no SessionEnd since).
+// started reports whether the session has sent SessionStart and has neither
+// sent SessionEnd nor exited since (cliExited).
 func (s *server) started() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -257,8 +258,26 @@ func (s *server) handleHook(w http.ResponseWriter, r *http.Request) {
 // first start (supervisor.cliPID): the CLI's first SessionStart can arrive
 // before tmux new-session has returned the pane (see startedRef).
 func (s *server) supervisePrimary(sup *supervisor, panePID func(context.Context, paneRef) (int, error)) {
-	s.sup, s.inputPane, s.recordsPrimary = sup, sup.inputPane, true
+	s.supervisedBy(sup)
+	s.recordsPrimary = true
 	s.primaryPID = func(ctx context.Context) (int, error) { return sup.cliPID(ctx, panePID) }
+}
+
+// supervisedBy makes sup the CLI s serves, the primary's or a lane's: turns
+// paste into sup's pane while its CLI runs, and every exit sup records clears
+// the session's SessionStart (cliExited).
+func (s *server) supervisedBy(sup *supervisor) {
+	s.sup, s.inputPane = sup, sup.inputPane
+	sup.onExit = s.cliExited
+}
+
+// cliExited: the CLI exited, with or without a SessionEnd. Its SessionStart
+// no longer says the TUI is at its prompt — only the next CLI's will (see
+// supervisor.run) — and an exited CLI is not mid-turn.
+func (s *server) cliExited() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionStarted, s.busy = false, false
 }
 
 // notFiredByPrimary says why a hook cannot be shown to come from the primary

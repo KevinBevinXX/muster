@@ -571,9 +571,10 @@ func TestTheCLIsPIDWaitsForItsFirstStart(t *testing.T) {
 	if a := <-got; a.err != nil || a.pid != 4343 {
 		t.Fatalf("after the start: pid %d, err %v; want 4343", a.pid, a.err)
 	}
-	// Once started, an ask answers at once, even on a spent deadline: the
-	// started check is not a coin-flip against ctx.Done() (startedRef). Many
-	// asks, since one select over two ready cases picks each half the time.
+	// Once started, startedRef answers at once, even on a spent deadline: the
+	// started check is not a coin-flip against ctx.Done(). Many asks, since one
+	// select over two ready cases picks each half the time. (This panePID
+	// ignores ctx; the real one, tmuxTerminal.PanePID, can fail on a spent one.)
 	if pid, err := sup.cliPID(context.Background(), panePID); err != nil || pid != 4343 {
 		t.Fatalf("a later ask: pid %d, err %v", pid, err)
 	}

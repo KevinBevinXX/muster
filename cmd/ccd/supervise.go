@@ -138,6 +138,10 @@ type supervisor struct {
 	// argvFn, when set, replaces argv's choice of command line: a lane's
 	// (lanes.go), which resumes its own session by id.
 	argvFn func() ([]string, string)
+	// onExit, when set, is told of every exit the supervisor records, BEFORE it
+	// is recorded and so before any restart: the server served by this CLI
+	// clears its SessionStart (server.cliExited). Set before run.
+	onExit func()
 
 	mu       sync.Mutex
 	st       cliState
@@ -273,9 +277,10 @@ func (s *supervisor) cliPID(ctx context.Context, panePID func(context.Context, p
 // TestTmuxLaneTwoSessionsRunInTheirOwnCLIsOnTheirOwnModels' CI flake ("no
 // primary session id recorded").
 //
-// Once started it answers at once, even on a spent ctx: the started check runs
-// first, on its own — in one select with ctx.Done() Go would pick between two
-// ready cases at random.
+// Once started, startedRef itself answers at once, even on a spent ctx: the
+// started check runs first, on its own — in one select with ctx.Done() Go would
+// pick between two ready cases at random. (cliPID then reads the pane's pid with
+// panePID(ctx, …), which a spent ctx can still fail.)
 func (s *supervisor) startedRef(ctx context.Context) (paneRef, error) {
 	select {
 	case <-s.firstStart:
@@ -437,6 +442,18 @@ func (s *supervisor) run(ctx context.Context) error {
 			}
 		}
 		deadSince = time.Time{}
+		// 🔴 THE DEAD CLI'S SessionStart DIES WITH IT. Nothing else clears it
+		// when the CLI ends without a SessionEnd (SIGKILL, OOM): the server
+		// would still say "started" once the respawn below is running, before
+		// the NEW CLI's SessionStart, and a turn would paste into a CLI still
+		// booting (504 not_submitted, which muster does not re-send) instead of
+		// answering 503 not_ready (which it does). Cleared on the EXIT, never on
+		// a start: a CLI's SessionStart can arrive before started() records its
+		// pane (startedRef). And this runs before the Respawn below, in this
+		// goroutine, so it cannot wipe the NEXT CLI's SessionStart.
+		if s.onExit != nil {
+			s.onExit()
+		}
 		delay, crash := s.recordExit(e)
 		if crash {
 			log.Printf("ccd: %s", s.state().Detail)

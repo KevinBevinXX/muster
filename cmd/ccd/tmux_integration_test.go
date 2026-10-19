@@ -380,6 +380,12 @@ func (r *serveRig) waitHealth(t *testing.T, label string, ok func(health) bool) 
 // the CLI before it returns the pane, so `session: started` while the
 // supervisor is still `starting` is a real state, in which a turn is 503
 // not_ready. Waiting on Session alone made the first chat race the start.
+//
+// 🔴 Session is the CURRENT CLI's: every exit the supervisor records clears it
+// (server.cliExited), so after a restart `started` is the new CLI's SessionStart,
+// never the dead one's. Before that, a CLI killed with no SessionEnd left it
+// `started`, and this predicate passed on the respawn alone (Starts == 2) — the
+// chat that followed raced the new CLI's boot.
 func primaryReady(h health) bool {
 	return h.Session == sessionStartedState && h.Supervisor != nil && h.Supervisor.CLI == cliRunning
 }
@@ -658,7 +664,16 @@ func TestTmuxASignalKilledCLIIsRecordedAsSignal9(t *testing.T) {
 	if out, err := exec.Command("kill", "-9", pid).CombinedOutput(); err != nil {
 		t.Fatalf("kill -9 %s: %v: %s", pid, err, out)
 	}
-	h := r.waitHealth(t, "restart after SIGKILL", func(h health) bool {
+	// While the supervisor waits out its backoff (1s) the killed CLI's
+	// SessionStart is already gone: no SessionEnd came, the exit cleared it.
+	h := r.waitHealth(t, "the SIGKILL recorded", func(h health) bool {
+		return h.Supervisor != nil && h.Supervisor.CLI == cliRestarting
+	})
+	if h.Session == sessionStartedState {
+		t.Fatalf("STALE SessionStart: the CLI was killed (no SessionEnd) and the supervisor is %s, yet session is %q",
+			h.Supervisor.CLI, h.Session)
+	}
+	h = r.waitHealth(t, "restart after SIGKILL", func(h health) bool {
 		return primaryReady(h) && h.Supervisor.Starts == 2
 	})
 	if h.Supervisor.LastExit == nil || *h.Supervisor.LastExit != 137 || !strings.Contains(h.Supervisor.Detail, "signal 9") {
