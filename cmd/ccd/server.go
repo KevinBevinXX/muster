@@ -104,6 +104,10 @@ type server struct {
 
 	mu             sync.Mutex
 	sessionStarted bool
+	// startedOnce: a SessionStart has arrived in this process. Set with the
+	// first one and NEVER cleared — not by SessionEnd, not by cliExited — so it
+	// says the CLI has started once, not that it is up now (startedEver).
+	startedOnce    bool
 	sessionEnded   bool // a SessionEnd arrived and no SessionStart since
 	sessionID      string
 	transcriptPath string // the session's transcript, as the last hook named it
@@ -146,6 +150,32 @@ func (s *server) started() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sessionStarted
+}
+
+// startedEver reports whether the session has sent SessionStart at any time in
+// this process: a one-way latch, unlike started (see runLanes).
+func (s *server) startedEver() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.startedOnce
+}
+
+// runLanes makes l the lanes s (the primary's server) runs, gated on the
+// primary's FIRST SessionStart in this process (lanes.go: no lane starts before
+// the primary has started once).
+//
+// 🔴 THE LATCH, NOT started(). started() is the CURRENT CLI's readiness, and
+// every exit clears it (cliExited) — SIGKILL and OOM included. Gating lanes on
+// it refused EVERY turn to a running, ready lane, 503 not_ready, for as long as
+// the primary's CLI was restarting (its backoff plus its boot; until the pod
+// restarted if it crash-looped), and muster's interactive chat does not re-send
+// a not_ready: the user's message was lost. The gate exists only so the
+// primary's first start (possibly `--continue`) cannot see a lane's transcript,
+// which a primary that has started once can no longer be exposed to. A lane's
+// OWN restart is still refused until ITS new SessionStart (lane.waitStarted).
+func (s *server) runLanes(l *lanes) {
+	l.primaryStarted = s.startedEver
+	s.lanes = l
 }
 
 // snapshot is the session state /healthz reports.
@@ -273,7 +303,19 @@ func (s *server) supervisedBy(sup *supervisor) {
 
 // cliExited: the CLI exited, with or without a SessionEnd. Its SessionStart
 // no longer says the TUI is at its prompt — only the next CLI's will (see
-// supervisor.run) — and an exited CLI is not mid-turn.
+// supervisor.run) — and an exited CLI is not mid-turn: busy is cleared too, so a
+// lane killed mid-turn is idle (evictable at the cap) while it restarts, and
+// /healthz does not call a dead CLI busy (TestALaneKilledMidTurnIsEvictableWhileItRestarts).
+// startedOnce is NOT cleared: it is a latch (runLanes).
+//
+// ⚠ KNOWN NARROW GAP, NOT CLOSED: a SessionStart hook sent by the DEAD CLI that
+// lands AFTER this clear — its orphaned `ccd hook` child still POSTing when
+// the supervisor saw the exit — sets sessionStarted again for a CLI that is
+// gone, and a turn could then paste into the respawn before ITS SessionStart.
+// onHook does not check which process sent a hook (only the primary's
+// recording does, notFiredByPrimary), so this clear does not exclude that
+// case. It needs a SessionStart in flight at the moment of a crash, which a CLI
+// sends only as it starts.
 func (s *server) cliExited() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -315,6 +357,7 @@ func (s *server) onHook(ev hookEvent) {
 		// workspace trust dialog (hooks do not run in an untrusted workspace), so it
 		// is the readiness signal that does not depend on reading the screen.
 		s.sessionStarted, s.sessionEnded, s.sessionID, s.busy = true, false, ev.SessionID, false
+		s.startedOnce = true
 		s.transcriptPath = ev.TranscriptPath
 	case "sessionend":
 		// The session is ending (an operator's /exit, after which the supervisor

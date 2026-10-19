@@ -225,7 +225,7 @@ func serve() error {
 			return err
 		}
 		if maxLanes > 0 {
-			srv.lanes = &lanes{
+			srv.runLanes(&lanes{
 				newTerm: func(target string) laneTerminal {
 					t := term
 					t.target = target
@@ -240,9 +240,10 @@ func serve() error {
 					return ls
 				},
 				bin: bin, configDir: configDir, workspace: workspace, max: maxLanes,
-				startTimeout: laneStartTimeout, primaryStarted: srv.started, now: time.Now,
+				// primaryStarted: set by runLanes (the primary's first-start latch).
+				startTimeout: laneStartTimeout, now: time.Now,
 				set: map[string]*lane{},
-			}
+			})
 		}
 	}
 

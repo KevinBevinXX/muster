@@ -243,8 +243,10 @@ type lanes struct {
 	bin, configDir, workspace string
 	max                       int
 	startTimeout              time.Duration
-	// primaryStarted reports whether the primary has started in this process
-	// (see the type comment on why no lane may start before it).
+	// primaryStarted reports whether the primary has started (sent SessionStart)
+	// at any time in this process (see the type comment on why no lane may start
+	// before it). A one-way latch, never the primary's CURRENT readiness: a
+	// primary restarting must not refuse a running lane (server.runLanes).
 	primaryStarted func() bool
 	now            func() time.Time
 	// stuckAfter is how long a lane may sit at a permission prompt before it
