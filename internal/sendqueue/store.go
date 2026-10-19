@@ -21,7 +21,9 @@
 // expired. The ONE way back to queued is a send the hub refused as superseded
 // (Outcome.Superseded: another paste got into the window between the decision
 // and the paste), which by construction wrote nothing to the host. A message is
-// never pasted twice by the queue.
+// never pasted twice by the queue on its own: a failed row stays failed, and a
+// person's Retry (PGStore.Retry) queues its text again as a NEW row — its own
+// id, so its own delivery nonce — once per failed row.
 //
 // 🔴 A CLAIM IS A LEASE, HELD BY ONE INSTANCE. Claim records the claiming
 // dispatcher (claimed_by) and lease_until, Renew extends it while the send
@@ -96,8 +98,10 @@ type Item struct {
 	Target Target
 	Body   string
 	// StepUpAt is the sign-in time of the session that queued the message (the
-	// step-up decision, recorded): the delivery presents it to the same
-	// freshness gate a manual send passes.
+	// step-up decision, recorded). It was inside the step-up window when the
+	// message was queued (the queue route's gate); the delivery checks that
+	// again against CreatedAt, and the account's cutoffs against it, and then
+	// sends for up to AuthorizedFor after CreatedAt (internal/api sendQueueSend).
 	StepUpAt         time.Time
 	State            State
 	Detail           string
@@ -122,7 +126,18 @@ type Item struct {
 	// session_routes): "" for a person's. Its delivery is gated on the route,
 	// not on a sign-in (internal/api's sendQueueSend).
 	RouteID string
+	// RetriedAs is, on a failed row that was retried, the row its Retry queued
+	// (0: not retried). A row is retried at most once (Retry).
+	RetriedAs int64
 }
+
+// AuthorizedFor is how long a person's queued message stays authorized by the
+// sign-in that queued it, counted from when it was QUEUED (CreatedAt): the
+// operator's decision. A message authorized when it was queued stays so until
+// it is sent, for at most this long; a delivery past it fails as expired, and
+// the owner can Retry it under a sign-in of their own. Routed messages are
+// gated by their route instead.
+const AuthorizedFor = 7 * 24 * time.Hour
 
 // MaxOpenPerTarget bounds the messages one target may have queued (or being
 // sent) at once. A target that is never idle — a host that stopped reporting,
@@ -147,6 +162,8 @@ var (
 	ErrNotCancellable = errors.New("sendqueue: the message is no longer queued, so it cannot be cancelled")
 	// ErrEmpty refuses a message with no text.
 	ErrEmpty = errors.New("sendqueue: nothing to queue: type a message first")
+	// ErrNotRetryable: the message did not fail, or was already retried.
+	ErrNotRetryable = errors.New("sendqueue: only a failed message can be retried, and only once")
 )
 
 // PGStore is the queue on Postgres.
@@ -163,13 +180,14 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 // cols is every column an Item is read from, in scanItem's order.
 const cols = `id, owner_id, mirror_host, mirror_session, mirror_window, body, stepup_at, state, detail,
 	may_have_delivered, created_at, coalesce(claimed_at, 'epoch'::timestamptz), coalesce(finished_at, 'epoch'::timestamptz),
-	after_since, coalesce(claimed_by, ''), coalesce(lease_until, 'epoch'::timestamptz), claim_since, coalesce(route_id, '')`
+	after_since, coalesce(claimed_by, ''), coalesce(lease_until, 'epoch'::timestamptz), claim_since, coalesce(route_id, ''),
+	coalesce(retried_as, 0)`
 
 // itemDests is where cols scan into it, with its state into state.
 func itemDests(it *Item, state *string) []any {
 	return []any{&it.ID, &it.Owner, &it.Target.Host, &it.Target.Session, &it.Target.Window,
 		&it.Body, &it.StepUpAt, state, &it.Detail, &it.MayHaveDelivered, &it.CreatedAt, &it.ClaimedAt, &it.FinishedAt,
-		&it.AfterSince, &it.ClaimedBy, &it.LeaseUntil, &it.ClaimSince, &it.RouteID}
+		&it.AfterSince, &it.ClaimedBy, &it.LeaseUntil, &it.ClaimSince, &it.RouteID, &it.RetriedAs}
 }
 
 // settle finishes a scanned item: its state, and the epoch placeholders back to
@@ -207,6 +225,20 @@ func targetWhere(t Target, n int) (string, []any) {
 // serialised per owner by an advisory lock, so two concurrent messages cannot
 // both pass it (internal/pins' shape; TestTwoConcurrentEnqueuesCannotBothPassTheBound).
 func (s *PGStore) Enqueue(ctx context.Context, it Item) (Item, error) {
+	var out Item
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		var err error
+		out, err = s.enqueueTx(ctx, tx, it)
+		return err
+	})
+	if err != nil {
+		return Item{}, err
+	}
+	return out, nil
+}
+
+// enqueueTx is Enqueue inside tx: the owner's lock, the insert, and the bound.
+func (s *PGStore) enqueueTx(ctx context.Context, tx pgx.Tx, it Item) (Item, error) {
 	if err := it.Target.Valid(); err != nil {
 		return Item{}, err
 	}
@@ -222,30 +254,62 @@ func (s *PGStore) Enqueue(ctx context.Context, it Item) (Item, error) {
 		// sign-in time that admitted it could never be sent.
 		return Item{}, errors.New("sendqueue: a queued message needs the sign-in time of the session that queued it")
 	}
-	q := `INSERT INTO send_queue (mirror_host, mirror_session, mirror_window, body, stepup_at, after_since, route_id)
-		VALUES ($1, $2, $3, $4, $5, $6, nullif($7, '')) RETURNING ` + cols
-	args := []any{it.Target.Host, it.Target.Session, it.Target.Window, text, it.StepUpAt, max(it.AfterSince, 0), it.RouteID}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('sendqueue.enqueue'),
+		coalesce(nullif(current_setting('muster.uid', true), '')::int, 0))`); err != nil {
+		return Item{}, fmt.Errorf("sendqueue: lock: %w", err)
+	}
+	out, err := scanItem(tx.QueryRow(ctx, `INSERT INTO send_queue (mirror_host, mirror_session, mirror_window, body, stepup_at, after_since, route_id)
+		VALUES ($1, $2, $3, $4, $5, $6, nullif($7, '')) RETURNING `+cols,
+		it.Target.Host, it.Target.Session, it.Target.Window, text, it.StepUpAt, max(it.AfterSince, 0), it.RouteID))
+	if err != nil {
+		return Item{}, fmt.Errorf("sendqueue: enqueue: %w", err)
+	}
+	where, wargs := targetWhere(it.Target, 1)
+	var n int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM send_queue WHERE state IN ('queued', 'sending') AND `+where, wargs...).Scan(&n); err != nil {
+		return Item{}, fmt.Errorf("sendqueue: count: %w", err)
+	}
+	if s.afterCount != nil {
+		s.afterCount()
+	}
+	if n > MaxOpenPerTarget {
+		return Item{}, ErrFull
+	}
+	return out, nil
+}
+
+// Retry queues the caller's FAILED message id again, as a new row with the
+// same target and body, under stepUpAt — the sign-in time of the request that
+// retried it, which the caller has checked is fresh — waiting behind
+// afterSince as Enqueue's does. The failed row stays failed and records the new
+// row (RetriedAs), in the same transaction and under the row's lock, so it is
+// retried at most once
+// (ErrNotRetryable after). A routed message is retried as the person's own: the
+// person, not its route, now asks for it to be sent. Another user's message is
+// not found; the per-target bound applies (ErrFull). Whether a message that may
+// already have been delivered may be retried is the caller's decision.
+func (s *PGStore) Retry(ctx context.Context, id int64, stepUpAt time.Time, afterSince int64) (Item, error) {
 	var out Item
-	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('sendqueue.enqueue'),
-			coalesce(nullif(current_setting('muster.uid', true), '')::int, 0))`); err != nil {
-			return fmt.Errorf("sendqueue: lock: %w", err)
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		old, err := scanItem(tx.QueryRow(ctx, `SELECT `+cols+` FROM send_queue WHERE id = $1 FOR UPDATE`, id))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
 		}
-		var err error
-		out, err = scanItem(tx.QueryRow(ctx, q, args...))
 		if err != nil {
-			return fmt.Errorf("sendqueue: enqueue: %w", err)
+			return fmt.Errorf("sendqueue: retry: %w", err)
 		}
-		where, wargs := targetWhere(it.Target, 1)
-		var n int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM send_queue WHERE state IN ('queued', 'sending') AND `+where, wargs...).Scan(&n); err != nil {
-			return fmt.Errorf("sendqueue: count: %w", err)
+		if old.State != Failed || old.RetriedAs != 0 {
+			return ErrNotRetryable
 		}
-		if s.afterCount != nil {
-			s.afterCount()
+		out, err = s.enqueueTx(ctx, tx, Item{Target: old.Target, Body: old.Body, StepUpAt: stepUpAt, AfterSince: afterSince})
+		if err != nil {
+			return err
 		}
-		if n > MaxOpenPerTarget {
-			return ErrFull
+		// The row is locked (FOR UPDATE) since it was read, so the check above
+		// still holds: a concurrent Retry waits for this one and then sees
+		// retried_as set.
+		if _, err := tx.Exec(ctx, `UPDATE send_queue SET retried_as = $2 WHERE id = $1`, id, out.ID); err != nil {
+			return fmt.Errorf("sendqueue: retry: %w", err)
 		}
 		return nil
 	})
