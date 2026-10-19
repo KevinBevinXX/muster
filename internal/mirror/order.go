@@ -48,6 +48,9 @@ type SessionView struct {
 	// by Ordered (qualify) and only there; a SessionView from HostView.Entries
 	// or Find alone has none — Qualified gives one the list's.
 	Qualifier string
+	// Repo is the short name of the repository the entry works in
+	// (HostView.Repos, repos.go), "" when its host did not say.
+	Repo string
 }
 
 // QualifierSep joins a Title and its Qualifier: "mango:1 · laptop".
@@ -222,6 +225,7 @@ func (h HostView) Entries() []SessionView {
 			e := base
 			e.Session, e.Window, e.Index, e.Active = w.Session, w.ID, w.Index, w.Active
 			e.Label, e.Command, e.Activity, e.Claude, e.ClaudeSession = w.Label, w.Command, w.Activity, w.Claude, w.ClaudeSession
+			e.Repo = h.Repos[w.ID]
 			out = append(out, e)
 		}
 		return out

@@ -176,6 +176,11 @@ export const chiefRuntimesFakePort = port + 91;
 export const attentionDeliveryPort = port + 96;
 export const attentionDeliveryConnectPort = port + 97;
 export const attentionDeliveryFakePort = port + 98;
+// The Agents list's cards (agent-cards.spec.ts): its own server (the e2eterm
+// binary, mirror plugin on), its connect listener (the asking agent's /mcp
+// door), and one mirrored host with a Claude window and two other windows.
+export const cardsPort = port + 100;
+export const cardsConnectPort = port + 101;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

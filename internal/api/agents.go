@@ -208,6 +208,8 @@ func (s *Server) handleAgentsContent(w http.ResponseWriter, r *http.Request) {
 // most recently active first, pins marked, and the viewer's mirrored sessions.
 // The list partial renders them, and the shell resolves the "Recently viewed"
 // strip against them (handleIndex), so both read the one list.
+//
+// Every card carries its attention badge (withCardAttention).
 func (s *Server) agentsListCards(ctx context.Context) ([]ui.AgentCardView, []ui.MirrorCardView, error) {
 	list, err := s.ext.Agents.List(ctx)
 	if err != nil {
@@ -237,7 +239,9 @@ func (s *Server) agentsListCards(ctx context.Context) ([]ui.AgentCardView, []ui.
 	}
 	// The viewer's mirrored sessions (internal/mirror), after the agents: from
 	// the plugin's in-memory hub, scoped to this request's principal.
-	return cards, s.mirrorCards(ctx, pinned, focused), nil
+	mirrors := s.mirrorCards(ctx, pinned, focused)
+	s.withCardAttention(ctx, cards, mirrors)
+	return cards, mirrors, nil
 }
 
 // handleAgentNewModal serves the /ui/agents/new partial: the dispatch form. It
@@ -598,7 +602,11 @@ func (s *Server) cardViewFor(ctx context.Context, a agents.Agent) ui.AgentCardVi
 		s.logger.Printf("agents: card %d: list for chief check: %v", a.ID, err)
 		list = nil
 	}
-	return s.cardViewIndexed(a, s.instanceIndex(ctx), s.lastMessageByAgents(ctx, []agents.Agent{a})[a.ID], chiefPredicate(list), s.pinSet(ctx), s.focusIndex(ctx))
+	v := s.cardViewIndexed(a, s.instanceIndex(ctx), s.lastMessageByAgents(ctx, []agents.Agent{a})[a.ID], chiefPredicate(list), s.pinSet(ctx), s.focusIndex(ctx))
+	// The same badge the list draws, so a re-rendered card keeps it.
+	one := []ui.AgentCardView{v}
+	s.withCardAttention(ctx, one, nil)
+	return one[0]
 }
 
 // handleAgentRenameForm serves GET /ui/agents/{id}/rename: the inline rename

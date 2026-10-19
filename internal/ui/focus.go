@@ -69,11 +69,13 @@ func cardNameClass(f *FocusView) string {
 
 // cardBodyClass is the nav anchor's box: its top padding moves to the focus
 // row when there is one, so the two read as one block.
-func cardBodyClass(f *FocusView) string {
+//
+// reserve is cardReserve's: what it keeps clear of the control cluster.
+func cardBodyClass(f *FocusView, reserve string) string {
 	if cardHasFocusTitle(f) {
-		return "flex flex-col gap-3 px-4 pb-4 pt-1 pr-28"
+		return "flex flex-col gap-3 px-4 pb-4 pt-1 " + reserve
 	}
-	return "flex flex-col gap-3 p-4 pr-28"
+	return "flex flex-col gap-3 p-4 " + reserve
 }
 
 // focusChevron is the title's "this opens something" affordance: a down
@@ -87,14 +89,14 @@ const focusChevron = `<svg class="h-4 w-4 shrink-0 text-muted transition group-h
 // not navigate: a chevron, a hover and focus-visible surface, the press
 // feedback, a 44px tap target, and aria-haspopup / aria-expanded (kept in step
 // with the popover by floatingMenuScript's toggle listener).
-func cardFocusTitle(cardID string, f *FocusView) g.Node {
+func cardFocusTitle(cardID string, f *FocusView, reserve string) g.Node {
 	if !cardHasFocusTitle(f) {
 		return g.Text("")
 	}
 	pop := cardID + "-focus"
 	return Div(
 		cardSlot("focus"),
-		Class("px-4 pt-3 pr-28"),
+		Class("px-4 pt-3 "+reserve),
 		Button(
 			Type("button"),
 			g.Attr("data-card-focus", ""),

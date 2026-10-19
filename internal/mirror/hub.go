@@ -116,6 +116,11 @@ type HostView struct {
 	// AskUserQuestion picker (Msg.AskAnswer) and is -interactive. False for an
 	// older or read-only muster-mirror and for an offline host.
 	AskAnswer bool
+	// Repos is the short repo name per WINDOW ID the host last sent
+	// (TypeRepos, repos.go), restricted to its windows when it arrived; nil when
+	// it sent none (an older muster-mirror, a per-session host). Display and
+	// search only: Entries copies each window's onto its SessionView.Repo.
+	Repos map[string]string
 	// OfflineSince is when an offline host disconnected; zero while Online.
 	// Its Windows keep the Status they last reported only when it reported
 	// status (StatusReport) — the attention queue keeps such a host's waiting
@@ -196,6 +201,7 @@ type offlineHost struct {
 	claude      []string
 	labels      map[string]string
 	activity    map[string]int64
+	repos       map[string]string
 	interactive bool
 	since       time.Time
 }
@@ -309,9 +315,11 @@ type hostConn struct {
 	claude   []string
 	labels   map[string]string
 	activity map[string]int64
-	streams  map[uint32]*stream
-	watches  map[uint32]*watch
-	pastes   map[uint32]chan error
+	// repos is the host's last TypeRepos map (NormalizeRepos over windows).
+	repos   map[string]string
+	streams map[uint32]*stream
+	watches map[uint32]*watch
+	pastes  map[uint32]chan error
 	// scrolls are the scroll requests waiting for the host's scrolled, by id
 	// (the same id space as streams and pastes).
 	scrolls map[uint32]chan error
@@ -352,7 +360,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		}
 		hc.mu.Lock()
 		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
-			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
+			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Repos: maps.Clone(hc.repos), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
 			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer})
 		hc.mu.Unlock()
 	}
@@ -364,7 +372,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		}
 		if k.owner == owner {
 			out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), o.sessions...), Windows: slices.Clone(o.windows),
-				Claude: append([]string(nil), o.claude...), Labels: maps.Clone(o.labels), Activity: maps.Clone(o.activity), Interactive: o.interactive,
+				Claude: append([]string(nil), o.claude...), Labels: maps.Clone(o.labels), Activity: maps.Clone(o.activity), Repos: maps.Clone(o.repos), Interactive: o.interactive,
 				OfflineSince: o.since})
 		}
 	}
@@ -715,6 +723,20 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				case !slices.Equal(shown, shownAfter):
 					h.activityMoved(hc.key.owner)
 				}
+			case TypeRepos:
+				// The window list's repo names (repos.go): a v2 host only,
+				// restricted to the windows it lists now. A change is one a card
+				// draws (its chip), so it nudges the open views.
+				if hc.version >= 2 {
+					hc.mu.Lock()
+					repos := NormalizeRepos(m.Repos, hc.windows)
+					same := maps.Equal(hc.repos, repos)
+					hc.repos = repos
+					hc.mu.Unlock()
+					if !same {
+						h.changed(hc.key.owner)
+					}
+				}
 			case TypeEvents:
 				if hc.version >= 2 {
 					hc.deliverEvents(m)
@@ -781,6 +803,7 @@ func (h *Hub) drop(hc *hostConn) {
 			labels := maps.Clone(hc.labels)
 			activity := maps.Clone(hc.activity)
 			windows := slices.Clone(hc.windows)
+			repos := maps.Clone(hc.repos)
 			if !hc.statusReport {
 				// A status is believed only from a host that reports it: what an
 				// offline host's last list keeps is what it was believed about.
@@ -789,7 +812,7 @@ func (h *Hub) drop(hc *hostConn) {
 				}
 			}
 			hc.mu.Unlock()
-			h.offline[hc.key] = offlineHost{sessions: hc.sessionsCopy(), windows: windows, claude: claude, labels: labels, activity: activity, interactive: hc.interactive, since: h.now()}
+			h.offline[hc.key] = offlineHost{sessions: hc.sessionsCopy(), windows: windows, claude: claude, labels: labels, activity: activity, repos: repos, interactive: hc.interactive, since: h.now()}
 		}
 	}
 	h.mu.Unlock()

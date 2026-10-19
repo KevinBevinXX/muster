@@ -49,7 +49,7 @@ import (
 // lines, re-read on every listing so a spec can close, renumber or re-order
 // them:
 //
-//	<session>|<window id>|<index>|<active 0/1>|<command>|<activity unix secs>|<claude transcript path, or empty>
+//	<session>|<window id>|<index>|<active 0/1>|<command>|<activity unix secs>|<claude transcript path, or empty>[|<split pane's transcript>[|<Claude's cwd>]]
 //
 // A window's active "pane" is `%e2e-<session>-<window id>`. Its terminal prints
 // `FAKE-MIRROR session=<s> window=<id> mode=ro|rw`, so a spec sees WHICH window
@@ -347,7 +347,7 @@ func (w windowFake) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
 	var out []mirrorhost.WindowInfo
 	for _, line := range strings.Split(string(b), "\n") {
 		f := strings.Split(strings.TrimSpace(line), "|")
-		if len(f) != 7 && len(f) != 8 {
+		if len(f) < 7 || len(f) > 9 {
 			continue
 		}
 		index, _ := strconv.Atoi(f[2])
@@ -361,9 +361,14 @@ func (w windowFake) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
 		}
 		// An 8th field: the transcript of a Claude Code session in the window's
 		// SECOND (non-active) pane, "<window pane>-split".
-		if len(f) == 8 && f[7] != "" {
+		if len(f) >= 8 && f[7] != "" {
 			info.Others = []mirrorhost.ClaudePane{{Pane: info.Pane + "-split", PID: 1, Transcript: f[7],
 				Gen: strings.TrimSuffix(filepath.Base(f[7]), ".jsonl")}}
+		}
+		// A 9th field: the working directory of the window's active pane
+		// (WindowInfo.Cwd), what its repo chip is named from.
+		if len(f) == 9 {
+			info.Cwd = f[8]
 		}
 		out = append(out, info)
 	}

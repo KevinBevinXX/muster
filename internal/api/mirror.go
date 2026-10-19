@@ -103,7 +103,7 @@ func (s *Server) mirrorCards(ctx context.Context, pinned pins.Set, focused focus
 	for _, m := range mirror.Ordered(s.ext.Mirror.Hosts(ctx)) {
 		out = append(out, ui.MirrorCardView{Host: m.Host, Session: m.Session, Window: m.Window, Title: mirrorTitle(m), Label: m.Label,
 			Qualifier: m.Qualifier, Kind: m.Kind(), Online: m.Online, Interactive: m.Interactive, Claude: m.Claude,
-			ActiveAt: m.ActiveAt(), Focus: focused.mirrorFocus(m.ClaudeSession),
+			ActiveAt: m.ActiveAt(), Focus: focused.mirrorFocus(m.ClaudeSession), Repo: m.Repo,
 			Pinned: pinned.Mirror(pins.MirrorKey{Host: m.Host, Session: m.Session, Window: m.Window})})
 	}
 	return out

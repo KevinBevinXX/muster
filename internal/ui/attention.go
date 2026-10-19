@@ -26,7 +26,15 @@ const AttentionBadgePath = "/attention/badge"
 // attentionBadgeTrigger refreshes the badge on the queue's SSE event (the
 // shell's /events stream; internal/api's EventAttentionChanged), on load, and
 // once a minute — the backstop on a page whose stream is not connected.
-const attentionBadgeTrigger = "load, sse:attention_queue.changed from:body, every 60s"
+//
+// 🔴 delay:50ms IS A DEBOUNCE, AND THE AGENTS LIST IS WHY IT IS NEEDED. htmx's
+// SSE extension dispatches an event on EVERY element that listens for it, and
+// each dispatch bubbles to body — so with the Agents list listening for this
+// event too (its cards' attention badges), a `from:body` listener here heard
+// ONE event twice and fetched the badge twice (measured: attention.spec's
+// "badge requests while nothing changed" saw 2). Debounced, the dispatches of
+// one event are one fetch, and the fetch still follows the last of them.
+const attentionBadgeTrigger = "load, sse:attention_queue.changed from:body delay:50ms, every 60s"
 
 // AttentionBadgeHTML is the badge for n waiting items: hidden at zero. It is
 // the slot's CONTENT and carries no htmx wiring of its own.

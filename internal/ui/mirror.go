@@ -61,6 +61,14 @@ type MirrorCardView struct {
 	// Focus is what the Claude Code session in the window is working on
 	// (internal/focus, keyed by its Claude session id), nil for none.
 	Focus *FocusView
+	// Repo is the short name of the repository the window works in
+	// (mirror.SessionView.Repo: its git top level's name, else its cwd's),
+	// "" when the host did not say (an older muster-mirror). A chip, and found
+	// by the filter (`repo:` and free text). The card's NAME is unchanged.
+	Repo string
+	// Attention is the card's attention badge (cards_attention.go), nil for
+	// none.
+	Attention *CardAttention
 }
 
 // MirrorCardHref is where a mirrored card opens: the rendered view for a
@@ -158,24 +166,25 @@ func mirrorCard(m MirrorCardView) g.Node {
 		// — its raw tmux session name, its host, and what runs in it.
 		cardFilterAttrs(f, append([]string{
 			m.Label, m.Title, mirrorQualified(displayOr(m.Label, displayOr(m.Title, m.Session)), m.Qualifier),
-			m.Session, m.Host, kind, "mirrored", mode, state}, focusHaystack(m.Focus)...)...),
+			m.Session, m.Host, kind, m.Repo, "mirrored", mode, state}, focusHaystack(m.Focus)...)...),
 		Class("group relative overflow-hidden rounded-2xl border border-line bg-s1/70 shadow-lg shadow-black/20 ring-1 ring-line"),
 		// The control cluster: the mirrored mark and the pin toggle, OUTSIDE the
 		// nav anchor (agentCard's pattern) so tapping either never opens the
 		// window.
 		cardControls(
+			cardAttentionBadge(m.Attention),
 			mirroredMark(id, m.Host),
 			mirrorPinToggle(m),
 		),
 		// With a focus, it heads the card (cardFocusTitle): a popover trigger
 		// OUTSIDE the nav anchor, and the window's title below — with its muted
 		// session line — becomes its subtitle.
-		cardFocusTitle(id, m.Focus),
+		cardFocusTitle(id, m.Focus, cardReserve(m.Attention)),
 		A(
 			Href(MirrorCardHref(m)),
 			hx("hx-boost", "false"),
 			cardSlot("body"),
-			Class(cardBodyClass(m.Focus)),
+			Class(cardBodyClass(m.Focus, cardReserve(m.Attention))),
 			Div(
 				cardSlot("header"),
 				Class("flex flex-wrap items-center gap-2"),
@@ -188,6 +197,8 @@ func mirrorCard(m MirrorCardView) g.Node {
 				// What else runs there (a shell, opencode, another TUI): the
 				// host's reading of the pane's command.
 				g.If(!m.Claude && m.Kind != "", Span(g.Attr("data-mirror-kind", ""), chip("kind", m.Kind))),
+				// The repository it works in (its host's repos message).
+				g.If(m.Repo != "", Span(g.Attr("data-mirror-repo", ""), chip("repo", m.Repo))),
 				g.If(!m.Online, Span(
 					g.Attr("data-mirror-offline", ""),
 					g.Attr("title", "The host's muster-mirror is not connected, or the host no longer lists this tmux session"),
@@ -210,7 +221,7 @@ func mirrorCard(m MirrorCardView) g.Node {
 // data-l-*) attributes, which the filter's options are read from.
 func mirrorFields(m MirrorCardView) cardFields {
 	f := cardFields{Host: m.Host, Type: "Mirrored", Name: displayOr(m.Label, displayOr(m.Title, m.Session)),
-		Session: m.Session, Status: "running", Kind: m.Kind, Titles: []string{m.Label, m.Title, m.Session}}
+		Session: m.Session, Status: "running", Kind: m.Kind, Repo: m.Repo, Titles: []string{m.Label, m.Title, m.Session}}
 	if !m.Online {
 		f.Status, f.State = "stopped", "offline"
 	}

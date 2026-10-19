@@ -84,6 +84,9 @@ type AgentCardView struct {
 	// Composed in cardViewIndexed; shown as the footer's focus chip, and found
 	// by the filter.
 	Focus *FocusView
+	// Attention is the card's attention badge (cards_attention.go), nil for
+	// none. Composed in internal/api from the attention queue's own read.
+	Attention *CardAttention
 }
 
 // lastActive is the card's "active" time: LastActiveAt, or UpdatedAt when the
@@ -294,12 +297,13 @@ func agentCard(a AgentCardView) g.Node {
 		// The control cluster (rename + ⋯ menu) is positioned over the card's
 		// top-right corner, OUTSIDE the nav anchor, so its clicks don't navigate.
 		cardControls(
+			cardAttentionBadge(a.Attention),
 			agentRenameButton(ids),
 			agentMenu(a),
 		),
 		// With a focus, it heads the card (cardFocusTitle): a popover trigger
 		// OUTSIDE the nav anchor, and the name below becomes its subtitle.
-		cardFocusTitle("agent-"+ids, a.Focus),
+		cardFocusTitle("agent-"+ids, a.Focus, cardReserve(a.Attention)),
 		// The card body is the navigation surface: a REAL-load link to the detail
 		// page (hx-boost="false"). The card sits inside #agents-list, which carries
 		// hx-get/hx-target="#agents-list"/hx-swap; htmx attrs are INHERITED by
@@ -313,7 +317,7 @@ func agentCard(a AgentCardView) g.Node {
 			Href("/agents/"+a.Name),
 			hx("hx-boost", "false"),
 			cardSlot("body"),
-			Class(cardBodyClass(a.Focus)),
+			Class(cardBodyClass(a.Focus, cardReserve(a.Attention))),
 			Div(
 				cardSlot("header"),
 				Class("flex flex-wrap items-center gap-2"),
@@ -399,7 +403,7 @@ func cardSlot(name string) g.Node { return g.Attr("data-card-slot", name) }
 // cluster is right-3 (12 px) plus two 44 px controls and a 4 px gap, 104 px,
 // so a long title wraps before it reaches the first control, and a tap on the
 // title's end opens the card rather than a control. A third control needs a
-// wider reservation.
+// wider reservation: the attention badge's is cardReserve's pr-44.
 func cardControls(children ...g.Node) g.Node {
 	return Div(append([]g.Node{cardSlot("controls"), Class("absolute right-3 top-3 z-10 flex items-center gap-1")}, children...)...)
 }
@@ -768,7 +772,13 @@ func statusLabel(status string) string {
 // agentsListTrigger is #agents-list's hx-trigger: first load, a local
 // lifecycle action's HX-Trigger, and the two server events that change what the
 // list shows or how it is ordered. See AgentsPanel.
-const agentsListTrigger = "load, agents:changed from:body, sse:agent.changed from:body, sse:chat.reply from:body, muster:resync from:body"
+//
+// sse:attention_queue.changed (internal/api's EventAttentionChanged, the event
+// the sidebar's attention badge refreshes on) keeps each card's attention badge
+// live: the queue moved, so the cards' counts may have. It is debounced
+// (delay:50ms) for the reason attentionBadgeTrigger gives: the sidebar badge
+// listens for the same event, so each one reaches this list twice.
+const agentsListTrigger = "load, agents:changed from:body, sse:agent.changed from:body, sse:chat.reply from:body, sse:attention_queue.changed from:body delay:50ms, muster:resync from:body"
 
 // agentModalShell is the static (always-present, hidden) dispatch modal. Its
 // body is loaded on demand by the FAB so it stays out of the 4s poll cycle.

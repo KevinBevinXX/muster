@@ -180,6 +180,22 @@ type attentionItem struct {
 	// session, a waiting window's Claude session); zero for a reply draft.
 	// sessions_overview reads it.
 	subject focus.Subject
+	// card is the Agents-list card the item is counted on (its attention badge,
+	// cards_attention.go); zero for none.
+	card attentionCard
+}
+
+// attentionCard is the card an attention item belongs to: an agent's (an
+// asking agent, a reply draft's drafting agent), a mirrored window by its
+// address (a waiting window, a held question), or a mirrored Claude session
+// on a host (an asking session), which the host's window list resolves to
+// its window.
+type attentionCard struct {
+	agentID int64
+	ref     ui.MirrorRef
+	// claudeSession, with ref.Host: an asking mirrored session, by its Claude
+	// session id.
+	claudeSession string
 }
 
 // attentionPrincipal is ctx acting as owner, through authz.ViaAttention: how
@@ -217,8 +233,10 @@ func askItem(a attention.Ask) attentionItem {
 	switch {
 	case a.Asker.AgentID > 0:
 		it.subject = focus.AgentSubject(a.Asker.AgentID)
+		it.card.agentID = a.Asker.AgentID
 	case a.Asker.MirrorSession != "":
 		it.subject = focus.MirrorSubject(a.Asker.MirrorSession)
+		it.card.ref.Host, it.card.claudeSession = a.Asker.MirrorHost, a.Asker.MirrorSession
 	}
 	return it
 }
@@ -300,8 +318,9 @@ func (s *Server) waitingSessions(ctx context.Context) []attentionItem {
 		if !ok {
 			continue
 		}
+		ref := ui.MirrorRef{Host: e.Host, Session: e.Session, Window: e.Window}
 		it := attentionItem{Key: k, Kind: attentionKindSession, Source: e.DisplayTitle() + " @ " + e.Host, Text: sessionWaitingText, host: e.Host,
-			claudeSession: e.ClaudeSession, Offline: wt.offline, Link: ui.MirrorRef{Host: e.Host, Session: e.Session, Window: e.Window}.ViewPath()}
+			claudeSession: e.ClaudeSession, Offline: wt.offline, Link: ref.ViewPath(), card: attentionCard{ref: ref}}
 		if e.ClaudeSession != "" {
 			it.subject = focus.MirrorSubject(e.ClaudeSession)
 		}
@@ -380,9 +399,14 @@ func (s *Server) pendingDraftItems(ctx context.Context) ([]attentionItem, error)
 		if c.Draft.Status != plugins.DraftPending || !c.Draft.ExpiresAt.After(now) {
 			continue
 		}
-		out = append(out, attentionItem{Key: draftKey(c.Draft.ID), Kind: attentionKindPlugin, Source: c.PluginLabel,
+		it := attentionItem{Key: draftKey(c.Draft.ID), Kind: attentionKindPlugin, Source: c.PluginLabel,
 			Text: draftInboundText(c.Message), Detail: "Draft reply: " + mirror.OneLine(c.Draft.Body, draftReplyMax),
-			Since: c.Draft.CreatedAt, Link: pluginsPath + "#" + draftCardAnchor(c.Draft.ID)})
+			Since: c.Draft.CreatedAt, Link: pluginsPath + "#" + draftCardAnchor(c.Draft.ID)}
+		// The agent that drafted it (none once that agent is deleted).
+		if c.Draft.AgentID != nil {
+			it.card.agentID = *c.Draft.AgentID
+		}
+		out = append(out, it)
 	}
 	return out, nil
 }

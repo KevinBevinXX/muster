@@ -144,6 +144,9 @@ type Client struct {
 	log *log.Logger
 	// catalog outlives each connection, so its cache does too.
 	catalog *CatalogScanner
+	// repos names each window's repository (repo.go); its per-cwd cache
+	// outlives each connection too.
+	repos *repoNamer
 
 	// cur is the live connection (nil between connections): what RefreshNow
 	// asks for an immediate listing.
@@ -210,7 +213,7 @@ func New(cfg Config) (*Client, error) {
 	if cat == nil {
 		cat = &CatalogScanner{SnippetsFile: cfg.SnippetsFile}
 	}
-	return &Client{cfg: cfg, url: u, log: cfg.Logger, catalog: cat}, nil
+	return &Client{cfg: cfg, url: u, log: cfg.Logger, catalog: cat, repos: &repoNamer{}}, nil
 }
 
 // Run connects, and reconnects with jittered exponential backoff (1s → 60s),
@@ -328,6 +331,12 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 		c.log.Printf("muster-mirror: connected to %s as host %s with %d session(s)", c.url, c.cfg.Host, len(first.sessions))
 	}
 
+	// The first listing's repo names, after the hello that listed its windows.
+	if len(first.repos) > 0 {
+		if err := conn.sendRepos(first.repos); err != nil {
+			return err
+		}
+	}
 	go conn.refresh(first)
 	go conn.keepalive(cancel)
 	c.curMu.Lock()
@@ -467,6 +476,11 @@ type listing struct {
 	activity map[string]int64
 	// windows is nil for a per-session host.
 	windows []mirror.Window
+	// repos is each window's repo name by window id (repo.go): NOT part
+	// of the hello or sessions message, and not compared by equal — it travels
+	// on a repos message of its own (sendRepos), the window list having no room
+	// for it (mirror/repos.go).
+	repos map[string]string
 }
 
 func (l listing) equal(o listing) bool {
@@ -506,6 +520,9 @@ func (h *hostSide) read() (listing, bool) {
 	h.pending.attachPending(raw)
 	windows := WireWindows(raw, h.c.cfg.Codenames, h.version >= 2, time.Now())
 	l := listing{windows: windows}
+	if h.sendsRepos() {
+		l.repos = mirror.NormalizeRepos(h.c.repoNamer().windowRepos(raw), windows)
+	}
 	l.sessions, l.claude, l.labels, l.activity = mirror.SessionsOf(windows)
 	// What a muster that predates Windows keeps is at most MaxSessions sessions,
 	// so no more than that is sent it.
@@ -814,23 +831,55 @@ func (h *hostSide) refresh(last listing) {
 	}
 }
 
-// refreshOnce reads the listing and sends it when it changed; false when the
-// send failed (the connection is gone).
+// refreshOnce reads the listing and sends it when it changed — and then its
+// repo names when THEY changed (sendRepos); false when a send failed (the
+// connection is gone).
 func (h *hostSide) refreshOnce(last *listing) bool {
 	now, ok := h.read()
-	if !ok || now.equal(*last) {
+	if !ok {
 		return true
 	}
-	// The allowlist moves BEFORE muster hears of a new session, so an open
-	// for it is never refused for being unlisted; a session that ended
-	// is unattachable from this instant.
-	h.setListed(now)
-	h.closeGone()
-	if err := h.send(now.msg(mirror.TypeSessions)); err != nil {
-		return false
+	if !now.equal(*last) {
+		// The allowlist moves BEFORE muster hears of a new session, so an open
+		// for it is never refused for being unlisted; a session that ended
+		// is unattachable from this instant.
+		h.setListed(now)
+		h.closeGone()
+		if err := h.send(now.msg(mirror.TypeSessions)); err != nil {
+			return false
+		}
+	}
+	// AFTER the window list, so muster already lists every window it names.
+	if !maps.Equal(now.repos, last.repos) {
+		if err := h.sendRepos(now.repos); err != nil {
+			return false
+		}
 	}
 	*last = now
 	return true
+}
+
+// sendsRepos is whether this connection sends repos messages: a v2 PER-WINDOW
+// host (the names are by window id).
+func (h *hostSide) sendsRepos() bool {
+	if h.version < 2 {
+		return false
+	}
+	_, ok := WindowListerOf(h.c.cfg.Backend)
+	return ok
+}
+
+// sendRepos sends the whole repo map (an empty one clears muster's).
+func (h *hostSide) sendRepos(repos map[string]string) error {
+	return h.send(mirror.Msg{Type: mirror.TypeRepos, Repos: repos})
+}
+
+// repoNamer is the client's repo namer (a zero Client — a test's — gets one).
+func (c *Client) repoNamer() *repoNamer {
+	if c.repos == nil {
+		c.repos = &repoNamer{}
+	}
+	return c.repos
 }
 
 func (h *hostSide) keepalive(cancel context.CancelFunc) {
