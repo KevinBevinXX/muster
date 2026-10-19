@@ -317,7 +317,7 @@ func (f *taskRouteFixture) mentionWorker(t *testing.T, tok, key string) (agents.
 }
 
 // TestConcurrentIdenticalMentionsForwardOnce: the same mention sent by eight
-// requests at once is forwarded once; every request answers where it went.
+// requests at once is forwarded once.
 func TestConcurrentIdenticalMentionsForwardOnce(t *testing.T) {
 	f := newTaskRouteFixture(t, false, false)
 	tok, _ := f.plugin(t)
@@ -335,10 +335,20 @@ func TestConcurrentIdenticalMentionsForwardOnce(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+	// One delivers; the rest arrive while it acts (503, replayed by the
+	// plugin) or after it completed (200, its destination).
+	ok := 0
 	for i := range answers {
-		if codes[i] != http.StatusOK || answers[i] != routedAgent {
-			t.Errorf("request %d: %d %v; want 200 routed agent", i, codes[i], answers[i])
+		switch {
+		case codes[i] == http.StatusOK && answers[i] == routedAgent:
+			ok++
+		case codes[i] == http.StatusServiceUnavailable:
+		default:
+			t.Errorf("request %d: %d %v; want 200 routed agent or 503", i, codes[i], answers[i])
 		}
+	}
+	if ok == 0 {
+		t.Error("no request was answered routed agent")
 	}
 	if got := turns(); got != 1 {
 		t.Fatalf("eight identical mentions started %d turn(s); want 1", got)

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
@@ -198,6 +199,10 @@ func (s *Server) handlePluginTask(w http.ResponseWriter, r *http.Request) {
 					// event's id. Resending cannot help, so not a 503.
 					s.writeJSON(w, http.StatusConflict, map[string]any{
 						"error": "the task is filed, but this plugin already holds a message under the task event's external_id", "id": id})
+					return
+				case errors.Is(err, errNoticeInFlight):
+					w.Header().Set("Retry-After", strconv.Itoa(int(plugins.NoticeRouteReclaimAfter/time.Second)))
+					s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error(), "id": id})
 					return
 				case errors.Is(err, errRouteRateLimited):
 					w.Header().Set("Retry-After", "60")

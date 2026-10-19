@@ -2,9 +2,11 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,11 +60,22 @@ func TestAMentionCutOffByACancelledRequestIsDeliveredOnTheResend(t *testing.T) {
 	}
 }
 
-// TestAStaleUnfinishedMentionReservationIsReclaimed: a reservation left by a
-// process that died between reserving and acting (no completion, older than
-// plugins.NoticeRouteReclaimAfter) is taken over by the next send, which
-// delivers. A fresh unfinished one (in flight elsewhere) is not.
-func TestAStaleUnfinishedMentionReservationIsReclaimed(t *testing.T) {
+// handoffRaw posts a notice and answers the recorder (headers included).
+func (f *taskRouteFixture) handoffRaw(t *testing.T, tok string, body map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	raw, _ := json.Marshal(body)
+	return f.connFixture.call(t, "POST", "/plugin/v1/tasks", strings.NewReader(string(raw)),
+		map[string]string{"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
+}
+
+// TestAnUnfinishedMentionReservationIsRefusedUntilItIsReclaimed (audit round
+// 4): a reservation with no completion stamp is NOT an answer. Inside the
+// reclaim window a send is refused 503 with a Retry-After no shorter than the
+// window — the plugin replays an answered failure, where a 2xx would have been
+// acked and the mention lost (its in-delivery retries land inside the window).
+// After the window a send reclaims and delivers; then a completed route
+// answers its destination, however old.
+func TestAnUnfinishedMentionReservationIsRefusedUntilItIsReclaimed(t *testing.T) {
 	f := newTaskRouteFixture(t, false, false)
 	tok, p := f.plugin(t)
 	key := "tracker:st" + strconv.FormatInt(time.Now().UnixNano(), 36)
@@ -77,23 +90,23 @@ func TestAStaleUnfinishedMentionReservationIsReclaimed(t *testing.T) {
 	if err != nil || !created {
 		t.Fatalf("the dead process's reservation: %v %v", created, err)
 	}
-	if out := f.notice(t, tok, key, noticeMentioned, comment, false); out["routed"] != routedAgent || turns() != 0 {
-		t.Fatalf("a send while the reservation is fresh: %v, %d turn(s); want routed agent and no second delivery", out, turns())
+	body := map[string]any{"key": key, "comment": comment, "route_to_chief": true, "notice": noticeMentioned}
+	w := f.handoffRaw(t, tok, body)
+	retry, _ := strconv.Atoi(w.Header().Get("Retry-After"))
+	if w.Code != http.StatusServiceUnavailable || retry < int(plugins.NoticeRouteReclaimAfter/time.Second) || turns() != 0 {
+		t.Fatalf("a send inside the window: %d, Retry-After %q, %d turn(s); want 503, Retry-After >= %v, nothing delivered",
+			w.Code, w.Header().Get("Retry-After"), turns(), plugins.NoticeRouteReclaimAfter)
 	}
 	dbtest.OwnerExec(t, dbtest.DSN(t), `DO $$ BEGIN
 		SET LOCAL session_replication_role = replica;
 		UPDATE plugin_messages SET created_at = now() - interval '1 hour' WHERE id = `+strconv.FormatInt(m.ID, 10)+`;
 	END $$`)
-	if out := f.notice(t, tok, key, noticeMentioned, comment, false); out["routed"] != routedAgent {
-		t.Fatalf("a send after the reservation went stale: %v", out)
-	}
-	if got := turns(); got != 1 {
-		t.Fatalf("turns after the stale reservation was reclaimed: %d; want 1", got)
+	if out := f.notice(t, tok, key, noticeMentioned, comment, false); out["routed"] != routedAgent || turns() != 1 {
+		t.Fatalf("a send after the window: %v, %d turn(s); want reclaimed and delivered", out, turns())
 	}
 	if out := f.notice(t, tok, key, noticeMentioned, comment, false); out["routed"] != routedAgent || turns() != 1 {
 		t.Fatalf("a send after the reclaimed delivery: %v, %d turns; want answered, not delivered again", out, turns())
 	}
-	// Completed, it is never reclaimed, however old.
 	dbtest.OwnerExec(t, dbtest.DSN(t), `DO $$ BEGIN
 		SET LOCAL session_replication_role = replica;
 		UPDATE plugin_messages SET created_at = now() - interval '2 hours', routed_claimed_at = now() - interval '2 hours'

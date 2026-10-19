@@ -205,6 +205,18 @@ func (s *PGStore) RecordTaskRouted(ctx context.Context, taskID int64, tool strin
 	})
 }
 
+// chiefActedOn is THE "the chief acted on this task event" predicate over
+// plugin_messages aliased m: a routing (ActionTaskRouted) or a started agent
+// (ActionChiefDispatchAgent — not the reservation, which a start that then
+// failed also wrote) recorded by the event's owner for its task at or after
+// the event. UnroutedTaskEvents lists the events it is false for; Retry
+// (retry.go) refuses the ones it is true for — one rule, one place, so the
+// task the attention view says is routed is the one a retry will not send
+// twice (audit round 4).
+const chiefActedOn = `EXISTS (SELECT 1 FROM audit_log a
+		WHERE a.action IN ('` + ActionTaskRouted + `', '` + ActionChiefDispatchAgent + `') AND a.user_id = m.owner_id
+		  AND a.object = 'note:' || m.task_id AND a.at >= m.created_at)`
+
 // UnroutedTaskEvents: see DispatchStore.
 //
 // 🔴 FILTERED TO TASK EVENTS IN SQL, BEFORE THE LIMIT. Reading the owner's
@@ -229,11 +241,9 @@ func (s *PGStore) UnroutedTaskEvents(ctx context.Context, limit int) ([]Message,
 	// LIMIT and hid this owner's (audit round 1).
 	rows, err := s.pool.Query(ctx, `SELECT `+prefixed("m", messageCols)+`
 		  FROM plugin_messages m
-		 WHERE m.owner_id = $4 AND m.task_id IS NOT NULL AND m.routed_to IS NULL AND m.status <> 'delivering'
-		   AND NOT EXISTS (SELECT 1 FROM audit_log a
-		                    WHERE a.action IN ($1, $2) AND a.user_id = m.owner_id
-		                      AND a.object = 'note:' || m.task_id AND a.at >= m.created_at)
-		 ORDER BY m.id DESC LIMIT $3`, ActionTaskRouted, ActionChiefDispatchAgent, limit, p.UserID)
+		 WHERE m.owner_id = $2 AND m.task_id IS NOT NULL AND m.routed_to IS NULL AND m.status <> 'delivering'
+		   AND NOT `+chiefActedOn+`
+		 ORDER BY m.id DESC LIMIT $1`, limit, p.UserID)
 	if err != nil {
 		return nil, err
 	}

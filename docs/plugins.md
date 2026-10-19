@@ -297,14 +297,19 @@ it. The flow:
      own id (the notice kind is part of it, so a mention never collides with a
      chief event carrying the same comment), delivered from birth (never
      handed to the chief, never "Task to route"), so identical sends —
-     concurrent ones too — act once and each answers where it went. It counts
+     concurrent ones too — act once. A send that finds the mention delivered
+     answers where it went; one that finds it reserved and **not yet
+     completed** (being delivered right now, or left by a muster that stopped
+     mid-way) answers `503` with `Retry-After: 120` — never a success, since
+     nothing may have been delivered — and is answered for real once the
+     delivery completes, or reclaims it 2 minutes after the reservation. It counts
      against the plugin's task-event **hour** (120; past it the mention
      answers `429` and nothing starts), but not against the chief's
      undelivered queue (300), which it never waits in. When the delivery is
      done the row is marked complete. A failed delivery — including one cut
      off because your request was cancelled — releases the reservation, so a
      resend tries again; one never completed (muster stopped mid-way) is taken
-     over by the first send at least 2 minutes later.
+     over, and delivered, by the first send at least 2 minutes later.
    - **`update`** (a comment, a status change) goes to your chief only while
      a live agent works the task, so the chief can pass it on with
      `task_forward`; otherwise it is filed only.
@@ -434,8 +439,10 @@ recorded as `plugin.retried` in the audit log.
 A retry is refused (409, nothing changed) when the message is queued (including
 a second click), being delivered or delivered; when your chief already drafted a
 reply to it that is pending, approved, sent or itself unconfirmed; when it was
-routed to a session that is still routed, answered or relayed; and when you have
-no chief. Another user's message answers 404.
+routed to a session that is still routed, answered or relayed; when it is a
+[task event](#routing-a-task-to-the-chief) your chief already acted on (routed
+the task, or started an agent on it, after the event — the same rule that takes
+it off "Task to route"); and when you have no chief. Another user's message answers 404.
 
 The data-scope sentence is **advisory**. The chief's own memory credential can
 write anywhere; only the preface asks it to keep what it records from plugin

@@ -586,6 +586,12 @@ const (
 	routedAttention = "attention"
 )
 
+// errNoticeInFlight: the notice is reserved and not completed — being
+// delivered now, or stranded until plugins.NoticeRouteReclaimAfter. The
+// handler answers 503 with a Retry-After of the window: the plugin replays an
+// answered failure (agentmail-plugin: 503 is never permanent, never abandoned).
+var errNoticeInFlight = errors.New("the notice is being routed or awaits reclaim; send it again later")
+
 // errRouteRateLimited marks a hand-off refused by the plugin's task-event caps.
 var errRouteRateLimited = errors.New("the chief's task-event queue for this plugin is full; send it again later")
 
@@ -722,6 +728,15 @@ func (s *Server) routeMention(ctx context.Context, p plugins.Plugin, n notes.Not
 		return "", err
 	}
 	if !created {
+		// 🔴 AN UNFINISHED RESERVATION IS NOT AN ANSWER. Done, it answers its
+		// destination. Not done, it is in flight elsewhere or was stranded (a
+		// crash, a cut-off request), and a 2xx would be acked by the plugin and
+		// the mention lost — its own retries land inside the reclaim window.
+		// Refused retryably instead, until a send after the window reclaims it
+		// (audit round 4).
+		if m.RoutedDoneAt == nil {
+			return "", errNoticeInFlight
+		}
 		return *m.RoutedTo, nil
 	}
 	err = s.actOnMention(ctx, n, target, comment)
