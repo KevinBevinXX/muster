@@ -13,26 +13,41 @@ import (
 var bothKinds = KindChoices{Kinds: []string{agents.KindGateway, agents.KindClaudeCode}, Accounts: []string{"alpha"}}
 
 // gatewayOnlyBlock returns the markup of the FIRST data-gateway-only container in
-// html, up to the next sibling marker it can bound on (the end marker), or "".
-func gatewayOnlyBlock(html, end string) string {
+// html — the element itself, to its matching </div> — or "". (end is unused
+// since the repository moved out of the container; kept for the call sites.)
+func gatewayOnlyBlock(html, _ string) string {
 	// Anchored on the ELEMENT, not the bare attribute name: the kind toggle's
 	// script text names [data-gateway-only] earlier in the document.
 	i := strings.Index(html, "<div "+gatewayOnlyAttr)
 	if i < 0 {
 		return ""
 	}
-	j := strings.Index(html[i:], end)
-	if j < 0 {
-		return html[i:]
+	depth := 0
+	for j := i; j < len(html); {
+		open, closing := strings.Index(html[j:], "<div"), strings.Index(html[j:], "</div>")
+		if closing < 0 {
+			return html[i:]
+		}
+		if open >= 0 && open < closing {
+			depth++
+			j += open + len("<div")
+			continue
+		}
+		depth--
+		j += closing + len("</div>")
+		if depth == 0 {
+			return html[i:j]
+		}
 	}
-	return html[i : i+j]
+	return html[i:]
 }
 
 // TestEveryOpenRouterControlInTheDispatchFormsIsGatewayOnly pins WHICH controls
 // the kind toggle hides, in both dispatch forms: the model selector (the
 // OpenRouter-specific one — curated OpenRouter slugs and the live OpenRouter
-// search, data-combobox-remote="/api/openrouter/models") and the repository.
-// The behavioural half — that they actually disappear on a tap — is
+// search, data-combobox-remote="/api/openrouter/models") — and which it does
+// NOT: the repository, which a claude-code agent now takes (its session starts
+// in a checkout). The behavioural half — that they actually disappear on a tap — is
 // e2e/tests/claude-code-polish.spec.ts.
 func TestEveryOpenRouterControlInTheDispatchFormsIsGatewayOnly(t *testing.T) {
 	forms := map[string]string{
@@ -45,11 +60,14 @@ func TestEveryOpenRouterControlInTheDispatchFormsIsGatewayOnly(t *testing.T) {
 			t.Errorf("%s: no data-gateway-only container", name)
 			continue
 		}
-		for _, want := range []string{`data-combobox-remote="/api/openrouter/models"`, `name="model"`, `name="repo"`} {
+		for _, want := range []string{`data-combobox-remote="/api/openrouter/models"`, `name="model"`} {
 			if !strings.Contains(block, want) {
 				t.Errorf("%s: %s is outside the gateway-only container — it stays on screen for a "+
 					"Claude Code dispatch", name, want)
 			}
+		}
+		if strings.Contains(block, `name="repo"`) || !strings.Contains(html, `name="repo"`) {
+			t.Errorf("%s: the repository must render OUTSIDE the gateway-only container (a claude-code agent takes one)", name)
 		}
 		// Nothing OpenRouter-specific may sit outside it.
 		outside := strings.Replace(html, block, "", 1)

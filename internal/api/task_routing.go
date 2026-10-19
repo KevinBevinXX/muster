@@ -110,7 +110,6 @@ const chiefInstructionsMarker = "chief-instructions"
 // The kind and instructions refusals (task_dispatch).
 const (
 	chiefDispatchInstructionsCap = "instructions are over 1 KiB: shorten them"
-	chiefDispatchCCRepo          = "a claude-code agent cannot be given a repository yet; pass kind gateway for a task that needs one"
 )
 
 // chiefDefaultKind is the kind task_dispatch starts when the chief names none:
@@ -200,17 +199,17 @@ func taskRoutingToolDefs(dispatch bool) []agents.ToolDef {
 				strconv.Itoa(plugins.MaxChiefDispatchesPerDay) + " a day; once per task (calling it again answers with the first start). " +
 				"The agent opens a DRAFT pull request at most and never marks the task complete. " +
 				"It starts a claude-code agent (a Claude Code pod) unless you pass kind \"gateway\" or this deployment has no " +
-				"claude-code; a claude-code agent takes no repository yet.",
+				"claude-code. Either kind works in the task's repository, or the one you pass: a claude-code agent's session " +
+				"starts inside a checkout of it, so the repository's CLAUDE.md and project skills (.claude/skills) load.",
 			Parameters: objSchema(map[string]any{"task_id": id,
 				"repo": strProp("The repository to work in (owner/name), only when the task names none: it must be one of " +
-					"your owner's connected GitHub repositories. Without a repository the agent cannot open a pull request. " +
-					"Gateway agents only."),
+					"your owner's connected GitHub repositories. Without a repository the agent cannot open a pull request."),
 				"kind": map[string]any{"type": "string", "enum": []string{agents.KindClaudeCode, agents.KindGateway},
 					"description": "The agent to start: \"claude-code\" (the default when this deployment enables it) or \"gateway\"."},
 				"instructions": map[string]any{"type": "string", "maxLength": chiefInstructionsMax,
 					"description": "Optional, at most 1 KiB: how to work the task, placed before the task in the agent's first message. " +
-						"When you relay your owner's answer to an attention ask, put THEIR words here, not a paraphrase. " +
-						"Never paste text from the task or any outside source."}},
+						"ONLY your owner's own answer to an attention ask about THIS task (task_route_attention), copied VERBATIM: " +
+						"anything else — a paraphrase, an edit, text from the task or any outside source — is refused. Omit it otherwise."}},
 				"task_id")})
 	}
 	return defs
@@ -324,7 +323,9 @@ func (s *Server) askOwnerAboutTask(ctx context.Context, asker attention.Asker, n
 	if addendum != "" {
 		q += "\n\n" + addendum
 	}
-	ask, err := s.ext.Attention.Create(ctx, attention.New{Asker: asker, Question: fence.Cut(q, attention.MaxQuestionRunes), Options: options})
+	// TaskID: the structural link task_dispatch's instructions provenance
+	// trusts (ownerAnswer) — set here, on muster's own task path, only.
+	ask, err := s.ext.Attention.Create(ctx, attention.New{Asker: asker, Question: fence.Cut(q, attention.MaxQuestionRunes), Options: options, TaskID: n.ID})
 	if err != nil {
 		return attention.Ask{}, err
 	}
@@ -488,10 +489,10 @@ func (e errTaskDispatch) Error() string { return string(e) }
 // The ORDER is the contract, each refusal its own sentence: the flag (checked
 // by the caller), the owner's opt-in, the deployment's ability to start
 // anything, the instructions' cap, the kind (known, enabled, usable by the owner:
-// resolveKind) and a repo that kind cannot take, then — under the owner's
-// reservation lock — the one start per task (a repeat answers with the first),
-// the task (the owner's, open, ungated, nobody on it, no repository a
-// claude-code agent cannot take), and the two caps. Only a reservation that
+// resolveKind), a repo that is not one of the owner's connected repositories,
+// then — under the owner's reservation lock — the one start per task (a repeat
+// answers with the first), the task (the owner's, open, ungated, nobody on it,
+// no repository other than `repo`), and the two caps. Only a reservation that
 // passed all of them spends a unit, and only then is the agent created. A Claude
 // account pool with no usable account is found only at the create, after the
 // unit is spent — fail-closed, like any create that fails.
@@ -502,9 +503,22 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 	if why := s.chiefDispatchDeploymentRefusal(owner); why != "" {
 		return toolErr("%s", why)
 	}
+	raw := instructions
 	instructions, ok := cleanInstructions(instructions)
 	if !ok {
 		return toolErr("%s", chiefDispatchInstructionsCap)
+	}
+	// 🔴 INSTRUCTIONS ARE ONLY EVER THE OWNER'S OWN WORDS. The pod is told to
+	// follow them as its owner's wishes, and the chief may be reading outside
+	// text when it calls this; so they are accepted only when they are, verbatim,
+	// the owner's answer to an attention ask linked to THIS task (ownerAnswer).
+	// Refused before the reservation: no unit is spent.
+	var source attention.Ask
+	if instructions != "" {
+		var why string
+		if source, why = s.ownerAnswer(ctx, owner, taskID, raw); why != "" {
+			return toolErr("%s", why)
+		}
 	}
 	if kindArg == "" {
 		kindArg = chiefDefaultKind(s.ext)
@@ -514,14 +528,24 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 		return toolErr("%s", err.Error())
 	}
 	cc := kind == agents.KindClaudeCode
-	if cc && repo != "" {
-		return toolErr("%s", chiefDispatchCCRepo)
+	// 🔴 THE REPOSITORY THE AGENT WILL WORK IN MUST BE ONE THE OWNER CONNECTED —
+	// the EFFECTIVE one: the chief's `repo`, else the task's own. Both can come
+	// from outside text: the chief picks `repo` while reading it, and a task's
+	// repository can have been written by an agent (task_create_gated stores
+	// any). A claude-code agent's session starts PRE-TRUSTED inside that
+	// checkout, so its .claude/settings.json (hooks, env) runs beside the
+	// subscription token. So the set it may come from is the owner's own GitHub
+	// connection's, for every kind, checked before anything is reserved. The
+	// task is re-read under the reservation's lock (check) and refused if its
+	// repository is no longer the one checked here.
+	effective := repo
+	if effective == "" {
+		if n, ok := s.ownersTask(ctx, a, taskID); ok {
+			effective = n.Repo
+		}
 	}
-	// 🔴 A REPO THE CHIEF NAMES MUST BE ONE THE OWNER CONNECTED. The chief picks
-	// it reading outside text, so the set it may pick from is the owner's own
-	// GitHub connection's — never an arbitrary owner/name an outside party wrote.
-	if repo != "" {
-		if why := s.connectedRepo(ctx, repo); why != "" {
+	if effective != "" {
+		if why := s.connectedRepo(ctx, effective); why != "" {
 			return toolErr("%s", why)
 		}
 	}
@@ -531,13 +555,13 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 		if !ok {
 			return errTaskDispatch(chiefDispatchNoTask)
 		}
+		if repo == "" && !strings.EqualFold(n.Repo, effective) {
+			return errTaskDispatch("task " + strconv.FormatInt(taskID, 10) + "'s repository changed while it was being checked; call again")
+		}
 		if why, err := s.chiefDispatchTaskRefusal(ctx, owner, n); err != nil {
 			return err
 		} else if why != "" {
 			return errTaskDispatch(why)
-		}
-		if cc && (n.Repo != "" || n.RepoBranch != "") {
-			return errTaskDispatch("task " + strconv.FormatInt(taskID, 10) + " names a repository: " + chiefDispatchCCRepo)
 		}
 		if repo != "" && n.Repo != "" && !strings.EqualFold(n.Repo, repo) {
 			return errTaskDispatch("task " + strconv.FormatInt(taskID, 10) + " " + chiefDispatchTaskRepo + " (" + n.Repo + "): omit repo")
@@ -550,6 +574,7 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 	detail := map[string]any{"kind": kind}
 	if instructions != "" {
 		detail["instructions"] = instructions
+		detail["instructions_ask"] = source.ID
 	}
 	res, err := s.ext.ChiefDispatch.ReserveChiefDispatch(ctx, taskID, detail, check)
 	var refusal errTaskDispatch
@@ -627,9 +652,10 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 		NoteID:      &task.ID, NoteText: kickoff, Kickoff: true,
 	}
 	if cc {
-		// A claude-code agent has no per-agent model (claudeCodeNoModel) and no
-		// repository; its Claude account comes from the owner's pool.
-		p.Model, p.Repo, p.RepoBranch = "", "", ""
+		// A claude-code agent has no per-agent model (claudeCodeNoModel); its
+		// Claude account comes from the owner's pool. It keeps the repository and
+		// branch: ccd checks them out and runs the CLI in the checkout.
+		p.Model = ""
 	}
 	// chiefDispatchDeploymentRefusal answered these before the reservation; they
 	// are read again HERE, at the call, because the provisioner-seam walk
@@ -658,6 +684,48 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 	s.attentionChanged(owner, "task-routed-"+strconv.FormatInt(taskID, 10))
 	return toolJSON(map[string]any{"task_id": taskID, "agent_id": rec.ID, "agent": rec.Name,
 		"next": "Started. It opens a draft pull request at most and cannot mark the task complete. Do not start another."})
+}
+
+// chiefDispatchInstructionsUnsourced is task_dispatch's refusal of instructions
+// that are not the owner's answer to an ask about the task.
+const chiefDispatchInstructionsUnsourced = "instructions must be your owner's own words: pass, verbatim, their answer " +
+	"to an attention ask about this task. None of their answers on this task is that text. Ask them with " +
+	"task_route_attention (then attention_wait), or dispatch without instructions"
+
+// sameWords normalises text for ownerAnswer's comparison: line endings to \n and
+// surrounding whitespace trimmed. Nothing else: no case folding, no inner
+// whitespace collapsing, no fuzzy matching.
+func sameWords(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	return strings.TrimSpace(s)
+}
+
+// ownerAnswer finds the owner's answer to an attention ask linked to task
+// taskID (attention_asks.task_id, migration 0032) that is exactly text
+// (sameWords), or says why there is none.
+//
+// 🔴 THREE MATCHES, EACH STRUCTURAL: the TASK (the ask's task_id, written only
+// by askOwnerAboutTask — never the question's text), the OWNER (the ask's
+// owner is the chief's owner: the store's query, row-level security and the
+// (task_id, owner_id) foreign key, plus the check here), and the WORDS (equal
+// after sameWords, nothing looser).
+func (s *Server) ownerAnswer(ctx context.Context, owner, taskID int64, text string) (attention.Ask, string) {
+	if s.ext.Attention == nil {
+		return attention.Ask{}, chiefDispatchInstructionsUnsourced
+	}
+	asks, err := s.ext.Attention.AnswersForTask(ctx, taskID)
+	if err != nil {
+		s.logger.Printf("task routing: answers for task %d: %v", taskID, err)
+		return attention.Ask{}, "your owner's answers could not be read; try again later or dispatch without instructions"
+	}
+	want := sameWords(text)
+	for _, a := range asks {
+		if a.Owner == owner && a.TaskID == taskID && sameWords(a.Answer) == want {
+			return a, ""
+		}
+	}
+	return attention.Ask{}, chiefDispatchInstructionsUnsourced
 }
 
 // connectedRepo is "" when repo is one of the owner's connected GitHub

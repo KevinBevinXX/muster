@@ -38,6 +38,9 @@
 //	CCD_TMUX_TARGET        tmux SESSION name      (default cc); never an input target:
 //	                       prompts go to the CLI's pane id (tmux.go)
 //	CCD_WORKSPACE          the CLI's working directory (default: cwd)
+//	CCD_REPO               owner/name: clone https://github.com/<it> into CCD_WORKSPACE before the
+//	                       CLI starts, and start the CLI only once it exists (checkout.go)
+//	CCD_REPO_BRANCH        the branch to clone (default: the remote's default)
 //	CCD_SUPERVISE          "1": once listening, create the tmux session and keep the
 //	                       CLI running in it — `claude --continue` when a transcript
 //	                       exists, `claude` on a fresh volume (supervise.go). Without
@@ -188,6 +191,11 @@ func serve() error {
 		workspace, _ = os.Getwd()
 	}
 
+	co, err := checkoutFromEnv(workspace)
+	if err != nil {
+		return err
+	}
+
 	term := tmuxTerminal{
 		bin: "tmux", socket: os.Getenv("CCD_TMUX_SOCKET"), conf: os.Getenv("CCD_TMUX_CONF"),
 		target: envOr("CCD_TMUX_TARGET", defaultTmuxTarget), enterDelay: 150 * time.Millisecond,
@@ -208,6 +216,7 @@ func serve() error {
 			return err
 		}
 	}
+	srv.checkout = co
 	if os.Getenv("CCD_SUPERVISE") == "1" {
 		bin := envOr("CCD_CLAUDE_BIN", "claude")
 		srv.sup = newSupervisor(term, bin, configDir, workspace)
@@ -269,10 +278,22 @@ func serve() error {
 	if srv.blocked != nil {
 		go srv.blocked.run(ctx)
 	}
+	// The agent's repository is checked out before the CLI starts, and the CLI
+	// starts in it (checkout.go). No repository: the CLI starts at once, as
+	// before.
+	if co != nil {
+		go co.run(ctx)
+	}
 	var supErr chan error // nil (never ready) unless ccd supervises the CLI
 	if srv.sup != nil {
 		supErr = make(chan error, 1)
-		go func() { supErr <- srv.sup.run(ctx) }()
+		go func() {
+			if co != nil && !co.wait(ctx) {
+				supErr <- nil // shutting down before the checkout existed
+				return
+			}
+			supErr <- srv.sup.run(ctx)
+		}()
 	}
 	for done := false; !done; {
 		select {

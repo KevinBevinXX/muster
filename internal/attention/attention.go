@@ -155,6 +155,10 @@ type Ask struct {
 	// DeliveryQueuedAt is when the delivery was last queued (the answer, or a
 	// Retry); zero when there is none.
 	DeliveryQueuedAt time.Time `json:"-"`
+	// TaskID is the task the ask is about (migration 0032), 0 for none. Only
+	// muster's own task path sets it (New.TaskID); an agent's attention_ask
+	// never does.
+	TaskID int64 `json:"task_id,omitempty"`
 }
 
 // Delivery is where an answer stands on its way to the asker (migration 0031).
@@ -191,6 +195,11 @@ type New struct {
 	Asker    Asker
 	Question string
 	Options  []string
+	// TaskID links the ask to one of the caller's tasks (0: none). Set ONLY by
+	// muster's task path (internal/api askOwnerAboutTask), never from an
+	// agent's arguments: task_dispatch trusts it as the provenance of the
+	// owner's answer.
+	TaskID int64
 	// Timeout is how long the ask waits; 0 is DefaultTimeout, and anything
 	// else is clamped to [MinTimeout, MaxTimeout].
 	Timeout time.Duration
@@ -322,6 +331,13 @@ type Store interface {
 	// whose lease lapsed (its process died mid-turn) and returns them (system
 	// scope).
 	RecoverDeliveries(ctx context.Context) ([]Ask, error)
+
+	// AnswersForTask is the caller's asks linked to taskID that were answered
+	// THROUGH THE ASK ITSELF (Answered), newest first. AnsweredInSession is
+	// left out on purpose: one message to the asker's session settles every
+	// open ask that asker raised, on every task, so it is not an answer to any
+	// one task's ask (task_dispatch's instructions provenance).
+	AnswersForTask(ctx context.Context, taskID int64) ([]Ask, error)
 }
 
 // PGStore is Store on Postgres.
@@ -340,7 +356,8 @@ const cols = `id, owner_id, coalesce(agent_id, 0), coalesce(mirror_host, ''), co
 	question, options,
 	CASE WHEN status = 'open' AND expires_at <= now() THEN 'expired' ELSE status END,
 	coalesce(answer, ''), coalesce(answered_by, ''), created_at, expires_at, resolved_at,
-	coalesce(delivery, ''), delivery_detail, delivery_attempts, coalesce(delivered_session_id, 0), delivery_queued_at`
+	coalesce(delivery, ''), delivery_detail, delivery_attempts, coalesce(delivered_session_id, 0), delivery_queued_at,
+	coalesce(task_id, 0)`
 
 func scan(row pgx.Row) (Ask, error) {
 	var a Ask
@@ -349,7 +366,7 @@ func scan(row pgx.Row) (Ask, error) {
 	var status, delivery string
 	if err := row.Scan(&a.ID, &a.Owner, &a.Asker.AgentID, &a.Asker.MirrorHost, &a.Asker.MirrorSession, &a.Asker.System, &a.Asker.Label,
 		&a.Question, &opts, &status, &a.Answer, &a.AnsweredBy, &a.CreatedAt, &a.ExpiresAt, &resolved,
-		&delivery, &a.DeliveryDetail, &a.DeliveryAttempts, &a.DeliveredSession, &queued); err != nil {
+		&delivery, &a.DeliveryDetail, &a.DeliveryAttempts, &a.DeliveredSession, &queued, &a.TaskID); err != nil {
 		return Ask{}, err
 	}
 	if queued != nil {
@@ -426,9 +443,13 @@ func (s *PGStore) Create(ctx context.Context, n New) (Ask, error) {
 	if open >= MaxOpenPerOwner {
 		return Ask{}, ErrTooMany
 	}
-	a, err := scan(tx.QueryRow(ctx, `INSERT INTO attention_asks (agent_id, mirror_host, mirror_session, system_asker, asker_label, question, options, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8))
-		RETURNING `+cols, agent, nullable(n.Asker.MirrorHost), nullable(n.Asker.MirrorSession), n.Asker.System, n.Asker.Label, n.Question, opts, n.Timeout.Seconds()))
+	var task any
+	if n.TaskID > 0 {
+		task = n.TaskID
+	}
+	a, err := scan(tx.QueryRow(ctx, `INSERT INTO attention_asks (agent_id, mirror_host, mirror_session, system_asker, asker_label, question, options, expires_at, task_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9)
+		RETURNING `+cols, agent, nullable(n.Asker.MirrorHost), nullable(n.Asker.MirrorSession), n.Asker.System, n.Asker.Label, n.Question, opts, n.Timeout.Seconds(), task))
 	if err != nil {
 		return Ask{}, err
 	}
@@ -441,6 +462,15 @@ func (s *PGStore) Get(ctx context.Context, id int64) (Ask, error) {
 		return Ask{}, ErrNotFound
 	}
 	return a, err
+}
+
+// AnswersForTask runs under the caller's principal (row-level security keeps it
+// to their own asks), and names the owner as well.
+func (s *PGStore) AnswersForTask(ctx context.Context, taskID int64) ([]Ask, error) {
+	return collect(s.pool.Query(ctx, `SELECT `+cols+` FROM attention_asks
+		WHERE task_id = $1 AND status = 'answered' AND answered_by = $2
+		  AND owner_id = nullif(current_setting('muster.uid', true), '')::bigint
+		ORDER BY id DESC`, taskID, ByOperator))
 }
 
 func (s *PGStore) Open(ctx context.Context) ([]Ask, error) {

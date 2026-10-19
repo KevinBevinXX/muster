@@ -328,7 +328,7 @@ it. The flow:
 |---|---|---|
 | `task_route_attention {task_id, note}` | Puts the task in front of you: an ask on `/attention` and a notification, with the chief's note — and, as its buttons, the actions the chief can take on the task right now (`task_forward` when a running agent works it; `task_dispatch` when the tool would start an agent: you opted in, the deployment can start one, and the task is open, ungated and has no live agent), returned to the chief as `actions_offered`. `route_to_session` is never offered: a task event is no_reply, so it refuses one. The offer and each tool's gate are the same predicate (`internal/api/task_actions.go`). Your answer is [delivered to the chief](attention.md#delivery) as a new message in its default session. | the task is not yours |
 | `task_forward {task_id, note}` | Sends the agent already working the task (the newest running one) a message from muster naming the task, with the chief's note fenced as data. The agent re-reads the task itself. | the task is not yours; no running agent works it |
-| `task_dispatch {task_id, repo?, kind?, instructions?}` | Starts a new agent on the task. `kind` is `claude-code` (the default when the deployment enables it, else `gateway`) or `gateway`. A claude-code agent runs on an account from your Claude account pool, with no per-agent model and no repository. A gateway agent gets the task's repository, branch and model; a task with no repository (a plugin's task has none) can be given one with `repo`, which must be one of your connected GitHub repositories; without one the agent cannot open a pull request. `instructions` (optional, at most 1 KiB) opens the agent's first message; when the chief relays your answer to an attention ask, your own words go there. Offered only when `MUSTER_CHIEF_DISPATCH_OWNERS` lists at least one user. | see below |
+| `task_dispatch {task_id, repo?, kind?, instructions?}` | Starts a new agent on the task. `kind` is `claude-code` (the default when the deployment enables it, else `gateway`) or `gateway`. Either kind gets the task's repository and branch; a task with no repository (a plugin's task has none) can be given one with `repo`, which must be one of your connected GitHub repositories; without one the agent cannot open a pull request. A claude-code agent runs on an account from your Claude account pool, with no per-agent model, and its Claude Code session starts inside a checkout of the repository, so the repository's `CLAUDE.md` and project skills (`.claude/skills`) load ([provisioner.md](provisioner.md#a-claude-code-agents-repository)). A gateway agent also gets the task's model. `instructions` (optional, at most 1 KiB) opens the agent's first message, and is accepted **only** when it is, verbatim, your answer to an attention ask about this task (see guard 5). Offered only when `MUSTER_CHIEF_DISPATCH_OWNERS` lists at least one user. | see below |
 
 All three are chief-only, on the agent gateway and over `/mcp`. Handing a task
 to the chief never starts anything by itself: only `task_dispatch` does.
@@ -358,26 +358,44 @@ Each refusal has its own sentence, in this order:
 3. The deployment cannot start agents (no provisioner, or a first message
    could not be delivered).
 4. `instructions` are over 1 KiB.
-5. `kind` is unknown, not enabled on the deployment (`MUSTER_AGENT_KINDS`), or
-   one you have no credential for; or it is `claude-code` and `repo` is given.
-6. `repo` is given and is not `owner/name`, you have no GitHub connection, or
-   it is not one of your connected repositories. The chief picks it while
-   reading outside text, so it may only pick from your own.
-7. Under a per-owner lock: **one start per task, ever.** A task the chief
+5. `instructions` are given and are not **your own words**: not, verbatim,
+   your answer to an attention ask linked to **this** task. An ask is linked
+   to its task only when muster filed it on the task's behalf
+   (`task_route_attention`, or a mention's route to `/attention`) — never by
+   its question's text, which any asker can write. The answer must be given
+   **through that ask** (on `/attention`): a message you write into the
+   chief's chat also settles its open asks, but every one of them at once, on
+   every task, so it counts for none. The comparison is exact
+   after trimming surrounding whitespace and normalising line endings: one
+   word added, a changed letter case or a doubled space is refused. Your
+   answer on another task, another user's answer, the task's own text and
+   the chief's note are all refused. The chief should pass your answer as you
+   typed it; to get one, it calls `task_route_attention` and waits.
+6. `kind` is unknown, not enabled on the deployment (`MUSTER_AGENT_KINDS`), or
+   one you have no credential for.
+7. The **effective** repository — `repo`, or else the task's own — is not
+   `owner/name`, you have no GitHub connection, or it is not one of your
+   connected repositories. This holds for every kind. The chief picks `repo`
+   while reading outside text, and a task's repository may have been written
+   by an agent (`task_create_gated`), so either may only be one of your own.
+   The task is re-read under the lock below, and a repository changed in
+   between is refused.
+8. Under a per-owner lock: **one start per task, ever.** A task the chief
    already started an agent for answers with that start
    (`already_dispatched`) and starts nothing, whatever became of the agent.
    A second agent on the task is yours to start, from its card.
-8. The task is not yours, is gated (`gate:` tag), names a repository when
-   the kind is `claude-code`, names a different repository than `repo`, is
-   not `open`, or already has a live agent (use `task_forward`).
-9. **2** of the agents the chief started are still live (pending,
+9. The task is not yours, is gated (`gate:` tag), names a different
+   repository than `repo`, is not `open`, or already has a live agent (use
+   `task_forward`).
+10. **2** of the agents the chief started are still live (pending,
    provisioning or running), counting a start from the last 10 minutes whose
    agent is not recorded yet.
-10. The chief started **10** agents in the last 24 hours.
+11. The chief started **10** agents in the last 24 hours.
 
 A start that passed every check is recorded (a `task.chief_dispatch` audit row,
-with the kind and any instructions, so you can read what the chief told the
-agent) **before** the agent is created, so a start that then fails still
+with the kind, any instructions and the id of the attention ask they are your
+answer to (`instructions_ask`), so you can read what the chief told the agent
+and where it came from) **before** the agent is created, so a start that then fails still
 spends the day's unit and the task's one start. That includes a claude-code
 start whose account pool has no usable account: the pool is asked only at the
 create. The agent's id is recorded beside it (`task.chief_dispatch_agent`); the

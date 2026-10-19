@@ -42,10 +42,10 @@ func (k KindChoices) offersClaudeCode() bool {
 
 // kindToggleScript shows the claude-code-only controls when that kind is
 // checked, and DISABLES the controls that do not apply — a disabled input is not
-// submitted. So a claude-code dispatch carries no `model` or `repo` (the server
-// refuses each: the CLI chooses its model, and nothing in the image clones a
-// repo) and a
-// gateway dispatch carries no `cc_account` (refused for any other kind).
+// submitted. So a claude-code dispatch carries no `model` (the server refuses
+// it: the CLI chooses its model) and a gateway dispatch carries no `cc_account`
+// (refused for any other kind). The repository applies to both kinds and is
+// neither hidden nor disabled.
 //
 // 🔴 DISABLED WAS NOT ENOUGH, AND HIDING IS THE FIX FOR AN OPERATOR REPORT. The
 // model combobox (curated OpenRouter slugs plus a live OpenRouter search), the
@@ -59,12 +59,11 @@ const kindToggleScript = "var f=this.closest('form'),cc=!!f.querySelector('input
 	"this.querySelectorAll('[data-cc-only]').forEach(function(e){e.classList.toggle('hidden',!cc)});" +
 	"f.querySelectorAll('[" + gatewayOnlyAttr + "]').forEach(function(e){e.classList.toggle('hidden',cc)});" +
 	"var a=f.querySelector('select[name=cc_account]');if(a){a.disabled=!cc}" +
-	"f.querySelectorAll('input[name=model],input[name=repo],input[name=repo_branch]').forEach(function(e){e.disabled=cc});"
+	"f.querySelectorAll('input[name=model]').forEach(function(e){e.disabled=cc});"
 
 // gatewayOnlyAttr marks a dispatch-form control that means nothing to a
-// claude-code agent — the model selector (OpenRouter-specific) and the
-// repository. kindToggleScript hides every one while Claude Code is
-// picked. ONE spelling, shared by the attribute and the script's selector.
+// claude-code agent — the model selector (OpenRouter-specific).
+// kindToggleScript hides every one while Claude Code is picked. ONE spelling, shared by the attribute and the script's selector.
 const gatewayOnlyAttr = "data-gateway-only"
 
 // gatewayOnly wraps nodes in a container kindToggleScript hides for claude-code.

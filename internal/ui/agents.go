@@ -809,12 +809,13 @@ func DispatchModalBodyFor(k KindChoices) g.Node {
 				Class("w-full resize-y rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
 			)),
 			kindPicker(k),
-			// The whole disclosure is gateway-only: every field in it is one a
-			// claude-code dispatch is refused for (see kindToggleScript).
-			gatewayOnly(advancedDisclosure(
-				labelledField("Model", modelField()),
+			// The model is gateway-only (a claude-code dispatch is refused one, see
+			// kindToggleScript); the repository is for both kinds — a claude-code
+			// agent's session starts in a checkout of it.
+			advancedDisclosure(
+				gatewayOnly(labelledField("Model", modelField())),
 				labelledField("Repository", lazyCombobox("repo", "Repository", "Search repos… (optional)", "repo", "/ui/agents/repos", "repos")),
-			)),
+			),
 			Div(
 				// Sticky as a ROW: both actions stay in view when Advanced pushes them
 				// below the sheet's fold (see TestEverySheetKeepsItsPrimaryActionInView).
@@ -972,15 +973,16 @@ func DispatchModalTaskBody(v TaskDispatchView) g.Node {
 			// field either — it resolves server-side when empty).
 			Input(Type("hidden"), Name("repo_branch"), Value(v.RepoBranch)),
 			kindPicker(v.Kinds),
-			// Gateway-only, like the FAB form's Advanced block: the task's model,
-			// and repository are both refused for a claude-code dispatch, so
-			// they leave the screen when Claude Code is picked (kindToggleScript).
+			// Gateway-only, like the FAB form's model field: the task's model is
+			// refused for a claude-code dispatch, so it leaves the screen when
+			// Claude Code is picked (kindToggleScript). The repository stays: both
+			// kinds work in it.
 			gatewayOnly(
 				Class("flex flex-col gap-3"),
 				dispatchConfirmRow("Model", modelStatic, modelFieldFor(v.Model, "")),
-				dispatchConfirmRow("Repository", repoStatic,
-					lazyComboboxPreselect("repo", "Repository", "Search repos… (optional)", "repo", "/ui/agents/repos", "repos", v.Repo, v.Repo)),
 			),
+			dispatchConfirmRow("Repository", repoStatic,
+				lazyComboboxPreselect("repo", "Repository", "Search repos… (optional)", "repo", "/ui/agents/repos", "repos", v.Repo, v.Repo)),
 			// Mobile-first action stack: a small secondary Cancel sits ABOVE the
 			// full-width primary Dispatch, so the thumb lands on Dispatch and Cancel
 			// is a deliberate, smaller reach.

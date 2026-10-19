@@ -105,6 +105,48 @@ func TestAClaudeCodeDispatchStoresTheKindAndThePoolsAccount(t *testing.T) {
 	}
 }
 
+// TestAClaudeCodeDispatchKeepsItsRepository: a claude-code agent takes a
+// repository and branch, as a gateway agent does — stored on the row, which is
+// what agentspec turns into the pod's checkout. (Before repositories existed for
+// this kind the same form was a 409.)
+func TestAClaudeCodeDispatchKeepsItsRepository(t *testing.T) {
+	s, h, store := kindsServer(t, stubKinds{pick: "work"})
+	connectRepos(t, s, "example-org/tide")
+	rec := postDispatch(t, s, h, url.Values{"kind": {"claude-code"}, "note_text": {"t"},
+		"repo": {"example-org/tide"}, "repo_branch": {"release/3"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("claude-code + repo: %d %s", rec.Code, rec.Body)
+	}
+	rows := store.rows()
+	if len(rows) != 1 || rows[0].Kind != agents.KindClaudeCode || rows[0].CCAccount != "work" ||
+		rows[0].Repo != "example-org/tide" || rows[0].RepoBranch != "release/3" {
+		t.Fatalf("rows = %+v", rows)
+	}
+}
+
+// TestAClaudeCodeDispatchTakesOnlyAConnectedRepository: from the dispatch form
+// or the API, a claude-code agent's repository must be one of the caller's
+// connected GitHub repositories — the predicate task_dispatch uses
+// (connectedRepo) — because its session starts pre-trusted in the checkout.
+// Refused 409 before the row; a gateway agent's repository is not (its runtime
+// image, not a pre-trusted Claude Code session, works in it).
+func TestAClaudeCodeDispatchTakesOnlyAConnectedRepository(t *testing.T) {
+	s, h, store := kindsServer(t, stubKinds{pick: "work"})
+	connectRepos(t, s, "example-org/tide")
+	rec := postDispatch(t, s, h, url.Values{"kind": {"claude-code"}, "note_text": {"t"}, "repo": {"stranger/x"}})
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), chiefDispatchRepo) || len(store.rows()) != 0 {
+		t.Fatalf("unconnected repo: %d %q rows=%d", rec.Code, rec.Body, len(store.rows()))
+	}
+	s2, h2, store2 := kindsServer(t, stubKinds{pick: "work"})
+	rec = postDispatch(t, s2, h2, url.Values{"kind": {"claude-code"}, "note_text": {"t"}, "repo": {"example-org/tide"}})
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), chiefDispatchNoGitHub) || len(store2.rows()) != 0 {
+		t.Fatalf("no GitHub connection: %d %q rows=%d", rec.Code, rec.Body, len(store2.rows()))
+	}
+	if rec := postDispatch(t, s, h, url.Values{"note_text": {"t"}, "repo": {"stranger/x"}}); rec.Code != http.StatusOK {
+		t.Fatalf("gateway + unconnected repo (unchanged): %d %s", rec.Code, rec.Body)
+	}
+}
+
 // TestADispatchTheDeploymentCannotSatisfyIsRefusedBeforeTheRow: every refusal is
 // a 409 with its reason, and NO row is created.
 func TestADispatchTheDeploymentCannotSatisfyIsRefusedBeforeTheRow(t *testing.T) {
@@ -119,7 +161,6 @@ func TestADispatchTheDeploymentCannotSatisfyIsRefusedBeforeTheRow(t *testing.T) 
 		{"unknown kind", stubKinds{}, url.Values{"kind": {"teleport"}}, "unknown agent kind"},
 		{"pin on a gateway agent", stubKinds{}, url.Values{"cc_account": {"work"}}, "only be pinned"},
 		{"model on a claude-code agent", stubKinds{pick: "work"}, url.Values{"kind": {"claude-code"}, "model": {"openrouter/x/y"}}, "no per-agent model"},
-		{"repo on a claude-code agent", stubKinds{pick: "work"}, url.Values{"kind": {"claude-code"}, "repo": {"example-org/tide"}}, "cannot be given a repository"},
 		{"pool refuses", stubKinds{err: errors.New("ccpool: no usable Claude account: every account's current token failed")}, url.Values{"kind": {"claude-code"}}, "no usable Claude account"},
 	}
 	for _, c := range cases {

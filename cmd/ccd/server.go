@@ -93,6 +93,9 @@ type server struct {
 	slot chan struct{} // capacity 1: one ccd-driven turn at a time
 
 	sup *supervisor // nil when ccd does not run the CLI itself
+	// checkout is the agent's repository (checkout.go); nil when the pod was
+	// given none. While it is not ready the supervisor has not started the CLI.
+	checkout *checkout
 	// inputPane names the tmux pane prompts are pasted into, and whether there is
 	// one to paste into now. Production wires the supervisor's (main.go); nil, or
 	// a false answer, is not_ready — never a fallback to the session name, which
@@ -667,6 +670,9 @@ func (s *server) runTurn(ctx context.Context, prompt string) (turnOutcome, *fail
 	}
 	pane, ok := s.inputPane()
 	if !ok {
+		if s.checkout != nil && !s.checkout.ready() {
+			return turnOutcome{}, paneNotReady(s.checkout.notReady())
+		}
 		return turnOutcome{}, paneNotReady("the supervisor reports no running CLI in its pane (starting, " +
 			"restarting, crash_loop or terminal_lost — see /healthz)")
 	}
@@ -887,6 +893,9 @@ type health struct {
 	Busy       bool      `json:"busy"`
 	// Lanes are the explicit sessions' CLIs (lanes.go); reported, never gating.
 	Lanes []laneHealth `json:"lanes,omitempty"`
+	// Repo is the agent's repository checkout (checkout.go); absent when the
+	// pod was given none. Reported, never gating.
+	Repo *checkoutState `json:"repo,omitempty"`
 	authSnapshot
 }
 
@@ -919,7 +928,19 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		h.Supervisor = &st
 		ref = s.sup.ref()
 	}
-	if err := s.term.Alive(ctx, ref); err != nil {
+	// 🔴 NO TERMINAL YET IS NOT A FAILURE WHILE THE CHECKOUT IS PENDING: the
+	// supervisor creates the tmux session only once the repository is checked
+	// out, which can wait on an operator approving the github connector. Failing
+	// here would restart-loop the pod for that whole wait.
+	waitingCheckout := false
+	if s.checkout != nil {
+		st := s.checkout.state()
+		h.Repo = &st
+		waitingCheckout = st.State != checkoutReady && ref == (paneRef{})
+	}
+	if waitingCheckout {
+		h.Terminal = "not started: waiting for the repository checkout"
+	} else if err := s.term.Alive(ctx, ref); err != nil {
 		h.Terminal = err.Error()
 	}
 	s.mu.Lock()
@@ -930,7 +951,7 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	if s.lanes != nil {
 		h.Lanes = s.lanes.health()
 	}
-	h.OK = h.Terminal == "ok" && (h.Supervisor == nil || (h.Supervisor.CLI != cliCrashLoop && h.Supervisor.CLI != cliLost))
+	h.OK = (h.Terminal == "ok" || waitingCheckout) && (h.Supervisor == nil || (h.Supervisor.CLI != cliCrashLoop && h.Supervisor.CLI != cliLost))
 	w.Header().Set("Content-Type", "application/json")
 	if !h.OK {
 		w.WriteHeader(http.StatusServiceUnavailable)

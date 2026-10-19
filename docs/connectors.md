@@ -5,7 +5,9 @@ auth. Connectors are sealed with AES-256-GCM. An agent never receives the secret
 It calls muster's proxy instead, at `/connect/{connector}/{host}/{path…}`, and
 muster injects the credential.
 
-Access is granted **per agent**. You approve it the first time an agent asks. A
+Access is granted **per agent**. You approve it the first time an agent asks.
+A claude-code agent dispatched with a repository that it cannot clone asks for
+`github` itself, before its session starts ([provisioner.md](provisioner.md#a-claude-code-agents-repository)). A
 grant lasts until the agent is destroyed, the grant is revoked, or the connector
 is deleted. Connectors handle HTTP only.
 

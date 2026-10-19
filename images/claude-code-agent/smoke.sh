@@ -29,6 +29,12 @@
 #      an unreachable muster fails fast and writes no git routing; curl is present;
 #  10. the seeded settings pin default permission mode and the approval hooks,
 #      and `ccd approve` with muster unreachable makes no decision (prints nothing).
+#  11. with CCD_REPO (a local bare repository standing in for GitHub), ccd clones
+#      it into CCD_WORKSPACE before starting the CLI; the real CLI runs in the
+#      checkout and applies the repository's own .claude/ project settings
+#      (its SessionStart hook sees CLAUDE_PROJECT_DIR = the checkout);
+#  12. with a repository that cannot be cloned, /healthz stays 200 and reports
+#      why, and no CLI session is started.
 #
 # ⚠ IT NEEDS NO REAL CREDENTIAL AND MUST NEVER BE GIVEN ONE, AND IT SENDS NO TURN:
 # nothing here needs the provider's API. Without any token the CLI stops at its
@@ -177,4 +183,58 @@ out="$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"rm -rf x"},"per
 [[ "$rc" == "0" && -z "$out" ]] || fail "ccd approve with the relay unreachable: exit $rc stdout '$out', want 0 and nothing"
 echo "cc-smoke: approval hook seeded; relay unreachable -> no decision (terminal prompt)"
 unset MUSTER_CONNECT_URL MUSTER_HOOK_TOKEN
+
+# 11. A repository (CCD_REPO), with the REAL CLI. A local bare repository stands
+# in for GitHub through git's url.<x>.insteadOf — the mechanism ccd's connector
+# routing itself uses for muster's proxy. The repository carries a CLAUDE.md, a
+# project skill (.claude/skills/smoke/SKILL.md) and a PROJECT settings file
+# whose SessionStart hook records $CLAUDE_PROJECT_DIR. ccd must clone it into
+# CCD_WORKSPACE before it starts the CLI, start the CLI there (trusted:
+# SessionStart reaches ccd), and the CLI must apply the repository's own
+# .claude/ — its hook fires with CLAUDE_PROJECT_DIR = the checkout. ⚠ That the
+# CLI LOADS the skill is not observable without a model turn; what is shown is
+# that it reads project configuration from the checkout's .claude/, where the
+# skill lives.
+tmux kill-server 2>/dev/null || true
+export GIT_CONFIG_GLOBAL=/tmp/smoke-gitconfig
+fake=/tmp/smoke-github src=/tmp/smoke-src ws=/tmp/smoke-ws/app
+mkdir -p "$src/.claude/skills/smoke" "$fake/example-org"
+printf '# smoke project\n' >"$src/CLAUDE.md"
+printf -- '---\nname: smoke\ndescription: a fixture skill\n---\nbody\n' >"$src/.claude/skills/smoke/SKILL.md"
+cat >"$src/.claude/settings.json" <<'JSON'
+{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "printf %s \"$CLAUDE_PROJECT_DIR\" >/tmp/smoke-project-dir"}]}]}}
+JSON
+printf '[url "file://%s/"]\n\tinsteadOf = https://github.com/\n' "$fake" >"$GIT_CONFIG_GLOBAL"
+git -C "$src" init -q -b trunk
+git -C "$src" add CLAUDE.md .claude
+git -C "$src" -c user.name=smoke -c user.email=smoke@example.test commit -q -m fixture
+git clone -q --bare "$src" "$fake/example-org/app.git"
+CLAUDE_CONFIG_DIR=/tmp/smoke-repo-cfg CCD_WORKSPACE="$ws" CCD_REPO=example-org/app CCD_REPO_BRANCH=trunk \
+  /usr/local/bin/cc-entrypoint >/tmp/cc-entrypoint.log 2>&1 &
+ep=$!
+wait_for '200 {*"session":"started"*'
+[[ "$body" == *'"repo":{"repo":"example-org/app","branch":"trunk","dir":"'"$ws"'","state":"ready"}'* ]] \
+  || fail "/healthz does not report the checkout ready: $body"
+pid="$(tmux list-panes -t cc -F '#{pane_pid}')"
+[[ "$(readlink "/proc/$pid/cwd")" == "$ws" ]] || fail "the CLI (pid $pid) runs in $(readlink "/proc/$pid/cwd"), not the checkout $ws"
+[[ -f "$ws/CLAUDE.md" && -f "$ws/.claude/skills/smoke/SKILL.md" ]] || fail "the checkout lacks CLAUDE.md or the skill"
+for _ in $(seq 1 30); do [[ -s /tmp/smoke-project-dir ]] && break; sleep 1; done
+[[ "$(cat /tmp/smoke-project-dir 2>/dev/null)" == "$ws" ]] \
+  || fail "the repository's own SessionStart hook did not run with CLAUDE_PROJECT_DIR=$ws (got '$(cat /tmp/smoke-project-dir 2>/dev/null)')"
+echo "cc-smoke: repository checked out; the real CLI runs in it and applied its project settings (CLAUDE_PROJECT_DIR=$ws)"
+kill "$ep" 2>/dev/null || true
+tmux kill-server 2>/dev/null || true
+
+# 12. A repository that cannot be cloned: /healthz stays 200 and says so, and no
+# CLI is started.
+CLAUDE_CONFIG_DIR=/tmp/smoke-missing-cfg CCD_WORKSPACE=/tmp/smoke-ws/missing CCD_REPO=example-org/missing \
+  /usr/local/bin/cc-entrypoint >/tmp/cc-entrypoint.log 2>&1 &
+ep=$!
+wait_for '200 {*"state":"failed"*'
+[[ "$body" == *'could not be cloned'* ]] || fail "the failed checkout does not say why: $body"
+if tmux has-session -t cc 2>/dev/null; then fail "a CLI session was started without the checkout"; fi
+echo "cc-smoke: an unclonable repository keeps the CLI stopped and /healthz 200"
+kill "$ep" 2>/dev/null || true
+tmux kill-server 2>/dev/null || true
+unset GIT_CONFIG_GLOBAL
 echo "cc-smoke: PASS"

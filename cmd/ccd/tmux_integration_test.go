@@ -298,13 +298,20 @@ type serveRig struct {
 // startServe runs `ccd serve`; extra is more NAME=value environment.
 func startServe(t *testing.T, extra ...string) *serveRig {
 	t.Helper()
+	return startServeAt(t, "workspace", nil, extra...)
+}
+
+// startServeAt is startServe with the workspace at <root>/<wsRel>, and env
+// computed from the rig's root (nil: none) appended to extra.
+func startServeAt(t *testing.T, wsRel string, env func(root string) []string, extra ...string) *serveRig {
+	t.Helper()
 	tmuxBin, err := exec.LookPath("tmux")
 	if err != nil {
 		t.Fatal("tmux is REQUIRED by the tmuxit suite and is not on PATH; install it (this suite never skips)")
 	}
 	exe, _ := os.Executable()
 	root := t.TempDir()
-	bin, cfg, ws := filepath.Join(root, "bin"), filepath.Join(root, "claude"), filepath.Join(root, "workspace")
+	bin, cfg, ws := filepath.Join(root, "bin"), filepath.Join(root, "claude"), filepath.Join(root, wsRel)
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -336,6 +343,9 @@ func startServe(t *testing.T, extra ...string) *serveRig {
 		"CCD_TMUX_SOCKET="+sock, "CCD_TMUX_CONF=/dev/null",
 		"CCD_SUPERVISE=1", "CCD_CLAUDE_BIN="+filepath.Join(bin, "claude"))
 	cmd.Env = append(cmd.Env, extra...)
+	if env != nil {
+		cmd.Env = append(cmd.Env, env(root)...)
+	}
 	logs := &syncBuffer{}
 	cmd.Stdout, cmd.Stderr = logs, logs
 	if err := cmd.Start(); err != nil {

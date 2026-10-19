@@ -223,7 +223,9 @@ variables when it provisions an agent, so you normally never set them yourself.
 | `CCD_TMUX_SOCKET` | tmux's default | no | `tmux -L` socket name. |
 | `CCD_TMUX_CONF` | tmux's default | no | `tmux -f` config file. |
 | `CCD_TMUX_TARGET` | `cc` | no | The tmux session the CLI runs in. |
-| `CCD_WORKSPACE` | the current directory | no | The CLI's working directory. |
+| `CCD_WORKSPACE` | the current directory | no | The CLI's working directory. muster sets it to the checkout (`/data/workspace/<name>`) for an agent dispatched with a repository, and leaves the image's `/data/workspace` otherwise. |
+| `CCD_REPO` | none | no | `owner/name`. `ccd` clones `https://github.com/<it>` into `CCD_WORKSPACE` and starts the CLI only once the checkout exists ([provisioner.md](provisioner.md#a-claude-code-agents-repository)). muster sets it for an agent dispatched with a repository. |
+| `CCD_REPO_BRANCH` | the remote's default | no | The branch `ccd` clones. |
 | `CCD_SUPERVISE` | off | no | With `1`, `ccd` creates the tmux session and keeps `claude` running in it. |
 | `CCD_CLAUDE_BIN` | `claude` | no | The path to the Claude Code CLI. |
 | `CCD_GATEWAY_UPSTREAM` | none | no | Where the gateway runtime beside `ccd` listens, as `http://127.0.0.1:<port>` (loopback only; muster sets it for a `claude-code` chief whose sessions may use the `gateway` runtime). A turn carrying `X-Muster-Runtime: gateway` is handed to it after `ccd` checks the bearer. Unset, such a turn is `not_ready`. |

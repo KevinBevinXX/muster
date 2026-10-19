@@ -91,9 +91,9 @@ test('the kind picker dispatches a Claude Code agent onto a pinned or pooled acc
   await expect(account).toBeVisible();
   await expect(account).toBeEnabled();
   await expect(model).toBeDisabled();
-  // Nothing in the claude-code image clones a repo, so the repo field is
-  // disabled too.
-  await expect(sheet.locator('input[name="repo"]')).toBeDisabled();
+  // A claude-code agent takes a repository (its session starts in a checkout),
+  // so the repo field stays live.
+  await expect(sheet.locator('input[name="repo"]')).toBeEnabled();
   await expect(account.locator('option')).toHaveText(['Auto (least rate-limited)', 'alpha', 'beta']);
   await account.selectOption('beta');
   const pinned = await save('e2e kinds: pinned to beta');

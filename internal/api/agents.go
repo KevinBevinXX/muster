@@ -954,13 +954,9 @@ func (s *Server) resolveKindAccount(ctx context.Context, p dispatchParams) (kind
 	if p.Model != "" {
 		return "", "", fmt.Errorf("%w: %s", ErrDispatchRefused, claudeCodeNoModel)
 	}
-	// ⚠ A REPO IS REFUSED FOR THE SAME REASON AS A MODEL: it would be accepted
-	// and do nothing. Nothing in the claude-code image clones a declared
-	// repository.
-	if p.Repo != "" || p.RepoBranch != "" {
-		return "", "", fmt.Errorf("%w: a %s agent cannot be given a repository yet (nothing in its image "+
-			"clones one); dispatch without a repo", ErrDispatchRefused, agents.KindClaudeCode)
-	}
+	// A repository IS taken (unlike a model): ccd checks it out before it starts
+	// the CLI and runs the CLI in the checkout (agentspec.claudeCodeRepo,
+	// cmd/ccd/checkout.go).
 	if s.ext.Kinds == nil {
 		return "", "", fmt.Errorf("%w: no Claude account pool is configured", ErrDispatchRefused)
 	}
@@ -1013,6 +1009,17 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	kind, account, err := s.resolveKindAccount(ctx, p)
 	if err != nil {
 		return agents.Agent{}, err
+	}
+	// 🔴 A CLAUDE-CODE AGENT'S REPOSITORY MUST BE A CONNECTED ONE, from every
+	// door (the forms, the API, task_dispatch): its session starts PRE-TRUSTED
+	// in the checkout (ccd seed), so the repository's .claude/settings.json
+	// (hooks, env) runs beside the subscription token. One predicate,
+	// connectedRepo, the same task_dispatch applies to every kind before it
+	// reserves. Before the row, so a refusal creates nothing.
+	if kind == agents.KindClaudeCode && p.Repo != "" {
+		if why := s.connectedRepo(ctx, p.Repo); why != "" {
+			return agents.Agent{}, fmt.Errorf("%w: %s", ErrDispatchRefused, why)
+		}
 	}
 	// 🔴 REFUSE A MODEL THE POD WILL HAVE NO CREDENTIAL FOR, BEFORE the record
 	// exists. This is the FIRST of the two places an operator can set an agent's

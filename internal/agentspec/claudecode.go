@@ -2,6 +2,8 @@ package agentspec
 
 import (
 	"fmt"
+	"path"
+	"regexp"
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/agents"
@@ -193,9 +195,9 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 			"configured (MUSTER_AGENT_CC_ACCOUNTS); an agent keeps its account for life, so restore that "+
 			"account's token rather than expecting a re-selection", a.Name, a.CCAccount)
 	}
-	if a.Repo != "" {
-		return provision.Spec{}, fmt.Errorf("agentspec: agent %q is kind %s and names repository %q; nothing in "+
-			"that image clones one, so it would start in an empty workspace", a.Name, agents.KindClaudeCode, a.Repo)
+	repo, err := claudeCodeRepo(a)
+	if err != nil {
+		return provision.Spec{}, err
 	}
 	if a.HooksToken == "" {
 		return provision.Spec{}, fmt.Errorf("agentspec: agent %q has no hooks token; ccd refuses to start "+
@@ -219,7 +221,6 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 
 	var sidecar *provision.Sidecar
 	if opts.GatewaySidecar != nil {
-		var err error
 		if sidecar, err = buildGatewaySidecar(a, cfg); err != nil {
 			return provision.Spec{}, err
 		}
@@ -231,7 +232,7 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		// entrypoint's `ccd seed` creating the workspace as uid 1000 — and it
 		// worked. Overriding it here would be an unmeasured difference.
 		Runtime: provision.Runtime{Image: cc.Image},
-		Env:     claudeCodeEnv(cfg, sidecar != nil),
+		Env:     claudeCodeEnv(cfg, sidecar != nil, repo),
 		// 🔴 THE ONLY PLACE EnvClaudeOAuthToken IS EVER WRITTEN.
 		Secrets: []provision.EnvVar{
 			{Name: EnvToken, Value: a.HooksToken},
@@ -246,6 +247,7 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		Network:   claudeCodeNetworkFor(cfg),
 		Labels:    labels,
 		Sidecar:   sidecar,
+		Repo:      repo,
 	}
 	if opts.Instructions != "" {
 		spec.Files = []provision.File{{Path: ClaudeCodeInstructionsPath, Content: []byte(opts.Instructions)}}
@@ -259,7 +261,13 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 // claudeCodeEnv is the claude-code kind's plain environment. With the gateway
 // sidecar, ccd is told where it is (EnvCCDGatewayUpstream): the one thing that
 // turns a gateway session's turn from not_ready into a hand-off.
-func claudeCodeEnv(cfg Config, gatewaySidecar bool) []provision.EnvVar {
+//
+// With a repository (repo.URL set), ccd is also told which one to check out and
+// where, and the CLI's working directory becomes that checkout (EnvCCDWorkspace
+// overrides the image's CCD_WORKSPACE): see claudeCodeRepo. Without one, none of
+// the three is set and the pod is exactly what it was before repositories
+// existed for this kind (TestAClaudeCodeSpecWithoutARepoIsUnchanged).
+func claudeCodeEnv(cfg Config, gatewaySidecar bool, repo provision.Repo) []provision.EnvVar {
 	env := []provision.EnvVar{
 		{Name: EnvAPIURL, Value: cfg.APIBaseURL},
 		{Name: EnvGitTerminalPrompt, Value: "0"},
@@ -270,5 +278,61 @@ func claudeCodeEnv(cfg Config, gatewaySidecar bool) []provision.EnvVar {
 	if gatewaySidecar {
 		env = append(env, provision.EnvVar{Name: EnvCCDGatewayUpstream, Value: gatewaySidecarUpstream()})
 	}
+	if repo.URL != "" {
+		env = append(env, provision.EnvVar{Name: EnvCCDRepo, Value: repo.URL})
+		if repo.Branch != "" {
+			env = append(env, provision.EnvVar{Name: EnvCCDRepoBranch, Value: repo.Branch})
+		}
+		env = append(env, provision.EnvVar{Name: EnvCCDWorkspace, Value: repo.Path})
+	}
 	return env
+}
+
+// The variables that hand a claude-code pod its repository. ccd reads them
+// (cmd/ccd/checkout.go); TestCcdReadsTheRepositoryVariablesAgentspecWrites pins
+// the spellings on both sides.
+const (
+	// EnvCCDRepo is the repository, owner/name, ccd clones from
+	// https://github.com/<owner/name> before it starts the CLI.
+	EnvCCDRepo = "CCD_REPO"
+	// EnvCCDRepoBranch is the branch to check out (empty: the remote's default).
+	EnvCCDRepoBranch = "CCD_REPO_BRANCH"
+	// EnvCCDWorkspace is the CLI's working directory. The image sets it to
+	// ClaudeCodeWorkspacePath; the spec overrides it ONLY for an agent with a
+	// repository, to the checkout, so the session's project is the repository —
+	// its CLAUDE.md and .claude/skills load, and the workspace trust ccd seeds is
+	// for that directory.
+	EnvCCDWorkspace = "CCD_WORKSPACE"
+)
+
+// ccRepoDirName is a checkout directory name ccd may create: one path element,
+// no traversal.
+var ccRepoDirName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*$`)
+
+// claudeCodeRepo declares a claude-code agent's repository: the row's owner/name
+// and branch, checked out at ClaudeCodeWorkspacePath/<name>. No repository: the
+// zero Repo.
+//
+// 🔴 THE CHECKOUT IS INSIDE THE WORKSPACE, ON THE AGENT'S VOLUME, so a pod
+// restart finds it (ccd never re-clones over an existing checkout) and the
+// conversation `claude --continue` resumes is the one for that directory.
+//
+// The name must be a plain directory name: a row naming "x/.." would otherwise
+// make the CLI's working directory somewhere else on the volume.
+func claudeCodeRepo(a agents.Agent) (provision.Repo, error) {
+	if a.Repo == "" {
+		// A branch alone means nothing without a repository, and was ignored
+		// before repositories existed for this kind; it still is.
+		return provision.Repo{}, nil
+	}
+	owner, name, ok := strings.Cut(strings.TrimSpace(a.Repo), "/")
+	if !ok || !ccRepoDirName.MatchString(owner) || !ccRepoDirName.MatchString(name) {
+		return provision.Repo{}, fmt.Errorf("agentspec: agent %q is kind %s and names repository %q, which is not "+
+			"owner/name", a.Name, agents.KindClaudeCode, a.Repo)
+	}
+	return provision.Repo{
+		URL:    owner + "/" + name,
+		Branch: a.RepoBranch,
+		Path:   path.Join(ClaudeCodeWorkspacePath, name),
+	}, nil
 }

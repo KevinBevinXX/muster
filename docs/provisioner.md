@@ -87,6 +87,45 @@ always be in it.
   `MUSTER_APPROVAL_GATE_URL` is configured, it relays the prompt to the
   permission router; otherwise the prompt falls back to the agent's own terminal.
 
+### A claude-code agent's repository
+
+A claude-code agent can be dispatched with a repository (`owner/name`, and a
+branch), from the dispatch forms, the API or the chief's `task_dispatch`, like a
+gateway agent — but only one of your **connected** GitHub repositories, from
+every door (its session starts pre-trusted in the checkout, so the repository's
+own `.claude/` runs beside the subscription token; see below). An agent without
+one is exactly what it was before: no clone, the CLI in `/data/workspace`, the
+same `--continue` resume.
+
+- **The checkout.** muster gives the pod `CCD_REPO`, `CCD_REPO_BRANCH` (when
+  there is a branch) and `CCD_WORKSPACE=/data/workspace/<name>`. Before it
+  starts the CLI, `ccd` clones `https://github.com/<owner/name>` there, on the
+  agent's volume, and then starts the CLI **in the checkout**. The session's
+  project is the repository: its `CLAUDE.md` and `.claude/` (project skills in
+  `.claude/skills`, project settings) are the session's, alongside the managed
+  `/etc/claude-code/CLAUDE.md`. An existing checkout (a restarted pod) is used
+  as it is, never re-cloned or reset.
+- **Credentials.** Only through the `github` connector
+  ([connectors.md](connectors.md)): git reaches GitHub through muster's proxy
+  once the agent holds an approved grant. No token is placed in the pod. A
+  public repository clones without one.
+- **Until the clone succeeds the CLI does not start.** Every turn answers
+  `503 not_ready` with the reason (git's error, and what the `github` connector
+  needs), so the kickoff's failure on the card says why; `/healthz` stays 200
+  and reports the checkout under `repo`; `ccd` retries every 30 seconds. When
+  the clone fails and the agent holds no `github` grant at all, `ccd` files the
+  agent's request for it **once** (the same request the session's
+  `connector_request` tool would file); approve it under Connectors and the
+  next retry clones. A denied or revoked grant is not asked for again.
+- ⚠ **The repository's own `.claude/settings.json` applies to the session**
+  (project settings: hooks, permissions, `env`). `ccd` strips `env` and
+  `apiKeyHelper` only from the CLI's user settings, so dispatch only onto
+  repositories you trust with the agent's subscription token.
+
+To start one from the chief: connect the repository on the Repos tab (it
+must be one of your connected repositories), make sure a `github` connector
+exists, then have the chief call `task_dispatch` with `repo`.
+
 ## Talking to an agent
 
 When a gateway is configured, three routes are live:

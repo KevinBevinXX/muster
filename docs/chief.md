@@ -54,14 +54,17 @@ The chief is offered these tools, and no other agent is:
 `task_dispatch` starts a **claude-code** agent unless the chief passes
 `kind: "gateway"` or the deployment does not enable claude-code: what you
 usually want from the chief is a Claude Code pod. That agent runs on an
-account from your Claude account pool and has no per-agent model and no
-repository; a task that names a repository needs `kind: "gateway"`. Its
-optional `instructions` (at most 1 KiB) open the agent's first message, fenced
-as relayed by the chief, before the task's text and muster's rules (which come
-last and win). When the chief relays your answer to one of its attention asks
-("start a Claude Code agent and have it open with skill X"), your own words
-belong there. The `task.chief_dispatch` audit row records the kind and the
-instructions. Guards: [plugins.md](plugins.md#task_dispatch-the-guards).
+account from your Claude account pool and has no per-agent model. It works in
+the task's repository (or the `repo` the chief passes, one of your connected
+repositories): its session starts inside a checkout, so the repository's
+`CLAUDE.md` and project skills load. Its optional `instructions` (at most
+1 KiB) open the agent's first message, fenced as relayed by the chief, before
+the task's text and muster's rules (which come last and win). They are
+accepted **only** as your own words: verbatim, your answer to an attention ask
+about that same task ("start a Claude Code agent and have it open with skill
+X"). Anything else is refused, and the chief is told to ask you with
+`task_route_attention`. The `task.chief_dispatch` audit row records the kind,
+the instructions and the ask they came from. Guards: [plugins.md](plugins.md#task_dispatch-the-guards).
 
 `tasks_list` and its siblings are offered to every agent. The chief's
 `tasks_list` covers your whole board, where a worker's covers only its own

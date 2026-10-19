@@ -121,8 +121,16 @@ func fakeClaude() int {
 		}
 		sid, source = resumeID, "resume"
 	}
-	appendFile(filepath.Join(cfg, "fake-argv.log"), fmt.Sprintf("sid=%s source=%s model=%s lane=%s args=%q\n",
-		sid, source, model, os.Getenv("CCD_LANE"), os.Args[1:]))
+	// The project the session opened: its working directory and the project
+	// skills there (<cwd>/.claude/skills/<name>/SKILL.md), which is where the
+	// real CLI documents it discovers them. ⚠ The fake LISTS them; whether the
+	// real CLI loads them is not something this fake can show.
+	skills, _ := filepath.Glob(filepath.Join(cwd, ".claude", "skills", "*", "SKILL.md"))
+	for i, sk := range skills {
+		skills[i] = filepath.Base(filepath.Dir(sk))
+	}
+	appendFile(filepath.Join(cfg, "fake-argv.log"), fmt.Sprintf("sid=%s source=%s model=%s lane=%s args=%q cwd=%s skills=%s\n",
+		sid, source, model, os.Getenv("CCD_LANE"), os.Args[1:], cwd, strings.Join(skills, ",")))
 	if resume {
 		newest, newestAt := "", time.Time{}
 		entries, _ := os.ReadDir(projDir)

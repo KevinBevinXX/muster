@@ -345,6 +345,12 @@ func (fakeGitHubConn) Get(context.Context) (github.Connection, bool, error) {
 // (restored after the test) and wires a connection.
 func (f *taskRouteFixture) withConnectedRepos(t *testing.T, repos ...string) {
 	t.Helper()
+	connectRepos(t, f.srv, repos...)
+}
+
+// connectRepos wires s with a GitHub connection whose account lists repos.
+func connectRepos(t *testing.T, s *Server, repos ...string) {
+	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/user/repos" || r.URL.Query().Get("page") != "1" {
 			_, _ = w.Write([]byte(`[]`))
@@ -359,7 +365,7 @@ func (f *taskRouteFixture) withConnectedRepos(t *testing.T, repos ...string) {
 	t.Cleanup(srv.Close)
 	github.UseAPIBaseURL(srv.URL)
 	t.Cleanup(func() { github.UseAPIBaseURL("https://api.github.com") })
-	f.srv.ext.GitHub = fakeGitHubConn{}
+	s.ext.GitHub = fakeGitHubConn{}
 }
 
 // TestTaskDispatchTakesOnlyAConnectedRepo: a task with no repository can be
