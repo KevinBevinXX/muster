@@ -75,6 +75,11 @@ type Store interface {
 	// chief's session claim, settles them (RecoverDeliveries) and reports these ids
 	// before it deletes.
 	DeliveringTo(ctx context.Context, agentID int64) ([]int64, error)
+	// Retryable is the principal's unconfirmed messages that may be retried
+	// (retry.go), newest first; Requeue puts one back in the queue, or refuses
+	// with ErrNotRetryable saying why.
+	Retryable(ctx context.Context, limit int) ([]Message, error)
+	Requeue(ctx context.Context, id int64) (Message, error)
 	// ReserveGatedTask spends one unit of an agent's gated-task budget (gated.go),
 	// or returns ErrGatedTaskCap.
 	ReserveGatedTask(ctx context.Context, agentID int64, messageID *int64) error

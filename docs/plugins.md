@@ -397,7 +397,7 @@ A delivery ends in one of three states:
 
 - **delivered**: the chief's turn completed.
 - **unconfirmed**: the send failed after the text may have reached the chief. It
-  is never sent again. A tool turn that fails on any request after its first
+  is never sent again on its own; you can [retry it](#retrying-an-unconfirmed-message). A tool turn that fails on any request after its first
   ends here too, because the runtime had already answered and the chief's tools
   had already run.
 - **pending**: nothing was sent (you have no chief, it is not running, or it was
@@ -411,6 +411,31 @@ delivering, and is not sent again either.
 
 Each settled delivery writes a `plugin.delivered` row to the audit log. A
 delivering message settled after a stop is recorded with `"recovered": true`.
+
+### Retrying an unconfirmed message
+
+A turn cut off by a rollout or a runtime error leaves its message
+**unconfirmed**, and muster does not send it again by itself, because your chief
+may already have acted on it. You can decide otherwise:
+
+- On `/plugins`, **Not confirmed by your chief** lists those messages, each with a
+  **Retry** button (a signed-in, same-origin form, like Revoke and Reject; no
+  fresh sign-in, since nothing leaves muster — any reply your chief drafts still
+  waits for your approval).
+- From a session: `muster plugins retry <message-id>`
+  (`POST /api/plugins/messages/{id}/retry`, the hook tier: your personal token,
+  or the shared hook token on an armed server).
+
+A retry puts the message back in the queue and hands it to your **current** chief
+the way every message is delivered: the session claim, a turn with the chief's
+tools, the attempt counted. With no agent runtime wired, it stays queued. It is
+recorded as `plugin.retried` in the audit log.
+
+A retry is refused (409, nothing changed) when the message is queued (including
+a second click), being delivered or delivered; when your chief already drafted a
+reply to it that is pending, approved, sent or itself unconfirmed; when it was
+routed to a session that is still routed, answered or relayed; and when you have
+no chief. Another user's message answers 404.
 
 The data-scope sentence is **advisory**. The chief's own memory credential can
 write anywhere; only the preface asks it to keep what it records from plugin

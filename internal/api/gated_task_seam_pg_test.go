@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
@@ -71,6 +73,7 @@ type pluginPlane struct {
 	chief   agents.Agent
 	plugin  plugins.Plugin
 	ownerID int64
+	pool    *pgxpool.Pool
 }
 
 func newPluginPlane(t *testing.T, rt http.Handler) *pluginPlane {
@@ -116,7 +119,7 @@ func newPluginPlane(t *testing.T, rt http.Handler) *pluginPlane {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &pluginPlane{srv: srv, ps: ps, as: as, ns: ns, owner: owner, chief: chief, plugin: p, ownerID: uid}
+	return &pluginPlane{srv: srv, ps: ps, as: as, ns: ns, owner: owner, chief: chief, plugin: p, ownerID: uid, pool: pool}
 }
 
 // TestTheChiefFilesAGatedTaskOnTheTurnThatDeliversTheMessage is finding 6 of

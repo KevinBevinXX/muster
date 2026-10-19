@@ -4,6 +4,7 @@
 //
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix chief <owner-id> <name> <token>   → prints the agent id
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix delivering <message-id> <agent-id>
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix unconfirmed <message-id>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix lapse <draft-id>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix cleanup <owner-id> <name>
 //
@@ -20,6 +21,8 @@
 //	    gateway — is the Go seam tests' (plugins_seam_pg_test.go,
 //	    reply_draft_seam_pg_test.go), which run a fake runtime the browser suite
 //	    has no place for.
+//	  - unconfirmed: settles a message being delivered as unconfirmed — what a
+//	    delivery turn cut off mid-way leaves, which the page's Retry is for.
 //	  - lapse: moves a claimed draft's claim and lease ten minutes back, so its
 //	    two-minute lease has lapsed without waiting for it.
 //	  - cleanup: removes the chief and the owner's plugins (their messages and
@@ -55,7 +58,7 @@ func run(args []string) error {
 		return err
 	}
 	if len(args) == 0 {
-		return fmt.Errorf("usage: pluginfix chief|agent|delivering|lapse|cleanup …")
+		return fmt.Errorf("usage: pluginfix chief|agent|delivering|unconfirmed|lapse|cleanup …")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -122,6 +125,21 @@ func run(args []string) error {
 		}
 		if tag.RowsAffected() != 1 {
 			return fmt.Errorf("message %d is not queued", msg)
+		}
+	case "unconfirmed":
+		// Settles a message being delivered as `unconfirmed`, as a delivery turn
+		// cut off mid-way does (internal/plugins RecordDelivery).
+		msg, err := num(1)
+		if err != nil {
+			return err
+		}
+		tag, err := conn.Exec(ctx, `UPDATE plugin_messages SET status = 'unconfirmed', delivered_at = now()
+			WHERE id = $1 AND status = 'delivering'`, msg)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return fmt.Errorf("message %d is not being delivered", msg)
 		}
 	case "lapse":
 		draft, err := num(1)
