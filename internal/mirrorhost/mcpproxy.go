@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -26,10 +28,11 @@ import (
 //
 // A Claude Code session holds no muster credential. This host does — its
 // mirror token — so muster-mirror serves MCP on a LOOPBACK address and
-// forwards each request to muster with the token and the CALLING session's
-// Claude session id. muster believes that id only if this host lists a window
-// running it now (internal/api's mirrorSessionOf), so the most a caller here
-// can do is act as one of this host's own sessions.
+// forwards each request to muster with the token — and, on a tools/call, the
+// CALLING session's Claude session id (ServeHTTP: only a call is bound to a
+// session). muster believes that id only if this host lists a window running
+// it now (internal/api's mirrorSessionOf), so the most a caller here can do
+// is act as one of this host's own sessions.
 //
 // 🔴 LOOPBACK ONLY, AND A SECRET EVEN THERE. ListenMCP refuses any address
 // that is not a literal loopback IP, so nothing off this machine reaches it.
@@ -72,6 +75,10 @@ type MCPProxy struct {
 	// Socket is this host's tmux server: a caller's $TMUX must name it. nil
 	// (a backend that is not tmux) skips the check.
 	Socket ServerSocketer
+	// Refresh sends muster this host's listing NOW (Client.RefreshNow), so a
+	// session that started since the last refresh is known there before its
+	// call arrives. nil skips it.
+	Refresh func(context.Context) error
 	// Client sends the forwarded request; nil is a client with no overall
 	// timeout (attention_wait long-polls for up to ten minutes).
 	Client *http.Client
@@ -122,17 +129,8 @@ func (p *MCPProxy) session(ctx context.Context, r *http.Request) (string, error)
 	if p.Windows == nil {
 		return "", errors.New("this host cannot resolve a tmux pane")
 	}
-	if p.Socket != nil {
-		want, err := p.Socket.ServerSocket(ctx)
-		if err != nil {
-			return "", fmt.Errorf("read this host's tmux server: %w", err)
-		}
-		// $TMUX is "<socket path>,<server pid>,<session index>".
-		got, _, _ := strings.Cut(strings.TrimSpace(r.Header.Get(MCPTmuxHeader)), ",")
-		if got == "" || got != want {
-			return "", fmt.Errorf("the caller is not in the tmux server this host mirrors (send %s: ${TMUX:-})", MCPTmuxHeader)
-		}
-	}
+	// A FRESH read, not the last refresh's: a session that started since then
+	// is found now.
 	ws, err := p.Windows.Windows(ctx)
 	if err != nil {
 		return "", fmt.Errorf("list windows: %w", err)
@@ -159,7 +157,56 @@ func (p *MCPProxy) session(ctx context.Context, r *http.Request) (string, error)
 			}
 		}
 	}
-	return "", fmt.Errorf("no Claude Code session runs in pane %s", pane)
+	return "", fmt.Errorf("no Claude Code session runs in pane %s (one that has not sent its first message has no transcript yet)", describePane(pane))
+}
+
+// describePane is a pane header's value as received — quoted, so an odd byte
+// shows — and, for a tmux pane id, its number spelled without the "%".
+//
+// 🔴 WHY THE NUMBER TOO: Claude Code percent-decodes an MCP server's error text
+// when it shows it (measured on 2.1.289: "%110" is shown as "\x11" + "0", which
+// reads "pane 0"), so a message naming only "%110" is unreadable there.
+func describePane(pane string) string {
+	q := strconv.Quote(pane)
+	if n, ok := strings.CutPrefix(pane, "%"); ok && n != "" && strings.Trim(n, "0123456789") == "" {
+		return q + " (tmux pane number " + n + ")"
+	}
+	return q
+}
+
+// checkServer refuses a caller whose $TMUX names another tmux server than the
+// one this host mirrors (pane ids are per server: %3 there is another pane).
+// It needs no session, so it applies to every request.
+func (p *MCPProxy) checkServer(ctx context.Context, r *http.Request) error {
+	if p.Socket == nil {
+		return nil
+	}
+	want, err := p.Socket.ServerSocket(ctx)
+	if err != nil {
+		return fmt.Errorf("read this host's tmux server: %w", err)
+	}
+	// $TMUX is "<socket path>,<server pid>,<session index>".
+	got, _, _ := strings.Cut(strings.TrimSpace(r.Header.Get(MCPTmuxHeader)), ",")
+	if got == "" || got != want {
+		return fmt.Errorf("the caller is not in the tmux server this host mirrors (send %s: ${TMUX:-})", MCPTmuxHeader)
+	}
+	return nil
+}
+
+// mcpRefreshWait bounds the listing push before a forwarded call.
+const mcpRefreshWait = 3 * time.Second
+
+// mcpToolError writes a tools/call's refusal as the call's RESULT — a tool
+// error the model reads — not as a failed request, which a client counts
+// against the connection.
+func mcpToolError(w http.ResponseWriter, id json.RawMessage, msg string) {
+	text, _ := json.Marshal(map[string]string{"error": msg})
+	if len(id) == 0 {
+		id = json.RawMessage("null")
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": id,
+		"result": map[string]any{"content": []map[string]any{{"type": "text", "text": string(text)}}, "isError": true}})
 }
 
 func derefClaude(c *ClaudePane) ClaudePane {
@@ -189,8 +236,7 @@ func (p *MCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	sid, err := p.session(r.Context(), r)
-	if err != nil {
+	if err := p.checkServer(r.Context(), r); err != nil {
 		mcpRefuse(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -204,13 +250,41 @@ func (p *MCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		mcpRefuse(w, http.StatusRequestEntityTooLarge, "the request is too large")
 		return
 	}
+	// 🔴 ONLY A tools/call IS BOUND TO A SESSION. initialize, tools/list, ping
+	// and notifications say nothing session-specific, and Claude Code sends
+	// them at startup — before its new session has a transcript, so before any
+	// listing can show it — and never retries a connection that failed then.
+	// They are forwarded with no session; muster binds the call. Anything that
+	// does not parse as one request is forwarded unbound too: muster refuses
+	// it, and an unbound call is refused there.
+	var head struct {
+		Method string          `json:"method"`
+		ID     json.RawMessage `json:"id"`
+	}
+	_ = json.Unmarshal(body, &head)
+	sid := ""
+	if head.Method == "tools/call" {
+		if sid, err = p.session(r.Context(), r); err != nil {
+			mcpToolError(w, head.ID, err.Error())
+			return
+		}
+		if p.Refresh != nil {
+			rctx, cancel := context.WithTimeout(r.Context(), mcpRefreshWait)
+			if err := p.Refresh(rctx); err != nil {
+				p.logf("muster-mirror: mcp: refresh before a call: %v", err)
+			}
+			cancel()
+		}
+	}
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, strings.NewReader(string(body)))
 	if err != nil {
 		mcpRefuse(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	req.Header.Set("Authorization", "Bearer "+p.Token)
-	req.Header.Set(MCPSessionHeader, sid)
+	if sid != "" {
+		req.Header.Set(MCPSessionHeader, sid)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	client := p.Client
