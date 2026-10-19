@@ -172,10 +172,18 @@ func (s *server) startedEver() bool {
 // it refused EVERY turn to a running, ready lane, 503 not_ready, for as long as
 // the primary's CLI was restarting (its backoff plus its boot; until the pod
 // restarted if it crash-looped), and muster's interactive chat does not re-send
-// a not_ready: the user's message was lost. The gate exists only so the
-// primary's first start (possibly `--continue`) cannot see a lane's transcript,
-// which a primary that has started once can no longer be exposed to. A lane's
-// OWN restart is still refused until ITS new SessionStart (lane.waitStarted).
+// a not_ready: the user's message was lost. A lane's OWN restart is still
+// refused until ITS new SessionStart (lane.waitStarted).
+//
+// ⚠ WHAT THE GATE DOES NOT DO. It was added so the primary's first start, then
+// possibly a bare `--continue`, could not see a lane's transcript. It never
+// protected a primary that RESTARTS: with its id unrecorded (the pid lookup
+// timed out, or the ancestry check missed) and a lane running that had not yet
+// written a transcript, the respawn's `--continue` could resolve — as the CLI
+// booted — to a lane's first transcript written in that window
+// (TestThePrimaryRespawnDoesNotContinueALaneThatWritesDuringItsBoot). That is
+// closed in supervisor.argv, which no longer uses `--continue` at all; the gate
+// does not close it.
 func (s *server) runLanes(l *lanes) {
 	l.primaryStarted = s.startedEver
 	s.lanes = l

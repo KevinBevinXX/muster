@@ -108,7 +108,8 @@ func TestThePrimaryRecordNeverNamesALane(t *testing.T) {
 // TestThePrimaryFallbackNeverResumesALane: with no record, a directory holding a
 // lane transcript NEWER than the primary's resumes the primary's by id (not
 // --continue, which would take the newest), and one holding only lane
-// transcripts starts fresh; with no lane transcript the old --continue stands.
+// transcripts starts fresh; with no lane transcript it is still by id — the
+// NEWEST non-lane one, never a bare --continue.
 func TestThePrimaryFallbackNeverResumesALane(t *testing.T) {
 	cfg, ws := t.TempDir(), "/data/workspace"
 	dir := projectDir(cfg, ws)
@@ -139,8 +140,22 @@ func TestThePrimaryFallbackNeverResumesALane(t *testing.T) {
 	if err := os.Remove(filepath.Join(dir, lane+".jsonl")); err != nil {
 		t.Fatal(err)
 	}
-	if argv, _ := sup.argv(); strings.Join(argv, " ") != "claude --continue" {
-		t.Errorf("no lane transcript: %v; want the unchanged --continue", argv)
+	if argv, _ := sup.argv(); strings.Join(argv, " ") != "claude --resume "+primary {
+		t.Errorf("no lane transcript: %v; want --resume %s", argv, primary)
+	}
+	// Two non-lane transcripts: the newer is resumed, whatever the names' order.
+	older := "ffffffff-0b0a-4908-8706-050403020100"
+	write(older, now.Add(-2*time.Hour))
+	if argv, _ := sup.argv(); strings.Join(argv, " ") != "claude --resume "+primary {
+		t.Errorf("an older non-lane transcript beside the primary's: %v; want --resume %s (the newest)", argv, primary)
+	}
+	// A record beats "the newest": the recorded conversation is resumed though
+	// another non-lane one is newer.
+	if err := recordPrimary(cfg, older); err != nil {
+		t.Fatal(err)
+	}
+	if argv, _ := sup.argv(); strings.Join(argv, " ") != "claude --resume "+older {
+		t.Errorf("recorded %s, newer %s beside it: %v; want --resume %s (the record)", older, primary, argv, older)
 	}
 }
 

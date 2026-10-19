@@ -445,7 +445,7 @@ func waitFile(path string, d time.Duration) bool {
 //   - health is 200 with no credential proof (there is no probe) and reports a
 //     FRESH supervised start;
 //   - a turn round-trips through muster's client;
-//   - 🔴 `/exit` typed in the pane restarts the CLI IN THE POD with --continue:
+//   - 🔴 `/exit` typed in the pane restarts the CLI IN THE POD, resuming it:
 //     the same session id, ONE transcript file holding the prompts from before
 //     and after, and a turn works again.
 func TestTmuxTheServeBinarySupervisesTheSessionAndResumesAfterExit(t *testing.T) {

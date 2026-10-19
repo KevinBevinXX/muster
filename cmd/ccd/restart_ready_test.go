@@ -23,20 +23,26 @@ type killablePane struct {
 	gate       chan struct{} // Respawn returns only once this is closed
 	respawning chan struct{} // closed when Respawn is first entered
 	once       sync.Once
+	// argvs is every command line Start and Respawn were given, in order.
+	argvs [][]string
 }
 
 func newKillablePane() *killablePane {
 	return &killablePane{gate: make(chan struct{}), respawning: make(chan struct{})}
 }
 
-func (p *killablePane) Start(context.Context, string, []string) (paneRef, error) {
+func (p *killablePane) Start(_ context.Context, _ string, argv []string) (paneRef, error) {
 	p.mu.Lock()
+	p.argvs = append(p.argvs, argv)
 	p.starts++
 	p.mu.Unlock()
 	return fakeRef, nil
 }
 
-func (p *killablePane) Respawn(ctx context.Context, _ paneRef, _ string, _ []string) error {
+func (p *killablePane) Respawn(ctx context.Context, _ paneRef, _ string, argv []string) error {
+	p.mu.Lock()
+	p.argvs = append(p.argvs, argv)
+	p.mu.Unlock()
 	p.once.Do(func() { close(p.respawning) })
 	select {
 	case <-p.gate:

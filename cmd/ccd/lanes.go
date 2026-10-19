@@ -40,16 +40,19 @@ import (
 //     CCD_LANE, `ccd hook` sends it as ?lane=, and the hook listener hands the
 //     event to that lane. A hook with no lane is the primary's.
 //
-// 🔴 THE PRIMARY RESUMES ITS OWN CONVERSATION BY ID, NOT "THE NEWEST". Lanes
+// 🔴 THE PRIMARY RESUMES ITS OWN CONVERSATION BY ID, NEVER "THE NEWEST". Lanes
 // write their transcripts in the same project directory (same workspace), so
-// `claude --continue` — "the most recent conversation in this directory" — could
-// resume a LANE's conversation in the primary. So the primary's session id is
-// recorded when its SessionStart arrives (primaryRecordFile) — only when the
-// primary's own process fired it, never a `claude` running inside it
-// (proctree.go) — and every later
-// primary start is `--resume <that id>`; and no lane starts until the primary
-// has started in this process, so on the first start after an upgrade (no
-// record yet) the only transcripts `--continue` can see are the primary's own.
+// `claude --continue` — "the most recent conversation in this directory", read
+// as the CLI boots — could resume a LANE's conversation in the primary. So the
+// primary's session id is recorded when its SessionStart arrives
+// (primaryRecordFile) — only when the primary's own process fired it, never a
+// `claude` running inside it (proctree.go) — and every later primary start is
+// `--resume <that id>`. With no usable record it is `--resume` of the newest
+// transcript that is not a lane's (laneUUIDMarker), chosen by ccd before the
+// start, so a lane transcript written while the CLI boots cannot be taken; it
+// is never a bare `--continue` (supervisor.argv). No lane starts until the
+// primary has started in this process (lanes.acquire); see server.runLanes on
+// what that gate still does.
 //
 // 🔴 MEMORY IS WHY THERE IS A CAP. A Claude Code CLI is a node process: measured
 // at about 250MiB (median) to 550MiB (largest) on workstation CLIs, against the
@@ -178,28 +181,24 @@ func recordedPrimary(configDir, workspace string) string {
 }
 
 // newestPrimaryTranscript returns the id of the newest transcript in the
-// workspace's project directory that is not a lane's, and whether any lane
-// transcript is there at all.
-func newestPrimaryTranscript(configDir, workspace string) (newest string, lanesSeen bool) {
+// workspace's project directory that is not a lane's ("" with none).
+func newestPrimaryTranscript(configDir, workspace string) string {
 	entries, err := os.ReadDir(projectDir(configDir, workspace))
 	if err != nil {
-		return "", false
+		return ""
 	}
+	var newest string
 	var at time.Time
 	for _, e := range entries {
 		name, ok := strings.CutSuffix(e.Name(), ".jsonl")
-		if !ok || !e.Type().IsRegular() {
-			continue
-		}
-		if strings.HasPrefix(name, laneUUIDMarker) {
-			lanesSeen = true
+		if !ok || !e.Type().IsRegular() || strings.HasPrefix(name, laneUUIDMarker) {
 			continue
 		}
 		if fi, err := e.Info(); err == nil && sessionIDPattern.MatchString(name) && (newest == "" || fi.ModTime().After(at)) {
 			newest, at = name, fi.ModTime()
 		}
 	}
-	return newest, lanesSeen
+	return newest
 }
 
 // laneTerminal is what a lane needs of tmux beyond what its supervisor does:

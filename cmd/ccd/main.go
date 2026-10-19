@@ -44,7 +44,7 @@
 //	                       CLI starts, and start the CLI only once it exists (checkout.go)
 //	CCD_REPO_BRANCH        the branch to clone (default: the remote's default)
 //	CCD_SUPERVISE          "1": once listening, create the tmux session and keep the
-//	                       CLI running in it — `claude --continue` when a transcript
+//	                       CLI running in it — `claude --resume <id>` when a transcript
 //	                       exists, `claude` on a fresh volume (supervise.go). Without
 //	                       it ccd knows no pane id, so every turn is not_ready.
 //	CCD_CLAUDE_BIN         the CLI binary         (default claude)

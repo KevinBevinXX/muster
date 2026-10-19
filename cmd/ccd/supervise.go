@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -17,11 +15,12 @@ import (
 // an exit (an operator's /exit, a crash) is followed by a restart in the same
 // pane, resuming the same conversation, with no pod restart.
 //
-// 🔴 RESUME, NEVER FORK. Every start is `claude --continue` when the config dir
-// already holds a transcript for this workspace, and plain `claude` only when it
-// holds none (a genuinely fresh volume). The decision is made by LOOKING at the
-// transcripts (hasPriorSession), never by running `--continue` and reading its exit
-// code: measured on the pinned CLI, `claude --continue` with nothing to continue
+// 🔴 RESUME, NEVER FORK. Every start is `claude --resume <id>` when the config dir
+// already holds a transcript for this workspace (argv: the primary's recorded
+// session, else its newest), and plain `claude` only when it holds none (a
+// genuinely fresh volume). The decision is made by LOOKING at the transcripts,
+// never by running a resume and reading its exit code: measured on the pinned
+// CLI, `claude --continue` with nothing to continue
 // prints "No conversation found to continue" and exits 1 — but so does any other
 // failure, and `--continue || claude` turns every one of them into a NEW
 // conversation that silently abandons the old one.
@@ -41,15 +40,15 @@ import (
 // `cli: terminal_lost`, refuses input, and /healthz fails. It does NOT start a
 // new CLI in a new session of its own, because:
 //   - it can no longer see the old CLI process: it is nobody's pane, so no tmux
-//     will report its exit, and a second `claude --continue` started beside a CLI
+//     will report its exit, and a second `claude --resume` started beside a CLI
 //     that survived would be two writers of one conversation — a fork in all but
 //     name. A container restart ends every process in the container, so the
-//     `--continue` that follows is the only one;
+//     resume that follows is the only one;
 //   - a session named `cc` that ccd did not create belongs to whoever created it,
 //     and ccd would have to kill it or work around it to start its own.
 //
 // The pod's next start resumes the conversation exactly as an in-pod restart
-// would: argv() chooses `--continue` whenever a transcript exists. Like
+// would: argv() resumes whenever a transcript exists. Like
 // crash_loop it latches, and without a liveness probe nothing restarts it.
 //
 // 🔴 EVERY START IS PRECEDED BY THE SEED'S STRIP of settingsForbidden (seed.go
@@ -188,48 +187,35 @@ func (s *supervisor) state() cliState {
 // replaced too, not only '/').
 var nonAlnum = regexp.MustCompile(`[^A-Za-z0-9]`)
 
-// hasPriorSession reports whether the config dir holds a transcript for the
-// workspace — i.e. whether `claude --continue` has a conversation to resume.
-// Measured on the pinned CLI: no transcript exists after startup alone; the first
-// prompt writes one, and so does a typed /exit (and `--continue` then resumes
-// that session). So a session that was started and never touched is, correctly,
-// still fresh.
-func hasPriorSession(configDir, workspace string) bool {
-	dir := filepath.Join(configDir, "projects", nonAlnum.ReplaceAllString(workspace, "-"))
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return false
-	}
-	for _, e := range entries {
-		if e.Type().IsRegular() && strings.HasSuffix(e.Name(), ".jsonl") {
-			return true
-		}
-	}
-	return false
-}
-
+// argv is the primary's command line for its next start, chosen by LOOKING at
+// the transcripts (measured on the pinned CLI: no transcript exists after
+// startup alone; the first prompt writes one, and so does a typed /exit — so a
+// session that was started and never touched is, correctly, still fresh):
+//
+//   - the recorded primary session (primaryRecordFile), by id, while its
+//     transcript exists;
+//   - else the newest transcript that is NOT a lane's (laneUUIDMarker), by id;
+//   - else a fresh start.
+//
+// 🔴 NEVER A BARE `--continue`. Lanes write their transcripts in the same
+// project directory, and `--continue` is "the newest conversation in this
+// directory" as the CLI reads it WHEN IT BOOTS — after this choice is made. A
+// lane that writes its FIRST transcript in that window (a lane may be running,
+// with no transcript yet, while the primary restarts) is then the newest, and
+// the primary resumes the lane's conversation. No check made here, of the disk
+// or of the running lanes, can see a file written after it; an id chosen here
+// cannot move. (TestThePrimaryRespawnDoesNotContinueALaneThatWritesDuringItsBoot.)
+// Resuming by id is what the primary has done since #145 once its id is
+// recorded; this removes the unrecorded case's `--continue`.
 func (s *supervisor) argv() ([]string, string) {
 	if s.argvFn != nil {
 		return s.argvFn()
 	}
-	// The primary resumes ITS conversation by id once one is recorded: lanes
-	// write transcripts in the same directory, so "the newest" (--continue)
-	// could be a lane's (lanes.go).
 	if id := recordedPrimary(s.configDir, s.workspace); id != "" {
 		return []string{s.bin, "--resume", id}, modeContinue
 	}
-	// No record (the first start after an upgrade, or a lost file): while no
-	// lane transcript exists, --continue can only find the primary's own, which
-	// is exactly what it always did. Once one does, the newest transcript that
-	// is NOT a lane's is resumed by id — or, if there is none, a fresh start.
-	if newest, lanesSeen := newestPrimaryTranscript(s.configDir, s.workspace); lanesSeen {
-		if newest == "" {
-			return []string{s.bin}, modeFresh
-		}
+	if newest := newestPrimaryTranscript(s.configDir, s.workspace); newest != "" {
 		return []string{s.bin, "--resume", newest}, modeContinue
-	}
-	if hasPriorSession(s.configDir, s.workspace) {
-		return []string{s.bin, "--continue"}, modeContinue
 	}
 	return []string{s.bin}, modeFresh
 }

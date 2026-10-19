@@ -101,8 +101,9 @@ func writeTranscript(t *testing.T, cfg, projDir string) {
 	}
 }
 
-// 🔴 FRESH vs CONTINUE IS DECIDED BY LOOKING, AND ONLY AT THIS WORKSPACE'S
-// PROJECT DIRECTORY. The encoded names are written out literally (not derived
+// 🔴 FRESH vs RESUME IS DECIDED BY LOOKING, AND ONLY AT THIS WORKSPACE'S
+// PROJECT DIRECTORY. A resume names the conversation by id, never a bare
+// --continue (supervisor.argv). The encoded names are written out literally (not derived
 // from nonAlnum) so a wrong encoding cannot agree with itself.
 func TestTheFirstStartContinuesOnlyWhenThisWorkspaceHasATranscript(t *testing.T) {
 	cases := []struct {
@@ -111,7 +112,7 @@ func TestTheFirstStartContinuesOnlyWhenThisWorkspaceHasATranscript(t *testing.T)
 		want []string
 	}{
 		{"fresh volume", func(*testing.T, string) {}, []string{"claude"}},
-		{"transcript for this workspace", func(t *testing.T, cfg string) { writeTranscript(t, cfg, "-data-my-ws-v2") }, []string{"claude", "--continue"}},
+		{"transcript for this workspace", func(t *testing.T, cfg string) { writeTranscript(t, cfg, "-data-my-ws-v2") }, []string{"claude", "--resume", "11111111-2222-4333-8444-555555555555"}},
 		{"transcript for ANOTHER workspace only", func(t *testing.T, cfg string) { writeTranscript(t, cfg, "-data-other") }, []string{"claude"}},
 		{"project dir with no transcript", func(t *testing.T, cfg string) {
 			if err := os.MkdirAll(filepath.Join(cfg, "projects", "-data-my-ws-v2"), 0o700); err != nil {
@@ -151,7 +152,8 @@ func TestARestartResumesTheConversationTheFirstRunCreated(t *testing.T) {
 	if err := s.run(ctx); err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{{"claude"}, {"claude", "--continue"}, {"claude", "--continue"}}
+	const id = "11111111-2222-4333-8444-555555555555"
+	want := [][]string{{"claude"}, {"claude", "--resume", id}, {"claude", "--resume", id}}
 	if !reflect.DeepEqual(pane.starts, want) {
 		t.Fatalf("starts %q, want %q", pane.starts, want)
 	}

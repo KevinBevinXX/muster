@@ -132,13 +132,7 @@ func fakeClaude() int {
 	appendFile(filepath.Join(cfg, "fake-argv.log"), fmt.Sprintf("sid=%s source=%s model=%s lane=%s args=%q cwd=%s skills=%s\n",
 		sid, source, model, os.Getenv("CCD_LANE"), os.Args[1:], cwd, strings.Join(skills, ",")))
 	if resume {
-		newest, newestAt := "", time.Time{}
-		entries, _ := os.ReadDir(projDir)
-		for _, e := range entries {
-			if fi, err := e.Info(); err == nil && strings.HasSuffix(e.Name(), ".jsonl") && fi.ModTime().After(newestAt) {
-				newest, newestAt = strings.TrimSuffix(e.Name(), ".jsonl"), fi.ModTime()
-			}
-		}
+		newest := fakeContinueTarget(projDir)
 		if newest == "" {
 			fmt.Print("No conversation found to continue\r\n")
 			return 1
@@ -304,6 +298,21 @@ func fakeClaude() int {
 			break
 		}
 	}
+}
+
+// fakeContinueTarget is the conversation the fake's `--continue` resumes: the
+// newest transcript in projDir, read when the CLI starts — so a transcript
+// written between ccd choosing the command line and the CLI reading the
+// directory is the one it takes ("" with none).
+func fakeContinueTarget(projDir string) string {
+	newest, newestAt := "", time.Time{}
+	entries, _ := os.ReadDir(projDir)
+	for _, e := range entries {
+		if fi, err := e.Info(); err == nil && strings.HasSuffix(e.Name(), ".jsonl") && fi.ModTime().After(newestAt) {
+			newest, newestAt = strings.TrimSuffix(e.Name(), ".jsonl"), fi.ModTime()
+		}
+	}
+	return newest
 }
 
 func appendFile(path, s string) {
