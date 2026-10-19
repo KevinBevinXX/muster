@@ -444,6 +444,13 @@ jobs:
           docker run --rm --user 0 -v cc-smoke-legacy:/data:nocopy claude-code-agent:ci \
             sh -euc 'chown 0:1000 /data && chmod 2777 /data && install -d -o 0 -g 1000 -m 2755 /data/workspace'
           docker run --rm -v cc-smoke-legacy:/data:nocopy -e CC_SMOKE_VOLUME=legacy claude-code-agent:ci cc-smoke
+          # The no-repository agent on that volume, which now holds the real
+          # CLI's transcript from the run above: put the root-owned, empty
+          # /data/workspace back, and the first start must replace it AND
+          # resume that transcript.
+          docker run --rm --user 0 -v cc-smoke-legacy:/data:nocopy claude-code-agent:ci \
+            sh -euc 'rm -rf /data/workspace && install -d -o 0 -g 1000 -m 2755 /data/workspace'
+          docker run --rm -v cc-smoke-legacy:/data:nocopy -e CC_SMOKE_VOLUME=legacy-resume claude-code-agent:ci cc-smoke
 
   # Local: make e2e (after `npm ci && npx playwright install chromium` in e2e/,
   # with MUSTER_E2E_DATABASE_URL naming a database ending in _e2e). On NixOS set

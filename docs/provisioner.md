@@ -83,6 +83,17 @@ always be in it.
 
   See [limits.md](limits.md) for what that does and does not stop.
 
+  **A workspace ccd cannot write in.** On a volume first used by an image up to
+  0.49.0, `/data/workspace` may be root-owned 0755. If it is **empty**, `ccd
+  seed` replaces it with one owned by uid 1000 and logs `ccd seed: replaced …`.
+  If it is **not empty** or is a **symlink**, nothing is removed: the pod
+  crash-loops with `ccd seed: <dir> is a directory this process (uid 1000) cannot
+  create files in …` (or `… is a symlink …`). `kubectl exec` into the agent is
+  impossible because its pod never starts. Instead, run a debug pod as root that
+  mounts the agent's PVC (`<agent>-workspace`) at `/data` and run `chown 1000
+  /data/workspace` there (or `chmod u+w` if uid 1000 already owns it). Then delete
+  the agent's pod so it restarts.
+
   **Permission prompts.** These go to `ccd approve`. If
   `MUSTER_APPROVAL_GATE_URL` is configured, it relays the prompt to the
   permission router; otherwise the prompt falls back to the agent's own terminal.

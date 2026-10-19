@@ -103,7 +103,9 @@ wait_for() {
 #            runtime creates a missing WORKDIR as ROOT, after mounting volumes);
 #   legacy — a volume a claude-code-agent image up to 0.49.0 already started on:
 #            /data/workspace exists, root-owned, mode 0755 — `ccd seed` must
-#            replace it (seed.go ensureWritableDir) and say so.
+#            replace it (seed.go ensureWritableDir) and say so;
+#   legacy-resume — the same, holding a prior transcript, and no repository:
+#            only the resume after the replacement is checked (below), then exit.
 awk '$5 == "/data" { found = 1 } END { exit !found }' /proc/self/mountinfo \
   || fail "/data is not a mount point: run with a volume there (see images/claude-code-agent/Dockerfile's header)"
 case "${CC_SMOKE_VOLUME:-}" in
@@ -114,9 +116,55 @@ case "${CC_SMOKE_VOLUME:-}" in
     [[ "$(stat -c '%u %a' /data/workspace 2>/dev/null)" == "0 2755" && ! -w /data/workspace ]] \
       || fail "legacy volume: /data/workspace is '$(stat -c '%u %a' /data/workspace 2>&1)', want root-owned 2755 and unwritable"
     ;;
-  *) fail "CC_SMOKE_VOLUME must be fresh or legacy, not '${CC_SMOKE_VOLUME:-}'" ;;
+  legacy-resume)
+    [[ "$(stat -c '%u %a' /data/workspace 2>/dev/null)" == "0 2755" && ! -w /data/workspace ]] \
+      || fail "legacy-resume volume: /data/workspace is '$(stat -c '%u %a' /data/workspace 2>&1)', want root-owned 2755 and unwritable"
+    ;;
+  *) fail "CC_SMOKE_VOLUME must be fresh, legacy or legacy-resume, not '${CC_SMOKE_VOLUME:-}'" ;;
 esac
 echo "cc-smoke: $CC_SMOKE_VOLUME volume at /data: $(stat -c '%U:%G %a' /data)"
+
+# legacy-resume — an agent WITHOUT a repository on a legacy volume that already
+# holds a conversation: the root-owned, EMPTY /data/workspace an image up to
+# 0.49.0 ran the CLI in, and that CLI's transcript under
+# /data/claude/projects/-data-workspace/. CI makes it from the `legacy` run's own
+# volume (whose steps 1-5 left a real transcript from the real CLI) by putting
+# the root-owned /data/workspace back. `ccd seed` replaces the directory — same
+# path, so the same transcript key — and the CLI must RESUME that transcript,
+# not start fresh: the replacement must not cost the agent its conversation.
+if [[ "$CC_SMOKE_VOLUME" == legacy-resume ]]; then
+  tdir=/data/claude/projects/-data-workspace
+  shopt -s nullglob
+  before=("$tdir"/*.jsonl)
+  shopt -u nullglob
+  (( ${#before[@]} > 0 )) || fail "legacy-resume volume: no prior transcript in $tdir"
+  /usr/local/bin/cc-entrypoint >/tmp/cc-entrypoint.log 2>&1 &
+  ep=$!
+  wait_for '200 {*"session":"started"*'
+  [[ "$body" == *'"supervisor":{"cli":"running","cli_mode":"continue","cli_starts":1'* ]] \
+    || fail "the first start on a legacy volume holding a transcript did not resume it: $body"
+  grep -q 'ccd seed: replaced /data/workspace: it was an empty directory' /tmp/cc-entrypoint.log \
+    || fail "ccd did not say it replaced the root-owned /data/workspace: $(cat /tmp/cc-entrypoint.log)"
+  pid="$(tmux list-panes -t cc -F '#{pane_pid}')"
+  argv="$(tr '\0' ' ' <"/proc/$pid/cmdline")"
+  [[ "$(readlink "/proc/$pid/cwd")" == /data/workspace && -O /data/workspace && -w /data/workspace ]] \
+    || fail "the CLI (pid $pid) runs in $(readlink "/proc/$pid/cwd"), want the replaced /data/workspace owned and writable by uid 1000"
+  # The SAME transcript: --resume names one that existed before this start
+  # (ccd's primary record), or --continue (the newest, the only one here).
+  resumed=""
+  if [[ "$argv" =~ --resume\ ([^ ]+) ]]; then
+    resumed="${BASH_REMATCH[1]}"
+    [[ " ${before[*]} " == *"/$resumed.jsonl "* ]] \
+      || fail "the CLI resumed $resumed, which is not a transcript the volume held before: ${before[*]}"
+  elif [[ "$argv" != *' --continue'* ]]; then
+    fail "the CLI's argv neither resumes nor continues: $argv"
+  fi
+  echo "cc-smoke: legacy volume with a transcript: replaced the root-owned /data/workspace and resumed (${resumed:---continue}): $argv"
+  kill "$ep" 2>/dev/null || true
+  tmux kill-server 2>/dev/null || true
+  echo "cc-smoke: PASS"
+  exit 0
+fi
 
 # 0 (continued). A repository (CCD_REPO) — an agent's FIRST start, on that volume,
 # at the production paths: CCD_WORKSPACE=/data/workspace/<name> (agentspec

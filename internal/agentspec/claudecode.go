@@ -231,8 +231,9 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		// runtime creates a missing working directory as ROOT after mounting the
 		// volume, which on a fresh volume made /data/workspace root-owned 0755 and
 		// crash-looped every agent with a repository (0.49.0). The entrypoint's
-		// `ccd seed` creates the workspace as uid 1000 and cd's into CCD_WORKSPACE;
-		// ccd starts the CLI there (images/claude-code-agent/Dockerfile).
+		// `ccd seed` creates the workspace as uid 1000, the entrypoint then cd's
+		// into CCD_WORKSPACE, and ccd starts the CLI there
+		// (images/claude-code-agent/entrypoint.sh).
 		Runtime: provision.Runtime{Image: cc.Image},
 		Env:     claudeCodeEnv(cfg, sidecar != nil, repo),
 		// 🔴 THE ONLY PLACE EnvClaudeOAuthToken IS EVER WRITTEN.

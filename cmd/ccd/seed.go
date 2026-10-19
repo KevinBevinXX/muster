@@ -158,13 +158,21 @@ func seed(o seedOpts, stderr io.Writer) error {
 // only when it is empty and its parent is writable by this process: exactly the
 // directory this process could have created and removed itself, so no file and
 // no other process's directory is ever lost. Anything else (a non-empty
-// directory, a read-only parent, the volume's mount point) is an error naming
-// the directory, its owner and mode.
+// directory, a read-only parent, the volume's mount point, a SYMLINK to an
+// unwritable directory — rmdir's guarantee does not hold through one) is an
+// error naming the directory, its owner and mode, and how to recover.
+//
+// ⚠ BEHAVIOUR CHANGE (#158): a workspace that exists, is not writable and is NOT
+// empty used to start (MkdirAll succeeds on an existing directory) and now
+// crash-loops on this error. That is deliberate — the CLI could not write in it
+// either — and the error says how to recover (unwritableRecovery).
 func ensureWritableDir(dir string, perm os.FileMode, stderr io.Writer) error {
 	dir = filepath.Clean(dir)
 	p := dir
+	var lfi os.FileInfo
 	for {
-		if _, err := os.Lstat(p); err == nil {
+		var err error
+		if lfi, err = os.Lstat(p); err == nil {
 			break
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
@@ -177,19 +185,42 @@ func ensureWritableDir(dir string, perm os.FileMode, stderr io.Writer) error {
 	}
 	fi, err := os.Stat(p)
 	if err == nil && fi.IsDir() && unix.Access(p, unix.W_OK|unix.X_OK) != nil {
-		owner := ""
+		owner, ownerUID := "", -1
 		if st, ok := fi.Sys().(*syscall.Stat_t); ok {
-			owner = fmt.Sprintf("owner %d:%d, ", st.Uid, st.Gid)
+			owner, ownerUID = fmt.Sprintf("owner %d:%d, ", st.Uid, st.Gid), int(st.Uid)
+		}
+		// 🔴 A SYMLINK IS NEVER REPLACED. os.Remove on a symlink unlinks the LINK
+		// whatever its target holds, so the rmdir-only guarantee above would not
+		// hold through one: a workspace symlinked to a non-empty directory would
+		// be "replaced" by an empty one, the target's files detached from it.
+		// The mode checked is the link's own (Lstat); fi is its target's.
+		if lfi != nil && lfi.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%s is a symlink to a directory this process (uid %d) cannot create files in (%smode %s); "+
+				"a symlink is never replaced. %s", p, os.Getuid(), owner, fi.Mode(), unwritableRecovery(p, ownerUID))
 		}
 		if rerr := os.Remove(p); rerr != nil {
 			return fmt.Errorf("%s is a directory this process (uid %d) cannot create files in (%smode %s), and it "+
-				"could not be replaced (%v): make it writable by uid %d", p, os.Getuid(), owner, fi.Mode(), rerr, os.Getuid())
+				"could not be replaced (%v). %s", p, os.Getuid(), owner, fi.Mode(), rerr, unwritableRecovery(p, ownerUID))
 		}
 		fmt.Fprintf(stderr, "ccd seed: replaced %s: it was an empty directory this process (uid %d) could not "+
 			"create files in (%smode %s) — a container runtime creates a missing image WORKDIR as root on a fresh volume\n",
 			p, os.Getuid(), owner, fi.Mode())
 	}
 	return os.MkdirAll(dir, perm)
+}
+
+// unwritableRecovery says how to recover from a directory ensureWritableDir
+// refused to replace. 🔴 The pod never starts (the entrypoint's seed fails first,
+// so the container crash-loops), so `kubectl exec` into it is impossible: the fix
+// is made from ANOTHER pod that mounts the agent's volume (docs/provisioner.md).
+func unwritableRecovery(p string, ownerUID int) string {
+	fix := fmt.Sprintf("`chown %d %s` as root", os.Getuid(), p)
+	if ownerUID == os.Getuid() {
+		fix = fmt.Sprintf("`chmod u+w %s`", p)
+	}
+	return fmt.Sprintf("The agent's pod cannot start until it is fixed, so `kubectl exec` into it is impossible: "+
+		"from a debug pod that mounts the agent's volume (PVC <agent>-workspace) at /data, run %s "+
+		"(see docs/provisioner.md, \"A workspace ccd cannot write in\")", fix)
 }
 
 // settingsForbidden are the settings.json keys REMOVED from the persisted file,
