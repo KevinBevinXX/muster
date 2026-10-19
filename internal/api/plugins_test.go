@@ -81,6 +81,11 @@ func (c *countingPlugins) DraftCards(ctx context.Context, _ int) ([]plugins.Draf
 	return nil, nil
 }
 
+func (c *countingPlugins) Retryable(ctx context.Context, _ int) ([]plugins.Message, error) {
+	c.note(ctx, "Retryable")
+	return nil, nil
+}
+
 func (c *countingPlugins) ClaimDraft(ctx context.Context, _ int64) (plugins.Claim, bool, error) {
 	c.note(ctx, "ClaimDraft")
 	return plugins.Claim{}, false, nil
@@ -303,6 +308,7 @@ func TestPluginsOffIsNotFound(t *testing.T) {
 		{"POST", "/plugins/1/revoke", ""}, {"POST", "/plugin/v1/messages", pgnMsg},
 		{"POST", "/plugins/drafts/1/approve", ""},
 		{"POST", "/plugins/drafts/1/reject", ""},
+		{"POST", "/plugins/messages/1/retry", ""}, {"POST", "/api/plugins/messages/1/retry", ""},
 		{"POST", "/plugin/v1/drafts/claim", `{"wait_seconds":0}`}, {"POST", "/plugin/v1/drafts/1/result", `{"ok":true}`},
 		{"POST", "/plugin/v1/tasks", `{"key":"tracker:abc","comment":"x"}`},
 	} {

@@ -177,6 +177,7 @@ func TestStdoutIsIndentedJSONForEveryVerb(t *testing.T) {
 			h.json("GET /api/flows/jobs", http.StatusOK, `[{"id":9,"nested":{"a":1}}]`)
 			h.json("GET /api/flows/jobs/9", http.StatusOK, `{"id":9,"nested":{"a":1}}`)
 			h.json("POST /api/routes/rt_0123456789abcdef01234567/reply", http.StatusOK, `{"route_id":"rt_0123456789abcdef01234567","state":"relayed","nested":{"a":1}}`)
+			h.json("POST /api/plugins/messages/6/retry", http.StatusAccepted, `{"id":6,"status":"queued","nested":{"a":1}}`)
 			h.json("POST /api/chief/replace", http.StatusOK, `{"deleted":null,"created":true,"nested":{"a":1}}`)
 
 			got := h.runCLI(w.args...)

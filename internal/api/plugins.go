@@ -61,6 +61,9 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	mux.HandleFunc("POST "+pluginsPath+"/drafts/{id}/approve", s.requirePluginsOn(s.requireOperatorWrite(s.handleDraftApprove)))
 	mux.HandleFunc("POST "+pluginsPath+"/drafts/{id}/reject", s.requirePluginsOn(s.requireOperatorWrite(s.handleDraftReject)))
 
+	// Retrying a message the chief never confirmed (plugin_retry.go).
+	s.registerPluginRetryRoutes(mux)
+
 	mux.HandleFunc("POST "+pluginAPIPrefix+"/messages", s.requirePluginToken(s.handlePluginMessage))
 	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/claim", s.requirePluginToken(s.handlePluginDraftClaim))
 	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/{id}/result", s.requirePluginToken(s.handlePluginDraftResult))
@@ -272,6 +275,11 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 		s.logger.Printf("plugins: page drafts: %v", err)
 		problem = "The reply drafts could not be read."
 	}
+	retryable, err := s.ext.Plugins.Retryable(r.Context(), pluginRetryShown)
+	if err != nil {
+		s.logger.Printf("plugins: page retryable: %v", err)
+		problem = "The unconfirmed messages could not be read."
+	}
 	esc := html.EscapeString
 	var b strings.Builder
 	b.WriteString(`<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line" data-testid="plugins-page">
@@ -322,6 +330,7 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 		b.WriteString("</li>\n")
 	}
 	b.WriteString("</ul>\n")
+	b.WriteString(retryableSectionHTML(retryable))
 	b.WriteString(draftsSectionHTML(cards))
 	b.WriteString(`<a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to muster</a>
 </section>`)

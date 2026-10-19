@@ -291,4 +291,26 @@ test('a plugin posts, the chief drafts, the owner approves with a passkey on a s
   expect((await plugin.post('/plugin/v1/drafts/claim', { data: { wait_seconds: 0 } })).status(), 'the superseded third is never claimed').toBe(204);
   await page.goto(browserURL + '/plugins');
   await expect(card(page, thirdID)).toHaveAttribute('data-draft-status', 'superseded');
+
+  // 11. RETRY: a message whose delivery turn was cut off (unconfirmed) is listed
+  //     with a Retry button; tapping it puts the message back in the queue for
+  //     the chief (this server runs no agent runtime, so it stays queued), the
+  //     card leaves the list, and a second retry is refused.
+  const cut = await plugin.post('/plugin/v1/messages', { data: { external_id: 'e2e-msg-cut', sender: 'Bo <bo@example.invalid>', subject: 'cut off', body: 'Did you get this?' } });
+  expect(cut.status()).toBe(202);
+  const cutID = ((await cut.json()) as { id: number }).id;
+  fix('delivering', String(cutID), chiefID);
+  fix('unconfirmed', String(cutID));
+  await page.goto(browserURL + '/plugins');
+  const retryCard = page.locator(`[data-retry-message-id="${cutID}"]`);
+  await expect(retryCard).toContainText('Bo <bo@example.invalid>');
+  await expect(page.locator('[data-plugin-queued]')).toHaveAttribute('data-plugin-queued', '0');
+  await Promise.all([
+    page.waitForURL((u) => u.pathname === '/plugins' && u.hash === '#plugin-retryable'),
+    retryCard.locator('[data-retry-button]').tap(),
+  ]);
+  await expect(page.locator(`[data-retry-message-id="${cutID}"]`)).toHaveCount(0);
+  await expect(page.locator('[data-plugin-queued]'), 'requeued for the chief').toHaveAttribute('data-plugin-queued', '1');
+  const twice = await page.request.post(browserURL + `/plugins/messages/${cutID}/retry`, { headers: { Origin: browserURL }, maxRedirects: 0 });
+  expect(twice.status(), 'a second retry is refused').toBe(409);
 });
