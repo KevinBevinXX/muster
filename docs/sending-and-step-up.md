@@ -95,11 +95,19 @@ A plugin message your chief [routes to the window](plugins.md#routing-a-message-
 🔴 **Step-up for a queued message is decided when you QUEUE it.** Queueing
 needs the same fresh sign-in a Send needs (the dialog, or the plain confirm page
 at `POST /send-queue/confirm`), and the server records the sign-in time of the
-session that queued it. When the message is sent, exactly that time is presented
-to the same gate, the plugin's own check included. So a queued message is sent
-only while the sign-in that queued it is still inside the step-up window. After
-that it fails, saying so, and is not sent. The queue never refreshes or extends
-the time.
+session that queued it. When the message is sent, the server checks again, from
+the stored row, that this sign-in was inside the step-up window when the message
+was queued, and that the message was queued at most **7 days** ago. A message
+past 7 days fails as expired and is not sent. The server fails it on its own
+pass even while the window never goes idle, so the list never shows a message
+"queued" for longer than that and it stops holding one of the window's 20
+places.
+
+A failed message of yours offers **Retry**, once. Retry queues the same text
+again as a new message, under the sign-in of the request that retried it, which
+must be fresh like a queue post's. A message that may already have been sent
+asks you to confirm first. A message your chief routed has no Retry: its failed
+route goes back to the chief instead.
 
 🔴 **A queued message does not outlive the account that queued it.** When a
 message is sent, the server checks the account again, from the database: if it

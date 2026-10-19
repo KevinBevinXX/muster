@@ -135,8 +135,14 @@ terminal attached through the tunnel.
 ![A mirrored terminal view with the message box (the screenshot's host is the e2e harness's fake tmux, which prints what reached it)](img/mirror-terminal.png)
 
 Rendered views stream bounded events: at most 300 when opened, taken from the
-last 4 MiB of the transcript, with each field capped. The transcript file itself
-is never sent, and nothing is stored on the server. Limits per host: 8 open
+last 4 MiB of the transcript, with each field capped. Anything in them that
+looks like a secret is replaced by `«redacted»` on the host, before it is sent:
+prompts, replies, errors, tool calls' targets and arguments, tool output,
+notices, questions and their answers, and the message index. The shapes it
+knows are the [attention queue's](attention.md#what-is-in-it); it is a
+heuristic, so a secret in a shape it does not know still passes. A host
+running an older `muster-mirror` sends the transcript unredacted. The
+transcript file itself is never sent, and nothing is stored on the server. Limits per host: 8 open
 terminals, 8 rendered views. Limit per server: 64 hosts.
 
 ### How a pane's transcript is found

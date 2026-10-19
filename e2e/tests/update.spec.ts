@@ -197,13 +197,22 @@ test('an update installed while signed out keeps the offline shell styled', asyn
   expect(routed, "control: the worker's precache of / was the routed one").toBeGreaterThan(0);
   await context.unroute(origin + '/');
   // A's shell links the old stylesheet, and A's cache holds it under that URL.
-  const before = await page.evaluate(async ([build, old]) => {
+  const links = await page.evaluate(async ([build, old]) => {
     await fetch(old);
-    const c = await caches.open('muster-shell-' + build);
-    const doc = await c.match('/');
-    return { links: (await doc!.text()).includes('href="' + old + '"'), cached: !!(await c.match(old)) };
+    const doc = await (await caches.open('muster-shell-' + build)).match('/');
+    return (await doc!.text()).includes('href="' + old + '"');
   }, [versionA, oldCSS]);
-  expect(before).toEqual({ links: true, cached: true });
+  expect(links, "A's shell links the old stylesheet").toBe(true);
+  // ⚠ POLLED, NOT READ ONCE: the worker answers the fetch first and writes
+  // the cache after (sw.js's app.css handler does not wait for its put), so a
+  // read right after the fetch can land before the write. That was this
+  // spec's flake: {cached: false} in 547 ms on CI, green on re-run.
+  await expect
+    .poll(
+      () => page.evaluate(async ([build, old]) => !!(await (await caches.open('muster-shell-' + build)).match(old)), [versionA, oldCSS]),
+      { message: "A's cache holds the old stylesheet under its URL" },
+    )
+    .toBe(true);
 
   await context.clearCookies();
   await deployB();

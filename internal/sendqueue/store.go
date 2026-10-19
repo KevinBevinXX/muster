@@ -164,6 +164,11 @@ var (
 	ErrEmpty = errors.New("sendqueue: nothing to queue: type a message first")
 	// ErrNotRetryable: the message did not fail, or was already retried.
 	ErrNotRetryable = errors.New("sendqueue: only a failed message can be retried, and only once")
+	// ErrRoutedNotRetryable: the message was routed by the chief (RouteID).
+	// Its failed route goes back to the chief; a Retry would requeue it as
+	// the person's own, with no route and no session binding. It is an
+	// ErrNotRetryable (errors.Is), so a caller that maps that one maps this.
+	ErrRoutedNotRetryable = fmt.Errorf("%w: a message your chief routed is not retried here; its failed route goes back to the chief", ErrNotRetryable)
 )
 
 // PGStore is the queue on Postgres.
@@ -284,10 +289,13 @@ func (s *PGStore) enqueueTx(ctx context.Context, tx pgx.Tx, it Item) (Item, erro
 // afterSince as Enqueue's does. The failed row stays failed and records the new
 // row (RetriedAs), in the same transaction and under the row's lock, so it is
 // retried at most once
-// (ErrNotRetryable after). A routed message is retried as the person's own: the
-// person, not its route, now asks for it to be sent. Another user's message is
-// not found; the per-target bound applies (ErrFull). Whether a message that may
-// already have been delivered may be retried is the caller's decision.
+// (ErrNotRetryable after). A ROUTED message is never retried
+// (ErrRoutedNotRetryable): requeued as the person's own it would carry no route
+// and no session binding, so nothing would check the route its delivery is
+// gated on (internal/api sendQueueRoutedGate); its failed route goes back to
+// the chief instead. Another user's message is not found; the per-target bound
+// applies (ErrFull). Whether a message that may already have been delivered
+// may be retried is the caller's decision.
 func (s *PGStore) Retry(ctx context.Context, id int64, stepUpAt time.Time, afterSince int64) (Item, error) {
 	var out Item
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
@@ -300,6 +308,9 @@ func (s *PGStore) Retry(ctx context.Context, id int64, stepUpAt time.Time, after
 		}
 		if old.State != Failed || old.RetriedAs != 0 {
 			return ErrNotRetryable
+		}
+		if old.RouteID != "" {
+			return ErrRoutedNotRetryable
 		}
 		out, err = s.enqueueTx(ctx, tx, Item{Target: old.Target, Body: old.Body, StepUpAt: stepUpAt, AfterSince: afterSince})
 		if err != nil {
@@ -460,6 +471,37 @@ func (s *PGStore) Recover(ctx context.Context, now time.Time) (int, error) {
 		WHERE state = 'sending' AND lease_until < now()`, RecoveredDetail, now)
 	if err != nil {
 		return 0, fmt.Errorf("sendqueue: recover: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// ExpiredDetail is the outcome of a person's message that was not sent within
+// AuthorizedFor of being queued: the delivery's refusal (internal/api
+// sendQueueAuthorization) and Expire's, the same words either way.
+var ExpiredDetail = "Not sent: it was queued more than " + authorizedText + " ago, and a queued message is sent only within " +
+	authorizedText + " of being queued. Retry it to queue it again."
+
+// authorizedText is AuthorizedFor as a person reads it.
+var authorizedText = fmt.Sprintf("%d days", int(AuthorizedFor/(24*time.Hour)))
+
+// Expire fails, at now, every PERSON's message still queued that was queued
+// more than AuthorizedFor before now — as expired (ExpiredDetail), never
+// delivered, so it offers Retry — and returns how many. The delivery refuses
+// such a row anyway, but only once its window goes idle: a window that never
+// does would show it "queued" past the bound and keep holding one of its
+// MaxOpenPerTarget slots. A routed message is gated by its route, not by this
+// bound, and is left alone; so is one being sent (its claimant finishes it).
+// now is muster's clock, as the delivery's check is (created_at is
+// Postgres's; a skew of seconds is immaterial at a bound of days). The row's
+// claimed_at is stamped now too, unclaimed (claimed_by NULL): a failed row
+// carries one (0019's send_queue_claimed_check), and this sweep is what
+// processed it.
+func (s *PGStore) Expire(ctx context.Context, now time.Time) (int, error) {
+	tag, err := s.pool.Exec(sys(ctx), `UPDATE send_queue SET state = 'failed', detail = $1, finished_at = $2,
+		claimed_at = $2, may_have_delivered = false
+		WHERE state = 'queued' AND route_id IS NULL AND created_at < $3`, clampDetail(ExpiredDetail), now, now.Add(-AuthorizedFor))
+	if err != nil {
+		return 0, fmt.Errorf("sendqueue: expire: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
 }

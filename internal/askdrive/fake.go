@@ -249,7 +249,10 @@ func (f *FakePicker) Screen() string {
 					line(more + l)
 				}
 			}
-			for j, l := range fakeWrap(f.answerOf(i), fakeWidth-5) {
+			// "   → " then "   ": the answer's further lines start two
+			// columns left of its first, and run to the pane's edge as the
+			// CLI's do (long-review-80).
+			for j, l := range fakeWrapIndent(f.answerOf(i), fakeWidth-5, fakeWidth-3) {
 				if j == 0 {
 					line("   → " + l)
 				} else {
@@ -337,26 +340,38 @@ func boxed(q string) bool { return len([]rune(q)) > fakeWidth-2 }
 // fakeWrap is s word-wrapped to width columns, a word longer than a line
 // broken mid-word — as the CLI wraps (its exact break points differ; Parse
 // and Match do not depend on them).
-func fakeWrap(s string, width int) []string {
+func fakeWrap(s string, width int) []string { return fakeWrapIndent(s, width, width) }
+
+// fakeWrapIndent is fakeWrap with its first line width columns wide and every
+// further line rest.
+func fakeWrapIndent(s string, width, rest int) []string {
 	if len([]rune(s)) <= width {
 		return []string{s} // as typed, its own spaces kept
 	}
 	var out []string
+	// lw is the width of the line being filled.
+	lw := func() int {
+		if len(out) == 0 {
+			return width
+		}
+		return rest
+	}
 	cur := ""
 	for _, w := range strings.Fields(s) {
-		for len([]rune(w)) > width {
+		for len([]rune(w)) > lw() {
 			if cur != "" {
 				out = append(out, cur)
 				cur = ""
 			}
 			r := []rune(w)
-			out = append(out, string(r[:width]))
-			w = string(r[width:])
+			n := lw()
+			out = append(out, string(r[:n]))
+			w = string(r[n:])
 		}
 		switch {
 		case cur == "":
 			cur = w
-		case len([]rune(cur))+1+len([]rune(w)) <= width:
+		case len([]rune(cur))+1+len([]rune(w)) <= lw():
 			cur += " " + w
 		default:
 			out = append(out, cur)

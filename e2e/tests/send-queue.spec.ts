@@ -416,6 +416,46 @@ test.describe('desktop 1280×800', () => {
     await expect(rowIn(page, text, 'sent')).toHaveCount(1, { timeout: 20_000 });
   });
 
+  // 🔴 A MESSAGE PAST ITS 7 DAYS EXPIRES EVEN WHILE ITS WINDOW NEVER GOES IDLE:
+  // the dispatcher's own pass fails it as expired, so the list stops saying
+  // "queued" and its slot frees; it offers Retry. Held busy throughout, so
+  // the delivery (which also refuses it) never gets to run. On origin/main
+  // the row stays queued, and this fails at the "failed" row.
+  test('a message past 7 days expires while its window stays busy, and offers Retry', async ({ page }) => {
+    await busyAndSeen();
+    fs.rmSync(tr + '.pasted', { force: true });
+    await openView(page, newHost);
+    const text = 'expired while busy ' + stamp;
+    await queue(page, text, false);
+    await expect(rowIn(page, text, 'queued')).toHaveCount(1);
+    sqfix('age', newHost, text, String(7 * 24 * 3600 + 60));
+    const failed = rowIn(page, text, 'failed');
+    await expect(failed, `the dispatcher expires it while busy (log:\n${mirrorLog})`).toContainText('queued more than 7 days ago', { timeout: 30_000 });
+    await expect(rowIn(page, text, 'queued'), 'no longer shown queued').toHaveCount(0);
+    await expect(failed.getByRole('button', { name: 'Queue this failed message again' }), 'it offers Retry').toHaveCount(1);
+    expect(pasted(), 'an expired message is not pasted').toEqual([]);
+  });
+
+  // 🔴 A ROUTED MESSAGE THAT FAILED OFFERS NO RETRY: Retry would queue it again
+  // as the person's own, with no route and no session binding, past the gate
+  // its route is. A failed route goes back to the chief instead. The test
+  // above is the control: a person's failed row draws the same button.
+  test('a routed message that failed offers no Retry', async ({ page }) => {
+    await busyAndSeen();
+    fs.rmSync(tr + '.pasted', { force: true });
+    await openView(page, newHost);
+    const text = 'routed then failed ' + stamp;
+    await queue(page, text, false);
+    await expect(rowIn(page, text, 'queued')).toHaveCount(1);
+    sqfix('route', newHost, text);
+    busy(false);
+    const failed = rowIn(page, text, 'failed');
+    await expect(failed, `the route gate fails it (log:\n${mirrorLog})`).toContainText('its route could not be read', { timeout: 30_000 });
+    expect(pasted(), 'a routed message whose route is gone is not pasted').toEqual([]);
+    await expect(failed.getByRole('button', { name: /Queue this/ }), 'a failed routed row offers no Retry').toHaveCount(0);
+    await busyAndSeen();
+  });
+
   // 🔴 A MESSAGE THAT MAY ALREADY HAVE BEEN SENT (muster stopped mid-send) says so,
   // and its Retry asks once: dismissed, nothing is queued; accepted, it is.
   test('Retry of a message that may already have been sent asks first', async ({ page }) => {

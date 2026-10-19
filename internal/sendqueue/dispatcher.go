@@ -116,6 +116,7 @@ func roundSecond(d time.Duration) time.Duration {
 // DispatchStore is the store half the dispatcher drives (PGStore's).
 type DispatchStore interface {
 	Recover(ctx context.Context, now time.Time) (int, error)
+	Expire(ctx context.Context, now time.Time) (int, error)
 	Heads(ctx context.Context) ([]Head, error)
 	Claim(ctx context.Context, id int64, now time.Time, c Claim) (Item, bool, error)
 	Renew(ctx context.Context, id int64, by string, lease time.Duration) (bool, error)
@@ -243,10 +244,22 @@ func (d *Dispatcher) recover(ctx context.Context) error {
 	return err
 }
 
-// Tick makes one pass: fail what a stopped sender left mid-send, then for
-// every target whose head Decide says to send, claim it, send it (renewing the
-// claim while it runs), and record the outcome. It returns how many it sent or
-// failed.
+// expire fails a person's messages queued more than AuthorizedFor ago
+// (Store.Expire), so a window that never goes idle neither shows them queued
+// past the bound nor keeps their slots.
+func (d *Dispatcher) expire(ctx context.Context) error {
+	n, err := d.Store.Expire(ctx, d.now())
+	if n > 0 {
+		d.logf("sendqueue: %d queued message(s) were queued more than %s ago; marked failed as expired, not sent", n, AuthorizedFor)
+	}
+	return err
+}
+
+// Tick makes one pass: fail what a stopped sender left mid-send, fail what
+// was queued too long ago to be sent (expire), then for every target whose
+// head Decide says to send, claim it, send it (renewing the claim while it
+// runs), and record the outcome. It returns how many it sent or failed (an
+// expired message is not counted).
 func (d *Dispatcher) Tick(ctx context.Context) (int, error) {
 	if d.AsOwner == nil {
 		// Without it the hooks would run as the system scope: refuse.
@@ -254,6 +267,10 @@ func (d *Dispatcher) Tick(ctx context.Context) (int, error) {
 	}
 	if err := d.recover(ctx); err != nil {
 		return 0, err
+	}
+	if err := d.expire(ctx); err != nil {
+		// The delivery refuses an expired row anyway; carry on sending.
+		d.logf("sendqueue: %v", err)
 	}
 	heads, err := d.Store.Heads(ctx)
 	if err != nil {

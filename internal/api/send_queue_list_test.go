@@ -66,6 +66,9 @@ func TestAFailedRowDrawsRetryOnce(t *testing.T) {
 	}{
 		{sendqueue.Item{State: sendqueue.Failed}, true},
 		{sendqueue.Item{State: sendqueue.Failed, RetriedAs: 4}, false},
+		// A routed row is never retried as the person's own: its failed
+		// route goes back to the chief.
+		{sendqueue.Item{State: sendqueue.Failed, RouteID: "rt_0123456789abcdef01234567"}, false},
 		{sendqueue.Item{State: sendqueue.Sent}, false},
 		{sendqueue.Item{State: sendqueue.Cancelled}, false},
 		{sendqueue.Item{State: sendqueue.Queued}, false},

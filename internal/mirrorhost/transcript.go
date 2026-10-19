@@ -236,6 +236,8 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 			return sendSubs()
 		}
 		off = next
+		// 🔴 Redacted before it is framed (redact_stream.go).
+		redactLines(lines)
 		batches := mirror.BatchLines(lines, next)
 		if len(batches) == 0 {
 			batches = []mirror.Msg{{Offset: off}}
@@ -265,6 +267,7 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 			h.c.log.Printf("muster-mirror: watch %q: index the prompts: %v", m.Session, err)
 			return nil
 		}
+		redactPrompts(refs)
 		refs, more := mirror.BoundPrompts(refs)
 		return send([]mirror.Msg{{Offset: off, Busy: busy, PromptIndex: true, Prompts: refs, PromptsMore: more}})
 	}
@@ -330,6 +333,8 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 			if subs != nil {
 				subs.observe(cctranscript.Flatten(lines))
 			}
+			// 🔴 Redacted before it is framed (redact_stream.go).
+			redactLines(lines)
 			batches := mirror.BatchLines(lines, off)
 			off = next
 			if len(batches) == 0 {

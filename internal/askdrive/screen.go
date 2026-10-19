@@ -62,8 +62,10 @@
 //     is never truncated or scrolled within the row (650+ characters drawn in
 //     full), and a word longer than a line breaks mid-word; a picker taller
 //     than the pane loses its TOP (header and question) off the screen.
-//     Parse takes the box off and keeps each text's lines; Match reads them
-//     back together (wrapEq), free only at the line breaks.
+//     Parse takes the box off and keeps each text's lines, and where each
+//     ends on screen; Match reads them back together (wrapEq): a line break
+//     stands for a space, or — only after a line that fills the pane, where
+//     the CLI breaks a word — for a space or none.
 package askdrive
 
 import (
@@ -111,6 +113,10 @@ type Row struct {
 	// decides it against the label it expects (labelMatch). The "Type
 	// something" row has no description, so all of its More is typed text.
 	More []string
+	// Ends is, for the Label line and then each More line, the screen column
+	// its text ends in: whether the line is FULL (fullLines), the one place
+	// the CLI breaks a word.
+	Ends []int
 }
 
 // Tab is one question's tab in a multi-question header.
@@ -125,6 +131,10 @@ type Tab struct {
 type ReviewItem struct {
 	Question string
 	Answer   string
+	// QuestionEnds and AnswerEnds are, per line of each, the screen column
+	// its text ends in (Row.Ends).
+	QuestionEnds []int
+	AnswerEnds   []int
 }
 
 // Screen is the picker as the pane shows it.
@@ -139,6 +149,13 @@ type Screen struct {
 	// and where it wrapped is kept so Match can tell a wrap from the text
 	// (wrapEq).
 	Question string
+	// QuestionEnds is, per line of Question, the screen column its text ends
+	// in (Row.Ends).
+	QuestionEnds []int
+	// Width is the pane's width in columns: the picker's rule, a line of "─"
+	// drawn across the whole pane (the widest one on the capture). 0 when
+	// there is none, and then no line is full (fullLines).
+	Width int
 	// Rows are the numbered rows above the "Chat about this" separator.
 	Rows []Row
 	// Nav is the "Next"/"Submit" row's text ("" when there is none), and
@@ -257,6 +274,7 @@ func parse(capture string) Screen {
 		return Screen{}
 	}
 	var s Screen
+	s.Width = ruleWidth(lines)
 	for _, m := range tabRE.FindAllStringSubmatch(tabsRE.FindStringSubmatch(lines[head])[1], -1) {
 		s.Tabs = append(s.Tabs, Tab{Header: strings.TrimSpace(m[2]), Answered: m[1] == "☒"})
 	}
@@ -278,7 +296,8 @@ func parse(capture string) Screen {
 			q = append(q, body[i])
 		}
 	}
-	s.Question = strings.Join(unbox(q), "\n")
+	qtext, qends := unbox(q)
+	s.Question, s.QuestionEnds = strings.Join(qtext, "\n"), qends
 	for ; i < len(body); i++ {
 		l := body[i]
 		if sepRE.MatchString(l) {
@@ -295,11 +314,12 @@ func parse(capture string) Screen {
 			if t := strings.TrimSpace(l); t != "" && len(s.Rows) > 0 {
 				r := &s.Rows[len(s.Rows)-1]
 				r.More = append(r.More, t)
+				r.Ends = append(r.Ends, cols(l))
 			}
 			continue
 		}
 		n, _ := strconv.Atoi(m[2])
-		r := Row{Num: n, Label: m[4], Cursor: m[1] == "❯"}
+		r := Row{Num: n, Label: m[4], Cursor: m[1] == "❯", Ends: []int{cols(l)}}
 		if m[3] != "" {
 			r.Box = "[" + m[3] + "]"
 		}
@@ -338,16 +358,21 @@ const vbars = "│┃║╎╏┆┇┊┋"
 // hborderRE is a box's top or bottom edge.
 var hborderRE = regexp.MustCompile(`^\s*[╭┌┏╔╰└┗╚][─━═]*[╮┐┓╗╯┘┛╝]\s*$`)
 
-// unbox is lines (a question's screen lines) with the box the CLI draws round
-// a long one taken off: a top or bottom edge, and a left (right) edge glyph
-// with the padding beside it when EVERY line has one — a text whose own
-// first character happens to be "│" is drawn inside the box and keeps it.
-// Each line comes back trimmed.
-func unbox(lines []string) []string {
+// unbox is lines (a question's screen lines, right-trimmed) with the box the
+// CLI draws round a long one taken off: a top or bottom edge, and a left
+// (right) edge glyph with the padding beside it when EVERY line has one and
+// the frame is really there — a left edge down two or more lines, or a left
+// and a right edge (one line). A text whose own first character happens to
+// be "│" is drawn inside the box and keeps it, and so does a one-line question
+// that merely starts or ends with one. Each line comes back trimmed, with the
+// screen column its text ends in (inside a right edge, when one is taken off).
+func unbox(lines []string) ([]string, []int) {
 	var ls []string
+	var ends []int
 	for _, l := range lines {
 		if !hborderRE.MatchString(l) {
 			ls = append(ls, strings.TrimSpace(l))
+			ends = append(ends, cols(trimRight(l)))
 		}
 	}
 	all := func(f func(string) bool) bool {
@@ -359,27 +384,71 @@ func unbox(lines []string) []string {
 		return len(ls) > 0
 	}
 	isBar := func(r rune) bool { return strings.ContainsRune(vbars, r) }
-	if all(func(l string) bool { r, _ := utf8.DecodeRuneInString(l); return isBar(r) }) {
-		for i, l := range ls {
-			_, n := utf8.DecodeRuneInString(l)
-			ls[i] = strings.TrimSpace(l[n:])
-		}
+	left := all(func(l string) bool { r, _ := utf8.DecodeRuneInString(l); return isBar(r) })
+	right := all(func(l string) bool { r, _ := utf8.DecodeLastRuneInString(l); return isBar(r) })
+	// 🔴 ONLY A FRAME THAT IS REALLY THERE: a left edge down two or more
+	// lines (the CLI's box, measured), or both edges. One line with a bar at
+	// one end — a short question's own text, which the CLI does not box — is
+	// text, and so is a right edge with no left one.
+	if !left || (len(ls) < 2 && !right) {
+		return ls, ends
 	}
-	if all(func(l string) bool { r, _ := utf8.DecodeLastRuneInString(l); return isBar(r) }) {
+	for i, l := range ls {
+		_, n := utf8.DecodeRuneInString(l)
+		ls[i] = strings.TrimSpace(l[n:])
+	}
+	if right {
 		for i, l := range ls {
 			_, n := utf8.DecodeLastRuneInString(l)
-			ls[i] = strings.TrimSpace(l[:len(l)-n])
+			t := strings.TrimSpace(l[:len(l)-n])
+			// The edge and the padding before it are not text.
+			ends[i] -= cols(l[len(strings.TrimRight(l[:len(l)-n], " \t")):])
+			ls[i] = t
 		}
 	}
-	return ls
+	return ls, ends
+}
+
+// cols is how many screen columns s takes: one per rune. A wide character
+// (two columns) is counted as one, so a line holding one reads as shorter
+// than it is — never as full when it is not (fullLines), only the reverse,
+// which refuses a mid-word break muster could not be sure of.
+func cols(s string) int { return utf8.RuneCountInString(s) }
+
+// ruleWidth is the widest line of "─" in lines (right-trimmed): the pane's
+// width, which the picker's rule spans. 0 when there is none.
+func ruleWidth(lines []string) int {
+	w := 0
+	for _, l := range lines {
+		if sepRE.MatchString(l) {
+			w = max(w, cols(trimRight(l)))
+		}
+	}
+	return w
+}
+
+// fullLines is, per line end (a screen column, as Row.Ends), whether that
+// line is FULL: it ends in the pane's last or last-but-one column. Only a
+// full line can end mid-word (measured 2.1.289: the text row's "…hyphens-ev"
+// ends in column 79 of 80; the review's "…of/the/ter" in 80 of 80 and
+// "…/at/all/be" in 119 of 120); a line that ends sooner was wrapped at white
+// space. width 0 (unknown) makes no line full.
+func fullLines(ends []int, width int) []bool {
+	full := make([]bool, len(ends))
+	for i, e := range ends {
+		full[i] = width > 0 && e >= width-1
+	}
+	return full
 }
 
 func parseReview(s Screen, body []string) Screen {
 	s.Kind = Review
 	seen := false
 	// more is where a further line of the item above goes: its question, its
-	// answer, or nowhere (a blank line or anything else ends an item).
+	// answer, or nowhere (a blank line or anything else ends an item); ends
+	// is where that line's end column goes.
 	var more *string
+	var ends *[]int
 	for i := 0; i < len(body); i++ {
 		l := body[i]
 		if strings.TrimSpace(l) == "Review your answers" {
@@ -388,13 +457,15 @@ func parseReview(s Screen, body []string) Screen {
 			continue
 		}
 		if m := reviewQ.FindStringSubmatch(l); m != nil {
-			s.Review = append(s.Review, ReviewItem{Question: m[1]})
-			more = &s.Review[len(s.Review)-1].Question
+			s.Review = append(s.Review, ReviewItem{Question: m[1], QuestionEnds: []int{cols(l)}})
+			it := &s.Review[len(s.Review)-1]
+			more, ends = &it.Question, &it.QuestionEnds
 			continue
 		}
 		if m := reviewA.FindStringSubmatch(l); m != nil && len(s.Review) > 0 {
-			s.Review[len(s.Review)-1].Answer = m[1]
-			more = &s.Review[len(s.Review)-1].Answer
+			it := &s.Review[len(s.Review)-1]
+			it.Answer, it.AnswerEnds = m[1], []int{cols(l)}
+			more, ends = &it.Answer, &it.AnswerEnds
 			continue
 		}
 		if m := rowRE.FindStringSubmatch(l); m != nil {
@@ -406,6 +477,7 @@ func parseReview(s Screen, body []string) Screen {
 		}
 		if m := reviewMore.FindStringSubmatch(l); m != nil && more != nil {
 			*more += "\n" + m[1]
+			*ends = append(*ends, cols(l))
 			continue
 		}
 		more = nil
@@ -422,24 +494,30 @@ func norm(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 // wrapEq reports whether lines — a text as the picker drew it, one screen line
 // each (the box already off) — are want, wrapped. ONLY the line breaks are
-// free: each stands for the white space the CLI wrapped at, or for none at
-// all (a word too long for its line broken mid-word or after a "/", measured
-// 2.1.289: "…hyphens-ev" / "erywhere-…", ".../of/the/" / "terminal/…").
-// Every character on a line must be want's, in order, and every character of
-// want must be on a line: an extra or a different character anywhere — a
-// person typing into the row — is a mismatch. A break may be read as "no
-// space" only because nothing a person types can put one there: Enter takes
-// the row, it does not break it.
+// read, and each stands for the white space the CLI wrapped at — or, after a
+// FULL line (full[i]: fullLines), for that or for none at all: a word too long
+// for its line is broken mid-word or after a "/" only where the line runs out
+// (measured 2.1.289: "…hyphens-ev" / "erywhere-…", ".../of/the/" /
+// "terminal/…"). Every character on a line must be want's, in order, and
+// every character of want must be on a line: an extra or a different
+// character anywhere — a person typing into the row — is a mismatch.
+//
+// 🔴 A BREAK IS NOT FREE AFTER A LINE THAT ENDS SHORT. A space someone types
+// inside a word can become a break (the CLI re-wraps the row at it: "…the
+// interactive sess" / "ions, …"), and every character on screen is then
+// still want's; only the short line says a space is there. So a break after
+// a line that is not full must be a space of want's, and a line whose end is
+// unknown (full shorter than lines, or nil) is not full.
 //
 // exact compares the text as typed (the "Type something" row); otherwise both
 // sides' runs of white space count as one space (norm), as question text and
 // labels always have been.
-func wrapEq(lines []string, want string, exact bool) bool {
+func wrapEq(lines []string, full []bool, want string, exact bool) bool {
 	if !exact {
 		want = norm(want)
 	}
-	pos, first := 0, true
-	for _, l := range lines {
+	pos, first, prevFull := 0, true, false
+	for i, l := range lines {
 		if exact {
 			if !first {
 				l = strings.TrimLeft(l, " ")
@@ -451,6 +529,9 @@ func wrapEq(lines []string, want string, exact bool) bool {
 			continue
 		}
 		if !first {
+			if !prevFull && (pos >= len(want) || want[pos] != ' ') {
+				return false // a break after a short line is a space
+			}
 			for pos < len(want) && want[pos] == ' ' {
 				pos++
 			}
@@ -460,6 +541,7 @@ func wrapEq(lines []string, want string, exact bool) bool {
 		}
 		pos += len(l)
 		first = false
+		prevFull = i < len(full) && full[i]
 	}
 	return pos == len(want)
 }
@@ -472,10 +554,11 @@ func wrapEq(lines []string, want string, exact bool) bool {
 // and an ask that differs from the registered one only so must also match
 // its question, headers and every other row. Descriptions are not compared
 // (they never were).
-func labelMatch(r Row, want string) bool {
+func labelMatch(r Row, width int, want string) bool {
 	lines := append([]string{r.Label}, r.More...)
+	full := fullLines(r.Ends, width)
 	for n := 1; n <= len(lines); n++ {
-		if wrapEq(lines[:n], want, false) {
+		if wrapEq(lines[:n], full, want, false) {
 			return true
 		}
 	}

@@ -3,6 +3,7 @@ package askdrive
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -122,21 +123,68 @@ func TestAWrappedAnswerIsStillComparedCharacterForCharacter(t *testing.T) {
 			t.Errorf("the screen matched the text %q", text)
 		}
 	}
-	// The one freedom, pinned so it is a decision and not an accident: AT A
-	// LINE BREAK the screen cannot say whether the CLI wrapped at a space or
-	// mid-word, so either reads the same (this capture breaks between
-	// "interactive" and "sessions"). A person deleting that space in the
-	// terminal would re-wrap the row ("interactivesessions," no longer fits
-	// the first line) and be seen by the line above changing.
+	// A break is NOT a free space. This capture breaks between "interactive"
+	// and "sessions" on a line that ends well short of the pane's width (91
+	// of 100 columns), and the CLI breaks a word only on a FULL line (wrapEq):
+	// so the break is a space, and text without one there is not this screen.
 	w := want
 	w.Text = strings.Replace(longText, "interactive sessions", "interactivesessions", 1)
-	if err := Match(Parse(real), w, long3, nil); err != nil {
-		t.Errorf("a break read as no space: %v", err)
+	if err := Match(Parse(real), w, long3, nil); err == nil {
+		t.Error("a break on a line short of the width was read as no space")
 	}
 	// The placeholder row with anything under it is not the placeholder.
 	ph := strings.Replace(fixture(t, "long-q2-80"), "  3. Type something.\n", "  3. Type something.\n     zz\n", 1)
 	if err := Match(Parse(ph), Want{Kind: Question, Q: 1, Cursor: 1}, long3, nil); err == nil {
 		t.Error("a text row with more under its placeholder matched the placeholder")
+	}
+}
+
+// TestASpaceTypedAtAWrapPointIsSeen is the #142 audit's case, on the real
+// long-q2-typed-100 capture: someone in the terminal types a space inside
+// "sessions", and the CLI re-wraps the row at it ("…the interactive sess" /
+// "ions, where …"). Every character on screen is still the asked text's, in
+// order, so a break read as "no space" would pass it; the first line ends
+// short of the pane's width, where the CLI never breaks a word, so it is
+// refused. The asked text against the real screen is the control, and the
+// mid-word captures (TestParseReadsBoxedAndWrappedScreens: long-q2-midword-80,
+// long-review-80 and -120) still read, their broken lines being full.
+func TestASpaceTypedAtAWrapPointIsSeen(t *testing.T) {
+	want := Want{Kind: Question, Q: 1, Cursor: 3, Text: longText}
+	real := fixture(t, "long-q2-typed-100")
+	if err := Match(Parse(real), want, long3, nil); err != nil {
+		t.Fatalf("the control: the real screen does not match: %v", err)
+	}
+	scr := strings.Replace(real, "alongside the interactive\n     sessions, where", "alongside the interactive sess\n     ions, where", 1)
+	if scr == real {
+		t.Fatal("the fixture edit did not apply")
+	}
+	if err := Match(Parse(scr), want, long3, nil); err == nil {
+		t.Fatal("a space typed inside a word, which the CLI wrapped at, matched the asked text")
+	}
+}
+
+// TestABreakIsFreeOnlyAfterAFullLine pins wrapEq's rule: a break read as no
+// space only when the line before it is full (it ends in the pane's last or
+// last-but-one column, where the CLI breaks a word); any other break stands
+// for a space. Exact and normalised alike.
+func TestABreakIsFreeOnlyAfterAFullLine(t *testing.T) {
+	for _, exact := range []bool{true, false} {
+		if !wrapEq([]string{"hyphens-ev", "erywhere"}, []bool{true}, "hyphens-everywhere", exact) {
+			t.Errorf("exact=%v: a mid-word break after a full line was refused", exact)
+		}
+		if wrapEq([]string{"hyphens-ev", "erywhere"}, []bool{false}, "hyphens-everywhere", exact) {
+			t.Errorf("exact=%v: a mid-word break after a short line was read as no space", exact)
+		}
+		if !wrapEq([]string{"the interactive", "sessions"}, []bool{false}, "the interactive sessions", exact) {
+			t.Errorf("exact=%v: a break at a space after a short line was refused", exact)
+		}
+		if !wrapEq([]string{"the interactive", "sessions"}, []bool{true}, "the interactive sessions", exact) {
+			t.Errorf("exact=%v: a break at a space after a full line was refused", exact)
+		}
+		// No ends known (nil): every break is a space.
+		if wrapEq([]string{"hyphens-ev", "erywhere"}, nil, "hyphens-everywhere", exact) {
+			t.Errorf("exact=%v: with no widths known, a break was read as no space", exact)
+		}
 	}
 }
 
@@ -150,12 +198,55 @@ func TestTheBoxIsStrippedOnEitherEdge(t *testing.T) {
 		"heavy, corners":   {"┏━━━━━━━━━━┓", "┃ one two  ┃", "┃ three    ┃", "┗━━━━━━━━━━┛"},
 		"rounded, corners": {"╭──────────╮", "│ one two  │", "│ three    │", "╰──────────╯"},
 	} {
-		if got := strings.Join(unbox(in), "\n"); got != "one two\nthree" {
+		if got, _ := unbox(in); strings.Join(got, "\n") != "one two\nthree" {
 			t.Errorf("%s: %q", name, got)
 		}
 	}
-	if got := unbox([]string{"│ one", "two"}); got[0] != "│ one" {
+	// Where each line's text ends, inside a right edge taken off: a line
+	// is full by its text, never by the box drawn round it.
+	if _, ends := unbox([]string{"│ one two  │", "│ three    │"}); !slices.Equal(ends, []int{9, 7}) {
+		t.Errorf("the ends inside a right edge: %v, want [9 7]", ends)
+	}
+	if _, ends := unbox([]string{"│ one two", "│ three"}); !slices.Equal(ends, []int{9, 7}) {
+		t.Errorf("the ends of a left-edged box: %v, want [9 7]", ends)
+	}
+	if got, _ := unbox([]string{"│ one", "two"}); got[0] != "│ one" {
 		t.Errorf("a bar on one line only was stripped: %q", got)
+	}
+	// ONE line: a box is there only with both edges. A one-line question
+	// whose own text starts (or ends) with a bar is not boxed — the CLI
+	// boxes a question too long for a line, which is never one line with
+	// only a left edge — and keeps it.
+	if got, _ := unbox([]string{"│ one two │"}); strings.Join(got, "\n") != "one two" {
+		t.Errorf("a one-line box with both edges: %q", got)
+	}
+	for _, in := range []string{"│ one two", "one two │"} {
+		if got, _ := unbox([]string{in}); got[0] != in {
+			t.Errorf("a one-line question %q lost its own bar: %q", in, got)
+		}
+	}
+	// A right edge with no left edge is not a frame either.
+	if got, _ := unbox([]string{"one │", "two │"}); strings.Join(got, "\n") != "one │\ntwo │" {
+		t.Errorf("a right-only edge was stripped: %q", got)
+	}
+}
+
+// TestAOneLineQuestionThatStartsWithABarIsReadAsAsked: a short question whose
+// own text begins "│ " (the real three-q1 capture, its question so) reads as
+// asked, bar and all — not as an untouched picker asking something else.
+func TestAOneLineQuestionThatStartsWithABarIsReadAsAsked(t *testing.T) {
+	scr := strings.Replace(fixture(t, "three-q1"), "Which color do you prefer?", "│ Which color do you prefer?", 1)
+	if scr == fixture(t, "three-q1") {
+		t.Fatal("the fixture edit did not apply")
+	}
+	qs := slices.Clone(three)
+	qs[0].Question = "│ Which color do you prefer?"
+	if err := Match(Parse(scr), Want{Kind: Question, Q: 0, Cursor: 1}, qs, nil); err != nil {
+		t.Fatalf("a one-line question starting with a bar: %v (parsed %q)", err, Parse(scr).Question)
+	}
+	// CONTROL: the question as it would read with the bar taken off is not it.
+	if err := Match(Parse(scr), Want{Kind: Question, Q: 0, Cursor: 1}, three, nil); err == nil {
+		t.Fatal("the bar-less question matched a screen asking it with a bar")
 	}
 }
 

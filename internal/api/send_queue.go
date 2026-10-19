@@ -422,10 +422,11 @@ func (s *Server) handleSendQueueCancel(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// sendQueueRetryable is whether it's row offers Retry: it failed, and has not
-// been retried yet (sendqueue.PGStore.Retry refuses it otherwise).
+// sendQueueRetryable is whether it's row offers Retry: it failed, has not
+// been retried yet, and is a person's own — never a ROUTED row, whose failed
+// route goes back to the chief (sendqueue.PGStore.Retry refuses it otherwise).
 func sendQueueRetryable(it sendqueue.Item) bool {
-	return it.State == sendqueue.Failed && it.RetriedAs == 0
+	return it.State == sendqueue.Failed && it.RetriedAs == 0 && it.RouteID == ""
 }
 
 // SendQueueRetryConfirmField is the form field that says the person confirmed
@@ -536,7 +537,11 @@ func (s *Server) sendQueueRetry(w http.ResponseWriter, r *http.Request, ctx cont
 		http.Error(w, msg, status)
 	}
 	if !sendQueueRetryable(it) {
-		refuse(http.StatusConflict, composerNotices[noticeNotRetried].text, noticeNotRetried)
+		n := noticeNotRetried
+		if it.RouteID != "" {
+			n = noticeRoutedNotRetried
+		}
+		refuse(http.StatusConflict, composerNotices[n].text, n)
 		return
 	}
 	// 🔴 ONE CONFIRM FOR A MESSAGE THAT MAY ALREADY HAVE BEEN SENT: a second
@@ -672,7 +677,17 @@ func sendQueueNonce(id int64) string { return fmt.Sprintf("send-queue-%020d", id
 
 // sendQueueSend delivers one claimed message: mirrorSend's gates, then
 // mirrorPaste into the window's Claude Code pane. ctx acts as the message's
-// owner; the sign-in time presented is the one the message was QUEUED with.
+// owner.
+//
+// 🔴 THE SIGN-IN TIME THE PASTE'S FRESHNESS CHECK SEES IS THE DELIVERY MOMENT,
+// NOT THE ONE THE MESSAGE WAS QUEUED WITH — and only once the row is
+// authorized by what actually gates it. The queued sign-in (StepUpAt) is read
+// twice before that: against the owner's account cutoffs
+// (sendQueueOwnerRefusal), and, for a person's message, against the row's own
+// age (sendQueueAuthorization: fresh when queued, at most
+// sendqueue.AuthorizedFor ago). A routed message is gated by its route instead
+// (sendQueueRoutedGate). Only after the applicable gate passes is ctx's auth
+// time moved to now; a row that fails either is refused before it is.
 //
 // 🔴 THE PASTE CARRIES THE TURN IT WAS DECIDED ON (st's Since and Pasted;
 // mirror.ExpectTurn). A person's Send that lands between the dispatcher's
@@ -890,14 +905,12 @@ func sendQueueStale() sendqueue.Outcome {
 		". Retry it to queue it again."}
 }
 
-// sendQueueAuthorizedText is sendqueue.AuthorizedFor as a person reads it.
-var sendQueueAuthorizedText = strconv.Itoa(int(sendqueue.AuthorizedFor/(24*time.Hour))) + " days"
-
 // Why a person's queued message is not sent on the sign-in that queued it
 // (sendQueueAuthorization).
 var (
-	SendQueueExpired = "Not sent: it was queued more than " + sendQueueAuthorizedText + " ago, and a queued message is sent only within " +
-		sendQueueAuthorizedText + " of being queued. Retry it to queue it again."
+	// SendQueueExpired is the same words the dispatcher's expiry sweep
+	// records (sendqueue.PGStore.Expire).
+	SendQueueExpired            = sendqueue.ExpiredDetail
 	SendQueueNotFreshWhenQueued = "Not sent: the sign-in that queued it was not a recent one when it was queued. Retry it to queue it again."
 )
 

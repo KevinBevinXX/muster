@@ -130,8 +130,12 @@ error is recorded.
 | errors | — | the error text |
 
 Prompts and replies are sent as they are: whatever you or a session wrote,
-including text pasted from elsewhere, goes out. The prompt asks the summarizer
-not to quote commands, secrets or host names, but the input is not redacted.
+including text pasted from elsewhere, goes out. The one exception is a
+mirrored session's: its host redacts anything that looks like a secret before
+the transcript leaves it ([mirroring](mirroring.md#rendered-and-terminal-views)), so
+what reaches the summarizer is redacted too. The prompt asks the summarizer not
+to quote commands, secrets or host names, but a dispatched agent's input is not
+redacted.
 
 🔴 **Focus is untrusted.** A title or description is a summarizer's output
 over a transcript that can carry an outside party's words, so it can repeat an

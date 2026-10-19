@@ -262,10 +262,10 @@ func match(s Screen, w Want, qs []askq.Question, answers map[string]string, ques
 			return fmt.Errorf("the review lists %d answers for %d questions", len(s.Review), len(qs))
 		}
 		for i, q := range qs {
-			if !wrapEq(splitLines(s.Review[i].Question), q.Question, false) {
+			if !wrapEq(splitLines(s.Review[i].Question), fullLines(s.Review[i].QuestionEnds, s.Width), q.Question, false) {
 				return fmt.Errorf("review item %d is %q, not %q", i+1, s.Review[i].Question, q.Question)
 			}
-			if !wrapEq(splitLines(s.Review[i].Answer), answers[q.Question], false) {
+			if !wrapEq(splitLines(s.Review[i].Answer), fullLines(s.Review[i].AnswerEnds, s.Width), answers[q.Question], false) {
 				return fmt.Errorf("review answer %d is %q, not %q", i+1, s.Review[i].Answer, answers[q.Question])
 			}
 		}
@@ -281,7 +281,7 @@ func match(s Screen, w Want, qs []askq.Question, answers map[string]string, ques
 		return fmt.Errorf("no question %d", w.Q+1)
 	}
 	q := qs[w.Q]
-	if question && !wrapEq(splitLines(s.Question), q.Question, false) {
+	if question && !wrapEq(splitLines(s.Question), fullLines(s.QuestionEnds, s.Width), q.Question, false) {
 		return fmt.Errorf("%w: the screen asks %q, not %q", errQuestionText, s.Question, q.Question)
 	}
 	if err := tabsMatch(s, qs, w.Q); err != nil {
@@ -305,14 +305,14 @@ func match(s Screen, w Want, qs []askq.Question, answers map[string]string, ques
 			return fmt.Errorf("row %d checked=%v, want %v", j+1, r.Box == "[✔]", checked)
 		}
 		if j < k {
-			if !labelMatch(r, q.Options[j].Label) {
+			if !labelMatch(r, s.Width, q.Options[j].Label) {
 				return fmt.Errorf("row %d is %q, not %q", j+1, r.Label, q.Options[j].Label)
 			}
 		} else if w.Text != "" {
 			// The typed text, wrapped over the row's lines when long (the CLI
 			// never truncates or scrolls it: measured 2.1.289, 650+ characters
 			// drawn in full, wrapped).
-			if !wrapEq(textLines(r), w.Text, true) {
+			if !wrapEq(textLines(r), fullLines(r.Ends, s.Width), w.Text, true) {
 				return fmt.Errorf("the text row holds %q, not %q", strings.Join(textLines(r), "\n"), w.Text)
 			}
 		} else if (r.Label != "Type something" && r.Label != "Type something.") || len(r.More) > 0 {

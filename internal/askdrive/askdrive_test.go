@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -86,7 +87,12 @@ func TestParseReadsTheRealScreens(t *testing.T) {
 	if s := Parse(fixture(t, "three-q2-typed")); s.Rows[3].Label != "a hamster" || s.Rows[3].Box != "[✔]" || !s.Rows[3].Cursor {
 		t.Errorf("the typed text row: %+v", s.Rows[3])
 	}
-	if s := Parse(fixture(t, "three-review")); !reflect.DeepEqual(s.Review, []ReviewItem{
+	s := Parse(fixture(t, "three-review"))
+	var got [][2]string
+	for _, r := range s.Review {
+		got = append(got, [2]string{r.Question, r.Answer})
+	}
+	if !reflect.DeepEqual(got, [][2]string{
 		{"Which color do you prefer?", "teal, mostly"}, {"Which pets do you have?", "Dog, a hamster"}, {"What should the project be called?", "Beta"}}) {
 		t.Errorf("the review: %+v", s.Review)
 	}
@@ -213,11 +219,27 @@ func TestTheFakeDrawsWhatTheCLIDraws(t *testing.T) {
 	for _, f := range []string{"three-q1", "three-q1-other", "three-q1-typed", "three-q2", "three-q2-toggled", "three-q2-textrow",
 		"three-q2-typed", "three-q2-next", "three-q3", "three-review"} {
 		fp.Type(steps[f])
-		real, fake := Parse(fixture(t, f)), Parse(fp.Screen())
+		real, fake := textOf(Parse(fixture(t, f))), textOf(Parse(fp.Screen()))
 		if !reflect.DeepEqual(real, fake) {
 			t.Errorf("%s: the fake draws\n %+v\nthe CLI drew\n %+v", f, fake, real)
 		}
 	}
+}
+
+// textOf is s without its geometry — the pane's width and where each line
+// ends, which differ between the fake's 80 columns and a capture's — so two
+// screens compare by what they say.
+func textOf(s Screen) Screen {
+	s.Width, s.QuestionEnds = 0, nil
+	s.Rows = slices.Clone(s.Rows)
+	for i := range s.Rows {
+		s.Rows[i].Ends = nil
+	}
+	s.Review = slices.Clone(s.Review)
+	for i := range s.Review {
+		s.Review[i].QuestionEnds, s.Review[i].AnswerEnds = nil, nil
+	}
+	return s
 }
 
 // TestDriveNeverTypesIntoAPickerItDoesNotExpect is the race half: the picker

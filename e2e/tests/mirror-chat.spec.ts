@@ -130,6 +130,28 @@ test('a human-origin pasted notice is a user bubble; a command record with an ex
   await expect(users.nth(2)).toContainText('<command-name>/model</command-name>');
 });
 
+// 🔴 A TOKEN IN THE TRANSCRIPT NEVER REACHES THE PAGE: the host redacts every
+// free-text field of the rendered view's stream (internal/mirrorhost
+// redact_stream.go) — a prompt, a reply, a notice's detail, in the backfill
+// and live — so the page shows «redacted» where it was. The tokens are
+// synthetic. On origin/main the page shows them, and this fails at the first
+// "not in the page".
+test('a token in the transcript is shown redacted, backfilled and live', async ({ page }) => {
+  const tokens = ['ghp_E2ePromptToken001', 'ghp_E2EReplyToken0002', 'ghp_E2ENoticeToken003', 'ghp_E2ELiveToken00004'];
+  const tr = newTranscript(
+    prompt('deploy with ' + tokens[0]) + reply('Pushed with GITHUB_TOKEN=' + tokens[1]) + taskNotice('completed', 'Agent "Push" finished', 'used ' + tokens[2]),
+  );
+  await openView(page, tr);
+  const log = page.locator('#mv-log');
+  await expect(log.locator('[data-bubble="user"]').first()).toContainText('deploy with «redacted»');
+  await expect(log).toContainText('GITHUB_TOKEN=«redacted»');
+  fs.appendFileSync(tr, reply('live: ' + tokens[3] + ' LIVE-REDACT-END'));
+  await expect(log).toContainText('LIVE-REDACT-END', { timeout: 15_000 });
+  await expect(log).toContainText('live: «redacted»');
+  const html = await page.content();
+  for (const tok of tokens) expect(html.includes(tok), `${tok} is not in the page`).toBe(false);
+});
+
 // B1: a harness notice is its own compact row — status and summary, detail on
 // expand — and never the human's bubble; a human who MENTIONS the tag, or types
 // a slash command, stays one.

@@ -77,3 +77,36 @@ func TestRetryQueuesAFailedMessageAgainOnce(t *testing.T) {
 		t.Fatalf("a refused Retry marked the row retried as %d", got.RetriedAs)
 	}
 }
+
+// TestARoutedMessageIsNotRetried: a ROUTED row that failed is refused by Retry
+// (ErrRoutedNotRetryable) — it is not requeued as the person's own, with no
+// route and no session binding, which would bypass the route's gate — and the
+// refusal queues nothing and leaves the row unretried. A failed route goes
+// back to the chief instead. The control is the same kind of row with no
+// route, which is retried.
+func TestARoutedMessageIsNotRetried(t *testing.T) {
+	s, _ := pgStore(t)
+	routed := mustEnqueue(t, s, 2, Item{Target: win, Body: "routed answer", StepUpAt: time.Now(), RouteID: "rt_0123456789abcdef01234567"})
+	failRow(t, s, routed.ID, false)
+	if _, err := s.Retry(as(2), routed.ID, time.Now(), 0); !errors.Is(err, ErrRoutedNotRetryable) {
+		t.Fatalf("Retry of a failed routed row: %v; want ErrRoutedNotRetryable", err)
+	}
+	if got, _ := s.Get(as(2), routed.ID); got.State != Failed || got.RetriedAs != 0 {
+		t.Fatalf("the routed row after a refused Retry: %s retried as %d", got.State, got.RetriedAs)
+	}
+	items, err := s.List(as(2), win)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range items {
+		if it.State.Open() {
+			t.Fatalf("a refused Retry of a routed row queued %+v", it)
+		}
+	}
+	// CONTROL: the person's own failed row is retried.
+	own := mustEnqueue(t, s, 2, Item{Target: win, Body: "my own", StepUpAt: time.Now()})
+	failRow(t, s, own.ID, false)
+	if _, err := s.Retry(as(2), own.ID, time.Now(), 0); err != nil {
+		t.Fatalf("CONTROL: Retry of the person's own failed row: %v", err)
+	}
+}
