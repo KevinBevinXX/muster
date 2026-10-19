@@ -505,6 +505,15 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 		d.recordError(parent, fresh, "kickoff not sent: could not stamp kicked_off: "+err.Error())
 		return
 	}
+	// 🔴 THE NOTE IS RE-READ AFTER THE STAMP. A forward to an agent that has not
+	// had its first turn is appended to pending_note (agents.PGStore
+	// AppendPendingNote, only while kicked_off is false), so one appended after
+	// the read above but before the stamp is in the row now and would be lost by
+	// sending the old copy. After the stamp no append succeeds, so this read
+	// holds every one (task routing, audit round 2).
+	if again, err := d.store.Get(ctx, fresh.ID); err == nil && again.PendingNote != "" {
+		fresh.PendingNote = again.PendingNote
+	}
 	// The "kickoff owed" badge goes with the stamp; tell open Agents lists.
 	d.notify(fresh.Name)
 	provenance := d.store.RecordKickoffDelivery(ctx, fresh.ID, inst.InstanceID, inst.Restarts)

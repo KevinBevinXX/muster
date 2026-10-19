@@ -373,6 +373,10 @@ var bannerLedger = []string{
 	// and how many owners have an allowlist.
 	envSessionRouting,
 	envRouteRelayAllow,
+	// 🔴 TASK ROUTING IS LEDGERED: ON, an outside system's task notice reaches
+	// the chief, and with dispatch the chief can start agents on the owner's
+	// credentials, so the log must say which state this is.
+	envTaskRouting,
 	// 🔴 THE AGENT-FLOW DENY WORDS ARE LEDGERED: unset, the agent door screens
 	// agent-composed text with the generic patterns only, and that fail-open
 	// state must be a loud line, not a silence (the operator's audit of #76).
@@ -397,6 +401,8 @@ var bannerLedger = []string{
 // GITHUB_CLIENT_ID and MUSTER_GITHUB_TOKEN and neither of the other two, so the
 // entries say what is actually true of them.
 var bannerExempt = map[string]string{
+	envChiefDispatchOwners: "counted on the `task routing: ON with DISPATCH` line (with the caps), named on the ON line " +
+		"when empty, and on a `chief dispatch: INERT` line when set with task routing off",
 	envStepUpWindow: "printed with its VALUE on the `mirrored sessions: ENABLED` line, the one plugin whose " +
 		"writes it gates; it has no OFF state (unset is the 12h default, an out-of-bounds value refuses to " +
 		"boot in loadConfig), and with the plugin off nothing reads it",
@@ -699,6 +705,10 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		// Session routing: the banner branches on ext.Routing (below).
 		SessionRouting:     true,
 		RouteRelayAllowRaw: "1:example-inbox:someone@example.invalid",
+		// Task routing: the banner branches on ext.TaskRouting (below).
+		TaskRouting:            true,
+		ChiefDispatchOwnersRaw: "1",
+		ChiefDispatchOwners:    map[int64]bool{1: true},
 	}
 	onOut = renderBannerWithPool(t, on, api.Extensions{
 		Mirror:      mirror.NewService(nil, nil),
@@ -714,6 +724,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		PluginGateway: bannerStubPluginGateway{},
 		Routes:        bannerStubRoutes{},
 		Routing:       &api.Routing{Allow: bannerAllowlist(t)},
+		TaskRouting:   &api.TaskRouting{DispatchOwners: map[int64]bool{1: true}},
 	}, &pgxpool.Pool{})
 	offOut = renderBannerWithPool(t, config{}, api.Extensions{}, nil)
 	return onOut, offOut

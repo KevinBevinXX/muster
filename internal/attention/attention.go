@@ -83,13 +83,18 @@ var (
 	ErrTooMany = fmt.Errorf("attention: there are already %d open asks; wait for some to be answered", MaxOpenPerOwner)
 )
 
-// Asker is who raised an ask: a dispatched agent (AgentID) or a mirrored
-// Claude Code session (MirrorHost + MirrorSession, the Claude session id).
-// Exactly one of the two is set.
+// SystemAskerLabel is the label of an ask muster itself raised.
+const SystemAskerLabel = "muster"
+
+// Asker is who raised an ask: a dispatched agent (AgentID), a mirrored Claude
+// Code session (MirrorHost + MirrorSession, the Claude session id), or muster
+// itself (System: an ask nobody waits on, migration 0028). Exactly one is set.
 type Asker struct {
 	AgentID       int64
 	MirrorHost    string
 	MirrorSession string
+	// System: muster itself raised the ask (no agent, no session).
+	System bool
 	// Label is the name the view shows beside the question.
 	Label string
 }
@@ -98,9 +103,9 @@ type Asker struct {
 func (a Asker) Valid() error {
 	mirrored := a.MirrorHost != "" || a.MirrorSession != ""
 	switch {
-	case a.AgentID > 0 && mirrored:
+	case a.AgentID > 0 && mirrored, a.System && (a.AgentID > 0 || mirrored):
 		return fmt.Errorf("%w: an ask has one asker", ErrInvalid)
-	case a.AgentID > 0:
+	case a.System, a.AgentID > 0:
 	case mirrored:
 		if err := mirror.ValidHost(a.MirrorHost); err != nil {
 			return fmt.Errorf("%w: %v", ErrInvalid, err)
@@ -247,7 +252,7 @@ func sys(ctx context.Context) context.Context { return authz.System(ctx) }
 
 // cols reads an ask; status is computed so an open ask past its expiry reads
 // as expired before the sweep has written it.
-const cols = `id, owner_id, coalesce(agent_id, 0), coalesce(mirror_host, ''), coalesce(mirror_session, ''), asker_label,
+const cols = `id, owner_id, coalesce(agent_id, 0), coalesce(mirror_host, ''), coalesce(mirror_session, ''), system_asker, asker_label,
 	question, options,
 	CASE WHEN status = 'open' AND expires_at <= now() THEN 'expired' ELSE status END,
 	coalesce(answer, ''), coalesce(answered_by, ''), created_at, expires_at, resolved_at`
@@ -257,7 +262,7 @@ func scan(row pgx.Row) (Ask, error) {
 	var opts []byte
 	var resolved *time.Time
 	var status string
-	if err := row.Scan(&a.ID, &a.Owner, &a.Asker.AgentID, &a.Asker.MirrorHost, &a.Asker.MirrorSession, &a.Asker.Label,
+	if err := row.Scan(&a.ID, &a.Owner, &a.Asker.AgentID, &a.Asker.MirrorHost, &a.Asker.MirrorSession, &a.Asker.System, &a.Asker.Label,
 		&a.Question, &opts, &status, &a.Answer, &a.AnsweredBy, &a.CreatedAt, &a.ExpiresAt, &resolved); err != nil {
 		return Ask{}, err
 	}
@@ -331,9 +336,9 @@ func (s *PGStore) Create(ctx context.Context, n New) (Ask, error) {
 	if open >= MaxOpenPerOwner {
 		return Ask{}, ErrTooMany
 	}
-	a, err := scan(tx.QueryRow(ctx, `INSERT INTO attention_asks (agent_id, mirror_host, mirror_session, asker_label, question, options, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, now() + make_interval(secs => $7))
-		RETURNING `+cols, agent, nullable(n.Asker.MirrorHost), nullable(n.Asker.MirrorSession), n.Asker.Label, n.Question, opts, n.Timeout.Seconds()))
+	a, err := scan(tx.QueryRow(ctx, `INSERT INTO attention_asks (agent_id, mirror_host, mirror_session, system_asker, asker_label, question, options, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8))
+		RETURNING `+cols, agent, nullable(n.Asker.MirrorHost), nullable(n.Asker.MirrorSession), n.Asker.System, n.Asker.Label, n.Question, opts, n.Timeout.Seconds()))
 	if err != nil {
 		return Ask{}, err
 	}

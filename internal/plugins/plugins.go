@@ -47,17 +47,22 @@ const TokenPrefix = "mpl_"
 // truncated: the plugin is the only party that can decide what to drop, and a
 // silently cut message would be delivered as if whole.
 const (
-	MaxBodyBytes      = 16 << 10
-	MaxSenderRunes    = 200
-	MaxSubjectRunes   = 200
-	MaxExternalIDLen  = 200
-	MaxLabelRunes     = 80
-	maxRequestBytes   = 6*MaxBodyBytes + 12*MaxSenderRunes + 12*MaxSubjectRunes + 6*MaxExternalIDLen + requestOverhead
-	requestOverhead   = 1024
-	MaxPerHour        = 60
-	MaxQueued         = 200
-	rateWindow        = time.Hour
-	nameAndScopeShape = `^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`
+	MaxBodyBytes     = 16 << 10
+	MaxSenderRunes   = 200
+	MaxSubjectRunes  = 200
+	MaxExternalIDLen = 200
+	MaxLabelRunes    = 80
+	maxRequestBytes  = 6*MaxBodyBytes + 12*MaxSenderRunes + 12*MaxSubjectRunes + 6*MaxExternalIDLen + requestOverhead
+	requestOverhead  = 1024
+	MaxPerHour       = 60
+	MaxQueued        = 200
+	// Task events (task_events.go) have their OWN allowance, counted apart from
+	// the chief mail above, so a burst of task notices can never get ordinary
+	// chief mail answered 429, nor chief mail crowd out a task event.
+	MaxTaskEventsPerHour = 120
+	MaxTaskEventsQueued  = 300
+	rateWindow           = time.Hour
+	nameAndScopeShape    = `^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`
 )
 
 // MaxRequestBytes bounds what the message route reads at all; the per-field caps
@@ -148,6 +153,16 @@ type Message struct {
 	NoReply       bool       `json:"noReply"`
 	// SenderVerified: the plugin asserted the sender is authenticated.
 	SenderVerified bool `json:"senderVerified"`
+	// TaskID is set on a TASK EVENT (migration 0027, task_events.go): muster's
+	// own message handing that task to the chief. nil on every inbound message.
+	TaskID *int64 `json:"taskId,omitempty"`
+	// RoutedTo is set on a notice muster routed AROUND the chief (migration
+	// 0028, task_events.go ReserveNoticeRoute): "agent" or "attention". Such a
+	// row is delivered from birth and is never a chief event.
+	RoutedTo *string `json:"routedTo,omitempty"`
+	// RoutedDoneAt is when that route's action completed; nil while it is
+	// reserved and not yet done (or never finished: NoticeRouteReclaimAfter).
+	RoutedDoneAt *time.Time `json:"routedDoneAt,omitempty"`
 }
 
 // Errors the API maps to status codes.

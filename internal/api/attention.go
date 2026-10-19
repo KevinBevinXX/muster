@@ -381,6 +381,12 @@ func (s *Server) attentionItems(ctx context.Context) ([]attentionItem, error) {
 		errs = append(errs, fmt.Errorf("reply drafts: %w", err))
 	}
 	out = append(out, drafts...)
+	// Task events the chief has not taken (task_routing.go).
+	tasks, err := s.unroutedTaskItems(ctx)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("tasks to route: %w", err))
+	}
+	out = append(out, tasks...)
 	sortAttentionItems(out)
 	return out, errors.Join(errs...)
 }
@@ -756,7 +762,7 @@ func attentionItemsHTML(items []attentionItem, now time.Time) string {
 	var b strings.Builder
 	for _, it := range items {
 		kind := map[string]string{attentionKindAsk: "Question", attentionKindSession: "Session waiting", attentionKindPlugin: "Reply draft",
-			attentionKindQuestion: "Session question"}[it.Kind]
+			attentionKindQuestion: "Session question", attentionKindTask: "Task to route"}[it.Kind]
 		age := ""
 		if !it.Since.IsZero() {
 			age = ` · <time datetime="` + it.Since.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(it.Since))) + `</time>`
@@ -804,6 +810,9 @@ func attentionItemsHTML(items []attentionItem, now time.Time) string {
 `)
 		case attentionKindPlugin:
 			b.WriteString(`<a href="` + esc(it.Link) + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Review the draft</a>
+`)
+		case attentionKindTask:
+			b.WriteString(`<a href="` + esc(it.Link) + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Open the task</a>
 `)
 		}
 		b.WriteString("</li>\n")

@@ -430,6 +430,14 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			ext.Routes = pluginStore
 			ext.Routing = &api.Routing{Allow: cfg.RouteRelayAllow}
 		}
+		// Task routing (MUSTER_TASK_ROUTING=1): a plugin may hand a task it files
+		// to the chief; a non-empty MUSTER_CHIEF_DISPATCH_OWNERS also lets the chief
+		// start an agent on one, for the listed owners only. The caps are counted
+		// from the same store's audit rows.
+		if cfg.TaskRouting {
+			ext.TaskRouting = &api.TaskRouting{DispatchOwners: cfg.ChiefDispatchOwners}
+			ext.ChiefDispatch = pluginStore
+		}
 		// The namespaces POST /plugin/v1/tasks files tasks by; validated at boot
 		// (config.validate), so this cannot fail on a config that got here.
 		if err := notes.SetPluginTaskNamespaces(cfg.PluginTaskNamespaces); err != nil {
@@ -1079,6 +1087,23 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	default:
 		l.Printf("session routing: OFF — %s is unset, so the chief has no route_to_session and POST /api/routes/{id}/reply "+
 			"answers 404 (%s is not read)", envSessionRouting, envRouteRelayAllow)
+	}
+	switch {
+	case ext.TaskRouting != nil && len(ext.TaskRouting.DispatchOwners) > 0:
+		l.Printf("task routing: ON with DISPATCH (%s=1) — a plugin may hand a task to the chief (route_to_chief); "+
+			"the chief may start an agent on an open, ungated task for %d opted-in owner(s) (%s), at most %d live and %d a day, once per task",
+			envTaskRouting, len(ext.TaskRouting.DispatchOwners), envChiefDispatchOwners,
+			plugins.MaxChiefLiveAgents, plugins.MaxChiefDispatchesPerDay)
+	case ext.TaskRouting != nil:
+		l.Printf("task routing: ON (%s=1) — a plugin may hand a task to the chief (route_to_chief), which routes it with "+
+			"task_route_attention / task_forward; %s is empty, so the chief starts no agent", envTaskRouting, envChiefDispatchOwners)
+	case a.cfg.TaskRouting:
+		l.Printf("task routing: INERT — %s=1 but the plugin interface is off, so nothing is routed", envTaskRouting)
+	default:
+		l.Printf("task routing: OFF — %s is unset, so route_to_chief is ignored and the chief has no task-routing tools", envTaskRouting)
+	}
+	if len(a.cfg.ChiefDispatchOwners) > 0 && (ext.TaskRouting == nil) {
+		l.Printf("chief dispatch: INERT — %s is set but task routing is off (%s)", envChiefDispatchOwners, envTaskRouting)
 	}
 	switch nss := a.cfg.PluginTaskNamespaces; {
 	case len(nss) > 0 && ext.Plugins != nil:

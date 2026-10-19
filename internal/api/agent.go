@@ -352,6 +352,15 @@ func (s *Server) agentTools() []agentTool {
 	if routingOn(s.ext) {
 		tools = append(tools, agentTool{def: routeToolDef(), mcp: true, chiefOnly: true})
 	}
+	// Task routing (task_routing.go), only with MUSTER_TASK_ROUTING on: the
+	// chief decides what happens to a task a plugin handed it — the attention
+	// queue, a forward, or (MUSTER_CHIEF_DISPATCH_OWNERS) a new agent. Chief-only and
+	// on MCP, like route_to_session.
+	if taskRoutingOn(s.ext) {
+		for _, d := range taskRoutingToolDefs(chiefDispatchOn(s.ext)) {
+			tools = append(tools, agentTool{def: d, mcp: true, chiefOnly: true})
+		}
+	}
 	// The attention queue (attention_tools.go), present with its store: every
 	// agent may ask its owner and work the owner's tasks; the chief alone lists
 	// and answers the queue and reads a session's transcript. All on MCP too.
@@ -620,6 +629,9 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		_ = arg(&in)
 		return s.toolConnectorStatus(ctx, a, in.Name, in.WaitSeconds)
 	default:
+		if text, ok := s.dispatchTaskRoutingTool(ctx, a, name, arguments); ok {
+			return text
+		}
 		// dispatchCallerTool runs nothing without the attention store (it
 		// answers false before touching it).
 		if text, ok := s.dispatchCallerTool(ctx, callerOfAgent(a), name, arguments); ok {

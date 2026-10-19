@@ -97,7 +97,10 @@ func fullyWiredServer(t *testing.T) *Server {
 		Attention:       stubAttention{},
 		MirrorTokens:    stubMirrorTokens{},
 		Routing:         &Routing{},
-		SendQueue:       stubSendQueue{},
+		// NON-ZERO on purpose: the zero TaskRouting offers no task_dispatch.
+		TaskRouting:   &TaskRouting{DispatchOwners: map[int64]bool{1: true}},
+		ChiefDispatch: stubChiefDispatch{},
+		SendQueue:     stubSendQueue{},
 		// NON-ZERO on purpose: the zero value is the default.
 		SendQueueIdle: time.Second,
 		PluginGateway: stubPluginGateway{},
@@ -132,6 +135,7 @@ type stubSummarizer struct{ focus.Summarizer }
 
 // stubRoutes satisfies plugins.RouteStore for registration only; any method call panics.
 type stubRoutes struct{ plugins.RouteStore }
+type stubChiefDispatch struct{ plugins.DispatchStore }
 type stubAttention struct{ attention.Store }
 type stubMirrorTokens struct{ MirrorTokenAuth }
 

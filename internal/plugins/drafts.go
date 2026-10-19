@@ -400,9 +400,8 @@ func (s *PGStore) DraftCards(ctx context.Context, limit int) ([]DraftCard, error
 		var dst, mst string
 		dest := draftDest(&c.Draft, &dst)
 		m := &c.Message
-		dest = append(dest, &m.ID, &m.OwnerID, &m.PluginID, &m.ExternalID, &m.Sender, &m.Subject, &m.Body, &m.ReceivedAt,
-			&m.CreatedAt, &mst, &m.Attempts, &m.LastAttemptAt, &m.DeliveredAt, &m.AgentID, &m.NoReply, &m.SenderVerified,
-			&c.PluginName, &c.PluginLabel, &c.EarlierUnconfirmed)
+		dest = append(dest, messageDest(m, &mst)...)
+		dest = append(dest, &c.PluginName, &c.PluginLabel, &c.EarlierUnconfirmed)
 		if err := rows.Scan(dest...); err != nil {
 			return nil, err
 		}

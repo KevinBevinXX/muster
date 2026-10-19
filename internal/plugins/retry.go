@@ -35,8 +35,12 @@ const (
 		AND r.state IN ('routed', 'answered', 'relayed'))`
 )
 
+// chiefActedTask: a task event (task_id set) the chief already acted on
+// (chiefActedOn, chief_dispatch.go): a retry would forward or ask twice.
+const chiefActedTask = `(m.task_id IS NOT NULL AND ` + chiefActedOn + `)`
+
 // retryableWhere is that predicate over plugin_messages aliased m.
-const retryableWhere = `m.status = 'unconfirmed' AND NOT ` + liveDraft + ` AND NOT ` + liveRoute
+const retryableWhere = `m.status = 'unconfirmed' AND NOT ` + liveDraft + ` AND NOT ` + liveRoute + ` AND NOT ` + chiefActedTask
 
 // ErrNotRetryable refuses a retry; the wrapped text says why (409).
 var ErrNotRetryable = errors.New("plugins: not retryable")
@@ -73,9 +77,9 @@ func (s *PGStore) Requeue(ctx context.Context, id int64) (Message, error) {
 	var out Message
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var st string
-		var drafts, routes bool
-		err := tx.QueryRow(ctx, `SELECT m.status, `+liveDraft+`, `+liveRoute+`
-			FROM plugin_messages m WHERE m.id = $1 FOR UPDATE OF m`, id).Scan(&st, &drafts, &routes)
+		var drafts, routes, acted bool
+		err := tx.QueryRow(ctx, `SELECT m.status, `+liveDraft+`, `+liveRoute+`, `+chiefActedTask+`
+			FROM plugin_messages m WHERE m.id = $1 FOR UPDATE OF m`, id).Scan(&st, &drafts, &routes, &acted)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -93,6 +97,8 @@ func (s *PGStore) Requeue(ctx context.Context, id int64) (Message, error) {
 			return fmt.Errorf("%w: your chief already drafted a reply to it that is pending, approved or sent", ErrNotRetryable)
 		case routes:
 			return fmt.Errorf("%w: your chief already routed it to a session", ErrNotRetryable)
+		case acted:
+			return fmt.Errorf("%w: your chief already acted on this task", ErrNotRetryable)
 		}
 		m, err := scanMessage(tx.QueryRow(ctx, `UPDATE plugin_messages m
 			SET status = 'queued', agent_id = NULL, delivered_at = NULL

@@ -172,6 +172,9 @@ var wantForeignKeys = []string{
 	"plugin_messages|plugin_messages_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL",
 	"plugin_messages|plugin_messages_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"plugin_messages|plugin_messages_plugin_owner_fkey|FOREIGN KEY (plugin_id, owner_id) REFERENCES plugins(id, owner_id) ON DELETE CASCADE",
+	// 0027: a PLAIN key, its owner checked by plugin_messages_task_is_owners (a
+	// composite onto notes would block 0006's re-run; see the migration).
+	"plugin_messages|plugin_messages_task_id_fkey|FOREIGN KEY (task_id) REFERENCES notes(id) ON DELETE CASCADE",
 	"plugin_reply_drafts|plugin_reply_drafts_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL",
 	"plugin_reply_drafts|plugin_reply_drafts_message_owner_fkey|FOREIGN KEY (message_id, owner_id) REFERENCES plugin_messages(id, owner_id) ON DELETE CASCADE",
 	"plugin_reply_drafts|plugin_reply_drafts_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",

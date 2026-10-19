@@ -35,6 +35,9 @@ type Store interface {
 	// whatever the new body says — and that answer wins over the rate caps, so a
 	// plugin retrying a POST it did not see answered is never refused for it.
 	Submit(ctx context.Context, pluginID int64, in MessageIn) (m Message, created bool, err error)
+	// SubmitTaskEvent stores muster's own message handing task taskID to the
+	// chief (task_events.go): no_reply, and the only writer of task_id.
+	SubmitTaskEvent(ctx context.Context, pluginID, taskID int64, in MessageIn) (m Message, created bool, err error)
 	// Message reads one message.
 	Message(ctx context.Context, id int64) (Message, error)
 	// Plugin reads one plugin.
@@ -127,13 +130,21 @@ func scanPlugin(row pgx.Row) (Plugin, error) {
 }
 
 const messageCols = `id, owner_id, plugin_id, external_id, sender, subject, body, received_at, created_at, status,
-	attempts, last_attempt_at, delivered_at, agent_id, no_reply, sender_verified`
+	attempts, last_attempt_at, delivered_at, agent_id, no_reply, sender_verified, task_id, routed_to, routed_done_at`
+
+// messageDest is the scan destinations for messageCols, in its order, with the
+// status into *st. THE ONE COPY: every reader of messageCols scans through it,
+// so a column added to the list cannot be left out of a scan (DraftCards had
+// its own copy, which a new column broke).
+func messageDest(m *Message, st *string) []any {
+	return []any{&m.ID, &m.OwnerID, &m.PluginID, &m.ExternalID, &m.Sender, &m.Subject, &m.Body, &m.ReceivedAt,
+		&m.CreatedAt, st, &m.Attempts, &m.LastAttemptAt, &m.DeliveredAt, &m.AgentID, &m.NoReply, &m.SenderVerified, &m.TaskID, &m.RoutedTo, &m.RoutedDoneAt}
+}
 
 func scanMessage(row pgx.Row) (Message, error) {
 	var m Message
 	var st string
-	err := row.Scan(&m.ID, &m.OwnerID, &m.PluginID, &m.ExternalID, &m.Sender, &m.Subject, &m.Body, &m.ReceivedAt,
-		&m.CreatedAt, &st, &m.Attempts, &m.LastAttemptAt, &m.DeliveredAt, &m.AgentID, &m.NoReply, &m.SenderVerified)
+	err := row.Scan(messageDest(&m, &st)...)
 	m.Status = Status(st)
 	return m, err
 }
@@ -266,6 +277,16 @@ func (s *PGStore) Authenticate(ctx context.Context, token string) (Plugin, error
 }
 
 func (s *PGStore) Submit(ctx context.Context, pluginID int64, in MessageIn) (Message, bool, error) {
+	return s.submit(ctx, pluginID, in, nil, "")
+}
+
+// submit is Submit, and SubmitTaskEvent when taskID is set. One body, so a task
+// event is held to every rule an inbound message is: the plugin row lock, the
+// external_id idempotency, the rate caps and the field bounds.
+// submit stores in for pluginID (once per external_id) under the caps of its
+// bucket. taskID links a task (a task event, or a notice route); routedTo, set
+// only with taskID, stores the row already delivered, routed around the chief.
+func (s *PGStore) submit(ctx context.Context, pluginID int64, in MessageIn, taskID *int64, routedTo string) (Message, bool, error) {
 	if err := in.Validate(); err != nil {
 		return Message{}, false, err
 	}
@@ -291,23 +312,43 @@ func (s *PGStore) Submit(ctx context.Context, pluginID int64, in MessageIn) (Mes
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
+		// 🔴 TWO ALLOWANCES, COUNTED APART: chief mail (task_id NULL) against
+		// MaxPerHour / MaxQueued, task events (task_id set) against
+		// MaxTaskEventsPerHour / MaxTaskEventsQueued. Counted together, a burst
+		// of task notices got the plugin's ordinary chief mail answered 429
+		// (audit round 1).
+		perHour, maxQueued := MaxPerHour, MaxQueued
+		if taskID != nil {
+			perHour, maxQueued = MaxTaskEventsPerHour, MaxTaskEventsQueued
+		}
 		var lastHour, queued int
 		if err := tx.QueryRow(ctx, `SELECT
 				count(*) FILTER (WHERE created_at > now() - make_interval(secs => $2)),
 				count(*) FILTER (WHERE status = 'queued')
-			  FROM plugin_messages WHERE plugin_id = $1`, pluginID, rateWindow.Seconds()).Scan(&lastHour, &queued); err != nil {
+			  FROM plugin_messages WHERE plugin_id = $1 AND (task_id IS NOT NULL) = $3`,
+			pluginID, rateWindow.Seconds(), taskID != nil).Scan(&lastHour, &queued); err != nil {
 			return err
 		}
+		// A notice route (routedTo) spends the task-event HOUR only: it is
+		// delivered from birth and never waits on the chief, so the chief's
+		// undelivered queue must not refuse it (audit round 3).
 		switch {
-		case lastHour >= MaxPerHour:
+		case lastHour >= perHour:
 			return ErrRateLimited
-		case queued >= MaxQueued:
+		case routedTo == "" && queued >= maxQueued:
 			return ErrQueueFull
 		}
+		var routed any
+		if routedTo != "" {
+			routed = routedTo
+		}
 		m, err = scanMessage(tx.QueryRow(ctx, `
-			INSERT INTO plugin_messages (plugin_id, external_id, sender, subject, body, received_at, no_reply, sender_verified)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING `+messageCols,
-			pluginID, in.ExternalID, in.Sender, in.Subject, in.Body, in.ReceivedAt, in.NoReply, in.SenderVerified))
+			INSERT INTO plugin_messages (plugin_id, external_id, sender, subject, body, received_at, no_reply, sender_verified, task_id,
+			                             routed_to, status, delivered_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::text,
+			        CASE WHEN $10::text IS NULL THEN 'queued' ELSE 'delivered' END,
+			        CASE WHEN $10::text IS NULL THEN NULL ELSE now() END) RETURNING `+messageCols,
+			pluginID, in.ExternalID, in.Sender, in.Subject, in.Body, in.ReceivedAt, in.NoReply, in.SenderVerified, taskID, routed))
 		if err != nil {
 			return err
 		}

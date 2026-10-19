@@ -214,6 +214,14 @@ type Extensions struct {
 	Routes  plugins.RouteStore
 	Routing *Routing
 
+	// TaskRouting is task routing's configuration (task_routing.go,
+	// MUSTER_TASK_ROUTING). nil is OFF, the default: POST /plugin/v1/tasks
+	// ignores route_to_chief and the chief's task_route_attention / task_forward
+	// / task_dispatch tools are not offered. ChiefDispatch is the ledger
+	// task_dispatch counts its caps from (the plugin store).
+	TaskRouting   *TaskRouting
+	ChiefDispatch plugins.DispatchStore
+
 	// Attention is the attention queue's explicit asks (internal/attention,
 	// migration 0025). nil (no database): the attention tools are not offered,
 	// /attention answers 404, and no link is drawn.
@@ -345,6 +353,16 @@ func (s *Server) UseExtensions(ext Extensions) {
 			s.logger.Printf("plugins: no deliverer: %v", err)
 		}
 		s.pluginDeliverer = d
+	}
+	// 🔴 THE FORWARD'S TURN EXISTS ONLY WITH A GATEWAY, BY CONSTRUCTION — the
+	// pluginDeliverer's shape. task_forward is reachable from POST /mcp, which
+	// is not (and cannot be) wrapped in requireGatewayProvisioner, so the turn
+	// is a field set here rather than a call the tool makes: on a gateway-less
+	// deployment it is nil and the forward is stored without a turn
+	// (TestATaskForwardWithoutAGatewayStoresTheMessageAndStartsNoTurn).
+	s.taskForwardTurn = nil
+	if ext.Gateway != nil && ext.Agents != nil {
+		s.taskForwardTurn = s.startAgentTurn
 	}
 	s.connectProxy = nil
 	if ext.Connectors != nil {
