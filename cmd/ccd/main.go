@@ -213,6 +213,7 @@ func serve() error {
 		srv.sup = newSupervisor(term, bin, configDir, workspace)
 		srv.inputPane = srv.sup.inputPane
 		srv.recordsPrimary = true
+		srv.primaryPID = func(ctx context.Context) (int, error) { return term.PanePID(ctx, srv.sup.ref()) }
 		maxLanes, err := envCount("CCD_MAX_SESSIONS", defaultMaxLanes)
 		if err != nil {
 			return err
@@ -225,9 +226,12 @@ func serve() error {
 					return t
 				},
 				newServer: func(t terminal) *server {
-					return newServer(serverConfig{Bearer: bearer, ConfigDir: configDir,
+					ls := newServer(serverConfig{Bearer: bearer, ConfigDir: configDir,
 						SubmitTimeout: durs[0], TurnTimeout: durs[1], HookLog: os.Getenv("CCD_HOOK_LOG"),
 						HasCredential: credentialVisible(configDir)}, t, auth)
+					// The agent's one badge: a lane's prompt shows on it too.
+					ls.blocked = srv.blocked
+					return ls
 				},
 				bin: bin, configDir: configDir, workspace: workspace, max: maxLanes,
 				startTimeout: laneStartTimeout, primaryStarted: srv.started, now: time.Now,

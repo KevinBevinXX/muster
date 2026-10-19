@@ -817,8 +817,13 @@ func (d *Driver) renderInitContainer(spec provision.Spec, main corev1.Container)
 // command, environment, confidential environment (its own Secret) and files,
 // and the instance's container security. NOT the workspace volume (see the
 // type). No ports and no probes: it is reached on loopback by the instance's
-// process, which is what the pod's probes check, and the kubelet restarts it
-// on exit.
+// process, which is what the pod's probes check.
+//
+// ⚠ NO PROBE IS DELIBERATE, NOT MISSING: every container's readiness gates the
+// pod's, so a probe here could only add ways for a sidecar fault to drop the
+// INSTANCE's endpoint. A sidecar that must survive its own process's exit says
+// so in its command (agentspec's gateway sidecar runs a supervisor); the kubelet
+// restarting an exited sidecar takes the pod NotReady while it does.
 func (d *Driver) renderSidecar(spec provision.Spec, ns string) (corev1.Container, error) {
 	sc := spec.Sidecar
 	if sc.Name == containerName || sc.Name == initContainerName {

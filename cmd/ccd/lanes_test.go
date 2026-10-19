@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -148,8 +150,12 @@ func TestThePrimaryFallbackNeverResumesALane(t *testing.T) {
 // recorded.
 func TestALaneHookReachesItsLaneAndNoOther(t *testing.T) {
 	cfg := t.TempDir()
+	old := procRoot
+	procRoot = fakeProc(t, chiefTree)
+	t.Cleanup(func() { procRoot = old })
 	primary := newServer(serverConfig{ConfigDir: cfg}, nil, newAuthTracker())
 	primary.recordsPrimary = true
+	primary.primaryPID = func(context.Context) (int, error) { return 20, nil }
 	laneSrv := newServer(serverConfig{ConfigDir: cfg}, nil, newAuthTracker())
 	id := laneID("k")
 	primary.lanes = &lanes{set: map[string]*lane{id: {id: id, key: "k", srv: laneSrv}}}
@@ -176,7 +182,7 @@ func TestALaneHookReachesItsLaneAndNoOther(t *testing.T) {
 	if primary.started() {
 		t.Fatal("a hook for a lane that is not running reached the primary")
 	}
-	post("", `{"hook_event_name":"SessionStart","session_id":"0f0e0d0c-0b0a-4908-8706-050403020100"}`)
+	post("?pid=31", `{"hook_event_name":"SessionStart","session_id":"0f0e0d0c-0b0a-4908-8706-050403020100"}`)
 	if !primary.started() {
 		t.Fatal("a hook with no lane did not reach the primary")
 	}
@@ -198,7 +204,8 @@ func TestRunHookSendsItsLane(t *testing.T) {
 		t.Setenv("CCD_LANE", lane)
 		runHook([]string{"Stop"}, strings.NewReader(`{}`), io.Discard)
 	}
-	want := []string{"/hook/Stop?lane=" + laneID("k"), "/hook/Stop", "/hook/Stop"}
+	pid := strconv.Itoa(os.Getpid())
+	want := []string{"/hook/Stop?pid=" + pid + "&lane=" + laneID("k"), "/hook/Stop?pid=" + pid, "/hook/Stop?pid=" + pid}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("hook URLs %v, want %v", got, want)
 	}

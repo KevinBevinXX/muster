@@ -109,10 +109,17 @@ type server struct {
 	// permission_prompt) and no later hook says the session moved on. See
 	// blocked.go.
 	awaitingApproval bool
+	// approvalSince is when awaitingApproval last became true (zero while it
+	// is false); a lane stuck there long enough may be stopped (lanes.go).
+	approvalSince time.Time
 	// blocked reports awaitingApproval to muster; nil when the pod is not
-	// offered muster's agent surface.
-	blocked *blockedReporter
-	pending *pendingTurn
+	// offered muster's agent surface. Every CLI's server shares the one
+	// reporter, each as its own source (blockedSrc: "" the primary, else the
+	// lane's id).
+	blocked    *blockedReporter
+	blockedSrc string
+	clock      func() time.Time
+	pending    *pendingTurn
 
 	// lanes runs a CLI per explicit muster session (lanes.go); nil when ccd
 	// does not supervise, and on a lane's own server.
@@ -120,6 +127,10 @@ type server struct {
 	// recordsPrimary: this is the primary's server, and its SessionStart's
 	// session id is recorded so the primary resumes ITS conversation (lanes.go).
 	recordsPrimary bool
+	// primaryPID is the pid of the primary CLI's process (its tmux pane's). A
+	// SessionStart is recorded only when THAT process fired it (proctree.go);
+	// nil records none.
+	primaryPID func(ctx context.Context) (int, error)
 
 	// gateway hands a gateway-runtime turn to the runtime beside ccd
 	// (gateway.go); nil when the pod runs none.
@@ -159,7 +170,7 @@ func newServer(cfg serverConfig, term terminal, auth *authTracker) *server {
 	if cfg.TranscriptGrace == 0 {
 		cfg.TranscriptGrace = 3 * time.Second
 	}
-	return &server{cfg: cfg, term: term, auth: auth, slot: make(chan struct{}, 1)}
+	return &server{cfg: cfg, term: term, auth: auth, slot: make(chan struct{}, 1), clock: time.Now}
 }
 
 // gatewayHandler is the NETWORK-facing mux. It deliberately does not serve /hook:
@@ -227,11 +238,36 @@ func (s *server) handleHook(w http.ResponseWriter, r *http.Request) {
 	}
 	target.onHook(ev)
 	if target.recordsPrimary && strings.EqualFold(ev.Event, "sessionstart") && ev.SessionID != "" {
-		if err := recordPrimary(s.cfg.ConfigDir, ev.SessionID); err != nil {
+		if why := s.notFiredByPrimary(r); why != "" {
+			log.Printf("ccd: not recording session %s as the primary's: %s", ev.SessionID, why)
+		} else if err := recordPrimary(s.cfg.ConfigDir, ev.SessionID); err != nil {
 			log.Printf("ccd: record the primary session id: %v", err)
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// notFiredByPrimary says why a hook cannot be shown to come from the primary
+// CLI's own process ("" when it can). See proctree.go: a `claude` the primary
+// runs inside itself sends its hooks here with no lane too.
+func (s *server) notFiredByPrimary(r *http.Request) string {
+	pid, err := strconv.Atoi(r.URL.Query().Get("pid"))
+	if err != nil || pid <= 1 {
+		return "the hook named no pid"
+	}
+	if s.primaryPID == nil {
+		return "ccd does not know the primary's process"
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	cli, err := s.primaryPID(ctx)
+	if err != nil {
+		return "the primary's process: " + err.Error()
+	}
+	if !hookFiredBy(procRoot, cli, pid) {
+		return fmt.Sprintf("hook process %d was not started by the primary CLI (pid %d) — a CLI running inside it, or none", pid, cli)
+	}
+	return ""
 }
 
 // onHook updates session state from one hook. It never blocks: a hook command that
@@ -595,6 +631,8 @@ func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			writeFailure(w, f)
 			return
 		}
+		// Held until runTurn returns: no eviction may take the lane under its turn.
+		defer s.lanes.release(ln)
 		target = ln.srv
 	}
 	res, f := target.runTurn(r.Context(), prompt)
@@ -933,7 +971,9 @@ func credentialVisible(configDir string) func() bool {
 }
 
 // laneFor resolves an explicit session's lane, starting its CLI when it is not
-// running, and waits for that CLI to reach its prompt.
+// running, and waits for that CLI to reach its prompt. The lane it returns is
+// reserved (lanes.acquire) and the caller releases it; on failure nothing is
+// held.
 func (s *server) laneFor(ctx context.Context, key, model string) (*lane, *failure) {
 	if s.lanes == nil {
 		return nil, paneNotReady("this ccd runs one Claude Code session only (it does not supervise the CLI, " +
@@ -949,6 +989,7 @@ func (s *server) laneFor(ctx context.Context, key, model string) (*lane, *failur
 	}
 	s.lanes.touch(ln)
 	if f := ln.waitStarted(ctx, s.lanes.startTimeout); f != nil {
+		s.lanes.release(ln)
 		return nil, f
 	}
 	return ln, nil

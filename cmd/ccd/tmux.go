@@ -219,11 +219,14 @@ func (t tmuxTerminal) Enter(ctx context.Context, ref paneRef) error {
 // taking the session down with it (the real-tmux crash-loop test starts exactly
 // such a CLI and reads its status).
 //
-// ⚠ argv of ONE element is run by tmux through the shell (`sh -c`); two or more
-// are exec'd directly. Both are fine for `claude` / `claude --continue`.
+// 🔴 THE PANE'S PROCESS IS THE CLI ITSELF, NEVER A SHELL AROUND IT. tmux runs an
+// argv of ONE element through `sh -c` (two or more are exec'd directly), and
+// whether that shell then execs the command is the shell's choice. ccd tells the
+// primary CLI's own hooks from a nested CLI's by the pane's pid (proctree.go),
+// so a lone argv is run as `env <it>`: env execs it, in the pane's own process.
 func (t tmuxTerminal) Start(ctx context.Context, dir string, argv []string) (paneRef, error) {
 	args := append([]string{"new-session", "-d", "-P", "-F", serverFormat + " #{pane_id}", "-s", t.target,
-		"-x", "200", "-y", "50", "-c", dir}, argv...)
+		"-x", "200", "-y", "50", "-c", dir}, execArgv(argv)...)
 	args = append(args, ";", "set-option", "-w", "-t", t.target, "remain-on-exit", "on")
 	out, err := t.output(ctx, args...)
 	if err != nil {
@@ -244,7 +247,32 @@ func (t tmuxTerminal) Respawn(ctx context.Context, ref paneRef, dir string, argv
 	if _, err := t.state(ctx, ref); err != nil {
 		return err
 	}
-	return t.run(ctx, nil, append([]string{"respawn-pane", "-t", ref.Pane, "-c", dir}, argv...)...)
+	return t.run(ctx, nil, append([]string{"respawn-pane", "-t", ref.Pane, "-c", dir}, execArgv(argv)...)...)
+}
+
+// execArgv is argv as tmux must be given it so the pane's process IS argv[0]
+// (see Start).
+func execArgv(argv []string) []string {
+	if len(argv) == 1 {
+		return []string{"env", argv[0]}
+	}
+	return argv
+}
+
+// PanePID is the pid of ref's pane process: the CLI (see Start).
+func (t tmuxTerminal) PanePID(ctx context.Context, ref paneRef) (int, error) {
+	if !strings.HasPrefix(ref.Pane, "%") || ref.Server == "" {
+		return 0, fmt.Errorf("no pane yet")
+	}
+	out, err := t.output(ctx, "display-message", "-p", "-t", ref.Pane, serverFormat+" #{pane_id} #{pane_pid}")
+	if err != nil {
+		return 0, err
+	}
+	f := strings.Fields(out)
+	if len(f) != 4 || f[0]+" "+f[1] != ref.Server || f[2] != ref.Pane {
+		return 0, fmt.Errorf("%w: %s now reads %q", errTerminalLost, ref, out)
+	}
+	return strconv.Atoi(f[3])
 }
 
 // paneDeadFormat is the part of paneStateFormat parsePaneExit reads.

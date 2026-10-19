@@ -113,7 +113,8 @@
   "Config": {
     "model": {
       "primary": "openrouter/vendor-a/model-one"
-    }
+    },
+    "workspace": "/srv/agent-work"
   },
   "Ports": [
     {

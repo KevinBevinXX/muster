@@ -221,6 +221,15 @@ func fakeClaude() int {
 			fmt.Print("\r\n" + msg + "\r\n> ")
 			return
 		}
+		if strings.Contains(prompt, "ASK-PERMISSION") {
+			// A tool call that stops at the terminal's permission dialog: the
+			// Notification hook fires and NOTHING else until someone answers —
+			// no Stop, so the session stays busy.
+			fire("Notification", map[string]any{"notification_type": "permission_prompt",
+				"message": "Claude needs your permission to use Bash"})
+			fmt.Print("\r\nDo you want to proceed?\r\n")
+			return
+		}
 		if strings.Contains(prompt, "SLOW") {
 			time.Sleep(1500 * time.Millisecond)
 		}

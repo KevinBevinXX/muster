@@ -233,8 +233,14 @@ type Extensions struct {
 
 	// SessionRuntimes is MUSTER_CHIEF_SESSION_RUNTIMES: the runtimes a chief
 	// chat session may be started on besides its own kind (session_runtime.go).
-	// Empty is OFF, the default: no picker is drawn and POST
-	// /agents/{id}/sessions refuses a runtime.
+	// Empty, the default: no picker is drawn and POST /agents/{id}/sessions
+	// refuses a runtime.
+	//
+	// ⚠ IT GATES THE PICKER, NOT THE ROUTING. Plugin deliveries and `chief ask`
+	// go to the chief's DEFAULT session (defaultSession) whether or not this is
+	// set, on any store with the 0030 half — so on such a deployment a plugin no
+	// longer gets a session of its own even with this empty. That is the
+	// operator's "one pinned default session" decision, not a leak of the flag.
 	SessionRuntimes []string
 }
 

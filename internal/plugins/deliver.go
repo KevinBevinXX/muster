@@ -309,6 +309,10 @@ func (d *Deliverer) attempted(parent context.Context, messageID int64, reason st
 // because a routed message handed back to the chief goes to the session p
 // records (session_routes.go), and that must be the one its delivery went to.
 //
+// ⚠ NOT GATED ON MUSTER_CHIEF_SESSION_RUNTIMES. That flag draws the runtime
+// picker; this routing applies on every store with the 0030 half, flag or no
+// flag (the operator's "one pinned default session" decision).
+//
 // A store without the 0030 half keeps the earlier rule: a session dedicated to
 // p — the recorded one while it still belongs to this chief, else a new one
 // (recorded for next time), titled by the first turn's first line, which begins

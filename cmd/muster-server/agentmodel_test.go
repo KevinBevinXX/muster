@@ -103,7 +103,7 @@ func TestThePerAgentModelReachesThePodsMusterConfig(t *testing.T) {
 	// 🔴 THE WHOLE NORMALISED STRING, NOT A SUBSTRING. A `contains` check on the
 	// wanted slug passes just as happily when BOTH slugs are present, and the
 	// operator-visible value is these exact bytes.
-	want := `{"model":{"primary":"` + a.Model + `"}}`
+	want := `{"model":{"primary":"` + a.Model + `"},"workspace":"/data/workspace"}`
 	if raw != want {
 		t.Errorf("MUSTER_CONFIG = %s\n            want %s\n"+
 			"This is the variable measured wrong on the cluster: the agent row named %q and the pod "+
@@ -148,7 +148,7 @@ func TestAnAgentWithNoModelOfItsOwnIsToldTheDeploymentDefault(t *testing.T) {
 		t.Fatalf("the Deployment carries NO MUSTER_CONFIG, so an agent that chose no model is told " +
 			"nothing rather than the installation's default")
 	}
-	want := `{"model":{"primary":"` + cfg.AgentModel + `"}}`
+	want := `{"model":{"primary":"` + cfg.AgentModel + `"},"workspace":"/data/workspace"}`
 	if raw != want {
 		t.Errorf("MUSTER_CONFIG = %s\n            want %s — an agent that named no model must "+
 			"inherit the installation's default", raw, want)
@@ -157,7 +157,7 @@ func TestAnAgentWithNoModelOfItsOwnIsToldTheDeploymentDefault(t *testing.T) {
 
 // TestNoModelAnywhereTellsTheContainerNothing pins the third tier of the
 // contract at the observable: with neither the row nor the deployment naming a
-// model, no MUSTER_CONFIG is rendered at all and the runtime decides.
+// model, MUSTER_CONFIG carries no model key (only the workspace) and the runtime decides.
 //
 // 🔴 IT IS THE CONTRACT THIS FIX WAS NOT ALLOWED TO CHANGE, which is why it is
 // asserted at the env-var level rather than trusted. agents.ResolveModel ends its
@@ -174,8 +174,10 @@ func TestNoModelAnywhereTellsTheContainerNothing(t *testing.T) {
 		t.Fatalf("provisionerTestConfig names a model (%q); this test needs both levels unset", cfg.AgentModel)
 	}
 
-	if raw, ok := musterConfigOf(t, cfg, a); ok {
-		t.Errorf("MUSTER_CONFIG = %s, want the variable to be ABSENT. An empty %s means the runtime "+
+	// MUSTER_CONFIG carries the workspace (agentspec.ConfigKeyWorkspace) and NO
+	// model key.
+	if raw, _ := musterConfigOf(t, cfg, a); raw != `{"workspace":"/data/workspace"}` {
+		t.Errorf("MUSTER_CONFIG = %s, want only the workspace and no model. An empty %s means the runtime "+
 			"decides; rendering a slug nobody configured makes muster the decider instead.",
 			raw, envAgentModel)
 	}

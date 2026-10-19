@@ -278,6 +278,20 @@ const InstructionsFileName = "AGENTS.md"
 // two string literals.
 const ConfigKeyModel = "model"
 
+// ConfigKeyWorkspace is the key Build writes the instance's workspace path under
+// in [provision.Spec.Config]: the directory [InstructionsFileName] and the seed
+// files are placed in, which the runtime must use as its agent workspace.
+//
+// 🔴 WITHOUT IT A GATEWAY AGENT NEVER READS ITS OWN AGENTS.md. The runtime's
+// default workspace is under its HOME ($HOME/.<runtime>/workspace in the 2026.5.7
+// image: resolveDefaultAgentWorkspaceDir, used whenever agents.defaults.workspace
+// is unset), not [DefaultWorkspacePath] — so the instructions muster places in
+// the workspace sat beside a runtime that looked elsewhere, and found that
+// directory's own default AGENTS.md instead. The operator's install script maps
+// this key to the runtime's setting (agents.defaults.workspace), as it maps
+// [ConfigKeyModel]; see docs/configuration.md.
+const ConfigKeyWorkspace = "workspace"
+
 // Config is the deployment-wide part of a spec: everything that is true of every
 // agent in this installation rather than of one agent row.
 //
@@ -614,7 +628,7 @@ func Build(a agents.Agent, cfg Config, opts Options) (provision.Spec, error) {
 			Persist: cfg.WorkspacePersist,
 		},
 		Repo:   repo,
-		Config: buildRuntimeConfig(a, cfg),
+		Config: buildRuntimeConfig(a, cfg, workspace),
 		Ports:  ports,
 		// 🔴 DECLARED UNCONDITIONALLY, FOR THE REASON [DefaultGatewayPort] IS:
 		// both reach the cluster at CREATE time, in the pod template, so gating
@@ -1002,7 +1016,8 @@ func resolvePrimaryModel(a agents.Agent, cfg Config) string {
 	return agents.ResolveModel(a.Model, cfg.Model)
 }
 
-// buildRuntimeConfig writes the opaque runtime config for ONE agent.
+// buildRuntimeConfig writes the opaque runtime config for ONE agent: its
+// workspace (ConfigKeyWorkspace, always) and its model (below).
 //
 // It writes the model key ONLY when there is a model to name. An empty primary
 // with a populated fallback list is not expressible upstream either, and writing
@@ -1027,7 +1042,7 @@ func resolvePrimaryModel(a agents.Agent, cfg Config) string {
 // way. The branch exists so that whenever a deployment-wide chain IS wired, it
 // does not quietly acquire authority over an agent whose model was chosen by
 // hand.
-func buildRuntimeConfig(a agents.Agent, cfg Config) map[string]any {
+func buildRuntimeConfig(a agents.Agent, cfg Config, workspace string) map[string]any {
 	primary := resolvePrimaryModel(a, cfg)
 
 	fallbacks := cfg.ModelFallbacks
@@ -1035,8 +1050,9 @@ func buildRuntimeConfig(a agents.Agent, cfg Config) map[string]any {
 		fallbacks = nil
 	}
 
+	out := map[string]any{ConfigKeyWorkspace: workspace}
 	if primary == "" && len(fallbacks) == 0 {
-		return nil
+		return out
 	}
 	model := map[string]any{}
 	if primary != "" {
@@ -1049,7 +1065,8 @@ func buildRuntimeConfig(a agents.Agent, cfg Config) map[string]any {
 		copy(copied, fallbacks)
 		model["fallbacks"] = copied
 	}
-	return map[string]any{ConfigKeyModel: model}
+	out[ConfigKeyModel] = model
+	return out
 }
 
 // buildLabels merges the installation's labels with this agent's.

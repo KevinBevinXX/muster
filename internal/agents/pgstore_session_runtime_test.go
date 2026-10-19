@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -111,6 +112,30 @@ func TestPGStoreSessionRuntimeAndDefault(t *testing.T) {
 	}
 	if d, _ := store.DefaultSession(ctx, a.ID, a.Name); d.ID != gw.ID {
 		t.Errorf("a refused SetDefaultSession moved the default to %d", d.ID)
+	}
+
+	// 🔴 THE OWNER CHECK, REACHED. The refusal above is the unique index's, not
+	// the owner check's: a already HAS a default, so marking another of its
+	// sessions default violates one-default-per-agent whatever the check says.
+	// Here the session's agent (c) has NO default yet, so nothing but the owner
+	// check stands between SetDefaultSession(other, c's session) and making it
+	// c's default — a write to another agent's sessions under this agent's id.
+	c, err := store.Create(ctx, Agent{Name: name + "-c", Namespace: "devpod-" + name + "-c", Status: StatusProvisioning})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanupAgent(ctx, pool, c.ID)
+	cSess, err := store.CreateSessionOn(ctx, c.ID, c.Name, SessionRuntimeGateway, "openrouter/vendor-x/model-y")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = store.SetDefaultSession(ctx, other.ID, cSess.ID)
+	if err == nil || !strings.Contains(err.Error(), "is not agent") {
+		t.Errorf("SetDefaultSession(other, c's session) = %v; want the owner check's refusal", err)
+	}
+	var cDefaults int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM chat_sessions WHERE agent_id=$1 AND is_default`, c.ID).Scan(&cDefaults); err != nil || cDefaults != 0 {
+		t.Errorf("c has %d default sessions after another agent's refused SetDefaultSession (%v); want 0", cDefaults, err)
 	}
 }
 

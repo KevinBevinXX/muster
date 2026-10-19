@@ -97,6 +97,20 @@ fi
 exec /usr/bin/tini -- <runtime> gateway --bind lan
 ```
 
+**Update that script before** naming `gateway` in
+`MUSTER_CHIEF_SESSION_RUNTIMES`. Otherwise the runtime would serve on its
+default port, which is `ccd`'s 18789 in the same pod. So muster refuses to build
+a chief whose script never expands `$MUSTER_GATEWAY_PORT`, and the refusal is
+shown as the chief's error. This is a text check: a script that reads the
+variable and then ignores it still passes.
+
+The `gateway` container runs the script under a small supervisor. When the
+runtime exits, the supervisor starts it again 10 s later, so the container stays
+up. A crashing runtime therefore doesn't take the pod, or `ccd`'s endpoint,
+NotReady: only `gateway` sessions fail, with the reason in that container's log.
+For the same reason the container has no probes, because every container's
+readiness gates the pod's.
+
 `MUSTER_CHIEF_SESSION_RUNTIMES`
 naming `gateway` on a deployment with the `claude-code` kind needs that bundle
 configured (it refuses to boot otherwise). A running chief gains the sidecar on
@@ -107,7 +121,9 @@ since that runtime has no standing file of the chief's.
 
 **The default session.** One session per agent is its default. Plugin
 deliveries and `muster chief ask` go to it, so they share one conversation
-instead of one per plugin. Until you choose one, it is the chief's original
+instead of one per plugin. This is so whether or not
+`MUSTER_CHIEF_SESSION_RUNTIMES` is set; that setting only adds the runtime
+picker. Until you choose one, it is the chief's original
 session (the one keyed `agent:<name>:webchat`, or the oldest). Move it with
 `POST /agents/{id}/sessions/{sid}/default`.
 

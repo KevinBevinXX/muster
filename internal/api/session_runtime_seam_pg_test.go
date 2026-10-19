@@ -18,6 +18,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/dbtest"
@@ -32,6 +33,8 @@ import (
 type routeRuntime struct {
 	mu    sync.Mutex
 	turns []routedTurn
+	// instructions is each turn's request `instructions`, beside turns.
+	instructions []string
 }
 
 type routedTurn struct {
@@ -43,8 +46,13 @@ func (r routedTurn) String() string {
 }
 
 func (f *routeRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	_, _ = io.ReadAll(r.Body)
+	raw, _ := io.ReadAll(r.Body)
+	var req struct {
+		Instructions string `json:"instructions"`
+	}
+	_ = json.Unmarshal(raw, &req)
 	f.mu.Lock()
+	f.instructions = append(f.instructions, req.Instructions)
 	f.turns = append(f.turns, routedTurn{key: r.Header.Get("X-Openclaw-Session-Key"),
 		runtime: r.Header.Get("X-Muster-Runtime"), ccSession: r.Header.Get("X-Muster-CC-Session"),
 		ccModel: r.Header.Get("X-Muster-CC-Model"), gwModel: r.Header.Get("X-Openclaw-Model")})
@@ -63,6 +71,16 @@ func (f *routeRuntime) last(t *testing.T) routedTurn {
 		t.Fatal("the runtime saw no turn")
 	}
 	return f.turns[len(f.turns)-1]
+}
+
+func (f *routeRuntime) lastInstructions(t *testing.T) string {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.instructions) == 0 {
+		t.Fatal("the runtime saw no turn")
+	}
+	return f.instructions[len(f.instructions)-1]
 }
 
 func (f *routeRuntime) count() int {
@@ -226,6 +244,35 @@ func TestChiefSessionRuntimesThroughTheRealPlane(t *testing.T) {
 		t.Errorf("refused opens wrote sessions: chief %d → %d, worker %d", before, after, sessionsOf(worker))
 	}
 
+	// A cross-site form (the operator's cookie, another site's Origin) can
+	// neither open a session nor move the default: both are 403 and write nothing.
+	crossSite := func(path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", path, strings.NewReader(body))
+		r.Host = "muster.test"
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.Header.Set("Cookie", sessionCookieFor(srv))
+		r.Header.Set("Origin", "https://elsewhere.example")
+		r.Header.Set(userHeader, strconv.FormatInt(owner, 10))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		return rec
+	}
+	if rec := crossSite("/agents/"+strconv.FormatInt(chief.ID, 10)+"/sessions",
+		url.Values{"runtime": {"claude-code"}, "model": {"opus"}}.Encode()); rec.Code != http.StatusForbidden ||
+		!strings.Contains(rec.Body.String(), CrossOriginRefusal) {
+		t.Errorf("a cross-site session open: %d %q; want 403 %q", rec.Code, rec.Body.String(), CrossOriginRefusal)
+	}
+	if after := sessionsOf(chief); after != before {
+		t.Errorf("a cross-site open wrote a session: %d → %d", before, after)
+	}
+	if rec := crossSite("/agents/"+strconv.FormatInt(chief.ID, 10)+"/sessions/"+strconv.FormatInt(cc.ID, 10)+"/default", ""); rec.Code != http.StatusForbidden ||
+		!strings.Contains(rec.Body.String(), CrossOriginRefusal) {
+		t.Errorf("a cross-site default move: %d %q; want 403 %q", rec.Code, rec.Body.String(), CrossOriginRefusal)
+	}
+	if d, _ := srv.defaultSession(asOwner, chief); d.ID != legacy.ID {
+		t.Errorf("a cross-site POST moved the default to %d; want it still %d", d.ID, legacy.ID)
+	}
+
 	// Each session's turn carries its route, and only its route.
 	want := map[int64]routedTurn{
 		legacy.ID: {key: legacy.SessionKey},
@@ -291,6 +338,10 @@ func TestChiefSessionRuntimesThroughTheRealPlane(t *testing.T) {
 	if got, sid := ask(); got != want[legacy.ID] || sid != legacy.ID {
 		t.Errorf("chief ask with the legacy default: %v in session %d; want %v in %d", got, sid, want[legacy.ID], legacy.ID)
 	}
+	// ccd's own CLI reads the chief's CLAUDE.md: the ask carries no instructions.
+	if got := rt.lastInstructions(t); got != "" {
+		t.Errorf("chief ask with the legacy default carried %d bytes of instructions; want none", len(got))
+	}
 	if got, sid := deliver(); got != want[legacy.ID] || sid != legacy.ID {
 		t.Errorf("a plugin delivery with the legacy default: %v in session %d; want %v in %d", got, sid, want[legacy.ID], legacy.ID)
 	}
@@ -302,6 +353,12 @@ func TestChiefSessionRuntimesThroughTheRealPlane(t *testing.T) {
 	}
 	if got, sid := ask(); got != want[or.ID] || sid != or.ID {
 		t.Errorf("chief ask with the OpenRouter default: %v in session %d; want %v in %d", got, sid, want[or.ID], or.ID)
+	}
+	// The gateway runtime beside ccd has no standing file of the chief's: the
+	// ask carries the chief's function-tool prose, as a chat turn there does.
+	if got, want := rt.lastInstructions(t), agentspec.ChiefInstructionsFunctionTools(true); got != want || want == "" {
+		t.Errorf("chief ask with the OpenRouter default carried instructions %.60q (%d bytes); want the chief's function-tool prose (%d bytes)",
+			got, len(got), len(want))
 	}
 	if got, sid := deliver(); got != want[or.ID] || sid != or.ID {
 		t.Errorf("a plugin delivery with the OpenRouter default: %v in session %d; want %v in %d", got, sid, want[or.ID], or.ID)
@@ -319,5 +376,87 @@ func TestChiefSessionRuntimesThroughTheRealPlane(t *testing.T) {
 	}
 	if d, _ := srv.defaultSession(asOwner, chief); d.ID != or.ID {
 		t.Errorf("a refused move changed the default to %d", d.ID)
+	}
+}
+
+// TestChiefAskGoesToTheDefaultSessionWithTheRuntimesFlagUnset pins what the docs
+// now say: MUSTER_CHIEF_SESSION_RUNTIMES draws the runtime picker and does NOT
+// gate default-session routing. With it unset, `chief ask` still lands in the
+// chief's default (its legacy-key session), not in its newer, latest one.
+//
+// ⚠ AN INVARIANT GUARD, NOT A REGRESSION TEST: the behaviour was already this
+// at origin/main; what was wrong was the docs and comments claiming otherwise.
+func TestChiefAskGoesToTheDefaultSessionWithTheRuntimesFlagUnset(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	t.Cleanup(cancel)
+	pool, err := db.Connect(ctx, dbtest.DSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	sys := authz.System(ctx)
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
+	var owner int64
+	if err := pool.QueryRow(sys, `INSERT INTO users (role, display_name) VALUES ('member', $1) RETURNING id`, "rf"+suffix).Scan(&owner); err != nil {
+		t.Fatal(err)
+	}
+	asOwner := authz.WithPrincipal(ctx, authz.Principal{UserID: owner, Role: authz.RoleMember, Via: authz.ViaSession})
+	t.Cleanup(func() {
+		for _, q := range []string{`DELETE FROM agents WHERE owner_id = $1`, `DELETE FROM audit_log WHERE user_id = $1`, `DELETE FROM users WHERE id = $1`} {
+			_, _ = pool.Exec(authz.System(context.Background()), q, owner)
+		}
+	})
+	as := agents.NewPG(pool)
+	chief, err := as.Create(asOwner, agents.Agent{Name: "rfchief-" + suffix, Namespace: "devpod-rfchief-" + suffix,
+		DisplayName: "chief", Status: agents.StatusRunning, HooksToken: "rf-hooks-" + suffix, Kind: agents.KindGateway})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := as.LatestOrCreateSession(asOwner, chief.ID, chief.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newer, err := as.CreateSession(asOwner, chief.ID, chief.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := as.AddChatMessage(asOwner, agents.ChatMessage{AgentID: chief.ID, SessionID: newer.ID, Role: "user", Content: "newer"}); err != nil {
+		t.Fatal(err)
+	}
+	// Control: the latest session is the newer one, so landing in legacy can
+	// only be the default rule.
+	if l, err := as.LatestOrCreateSession(asOwner, chief.ID, chief.Name); err != nil || l.ID != newer.ID {
+		t.Fatalf("control: the latest session is %d (%v); want the newer %d", l.ID, err, newer.ID)
+	}
+
+	rt := &routeRuntime{}
+	up := httptest.NewServer(rt)
+	t.Cleanup(up.Close)
+	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(up.URL, "http://"))
+	port, _ := strconv.Atoi(portStr)
+	gw, err := agentgateway.New(agentgateway.Config{Driver: fixedEndpoint{provision.Endpoint{Host: host, Port: port}},
+		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Client: up.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(nil, AuthConfig{HookToken: tokTestHook, UIPassword: "rf-seam-operator-pw"}, log.New(io.Discard, "", 0))
+	toks := newFakeAPITokens()
+	ownerTok := toks.add(t, owner)
+	srv.UseExtensions(Extensions{Agents: as, Users: users.NewPG(pool), Gateway: gw, APITokens: toks}) // no SessionRuntimes
+	r := httptest.NewRequest("POST", "/api/agents/"+chief.Name+"/messages", strings.NewReader(`{"message":"status?"}`))
+	r.Host = "muster.test"
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer "+ownerTok)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, r)
+	var body struct {
+		SessionID int64 `json:"sessionId"`
+	}
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &body) != nil {
+		t.Fatalf("chief ask: %d %s", rec.Code, rec.Body.String())
+	}
+	if body.SessionID != legacy.ID || rt.last(t).key != legacy.SessionKey {
+		t.Errorf("with MUSTER_CHIEF_SESSION_RUNTIMES unset, chief ask went to session %d (key %s); want the default, %d",
+			body.SessionID, rt.last(t).key, legacy.ID)
 	}
 }

@@ -155,8 +155,11 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	mux.HandleFunc("POST /agents/{id}/stop", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentStop)))
 	mux.HandleFunc("POST /agents/{id}/name", s.requireSession(s.handleAgentName))
 	mux.HandleFunc("POST /agents/{id}/model", s.requireSession(s.handleAgentModel))
-	mux.HandleFunc("POST /agents/{id}/sessions", s.requireSession(s.handleAgentSessionCreate))
-	mux.HandleFunc("POST /agents/{id}/sessions/{sid}/default", s.requireSession(s.handleAgentSessionDefault))
+	// Same-origin, like every other form that changes where the chief's turns
+	// go (requireOperatorWrite): a cross-site POST could otherwise open sessions
+	// or move the default session plugin deliveries and `chief ask` land in.
+	mux.HandleFunc("POST /agents/{id}/sessions", s.requireOperatorWrite(s.handleAgentSessionCreate))
+	mux.HandleFunc("POST /agents/{id}/sessions/{sid}/default", s.requireOperatorWrite(s.handleAgentSessionDefault))
 	mux.HandleFunc("DELETE /agents/{id}", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentDelete)))
 	mux.HandleFunc("GET /agents/{name}", s.requireSession(s.handleAgentDetail))
 	// Live transcript partial: the detail page's #chat-log re-fetches this on the

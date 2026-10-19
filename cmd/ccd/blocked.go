@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -40,18 +41,62 @@ func (s *server) trackApprovalLocked(ev hookEvent) {
 	case "posttooluse", "stop", "stopfailure", "userpromptsubmit", "sessionstart", "sessionend":
 		s.awaitingApproval = false
 	}
-	if s.awaitingApproval != was && s.blocked != nil {
-		s.blocked.set(s.awaitingApproval)
+	if s.awaitingApproval != was {
+		if s.awaitingApproval {
+			s.approvalSince = s.clock()
+		} else {
+			s.approvalSince = time.Time{}
+		}
+		if s.blocked != nil {
+			s.blocked.setFrom(s.blockedSrc, s.awaitingApproval)
+		}
 	}
 }
 
+// awaitingSince is when the session's current permission prompt appeared, and
+// whether one is showing.
+func (s *server) awaitingSince() (time.Time, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.approvalSince, s.awaitingApproval
+}
+
 // blockedReporter posts the latest blocked state to muster from one goroutine.
+//
+// 🔴 THE STATE IS THE AGENT'S, SO IT IS THE OR OF EVERY CLI IN THE POD: the
+// primary and each lane (lanes.go) is a SOURCE (setFrom), and muster's one
+// "awaiting approval" badge shows while any of them is at a permission prompt.
+// Before, only the primary reported, so a lane stuck at a prompt was invisible
+// — and, being busy, unstoppable — while it refused new sessions at the cap.
 type blockedReporter struct {
 	base, token string
 	client      *http.Client
 	heartbeat   time.Duration
 	ch          chan bool // capacity 1: the latest state wins
 	logf        func(format string, args ...any)
+
+	mu      sync.Mutex
+	sources map[string]bool // source ("" the primary, else a lane id) -> blocked
+	any     bool            // the OR last sent
+}
+
+// setFrom records one source's state and reports the OR when it changes. A
+// source that goes away (a stopped lane) reports false.
+func (r *blockedReporter) setFrom(src string, blocked bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.sources == nil {
+		r.sources = map[string]bool{}
+	}
+	if blocked {
+		r.sources[src] = true
+	} else {
+		delete(r.sources, src)
+	}
+	if now := len(r.sources) > 0; now != r.any {
+		r.any = now
+		r.set(now)
+	}
 }
 
 func newBlockedReporter(base, token string) *blockedReporter {
@@ -64,8 +109,8 @@ func newBlockedReporter(base, token string) *blockedReporter {
 	}
 }
 
-// set records the latest state without blocking. Callers are serialised by
-// server.mu, so drain-then-send cannot block.
+// set records the latest state without blocking. Its one caller, setFrom, holds
+// r.mu, so drain-then-send cannot block.
 func (r *blockedReporter) set(blocked bool) {
 	select {
 	case <-r.ch:

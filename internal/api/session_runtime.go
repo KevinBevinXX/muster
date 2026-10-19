@@ -186,11 +186,44 @@ func (s *Server) handleAgentSessionDefault(w http.ResponseWriter, r *http.Reques
 // written for function tools, travels with each turn
 // (agentspec.ChiefInstructionsFunctionTools).
 func (s *Server) turnInstructions(ctx context.Context, a agents.Agent) string {
-	if r, ok := agents.TurnRouteFrom(ctx); ok && r.Runtime == agents.SessionRuntimeGateway &&
-		agents.ResolveKind(a.Kind) == agents.KindClaudeCode {
+	if sidecarTurn(ctx, a) {
 		return agentspec.ChiefInstructionsFunctionTools(s.ext.Plugins != nil)
 	}
 	return s.AgentInstructions(a)
+}
+
+// sidecarTurn reports whether ctx routes a's turn to the gateway runtime BESIDE
+// ccd: a claude-code agent's session on the gateway runtime. That runtime has no
+// standing file of the agent's, so such a turn must carry its instructions.
+func sidecarTurn(ctx context.Context, a agents.Agent) bool {
+	r, ok := agents.TurnRouteFrom(ctx)
+	return ok && r.Runtime == agents.SessionRuntimeGateway && agents.ResolveKind(a.Kind) == agents.KindClaudeCode
+}
+
+// askTurn is the tool-less turn `chief ask` (POST /api/agents/{name}/messages)
+// runs, on ctx carrying the session's route.
+//
+// 🔴 A TURN FOR THE GATEWAY RUNTIME BESIDE ccd CARRIES turnInstructions.
+// Gateway.Chat sends no instructions, which is parity everywhere else: the agent's
+// own runtime reads its standing files. The sidecar has none of the chief's, so a
+// `chief ask` to a gateway DEFAULT session reached a model that had never been
+// told it was the chief. Such a turn goes over ChatWithTools with no tools (the
+// route stays tool-less, as it has always been) and the instructions chatTurn
+// sends, falling back to Chat exactly where chatTurn does.
+func (s *Server) askTurn(ctx context.Context, a agents.Agent, sessionKey, message string) (string, error) {
+	if !sidecarTurn(ctx, a) {
+		return s.ext.Gateway.Chat(ctx, a, sessionKey, message, nil)
+	}
+	reply, err := s.ext.Gateway.ChatWithTools(ctx, a, sessionKey, s.turnInstructions(ctx, a), message, nil, noTools, nil)
+	if errors.Is(err, agents.ErrResponsesUnsupported) && !agents.PastFirstRequest(err) {
+		return s.ext.Gateway.Chat(ctx, a, sessionKey, message, nil)
+	}
+	return reply, err
+}
+
+// noTools answers a call to a tool a tool-less turn never offered.
+func noTools(string, string) string {
+	return `{"error":"no tools are offered on this turn; nothing was run"}`
 }
 
 // sessionViews renders a's sessions for a switcher: active marks the open one,

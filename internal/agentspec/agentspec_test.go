@@ -909,8 +909,38 @@ func TestNoModelMeansNoConfigKeyRatherThanAnEmptyOne(t *testing.T) {
 	cfg := fixtureConfig()
 	cfg.Model, cfg.ModelFallbacks = "", nil
 	spec := mustBuild(t, a, cfg, Options{})
-	if spec.Config != nil {
-		t.Errorf("Spec.Config = %#v, want nil — writing {\"primary\":\"\"} hands the runtime a value it must special-case, which is how unset and empty stop being distinguishable", spec.Config)
+	// Only the workspace (ConfigKeyWorkspace), which is not a model.
+	if len(spec.Config) != 1 || spec.Config[ConfigKeyWorkspace] != cfg.WorkspacePath || cfg.WorkspacePath == "" {
+		t.Errorf("Spec.Config = %#v, want only the workspace — writing {\"primary\":\"\"} hands the runtime a value it must special-case, which is how unset and empty stop being distinguishable", spec.Config)
+	}
+}
+
+// TestTheRuntimeIsToldTheWorkspaceItsInstructionsAreIn: the runtime config
+// names the workspace AGENTS.md is placed in — the configured path, or the
+// default — because the runtime's own default workspace is elsewhere (under its
+// HOME), where it never sees muster's instructions. The gateway sidecar, which
+// mounts no workspace, is told none.
+func TestTheRuntimeIsToldTheWorkspaceItsInstructionsAreIn(t *testing.T) {
+	for _, ws := range []string{"/srv/agent-work", ""} {
+		cfg := fixtureConfig()
+		cfg.WorkspacePath = ws
+		spec := mustBuild(t, fixtureAgent(), cfg, Options{Instructions: "prose"})
+		want := ws
+		if want == "" {
+			want = "/data/workspace"
+		}
+		if got := spec.Config[ConfigKeyWorkspace]; got != want {
+			t.Errorf("workspace %q: Spec.Config[%q] = %v, want %q", ws, ConfigKeyWorkspace, got, want)
+		}
+		var instr string
+		for _, f := range spec.Files {
+			if strings.HasSuffix(f.Path, "/"+InstructionsFileName) {
+				instr = f.Path
+			}
+		}
+		if instr != want+"/AGENTS.md" {
+			t.Errorf("workspace %q: AGENTS.md is placed at %q, not in the workspace the runtime is told (%q)", ws, instr, want)
+		}
 	}
 }
 

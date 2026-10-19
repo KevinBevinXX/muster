@@ -2,6 +2,7 @@ package agentprovision
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/agents"
@@ -14,7 +15,7 @@ func sidecarSpecConfig() agentspec.Config {
 	cfg.ChiefGatewaySidecar = true
 	cfg.OpenRouterAPIKey = "sk-or-v1-FAKE-sidecar-ENV-key-7d10"
 	cfg.RuntimeConfig = agentspec.RuntimeConfig{
-		Template: []byte("{}\n"), Install: []byte("set -eu\nexec /example/entrypoint\n"),
+		Template: []byte("{}\n"), Install: []byte("set -eu\nexec /example/entrypoint --port \"$MUSTER_GATEWAY_PORT\"\n"),
 		DeriveBearer: func(tok string) string { return "derived:" + tok },
 	}
 	return cfg
@@ -80,5 +81,34 @@ func TestTheChiefSidecarCarriesItsOwnersOpenRouterKey(t *testing.T) {
 	spec, err = a.buildSpec(context.Background(), row)
 	if err != nil || spec.Sidecar == nil || key(spec) != "" {
 		t.Fatalf("member 42 (no key): sidecar %v key %q (%v); want a sidecar and no key — never the environment's", spec.Sidecar != nil, key(spec), err)
+	}
+}
+
+// TestAChiefStartOnAPreSidecarInstallScriptFailsOnTheAgent is the wrong deploy
+// order: the switch is on while the runtime bundle's install script still
+// predates the sidecar's port. Start refuses to apply the spec, and the row
+// says why — rather than a pod whose sidecar fights ccd for its port.
+func TestAChiefStartOnAPreSidecarInstallScriptFailsOnTheAgent(t *testing.T) {
+	cfg := sidecarSpecConfig()
+	cfg.RuntimeConfig.Install = []byte("set -eu\nexec /example/entrypoint --bind lan\n")
+	row := ccRow(agents.ChiefName)
+	a := adapterWith(t, cfg, row)
+	err := a.Start(context.Background(), row.ID)
+	if err == nil || !strings.Contains(err.Error(), "MUSTER_GATEWAY_PORT") {
+		t.Fatalf("Start: %v; want a refusal naming MUSTER_GATEWAY_PORT", err)
+	}
+	store := a.store.(*recordingStore)
+	var recorded bool
+	for _, c := range store.calls {
+		if strings.HasPrefix(c, "UpdateStatus(") && strings.Contains(c, ","+agents.StatusError+",") &&
+			strings.Contains(c, "build spec") && strings.Contains(c, "MUSTER_GATEWAY_PORT") {
+			recorded = true
+		}
+		if strings.HasPrefix(c, "driver.") {
+			t.Errorf("the driver was called after the refusal: %s", c)
+		}
+	}
+	if !recorded {
+		t.Errorf("the refusal is not on the agent's row: %v", store.calls)
 	}
 }

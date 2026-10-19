@@ -161,8 +161,8 @@ var provisionerDeps = []provisionerDep{
 			"POST /api/agents/{name}/messages",
 		},
 		callers: []string{
-			"(*Server).chatTurn",                  // ChatWithTools + Chat; reached from runUserTurn (handleAgentWS, handleAgentSend)
-			"(*Server).handleAPIAgentSendMessage", // Chat
+			"(*Server).askTurn",  // Chat, or ChatWithTools + Chat for the gateway sidecar; reached from handleAPIAgentSendMessage
+			"(*Server).chatTurn", // ChatWithTools + Chat; reached from runUserTurn (handleAgentWS, handleAgentSend)
 		},
 	},
 }

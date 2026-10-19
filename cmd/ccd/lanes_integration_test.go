@@ -14,8 +14,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -251,6 +253,82 @@ func TestTmuxLaneEachCLIResumesItsOwnConversation(t *testing.T) {
 	}
 }
 
+// 🔴 A `claude` RUN INSIDE THE PRIMARY IS NOT THE PRIMARY. The chief's own shell
+// (here the fake's `!` shell mode, typed in the pane) starts a nested CLI that
+// inherits CLAUDE_CONFIG_DIR and the hook settings and has no CCD_LANE; its
+// SessionStart reaches ccd as a primary hook. Its session id must not replace
+// the primary's record — which the next primary restart resumes.
+func TestTmuxLaneANestedCLIIsNotRecordedAsThePrimary(t *testing.T) {
+	r := startServe(t)
+	r.waitHealth(t, "primary start", func(h health) bool { return h.Session == sessionStartedState })
+	r.chat(t, "p1")
+	primary := r.primaryID(t)
+
+	r.tmux(t, "send-keys", "-t", "=cc:", "-l", "!claude")
+	r.tmux(t, "send-keys", "-t", "=cc:", "Enter")
+	var nested string
+	waitLane(t, "the nested CLI's start", func() bool {
+		for _, line := range strings.Split(r.argvLog(t), "\n") {
+			if f := strings.Fields(line); len(f) > 2 && f[1] == "source=startup" && f[3] == "lane=" &&
+				strings.TrimPrefix(f[0], "sid=") != primary {
+				nested = strings.TrimPrefix(f[0], "sid=")
+				return true
+			}
+		}
+		return false
+	}, r)
+	// Wait until ccd has HANDLED the nested CLI's SessionStart — it either
+	// replaced the record (the bug) or logged declining it — so an unchanged
+	// record below is never a hook that simply had not arrived yet.
+	waitLane(t, "the nested CLI's SessionStart reaching ccd", func() bool {
+		return r.primaryID(t) != primary || strings.Contains(r.logs.String(), "not recording session "+nested)
+	}, r)
+	if got := r.primaryID(t); got != primary {
+		t.Fatalf("the primary's record is now %q (the nested CLI's is %q); want the primary's own %q", got, nested, primary)
+	}
+}
+
+// 🔴 A LANE'S PERMISSION PROMPT SHOWS ON THE AGENT'S BADGE, through the whole
+// binary: ccd posts blocked=true to muster's /agent/blocked when a LANE's CLI
+// stops at the dialog — not only the primary's — and /healthz names the lane as
+// waiting.
+func TestTmuxLaneAPermissionPromptInALaneReachesTheBadge(t *testing.T) {
+	var mu sync.Mutex
+	var posts []string
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/agent/blocked":
+			b, _ := io.ReadAll(r.Body)
+			mu.Lock()
+			posts = append(posts, strings.TrimSpace(string(b)))
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		case r.URL.Path == "/agent/connectors":
+			_, _ = io.WriteString(w, `{"connectors":[]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(fake.Close)
+	r := startServe(t, "MUSTER_CONNECT_URL="+fake.URL, "MUSTER_HOOK_TOKEN=agent-own-token",
+		"HOME="+t.TempDir(), "CCD_TURN_TIMEOUT=2s")
+	r.waitHealth(t, "primary start", func(h health) bool { return h.Session == sessionStartedState })
+	r.mustLaneChat(t, "sess-p", "opus", "first")
+
+	if _, err := r.laneChat("sess-p", "opus", "ASK-PERMISSION run it"); err == nil {
+		t.Fatal("a turn stopped at a permission dialog returned a reply")
+	}
+	waitLane(t, "blocked=true posted for the lane's prompt", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(posts) > 0 && posts[len(posts)-1] == `{"blocked":true}`
+	}, r)
+	h := r.waitHealth(t, "the lane waiting", func(h health) bool { return len(h.Lanes) == 1 })
+	if !h.Lanes[0].AwaitingApproval || h.Lanes[0].AwaitingSince == "" || h.Lanes[0].Stuck {
+		t.Errorf("/healthz lane: %+v; want awaiting approval, not yet stuck", h.Lanes[0])
+	}
+}
+
 // 🔴 THE CAP: with CCD_MAX_SESSIONS=1 a second session stops the first (idle)
 // one's CLI, whose next turn starts it again and resumes its conversation; and
 // while the running one is mid-turn, another session is refused 503 capacity
@@ -280,10 +358,23 @@ func TestTmuxLaneTheCapStopsTheIdleLaneAndRefusesWhenAllAreBusy(t *testing.T) {
 	if !errors.As(err, &rt) || rt.Type != failCapacity {
 		t.Errorf("a second session while the only lane is mid-turn: %v; want a typed %s refusal", err, failCapacity)
 	}
-	if err := <-done; err != nil {
-		t.Errorf("the turn in progress was disturbed: %v", err)
+	// BOUNDED: an unbounded receive hung here until the binary's 10-minute
+	// timeout panicked, which skips every t.Cleanup — the tmux server and the
+	// ccd it serves were left running. A Fatalf returns, so they run.
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("the turn in progress was disturbed: %v", err)
+		}
+	case <-time.After(laneTurnWait):
+		t.Fatalf("the turn in progress never returned within %s; ccd log:\n%s", laneTurnWait, r.logs.String())
 	}
 }
+
+// laneTurnWait bounds waiting on a turn the test started in a goroutine. The
+// turn takes 1.5s (SLOW); the bound is generous for a loaded host and far
+// below the binary's -timeout.
+const laneTurnWait = 30 * time.Second
 
 // A model ccd will not pass to --model is refused before any CLI starts.
 func TestTmuxLaneABadModelIsRefusedAndStartsNothing(t *testing.T) {
