@@ -182,8 +182,11 @@ func taskRoutingToolDefs(dispatch bool) []agents.ToolDef {
 	defs := []agents.ToolDef{
 		{Type: "function", Name: taskRouteAttentionTool,
 			Description: "Put one of your owner's tasks in front of them: it appears in muster's Attention view and on their phone, with your note. " +
-				"The default for a task event whenever you are unsure, or when another routing tool refuses. Returns the ask's id; " +
-				"call attention_wait with it only if you will act on the answer.",
+				"The default for a task event whenever you are unsure, or when another routing tool refuses. muster shows your owner, as buttons, " +
+				"the actions you can actually take on the task right now (task_forward when a running agent works it; task_dispatch when your owner " +
+				"has opted in) — returned as actions_offered — so phrase your note as a choice between THOSE actions; never offer one that is not " +
+				"listed. Their answer is delivered to you as a new message in your default session, so you need not wait; you MAY call " +
+				"attention_wait with the returned id to block on it.",
 			Parameters: objSchema(map[string]any{"task_id": id, "note": note}, "task_id", "note")},
 		{Type: "function", Name: taskForwardTool,
 			Description: "Pass a task event to the agent already working the task (agents_on_task): it gets a message naming the task, " +
@@ -283,11 +286,21 @@ func (s *Server) toolTaskRouteAttention(ctx context.Context, a agents.Agent, tas
 	if !ok {
 		return toolErr("%s", chiefDispatchNoTask)
 	}
+	acts, err := s.chiefTaskActions(ctx, a, n)
+	if err != nil {
+		s.logger.Printf("task routing: the actions on task %d: %v", taskID, err)
+		return toolErr("the task could not be put in front of your owner")
+	}
 	addendum := ""
 	if c := cleanNote(note); c != "" {
-		addendum = "Your chief's note: " + c
+		addendum = "Your chief's note: " + c + "\n\n"
 	}
-	ask, err := s.askOwnerAboutTask(ctx, callerOfAgent(a).asker, n, addendum)
+	addendum += chiefTaskActionsLine(acts)
+	options, offered := make([]string, 0, len(acts)), make([]string, 0, len(acts))
+	for _, x := range acts {
+		options, offered = append(options, x.Label), append(offered, x.Tool)
+	}
+	ask, err := s.askOwnerAboutTask(ctx, callerOfAgent(a).asker, n, addendum, options...)
 	switch {
 	case err == nil:
 	case errors.Is(err, attention.ErrInvalid), errors.Is(err, attention.ErrTooMany):
@@ -297,19 +310,21 @@ func (s *Server) toolTaskRouteAttention(ctx context.Context, a agents.Agent, tas
 		return toolErr("the task could not be put in front of your owner")
 	}
 	s.recordTaskRouted(ctx, n, taskRouteAttentionTool)
-	return toolJSON(map[string]any{"id": ask.ID, "task_id": n.ID, "status": "pending",
-		"next": "Your owner has it. Call attention_wait{id: " + strconv.FormatInt(ask.ID, 10) + "} only if you will act on the answer."})
+	return toolJSON(map[string]any{"id": ask.ID, "task_id": n.ID, "status": "pending", "actions_offered": offered,
+		"next": "Your owner has it. Their answer will be delivered to you as a new message in your default session; act on it then " +
+			"(with one of actions_offered when they pick one). You do not need to wait; you MAY call attention_wait{id: " +
+			strconv.FormatInt(ask.ID, 10) + "} to block on it."})
 }
 
 // askOwnerAboutTask files an ask by asker naming task n ("Task #N needs you:
 // <title>", then addendum on its own paragraph) and notifies the owner. The ONE
 // path both task_route_attention and a mention's attention route use.
-func (s *Server) askOwnerAboutTask(ctx context.Context, asker attention.Asker, n notes.Note, addendum string) (attention.Ask, error) {
+func (s *Server) askOwnerAboutTask(ctx context.Context, asker attention.Asker, n notes.Note, addendum string, options ...string) (attention.Ask, error) {
 	q := "Task #" + strconv.FormatInt(n.ID, 10) + " needs you: " + taskLabel(n)
 	if addendum != "" {
 		q += "\n\n" + addendum
 	}
-	ask, err := s.ext.Attention.Create(ctx, attention.New{Asker: asker, Question: fence.Cut(q, attention.MaxQuestionRunes)})
+	ask, err := s.ext.Attention.Create(ctx, attention.New{Asker: asker, Question: fence.Cut(q, attention.MaxQuestionRunes), Options: options})
 	if err != nil {
 		return attention.Ask{}, err
 	}
@@ -425,17 +440,12 @@ func (s *Server) toolTaskForward(ctx context.Context, a agents.Agent, taskID int
 	if !ok {
 		return toolErr("%s", chiefDispatchNoTask)
 	}
-	on, err := s.agentsOnTask(ctx, agentOwnerID(a), taskID)
+	// forwardTarget is ALSO what task_route_attention offers the owner
+	// (task_actions.go): one predicate for the offer and the gate.
+	target, err := s.forwardTarget(ctx, a, taskID)
 	if err != nil {
 		s.logger.Printf("task routing: agents on task %d: %v", taskID, err)
 		return toolErr("the agents working the task could not be read")
-	}
-	var target *agents.Agent
-	for i := range on {
-		if on[i].ID != a.ID && agentCanBeSent(on[i].Status) {
-			target = &on[i]
-			break
-		}
 	}
 	if target == nil {
 		return toolErr("no running agent works task %d: use task_dispatch or task_route_attention", taskID)
@@ -487,14 +497,10 @@ func (e errTaskDispatch) Error() string { return string(e) }
 // unit is spent — fail-closed, like any create that fails.
 func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID int64, repo, kindArg, instructions string) string {
 	owner := agentOwnerID(a)
-	if owner <= 0 || !s.ext.TaskRouting.DispatchOwners[owner] {
-		return toolErr("%s", chiefDispatchOptOut)
-	}
-	if s.ext.Provisioner == nil {
-		return toolErr("this deployment cannot start agents")
-	}
-	if reason := s.ext.Provisioner.KickoffUndeliverableReason(); reason != "" {
-		return toolErr("this deployment cannot start an agent now: %s", reason)
+	// The opt-in and the deployment: shared with task_route_attention's offer
+	// (task_actions.go), as is chiefDispatchTaskRefusal below.
+	if why := s.chiefDispatchDeploymentRefusal(owner); why != "" {
+		return toolErr("%s", why)
 	}
 	instructions, ok := cleanInstructions(instructions)
 	if !ok {
@@ -525,26 +531,16 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 		if !ok {
 			return errTaskDispatch(chiefDispatchNoTask)
 		}
-		if reason, gated := notes.GateReason(n.Tags); gated {
-			return errTaskDispatch("task " + strconv.FormatInt(taskID, 10) + " (" + reason + ") " + chiefDispatchGatedText)
+		if why, err := s.chiefDispatchTaskRefusal(ctx, owner, n); err != nil {
+			return err
+		} else if why != "" {
+			return errTaskDispatch(why)
 		}
 		if cc && (n.Repo != "" || n.RepoBranch != "") {
 			return errTaskDispatch("task " + strconv.FormatInt(taskID, 10) + " names a repository: " + chiefDispatchCCRepo)
 		}
 		if repo != "" && n.Repo != "" && !strings.EqualFold(n.Repo, repo) {
 			return errTaskDispatch("task " + strconv.FormatInt(taskID, 10) + " " + chiefDispatchTaskRepo + " (" + n.Repo + "): omit repo")
-		}
-		if n.Status != notes.StatusOpen {
-			return errTaskDispatch("task " + strconv.FormatInt(taskID, 10) + " " + chiefDispatchNotOpen + " (" + n.Status + ")")
-		}
-		on, err := s.agentsOnTask(ctx, owner, taskID)
-		if err != nil {
-			return err
-		}
-		for _, x := range on {
-			if agentLive(x.Status) {
-				return errTaskDispatch("task " + strconv.FormatInt(taskID, 10) + " " + chiefDispatchHasAgent)
-			}
 		}
 		task = n
 		return nil
@@ -634,6 +630,17 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 		// A claude-code agent has no per-agent model (claudeCodeNoModel) and no
 		// repository; its Claude account comes from the owner's pool.
 		p.Model, p.Repo, p.RepoBranch = "", "", ""
+	}
+	// chiefDispatchDeploymentRefusal answered these before the reservation; they
+	// are read again HERE, at the call, because the provisioner-seam walk
+	// (provisioner_seam_test.go) is function-granular — a body that calls the
+	// provisioner and nil-checks it is the barrier — and because the deployment
+	// can stop taking kickoffs while the reservation ran.
+	if s.ext.Provisioner == nil {
+		return toolErr("this deployment cannot start agents")
+	}
+	if reason := s.ext.Provisioner.KickoffUndeliverableReason(); reason != "" {
+		return toolErr("this deployment cannot start an agent now: %s", reason)
 	}
 	rec, err := s.createAndDispatchAgent(ctx, p)
 	if err != nil {

@@ -157,7 +157,10 @@ var (
 		"internal/uploads.sys",
 		// The attention queue (migration 0023): the expiry sweep moves every
 		// owner's lapsed asks and hands each back with its owner, whose devices
-		// alone are then told (attention.PGStore.ExpireDue's one helper).
+		// alone are then told (attention.PGStore.ExpireDue's one helper) — and,
+		// migration 0031, the answer-delivery sweep's two reads of every owner's
+		// owed/lapsed deliveries (DueDeliveries, RecoverDeliveries), each row
+		// handed back with its owner and delivered under THAT owner's principal.
 		"internal/attention.sys",
 		// …and its draft half: every owner's PENDING reply drafts (ids, owners,
 		// deadlines; no body), read once per process so a notification shown

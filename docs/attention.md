@@ -84,7 +84,7 @@ claude-code agent — whenever muster has a database.
 
 | tool | does |
 |---|---|
-| `attention_ask {question, options?, timeout_seconds?}` | Files a question. `options` (at most 10) become buttons; you can still answer in free text. Open for 24 hours by default (60 s to 7 days), then it expires. Returns `{id, status: "pending"}`. |
+| `attention_ask {question, options?, timeout_seconds?}` | Files a question. `options` (at most 10) become buttons; you can still answer in free text. Open for 24 hours by default (60 s to 7 days), then it expires. Returns `{id, status: "pending", next}`. A dispatched agent's answer is [delivered to it](#delivery) as a new message, so it need not wait; a mirrored session must call `attention_wait`. |
 | `attention_wait {id, wait_seconds?}` | Blocks until the ask is answered (`status: "answered"`, `answer`), answered in the session (`status: "answered_in_session"`, `answer` — see [Answering](#answering)), cancelled or expired, or `wait_seconds` (default 240, at most 600) pass — then answers `status: "pending"` and the agent calls it again. `wait_seconds: 0` reads it without waiting. At most 2 waits per agent and 20 per owner are open at once; past that a wait is refused at once. |
 | `attention_cancel {id}` | Withdraws an open ask. |
 | `tasks_list {status?}`, `task_get {id}`, `task_comment {id, body}`, `task_set_status {id, status}` | The agent's OWN task: the one it was dispatched for. The chief's: the owner's whole board. Any other task answers exactly what a task that does not exist answers. An agent may set `open`, `in_progress` or `ready_for_review` — never `complete`, and never on a task that is already complete (checked in the update itself). The same rule holds on `PATCH /api/tasks/{id}/status` when the caller is an agent (the chief asserting its name through the service credential); the operator's tokens are unchanged. |
@@ -110,14 +110,19 @@ default wait is 240 seconds.
 
 ### What agents are told
 
-The gateway system prompt and the MCP `initialize` instructions both carry this
-paragraph:
+A dispatched agent's gateway system prompt and MCP `initialize` instructions
+carry this paragraph (`attentionInstruction`):
 
-> If you need your owner's input — a decision, a missing fact, an approval — do
-> NOT stop and wait for a reply in the chat: call attention_ask{question,
-> options?} and then attention_wait{id} (repeat it while it answers "pending")
-> until it returns the answer, then continue. Your owner sees the question in
-> muster's Attention view and on their phone.
+> If you need your owner's input — a decision, a missing fact, an approval —
+> call attention_ask{question, options?}. Your owner sees the question in
+> muster's Attention view and on their phone. When they answer, muster delivers
+> the answer to you as a new message in your default session, so you do NOT
+> need to wait for it: you may end your turn. If you cannot continue without
+> it, you MAY instead block on it with attention_wait{id} (repeat it while it
+> answers "pending"); an answer you read there is not delivered a second time.
+
+A mirrored session's (`mirrorAttentionInstruction`) still says to call
+`attention_wait` until it returns the answer: its answer is never pushed.
 
 ## Mirrored Claude Code sessions
 
@@ -219,6 +224,48 @@ names and server instructions load at startup",
 
 If muster sits behind an auth proxy, `POST /mirror/mcp` must bypass it, as
 `GET /mirror/connect` does.
+
+## Delivery
+
+When you answer an ask on `/attention`, the answer goes to whoever asked
+(migration 0031, `internal/api/attention_delivery.go`):
+
+| asker | what happens |
+|---|---|
+| a dispatched agent (the chief included) | muster pushes the answer into the agent's **default** chat session (the chief's pinned one) as a new turn: muster's line naming the ask by id (no question text outside the fence), then the question and your answer, fenced (`<<<attention-answer untrusted …>>>`). The agent acts on it without polling. |
+| a mirrored Claude Code session | nothing is pushed: muster types into a mirrored window only for your own message (the send queue's step-up gate). The session reads the answer with `attention_wait`. |
+| muster itself (a system ask) | nothing to deliver. |
+
+**Exactly once.** The delivery is a state on the ask's row, and every move is
+one conditional update: queued → delivering (one claimer, with a lease) →
+delivered, or unconfirmed. An agent blocked in `attention_wait` on the ask gets
+the answer THERE instead — a wait in flight is never pushed over, the push only
+takes an answer a few seconds old, and a wait that returns the answer marks it
+read — so it never gets the answer twice. A restart re-reads the owed answers
+on the attention sweep (every 30 s) and delivers each once.
+
+**The turn's locks are a delivered plugin message's.** It holds the agent's
+session claim (so it never overlaps a plugin delivery, a first turn or a route
+hand-back) and waits for the agent to be idle in this process (an operator's
+chat turn). An agent that is busy, not running or not yet started keeps the
+answer queued, saying why, and the sweep retries it.
+
+**Unconfirmed is never resent on its own.** A turn that failed after the text
+may have reached the agent, or whose process died mid-turn (its lease lapsed),
+settles *unconfirmed* — the plugin deliverer's rule. So does an answer still
+queued a day after it was given or retried (its agent stopped, never started,
+or stayed busy), saying why; unconfirmed answers stay listed until retried. A turn the runtime provably
+did not take (busy, not ready) stays queued.
+
+**Where it went.** Below the open items, `/attention` lists the last day's
+answers and where each went: *Queued for …* (with why, while it waits),
+*Delivering…*, *Delivered to …*, *… read it while waiting for it*, *Waiting for …
+to read it* (a mirrored session), or *Delivery failed: …* with **Retry delivery**
+(`POST /attention/asks/{id}/redeliver`, your own asks only), which queues it
+once more.
+
+**No backfill.** An answer recorded before 0031 has no delivery state and is
+never pushed.
 
 ## Answering
 

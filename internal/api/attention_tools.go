@@ -80,12 +80,22 @@ var (
 )
 
 // attentionToolNote ends the attention tools' descriptions.
-const attentionToolNote = " Use it whenever you need your owner's input instead of stopping: ask, then wait."
+const attentionToolNote = " Use it whenever you need your owner's input instead of stopping."
 
-// attentionInstruction is the paragraph every agent's instructions carry
-// (AgentInstructions for a gateway agent, the MCP initialize instructions for a
-// claude-code one).
-const attentionInstruction = "If you need your owner's input — a decision, a missing fact, an approval — do NOT stop and wait for a reply in the chat: " +
+// attentionInstruction is the paragraph every DISPATCHED agent's instructions
+// carry (AgentInstructions for a gateway agent, the MCP initialize instructions
+// for a claude-code one). Its answer is pushed to it (attention_delivery.go), so
+// it need not wait; it may.
+const attentionInstruction = "If you need your owner's input — a decision, a missing fact, an approval — call attention_ask{question, options?}. " +
+	"Your owner sees the question in muster's Attention view and on their phone. When they answer, muster delivers the answer to you " +
+	"as a new message in your default session, so you do NOT need to wait for it: you may end your turn. If you cannot continue " +
+	"without it, you MAY instead block on it with attention_wait{id} (repeat it while it answers \"pending\"); an answer you read " +
+	"there is not delivered a second time."
+
+// mirrorAttentionInstruction is a MIRRORED Claude Code session's paragraph
+// (mirror_mcp.go). muster never types into a mirrored window unasked, so its
+// answer is NOT pushed: the session must wait for it.
+const mirrorAttentionInstruction = "If you need your owner's input — a decision, a missing fact, an approval — do NOT stop and wait for a reply in the chat: " +
 	"call attention_ask{question, options?} and then attention_wait{id} (repeat it while it answers \"pending\") until it returns the answer, then continue. " +
 	"Your owner sees the question in muster's Attention view and on their phone."
 
@@ -136,7 +146,9 @@ func attentionToolDefs() []agents.ToolDef {
 	return []agents.ToolDef{
 		{Type: "function", Name: attentionAskTool,
 			Description: "Ask your owner a question and get their answer. It appears in muster's Attention view and as a notification on their phone. " +
-				"Offer options when the answer is a choice (they can still type a free answer). Returns the ask's id: then call attention_wait with it." + attentionToolNote,
+				"Offer options when the answer is a choice (they can still type a free answer). Returns the ask's id. A dispatched agent (the chief included) " +
+				"gets the answer delivered as a new message in its default session, so it need not wait (it MAY call attention_wait to block on it); " +
+				"a mirrored Claude Code session gets it ONLY through attention_wait, so it must call attention_wait with the id." + attentionToolNote,
 			Parameters: objSchema(map[string]any{
 				"question": strProp("The question, self-contained: your owner may read it on a lock screen without context."),
 				"options": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": attention.MaxOptions,
@@ -270,7 +282,19 @@ func (s *Server) toolAttentionAsk(ctx context.Context, c toolCaller, arguments s
 	s.attentionNotify(a.Owner, askItem(a))
 	s.attentionChanged(a.Owner, attentionAskKey(a.ID))
 	return toolJSON(map[string]any{"id": a.ID, "status": "pending", "expires_at": a.ExpiresAt.UTC().Format(time.RFC3339),
-		"next": "Call attention_wait{id: " + strconv.FormatInt(a.ID, 10) + "} now, and again while it answers pending."})
+		"next": askNext(c, a.ID)})
+}
+
+// askNext is an ask's "next" line, by who asked: a dispatched agent's answer is
+// delivered to it (it may wait); a mirrored session's only reaches it through
+// attention_wait.
+func askNext(c toolCaller, id int64) string {
+	wait := "attention_wait{id: " + strconv.FormatInt(id, 10) + "}"
+	if c.asker.AgentID > 0 {
+		return "Your owner's answer will be delivered to you as a new message in your default session; you do not need to wait for it. " +
+			"Only if you cannot continue without it, call " + wait + " to block on it (again while it answers pending)."
+	}
+	return "Call " + wait + " now, and again while it answers pending."
 }
 
 // ownAsk reads ask id and checks the caller raised it: another asker's ask is
@@ -290,20 +314,25 @@ func (s *Server) ownAsk(ctx context.Context, c toolCaller, id int64) (attention.
 	return a, ""
 }
 
-// attentionWaitSlot takes one of the asker's and the owner's wait slots,
-// returning its release; false when either is full.
-func (s *Server) attentionWaitSlot(asker string, owner int64) (func(), bool) {
+// attentionWaitSlot takes one of the asker's and the owner's wait slots for
+// ask id, returning its release; false when either is full. While it is held
+// the ask counts as waited on (waitingOn), so its answer is not pushed.
+func (s *Server) attentionWaitSlot(asker string, owner, id int64) (func(), bool) {
 	st := &s.attention
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if st.waitsByAsker == nil {
 		st.waitsByAsker, st.waitsByOwner = map[string]int{}, map[int64]int{}
 	}
+	if st.waitsByAsk == nil {
+		st.waitsByAsk = map[int64]int{}
+	}
 	if st.waitsByAsker[asker] >= attentionWaitsPerAsker || st.waitsByOwner[owner] >= attentionWaitsPerOwner {
 		return nil, false
 	}
 	st.waitsByAsker[asker]++
 	st.waitsByOwner[owner]++
+	st.waitsByAsk[id]++
 	return func() {
 		st.mu.Lock()
 		defer st.mu.Unlock()
@@ -313,7 +342,33 @@ func (s *Server) attentionWaitSlot(asker string, owner int64) (func(), bool) {
 		if st.waitsByOwner[owner]--; st.waitsByOwner[owner] <= 0 {
 			delete(st.waitsByOwner, owner)
 		}
+		if st.waitsByAsk[id]--; st.waitsByAsk[id] <= 0 {
+			delete(st.waitsByAsk, id)
+		}
 	}, true
+}
+
+// waitingOn reports whether an attention_wait on ask id is in flight here.
+func (s *Server) waitingOn(id int64) bool {
+	st := &s.attention
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.waitsByAsk[id] > 0
+}
+
+// waitResult is what attention_wait returns for a: its view — and, when a is
+// answered, the record that the asker READ the answer here (MarkWaited), so the
+// answer is not also pushed into its session as a turn. Whichever comes first
+// wins, by one conditional UPDATE each: this, or the delivery's claim.
+func (s *Server) waitResult(ctx context.Context, a attention.Ask) string {
+	if a.Status == attention.Answered {
+		if moved, err := s.ext.Attention.MarkWaited(context.WithoutCancel(ctx), a.ID); err != nil {
+			s.logger.Printf("attention: ask %d: record that its asker read the answer: %v", a.ID, err)
+		} else if moved {
+			s.attentionChanged(a.Owner, attentionAskKey(a.ID))
+		}
+	}
+	return toolJSON(askView(a))
 }
 
 // toolAttentionWait is attention_wait: the ask now, or once it leaves open,
@@ -336,9 +391,9 @@ func (s *Server) toolAttentionWait(ctx context.Context, c toolCaller, arguments 
 		return bad
 	}
 	if a.Status != attention.Open || d == 0 {
-		return toolJSON(askView(a))
+		return s.waitResult(ctx, a)
 	}
-	release, ok := s.attentionWaitSlot(c.askerKey(), a.Owner)
+	release, ok := s.attentionWaitSlot(c.askerKey(), a.Owner, a.ID)
 	if !ok {
 		return toolErr("too many attention_wait calls are open (at most %d of yours, %d of your owner's at once); let one return first", attentionWaitsPerAsker, attentionWaitsPerOwner)
 	}
@@ -357,7 +412,7 @@ func (s *Server) toolAttentionWait(ctx context.Context, c toolCaller, arguments 
 			return bad
 		}
 		if a.Status != attention.Open {
-			return toolJSON(askView(a))
+			return s.waitResult(ctx, a)
 		}
 		select {
 		case <-woken:

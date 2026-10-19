@@ -41,6 +41,27 @@ func (g *turnGate) enter(id int64) bool {
 	return true
 }
 
+// enterIdle starts a turn for id only when no other turn of id's is running
+// here: the answer delivery's door (attention_delivery.go), which must never
+// overlap the agent's own turn — an operator's chat turn takes no session
+// claim, so the claim alone would not see it. ok false (nothing counted) with
+// why: "closed" (being replaced) or "busy" (a turn is running).
+func (g *turnGate) enterIdle(id int64) (ok bool, why string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed[id] {
+		return false, "closed"
+	}
+	if g.running[id] > 0 {
+		return false, "busy"
+	}
+	if g.running == nil {
+		g.running = map[int64]int{}
+	}
+	g.running[id]++
+	return true, ""
+}
+
 // leave ends a turn enter counted.
 func (g *turnGate) leave(id int64) {
 	g.mu.Lock()

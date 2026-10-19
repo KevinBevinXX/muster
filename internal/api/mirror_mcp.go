@@ -178,7 +178,7 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 	sid := strings.TrimSpace(r.Header.Get(mirrorSessionHeader))
 	instructions := "muster's tools for a mirrored Claude Code session."
 	if s.attentionToolsOn() {
-		instructions += " " + attentionInstruction
+		instructions += " " + mirrorAttentionInstruction
 	}
 	// 🔴 THE SESSION IS BOUND AT tools/call, NOT AT CONNECT. initialize,
 	// tools/list, ping and notifications say nothing session-specific — the

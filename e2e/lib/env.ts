@@ -170,6 +170,12 @@ export const agentToken = 'e2e-agent-token-not-a-real-one';
 // runtimes offered) and the fake OpenRouter model list it searches.
 export const chiefRuntimesPort = port + 90;
 export const chiefRuntimesFakePort = port + 91;
+// An answer delivered to the chief (attention-delivery.spec.ts): its own server
+// (the e2eterm binary, the agent gateway on, every agent endpoint pointed at the
+// spec's fake runtime), its /mcp door, and that fake runtime.
+export const attentionDeliveryPort = port + 96;
+export const attentionDeliveryConnectPort = port + 97;
+export const attentionDeliveryFakePort = port + 98;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

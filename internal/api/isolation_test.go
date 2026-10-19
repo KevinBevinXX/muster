@@ -409,6 +409,9 @@ var isolationClasses = map[string]routeClass{
 	"GET /attention/badge":             classList,
 	"POST /attention/asks/{id}/answer": classParam,
 	"POST /attention/asks/{id}/cancel": classParam,
+	// An unconfirmed answer delivery's Retry (migration 0031): one of the
+	// caller's asks by id, under row-level security.
+	"POST /attention/asks/{id}/redeliver": classParam,
 	// Dictation (transcribe.go) names no object: it turns the caller's recording
 	// into text for the caller and reads or writes no row.
 	"POST /transcribe": classList,

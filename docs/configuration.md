@@ -257,6 +257,7 @@ build tag, which the Playwright suite uses. The shipped binaries do not read the
 | `MUSTER_E2E_TERM_WINDOW` | none | no | (`e2eterm`) The `CxR` window size the fake agent pod reports. |
 | `MUSTER_E2E_GITHUB_API` | none | no | (`e2eterm`) Points every GitHub API call at this base URL (a fake GitHub), so the dispatch dialog's repo picker can be driven with fixture repos. |
 | `MUSTER_E2E_OPENROUTER_MODELS` | none | no | (`e2eterm`) Points the model search at this URL instead of OpenRouter's public model list (a fake catalogue). |
+| `MUSTER_E2E_AGENT_ENDPOINT` | none | no | (`e2eterm`) Points every agent's gateway endpoint at this loopback URL (`http://127.0.0.1:<port>`, anything else refused): the answer-delivery spec's fake runtime. |
 | `MUSTER_E2E_GOTRUE_SKEW` | none (`30s`, `gotrue.DefaultSkew`) | no | (`e2eterm`) The GoTrue access-token verifier's clock skew, a Go duration, so the specs that outlive an access token wait seconds instead of 35 s. |
 | `MUSTER_MIRROR_E2E_REFRESH` | none (`5s`) | no | (`e2emirror`) How often the fake host re-reads its windows (`mirrorhost.Config.Refresh`), a Go duration. |
 | `MUSTER_MIRROR_E2E_SESSIONS` | none | no | (`e2emirror`) The fake tmux server's session names, comma-separated. |

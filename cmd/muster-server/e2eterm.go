@@ -7,9 +7,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/agents"
@@ -66,6 +68,27 @@ func (d fakeTerminalDriver) Get(ctx context.Context, ref provision.Ref) (provisi
 		return inst, err
 	}
 	return d.hold(inst), nil
+}
+
+// Endpoint is every agent's gateway endpoint when envE2EAgentEndpoint names a
+// loopback base URL ("http://127.0.0.1:<port>"): the spec's fake runtime answers
+// the agent's turns there. Unset, the noop driver's own answer (which knows only
+// the instances it created). Anything but a loopback http URL is refused, so
+// even this fixture binary cannot be pointed at a real host by the variable.
+func (d fakeTerminalDriver) Endpoint(ctx context.Context, ref provision.Ref) (provision.Endpoint, error) {
+	raw := os.Getenv(envE2EAgentEndpoint)
+	if raw == "" {
+		return d.Provisioner.Endpoint(ctx, ref)
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "http" || u.Hostname() != "127.0.0.1" || u.Port() == "" {
+		return provision.Endpoint{}, fmt.Errorf("e2e fake driver: %s=%q is not http://127.0.0.1:<port>", envE2EAgentEndpoint, raw)
+	}
+	p, err := strconv.Atoi(u.Port())
+	if err != nil {
+		return provision.Endpoint{}, err
+	}
+	return provision.Endpoint{Scheme: "http", Host: "127.0.0.1", Port: p}, nil
 }
 
 func (d fakeTerminalDriver) Capabilities() provision.Capabilities {

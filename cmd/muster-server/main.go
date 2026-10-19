@@ -837,6 +837,8 @@ func (a *app) shutdown() {
 	go func() {
 		defer close(pluginsDone)
 		a.srv.WaitForPluginDeliveries()
+		// An answer delivered into an agent's session, the same way.
+		a.srv.WaitForAttentionDeliveries()
 	}()
 	a.waitForKickoffs(kickoffDrainTimeout)
 	<-memoDone

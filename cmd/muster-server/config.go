@@ -286,6 +286,10 @@ const (
 	// gotrue.DefaultSkew, so the specs that outlive an access token wait
 	// seconds rather than 35 s. Read only by e2egotrue.go.
 	envE2EGoTrueSkew = "MUSTER_E2E_GOTRUE_SKEW"
+	// A loopback base URL every agent's gateway endpoint resolves to, so a
+	// browser test can answer an agent's turn with a fake runtime (the answer
+	// delivery's spec, attention-delivery.spec.ts). Read only by e2eterm.go.
+	envE2EAgentEndpoint = "MUSTER_E2E_AGENT_ENDPOINT"
 )
 
 // The values MUSTER_AGENT_PROVISIONER accepts.

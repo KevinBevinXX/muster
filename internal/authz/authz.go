@@ -106,9 +106,11 @@ const (
 	// ViaAttention is the ATTENTION QUEUE's background work acting as one
 	// owner: reading that owner's mirrored windows to see which became (or
 	// stopped) waiting on the person, and telling that owner's devices about
-	// an ask the expiry sweep closed. One site mints it — internal/api's
-	// attentionPrincipal — handed the owner by the mirror hub's change nudge
-	// or by attention.PGStore.ExpireDue's row.
+	// an ask the expiry sweep closed, and delivering an answer into that
+	// owner's agent's session (migration 0031). One site mints it —
+	// internal/api's attentionPrincipal — handed the owner by the mirror hub's
+	// change nudge, by attention.PGStore.ExpireDue's row, or by an answer's own
+	// row (the answer request's, or the delivery sweep's DueDeliveries).
 	ViaAttention Via = "attention"
 	// ViaAsk is the AskUserQuestion watcher (internal/api's question watch)
 	// acting as one owner: reading that owner's mirrored window's transcript

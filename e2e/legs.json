@@ -54,7 +54,8 @@
     "tests/uploads.spec.ts": 10.0,
     "tests/mirror-ask.spec.ts": 14.1,
     "tests/attention.spec.ts": 20.0,
-    "chief-runtimes.spec.ts": 12.0
+    "chief-runtimes.spec.ts": 12.0,
+    "tests/attention-delivery.spec.ts": 10.0
   },
   "legs": {
     "1": [
@@ -109,7 +110,8 @@
       "tests/terminal.spec.ts",
       "tests/uploads.spec.ts",
       "tests/host-tabs.spec.ts",
-      "tests/mirror-ask.spec.ts"
+      "tests/mirror-ask.spec.ts",
+      "tests/attention-delivery.spec.ts"
     ]
   }
 }

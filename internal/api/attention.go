@@ -91,6 +91,19 @@ type attentionState struct {
 	// (attentionWaitSlot).
 	waitsByAsker map[string]int
 	waitsByOwner map[int64]int
+	// waitsByAsk counts the attention_wait calls in flight per ask id: while
+	// one waits on an ask, its answer is the waiter's and no turn is pushed
+	// (attention_delivery.go).
+	waitsByAsk map[int64]int
+	// deliveries tracks the answer deliveries this process started, so a
+	// shutdown (and a test) can wait for each to record its outcome;
+	// deliveryBy names this process in a delivery's lease.
+	deliveries     sync.WaitGroup
+	deliveryByOnce sync.Once
+	deliveryBy     string
+	// graceOverride, when set (tests, before any delivery starts), replaces
+	// attentionDeliveryGrace for this server.
+	graceOverride *time.Duration
 	// waiting is each owner's waiting sessions as last seen, by item key: what
 	// a hub nudge is diffed against to push a new one and clear a gone one.
 	waiting map[int64]map[string]attentionItem
@@ -628,7 +641,8 @@ func (s *Server) recheckOfflineHosts() {
 
 // RunAttentionSweep expires lapsed asks until ctx ends (interval <= 0: every
 // 30s): each is cleared from its owner's devices and views, and its waiters
-// woken. It also clears the notification of a reply draft that expired
+// woken. It also delivers every owed answer (deliverDueAnswers: after a
+// restart, a busy agent, a retry). It also clears the notification of a reply draft that expired
 // (expireDraftNotes). Started by cmd/muster-server beside the other background loops; it
 // does nothing without a store.
 func (s *Server) RunAttentionSweep(ctx context.Context, interval time.Duration) {
@@ -642,6 +656,7 @@ func (s *Server) RunAttentionSweep(ctx context.Context, interval time.Duration) 
 	defer t.Stop()
 	for {
 		s.expireAsks(ctx)
+		s.deliverDueAnswers(ctx)
 		s.expireDraftNotes(ctx)
 		s.recheckOfflineHosts()
 		select {
@@ -672,6 +687,7 @@ func (s *Server) registerAttentionRoutes(mux Mux) {
 	mux.HandleFunc("GET "+ui.AttentionBadgePath, s.requireSession(s.handleAttentionBadge))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/answer", s.requireOperatorWrite(s.handleAttentionAnswerForm))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/cancel", s.requireOperatorWrite(s.handleAttentionCancelForm))
+	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/redeliver", s.requireOperatorWrite(s.handleAttentionRedeliverForm))
 }
 
 func (s *Server) handleAttentionPage(w http.ResponseWriter, r *http.Request) {
@@ -699,6 +715,7 @@ func (s *Server) renderAttentionPage(w http.ResponseWriter, r *http.Request, cod
 	b.WriteString(problemNode(problem))
 	b.WriteString(`<ul id="attention-items" class="flex flex-col gap-2" data-testid="attention-items" aria-live="polite">`)
 	b.WriteString(attentionItemsHTML(items, time.Now()))
+	b.WriteString(answeredAsksHTML(s.recentAnswers(r.Context()), time.Now()))
 	b.WriteString(`</ul>
 <a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to muster</a>
 </section>`)
@@ -751,7 +768,7 @@ func (s *Server) handleAttentionItems(w http.ResponseWriter, r *http.Request) {
 	s.withFocus(r.Context(), items)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write([]byte(attentionItemsHTML(items, time.Now())))
+	_, _ = w.Write([]byte(attentionItemsHTML(items, time.Now()) + answeredAsksHTML(s.recentAnswers(r.Context()), time.Now())))
 }
 
 func (s *Server) handleAttentionBadge(w http.ResponseWriter, r *http.Request) {
@@ -854,11 +871,16 @@ func askIDParam(r *http.Request) (int64, bool) {
 	return id, err == nil && id > 0
 }
 
-// answerAsk records the operator's answer and settles it.
+// answerAsk records the operator's answer and settles it — and, for an agent's
+// ask, starts its delivery into the agent's session once the grace has passed
+// (attention_delivery.go; the sweep delivers it if this process stops first).
 func (s *Server) answerAsk(ctx context.Context, id int64, answer string) (attention.Ask, error) {
 	a, err := s.ext.Attention.Answer(ctx, id, answer)
 	if err == nil {
 		s.askSettled(a)
+		if a.Delivery == attention.DeliveryQueued {
+			s.startAnswerDelivery(a.Owner, a.ID, s.deliveryGrace()+500*time.Millisecond)
+		}
 	}
 	return a, err
 }
@@ -939,6 +961,113 @@ func (s *Server) handleAttentionCancelForm(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	http.Redirect(w, r, attentionPath, http.StatusSeeOther)
+}
+
+// handleAttentionRedeliverForm is an unconfirmed delivery's Retry: back to
+// queued (the caller's own ask only — row-level security), then delivered now.
+func (s *Server) handleAttentionRedeliverForm(w http.ResponseWriter, r *http.Request) {
+	if s.ext.Attention == nil {
+		http.NotFound(w, r)
+		return
+	}
+	id, ok := askIDParam(r)
+	if !ok {
+		s.renderAttentionPage(w, r, http.StatusNotFound, "No such question.")
+		return
+	}
+	a, err := s.ext.Attention.RetryDelivery(r.Context(), id)
+	switch {
+	case err == nil:
+	case errors.Is(err, attention.ErrNotRetryable):
+		s.renderAttentionPage(w, r, http.StatusConflict, "That answer's delivery has not failed, so there is nothing to retry.")
+		return
+	default:
+		if attentionErrCode(err) == http.StatusInternalServerError {
+			s.logger.Printf("attention: retry the delivery of %d: %v", id, err)
+		}
+		s.renderAttentionPage(w, r, attentionErrCode(err), attentionErrText(err, a))
+		return
+	}
+	s.attentionChanged(a.Owner, attentionAskKey(a.ID))
+	s.startAnswerDelivery(a.Owner, a.ID, 0)
+	http.Redirect(w, r, attentionPath, http.StatusSeeOther)
+}
+
+// attentionAnsweredWindow / attentionAnsweredShown bound the "Answered" list:
+// the answers of the last day, at most this many.
+const (
+	attentionAnsweredWindow = 24 * time.Hour
+	attentionAnsweredShown  = 20
+)
+
+// recentAnswers is ctx's principal's recent answers with a delivery to show.
+func (s *Server) recentAnswers(ctx context.Context) []attention.Ask {
+	if s.ext.Attention == nil {
+		return nil
+	}
+	out, err := s.ext.Attention.Answered(ctx, time.Now().Add(-attentionAnsweredWindow), attentionAnsweredShown)
+	if err != nil {
+		s.logger.Printf("attention: recent answers: %v", err)
+	}
+	return out
+}
+
+// answerDeliveryText is where an answer went, as the owner reads it, and
+// whether it offers Retry.
+func answerDeliveryText(a attention.Ask) (string, bool) {
+	who := askerLabel(a)
+	switch a.Delivery {
+	case attention.DeliveryQueued:
+		if a.DeliveryDetail != "" {
+			return "Queued for " + who + " — waiting: " + a.DeliveryDetail + ". muster keeps trying.", false
+		}
+		return "Queued for " + who + ": delivering it as a new message in its session.", false
+	case attention.DeliveryDelivering:
+		return "Delivering to " + who + " now.", false
+	case attention.DeliveryDelivered:
+		return "Delivered to " + who + " as a new message in its session.", false
+	case attention.DeliveryWaited:
+		return who + " read it while waiting for it.", false
+	case attention.DeliveryUnconfirmed:
+		return "Delivery failed: " + firstNonBlank(a.DeliveryDetail, "unknown") + ".", true
+	case attention.DeliveryPull:
+		return "Waiting for " + who + " to read it: a mirrored session reads its answer itself (attention_wait); muster does not type into it.", false
+	}
+	if a.Asker.System {
+		return "Recorded. muster raised this question itself, so there is nobody to deliver it to.", false
+	}
+	return "Not delivered.", false
+}
+
+// answeredAsksHTML is the "Answered" part of the list: each recent answer and
+// where it went, with Retry on a failed delivery.
+func answeredAsksHTML(asks []attention.Ask, now time.Time) string {
+	if len(asks) == 0 {
+		return ""
+	}
+	esc := html.EscapeString
+	var b strings.Builder
+	b.WriteString(`<li class="pt-2 text-xs font-semibold uppercase tracking-wide text-fg2" data-attention-answered-heading>Answered</li>` + "\n")
+	for _, a := range asks {
+		id := strconv.FormatInt(a.ID, 10)
+		text, retry := answerDeliveryText(a)
+		age := ""
+		if !a.ResolvedAt.IsZero() {
+			age = ` · <time datetime="` + a.ResolvedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(a.ResolvedAt))) + `</time>`
+		}
+		b.WriteString(`<li id="answered-` + id + `" class="` + flowsCardClass + `" data-attention-answered data-ask-id="` + id + `" data-delivery="` + esc(firstNonBlank(string(a.Delivery), "none")) + `">
+<span class="text-xs text-fg2"><span class="font-semibold">Answered</span> · <span data-attention-source>` + esc(askerLabel(a)) + `</span>` + age + `</span>
+<p class="break-words text-sm text-fg2" data-attention-text>` + esc(mirror.OneLine(a.Question, 200)) + `</p>
+<p class="whitespace-pre-wrap break-words text-sm text-fg" data-attention-answer-text>Your answer: ` + esc(a.Answer) + `</p>
+<p class="break-words text-sm text-fg" data-attention-delivery>` + esc(text) + `</p>
+`)
+		if retry {
+			b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/redeliver"><button type="submit" class="` + flowsQuietButton + `" data-attention-redeliver>Retry delivery</button></form>
+`)
+		}
+		b.WriteString("</li>\n")
+	}
+	return b.String()
 }
 
 func nonNilItems(items []attentionItem) []attentionItem {

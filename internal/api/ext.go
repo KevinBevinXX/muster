@@ -380,6 +380,13 @@ func (s *Server) UseExtensions(ext Extensions) {
 	if ext.Gateway != nil && ext.Agents != nil {
 		s.taskForwardTurn = s.startAgentTurn
 	}
+	// The answer delivery's turn (attention_delivery.go), set here for the same
+	// reason: on a gateway-less deployment it is nil, and an answer stays
+	// queued saying so — the answer route itself never reaches the gateway.
+	s.answerTurn = nil
+	if ext.Gateway != nil && ext.Agents != nil {
+		s.answerTurn = s.runDeliveredTurn
+	}
 	s.connectProxy = nil
 	if ext.Connectors != nil {
 		s.connectProxy = &connectors.Proxy{
