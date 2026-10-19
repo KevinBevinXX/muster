@@ -72,7 +72,7 @@ JSON. On every route:
 | `202 {"id", "status": "queued"}` | stored; delivery to your chief has started |
 | `200 {"id", "status"}` | this plugin already sent this `external_id`. The stored message is the answer, and nothing is stored or delivered again, **whatever the new body or `no_reply` says**. `status` is `queued`, `delivered` or `unconfirmed`. |
 | `400 {"error"}` | a field breaks a rule above |
-| `429 {"error"}` | 60 new messages in the last hour, or 200 not yet delivered. Retry after the `Retry-After` header. Task events ([routing a task](#routing-a-task-to-the-chief)) and the mentions muster routes have their own allowance — 120 an hour, 300 task events undelivered — so they never count here, nor these toward them. |
+| `429 {"error"}` | 60 new messages in the last hour, or 200 not yet delivered. Retry after the `Retry-After` header. Task events ([routing a task](#routing-a-task-to-the-chief)) and the mentions muster routes have their own allowance — 120 an hour, and 300 task events undelivered (mentions count toward the hour only) — so they never count here, nor these toward them. |
 
 A plugin that did not see an answer should send the same message again. A
 repeat is answered even while the plugin is rate-limited. Advance your upstream
@@ -293,12 +293,18 @@ it. The flow:
      you have no chief, by **muster** itself. Otherwise it is **filed only**
      (`"routed": false`) — a case the operator left unspecified, so this is
      the default.
-     A mention muster routes is **reserved before it acts**: one row under the
-     notice's own id, delivered from birth (never handed to the chief, never
-     "Task to route"), so identical sends — concurrent ones too — act once and
-     each answers where it went; it counts against the plugin's task-event
-     hour (120), and past it the mention answers `429` and nothing starts. A
-     failed delivery releases the reservation, so a resend tries again.
+     A mention muster routes is **reserved before it acts**: one row under its
+     own id (the notice kind is part of it, so a mention never collides with a
+     chief event carrying the same comment), delivered from birth (never
+     handed to the chief, never "Task to route"), so identical sends —
+     concurrent ones too — act once and each answers where it went. It counts
+     against the plugin's task-event **hour** (120; past it the mention
+     answers `429` and nothing starts), but not against the chief's
+     undelivered queue (300), which it never waits in. When the delivery is
+     done the row is marked complete. A failed delivery — including one cut
+     off because your request was cancelled — releases the reservation, so a
+     resend tries again; one never completed (muster stopped mid-way) is taken
+     over by the first send at least 2 minutes later.
    - **`update`** (a comment, a status change) goes to your chief only while
      a live agent works the task, so the chief can pass it on with
      `task_forward`; otherwise it is filed only.

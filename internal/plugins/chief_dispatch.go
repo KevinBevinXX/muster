@@ -80,8 +80,9 @@ type DispatchStore interface {
 	// limit, that the chief has not acted on: not being delivered right now,
 	// and with no routing or start recorded for their task since the event.
 	UnroutedTaskEvents(ctx context.Context, limit int) ([]Message, error)
-	// ReserveNoticeRoute / ReleaseNoticeRoute: task_events.go.
+	// ReserveNoticeRoute / CompleteNoticeRoute / ReleaseNoticeRoute: task_events.go.
 	ReserveNoticeRoute(ctx context.Context, pluginID, taskID int64, in MessageIn, to string) (Message, bool, error)
+	CompleteNoticeRoute(ctx context.Context, id int64) error
 	ReleaseNoticeRoute(ctx context.Context, id int64) error
 }
 

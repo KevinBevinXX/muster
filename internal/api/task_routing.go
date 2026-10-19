@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"net/http"
 
@@ -592,22 +593,29 @@ var errRouteRateLimited = errors.New("the chief's task-event queue for this plug
 // takes it there, as plugin p. It answers routedChief / routedAgent /
 // routedAttention, or "" when the notice is filed only.
 //
-// 🔴 THE RULE (operator decision, audit round 1), by the plugin's notice:
+// 🔴 THE RULE (operator decisions, audit rounds 1-2), by the plugin's notice:
 //
 //   - assigned → a task event for the CHIEF (attention / forward / dispatch is
-//     its call), whether or not the task already existed;
-//   - mentioned → NOT the chief: the newest live agent (agentLive: pending,
-//     provisioning, running) on the task gets it as a fenced forward
-//     (forwardToTaskAgent, task_forward's own path); else, a task in_progress
-//     goes on the owner's attention queue as an ask naming it (askOwnerAboutTask,
-//     task_route_attention's own path), raised by the owner's chief; else it is
-//     filed only — the operator left that case unspecified;
-//   - update → a task event for the chief only while a live agent works the
-//     task; else filed only.
+//     its call), whether or not the task already existed (handTaskToChief);
+//   - update → a task event for the chief only while a live agent (agentLive:
+//     pending, provisioning, running) is bound to the task; else filed only;
+//   - mentioned → NEVER the chief (routeMention): the newest agent on the task
+//     a forward can reach (forwardReachable: running, or its first turn still
+//     owed) gets it as a fenced forward (forwardToTaskAgent, task_forward's own
+//     path); else, a task in_progress gets an ask on the owner's attention
+//     queue naming it (askOwnerAboutTask, task_route_attention's own path),
+//     raised by the owner's chief or, with none, by muster; else it is filed
+//     only — the operator left that case unspecified.
 //
-// A repeat of the same notice (the same key and comment) does nothing twice: a
-// task event by its external_id (plugins.TaskEventExternalID), an agent or
-// attention route by the task.notice_routed row recorded after it.
+// A repeat of the same notice does nothing twice. A chief task event is one
+// row by its external_id (plugins.TaskEventExternalID over key + comment). A
+// mention is RESERVED, then acted on, then COMPLETED: ReserveNoticeRoute
+// stores one row under its own id (mentionRouteDiscriminator: the kind is in
+// it, so it never shares a chief event's), atomically, and only the request
+// that reserved it — or that reclaimed a stale one never completed — acts;
+// CompleteNoticeRoute stamps it done, and a failed action releases it
+// (ReleaseNoticeRoute, on a context the request's cancellation cannot reach)
+// so the resend acts again.
 func (s *Server) routeTaskNotice(r *http.Request, p plugins.Plugin, id int64, key, notice, comment string) (string, error) {
 	ctx := r.Context()
 	n, err := s.ext.Notes.Get(ctx, id)
@@ -678,11 +686,15 @@ const mentionAttentionNote = "You were mentioned on it upstream; the notice is o
 // forward can reach (forwardReachable) — or, with none, to the owner's
 // attention queue when n is in progress, or nowhere ("").
 //
-// 🔴 RESERVE, THEN ACT. The notice is reserved first (ReserveNoticeRoute: one
-// row under its external_id, atomic, counted against the task-event hour), and
-// only the request that created the reservation acts; an identical send gets
-// the stored destination and acts on nothing. A failed action releases the
-// reservation, so the plugin's resend acts again (audit round 2).
+// 🔴 RESERVE → ACT → COMPLETE, OR RELEASE. The notice is reserved first
+// (ReserveNoticeRoute: one row under its own id, atomic, counted against the
+// task-event hour only), and only the request told to act does; an identical
+// send gets the stored destination and acts on nothing. Done, the route is
+// completed; failed, it is released, so the plugin's resend acts again. Both
+// run on a context WITHOUT the request's cancellation: a client that gave up
+// mid-action cancels the action, and must not also cancel the release that
+// lets its resend deliver (audit round 3). A crash between the two leaves a
+// reservation that a later send reclaims (plugins.NoticeRouteReclaimAfter).
 func (s *Server) routeMention(ctx context.Context, p plugins.Plugin, n notes.Note, target *agents.Agent, key, comment string) (string, error) {
 	if s.ext.ChiefDispatch == nil {
 		return "", nil
@@ -697,7 +709,7 @@ func (s *Server) routeMention(ctx context.Context, p plugins.Plugin, n notes.Not
 		return "", nil
 	}
 	in, err := plugins.NewTaskEventIn(plugins.TaskEvent{Event: noticeMentioned, TaskID: n.ID, Key: key, Status: n.Status,
-		Title: taskLabel(n), Change: comment}, key+"\x00"+comment)
+		Title: taskLabel(n), Change: comment}, mentionRouteDiscriminator(key, comment))
 	if err != nil {
 		return "", err
 	}
@@ -712,14 +724,26 @@ func (s *Server) routeMention(ctx context.Context, p plugins.Plugin, n notes.Not
 	if !created {
 		return *m.RoutedTo, nil
 	}
-	if err := s.actOnMention(ctx, n, target, comment); err != nil {
-		if rerr := s.ext.ChiefDispatch.ReleaseNoticeRoute(ctx, m.ID); rerr != nil {
+	err = s.actOnMention(ctx, n, target, comment)
+	bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), noticeRouteBookkeeping)
+	defer cancel()
+	if err != nil {
+		if rerr := s.ext.ChiefDispatch.ReleaseNoticeRoute(bctx, m.ID); rerr != nil {
 			s.logger.Printf("task routing: release the mention reservation %d: %v", m.ID, rerr)
 		}
 		return "", err
 	}
+	if cerr := s.ext.ChiefDispatch.CompleteNoticeRoute(bctx, m.ID); cerr != nil {
+		// Delivered but not stamped: a send after NoticeRouteReclaimAfter may
+		// deliver it again — at least once, never lost.
+		s.logger.Printf("task routing: complete the mention reservation %d: %v", m.ID, cerr)
+	}
 	return to, nil
 }
+
+// noticeRouteBookkeeping bounds a mention reservation's release or completion,
+// which runs without the request's cancellation.
+const noticeRouteBookkeeping = 10 * time.Second
 
 // actOnMention delivers a reserved mention: to target, or as an ask.
 func (s *Server) actOnMention(ctx context.Context, n notes.Note, target *agents.Agent, comment string) error {
@@ -806,4 +830,12 @@ func (s *Server) unroutedTaskItems(ctx context.Context) ([]attentionItem, error)
 			Since:  m.CreatedAt, Link: canonicalTaskPath(n.ID)})
 	}
 	return out, nil
+}
+
+// mentionRouteDiscriminator names a mention's reservation. The notice kind is
+// in it: a chief task event's is key + comment (handTaskToChief), and an
+// update and a mention carrying one comment are two notices, so they must be
+// two rows — sharing one id refused the mention 409 for good (audit round 3).
+func mentionRouteDiscriminator(key, comment string) string {
+	return noticeMentioned + "\x00" + key + "\x00" + comment
 }

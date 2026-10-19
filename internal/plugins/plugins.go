@@ -160,6 +160,9 @@ type Message struct {
 	// 0028, task_events.go ReserveNoticeRoute): "agent" or "attention". Such a
 	// row is delivered from birth and is never a chief event.
 	RoutedTo *string `json:"routedTo,omitempty"`
+	// RoutedDoneAt is when that route's action completed; nil while it is
+	// reserved and not yet done (or never finished: NoticeRouteReclaimAfter).
+	RoutedDoneAt *time.Time `json:"routedDoneAt,omitempty"`
 }
 
 // Errors the API maps to status codes.

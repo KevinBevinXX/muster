@@ -125,7 +125,7 @@ func scanPlugin(row pgx.Row) (Plugin, error) {
 }
 
 const messageCols = `id, owner_id, plugin_id, external_id, sender, subject, body, received_at, created_at, status,
-	attempts, last_attempt_at, delivered_at, agent_id, no_reply, sender_verified, task_id, routed_to`
+	attempts, last_attempt_at, delivered_at, agent_id, no_reply, sender_verified, task_id, routed_to, routed_done_at`
 
 // messageDest is the scan destinations for messageCols, in its order, with the
 // status into *st. THE ONE COPY: every reader of messageCols scans through it,
@@ -133,7 +133,7 @@ const messageCols = `id, owner_id, plugin_id, external_id, sender, subject, body
 // its own copy, which a new column broke).
 func messageDest(m *Message, st *string) []any {
 	return []any{&m.ID, &m.OwnerID, &m.PluginID, &m.ExternalID, &m.Sender, &m.Subject, &m.Body, &m.ReceivedAt,
-		&m.CreatedAt, st, &m.Attempts, &m.LastAttemptAt, &m.DeliveredAt, &m.AgentID, &m.NoReply, &m.SenderVerified, &m.TaskID, &m.RoutedTo}
+		&m.CreatedAt, st, &m.Attempts, &m.LastAttemptAt, &m.DeliveredAt, &m.AgentID, &m.NoReply, &m.SenderVerified, &m.TaskID, &m.RoutedTo, &m.RoutedDoneAt}
 }
 
 func scanMessage(row pgx.Row) (Message, error) {
@@ -324,10 +324,13 @@ func (s *PGStore) submit(ctx context.Context, pluginID int64, in MessageIn, task
 			pluginID, rateWindow.Seconds(), taskID != nil).Scan(&lastHour, &queued); err != nil {
 			return err
 		}
+		// A notice route (routedTo) spends the task-event HOUR only: it is
+		// delivered from birth and never waits on the chief, so the chief's
+		// undelivered queue must not refuse it (audit round 3).
 		switch {
 		case lastHour >= perHour:
 			return ErrRateLimited
-		case queued >= maxQueued:
+		case routedTo == "" && queued >= maxQueued:
 			return ErrQueueFull
 		}
 		var routed any

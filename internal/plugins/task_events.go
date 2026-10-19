@@ -8,6 +8,9 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/fence"
 )
@@ -130,15 +133,31 @@ func (s *PGStore) SubmitTaskEvent(ctx context.Context, pluginID, taskID int64, i
 	return m, created, nil
 }
 
+// NoticeRouteReclaimAfter is how long a notice route may stay reserved and
+// not completed before the next send takes it over: well past any action (an
+// agent message and its turn's start, or one ask: milliseconds), and well
+// inside the plugin's replay interval, so the first replay after a crash or a
+// cut-off request is the one that delivers.
+const NoticeRouteReclaimAfter = 2 * time.Minute
+
 // ReserveNoticeRoute reserves a notice muster routes AROUND the chief (to the
 // agent on the task, or the attention queue) BEFORE it acts on it: one row
-// under the notice's external_id, delivered from birth, routed_to `to`.
+// under the notice's external_id, delivered from birth, routed_to `to`. It
+// reports whether the caller must act (true) or the notice is done or being
+// done elsewhere (false: answer m.RoutedTo).
 //
 // 🔴 THE RESERVATION IS THE DEDUPE, AND IT IS ATOMIC: submit's plugin-row lock
 // and the (plugin_id, external_id) key make exactly one of any number of
-// identical concurrent sends created; the rest get the stored row (created
-// false) and must not act. It counts against the plugin's task-event hour
-// (MaxTaskEventsPerHour), so a plugin cannot start unbounded agent turns.
+// identical concurrent sends created; the rest get the stored row and must not
+// act. It counts against the plugin's task-event hour (MaxTaskEventsPerHour),
+// so a plugin cannot start unbounded agent turns.
+//
+// 🔴 A RESERVATION THAT NEVER COMPLETED IS NOT FOR EVER. CompleteNoticeRoute
+// stamps routed_done_at after the action. One with none, older than
+// NoticeRouteReclaimAfter (counted from its last claim), is taken over by this
+// send — one conditional UPDATE, so of concurrent senders exactly one wins —
+// which then acts, for destination `to` as decided now (audit round 3: a
+// request cut off mid-action, or a crash, swallowed every resend).
 // A row under that id that is not this task's notice route is
 // ErrTaskEventIDTaken.
 func (s *PGStore) ReserveNoticeRoute(ctx context.Context, pluginID, taskID int64, in MessageIn, to string) (Message, bool, error) {
@@ -155,7 +174,27 @@ func (s *PGStore) ReserveNoticeRoute(ctx context.Context, pluginID, taskID int64
 	if m.TaskID == nil || *m.TaskID != taskID || m.RoutedTo == nil {
 		return Message{}, false, ErrTaskEventIDTaken
 	}
-	return m, created, nil
+	if created {
+		return m, true, nil
+	}
+	taken, err := scanMessage(s.pool.QueryRow(ctx, `UPDATE plugin_messages SET routed_claimed_at = now(), routed_to = $2
+		WHERE id = $1 AND routed_done_at IS NULL
+		  AND coalesce(routed_claimed_at, created_at) < now() - make_interval(secs => $3)
+		RETURNING `+messageCols, m.ID, to, NoticeRouteReclaimAfter.Seconds()))
+	switch {
+	case err == nil:
+		return taken, true, nil
+	case errors.Is(err, pgx.ErrNoRows):
+		return m, false, nil // in flight elsewhere, and fresh
+	}
+	return Message{}, false, err
+}
+
+// CompleteNoticeRoute stamps a notice route's action done, so it is never
+// reclaimed.
+func (s *PGStore) CompleteNoticeRoute(ctx context.Context, id int64) error {
+	_, err := s.pool.Exec(ctx, `UPDATE plugin_messages SET routed_done_at = now() WHERE id = $1 AND routed_to IS NOT NULL`, id)
+	return err
 }
 
 // ReleaseNoticeRoute deletes a notice route reserved by ReserveNoticeRoute

@@ -15,6 +15,11 @@
 --    task-event hour like a task event. routed_to says where it went; it is
 --    'delivered' from birth, so no delivery ever hands it to the chief, and
 --    UnroutedTaskEvents leaves it out (it is not a chief event).
+--    routed_done_at is stamped when the action completed. A reservation never
+--    completed (a crash or a cut-off request between reserve and act) is taken
+--    over by the next send once it is older than a few minutes
+--    (plugins.NoticeRouteReclaimAfter), counted from routed_claimed_at, or
+--    created_at before any reclaim — so it cannot swallow resends for good.
 --
 -- Not re-applied by db.RLSOn (no policy, grant or default) and idempotent.
 
@@ -28,6 +33,11 @@ ALTER TABLE public.attention_asks ADD CONSTRAINT attention_asks_asker_check CHEC
     OR (agent_id IS NULL AND mirror_host IS NULL AND mirror_session IS NULL AND system_asker));
 
 ALTER TABLE public.plugin_messages ADD COLUMN IF NOT EXISTS routed_to TEXT;
+ALTER TABLE public.plugin_messages ADD COLUMN IF NOT EXISTS routed_done_at TIMESTAMPTZ;
+ALTER TABLE public.plugin_messages ADD COLUMN IF NOT EXISTS routed_claimed_at TIMESTAMPTZ;
 ALTER TABLE public.plugin_messages DROP CONSTRAINT IF EXISTS plugin_messages_routed_to_check;
 ALTER TABLE public.plugin_messages ADD CONSTRAINT plugin_messages_routed_to_check CHECK (
-    routed_to IS NULL OR (routed_to IN ('agent', 'attention') AND task_id IS NOT NULL AND status = 'delivered'));
+    (routed_to IS NULL AND routed_done_at IS NULL AND routed_claimed_at IS NULL)
+    -- coalesce: a NULL routed_to must make this branch FALSE, not NULL — a
+    -- CHECK passes on NULL, which let routed_done_at stand alone.
+    OR (coalesce(routed_to IN ('agent', 'attention'), false) AND task_id IS NOT NULL AND status = 'delivered'));
