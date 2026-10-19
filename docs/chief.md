@@ -48,6 +48,20 @@ The chief is offered these tools, and no other agent is:
 | `fleet_list`, `focus_search`, `focus_refresh`, `sessions_overview` | session focus |
 | `route_to_session` | session routing |
 | `attention_list`, `session_transcript` | the attention queue |
+| `task_route_attention`, `task_forward` | task routing (`MUSTER_TASK_ROUTING`) |
+| `task_dispatch` | task routing, and you opted in (`MUSTER_CHIEF_DISPATCH_OWNERS`) |
+
+`task_dispatch` starts a **claude-code** agent unless the chief passes
+`kind: "gateway"` or the deployment does not enable claude-code: what you
+usually want from the chief is a Claude Code pod. That agent runs on an
+account from your Claude account pool and has no per-agent model and no
+repository; a task that names a repository needs `kind: "gateway"`. Its
+optional `instructions` (at most 1 KiB) open the agent's first message, fenced
+as relayed by the chief, before the task's text and muster's rules (which come
+last and win). When the chief relays your answer to one of its attention asks
+("start a Claude Code agent and have it open with skill X"), your own words
+belong there. The `task.chief_dispatch` audit row records the kind and the
+instructions. Guards: [plugins.md](plugins.md#task_dispatch-the-guards).
 
 `tasks_list` and its siblings are offered to every agent. The chief's
 `tasks_list` covers your whole board, where a worker's covers only its own

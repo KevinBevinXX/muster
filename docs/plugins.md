@@ -328,7 +328,7 @@ it. The flow:
 |---|---|---|
 | `task_route_attention {task_id, note}` | Puts the task in front of you: an ask on `/attention` and a notification, with the chief's note. | the task is not yours |
 | `task_forward {task_id, note}` | Sends the agent already working the task (the newest running one) a message from muster naming the task, with the chief's note fenced as data. The agent re-reads the task itself. | the task is not yours; no running agent works it |
-| `task_dispatch {task_id, repo?}` | Starts a new agent on the task, with the task's repository, branch and model. A task with no repository (a plugin's task has none) can be given one with `repo`, which must be one of your connected GitHub repositories; without one the agent cannot open a pull request. Offered only when `MUSTER_CHIEF_DISPATCH_OWNERS` lists at least one user. | see below |
+| `task_dispatch {task_id, repo?, kind?, instructions?}` | Starts a new agent on the task. `kind` is `claude-code` (the default when the deployment enables it, else `gateway`) or `gateway`. A claude-code agent runs on an account from your Claude account pool, with no per-agent model and no repository. A gateway agent gets the task's repository, branch and model; a task with no repository (a plugin's task has none) can be given one with `repo`, which must be one of your connected GitHub repositories; without one the agent cannot open a pull request. `instructions` (optional, at most 1 KiB) opens the agent's first message; when the chief relays your answer to an attention ask, your own words go there. Offered only when `MUSTER_CHIEF_DISPATCH_OWNERS` lists at least one user. | see below |
 
 All three are chief-only, on the agent gateway and over `/mcp`. Handing a task
 to the chief never starts anything by itself: only `task_dispatch` does.
@@ -357,26 +357,35 @@ Each refusal has its own sentence, in this order:
    in.
 3. The deployment cannot start agents (no provisioner, or a first message
    could not be delivered).
-4. `repo` is given and is not `owner/name`, you have no GitHub connection, or
+4. `instructions` are over 1 KiB.
+5. `kind` is unknown, not enabled on the deployment (`MUSTER_AGENT_KINDS`), or
+   one you have no credential for; or it is `claude-code` and `repo` is given.
+6. `repo` is given and is not `owner/name`, you have no GitHub connection, or
    it is not one of your connected repositories. The chief picks it while
    reading outside text, so it may only pick from your own.
-5. Under a per-owner lock: **one start per task, ever.** A task the chief
+7. Under a per-owner lock: **one start per task, ever.** A task the chief
    already started an agent for answers with that start
    (`already_dispatched`) and starts nothing, whatever became of the agent.
    A second agent on the task is yours to start, from its card.
-6. The task is not yours, names a different repository than `repo`, is gated (`gate:` tag), is not `open`, or already
-   has a live agent (use `task_forward`).
-7. **2** of the agents the chief started are still live (pending,
+8. The task is not yours, is gated (`gate:` tag), names a repository when
+   the kind is `claude-code`, names a different repository than `repo`, is
+   not `open`, or already has a live agent (use `task_forward`).
+9. **2** of the agents the chief started are still live (pending,
    provisioning or running), counting a start from the last 10 minutes whose
    agent is not recorded yet.
-8. The chief started **10** agents in the last 24 hours.
+10. The chief started **10** agents in the last 24 hours.
 
-A start that passed every check is recorded (a `task.chief_dispatch` audit row)
-**before** the agent is created, so a start that then fails still spends the
-day's unit and the task's one start. The agent's id is recorded beside it
-(`task.chief_dispatch_agent`); the caps are counted from those rows.
+A start that passed every check is recorded (a `task.chief_dispatch` audit row,
+with the kind and any instructions, so you can read what the chief told the
+agent) **before** the agent is created, so a start that then fails still
+spends the day's unit and the task's one start. That includes a claude-code
+start whose account pool has no usable account: the pool is asked only at the
+create. The agent's id is recorded beside it (`task.chief_dispatch_agent`); the
+caps are counted from those rows.
 
-The agent's first message is the task's text, then muster's rules for the run:
+The agent's first message is the chief's `instructions`, if any (control
+characters removed, fenced under a line saying the chief relayed them), then
+the task's text, then muster's rules for the run, which come last and win:
 open any pull request as a **draft**, never merge, never mark the task complete
 (set it `ready_for_review` with the pull request's URL in a comment). Marking a
 task complete is refused to every agent anyway. ⚠ The draft rule is an

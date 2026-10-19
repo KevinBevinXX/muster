@@ -69,8 +69,10 @@ type DispatchStore interface {
 	// prior one (Prior), or refuses: with check's error (the caller's own
 	// conditions on the task, run under the reservation's lock after the prior
 	// check), or ErrChiefLiveCap / ErrChiefDailyCap. Only a reservation that
-	// passed all of them writes anything.
-	ReserveChiefDispatch(ctx context.Context, taskID int64, check func() error) (ChiefDispatch, error)
+	// passed all of them writes anything. detail (nil-safe) is written into the
+	// reservation's audit row: what the chief asked for (the kind, its relayed
+	// instructions), for the owner to read.
+	ReserveChiefDispatch(ctx context.Context, taskID int64, detail map[string]any, check func() error) (ChiefDispatch, error)
 	// RecordChiefDispatchAgent records the agent a reservation for taskID started.
 	RecordChiefDispatchAgent(ctx context.Context, taskID, agentID int64) error
 	// RecordTaskRouted records the chief routing taskID with tool (an
@@ -119,7 +121,7 @@ const ActionTaskRouted = "task.chief_routed"
 // SPENDS THE DAY'S UNIT AND THE TASK'S ONE START — the fail-closed direction, as
 // for the gated-task budget. The caller checks everything else before it
 // reserves.
-func (s *PGStore) ReserveChiefDispatch(ctx context.Context, taskID int64, check func() error) (ChiefDispatch, error) {
+func (s *PGStore) ReserveChiefDispatch(ctx context.Context, taskID int64, detail map[string]any, check func() error) (ChiefDispatch, error) {
 	p, ok := authz.From(ctx)
 	if !ok || p.UserID <= 0 {
 		return ChiefDispatch{}, errors.New("plugins: a chief dispatch needs a user principal")
@@ -184,7 +186,10 @@ func (s *PGStore) ReserveChiefDispatch(ctx context.Context, taskID int64, check 
 		if today >= MaxChiefDispatchesPerDay {
 			return ErrChiefDailyCap
 		}
-		return audit(ctx, tx, ActionChiefDispatch, NoteObject(taskID), map[string]any{})
+		if detail == nil {
+			detail = map[string]any{}
+		}
+		return audit(ctx, tx, ActionChiefDispatch, NoteObject(taskID), detail)
 	})
 	if err != nil {
 		return ChiefDispatch{}, err
