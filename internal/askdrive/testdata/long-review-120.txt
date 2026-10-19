@@ -1,0 +1,23 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Color  ☒ Where  ☒ Name  ✔ Submit  →
+
+Review your answers
+
+ ● Which color do you prefer?
+   → Red
+ │ ● The shared widget package renders every tool call the same way regardless of its status, so the spinner on a
+ │   half-finished call never stops (see the notes in #12/#13 and the @example/widgets-chat package). Should we fix it
+ │   upstream, or patch our copy for now and file the upstream change separately?
+   → The build agent needs to support running nightly batch-jobs, alongside the interactive sessions, where we are using
+   models via a proxy. See https://example.com/a/very/long/path/that/does/not/fit/on/one/line/of/the/terminal/at/all/be
+   cause/it/keeps/going/and-going-and-going-with-hyphens-everywhere-so-the-wrap-falls-on-one. Sentence number 1 adds
+   more words so that the typed answer grows well past several screen rows. Sentence number 2 adds more words so that
+   the typed answer grows well past several screen rows. Sentence number 3 adds more words so that it grows.
+ ● What should it be called?
+   → Alpha
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel
+

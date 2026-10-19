@@ -119,6 +119,8 @@ func TestAnAnswerIsTypedIntoTheClaudePaneOnly(t *testing.T) {
 	}{
 		{fmt.Errorf("x: %w", askdrive.ErrNoPicker), mirror.AskRefusalNoPicker},
 		{fmt.Errorf("x: %w", askdrive.ErrNotUntouched), mirror.AskRefusalTouched},
+		{fmt.Errorf("x: %w", askdrive.ErrUnreadable), mirror.AskRefusalUnreadable},
+		{fmt.Errorf("%w: %w", askdrive.ErrLost, askdrive.ErrUnreadable), mirror.AskRefusalUnreadableTyped},
 		{fmt.Errorf("x: %w", askdrive.ErrLost), mirror.AskRefusalLost},
 		{fmt.Errorf("x: %w", askdrive.ErrUnrecognised), mirror.AskRefusalUnrecognised},
 		{ErrPaneBusy, mirror.AskRefusalBusy},

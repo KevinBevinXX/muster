@@ -5,6 +5,8 @@ import (
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
+
+	"github.com/ZacxDev/muster/web"
 )
 
 // THE SEND QUEUE in a mirrored window's Rendered view (internal/sendqueue): a
@@ -35,6 +37,15 @@ func SendQueueCancelPath(id int64) string {
 	return SendQueuePath + "/" + strconv.FormatInt(id, 10) + "/cancel"
 }
 
+// SendQueueRetryPath is where message id's Retry posts.
+func SendQueueRetryPath(id int64) string {
+	return SendQueuePath + "/" + strconv.FormatInt(id, 10) + "/retry"
+}
+
+// SendQueueMayHaveSentText is what a failed message that may already have
+// been sent says beside its Retry.
+const SendQueueMayHaveSentText = "May already have been sent."
+
 // ComposerQueue is a Rendered view composer's queue: the list's URL, and the
 // list as it was when the page was drawn.
 type ComposerQueue struct {
@@ -62,6 +73,11 @@ type SendQueueItem struct {
 	// Answered is the asker whose question this message already answered when
 	// it was queued, "" for none: its Cancel cannot take that answer back.
 	Answered string
+	// Retryable: it failed and has not been retried; drawn with a Retry.
+	Retryable bool
+	// MayHaveDelivered: muster stopped while sending it, so it may have
+	// reached the window. Its Retry warns, and asks once before it queues it.
+	MayHaveDelivered bool
 }
 
 // SendQueueAnsweredText is what a queued message that answered asker's
@@ -112,7 +128,10 @@ func SendQueueList(v SendQueueListView) g.Node {
 		return P(ID("mv-queue-error"), Class("px-3 pt-2 text-xs text-st-error-fg break-words"), g.Text(v.Error))
 	}
 	if len(v.Items) == 0 {
-		return nil
+		// An empty group, never nil: the GET route renders this node itself,
+		// and a nil node has no Render (the 2026-10-19 panic on every window
+		// with nothing queued).
+		return g.Group(nil)
 	}
 	open := 0
 	rows := make([]g.Node, 0, len(v.Items))
@@ -132,7 +151,10 @@ func SendQueueList(v SendQueueListView) g.Node {
 					P(Class("text-[11px] text-muted [overflow-wrap:anywhere]"), g.Text(it.Detail))),
 				g.If(it.Answered != "", P(g.Attr("data-queue-answered", ""), Class("text-[11px] text-muted [overflow-wrap:anywhere]"),
 					g.Text(SendQueueAnsweredText(it.Answered)))),
+				g.If(it.Retryable && it.MayHaveDelivered, P(g.Attr("data-queue-may-have-sent", ""),
+					Class("text-[11px] font-semibold text-st-error-fg [overflow-wrap:anywhere]"), g.Text(SendQueueMayHaveSentText))),
 			),
+			g.If(it.Retryable, sendQueueRetryForm(it)),
 			g.If(it.Cancellable, Form(
 				Method("post"),
 				Action(SendQueueCancelPath(it.ID)),
@@ -154,6 +176,71 @@ func SendQueueList(v SendQueueListView) g.Node {
 		g.If(v.Waiting != "", P(ID("mv-queue-waiting"), Class("text-[11px] text-muted [overflow-wrap:anywhere]"),
 			g.Text("Next: "+v.Waiting))),
 		Ul(Class("max-h-40 overflow-y-auto"), g.Group(rows)),
+	)
+}
+
+// sendQueueRetryForm is a failed message's Retry: a form of its own, so it
+// works without script. One that may already have been sent carries
+// data-confirm (the script asks before posting, and confirms in the post); the
+// server asks again — a page of its own — when the post does not say so.
+func sendQueueRetryForm(it SendQueueItem) g.Node {
+	label := "Queue this failed message again"
+	if it.MayHaveDelivered {
+		label = "Queue this message again (it may already have been sent)"
+	}
+	return Form(
+		Method("post"),
+		Action(SendQueueRetryPath(it.ID)),
+		g.Attr("data-retry", ""),
+		g.If(it.MayHaveDelivered, g.Attr("data-confirm", SendQueueMayHaveSentText+" Queue it again anyway?")),
+		Class("shrink-0"),
+		Button(Type("submit"),
+			g.Attr("aria-label", label),
+			Class("press min-h-[44px] rounded-lg px-3 text-xs font-semibold text-fg2 ring-1 ring-inset ring-line transition hover:bg-s2"),
+			g.Text("Retry")),
+	)
+}
+
+// SendQueueRetryConfirmPage is a whole document asking once before a message
+// that may already have been sent is queued again: the browser's own answer
+// to a Retry posted without the confirm (no script ran). It posts to action
+// with field=1.
+func SendQueueRetryConfirmPage(action, field, question, back string) g.Node {
+	return Doctype(
+		HTML(Class("dark"), Lang("en"),
+			Head(
+				Meta(Charset("utf-8")),
+				Meta(Name("viewport"), Content("width=device-width, initial-scale=1, viewport-fit=cover")),
+				Meta(Name("color-scheme"), Content("dark light")),
+				ThemeHead(),
+				manifestLink(),
+				TitleEl(g.Text("Queue it again? · muster")),
+				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
+				faroHead(),
+			),
+			Body(
+				Class("flex min-h-dvh items-center justify-center bg-bg px-4 text-fg antialiased"),
+				Form(
+					ID("sq-retry-confirm"),
+					Method("post"),
+					Action(action),
+					Class("flex w-full max-w-sm flex-col gap-4 rounded-2xl bg-s1 px-5 py-6 ring-1 ring-line"),
+					Input(Type("hidden"), Name(field), Value("1")),
+					H1(Class("text-base font-semibold text-fg"), g.Text("Queue it again?")),
+					P(Class("text-sm text-fg2"), g.Text(question)),
+					Div(
+						Class("flex gap-2"),
+						A(Href(back),
+							Class("press inline-flex min-h-[44px] flex-1 items-center justify-center rounded-md px-3 py-2 text-base font-semibold "+stepUpSecondary),
+							g.Text("Cancel")),
+						Button(Type("submit"),
+							Class("press min-h-[44px] flex-1 rounded-md px-3 py-2 text-base font-semibold transition "+stepUpPrimary),
+							g.Text("Queue it again")),
+					),
+				),
+				pwaChrome(),
+			),
+		),
 	)
 }
 
@@ -228,8 +315,40 @@ func sendQueueScript() g.Node {
       .then(function (t) { loading = false; if (t !== null) box.innerHTML = t; schedule(); },
             function () { loading = false; schedule(); });
   }
+  function note(t) {
+    var n = document.getElementById('mv-note');
+    if (n && t) { n.textContent = t; n.hidden = false; n.removeAttribute('data-ok'); }
+  }
+  // Retry: queues a failed message again under this session's sign-in. One
+  // that may already have been sent is asked about once (data-confirm), and the
+  // post says it was; a stale sign-in asks "Confirm it's you" and retries.
+  function retry(f, confirmed) {
+    var b = f.querySelector('button');
+    if (b) b.disabled = true;
+    var body = new URLSearchParams();
+    if (confirmed) body.append('confirm', '1');
+    return fetch(f.getAttribute('action'), { method: 'POST', body: body, credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' } })
+      .then(function (r) {
+        if (r.ok) return;
+        if (r.status === 403 && r.headers.get('X-Muster-Step-Up') && window.musterStepUp) {
+          window.musterStepUp.stale();
+          window.musterStepUp.ask('', function () { return retry(f, confirmed); });
+          return;
+        }
+        return r.text().then(function (t) { note(t.trim() || ('Not queued again (HTTP ' + r.status + ')')); });
+      })
+      .then(load, load);
+  }
   box.addEventListener('submit', function (e) {
     var f = e.target;
+    if (f && f.hasAttribute && f.hasAttribute('data-retry') && typeof fetch === 'function' && typeof URLSearchParams === 'function') {
+      e.preventDefault();
+      var ask = f.getAttribute('data-confirm');
+      if (ask && !window.confirm(ask)) return;
+      retry(f, !!ask);
+      return;
+    }
     if (!f || !f.hasAttribute || !f.hasAttribute('data-cancel') || typeof fetch !== 'function') return;
     e.preventDefault();
     var b = f.querySelector('button');

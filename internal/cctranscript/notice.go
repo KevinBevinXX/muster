@@ -149,7 +149,8 @@ func noticeOf(r Record, text string) (Event, bool) {
 			summary = firstLine(detail)
 		}
 		return Event{Kind: KindNotice, Notice: NoticeTask, Status: innerTag(body, "status"),
-			Text: Cap(summary, MaxText), Output: Cap(detail, MaxOutput)}, true
+			Text: Cap(summary, MaxText), Output: Cap(detail, MaxOutput),
+			TaskToolID: innerTag(body, "tool-use-id"), At: r.Time()}, true
 	case NoticeCommandOutput:
 		out := strings.TrimSpace(ansi.ReplaceAllString(blocks[0][1], ""))
 		return Event{Kind: KindNotice, Notice: NoticeCommandOutput, Text: Cap(firstLine(out), MaxText), Output: Cap(out, MaxOutput)}, true

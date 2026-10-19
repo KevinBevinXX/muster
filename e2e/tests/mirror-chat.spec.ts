@@ -568,3 +568,115 @@ test('the header shows the context token count from the host, follows it live, a
   const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
   expect(sw).toBeLessThanOrEqual(cw);
 });
+
+// ---- SUBAGENT CARDS (internal/mirror's subagents.go) ----
+//
+// The subagents' files sit where Claude Code writes them, beside the
+// transcript: <dir>/<session>/subagents/agent-<id>.{jsonl,meta.json}. The
+// host reads them; every id and text here is invented.
+const agentCall = (id: string, description: string, type: string, background = false) =>
+  rec({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id, name: 'Agent', input: { description, prompt: 'do it', subagent_type: type, ...(background ? { run_in_background: true } : {}) } }] },
+  });
+const agentResult = (id: string, agent: string, async: boolean, out: string) =>
+  rec({
+    type: 'user',
+    promptId: 'p',
+    timestamp: new Date().toISOString(),
+    toolUseResult: async ? { isAsync: true, status: 'async_launched', agentId: agent } : { status: 'completed', agentId: agent },
+    message: { content: [{ type: 'tool_result', tool_use_id: id, content: out }] },
+  });
+const agentNotice = (toolId: string, status: string) =>
+  rec({
+    type: 'user',
+    promptId: 'p',
+    timestamp: new Date().toISOString(),
+    origin: { kind: 'task-notification' },
+    message: { role: 'user', content: `<task-notification>\n<task-id>x</task-id>\n<tool-use-id>${toolId}</tool-use-id>\n<status>${status}</status>\n<summary>Agent finished</summary>\n</task-notification>` },
+  });
+const subRow = (agent: string, ago: number, message: object, type = 'assistant') =>
+  rec({ type, isSidechain: true, agentId: agent, timestamp: new Date(Date.now() - ago * 1000).toISOString(), message });
+const subTool = (agent: string, ago: number, name: string, input: object) =>
+  subRow(agent, ago, { role: 'assistant', stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'x' + ago, name, input }] });
+const subText = (agent: string, ago: number, text: string) => subRow(agent, ago, { role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text', text }] });
+
+function subagentsDir(transcript: string): string {
+  const d = path.join(transcript.replace(/\.jsonl$/, ''), 'subagents');
+  fs.mkdirSync(d, { recursive: true });
+  return d;
+}
+
+test('an Agent call is a subagent card with its live state, and opening it shows the agent\'s own steps', async ({ page }) => {
+  const tr = newTranscript(
+    prompt('fan out') +
+      agentCall('toolu_e2e_bg', 'Survey the widget', 'Explore', true) +
+      agentResult('toolu_e2e_bg', 'a0e2e1', true, 'Async agent launched') +
+      agentCall('toolu_e2e_fg', 'Check the config', 'general-purpose') +
+      agentResult('toolu_e2e_fg', 'a0e2e2', false, 'The config is fine.'),
+  );
+  const dir = subagentsDir(tr);
+  fs.writeFileSync(path.join(dir, 'agent-a0e2e1.meta.json'), JSON.stringify({ agentType: 'Explore', description: 'Survey the widget', toolUseId: 'toolu_e2e_bg', spawnDepth: 1, requestShape: 'background' }));
+  const bg = path.join(dir, 'agent-a0e2e1.jsonl');
+  fs.writeFileSync(
+    bg,
+    subRow('a0e2e1', 90, { role: 'user', content: 'survey it' }, 'user') +
+      subTool('a0e2e1', 80, 'Bash', { command: 'deploy --token e2eSecretValue123 now' }) +
+      subTool('a0e2e1', 70, 'Grep', { pattern: 'TODO' }),
+  );
+  // The foreground agent has NO meta file: its card is linked through the
+  // parent's result, and the parent's result says done.
+  fs.writeFileSync(path.join(dir, 'agent-a0e2e2.jsonl'), subRow('a0e2e2', 60, { role: 'user', content: 'check' }, 'user') + subText('a0e2e2', 50, 'Looks fine.'));
+
+  await openView(page, tr);
+  const log = page.locator('#mv-log');
+  const cards = log.locator('[data-subagent-card]');
+  await expect(cards).toHaveCount(2);
+  // Not tool rows: never folded into a collapsed group.
+  await expect(log.locator('[data-tool-row]')).toHaveCount(0);
+  const first = cards.nth(0);
+  await expect(first.locator('[data-subagent-desc]')).toHaveText('Survey the widget');
+  await expect(first.locator('[data-subagent-type]')).toHaveText('Explore');
+  await expect(first.locator('[data-subagent-background]')).toBeVisible();
+  await expect(first.locator('[data-subagent-status]')).toHaveText('running');
+  await expect(first.locator('[data-subagent-last]')).toHaveText('Grep: TODO');
+  // The elapsed time ticks from the agent's first row (90 s ago).
+  await expect(first.locator('[data-subagent-elapsed]')).toHaveText(/^1m \d\ds$/);
+  await expect(cards.nth(1).locator('[data-subagent-status]')).toHaveText('done');
+  await expect(cards.nth(1).locator('[data-subagent-desc]')).toHaveText('Check the config');
+
+  // Opening the card shows the agent's own steps, the secret in one redacted
+  // on the host.
+  await first.locator('summary').click();
+  const steps = first.locator('[data-subagent-step]');
+  await expect(steps).toHaveCount(2);
+  await expect(steps.nth(0)).toContainText('«redacted»');
+  await expect(first).not.toContainText('e2eSecretValue123');
+  await expect(steps.nth(1)).toContainText('TODO');
+
+  // Live: a new step moves the card and, while it is open, its tail.
+  fs.appendFileSync(bg, subTool('a0e2e1', 0, 'Read', { file_path: '/src/widget.go' }));
+  await expect(first.locator('[data-subagent-last]')).toHaveText('Read: /src/widget.go');
+  await expect(steps).toHaveCount(3);
+  await expect(first).toHaveAttribute('open', '');
+
+  // It finishes: a final reply, then the harness's notification → done.
+  fs.appendFileSync(bg, subText('a0e2e1', 0, 'The widget is fine.'));
+  fs.appendFileSync(tr, agentNotice('toolu_e2e_bg', 'completed'));
+  await expect(first.locator('[data-subagent-status]')).toHaveText('done');
+  await expect(first).toHaveAttribute('data-subagent-state', 'done');
+  const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+  expect(sw).toBeLessThanOrEqual(cw);
+});
+
+test('an older host draws an Agent call as the plain tool row, with no card', async ({ page }) => {
+  const tr = newTranscript(prompt('fan out') + agentCall('toolu_e2e_old', 'Survey the widget', 'Explore'));
+  const dir = subagentsDir(tr);
+  fs.writeFileSync(path.join(dir, 'agent-a0e2e9.meta.json'), JSON.stringify({ agentType: 'Explore', description: 'Survey the widget', toolUseId: 'toolu_e2e_old' }));
+  fs.writeFileSync(path.join(dir, 'agent-a0e2e9.jsonl'), subRow('a0e2e9', 5, { role: 'user', content: 'x' }, 'user'));
+  await openView(page, tr, { MUSTER_MIRROR_E2E_NO_SUBAGENTS: '1' });
+  const log = page.locator('#mv-log');
+  await expect(log.locator('[data-tool-row]')).toHaveCount(1);
+  await expect(log.locator('[data-tool-row]')).toContainText('Agent');
+  await expect(log.locator('[data-subagent-card]')).toHaveCount(0);
+});

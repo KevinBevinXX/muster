@@ -95,6 +95,7 @@ GET /mirror/view
 GET /mirror/view/asks
 GET /mirror/view/complete
 GET /mirror/view/send
+GET /mirror/view/subagent
 GET /mirror/view/ws
 GET /plugins
 GET /readyz
@@ -224,6 +225,8 @@ POST /runner/flows/{id}/result
 POST /send-queue
 POST /send-queue/confirm
 POST /send-queue/{id}/cancel
+POST /send-queue/{id}/retry
+POST /send-queue/{id}/retry/confirm
 POST /tasks
 POST /tasks/merge
 POST /tasks/{id}/comments

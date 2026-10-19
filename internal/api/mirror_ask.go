@@ -280,6 +280,12 @@ func askTypeFailure(err error) string {
 	switch {
 	case errors.Is(err, mirror.ErrAskNoPicker):
 		return "The question is no longer on the terminal's screen — it was answered or dismissed there."
+	// Before lost and touched: muster could not read the question — which
+	// says nothing about anyone in the terminal, so the card does not either.
+	case errors.Is(err, mirror.ErrAskUnreadable) && errors.Is(err, mirror.ErrAskLost):
+		return "Couldn't type it in: the question went off the terminal's screen while typing (its picker is taller than the terminal), and nothing was submitted." + askPartlyFilled
+	case errors.Is(err, mirror.ErrAskUnreadable):
+		return "Couldn't read this question off the terminal's screen as the one muster was sent — answer it in the terminal."
 	case errors.Is(err, mirror.ErrAskTouched):
 		return "Someone has started answering it in the terminal — finish it there."
 	case errors.Is(err, mirror.ErrAskBusy):
@@ -310,6 +316,8 @@ func askTypingResult(err error) string {
 		return "not-sent"
 	case errors.Is(err, mirror.ErrAskNoPicker):
 		return "no-picker"
+	case errors.Is(err, mirror.ErrAskUnreadable):
+		return "unreadable"
 	case errors.Is(err, mirror.ErrAskTouched):
 		return "touched"
 	case errors.Is(err, mirror.ErrAskLost):

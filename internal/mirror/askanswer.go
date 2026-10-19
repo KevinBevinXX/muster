@@ -42,6 +42,11 @@ var (
 	// ErrAskBusy: another answer is being typed into that terminal. Nothing
 	// was typed.
 	ErrAskBusy = errors.New("mirror: another answer is being typed into that terminal")
+	// ErrAskUnreadable: the host could not read the question off the
+	// terminal's screen as the one muster registered — NOT someone answering
+	// it there. Alone, nothing was typed; with ErrAskLost, keys were typed
+	// before it went out of reading and nothing was submitted.
+	ErrAskUnreadable = errors.New("mirror: the host could not read this question off the terminal's screen")
 	// ErrAskNotSent wraps an AnswerWindow error from BEFORE the answer was
 	// sent to the host: nothing can be being typed.
 	ErrAskNotSent = errors.New("mirror: the answer was not sent to the host")
@@ -55,7 +60,7 @@ func AskOutcomeKnown(err error) bool {
 	if err == nil {
 		return true
 	}
-	for _, e := range []error{ErrAskNotSent, ErrAskNoPicker, ErrAskTouched, ErrAskLost, ErrAskUnsupported, ErrAskUnrecognised, ErrAskBusy, ErrAskRefused} {
+	for _, e := range []error{ErrAskNotSent, ErrAskNoPicker, ErrAskTouched, ErrAskLost, ErrAskUnsupported, ErrAskUnrecognised, ErrAskBusy, ErrAskUnreadable, ErrAskRefused} {
 		if errors.Is(err, e) {
 			return true
 		}
@@ -156,6 +161,10 @@ func askAnswerError(why, refusal string) error {
 		return fmt.Errorf("%w: %s", ErrAskUnrecognised, why)
 	case AskRefusalBusy:
 		return fmt.Errorf("%w: %s", ErrAskBusy, why)
+	case AskRefusalUnreadable:
+		return fmt.Errorf("%w: %s", ErrAskUnreadable, why)
+	case AskRefusalUnreadableTyped:
+		return fmt.Errorf("%w: %w: %s", ErrAskUnreadable, ErrAskLost, why)
 	}
 	return fmt.Errorf("%w: %s", ErrAskRefused, why)
 }

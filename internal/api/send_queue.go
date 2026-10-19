@@ -20,7 +20,7 @@ import (
 
 // ---------------------------------------------------------------------------
 // THE SEND QUEUE's server half (internal/sendqueue, migration 0019): the
-// Rendered view's Queue, the queue's list and Cancel, and the dispatcher's two
+// Rendered view's Queue, the queue's list, Cancel and Retry, and the dispatcher's two
 // hooks — the target's state (sendQueueProbe) and the delivery
 // (sendQueueSend).
 //
@@ -37,15 +37,20 @@ import (
 // so row-level security and the plugin's own gates see the owner and nobody
 // else.
 //
-// 🔴 THE STEP-UP IS DECIDED WHEN THE MESSAGE IS QUEUED, AND RE-CHECKED WHEN IT
-// IS SENT. Queueing needs the same fresh sign-in a Send needs (403 +
-// X-Muster-Step-Up, or the plain confirm page), and the queue stores the
-// sign-in time of the session that queued it (stepup_at). The delivery presents
-// EXACTLY that time to the same gate — the plugin's own Fresh check included —
-// so a queued message is sent only while the sign-in that queued it is still
-// inside the step-up window (MUSTER_STEPUP_WINDOW, 12 h by default). Past it
-// the message FAILS with a reason and is not sent; nothing about the queue
-// widens the window or mints a fresher time.
+// 🔴 THE STEP-UP IS DECIDED WHEN THE MESSAGE IS QUEUED, AND THAT DECISION
+// HOLDS FOR AT MOST sendqueue.AuthorizedFor (7 days) FROM THE QUEUEING — the
+// operator's decision. Queueing needs the same fresh sign-in a Send needs (403
+// + X-Muster-Step-Up, or the plain confirm page), and the queue stores the
+// sign-in time of the session that queued it (stepup_at). The delivery checks
+// that the recorded sign-in was inside the step-up window (MUSTER_STEPUP_WINDOW)
+// when the row was created and that the row is no older than AuthorizedFor
+// (sendQueueAuthorization); only then does it present the delivery moment to
+// the paste's own freshness gate, as a routed message's delivery does. A
+// message past either FAILS with a reason, pasting nothing, and its row offers
+// Retry, which queues the same text again under the retrying request's own
+// fresh sign-in (handleSendQueueRetry). It used to present the queueing time
+// itself to the 12 h gate, so a message that waited out a long turn overnight
+// failed though it was authorized when it was queued.
 //
 // 🔴 AND THE ACCOUNT IS RE-CHECKED WHEN IT IS SENT, FROM THE DATABASE. The
 // delivery refuses — fails, saying why, pasting nothing — when the owner is
@@ -75,6 +80,9 @@ func (s *Server) registerSendQueueRoutes(mux Mux) {
 	mux.HandleFunc("POST /send-queue/{id}/cancel", s.requireOperatorWrite(s.handleSendQueueCancel))
 	// The plain confirm page's form: a stale queue the BROWSER submitted.
 	mux.HandleFunc("POST "+sendQueueConfirmPath, s.requireOperatorWrite(s.handleSendQueueConfirm))
+	mux.HandleFunc("POST /send-queue/{id}/retry", s.requireOperatorWrite(s.handleSendQueueRetry))
+	// The plain confirm page's form for a stale Retry the BROWSER submitted.
+	mux.HandleFunc("POST /send-queue/{id}/retry/confirm", s.requireOperatorWrite(s.handleSendQueueRetryConfirm))
 }
 
 // sendQueueConfirmPath is the plain confirm page's route for a queue post.
@@ -168,25 +176,15 @@ func (s *Server) sendQueueAdd(w http.ResponseWriter, r *http.Request, ctx contex
 		refuse(http.StatusBadRequest, MirrorSendEmpty, noticeEmpty)
 		return
 	}
-	// THE SAME GATES AS A SEND, IN mirrorSend's ORDER — then the queue's own.
-	if !q.h.Interactive {
-		refuse(http.StatusConflict, mirror.ErrInteractiveRefused.Error(), noticeReadOnly)
-		return
-	}
-	if !stepup.Fresh(ctx, s.stepUpNow()) {
-		if nav {
-			s.sendQueueStepUpPage(w, r, q, text, "")
-			return
+	if g := s.sendQueueGate(ctx, q); g.status != 0 {
+		switch {
+		case !g.stale:
+			refuse(g.status, g.msg, g.notice)
+		case nav:
+			s.sendQueueStepUpPage(w, sendQueueConfirmPath, sendQueueAddFields(q, text), q.back, "")
+		default:
+			refuseStale(w)
 		}
-		refuseStale(w)
-		return
-	}
-	if !q.listed {
-		refuse(http.StatusConflict, mirror.ErrWindowGone.Error(), noticeWindowGone)
-		return
-	}
-	if off := mirrorQueueOff(q.h, q.e); off != "" {
-		refuse(http.StatusConflict, off, noticeQueueOff)
 		return
 	}
 	if _, err := mirror.SanitizePaste(text); err != nil {
@@ -221,19 +219,51 @@ func (s *Server) sendQueueAdd(w http.ResponseWriter, r *http.Request, ctx contex
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// sendQueueStepUpPage answers a browser-submitted queue whose sign-in is
-// stale: the plain confirm page, carrying the message in hidden fields, which
-// posts to sendQueueConfirmPath.
-func (s *Server) sendQueueStepUpPage(w http.ResponseWriter, r *http.Request, q sendQueueTarget, text, problem string) {
+// sendQueueGateResult is why a queue (or a Retry) may not be queued for its
+// target now: a status, the reason and the notice a redirect carries — or,
+// stale, that the sign-in must be confirmed first. status 0: it may.
+type sendQueueGateResult struct {
+	status      int
+	msg, notice string
+	stale       bool
+}
+
+// sendQueueGate is the one gate a queue post and a Retry both pass: THE SAME
+// GATES AS A SEND, IN mirrorSend's ORDER — an -interactive host, a FRESH
+// sign-in on ctx — then the queue's own: the window is listed, and the host
+// can tell when Claude Code in it is idle.
+func (s *Server) sendQueueGate(ctx context.Context, q sendQueueTarget) sendQueueGateResult {
+	switch {
+	case !q.h.Interactive:
+		return sendQueueGateResult{status: http.StatusConflict, msg: mirror.ErrInteractiveRefused.Error(), notice: noticeReadOnly}
+	case !stepup.Fresh(ctx, s.stepUpNow()):
+		return sendQueueGateResult{status: http.StatusForbidden, stale: true}
+	case !q.listed:
+		return sendQueueGateResult{status: http.StatusConflict, msg: mirror.ErrWindowGone.Error(), notice: noticeWindowGone}
+	}
+	if off := mirrorQueueOff(q.h, q.e); off != "" {
+		return sendQueueGateResult{status: http.StatusConflict, msg: off, notice: noticeQueueOff}
+	}
+	return sendQueueGateResult{}
+}
+
+// sendQueueAddFields is a queue post's message, as the confirm page carries it.
+func sendQueueAddFields(q sendQueueTarget, text string) []ui.ComposerField {
 	fields := []ui.ComposerField{{Name: "host", Value: q.h.Host}, {Name: "session", Value: q.e.Session}}
 	if q.e.Window != "" {
 		fields = append(fields, ui.ComposerField{Name: "window", Value: q.e.Window})
 	}
-	fields = append(fields, ui.ComposerField{Name: "text", Value: text})
+	return append(fields, ui.ComposerField{Name: "text", Value: text})
+}
+
+// sendQueueStepUpPage answers a browser-submitted queue (or Retry) whose
+// sign-in is stale: the plain confirm page, carrying what was waiting in
+// hidden fields, which posts to action.
+func (s *Server) sendQueueStepUpPage(w http.ResponseWriter, action string, fields []ui.ComposerField, back, problem string) {
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.StepUpFormPage(ui.StepUpFormView{Action: sendQueueConfirmPath, Fields: fields,
-		BackHref: q.back, Window: stepup.WindowText(), Error: problem}).Render(w); err != nil {
+	if err := ui.StepUpFormPage(ui.StepUpFormView{Action: action, Fields: fields,
+		BackHref: back, Window: stepup.WindowText(), Error: problem}).Render(w); err != nil {
 		s.logger.Printf("sendqueue: render confirm page: %v", err)
 	}
 }
@@ -264,7 +294,7 @@ func (s *Server) handleSendQueueConfirm(w http.ResponseWriter, r *http.Request) 
 	// PostForm, never Form: a password in the URL would be in the access log.
 	o := s.stepUpWithPassword(w, r, r.PostForm.Get("password"))
 	if o.Error != "" {
-		s.sendQueueStepUpPage(w, r, q, r.PostFormValue("text"), o.Error)
+		s.sendQueueStepUpPage(w, sendQueueConfirmPath, sendQueueAddFields(q, r.PostFormValue("text")), q.back, o.Error)
 		return
 	}
 	s.sendQueueAdd(w, r, stepup.WithAuthTime(r.Context(), o.At), true)
@@ -306,7 +336,8 @@ func (s *Server) sendQueueListView(ctx context.Context, t sendqueue.Target) ui.S
 			preview = strings.ToValidUTF8(preview[:sendQueuePreview], "") + "…"
 		}
 		v.Items = append(v.Items, ui.SendQueueItem{ID: it.ID, State: string(it.State), Preview: preview,
-			Detail: it.Detail, Cancellable: it.State == sendqueue.Queued, Answered: answered[it.ID]})
+			Detail: it.Detail, Cancellable: it.State == sendqueue.Queued, Answered: answered[it.ID],
+			Retryable: sendQueueRetryable(it), MayHaveDelivered: it.MayHaveDelivered})
 	}
 	if h, ok, err := s.ext.SendQueue.HeadOf(ctx, t); err == nil && ok {
 		if d := s.sendQueueDecide(h, s.sendQueueProbe(ctx, h)); !d.Send {
@@ -386,6 +417,178 @@ func (s *Server) handleSendQueueCancel(w http.ResponseWriter, r *http.Request) {
 	}
 	if nav {
 		http.Redirect(w, r, withNotice(back, noticeCancelled), http.StatusSeeOther)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// sendQueueRetryable is whether it's row offers Retry: it failed, and has not
+// been retried yet (sendqueue.PGStore.Retry refuses it otherwise).
+func sendQueueRetryable(it sendqueue.Item) bool {
+	return it.State == sendqueue.Failed && it.RetriedAs == 0
+}
+
+// SendQueueRetryConfirmField is the form field that says the person confirmed
+// retrying a message that may already have been sent.
+const SendQueueRetryConfirmField = "confirm"
+
+// SendQueueMayHaveSent is what Retry on a message that may already have been
+// sent asks before it queues it again.
+const SendQueueMayHaveSent = "This message may already have been sent: muster stopped while sending it. Queue it again anyway?"
+
+// handleSendQueueRetry is POST /send-queue/{id}/retry: queue the principal's
+// FAILED message again — the same text, the same window — under the
+// request's OWN sign-in, which must be fresh like a queue post's
+// (sendQueueGate: 403 + X-Muster-Step-Up to the script, the plain confirm page
+// to a browser form). A message that may already have been sent (muster died
+// mid-send) needs one confirm first (SendQueueRetryConfirmField): 409 saying so
+// to the script, a confirm page to a browser form. 404 for a message the
+// principal cannot see; 409 for one that did not fail or was already retried.
+func (s *Server) handleSendQueueRetry(w http.ResponseWriter, r *http.Request) {
+	s.sendQueueRetry(w, r, r.Context(), false)
+}
+
+// handleSendQueueRetryConfirm is POST /send-queue/{id}/retry/confirm: the
+// plain confirm page's form for a stale Retry — the password again. A right
+// one replaces the session with a freshly signed-in one (stepUpWithPassword,
+// as the queue's own confirm page) and the Retry is made under THAT sign-in.
+func (s *Server) handleSendQueueRetryConfirm(w http.ResponseWriter, r *http.Request) {
+	if s.ext.SendQueue == nil || s.ext.Mirror == nil {
+		http.NotFound(w, r)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "the form is too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	id, _, q, ok := s.sendQueueRetryTarget(w, r)
+	if !ok {
+		return
+	}
+	// PostForm, never Form: a password in the URL would be in the access log.
+	o := s.stepUpWithPassword(w, r, r.PostForm.Get("password"))
+	if o.Error != "" {
+		s.sendQueueStepUpPage(w, sendQueueRetryConfirmPath(id), sendQueueRetryFields(r), q.back, o.Error)
+		return
+	}
+	s.sendQueueRetry(w, r, stepup.WithAuthTime(r.Context(), o.At), true)
+}
+
+func sendQueueRetryConfirmPath(id int64) string { return ui.SendQueueRetryPath(id) + "/confirm" }
+
+// sendQueueRetryFields is what a Retry's confirm page carries: the
+// may-have-been-sent confirm, when it was given.
+func sendQueueRetryFields(r *http.Request) []ui.ComposerField {
+	if r.PostFormValue(SendQueueRetryConfirmField) == "1" {
+		return []ui.ComposerField{{Name: SendQueueRetryConfirmField, Value: "1"}}
+	}
+	return nil
+}
+
+// sendQueueRetryTarget is the {id} of a Retry route: the principal's message
+// and its window, resolved for the principal like a queue post's. ok is false
+// when it answered already (404: not the principal's, or no such window).
+func (s *Server) sendQueueRetryTarget(w http.ResponseWriter, r *http.Request) (int64, sendqueue.Item, sendQueueTarget, bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		http.NotFound(w, r)
+		return 0, sendqueue.Item{}, sendQueueTarget{}, false
+	}
+	it, err := s.ext.SendQueue.Get(r.Context(), id)
+	if err != nil {
+		http.NotFound(w, r)
+		return 0, sendqueue.Item{}, sendQueueTarget{}, false
+	}
+	v := url.Values{"host": {it.Target.Host}, "session": {it.Target.Session}}
+	if it.Target.Window != "" {
+		v.Set("window", it.Target.Window)
+	}
+	q, ok := s.resolveSendQueueTarget(w, r, v)
+	return id, it, q, ok
+}
+
+// sendQueueRetry retries the route's message. ctx carries the sign-in time the
+// gate reads (the request's, or one the confirm page just minted); confirmed
+// says it is the confirm page's post, which is always a browser navigation.
+func (s *Server) sendQueueRetry(w http.ResponseWriter, r *http.Request, ctx context.Context, confirmed bool) {
+	if s.ext.SendQueue == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if !confirmed {
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "the form is too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+	}
+	id, it, q, ok := s.sendQueueRetryTarget(w, r)
+	if !ok {
+		return
+	}
+	nav := confirmed || isDocumentNavigation(r)
+	refuse := func(status int, msg, notice string) {
+		if nav {
+			http.Redirect(w, r, withNotice(q.back, notice), http.StatusSeeOther)
+			return
+		}
+		http.Error(w, msg, status)
+	}
+	if !sendQueueRetryable(it) {
+		refuse(http.StatusConflict, composerNotices[noticeNotRetried].text, noticeNotRetried)
+		return
+	}
+	// 🔴 ONE CONFIRM FOR A MESSAGE THAT MAY ALREADY HAVE BEEN SENT: a second
+	// paste of it is the failure the queue otherwise never risks.
+	if it.MayHaveDelivered && r.PostFormValue(SendQueueRetryConfirmField) != "1" {
+		if nav {
+			formDocument(w)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			if err := ui.SendQueueRetryConfirmPage(ui.SendQueueRetryPath(id), SendQueueRetryConfirmField,
+				SendQueueMayHaveSent, q.back).Render(w); err != nil {
+				s.logger.Printf("sendqueue: render retry confirm page: %v", err)
+			}
+			return
+		}
+		w.Header().Set("X-Muster-Confirm", "may-have-sent")
+		http.Error(w, SendQueueMayHaveSent, http.StatusConflict)
+		return
+	}
+	if g := s.sendQueueGate(ctx, q); g.status != 0 {
+		switch {
+		case !g.stale:
+			refuse(g.status, g.msg, g.notice)
+		case nav:
+			s.sendQueueStepUpPage(w, sendQueueRetryConfirmPath(id), sendQueueRetryFields(r), q.back, "")
+		default:
+			refuseStale(w)
+		}
+		return
+	}
+	at, _ := stepup.AuthTime(ctx)
+	stored, err := s.ext.SendQueue.Retry(ctx, id, at, s.ext.Mirror.AgentState(ctx, q.t.Host, q.t.Session, q.t.Window).Pasted)
+	switch {
+	case errors.Is(err, sendqueue.ErrNotFound):
+		http.NotFound(w, r)
+		return
+	case errors.Is(err, sendqueue.ErrNotRetryable):
+		refuse(http.StatusConflict, composerNotices[noticeNotRetried].text, noticeNotRetried)
+		return
+	case errors.Is(err, sendqueue.ErrFull):
+		refuse(http.StatusConflict, strings.TrimPrefix(err.Error(), "sendqueue: "), noticeQueueFull)
+		return
+	case err != nil:
+		s.logger.Printf("sendqueue: retry %d for %s: %v", id, q.t, err)
+		refuse(http.StatusInternalServerError, "could not queue the message again", noticeFailed)
+		return
+	}
+	s.logger.Printf("sendqueue: retried message %d as %d (%d bytes) for %s (may have been delivered: %t)",
+		id, stored.ID, len(stored.Body), q.t, it.MayHaveDelivered)
+	s.mirrorAddressed(ctx, q.h.Host, q.e, mirror.PasteClaude, stored.Body, stored.ID)
+	s.kickSendQueue()
+	if nav {
+		http.Redirect(w, r, withNotice(q.back, noticeQueued), http.StatusSeeOther)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -485,7 +688,15 @@ func (s *Server) sendQueueSend(ctx context.Context, it sendqueue.Item, st sendqu
 	if why := s.sendQueueOwnerRefusal(ctx, it); why != "" {
 		return sendqueue.Outcome{Detail: why}
 	}
-	if it.RouteID != "" {
+	if it.RouteID == "" {
+		if why := sendQueueAuthorization(it, s.sendQueueNow()); why != "" {
+			return sendqueue.Outcome{Detail: why}
+		}
+		// Authorized when it was queued, and still within AuthorizedFor of
+		// that: the delivery moment is the auth time the paste's own
+		// freshness check sees, as a routed message's is.
+		ctx = stepup.WithAuthTime(ctx, s.stepUpNow())
+	} else {
 		why := s.sendQueueRoutedGate(ctx, it)
 		if why != "" {
 			return sendqueue.Outcome{Detail: why}
@@ -672,11 +883,38 @@ func (s *Server) sendQueueNotePaste(ctx context.Context, host, session, window s
 	}
 }
 
-// sendQueueStale is the outcome of a message whose queueing sign-in has left
-// the step-up window.
+// sendQueueStale is the outcome of a delivery the paste's own freshness gate
+// refused (it presents the delivery moment, so this is not expected).
 func sendQueueStale() sendqueue.Outcome {
 	return sendqueue.Outcome{Detail: "Not sent: the sign-in that queued it is older than " + stepup.WindowText() +
-		". Confirm it's you and queue it again."}
+		". Retry it to queue it again."}
+}
+
+// sendQueueAuthorizedText is sendqueue.AuthorizedFor as a person reads it.
+var sendQueueAuthorizedText = strconv.Itoa(int(sendqueue.AuthorizedFor/(24*time.Hour))) + " days"
+
+// Why a person's queued message is not sent on the sign-in that queued it
+// (sendQueueAuthorization).
+var (
+	SendQueueExpired = "Not sent: it was queued more than " + sendQueueAuthorizedText + " ago, and a queued message is sent only within " +
+		sendQueueAuthorizedText + " of being queued. Retry it to queue it again."
+	SendQueueNotFreshWhenQueued = "Not sent: the sign-in that queued it was not a recent one when it was queued. Retry it to queue it again."
+)
+
+// sendQueueAuthorization is why the sign-in that queued person's message it no
+// longer authorizes sending it at now, "" when it does: it was inside the
+// step-up window when the row was created (the queue route's gate, checked
+// again from the row), and the row is at most sendqueue.AuthorizedFor old.
+// CreatedAt is Postgres's clock, StepUpAt GoTrue's and now muster's; a skew of
+// seconds between them is immaterial at either bound.
+func sendQueueAuthorization(it sendqueue.Item, now time.Time) string {
+	switch {
+	case it.CreatedAt.Sub(it.StepUpAt) > stepup.Window():
+		return SendQueueNotFreshWhenQueued
+	case now.Sub(it.CreatedAt) > sendqueue.AuthorizedFor:
+		return SendQueueExpired
+	}
+	return ""
 }
 
 // newSendQueueDispatcher is the dispatcher RunSendQueue runs: this server's

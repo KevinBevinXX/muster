@@ -152,7 +152,7 @@ func TestADeliveryRefusesASignInAtOrBeforeTheCutoff(t *testing.T) {
 	u.SessionsNotBefore = &cut
 	r.store.add(u)
 	item := func(id int64, at time.Time) sendqueue.Item {
-		return sendqueue.Item{ID: id, Owner: 1, Target: queueTarget, Body: "at the cutoff", StepUpAt: at}
+		return sendqueue.Item{ID: id, Owner: 1, Target: queueTarget, Body: "at the cutoff", StepUpAt: at, CreatedAt: at}
 	}
 	for _, c := range []struct {
 		name string
@@ -172,7 +172,7 @@ func TestADeliveryRefusesASignInAtOrBeforeTheCutoff(t *testing.T) {
 		t.Fatalf("CONTROL: a sign-in after the cutoff = %+v, %d paste(s)", o, r.pastes())
 	}
 	// And an owner the account store cannot find sends nothing.
-	if o := r.deliver(sendqueue.Item{ID: 3, Owner: 99, Target: queueTarget, Body: "x", StepUpAt: time.Now()}); o.Sent ||
+	if o := r.deliver(sendqueue.Item{ID: 3, Owner: 99, Target: queueTarget, Body: "x", StepUpAt: time.Now(), CreatedAt: time.Now()}); o.Sent ||
 		o.Detail != SendQueueOwnerUnchecked {
 		t.Fatalf("an unknown owner = %+v; want %q", o, SendQueueOwnerUnchecked)
 	}
@@ -286,7 +286,7 @@ func TestSigningOutEverywhereHoldsAtSendTimeWhateverTheCancel(t *testing.T) {
 		t.Fatalf("after the sign-out: signed_out_at %v, sessions_not_before %v; want set, unset", u.SignedOutAt, u.SessionsNotBefore)
 	}
 	sameSecond := u.SignedOutAt.Truncate(time.Second).Add(999 * time.Millisecond)
-	if o := r.deliver(sendqueue.Item{ID: 98, Owner: 1, Target: queueTarget, Body: "same second", StepUpAt: sameSecond}); o.Sent ||
+	if o := r.deliver(sendqueue.Item{ID: 98, Owner: 1, Target: queueTarget, Body: "same second", StepUpAt: sameSecond, CreatedAt: sameSecond}); o.Sent ||
 		o.Detail != SendQueueOwnerCutoff {
 		t.Fatalf("delivery under a sign-in in the sign-out's own second = %+v; want failed, %q", o, SendQueueOwnerCutoff)
 	}
@@ -295,7 +295,7 @@ func TestSigningOutEverywhereHoldsAtSendTimeWhateverTheCancel(t *testing.T) {
 	}
 	// CONTROL: a sign-in after the sign-out queues a message that is sent.
 	after := time.Now().Add(2 * time.Second)
-	fresh := sendqueue.Item{ID: 99, Owner: 1, Target: queueTarget, Body: "queued after", StepUpAt: after}
+	fresh := sendqueue.Item{ID: 99, Owner: 1, Target: queueTarget, Body: "queued after", StepUpAt: after, CreatedAt: after}
 	if o := r.deliver(fresh); !o.Sent || r.pastes() != 1 {
 		t.Fatalf("CONTROL: a sign-in after the sign-out = %+v, %d paste(s)", o, r.pastes())
 	}

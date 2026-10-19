@@ -314,6 +314,22 @@ type Msg struct {
 	// one choice per question.
 	Ask *AskTyping `json:"ask,omitempty"`
 
+	// ---- subagent cards (subagents.go) ----
+
+	// SubagentReport (hello) is the host ADVERTISING that it answers a
+	// subagent tail request (TypeSubagentTail). Backward-compatible both ways,
+	// like CatalogReport.
+	SubagentReport bool `json:"subagentReport,omitempty"`
+	// SubagentList (events) marks a message carrying the view's subagent
+	// summaries: Subagents is the WHOLE list (empty is a list too). Set on
+	// every backfill's Reset batch by a host that reports subagents.
+	SubagentList bool       `json:"subagentList,omitempty"`
+	Subagents    []Subagent `json:"subagents,omitempty"`
+	// Agent (subagent-tail) is the subagent whose steps are asked for.
+	Agent string `json:"agent,omitempty"`
+	// Tail (subagent-tailed) is the answer; nil with Error set when refused.
+	Tail *SubagentTail `json:"tail,omitempty"`
+
 	// ---- per-window registration ----
 
 	// Windows (hello, sessions) is EVERY WINDOW of every session on the host,
@@ -974,4 +990,13 @@ const (
 	AskRefusalUnrecognised = "unrecognised"
 	// AskRefusalBusy: another answer is being typed into that pane.
 	AskRefusalBusy = "busy"
+	// AskRefusalUnreadable: the host could not read the question off the
+	// screen as the one muster registered (the picker untouched, its question
+	// in other words; or the picker taller than the pane) — nobody is
+	// answering it in the terminal. Nothing was typed.
+	AskRefusalUnreadable = "unreadable"
+	// AskRefusalUnreadableTyped: as AskRefusalUnreadable, but keys were typed
+	// before the picker went out of reading (off the top of the pane); nothing
+	// was submitted.
+	AskRefusalUnreadableTyped = "unreadable-typed"
 )

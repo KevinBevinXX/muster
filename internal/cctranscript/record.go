@@ -36,6 +36,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"strings"
+	"time"
 )
 
 // Record is one decoded transcript line, the fields muster reads and no others.
@@ -49,6 +50,8 @@ type Record struct {
 	IsAPIError       bool   `json:"isApiErrorMessage"`
 	Error            string `json:"error"`
 	APIErrorStatus   int    `json:"apiErrorStatus"`
+	// Timestamp is when the CLI wrote the record (RFC 3339); Time reads it.
+	Timestamp string `json:"timestamp"`
 	// Origin is who wrote a user record: "human", or "task-notification" for
 	// one the harness injected (notice.go). Absent before CLI 2.1.22.
 	Origin struct {
@@ -175,4 +178,17 @@ func (b Block) ResultText() string {
 		}
 	}
 	return strings.Join(out, "\n")
+}
+
+// Time is the record's timestamp in Unix milliseconds, 0 when it has none or
+// one that does not parse.
+func (r Record) Time() int64 {
+	if r.Timestamp == "" {
+		return 0
+	}
+	t, err := time.Parse(time.RFC3339Nano, r.Timestamp)
+	if err != nil {
+		return 0
+	}
+	return t.UnixMilli()
 }

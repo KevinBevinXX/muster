@@ -151,6 +151,18 @@ var standaloneDocuments = []documentRenderer{
 		},
 	},
 	{
+		// The send queue's Retry of a message that may already have been sent,
+		// asked once when the browser posted it with no script.
+		fn: "SendQueueRetryConfirmPage", label: "the send queue's retry confirm page (no script)",
+		render: func(w io.Writer) error {
+			return SendQueueRetryConfirmPage("/send-queue/7/retry", "confirm", "May already have been sent. <b>Again</b>?",
+				"/mirror/view?host=laptop&session=main").Render(w)
+		},
+		renderEmpty: func(w io.Writer) error {
+			return SendQueueRetryConfirmPage("/send-queue/7/retry", "confirm", "", "/agents").Render(w)
+		},
+	},
+	{
 		// A real document a reader can LAND on — a legacy deeplink to a dismissed
 		// task arrives here — so it owes the same contract as any other page.
 		fn: "TaskNotFoundPage", label: "the task 404 page (/tasks/<id>, dismissed)",

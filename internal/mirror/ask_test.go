@@ -38,19 +38,23 @@ func TestAnAnswerReachesTheHostAndItsRefusalComesBack(t *testing.T) {
 		t.Fatalf("the host's AskAnswer is not in its view: %+v", hs)
 	}
 	choices := []askq.Choice{{Picks: []int{1}}}
-	all := []error{mirror.ErrAskNoPicker, mirror.ErrAskTouched, mirror.ErrAskLost, mirror.ErrAskUnsupported, mirror.ErrAskUnrecognised, mirror.ErrAskBusy, mirror.ErrAskRefused}
+	all := []error{mirror.ErrAskNoPicker, mirror.ErrAskTouched, mirror.ErrAskLost, mirror.ErrAskUnsupported, mirror.ErrAskUnrecognised, mirror.ErrAskBusy, mirror.ErrAskUnreadable, mirror.ErrAskRefused}
 	for _, tc := range []struct {
 		why, refusal string
 		want         error
+		// also is a second error the outcome must be (and the only other).
+		also error
 	}{
-		{"", "", nil},
-		{"gone", mirror.AskRefusalNoPicker, mirror.ErrAskNoPicker},
-		{"someone typed", mirror.AskRefusalTouched, mirror.ErrAskTouched},
-		{"moved", mirror.AskRefusalLost, mirror.ErrAskLost},
-		{"cannot", mirror.AskRefusalUnsupported, mirror.ErrAskUnsupported},
-		{"cannot read it", mirror.AskRefusalUnrecognised, mirror.ErrAskUnrecognised},
-		{"another drive", mirror.AskRefusalBusy, mirror.ErrAskBusy},
-		{"what", "a-kind-this-muster-does-not-know", mirror.ErrAskRefused},
+		{"", "", nil, nil},
+		{"gone", mirror.AskRefusalNoPicker, mirror.ErrAskNoPicker, nil},
+		{"someone typed", mirror.AskRefusalTouched, mirror.ErrAskTouched, nil},
+		{"moved", mirror.AskRefusalLost, mirror.ErrAskLost, nil},
+		{"cannot", mirror.AskRefusalUnsupported, mirror.ErrAskUnsupported, nil},
+		{"cannot read it", mirror.AskRefusalUnrecognised, mirror.ErrAskUnrecognised, nil},
+		{"another drive", mirror.AskRefusalBusy, mirror.ErrAskBusy, nil},
+		{"other words", mirror.AskRefusalUnreadable, mirror.ErrAskUnreadable, nil},
+		{"off the top", mirror.AskRefusalUnreadableTyped, mirror.ErrAskUnreadable, mirror.ErrAskLost},
+		{"what", "a-kind-this-muster-does-not-know", mirror.ErrAskRefused, nil},
 	} {
 		seen := len(raw.of(mirror.TypeAnswer))
 		done := make(chan error, 1)
@@ -84,7 +88,7 @@ func TestAnAnswerReachesTheHostAndItsRefusalComesBack(t *testing.T) {
 			continue
 		}
 		for _, e := range all {
-			if errors.Is(got, e) != (e == tc.want) {
+			if errors.Is(got, e) != (e == tc.want || e == tc.also) {
 				t.Errorf("refusal %q: muster heard %v; want %v and none of the others", tc.refusal, got, tc.want)
 				break
 			}

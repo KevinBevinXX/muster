@@ -48,6 +48,11 @@ func TestLiveClaudePicker(t *testing.T) {
 	pets := askq.Question{Question: "Which pets do you have?", Header: "Pets", MultiSelect: true, Options: []askq.Option{{Label: "Cat"}, {Label: "Dog"}, {Label: "Fish"}}}
 	name := askq.Question{Question: "What should the project be called?", Header: "Name", Options: []askq.Option{{Label: "Alpha"}, {Label: "Beta"}}}
 	size := askq.Question{Question: "Which size?", Header: "Size", Options: []askq.Option{{Label: "Small"}, {Label: "Medium"}, {Label: "Large"}, {Label: "Huge"}}}
+	// A question too long for a line (the CLI boxes it, "│ " down its left
+	// edge) and an answer in its own words over two rows (the CLI wraps the
+	// text row): the two live failures this case pins.
+	where := askq.Question{Question: "The shared widget package renders every tool call the same way regardless of its status, so the spinner on a half-finished call never stops. Should we fix it upstream, or patch our copy for now and file the upstream change separately?", Header: "Where", Options: []askq.Option{{Label: "Upstream"}, {Label: "Patch"}}}
+	own := "The build agent needs to support running nightly batch-jobs, alongside the interactive sessions, where we are using models via a proxy."
 	describe := func(qs []askq.Question) string {
 		var parts []string
 		for i, q := range qs {
@@ -76,6 +81,8 @@ func TestLiveClaudePicker(t *testing.T) {
 		{"multi-select with own words", []askq.Question{pets}, []askdrive.Choice{{Picks: []int{1}, Other: "a hamster"}}},
 		{"three questions", []askq.Question{color, pets, name}, []askdrive.Choice{{Other: "teal, mostly"}, {Picks: []int{1}, Other: "a hamster"}, {Picks: []int{1}}}},
 		{"four questions", []askq.Question{color, pets, name, size}, []askdrive.Choice{{Picks: []int{0}}, {Picks: []int{0, 1, 2}}, {Other: "Delta"}, {Picks: []int{1}}}},
+		{"a long boxed question", []askq.Question{where}, []askdrive.Choice{{Picks: []int{1}}}},
+		{"a long answer of its own to question 2", []askq.Question{color, where}, []askdrive.Choice{{Picks: []int{0}}, {Other: own}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

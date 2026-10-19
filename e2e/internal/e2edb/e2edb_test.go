@@ -48,7 +48,7 @@ func TestCheckRefusesAnythingButAnE2EDatabase(t *testing.T) {
 // fixtureCommands is every e2e command that reads DATABASE_URL. An asserted
 // ledger: the test fails when the set grows OR shrinks, so a new fixture is a
 // decision to route it through Check, not a copy of the guard.
-var fixtureCommands = []string{"mkchat/main.go", "mkmember/main.go", "pluginfix/main.go", "seed/main.go"}
+var fixtureCommands = []string{"mkchat/main.go", "mkmember/main.go", "pluginfix/main.go", "seed/main.go", "sqfix/main.go"}
 
 // TestEveryE2ECommandUsesTheOneGuard: each command that reads DATABASE_URL
 // calls Check, and none parses the DSN itself (the path check this package

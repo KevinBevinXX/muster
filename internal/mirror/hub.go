@@ -295,6 +295,8 @@ type hostConn struct {
 	statusReport bool
 	// catalogReport: the host advertised Msg.CatalogReport and speaks v2.
 	catalogReport bool
+	// subagentReport: the host advertised Msg.SubagentReport and speaks v2.
+	subagentReport bool
 	// askAnswer: the host advertised Msg.AskAnswer, speaks v2 and is
 	// -interactive.
 	askAnswer bool
@@ -316,6 +318,9 @@ type hostConn struct {
 	// catalogs are the catalog requests waiting for the host's cataloged, by
 	// id (the same id space).
 	catalogs map[uint32]chan catalogAnswer
+	// tails are the subagent tail requests waiting for the host's
+	// subagent-tailed, by id (the same id space).
+	tails map[uint32]chan tailAnswer
 	// answers are the AskUserQuestion answers waiting for the host's
 	// answered, by id (the same id space).
 	answers map[uint32]chan error
@@ -580,7 +585,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 	key := hostKey{owner, host}
 	hc := &hostConn{key: key, ws: ws, ctx: ctx, cancel: cancel, interactive: hello.Interactive, version: hello.Version,
 		streams: map[uint32]*stream{}, watches: map[uint32]*watch{}, pastes: map[uint32]chan error{}, scrolls: map[uint32]chan error{},
-		catalogs: map[uint32]chan catalogAnswer{}, answers: map[uint32]chan error{}}
+		catalogs: map[uint32]chan catalogAnswer{}, answers: map[uint32]chan error{}, tails: map[uint32]chan tailAnswer{}}
 	hc.sessions, hc.windows, hc.claude, hc.labels, hc.activity = hc.list(hello, h.now().Unix())
 	h.observe(owner, host, hc.windows, h.now())
 	if hc.version >= 2 {
@@ -594,6 +599,9 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		// Read-only or not: the catalog is names and descriptions shown to the
 		// host's own owner, never a write into the pane.
 		hc.catalogReport = hello.CatalogReport
+		// Like the catalog: a read of the host's own transcripts, shown to its
+		// owner.
+		hc.subagentReport = hello.SubagentReport
 		// Typing an answer is a write into the pane: -interactive hosts only.
 		hc.askAnswer = hello.AskAnswer && hello.Interactive
 	}
@@ -723,6 +731,10 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				if hc.version >= 2 {
 					hc.cataloged(m)
 				}
+			case TypeSubagentTailed:
+				if hc.version >= 2 {
+					hc.subagentTailed(m)
+				}
 			case TypeAnswered:
 				if hc.version >= 2 {
 					hc.answered(m.ID, m.Error, m.Refusal)
@@ -805,6 +817,10 @@ func (h *Hub) drop(hc *hostConn) {
 	for id, ch := range hc.answers {
 		ch <- ErrHostDisconnected
 		delete(hc.answers, id)
+	}
+	for id, ch := range hc.tails {
+		ch <- tailAnswer{err: ErrHostDisconnected}
+		delete(hc.tails, id)
 	}
 	hc.mu.Unlock()
 	if current {
