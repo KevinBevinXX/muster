@@ -1,0 +1,17 @@
+────────────────────────────────────────────────────────────────────────────────
+←  ☐ Fix  ✔ Submit  →                                                           
+                                                                              
+Which fixes should we ship?                                                     
+
+❯ 1. [ ] Patch the dashboard copy of the widget package now and file the        
+         upstream change in the shared repository later                       
+         Dashboard             
+  2. [ ] Upstream
+         Package
+  3. [ ] Type something
+     Submit
+────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+

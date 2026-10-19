@@ -178,8 +178,14 @@ async function queue(page: Page, text: string, touch: boolean) {
   await expect(page.locator('#mv-note')).toHaveText('Queued.');
 }
 
+// sqfix is the spec's database fixture (e2e/sqfix): ages a queued message, or
+// strands it mid-send, so that the server's OWN dispatcher fails it.
+const sqfix = (...args: string[]) =>
+  execFileSync('go', ['run', './e2e/sqfix', ...args], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } });
+
 const rows = (page: Page) => page.locator('#mv-queue [data-queue-id]');
 const row = (page: Page, text: string) => page.locator('#mv-queue [data-queue-id]', { hasText: text });
+const rowIn = (page: Page, text: string, state: string) => page.locator(`#mv-queue [data-queue-state="${state}"]`, { hasText: text });
 
 test.describe('phone 390×844 touch', () => {
   test.use({ ...phone, storageState: { cookies: [], origins: [] } });
@@ -382,6 +388,71 @@ test.describe('desktop 1280×800', () => {
     await page.goto(origin + viewPath(newHost));
     await page.locator('#mv-send-more').click({ timeout: 20_000 });
     await expect(page.locator('#mv-queue-send')).toBeVisible();
+  });
+
+  // 🔴 A MESSAGE STAYS AUTHORIZED FOR 7 DAYS FROM WHEN IT WAS QUEUED, then fails
+  // as expired with a Retry; Retry queues the same text again under this
+  // session's own (fresh) sign-in, and the dispatcher sends it. On origin/main
+  // there is no Retry, so this fails at the Retry button.
+  test('a message that expired shows Retry, and Retry queues it again and it is sent', async ({ page }) => {
+    await busyAndSeen();
+    fs.rmSync(tr + '.pasted', { force: true });
+    await openView(page, newHost);
+    const text = 'expired then retried ' + stamp;
+    await queue(page, text, false);
+    await expect(rowIn(page, text, 'queued')).toHaveCount(1);
+    sqfix('age', newHost, text, String(7 * 24 * 3600 + 60));
+    busy(false);
+    const failed = rowIn(page, text, 'failed');
+    await expect(failed, `the dispatcher fails it as expired (log:\n${mirrorLog})`).toContainText('queued more than 7 days ago', { timeout: 30_000 });
+    expect(pasted(), 'an expired message is not pasted').toEqual([]);
+    // Held busy again, so the Retry's row is seen queued before it is sent.
+    await busyAndSeen();
+    await failed.getByRole('button', { name: 'Queue this failed message again' }).click();
+    await expect(rowIn(page, text, 'queued'), 'Retry queues it again').toHaveCount(1, { timeout: 20_000 });
+    await expect(failed.getByRole('button', { name: /Queue this/ }), 'a retried message offers no second Retry').toHaveCount(0);
+    busy(false);
+    await expect.poll(pasted, { message: `the retried message is sent (log:\n${mirrorLog})`, timeout: 30_000 }).toEqual([`${pane} ${text}`]);
+    await expect(rowIn(page, text, 'sent')).toHaveCount(1, { timeout: 20_000 });
+  });
+
+  // 🔴 A MESSAGE THAT MAY ALREADY HAVE BEEN SENT (muster stopped mid-send) says so,
+  // and its Retry asks once: dismissed, nothing is queued; accepted, it is.
+  test('Retry of a message that may already have been sent asks first', async ({ page }) => {
+    await busyAndSeen();
+    fs.rmSync(tr + '.pasted', { force: true });
+    await openView(page, newHost);
+    const text = 'stranded mid-send ' + stamp;
+    await queue(page, text, false);
+    await expect(rowIn(page, text, 'queued')).toHaveCount(1);
+    sqfix('strand', newHost, text);
+    const failed = rowIn(page, text, 'failed');
+    await expect(failed, `recovered as may-have-been-sent (log:\n${mirrorLog})`).toContainText('May already have been sent.', { timeout: 30_000 });
+    const btn = failed.getByRole('button', { name: 'Queue this message again (it may already have been sent)' });
+    const asked: string[] = [];
+    // Every Retry post the page makes: the observable for "dismissed sends
+    // nothing", with the accepted Retry below as its positive control.
+    const posts: string[] = [];
+    page.on('request', (r) => {
+      if (r.method() === 'POST' && r.url().includes('/retry')) posts.push(r.postData() ?? '');
+    });
+    page.once('dialog', (d) => {
+      asked.push(d.message());
+      void d.dismiss();
+    });
+    await btn.click();
+    await expect.poll(() => asked.length, { message: 'Retry asks first' }).toBe(1);
+    expect(asked[0]).toContain('May already have been sent.');
+    await expect(btn, 'dismissed: the Retry is still there').toBeEnabled();
+    expect(posts, 'a dismissed Retry posts nothing').toEqual([]);
+    page.once('dialog', (d) => void d.accept());
+    await btn.click();
+    await expect(rowIn(page, text, 'queued'), 'an accepted Retry queues it again').toHaveCount(1, { timeout: 20_000 });
+    expect(posts, 'CONTROL: the accepted Retry posted once, saying it was confirmed').toEqual(['confirm=1']);
+    // Tidy: cancel the copy, so no later run sees it sent.
+    await rowIn(page, text, 'queued').getByRole('button', { name: 'Cancel this queued message' }).click();
+    await expect(rowIn(page, text, 'cancelled')).toHaveCount(1);
+    busy(false);
   });
 
   // 🔴 WHERE THE BROWSER HAS NO SubmitEvent.submitter (older Safari), the

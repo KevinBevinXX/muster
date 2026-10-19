@@ -44,6 +44,8 @@ import (
 func (s *Server) registerMirrorViewRoutes(mux Mux) {
 	mux.HandleFunc("GET /mirror/view", s.requireSession(s.handleMirrorViewPage))
 	mux.HandleFunc("GET /mirror/view/ws", s.requireSession(s.handleMirrorViewWS))
+	// An opened subagent card's steps (mirror_subagents.go).
+	mux.HandleFunc("GET "+ui.MirrorSubagentPath, s.requireSession(s.handleMirrorSubagent))
 	mux.HandleFunc("POST "+ui.MirrorSendPath, s.requireOperatorWrite(s.handleMirrorViewSend))
 	// A send that came back from a sign-in as a GET (handleMirrorSendAgain).
 	mux.HandleFunc("GET "+ui.MirrorSendPath, s.requireSession(s.handleMirrorViewSendAgain))
@@ -155,7 +157,15 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 		if m.Reset {
 			drawn.Reset()
 		}
+		// A host that reports subagents says so before it draws an Agent call
+		// (the Reset batch, a resume's marker): those calls are then cards.
+		if m.SubagentList {
+			drawn.Subagents = true
+		}
 		b := mirrorViewBatch{Type: "batch", Reset: m.Reset, Gen: m.Gen, Offset: m.Offset, Busy: m.Busy, Ops: drawn.Ops(m.Events)}
+		if m.SubagentList && len(m.Subagents) > 0 {
+			b.Ops = append(b.Ops, drawn.SubagentOps(m.Subagents)...)
+		}
 		// After Ops: Ops is what records the usage TakeContext reports.
 		b.Context = drawn.TakeContext()
 		if m.PromptIndex {

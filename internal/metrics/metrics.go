@@ -86,6 +86,10 @@ var (
 	//   not-sent     — refused before the host was asked (offline, step-up, …)
 	//   no-picker    — the picker was gone (answered or dismissed in the terminal)
 	//   touched      — someone was answering in the terminal; nothing typed
+	//   unreadable   — the host could not read the question off the screen as
+	//                  the one registered (NOT someone answering it): a parse
+	//                  or registration mismatch, or a picker taller than the
+	//                  pane — worth a look, like unrecognised
 	//   busy         — another answer was being typed into that pane
 	//   lost         — the picker changed mid-way; stopped, nothing submitted
 	//   unrecognised — the host could not read the picker: Claude Code's layout

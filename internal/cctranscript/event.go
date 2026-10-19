@@ -94,6 +94,34 @@ type Event struct {
 	// predates it. Input cannot stand in for it: MaxInput cuts a real question
 	// set's input to "…".
 	Ask *Ask `json:"ask,omitempty"`
+
+	// THE SUBAGENT SIGNALS (internal/mirrorhost's subagents.go reads them on
+	// the host, where Events ran). 🔴 NEVER ON THE WIRE (json:"-"): what a
+	// subagent card shows is computed on the host and sent as its own summary,
+	// so the events stream is not one byte larger for them.
+	//
+	// At is the record's own timestamp (Unix ms; 0 when it has none), set on
+	// a tool_result and on a task notice: the time a parent signal is compared
+	// with the subagent's last row by.
+	At int64 `json:"-"`
+	// Agent and Async are a tool_result's toolUseResult, when the record
+	// carries exactly one result and that result names a subagent (agentId):
+	// its id, and whether the result is only the LAUNCH of a background agent
+	// (isAsync, or status "async_launched") — which says nothing about the
+	// agent having finished.
+	Agent string `json:"-"`
+	Async bool   `json:"-"`
+	// TaskToolID is a task notice's <tool-use-id>: the Agent call whose agent
+	// it reports on ("" when it names none).
+	TaskToolID string `json:"-"`
+}
+
+// agentResult is the part of an Agent call's toolUseResult the subagent
+// signals read.
+type agentResult struct {
+	AgentID string `json:"agentId"`
+	IsAsync bool   `json:"isAsync"`
+	Status  string `json:"status"`
 }
 
 // Ask is Event.Ask.
@@ -150,6 +178,14 @@ func Events(r Record) []Event {
 			if res, ok := askq.ParseResult(r.ToolUseResult); ok {
 				out[0].Ask = &Ask{Questions: res.Questions, Answers: res.Answers}
 			}
+			var ar agentResult
+			if json.Unmarshal(r.ToolUseResult, &ar) == nil && ar.AgentID != "" {
+				out[0].Agent = ar.AgentID
+				out[0].Async = ar.IsAsync || ar.Status == "async_launched"
+			}
+		}
+		for i := range out {
+			out[i].At = r.Time()
 		}
 		return out
 	case "assistant":

@@ -306,6 +306,12 @@ func (h *hostSide) answer(m mirror.Msg) {
 				ans.Refusal = mirror.AskRefusalNoPicker
 			case errors.Is(err, ErrPaneBusy):
 				ans.Refusal = mirror.AskRefusalBusy
+			// Before touched and lost: it says what neither does — muster
+			// could not read the question, nobody changed the picker.
+			case errors.Is(err, askdrive.ErrUnreadable) && errors.Is(err, askdrive.ErrLost):
+				ans.Refusal = mirror.AskRefusalUnreadableTyped
+			case errors.Is(err, askdrive.ErrUnreadable):
+				ans.Refusal = mirror.AskRefusalUnreadable
 			case errors.Is(err, askdrive.ErrNotUntouched):
 				ans.Refusal = mirror.AskRefusalTouched
 			case errors.Is(err, askdrive.ErrLost):

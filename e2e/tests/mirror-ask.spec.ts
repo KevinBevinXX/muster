@@ -71,8 +71,29 @@ const questions = [
   },
 ];
 
+type Question = (typeof questions)[number];
+
+// longQuestions: the shape of a live failure — the second question too long
+// for a line, so the CLI (and the fake host's picker) draws it wrapped inside a
+// box, "│ " down its left edge.
+const longQuestions: Question[] = [
+  questions[0],
+  {
+    question:
+      'The shared widget package renders every tool call the same way regardless of its status, so the spinner on a ' +
+      'half-finished call never stops (see the notes in #12/#13). Should we fix it upstream, or patch our copy for now?',
+    header: 'Where',
+    options: [
+      { label: 'Upstream', description: 'Fix the package' },
+      { label: 'Patch', description: 'Fix our copy' },
+    ],
+    multiSelect: false,
+  },
+  questions[2],
+];
+
 // payload is the PreToolUse hook payload Claude Code sends for the call.
-const payload = (toolUseID: string) =>
+const payload = (toolUseID: string, qs: Question[] = questions) =>
   JSON.stringify({
     session_id: claudeSession,
     transcript_path: tr,
@@ -80,7 +101,7 @@ const payload = (toolUseID: string) =>
     permission_mode: 'default',
     hook_event_name: 'PreToolUse',
     tool_name: 'AskUserQuestion',
-    tool_input: { questions },
+    tool_input: { questions: qs },
     tool_use_id: toolUseID,
   });
 
@@ -99,11 +120,13 @@ interface Hook {
 }
 
 // picker puts the call's picker on the terminal's screen (the CLI draws it as
-// soon as the hook returns); touched says someone has started answering it.
+// soon as the hook returns); touched says someone has started answering it;
+// shown is what the picker shows (the questions asked, unless a spec says
+// otherwise).
 const pickerFile = () => tr + '.picker.json';
 const touchedFile = () => tr + '.picker.touched';
-function picker(toolUseId: string, touched = false) {
-  fs.writeFileSync(pickerFile(), JSON.stringify({ toolUseId, questions }));
+function picker(toolUseId: string, touched = false, shown: Question[] = questions) {
+  fs.writeFileSync(pickerFile(), JSON.stringify({ toolUseId, questions: shown }));
   if (touched) fs.writeFileSync(touchedFile(), '');
   else fs.rmSync(touchedFile(), { force: true });
 }
@@ -115,9 +138,9 @@ function answerInTerminal(id: string, answers: Record<string, string>) {
 
 // registered runs the hook for a question shown in both places and checks it
 // behaved as the CLI needs: quickly, with no output, exit 0.
-async function registered(toolUseID: string, opts: { touched?: boolean } = {}) {
-  picker(toolUseID, opts.touched);
-  const got = await hook(toolUseID).done;
+async function registered(toolUseID: string, opts: { touched?: boolean; qs?: Question[]; shown?: Question[] } = {}) {
+  picker(toolUseID, opts.touched, opts.shown ?? opts.qs ?? questions);
+  const got = await hook(toolUseID, opts.qs).done;
   expect(got.code, got.err).toBe(0);
   expect(got.out, 'the hook printed something — the CLI would read it as the call\'s answer').toBe('');
   expect(got.ms, 'the hook held the call: the terminal waits on it').toBeLessThan(3000);
@@ -125,7 +148,7 @@ async function registered(toolUseID: string, opts: { touched?: boolean } = {}) {
 
 // hook runs `muster-mirror ask` as the CLI would: the payload on stdin and
 // the mirror token.
-function hook(toolUseID: string): Hook {
+function hook(toolUseID: string, qs: Question[] = questions): Hook {
   const p = spawn(mirrorBin, ['ask'], {
     env: { ...process.env, MUSTER_MIRROR_URL: origin, MUSTER_MIRROR_ALLOW_HTTP: '1', MUSTER_MIRROR_TOKEN: token },
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -136,7 +159,7 @@ function hook(toolUseID: string): Hook {
   p.stdout?.on('data', (d) => (out += d));
   p.stderr?.on('data', (d) => (err += d));
   const start = Date.now();
-  p.stdin?.end(payload(toolUseID));
+  p.stdin?.end(payload(toolUseID, qs));
   return { done: new Promise((r) => p.once('exit', (code) => r({ code, out, err, ms: Date.now() - start }))) };
 }
 
@@ -312,6 +335,58 @@ test.describe('phone 412×915 touch', () => {
     answerInTerminal(toolID, { 'Which color do you prefer?': 'Green', 'Which pets do you have?': 'Cat', 'What should the project be called?': 'Beta' });
     await expect(c).toHaveAttribute('data-ask-state', 'answered-terminal', { timeout: 10_000 });
     await expect(c).toContainText('Answered in the terminal');
+  });
+
+  // 🔴 A LONG QUESTION, AND A LONG ANSWER IN ONE'S OWN WORDS: the picker
+  // draws the question boxed and wraps the typed answer over the text row's
+  // lines (as Claude Code 2.1.289 does); both are read back as what muster
+  // asked and typed, and the answer is submitted — not refused as someone
+  // answering in the terminal, nor as the picker changing while typing.
+  test('a long boxed question with a long answer of its own is typed into the terminal', async ({ page }) => {
+    await openView(page);
+    const toolID = 'toolu_e2e_long_' + stamp;
+    await registered(toolID, { qs: longQuestions });
+    const c = card(page, toolID);
+    await expect(c, `the question is drawn (log:\n${mirrorLog})`).toHaveAttribute('data-ask-state', 'pending', { timeout: 10_000 });
+    const own = 'The build agent needs to support running nightly batch-jobs, alongside the interactive sessions, where we are using models via a proxy.';
+    // (Not Red: the historical-ask test finds ITS card by "Answer: Red".)
+    await c.locator('fieldset').nth(0).getByText('Green', { exact: true }).tap();
+    await c.locator('fieldset').nth(1).getByRole('textbox').fill(own);
+    await c.locator('fieldset').nth(2).getByText('Beta', { exact: true }).tap();
+    await c.getByRole('button', { name: 'Submit answers' }).tap();
+    await expect(c, `typed (log:\n${mirrorLog})`).toHaveAttribute('data-ask-state', 'answered', { timeout: 10_000 });
+    const lines = fs.readFileSync(tr, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const result = lines.find((l) => l.toolUseResult && l.message?.content?.[0]?.tool_use_id === toolID);
+    expect(result?.toolUseResult?.answers).toEqual({
+      [longQuestions[0].question]: 'Green',
+      [longQuestions[1].question]: own,
+      [longQuestions[2].question]: 'Beta',
+    });
+  });
+
+  // 🔴 A QUESTION MUSTER CANNOT READ IS NOT BLAMED ON THE TERMINAL: the
+  // picker is untouched but shows the question in other words than the hook
+  // registered. Nothing is typed, and the card says muster could not read it —
+  // NOT that someone has started answering it in the terminal.
+  test('a question the terminal shows in other words is refused as unreadable, not as touched', async ({ page }) => {
+    await openView(page);
+    const toolID = 'toolu_e2e_unread_' + stamp;
+    const shown = [{ ...questions[0], question: 'Which colour do you prefer?' }, questions[1], questions[2]];
+    await registered(toolID, { shown });
+    const c = card(page, toolID);
+    await expect(c).toHaveAttribute('data-ask-state', 'pending', { timeout: 10_000 });
+    await c.locator('fieldset').nth(0).getByText('Blue', { exact: true }).tap();
+    await c.locator('fieldset').nth(1).getByText('Dog', { exact: true }).tap();
+    await c.locator('fieldset').nth(2).getByText('Beta', { exact: true }).tap();
+    const before = fs.readFileSync(tr, 'utf8');
+    await c.getByRole('button', { name: 'Submit answers' }).tap();
+    await expect(c).toHaveAttribute('data-ask-state', 'failed', { timeout: 10_000 });
+    await expect(c).toContainText("Couldn't read this question off the terminal's screen as the one muster was sent — answer it in the terminal.");
+    await expect(c).not.toContainText('Someone has started answering it');
+    expect(fs.readFileSync(tr, 'utf8'), 'something was submitted into a picker muster could not read').toBe(before);
+    expect(fs.existsSync(pickerFile()), "the picker is still the terminal's").toBe(true);
+    answerInTerminal(toolID, { 'Which color do you prefer?': 'Green', 'Which pets do you have?': 'Cat', 'What should the project be called?': 'Beta' });
+    await expect(c).toHaveAttribute('data-ask-state', 'answered-terminal', { timeout: 10_000 });
   });
 
   // An ask answered earlier is drawn from the transcript, read-only.

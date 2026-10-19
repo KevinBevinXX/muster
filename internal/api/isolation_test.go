@@ -356,8 +356,11 @@ var isolationClasses = map[string]routeClass{
 	"GET /send-queue":              classMirror,
 	"POST /send-queue":             classMirror,
 	"POST /send-queue/{id}/cancel": classParam,
-	"POST /send-queue/confirm":     classMirror,
-	"POST /plugin/v1/messages":     classPlugin,
+	"POST /send-queue/{id}/retry":  classParam,
+	// The Retry's plain confirm page form (a stale Retry with no script).
+	"POST /send-queue/{id}/retry/confirm": classParam,
+	"POST /send-queue/confirm":            classMirror,
+	"POST /plugin/v1/messages":            classPlugin,
 	// Reply drafts (PR C): the owner's decisions name A's draft by id; the
 	// plugin's claim names nothing (it leases the token owner's own drafts) and
 	// its result names A's draft — which B's plugin must not settle.
@@ -392,6 +395,9 @@ var isolationClasses = map[string]routeClass{
 	// The Rendered view composer's `/` and `:` menu data: the same address in
 	// the query; B asking for A's window's catalog must 404 before the plugin.
 	"GET /mirror/view/complete": classMirror,
+	// An opened subagent card's steps: the same address in the query, plus
+	// the agent id.
+	"GET /mirror/view/subagent": classMirror,
 	// A message to an agent as a form post, and the GET it can come back as.
 	"POST /agents/{name}/send": classParam,
 	"GET /agents/{name}/send":  classParam,

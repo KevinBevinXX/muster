@@ -133,6 +133,25 @@ func (m *memQueue) CancelOwner(_ context.Context, owner int64, _ time.Time, deta
 	return n, nil
 }
 
+func (m *memQueue) Retry(ctx context.Context, id int64, stepUpAt time.Time, afterSince int64) (sendqueue.Item, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, it := range m.items {
+		if it.ID != id || it.Owner != queueUser(ctx) {
+			continue
+		}
+		if it.State != sendqueue.Failed || it.RetriedAs != 0 {
+			return sendqueue.Item{}, sendqueue.ErrNotRetryable
+		}
+		n := sendqueue.Item{ID: int64(len(m.items) + 1), Owner: it.Owner, Target: it.Target, Body: it.Body, StepUpAt: stepUpAt,
+			AfterSince: afterSince, State: sendqueue.Queued, CreatedAt: time.Now()}
+		m.items = append(m.items, n)
+		m.items[i].RetriedAs = n.ID
+		return n, nil
+	}
+	return sendqueue.Item{}, sendqueue.ErrNotFound
+}
+
 func (m *memQueue) all() []sendqueue.Item {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -324,15 +343,17 @@ func TestAnotherOwnerCannotSeeOrCancelAQueue(t *testing.T) {
 // TestAQueuedMirrorMessageIsSentThroughTheSendPathWithItsOwnStepUp: delivery
 // pastes through the plugin exactly as a Send does — as the message's owner,
 // into the window's CLAUDE CODE pane (the pane whose idle the queue waited on,
-// never whatever else is active) — and presents the sign-in time the message
-// was QUEUED with: inside the window it is pasted; past it, it fails saying so
-// and NOTHING is pasted, however fresh anything else is.
+// never whatever else is active) — and is authorized by the sign-in the message
+// was QUEUED with: one that was inside the window when the message was queued
+// is pasted; one that was already past it fails saying so and NOTHING is
+// pasted, however fresh anything else is. (Its 7-day bound is
+// TestAQueuedMessageStaysAuthorizedForSevenDays.)
 func TestAQueuedMirrorMessageIsSentThroughTheSendPathWithItsOwnStepUp(t *testing.T) {
 	fm := queueMirror()
 	s, _ := queueServer(t, fm, &memQueue{}, &turnGateway{})
 	item := func(id int64, at time.Time) sendqueue.Item {
 		return sendqueue.Item{ID: id, Owner: 1, Target: sendqueue.Target{Host: "ws", Session: "main", Window: "@1"},
-			Body: "queued text " + strconv.FormatInt(id, 10), StepUpAt: at}
+			Body: "queued text " + strconv.FormatInt(id, 10), StepUpAt: at, CreatedAt: time.Now()}
 	}
 	// The owner's context, as the dispatcher hands it (queuedPrincipal), and
 	// itself FRESH: what is presented must be the item's time, not anything
@@ -342,7 +363,7 @@ func TestAQueuedMirrorMessageIsSentThroughTheSendPathWithItsOwnStepUp(t *testing
 	decided := sendqueue.AgentState{Idle: true, Since: 1792000001111, Pasted: 1792000000222, Observed: time.Now()}
 
 	if o := s.sendQueueSend(ctx, item(1, time.Now().Add(-stepup.Window()-time.Minute)), decided); o.Sent || o.MayHaveDelivered ||
-		!strings.Contains(o.Detail, "Confirm it's you") {
+		o.Detail != SendQueueNotFreshWhenQueued {
 		t.Fatalf("a message queued under a sign-in past the window: %+v", o)
 	}
 	if _, pastes := fm.v2.snapshot(); len(pastes) != 0 {
@@ -535,7 +556,7 @@ func TestASendBetweenTheDecisionAndTheQueuedPasteSupersedesIt(t *testing.T) {
 	const since = int64(1792000006666)
 	fm.agentState = &mirror.AgentState{Status: mirror.StatusIdle, Since: since, Observed: time.Now().Add(-time.Hour), Pasted: since - 1000}
 	user1 := stepup.WithAuthTime(asQueueUser(1, time.Now()), time.Now())
-	it := sendqueue.Item{ID: 7, Owner: 1, Target: queueTarget, Body: "queued", StepUpAt: time.Now()}
+	it := sendqueue.Item{ID: 7, Owner: 1, Target: queueTarget, Body: "queued", StepUpAt: time.Now(), CreatedAt: time.Now()}
 	h := sendqueue.Head{Item: it}
 	st := s.sendQueueProbe(user1, h)
 	if d := s.sendQueueDecide(h, st); !d.Send {

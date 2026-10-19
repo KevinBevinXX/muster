@@ -67,6 +67,6 @@ failed="$(grep -c -- '--- FAIL' "$out" || true)"
 skipped="$(grep -c -- '--- SKIP' "$out" || true)"
 rm -f "$out"
 echo "liveclaude: $passed case(s) passed, $failed failed, $skipped skipped"
-if [ "$rc" -ne 0 ] || [ "$passed" -lt 7 ] || [ "$skipped" -ne 0 ]; then
+if [ "$rc" -ne 0 ] || [ "$passed" -lt 9 ] || [ "$skipped" -ne 0 ]; then
   exit 1
 fi

@@ -108,6 +108,7 @@ func init() {
 	}
 	e2eNoPromptIndex = func() bool { return os.Getenv("MUSTER_MIRROR_E2E_NO_PROMPT_INDEX") == "1" }
 	e2eNoCatalog = func() bool { return os.Getenv("MUSTER_MIRROR_E2E_NO_CATALOG") == "1" }
+	e2eNoSubagents = func() bool { return os.Getenv("MUSTER_MIRROR_E2E_NO_SUBAGENTS") == "1" }
 	e2eWrap = func(b mirrorhost.Backend) mirrorhost.Backend {
 		if f := os.Getenv("MUSTER_MIRROR_E2E_SCROLL_FILE"); f != "" {
 			return &scrollFake{Backend: b, file: f, pos: map[string]int{}}

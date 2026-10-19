@@ -128,8 +128,9 @@ func TestWhoseWaitingWindowsTheQueueBelieves(t *testing.T) {
 // paste TARGET each mirrored one names. Each is a door the OPERATOR writes
 // through: the rendered view's Send (its own target — mirrorAddressed answers
 // only mirror.PasteClaude, so a Terminal send to the active pane does not),
-// the send queue's add (PasteClaude: the queue pastes into the Claude pane, as
-// sendQueueSend's own paste pins below), an agent's chat form and socket. A
+// the send queue's add and its Retry of a failed message (PasteClaude: the
+// queue pastes into the Claude pane, as sendQueueSend's own paste pins below),
+// an agent's chat form and socket. A
 // new caller — a routed message, the chief's hand-back turn, a machine-token
 // message, anything an agent sends — or a queue that pasted elsewhere fails
 // here; so does a door that stopped answering.
@@ -186,7 +187,7 @@ func TestOnlyTheOperatorsSendsAnswerAsksInSession(t *testing.T) {
 		"AnswerInSession":  {{"askerAddressedBy", ""}},
 		"askerAddressedBy": {{"askerAddressed", ""}, {"mirrorAddressed", ""}},
 		"askerAddressed":   {{"handleAgentSend", ""}, {"handleAgentWS", ""}},
-		"mirrorAddressed":  {{"mirrorDeliver", "p.target"}, {"sendQueueAdd", "mirror.PasteClaude"}},
+		"mirrorAddressed":  {{"mirrorDeliver", "p.target"}, {"sendQueueAdd", "mirror.PasteClaude"}, {"sendQueueRetry", "mirror.PasteClaude"}},
 		"queue paste":      {{"sendQueueSend", "mirror.PasteClaude"}},
 	} {
 		got := calls[name]

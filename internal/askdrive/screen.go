@@ -52,13 +52,25 @@
 //     digits and letters are TEXT;
 //
 //   - an ask with several questions (or a multi-select one) ends on a review
-//     screen listing every "question → answer"; "1" submits it.
+//     screen listing every "question → answer"; "1" submits it;
+//
+//   - LONG TEXT (measured 2.1.289, synthetic text at 80, 100 and 120
+//     columns: testdata/long-*): a question too long for a line is wrapped
+//     inside a box, "│ " down its left edge (on the review screen " │ ● …");
+//     a long label, and a long answer typed into the "Type something" row,
+//     wrap onto the row's further lines at its label's column — the answer
+//     is never truncated or scrolled within the row (650+ characters drawn in
+//     full), and a word longer than a line breaks mid-word; a picker taller
+//     than the pane loses its TOP (header and question) off the screen.
+//     Parse takes the box off and keeps each text's lines; Match reads them
+//     back together (wrapEq), free only at the line breaks.
 package askdrive
 
 import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // Kind is what the pane shows.
@@ -75,6 +87,13 @@ const (
 	// the review's Submit row) that does not parse as either screen — the
 	// CLI's layout has probably changed (ErrUnrecognised).
 	Unknown
+	// Clipped: the BOTTOM of a picker — its footer (or the review's Submit
+	// and Cancel rows) under numbered rows — whose header is not on screen: a
+	// picker taller than the pane, its top scrolled off (measured 2.1.289: a
+	// long typed answer in an 80x20 pane). Which question it is, and what the
+	// rows above say, cannot be read, so nothing may be typed into it; it is
+	// never what a key should produce (ErrUnreadable).
+	Clipped
 )
 
 // Row is one numbered row of a question screen.
@@ -86,6 +105,12 @@ type Row struct {
 	// Box is "" for a single-select row, else "[ ]" / "[✔]".
 	Box    string
 	Cursor bool
+	// More is the row's further lines, trimmed, in order: the rest of a label
+	// (or of typed text) the CLI wrapped, then the option's description. The
+	// screen does not say where the one ends and the other begins; Match
+	// decides it against the label it expects (labelMatch). The "Type
+	// something" row has no description, so all of its More is typed text.
+	More []string
 }
 
 // Tab is one question's tab in a multi-question header.
@@ -94,7 +119,9 @@ type Tab struct {
 	Answered bool
 }
 
-// ReviewItem is one "question → answer" of the review screen.
+// ReviewItem is one "question → answer" of the review screen: each is its
+// screen lines joined by "\n" (a long one is wrapped, and its question boxed —
+// see Screen.Question), so where the CLI wrapped it is kept.
 type ReviewItem struct {
 	Question string
 	Answer   string
@@ -106,7 +133,11 @@ type Screen struct {
 	// Tabs are the question tabs (the header line), in order; Current is the
 	// index of the one shown (Question), -1 when no tab is marked current.
 	Tabs []Tab
-	// Question is the shown question's text (lines joined by one space).
+	// Question is the shown question's text: its screen lines, the box border
+	// and its padding stripped, joined by "\n" — the CLI wraps a long question
+	// and draws it inside a box ("│ " down its left edge, measured 2.1.289),
+	// and where it wrapped is kept so Match can tell a wrap from the text
+	// (wrapEq).
 	Question string
 	// Rows are the numbered rows above the "Chat about this" separator.
 	Rows []Row
@@ -122,14 +153,18 @@ type Screen struct {
 
 var (
 	// "←  ☐ Color  ☒ Pets  ✔ Submit  →" or, one single-select question, " ☐ Color".
-	tabsRE   = regexp.MustCompile(`^\s*(?:←\s+)?((?:[☐☒] .+?\s{2,})*[☐☒] .+?)(?:\s+✔ Submit\s+→)?\s*$`)
-	tabRE    = regexp.MustCompile(`([☐☒]) (.+?)(?:\s{2,}|$)`)
-	rowRE    = regexp.MustCompile(`^(❯| ) (\d+)\. (?:\[(✔| )\] )?(.*?)\s*$`)
-	navRE    = regexp.MustCompile(`^(❯| ) {4}(Next|Submit)\s*$`)
-	sepRE    = regexp.MustCompile(`^─{10,}\s*$`)
-	reviewQ  = regexp.MustCompile(`^ ● (.*?)\s*$`)
-	reviewA  = regexp.MustCompile(`^ {3}→ (.*?)\s*$`)
-	footerRE = regexp.MustCompile(`^Enter to select · `)
+	tabsRE = regexp.MustCompile(`^\s*(?:←\s+)?((?:[☐☒] .+?\s{2,})*[☐☒] .+?)(?:\s+✔ Submit\s+→)?\s*$`)
+	tabRE  = regexp.MustCompile(`([☐☒]) (.+?)(?:\s{2,}|$)`)
+	rowRE  = regexp.MustCompile(`^(❯| ) (\d+)\. (?:\[(✔| )\] )?(.*?)\s*$`)
+	navRE  = regexp.MustCompile(`^(❯| ) {4}(Next|Submit)\s*$`)
+	sepRE  = regexp.MustCompile(`^─{10,}\s*$`)
+	// A review item's question, boxed when long (" │ ● …", its further lines
+	// " │   …"); its answer, wrapped when long ("   → …", then "   …").
+	reviewQ    = regexp.MustCompile(`^ (?:[│┃] )?● (.*?)\s*$`)
+	reviewA    = regexp.MustCompile(`^ (?:[│┃] )?  → (.*?)\s*$`)
+	reviewMore = regexp.MustCompile(`^ (?:[│┃] )?  (\S.*?)\s*$`)
+	chatRE     = regexp.MustCompile(`^  \d+\. Chat about this\s*$`)
+	footerRE   = regexp.MustCompile(`^Enter to select · `)
 )
 
 func trimRight(s string) string { return strings.TrimRight(s, " \t") }
@@ -216,6 +251,9 @@ func parse(capture string) Screen {
 		}
 	}
 	if head < 0 {
+		if clipped(lines[:last+1], review) {
+			return Screen{Kind: Clipped}
+		}
 		return Screen{}
 	}
 	var s Screen
@@ -236,11 +274,11 @@ func parse(capture string) Screen {
 		if sepRE.MatchString(body[i]) {
 			return Screen{} // no option rows above the separator
 		}
-		if t := strings.TrimSpace(body[i]); t != "" {
-			q = append(q, t)
+		if strings.TrimSpace(body[i]) != "" {
+			q = append(q, body[i])
 		}
 	}
-	s.Question = strings.Join(q, " ")
+	s.Question = strings.Join(unbox(q), "\n")
 	for ; i < len(body); i++ {
 		l := body[i]
 		if sepRE.MatchString(l) {
@@ -252,7 +290,13 @@ func parse(capture string) Screen {
 		}
 		m := rowRE.FindStringSubmatch(l)
 		if m == nil {
-			continue // a description line
+			// A row's further line: its wrapped label or typed text, or its
+			// description.
+			if t := strings.TrimSpace(l); t != "" && len(s.Rows) > 0 {
+				r := &s.Rows[len(s.Rows)-1]
+				r.More = append(r.More, t)
+			}
+			continue
 		}
 		n, _ := strconv.Atoi(m[2])
 		r := Row{Num: n, Label: m[4], Cursor: m[1] == "❯"}
@@ -267,26 +311,104 @@ func parse(capture string) Screen {
 	return s
 }
 
+// clipped reports whether lines — a screen down to its bottom, a question's
+// footer or (review) the Submit/Cancel rows, with no header above — are the
+// bottom of a picker whose top is off the pane: a question's numbered rows
+// above its separator and "Chat about this" row, or a review's Submit row.
+func clipped(lines []string, review bool) bool {
+	if review {
+		return true // "1. Submit answers" over "2. Cancel" at the bottom
+	}
+	for i := len(lines) - 1; i >= 1; i-- {
+		if chatRE.MatchString(lines[i]) && sepRE.MatchString(lines[i-1]) {
+			for j := i - 2; j >= 0; j-- {
+				if rowRE.MatchString(lines[j]) {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	return false
+}
+
+// vbars are the box-drawing glyphs that can draw a box's left or right edge.
+const vbars = "│┃║╎╏┆┇┊┋"
+
+// hborderRE is a box's top or bottom edge.
+var hborderRE = regexp.MustCompile(`^\s*[╭┌┏╔╰└┗╚][─━═]*[╮┐┓╗╯┘┛╝]\s*$`)
+
+// unbox is lines (a question's screen lines) with the box the CLI draws round
+// a long one taken off: a top or bottom edge, and a left (right) edge glyph
+// with the padding beside it when EVERY line has one — a text whose own
+// first character happens to be "│" is drawn inside the box and keeps it.
+// Each line comes back trimmed.
+func unbox(lines []string) []string {
+	var ls []string
+	for _, l := range lines {
+		if !hborderRE.MatchString(l) {
+			ls = append(ls, strings.TrimSpace(l))
+		}
+	}
+	all := func(f func(string) bool) bool {
+		for _, l := range ls {
+			if !f(l) {
+				return false
+			}
+		}
+		return len(ls) > 0
+	}
+	isBar := func(r rune) bool { return strings.ContainsRune(vbars, r) }
+	if all(func(l string) bool { r, _ := utf8.DecodeRuneInString(l); return isBar(r) }) {
+		for i, l := range ls {
+			_, n := utf8.DecodeRuneInString(l)
+			ls[i] = strings.TrimSpace(l[n:])
+		}
+	}
+	if all(func(l string) bool { r, _ := utf8.DecodeLastRuneInString(l); return isBar(r) }) {
+		for i, l := range ls {
+			_, n := utf8.DecodeLastRuneInString(l)
+			ls[i] = strings.TrimSpace(l[:len(l)-n])
+		}
+	}
+	return ls
+}
+
 func parseReview(s Screen, body []string) Screen {
 	s.Kind = Review
 	seen := false
+	// more is where a further line of the item above goes: its question, its
+	// answer, or nowhere (a blank line or anything else ends an item).
+	var more *string
 	for i := 0; i < len(body); i++ {
 		l := body[i]
 		if strings.TrimSpace(l) == "Review your answers" {
 			seen = true
+			more = nil
 			continue
 		}
 		if m := reviewQ.FindStringSubmatch(l); m != nil {
 			s.Review = append(s.Review, ReviewItem{Question: m[1]})
+			more = &s.Review[len(s.Review)-1].Question
 			continue
 		}
 		if m := reviewA.FindStringSubmatch(l); m != nil && len(s.Review) > 0 {
 			s.Review[len(s.Review)-1].Answer = m[1]
+			more = &s.Review[len(s.Review)-1].Answer
 			continue
 		}
-		if m := rowRE.FindStringSubmatch(l); m != nil && m[1] == "❯" {
-			s.ReviewCursor, _ = strconv.Atoi(m[2])
+		if m := rowRE.FindStringSubmatch(l); m != nil {
+			if m[1] == "❯" {
+				s.ReviewCursor, _ = strconv.Atoi(m[2])
+			}
+			more = nil
+			continue
 		}
+		if m := reviewMore.FindStringSubmatch(l); m != nil && more != nil {
+			*more += "\n" + m[1]
+			continue
+		}
+		more = nil
 	}
 	if !seen {
 		return Screen{}
@@ -297,3 +419,72 @@ func parseReview(s Screen, body []string) Screen {
 // norm is s with runs of white space as one space, trimmed: how question text
 // and labels are compared (the picker wraps a long question over lines).
 func norm(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// wrapEq reports whether lines — a text as the picker drew it, one screen line
+// each (the box already off) — are want, wrapped. ONLY the line breaks are
+// free: each stands for the white space the CLI wrapped at, or for none at
+// all (a word too long for its line broken mid-word or after a "/", measured
+// 2.1.289: "…hyphens-ev" / "erywhere-…", ".../of/the/" / "terminal/…").
+// Every character on a line must be want's, in order, and every character of
+// want must be on a line: an extra or a different character anywhere — a
+// person typing into the row — is a mismatch. A break may be read as "no
+// space" only because nothing a person types can put one there: Enter takes
+// the row, it does not break it.
+//
+// exact compares the text as typed (the "Type something" row); otherwise both
+// sides' runs of white space count as one space (norm), as question text and
+// labels always have been.
+func wrapEq(lines []string, want string, exact bool) bool {
+	if !exact {
+		want = norm(want)
+	}
+	pos, first := 0, true
+	for _, l := range lines {
+		if exact {
+			if !first {
+				l = strings.TrimLeft(l, " ")
+			}
+		} else {
+			l = norm(l)
+		}
+		if l == "" {
+			continue
+		}
+		if !first {
+			for pos < len(want) && want[pos] == ' ' {
+				pos++
+			}
+		}
+		if !strings.HasPrefix(want[pos:], l) {
+			return false
+		}
+		pos += len(l)
+		first = false
+	}
+	return pos == len(want)
+}
+
+// labelMatch reports whether row r's label is want: its first line and as
+// many of its further lines as the CLI wrapped the label over (the rest are
+// its description). The screen cannot say where a wrapped label ends and its
+// description begins, so a label "Red" over a description "Warm" also reads
+// as a label "Red Warm" — accepted: it picks the same row with the same key,
+// and an ask that differs from the registered one only so must also match
+// its question, headers and every other row. Descriptions are not compared
+// (they never were).
+func labelMatch(r Row, want string) bool {
+	lines := append([]string{r.Label}, r.More...)
+	for n := 1; n <= len(lines); n++ {
+		if wrapEq(lines[:n], want, false) {
+			return true
+		}
+	}
+	return false
+}
+
+// textLines is the "Type something" row's text as screen lines: every line of
+// it (that row has no description).
+func textLines(r Row) []string { return append([]string{r.Label}, r.More...) }
+
+// splitLines is a "\n"-joined Screen text as its screen lines.
+func splitLines(s string) []string { return strings.Split(s, "\n") }

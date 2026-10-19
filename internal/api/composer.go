@@ -62,6 +62,7 @@ const (
 	// a question in the session (attention.go's askerAddressed) — that answer
 	// was delivered and stays.
 	noticeCancelledAnswered = "cancelled-answered"
+	noticeNotRetried        = "not-retried"
 )
 
 // ComposerNoticeAgain is what a send that came back as a GET is told: it was
@@ -96,6 +97,7 @@ var composerNotices = map[string]struct {
 	noticeCancelled:         {"Cancelled: that queued message will not be sent.", true},
 	noticeNotCancelled:      {"Not cancelled: that message is already being sent, or has been.", false},
 	noticeCancelledAnswered: {SendQueueCancelledAnsweredText(""), false},
+	noticeNotRetried:        {"Not queued again: only a message that failed can be retried, and only once.", false},
 }
 
 // SendQueueCancelledAnsweredText is what a Cancel of a queued message that
