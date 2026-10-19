@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeProc writes a /proc fixture: pid -> (parent, program).
@@ -175,5 +176,64 @@ func TestRunHookSendsItsPID(t *testing.T) {
 	me := strconv.Itoa(os.Getpid())
 	if want := me + "|," + me + "|" + laneID("k"); strings.Join(got, ",") != want {
 		t.Fatalf("hook queries %v, want %s", got, want)
+	}
+}
+
+// 🔴 THE PRIMARY'S HOOK PATH AS main.go WIRES IT (server.supervisePrimary): the
+// CLI's SessionStart reaches ccd while the supervisor's first Start has not
+// returned the pane yet, and is still recorded as the primary's — the hook
+// waits for that start rather than reading "no pane yet". Red when
+// supervisePrimary reads the pane with sup.ref() instead of sup.cliPID.
+func TestThePrimarysSessionStartIsRecordedWhileItsFirstStartIsPending(t *testing.T) {
+	old := procRoot
+	procRoot = fakeProc(t, chiefTree)
+	t.Cleanup(func() { procRoot = old })
+	cfg := t.TempDir()
+	pane := &gatedPane{release: make(chan struct{})}
+	sup := newSupervisor(pane, "claude", cfg, "/data/workspace")
+	sup.poll = 10 * time.Millisecond
+	srv := newServer(serverConfig{ConfigDir: cfg}, pane, newAuthTracker())
+	// tmuxTerminal.PanePID's contract: the zero ref is "no pane yet".
+	srv.supervisePrimary(sup, func(_ context.Context, ref paneRef) (int, error) {
+		if ref != fakeRef {
+			return 0, fmt.Errorf("no pane yet")
+		}
+		return 20, nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	ran := make(chan struct{})
+	go func() { defer close(ran); _ = sup.run(ctx) }()
+	t.Cleanup(func() { cancel(); <-ran })
+	hs := httptest.NewServer(srv.hookHandler())
+	t.Cleanup(hs.Close)
+
+	const own = "0f0e0d0c-0b0a-4908-8706-050403020100"
+	done := make(chan error, 1)
+	go func() {
+		resp, err := http.Post(hs.URL+"/hook/SessionStart?pid=31", "application/json",
+			strings.NewReader(`{"hook_event_name":"SessionStart","session_id":"`+own+`"}`))
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+		done <- err
+	}()
+	// The hook is in flight before the start lands.
+	time.Sleep(200 * time.Millisecond)
+	if st := sup.state(); st.CLI != cliStarting {
+		t.Fatalf("precondition: the supervisor is %q, want %q", st.CLI, cliStarting)
+	}
+	close(pane.release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the hook never answered")
+	}
+	b, _ := os.ReadFile(filepath.Join(cfg, primaryRecordFile))
+	if got := strings.TrimSpace(string(b)); got != own {
+		t.Fatalf("the primary's SessionStart during its first start: recorded %q, want %q", got, own)
 	}
 }

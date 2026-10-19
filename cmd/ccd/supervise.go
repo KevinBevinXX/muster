@@ -272,7 +272,16 @@ func (s *supervisor) cliPID(ctx context.Context, panePID func(context.Context, p
 // "the newest conversation" — which may be a lane's. Measured as
 // TestTmuxLaneTwoSessionsRunInTheirOwnCLIsOnTheirOwnModels' CI flake ("no
 // primary session id recorded").
+//
+// Once started it answers at once, even on a spent ctx: the started check runs
+// first, on its own — in one select with ctx.Done() Go would pick between two
+// ready cases at random.
 func (s *supervisor) startedRef(ctx context.Context) (paneRef, error) {
+	select {
+	case <-s.firstStart:
+		return s.ref(), nil
+	default:
+	}
 	select {
 	case <-s.firstStart:
 		return s.ref(), nil

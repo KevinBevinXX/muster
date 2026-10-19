@@ -39,7 +39,7 @@ func TestTmuxARepoAgentsCLIStartsInTheCheckout(t *testing.T) {
 	r := startServeAt(t, "workspace/app", nil,
 		append(gh.env(), "CCD_REPO=example-org/app", "CCD_REPO_BRANCH=feature")...)
 
-	h := r.waitHealth(t, "started in the checkout", func(h health) bool { return h.Session == sessionStartedState })
+	h := r.waitHealth(t, "started in the checkout", primaryReady)
 	if h.Repo == nil || h.Repo.State != checkoutReady || h.Repo.Dir != r.ws || h.Repo.Repo != "example-org/app" {
 		t.Fatalf("health repo = %+v", h.Repo)
 	}
@@ -123,7 +123,7 @@ func TestTmuxARepoThatCannotBeClonedKeepsTheCLIStoppedAndSaysWhy(t *testing.T) {
 // live chief): no `repo` in /healthz, the CLI in the plain workspace.
 func TestTmuxAnAgentWithNoRepoReportsNoCheckout(t *testing.T) {
 	r := startServe(t)
-	h := r.waitHealth(t, "first start", func(h health) bool { return h.Session == sessionStartedState })
+	h := r.waitHealth(t, "first start", primaryReady)
 	if h.Repo != nil {
 		t.Fatalf("a repo-less agent reports a checkout: %+v", h.Repo)
 	}

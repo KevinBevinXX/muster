@@ -219,10 +219,7 @@ func serve() error {
 	srv.checkout = co
 	if os.Getenv("CCD_SUPERVISE") == "1" {
 		bin := envOr("CCD_CLAUDE_BIN", "claude")
-		srv.sup = newSupervisor(term, bin, configDir, workspace)
-		srv.inputPane = srv.sup.inputPane
-		srv.recordsPrimary = true
-		srv.primaryPID = func(ctx context.Context) (int, error) { return srv.sup.cliPID(ctx, term.PanePID) }
+		srv.supervisePrimary(newSupervisor(term, bin, configDir, workspace), term.PanePID)
 		maxLanes, err := envCount("CCD_MAX_SESSIONS", defaultMaxLanes)
 		if err != nil {
 			return err

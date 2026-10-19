@@ -31,6 +31,23 @@ func (p *stillPane) KillSession(context.Context) error {
 	return nil
 }
 
+// gatedPane is a stillPane whose Start returns only once release is closed: a
+// tmux new-session that is slow to print the pane id, while the CLI it started
+// is already running (and hooking) — see startedRef.
+type gatedPane struct {
+	stillPane
+	release chan struct{}
+}
+
+func (p *gatedPane) Start(ctx context.Context, _ string, _ []string) (paneRef, error) {
+	select {
+	case <-p.release:
+		return fakeRef, nil
+	case <-ctx.Done():
+		return paneRef{}, ctx.Err()
+	}
+}
+
 func (p *stillPane) kills() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -147,5 +164,37 @@ func TestALaneHeldByATurnIsNeverEvicted(t *testing.T) {
 	t.Cleanup(b.stop)
 	if l.get(a.id) != nil {
 		t.Fatal("the released idle lane was not evicted")
+	}
+}
+
+// 🔴 A LANE IS READY WHEN ITS CLI HOOKED *AND* ITS SUPERVISOR RECORDED THE
+// START. tmux new-session runs the CLI before it returns the pane, so the
+// lane's SessionStart can come first; a turn let through then had no input pane
+// and was refused 503 not_ready. Red when waitStarted waits on SessionStart
+// alone.
+func TestALaneIsNotReadyUntilItsSupervisorRecordsTheStart(t *testing.T) {
+	l := testLanes(t, 1)
+	gate := make(chan struct{})
+	l.newTerm = func(string) laneTerminal { return &gatedPane{release: gate} }
+	ctx := context.Background()
+	ln, f := l.acquire(ctx, "sess-a", "")
+	if f != nil {
+		t.Fatal(f)
+	}
+	t.Cleanup(ln.stop)
+
+	ln.srv.onHook(hookEvent{Event: "SessionStart", SessionID: laneUUID("sess-a")})
+	if st := ln.sup.state(); st.CLI != cliStarting {
+		t.Fatalf("precondition: the supervisor is %q, want %q (Start has not returned)", st.CLI, cliStarting)
+	}
+	if f := ln.waitStarted(ctx, 300*time.Millisecond); f == nil || f.Type != failNotReady {
+		t.Fatalf("SessionStart seen, the start not recorded: waitStarted = %+v; want a %s refusal", f, failNotReady)
+	}
+	close(gate)
+	if f := ln.waitStarted(ctx, 5*time.Second); f != nil {
+		t.Fatalf("after the start was recorded: %+v", f)
+	}
+	if _, ok := ln.sup.inputPane(); !ok {
+		t.Fatal("waitStarted returned with no input pane")
 	}
 }

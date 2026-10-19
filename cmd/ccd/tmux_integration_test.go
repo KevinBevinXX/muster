@@ -374,6 +374,36 @@ func (r *serveRig) waitHealth(t *testing.T, label string, ok func(health) bool) 
 	return h
 }
 
+// primaryReady: the primary can take a turn — its CLI has sent SessionStart AND
+// the supervisor has recorded it running (its pane is the input pane). /healthz
+// reports the two separately and either can come first: tmux new-session runs
+// the CLI before it returns the pane, so `session: started` while the
+// supervisor is still `starting` is a real state, in which a turn is 503
+// not_ready. Waiting on Session alone made the first chat race the start.
+func primaryReady(h health) bool {
+	return h.Session == sessionStartedState && h.Supervisor != nil && h.Supervisor.CLI == cliRunning
+}
+
+// slowNewSession is a startServeAt env func: it puts a `tmux` first on ccd's
+// PATH that sleeps d after each successful new-session, after the pane id is
+// printed — so every CLI (the primary's and each lane's) is running, and
+// hooking, for d before ccd learns its pane. The window startedRef,
+// supervisePrimary and lane.waitStarted must survive.
+func slowNewSession(t *testing.T, d time.Duration) func(root string) []string {
+	t.Helper()
+	return func(root string) []string {
+		real, err := exec.LookPath("tmux")
+		if err != nil {
+			t.Fatal(err)
+		}
+		script := fmt.Sprintf("#!/bin/sh\n%q \"$@\"\nrc=$?\nif [ $rc -eq 0 ]; then\n  for a in \"$@\"; do\n    if [ \"$a\" = new-session ]; then sleep %g; break; fi\n  done\nfi\nexit $rc\n", real, d.Seconds())
+		if err := os.WriteFile(filepath.Join(root, "bin", "tmux"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return nil
+	}
+}
+
 // chat sends p through muster's client and requires the fake CLI's reply for
 // exactly those bytes.
 func (r *serveRig) chat(t *testing.T, p string) {
@@ -414,7 +444,7 @@ func waitFile(path string, d time.Duration) bool {
 //     and after, and a turn works again.
 func TestTmuxTheServeBinarySupervisesTheSessionAndResumesAfterExit(t *testing.T) {
 	r := startServe(t)
-	h := r.waitHealth(t, "first start", func(h health) bool { return h.Session == sessionStartedState })
+	h := r.waitHealth(t, "first start", primaryReady)
 	if h.Terminal != "ok" || h.Auth != authUnknown || h.Supervisor == nil ||
 		h.Supervisor.CLI != cliRunning || h.Supervisor.Mode != modeFresh || h.Supervisor.Starts != 1 {
 		t.Fatalf("after the first start: %+v sup=%+v", h, h.Supervisor)
@@ -425,7 +455,7 @@ func TestTmuxTheServeBinarySupervisesTheSessionAndResumesAfterExit(t *testing.T)
 	r.tmux(t, "send-keys", "-t", "cc", "-l", "/exit")
 	r.tmux(t, "send-keys", "-t", "cc", "Enter")
 	h = r.waitHealth(t, "restart after /exit", func(h health) bool {
-		return h.Supervisor != nil && h.Supervisor.Starts == 2 && h.Session == sessionStartedState
+		return primaryReady(h) && h.Supervisor.Starts == 2
 	})
 	if h.Supervisor.Mode != modeContinue || h.Supervisor.LastExit == nil || *h.Supervisor.LastExit != 0 {
 		t.Fatalf("after /exit: sup=%+v", h.Supervisor)
@@ -454,7 +484,7 @@ func TestTmuxTheServeBinarySupervisesTheSessionAndResumesAfterExit(t *testing.T)
 // pane is live and would have run it.
 func TestTmuxATurnGoesToTheCLIPaneNotTheFocusedShellPane(t *testing.T) {
 	r := startServe(t)
-	r.waitHealth(t, "first start", func(h health) bool { return h.Session == sessionStartedState })
+	r.waitHealth(t, "first start", primaryReady)
 	cliPane := r.tmux(t, "display-message", "-p", "-t", "cc", "#{pane_id}")
 
 	shellPane := r.tmux(t, "split-window", "-t", "cc", "-P", "-F", "#{pane_id}", "-c", r.root, "/bin/sh")
@@ -512,7 +542,7 @@ func recreateWithShell(t *testing.T, tmuxBin, sock, dir string) string {
 // it does run (the shell is live).
 func TestTmuxARecreatedServerWithARecycledPaneIDNeverReceivesATurn(t *testing.T) {
 	r := startServe(t)
-	r.waitHealth(t, "first start", func(h health) bool { return h.Session == sessionStartedState })
+	r.waitHealth(t, "first start", primaryReady)
 	cliPane := r.tmux(t, "display-message", "-p", "-t", "cc", "#{pane_id}")
 
 	r.tmux(t, "kill-server")
@@ -568,7 +598,7 @@ func TestTmuxARecreatedServerWithARecycledPaneIDNeverReceivesATurn(t *testing.T)
 // would have executed it.
 func TestTmuxASmuggledPasteTerminatorIsRefusedAndRunsNothing(t *testing.T) {
 	r := startServe(t)
-	r.waitHealth(t, "first start", func(h health) bool { return h.Session == sessionStartedState })
+	r.waitHealth(t, "first start", primaryReady)
 	cliPane := r.tmux(t, "display-message", "-p", "-t", "cc", "#{pane_id}")
 
 	marker := filepath.Join(r.root, "smuggled")
@@ -623,13 +653,13 @@ func TestTmuxASmuggledPasteTerminatorIsRefusedAndRunsNothing(t *testing.T) {
 // SIGKILL a clean exit. The supervisor records 128+9 and names the signal.
 func TestTmuxASignalKilledCLIIsRecordedAsSignal9(t *testing.T) {
 	r := startServe(t)
-	r.waitHealth(t, "first start", func(h health) bool { return h.Session == sessionStartedState })
+	r.waitHealth(t, "first start", primaryReady)
 	pid := r.tmux(t, "display-message", "-p", "-t", "cc", "#{pane_pid}")
 	if out, err := exec.Command("kill", "-9", pid).CombinedOutput(); err != nil {
 		t.Fatalf("kill -9 %s: %v: %s", pid, err, out)
 	}
 	h := r.waitHealth(t, "restart after SIGKILL", func(h health) bool {
-		return h.Supervisor != nil && h.Supervisor.Starts == 2 && h.Session == sessionStartedState
+		return primaryReady(h) && h.Supervisor.Starts == 2
 	})
 	if h.Supervisor.LastExit == nil || *h.Supervisor.LastExit != 137 || !strings.Contains(h.Supervisor.Detail, "signal 9") {
 		t.Fatalf("after kill -9: sup=%+v (last exit %v), want 137 and signal 9 named", h.Supervisor, derefInt(h.Supervisor.LastExit))

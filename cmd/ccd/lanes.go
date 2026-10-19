@@ -459,15 +459,25 @@ func (l *lanes) touch(ln *lane) {
 	l.mu.Unlock()
 }
 
-// waitStarted waits until the lane's CLI has sent SessionStart, its supervisor
-// gave up, or d passes.
+// waitStarted waits until the lane's CLI is ready for a turn, its supervisor
+// gave up, or d passes. Ready is BOTH halves:
+//   - the CLI has sent SessionStart (it is at its prompt), and
+//   - the supervisor has recorded the start (its pane is the input pane).
+//
+// 🔴 EITHER CAN COME FIRST. tmux new-session runs the CLI before it prints the
+// pane id that Start returns, so the CLI's SessionStart can land while the
+// supervisor is still `starting` (startedRef) — and a turn then has no pane to
+// paste into: runTurn answers 503 not_ready. Waiting on SessionStart alone made
+// a lane's first turn fail whenever new-session was slow to return.
 func (ln *lane) waitStarted(ctx context.Context, d time.Duration) *failure {
 	deadline := time.NewTimer(d)
 	defer deadline.Stop()
 	tick := time.NewTicker(50 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		if ln.srv.started() {
+		hooked := ln.srv.started()
+		_, running := ln.sup.inputPane()
+		if hooked && running {
 			return nil
 		}
 		select {
@@ -476,8 +486,12 @@ func (ln *lane) waitStarted(ctx context.Context, d time.Duration) *failure {
 			return &failure{Status: http.StatusServiceUnavailable, Type: failNotReady,
 				Message: fmt.Sprintf("the session's Claude Code CLI did not stay up (%s: %s)", st.CLI, st.Detail)}
 		case <-deadline.C:
+			why := "no SessionStart"
+			if hooked {
+				why = "SessionStart seen, but the supervisor has not recorded the CLI as running: " + ln.sup.state().CLI
+			}
 			return &failure{Status: http.StatusServiceUnavailable, Type: failNotReady,
-				Message: fmt.Sprintf("the session's Claude Code CLI did not reach its prompt within %s (no SessionStart)", d)}
+				Message: fmt.Sprintf("the session's Claude Code CLI did not reach its prompt within %s (%s)", d, why)}
 		case <-ctx.Done():
 			return &failure{Status: http.StatusGatewayTimeout, Type: failTurnTimeout, Message: "caller went away while the session's CLI started"}
 		case <-tick.C:

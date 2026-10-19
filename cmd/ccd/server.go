@@ -250,6 +250,17 @@ func (s *server) handleHook(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// supervisePrimary makes s the PRIMARY CLI's server, run by sup: turns paste
+// into sup's pane while its CLI runs, and a SessionStart is recorded as the
+// primary's only when the CLI's own process fired it — that process read with
+// panePID (tmuxTerminal.PanePID) from the pane sup started, waiting for the
+// first start (supervisor.cliPID): the CLI's first SessionStart can arrive
+// before tmux new-session has returned the pane (see startedRef).
+func (s *server) supervisePrimary(sup *supervisor, panePID func(context.Context, paneRef) (int, error)) {
+	s.sup, s.inputPane, s.recordsPrimary = sup, sup.inputPane, true
+	s.primaryPID = func(ctx context.Context) (int, error) { return sup.cliPID(ctx, panePID) }
+}
+
 // notFiredByPrimary says why a hook cannot be shown to come from the primary
 // CLI's own process ("" when it can). See proctree.go: a `claude` the primary
 // runs inside itself sends its hooks here with no lane too.

@@ -124,7 +124,7 @@ func has(transcript, prompt string) bool {
 //   - /healthz lists both lanes.
 func TestTmuxLaneTwoSessionsRunInTheirOwnCLIsOnTheirOwnModels(t *testing.T) {
 	r := startServe(t)
-	r.waitHealth(t, "primary start", func(h health) bool { return h.Session == sessionStartedState })
+	r.waitHealth(t, "primary start", primaryReady)
 	r.chat(t, "primary first")
 
 	var wg sync.WaitGroup
@@ -201,7 +201,7 @@ func TestTmuxLaneTwoSessionsRunInTheirOwnCLIsOnTheirOwnModels(t *testing.T) {
 //     before lanes) would have resumed the lane's.
 func TestTmuxLaneEachCLIResumesItsOwnConversation(t *testing.T) {
 	r := startServe(t)
-	r.waitHealth(t, "primary start", func(h health) bool { return h.Session == sessionStartedState })
+	r.waitHealth(t, "primary start", primaryReady)
 	r.chat(t, "p1")
 	primary := r.primaryID(t)
 	r.mustLaneChat(t, "sess-a", "haiku", "a1")
@@ -234,7 +234,7 @@ func TestTmuxLaneEachCLIResumesItsOwnConversation(t *testing.T) {
 	r.tmux(t, "send-keys", "-t", "=cc:", "-l", "/exit")
 	r.tmux(t, "send-keys", "-t", "=cc:", "Enter")
 	r.waitHealth(t, "primary restart", func(h health) bool {
-		return h.Supervisor != nil && h.Supervisor.Starts == 2 && h.Session == sessionStartedState
+		return primaryReady(h) && h.Supervisor.Starts == 2
 	})
 	if want := fmt.Sprintf("sid=%s source=resume model= lane= args=[\"--resume\" %q]", primary, primary); !strings.Contains(r.argvLog(t), want) {
 		t.Fatalf("the primary did not resume its own session:\n  want %s\nargv log:\n%s", want, r.argvLog(t))
@@ -260,7 +260,7 @@ func TestTmuxLaneEachCLIResumesItsOwnConversation(t *testing.T) {
 // the primary's record — which the next primary restart resumes.
 func TestTmuxLaneANestedCLIIsNotRecordedAsThePrimary(t *testing.T) {
 	r := startServe(t)
-	r.waitHealth(t, "primary start", func(h health) bool { return h.Session == sessionStartedState })
+	r.waitHealth(t, "primary start", primaryReady)
 	r.chat(t, "p1")
 	primary := r.primaryID(t)
 
@@ -312,7 +312,7 @@ func TestTmuxLaneAPermissionPromptInALaneReachesTheBadge(t *testing.T) {
 	t.Cleanup(fake.Close)
 	r := startServe(t, "MUSTER_CONNECT_URL="+fake.URL, "MUSTER_HOOK_TOKEN=agent-own-token",
 		"HOME="+t.TempDir(), "CCD_TURN_TIMEOUT=2s")
-	r.waitHealth(t, "primary start", func(h health) bool { return h.Session == sessionStartedState })
+	r.waitHealth(t, "primary start", primaryReady)
 	r.mustLaneChat(t, "sess-p", "opus", "first")
 
 	if _, err := r.laneChat("sess-p", "opus", "ASK-PERMISSION run it"); err == nil {
@@ -335,7 +335,7 @@ func TestTmuxLaneAPermissionPromptInALaneReachesTheBadge(t *testing.T) {
 // rather than stopping a turn or queueing.
 func TestTmuxLaneTheCapStopsTheIdleLaneAndRefusesWhenAllAreBusy(t *testing.T) {
 	r := startServe(t, "CCD_MAX_SESSIONS=1")
-	r.waitHealth(t, "primary start", func(h health) bool { return h.Session == sessionStartedState })
+	r.waitHealth(t, "primary start", primaryReady)
 	r.mustLaneChat(t, "sess-a", "opus", "a1")
 	r.mustLaneChat(t, "sess-b", "sonnet", "b1")
 	if r.hasTmuxSession("cc-"+laneID("sess-a")) || !r.hasTmuxSession("cc-"+laneID("sess-b")) {
@@ -379,7 +379,7 @@ const laneTurnWait = 30 * time.Second
 // A model ccd will not pass to --model is refused before any CLI starts.
 func TestTmuxLaneABadModelIsRefusedAndStartsNothing(t *testing.T) {
 	r := startServe(t)
-	r.waitHealth(t, "primary start", func(h health) bool { return h.Session == sessionStartedState })
+	r.waitHealth(t, "primary start", primaryReady)
 	_, err := r.laneChat("sess-x", "opus --dangerously-skip-permissions", "x")
 	var rt *agents.RuntimeError
 	if !errors.As(err, &rt) || rt.Type != failInvalidInput {
@@ -410,4 +410,19 @@ func waitLane(t *testing.T, what string, ok func() bool, r *serveRig) {
 		}
 	}
 	t.Fatalf("%s: never happened; ccd log:\n%s", what, r.logs.String())
+}
+
+// 🔴 A SLOW tmux new-session: every CLI runs, and sends SessionStart, ~700ms
+// before ccd learns its pane. The primary's first turn after primaryReady, and
+// a lane's first turn (lane.waitStarted), must both be served — not refused
+// 503 not_ready for a pane the supervisor has not recorded yet — and the
+// primary's SessionStart is still recorded as its own (supervisePrimary).
+func TestTmuxLaneASlowNewSessionStillServesTheFirstTurns(t *testing.T) {
+	r := startServeAt(t, "workspace", slowNewSession(t, 700*time.Millisecond))
+	r.waitHealth(t, "primary start", primaryReady)
+	r.chat(t, "primary first")
+	r.mustLaneChat(t, "sess-a", "opus", "alpha")
+	if got := r.primaryID(t); !has(r.transcript(t, got), "primary first") {
+		t.Fatalf("recorded primary session %s does not hold the primary's turn", got)
+	}
 }
