@@ -377,6 +377,9 @@ var bannerLedger = []string{
 	// the chief, and with dispatch the chief can start agents on the owner's
 	// credentials, so the log must say which state this is.
 	envTaskRouting,
+	// CHIEF SESSION RUNTIMES ARE LEDGERED: ON, the chief's sessions may run on
+	// another runtime and model than its own, so the log must name which.
+	envChiefSessionRuntimes,
 	// 🔴 THE AGENT-FLOW DENY WORDS ARE LEDGERED: unset, the agent door screens
 	// agent-composed text with the generic patterns only, and that fail-open
 	// state must be a loud line, not a silence (the operator's audit of #76).
@@ -709,6 +712,8 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		TaskRouting:            true,
 		ChiefDispatchOwnersRaw: "1",
 		ChiefDispatchOwners:    map[int64]bool{1: true},
+		// Chief session runtimes: the banner branches on ext.SessionRuntimes (below).
+		ChiefSessionRuntimes: []string{"claude-code", "gateway"},
 	}
 	onOut = renderBannerWithPool(t, on, api.Extensions{
 		Mirror:      mirror.NewService(nil, nil),
@@ -720,11 +725,12 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		Transcriber: bannerTranscriber(t, on),
 		Uploads:     bannerUploads(t, on),
 		// Plugins: the banner branches on ext.Plugins and ext.PluginGateway.
-		Plugins:       bannerStubPlugins{},
-		PluginGateway: bannerStubPluginGateway{},
-		Routes:        bannerStubRoutes{},
-		Routing:       &api.Routing{Allow: bannerAllowlist(t)},
-		TaskRouting:   &api.TaskRouting{DispatchOwners: map[int64]bool{1: true}},
+		Plugins:         bannerStubPlugins{},
+		PluginGateway:   bannerStubPluginGateway{},
+		Routes:          bannerStubRoutes{},
+		Routing:         &api.Routing{Allow: bannerAllowlist(t)},
+		TaskRouting:     &api.TaskRouting{DispatchOwners: map[int64]bool{1: true}},
+		SessionRuntimes: []string{"claude-code", "gateway"},
 	}, &pgxpool.Pool{})
 	offOut = renderBannerWithPool(t, config{}, api.Extensions{}, nil)
 	return onOut, offOut

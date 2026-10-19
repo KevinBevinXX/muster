@@ -262,6 +262,7 @@ var isolationClasses = map[string]routeClass{
 	"POST /agents/{id}/model":                  classParam,
 	"POST /agents/{id}/name":                   classParam,
 	"POST /agents/{id}/sessions":               classParam,
+	"POST /agents/{id}/sessions/{sid}/default": classParam,
 	"POST /agents/{id}/start":                  classParam,
 	"POST /agents/{id}/stop":                   classParam,
 	"POST /connectors/{name}/rotate":           classParam,

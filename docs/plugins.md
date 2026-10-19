@@ -604,7 +604,7 @@ for why the lookup reads a time window of history.
 With `MUSTER_SESSION_ROUTING=1` (and plugins on), your chief can hand a plugin
 message to the session best placed to answer it, instead of drafting the reply
 itself. It finds the session by [focus](focus.md) (`focus_search`,
-`agents_list`) and calls `route_to_session(message_id, subject)`. The chief's
+`fleet_list`) and calls `route_to_session(message_id, subject)`. The chief's
 turn for each message says when to do this.
 
 1. **The route.** muster records a route (`session_routes`, migration `0021`):

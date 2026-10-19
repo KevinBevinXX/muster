@@ -32,8 +32,8 @@ import (
 // it searches a TIME window of history, never the current focus or the newest
 // N rows (internal/focus/history_search.go says why each misses).
 //
-// 🔴 sessions_overview IS CHIEF-ONLY, LIKE agents_list: it reads every live
-// session of the owner's, transcripts included. agents_list stays compact; this
+// 🔴 sessions_overview IS CHIEF-ONLY, LIKE fleet_list: it reads every live
+// session of the owner's, transcripts included. fleet_list stays compact; this
 // is the one call that says what each session is doing NOW, in its own words.
 //
 // 🔴 THE TRANSCRIPT TAIL IS REDACTED BY THE ONE REDACTOR (internal/redact),

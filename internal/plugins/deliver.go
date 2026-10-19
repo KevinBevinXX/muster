@@ -301,10 +301,31 @@ func (d *Deliverer) attempted(parent context.Context, messageID int64, reason st
 	return pending(reason)
 }
 
-// session is the chief chat session dedicated to plugin p: the recorded one when
-// it still belongs to this chief, else a new one (recorded for next time). Its
-// title comes from the first turn's first line, which begins with p's label.
+// session is the chief chat session p's messages are delivered into.
+//
+// 🔴 IT IS THE CHIEF'S DEFAULT SESSION (agents.SessionRuntimeStore, migration
+// 0030) — one conversation for every plugin and for `chief ask`, on whatever
+// runtime the owner made the default. It is recorded as p's chief session too,
+// because a routed message handed back to the chief goes to the session p
+// records (session_routes.go), and that must be the one its delivery went to.
+//
+// A store without the 0030 half keeps the earlier rule: a session dedicated to
+// p — the recorded one while it still belongs to this chief, else a new one
+// (recorded for next time), titled by the first turn's first line, which begins
+// with p's label.
 func (d *Deliverer) session(ctx context.Context, p Plugin, chief agents.Agent) (agents.ChatSession, error) {
+	if st, ok := d.agents.(agents.SessionRuntimeStore); ok {
+		s, err := st.DefaultSession(ctx, chief.ID, chief.Name)
+		if err != nil {
+			return agents.ChatSession{}, err
+		}
+		if p.ChiefAgentID == nil || *p.ChiefAgentID != chief.ID || p.ChiefSessionID == nil || *p.ChiefSessionID != s.ID {
+			if err := d.store.SetChiefSession(ctx, p.ID, chief.ID, s.ID); err != nil {
+				d.log.Printf("plugins: plugin %d: record its chief session: %v", p.ID, err)
+			}
+		}
+		return s, nil
+	}
 	if p.ChiefAgentID != nil && *p.ChiefAgentID == chief.ID && p.ChiefSessionID != nil {
 		if s, err := d.agents.GetSession(ctx, *p.ChiefSessionID); err == nil && s.AgentID == chief.ID {
 			return s, nil

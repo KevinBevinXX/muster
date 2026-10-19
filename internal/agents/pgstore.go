@@ -33,6 +33,8 @@ type querier interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	// Begin opens a transaction (on a pool) or a savepoint (inside NewPGTx's).
+	Begin(ctx context.Context) (pgx.Tx, error)
 }
 
 // NewPG constructs a Postgres-backed agents Store.
@@ -401,13 +403,13 @@ func (s *PGStore) Delete(ctx context.Context, id int64) error {
 	return err
 }
 
-const sessionCols = `id, agent_id, session_key, title, created_at, updated_at, read_at`
+const sessionCols = `id, agent_id, session_key, title, created_at, updated_at, read_at, runtime, model, is_default`
 
 func scanSession(row interface {
 	Scan(dest ...any) error
 }) (ChatSession, error) {
 	var c ChatSession
-	err := row.Scan(&c.ID, &c.AgentID, &c.SessionKey, &c.Title, &c.CreatedAt, &c.UpdatedAt, &c.ReadAt)
+	err := row.Scan(&c.ID, &c.AgentID, &c.SessionKey, &c.Title, &c.CreatedAt, &c.UpdatedAt, &c.ReadAt, &c.Runtime, &c.Model, &c.IsDefault)
 	return c, err
 }
 
@@ -480,6 +482,7 @@ const searchSnippetLateral = `
 const searchRankedTitlesSQL = `
 		WITH cand AS (
 			SELECT s.id, s.agent_id, s.session_key, s.title, s.created_at, s.updated_at, s.read_at,
+		       s.runtime, s.model, s.is_default,
 			       CASE WHEN s.title ILIKE $7 ESCAPE '\' THEN 0 ELSE 1 END AS rank
 			FROM chat_sessions s
 			WHERE s.agent_id = $1
@@ -489,6 +492,7 @@ const searchRankedTitlesSQL = `
 			LIMIT $6
 		)
 		SELECT s.id, s.agent_id, s.session_key, s.title, s.created_at, s.updated_at, s.read_at,
+		       s.runtime, s.model, s.is_default,
 		       COALESCE(m.snippet, '') AS snippet
 		FROM cand s` + searchSnippetLateral + `
 		ORDER BY s.rank, s.updated_at DESC, s.id DESC`
@@ -512,10 +516,11 @@ const searchRankedTitlesSQL = `
 // pins only that these are the statements SearchSessions sends.
 const searchRecentSQL = `
 		SELECT s.id, s.agent_id, s.session_key, s.title, s.created_at, s.updated_at, s.read_at,
+		       s.runtime, s.model, s.is_default,
 		       COALESCE(m.snippet, '') AS snippet,
 		       (s.title ILIKE $3 ESCAPE '\' OR m.snippet IS NOT NULL) AS matched
 		FROM (
-			SELECT id, agent_id, session_key, title, created_at, updated_at, read_at
+			SELECT id, agent_id, session_key, title, created_at, updated_at, read_at, runtime, model, is_default
 			FROM chat_sessions
 			WHERE agent_id = $1
 			  AND ($6::timestamptz IS NULL OR (updated_at, id) < ($6::timestamptz, $7::bigint))
@@ -602,7 +607,7 @@ func (s *PGStore) SearchSessions(ctx context.Context, agentID int64, q string, l
 				var m SessionMatch
 				var matched bool
 				if err := rows.Scan(&m.ID, &m.AgentID, &m.SessionKey, &m.Title,
-					&m.CreatedAt, &m.UpdatedAt, &m.ReadAt, &m.Snippet, &matched); err != nil {
+					&m.CreatedAt, &m.UpdatedAt, &m.ReadAt, &m.Runtime, &m.Model, &m.IsDefault, &m.Snippet, &matched); err != nil {
 					rows.Close()
 					return nil, err
 				}
@@ -639,7 +644,7 @@ func (s *PGStore) searchRows(ctx context.Context, query string, args ...any) ([]
 	for rows.Next() {
 		var m SessionMatch
 		if err := rows.Scan(&m.ID, &m.AgentID, &m.SessionKey, &m.Title,
-			&m.CreatedAt, &m.UpdatedAt, &m.ReadAt, &m.Snippet); err != nil {
+			&m.CreatedAt, &m.UpdatedAt, &m.ReadAt, &m.Runtime, &m.Model, &m.IsDefault, &m.Snippet); err != nil {
 			return nil, err
 		}
 		m.Snippet = strings.Join(strings.Fields(m.Snippet), " ")
@@ -685,6 +690,93 @@ func (s *PGStore) LatestOrCreateSession(ctx context.Context, agentID int64, agen
 	return scanSession(s.pool.QueryRow(ctx, `
 		INSERT INTO chat_sessions (agent_id, owner_id, session_key, title) VALUES ($1, `+ownerOfAgent+`, $2, '')
 		RETURNING `+sessionCols, agentID, legacySessionKey(agentName)))
+}
+
+// CreateSessionOn implements SessionRuntimeStore. The pair is validated here as
+// well as by the caller: it is argv to a CLI (a Claude model) or a request
+// header (an OpenRouter model), and the store is the last place a bad value
+// could be stopped before it is written for good.
+func (s *PGStore) CreateSessionOn(ctx context.Context, agentID int64, agentName, runtime, model string) (ChatSession, error) {
+	model, err := ValidateSessionRuntime(runtime, model)
+	if err != nil {
+		return ChatSession{}, err
+	}
+	return scanSession(s.pool.QueryRow(ctx, `
+		INSERT INTO chat_sessions (agent_id, owner_id, session_key, title, runtime, model) VALUES ($1, `+ownerOfAgent+`, $2, '', $3, $4)
+		RETURNING `+sessionCols, agentID, newSessionKey(agentName), runtime, model))
+}
+
+// DefaultSession implements SessionRuntimeStore.
+//
+// 🔴 THE ELECTION IS THE MIGRATION'S RULE, IN ONE PLACE PER LAYER: the legacy-key
+// session first, then the oldest. "Latest" would be wrong — it is whatever was
+// touched last, which for a chief is usually a plugin's session — and a default
+// that moved every time a message arrived would not be a default.
+//
+// ⚠ TWO CALLERS ELECTING AT ONCE: the partial unique index lets one UPDATE win;
+// the other matches no row it may set (its WHERE re-checks that the agent still
+// has no default) and falls through to the re-read, which returns the winner.
+func (s *PGStore) DefaultSession(ctx context.Context, agentID int64, agentName string) (ChatSession, error) {
+	read := func() (ChatSession, error) {
+		return scanSession(s.pool.QueryRow(ctx,
+			`SELECT `+sessionCols+` FROM chat_sessions WHERE agent_id=$1 AND is_default`, agentID))
+	}
+	c, err := read()
+	if err == nil || !errors.Is(err, pgx.ErrNoRows) {
+		return c, err
+	}
+	if _, err := s.LatestOrCreateSession(ctx, agentID, agentName); err != nil {
+		return ChatSession{}, err
+	}
+	_, err = s.pool.Exec(ctx, `
+		UPDATE chat_sessions SET is_default = true
+		WHERE id = (
+			SELECT id FROM chat_sessions
+			WHERE agent_id = $1
+			ORDER BY (session_key = $2) DESC, created_at, id
+			LIMIT 1)
+		  AND NOT EXISTS (SELECT 1 FROM chat_sessions WHERE agent_id = $1 AND is_default)`,
+		agentID, legacySessionKey(agentName))
+	if err != nil && !isUniqueViolation(err) {
+		return ChatSession{}, err
+	}
+	return read()
+}
+
+// isUniqueViolation: another election set the agent's default first
+// (chat_sessions_one_default).
+func isUniqueViolation(err error) bool {
+	var pg *pgconn.PgError
+	return errors.As(err, &pg) && pg.Code == "23505" && pg.ConstraintName == "chat_sessions_one_default"
+}
+
+// SetDefaultSession implements SessionRuntimeStore.
+func (s *PGStore) SetDefaultSession(ctx context.Context, agentID, sessionID int64) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var owner int64
+	if err := tx.QueryRow(ctx, `SELECT agent_id FROM chat_sessions WHERE id = $1`, sessionID).Scan(&owner); err != nil {
+		return err
+	}
+	if owner != agentID {
+		return fmt.Errorf("session %d is not agent %d's", sessionID, agentID)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE chat_sessions SET is_default = false WHERE agent_id = $1 AND is_default AND id <> $2`, agentID, sessionID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE chat_sessions SET is_default = true WHERE id = $1`, sessionID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// SessionByKey implements SessionRuntimeStore.
+func (s *PGStore) SessionByKey(ctx context.Context, agentID int64, sessionKey string) (ChatSession, error) {
+	return scanSession(s.pool.QueryRow(ctx,
+		`SELECT `+sessionCols+` FROM chat_sessions WHERE agent_id=$1 AND session_key=$2`, agentID, sessionKey))
 }
 
 // AddChatMessage inserts a message scoped to m.SessionID, then (in the same

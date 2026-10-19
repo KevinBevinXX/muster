@@ -4,9 +4,9 @@
 //
 // Focus has ONE writer: muster's own SERVER-SIDE refresh (Refresher), which
 // tails the session's transcript and asks a Summarizer (SourceSummarizer). The
-// chief READS it — focus_search, agents_list — and never spends a token
+// chief READS it — focus_search, fleet_list — and never spends a token
 // computing it. A refresh that fails keeps the focus and records WHY, as a short
-// non-secret reason (Reason) the card and agents_list show.
+// non-secret reason (Reason) the card and fleet_list show.
 //
 // 🔴 A MIRRORED SESSION IS KEYED BY ITS CLAUDE CODE SESSION ID, NOT ITS TMUX
 // WINDOW. tmux reissues window ids ("@12") on a server restart and an operator
@@ -161,7 +161,7 @@ var ErrNoSession = errors.New("focus: no such session is visible now")
 
 // The reasons a refresh records (Reason). Each is short, fixed and carries
 // nothing from the transcript, the key or the provider's error body, so the
-// card, agents_list and the database may show it as is.
+// card, fleet_list and the database may show it as is.
 const (
 	ReasonNoKey       = "no OpenRouter key"
 	ReasonKeyLookup   = "the OpenRouter key could not be read"
