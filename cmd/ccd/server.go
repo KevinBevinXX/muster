@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -111,6 +112,36 @@ type server struct {
 	// offered muster's agent surface.
 	blocked *blockedReporter
 	pending *pendingTurn
+
+	// lanes runs a CLI per explicit muster session (lanes.go); nil when ccd
+	// does not supervise, and on a lane's own server.
+	lanes *lanes
+	// recordsPrimary: this is the primary's server, and its SessionStart's
+	// session id is recorded so the primary resumes ITS conversation (lanes.go).
+	recordsPrimary bool
+}
+
+// started reports whether the session has sent SessionStart (and no SessionEnd since).
+func (s *server) started() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sessionStarted
+}
+
+// snapshot is the session state /healthz reports.
+func (s *server) snapshot() (started, ended, busy bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sessionStarted, s.sessionEnded, s.busy
+}
+
+// idle: no turn is being driven (the slot is free) and none was submitted in
+// the terminal — a lane that may be stopped without cutting a turn short.
+func (s *server) idle() bool {
+	s.mu.Lock()
+	busy, pending := s.busy, s.pending != nil
+	s.mu.Unlock()
+	return !busy && !pending && len(s.slot) == 0
 }
 
 func newServer(cfg serverConfig, term terminal, auth *authTracker) *server {
@@ -167,13 +198,33 @@ func (s *server) handleHook(w http.ResponseWriter, r *http.Request) {
 	if ev.Event == "" {
 		ev.Event = r.PathValue("event")
 	}
+	// A lane's CLI says which lane it is (?lane=, from CCD_LANE in its
+	// environment; lanes.go). Its hooks are that lane's, never the primary's.
+	target := s
+	if id := r.URL.Query().Get("lane"); id != "" {
+		var ln *lane
+		if s.lanes != nil {
+			ln = s.lanes.get(id)
+		}
+		if ln == nil {
+			log.Printf("ccd: a %s hook for session %s, which is not running; ignored", ev.Event, id)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		target = ln.srv
+	}
 	if s.cfg.HookLog != "" {
 		if f, err := os.OpenFile(s.cfg.HookLog, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
 			_, _ = f.Write(append(bytes.TrimSpace(body), '\n'))
 			f.Close()
 		}
 	}
-	s.onHook(ev)
+	target.onHook(ev)
+	if target.recordsPrimary && strings.EqualFold(ev.Event, "sessionstart") && ev.SessionID != "" {
+		if err := recordPrimary(s.cfg.ConfigDir, ev.SessionID); err != nil {
+			log.Printf("ccd: record the primary session id: %v", err)
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -524,7 +575,18 @@ func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	prompt = neutralizeInputMode(prompt)
 
-	res, f := s.runTurn(r.Context(), prompt)
+	// The turn's CLI: a lane's when muster names an explicit session, else the
+	// primary — every request without the header, as before (lanes.go).
+	target := s
+	if key := r.Header.Get(headerCCSession); key != "" {
+		ln, f := s.laneFor(r.Context(), key, r.Header.Get(headerCCModel))
+		if f != nil {
+			writeFailure(w, f)
+			return
+		}
+		target = ln.srv
+	}
+	res, f := target.runTurn(r.Context(), prompt)
 	if f != nil {
 		log.Printf("ccd: turn failed: %s (code=%q upstream=%d)", f.Error(), f.Code, f.Upstream)
 		writeFailure(w, f)
@@ -774,6 +836,8 @@ type health struct {
 	Supervisor *cliState `json:"supervisor,omitempty"`
 	Session    string    `json:"session"`
 	Busy       bool      `json:"busy"`
+	// Lanes are the explicit sessions' CLIs (lanes.go); reported, never gating.
+	Lanes []laneHealth `json:"lanes,omitempty"`
 	authSnapshot
 }
 
@@ -814,6 +878,9 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	h.Busy = s.busy
 	s.mu.Unlock()
 	h.Session = s.sessionState(started, ended)
+	if s.lanes != nil {
+		h.Lanes = s.lanes.health()
+	}
 	h.OK = h.Terminal == "ok" && (h.Supervisor == nil || (h.Supervisor.CLI != cliCrashLoop && h.Supervisor.CLI != cliLost))
 	w.Header().Set("Content-Type", "application/json")
 	if !h.OK {
@@ -852,4 +919,26 @@ func credentialVisible(configDir string) func() bool {
 		_, err := os.Stat(filepath.Join(configDir, ".credentials.json"))
 		return err == nil
 	}
+}
+
+// laneFor resolves an explicit session's lane, starting its CLI when it is not
+// running, and waits for that CLI to reach its prompt.
+func (s *server) laneFor(ctx context.Context, key, model string) (*lane, *failure) {
+	if s.lanes == nil {
+		return nil, paneNotReady("this ccd runs one Claude Code session only (it does not supervise the CLI, " +
+			"or CCD_MAX_SESSIONS is 0), so it cannot run a session of its own for " + strconv.Quote(key))
+	}
+	if model != "" && !laneModelPattern.MatchString(model) {
+		return nil, &failure{Status: http.StatusBadRequest, Type: failInvalidInput,
+			Message: fmt.Sprintf("%q is not a Claude model ccd will pass to --model", model)}
+	}
+	ln, f := s.lanes.acquire(ctx, key, model)
+	if f != nil {
+		return nil, f
+	}
+	s.lanes.touch(ln)
+	if f := ln.waitStarted(ctx, s.lanes.startTimeout); f != nil {
+		return nil, f
+	}
+	return ln, nil
 }

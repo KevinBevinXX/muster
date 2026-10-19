@@ -214,6 +214,7 @@ variables when it provisions an agent, so you normally never set them yourself.
 | `CCD_WORKSPACE` | the current directory | no | The CLI's working directory. |
 | `CCD_SUPERVISE` | off | no | With `1`, `ccd` creates the tmux session and keeps `claude` running in it. |
 | `CCD_CLAUDE_BIN` | `claude` | no | The path to the Claude Code CLI. |
+| `CCD_MAX_SESSIONS` | `3` | no | How many Claude Code CLIs `ccd` runs **beside** the original one, one per chief session started on the `claude-code` runtime (each its own tmux session `cc-<id>`, started with that session's `--model`). At the cap, the least recently used idle one is stopped; its conversation resumes on its next turn. When all are mid-turn, a new session's turn is refused with a typed `capacity` 503. `0` turns this off: such a turn is `not_ready`. Each CLI costs roughly 250–550 MiB of the pod's 3 GiB. |
 | `CCD_SUBMIT_TIMEOUT` | `20s` | no | How long to wait for a pasted prompt to be accepted. |
 | `CCD_TURN_TIMEOUT` | `30m` | no | The deadline for a whole turn. |
 | `CCD_APPROVAL_DEADLINE` | `170s` | no | How long `ccd approve` waits for a relayed decision before falling back to the terminal prompt. |

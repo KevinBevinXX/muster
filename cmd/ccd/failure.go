@@ -39,6 +39,7 @@ const (
 	failBilling      = "billing_error" // 502
 	failTurn         = "turn_failed"   // 502: any other API failure
 	failEmptyReply   = "empty_reply"   // 502: the turn ended with no answer text
+	failCapacity     = "capacity"      // 503: every Claude Code session ccd may run at once is mid-turn (lanes.go)
 )
 
 type failure struct {
