@@ -12,6 +12,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/cctranscript"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/web"
 )
 
@@ -149,6 +150,9 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				Main(
 					ID("mv-log"),
 					g.Attr("data-ws", ref.ViewWSPath()),
+					// Where an opened subagent card reads its steps
+					// (subagent_cards.go), before it adds `agent`.
+					g.Attr("data-subagent-src", ref.SubagentPath()),
 					g.Attr("aria-label", "Conversation"),
 					Class("flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overflow-x-hidden px-3 py-3"),
 				),
@@ -170,6 +174,8 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				// The tool groups' open/close animation (tool_groups.go).
 				toolGroupScript(),
 				bubbleClampScript(),
+				// The subagent cards' tails and elapsed time.
+				subagentCardScript(),
 				chatIndexSheet(v.FocusHistory, "mirror-view:"+ref.query()),
 				chatIndexScript(),
 				mirrorComposerScript(),
@@ -211,9 +217,12 @@ func viewToggle(rendered bool, renderedHref, terminalHref string) g.Node {
 //   - attr: set attribute Name to Value on the element with ID (a group's state);
 //   - result: a tool row's result for a call an EARLIER socket drew (Resumed):
 //     the row with ID takes HTML's status and output and keeps the rest; with
-//     no such row on the page, it is an append.
+//     no such row on the page, it is an append;
+//   - patch: put HTML in place of the element with ID when the page has one,
+//     and do nothing when it does not (a subagent card's summary: never drawn
+//     anywhere but inside its card).
 type MirrorOp struct {
-	Op    string `json:"op"` // "append" | "replace" | "wrap" | "attr" | "result"
+	Op    string `json:"op"` // "append" | "replace" | "wrap" | "attr" | "result" | "patch"
 	ID    string `json:"id,omitempty"`
 	HTML  string `json:"html,omitempty"`
 	Into  string `json:"into,omitempty"`
@@ -261,6 +270,14 @@ type MirrorTranscript struct {
 	// with their questions: a result for one redraws its card. Bounded with
 	// calls (forget).
 	asks map[string][]askq.Question
+	// Subagents: the host reports subagents (the stream's SubagentList), so
+	// an Agent call is drawn as a subagent card (subagent_cards.go) — never
+	// for an older host, whose Agent calls stay plain tool rows. cards are
+	// the cards drawn, by tool id, and subs the latest summary of each (a
+	// summary can arrive before its card). Bounded with calls (forget).
+	Subagents bool
+	cards     map[string]subagentCall
+	subs      map[string]mirror.Subagent
 }
 
 const maxDrawnCalls = 2048
@@ -296,6 +313,7 @@ func NewMirrorIndex(refs []cctranscript.PromptRef, more int) *MirrorIndex {
 // Reset forgets every drawn call (the view starts over).
 func (t *MirrorTranscript) Reset() {
 	t.calls, t.order, t.asks = nil, nil, nil
+	t.Subagents, t.cards, t.subs = false, nil, nil
 	t.states, t.groupOf, t.groups, t.run, t.runGrp = nil, nil, nil, nil, ""
 	t.Resumed = false
 	t.usage, t.fresh = nil, false
@@ -309,6 +327,8 @@ func (t *MirrorTranscript) endRun() { t.run, t.runGrp = nil, "" }
 func (t *MirrorTranscript) forget(toolID string) {
 	delete(t.calls, toolID)
 	delete(t.asks, toolID)
+	delete(t.cards, toolID)
+	delete(t.subs, toolID)
 	delete(t.states, toolID)
 	if gid, ok := t.groupOf[toolID]; ok {
 		delete(t.groupOf, toolID)
@@ -457,6 +477,10 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 				ops = append(ops, t.askCall(ev)...)
 				continue
 			}
+			if t.Subagents && mirror.IsSubagentTool(ev.Tool) {
+				ops = append(ops, t.subagentCallOps(ev)...)
+				continue
+			}
 			call := ChatLine{Kind: "tool_call", ToolID: ev.ToolID, ToolName: ev.Tool, ToolTarget: ev.Target, Content: ev.Input}
 			id := toolRowID(ev.ToolID)
 			if _, seen := t.calls[ev.ToolID]; seen {
@@ -479,6 +503,10 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 		case cctranscript.KindToolResult:
 			if qs, isAsk := t.asks[ev.ToolID]; isAsk || (ev.Ask != nil && len(ev.Ask.Questions) > 0) {
 				ops = append(ops, t.askResult(ev, qs, isAsk)...)
+				continue
+			}
+			if _, isCard := t.cards[ev.ToolID]; isCard {
+				ops = append(ops, t.subagentResultOps(ev)...)
 				continue
 			}
 			result := ChatLine{Kind: "tool_result", ToolID: ev.ToolID, ToolOK: ev.OK, Content: ev.Output}
@@ -676,6 +704,12 @@ func mirrorViewScript() g.Node {
           grp.querySelector('[data-tool-group-body]').appendChild(first);
           return;
         }
+      }
+      // Only where it is: a subagent card's summary (subagent_cards.go).
+      if (op.op === 'patch') {
+        var pt = op.id && document.getElementById(op.id);
+        if (pt) pt.replaceWith(frag(op.html));
+        return;
       }
       if (op.op === 'result' && op.id) {
         var row = document.getElementById(op.id);

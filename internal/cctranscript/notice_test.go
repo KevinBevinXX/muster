@@ -34,9 +34,9 @@ func TestEventsClassifiesHarnessNotices(t *testing.T) {
 		want                  Event
 	}{
 		{"a finished agent: its status, summary and result", task, "task-notification",
-			Event{Kind: KindNotice, Notice: NoticeTask, Status: "completed", Text: `Agent "Audit the widget" finished`, Output: "The widget is fine.\n\nTwo nits."}},
+			Event{Kind: KindNotice, Notice: NoticeTask, Status: "completed", Text: `Agent "Audit the widget" finished`, Output: "The widget is fine.\n\nTwo nits.", TaskToolID: "toolu_x"}},
 		{"the same with no origin (CLI before 2.1.22): the tag alone decides", task, "",
-			Event{Kind: KindNotice, Notice: NoticeTask, Status: "completed", Text: `Agent "Audit the widget" finished`, Output: "The widget is fine.\n\nTwo nits."}},
+			Event{Kind: KindNotice, Notice: NoticeTask, Status: "completed", Text: `Agent "Audit the widget" finished`, Output: "The widget is fine.\n\nTwo nits.", TaskToolID: "toolu_x"}},
 		{"a monitor event: no status, the event is the detail", monitor, "task-notification",
 			Event{Kind: KindNotice, Notice: NoticeTask, Text: `Monitor event: "CI on the example PR"`, Output: "ci/unit: success\nci/lint: failure"}},
 		{"a tagless task notification is told by its origin", "Background agent \"Audit the widget\" was stopped by the user.", "task-notification",

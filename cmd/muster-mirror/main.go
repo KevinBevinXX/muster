@@ -54,6 +54,11 @@ var e2eNoPromptIndex func() bool
 // every shipped binary.
 var e2eNoCatalog func() bool
 
+// e2eNoSubagents, in a browser-test build, makes the host behave as one that
+// predates the subagent cards (mirrorhost.Config.NoSubagents). nil in every
+// other build.
+var e2eNoSubagents func() bool
+
 // e2eRefresh, in a browser-test build, is how often the host re-reads its
 // windows (mirrorhost.Config.Refresh; 0 = mirrorhost's default) — so a spec
 // waiting for a status flip to reach muster waits a fraction of a second, not
@@ -254,6 +259,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		Interactive: *interactive, AllowHTTP: *allowHTTP, Logger: logger,
 		NoPromptIndex: e2eNoPromptIndex != nil && e2eNoPromptIndex(),
 		NoCatalog:     e2eNoCatalog != nil && e2eNoCatalog(),
+		NoSubagents:   e2eNoSubagents != nil && e2eNoSubagents(),
 		SnippetsFile:  *snippetsFile,
 		Refresh:       refreshOverride(),
 	})

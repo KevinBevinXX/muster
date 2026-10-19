@@ -159,6 +159,10 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 		f    *os.File
 		off  int64
 		busy = p.Busy
+		// subs is the view's subagents (subagents.go); nil on a host that
+		// does not report them.
+		subs     *subagentTracker
+		withSubs = h.subagentReport()
 	)
 	defer func() {
 		if f != nil {
@@ -179,6 +183,19 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 		}
 		return nil
 	}
+	// sendSubs sends the view's subagent list when it changed since the last
+	// one sent (or none was): a message of its own, at the offset the view
+	// already has.
+	sendSubs := func() error {
+		if subs == nil {
+			return nil
+		}
+		list, ok := subs.changed()
+		if !ok {
+			return nil
+		}
+		return send([]mirror.Msg{{Offset: off, Busy: busy, SubagentList: true, Subagents: list}})
+	}
 	// start (re)opens p's transcript and sends a Reset backfill — or, when the
 	// resume names this very transcript at an offset it still has, nothing but
 	// a marker that the resume was accepted.
@@ -194,13 +211,29 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 		if err != nil {
 			return err
 		}
-		if resumeGen != "" && resumeGen == p.Gen && resumeOff >= 0 && resumeOff <= st.Size() {
-			off = resumeOff
-			return send([]mirror.Msg{{Offset: off, Busy: busy}})
+		resume := resumeGen != "" && resumeGen == p.Gen && resumeOff >= 0 && resumeOff <= st.Size()
+		var (
+			lines []cctranscript.Line
+			next  int64
+		)
+		if !resume || withSubs {
+			if lines, next, err = cctranscript.Backfill(f, st.Size(), mirror.BackfillWindow, mirror.MaxBackfillEvents); err != nil {
+				return err
+			}
 		}
-		lines, next, err := cctranscript.Backfill(f, st.Size(), mirror.BackfillWindow, mirror.MaxBackfillEvents)
-		if err != nil {
-			return err
+		if withSubs {
+			// The subagents' parent signals come from the same window the
+			// backfill draws — read on a resume too, which draws none of it,
+			// so a card the page already has still learns its result.
+			subs = newSubagentTracker(p.Transcript)
+			subs.observe(cctranscript.Flatten(lines))
+		}
+		if resume {
+			off = resumeOff
+			if err := send([]mirror.Msg{{Offset: off, Busy: busy, SubagentList: withSubs}}); err != nil {
+				return err
+			}
+			return sendSubs()
 		}
 		off = next
 		batches := mirror.BatchLines(lines, next)
@@ -210,8 +243,15 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 		// The FIRST batch resets the view; the backfill is one transcript from
 		// its window's start, and every batch's offset is in it.
 		batches[0].Reset = true
+		// And says, before the view draws one Agent call, that this host
+		// reports subagents: the calls are then drawn as cards. The list itself
+		// follows as its own message.
+		batches[0].SubagentList = withSubs
 		batches[len(batches)-1].Busy = busy
-		if err := send(batches); err != nil || h.c.cfg.NoPromptIndex {
+		if err := send(batches); err != nil {
+			return err
+		}
+		if err := sendSubs(); err != nil || h.c.cfg.NoPromptIndex {
 			return err
 		}
 		// Then the prompt index: every prompt in the file up to where the
@@ -262,6 +302,11 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 					return err
 				}
 			}
+			// The subagents' own files move without the parent's: read them
+			// on the re-resolve cadence.
+			if err := sendSubs(); err != nil {
+				return err
+			}
 		}
 		st, err := f.Stat()
 		if err != nil {
@@ -281,6 +326,9 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 			}
 			if next == off {
 				break // a partial line: the rest arrives on a later poll
+			}
+			if subs != nil {
+				subs.observe(cctranscript.Flatten(lines))
 			}
 			batches := mirror.BatchLines(lines, off)
 			off = next

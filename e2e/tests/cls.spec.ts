@@ -82,6 +82,7 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /mirror/view/asks': 'an HTML fragment (the Rendered view\'s question cards, polled into #mv-asks)',
   'GET /mirror/view/complete': 'JSON (the composer menu data)',
   'GET /mirror/view/send': 'a redirect back to the view',
+  'GET /mirror/view/subagent': 'an HTML fragment (an opened subagent card\'s steps, fetched into the card)',
   'GET /mirror/view/ws': 'websocket',
   'GET /send-queue': 'an htmx partial (the queue list)',
   'GET /attention/items': 'an html partial (the attention list)',

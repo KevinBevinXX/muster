@@ -88,7 +88,7 @@ func TestEventsFromARealToolTurn(t *testing.T) {
 		{Kind: KindPrompt, Text: "list the workspace"},
 		{Kind: KindText, Text: "First segment: I will list the workspace.", Usage: &Usage{Tokens: 248773}},
 		{Kind: KindToolCall, ToolID: "toolu_fixture1", Tool: "Bash", Target: "ls", Input: `{"command":"ls","description":"List files"}`, Usage: &Usage{Tokens: 248773}},
-		{Kind: KindToolResult, ToolID: "toolu_fixture1", OK: true, Output: "file-a\nfile-b"},
+		{Kind: KindToolResult, ToolID: "toolu_fixture1", OK: true, Output: "file-a\nfile-b", At: 946684811000},
 		{Kind: KindText, Text: "Second segment: the workspace holds file-a and file-b.", Usage: &Usage{Tokens: 249972}},
 	}
 	if !reflect.DeepEqual(got, want) {

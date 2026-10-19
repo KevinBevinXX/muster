@@ -95,6 +95,7 @@ GET /mirror/view
 GET /mirror/view/asks
 GET /mirror/view/complete
 GET /mirror/view/send
+GET /mirror/view/subagent
 GET /mirror/view/ws
 GET /plugins
 GET /readyz

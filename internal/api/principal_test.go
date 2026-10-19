@@ -158,6 +158,7 @@ var routeVias = map[authz.Via][]string{
 		"GET /mirror/view/ws",
 		// The composer menu's data (mirror_complete.go): the session tier.
 		"GET /mirror/view/complete",
+		"GET /mirror/view/subagent",
 		"POST /mirror/view/send",
 		"POST /mirror/terminal/send",
 		"POST /mirror/terminal/scroll",

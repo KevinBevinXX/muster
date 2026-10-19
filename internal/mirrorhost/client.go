@@ -99,6 +99,11 @@ type Config struct {
 	// FOR THE BROWSER SUITE'S OLDER-HOST CASE ONLY (cmd/muster-mirror's
 	// e2emirror build); no flag sets it.
 	NoCatalog bool
+	// NoSubagents makes this host behave as one that predates the subagent
+	// cards (mirror.Msg.SubagentReport): no summaries on a view's stream, none
+	// advertised, no tail request answered. FOR THE OLDER-HOST TESTS ONLY
+	// (cmd/muster-mirror's e2emirror build); no flag sets it.
+	NoSubagents bool
 }
 
 // ErrUnauthorized: muster refused the token (unknown, revoked, or not a mirror
@@ -297,6 +302,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	hello.AskAnswer = conn.askAnswer()
 	hello.StatusReport = reportsStatus(c.cfg.Backend)
 	hello.CatalogReport = version >= 2 && !c.cfg.NoCatalog
+	hello.SubagentReport = conn.subagentReport()
 	if err := conn.send(hello); err != nil {
 		return err
 	}
@@ -381,6 +387,10 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 			case mirror.TypeCatalog:
 				if conn.version >= 2 && !c.cfg.NoCatalog {
 					go conn.catalog(m)
+				}
+			case mirror.TypeSubagentTail:
+				if conn.subagentReport() {
+					go conn.subagentTail(m)
 				}
 			}
 		}
