@@ -47,6 +47,8 @@ type Store interface {
 	// SetChiefSession records the chief chat session a plugin's messages are
 	// delivered into.
 	SetChiefSession(ctx context.Context, pluginID, agentID, sessionID int64) error
+	// Retries is how many times the principal retried a message (retry.go).
+	Retries(ctx context.Context, messageID int64) (int, error)
 	// RecordAttempt counts an attempt that provably delivered nothing; the
 	// message stays queued.
 	RecordAttempt(ctx context.Context, messageID int64) error

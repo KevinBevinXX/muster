@@ -6,6 +6,7 @@
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix delivering <message-id> <agent-id>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix unconfirmed <message-id>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix lapse <draft-id>
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix label <agent-id> <display-name>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix cleanup <owner-id> <name>
 //
 //	  - chief: an agent labelled "chief", running, holding token — the owner's
@@ -25,6 +26,8 @@
 //	    delivery turn cut off mid-way leaves, which the page's Retry is for.
 //	  - lapse: moves a claimed draft's claim and lease ten minutes back, so its
 //	    two-minute lease has lapsed without waiting for it.
+//	  - label: sets an agent's display name — "retired" takes the chief role away
+//	    (the chief IS the agent displayed "chief"), "chief" gives it back.
 //	  - cleanup: removes the chief and the owner's plugins (their messages and
 //	    drafts cascade), so later specs on the shared database see neither.
 //
@@ -58,7 +61,7 @@ func run(args []string) error {
 		return err
 	}
 	if len(args) == 0 {
-		return fmt.Errorf("usage: pluginfix chief|agent|delivering|unconfirmed|lapse|cleanup …")
+		return fmt.Errorf("usage: pluginfix chief|agent|delivering|unconfirmed|lapse|label|cleanup …")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -153,6 +156,18 @@ func run(args []string) error {
 		}
 		if tag.RowsAffected() != 1 {
 			return fmt.Errorf("draft %d is not claimed", draft)
+		}
+	case "label":
+		agent, err := num(1)
+		if err != nil || len(args) != 3 {
+			return fmt.Errorf("usage: label <agent-id> <display-name>")
+		}
+		tag, err := conn.Exec(ctx, `UPDATE agents SET display_name = $2 WHERE id = $1`, agent, args[2])
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return fmt.Errorf("no agent %d", agent)
 		}
 	case "cleanup":
 		owner, err := num(1)

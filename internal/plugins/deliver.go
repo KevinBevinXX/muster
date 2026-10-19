@@ -154,6 +154,13 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 	if err != nil {
 		return pending("plugin_unreadable")
 	}
+	if p.RevokedAt != nil {
+		// A revoked plugin's messages never reach the chief: Submit refuses new
+		// ones and QueuedForOwner skips queued ones, and THIS is the check for a
+		// caller that names one directly (a retry requeued just before the
+		// revoke). It stays queued, uncounted, as QueuedForOwner leaves it.
+		return pending("plugin_revoked")
+	}
 	if chief.ID == 0 {
 		return d.attempted(parent, messageID, "no_chief")
 	}
@@ -204,6 +211,12 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 	if m.Status != StatusQueued || m.PluginID != pluginID || m.OwnerID != p.OwnerID {
 		return Result{Outcome: OutcomeSettled}
 	}
+	// A message the owner retried says so in its turn (retrySentence): its
+	// earlier turn may already have acted on it.
+	retries, err := d.store.Retries(ctx, messageID)
+	if err != nil {
+		return pending("message_unreadable")
+	}
 	fresh, err := d.agents.Get(ctx, chief.ID)
 	if err != nil {
 		return d.attempted(parent, messageID, "chief_unreadable")
@@ -236,7 +249,7 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 		return Result{Outcome: OutcomeSettled}
 	}
 
-	message := RenderMessage(p, m, d.routing, d.hintsFor(ctx, fresh, m))
+	message := RenderMessage(p, m, d.routing, d.hintsFor(ctx, fresh, m), Retry{Count: retries, Now: time.Now()})
 	pc := &agents.PartCollector{}
 	reply, err := d.run(ctx, fresh, sess.SessionKey, message, pc.Observe)
 

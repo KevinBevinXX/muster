@@ -296,14 +296,32 @@ test('a plugin posts, the chief drafts, the owner approves with a passkey on a s
   //     with a Retry button; tapping it puts the message back in the queue for
   //     the chief (this server runs no agent runtime, so it stays queued), the
   //     card leaves the list, and a second retry is refused.
+  //     With NO chief first (the chief's label taken away), the message is still
+  //     listed but its Retry button is disabled and the section says why — every
+  //     retry would be refused (409) — and a tap does nothing.
   const cut = await plugin.post('/plugin/v1/messages', { data: { external_id: 'e2e-msg-cut', sender: 'Bo <bo@example.invalid>', subject: 'cut off', body: 'Did you get this?' } });
   expect(cut.status()).toBe(202);
   const cutID = ((await cut.json()) as { id: number }).id;
   fix('delivering', String(cutID), chiefID);
   fix('unconfirmed', String(cutID));
-  await page.goto(browserURL + '/plugins');
   const retryCard = page.locator(`[data-retry-message-id="${cutID}"]`);
+  fix('label', chiefID, 'retired');
+  try {
+    await page.goto(browserURL + '/plugins');
+    await expect(retryCard).toContainText('Bo <bo@example.invalid>');
+    await expect(retryCard.locator('[data-retry-button]'), 'no chief: Retry is disabled').toBeDisabled();
+    await expect(page.locator('[data-retry-no-chief]')).toHaveText(
+      'Retry is off: you have no chief agent to deliver these to. An agent becomes your chief when its display name is "chief".');
+    await retryCard.locator('[data-retry-button]').tap({ force: true });
+    await expect(page, 'a disabled Retry posts nothing').toHaveURL(browserURL + '/plugins');
+    await expect(page.locator('[data-plugin-queued]')).toHaveAttribute('data-plugin-queued', '0');
+  } finally {
+    fix('label', chiefID, 'chief');
+  }
+  await page.goto(browserURL + '/plugins');
   await expect(retryCard).toContainText('Bo <bo@example.invalid>');
+  await expect(retryCard.locator('[data-retry-button]'), 'with a chief: Retry is enabled').toBeEnabled();
+  await expect(page.locator('[data-retry-no-chief]')).toHaveCount(0);
   await expect(page.locator('[data-plugin-queued]')).toHaveAttribute('data-plugin-queued', '0');
   await Promise.all([
     page.waitForURL((u) => u.pathname === '/plugins' && u.hash === '#plugin-retryable'),

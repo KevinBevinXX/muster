@@ -166,13 +166,15 @@ func TestOnlyLiveSessionsAreRead(t *testing.T) {
 	}
 }
 
-// TestOneSharedWordIsNotAMatch: a session sharing a single word with the
-// message — even a distinctive one, "7k" — is left out at minTerms 2, and
-// found at 1 (control).
+// TestOneSharedWordIsNotAMatch: a session sharing a single term with the
+// message — even a distinctive one, "node-7k" — is left out at minTerms 2, and
+// found at 1 (control). (It read "the 7k spare parts" while "node-7k" counted
+// as three words, node-7k, node and 7k; an identifier is now ONE term, matched
+// whole, and its parts are not counted again.)
 func TestOneSharedWordIsNotAMatch(t *testing.T) {
 	s, pool := pgStore(t)
 	w := AgentSubject(mustAgent(t, pool, 2, "focus-hs-weak").ID)
-	write(t, s, 2, w, "Labelling the 7k spare parts", "", "")
+	write(t, s, 2, w, "Labelling the node-7k spare parts", "", "")
 	live := Live{Agents: []int64{w.AgentID()}}
 	since := time.Now().Add(-HistoryWindow)
 	if ms, _ := s.MatchHistory(as(2), replayText, live, since, 2, 5); len(ms) != 0 {
@@ -224,7 +226,7 @@ func TestAHistoryReadNeedsAWindow(t *testing.T) {
 // review, an invoice export, release planning) and messages made of common
 // words — an ordinary mail, a newsletter, a two-word nudge — share several
 // lexemes with the sessions, yet name none: a session is named only when it
-// shares a DISTINCTIVE term (identifier-like: a digit or a hyphen). The
+// shares a DISTINCTIVE term (an identifier, terms.go). The
 // two-word nudge is the case a "term in at most one candidate's history" rule
 // gets wrong: "review" and "update" are in ONE session's history here, so that
 // rule would call them distinctive and name it.
@@ -260,4 +262,93 @@ func must[T any](v T, err error) T {
 		panic(err)
 	}
 	return v
+}
+
+// 🔴 TestJunkCannotSteerTheHint (#139 follow-up 7): a sender could name
+// sessions with junk. Bare numbers 0–999 plus "please review" named a session
+// whose focus said "PR 137" (the tsvector lexeme `137` held a digit, so it was
+// "distinctive"); hyphenated common words named a session that also wrote them;
+// and a message stuffed with references could carry one for every session.
+// Now: a bare number is not distinctive, a hyphenated word made only of
+// dictionary words is not, and a message contributes only its first
+// MaxDistinctiveTerms. Controls: "#137" still names the PR-137 session (one
+// reference, any spelling), and the stuffed message still names a session
+// whose reference is among its first twenty.
+func TestJunkCannotSteerTheHint(t *testing.T) {
+	s, pool := pgStore(t)
+	pr := AgentSubject(mustAgent(t, pool, 2, "focus-hs-pr137").ID)
+	fu := AgentSubject(mustAgent(t, pool, 2, "focus-hs-followup").ID)
+	early := AgentSubject(mustAgent(t, pool, 2, "focus-hs-pr20").ID)
+	late := AgentSubject(mustAgent(t, pool, 2, "focus-hs-pr30").ID)
+	write(t, s, 2, pr, "Reviewing PR 137 before the release", "Please review the notes and the changelog.", "")
+	write(t, s, 2, fu, "Drafting the follow-up email", "Testing the sign-up flow next; please review the copy.", "")
+	write(t, s, 2, early, "Reviewing PR 20", "Please review the second round.", "")
+	write(t, s, 2, late, "Reviewing PR 30", "Please review the third round.", "")
+	live := Live{Agents: []int64{pr.AgentID(), fu.AgentID(), early.AgentID(), late.AgentID()}}
+	since := time.Now().Add(-HistoryWindow)
+	match := func(text string) []string {
+		t.Helper()
+		ms, err := s.MatchHistory(as(2), text, live, since, 2, MaxSearchResults)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return subjectsOf(ms)
+	}
+
+	var numbers strings.Builder
+	for i := 0; i <= 999; i++ {
+		fmt.Fprintf(&numbers, "%d ", i)
+	}
+	if got := match(numbers.String() + "please review"); len(got) != 0 {
+		t.Errorf("0–999 plus \"please review\" named %v; bare numbers must name nothing", got)
+	}
+	if got := match("Quick follow-up on the sign-up form"); len(got) != 0 {
+		t.Errorf("\"Quick follow-up on the sign-up form\" named %v; hyphenated dictionary words must name nothing", got)
+	}
+	var refs strings.Builder
+	for i := 1; i <= 40; i++ {
+		fmt.Fprintf(&refs, "#%d ", i)
+	}
+	stuffed := match(refs.String() + "please review the round")
+	if fmt.Sprint(stuffed) != fmt.Sprint([]string{early.String()}) {
+		t.Errorf("a message stuffed with #1…#40 named %v; want only [%s] (PR 20 is among its first twenty, PR 30 is not)", stuffed, early)
+	}
+	// Control: one reference, in another spelling, still names its session.
+	if got := match("Any news on #137? The release is waiting on it."); fmt.Sprint(got) != fmt.Sprint([]string{pr.String()}) {
+		t.Errorf("control: \"#137\" named %v; want [%s]", got, pr)
+	}
+}
+
+// 🔴 TestRealIdentifiersGetAHint (#139 follow-up 8): identifiers people do
+// write got no hint — snake_case and camelCase names and file names (hints.go
+// has no underscore, so the snake rule cannot stand in for the file rule) hold
+// neither a digit nor a hyphen, and "PR-137" became the lexemes `pr` and
+// `-137`, which a focus saying "PR 137" (`pr`, `137`) does not share. Each
+// message names exactly the session on that identifier.
+func TestRealIdentifiersGetAHint(t *testing.T) {
+	s, pool := pgStore(t)
+	snake := AgentSubject(mustAgent(t, pool, 2, "focus-hs-snake").ID)
+	camel := AgentSubject(mustAgent(t, pool, 2, "focus-hs-camel").ID)
+	file := AgentSubject(mustAgent(t, pool, 2, "focus-hs-file").ID)
+	pr := AgentSubject(mustAgent(t, pool, 2, "focus-hs-prdash").ID)
+	write(t, s, 2, snake, "Fixing the match_history ranking", "Tie-breaks are next.", "")
+	write(t, s, 2, camel, "Refactoring MatchRows in the store", "Splitting the scan loop.", "")
+	write(t, s, 2, file, "Editing hints.go for the routing line", "Adding the cap.", "")
+	write(t, s, 2, pr, "Reviewing PR 137 for the release", "Two comments left.", "")
+	live := Live{Agents: []int64{snake.AgentID(), camel.AgentID(), file.AgentID(), pr.AgentID()}}
+	since := time.Now().Add(-HistoryWindow)
+	for _, c := range []struct {
+		text string
+		want Subject
+	}{
+		{"Is match_history done? The ranking looked off.", snake},
+		{"Did the matchRows refactor land in the store?", camel},
+		{"Please look at hints.go before the routing change ships.", file},
+		{"Status of PR-137? The release depends on it.", pr},
+	} {
+		ms, err := s.MatchHistory(as(2), c.text, live, since, 2, 5)
+		if err != nil || fmt.Sprint(subjectsOf(ms)) != fmt.Sprint([]string{c.want.String()}) {
+			t.Errorf("%q named %v (%v); want [%s]", c.text, subjectsOf(ms), err, c.want)
+		}
+	}
 }

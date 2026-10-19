@@ -64,9 +64,10 @@ const (
 	// overviewParallel is how many transcripts are read at once.
 	overviewParallel = 4
 
-	// hintMinTerms is how many distinct words a session's recent focus must
-	// share with a plugin message to be hinted; at least one must also be
-	// identifier-like, or nothing is (focus.PGStore.MatchHistory).
+	// hintMinTerms is how many distinct terms a session's recent focus must
+	// share with a plugin message to be hinted; at least one must be an
+	// identifier (internal/focus/terms.go), or nothing is
+	// (focus.PGStore.MatchHistory).
 	hintMinTerms = 2
 )
 

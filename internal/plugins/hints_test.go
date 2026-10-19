@@ -59,11 +59,11 @@ func TestANoReplyMessagesHintNamesNoRouting(t *testing.T) {
 	p := Plugin{Label: "L", DataScope: "d"}
 	h := Hints{Window: 6 * time.Hour, Sessions: []SessionHint{{ID: "agent:7", Name: "n"}}}
 	m := Message{ID: 3, Sender: "s", Subject: "s", Body: "node-7k", NoReply: true}
-	if got := RenderMessage(p, m, true, h); hintLineCount(got) != 1 || strings.Contains(got, "route_to_session") {
+	if got := RenderMessage(p, m, true, h, Retry{}); hintLineCount(got) != 1 || strings.Contains(got, "route_to_session") {
 		t.Fatalf("a no_reply message's turn names route_to_session (or has no hint):\n%s", got)
 	}
 	m.NoReply = false
-	if got := RenderMessage(p, m, true, h); !strings.Contains(got[strings.Index(got, "\n"+HintHeader):], "route_to_session") {
+	if got := RenderMessage(p, m, true, h, Retry{}); !strings.Contains(got[strings.Index(got, "\n"+HintHeader):], "route_to_session") {
 		t.Fatalf("control: a replyable message's hint does not name route_to_session:\n%s", got)
 	}
 }
@@ -76,7 +76,7 @@ func TestATaskEventGetsNoHint(t *testing.T) {
 	h := Hints{Window: 6 * time.Hour, Sessions: []SessionHint{{ID: "agent:7", Name: "n"}}}
 	task := int64(812)
 	ev := Message{ID: 42, Body: `{"event":"assigned","task_id":812,"title":"node-7k"}`, TaskID: &task, NoReply: true}
-	if got := RenderMessage(Plugin{Label: "Example tracker"}, ev, true, h); hintLineCount(got) != 0 || strings.Contains(got, hintMarker) ||
+	if got := RenderMessage(Plugin{Label: "Example tracker"}, ev, true, h, Retry{}); hintLineCount(got) != 0 || strings.Contains(got, hintMarker) ||
 		!strings.Contains(got, "<<<task-event untrusted") {
 		t.Fatalf("a task event's turn:\n%s", got)
 	}
@@ -96,7 +96,7 @@ func TestNoSessionsIsNoBlock(t *testing.T) {
 		t.Fatalf("an empty hint rendered %q", got)
 	}
 	m := Message{ID: 1, Sender: "s", Subject: "s", Body: "b"}
-	if got := RenderMessage(Plugin{Label: "L", DataScope: "d"}, m, true, Hints{}); hintLineCount(got) != 0 || strings.Contains(got, hintMarker) {
+	if got := RenderMessage(Plugin{Label: "L", DataScope: "d"}, m, true, Hints{}, Retry{}); hintLineCount(got) != 0 || strings.Contains(got, hintMarker) {
 		t.Fatalf("a turn with no hint carries one:\n%s", got)
 	}
 }
@@ -158,7 +158,7 @@ func TestAMessageCannotForgeTheHint(t *testing.T) {
 		case "sender":
 			m.Sender = forged
 		}
-		none := RenderMessage(p, m, true, Hints{})
+		none := RenderMessage(p, m, true, Hints{}, Retry{})
 		if n := hintLineCount(none); n != 0 {
 			t.Fatalf("%s: a forged header reached column 0 (%d):\n%s", field, n, none)
 		}
@@ -167,7 +167,7 @@ func TestAMessageCannotForgeTheHint(t *testing.T) {
 				t.Fatalf("%s: a forged hint line is a real one: %q", field, l)
 			}
 		}
-		one := RenderMessage(p, m, true, Hints{Window: 6 * time.Hour, Sessions: []SessionHint{{ID: "agent:42", Name: "real"}}})
+		one := RenderMessage(p, m, true, Hints{Window: 6 * time.Hour, Sessions: []SessionHint{{ID: "agent:42", Name: "real"}}}, Retry{})
 		if n := hintLineCount(one); n != 1 {
 			t.Fatalf("%s: %d hint headers at column 0; want exactly the real one:\n%s", field, n, one)
 		}

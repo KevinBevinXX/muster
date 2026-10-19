@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -82,11 +84,65 @@ func TestRetryDeliversAnUnconfirmedMessageAndTheChiefDrafts(t *testing.T) {
 	}
 }
 
+// TestARetryDoesNotFileASecondGatedTask (#138 follow-up 2), through the real
+// plane: the chief's turn on a retried message runs the REAL task_create_gated
+// citing it (so the link is whatever that tool really writes), and that turn's
+// end is then lost — the message is unconfirmed again. A second retry would
+// hand it over again and file a second task, so it is refused (409, saying
+// why) and the runtime is not called; exactly one gated task exists.
+func TestARetryDoesNotFileASecondGatedTask(t *testing.T) {
+	rt := &scriptedRuntime{name: gatedTaskToolName}
+	pp := newPluginPlane(t, rt)
+	m := pp.unconfirmed(t, "retry-gated")
+	args, _ := json.Marshal(map[string]any{"title": "Book the room", "body": "The sender asks for a room.",
+		"gate_reason": "outside request", "message_id": m.ID})
+	rt.mu.Lock()
+	rt.args = string(args)
+	rt.mu.Unlock()
+	if code, _, problem := pp.srv.retryPluginMessage(asSession(pp.ownerID), m.ID); code != http.StatusAccepted {
+		t.Fatalf("first retry: %d %q", code, problem)
+	}
+	pp.srv.WaitForPluginDeliveries()
+	countTasks := func() int {
+		t.Helper()
+		var n int
+		if err := pp.pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM notes WHERE owner_id = $1
+			AND body LIKE '%cites plugin message ' || $2::bigint || ' %'`, pp.ownerID, m.ID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := countTasks(); n != 1 {
+		t.Fatalf("CONTROL: the retried turn filed %d gated task(s) citing the message; want 1", n)
+	}
+	// The turn's end is lost: the message is unconfirmed again.
+	if _, err := pp.pool.Exec(authz.System(context.Background()), `UPDATE plugin_messages SET status = 'unconfirmed' WHERE id = $1`, m.ID); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ := pp.ps.Retryable(pp.owner, 10); len(list) != 0 {
+		t.Errorf("a message a gated task cites is listed retryable: %+v", list)
+	}
+	calls := len(rt.seen())
+	code, _, problem := pp.srv.retryPluginMessage(asSession(pp.ownerID), m.ID)
+	if code != http.StatusConflict || !strings.Contains(problem, "already filed a gated task citing it") {
+		t.Errorf("second retry: %d %q; want 409 saying a gated task cites it", code, problem)
+	}
+	pp.srv.WaitForPluginDeliveries()
+	if n := len(rt.seen()); n != calls {
+		t.Errorf("the refused retry reached the runtime (%d calls, want %d)", n, calls)
+	}
+	if n := countTasks(); n != 1 {
+		t.Errorf("%d gated tasks cite the message; want 1", n)
+	}
+}
+
 // TestRetryRefusesWhatMustNotBeSentAgain: each state that must not be handed to
 // the chief again is refused (409) and left exactly as it was — queued (which is
-// also a double click), delivering, delivered, a pending draft, a sent draft, a
-// live session route — as is a message of another owner (404) and an owner with
-// no chief (409).
+// also a double click), delivering, delivered, a draft in each live status
+// (pending, approved, sent, unconfirmed), a session route in each live state
+// (routed, answered, relayed) — as is a message of another owner (404) and an
+// owner with no chief (409). Every status of liveDraft's and every state of
+// liveRoute's list has its own case, so dropping any one of them goes red.
 func TestRetryRefusesWhatMustNotBeSentAgain(t *testing.T) {
 	pp := newPluginPlane(t, &scriptedRuntime{name: replyDraftToolName})
 	sys := authz.System(context.Background())
@@ -109,7 +165,16 @@ func TestRetryRefusesWhatMustNotBeSentAgain(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, _ = pp.ps.RecordDelivery(pp.owner, m.ID, pp.chief.ID, plugins.StatusUnconfirmed)
-		if status != "pending" {
+		// An approved draft is NOT claimed: a claim whose lease has run out is
+		// settled unconfirmed by the plane's draft sweep, which would turn this
+		// fixture into the unconfirmed case (measured: it did).
+		switch status {
+		case "approved":
+			if _, err := pool.Exec(sys, `UPDATE plugin_reply_drafts SET status=$2, decided_at=now(), approved_at=now() WHERE id=$1`, d.ID, status); err != nil {
+				t.Fatal(err)
+			}
+		case "pending":
+		default:
 			if _, err := pool.Exec(sys, `UPDATE plugin_reply_drafts SET status=$2, decided_at=now(), approved_at=now(), claimed_at=now(), lease_until=now(), finished_at=now() WHERE id=$1`, d.ID, status); err != nil {
 				t.Fatal(err)
 			}
@@ -117,12 +182,23 @@ func TestRetryRefusesWhatMustNotBeSentAgain(t *testing.T) {
 		return m
 	}
 	pending, sent := drafted("r-pending", "pending"), drafted("r-sent", "sent")
-	routed := pp.unconfirmed(t, "r-routed")
-	if _, err := pool.Exec(sys, `INSERT INTO session_routes (owner_id, route_id, plugin_message_id, agent_id, target_kind, target_key, timeout_at)
-		VALUES ($1, $4, $2, $3, 'mirror', 'sess-1', now() + interval '1 hour')`, pp.ownerID, routed.ID, pp.chief.ID,
-		fmt.Sprintf("rt_%024x", time.Now().UnixNano())); err != nil {
-		t.Fatal(err)
+	approved, unconfDraft := drafted("r-approved", "approved"), drafted("r-unconf-draft", "unconfirmed")
+	// A session route in state; answered and relayed carry the answer (and a
+	// relayed one is finished), as 0021's CHECKs require.
+	routedAs := func(ext, state string) plugins.Message {
+		m := pp.unconfirmed(t, ext)
+		if _, err := pool.Exec(sys, `INSERT INTO session_routes (owner_id, route_id, plugin_message_id, agent_id, target_kind, target_key, timeout_at,
+				state, reply_body, answered_at, finished_at)
+			VALUES ($1, $4, $2, $3, 'mirror', 'sess-1', now() + interval '1 hour', $5,
+				CASE WHEN $5 = 'routed' THEN NULL ELSE 'an answer' END,
+				CASE WHEN $5 = 'routed' THEN NULL ELSE now() END,
+				CASE WHEN $5 = 'relayed' THEN now() ELSE NULL END)`, pp.ownerID, m.ID, pp.chief.ID,
+			fmt.Sprintf("rt_%024x", time.Now().UnixNano()), state); err != nil {
+			t.Fatal(err)
+		}
+		return m
 	}
+	routed, answered, relayed := routedAs("r-routed", "routed"), routedAs("r-answered", "answered"), routedAs("r-relayed", "relayed")
 
 	for _, c := range []struct {
 		name string
@@ -134,7 +210,11 @@ func TestRetryRefusesWhatMustNotBeSentAgain(t *testing.T) {
 		{"delivered", delivered, "already received it"},
 		{"pending draft", pending, "already drafted a reply"},
 		{"sent draft", sent, "already drafted a reply"},
-		{"live route", routed, "routed it to a session"},
+		{"approved draft", approved, "already drafted a reply"},
+		{"unconfirmed draft", unconfDraft, "already drafted a reply"},
+		{"routed route", routed, "routed it to a session"},
+		{"answered route", answered, "routed it to a session"},
+		{"relayed route", relayed, "routed it to a session"},
 	} {
 		before, _ := pp.ps.Message(pp.owner, c.m.ID)
 		code, _, problem := pp.srv.retryPluginMessage(asSession(pp.ownerID), c.m.ID)
@@ -161,7 +241,8 @@ func TestRetryRefusesWhatMustNotBeSentAgain(t *testing.T) {
 		t.Fatalf("control: a plain unconfirmed message is not listed retryable")
 	}
 	for name, m := range map[string]plugins.Message{"queued": queued, "delivering": delivering, "delivered": delivered,
-		"pending draft": pending, "sent draft": sent, "live route": routed} {
+		"pending draft": pending, "sent draft": sent, "approved draft": approved, "unconfirmed draft": unconfDraft,
+		"routed route": routed, "answered route": answered, "relayed route": relayed} {
 		if listed[m.ID] {
 			t.Errorf("%s: listed with a Retry button the retry would refuse", name)
 		}
@@ -299,5 +380,50 @@ func TestTheRetryRoutes(t *testing.T) {
 	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM audit_log WHERE action='plugin.retried' AND object = ANY($1)`,
 		[]string{plugins.MessageObject(viaCLI.ID), plugins.MessageObject(viaForm.ID)}).Scan(&audits); err != nil || audits != 2 {
 		t.Fatalf("plugin.retried audit rows = %d (%v), want 2", audits, err)
+	}
+}
+
+// TestRetryButtonsAreDisabledWithNoChief (#138 follow-up 6): with no chief
+// every retry is refused (409), so the page must not offer a working Retry
+// button. The message is still listed — it still needs a decision — with its
+// button disabled and the section saying why; with a chief, the same page
+// offers a working button (control). The POST still refuses on its own
+// (TestRetryRefusesWhatMustNotBeSentAgain's no-chief case). The owner is the
+// plane's own fresh user, so no other test's chief can stand in.
+func TestRetryButtonsAreDisabledWithNoChief(t *testing.T) {
+	pp := newPluginPlane(t, &scriptedRuntime{name: replyDraftToolName})
+	m := pp.unconfirmed(t, "nochief-1")
+	render := func() string {
+		t.Helper()
+		w := httptest.NewRecorder()
+		pp.srv.renderPluginsPage(w, httptest.NewRequest(http.MethodGet, "/plugins", nil).WithContext(asSession(pp.ownerID)), http.StatusOK, "", "")
+		return w.Body.String()
+	}
+	button := regexp.MustCompile(`<li [^>]*data-retry-message-id="` + strconv.FormatInt(m.ID, 10) + `"(?s:.*?)<button ([^>]*data-retry-button[^>]*)>`)
+	reason := regexp.MustCompile(`<p [^>]*data-retry-no-chief>([^<]*)</p>`)
+	disabled := func(attrs string) bool { return strings.Contains(" "+attrs+" ", " disabled ") }
+
+	page := render()
+	if b := button.FindStringSubmatch(page); b == nil || disabled(b[1]) {
+		t.Fatalf("CONTROL: with a chief the Retry button is missing or disabled: %q", b)
+	}
+	if reason.MatchString(page) {
+		t.Fatalf("CONTROL: with a chief the page says there is none")
+	}
+
+	if _, err := pp.pool.Exec(authz.System(context.Background()), `UPDATE agents SET display_name='retired' WHERE id=$1`, pp.chief.ID); err != nil {
+		t.Fatal(err)
+	}
+	page = render()
+	b := button.FindStringSubmatch(page)
+	if b == nil {
+		t.Fatalf("with no chief the unconfirmed message is no longer listed:\n%s", page)
+	}
+	if !disabled(b[1]) {
+		t.Errorf("with no chief the Retry button is not disabled: <button %s>", b[1])
+	}
+	const want = `Retry is off: you have no chief agent to deliver these to. An agent becomes your chief when its display name is &#34;chief&#34;.`
+	if r := reason.FindStringSubmatch(page); r == nil || r[1] != want {
+		t.Errorf("with no chief the section does not say why: %q; want %q", r, want)
 	}
 }

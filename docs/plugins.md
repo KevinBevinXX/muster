@@ -428,8 +428,12 @@ may already have acted on it. You can decide otherwise:
 
 - On `/plugins`, **Not confirmed by your chief** lists those messages, each with a
   **Retry** button (a signed-in, same-origin form, like Revoke and Reject; no
-  fresh sign-in, since nothing leaves muster — any reply your chief drafts still
-  waits for your approval).
+  fresh sign-in, since nothing leaves muster at that point). Your chief then
+  handles the message like any other: a reply it drafts waits for your approval,
+  **except** an answer it routes through one of your sessions to a verified
+  sender you allowlisted for this plugin (`MUSTER_ROUTE_RELAY_ALLOW`), which is
+  sent without it. While you have no chief the messages are still listed, but
+  their Retry buttons are disabled and the section says why.
 - From a session: `muster plugins retry <message-id>`
   (`POST /api/plugins/messages/{id}/retry`, the hook tier: your personal token,
   or the shared hook token on an armed server).
@@ -437,7 +441,10 @@ may already have acted on it. You can decide otherwise:
 A retry puts the message back in the queue and hands it to your **current** chief
 the way every message is delivered: the session claim, a turn with the chief's
 tools, the attempt counted. With no agent runtime wired, it stays queued. It is
-recorded as `plugin.retried` in the audit log.
+recorded as `plugin.retried` in the audit log. The turn's preface (outside the
+fence, muster's own words) tells your chief it is a retry — the retry and
+delivery-attempt numbers, that the earlier turn may already have acted on it,
+to check its tasks and reply drafts before acting again, and the message's age.
 
 A retry is refused (409, nothing changed) when the message is queued (including
 a second click), being delivered or delivered; when your chief already drafted a
@@ -447,7 +454,12 @@ routed to a session that is still routed, answered or relayed; when it is a
 the task, or started an agent on it, at or after this event's latest delivery
 attempt — for a message that can be retried, the turn that handed it over — so
 an action on another event of the same task does not count; the same rule that
-takes it off "Task to route"); and when you have no chief. Another user's message answers 404.
+takes it off "Task to route"); when your chief already filed a gated task
+citing it (`task_create_gated` with its `message_id`, read from that call's
+audit row — a task filed without citing the message is not seen); when its
+plugin has been revoked (a revoked
+plugin's messages never reach your chief again, by retry or otherwise); and when
+you have no chief. Another user's message answers 404.
 
 The data-scope sentence is **advisory**. The chief's own memory credential can
 write anywhere; only the preface asks it to keep what it records from plugin
@@ -560,11 +572,16 @@ reply.
 
 When session focus is on, muster looks up, on every delivery, which of your
 live sessions (running agents and online mirrored windows, not the chief)
-wrote a focus in the last six hours that shares at least two searchable words
-with the message's subject and body, at least one of them **identifier-like**
-(it holds a digit or a hyphen: `node-7k`, a PR or ticket number). Common words
-alone ("update", "next week", "review") name nothing: an ordinary mail or a
-newsletter shares several with almost any session. It appends what it finds to the chief's
+wrote a focus in the last six hours that shares at least two terms with the
+message's subject and body, at least one of them an **identifier**: a word
+with letters and digits (`node-7k`), a reference (`#137`, `PR 137`, `PR-137` —
+one term however it is spelled; a bare `137` is not one), a version
+(`v1.2.3`), a code name (`match_history`, `matchHistory`) or file name
+(`hints.go`), or a hyphenated word with a part that is not a dictionary word
+(`follow-up` and `sign-up` are not identifiers). An identifier counts once,
+not again as the words it is made of, and a message contributes at most its
+first 20. Common words alone ("update", "next week", "review") name nothing: an
+ordinary mail or a newsletter shares several with almost any session. It appends what it finds to the chief's
 turn, after the message, as a block headed **Sessions that may already be on
 this**: up to three sessions, each with its id, name, host and up to three
 matching focus titles with their times, within 2 KiB. No match, no block.

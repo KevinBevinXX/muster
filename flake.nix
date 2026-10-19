@@ -125,6 +125,13 @@
           || ((pkgs.lib.hasPrefix "cmd/" rel || pkgs.lib.hasPrefix "internal/" rel)
               && (pkgs.lib.hasSuffix ".go" rel || pkgs.lib.hasSuffix ".sql" rel
                   || pkgs.lib.hasSuffix ".js" rel))
+          # 🔴 ONE DIRECTORY, NOT A SUFFIX: `internal/focus/terms.go` embeds
+          # `dict/words.txt` (the session hint's dictionary), and the CLI compiles
+          # `internal/focus`. Without this row `nix build .#muster-cli` dies with
+          # `pattern dict/words.txt: no matching files found`. It names the
+          # directory rather than allowing `.txt`, which would carry any stray
+          # text file under `cmd/` or `internal/` into the store.
+          || pkgs.lib.hasPrefix "internal/focus/dict/" rel
           # 🔴 `testdata/` IS CARRIED WHOLE, AND IT IS THE ONE ROW HERE THAT IS
           # NOT AN EXTENSION. ONE file under it is read by a test a `checkPhase` here
           # RUNS: `cmd/muster/one_service_test.go` opens
