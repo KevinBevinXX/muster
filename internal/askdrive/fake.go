@@ -238,8 +238,24 @@ func (f *FakePicker) Screen() string {
 	if f.review {
 		line("Review your answers")
 		for i, q := range f.qs {
-			line(" ● " + q.Question)
-			line("   → " + f.answerOf(i))
+			lead, more := " ● ", "   "
+			if boxed(q.Question) {
+				lead, more = " │ ● ", " │   "
+			}
+			for j, l := range fakeWrap(q.Question, fakeWidth-len([]rune(lead))) {
+				if j == 0 {
+					line(lead + l)
+				} else {
+					line(more + l)
+				}
+			}
+			for j, l := range fakeWrap(f.answerOf(i), fakeWidth-5) {
+				if j == 0 {
+					line("   → " + l)
+				} else {
+					line("   " + l)
+				}
+			}
 		}
 		line("Ready to submit your answers?")
 		line("❯ 1. Submit answers")
@@ -248,7 +264,13 @@ func (f *FakePicker) Screen() string {
 	}
 	q := f.qs[f.tab]
 	k := len(q.Options)
-	line(q.Question)
+	if boxed(q.Question) {
+		for _, l := range fakeWrap(q.Question, fakeWidth-2) {
+			line("│ " + l)
+		}
+	} else {
+		line(q.Question)
+	}
 	line("")
 	cur := func(row int) string {
 		if f.cursor == row {
@@ -265,8 +287,20 @@ func (f *FakePicker) Screen() string {
 		}
 		return "[ ] "
 	}
+	// row draws a numbered row, its label (or text) wrapped under itself.
+	row := func(n int, label string) {
+		lead := cur(n) + " " + itoa(n) + ". " + box(n)
+		indent := strings.Repeat(" ", len([]rune(lead)))
+		for j, l := range fakeWrap(label, fakeWidth-len(indent)) {
+			if j == 0 {
+				line(lead + l)
+			} else {
+				line(indent + l)
+			}
+		}
+	}
 	for j, o := range q.Options {
-		line(cur(j+1) + " " + itoa(j+1) + ". " + box(j+1) + o.Label)
+		row(j+1, o.Label)
 		if o.Description != "" {
 			line("     " + o.Description)
 		}
@@ -278,7 +312,7 @@ func (f *FakePicker) Screen() string {
 			textLabel = "Type something"
 		}
 	}
-	line(cur(k+1) + " " + itoa(k+1) + ". " + box(k+1) + textLabel)
+	row(k+1, textLabel)
 	if q.MultiSelect {
 		nav := "Next"
 		if f.tab == len(f.qs)-1 {
@@ -291,6 +325,48 @@ func (f *FakePicker) Screen() string {
 	line("")
 	line("Enter to select · ↑/↓ to navigate · Esc to cancel")
 	return b.String()
+}
+
+// fakeWidth is the fake's pane width: the 80 columns its rule is.
+const fakeWidth = 80
+
+// boxed reports whether the CLI draws question q in a box: one too long for
+// a line (measured 2.1.289: "│ " down its left edge, wrapped inside).
+func boxed(q string) bool { return len([]rune(q)) > fakeWidth-2 }
+
+// fakeWrap is s word-wrapped to width columns, a word longer than a line
+// broken mid-word — as the CLI wraps (its exact break points differ; Parse
+// and Match do not depend on them).
+func fakeWrap(s string, width int) []string {
+	if len([]rune(s)) <= width {
+		return []string{s} // as typed, its own spaces kept
+	}
+	var out []string
+	cur := ""
+	for _, w := range strings.Fields(s) {
+		for len([]rune(w)) > width {
+			if cur != "" {
+				out = append(out, cur)
+				cur = ""
+			}
+			r := []rune(w)
+			out = append(out, string(r[:width]))
+			w = string(r[width:])
+		}
+		switch {
+		case cur == "":
+			cur = w
+		case len([]rune(cur))+1+len([]rune(w)) <= width:
+			cur += " " + w
+		default:
+			out = append(out, cur)
+			cur = w
+		}
+	}
+	if cur != "" || len(out) == 0 {
+		out = append(out, cur)
+	}
+	return out
 }
 
 func itoa(n int) string {

@@ -296,6 +296,15 @@ How it works:
   counted there). Run `make test-liveclaude` on every Claude Code upgrade: it
   answers a real Claude Code's pickers in a scratch tmux server, checks the
   CLI recorded those answers, and re-measures the redraw lag.
+- **When muster cannot read the question.** Long questions (drawn boxed) and
+  long answers (wrapped over several rows) are read back as one text. If the
+  picker is untouched but its question still does not read as the one muster
+  was sent, or the picker is taller than the terminal so its question is off
+  screen, the card says *couldn't read this question off the terminal's
+  screen* — not that someone is answering it — and it is counted as
+  `result="unreadable"`. Nothing is typed; if the picker went off screen part
+  way through typing, nothing is submitted and the card says it may be partly
+  filled in. A taller terminal (or answering there) gets past it.
 - Answering has the same rules as sending: you must own the host, the host must
   be `-interactive`, and your sign-in must be recent. A read-only host's card
   shows the questions without a form.

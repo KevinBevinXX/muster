@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/askq"
@@ -34,6 +35,15 @@ var (
 	// parse (Kind Unknown) — Claude Code's layout has probably changed.
 	// Nothing is sent.
 	ErrUnrecognised = errors.New("askdrive: could not recognise the terminal's picker (Claude Code may have changed)")
+	// ErrUnreadable: muster could not read the question off the screen as the
+	// one it registered — NOT that anyone is answering it. Before the first
+	// key: the picker is untouched (every option, the cursor, the tabs as
+	// expected) but its question's text does not read as the registered one;
+	// or the picker is taller than the pane and its question is off screen
+	// (Clipped). Nothing was sent. After a key it is wrapped in ErrLost too:
+	// the picker went off the top of the pane mid-way, keys were sent, and
+	// nothing was submitted.
+	ErrUnreadable = errors.New("askdrive: could not read the question off the terminal's screen as the one muster registered")
 )
 
 // Activity is a Pane that can tell when a person last gave its terminal
@@ -74,6 +84,14 @@ type Options struct {
 // after every key (see the package doc). nil means every key landed and the
 // final screen showed the picker gone — the CLI took the answers; that it took
 // THESE answers is for the caller to confirm (the transcript's result).
+//
+// 🔴 A REFUSAL AFTER THE FIRST KEY (ErrLost) LEAVES WHAT WAS TYPED IN THE
+// PICKER, unsubmitted — a ticked box, a moved cursor, part or all of an
+// answer's own words in its "Type something" row. Drive never sends a key to
+// take it back: clearing it means typing into a picker it has just failed to
+// recognise, the very thing it refuses. The person finishes, corrects or
+// cancels it in the terminal; the card says it may be partly filled in
+// (internal/api askTypeFailure).
 func Drive(ctx context.Context, p Pane, qs []askq.Question, choices []Choice, opt Options) error {
 	steps, err := Plan(qs, choices)
 	if err != nil {
@@ -116,13 +134,23 @@ func Drive(ctx context.Context, p Pane, qs []askq.Question, choices []Choice, op
 				return err
 			}
 			if err := Match(Parse(scr), want, qs, answers); err != nil {
+				s := Parse(scr)
 				if i == 0 {
-					switch Parse(scr).Kind {
-					case None:
+					switch {
+					case s.Kind == None:
 						return fmt.Errorf("%w: %v", ErrNoPicker, err)
-					case Unknown:
+					case s.Kind == Unknown:
 						return fmt.Errorf("%w: %v", ErrUnrecognised, err)
+					case s.Kind == Clipped:
+						return fmt.Errorf("%w: %v", ErrUnreadable, err)
+					// Untouched in every way the screen can show, only the
+					// question's words differ: muster misread (or was told)
+					// the question — nobody is answering it.
+					case s.Kind == Question && match(s, want, qs, answers, false) == nil:
+						return fmt.Errorf("%w: %v", ErrUnreadable, err)
 					}
+				} else if s.Kind == Clipped {
+					return fmt.Errorf("%w (before key %d, wanted %s): %w: %v", ErrLost, i+1, want, ErrUnreadable, err)
 				}
 				return refuse(err)
 			}
@@ -174,6 +202,9 @@ func Drive(ctx context.Context, p Pane, qs []askq.Question, choices []Choice, op
 				break
 			}
 			if time.Now().After(deadline) {
+				if Parse(scr).Kind == Clipped {
+					return fmt.Errorf("%w (after key %d, wanted %s): %w: %v", ErrLost, i+1, st.Want, ErrUnreadable, merr)
+				}
 				return fmt.Errorf("%w (after key %d, wanted %s): %v", ErrLost, i+1, st.Want, merr)
 			}
 			select {
@@ -203,6 +234,20 @@ func sleep(ctx context.Context, d time.Duration) error {
 // Match reports why s is not the screen w describes for qs (nil when it is).
 // answers is what the review screen must list (Answers).
 func Match(s Screen, w Want, qs []askq.Question, answers map[string]string) error {
+	return match(s, w, qs, answers, true)
+}
+
+// errQuestionText: the screen is the wanted one but for the question's text.
+var errQuestionText = errors.New("the question's text differs")
+
+// match is Match; with question false it does not compare the shown
+// question's text (and only that) — how Drive tells "this picker, untouched,
+// but its question does not read as the one registered" (ErrUnreadable) from
+// a picker someone has touched.
+func match(s Screen, w Want, qs []askq.Question, answers map[string]string, question bool) error {
+	if s.Kind == Clipped && w.Kind != None {
+		return errors.New("the picker's top is off the pane (it is taller than the terminal): its question cannot be read")
+	}
 	switch w.Kind {
 	case None:
 		if s.Kind != None {
@@ -217,10 +262,10 @@ func Match(s Screen, w Want, qs []askq.Question, answers map[string]string) erro
 			return fmt.Errorf("the review lists %d answers for %d questions", len(s.Review), len(qs))
 		}
 		for i, q := range qs {
-			if norm(s.Review[i].Question) != norm(q.Question) {
+			if !wrapEq(splitLines(s.Review[i].Question), q.Question, false) {
 				return fmt.Errorf("review item %d is %q, not %q", i+1, s.Review[i].Question, q.Question)
 			}
-			if norm(s.Review[i].Answer) != norm(answers[q.Question]) {
+			if !wrapEq(splitLines(s.Review[i].Answer), answers[q.Question], false) {
 				return fmt.Errorf("review answer %d is %q, not %q", i+1, s.Review[i].Answer, answers[q.Question])
 			}
 		}
@@ -236,8 +281,8 @@ func Match(s Screen, w Want, qs []askq.Question, answers map[string]string) erro
 		return fmt.Errorf("no question %d", w.Q+1)
 	}
 	q := qs[w.Q]
-	if norm(s.Question) != norm(q.Question) {
-		return fmt.Errorf("the screen asks %q, not %q", s.Question, q.Question)
+	if question && !wrapEq(splitLines(s.Question), q.Question, false) {
+		return fmt.Errorf("%w: the screen asks %q, not %q", errQuestionText, s.Question, q.Question)
 	}
 	if err := tabsMatch(s, qs, w.Q); err != nil {
 		return err
@@ -260,15 +305,18 @@ func Match(s Screen, w Want, qs []askq.Question, answers map[string]string) erro
 			return fmt.Errorf("row %d checked=%v, want %v", j+1, r.Box == "[✔]", checked)
 		}
 		if j < k {
-			if norm(r.Label) != norm(q.Options[j].Label) {
+			if !labelMatch(r, q.Options[j].Label) {
 				return fmt.Errorf("row %d is %q, not %q", j+1, r.Label, q.Options[j].Label)
 			}
 		} else if w.Text != "" {
-			if r.Label != w.Text {
-				return fmt.Errorf("the text row holds %q, not %q", r.Label, w.Text)
+			// The typed text, wrapped over the row's lines when long (the CLI
+			// never truncates or scrolls it: measured 2.1.289, 650+ characters
+			// drawn in full, wrapped).
+			if !wrapEq(textLines(r), w.Text, true) {
+				return fmt.Errorf("the text row holds %q, not %q", strings.Join(textLines(r), "\n"), w.Text)
 			}
-		} else if r.Label != "Type something" && r.Label != "Type something." {
-			return fmt.Errorf("the text row holds %q, not its placeholder", r.Label)
+		} else if (r.Label != "Type something" && r.Label != "Type something.") || len(r.More) > 0 {
+			return fmt.Errorf("the text row holds %q, not its placeholder", strings.Join(textLines(r), "\n"))
 		}
 		if r.Cursor != (w.Cursor == j+1) {
 			return fmt.Errorf("the cursor is not where wanted (row %d cursor=%v)", j+1, r.Cursor)

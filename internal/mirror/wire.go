@@ -974,4 +974,13 @@ const (
 	AskRefusalUnrecognised = "unrecognised"
 	// AskRefusalBusy: another answer is being typed into that pane.
 	AskRefusalBusy = "busy"
+	// AskRefusalUnreadable: the host could not read the question off the
+	// screen as the one muster registered (the picker untouched, its question
+	// in other words; or the picker taller than the pane) — nobody is
+	// answering it in the terminal. Nothing was typed.
+	AskRefusalUnreadable = "unreadable"
+	// AskRefusalUnreadableTyped: as AskRefusalUnreadable, but keys were typed
+	// before the picker went out of reading (off the top of the pane); nothing
+	// was submitted.
+	AskRefusalUnreadableTyped = "unreadable-typed"
 )

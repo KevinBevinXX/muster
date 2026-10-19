@@ -1,0 +1,20 @@
+│ or patch our copy for now and file the upstream change separately?
+
+  1. Upstream
+     Package
+  2. Patch
+     Local
+❯ 3. The build agent needs to support running nightly batch-jobs, alongside the
+     interactive sessions, where we are using models via a proxy. See
+     https://example.com/a/very/long/path/that/does/not/fit/on/one/line/of/the/
+     terminal/at/all/because/it/keeps/going/and-going-and-going-with-hyphens-ev
+     erywhere-so-the-wrap-falls-on-one. Sentence number 1 adds more words so
+     that the typed answer grows well past several screen rows. Sentence number
+     2 adds more words so that the typed answer grows well past several screen
+     rows. Sentence number 3 adds more words so that it grows.
+────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · ctrl+g to edit in Nvim · Esc to
+cancel
+

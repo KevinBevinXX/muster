@@ -729,6 +729,8 @@ func TestEachFailureSaysWhatTheTerminalHas(t *testing.T) {
 	}{
 		{fmt.Errorf("%w: x", mirror.ErrAskNoPicker), "no longer on the terminal's screen", false},
 		{fmt.Errorf("%w: x", mirror.ErrAskTouched), "Someone has started answering it", false},
+		{fmt.Errorf("%w: x", mirror.ErrAskUnreadable), "Couldn't read this question off the terminal's screen as the one muster was sent — answer it in the terminal.", false},
+		{fmt.Errorf("%w: %w: x", mirror.ErrAskUnreadable, mirror.ErrAskLost), "the question went off the terminal's screen while typing", true},
 		{fmt.Errorf("%w: x", mirror.ErrAskBusy), "Another answer is being typed into this terminal", false},
 		{fmt.Errorf("%w: x", mirror.ErrAskUnrecognised), "Couldn't recognise the terminal's picker (Claude Code may have changed) — answer it in the terminal.", false},
 		{fmt.Errorf("%w: x", mirror.ErrAskLost), "changed while typing", true},
@@ -747,8 +749,10 @@ func TestEachFailureSaysWhatTheTerminalHas(t *testing.T) {
 // unrecognised picker (the signal that Claude Code's layout changed).
 func TestAnUnrecognisedPickerIsCounted(t *testing.T) {
 	for err, want := range map[error]string{
-		fmt.Errorf("%w: x", mirror.ErrAskBusy):    "busy",
-		fmt.Errorf("%w: x", mirror.ErrAskTouched): "touched",
+		fmt.Errorf("%w: x", mirror.ErrAskBusy):                              "busy",
+		fmt.Errorf("%w: x", mirror.ErrAskTouched):                           "touched",
+		fmt.Errorf("%w: x", mirror.ErrAskUnreadable):                        "unreadable",
+		fmt.Errorf("%w: %w: x", mirror.ErrAskUnreadable, mirror.ErrAskLost): "unreadable",
 		nil: "typed",
 	} {
 		if got := askTypingResult(err); got != want {

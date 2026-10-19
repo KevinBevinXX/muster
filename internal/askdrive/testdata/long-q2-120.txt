@@ -1,0 +1,17 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Color  ☐ Where  ☐ Name  ✔ Submit  →
+
+│ The shared widget package renders every tool call the same way regardless of its status, so the spinner on a
+│ half-finished call never stops (see the notes in #12/#13 and the @example/widgets-chat package). Should we fix it
+│ upstream, or patch our copy for now and file the upstream change separately?
+
+❯ 1. Upstream
+     Package
+  2. Patch
+     Local
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+
