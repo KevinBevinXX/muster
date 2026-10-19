@@ -142,6 +142,9 @@ type server struct {
 	// gateway hands a gateway-runtime turn to the runtime beside ccd
 	// (gateway.go); nil when the pod runs none.
 	gateway *httputil.ReverseProxy
+	// gatewayOff is why gateway turns are refused on a pod that has the
+	// runtime beside ccd (gatewayBearerProblem); "" otherwise.
+	gatewayOff string
 }
 
 // started reports whether the session has sent SessionStart and has neither
@@ -226,9 +229,16 @@ func (s *server) gatewayHandler() http.Handler {
 // hookHandler is served ONLY on a loopback listener (see main.go). The hooks the
 // CLI runs are `ccd hook <Event>` commands that POST their stdin here.
 //
-// ⚠ IT IS UNAUTHENTICATED, AND THAT IS A STATEMENT ABOUT WHO CAN REACH IT, NOT AN
-// OVERSIGHT: anything that can connect to 127.0.0.1 in the pod can already type
-// into the tmux session, which is strictly more than a forged Stop can do.
+// ⚠ IT IS UNAUTHENTICATED, ON THE ARGUMENT THAT anything that can connect to
+// 127.0.0.1 in the pod can already type into the tmux session, which is strictly
+// more than a forged Stop can do. 🔴 THAT ARGUMENT DOES NOT HOLD IN A CHIEF'S POD
+// WITH THE GATEWAY RUNTIME BESIDE ccd (gateway.go): the runtime shares this
+// loopback and NOT ccd's filesystem, so it can reach this listener without being
+// able to reach tmux. A hook carries no prompt and decides no permission, so a
+// forged one cannot submit a turn or allow a tool; what it can do is bookkeeping
+// — end a pending turn early, set the auth state /healthz reports, set or clear
+// the awaiting-approval badge, record a primary session id. Authenticating this
+// listener (or moving it off TCP loopback) is still owed.
 func (s *server) hookHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /hook/{event}", s.handleHook)

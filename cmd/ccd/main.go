@@ -30,6 +30,8 @@
 //
 //	MUSTER_GATEWAY_BEARER  the bearer /v1/responses accepts (muster derives it)
 //	HOOKS_TOKEN            alternatively, the token it is derived from (both: must agree)
+//	CCD_GATEWAY_UPSTREAM_BEARER  the gateway runtime's OWN credential, which ccd
+//	                       presents when it hands a gateway turn on (never its own)
 //	CLAUDE_CONFIG_DIR      the CLI's config dir; transcripts are read only under <it>/projects
 //	CCD_LISTEN             gateway address        (default :18789)
 //	CCD_HOOK_LISTEN        hook address, loopback (default 127.0.0.1:18790)
@@ -212,7 +214,13 @@ func serve() error {
 		srv.blocked = newBlockedReporter(base, tok)
 	}
 	if up := os.Getenv("CCD_GATEWAY_UPSTREAM"); up != "" {
-		if srv.gateway, err = newGatewayProxy(up); err != nil {
+		// A missing or reused runtime credential refuses gateway turns only;
+		// failing the process would take the Claude Code sessions down with it.
+		gwBearer := os.Getenv(envGatewayUpstreamBearer)
+		if why := gatewayBearerProblem(gwBearer, bearer); why != "" {
+			log.Printf("ccd: gateway turns refused: %s", why)
+			srv.gatewayOff = why
+		} else if srv.gateway, err = newGatewayProxy(up, gwBearer); err != nil {
 			return err
 		}
 	}

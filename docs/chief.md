@@ -97,10 +97,14 @@ runtime and model never change; open a new session to use another.
   `CCD_MAX_SESSIONS` (3) such CLIs run at once.
 - `gateway` (the gateway runtime's image, built exactly as a `gateway`-kind
   agent's): serves on **loopback** port 18791 only. `ccd` hands it a
-  `gateway` session's turn after checking the bearer. Its own memory budget
-  (512Mi request, 1536Mi limit), its own Secret (OpenRouter key and gateway
-  credential) — the Claude Code container never holds those, nor it the Claude
-  token. Its state lives in its own container, so a pod restart starts its
+  `gateway` session's turn after checking muster's bearer, and presents the
+  runtime's own credential instead. Its own memory budget
+  (512Mi request, 1536Mi limit), its own Secret (OpenRouter key and a gateway
+  credential of its own, derived separately from the chief's) — the Claude Code
+  container never holds the OpenRouter key, and the runtime holds neither the
+  Claude token nor the chief's hooks token or anything `ccd` accepts. It shares
+  `ccd`'s loopback, so a prompt-injected gateway session must not be able to
+  drive `ccd`. Its state lives in its own container, so a pod restart starts its
   conversations afresh (muster keeps the transcript).
 
 The operator's install script (`MUSTER_AGENT_RUNTIME_INSTALL`) must start the
@@ -131,7 +135,10 @@ readiness gates the pod's.
 `MUSTER_CHIEF_SESSION_RUNTIMES`
 naming `gateway` on a deployment with the `claude-code` kind needs that bundle
 configured (it refuses to boot otherwise). A running chief gains the sidecar on
-its next **Stop → Start** (Start re-applies its spec).
+its next **Stop → Start** (Start re-applies its spec). The same goes for the
+runtime's own credential: a chief started before it existed gets
+`gateway` turns refused (`not_ready`, naming Stop → Start) once `ccd` is
+updated, until it is restarted that way. Claude Code sessions keep working.
 
 A `gateway` session's turn carries the chief's instructions for function tools,
 since that runtime has no standing file of the chief's.

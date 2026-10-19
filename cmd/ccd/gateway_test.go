@@ -49,6 +49,10 @@ func (f *fakeGatewayRuntime) count() int {
 	return len(f.seen)
 }
 
+// fixtureRuntimeCredential is the gateway runtime's OWN credential in these
+// tests: what ccd presents to it (CCD_GATEWAY_UPSTREAM_BEARER), never ccd's.
+const fixtureRuntimeCredential = "fixture-gateway-runtime-own-credential-7c2e"
+
 // gatewayRig is a ccd (no CLI behind it) with a gateway runtime beside it.
 func gatewayRig(t *testing.T) (*fakeGatewayRuntime, *httptest.Server) {
 	t.Helper()
@@ -57,7 +61,7 @@ func gatewayRig(t *testing.T) (*fakeGatewayRuntime, *httptest.Server) {
 	t.Cleanup(up.Close)
 	bearer, _ := resolveBearer(knownHooksToken, "")
 	srv := newServer(serverConfig{Bearer: bearer, ConfigDir: t.TempDir()}, nil, newAuthTracker())
-	p, err := newGatewayProxy(up.URL)
+	p, err := newGatewayProxy(up.URL, fixtureRuntimeCredential)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,8 +77,8 @@ func gatewayRoute(model string) context.Context {
 }
 
 // TestAGatewayTurnIsHandedToTheRuntimeBesideCcd: through muster's own client, a
-// gateway-runtime turn WITH TOOLS reaches the runtime beside ccd — the bearer it
-// arrived with, the session key, the model override and the tools intact,
+// gateway-runtime turn WITH TOOLS reaches the runtime beside ccd — under the
+// runtime's OWN credential, never the bearer it arrived with (ccd's) — the session key, the model override and the tools intact,
 // ccd's own headers dropped — and its answer comes back. ccd's CLI is never
 // touched (this ccd has none).
 func TestAGatewayTurnIsHandedToTheRuntimeBesideCcd(t *testing.T) {
@@ -90,8 +94,11 @@ func TestAGatewayTurnIsHandedToTheRuntimeBesideCcd(t *testing.T) {
 	}
 	r, body := rt.seen[0], rt.body[0]
 	bearer, _ := resolveBearer(knownHooksToken, "")
+	if got := r.Header.Values("Authorization"); len(got) != 1 || strings.Contains(got[0], bearer) {
+		t.Errorf("the runtime got Authorization %q; ccd's bearer must stop at ccd", got)
+	}
 	for name, want := range map[string]string{
-		"Authorization": "Bearer " + bearer, "X-Openclaw-Session-Key": "agent:chief:webchat:7",
+		"Authorization": "Bearer " + fixtureRuntimeCredential, "X-Openclaw-Session-Key": "agent:chief:webchat:7",
 		agents.HeaderGatewayModel: "openrouter/vendor-x/model-y", agents.HeaderRuntime: "",
 	} {
 		if got := r.Header.Get(name); got != want {
@@ -242,7 +249,7 @@ func TestAGatewayTurnIsNotTornWhenTheRuntimeAnswersBeforeTheBodyEnds(t *testing.
 	t.Cleanup(up.Close)
 	bearer, _ := resolveBearer(knownHooksToken, "")
 	srv := newServer(serverConfig{Bearer: bearer, ConfigDir: t.TempDir()}, nil, newAuthTracker())
-	p, err := newGatewayProxy(up.URL)
+	p, err := newGatewayProxy(up.URL, fixtureRuntimeCredential)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,13 +319,13 @@ func TestTheChatCompletionsDoorIsTheGatewaysAlone(t *testing.T) {
 // TestTheGatewayUpstreamIsLoopbackOnly.
 func TestTheGatewayUpstreamIsLoopbackOnly(t *testing.T) {
 	for _, ok := range []string{"http://127.0.0.1:18791", "http://localhost:18791/", "http://[::1]:18791"} {
-		if _, err := newGatewayProxy(ok); err != nil {
+		if _, err := newGatewayProxy(ok, fixtureRuntimeCredential); err != nil {
 			t.Errorf("%s: %v", ok, err)
 		}
 	}
 	for _, bad := range []string{"http://198.51.100.7:18791", "http://gateway.example.test:18791", "https://127.0.0.1:18791",
 		"127.0.0.1:18791", "http://127.0.0.1:18791/v1", ""} {
-		if _, err := newGatewayProxy(bad); err == nil {
+		if _, err := newGatewayProxy(bad, fixtureRuntimeCredential); err == nil {
 			t.Errorf("%q was accepted", bad)
 		}
 	}

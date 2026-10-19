@@ -1,6 +1,8 @@
 package agentspec
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -22,10 +24,13 @@ import (
 //
 // 🔴 THE SIDECAR IS BUILT BY THE GATEWAY KIND'S OWN Build, NOT BY A SECOND COPY
 // OF IT. Its image, its command (the operator's install script), its runtime
-// configuration files, its derived gateway credential, its OpenRouter key and its
-// MUSTER_CONFIG model are exactly what a gateway-kind agent with this row's
-// identity would get; only what a SIDECAR cannot have is changed:
+// configuration files, its OpenRouter key and its MUSTER_CONFIG model are exactly
+// what a gateway-kind agent with this row's identity would get; only what a
+// SIDECAR cannot have is changed:
 //
+//   - its token is its OWN (sidecarHooksToken), not the row's, and so is the
+//     gateway credential derived from it: it shares ccd's loopback, so it must
+//     hold nothing ccd accepts (see below);
 //   - no workspace, repository, seed files or Init (it has no volume and runs no
 //     init container) — Build is asked for none, and a non-empty Init is refused;
 //   - WorkingDir is cleared: Build's is the gateway kind's workspace, which a
@@ -59,7 +64,92 @@ const (
 	GatewaySidecarHome = "/home/node"
 	// EnvCCDGatewayUpstream tells ccd where the sidecar is.
 	EnvCCDGatewayUpstream = "CCD_GATEWAY_UPSTREAM"
+	// EnvCCDGatewayUpstreamBearer is the credential ccd presents to the sidecar
+	// when it hands a gateway turn on: the sidecar's OWN gateway credential
+	// (its [EnvGatewayBearer]), never ccd's. A SECRET, in the instance's Secrets.
+	EnvCCDGatewayUpstreamBearer = "CCD_GATEWAY_UPSTREAM_BEARER"
 )
+
+// 🔴 THE SIDECAR HOLDS NO CREDENTIAL ccd ACCEPTS, BECAUSE IT SHARES ccd'S
+// LOOPBACK. Containers in one pod share a network namespace, so anything the
+// gateway runtime can be talked into doing — a tool call or a fetch, steered by
+// model output that untrusted content influences — can reach ccd on 127.0.0.1.
+// ccd's network port accepts one bearer (sha256("gw-" + hooks token), or the
+// same value as MUSTER_GATEWAY_BEARER), and a holder of it drives the Claude
+// Code chief: its turns, its tools, its account. Until this was fixed the
+// sidecar was built from the chief's own row and so held exactly that: the raw
+// hooks token under two names and the derived bearer.
+//
+// So the sidecar is built from a token of its OWN, [sidecarHooksToken]: a
+// one-way, domain-separated derivation of the chief's, from which neither the
+// chief's token nor ccd's bearer can be computed. The gateway kind's own Build
+// then derives the sidecar's gateway credential from it as it would for any
+// gateway agent, and ccd is handed that credential
+// ([EnvCCDGatewayUpstreamBearer]) to present when it hands a turn on. muster
+// still authenticates to ccd with ccd's bearer; ccd checks it, then swaps it
+// for the sidecar's (cmd/ccd/gateway.go). checkSidecarIsolation refuses a build
+// in which any value ccd accepts, or any of the instance's own secrets, reaches
+// the sidecar anyway.
+//
+// ⚠ THE SIDECAR ALSO NO LONGER HOLDS [EnvToken]: under that name the value is
+// muster's API identity for the agent, and the sidecar's token is not one. A
+// gateway session's tools are function tools muster runs, so the runtime never
+// called muster with it.
+
+// sidecarTokenDomain separates the sidecar's token from every other use of the
+// chief's hooks token.
+const sidecarTokenDomain = "muster/chief-gateway-sidecar/v1\x00"
+
+// sidecarHooksToken is the gateway sidecar's own token, derived from the
+// chief's: sha256 over a domain prefix, lower-case hex. One-way, so the sidecar
+// cannot recover the chief's token (and from it ccd's bearer).
+func sidecarHooksToken(hooksToken string) string {
+	sum := sha256.Sum256([]byte(sidecarTokenDomain + hooksToken))
+	return hex.EncodeToString(sum[:])
+}
+
+// checkSidecarIsolation refuses a spec whose sidecar holds, anywhere in its
+// environment, confidential environment, files or command, a value of the
+// instance's own Secrets (the hooks token ccd derives its bearer from, the
+// Claude token) or ccd's bearer itself — except [EnvCCDGatewayUpstreamBearer],
+// which IS the sidecar's own credential.
+func checkSidecarIsolation(spec provision.Spec, ccdBearer string) error {
+	sc := spec.Sidecar
+	if sc == nil {
+		return nil
+	}
+	forbidden := map[string]string{"ccd's bearer": ccdBearer}
+	for _, e := range spec.Secrets {
+		if e.Name != EnvCCDGatewayUpstreamBearer {
+			forbidden["the instance's "+e.Name] = e.Value
+		}
+	}
+	places := map[string]string{
+		"command": strings.Join(append(append([]string{}, sc.Runtime.Command...), sc.Runtime.Args...), " "),
+	}
+	for _, e := range sc.Env {
+		places["env "+e.Name] = e.Value
+	}
+	for _, e := range sc.Secrets {
+		places["secret "+e.Name] = e.Value
+	}
+	for _, f := range sc.Files {
+		places["file "+f.Path] = string(f.Content)
+	}
+	for what, v := range forbidden {
+		if v == "" {
+			continue
+		}
+		for where, got := range places {
+			if strings.Contains(got, v) {
+				// Names only, never the value.
+				return fmt.Errorf("agentspec: the gateway runtime beside agent %q would hold %s in its %s; it "+
+					"shares ccd's loopback, so it must hold nothing ccd accepts", spec.Ref.Name, what, where)
+			}
+		}
+	}
+	return nil
+}
 
 // GatewaySidecarRestartSeconds is how long the sidecar's supervisor waits
 // before running the runtime again after it exits (gatewaySidecarCommand).
@@ -92,8 +182,12 @@ func buildGatewaySidecar(a agents.Agent, cfg Config) (*provision.Sidecar, error)
 			"gateway in MUSTER_CHIEF_SESSION_RUNTIMES", a.Name, GatewaySidecarPortEnv, DefaultGatewayPort,
 			GatewaySidecarPortEnv)
 	}
+	if a.HooksToken == "" {
+		return nil, fmt.Errorf("agentspec: agent %q has no hooks token to derive its gateway runtime's own from", a.Name)
+	}
 	ga := a
 	ga.Kind, ga.CCAccount, ga.Repo, ga.RepoBranch = agents.KindGateway, "", "", ""
+	ga.HooksToken = sidecarHooksToken(a.HooksToken)
 	gcfg := cfg
 	gcfg.WorkspacePersist = false
 	gw, err := Build(ga, gcfg, Options{})
@@ -131,11 +225,20 @@ func buildGatewaySidecar(a agents.Agent, cfg Config) (*provision.Sidecar, error)
 	rt := gw.Runtime
 	rt.WorkingDir = ""
 	rt.Command = gatewaySidecarCommand(rt.Command, GatewaySidecarRestartSeconds)
+	// Not EnvToken: under that name the value is muster's API identity, and the
+	// sidecar's token is not one. HOOKS_TOKEN stays: it is the scheme's input,
+	// which the operator's install script reads (the runtime's own hooks token).
+	secrets := make([]provision.EnvVar, 0, len(gw.Secrets))
+	for _, e := range gw.Secrets {
+		if e.Name != EnvToken {
+			secrets = append(secrets, e)
+		}
+	}
 	return &provision.Sidecar{
 		Name:      GatewaySidecarName,
 		Runtime:   rt,
 		Env:       env,
-		Secrets:   gw.Secrets,
+		Secrets:   secrets,
 		Files:     gw.Files,
 		Resources: GatewaySidecarResources,
 	}, nil

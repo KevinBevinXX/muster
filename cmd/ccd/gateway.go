@@ -17,10 +17,18 @@ import (
 // X-Muster-Runtime: gateway, and ccd hands the request, unread, to the runtime
 // beside it, streaming the answer back.
 //
-// 🔴 ccd CHECKS THE BEARER FIRST, AND THE RUNTIME CHECKS IT AGAIN. Both are
-// handed the same derived credential (MUSTER_GATEWAY_BEARER), so a request ccd
-// forwards carries the Authorization it arrived with, and a request that did not
-// pass ccd's check never reaches the runtime at all.
+// 🔴 ccd AUTHENTICATES muster, THEN PRESENTS THE RUNTIME'S OWN CREDENTIAL. The
+// runtime shares ccd's loopback, so it must hold nothing ccd accepts: anything it
+// can be talked into doing (a tool call, a fetch steered by untrusted content)
+// can reach 127.0.0.1:18789. So muster's request is checked against ccd's bearer
+// (the server's credential), and the Authorization it carried is REPLACED with
+// the runtime's own (CCD_GATEWAY_UPSTREAM_BEARER, which muster derives
+// separately; agentspec/chief_sidecar.go). ccd's bearer never reaches the
+// runtime, and the runtime's credential is refused on every ccd route.
+//
+// A pod whose spec predates this hands ccd no runtime credential; ccd then
+// refuses gateway turns, naming the fix (Stop → Start the agent), rather than
+// forwarding its own bearer, and Claude Code turns are unaffected.
 //
 // The headers that only ccd reads (X-Muster-*) are dropped on the way; the
 // session key and the model override (the runtime's own headers) pass through,
@@ -30,12 +38,34 @@ import (
 const (
 	headerRuntime  = "X-Muster-Runtime"
 	runtimeGateway = "gateway"
+
+	// envGatewayUpstreamBearer is agentspec.EnvCCDGatewayUpstreamBearer.
+	envGatewayUpstreamBearer = "CCD_GATEWAY_UPSTREAM_BEARER"
 )
+
+// gatewayBearerProblem says why upstream cannot be the credential ccd presents
+// to the runtime beside it, given ccd's own bearer; "" when it can.
+func gatewayBearerProblem(upstream, own string) string {
+	switch {
+	case upstream == "":
+		return envGatewayUpstreamBearer + " is unset, so ccd has no credential of the gateway runtime's own to " +
+			"present (this pod's spec predates it): Stop → Start the agent"
+	case upstream == own:
+		return envGatewayUpstreamBearer + " equals ccd's own bearer, which would let the gateway runtime beside " +
+			"ccd drive ccd: the runtime's credential must be its own"
+	}
+	return ""
+}
 
 // newGatewayProxy builds the hand-off to upstream, which must be a loopback
 // http URL: the runtime is never meant to be reachable any other way, and a
-// non-loopback upstream would send a bearer-carrying request off the pod.
-func newGatewayProxy(upstream string) (*httputil.ReverseProxy, error) {
+// non-loopback upstream would send a bearer-carrying request off the pod. Every
+// request it hands on carries `Authorization: Bearer <bearer>` — the runtime's
+// own credential — and never the one it arrived with.
+func newGatewayProxy(upstream, bearer string) (*httputil.ReverseProxy, error) {
+	if bearer == "" {
+		return nil, fmt.Errorf("ccd: the gateway runtime beside ccd needs a credential of its own (%s)", envGatewayUpstreamBearer)
+	}
 	u, err := url.Parse(upstream)
 	if err != nil || u.Scheme != "http" || u.Host == "" || (u.Path != "" && u.Path != "/") {
 		return nil, fmt.Errorf("ccd: CCD_GATEWAY_UPSTREAM=%q is not an http://host:port URL", upstream)
@@ -51,6 +81,8 @@ func newGatewayProxy(upstream string) (*httputil.ReverseProxy, error) {
 			for _, h := range []string{headerRuntime, headerCCSession, headerCCModel} {
 				pr.Out.Header.Del(h)
 			}
+			// muster's credential (ccd's bearer) stops here.
+			pr.Out.Header.Set("Authorization", "Bearer "+bearer)
 		},
 		// The answer is an event stream: every event is passed on as it comes.
 		FlushInterval: -1,
@@ -65,15 +97,19 @@ func newGatewayProxy(upstream string) (*httputil.ReverseProxy, error) {
 // isGatewayTurn reports whether r is for the gateway runtime.
 func isGatewayTurn(r *http.Request) bool { return r.Header.Get(headerRuntime) == runtimeGateway }
 
-// handleGatewayTurn hands an authenticated request to the gateway runtime.
+// handleGatewayTurn hands a request authenticated as muster's (ccd's bearer) to
+// the gateway runtime, under the runtime's own credential.
 func (s *server) handleGatewayTurn(w http.ResponseWriter, r *http.Request) {
 	if !bearerOK(r, s.cfg.Bearer) {
 		writeFailure(w, &failure{Status: http.StatusUnauthorized, Type: failUnauthorized, Message: "missing or wrong bearer"})
 		return
 	}
 	if s.gateway == nil {
-		writeFailure(w, &failure{Status: http.StatusServiceUnavailable, Type: failNotReady,
-			Message: "this pod runs no gateway runtime beside ccd (CCD_GATEWAY_UPSTREAM is unset)"})
+		msg := "this pod runs no gateway runtime beside ccd (CCD_GATEWAY_UPSTREAM is unset)"
+		if s.gatewayOff != "" {
+			msg = "gateway turns are refused: " + s.gatewayOff
+		}
+		writeFailure(w, &failure{Status: http.StatusServiceUnavailable, Type: failNotReady, Message: msg})
 		return
 	}
 	// 🔴 FULL DUPLEX, OR THE TURN IS CUT MID-STREAM. net/http's HTTP/1 server,

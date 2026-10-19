@@ -254,6 +254,24 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	if opts.Instructions != "" {
 		spec.Files = []provision.File{{Path: ClaudeCodeInstructionsPath, Content: []byte(opts.Instructions)}}
 	}
+	if sidecar != nil {
+		// ccd presents the sidecar's OWN credential when it hands a gateway turn
+		// on, never the one muster sent it (chief_sidecar.go).
+		var own string
+		for _, e := range sidecar.Secrets {
+			if e.Name == EnvGatewayBearer {
+				own = e.Value
+			}
+		}
+		if own == "" {
+			return provision.Spec{}, fmt.Errorf("agentspec: the gateway runtime beside agent %q has no credential "+
+				"of its own (%s)", a.Name, EnvGatewayBearer)
+		}
+		spec.Secrets = append(spec.Secrets, provision.EnvVar{Name: EnvCCDGatewayUpstreamBearer, Value: own})
+		if err := checkSidecarIsolation(spec, cfg.RuntimeConfig.DeriveBearer(a.HooksToken)); err != nil {
+			return provision.Spec{}, err
+		}
+	}
 	if err := spec.Validate(); err != nil {
 		return provision.Spec{}, fmt.Errorf("agentspec: built an invalid spec for agent %q: %w", a.Name, err)
 	}

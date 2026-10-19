@@ -32,8 +32,8 @@ func envMap(env []provision.EnvVar) map[string]string {
 
 // TestAClaudeCodeChiefRunsTheGatewayRuntimeBesideCcd pins the sidecar as
 // LITERALS: the gateway kind's image, install command and runtime files; its own
-// credentials (the derived bearer, the hooks token, the OpenRouter key) and NOT
-// the Claude token; HOME and the loopback port; no working directory; and ccd
+// credentials (its OWN token and the bearer derived from it, the OpenRouter key)
+// and NOT the Claude token or the chief's hooks token; HOME and the loopback port; no working directory; and ccd
 // told where it is. The instance's own Secrets hold neither gateway credential.
 func TestAClaudeCodeChiefRunsTheGatewayRuntimeBesideCcd(t *testing.T) {
 	a, cfg := ccAgent(), sidecarConfig()
@@ -59,9 +59,18 @@ func TestAClaudeCodeChiefRunsTheGatewayRuntimeBesideCcd(t *testing.T) {
 		}
 	}
 	sec := envMap(sc.Secrets)
-	if sec["MUSTER_GATEWAY_BEARER"] != fixtureDeriveBearer(a.HooksToken) || sec["HOOKS_TOKEN"] != a.HooksToken ||
-		sec["OPENROUTER_API_KEY"] != cfg.OpenRouterAPIKey || cfg.OpenRouterAPIKey == "" {
+	// The sidecar's OWN token: sha256("muster/chief-gateway-sidecar/v1\x00" +
+	// the fixture's token), computed outside Go with sha256sum. Never the chief's.
+	const sidecarToken = "588121da36f719bd9da276c4aaba848d5f73b4e6d5ea83d42204d5522c8acc21"
+	if a.HooksToken != "fixture-per-agent-token-9f31c7" {
+		t.Fatalf("the fixture's token moved (%q); recompute sidecarToken", a.HooksToken)
+	}
+	if sec["MUSTER_GATEWAY_BEARER"] != fixtureDeriveBearer(sidecarToken) || sec["HOOKS_TOKEN"] != sidecarToken ||
+		sec["OPENROUTER_API_KEY"] != cfg.OpenRouterAPIKey || cfg.OpenRouterAPIKey == "" || len(sec) != 3 {
 		t.Errorf("sidecar secrets %v", names(sc.Secrets))
+	}
+	if envMap(spec.Secrets)["CCD_GATEWAY_UPSTREAM_BEARER"] != fixtureDeriveBearer(sidecarToken) {
+		t.Errorf("ccd is not handed the sidecar's credential to forward with: %v", names(spec.Secrets))
 	}
 	if _, ok := sec[EnvClaudeOAuthToken]; ok {
 		t.Error("the sidecar holds the Claude token")

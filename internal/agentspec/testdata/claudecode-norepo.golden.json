@@ -36,6 +36,10 @@
       {
         "Name": "CLAUDE_CODE_OAUTH_TOKEN",
         "Value": "«redacted in the golden; see goldenView»"
+      },
+      {
+        "Name": "CCD_GATEWAY_UPSTREAM_BEARER",
+        "Value": "«redacted in the golden; see goldenView»"
       }
     ],
     "Files": [
@@ -142,16 +146,12 @@
       ],
       "Secrets": [
         {
-          "Name": "MUSTER_HOOK_TOKEN",
-          "Value": "fixture-per-agent-token-9f31c7"
-        },
-        {
           "Name": "HOOKS_TOKEN",
-          "Value": "fixture-per-agent-token-9f31c7"
+          "Value": "588121da36f719bd9da276c4aaba848d5f73b4e6d5ea83d42204d5522c8acc21"
         },
         {
           "Name": "MUSTER_GATEWAY_BEARER",
-          "Value": "fixture-derived-bearer\u003cfixture-per-agent-token-9f31c7\u003e"
+          "Value": "fixture-derived-bearer\u003c588121da36f719bd9da276c4aaba848d5f73b4e6d5ea83d42204d5522c8acc21\u003e"
         },
         {
           "Name": "OPENROUTER_API_KEY",
