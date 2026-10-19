@@ -395,6 +395,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if gw != nil {
 		ext.Gateway = gw
 	}
+	// The runtimes a chief session may be started on (MUSTER_CHIEF_SESSION_RUNTIMES;
+	// internal/api/session_runtime.go). Empty: the picker is not drawn.
+	ext.SessionRuntimes = cfg.ChiefSessionRuntimes
 	ext.SessionLiveness = buildSessionLiveness(cfg, port, logger)
 	// 🔴 THE ZERO POLICY IS PRODUCTION'S. Only a binary built with the e2e tag
 	// sets this hook (e2econnect.go), so a deployable binary cannot be configured
@@ -1104,6 +1107,13 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	}
 	if len(a.cfg.ChiefDispatchOwners) > 0 && (ext.TaskRouting == nil) {
 		l.Printf("chief dispatch: INERT — %s is set but task routing is off (%s)", envChiefDispatchOwners, envTaskRouting)
+	}
+	if rts := ext.SessionRuntimes; len(rts) > 0 {
+		l.Printf("chief session runtimes: ON (%s=%s) — a chief chat session may be started on %s, with a model of its own",
+			envChiefSessionRuntimes, strings.Join(rts, ","), strings.Join(rts, " or "))
+	} else {
+		l.Printf("chief session runtimes: OFF — %s is unset, so every chief session is on the chief's own runtime and no picker is drawn",
+			envChiefSessionRuntimes)
 	}
 	switch nss := a.cfg.PluginTaskNamespaces; {
 	case len(nss) > 0 && ext.Plugins != nil:

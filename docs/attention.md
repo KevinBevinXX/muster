@@ -98,8 +98,8 @@ called by name):
 | tool | does |
 |---|---|
 | `attention_list` | The whole queue, as the view shows it, newest first: each item's `text` (the question; what a session waits on; a draft's inbound message), `detail` (a session's last words; the draft) and `focus`. Read-only: only the operator answers an ask. |
-| `session_transcript {subject, max_entries?}` | The recent conversation of one of the owner's sessions (`agent:<id>` or `mirror:<claude session id>`, as `agents_list` returns them): oldest first, at most 200 entries, each at most 2000 characters, 48 KiB in all; tool calls by name, tool output left out. |
-| `agents_list` | (Existing.) Now also carries a mirrored session's `host`. |
+| `session_transcript {subject, max_entries?}` | The recent conversation of one of the owner's sessions (`agent:<id>` or `mirror:<claude session id>`, as `fleet_list` returns them): oldest first, at most 200 entries, each at most 2000 characters, 48 KiB in all; tool calls by name, tool output left out. |
+| `fleet_list` | (Existing.) Now also carries a mirrored session's `host`. |
 
 A long `attention_wait` keeps its connection alive: after 15 seconds the MCP
 response's headers are sent and a newline follows every 15 seconds until the

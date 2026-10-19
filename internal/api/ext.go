@@ -230,6 +230,12 @@ type Extensions struct {
 	// sessions' MCP door (mirror_mcp.go) — *mirror.PGStore, the same table
 	// /mirror/connect reads. nil: POST /mirror/mcp answers 404.
 	MirrorTokens MirrorTokenAuth
+
+	// SessionRuntimes is MUSTER_CHIEF_SESSION_RUNTIMES: the runtimes a chief
+	// chat session may be started on besides its own kind (session_runtime.go).
+	// Empty is OFF, the default: no picker is drawn and POST
+	// /agents/{id}/sessions refuses a runtime.
+	SessionRuntimes []string
 }
 
 // MirrorTokenAuth resolves a presented mirror token to its row (ErrBadToken

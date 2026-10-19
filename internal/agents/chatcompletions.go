@@ -95,6 +95,7 @@ func ChatStream(ctx context.Context, client *http.Client, url, token, sessionKey
 	if sessionKey != "" {
 		req.Header.Set(sessionKeyHeader, sessionKey)
 	}
+	applyTurnRoute(req)
 
 	resp, err := client.Do(req)
 	if err != nil {

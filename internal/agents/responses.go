@@ -304,6 +304,7 @@ func streamResponses(ctx context.Context, client *http.Client, url, token, sessi
 	if sessionKey != "" {
 		req.Header.Set(sessionKeyHeader, sessionKey)
 	}
+	applyTurnRoute(req)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request: %w", err)

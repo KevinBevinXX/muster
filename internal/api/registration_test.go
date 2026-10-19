@@ -98,9 +98,10 @@ func fullyWiredServer(t *testing.T) *Server {
 		MirrorTokens:    stubMirrorTokens{},
 		Routing:         &Routing{},
 		// NON-ZERO on purpose: the zero TaskRouting offers no task_dispatch.
-		TaskRouting:   &TaskRouting{DispatchOwners: map[int64]bool{1: true}},
-		ChiefDispatch: stubChiefDispatch{},
-		SendQueue:     stubSendQueue{},
+		TaskRouting:     &TaskRouting{DispatchOwners: map[int64]bool{1: true}},
+		ChiefDispatch:   stubChiefDispatch{},
+		SessionRuntimes: []string{"claude-code", "gateway"},
+		SendQueue:       stubSendQueue{},
 		// NON-ZERO on purpose: the zero value is the default.
 		SendQueueIdle: time.Second,
 		PluginGateway: stubPluginGateway{},

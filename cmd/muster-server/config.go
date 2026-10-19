@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -135,6 +136,13 @@ const (
 	// agents. Non-empty (with task routing on) is what offers the chief
 	// task_dispatch, for the listed owners only; empty, it is not offered.
 	envChiefDispatchOwners = "MUSTER_CHIEF_DISPATCH_OWNERS"
+	// CHIEF SESSION RUNTIMES (internal/api/session_runtime.go): the runtimes a
+	// chief chat session may be started on, comma-separated — claude-code (a CLI
+	// of its own in ccd, with a chosen Claude model; needs a claude-code chief on
+	// a ccd that runs one CLI per session) and gateway (an OpenRouter model, on
+	// the gateway runtime — in a claude-code chief, the one beside ccd). Unset is
+	// OFF: no picker, and a session is the chief's own kind as before.
+	envChiefSessionRuntimes = "MUSTER_CHIEF_SESSION_RUNTIMES"
 	// How long a sign-in stays fresh enough to TYPE into a mirrored session
 	// (internal/stepup): a Go duration, 12h when unset, refused outside
 	// 1m–24h. Freshness is per browser session, never per user.
@@ -460,6 +468,9 @@ type config struct {
 	TaskRouting            bool
 	ChiefDispatchOwnersRaw string
 	ChiefDispatchOwners    map[int64]bool
+	// ChiefSessionRuntimes is MUSTER_CHIEF_SESSION_RUNTIMES, split on commas
+	// (validateSessionRuntimes refuses an unknown or repeated entry).
+	ChiefSessionRuntimes []string
 	// StepUpWindow is internal/stepup's freshness window (MUSTER_STEPUP_WINDOW;
 	// stepup.DefaultWindow when unset). loadConfig refuses an out-of-bounds one.
 	StepUpWindow time.Duration
@@ -1026,6 +1037,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, fmt.Errorf("invalid %s: %v (want user ids, comma-separated)", envChiefDispatchOwners, err)
 	}
 	c.ChiefDispatchOwners = owners
+	c.ChiefSessionRuntimes = splitList(getenv(envChiefSessionRuntimes))
 
 	if v := strings.TrimSpace(getenv(envGitHubEncKey)); v != "" {
 		key, err := decodeEncryptionKey(v)
@@ -1487,6 +1499,9 @@ func (c config) validateProvisioner() error {
 	if err := c.validateKinds(); err != nil {
 		return err
 	}
+	if err := c.validateSessionRuntimes(); err != nil {
+		return err
+	}
 
 	if named == provisionerNone {
 		// Nothing else is read in this mode, so nothing else is refused. An
@@ -1528,6 +1543,27 @@ func (c config) validateProvisioner() error {
 // 200: an unknown kind, an image that does not pin a version, an account list
 // with no tokens behind it, an empty pool. And the armed-switch shape: claude-code
 // settings with the kind not enabled are refused rather than ignored.
+// validateSessionRuntimes refuses a MUSTER_CHIEF_SESSION_RUNTIMES entry that is
+// not a session runtime or is listed twice, and claude-code while the
+// claude-code kind is off (no chief could run such a session).
+func (c config) validateSessionRuntimes() error {
+	seen := map[string]bool{}
+	for _, rt := range c.ChiefSessionRuntimes {
+		if !slices.Contains(agents.SessionRuntimes, rt) {
+			return fmt.Errorf("invalid %s entry %q: want a comma list of %s", envChiefSessionRuntimes, rt, strings.Join(agents.SessionRuntimes, ", "))
+		}
+		if seen[rt] {
+			return fmt.Errorf("invalid %s: %q is listed twice", envChiefSessionRuntimes, rt)
+		}
+		seen[rt] = true
+	}
+	if seen[agents.SessionRuntimeClaudeCode] && !c.claudeCodeEnabled() {
+		return fmt.Errorf("invalid %s: it names %s, but %s does not enable that kind, so no chief could run such a session",
+			envChiefSessionRuntimes, agents.SessionRuntimeClaudeCode, envAgentKinds)
+	}
+	return nil
+}
+
 func (c config) validateKinds() error {
 	seen := map[string]bool{}
 	for _, k := range c.agentKinds() {

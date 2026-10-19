@@ -217,6 +217,13 @@ type ChatSession struct {
 	// ReadAt is when the human last opened this session. An assistant message
 	// created after ReadAt counts as unread (the notification panel + FAB badge).
 	ReadAt time.Time `json:"readAt"`
+	// Runtime and Model are fixed when the session is created (migration 0030,
+	// session_runtime.go): Runtime "" is a LEGACY session, on the agent's own
+	// kind. IsDefault marks the one session plugin deliveries and `chief ask`
+	// go to.
+	Runtime   string `json:"runtime"`
+	Model     string `json:"model"`
+	IsDefault bool   `json:"isDefault"`
 }
 
 // SessionMatch is one SearchSessions hit: the session plus one excerpt around the

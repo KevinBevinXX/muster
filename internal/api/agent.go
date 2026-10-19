@@ -545,6 +545,9 @@ func (s *Server) AgentToolDispatch(ctx context.Context, a agents.Agent) agents.T
 
 func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, arguments string) string {
 	arg := func(v any) error { return json.Unmarshal([]byte(orEmptyJSON(arguments)), v) }
+	// A retired name runs as the tool it became — BEFORE the chief-only check, so
+	// the alias cannot step around it (tool_names.go).
+	name = canonicalToolName(name)
 	// 🔴 THE CHIEF-ONLY RE-CHECK. The listing already leaves a chief-only tool out
 	// for any other agent, but a gateway runtime can call a name it was not
 	// offered, and this closure runs whatever it is handed — so the decision is
@@ -617,8 +620,8 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return s.toolTaskCreateGated(ctx, a, arguments)
 	case replyDraftToolName:
 		return s.toolReplyDraft(ctx, a, arguments)
-	case agentsListToolName:
-		return s.toolAgentsList(ctx)
+	case fleetListToolName:
+		return s.toolFleetList(ctx)
 	case focusSearchToolName:
 		return s.toolFocusSearch(ctx, arguments)
 	case focusRefreshToolName:

@@ -633,7 +633,15 @@ func (s *Server) handleAPIAgentSendMessage(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	sess, err := s.ext.Agents.LatestOrCreateSession(ctx, a.ID, a.Name)
+	// The chief's messages go to its DEFAULT session (session_runtime.go) — the
+	// one plugin deliveries go to — and every other agent's to its latest, as
+	// before.
+	var sess agents.ChatSession
+	if s.isChiefAgent(ctx, a) {
+		sess, err = s.defaultSession(ctx, a)
+	} else {
+		sess, err = s.ext.Agents.LatestOrCreateSession(ctx, a.ID, a.Name)
+	}
 	if err != nil {
 		s.logger.Printf("agents: api message session for %q: %v", name, err)
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not open a chat session for that agent"})
@@ -642,7 +650,7 @@ func (s *Server) handleAPIAgentSendMessage(w http.ResponseWriter, r *http.Reques
 	_, _ = s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{
 		AgentID: a.ID, SessionID: sess.ID, Role: "user", Content: body.Message,
 	})
-	reply, err := s.ext.Gateway.Chat(ctx, a, sess.SessionKey, body.Message, nil)
+	reply, err := s.ext.Gateway.Chat(withSessionRoute(ctx, a, sess), a, sess.SessionKey, body.Message, nil)
 	if err != nil {
 		s.writeJSON(w, http.StatusBadGateway, map[string]any{"error": "agent did not respond: " + err.Error()})
 		return

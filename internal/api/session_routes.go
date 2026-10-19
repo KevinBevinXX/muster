@@ -97,7 +97,7 @@ func (s *Server) routeTimeout() time.Duration {
 func routeToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: routeToSessionToolName,
 		Description: "Hand a plugin message delivered to you to one of your owner's MIRRORED Claude Code sessions to " +
-			"answer (find it with focus_search or agents_list; its id is \"mirror:<claude session id>\"). muster puts the " +
+			"answer (find it with focus_search or fleet_list; its id is \"mirror:<claude session id>\"). muster puts the " +
 			"STORED message into that session through its send queue, fenced as untrusted — you do not write what it " +
 			"receives. The session's answer comes back as the reply: sent at once when your owner has allowlisted the " +
 			"sender, otherwise after your owner approves it. If it does not answer within the deadline, the message comes " +
