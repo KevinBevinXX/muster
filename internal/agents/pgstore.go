@@ -222,6 +222,22 @@ func (s *PGStore) SetHooksToken(ctx context.Context, id int64, token string) err
 	return err
 }
 
+// AppendPendingNote appends text to agent id's first message while that
+// message is still owed — not kicked off, and non-empty — and reports whether
+// it did. The kickoff re-reads the note AFTER stamping kicked_off
+// (agentkickoff.deliver), so an append either lands before the stamp and rides
+// the first turn, or is refused (false) and the caller delivers another way.
+// updated_at is left alone: an append is not the agent's activity, and the
+// kickoff's dwell bound reads it.
+func (s *PGStore) AppendPendingNote(ctx context.Context, id int64, text string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE agents SET pending_note = pending_note || $2
+		WHERE id = $1 AND NOT kicked_off AND pending_note <> ''`, id, text)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 func (s *PGStore) SetKickedOff(ctx context.Context, id int64, v bool) error {
 	_, err := s.pool.Exec(ctx, `UPDATE agents SET kicked_off=$2, updated_at=now() WHERE id=$1`, id, v)
 	return err

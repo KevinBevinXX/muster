@@ -120,14 +120,49 @@ func (s *PGStore) SubmitTaskEvent(ctx context.Context, pluginID, taskID int64, i
 	if !in.NoReply {
 		return Message{}, false, invalid("a task event is no_reply")
 	}
-	m, created, err := s.submit(ctx, pluginID, in, &taskID)
+	m, created, err := s.submit(ctx, pluginID, in, &taskID, "")
 	if err != nil {
 		return Message{}, false, err
 	}
-	if m.TaskID == nil || *m.TaskID != taskID {
+	if m.TaskID == nil || *m.TaskID != taskID || m.RoutedTo != nil {
 		return Message{}, false, ErrTaskEventIDTaken
 	}
 	return m, created, nil
+}
+
+// ReserveNoticeRoute reserves a notice muster routes AROUND the chief (to the
+// agent on the task, or the attention queue) BEFORE it acts on it: one row
+// under the notice's external_id, delivered from birth, routed_to `to`.
+//
+// 🔴 THE RESERVATION IS THE DEDUPE, AND IT IS ATOMIC: submit's plugin-row lock
+// and the (plugin_id, external_id) key make exactly one of any number of
+// identical concurrent sends created; the rest get the stored row (created
+// false) and must not act. It counts against the plugin's task-event hour
+// (MaxTaskEventsPerHour), so a plugin cannot start unbounded agent turns.
+// A row under that id that is not this task's notice route is
+// ErrTaskEventIDTaken.
+func (s *PGStore) ReserveNoticeRoute(ctx context.Context, pluginID, taskID int64, in MessageIn, to string) (Message, bool, error) {
+	if taskID <= 0 || (to != "agent" && to != "attention") {
+		return Message{}, false, invalid("a notice route needs a task and a destination")
+	}
+	if !in.NoReply {
+		return Message{}, false, invalid("a notice route is no_reply")
+	}
+	m, created, err := s.submit(ctx, pluginID, in, &taskID, to)
+	if err != nil {
+		return Message{}, false, err
+	}
+	if m.TaskID == nil || *m.TaskID != taskID || m.RoutedTo == nil {
+		return Message{}, false, ErrTaskEventIDTaken
+	}
+	return m, created, nil
+}
+
+// ReleaseNoticeRoute deletes a notice route reserved by ReserveNoticeRoute
+// whose action then failed, so the plugin's resend acts again.
+func (s *PGStore) ReleaseNoticeRoute(ctx context.Context, id int64) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM plugin_messages WHERE id = $1 AND routed_to IS NOT NULL`, id)
+	return err
 }
 
 // IsTaskEvent reports whether m is a task event.

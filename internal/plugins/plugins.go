@@ -156,6 +156,10 @@ type Message struct {
 	// TaskID is set on a TASK EVENT (migration 0027, task_events.go): muster's
 	// own message handing that task to the chief. nil on every inbound message.
 	TaskID *int64 `json:"taskId,omitempty"`
+	// RoutedTo is set on a notice muster routed AROUND the chief (migration
+	// 0028, task_events.go ReserveNoticeRoute): "agent" or "attention". Such a
+	// row is delivered from birth and is never a chief event.
+	RoutedTo *string `json:"routedTo,omitempty"`
 }
 
 // Errors the API maps to status codes.

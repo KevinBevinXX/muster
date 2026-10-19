@@ -80,12 +80,9 @@ type DispatchStore interface {
 	// limit, that the chief has not acted on: not being delivered right now,
 	// and with no routing or start recorded for their task since the event.
 	UnroutedTaskEvents(ctx context.Context, limit int) ([]Message, error)
-	// NoticeRouted reports where a notice (noticeID, a task event external id)
-	// that did not go to the chief was already taken for taskID, if it was.
-	NoticeRouted(ctx context.Context, taskID int64, noticeID string) (string, bool, error)
-	// RecordNoticeRouted records that noticeID went to `to` (an
-	// ActionNoticeRouted row), so a resend does not deliver it again.
-	RecordNoticeRouted(ctx context.Context, taskID int64, noticeID, to string) error
+	// ReserveNoticeRoute / ReleaseNoticeRoute: task_events.go.
+	ReserveNoticeRoute(ctx context.Context, pluginID, taskID int64, in MessageIn, to string) (Message, bool, error)
+	ReleaseNoticeRoute(ctx context.Context, id int64) error
 }
 
 var _ DispatchStore = (*PGStore)(nil)
@@ -105,11 +102,6 @@ const pendingAgentWindow = 10 * time.Minute
 // already_dispatched while an agent is running on the task): what takes the task off
 // the attention queue's "Task to route" list once its event was delivered.
 const ActionTaskRouted = "task.chief_routed"
-
-// ActionNoticeRouted records a plugin notice muster took somewhere other than
-// the chief (a mention to the agent on the task, or to the attention queue):
-// detail {"notice_id", "to"}. It is what makes that route once per notice.
-const ActionNoticeRouted = "task.notice_routed"
 
 // ReserveChiefDispatch: see DispatchStore.
 //
@@ -236,7 +228,7 @@ func (s *PGStore) UnroutedTaskEvents(ctx context.Context, limit int) ([]Message,
 	// LIMIT and hid this owner's (audit round 1).
 	rows, err := s.pool.Query(ctx, `SELECT `+prefixed("m", messageCols)+`
 		  FROM plugin_messages m
-		 WHERE m.owner_id = $4 AND m.task_id IS NOT NULL AND m.status <> 'delivering'
+		 WHERE m.owner_id = $4 AND m.task_id IS NOT NULL AND m.routed_to IS NULL AND m.status <> 'delivering'
 		   AND NOT EXISTS (SELECT 1 FROM audit_log a
 		                    WHERE a.action IN ($1, $2) AND a.user_id = m.owner_id
 		                      AND a.object = 'note:' || m.task_id AND a.at >= m.created_at)
@@ -254,31 +246,4 @@ func (s *PGStore) UnroutedTaskEvents(ctx context.Context, limit int) ([]Message,
 		out = append(out, m)
 	}
 	return out, rows.Err()
-}
-
-// NoticeRouted: see DispatchStore. Filtered to the principal's rows in SQL,
-// as every ledger read is.
-func (s *PGStore) NoticeRouted(ctx context.Context, taskID int64, noticeID string) (string, bool, error) {
-	p, ok := authz.From(ctx)
-	if !ok || p.UserID <= 0 {
-		return "", false, errors.New("plugins: a notice lookup needs a user principal")
-	}
-	var to string
-	err := s.pool.QueryRow(ctx, `SELECT detail->>'to' FROM audit_log
-		WHERE action = $1 AND object = $2 AND user_id = $3 AND detail->>'notice_id' = $4 ORDER BY id LIMIT 1`,
-		ActionNoticeRouted, NoteObject(taskID), p.UserID, noticeID).Scan(&to)
-	switch {
-	case err == nil:
-		return to, true, nil
-	case errors.Is(err, pgx.ErrNoRows):
-		return "", false, nil
-	}
-	return "", false, err
-}
-
-// RecordNoticeRouted: see DispatchStore.
-func (s *PGStore) RecordNoticeRouted(ctx context.Context, taskID int64, noticeID, to string) error {
-	return s.inTx(ctx, func(tx pgx.Tx) error {
-		return audit(ctx, tx, ActionNoticeRouted, NoteObject(taskID), map[string]any{"notice_id": noticeID, "to": to})
-	})
 }

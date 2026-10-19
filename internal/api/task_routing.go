@@ -284,26 +284,61 @@ func renderTaskForward(n notes.Note, note, by string) string {
 	return fence.Block{Preface: pre, Marker: taskForwardMarker, Count: 1, Lines: lines}.Render(fence.NewNonce())
 }
 
-// forwardToTaskAgent stores text in target's latest conversation and, when
-// target is running and a gateway is wired, starts its turn. The ONE delivery
-// path task_forward and a mention's agent route share. It reports whether a
-// turn started; a target still starting (pending, provisioning) gets the
-// message stored and no turn — a turn handed to an agent that is not running
-// is refused by the gateway (agent_send.go).
+// pendingNoteAppender is the agents store's AppendPendingNote: a forward to an
+// agent that has not had its first turn rides that turn (agentkickoff re-reads
+// the note after its stamp).
+type pendingNoteAppender interface {
+	AppendPendingNote(ctx context.Context, id int64, text string) (bool, error)
+}
+
+// The production agents store has it; forwardToTaskAgent finds it by assertion.
+var _ pendingNoteAppender = (*agents.PGStore)(nil)
+
+// forwardReachable reports whether a forward to a can reach its model: it is
+// running (a turn), or its first turn is still owed (the forward is appended
+// to it). Anything else — starting with no first message owed, already handed
+// its first turn but not running — would only be a row nobody reads.
+func forwardReachable(a agents.Agent) bool {
+	return agentCanBeSent(a.Status) || (agentLive(a.Status) && !a.KickedOff && a.PendingNote != "")
+}
+
+// forwardToTaskAgent delivers text to target. The ONE delivery path
+// task_forward and a mention's agent route share. It reports whether a turn
+// started.
+//
+//   - Running, with a gateway, and its turn gate entered: the turn runs, and
+//     the TURN stores the user message (runEnteredTurn) — so this stores nothing
+//     itself; storing it here as well wrote every forward twice (audit round 2).
+//     startAgentTurn leaves the gate, so it is entered here, for any target the
+//     chief included (a chief bound to a task is a target like any other).
+//   - Not running, first turn still owed: appended to that first turn
+//     (AppendPendingNote), never a chat row of its own before the kickoff.
+//   - Otherwise (no gateway, the gate closed for a replacement, or the kickoff
+//     stamped in between): stored in its conversation, no turn.
 func (s *Server) forwardToTaskAgent(ctx context.Context, target agents.Agent, text string) (bool, error) {
+	if !agentCanBeSent(target.Status) {
+		if ap, ok := s.ext.Agents.(pendingNoteAppender); ok {
+			appended, err := ap.AppendPendingNote(ctx, target.ID, "\n\n"+text)
+			if err != nil {
+				return false, fmt.Errorf("the forward could not be stored: %w", err)
+			}
+			if appended {
+				return false, nil
+			}
+		}
+	}
 	session, err := s.ext.Agents.LatestOrCreateSession(ctx, target.ID, target.Name)
 	if err != nil {
 		return false, fmt.Errorf("the agent's conversation could not be opened: %w", err)
 	}
+	if turn := s.taskForwardTurn; turn != nil && agentCanBeSent(target.Status) && s.turns.enter(target.ID) {
+		turn(ctx, target, session, text)
+		return true, nil
+	}
 	if _, err := s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{AgentID: target.ID, SessionID: session.ID, Role: "user", Content: text}); err != nil {
 		return false, fmt.Errorf("the forward could not be stored: %w", err)
 	}
-	turn := s.taskForwardTurn
-	if turn == nil || !agentCanBeSent(target.Status) {
-		return false, nil
-	}
-	turn(ctx, target, session, text)
-	return true, nil
+	return false, nil
 }
 
 // toolTaskForward sends the forward to the newest running agent on the task.
@@ -594,7 +629,14 @@ func (s *Server) routeTaskNotice(r *http.Request, p plugins.Plugin, id int64, ke
 	case notice == noticeAssigned, notice == noticeUpdate && live != nil:
 		return routedChief, s.handTaskToChief(r, p, n, on, key, notice, comment)
 	case notice == noticeMentioned:
-		return s.routeMention(ctx, n, live, key, comment)
+		var reach *agents.Agent
+		for i := range on { // newest first
+			if forwardReachable(on[i]) {
+				reach = &on[i]
+				break
+			}
+		}
+		return s.routeMention(ctx, p, n, reach, key, comment)
 	}
 	return "", nil
 }
@@ -632,45 +674,89 @@ func (s *Server) handTaskToChief(r *http.Request, p plugins.Plugin, n notes.Note
 // words only — the notice itself is outside text and stays on the task.
 const mentionAttentionNote = "You were mentioned on it upstream; the notice is on the task."
 
-// routeMention takes a mention notice to the live agent on n, or to the
-// owner's attention queue when n is in progress, or nowhere ("").
-func (s *Server) routeMention(ctx context.Context, n notes.Note, live *agents.Agent, key, comment string) (string, error) {
+// routeMention takes a mention notice to target — the newest agent on n a
+// forward can reach (forwardReachable) — or, with none, to the owner's
+// attention queue when n is in progress, or nowhere ("").
+//
+// 🔴 RESERVE, THEN ACT. The notice is reserved first (ReserveNoticeRoute: one
+// row under its external_id, atomic, counted against the task-event hour), and
+// only the request that created the reservation acts; an identical send gets
+// the stored destination and acts on nothing. A failed action releases the
+// reservation, so the plugin's resend acts again (audit round 2).
+func (s *Server) routeMention(ctx context.Context, p plugins.Plugin, n notes.Note, target *agents.Agent, key, comment string) (string, error) {
 	if s.ext.ChiefDispatch == nil {
 		return "", nil
 	}
-	noticeID := plugins.TaskEventExternalID(n.ID, key+"\x00"+comment)
-	if to, done, err := s.ext.ChiefDispatch.NoticeRouted(ctx, n.ID, noticeID); err != nil || done {
-		return to, err
-	}
 	to := ""
 	switch {
-	case live != nil:
-		started, err := s.forwardToTaskAgent(ctx, *live, renderTaskForward(n, comment, forwardByMention))
-		if err != nil {
-			return "", err
-		}
-		s.logger.Printf("task routing: a mention on task %d delivered to %s (turn started: %v)", n.ID, live.Name, started)
+	case target != nil:
 		to = routedAgent
 	case n.Status == notes.StatusInProgress && s.ext.Attention != nil:
-		chief, err := s.chiefAgent(ctx)
-		if errors.Is(err, ErrNoChief) {
-			s.logger.Printf("task routing: a mention on in-progress task %d: no chief to raise the ask; filed only", n.ID)
-			return "", nil
-		}
-		if err != nil {
-			return "", err
-		}
-		if _, err := s.askOwnerAboutTask(ctx, callerOfAgent(chief).asker, n, mentionAttentionNote); err != nil {
-			return "", err
-		}
 		to = routedAttention
 	default:
 		return "", nil
 	}
-	if err := s.ext.ChiefDispatch.RecordNoticeRouted(ctx, n.ID, noticeID, to); err != nil {
-		s.logger.Printf("task routing: record the mention on task %d: %v", n.ID, err)
+	in, err := plugins.NewTaskEventIn(plugins.TaskEvent{Event: noticeMentioned, TaskID: n.ID, Key: key, Status: n.Status,
+		Title: taskLabel(n), Change: comment}, key+"\x00"+comment)
+	if err != nil {
+		return "", err
+	}
+	m, created, err := s.ext.ChiefDispatch.ReserveNoticeRoute(ctx, p.ID, n.ID, in, to)
+	switch {
+	case err == nil:
+	case errors.Is(err, plugins.ErrRateLimited), errors.Is(err, plugins.ErrQueueFull):
+		return "", errRouteRateLimited
+	default:
+		return "", err
+	}
+	if !created {
+		return *m.RoutedTo, nil
+	}
+	if err := s.actOnMention(ctx, n, target, comment); err != nil {
+		if rerr := s.ext.ChiefDispatch.ReleaseNoticeRoute(ctx, m.ID); rerr != nil {
+			s.logger.Printf("task routing: release the mention reservation %d: %v", m.ID, rerr)
+		}
+		return "", err
 	}
 	return to, nil
+}
+
+// actOnMention delivers a reserved mention: to target, or as an ask.
+func (s *Server) actOnMention(ctx context.Context, n notes.Note, target *agents.Agent, comment string) error {
+	if target != nil {
+		started, err := s.forwardToTaskAgent(ctx, *target, renderTaskForward(n, comment, forwardByMention))
+		if err != nil {
+			return err
+		}
+		s.logger.Printf("task routing: a mention on task %d delivered to %s (turn started: %v)", n.ID, target.Name, started)
+		return nil
+	}
+	_, err := s.askOwnerAboutTask(ctx, s.mentionAsker(ctx, n.OwnerID), n, mentionAttentionNote)
+	return err
+}
+
+// mentionAsker is who raises a mention's ask: the OWNER's chief, resolved
+// among the owner's own agents (an explicit owner filter, not only row-level
+// security: with RLS rolled back the list holds every owner's agents, and
+// another owner's chief must never raise this owner's ask); with no chief,
+// muster itself (operator decision, audit round 2).
+func (s *Server) mentionAsker(ctx context.Context, owner int64) attention.Asker {
+	if s.ext.Agents != nil {
+		if list, err := s.ext.Agents.List(ctx); err == nil {
+			var mine []agents.Agent
+			for _, a := range list {
+				if a.OwnerID == owner {
+					mine = append(mine, a)
+				}
+			}
+			if chief, ok := resolveChief(mine); ok {
+				return callerOfAgent(chief).asker
+			}
+		} else {
+			s.logger.Printf("task routing: list agents for the mention's asker: %v", err)
+		}
+	}
+	return attention.Asker{System: true, Label: attention.SystemAskerLabel}
 }
 
 // --- the attention queue: a task the chief has not taken ----------------------

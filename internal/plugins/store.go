@@ -125,7 +125,7 @@ func scanPlugin(row pgx.Row) (Plugin, error) {
 }
 
 const messageCols = `id, owner_id, plugin_id, external_id, sender, subject, body, received_at, created_at, status,
-	attempts, last_attempt_at, delivered_at, agent_id, no_reply, sender_verified, task_id`
+	attempts, last_attempt_at, delivered_at, agent_id, no_reply, sender_verified, task_id, routed_to`
 
 // messageDest is the scan destinations for messageCols, in its order, with the
 // status into *st. THE ONE COPY: every reader of messageCols scans through it,
@@ -133,7 +133,7 @@ const messageCols = `id, owner_id, plugin_id, external_id, sender, subject, body
 // its own copy, which a new column broke).
 func messageDest(m *Message, st *string) []any {
 	return []any{&m.ID, &m.OwnerID, &m.PluginID, &m.ExternalID, &m.Sender, &m.Subject, &m.Body, &m.ReceivedAt,
-		&m.CreatedAt, st, &m.Attempts, &m.LastAttemptAt, &m.DeliveredAt, &m.AgentID, &m.NoReply, &m.SenderVerified, &m.TaskID}
+		&m.CreatedAt, st, &m.Attempts, &m.LastAttemptAt, &m.DeliveredAt, &m.AgentID, &m.NoReply, &m.SenderVerified, &m.TaskID, &m.RoutedTo}
 }
 
 func scanMessage(row pgx.Row) (Message, error) {
@@ -272,13 +272,16 @@ func (s *PGStore) Authenticate(ctx context.Context, token string) (Plugin, error
 }
 
 func (s *PGStore) Submit(ctx context.Context, pluginID int64, in MessageIn) (Message, bool, error) {
-	return s.submit(ctx, pluginID, in, nil)
+	return s.submit(ctx, pluginID, in, nil, "")
 }
 
 // submit is Submit, and SubmitTaskEvent when taskID is set. One body, so a task
 // event is held to every rule an inbound message is: the plugin row lock, the
 // external_id idempotency, the rate caps and the field bounds.
-func (s *PGStore) submit(ctx context.Context, pluginID int64, in MessageIn, taskID *int64) (Message, bool, error) {
+// submit stores in for pluginID (once per external_id) under the caps of its
+// bucket. taskID links a task (a task event, or a notice route); routedTo, set
+// only with taskID, stores the row already delivered, routed around the chief.
+func (s *PGStore) submit(ctx context.Context, pluginID int64, in MessageIn, taskID *int64, routedTo string) (Message, bool, error) {
 	if err := in.Validate(); err != nil {
 		return Message{}, false, err
 	}
@@ -327,10 +330,17 @@ func (s *PGStore) submit(ctx context.Context, pluginID int64, in MessageIn, task
 		case queued >= maxQueued:
 			return ErrQueueFull
 		}
+		var routed any
+		if routedTo != "" {
+			routed = routedTo
+		}
 		m, err = scanMessage(tx.QueryRow(ctx, `
-			INSERT INTO plugin_messages (plugin_id, external_id, sender, subject, body, received_at, no_reply, sender_verified, task_id)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING `+messageCols,
-			pluginID, in.ExternalID, in.Sender, in.Subject, in.Body, in.ReceivedAt, in.NoReply, in.SenderVerified, taskID))
+			INSERT INTO plugin_messages (plugin_id, external_id, sender, subject, body, received_at, no_reply, sender_verified, task_id,
+			                             routed_to, status, delivered_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::text,
+			        CASE WHEN $10::text IS NULL THEN 'queued' ELSE 'delivered' END,
+			        CASE WHEN $10::text IS NULL THEN NULL ELSE now() END) RETURNING `+messageCols,
+			pluginID, in.ExternalID, in.Sender, in.Subject, in.Body, in.ReceivedAt, in.NoReply, in.SenderVerified, taskID, routed))
 		if err != nil {
 			return err
 		}

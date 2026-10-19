@@ -202,26 +202,6 @@ func TestAnotherOwnersStartedAgentDoesNotFreeTheCallersPendingSlot(t *testing.T)
 	}
 }
 
-// TestANoticeRoutedIsTheCallersWithoutRLS: another owner's notice-routed row
-// for the same task and notice does not make the caller's notice look done.
-func TestANoticeRoutedIsTheCallersWithoutRLS(t *testing.T) {
-	s, pool, dsn := pgStore(t)
-	task := pgTask(t, pool, 2)
-	if err := s.RecordNoticeRouted(session(3), task, "task-event:n1", "agent"); err != nil {
-		t.Fatal(err)
-	}
-	rlsOffForTest(t, pool, dsn, true)
-	if to, done, err := s.NoticeRouted(session(2), task, "task-event:n1"); err != nil || done {
-		t.Fatalf("owner 2's notice with RLS off: %q done=%v %v; want not routed yet", to, done, err)
-	}
-	if err := s.RecordNoticeRouted(session(2), task, "task-event:n1", "attention"); err != nil {
-		t.Fatal(err)
-	}
-	if to, done, err := s.NoticeRouted(session(2), task, "task-event:n1"); err != nil || !done || to != "attention" {
-		t.Fatalf("owner 2's own record: %q done=%v %v; want attention", to, done, err)
-	}
-}
-
 // TestAPriorStartNamesOnlyTheCallersAgent: with RLS off, the caller's prior
 // start for a task answers with the caller's agent (none recorded here), never
 // another owner's agent recorded under the same task id.

@@ -72,7 +72,7 @@ JSON. On every route:
 | `202 {"id", "status": "queued"}` | stored; delivery to your chief has started |
 | `200 {"id", "status"}` | this plugin already sent this `external_id`. The stored message is the answer, and nothing is stored or delivered again, **whatever the new body or `no_reply` says**. `status` is `queued`, `delivered` or `unconfirmed`. |
 | `400 {"error"}` | a field breaks a rule above |
-| `429 {"error"}` | 60 new messages in the last hour, or 200 not yet delivered. Retry after the `Retry-After` header. Task events ([routing a task](#routing-a-task-to-the-chief)) have their own allowance — 120 an hour, 300 undelivered — so they never count here, nor these toward them. |
+| `429 {"error"}` | 60 new messages in the last hour, or 200 not yet delivered. Retry after the `Retry-After` header. Task events ([routing a task](#routing-a-task-to-the-chief)) and the mentions muster routes have their own allowance — 120 an hour, 300 task events undelivered — so they never count here, nor these toward them. |
 
 A plugin that did not see an answer should send the same message again. A
 repeat is answered even while the plugin is rate-limited. Advance your upstream
@@ -280,16 +280,25 @@ it. The flow:
    - **`assigned`** goes to your **chief** as a task event, whether or not the
      task already existed (a task a mention filed is routed when it is later
      assigned). The chief picks attention, forward or dispatch.
-   - **`mentioned`** does **not** go through the chief. With a live agent on
-     the task, it is delivered to that agent (the newest) the way
-     `task_forward` delivers: a muster message naming the task with the notice
-     fenced as data; its turn starts if the agent is running, and is only
-     stored while the agent is still starting. Otherwise, a task `in_progress`
-     gets an ask on your attention queue naming the task, raised by your chief
-     (no chief: filed only). Otherwise it is **filed only** (`"routed":
-     false`) — a case the operator left unspecified, so this is the default.
-     A mention resent is not delivered or asked twice (a `task.notice_routed`
-     audit row).
+   - **`mentioned`** does **not** go through the chief. With an agent on the
+     task that the mention can reach, it is delivered to the newest one the
+     way `task_forward` delivers: a muster message naming the task with the
+     notice fenced as data. A running agent gets it as a turn (stored once, by
+     the turn). An agent still starting whose first message is owed gets it
+     appended to that first message, so its first turn carries it; it never
+     becomes a conversation row of its own before then. A starting agent with
+     no first message owed, or one already sent its first turn but not
+     running, is not a target. Otherwise, a task `in_progress` gets an ask on
+     your attention queue naming the task, raised by your chief — or, when
+     you have no chief, by **muster** itself. Otherwise it is **filed only**
+     (`"routed": false`) — a case the operator left unspecified, so this is
+     the default.
+     A mention muster routes is **reserved before it acts**: one row under the
+     notice's own id, delivered from birth (never handed to the chief, never
+     "Task to route"), so identical sends — concurrent ones too — act once and
+     each answers where it went; it counts against the plugin's task-event
+     hour (120), and past it the mention answers `429` and nothing starts. A
+     failed delivery releases the reservation, so a resend tries again.
    - **`update`** (a comment, a status change) goes to your chief only while
      a live agent works the task, so the chief can pass it on with
      `task_forward`; otherwise it is filed only.
