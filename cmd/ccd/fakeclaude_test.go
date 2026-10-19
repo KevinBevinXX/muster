@@ -57,7 +57,35 @@ func fakeClaude() int {
 	}
 	cfg := os.Getenv("CLAUDE_CONFIG_DIR")
 	cwd, _ := os.Getwd()
-	resume := len(os.Args) > 1 && os.Args[1] == "--continue"
+	// The flags ccd passes: --continue (the primary, before lanes), --resume
+	// <id> (the primary once recorded, a lane once its transcript exists),
+	// --session-id <id> (a lane's first start) and --model <m> (a lane's).
+	var resume bool
+	var resumeID, sessionID, model string
+	for i := 1; i < len(os.Args); i++ {
+		switch os.Args[i] {
+		case "--continue":
+			resume = true
+		case "--resume", "--session-id", "--model":
+			if i+1 >= len(os.Args) {
+				fmt.Printf("%s needs a value\r\n", os.Args[i])
+				return 1
+			}
+			v := os.Args[i+1]
+			switch os.Args[i] {
+			case "--resume":
+				resumeID = v
+			case "--session-id":
+				sessionID = v
+			default:
+				model = v
+			}
+			i++
+		default:
+			fmt.Printf("unknown argument %q\r\n", os.Args[i])
+			return 1
+		}
+	}
 	st := map[string]any{}
 	if b, err := os.ReadFile(filepath.Join(cfg, ".claude.json")); err == nil {
 		_ = json.Unmarshal(b, &st)
@@ -83,6 +111,18 @@ func fakeClaude() int {
 	// ccd's own copy (hasPriorSession) so a wrong copy cannot agree with itself.
 	projDir := filepath.Join(cfg, "projects", regexp.MustCompile(`[^A-Za-z0-9]`).ReplaceAllString(cwd, "-"))
 	sid, source := randomID(), "startup"
+	if sessionID != "" {
+		sid = sessionID
+	}
+	if resumeID != "" {
+		if _, err := os.Stat(filepath.Join(projDir, resumeID+".jsonl")); err != nil {
+			fmt.Printf("No conversation found with session ID: %s\r\n", resumeID)
+			return 1
+		}
+		sid, source = resumeID, "resume"
+	}
+	appendFile(filepath.Join(cfg, "fake-argv.log"), fmt.Sprintf("sid=%s source=%s model=%s lane=%s args=%q\n",
+		sid, source, model, os.Getenv("CCD_LANE"), os.Args[1:]))
 	if resume {
 		newest, newestAt := "", time.Time{}
 		entries, _ := os.ReadDir(projDir)
@@ -181,8 +221,15 @@ func fakeClaude() int {
 			fmt.Print("\r\n" + msg + "\r\n> ")
 			return
 		}
+		if strings.Contains(prompt, "SLOW") {
+			time.Sleep(1500 * time.Millisecond)
+		}
 		sum := sha256.Sum256([]byte(prompt))
 		first := fmt.Sprintf("received %d bytes", len(prompt))
+		if model != "" {
+			// A lane's CLI names its model, so a reply proves which CLI answered.
+			first += " on " + model
+		}
 		second := "sha256 " + hex.EncodeToString(sum[:])
 		assistant(map[string]any{"type": "thinking", "thinking": "PRIVATE REASONING", "signature": "s"}, nil)
 		assistant(map[string]any{"type": "text", "text": first}, nil)

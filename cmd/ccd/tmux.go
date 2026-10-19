@@ -316,3 +316,14 @@ func (t tmuxTerminal) Alive(ctx context.Context, ref paneRef) error {
 	_, err := t.state(ctx, ref)
 	return err
 }
+
+// KillSession ends the session named by target (a lane's, lanes.go) and every
+// process in it. A session that is already gone is not an error.
+func (t tmuxTerminal) KillSession(ctx context.Context) error {
+	// "=" makes the target an EXACT session name: tmux otherwise matches a
+	// session-name target by prefix too.
+	if err := t.run(ctx, nil, "has-session", "-t", "="+t.target); err != nil {
+		return nil
+	}
+	return t.run(ctx, nil, "kill-session", "-t", "="+t.target)
+}

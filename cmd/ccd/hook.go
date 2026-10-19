@@ -37,8 +37,15 @@ func runHook(args []string, stdin io.Reader, stderr io.Writer) int {
 	if base == "" {
 		base = defaultHookURL
 	}
+	url := strings.TrimSuffix(base, "/") + "/hook/" + args[0]
+	// A lane's CLI (lanes.go) runs with CCD_LANE in its environment, which every
+	// hook it runs inherits: the event is that lane's. Hex only, as laneID makes
+	// it — anything else is dropped rather than put in a URL.
+	if lane := os.Getenv("CCD_LANE"); lane != "" && isLaneID(lane) {
+		url += "?lane=" + lane
+	}
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Post(strings.TrimSuffix(base, "/")+"/hook/"+args[0], "application/json", bytes.NewReader(body))
+	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
 		fmt.Fprintln(stderr, "ccd hook:", err)
 		return 0

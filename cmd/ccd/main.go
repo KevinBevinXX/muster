@@ -43,6 +43,9 @@
 //	                       exists, `claude` on a fresh volume (supervise.go). Without
 //	                       it ccd knows no pane id, so every turn is not_ready.
 //	CCD_CLAUDE_BIN         the CLI binary         (default claude)
+//	CCD_MAX_SESSIONS       how many CLIs ccd runs BESIDE the primary, one per explicit
+//	                       muster session (lanes.go; default 3, 0 = none: a request
+//	                       naming a session is then not_ready)
 //	CCD_SUBMIT_TIMEOUT / CCD_TURN_TIMEOUT              (default 20s / 30m)
 //	CCD_HOOK_LOG           append every raw hook payload to this file. OFF by default;
 //	                       when on it writes every prompt's text there (on the volume,
@@ -60,6 +63,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -112,6 +116,19 @@ func envOr(name, def string) string {
 		return v
 	}
 	return def
+}
+
+// envCount reads a non-negative integer, def when unset.
+func envCount(name string, def int) (int, error) {
+	v := os.Getenv(name)
+	if v == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("ccd: %s=%q is not a non-negative integer", name, v)
+	}
+	return n, nil
 }
 
 func envDuration(name string, def time.Duration) (time.Duration, error) {
@@ -184,8 +201,31 @@ func serve() error {
 		srv.blocked = newBlockedReporter(base, tok)
 	}
 	if os.Getenv("CCD_SUPERVISE") == "1" {
-		srv.sup = newSupervisor(term, envOr("CCD_CLAUDE_BIN", "claude"), configDir, workspace)
+		bin := envOr("CCD_CLAUDE_BIN", "claude")
+		srv.sup = newSupervisor(term, bin, configDir, workspace)
 		srv.inputPane = srv.sup.inputPane
+		srv.recordsPrimary = true
+		maxLanes, err := envCount("CCD_MAX_SESSIONS", defaultMaxLanes)
+		if err != nil {
+			return err
+		}
+		if maxLanes > 0 {
+			srv.lanes = &lanes{
+				newTerm: func(target string) laneTerminal {
+					t := term
+					t.target = target
+					return t
+				},
+				newServer: func(t terminal) *server {
+					return newServer(serverConfig{Bearer: bearer, ConfigDir: configDir,
+						SubmitTimeout: durs[0], TurnTimeout: durs[1], HookLog: os.Getenv("CCD_HOOK_LOG"),
+						HasCredential: credentialVisible(configDir)}, t, auth)
+				},
+				bin: bin, configDir: configDir, workspace: workspace, max: maxLanes,
+				startTimeout: laneStartTimeout, primaryStarted: srv.started, now: time.Now,
+				set: map[string]*lane{},
+			}
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)

@@ -295,7 +295,8 @@ type serveRig struct {
 	logs          *syncBuffer
 }
 
-func startServe(t *testing.T) *serveRig {
+// startServe runs `ccd serve`; extra is more NAME=value environment.
+func startServe(t *testing.T, extra ...string) *serveRig {
 	t.Helper()
 	tmuxBin, err := exec.LookPath("tmux")
 	if err != nil {
@@ -334,6 +335,7 @@ func startServe(t *testing.T) *serveRig {
 		"CCD_LISTEN="+gwAddr, "CCD_HOOK_LISTEN="+hookAddr, "CCD_HOOK_URL=http://"+hookAddr,
 		"CCD_TMUX_SOCKET="+sock, "CCD_TMUX_CONF=/dev/null",
 		"CCD_SUPERVISE=1", "CCD_CLAUDE_BIN="+filepath.Join(bin, "claude"))
+	cmd.Env = append(cmd.Env, extra...)
 	logs := &syncBuffer{}
 	cmd.Stdout, cmd.Stderr = logs, logs
 	if err := cmd.Start(); err != nil {

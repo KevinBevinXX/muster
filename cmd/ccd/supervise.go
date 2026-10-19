@@ -135,6 +135,9 @@ type supervisor struct {
 	crashWindow            time.Duration
 	now                    func() time.Time
 	after                  func(time.Duration) <-chan time.Time
+	// argvFn, when set, replaces argv's choice of command line: a lane's
+	// (lanes.go), which resumes its own session by id.
+	argvFn func() ([]string, string)
 
 	mu       sync.Mutex
 	st       cliState
@@ -197,6 +200,25 @@ func hasPriorSession(configDir, workspace string) bool {
 }
 
 func (s *supervisor) argv() ([]string, string) {
+	if s.argvFn != nil {
+		return s.argvFn()
+	}
+	// The primary resumes ITS conversation by id once one is recorded: lanes
+	// write transcripts in the same directory, so "the newest" (--continue)
+	// could be a lane's (lanes.go).
+	if id := recordedPrimary(s.configDir, s.workspace); id != "" {
+		return []string{s.bin, "--resume", id}, modeContinue
+	}
+	// No record (the first start after an upgrade, or a lost file): while no
+	// lane transcript exists, --continue can only find the primary's own, which
+	// is exactly what it always did. Once one does, the newest transcript that
+	// is NOT a lane's is resumed by id — or, if there is none, a fresh start.
+	if newest, lanesSeen := newestPrimaryTranscript(s.configDir, s.workspace); lanesSeen {
+		if newest == "" {
+			return []string{s.bin}, modeFresh
+		}
+		return []string{s.bin, "--resume", newest}, modeContinue
+	}
 	if hasPriorSession(s.configDir, s.workspace) {
 		return []string{s.bin, "--continue"}, modeContinue
 	}
