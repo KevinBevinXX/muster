@@ -591,10 +591,31 @@ below in these ways, each decided while building it:
 - 🔴 **A Hermes view never resumes.** A reconnect always gets a Reset backfill:
   an in-place rewrite moves `transcript_revision` but no id, so a cursor the
   page kept cannot prove the rows before it unchanged.
-- **The scrollback collapses compaction copies by `message_uid`**, the live
-  copy first, then the newest, in first-seen order: Hermes's own
+- **The scrollback collapses compaction copies by `message_uid` ONLY**, the
+  live copy first, then the newest, in first-seen order: Hermes's own
   `_dedupe_display_generations` without its removed-rows refinement (a rewound
-  message's older copy can still show until the next reset). The prompt index
+  message's older copy can still show until the next reset) and without its
+  display-identity key or `absorbed_message_uids` (a copy with a different
+  uid shows twice). ⚠ **Ordered by id, not `display_order`**: this matches
+  upstream's multi-segment projection (`display_order` is per segment and not
+  comparable across a lineage), and departs from its single-segment paging,
+  which groups by `display_order`.
+- **Rows nobody typed are never drawn**: a compaction summary
+  (`_compressed_summary=1`, a user-role row) and a model-only row
+  (`display_metadata.model_only`, a micro-compaction merge; decoded as Hermes
+  does, an object or a double-encoded string), as upstream never renders
+  them (`P:hermes_state_messages.py:1090`, `P:gateway/session_controls.py:106`).
+- 🔴 **A display kind stamped after a row was drawn is redrawn.** Hermes can
+  write an `auto_continue` or `process_complete` row and mark it afterwards;
+  no fingerprint column moves. The host re-reads the display keys
+  (`display_kind`, `display_metadata`, the summary flag) of the newest 64
+  drawn rows on every poll and starts the view over when one changed, so a
+  turn the model wrote never stays the person's bubble. (Holding user rows
+  back until the turn ends would delay every prompt, and a stamp can come
+  later than that.)
+- **One rendered-view loop** (`runView`) serves both streams; which one
+  serves a watch is decided in the watch's own goroutine, never on the
+  connection's read loop. The prompt index
   covers every prompt of the conversation, from a light pass over the first
   1,024 bytes of each row.
 - **A tail read that the fingerprint does not explain resets the view**, and so
@@ -744,6 +765,7 @@ Streaming deltas are not persisted.
 | `display_kind='failed_turn'`, or an error `finish_reason` | `error` |
 | `display_kind` `process_complete`, `async_delegation_complete`, `model_switch`, `steer`, `auto_continue`, `skill_invocation`, `personality_switch`, `internal_notification` | `notice`, naming the kind |
 | `display_kind='hidden'`, `role='system'`, `role='session_meta'` | nothing |
+| `_compressed_summary=1` (a compaction summary), `display_metadata.model_only` (a merged turn) | nothing |
 | a reasoning-only reply (empty `content`) | nothing |
 
 An unknown `display_kind` renders as a `notice` naming it, never as user text.

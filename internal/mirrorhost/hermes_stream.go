@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/hermeshost"
@@ -65,27 +64,27 @@ func (h *hostSide) hermesTail(ctx context.Context, src *HermesSource, m mirror.M
 		cursor  int64
 		fp      hermeshost.Fingerprint
 		lineage hermeshost.Lineage
+		// shown is the display key of the newest drawn rows (at most
+		// displayWatch of them, oldest first): a key that changes later is a
+		// display_kind (or metadata) stamped after the row was drawn.
+		shown []shownRow
 	)
-	send := func(msgs []mirror.Msg) error {
-		for _, b := range msgs {
-			b.Type, b.ID, b.Gen = mirror.TypeEvents, m.ID, root
-			if h.c.cfg.NoPromptIndex {
-				for i := range b.Events {
-					b.Events[i].Line = 0
-				}
-			}
-			if err := h.send(b); err != nil {
-				return err
-			}
+	send := h.viewSend(m, func() string { return root })
+	remember := func(rows []hermeshost.Row) {
+		for _, r := range rows {
+			shown = append(shown, shownRow{r.ID, r.DisplayKey()})
 		}
-		return nil
+		if len(shown) > displayWatch {
+			shown = append([]shownRow(nil), shown[len(shown)-displayWatch:]...)
+		}
 	}
 	start := func() error {
 		page, err := st.Backfill(ctx, root, mirror.MaxBackfillEvents)
 		if err != nil {
 			return fmt.Errorf("read the Hermes conversation: %w", err)
 		}
-		cursor, fp, lineage = page.Cursor, page.Fingerprint, page.Lineage
+		cursor, fp, lineage, shown = page.Cursor, page.Fingerprint, page.Lineage, nil
+		remember(page.Rows)
 		lines := renderRows(page.Rows)
 		// The event bound is the Claude view's: the newest MaxBackfillEvents.
 		lines = lastEvents(lines, mirror.MaxBackfillEvents)
@@ -109,93 +108,105 @@ func (h *hostSide) hermesTail(ctx context.Context, src *HermesSource, m mirror.M
 		refs, more := mirror.BoundPrompts(refs)
 		return send([]mirror.Msg{{Offset: cursor, Busy: busy, PromptIndex: true, Prompts: refs, PromptsMore: more}})
 	}
-	if err := start(); err != nil {
-		return err
-	}
-	t := time.NewTicker(h.c.cfg.ViewPoll)
-	defer t.Stop()
-	for tick := 1; ; tick++ {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-t.C:
-		}
-		if tick%reresolveEvery == 0 {
+	return h.runView(ctx, renderedView{
+		start: start,
+		reresolve: func(ctx context.Context) (bool, error) {
 			np, ok := h.hermesWindow(ctx, m)
 			if !ok {
-				if ctx.Err() != nil {
-					return nil
-				}
-				return errNoHermesViewNow
+				return false, errNoHermesViewNow
 			}
 			if np.Gen != root {
 				// /new, or a restart of the CLI: another conversation.
 				root, busy = np.Gen, np.Busy
-				if err := start(); err != nil {
-					return err
+				return true, start()
+			}
+			return false, sendBusy(&busy, np.Busy, cursor, send)
+		},
+		poll: func() error {
+			var rows []hermeshost.Row
+			var last hermeshost.Page
+			reset := false
+			for {
+				page, err := st.Tail(ctx, root, cursor, hermesTailRows)
+				if err != nil {
+					return fmt.Errorf("read the Hermes conversation: %w", err)
 				}
-				continue
+				if !hermeshost.SameLineage(page.Lineage, lineage) {
+					reset = true // a rotation: start over on the new lineage
+					break
+				}
+				rows = append(rows, page.Rows...)
+				last = page
+				if len(page.Rows) < hermesTailRows {
+					break
+				}
+				cursor = page.Cursor
 			}
-			if np.Busy != busy {
-				busy = np.Busy
-				if err := send([]mirror.Msg{{Offset: cursor, Busy: busy}}); err != nil {
-					return err
+			// 🔴 A fingerprint the appended rows do not explain is a rewind, a
+			// compaction or an in-place rewrite: the rows already drawn are no
+			// longer the conversation. Start over.
+			if reset || last.Fingerprint != fp.After(rows) {
+				return start()
+			}
+			cursor, fp = last.Cursor, last.Fingerprint
+			// 🔴 A display_kind (or display_metadata, or the summary flag)
+			// stamped on a row AFTER it was drawn — Hermes writes an
+			// auto_continue or process_complete row, then marks it — moves no
+			// fingerprint column, and the row may now be one that is never the
+			// person's bubble. Re-read the newest drawn rows' display keys on
+			// every poll and redraw when one changed. (Holding a user row back
+			// until its turn ends was the other way; it would delay every
+			// prompt by a turn, and a stamp can come later than that.)
+			if len(shown) > 0 {
+				ids := make([]int64, len(shown))
+				for i, r := range shown {
+					ids[i] = r.id
+				}
+				now, err := st.DisplayKeys(ctx, ids)
+				if err != nil {
+					return fmt.Errorf("read the Hermes conversation: %w", err)
+				}
+				for _, r := range shown {
+					if k, ok := now[r.id]; ok && k != r.key {
+						return start()
+					}
 				}
 			}
-		}
-		var rows []hermeshost.Row
-		var last hermeshost.Page
-		reset := false
-		for {
-			page, err := st.Tail(ctx, root, cursor, hermesTailRows)
-			if err != nil {
-				return fmt.Errorf("read the Hermes conversation: %w", err)
+			if len(rows) == 0 {
+				return nil
 			}
-			if !hermeshost.SameLineage(page.Lineage, lineage) {
-				reset = true // a rotation: start over on the new lineage
-				break
+			var drawn []hermeshost.Row
+			for _, r := range rows {
+				if r.Active {
+					drawn = append(drawn, r)
+				}
 			}
-			rows = append(rows, page.Rows...)
-			last = page
-			if len(page.Rows) < hermesTailRows {
-				break
+			remember(drawn)
+			lines := renderRows(drawn)
+			// 🔴 Redacted before it is framed (redact_stream.go).
+			redactLines(lines)
+			batches := mirror.BatchLines(lines, 0)
+			if len(batches) == 0 {
+				return nil
 			}
-			cursor = page.Cursor
-		}
-		// 🔴 A fingerprint the appended rows do not explain is a rewind, a
-		// compaction or an in-place rewrite: the rows already drawn are no
-		// longer the conversation. Start over.
-		if reset || last.Fingerprint != fp.After(rows) {
-			if err := start(); err != nil {
-				return err
+			batches[len(batches)-1].Offset = cursor
+			for i := range batches {
+				batches[i].Busy = busy
 			}
-			continue
-		}
-		cursor, fp = last.Cursor, last.Fingerprint
-		if len(rows) == 0 {
-			continue
-		}
-		var drawn []hermeshost.Row
-		for _, r := range rows {
-			if r.Active {
-				drawn = append(drawn, r)
-			}
-		}
-		lines := renderRows(drawn)
-		redactLines(lines)
-		batches := mirror.BatchLines(lines, 0)
-		if len(batches) == 0 {
-			continue
-		}
-		batches[len(batches)-1].Offset = cursor
-		for i := range batches {
-			batches[i].Busy = busy
-		}
-		if err := send(batches); err != nil {
-			return err
-		}
-	}
+			return send(batches)
+		},
+	})
 }
+
+// shownRow is a drawn row's id and its display key when drawn.
+type shownRow struct {
+	id  int64
+	key string
+}
+
+// displayWatch is how many of the newest drawn rows have their display keys
+// re-read on each poll.
+const displayWatch = 64
 
 // renderRows is rows as cctranscript lines: one per row that draws anything,
 // its End the row's id (the cursor a batch ending there resumes past).

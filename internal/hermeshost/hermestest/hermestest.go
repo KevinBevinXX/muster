@@ -145,6 +145,10 @@ type Msg struct {
 	Inactive  bool
 	Compacted bool
 	UID       string
+	// DisplayMetadata is the display_metadata column (JSON text);
+	// CompressedSummary sets _compressed_summary=1 (a compaction summary).
+	DisplayMetadata   string
+	CompressedSummary bool
 }
 
 func nullable(s string) any {
@@ -161,9 +165,11 @@ func (h *Home) Message(session string, m Msg) int64 {
 		m.Timestamp = Now()
 	}
 	r := h.Exec(`INSERT INTO messages (session_id, role, content, tool_call_id, tool_calls, tool_name, finish_reason,
-display_kind, reasoning, timestamp, active, compacted, message_uid) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+display_kind, reasoning, timestamp, active, compacted, message_uid, display_metadata, _compressed_summary)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		session, m.Role, nullable(m.Content), nullable(m.ToolCallID), nullable(m.ToolCalls), nullable(m.ToolName),
-		nullable(m.FinishReason), nullable(m.DisplayKind), nullable(m.Reasoning), m.Timestamp, !m.Inactive, m.Compacted, nullable(m.UID))
+		nullable(m.FinishReason), nullable(m.DisplayKind), nullable(m.Reasoning), m.Timestamp, !m.Inactive, m.Compacted, nullable(m.UID),
+		nullable(m.DisplayMetadata), m.CompressedSummary)
 	id, err := r.LastInsertId()
 	if err != nil {
 		h.t.Fatal(err)

@@ -74,7 +74,7 @@ var requiredColumns = map[string][]string{
 	"sessions": {"id", "source", "model_config", "parent_session_id", "started_at", "ended_at", "end_reason",
 		"last_activity_at", "archived", "hidden", "transcript_revision"},
 	"messages": {"id", "session_id", "role", "content", "tool_call_id", "tool_calls", "tool_name", "timestamp",
-		"finish_reason", "active", "compacted", "display_kind", "display_order", "message_uid"},
+		"finish_reason", "active", "compacted", "display_kind", "display_order", "message_uid", "display_metadata", "_compressed_summary"},
 	"session_turn_leases": {"conversation_id", "expires_at"},
 }
 

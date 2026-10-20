@@ -1,9 +1,11 @@
 package mirror_test
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/mirror"
 )
@@ -42,9 +44,13 @@ func TestAHermesWindowWithASessionHasARenderedView(t *testing.T) {
 		t.Fatalf("the watch sent the host = %+v", w)
 	}
 	// … the one without (a stale breadcrumb, or a Phase 1 host) is not.
-	err = r.svc.WatchWindow(asUser(1), "h", "s", "@2", "", 0, func(mirror.Msg) error { return nil })
-	if !errors.Is(err, mirror.ErrNotClaude) {
-		t.Fatalf("watch of a Hermes window with no session = %v, want ErrNotClaude", err)
+	// Bounded: a regression that streams it would block until the context
+	// ends, and must fail as a refusal missing, not as a 600 s hang.
+	bctx, cancel := context.WithTimeout(asUser(1), 3*time.Second)
+	defer cancel()
+	err = r.svc.WatchWindow(bctx, "h", "s", "@2", "", 0, func(mirror.Msg) error { return nil })
+	if !errors.Is(err, mirror.ErrNotClaude) || bctx.Err() != nil {
+		t.Fatalf("watch of a Hermes window with no session = %v (ctx %v), want an explicit ErrNotClaude refusal", err, bctx.Err())
 	}
 	if n := len(raw.of(mirror.TypeWatch)); n != 1 {
 		t.Fatalf("the host was asked for %d watches, want 1", n)

@@ -21,6 +21,9 @@ import (
 //	an UNKNOWN display_kind             → notice naming it, never user text
 //	display_kind hidden, role system,
 //	  role session_meta, reasoning only → nothing
+//	_compressed_summary=1 (a compaction
+//	  summary), display_metadata
+//	  model_only (a merged turn)         → nothing
 //
 // The fields are capped here (cctranscript's caps) and REDACTED by the
 // caller (internal/mirrorhost's redactLines) before anything is framed.
@@ -67,7 +70,7 @@ func (c toolCall) arguments() string {
 
 // Render is r's events. A row it draws nothing for has none.
 func Render(r Row) []cctranscript.Event {
-	if r.Role == "system" || r.Role == "session_meta" || r.DisplayKind == "hidden" {
+	if r.Hidden() || r.Role == "system" || r.Role == "session_meta" || r.DisplayKind == "hidden" {
 		return nil
 	}
 	if r.DisplayKind == "failed_turn" || errorFinish[r.FinishReason] {

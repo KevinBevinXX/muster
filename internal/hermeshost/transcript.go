@@ -3,6 +3,7 @@ package hermeshost
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"slices"
 	"strconv"
 
@@ -42,11 +43,57 @@ type Row struct {
 	Timestamp    float64
 	Active       bool
 	Compacted    bool
+	// DisplayMetadata is the display_metadata column as stored ("" for NULL);
+	// CompressedSummary is _compressed_summary.
+	DisplayMetadata   string
+	CompressedSummary bool
+}
+
+// Hidden: a row Hermes never renders — a compaction summary
+// (_compressed_summary=1, a user-role row Hermes wrote) or a model-only row
+// (display_metadata.model_only: a micro-compaction merge the model reads but
+// nobody typed as one message; P:hermes_state_messages.py:1090,
+// P:gateway/session_controls.py:106).
+func (r Row) Hidden() bool { return r.CompressedSummary || modelOnly(r.DisplayMetadata) }
+
+// modelOnly decodes display_metadata the way Hermes does
+// (_decode_display_metadata: an object, or a pre-guard row's object encoded
+// once more as a JSON string) and reports its model_only flag.
+func modelOnly(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	var v any = raw
+	for i := 0; i < 3; i++ {
+		str, ok := v.(string)
+		if !ok {
+			break
+		}
+		if json.Unmarshal([]byte(str), &v) != nil {
+			return false
+		}
+	}
+	m, ok := v.(map[string]any)
+	if !ok {
+		return false
+	}
+	switch f := m["model_only"].(type) {
+	case bool:
+		return f
+	case float64:
+		return f != 0
+	case string:
+		return f != ""
+	case nil:
+		return false
+	default:
+		return true
+	}
 }
 
 const rowColumns = `id, session_id, role, COALESCE(content, ''), COALESCE(tool_call_id, ''), COALESCE(tool_calls, ''),
 COALESCE(tool_name, ''), COALESCE(finish_reason, ''), COALESCE(display_kind, ''), COALESCE(message_uid, ''),
-timestamp, active, compacted`
+timestamp, active, compacted, COALESCE(display_metadata, ''), COALESCE(_compressed_summary, 0)`
 
 func scanRows(rows *sql.Rows) ([]Row, error) {
 	defer rows.Close()
@@ -54,7 +101,7 @@ func scanRows(rows *sql.Rows) ([]Row, error) {
 	for rows.Next() {
 		var r Row
 		if err := rows.Scan(&r.ID, &r.SessionID, &r.Role, &r.Content, &r.ToolCallID, &r.ToolCalls, &r.ToolName,
-			&r.FinishReason, &r.DisplayKind, &r.UID, &r.Timestamp, &r.Active, &r.Compacted); err != nil {
+			&r.FinishReason, &r.DisplayKind, &r.UID, &r.Timestamp, &r.Active, &r.Compacted, &r.DisplayMetadata, &r.CompressedSummary); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -125,7 +172,7 @@ func (s *State) Backfill(ctx context.Context, root string, n int) (Page, error) 
 		in := "session_id IN (" + placeholders(len(ids)) + ")"
 		// The light pass: which rows are drawn, by id.
 		rows, err := tx.QueryContext(ctx, "SELECT id, COALESCE(message_uid, ''), active, role, COALESCE(display_kind, ''),"+
-			" substr(COALESCE(content, ''), 1, ?) FROM messages WHERE "+in+
+			" substr(COALESCE(content, ''), 1, ?), COALESCE(display_metadata, ''), COALESCE(_compressed_summary, 0) FROM messages WHERE "+in+
 			" AND (active = 1 OR compacted = 1) ORDER BY id", append([]any{promptPeek}, anys(ids)...)...)
 		if err != nil {
 			return err
@@ -139,11 +186,11 @@ func (s *State) Backfill(ctx context.Context, root string, n int) (Page, error) 
 		chosen := map[string]pick{}
 		for rows.Next() {
 			var (
-				id                   int64
-				uid, role, kind, txt string
-				active               bool
+				id                         int64
+				uid, role, kind, txt, meta string
+				active, summary            bool
 			)
-			if err := rows.Scan(&id, &uid, &active, &role, &kind, &txt); err != nil {
+			if err := rows.Scan(&id, &uid, &active, &role, &kind, &txt, &meta, &summary); err != nil {
 				rows.Close()
 				return err
 			}
@@ -158,7 +205,7 @@ func (s *State) Backfill(ctx context.Context, root string, n int) (Page, error) 
 			// The live copy wins, then the newest.
 			if !seen || (active && !cur.active) || (active == cur.active && id > cur.id) {
 				pk := pick{id: id, active: active}
-				if r := Render(Row{ID: id, Role: role, DisplayKind: kind, Content: txt}); len(r) == 1 && r[0].Kind == cctranscript.KindPrompt {
+				if r := Render(Row{ID: id, Role: role, DisplayKind: kind, Content: txt, DisplayMetadata: meta, CompressedSummary: summary}); len(r) == 1 && r[0].Kind == cctranscript.KindPrompt {
 					pk.prompt = txt
 				}
 				chosen[key] = pk
@@ -243,6 +290,48 @@ func (s *State) Tail(ctx context.Context, root string, cursor int64, limit int) 
 		return err
 	})
 	return p, err
+}
+
+// DisplayKey is what decides how a row is drawn beyond its content: its
+// display_kind, display_metadata and _compressed_summary. Hermes can stamp
+// these AFTER writing the row (an auto_continue or process_complete row), and
+// no fingerprint column moves when it does (transcript_revision's trigger
+// watches content, not display columns).
+func (r Row) DisplayKey() string {
+	sum := "0"
+	if r.CompressedSummary {
+		sum = "1"
+	}
+	return r.DisplayKind + "\x00" + r.DisplayMetadata + "\x00" + sum
+}
+
+// DisplayKeys is the current DisplayKey of each of ids that still exists.
+func (s *State) DisplayKeys(ctx context.Context, ids []int64) (map[int64]string, error) {
+	out := map[int64]string{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	err := s.read(ctx, func(tx *sql.Tx) error {
+		args := make([]any, len(ids))
+		for i, id := range ids {
+			args[i] = id
+		}
+		rs, err := tx.QueryContext(ctx, "SELECT id, COALESCE(display_kind, ''), COALESCE(display_metadata, ''), COALESCE(_compressed_summary, 0)"+
+			" FROM messages WHERE id IN ("+placeholders(len(ids))+")", args...)
+		if err != nil {
+			return err
+		}
+		defer rs.Close()
+		for rs.Next() {
+			var r Row
+			if err := rs.Scan(&r.ID, &r.DisplayKind, &r.DisplayMetadata, &r.CompressedSummary); err != nil {
+				return err
+			}
+			out[r.ID] = r.DisplayKey()
+		}
+		return rs.Err()
+	})
+	return out, err
 }
 
 // SameLineage: a and b are the same sessions in the same order.
