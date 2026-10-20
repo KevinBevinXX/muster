@@ -42,6 +42,12 @@ var (
 	// ErrBadPaste: a message SanitizePaste refuses (empty, oversized, or
 	// carrying a control character).
 	ErrBadPaste = errors.New("mirror: the message cannot be pasted")
+	// ErrHermesSendOff: the window runs Hermes and its host did not advertise
+	// Msg.HermesSend — the hermesSend switch, closed (PasteWindow). Nothing
+	// was sent to the host. It is the Cause of a *PasteRefusedError carrying
+	// the host guard's own words (PasteRefusedHermesText, PasteRefusalHermes),
+	// so a person sees the same refusal whichever side made it.
+	ErrHermesSendOff = errors.New("mirror: muster did not send it: this window runs Hermes, and its host's muster-mirror does not accept a send to Hermes (-hermes-send)")
 )
 
 // pasteTimeout bounds how long a paste waits for the host's confirmation.
@@ -97,13 +103,29 @@ func (hc *hostConn) pasted(id uint32, why, refusal string) {
 
 // PasteRefusedError is ErrPasteRefused with the host's reason (Why, its prose,
 // never parsed) and the kind it named (Refusal, a PasteRefusal* or "").
+//
+// Cause is set when MUSTER refused it, on the host's behalf and in the host's
+// words, before anything was sent (ErrHermesSendOff); nil for a refusal the
+// host itself sent.
 type PasteRefusedError struct {
 	Why     string
 	Refusal string
+	Cause   error
 }
 
-func (e *PasteRefusedError) Error() string { return ErrPasteRefused.Error() + ": " + e.Why }
-func (e *PasteRefusedError) Unwrap() error { return ErrPasteRefused }
+func (e *PasteRefusedError) Error() string {
+	if e.Cause != nil {
+		return e.Cause.Error() + ": " + e.Why
+	}
+	return ErrPasteRefused.Error() + ": " + e.Why
+}
+
+func (e *PasteRefusedError) Unwrap() []error {
+	if e.Cause != nil {
+		return []error{ErrPasteRefused, e.Cause}
+	}
+	return []error{ErrPasteRefused}
+}
 
 // PasteGuardRefusal is the host's paste-guard refusal err carries (one of the
 // PasteRefusal* kinds), or "" when it is not one.
@@ -302,6 +324,15 @@ func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, windo
 	if !hc.interactive {
 		return fmt.Errorf("%w (host %q)", ErrInteractiveRefused, host)
 	}
+	// 🔴 THE hermesSend SWITCH, SERVER HALF. Every paste muster makes passes
+	// here (Paste delegates; the ledger in hermes_switch_test.go pins that no
+	// other function writes a paste), so Send, Send now, Queue, a routed
+	// message and any later caller are refused for a Hermes window of a host
+	// that did not advertise Msg.HermesSend — before anything reaches it. The
+	// host's Hermes runtime refuses on its own flag too, whatever this sends.
+	if err := hc.hermesSendGate(session, windowID); err != nil {
+		return err
+	}
 	if o.Window != nil {
 		*o.Window = windowID
 	}
@@ -368,6 +399,23 @@ type SupersededError struct {
 
 func (e *SupersededError) Error() string { return ErrSuperseded.Error() }
 func (e *SupersededError) Unwrap() error { return ErrSuperseded }
+
+// hermesSendGate is the hermesSend switch for (session, window id) on hc: nil
+// unless the window runs Hermes and hc did not advertise Msg.HermesSend. A
+// per-session host (window id "") lists no runtime, and never reports Hermes.
+func (hc *hostConn) hermesSendGate(session, id string) error {
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	if hc.hermesSend {
+		return nil
+	}
+	for _, w := range hc.windows {
+		if w.Session == session && w.ID == id && w.AgentRuntime() == RuntimeHermes {
+			return &PasteRefusedError{Why: PasteRefusedHermesText, Refusal: PasteRefusalHermes, Cause: ErrHermesSendOff}
+		}
+	}
+	return nil
+}
 
 // statusSince is the StatusSince hc lists for (session, window id), 0 for none.
 func (hc *hostConn) statusSince(session, id string) int64 {

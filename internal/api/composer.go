@@ -74,6 +74,10 @@ const (
 	noticeSendingAnother = "sending-another"
 	noticeSendNowFailed  = "send-now-failed"
 	noticeWaitingNow     = "waiting-now"
+	// A Hermes window's Send now refusals.
+	noticeHermesWaitingNow = "hermes-waiting-now"
+	noticeHermesBusyNow    = "hermes-busy-now"
+	noticeHermesUnknownNow = "hermes-unknown-now"
 	// The host's Hermes paste guard (mirror.PasteRefusal*).
 	noticeHermes      = "hermes"
 	noticeMultiplexer = "multiplexer"
@@ -127,6 +131,9 @@ var composerNotices = map[string]struct {
 	noticeNotQueuedNow:      {SendQueueNotQueuedNow, false},
 	noticeSendingAnother:    {SendQueueSendingAnother, false},
 	noticeWaitingNow:        {SendQueueWaitingNow, false},
+	noticeHermesWaitingNow:  {SendQueueHermesWaitingNow, false},
+	noticeHermesBusyNow:     {SendQueueHermesBusyNow, false},
+	noticeHermesUnknownNow:  {SendQueueHermesUnknownNow, false},
 	noticeSendNowFailed:     {"Not sent: the message could not be delivered. Its row in the queue says why.", false},
 	noticeHermes:            {mirror.PasteRefusedHermesText, false},
 	noticeMultiplexer:       {mirror.PasteRefusedMultiplexerText, false},

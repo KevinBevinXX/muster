@@ -255,6 +255,22 @@ Known gaps:
   the message box away from every macOS user, and no deployment runs Hermes on
   a macOS host.
 
+### Hermes windows
+
+A window whose pane runs the Hermes CLI (`hermes chat`, or bare `hermes`) is
+listed as a **Hermes window**: a process named `hermes`, a Python running a
+`hermes` launcher, no `gateway` argument, reading the pane's terminal. It has
+no Rendered view yet and its status is unknown, so nothing queued is sent to
+it and Send now refuses it. `muster-mirror -list -windows` prints such a window
+as `hermes <pane> unknown process`. A profile-launched `hermes -p <name> chat`
+is not recognised as one; the paste refusal above still covers it.
+
+muster also refuses every send into a Hermes window on its side, before
+anything reaches the host, unless the host was started with `-hermes-send`
+(`MUSTER_MIRROR_HERMES_SEND`) together with `-interactive`. That flag is off by
+default and reserved: in this release the host refuses to send to Hermes even
+with it on.
+
 ## Answering Claude's questions
 
 When Claude Code calls `AskUserQuestion`, the question shows in **both places

@@ -235,12 +235,12 @@ func (h *Hub) SetWaitingNotify(fn func(owner int64)) {
 	h.mu.Unlock()
 }
 
-// waitingWindows is the sorted addresses of ws's windows whose Claude Code
-// session reports StatusWaiting.
+// waitingWindows is the sorted addresses of ws's windows whose agent session
+// (any runtime, Window.AgentRuntime) reports StatusWaiting.
 func waitingWindows(ws []Window) []string {
 	var out []string
 	for _, w := range ws {
-		if w.Claude && w.Status == StatusWaiting {
+		if w.AgentRuntime() != "" && w.Status == StatusWaiting {
 			k := w.Session + "\x00" + w.ID
 			// What it waits on is part of the item: a pending action that
 			// arrives (or changes) after the status does still updates the queue.
@@ -306,6 +306,9 @@ type hostConn struct {
 	// askAnswer: the host advertised Msg.AskAnswer, speaks v2 and is
 	// -interactive.
 	askAnswer bool
+	// hermesSend: the host advertised Msg.HermesSend, speaks v2 and is
+	// -interactive — the server half of the hermesSend switch (PasteWindow).
+	hermesSend bool
 
 	mu       sync.Mutex
 	sessions []string
@@ -423,33 +426,43 @@ func normalizeClaude(claude, sessions []string) []string {
 // windows were addressable. On a per-window host it is resolved HERE, to an
 // explicit id, so the host is never left to decide which window was meant.
 func (hc *hostConn) target(session, window string) (id string, claude bool, err error) {
+	id, runtime, err := hc.targetRuntime(session, window)
+	return id, runtime == RuntimeClaude, err
+}
+
+// targetRuntime is target with the agent runtime of the window it resolved to
+// (Window.AgentRuntime): RuntimeClaude, RuntimeHermes or "" for none. A
+// per-session host reports Claude Code only (Msg.Claude), never Hermes.
+func (hc *hostConn) targetRuntime(session, window string) (id, runtime string, err error) {
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
 	i := sort.SearchStrings(hc.sessions, session)
 	listed := i < len(hc.sessions) && hc.sessions[i] == session
 	if !listed {
-		return "", false, fmt.Errorf("%w (host %q, session %q)", ErrSessionGone, hc.key.host, session)
+		return "", "", fmt.Errorf("%w (host %q, session %q)", ErrSessionGone, hc.key.host, session)
 	}
 	if hc.windows == nil {
 		if window != "" {
-			return "", false, fmt.Errorf("%w (host %q registers per session; session %q, window %q)", ErrWindowGone, hc.key.host, session, window)
+			return "", "", fmt.Errorf("%w (host %q registers per session; session %q, window %q)", ErrWindowGone, hc.key.host, session, window)
 		}
-		j := sort.SearchStrings(hc.claude, session)
-		return "", j < len(hc.claude) && hc.claude[j] == session, nil
+		if j := sort.SearchStrings(hc.claude, session); j < len(hc.claude) && hc.claude[j] == session {
+			return "", RuntimeClaude, nil
+		}
+		return "", "", nil
 	}
 	if window == "" {
 		w, ok := ActiveWindow(hc.windows, session)
 		if !ok {
-			return "", false, fmt.Errorf("%w (host %q, session %q)", ErrSessionGone, hc.key.host, session)
+			return "", "", fmt.Errorf("%w (host %q, session %q)", ErrSessionGone, hc.key.host, session)
 		}
-		return w.ID, w.Claude, nil
+		return w.ID, w.AgentRuntime(), nil
 	}
 	for _, w := range hc.windows {
 		if w.Session == session && w.ID == window {
-			return w.ID, w.Claude, nil
+			return w.ID, w.AgentRuntime(), nil
 		}
 	}
-	return "", false, fmt.Errorf("%w (host %q, session %q, window %q)", ErrWindowGone, hc.key.host, session, window)
+	return "", "", fmt.Errorf("%w (host %q, session %q, window %q)", ErrWindowGone, hc.key.host, session, window)
 }
 
 // list is what a hello or a sessions message registers: the window list when
@@ -462,6 +475,7 @@ func (hc *hostConn) list(m Msg, now int64) (sessions []string, windows []Window,
 			// A v1 host has no rendered view whatever it claims.
 			for i := range windows {
 				windows[i].Claude, windows[i].Status, windows[i].StatusSince, windows[i].ClaudeSession, windows[i].Pending = false, "", 0, "", nil
+				windows[i].Runtime, windows[i].AgentSession = "", ""
 			}
 		}
 		sessions, claude, labels, activity = SessionsOf(windows)
@@ -612,6 +626,9 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		hc.subagentReport = hello.SubagentReport
 		// Typing an answer is a write into the pane: -interactive hosts only.
 		hc.askAnswer = hello.AskAnswer && hello.Interactive
+		// The hermesSend switch: a paste into a Hermes window is a write into
+		// the pane like any other, so -interactive hosts only.
+		hc.hermesSend = hello.HermesSend && hello.Interactive
 	}
 	h.mu.Lock()
 	old := h.hosts[key]

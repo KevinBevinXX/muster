@@ -26,8 +26,15 @@ type Tmux struct {
 	Socket     string
 	SocketPath string
 	// Claude finds Claude Code in a session's pane (the rendered view); its
-	// zero value reads /proc and the user's own ~/.claude.
+	// zero value reads /proc and the user's own ~/.claude. Its Proc is also
+	// the proc root the Hermes runtime and the Hermes paste guard read.
 	Claude ClaudeLocator
+	// HermesSend is muster-mirror's -hermes-send flag, OFF by default: the
+	// host half of the hermesSend switch. Off, the Hermes runtime refuses
+	// every submit and the hello does not advertise Msg.HermesSend. On, it
+	// is advertised (on an -interactive host) — and the submit is STILL
+	// refused in this release, which has no gated send (runtime.go).
+	HermesSend bool
 }
 
 func (t Tmux) bin() string {

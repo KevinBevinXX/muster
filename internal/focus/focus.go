@@ -13,17 +13,21 @@
 // moves conversations between windows; the Claude session id names the
 // conversation itself, so the focus follows it (mirror.Window.ClaudeSession). A
 // window whose host does not report one (an older muster-mirror) has no focus.
+// A Hermes conversation's key is runtime-qualified, "hermes:<session id>"
+// (mirror.Window.SessionKey, HermesSubject), so it can never be taken for a
+// Claude one.
 package focus
 
 import (
 	"errors"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // Kind is what a subject is.
@@ -67,19 +71,22 @@ type Subject struct {
 	Key  string
 }
 
-// claudeSessionPattern is what a Claude Code session id may look like on the
-// wire and in the table (0020's agent_focus_subject_check; mirror's
-// ValidClaudeSession applies the same pattern to what a host reports).
-var claudeSessionPattern = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z_-]{0,63}$`)
-
-// ErrBadSubject refuses a subject that is not "agent:<id>" or "mirror:<claude session id>".
-var ErrBadSubject = errors.New(`focus: a subject is "agent:<id>" or "mirror:<claude session id>"`)
+// ErrBadSubject refuses a subject that is not "agent:<id>",
+// "mirror:<claude session id>" or "mirror:hermes:<hermes session id>".
+var ErrBadSubject = errors.New(`focus: a subject is "agent:<id>", "mirror:<claude session id>" or "mirror:hermes:<hermes session id>"`)
 
 // AgentSubject is the subject of agent id.
 func AgentSubject(id int64) Subject { return Subject{Kind: KindAgent, Key: strconv.FormatInt(id, 10)} }
 
-// MirrorSubject is the subject of the mirrored session with Claude session id sid.
+// MirrorSubject is the subject of the mirrored session with Claude session id
+// sid — or, given a whole session key (mirror.Window.SessionKey), of the
+// conversation that key names.
 func MirrorSubject(sid string) Subject { return Subject{Kind: KindMirror, Key: sid} }
+
+// HermesSubject is the subject of the mirrored Hermes session with id sid: its
+// key is runtime-qualified ("hermes:<sid>"), as mirror.Window.SessionKey makes
+// it.
+func HermesSubject(sid string) Subject { return MirrorSubject(mirror.HermesKeyPrefix + sid) }
 
 // String is the subject as the tools spell it: "agent:12", "mirror:<sid>".
 func (s Subject) String() string { return string(s.Kind) + ":" + s.Key }
@@ -102,7 +109,9 @@ func (s Subject) Valid() error {
 		}
 		return nil
 	case KindMirror:
-		if !claudeSessionPattern.MatchString(s.Key) {
+		// One pattern for every stored session key (mirror.SessionKeyPattern),
+		// the same one 0035 puts in the table's CHECK.
+		if !mirror.ValidSessionKey(s.Key) {
 			return ErrBadSubject
 		}
 		return nil
@@ -110,7 +119,8 @@ func (s Subject) Valid() error {
 	return ErrBadSubject
 }
 
-// ParseSubject reads "agent:<id>" or "mirror:<claude session id>".
+// ParseSubject reads "agent:<id>", "mirror:<claude session id>" or
+// "mirror:hermes:<hermes session id>".
 func ParseSubject(raw string) (Subject, error) {
 	kind, key, ok := strings.Cut(strings.TrimSpace(raw), ":")
 	if !ok {

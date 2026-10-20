@@ -70,8 +70,13 @@ func capabilityOf[T any](b Backend) (T, bool) {
 	return zero, false
 }
 
-// ClaudePane is one tmux pane running Claude Code.
+// ClaudePane is one tmux pane running Claude Code — or, with Runtime set,
+// another agent CLI: it is also the runtime seam's AgentPane (runtime.go).
 type ClaudePane struct {
+	// Runtime is the agent CLI in the pane: "" for Claude Code (so every
+	// ClaudePane means what it did before the seam), mirror.RuntimeHermes for
+	// Hermes. Which runtime claimed the pane decides how it is sent to.
+	Runtime string
 	// Pane is the tmux pane id (%12): the only input target — never the session
 	// name, which resolves to whatever pane was focused last.
 	Pane string
@@ -643,9 +648,11 @@ func (t Tmux) ClaudePanes(ctx context.Context, sessions []string) map[string]Cla
 // in before the submit key arrives (ccd's value, measured there).
 const enterDelay = 150 * time.Millisecond
 
-// Paste implements ClaudeBackend: PastePane into the Claude pane's id.
+// Paste implements ClaudeBackend: the submit of the runtime that claimed p
+// (runtime.go) — for Claude Code, PastePane into its pane's id, exactly as
+// before the seam; for Hermes, a refusal (no send path in this release).
 func (t Tmux) Paste(ctx context.Context, p ClaudePane, text string) error {
-	return t.PastePane(ctx, p.Pane, text)
+	return t.runtimeOf(p).Submit(ctx, t, p, text)
 }
 
 // ActivePane implements PaneBackend: session's active pane id, from the same

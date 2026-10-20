@@ -17,9 +17,14 @@ import (
 // TestEveryHostPasteIntoAHermesPaneIsRefusedAndTypesNothing, and this is what
 // keeps it complete. The Hermes paste guard lives in hostSide.typeInto, so:
 //
-//  1. every call that types into a pane — PastePane, Paste, AnswerAsk — is
-//     either the tmux backend's own implementation (a Tmux method delegating
-//     to another), or sits in the function literal handed to typeInto;
+//  1. every call that types into a pane — PastePane, Paste, AnswerAsk, and a
+//     runtime's Submit (runtime.go) — is either the tmux backend's own
+//     implementation (a Tmux method delegating to another, or Claude Code's
+//     Runtime.Submit, which Tmux.Paste delegates to), or sits in the function
+//     literal handed to typeInto. The Hermes runtime's Submit types nothing
+//     in this release; when Phase 3 gives it a paste, that call fails here
+//     until it is added on purpose — the one deliberate exception the design
+//     names;
 //  2. the typeInto call sites are EXACTLY the three host entry points that
 //     type: paste (the Terminal view's and the rendered view's) and answer.
 //     A fourth fails here until it is added on purpose; one fewer fails too;
@@ -89,12 +94,15 @@ func TestEveryWayThisHostTypesIntoAPaneGoesThroughTheHermesGuard(t *testing.T) {
 						return true
 					}
 					switch sel.Sel.Name {
-					case "PastePane", "Paste", "AnswerAsk":
+					case "PastePane", "Paste", "AnswerAsk", "Submit":
 						switch {
 						case inTypeInto[x]:
 							// counted below, by its typeInto call
 						case recv == "Tmux":
 							// the backend's own implementation
+						case where == "claudeRuntime.Submit" && sel.Sel.Name == "PastePane":
+							// Claude Code's submit, reached only through
+							// Tmux.Paste: the backend's own implementation
 						default:
 							unguarded = append(unguarded, fset.Position(x.Pos()).String()+" "+where+" calls "+sel.Sel.Name)
 						}

@@ -306,6 +306,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	hello.StatusReport = reportsStatus(c.cfg.Backend)
 	hello.CatalogReport = version >= 2 && !c.cfg.NoCatalog
 	hello.SubagentReport = conn.subagentReport()
+	hello.HermesSend = conn.hermesSend()
 	if err := conn.send(hello); err != nil {
 		return err
 	}

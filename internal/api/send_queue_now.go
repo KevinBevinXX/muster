@@ -41,6 +41,10 @@ const (
 	SendQueueNotQueuedNow   = "Not sent: that message is no longer queued (it is being sent, or has finished)."
 	SendQueueSendingAnother = "Not sent: another message for this window is being sent right now. Try again in a moment."
 	SendQueueWaitingNow     = "Not sent: Claude Code is waiting for you (a prompt or a question). Answer it first."
+	// A Hermes window's (docs/design/hermes.md, the gated send, step 1).
+	SendQueueHermesWaitingNow = "Not sent: Hermes is waiting for you (an approval or a question). Answer it in the terminal first."
+	SendQueueHermesBusyNow    = "Not sent: Hermes is working, and Enter would interrupt its turn. Leave it queued."
+	SendQueueHermesUnknownNow = "Not sent: muster cannot tell whether Hermes is idle, and Enter could answer a prompt it is showing. Leave it queued."
 )
 
 // handleSendQueueSendNow is POST /send-queue/{id}/send-now: send the
@@ -140,12 +144,8 @@ func (s *Server) sendQueueSendNow(w http.ResponseWriter, r *http.Request, ctx co
 	// The window's status now, read BEFORE the claim so a refusal leaves the
 	// row queued.
 	st := s.ext.Mirror.AgentState(ctx, q.t.Host, q.t.Session, q.t.Window)
-	// 🔴 NEVER INTO A WINDOW WAITING ON THE PERSON: the paste ends with Enter,
-	// which would answer the prompt on screen — confirm a highlighted option,
-	// approve a permission. The dispatcher never sends on waiting either. Busy,
-	// idle and Claude Code's "shell" (idle) are pasted into like a Send.
-	if st.Unknown == nil && st.Status == mirror.StatusWaiting {
-		refuse(http.StatusConflict, SendQueueWaitingNow, noticeWaitingNow)
+	if msg, notice := sendNowRefusal(st); msg != "" {
+		refuse(http.StatusConflict, msg, notice)
 		return
 	}
 	// The window's status time: the claim's, so the next queued message waits
@@ -182,6 +182,38 @@ func (s *Server) sendQueueSendNow(w http.ResponseWriter, r *http.Request, ctx co
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// sendNowRefusal is why a Send now into a window whose state is st is refused
+// before anything is claimed, and its notice; "" to send.
+//
+//   - 🔴 NEVER INTO A WINDOW WAITING ON THE PERSON, either runtime: the paste
+//     ends with Enter, which would answer the prompt on screen — confirm a
+//     highlighted option, approve a permission. The dispatcher never sends on
+//     waiting either.
+//   - Claude Code: busy, idle, its "shell" (idle) and unknown are pasted into
+//     like a Send — it queues typed input itself.
+//   - 🔴 Hermes: ONLY IDLE. Enter during a turn interrupts it (Hermes's
+//     default busy_input_mode), and unknown is not idle: an approval modal
+//     takes a pasted Enter as "approve once". (The hermesSend switch in the
+//     plugin refuses a Hermes window anyway until its host opts in; this rule
+//     is what holds once it has.)
+func sendNowRefusal(st mirror.AgentState) (msg, notice string) {
+	if st.Runtime == mirror.RuntimeHermes {
+		switch {
+		case st.Unknown != nil:
+			return SendQueueHermesUnknownNow, noticeHermesUnknownNow
+		case st.Status == mirror.StatusWaiting:
+			return SendQueueHermesWaitingNow, noticeHermesWaitingNow
+		case st.Status != mirror.StatusIdle:
+			return SendQueueHermesBusyNow, noticeHermesBusyNow
+		}
+		return "", ""
+	}
+	if st.Unknown == nil && st.Status == mirror.StatusWaiting {
+		return SendQueueWaitingNow, noticeWaitingNow
+	}
+	return "", ""
 }
 
 // sendQueueDispatcher is the dispatcher a Send now claims through: the running
