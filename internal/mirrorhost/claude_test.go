@@ -175,12 +175,14 @@ func TestParseActivePanesTakesEachSessionsActivePane(t *testing.T) {
 }
 
 // TestThePaneStatusIsClaudeCodesOwnAndAnythingElseIsUnknown: a pane's Status is
-// what the CLI's sessions file says — busy, idle or waiting, each kept as such
-// — and a status this side does not know is UNKNOWN (""), never idle: the send
-// queue would otherwise paste into a session it cannot read.
+// what the CLI's sessions file says — busy, idle or waiting, each kept as such;
+// "shell" (idle with a background shell running, Claude Code 2.1.289) as IDLE —
+// and a status this side does not know is UNKNOWN (""), never idle: the send
+// queue would otherwise paste into a session it cannot read. ("shell" read as
+// unknown held a free prompt's queue for as long as the background shell ran.)
 func TestThePaneStatusIsClaudeCodesOwnAndAnythingElseIsUnknown(t *testing.T) {
 	for file, want := range map[string]string{"busy": mirror.StatusBusy, "idle": mirror.StatusIdle,
-		"waiting": mirror.StatusWaiting, "compacting": "", "": ""} {
+		"waiting": mirror.StatusWaiting, "shell": mirror.StatusIdle, "compacting": "", "": ""} {
 		proc, home := newFakeProc(t), newFakeHome(t)
 		const cwd = "/w"
 		proc.add(10, 1, "claude", cwd, "claude")

@@ -84,6 +84,9 @@ func (s *Server) registerSendQueueRoutes(mux Mux) {
 	mux.HandleFunc("POST /send-queue/{id}/retry", s.requireOperatorWrite(s.handleSendQueueRetry))
 	// The plain confirm page's form for a stale Retry the BROWSER submitted.
 	mux.HandleFunc("POST /send-queue/{id}/retry/confirm", s.requireOperatorWrite(s.handleSendQueueRetryConfirm))
+	mux.HandleFunc("POST /send-queue/{id}/send-now", s.requireOperatorWrite(s.handleSendQueueSendNow))
+	// The plain confirm page's form for a stale Send now the BROWSER submitted.
+	mux.HandleFunc("POST /send-queue/{id}/send-now/confirm", s.requireOperatorWrite(s.handleSendQueueSendNowConfirm))
 }
 
 // sendQueueConfirmPath is the plain confirm page's route for a queue post.
@@ -336,7 +339,11 @@ func (s *Server) sendQueueListView(ctx context.Context, t sendqueue.Target) ui.S
 			// A cut through a character leaves invalid bytes; they are dropped.
 			preview = strings.ToValidUTF8(preview[:sendQueuePreview], "") + "…"
 		}
-		v.Items = append(v.Items, ui.SendQueueItem{ID: it.ID, State: string(it.State), Preview: preview,
+		body := ""
+		if it.State == sendqueue.Queued {
+			body = it.Body // Copy message copies all of it, not the preview.
+		}
+		v.Items = append(v.Items, ui.SendQueueItem{ID: it.ID, State: string(it.State), Preview: preview, Body: body,
 			Detail: it.Detail, Cancellable: it.State == sendqueue.Queued, Answered: answered[it.ID],
 			Retryable: sendQueueRetryable(it), Deletable: it.State.Finished(), MayHaveDelivered: it.MayHaveDelivered})
 	}
@@ -515,7 +522,7 @@ func (s *Server) handleSendQueueRetryConfirm(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "the form is too large", http.StatusRequestEntityTooLarge)
 		return
 	}
-	id, _, q, ok := s.sendQueueRetryTarget(w, r)
+	id, _, q, ok := s.sendQueueRowTarget(w, r)
 	if !ok {
 		return
 	}
@@ -539,10 +546,11 @@ func sendQueueRetryFields(r *http.Request) []ui.ComposerField {
 	return nil
 }
 
-// sendQueueRetryTarget is the {id} of a Retry route: the principal's message
-// and its window, resolved for the principal like a queue post's. ok is false
+// sendQueueRowTarget is the {id} of a Retry or Send now route: the
+// principal's message and its window, resolved for the principal like a queue
+// post's. ok is false
 // when it answered already (404: not the principal's, or no such window).
-func (s *Server) sendQueueRetryTarget(w http.ResponseWriter, r *http.Request) (int64, sendqueue.Item, sendQueueTarget, bool) {
+func (s *Server) sendQueueRowTarget(w http.ResponseWriter, r *http.Request) (int64, sendqueue.Item, sendQueueTarget, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 {
 		http.NotFound(w, r)
@@ -576,7 +584,7 @@ func (s *Server) sendQueueRetry(w http.ResponseWriter, r *http.Request, ctx cont
 			return
 		}
 	}
-	id, it, q, ok := s.sendQueueRetryTarget(w, r)
+	id, it, q, ok := s.sendQueueRowTarget(w, r)
 	if !ok {
 		return
 	}
@@ -748,6 +756,15 @@ func sendQueueNonce(id int64) string { return fmt.Sprintf("send-queue-%020d", id
 // Send — nothing reaches the host — so the message goes back to queued behind
 // the Send's turn (Outcome.Superseded) instead of being pasted into it.
 func (s *Server) sendQueueSend(ctx context.Context, it sendqueue.Item, st sendqueue.AgentState) sendqueue.Outcome {
+	return s.sendQueueDeliver(ctx, it, mirror.ExpectTurn(mirror.Turn{Since: st.Since, Pasted: st.Pasted}))
+}
+
+// sendQueueDeliver is a queued message's delivery, as sendQueueSend describes:
+// the owner's account, the row's own authorization (or its route), the host's
+// gates, then mirrorPaste into the window's Claude Code pane with opts. The
+// dispatcher's send passes the turn it decided on (mirror.ExpectTurn); a
+// person's Send now passes none, so it is pasted like a Send — busy or not.
+func (s *Server) sendQueueDeliver(ctx context.Context, it sendqueue.Item, opts ...mirror.PasteOption) sendqueue.Outcome {
 	ctx = stepup.WithAuthTime(ctx, it.StepUpAt)
 	if s.ext.Mirror == nil {
 		return sendqueue.Outcome{Detail: "Not sent: mirrored sessions are off on this server."}
@@ -790,7 +807,7 @@ func (s *Server) sendQueueSend(ctx context.Context, it sendqueue.Item, st sendqu
 		return sendQueueStale()
 	}
 	repeat, err := s.mirrorPaste(ctx, it.Target.Host, it.Target.Session, it.Target.Window, it.Body, sendQueueNonce(it.ID), mirror.PasteClaude,
-		mirror.ExpectTurn(mirror.Turn{Since: st.Since, Pasted: st.Pasted}))
+		opts...)
 	var sup *mirror.SupersededError
 	switch {
 	case repeat:

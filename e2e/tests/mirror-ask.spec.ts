@@ -401,3 +401,72 @@ test.describe('phone 412×915 touch', () => {
     await expect(hc.locator('input, textarea, button, form')).toHaveCount(0);
   });
 });
+
+// 🔴 QUEUED MESSAGES NEVER COVER THE QUESTION'S SUBMIT (the operator's report:
+// "the queued messages cover the submit button for the question, so I can't
+// submit them"). The composer — and the queue list in it — is pinned to the
+// bottom of the screen; the question card sits above it. With a full queue and
+// a long question, the card's Submit must still be reachable: scrolled to, the
+// point at its centre is the button itself, not the composer over it. At a
+// phone and at a desktop. On origin/main the card did not shrink into the room
+// left above a tall composer, so its Submit was drawn under the queue.
+for (const vp of [
+  { name: 'phone 412×915 touch', viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true },
+  { name: 'short phone 390×664 touch', viewport: { width: 390, height: 664 }, hasTouch: true, isMobile: true },
+  { name: 'desktop 1280×800', viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false },
+]) {
+  test.describe(vp.name, () => {
+    test.use({ viewport: vp.viewport, hasTouch: vp.hasTouch, isMobile: vp.isMobile, storageState: { cookies: [], origins: [] } });
+
+    test('with messages queued, the question’s Submit is not covered and submits', async ({ page }) => {
+      await openView(page);
+      // A full-looking queue: queued by the window's own route (the composer's
+      // Queue posts the same), before the question is asked.
+      const ids: number[] = [];
+      for (let i = 0; i < 6; i++) {
+        const st = await page.evaluate(async ({ host, i }) => {
+          const r = await fetch('/send-queue', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
+            body: new URLSearchParams({ host, session: 'work', window: '@1', text: `queued while a question is open, number ${i}` }),
+          });
+          return r.status;
+        }, { host, i });
+        expect(st, 'queued').toBe(204);
+      }
+      await page.reload();
+      await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 20_000 });
+      const queuedRows = page.locator('#mv-queue [data-queue-state="queued"]');
+      await expect(queuedRows).toHaveCount(6);
+      for (const id of await queuedRows.evaluateAll((els) => els.map((e) => Number(e.getAttribute('data-queue-id'))))) ids.push(id);
+
+      try {
+        const toolID = `toolu_e2e_cover_${vp.viewport.width}_${stamp}`;
+        await registered(toolID, { qs: longQuestions });
+        const c = page.locator(`#mv-asks [data-ask-live][data-ask-tool="${toolID}"]`);
+        await expect(c, `the question is drawn (log:\n${mirrorLog})`).toHaveAttribute('data-ask-state', 'pending', { timeout: 10_000 });
+        const submit = c.getByRole('button', { name: 'Submit answers' });
+        await submit.scrollIntoViewIfNeeded();
+        const hit = await submit.evaluate((b) => {
+          const r = b.getBoundingClientRect();
+          const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+          return { inside: !!at && (at === b || b.contains(at)), at: at ? (at.id || at.tagName) + ' ' + (at.className || '').toString().slice(0, 60) : 'nothing', top: r.top, bottom: r.bottom, vh: window.innerHeight };
+        });
+        expect(hit.inside, `the point at Submit's centre is Submit, not ${hit.at} (Submit ${hit.top}–${hit.bottom} of ${hit.vh})`).toBe(true);
+        // And it can be used: an answer submitted with the queue still drawn.
+        await c.locator('fieldset').nth(0).getByText('Blue', { exact: true }).click();
+        await c.locator('fieldset').nth(1).getByText('Patch', { exact: true }).click();
+        await c.locator('fieldset').nth(2).getByText('Alpha', { exact: true }).click();
+        if (vp.hasTouch) await submit.tap();
+        else await submit.click();
+        await expect(c, `submitted (log:\n${mirrorLog})`).toHaveAttribute('data-ask-state', 'answered', { timeout: 10_000 });
+      } finally {
+        // Tidy: the queued messages are cancelled, so no later test sees them.
+        for (const id of ids) {
+          await page.evaluate(async (id) => (await fetch(`/send-queue/${id}/cancel`, { method: 'POST', credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })).status, id);
+        }
+      }
+    });
+  });
+}
