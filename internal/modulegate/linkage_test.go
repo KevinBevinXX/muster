@@ -130,6 +130,9 @@ var notLinkedLedger = map[string]string{
 
 	"internal/provision/provisiontest": "the driver contract suite, run by driver " +
 		"implementations from their own _test.go files. Same reason as internal/dbtest.",
+	"images/hermes-agent/smoke": "the hermes image's smoke test (`make hermes-smoke`, `go run`): it starts " +
+		"Docker containers, a stub model and a fake muster relay on loopback, so it is a harness run by hand " +
+		"against a built image and must never be reachable from a shipped binary.",
 }
 
 // TestTheHTTPLayerLinksIntoABinary is the gate that makes "muster serves" a
