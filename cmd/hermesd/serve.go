@@ -107,10 +107,12 @@ func serve() error {
 	}
 	// SIGTERM: no new turns; the gateway drains (the turns in flight see their
 	// runs end) and is waited for, then the listener closes.
+	log.Printf("hermesd: shutting down: no new turns; waiting for the gateway to drain")
 	srv.shutdown()
 	<-supDone
 	shut, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = hs.Shutdown(shut)
+	err = hs.Shutdown(shut)
+	log.Printf("hermesd: stopped (listener closed: %v)", err)
 	return nil
 }
