@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"io"
+	"log"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -62,5 +64,28 @@ func TestAChatDoorRoleReadFailureDoesNotReopenAnAdminsAppGrant(t *testing.T) {
 	fail.Store(false)
 	if out := status(); !strings.Contains(out, `"approved"`) {
 		t.Fatalf("after the blip: %s", out)
+	}
+}
+
+// TestAnUnreadableRoleIsMemberAndMarkedUncertain pins the fallback's VALUE:
+// for a user whose real role is ADMIN, a failed role read yields member, with
+// the uncertain flag. The flag alone is not the guarantee — every reader of
+// Role that does not look at the flag (the approval relay, the admin gate, the
+// App gate) relies on the fallback being least privilege. roleOf, the other
+// reader, is principalFor's role and must agree.
+func TestAnUnreadableRoleIsMemberAndMarkedUncertain(t *testing.T) {
+	s := New(nil, AuthConfig{}, log.New(io.Discard, "", 0))
+	var fail atomic.Bool
+	s.UseExtensions(Extensions{Users: failingUsers{fail: &fail}})
+	if p := s.principalFor(context.Background(), authz.OperatorUserID, authz.ViaSession); p.Role != authz.RoleAdmin || p.RoleUncertain {
+		t.Fatalf("control: a readable admin reads %+v", p)
+	}
+	fail.Store(true)
+	p := s.principalFor(context.Background(), authz.OperatorUserID, authz.ViaSession)
+	if p.Role != authz.RoleMember || !p.RoleUncertain {
+		t.Fatalf("an admin whose role cannot be read is %+v; want member AND uncertain", p)
+	}
+	if r := s.roleOf(context.Background(), authz.OperatorUserID); r != authz.RoleMember {
+		t.Fatalf("roleOf on an unreadable admin = %q; want member (principalFor's fallback)", r)
 	}
 }

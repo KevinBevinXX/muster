@@ -270,3 +270,31 @@ func TestReconcileNeverActsOnAnUncertainRole(t *testing.T) {
 		}
 	}
 }
+
+// TestTheProxyNeverChoosesACredentialOnAnUncertainRole is the BACKSTOP behind
+// the connect door's 503: a request that reaches Proxy.Serve with an uncertain
+// principal (a door that forgot the 503) gets a retryable 503 and NO
+// credential — the upstream sees nothing. Control: the same request with a
+// certain role is forwarded with the credential.
+func TestTheProxyNeverChoosesACredentialOnAnUncertainRole(t *testing.T) {
+	up := newUpstream(t)
+	host := "api.fake.test:" + up.port()
+	p := &connectors.Proxy{Store: approvedStub{c: connectors.Connector{Name: "svc", Hosts: []string{host},
+		Scheme: connectors.SchemeBearer}}, Policy: testPolicy()}
+	do := func(uncertain bool) *httptest.ResponseRecorder {
+		ctx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 1, Role: authz.RoleMember,
+			Via: authz.ViaConnect, RoleUncertain: uncertain})
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/connect/svc/"+host+"/x", nil).WithContext(ctx)
+		p.Serve(w, r, connectors.Caller{AgentID: 1, AgentName: "a"}, "svc", host, "x")
+		return w
+	}
+	w := do(true)
+	if w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") == "" || up.hits.Load() != 0 {
+		t.Fatalf("an uncertain role: %d (Retry-After %q), upstream hit %d time(s); want a retryable 503 and nothing sent",
+			w.Code, w.Header().Get("Retry-After"), up.hits.Load())
+	}
+	if w := do(false); w.Code != http.StatusOK || up.last(t).Header.Get("Authorization") == "" {
+		t.Fatalf("control: a certain role: %d, Authorization %q", w.Code, up.last(t).Header.Get("Authorization"))
+	}
+}

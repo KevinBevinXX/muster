@@ -542,10 +542,15 @@ func TestExpiredTokensAreSweptFromTheCache(t *testing.T) {
 	}
 }
 
-// TestTheInstallationListIsReadFromGitHubsLiteralJSON (M3): the installation
-// list as GitHub sends it, verbatim — the account's id, login and type under
-// GitHub's own field names. The allowlisted account is read; an Enterprise
-// account carrying the SAME numeric id (another numbering space) is not.
+// TestTheInstallationListIsReadFromGitHubsLiteralJSON (M3, M6): the
+// installation list as literal JSON SHAPED BY GITHUB'S SCHEMA, not the
+// production struct re-encoded. In the REST OpenAPI description
+// `installation.account` is anyOf[simple-user, enterprise]: a simple-user (a
+// user or an organization) has id, login and type; an ENTERPRISE has id, slug,
+// name, node_id … and NO type and NO login. The allowlisted organization is
+// read; an enterprise carrying the SAME numeric id (another numbering space) is
+// not — and because it has no `type`, only an ALLOWLIST of types refuses it (a
+// denylist of "Enterprise" would let it through).
 func TestTheInstallationListIsReadFromGitHubsLiteralJSON(t *testing.T) {
 	app, f, _ := newTestApp(t) // allowlist: Example-Org = 4200
 	f.mu.Lock()
@@ -553,14 +558,17 @@ func TestTheInstallationListIsReadFromGitHubsLiteralJSON(t *testing.T) {
 		{"id": 42, "app_id": 12345, "target_type": "Organization",
 		 "account": {"login": "example-org", "id": 4200, "type": "Organization", "site_admin": false}},
 		{"id": 55, "app_id": 12345, "target_type": "Enterprise",
-		 "account": {"slug": "some-enterprise", "login": "some-enterprise", "id": 4200, "type": "Enterprise"}}
+		 "account": {"id": 4200, "slug": "some-enterprise", "name": "Some Enterprise", "node_id": "E_example",
+		  "html_url": "https://github.com/enterprises/some-enterprise", "website_url": null, "description": null,
+		  "created_at": "2030-01-01T00:00:00Z", "updated_at": "2030-01-01T00:00:00Z",
+		  "avatar_url": "https://avatars.githubusercontent.com/b/1"}}
 	]`
 	f.mu.Unlock()
 	logins, err := app.Check(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(logins, ",") != "example-org" {
+	if strings.Join(logins, "|") != "example-org" {
 		t.Fatalf("installations read from GitHub's JSON = %q, want exactly example-org (not the enterprise with the same id)", logins)
 	}
 	if got := app.Renames(); len(got) != 0 {

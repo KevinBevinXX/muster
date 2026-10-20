@@ -102,13 +102,10 @@ func (s *Server) agentPrincipal(ctx context.Context, a agents.Agent, via authz.V
 // ⚠ WITH NO users STORE WIRED (unit tests over fakes) the operator — user 1 —
 // is admin and everyone else is a member: the seeded row, without a database.
 // cmd/muster-server always wires the store beside the database.
+//
+// It IS principalFor's role: the fallback is written once, there.
 func (s *Server) roleOf(ctx context.Context, uid int64) authz.Role {
-	r, err := s.roleOfChecked(ctx, uid)
-	if err != nil {
-		s.logger.Printf("principal: reading user %d's role: %v (acting as member)", uid, err)
-		return authz.RoleMember
-	}
-	return r
+	return s.principalFor(ctx, uid, "").Role
 }
 
 // roleOfChecked is roleOf WITHOUT the member fallback: a failed read is

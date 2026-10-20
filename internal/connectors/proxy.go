@@ -22,6 +22,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/authz"
 )
 
 // Policy is the proxy's network policy for upstream connections.
@@ -39,6 +41,10 @@ type Policy struct {
 	// Resolve replaces the system resolver. nil means net.DefaultResolver.
 	Resolve func(ctx context.Context, host string) ([]netip.Addr, error)
 }
+
+// ErrRoleUncertain refuses access decided on a fallback role (the caller's
+// owner's role could not be read). Retryable.
+var ErrRoleUncertain = errors.New("connectors: the agent's owner's role could not be read; retry shortly")
 
 // ErrForbiddenAddress is the dial refusal for a non-public destination.
 var ErrForbiddenAddress = errors.New("connectors: refusing to connect to a non-public address")
@@ -239,6 +245,13 @@ type Access struct {
 // explicitly (the request route / the connector_request tool), which is a
 // deliberate act the operator then sees as a new request.
 func (p *Proxy) CheckAccess(ctx context.Context, caller Caller, connector, reason string) (Access, error) {
+	// 🔴 BACKSTOP: NEVER DECIDE ACCESS ON A FALLBACK ROLE. The connect door
+	// already answers 503 for an uncertain principal (api.requireConnectorAgent);
+	// this holds for any future door that forgets to, so no credential is ever
+	// chosen — stored or App — for a role that could not be read.
+	if pr, ok := authz.From(ctx); ok && pr.RoleUncertain {
+		return Access{}, ErrRoleUncertain
+	}
 	g, err := p.Store.LatestGrant(ctx, caller.AgentID, connector)
 	switch {
 	case err == nil:
@@ -366,6 +379,11 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 	}
 
 	acc, err := p.CheckAccess(ctx, caller, connector, "")
+	if errors.Is(err, ErrRoleUncertain) {
+		w.Header().Set("Retry-After", "5")
+		refuse(http.StatusServiceUnavailable, RefusalBody{Error: err.Error()}, "role uncertain")
+		return
+	}
 	if errors.Is(err, ErrTooManyPending) {
 		refuse(http.StatusTooManyRequests, RefusalBody{Error: err.Error()}, "too many pending requests")
 		return
