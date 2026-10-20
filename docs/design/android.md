@@ -23,8 +23,8 @@ The design, in one line each:
   bubbles, widgets and live status. The web UI keeps updating from the server.
 - **Push:** UnifiedPush with a self-hosted ntfy distributor. UnifiedPush
   endpoints are Web Push endpoints with VAPID, so muster's existing sender is
-  reused. The server change is one operator-configured host in the push
-  allowlist, dialled through an SSRF-safe dialer.
+  reused. The server change is one operator-configured exact host in the
+  push allowlist.
 - **Auth:** a new **device credential**, minted from a signed-in WebView
   session, so "a token cannot mint a token" still holds. It is revoked by
   account disable, the session cutoff and Sign out everywhere, and it is
@@ -39,7 +39,8 @@ The design, in one line each:
   session, conversation shortcuts, a channel per event family, runtime
   POST_NOTIFICATIONS. A Live Update only for an agent run the user started;
   fleet status is a plain ongoing notification.
-- **Chat heads:** the Bubbles API, never SYSTEM_ALERT_WINDOW.
+- **Chat heads:** the Bubbles API now. An always-on SYSTEM_ALERT_WINDOW
+  overlay is a later, opt-in phase.
 - **Widgets:** Jetpack Glance, updated from push.
 - **Distribution:** sideloaded, signed APKs with a self-hosted update channel
   and an in-app updater. The package name and signing key are chosen now and
@@ -67,7 +68,11 @@ The design, in one line each:
 - Google Play distribution, FCM, or any dependency on Google Play services.
 - A rewrite of muster's screens in Compose. Only the bubble's chrome, the
   widgets and the pairing and settings screens are native.
-- Always-on floating heads through SYSTEM_ALERT_WINDOW.
+- Always-on floating heads in the first release. They are
+  [Phase 6](#phase-6-always-on-overlay-later-opt-in), later and opt-in.
+- Passkey sign-in inside the shell in the first release. Password sign-in
+  works without it, and it is the optional
+  [Phase 7](#phase-7-asset-links-and-passkeys-in-the-shell-later-optional).
 - An app-owned background service that watches agents.
 - Action buttons in the **web** service worker. `web/static/sw.js` keeps
   rendering `actions: []` (see [reconciling the sw.js test](#reconciling-the-swjs-test)).
@@ -75,10 +80,21 @@ The design, in one line each:
 ## Operator decisions
 
 - **Must-haves:**
-  - actionable notifications: inline reply, and Send now / Approve / Cancel,
-    each gated by a biometric step-up;
+  - actionable notifications. The option the operator selected read:
+    "Actionable notifications: inline reply (type into the notification),
+    Send now / Approve / Cancel buttons — gated by a biometric step-up";
   - overlay chat heads;
   - home-screen widgets and live status.
+- **Step-up on the phone is one rule:** every state-changing action is signed
+  with the biometric-bound key, refusals included. The operator chose biometric
+  gating, and one rule is simpler than mirroring the web's per-route gates
+  ([which actions are gated](#which-actions-are-gated)). Inline replies use the
+  held-reply flow ([inline reply](#inline-reply)).
+- **Chat heads: Bubbles now, an overlay as an opt-in later.** The operator
+  accepted the Bubbles API in place of always-on chat heads for the first
+  release. An always-on SYSTEM_ALERT_WINDOW overlay, which a sideloaded app
+  may hold, is a later opt-in
+  [Phase 6](#phase-6-always-on-overlay-later-opt-in).
 - **Distribution:** private sideload for now, with self-hosted over-the-air
   updates. No Play Store.
 - **Push transport:** whichever the research recommends. It recommends
@@ -119,8 +135,8 @@ The reasons for the shell:
    saves no native work.
 2. The shell keeps muster's htmx UI and its server-side updates.
 3. A WebView runs service workers like Chrome, so muster's offline shell works.
-4. Passkeys can work in a WebView once muster serves Digital Asset Links
-   (UNVERIFIED in practice: [Phase 0](#phase-0-spikes) S2).
+4. Sign-in in the WebView is muster's own sign-in page. The password works
+   there unchanged; passkeys there are an optional later item (Phase 7).
 5. No third-party JS runtime to keep current.
 
 ### The shell
@@ -197,18 +213,15 @@ The change:
    names, no suffixes, no wildcards. Empty by default, so nothing changes until
    the operator sets it. The `https`-only, default-port rule stays, so the
    ntfy server must be served on 443.
-2. **The non-global-address rule.** UnifiedPush's server guidance says a server
-   "should reject push endpoints that resolve to non-global IP addresses". The
-   browser hosts keep today's plain client. A request to an **operator** host
-   is sent through the same dial policy the connector proxy uses
-   (`internal/connectors/proxy.go`): it resolves the name itself, refuses
-   any non-public address, and dials the checked address so that DNS rebinding
-   cannot slip past. The allowlist names who may be dialled, and the dial
-   policy checks where the connection lands.
-   - ⚠ If the deployment's DNS answers the ntfy name with a private address
-     from inside the cluster (split horizon), this rule refuses every send.
-     That is the rule working, not a bug; the fix is public resolution for that
-     name. This is spike S10.
+2. **No address check on the operator host.** UnifiedPush's server guidance
+   says a server "should reject push endpoints that resolve to non-global IP
+   addresses". That guards a server that accepts *any* host a member names.
+   Here the exact-host allowlist already bounds what muster can reach: a member
+   chooses only the path on a host the operator named. An address check would
+   also refuse an in-cluster ntfy whose name resolves to a private address
+   under split-horizon DNS, which is a reasonable deployment. So the operator
+   host is sent with today's client, like the browser hosts. Spike S10 checks
+   that muster and the phone reach ntfy by the same name.
 3. **A test push on registration.** As UnifiedPush recommends, a new device
    endpoint is accepted only after muster has sent it a VAPID test push and got
    a 2xx response.
@@ -288,9 +301,12 @@ A notification action has no browser session, so none of this applies as is.
   - the pairing session's sign-in is at or before the account's session
     cutoff (moved by a disable or a password reset);
   - the pairing session's sign-in is at or before the account's latest
-    **Sign out everywhere**. This is stricter than `mst_` tokens, which Sign
-    out everywhere does not revoke today. A phone is a session-like thing,
-    and "everywhere" should include it.
+    **Sign out everywhere**. This one is a **recommendation** of this design,
+    not an operator requirement: it is what that button is expected to mean.
+    It is stricter than `mst_` tokens, which Sign out everywhere does not
+    revoke today. A phone is a session-like thing, and "everywhere" should
+    include it. It gets its own [decisions.md](../decisions.md) note (server
+    change 25).
 - **Account → Devices** lists each device: its name, app version, when it was
   paired, when it was last seen, and whether push is registered. Each has a
   **Remove** button. The 20-device limit per owner that push subscriptions
@@ -386,7 +402,7 @@ confirmed.
 | action | web route today | web gate | native gate |
 |---|---|---|---|
 | Send now | `POST /send-queue/{id}/send-now` | fresh sign-in (12 h) | biometric signature |
-| Cancel a queued message | `POST /send-queue/{id}/cancel` | none | biometric signature (operator decision) |
+| Cancel a queued message | `POST /send-queue/{id}/cancel` | none | biometric signature |
 | Approve a reply draft | `POST /plugins/drafts/{id}/approve` | fresh sign-in (12 h) | biometric signature |
 | Reject a reply draft | `POST /plugins/drafts/{id}/reject` | none | biometric signature |
 | Answer an ask (option or text) | `POST /attention/asks/{id}/answer` | none | biometric signature |
@@ -394,26 +410,29 @@ confirmed.
 | Message an agent | `POST /agents/{name}/send` | none | biometric signature |
 | Queue into a mirrored window | `POST /send-queue` | fresh sign-in (12 h) | biometric signature |
 
-The native rule is one rule: **every action that changes server state is
-signed**. It is stricter than the web, where refusing (Cancel, Reject,
-Dismiss) needs no fresh sign-in because "refusing to send is never the risky
-direction". On a phone a lost device credential is the threat, and a single
-rule leaves nothing to get wrong per action. Relaxing the refusals is
-[open question](#open-questions) 2.
+**Decided by the operator: one rule. Every action that changes server state
+is signed.** The operator chose biometric gating for the phone's actions, and
+one rule is simpler than mirroring the web's per-route gates. It is stricter
+than the web, where refusing (Cancel, Reject, Dismiss) needs no fresh sign-in
+because "refusing to send is never the risky direction". On a phone a lost
+device credential is the threat, and a single rule leaves nothing to get wrong
+per action.
 
 ### Native passkeys are not on the path
 
-A passkey assertion made by a native app presents an origin of
-`android:apk-key-hash:<hash of the signing certificate>`, not `https://…`.
-muster's passkeys are GoTrue's, and whether GoTrue accepts such an origin in
-its allowed-origins setting is UNVERIFIED (S1). The device key above does not
-depend on it.
+Neither the step-up nor sign-in depends on passkeys:
 
-Passkey **sign-in inside the WebView** is a separate question. The WebView
-supports Credential Manager in its "for app" mode, given Digital Asset Links,
-but without conditional mediation, and which origin it presents is UNVERIFIED
-(S2). If it presents the app origin and GoTrue refuses it, sign-in in the shell
-falls back to the password, which stays mandatory in muster anyway.
+- **Step-up** uses the Keystore device key above. A passkey assertion made by
+  a native app presents an `android:apk-key-hash:<hash of the signing
+  certificate>` origin, not `https://…`, and whether GoTrue accepts that origin
+  is UNVERIFIED.
+- **Sign-in in the shell** uses muster's sign-in page with the password, which
+  stays mandatory in muster anyway.
+
+Passkey sign-in inside the WebView (Credential Manager's "for app" mode, which
+needs Digital Asset Links) is the optional
+[Phase 7](#phase-7-asset-links-and-passkeys-in-the-shell-later-optional), with
+its spikes S1 and S2.
 
 ## Server changes
 
@@ -422,15 +441,15 @@ free ones when each phase lands.
 
 **Configuration**
 
-1. `MUSTER_PUSH_EXTRA_HOSTS`: operator push hosts (exact names), dialled
-   through the connector dial policy (non-global addresses refused).
-2. `MUSTER_ANDROID_APP`: the package name and the SHA-256 fingerprints of the
-   signing certificates, for asset links. Unset means no asset-links file and
-   no pairing.
+1. `MUSTER_PUSH_EXTRA_HOSTS`: operator push hosts (exact names, `https`,
+   default port).
+2. *Later, optional (Phase 7):* `MUSTER_ANDROID_APP`: the package name and the
+   SHA-256 fingerprints of the signing certificates, for asset links. Unset
+   means no asset-links file. Pairing does not depend on it.
 3. `MUSTER_ANDROID_UPDATE_URL` (optional): the update channel's manifest URL,
    which paired devices read from `/api/device/config`.
-4. Rows for all three in [configuration.md](../configuration.md), which a test
-   requires.
+4. Rows for each variable in [configuration.md](../configuration.md), which a
+   test requires, added in the phase that adds the variable.
 
 **Migrations**
 
@@ -482,7 +501,7 @@ free ones when each phase lands.
     - `POST /api/device/actions/plugins/drafts/{id}/reject`
     - `POST /api/device/actions/agents/{name}/send`
 
-**Public routes**
+**Public routes (later, optional: Phase 7)**
 
 20. `GET /.well-known/assetlinks.json`: `delegate_permission/common.get_login_creds`
     and `delegate_permission/common.handle_all_urls` for the configured
@@ -491,8 +510,8 @@ free ones when each phase lands.
 
 **Push and UI**
 
-21. `AllowedPushService` takes the operator hosts (item 1); the sender picks
-    the dial policy by host.
+21. `AllowedPushService` also admits the operator hosts (item 1), by exact
+    name only; the sender is unchanged.
 22. Payload v2 and the `message`, `queue` and `status` events for `android`
     devices; the silent `resolved` withdrawal for them.
 23. A compact chat layout for a bubble (a query parameter on the existing
@@ -504,7 +523,8 @@ free ones when each phase lands.
 
 25. [decisions.md](../decisions.md) entries: native notification actions, and
     why the web worker still has none; the device key as a freshness source;
-    device credentials revoked by Sign out everywhere.
+    device credentials revoked by Sign out everywhere (a recommendation of
+    this design, recorded as the expected meaning of that button).
 26. A route ledger test: every action id payload v2 can name maps to a
     registered `/api/device/actions/*` route, and every such route is in the
     ledger. This is the native counterpart of the service-worker test below.
@@ -588,11 +608,66 @@ signed action) and its own [decisions.md](../decisions.md) entry (item 25).
   - a bubble exists only while that conversation has a notification;
   - the user chooses, per app and per conversation, whether bubbles appear;
     only priority conversations bubble automatically;
-  - there is no always-on floating head.
-- **Why not an overlay:** SYSTEM_ALERT_WINDOW needs a persistent service to host
-  the window, which runs into the foreground-service limits below, and since
-  Android 12 an overlay's touches are untrusted unless it is mostly
-  transparent. It stays a possible later opt-in experiment, not a plan.
+  - there is no always-on floating head. That is
+    [Phase 6](#phase-6-always-on-overlay-later-opt-in).
+
+## Always-on overlay (later, opt-in)
+
+The operator wants chat heads that stay on screen without a notification. A
+sideloaded app may ask for SYSTEM_ALERT_WINDOW ("display over other apps"), so
+this is buildable. It is a later phase, off by default, turned on per phone in
+the app's settings.
+
+- **The permission.** The user grants it in Settings, through
+  `ACTION_MANAGE_OVERLAY_PERMISSION`. The app re-checks `canDrawOverlays()`
+  on every start and turns the overlay off, saying why, when it is revoked.
+- **A foreground service with a declared type.** An overlay window lives only
+  as long as something hosts it, so a foreground service owns the
+  `TYPE_APPLICATION_OVERLAY` window. Since Android 14 every foreground service
+  declares a `foregroundServiceType` and its matching permission:
+  - **`specialUse`**, with its required subtype property naming the use
+    ("chat-head overlay"). It is the only fitting type;
+  - not `dataSync`: Android 15 caps it at 6 h per 24 h, and it cannot start
+    from `BOOT_COMPLETED`;
+  - not `remoteMessaging`: that type is for transferring text messages, and
+    this service transfers nothing.
+  - The service shows its own ongoing notification, which is the cost of the
+    overlay.
+- **Its battery cost.** The service holds no socket. ntfy already does, and
+  the head's badge and preview are updated by the same pushes as the widgets.
+  Its cost is one resident process and one ongoing notification. No source
+  gives a figure: spike S6 measures it against the ntfy baseline (about 0–1 %
+  per 17 h, by ntfy's own claim).
+- **Android 12's untrusted touches.** A `TYPE_APPLICATION_OVERLAY` window is
+  untrusted: a touch that would pass *through* it to another app is blocked
+  unless the window is at most 0.8 opaque, or invisible. So:
+  - the head is a small window sized to its content, with
+    `FLAG_NOT_TOUCH_MODAL` and `FLAG_NOT_FOCUSABLE`, so touches outside it reach
+    the app below normally;
+  - the expanded chat panel is focusable while open, and it closes on an outside
+    tap instead of letting the tap through;
+  - no full-screen translucent layer, ever.
+- **Android 15's foreground-service gating.** An app holding the permission may
+  start a foreground service from the background **only while it has a visible
+  overlay window**. After a reboot, or after the system kills the process, there
+  is no visible window, so the service cannot restart itself from the
+  background. The head comes back when the user opens the app or taps a muster
+  notification, both of which are allowed starts. The app says so in the
+  overlay setting, rather than promising "always".
+- **What it shows:** the same conversations as the bubbles, using the same
+  compact chat page in a WebView, under the same gates. A head is not drawn on
+  the lock screen.
+- **Holding the permission also exempts the app from background
+  activity-start limits.** The design does not rely on that: the step-up
+  activity is still started only from a notification or from the head's own
+  tap.
+- **Spike S6, moved here from Phase 0:** check the platform's rules for
+  granting the permission (including the Android Go limitation), confirm that
+  `specialUse` is accepted for this use on current Android, measure battery
+  over 24 h with the head on, and measure how restarts behave on Android 15 and
+  later.
+- **Effort:** server 0–0.5 days (a feature switch in `/api/device/config`),
+  app 6–8 days including S6.
 
 ## Widgets
 
@@ -667,9 +742,9 @@ signed action) and its own [decisions.md](../decisions.md) entry (item 25).
   debug-signed test APK. The operator signs the release offline with
   `apksigner` (zipalign first; v2 and v3 schemes) and publishes it
   ([release pipeline](#release-pipeline)).
-- Record the certificate's SHA-256 fingerprint. It goes into
-  `MUSTER_ANDROID_APP` (asset links), and into the developer verification
-  registration.
+- Record the certificate's SHA-256 fingerprint. It goes into the developer
+  verification registration, and into `MUSTER_ANDROID_APP` if the optional
+  asset links are built (Phase 7).
 - Key rotation, if ever needed, uses `apksigner rotate` and a signing lineage.
 
 ### 🔴 Android developer verification
@@ -737,35 +812,55 @@ in muster; **app** is work in the app repo.
 
 | phase | what | server | app | depends on |
 |---|---|---|---|---|
-| **0** | Spikes S1–S12 ([below](#phase-0-spikes)) | 1 | 3–4 | — |
-| **1** | Shell and push. Server: items 1, 2, 4, 5, 6, 8–14, 20, 21, 24, 27; Account → Devices. App: project and modules, server-URL screen, hardened WebView, bridge, pairing, encrypted token store, UnifiedPush registration, channels, POST_NOTIFICATIONS, plain notifications from payload v2, the CI build and the offline signing script. | 6–8 | 7–9 | 0 |
+| **0** | Spikes S3–S5 and S7–S12 ([below](#phase-0-spikes)) | 0.5 | 2–3 | — |
+| **1** | Shell and push. Server: items 1, 4, 5, 6, 8–14, 21, 24, 27; Account → Devices. App: project and modules, server-URL screen, hardened WebView with password sign-in, bridge, pairing, encrypted token store, UnifiedPush registration, channels, POST_NOTIFICATIONS, plain notifications from payload v2, the CI build and the offline signing script. | 5–6 | 7–9 | 0 |
 | **2** | Actionable notifications. Server: items 7, 16–19, 22 (`queue`, `message`), 25, 26. App: the step-up key, the invisible activity, the signed action client, inline reply with the held reply, MessagingStyle conversations and shortcuts, lock-screen public versions. | 6–8 | 7–9 | 1 |
 | **3** | Bubbles. Server: item 23. App: bubble metadata, the expanded activity, per-conversation bubble settings. | 1–2 | 3–4 | 2 |
 | **4** | Widgets and live status. Server: item 15, the `status` event with coalescing. App: two Glance widgets, the fleet ongoing notification, the Live Update for user-started runs, the WorkManager catch-up. | 3–4 | 5–6 | 1 |
 | **5** | Updates and verification. Server: item 3. App: the in-app updater (manifest, sha256 and certificate checks, PackageInstaller, pending-user-action handling), the channel publishing script, developer verification registration. | 0.5–1 | 4–5 | 1 |
+| *6, later, opt-in* | The always-on overlay ([below](#phase-6-always-on-overlay-later-opt-in)), with spike S6. Server: a feature switch in `/api/device/config`. App: the overlay permission flow, the `specialUse` foreground service, the head and its expanded panel, restart handling, the battery measurement. | 0–0.5 | 6–8 | 3 |
+| *7, later, optional* | Asset links and passkeys in the shell ([below](#phase-7-asset-links-and-passkeys-in-the-shell-later-optional)), with spikes S1 and S2. Server: items 2 and 20, and the edge serving the file without a redirect. App: Credential Manager in the WebView. | 1–1.5 | 1–2 | 1 |
 
-Totals: **server 17.5–24 days**, **app 29–37 days**. Phases 3, 4 and 5 are
+Totals for Phases 0–5: **server 16–21.5 days**, **app 28–36 days**. The later
+Phases 6 and 7 add **server 1–2** and **app 7–10**. Phases 3, 4 and 5 are
 independent after their dependencies. The shortest useful slice is Phases 0–2:
 a paired phone with signed Send now, Approve and Cancel, and inline replies.
 
 ### Phase 0 spikes
 
-Each spike is the UNVERIFIED item a decision rests on.
+Each spike is the UNVERIFIED item a decision rests on. S1 and S2 belong to
+Phase 7, and S6 to Phase 6; the numbers are kept so references stay stable.
 
 | id | question | decides |
 |---|---|---|
-| S1 | Does GoTrue accept an `android:apk-key-hash:` entry among its allowed WebAuthn origins? | whether native passkeys are ever an option; the design does not need them |
-| S2 | Which origin does a WebView in `WEB_AUTHENTICATION_SUPPORT_FOR_APP` mode put in clientDataJSON, and from which WebView version does it work? | whether passkey sign-in works in the shell, or the shell uses the password |
 | S3 | Can BiometricPrompt sign with an EC P-256 key through a CryptoObject from a translucent, UI-less FragmentActivity started by a notification action, on the lock screen and unlocked? (And: is an activity really required?) | the step-up activity's shape |
 | S4 | Can a key use `AUTH_BIOMETRIC_STRONG \| AUTH_DEVICE_CREDENTIAL` with a timeout of 0, so a phone without a strong biometric can still sign? | [open question](#open-questions) 3 |
 | S5 | Does Android's Live Update policy exclude "activities triggered by other parties" and "ambient information"? Are promoted notifications available on a sideloaded app? | whether only user-started runs are promoted (the design assumes yes) |
-| S6 | SYSTEM_ALERT_WINDOW policy text, for the record | nothing now; the overlay stays out of scope |
 | S7 | Developer verification: are browser and file-manager installs blocked in the enforcing countries; can limited-distribution devices be swapped; is "no commercial intent" binding; how do unattended updates of an unregistered app behave after the global rollout? | full or limited account, and the timing |
 | S8 | Obtainium's unattended-install mechanism; F-Droid index v2 client compatibility | whether Obtainium is a full alternative channel |
 | S9 | Does ntfy require VAPID on `up*` publishes; which foreground-service type does ntfy use; does the embedded-FCM distributor need a Firebase project? | ntfy's access config, battery claims, the fallback |
-| S10 | From inside the deployment, does the ntfy host resolve to a public address, so the non-global-address rule admits it? | whether the deployment needs DNS changes before Phase 1 |
+| S10 | Does muster reach ntfy by the exact name in the endpoint ntfy gives the phone, on `https` and the default port, whether that name resolves inside the cluster (split horizon) or publicly? | ntfy's base URL, and the value of `MUSTER_PUSH_EXTRA_HOSTS` |
 | S11 | Do the phone's launcher and lock screen show only the public version of a `VISIBILITY_PRIVATE` notification? | whether WHAT can be shown unlocked |
 | S12 | Do CSS `env(safe-area-inset-*)` values work in an edge-to-edge WebView? | whether the page or the shell pads for insets |
+
+### Phase 6: always-on overlay (later, opt-in)
+
+The design is in [always-on overlay](#always-on-overlay-later-opt-in). Its spike:
+
+| id | question | decides |
+|---|---|---|
+| S6 | The platform's rules for granting SYSTEM_ALERT_WINDOW (including the Android Go limitation); whether `specialUse` is accepted for an overlay host on current Android; the battery cost over 24 h against the ntfy baseline; how restarts behave under Android 15's gating | whether the overlay ships, and what its setting promises |
+
+### Phase 7: asset links and passkeys in the shell (later, optional)
+
+Not needed for anything above: sign-in in the shell uses the password, and the
+step-up uses the Keystore device key. Built only if passkey sign-in inside the
+app is wanted.
+
+| id | question | decides |
+|---|---|---|
+| S1 | Does GoTrue accept an `android:apk-key-hash:` entry among its allowed WebAuthn origins? | whether native passkeys are ever an option |
+| S2 | Which origin does a WebView in `WEB_AUTHENTICATION_SUPPORT_FOR_APP` mode put in clientDataJSON, and from which WebView version does it work? | whether passkey sign-in works in the shell with no GoTrue change |
 
 Also not verified, and not blocking: the Android 17 release date; whether
 Android 16 changed widgets; Compose's minSdk; Tink with DataStore as official
@@ -784,6 +879,13 @@ guidance; the Play fee.
   works.
 - **The ntfy app's permanent notification** and its battery use are the price
   of not using FCM.
+- **The push allowlist trusts the operator's host list.** With no address
+  check, a wrong entry in `MUSTER_PUSH_EXTRA_HOSTS` lets members make muster
+  POST to that host. The list is exact names, set only by the operator, and
+  empty by default.
+- **The overlay (Phase 6) cannot promise "always".** Under Android 15's
+  gating it does not come back by itself after a reboot or a kill, and it costs
+  a second ongoing notification and a resident process.
 - **Developer verification** could make sideloaded updates noisy or blocked
   from 2027 if the app is not registered, or if the registration terms change.
 - **Android policy churn:** background starts were tightened in Android 14, 15
@@ -801,9 +903,9 @@ guidance; the Play fee.
    Releases and Obtainium work without a token and holds nothing sensitive
    (the server URL is entered at run time and the release key is offline).
    **Recommended: public.**
-2. **Refusals on the phone:** keep Cancel, Reject and Dismiss behind the
-   biometric (the decided default), or match the web, where refusing needs no
-   fresh sign-in?
+2. ~~Refusals on the phone~~ **Decided:** Cancel, Reject and Dismiss stay
+   behind the biometric. Every state-changing action is signed, as one rule
+   ([which actions are gated](#which-actions-are-gated)).
 3. **Phones without a strong biometric:** allow the device PIN as the step-up
    (S4), or leave such phones read-only?
 4. **Showing WHAT on an unlocked phone:** opt-in per device (the default
