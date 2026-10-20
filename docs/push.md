@@ -59,6 +59,11 @@ a host that is not on the list.
 muster does not check which address a listed host resolves to. An in-cluster
 ntfy that resolves to a private address works.
 
+⚠ If your ntfy host is behind a CDN, its bot filter may refuse requests with an
+unusual `User-Agent`. muster sends Go's default one (`Go-http-client/1.1`).
+Check that the CDN accepts it, for example with a test notification from
+Account → Notifications.
+
 ## Installable app (PWA)
 
 - **The manifest** (`/manifest.webmanifest`) declares a standalone display, any
