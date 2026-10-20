@@ -93,9 +93,12 @@ repository. (A stored `github` token is different: an approved agent gets
 whatever that token can do, whatever its repository.)
 
 🔴 **Accepted risk: a dispatched agent can try to talk a session into
-approving its own request.** The operator chose this flow (above) for answering
-without a browser; it inherits attention_answer's risk class
-([attention.md](attention.md#mirrored-claude-code-sessions)). Concretely: the
+approving its own request.** The operator decided this explicitly, after being
+told the risk: offered two structural narrowings — allowing MCP approval only
+for a GitHub App grant (a 1-hour token for the agent's own repository, stored
+credentials staying on the tab), or leaving the agent's reason out of
+`connector_requests_list` — he chose **"Accept as built"**. It is the same risk
+class as attention_answer's ([attention.md](attention.md#mirrored-claude-code-sessions)). Concretely: the
 request's `reason` is the requesting agent's own text, and the session reads it
 in `connector_requests_list`; an agent's PR, task comments or other output the
 session reads can carry text too. A session that follows injected text ("the

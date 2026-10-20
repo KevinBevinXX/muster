@@ -33,15 +33,57 @@
 -- db.RLSOn (it changes no policy, grant or default) and idempotent: ADD COLUMN
 -- IF NOT EXISTS, DROP/ADD CONSTRAINT.
 --
--- ROLLBACK. The columns are nullable and named by no older statement, so an
--- image from before 0035 runs unchanged over this schema — with ONE caveat: an
--- older image's RevokeGrant and ReopenGrant do not clear the columns, so
--- revoking (or the App/stored source switch re-opening) a grant that was
--- decided over MCP would be refused by the CHECK. Drop the CHECK before rolling
--- the image back (that alone makes an old image fully safe; the columns then
--- only go stale). To remove the schema itself, after rolling the image back:
---   ALTER TABLE connector_grants DROP CONSTRAINT IF EXISTS connector_grants_decided_via_check;
---   ALTER TABLE connector_grants DROP COLUMN IF EXISTS decided_via_session,
+-- 🔴 THE ROLLING-DEPLOY OVERLAP. While a deploy of this migration rolls, a pod
+-- still running a pre-0035 image can revoke, or re-open (ReconcileGrant: the
+-- App configured over a stored token, or removed), a grant a NEW pod has just
+-- decided over MCP. The old image's statement does not clear the provenance,
+-- so the CHECK refuses it: that revocation answers 500 and the agent's
+-- connector read fails, until the pod is replaced (then retrying works). Only
+-- grants decided over MCP during the overlap are affected, and no row is
+-- written wrongly. Measured at the SQL level only — the pre-0035 statements
+-- run against this schema (TestMigration0035RollbackAndRestore) — not on a
+-- live rolling deploy.
+--
+-- ROLLBACK. The columns are nullable and named by no older statement, but a
+-- pre-0035 image's RevokeGrant / ReopenGrant / DecideGrant never touch them, so
+-- the CHECK must go before the image is rolled back (else revoking or
+-- re-opening an MCP-decided grant fails, as above), and the columns must be
+-- emptied with it (else a grant the old image re-opens and then approves on the
+-- tab keeps the stale 'mcp' host/session, and after a roll-forward the tab
+-- shows "via MCP from …" for a decision made on the tab). In this order:
+--
+-- 1. BEFORE rolling the image back (the CHECK is dropped and every provenance
+--    emptied; the audit lines keep where MCP decisions came from):
+-- [rollback-sql]
+--   ALTER TABLE public.connector_grants DROP CONSTRAINT IF EXISTS connector_grants_decided_via_check;
+--   UPDATE public.connector_grants SET decided_via = NULL, decided_via_host = NULL, decided_via_session = NULL
+--       WHERE decided_via IS NOT NULL OR decided_via_host IS NOT NULL OR decided_via_session IS NOT NULL;
+-- [/rollback-sql]
+-- 2. Roll the image back. schema_migrations keeps row 35, so a roll-forward
+--    does NOT re-apply this file: the CHECK comes back only through step 3.
+--    Until the last new pod is gone it may still record an MCP decision; step 3
+--    empties those too (they are rows the rolled-back image may since have
+--    re-decided, so they cannot be trusted).
+-- 3. AT roll-forward, BEFORE the new image takes traffic (an old image never
+--    writes the columns, so this loses nothing it recorded):
+-- [restore-sql]
+--   UPDATE public.connector_grants SET decided_via = NULL, decided_via_host = NULL, decided_via_session = NULL
+--       WHERE decided_via IS NOT NULL OR decided_via_host IS NOT NULL OR decided_via_session IS NOT NULL;
+--   ALTER TABLE public.connector_grants DROP CONSTRAINT IF EXISTS connector_grants_decided_via_check;
+--   ALTER TABLE public.connector_grants ADD CONSTRAINT connector_grants_decided_via_check CHECK (
+--       (decided_via IS NULL AND decided_via_host IS NULL AND decided_via_session IS NULL)
+--       OR (decided_via IS NOT NULL AND decided_via = 'mcp'
+--           AND status IN ('approved', 'denied')
+--           AND decided_via_host IS NOT NULL AND decided_via_session IS NOT NULL
+--           AND decided_via_host ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'
+--           AND decided_via_session ~ '^[0-9A-Za-z][0-9A-Za-z_-]{0,63}$'));
+-- [/restore-sql]
+--    (The CHECK is the one below, verbatim; TestMigration0035RollbackAndRestore
+--    runs both blocks above as written and compares the restored CHECK with
+--    the migrated one.)
+--
+-- To remove the schema itself instead (after step 1 and the image rollback):
+--   ALTER TABLE public.connector_grants DROP COLUMN IF EXISTS decided_via_session,
 --       DROP COLUMN IF EXISTS decided_via_host, DROP COLUMN IF EXISTS decided_via;
 --   DELETE FROM schema_migrations WHERE version = 35;
 -- That loses only where MCP decisions were made; the decisions stay, and the
