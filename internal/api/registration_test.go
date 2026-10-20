@@ -108,6 +108,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		SendQueueIdle: time.Second,
 		PluginGateway: stubPluginGateway{},
 		Push:          stubPush{},
+		Devices:       principalDevices{},
 		Transcriber:   stubTranscriber{},
 		Jobs:          stubJobs{},
 		JobWorkspace:  stubJobWorkspace{},

@@ -24,7 +24,21 @@ type Device struct {
 	CreatedAt time.Time
 	LastOKAt  *time.Time
 	FailCount int
+	// Kind is KindBrowser for a browser's PushSubscription and KindAndroid for
+	// a paired phone's UnifiedPush endpoint (migration 0037).
+	Kind string
+	// DeviceID is the paired device (internal/devices) a KindAndroid
+	// subscription belongs to; 0 for a browser.
+	DeviceID int64
 }
+
+// The subscription kinds (push_subscriptions.kind). A native device gets
+// payload v2 and the silent "resolved" withdrawal; a browser gets what the
+// service worker reads.
+const (
+	KindBrowser = "browser"
+	KindAndroid = "android"
+)
 
 // MaxDevicesPerOwner bounds one user's subscriptions. Every send fans out to
 // all of them, so the cap is also a bound on what one notification costs.
@@ -195,6 +209,13 @@ type Store interface {
 	Prune(ctx context.Context, d Device) (bool, error)
 	ForgetDevice(ctx context.Context, owner int64, endpointHash string) (bool, error)
 
+	// ClaimNative stores sub as paired device deviceID's one subscription
+	// (KindAndroid), replacing any it held; ForgetNative removes it. Both
+	// System, filtered by owner AND device: the device credential's request
+	// names both, and the device row is under row-level security.
+	ClaimNative(ctx context.Context, owner, deviceID int64, sub Subscription, label string) error
+	ForgetNative(ctx context.Context, owner, deviceID int64) (bool, error)
+
 	// Muted is owner's muted events, for a send (System, filtered by owner).
 	Muted(ctx context.Context, owner int64) ([]string, error)
 	// Allowlist is the hosts a subscription may be on: the ONE allowlist,
@@ -228,12 +249,12 @@ func (s *PGStore) WithAllowlist(a Allowlist) *PGStore {
 // Allowlist implements Store.
 func (s *PGStore) Allowlist() Allowlist { return s.allow }
 
-const deviceCols = `id, owner_id, endpoint, p256dh, auth, user_agent, created_at, last_ok_at, fail_count`
+const deviceCols = `id, owner_id, endpoint, p256dh, auth, user_agent, created_at, last_ok_at, fail_count, kind, coalesce(device_id, 0)`
 
 func scanDevice(row pgx.Row) (Device, error) {
 	var d Device
 	err := row.Scan(&d.ID, &d.OwnerID, &d.Sub.Endpoint, &d.Sub.Keys.P256dh, &d.Sub.Keys.Auth,
-		&d.UserAgent, &d.CreatedAt, &d.LastOKAt, &d.FailCount)
+		&d.UserAgent, &d.CreatedAt, &d.LastOKAt, &d.FailCount, &d.Kind, &d.DeviceID)
 	return d, err
 }
 
@@ -309,7 +330,10 @@ func (s *PGStore) Claim(ctx context.Context, owner int64, sub Subscription, user
 			-- owner's last delivery is not this owner's.
 			last_ok_at = CASE WHEN p.owner_id = EXCLUDED.owner_id THEN p.last_ok_at END,
 			created_at = CASE WHEN p.owner_id = EXCLUDED.owner_id THEN p.created_at ELSE now() END,
-			owner_id   = EXCLUDED.owner_id
+			owner_id   = EXCLUDED.owner_id,
+			-- A browser's claim makes the row a browser's, whatever held it.
+			kind       = 'browser',
+			device_id  = NULL
 		RETURNING (SELECT owner_id FROM prev)`,
 		owner, sub.Endpoint, sub.Keys.P256dh, sub.Keys.Auth, userAgent).Scan(&prev)
 	if err != nil {
@@ -401,6 +425,88 @@ func (s *PGStore) ForgetDevice(ctx context.Context, owner int64, endpointHash st
 		}
 	}
 	return false, nil
+}
+
+// ClaimNative implements Store. It runs under System because the device row
+// it names is under row-level security and the push row may be another
+// user's (an endpoint moved between phones); every statement is filtered by
+// owner and device, both of which come from the device credential, never from
+// the request body.
+//
+// 🔴 THE ALLOWLIST AND THE DEVICE CAP APPLY AS TO A BROWSER: the endpoint must
+// be on an allowed push service (Allowlist), and the owner's subscriptions,
+// browser and native together, stay at most MaxDevicesPerOwner.
+func (s *PGStore) ClaimNative(ctx context.Context, owner, deviceID int64, sub Subscription, label string) error {
+	if owner <= 0 || deviceID <= 0 {
+		return fmt.Errorf("push: native claim for no user or device (%d, %d)", owner, deviceID)
+	}
+	if err := sub.Check(); err != nil {
+		return err
+	}
+	if !s.allow.Allows(sub.Endpoint) {
+		return ErrPushServiceNotAllowed
+	}
+	if r := []rune(label); len(r) > maxUserAgent {
+		label = string(r[:maxUserAgent])
+	}
+	ctx = sys(ctx)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('muster.push_subscriptions.owner', $1::bigint))`, owner); err != nil {
+		return err
+	}
+	var mine bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM devices WHERE id = $1 AND owner_id = $2)`, deviceID, owner).Scan(&mine); err != nil {
+		return err
+	}
+	if !mine {
+		return fmt.Errorf("push: device %d is not owner %d's", deviceID, owner)
+	}
+	// The device's previous endpoint, if it changed.
+	if _, err := tx.Exec(ctx, `DELETE FROM push_subscriptions WHERE device_id = $1 AND owner_id = $2 AND endpoint <> $3`,
+		deviceID, owner, sub.Endpoint); err != nil {
+		return err
+	}
+	var others int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM push_subscriptions WHERE owner_id = $1 AND endpoint <> $2`,
+		owner, sub.Endpoint).Scan(&others); err != nil {
+		return err
+	}
+	if others >= MaxDevicesPerOwner {
+		return ErrTooManyDevices
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO push_subscriptions AS p (owner_id, endpoint, p256dh, auth, user_agent, kind, device_id)
+		VALUES ($1, $2, $3, $4, $5, 'android', $6)
+		ON CONFLICT (endpoint) DO UPDATE SET
+			p256dh     = EXCLUDED.p256dh,
+			auth       = EXCLUDED.auth,
+			user_agent = EXCLUDED.user_agent,
+			fail_count = 0,
+			last_ok_at = CASE WHEN p.owner_id = EXCLUDED.owner_id THEN p.last_ok_at END,
+			created_at = CASE WHEN p.owner_id = EXCLUDED.owner_id THEN p.created_at ELSE now() END,
+			owner_id   = EXCLUDED.owner_id,
+			kind       = 'android',
+			device_id  = EXCLUDED.device_id`,
+		owner, sub.Endpoint, sub.Keys.P256dh, sub.Keys.Auth, label, deviceID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// ForgetNative implements Store.
+func (s *PGStore) ForgetNative(ctx context.Context, owner, deviceID int64) (bool, error) {
+	if owner <= 0 || deviceID <= 0 {
+		return false, nil
+	}
+	tag, err := s.pool.Exec(sys(ctx), `DELETE FROM push_subscriptions WHERE device_id = $1 AND owner_id = $2`, deviceID, owner)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 // Muted reads owner's muted events. System, filtered by owner. A user with no

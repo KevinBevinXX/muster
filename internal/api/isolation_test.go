@@ -31,6 +31,7 @@ import (
 	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/dbtest"
+	"github.com/ZacxDev/muster/internal/devices"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/github"
@@ -122,6 +123,10 @@ const (
 	// is claimed by header and checked against the token's own host
 	// (mirror_mcp_pg_test.go walks that refusal across hosts and owners).
 	classMirrorHost routeClass = "mirror-host"
+	// classDevice is a paired DEVICE credential's tier (/api/device/*, 0037): no
+	// other credential opens it, it acts as the device's owner, and it names no
+	// object — a device acts on itself — so B's device must reach nothing of A's.
+	classDevice routeClass = "device"
 )
 
 // isolationClasses classifies EVERY route in routes.golden. Exhaustive both
@@ -179,12 +184,22 @@ var isolationClasses = map[string]routeClass{
 	// unsubscribe writes act on the CALLER's own devices (list); the account
 	// page's remove names a device by id (param, A's is the object). A's device
 	// carries the canary in its user agent and its endpoint.
-	"GET /api/push/vapid-public-key": classList,
-	"POST /api/push/subscribe":       classList,
-	"POST /api/push/unsubscribe":     classList,
-	"POST /account/push/test":        classList,
-	"POST /account/push/{id}/remove": classParam,
-	"POST /account/push/preferences": classList,
+	// Paired devices (0037): minting a code is the caller's own; removing
+	// names a device; pairing is public (the code is the authority); the
+	// device tier is the device credential's alone.
+	"POST /account/devices/pair":        classList,
+	"POST /account/devices/{id}/remove": classParam,
+	"POST /api/device/pair":             classPublic,
+	"DELETE /api/device":                classDevice,
+	"GET /api/device/config":            classDevice,
+	"PUT /api/device/push":              classDevice,
+	"DELETE /api/device/push":           classDevice,
+	"GET /api/push/vapid-public-key":    classList,
+	"POST /api/push/subscribe":          classList,
+	"POST /api/push/unsubscribe":        classList,
+	"POST /account/push/test":           classList,
+	"POST /account/push/{id}/remove":    classParam,
+	"POST /account/push/preferences":    classList,
 	// accounts PR 5: invite redemption and the password reset (tokens in form
 	// fields, like the claim), and the admin pages.
 	"GET /invite":      classPublic,
@@ -593,6 +608,10 @@ type isoWorld struct {
 	// (canary-labelled) — the revoke route's object, so revoking it never
 	// revokes a credential.
 	pluginTokens map[int64]string
+	// Paired devices (0037): each user's device credential, and A's device
+	// (canary-named), the object Remove names.
+	deviceTokens map[int64]string
+	aDevice      devices.Device
 	aPlugin2     plugins.Plugin
 	aDraft       plugins.Draft
 }
@@ -857,7 +876,28 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		agentName: "ghost-agent" + w.suffix, connName: "ghostconn" + w.suffix, tag: "ghosttag", link: "ghost-sess-" + w.suffix,
 		mirrorHost: "ghost-host", mirrorSession: "main", ccAccount: "ghostacct", token: ghostID, pushDevice: ghostID,
 		flowJob: ghostID, runnerTok: ghostID, flowReq: ghostID, plugin: ghostID, draft: ghostID, passkey: "00000000-0000-4000-a000-00000000ghost",
-		queued: ghostID, route: "rt_000000000000000000000000", upload: "GhostGhostGhostGhost00", ask: ghostID, pluginMsg: ghostID}
+		queued: ghostID, route: "rt_000000000000000000000000", upload: "GhostGhostGhostGhost00", ask: ghostID, pluginMsg: ghostID,
+		device: ghostID}
+
+	// Paired devices (0037): each user pairs one, through the real store and a
+	// real pairing code; A's is canary-named (Account → Devices shows it).
+	ds := devices.NewPG(pool)
+	w.deviceTokens = map[int64]string{}
+	for _, u := range []isoUser{w.a, w.b} {
+		code, _, err := ds.CreatePairingCode(as2(u), time.Now())
+		must(err, u.name+" pairing code")
+		name := "iso phone"
+		if u.uid == w.a.uid {
+			name = w.canary + " phone"
+		}
+		tok, d, err := ds.Redeem(context.Background(), code, devices.PairIn{Name: name, AppVersion: "1.0"})
+		must(err, u.name+" device")
+		w.deviceTokens[u.uid] = tok
+		if u.uid == w.a.uid {
+			w.aDevice = d
+		}
+	}
+	w.objA.device = w.aDevice.ID
 
 	// A's push device: through the real store, as the claim the subscribe route
 	// makes. Its user agent and endpoint carry the canary.
@@ -904,6 +944,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		Uploads:   w.uploadSvc,
 		// The attention queue (0025): A's ask is a real object B must not reach.
 		Attention: attention.NewPG(pool),
+		Devices:   devices.NewPG(pool),
 		Push:      push.NewService(pushStore, w.pusher, push.VAPIDConfig{PublicKey: "iso-walk-vapid-public"}, log.New(io.Discard, "", 0)),
 		ConnectorPolicy: connectors.Policy{AllowLoopback: true, InsecureHTTP: true,
 			Resolve: func(_ context.Context, host string) ([]netip.Addr, error) {
@@ -1022,6 +1063,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 			`DELETE FROM github_connection WHERE owner_id = ANY($1)`, `DELETE FROM user_credentials WHERE owner_id = ANY($1)`,
 			`DELETE FROM cc_account_marks WHERE owner_id = ANY($1)`,
 			`DELETE FROM push_subscriptions WHERE owner_id = ANY($1)`, `DELETE FROM push_preferences WHERE owner_id = ANY($1)`,
+			`DELETE FROM device_pairing_codes WHERE owner_id = ANY($1)`, `DELETE FROM devices WHERE owner_id = ANY($1)`,
 			`DELETE FROM api_tokens WHERE user_id = ANY($1)`, `DELETE FROM audit_log WHERE user_id = ANY($1)`,
 			`DELETE FROM flow_requests WHERE owner_id = ANY($1)`, `DELETE FROM flow_jobs WHERE owner_id = ANY($1)`, `DELETE FROM flow_runner_tokens WHERE owner_id = ANY($1)`,
 			`DELETE FROM plugins WHERE owner_id = ANY($1)`,
@@ -1045,6 +1087,7 @@ type cred struct {
 	apiToken    string // a user's own personal API token (mst_…)
 	runnerToken string // a user's own browser-flow runner token (mfr_…)
 	pluginToken string // a user's own plugin token (mpl_…)
+	deviceToken string // a user's own paired device credential (mdv_…)
 }
 
 func (c cred) String() string {
@@ -1063,6 +1106,8 @@ func (c cred) String() string {
 		return "runner-token"
 	case c.pluginToken != "":
 		return "plugin-token"
+	case c.deviceToken != "":
+		return "device-token"
 	}
 	return "none"
 }
@@ -1117,6 +1162,8 @@ func (w *isoWorld) do(h http.Handler, method, path, body string, c cred) *httpte
 		r.Header.Set("Authorization", "Bearer "+c.runnerToken)
 	case c.pluginToken != "":
 		r.Header.Set("Authorization", "Bearer "+c.pluginToken)
+	case c.deviceToken != "":
+		r.Header.Set("Authorization", "Bearer "+c.deviceToken)
 	}
 	rec := httptest.NewRecorder()
 	func() {
@@ -1137,6 +1184,7 @@ type isoObjs struct {
 	draft                                     int64  // a plugin reply draft's id (0015/0016)
 	passkey                                   string // a GoTrue passkey id (the gotrue twin's fake)
 	pushDevice                                int64  // a Web Push device's id
+	device                                    int64  // a paired device's id (0037)
 	agentName, connName, tag, link            string
 	mirrorHost, mirrorSession                 string
 	queued                                    int64  // a queued message's id (0019)
@@ -1183,6 +1231,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		id = o.passkey
 	case strings.Contains(path, "/account/push/{id}"):
 		id = strconv.FormatInt(o.pushDevice, 10)
+	case strings.HasPrefix(path, "/account/devices/{id}"):
+		id = strconv.FormatInt(o.device, 10)
 	case strings.HasPrefix(path, "/admin/users/{id}"):
 		id = strconv.FormatInt(o.user, 10)
 	case strings.HasPrefix(path, "/admin/invites/{id}"):
@@ -1297,7 +1347,8 @@ func (w *isoWorld) snapshot() map[string]string {
 	for _, tbl := range []string{"notes", "note_comments", "note_attachments", "task_sessions", "agents",
 		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "github_connection", "mirror_tokens",
 		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens", "push_subscriptions", "push_preferences", "flow_requests",
-		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "recents", "send_queue", "agent_focus", "agent_focus_history", "session_routes", "uploads", "attention_asks", "jobs"} {
+		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "recents", "send_queue", "agent_focus", "agent_focus_history", "session_routes", "uploads", "attention_asks", "jobs",
+		"devices", "device_pairing_codes"} {
 		var js string
 		if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t.id)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
 			// task_sessions/github_connection have no `id` ordering column in every
@@ -1502,7 +1553,8 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 
 	// --- user B, a member, through every one of B's credentials ---
 	bResults := w.walkAs(w.b, w.objA, []cred{{sessionUser: w.b.uid}, {gotrueUser: w.b.uid}, {agentToken: w.b.token},
-		{apiToken: w.apiTokens[w.b.uid]}, {runnerToken: w.runnerTokens[w.b.uid]}, {pluginToken: w.pluginTokens[w.b.uid]}}, routes)
+		{apiToken: w.apiTokens[w.b.uid]}, {runnerToken: w.runnerTokens[w.b.uid]}, {pluginToken: w.pluginTokens[w.b.uid]},
+		{deviceToken: w.deviceTokens[w.b.uid]}}, routes)
 	w.checkOutsider(t, "B", bResults)
 	// The operator's own data (the router's directory list) is not A's, so the
 	// canary check above cannot see it: a MEMBER must not get it either.
@@ -1547,6 +1599,22 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 	}
 	if plugAdmitted != 2 {
 		t.Errorf("CONTROL: B's plugin token was admitted on %d routes; want exactly its own message and claim routes", plugAdmitted)
+	}
+	// The device-credential leg: B's device must have been ADMITTED on its own
+	// tier (its config read, its own unpair) and nowhere else. The push PUT is
+	// a 400 (the walk's body is no subscription) and the push DELETE runs after
+	// the unpair, so neither is among them.
+	devAdmitted := 0
+	for _, res := range bResults {
+		if strings.HasPrefix(res.via, "device-token") && is2xx(res.status) && isolationClasses[res.route] != classPublic {
+			devAdmitted++
+			if isolationClasses[res.route] != classDevice {
+				t.Errorf("B's device credential was answered %d on %s, which is not the device tier", res.status, res.route)
+			}
+		}
+	}
+	if devAdmitted != 2 {
+		t.Errorf("CONTROL: B's device credential was admitted on %d routes; want exactly its config read and its own unpair", devAdmitted)
 	}
 	if len(bResults) < 5*len(isolationClasses) {
 		t.Fatalf("the walk drove %d requests for %d routes", len(bResults), len(isolationClasses))

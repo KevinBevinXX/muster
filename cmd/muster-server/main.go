@@ -63,6 +63,7 @@ import (
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/db"
+	"github.com/ZacxDev/muster/internal/devices"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/github"
@@ -287,6 +288,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.Users = users.NewPG(pool)
 		// Personal API tokens (accounts PR 6): mst_… on the machine tier.
 		ext.APITokens = apitokens.NewPG(pool)
+		// Paired phones (migration 0037): the Android app's mdv_ credential on
+		// /api/device/*, and Account → Devices.
+		ext.Devices = devices.NewPG(pool)
 		// Browser flows (migration 0012): the owner-scoped job queue and the
 		// per-host runner tokens. Always on with a database: with no runner
 		// token minted, nothing ever claims a job and each one expires.

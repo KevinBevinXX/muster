@@ -63,6 +63,11 @@ type PushService interface {
 	PublicKey() string
 	Store() push.Store
 	SendTo(ctx context.Context, owner int64, p push.Payload) push.Report
+	// The paired-device half (devices.go): the ONE allowlist (the store's),
+	// for /api/device/config's push hosts and the check a registration passes
+	// before its test push, and that test push.
+	Allowlist() push.Allowlist
+	Probe(ctx context.Context, sub push.Subscription, payload []byte) push.SendResult
 }
 
 func (s *Server) registerPushRoutes(mux Mux) {

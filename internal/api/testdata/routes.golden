@@ -28,6 +28,8 @@
 /connect/{connector}/{host}/{path...}
 DELETE /agent/approvals/{id}
 DELETE /agents/{id}
+DELETE /api/device
+DELETE /api/device/push
 DELETE /api/tasks/{id}
 DELETE /api/tasks/{id}/comments/{cid}
 DELETE /api/tokens/{id}
@@ -56,6 +58,7 @@ GET /agents/{name}/terminal/ws
 GET /agents/{name}/ws
 GET /api/agents
 GET /api/agents/{name}/messages
+GET /api/device/config
 GET /api/directories
 GET /api/flows/jobs
 GET /api/flows/jobs/{id}
@@ -142,6 +145,8 @@ POST /account/credentials/claude
 POST /account/credentials/claude/{name}/delete
 POST /account/credentials/openrouter
 POST /account/credentials/openrouter/delete
+POST /account/devices/pair
+POST /account/devices/{id}/remove
 POST /account/passkeys/options
 POST /account/passkeys/verify
 POST /account/passkeys/{id}/delete
@@ -174,6 +179,7 @@ POST /agents/{id}/stop
 POST /agents/{name}/send
 POST /api/agents/{name}/messages
 POST /api/chief/replace
+POST /api/device/pair
 POST /api/flows/jobs
 POST /api/jobs
 POST /api/plugins/messages/{id}/retry
@@ -244,3 +250,4 @@ POST /ui/connector-requests/{id}/approve
 POST /ui/connector-requests/{id}/deny
 POST /uploads
 POST /uploads/{id}/revoke
+PUT /api/device/push

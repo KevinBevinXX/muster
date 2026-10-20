@@ -74,6 +74,9 @@ func (s *Service) Allowlist() Allowlist { return s.store.Allowlist() }
 // out of MUSTER_PUSH_EXTRA_HOSTS (or a row stored before a rule tightened)
 // would otherwise keep receiving a POST per notification, forever.
 func (s *Service) allowedNow(d Device) bool {
+	if d.Kind == KindAndroid {
+		return s.store.Allowlist().Allows(d.Sub.Endpoint)
+	}
 	return s.store.Allowlist().AllowsBrowser(d.Sub.Endpoint)
 }
 
@@ -87,6 +90,14 @@ func (s *Service) dropDisallowed(ctx context.Context, d Device) string {
 		s.logger.Printf("push: pruned %s (owner=%d): its push service is no longer allowed; nothing was sent", Short(ep), d.OwnerID)
 	}
 	return ResultDisallowed
+}
+
+// Probe sends payload to sub, a subscription that is NOT stored: the test
+// push a paired device's registration must pass before it is kept (as
+// UnifiedPush recommends). It settles nothing and touches no row; the caller
+// reads the result.
+func (s *Service) Probe(ctx context.Context, sub Subscription, payload []byte) SendResult {
+	return s.pusher.Send(ctx, sub, payload)
 }
 
 // SendTo delivers p to every device OWNER holds — and to nobody else's — in

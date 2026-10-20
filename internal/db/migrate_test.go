@@ -24,7 +24,7 @@ import (
 // applied. (0005 dropped the five privilege and runbook tables 0001 created;
 // 0006 added users, invites, api_tokens and audit_log; 0008 added mirror_tokens;
 // 0011 added user_credentials; 0012 added flow_jobs and flow_runner_tokens;
-// 0013 added push_subscriptions and push_preferences; 0014 added flow_requests; 0015 added plugins and plugin_messages; 0016 added plugin_reply_drafts; 0017 added pins; 0018 added recents; 0019 added send_queue; 0020 added agent_focus; 0021 added session_routes; 0022 added agent_focus_history; 0024 added uploads; 0025 added attention_asks; 0037 added jobs.)
+// 0013 added push_subscriptions and push_preferences; 0014 added flow_requests; 0015 added plugins and plugin_messages; 0016 added plugin_reply_drafts; 0017 added pins; 0018 added recents; 0019 added send_queue; 0020 added agent_focus; 0021 added session_routes; 0022 added agent_focus_history; 0024 added uploads; 0025 added attention_asks; 0037 added jobs; 0037 added devices and device_pairing_codes.)
 //
 // 🔴 A LEDGER, NOT A SPOT CHECK. It fails when the set GROWS or SHRINKS, so a
 // table quietly dropped from 0001 reddens here and a table added without a
@@ -44,6 +44,8 @@ var tablesThisSchemaMustHave = []string{
 	"connector_audit",
 	"connector_grants",
 	"connectors",
+	"device_pairing_codes",
+	"devices",
 	"flow_jobs",
 	"flow_requests",
 	"flow_runner_tokens",

@@ -123,6 +123,11 @@ const (
 	// through the host's muster-mirror, acting as the token's owner — and only
 	// for a session that host lists now. internal/api's requireMirrorHostToken.
 	ViaMirrorHost Via = "mirror-host"
+	// ViaDevice is a paired phone's DEVICE credential (`mdv_…`,
+	// internal/devices): requireDeviceToken, on the /api/device/* routes only.
+	// It acts as the device's OWNER, so row-level security confines the device
+	// to that owner's rows.
+	ViaDevice Via = "device"
 	// ViaSystem is a background loop acting for every user. Only System sets
 	// it.
 	ViaSystem Via = "system"
@@ -152,6 +157,7 @@ var requestVias = map[Via]bool{
 	ViaAsk: true,
 	// A mirrored session's MCP door (internal/api's requireMirrorHostToken).
 	ViaMirrorHost: true,
+	ViaDevice:     true,
 }
 
 // OperatorUserID is the user every principal names today: the operator, the

@@ -178,6 +178,10 @@ var pgBackedPackages = []string{
 	// shared device and nothing else" and "a stale handle cannot touch a row
 	// that changed hands" are claims about SQL and row-level security.
 	"internal/push",
+	// The Android app's paired phones (0037): "a removed device, a disabled
+	// owner, a moved cutoff and a later sign-out everywhere each refuse the
+	// credential" are claims about SQL and row-level security.
+	"internal/devices",
 	// Added by the UI carve, and the decision behind it is worth one line
 	// because a RENDERING package taking a real database looks wrong at a
 	// glance. It takes exactly one: the reaper writes a task's idle flag

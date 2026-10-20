@@ -107,6 +107,13 @@ func (m *memPush) ForgetDevice(_ context.Context, owner int64, hash string) (boo
 
 func (m *memPush) Allowlist() push.Allowlist { return push.Allowlist{} }
 
+// The native (paired-device) half is exercised against Postgres
+// (device_pg_test.go); nothing in the in-memory tests reaches it.
+func (m *memPush) ClaimNative(context.Context, int64, int64, push.Subscription, string) error {
+	panic("memPush: ClaimNative is not modelled")
+}
+func (m *memPush) ForgetNative(context.Context, int64, int64) (bool, error) { return false, nil }
+
 func (m *memPush) Muted(_ context.Context, owner int64) ([]string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

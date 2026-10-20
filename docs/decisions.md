@@ -143,6 +143,24 @@ sign-in. Here is how that rule settled:
 - **Who is fresh.** Freshness belongs to the **browser session**, not to the
   user. Confirming on your laptop must not make a stolen phone fresh.
 
+## Sign out everywhere signs out paired phones too
+
+Sign out everywhere ends GoTrue sessions, and it also cuts off every phone paired
+by a sign-in at or before it. Personal API tokens are not affected.
+
+- **Why the phones.** A phone holds a session-like credential: it was minted from
+  a browser session and acts on a person's behalf from a device that can be lost.
+  "Everywhere" should include it.
+- **Why not the tokens.** A personal token is a deliberate, named credential for a
+  script or the CLI, and it has its own revoke button. Ending every script's
+  access as a side effect of a sign-out would surprise.
+- **Whose idea.** This is the Android design's recommendation, not an operator
+  requirement ([design/android.md](design/android.md), server change 25).
+- **How.** The device records the pairing session's sign-in time and every
+  request compares it with `users.signed_out_at`, the same record the send
+  queue reads. Password mode has no Sign out everywhere, so there a phone is
+  removed on Account → Devices.
+
 ## The message box must not fail silently, or deliver twice
 
 On a phone behind an auth proxy, a script's `fetch` can get a sign-in redirect

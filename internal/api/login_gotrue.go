@@ -88,7 +88,7 @@ const accountPath = "/account"
 // SignOutEverywhereTokenNote sits beside "Sign out everywhere": that button
 // ends GoTrue sessions only, and a person must not believe it ended their API
 // tokens (accounts PR 6).
-const SignOutEverywhereTokenNote = "API tokens are not affected — revoke them under API tokens below."
+const SignOutEverywhereTokenNote = "Paired phones are signed out too. API tokens are not affected — revoke them under API tokens below."
 
 // ResetDoneNote is what /account?reset=1 — where a successful password reset
 // lands — says: the reset revoked every personal API token (users.ResetCredentials).
@@ -333,6 +333,7 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 <a href="`+accountTokensPath+`" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">API tokens</a>
 <a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to muster</a>
 </section>
+`+s.accountDevicesSection(r)+`
 `+s.accountNotificationsSection(r)+`</div>`)
 }
 

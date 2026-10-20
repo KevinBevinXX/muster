@@ -83,9 +83,59 @@ offered only in gotrue mode, and only when GoTrue reports `passkeys_enabled`.
 | Mirror token (`mmt_…`) | the host it was minted for | Opens `GET /mirror/connect`, the `AskUserQuestion` hook's `/mirror/ask` routes and `POST /mirror/mcp`. Through `/mirror/mcp` a leaked one reaches, beyond the host's tunnel and its questions, the attention asks of that host's own Claude Code sessions (file, wait, cancel), the tasks those sessions created, and — through `attention_answer` — an answer as the operator to any of its owner's open asks not raised by a mirrored session on that host (recorded as via MCP from that host; accepted like any of your answers, **including as `task_dispatch` instructions** — the accepted risk in [attention.md](attention.md#mirrored-claude-code-sessions)) — and, through `connector_request_decide`, an approval as the operator of any of its owner's agents' pending connector requests (recorded and shown as via MCP from that host; the accepted risk in [connectors.md](connectors.md#deciding-a-request-from-your-own-session)), and — through `agent_destroy` — the **teardown of any of its owner's agents but the chief** (the tasks are kept; **no audit row**: the host is named only in muster's server log; also an accepted risk, by operator decision — [attention.md](attention.md#mirrored-claude-code-sessions)) — never another task, another host's session, another owner's ask or request, a secret, or a chief tool. See [mirroring.md](mirroring.md) and [attention.md](attention.md#mirrored-claude-code-sessions). |
 | Flow runner token (`mfr_…`) | its owner, confined to one host | See [browser-flows.md](browser-flows.md). |
 | Plugin token (`mpl_…`) | its owner, on `/plugin/v1/*` only | Minted at `/plugins` and shown once. Every other route refuses it. See [plugins.md](plugins.md). |
+| Device credential (`mdv_…`) | its owner, on `/api/device/*` only | A phone paired with the [Android app](design/android.md). See [Paired devices](#paired-devices). Every other route refuses it. |
 
-The two shared secrets may not start with `mst_`. The server refuses to boot if
-one does.
+The two shared secrets may not start with `mst_`, `mpl_` or `mdv_`. The server
+refuses to boot if one does.
+
+## Paired devices
+
+The native Android app gets its own credential, the **device credential**
+(`mdv_…`), one per paired phone. It opens `/api/device/*` and nothing else.
+
+**Pairing.** A signed-in page inside the app asks for a one-time pairing code
+(`POST /account/devices/pair`). That needs a sign-in from the last five minutes,
+as adding a passkey does, because the credential outlives the session. The code
+is single use and expires after 60 seconds. The app redeems it at
+`POST /api/device/pair` with the phone's name, its app version and its step-up
+public key (an EC P-256 key the app generates in the Android Keystore at
+pairing). The credential is shown to the app once. Only its sha256 is stored.
+
+- **A device credential cannot mint another.** Only a browser session can ask
+  for a pairing code.
+- **It is confined to `/api/device/*`.** Every other route refuses it, and the
+  device routes refuse every other credential, a session cookie included.
+- **Which listener.** In gotrue mode the phone reaches muster through the public
+  edge, so the device routes are served on the browser listener as well. The
+  shared hook and service secrets stay refused there.
+
+**Revocation** is read from the database on every request, and nothing is
+cached. A device is signed out on its next request when:
+
+- you remove it on **Account → Devices**, or the app unpairs itself
+  (`DELETE /api/device`);
+- the account is disabled;
+- the session that paired it signed in at or before the account's session
+  cutoff, which a disable or a password reset moves;
+- the session that paired it signed in at or before your latest **Sign out
+  everywhere** (gotrue mode only). This is the design's recommendation, not an
+  operator requirement: it is what "everywhere" is expected to mean for a phone.
+  It is stricter than for personal tokens, which Sign out everywhere does not
+  revoke.
+
+**Account → Devices** (on `/account`) lists each phone: its name, app version,
+when it was paired, when it was last seen, and whether push is registered. Each
+has a **Remove** button. Removing a phone also removes its push registration. A
+user may pair at most 20 phones.
+
+The device routes:
+
+| route | what it does |
+|---|---|
+| `GET /api/device/config` | The VAPID public key the app registers for push with, and the operator's push hosts. |
+| `PUT /api/device/push` | Registers the phone's UnifiedPush endpoint `{endpoint, p256dh, auth}`. The endpoint must be on an allowed push host ([push.md](push.md#which-push-services)), and muster keeps it only after a test push to it succeeds. A phone holds one registration; a new one replaces it. |
+| `DELETE /api/device/push` | Removes the phone's push registration. |
+| `DELETE /api/device` | Unpairs the phone. |
 
 Two endpoints help with personal tokens:
 

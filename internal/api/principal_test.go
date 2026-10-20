@@ -16,6 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/apitokens"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/devices"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
@@ -47,6 +48,9 @@ const (
 	pPluginToken = "mpl_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	// A mirror host token's shape (mirror.TokenShapeOK): mmt_ + 43 base64url.
 	pMirrorToken = "mmt_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	// A paired device's credential (devices.ShapeOK): mdv_ + 43 base64url;
+	// principalDevices resolves it to user 1.
+	pDeviceToken = "mdv_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 )
 
 // publicRoutes are served with no credential and therefore no Principal.
@@ -93,6 +97,11 @@ var publicRoutes = []string{
 	"GET /sw.js",
 	"POST /login",
 	"POST /logout",
+	// ⚠ NOT UNAUTHENTICATED: the Android app redeeming a pairing code
+	// (devices.go). No door admits it and no Principal is attached — the
+	// single-use code, minted by a signed-in session, IS the authority
+	// (devices.PGStore.Redeem, under System). Throttled per client address.
+	"POST /api/device/pair",
 }
 
 // routeVias is, for every non-public route, each door that admits it.
@@ -128,6 +137,10 @@ var routeVias = map[authz.Via][]string{
 		"GET /account/tokens",
 		"POST /account/tokens",
 		"POST /account/tokens/{id}/revoke",
+		// Paired devices: minting a pairing code and removing a device are the
+		// session's own (a device credential cannot reach either).
+		"POST /account/devices/pair",
+		"POST /account/devices/{id}/remove",
 		// Passkeys: the caller's own, acted on AS the caller at GoTrue.
 		"GET /account/passkeys",
 		"POST /account/passkeys/options",
@@ -334,6 +347,13 @@ var routeVias = map[authz.Via][]string{
 	authz.ViaMirrorHost: {
 		"POST /mirror/mcp",
 	},
+	// A DEVICE credential (0037) opens exactly the device tier.
+	authz.ViaDevice: {
+		"DELETE /api/device",
+		"GET /api/device/config",
+		"PUT /api/device/push",
+		"DELETE /api/device/push",
+	},
 	// A PLUGIN token (0015) opens exactly the plugin door.
 	authz.ViaPlugin: {
 		"POST /plugin/v1/messages",
@@ -396,6 +416,16 @@ func (principalPlugins) Authenticate(_ context.Context, tok string) (plugins.Plu
 	return plugins.Plugin{}, plugins.ErrBadToken
 }
 
+// principalDevices resolves the one test device credential to user 1.
+type principalDevices struct{ devices.Store }
+
+func (principalDevices) Authenticate(_ context.Context, tok string) (devices.Device, error) {
+	if tok == pDeviceToken {
+		return devices.Device{ID: 6, OwnerID: authz.OperatorUserID, Name: "principal-test"}, nil
+	}
+	return devices.Device{}, devices.ErrBadToken
+}
+
 // principalMirrorTokens resolves the one test mirror token to user 1's host.
 type principalMirrorTokens struct{}
 
@@ -445,7 +475,7 @@ func newPrincipalTestServerWith(t *testing.T, cfg AuthConfig) (*Server, http.Han
 	t.Helper()
 	s := New(nil, cfg, log.New(io.Discard, "", 0))
 	s.UseExtensions(Extensions{Agents: principalAgents{}, Connectors: principalConnectors{}, APITokens: principalAPITokens{},
-		Flows: principalFlows{}, Plugins: principalPlugins{}, MirrorTokens: principalMirrorTokens{}})
+		Flows: principalFlows{}, Plugins: principalPlugins{}, MirrorTokens: principalMirrorTokens{}, Devices: principalDevices{}})
 	seen := &[]authz.Principal{}
 	s.principalProbe = func(r *http.Request) {
 		p, ok := authz.From(r.Context())
@@ -503,6 +533,8 @@ func credential(s *Server, req *http.Request, via authz.Via) {
 		req.Header.Set("Authorization", "Bearer "+pPluginToken)
 	case authz.ViaMirrorHost:
 		req.Header.Set("Authorization", "Bearer "+pMirrorToken)
+	case authz.ViaDevice:
+		req.Header.Set("Authorization", "Bearer "+pDeviceToken)
 	}
 }
 
@@ -642,7 +674,7 @@ func TestAnUnarmedHookTierStillActsAsTheMachineUser(t *testing.T) {
 // prove nothing — a mislabelled route simply refuses and attaches nothing.)
 func TestPublicRoutesAreServedWithoutAPrincipal(t *testing.T) {
 	s, h, seen := newPrincipalTestServer(t)
-	doors := []authz.Via{authz.ViaSession, authz.ViaHook, authz.ViaService, authz.ViaAgent, authz.ViaToken, authz.ViaRunner, authz.ViaPlugin, authz.ViaMirrorHost}
+	doors := []authz.Via{authz.ViaSession, authz.ViaHook, authz.ViaService, authz.ViaAgent, authz.ViaToken, authz.ViaRunner, authz.ViaPlugin, authz.ViaMirrorHost, authz.ViaDevice}
 	for _, pattern := range publicRoutes {
 		method, path := concretePath(pattern)
 		for _, via := range doors {
