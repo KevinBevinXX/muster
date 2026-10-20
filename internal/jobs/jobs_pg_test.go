@@ -147,7 +147,8 @@ func TestFailInterruptedFailsEveryUnfinishedJob(t *testing.T) {
 	if ok, err := s.Finish(as(1), done.ID, Outcome{Status: StatusSucceeded, Result: "r"}); !ok || err != nil {
 		t.Fatalf("finish: %v %v", ok, err)
 	}
-	n, err := s.FailInterrupted(authz.System(context.Background()))
+	// No principal: the sweep elevates itself.
+	n, err := s.FailInterrupted(context.Background())
 	if err != nil || n != 2 {
 		t.Fatalf("FailInterrupted = %d, %v; want 2", n, err)
 	}

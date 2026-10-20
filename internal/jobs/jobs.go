@@ -11,8 +11,8 @@
 // 🔴 EVERY METHOD EXCEPT FailInterrupted RUNS UNDER THE CALLER'S PRINCIPAL.
 // jobs is under FORCE row-level security, so a caller reads and writes only its
 // own user's rows; the owner of a row is the principal's user (owner_id's
-// default), never a parameter. FailInterrupted is the boot sweep and needs the
-// system scope (authz.System).
+// default), never a parameter. FailInterrupted is the boot sweep across every
+// owner and runs under the system principal itself (sys).
 package jobs
 
 import (
@@ -28,6 +28,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 )
 
 // Statuses. A job moves queued → running → one of the three terminal ones, or
@@ -182,7 +183,7 @@ type Store interface {
 	// FailInterrupted fails every queued or running job with
 	// ReasonInterrupted, across every owner, returning how many. It is the boot
 	// sweep: no job survives a restart of the process that was running it. It
-	// needs the system scope.
+	// runs under the system principal whatever ctx carries.
 	FailInterrupted(ctx context.Context) (int64, error)
 }
 
@@ -370,12 +371,18 @@ func (s *PGStore) Finish(ctx context.Context, id int64, o Outcome) (bool, error)
 	return tag.RowsAffected() == 1, nil
 }
 
+// sys is ctx under the system principal: the boot sweep's one UPDATE, which
+// spans every owner's jobs and returns only a count. It is internal/authz's
+// System ledger entry for this package.
+func sys(ctx context.Context) context.Context { return authz.System(ctx) }
+
 // InterruptedError is the error FailInterrupted records.
 const InterruptedError = "the server stopped before this job finished; the agent may have done some or all of the work, so re-submit it only if repeating that is safe"
 
-// FailInterrupted fails every unfinished job, across every owner.
+// FailInterrupted fails every unfinished job, across every owner, under the
+// system principal (sys) whatever ctx carries.
 func (s *PGStore) FailInterrupted(ctx context.Context) (int64, error) {
-	tag, err := s.pool.Exec(ctx, `UPDATE jobs SET status = 'failed', reason = $1, error = $2, finished_at = now()
+	tag, err := s.pool.Exec(sys(ctx), `UPDATE jobs SET status = 'failed', reason = $1, error = $2, finished_at = now()
 		WHERE status IN ('queued', 'running')`, ReasonInterrupted, InterruptedError)
 	if err != nil {
 		return 0, fmt.Errorf("jobs: fail interrupted: %w", err)

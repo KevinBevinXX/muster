@@ -151,6 +151,7 @@ var pgBackedPackages = []string{
 	// focus", "an upsert keeps one row" and "full-text search ranks the right
 	// focus first" are claims about row-level security and SQL.
 	"internal/focus",
+	"internal/jobs",
 	"internal/pins",
 	// The send queue (migration 0019). "Another user cannot see, queue into or
 	// cancel your queue", "one row per target is sending" and "a claim is never

@@ -299,7 +299,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// running can never finish: fail it now, saying so, rather than leave a
 		// caller polling a job nothing is running.
 		js := jobs.NewPG(pool)
-		if n, err := js.FailInterrupted(authz.System(ctx)); err != nil {
+		if n, err := js.FailInterrupted(ctx); err != nil {
 			logger.Printf("jobs: could not fail the jobs a previous process left unfinished: %v", err)
 		} else if n > 0 {
 			logger.Printf("jobs: failed %d job(s) a previous process left unfinished (reason %q)", n, jobs.ReasonInterrupted)
