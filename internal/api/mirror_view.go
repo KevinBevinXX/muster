@@ -79,6 +79,7 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 		StepUp: s.stepUpView(r, ""), Nonce: newSendNonce(), Dictate: s.dictatePath(), Upload: s.uploadPath(),
 		Queue: s.mirrorComposerQueue(r.Context(), h, e), FocusHistory: s.mirrorFocusHistoryPath(e.ClaudeSession)}
 	v.Notice, v.NoticeOK = composerNotice(r)
+	v.HostIcon = s.mirrorHostIcon(r.Context(), h.Host)
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.MirrorViewPage(v).Render(w); err != nil {

@@ -72,6 +72,9 @@ type AgentTerminalView struct {
 	BackHref string
 	// Badge is a short label beside the title ("Mirrored · <host>"); "" = none.
 	Badge string
+	// BadgeHost and BadgeHostIcon are the mirrored host the badge names and its
+	// icon key (HostIconFor): the badge leads with the icon its cards draw.
+	BadgeHost, BadgeHostIcon string
 	// RawName, when set, is shown small and muted after the title, and as its
 	// tooltip (mirrorSessionTitle): a mirrored session titled by its host's
 	// label ("mango:1") keeps its real tmux session name findable. "" = the
@@ -262,7 +265,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 							// A mirrored entry: its label with the raw session name
 							// beside it, and/or its qualifier — drawn like its card.
 							g.If(v.RawName != "" || v.TitleQualifier != "", mirrorTerminalTitle(markdownPlain(title), v.RawName, v.TitleQualifier)),
-							g.If(v.Badge != "", Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge(v.Badge)))),
+							g.If(v.Badge != "", Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge(v.Badge, v.BadgeHost, v.BadgeHostIcon)))),
 						P(ID("term-status"), Class("truncate text-xs text-muted"), g.Attr("aria-live", "polite"), g.Text("Not connected")),
 					),
 					// Fit width: shown only while the far side is wider than this

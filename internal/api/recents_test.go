@@ -147,7 +147,7 @@ func TestTheListDrawsTheRecentStrip(t *testing.T) {
 	mp.pinFor(1).Mirrors[pins.MirrorKey{Host: "ws", Session: "chief", Window: "@2"}] = true
 
 	body := getOwed(t, s, h, "/ui/agents").Body.String()
-	if !regexp.MustCompile(`<nav id="agents-recent" aria-label="Recently viewed" hx-swap-oob="true"`).MatchString(body) {
+	if !regexp.MustCompile(`<nav id="agents-recent" aria-label="Recently viewed" hx-swap-oob="morph:outerHTML"`).MatchString(body) {
 		t.Fatalf("no out-of-band strip in the list:\n%s", body)
 	}
 	var got []string

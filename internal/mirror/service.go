@@ -60,6 +60,9 @@ type Service struct {
 	recheck time.Duration
 
 	limiter *failLimiter
+
+	// ranks caches HostRanks per owner (host_ranks.go).
+	ranks hostRankCache
 }
 
 // NewService builds the plugin over store.

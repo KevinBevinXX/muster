@@ -115,6 +115,18 @@ type fakeMirror struct {
 	// onPaste, when set, runs (under mu) after each paste the host accepted:
 	// a test's stand-in for the hub recording the paste (AgentState.Pasted).
 	onPaste func()
+	// ranks is what HostRanks answers for user 1 (nil = no ranks known).
+	ranks map[string]int
+}
+
+// HostRanks answers f.ranks for the host's owner, nothing for anyone else.
+func (f *fakeMirror) HostRanks(ctx context.Context, _ []string) map[string]int {
+	if f.user(ctx) != 1 {
+		return nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ranks
 }
 
 func (f *fakeMirror) ServeConnect(w http.ResponseWriter, _ *http.Request) {

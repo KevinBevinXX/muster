@@ -473,6 +473,9 @@ func (m *isoMirror) WatchWindow(ctx context.Context, host, _, _, _ string, _ int
 	return mirror.ErrNoRenderedView
 }
 
+// HostRanks: no ranks are known (every host draws its hash fallback).
+func (m *isoMirror) HostRanks(context.Context, []string) map[string]int { return nil }
+
 // ScrollWindow: A's host advertises no scrolling (Hosts sets no PaneScroll), so
 // the route answers 409 for A before asking; as B it must 404 before that.
 func (m *isoMirror) ScrollWindow(ctx context.Context, host, _, _ string, _ int) error {

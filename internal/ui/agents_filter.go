@@ -515,12 +515,16 @@ func agentsFilterScript() g.Node {
     if (!s) return '';
     var all = s.querySelector('[data-host=""]');
     var drawn = list.querySelectorAll(':scope > article:not([data-held])');
-    var seen = Object.create(null), hosts = [];
+    var seen = Object.create(null), hosts = [], icons = Object.create(null);
     [].forEach.call(drawn, function (a) {
       var v = a.getAttribute('data-f-host');
       if (!v || seen[v]) return;
       seen[v] = true;
-      hosts.push({ v: v, l: a.getAttribute('data-l-host') || v });
+      // The host's icon (host_icons.go), as its first drawn card draws it: the
+      // tab leads with the same one.
+      var ic = a.querySelector('[data-host-icon]');
+      icons[v] = ic;
+      hosts.push({ v: v, l: a.getAttribute('data-l-host') || v, i: ic ? ic.getAttribute('data-host-icon') : '' });
     });
     var h = linkAll ? '' : hostChosen();
     var on = h && seen[h] ? h : '';
@@ -544,6 +548,22 @@ func agentsFilterScript() g.Node {
         }
         var lab = t.querySelector('[data-tab-label]');
         if (lab && lab.textContent !== h.l) lab.textContent = h.l;
+        var had = t.querySelector('[data-host-icon]');
+        if ((had ? had.getAttribute('data-host-icon') : '') !== h.i) {
+          if (had) had.remove();
+          if (icons[h.v] && lab) {
+            var ic = icons[h.v].cloneNode(true);
+            // The count's spacing (0.375rem), as a style: no class
+            // the stylesheet does not already carry.
+            ic.style.marginRight = '0.375rem';
+            // The tab already names the host in its label: the icon is
+            // decoration there, not a second name read out.
+            ic.removeAttribute('role');
+            ic.removeAttribute('aria-label');
+            ic.setAttribute('aria-hidden', 'true');
+            t.insertBefore(ic, lab);
+          }
+        }
         return t;
       }));
       Object.keys(have).forEach(function (k) { have[k].remove(); });

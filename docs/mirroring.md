@@ -95,6 +95,13 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   shared link carrying its own `?q=` opens on **All**. A refresh that changes
   only cards the current tab and search hide is applied at once, with no
   "N new ↑". On a phone the strip scrolls sideways.
+- **Host icons.** Every entry draws its host's icon beside its name — on its
+  card, its "Recently viewed" entry, its host tab and the badge on its own
+  pages — with the host's name in the icon's tooltip. Dispatched pod agents
+  draw the cluster's icon, which no mirrored host ever draws. A host's icon is
+  picked by when its first mirror token was minted, so your first twelve hosts
+  each draw a different one, and minting a token for a new host (or a second
+  token for an old one) never changes an existing host's icon.
 
 ![The Agents list filtered with the search box](img/agents-filter.png)
 

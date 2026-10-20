@@ -24,6 +24,9 @@ const RecentMax = 6
 type recentItem struct {
 	Href, Title, Status string
 	Mirror              bool
+	// Host and HostIcon are the entry's host and its icon key — the card's
+	// (host_icons.go): the cluster for an agent, the mirrored host's otherwise.
+	Host, HostIcon string
 }
 
 // recentItems resolves refs (newest first) against the cards the list holds
@@ -55,7 +58,8 @@ func recentItems(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRe
 			if !ok || a.Pinned {
 				continue
 			}
-			out = append(out, recentItem{Href: "/agents/" + a.Name, Title: markdownPlain(displayOr(a.DisplayName, a.Name)), Status: a.Status})
+			out = append(out, recentItem{Href: "/agents/" + a.Name, Title: markdownPlain(displayOr(a.DisplayName, a.Name)), Status: a.Status,
+				Host: podHost, HostIcon: clusterIcon.Key})
 			continue
 		}
 		m, ok := mirrorsByRef[r.Mirror]
@@ -63,13 +67,13 @@ func recentItems(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRe
 			continue
 		}
 		out = append(out, recentItem{Href: MirrorCardHref(m), Mirror: true, Status: mirrorFields(m).Status,
-			Title: mirrorQualified(displayOr(m.Label, displayOr(m.Title, m.Session)), m.Qualifier)})
+			Title: mirrorQualified(displayOr(m.Label, displayOr(m.Title, m.Session)), m.Qualifier), Host: m.Host, HostIcon: m.HostIcon})
 	}
 	return out
 }
 
-// recentStripID is the strip's element: drawn empty (hidden) by the shell, and
-// replaced OUT OF BAND by every list render (RenderAgentsList).
+// recentStripID is the strip's element: drawn by the shell, and MORPHED out of
+// band by every list render (RenderAgentsList).
 const recentStripID = "agents-recent"
 
 // recentStrip is the condensed horizontal row of recently viewed entries. It
@@ -80,7 +84,10 @@ func recentStrip(items []recentItem, oob bool) g.Node {
 		ID(recentStripID),
 		g.Attr("aria-label", "Recently viewed"),
 		g.If(len(items) == 0, g.Attr("hidden", "")),
-		g.If(oob, hx("hx-swap-oob", "true")),
+		// 🔴 MORPHED, NOT REPLACED: "true" is an outerHTML replace, which made
+		// the sideways scroller below a new element — at scrollLeft 0 — on every
+		// list render (agents_scroll.go).
+		g.If(oob, hx("hx-swap-oob", "morph:outerHTML")),
 		Class("mb-3 min-w-0"),
 		// A sideways swipe here is the strip's, not the sidebar edge-swipe's
 		// (appScript's ownsSideways): the strip starts inside the 28px edge zone.
@@ -110,7 +117,8 @@ func recentEntry(it recentItem) g.Node {
 		g.Attr("title", it.Title),
 		Class("press inline-flex min-h-[44px] max-w-[14rem] shrink-0 items-center gap-2 rounded-xl bg-s1/70 px-3 text-sm font-medium text-fg ring-1 ring-inset ring-line transition hover:bg-s2"),
 		statusIcon(it.Status),
-		g.If(it.Mirror, Span(Class("text-st-progress-fg"), g.Raw(mirroredIcon))),
+		// Its host's icon — the one its card draws (host_icons.go).
+		hostMark(it.Host, it.HostIcon),
 		Span(Class("truncate"), g.Text(it.Title)),
 	)
 }

@@ -69,6 +69,10 @@ type MirrorCardView struct {
 	// Attention is the card's attention badge (cards_attention.go), nil for
 	// none.
 	Attention *CardAttention
+	// HostIcon is the key of Host's icon (HostIconFor, composed in
+	// internal/api from the host's registration rank); "" draws the hash
+	// fallback.
+	HostIcon string
 }
 
 // MirrorCardHref is where a mirrored card opens: the rendered view for a
@@ -190,6 +194,8 @@ func mirrorCard(m MirrorCardView) g.Node {
 				Class("flex flex-wrap items-center gap-2"),
 				statusIcon(status),
 				g.If(m.Pinned, pinnedGlyph()),
+				// Its host's icon, beside its name (host_icons.go).
+				hostMark(m.Host, m.HostIcon),
 				g.If(!cardHasFocusTitle(m.Focus), mirrorEntryTitle(m.Label, m.Title, m.Session, m.Qualifier, cardTitleClass)),
 				g.If(cardHasFocusTitle(m.Focus), Span(g.Attr("data-card-subtitle", ""), Class("contents"),
 					mirrorEntryTitle(m.Label, m.Title, m.Session, m.Qualifier, cardSubtitleClass))),
@@ -363,11 +369,14 @@ func mirrorQualified(name, qualifier string) string {
 // title on both its pages (the card carries mirroredMark instead). It is NOT the generic grey chip:
 // a muted chip among the kind/mode chips was easy to miss on a phone, and the
 // host is what tells two same-named windows apart — so it is tinted, bold, and
-// leads with a screen icon.
-func mirrorBadge(text string) g.Node {
+// leads with the HOST'S icon (host_icons.go: the one its cards draw), hostIcon
+// being its key and host what it names.
+func mirrorBadge(text, host, hostIcon string) g.Node {
+	d := hostIconDefOf(hostIcon, host)
 	return Span(
+		g.Attr("data-host-icon", d.Key),
 		Class("inline-flex items-center gap-1 rounded-full bg-st-progress-bg px-2.5 py-1 text-xs font-semibold text-st-progress-fg ring-1 ring-inset ring-st-progress-fg/40"),
-		g.Raw(`<svg class="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>`),
+		g.Raw(hostIconSVG(d, "h-3.5 w-3.5")),
 		g.Text(text),
 	)
 }
