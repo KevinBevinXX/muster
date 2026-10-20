@@ -197,12 +197,8 @@ type WebpushPusher struct {
 // NewWebpushPusher builds a Pusher signing with vapid. Its HTTP client has a
 // short timeout so a stuck push service cannot hold a fan-out open, and it
 // never follows a redirect (pushHTTPClient).
-func NewWebpushPusher(vapid VAPIDConfig) *WebpushPusher { return newWebpushPusher(vapid, nil) }
-
-// newWebpushPusher is NewWebpushPusher over transport rt (a test's TLS
-// server); the redirect rule is the production one.
-func newWebpushPusher(vapid VAPIDConfig, rt http.RoundTripper) *WebpushPusher {
-	return &WebpushPusher{vapid: vapid, client: pushHTTPClient(rt), ttl: 3600}
+func NewWebpushPusher(vapid VAPIDConfig) *WebpushPusher {
+	return &WebpushPusher{vapid: vapid, client: pushHTTPClient(nil), ttl: 3600}
 }
 
 // pushHTTPClient is the client every push send uses. rt nil is the default

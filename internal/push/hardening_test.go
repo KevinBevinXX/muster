@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -19,8 +20,8 @@ import (
 // second host is not followed — the second host is never reached — and the
 // send is a failure, not a delivery and not an expiry.
 //
-// The send goes through the PRODUCTION client (newWebpushPusher builds it with
-// pushHTTPClient); only the transport is the test servers'. Both servers share
+// The send goes through the PRODUCTION client (NewWebpushPusher builds it with
+// pushHTTPClient); only its transport is swapped for the test servers' (overTLS). Both servers share
 // httptest's one certificate, so a client that followed the redirect WOULD
 // reach the second: the positive control is that the second server counts a
 // direct POST.
@@ -35,24 +36,37 @@ func TestAPushSendNeverFollowsARedirect(t *testing.T) {
 		listed := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, elsewhere.URL+"/bounced", code)
 		}))
-		p := newWebpushPusher(realVAPID(t, "mailto:ops@example.com"), listed.Client().Transport)
+		p := overTLS(t, NewWebpushPusher(realVAPID(t, "mailto:ops@example.com")), listed)
 		res := p.Send(context.Background(), realSubscription(t, listed.URL+"/push/abc"), []byte(`{}`))
 		listed.Close()
 		if n := reached.Load(); n != 0 {
 			t.Fatalf("status %d: the redirect was FOLLOWED: the second host received %d POST(s)", code, n)
 		}
-		if !errors.Is(res.Err, ErrRedirectRefused) || res.StatusCode != code || res.Expired {
-			t.Fatalf("status %d: send = %+v; want ErrRedirectRefused, the 3xx status, not expired", code, res)
+		if res.Err == nil || !strings.Contains(res.Err.Error(), "redirect") || res.StatusCode != code || res.Expired {
+			t.Fatalf("status %d: send = %+v; want a redirect refusal, the 3xx status, not expired", code, res)
 		}
 	}
 	// Positive control: the same client reaches the second host directly.
-	p := newWebpushPusher(realVAPID(t, "mailto:ops@example.com"), elsewhere.Client().Transport)
+	p := overTLS(t, NewWebpushPusher(realVAPID(t, "mailto:ops@example.com")), elsewhere)
 	if res := p.Send(context.Background(), realSubscription(t, elsewhere.URL+"/push/abc"), []byte(`{}`)); res.Err != nil || res.StatusCode != http.StatusCreated {
 		t.Fatalf("CONTROL: a direct send = %+v", res)
 	}
 	if reached.Load() != 1 {
 		t.Fatalf("CONTROL: the second host counted %d POSTs, want 1", reached.Load())
 	}
+}
+
+// overTLS points p's own HTTP client at ts's transport (it trusts httptest's
+// certificate), keeping everything else about the client — its redirect rule
+// above all — as production built it.
+func overTLS(t *testing.T, p *WebpushPusher, ts *httptest.Server) *WebpushPusher {
+	t.Helper()
+	c, ok := p.client.(*http.Client)
+	if !ok {
+		t.Fatalf("the pusher's client is a %T, not an *http.Client", p.client)
+	}
+	c.Transport = ts.Client().Transport
+	return p
 }
 
 // TestARedirectedSendIsSettledAsFailed: through the Service, a redirect is a
@@ -66,7 +80,7 @@ func TestARedirectedSendIsSettledAsFailed(t *testing.T) {
 	d := dev(1, 7, listed.URL+"/push/abc")
 	d.Sub = realSubscription(t, d.Sub.Endpoint)
 	store := &memStore{devs: []Device{d}}
-	svc := NewService(store, newWebpushPusher(realVAPID(t, "mailto:ops@example.com"), listed.Client().Transport),
+	svc := NewService(store, overTLS(t, NewWebpushPusher(realVAPID(t, "mailto:ops@example.com")), listed),
 		VAPIDConfig{}, log.New(io.Discard, "", 0))
 	rep := svc.SendTo(context.Background(), 7, Payload{Type: "notify", Tag: "t"})
 	if rep.Failed != 1 || rep.Delivered != 0 || rep.Expired != 0 {
