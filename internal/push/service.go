@@ -23,6 +23,41 @@ type Payload struct {
 	Data  map[string]string `json:"data,omitempty"`
 }
 
+// PayloadV2 is what a NATIVE device (KindAndroid) receives in place of
+// Payload: the Android app's payload (docs/design/android.md, "Payload v2").
+//
+// 🔴 IDS, NOT CONTENT, AND THE SAME WHO/WHERE AS TODAY. Title and Body are the
+// browser payload's own, which every notification helper already writes as
+// WHO and WHERE, never WHAT (docs/attention.md); v2 adds nothing to them. URL
+// is where a tap opens, a path on muster. Anything longer is fetched by the
+// app after delivery with its device credential (a later phase).
+//
+// ⚠ PHASE 1 CARRIES NO `actions`, `conv` OR `state`. An action id is a
+// promise that a signed /api/device/actions/* route exists (Phase 2, with
+// the route ledger that pins that promise), and the state delta feeds the
+// widgets (Phase 4). Sending either before its route or consumer exists would
+// be a field no code reads.
+type PayloadV2 struct {
+	V     int    `json:"v"`
+	Type  string `json:"type"`
+	ID    string `json:"id,omitempty"`
+	Tag   string `json:"tag,omitempty"`
+	Title string `json:"title,omitempty"`
+	Body  string `json:"body,omitempty"`
+	URL   string `json:"url,omitempty"`
+}
+
+// V2 is p as a native device receives it. A "resolved" carries only its type,
+// id and tag: it shows nothing.
+func (p Payload) V2() PayloadV2 {
+	v := PayloadV2{V: 2, Type: p.Type, ID: p.ID, Tag: p.Tag}
+	if p.Type == TypeResolved {
+		return v
+	}
+	v.Title, v.Body, v.URL = p.Title, p.Body, p.Data["url"]
+	return v
+}
+
 // Report is what one SendTo did. Devices is how many the owner had.
 type Report struct {
 	Devices   int
@@ -125,6 +160,14 @@ func (s *Service) SendTo(ctx context.Context, owner int64, p Payload) Report {
 		s.logger.Printf("push: marshal payload tag=%s: %v", p.Tag, err)
 		return rep
 	}
+	// A native device gets payload v2; a browser the payload its service
+	// worker reads. Keyed on the subscription's recorded kind, never guessed
+	// from the endpoint.
+	native, err := json.Marshal(p.V2())
+	if err != nil {
+		s.logger.Printf("push: marshal payload v2 tag=%s: %v", p.Tag, err)
+		return rep
+	}
 	var (
 		wg sync.WaitGroup
 		mu sync.Mutex
@@ -133,11 +176,15 @@ func (s *Service) SendTo(ctx context.Context, owner int64, p Payload) Report {
 		wg.Add(1)
 		go func(d Device) {
 			defer wg.Done()
+			b := body
+			if d.Kind == KindAndroid {
+				b = native
+			}
 			var result string
 			if !s.allowedNow(d) {
 				result = s.dropDisallowed(ctx, d)
 			} else {
-				result = s.settle(ctx, d, s.pusher.Send(ctx, d.Sub, body))
+				result = s.settle(ctx, d, s.pusher.Send(ctx, d.Sub, b))
 			}
 			metrics.PushDelivery.WithLabelValues(result).Inc()
 			mu.Lock()
@@ -158,8 +205,11 @@ func (s *Service) SendTo(ctx context.Context, owner int64, p Payload) Report {
 	return rep
 }
 
-// withoutSilentPenalty drops Safari (web.push.apple.com) devices from a
-// "resolved" send.
+// withoutSilentPenalty drops Safari (web.push.apple.com) BROWSER devices from
+// a "resolved" send. A native device (KindAndroid) always gets it: the app
+// withdraws the notification by tag and shows nothing, and no distributor
+// penalises a silent push — which is the clear Safari subscriptions are
+// spared. Keyed on the recorded kind, not on the host.
 //
 // 🔴 A resolved MESSAGE SHOWS NOTHING, AND SAFARI PENALISES A PUSH THAT SHOWS
 // NOTHING. WebKit's push contract is "every push displays a notification"; a
@@ -169,6 +219,10 @@ func (s *Service) SendTo(ctx context.Context, owner int64, p Payload) Report {
 func withoutSilentPenalty(devs []Device) []Device {
 	out := devs[:0:0]
 	for _, d := range devs {
+		if d.Kind == KindAndroid {
+			out = append(out, d)
+			continue
+		}
 		if u, err := url.Parse(d.Sub.Endpoint); err == nil && strings.EqualFold(u.Hostname(), applePushHost) {
 			continue
 		}
