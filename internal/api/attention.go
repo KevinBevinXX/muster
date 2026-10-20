@@ -895,11 +895,25 @@ func askIDParam(r *http.Request) (int64, bool) {
 	return id, err == nil && id > 0
 }
 
-// answerAsk records the operator's answer and settles it — and, for an agent's
-// ask, starts its delivery into the agent's session once the grace has passed
-// (attention_delivery.go; the sweep delivers it if this process stops first).
+// answerAsk records the operator's answer given on the Attention view.
 func (s *Server) answerAsk(ctx context.Context, id int64, answer string) (attention.Ask, error) {
-	a, err := s.ext.Attention.Answer(ctx, id, answer)
+	return s.answerAskFrom(ctx, id, answer, attention.AnswerSource{})
+}
+
+// answerAskFrom records the operator's answer — given on the Attention view
+// (src zero) or through their mirrored session's attention_answer (src names
+// it) — and settles it: its notification cleared, its waiters woken, and, for an
+// agent's ask, its delivery into the agent's session started once the grace
+// has passed (attention_delivery.go; the sweep delivers it if this process stops
+// first). The ONE answer path both doors take.
+func (s *Server) answerAskFrom(ctx context.Context, id int64, answer string, src attention.AnswerSource) (attention.Ask, error) {
+	var a attention.Ask
+	var err error
+	if src.ViaSession() {
+		a, err = s.ext.Attention.AnswerFromSession(ctx, id, answer, src.Host, src.Session)
+	} else {
+		a, err = s.ext.Attention.Answer(ctx, id, answer)
+	}
 	if err == nil {
 		s.askSettled(a)
 		if a.Delivery == attention.DeliveryQueued {
@@ -1083,7 +1097,7 @@ func answeredAsksHTML(asks []attention.Ask, now time.Time) string {
 <span class="text-xs text-fg2"><span class="font-semibold">Answered</span> · <span data-attention-source>` + esc(askerLabel(a)) + `</span>` + age + `</span>
 <p class="break-words text-sm text-fg2" data-attention-text>` + esc(mirror.OneLine(a.Question, 200)) + `</p>
 <p class="whitespace-pre-wrap break-words text-sm text-fg" data-attention-answer-text>Your answer: ` + esc(a.Answer) + `</p>
-<p class="break-words text-sm text-fg" data-attention-delivery>` + esc(text) + `</p>
+` + answeredViaHTML(a) + `<p class="break-words text-sm text-fg" data-attention-delivery>` + esc(text) + `</p>
 `)
 		if retry {
 			b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/redeliver"><button type="submit" class="` + flowsQuietButton + `" data-attention-redeliver>Retry delivery</button></form>
@@ -1092,6 +1106,17 @@ func answeredAsksHTML(asks []attention.Ask, now time.Time) string {
 		b.WriteString("</li>\n")
 	}
 	return b.String()
+}
+
+// answeredViaHTML is an Answered item's provenance line: "" for an answer given
+// on this view; for attention_answer, the mirrored session it came from.
+func answeredViaHTML(a attention.Ask) string {
+	if !a.AnsweredVia.ViaSession() {
+		return ""
+	}
+	return `<p class="break-words text-xs text-fg2" data-attention-answered-via>Given via MCP from your mirrored session ` +
+		html.EscapeString(a.AnsweredVia.String()) + `</p>
+`
 }
 
 func nonNilItems(items []attentionItem) []attentionItem {

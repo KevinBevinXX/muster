@@ -172,3 +172,27 @@ func TestTaskDispatchRefusesAnInSessionAnswer(t *testing.T) {
 	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": a.ID, "instructions": ownersWords}),
 		chiefDispatchInstructionsUnsourced, a.ID)
 }
+
+// TestTaskDispatchRefusesAnMCPAnswerAsInstructionsButStillDispatches: the
+// owner's words, answered on the task's ask through a mirrored session's
+// attention_answer (answered_via = 'mcp'), are refused as `instructions`
+// (operator decision "MCP answers can't be instructions") — while a dispatch
+// WITHOUT instructions on that task still starts. The view's answer being
+// accepted is TestTaskDispatchAcceptsTheOwnersAnswerOnTheTask.
+func TestTaskDispatchRefusesAnMCPAnswerAsInstructionsButStillDispatches(t *testing.T) {
+	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
+	n := f.task(t, "answered over MCP")
+	text := f.call(f.chief, taskRouteAttentionTool, map[string]any{"task_id": n.ID})
+	var out struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(text), &out); err != nil || out.ID <= 0 {
+		t.Fatalf("task_route_attention: %s (%v)", text, err)
+	}
+	if _, err := f.srv.ext.Attention.AnswerFromSession(f.asOwner, out.ID, ownersWords, "ws", "0b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b"); err != nil {
+		t.Fatal(err)
+	}
+	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "instructions": ownersWords}),
+		chiefDispatchInstructionsUnsourced, n.ID)
+	f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}), n.ID)
+}

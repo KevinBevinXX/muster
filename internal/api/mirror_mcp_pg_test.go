@@ -104,11 +104,11 @@ func TestAMirroredSessionGetsTheAllAgentsToolsAndNothingElse(t *testing.T) {
 	for _, tl := range res.Tools {
 		names = append(names, tl.Name)
 	}
-	want := "attention_ask attention_wait attention_cancel tasks_list task_get task_comment task_set_status"
+	want := "attention_ask attention_wait attention_cancel tasks_list task_get task_comment task_set_status attention_answer"
 	if strings.Join(names, " ") != want {
 		t.Fatalf("tools = %v, want %s", names, want)
 	}
-	for _, n := range []string{attentionListTool, "attention_answer", "attention_get", sessionTranscript, "fleet_list", "connector_request", "task_create_gated"} {
+	for _, n := range []string{attentionListTool, "attention_get", sessionTranscript, "fleet_list", "connector_request", "task_create_gated"} {
 		_, r, _ := f.mirrorRPC(t, mirrorAs(ws, focusSID), mcpToolCall(n, map[string]any{"id": 1, "answer": "x", "subject": "agent:1"}))
 		if r == nil || r.Error == nil || r.Error.Code != -32602 {
 			t.Fatalf("%s by a mirrored session: %+v", n, r)

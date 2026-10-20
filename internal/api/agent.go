@@ -368,7 +368,9 @@ func (s *Server) agentTools() []agentTool {
 	}
 	// The attention queue (attention_tools.go), present with its store: every
 	// agent may ask its owner and work the owner's tasks; the chief alone lists
-	// and answers the queue and reads a session's transcript. All on MCP too.
+	// the queue (read-only) and reads a session's transcript. All on MCP too.
+	// attention_answer is NOT here: it is the mirrored sessions' alone
+	// (mirror_mcp.go's mirrorTools), and its handler refuses any agent.
 	if s.attentionToolsOn() {
 		for _, d := range attentionToolDefs() {
 			tools = append(tools, agentTool{def: d, mcp: true})
