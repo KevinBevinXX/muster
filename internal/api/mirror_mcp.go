@@ -36,8 +36,9 @@ import (
 // sessions (file, wait, cancel), the tasks those sessions created, and — 🔴
 // through attention_answer — an answer AS THE OPERATOR to any of the owner's
 // open asks not raised by a mirrored session on that host (the chief's
-// included; never task_dispatch instructions, which take only the view's
-// answers). Never another task, another host's session, another owner's ask
+// included — and, by operator decision, as task_dispatch instructions too:
+// a leaked mmt_ can write a dispatched agent's prompt; the kickoff and audit
+// row name the host it came from). Never another task, another host's session, another owner's ask
 // or a chief tool. The SESSION a call names is the caller's claim (its pane);
 // only the HOST is proven, which is why attention_answer's rule is per host.
 //

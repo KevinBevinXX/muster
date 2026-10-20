@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/agents"
@@ -173,13 +174,15 @@ func TestTaskDispatchRefusesAnInSessionAnswer(t *testing.T) {
 		chiefDispatchInstructionsUnsourced, a.ID)
 }
 
-// TestTaskDispatchRefusesAnMCPAnswerAsInstructionsButStillDispatches: the
-// owner's words, answered on the task's ask through a mirrored session's
-// attention_answer (answered_via = 'mcp'), are refused as `instructions`
-// (operator decision "MCP answers can't be instructions") — while a dispatch
-// WITHOUT instructions on that task still starts. The view's answer being
-// accepted is TestTaskDispatchAcceptsTheOwnersAnswerOnTheTask.
-func TestTaskDispatchRefusesAnMCPAnswerAsInstructionsButStillDispatches(t *testing.T) {
+// TestTaskDispatchTakesAnMCPAnswerAsInstructionsAndSaysSo: the owner's words,
+// answered on the task's ask through a mirrored session's attention_answer
+// (answered_via = 'mcp'), ARE accepted as `instructions` (operator decision
+// "Just remove the filter") — and where they came from survives: the started
+// agent's first message says they were given over MCP from ws/<session>, and the
+// reservation's audit row records it. The view's answer (no such words) is
+// TestTaskDispatchAcceptsTheOwnersAnswerOnTheTask / ...PutsTheInstructionsFirst.
+func TestTaskDispatchTakesAnMCPAnswerAsInstructionsAndSaysSo(t *testing.T) {
+	const sid = "0b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b"
 	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
 	n := f.task(t, "answered over MCP")
 	text := f.call(f.chief, taskRouteAttentionTool, map[string]any{"task_id": n.ID})
@@ -189,10 +192,19 @@ func TestTaskDispatchRefusesAnMCPAnswerAsInstructionsButStillDispatches(t *testi
 	if err := json.Unmarshal([]byte(text), &out); err != nil || out.ID <= 0 {
 		t.Fatalf("task_route_attention: %s (%v)", text, err)
 	}
-	if _, err := f.srv.ext.Attention.AnswerFromSession(f.asOwner, out.ID, ownersWords, "ws", "0b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b"); err != nil {
+	if _, err := f.srv.ext.Attention.AnswerFromSession(f.asOwner, out.ID, ownersWords, "ws", sid); err != nil {
 		t.Fatal(err)
 	}
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "instructions": ownersWords}),
-		chiefDispatchInstructionsUnsourced, n.ID)
-	f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}), n.ID)
+	got := f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "instructions": ownersWords}), n.ID)
+	if want := "muster: your owner's chief relayed the instructions below for this task: your owner's answer, given over MCP from ws/" + sid +
+		", their mirrored Claude Code session rather than on muster's Attention view."; !strings.HasPrefix(got.PendingNote, want) {
+		t.Fatalf("first message does not say where the instructions came from:\n%s", got.PendingNote)
+	}
+	if !strings.Contains(got.PendingNote, "| "+ownersWords) {
+		t.Fatalf("first message lacks the instructions: %s", got.PendingNote)
+	}
+	d := f.reservationDetail(t, n.ID)
+	if d["instructions_ask"] != float64(out.ID) || d["instructions_via"] != "mcp" || d["instructions_from"] != "ws/"+sid {
+		t.Fatalf("reservation detail %v: want the ask %d and its MCP provenance", d, out.ID)
+	}
 }
