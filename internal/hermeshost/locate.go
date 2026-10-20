@@ -49,7 +49,7 @@ type PaneSession struct {
 
 // The reasons a pane has no rendered view, as -list -hermes prints them.
 const (
-	NoViewNoBreadcrumb = "no breadcrumb for the pane's terminal (Hermes's session.terminal_continue is off, or the CLI has not attached to its gateway yet)"
+	NoViewNoBreadcrumb  = "no breadcrumb for the pane's terminal (Hermes's session.terminal_continue is off, or the CLI has not attached to its gateway yet)"
 	NoViewOldBreadcrumb = "the breadcrumb predates the Hermes process in the pane (it is a previous CLI's)"
 	NoViewNoSession     = "the breadcrumb's session is not in state.db"
 	NoViewArchived      = "the breadcrumb's session is archived or hidden"

@@ -30,7 +30,7 @@ import (
 //
 // It is safe for concurrent use.
 type State struct {
-	home Home
+	hermes Home
 
 	mu sync.Mutex
 	db *sql.DB
@@ -42,10 +42,10 @@ type State struct {
 }
 
 // OpenState is h's state.db, opened lazily on the first read.
-func (h Home) OpenState() *State { return &State{home: h} }
+func (h Home) OpenState() *State { return &State{hermes: h} }
 
 // Home is the home this reads.
-func (s *State) Home() Home { return s.home }
+func (s *State) Home() Home { return s.hermes }
 
 // Close closes the connection.
 func (s *State) Close() error {
@@ -79,7 +79,7 @@ var ErrSchema = errors.New("state.db is not the schema this muster-mirror reads"
 func (s *State) conn() (*sql.DB, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ino := fileIno(s.home.stateDBPath())
+	ino := fileIno(s.hermes.stateDBPath())
 	if s.db != nil && ino != 0 && ino != s.ino {
 		_ = s.db.Close()
 		s.db = nil
@@ -90,9 +90,9 @@ func (s *State) conn() (*sql.DB, error) {
 	if ino == 0 {
 		// Never create one: a read-only open of a missing file fails anyway,
 		// and the error should say what is missing.
-		return nil, fmt.Errorf("%s: %w", s.home.stateDBPath(), os.ErrNotExist)
+		return nil, fmt.Errorf("%s: %w", s.hermes.stateDBPath(), os.ErrNotExist)
 	}
-	uri, err := s.home.stateDBURI()
+	uri, err := s.hermes.stateDBURI()
 	if err != nil {
 		return nil, err
 	}

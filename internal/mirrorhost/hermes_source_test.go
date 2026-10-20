@@ -16,7 +16,7 @@ import (
 // a Hermes home and status directory for a Tmux to resolve it from.
 type hermesPane struct {
 	proc   *fakeProc
-	home   *hermestest.Home
+	hm     *hermestest.Home
 	status hermeshost.StatusDir
 	tmux   Tmux
 	bootAt time.Time
@@ -41,7 +41,7 @@ func newHermesPane(t *testing.T) *hermesPane {
 	status := hermeshost.StatusDir(t.TempDir())
 	src := NewHermesSource(h.Dir, string(status))
 	t.Cleanup(func() { _ = src.State().Close() })
-	return &hermesPane{proc: proc, home: h, status: status, bootAt: boot,
+	return &hermesPane{proc: proc, hm: h, status: status, bootAt: boot,
 		tmux: Tmux{Claude: ClaudeLocator{Proc: proc.root, Home: t.TempDir()}, Hermes: src}}
 }
 
@@ -59,8 +59,8 @@ const gatewayStart = "100"
 func TestAHermesWindowCarriesItsSessionAndStatus(t *testing.T) {
 	p := newHermesPane(t)
 	root := hermestest.LocalID()
-	p.home.Session(root, hermestest.SessionOpts{})
-	p.home.Breadcrumb(hermesTTY, root, hermestest.Now())
+	p.hm.Session(root, hermestest.SessionOpts{})
+	p.hm.Breadcrumb(hermesTTY, root, hermestest.Now())
 	since := time.Now().UnixMilli()
 	must(t, p.status.Write(hermeshost.StatusFile{SessionID: root, Status: mirror.StatusIdle, Since: since, WriterPID: 50, WriterStart: gatewayStart}))
 	ws := p.windows(t)
@@ -77,7 +77,7 @@ func TestAHermesWindowCarriesItsSessionAndStatus(t *testing.T) {
 	}
 
 	// A busy file is believed while the gateway lives and the root's lease is.
-	p.home.Lease(root, hermestest.Now()+300)
+	p.hm.Lease(root, hermestest.Now()+300)
 	must(t, p.status.Write(hermeshost.StatusFile{SessionID: root, Status: mirror.StatusBusy, Since: since + 1, WriterPID: 50, WriterStart: gatewayStart}))
 	if a := p.windows(t)[0].Agent; a.Status != mirror.StatusBusy || !a.Busy {
 		t.Fatalf("busy: %+v", a)
@@ -96,10 +96,10 @@ func TestAHermesWindowCarriesItsSessionAndStatus(t *testing.T) {
 func TestASwitchedHermesWindowHasNoSessionAndUnknownStatus(t *testing.T) {
 	p := newHermesPane(t)
 	root := hermestest.LocalID()
-	p.home.Session(root, hermestest.SessionOpts{})
-	p.home.Breadcrumb(hermesTTY, root, hermestest.Now())
+	p.hm.Session(root, hermestest.SessionOpts{})
+	p.hm.Breadcrumb(hermesTTY, root, hermestest.Now())
 	must(t, p.status.Write(hermeshost.StatusFile{SessionID: root, Status: mirror.StatusIdle, Since: time.Now().UnixMilli(), WriterPID: 50, WriterStart: gatewayStart}))
-	p.home.End(root, "resumed_other")
+	p.hm.End(root, "resumed_other")
 	ws := p.windows(t)
 	a := ws[0].Agent
 	if a == nil || a.Runtime != mirror.RuntimeHermes || a.Gen != "" || a.Status != "" || a.StatusSince != 0 || a.Source != SourceProcess {
@@ -119,9 +119,9 @@ func TestASwitchedHermesWindowHasNoSessionAndUnknownStatus(t *testing.T) {
 func TestABreadcrumbFromBeforeTheCLIStartedIsNotItsSession(t *testing.T) {
 	p := newHermesPane(t)
 	root := hermestest.LocalID()
-	p.home.Session(root, hermestest.SessionOpts{})
+	p.hm.Session(root, hermestest.SessionOpts{})
 	// Written before boot+1s, when the fixture CLI started.
-	p.home.Breadcrumb(hermesTTY, root, float64(p.bootAt.Unix())-5)
+	p.hm.Breadcrumb(hermesTTY, root, float64(p.bootAt.Unix())-5)
 	a := p.windows(t)[0].Agent
 	if a.Gen != "" || a.Hermes.NoView != hermeshost.NoViewOldBreadcrumb {
 		t.Fatalf("Agent = %+v (%+v)", a, a.Hermes)
