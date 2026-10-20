@@ -3,7 +3,6 @@ package mirror
 import (
 	"context"
 	"sort"
-	"sync"
 )
 
 // HOST RANKS: each of an owner's hosts' place in the order the host was first
@@ -51,49 +50,20 @@ func RanksByRegistration(tokens []Token) map[string]int {
 	return ranks
 }
 
-// hostRankCache is the last ranks read per owner. Because a rank never changes
-// once a host has one (see above), a cached answer is correct for every host it
-// holds; it is re-read only when asked about a host it does not hold — a host
-// minted since (by `muster-server mirror token create`, another process, so
-// there is nothing to invalidate it from).
-type hostRankCache struct {
-	mu     sync.Mutex
-	owners map[int64]map[string]int
-}
-
 // HostRanks is the viewing principal's hosts' registration ranks
 // (RanksByRegistration over its own tokens — mirror_tokens is under row-level
-// security, so ListTokens runs as the viewer and reads only theirs). need is the
-// hosts the caller is about to draw: the cached ranks answer while they hold
-// every one of them. A failed read is logged and answers what is cached (nil
-// at worst): the caller's fallback draws an icon regardless.
-func (s *Service) HostRanks(ctx context.Context, need []string) map[string]int {
-	o, err := owner(ctx)
-	if err != nil {
+// security, so ListTokens runs as the viewer and reads only theirs). Read on
+// every call, uncached, like the rest of the Agents list's per-render reads. A
+// failed read is logged and answers nil: the caller's fallback (ui.HostIconFor's
+// hash) still draws an icon.
+func (s *Service) HostRanks(ctx context.Context) map[string]int {
+	if _, err := owner(ctx); err != nil {
 		return nil
-	}
-	s.ranks.mu.Lock()
-	defer s.ranks.mu.Unlock()
-	cached := s.ranks.owners[o]
-	complete := cached != nil
-	for _, h := range need {
-		if _, ok := cached[h]; !ok {
-			complete = false
-			break
-		}
-	}
-	if complete {
-		return cached
 	}
 	toks, err := s.store.ListTokens(ctx)
 	if err != nil {
 		s.logger.Printf("mirror: host ranks: %v", err)
-		return cached
+		return nil
 	}
-	r := RanksByRegistration(toks)
-	if s.ranks.owners == nil {
-		s.ranks.owners = map[int64]map[string]int{}
-	}
-	s.ranks.owners[o] = r
-	return r
+	return RanksByRegistration(toks)
 }

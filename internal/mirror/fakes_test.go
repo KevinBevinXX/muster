@@ -57,8 +57,6 @@ type memStore struct {
 	nonSystem []string
 	// authCalls counts Authenticate calls (database reads, in PGStore).
 	authCalls int
-	// listCalls counts ListTokens calls.
-	listCalls int
 }
 
 func newMemStore() *memStore { return &memStore{tokens: map[string]mirror.Token{}} }
@@ -127,12 +125,10 @@ func (m *memStore) CreateToken(ctx context.Context, host string) (string, mirror
 }
 
 // ListTokens is the principal's own tokens, revoked ones included, by id —
-// PGStore's answer under mirror_tokens' row-level security. listCalls counts
-// them (database reads, in PGStore).
+// PGStore's answer under mirror_tokens' row-level security.
 func (m *memStore) ListTokens(ctx context.Context) ([]mirror.Token, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.listCalls++
 	p, ok := authz.From(ctx)
 	if !ok {
 		return nil, errors.New("memStore: no principal")

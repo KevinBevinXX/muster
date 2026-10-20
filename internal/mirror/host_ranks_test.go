@@ -86,38 +86,28 @@ func TestHostRanksAreDistinctAndStableAsHostsAreAdded(t *testing.T) {
 	}
 }
 
-// TestServiceHostRanksAreTheViewersAndCached: Service.HostRanks ranks the
-// VIEWER's hosts only (another owner's token minted between theirs does not
-// take a rank from them), reads the store once while every host asked about
-// is known, and reads it again for a host minted since.
-func TestServiceHostRanksAreTheViewersAndCached(t *testing.T) {
+// TestServiceHostRanksAreTheViewers: Service.HostRanks ranks the VIEWER's
+// hosts only — another owner's token minted between theirs does not take a
+// rank from them — a host minted since is ranked on the next call, and no
+// principal ranks nothing.
+func TestServiceHostRanksAreTheViewers(t *testing.T) {
 	st := newMemStore()
 	svc := mirror.NewService(st, log.New(io.Discard, "", 0))
 	st.mint(t, 1, "first")
 	st.mint(t, 2, "theirs")
 	st.mint(t, 1, "second")
 
-	got := svc.HostRanks(asUser(1), []string{"first", "second"})
-	if want := map[string]int{"first": 0, "second": 1}; !reflect.DeepEqual(got, want) {
+	if got, want := svc.HostRanks(asUser(1)), map[string]int{"first": 0, "second": 1}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("user 1's ranks %v, want %v", got, want)
 	}
-	if got := svc.HostRanks(asUser(2), []string{"theirs"}); !reflect.DeepEqual(got, map[string]int{"theirs": 0}) {
+	if got := svc.HostRanks(asUser(2)); !reflect.DeepEqual(got, map[string]int{"theirs": 0}) {
 		t.Fatalf("user 2's ranks %v, want only its own host at 0", got)
 	}
-	reads := st.listCalls
-	svc.HostRanks(asUser(1), []string{"second"})
-	if st.listCalls != reads {
-		t.Fatalf("a known host re-read the store (%d reads, want %d)", st.listCalls, reads)
-	}
 	st.mint(t, 1, "third")
-	got = svc.HostRanks(asUser(1), []string{"first", "third"})
-	if st.listCalls != reads+1 {
-		t.Fatalf("a host minted since was answered without a read (%d reads, want %d)", st.listCalls, reads+1)
-	}
-	if want := map[string]int{"first": 0, "second": 1, "third": 2}; !reflect.DeepEqual(got, want) {
+	if got, want := svc.HostRanks(asUser(1)), map[string]int{"first": 0, "second": 1, "third": 2}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("after a third host: %v, want %v", got, want)
 	}
-	if got := svc.HostRanks(context.Background(), []string{"first"}); got != nil {
+	if got := svc.HostRanks(context.Background()); got != nil {
 		t.Fatalf("no principal ranked %v; a host's ranks are its owner's", got)
 	}
 }

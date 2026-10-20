@@ -101,12 +101,8 @@ func (s *Server) mirrorCards(ctx context.Context, pinned pins.Set, focused focus
 	}
 	var out []ui.MirrorCardView
 	hosts := s.ext.Mirror.Hosts(ctx)
-	names := make([]string, 0, len(hosts))
-	for _, h := range hosts {
-		names = append(names, h.Host)
-	}
 	// Each host's icon, by its registration rank (ui.HostIconFor), read once.
-	ranks := s.ext.Mirror.HostRanks(ctx, names)
+	ranks := s.ext.Mirror.HostRanks(ctx)
 	for _, m := range mirror.Ordered(hosts) {
 		out = append(out, ui.MirrorCardView{Host: m.Host, Session: m.Session, Window: m.Window, Title: mirrorTitle(m), Label: m.Label,
 			Qualifier: m.Qualifier, Kind: m.Kind(), Online: m.Online, Interactive: m.Interactive, Claude: m.Claude,
@@ -122,7 +118,7 @@ func (s *Server) mirrorHostIcon(ctx context.Context, host string) string {
 	if s.ext.Mirror == nil {
 		return ui.HostIconFor(nil, host)
 	}
-	return ui.HostIconFor(s.ext.Mirror.HostRanks(ctx, []string{host}), host)
+	return ui.HostIconFor(s.ext.Mirror.HostRanks(ctx), host)
 }
 
 // mirrorTitle is what an entry with no label is called, for the ui views'

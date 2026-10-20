@@ -120,7 +120,7 @@ type fakeMirror struct {
 }
 
 // HostRanks answers f.ranks for the host's owner, nothing for anyone else.
-func (f *fakeMirror) HostRanks(ctx context.Context, _ []string) map[string]int {
+func (f *fakeMirror) HostRanks(ctx context.Context) map[string]int {
 	if f.user(ctx) != 1 {
 		return nil
 	}
