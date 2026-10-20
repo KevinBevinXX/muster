@@ -133,7 +133,7 @@ func TestOperatorPushHostsMatchExactly(t *testing.T) {
 func TestExtraHostsMustBeBareNames(t *testing.T) {
 	for _, v := range []string{
 		"*.example.org", ".example.org", "https://ntfy.example.org", "ntfy.example.org:443",
-		"ntfy.example.org/up", "10.0.0.5", "localhost", "ntfy..example.org", "-ntfy.example.org",
+		"ntfy.example.org/up", "192.0.2.5", "localhost", "ntfy..example.org", "-ntfy.example.org",
 		"ntfy_example.org", "ntfy.example.org.", "[::1]",
 	} {
 		if _, err := ParseExtraHosts(v); !errors.Is(err, ErrBadExtraHost) {
