@@ -64,6 +64,12 @@ func TestAHermesChiefIsRefusedBeforeAnythingChanges(t *testing.T) {
 
 // task_dispatch offers the hermes kind in its schema, and the delivery lease
 // outlasts the longest kind's turn (the hermes budget among them).
+//
+// ⚠ THE LEASE HALF IS AN INVARIANT GUARD, NOT REGRESSION COVERAGE: hermes's
+// budget equals claude-code's today, so the pre-hermes formula (the max of
+// claude-code's and gateway's) already outlasts it — the mutation sweep
+// confirmed that formula passes here. It reddens only if a kind's budget ever
+// outgrows the others' without the lease following.
 func TestTaskDispatchOffersHermesAndTheLeaseOutlastsItsTurn(t *testing.T) {
 	var found bool
 	for _, d := range taskRoutingToolDefs(true) {

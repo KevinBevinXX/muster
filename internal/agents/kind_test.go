@@ -77,6 +77,22 @@ func TestKindResolutionAndTurnBudgets(t *testing.T) {
 	}
 }
 
+// A hermes agent dispatched with a repository waits for its checkout like a
+// claude-code one (hermesd reports repo.state as ccd does); without one, or as a
+// gateway agent, it never does.
+func TestNeedsCheckoutCoversTheHermesKind(t *testing.T) {
+	for _, c := range []struct {
+		kind, repo string
+		want       bool
+	}{
+		{KindHermes, "o/r", true}, {KindClaudeCode, "o/r", true}, {KindGateway, "o/r", false}, {KindHermes, "", false},
+	} {
+		if got := NeedsCheckout(Agent{Kind: c.kind, Repo: c.repo}); got != c.want {
+			t.Fatalf("NeedsCheckout(%s, %q) = %t, want %t", c.kind, c.repo, got, c.want)
+		}
+	}
+}
+
 func TestPGStoreKindAndAccountRoundTrip(t *testing.T) {
 	dsn := dbtest.DSN(t)
 	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
@@ -110,5 +126,20 @@ func TestPGStoreKindAndAccountRoundTrip(t *testing.T) {
 	got, err = store.Get(ctx, plain.ID)
 	if err != nil || got.Kind != KindGateway || got.CCAccount != "" {
 		t.Fatalf("kindless round trip: kind %q account %q, %v", got.Kind, got.CCAccount, err)
+	}
+
+	// The hermes kind (0037): stored with no account, and refused WITH one
+	// (0003's agents_cc_account_matches_kind holds for it as for gateway).
+	hermes, err := store.Create(ctx, Agent{Name: "kind-hermes-" + stamp, Namespace: "ns", Status: StatusProvisioning, Kind: KindHermes})
+	if err != nil {
+		t.Fatalf("create hermes: %v", err)
+	}
+	defer cleanupAgent(ctx, pool, hermes.ID)
+	if got, err := store.Get(ctx, hermes.ID); err != nil || got.Kind != KindHermes || got.CCAccount != "" {
+		t.Fatalf("hermes round trip: %+v, %v", got, err)
+	}
+	if bad, err := store.Create(ctx, Agent{Name: "kind-hermes-acct-" + stamp, Namespace: "ns", Status: StatusProvisioning, Kind: KindHermes, CCAccount: "work"}); err == nil {
+		cleanupAgent(ctx, pool, bad.ID)
+		t.Fatal("a hermes row naming a Claude account was stored")
 	}
 }
