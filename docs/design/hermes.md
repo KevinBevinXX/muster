@@ -34,10 +34,12 @@ The design, in one line each:
   per physical session id, cross-checked against the turn lease and the
   newest message row before it is believed.
 - **Send:** a **pane paste** is the only send path. It is gated on idle and on
-  a structural screen check that admits only the recorded idle layout with an
-  empty input line, and is re-checked on the host at the moment of acting, with the Enter as a
+  a screen check of the whole input line, and is re-checked on the host at the moment of acting, with the Enter as a
   separate step. The viewer's `prompt.submit` was refuted: the CLI never draws
-  the turn.
+  the turn. 🔴 Three overlays (the palette, the model picker, the stash) leave
+  no mark on the input line, so the send is enabled only once Escape
+  normalisation measures safe, or upstream exposes those states; until then a
+  Hermes window has no Send.
 - **Questions and approvals:** clarify cards from the database, approval and
   sudo items from the hooks. Approvals are answered through the gateway viewer's
   `approval.respond`; clarify through the viewer if Phase 4 measures it, else in
@@ -262,13 +264,26 @@ Into a Hermes approval modal, paste+Enter approves `once` (S11). Any muster
 server, old or new, offers this path.
 
 **The decision: the host refuses an `AnyPane` paste into a pane that holds a
-Hermes CLI**, decided at the host's paste entry by the pane's **process
-identity** (the [S10 rule](#pane-to-session-resolution): `comm=hermes` plus
-argv), never by `Msg.Runtime`, so the guard holds whatever the server sends.
-The refusal reads "Hermes runs in this pane; send from the rendered view".
+Hermes CLI**, decided at the host's paste entry, never by `Msg.Runtime`, so the
+guard holds whatever the server sends. The refusal reads "Hermes runs in this
+pane; send from the rendered view".
+
+- 🔴 **The guard uses the broad match, not the mirroring rule.** The pane's
+  process tree holds a process with `comm == "hermes"` and
+  `basename(argv[1]) == "hermes"`, whatever follows. The strict
+  [mirroring rule](#pane-to-session-resolution) also wants `argv[2] == chat`,
+  which fails open for a profile-launched CLI: `hermes -p coder chat` runs as
+  `[python, hermes, -p, coder, chat]` (`P:hermes_cli/main.py:500,595-667`).
+  The gateway (`[python, -m, hermes_cli.main, …, gateway, run, …]`) is
+  excluded explicitly. A false refusal is safe; a false admit is not.
+- **It also refuses when the screen shows Hermes's chrome** (the status bar and
+  input rules around a `❯ ` input line, from the recorded fixtures). ⚠ A Hermes
+  run over `ssh` or `docker exec` inside the pane is invisible to the local
+  process walk: that is a known gap, and the chrome check is what covers it,
+  best-effort.
 
 - It ships in **Phase 1**, first, in the host binary, before any other Hermes
-  work.
+  work. Process identity (both rules) therefore moves into Phase 1.
 - From Phase 3 the rendered view's gated send exists. Every Hermes send goes
   through `Runtime.Submit`, and so through `CheckSend`. The Terminal
   composer's refusal stays: one gated path, not two.
@@ -292,10 +307,13 @@ Phase 1 changes:
   `Window.Runtime`;
 - for a Hermes window, Send now refuses `busy` and unknown as well as
   `waiting`. Claude Code keeps today's rule.
-- **Migration** widening migration 0020's `agent_focus.subject_key` check,
-  which admits `^[0-9A-Za-z][0-9A-Za-z_-]{0,63}$` today, so a
-  runtime-qualified `hermes:<id>` key is accepted. `internal/focus` and the
-  wire pattern change with it.
+- **A migration widening both `subject_key` checks**: migration 0020's on
+  `agent_focus` and migration 0022's on `agent_focus_history`
+  (`0022_agent_focus_history.sql:48`). Both admit
+  `^[0-9A-Za-z][0-9A-Za-z_-]{0,63}$` today, and `internal/focus/pgstore.go`
+  writes both tables in one transaction, so widening one alone fails every
+  write. After it a runtime-qualified `hermes:<id>` key is accepted.
+  `internal/focus` and the wire pattern change with it.
 
 Phase 1 is this refactor plus the host paste guard, with the Claude path
 byte-identical, gated by the existing suite.
@@ -505,10 +523,15 @@ hooks (`hooks:` in `config.yaml`) receive JSON on stdin with
     `config.yaml`, as `settings.hooks`);
   - `shell-hooks-allowlist.json` needs its own writer: a Home Manager
     activation script, ordered after the module's own activation, that writes a
-    **real file** (0600), never a read-only store symlink. Hermes writes the
-    same file itself (`save_allowlist`, when a person answers the `[y/N]`
-    prompt), so a symlink would break that path. The script makes muster's
+    **real file**, never a read-only store symlink. Hermes writes the same file
+    itself (`save_allowlist`, when a person answers the `[y/N]` prompt), so a
+    symlink would break that path. The script makes muster's
     `(event, command)` pairs present exactly and keeps any other entries.
+  - 🔴 **It writes the way Hermes does** (`P:agent/shell_hooks.py:715-740`):
+    it takes Hermes's lock on `shell-hooks-allowlist.json.lock` (`flock`), reads
+    the current file under it, and writes a temp file then renames it into
+    place, mode 0600. Without the lock a concurrent `[y/N]` answer is lost;
+    without the rename a reader can see a half-written file.
   - **On a mismatch** (a pair missing or with a different command): the gateway
     skips that hook with a warning and every new foreground CLI stops on the
     `[y/N]` prompt. muster-mirror's `-list -hermes` compares the declared hooks
@@ -595,9 +618,9 @@ viewer is attached. Measured: it submits once, idle, at both busy modes, and a
 (`paste_collapse_threshold`) or 2000 characters
 (`paste_collapse_char_threshold`) is saved to a file under `~/.hermes/pastes/`
 and replaced in the input box by `[Pasted text #N: L lines → <file>]`
-(`P:hermes_cli/cli_tui_mixin.py:1677-1693,1698-1730`). On submit the
-placeholder is inlined back (`:1472`), which is why S11's 3,229-character paste
-arrived whole. Two consequences:
+(`P:hermes_cli/cli_tui_mixin.py:1677-1693,1698-1730`). The submitted message
+carries the full text, which is why S11's 3,229-character paste arrived whole as
+one user row. (`:1472` inlines it for the input history only.) Two consequences:
 
 - the screen cannot show muster's text after such a paste, so the post-paste
   check accepts either the exact text (a short paste) or exactly one
@@ -619,22 +642,37 @@ message.
      as superseded (nothing pasted, so the queue's Send-wins path puts the
      message back);
    - the false-idle checks above;
-   - the [screen check](#the-screen-check) passes.
+   - the [screen check](#the-screen-check)'s input-line rule passes; then
+     Escape normalisation (one Escape, wait, re-capture, re-verify), once it is
+     measured safe.
 3. Paste the text, bracketed, with no Enter.
 4. Wait `enterDelay`, then re-check the status file and the screen. The input
-   line must now hold muster's text, or its one collapse placeholder, and the
-   rest of the screen must still match the idle layout. If anything moved, do
-   not press Enter: report "pasted, not submitted; the text is in Hermes's input
-   box".
+   area must now hold exactly muster's text, or its one collapse placeholder,
+   under the idle prefix, with the rest of the input-line rule still holding.
+   If anything moved, do not press Enter: report "pasted, not submitted; the
+   text is in Hermes's input box".
 5. Press Enter as today's pasted newline.
 6. **Confirm by the database:** a new `user` row in the lineage whose content
-   equals the message (after `SanitizePaste`), within a bounded wait. If none
-   arrives (a stalled event loop turned the Enter into a newline, item 5), report
-   "pasted, not submitted". That direction is fail-safe.
+   equals the message as Hermes submits it: after `SanitizePaste` and then
+   **stripped** of leading and trailing whitespace, because the CLI submits
+   `raw_text.strip()` (`P:hermes_cli/cli_tui_mixin.py:1452`) and
+   `SanitizePaste` does not trim. If the row arrives, report "sent". If it does
+   not arrive within a bounded wait (a stalled event loop can turn the Enter
+   into a newline, item 5), report **"may have been submitted; check the
+   conversation before sending again"** — never "not submitted", which would
+   invite a resend and a duplicate turn. The pre-Enter refusals in steps 2 and
+   4 are the only "not submitted" answers, because there no Enter was sent.
 
-Text rules: `mirror.SanitizePaste` as today. A leading `/` is passed through, as
-for Claude Code; `/new` opens a confirm modal, which the screen check then
-holds.
+Text rules for Hermes, after `mirror.SanitizePaste`:
+
+- a message whose stripped text starts with `/` or `!` is **refused**. The CLI
+  runs those locally (`_looks_like_slash_command`, `_tui_enter_inline_command`),
+  writes no user row, so a submit cannot be confirmed, and some open the very
+  overlays the screen cannot see (`/model`). Claude Code keeps passing them
+  through;
+- a message whose last line ends in `\` is **refused**: with the multi-line
+  shortcuts on, Enter after a trailing backslash continues the line instead of
+  submitting (`_is_backslash_line_continuation`, `:1436-1443`).
 
 ⚠ **Residual risk.** A turn can start on its own between step 4's re-check and
 step 5's Enter (`auto_continue`, a background delegation finishing). With
@@ -647,28 +685,82 @@ muster never writes Hermes's config.
 ### The screen check
 
 The screen is the only signal for states no hook reports, and the backstop for
-the ones the hook does.
+the ones the hook does. What it can see is set by the CLI's layout
+(`_build_tui_layout_children`, `P:hermes_cli/cli_tui_mixin.py:395-441`). The
+app is drawn at the bottom of the pane, top to bottom: the overlays (sudo,
+secret, connection, approval, slash-confirm, clarify, model picker, command
+palette), the spinner, the hint line, the pet, the stash panel, the subagent
+dock, **the status bar**, the upper input rule, the image bar, **the input
+area**, the lower input rule, the voice bar, the completions menu. The printed
+transcript is above the app.
 
-🔴 **The admit rule is structural, not a marker list.** A list of markers
-admits any state nobody listed, and some states keep the idle `❯ ` prefix while
-Enter acts: at the pin, `_get_tui_prompt_fragments`
-(`P:hermes_cli/cli_tui_mixin.py`) does not change the prefix for the command
-palette (Ctrl+P; Enter runs the highlighted command), the model picker or the
-prompt-stash panel (Ctrl+S). So the host captures the pane
-(`capture-pane -p -e`, with attributes) and admits a send only when:
+So:
 
-- the region between the status bar and the input line matches the **idle
-  layout exactly**, line for line, as recorded for the pinned commit; any extra
-  line is a refusal;
-- the input line is the idle prefix, `❯ `, optionally preceded by a profile
-  name (a non-default profile draws `<profile> ❯ `), followed by nothing or
-  only the **placeholder**. "Empty" is defined by style: the placeholder is
-  drawn in italic (`idle.ansi`), so any non-italic character after the prefix
-  is text in the box and refuses.
+- **Between the status bar and the input area there is only the input rule**
+  (and the image bar), in every state; the S11 idle, busy and approval fixtures
+  all show the same single rule there. That region cannot tell states apart.
+  An earlier revision of this page said a structural check of it refuses the
+  overlays. That was false.
+- **States that change the input line** are told apart reliably. The prompt
+  prefix (`_get_tui_prompt_fragments`, `:309-339`) and the placeholder
+  (`_tui_placeholder_text`, `:798-833`) change for sudo (🔐), secret capture
+  (🔑), the connection form (⚙), approval and slash-confirm (⚠), clarify (`?`,
+  ✎), voice (●, ◉) and a running turn.
+- 🔴 **Three states do not: the command palette (Ctrl+P), the model picker
+  (`/model`) and the prompt-stash panel (Ctrl+S).** Their panels are drawn
+  above the status bar, in rows the transcript also fills. The prefix stays
+  `❯ `, the placeholder is unchanged and the buffer is empty. Enter goes to the
+  overlay first (`_tui_enter_overlay`), so it runs the highlighted command
+  (`:1365`) or persists a model (`:1614-1622`).
 
-Everything else refuses. The states known to block, with their S11 fixtures:
+**Signals for those three, evaluated against the source:**
 
-| state | marker | input-line prefix | why it blocks |
+| candidate | verdict |
+|---|---|
+| tmux `#{cursor_x}`, `#{cursor_y}`, `#{cursor_flag}` | **No.** The overlays are non-focusable `FormattedTextControl` windows (`_tui_overlay_widget`, `:2117-2121`), and keys reach them by key-binding filters on the state (`:2050-2062`). Focus and the cursor stay on the input line. |
+| the overlay's frame above the status bar | **Not proof.** Its chrome is localised text (`t("cli.tui.palette_title")`) in rows the transcript also fills, and the transcript has boxes of its own. At best a deny-list, and a missed match proves nothing. |
+| a CLI-side plugin or hook exposing UI state | **None.** At the pin, hooks and plugins run in the gateway (S2); the CLI loads no user code that sees its UI. |
+| the terminal title | **None.** The CLI sets no title. |
+
+🔴 **No passive signal proves those three closed, so the send fails closed:**
+
+- muster never opens them itself: a Hermes send refuses a message that starts
+  with `/` or `!` (see [the send path](#the-send-path)), so `/model` and the
+  palette can only be opened by a person at the terminal.
+- Phase 3 builds the gated send, but it is **enabled on hosts only when one of
+  these is measured to hold**:
+  1. **Escape normalisation** (the chosen candidate, UNVERIFIED). With the
+     input line already verified idle and empty, send one Escape, wait,
+     re-capture, re-verify, then paste. Escape closes the palette (an eager
+     binding, `:2060`). The states where Escape means something else
+     (approval, clarify, sudo) are refused by the input line before any Escape
+     is sent. Phase 3 measures, with fixtures for the palette, the model picker
+     and the stash before and after: Escape closes each of the three; on an idle,
+     empty buffer it changes nothing (no interrupt, no cleared stash, no
+     meta-prefix swallowing the paste that follows).
+  2. **Upstream exposes the state** on the input line, as it does for every
+     other modal: a prefix glyph for the palette, the picker and the stash. That
+     is the clean cure, and a small upstream change.
+- Until one holds, a Hermes window has no Send and no Queue: the server draws
+  them disabled with the reason, and the host refuses. Full parity for sending
+  depends on this ([risks](#risks), open question 4).
+
+**The input-line rule.** On the captured app region:
+
+- every row of the input area, from the first input row down to the lower
+  input rule, is checked, not only the first. The first row is the idle prefix
+  `❯ `, optionally preceded by a profile name (`<profile> ❯ `), followed by
+  nothing or only the placeholder. Every further row up to the lower rule is
+  empty. A multi-line buffer with text on any row refuses;
+- "empty" is defined by style: the placeholder is drawn in italic
+  (`idle.ansi`), so any non-italic character after the prefix is text in the
+  box;
+- nothing is drawn below the lower rule: no voice bar, and no completions menu
+  (Enter there accepts a completion).
+
+The states known to block, with their S11 fixtures:
+
+| state | marker | input line | why it blocks |
 |---|---|---|---|
 | approval | `Dangerous Command`, `↑/↓ to select, Enter to confirm` | `⚠ ❯` | 🔴 Enter approves `once` |
 | confirm (`/new` and similar) | `destroys conversation state`, `Type 1/2/3` | `⚠ ❯ type 1/2/3, …` | Enter approves; **no hook fires** |
@@ -676,25 +768,24 @@ Everything else refuses. The states known to block, with their S11 fixtures:
 | clarify, free text | `needs your input`, `Type your answer in the prompt below` | `✎ ❯` | the paste becomes the answer; muster never answers by pasting |
 | sudo | `Sudo Password Required` | `type password (hidden), …` | 🔴 the paste becomes a password |
 | hook consent | `Allow this hook to run? [y/N]:`, before the UI | none | the CLI has not started |
+| busy | spinner | `☤ ❯` | Enter interrupts the turn |
+| palette, model picker, stash | a panel above the status bar | **idle `❯ `** | 🔴 Enter runs a command or persists a model; see above |
 
-Also refused: a busy screen (spinner; `☤ ❯` prefix), and an idle line that is
-**not empty** (leftover text would be submitted with muster's). A modal still
-drawn after the hook or viewer reported it resolved is still a modal: a
-viewer-answered approval leaves it on screen until a key is pressed (S1).
+A modal still drawn after the hook or viewer reported it resolved is still a
+modal: a viewer-answered approval leaves it on screen until a key is pressed
+(S1).
 
-States found in source and **not yet captured** (UNVERIFIED until Phase 3
-records a fixture for each): the command palette, the model picker, the
-prompt-stash panel, secret capture (🔑), the connection form (⚙), and the voice
-states. The structural rule refuses them already, because none matches the idle
-layout; the fixtures prove it.
+Not yet captured (UNVERIFIED until Phase 3 records a fixture for each): the
+command palette, the model picker, the stash panel, secret capture, the
+connection form, and the voice states.
 
 **A ledger of overlay states.** Phase 3 keeps a list of every overlay or modal
 state attribute the pinned `cli_tui_mixin.py` and `cli_modal_mixin.py` define,
-each with its fixture. On a pin bump, a test that extracts the attributes from
-the new source fails when the set grows or shrinks, so a new overlay cannot
-arrive unseen. The idle layout, the prefix and the fixtures are re-recorded by
-`make test-livehermes` on every pin bump. Skins or themes changing the glyphs
-are UNVERIFIED; an unrecognised screen refuses.
+each marked "changes the input line" or "does not", with its fixture. On a pin
+bump, a test that extracts the attributes from the new source fails when the set
+grows or shrinks, so a new overlay cannot arrive unseen. The fixtures are
+re-recorded by `make test-livehermes` on every pin bump. Skins or themes
+changing the glyphs are UNVERIFIED; an unrecognised screen refuses.
 
 ### The gateway viewer
 
@@ -912,7 +1003,7 @@ gateway.
 |---|---|---|
 | serve muster's wire | `POST /v1/responses` on :18789, bearer `sha256("gw-"+HOOKS_TOKEN)` | the same port, bearer and wire; `GET /` and `/healthz` |
 | run the agent | the `claude` TUI in tmux, supervised | `hermes gateway run` with the API server on **127.0.0.1** only, supervised with ccd's backoff, crash-loop latch and `/healthz` failure |
-| the agent's own credential | none | a random `API_SERVER_KEY` per start, in memory, passed only to the child; stripped from the agent's shell by Hermes (S8) |
+| the agent's own credential | none | an `API_SERVER_KEY` generated **once** and kept on the volume, `/data/hermesd/api-server-key`, mode 0600; passed only to the child; stripped from the agent's shell by Hermes (S8). It must be **stable across restarts**: see [restart](#restart-and-resume) |
 | one turn | paste, read the transcript, end on the Stop hook | `POST /v1/runs`, stream `/events` |
 | streaming text | output_text deltas | `message.delta` → `response.output_text.delta` |
 | the agent's own tools | `NativeToolItem` items, streamed as `output_item.done`, never in `response.completed` | the same: `tool.*` → `native_tool_call` items, so muster draws them and never dispatches them |
@@ -948,16 +1039,32 @@ No run resumes (S6).
   the unknown run is resolved, the queued run executes. A client that treats it
   as a failure and lets the person resend would run the turn **twice**.
   hermesd therefore:
-  - **records intent before it posts.** For each turn it writes the session,
-    a fresh idempotency key and "posting" to its map on the volume **before**
-    `POST /v1/runs`, sends the key as the `Idempotency-Key` header
-    (`P:gateway/platforms/api_server_runs.py:738`; P keeps the keys in the
-    durable `runs_idempotency.db`), and records the run id from the 202. A
-    crash between the POST and that record would otherwise leave a run hermesd
-    cannot name, parking the session for good. On recovery an intent with no
-    run id is re-posted with the **same** key, which should return the existing
-    run rather than start a second one. That replay across a gateway restart is
-    UNVERIFIED; Phase 5 measures it;
+  - 🔴 **keeps the API key stable.** Runs, their idempotency keys and
+    `resolve-unknown` are scoped by a hash of the profile and the **API key**
+    (`P:gateway/platforms/api_server_runs.py:375-386`); `_request_owns_run`
+    (`:1168-1180`) gates `GET /v1/runs/{id}` and `resolve-unknown`
+    (`:1487-1492`) on it. A key minted per start, as an earlier revision
+    proposed, would make every recovery call 404 and let a same-key re-post
+    admit a **second** run. So the key is generated once, kept on the volume
+    (0600) and reused by every start. (Deriving it from the hooks token was
+    rejected: muster may rotate that token, which would orphan every run.)
+  - **records intent before it posts.** For each turn it writes to its map on
+    the volume, **before** `POST /v1/runs`: the session, a fresh idempotency
+    key, the **exact request body bytes**, and "posting". It sends the key as
+    the `Idempotency-Key` header (`:738`; P keeps keys in the durable
+    `runs_idempotency.db`) and records the run id from the 202. A crash between
+    the POST and that record would otherwise leave a run hermesd cannot name,
+    parking the session for good. On recovery an intent with no run id is
+    re-posted with the **same key and the same bytes**: the request fingerprint
+    hashes the body (`:660-666`), so only an identical body replays the existing
+    run instead of starting a second. That replay across a gateway restart is
+    UNVERIFIED; Phase 5 measures it.
+  - **409 `idempotency_key_conflict`** means the stored key saw a different
+    body. hermesd never retries it with a new key: the turn is reported as
+    "may have run; check the conversation", and the intent is closed.
+  - **Key retention** is 24 h. An intent older than that is never re-posted
+    (a replay could start a second run); it is resolved by reading the
+    session's messages, and otherwise reported as "may have run".
   - **recovers on every gateway start, not only its own.** The likely SIGKILL is
     the gateway alone being OOM-killed while hermesd lives on. So after every
     start of the child (hermesd's own start, and each supervised restart), and
@@ -1134,13 +1241,13 @@ Efforts are rough engineer-days, including tests and docs. Phase 0 is done.
 | phase | what | effort | depends on |
 |---|---|---|---|
 | ~~0~~ | Spikes S1–S11 | done | — |
-| **1** | Runtime seam: `mirrorhost.Runtime` for Claude Code and Hermes, Claude behind it, `Window.Runtime`/`AgentSession` with the wider id bound. 🔴 **The host paste guard** (refuse `AnyPane` into a pane holding a Hermes CLI), first. [Server changes](#server-changes): runtime-aware `AgentState` and waiting set, Send now refusing unknown and busy for Hermes, the migration widening 0020's `subject_key` check. No behaviour change for Claude Code. | 4–5 | — |
-| **2** | Read-only Hermes mirroring: process identity, breadcrumb locator with the end-reason staleness rule (no view, unknown status), SQLite reader (compaction, compression-only lineage), renderer, the `hermes-hook` command and its status files with lease and newest-row checks, the Home Manager declaration and allowlist writer, mismatch diagnostics, listing and kind chip, secret-path ledger, `-list -hermes` | 6–8 | 1 |
-| **3** | Gated pane send **and its live harness**. `make test-livehermes`: the pinned Hermes in a scratch tmux server and home; fixtures for every blocking state, including the six not yet captured; the overlay-state ledger; re-measuring under load the false-idle slack, the 150 ms Enter margin and the queue gap. Then the send: per-runtime server gates, host `CheckSend` with the structural screen check, collapse-aware post-paste check, database-confirmed submit, Queue and Send now for Hermes, host docs (`/busy queue`, the `~/.hermes/pastes/` copy). The send ships to hosts only once the harness is green. | 9–11 | 2 |
+| **1** | Runtime seam: `mirrorhost.Runtime` for Claude Code and Hermes, Claude behind it, `Window.Runtime`/`AgentSession` with the wider id bound. 🔴 **The host paste guard**, first, with process identity (the broad guard match and the strict mirroring rule) and the chrome check. [Server changes](#server-changes): runtime-aware `AgentState` and waiting set, Send now refusing unknown and busy for Hermes, the migration widening both `subject_key` checks (0020, 0022). No behaviour change for Claude Code. | 5–6 | — |
+| **2** | Read-only Hermes mirroring: breadcrumb locator with the end-reason staleness rule (no view, unknown status), SQLite reader (compaction, compression-only lineage), renderer, the `hermes-hook` command and its status files with lease and newest-row checks, the Home Manager declaration and the locking allowlist writer, mismatch diagnostics, listing and kind chip, secret-path ledger, `-list -hermes` | 6–8 | 1 |
+| **3** | Gated pane send **and its live harness**. `make test-livehermes`: the pinned Hermes in a scratch tmux server and home; fixtures for every blocking state, including the palette, model picker and stash; the overlay-state ledger; measuring Escape normalisation; re-measuring under load the false-idle slack, the 150 ms Enter margin and the queue gap. Then the send: per-runtime server gates, host `CheckSend` with the input-line rule and Escape normalisation, the `/`, `!` and trailing-`\` refusals, collapse-aware post-paste check, database-confirmed submit with "may have been submitted", Queue and Send now for Hermes, host docs. The send is enabled on hosts only when the harness is green **and** Escape normalisation measures safe (or upstream exposes the overlay state). | 10–12 | 2 |
 | **4** | Questions and approvals: clarify cards from the DB, approval and sudo attention items from the hooks, viewer discovery through `gateway.sock.path`, attach-to-answer, `approval.respond` with the stale-modal card, measuring the viewer's clarify answer (and wiring it if it passes), the hygiene filters; harness cases for each | 5–7 | 2, 3 |
-| **5** | `hermes` kind: `hermesd` (runs, events, exact approval body, relay timeout, intent-before-POST with `Idempotency-Key`, `resolve-unknown` recovery on every gateway start, SIGTERM handling), the Nix image without ffmpeg, `agentspec`, migration, config, smoke test like `cc-smoke`, a first run in a real pod | 9–11 | 1 |
+| **5** | `hermes` kind: `hermesd` (runs, events, exact approval body, relay timeout, a stable API key on the volume, intent-before-POST with the exact body and `Idempotency-Key`, 409 and retention handling, `resolve-unknown` recovery on every gateway start, SIGTERM handling), the Nix image without ffmpeg, `agentspec`, migration, config, smoke test like `cc-smoke`, a first run in a real pod | 10–12 | 1 |
 
-Remaining: about 33–42 days. Each phase is released and shipped to the hosts as
+Remaining: about 36–45 days. Each phase is released and shipped to the hosts as
 it merges. Phases 2–4 and 5 are independent after Phase 1. The shortest useful
 slice is Phases 1–2: read-only Hermes windows with status, with the paste
 guard already in place. `make test-livehermes` re-runs on every pin bump.
@@ -1150,9 +1257,11 @@ guard already in place. `make test-livehermes` re-runs on every pin bump.
 - 🔴 **A misplaced Enter approves, picks a choice, sends a password or
   interrupts.** Shipped muster can do it today through the Terminal composer;
   Phase 1's host paste guard closes that first. Mitigated afterwards by the
-  structural screen check, the status and DB
+  input-line rule, Escape normalisation (once measured), the status and DB
   checks, and the post-paste re-check; the residual window is named, and
-  `/busy queue` narrows it.
+  `/busy queue` narrows it. The palette, model picker and stash are invisible
+  to the screen, which is why the send stays off until Escape normalisation
+  measures safe.
 - **Upstream churn.** Main moves daily; the rendered view parses Hermes's
   schema and the send path depends on its key bindings and glyphs. Every pin
   bump re-runs `make test-livehermes` and re-records the fixtures;
@@ -1176,6 +1285,13 @@ guard already in place. `make test-livehermes` re-runs on every pin bump.
   - the command palette, model picker, prompt-stash panel, secret capture,
     connection form and voice states (found in source; fixtures in Phase 3);
   - an `Idempotency-Key` replay across a gateway restart (Phase 5);
+  - Escape normalisation for the palette, model picker and stash (Phase 3);
+    until it measures safe, Hermes windows have no Send;
+  - a Hermes CLI run over `ssh` or `docker exec` in a pane, covered only by the
+    best-effort chrome check;
+  - in a pod, the agent shares a uid with the gateway and can read its
+    environment and the API key file, so approvals there are a policy aid, not a
+    boundary against the agent itself (as for `claude-code`);
   - every timing under load: the false-idle slack, the Enter boundary, the
     ~0.3 s queue gap;
   - a Kubernetes pod: container detection, the NetworkPolicy and restricted
@@ -1201,7 +1317,11 @@ guard already in place. `make test-livehermes` re-runs on every pin bump.
    what Enter does at the terminal for the person too.
 3. **Question cards from pods:** add the `clarify` toolset to the pod (it is
    off for API-server turns), and with it the P-only `/clarify` route?
-4. **A Terminal view for `hermes` pods** (a TUI viewer of the in-pod gateway):
+4. **Send without a proven-closed overlay:** if Escape normalisation fails to
+   measure safe and upstream does not expose the state, ship Hermes windows
+   without Send and Queue (the default here), or accept the palette, picker and
+   stash as a named residual risk?
+5. **A Terminal view for `hermes` pods** (a TUI viewer of the in-pod gateway):
    in scope for a later release?
 
 ## Recommended improvements
@@ -1209,7 +1329,9 @@ guard already in place. `make test-livehermes` re-runs on every pin bump.
 - **Upstream, small:** rewrite the terminal breadcrumb on `/resume` and
   `/branch`; have the CLI draw turns other viewers submit (which would make
   `prompt.submit` a safe send path, see #103748); clear the CLI's approval
-  modal when another client settles it; a documented per-session status file
+  modal when another client settles it; mark the command palette, the model
+  picker and the stash on the input line, as every other modal already is; a
+  documented per-session status file
   for the CLI; a hook-reported event for confirm modals such as `/new`.
 - **A runtime-neutral identity for the host MCP endpoint**, so Hermes sessions
   can call muster's attention and task tools.
