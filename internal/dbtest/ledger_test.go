@@ -178,7 +178,7 @@ var pgBackedPackages = []string{
 	// shared device and nothing else" and "a stale handle cannot touch a row
 	// that changed hands" are claims about SQL and row-level security.
 	"internal/push",
-	// The Android app's paired phones (0037): "a removed device, a disabled
+	// The Android app's paired phones (0038): "a removed device, a disabled
 	// owner, a moved cutoff and a later sign-out everywhere each refuse the
 	// credential" are claims about SQL and row-level security.
 	"internal/devices",

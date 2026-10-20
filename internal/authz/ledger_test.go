@@ -139,7 +139,7 @@ var (
 		// ended its session. Every query through it filters on an explicit owner
 		// (or a row handle carrying one) — see internal/push.Store.
 		"internal/push.sys",
-		// Paired devices (migration 0037): the device store's one helper. Two
+		// Paired devices (migration 0038): the device store's one helper. Two
 		// lookups run through it, each how a request's owner is LEARNED by a
 		// hash — redeeming a pairing code (the public pairing route, no
 		// principal) and authenticating a device credential (devices and
@@ -240,7 +240,7 @@ var (
 		"internal/api.(*Server).requireRelayAgent",
 		"internal/api.(*Server).requireMirrorHostToken", // mirror host tokens: POST /mirror/mcp
 		"internal/api.(*Server).requirePluginToken",     // plugin tokens (0015): /plugin/v1/*
-		"internal/api.(*Server).requireDeviceToken",     // paired device credentials (0037): /api/device/*
+		"internal/api.(*Server).requireDeviceToken",     // paired device credentials (0038): /api/device/*
 		"internal/api.(*Server).requireRunnerToken",     // browser-flow runner tokens (0012): /runner/flows/*
 		"internal/api.(*Server).requireSession",
 	}
