@@ -25,15 +25,19 @@ import (
 // with the HOST's mirror token and the calling session's Claude session id
 // (X-Muster-Claude-Session) — so the session gets the "all agents" tools:
 // attention_ask/wait/cancel, and the task tools over the tasks THAT SESSION
-// created (taskScopeOf).
+// created (taskScopeOf) — plus attention_answer, the operator answering one of
+// their asks through their own session, which no dispatched agent gets.
 //
 // 🔴 A MIRROR TOKEN NOW OPENS A SECOND ROUTE, AND THIS ONE IS NARROW. Until this
-// door, mmt_ opened /mirror/connect and nothing else. Here it opens exactly the
-// all-agents tool set (mirrorTools) and nothing else: no chief tool (they are
-// not listed, and serveMCP refuses an unlisted name), no connector, no flow.
-// So a LEAKED mmt_ reaches, beyond what /mirror/connect already gives, the
-// asks of that host's sessions (file, wait, cancel) and the tasks those
-// sessions created — never another task, another host's session or the chief.
+// door, mmt_ opened /mirror/connect and nothing else. Here it opens exactly
+// mirrorTools and nothing else: no chief tool (they are not listed, and
+// serveMCP refuses an unlisted name), no connector, no flow. So a LEAKED mmt_
+// reaches, beyond what /mirror/connect already gives, the asks of that host's
+// sessions (file, wait, cancel), the tasks those sessions created, and — 🔴
+// through attention_answer — an answer AS THE OPERATOR to any of the owner's
+// open asks that one of the host's listed sessions did not raise (the chief's
+// included, so also task_dispatch's instructions provenance). Never another
+// task, another host's session, another owner's ask or a chief tool.
 //
 // 🔴 A HOST ACTS ONLY AS ITS OWN SESSIONS. The token names its host; the
 // session id is the caller's claim, and it is believed only when THAT host is
@@ -161,12 +165,14 @@ func (s *Server) mirrorSessionOf(ctx context.Context, host, sid string) (mirror.
 }
 
 // mirrorTools is the mirrored sessions' tool set: the all-agents attention and
-// task tools, and nothing else.
+// task tools, and attention_answer — the operator answering an ask through
+// their own session, which no dispatched agent is offered (and which its
+// handler refuses to any caller but a mirrored session).
 func (s *Server) mirrorTools() []agents.ToolDef {
 	if !s.attentionToolsOn() {
 		return nil
 	}
-	return append(attentionToolDefs(), taskToolDefs()...)
+	return append(append(attentionToolDefs(), taskToolDefs()...), attentionAnswerToolDef())
 }
 
 func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {

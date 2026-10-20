@@ -14,6 +14,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/fence"
+	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // ---------------------------------------------------------------------------
@@ -115,10 +116,14 @@ func (s *Server) deliveryOwner() string {
 // outside the fence; fence.Sanitize folds line breaks but not quotes, so any
 // excerpt of the question there (a task title can be written upstream) could
 // close the quote and speak as the owner. Every byte of the question and the
-// answer is inside the fence.
+// answer is inside the fence. The one other thing it names is where an answer
+// given through attention_answer came from (answeredViaLine): a host and a
+// Claude session id, each re-checked against the mirror wire's shapes
+// (lowercase host label; [0-9A-Za-z_-] id) before it is written there.
 func renderAttentionAnswer(a attention.Ask) string {
 	id := strconv.FormatInt(a.ID, 10)
-	pre := "muster: your owner answered attention #" + id + ", which you asked. The block below is your question and your owner's " +
+	pre := "muster: your owner answered attention #" + id + ", which you asked" + answeredViaLine(a.AnsweredVia) +
+		". The block below is your question and your owner's " +
 		"answer, relayed by muster: act on the answer now. It is delivered once; you do not need to call attention_wait for it."
 	lines := []string{"question:"}
 	for _, l := range strings.Split(a.Question, "\n") {
@@ -129,6 +134,22 @@ func renderAttentionAnswer(a attention.Ask) string {
 		lines = append(lines, "  "+fence.Sanitize(l))
 	}
 	return fence.Block{Preface: pre, Marker: attentionDeliveryMarker, Count: 1, Lines: lines}.Render(fence.NewNonce())
+}
+
+// answeredViaLine is where an answer came from, as the delivered preface says
+// it: "" for the Attention view; for attention_answer, " — answered by the
+// operator via MCP from <host>/<session>, their mirrored Claude Code session,
+// not on the Attention view". A host or session id that does not have the
+// wire's shape (0034's CHECK refuses one, so: never) is not named.
+func answeredViaLine(src attention.AnswerSource) string {
+	if !src.ViaSession() {
+		return ""
+	}
+	from := "a mirrored Claude Code session"
+	if mirror.ValidHost(src.Host) == nil && mirror.ValidClaudeSession(src.Session) {
+		from = src.Host + "/" + src.Session + ", their mirrored Claude Code session"
+	}
+	return " — answered by the operator via MCP from " + from + ", not on the Attention view"
 }
 
 // answerSession is the session an answer to agent a goes to: its default

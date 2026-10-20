@@ -62,7 +62,9 @@ repositories): its session starts inside a checkout, so the repository's
 the task's text and muster's rules (which come last and win). They are
 accepted **only** as your own words: verbatim, your answer to an attention ask
 about that same task ("start a Claude Code agent and have it open with skill
-X"). Anything else is refused, and the chief is told to ask you with
+X") — given on `/attention` or through one of your mirrored sessions'
+`attention_answer`, which the chief's delivered answer names as *via MCP from
+`<host>`/`<session>`* ([attention.md](attention.md#the-agent-tools)). Anything else is refused, and the chief is told to ask you with
 `task_route_attention`. The `task.chief_dispatch` audit row records the kind,
 the instructions and the ask they came from. Guards: [plugins.md](plugins.md#task_dispatch-the-guards).
 

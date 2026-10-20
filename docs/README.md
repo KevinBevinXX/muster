@@ -7,7 +7,7 @@ Start with the [project README](../README.md) for the pitch and a quickstart.
 - [tasks.md](tasks.md) — the task board, statuses, tags, the reaper, GitHub
 - [mirroring.md](mirroring.md) — mirrored tmux and Claude Code sessions
 - [focus.md](focus.md) — what each session is working on, and how the chief finds one
-- [attention.md](attention.md) — the attention queue: everything waiting on you, and the agents' ask-and-wait tools
+- [attention.md](attention.md) — the attention queue: everything waiting on you, the agents' ask-and-wait tools, and answering an ask from your own mirrored session (`attention_answer`)
 - [sending-and-step-up.md](sending-and-step-up.md) — the message box, and the step-up check that guards it
 - [dictation.md](dictation.md) — the microphone on every message box
 - [uploads.md](uploads.md) — attaching files in the composer; the signed link an agent downloads them through

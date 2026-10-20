@@ -7,7 +7,7 @@
 // live from the state that owns them; only the explicit asks are stored, here.
 //
 // 🔴 THE STORE HAS TWO HALVES AND THEY RUN UNDER DIFFERENT PRINCIPALS. Ask,
-// Get, Open, Answer and Cancel run under the CALLER's principal: attention_asks
+// Get, Open, Answer, AnswerFromSession and Cancel run under the CALLER's principal: attention_asks
 // is under FORCE row-level security, so a request sees, asks into and answers
 // only its own user's rows, and the owner of a new row is the principal's user
 // (owner_id's default), never a parameter. ExpireDue runs under the
@@ -59,9 +59,36 @@ const (
 	AnsweredInSession Status = "answered_in_session"
 )
 
-// ByOperator is who answers an ask: the operator, on the attention view. No
-// agent answers one — not even the chief.
+// ByOperator is who answers an ask: the operator — on the attention view, or
+// (migration 0034) through one of their own mirrored Claude Code sessions'
+// attention_answer. No dispatched agent answers one — not even the chief.
 const ByOperator = "operator"
+
+// ViaMCP is answered_via for an answer given through attention_answer, from a
+// mirrored session (migration 0034). An answer given on the attention view has
+// no answered_via.
+const ViaMCP = "mcp"
+
+// AnswerSource is where the operator gave an answer when it was NOT the
+// attention view: Via (ViaMCP) and the mirrored session it came from (Host, the
+// session's mirror host; Session, its Claude session id). The zero value is the
+// view.
+type AnswerSource struct {
+	Via     string
+	Host    string
+	Session string
+}
+
+// ViaSession reports whether src names a mirrored session (an MCP answer).
+func (src AnswerSource) ViaSession() bool { return src.Via == ViaMCP }
+
+// String is "<host>/<session>", "" for the view.
+func (src AnswerSource) String() string {
+	if !src.ViaSession() {
+		return ""
+	}
+	return src.Host + "/" + src.Session
+}
 
 // The bounds, each also a CHECK in 0025.
 const (
@@ -87,6 +114,10 @@ var (
 	ErrNotFound = errors.New("attention: no such ask")
 	// ErrNotOpen: the ask was already answered, cancelled or expired.
 	ErrNotOpen = errors.New("attention: the ask is no longer open")
+	// ErrOwnAsk: a mirrored session tried to answer an ask it raised itself
+	// (AnswerFromSession). An ask is a question to the operator; the session
+	// that put it cannot also be the one that answers it.
+	ErrOwnAsk = errors.New("attention: a session cannot answer an ask it raised")
 	// ErrTooMany: the owner already has MaxOpenPerOwner open asks.
 	ErrTooMany = fmt.Errorf("attention: there are already %d open asks; wait for some to be answered", MaxOpenPerOwner)
 )
@@ -159,6 +190,10 @@ type Ask struct {
 	// muster's own task path sets it (New.TaskID); an agent's attention_ask
 	// never does.
 	TaskID int64 `json:"task_id,omitempty"`
+	// AnsweredVia is where the operator gave the answer when it was not the
+	// attention view (migration 0034): the zero value for the view (and for
+	// every answer recorded before 0034).
+	AnsweredVia AnswerSource `json:"-"`
 }
 
 // Delivery is where an answer stands on its way to the asker (migration 0031).
@@ -279,8 +314,14 @@ type Store interface {
 	Get(ctx context.Context, id int64) (Ask, error)
 	// Open is the caller's open, unexpired asks, oldest first.
 	Open(ctx context.Context) ([]Ask, error)
-	// Answer records the operator's answer to an open ask.
+	// Answer records the operator's answer to an open ask, given on the
+	// attention view.
 	Answer(ctx context.Context, id int64, answer string) (Ask, error)
+	// AnswerFromSession records the operator's answer to an open ask, given
+	// through attention_answer by their mirrored Claude Code session (host,
+	// session): the same transition as Answer, plus its provenance (ViaMCP).
+	// ErrOwnAsk when that session raised the ask.
+	AnswerFromSession(ctx context.Context, id int64, answer, host, session string) (Ask, error)
 	// Cancel withdraws an open ask.
 	Cancel(ctx context.Context, id int64) (Ask, error)
 	// AnswerInSession settles as AnsweredInSession every open ask asker raised
@@ -357,7 +398,8 @@ const cols = `id, owner_id, coalesce(agent_id, 0), coalesce(mirror_host, ''), co
 	CASE WHEN status = 'open' AND expires_at <= now() THEN 'expired' ELSE status END,
 	coalesce(answer, ''), coalesce(answered_by, ''), created_at, expires_at, resolved_at,
 	coalesce(delivery, ''), delivery_detail, delivery_attempts, coalesce(delivered_session_id, 0), delivery_queued_at,
-	coalesce(task_id, 0)`
+	coalesce(task_id, 0),
+	coalesce(answered_via, ''), coalesce(answered_via_host, ''), coalesce(answered_via_session, '')`
 
 func scan(row pgx.Row) (Ask, error) {
 	var a Ask
@@ -366,7 +408,8 @@ func scan(row pgx.Row) (Ask, error) {
 	var status, delivery string
 	if err := row.Scan(&a.ID, &a.Owner, &a.Asker.AgentID, &a.Asker.MirrorHost, &a.Asker.MirrorSession, &a.Asker.System, &a.Asker.Label,
 		&a.Question, &opts, &status, &a.Answer, &a.AnsweredBy, &a.CreatedAt, &a.ExpiresAt, &resolved,
-		&delivery, &a.DeliveryDetail, &a.DeliveryAttempts, &a.DeliveredSession, &queued, &a.TaskID); err != nil {
+		&delivery, &a.DeliveryDetail, &a.DeliveryAttempts, &a.DeliveredSession, &queued, &a.TaskID,
+		&a.AnsweredVia.Via, &a.AnsweredVia.Host, &a.AnsweredVia.Session); err != nil {
 		return Ask{}, err
 	}
 	if queued != nil {
@@ -494,20 +537,55 @@ func (s *PGStore) settle(ctx context.Context, id int64, q string, args ...any) (
 	return cur, ErrNotOpen
 }
 
+// answerSQL is THE answer transition, Answer's and AnswerFromSession's: one
+// conditional UPDATE, so the two doors cannot drift apart.
+//
+// 🔴 THE DELIVERY IS OWED IN THE SAME STATEMENT AS THE ANSWER (migration
+// 0031), so no answer to an agent exists without its delivery state: an
+// agent's answer is queued for a turn in its session; a mirrored session's
+// is left for its attention_wait (pull); a system asker's has nobody to
+// reach (NULL).
+//
+// 🔴 A SESSION NEVER ANSWERS ITS OWN ASK, IN THE SAME STATEMENT: the last
+// condition refuses the row when the answering session ($5, $6) is the ask's
+// asker; an answer from the view ($4 NULL) names no session, so it applies to
+// none. 0034's CHECK states the same rule again. AnswerFromSession tells the
+// refusal apart from "no longer open" (ErrOwnAsk).
+const answerSQL = `UPDATE attention_asks SET status = 'answered', answer = $2, answered_by = $3, resolved_at = now(),
+	  delivery = CASE WHEN agent_id IS NOT NULL THEN 'queued' WHEN mirror_session IS NOT NULL THEN 'pull' END,
+	  delivery_queued_at = CASE WHEN agent_id IS NOT NULL THEN now() END,
+	  answered_via = $4::text, answered_via_host = $5::text, answered_via_session = $6::text
+	WHERE id = $1 AND status = 'open' AND expires_at > now()
+	  AND ($4::text IS NULL OR NOT (mirror_host IS NOT DISTINCT FROM $5::text AND mirror_session IS NOT DISTINCT FROM $6::text))
+	RETURNING ` + cols
+
 func (s *PGStore) Answer(ctx context.Context, id int64, answer string) (Ask, error) {
 	answer, err := CleanAnswer(answer)
 	if err != nil {
 		return Ask{}, err
 	}
-	// 🔴 THE DELIVERY IS OWED IN THE SAME STATEMENT AS THE ANSWER (migration
-	// 0031), so no answer to an agent exists without its delivery state: an
-	// agent's answer is queued for a turn in its session; a mirrored session's
-	// is left for its attention_wait (pull); a system asker's has nobody to
-	// reach (NULL).
-	return s.settle(ctx, id, `UPDATE attention_asks SET status = 'answered', answer = $2, answered_by = $3, resolved_at = now(),
-		  delivery = CASE WHEN agent_id IS NOT NULL THEN 'queued' WHEN mirror_session IS NOT NULL THEN 'pull' END,
-		  delivery_queued_at = CASE WHEN agent_id IS NOT NULL THEN now() END
-		WHERE id = $1 AND status = 'open' AND expires_at > now() RETURNING `+cols, id, answer, ByOperator)
+	return s.settle(ctx, id, answerSQL, id, answer, ByOperator, nil, nil, nil)
+}
+
+// AnswerFromSession runs under the caller's principal, like Answer: row-level
+// security keeps it to the caller's own asks, so another owner's ask is
+// ErrNotFound exactly as a missing one is.
+func (s *PGStore) AnswerFromSession(ctx context.Context, id int64, answer, host, session string) (Ask, error) {
+	answer, err := CleanAnswer(answer)
+	if err != nil {
+		return Ask{}, err
+	}
+	if err := mirror.ValidHost(host); err != nil {
+		return Ask{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	if !mirror.ValidClaudeSession(session) {
+		return Ask{}, fmt.Errorf("%w: not a Claude session id", ErrInvalid)
+	}
+	a, err := s.settle(ctx, id, answerSQL, id, answer, ByOperator, ViaMCP, host, session)
+	if errors.Is(err, ErrNotOpen) && a.Asker.MirrorHost == host && a.Asker.MirrorSession == session {
+		return a, ErrOwnAsk
+	}
+	return a, err
 }
 
 // cutDetail bounds a delivery detail (0031's CHECK).

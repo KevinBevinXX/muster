@@ -343,13 +343,15 @@ func TestTheChiefOnlyToolsAreRefusedToEveryoneElse(t *testing.T) {
 			t.Fatalf("gateway %s by a worker: %s", n, got)
 		}
 	}
-	// No agent answers an ask — the chief included: there is no such tool.
-	for _, n := range []string{"attention_answer", "attention_get"} {
+	// No dispatched agent answers an ask — the chief included. attention_answer
+	// exists, but only for the owner's mirrored sessions: unlisted on /mcp, and
+	// refused by its handler when a gateway runtime names it.
+	for n, want := range map[string]string{"attention_answer": "available only to your owner's own mirrored Claude Code sessions", "attention_get": "unknown tool"} {
 		if _, _, rpc := f.tool(t, f.chiefTok, n, args); rpc == nil || rpc.Code != -32602 {
 			t.Fatalf("MCP %s by the chief: %+v", n, rpc)
 		}
 		raw, _ := json.Marshal(args)
-		if got := f.srv.AgentToolDispatch(asUser(f.member), f.chief)(n, string(raw)); !strings.Contains(got, "unknown tool") {
+		if got := f.srv.AgentToolDispatch(asUser(f.member), f.chief)(n, string(raw)); !strings.Contains(got, want) {
 			t.Fatalf("gateway %s by the chief: %s", n, got)
 		}
 	}

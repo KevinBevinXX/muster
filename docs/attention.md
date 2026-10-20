@@ -97,9 +97,27 @@ called by name):
 
 | tool | does |
 |---|---|
-| `attention_list` | The whole queue, as the view shows it, newest first: each item's `text` (the question; what a session waits on; a draft's inbound message), `detail` (a session's last words; the draft) and `focus`. Read-only: only the operator answers an ask. |
+| `attention_list` | The whole queue, as the view shows it, newest first: each item's `text` (the question; what a session waits on; a draft's inbound message), `detail` (a session's last words; the draft) and `focus`. Read-only: the chief cannot answer an ask (no dispatched agent can); only the operator does — on `/attention`, or through one of their own mirrored sessions' `attention_answer` (below). |
 | `session_transcript {subject, max_entries?}` | The recent conversation of one of the owner's sessions (`agent:<id>` or `mirror:<claude session id>`, as `fleet_list` returns them): oldest first, at most 200 entries, each at most 2000 characters, 48 KiB in all; tool calls by name, tool output left out. |
 | `fleet_list` | (Existing.) Now also carries a mirrored session's `host`. |
+
+**Mirrored Claude Code sessions only** (the operator's own sessions, through
+their host's `muster-mirror` — [below](#mirrored-claude-code-sessions)):
+
+| tool | does |
+|---|---|
+| `attention_answer {id, answer}` | Answers one of the owner's OPEN asks as the operator: free text or one of its options, the same validation as the `/attention` form (blank refused, at most 8000 characters). It takes the form's own answer path, so the notification is withdrawn, waiters wake and an agent's answer is [delivered](#delivery) exactly as a browser answer is. The row records where it came from (`answered_via = 'mcp'`, the session's host and Claude session id, migration 0034); `answered_by` is still `operator`. Refused: an ask **this session raised** (*"was raised by this session"*), an ask that is no longer open (*"is no longer open (it is …)"*), and another owner's ask or a missing id (both *"no such ask: N"*). |
+
+🔴 **Who can answer, and how that is enforced.** `attention_answer` is listed
+only on `POST /mirror/mcp`; no dispatched agent's tool list (gateway or `POST
+/mcp`) has it, and `POST /mcp` refuses an unlisted name. Because a gateway
+runtime can name any tool, the handler itself also refuses every caller that is
+not a mirrored session — the chief included: *"attention_answer is available
+only to your owner's own mirrored Claude Code sessions"*. `POST /mirror/mcp`
+admits only a mirror host token (the hook token, an agent's token and the
+chief's are 401), acts as that token's owner (row-level security), and binds
+each call to a Claude session **that host** lists now. The self-answer rule is
+part of the answer's own conditional update, and 0034's CHECK states it again.
 
 A long `attention_wait` keeps its connection alive: after 15 seconds the MCP
 response's headers are sent and a newline follows every 15 seconds until the
@@ -163,7 +181,8 @@ too, through its host's `muster-mirror`:
    any pane) — waiting up to 3 seconds for the host's list to arrive. Another
    host's session, a session no window shows, or another owner's token gets a
    tool error and the tool does not run. The tool set is exactly
-   `attention_ask`, `attention_wait`, `attention_cancel` and the task tools; the
+   `attention_ask`, `attention_wait`, `attention_cancel`, the task tools and
+   `attention_answer` (the operator answering an ask through this session); the
    chief's tools are not on it. The token is checked on every call (a revoked
    one is refused at its next call, `initialize` included). After 10 failed checks of one token from
    one address within a minute, that token from that address is answered 429 —
@@ -176,10 +195,20 @@ session can wait on or cancel it. The task tools act on **the tasks that
 session created** (its `created` link, which `muster task create` records from
 the session's id) and nothing else.
 
+An answer given with `attention_answer` from one of these sessions is the
+operator's answer (see [The agent tools](#the-agent-tools)): the session can
+answer any of its owner's open asks except its own.
+
 **What a leaked mirror token reaches** (see [auth.md](auth.md)): beyond the
 host's tunnel, the asks of that host's own Claude Code sessions (file, wait,
-cancel) and the tasks those sessions created. Never another task, another
-host's session, or a chief tool.
+cancel), the tasks those sessions created — and, through `attention_answer`,
+**an answer as the operator to any of the owner's open asks** that one of the
+host's listed sessions did not raise, including the chief's. Such an answer is
+recorded and shown as coming via MCP from that host, and it counts as the
+operator's answer everywhere — including `task_dispatch`'s rule that
+`instructions` be the owner's own words (an answer to an ask about that task).
+Never another task, another host's session, another owner's ask, or a chief
+tool. Revoke a token you suspect (`muster-server mirror token revoke`).
 
 ### Client configuration
 
@@ -227,13 +256,14 @@ If muster sits behind an auth proxy, `POST /mirror/mcp` must bypass it, as
 
 ## Delivery
 
-When you answer an ask on `/attention`, the answer goes to whoever asked
-(migration 0031, `internal/api/attention_delivery.go`):
+When you answer an ask — on `/attention`, or through a mirrored session's
+`attention_answer` — the answer goes to whoever asked (migration 0031,
+`internal/api/attention_delivery.go`):
 
 | asker | what happens |
 |---|---|
-| a dispatched agent (the chief included) | muster pushes the answer into the agent's **default** chat session (the chief's pinned one) as a new turn: muster's line naming the ask by id (no question text outside the fence), then the question and your answer, fenced (`<<<attention-answer untrusted …>>>`). The agent acts on it without polling. |
-| a mirrored Claude Code session | nothing is pushed: muster types into a mirrored window only for your own message (the send queue's step-up gate). The session reads the answer with `attention_wait`. |
+| a dispatched agent (the chief included) | muster pushes the answer into the agent's **default** chat session (the chief's pinned one) as a new turn: muster's line naming the ask by id (no question text outside the fence), then the question and your answer, fenced (`<<<attention-answer untrusted …>>>`). The agent acts on it without polling. An answer given through `attention_answer` says so in muster's line: *"— answered by the operator via MCP from `<host>`/`<claude session id>`, their mirrored Claude Code session, not on the Attention view"* (the host and id are re-checked against the mirror wire's shapes before they are written outside the fence). |
+| a mirrored Claude Code session | nothing is pushed: muster types into a mirrored window only for your own message (the send queue's step-up gate). The session reads the answer with `attention_wait`; an answer given through `attention_answer` carries `answered_via: "mcp"` and `answered_from: "<host>/<session>"` there. |
 | muster itself (a system ask) | nothing to deliver. |
 
 **Exactly once.** The delivery is a state on the ask's row, and every move is
@@ -262,16 +292,19 @@ answers and where each went: *Queued for …* (with why, while it waits),
 *Delivering…*, *Delivered to …*, *… read it while waiting for it*, *Waiting for …
 to read it* (a mirrored session), or *Delivery failed: …* with **Retry delivery**
 (`POST /attention/asks/{id}/redeliver`, your own asks only), which queues it
-once more.
+once more. An answer given through `attention_answer` also reads *Given via MCP
+from your mirrored session `<host>`/`<session>`*.
 
 **No backfill.** An answer recorded before 0031 has no delivery state and is
 never pushed.
 
 ## Answering
 
-Only the operator answers, on `/attention`: `POST /attention/asks/{id}/answer`
+Only the operator answers: on `/attention` — `POST /attention/asks/{id}/answer`
 (`option` or `answer`) and `POST /attention/asks/{id}/cancel`,
-session-authenticated and same-origin. No agent tool answers an ask.
+session-authenticated and same-origin — or through one of their own mirrored
+Claude Code sessions' `attention_answer` ([who can, and how](#the-agent-tools)).
+No dispatched agent's tool answers an ask, the chief's included.
 
 **Or in the session.** Writing to the asker directly answers it too: a message
 you send into a mirrored session's Claude Code pane (the rendered view's Send —

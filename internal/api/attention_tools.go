@@ -30,8 +30,17 @@ import (
 // CHIEF ONLY (gateway + MCP, chiefOnly in the registry, so refused at dispatch
 // for anyone else even when called by name): attention_list over the whole
 // queue, and session_transcript — a size-capped tail of any of the owner's
-// sessions. (fleet_list, the fleet listing, is focus_tools.go's.) No agent
-// answers an ask, the chief included: only the operator does, on /attention.
+// sessions. (fleet_list, the fleet listing, is focus_tools.go's.) No
+// DISPATCHED agent answers an ask, the chief included.
+//
+// MIRRORED SESSIONS ONLY (mirror_mcp.go's tool set, never the agent registry):
+// attention_answer — the operator answering one of their asks through one of
+// their own mirrored Claude Code sessions (operator decision "Mirrored owner
+// sessions only"). 🔴 IT IS REFUSED IN ITS HANDLER, NOT ONLY BY THE LISTINGS:
+// dispatchCallerTool is reached by a gateway agent naming ANY tool (the chief
+// included: dispatchAgentTool's default case), so toolAttentionAnswer itself
+// refuses every caller that is not a mirrored session (mirroredSession), and the
+// store refuses the session that raised the ask (attention.ErrOwnAsk).
 //
 // 🔴 THE TOOLS TAKE A toolCaller, NOT AN agents.Agent, so a caller that is not
 // an agent row can be served the same set by constructing one; today every
@@ -53,6 +62,7 @@ const (
 	attentionWaitTool   = "attention_wait"
 	attentionCancelTool = "attention_cancel"
 	attentionListTool   = "attention_list"
+	attentionAnswerTool = "attention_answer"
 	tasksListTool       = "tasks_list"
 	taskGetTool         = "task_get"
 	taskCommentTool     = "task_comment"
@@ -126,6 +136,14 @@ func (c toolCaller) author() string {
 		return c.agent.Name
 	}
 	return c.asker.Label
+}
+
+// mirroredSession reports whether c is one of the owner's mirrored Claude Code
+// sessions — the caller mirror_mcp.go builds from a mirror host's token and a
+// session that host lists — and not a dispatched agent or muster itself. It is
+// attention_answer's caller-kind rule.
+func (c toolCaller) mirroredSession() bool {
+	return c.agent == nil && c.asker.AgentID == 0 && !c.asker.System && c.asker.MirrorHost != "" && c.asker.MirrorSession != ""
 }
 
 // askerKey names the caller for the wait bounds.
@@ -210,6 +228,63 @@ func chiefAttentionToolDefs() []agents.ToolDef {
 	}
 }
 
+// attentionAnswerToolDef is the mirrored sessions' attention_answer.
+func attentionAnswerToolDef() agents.ToolDef {
+	return agents.ToolDef{Type: "function", Name: attentionAnswerTool,
+		Description: "Answer one of your owner's open attention asks ON YOUR OWNER'S BEHALF — use it only to relay an answer your owner gave you " +
+			"(for example \"answer ask 776 with 'dispatch it'\"), never to decide one yourself. It is the same answer as your owner tapping it on " +
+			"muster's Attention view: the asker gets it (a dispatched agent, the chief included, as a new message saying it came through MCP from this session). " +
+			"answer is free text or one of the ask's options. You cannot answer an ask this session raised, nor one that is no longer open.",
+		Parameters: objSchema(map[string]any{
+			"id":     intProp("The ask's id, as the Attention view or your owner names it.", 1, 1<<53),
+			"answer": strProp("Your owner's answer: free text, or one of the ask's options."),
+		}, "id", "answer")}
+}
+
+// attentionAnswerMirrorOnly is attention_answer's refusal of any caller that is
+// not a mirrored session.
+const attentionAnswerMirrorOnly = "attention_answer is available only to your owner's own mirrored Claude Code sessions; only your owner answers an ask"
+
+// toolAttentionAnswer is attention_answer: the operator's answer to ask id,
+// given through their mirrored session c — through answerAskFrom, the ONE path
+// the Attention view's answer takes too, so the delivery, the notification and
+// the queue move exactly as for a browser answer. Another owner's ask (row-level
+// security) and a missing one read the same.
+func (s *Server) toolAttentionAnswer(ctx context.Context, c toolCaller, arguments string) string {
+	if !c.mirroredSession() {
+		return toolErr("%s", attentionAnswerMirrorOnly)
+	}
+	var in struct {
+		ID     int64  `json:"id"`
+		Answer string `json:"answer"`
+	}
+	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &in); err != nil {
+		return toolErr("arguments are {id, answer}")
+	}
+	if in.ID <= 0 {
+		return toolErr("id is required: the ask's id")
+	}
+	src := attention.AnswerSource{Via: attention.ViaMCP, Host: c.asker.MirrorHost, Session: c.asker.MirrorSession}
+	a, err := s.answerAskFrom(ctx, in.ID, in.Answer, src)
+	switch {
+	case err == nil:
+	case errors.Is(err, attention.ErrNotFound):
+		return toolErr("no such ask: %d", in.ID)
+	case errors.Is(err, attention.ErrOwnAsk):
+		return toolErr("ask %d was raised by this session: a session cannot answer its own ask; your owner answers it", in.ID)
+	case errors.Is(err, attention.ErrNotOpen):
+		return toolErr("ask %d is no longer open (it is %s)", in.ID, a.Status)
+	case errors.Is(err, attention.ErrInvalid):
+		return toolErr("%s", strings.TrimPrefix(err.Error(), attention.ErrInvalid.Error()+": "))
+	default:
+		s.logger.Printf("attention: answer %d via MCP from %s: %v", in.ID, src, err)
+		return toolErr("the answer could not be recorded")
+	}
+	s.logger.Printf("attention: ask %d answered by the operator via MCP from %s", a.ID, src)
+	return toolJSON(map[string]any{"id": a.ID, "status": string(a.Status), "answer": a.Answer, "answered_via": attention.ViaMCP,
+		"answered_from": src.String()})
+}
+
 // askView is an ask as a tool returns it.
 func askView(a attention.Ask) map[string]any {
 	status := string(a.Status)
@@ -222,6 +297,9 @@ func askView(a attention.Ask) map[string]any {
 	}
 	if a.Status == attention.AnsweredInSession {
 		out["note"] = answeredInSessionNote
+	}
+	if a.AnsweredVia.ViaSession() {
+		out["answered_via"], out["answered_from"] = a.AnsweredVia.Via, a.AnsweredVia.String()
 	}
 	return out
 }
@@ -244,6 +322,10 @@ func (s *Server) dispatchCallerTool(ctx context.Context, c toolCaller, name, arg
 		return s.toolAttentionWait(ctx, c, arguments), true
 	case attentionCancelTool:
 		return s.toolAttentionCancel(ctx, c, arguments), true
+	case attentionAnswerTool:
+		// Refused inside for every caller but a mirrored session: a gateway
+		// agent reaches this switch with any name it chooses.
+		return s.toolAttentionAnswer(ctx, c, arguments), true
 	case tasksListTool:
 		return s.toolTasksList(ctx, c, arguments), true
 	case taskGetTool:
