@@ -74,6 +74,7 @@ func (f *fakeGitHub) install(id int64, login string, repos ...string) {
 	defer f.mu.Unlock()
 	in := installation{ID: id}
 	in.Account.Login = login
+	in.Account.ID = id * 100 // the account's id: distinct from the installation's
 	f.installations = append(f.installations, in)
 	f.repos[id] = repos
 }
@@ -211,7 +212,7 @@ func newTestApp(t *testing.T) (*App, *fakeGitHub, *clock) {
 	k := key(t)
 	f := newFakeGitHub(t, &k.PublicKey, c.now)
 	f.install(42, "example-org", "example-org/widget", "example-org/gadget")
-	app, err := New(Config{AppID: 12345, PrivateKey: k, BaseURL: f.srv.URL, Now: c.now, Accounts: []string{"Example-Org"}})
+	app, err := New(Config{AppID: 12345, PrivateKey: k, BaseURL: f.srv.URL, Now: c.now, Accounts: []Account{{Login: "Example-Org", ID: 4200}}})
 	if err != nil {
 		t.Fatal(err)
 	}

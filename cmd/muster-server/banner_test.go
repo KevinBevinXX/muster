@@ -15,6 +15,7 @@ import (
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/github"
+	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/router"
@@ -726,7 +727,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		// The GitHub App: the banner branches on ext.GitHubApp (below); the key
 		// itself is never printed, so the fixture needs none.
 		GitHubAppID:         12345,
-		GitHubAppAccounts:   []string{"example-org"},
+		GitHubAppAccounts:   []githubapp.Account{{Login: "example-org", ID: 4200}},
 		CheckoutWaitTimeout: 48 * time.Hour,
 	}
 	onOut = renderBannerWithPool(t, on, api.Extensions{

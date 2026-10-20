@@ -1192,7 +1192,7 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"Repos tab and connected-repository checks list its installation repositories; members keep their "+
 			"OAuth connection, deprecated); only installations on %s=%s are used; %s",
 			envGitHubAppID, a.cfg.GitHubAppID, envGitHubAppKey, envGitHubAppAccounts,
-			strings.Join(a.cfg.GitHubAppAccounts, ","), agentsSee)
+			githubAppAccountList(a.cfg.GitHubAppAccounts), agentsSee)
 	} else {
 		l.Printf("github app: OFF — %s/%s/%s are unset, so muster's GitHub identity is the OAuth connection "+
 			"(deprecated) and a `github` connector needs a stored token", envGitHubAppID, envGitHubAppKey,
@@ -1603,13 +1603,26 @@ func checkGitHubApp(ctx context.Context, app *githubapp.App, logger *log.Logger)
 		logger.Printf("github app: the boot check FAILED: %v", err)
 		return
 	}
+	if r := app.Renames(); len(r) > 0 {
+		logger.Printf("github app: RENAMED allowlisted account(s), still used by id: %s — update %s",
+			strings.Join(r, ", "), envGitHubAppAccounts)
+	}
 	if len(logins) == 0 {
-		logger.Printf("github app: App %d authenticates but is installed on NO account: install it (with the "+
-			"repositories agents should reach) on an account in %s before approving any agent's github request",
+		logger.Printf("github app: App %d authenticates but is installed on NO allowlisted account: install it (with "+
+			"the repositories agents should reach) on an account in %s before approving any agent's github request",
 			app.AppID(), envGitHubAppAccounts)
 		return
 	}
 	logger.Printf("github app: App %d authenticates and is installed on %s", app.AppID(), strings.Join(logins, ", "))
+}
+
+// githubAppAccountList prints the allowlist as configured: login:id, ...
+func githubAppAccountList(accs []githubapp.Account) string {
+	parts := make([]string, 0, len(accs))
+	for _, a := range accs {
+		parts = append(parts, a.Login+":"+strconv.FormatInt(a.ID, 10))
+	}
+	return strings.Join(parts, ",")
 }
 
 // 🔴 A FAILURE HERE IS LOGGED, NOT FATAL. The token may be expired or the

@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -21,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -78,7 +80,7 @@ func newFakeGitHubUpstream(t *testing.T) *fakeGitHubUpstream {
 			}
 			// A second installation, on an account NOT on the allowlist: a stranger
 			// who installed the public App on their own repositories.
-			_, _ = io.WriteString(w, `[{"id":42,"account":{"login":"example-org"}},{"id":77,"account":{"login":"stranger"}}]`)
+			_, _ = io.WriteString(w, `[{"id":42,"account":{"id":4200,"login":"example-org"}},{"id":77,"account":{"id":7700,"login":"stranger"}}]`)
 		case p == "/app/installations/77/access_tokens":
 			// A real installation: it mints, and its token lists the stranger's
 			// repository. Only the allowlist keeps muster from using it.
@@ -204,7 +206,7 @@ func appServer(t *testing.T, f *connFixture, up *fakeGitHubUpstream) (*Server, h
 		t.Fatal(err)
 	}
 	app, err := githubapp.New(githubapp.Config{AppID: 12345, PrivateKey: k, BaseURL: up.srv.URL,
-		GitHost: "github.fake.test:" + up.port(), APIHost: "api.fake.test:" + up.port(), Accounts: []string{"example-org"}})
+		GitHost: "github.fake.test:" + up.port(), APIHost: "api.fake.test:" + up.port(), Accounts: []githubapp.Account{{Login: "example-org", ID: 4200}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -646,5 +648,64 @@ func TestAStrangersInstallationConnectsNothing(t *testing.T) {
 		if m == "STRANGER INSTALLATION" {
 			t.Fatal("a token was minted on the stranger's installation")
 		}
+	}
+}
+
+// failingUsers is a users store whose role read fails (a database blip).
+type failingUsers struct{ fail *atomic.Bool }
+
+func (u failingUsers) Role(_ context.Context, id int64) (authz.Role, error) {
+	if u.fail.Load() {
+		return "", errors.New("synthetic: the users table could not be read")
+	}
+	if id == authz.OperatorUserID {
+		return authz.RoleAdmin, nil
+	}
+	return authz.RoleMember, nil
+}
+
+// TestARoleReadFailureIsRetryableNotADowngrade (🟢): while the owner's role
+// cannot be read, the connector door answers 503 (retryable) — on the status
+// route AND the proxy — and the admin's App-approved github grant stays
+// approved. Downgraded to "member" instead, the App connector would vanish for
+// the request and ReconcileGrant would re-open the grant.
+func TestARoleReadFailureIsRetryableNotADowngrade(t *testing.T) {
+	f := newConnFixture(t)
+	up := newFakeGitHubUpstream(t)
+	const tok = "role-blip-agent-token-0123456789abcd"
+	id := f.seedAgent(t, "role-blip", tok)
+	if _, err := f.pool.Exec(f.ctx, `UPDATE agents SET repo='example-org/widget' WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	srv, h, _ := appServer(t, f, up)
+	var fail atomic.Bool
+	ext := srv.ext
+	ext.Users = failingUsers{fail: &fail}
+	srv.UseExtensions(ext)
+	h = srv.Handler()
+	g, _, err := f.store.RequestGrant(f.ctx, id, "github", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.DecideGrant(f.ctx, g.ID, true, "operator", connectors.SourceApp); err != nil {
+		t.Fatal(err)
+	}
+	if v := agentView(t, h, tok); v.Grant != connectors.StatusApproved || !v.Exists {
+		t.Fatalf("control: with the role readable the App approval stands: %+v", v)
+	}
+	fail.Store(true)
+	for _, path := range []string{"/agent/connectors/github",
+		"/connect/github/github.fake.test:" + up.port() + "/example-org/widget.git/info/refs"} {
+		w := serveCall(t, h, "GET", path, nil, map[string]string{"X-Muster-Token": tok})
+		if w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") == "" {
+			t.Errorf("%s with the role unreadable: %d %s, want a retryable 503", path, w.Code, w.Body)
+		}
+	}
+	if ng, _ := f.store.GetGrant(f.ctx, g.ID); ng.Status != connectors.StatusApproved {
+		t.Fatalf("a role-read failure re-opened the admin's App grant: %+v", ng)
+	}
+	fail.Store(false)
+	if v := agentView(t, h, tok); v.Grant != connectors.StatusApproved {
+		t.Fatalf("after the blip the grant reads %+v", v)
 	}
 }

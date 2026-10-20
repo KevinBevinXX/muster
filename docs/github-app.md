@@ -39,10 +39,16 @@ With the App configured:
   the dispatch pickers and the "connected repository" check that every
   claude-code dispatch and `task_dispatch` applies. The OAuth connection is not
   consulted for an admin while the App is configured.
-- **Only installations on `MUSTER_GITHUB_APP_ACCOUNTS` count.** The App has to
-  be installable on "Any account", so anyone can install it on their own
-  repositories. An installation on an account that is not on the list adds no
-  repository, gets no token and passes no check. muster logs it once, by login.
+- **Only installations on `MUSTER_GITHUB_APP_ACCOUNTS` count, matched by the
+  account's numeric id.** The App has to be installable on "Any account", so
+  anyone can install it on their own repositories. An installation on an
+  account that is not on the list adds no repository, gets no token and passes
+  no check. muster logs it once, by login. The match is on the **id**, never
+  the login. A login can be renamed, and the freed name can then be registered
+  by someone else, who could install the App under it. So an installation whose
+  login matches but whose id does not is ignored. An installation whose id
+  matches under a new login (your own rename) is still used, and muster logs
+  the rename so you can update the entry.
 - The `github` connector card under Connectors says it is provided by the App.
   There is no Rotate or Delete. An admin's stored `github` connector (a
   personal access token) is hidden while the App is configured, and comes back
@@ -128,7 +134,7 @@ That account must be on `MUSTER_GITHUB_APP_ACCOUNTS`.
 |---|---|
 | `MUSTER_GITHUB_APP_ID` | The App ID |
 | `MUSTER_GITHUB_APP_PRIVATE_KEY` | The whole `.pem` file's contents. A value with its line breaks written as `\n` is accepted too. |
-| `MUSTER_GITHUB_APP_ACCOUNTS` | **Required.** Comma-separated GitHub logins whose installations muster may use, e.g. `example-org,your-user` (any case). |
+| `MUSTER_GITHUB_APP_ACCOUNTS` | **Required.** Comma-separated `<login>:<id>` entries for the accounts whose installations muster may use, e.g. `example-org:12345,your-user:67890`. Get each id with `gh api users/<login> -q .id` (it works for organizations too). An entry without an id refuses to boot. |
 
 The App also needs the connector store (`MUSTER_CONNECTOR_ENCRYPTION_KEY`,
 [connectors.md](connectors.md)), because agents reach GitHub only through the
@@ -141,7 +147,7 @@ On Kubernetes, keep all three in one Secret and load it with `envFrom`:
 ```sh
 kubectl -n <muster-namespace> create secret generic muster-github-app \
   --from-literal=MUSTER_GITHUB_APP_ID=<app id> \
-  --from-literal=MUSTER_GITHUB_APP_ACCOUNTS=<org>,<your-user> \
+  --from-literal=MUSTER_GITHUB_APP_ACCOUNTS=<org>:<org id>,<your-user>:<your id> \
   --from-file=MUSTER_GITHUB_APP_PRIVATE_KEY=./<app-name>.<date>.private-key.pem
 ```
 
@@ -166,6 +172,9 @@ installations in the background:
   before to 9 minutes after muster signs it.
 - `… is installed on NO account`: install it (above) on an account in
   `MUSTER_GITHUB_APP_ACCOUNTS`.
+- `github app: RENAMED allowlisted account(s), still used by id: <listed>→<current> (<id>)`:
+  an account you listed was renamed on GitHub. It still works. Update its entry
+  to the new login.
 - `github app: ignoring the installation on "<login>": not on MUSTER_GITHUB_APP_ACCOUNTS`:
   someone installed the App on an account you did not list. muster uses
   nothing from it.

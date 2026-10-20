@@ -55,11 +55,11 @@ func TestGitHubAppConfigurationIsRefusedAtBootWhenIncoherent(t *testing.T) {
 		}
 		return out
 	}
-	cfg, err := load(with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: keyPEM, envGitHubAppAccounts: "example-org, Second-Org"}))
+	cfg, err := load(with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: keyPEM, envGitHubAppAccounts: "example-org:4200, Second-Org:4300"}))
 	if err != nil {
 		t.Fatalf("control: a coherent App configuration is refused: %v", err)
 	}
-	if cfg.GitHubAppID != 12345 || cfg.GitHubAppKey == nil || strings.Join(cfg.GitHubAppAccounts, ",") != "example-org,second-org" {
+	if cfg.GitHubAppID != 12345 || cfg.GitHubAppKey == nil || githubAppAccountList(cfg.GitHubAppAccounts) != "example-org:4200,second-org:4300" {
 		t.Fatalf("control: loaded %d / key=%v / %q", cfg.GitHubAppID, cfg.GitHubAppKey != nil, cfg.GitHubAppAccounts)
 	}
 	// A PEM block of the right type holding bytes that are not a key, built at
@@ -69,15 +69,19 @@ func TestGitHubAppConfigurationIsRefusedAtBootWhenIncoherent(t *testing.T) {
 		env  map[string]string
 		want string
 	}{
-		"no account allowlist":   {with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: keyPEM}), envGitHubAppAccounts},
-		"bad account":            {with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: keyPEM, envGitHubAppAccounts: "ok,not a login"}), envGitHubAppAccounts},
-		"id without key":         {with(map[string]string{envGitHubAppID: "12345", envGitHubAppAccounts: "example-org"}), envGitHubAppKey},
-		"key without id":         {with(map[string]string{envGitHubAppKey: keyPEM, envGitHubAppAccounts: "example-org"}), envGitHubAppID},
-		"id not a number":        {with(map[string]string{envGitHubAppID: "my-app", envGitHubAppKey: keyPEM, envGitHubAppAccounts: "example-org"}), envGitHubAppID},
-		"key does not parse":     {with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: garbage, envGitHubAppAccounts: "example-org"}), envGitHubAppKey},
-		"key is a token":         {with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: "ghp_synthetic0123456789", envGitHubAppAccounts: "example-org"}), envGitHubAppKey},
-		"accounts without app":   {with(map[string]string{envGitHubAppAccounts: "example-org"}), envGitHubAppID},
-		"app without connectors": {map[string]string{envGitHubAppID: "12345", envGitHubAppKey: keyPEM, envGitHubAppAccounts: "example-org"}, envConnectorEncKey},
+		"no account allowlist": {with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: keyPEM}), envGitHubAppAccounts},
+		"bad account":          {with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: keyPEM, envGitHubAppAccounts: "ok:1,not a login:2"}), envGitHubAppAccounts},
+		// 🔴 A BARE LOGIN REFUSES TO BOOT, and says how to find the id.
+		"bare login":             {with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: keyPEM, envGitHubAppAccounts: "example-org:4200,second-org"}), "give the account's numeric id as well, as second-org:<id> — a login alone can be renamed and re-registered by someone else. Find the id with `gh api users/second-org -q .id`"},
+		"id not numeric":         {with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: keyPEM, envGitHubAppAccounts: "example-org:abc"}), "not a numeric account id"},
+		"id zero":                {with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: keyPEM, envGitHubAppAccounts: "example-org:0"}), "not a numeric account id"},
+		"id without key":         {with(map[string]string{envGitHubAppID: "12345", envGitHubAppAccounts: "example-org:4200"}), envGitHubAppKey},
+		"key without id":         {with(map[string]string{envGitHubAppKey: keyPEM, envGitHubAppAccounts: "example-org:4200"}), envGitHubAppID},
+		"id not a number":        {with(map[string]string{envGitHubAppID: "my-app", envGitHubAppKey: keyPEM, envGitHubAppAccounts: "example-org:4200"}), envGitHubAppID},
+		"key does not parse":     {with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: garbage, envGitHubAppAccounts: "example-org:4200"}), envGitHubAppKey},
+		"key is a token":         {with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: "ghp_synthetic0123456789", envGitHubAppAccounts: "example-org:4200"}), envGitHubAppKey},
+		"accounts without app":   {with(map[string]string{envGitHubAppAccounts: "example-org:4200"}), envGitHubAppID},
+		"app without connectors": {map[string]string{envGitHubAppID: "12345", envGitHubAppKey: keyPEM, envGitHubAppAccounts: "example-org:4200"}, envConnectorEncKey},
 	} {
 		_, err := load(c.env)
 		if err == nil || !strings.Contains(err.Error(), c.want) {
@@ -135,7 +139,7 @@ func TestBuildAppPresentsTheAppAsTheGitHubConnector(t *testing.T) {
 		case envGitHubAppKey:
 			return testAppKeyPEM(t)
 		case envGitHubAppAccounts:
-			return "example-org"
+			return "example-org:4200"
 		}
 		return ""
 	})

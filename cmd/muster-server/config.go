@@ -449,7 +449,7 @@ type config struct {
 	// GitHubAppAccounts is the REQUIRED allowlist of installation accounts.
 	GitHubAppID       int64
 	GitHubAppKey      *rsa.PrivateKey
-	GitHubAppAccounts []string
+	GitHubAppAccounts []githubapp.Account
 
 	// CheckoutWaitTimeout is agents.CheckoutWaitTimeout for this server: 0 means
 	// the default (agents.DefaultCheckoutWaitTimeout).
@@ -1296,12 +1296,29 @@ func (c *config) loadGitHubApp(getenv func(string) string) error {
 			"comma-separated) whose installations muster may use — anyone can install a public App",
 			envGitHubAppID, envGitHubAppAccounts)
 	}
+	// 🔴 EACH ENTRY IS <login>:<id>, AND THE ID IS WHAT IS MATCHED. A login can be
+	// renamed and then re-registered by anyone; the numeric id cannot. A bare
+	// login is refused rather than resolved: resolving it at boot would trust
+	// whoever holds the name today.
+	parsed := make([]githubapp.Account, 0, len(accounts))
 	for _, a := range accounts {
-		if !githubLoginRE.MatchString(a) {
-			return fmt.Errorf("invalid %s entry %q: a GitHub login", envGitHubAppAccounts, a)
+		login, idStr, ok := strings.Cut(a, ":")
+		if !ok {
+			return fmt.Errorf("invalid %s entry %q: give the account's numeric id as well, as %s:<id> — a "+
+				"login alone can be renamed and re-registered by someone else. Find the id with "+
+				"`gh api users/%s -q .id`", envGitHubAppAccounts, a, a, a)
 		}
+		if !githubLoginRE.MatchString(login) {
+			return fmt.Errorf("invalid %s entry %q: %q is not a GitHub login", envGitHubAppAccounts, a, login)
+		}
+		aid, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil || aid <= 0 {
+			return fmt.Errorf("invalid %s entry %q: %q is not a numeric account id (`gh api users/%s -q .id`)",
+				envGitHubAppAccounts, a, idStr, login)
+		}
+		parsed = append(parsed, githubapp.Account{Login: login, ID: aid})
 	}
-	c.GitHubAppID, c.GitHubAppKey, c.GitHubAppAccounts = n, k, accounts
+	c.GitHubAppID, c.GitHubAppKey, c.GitHubAppAccounts = n, k, parsed
 	return nil
 }
 

@@ -154,8 +154,20 @@ func (s *Server) requireConnectorAgent(next http.HandlerFunc) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		// 🔴 A ROLE THAT CANNOT BE READ IS A RETRYABLE REFUSAL HERE, NOT "member"
+		// (roleOfChecked): downgrading an admin would make the App connector
+		// vanish and re-open every App-approved grant of theirs.
+		role, err := s.roleOfChecked(r.Context(), agentOwnerID(a))
+		if err != nil {
+			s.logger.Printf("connectors: reading the role of agent %d's owner: %v (refusing, retryable)", a.ID, err)
+			w.Header().Set("Retry-After", "5")
+			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"error": "the agent's owner could not be read; retry shortly", "retryable": true,
+			})
+			return
+		}
 		s.admit(w, r.WithContext(context.WithValue(r.Context(), agentCtxKey{}, a)), next,
-			s.principalFor(r.Context(), agentOwnerID(a), authz.ViaConnect))
+			authz.Principal{UserID: agentOwnerID(a), Role: role, Via: authz.ViaConnect})
 	}
 }
 

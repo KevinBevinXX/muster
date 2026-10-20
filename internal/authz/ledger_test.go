@@ -80,7 +80,7 @@ var (
 	//   - agentOwner: the agent-named SSE nudge (BroadcastAgentChanged) is
 	//     handed only a NAME, by loops with no principal; the owner the event
 	//     reaches is read here.
-	//   - roleOf: the request principal's ROLE, read inside the wrappers before
+	//   - roleOfChecked (and roleOf through it): the request principal's ROLE, read inside the wrappers before
 	//     the principal it completes exists (as agentByToken learns the owner).
 	systemLedger = []string{
 		"internal/agentkickoff.(*Deliverer).Run",
@@ -90,7 +90,7 @@ var (
 		"internal/api.(*Server).agentByToken",
 		"internal/api.(*Server).agentOwner",
 		"internal/api.(*Server).notifyAgentRunning",
-		"internal/api.(*Server).roleOf",
+		"internal/api.(*Server).roleOfChecked", // roleOf delegates to it; the connector door calls it directly
 		// Bring-your-own credentials: whose model-provider credentials an
 		// OWNER's agents run on is decided by that owner's ROLE, and the pod-spec
 		// path asks it from loops with no principal (and a member's principal

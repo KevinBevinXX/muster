@@ -103,18 +103,32 @@ func (s *Server) agentPrincipal(ctx context.Context, a agents.Agent, via authz.V
 // is admin and everyone else is a member: the seeded row, without a database.
 // cmd/muster-server always wires the store beside the database.
 func (s *Server) roleOf(ctx context.Context, uid int64) authz.Role {
-	if s.ext.Users == nil {
-		if uid == authz.OperatorUserID {
-			return authz.RoleAdmin
-		}
-		return authz.RoleMember
-	}
-	r, err := s.ext.Users.Role(authz.System(ctx), uid)
+	r, err := s.roleOfChecked(ctx, uid)
 	if err != nil {
 		s.logger.Printf("principal: reading user %d's role: %v (acting as member)", uid, err)
 		return authz.RoleMember
 	}
 	return r
+}
+
+// roleOfChecked is roleOf WITHOUT the member fallback: a failed read is
+// returned, so a door whose decision a wrong "member" would CHANGE (not just
+// narrow) can refuse instead.
+//
+// 🔴 THE CONNECTOR DOOR IS ONE (requireConnectorAgent). There, "member" for an
+// admin is not least privilege but a STATE CHANGE: the GitHub App connector
+// vanishes for that principal, so connectors.ReconcileGrant re-opens every
+// App-approved github grant of the admin's agents and the owner is asked to
+// approve them all again — one database blip, a wave of re-approvals. It
+// answers 503 (retryable) instead.
+func (s *Server) roleOfChecked(ctx context.Context, uid int64) (authz.Role, error) {
+	if s.ext.Users == nil {
+		if uid == authz.OperatorUserID {
+			return authz.RoleAdmin, nil
+		}
+		return authz.RoleMember, nil
+	}
+	return s.ext.Users.Role(authz.System(ctx), uid)
 }
 
 // principalFor builds the request principal for a user admitted through via.

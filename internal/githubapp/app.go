@@ -10,6 +10,14 @@
 // on the list contributes no repository, mints no token and passes no
 // connected-repository check: it is ignored, and logged once by login.
 //
+// 🔴 THE LIST IS MATCHED ON THE ACCOUNT'S NUMERIC ID, NEVER ITS LOGIN. A login
+// is renamable and, once freed, re-registrable: if an allowlisted `acme`
+// renames, anyone can register `acme`, install the public App, and — matched by
+// login — pass the allowlist. The id never changes and is never reused. The
+// login in each entry is a label and a cross-check only: an installation whose
+// id matches but whose login differs (a legitimate rename) is still used, and
+// the rename is logged once and reported (App.Renames, the boot check line).
+//
 // 🔴 AN AGENT'S TOKEN IS MINTED FOR THAT AGENT'S ONE REPOSITORY, WITH EXACTLY
 // FOUR PERMISSIONS. Each proxied request from an approved agent to its own
 // repository is served with an installation access token minted by POST
@@ -97,10 +105,10 @@ const maxRepoPages = 30
 type Config struct {
 	AppID      int64
 	PrivateKey *rsa.PrivateKey
-	// Accounts are the GitHub logins (users or organizations) whose
-	// installations are used, compared without case. REQUIRED: New refuses an
-	// empty list, because the App is installable by anyone.
-	Accounts []string
+	// Accounts are the GitHub accounts (users or organizations) whose
+	// installations are used, matched by ID. REQUIRED: New refuses an empty
+	// list or an entry with no ID, because the App is installable by anyone.
+	Accounts []Account
 	// BaseURL is the REST API base; "" means github's (github.APIBaseURL()).
 	BaseURL string
 	// GitHost and APIHost are the hosts the connector serves; "" means
@@ -124,6 +132,7 @@ type App struct {
 	repos      []github.Repo
 	reposAt    time.Time
 	ignored    map[string]bool  // logins of non-allowlisted installations, logged once
+	renamed    map[int64]string // allowlisted id -> its login on GitHub, when it differs from the listed one
 	problems   map[int64]string // per agent: the last mint's failure
 	global     string           // the last App-JWT call's failure (auth, rate limit)
 }
@@ -131,8 +140,16 @@ type App struct {
 type installation struct {
 	ID      int64 `json:"id"`
 	Account struct {
+		ID    int64  `json:"id"`
 		Login string `json:"login"`
 	} `json:"account"`
+}
+
+// Account is one allowlisted GitHub account: its immutable numeric ID (what is
+// matched) and the login it was listed under (a label, and the rename check).
+type Account struct {
+	Login string
+	ID    int64
 }
 
 // tokenKey names a cached token: an agent's repository token (agent > 0), or an
@@ -159,6 +176,12 @@ func New(cfg Config) (*App, error) {
 		return nil, errors.New("githubapp: no allowlisted accounts: anyone can install a public App, so the " +
 			"accounts whose installations are used must be named")
 	}
+	for _, acc := range cfg.Accounts {
+		if acc.ID <= 0 {
+			return nil, fmt.Errorf("githubapp: allowlisted account %q has no numeric ID: a login alone can be "+
+				"renamed and re-registered by someone else", acc.Login)
+		}
+	}
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = github.APIBaseURL()
 	}
@@ -176,20 +199,62 @@ func New(cfg Config) (*App, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	return &App{cfg: cfg, tokens: map[tokenKey]token{}, problems: map[int64]string{}, ignored: map[string]bool{}}, nil
+	return &App{cfg: cfg, tokens: map[tokenKey]token{}, problems: map[int64]string{}, ignored: map[string]bool{},
+		renamed: map[int64]string{}}, nil
 }
 
 // AppID is the configured App ID.
 func (a *App) AppID() int64 { return a.cfg.AppID }
 
-// allowed reports whether login is on the account allowlist.
-func (a *App) allowed(login string) bool {
+// allowed reports whether in's ACCOUNT ID is on the allowlist. A matching id
+// under a different login (a rename) is allowed, and recorded once (Renames).
+// A matching login under a different id is NOT allowed: that is a different
+// account that took a freed name.
+func (a *App) allowed(in installation) bool {
 	for _, acc := range a.cfg.Accounts {
-		if strings.EqualFold(strings.TrimSpace(acc), login) {
+		if acc.ID != in.Account.ID {
+			continue
+		}
+		if !strings.EqualFold(acc.Login, in.Account.Login) {
+			a.mu.Lock()
+			first := a.renamed[acc.ID] != in.Account.Login
+			a.renamed[acc.ID] = in.Account.Login
+			a.mu.Unlock()
+			if first && a.cfg.Logger != nil {
+				a.cfg.Logger.Printf("github app: allowlisted account %d is listed as %q but is now %q on GitHub "+
+					"(renamed); it is still used — update MUSTER_GITHUB_APP_ACCOUNTS to %s:%d", acc.ID, acc.Login,
+					in.Account.Login, in.Account.Login, acc.ID)
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// listed reports whether login is the listed label of an allowlisted account
+// (for an error message only; never an authorisation).
+func (a *App) listed(login string) bool {
+	for _, acc := range a.cfg.Accounts {
+		if strings.EqualFold(acc.Login, login) {
 			return true
 		}
 	}
 	return false
+}
+
+// Renames are the allowlisted accounts whose login on GitHub differs from the
+// listed one, as "listed→current (id)", sorted.
+func (a *App) Renames() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out []string
+	for _, acc := range a.cfg.Accounts {
+		if now, ok := a.renamed[acc.ID]; ok {
+			out = append(out, fmt.Sprintf("%s→%s (%d)", acc.Login, now, acc.ID))
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // --- the connector ---------------------------------------------------------------
@@ -453,9 +518,9 @@ func (a *App) installationFor(ctx context.Context, owner string) (installation, 
 			}
 		}
 	}
-	if !a.allowed(owner) {
-		return installation{}, fmt.Errorf("%s is not on MUSTER_GITHUB_APP_ACCOUNTS, so the GitHub App does not "+
-			"serve its repositories", owner)
+	if !a.listed(owner) {
+		return installation{}, fmt.Errorf("%s is not on MUSTER_GITHUB_APP_ACCOUNTS (or is not the account "+
+			"it lists by id), so the GitHub App does not serve its repositories", owner)
 	}
 	return installation{}, fmt.Errorf("the GitHub App (ID %d) is not installed on %s: install it there "+
 		"(github.com/apps/<app>/installations/new) and give it access to the repository", a.cfg.AppID, owner)
@@ -480,7 +545,7 @@ func (a *App) installations(ctx context.Context, force bool) ([]installation, er
 		// 🔴 THE ALLOWLIST IS APPLIED HERE, AT THE ONE SOURCE every reader
 		// (repository listing, minting, default branch) takes installations from.
 		for _, in := range batch {
-			if a.allowed(in.Account.Login) {
+			if a.allowed(in) {
 				list = append(list, in)
 				continue
 			}

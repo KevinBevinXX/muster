@@ -107,12 +107,12 @@ func TestParsePrivateKeyAcceptsGitHubsFormatsAndRefusesTheRest(t *testing.T) {
 	}
 }
 
-// TestTheAgentMintCarriesExactlyItsOneRepositoryAndTwoPermissions pins the
+// TestTheAgentMintCarriesExactlyItsOneRepositoryAndFourPermissions pins the
 // mint request's body LITERALLY: one repository (the agent's, by name), and
 // contents + pull_requests write, checks + statuses read — nothing else. A mutant that adds a
 // permission, widens a level, or drops the repositories restriction changes
 // these bytes.
-func TestTheAgentMintCarriesExactlyItsOneRepositoryAndTwoPermissions(t *testing.T) {
+func TestTheAgentMintCarriesExactlyItsOneRepositoryAndFourPermissions(t *testing.T) {
 	app, f, _ := newTestApp(t)
 	tok, _, err := app.Credential(context.Background(), agent(7, "example-org/widget"), DefaultGitHost, "example-org/widget.git/info/refs")
 	if err != nil {
@@ -303,7 +303,7 @@ func TestAMint401IsAnOperatorFacingProblemAndClearsOnSuccess(t *testing.T) {
 func TestAWrongKeyIsRefusedByTheJWTCheck(t *testing.T) {
 	_, f, c := newTestApp(t)
 	wrong, _ := rsa.GenerateKey(rand.Reader, 2048)
-	app, err := New(Config{AppID: 12345, PrivateKey: wrong, BaseURL: f.srv.URL, Now: c.now, Accounts: []string{"example-org"}})
+	app, err := New(Config{AppID: 12345, PrivateKey: wrong, BaseURL: f.srv.URL, Now: c.now, Accounts: []Account{{Login: "example-org", ID: 4200}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +335,7 @@ func TestA422MintNamesTheInstallationsRepositoryAccess(t *testing.T) {
 // TestAnOwnerWithoutAnInstallationIsRefusedByName.
 func TestAnOwnerWithoutAnInstallationIsRefusedByName(t *testing.T) {
 	app, f, _ := newTestApp(t)
-	app.cfg.Accounts = append(app.cfg.Accounts, "someone-else") // allowlisted, but not installed
+	app.cfg.Accounts = append(app.cfg.Accounts, Account{Login: "someone-else", ID: 9900}) // allowlisted, but not installed
 	_, _, err := app.Credential(context.Background(), agent(7, "someone-else/widget"), DefaultGitHost, "someone-else/widget.git")
 	if err == nil || !strings.Contains(err.Error(), "not installed on someone-else") {
 		t.Fatalf("err = %v", err)
@@ -398,7 +398,7 @@ func TestReposListsEveryInstallationRepositoryAcrossPages(t *testing.T) {
 	}
 	f.install(42, "example-org", many...)
 	f.install(43, "second-org", "second-org/thing")
-	app, err := New(Config{AppID: 12345, PrivateKey: k, BaseURL: f.srv.URL, Now: c.now, Accounts: []string{"example-org", "second-org"}})
+	app, err := New(Config{AppID: 12345, PrivateKey: k, BaseURL: f.srv.URL, Now: c.now, Accounts: []Account{{Login: "example-org", ID: 4200}, {Login: "second-org", ID: 4300}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,5 +454,90 @@ func TestDescribeIsTheGitHubPresetsShape(t *testing.T) {
 	want, _ := json.Marshal(p.Hosts)
 	if string(got) != string(want) {
 		t.Fatalf("hosts %s, want %s", got, want)
+	}
+}
+
+// TestTheAllowlistMatchesTheAccountIDNotTheLogin is the re-registered-name
+// attack: allowlisted example-org (id 4200) renames, a stranger registers the
+// freed login `example-org` (a NEW id) and installs the public App. Matched by
+// login it would pass; matched by id it contributes nothing and mints nothing.
+// The genuine account, now under its new login, is still used — and the rename
+// is reported once.
+func TestTheAllowlistMatchesTheAccountIDNotTheLogin(t *testing.T) {
+	c := &clock{t: time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)}
+	k := key(t)
+	f := newFakeGitHub(t, &k.PublicKey, c.now)
+	f.install(42, "example-org-renamed", "example-org-renamed/widget") // the genuine account: id 4200
+	f.install(91, "example-org", "example-org/payload")                // a squatter on the freed login: id 9100
+	var logBuf strings.Builder
+	app, err := New(Config{AppID: 12345, PrivateKey: k, BaseURL: f.srv.URL, Now: c.now,
+		Accounts: []Account{{Login: "example-org", ID: 4200}}, Logger: log.New(&logBuf, "", 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repos, err := app.Repos(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repos) != 1 || repos[0].FullName != "example-org-renamed/widget" {
+		t.Fatalf("repositories = %+v, want only the genuine (renamed) account's", repos)
+	}
+	if _, _, err := app.Credential(context.Background(), agent(1, "example-org/payload"), DefaultGitHost, "example-org/payload.git"); err == nil {
+		t.Fatal("a token was served for the squatter's repository")
+	}
+	for _, m := range f.mintsSoFar() {
+		if m.installation == 91 {
+			t.Fatalf("a token was minted on the squatter's installation: %s", m.body)
+		}
+	}
+	if _, _, err := app.Credential(context.Background(), agent(2, "example-org-renamed/widget"), DefaultGitHost,
+		"example-org-renamed/widget.git"); err != nil {
+		t.Fatalf("the renamed genuine account is not served: %v", err)
+	}
+	if got := app.Renames(); len(got) != 1 || got[0] != "example-org→example-org-renamed (4200)" {
+		t.Fatalf("Renames = %q", got)
+	}
+	_, _ = app.Repos(context.Background())
+	if _, err := app.installations(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(logBuf.String(), "is listed as"); n != 1 {
+		t.Fatalf("the rename is logged %d times, want once:\n%s", n, logBuf.String())
+	}
+	if _, err := New(Config{AppID: 1, PrivateKey: k, Accounts: []Account{{Login: "example-org"}}}); err == nil {
+		t.Fatal("New accepted an allowlisted account with no id")
+	}
+}
+
+// TestExpiredTokensAreSweptFromTheCache pins the sweep in store: once a token
+// is past its expiry, the next store drops it, so the cache is bounded by the
+// agents active within the last hour.
+func TestExpiredTokensAreSweptFromTheCache(t *testing.T) {
+	app, _, c := newTestApp(t)
+	start := c.now()
+	for id := int64(1); id <= 3; id++ {
+		if _, _, err := app.Credential(context.Background(), agent(id, "example-org/widget"), DefaultGitHost, "example-org/widget.git"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	count := func() int { app.mu.Lock(); defer app.mu.Unlock(); return len(app.tokens) }
+	if n := count(); n != 3 {
+		t.Fatalf("control: %d cached tokens, want 3", n)
+	}
+	// One second before expiry nothing is swept (a new agent's store keeps all).
+	c.set(start.Add(time.Hour - time.Second))
+	if _, _, err := app.Credential(context.Background(), agent(4, "example-org/widget"), DefaultGitHost, "example-org/widget.git"); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(); n != 4 {
+		t.Fatalf("before expiry: %d cached tokens, want 4", n)
+	}
+	// Past the first three's expiry, the next store drops them.
+	c.set(start.Add(time.Hour + time.Second))
+	if _, _, err := app.Credential(context.Background(), agent(5, "example-org/widget"), DefaultGitHost, "example-org/widget.git"); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(); n != 2 {
+		t.Fatalf("after expiry: %d cached tokens, want 2 (agents 4 and 5)", n)
 	}
 }
