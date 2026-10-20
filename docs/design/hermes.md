@@ -32,13 +32,16 @@ The design, in one line each:
   `active=1` and `display_order`; parent links followed only for compression.
 - **Status:** a muster-installed Hermes **shell hook** writing one status file
   per physical session id, cross-checked against the turn lease and the
-  newest message row before it is believed. At P, the gateway viewer adds turn
-  edges and pending requests.
+  newest message row before it is believed.
 - **Send:** a **pane paste** is the only send path. It is gated on idle and on
   a screen check that admits exactly one state, an idle, empty input line, and
   is re-checked on the host at the moment of acting, with the Enter as a
   separate step. The viewer's `prompt.submit` was refuted: the CLI never draws
   the turn.
+- **Questions and approvals:** clarify cards from the database, approval and
+  sudo items from the hooks. Approvals are answered through the gateway viewer's
+  `approval.respond`; clarify through the viewer if Phase 4 measures it, else in
+  the terminal; sudo is never answered from muster.
 - **Pod:** `hermes gateway run` with the API server on loopback, driven
   through `/v1/runs` and its SSE events by `hermesd`, which also resolves
   executions left unknown by a crash before it accepts turns.
@@ -46,8 +49,12 @@ The design, in one line each:
 ## Goals
 
 - A Hermes tmux window is a first-class mirrored window: rendered view,
-  Terminal view, Send, Queue, Send now, status-driven attention, questions and
-  approvals, focus, filter and host icon, with no regression for Claude Code.
+  Terminal view, Send, Queue, Send now, status-driven attention, focus, filter
+  and host icon, with no regression for Claude Code.
+- **Questions and approvals are in scope.** The operator chose full parity, and
+  Claude Code windows have asks, so a Hermes window's clarify questions and
+  approvals reach muster's asks UI, each with a defined answer path
+  ([questions and approvals](#questions-and-approvals)).
 - Every send path is at least as safe as Claude Code's. 🔴 Measured in Phase 0:
   a paste followed by Enter on Hermes's approval prompt **approves the command**,
   whatever the pasted text says. The design must make that unreachable from
@@ -55,8 +62,8 @@ The design, in one line each:
 - A `hermes` agent can be dispatched, kicked off, chatted with, and approved,
   with the same isolation as `claude-code`: uid 1000, no ServiceAccount token,
   the same NetworkPolicy, no credentials on the volume that outrank the pod's.
-- The Claude-specific code paths become one runtime behind a small interface,
-  so a third runtime costs a locator and a renderer, not another rewrite.
+- The Claude-specific code paths become one runtime interface, sized for the
+  two runtimes it serves: Claude Code and Hermes.
 
 ## Non-goals
 
@@ -70,6 +77,20 @@ The design, in one line each:
   Hermes file.
 - Sending through the gateway viewer (refuted, S1).
 - A Terminal view for `hermes` agent pods in the first release.
+- Supporting more than one Hermes commit. There is one pinned sha.
+
+## Operator decisions
+
+- **Version:** one Hermes commit, pinned by sha, for hosts and pods
+  ([versions](#versions)).
+- **Hook installation:** the status hook and its exact consent allowlist are
+  declared in the host's Home Manager configuration, through upstream's
+  `hermes-agent` Home Manager module. muster-mirror ships only the
+  `hermes-hook` command and never edits `~/.hermes/config.yaml`.
+- **Release cadence:** each phase is released, and shipped to the hosts, as it
+  merges.
+- **Pod credentials:** `hermes` pods use the OpenRouter credential muster's
+  gateway runtime already uses.
 
 ## Sources and notation
 
@@ -116,46 +137,40 @@ Rules that follow:
   `identify` reply carries `code_sha` (S1), which muster-mirror logs and checks.
 - **Move to a stable release only by tree.** When a `vX.Y.Z` ships, check by
   tree that it contains the gateway runtime (`hermes_cli/gateway_agent.py`
-  present) and the P-only pieces this design uses, then re-run Phase 0's live
-  test against it before moving the pin.
-- muster-mirror still chooses behaviour by **feature probes**, not version
-  strings: a gateway it can attach to, the status files the hook writes, the
-  columns `PRAGMA table_info` reports. A host on another commit gets what it
-  supports, and nothing it does not.
+  present) and the P-only pieces this design uses, then run
+  `make test-livehermes` (Phase 6) against it before moving the pin.
+- **Refuse what it cannot read.** There is no multi-version design.
+  muster-mirror checks the gateway's `identify` `code_sha` against the pin when
+  it attaches, and the schema's columns with `PRAGMA table_info`; it refuses a
+  schema or a screen it cannot read rather than guessing.
 
-### Why S and P differ
+### What the pin is
 
-🔴 **P is newer than S, not older, and commit ancestry says otherwise.** S is a
-release-branch commit; it records an older main commit as a second parent only
-to satisfy the release script's ancestry check, and its message says the branch
-must never be merged into main. So `git merge-base --is-ancestor X v0.22.2`
-does not mean X's code is in S. Any check of "is feature F in version V" in
-muster's tooling must test the **tree**, never ancestry.
+P contains upstream's **unified gateway runtime** (PR #106742), which v0.22.2
+does not. 🔴 Commit ancestry misleads here: S records an older main commit as a
+second parent only to satisfy the release script, so
+`git merge-base --is-ancestor X v0.22.2` does not mean X's code is in S. A
+check of "is feature F in release R" tests the **tree**, never ancestry.
 
-The architectural difference is the **unified gateway runtime** (upstream PR
-#106742), merged just after S's release branch was cut:
+At P, `hermes chat` is a thin client. The turn runs in a per-`HERMES_HOME`
+gateway (`hermes gateway run --quiet --idle-exit`), auto-started by the first
+client (`P:hermes_cli/gateway_agent.py:1-9`,
+`P:hermes_cli/gateway_client.py:257-301`). One gateway serves every CLI on that
+home; a second pane's CLI joins it (S2). It outlives its clients, even
+`tmux kill-server`, until its idle exit (S10).
 
-- **At P**, `hermes chat` is a thin client. The turn runs in a per-`HERMES_HOME`
-  gateway (`hermes gateway run --quiet --idle-exit`), auto-started by the first
-  client (`P:hermes_cli/gateway_agent.py:1-9`,
-  `P:hermes_cli/gateway_client.py:257-301`). One gateway serves every CLI on
-  that home; a second pane's CLI joins it (S2). It outlives its clients, even
-  `tmux kill-server`, until its idle exit (S10).
-- **At S**, the CLI runs the agent in its own process
-  (`S:hermes_cli/oneshot.py:514-520`).
-
-| concern | S (v0.22.2) | P (pinned) |
-|---|---|---|
-| who runs hooks | the CLI process (UNVERIFIED at runtime) | the gateway, with the **first** client's environment (S2) |
-| who writes `state.db` | the CLI | the gateway only |
-| `sessions.source` of a CLI session | `cli` | `cli` at creation, `local` after the first turn; `created_source` stays `cli` (S3) |
-| turn-in-flight signal in the DB | `session_turn_leases` | `session_turn_leases`, plus `session_admissions` |
-| structured approvals and requests | hooks only | hooks, plus the gateway viewer (S1) |
-| `SCHEMA_VERSION` | 31 | 32 |
-| API approval body | `{choice[, request_id]}` | exactly `{request_id, execution_generation, choice}` (S6) |
-| API run records across a restart | lost (404) | kept (S6) |
-| `/v1/runs/{id}/resolve-unknown`, `/clarify` | absent | present (S6) |
-| `chat -q --format stream-json` | in-process | spawns a detached gateway per home (S7) |
+| concern | at the pin |
+|---|---|
+| who runs hooks | the gateway, with the **first** client's environment (S2) |
+| who writes `state.db` | the gateway only |
+| `sessions.source` of a CLI session | `cli` at creation, `local` after the first turn; `created_source` stays `cli` (S3) |
+| turn-in-flight signal in the DB | `session_turn_leases`, plus `session_admissions` |
+| answering approvals out of band | the gateway viewer (S1) |
+| `SCHEMA_VERSION` | 32 |
+| API approval body | exactly `{request_id, execution_generation, choice}` (S6) |
+| API run records across a restart | kept (S6) |
+| `/v1/runs/{id}/resolve-unknown`, `/clarify` | present (S6) |
+| `chat -q --format stream-json` | spawns a detached gateway per home (S7) |
 
 ### Moving a host from P to S is hazardous
 
@@ -174,7 +189,7 @@ The architectural difference is the **unified gateway runtime** (upstream PR
 
 | spike | verdict | key observation | changed |
 |---|---|---|---|
-| **S1** viewer protocol | partially | Attach, `session.resume`, `prompt.submit` and `approval.respond` work, and a passive viewer does not disturb the CLI's modal. 🔴 The CLI **never draws** a viewer-submitted turn. A viewer's `approval.respond` wins, but the CLI's modal stays drawn and later prints a misleading "allowed once". Passive viewers receive `clarify` and `sudo` server requests. | [send path](#the-send-path), [viewer](#the-gateway-viewer), [questions](#questions-and-approvals), [hygiene](#secret-hygiene), Phase 5 |
+| **S1** viewer protocol | partially | Attach, `session.resume`, `prompt.submit` and `approval.respond` work, and a passive viewer does not disturb the CLI's modal. 🔴 The CLI **never draws** a viewer-submitted turn. A viewer's `approval.respond` wins, but the CLI's modal stays drawn and later prints a misleading "allowed once". Passive viewers receive `clarify` and `sudo` server requests. | [send path](#the-send-path), [viewer](#the-gateway-viewer), [questions](#questions-and-approvals), [hygiene](#secret-hygiene), Phase 4 |
 | **S2** hooks | confirmed, one correction | Hooks carry the **physical** session id (the child id after a rotation); the lease and breadcrumb keep the logical root. All three `on_human_input_*` kinds arrive. Pre-seeded consent holds in an auto-started gateway; an extra hook not on the allowlist makes every new CLI stop on a `[y/N]` prompt. Hook env has the first pane's `TMUX_PANE`. Slack: 0 (the final row precedes `on_session_end` by 19–33 ms). | [status](#busy-idle-and-waiting) |
 | **S3** breadcrumb | confirmed | Follows `/new`, keeps the logical id across compression. `/resume` and `/branch` leave it stale, and mark the abandoned session `end_reason` `resumed_other` / `branched`. `parent_session_id` is shared by compression and branching. | [locator](#pane-to-session-resolution), [transcript](#transcript-reading) |
 | **S4** turn lease | confirmed | TTL 300 s, renewed every 60 s, keyed by the logical root, held through approval and clarify waits, deleted at turn end. | [status](#busy-idle-and-waiting) |
@@ -334,7 +349,7 @@ Streaming deltas are not persisted.
 
 **Compaction and lineage.**
 
-- **In place is the default** at S and P (`compression.in_place: true`): the
+- **In place is the default** (`compression.in_place: true`): the
   session id is unchanged, old rows become `active=0, compacted=1`, and the
   retained context is re-inserted as `active=1` (S2: 50 rows to 12 live). Live
   view: `active=1`. Scrollback: `active=1 OR compacted=1`, ordered by
@@ -415,8 +430,12 @@ hooks (`hooks:` in `config.yaml`) receive JSON on stdin with
   file's.
 - **Contents.** Status, time, request kind and id. 🔴 Never the prompt text,
   never tool arguments.
+- **Installation.** The hook entries and their consent allowlist are declared
+  in the host's Home Manager configuration, through upstream's `hermes-agent`
+  Home Manager module. muster-mirror ships only the `hermes-hook` command and
+  never edits `~/.hermes/config.yaml`.
 - **Consent** (S2). Pre-seeded allowlist entries hold in an auto-started
-  gateway, with no prompt. 🔴 The install must allowlist **exactly** every
+  gateway, with no prompt. 🔴 The declaration must allowlist **exactly** every
   `(event, command)` pair it configures: a configured hook that is not
   allowlisted is skipped by the gateway with a warning, and makes every new
   foreground CLI stop before its UI on `Allow this hook to run? [y/N]:`. A hook
@@ -452,8 +471,8 @@ fresh `since` at every turn end, so a short turn still moves it.
 - A host with no status file for a session reports unknown, naming the
   missing hook, as `ErrNoStatus` does for Claude.
 
-At P the [gateway viewer](#the-gateway-viewer) adds turn edges and pending
-requests; the hook stays the primary source.
+Status comes from the hook, the lease and the newest row only. The
+[gateway viewer](#the-gateway-viewer) is used for answering, not for status.
 
 ### The send path
 
@@ -464,7 +483,7 @@ the turn. It is not used. It may become usable if upstream makes the CLI render
 foreign turns (upstream issue #103748 asks for an official way to deliver a
 message into a live session).
 
-**What Hermes does with keys** (S11; classic CLI, same bindings at S and P):
+**What Hermes does with keys** (S11; the classic CLI):
 
 1. 🔴 **Paste+Enter on the approval modal approves `once`.** A bracketed paste
    of `4` (deny) landed in the input buffer, then muster's pasted Enter
@@ -524,8 +543,8 @@ holds.
 step 5's Enter (`auto_continue`, a background delegation finishing). With
 `queue` mode the CLI also holds its own queue for about 0.3 s after a turn ends,
 while the hook already says idle (S11); check (b) catches it once the user row
-is written. The install instructions recommend `/busy queue`, which the CLI
-saves to `config.yaml` itself: any such gap then queues rather than interrupts.
+is written. The host docs recommend `/busy queue`, which the CLI saves to
+`config.yaml` itself: any such gap then queues rather than interrupts.
 muster never writes Hermes's config.
 
 ### The screen check
@@ -556,9 +575,9 @@ unrecognised screen refuses.
 
 ### The gateway viewer
 
-At P a second client can attach to the gateway as a **viewer** (S1). It is not
-a send path. It is the richest read and status source, and the authoritative
-way to answer an approval.
+A second client can attach to the gateway as a **viewer** (S1). muster uses it
+for one thing: **answering** an ask the person answers in muster. It is not a
+send path and not a status source.
 
 **Discovery.** 🔴 The control socket is at `$HERMES_HOME/gateway.sock` only
 when that path is short enough (`gateway/control_socket.py`,
@@ -579,27 +598,28 @@ a peer with a different uid.
    ticket valid for 30 s.
 3. WebSocket `<api_origin>/api/ws`, subprotocols `hermes-gateway-v1` and
    `hermes-gateway-ticket.<ticket>`; the gateway answers `gateway.ready`.
-4. `session.resume({session_id})` returns, among others, `running`,
-   `pending` (started admissions, **with prompt text**) and `prompts` (pending
-   approvals: `prompt_id`, `execution_generation`, `command`, `description`,
-   `choices` in the order `once, deny, session, always`, `timeout_s`). There is
-   no `open_requests` or `inflight`.
+4. `session.resume({session_id})` returns `prompts`, the pending approvals:
+   `prompt_id`, `execution_generation`, `command`, `description`, `choices` in
+   the order `once, deny, session, always`, `timeout_s`. That is what an answer
+   needs. (It also returns `pending`, started admissions **with prompt text**,
+   which is dropped.)
 
-**Events used.** `message.start` / `message.complete` (turn edges),
-`approval.request` / `approval.settled`, `request.cancel`, `tool.start` /
-`tool.complete`, and the server requests `clarify` and `sudo`, which a passive
-viewer **receives** although it declared no capabilities. Dropped on receipt:
-`thinking.delta`, `reasoning.available`, and everything not listed.
+**Events used.** `approval.request` / `approval.settled` and `request.cancel`,
+to keep the identifiers of what is pending current, and the `clarify` server
+request (`method:"clarify"`, an `srq-…` id, the questions), which a passive
+viewer **receives** although it declared no capabilities. Everything else is
+dropped on receipt, `sudo` frames included.
 
 **Rules.**
 
 - 🔴 **Never answer a server request** unless the person is answering it
   through muster's asks UI, and **never answer, log or forward a `sudo`
   frame**.
-- **Attach only while needed:** while a Hermes window on that home is listed
-  with a live CLI, and detach when none is. The gateway idles out after 600 s
-  without clients; whether an attached viewer keeps it alive is UNVERIFIED, and
-  muster must not be the reason a gateway outlives its panes.
+- **Attach only to answer:** when the hook reports a listed window `waiting`
+  on an approval or clarify that muster is showing, and detach once it is
+  settled. The gateway idles out after 600 s without clients; whether an
+  attached viewer keeps it alive is UNVERIFIED, and muster must not be the
+  reason a gateway outlives its panes.
 - No payload says which client or terminal shows a session, so the viewer
   never replaces the [locator](#pane-to-session-resolution).
 
@@ -633,9 +653,15 @@ viewer **receives** although it declared no capabilities. Dropped on receipt:
 - **A `sudo` request** is shown as "Hermes is asking for a sudo password in
   the terminal", with nothing to answer in muster.
 
-**Answering.**
+**Answering.** Every ask kind has one path:
 
-- **Approvals, at P: the viewer's `approval.respond({session_id,
+| ask | answered by |
+|---|---|
+| approval | the viewer's `approval.respond` |
+| clarify | the viewer, if Phase 4 measures it; else the terminal |
+| sudo | never from muster |
+
+- **Approvals: the viewer's `approval.respond({session_id,
   execution_generation, prompt_id, choice})`.** Measured authoritative: the
   command did not run, the lease was released, the turn finished (S1). ⚠ The
   CLI's modal **stays drawn**, countdown running, until a key is pressed, and
@@ -643,16 +669,17 @@ viewer **receives** although it declared no capabilities. Dropped on receipt:
   command — it did not run." The card says so: "answered here; the terminal
   will show a stale prompt until a key is pressed there". The screen check
   keeps treating that modal as blocking.
-- **Clarify, at P:** the viewer's answer to the `clarify` server request is
-  UNVERIFIED (Phase 5 measures it). The fallback is a key driver built like
-  `internal/askdrive` — read the pane twice before every key, stop on any
-  divergence, never half an answer — pinned by a live test; else "answer in
-  the terminal".
-- **Approvals without a viewer** (another commit, or the viewer unavailable):
-  typed keys only, `1` or `4`, after the screen check proves the modal is up
-  with that command. Whether `paste-buffer -S` (unbracketed, as askdrive types)
-  acts as typed keys on this modal is UNVERIFIED; the S11 finding is that a
-  **bracketed** digit does not.
+- **Clarify: through the viewer if measured, else in the terminal.** The
+  protocol carries it: a passive viewer receives the `clarify` server request
+  with its id and questions, and the viewers that did not answer get
+  `request.cancel` (S1). Answering it from a viewer was **not** measured.
+  Phase 4 measures it, including what the CLI's picker shows afterwards; until
+  it passes, the card shows the questions and says "answer in the terminal".
+- **Sudo: never answered from muster.** The card says Hermes is asking for a
+  password in the terminal.
+- **When the viewer cannot attach** (the socket fails its checks, `code_sha`
+  is not the pin): every card says "answer in the terminal". muster types
+  nothing into a pane to answer a Hermes ask.
 - 🔴 **Choices offered from muster: `once` and `deny` only** by default.
   `session` and `always` widen what the agent may do beyond the moment being
   approved (open question 1).
@@ -724,13 +751,11 @@ view's redaction and caps. Nothing is stored on the server.
   `tool.completed`, `tool.failed`, `approval.request`, `approval.settled`, and
   the terminal `run.completed`, `run.failed`, `run.cancelled`,
   `run.interrupted`. `run.queued`/`run.started` exist in source but were never
-  observed and are not relied on. (At S the answer event is
-  `approval.responded`, and text is also `message.delta`.)
+  observed and are not relied on.
 - `POST /v1/runs/{id}/approval` with **exactly**
   `{"request_id": <approval.request.prompt_id>, "execution_generation": <n>,
   "choice": "once"|"deny"}`; any other key set is `400 invalid_params`
-  (`P:gateway/platforms/api_server_authority_runs.py:113-133`). (At S:
-  `{choice[, request_id]}`.)
+  (`P:gateway/platforms/api_server_authority_runs.py:113-133`).
 - `POST /v1/runs/{id}/stop`, `/steer`; `POST /v1/runs/{id}/resolve-unknown
   {admission_id, execution_generation}`; `GET /v1/runs/{id}`;
   `GET /api/sessions/{id}/messages`.
@@ -744,7 +769,7 @@ view's redaction and caps. Nothing is stored on the server.
   as success. So hermesd's relay timeout is **shorter** than the rendered
   `approvals.timeout` (proposed: relay 240 s, Hermes 300 s, both rendered
   explicitly), and a relay timeout is answered `deny` by hermesd itself.
-- **The `clarify` tool is not offered to API-server turns** at S or P: the
+- **The `clarify` tool is not offered to API-server turns**: the
   model's call gets "Tool 'clarify' does not exist" (S6). Question cards from
   pods need a toolset config that adds `clarify`, and then
   `POST /v1/runs/{id}/clarify` (P-only, untested end to end). Not in the first
@@ -778,7 +803,7 @@ muster has a steer concept.
 
 ### Restart and resume
 
-No run resumes, at S or P (S6).
+No run resumes (S6).
 
 - **SIGTERM** (a rollout): the gateway drains for 30 s, then interrupts the run
   (`run.interrupted`, status `cancelled` at P) and **exits 1**. The transcript
@@ -804,8 +829,8 @@ No run resumes, at S or P (S6).
     run": it keeps streaming, resolves the predecessor, and never reports it as
     a failure.
 - Sessions and their messages survive any restart; the next run on the same
-  `session_id` gets the full history. P keeps run records across a restart
-  (`GET /v1/runs/{old}` answers with its final status); S does not.
+  `session_id` gets the full history. Run records survive a restart
+  (`GET /v1/runs/{old}` answers with its final status).
 - The `hermes sessions discard` step of the earlier draft is superseded by
   `resolve-unknown`.
 
@@ -880,12 +905,14 @@ writes into it survives a restart:
 
 ### Credentials
 
-- **Provider keys** go into the agent's own Secret, consumed by `envFrom`, as
-  `CLAUDE_CODE_OAUTH_TOKEN` does for `claude-code`, with the same seam-ledger
-  test holding each name to that one place
-  (`website/docs/reference/environment-variables.md:15-95` lists them).
-- **The agent's shell never sees them** (S8): `OPENAI_API_KEY`,
-  `ANTHROPIC_API_KEY`, `GH_TOKEN`, `GITHUB_TOKEN` and every `API_SERVER_*`
+- **The provider is OpenRouter, with the credential muster's gateway runtime
+  already uses** (operator decision): the admin's `MUSTER_AGENT_OPENROUTER_KEY`,
+  or a member's own stored OpenRouter key ([connectors.md](../connectors.md)).
+  It goes into the agent's own Secret as `OPENROUTER_API_KEY`, consumed by
+  `envFrom`, as `CLAUDE_CODE_OAUTH_TOKEN` does for `claude-code`, with the same
+  seam-ledger test holding the name to that one place.
+- **The agent's shell never sees it** (S8): provider keys (`OPENAI_API_KEY`,
+  `ANTHROPIC_API_KEY` measured), `GH_TOKEN`, `GITHUB_TOKEN` and every `API_SERVER_*`
   variable are stripped from terminal subprocesses
   (`P:tools/environments/local_env_policy.py:38,380`). So the agent cannot call
   Hermes's own API.
@@ -922,7 +949,7 @@ Measured (S9):
 - **Never `.hermes.md`**: when present, the repository's `AGENTS.md` is not
   loaded.
 - **Never `agent.system_prompt` or `HERMES_EPHEMERAL_SYSTEM_PROMPT`**: both are
-  ignored for API-server turns, at S and P.
+  ignored for API-server turns.
 
 ### Sandboxing
 
@@ -951,8 +978,8 @@ on 443" is not "the provider and GitHub".
   refusal naming it; `TERMINAL_HOME_MODE=profile`; a termination grace over
   30 s; a memory limit (the four-minute soak's RSS rose from about 275 MiB to
   328 MiB, undiagnosed).
-- Configuration: `MUSTER_AGENT_HERMES_IMAGE` (pinned digest), the provider key
-  variables, `MUSTER_AGENT_HERMES_STORAGE_SIZE`; documented in
+- Configuration: `MUSTER_AGENT_HERMES_IMAGE` (pinned digest) and
+  `MUSTER_AGENT_HERMES_STORAGE_SIZE`; the OpenRouter key is the existing one; documented in
   [configuration.md](../configuration.md), which a test checks.
 - No Terminal view for `hermes` agents in the first release: `agents.terminal`
   refuses kinds other than `claude-code`.
@@ -964,16 +991,16 @@ Efforts are rough engineer-days, including tests and docs. Phase 0 is done.
 | phase | what | effort | depends on |
 |---|---|---|---|
 | ~~0~~ | Spikes S1–S11 | done | — |
-| **1** | Runtime seam: `mirrorhost.Runtime`, Claude behind it, `Window.Runtime`/`AgentSession` with the wider id bound, runtime-neutral waiting set and queue reasons. No behaviour change for Claude Code. | 3–4 | — |
-| **2** | Read-only Hermes mirroring: process identity, breadcrumb locator with the end-reason staleness rule, SQLite reader (compaction, compression-only lineage), renderer, `hermes-hook` status files with lease and newest-row checks, consent diagnostics, listing and kind chip, secret-path ledger, `-list -hermes` | 6–8 | 1 |
-| **3** | Gated pane send: per-runtime server gates, host `CheckSend`, the six-state screen check against recorded fixtures, post-paste and post-Enter checks, Queue and Send now for Hermes, install docs (exact allowlist, `/busy queue`) | 5–6 | 2 |
-| **4** | Questions and approvals without the viewer: clarify cards from the DB, approval and sudo attention items from the hooks, a clarify key driver with a live test, typed-digit approvals if `paste-buffer -S` measures as typed | 4–6 | 2, 3 |
-| **5** | The gateway viewer, **no sending**: discovery through `gateway.sock.path`, ticket and attach, attach lifecycle, turn edges and pending requests as a status cross-check, `approval.respond` with the stale-modal card, clarify answers if they measure safe, the hygiene filters | 4–6 | 2, 4 |
-| **6** | `hermes` kind: `hermesd` (runs, events, exact approval body, relay timeout, start-up `resolve-unknown`, SIGTERM handling), the Nix image without ffmpeg, `agentspec`, migration, config, smoke test like `cc-smoke`, a first run in a real pod | 8–10 | 1 |
-| **7** | `make test-livehermes`: the pinned Hermes in a scratch tmux server and home, driving every screen-check state, the queue, the clarify picker, and the timings under load; re-run on every pin bump | 3–4 | 3, 4 |
+| **1** | Runtime seam: `mirrorhost.Runtime` for Claude Code and Hermes, Claude behind it, `Window.Runtime`/`AgentSession` with the wider id bound, runtime-neutral waiting set and queue reasons. No behaviour change for Claude Code. | 3–4 | — |
+| **2** | Read-only Hermes mirroring: process identity, breadcrumb locator with the end-reason staleness rule, SQLite reader (compaction, compression-only lineage), renderer, the `hermes-hook` command and its status files with lease and newest-row checks, consent diagnostics, listing and kind chip, secret-path ledger, `-list -hermes` | 6–8 | 1 |
+| **3** | Gated pane send: per-runtime server gates, host `CheckSend`, the six-state screen check against recorded fixtures, post-paste and post-Enter checks, Queue and Send now for Hermes, host docs (the Home Manager hook declaration, `/busy queue`) | 5–6 | 2 |
+| **4** | Questions and approvals: clarify cards from the DB, approval and sudo attention items from the hooks, viewer discovery through `gateway.sock.path`, attach-to-answer, `approval.respond` with the stale-modal card, measuring the viewer's clarify answer (and wiring it if it passes), the hygiene filters | 5–7 | 2, 3 |
+| **5** | `hermes` kind: `hermesd` (runs, events, exact approval body, relay timeout, start-up `resolve-unknown`, SIGTERM handling), the Nix image without ffmpeg, `agentspec`, migration, config, smoke test like `cc-smoke`, a first run in a real pod | 8–10 | 1 |
+| **6** | `make test-livehermes`: the pinned Hermes in a scratch tmux server and home, driving every screen-check state, the queue, the clarify picker, and the timings under load; re-run on every pin bump | 3–4 | 3, 4 |
 
-Remaining: about 33–44 days. Phases 2–5 and 6 are independent after Phase 1.
-The shortest useful slice is Phases 1–2: read-only Hermes windows with status.
+Remaining: about 30–39 days. Each phase is released and shipped to the hosts as
+it merges. Phases 2–4 and 5 are independent after Phase 1. The shortest useful
+slice is Phases 1–2: read-only Hermes windows with status.
 
 ## Risks
 
@@ -990,7 +1017,6 @@ The shortest useful slice is Phases 1–2: read-only Hermes windows with status.
   start-up recovery is the mitigation; a pod killed before recovery runs leaves
   the session parked until the next start.
 - **Untested in Phase 0, carried as risk:**
-  - S at runtime as a mirrored CLI (hooks in the CLI process, an S pane map);
   - a real pip/uv install (S10's row is from a simulated launcher), and the bare
     `hermes` launch form;
   - threshold-triggered auto-compression (only `/compress` was used);
@@ -998,6 +1024,7 @@ The shortest useful slice is Phases 1–2: read-only Hermes windows with status.
     from the highlighted choice);
   - the `session` and `always` approval choices, and a viewer declaring
     `server_requests: true`;
+  - answering a clarify from the viewer (measured in Phase 4);
   - whether an attached viewer keeps an auto-started gateway alive past its
     idle exit;
   - skins or themes changing the input-line glyphs;
@@ -1008,7 +1035,6 @@ The shortest useful slice is Phases 1–2: read-only Hermes windows with status.
   - `/clarify` end to end on the API server;
   - the RSS growth during the soak (leak or history growth, not told apart);
   - a real provider: rate limits and compression in a pod;
-  - S's env stripping and soak (S is not a target).
 - **Hermes's own concurrency issues** at P (upstream #140622, #139959,
   #135487, #133253, #131838, #120888): turns aborted by lock contention or a lost
   lease surface as failed turns in muster.
@@ -1023,13 +1049,11 @@ The shortest useful slice is Phases 1–2: read-only Hermes windows with status.
 
 1. **Approval scopes from muster:** `once`/`deny` only, or also `session` and
    `always`?
-2. **Provider credentials for `hermes` pods:** one admin key set, a pool like
-   the Claude accounts, or members' own stored keys only?
-3. **Host config advice:** recommend `/busy queue` on mirrored hosts? It changes
+2. **Host config advice:** recommend `/busy queue` on mirrored hosts? It changes
    what Enter does at the terminal for the person too.
-4. **Question cards from pods:** add the `clarify` toolset to the pod (it is
+3. **Question cards from pods:** add the `clarify` toolset to the pod (it is
    off for API-server turns), and with it the P-only `/clarify` route?
-5. **A Terminal view for `hermes` pods** (a TUI viewer of the in-pod gateway):
+4. **A Terminal view for `hermes` pods** (a TUI viewer of the in-pod gateway):
    in scope for a later release?
 
 ## Recommended improvements
@@ -1041,13 +1065,6 @@ The shortest useful slice is Phases 1–2: read-only Hermes windows with status.
   for the CLI; a hook-reported event for confirm modals such as `/new`.
 - **A runtime-neutral identity for the host MCP endpoint**, so Hermes sessions
   can call muster's attention and task tools.
-- **`make test-livehermes`** on every pin bump, as `make test-liveclaude` is on
-  every Claude Code upgrade, with fixtures recorded from the pinned commit
-  (schema DDL, a compacted session, a rotated lineage, a branch, a clarify call,
-  each blocking screen).
-- **Metrics**: `muster_mirror_hermes_status_total{state}`,
-  `…_send_refused_total{reason}` (busy, waiting, screen_state, superseded,
-  pasted_not_submitted), `…_schema_unreadable_total`, and hermesd's
-  `…_unknown_resolved_total`.
-- **A decisions.md entry** recording why muster pins Hermes by sha, probes
-  features instead of reading versions, and does not send through the viewer.
+- **A decisions.md entry** recording why muster pins Hermes by sha, refuses
+  what it cannot read instead of supporting several versions, and does not send
+  through the viewer.
