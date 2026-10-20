@@ -34,7 +34,7 @@ export MUSTER_TEST_PG_PORT
 # database, which is the specific failure that file's header is about.
 TEST_DSN := postgres://muster:muster@127.0.0.1:$(MUSTER_TEST_PG_PORT)/muster_test?sslmode=disable
 
-.PHONY: build vet run image test test-db test-db-down test-liveclaude leakscan css css-check check help verb-ledger icons e2e screenshots
+.PHONY: build vet run image hermes-image hermes-smoke test test-db test-db-down test-liveclaude leakscan css css-check check help verb-ledger icons e2e screenshots
 
 # The stylesheet the UI serves, and the classes that prove each Tailwind content
 # entry is still matching something. See css-check.
@@ -94,6 +94,8 @@ help:
 	@echo "  make build        go build ./... (muster-server, muster, muster-migrate)"
 	@echo "  make run          the server, against \$$DATABASE_URL (see README)"
 	@echo "  make image        the container image, css-check included"
+	@echo "  make hermes-image the hermes agent image (Nix; loads it into Docker)"
+	@echo "  make hermes-smoke the hermes image smoke test: a stub model, a full turn, approvals, crash and restart"
 	@echo "  make vet          go vet ./..."
 	@echo "  make test-db      start the throwaway Postgres, migrate it, print the exports"
 	@echo "                    (MUSTER_TEST_PG_PORT=55433 make test-db for a second checkout)"
@@ -328,3 +330,18 @@ screenshots:
 	  test "$$s" -le 204800 || { echo "screenshots: $$f is over 200 KB"; exit 1; }; done
 
 check: vet test leakscan css-check verb-ledger
+
+# The `hermes` agent kind's image (images/hermes-agent/flake.nix): upstream
+# Hermes at its pinned sha, ffmpeg overridden out, behind hermesd. The flake's
+# output is a stream script, so the image is assembled as Docker loads it.
+HERMES_IMAGE ?= hermes-agent:hermes-5fc490e2
+hermes-image:
+	nix build -o .hermes-image ./images/hermes-agent#image
+	./.hermes-image | docker load
+	rm -f .hermes-image
+
+# The image smoke test: the real image under Docker with pod-like restrictions,
+# a stub OpenAI-compatible model and a fake muster relay, driven by muster's own
+# client (images/hermes-agent/smoke). No real model, no Kubernetes.
+hermes-smoke:
+	go run ./images/hermes-agent/smoke -image $(HERMES_IMAGE)
