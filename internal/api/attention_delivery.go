@@ -151,11 +151,19 @@ func answeredViaLine(src attention.AnswerSource) string {
 	if !src.ViaSession() {
 		return ""
 	}
-	from := "a mirrored Claude Code session"
+	return " — answered by the operator via MCP from " + mcpAnswerFrom(src) + ", not on the Attention view"
+}
+
+// mcpAnswerFrom names where an MCP answer came from, for text written OUTSIDE
+// a fence in muster's voice (the delivered answer's preface, a dispatched
+// agent's instructions preface): "<host>/<session>, their mirrored Claude Code
+// session" when both have the mirror wire's shapes, else "a mirrored Claude
+// Code session" (see answeredViaLine on why the re-check stays).
+func mcpAnswerFrom(src attention.AnswerSource) string {
 	if mirror.ValidHost(src.Host) == nil && mirror.ValidClaudeSession(src.Session) {
-		from = src.Host + "/" + src.Session + ", their mirrored Claude Code session"
+		return src.Host + "/" + src.Session + ", their mirrored Claude Code session"
 	}
-	return " — answered by the operator via MCP from " + from + ", not on the Attention view"
+	return "a mirrored Claude Code session"
 }
 
 // answerSession is the session an answer to agent a goes to: its default

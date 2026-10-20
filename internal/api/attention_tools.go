@@ -42,8 +42,9 @@ import (
 // refuses every caller that is not a mirrored session (mirroredSession), and the
 // store refuses an ask raised by any mirrored session on the caller's HOST
 // (attention.ErrSameHost: the host is what the token proves; the session is a
-// pane the caller names). An MCP answer is never task_dispatch instructions
-// (attention.Store.AnswersForTask).
+// pane the caller names). An MCP answer IS accepted as task_dispatch
+// instructions, by operator decision ("Just remove the filter"; the accepted
+// risk is in docs/attention.md); the kickoff names it as given over MCP.
 //
 // 🔴 THE TOOLS TAKE A toolCaller, NOT AN agents.Agent, so a caller that is not
 // an agent row can be served the same set by constructing one; today every
@@ -238,7 +239,8 @@ func attentionAnswerToolDef() agents.ToolDef {
 			"never to decide one yourself. Name the ask by EXACTLY ONE of: id (the ask's own id, as the Attention view shows it) or task_id (the task " +
 			"an ask is about — e.g. the chief's \"Task #776 needs you\" is {task_id: 776}; it must have exactly one open ask). It is the same answer as " +
 			"your owner tapping it on muster's Attention view: the asker gets it (a dispatched agent, the chief included, as a new message saying it came " +
-			"through MCP from this host and session), but it never counts as your owner's own words for a dispatch's instructions. answer is free " +
+			"through MCP from this host and session); it counts as your owner's own words, also as a dispatch's instructions, so relay only " +
+			"words your owner actually gave you. answer is free " +
 			"text or one of the ask's options. You cannot answer an ask raised by a session on this same host, nor one that is no longer open.",
 		Parameters: objSchema(map[string]any{
 			"id":      intProp("The ask's id, as the Attention view shows it. Give this OR task_id.", 1, 1<<53),

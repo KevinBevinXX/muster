@@ -363,7 +363,10 @@ Each refusal has its own sentence, in this order:
    to its task only when muster filed it on the task's behalf
    (`task_route_attention`, or a mention's route to `/attention`) — never by
    its question's text, which any asker can write. The answer must be given
-   **through that ask** (on `/attention`): a message you write into the
+   **through that ask** — on `/attention`, or from one of your mirrored
+   sessions' `attention_answer`, which counts the same (operator decision;
+   the accepted risk is in [attention.md](attention.md#mirrored-claude-code-sessions)) —
+   while a message you write into the
    chief's chat also settles its open asks, but every one of them at once, on
    every task, so it counts for none. The comparison is exact
    after trimming surrounding whitespace and normalising line endings: one
@@ -394,15 +397,18 @@ Each refusal has its own sentence, in this order:
 
 A start that passed every check is recorded (a `task.chief_dispatch` audit row,
 with the kind, any instructions and the id of the attention ask they are your
-answer to (`instructions_ask`), so you can read what the chief told the agent
-and where it came from) **before** the agent is created, so a start that then fails still
+answer to (`instructions_ask`) — and, for an answer given over MCP,
+`instructions_via: "mcp"` and `instructions_from: "<host>/<session>"` — so you
+can read what the chief told the agent and where it came from) **before** the agent is created, so a start that then fails still
 spends the day's unit and the task's one start. That includes a claude-code
 start whose account pool has no usable account: the pool is asked only at the
 create. The agent's id is recorded beside it (`task.chief_dispatch_agent`); the
 caps are counted from those rows.
 
 The agent's first message is the chief's `instructions`, if any (control
-characters removed, fenced under a line saying the chief relayed them), then
+characters removed, fenced under a line saying the chief relayed them — and,
+for an MCP answer, that they were your answer given over MCP from
+`<host>`/`<session>` rather than on the Attention view), then
 the task's text, then muster's rules for the run, which come last and win:
 open any pull request as a **draft**, never merge, never mark the task complete
 (set it `ready_for_review` with the pull request's URL in a comment). Marking a

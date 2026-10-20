@@ -382,12 +382,13 @@ func TestAttentionAnswerRefusesClosedForeignAndBadAsks(t *testing.T) {
 	}
 }
 
-// TestAnMCPAnswerIsNeverTaskDispatchInstructions (operator decision "MCP
-// answers can't be instructions"): an answer given through attention_answer is
-// delivered like any answer, but ownerAnswer — task_dispatch's instructions
-// provenance — does not accept it. CONTROL: the same words answered on the
-// Attention view, on another of the task's asks, are accepted.
-func TestAnMCPAnswerIsNeverTaskDispatchInstructions(t *testing.T) {
+// TestAnMCPAnswerIsTaskDispatchInstructions (operator decision "Just remove
+// the filter"): an answer given through attention_answer is delivered like any
+// answer AND ownerAnswer — task_dispatch's instructions provenance — accepts it,
+// carrying where it came from (ws/<session>). CONTROL: a view answer on another
+// of the task's asks is accepted too, with no provenance — so the provenance is
+// the MCP answer's, not a constant.
+func TestAnMCPAnswerIsTaskDispatchInstructions(t *testing.T) {
 	f := newAnswerFixture(t)
 	n, err := f.notes.Create(asUser(1), notes.Note{Title: "mcp-answer task", Body: "b", Status: notes.StatusOpen})
 	if err != nil {
@@ -406,17 +407,19 @@ func TestAnMCPAnswerIsNeverTaskDispatchInstructions(t *testing.T) {
 	if got := f.delivery(t, a.ID); got.Delivery != attention.DeliveryDelivered {
 		t.Fatalf("the MCP answer was not delivered to the chief: %q", got.Delivery)
 	}
-	if got, why := f.srv.ownerAnswer(asUser(1), 1, n.ID, "fix the flaky test"); why == "" || got.ID != 0 {
-		t.Fatalf("an MCP answer was accepted as instructions: %+v", got)
-	} else if !strings.Contains(why, "an answer relayed over MCP from a mirrored session never counts") {
-		t.Fatalf("the refusal does not say why: %q", why)
+	got, why := f.srv.ownerAnswer(asUser(1), 1, n.ID, "fix the flaky test")
+	if why != "" || got.ID != a.ID {
+		t.Fatalf("the MCP answer was not accepted as instructions: %+v %q", got, why)
+	}
+	if got.AnsweredVia.Via != "mcp" || got.AnsweredVia.Host != "ws" || got.AnsweredVia.Session != focusSID {
+		t.Fatalf("the accepted answer lost its provenance: %+v", got.AnsweredVia)
 	}
 	b, err := f.attn.Create(asUser(1), attention.New{Asker: attention.Asker{AgentID: f.chief.ID, Label: "chief"}, Question: "Task needs you (again)", TaskID: n.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.answerForm(t, b.ID, "fix the flaky test")
-	if got, why := f.srv.ownerAnswer(asUser(1), 1, n.ID, "fix the flaky test"); why != "" || got.ID != b.ID {
-		t.Fatalf("control: the view's answer was not accepted: %+v %q", got, why)
+	f.answerForm(t, b.ID, "use the view's words")
+	if got, why := f.srv.ownerAnswer(asUser(1), 1, n.ID, "use the view's words"); why != "" || got.ID != b.ID || got.AnsweredVia.Via != "" {
+		t.Fatalf("control: the view's answer: %+v %q", got, why)
 	}
 }

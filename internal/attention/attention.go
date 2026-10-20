@@ -383,15 +383,18 @@ type Store interface {
 	RecoverDeliveries(ctx context.Context) ([]Ask, error)
 
 	// AnswersForTask is the caller's asks linked to taskID that were answered
-	// THROUGH THE ASK ITSELF ON THE ATTENTION VIEW (Answered, no answered_via),
-	// newest first — task_dispatch's instructions provenance. Left out on
+	// THROUGH THE ASK ITSELF (Answered) — on the Attention view or through a
+	// mirrored session's attention_answer (ViaMCP; AnsweredVia says which) —
+	// newest first: task_dispatch's instructions provenance. Left out on
 	// purpose: AnsweredInSession (one message to the asker's session settles
 	// every open ask that asker raised, on every task, so it is not an answer
-	// to any one task's ask) and an answer given through attention_answer
-	// (ViaMCP: its text came out of a Claude Code session, which may be
-	// relaying words that are not the operator's — operator decision "MCP
-	// answers can't be instructions"; it is still delivered, and a dispatch
-	// WITHOUT instructions is unaffected).
+	// to any one task's ask).
+	//
+	// ⚠ AN MCP ANSWER COUNTS, BY OPERATOR DECISION ("Just remove the filter").
+	// Its text came out of a Claude Code session, which may have been fed
+	// outside text, so a session (or a leaked mirror token) can write a
+	// dispatched agent's instructions this way. That risk was stated and
+	// accepted; the kickoff names where the answer came from.
 	AnswersForTask(ctx context.Context, taskID int64) ([]Ask, error)
 }
 
@@ -525,7 +528,7 @@ func (s *PGStore) Get(ctx context.Context, id int64) (Ask, error) {
 // to their own asks), and names the owner as well.
 func (s *PGStore) AnswersForTask(ctx context.Context, taskID int64) ([]Ask, error) {
 	return collect(s.pool.Query(ctx, `SELECT `+cols+` FROM attention_asks
-		WHERE task_id = $1 AND status = 'answered' AND answered_by = $2 AND answered_via IS NULL
+		WHERE task_id = $1 AND status = 'answered' AND answered_by = $2
 		  AND owner_id = nullif(current_setting('muster.uid', true), '')::bigint
 		ORDER BY id DESC`, taskID, ByOperator))
 }

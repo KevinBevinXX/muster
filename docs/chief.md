@@ -62,14 +62,15 @@ repositories): its session starts inside a checkout, so the repository's
 the task's text and muster's rules (which come last and win). They are
 accepted **only** as your own words: verbatim, your answer to an attention ask
 about that same task ("start a Claude Code agent and have it open with skill
-X") — given on `/attention`. An answer given through a mirrored session's
-`attention_answer` is delivered to the chief (named as *via MCP from
-`<host>`/`<session>`*) but is **never** accepted as instructions (operator
-decision "MCP answers can't be instructions": a Claude Code session may be
-relaying text that is not yours); the chief can still dispatch without
-instructions ([attention.md](attention.md#the-agent-tools)). Anything else is refused, and the chief is told to ask you with
+X") — given on `/attention`, or through one of your mirrored sessions'
+`attention_answer` (operator decision "Just remove the filter": a session fed
+outside text could therefore write a dispatched agent's prompt — the accepted
+risk is spelled out in [attention.md](attention.md#mirrored-claude-code-sessions)).
+Instructions from an MCP answer say so: the agent's first message names them
+as your answer given over MCP from `<host>`/`<session>`, and the audit row
+records `instructions_via` / `instructions_from`. Anything else is refused, and the chief is told to ask you with
 `task_route_attention`. The `task.chief_dispatch` audit row records the kind,
-the instructions and the ask they came from. Guards: [plugins.md](plugins.md#task_dispatch-the-guards).
+the instructions and the ask they came from (and, for an MCP answer, where). Guards: [plugins.md](plugins.md#task_dispatch-the-guards).
 
 `tasks_list` and its siblings are offered to every agent. The chief's
 `tasks_list` covers your whole board, where a worker's covers only its own
