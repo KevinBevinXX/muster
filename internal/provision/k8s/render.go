@@ -668,6 +668,10 @@ func (d *Driver) renderDeployment(spec provision.Spec, ns string) (*appsv1.Deplo
 		no := false
 		podSpec.AutomountServiceAccountToken = &no
 	}
+	if spec.TerminationGraceSeconds > 0 {
+		grace := int64(spec.TerminationGraceSeconds)
+		podSpec.TerminationGracePeriodSeconds = &grace
+	}
 	if len(spec.Init) > 0 {
 		podSpec.InitContainers = []corev1.Container{d.renderInitContainer(spec, container)}
 	}

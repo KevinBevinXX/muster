@@ -419,5 +419,12 @@ func Fingerprint(s Spec) string {
 			sc.Runtime.WorkingDir, strings.Join(sortedEnvPairs(sc.Env), "\x1f"), strings.Join(sortedEnvPairs(sc.Secrets), "\x1f"),
 			strings.Join(files, "\x1f"), sc.Resources.CPURequest, sc.Resources.CPULimit, sc.Resources.MemoryRequest, sc.Resources.MemoryLimit)
 	}
+
+	// 🔴 THE TERMINATION GRACE COUNTS, AND ONLY WHEN DECLARED — Security's rule,
+	// for Security's reason: it is rendered into the pod template, and a spec that
+	// declares none keeps the fingerprint it had before the field existed.
+	if s.TerminationGraceSeconds > 0 {
+		w("termination-grace", strconv.Itoa(s.TerminationGraceSeconds))
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }

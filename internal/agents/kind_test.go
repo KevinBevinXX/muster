@@ -3,7 +3,9 @@ package agents
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -12,24 +14,40 @@ import (
 	"github.com/ZacxDev/muster/internal/dbtest"
 )
 
-// TestKindsMatchTheMigrationsCheck pins Kinds to the set migration 0003's
-// agents_kind_check admits, so a kind added in Go and not in the schema (or the
-// reverse) reddens here instead of as a CHECK violation at a dispatch.
+// TestKindsMatchTheMigrationsCheck pins Kinds to the set the NEWEST migration
+// that re-creates agents_kind_check admits (0003 created it, 0037 widened it for
+// hermes), so a kind added in Go and not in the schema (or the reverse) reddens
+// here instead of as a CHECK violation at a dispatch.
 func TestKindsMatchTheMigrationsCheck(t *testing.T) {
-	b, err := os.ReadFile("../db/migrations/0003_agent_kinds.sql")
-	if err != nil {
-		t.Fatal(err)
+	files, err := filepath.Glob("../db/migrations/*.sql")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("instrument check: no migrations found (%v)", err)
 	}
-	m := regexp.MustCompile(`CHECK \(kind IN \(([^)]*)\)\)`).FindStringSubmatch(string(b))
+	sort.Strings(files)
+	check := regexp.MustCompile(`ADD CONSTRAINT agents_kind_check\s+CHECK \(kind IN \(([^)]*)\)\)`)
+	var newest string
+	var m []string
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := check.FindStringSubmatch(string(b)); got != nil {
+			newest, m = f, got
+		}
+	}
 	if m == nil {
-		t.Fatal("instrument check: agents_kind_check's IN-list was not found in 0003")
+		t.Fatal("instrument check: no migration re-creates agents_kind_check with an IN-list")
+	}
+	if !strings.HasSuffix(newest, "0037_agent_kind_hermes.sql") {
+		t.Fatalf("the newest agents_kind_check is in %s; update this test's expectation with the migration that moved it", newest)
 	}
 	var sqlKinds []string
 	for _, p := range strings.Split(m[1], ",") {
 		sqlKinds = append(sqlKinds, strings.Trim(strings.TrimSpace(p), "'"))
 	}
 	if strings.Join(sqlKinds, ",") != strings.Join(Kinds, ",") {
-		t.Fatalf("migration admits %v, Kinds is %v", sqlKinds, Kinds)
+		t.Fatalf("migration %s admits %v, Kinds is %v", newest, sqlKinds, Kinds)
 	}
 }
 
@@ -47,6 +65,15 @@ func TestKindResolutionAndTurnBudgets(t *testing.T) {
 	// typed 504 turn_timeout always arrives before muster's client gives up.
 	if KindTurnTimeout("claude-code") != 35*time.Minute {
 		t.Fatalf("claude-code turn budget = %s, want 35m", KindTurnTimeout("claude-code"))
+	}
+	// Likewise five minutes past hermesd's own HERMESD_TURN_TIMEOUT default.
+	if KindTurnTimeout("hermes") != 35*time.Minute || KindLabel("hermes") != "Hermes" || !ValidKind("hermes") {
+		t.Fatalf("hermes: turn budget %s, label %q, valid %t", KindTurnTimeout("hermes"), KindLabel("hermes"), ValidKind("hermes"))
+	}
+	for kind, want := range map[string]bool{"": false, "gateway": false, "claude-code": true, "hermes": true, "teleport": false} {
+		if RunsPodSupervisor(kind) != want {
+			t.Fatalf("RunsPodSupervisor(%q) = %t", kind, !want)
+		}
 	}
 }
 

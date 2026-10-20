@@ -429,6 +429,9 @@ var bannerExempt = map[string]string{
 	envAgentCCAccounts:    "printed on the claude-code arm of the `agent kinds:` line (names only); same reason as " + envAgentCCImage,
 	envAgentCCTokenPrefix: "a PREFIX naming subscription credentials: the banner names the prefix and never a value (TestTheKindsBannerLineNamesAccountsNeverTokens)",
 	envAgentCCStorage:     "an optional size for the claude-code volume; refused at boot without the kind, defaulted with it (agentspec.DefaultClaudeCodeStorage)",
+	envAgentHermesImage: "printed on the hermes arm of the `agent kinds:` line; refused at boot when the kind is not " +
+		"enabled (validateKinds), so there is no OFF state to announce. TestTheKindsBannerLineNamesTheHermesImage pins it",
+	envAgentHermesStorage: "an optional size for the hermes volume; refused at boot without the kind, defaulted with it (agentspec.DefaultHermesStorage)",
 	envAgentNetpolFromNS: "named on the `claude-code network:` line in both arms (a policy is written / NOT CONFINED), " +
 		"which bannerBothDirections' fixture cannot render for the reason given for " + envAgentKinds + "; " +
 		"TestTheNetworkBannerLineSaysWhetherAgentsAreConfined renders both and pins them. There is no silent " +

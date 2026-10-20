@@ -205,14 +205,16 @@ func taskRoutingToolDefs(dispatch bool) []agents.ToolDef {
 				strconv.Itoa(plugins.MaxChiefLiveAgents) + " of the agents you start live at once and " +
 				strconv.Itoa(plugins.MaxChiefDispatchesPerDay) + " a day; once per task (calling it again answers with that start), until your owner destroys the agent you started there. " +
 				"The agent opens a DRAFT pull request at most and never marks the task complete. " +
-				"It starts a claude-code agent (a Claude Code pod) unless you pass kind \"gateway\" or this deployment has no " +
-				"claude-code. Either kind works in the task's repository, or the one you pass: a claude-code agent's session " +
-				"starts inside a checkout of it, so the repository's CLAUDE.md and project skills (.claude/skills) load.",
+				"It starts a claude-code agent (a Claude Code pod) unless you pass kind \"gateway\" or \"hermes\" (a Hermes pod, " +
+				"when this deployment enables it) or this deployment has no claude-code. Every kind works in the task's repository, " +
+				"or the one you pass: a claude-code agent's session starts inside a checkout of it, so the repository's CLAUDE.md " +
+				"and project skills (.claude/skills) load; a hermes agent's inside a checkout too, loading its AGENTS.md.",
 			Parameters: objSchema(map[string]any{"task_id": id,
 				"repo": strProp("The repository to work in (owner/name), only when the task names none: it must be one of " +
 					"your owner's connected GitHub repositories. Without a repository the agent cannot open a pull request."),
-				"kind": map[string]any{"type": "string", "enum": []string{agents.KindClaudeCode, agents.KindGateway},
-					"description": "The agent to start: \"claude-code\" (the default when this deployment enables it) or \"gateway\"."},
+				"kind": map[string]any{"type": "string", "enum": []string{agents.KindClaudeCode, agents.KindGateway, agents.KindHermes},
+					"description": "The agent to start: \"claude-code\" (the default when this deployment enables it), \"gateway\", " +
+						"or \"hermes\" (only when this deployment enables it)."},
 				"instructions": map[string]any{"type": "string", "maxLength": chiefInstructionsMax,
 					"description": "Optional, at most 1 KiB: how to work the task, placed before the task in the agent's first message. " +
 						"ONLY your owner's own answer to an attention ask about THIS task (task_route_attention), copied VERBATIM: " +

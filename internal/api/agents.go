@@ -954,7 +954,7 @@ func (s *Server) resolveKindAccount(ctx context.Context, p dispatchParams) (kind
 		return "", "", fmt.Errorf("%w: %s", ErrDispatchRefused, claudeCodeNoModel)
 	}
 	// A repository IS taken (unlike a model): ccd checks it out before it starts
-	// the CLI and runs the CLI in the checkout (agentspec.claudeCodeRepo,
+	// the CLI and runs the CLI in the checkout (agentspec.podRepo,
 	// cmd/ccd/checkout.go).
 	if s.ext.Kinds == nil {
 		return "", "", fmt.Errorf("%w: no Claude account pool is configured", ErrDispatchRefused)
@@ -1011,7 +1011,9 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	// (hooks, env) runs beside the subscription token. One predicate,
 	// connectedRepo, the same task_dispatch applies to every kind before it
 	// reserves. Before the row, so a refusal creates nothing.
-	if kind == agents.KindClaudeCode && p.Repo != "" {
+	// The same holds for a hermes agent: hermesd checks the repository out and
+	// Hermes runs in it, loading its AGENTS.md (agents.RunsPodSupervisor).
+	if agents.RunsPodSupervisor(kind) && p.Repo != "" {
 		if why := s.connectedRepo(ctx, p.Repo); why != "" {
 			return agents.Agent{}, fmt.Errorf("%w: %s", ErrDispatchRefused, why)
 		}

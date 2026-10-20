@@ -1,6 +1,10 @@
 # Design: Hermes mirroring and the `hermes` agent kind
 
-**Status: proposed, with Phases 0, 1 and 2 done.** Phase 1 is implemented: the
+**Status: proposed, with Phases 0, 1, 2 and 5 done.** Phase 5, the `hermes`
+agent kind, is implemented (`cmd/hermesd`, `images/hermes-agent`, the kind in
+`internal/agents` and `internal/agentspec`, migration `0037`); what it built
+differently from this page is under [Phase 5 as built](#phase-5-as-built).
+Phase 1 is implemented: the
 [host paste guard](#every-paste-into-a-hermes-pane-is-gated-on-the-host)
 (Phase 1a, without its chrome check, moved to Phase 3), and the
 [runtime seam](#a-runtime-seam-instead-of-claude-only-code), the
@@ -14,7 +18,7 @@ session is resolved from its terminal's breadcrumb and its status from the
 `hermes-hook` status files; it has a read-only rendered view, the Hermes kind
 chip and `-list -hermes`; there is no send path. The Home Manager declaration
 of the hook and its allowlist entries is the host configuration's (devrc).
-Nothing of Phases 3–5 is implemented. The
+Nothing of Phases 3–4 is implemented. The
 version target is **decided** (below). Every other section describes the design
 the Phase 0 spikes support; the [Phase 0 results](#phase-0-results) table names
 what each spike changed. Where this page states how muster works today, the
@@ -1763,6 +1767,63 @@ on 443" is not "the provider and GitHub".
 - No Terminal view for `hermes` agents in the first release: `agents.terminal`
   refuses kinds other than `claude-code`.
 
+### Phase 5 as built
+
+`cmd/hermesd`, `images/hermes-agent` (the image flake and `smoke/`), the kind
+(`agents.KindHermes`, migration `0037`, `agentspec.buildHermes`, the
+`MUSTER_AGENT_HERMES_*` variables) differ from the sections above in these
+ways, each decided while building it:
+
+- **The pieces ccd and hermesd share moved to `internal/podagent`** — git
+  routing through the connector proxy, the repository checkout (with its
+  self-filed `github` request) and the bearer — unchanged in behaviour; ccd
+  keeps its names as thin delegations. One rule, one implementation.
+- **tini is PID 1, not hermesd.** The gateway's terminal tool leaves processes
+  behind when the gateway is killed; they are reparented to PID 1, which must
+  reap them, and a Go process that also `exec`s git cannot safely reap all
+  children. tini forwards SIGTERM to hermesd, which forwards it to the gateway.
+- **`gateway run --external-supervisor`**: hermesd is the process manager that
+  owns the foreground gateway, so an in-chat restart or update exits back to it
+  rather than spawning a detached replacement (read from the pin's
+  `gateway run --help` and `P:hermes_cli/gateway.py`).
+- **The termination grace is 60 s, not 45 s.** The smoke test measured a stop
+  during a run at 34 s on an idle host and 53 s under load (the 30 s drain, the
+  interrupt, hermesd's own shutdown).
+- **What a run nobody waits for any more says, it says on the session's next
+  reply** (a notice): a turn whose request timed out, an intent recovery
+  replayed, an old-key intent resolved from the messages, a retired session.
+  Hermes's own `run.completed` output is kept for that notice.
+- **No relay, an unreachable relay or a dismissed card is a `deny` too**, not
+  only the relay timeout: there is no terminal prompt to fall back to in a pod,
+  and an unanswered prompt would end `run.completed` at Hermes's 300 s.
+- **Busy is one rule**: a session with an open intent (a live turn, or a run
+  recovery is still following) answers `409 busy`; `beginIntent` is the one
+  place it is checked.
+- **`config.yaml` is written as JSON** (which YAML reads), rewritten before every
+  start of the gateway; `agent.disabled_toolsets` removes browser, computer use
+  and TTS; `${OPENROUTER_API_KEY}` and `${MUSTER_HOOK_TOKEN}` are expanded by
+  Hermes, so no credential is written to the volume.
+- **The model** is muster's slug with its `openrouter/` provider prefix removed
+  (Hermes runs the openrouter provider); `openrouter/auto` keeps its id.
+- **SOUL.md is not written.** The per-run `instructions` path is measured (S9)
+  and is the only one used; the SOUL.md fallback has no caller.
+- **Not in this release**, each refused rather than half-built: a `hermes`
+  chief (every chief tool is an MCP tool, and Hermes's MCP client against
+  muster's `/mcp` is unverified — the smoke test's fake `/mcp` answered 404 and
+  Hermes parked the server and carried on), the Terminal view, and `clarify`
+  (open question 3). The memo relay still skips the kind
+  (`ResultKindUnsupported`), although hermesd answers a second turn with the
+  typed `409 busy` that rule waits for.
+- **Measured by the smoke test, against the real pin in a container** (uid
+  1000, read-only root, no capabilities): the exact approval body, approved
+  and denied through the relay; the agent shell's environment (no bearer, hooks
+  token, provider or API key; `HOME` and `TMPDIR` on the volume; git routed
+  through muster's proxy); a SIGKILL mid-turn (the turn ends `interrupted`,
+  recovery's `resolve-unknown` with the exact body releases the session); the
+  `Idempotency-Key` replay across a restart (above); SIGTERM during a run; a
+  container restart on the same volume (same API key, history kept). Not
+  measured: a Kubernetes pod, a real provider, a cold image build.
+
 ## Phased plan
 
 Efforts are rough engineer-days, including tests and docs. Phase 0 is done.
@@ -1774,7 +1835,7 @@ Efforts are rough engineer-days, including tests and docs. Phase 0 is done.
 | ~~2~~ | (**done**, see [as built](#phase-2-as-built)) Read-only Hermes mirroring: the strict mirroring identity rule (moved from Phase 1; then pulled forward into 1b by coordinator decision, and landed there — Phase 2 builds on it), breadcrumb locator with the end-reason staleness rule (no view, unknown status), SQLite reader (compaction, compression-only lineage), renderer, the `hermes-hook` command and its status files with lease and newest-row checks, the Home Manager declaration and the locking allowlist writer, mismatch diagnostics, listing and kind chip, secret-path ledger, `-list -hermes` | 6–8 | 1 |
 | **3** | Gated pane send **and its live harness**. `make test-livehermes`: the pinned Hermes in a scratch tmux server and home; fixtures for every blocking state, and from them the paste guard's chrome check (moved from Phase 1), including the palette, model picker and stash; the overlay-state ledger; measuring the Escape sequence (with the abort rule and waits above `timeoutlen`) against every overlay at its non-default stages (filtered picker, reasoning stage, palette and stash together, the picker opened over a draft, vi mode); re-measuring under load the false-idle slack, the 150 ms Enter margin and the queue gap. Then the send: per-runtime server gates, host `CheckSend` with the image-region and input-line rules and the bounded Escape sequence, the `hermesSend` switch on both sides, the `/`, `!` and trailing-`\` refusals, collapse-aware post-paste check, database-confirmed submit with "may have been submitted", Queue and Send now for Hermes, host docs. Send stays off until these measurements are done and the harness is green; then the operator enables it per host, with the residual cases named in the host docs. | 10–12 | 2 |
 | **4** | Questions and approvals: clarify cards from the DB, approval and sudo attention items from the hooks, viewer discovery through `gateway.sock.path`, attach-to-answer, `approval.respond` with the stale-modal card, measuring the viewer's clarify answer (and wiring it if it passes), the hygiene filters; harness cases for each | 5–7 | 2, 3 |
-| **5** | `hermes` kind: `hermesd` (runs, events, exact approval body, relay timeout, a stable API key on the volume, intent-before-POST with the exact body and `Idempotency-Key`, 409 and retention handling, `resolve-unknown` recovery on every gateway start, SIGTERM handling), the Nix image without ffmpeg, `agentspec`, migration, config, smoke test like `cc-smoke`, a first run in a real pod | 10–12 | 1 |
+| ~~5~~ | `hermes` kind: `hermesd` (runs, events, exact approval body, relay timeout, a stable API key on the volume, intent-before-POST with the exact body and `Idempotency-Key`, 409 and retention handling, `resolve-unknown` recovery on every gateway start, SIGTERM handling), the Nix image without ffmpeg, `agentspec`, migration, config, smoke test like `cc-smoke` (**done**; see [as built](#phase-5-as-built)). A first run in a real pod is the release's (muster-ops), not this phase's code. | done | 1 |
 
 Remaining: about 31–39 days. Each phase is released and shipped to the hosts as
 it merges. Phases 2–4 and 5 are independent after Phase 1. The shortest useful
@@ -1813,7 +1874,11 @@ guard already in place. `make test-livehermes` re-runs on every pin bump.
   - skins or themes changing the input-line glyphs;
   - the command palette, model picker, prompt-stash panel, secret capture,
     connection form and voice states (found in source; fixtures in Phase 3);
-  - an `Idempotency-Key` replay across a gateway restart (Phase 5);
+  - ~~an `Idempotency-Key` replay across a gateway restart~~: **measured** in
+    Phase 5's image smoke test: the same key and bytes after a SIGKILL and
+    restart answer `202` with the ORIGINAL run id and `replayed: true`; another
+    key with the same body admits a new run (the control); the same key with
+    another body is `409 idempotency_key_conflict`;
   - the Escape sequence against the palette, model picker and stash at their
     non-default stages (Phase 3); Send stays off until it is measured;
   - a Hermes CLI run over `ssh` or `docker exec` in a pane, covered only by the

@@ -141,7 +141,9 @@ func (p *Plane) Unavailable(ctx context.Context, owner int64, kinds []string) ma
 			if err != nil || len(acc) == 0 {
 				out[k] = NeedClaude
 			}
-		case agents.KindGateway:
+		case agents.KindGateway, agents.KindHermes:
+			// Both run on the OpenRouter key (the hermes kind by operator
+			// decision: docs/design/hermes.md, "Credentials").
 			ok := false
 			if p.Personal != nil {
 				var err error
