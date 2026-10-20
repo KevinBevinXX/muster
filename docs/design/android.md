@@ -43,8 +43,10 @@ The design, in one line each:
   overlay is a later, opt-in phase.
 - **Widgets:** Jetpack Glance, updated from push.
 - **Distribution:** sideloaded, signed APKs with a self-hosted update channel
-  and an in-app updater. The package name and signing key are chosen now and
-  registered for Android developer verification before its global rollout.
+  and an in-app updater. The package name and signing key are chosen now. No
+  paid developer account: whether to register (free limited-distribution
+  account) or stay unregistered is decided when verification is enforced in
+  the operator's country.
 
 ## Goals
 
@@ -97,6 +99,10 @@ The design, in one line each:
   [Phase 6](#phase-6-always-on-overlay-later-opt-in).
 - **Distribution:** private sideload for now, with self-hosted over-the-air
   updates. No Play Store.
+- **No paid developer account.** The operator declined the $25 full account.
+  Developer verification is handled with the free limited-distribution account
+  or by staying unregistered, chosen at enforcement
+  ([developer verification](#-android-developer-verification)).
 - **Push transport:** whichever the research recommends. It recommends
   UnifiedPush with self-hosted ntfy ([push design](#push-design)).
 - **Deliverable:** this design doc in muster. The app's code lives in a new
@@ -848,12 +854,23 @@ a registered developer
   | account | cost | identity | limit | fit |
   |---|---|---|---|---|
   | Limited distribution | free | Google account with 2-step verification and a payments profile; no government ID | up to 20 devices, each authorised by its user | framed for hobbyists and learners with "no commercial intent"; whether that is binding is unclear |
-  | Full | $25 | government ID | none | the clean choice for a tool used for work |
+  | Full | $25 | government ID | none | declined by the operator |
 
+- **Self-hosted over-the-air updates do not need an account today.** Nothing
+  is enforced in the operator's country, so an unregistered app installs and
+  updates normally through the in-app updater, Obtainium or an F-Droid repo.
 - **Recommendation: choose the package name and the release key now**, since
-  both are fixed at registration, and register with a **full account** before
-  the global rollout. Nothing is enforced in the operator's country today, so
-  this does not block Phase 1.
+  both are fixed at registration and a lost key can never be registered. Keep
+  the key offline with a backup. Then, when enforcement reaches the operator's
+  country, pick one of the two free paths, informed by S7:
+
+  | path | after enforcement | cost to the operator |
+  |---|---|---|
+  | **Limited-distribution account** (free) | registered: installs and updates as today, on up to 20 authorised devices | registration, plus the "no commercial intent" framing (S7: how binding) |
+  | **Stay unregistered** | each phone completes the advanced flow once (24-hour wait); every install then warns | whether every OTA update warns, which would end silent updates, is UNVERIFIED (S7) |
+
+  ADB installs stay exempt either way, as a manual fallback. This does not
+  block any phase.
 - F-Droid publicly opposes verification and advises developers not to
   register. Not registering keeps the app installable only through ADB or the
   advanced flow after the global rollout.
@@ -896,7 +913,7 @@ in muster; **app** is work in the app repo.
 | **2** | Actionable notifications. Server: items 7, 16–19, 22b, 25, 26. App: the invisible activity, the signed action client, inline reply with the held reply shown in the notification and the prompt, MessagingStyle conversations and shortcuts, lock-screen public versions. | 6–8 | 7–9 | 1 |
 | **3** | Bubbles. Server: item 23. App: bubble metadata, the expanded activity, per-conversation bubble settings. | 1–2 | 3–4 | 2 |
 | **4** | Widgets and live status. Server: items 15, 22c (the `status` event, coalesced) and 28. App: two Glance widgets, the fleet ongoing notification, the Live Update for user-started runs, the WorkManager catch-up. | 3.5–4.5 | 5–6 | 1 |
-| **5** | Updates and verification. Server: item 3. App: the in-app updater (manifest, sha256 and certificate checks, PackageInstaller, pending-user-action handling), the channel publishing script, developer verification registration. | 0.5–1 | 4–5 | 1 |
+| **5** | Updates and verification. Server: item 3. App: the in-app updater (manifest, sha256 and certificate checks, PackageInstaller, pending-user-action handling), the channel publishing script; developer verification (free limited-distribution registration, or none) once enforcement reaches the operator's country. | 0.5–1 | 4–5 | 1 |
 | *6, later, opt-in* | The always-on overlay ([below](#phase-6-always-on-overlay-later-opt-in)), with spike S6. Server: a feature switch in `/api/device/config`. App: the overlay permission flow, the `specialUse` foreground service, the head and its expanded panel, restart handling, the battery measurement. | 0–0.5 | 6–8 | 3 |
 | *7, later, optional* | Asset links and passkeys in the shell ([below](#phase-7-asset-links-and-passkeys-in-the-shell-later-optional)), with spikes S1 and S2. Server: items 2 and 20, and the edge serving the file without a redirect. App: Credential Manager in the WebView. | 1–1.5 | 1–2 | 1 |
 
@@ -915,7 +932,7 @@ Phase 7, and S6 to Phase 6; the numbers are kept so references stay stable.
 | S3 | Can BiometricPrompt sign with an EC P-256 key through a CryptoObject from a translucent, UI-less FragmentActivity started by a notification action, on the lock screen and unlocked? (And: is an activity really required?) | the step-up activity's shape |
 | S4 | Can a key use `AUTH_BIOMETRIC_STRONG \| AUTH_DEVICE_CREDENTIAL` with a timeout of 0, so a phone without a strong biometric can still sign? | [open question](#open-questions) 3 |
 | ~~S5~~ | **Closed.** The Live Update page says "Don't allow activities triggered by other parties" and "Don't show ambient information", so only user-started runs are promoted. Whether promotion works on a sideloaded app is checked in Phase 4 itself. | — |
-| S7 | Developer verification: are browser and file-manager installs blocked in the enforcing countries; can limited-distribution devices be swapped; is "no commercial intent" binding; how do unattended updates of an unregistered app behave after the global rollout? | full or limited account, and the timing |
+| S7 | Developer verification: are browser and file-manager installs blocked in the enforcing countries; can limited-distribution devices be swapped; is "no commercial intent" binding; how do unattended updates of an unregistered app behave after the global rollout? | free limited-distribution account or stay unregistered, and the timing |
 | S8 | Obtainium's unattended-install mechanism; F-Droid index v2 client compatibility | whether Obtainium is a full alternative channel |
 | S9 | Does ntfy require VAPID on `up*` publishes; which foreground-service type does ntfy use; does the embedded-FCM distributor need a Firebase project? | ntfy's access config, battery claims, the fallback |
 | S10 | Does muster reach ntfy by the exact name in the endpoint ntfy gives the phone, on `https` and the default port, whether that name resolves inside the cluster (split horizon) or publicly? | ntfy's base URL, and the value of `MUSTER_PUSH_EXTRA_HOSTS` |
@@ -967,7 +984,9 @@ guidance; the Play fee.
   gating it does not come back by itself after a reboot or a kill, and it costs
   a second ongoing notification and a resident process.
 - **Developer verification** could make sideloaded updates noisy or blocked
-  from 2027 if the app is not registered, or if the registration terms change.
+  from 2027 if the app is not registered, if the free limited-distribution
+  terms change, or if their "no commercial intent" framing is enforced. With
+  no paid account, these are the only registration paths.
 - **Android policy churn:** background starts were tightened in Android 14, 15
   and 17; Live Update rules are new. Each targetSdk bump needs a pass over the
   step-up activity, bubbles and the Live Update.
