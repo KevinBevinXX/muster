@@ -28,12 +28,15 @@ import (
 
 // answerFixture is the delivery fixture (a chief of user 1 with a turn-recording
 // gateway and no delivery grace) plus user 1's mirror host "ws" listing two
-// Claude sessions (focusSID in @1, secondSID in @3), and another owner's token
-// for a host also named "ws".
+// Claude sessions (focusSID in @1, secondSID in @3), user 1's second host
+// "laptop" listing laptopSID, and another owner's token for a host also named
+// "ws".
 type answerFixture struct {
 	*deliveryFixture
-	ws, members string
+	ws, laptop, members string
 }
+
+const laptopSID = "5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d"
 
 func newAnswerFixture(t *testing.T) *answerFixture {
 	t.Helper()
@@ -41,9 +44,13 @@ func newAnswerFixture(t *testing.T) *answerFixture {
 	f.mirror.mu.Lock()
 	f.mirror.windows = append(attnWindows(mirror.StatusWaiting),
 		mirror.Window{Session: "side", ID: "@3", Index: 0, Active: true, Claude: true, ClaudeSession: secondSID, Status: mirror.StatusBusy, StatusSince: attnSince, Activity: 1_700_000_000})
+	f.mirror.others = []mirror.HostView{{Host: "laptop", Online: true, Interactive: true, StatusReport: true,
+		Windows: mirror.NormalizeWindows([]mirror.Window{{Session: "lap", ID: "@1", Index: 1, Active: true, Claude: true, ClaudeSession: laptopSID,
+			Status: mirror.StatusIdle, StatusSince: attnSince, Activity: 1_700_000_000}}, 0)}}
 	f.mirror.mu.Unlock()
-	f.ws, f.members = mirrorTok('a'), mirrorTok('c')
+	f.ws, f.laptop, f.members = mirrorTok('a'), mirrorTok('b'), mirrorTok('c')
 	f.tokens[f.ws] = mirror.Token{ID: 1, OwnerID: 1, Host: "ws"}
+	f.tokens[f.laptop] = mirror.Token{ID: 2, OwnerID: 1, Host: "laptop"}
 	f.tokens[f.members] = mirror.Token{ID: 3, OwnerID: f.member, Host: "ws"}
 	t.Cleanup(func() {
 		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM attention_asks WHERE owner_id = 1 AND mirror_host IS NOT NULL`)
@@ -59,6 +66,17 @@ func (f *answerFixture) answerAs(t *testing.T, token, sid string, id int64, answ
 	code, r, body := f.mirrorRPC(t, mirrorAs(token, sid), mcpToolCall("attention_answer", map[string]any{"id": id, "answer": answer}))
 	if code != http.StatusOK || r == nil || r.Error != nil {
 		t.Fatalf("attention_answer as %s: HTTP %d %s", sid, code, body)
+	}
+	return toolText(t, r)
+}
+
+// answerArgs calls attention_answer with args as given (id, task_id, both or
+// neither): the tool's text and whether it is a tool error.
+func (f *answerFixture) answerArgs(t *testing.T, token, sid string, args map[string]any) (string, bool) {
+	t.Helper()
+	code, r, body := f.mirrorRPC(t, mirrorAs(token, sid), mcpToolCall("attention_answer", args))
+	if code != http.StatusOK || r == nil || r.Error != nil {
+		t.Fatalf("attention_answer %v: HTTP %d %s", args, code, body)
 	}
 	return toolText(t, r)
 }
@@ -150,39 +168,128 @@ func TestAMirroredSessionAnswersTheChiefsAskAndTheChiefSeesWhereFrom(t *testing.
 	}
 }
 
-// TestAMirroredSessionAnswersAnotherSessionsAsk: ws's second session asked;
-// the first answers it; the asker's attention_wait returns the answer with its
-// provenance (a mirrored asker's answer is pulled, never pushed).
-func TestAMirroredSessionAnswersAnotherSessionsAsk(t *testing.T) {
+// TestASessionOnAnotherHostAnswersAMirroredAsk: ws's session asked; the
+// operator's session on ANOTHER host (laptop) answers it; the asker's
+// attention_wait returns the answer with its provenance (a mirrored asker's
+// answer is pulled, never pushed).
+func TestASessionOnAnotherHostAnswersAMirroredAsk(t *testing.T) {
 	f := newAnswerFixture(t)
 	id := f.mirrorAsk(t, secondSID, "Keep the old schema?")
-	if text, isErr := f.answerAs(t, f.ws, focusSID, id, "keep it"); isErr {
-		t.Fatalf("attention_answer: %s", text)
+	if text, isErr := f.answerAs(t, f.laptop, laptopSID, id, "keep it"); isErr {
+		t.Fatalf("attention_answer from laptop: %s", text)
 	}
 	if a := f.askStatus(t, id); a.Status != attention.Answered || a.Delivery != attention.DeliveryPull {
 		t.Fatalf("%+v; want answered, left for the asker's wait", a)
 	}
+	if via, host, sess := f.provenance(t, id); via != "mcp" || host != "laptop" || sess != laptopSID {
+		t.Fatalf("provenance (%q, %q, %q)", via, host, sess)
+	}
 	_, r, _ := f.mirrorRPC(t, mirrorAs(f.ws, secondSID), mcpToolCall(attentionWaitTool, map[string]any{"id": id, "wait_seconds": 0}))
-	if text, _ := toolText(t, r); !strings.Contains(text, `"answer":"keep it"`) || !strings.Contains(text, `"answered_from":"ws/`+focusSID+`"`) {
+	if text, _ := toolText(t, r); !strings.Contains(text, `"answer":"keep it"`) || !strings.Contains(text, `"answered_from":"laptop/`+laptopSID+`"`) {
 		t.Fatalf("the asker's wait: %s", text)
 	}
 }
 
-// TestASessionCannotAnswerItsOwnAsk: the session that raised the ask is
-// refused, with the self-answer refusal, and the ask stays open; the CONTROL is
-// the other session of the same host answering it.
-func TestASessionCannotAnswerItsOwnAsk(t *testing.T) {
+// TestNoSessionAnswersAnAskRaisedOnItsOwnHost: the HOST is the principal. An
+// open ask raised by a session on ws is refused to the session that raised it
+// AND to its sibling on ws (a session can name a sibling's pane), with the
+// same-host refusal, and stays open. Once it is closed, a retry from ws says
+// "no longer open" — the true reason — not the same-host one. CONTROLS: laptop
+// answers it; and ws's session answers an AGENT's ask (no mirror host).
+func TestNoSessionAnswersAnAskRaisedOnItsOwnHost(t *testing.T) {
 	f := newAnswerFixture(t)
 	id := f.mirrorAsk(t, focusSID, "Shall I force-push?")
-	text, isErr := f.answerAs(t, f.ws, focusSID, id, "yes")
-	if !isErr || !strings.Contains(text, "was raised by this session") {
-		t.Fatalf("self-answer: %s", text)
+	for name, sid := range map[string]string{"the asking session": focusSID, "its sibling on the same host": secondSID} {
+		text, isErr := f.answerAs(t, f.ws, sid, id, "yes")
+		if !isErr || text != `{"error":"ask `+strconv.FormatInt(id, 10)+` was raised by a mirrored session on this host (ws): no session answers an ask raised on its own host; your owner answers it on the Attention view or from another host"}` {
+			t.Fatalf("%s: %s", name, text)
+		}
 	}
 	if a := f.askStatus(t, id); a.Status != attention.Open {
-		t.Fatalf("after a refused self-answer the ask is %s", a.Status)
+		t.Fatalf("after the refused same-host answers the ask is %s", a.Status)
 	}
-	if text, isErr := f.answerAs(t, f.ws, secondSID, id, "no"); isErr {
-		t.Fatalf("control: another session's answer: %s", text)
+	if text, isErr := f.answerAs(t, f.laptop, laptopSID, id, "no"); isErr {
+		t.Fatalf("control: laptop's answer: %s", text)
+	}
+	for _, sid := range []string{focusSID, secondSID} {
+		if text, _ := f.answerAs(t, f.ws, sid, id, "yes"); !strings.Contains(text, "is no longer open (it is answered)") {
+			t.Fatalf("a same-host retry after the ask closed: %s", text)
+		}
+	}
+	cancelled := f.mirrorAsk(t, focusSID, "Withdrawn?")
+	if _, r, _ := f.mirrorRPC(t, mirrorAs(f.ws, focusSID), mcpToolCall(attentionCancelTool, map[string]any{"id": cancelled})); r == nil {
+		t.Fatal("cancel")
+	}
+	if text, _ := f.answerAs(t, f.ws, focusSID, cancelled, "x"); !strings.Contains(text, "is no longer open (it is cancelled)") {
+		t.Fatalf("a same-host answer to a cancelled ask: %s", text)
+	}
+	agentAsk := f.ask(t, f.opTok, "An agent's question")
+	if text, isErr := f.answerAs(t, f.ws, focusSID, agentAsk, "fine"); isErr {
+		t.Fatalf("control: ws answering an agent's ask: %s", text)
+	}
+}
+
+// TestAttentionAnswerByTaskID: {task_id, answer} answers that task's ONE open
+// ask; a task with none (including another owner's task, which reads the
+// same), with only closed asks, or with two open ones is refused; and exactly
+// one of id / task_id must be given.
+func TestAttentionAnswerByTaskID(t *testing.T) {
+	f := newAnswerFixture(t)
+	mk := func(uid int64, title string) notes.Note {
+		n, err := f.notes.Create(asUser(uid), notes.Note{Title: title, Body: "b", Status: notes.StatusOpen})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM notes WHERE id = $1`, n.ID)
+		})
+		return n
+	}
+	askAbout := func(uid, agent int64, task notes.Note) int64 {
+		a, err := f.attn.Create(asUser(uid), attention.New{Asker: attention.Asker{AgentID: agent, Label: "chief"}, Question: "Task #N needs you", TaskID: task.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a.ID
+	}
+	one, none, two, closed, theirs := mk(1, "one ask"), mk(1, "no ask"), mk(1, "two asks"), mk(1, "closed ask"), mk(f.member, "theirs")
+	id := askAbout(1, f.chief.ID, one)
+	askAbout(1, f.chief.ID, two)
+	askAbout(1, f.op.ID, two)
+	c := askAbout(1, f.chief.ID, closed)
+	if _, err := f.attn.Cancel(asUser(1), c); err != nil {
+		t.Fatal(err)
+	}
+	askAbout(f.member, f.worker.ID, theirs)
+
+	by := func(args map[string]any) (string, bool) {
+		args["answer"] = "dispatch it"
+		return f.answerArgs(t, f.ws, focusSID, args)
+	}
+	if text, isErr := by(map[string]any{"task_id": one.ID}); isErr || !strings.Contains(text, `"id":`+strconv.FormatInt(id, 10)) {
+		t.Fatalf("task_id with one open ask: %s", text)
+	}
+	if a := f.askStatus(t, id); a.Status != attention.Answered {
+		t.Fatalf("the task's ask is %s", a.Status)
+	}
+	for name, task := range map[string]notes.Note{"a task with no ask": none, "a task whose ask is closed": closed, "another owner's task": theirs, "the answered task, again": one} {
+		if text, _ := by(map[string]any{"task_id": task.ID}); text != `{"error":"task `+strconv.FormatInt(task.ID, 10)+` has no open ask"}` {
+			t.Errorf("%s: %s", name, text)
+		}
+	}
+	if text, _ := by(map[string]any{"task_id": two.ID}); !strings.Contains(text, "has 2 open asks") || !strings.Contains(text, "answer one by id") {
+		t.Errorf("a task with two open asks: %s", text)
+	}
+	const exactlyOne = `{"error":"name the ask by exactly one of id (the ask's id) or task_id (the task it is about), not both and not neither"}`
+	if text, _ := by(map[string]any{"task_id": two.ID, "id": id}); text != exactlyOne {
+		t.Errorf("both: %s", text)
+	}
+	if text, _ := by(map[string]any{}); text != exactlyOne {
+		t.Errorf("neither: %s", text)
+	}
+	var st string
+	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT string_agg(status, ',' ORDER BY id) FROM attention_asks WHERE task_id = $1`, two.ID).Scan(&st); err != nil || st != "open,open" {
+		t.Fatalf("the two-ask task's asks are %q (%v); want both still open", st, err)
 	}
 }
 
@@ -275,11 +382,12 @@ func TestAttentionAnswerRefusesClosedForeignAndBadAsks(t *testing.T) {
 	}
 }
 
-// TestAnMCPAnswerIsTheOwnersAnswerForTaskDispatch pins the boundary the PR
-// states: an answer given through attention_answer IS the operator's answer to
-// a task's ask, so task_dispatch's instructions provenance (AnswersForTask)
-// accepts it, exactly as it accepts the view's.
-func TestAnMCPAnswerIsTheOwnersAnswerForTaskDispatch(t *testing.T) {
+// TestAnMCPAnswerIsNeverTaskDispatchInstructions (operator decision "MCP
+// answers can't be instructions"): an answer given through attention_answer is
+// delivered like any answer, but ownerAnswer — task_dispatch's instructions
+// provenance — does not accept it. CONTROL: the same words answered on the
+// Attention view, on another of the task's asks, are accepted.
+func TestAnMCPAnswerIsNeverTaskDispatchInstructions(t *testing.T) {
 	f := newAnswerFixture(t)
 	n, err := f.notes.Create(asUser(1), notes.Note{Title: "mcp-answer task", Body: "b", Status: notes.StatusOpen})
 	if err != nil {
@@ -295,8 +403,20 @@ func TestAnMCPAnswerIsTheOwnersAnswerForTaskDispatch(t *testing.T) {
 	if text, isErr := f.answerAs(t, f.ws, focusSID, a.ID, "fix the flaky test"); isErr {
 		t.Fatal(text)
 	}
-	got, why := f.srv.ownerAnswer(asUser(1), 1, n.ID, "fix the flaky test")
-	if why != "" || got.ID != a.ID {
-		t.Fatalf("ownerAnswer: %+v %q", got, why)
+	if got := f.delivery(t, a.ID); got.Delivery != attention.DeliveryDelivered {
+		t.Fatalf("the MCP answer was not delivered to the chief: %q", got.Delivery)
+	}
+	if got, why := f.srv.ownerAnswer(asUser(1), 1, n.ID, "fix the flaky test"); why == "" || got.ID != 0 {
+		t.Fatalf("an MCP answer was accepted as instructions: %+v", got)
+	} else if !strings.Contains(why, "an answer relayed over MCP from a mirrored session never counts") {
+		t.Fatalf("the refusal does not say why: %q", why)
+	}
+	b, err := f.attn.Create(asUser(1), attention.New{Asker: attention.Asker{AgentID: f.chief.ID, Label: "chief"}, Question: "Task needs you (again)", TaskID: n.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.answerForm(t, b.ID, "fix the flaky test")
+	if got, why := f.srv.ownerAnswer(asUser(1), 1, n.ID, "fix the flaky test"); why != "" || got.ID != b.ID {
+		t.Fatalf("control: the view's answer was not accepted: %+v %q", got, why)
 	}
 }

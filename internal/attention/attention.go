@@ -114,10 +114,16 @@ var (
 	ErrNotFound = errors.New("attention: no such ask")
 	// ErrNotOpen: the ask was already answered, cancelled or expired.
 	ErrNotOpen = errors.New("attention: the ask is no longer open")
-	// ErrOwnAsk: a mirrored session tried to answer an ask it raised itself
-	// (AnswerFromSession). An ask is a question to the operator; the session
-	// that put it cannot also be the one that answers it.
-	ErrOwnAsk = errors.New("attention: a session cannot answer an ask it raised")
+	// ErrSameHost: a mirrored session tried to answer an OPEN ask that a
+	// mirrored session on its OWN host raised (AnswerFromSession).
+	//
+	// 🔴 THE HOST IS THE PRINCIPAL, NOT THE SESSION. muster knows a mirrored
+	// caller's host from its token, but the session only from the pane the
+	// caller names (X-Muster-Pane, set by the caller; the host's MCP secret is
+	// readable by every session of its user), so one session can claim to be
+	// a sibling pane. A per-session "not your own ask" rule would rest on that
+	// claim; a per-host rule rests only on the token.
+	ErrSameHost = errors.New("attention: a mirrored session cannot answer an ask raised by a session on its own host")
 	// ErrTooMany: the owner already has MaxOpenPerOwner open asks.
 	ErrTooMany = fmt.Errorf("attention: there are already %d open asks; wait for some to be answered", MaxOpenPerOwner)
 )
@@ -320,8 +326,11 @@ type Store interface {
 	// AnswerFromSession records the operator's answer to an open ask, given
 	// through attention_answer by their mirrored Claude Code session (host,
 	// session): the same transition as Answer, plus its provenance (ViaMCP).
-	// ErrOwnAsk when that session raised the ask.
+	// ErrSameHost when a mirrored session on host raised the (open) ask.
 	AnswerFromSession(ctx context.Context, id int64, answer, host, session string) (Ask, error)
+	// OpenForTask is the caller's open, unexpired asks linked to taskID
+	// (migration 0032), oldest first.
+	OpenForTask(ctx context.Context, taskID int64) ([]Ask, error)
 	// Cancel withdraws an open ask.
 	Cancel(ctx context.Context, id int64) (Ask, error)
 	// AnswerInSession settles as AnsweredInSession every open ask asker raised
@@ -374,10 +383,15 @@ type Store interface {
 	RecoverDeliveries(ctx context.Context) ([]Ask, error)
 
 	// AnswersForTask is the caller's asks linked to taskID that were answered
-	// THROUGH THE ASK ITSELF (Answered), newest first. AnsweredInSession is
-	// left out on purpose: one message to the asker's session settles every
-	// open ask that asker raised, on every task, so it is not an answer to any
-	// one task's ask (task_dispatch's instructions provenance).
+	// THROUGH THE ASK ITSELF ON THE ATTENTION VIEW (Answered, no answered_via),
+	// newest first — task_dispatch's instructions provenance. Left out on
+	// purpose: AnsweredInSession (one message to the asker's session settles
+	// every open ask that asker raised, on every task, so it is not an answer
+	// to any one task's ask) and an answer given through attention_answer
+	// (ViaMCP: its text came out of a Claude Code session, which may be
+	// relaying words that are not the operator's — operator decision "MCP
+	// answers can't be instructions"; it is still delivered, and a dispatch
+	// WITHOUT instructions is unaffected).
 	AnswersForTask(ctx context.Context, taskID int64) ([]Ask, error)
 }
 
@@ -511,9 +525,16 @@ func (s *PGStore) Get(ctx context.Context, id int64) (Ask, error) {
 // to their own asks), and names the owner as well.
 func (s *PGStore) AnswersForTask(ctx context.Context, taskID int64) ([]Ask, error) {
 	return collect(s.pool.Query(ctx, `SELECT `+cols+` FROM attention_asks
-		WHERE task_id = $1 AND status = 'answered' AND answered_by = $2
+		WHERE task_id = $1 AND status = 'answered' AND answered_by = $2 AND answered_via IS NULL
 		  AND owner_id = nullif(current_setting('muster.uid', true), '')::bigint
 		ORDER BY id DESC`, taskID, ByOperator))
+}
+
+// OpenForTask runs under the caller's principal (row-level security keeps it
+// to their own asks).
+func (s *PGStore) OpenForTask(ctx context.Context, taskID int64) ([]Ask, error) {
+	return collect(s.pool.Query(ctx, `SELECT `+cols+` FROM attention_asks
+		WHERE task_id = $1 AND status = 'open' AND expires_at > now() ORDER BY id`, taskID))
 }
 
 func (s *PGStore) Open(ctx context.Context) ([]Ask, error) {
@@ -546,17 +567,18 @@ func (s *PGStore) settle(ctx context.Context, id int64, q string, args ...any) (
 // is left for its attention_wait (pull); a system asker's has nobody to
 // reach (NULL).
 //
-// 🔴 A SESSION NEVER ANSWERS ITS OWN ASK, IN THE SAME STATEMENT: the last
-// condition refuses the row when the answering session ($5, $6) is the ask's
-// asker; an answer from the view ($4 NULL) names no session, so it applies to
-// none. 0034's CHECK states the same rule again. AnswerFromSession tells the
-// refusal apart from "no longer open" (ErrOwnAsk).
+// 🔴 NO MCP ANSWER TO AN ASK RAISED ON THE ANSWERING HOST, IN THE SAME
+// STATEMENT: the last condition refuses the row when the ask's mirror_host is
+// the answering host ($5) — whichever of that host's sessions asked
+// (ErrSameHost says why the host, not the session). An agent's, the chief's
+// or a system ask has no mirror_host, so it is unaffected; an answer from
+// the view ($4 NULL) is unaffected. 0034's CHECK states the same rule again.
 const answerSQL = `UPDATE attention_asks SET status = 'answered', answer = $2, answered_by = $3, resolved_at = now(),
 	  delivery = CASE WHEN agent_id IS NOT NULL THEN 'queued' WHEN mirror_session IS NOT NULL THEN 'pull' END,
 	  delivery_queued_at = CASE WHEN agent_id IS NOT NULL THEN now() END,
 	  answered_via = $4::text, answered_via_host = $5::text, answered_via_session = $6::text
 	WHERE id = $1 AND status = 'open' AND expires_at > now()
-	  AND ($4::text IS NULL OR NOT (mirror_host IS NOT DISTINCT FROM $5::text AND mirror_session IS NOT DISTINCT FROM $6::text))
+	  AND ($4::text IS NULL OR mirror_host IS DISTINCT FROM $5::text)
 	RETURNING ` + cols
 
 func (s *PGStore) Answer(ctx context.Context, id int64, answer string) (Ask, error) {
@@ -582,8 +604,10 @@ func (s *PGStore) AnswerFromSession(ctx context.Context, id int64, answer, host,
 		return Ask{}, fmt.Errorf("%w: not a Claude session id", ErrInvalid)
 	}
 	a, err := s.settle(ctx, id, answerSQL, id, answer, ByOperator, ViaMCP, host, session)
-	if errors.Is(err, ErrNotOpen) && a.Asker.MirrorHost == host && a.Asker.MirrorSession == session {
-		return a, ErrOwnAsk
+	// Only a STILL-OPEN ask is refused for its host: one already answered,
+	// cancelled or expired says so (ErrNotOpen), whoever asked.
+	if errors.Is(err, ErrNotOpen) && a.Status == Open && a.Asker.MirrorHost == host {
+		return a, ErrSameHost
 	}
 	return a, err
 }

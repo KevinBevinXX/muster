@@ -10,7 +10,7 @@ import (
 // backfill — an answer recorded before it reads NULL, i.e. the Attention view —
 // and its CHECK allows provenance only all-or-nothing, only 'mcp', only on an
 // answered ask, only with the mirror wire's host and session shapes, and never
-// naming the very session that raised the ask.
+// from the HOST a mirrored asker is on (whichever of its sessions answers).
 func TestMigration0034RecordsWhereAnAnswerCameFrom(t *testing.T) {
 	ctx := ctx0006(t)
 	pool := freshAt(ctx, t, "ms_0034_answer_source", 33)
@@ -50,9 +50,19 @@ func TestMigration0034RecordsWhereAnAnswerCameFrom(t *testing.T) {
 	refused("a host the wire would refuse", answered(), "mcp", "WS ws", other)
 	refused("a session the wire would refuse", answered(), "mcp", "ws", "../etc")
 	refused("the session that raised the ask", answered(), "mcp", "ws", sid)
-	// The same session id on ANOTHER host is another session: allowed.
-	for name, hs := range map[string][2]string{"another session of the host": {"ws", other}, "the same id on another host": {"laptop", sid}} {
-		if _, err := pool.Exec(ctx, set, answered(), "mcp", hs[0], hs[1]); err != nil {
+	refused("another session on the asker's host", answered(), "mcp", "ws", other)
+	// Another host is another principal, even naming the same session id; and
+	// an agent's ask has no mirror host at all.
+	agent := scanID(ctx, t, pool, `INSERT INTO agents (owner_id, name, namespace) VALUES (1, 'src-agent', 'ns-src') RETURNING id`)
+	agentAsk := scanID(ctx, t, pool, `INSERT INTO attention_asks (owner_id, agent_id, question, expires_at) VALUES (1, $1, 'q', now() + interval '1 hour') RETURNING id`, agent)
+	mustExec(ctx, t, pool, `UPDATE attention_asks SET status = 'answered', answer = 'a', answered_by = 'operator', resolved_at = now() WHERE id = $1`, agentAsk)
+	for name, c := range map[string]struct {
+		id         int64
+		host, sess string
+	}{
+		"another host": {answered(), "laptop", other}, "the same id on another host": {answered(), "laptop", sid}, "an agent's ask, from ws": {agentAsk, "ws", sid},
+	} {
+		if _, err := pool.Exec(ctx, set, c.id, "mcp", c.host, c.sess); err != nil {
 			t.Errorf("after 0034, %s: %v", name, err)
 		}
 	}

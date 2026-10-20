@@ -19,8 +19,11 @@
 -- WRITE A ROW THAT BREAKS THEM: provenance is all-or-nothing; only an
 -- 'answered' ask carries it; the host and session have the shapes the mirror
 -- wire accepts (mirror.ValidHost, mirror.ValidClaudeSession — the delivered
--- message names them outside its fence, so they must be inert text); and a
--- session never answers an ask IT raised (same mirror_host AND mirror_session).
+-- message names them outside its fence, so they must be inert text); and no
+-- MCP answer is given to an ask a mirrored session on the SAME HOST raised
+-- (mirror_host = answered_via_host). The HOST, not the session, because the
+-- host is what the caller's token proves; the session is the pane the caller
+-- names, which any session of that host's user can name for a sibling.
 --
 -- Row-level security is unchanged: the columns are on attention_asks, whose
 -- owner_isolation policy (0025) already covers every column of the row.
@@ -57,6 +60,5 @@ ALTER TABLE public.attention_asks
             AND answered_via_host IS NOT NULL AND answered_via_session IS NOT NULL
             AND answered_via_host ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'
             AND answered_via_session ~ '^[0-9A-Za-z][0-9A-Za-z_-]{0,63}$'
-            -- Never the session that raised it.
-            AND NOT (mirror_host IS NOT DISTINCT FROM answered_via_host
-                     AND mirror_session IS NOT DISTINCT FROM answered_via_session)));
+            -- Never an ask raised on the answering host (any of its sessions).
+            AND mirror_host IS DISTINCT FROM answered_via_host));

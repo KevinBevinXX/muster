@@ -106,7 +106,7 @@ their host's `muster-mirror` — [below](#mirrored-claude-code-sessions)):
 
 | tool | does |
 |---|---|
-| `attention_answer {id, answer}` | Answers one of the owner's OPEN asks as the operator: free text or one of its options, the same validation as the `/attention` form (blank refused, at most 8000 characters). It takes the form's own answer path, so the notification is withdrawn, waiters wake and an agent's answer is [delivered](#delivery) exactly as a browser answer is. The row records where it came from (`answered_via = 'mcp'`, the session's host and Claude session id, migration 0034); `answered_by` is still `operator`. Refused: an ask **this session raised** (*"was raised by this session"*), an ask that is no longer open (*"is no longer open (it is …)"*), and another owner's ask or a missing id (both *"no such ask: N"*). |
+| `attention_answer {id \| task_id, answer}` | Answers one of the owner's OPEN asks as the operator: free text or one of its options, the same validation as the `/attention` form (blank refused, at most 8000 characters). The ask is named by **exactly one** of `id` (the ask's id) or `task_id` (the task it is about — the chief's *"Task #776 needs you"* is `{task_id: 776}`); `task_id` must have exactly one open ask of yours (*"task N has no open ask"* — also what another owner's task reads — or *"task N has K open asks (ids …): answer one by id"*). It takes the form's own answer path, so the notification is withdrawn, waiters wake and an agent's answer is [delivered](#delivery) exactly as a browser answer is. The row records where it came from (`answered_via = 'mcp'`, the calling host and the Claude session it named, migration 0034); `answered_by` is still `operator`. **It is never `task_dispatch` instructions** ([chief.md](chief.md)): a dispatch WITHOUT instructions is unaffected. Refused: an open ask raised by **any mirrored session on the calling host** (*"was raised by a mirrored session on this host"*), an ask that is no longer open (*"is no longer open (it is …)"* — also for a same-host ask once it has closed), and another owner's ask or a missing id (both *"no such ask: N"*). |
 
 🔴 **Who can answer, and how that is enforced.** `attention_answer` is listed
 only on `POST /mirror/mcp`; no dispatched agent's tool list (gateway or `POST
@@ -116,8 +116,17 @@ not a mirrored session — the chief included: *"attention_answer is available
 only to your owner's own mirrored Claude Code sessions"*. `POST /mirror/mcp`
 admits only a mirror host token (the hook token, an agent's token and the
 chief's are 401), acts as that token's owner (row-level security), and binds
-each call to a Claude session **that host** lists now. The self-answer rule is
-part of the answer's own conditional update, and 0034's CHECK states it again.
+each call to a Claude session **that host** lists now.
+
+🔴 **The host is the principal, not the session.** The token proves the host;
+the session is the tmux pane the caller names (`X-Muster-Pane`, which the
+caller sets — and the host's MCP secret is readable by every session of its
+user), so one session can claim a sibling's pane. So an answer is refused for
+an ask raised by **any** mirrored session on the calling host, not only the
+asking one; an ask raised on another host, or by an agent, the chief or
+muster, is answerable. The rule is part of the answer's own conditional
+update, and 0034's CHECK states it again. The recorded session is the one the
+caller named: provenance of the host is proven, of the session it is a claim.
 
 A long `attention_wait` keeps its connection alive: after 15 seconds the MCP
 response's headers are sent and a newline follows every 15 seconds until the
@@ -197,16 +206,18 @@ the session's id) and nothing else.
 
 An answer given with `attention_answer` from one of these sessions is the
 operator's answer (see [The agent tools](#the-agent-tools)): the session can
-answer any of its owner's open asks except its own.
+answer any of its owner's open asks except one raised by a mirrored session on
+its own host.
 
 **What a leaked mirror token reaches** (see [auth.md](auth.md)): beyond the
 host's tunnel, the asks of that host's own Claude Code sessions (file, wait,
 cancel), the tasks those sessions created — and, through `attention_answer`,
-**an answer as the operator to any of the owner's open asks** that one of the
-host's listed sessions did not raise, including the chief's. Such an answer is
-recorded and shown as coming via MCP from that host, and it counts as the
-operator's answer everywhere — including `task_dispatch`'s rule that
-`instructions` be the owner's own words (an answer to an ask about that task).
+**an answer as the operator to any of the owner's open asks** not raised by a
+mirrored session on that host, including the chief's. Such an answer is
+recorded and shown as coming via MCP from that host. It is delivered as the
+operator's answer, but it is **never** accepted as `task_dispatch`
+`instructions` (the owner's own words must come from the Attention view), so a
+leaked token cannot write a dispatched agent's prompt this way.
 Never another task, another host's session, another owner's ask, or a chief
 tool. Revoke a token you suspect (`muster-server mirror token revoke`).
 

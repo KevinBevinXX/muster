@@ -40,7 +40,10 @@ import (
 // dispatchCallerTool is reached by a gateway agent naming ANY tool (the chief
 // included: dispatchAgentTool's default case), so toolAttentionAnswer itself
 // refuses every caller that is not a mirrored session (mirroredSession), and the
-// store refuses the session that raised the ask (attention.ErrOwnAsk).
+// store refuses an ask raised by any mirrored session on the caller's HOST
+// (attention.ErrSameHost: the host is what the token proves; the session is a
+// pane the caller names). An MCP answer is never task_dispatch instructions
+// (attention.Store.AnswersForTask).
 //
 // 🔴 THE TOOLS TAKE A toolCaller, NOT AN agents.Agent, so a caller that is not
 // an agent row can be served the same set by constructing one; today every
@@ -231,14 +234,17 @@ func chiefAttentionToolDefs() []agents.ToolDef {
 // attentionAnswerToolDef is the mirrored sessions' attention_answer.
 func attentionAnswerToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: attentionAnswerTool,
-		Description: "Answer one of your owner's open attention asks ON YOUR OWNER'S BEHALF — use it only to relay an answer your owner gave you " +
-			"(for example \"answer ask 776 with 'dispatch it'\"), never to decide one yourself. It is the same answer as your owner tapping it on " +
-			"muster's Attention view: the asker gets it (a dispatched agent, the chief included, as a new message saying it came through MCP from this session). " +
-			"answer is free text or one of the ask's options. You cannot answer an ask this session raised, nor one that is no longer open.",
+		Description: "Answer one of your owner's open attention asks ON YOUR OWNER'S BEHALF — use it only to relay an answer your owner gave you, " +
+			"never to decide one yourself. Name the ask by EXACTLY ONE of: id (the ask's own id, as the Attention view shows it) or task_id (the task " +
+			"an ask is about — e.g. the chief's \"Task #776 needs you\" is {task_id: 776}; it must have exactly one open ask). It is the same answer as " +
+			"your owner tapping it on muster's Attention view: the asker gets it (a dispatched agent, the chief included, as a new message saying it came " +
+			"through MCP from this host and session), but it never counts as your owner's own words for a dispatch's instructions. answer is free " +
+			"text or one of the ask's options. You cannot answer an ask raised by a session on this same host, nor one that is no longer open.",
 		Parameters: objSchema(map[string]any{
-			"id":     intProp("The ask's id, as the Attention view or your owner names it.", 1, 1<<53),
-			"answer": strProp("Your owner's answer: free text, or one of the ask's options."),
-		}, "id", "answer")}
+			"id":      intProp("The ask's id, as the Attention view shows it. Give this OR task_id.", 1, 1<<53),
+			"task_id": intProp("The task the ask is about (the number in \"Task #N needs you\"). Give this OR id.", 1, 1<<53),
+			"answer":  strProp("Your owner's answer: free text, or one of the ask's options."),
+		}, "answer")}
 }
 
 // attentionAnswerMirrorOnly is attention_answer's refusal of any caller that is
@@ -255,34 +261,72 @@ func (s *Server) toolAttentionAnswer(ctx context.Context, c toolCaller, argument
 		return toolErr("%s", attentionAnswerMirrorOnly)
 	}
 	var in struct {
-		ID     int64  `json:"id"`
+		ID     *int64 `json:"id"`
+		TaskID *int64 `json:"task_id"`
 		Answer string `json:"answer"`
 	}
 	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &in); err != nil {
-		return toolErr("arguments are {id, answer}")
+		return toolErr("arguments are {id or task_id, answer}")
 	}
-	if in.ID <= 0 {
-		return toolErr("id is required: the ask's id")
+	if (in.ID == nil) == (in.TaskID == nil) {
+		return toolErr("name the ask by exactly one of id (the ask's id) or task_id (the task it is about), not both and not neither")
+	}
+	var id int64
+	if in.ID != nil {
+		if id = *in.ID; id <= 0 {
+			return toolErr("id must be an ask's id (a positive number)")
+		}
+	} else {
+		var bad string
+		if id, bad = s.openAskForTask(ctx, *in.TaskID); bad != "" {
+			return bad
+		}
 	}
 	src := attention.AnswerSource{Via: attention.ViaMCP, Host: c.asker.MirrorHost, Session: c.asker.MirrorSession}
-	a, err := s.answerAskFrom(ctx, in.ID, in.Answer, src)
+	a, err := s.answerAskFrom(ctx, id, in.Answer, src)
 	switch {
 	case err == nil:
 	case errors.Is(err, attention.ErrNotFound):
-		return toolErr("no such ask: %d", in.ID)
-	case errors.Is(err, attention.ErrOwnAsk):
-		return toolErr("ask %d was raised by this session: a session cannot answer its own ask; your owner answers it", in.ID)
+		return toolErr("no such ask: %d", id)
+	case errors.Is(err, attention.ErrSameHost):
+		return toolErr("ask %d was raised by a mirrored session on this host (%s): no session answers an ask raised on its own host; your owner answers it on the Attention view or from another host", id, src.Host)
 	case errors.Is(err, attention.ErrNotOpen):
-		return toolErr("ask %d is no longer open (it is %s)", in.ID, a.Status)
+		return toolErr("ask %d is no longer open (it is %s)", id, a.Status)
 	case errors.Is(err, attention.ErrInvalid):
 		return toolErr("%s", strings.TrimPrefix(err.Error(), attention.ErrInvalid.Error()+": "))
 	default:
-		s.logger.Printf("attention: answer %d via MCP from %s: %v", in.ID, src, err)
+		s.logger.Printf("attention: answer %d via MCP from %s: %v", id, src, err)
 		return toolErr("the answer could not be recorded")
 	}
 	s.logger.Printf("attention: ask %d answered by the operator via MCP from %s", a.ID, src)
 	return toolJSON(map[string]any{"id": a.ID, "status": string(a.Status), "answer": a.Answer, "answered_via": attention.ViaMCP,
 		"answered_from": src.String()})
+}
+
+// openAskForTask is the id of the ONE open ask of the caller's owner about
+// task taskID (attention_answer's task_id), or the refusal: none, or more than
+// one. Row-level security scopes it, so another owner's task reads exactly as
+// a task of yours with no open ask.
+func (s *Server) openAskForTask(ctx context.Context, taskID int64) (int64, string) {
+	if taskID <= 0 {
+		return 0, toolErr("task_id must be a task's number (a positive number)")
+	}
+	asks, err := s.ext.Attention.OpenForTask(ctx, taskID)
+	if err != nil {
+		s.logger.Printf("attention: open asks for task %d: %v", taskID, err)
+		return 0, toolErr("the asks for task %d could not be read", taskID)
+	}
+	switch len(asks) {
+	case 0:
+		return 0, toolErr("task %d has no open ask", taskID)
+	case 1:
+		return asks[0].ID, ""
+	}
+	ids := make([]string, len(asks))
+	for i, a := range asks {
+		ids[i] = strconv.FormatInt(a.ID, 10)
+	}
+	return 0, toolErr("task %d has %d open asks (ids %s): answer one by id", taskID, len(asks), strings.Join(ids, ", "))
 }
 
 // askView is an ask as a tool returns it.

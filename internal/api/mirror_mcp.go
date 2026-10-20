@@ -35,9 +35,11 @@ import (
 // reaches, beyond what /mirror/connect already gives, the asks of that host's
 // sessions (file, wait, cancel), the tasks those sessions created, and — 🔴
 // through attention_answer — an answer AS THE OPERATOR to any of the owner's
-// open asks that one of the host's listed sessions did not raise (the chief's
-// included, so also task_dispatch's instructions provenance). Never another
-// task, another host's session, another owner's ask or a chief tool.
+// open asks not raised by a mirrored session on that host (the chief's
+// included; never task_dispatch instructions, which take only the view's
+// answers). Never another task, another host's session, another owner's ask
+// or a chief tool. The SESSION a call names is the caller's claim (its pane);
+// only the HOST is proven, which is why attention_answer's rule is per host.
 //
 // 🔴 A HOST ACTS ONLY AS ITS OWN SESSIONS. The token names its host; the
 // session id is the caller's claim, and it is believed only when THAT host is

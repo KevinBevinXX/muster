@@ -139,8 +139,14 @@ func renderAttentionAnswer(a attention.Ask) string {
 // answeredViaLine is where an answer came from, as the delivered preface says
 // it: "" for the Attention view; for attention_answer, " — answered by the
 // operator via MCP from <host>/<session>, their mirrored Claude Code session,
-// not on the Attention view". A host or session id that does not have the
-// wire's shape (0034's CHECK refuses one, so: never) is not named.
+// not on the Attention view".
+//
+// ⚠ THE SHAPE RE-CHECK IS DELIBERATE, NOT DEAD CODE. While 0034's CHECK holds,
+// no row reaches here with a host or session id outside the wire's shapes, so
+// the fallback ("a mirrored Claude Code session", nothing named) does not run
+// on stored data. It stays because this text is written OUTSIDE the fence in
+// muster's own voice, and a CHECK is one ALTER (or a restore without it) away;
+// TestAnsweredViaLineNamesOnlyWireShapedIDs reaches it directly.
 func answeredViaLine(src attention.AnswerSource) string {
 	if !src.ViaSession() {
 		return ""
