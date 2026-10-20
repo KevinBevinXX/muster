@@ -1,12 +1,28 @@
 # Design: a native Android app for muster
 
-**Status: proposed.** Nothing here is implemented, and no Phase 0 spike has
-run. The operator decisions below are **decided**. Every other section is
-the recommended design. Where this page states how muster works today, the
-code is the authority (see [decisions.md](../decisions.md)). Where it states
-how Android, UnifiedPush or a distribution channel behaves, it cites a public
-source with a date. Claims no source confirmed are marked **UNVERIFIED**, and
-the ones that block a decision are [Phase 0](#phase-0-spikes) spikes.
+**Status: proposed; Phase 0 done.** The [Phase 0](#phase-0-spikes) spikes
+have run, on emulators and against a server, and their results are folded in
+below ([Phase 0 results][p0]). Nothing else is implemented. The operator
+decisions below are **decided**. Every other section is the recommended
+design. Where this page states how muster works today, the code is the
+authority (see [decisions.md](../decisions.md)). Where it states how Android,
+UnifiedPush or a distribution channel behaves, it cites a public source with a
+date, or the Phase 0 results file. Claims nothing confirmed are marked
+**UNVERIFIED**. What Phase 0 could not measure (no physical phone) is listed
+under [risks](#risks).
+
+[p0]: https://github.com/ZacxDev/muster-android/blob/f652f3256bbe487e9babb467e5f509a41ef54068/docs/phase0-results.md
+[p0-s3]: https://github.com/ZacxDev/muster-android/blob/f652f3256bbe487e9babb467e5f509a41ef54068/docs/phase0-results.md#s3-step-up-from-a-notification-action
+[p0-s4]: https://github.com/ZacxDev/muster-android/blob/f652f3256bbe487e9babb467e5f509a41ef54068/docs/phase0-results.md#s4-device-credential-as-the-step-up
+[p0-s7]: https://github.com/ZacxDev/muster-android/blob/f652f3256bbe487e9babb467e5f509a41ef54068/docs/phase0-results.md#s7-android-developer-verification-docs
+[p0-s8]: https://github.com/ZacxDev/muster-android/blob/f652f3256bbe487e9babb467e5f509a41ef54068/docs/phase0-results.md#s8-obtainium-and-f-droid-index-v2-source
+[p0-s9]: https://github.com/ZacxDev/muster-android/blob/f652f3256bbe487e9babb467e5f509a41ef54068/docs/phase0-results.md#s9-ntfy-measured-locally--source
+[p0-s10]: https://github.com/ZacxDev/muster-android/blob/f652f3256bbe487e9babb467e5f509a41ef54068/docs/phase0-results.md#s10-muster--the-operators-ntfy-measured
+[p0-s11]: https://github.com/ZacxDev/muster-android/blob/f652f3256bbe487e9babb467e5f509a41ef54068/docs/phase0-results.md#s11-lock-screen-privacy-measured
+[p0-s12]: https://github.com/ZacxDev/muster-android/blob/f652f3256bbe487e9babb467e5f509a41ef54068/docs/phase0-results.md#s12-css-safe-area-insets-in-an-edge-to-edge-webview-measured
+[p0-sum]: https://github.com/ZacxDev/muster-android/blob/f652f3256bbe487e9babb467e5f509a41ef54068/docs/phase0-results.md#summary-of-changes-the-spikes-imply-for-docsdesignandroidmd
+[p0-app]: https://github.com/ZacxDev/muster-android/tree/f652f3256bbe487e9babb467e5f509a41ef54068
+[p0-limits]: https://github.com/ZacxDev/muster-android/blob/f652f3256bbe487e9babb467e5f509a41ef54068/docs/phase0-results.md#what-did-not-run
 
 ## Summary
 
@@ -32,9 +48,10 @@ The design, in one line each:
 - **Step-up for native actions:** each privileged action runs in a small
   invisible activity: BiometricPrompt, then a signature over a single-use
   server challenge with a biometric-bound Keystore key registered at pairing,
-  then the request, then `finish()`. An inline reply cannot be
-  biometric-gated, so the app holds the text and sends only after the same
-  step-up.
+  then the request, then `finish()`. From the lock screen the activity first
+  asks the system to dismiss the keyguard, so a signed action there costs two
+  touches. An inline reply cannot be biometric-gated, so the app holds the
+  text and sends only after the same step-up.
 - **Notifications:** MessagingStyle conversations per agent and per mirrored
   session, conversation shortcuts, a channel per event family, runtime
   POST_NOTIFICATIONS. A Live Update only for an agent run the user started;
@@ -58,7 +75,8 @@ The design, in one line each:
 - muster's web UI stays the one UI. A UI change ships from the server, and only
   native modules need an APK.
 - Lock-screen privacy holds: **a notification says WHO and WHERE, never WHAT**
-  ([attention.md](../attention.md)).
+  ([attention.md](../attention.md)). WHAT enters a notification only while the
+  phone is unlocked ([lock screen](#notifications)).
 - The server additions follow muster's existing rules: data per user under
   row-level security, nothing cached positively, every credential revocable on
   the next request.
@@ -116,7 +134,9 @@ Android Developers Blog. Each claim carries its source:
 
 - **(updated YYYY-MM-DD)** is the page's own "last updated" date;
 - **(accessed 2026-10-20)** means the page showed no date;
-- **UNVERIFIED** means no source confirmed the claim.
+- **(Phase 0, Sn)** means spike Sn measured it, or read it from source, as
+  recorded in the [Phase 0 results][p0];
+- **UNVERIFIED** means nothing confirmed the claim.
 
 Most pages were read through a summarising fetcher. Two summaries of the
 Live Update page disagreed; a later reading of the page settled it (spike S5,
@@ -165,8 +185,15 @@ The reasons for the shell:
   cookie through CookieManager. They use the device credential.
 - **Back and insets:** predictive back (default at targetSdk 36) maps to
   WebView history through `OnBackPressedCallback`. Edge-to-edge is mandatory at
-  targetSdk 36, so the shell passes window insets to the page. How CSS
-  `env(safe-area-inset-*)` behaves in a WebView is UNVERIFIED (S12).
+  targetSdk 36. **The native shell pads for insets, not the page:** it applies
+  the system-bar, display-cutout and IME insets as padding on the WebView's
+  container, and the container **consumes** the insets it pads for, so they
+  are not passed on to the WebView as well. Inside a WebView, CSS `env(safe-area-inset-*)` is defined but
+  reads 0 px on every side (measured on WebView 124 and 133, where the real
+  insets were 51.8 dp top and 24 dp bottom), so a page that pads itself draws
+  under the status bar. A newer WebView that does report `env()` then reports
+  0 inside the padded, inset-consumed view, so nothing is padded twice
+  ([Phase 0, S12][p0-s12]).
 
 ### What lives where
 
@@ -201,23 +228,40 @@ The reasons for the shell:
   which costs one permanent notification in the ntfy app.
 - No Google account, no Firebase project, no Play services.
 - The app uses `org.unifiedpush.android:connector` (3.3.5, Apache-2.0). An
-  embedded-FCM distributor exists as a fallback, but this design does not
-  ship it: whether it needs a Firebase project is UNVERIFIED (S9).
+  embedded-FCM distributor exists as a fallback. It needs no Firebase project
+  (v3.1.0, read from source), but it needs Play services on the phone, which
+  the goals exclude, so this design does not ship it ([Phase 0, S9][p0-s9]).
+- The ntfy app holds its socket in a `specialUse` foreground service, so
+  Android 15's 6-hour `dataSync` cap does not apply to it (Phase 0, S9,
+  source). Its battery figure is still ntfy's own claim.
 
 ### 🔴 Only decrypted pushes are trusted
 
 ntfy's `up*` topics are written anonymously (the access rule UnifiedPush needs
 is `up*` write-only for everyone), so anyone who learns a phone's endpoint URL
 can publish to it. The connector hands the app every message as
-`PushMessage(content, decrypted)`, including ones it could not decrypt. So:
+`PushMessage(content, decrypted)`, including ones it could not decrypt.
+
+**ntfy does not enforce VAPID on `up*` topics** (Phase 0, S9: measured on a
+local ntfy 2.31.0 and on a deployed one; a publish with no `Authorization`
+header, or with a bogus VAPID header, gets 200; ntfy's auth code accepts only
+`Basic` and `Bearer` and treats anything else as anonymous). VAPID therefore
+authenticates nothing at the distributor, and **the decrypted-only rule below
+is the ONLY sender check. It is load-bearing, not defence in depth.** So:
 
 - The app registers with muster's VAPID public key:
   `UnifiedPush.register(…, vapid = <key>)`, where the key comes from
-  `GET /api/device/config`. The distributor can then tell muster's pushes
-  from others.
+  `GET /api/device/config`, because UnifiedPush requires it and a distributor
+  that does check VAPID can use it. ntfy does not, so it is not relied on.
 - **The app drops every message with `decrypted == false`**, before it
   parses anything. A message that decrypts was encrypted to this
-  subscription's keys (RFC 8291), which only the phone and muster hold.
+  subscription's keys (RFC 8291), which only the phone and muster hold. A
+  test in the app repo feeds an undecryptable message and checks that
+  nothing is drawn and no state changes.
+- ntfy also ignores the `Topic`, `Urgency` and `TTL` headers on publish
+  (S9, source), so the Web Push `Topic` header, once considered for replacing
+  an undelivered `status` push, is dropped. muster coalesces `status` on its
+  own side instead.
 - **Widget and status deltas (`state`) are applied only from decrypted
   messages**, like everything else in the payload. A forged push can therefore
   neither draw a notification nor change a widget.
@@ -255,11 +299,29 @@ The change:
    address check would also refuse an in-cluster ntfy whose name resolves to a
    private address under split-horizon DNS, which is a reasonable deployment.
    So the operator host uses the same client as the browser hosts. Spike S10
-   checks that muster and the phone reach ntfy by the same name.
+   measured that no split horizon is involved in practice: from inside the
+   deployment, the operator's push host resolves through public DNS to the
+   same addresses the phone uses, and an anonymous `up*` POST on `https`/443
+   gets 200 ([Phase 0, S10][p0-s10]). `MUSTER_PUSH_EXTRA_HOSTS` is that host's
+   name, exactly.
 4. **A test push on registration.** As UnifiedPush recommends, a new device
    endpoint is accepted only after muster has sent it a VAPID test push and got
-   a 2xx response.
-5. **A device kind** on each subscription (`browser` or `android`), so native
+   a 2xx response. Phase 0 found one more reason to keep it: an edge in front
+   of ntfy can block some client user agents (S10), and without a test push a
+   rule change there would fail silently.
+5. **A size cap on Android pushes.** ntfy accepts an `up*` message over its
+   message-size limit with 200 and **silently truncates** it to the limit;
+   the phone then cannot decrypt it, and the message vanishes with no error
+   anywhere ([Phase 0, S9][p0-s9], measured at the default). That limit is
+   ntfy's `message-size-limit`, **4096 bytes by default and configurable**;
+   the deployed server's value was not measured. muster does not depend on
+   it: it uses a fixed 4096-byte cap, which holds under the default and under
+   any larger setting. So muster **refuses to send an `android`
+   push whose encrypted body is over 4096 bytes**, with a test that an
+   over-budget payload is refused. The aes128gcm overhead (an 86-byte header
+   and a 16-byte tag) leaves a plaintext budget under about 3990 bytes, and payload v2 is sized well under
+   it. This is a Phase 1 server item (server change 30).
+6. **A device kind** on each subscription (`browser` or `android`), so native
    devices get payload v2, the native-only events, and the silent `resolved`
    withdrawal that Safari subscriptions are spared today. Payload v2 for the
    existing events, and the silent `resolved`, ship in Phase 1; the
@@ -273,20 +335,26 @@ Native devices get a payload that carries **ids, not content**:
 {"v": 2, "type": "attention", "id": "…", "tag": "…",
  "conv": "agent:<name>",
  "title": "<WHO>", "body": "<WHERE>",
- "actions": ["answer", "cancel"],
+ "actions": ["ask_answer", "ask_dismiss"],
  "state": {"attention": 3, "review": 1}}
 ```
 
 - `title` and `body` obey WHO and WHERE, never WHAT, exactly as today.
-- `actions` names action ids. The app maps each id to a fixed button and a
+- `actions` names action ids, from the app's fixed table
+  ([action ids](#action-ids)). The app maps each id to a fixed button and a
   fixed `/api/device/actions/*` route, so the server cannot make the app POST
   to an arbitrary path.
 - `state` is a small delta for widgets and live status.
 - Anything longer (a question's text, a draft, the last messages of a
   conversation) is fetched after delivery with the device credential, and is
   shown only on an unlocked phone ([notifications](#notifications)).
-- The payload stays small. A 4 KB budget is ntfy's general guidance and is
-  UNVERIFIED for UnifiedPush specifically.
+- **Size: a fixed 4096-byte cap on the encrypted body.** ntfy truncates a
+  body over its `message-size-limit` silently, with 200; that limit is 4096
+  bytes by default and configurable, and the deployed value was not measured
+  ([Phase 0, S9][p0-s9]). muster's cap is fixed at the default. Payload v2 carries ids, a
+  short title and the `state` delta, which fits well under it; every detail is
+  fetched. muster refuses a larger Android push rather than send one ntfy
+  would truncate (server change 30).
 
 New event types, sent to `android` devices only:
 
@@ -336,7 +404,15 @@ A notification action has no browser session, so none of this applies as is.
   the key it enrols outlives the session. It returns a one-time pairing code
   (single use, 60 s, stored as a hash). The page hands the code to the app over
   the bridge, and the app redeems it at `POST /api/device/pair` for the
-  credential. A device credential cannot ask for a pairing code, so "a token
+  credential.
+- **The push host is checked at pairing.** The UnifiedPush endpoint's host is
+  whatever default server the ntfy app is set to, and with none set ntfy falls
+  back to its public server ([Phase 0, S10][p0-s10], from ntfy-android's
+  source). muster would refuse that endpoint, which is safe, but the user
+  would see only "push registration failed". So before registering, the app
+  compares the endpoint's host with the operator's push host from
+  `GET /api/device/config`, and if they differ it tells the user to set
+  ntfy's default server to the operator's push host. A device credential cannot ask for a pairing code, so "a token
   cannot mint a token" still holds.
 - **Revocation, read on every request, nothing cached:**
   - the user removes the device on Account → Devices, or the app unpairs;
@@ -351,7 +427,8 @@ A notification action has no browser session, so none of this applies as is.
     include it. It gets its own [decisions.md](../decisions.md) note (server
     change 25).
 - **Account → Devices** lists each device: its name, app version, when it was
-  paired, when it was last seen, and whether push is registered. Each has a
+  paired, when it was last seen, whether push is registered, and its step-up
+  key type (biometric, biometric or PIN, or none: read-only). Each has a
   **Remove** button. The 20-device limit per owner that push subscriptions
   already have applies here too.
 - **On the phone** the credential is stored in DataStore, encrypted with
@@ -371,11 +448,37 @@ key in the Android Keystore with
   face destroys the key.
 
 The public key is sent with the pairing request and stored on the device row.
-A phone without a strong biometric cannot create the key; it pairs read-only
-(notifications, widgets, no actions) until [open question](#open-questions) 3
-is settled.
 If the key is invalidated, the app shows "Re-confirm this phone", which sends
 the user to a fresh pairing in the WebView.
+
+**Phones without a strong biometric** ([open question](#open-questions) 3,
+now decided). Phase 0 measured the alternative, a key with
+`AUTH_BIOMETRIC_STRONG | AUTH_DEVICE_CREDENTIAL` and timeout 0
+([Phase 0, S4][p0-s4]; on the emulator's software keys only, hardware
+behaviour expected but not measured). It works: a phone with a PIN and no biometric can
+create it and sign with the PIN on every use. But it is weaker in two ways.
+Anyone who knows the PIN can sign. And it is **not invalidated when a new
+fingerprint is enrolled**: the platform reports `invalidatedByEnroll=false`
+for it even when `setInvalidatedByBiometricEnrollment(true)` was requested,
+and the key kept signing after a second fingerprint was enrolled. So anyone
+with the PIN can enrol their own finger without triggering "Re-confirm this
+phone". The coordinator's decision:
+
+- **The default requires a biometric-only, hardware-backed key** (the key
+  above). A phone that cannot make one pairs **read-only**: notifications and
+  widgets, no actions.
+- **Allowing PIN keys is a muster policy setting, off by default.** With it
+  on, a phone without a strong biometric may register a biometric-or-PIN key.
+  The app never falls back from one kind to the other silently.
+- **The key type is recorded at pairing** (`biometric` or
+  `biometric_or_credential`, plus its Keystore security level), **shown on
+  Account → Devices**, and checked on every signed action: with the policy
+  off, a signature from a `biometric_or_credential` key is refused.
+- **Pairing refuses a software-only key.** The app reads
+  `KeyInfo.securityLevel` and reports it; muster refuses `software`. (On an
+  emulator every key is software, so Phase 0 could not measure hardware
+  backing. Until [key attestation](#recommended-improvements) is built, the
+  server trusts the app's report.)
 
 ### A gated action, step by step
 
@@ -386,6 +489,9 @@ sequenceDiagram
   participant K as Keystore
   participant M as muster
   N->>A: tap "Send now" (PendingIntent.getActivity)
+  opt the phone is locked
+    A->>A: requestDismissKeyguard(), wait for onDismissSucceeded
+  end
   A->>M: POST /api/device/challenge {action, target, text_sha256}
   M-->>A: nonce (single use, 2 min)
   A->>K: BiometricPrompt with CryptoObject(Signature)
@@ -400,10 +506,28 @@ sequenceDiagram
   started straight from the notification's `PendingIntent.getActivity`. On
   targetSdk 31+ an activity cannot be started from a receiver or service that a
   notification launched (the trampoline rule), and BiometricPrompt needs a
-  FragmentActivity or Fragment.
-- **`setAuthenticationRequired(true)`** is set on every privileged action as
-  well. It means only "the device must be unlocked", not a biometric, so it is
-  defence in depth and not the gate.
+  FragmentActivity or Fragment. Phase 0 confirmed the activity is required,
+  and found that the block is **silent**: on API 35 and 36 the receiver's
+  `startActivity` returns without an exception and only a system log line
+  says it was blocked ([Phase 0, S3][p0-s3]). A receiver-based action would
+  ship broken with no error, so **Phase 2 adds an instrumented test that every
+  action PendingIntent is `getActivity` straight to the step-up activity.**
+- **From the lock screen, dismiss the keyguard first.** Phase 0 measured (on
+  software keys; hardware expected, not measured) the
+  flow above failing on a locked phone: the system starts the activity behind
+  the keyguard, and the prompt is cancelled (BiometricPrompt error 5,
+  "Authentication canceled") within about 100–150 ms, so the finger only unlocks
+  the phone and nothing is signed ([Phase 0, S3][p0-s3]). So when
+  `KeyguardManager.isKeyguardLocked` is true, the activity calls
+  `requestDismissKeyguard()` and shows BiometricPrompt only in
+  `onDismissSucceeded`. If the dismiss is cancelled, the activity finishes and
+  leaves the notification as it was. This costs **two touches** from the lock
+  screen (the unlock, then the per-use key's own authentication, which a
+  timeout of 0 makes unavoidable), and the app says so.
+- **`setAuthenticationRequired(true)` is not a fix and not a gate.** Phase 0
+  measured it making no difference on a locked phone: the system still starts
+  the activity before the unlock, and the prompt is still cancelled. The design
+  does not rely on it.
 - **The challenge** is bound to the device, the action, the target id and, for
   a message, the sha256 of the exact text. It is single use, expires after
   2 minutes, and lives in the database so it holds across a rolling update.
@@ -432,10 +556,12 @@ and the text may not even have been typed by the user: a notification
 listener or a paired wearable can fill RemoteInput too. So:
 
 1. The app keeps the reply **on the phone**, encrypted, and replaces the
-   notification with a held-reply notification that **shows the exact held
-   text** in its private (unlocked) version, with a **Confirm and send** action
-   and a **Discard** action. Its public (lock-screen) version says only
-   "Reply held for <WHO>".
+   notification with a held-reply notification with a **Confirm and send**
+   action and a **Discard** action. It **shows the exact held text only while
+   the phone is unlocked**, under the same rule as every other notification
+   ([lock screen](#notifications)); while locked it says only "Reply held for
+   <WHO>". A private version alone would not do: on a phone set to show all
+   notification content, the lock screen shows it ([Phase 0, S11][p0-s11]).
 2. **Confirm and send** runs the gated flow above, with the text's sha256 in
    the challenge, and **the BiometricPrompt's description repeats the exact
    text** (truncated with a visible marker when long, with **Discard** offered
@@ -476,6 +602,25 @@ because "refusing to send is never the risky direction". On a phone a lost
 device credential is the threat, and a single rule leaves nothing to get wrong
 per action.
 
+### Action ids
+
+**The app defines these wire ids, muster's payload v2 must use these exact
+strings, and server change 26's route-ledger test checks against this
+table.** Each id names exactly one route, so the same verb on two routes
+cannot clash. The app refuses the bare verbs (`cancel`, `answer`, `approve`)
+([app repo, merged at `f652f32`][p0-app]).
+
+| wire id | route |
+|---|---|
+| `queue_send_now` | `/api/device/actions/send-queue/{id}/send-now` |
+| `queue_cancel` | `/api/device/actions/send-queue/{id}/cancel` |
+| `session_queue` | `/api/device/actions/send-queue` |
+| `ask_answer` | `/api/device/actions/attention/asks/{id}/answer` |
+| `ask_dismiss` | `/api/device/actions/attention/asks/{id}/cancel` |
+| `draft_approve` | `/api/device/actions/plugins/drafts/{id}/approve` |
+| `draft_reject` | `/api/device/actions/plugins/drafts/{id}/reject` |
+| `agent_send` | `/api/device/actions/agents/{name}/send` |
+
 ### Native passkeys are not on the path
 
 Neither the step-up nor sign-in depends on passkeys:
@@ -513,7 +658,9 @@ free ones when each phase lands.
 
 5. `devices`: `id`, `owner_id` (under FORCE row-level security, like
    `push_subscriptions`), `name`, `app_version`, `token_sha256` (unique),
-   `stepup_pubkey` (SPKI), `paired_signin_at` (the pairing session's sign-in
+   `stepup_pubkey` (SPKI), `stepup_key_type` (`biometric` |
+   `biometric_or_credential`), `stepup_key_level` (the reported Keystore
+   security level), `paired_signin_at` (the pairing session's sign-in
    time, for the cutoff and Sign out everywhere checks), `created_at`,
    `last_seen_at`, `revoked_at`.
 6. `device_pairing_codes`: `code_sha256`, `owner_id`, `signin_at`,
@@ -533,13 +680,17 @@ free ones when each phase lands.
 **Routes, device tier (`mdv_` only, confined to `/api/device/*`)**
 
 11. `POST /api/device/pair`: redeems a pairing code (no credential needed;
-    throttled like sign-in) with `{name, app_version, stepup_pubkey}`;
-    returns the credential once.
+    throttled like sign-in) with `{name, app_version, stepup_pubkey,
+    stepup_key_type, stepup_key_level}`; refuses a `software` key, and a
+    `biometric_or_credential` key while the PIN-key policy is off; returns the
+    credential once. A phone without an acceptable key pairs with no step-up
+    key, read-only.
 12. `DELETE /api/device`: unpair this device.
 13. `PUT /api/device/push` and `DELETE /api/device/push`: register or remove
     the UnifiedPush endpoint `{endpoint, p256dh, auth}`, with the test push.
-14. `GET /api/device/config`: the VAPID public key, server version, update
-    channel, and the feature switches the app needs.
+14. `GET /api/device/config`: the VAPID public key, the operator's push host
+    (for the pairing check), whether PIN keys are allowed, server version,
+    update channel, and the feature switches the app needs.
 15. `GET /api/device/state`: counts and per-agent status for widgets and live
     status.
 16. `GET /api/device/items/{kind}/{id}`: the text of one ask, draft or
@@ -587,7 +738,8 @@ free ones when each phase lands.
     this design, recorded as the expected meaning of that button).
 26. A route ledger test: every action id payload v2 can name maps to a
     registered `/api/device/actions/*` route, and every such route is in the
-    ledger. This is the native counterpart of the service-worker test below.
+    ledger. The ledger is the app's id table ([action ids](#action-ids)),
+    exact strings. This is the native counterpart of the service-worker test below.
 27. A tier test: an `mdv_` credential is refused on every route outside
     `/api/device/*`, and a session cookie is refused on the `/api/device/*`
     routes.
@@ -600,6 +752,18 @@ free ones when each phase lands.
 29. The device tier on the browser listener: in gotrue mode, admit `mdv_` on
     the browser listener for `/api/device/*` only. Shared hook and service
     tokens stay refused there, and `mdv_` stays refused everywhere else.
+
+**Added after Phase 0** ([Phase 0 results][p0])
+
+30. The Android push size cap: muster refuses an `android` push whose
+    encrypted body is over 4096 bytes, with a test that an over-budget payload
+    is refused (S9; Phase 1).
+31. The step-up key type: the `devices` columns (item 5), the pairing checks
+    (item 11), Account → Devices showing the type, the PIN-key policy setting
+    (off by default; a row in [configuration.md](../configuration.md) if it is
+    an environment variable), and the signed action routes (item 19) refusing
+    a `biometric_or_credential` key while the policy is off (S4; Phase 1 for
+    pairing, Phase 2 for the actions).
 
 ### Reconciling the sw.js test
 
@@ -642,11 +806,24 @@ signed action) and its own [decisions.md](../decisions.md) entry (item 25).
   `setShortcutId`. Conversations get the conversation space, priority marking
   and bubbles. Each conversation has a unique PendingIntent request code, or a
   reply can land in the wrong one.
-- **Lock screen.** Every notification is `VISIBILITY_PRIVATE`, with a public
-  version holding only WHO and WHERE. The private version may show the
-  question, draft or messages, fetched with the device credential. Whether
-  every launcher honours the public version is UNVERIFIED (S11); until it is
-  measured, the app shows WHAT only after the user opts in.
+- **Lock screen: WHAT only while unlocked.** `VISIBILITY_PRIVATE` with a
+  public version hides the private text on the lock screen **only if the
+  user's own setting hides sensitive content**. With "show all notification
+  content" the lock screen shows the full private notification (measured on
+  API 35 and 36, [Phase 0, S11][p0-s11]). The app does not control that
+  setting, so it does not rely on it:
+  - every notification is still `VISIBILITY_PRIVATE`, with a public version
+    holding only WHO and WHERE;
+  - the notification itself carries **only WHO and WHERE whenever the phone
+    is locked**. WHAT (the question, draft or messages, fetched with the
+    device credential) is added only when `KeyguardManager.isKeyguardLocked`
+    is false at post time, and on `ACTION_USER_PRESENT`;
+  - on `ACTION_SCREEN_OFF` the app re-posts every notification that carries
+    WHAT without it, back to WHO and WHERE;
+  - this applies to held replies too ([inline reply](#inline-reply));
+  - showing WHAT at all is a per-device opt-in, and it means "WHAT while this
+    phone is unlocked", never "WHAT on the lock screen"
+    ([open question](#open-questions) 4, decided).
 - **Actions per event:**
 
   | event | actions |
@@ -784,8 +961,8 @@ the app's settings.
 | option | infrastructure | unattended updates | verdict |
 |---|---|---|---|
 | **In-app updater** (PackageInstaller) against a self-hosted channel | a static HTTPS host: one manifest plus APKs | yes, for a self-updating installer at a high enough targetSdk | **recommended** |
-| GitHub Releases + Obtainium | none | Obtainium's mechanism is UNVERIFIED (S8) | supported as an alternative |
-| Self-hosted F-Droid repo | a static host plus `fdroid` tooling | through an F-Droid client | heavier; not needed for one app |
+| GitHub Releases + Obtainium | none | silent only if Obtainium did the first install, on Android 12+, with targetSdk ≥ device SDK − 3; otherwise every update prompts ([Phase 0, S8][p0-s8]) | supported as an alternative |
+| Self-hosted F-Droid repo | a static host plus `fdroid` tooling | through an F-Droid client; the tooling still writes the v1 index beside v2, so every current client can read it (S8) | heavier; not needed for one app |
 | Accrescent | — | — | not viable: new submissions unlikely, no private apps |
 | Play internal testing | Play Console | yes | excluded by the operator decision |
 
@@ -813,10 +990,20 @@ the app's settings.
     Android 15, 34+ on Android 16 (API 36), 35+ on API 37.
   - If any is not met, **every** update shows the system install prompt. The
     app must handle `STATUS_PENDING_USER_ACTION` either way.
+- **A failed install is reported, never retried silently.** After the 2027
+  global rollout an unregistered app updates only while the advanced flow is
+  on, and the 7-day option lapses ([developer verification](#-android-developer-verification)).
+  When an install fails because the advanced flow has lapsed, the updater
+  tells the user so, and how to turn it back on.
 - The first install needs the "install unknown apps" permission for the
   browser or file manager used.
 - GitHub Releases on the app repo carry the same APKs, so Obtainium also works
-  for anyone who prefers it.
+  for anyone who prefers it. Obtainium updates silently **only if Obtainium
+  did the first install** (and on Android 12+, with the app's targetSdk at
+  least the phone's SDK − 3); a phone that installed from a browser and then
+  added the app to Obtainium is prompted on every update
+  ([Phase 0, S8][p0-s8], read from Obtainium's source). The app repo's README
+  says so.
 
 ### Signing-key custody
 
@@ -845,10 +1032,16 @@ a registered developer
 | 2027 and later | the global rollout |
 
 - **ADB installs are exempt.** Without ADB, an unregistered app needs the
-  advanced flow: a one-time setup in Developer options with a 24-hour wait,
-  then a warning on every install. Whether that warning also stops every
-  over-the-air update, and so makes silent updates impossible, is UNVERIFIED
-  (S7) but likely.
+  advanced flow: a one-time setup in Developer options with a one-day wait,
+  then enabling it **for 7 days or indefinitely**, then a warning on every
+  install ([Phase 0, S7][p0-s7], from the developer-verification FAQ).
+- **After the 2027 global rollout, an unregistered app installs and updates
+  only while the advanced flow is on, or over ADB.** The FAQ: "if the advanced
+  flow is disabled updates to unregistered apps will fail." With the 7-day
+  option, updates fail once it lapses, and the in-app updater must tell the
+  user. Whether each update also warns, and so whether silent self-update
+  survives, is still **UNVERIFIED**: no Google page says, and no image with
+  enforcement exists to test against.
 - **Two ways to register:**
 
   | account | cost | identity | limit | fit |
@@ -866,8 +1059,8 @@ a registered developer
 
   | path | after enforcement | cost to the operator |
   |---|---|---|
-  | **Limited-distribution account** (free) | registered: installs and updates as today, on up to 20 authorised devices | registration, plus the "no commercial intent" framing (S7: how binding) |
-  | **Stay unregistered** | each phone completes the advanced flow once (24-hour wait); every install then warns | whether every OTA update warns, which would end silent updates, is UNVERIFIED (S7) |
+  | **Limited-distribution account** (free) | registered: installs and updates as today, on up to 20 authorised devices | registration, plus the "no commercial intent" framing: the terms say limited distribution "may be subject to different or additional terms", shown only at registration; whether devices can be swapped is undocumented (S7) |
+  | **Stay unregistered** | each phone completes the advanced flow (one-day wait) and must **keep it on**: updates fail while it is off, and the 7-day option lapses; every install warns | whether every OTA update warns, which would end silent updates, is UNVERIFIED (S7) |
 
   ADB installs stay exempt either way, as a manual fallback. This does not
   block any phase.
@@ -892,8 +1085,11 @@ a registered developer
   UnifiedPush receiver are exported. The invisible step-up activity is not
   exported and is reachable only through the app's own PendingIntents.
 - **SDK levels:** minSdk 30 (conversations and bubbles everywhere; passkeys
-  need 28, direct reply 24, Glance 23). targetSdk 36 now, planned 37. These
-  also satisfy the PackageInstaller silent-update table.
+  need 28, direct reply 24, Glance 23; a `CryptoObject` with
+  `DEVICE_CREDENTIAL` needs 30). **compileSdk 37**, because current AndroidX
+  (core-ktx 1.19.1) requires it ([Phase 0][p0-sum]). **targetSdk stays 36**,
+  planned 37. These also satisfy the PackageInstaller silent-update table and
+  Obtainium's "within 3 of the device SDK" rule.
 - **Platform defaults at targetSdk 36:** edge-to-edge, predictive back,
   and orientation locks ignored on large screens. The shell is built for all
   three.
@@ -908,36 +1104,42 @@ in muster; **app** is work in the app repo.
 
 | phase | what | server | app | depends on |
 |---|---|---|---|---|
-| **0** | Spikes S3, S4 and S7–S12 ([below](#phase-0-spikes)) | 0.5 | 2–3 | — |
-| **1** | Shell and push. Server: items 1, 4, 5, 6, 8–14, 21, 22a, 24, 27, 29; Account → Devices. App: project and modules, server-URL screen, hardened WebView with password sign-in, bridge, pairing with the step-up key, encrypted token store, UnifiedPush registration with the VAPID key and the decrypted-only filter, channels, POST_NOTIFICATIONS, payload v2 notifications for the existing events and `resolved` withdrawal, the CI build and the offline signing script. | 6–7 | 8–10 | 0 |
-| **2** | Actionable notifications. Server: items 7, 16–19, 22b, 25, 26. App: the invisible activity, the signed action client, inline reply with the held reply shown in the notification and the prompt, MessagingStyle conversations and shortcuts, lock-screen public versions. | 6–8 | 7–9 | 1 |
+| **0** | **Done.** Spikes S3, S4 and S7–S12 ([below](#phase-0-spikes)); results in the [Phase 0 results file][p0] | — | — | — |
+| **1** | Shell and push. Server: items 1, 4, 5, 6, 8–14, 21, 22a, 24, 27, 29, 30, and 31's pairing part; Account → Devices with the key type. App: project and modules (compileSdk 37), server-URL screen, hardened WebView with password sign-in and native inset padding, bridge, pairing with the step-up key, its type and security level, encrypted token store, the push-host check, UnifiedPush registration with the VAPID key and the decrypted-only filter, channels, POST_NOTIFICATIONS, payload v2 notifications for the existing events and `resolved` withdrawal, the CI build and the offline signing script. | 6.5–7.5 | 8.5–10.5 | 0 |
+| **2** | Actionable notifications. Server: items 7, 16–19, 22b, 25, 26, and 31's action part. App: the invisible activity with keyguard dismissal from the lock screen, the instrumented test that every action is `getActivity` straight to it, the signed action client, inline reply with the held reply shown in the notification (while unlocked) and the prompt, MessagingStyle conversations and shortcuts, lock-screen public versions, and the per-screen-state content swap (WHAT added on unlock, stripped on screen-off). | 6–8 | 8–10 | 1 |
 | **3** | Bubbles. Server: item 23. App: bubble metadata, the expanded activity, per-conversation bubble settings. | 1–2 | 3–4 | 2 |
 | **4** | Widgets and live status. Server: items 15, 22c (the `status` event, coalesced) and 28. App: two Glance widgets, the fleet ongoing notification, the Live Update for user-started runs, the WorkManager catch-up. | 3.5–4.5 | 5–6 | 1 |
-| **5** | Updates and verification. Server: item 3. App: the in-app updater (manifest, sha256 and certificate checks, PackageInstaller, pending-user-action handling), the channel publishing script; developer verification (free limited-distribution registration, or none) once enforcement reaches the operator's country. | 0.5–1 | 4–5 | 1 |
+| **5** | Updates and verification. Server: item 3. App: the in-app updater (manifest, sha256 and certificate checks, PackageInstaller, pending-user-action handling, reporting an install that failed because the advanced flow lapsed), the channel publishing script; developer verification (free limited-distribution registration, or none) once enforcement reaches the operator's country. | 0.5–1 | 4.5–5.5 | 1 |
 | *6, later, opt-in* | The always-on overlay ([below](#phase-6-always-on-overlay-later-opt-in)), with spike S6. Server: a feature switch in `/api/device/config`. App: the overlay permission flow, the `specialUse` foreground service, the head and its expanded panel, restart handling, the battery measurement. | 0–0.5 | 6–8 | 3 |
 | *7, later, optional* | Asset links and passkeys in the shell ([below](#phase-7-asset-links-and-passkeys-in-the-shell-later-optional)), with spikes S1 and S2. Server: items 2 and 20, and the edge serving the file without a redirect. App: Credential Manager in the WebView. | 1–1.5 | 1–2 | 1 |
 
-Totals for Phases 0–5: **server 17.5–23 days**, **app 29–37 days**. The later
+Phase 0 is done. Phase 0 moved work into Phases 1, 2 and 5 (Phase 2 grew
+most: keyguard handling and the per-screen-state content swap). Totals for
+the remaining Phases 1–5: **server 17.5–23 days**, **app 29–36 days**. The later
 Phases 6 and 7 add **server 1–2** and **app 7–10**. Phases 3, 4 and 5 are
-independent after their dependencies. The shortest useful slice is Phases 0–2:
+independent after their dependencies. The shortest useful slice is Phases 1–2:
 a paired phone with signed Send now, Approve and Cancel, and inline replies.
 
 ### Phase 0 spikes
 
-Each spike is the UNVERIFIED item a decision rests on. S1 and S2 belong to
-Phase 7, and S6 to Phase 6; the numbers are kept so references stay stable.
+**Done.** Each spike was an UNVERIFIED item a decision rested on. They ran on
+API 35 and API 36 emulators (Pixel 7 profile, emulated fingerprint, WebView
+124 and 133), on a local ntfy 2.31.0, and against the operator's deployed
+ntfy; the evidence, the scripts and how to reproduce them are in the
+[Phase 0 results file][p0]. S1 and S2 belong to Phase 7, and S6 to Phase 6,
+and did not run; the numbers are kept so references stay stable.
 
-| id | question | decides |
-|---|---|---|
-| S3 | Can BiometricPrompt sign with an EC P-256 key through a CryptoObject from a translucent, UI-less FragmentActivity started by a notification action, on the lock screen and unlocked? (And: is an activity really required?) | the step-up activity's shape |
-| S4 | Can a key use `AUTH_BIOMETRIC_STRONG \| AUTH_DEVICE_CREDENTIAL` with a timeout of 0, so a phone without a strong biometric can still sign? | [open question](#open-questions) 3 |
-| ~~S5~~ | **Closed.** The Live Update page says "Don't allow activities triggered by other parties" and "Don't show ambient information", so only user-started runs are promoted. Whether promotion works on a sideloaded app is checked in Phase 4 itself. | — |
-| S7 | Developer verification: are browser and file-manager installs blocked in the enforcing countries; can limited-distribution devices be swapped; is "no commercial intent" binding; how do unattended updates of an unregistered app behave after the global rollout? | free limited-distribution account or stay unregistered, and the timing |
-| S8 | Obtainium's unattended-install mechanism; F-Droid index v2 client compatibility | whether Obtainium is a full alternative channel |
-| S9 | Does ntfy require VAPID on `up*` publishes; which foreground-service type does ntfy use; does the embedded-FCM distributor need a Firebase project? | ntfy's access config, battery claims, the fallback |
-| S10 | Does muster reach ntfy by the exact name in the endpoint ntfy gives the phone, on `https` and the default port, whether that name resolves inside the cluster (split horizon) or publicly? | ntfy's base URL, and the value of `MUSTER_PUSH_EXTRA_HOSTS` |
-| S11 | Do the phone's launcher and lock screen show only the public version of a `VISIBILITY_PRIVATE` notification? | whether WHAT can be shown unlocked |
-| S12 | Do CSS `env(safe-area-inset-*)` values work in an edge-to-edge WebView? | whether the page or the shell pads for insets |
+| id | question | result | what changed here |
+|---|---|---|---|
+| S3 | Can BiometricPrompt sign through a CryptoObject from a UI-less activity started by a notification action, locked and unlocked? Is an activity required? | Unlocked: works. **Locked: fails** (prompt cancelled, error 5); works after `requestDismissKeyguard()`. `setAuthenticationRequired(true)` makes no difference. A receiver trampoline is **blocked silently**, so the activity is required. ([S3][p0-s3]) | [the gated action](#a-gated-action-step-by-step); a Phase 2 test |
+| S4 | Can a key use `AUTH_BIOMETRIC_STRONG \| AUTH_DEVICE_CREDENTIAL` with a timeout of 0? | Works, also with no biometric enrolled; but the key is **not invalidated by a new fingerprint**. ([S4][p0-s4]) | [open question](#open-questions) 3, decided: biometric-only by default, PIN keys by policy |
+| ~~S5~~ | **Closed** before Phase 0. The Live Update page says "Don't allow activities triggered by other parties" and "Don't show ambient information", so only user-started runs are promoted. Whether promotion works on a sideloaded app is checked in Phase 4 itself. | — | — |
+| S7 | Developer verification details | Docs. Sideloading unaffected until the 2027 global rollout; then an unregistered app installs **and updates** only with the advanced flow on (7 days or indefinitely) or over ADB. Whether each update warns: **UNKNOWN**. ([S7][p0-s7]) | [developer verification](#-android-developer-verification); the updater reports a lapsed flow |
+| S8 | Obtainium's unattended installs; F-Droid index v2 | Source. Obtainium is silent only as installer of record (Android 12+, targetSdk ≥ device SDK − 3). fdroidserver still writes the v1 index. ([S8][p0-s8]) | [channel](#channel) |
+| S9 | ntfy and VAPID; ntfy's FGS type; embedded-FCM and Firebase | ntfy does **not** enforce VAPID on `up*`; it truncates an `up*` body over its size limit (default 4096 bytes, configurable; the deployed value not measured) with 200; ntfy uses `specialUse`; embedded FCM needs no Firebase project but needs Play services. ([S9][p0-s9]) | [decrypted-only](#-only-decrypted-pushes-are-trusted) is load-bearing; server change 30 |
+| S10 | Does muster reach ntfy by the exact name in the phone's endpoint? | Yes, by its public name on `https`/443; no split horizon. The endpoint's host is the ntfy app's default server, else ntfy's public server. A real phone's registration was not observed. ([S10][p0-s10]) | `MUSTER_PUSH_EXTRA_HOSTS`; the pairing push-host check |
+| S11 | Does the lock screen show only the public version of a `VISIBILITY_PRIVATE` notification? | **Only if the user's setting hides sensitive content.** ([S11][p0-s11]) | [WHAT only while unlocked](#notifications); open question 4, decided |
+| S12 | Do CSS `env(safe-area-inset-*)` values work in an edge-to-edge WebView? | **No** on WebView 124 and 133: 0 px on every side. ([S12][p0-s12]) | [the shell pads](#the-shell) |
 
 ### Phase 6: always-on overlay (later, opt-in)
 
@@ -968,8 +1170,33 @@ guidance; the Play fee.
   item text and conversations through `/api/device/*`, but every
   state-changing action needs the biometric key. Removing the device, Sign out
   everywhere, or a disable cuts it off on the next request.
-- **Biometric enrolment changes** destroy the step-up key. The phone falls back
-  to "Re-confirm this phone"; that is the intended cost.
+- **Biometric enrolment changes** destroy the biometric-only step-up key. The
+  phone falls back to "Re-confirm this phone"; that is the intended cost. A
+  biometric-or-PIN key, allowed only by the policy setting, survives an
+  enrolment (Phase 0, S4), so on such a phone anyone with the PIN can sign.
+- **What Phase 0 could not verify, with no physical phone**
+  ([Phase 0][p0-limits]):
+  - **Hardware-backed keys.** The emulator keystore is software, so every key
+    measured was `SOFTWARE`, and **S3 and S4 were measured on software keys
+    only**. The same auth-binding behaviour (per-use biometric, enrolment
+    invalidation, the PIN key surviving enrolment) is **expected** on TEE and
+    StrongBox keys, because the framework and keystore enforce it, but it is
+    not measured. That real phones yield TEE or StrongBox keys, and that the software-key refusal at pairing never trips on a
+    phone that should pass, are unmeasured. Check `KeyInfo.securityLevel` on a
+    real phone in Phase 1.
+  - **OEM lock screens.** Lock-screen and biometric behaviour was measured on
+    AOSP/Pixel SystemUI only. Another vendor's skin could treat the keyguard
+    dismissal or the public version differently, and what OEM images default
+    "sensitive notifications" to is unknown. The WHAT-only-while-unlocked rule
+    is chosen so that this setting does not matter.
+  - **The current WebView.** Only WebView 124 and 133 were measured, which
+    cannot update on those images. The native inset padding works whatever
+    `env()` reports, but re-check it on a real phone in Phase 1.
+  - **A real ntfy registration.** No ntfy app ran on a device, so the
+    endpoint a phone gets was read from ntfy-android's source, not observed.
+  - **Updates after enforcement.** Whether every update of an unregistered app
+    warns, and so whether silent self-update survives 2027, is UNVERIFIED;
+    re-run S7 when an image with enforcement exists.
 - **Push depends on a second service.** If ntfy is down, nothing arrives. The
   WorkManager catch-up keeps widgets roughly current, and the web UI still
   works.
@@ -1005,10 +1232,19 @@ guidance; the Play fee.
 2. ~~Refusals on the phone~~ **Decided:** Cancel, Reject and Dismiss stay
    behind the biometric. Every state-changing action is signed, as one rule
    ([which actions are gated](#which-actions-are-gated)).
-3. **Phones without a strong biometric:** allow the device PIN as the step-up
-   (S4), or leave such phones read-only?
-4. **Showing WHAT on an unlocked phone:** opt-in per device (the default
-   here), or never?
+3. ~~Phones without a strong biometric~~ **Decided** (coordinator, after
+   Phase 0 S4): the default requires a biometric-only, hardware-backed key, and
+   a phone without one pairs read-only. Allowing a biometric-or-PIN key is a
+   muster policy setting, off by default, because such a key survives a new
+   fingerprint enrolment. The key type is recorded at pairing and shown on
+   Account → Devices, and software-only keys are refused
+   ([the step-up key](#the-step-up-key)).
+4. ~~Showing WHAT on an unlocked phone~~ **Decided: WHAT only while
+   unlocked.** Phase 0 S11 showed `VISIBILITY_PRIVATE` cannot keep WHAT off
+   the lock screen when the user shows all content, so WHAT is put into a
+   notification only while the phone is unlocked and stripped when the screen
+   turns off, held replies included. The per-device opt-in stays and means
+   "WHAT while unlocked" ([notifications](#notifications)).
 5. **Connector approvals** from a notification: add them in a later phase, or
    keep them on the web page?
 
@@ -1016,13 +1252,13 @@ guidance; the Play fee.
 
 - **Key attestation.** Verify the step-up key's Android Key Attestation chain
   at pairing, so the server knows the key is hardware-backed and
-  biometric-bound rather than trusting the app's claim. Its value on
-  sideloaded phones is UNVERIFIED.
+  biometric-bound rather than trusting the app's claim. It would turn the
+  pairing's software-key refusal and key-type record (server change 31) from
+  a report the app makes into a fact muster checks. Its value on sideloaded
+  phones is UNVERIFIED.
 - **Proof of possession on every call.** Bind the device credential to a
   second, non-biometric Keystore key and sign each request, so a copied token
   is useless without the phone.
-- **The Web Push `Topic` header** for `status` pushes, so an undelivered status
-  is replaced rather than queued. ntfy's support is UNVERIFIED.
 - **Hide the app from Recents screenshots** on sensitive screens.
 - **One decisions.md entry per server change** as it lands, and a `limits.md`
   line for what the phone cannot do (always-on chat heads, push without ntfy).
@@ -1082,6 +1318,11 @@ Each `feature/*` module depends only on `core/*`; `app` wires them together.
 
 Dates are the page's "last updated" date where it shows one; otherwise the
 page was accessed 2026-10-20.
+
+**Phase 0**
+
+- Phase 0 spike results (S3, S4, S7–S12; measured on emulators and against ntfy; app repo `main` at merge commit `f652f32`): <https://github.com/ZacxDev/muster-android/blob/f652f3256bbe487e9babb467e5f509a41ef54068/docs/phase0-results.md>
+- Developer verification terms (cited by S7): <https://developer.android.com/developer-verification/console/terms> (effective 2025-11-11)
 
 **Android platform**
 
