@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -99,6 +100,11 @@ func (f *fakeMirror) PasteWindow(ctx context.Context, host, session, window, tex
 	f.mu.Unlock()
 	if in != nil {
 		in()
+		// A caller that went away during the paste: the hub's answer is never
+		// seen, as a real host's would not be.
+		if err := ctx.Err(); err != nil {
+			return errors.Join(err, mirror.ErrPasteUnconfirmed)
+		}
 	}
 	f.mu.Lock()
 	f.asked = append(f.asked, window)

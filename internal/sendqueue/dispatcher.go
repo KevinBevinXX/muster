@@ -377,6 +377,11 @@ func (d *Dispatcher) SendNow(ctx, octx context.Context, id int64, since int64, s
 	if !ok {
 		return Item{}, Outcome{}, ErrNotClaimed
 	}
+	// 🔴 ONCE CLAIMED, THE SEND OUTLIVES ITS CALLER: a browser that goes away
+	// mid-paste (a phone locked, a tab switched) must not end the row failed —
+	// that would spend its one Retry on a message that was on its way.
+	// WithoutCancel keeps ctx's values (the principal, the sign-in time).
+	ctx, octx = context.WithoutCancel(ctx), context.WithoutCancel(octx)
 	o := d.sendRenewing(ctx, octx, it, AgentState{Since: since}, send)
 	if o.Sent {
 		o.MayHaveDelivered = true

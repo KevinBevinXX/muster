@@ -40,6 +40,7 @@ import (
 const (
 	SendQueueNotQueuedNow   = "Not sent: that message is no longer queued (it is being sent, or has finished)."
 	SendQueueSendingAnother = "Not sent: another message for this window is being sent right now. Try again in a moment."
+	SendQueueWaitingNow     = "Not sent: Claude Code is waiting for you (a prompt or a question). Answer it first."
 )
 
 // handleSendQueueSendNow is POST /send-queue/{id}/send-now: send the
@@ -136,10 +137,21 @@ func (s *Server) sendQueueSendNow(w http.ResponseWriter, r *http.Request, ctx co
 		refuse(http.StatusConflict, mirror.ErrWindowGone.Error(), noticeWindowGone)
 		return
 	}
-	// The window's status time now: the claim's, so the next queued message
-	// waits for the turn this paste starts (0 when the host cannot say; the
-	// hub's own record of the paste still holds it).
-	since := s.ext.Mirror.AgentState(ctx, q.t.Host, q.t.Session, q.t.Window).Since
+	// The window's status now, read BEFORE the claim so a refusal leaves the
+	// row queued.
+	st := s.ext.Mirror.AgentState(ctx, q.t.Host, q.t.Session, q.t.Window)
+	// 🔴 NEVER INTO A WINDOW WAITING ON THE PERSON: the paste ends with Enter,
+	// which would answer the prompt on screen — confirm a highlighted option,
+	// approve a permission. The dispatcher never sends on waiting either. Busy,
+	// idle and Claude Code's "shell" (idle) are pasted into like a Send.
+	if st.Unknown == nil && st.Status == mirror.StatusWaiting {
+		refuse(http.StatusConflict, SendQueueWaitingNow, noticeWaitingNow)
+		return
+	}
+	// The window's status time: the claim's, so the next queued message waits
+	// for the turn this paste starts (0 when the host cannot say; the hub's own
+	// record of the paste still holds it).
+	since := st.Since
 	sent, o, err := s.sendQueueDispatcher().SendNow(ctx, ctx, id, since, func(octx context.Context, it sendqueue.Item, _ sendqueue.AgentState) sendqueue.Outcome {
 		// No turn expected: a person's Send now is pasted like a Send.
 		return s.sendQueueDeliver(octx, it)

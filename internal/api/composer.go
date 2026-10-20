@@ -73,6 +73,7 @@ const (
 	noticeNotQueuedNow   = "not-queued-now"
 	noticeSendingAnother = "sending-another"
 	noticeSendNowFailed  = "send-now-failed"
+	noticeWaitingNow     = "waiting-now"
 )
 
 // ComposerNoticeAgain is what a send that came back as a GET is told: it was
@@ -113,6 +114,7 @@ var composerNotices = map[string]struct {
 	noticeNotDeleted:        {SendQueueNotDeleted, false},
 	noticeNotQueuedNow:      {SendQueueNotQueuedNow, false},
 	noticeSendingAnother:    {SendQueueSendingAnother, false},
+	noticeWaitingNow:        {SendQueueWaitingNow, false},
 	noticeSendNowFailed:     {"Not sent: the message could not be delivered. Its row in the queue says why.", false},
 }
 

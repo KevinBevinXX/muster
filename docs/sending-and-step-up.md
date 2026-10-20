@@ -106,8 +106,10 @@ one, so it is never sent twice. It ends sent, or failed saying why. The send
 checks the account, the sign-in that queued it and a routed message's route,
 as the dispatcher's send does. The paste is recorded like a Send's, so the next
 queued message still waits for its turn. It is refused, sending nothing, while
-another message for the window is being sent, when the host is offline or
-read-only, or when the message is no longer queued. **Copy message** copies the
+Claude Code is waiting for you (a prompt or a question: the paste's Enter would
+answer it), while another message for the window is being sent, when the host
+is offline or read-only, or when the message is no longer queued. Once it is
+claimed, it is sent even if the page goes away. **Copy message** copies the
 whole message, and is not offered without JavaScript. The menu works without
 JavaScript (Send now and Cancel are forms). The list is not redrawn while a
 menu is open.
