@@ -53,6 +53,11 @@ type ConnectorGrantView struct {
 	Status      string // pending | approved
 	LastUsedAt  *time.Time
 	RequestedAt time.Time
+	// DecidedFrom, when non-empty, is the mirrored session ("<host>/<session>")
+	// the operator approved it from over MCP (connector_request_decide,
+	// migration 0035) rather than on this tab. The host is proven by its mirror
+	// token; the session is the one the caller named.
+	DecidedFrom string
 }
 
 // ConnectorRequestView is one pending request.
@@ -470,6 +475,9 @@ func connectorGrantRow(gv ConnectorGrantView) g.Node {
 		g.Attr("data-grant", gv.AgentName),
 		Span(Class("min-w-0 break-all text-xs font-semibold text-fg"), g.Text(gv.AgentName)),
 		Span(Class("text-xs text-muted"), g.Attr("data-grant-status", gv.Status), g.Text(gv.Status)),
+		g.If(gv.DecidedFrom != "", Span(Class("min-w-0 break-all text-xs text-muted"), g.Attr("data-grant-via", gv.DecidedFrom),
+			g.Attr("title", "Approved from one of your mirrored Claude Code sessions over MCP: the host is proven by its mirror token, the session is the one it named"),
+			g.Text("via MCP from "+gv.DecidedFrom))),
 		Span(Class("flex-1")),
 		Button(Type("button"), Class("press min-h-[44px] rounded-lg px-2 text-xs font-medium text-fg2 transition hover:text-st-error-fg"),
 			g.Attr("data-revoke", gv.AgentName),

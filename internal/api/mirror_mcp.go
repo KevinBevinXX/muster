@@ -26,20 +26,26 @@ import (
 // (X-Muster-Claude-Session) — so the session gets the "all agents" tools:
 // attention_ask/wait/cancel, and the task tools over the tasks THAT SESSION
 // created (taskScopeOf) — plus attention_answer, the operator answering one of
-// their asks through their own session, which no dispatched agent gets.
+// their asks through their own session, and connector_requests_list /
+// connector_request_decide, the operator deciding one of their agents'
+// connector requests through it (connector_decide_tools.go), which no
+// dispatched agent gets.
 //
 // 🔴 A MIRROR TOKEN NOW OPENS A SECOND ROUTE, AND THIS ONE IS NARROW. Until this
 // door, mmt_ opened /mirror/connect and nothing else. Here it opens exactly
 // mirrorTools and nothing else: no chief tool (they are not listed, and
-// serveMCP refuses an unlisted name), no connector, no flow. So a LEAKED mmt_
+// serveMCP refuses an unlisted name), no agent connector tool, no flow. So a LEAKED mmt_
 // reaches, beyond what /mirror/connect already gives, the asks of that host's
 // sessions (file, wait, cancel), the tasks those sessions created, and — 🔴
 // through attention_answer — an answer AS THE OPERATOR to any of the owner's
 // open asks not raised by a mirrored session on that host (the chief's
 // included — and, by operator decision, as task_dispatch instructions too:
 // a leaked mmt_ can write a dispatched agent's prompt; the kickoff and audit
-// row name the host it came from). Never another task, another host's session, another owner's ask
-// or a chief tool. The SESSION a call names is the caller's claim (its pane);
+// row name the host it came from) — and 🔴 through connector_request_decide,
+// an APPROVAL AS THE OPERATOR of any of the owner's agents' pending connector
+// requests (operator decision "Build connector_approve MCP"; the grant and the
+// audit line name the host it came from). Never another task, another host's session, another owner's ask
+// or request, a secret, or a chief tool. The SESSION a call names is the caller's claim (its pane);
 // only the HOST is proven, which is why attention_answer's rule is per host.
 //
 // 🔴 A HOST ACTS ONLY AS ITS OWN SESSIONS. The token names its host; the
@@ -169,13 +175,20 @@ func (s *Server) mirrorSessionOf(ctx context.Context, host, sid string) (mirror.
 
 // mirrorTools is the mirrored sessions' tool set: the all-agents attention and
 // task tools, and attention_answer — the operator answering an ask through
-// their own session, which no dispatched agent is offered (and which its
-// handler refuses to any caller but a mirrored session).
+// their own session — with the attention store; and connector_requests_list /
+// connector_request_decide — the operator deciding a connector request through
+// their own session — with the connector store. No dispatched agent is offered
+// either operator tool, and their handlers refuse any caller but a mirrored
+// session.
 func (s *Server) mirrorTools() []agents.ToolDef {
-	if !s.attentionToolsOn() {
-		return nil
+	var out []agents.ToolDef
+	if s.attentionToolsOn() {
+		out = append(append(append(out, attentionToolDefs()...), taskToolDefs()...), attentionAnswerToolDef())
 	}
-	return append(append(attentionToolDefs(), taskToolDefs()...), attentionAnswerToolDef())
+	if s.connectorDecideToolsOn() {
+		out = append(out, connectorDecideToolDefs()...)
+	}
+	return out
 }
 
 func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {

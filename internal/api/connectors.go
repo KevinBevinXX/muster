@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"sort"
@@ -550,6 +551,11 @@ func (s *Server) connectorRequestViews(ctx context.Context) ([]ui.ConnectorReque
 	return out, nil
 }
 
+// githubAppScope is what the GitHub App's installation token may do in the
+// agent's own repository (the permissions internal/githubapp mints it with), as
+// the Connectors tab and connector_requests_list both say it.
+const githubAppScope = "Contents and Pull requests read and write, Checks and Commit statuses read"
+
 func (s *Server) fillConnectorsContent(ctx context.Context, c *ui.ConnectorsContent) error {
 	reqs, err := s.connectorRequestViews(ctx)
 	if err != nil {
@@ -567,7 +573,7 @@ func (s *Server) fillConnectorsContent(ctx context.Context, c *ui.ConnectorsCont
 	by := map[string][]ui.ConnectorGrantView{}
 	for _, g := range grants {
 		by[g.Connector] = append(by[g.Connector], ui.ConnectorGrantView{ID: g.ID, AgentName: g.AgentName,
-			Status: g.Status, LastUsedAt: g.LastUsedAt, RequestedAt: g.RequestedAt})
+			Status: g.Status, LastUsedAt: g.LastUsedAt, RequestedAt: g.RequestedAt, DecidedFrom: g.DecidedVia.String()})
 	}
 	c.Connectors = make([]ui.ConnectorView, 0, len(list))
 	for _, k := range list {
@@ -576,8 +582,8 @@ func (s *Server) fillConnectorsContent(ctx context.Context, c *ui.ConnectorsCont
 			CreatedAt: k.CreatedAt, RotatedAt: k.RotatedAt, LastUsedAt: k.LastUsedAt, Grants: by[k.Name]}
 		if vc, ok := connectors.VirtualOf(ctx, s.ext.Connectors, k.Name); ok {
 			cv.Managed = "Provided by the GitHub App this server is configured with: each approved agent's " +
-				"requests to its own repository carry a 1-hour token limited to it (Contents and Pull requests " +
-				"read and write, Checks and Commit statuses read); other repositories are reached anonymously, " +
+				"requests to its own repository carry a 1-hour token limited to it (" + githubAppScope + "); " +
+				"other repositories are reached anonymously, " +
 				"and an agent with no repository gets no access. There is no stored secret to rotate or delete."
 			cv.Problem = vc.Problem(0)
 		}
@@ -809,6 +815,77 @@ func (s *Server) handleConnectorDelete(w http.ResponseWriter, r *http.Request) {
 	s.renderConnectorsContent(w, r, ui.ConnectorsContent{Notice: "Connector " + name + " deleted."})
 }
 
+// errGrantUnreadable is decideConnectorGrant's refusal when an approval's
+// request could not be read (wrapping why: connectors.ErrNotFound for a
+// missing one or another owner's — row-level security reads them the same).
+var errGrantUnreadable = errors.New("the request could not be read")
+
+// errConnectorMissing is decideConnectorGrant's refusal to approve a request
+// for a connector that does not exist: the operator's answer to that is a
+// credential, entered on the Connectors tab (handleConnectorCreate).
+type errConnectorMissing struct{ name string }
+
+func (e errConnectorMissing) Error() string {
+	return "connector " + e.name + " does not exist; enter a credential for it instead"
+}
+
+// decideConnectorGrant is THE operator decision on pending connector request
+// id: the Connectors tab's Approve / Deny (decideConnectorRequest) and a
+// mirrored session's connector_request_decide (connector_decide_tools.go) both
+// take it, so the grant, its credential source, the audit line and the nudge to
+// open Connectors tabs are the same whichever door it came through. via is
+// where it was made (the zero value: the tab). An agent learns the outcome the
+// one way it learns a browser decision — its next connector_status /
+// GET /agent/connectors/{name} read, or ccd's clone retry — so nothing is
+// owed to it here.
+//
+// 🔴 UNDER THE DECIDER'S PRINCIPAL, WHICH ROW-LEVEL SECURITY MAKES THE GRANT'S
+// OWNER: a user can read (and so decide) only grants on their own agents, so
+// another owner's request is connectors.ErrNotFound, exactly as a missing one.
+// For a member `github` is never the App here (connectors.WithVirtual's allow is
+// authz.IsAdmin): a member cannot approve their agent onto the App. Measured: an
+// operator session cannot even read a member's grant
+// (TestAMembersAgentGetsNoAppConnectorAndCannotBeApprovedOntoIt).
+//
+// 🔴 EXACTLY WHAT THE CARD GRANTS, NO WIDER: an approval is of the connector as
+// it is configured (its hosts; for the App, a 1-hour token for the agent's own
+// repository), recorded with the source it was about. There is no scope to
+// narrow — the card offers none either.
+func (s *Server) decideConnectorGrant(ctx context.Context, id int64, approve bool, via connectors.DecisionSource) (connectors.Grant, error) {
+	src := ""
+	if approve {
+		g, err := s.ext.Connectors.GetGrant(ctx, id)
+		if err != nil {
+			return connectors.Grant{}, fmt.Errorf("%w: %w", errGrantUnreadable, err)
+		}
+		if _, err := s.ext.Connectors.GetConnector(ctx, g.Connector); err != nil {
+			return g, errConnectorMissing{name: g.Connector}
+		}
+		src = connectors.SourceFor(ctx, s.ext.Connectors, g.Connector)
+	}
+	g, err := s.ext.Connectors.DecideGrantFrom(ctx, id, approve, "operator", src, via)
+	if err != nil {
+		return g, err
+	}
+	s.auditGrant(ctx, g, decisionDetail(approve, via))
+	s.broadcast(ctx, EventConnectorChanged, strconv.FormatInt(id, 10))
+	return g, nil
+}
+
+// decisionDetail is a decision's audit line: "approved" / "denied", and for a
+// decision from a mirrored session where it came from — the host proven by its
+// token, the session as the caller named it.
+func decisionDetail(approve bool, via connectors.DecisionSource) string {
+	verb := "denied"
+	if approve {
+		verb = "approved"
+	}
+	if via.ViaSession() {
+		verb += " via MCP from " + via.String() + " (host proven by its mirror token; session as named by the caller)"
+	}
+	return verb
+}
+
 func (s *Server) decideConnectorRequest(w http.ResponseWriter, r *http.Request, approve bool) {
 	if s.ext.Connectors == nil {
 		http.Error(w, ConnectorsUnconfigured, http.StatusServiceUnavailable)
@@ -819,29 +896,16 @@ func (s *Server) decideConnectorRequest(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	ctx := r.Context()
-	src := ""
-	if approve {
-		g, err := s.ext.Connectors.GetGrant(ctx, id)
-		if err != nil {
-			s.renderConnectorsContent(w, r, ui.ConnectorsContent{Error: "That request no longer exists."})
-			return
-		}
-		// 🔴 UNDER THE APPROVER'S PRINCIPAL, WHICH ROW-LEVEL SECURITY MAKES THE
-		// GRANT'S OWNER: a user can read (and so decide) only grants on their own
-		// agents. So for a member `github` is never the App here
-		// (connectors.WithVirtual's allow is authz.IsAdmin): a member cannot
-		// approve their agent onto the App. Measured: an operator session cannot
-		// even read a member's grant (TestAMembersAgentGetsNoAppConnectorAndCannotBeApprovedOntoIt).
-		if _, err := s.ext.Connectors.GetConnector(ctx, g.Connector); err != nil {
-			s.renderConnectorsContent(w, r, ui.ConnectorsContent{Error: "Connector " + g.Connector +
-				" does not exist; enter a credential for it instead."})
-			return
-		}
-		src = connectors.SourceFor(ctx, s.ext.Connectors, g.Connector)
-	}
-	g, err := s.ext.Connectors.DecideGrant(ctx, id, approve, "operator", src)
+	g, err := s.decideConnectorGrant(r.Context(), id, approve, connectors.DecisionSource{})
+	var missing errConnectorMissing
 	switch {
+	case errors.Is(err, errGrantUnreadable):
+		s.renderConnectorsContent(w, r, ui.ConnectorsContent{Error: "That request no longer exists."})
+		return
+	case errors.As(err, &missing):
+		s.renderConnectorsContent(w, r, ui.ConnectorsContent{Error: "Connector " + missing.name +
+			" does not exist; enter a credential for it instead."})
+		return
 	case errors.Is(err, connectors.ErrNotPending), errors.Is(err, connectors.ErrNotFound):
 		s.renderConnectorsContent(w, r, ui.ConnectorsContent{Error: "That request was already decided."})
 		return
@@ -854,8 +918,6 @@ func (s *Server) decideConnectorRequest(w http.ResponseWriter, r *http.Request, 
 	if approve {
 		verb = "approved"
 	}
-	s.auditGrant(ctx, g, verb)
-	s.broadcast(r.Context(), EventConnectorChanged, strconv.FormatInt(id, 10))
 	s.renderConnectorsContent(w, r, ui.ConnectorsContent{Notice: g.AgentName + " " + verb + " for " + g.Connector + "."})
 }
 
