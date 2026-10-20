@@ -25,7 +25,7 @@ import (
 //   - uid/gid 1000: the image's `USER 1000:1000`;
 //   - the volume at /data: CLAUDE_CONFIG_DIR=/data/claude and
 //     CCD_WORKSPACE=/data/workspace are siblings under it, so the conversation
-//     transcripts `claude --continue` resumes from survive a pod restart;
+//     transcripts `claude --resume <id>` resumes survive a pod restart;
 //   - resources: the scoping measurement (an idle TUI ~300Mi/128m; long-running
 //     real sessions 460-562MiB RSS) — request 512Mi/250m, limit 3Gi, no CPU limit.
 const (
@@ -135,7 +135,7 @@ func (c Config) ClaudeCodeMCPOffered() bool { return c.ConnectURL != "" }
 // kind's AGENTS.md).
 //
 // ⚠ NOT --append-system-prompt: the CLI is launched by ccd's supervisor with a
-// fixed argv (`claude` / `claude --continue`), so a flag would mean an image
+// fixed argv (`claude` / `claude --resume <id>`), so a flag would mean an image
 // change, and the docs scope that flag to scripted use.
 const ClaudeCodeInstructionsPath = "/etc/claude-code/CLAUDE.md"
 
@@ -336,7 +336,7 @@ var ccRepoDirName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*$`)
 //
 // 🔴 THE CHECKOUT IS INSIDE THE WORKSPACE, ON THE AGENT'S VOLUME, so a pod
 // restart finds it (ccd never re-clones over an existing checkout) and the
-// conversation `claude --continue` resumes is the one for that directory.
+// conversation `claude --resume <id>` resumes is one of that directory's.
 //
 // The name must be a plain directory name: a row naming "x/.." would otherwise
 // make the CLI's working directory somewhere else on the volume.

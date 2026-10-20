@@ -148,15 +148,16 @@ func TestOnlyThePrimaryProcessSessionStartIsRecorded(t *testing.T) {
 	}
 }
 
-// A lone argv is handed to tmux behind `env`, which execs it, so the pane's
-// process is the CLI and not a `sh -c` around it. ⚠ An INVARIANT pin: on this
-// host's /bin/sh (bash, which execs a lone `-c` command) the end-to-end test
-// passes without it; it is kept for a /bin/sh that does not.
-func TestALoneArgvIsExecdNotShelled(t *testing.T) {
-	if got := strings.Join(execArgv([]string{"claude"}), " "); got != "env claude" {
+// Every argv is handed to tmux behind `env`, which execs it, so the pane's
+// process is the CLI and not a `sh -c` around it (⚠ an INVARIANT pin: on this
+// host's /bin/sh, bash, which execs a lone `-c` command, the end-to-end test
+// passes without it), and with CLAUDE_CODE_ENTRYPOINT unset (the end-to-end
+// check is TestTmuxLaneTwoSessionsRunInTheirOwnCLIsOnTheirOwnModels).
+func TestEveryArgvIsExecdWithoutAnInheritedEntrypoint(t *testing.T) {
+	if got := strings.Join(execArgv([]string{"claude"}), " "); got != "env -u CLAUDE_CODE_ENTRYPOINT claude" {
 		t.Errorf("lone argv: %q", got)
 	}
-	if got := strings.Join(execArgv([]string{"claude", "--continue"}), " "); got != "claude --continue" {
+	if got := strings.Join(execArgv([]string{"env", "CCD_LANE=x", "claude", "--resume", "id"}), " "); got != "env -u CLAUDE_CODE_ENTRYPOINT env CCD_LANE=x claude --resume id" {
 		t.Errorf("argv: %q", got)
 	}
 }

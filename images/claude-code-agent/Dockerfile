@@ -52,7 +52,7 @@ COPY --chmod=0755 images/claude-code-agent/entrypoint.sh /usr/local/bin/cc-entry
 COPY --chmod=0755 images/claude-code-agent/smoke.sh /usr/local/bin/cc-smoke
 
 # /data is the persistent volume's mount point: the CLI's config (credentials from
-# /login, settings, and the session transcripts --continue resumes from) and the
+# /login, settings, and the session transcripts `--resume <id>` resumes) and the
 # workspace both live under it. Kept as two sibling directories so the config
 # never sits inside a repository a session might commit.
 #

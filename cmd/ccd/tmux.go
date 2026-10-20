@@ -250,13 +250,14 @@ func (t tmuxTerminal) Respawn(ctx context.Context, ref paneRef, dir string, argv
 	return t.run(ctx, nil, append([]string{"respawn-pane", "-t", ref.Pane, "-c", dir}, execArgv(argv)...)...)
 }
 
-// execArgv is argv as tmux must be given it so the pane's process IS argv[0]
-// (see Start).
+// execArgv is argv as tmux must be given it: behind `env`, which execs it, so
+// the pane's process IS argv[0] (see Start) — and with CLAUDE_CODE_ENTRYPOINT
+// removed from its environment. The CLI stamps its transcript's entries with
+// that variable when it is set, and an `sdk-*` value inherited from whatever
+// started ccd would label the interactive CLI as a `claude -p` run, which the
+// primary's fallback prefers not to resume (newestPrimaryTranscript).
 func execArgv(argv []string) []string {
-	if len(argv) == 1 {
-		return []string{"env", argv[0]}
-	}
-	return argv
+	return append([]string{"env", "-u", "CLAUDE_CODE_ENTRYPOINT"}, argv...)
 }
 
 // PanePID is the pid of ref's pane process: the CLI (see Start).

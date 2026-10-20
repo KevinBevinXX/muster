@@ -248,7 +248,6 @@ func serve() error {
 					return ls
 				},
 				bin: bin, configDir: configDir, workspace: workspace, max: maxLanes,
-				// primaryStarted: set by runLanes (the primary's first-start latch).
 				startTimeout: laneStartTimeout, now: time.Now,
 				set: map[string]*lane{},
 			})

@@ -31,9 +31,13 @@ import (
 // this cannot place (no pid, an unreadable /proc, no started pane within the
 // hook's wait — supervisor.startedRef) is not recorded,
 // and the primary then starts as it did before any record existed
-// (supervisor.argv's fallback) — never resuming a conversation it cannot prove
-// is its own. Every other effect of the hook on the primary's state is
-// unchanged.
+// (supervisor.argv's fallback: the newest transcript that is not a lane's,
+// preferring an interactive CLI's, newestPrimaryTranscript). That fallback is a
+// heuristic, NOT proof the conversation is the primary's: an interactive
+// `claude` run inside the pane, or a lane's /clear whose SessionStart ccd never
+// saw, leaves a transcript it cannot tell apart. Not recording a hook it cannot
+// place keeps a nested CLI's id out of the record, where it would be resumed
+// for good. Every other effect of the hook on the primary's state is unchanged.
 
 // procRoot is /proc; tests point it at a fixture tree.
 var procRoot = "/proc"

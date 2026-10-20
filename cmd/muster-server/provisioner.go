@@ -471,7 +471,7 @@ func k8sDriverConfig(cfg config, logger *log.Logger) k8sdriver.Config {
 	}
 	if cfg.AgentWorkspacePersist || cfg.claudeCodeEnabled() {
 		// ⚠ ...OR THE CLAUDE-CODE KIND IS ENABLED: its /data volume is not optional
-		// (the conversation `claude --continue` resumes lives on it), so the driver
+		// (the conversation `claude --resume <id>` resumes lives on it), so the driver
 		// must accept a persistent workspace even when gateway-kind agents keep
 		// theirs ephemeral. This raises the CAPABILITY only; a gateway-kind spec
 		// still asks for persistence exactly when AgentWorkspacePersist says so.

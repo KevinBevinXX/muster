@@ -154,13 +154,15 @@ func seed(o seedOpts, stderr io.Writer) error {
 //
 // The directory checked is the one that must be WRITTEN: dir itself when it
 // exists (the CLI works in it), else its deepest existing ancestor (MkdirAll
-// creates the rest inside it). Replacing it is os.Remove — rmdir — so it happens
-// only when it is empty and its parent is writable by this process: exactly the
-// directory this process could have created and removed itself, so no file and
-// no other process's directory is ever lost. Anything else (a non-empty
-// directory, a read-only parent, the volume's mount point, a SYMLINK to an
-// unwritable directory — rmdir's guarantee does not hold through one) is an
-// error naming the directory, its owner and mode, and how to recover.
+// creates the rest inside it). Replacing it is rmdir(2) (removeEmptyDir), which
+// removes only an EMPTY DIRECTORY — it fails ENOTDIR on a symlink or a file and
+// ENOTEMPTY on a directory with anything in it — and only when its parent is
+// writable by this process: exactly the directory this process could have
+// created and removed itself, so no file and no other process's directory is
+// ever lost. Anything else (a non-empty directory, a read-only parent, the
+// volume's mount point, a SYMLINK to an unwritable directory, empty or not —
+// refused before rmdir, for a clearer error) is an error naming the directory,
+// its owner and mode, and how to recover.
 //
 // ⚠ BEHAVIOUR CHANGE (#158): a workspace that exists, is not writable and is NOT
 // empty used to start (MkdirAll succeeds on an existing directory) and now
@@ -185,22 +187,26 @@ func ensureWritableDir(dir string, perm os.FileMode, stderr io.Writer) error {
 	}
 	fi, err := os.Stat(p)
 	if err == nil && fi.IsDir() && unix.Access(p, unix.W_OK|unix.X_OK) != nil {
-		owner, ownerUID := "", -1
+		owner := ""
 		if st, ok := fi.Sys().(*syscall.Stat_t); ok {
-			owner, ownerUID = fmt.Sprintf("owner %d:%d, ", st.Uid, st.Gid), int(st.Uid)
+			owner = fmt.Sprintf("owner %d:%d, ", st.Uid, st.Gid)
 		}
-		// 🔴 A SYMLINK IS NEVER REPLACED. os.Remove on a symlink unlinks the LINK
-		// whatever its target holds, so the rmdir-only guarantee above would not
-		// hold through one: a workspace symlinked to a non-empty directory would
-		// be "replaced" by an empty one, the target's files detached from it.
-		// The mode checked is the link's own (Lstat); fi is its target's.
+		// 🔴 A SYMLINK IS NEVER REPLACED, whatever its target holds. rmdir(2)
+		// below already refuses one (ENOTDIR); this check comes first for its
+		// clearer error, and names the TARGET in the recovery (`chown -R` on the
+		// link's own path changes only the link). The mode checked is the link's
+		// own (Lstat); fi is its target's.
 		if lfi != nil && lfi.Mode()&os.ModeSymlink != 0 {
+			fixAt := p + "/"
+			if t, terr := filepath.EvalSymlinks(p); terr == nil {
+				fixAt = t
+			}
 			return fmt.Errorf("%s is a symlink to a directory this process (uid %d) cannot create files in (%smode %s); "+
-				"a symlink is never replaced. %s", p, os.Getuid(), owner, fi.Mode(), unwritableRecovery(p, ownerUID))
+				"a symlink is never replaced. %s", p, os.Getuid(), owner, fi.Mode(), unwritableRecovery(fixAt))
 		}
-		if rerr := os.Remove(p); rerr != nil {
+		if rerr := removeEmptyDir(p); rerr != nil {
 			return fmt.Errorf("%s is a directory this process (uid %d) cannot create files in (%smode %s), and it "+
-				"could not be replaced (%v). %s", p, os.Getuid(), owner, fi.Mode(), rerr, unwritableRecovery(p, ownerUID))
+				"could not be replaced (%v). %s", p, os.Getuid(), owner, fi.Mode(), rerr, unwritableRecovery(p))
 		}
 		fmt.Fprintf(stderr, "ccd seed: replaced %s: it was an empty directory this process (uid %d) could not "+
 			"create files in (%smode %s) — a container runtime creates a missing image WORKDIR as root on a fresh volume\n",
@@ -209,18 +215,23 @@ func ensureWritableDir(dir string, perm os.FileMode, stderr io.Writer) error {
 	return os.MkdirAll(dir, perm)
 }
 
+// removeEmptyDir removes p only if it is an empty directory: rmdir(2), never
+// os.Remove, which tries unlink(2) FIRST and so deletes a symlink or a file —
+// one already there, or one put at p after ensureWritableDir's checks.
+func removeEmptyDir(p string) error { return unix.Rmdir(p) }
+
 // unwritableRecovery says how to recover from a directory ensureWritableDir
 // refused to replace. 🔴 The pod never starts (the entrypoint's seed fails first,
 // so the container crash-loops), so `kubectl exec` into it is impossible: the fix
 // is made from ANOTHER pod that mounts the agent's volume (docs/provisioner.md).
-func unwritableRecovery(p string, ownerUID int) string {
-	fix := fmt.Sprintf("`chown %d %s` as root", os.Getuid(), p)
-	if ownerUID == os.Getuid() {
-		fix = fmt.Sprintf("`chmod u+w %s`", p)
-	}
+// One command whoever owns dir: as root, `chown -R` makes this uid the owner
+// (of anything under it too) and `chmod u+rwx` gives the owner what it needs.
+func unwritableRecovery(dir string) string {
 	return fmt.Sprintf("The agent's pod cannot start until it is fixed, so `kubectl exec` into it is impossible: "+
-		"from a debug pod that mounts the agent's volume (PVC <agent>-workspace) at /data, run %s "+
-		"(see docs/provisioner.md, \"A workspace ccd cannot write in\")", fix)
+		"from a debug pod in the agent's namespace (`<MUSTER_AGENT_NAMESPACE_PREFIX><agent>`, e.g. "+
+		"`muster-agent-<agent>`) that mounts the agent's volume (PVC <agent>-workspace) at /data, run "+
+		"`chown -R %d %s && chmod u+rwx %s` as root "+
+		"(see docs/provisioner.md, \"A workspace ccd cannot write in\")", os.Getuid(), dir, dir)
 }
 
 // settingsForbidden are the settings.json keys REMOVED from the persisted file,

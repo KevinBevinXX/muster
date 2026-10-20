@@ -194,7 +194,9 @@ var nonAlnum = regexp.MustCompile(`[^A-Za-z0-9]`)
 //
 //   - the recorded primary session (primaryRecordFile), by id, while its
 //     transcript exists;
-//   - else the newest transcript that is NOT a lane's (laneUUIDMarker), by id;
+//   - else, by id, the newest transcript that may be the primary's
+//     (newestPrimaryTranscript: not a lane's; an interactive CLI's if any is,
+//     else the newest of any stamp);
 //   - else a fresh start.
 //
 // 🔴 NEVER A BARE `--continue`. Lanes write their transcripts in the same
@@ -214,9 +216,11 @@ func (s *supervisor) argv() ([]string, string) {
 	if id := recordedPrimary(s.configDir, s.workspace); id != "" {
 		return []string{s.bin, "--resume", id}, modeContinue
 	}
-	if newest := newestPrimaryTranscript(s.configDir, s.workspace); newest != "" {
+	if newest, tier := newestPrimaryTranscript(s.configDir, s.workspace); newest != "" {
+		log.Printf("ccd: resuming %s: newest primary transcript (no record, %s)", newest, tier)
 		return []string{s.bin, "--resume", newest}, modeContinue
 	}
+	log.Printf("ccd: starting fresh: no primary transcript")
 	return []string{s.bin}, modeFresh
 }
 
@@ -259,7 +263,9 @@ func (s *supervisor) cliPID(ctx context.Context, panePID func(context.Context, p
 // SessionStart hook can reach ccd before started() has recorded the pane. Read
 // with ref(), that hook's pane was "no pane yet": the primary's session id went
 // unrecorded (primaryRecordFile), and the next primary restart fell back to
-// "the newest conversation" — which may be a lane's. Measured as
+// the newest transcript (then any non-lane one; now newestPrimaryTranscript's
+// choice, which prefers an interactive CLI's — still not proof it is the
+// primary's). Measured as
 // TestTmuxLaneTwoSessionsRunInTheirOwnCLIsOnTheirOwnModels' CI flake ("no
 // primary session id recorded").
 //

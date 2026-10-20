@@ -6,14 +6,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
 
-// latchRig is a supervised primary whose lanes are wired the way main.go wires
+// primaryLaneRig is a supervised primary whose lanes are wired the way main.go wires
 // them (server.runLanes), each CLI on a killablePane of its own.
-type latchRig struct {
+type primaryLaneRig struct {
 	s        *server
 	sup      *supervisor
 	primary  *killablePane
@@ -21,10 +20,10 @@ type latchRig struct {
 	l        *lanes
 }
 
-func newLatchRig(t *testing.T) *latchRig {
+func newPrimaryLaneRig(t *testing.T) *primaryLaneRig {
 	t.Helper()
 	cfg := t.TempDir()
-	r := &latchRig{primary: newKillablePane(), lanePane: newKillablePane()}
+	r := &primaryLaneRig{primary: newKillablePane(), lanePane: newKillablePane()}
 	r.s = newServer(serverConfig{Bearer: "b", ConfigDir: cfg, SubmitTimeout: 200 * time.Millisecond}, r.primary, newAuthTracker())
 	r.sup = newSupervisor(r.primary, "claude", cfg, "/data/workspace")
 	fastRestarts(r.sup)
@@ -45,94 +44,10 @@ func newLatchRig(t *testing.T) *latchRig {
 	return r
 }
 
-func (r *latchRig) laneStarts() int {
+func (r *primaryLaneRig) laneStarts() int {
 	r.lanePane.mu.Lock()
 	defer r.lanePane.mu.Unlock()
 	return r.lanePane.starts
-}
-
-// 🔴 A HEALTHY LANE IS NOT HOSTAGE TO THE PRIMARY'S RESTART. A lane may not
-// START before the primary has started once in this process (lanes.go), but
-// once it has, the primary's CLI dying (SIGKILL, OOM: no SessionEnd) and
-// sitting in its respawn must not refuse a turn to a lane that is up — muster's
-// interactive chat does not re-send a 503 not_ready, so the user's message was
-// lost. Here the primary is killed and HELD in its respawn; the lane's turn
-// must reach the lane's pane (pasted; unsubmitted, so it times out 504).
-func TestALaneTurnIsServedWhileThePrimaryRestarts(t *testing.T) {
-	laneServedWhileThePrimaryRestarts(t, func(r *latchRig) { r.primary.kill() })
-}
-
-// The same after the primary's SessionEnd (an operator's /exit), which clears
-// its CURRENT readiness (sessionStarted) like an exit does — but the latch
-// (startedOnce) must hold: SessionEnd is followed by a restart, not by "the
-// primary has never started".
-func TestALaneTurnIsServedWhileThePrimaryRestartsAfterSessionEnd(t *testing.T) {
-	laneServedWhileThePrimaryRestarts(t, func(r *latchRig) {
-		r.s.onHook(hookEvent{Event: "SessionEnd", SessionID: "11111111-2222-4333-8444-555555555555"})
-		r.primary.kill()
-	})
-}
-
-// laneServedWhileThePrimaryRestarts: a ready lane, then end(r) takes the
-// primary's CLI down; held in its respawn, a turn to the lane must reach the
-// lane's pane.
-func laneServedWhileThePrimaryRestarts(t *testing.T, end func(r *latchRig)) {
-	t.Helper()
-	r := newLatchRig(t)
-	r.s.onHook(hookEvent{Event: "SessionStart", SessionID: "11111111-2222-4333-8444-555555555555"})
-
-	ctx := context.Background()
-	ln, f := r.l.acquire(ctx, "sess-a", "")
-	if f != nil {
-		t.Fatalf("control: a lane starts once the primary has started: %+v", f)
-	}
-	t.Cleanup(ln.stop)
-	ln.srv.onHook(hookEvent{Event: "SessionStart", SessionID: laneUUID("sess-a")})
-	if f := ln.waitStarted(ctx, 5*time.Second); f != nil {
-		t.Fatalf("control: the lane never became ready: %+v", f)
-	}
-	r.l.release(ln)
-
-	end(r)
-	select {
-	case <-r.primary.respawning:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the supervisor never respawned the killed primary")
-	}
-	// Held in Respawn (gate not closed): the primary is down, its SessionStart cleared.
-	if r.s.started() {
-		t.Fatal("control: the killed primary's SessionStart was not cleared (#156)")
-	}
-	if code, body := turnStatus(t, r.s, "sess-a"); code != http.StatusGatewayTimeout || r.lanePane.pasted() != 1 {
-		t.Fatalf("LANE HOSTAGE TO THE PRIMARY: a turn to a running, ready lane while the primary CLI restarts: "+
-			"status %d, %d paste(s) into the lane, body %s; want the turn pasted into the lane (504 unsubmitted here)",
-			code, r.lanePane.pasted(), body)
-	}
-	close(r.primary.gate)
-}
-
-// The gate the latch keeps: no lane STARTS before the primary's first
-// SessionStart in this process (lanes.go; it was added for the primary's
-// `--continue`, which supervisor.argv no longer uses — see server.runLanes).
-// The primary's CLI is
-// running here but has not sent SessionStart; the lane is refused 503 not_ready
-// and never started. Control: after the SessionStart it starts.
-func TestNoLaneStartsBeforeThePrimarysFirstSessionStart(t *testing.T) {
-	r := newLatchRig(t)
-	code, body := turnStatus(t, r.s, "sess-a")
-	if code != http.StatusServiceUnavailable || !strings.Contains(body, failNotReady) ||
-		!strings.Contains(body, "the original Claude Code session has not started yet") || r.laneStarts() != 0 {
-		t.Fatalf("a lane turn before the primary's first SessionStart: status %d, %d lane start(s), body %s; "+
-			"want 503 not_ready (the original session has not started) and no lane started", code, r.laneStarts(), body)
-	}
-	r.s.onHook(hookEvent{Event: "SessionStart", SessionID: "11111111-2222-4333-8444-555555555555"})
-	ln, f := r.l.acquire(context.Background(), "sess-a", "")
-	if f != nil {
-		t.Fatalf("control: after the primary's SessionStart a lane starts: %+v", f)
-	}
-	t.Cleanup(ln.stop)
-	r.l.release(ln)
-	waitUntil(t, "the lane's CLI started", func() bool { return r.laneStarts() == 1 })
 }
 
 // 🟢 cliExited clears busy too. A lane whose CLI is killed mid-turn — the
@@ -189,7 +104,7 @@ func TestALaneKilledMidTurnIsEvictableWhileItRestarts(t *testing.T) {
 // primary would resume the LANE's conversation. The respawn must name the
 // primary's own conversation by id.
 func TestThePrimaryRespawnDoesNotContinueALaneThatWritesDuringItsBoot(t *testing.T) {
-	r := newLatchRig(t)
+	r := newPrimaryLaneRig(t)
 	const primary = "0f0e0d0c-0b0a-4908-8706-050403020100"
 	dir := projectDir(r.sup.configDir, r.sup.workspace)
 	writeAt := func(id string, at time.Time) {
@@ -198,15 +113,15 @@ func TestThePrimaryRespawnDoesNotContinueALaneThatWritesDuringItsBoot(t *testing
 			t.Fatal(err)
 		}
 		p := filepath.Join(dir, id+".jsonl")
-		if err := os.WriteFile(p, []byte("{}\n"), 0o600); err != nil {
+		if err := os.WriteFile(p, []byte(cliTranscript), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.Chtimes(p, at, at); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// The primary's first prompt wrote its transcript; its SessionStart set the
-	// latch but recorded nothing.
+	// The primary's first prompt wrote its transcript; its SessionStart recorded
+	// nothing.
 	writeAt(primary, time.Now().Add(-time.Hour))
 	r.s.onHook(hookEvent{Event: "SessionStart", SessionID: primary})
 	if _, err := os.Stat(filepath.Join(r.sup.configDir, primaryRecordFile)); !errors.Is(err, os.ErrNotExist) {
@@ -215,7 +130,7 @@ func TestThePrimaryRespawnDoesNotContinueALaneThatWritesDuringItsBoot(t *testing
 
 	ln, f := r.l.acquire(context.Background(), "sess-a", "")
 	if f != nil {
-		t.Fatalf("control: a lane starts once the primary has started: %+v", f)
+		t.Fatalf("control: the lane starts: %+v", f)
 	}
 	t.Cleanup(ln.stop)
 	r.l.release(ln)
@@ -253,5 +168,73 @@ func TestThePrimaryRespawnDoesNotContinueALaneThatWritesDuringItsBoot(t *testing
 	if got != primary {
 		t.Fatalf("THE PRIMARY RESUMED %q (argv %q), want its own conversation %s (the lane's is %s)",
 			got, argv, primary, laneUUID("sess-a"))
+	}
+}
+
+// 🔴 A LANE IS NOT HOSTAGE TO A PRIMARY THAT NEVER STARTS. A lane turn is
+// served while the primary has not sent SessionStart in this process at all:
+// its CLI is up but never reaches its prompt (no SessionStart ever comes), or
+// it is down and held in its respawn (a crash loop). (A primary that is not
+// logged in is NOT this case for long: lanes share its config dir, so a lane is
+// not logged in either.) The primary resumes by id, never a
+// bare --continue (supervisor.argv), so there is nothing for a lane started
+// first to take from it — and muster's interactive chat does not re-send a 503
+// not_ready, so refusing the turn loses the user's message.
+func TestALaneTurnIsServedWhileThePrimaryHasNeverStarted(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		down func(r *primaryLaneRig)
+	}{
+		{"never reaches its prompt", func(*primaryLaneRig) {}},
+		{"crash-looping", func(r *primaryLaneRig) {
+			r.primary.kill()
+			select {
+			case <-r.primary.respawning:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the supervisor never respawned the killed primary")
+			}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newPrimaryLaneRig(t)
+			r.l.startTimeout = 5 * time.Second
+			c.down(r)
+			if r.s.started() {
+				t.Fatal("control: the primary has never sent SessionStart")
+			}
+			type res struct {
+				code int
+				body string
+			}
+			done := make(chan res, 1)
+			go func() { code, body := turnStatus(t, r.s, "sess-a"); done <- res{code, body} }()
+			// The lane's CLI starts for this turn and sends its SessionStart.
+			var ln *lane
+			deadline := time.Now().Add(5 * time.Second)
+			for ln == nil && time.Now().Before(deadline) {
+				select {
+				case got := <-done:
+					t.Fatalf("LANE HOSTAGE TO A PRIMARY THAT NEVER STARTED (%s): status %d, %d lane start(s), body %s; "+
+						"want the lane started and the turn pasted into it", c.name, got.code, r.laneStarts(), got.body)
+				default:
+				}
+				ln = r.l.get(laneID("sess-a"))
+				time.Sleep(5 * time.Millisecond)
+			}
+			if ln == nil {
+				t.Fatal("the lane was never started")
+			}
+			t.Cleanup(ln.stop)
+			waitUntil(t, "the lane's CLI started", func() bool { return r.laneStarts() == 1 })
+			ln.srv.onHook(hookEvent{Event: "SessionStart", SessionID: laneUUID("sess-a")})
+			got := <-done
+			if got.code != http.StatusGatewayTimeout || r.lanePane.pasted() != 1 {
+				t.Fatalf("LANE HOSTAGE TO A PRIMARY THAT NEVER STARTED (%s): status %d, %d paste(s) into the lane, body %s; "+
+					"want the turn pasted into the lane (504 unsubmitted here)", c.name, got.code, r.lanePane.pasted(), got.body)
+			}
+			if c.name == "crash-looping" {
+				close(r.primary.gate)
+			}
+		})
 	}
 }

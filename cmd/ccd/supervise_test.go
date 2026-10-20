@@ -96,7 +96,7 @@ func writeTranscript(t *testing.T, cfg, projDir string) {
 	if err := os.MkdirAll(d, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(d, "11111111-2222-4333-8444-555555555555.jsonl"), []byte("{}\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(d, "11111111-2222-4333-8444-555555555555.jsonl"), []byte(cliTranscript), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }

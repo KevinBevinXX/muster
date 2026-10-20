@@ -119,7 +119,7 @@ func TestThePrimaryFallbackNeverResumesALane(t *testing.T) {
 	sup := newSupervisor(nil, "claude", cfg, ws)
 	write := func(id string, at time.Time) {
 		p := filepath.Join(dir, id+".jsonl")
-		if err := os.WriteFile(p, []byte("{}\n"), 0o600); err != nil {
+		if err := os.WriteFile(p, []byte(cliTranscript), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.Chtimes(p, at, at); err != nil {

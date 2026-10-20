@@ -105,7 +105,7 @@ func TestSeedRefusesToReplaceAnUnwritableDirectoryThatHoldsFiles(t *testing.T) {
 	err, _ := seedErr(filepath.Join(volume, "claude"), filepath.Join(parent, "app"))
 	if err == nil || !strings.Contains(err.Error(), parent+" is a directory this process") ||
 		!strings.Contains(err.Error(), "could not be replaced") ||
-		!strings.Contains(err.Error(), unwritableRecovery(parent, os.Getuid())) {
+		!strings.Contains(err.Error(), unwritableRecovery(parent)) {
 		t.Fatalf("seed error = %v, want one naming %s as unwritable and not replaceable, and how to recover", err, parent)
 	}
 	if b, rerr := os.ReadFile(filepath.Join(other, "keep")); rerr != nil || string(b) != "x" {
@@ -158,35 +158,51 @@ func TestSeedLeavesAWritableWorkspaceAlone(t *testing.T) {
 // A SYMLINK on the path is never replaced, whatever it points at. os.Remove on
 // a symlink deletes the link, not its target, so the rmdir-only guarantee ("a
 // non-empty directory is never replaced") does not hold through one: before
-// this test, a workspace symlinked to a non-empty unwritable directory was
+// #162, a workspace symlinked to a non-empty unwritable directory was
 // unlinked, logged as "an empty directory", and recreated empty — the target's
-// files no longer at the workspace path.
+// files no longer at the workspace path. A link to an EMPTY unwritable
+// directory is refused too: the link is the operator's, not a directory this
+// process could have made.
 //
 // Both places the loop can reach a symlink: the workspace itself (an agent
 // without a repository) and the workspace's deepest existing ancestor (with
 // one: CCD_WORKSPACE=/data/workspace/<repo>, the link at /data/workspace).
-func TestSeedRefusesToReplaceASymlinkToANonEmptyUnwritableDirectory(t *testing.T) {
-	for _, tc := range []struct{ name, under string }{{"workspace itself", ""}, {"ancestor of the workspace", "app"}} {
+func TestSeedRefusesToReplaceASymlinkToAnUnwritableDirectory(t *testing.T) {
+	for _, tc := range []struct {
+		name, under string
+		empty       bool
+	}{
+		{"workspace itself", "", false},
+		{"ancestor of the workspace", "app", false},
+		{"workspace itself, empty target", "", true},
+		{"ancestor of the workspace, empty target", "app", true},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			volume, target := volumeWithUnwritableDir(t, "target")
-			if err := os.Chmod(target, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(target, "keep"), []byte("x"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Chmod(target, 0o555); err != nil {
-				t.Fatal(err)
+			if !tc.empty {
+				if err := os.Chmod(target, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(target, "keep"), []byte("x"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(target, 0o555); err != nil {
+					t.Fatal(err)
+				}
 			}
 			link := filepath.Join(volume, "workspace")
 			if err := os.Symlink(target, link); err != nil {
 				t.Fatal(err)
 			}
+			resolved, err := filepath.EvalSymlinks(target)
+			if err != nil {
+				t.Fatal(err)
+			}
 			err, log := seedErr(filepath.Join(volume, "claude"), filepath.Join(link, tc.under))
 			if err == nil || !strings.Contains(err.Error(), link+" is a symlink to a directory this process (uid") ||
 				!strings.Contains(err.Error(), "mode d") || !strings.Contains(err.Error(), "a symlink is never replaced") ||
-				!strings.Contains(err.Error(), unwritableRecovery(link, os.Getuid())) {
-				t.Fatalf("seed error = %v, want one naming %s as a symlink, with its mode", err, link)
+				!strings.Contains(err.Error(), unwritableRecovery(resolved)) {
+				t.Fatalf("seed error = %v, want one naming %s as a symlink, with its mode, and the fix at its target %s", err, link, resolved)
 			}
 			if strings.Contains(log, "replaced") {
 				t.Fatalf("seed logged a replacement: %q", log)
@@ -194,10 +210,55 @@ func TestSeedRefusesToReplaceASymlinkToANonEmptyUnwritableDirectory(t *testing.T
 			if got, lerr := os.Readlink(link); lerr != nil || got != target {
 				t.Fatalf("the symlink was changed: %q %v, want -> %s", got, lerr, target)
 			}
-			if b, rerr := os.ReadFile(filepath.Join(target, "keep")); rerr != nil || string(b) != "x" {
-				t.Fatalf("the target's file was touched: %q %v", b, rerr)
+			entries, rerr := os.ReadDir(target)
+			if rerr != nil || (tc.empty && len(entries) != 0) {
+				t.Fatalf("the target was touched: %v %v", entries, rerr)
+			}
+			if !tc.empty {
+				if b, rerr := os.ReadFile(filepath.Join(target, "keep")); rerr != nil || string(b) != "x" {
+					t.Fatalf("the target's file was touched: %q %v", b, rerr)
+				}
 			}
 		})
+	}
+}
+
+// 🔴 THE REMOVAL ITSELF NEVER DELETES ANYTHING BUT AN EMPTY DIRECTORY, whatever
+// is at the path by the time it runs — ensureWritableDir's Lstat refuses a
+// symlink first, so only this reaches the primitive with one (what a symlink
+// swapped in after that check would meet). os.Remove would unlink the link and
+// the file (unlink(2) before rmdir(2)).
+func TestRemoveEmptyDirRemovesOnlyAnEmptyDirectory(t *testing.T) {
+	d := t.TempDir()
+	empty, full, file, link := filepath.Join(d, "empty"), filepath.Join(d, "full"), filepath.Join(d, "file"), filepath.Join(d, "link")
+	for _, dir := range []string{empty, full} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(full, "keep"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(empty, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{link, file, full} {
+		if err := removeEmptyDir(p); err == nil {
+			t.Errorf("removeEmptyDir(%s) succeeded; want it refused", filepath.Base(p))
+		}
+		if _, err := os.Lstat(p); err != nil {
+			t.Errorf("REMOVED: %s is gone after removeEmptyDir: %v", filepath.Base(p), err)
+		}
+	}
+	// Control: an empty directory is removed.
+	if err := removeEmptyDir(empty); err != nil {
+		t.Fatalf("control: removeEmptyDir(empty) = %v", err)
+	}
+	if _, err := os.Lstat(empty); !os.IsNotExist(err) {
+		t.Fatalf("control: the empty directory is still there: %v", err)
 	}
 }
 
@@ -224,22 +285,17 @@ func TestSeedUsesASymlinkToAWritableDirectory(t *testing.T) {
 }
 
 // A refusal must say how to recover: the pod never starts, so `kubectl exec` into
-// it is impossible. The command named depends on who owns the directory — only
-// root can make a root-owned one writable by uid 1000; its owner can chmod it.
-func TestUnwritableRecoveryNamesADebugPodAndTheRightCommand(t *testing.T) {
-	me := os.Getuid()
-	other := me + 1
-	for _, tc := range []struct {
-		owner int
-		want  string
-	}{
-		{other, "run `chown " + strconv.Itoa(me) + " /data/workspace` as root"},
-		{me, "run `chmod u+w /data/workspace`"},
-	} {
-		got := unwritableRecovery("/data/workspace", tc.owner)
-		if !strings.Contains(got, tc.want) || !strings.Contains(got, "`kubectl exec` into it is impossible") ||
-			!strings.Contains(got, "debug pod that mounts the agent's volume (PVC <agent>-workspace) at /data") {
-			t.Errorf("owner %d: %q, want it to name a debug pod and %q", tc.owner, got, tc.want)
-		}
+// it is impossible. The fix runs from a debug pod in the agent's namespace and is
+// ONE command whoever owns the directory: `chown -R` (only root can make a
+// root-owned one this uid's) then `chmod u+rwx` (an owner without write).
+func TestUnwritableRecoveryNamesADebugPodAndTheCommand(t *testing.T) {
+	got := unwritableRecovery("/data/workspace")
+	want := "The agent's pod cannot start until it is fixed, so `kubectl exec` into it is impossible: " +
+		"from a debug pod in the agent's namespace (`<MUSTER_AGENT_NAMESPACE_PREFIX><agent>`, e.g. " +
+		"`muster-agent-<agent>`) that mounts the agent's volume (PVC <agent>-workspace) at /data, run " +
+		"`chown -R " + strconv.Itoa(os.Getuid()) + " /data/workspace && chmod u+rwx /data/workspace` as root " +
+		"(see docs/provisioner.md, \"A workspace ccd cannot write in\")"
+	if got != want {
+		t.Errorf("unwritableRecovery:\n got %q\nwant %q", got, want)
 	}
 }

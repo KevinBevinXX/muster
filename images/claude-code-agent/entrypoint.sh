@@ -11,8 +11,10 @@
 # (terminal_lost): ccd never starts a second CLI beside one it can no longer see.
 #
 # 🔴 EVERY START RESUMES THE SAME CONVERSATION WHEN THERE IS ONE: ccd runs
-# `claude --continue` when CLAUDE_CONFIG_DIR already holds a transcript for the
-# workspace, and plain `claude` only when it holds none. CLAUDE_CONFIG_DIR must
+# `claude --resume <id>` — the primary's recorded session id, else the newest
+# interactive, non-lane transcript for the workspace (never a bare `--continue`,
+# which could pick a lane's conversation) — and plain `claude` only when there is
+# none. CLAUDE_CONFIG_DIR must
 # therefore be on a persistent volume (as must the workspace) — wiring that volume
 # is the provisioner's job, not this image's.
 set -euo pipefail

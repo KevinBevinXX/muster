@@ -104,10 +104,6 @@ type server struct {
 
 	mu             sync.Mutex
 	sessionStarted bool
-	// startedOnce: a SessionStart has arrived in this process. Set with the
-	// first one and NEVER cleared — not by SessionEnd, not by cliExited — so it
-	// says the CLI has started once, not that it is up now (startedEver).
-	startedOnce    bool
 	sessionEnded   bool // a SessionEnd arrived and no SessionStart since
 	sessionID      string
 	transcriptPath string // the session's transcript, as the last hook named it
@@ -155,37 +151,11 @@ func (s *server) started() bool {
 	return s.sessionStarted
 }
 
-// startedEver reports whether the session has sent SessionStart at any time in
-// this process: a one-way latch, unlike started (see runLanes).
-func (s *server) startedEver() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.startedOnce
-}
-
-// runLanes makes l the lanes s (the primary's server) runs, gated on the
-// primary's FIRST SessionStart in this process (lanes.go: no lane starts before
-// the primary has started once).
-//
-// 🔴 THE LATCH, NOT started(). started() is the CURRENT CLI's readiness, and
-// every exit clears it (cliExited) — SIGKILL and OOM included. Gating lanes on
-// it refused EVERY turn to a running, ready lane, 503 not_ready, for as long as
-// the primary's CLI was restarting (its backoff plus its boot; until the pod
-// restarted if it crash-looped), and muster's interactive chat does not re-send
-// a not_ready: the user's message was lost. A lane's OWN restart is still
-// refused until ITS new SessionStart (lane.waitStarted).
-//
-// ⚠ WHAT THE GATE DOES NOT DO. It was added so the primary's first start, then
-// possibly a bare `--continue`, could not see a lane's transcript. It never
-// protected a primary that RESTARTS: with its id unrecorded (the pid lookup
-// timed out, or the ancestry check missed) and a lane running that had not yet
-// written a transcript, the respawn's `--continue` could resolve — as the CLI
-// booted — to a lane's first transcript written in that window
-// (TestThePrimaryRespawnDoesNotContinueALaneThatWritesDuringItsBoot). That is
-// closed in supervisor.argv, which no longer uses `--continue` at all; the gate
-// does not close it.
+// runLanes makes l the lanes s (the primary's server) runs. No lane waits for
+// the primary: it may start before the primary has ever sent SessionStart
+// (lanes.go), and a primary that is restarting, not logged in or crash-looping
+// does not refuse a lane's turn.
 func (s *server) runLanes(l *lanes) {
-	l.primaryStarted = s.startedEver
 	s.lanes = l
 }
 
@@ -296,6 +266,14 @@ func (s *server) handleHook(w http.ResponseWriter, r *http.Request) {
 			log.Printf("ccd: record the primary session id: %v", err)
 		}
 	}
+	// A session a lane's hooks name that is not marked as a lane's (/clear in
+	// the lane's CLI) is recorded so the primary's unrecorded fallback never
+	// resumes it (newestPrimaryTranscript).
+	if target != s && strings.EqualFold(ev.Event, "sessionstart") && ev.SessionID != "" {
+		if err := recordLaneSession(s.cfg.ConfigDir, ev.SessionID); err != nil {
+			log.Printf("ccd: record lane session %s: %v", ev.SessionID, err)
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -324,7 +302,6 @@ func (s *server) supervisedBy(sup *supervisor) {
 // supervisor.run) — and an exited CLI is not mid-turn: busy is cleared too, so a
 // lane killed mid-turn is idle (evictable at the cap) while it restarts, and
 // /healthz does not call a dead CLI busy (TestALaneKilledMidTurnIsEvictableWhileItRestarts).
-// startedOnce is NOT cleared: it is a latch (runLanes).
 //
 // ⚠ KNOWN NARROW GAP, NOT CLOSED: a SessionStart hook sent by the DEAD CLI that
 // lands AFTER this clear — its orphaned `ccd hook` child still POSTing when
@@ -375,7 +352,6 @@ func (s *server) onHook(ev hookEvent) {
 		// workspace trust dialog (hooks do not run in an untrusted workspace), so it
 		// is the readiness signal that does not depend on reading the screen.
 		s.sessionStarted, s.sessionEnded, s.sessionID, s.busy = true, false, ev.SessionID, false
-		s.startedOnce = true
 		s.transcriptPath = ev.TranscriptPath
 	case "sessionend":
 		// The session is ending (an operator's /exit, after which the supervisor
@@ -1094,6 +1070,14 @@ func (s *server) laneFor(ctx context.Context, key, model string) (*lane, *failur
 	if model != "" && !laneModelPattern.MatchString(model) {
 		return nil, &failure{Status: http.StatusBadRequest, Type: failInvalidInput,
 			Message: fmt.Sprintf("%q is not a Claude model ccd will pass to --model", model)}
+	}
+	// 🔴 No lane before the repository is checked out — the primary is held back
+	// the same way (main.go, checkout.wait). A lane CLI in the empty workspace
+	// would run without the repository's CLAUDE.md and .claude/, and a file it
+	// wrote there would make every later clone refuse the directory, so the
+	// primary would never start (TestNoLaneStartsBeforeTheCheckoutExists).
+	if s.checkout != nil && !s.checkout.ready() {
+		return nil, paneNotReady(s.checkout.notReady())
 	}
 	ln, f := s.lanes.acquire(ctx, key, model)
 	if f != nil {
