@@ -75,3 +75,39 @@ func TestAReleasedTasksNewStartCountsAsLiveUntilItsAgentIsRecorded(t *testing.T)
 		t.Fatalf("a third start with two in flight (one on the released task): %v; want ErrChiefLiveCap", err)
 	}
 }
+
+// TestAPriorStartNamesOnlyItsOwnAgentAfterARelease: after a release, a new
+// start that never recorded an agent answers Prior with NO agent — never the
+// older, already-destroyed agent of the released start (audit round 2).
+func TestAPriorStartNamesOnlyItsOwnAgentAfterARelease(t *testing.T) {
+	s, _, dsn := pgStore(t)
+	dbtest.OwnerExec(t, dsn, `DELETE FROM audit_log WHERE action LIKE 'task.chief_%'`)
+	const task, destroyed = 670, 990009
+	if _, err := s.ReserveChiefDispatch(session(2), task, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordChiefDispatchAgent(session(2), task, destroyed); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := s.ReserveChiefDispatch(session(2), task, nil, nil); err != nil || !r.Prior || r.AgentID == nil || *r.AgentID != destroyed {
+		t.Fatalf("control: before the release the repeat names its agent: %+v %v", r, err)
+	}
+	if wrote, err := s.ReleaseChiefDispatch(session(2), task, destroyed); err != nil || !wrote {
+		t.Fatalf("release: %v %v", wrote, err)
+	}
+	if r, err := s.ReserveChiefDispatch(session(2), task, nil, nil); err != nil || r.Prior {
+		t.Fatalf("the new start: %+v %v", r, err)
+	}
+	// That start fails before any agent is recorded; the repeat:
+	r, err := s.ReserveChiefDispatch(session(2), task, nil, nil)
+	if err != nil || !r.Prior || r.AgentID != nil {
+		t.Fatalf("the repeat after an agentless start: %+v (agent %v) %v; want Prior with no agent", r, deref(r.AgentID), err)
+	}
+}
+
+func deref(p *int64) any {
+	if p == nil {
+		return nil
+	}
+	return *p
+}

@@ -203,7 +203,7 @@ func taskRoutingToolDefs(dispatch bool) []agents.ToolDef {
 		defs = append(defs, agents.ToolDef{Type: "function", Name: taskDispatchTool,
 			Description: "Start a new agent on one of your owner's open, ungated tasks. Only with your owner's opt-in; at most " +
 				strconv.Itoa(plugins.MaxChiefLiveAgents) + " of the agents you start live at once and " +
-				strconv.Itoa(plugins.MaxChiefDispatchesPerDay) + " a day; once per task (calling it again answers with the first start), until your owner destroys the agent you started there. " +
+				strconv.Itoa(plugins.MaxChiefDispatchesPerDay) + " a day; once per task (calling it again answers with that start), until your owner destroys the agent you started there. " +
 				"The agent opens a DRAFT pull request at most and never marks the task complete. " +
 				"It starts a claude-code agent (a Claude Code pod) unless you pass kind \"gateway\" or this deployment has no " +
 				"claude-code. Either kind works in the task's repository, or the one you pass: a claude-code agent's session " +
@@ -498,7 +498,7 @@ func (e errTaskDispatch) Error() string { return string(e) }
 // anything, the instructions' cap, the kind (known, enabled, usable by the owner:
 // resolveKind), a repo that is not one of the owner's connected repositories,
 // then — under the owner's reservation lock — the one start per task (a repeat
-// answers with the first), the task (the owner's, open, ungated, nobody on it,
+// answers with the latest start), the task (the owner's, open, ungated, nobody on it,
 // no repository other than `repo`), and the two caps. Only a reservation that
 // passed all of them spends a unit, and only then is the agent created. A Claude
 // account pool with no usable account is found only at the create, after the
@@ -628,6 +628,13 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 		}
 		next := "An agent was already started for this task and none is running or starting now; nothing new was started. " +
 			"Use task_route_attention: only your owner can start another (or destroy the one you started, which lets you start one more)."
+		if res.AgentID == nil {
+			// No agent is recorded for the start (it failed before one existed):
+			// nothing to destroy, so it cannot be released
+			// (plugins.ReleaseChiefDispatch).
+			next = "A start for this task was already made and no agent of it is recorded; nothing new was started. " +
+				"Use task_route_attention: only your owner can start another."
+		}
 		switch state {
 		case "running":
 			if n, ok := s.ownersTask(ctx, a, taskID); ok {

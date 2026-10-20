@@ -16,6 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
@@ -598,4 +599,41 @@ func TestOnlyAMirroredSessionCanDestroyAnAgent(t *testing.T) {
 		t.Fatalf("control: %s", text)
 	}
 	f.waitGone(t, target.ID)
+}
+
+// TestAgentDestroyKeepsToTheOwnersAgentsWithRLSOff: with row-level security
+// rolled back (db.RLSOff, a real rollback mode), the store reads another
+// owner's agent, so the tool's own owner comparison is the ONLY guard: user
+// 1's session asking for the member's worker, by id or by name, is told "no
+// such agent" and nothing reaches the provisioner. CONTROL: the same call for
+// user 1's own agent, under the same RLS-off, destroys it.
+func TestAgentDestroyKeepsToTheOwnersAgentsWithRLSOff(t *testing.T) {
+	f := newDestroyFixture(t)
+	if err := db.RLSOff(context.Background(), f.pool); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := db.RLSOn(context.Background(), f.pool); err != nil {
+			t.Errorf("RLSOn: %v", err)
+		}
+	})
+	if got, err := f.srv.ext.Agents.Get(asUser(1), f.worker.ID); err != nil || got.ID != f.worker.ID {
+		t.Fatalf("positive control: with RLS off user 1 cannot read the member's worker (%v): the owner guard would not be what is tested", err)
+	}
+	for want, args := range map[string]map[string]any{
+		`{"error":"no such agent: ` + strconv.FormatInt(f.worker.ID, 10) + `"}`: {"id": f.worker.ID},
+		`{"error":"no such agent: ` + f.worker.Name + `"}`:                      {"name": f.worker.Name},
+	} {
+		if text, _ := f.destroy(t, f.ws, focusSID, args); text != want {
+			t.Errorf("another owner's agent %v with RLS off: %s\nwant %s", args, text, want)
+		}
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := f.prov.destroyedIDs(); len(got) != 0 || !f.exists(t, f.worker.ID) {
+		t.Fatalf("with RLS off another owner's agent was destroyed: %v", got)
+	}
+	if text, isErr := f.destroy(t, f.ws, focusSID, map[string]any{"id": f.op.ID}); isErr {
+		t.Fatalf("control: %s", text)
+	}
+	f.waitGone(t, f.op.ID)
 }

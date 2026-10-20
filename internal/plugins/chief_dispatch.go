@@ -160,10 +160,14 @@ func (s *PGStore) ReserveChiefDispatch(ctx context.Context, taskID int64, detail
 		}
 		if reserved > released {
 			out.Prior = true
+			// The agent of THIS (the latest) reservation only — its row is newer
+			// than the reservation. An older agent row is a start that was
+			// released (its agent destroyed), and naming it would answer with an
+			// agent that no longer exists (audit round 2).
 			var agentID int64
 			err := tx.QueryRow(ctx, `SELECT (detail->>'agent_id')::bigint FROM audit_log
-				WHERE action = $1 AND object = $2 AND user_id = $3 ORDER BY id DESC LIMIT 1`,
-				ActionChiefDispatchAgent, NoteObject(taskID), p.UserID).Scan(&agentID)
+				WHERE action = $1 AND object = $2 AND user_id = $3 AND id > $4 ORDER BY id DESC LIMIT 1`,
+				ActionChiefDispatchAgent, NoteObject(taskID), p.UserID, reserved).Scan(&agentID)
 			switch {
 			case err == nil:
 				out.AgentID = &agentID

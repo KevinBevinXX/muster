@@ -407,10 +407,16 @@ with the kind, any instructions and the id of the attention ask they are your
 answer to (`instructions_ask`) — and, for an answer given over MCP,
 `instructions_via: "mcp"` and `instructions_from: "<host>/<session>"` — so you
 can read what the chief told the agent and where it came from) **before** the agent is created, so a start that then fails still
-spends the day's unit and the task's one start (until a release). That includes a claude-code
+spends the day's unit and the task's one start. That includes a claude-code
 start whose account pool has no usable account: the pool is asked only at the
 create. The agent's id is recorded beside it (`task.chief_dispatch_agent`); the
 caps are counted from those rows.
+
+Only a start whose agent was **recorded** (`task.chief_dispatch_agent`) can be
+released, by destroying that agent. ⚠ A start that failed before any agent
+existed stays spent for good — there is nothing to destroy — and
+`task_dispatch` answers `already_dispatched` with no `agent_id`: a new agent on
+that task is yours to start, from its card.
 
 The agent's first message is the chief's `instructions`, if any (control
 characters removed, fenced under a line saying the chief relayed them — and,
