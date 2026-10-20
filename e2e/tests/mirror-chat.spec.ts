@@ -206,7 +206,7 @@ const fromBottom = (page: Page, sel = '#mv-log') =>
   page.locator(sel).evaluate((l) => l.scrollHeight - l.scrollTop - l.clientHeight);
 
 // B2: a bubble over ~12 lines is clamped with a fade and a control; a tap opens
-// it to its full height (animated), another closes it; a short one is untouched;
+// it to its full height (animated), "Show less" closes it; a short one is untouched;
 // opening the newest at the bottom keeps the log at the bottom.
 test('a long bubble is clamped, a tap expands it to full height and back, a short one is not clamped, and the log stays at the bottom', async ({ page }) => {
   const tr = newTranscript(prompt('a short question') + reply(lines(40, 'answer')) + prompt(lines(30, 'my long message')));
@@ -248,7 +248,7 @@ test('a long bubble is clamped, a tap expands it to full height and back, a shor
   await expect(toggle).toHaveText('Show less');
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
 
-  // Tap again (the control this time) collapses it back to the clamp.
+  // The control ("Show less") collapses it back to the clamp.
   await toggle.tap();
   await expect(newest).toHaveAttribute('data-clamp', 'closed');
   await expect.poll(() => newest.evaluate((e) => e.clientHeight)).toBe(before);
@@ -307,6 +307,44 @@ test('tapping a code block summary inside a clamped bubble toggles only the code
   // The bubble itself still toggles.
   await b.locator('p').last().tap();
   await expect(b).toHaveAttribute('data-clamp', 'open');
+});
+
+// A tap on the BUBBLE only ever opens it: a second tap on the open bubble
+// leaves it open, and only "Show less" closes it.
+test('a tap opens a clamped bubble, a second tap leaves it open, and only Show less closes it', async ({ page }) => {
+  const tr = newTranscript(prompt(lines(30, 'tap target')));
+  await openView(page, tr);
+  const b = page.locator('#mv-log [data-bubble="user"]').first();
+  const toggle = b.locator('xpath=following-sibling::*[1]');
+  await expect(b).toHaveAttribute('data-clamp', 'closed');
+  await expect(toggle).toHaveText('Show more');
+  const closedH = await b.evaluate((e) => e.clientHeight);
+
+  await b.tap();
+  await expect(b).toHaveAttribute('data-clamp', 'open');
+  await expect(toggle).toHaveText('Show less');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  const openH = await b.evaluate((e) => e.clientHeight);
+  expect(openH, 'it opened').toBeGreaterThan(closedH);
+
+  // A second tap, and a mouse click, on the open bubble: past the animation's
+  // own 600ms finish timer it is still open, at its full height.
+  await b.tap();
+  await page.waitForTimeout(700);
+  await expect(b).toHaveAttribute('data-clamp', 'open');
+  await b.click();
+  await page.waitForTimeout(700);
+  await expect(b).toHaveAttribute('data-clamp', 'open');
+  expect(await b.evaluate((e) => e.clientHeight), 'still at its full height').toBe(openH);
+  await expect(toggle).toHaveText('Show less');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+
+  // Show less closes it, back to the clamp.
+  await toggle.tap();
+  await expect(b).toHaveAttribute('data-clamp', 'closed');
+  await expect.poll(() => b.evaluate((e) => e.clientHeight)).toBe(closedH);
+  await expect(toggle).toHaveText('Show more');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
 });
 
 // The agent chat specs below drive an agent of their OWN (e2e/mkchat) with a
@@ -393,8 +431,9 @@ test('an opened persisted message stays open across a chat-log refresh', async (
   expect(await page.evaluate(() => (window as any).__states), 'no animation: never "moving"').not.toContain('moving');
   await expect(fresh.locator('xpath=following-sibling::*[1]')).toHaveText('Show less');
 
-  // Collapsing it is remembered too.
-  await fresh.tap();
+  // Collapsing it (with "Show less": a tap on the bubble never collapses) is
+  // remembered too.
+  await fresh.locator('xpath=following-sibling::*[1]').tap();
   await expect(fresh).toHaveAttribute('data-clamp', 'closed');
   await refreshChatLog(page);
   await expect(log.locator(`[data-msg-id="${id}"]`)).toHaveAttribute('data-clamp', 'closed');

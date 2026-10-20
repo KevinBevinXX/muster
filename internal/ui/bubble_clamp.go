@@ -7,8 +7,12 @@ import (
 
 // BUBBLE CLAMP: a chat bubble taller than about twelve lines is drawn clamped —
 // its top twelve lines, fading out, and a "Show more" control under it. A tap on
-// the bubble or the control animates it open to its full height; another tap
-// closes it again.
+// the closed bubble or on "Show more" animates it open to its full height.
+//
+// 🔴 A TAP ON THE BUBBLE ONLY EVER OPENS IT. A tap on an OPEN bubble does
+// nothing to the clamp — the reader is reading it, and a stray tap must not
+// fold the text away under their thumb. The ONLY way to close it is the
+// control under it, which reads "Show less" while the bubble is open.
 //
 // 🔴 ONE SCRIPT FOR BOTH CLAMPED SURFACES, BECAUSE THE BUBBLES ARE ONE
 // COMPONENT. It acts on any [data-bubble] element in the document — the mirrored
@@ -172,6 +176,7 @@ func bubbleClampScript() g.Node {
     var max = limit(el);
     animate(el, max, function () { el.style.maxHeight = max + 'px'; el.setAttribute('data-clamp', 'closed'); });
   }
+  // toggle is the CONTROL's action only: Show more opens, Show less closes.
   function toggle(el) {
     var st = el.getAttribute('data-clamp');
     if (st === 'closed') expand(el); else if (st === 'open') collapse(el);
@@ -188,13 +193,15 @@ func bubbleClampScript() g.Node {
     }
     // A tap on the bubble itself — but not on a control inside it (see the
     // comment above bubbleClampScript), and not the end of a text selection.
+    // It OPENS a closed bubble and never collapses an open one: expand is a
+    // no-op unless the bubble is closed.
     var el = t.closest('[data-clamp]');
     if (!el) return;
     var ctl = t.closest(CONTROLS);
     if (ctl && el.contains(ctl)) return;
     var sel = window.getSelection && window.getSelection();
     if (sel && !sel.isCollapsed && el.contains(sel.anchorNode)) return;
-    toggle(el);
+    expand(el);
   });
 
   new MutationObserver(function (ms) {
