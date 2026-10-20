@@ -153,8 +153,10 @@ func (s *server) started() bool {
 
 // runLanes makes l the lanes s (the primary's server) runs. No lane waits for
 // the primary: it may start before the primary has ever sent SessionStart
-// (lanes.go), and a primary that is restarting, not logged in or crash-looping
-// does not refuse a lane's turn.
+// (lanes.go), and a primary that is restarting, crash-looping or never reaches
+// its prompt does not refuse a lane's turn. (A primary that is not logged in is
+// not that case: lanes share its config dir, so a lane is not logged in
+// either.) What a lane does wait for is the repository checkout (laneFor).
 func (s *server) runLanes(l *lanes) {
 	s.lanes = l
 }
