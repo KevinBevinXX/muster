@@ -363,8 +363,11 @@ var isolationClasses = map[string]routeClass{
 	"POST /send-queue/{id}/delete": classParam,
 	// The Retry's plain confirm page form (a stale Retry with no script).
 	"POST /send-queue/{id}/retry/confirm": classParam,
-	"POST /send-queue/confirm":            classMirror,
-	"POST /plugin/v1/messages":            classPlugin,
+	// Send now of a queued message, and its plain confirm page's form.
+	"POST /send-queue/{id}/send-now":         classParam,
+	"POST /send-queue/{id}/send-now/confirm": classParam,
+	"POST /send-queue/confirm":               classMirror,
+	"POST /plugin/v1/messages":               classPlugin,
 	// Reply drafts (PR C): the owner's decisions name A's draft by id; the
 	// plugin's claim names nothing (it leases the token owner's own drafts) and
 	// its result names A's draft — which B's plugin must not settle.

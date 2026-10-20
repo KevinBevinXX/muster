@@ -132,6 +132,11 @@ func TestTheAgentStateIsTheCLIsOwnStatusAndTime(t *testing.T) {
 	send(mirror.StatusIdle, t3+1, 0)
 	waitSince("idle again since t3+1", mirror.StatusIdle, t3+1)
 
+	// 🔴 Claude Code's "shell" — idle, a background shell still running — is
+	// IDLE, since the time it was written: the prompt is free, and the time is
+	// the turn's end, which the queue's "newer than the paste" rule waits for.
+	send("shell", t3+2, 0)
+	waitSince("shell is idle since t3+2", mirror.StatusIdle, t3+2)
 	// A status without its time.
 	send(mirror.StatusIdle, 0, 0)
 	eventually(t, "a status with no time is unknown", func() bool { return errors.Is(at("@1").Unknown, mirror.ErrNoStatusSince) })
@@ -268,21 +273,24 @@ func TestABusyFlipDoesNotNudgeTheAgentsView(t *testing.T) {
 }
 
 // TestAStatusIsKeptOnlyForAClaudeWindowAndOnlyAsOneOfThree: the normalizer
-// both halves apply keeps busy / idle / waiting on a Claude window, blanks any
-// other value, and blanks a status on a window that is not Claude Code — and
-// a status's time goes with it, and is never negative.
+// both halves apply keeps busy / idle / waiting on a Claude window, reads
+// Claude Code's "shell" (idle, a background shell running) as idle, blanks any
+// other value, and blanks a status on a window that is not Claude Code — and a
+// status's time goes with it, and is never negative.
 func TestAStatusIsKeptOnlyForAClaudeWindowAndOnlyAsOneOfThree(t *testing.T) {
 	got := mirror.NormalizeWindows([]mirror.Window{
 		{Session: "s", ID: "@1", Claude: true, Status: mirror.StatusWaiting, StatusSince: t1},
 		{Session: "s", ID: "@2", Claude: true, Status: "compacting", StatusSince: t1},
 		{Session: "s", ID: "@3", Status: mirror.StatusIdle, StatusSince: t1},
 		{Session: "s", ID: "@4", Claude: true, Status: mirror.StatusIdle, StatusSince: -1},
+		{Session: "s", ID: "@5", Claude: true, Status: "shell", StatusSince: t2},
 	}, 0)
 	type st struct {
 		status string
 		since  int64
 	}
-	want := map[string]st{"@1": {mirror.StatusWaiting, t1}, "@2": {}, "@3": {}, "@4": {mirror.StatusIdle, 0}}
+	want := map[string]st{"@1": {mirror.StatusWaiting, t1}, "@2": {}, "@3": {}, "@4": {mirror.StatusIdle, 0},
+		"@5": {mirror.StatusIdle, t2}}
 	for _, w := range got {
 		if (st{w.Status, w.StatusSince}) != want[w.ID] {
 			t.Errorf("window %s: Status %q since %d, want %+v", w.ID, w.Status, w.StatusSince, want[w.ID])

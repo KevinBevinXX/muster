@@ -175,7 +175,7 @@ func TestOnlyTheOperatorsSendsAnswerAsksInSession(t *testing.T) {
 				case "mirrorAddressed":
 					calls[sel.Sel.Name] = append(calls[sel.Sel.Name], site{fn.Name.Name, expr(call.Args[3])})
 				case "mirrorPaste":
-					if fn.Name.Name == "sendQueueSend" {
+					if fn.Name.Name == "sendQueueDeliver" {
 						calls["queue paste"] = append(calls["queue paste"], site{fn.Name.Name, expr(call.Args[6])})
 					}
 				}
@@ -188,7 +188,7 @@ func TestOnlyTheOperatorsSendsAnswerAsksInSession(t *testing.T) {
 		"askerAddressedBy": {{"askerAddressed", ""}, {"mirrorAddressed", ""}},
 		"askerAddressed":   {{"handleAgentSend", ""}, {"handleAgentWS", ""}},
 		"mirrorAddressed":  {{"mirrorDeliver", "p.target"}, {"sendQueueAdd", "mirror.PasteClaude"}, {"sendQueueRetry", "mirror.PasteClaude"}},
-		"queue paste":      {{"sendQueueSend", "mirror.PasteClaude"}},
+		"queue paste":      {{"sendQueueDeliver", "mirror.PasteClaude"}},
 	} {
 		got := calls[name]
 		slices.SortFunc(got, func(a, b site) int { return strings.Compare(a.caller, b.caller) })

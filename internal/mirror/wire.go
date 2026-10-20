@@ -472,12 +472,26 @@ const (
 	StatusWaiting = "waiting"
 )
 
-// NormalizeStatus is status when it is one of the three Window.Status values,
-// else "" (unknown). Both halves apply it.
+// ClaudeStatusShell is what Claude Code's sessions file says INSTEAD of idle
+// while a background shell (a run_in_background Bash task) is still running
+// and no turn is (measured in Claude Code 2.1.289: an idle status with a live
+// local_bash task is written as "shell"). The prompt is free and takes input
+// exactly as when idle, so NormalizeStatus reads it as StatusIdle. Its
+// statusUpdatedAt is a real status time: a turn that ends with a background
+// shell still running writes "shell" with a newer time, which is what the send
+// queue's "newer than the paste" rule waits for.
+const ClaudeStatusShell = "shell"
+
+// NormalizeStatus is the Window.Status a sessions-file status is read as: busy,
+// idle and waiting as themselves, ClaudeStatusShell as StatusIdle, anything
+// else "" (unknown, which never releases a queued message). Both halves apply
+// it.
 func NormalizeStatus(status string) string {
 	switch status {
 	case StatusBusy, StatusIdle, StatusWaiting:
 		return status
+	case ClaudeStatusShell:
+		return StatusIdle
 	}
 	return ""
 }

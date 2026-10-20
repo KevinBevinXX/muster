@@ -365,7 +365,9 @@ test('a queued message answers the ask, and its Cancel says the answer stays', a
   expect(JSON.parse(got.result.content[0].text)).toMatchObject({ id, status: 'answered_in_session', answer: 'yes, a minor bump' });
   const row = page.locator('#mv-queue [data-queue-id]', { hasText: 'yes, a minor bump' });
   await expect(row.locator('[data-queue-answered]')).toHaveText(/^Already answered .+'s question\.$/, { timeout: 20_000 });
-  await row.getByRole('button', { name: 'Cancel this queued message' }).click();
+  // Cancel is in the row's ⋯ menu.
+  await row.getByRole('button', { name: 'More actions for this queued message' }).click();
+  await row.getByRole('menuitem', { name: 'Cancel this queued message' }).click();
   await expect(page.locator('#mv-note')).toHaveText(/^Cancelled — but this message had already answered .+'s question, and that answer was delivered: it can't be un-sent\.$/);
   await expect(row).toHaveAttribute('data-queue-state', 'cancelled');
 });
