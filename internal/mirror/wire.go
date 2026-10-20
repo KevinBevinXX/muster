@@ -297,9 +297,10 @@ type Msg struct {
 	// the live screen). 0 and anything beyond MaxScrollLines either way is
 	// refused (ClampScroll is the bound both halves apply).
 	Lines int `json:"lines,omitempty"`
-	// Refusal (scrolled) is WHICH KIND of refusal Error is, for muster to act
-	// on without reading the host's prose: ScrollRefusalMode or
-	// ScrollRefusalUnsupported; "" for any other (and for every refusal an
+	// Refusal (scrolled, answered, pasted) is WHICH KIND of refusal Error is,
+	// for muster to act on without reading the host's prose: ScrollRefusalMode
+	// or ScrollRefusalUnsupported on scrolled, an AskRefusal* on answered, a
+	// PasteRefusal* on pasted; "" for any other (and for every refusal an
 	// older host sends — which muster then treats as a plain refusal, never as
 	// "this host cannot scroll"). Backward-compatible both ways, like PaneScroll.
 	Refusal string `json:"refusal,omitempty"`
@@ -989,6 +990,35 @@ type AskTyping struct {
 	Questions []askq.Question `json:"questions"`
 	Choices   []askq.Choice   `json:"choices"`
 }
+
+// The kinds of paste refusal a host names (Msg.Refusal on pasted): the
+// Hermes paste guard's (docs/design/hermes.md). An older host names none, and
+// muster then shows the host's prose as a plain refusal.
+const (
+	// PasteRefusalHermes: the pane's process tree holds a Hermes-shaped
+	// process. Nothing was typed.
+	PasteRefusalHermes = "hermes"
+	// PasteRefusalMultiplexer: the pane's process tree holds a terminal
+	// multiplexer client (tmux, screen, dtach, abduco, zellij), which can hide
+	// a Hermes the host cannot see. Nothing was typed.
+	PasteRefusalMultiplexer = "multiplexer"
+	// PasteRefusalUnchecked: the host could not read the pane's processes, so
+	// it could not rule Hermes out. Nothing was typed.
+	PasteRefusalUnchecked = "unchecked"
+)
+
+// The texts of the paste guard's refusals, for the person sending: the host
+// sends them as its reason, and muster shows the same words when the page
+// posted without script (one source, so the two paths cannot drift).
+const (
+	PasteRefusedHermesText = "Not sent: Hermes runs in this pane. muster never pastes into Hermes, because Enter " +
+		"there can answer a prompt Hermes is showing, such as a command approval. Type it in the terminal; " +
+		"sending to Hermes from its own rendered view comes in a later release."
+	PasteRefusedMultiplexerText = "Not sent: this pane runs another terminal multiplexer (tmux, screen, dtach, " +
+		"abduco or zellij), so muster cannot see whether Hermes runs inside it. Type it in the terminal."
+	PasteRefusedUncheckedText = "Not sent: muster-mirror could not check whether Hermes runs in this pane. " +
+		"Type it in the terminal."
+)
 
 // The kinds of answer refusal a host names (Msg.Refusal on answered).
 const (

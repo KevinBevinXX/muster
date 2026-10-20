@@ -743,7 +743,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				}
 			case TypePasted:
 				if hc.version >= 2 {
-					hc.pasted(m.ID, m.Error)
+					hc.pasted(m.ID, m.Error, m.Refusal)
 				}
 			case TypeScrolled:
 				if hc.version >= 2 {

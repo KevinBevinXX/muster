@@ -196,22 +196,41 @@ type procInfo struct {
 	// start is /proc/<pid>/stat field 22 (start time, clock ticks since boot),
 	// as written: what tells a live process from a reused pid.
 	start string
+	// state is /proc/<pid>/stat field 3 ("S", "R", "Z" for a zombie, …).
+	state string
+	// argvUnread: /proc/<pid>/cmdline could not be read, so argv is empty for
+	// want of reading it, not because the process has none. The Claude
+	// locator does not look at it (a process it cannot read simply is not
+	// Claude Code); the Hermes guard refuses on it (hermes.go).
+	argvUnread bool
 }
 
 // table reads every process's parent, name and argv once.
 func (l ClaudeLocator) table() (map[int]procInfo, map[int][]int) {
+	procs, children, _ := readProcTable(l.proc())
+	return procs, children
+}
+
+// readProcTable reads every process under the proc root once: parent, name,
+// argv and start time, and each process's children (sorted). The error is the
+// proc root's own (unreadable, absent). A process whose stat cannot be read
+// (it vanished mid-read, or is hidden) is SKIPPED: absent from both maps. The
+// Claude locator relies on exactly that; the Hermes guard does not, and finds
+// such a process inside a pane's tree by the kernel's own children lists
+// (HermesIdentity.InTree). Shared by ClaudeLocator and HermesIdentity.
+func readProcTable(root string) (map[int]procInfo, map[int][]int, error) {
 	procs := map[int]procInfo{}
 	children := map[int][]int{}
-	ents, err := os.ReadDir(l.proc())
+	ents, err := os.ReadDir(root)
 	if err != nil {
-		return procs, children
+		return procs, children, err
 	}
 	for _, e := range ents {
 		pid, err := strconv.Atoi(e.Name())
 		if err != nil || pid <= 0 {
 			continue
 		}
-		dir := filepath.Join(l.proc(), e.Name())
+		dir := filepath.Join(root, e.Name())
 		stat, err := os.ReadFile(filepath.Join(dir, "stat"))
 		if err != nil {
 			continue
@@ -227,7 +246,7 @@ func (l ClaudeLocator) table() (map[int]procInfo, map[int][]int) {
 			continue
 		}
 		ppid, _ := strconv.Atoi(rest[1])
-		info := procInfo{ppid: ppid, comm: string(stat[open+1 : close])}
+		info := procInfo{ppid: ppid, comm: string(stat[open+1 : close]), state: rest[0]}
 		if len(rest) > 19 {
 			info.start = rest[19]
 		}
@@ -235,6 +254,8 @@ func (l ClaudeLocator) table() (map[int]procInfo, map[int][]int) {
 			for _, a := range bytes.Split(bytes.TrimRight(cmd, "\x00"), []byte{0}) {
 				info.argv = append(info.argv, string(a))
 			}
+		} else {
+			info.argvUnread = true
 		}
 		procs[pid] = info
 		children[ppid] = append(children[ppid], pid)
@@ -242,7 +263,7 @@ func (l ClaudeLocator) table() (map[int]procInfo, map[int][]int) {
 	for _, c := range children {
 		sort.Ints(c)
 	}
-	return procs, children
+	return procs, children, nil
 }
 
 // isClaude reports whether a process is the Claude Code CLI: its name (the CLI

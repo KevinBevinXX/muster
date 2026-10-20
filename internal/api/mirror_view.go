@@ -447,8 +447,15 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 			refuseStale(w)
 			return
 		}
-		status, notice := http.StatusBadGateway, noticeFailed
+		status, notice, msg := http.StatusBadGateway, noticeFailed, err.Error()
 		switch {
+		case mirror.PasteGuardRefusal(err) != "":
+			// The host's Hermes paste guard: its own words, without this
+			// side's "the host refused the message:" in front, and a notice
+			// code that says the same when the browser posted the form.
+			var pr *mirror.PasteRefusedError
+			errors.As(err, &pr)
+			status, notice, msg = http.StatusConflict, pasteGuardNotices[pr.Refusal], pr.Why
 		case errors.Is(err, mirror.ErrBadPaste):
 			status, notice = http.StatusBadRequest, noticeBadText
 		case errors.Is(err, mirror.ErrInteractiveRefused):
@@ -465,7 +472,7 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 			status, notice = http.StatusServiceUnavailable, noticeOffline
 		}
 		s.logger.Printf("mirror: send to %s/%s%s refused: %v", host, session, p.window, err)
-		s.mirrorRefuse(w, r, p, status, err.Error(), notice)
+		s.mirrorRefuse(w, r, p, status, msg, notice)
 		return
 	}
 	s.logger.Printf("mirror: sent a message to %s/%s%s", host, session, p.window)
