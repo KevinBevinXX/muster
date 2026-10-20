@@ -98,8 +98,19 @@ The native Android app gets its own credential, the **device credential**
 as adding a passkey does, because the credential outlives the session. The code
 is single use and expires after 60 seconds. The app redeems it at
 `POST /api/device/pair` with the phone's name, its app version and its step-up
-public key (an EC P-256 key the app generates in the Android Keystore at
-pairing). The credential is shown to the app once. Only its sha256 is stored.
+key: an EC P-256 public key the app generates in the Android Keystore at
+pairing, its type, and the Keystore security level the app reports. The
+credential is shown to the app once. Only its sha256 is stored.
+
+**The step-up key** ([design](design/android.md#the-step-up-key)):
+
+- A `biometric` key (a fresh strong biometric on every use) is accepted.
+- A `biometric_or_credential` key (the device PIN also works) is accepted only
+  when `MUSTER_ANDROID_ALLOW_PIN_KEYS` is set. It is off by default, because such
+  a key survives a new fingerprint being enrolled.
+- A key the app reports as `software` is refused. Until key attestation exists,
+  muster trusts the app's report.
+- A phone without an acceptable key pairs **read-only**, with no key.
 
 - **A device credential cannot mint another.** Only a browser session can ask
   for a pairing code.
@@ -109,22 +120,39 @@ pairing). The credential is shown to the app once. Only its sha256 is stored.
   edge, so the device routes are served on the browser listener as well. The
   shared hook and service secrets stay refused there.
 
-**Revocation** is read from the database on every request, and nothing is
-cached. A device is signed out on its next request when:
+**Revocation.** These end a phone, and each one **deletes** it: its row, its
+push registration (so it gets no more notifications), its place in the 20-phone
+limit and its line on Account → Devices.
 
 - you remove it on **Account → Devices**, or the app unpairs itself
   (`DELETE /api/device`);
 - the account is disabled;
-- the session that paired it signed in at or before the account's session
-  cutoff, which a disable or a password reset moves;
-- the session that paired it signed in at or before your latest **Sign out
-  everywhere** (gotrue mode only). This is the design's recommendation, not an
-  operator requirement: it is what "everywhere" is expected to mean for a phone.
-  It is stricter than for personal tokens, which Sign out everywhere does not
-  revoke.
+- a password reset (it moves the account's session cutoff);
+- **Sign out everywhere** (gotrue mode only). This is the design's
+  recommendation, not an operator requirement: it is what "everywhere" is
+  expected to mean for a phone. It is stricter than for personal tokens, which
+  Sign out everywhere does not revoke. If muster cannot record the sign-out, or
+  cannot tell who you are, the page says it did not finish rather than
+  pretending it did.
+
+As a second wall, every request also checks the account from the database,
+with nothing cached: a phone whose pairing sign-in is at or before the account's
+session cutoff or latest Sign out everywhere, or whose account is disabled, is
+refused, and is not sent notifications, even if its row somehow survived.
+
+**Throttles.** Pairing is limited to 10 attempts a minute per client address.
+Every device route is limited to 120 requests a minute per address (counted
+before the credential is checked) and 60 a minute per phone. Registering push,
+which makes muster send a test push, is limited to 10 a minute per address and
+5 per phone. The address is the one the edge reports: on the browser listener
+that is `CF-Connecting-IP` (or the first `X-Forwarded-For` entry), which only an
+edge in front of muster can be trusted to set. A client that reaches the browser
+port without passing the edge can choose its own address, so the per-phone
+limits are the ones that hold.
 
 **Account → Devices** (on `/account`) lists each phone: its name, app version,
-when it was paired, when it was last seen, and whether push is registered. Each
+when it was paired, when it was last seen, whether push is registered, and its
+step-up key type (biometric, biometric or PIN, or none: read-only). Each
 has a **Remove** button. Removing a phone also removes its push registration. A
 user may pair at most 20 phones.
 
@@ -132,7 +160,7 @@ The device routes:
 
 | route | what it does |
 |---|---|
-| `GET /api/device/config` | The VAPID public key the app registers for push with, and the operator's push hosts. |
+| `GET /api/device/config` | The server version; push (whether it is served, the VAPID public key the app registers with, and the operator's push hosts, for the app's pairing check); whether PIN keys are allowed; and the feature switches (`push`, and `actions`, `bubbles`, `state`, which stay false until their phases ship). |
 | `PUT /api/device/push` | Registers the phone's UnifiedPush endpoint `{endpoint, p256dh, auth}`. The endpoint must be on an allowed push host ([push.md](push.md#which-push-services)), and muster keeps it only after a test push to it succeeds. A phone holds one registration; a new one replaces it. |
 | `DELETE /api/device/push` | Removes the phone's push registration. |
 | `DELETE /api/device` | Unpairs the phone. |

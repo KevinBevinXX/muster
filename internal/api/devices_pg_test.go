@@ -2,6 +2,11 @@ package api
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log"
@@ -191,14 +196,20 @@ func TestAPhonePairsOnTheBrowserListenerAndSignOutEverywhereCutsItOff(t *testing
 
 	w := r.call(r.edge, "GET", deviceConfigPath, tok, "")
 	var cfg struct {
-		Push struct {
+		Version string `json:"server_version"`
+		Push    struct {
 			Served bool     `json:"served"`
 			Key    string   `json:"vapid_public_key"`
 			Hosts  []string `json:"hosts"`
 		} `json:"push"`
+		Pairing struct {
+			PINKeys *bool `json:"pin_keys_allowed"`
+		} `json:"pairing"`
+		Features map[string]bool `json:"features"`
 	}
 	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &cfg) != nil || !cfg.Push.Served || cfg.Push.Key == "" ||
-		len(cfg.Push.Hosts) != 1 || cfg.Push.Hosts[0] != devNtfyHost {
+		len(cfg.Push.Hosts) != 1 || cfg.Push.Hosts[0] != devNtfyHost || cfg.Version != BuildVersion ||
+		cfg.Pairing.PINKeys == nil || *cfg.Pairing.PINKeys || !cfg.Features["push"] || cfg.Features["actions"] {
 		t.Fatalf("config on the browser listener: %d %s", w.Code, w.Body.String())
 	}
 	if c := r.call(r.mach, "GET", deviceConfigPath, tok, "").Code; c != http.StatusOK {
@@ -360,4 +371,219 @@ func TestPushRegistrationIsCheckedThenProbedThenStored(t *testing.T) {
 	if got := stored(); len(got) != 0 {
 		t.Fatalf("after the delete: %v", got)
 	}
+}
+
+// sendCount is how many pushes the rig's pusher was asked to make to ep.
+func (r *deviceRig) sendCount(ep string) int {
+	r.pusher.mu.Lock()
+	defer r.pusher.mu.Unlock()
+	n := 0
+	for _, e := range r.pusher.sent {
+		if e == ep {
+			n++
+		}
+	}
+	return n
+}
+
+// registered pairs a phone with push registered at ep and returns its
+// credential, after checking a notification reaches it (the control).
+func (r *deviceRig) registered(t *testing.T, ep string) (string, string, string) {
+	t.Helper()
+	at, rt := r.login()
+	tok, _ := r.pair(at, rt, "Pixel")
+	if w := r.call(r.edge, "PUT", devicePushPath, tok, `{"endpoint":"`+ep+`","p256dh":"BPk","auth":"au"}`); w.Code != http.StatusOK {
+		t.Fatalf("register: %d %s", w.Code, w.Body.String())
+	}
+	before := r.sendCount(ep)
+	r.s.ext.Push.SendTo(context.Background(), r.uid, push.Payload{Type: "review", Tag: "task-1", Title: "agent"})
+	if r.sendCount(ep) != before+1 {
+		t.Fatal("CONTROL: a notification did not reach the registered phone")
+	}
+	return tok, at, rt
+}
+
+// TestARevokedPhoneGetsNoPush is the audit's probe: pair, register push, end
+// the phone by each account-level path a person can take — Sign out everywhere
+// (the real logout), a password reset, a disable — and a notification to the
+// owner reaches the phone ZERO times. Before the fix the credential was
+// refused but the push row lived on and was sent to.
+func TestARevokedPhoneGetsNoPush(t *testing.T) {
+	for _, path := range []string{"sign out everywhere", "reset", "disable"} {
+		t.Run(path, func(t *testing.T) {
+			r := newDeviceRig(t)
+			ep := "https://" + devNtfyHost + "/upRevoked" + strings.ReplaceAll(path, " ", "")
+			_, at, rt := r.registered(t, ep)
+			us := users.NewPG(r.pool)
+			switch path {
+			case "sign out everywhere":
+				if w := do(r.edge, "POST", "/logout", url.Values{"scope": {"global"}}, withCookies(at, rt)); w.Code != http.StatusSeeOther {
+					t.Fatalf("global logout: %d %s", w.Code, w.Body.String())
+				}
+			case "reset":
+				if _, err := us.ResetCredentials(context.Background(), r.uid); err != nil {
+					t.Fatal(err)
+				}
+			case "disable":
+				if _, err := us.SetDisabled(context.Background(), r.uid, true); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := r.sendCount(ep)
+			r.s.ext.Push.SendTo(context.Background(), r.uid, push.Payload{Type: "review", Tag: "task-2", Title: "agent"})
+			if got := r.sendCount(ep) - before; got != 0 {
+				t.Fatalf("after %s the revoked phone was sent %d push(es)", path, got)
+			}
+		})
+	}
+}
+
+// TestAPushRowThatOutlivedItsPhonesRevocationIsNotSent is the second wall:
+// with the owner's sign-out recorded directly (no writer, so the phone's rows
+// survive), the fan-out still sends the phone nothing — the push store applies
+// the device credential's own rule (devices.LiveSQL) to android rows.
+func TestAPushRowThatOutlivedItsPhonesRevocationIsNotSent(t *testing.T) {
+	r := newDeviceRig(t)
+	ep := "https://" + devNtfyHost + "/upOutlived"
+	r.registered(t, ep)
+	if _, err := r.pool.Exec(authz.System(context.Background()), `UPDATE users SET signed_out_at = now() WHERE id = $1`, r.uid); err != nil {
+		t.Fatal(err)
+	}
+	var rows int
+	if err := r.pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM push_subscriptions WHERE owner_id = $1`, r.uid).Scan(&rows); err != nil || rows != 1 {
+		t.Fatalf("fixture: %d push rows (%v); the row must have survived", rows, err)
+	}
+	before := r.sendCount(ep)
+	r.s.ext.Push.SendTo(context.Background(), r.uid, push.Payload{Type: "review", Tag: "task-3", Title: "agent"})
+	if got := r.sendCount(ep) - before; got != 0 {
+		t.Fatalf("a phone signed out everywhere was sent %d push(es) from a surviving row", got)
+	}
+}
+
+// TestTheDeviceRoutesAreThrottled: per device on the device tier, per address
+// before the credential is even looked up, and tighter on PUT /api/device/push
+// (it makes an outbound test push). Each answers 429 past its limit, and a
+// different device or address is unaffected (control).
+func TestTheDeviceRoutesAreThrottled(t *testing.T) {
+	r := newDeviceRig(t)
+	at, rt := r.login()
+	tok, _ := r.pair(at, rt, "Pixel")
+	other, _ := r.pair(at, rt, "Pixel 2")
+	from := func(ip string) func(*http.Request) {
+		return func(q *http.Request) { q.Header.Set("CF-Connecting-IP", ip) }
+	}
+	call := func(method, path, bearer, body, ip string) int {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		from(ip)(req)
+		w := httptest.NewRecorder()
+		r.edge.ServeHTTP(w, req)
+		return w.Code
+	}
+	// Per device: each call from a fresh address, so only the device's own
+	// counter can refuse.
+	for i := 0; i < deviceRoutePerDevice; i++ {
+		if c := call("GET", deviceConfigPath, tok, "", "198.51.100."+strconv.Itoa(i%250+1)); c != http.StatusOK {
+			t.Fatalf("request %d: %d", i+1, c)
+		}
+	}
+	if c := call("GET", deviceConfigPath, tok, "", "203.0.113.200"); c != http.StatusTooManyRequests {
+		t.Fatalf("past the per-device limit: %d; want 429", c)
+	}
+	if c := call("GET", deviceConfigPath, other, "", "203.0.113.201"); c != http.StatusOK {
+		t.Fatalf("CONTROL: another device: %d", c)
+	}
+	// Per address, before the credential: a bad credential from one address.
+	for i := 0; i < deviceRoutePerAddr; i++ {
+		if c := call("GET", deviceConfigPath, "mdv_bad", "", "203.0.113.7"); c != http.StatusUnauthorized {
+			t.Fatalf("bad credential %d: %d", i+1, c)
+		}
+	}
+	if c := call("GET", deviceConfigPath, other, "", "203.0.113.7"); c != http.StatusTooManyRequests {
+		t.Fatalf("past the per-address limit: %d; want 429", c)
+	}
+	// The push registration: tighter, per device.
+	third, _ := r.pair(at, rt, "Pixel 3")
+	reg := `{"endpoint":"https://` + devNtfyHost + `/upThrottle","p256dh":"BPk","auth":"au"}`
+	for i := 0; i < devicePushPerDevice; i++ {
+		if c := call("PUT", devicePushPath, third, reg, "192.0.2."+strconv.Itoa(i+1)); c != http.StatusOK {
+			t.Fatalf("push register %d: %d", i+1, c)
+		}
+	}
+	probes := r.sendCount("https://" + devNtfyHost + "/upThrottle")
+	if c := call("PUT", devicePushPath, third, reg, "192.0.2.99"); c != http.StatusTooManyRequests {
+		t.Fatalf("past the push-registration limit: %d; want 429", c)
+	}
+	if r.sendCount("https://"+devNtfyHost+"/upThrottle") != probes {
+		t.Fatal("a throttled registration still made its outbound test push")
+	}
+	// …and per address: two more phones from ONE address, each under its own
+	// limit, together reach the address's.
+	p4, _ := r.pair(at, rt, "Pixel 4")
+	p5, _ := r.pair(at, rt, "Pixel 5")
+	p6, _ := r.pair(at, rt, "Pixel 6")
+	n := 0
+	for _, dev := range []string{p4, p5} {
+		for i := 0; i < devicePushPerDevice; i++ {
+			if c := call("PUT", devicePushPath, dev, reg, "198.18.0.1"); c != http.StatusOK {
+				t.Fatalf("push register %d from one address: %d", n+1, c)
+			}
+			n++
+		}
+	}
+	if n != devicePushPerAddr {
+		t.Fatalf("fixture: %d registrations from one address; the limit is %d", n, devicePushPerAddr)
+	}
+	if c := call("PUT", devicePushPath, p6, reg, "198.18.0.1"); c != http.StatusTooManyRequests {
+		t.Fatalf("past the per-address push-registration limit: %d; want 429", c)
+	}
+}
+
+// TestPairingRecordsTheStepUpKeyAndItsPolicy: a biometric hardware key pairs
+// and Account → Devices says so; a software key is refused 403; a PIN key is
+// refused 403 with the policy off.
+func TestPairingRecordsTheStepUpKeyAndItsPolicy(t *testing.T) {
+	r := newDeviceRig(t)
+	at, rt := r.login()
+	key := testP256SPKI(t)
+	redeem := func(typ, level string) int {
+		w := do(r.edge, "POST", accountDevicesPairPath, nil, withCookies(at, rt))
+		var code struct {
+			Code string `json:"code"`
+		}
+		if json.Unmarshal(w.Body.Bytes(), &code) != nil {
+			t.Fatalf("code: %d %s", w.Code, w.Body.String())
+		}
+		body, _ := json.Marshal(map[string]string{"code": code.Code, "name": "keyed " + typ + " " + level,
+			"stepup_pubkey": key, "stepup_key_type": typ, "stepup_key_level": level})
+		return r.call(r.edge, "POST", devicePairPath, "", string(body)).Code
+	}
+	if c := redeem(devices.KeyBiometric, devices.LevelSoftware); c != http.StatusForbidden {
+		t.Fatalf("a software key: %d; want 403", c)
+	}
+	if c := redeem(devices.KeyBiometricOrCredential, devices.LevelStrongBox); c != http.StatusForbidden {
+		t.Fatalf("a PIN key with the policy off: %d; want 403", c)
+	}
+	if c := redeem(devices.KeyBiometric, devices.LevelStrongBox); c != http.StatusCreated {
+		t.Fatalf("CONTROL: a biometric StrongBox key: %d", c)
+	}
+	page := do(r.edge, "GET", "/account", nil, withCookies(at, rt), asNavigation)
+	if !strings.Contains(page.Body.String(), "step-up: biometric") {
+		t.Fatalf("Account → Devices does not show the key type:\n%s", truncate(page.Body.String(), 400))
+	}
+}
+
+// testP256SPKI is a fresh EC P-256 public key as base64 SubjectPublicKeyInfo,
+// the shape the app sends.
+func testP256SPKI(t *testing.T) string {
+	t.Helper()
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(&k.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return base64.StdEncoding.EncodeToString(der)
 }

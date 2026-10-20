@@ -145,8 +145,9 @@ sign-in. Here is how that rule settled:
 
 ## Sign out everywhere signs out paired phones too
 
-Sign out everywhere ends GoTrue sessions, and it also cuts off every phone paired
-by a sign-in at or before it. Personal API tokens are not affected.
+Sign out everywhere ends GoTrue sessions, and it also deletes every paired phone
+(each was paired by a sign-in at or before it). Personal API tokens are not
+affected. A disable and a password reset delete the phones too.
 
 - **Why the phones.** A phone holds a session-like credential: it was minted from
   a browser session and acts on a person's behalf from a device that can be lost.
@@ -156,10 +157,17 @@ by a sign-in at or before it. Personal API tokens are not affected.
   access as a side effect of a sign-out would surprise.
 - **Whose idea.** This is the Android design's recommendation, not an operator
   requirement ([design/android.md](design/android.md), server change 25).
-- **How.** The device records the pairing session's sign-in time and every
-  request compares it with `users.signed_out_at`, the same record the send
-  queue reads. Password mode has no Sign out everywhere, so there a phone is
+- **How.** The sign-out's record (`users.signed_out_at`, the same one the send
+  queue reads) and the deletion of the phones are one transaction. As a second
+  wall, the device records the pairing session's sign-in time, and every
+  request, and every push to the phone, compares it with that record. If the
+  record cannot be written, the page says so instead of redirecting as though
+  it had worked. Password mode has no Sign out everywhere, so there a phone is
   removed on Account → Devices.
+- **Why delete, not only refuse.** A refused credential is not a silent phone:
+  an audit found a signed-out phone still receiving notifications through its
+  push registration, still counting toward the 20-phone limit, and still listed
+  as live on Account → Devices.
 
 ## The message box must not fail silently, or deliver twice
 

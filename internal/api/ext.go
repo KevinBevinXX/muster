@@ -61,6 +61,10 @@ type Extensions struct {
 	// Devices is the paired-device store (the Android app; devices.go). Nil:
 	// no device is paired or admitted anywhere (503).
 	Devices devices.Store
+	// AllowPINKeys is MUSTER_ANDROID_ALLOW_PIN_KEYS: a phone with no strong
+	// biometric may pair with a biometric-or-PIN step-up key. False (the
+	// default): such a phone pairs read-only.
+	AllowPINKeys bool
 
 	// AgentNamespacePrefix is the prefix [Extensions.AgentNamespace] builds a new
 	// agent's stored namespace from. It is the DEPLOYMENT's prefix — the same

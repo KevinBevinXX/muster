@@ -5,8 +5,13 @@
 and their results are folded in below ([Phase 0 results][p0]). Implemented in
 muster so far: the push hardening (server change 21 and item 1: push sends
 refuse redirects, and `MUSTER_PUSH_EXTRA_HOSTS` admits the operator's exact
-push hosts, for paired phones only, re-checked at every send). Nothing else is
-implemented. The operator
+push hosts, for paired phones only, re-checked at every send); the device
+credential, pairing with the step-up key and its type and level (31's pairing
+part), Account → Devices, the Phase 1 device routes, and the in-shell page
+changes (server changes 4–6, 8–14, 24, 27, 29; see
+[auth.md](../auth.md#paired-devices)). Built differently from the text below:
+there is no `devices.revoked_at`, because every revocation deletes the phone.
+Nothing for Phase 2 or later is implemented. The operator
 decisions below are **decided**. Every other section is the recommended
 design. Where this page states how muster works today, the code is the
 authority (see [decisions.md](../decisions.md)). Where it states how Android,
@@ -181,7 +186,13 @@ The reasons for the shell:
   exact origin, never `*`.
 - **The bridge carries four messages:** the pairing code (below), "open the
   app's notification settings", "request POST_NOTIFICATIONS", and the theme. It
-  never carries a credential from the app to the page.
+  never carries a credential from the app to the page. The listener's JavaScript
+  object is named `musterApp` (`ui.AppBridgeName` in muster), and each message
+  is a JSON string. The server's pages send two today, from Account → Devices:
+  `{"type":"pair","code":…,"expires_at":…}` and
+  `{"type":"open-notification-settings"}`. The object's presence is also how a
+  page knows it is in the shell, to hide **Enable notifications** and
+  **Install**.
 - **No Web Push in the WebView.** WebView has no PushManager, so the page must
   not offer **Enable notifications** inside the shell. The page feature-detects
   PushManager, and in the shell it points to the app's own settings instead.
@@ -1221,6 +1232,14 @@ guidance; the Play fee.
 - **Android policy churn:** background starts were tightened in Android 14, 15
   and 17; Live Update rules are new. Each targetSdk bump needs a pass over the
   step-up activity, bubbles and the Live Update.
+- **Note attachments are served inline, scripts included** (found by the
+  Phase 1 audit; it predates this design). `GET /tasks/{id}/attachments/{aid}`
+  answers with the stored content type and `Content-Disposition: inline` under
+  the app's ordinary CSP, so an HTML attachment's inline script runs on
+  muster's origin. In the shell, that origin is where the bridge listener
+  answers. **Sandbox note
+  attachments before the app ships** (for example a `sandbox` CSP or a
+  separate origin).
 - **The WebView is Chromium's, updated separately.** A WebView regression can
   break the shell without an APK change.
 - **Two UIs for one conversation.** A notification and a bubble can show stale

@@ -347,7 +347,7 @@ var routeVias = map[authz.Via][]string{
 	authz.ViaMirrorHost: {
 		"POST /mirror/mcp",
 	},
-	// A DEVICE credential (0038) opens exactly the device tier.
+	// A DEVICE credential (0037) opens exactly the device tier.
 	authz.ViaDevice: {
 		"DELETE /api/device",
 		"GET /api/device/config",

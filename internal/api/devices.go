@@ -10,13 +10,13 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/devices"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/stepup"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // PAIRED DEVICES: the native Android app's server side, Phase 1
@@ -63,11 +63,23 @@ const (
 	// its step-up key, or a push subscription, is well under 2 KB).
 	maxDeviceBody = 8 << 10
 
-	// devicePairBurst per devicePairWindow is how many pairing attempts one
-	// client address may make. A code is 256 bits, so this bounds database
-	// work, not guessing.
-	devicePairBurst  = 10
-	devicePairWindow = time.Minute
+	// The device routes' throttles, per window (deviceWindow), each a
+	// boundedWindow so a flood of distinct keys cannot grow them without bound.
+	// A code and a credential are 256 bits, so they bound database work and
+	// outbound requests, not guessing. The address is clientIP: on the browser
+	// listener that is CF-Connecting-IP (or X-Forwarded-For), which only the
+	// edge in front of muster can be trusted to set (docs/auth.md).
+	deviceWindow = time.Minute
+	// devicePairPerAddr: pairing attempts per client address.
+	devicePairPerAddr = 10
+	// deviceRoutePerAddr / deviceRoutePerDevice: any device-tier request, per
+	// client address (before the credential is looked up) and per device.
+	deviceRoutePerAddr   = 120
+	deviceRoutePerDevice = 60
+	// devicePushPerAddr / devicePushPerDevice: PUT /api/device/push, which
+	// makes an OUTBOUND test push, per address and per device.
+	devicePushPerAddr   = 10
+	devicePushPerDevice = 5
 
 	// deviceProbeTimeout bounds the test push a registration must pass.
 	deviceProbeTimeout = 10 * time.Second
@@ -123,6 +135,10 @@ func (s *Server) requireDeviceToken(next http.HandlerFunc) http.HandlerFunc {
 			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": DevicesNotServed})
 			return
 		}
+		if !s.deviceLimits.addr.take(clientIP(r), s.now(), deviceWindow, deviceRoutePerAddr) {
+			s.refuseDeviceThrottled(w)
+			return
+		}
 		tok := hookTokenFromRequest(r)
 		if !devices.ShapeOK(tok) {
 			s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": DeviceTokenRefusal})
@@ -140,6 +156,10 @@ func (s *Server) requireDeviceToken(next http.HandlerFunc) http.HandlerFunc {
 			// credential.
 			s.logger.Printf("devices: credential lookup failed: %v", err)
 			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "could not check the device credential"})
+			return
+		}
+		if !s.deviceLimits.device.take(strconv.FormatInt(d.ID, 10), s.now(), deviceWindow, deviceRoutePerDevice) {
+			s.refuseDeviceThrottled(w)
 			return
 		}
 		ctx := context.WithValue(r.Context(), deviceCtxKey{}, d)
@@ -209,31 +229,17 @@ func (s *Server) handleDeviceRemove(w http.ResponseWriter, r *http.Request) {
 
 // --- the public pairing route ---------------------------------------------------------
 
-// addrRateLimit is a fixed window per client address.
-type addrRateLimit struct {
-	mu   sync.Mutex
-	wins map[string]*ownerWindow
+// deviceLimits are the device routes' throttles (see deviceWindow).
+type deviceLimits struct {
+	pair, addr, device, pushAddr, pushDevice boundedWindow
 }
 
-// allow reports whether addr may make one more attempt at now, and records it.
-// The map is cleared when it grows past a bound, so it cannot be grown without
-// limit by spoofed addresses (the window is short; losing it costs a reset).
-func (l *addrRateLimit) allow(addr string, now time.Time) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.wins == nil || len(l.wins) > 10000 {
-		l.wins = map[string]*ownerWindow{}
-	}
-	w := l.wins[addr]
-	if w == nil || now.Sub(w.start) >= devicePairWindow {
-		w = &ownerWindow{start: now}
-		l.wins[addr] = w
-	}
-	if w.count >= devicePairBurst {
-		return false
-	}
-	w.count++
-	return true
+// DeviceThrottled is the 429 body for a throttled device-tier request.
+const DeviceThrottled = "too many requests from this device or address; wait a minute"
+
+func (s *Server) refuseDeviceThrottled(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", strconv.Itoa(int(deviceWindow/time.Second)))
+	s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": DeviceThrottled})
 }
 
 func (s *Server) handleDevicePair(w http.ResponseWriter, r *http.Request) {
@@ -241,26 +247,32 @@ func (s *Server) handleDevicePair(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": DevicesNotServed})
 		return
 	}
-	if !s.devicePairLimit.allow(clientIP(r), s.now()) {
-		w.Header().Set("Retry-After", strconv.Itoa(int(devicePairWindow/time.Second)))
-		s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "too many pairing attempts; wait a minute"})
+	if !s.deviceLimits.pair.take(clientIP(r), s.now(), deviceWindow, devicePairPerAddr) {
+		s.refuseDeviceThrottled(w)
 		return
 	}
 	var body struct {
-		Code         string `json:"code"`
-		Name         string `json:"name"`
-		AppVersion   string `json:"app_version"`
-		StepUpPubkey string `json:"stepup_pubkey"`
+		Code           string `json:"code"`
+		Name           string `json:"name"`
+		AppVersion     string `json:"app_version"`
+		StepUpPubkey   string `json:"stepup_pubkey"`
+		StepUpKeyType  string `json:"stepup_key_type"`
+		StepUpKeyLevel string `json:"stepup_key_level"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, maxDeviceBody)).Decode(&body); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error": `the body is {"code","name","app_version","stepup_pubkey" (base64 SubjectPublicKeyInfo, EC P-256; optional)}`})
+			"error": `the body is {"code","name","app_version","stepup_pubkey" (base64 SubjectPublicKeyInfo, EC P-256),` +
+				`"stepup_key_type","stepup_key_level"}; the three step-up fields are all present or all absent`})
 		return
 	}
 	tok, d, err := s.ext.Devices.Redeem(r.Context(), body.Code, devices.PairIn{
-		Name: body.Name, AppVersion: body.AppVersion, StepUpKey: body.StepUpPubkey})
+		Name: body.Name, AppVersion: body.AppVersion, StepUpKey: body.StepUpPubkey,
+		KeyType: body.StepUpKeyType, KeyLevel: body.StepUpKeyLevel, AllowPINKeys: s.ext.AllowPINKeys})
 	switch {
 	case err == nil:
+	case errors.Is(err, devices.ErrKeyNotAllowed):
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": strings.TrimPrefix(err.Error(), "devices: ")})
+		return
 	case errors.Is(err, devices.ErrInvalid):
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": strings.TrimPrefix(err.Error(), "devices: ")})
 		return
@@ -279,8 +291,9 @@ func (s *Server) handleDevicePair(w http.ResponseWriter, r *http.Request) {
 	s.logger.Printf("devices: user %d paired device %d (step-up key: %v)", d.OwnerID, d.ID, d.HasStepUpKey)
 	w.Header().Set("Cache-Control", "no-store")
 	s.writeJSON(w, http.StatusCreated, map[string]any{
-		"token":  tok,
-		"device": map[string]any{"id": d.ID, "name": d.Name, "stepup_key": d.HasStepUpKey},
+		"token": tok,
+		"device": map[string]any{"id": d.ID, "name": d.Name, "stepup_key": d.HasStepUpKey,
+			"stepup_key_type": d.KeyType, "stepup_key_level": d.KeyLevel},
 	})
 }
 
@@ -301,13 +314,25 @@ func (s *Server) handleDeviceUnpair(w http.ResponseWriter, r *http.Request) {
 // handleDeviceConfig is what a paired device needs to register for push: the
 // VAPID public key it registers with (so its distributor can tell muster's
 // pushes from others) and the operator's push hosts.
+//
+// It also carries the server's version, the pairing policy (whether PIN keys
+// are accepted) and the feature switches the app branches on. A switch for a
+// later phase is false until that phase's routes exist, so the app never
+// offers something the server would 404.
 func (s *Server) handleDeviceConfig(w http.ResponseWriter, r *http.Request) {
-	out := map[string]any{"push": map[string]any{"served": false, "vapid_public_key": "", "hosts": []string{}}}
+	push := map[string]any{"served": false, "vapid_public_key": "", "hosts": []string{}}
 	if s.pushServed() {
-		out["push"] = map[string]any{"served": true, "vapid_public_key": s.ext.Push.PublicKey(), "hosts": s.ext.Push.Allowlist().ExtraHosts()}
+		push = map[string]any{"served": true, "vapid_public_key": s.ext.Push.PublicKey(), "hosts": s.ext.Push.Allowlist().ExtraHosts()}
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	s.writeJSON(w, http.StatusOK, out)
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"server_version": BuildVersion,
+		"push":           push,
+		"pairing":        map[string]any{"pin_keys_allowed": s.ext.AllowPINKeys},
+		// Phase 1 serves push and nothing else; actions (Phase 2), bubbles
+		// (Phase 3) and widget state (Phase 4) are not served yet.
+		"features": map[string]any{"push": s.pushServed(), "actions": false, "bubbles": false, "state": false},
+	})
 }
 
 // devicePushProbe is the payload of the test push a registration must pass.
@@ -346,6 +371,13 @@ func (s *Server) handleDevicePushPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d := deviceFromContext(r.Context())
+	// The test push is an OUTBOUND request, so the registrations that reach it
+	// have their own, tighter throttle on top of the device tier's.
+	if !s.deviceLimits.pushAddr.take(clientIP(r), s.now(), deviceWindow, devicePushPerAddr) ||
+		!s.deviceLimits.pushDevice.take(strconv.FormatInt(d.ID, 10), s.now(), deviceWindow, devicePushPerDevice) {
+		s.refuseDeviceThrottled(w)
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), deviceProbeTimeout)
 	res := s.ext.Push.Probe(ctx, sub, devicePushProbe)
 	cancel()
@@ -392,16 +424,9 @@ func (s *Server) handleDevicePushDelete(w http.ResponseWriter, r *http.Request) 
 
 // --- Account → Devices ---------------------------------------------------------------
 
-// AppBridgeName is the JavaScript object the Android app's WebView injects
-// (WebViewCompat.addWebMessageListener) on muster's own origin only. The page
-// posts to it the pairing code and the "open the app's notification settings"
-// request; it never receives a credential from it. The app repository must use
-// the same name.
-const AppBridgeName = "musterApp"
-
 // accountDevicesSection renders Account → Devices: the caller's paired phones
 // (row-level security), each with Remove, and — only inside the app's WebView,
-// where AppBridgeName exists — "Pair this phone" and the app's notification
+// where ui.AppBridgeName exists — "Pair this phone" and the app's notification
 // settings.
 func (s *Server) accountDevicesSection(r *http.Request) string {
 	var b strings.Builder
@@ -435,6 +460,13 @@ func (s *Server) accountDevicesSection(r *http.Request) string {
 			if d.LastSeenAt != nil {
 				seen = d.LastSeenAt.UTC().Format("2006-01-02 15:04 UTC")
 			}
+			key := "step-up: none (read-only)"
+			switch d.KeyType {
+			case devices.KeyBiometric:
+				key = "step-up: biometric"
+			case devices.KeyBiometricOrCredential:
+				key = "step-up: biometric or PIN"
+			}
 			pushState := "push not registered"
 			if d.PushRegistered {
 				pushState = "push registered"
@@ -446,7 +478,7 @@ func (s *Server) accountDevicesSection(r *http.Request) string {
 			b.WriteString(`<li data-testid="paired-device" data-device-id="` + strconv.FormatInt(d.ID, 10) + `" class="flex flex-col gap-1 rounded-md bg-bg px-3 py-2 ring-1 ring-inset ring-edge">
 <span class="break-all text-sm font-semibold text-fg">` + html.EscapeString(truncate(name, 80)) + `</span>
 <span class="text-xs text-fg2">paired ` + d.CreatedAt.UTC().Format("2006-01-02 15:04 UTC") + ` · last seen ` + html.EscapeString(seen) +
-				version + ` · ` + pushState + `</span>
+				version + ` · ` + pushState + ` · ` + key + `</span>
 <form method="POST" action="/account/devices/` + strconv.FormatInt(d.ID, 10) + `/remove">
 <button type="submit" class="press min-h-[44px] w-full rounded-md bg-bg px-3 py-2 text-sm font-semibold text-fg ring-1 ring-inset ring-edge">Remove</button></form>
 </li>`)
@@ -464,10 +496,10 @@ func (s *Server) accountDevicesSection(r *http.Request) string {
 }
 
 // appBridgeJS shows the app-only controls when the page is inside the app's
-// WebView (AppBridgeName exists) and drives them. The code goes to the app and
+// WebView (ui.AppBridgeName exists) and drives them. The code goes to the app and
 // nowhere else; the request is same-origin with the session cookie.
 const appBridgeJS = `(function () {
-  var bridge = window.` + AppBridgeName + `;
+  var bridge = window.` + ui.AppBridgeName + `;
   var box = document.getElementById('app-bridge');
   if (!bridge || typeof bridge.postMessage !== 'function' || !box) return;
   box.classList.remove('hidden'); box.classList.add('flex');

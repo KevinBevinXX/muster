@@ -918,14 +918,20 @@ func atOrBefore(at time.Time, cut *time.Time) bool {
 // delivery checks, and cancels the queued messages so the list says so. The
 // record is the guarantee and the cancel the courtesy: a failed cancel leaves
 // rows queued that the delivery refuses (both are logged).
-func (s *Server) signedOutEverywhere(ctx context.Context, uid int64) {
+//
+// It returns the record's error, which the logout shows the person: the record
+// is also what signs out their paired phones (users.RecordSignOutEverywhere).
+func (s *Server) signedOutEverywhere(ctx context.Context, uid int64) error {
+	var recErr error
 	if s.gt != nil && s.gt.Users != nil {
 		if _, err := s.gt.Users.RecordSignOutEverywhere(ctx, uid); err != nil {
 			s.logger.Printf("logout: record user %d's sign-out everywhere: %v (only the cancel below now stops "+
 				"their queued messages; one queued by a request still in flight is not stopped)", uid, err)
+			recErr = err
 		}
 	}
 	s.cancelQueuedFor(ctx, uid, SendQueueCancelSignOut)
+	return recErr
 }
 
 // cancelQueuedFor cancels every message user uid still has queued, saying why:

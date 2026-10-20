@@ -320,6 +320,8 @@ var bannerLedger = []string{
 	// whether it is set (the hosts it adds) or unset (browser hosts only). With
 	// push OFF nothing is sent anywhere, so the hosts are moot.
 	envPushExtraHosts,
+	// The Android pairing policy: a line in both directions (set / unset).
+	envAndroidAllowPINKeys,
 	envGitHubEncKey,
 	envAgentProvisioner,
 	// The chat tier is its own axis with its own two lines — the fully-off arm names
@@ -642,18 +644,19 @@ func bannerGateway(t *testing.T, cfg config) api.Gateway {
 func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 	t.Helper()
 	on := config{
-		Database:      "postgres://x/y",
-		UIPassword:    strings.Repeat("p", 40),
-		SecureCookies: true,
-		HookToken:     "hook",
-		ServiceToken:  strings.Repeat("s", 40),
-		AuthMode:      string(api.AuthModeGoTrue),
-		GoTrueURL:     "http://auth.example.invalid:9999",
-		GoTrueSecret:  strings.Repeat("j", 40),
-		BrowserPort:   18192,
-		RouterURL:     "https://router.example.invalid",
-		RouterToken:   "t",
-		RouterActor:   "muster",
+		Database:            "postgres://x/y",
+		UIPassword:          strings.Repeat("p", 40),
+		SecureCookies:       true,
+		AndroidAllowPINKeys: true,
+		HookToken:           "hook",
+		ServiceToken:        strings.Repeat("s", 40),
+		AuthMode:            string(api.AuthModeGoTrue),
+		GoTrueURL:           "http://auth.example.invalid:9999",
+		GoTrueSecret:        strings.Repeat("j", 40),
+		BrowserPort:         18192,
+		RouterURL:           "https://router.example.invalid",
+		RouterToken:         "t",
+		RouterActor:         "muster",
 		// The relay's dedicated gate, so the ON render takes the DEDICATED arm.
 		ApprovalGateURL:   "https://gate.example.invalid",
 		ApprovalGateToken: "g",

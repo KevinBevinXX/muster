@@ -136,7 +136,7 @@ func (s *Server) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, push.ErrBadSubscription), errors.Is(err, push.ErrPushServiceNotAllowed):
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
-	case errors.Is(err, push.ErrTooManyDevices):
+	case errors.Is(err, push.ErrTooManyDevices), errors.Is(err, push.ErrNativeEndpoint):
 		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
 	case err != nil:

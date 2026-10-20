@@ -1,12 +1,14 @@
--- muster 0038 — PAIRED PHONES: the native Android app's device credential and
+-- muster 0037 — PAIRED PHONES: the native Android app's device credential and
 -- its pairing codes (internal/devices; docs/design/android.md, server changes
 -- 5, 6 and 8).
 --
 --   devices                one row per paired phone. Only the sha256 of its
 --                          `mdv_` credential is stored. stepup_pubkey is the
 --                          SubjectPublicKeyInfo DER of the EC P-256 key the app
---                          generated in the Android Keystore at pairing (NULL
---                          for a phone with no strong biometric, which pairs
+--                          generated in the Android Keystore at pairing, with
+--                          its type (biometric | biometric_or_credential) and
+--                          reported Keystore security level (NULL, all three,
+--                          for a phone with no acceptable key, which pairs
 --                          read-only). paired_signin_at is the pairing
 --                          session's SIGN-IN time: every request compares it
 --                          with users.sessions_not_before and users.signed_out_at
@@ -21,10 +23,12 @@
 --                          removes its subscription (ON DELETE CASCADE), and a
 --                          device holds at most one.
 --
--- 🔴 A DEVICE IS REMOVED BY DELETING ITS ROW. The design's schema listed a
--- revoked_at column; there is none, on purpose: nothing would read a revoked
--- row, the cascade removes its push subscription only on a delete, and one
--- fewer predicate on every authentication is one fewer place to forget it.
+-- 🔴 A DEVICE IS REMOVED BY DELETING ITS ROW, ON EVERY REVOCATION: Remove,
+-- unpair, a disable, a password reset and Sign out everywhere
+-- (internal/users.deleteDevicesTx). The design's schema listed a revoked_at
+-- column; there is none, on purpose: a revoked-but-present row was what kept a
+-- signed-out phone receiving pushes, counting toward the cap and listed as
+-- live, and the cascade removes its push subscription only on a delete.
 --
 -- Both new tables are under FORCE row-level security, owner-isolated, exactly as
 -- push_subscriptions (0013): a request sees only its own user's rows. The two
@@ -43,6 +47,8 @@ CREATE TABLE IF NOT EXISTS public.devices (
     app_version       TEXT        NOT NULL DEFAULT '',
     token_sha256      BYTEA       NOT NULL UNIQUE,
     stepup_pubkey     BYTEA,
+    stepup_key_type   TEXT,
+    stepup_key_level  TEXT,
     paired_signin_at  TIMESTAMPTZ NOT NULL,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_seen_at      TIMESTAMPTZ,
@@ -50,6 +56,13 @@ CREATE TABLE IF NOT EXISTS public.devices (
     CONSTRAINT devices_name_check CHECK (char_length(name) <= 100),
     CONSTRAINT devices_app_version_check CHECK (char_length(app_version) <= 64),
     CONSTRAINT devices_stepup_pubkey_check CHECK (stepup_pubkey IS NULL OR octet_length(stepup_pubkey) BETWEEN 1 AND 512),
+    -- A key always has its type and a non-software level; no key has neither
+    -- (devices.checkKey is the same rule, with the PIN-key policy on top).
+    CONSTRAINT devices_stepup_key_check CHECK (
+        (stepup_pubkey IS NULL AND stepup_key_type IS NULL AND stepup_key_level IS NULL) OR
+        (stepup_pubkey IS NOT NULL
+         AND stepup_key_type IN ('biometric', 'biometric_or_credential')
+         AND stepup_key_level IN ('trusted_environment', 'strongbox', 'unknown_secure'))),
     -- The composite key a push subscription's (device_id, owner_id) points at,
     -- so a subscription can never name another user's device (the 0006 rule).
     CONSTRAINT devices_id_owner_key UNIQUE (id, owner_id)

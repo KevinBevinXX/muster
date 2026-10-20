@@ -219,9 +219,9 @@ type Server struct {
 
 	// pushLimit is the per-owner notification rate cap (push_routes.go).
 	pushLimit ownerRateLimit
-	// devicePairLimit throttles the public pairing route per client address
+	// deviceLimits throttle the pairing route and the device tier
 	// (devices.go).
-	devicePairLimit addrRateLimit
+	deviceLimits deviceLimits
 
 	taskProvisionedMu       sync.Mutex
 	taskProvisionedNotified map[int64]bool

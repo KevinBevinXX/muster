@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/devices"
 )
 
 // Device is one stored subscription.
@@ -25,7 +26,7 @@ type Device struct {
 	LastOKAt  *time.Time
 	FailCount int
 	// Kind is KindBrowser for a browser's PushSubscription and KindAndroid for
-	// a paired phone's UnifiedPush endpoint (migration 0038).
+	// a paired phone's UnifiedPush endpoint (migration 0037).
 	Kind string
 	// DeviceID is the paired device (internal/devices) a KindAndroid
 	// subscription belongs to; 0 for a browser.
@@ -46,6 +47,10 @@ const MaxDevicesPerOwner = 20
 
 // ErrTooManyDevices refuses a claim past MaxDevicesPerOwner.
 var ErrTooManyDevices = fmt.Errorf("push: a user may have at most %d devices; remove one on the account page", MaxDevicesPerOwner)
+
+// ErrNativeEndpoint refuses a browser claim of an endpoint a paired phone
+// holds.
+var ErrNativeEndpoint = errors.New("push: that endpoint belongs to a paired phone")
 
 // ErrPushServiceNotAllowed refuses an endpoint on a host that is not a known
 // browser push service or a push host the operator named
@@ -330,12 +335,17 @@ func (s *PGStore) Claim(ctx context.Context, owner int64, sub Subscription, user
 			-- owner's last delivery is not this owner's.
 			last_ok_at = CASE WHEN p.owner_id = EXCLUDED.owner_id THEN p.last_ok_at END,
 			created_at = CASE WHEN p.owner_id = EXCLUDED.owner_id THEN p.created_at ELSE now() END,
-			owner_id   = EXCLUDED.owner_id,
-			-- A browser's claim makes the row a browser's, whatever held it.
-			kind       = 'browser',
-			device_id  = NULL
+			owner_id   = EXCLUDED.owner_id
+		-- 🔴 A BROWSER CLAIM NEVER TAKES OVER A PAIRED PHONE'S ROW. A session must
+		-- not turn a phone's subscription into a browser row (and so out of the
+		-- device's own control): the update applies to browser rows only, and
+		-- a phone's endpoint is refused (ErrNativeEndpoint).
+		WHERE p.kind = 'browser'
 		RETURNING (SELECT owner_id FROM prev)`,
 		owner, sub.Endpoint, sub.Keys.P256dh, sub.Keys.Auth, userAgent).Scan(&prev)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrNativeEndpoint
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -377,8 +387,21 @@ func (s *PGStore) ForOwner(ctx context.Context, owner int64) ([]Device, error) {
 	if owner <= 0 {
 		return nil, fmt.Errorf("push: devices for no user (%d)", owner)
 	}
-	return collect(s.pool.Query(sys(ctx), `SELECT `+deviceCols+` FROM push_subscriptions WHERE owner_id = $1 ORDER BY id`, owner))
+	// 🔴 A PHONE'S ROW IS SENT TO ONLY WHILE ITS DEVICE IS LIVE: the device
+	// row exists and its owner has not disabled, reset or signed out
+	// everywhere since the pairing sign-in — devices.LiveSQL, the rule its
+	// credential is checked by. The revocations delete the phone (and so this
+	// row) as well; this is the second wall, so a revoked phone gets nothing
+	// even if a row outlived its device.
+	return collect(s.pool.Query(sys(ctx), `SELECT `+qualifiedCols+` FROM push_subscriptions p
+		JOIN users u ON u.id = p.owner_id
+		LEFT JOIN devices d ON d.id = p.device_id
+		WHERE p.owner_id = $1 AND (p.kind = 'browser' OR (d.id IS NOT NULL AND `+devices.LiveSQL("d", "u")+`))
+		ORDER BY p.id`, owner))
 }
+
+// qualifiedCols is deviceCols over the alias p.
+const qualifiedCols = `p.id, p.owner_id, p.endpoint, p.p256dh, p.auth, p.user_agent, p.created_at, p.last_ok_at, p.fail_count, p.kind, coalesce(p.device_id, 0)`
 
 // MarkDelivered stamps a successful delivery. Keyed by (id, owner) so a row
 // that changed hands mid-send is not stamped for the new owner.

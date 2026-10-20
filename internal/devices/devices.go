@@ -1,6 +1,6 @@
 // Package devices is muster's paired-phone store: the native Android app's
 // DEVICE CREDENTIAL (`mdv_…`) and the one-time PAIRING CODE that mints it
-// (migration 0038; docs/design/android.md, "The device credential").
+// (migration 0037; docs/design/android.md, "The device credential").
 //
 // The flow, in one line each:
 //
@@ -18,8 +18,13 @@
 // door refuses an `mdv_` credential everywhere outside /api/device/*. So "a
 // token cannot mint a token" holds for this credential as it does for `mst_`.
 //
-// 🔴 REVOCATION IS READ ON EVERY REQUEST, AND NOTHING IS CACHED. Authenticate
-// joins the device to its owner's users row and refuses the credential when:
+// 🔴 EVERY REVOCATION DELETES THE PHONE: Remove and unpair here, and a disable,
+// a password reset and a Sign out everywhere in internal/users
+// (deleteDevicesTx), each in the transaction that records it. Its push
+// subscription goes with it. THE RULE BELOW IS THE SECOND WALL, READ ON EVERY
+// REQUEST WITH NOTHING CACHED, for a row that outlived its revocation:
+// Authenticate joins the device to its owner's users row and refuses the
+// credential when:
 //
 //   - the device row is gone (the owner removed it on Account → Devices, or the
 //     app unpaired itself);
@@ -113,7 +118,57 @@ var (
 	ErrNoUser = errors.New("devices: no user principal on this context")
 	// ErrNoSignIn: a pairing code was asked for with no sign-in time.
 	ErrNoSignIn = errors.New("devices: a pairing code needs the session's sign-in time")
+	// ErrKeyNotAllowed: the step-up key's kind or security level is one this
+	// server refuses (a software key always; a biometric-or-PIN key while the
+	// PIN-key policy is off).
+	ErrKeyNotAllowed = errors.New("devices: this step-up key is not accepted")
 )
+
+// The step-up key's type (docs/design/android.md, "The step-up key"):
+// biometric-only by default; biometric-or-device-PIN only when the operator
+// allows PIN keys (MUSTER_ANDROID_ALLOW_PIN_KEYS).
+const (
+	KeyBiometric             = "biometric"
+	KeyBiometricOrCredential = "biometric_or_credential"
+)
+
+// The Keystore security levels the app reports (KeyInfo.getSecurityLevel). A
+// software key is refused: until key attestation exists the server trusts
+// the app's report, and it refuses the one level that says "not hardware".
+const (
+	LevelSoftware           = "software"
+	LevelTrustedEnvironment = "trusted_environment"
+	LevelStrongBox          = "strongbox"
+	LevelUnknownSecure      = "unknown_secure"
+)
+
+// checkKey validates the key's type and level against the policy. No key is
+// "read-only": then type and level must be absent too.
+func checkKey(key []byte, in PairIn) error {
+	if key == nil {
+		if in.KeyType != "" || in.KeyLevel != "" {
+			return fmt.Errorf("%w: a key type or level without a step-up key", ErrInvalid)
+		}
+		return nil
+	}
+	switch in.KeyLevel {
+	case LevelTrustedEnvironment, LevelStrongBox, LevelUnknownSecure:
+	case LevelSoftware:
+		return fmt.Errorf("%w: a software-only key cannot gate actions", ErrKeyNotAllowed)
+	default:
+		return fmt.Errorf("%w: the key's security level %q is not one the app reports", ErrInvalid, in.KeyLevel)
+	}
+	switch in.KeyType {
+	case KeyBiometric:
+	case KeyBiometricOrCredential:
+		if !in.AllowPINKeys {
+			return fmt.Errorf("%w: this server does not accept biometric-or-PIN keys", ErrKeyNotAllowed)
+		}
+	default:
+		return fmt.Errorf("%w: the key type %q is not %s or %s", ErrInvalid, in.KeyType, KeyBiometric, KeyBiometricOrCredential)
+	}
+	return nil
+}
 
 // Device is one paired device's record. It never carries the credential or
 // its hash.
@@ -123,8 +178,12 @@ type Device struct {
 	Name       string
 	AppVersion string
 	// HasStepUpKey: the device registered a step-up public key at pairing. A
-	// phone without a strong biometric pairs without one (read-only).
+	// phone without an acceptable key pairs without one (read-only).
 	HasStepUpKey bool
+	// KeyType and KeyLevel are the step-up key's type and reported Keystore
+	// security level; empty with no key.
+	KeyType  string
+	KeyLevel string
 	// PairedSigninAt is the pairing session's sign-in time, which every
 	// revocation check compares against.
 	PairedSigninAt time.Time
@@ -141,6 +200,13 @@ type PairIn struct {
 	// StepUpKey is the step-up public key as SubjectPublicKeyInfo DER, base64
 	// (standard or URL alphabet, padded or not). Empty: no key (read-only).
 	StepUpKey string
+	// KeyType (KeyBiometric | KeyBiometricOrCredential) and KeyLevel (the
+	// Keystore security level) describe StepUpKey; both empty with no key.
+	KeyType  string
+	KeyLevel string
+	// AllowPINKeys is the SERVER's policy (MUSTER_ANDROID_ALLOW_PIN_KEYS),
+	// set by the handler, never read from the request.
+	AllowPINKeys bool
 }
 
 func newSecret(prefix string) (string, error) {
@@ -233,6 +299,39 @@ func ownerRefusal(disabled bool, signin time.Time, cutoff, signedOut *time.Time)
 	return nil
 }
 
+// deviceCols is a device row as Device holds it, in deviceDest's order; cols
+// is the same list qualified by a table alias.
+var deviceCols = cols("")
+
+func cols(alias string) string {
+	q := func(c string) string {
+		if alias == "" {
+			return c
+		}
+		return alias + "." + c
+	}
+	return strings.Join([]string{q("id"), q("owner_id"), q("name"), q("app_version"), q("stepup_pubkey") + " IS NOT NULL",
+		"coalesce(" + q("stepup_key_type") + ", '')", "coalesce(" + q("stepup_key_level") + ", '')",
+		q("paired_signin_at"), q("created_at"), q("last_seen_at")}, ", ")
+}
+
+func deviceDest(d *Device) []any {
+	return []any{&d.ID, &d.OwnerID, &d.Name, &d.AppVersion, &d.HasStepUpKey, &d.KeyType, &d.KeyLevel,
+		&d.PairedSigninAt, &d.CreatedAt, &d.LastSeenAt}
+}
+
+// LiveSQL is ownerRefusal as a SQL predicate over a devices alias and its
+// owner's users alias: true while the device's owner may still hold it. It is
+// the SAME rule, for the readers that select rather than authenticate (the
+// push fan-out's android rows, internal/push), and
+// TestTheSQLRuleIsTheGoRule pins the two to each other.
+func LiveSQL(dev, usr string) string {
+	sec := func(col string) string { return "floor(extract(epoch FROM " + col + "))" }
+	return "(" + usr + ".disabled_at IS NULL" +
+		" AND (" + usr + ".sessions_not_before IS NULL OR " + sec(dev+".paired_signin_at") + " > " + sec(usr+".sessions_not_before") + ")" +
+		" AND (" + usr + ".signed_out_at IS NULL OR " + sec(dev+".paired_signin_at") + " > " + sec(usr+".signed_out_at") + "))"
+}
+
 // sys is this package's ONE authz.System call (ledgered). See the package doc.
 func sys(ctx context.Context) context.Context { return authz.System(ctx) }
 
@@ -254,7 +353,7 @@ type Store interface {
 	Remove(ctx context.Context, id int64) (found bool, err error)
 }
 
-// PGStore is Store over Postgres (migration 0038).
+// PGStore is Store over Postgres (migration 0037).
 type PGStore struct {
 	pool *pgxpool.Pool
 	now  func() time.Time
@@ -343,6 +442,13 @@ func (s *PGStore) Redeem(ctx context.Context, code string, in PairIn) (string, D
 	if err != nil {
 		return "", Device{}, err
 	}
+	if err := checkKey(key, in); err != nil {
+		return "", Device{}, err
+	}
+	var keyType, keyLevel *string
+	if key != nil {
+		keyType, keyLevel = &in.KeyType, &in.KeyLevel
+	}
 	tok, err := newSecret(TokenPrefix)
 	if err != nil {
 		return "", Device{}, err
@@ -354,16 +460,32 @@ func (s *PGStore) Redeem(ctx context.Context, code string, in PairIn) (string, D
 			codeID, owner int64
 			signin        time.Time
 		)
-		err := tx.QueryRow(ctx, `SELECT id, owner_id, signin_at FROM device_pairing_codes
-			WHERE code_sha256 = $1 AND used_at IS NULL AND expires_at > now() FOR UPDATE`, hash(code)).
-			Scan(&codeID, &owner, &signin)
+		// 🔴 THE CREDENTIALS LOCK COMES BEFORE ANY ROW LOCK (users.LockCredentialsTx's
+		// order rule). The code row names the owner whose lock to take, so it is
+		// read FIRST WITHOUT a lock, then the owner's credentials lock is taken,
+		// then the row is locked and re-checked: a code spent, or one that names
+		// another owner, between the two reads is refused like any spent code.
+		// ⚠ Measured, not assumed: today no writer that holds the credentials
+		// lock touches a code row (the revocations delete devices, not codes),
+		// so the reverse order would not deadlock either — a mutation that locks
+		// the code row first survives TestCredentialWritersNeverDeadlock. The
+		// order is kept so the rule has no exception for the next writer.
+		if err := tx.QueryRow(ctx, `SELECT owner_id FROM device_pairing_codes WHERE code_sha256 = $1`, hash(code)).
+			Scan(&owner); errors.Is(err, pgx.ErrNoRows) {
+			return ErrBadCode
+		} else if err != nil {
+			return err
+		}
+		if err := users.LockCredentialsTx(ctx, tx, owner); err != nil {
+			return err
+		}
+		err := tx.QueryRow(ctx, `SELECT id, signin_at FROM device_pairing_codes
+			WHERE code_sha256 = $1 AND owner_id = $2 AND used_at IS NULL AND expires_at > now() FOR UPDATE`, hash(code), owner).
+			Scan(&codeID, &signin)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrBadCode
 		}
 		if err != nil {
-			return err
-		}
-		if err := users.LockCredentialsTx(ctx, tx, owner); err != nil {
 			return err
 		}
 		var (
@@ -387,16 +509,18 @@ func (s *PGStore) Redeem(ctx context.Context, code string, in PairIn) (string, D
 		if _, err := tx.Exec(ctx, `UPDATE device_pairing_codes SET used_at = now() WHERE id = $1`, codeID); err != nil {
 			return err
 		}
-		err = tx.QueryRow(ctx, `INSERT INTO devices (owner_id, name, app_version, token_sha256, stepup_pubkey, paired_signin_at)
-			VALUES ($1, $2, $3, $4, $5, $6)
-			RETURNING id, owner_id, name, app_version, stepup_pubkey IS NOT NULL, paired_signin_at, created_at, last_seen_at`,
-			owner, name, version, hash(tok), key, signin).
-			Scan(&d.ID, &d.OwnerID, &d.Name, &d.AppVersion, &d.HasStepUpKey, &d.PairedSigninAt, &d.CreatedAt, &d.LastSeenAt)
+		err = tx.QueryRow(ctx, `INSERT INTO devices (owner_id, name, app_version, token_sha256, stepup_pubkey,
+				stepup_key_type, stepup_key_level, paired_signin_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			RETURNING `+deviceCols,
+			owner, name, version, hash(tok), key, keyType, keyLevel, signin).
+			Scan(deviceDest(&d)...)
 		if err != nil {
 			return err
 		}
 		return users.AuditTx(ctx, tx, users.Actor{UserID: owner, Via: authz.ViaDevice}, "device.pair", Object(d.ID),
-			map[string]any{"name": d.Name, "app_version": d.AppVersion, "stepup_key": d.HasStepUpKey})
+			map[string]any{"name": d.Name, "app_version": d.AppVersion, "stepup_key": d.HasStepUpKey,
+				"stepup_key_type": d.KeyType, "stepup_key_level": d.KeyLevel})
 	})
 	if err != nil {
 		return "", Device{}, err
@@ -418,13 +542,11 @@ func (s *PGStore) Authenticate(ctx context.Context, token string) (Device, error
 		disabled          bool
 		cutoff, signedOut *time.Time
 	)
-	err := s.pool.QueryRow(ctx, `SELECT d.id, d.owner_id, d.name, d.app_version, d.stepup_pubkey IS NOT NULL,
-			d.paired_signin_at, d.created_at, d.last_seen_at,
+	err := s.pool.QueryRow(ctx, `SELECT `+cols("d")+`,
 			u.disabled_at IS NOT NULL, u.sessions_not_before, u.signed_out_at
 		FROM devices d JOIN users u ON u.id = d.owner_id
 		WHERE d.token_sha256 = $1`, hash(token)).
-		Scan(&d.ID, &d.OwnerID, &d.Name, &d.AppVersion, &d.HasStepUpKey, &d.PairedSigninAt, &d.CreatedAt, &d.LastSeenAt,
-			&disabled, &cutoff, &signedOut)
+		Scan(append(deviceDest(&d), &disabled, &cutoff, &signedOut)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Device{}, ErrBadToken
 	}
@@ -450,8 +572,7 @@ func (s *PGStore) List(ctx context.Context) ([]Device, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.pool.Query(ctx, `SELECT d.id, d.owner_id, d.name, d.app_version, d.stepup_pubkey IS NOT NULL,
-			d.paired_signin_at, d.created_at, d.last_seen_at,
+	rows, err := s.pool.Query(ctx, `SELECT `+cols("d")+`,
 			EXISTS (SELECT 1 FROM push_subscriptions p WHERE p.device_id = d.id)
 		FROM devices d WHERE d.owner_id = $1 ORDER BY d.created_at DESC, d.id DESC`, p.UserID)
 	if err != nil {
@@ -461,8 +582,7 @@ func (s *PGStore) List(ctx context.Context) ([]Device, error) {
 	out := []Device{}
 	for rows.Next() {
 		var d Device
-		if err := rows.Scan(&d.ID, &d.OwnerID, &d.Name, &d.AppVersion, &d.HasStepUpKey, &d.PairedSigninAt,
-			&d.CreatedAt, &d.LastSeenAt, &d.PushRegistered); err != nil {
+		if err := rows.Scan(append(deviceDest(&d), &d.PushRegistered)...); err != nil {
 			return nil, err
 		}
 		out = append(out, d)

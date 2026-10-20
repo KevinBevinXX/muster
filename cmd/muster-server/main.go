@@ -288,9 +288,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.Users = users.NewPG(pool)
 		// Personal API tokens (accounts PR 6): mst_… on the machine tier.
 		ext.APITokens = apitokens.NewPG(pool)
-		// Paired phones (migration 0038): the Android app's mdv_ credential on
+		// Paired phones (migration 0037): the Android app's mdv_ credential on
 		// /api/device/*, and Account → Devices.
 		ext.Devices = devices.NewPG(pool)
+		ext.AllowPINKeys = cfg.AndroidAllowPINKeys
 		// Browser flows (migration 0012): the owner-scoped job queue and the
 		// per-host runner tokens. Always on with a database: with no runner
 		// token minted, nothing ever claims a job and each one expires.
@@ -1114,6 +1115,16 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("web push: OFF — %s/%s/%s are unset (or there is no database), so no Enable button is drawn, "+
 			"%s answers 503 and nothing is sent (%s is not read). Mint a keypair with `muster-server vapid generate`",
 			envVAPIDPublicKey, envVAPIDPrivateKey, envVAPIDSubject, "/api/push/vapid-public-key", envPushExtraHosts)
+	}
+
+	// The Android app's pairing policy, in both directions: whether a phone with
+	// no strong biometric gets actions at all is a security decision.
+	if a.cfg.AndroidAllowPINKeys {
+		l.Printf("android pairing: %s is SET, so a phone with no strong biometric may pair with a biometric-or-PIN "+
+			"step-up key (anyone who knows its PIN can use it)", envAndroidAllowPINKeys)
+	} else {
+		l.Printf("android pairing: %s is unset, so a phone with no strong biometric pairs read-only "+
+			"(a biometric-or-PIN step-up key is refused)", envAndroidAllowPINKeys)
 	}
 
 	if ext.Connectors != nil {

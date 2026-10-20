@@ -105,10 +105,10 @@ const attentionAsksMigrationVersion = 25
 // same row-level security; same treatment again.
 const jobsMigrationVersion = 37
 
-// devicesMigrationVersion is 0038: devices and device_pairing_codes (the
+// devicesMigrationVersion is 0037: devices and device_pairing_codes (the
 // Android app's paired phones), owned and under the same row-level security;
 // same treatment again.
-const devicesMigrationVersion = 38
+const devicesMigrationVersion = 37
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the

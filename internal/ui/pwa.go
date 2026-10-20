@@ -87,6 +87,13 @@ const reviewCountPath = "/ui/tasks/review-count"
 //
 // ⚠ ORDER: it publishes window.musterSWReady, which pushScript consumes, so it
 // renders before pushScript on the shell.
+// AppBridgeName is the JavaScript object the Android app's WebView injects
+// (WebViewCompat.addWebMessageListener), on muster's own origin only. Its
+// presence is how a page knows it is inside the app; the page posts the
+// pairing code and "open the app's notification settings" to it, and never
+// receives a credential from it. The app repository uses the same name.
+const AppBridgeName = "musterApp"
+
 func pwaScript() g.Node {
 	return Script(g.Raw(`
 (function () {
@@ -163,6 +170,9 @@ func pwaScript() g.Node {
   var INSTALLED_MODES = ['standalone', 'fullscreen', 'minimal-ui', 'window-controls-overlay'];
   function installed() {
     if (navigator.standalone === true) return true;
+    // Inside the Android app's WebView the page IS the installed app: never
+    // offer Install there (docs/design/android.md, server change 24).
+    if (window.` + AppBridgeName + `) return true;
     if (!window.matchMedia) return false;
     for (var i = 0; i < INSTALLED_MODES.length; i++) {
       if (window.matchMedia('(display-mode: ' + INSTALLED_MODES[i] + ')').matches) return true;

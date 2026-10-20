@@ -275,8 +275,16 @@ func (s *Server) handleGoTrueLogout(w http.ResponseWriter, r *http.Request) {
 	if r.FormValue("scope") == "global" {
 		scope = gotrue.ScopeGlobal
 	}
+	// failed is why a Sign out everywhere did not complete; the person is told
+	// rather than redirected as though it had (it also ends paired phones).
+	var failed string
 	if s.gt != nil && viaBrowserListener(r) {
-		if sess, err := s.resolveGoTrueSession(r); err == nil {
+		sess, err := s.resolveGoTrueSession(r)
+		if err != nil && scope == gotrue.ScopeGlobal {
+			s.logger.Printf("logout: a sign-out everywhere could not resolve its session: %v", err)
+			failed = SignOutEverywhereUnresolved
+		}
+		if err == nil {
 			if err := s.gt.Client.Logout(r.Context(), clientIP(r), sess.access, scope); err != nil {
 				// The local revocation below still applies; the refresh side
 				// may survive in GoTrue, so it is logged rather than swallowed.
@@ -284,8 +292,11 @@ func (s *Server) handleGoTrueLogout(w http.ResponseWriter, r *http.Request) {
 			}
 			s.gt.revoke(sess.user.ID, sess.claims, scope)
 			if signsOutEverywhere(sess.claims, scope) {
-				// Signed out of every session: nothing queued from one is sent.
-				s.signedOutEverywhere(r.Context(), sess.user.ID)
+				// Signed out of every session: nothing queued from one is sent,
+				// and every paired phone is signed out.
+				if err := s.signedOutEverywhere(r.Context(), sess.user.ID); err != nil {
+					failed = SignOutEverywhereUnrecorded
+				}
 			}
 			// This browser's push subscription goes with its session.
 			s.forgetPushDevice(w, r, sess.user.ID)
@@ -293,8 +304,20 @@ func (s *Server) handleGoTrueLogout(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.clearGoTrueCookies(w)
+	if failed != "" {
+		s.renderNotice(w, http.StatusInternalServerError, "Sign out everywhere did not finish", failed)
+		return
+	}
 	http.Redirect(w, r, loginPath, http.StatusSeeOther)
 }
+
+// The two ways a Sign out everywhere can fail, as the person is told.
+const (
+	SignOutEverywhereUnresolved = "muster could not confirm your sign-in, so your other sessions and paired phones were NOT signed out. " +
+		"Sign in again and use Sign out everywhere again."
+	SignOutEverywhereUnrecorded = "Your sign-ins were ended, but muster could not record the sign-out, so paired phones and queued messages " +
+		"may still be active. Sign in again and use Sign out everywhere again, or remove phones on Account → Devices."
+)
 
 // --- the account page ---------------------------------------------------------
 

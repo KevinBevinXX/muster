@@ -69,3 +69,30 @@ test('outside the app shell the pairing buttons are not drawn', async ({ page })
   await expect(section.getByRole('heading', { name: 'Devices' })).toBeVisible();
   await expect(section.getByRole('button', { name: 'Pair this phone' })).toBeHidden();
 });
+
+// Inside the app shell the page never offers Install: the page IS the
+// installed app. The browser's install event is synthesised, as in
+// install-button.spec.ts; the control is the same event with no bridge.
+const fireInstall = `(() => {
+  const e = new Event('beforeinstallprompt', { cancelable: true });
+  e.prompt = () => Promise.resolve();
+  e.userChoice = Promise.resolve({ outcome: 'accepted', platform: 'web' });
+  window.dispatchEvent(e);
+})()`;
+
+test('inside the app shell Install is never offered', async ({ page }) => {
+  await page.addInitScript(() => { (window as unknown as { musterApp: { postMessage(m: string): void } }).musterApp = { postMessage: () => {} }; });
+  await signIn(page);
+  await page.goto(baseURL + '/tasks');
+  await page.click('#sidebar-open');
+  await page.evaluate(fireInstall);
+  await expect(page.locator('#sidebar [data-install-app]')).toBeHidden();
+});
+
+test('CONTROL: outside the app shell the same event offers Install', async ({ page }) => {
+  await signIn(page);
+  await page.goto(baseURL + '/tasks');
+  await page.click('#sidebar-open');
+  await page.evaluate(fireInstall);
+  await expect(page.locator('#sidebar [data-install-app]')).toBeVisible();
+});

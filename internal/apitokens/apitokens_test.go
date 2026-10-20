@@ -19,6 +19,7 @@ import (
 	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/dbtest"
+	"github.com/ZacxDev/muster/internal/devices"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -633,6 +634,10 @@ type stressResult struct {
 // with a second admin (w.b) minting beside it, for up to `rounds` rounds each
 // or `budget`. It counts SQLSTATE 40P01. The invite create/revoke by the
 // target are here because a disable also revokes its target's pending invites.
+// errRefusedNotFailed is a writer that ran and was REFUSED by the rule it
+// enforces (a pairing after a disable): neither a success nor a deadlock.
+var errRefusedNotFailed = errors.New("refused by its own rule")
+
 func stressCredentialWriters(t *testing.T, w world, rounds int, budget time.Duration) stressResult {
 	t.Helper()
 	ctx := context.Background()
@@ -716,6 +721,41 @@ func stressCredentialWriters(t *testing.T, w world, rounds int, budget time.Dura
 			return nil
 		}
 	}
+	// Paired phones (0037): pairing (an UNLOCKED read of the code's owner, then
+	// the credentials lock, then the code row) and removing take the
+	// credentials lock first; a disable, a reset and a sign-out everywhere
+	// delete the user's phones under it.
+	ds := devices.NewPG(w.pool)
+	t.Cleanup(func() {
+		_, _ = w.pool.Exec(sysCtx(), `DELETE FROM device_pairing_codes WHERE owner_id = ANY($1)`, []int64{w.a, w.b})
+		_, _ = w.pool.Exec(sysCtx(), `DELETE FROM devices WHERE owner_id = ANY($1)`, []int64{w.a, w.b})
+	})
+	ops["device-pair"] = func(int) error {
+		// A sign-in an hour ahead, so the stress's constant resets and
+		// sign-outs never refuse it by the rule: what is measured here is the
+		// lock order, and a pairing that is always refused takes no lock past
+		// the code row.
+		code, _, err := ds.CreatePairingCode(asX, time.Now().Add(time.Hour))
+		if err != nil {
+			return err
+		}
+		_, _, err = ds.Redeem(ctx, code, devices.PairIn{Name: "stress"})
+		if errors.Is(err, devices.ErrSessionEnded) || errors.Is(err, devices.ErrUserDisabled) ||
+			errors.Is(err, devices.ErrSignedOut) || errors.Is(err, devices.ErrBadCode) || errors.Is(err, devices.ErrTooMany) {
+			return errRefusedNotFailed
+		}
+		return err
+	}
+	ops["device-remove"] = func(int) error {
+		list, err := ds.List(asX)
+		if err != nil || len(list) == 0 {
+			return err
+		}
+		_, err = ds.Remove(asX, list[0].ID)
+		return err
+	}
+	ops["sign-out-everywhere"] = func(int) error { _, err := us.RecordSignOutEverywhere(ctx, w.a); return err }
+	paced := map[string]bool{"device-pair": true, "device-remove": true, "sign-out-everywhere": true}
 	var mu sync.Mutex
 	res := stressResult{ok: map[string]int{}}
 	deadline := time.Now().Add(budget)
@@ -725,6 +765,12 @@ func stressCredentialWriters(t *testing.T, w world, rounds int, budget time.Dura
 		go func() {
 			defer wg.Done()
 			for i := 0; i < rounds && time.Now().Before(deadline); i++ {
+				if paced[name] {
+					// Interleaved, not flooding: three more writers on the same
+					// credentials lock otherwise starve the disable rounds the
+					// control counts (measured: 2 rounds under -race).
+					time.Sleep(10 * time.Millisecond)
+				}
 				err := fn(i)
 				mu.Lock()
 				var pg *pgconn.PgError
@@ -781,7 +827,7 @@ func TestCredentialWritersNeverDeadlock(t *testing.T) {
 		t.Fatalf("%d deadlock(s) (SQLSTATE 40P01) among the credential writers; first: %s", res.deadlocks, res.firstDead)
 	}
 	for _, name := range []string{"mint", "mint-by-another-admin", "revoke-one", "list", "disable", "enable", "reset", "demote",
-		"invite-create", "invite-revoke", "credential-save", "credential-delete"} {
+		"invite-create", "invite-revoke", "credential-save", "credential-delete", "device-pair", "device-remove", "sign-out-everywhere"} {
 		if res.ok[name] == 0 {
 			t.Errorf("CONTROL: %q never succeeded, so its absence of deadlocks proves nothing (ok counts %v)", name, res.ok)
 		}

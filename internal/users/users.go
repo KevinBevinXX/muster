@@ -191,6 +191,9 @@ func (s *PGStore) ResetCredentials(ctx context.Context, id int64) (time.Time, er
 	if err := revokeAPITokensTx(ctx, tx, id); err != nil {
 		return time.Time{}, err
 	}
+	if err := deleteDevicesTx(ctx, tx, id); err != nil {
+		return time.Time{}, err
+	}
 	return t, tx.Commit(ctx)
 }
 
@@ -199,14 +202,36 @@ func (s *PGStore) ResetCredentials(ctx context.Context, id int64) (time.Time, er
 // of a "sign out everywhere" that the send queue's delivery checks
 // (migration 0019). It moves nothing else: sessions_not_before, the API
 // tokens and GoTrue are the session tier's.
+//
+// 🔴 AND IT DELETES THE USER'S PAIRED PHONES (deleteDevicesTx), in the same
+// transaction, under the credentials lock taken first. Every phone that exists
+// at this moment was paired by a sign-in at or before it, so the rule the
+// device credential is checked by would refuse each one anyway; deleting them
+// also stops their pushes, frees the 20-device cap and takes them off
+// Account → Devices (docs/decisions.md).
 func (s *PGStore) RecordSignOutEverywhere(ctx context.Context, id int64) (time.Time, error) {
+	ctx = sys(ctx)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := LockCredentialsTx(ctx, tx, id); err != nil {
+		return time.Time{}, err
+	}
 	var t time.Time
-	err := s.pool.QueryRow(sys(ctx), `UPDATE users SET signed_out_at = greatest(signed_out_at, clock_timestamp())
+	err = tx.QueryRow(ctx, `UPDATE users SET signed_out_at = greatest(signed_out_at, clock_timestamp())
 		WHERE id = $1 RETURNING signed_out_at`, id).Scan(&t)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return t, ErrNotFound
 	}
-	return t, err
+	if err != nil {
+		return t, err
+	}
+	if err := deleteDevicesTx(ctx, tx, id); err != nil {
+		return time.Time{}, err
+	}
+	return t, tx.Commit(ctx)
 }
 
 // SetDisabledAs is SetDisabled that, when by is non-nil, writes the
@@ -260,6 +285,9 @@ func (s *PGStore) SetDisabledAs(ctx context.Context, by *Actor, id int64, disabl
 			return User{}, err
 		}
 		// Accounts PR 6: every live personal API token, in THIS transaction.
+		if err := deleteDevicesTx(ctx, tx, id); err != nil {
+			return User{}, err
+		}
 		if err := revokeAPITokensTx(ctx, tx, id); err != nil {
 			return User{}, err
 		}
@@ -284,6 +312,18 @@ func (s *PGStore) SetDisabledAs(ctx context.Context, by *Actor, id int64, disabl
 // this UPDATE ran but before the commit survived.
 func revokeAPITokensTx(ctx context.Context, tx pgx.Tx, id int64) error {
 	_, err := tx.Exec(ctx, `UPDATE api_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`, id)
+	return err
+}
+
+// deleteDevicesTx deletes every paired phone (internal/devices) user id holds
+// inside tx: a disable, a password reset and a Sign out everywhere each end
+// every phone's credential. The phones' push subscriptions go with them (ON
+// DELETE CASCADE). An unspent pairing code is left to expire (a minute): the
+// session that minted it signed in at or before the cut, so the redeem's own
+// rule refuses it. Raw SQL for the revokeAPITokensTx reason: internal/devices
+// imports this package.
+func deleteDevicesTx(ctx context.Context, tx pgx.Tx, id int64) error {
+	_, err := tx.Exec(ctx, `DELETE FROM devices WHERE owner_id = $1`, id)
 	return err
 }
 
@@ -326,17 +366,24 @@ const credentialsLockClass int32 = 0x6d75746b // "mutk"
 // checked against UPDATE policies — measured: 0 rows). An advisory lock needs
 // no row and no policy.
 //
-// 🔴 ORDER RULE: A TRANSACTION THAT WRITES api_tokens TAKES THIS LOCK FIRST —
-// before any users row lock and before any api_tokens row lock. The writers,
-// enumerated (TestCredentialWritersNeverDeadlock runs them all against one
-// admin and demands zero deadlocks):
+// 🔴 ORDER RULE: A TRANSACTION THAT WRITES api_tokens OR devices TAKES THIS
+// LOCK FIRST — before any users row lock and before any api_tokens, devices or
+// device_pairing_codes row lock. The writers, enumerated
+// (TestCredentialWritersNeverDeadlock runs them all against one admin and
+// demands zero deadlocks):
 //
 //   - apitokens.Create      lock → reads users → INSERT api_tokens, audit_log
 //   - apitokens.Revoke      lock → token row FOR UPDATE → UPDATE, audit_log
 //   - SetDisabledAs (disable) lockAccountWritersTx → lock → guardLastAdmin (FOR
-//     UPDATE on every enabled admin) → UPDATE users → invites → UPDATE
-//     api_tokens → audit_log
-//   - ResetCredentials      lock → UPDATE users → UPDATE api_tokens
+//     UPDATE on every enabled admin) → UPDATE users → invites → DELETE
+//     devices → UPDATE api_tokens → audit_log
+//   - ResetCredentials      lock → UPDATE users → UPDATE api_tokens → DELETE
+//     devices
+//   - RecordSignOutEverywhere lock → UPDATE users → DELETE devices
+//   - devices.Redeem        an UNLOCKED read of the code's owner → lock →
+//     code row FOR UPDATE → reads users → UPDATE code, INSERT devices,
+//     audit_log
+//   - devices.Remove        lock → DELETE devices → audit_log
 //
 // NOT api_tokens writers, and deliberately outside the rule: the
 // bring-your-own-credentials writers (internal/credentials Put*/Delete). Each
