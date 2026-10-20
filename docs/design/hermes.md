@@ -293,11 +293,13 @@ pane; send from the rendered view".
   [mirroring rule](#pane-to-session-resolution) also wants `argv[2] == chat`,
   which fails open for a profile-launched CLI: `hermes -p coder chat` runs as
   `[python, hermes, -p, coder, chat]` (`P:hermes_cli/main.py:500,595-667`).
-  **The gateway is excluded**: a process whose argv holds `gateway` followed by
-  `run` (`[python, -m, hermes_cli.main, …, gateway, run, …]`, which the second
-  pattern would otherwise match) is not itself a reason to refuse. It is only
-  ever in a pane's tree as the child of the CLI that auto-started it (S10), and
-  that CLI matches. A false refusal is safe; a false admit is not.
+  **The gateway is not excluded.** Its argv
+  (`[python, -m, hermes_cli.main, …, gateway, run, …]`) matches the patterns
+  above, and upstream ships a hand-run foreground gateway ("Run gateway in
+  foreground (recommended for WSL and Docker)",
+  `P:hermes_cli/subcommands/gateway.py:64-65,110`; `P:hermes_cli/main.py:60-62`),
+  so an operator can run `hermes gateway run` in a pane. Refusing a paste into
+  that pane is a false refusal, which is safe; a false admit is not.
 - **It also refuses when the screen shows Hermes's chrome** (the status bar and
   input rules around a `❯ ` input line, from the recorded fixtures), as a
   best-effort extra. ⚠ That check **fails open** exactly when the chrome is not
@@ -815,7 +817,18 @@ residual cases (operator decision).
     the abort rule below refuses;
   - approval and clarify have **no** Escape binding; they are harmless only
     because the input-line rule refuses them before any Escape is sent;
-  - ⚠ two Escapes in a row clear attached images (`:1072-1086`). That is why
+  - ⚠ **vi mode changes what Escape does.** With `display.vim_mode`, the CLI
+    runs prompt_toolkit in `EditingMode.VI`
+    (`P:hermes_cli/cli_tui_runtime_mixin.py:414-417`), and one Escape on an
+    idle, empty line enters navigation mode, where the paste's characters can be
+    read as vi commands. muster cannot read `config.yaml` (secret hygiene).
+    Phase 3 records a vi-mode fixture and looks for a screen marker of
+    navigation or insert mode (UNVERIFIED that one exists). If there is one, the
+    input-line rule refuses vi mode before any Escape. If there is none, a host
+    using vi mode must not enable `-hermes-send`; the host docs say so, and the
+    per-host switch is what enforces it;
+  - ⚠ two Escapes in a row move the draft into the Up-arrow history and clear
+    attached images (`:1072-1086`). That is why
     the image-region check runs **before** any Escape, and refuses if images are
     attached, rather than letting the Escapes silently drop them.
 
@@ -827,18 +840,18 @@ residual cases (operator decision).
     re-captures; the first capture that shows a non-idle input line, a non-empty
     one (a restored palette draft) or an image bar ends the sequence, and the
     send is refused with nothing pasted. Without this, Escapes #2 and #3 would
-    form a double-Escape that discards a restored draft and any attached images
-    (`:1072-1086`).
+    form a double-Escape, which moves a restored draft out of the input box into
+    the Up-arrow history and clears any attached images (`:1072-1086`).
   - **every wait exceeds prompt_toolkit's `timeoutlen`** (1 s by default; Hermes
     does not override it), proposed 1.5 s, so two consecutive Escapes are never
-    read as a double-Escape. The cost is a send that takes about 5 s longer, and
+    read as a double-Escape. The cost is a send that takes about 4.5 s longer, and
     a wider window for the "person opens an overlay meanwhile" residual case
     below; the abort rule's final re-capture just before the paste bounds it.
 - **Phase 3 measures every overlay at its non-default stages**, not just the
   defaults: the palette with a filter and over a draft, the model picker with a
   typed filter, at the reasoning stage and **opened over a draft**, the stash
-  alone, the palette and stash open together, and each after the Escape
-  sequence.
+  alone, the palette and stash open together, each after the Escape sequence,
+  and an idle line in **vi mode** before and after one Escape.
 
 #### Residual cases, accepted
 
@@ -856,10 +869,17 @@ accepted as known risk:
   person loses the draft they had typed; muster's own message is then sent
   normally.
 
-The worst outcome in the first three is the one measured above: Enter acts on
-the overlay (prefills a palette command into the input box, or selects a
-model), muster's text is lost, and nothing is submitted; the database check then
-reports "may have been submitted".
+The worst outcome in the first three is that Enter acts on the overlay and
+nothing is submitted; the database check then reports "may have been
+submitted". Per overlay:
+
+- **palette:** Enter prefills the highlighted command into the input box;
+  muster's text is lost;
+- **model picker:** Enter selects and persists a model; muster's text is lost;
+- **stash panel:** Enter restores the highlighted stashed draft, and its
+  images, into the input box, overwriting muster's text
+  (`_tui_handle_stash_panel_restore`, `P:hermes_cli/cli_tui_mixin.py:1802-1805`,
+  `:1020-1032`).
 
 **The image region and the input-line rule.** On the captured app region,
 **before any Escape**:
@@ -1193,13 +1213,18 @@ No run resumes (S6).
     the old run is out of scope for the new key, and a re-post would admit a
     second run. The intent is resolved from the session's messages, else
     reported as "may have run".
-  - 🔴 **An `unknown` run left under an old key blocks its session for good.**
-    Scope is a hash of the profile and the key
-    (`P:gateway/platforms/api_server_runs.py:375-386`), and `resolve-unknown`
-    answers only the owner (`:1487-1492`), so no new key can resolve it, and
-    every later run on that Hermes session parks behind it. hermesd **retires
-    that Hermes session**: it maps the muster session to a fresh Hermes
-    `session_id`, and the next turn's reply starts with a notice: "The previous
+  - 🔴 **After a key change, every session posted under the old key is
+    retired.** Scope is a hash of the profile and the key
+    (`P:gateway/platforms/api_server_runs.py:375-386`), and `GET /v1/runs/{id}`
+    and `resolve-unknown` answer only the owner (`:1168-1180`, `:1487-1492`).
+    So under a new key hermesd **cannot see** whether an old run is `unknown`
+    and blocking its session: both calls 404. It cannot retire only the blocked
+    sessions. The session map therefore records, per session, the fingerprint
+    of the key its runs were posted with, and at start hermesd **retires every
+    session whose fingerprint differs from the current key**: it maps the muster
+    session to a fresh Hermes `session_id`. This deliberately costs the history
+    of sessions that were not blocked too; a session that might be blocked
+    forever is worse. The next turn's reply on each starts with: "The previous
     Hermes session could not be recovered after the agent's API key changed;
     this turn starts a new session without its history." The key only changes
     if its file on the volume is deleted or replaced (a lost volume loses
@@ -1392,7 +1417,7 @@ Efforts are rough engineer-days, including tests and docs. Phase 0 is done.
 | ~~0~~ | Spikes S1–S11 | done | — |
 | **1** | Runtime seam: `mirrorhost.Runtime` for Claude Code and Hermes, Claude behind it, `Window.Runtime`/`AgentSession` with the wider id bound. 🔴 **The host paste guard**, first, with process identity (the broad guard match and the strict mirroring rule) and the chrome check. [Server changes](#server-changes): runtime-aware `AgentState` and waiting set, Send now refusing unknown and busy for Hermes, the migration widening the session-key checks of 0020, 0021, 0022 and 0025. No behaviour change for Claude Code. | 5–6 | — |
 | **2** | Read-only Hermes mirroring: breadcrumb locator with the end-reason staleness rule (no view, unknown status), SQLite reader (compaction, compression-only lineage), renderer, the `hermes-hook` command and its status files with lease and newest-row checks, the Home Manager declaration and the locking allowlist writer, mismatch diagnostics, listing and kind chip, secret-path ledger, `-list -hermes` | 6–8 | 1 |
-| **3** | Gated pane send **and its live harness**. `make test-livehermes`: the pinned Hermes in a scratch tmux server and home; fixtures for every blocking state, including the palette, model picker and stash; the overlay-state ledger; measuring the Escape sequence (with the abort rule and waits above `timeoutlen`) against every overlay at its non-default stages (filtered picker, reasoning stage, palette and stash together, the picker opened over a draft); re-measuring under load the false-idle slack, the 150 ms Enter margin and the queue gap. Then the send: per-runtime server gates, host `CheckSend` with the image-region and input-line rules and the bounded Escape sequence, the `hermesSend` switch on both sides, the `/`, `!` and trailing-`\` refusals, collapse-aware post-paste check, database-confirmed submit with "may have been submitted", Queue and Send now for Hermes, host docs. Send stays off until these measurements are done and the harness is green; then the operator enables it per host, with the residual cases named in the host docs. | 10–12 | 2 |
+| **3** | Gated pane send **and its live harness**. `make test-livehermes`: the pinned Hermes in a scratch tmux server and home; fixtures for every blocking state, including the palette, model picker and stash; the overlay-state ledger; measuring the Escape sequence (with the abort rule and waits above `timeoutlen`) against every overlay at its non-default stages (filtered picker, reasoning stage, palette and stash together, the picker opened over a draft, vi mode); re-measuring under load the false-idle slack, the 150 ms Enter margin and the queue gap. Then the send: per-runtime server gates, host `CheckSend` with the image-region and input-line rules and the bounded Escape sequence, the `hermesSend` switch on both sides, the `/`, `!` and trailing-`\` refusals, collapse-aware post-paste check, database-confirmed submit with "may have been submitted", Queue and Send now for Hermes, host docs. Send stays off until these measurements are done and the harness is green; then the operator enables it per host, with the residual cases named in the host docs. | 10–12 | 2 |
 | **4** | Questions and approvals: clarify cards from the DB, approval and sudo attention items from the hooks, viewer discovery through `gateway.sock.path`, attach-to-answer, `approval.respond` with the stale-modal card, measuring the viewer's clarify answer (and wiring it if it passes), the hygiene filters; harness cases for each | 5–7 | 2, 3 |
 | **5** | `hermes` kind: `hermesd` (runs, events, exact approval body, relay timeout, a stable API key on the volume, intent-before-POST with the exact body and `Idempotency-Key`, 409 and retention handling, `resolve-unknown` recovery on every gateway start, SIGTERM handling), the Nix image without ffmpeg, `agentspec`, migration, config, smoke test like `cc-smoke`, a first run in a real pod | 10–12 | 1 |
 
