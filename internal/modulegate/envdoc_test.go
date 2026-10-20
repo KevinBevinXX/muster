@@ -73,6 +73,9 @@ const configDoc = "docs/configuration.md"
 var environCallSites = map[string]string{
 	"internal/mirrorhost/tmux.go": "copies the whole environment to the tmux child minus TMUX, TMUX_PANE " +
 		"and TERM (a nested-client guard); it reads no variable by name",
+	"cmd/hermesd/serve.go": "copies the whole environment to the Hermes gateway minus muster's bearer, the " +
+		"raw hooks token, HERMES_YOLO_MODE, API_SERVER_* and HERMESD_* (gatewayEnv), then sets the API " +
+		"server's and the volume's variables; it reads no variable by name",
 }
 
 // TestEveryEnvVarTheCodeReadsIsDocumentedAndViceVersa is the gate.

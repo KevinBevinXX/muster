@@ -333,13 +333,13 @@ func serve() error {
 	// starts in it (checkout.go). No repository: the CLI starts at once, as
 	// before.
 	if co != nil {
-		go co.run(ctx)
+		go co.Run(ctx)
 	}
 	var supErr chan error // nil (never ready) unless ccd supervises the CLI
 	if srv.sup != nil {
 		supErr = make(chan error, 1)
 		go func() {
-			if co != nil && !co.wait(ctx) {
+			if co != nil && !co.Wait(ctx) {
 				supErr <- nil // shutting down before the checkout existed
 				return
 			}

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/podagent"
 )
 
 // 🔴 NO LANE STARTS BEFORE THE REPOSITORY IS CHECKED OUT. main.go holds the
@@ -25,8 +27,8 @@ func TestNoLaneStartsBeforeTheCheckoutExists(t *testing.T) {
 			sup := newSupervisor(primary, "claude", cfg, "/data/workspace")
 			fastRestarts(sup)
 			s.supervisePrimary(sup, noPrimaryPID)
-			co := &checkout{repo: "o/r", dir: "/data/workspace", done: make(chan struct{}),
-				st: checkoutState{Repo: "o/r", Dir: "/data/workspace", State: state, Detail: "detail"}}
+			co := podagent.NewCheckout(podagent.CheckoutConfig{Repo: "o/r", Dir: "/data/workspace", Voice: ccdVoice})
+			co.SetStateForTest(state, "detail")
 			s.checkout = co
 			l := testLanes(t, 2)
 			l.startTimeout = 300 * time.Millisecond
@@ -56,9 +58,7 @@ func TestNoLaneStartsBeforeTheCheckoutExists(t *testing.T) {
 			// Control, through the REAL turn path (laneFor), not acquire: once the
 			// checkout exists, the lane starts and the turn is served — so a
 			// check that refused lanes for good would fail here.
-			co.mu.Lock()
-			co.st.State = checkoutReady
-			co.mu.Unlock()
+			co.SetStateForTest(checkoutReady, "")
 			l.startTimeout = 5 * time.Second
 			type res struct {
 				code int

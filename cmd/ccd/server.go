@@ -768,8 +768,8 @@ func (s *server) runTurn(ctx context.Context, prompt string) (turnOutcome, *fail
 	}
 	pane, ok := s.inputPane()
 	if !ok {
-		if s.checkout != nil && !s.checkout.ready() {
-			return turnOutcome{}, paneNotReady(s.checkout.notReady())
+		if s.checkout != nil && !s.checkout.Ready() {
+			return turnOutcome{}, paneNotReady(s.checkout.NotReady())
 		}
 		return turnOutcome{}, paneNotReady("the supervisor reports no running CLI in its pane (starting, " +
 			"restarting, crash_loop or terminal_lost — see /healthz)")
@@ -1045,7 +1045,7 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	// here would restart-loop the pod for that whole wait.
 	waitingCheckout := false
 	if s.checkout != nil {
-		st := s.checkout.state()
+		st := s.checkout.State()
 		h.Repo = &st
 		waitingCheckout = st.State != checkoutReady && ref == (paneRef{})
 	}
@@ -1120,8 +1120,8 @@ func (s *server) laneFor(ctx context.Context, key, model string) (*lane, *failur
 	// would run without the repository's CLAUDE.md and .claude/, and a file it
 	// wrote there would make every later clone refuse the directory, so the
 	// primary would never start (TestNoLaneStartsBeforeTheCheckoutExists).
-	if s.checkout != nil && !s.checkout.ready() {
-		return nil, paneNotReady(s.checkout.notReady())
+	if s.checkout != nil && !s.checkout.Ready() {
+		return nil, paneNotReady(s.checkout.NotReady())
 	}
 	ln, f := s.lanes.acquire(ctx, key, model)
 	if f != nil {

@@ -246,6 +246,30 @@ variables when it provisions an agent, so you normally never set them yourself.
 | `CCD_APPROVAL_DEADLINE` | `170s` | no | How long `ccd approve` waits for a relayed decision before falling back to the terminal prompt. |
 | `CCD_LIVECHECK_HOOKS_TOKEN` | none | for `livecheck` | The token for `cmd/ccd/livecheck`, a manual probe of a live agent. |
 
+## hermesd (inside the hermes agent image)
+
+`hermesd` runs inside the `hermes` agent container, in front of one `hermes
+gateway run` ([design](design/hermes.md#the-hermes-agent-kind)). muster sets these
+variables when it provisions a `hermes` agent, so you normally never set them
+yourself. `MUSTER_GATEWAY_BEARER` and `HOOKS_TOKEN` are read as `ccd` reads
+them (above), and are not passed on to Hermes.
+
+| variable | default | required | what it does |
+|---|---|---|---|
+| `HERMES_HOME` | `/data/hermes` | no | Hermes's home on the volume. `hermesd` creates it, the agent shell's HOME (`$HERMES_HOME/home`) and `TMPDIR` (`$HERMES_HOME/cache/tmp`), renders `config.yaml` there on every start, and refuses to start Hermes while a `.env` exists there. |
+| `HERMESD_STATE_DIR` | `/data/hermesd` | no | `hermesd`'s own state: the API server key (`api-server-key`, mode 0600, generated once) and the session map with its intents (`sessions.json`). |
+| `HERMESD_WORKSPACE` | `/data/workspace` | no | The agent's working directory: the rendered `terminal.cwd`. muster sets it to the checkout (`/data/workspace/<name>`) for an agent dispatched with a repository. |
+| `HERMESD_REPO` | none | no | `owner/name`. `hermesd` clones `https://github.com/<it>` into `HERMESD_WORKSPACE` before it starts Hermes, as `ccd` does with `CCD_REPO`. |
+| `HERMESD_REPO_BRANCH` | the remote's default | no | The branch `hermesd` clones. |
+| `HERMESD_INSTRUCTIONS` | `/etc/hermesd/instructions.md` | no | muster's instructions, sent as `instructions` on every Hermes run. muster places the file outside every volume. An absent file is no instructions. |
+| `HERMESD_MODEL` | none | no | The OpenRouter model slug Hermes runs. muster sets it from the agent's model or `MUSTER_AGENT_MODEL`. |
+| `HERMESD_MODEL_BASE_URL` | none | no | An OpenAI-compatible base URL used instead of OpenRouter, for the image smoke test's stub model. Its key is still `${OPENROUTER_API_KEY}`, expanded by Hermes. |
+| `HERMESD_LISTEN` | `:18789` | no | muster's agent wire. |
+| `HERMESD_API_PORT` | `8642` | no | Hermes's API server, bound to `127.0.0.1` only. |
+| `HERMESD_HERMES_BIN` | `hermes` | no | The Hermes binary. |
+| `HERMESD_TURN_TIMEOUT` | `30m` | no | The deadline for a whole turn. A run still going after it keeps running; its outcome is reported on the session's next reply. |
+| `HERMESD_RELAY_TIMEOUT` | `240s` | no | How long an approval waits for muster's relay before `hermesd` answers `deny` itself. It must be shorter than the rendered `approvals.timeout` (300 s); `hermesd` refuses to start otherwise. |
+
 ## Test and e2e harness
 
 These variables are read by non-test code that exists only for testing. That
