@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
 )
 
@@ -245,6 +246,27 @@ func TestAGrantApprovedForAnotherSourceIsReopened(t *testing.T) {
 		}
 		if c.reopened && g.Status != connectors.StatusPending {
 			t.Errorf("%s: the re-opened grant reads %q", c.name, g.Status)
+		}
+	}
+}
+
+// TestReconcileNeverActsOnAnUncertainRole: a principal whose role is a
+// FALLBACK (RoleUncertain) never re-opens a grant, even where the same grant
+// under a certain principal would be (control).
+func TestReconcileNeverActsOnAnUncertainRole(t *testing.T) {
+	g := connectors.Grant{ID: 9, Connector: "github", Status: connectors.StatusApproved, Source: connectors.SourceApp}
+	v := &stubVirtual{hosts: []string{"github.com"}}
+	for _, c := range []struct {
+		uncertain bool
+		want      bool
+	}{{false, true}, {true, false}} {
+		base := &reopenStub{}
+		s := connectors.WithVirtual(base, v, func(context.Context) bool { return false }) // "member": no App
+		ctx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 1, Role: authz.RoleMember,
+			Via: authz.ViaSession, RoleUncertain: c.uncertain})
+		_, reopened, err := connectors.ReconcileGrant(ctx, s, g)
+		if err != nil || reopened != c.want {
+			t.Errorf("uncertain=%v: reopened=%v err=%v, want %v", c.uncertain, reopened, err, c.want)
 		}
 	}
 }

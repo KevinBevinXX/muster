@@ -60,6 +60,10 @@ type fakeGitHub struct {
 	mintStatus    int // non-zero: answer every mint with this status
 	listCalls     int
 	tokenTTL      time.Duration
+	// rawInstallations, when set, is GET /app/installations' body VERBATIM —
+	// GitHub's own JSON, not the production struct re-encoded, so a wrong json
+	// tag on that struct cannot agree with itself and pass.
+	rawInstallations string
 }
 
 func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fakeGitHub {
@@ -75,6 +79,7 @@ func (f *fakeGitHub) install(id int64, login string, repos ...string) {
 	in := installation{ID: id}
 	in.Account.Login = login
 	in.Account.ID = id * 100 // the account's id: distinct from the installation's
+	in.Account.Type = "Organization"
 	f.installations = append(f.installations, in)
 	f.repos[id] = repos
 }
@@ -130,6 +135,10 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case r.Method == http.MethodGet && p == "/app/installations":
+		if f.rawInstallations != "" {
+			_, _ = io.WriteString(w, f.rawInstallations)
+			return
+		}
 		_ = json.NewEncoder(w).Encode(f.installations)
 	case r.Method == http.MethodGet && strings.HasPrefix(p, "/app/installations/"):
 		id, _ := strconv.ParseInt(strings.TrimPrefix(p, "/app/installations/"), 10, 64)

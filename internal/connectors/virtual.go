@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/authz"
 )
 
 // A VIRTUAL CONNECTOR is one whose credential is not a stored secret but is
@@ -115,6 +117,14 @@ func SourceFor(ctx context.Context, s Store, name string) string {
 // agent's connector status and request routes).
 func ReconcileGrant(ctx context.Context, s Store, g Grant) (Grant, bool, error) {
 	if g.Status != StatusApproved {
+		return g, false, nil
+	}
+	// 🔴 NEVER ON A FALLBACK ROLE. When the principal's role could not be read it
+	// acts as member, and for an admin that makes the App connector vanish —
+	// SourceFor would answer "stored" and this would re-open every App approval
+	// over one database blip. The grant is left as it is; the next request with
+	// a readable role decides.
+	if p, ok := authz.From(ctx); ok && p.RoleUncertain {
 		return g, false, nil
 	}
 	src := g.Source

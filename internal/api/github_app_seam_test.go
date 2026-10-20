@@ -80,7 +80,7 @@ func newFakeGitHubUpstream(t *testing.T) *fakeGitHubUpstream {
 			}
 			// A second installation, on an account NOT on the allowlist: a stranger
 			// who installed the public App on their own repositories.
-			_, _ = io.WriteString(w, `[{"id":42,"account":{"id":4200,"login":"example-org"}},{"id":77,"account":{"id":7700,"login":"stranger"}}]`)
+			_, _ = io.WriteString(w, `[{"id":42,"account":{"id":4200,"login":"example-org","type":"Organization"}},{"id":77,"account":{"id":7700,"login":"stranger","type":"User"}}]`)
 		case p == "/app/installations/77/access_tokens":
 			// A real installation: it mints, and its token lists the stranger's
 			// repository. Only the allowlist keeps muster from using it.

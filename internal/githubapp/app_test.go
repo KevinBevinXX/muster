@@ -541,3 +541,29 @@ func TestExpiredTokensAreSweptFromTheCache(t *testing.T) {
 		t.Fatalf("after expiry: %d cached tokens, want 2 (agents 4 and 5)", n)
 	}
 }
+
+// TestTheInstallationListIsReadFromGitHubsLiteralJSON (M3): the installation
+// list as GitHub sends it, verbatim — the account's id, login and type under
+// GitHub's own field names. The allowlisted account is read; an Enterprise
+// account carrying the SAME numeric id (another numbering space) is not.
+func TestTheInstallationListIsReadFromGitHubsLiteralJSON(t *testing.T) {
+	app, f, _ := newTestApp(t) // allowlist: Example-Org = 4200
+	f.mu.Lock()
+	f.rawInstallations = `[
+		{"id": 42, "app_id": 12345, "target_type": "Organization",
+		 "account": {"login": "example-org", "id": 4200, "type": "Organization", "site_admin": false}},
+		{"id": 55, "app_id": 12345, "target_type": "Enterprise",
+		 "account": {"slug": "some-enterprise", "login": "some-enterprise", "id": 4200, "type": "Enterprise"}}
+	]`
+	f.mu.Unlock()
+	logins, err := app.Check(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(logins, ",") != "example-org" {
+		t.Fatalf("installations read from GitHub's JSON = %q, want exactly example-org (not the enterprise with the same id)", logins)
+	}
+	if got := app.Renames(); len(got) != 0 {
+		t.Fatalf("a spurious rename was recorded: %q", got)
+	}
+}

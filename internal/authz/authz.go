@@ -165,6 +165,12 @@ type Principal struct {
 	UserID int64
 	Role   Role
 	Via    Via
+	// RoleUncertain is true when Role is a FALLBACK: the user's role could not
+	// be read and the principal acts as member (least privilege). Narrowing what
+	// the request may do is safe on a fallback; CHANGING stored state because of
+	// it is not — connectors.ReconcileGrant refuses to, and the connector door
+	// answers a retryable 503 instead of serving it.
+	RoleUncertain bool
 }
 
 // All reports whether this principal acts across every user's rows — true

@@ -142,6 +142,10 @@ type installation struct {
 	Account struct {
 		ID    int64  `json:"id"`
 		Login string `json:"login"`
+		// Type is "User" or "Organization" for the accounts the allowlist's
+		// ids name; an Enterprise installation's account id is from another
+		// numbering space and must never match one (allowed).
+		Type string `json:"type"`
 	} `json:"account"`
 }
 
@@ -211,6 +215,9 @@ func (a *App) AppID() int64 { return a.cfg.AppID }
 // A matching login under a different id is NOT allowed: that is a different
 // account that took a freed name.
 func (a *App) allowed(in installation) bool {
+	if in.Account.Type != "User" && in.Account.Type != "Organization" {
+		return false // an Enterprise (or unknown) account: its id is not a user/org id
+	}
 	for _, acc := range a.cfg.Accounts {
 		if acc.ID != in.Account.ID {
 			continue

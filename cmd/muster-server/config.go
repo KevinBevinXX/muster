@@ -1301,6 +1301,7 @@ func (c *config) loadGitHubApp(getenv func(string) string) error {
 	// login is refused rather than resolved: resolving it at boot would trust
 	// whoever holds the name today.
 	parsed := make([]githubapp.Account, 0, len(accounts))
+	seen := map[int64]string{}
 	for _, a := range accounts {
 		login, idStr, ok := strings.Cut(a, ":")
 		if !ok {
@@ -1316,6 +1317,13 @@ func (c *config) loadGitHubApp(getenv func(string) string) error {
 			return fmt.Errorf("invalid %s entry %q: %q is not a numeric account id (`gh api users/%s -q .id`)",
 				envGitHubAppAccounts, a, idStr, login)
 		}
+		// A repeated id is two labels for one account: the rename check could
+		// only ever agree with one of them. Refused rather than guessed.
+		if prev, dup := seen[aid]; dup {
+			return fmt.Errorf("invalid %s: account id %d is listed twice (%q and %q); list each account once",
+				envGitHubAppAccounts, aid, prev, a)
+		}
+		seen[aid] = a
 		parsed = append(parsed, githubapp.Account{Login: login, ID: aid})
 	}
 	c.GitHubAppID, c.GitHubAppKey, c.GitHubAppAccounts = n, k, parsed

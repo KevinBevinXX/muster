@@ -115,12 +115,8 @@ func (s *Server) roleOf(ctx context.Context, uid int64) authz.Role {
 // returned, so a door whose decision a wrong "member" would CHANGE (not just
 // narrow) can refuse instead.
 //
-// 🔴 THE CONNECTOR DOOR IS ONE (requireConnectorAgent). There, "member" for an
-// admin is not least privilege but a STATE CHANGE: the GitHub App connector
-// vanishes for that principal, so connectors.ReconcileGrant re-opens every
-// App-approved github grant of the admin's agents and the owner is asked to
-// approve them all again — one database blip, a wave of re-approvals. It
-// answers 503 (retryable) instead.
+// principalFor calls it and marks a failure as authz.Principal.RoleUncertain;
+// see there for the rule that flag carries.
 func (s *Server) roleOfChecked(ctx context.Context, uid int64) (authz.Role, error) {
 	if s.ext.Users == nil {
 		if uid == authz.OperatorUserID {
@@ -132,8 +128,20 @@ func (s *Server) roleOfChecked(ctx context.Context, uid int64) (authz.Role, erro
 }
 
 // principalFor builds the request principal for a user admitted through via.
+//
+// 🔴 A ROLE THAT COULD NOT BE READ IS MEMBER, AND SAYS SO (RoleUncertain). The
+// member fallback is least privilege for what a request may DO; it must not
+// become a reason to CHANGE state. Every door builds its principal here, so
+// the one rule — grant reconciliation never acts on a fallback role
+// (connectors.ReconcileGrant) — holds on the session, route, agent and
+// connector doors alike.
 func (s *Server) principalFor(ctx context.Context, uid int64, via authz.Via) authz.Principal {
-	return authz.Principal{UserID: uid, Role: s.roleOf(ctx, uid), Via: via}
+	r, err := s.roleOfChecked(ctx, uid)
+	if err != nil {
+		s.logger.Printf("principal: reading user %d's role: %v (acting as member, role uncertain)", uid, err)
+		return authz.Principal{UserID: uid, Role: authz.RoleMember, Via: via, RoleUncertain: true}
+	}
+	return authz.Principal{UserID: uid, Role: r, Via: via}
 }
 
 // admit attaches p to the request and hands it to next. See the file header:
