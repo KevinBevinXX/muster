@@ -200,6 +200,11 @@ func TestTaskDispatchPutsTheInstructionsFirstAndTheRulesLast(t *testing.T) {
 		d["instructions_ask"] != float64(askID) {
 		t.Errorf("reservation detail %v: want the cleaned instructions, the kind and the ask %d they came from", d, askID)
 	}
+	// A view answer names no MCP source (the MCP case is
+	// TestTaskDispatchTakesAnMCPAnswerAsInstructionsAndSaysSo).
+	if strings.Contains(msg, "over MCP") || d["instructions_via"] != nil || d["instructions_from"] != nil {
+		t.Errorf("a view answer's dispatch claims an MCP source: %v / %q", d, msg)
+	}
 }
 
 // TestTaskDispatchRefusesInstructionsOverTheCap: over 1 KiB is refused before

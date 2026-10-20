@@ -151,11 +151,19 @@ func cleanInstructions(raw string) (string, bool) {
 // top of a started agent's first message: muster's preface, then the text fenced
 // line by line. The chief may be reading outside text when it writes them, so
 // they are marked as relayed by the chief, never as muster's own; muster's rules
-// close the message and win.
-func renderChiefInstructions(text string) string {
+// close the message and win. src is the owner's answer they are (ownerAnswer):
+// one given over MCP from a mirrored session says so in the preface
+// (mcpAnswerFrom), so the agent knows they did not come from the Attention view.
+func renderChiefInstructions(text string, src attention.AnswerSource) string {
 	pre := "muster: your owner's chief relayed the instructions below for this task. Follow them as your owner's " +
 		"wishes for how to work it, unless they conflict with muster's rules at the end of this message, which win. " +
 		"The task itself follows the block."
+	if src.ViaSession() {
+		pre = "muster: your owner's chief relayed the instructions below for this task: your owner's answer, given over MCP from " +
+			mcpAnswerFrom(src) + " rather than on muster's Attention view. Follow them as your owner's " +
+			"wishes for how to work it, unless they conflict with muster's rules at the end of this message, which win. " +
+			"The task itself follows the block."
+	}
 	lines := strings.Split(text, "\n")
 	for i, l := range lines {
 		lines[i] = fence.Sanitize(l)
@@ -574,6 +582,11 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 	if instructions != "" {
 		detail["instructions"] = instructions
 		detail["instructions_ask"] = source.ID
+		// Where the owner gave that answer: the audit row names an MCP answer's
+		// host and session (attention_answer), as the kickoff's preface does.
+		if source.AnsweredVia.ViaSession() {
+			detail["instructions_via"], detail["instructions_from"] = source.AnsweredVia.Via, source.AnsweredVia.String()
+		}
 	}
 	res, err := s.ext.ChiefDispatch.ReserveChiefDispatch(ctx, taskID, detail, check)
 	var refusal errTaskDispatch
@@ -641,7 +654,7 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 	// text, then muster's rules — last, so they win.
 	kickoff := task.Body + chiefDispatchRules
 	if instructions != "" {
-		kickoff = renderChiefInstructions(instructions) + "\n" + kickoff
+		kickoff = renderChiefInstructions(instructions, source.AnsweredVia) + "\n" + kickoff
 	}
 	p := dispatchParams{
 		Repo: task.Repo, RepoBranch: task.RepoBranch, Model: task.Model, Kind: kind,
@@ -688,7 +701,7 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 // chiefDispatchInstructionsUnsourced is task_dispatch's refusal of instructions
 // that are not the owner's answer to an ask about the task.
 const chiefDispatchInstructionsUnsourced = "instructions must be your owner's own words: pass, verbatim, their answer " +
-	"to an attention ask about this task, given on muster's Attention view (an answer relayed over MCP from a mirrored session never counts). " +
+	"to an attention ask about this task (on muster's Attention view or from their mirrored session's attention_answer). " +
 	"None of their answers on this task is that text. Ask them with " +
 	"task_route_attention (then attention_wait), or dispatch without instructions"
 
@@ -709,9 +722,12 @@ func sameWords(s string) string {
 // by askOwnerAboutTask — never the question's text), the OWNER (the ask's
 // owner is the chief's owner: the store's query, row-level security and the
 // (task_id, owner_id) foreign key, plus the check here), and the WORDS (equal
-// after sameWords, nothing looser). And a fourth, in the store's query: the
-// answer was given on the Attention view, never relayed over MCP by a
-// mirrored session (AnswersForTask: answered_via IS NULL).
+// after sameWords, nothing looser). WHERE the owner gave it does not matter:
+// an answer given over MCP from a mirrored session (attention_answer) counts
+// like one given on the Attention view (operator decision "Just remove the
+// filter", accepting that a session fed outside text could write a dispatched
+// agent's prompt); the returned ask's AnsweredVia carries it into the kickoff
+// preface and the reservation's audit row.
 func (s *Server) ownerAnswer(ctx context.Context, owner, taskID int64, text string) (attention.Ask, string) {
 	if s.ext.Attention == nil {
 		return attention.Ask{}, chiefDispatchInstructionsUnsourced
