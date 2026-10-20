@@ -78,7 +78,7 @@ func TestADaemonRecordsOnlyWhenToldTo(t *testing.T) {
 	}))
 	defer refuse.Close()
 	old := newTmuxBackend
-	newTmuxBackend = func(string, string, string) mirrorhost.Backend { return listBackend{} }
+	newTmuxBackend = func(string, string, string, *mirrorhost.HermesSource) mirrorhost.Backend { return listBackend{} }
 	defer func() { newTmuxBackend = old }()
 	tok := filepath.Join(home, "tok")
 	_ = os.WriteFile(tok, []byte("mmt_"+strings.Repeat("a", 43)+"\n"), 0o600)

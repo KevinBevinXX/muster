@@ -35,8 +35,9 @@ type Runtime interface {
 // AgentPane is one tmux pane running an agent CLI, of any runtime: ClaudePane
 // under the name the seam uses. Its Runtime field says which; "" is Claude
 // Code (every ClaudePane written before the seam). For a Hermes pane, Gen is
-// the Hermes session id once the locator can read it (Phase 2), "" until then,
-// and Transcript and Pending are always empty: it has no rendered view yet.
+// the conversation's logical session id (its lineage root) when the pane has
+// a rendered view, "" when it has none (Hermes says why); Transcript and
+// Pending are always empty.
 type AgentPane = ClaudePane
 
 // claudeRuntime is Claude Code behind the seam: exactly the code that ran
@@ -49,41 +50,51 @@ func (r claudeRuntime) LocatePanes(panes []pane, procs map[int]procInfo, childre
 	return r.loc.locatePanesIn(panes, procs, children)
 }
 
-// hermesRuntime is Hermes behind the seam. In this release it DETECTS a Hermes
-// CLI in a pane (the strict mirroring rule, HermesIdentity.CLI) and nothing
-// more: no session id, no status (unknown), no rendered view, no send.
-type hermesRuntime struct{ id HermesIdentity }
+// hermesRuntime is Hermes behind the seam: it DETECTS a Hermes CLI in a pane
+// (the strict mirroring rule, HermesIdentity.CLI) and, with a HermesSource,
+// resolves the CLI's session and status from its terminal's breadcrumb
+// (hermeshost.Locator). No send: that is Phase 3.
+type hermesRuntime struct {
+	id  HermesIdentity
+	src *HermesSource
+}
 
 func (hermesRuntime) Name() string { return mirror.RuntimeHermes }
 
 // LocatePanes claims each pane whose process tree holds a Hermes CLI by the
-// strict rule, reading the pane's terminal from its root process's stdin.
+// strict rule on the pane's terminal — #{pane_tty} as the listing read it,
+// else (a pane from a lookup that did not read it) the root process's stdin —
+// and resolves its session when the host has a HermesSource.
 //
 // It walks nothing when the table holds no process named "hermes": the strict
 // rule requires that comm, and this runs on every listing.
 //
-// ⚠ THE PANE'S TERMINAL IS ITS ROOT PROCESS'S fd 0, NOT #{pane_tty}: the one
-// window listing (windowsFormat) does not read the tty, and this release only
-// needs to tell a Hermes window from another. A root whose stdin is NOT the
-// pane's terminal (`exec </dev/null`) passes that file as "the pane's
-// terminal", so a Hermes child with the SAME stdin is claimed — a window
-// listed as Hermes that is not quite one, which only takes things away from it
-// (no rendered view, every paste refused). A root whose stdin cannot be read
-// has no Hermes window. Phase 2's breadcrumb locator, which names the
-// breadcrumb FILE by #{pane_tty}, reads it from tmux.
+// ⚠ ON THE FALLBACK, A ROOT WHOSE STDIN IS NOT THE PANE'S TERMINAL (`exec
+// </dev/null`) passes that file as "the pane's terminal", so a Hermes child
+// with the same stdin is claimed — and then has no breadcrumb for that file,
+// so no rendered view and an unknown status: it only takes things away.
 func (r hermesRuntime) LocatePanes(panes []pane, procs map[int]procInfo, children map[int][]int) map[string]AgentPane {
 	out := map[string]AgentPane{}
 	if len(panes) == 0 || !anyComm(procs, "hermes") {
 		return out
 	}
 	for _, p := range panes {
-		tty, err := os.Readlink(filepath.Join(r.id.proc(), strconv.Itoa(p.PID), "fd", "0"))
-		if err != nil {
+		tty := p.TTY
+		if tty == "" {
+			var err error
+			if tty, err = os.Readlink(filepath.Join(r.id.proc(), strconv.Itoa(p.PID), "fd", "0")); err != nil {
+				continue
+			}
+		}
+		pid, ok := r.id.cli(p.PID, tty, procs, children)
+		if !ok {
 			continue
 		}
-		if pid, ok := r.id.cli(p.PID, tty, procs, children); ok {
-			out[p.ID] = AgentPane{Runtime: mirror.RuntimeHermes, Pane: p.ID, PID: pid, Source: SourceProcess}
+		ap := AgentPane{Runtime: mirror.RuntimeHermes, Pane: p.ID, PID: pid, Source: SourceProcess}
+		if r.src != nil {
+			r.src.resolve(&ap, pid, tty, r.id.proc(), procs)
 		}
+		out[p.ID] = ap
 	}
 	return out
 }
@@ -111,7 +122,7 @@ func (t Tmux) runtimes() []Runtime {
 func (t Tmux) claudeRuntime() claudeRuntime { return claudeRuntime{loc: t.Claude} }
 
 func (t Tmux) hermesRuntime() hermesRuntime {
-	return hermesRuntime{id: HermesIdentity{Proc: t.Claude.Proc}}
+	return hermesRuntime{id: HermesIdentity{Proc: t.Claude.Proc}, src: t.Hermes}
 }
 
 // attachAgents sets each window's Agent: the active pane's agent session of a
@@ -123,7 +134,7 @@ func attachAgents(windows []WindowInfo, procs map[int]procInfo, children map[int
 		var free []pane
 		for _, w := range windows {
 			if w.Claude == nil && w.Agent == nil {
-				free = append(free, pane{Session: w.Session, ID: w.Pane, PID: w.PanePID})
+				free = append(free, pane{Session: w.Session, ID: w.Pane, PID: w.PanePID, TTY: w.TTY})
 			}
 		}
 		if len(free) == 0 {

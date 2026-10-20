@@ -48,6 +48,9 @@ type WindowInfo struct {
 	Pane string
 	// PanePID is that pane's root process.
 	PanePID int
+	// TTY is that pane's terminal device (#{pane_tty}, "/dev/pts/3"), "" when
+	// tmux reported none a device path.
+	TTY string
 	// Activity is the Unix time the window was last active: its own
 	// #{window_activity} and, for the session's ACTIVE window, the session's
 	// #{session_activity} when that is newer (a client's key that draws
@@ -125,7 +128,11 @@ func WindowAttacherOf(b Backend) (WindowAttacher, bool) { return capabilityOf[Wi
 // windowsFormat is the ONE listing a poll reads: a line per pane of every
 // window of every session. The session name is the LAST field, so it is taken
 // whole whatever it holds.
-const windowsFormat = "#{pane_active}\t#{window_id}\t#{window_index}\t#{window_active}\t#{pane_id}\t#{pane_pid}\t#{window_activity}\t#{session_activity}\t#{pane_current_command}\t#{session_name}"
+//
+// #{pane_tty} is the pane's terminal device: what a Hermes CLI's breadcrumb
+// file is named by (internal/hermeshost), and what its stdin must be for the
+// strict identity rule to claim it.
+const windowsFormat = "#{pane_active}\t#{window_id}\t#{window_index}\t#{window_active}\t#{pane_id}\t#{pane_pid}\t#{window_activity}\t#{session_activity}\t#{pane_current_command}\t#{pane_tty}\t#{session_name}"
 
 // Windows implements WindowLister with ONE `tmux list-panes -a`, however many
 // windows there are: the listing, each session's current window, each window's
@@ -224,17 +231,17 @@ func parseWindows(out string) []WindowInfo {
 	type wkey struct{ session, id string }
 	others := map[wkey][]pane{}
 	for _, line := range strings.Split(out, "\n") {
-		f := strings.SplitN(strings.TrimRight(line, "\r"), "\t", 10)
-		if len(f) == 10 && f[0] != "1" && strings.HasPrefix(f[4], "%") {
+		f := strings.SplitN(strings.TrimRight(line, "\r"), "\t", 11)
+		if len(f) == 11 && f[0] != "1" && strings.HasPrefix(f[4], "%") {
 			if pid, err := strconv.Atoi(f[5]); err == nil && pid > 0 {
-				others[wkey{f[9], f[1]}] = append(others[wkey{f[9], f[1]}], pane{Session: f[9], ID: f[4], PID: pid})
+				others[wkey{f[10], f[1]}] = append(others[wkey{f[10], f[1]}], pane{Session: f[10], ID: f[4], PID: pid, TTY: paneTTY(f[9])})
 			}
 			continue
 		}
-		if len(f) != 10 || f[0] != "1" {
+		if len(f) != 11 || f[0] != "1" {
 			continue
 		}
-		session := f[9]
+		session := f[10]
 		if mirror.ValidSession(session) != nil || mirror.IsViewSession(session) ||
 			mirror.ValidWindowID(f[1]) != nil || !strings.HasPrefix(f[4], "%") {
 			continue
@@ -247,7 +254,7 @@ func parseWindows(out string) []WindowInfo {
 		if err != nil || pid <= 0 {
 			continue
 		}
-		w := WindowInfo{Session: session, ID: f[1], Index: index, Active: f[3] == "1", Pane: f[4], PanePID: pid, Command: f[8]}
+		w := WindowInfo{Session: session, ID: f[1], Index: index, Active: f[3] == "1", Pane: f[4], PanePID: pid, Command: f[8], TTY: paneTTY(f[9])}
 		w.Activity, _ = strconv.ParseInt(f[6], 10, 64)
 		if w.Active {
 			if sa, err := strconv.ParseInt(f[7], 10, 64); err == nil && sa > w.Activity {
@@ -270,6 +277,14 @@ func parseWindows(out string) []WindowInfo {
 		return a.ID < b.ID
 	})
 	return list
+}
+
+// paneTTY is #{pane_tty} when it names a terminal device, else "".
+func paneTTY(s string) string {
+	if strings.HasPrefix(s, "/dev/") && !strings.ContainsAny(s, "\t\n") {
+		return s
+	}
+	return ""
 }
 
 // FindWindow is the entry of windows for (session, window id).

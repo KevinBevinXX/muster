@@ -29,6 +29,9 @@ type Tmux struct {
 	// zero value reads /proc and the user's own ~/.claude. Its Proc is also
 	// the proc root the Hermes runtime and the Hermes paste guard read.
 	Claude ClaudeLocator
+	// Hermes is where Hermes windows' sessions and status are read from
+	// (hermes_source.go); nil detects Hermes windows without resolving them.
+	Hermes *HermesSource
 }
 
 func (t Tmux) bin() string {

@@ -36,6 +36,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/hermeshost"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/mirrorhost"
 )
@@ -123,6 +124,16 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	if len(args) > 0 && args[0] == "ask" {
 		return runAsk(args[1:], getenv, stdin, stdout, stderr)
 	}
+	// `muster-mirror hermes-hook`: Hermes's status hook (hermes.go). 🔴 It is
+	// given no stdout: Hermes reads a hook's stdout as a directive.
+	if len(args) > 0 && args[0] == hermeshost.HookSubcommand {
+		return runHermesHook(getenv, stdin, stderr, time.Now)
+	}
+	// `muster-mirror hermes-allowlist`: the hook's allowlist writer, for the
+	// host's Home Manager activation (hermes.go).
+	if len(args) > 0 && args[0] == "hermes-allowlist" {
+		return runHermesAllowlist(args[1:], getenv, stdout, stderr)
+	}
 	fs := flag.NewFlagSet("muster-mirror", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	envBool := func(k string) bool { v := getenv(k); return v == "1" || strings.EqualFold(v, "true") }
@@ -149,6 +160,8 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	list := fs.Bool("list", false, "print the sessions this host would register, and exit (a labelled session's line ends in a label=<label> column)")
 	listClaude := fs.Bool("claude", false, "with -list: print, for each WINDOW whose active pane runs Claude Code, what its rendered view would stream (one line each: session, window id, index, claude, pane, state, session id, transcript, source = pane-map|sessions|guessed, then label=<label>); per session on a backend that does not list windows")
 	listWindows := fs.Bool("windows", false, "with -list: print every WINDOW this host would register instead (one line each: session, window id, index, active|-, command, then claude <pane> <state> <session id> <transcript> <source> for a Claude Code window, or hermes <pane> <state> <source> for a Hermes one, then label=<label>)")
+	hermesHome := fs.String("hermes-home", hermesHomeDefault(getenv), "the Hermes home whose sessions a Hermes window is resolved from — read-only, and only state.db, terminal-sessions/tty-* and shell-hooks-allowlist.json ("+envHermesHome+"; else $HERMES_HOME, else ~/.hermes)")
+	hermesStatusDir := fs.String("hermes-status-dir", hermesStatusDirDefault(getenv), "the directory `muster-mirror hermes-hook` writes Hermes status files in; recorded for the hook with -write-hook-config ("+envHermesStatusDir+")")
 	version := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -161,7 +174,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return 0
 	}
 
-	backend := newTmuxBackend(*socket, *socketPath, *paneMapDir)
+	backend := newTmuxBackend(*socket, *socketPath, *paneMapDir, mirrorhost.NewHermesSource(*hermesHome, *hermesStatusDir))
 	if e2eBackend != nil {
 		backend = e2eBackend()
 	}
@@ -293,6 +306,9 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	// told to (the managed service), and never in a browser-test build.
 	if *writeHook && e2eBackend == nil {
 		hc := hookConfig{URL: *url, AllowHTTP: *allowHTTP}
+		if abs, err := filepath.Abs(*hermesStatusDir); err == nil {
+			hc.HermesStatusDir = abs
+		}
 		if *tokenFile != "" {
 			if abs, err := filepath.Abs(expandHome(*tokenFile)); err == nil {
 				hc.TokenFile = abs
@@ -341,10 +357,10 @@ var runContext = func() (context.Context, context.CancelFunc) {
 var newTmuxBackend = tmuxBackend
 
 // tmuxBackend is the host's tmux, with its rendered-view lookup reading the pane
-// map in paneMapDir ("" = none).
-func tmuxBackend(socket, socketPath, paneMapDir string) mirrorhost.Backend {
+// map in paneMapDir ("" = none) and its Hermes windows resolved from hermes.
+func tmuxBackend(socket, socketPath, paneMapDir string, hermes *mirrorhost.HermesSource) mirrorhost.Backend {
 	return mirrorhost.Tmux{Socket: socket, SocketPath: socketPath,
-		Claude: mirrorhost.ClaudeLocator{PaneMapDir: paneMapDir}}
+		Claude: mirrorhost.ClaudeLocator{PaneMapDir: paneMapDir}, Hermes: hermes}
 }
 
 // printWindows is `-list -windows`: every window this host would register — or,

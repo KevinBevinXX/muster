@@ -8,9 +8,11 @@
 what it built differently from this page is under
 [Phase 1 as built](#phase-1-as-built)). The strict mirroring identity rule,
 moved to Phase 2 by operator decision, was pulled forward from Phase 2 into 1b
-by coordinator decision, to avoid churn; Phase 2 builds on it. A Hermes window is detected and
-listed, with no rendered view and no send path; nothing of Phases 2–5 is
-implemented. The
+by coordinator decision, to avoid churn; Phase 2 builds on it. Phase 2 is in
+progress (see [Phase 2 as built](#phase-2-as-built)): a Hermes window's
+session is resolved from its terminal's breadcrumb and its status from the
+`hermes-hook` status files; it has no rendered view and no send path yet.
+Nothing of Phases 3–5 is implemented. The
 version target is **decided** (below). Every other section describes the design
 the Phase 0 spikes support; the [Phase 0 results](#phase-0-results) table names
 what each spike changed. Where this page states how muster works today, the
@@ -495,6 +497,58 @@ in these ways, each decided while building it:
 - **Deferred:** `Msg.Runtime` on watch, paste and answer (nothing sends a
   Hermes message yet; Phase 3), the kind chip and listing (Phase 2), and
   focus refresh for Hermes windows (it needs the transcript, Phase 2).
+
+### Phase 2 as built
+
+Phase 2 (`internal/hermeshost`, `internal/mirrorhost`'s Hermes runtime,
+`muster-mirror hermes-hook` and `hermes-allowlist`) differs from the sections
+below in these ways, each decided while building it:
+
+- **One package holds every Hermes path.** `internal/hermeshost/home.go` is
+  the only code that names a path under the Hermes home
+  (`TestOnlyHomeGoReadsTheHermesHome`), and `TestTheHermesHomeLedger` runs the
+  whole read path under inotify against a home planted with every
+  secret-bearing file, failing on any open outside `ReadPaths`.
+  🔴 **`ReadPaths` adds `shell-hooks-allowlist.json`** to the list under
+  [secret hygiene](#secret-hygiene): `-list -hermes` reads it to name a
+  consent mismatch. It holds `(event, command)` pairs and timestamps, no
+  secret.
+- 🔴 **The allowlist writer is a muster-mirror verb, `hermes-allowlist`.** The
+  operator decision has muster-mirror ship only `hermes-hook`, with the
+  allowlist written by a Home Manager activation script. That script still
+  does the writing — but it runs `muster-mirror hermes-allowlist -command
+  "<muster-mirror> hermes-hook"` rather than re-implementing the lock, the
+  merge and the rename in shell. It is the one Hermes file muster ever writes,
+  and the daemon never does. It refuses to replace an allowlist that is not
+  JSON, keeps every other entry, and removes entries for an older
+  `muster-mirror hermes-hook` path. Measured against the pin: Hermes's own
+  `allowlisted_pairs()` reads the five pairs it writes, and a later
+  `_record_approval` under the same lock keeps them.
+- **The status file's writer is the gateway.** The hook process exits at
+  once, so `writer_pid`/`writer_start` record its parent, the gateway that
+  runs every hook (S2); a busy status whose gateway is gone is unknown.
+- **The driver is `modernc.org/sqlite` v1.59.0**, the newest release that
+  builds with Go 1.25 (v1.60 needs 1.26). The stripped `muster-mirror` grows
+  from 8,724,745 to 12,722,441 bytes (+46%).
+- **The lineage walk is Hermes's own chain step**
+  (`P:hermes_state_compression.py`, `_CHAIN_STEP_SQL`): a child continues a
+  parent only when the parent ended by compression AND the child carries no
+  `_branched_from`, `_delegate_from` or `_reset_from` marker and is not a
+  `tool` session. ⚠ Hermes also recognises a *legacy* reset child by its end
+  reason; this walk does not.
+- **The breadcrumb's `ts` is compared with the process's start** as boot time
+  (`btime`, 1 s resolution) plus its start ticks at 100 per second: up to a
+  second early, so a breadcrumb the previous CLI on the same terminal wrote in
+  that second could pass.
+- **`#{pane_tty}` joins the one window listing**, so the strict rule matches
+  the CLI's stdin against the pane's terminal as tmux reports it, and the
+  breadcrumb is named by it. A pane looked up without it falls back to the
+  root process's stdin, as in 1b.
+- **An `on_human_input_request` of an unknown kind writes nothing**, so the
+  status stays what it was; a `request_id` that is not 1–64 of
+  `[0-9A-Za-z_-]` is dropped from the file.
+- The hook prunes status files older than 30 days on `on_session_finalize`
+  (the gateway also runs API, cron and bot sessions, each leaving one).
 
 ### Pane to session resolution
 

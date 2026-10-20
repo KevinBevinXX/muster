@@ -41,6 +41,10 @@ type hookConfig struct {
 	URL       string `json:"url"`
 	AllowHTTP bool   `json:"allowHttp,omitempty"`
 	TokenFile string `json:"tokenFile,omitempty"`
+	// HermesStatusDir is where the daemon reads Hermes status files from:
+	// where `muster-mirror hermes-hook`, run by Hermes's gateway with none of
+	// the service's environment, writes them (hermes.go).
+	HermesStatusDir string `json:"hermesStatusDir,omitempty"`
 }
 
 // hookConfigPath is where the hook config lives: MUSTER_MIRROR_HOOK_CONFIG,

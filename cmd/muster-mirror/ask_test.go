@@ -200,7 +200,7 @@ func TestTheDaemonRecordsItsConfigForTheHook(t *testing.T) {
 	}))
 	defer refuse.Close()
 	old := newTmuxBackend
-	newTmuxBackend = func(string, string, string) mirrorhost.Backend { return listBackend{} }
+	newTmuxBackend = func(string, string, string, *mirrorhost.HermesSource) mirrorhost.Backend { return listBackend{} }
 	defer func() { newTmuxBackend = old }()
 	tok := filepath.Join(home, ".muster", "mirror-token")
 	_ = os.MkdirAll(filepath.Dir(tok), 0o700)
@@ -228,6 +228,11 @@ func TestTheDaemonRecordsItsConfigForTheHook(t *testing.T) {
 	c, err := readHookConfig(filepath.Join(home, ".muster", "mirror-hook.json"))
 	if err != nil || c.URL != refuse.URL || !c.AllowHTTP || c.TokenFile != tok {
 		t.Fatalf("recorded %+v (%v), want url %s, allowHttp, token file %s", c, err, refuse.URL, tok)
+	}
+	// And where `muster-mirror hermes-hook` must write: the daemon's default
+	// Hermes status directory, absolute.
+	if want := filepath.Join(home, ".muster", "hermes-status"); c.HermesStatusDir != want {
+		t.Fatalf("recorded the Hermes status dir %q, want %q", c.HermesStatusDir, want)
 	}
 	b, _ := os.ReadFile(filepath.Join(home, ".muster", "mirror-hook.json"))
 	if strings.Contains(string(b), "mmt_") {

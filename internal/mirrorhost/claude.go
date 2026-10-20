@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/hermeshost"
 	"github.com/ZacxDev/muster/internal/mirror"
 )
 
@@ -107,8 +108,13 @@ type ClaudePane struct {
 	// by the locator); nil otherwise.
 	Pending *mirror.Pending
 	// Source says how Transcript was found: SourcePaneMap, SourceSessions or
-	// SourceGuessed (see ClaudeLocator).
+	// SourceGuessed (see ClaudeLocator) — for a Hermes pane, SourceBreadcrumb
+	// or SourceProcess.
 	Source string
+	// Hermes is how a Hermes pane resolved (its breadcrumb, lineage, status
+	// and, when it has no rendered view, why): what -list -hermes prints. nil
+	// for Claude Code, and for a host with no HermesSource.
+	Hermes *hermeshost.PaneSession
 }
 
 // How a ClaudePane's transcript was resolved, most to least authoritative.
@@ -128,6 +134,9 @@ type pane struct {
 	Session string
 	ID      string
 	PID     int
+	// TTY is the pane's terminal device (#{pane_tty}), "" when the listing
+	// that found the pane did not read it.
+	TTY string
 }
 
 // ClaudeLocator maps panes to the Claude Code sessions running in them.
