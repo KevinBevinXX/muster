@@ -167,6 +167,19 @@ func (s SessionView) HasRenderedView() bool {
 	return s.Online && s.Rendered && (s.Claude || s.HermesView())
 }
 
+// SessionKey is the key the entry's conversation is stored by (a focus):
+// a Claude session id as itself, a Hermes one runtime-qualified
+// ("hermes:<id>", Window.SessionKey's rule); "" when the entry names none.
+func (s SessionView) SessionKey() string {
+	switch {
+	case s.Claude:
+		return s.ClaudeSession
+	case s.HermesView():
+		return HermesKeyPrefix + s.AgentSession
+	}
+	return ""
+}
+
 // HermesView reports whether the entry is a Hermes window whose host names
 // its conversation: one with a rendered view (read-only: muster sends nothing
 // into Hermes before Phase 3).

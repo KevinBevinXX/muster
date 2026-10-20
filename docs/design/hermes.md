@@ -538,7 +538,9 @@ below in these ways, each decided while building it:
   runs every hook (S2); a busy status whose gateway is gone is unknown.
 - **The driver is `modernc.org/sqlite` v1.59.0**, the newest release that
   builds with Go 1.25 (v1.60 needs 1.26). The stripped `muster-mirror` grows
-  from 8,724,745 to 12,722,441 bytes (+46%).
+  from 8,724,745 to 12,722,441 bytes (+46%) with it, and to 13,054,217
+  (+50%) with the YAML decoder `-list -hermes` reads `config.yaml`'s hooks
+  with.
 - **The lineage walk is Hermes's own chain step**
   (`P:hermes_state_compression.py`, `_CHAIN_STEP_SQL`): a child continues a
   parent only when the parent ended by compression AND the child carries no
@@ -623,7 +625,8 @@ below in these ways, each decided while building it:
   does a lineage that changed (a rotation): reading a child's rows as appends
   would draw the re-inserted context twice.
 - **`-list -hermes`** reports the hook's consent (the five pairs in the
-  allowlist, and entries for another binary) and per window the breadcrumb,
+  allowlist, per command `config.yaml` declares, and entries for another
+  binary) and per window the breadcrumb,
   lineage, newest status file and the no-view and unknown reasons. It does not
   report the gateway's `code_sha`: that needs the viewer (Phase 4). The kind is
   `Hermes` for every Hermes window, with a session or without.
@@ -635,8 +638,21 @@ below in these ways, each decided while building it:
   rendered as prompts, replies, a `terminal` call and its failed result; and
   after `/branch` the window had no session and an unknown status while the
   abandoned session's file still said idle.
-- **Focus refresh for Hermes windows** is not built: Phase 1b deferred it to
-  Phase 2, which does not list it; a Hermes window has no focus.
+- **Focus refresh for Hermes windows is built** (round-0 decision): keyed by
+  the runtime-qualified session id (`mirror:hermes:<id>`), refreshed from the
+  window's rendered-view backfill like a Claude Code window's, shown on its
+  card and in `fleet_list`/`focus_search`. Routing, the send queue and the
+  sessions overview stay Claude-only: each of those is a way to send.
+- **The gateway's `code_sha` is not checked by `-list -hermes`**: deferred to
+  Phase 4, which attaches the viewer that reports it (round-0 decision Q1).
+- **`-list -hermes` reads the hooks Hermes ACTUALLY declares** (round-1 audit):
+  `config.yaml`'s `hooks:` section only, decoded into a struct with no other
+  field, by the diagnostic alone (`DiagnosticReadPaths`; the daemon never
+  opens `config.yaml`). Consent is reported per declared muster-mirror
+  command — "ok for <command>" — and a fix (`hermes-allowlist -hermes-home …
+  -command <declared>`) is printed only for the one declared command: since
+  the writer removes other muster-mirror entries, a fix naming any other
+  command would remove the declared one's consent.
 - **Notices** are a new `cctranscript.NoticeHermes` source, drawn as the
   harness's compact rows; a tool result is a failure only when its JSON says
   so (`error`, or a non-zero `exit_code`), since Hermes records no `is_error`.
@@ -858,9 +874,11 @@ hooks (`hooks:` in `config.yaml`) receive JSON on stdin with
     without the rename a reader can see a half-written file.
   - **On a mismatch** (a pair missing or with a different command): the gateway
     skips that hook with a warning and every new foreground CLI stops on the
-    `[y/N]` prompt. muster-mirror's `-list -hermes` compares the declared hooks
-    with the allowlist and names the mismatch; the affected sessions read as
-    unknown; the next Home Manager switch rewrites the file.
+    `[y/N]` prompt. muster-mirror's `-list -hermes` reads the hooks
+    `config.yaml` declares (its `hooks:` section only), compares each declared
+    muster-mirror command with the allowlist and names the mismatch; the
+    affected sessions read as unknown; the next Home Manager switch rewrites
+    the file.
 - **Consent** (S2). Pre-seeded allowlist entries hold in an auto-started
   gateway, with no prompt. 🔴 The declaration must allowlist **exactly** every
   `(event, command)` pair it configures: a configured hook that is not

@@ -160,8 +160,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	list := fs.Bool("list", false, "print the sessions this host would register, and exit (a labelled session's line ends in a label=<label> column)")
 	listClaude := fs.Bool("claude", false, "with -list: print, for each WINDOW whose active pane runs Claude Code, what its rendered view would stream (one line each: session, window id, index, claude, pane, state, session id, transcript, source = pane-map|sessions|guessed, then label=<label>); per session on a backend that does not list windows")
 	listWindows := fs.Bool("windows", false, "with -list: print every WINDOW this host would register instead (one line each: session, window id, index, active|-, command, then claude <pane> <state> <session id> <transcript> <source> for a Claude Code window, or hermes <pane> <state> <session id or -> <source> for a Hermes one, then label=<label>)")
-	listHermes := fs.Bool("hermes", false, "with -list: diagnose this host's Hermes windows — each window's breadcrumb, session, status file and why it has no rendered view or no status — and the hook's consent in the Hermes home's allowlist (see -hermes-hook-command)")
-	hermesHookCommand := fs.String("hermes-hook-command", "", "with -list -hermes: the hook command the host's Hermes config declares (default: `<this binary> hermes-hook`)")
+	listHermes := fs.Bool("hermes", false, "with -list: diagnose this host's Hermes windows — each window's breadcrumb, session, status file and why it has no rendered view or no status — and, per hook command Hermes's config.yaml declares (its hooks: section only), its consent in the allowlist")
 	hermesHome := fs.String("hermes-home", hermesHomeDefault(getenv), "the Hermes home whose sessions a Hermes window is resolved from — read-only, and only state.db, terminal-sessions/tty-* and shell-hooks-allowlist.json ("+envHermesHome+"; else $HERMES_HOME, else ~/.hermes)")
 	hermesStatusDir := fs.String("hermes-status-dir", hermesStatusDirDefault(getenv), "the directory `muster-mirror hermes-hook` writes Hermes status files in; recorded for the hook with -write-hook-config ("+envHermesStatusDir+")")
 	version := fs.Bool("version", false, "print the version and exit")
@@ -212,7 +211,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	if *list && *listHermes {
 		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		return printHermes(lctx, backend, *hermesHome, *hermesStatusDir, *hermesHookCommand, stdout, stderr)
+		return printHermes(lctx, backend, *hermesHome, *hermesStatusDir, stdout, stderr)
 	}
 	if *list && *listWindows {
 		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)

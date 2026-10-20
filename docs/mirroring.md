@@ -359,11 +359,16 @@ idle.
 window that has no rendered view and `unknown` for a status muster does not
 believe. `muster-mirror -list -hermes` says why:
 
-- `hook-consent`: `ok`, or `MISSING` with the events whose `(event, command)`
-  pair is not in the allowlist, and the command to fix it. `hook-other` names
-  allowlisted entries for another `muster-mirror` path (a Hermes config that
-  names a different binary than this one; `-hermes-hook-command` sets the one
-  checked).
+- `hook-declared`: each `muster-mirror hermes-hook` command Hermes's
+  `config.yaml` declares, per event (only its `hooks:` section is read).
+  `hook-config` says when it declares none, or several.
+- `hook-consent`, per declared command: `ok for <command>`, or `MISSING for
+  <command>` with the events whose `(event, command)` pair is not in the
+  allowlist, and the command that fixes it (`muster-mirror hermes-allowlist
+  -hermes-home … -command <the declared command>`; none when several are
+  declared). `hook-undeclared` names events the config does not hook;
+  `hook-other` names allowlisted entries of a command that is not declared
+  (an older binary's, which the next `hermes-allowlist` removes).
 - per Hermes window: its pane, CLI process, terminal, session and status; the
   `breadcrumb` (its session and time, or `none`); the `lineage` and how its tip
   ended; the newest `status-file`; and, when there is one, the `no-view` and

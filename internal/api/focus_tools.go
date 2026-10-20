@@ -95,12 +95,12 @@ func (s *Server) toolFleetList(ctx context.Context) string {
 		}
 	}
 	seen := map[string]bool{}
-	for _, e := range s.mirrorClaudeEntries(ctx) {
-		if seen[e.ClaudeSession] {
+	for _, e := range s.mirrorFocusEntries(ctx) {
+		if seen[e.SessionKey()] {
 			continue
 		}
-		seen[e.ClaudeSession] = true
-		sub := focus.MirrorSubject(e.ClaudeSession)
+		seen[e.SessionKey()] = true
+		sub := focus.MirrorSubject(e.SessionKey())
 		st := s.ext.Mirror.AgentState(ctx, e.Host, e.Session, e.Window)
 		status := st.Status
 		if status == "" {
@@ -131,8 +131,8 @@ func (s *Server) toolFocusSearch(ctx context.Context, arguments string) string {
 	// out — by the store, BEFORE its limit (Store.Search): a chief must not
 	// route to one, and dead rows must not crowd out a live one.
 	var live []string
-	for _, e := range s.mirrorClaudeEntries(ctx) {
-		live = append(live, e.ClaudeSession)
+	for _, e := range s.mirrorFocusEntries(ctx) {
+		live = append(live, e.SessionKey())
 	}
 	limit := min(max(in.Limit, 1), focus.MaxSearchResults)
 	if in.SinceHours > 0 {
