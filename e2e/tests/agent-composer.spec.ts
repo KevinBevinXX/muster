@@ -230,9 +230,19 @@ for (const vp of [
       await expect.poll(() => closed, 'control: the chat socket was refused').toBeGreaterThan(0);
       const viaForm = `by the form, no socket (${vp.name})`;
       await page.locator('#chat-input').fill(viaForm);
-      await page.locator('#chat-send').click();
-      await page.waitForURL((u) => u.pathname === '/agents/' + agent.name && u.searchParams.get('notice') === 'sent');
+      // 🔴 THE WAIT IS ARMED BEFORE THE CLICK. The page this lands on takes
+      // ?notice=sent out of its address as soon as its script runs (a reload
+      // must not repeat the notice). A waitForURL started after the click
+      // found an address that had already lost it, so it waited for a SECOND
+      // navigation that never comes, until the test timed out (CI, run
+      // 39502271983). Armed first, it sees the landing itself.
+      await Promise.all([
+        page.waitForURL((u) => u.pathname === '/agents/' + agent.name && u.searchParams.get('notice') === 'sent'),
+        page.locator('#chat-send').click(),
+      ]);
       await expect(page.locator('#chat-note')).toHaveText('Sent.');
+      // …and the notice is taken out of the address once shown.
+      await expect.poll(() => new URL(page.url()).searchParams.get('notice')).toBeNull();
       await expect(page.locator('#chat-log')).toContainText(viaForm);
     });
 
