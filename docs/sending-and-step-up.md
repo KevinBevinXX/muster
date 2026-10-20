@@ -79,7 +79,7 @@ no Queue.
   window is held with the reason shown. So is one for a host that reports the
   status without its time.
 - **At most 20** messages can wait per window. Finished ones are shown for a
-  while and deleted after 7 days.
+  while and deleted after 7 days, or sooner with their **Delete** (below).
 - **Never twice.** A message is claimed (`queued` → `sending`) before it is sent
   and never put back once anything may have reached the window. (The one way
   back to `queued` is the Send-wins case above, where nothing was pasted.) The
@@ -108,6 +108,15 @@ again as a new message, under the sign-in of the request that retried it, which
 must be fresh like a queue post's. A message that may already have been sent
 asks you to confirm first. A message your chief routed has no Retry: its failed
 route goes back to the chief instead.
+
+A finished message (sent, failed, expired or cancelled) has a **Delete**, which
+removes it from the list on every device at once (`POST /send-queue/{id}/delete`).
+A message still queued has no Delete (Cancel it first), and neither has one
+being sent: the send in progress still holds it. Deleting a sent message does
+not let the next one in early: the next message still waits for the turn the
+deleted one started. Deleting a failed message your chief routed is fine: its
+route is not affected, and if the route times out, the message still goes back
+to the chief.
 
 🔴 **A queued message does not outlive the account that queued it.** When a
 message is sent, the server checks the account again, from the database: if it

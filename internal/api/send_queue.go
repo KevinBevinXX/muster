@@ -20,7 +20,7 @@ import (
 
 // ---------------------------------------------------------------------------
 // THE SEND QUEUE's server half (internal/sendqueue, migration 0019): the
-// Rendered view's Queue, the queue's list, Cancel and Retry, and the dispatcher's two
+// Rendered view's Queue, the queue's list, Cancel, Retry and Delete, and the dispatcher's two
 // hooks — the target's state (sendQueueProbe) and the delivery
 // (sendQueueSend).
 //
@@ -78,6 +78,7 @@ func (s *Server) registerSendQueueRoutes(mux Mux) {
 	mux.HandleFunc("POST /send-queue", s.requireOperatorWrite(s.handleSendQueueAdd))
 	mux.HandleFunc("GET /send-queue", s.requireSession(s.handleSendQueueList))
 	mux.HandleFunc("POST /send-queue/{id}/cancel", s.requireOperatorWrite(s.handleSendQueueCancel))
+	mux.HandleFunc("POST /send-queue/{id}/delete", s.requireOperatorWrite(s.handleSendQueueDelete))
 	// The plain confirm page's form: a stale queue the BROWSER submitted.
 	mux.HandleFunc("POST "+sendQueueConfirmPath, s.requireOperatorWrite(s.handleSendQueueConfirm))
 	mux.HandleFunc("POST /send-queue/{id}/retry", s.requireOperatorWrite(s.handleSendQueueRetry))
@@ -337,7 +338,7 @@ func (s *Server) sendQueueListView(ctx context.Context, t sendqueue.Target) ui.S
 		}
 		v.Items = append(v.Items, ui.SendQueueItem{ID: it.ID, State: string(it.State), Preview: preview,
 			Detail: it.Detail, Cancellable: it.State == sendqueue.Queued, Answered: answered[it.ID],
-			Retryable: sendQueueRetryable(it), MayHaveDelivered: it.MayHaveDelivered})
+			Retryable: sendQueueRetryable(it), Deletable: it.State.Finished(), MayHaveDelivered: it.MayHaveDelivered})
 	}
 	if h, ok, err := s.ext.SendQueue.HeadOf(ctx, t); err == nil && ok {
 		if d := s.sendQueueDecide(h, s.sendQueueProbe(ctx, h)); !d.Send {
@@ -417,6 +418,57 @@ func (s *Server) handleSendQueueCancel(w http.ResponseWriter, r *http.Request) {
 	}
 	if nav {
 		http.Redirect(w, r, withNotice(back, noticeCancelled), http.StatusSeeOther)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// SendQueueNotDeleted is why a Delete was refused: the message is not
+// finished.
+const SendQueueNotDeleted = "Not deleted: that message is still queued (cancel it first) or is being sent."
+
+// handleSendQueueDelete is POST /send-queue/{id}/delete: delete one of the
+// principal's FINISHED messages (sent, failed — expired included — or
+// cancelled; sendqueue.State.Finished), so it leaves the list on every device.
+// 404 for one it cannot see; 409 for one still queued (Cancel it) or being
+// sent, which is never deleted from under its claim. To the list's script 204;
+// to a form the browser submitted, a redirect back with a notice.
+func (s *Server) handleSendQueueDelete(w http.ResponseWriter, r *http.Request) {
+	if s.ext.SendQueue == nil {
+		http.NotFound(w, r)
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		http.NotFound(w, r)
+		return
+	}
+	ctx := r.Context()
+	it, err := s.ext.SendQueue.Get(ctx, id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	back := ui.MirrorRef{Host: it.Target.Host, Session: it.Target.Session, Window: it.Target.Window}.ViewPath()
+	nav := isDocumentNavigation(r)
+	switch err := s.ext.SendQueue.Delete(ctx, id); {
+	case errors.Is(err, sendqueue.ErrNotFound):
+		http.NotFound(w, r)
+		return
+	case err != nil:
+		if !errors.Is(err, sendqueue.ErrNotDeletable) {
+			s.logger.Printf("sendqueue: delete %d: %v", id, err)
+		}
+		if nav {
+			http.Redirect(w, r, withNotice(back, noticeNotDeleted), http.StatusSeeOther)
+			return
+		}
+		http.Error(w, SendQueueNotDeleted, http.StatusConflict)
+		return
+	}
+	s.logger.Printf("sendqueue: deleted finished message %d (%s) for %s", id, it.State, it.Target)
+	if nav {
+		http.Redirect(w, r, withNotice(back, noticeDeleted), http.StatusSeeOther)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

@@ -231,6 +231,7 @@ var routeVias = map[authz.Via][]string{
 		"POST /agents/pins/delete",
 		"POST /send-queue",
 		"POST /send-queue/{id}/cancel",
+		"POST /send-queue/{id}/delete",
 		"POST /send-queue/{id}/retry",
 		"POST /send-queue/{id}/retry/confirm",
 		"POST /send-queue/confirm",

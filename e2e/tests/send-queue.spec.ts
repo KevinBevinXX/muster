@@ -456,6 +456,47 @@ test.describe('desktop 1280×800', () => {
     await busyAndSeen();
   });
 
+  // 🔴 A FINISHED MESSAGE CAN BE DELETED — the operator's case: a failed
+  // message the chief routed has no Retry, and used to sit in the list until it
+  // was pruned. Its Delete removes the row without a page reload, and another
+  // device's list no longer has it. A queued message has no Delete (that is
+  // Cancel). On origin/main there is no Delete, so this fails at the button.
+  test('a failed message has Delete, and Delete removes it without a reload, on every device', async ({ page, browser }) => {
+    await busyAndSeen();
+    fs.rmSync(tr + '.pasted', { force: true });
+    await openView(page, newHost);
+    const text = 'failed then deleted ' + stamp;
+    await queue(page, text, false);
+    const queuedRow = rowIn(page, text, 'queued');
+    await expect(queuedRow).toHaveCount(1);
+    await expect(queuedRow.getByRole('button', { name: 'Delete this message' }), 'a queued message has no Delete').toHaveCount(0);
+    sqfix('route', newHost, text);
+    busy(false);
+    const failed = rowIn(page, text, 'failed');
+    await expect(failed, `the route gate fails it (log:\n${mirrorLog})`).toContainText('its route could not be read', { timeout: 30_000 });
+    await expect(failed.getByRole('button', { name: /Queue this/ }), 'no Retry: the operator case').toHaveCount(0);
+
+    const other = await otherDevice(browser);
+    await openView(other.page, newHost);
+    await expect(rowIn(other.page, text, 'failed'), 'the other device shows it').toHaveCount(1);
+
+    // A marker on the page's window: a reload (or a navigation) would drop it.
+    await page.evaluate(() => ((window as unknown as { __sqNoReload?: number }).__sqNoReload = 1));
+    const del = failed.getByRole('button', { name: 'Delete this message' });
+    await expect(del).toBeVisible();
+    await del.click();
+    await expect(row(page, text), 'the row is gone').toHaveCount(0, { timeout: 10_000 });
+    expect(await page.evaluate(() => (window as unknown as { __sqNoReload?: number }).__sqNoReload), 'no reload').toBe(1);
+    await expect(page).toHaveURL(origin + viewPath(newHost));
+    // Another device: its list follows (it re-reads every 15 s with nothing
+    // open, at once when the page is shown again).
+    await other.page.reload();
+    await expect(row(other.page, text), 'gone on the other device too').toHaveCount(0, { timeout: 20_000 });
+    expect(pasted(), 'nothing was pasted').toEqual([]);
+    await other.ctx.close();
+    await busyAndSeen();
+  });
+
   // 🔴 A MESSAGE THAT MAY ALREADY HAVE BEEN SENT (muster stopped mid-send) says so,
   // and its Retry asks once: dismissed, nothing is queued; accepted, it is.
   test('Retry of a message that may already have been sent asks first', async ({ page }) => {

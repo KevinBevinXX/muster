@@ -350,13 +350,17 @@ var isolationClasses = map[string]routeClass{
 	"POST /agents/pins":        classList,
 	"POST /agents/pins/delete": classList,
 	// The send queue (0019): the queue form, the list and the plain confirm
-	// page name A's mirrored window; Cancel names A's queued message by id.
+	// page name A's mirrored window; Cancel, Retry and Delete name A's queued
+	// message by id.
 	// Each must answer B exactly as for a ghost, and A's queued message (its
 	// body carries the canary) is in the snapshot.
 	"GET /send-queue":              classMirror,
 	"POST /send-queue":             classMirror,
 	"POST /send-queue/{id}/cancel": classParam,
 	"POST /send-queue/{id}/retry":  classParam,
+	// Delete of a finished message (A's seeded message is queued, so A's own
+	// control is refused 409 and nothing of A's is removed; B's is 404).
+	"POST /send-queue/{id}/delete": classParam,
 	// The Retry's plain confirm page form (a stale Retry with no script).
 	"POST /send-queue/{id}/retry/confirm": classParam,
 	"POST /send-queue/confirm":            classMirror,

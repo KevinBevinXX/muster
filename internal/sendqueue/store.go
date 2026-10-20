@@ -6,7 +6,7 @@
 // cancel) the same queue.
 //
 // 🔴 THE STORE HAS TWO HALVES AND THEY RUN UNDER DIFFERENT PRINCIPALS.
-// Enqueue, List, Get, Cancel and NotePaste run under the CALLER's principal:
+// Enqueue, List, Get, Cancel, Retry, Delete and NotePaste run under the CALLER's principal:
 // send_queue is under FORCE row-level security, so a request sees, queues into
 // and cancels only its own user's rows, and the owner of a new row is the
 // principal's user (owner_id's default), never a parameter. Recover, Heads,
@@ -60,6 +60,31 @@ const (
 
 // Open reports whether a message in state s is still to be sent (or being sent).
 func (s State) Open() bool { return s == Queued || s == Sending }
+
+// finishedStates are the states a message ends in: nothing more happens to
+// it. It is the ONE list Finished and Delete's SQL both read.
+var finishedStates = []State{Sent, Failed, Cancelled}
+
+// Finished reports whether a message in state s has ended — sent, failed (an
+// expired message included: it is failed, saying so) or cancelled — and so
+// whether its owner may delete it (Delete). Named states only: a state this
+// list does not know is not finished, so a new open state added to the
+// schema is never deletable by default.
+func (s State) Finished() bool {
+	for _, f := range finishedStates {
+		if s == f {
+			return true
+		}
+	}
+	return false
+}
+
+// HoldsTurn reports whether it is a message the NEXT message of its target
+// waits behind: one that was pasted (sent), or may have been (failed, may
+// have been delivered). It is heads' TurnAfter predicate, in Go.
+func (it Item) HoldsTurn() bool {
+	return it.State == Sent || (it.State == Failed && it.MayHaveDelivered)
+}
 
 // Target addresses what messages are queued for: a mirrored window by (host,
 // session, tmux window id) — "" being a per-session host's session. It is the
@@ -160,6 +185,10 @@ var (
 	// ErrNotCancellable: the message is no longer queued (it is being sent, or
 	// already finished).
 	ErrNotCancellable = errors.New("sendqueue: the message is no longer queued, so it cannot be cancelled")
+	// ErrNotDeletable: the message is not finished — still queued (Cancel it
+	// first) or being sent (a send in flight is never deleted from under its
+	// claim).
+	ErrNotDeletable = errors.New("sendqueue: only a finished message can be deleted: cancel a queued one first; one being sent cannot be deleted")
 	// ErrEmpty refuses a message with no text.
 	ErrEmpty = errors.New("sendqueue: nothing to queue: type a message first")
 	// ErrNotRetryable: the message did not fail, or was already retried.
@@ -399,6 +428,63 @@ func (s *PGStore) Cancel(ctx context.Context, id int64, now time.Time) (Item, er
 		return Item{}, gerr
 	}
 	return Item{}, ErrNotCancellable
+}
+
+// Delete deletes the caller's FINISHED message id (State.Finished): a queued
+// one is refused (ErrNotDeletable; Cancel it first), and so is one being sent
+// — its claimant still holds a lease on the row and will Finish it, so the
+// row must outlive the send. Another user's message is not found (row-level
+// security: the two answer identically).
+//
+// 🔴 A DELETED MESSAGE'S TURN IS NOT FORGOTTEN. A sent message (or one that
+// may have been delivered) is what the target's next message waits behind:
+// heads reads its after_since as TurnAfter. Deleting the row would drop that
+// turn and could release the next message into the turn the deleted one
+// started. So, in the same transaction and under the row's lock, its
+// after_since is first carried onto the target's open rows (as NotePaste
+// does). ⚠ With no open row to carry it to, it goes with the row — as Prune's
+// deletes do — and a message queued afterwards waits on the hub's in-memory
+// record of the paste alone, which a restart forgets.
+//
+// A ROUTED message is deleted like a person's: its route (session_routes)
+// names the row by send_queue_id with no foreign key, and the one thing that
+// reads it back — the route sweep's Cancel on a timeout — finds nothing and
+// still hands the route back to the chief.
+func (s *PGStore) Delete(ctx context.Context, id int64) error {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		it, err := scanItem(tx.QueryRow(ctx, `SELECT `+cols+` FROM send_queue WHERE id = $1 FOR UPDATE`, id))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("sendqueue: delete: %w", err)
+		}
+		if !it.State.Finished() {
+			return ErrNotDeletable
+		}
+		if it.HoldsTurn() && it.AfterSince > 0 {
+			where, args := targetWhere(it.Target, 3)
+			if _, err := tx.Exec(ctx, `UPDATE send_queue SET after_since = $1
+				WHERE owner_id = $2 AND state IN ('queued', 'sending') AND after_since < $1 AND `+where,
+				append([]any{it.AfterSince, it.Owner}, args...)...); err != nil {
+				return fmt.Errorf("sendqueue: delete: carry the turn: %w", err)
+			}
+		}
+		states := make([]string, len(finishedStates))
+		for i, f := range finishedStates {
+			states[i] = string(f)
+		}
+		// The state is checked again here, not only above: the row is locked
+		// (FOR UPDATE), so it holds, and the statement says so on its own.
+		tag, err := tx.Exec(ctx, `DELETE FROM send_queue WHERE id = $1 AND state = ANY($2)`, id, states)
+		if err != nil {
+			return fmt.Errorf("sendqueue: delete: %w", err)
+		}
+		if tag.RowsAffected() != 1 {
+			return ErrNotDeletable
+		}
+		return nil
+	})
 }
 
 // NotePaste records, as the caller, that something was pasted into target t

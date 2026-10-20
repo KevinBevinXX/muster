@@ -78,3 +78,33 @@ func TestAFailedRowDrawsRetryOnce(t *testing.T) {
 		}
 	}
 }
+
+// TestDeleteIsDrawnOnExactlyTheFinishedStates: through the real list route, a
+// row in each state the schema allows (0019's send_queue_state_check) draws a
+// Delete exactly when it is finished — sent, failed, cancelled — and never
+// when it is queued (that is Cancel) or being sent.
+func TestDeleteIsDrawnOnExactlyTheFinishedStates(t *testing.T) {
+	q := &memQueue{}
+	s, ts := queueServer(t, queueMirror(), q, &turnGateway{})
+	states := []sendqueue.State{sendqueue.Queued, sendqueue.Sending, sendqueue.Sent, sendqueue.Failed, sendqueue.Cancelled}
+	for _, st := range states {
+		it, err := q.Enqueue(asQueueUser(1, time.Now()), sendqueue.Item{Target: queueTarget, Body: "row " + string(st), StepUpAt: time.Now()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		q.mu.Lock()
+		q.items[it.ID-1].State = st
+		q.mu.Unlock()
+	}
+	_, page := mirrorGet(t, s, ts, ui.SendQueuePath+"?"+url.Values{"host": {"ws"}, "session": {"main"}, "window": {"@1"}}.Encode())
+	want := map[sendqueue.State]bool{sendqueue.Sent: true, sendqueue.Failed: true, sendqueue.Cancelled: true}
+	for i, st := range states {
+		drawn := strings.Contains(page, `action="`+ui.SendQueueDeletePath(int64(i+1))+`"`)
+		if drawn != want[st] {
+			t.Errorf("a %s row draws Delete: %v; want %v", st, drawn, want[st])
+		}
+	}
+	if !strings.Contains(page, "row sending") {
+		t.Fatalf("CONTROL: the list drew no rows: %s", page)
+	}
+}

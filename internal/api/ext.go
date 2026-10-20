@@ -261,7 +261,7 @@ type MirrorTokenAuth interface {
 }
 
 // SendQueue is the send queue's store as this package consumes it:
-// *sendqueue.PGStore. The first seven run under the request's principal;
+// *sendqueue.PGStore. The first eight run under the request's principal;
 // CancelOwner and the embedded DispatchStore are the system scope's.
 type SendQueue interface {
 	Enqueue(ctx context.Context, it sendqueue.Item) (sendqueue.Item, error)
@@ -271,6 +271,7 @@ type SendQueue interface {
 	HeadOf(ctx context.Context, t sendqueue.Target) (sendqueue.Head, bool, error)
 	NotePaste(ctx context.Context, t sendqueue.Target, since int64) error
 	Retry(ctx context.Context, id int64, stepUpAt time.Time, afterSince int64) (sendqueue.Item, error)
+	Delete(ctx context.Context, id int64) error
 	// CancelOwner is the system scope's: a disable or a sign-out everywhere
 	// cancels the user's queued messages.
 	CancelOwner(ctx context.Context, owner int64, now time.Time, detail string) (int, error)

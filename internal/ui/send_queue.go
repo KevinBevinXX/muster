@@ -13,7 +13,7 @@ import (
 // "Queue for when idle" item behind Send's caret (composer_menu.go), and the
 // window's queue under the status line — what is waiting, what
 // it is waiting for, a Cancel for each message not yet being sent, and the
-// last few outcomes.
+// last few outcomes, each with a Delete.
 //
 // 🔴 THE QUEUE IS THE SERVER'S, NOT THE PAGE'S. Queue posts the message to
 // SendQueuePath and the server sends it when the target has been idle long
@@ -26,7 +26,7 @@ import (
 // browser opens itself, Queue in it is a submit button whose formaction is the
 // queue route (the browser posts the same form there and is
 // redirected back with a notice), the list is drawn into the page by the
-// server, and each Cancel is a form of its own.
+// server, and each Cancel, Retry and Delete is a form of its own.
 
 // SendQueuePath is the queue's route: POST queues a message, GET is a
 // target's list (SendQueueList), drawn as a fragment.
@@ -41,6 +41,15 @@ func SendQueueCancelPath(id int64) string {
 func SendQueueRetryPath(id int64) string {
 	return SendQueuePath + "/" + strconv.FormatInt(id, 10) + "/retry"
 }
+
+// SendQueueDeletePath is where message id's Delete posts.
+func SendQueueDeletePath(id int64) string {
+	return SendQueuePath + "/" + strconv.FormatInt(id, 10) + "/delete"
+}
+
+// SendQueueDeleteLabel is a finished message's Delete, as a screen reader
+// names it.
+const SendQueueDeleteLabel = "Delete this message"
 
 // SendQueueMayHaveSentText is what a failed message that may already have
 // been sent says beside its Retry.
@@ -75,6 +84,10 @@ type SendQueueItem struct {
 	Answered string
 	// Retryable: it failed and has not been retried; drawn with a Retry.
 	Retryable bool
+	// Deletable: it is finished (sent, failed, cancelled), so its owner may
+	// remove it from the list; drawn with a Delete. Never a queued message
+	// (that is Cancel) or one being sent.
+	Deletable bool
 	// MayHaveDelivered: muster stopped while sending it, so it may have
 	// reached the window. Its Retry warns, and asks once before it queues it.
 	MayHaveDelivered bool
@@ -164,6 +177,16 @@ func SendQueueList(v SendQueueListView) g.Node {
 					g.Attr("aria-label", "Cancel this queued message"),
 					Class("press min-h-[44px] rounded-lg px-3 text-xs font-semibold text-fg2 ring-1 ring-inset ring-line transition hover:bg-s2"),
 					g.Text("Cancel")),
+			)),
+			g.If(it.Deletable, Form(
+				Method("post"),
+				Action(SendQueueDeletePath(it.ID)),
+				g.Attr("data-delete", ""),
+				Class("shrink-0"),
+				Button(Type("submit"),
+					g.Attr("aria-label", SendQueueDeleteLabel),
+					Class("press min-h-[44px] rounded-lg px-3 text-xs font-semibold text-fg2 ring-1 ring-inset ring-line transition hover:bg-s2"),
+					g.Text("Delete")),
 			)),
 		))
 	}
@@ -293,7 +316,7 @@ func sendQueueBox(q *ComposerQueue, off bool) g.Node {
 // sendQueueScript keeps #mv-queue current: re-read every 3 s while anything is
 // open there, every 15 s otherwise, at once on a Queue (the composer's script
 // dispatches mv-queued) and when the page is shown again; and it sends each
-// Cancel without leaving the page.
+// Cancel, Retry and Delete without leaving the page.
 func sendQueueScript() g.Node {
 	return Script(g.Raw(`
 (function () {
@@ -347,6 +370,27 @@ func sendQueueScript() g.Node {
       var ask = f.getAttribute('data-confirm');
       if (ask && !window.confirm(ask)) return;
       retry(f, !!ask);
+      return;
+    }
+    // Delete: a finished message leaves the list at once, without leaving the
+    // page; the list is then re-read, so every device's copy agrees.
+    if (f && f.hasAttribute && f.hasAttribute('data-delete') && typeof fetch === 'function') {
+      e.preventDefault();
+      var db = f.querySelector('button');
+      if (db) db.disabled = true;
+      fetch(f.getAttribute('action'), { method: 'POST', credentials: 'same-origin',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+        .then(function (r) {
+          if (r.ok || r.status === 404) {
+            // 404: already gone (deleted from another device).
+            var li = f.closest ? f.closest('[data-queue-id]') : null;
+            if (li && li.parentNode) li.parentNode.removeChild(li);
+            return;
+          }
+          if (db) db.disabled = false;
+          return r.text().then(function (t) { note(t.trim() || ('Not deleted (HTTP ' + r.status + ')')); });
+        })
+        .then(load, load);
       return;
     }
     if (!f || !f.hasAttribute || !f.hasAttribute('data-cancel') || typeof fetch !== 'function') return;

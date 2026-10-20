@@ -152,6 +152,21 @@ func (m *memQueue) Retry(ctx context.Context, id int64, stepUpAt time.Time, afte
 	return sendqueue.Item{}, sendqueue.ErrNotFound
 }
 
+func (m *memQueue) Delete(ctx context.Context, id int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, it := range m.items {
+		if it.ID == id && it.Owner == queueUser(ctx) {
+			if !it.State.Finished() {
+				return sendqueue.ErrNotDeletable
+			}
+			m.items = append(m.items[:i], m.items[i+1:]...)
+			return nil
+		}
+	}
+	return sendqueue.ErrNotFound
+}
+
 func (m *memQueue) all() []sendqueue.Item {
 	m.mu.Lock()
 	defer m.mu.Unlock()

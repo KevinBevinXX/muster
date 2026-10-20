@@ -226,6 +226,7 @@ POST /runner/flows/{id}/result
 POST /send-queue
 POST /send-queue/confirm
 POST /send-queue/{id}/cancel
+POST /send-queue/{id}/delete
 POST /send-queue/{id}/retry
 POST /send-queue/{id}/retry/confirm
 POST /tasks

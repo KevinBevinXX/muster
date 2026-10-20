@@ -529,6 +529,11 @@ func (s *Server) RouteTimeoutPass(ctx context.Context) (int, error) {
 				s.logger.Printf("routes: %s: its queued message %d was cancelled", r.RouteID, *r.SendQueueID)
 			case errors.Is(err, sendqueue.ErrNotCancellable):
 				// Already sent, or being sent: past cancelling.
+			case errors.Is(err, sendqueue.ErrNotFound):
+				// Its owner deleted it once it had finished (only a finished
+				// row can be deleted): nothing to cancel, and the hand-back
+				// below does not read it.
+				s.logger.Printf("routes: %s: its queued message %d was already deleted", r.RouteID, *r.SendQueueID)
 			default:
 				// Logged, not ignored — and not a hole: the row's route is no
 				// longer `routed`, so its delivery refuses it (sendQueueRoutedGate).
