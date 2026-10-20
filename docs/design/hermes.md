@@ -826,13 +826,21 @@ residual cases (operator decision).
     `-hermes-send`, unconditionally.** muster cannot read `config.yaml` (secret
     hygiene), so this is the operator's responsibility when turning on the
     per-host switch; the host docs say so.
-    - **Defence in depth only:** upstream draws a vi label, `INSERT`, `NORMAL` or
-      `REPLACE` (`_vim_mode_label`, `P:hermes_cli/cli_status_bar_mixin.py:82-97`),
-      and the host refuses whenever it sees one. It cannot be relied on as a
-      gate: it is only the **last** fragment of the status bar (`:1169-1171`),
-      it is absent when the bar is hidden (`:1129-1132`, after a resize or with
-      the bar off), and it is the first thing `_trim_status_bar_text` cuts in a
-      narrow pane (`:434` onward).
+    - **Defence in depth only:** upstream draws a vi label (`_vim_mode_label`,
+      `P:hermes_cli/cli_status_bar_mixin.py:82-97`), and the host refuses
+      whenever it sees one. The label is **localised**
+      (`t("cli.status_bar.vim_*")`): English `INSERT`/`NORMAL`/`REPLACE`,
+      German `EINFÜGEN`/`NORMAL`/`ERSETZEN`, and so on. So the matcher, and the
+      `-list -hermes` warning, use the bundled translations of every language
+      Hermes ships at the pin (the 17 of `SUPPORTED_LANGUAGES`,
+      `P:agent/i18n.py`), extracted from `P:locales/*.yaml` when the pin is set.
+      It cannot be relied on as a gate: it is only the **last** fragment of the
+      status bar (`:1169-1171`); it is absent when the bar is hidden
+      (`:1129-1132`, after a resize or with the bar off); it is the first thing
+      `_trim_status_bar_text` cuts in a narrow pane (`:434` onward); and a
+      plugin language pack or a user overlay (`$HERMES_HOME/locales/`, which
+      muster does not read) can **localise or override** it to text the matcher
+      does not know.
     - `-list -hermes` warns when the label has ever been seen on a host that has
       `-hermes-send` enabled;
   - ⚠ two Escapes in a row move the draft into the Up-arrow history and clear
@@ -860,7 +868,8 @@ residual cases (operator decision).
   typed filter, at the reasoning stage and **opened over a draft**, the stash
   alone, the palette and stash open together, each after the Escape sequence,
   and an idle line in **vi mode** before and after one Escape, with the status
-  bar's vi label shown, trimmed and hidden.
+  bar's vi label shown, trimmed and hidden, in English and in at least one
+  other bundled language.
 
 #### Residual cases, accepted
 
@@ -909,7 +918,37 @@ submitted". Per overlay:
 - nothing is drawn below the lower rule: no voice bar, and no completions menu
   (Enter there accepts a completion).
 
-The states known to block, with their S11 fixtures:
+**Localisation.** Hermes localises its user-facing text: `t()` resolves
+plugin packs, then the user overlay `$HERMES_HOME/locales/<lang>.yaml`, then the
+bundled `locales/<lang>.yaml`, with the language from `HERMES_LANGUAGE`, then
+`display.language`, then English (`P:agent/i18n.py:1-13`). What the screen
+check matches, at the pin:
+
+- **localised, and matched by style instead:** the idle placeholder (a random
+  `t()` example, `P:hermes_cli/tips.py:72-78`) and the busy placeholder: the
+  rule needs only the italic placeholder style, never its words;
+- **localised, and not used as a gate:** the overlay and modal titles and hints
+  in the table below (for example `approval_title`, `clarify_title`,
+  `sudo_title`, `palette_title`, `hint_approval`, `destructive_title` in
+  `P:locales/en.yaml`). The table's marker column describes the English
+  fixtures only; the refusal comes from the input line's prefix glyph and
+  style. The palette title being localised is one more reason the frame cannot
+  be proof (the signals table above);
+- **localised, matched against every bundled translation:** the vi label
+  (above);
+- **not localised:** the prompt prefix glyphs (`❯ `, `⚠`, `?`, `✎`, `🔐`,
+  `☤`), which come from the skin, not `t()` (`_get_tui_prompt_symbols`,
+  `P:hermes_cli/cli_tui_mixin.py:272-288`), and the hook-consent prompt, a
+  plain English `input()` (`P:agent/shell_hooks.py:762`). Skins that change the
+  glyphs remain UNVERIFIED (below);
+- **the chrome fallback** of the [paste guard](#every-paste-into-a-hermes-pane-is-gated-on-the-host)
+  matches the rule rows and the prefix glyph, not the status bar's words.
+
+Phase 3 records the blocking-state fixtures in English and in at least one
+other bundled language; that the non-English screens still refuse on structure
+and style alone is UNVERIFIED until then.
+
+The states known to block, with their S11 fixtures (English):
 
 | state | marker | input line | why it blocks |
 |---|---|---|---|
