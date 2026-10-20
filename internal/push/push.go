@@ -195,12 +195,42 @@ type WebpushPusher struct {
 }
 
 // NewWebpushPusher builds a Pusher signing with vapid. Its HTTP client has a
-// short timeout so a stuck push service cannot hold a fan-out open.
-func NewWebpushPusher(vapid VAPIDConfig) *WebpushPusher {
-	return &WebpushPusher{vapid: vapid, client: &http.Client{Timeout: 10 * time.Second}, ttl: 3600}
+// short timeout so a stuck push service cannot hold a fan-out open, and it
+// never follows a redirect (pushHTTPClient).
+func NewWebpushPusher(vapid VAPIDConfig) *WebpushPusher { return newWebpushPusher(vapid, nil) }
+
+// newWebpushPusher is NewWebpushPusher over transport rt (a test's TLS
+// server); the redirect rule is the production one.
+func newWebpushPusher(vapid VAPIDConfig, rt http.RoundTripper) *WebpushPusher {
+	return &WebpushPusher{vapid: vapid, client: pushHTTPClient(rt), ttl: 3600}
 }
 
-// Send encrypts payload for sub and POSTs it. 2xx is success; 404/410 expire.
+// pushHTTPClient is the client every push send uses. rt nil is the default
+// transport.
+//
+// 🔴 IT REFUSES EVERY REDIRECT. The host allowlist (Allowlist) checks only
+// the endpoint muster was handed, so a client that followed redirects would
+// let a listed host bounce the POST to ANY host the pod can reach, which is
+// exactly what the allowlist exists to prevent. CheckRedirect returns
+// http.ErrUseLastResponse, so the 3xx itself comes back and Send counts it as
+// a failed send (ErrRedirectRefused). This is for every push, the browser
+// push services included (docs/design/android.md, server change 21).
+func pushHTTPClient(rt http.RoundTripper) *http.Client {
+	return &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: rt,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+// ErrRedirectRefused is a send the push service answered with a redirect.
+// muster does not follow it, and the send counts as failed.
+var ErrRedirectRefused = errors.New("push: the push service answered with a redirect, which muster does not follow")
+
+// Send encrypts payload for sub and POSTs it. 2xx is success; 404/410 expire;
+// a 3xx is a failed send (ErrRedirectRefused), never followed.
 func (p *WebpushPusher) Send(ctx context.Context, sub Subscription, payload []byte) SendResult {
 	resp, err := webpush.SendNotificationWithContext(ctx, payload, sub.toWebpush(), &webpush.Options{
 		HTTPClient:      p.client,
@@ -215,6 +245,9 @@ func (p *WebpushPusher) Send(ctx context.Context, sub Subscription, payload []by
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return SendResult{StatusCode: resp.StatusCode, Err: fmt.Errorf("%w (status %d)", ErrRedirectRefused, resp.StatusCode)}
+	}
 	return SendResult{
 		StatusCode: resp.StatusCode,
 		Expired:    resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone,

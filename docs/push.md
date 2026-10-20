@@ -40,6 +40,25 @@ Push routes are session-authenticated and same-origin:
 On iOS, a page must be installed to the Home Screen before it can subscribe. The
 page tells you this.
 
+### Which push services
+
+A subscription's endpoint is a URL that muster later POSTs to, so muster accepts
+only endpoints on a known push service, on `https` and the default port:
+
+- the browser push services: FCM, Mozilla autopush, Apple, and Windows (WNS);
+- your own hosts, listed in `MUSTER_PUSH_EXTRA_HOSTS`. Each matches by its exact
+  name only, with no subdomains or wildcards. Use it for a self-hosted ntfy that
+  delivers UnifiedPush to the [Android app](design/android.md). It is empty by
+  default.
+
+**muster never follows a redirect on a push send.** A push service that answers
+with a 3xx counts as a failed send, and the device's failure count goes up. This
+applies to every push service. Without it, a listed host could redirect a send to
+a host that is not on the list.
+
+muster does not check which address a listed host resolves to. An in-cluster
+ntfy that resolves to a private address works.
+
 ## Installable app (PWA)
 
 - **The manifest** (`/manifest.webmanifest`) declares a standalone display, any
