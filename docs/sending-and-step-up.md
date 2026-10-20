@@ -59,12 +59,10 @@ dispatched agents and the chief panel have no Queue.
   still running and no turn is, Claude Code writes `shell` instead of `idle`.
   The prompt is free, so it counts as idle, and its time is the turn's end.
   `muster-mirror` maps it before sending, so a host needs a `muster-mirror` with
-  the mapping; an older one reports it as unknown, which holds the queue. A
-  background subagent is different: Claude Code reports `busy` while one runs,
-  and the queue holds.
-- **A status muster does not know** holds the queue, and the list names it:
-  "Claude Code reports a status muster does not know: …". Only `busy` reads
-  "Claude Code is working."
+  the mapping; an older one reports it as unknown, which holds the queue
+  ("the host cannot read whether this window's Claude Code session is busy").
+  A background subagent is different: Claude Code reports `busy` while one
+  runs, and the queue holds.
 - **One at a time, after every paste.** Whenever anything is pasted into the
   window (a queued message, or your own Send), muster records the status time
   the window held then. The next queued message waits until Claude Code reports

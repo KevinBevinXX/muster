@@ -88,9 +88,9 @@ type ClaudePane struct {
 	// Status is Claude Code's own session status, as its sessions file states
 	// it, read through mirror.NormalizeStatus (StatusBusy, StatusIdle,
 	// StatusWaiting; "shell" — idle with a background shell running — as
-	// StatusIdle; another short word kept so muster can name it); "" when it
-	// states none it can carry, and for a GUESSED transcript, which has no
-	// sessions file to read one from. Busy is Status == busy.
+	// StatusIdle); "" when it states none this side recognises, and for a
+	// GUESSED transcript, which has no sessions file to read one from. Busy is
+	// Status == busy.
 	Status string
 	// StatusSince is when Claude Code wrote Status — its sessions file's
 	// statusUpdatedAt, Unix milliseconds — 0 when it states none (and whenever

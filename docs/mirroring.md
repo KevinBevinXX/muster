@@ -404,10 +404,9 @@ Code wrote it (`statusSince`, from its sessions file's `statusUpdatedAt`), which
 the [send queue](sending-and-step-up.md#queue-send-when-claude-code-is-idle)
 waits on. A host that does not report status, or reports it without its time,
 is never sent a queued message. Claude Code's `shell` (idle, with a background
-shell still running) is reported as `idle`. Another status the host does not
-know is passed on as written, so muster can name it; it is never idle. The
-host maps these before it sends, so a `muster-mirror` older than the mapping
-reports `shell` as unknown, whatever muster runs.
+shell still running) is reported as `idle`. The host maps it before it sends,
+so a `muster-mirror` older than the mapping reports `shell` as unknown,
+whatever muster runs.
 The same way, a host reports each Claude Code window's **session id**
 (`claudeSession`), which its [focus](focus.md) is keyed by. A host that does not
 report it still works; its windows have no focus.

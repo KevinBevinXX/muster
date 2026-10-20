@@ -3,7 +3,6 @@ package mirror_test
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -138,10 +137,6 @@ func TestTheAgentStateIsTheCLIsOwnStatusAndTime(t *testing.T) {
 	// the turn's end, which the queue's "newer than the paste" rule waits for.
 	send("shell", t3+2, 0)
 	waitSince("shell is idle since t3+2", mirror.StatusIdle, t3+2)
-	// A status muster does not know is kept as said, with its time: never idle,
-	// but nameable.
-	send("compacting", t3+3, 0)
-	waitSince("an unknown status is kept", "compacting", t3+3)
 	// A status without its time.
 	send(mirror.StatusIdle, 0, 0)
 	eventually(t, "a status with no time is unknown", func() bool { return errors.Is(at("@1").Unknown, mirror.ErrNoStatusSince) })
@@ -279,26 +274,23 @@ func TestABusyFlipDoesNotNudgeTheAgentsView(t *testing.T) {
 
 // TestAStatusIsKeptOnlyForAClaudeWindowAndOnlyAsOneOfThree: the normalizer
 // both halves apply keeps busy / idle / waiting on a Claude window, reads
-// Claude Code's "shell" (idle, a background shell running) as idle, keeps a
-// short unknown word as it is (so it can be named; it is never idle), blanks
-// any other value, and blanks a status on a window that is not Claude Code —
-// and a status's time goes with it, and is never negative.
+// Claude Code's "shell" (idle, a background shell running) as idle, blanks any
+// other value, and blanks a status on a window that is not Claude Code — and a
+// status's time goes with it, and is never negative.
 func TestAStatusIsKeptOnlyForAClaudeWindowAndOnlyAsOneOfThree(t *testing.T) {
 	got := mirror.NormalizeWindows([]mirror.Window{
 		{Session: "s", ID: "@1", Claude: true, Status: mirror.StatusWaiting, StatusSince: t1},
-		{Session: "s", ID: "@2", Claude: true, Status: "Not A Status!", StatusSince: t1},
+		{Session: "s", ID: "@2", Claude: true, Status: "compacting", StatusSince: t1},
 		{Session: "s", ID: "@3", Status: mirror.StatusIdle, StatusSince: t1},
 		{Session: "s", ID: "@4", Claude: true, Status: mirror.StatusIdle, StatusSince: -1},
 		{Session: "s", ID: "@5", Claude: true, Status: "shell", StatusSince: t2},
-		{Session: "s", ID: "@6", Claude: true, Status: "compacting", StatusSince: t2},
-		{Session: "s", ID: "@7", Claude: true, Status: strings.Repeat("x", 25), StatusSince: t2},
 	}, 0)
 	type st struct {
 		status string
 		since  int64
 	}
 	want := map[string]st{"@1": {mirror.StatusWaiting, t1}, "@2": {}, "@3": {}, "@4": {mirror.StatusIdle, 0},
-		"@5": {mirror.StatusIdle, t2}, "@6": {"compacting", t2}, "@7": {}}
+		"@5": {mirror.StatusIdle, t2}}
 	for _, w := range got {
 		if (st{w.Status, w.StatusSince}) != want[w.ID] {
 			t.Errorf("window %s: Status %q since %d, want %+v", w.ID, w.Status, w.StatusSince, want[w.ID])

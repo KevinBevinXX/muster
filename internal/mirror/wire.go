@@ -388,10 +388,8 @@ type Window struct {
 	// "zsh", "opencode", "vim"), "" for unknown. Display and search only.
 	Command string `json:"command,omitempty"`
 	// Status is what the Claude Code session in the window's pane reports about
-	// itself (StatusBusy, StatusIdle, StatusWaiting — or a word NormalizeStatus
-	// kept because muster does not know it, which is never idle), "" when
-	// unknown — no Claude pane, or one whose status the host cannot read. It is
-	// what decides when a
+	// itself (StatusBusy, StatusIdle, StatusWaiting), "" when unknown — no Claude
+	// pane, or one whose status the host cannot read. It is what decides when a
 	// QUEUED message may be sent (internal/sendqueue), and only a host that
 	// advertised Msg.StatusReport is believed about it.
 	//
@@ -484,26 +482,16 @@ const (
 // queue's "newer than the paste" rule waits for.
 const ClaudeStatusShell = "shell"
 
-// unknownStatusPattern is a status this side does not know but keeps, so that
-// what holds a queued message can say what Claude Code reported: a short
-// lowercase word, bounded so the window list's worst case does not grow (a
-// waiting window's Pending is far larger).
-var unknownStatusPattern = regexp.MustCompile(`^[a-z][a-z_-]{0,23}$`)
-
 // NormalizeStatus is the Window.Status a sessions-file status is read as: busy,
-// idle and waiting as themselves; ClaudeStatusShell as StatusIdle; any other
-// short lowercase word KEPT as it is, so it can be named — a status that is
-// never idle (UNKNOWN IS NOT IDLE: only StatusIdle releases a queued message);
-// anything else "" (unknown). Both halves apply it.
+// idle and waiting as themselves, ClaudeStatusShell as StatusIdle, anything
+// else "" (unknown, which never releases a queued message). Both halves apply
+// it.
 func NormalizeStatus(status string) string {
 	switch status {
 	case StatusBusy, StatusIdle, StatusWaiting:
 		return status
 	case ClaudeStatusShell:
 		return StatusIdle
-	}
-	if unknownStatusPattern.MatchString(status) {
-		return status
 	}
 	return ""
 }

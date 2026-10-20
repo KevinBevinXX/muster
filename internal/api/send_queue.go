@@ -725,20 +725,8 @@ func (s *Server) sendQueueProbe(ctx context.Context, h sendqueue.Head) sendqueue
 		return sendqueue.AgentState{Idle: true, Since: st.Since, Observed: st.Observed, Pasted: st.Pasted}
 	case st.Status == mirror.StatusWaiting:
 		return sendqueue.AgentState{Why: "Claude Code is waiting for you (a prompt or a question)."}
-	case st.Status == mirror.StatusBusy:
-		return sendqueue.AgentState{Why: "Claude Code is working."}
 	}
-	// 🔴 A STATUS MUSTER DOES NOT KNOW IS NAMED, NEVER CALLED "WORKING": that
-	// is how a Claude Code that wrote a new status for an idle prompt (its
-	// "shell", before muster read it as idle) left a queue held for hours under
-	// a reason that was false. Still not idle: nothing is sent on it.
-	return sendqueue.AgentState{Why: SendQueueUnknownStatus(st.Status)}
-}
-
-// SendQueueUnknownStatus is why a queued message is held for a window whose
-// Claude Code reports a status muster does not know.
-func SendQueueUnknownStatus(status string) string {
-	return fmt.Sprintf("Claude Code reports a status muster does not know: %q. Nothing queued is sent until it reports idle; send by hand, or upgrade muster.", status)
+	return sendqueue.AgentState{Why: "Claude Code is working."}
 }
 
 // sendQueueNonce is the nonce a queued message is delivered with: one per

@@ -578,8 +578,8 @@ test.describe('desktop 1280×800', () => {
 // "idle" while a run_in_background Bash task is still alive and no turn is):
 // the prompt is free, so a queued message is sent. On origin/main the server
 // read "shell" as unknown and held the message for as long as the background
-// shell ran, so this fails at the paste. A status muster does not know at all
-// still holds the queue, and the list NAMES it rather than saying "working".
+// shell ran (the window read as one whose status the host cannot read), so
+// this fails at the paste.
 test.describe('statuses', () => {
   test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false, storageState: { cookies: [], origins: [] } });
 
@@ -594,27 +594,6 @@ test.describe('statuses', () => {
     setStatus('shell');
     await expect.poll(pasted, { message: `sent once Claude Code reports "shell" (log:\n${mirrorLog})`, timeout: 30_000 }).toEqual([`${pane} ${text}`]);
     await expect(rowIn(page, text, 'sent')).toHaveCount(1, { timeout: 20_000 });
-    await busyAndSeen();
-  });
-
-  test('a status muster does not know holds the queue and is named, never called "working"', async ({ page }) => {
-    await busyAndSeen();
-    fs.rmSync(tr + '.pasted', { force: true });
-    await openView(page, newHost);
-    const text = 'held on an unknown status ' + stamp;
-    await queue(page, text, false);
-    setStatus('compacting');
-    const waiting = page.locator('#mv-queue-waiting');
-    await expect(waiting, `the unknown status is named (log:\n${mirrorLog})`).toContainText(
-      'Claude Code reports a status muster does not know: "compacting"',
-      { timeout: 20_000 },
-    );
-    await expect(waiting).not.toContainText('working');
-    await holdWindow();
-    expect(pasted(), 'nothing is sent on a status muster does not know').toEqual([]);
-    // CONTROL: the same message is sent once Claude Code reports idle.
-    setStatus('idle');
-    await expect.poll(pasted, { message: 'CONTROL: sent once idle', timeout: 30_000 }).toEqual([`${pane} ${text}`]);
     await busyAndSeen();
   });
 });

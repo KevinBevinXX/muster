@@ -56,12 +56,12 @@ func TestThePaneStatusCarriesTheTimeOfTheSessionsFileItCameFrom(t *testing.T) {
 	})
 }
 
-// TestNoStatusNoTime: a time without a status this side can carry, and a
+// TestNoStatusNoTime: a time without a status this side knows, and a
 // status without a time (a Claude Code whose sessions file has no
 // statusUpdatedAt), each carry NO time — which the send queue reads as
 // unknown, never as idle since some guess. The control is the same file with
-// both. "shell" (idle, a background shell running) and an unknown short word
-// keep their time: the first is idle since then, the second is named.
+// both. "shell" (idle, a background shell running) keeps its time: it is idle
+// since then.
 func TestNoStatusNoTime(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -70,8 +70,7 @@ func TestNoStatusNoTime(t *testing.T) {
 	}{
 		{"both (control)", map[string]any{"status": "idle", "statusUpdatedAt": at400}, at400},
 		{"shell (idle with a background shell)", map[string]any{"status": "shell", "statusUpdatedAt": at400}, at400},
-		{"an unknown word, kept to be named", map[string]any{"status": "compacting", "statusUpdatedAt": at400}, at400},
-		{"a status that is not a word", map[string]any{"status": "Not A Status!", "statusUpdatedAt": at400}, 0},
+		{"an unknown status", map[string]any{"status": "compacting", "statusUpdatedAt": at400}, 0},
 		{"no statusUpdatedAt", map[string]any{"status": "idle"}, 0},
 		{"a negative one", map[string]any{"status": "idle", "statusUpdatedAt": -5}, 0},
 	} {
