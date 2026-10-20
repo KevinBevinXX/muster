@@ -34,12 +34,13 @@ The design, in one line each:
   per physical session id, cross-checked against the turn lease and the
   newest message row before it is believed.
 - **Send:** a **pane paste** is the only send path. It is gated on idle and on
-  a screen check of the whole input line, and is re-checked on the host at the moment of acting, with the Enter as a
-  separate step. The viewer's `prompt.submit` was refuted: the CLI never draws
-  the turn. 🔴 Three overlays (the palette, the model picker, the stash) leave
-  no mark on the input line, so the send is enabled only once Escape
-  normalisation measures safe, or upstream exposes those states; until then a
-  Hermes window has no Send.
+  a screen check of the image region and the whole input line, and is
+  re-checked on the host at the moment of acting, with the Enter as a separate
+  step. The viewer's `prompt.submit` was refuted: the CLI never draws the turn.
+  🔴 Three overlays (the palette, the model picker, the stash) leave no mark on
+  the input line. A bounded Escape sequence reduces that risk without removing
+  it; Send stays off until Phase 3 has measured it, then is enabled with the
+  remaining cases accepted as residual risk (operator decision).
 - **Questions and approvals:** clarify cards from the database, approval and
   sudo items from the hooks. Approvals are answered through the gateway viewer's
   `approval.respond`; clarify through the viewer if Phase 4 measures it, else in
@@ -66,7 +67,10 @@ The design, in one line each:
   muster, not merely unlikely.
 - A `hermes` agent can be dispatched, kicked off, chatted with, and approved,
   with the same isolation as `claude-code`: uid 1000, no ServiceAccount token,
-  the same NetworkPolicy, no credentials on the volume that outrank the pod's.
+  the same NetworkPolicy, and no file on the volume that overrides the pod's
+  provider credentials (no `.env`). The one credential hermesd keeps on the
+  volume is the in-pod API key; see [credentials](#credentials) for what it
+  grants.
 - The Claude-specific code paths become one runtime interface, sized for the
   two runtimes it serves: Claude Code and Hermes.
 
@@ -96,6 +100,13 @@ The design, in one line each:
   merges.
 - **Pod credentials:** `hermes` pods use the OpenRouter credential muster's
   gateway runtime already uses.
+- **Send with a residual overlay risk (accepted):** Send and Queue for Hermes
+  windows stay **off** until Phase 3's measurements are done. Then they are
+  enabled with every mitigation in place, **even if** Phase 3 cannot prove the
+  overlay handling complete. The cases left uncovered are named in
+  [the screen check](#residual-cases-accepted) as a known, accepted residual
+  risk. The real cure stays upstream (see
+  [improvements](#recommended-improvements)).
 
 ## Sources and notation
 
@@ -268,19 +279,33 @@ Hermes CLI**, decided at the host's paste entry, never by `Msg.Runtime`, so the
 guard holds whatever the server sends. The refusal reads "Hermes runs in this
 pane; send from the rendered view".
 
-- 🔴 **The guard uses the broad match, not the mirroring rule.** The pane's
-  process tree holds a process with `comm == "hermes"` and
-  `basename(argv[1]) == "hermes"`, whatever follows. The strict
+- 🔴 **The guard uses the broad match, not the mirroring rule, and fails
+  closed.** It refuses when the pane's process tree holds **any** of:
+  - a process with `comm == "hermes"` and `basename(argv[1]) == "hermes"`,
+    whatever follows;
+  - a Python interpreter (`basename(argv[0])` starting with `python`) running
+    Hermes's code another way: `-m hermes_cli.main` (or any `-m hermes_cli…`),
+    or a script path containing `/hermes_cli/`, or a `cli.py` inside a Hermes
+    install (a directory holding `hermes_cli/`). These run the interactive CLI
+    with `comm=python`;
+  - any process whose `comm` is `hermes`. The strict
   [mirroring rule](#pane-to-session-resolution) also wants `argv[2] == chat`,
   which fails open for a profile-launched CLI: `hermes -p coder chat` runs as
   `[python, hermes, -p, coder, chat]` (`P:hermes_cli/main.py:500,595-667`).
   The gateway (`[python, -m, hermes_cli.main, …, gateway, run, …]`) is
   excluded explicitly. A false refusal is safe; a false admit is not.
 - **It also refuses when the screen shows Hermes's chrome** (the status bar and
-  input rules around a `❯ ` input line, from the recorded fixtures). ⚠ A Hermes
-  run over `ssh` or `docker exec` inside the pane is invisible to the local
-  process walk: that is a known gap, and the chrome check is what covers it,
-  best-effort.
+  input rules around a `❯ ` input line, from the recorded fixtures), as a
+  best-effort extra. ⚠ That check **fails open** exactly when the chrome is not
+  drawn: after a resize, the status bar and rules stay hidden until the next
+  keypress (`P:hermes_cli/cli_tui_mixin.py:139-140,2177-2179`); with the status
+  bar turned off; and in a narrow pane.
+- **Known gaps**, named: a Hermes CLI run over `ssh` or `docker exec` inside the
+  pane (invisible to the local process walk), in one of the chrome-less states
+  above; and a Hermes launched under a renamed interpreter or a copied tree the
+  argv patterns do not match. The guard does not try to classify a pane as
+  "not Hermes": it refuses on any Hermes-shaped process and admits otherwise,
+  with these gaps documented.
 
 - It ships in **Phase 1**, first, in the host binary, before any other Hermes
   work. Process identity (both rules) therefore moves into Phase 1.
@@ -307,12 +332,25 @@ Phase 1 changes:
   `Window.Runtime`;
 - for a Hermes window, Send now refuses `busy` and unknown as well as
   `waiting`. Claude Code keeps today's rule.
-- **A migration widening both `subject_key` checks**: migration 0020's on
-  `agent_focus` and migration 0022's on `agent_focus_history`
-  (`0022_agent_focus_history.sql:48`). Both admit
-  `^[0-9A-Za-z][0-9A-Za-z_-]{0,63}$` today, and `internal/focus/pgstore.go`
-  writes both tables in one transaction, so widening one alone fails every
-  write. After it a runtime-qualified `hermes:<id>` key is accepted.
+- 🔴 **One enable switch, checked on both sides.** The host advertises a
+  capability, `hermesSend`, in its hello, **only** when it runs with the
+  `-hermes-send` flag (`MUSTER_MIRROR_HERMES_SEND`), which defaults to off.
+  The server refuses Send, Send now, Queue and a routed message to a Hermes
+  window unless that host advertised it; the host's Hermes `Runtime.Submit`
+  refuses unless its own flag is on, whatever the server sent. Before Phase 3
+  the flag does not exist in a release, so an idle Hermes window is refused on
+  both sides; Phase 1's Send now change does **not** open it. Phase 3 adds the
+  flag; the operator turns it on per host.
+- **A migration widening every session-key check with the 64-character
+  bound**, all of which admit `^[0-9A-Za-z][0-9A-Za-z_-]{0,63}$` today:
+  - `agent_focus.subject_key` (0020) and `agent_focus_history.subject_key`
+    (`0022_agent_focus_history.sql:48`): `internal/focus/pgstore.go` writes both
+    in one transaction, so widening one alone fails every write;
+  - `session_routes.target_key` (`0021_session_routes.sql:68`): a routed
+    message is a Hermes send path;
+  - `attention_asks.mirror_session` (`0025_attention_asks.sql:55`).
+
+  After it a runtime-qualified `hermes:<id>` key is accepted.
   `internal/focus` and the wire pattern change with it.
 
 Phase 1 is this refactor plus the host paste guard, with the Claude path
@@ -642,9 +680,9 @@ message.
      as superseded (nothing pasted, so the queue's Send-wins path puts the
      message back);
    - the false-idle checks above;
-   - the [screen check](#the-screen-check)'s input-line rule passes; then
-     Escape normalisation (one Escape, wait, re-capture, re-verify), once it is
-     measured safe.
+   - the [screen check](#the-screen-check)'s image-region and input-line rules
+     pass; then the bounded Escape sequence (each Escape followed by a wait and
+     a re-capture), and both rules pass again.
 3. Paste the text, bracketed, with no Enter.
 4. Wait `enterDelay`, then re-check the status file and the screen. The input
    area must now hold exactly muster's text, or its one collapse placeholder,
@@ -653,10 +691,11 @@ message.
    text is in Hermes's input box".
 5. Press Enter as today's pasted newline.
 6. **Confirm by the database:** a new `user` row in the lineage whose content
-   equals the message as Hermes submits it: after `SanitizePaste` and then
-   **stripped** of leading and trailing whitespace, because the CLI submits
-   `raw_text.strip()` (`P:hermes_cli/cli_tui_mixin.py:1452`) and
-   `SanitizePaste` does not trim. If the row arrives, report "sent". If it does
+   equals the message, with **both sides stripped** of leading and trailing
+   whitespace before comparing: the CLI submits `raw_text.strip()`
+   (`P:hermes_cli/cli_tui_mixin.py:1452`) and `SanitizePaste` does not trim,
+   while a collapsed paste is expanded back **unstripped**
+   (`P:hermes_cli/cli_modal_mixin.py:209-227`). If the row arrives, report "sent". If it does
    not arrive within a bounded wait (a stalled event loop can turn the Enter
    into a newline, item 5), report **"may have been submitted; check the
    conversation before sending again"** — never "not submitted", which would
@@ -665,14 +704,21 @@ message.
 
 Text rules for Hermes, after `mirror.SanitizePaste`:
 
-- a message whose stripped text starts with `/` or `!` is **refused**. The CLI
-  runs those locally (`_looks_like_slash_command`, `_tui_enter_inline_command`),
+- a message whose stripped text starts with `/` or `!` is **refused**. This is
+  wider than Hermes's own predicate (`_looks_like_slash_command`,
+  `P:cli.py:701-705`, does not treat a path such as `/tmp/notes.txt` as a
+  command), and the over-refusal is **accepted**: one simple rule, and a
+  message starting with a path can be reworded. The CLI runs commands locally
+  (`_looks_like_slash_command`, `_tui_enter_inline_command`),
   writes no user row, so a submit cannot be confirmed, and some open the very
   overlays the screen cannot see (`/model`). Claude Code keeps passing them
   through;
-- a message whose last line ends in `\` is **refused**: with the multi-line
-  shortcuts on, Enter after a trailing backslash continues the line instead of
-  submitting (`_is_backslash_line_continuation`, `:1436-1443`).
+- a message whose **stripped** text ends in `\` is **refused**: with the
+  multi-line shortcuts on, Enter after a trailing backslash continues the line
+  instead of submitting. Hermes tests `\\[ \t]*$` against the raw buffer, and
+  `$` also matches before a final newline
+  (`P:hermes_cli/cli_terminal_input.py:348,427-430`), so the stripped text is
+  the safe test.
 
 ⚠ **Residual risk.** A turn can start on its own between step 4's re-check and
 step 5's Enter (`auto_continue`, a background delegation finishing). With
@@ -722,30 +768,63 @@ So:
 | a CLI-side plugin or hook exposing UI state | **None.** At the pin, hooks and plugins run in the gateway (S2); the CLI loads no user code that sees its UI. |
 | the terminal title | **None.** The CLI sets no title. |
 
-🔴 **No passive signal proves those three closed, so the send fails closed:**
+🔴 **No passive signal proves those three closed.** The send is therefore off
+until Phase 3 has measured the mitigations below, and then on with the named
+residual cases (operator decision).
 
-- muster never opens them itself: a Hermes send refuses a message that starts
-  with `/` or `!` (see [the send path](#the-send-path)), so `/model` and the
-  palette can only be opened by a person at the terminal.
-- Phase 3 builds the gated send, but it is **enabled on hosts only when one of
-  these is measured to hold**:
-  1. **Escape normalisation** (the chosen candidate, UNVERIFIED). With the
-     input line already verified idle and empty, send one Escape, wait,
-     re-capture, re-verify, then paste. Escape closes the palette (an eager
-     binding, `:2060`). The states where Escape means something else
-     (approval, clarify, sudo) are refused by the input line before any Escape
-     is sent. Phase 3 measures, with fixtures for the palette, the model picker
-     and the stash before and after: Escape closes each of the three; on an idle,
-     empty buffer it changes nothing (no interrupt, no cleared stash, no
-     meta-prefix swallowing the paste that follows).
-  2. **Upstream exposes the state** on the input line, as it does for every
-     other modal: a prefix glyph for the palette, the picker and the stash. That
-     is the clean cure, and a small upstream change.
-- Until one holds, a Hermes window has no Send and no Queue: the server draws
-  them disabled with the reason, and the host refuses. Full parity for sending
-  depends on this ([risks](#risks), open question 4).
+- **muster never opens them itself.** A Hermes send refuses a message that
+  starts with `/` or `!` (see [the send path](#the-send-path)), so `/model` and
+  the palette's commands come only from a person at the terminal.
+- **Escape reduces the risk; it does not remove it.** After the input line and
+  the image region are verified idle (below), the host sends a **bounded
+  sequence of Escapes**, each separated by a wait and a re-capture, then
+  re-verifies and pastes. What one Escape does at the pin:
+  - the palette closes (an eager binding, `:2060`);
+  - the stash panel closes, unless the palette is open too: the palette's eager
+    binding wins (`:2001` against `:2060`), so with both open the first Escape
+    closes only the palette;
+  - 🔴 the **model picker does not always close**. With a typed filter, Escape
+    clears only the filter; at the reasoning stage it steps back to the model
+    stage (`:1263-1275`). Only a further Escape closes it. If it is still open
+    when muster pastes, Enter goes to the picker (`:1609-1620`): it selects a
+    model and the pasted text is lost.
+  - approval and clarify have **no** Escape binding; they are harmless only
+    because the input-line rule refuses them before any Escape is sent;
+  - ⚠ two Escapes in a row clear attached images (`:1072-1086`). That is why
+    the image-region check runs **before** any Escape, and refuses if images are
+    attached, rather than letting the Escapes silently drop them.
 
-**The input-line rule.** On the captured app region:
+  The sequence length (proposed: 3, enough for picker-with-filter at the
+  reasoning stage) and the waits are set by Phase 3's measurements, and every
+  Escape in it must first be shown, by fixture, to be harmless on an idle,
+  empty line.
+- **Phase 3 measures every overlay at its non-default stages**, not just the
+  defaults: the palette with a filter, the model picker with a typed filter and
+  at the reasoning stage, the stash alone, the palette and stash open together,
+  and each after the Escape sequence.
+
+#### Residual cases, accepted
+
+Under the operator's decision, these remain after the mitigations and are
+accepted as known risk:
+
+- an overlay **deeper than the Escape sequence** (a stage Phase 3 did not
+  measure, or one a pin bump adds before the ledger test catches it);
+- a person **opening an overlay at the terminal between the last re-capture and
+  muster's Enter** (well under a second);
+- any overlay state Phase 3 measures as **not closed** by the sequence; Phase 3
+  lists them by name in the host docs when it enables the send.
+
+The worst outcome in each is the one measured above: Enter acts on the overlay
+(runs a palette command, selects a model) and muster's text is lost.
+
+**The image region and the input-line rule.** On the captured app region,
+**before any Escape**:
+
+- the rows between the status bar and the input area are exactly the idle
+  layout: the upper input rule (`input_rule_top`) and nothing else. An image
+  bar there (`:436`, `:2162-2164`) means images are attached, and Enter would
+  send them with muster's message (`:1460-1464`): refuse;
 
 - every row of the input area, from the first input row down to the lower
   input rule, is checked, not only the first. The first row is the idle prefix
@@ -1050,7 +1129,8 @@ No run resumes (S6).
     rejected: muster may rotate that token, which would orphan every run.)
   - **records intent before it posts.** For each turn it writes to its map on
     the volume, **before** `POST /v1/runs`: the session, a fresh idempotency
-    key, the **exact request body bytes**, and "posting". It sends the key as
+    key, the **exact request body bytes**, a **fingerprint of the API key** it
+    posts with (a hash, never the key), and "posting". It sends the key as
     the `Idempotency-Key` header (`:738`; P keeps keys in the durable
     `runs_idempotency.db`) and records the run id from the 202. A crash between
     the POST and that record would otherwise leave a run hermesd cannot name,
@@ -1065,6 +1145,11 @@ No run resumes (S6).
   - **Key retention** is 24 h. An intent older than that is never re-posted
     (a replay could start a second run); it is resolved by reading the
     session's messages, and otherwise reported as "may have run".
+  - **An intent is never re-posted under a different API key.** If the key's
+    fingerprint differs from the intent's (the key file was lost or replaced),
+    the old run is out of scope for the new key, and a re-post would admit a
+    second run. The intent is resolved from the session's messages, else
+    reported as "may have run".
   - **recovers on every gateway start, not only its own.** The likely SIGKILL is
     the gateway alone being OOM-killed while hermesd lives on. So after every
     start of the child (hermesd's own start, and each supervised restart), and
@@ -1163,6 +1248,16 @@ writes into it survives a restart:
   variable are stripped from terminal subprocesses
   (`P:tools/environments/local_env_policy.py:38,380`). So the agent cannot call
   Hermes's own API.
+- **The in-pod API key** (`/data/hermesd/api-server-key`, 0600) grants the
+  loopback API server: starting runs on any session, reading them, and
+  answering their approvals. The agent runs as the same uid and **can read
+  it**, as it can already read the gateway's environment in `/proc`. That is
+  acceptable because it grants nothing the agent does not already have: the
+  agent can run any command in its own shell, so approving its own commands
+  through the API is no new power, and the API is bound to loopback inside a
+  pod reachable only by muster. Approvals in a pod are a policy aid, not a
+  boundary against the agent (as for `claude-code`). The key is not a provider
+  credential and does not leave the pod.
 - **`MUSTER_HOOK_TOKEN` and `MUSTER_CONNECT_URL` pass through unchanged** (S8);
   no `env_passthrough` configuration is needed.
 - **OAuth providers are not offered for pods**: some rotate single-use refresh
@@ -1243,7 +1338,7 @@ Efforts are rough engineer-days, including tests and docs. Phase 0 is done.
 | ~~0~~ | Spikes S1–S11 | done | — |
 | **1** | Runtime seam: `mirrorhost.Runtime` for Claude Code and Hermes, Claude behind it, `Window.Runtime`/`AgentSession` with the wider id bound. 🔴 **The host paste guard**, first, with process identity (the broad guard match and the strict mirroring rule) and the chrome check. [Server changes](#server-changes): runtime-aware `AgentState` and waiting set, Send now refusing unknown and busy for Hermes, the migration widening both `subject_key` checks (0020, 0022). No behaviour change for Claude Code. | 5–6 | — |
 | **2** | Read-only Hermes mirroring: breadcrumb locator with the end-reason staleness rule (no view, unknown status), SQLite reader (compaction, compression-only lineage), renderer, the `hermes-hook` command and its status files with lease and newest-row checks, the Home Manager declaration and the locking allowlist writer, mismatch diagnostics, listing and kind chip, secret-path ledger, `-list -hermes` | 6–8 | 1 |
-| **3** | Gated pane send **and its live harness**. `make test-livehermes`: the pinned Hermes in a scratch tmux server and home; fixtures for every blocking state, including the palette, model picker and stash; the overlay-state ledger; measuring Escape normalisation; re-measuring under load the false-idle slack, the 150 ms Enter margin and the queue gap. Then the send: per-runtime server gates, host `CheckSend` with the input-line rule and Escape normalisation, the `/`, `!` and trailing-`\` refusals, collapse-aware post-paste check, database-confirmed submit with "may have been submitted", Queue and Send now for Hermes, host docs. The send is enabled on hosts only when the harness is green **and** Escape normalisation measures safe (or upstream exposes the overlay state). | 10–12 | 2 |
+| **3** | Gated pane send **and its live harness**. `make test-livehermes`: the pinned Hermes in a scratch tmux server and home; fixtures for every blocking state, including the palette, model picker and stash; the overlay-state ledger; measuring the Escape sequence against every overlay at its non-default stages (filtered picker, reasoning stage, palette and stash together); re-measuring under load the false-idle slack, the 150 ms Enter margin and the queue gap. Then the send: per-runtime server gates, host `CheckSend` with the image-region and input-line rules and the bounded Escape sequence, the `hermesSend` switch on both sides, the `/`, `!` and trailing-`\` refusals, collapse-aware post-paste check, database-confirmed submit with "may have been submitted", Queue and Send now for Hermes, host docs. Send stays off until these measurements are done and the harness is green; then the operator enables it per host, with the residual cases named in the host docs. | 10–12 | 2 |
 | **4** | Questions and approvals: clarify cards from the DB, approval and sudo attention items from the hooks, viewer discovery through `gateway.sock.path`, attach-to-answer, `approval.respond` with the stale-modal card, measuring the viewer's clarify answer (and wiring it if it passes), the hygiene filters; harness cases for each | 5–7 | 2, 3 |
 | **5** | `hermes` kind: `hermesd` (runs, events, exact approval body, relay timeout, a stable API key on the volume, intent-before-POST with the exact body and `Idempotency-Key`, 409 and retention handling, `resolve-unknown` recovery on every gateway start, SIGTERM handling), the Nix image without ffmpeg, `agentspec`, migration, config, smoke test like `cc-smoke`, a first run in a real pod | 10–12 | 1 |
 
@@ -1257,11 +1352,11 @@ guard already in place. `make test-livehermes` re-runs on every pin bump.
 - 🔴 **A misplaced Enter approves, picks a choice, sends a password or
   interrupts.** Shipped muster can do it today through the Terminal composer;
   Phase 1's host paste guard closes that first. Mitigated afterwards by the
-  input-line rule, Escape normalisation (once measured), the status and DB
-  checks, and the post-paste re-check; the residual window is named, and
+  image-region and input-line rules, the bounded Escape sequence, the status and
+  DB checks, and the post-paste re-check; the residual window is named, and
   `/busy queue` narrows it. The palette, model picker and stash are invisible
-  to the screen, which is why the send stays off until Escape normalisation
-  measures safe.
+  to the screen; the cases the Escape sequence leaves are
+  [accepted residual risk](#residual-cases-accepted).
 - **Upstream churn.** Main moves daily; the rendered view parses Hermes's
   schema and the send path depends on its key bindings and glyphs. Every pin
   bump re-runs `make test-livehermes` and re-records the fixtures;
@@ -1285,8 +1380,8 @@ guard already in place. `make test-livehermes` re-runs on every pin bump.
   - the command palette, model picker, prompt-stash panel, secret capture,
     connection form and voice states (found in source; fixtures in Phase 3);
   - an `Idempotency-Key` replay across a gateway restart (Phase 5);
-  - Escape normalisation for the palette, model picker and stash (Phase 3);
-    until it measures safe, Hermes windows have no Send;
+  - the Escape sequence against the palette, model picker and stash at their
+    non-default stages (Phase 3); Send stays off until it is measured;
   - a Hermes CLI run over `ssh` or `docker exec` in a pane, covered only by the
     best-effort chrome check;
   - in a pod, the agent shares a uid with the gateway and can read its
@@ -1317,11 +1412,7 @@ guard already in place. `make test-livehermes` re-runs on every pin bump.
    what Enter does at the terminal for the person too.
 3. **Question cards from pods:** add the `clarify` toolset to the pod (it is
    off for API-server turns), and with it the P-only `/clarify` route?
-4. **Send without a proven-closed overlay:** if Escape normalisation fails to
-   measure safe and upstream does not expose the state, ship Hermes windows
-   without Send and Queue (the default here), or accept the palette, picker and
-   stash as a named residual risk?
-5. **A Terminal view for `hermes` pods** (a TUI viewer of the in-pod gateway):
+4. **A Terminal view for `hermes` pods** (a TUI viewer of the in-pod gateway):
    in scope for a later release?
 
 ## Recommended improvements
