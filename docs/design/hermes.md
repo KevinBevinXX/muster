@@ -821,12 +821,20 @@ residual cases (operator decision).
     runs prompt_toolkit in `EditingMode.VI`
     (`P:hermes_cli/cli_tui_runtime_mixin.py:414-417`), and one Escape on an
     idle, empty line enters navigation mode, where the paste's characters can be
-    read as vi commands. muster cannot read `config.yaml` (secret hygiene).
-    Phase 3 records a vi-mode fixture and looks for a screen marker of
-    navigation or insert mode (UNVERIFIED that one exists). If there is one, the
-    input-line rule refuses vi mode before any Escape. If there is none, a host
-    using vi mode must not enable `-hermes-send`; the host docs say so, and the
-    per-host switch is what enforces it;
+    read as vi commands, and the abort rule would not notice.
+    🔴 **A host whose Hermes uses vi mode (`display.vim_mode`) must not enable
+    `-hermes-send`, unconditionally.** muster cannot read `config.yaml` (secret
+    hygiene), so this is the operator's responsibility when turning on the
+    per-host switch; the host docs say so.
+    - **Defence in depth only:** upstream draws a vi label, `INSERT`, `NORMAL` or
+      `REPLACE` (`_vim_mode_label`, `P:hermes_cli/cli_status_bar_mixin.py:82-97`),
+      and the host refuses whenever it sees one. It cannot be relied on as a
+      gate: it is only the **last** fragment of the status bar (`:1169-1171`),
+      it is absent when the bar is hidden (`:1129-1132`, after a resize or with
+      the bar off), and it is the first thing `_trim_status_bar_text` cuts in a
+      narrow pane (`:434` onward).
+    - `-list -hermes` warns when the label has ever been seen on a host that has
+      `-hermes-send` enabled;
   - ⚠ two Escapes in a row move the draft into the Up-arrow history and clear
     attached images (`:1072-1086`). That is why
     the image-region check runs **before** any Escape, and refuses if images are
@@ -851,7 +859,8 @@ residual cases (operator decision).
   defaults: the palette with a filter and over a draft, the model picker with a
   typed filter, at the reasoning stage and **opened over a draft**, the stash
   alone, the palette and stash open together, each after the Escape sequence,
-  and an idle line in **vi mode** before and after one Escape.
+  and an idle line in **vi mode** before and after one Escape, with the status
+  bar's vi label shown, trimmed and hidden.
 
 #### Residual cases, accepted
 
@@ -1221,7 +1230,10 @@ No run resumes (S6).
     and blocking its session: both calls 404. It cannot retire only the blocked
     sessions. The session map therefore records, per session, the fingerprint
     of the key its runs were posted with, and at start hermesd **retires every
-    session whose fingerprint differs from the current key**: it maps the muster
+    session whose fingerprint differs from the current key**, **after** first
+    resolving every old-key intent it can from the session's messages (resolve
+    first, then retire, so an intent's outcome is decided against the session it
+    was posted to). Retiring maps the muster
     session to a fresh Hermes `session_id`. This deliberately costs the history
     of sessions that were not blocked too; a session that might be blocked
     forever is worse. The next turn's reply on each starts with: "The previous
