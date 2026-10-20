@@ -583,12 +583,26 @@ test.describe('desktop 1280×800', () => {
 test.describe('statuses', () => {
   test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false, storageState: { cookies: [], origins: [] } });
 
-  test('"shell" (idle with a background shell) sends the queued message; an unknown status holds it and is named', async ({ page }) => {
+  test('"shell" (idle with a background shell running) sends the queued message', async ({ page }) => {
     await busyAndSeen();
     fs.rmSync(tr + '.pasted', { force: true });
     await openView(page, newHost);
-    const unknownText = 'held on an unknown status ' + stamp;
-    await queue(page, unknownText, false);
+    const text = 'sent while a background shell runs ' + stamp;
+    await queue(page, text, false);
+    await expect(page.locator('#mv-queue-waiting'), `busy is seen (log:\n${mirrorLog})`).toContainText('working', { timeout: 20_000 });
+    // The turn ends with a background shell still running: "shell", a newer time.
+    setStatus('shell');
+    await expect.poll(pasted, { message: `sent once Claude Code reports "shell" (log:\n${mirrorLog})`, timeout: 30_000 }).toEqual([`${pane} ${text}`]);
+    await expect(rowIn(page, text, 'sent')).toHaveCount(1, { timeout: 20_000 });
+    await busyAndSeen();
+  });
+
+  test('a status muster does not know holds the queue and is named, never called "working"', async ({ page }) => {
+    await busyAndSeen();
+    fs.rmSync(tr + '.pasted', { force: true });
+    await openView(page, newHost);
+    const text = 'held on an unknown status ' + stamp;
+    await queue(page, text, false);
     setStatus('compacting');
     const waiting = page.locator('#mv-queue-waiting');
     await expect(waiting, `the unknown status is named (log:\n${mirrorLog})`).toContainText(
@@ -598,12 +612,9 @@ test.describe('statuses', () => {
     await expect(waiting).not.toContainText('working');
     await holdWindow();
     expect(pasted(), 'nothing is sent on a status muster does not know').toEqual([]);
-    // The turn ends with a background shell still running: "shell", a newer time.
-    setStatus('shell');
-    await expect.poll(pasted, { message: `sent once Claude Code reports "shell" (log:\n${mirrorLog})`, timeout: 30_000 }).toEqual([
-      `${pane} ${unknownText}`,
-    ]);
-    await expect(rowIn(page, unknownText, 'sent')).toHaveCount(1, { timeout: 20_000 });
+    // CONTROL: the same message is sent once Claude Code reports idle.
+    setStatus('idle');
+    await expect.poll(pasted, { message: 'CONTROL: sent once idle', timeout: 30_000 }).toEqual([`${pane} ${text}`]);
     await busyAndSeen();
   });
 });
@@ -665,7 +676,8 @@ test.describe('queued row menu, phone 390×844 touch', () => {
     const text = 'menu layout ' + stamp;
     await queue(page, text, true);
     const r = rowIn(page, text, 'queued');
-    // Every layout shift whose moved nodes are the queue's or the menu's —
+    // Every layout shift whose moved nodes are the composer's (the queue is in
+    // it) or the menu's —
     // input or not: CLS leaves out shifts right after input, and a menu opened
     // by a tap is exactly that. (Other parts of the view move on their own —
     // the "Claude is working…" line — and are not this menu's.)
@@ -678,7 +690,7 @@ test.describe('queued row menu, phone 390×844 touch', () => {
           const nodes = (e.sources || []).map((x) => x.node).filter((n): n is Node => !!n);
           const ours = nodes.some((n) => {
             const el = n instanceof Element ? n : n.parentElement;
-            return !!el && !!el.closest('#mv-queue, [data-queue-menu]');
+            return !!el && !!el.closest('#mv-compose, [data-queue-menu]');
           });
           if (ours) w.__shift += e.value;
           w.__shifts.push(`${e.value.toFixed(4)} ours=${ours} ` + nodes.map((n) => (n instanceof Element ? n.id || n.tagName : n.nodeName)).join(','));

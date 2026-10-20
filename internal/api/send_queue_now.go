@@ -29,8 +29,9 @@ import (
 //
 // 🔴 THE SAME GATES AS A SEND, THEN THE DISPATCHER'S: the host online and
 // -interactive, a FRESH sign-in on the request (403 + X-Muster-Step-Up to the
-// script, the plain confirm page to a browser form), the window listed, no
-// other message of the window being sent; then the delivery's own checks on the
+// script, the plain confirm page to a browser form), the window listed; then
+// the claim, which the target's one-sending index refuses while another of its
+// messages is being sent; then the delivery's own checks on the
 // row, the ones the dispatcher's send makes (sendQueueDeliver: the owner's
 // account, the sign-in that queued it, a routed row's route).
 // ---------------------------------------------------------------------------
@@ -109,6 +110,9 @@ func (s *Server) sendQueueSendNow(w http.ResponseWriter, r *http.Request, ctx co
 		}
 		http.Error(w, msg, status)
 	}
+	// A fast refusal before the gates (no step-up asked for a message already
+	// sent). The claim below is what guarantees it: it refuses a row that is
+	// no longer queued whatever this read saw.
 	if it.State != sendqueue.Queued {
 		refuse(http.StatusConflict, SendQueueNotQueuedNow, noticeNotQueuedNow)
 		return
@@ -130,10 +134,6 @@ func (s *Server) sendQueueSendNow(w http.ResponseWriter, r *http.Request, ctx co
 		return
 	case !q.listed:
 		refuse(http.StatusConflict, mirror.ErrWindowGone.Error(), noticeWindowGone)
-		return
-	}
-	if h, ok, err := s.ext.SendQueue.HeadOf(ctx, q.t); err == nil && ok && h.State == sendqueue.Sending && h.ID != id {
-		refuse(http.StatusConflict, SendQueueSendingAnother, noticeSendingAnother)
 		return
 	}
 	// The window's status time now: the claim's, so the next queued message

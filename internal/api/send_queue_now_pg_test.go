@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
@@ -172,8 +171,8 @@ func TestSendNowUnderAStaleSignInAsksToStepUp(t *testing.T) {
 
 // TestSendNowIsRefusedWhereASendIsAndWhereTheDispatchersDeliveryIs: each
 // refusal pastes nothing. Before the claim (the row stays queued): a read-only
-// host, an offline one, a message no longer queued, another user's message
-// (404). After it, the dispatcher's own delivery checks fail the row saying
+// host, an offline one, a message no longer queued (another user's message is
+// TestAnotherOwnersSendNowIsNotFound). After it, the dispatcher's own delivery checks fail the row saying
 // why: a sign-in that was not fresh when the message was queued, and a routed
 // row whose route cannot be read. The control is a plain Send now, sent.
 func TestSendNowIsRefusedWhereASendIsAndWhereTheDispatchersDeliveryIs(t *testing.T) {
@@ -201,15 +200,6 @@ func TestSendNowIsRefusedWhereASendIsAndWhereTheDispatchersDeliveryIs(t *testing
 	set(true, true)
 	if got := f.row(t, it.ID); got.State != sendqueue.Queued || len(f.pasted()) != 0 {
 		t.Fatalf("after the host refusals: %s, pasted %q", got.State, f.pasted())
-	}
-	// Another user's message is not found, and stays queued.
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, sendNowPath(it.ID), nil)
-	req.SetPathValue("id", strconv.FormatInt(it.ID, 10))
-	req.Header.Set("X-Requested-With", "XMLHttpRequest")
-	f.srv.handleSendQueueSendNow(rec, req.WithContext(asQueueUser(2, time.Now())))
-	if rec.Code != http.StatusNotFound || f.row(t, it.ID).State != sendqueue.Queued {
-		t.Fatalf("user 2's Send now of user 1's message: %d %q, row %s", rec.Code, rec.Body.String(), f.row(t, it.ID).State)
 	}
 	// CONTROL: the owner's own, sent.
 	if code, body := post(it.ID); code != http.StatusNoContent {
