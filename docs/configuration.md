@@ -274,6 +274,8 @@ build tag, which the Playwright suite uses. The shipped binaries do not read the
 | `MUSTER_MIRROR_E2E_REFRESH` | none (`5s`) | no | (`e2emirror`) How often the fake host re-reads its windows (`mirrorhost.Config.Refresh`), a Go duration. |
 | `MUSTER_MIRROR_E2E_SESSIONS` | none | no | (`e2emirror`) The fake tmux server's session names, comma-separated. |
 | `MUSTER_MIRROR_E2E_WINDOWS_FILE` | none | no | (`e2emirror`) A per-window fake. Each line is `session\|@id\|index\|active\|command\|activity\|transcript`. |
+| `MUSTER_MIRROR_E2E_HERMES_HOME` | none | no | (`e2emirror`) A scratch Hermes home: the fake makes `state.db` there from Hermes's pinned schema and inserts each new line of `rows.jsonl` as a message, as Hermes's gateway would. |
+| `MUSTER_MIRROR_E2E_HERMES_WINDOWS_FILE` | none | no | (`e2emirror`) Hermes windows added to a per-window fake. Each line is `session\|@id\|index\|active\|activity\|hermes session id\|status`; an empty session id is a window with no rendered view. |
 | `MUSTER_MIRROR_E2E_CLAUDE` | none | no | (`e2emirror`) `<session>=<transcript path>`: plays that session as a Claude Code pane. |
 | `MUSTER_MIRROR_E2E_NO_PROMPT_INDEX` | unset | no | (`e2emirror`) `1`: the host sends no prompt index and no prompt places, as one that predates them (`mirrorhost.Config.NoPromptIndex`). |
 | `MUSTER_MIRROR_E2E_NO_CATALOG` | unset | no | (`e2emirror`) `1`: the host advertises no composer-menu catalog and answers no request, as one that predates it (`mirrorhost.Config.NoCatalog`). |

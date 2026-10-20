@@ -11,7 +11,8 @@ moved to Phase 2 by operator decision, was pulled forward from Phase 2 into 1b
 by coordinator decision, to avoid churn; Phase 2 builds on it. Phase 2 is in
 progress (see [Phase 2 as built](#phase-2-as-built)): a Hermes window's
 session is resolved from its terminal's breadcrumb and its status from the
-`hermes-hook` status files; it has no rendered view and no send path yet.
+`hermes-hook` status files, and it has a read-only rendered view; there is no
+send path.
 Nothing of Phases 3–5 is implemented. The
 version target is **decided** (below). Every other section describes the design
 the Phase 0 spikes support; the [Phase 0 results](#phase-0-results) table names
@@ -579,6 +580,29 @@ below in these ways, each decided while building it:
   was not yet the expected schema recovers without a restart.
 - **`state.db` replaced under the connection is reopened** (by inode): Hermes
   keeps backups, and a restore replaces the file.
+- **The rendered view is read-only and has no `Runtime.Stream` yet.** The host
+  routes a watch to the Hermes tail when the window it names runs Hermes NOW
+  (`mirrorhost`'s `hermesTail`), and the hub asks for one only for a Hermes
+  window whose host named its session (`Window.AgentSession`), so a Phase 1
+  host is never asked. The page's composer is drawn disabled with its reason
+  and no queue; every send is still refused at the hub (`hermesSend`) and on
+  the host (the paste guard). `Stream` joins the seam when Phase 3 gives the
+  rendered view a send to share it with.
+- 🔴 **A Hermes view never resumes.** A reconnect always gets a Reset backfill:
+  an in-place rewrite moves `transcript_revision` but no id, so a cursor the
+  page kept cannot prove the rows before it unchanged.
+- **The scrollback collapses compaction copies by `message_uid`**, the live
+  copy first, then the newest, in first-seen order: Hermes's own
+  `_dedupe_display_generations` without its removed-rows refinement (a rewound
+  message's older copy can still show until the next reset). The prompt index
+  covers every prompt of the conversation, from a light pass over the first
+  1,024 bytes of each row.
+- **A tail read that the fingerprint does not explain resets the view**, and so
+  does a lineage that changed (a rotation): reading a child's rows as appends
+  would draw the re-inserted context twice.
+- **Notices** are a new `cctranscript.NoticeHermes` source, drawn as the
+  harness's compact rows; a tool result is a failure only when its JSON says
+  so (`error`, or a non-zero `exit_code`), since Hermes records no `is_error`.
 
 ### Pane to session resolution
 

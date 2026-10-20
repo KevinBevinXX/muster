@@ -261,9 +261,18 @@ A window whose pane runs the Hermes CLI (`hermes chat`, or bare `hermes`) is
 listed as a **Hermes window**: a process named `hermes`, a Python running a
 `hermes` launcher, no `gateway` argument, reading the pane's terminal
 (`#{pane_tty}`). A profile-launched `hermes -p <name> chat` is not recognised
-as one; the paste refusal above still covers it. It has no Rendered view yet.
-muster never sends into it: Send, Queue and Send now all refuse a Hermes
-window in this release.
+as one; the paste refusal above still covers it. muster never sends into it:
+Send, Queue and Send now all refuse a Hermes window in this release.
+
+**Rendered view, read-only.** A Hermes window whose session the host can name
+(below) opens in a Rendered view of its conversation, read from Hermes's
+session store as it is written: the prompts, the replies, the tool calls and
+their results, and a compact row for what Hermes adds itself (a process
+finishing, a model switch). Thinking is never shown. Its message box is drawn
+disabled and says why: muster does not send to Hermes yet, because Enter there
+can answer a prompt Hermes is showing, such as a command approval. There is no
+send queue. Terminal is one tap away, as for Claude Code. A compression that
+rewrites the conversation redraws the view from the start.
 
 **Which session.** The host finds the window's Hermes session from the
 breadcrumb Hermes writes for its terminal,

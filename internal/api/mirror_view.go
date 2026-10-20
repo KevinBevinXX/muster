@@ -77,7 +77,15 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	s.recordMirrorVisit(r.Context(), h.Host, e.Session, e.Window)
 	v := ui.MirrorViewView{Host: h.Host, Session: e.Session, Window: e.Window, Title: mirrorTitle(e), Label: e.Label, Qualifier: e.Qualifier, Interactive: h.Interactive,
 		StepUp: s.stepUpView(r, ""), Nonce: newSendNonce(), Dictate: s.dictatePath(), Upload: s.uploadPath(),
-		Queue: s.mirrorComposerQueue(r.Context(), h, e), FocusHistory: s.mirrorFocusHistoryPath(e.ClaudeSession)}
+		FocusHistory: s.mirrorFocusHistoryPath(e.ClaudeSession)}
+	// 🔴 A HERMES WINDOW's VIEW IS READ-ONLY (Phase 2): no queue, and the
+	// composer is drawn disabled. Every send path is refused again at the hub
+	// (the hermesSend switch) and on the host (the paste guard).
+	if e.HermesView() {
+		v.Hermes = true
+	} else {
+		v.Queue = s.mirrorComposerQueue(r.Context(), h, e)
+	}
 	v.Notice, v.NoticeOK = composerNotice(r)
 	v.HostIcon = s.mirrorHostIcon(r.Context(), h.Host)
 	formDocument(w)

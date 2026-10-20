@@ -163,6 +163,31 @@ func (h *Hub) lookupClaude(owner int64, host, session, window string) (*hostConn
 	return hc, id, nil
 }
 
+// lookupRendered is lookupClaude for a RENDERED VIEW, which a Hermes window
+// has too (Phase 2) once its host names its session (Window.AgentSession): a
+// host older than Phase 2 never does, so it is never asked to stream one.
+// Everything that SENDS stays on lookupClaude.
+func (h *Hub) lookupRendered(owner int64, host, session, window string) (*hostConn, string, error) {
+	h.mu.Lock()
+	hc := h.hosts[hostKey{owner, host}]
+	h.mu.Unlock()
+	if hc == nil {
+		return nil, "", fmt.Errorf("%w (host %q)", ErrHostOffline, host)
+	}
+	id, runtime, err := hc.targetRuntime(session, window)
+	switch {
+	case err != nil:
+		return nil, "", err
+	case hc.version < 2:
+		return nil, "", fmt.Errorf("%w (host %q)", ErrNoRenderedView, host)
+	case runtime == RuntimeClaude:
+		return hc, id, nil
+	case runtime == RuntimeHermes && hc.agentSession(session, id) != "":
+		return hc, id, nil
+	}
+	return nil, "", fmt.Errorf("%w (host %q, session %q)", ErrNotClaude, host, session)
+}
+
 // Watch streams owner's host's session's Claude Code transcript to out until ctx
 // ends (nil), the host ends it, or the connection drops. gen and offset ask to
 // RESUME (the browser reconnecting with what it already drew); the host honours
@@ -179,8 +204,12 @@ func (h *Hub) Watch(ctx context.Context, owner int64, host, session, gen string,
 // WatchWindow is Watch on one WINDOW of the session (its tmux window id), or —
 // window == "" — on the session's active window: the transcript of the Claude
 // Code session running in THAT window's pane.
+//
+// A Hermes window's view (Phase 2) is the same stream: Gen is its
+// conversation's id and the offset a messages.id; its host always answers a
+// watch with a Reset backfill.
 func (h *Hub) WatchWindow(ctx context.Context, owner int64, host, session, window, gen string, offset int64, out func(Msg) error) error {
-	hc, windowID, err := h.lookupClaude(owner, host, session, window)
+	hc, windowID, err := h.lookupRendered(owner, host, session, window)
 	if err != nil {
 		return err
 	}
@@ -416,6 +445,19 @@ func (hc *hostConn) hermesSendGate(session, id string) error {
 		}
 	}
 	return nil
+}
+
+// agentSession is the AgentSession hc lists for (session, window id), "" for
+// none.
+func (hc *hostConn) agentSession(session, id string) string {
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	for _, w := range hc.windows {
+		if w.Session == session && w.ID == id {
+			return w.AgentSession
+		}
+	}
+	return ""
 }
 
 // statusSince is the StatusSince hc lists for (session, window id), 0 for none.

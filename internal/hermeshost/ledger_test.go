@@ -146,6 +146,17 @@ var exerciseReadPath = []func(t *testing.T, h *hermestest.Home, root string){
 		}
 	},
 	func(t *testing.T, h *hermestest.Home, root string) {
+		st := NewHome(h.Dir).OpenState()
+		defer st.Close()
+		p, err := st.Backfill(ctx(t), root, 300)
+		if err != nil || len(p.Rows) == 0 {
+			t.Fatalf("the backfill exercise read nothing: %v", err)
+		}
+		if _, err := st.Tail(ctx(t), root, 0, 256); err != nil {
+			t.Fatal(err)
+		}
+	},
+	func(t *testing.T, h *hermestest.Home, root string) {
 		if _, err := NewHome(h.Dir).CheckAllowlist(testCommand); err != nil {
 			t.Fatal(err)
 		}

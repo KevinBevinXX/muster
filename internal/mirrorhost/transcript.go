@@ -23,6 +23,19 @@ const reresolveEvery = 3
 // readChunk bounds one poll's read of new transcript bytes.
 const readChunk = 1 << 20
 
+// hermesSource is the backend's HermesSource, when it has one AND this
+// connection speaks v2 (a rendered view does not exist on v1).
+func (h *hostSide) hermesSource() (*HermesSource, bool) {
+	if h.version < 2 {
+		return nil, false
+	}
+	hs, ok := capabilityOf[HermesSourcer](h.c.cfg.Backend)
+	if !ok || hs.HermesSource() == nil {
+		return nil, false
+	}
+	return hs.HermesSource(), true
+}
+
 // claudeBackend is the backend's ClaudeBackend, when it has one AND this
 // connection speaks v2.
 func (h *hostSide) claudeBackend() (ClaudeBackend, bool) {
@@ -112,14 +125,28 @@ func (h *hostSide) watch(m mirror.Msg) {
 		h.c.log.Printf("muster-mirror: watch %q: %v", m.Session, err)
 		_ = h.send(mirror.Msg{Type: mirror.TypeClosed, ID: m.ID, Error: err.Error()})
 	}
-	cb, ok := h.claudeBackend()
-	if !ok {
-		fail(errors.New("this host cannot read Claude Code transcripts"))
-		return
-	}
 	if err := h.allowed(m); err != nil {
 		fail(err)
 		return
+	}
+	// A Hermes window (Phase 2): the same stream, read from Hermes's
+	// state.db. Decided by what the window runs NOW, re-read here.
+	var serve func(ctx context.Context) error
+	if src, ok := h.hermesSource(); ok {
+		rctx, rcancel := context.WithTimeout(h.ctx, 10*time.Second)
+		_, isHermes := h.hermesWindow(rctx, m)
+		rcancel()
+		if isHermes {
+			serve = func(ctx context.Context) error { return h.hermesTail(ctx, src, m) }
+		}
+	}
+	if serve == nil {
+		cb, ok := h.claudeBackend()
+		if !ok {
+			fail(errors.New("this host cannot read Claude Code transcripts"))
+			return
+		}
+		serve = func(ctx context.Context) error { return h.tail(ctx, h.claudePaneOf(cb, m), m) }
 	}
 	ctx, cancel := context.WithCancel(h.ctx)
 	h.mu.Lock()
@@ -132,7 +159,7 @@ func (h *hostSide) watch(m mirror.Msg) {
 	h.watches[m.ID] = cancel
 	h.mu.Unlock()
 	go func() {
-		err := h.tail(ctx, h.claudePaneOf(cb, m), m)
+		err := serve(ctx)
 		h.unwatch(m.ID)
 		msg := ""
 		if err != nil && !errors.Is(err, context.Canceled) {
