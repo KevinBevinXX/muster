@@ -190,8 +190,11 @@ too, through its host's `muster-mirror`:
    any pane) — waiting up to 3 seconds for the host's list to arrive. Another
    host's session, a session no window shows, or another owner's token gets a
    tool error and the tool does not run. The tool set is exactly
-   `attention_ask`, `attention_wait`, `attention_cancel`, the task tools and
-   `attention_answer` (the operator answering an ask through this session); the
+   `attention_ask`, `attention_wait`, `attention_cancel`, the task tools,
+   `attention_answer` (the operator answering an ask through this session) and,
+   with a connector store, `connector_requests_list` / `connector_request_decide`
+   (the operator deciding a connector request through this session —
+   [connectors.md](connectors.md#deciding-a-request-from-your-own-session)); the
    chief's tools are not on it. The token is checked on every call (a revoked
    one is refused at its next call, `initialize` included). After 10 failed checks of one token from
    one address within a minute, that token from that address is answered 429 —
@@ -216,7 +219,11 @@ cancel), the tasks those sessions created — and, through `attention_answer`,
 mirrored session on that host, including the chief's. Such an answer is
 recorded and shown as coming via MCP from that host, and it is accepted as
 the operator's answer everywhere — **including as `task_dispatch`
-`instructions`**, so a leaked token can write a dispatched agent's prompt.
+`instructions`**, so a leaked token can write a dispatched agent's prompt —
+and, through `connector_request_decide`, **an approval as the operator of any
+of the owner's agents' pending connector requests** (recorded and shown as via
+MCP from that host; the accepted risk is in
+[connectors.md](connectors.md#deciding-a-request-from-your-own-session)).
 
 🔴 **Accepted risk: an MCP answer can become a dispatched agent's
 instructions.** The operator decided this explicitly after being told the risk

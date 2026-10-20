@@ -354,10 +354,18 @@ func askView(a attention.Ask) map[string]any {
 func (s *Server) attentionToolsOn() bool { return s.ext.Attention != nil }
 
 // dispatchCallerTool runs the tools a toolCaller may call — the all-agents
-// attention and task tools, and the chief's queue/transcript tools (whose
-// chief-only gate is dispatchAgentTool's, before this) — and reports whether
-// name was one of them. It answers nothing while the store is absent.
+// attention and task tools, the chief's queue/transcript tools (whose
+// chief-only gate is dispatchAgentTool's, before this), and the mirrored
+// sessions' connector decision tools (refused inside to any other caller) —
+// and reports whether name was one of them. The attention tools answer nothing
+// while their store is absent.
 func (s *Server) dispatchCallerTool(ctx context.Context, c toolCaller, name, arguments string) (string, bool) {
+	// The connector decision tools first, and not behind the attention store:
+	// they need the connector store, and their handlers refuse every caller
+	// that is not a mirrored session (connector_decide_tools.go).
+	if text, ok := s.dispatchConnectorDecideTool(ctx, c, name, arguments); ok {
+		return text, true
+	}
 	if !s.attentionToolsOn() {
 		return "", false
 	}

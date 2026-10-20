@@ -253,14 +253,16 @@ func (s *PGStore) TouchConnector(ctx context.Context, name string) error {
 // --- grants -----------------------------------------------------------------------
 
 const grantCols = `g.id, g.agent_id, coalesce(a.name, ''), g.connector_name, g.status, g.reason, g.requested_at,
-	g.decided_at, g.decided_by, g.last_used_at, g.source`
+	g.decided_at, g.decided_by, g.last_used_at, g.source,
+	coalesce(g.decided_via, ''), coalesce(g.decided_via_host, ''), coalesce(g.decided_via_session, '')`
 
 const grantFrom = ` FROM connector_grants g LEFT JOIN agents a ON a.id = g.agent_id`
 
 func scanGrant(row pgx.Row) (Grant, error) {
 	var g Grant
 	err := row.Scan(&g.ID, &g.AgentID, &g.AgentName, &g.Connector, &g.Status, &g.Reason, &g.RequestedAt,
-		&g.DecidedAt, &g.DecidedBy, &g.LastUsedAt, &g.Source)
+		&g.DecidedAt, &g.DecidedBy, &g.LastUsedAt, &g.Source,
+		&g.DecidedVia.Via, &g.DecidedVia.Host, &g.DecidedVia.Session)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Grant{}, ErrNotFound
 	}
@@ -354,8 +356,20 @@ func (s *PGStore) GetGrant(ctx context.Context, id int64) (Grant, error) {
 }
 
 // DecideGrant approves or denies a pending grant, recording the credential
-// source the decision was about (SourceStored / SourceApp).
+// source the decision was about (SourceStored / SourceApp). It is a decision
+// on the Connectors tab: no provenance (DecideGrantFrom with the zero source).
 func (s *PGStore) DecideGrant(ctx context.Context, id int64, approve bool, by, source string) (Grant, error) {
+	return s.DecideGrantFrom(ctx, id, approve, by, source, DecisionSource{})
+}
+
+// DecideGrantFrom is DecideGrant recording where the operator made the
+// decision (migration 0035). The zero via writes NULLs — the tab.
+//
+// 🔴 ONE CONDITIONAL UPDATE FOR BOTH DOORS, so a decision from a mirrored
+// session and one from the tab cannot drift apart, and two of them racing on
+// one request cannot both land: the loser is ErrNotPending. 0035's CHECK
+// refuses a half-written provenance or one on an undecided row.
+func (s *PGStore) DecideGrantFrom(ctx context.Context, id int64, approve bool, by, source string, via DecisionSource) (Grant, error) {
 	status := StatusDenied
 	if approve {
 		status = StatusApproved
@@ -363,9 +377,14 @@ func (s *PGStore) DecideGrant(ctx context.Context, id int64, approve bool, by, s
 	if source == "" {
 		source = SourceStored
 	}
+	var v, host, sess any
+	if via != (DecisionSource{}) {
+		v, host, sess = via.Via, via.Host, via.Session
+	}
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE connector_grants SET status=$2, decided_by=$3, decided_at=now(), source=$4
-		WHERE id=$1 AND status='pending'`, id, status, by, source)
+		UPDATE connector_grants SET status=$2, decided_by=$3, decided_at=now(), source=$4,
+		  decided_via=$5::text, decided_via_host=$6::text, decided_via_session=$7::text
+		WHERE id=$1 AND status='pending'`, id, status, by, source, v, host, sess)
 	if err != nil {
 		return Grant{}, err
 	}
@@ -380,9 +399,11 @@ func (s *PGStore) DecideGrant(ctx context.Context, id int64, approve bool, by, s
 
 // ReopenGrant puts an APPROVED grant back to pending (see ReconcileGrant). It
 // is conditional on the row still being approved: false, nil when it was not.
+// An undecided row carries no decision, so its provenance is cleared too.
 func (s *PGStore) ReopenGrant(ctx context.Context, id int64) (Grant, bool, error) {
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE connector_grants SET status='pending', decided_by='', decided_at=NULL, source='stored'
+		UPDATE connector_grants SET status='pending', decided_by='', decided_at=NULL, source='stored',
+		  decided_via=NULL, decided_via_host=NULL, decided_via_session=NULL
 		WHERE id=$1 AND status='approved'`, id)
 	if err != nil {
 		return Grant{}, false, err
@@ -391,10 +412,14 @@ func (s *PGStore) ReopenGrant(ctx context.Context, id int64) (Grant, bool, error
 	return g, tag.RowsAffected() == 1, err
 }
 
-// RevokeGrant ends a pending or approved grant.
+// RevokeGrant ends a pending or approved grant. A revocation is made on the
+// Connectors tab, so it clears an MCP decision's provenance with the rest of
+// the decision it replaces (decided_by/decided_at describe the revocation);
+// the audit trail keeps where the approval came from.
 func (s *PGStore) RevokeGrant(ctx context.Context, id int64, by string) (Grant, error) {
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE connector_grants SET status='revoked', decided_by=$2, decided_at=now()
+		UPDATE connector_grants SET status='revoked', decided_by=$2, decided_at=now(),
+		  decided_via=NULL, decided_via_host=NULL, decided_via_session=NULL
 		WHERE id=$1 AND status IN ('pending', 'approved')`, id, by)
 	if err != nil {
 		return Grant{}, err

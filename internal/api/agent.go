@@ -370,7 +370,9 @@ func (s *Server) agentTools() []agentTool {
 	// agent may ask its owner and work the owner's tasks; the chief alone lists
 	// the queue (read-only) and reads a session's transcript. All on MCP too.
 	// attention_answer is NOT here: it is the mirrored sessions' alone
-	// (mirror_mcp.go's mirrorTools), and its handler refuses any agent.
+	// (mirror_mcp.go's mirrorTools), and its handler refuses any agent. Nor are
+	// connector_requests_list / connector_request_decide, for the same reason
+	// (connector_decide_tools.go).
 	if s.attentionToolsOn() {
 		for _, d := range attentionToolDefs() {
 			tools = append(tools, agentTool{def: d, mcp: true})
