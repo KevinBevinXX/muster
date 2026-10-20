@@ -75,7 +75,8 @@ func capabilityOf[T any](b Backend) (T, bool) {
 type ClaudePane struct {
 	// Runtime is the agent CLI in the pane: "" for Claude Code (so every
 	// ClaudePane means what it did before the seam), mirror.RuntimeHermes for
-	// Hermes. Which runtime claimed the pane decides how it is sent to.
+	// Hermes. Only a Claude Code pane is ever sent to: a Hermes pane has no
+	// send path before Hermes Phase 3.
 	Runtime string
 	// Pane is the tmux pane id (%12): the only input target — never the session
 	// name, which resolves to whatever pane was focused last.
@@ -555,11 +556,20 @@ func (l ClaudeLocator) Locate(panes []pane) map[string]ClaudePane {
 // composer that sends to the right pane — so a guess that any other pane also
 // resolves to is dropped, and that window opens in the Terminal instead.
 func (l ClaudeLocator) LocatePanes(panes []pane) map[string]ClaudePane {
+	if len(panes) == 0 {
+		return map[string]ClaudePane{}
+	}
+	procs, children := l.table()
+	return l.locatePanesIn(panes, procs, children)
+}
+
+// locatePanesIn is LocatePanes over a proc table already read (readProcTable):
+// what lets one listing read the table ONCE for every runtime (Tmux.Windows).
+func (l ClaudeLocator) locatePanesIn(panes []pane, procs map[int]procInfo, children map[int][]int) map[string]ClaudePane {
 	out := map[string]ClaudePane{}
 	if len(panes) == 0 {
 		return out
 	}
-	procs, children := l.table()
 	// Read every sessions file at most once per lookup, and only when a pane
 	// needs it (a parked job, or a pane-map session's busy flag).
 	var live *liveSessions
@@ -648,11 +658,9 @@ func (t Tmux) ClaudePanes(ctx context.Context, sessions []string) map[string]Cla
 // in before the submit key arrives (ccd's value, measured there).
 const enterDelay = 150 * time.Millisecond
 
-// Paste implements ClaudeBackend: the submit of the runtime that claimed p
-// (runtime.go) — for Claude Code, PastePane into its pane's id, exactly as
-// before the seam; for Hermes, a refusal (no send path in this release).
+// Paste implements ClaudeBackend: PastePane into the Claude pane's id.
 func (t Tmux) Paste(ctx context.Context, p ClaudePane, text string) error {
-	return t.runtimeOf(p).Submit(ctx, t, p, text)
+	return t.PastePane(ctx, p.Pane, text)
 }
 
 // ActivePane implements PaneBackend: session's active pane id, from the same

@@ -3,7 +3,6 @@ package mirrorhost
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"log"
 	"math"
@@ -152,7 +151,8 @@ func TestAHermesWindowIsListedWithNoRenderedViewAndUnknownStatus(t *testing.T) {
 		// Claude Code's pane, claimed by its runtime before Hermes is asked.
 		{Session: "work", ID: "@3", Index: 2, Pane: "%3", PanePID: 30, Claude: &ClaudePane{Pane: "%3", Gen: "0b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b", Status: mirror.StatusIdle, StatusSince: 1792000001111}},
 	}
-	attachAgents(windows, t3.runtimes()[1:])
+	procs, children := t3.Claude.table()
+	attachAgents(windows, procs, children, t3.runtimes()[1:])
 	if a := windows[0].Agent; a == nil || a.Runtime != mirror.RuntimeHermes || a.Pane != "%1" || a.PID != 11 || a.Source != SourceProcess {
 		t.Fatalf("the Hermes window's Agent = %+v", a)
 	}
@@ -177,74 +177,6 @@ func TestAHermesWindowIsListedWithNoRenderedViewAndUnknownStatus(t *testing.T) {
 	// A v1 tunnel (claude=false) carries no claim of either.
 	if w := WireWindows(windows, nil, false, time.Unix(1792000002, 0)); w[0].Runtime != "" || w[2].Claude {
 		t.Fatalf("a v1 list claims a runtime: %+v", w)
-	}
-}
-
-// TestTheHermesRuntimeNeverTypes: no Hermes send path exists. Without
-// -hermes-send its Submit refuses with the flag's reason; WITH it, it still
-// refuses (the gated send is not in this release) — and neither ever reaches
-// the pane. Tmux.Paste routes a Hermes pane to that refusal; a Claude pane
-// still reaches PastePane, exactly as before the seam.
-func TestTheHermesRuntimeNeverTypes(t *testing.T) {
-	ctx := context.Background()
-	pb := &recordingPaste{}
-	hp := AgentPane{Runtime: mirror.RuntimeHermes, Pane: "%5"}
-	if err := (hermesRuntime{}).Submit(ctx, pb, hp, "hello"); !errors.Is(err, ErrHermesSendOff) {
-		t.Fatalf("Submit without -hermes-send = %v, want ErrHermesSendOff", err)
-	}
-	if err := (hermesRuntime{send: true}).Submit(ctx, pb, hp, "hello"); !errors.Is(err, ErrHermesSendUnavailable) {
-		t.Fatalf("Submit with -hermes-send = %v, want ErrHermesSendUnavailable", err)
-	}
-	if err := (claudeRuntime{}).Submit(ctx, pb, AgentPane{Pane: "%6"}, "hi"); err != nil {
-		t.Fatal(err)
-	}
-	if len(pb.pastes) != 1 || pb.pastes[0] != "%6:hi" {
-		t.Fatalf("pastes = %q, want only the Claude pane's", pb.pastes)
-	}
-	// Through the backend: the tmux binary is one that cannot run, so a Hermes
-	// pane's refusal is proved to come before any tmux call; a Claude pane's
-	// paste reaches tmux (and fails there).
-	tm := Tmux{Bin: filepath.Join(t.TempDir(), "no-tmux"), HermesSend: true}
-	if err := tm.Paste(ctx, hp, "hello"); !errors.Is(err, ErrHermesSendUnavailable) {
-		t.Fatalf("Tmux.Paste into a Hermes pane = %v, want the runtime's refusal", err)
-	}
-	if err := tm.Paste(ctx, AgentPane{Pane: "%6"}, "hi"); err == nil || !strings.Contains(err.Error(), "load-buffer") {
-		t.Fatalf("Tmux.Paste into a Claude pane = %v, want tmux's own failure (it ran PastePane)", err)
-	}
-}
-
-// recordingPaste is a PaneBackend that records what it is asked to type.
-type recordingPaste struct{ pastes []string }
-
-func (r *recordingPaste) ActivePane(context.Context, string) (string, bool) { return "", false }
-func (r *recordingPaste) PastePane(_ context.Context, pane, text string) error {
-	r.pastes = append(r.pastes, pane+":"+text)
-	return nil
-}
-
-// TestTheHelloAdvertisesHermesSendOnlyWithTheFlagOnAnInteractiveV2Host: the
-// host half of the switch. Off by default; on only with -hermes-send AND
-// -interactive AND tunnel v2; a backend with no Hermes runtime never.
-func TestTheHelloAdvertisesHermesSendOnlyWithTheFlagOnAnInteractiveV2Host(t *testing.T) {
-	for _, c := range []struct {
-		name        string
-		backend     Backend
-		interactive bool
-		version     int
-		want        bool
-	}{
-		{"the default", Tmux{}, true, 2, false},
-		{"-hermes-send, -interactive, v2", Tmux{HermesSend: true}, true, 2, true},
-		{"-hermes-send on a read-only host", Tmux{HermesSend: true}, false, 2, false},
-		{"-hermes-send over tunnel v1", Tmux{HermesSend: true}, true, 1, false},
-		{"-hermes-send through a wrapper", NoShrink(Tmux{HermesSend: true}), true, 2, true},
-		{"a backend with no Hermes runtime", &windowsBackend{}, true, 2, false},
-	} {
-		h := &hostSide{c: &Client{cfg: Config{Backend: c.backend, Interactive: c.interactive}, log: log.New(io.Discard, "", 0)},
-			ctx: context.Background(), version: c.version}
-		if got := h.hermesSend(); got != c.want {
-			t.Errorf("%s: hermesSend = %t, want %t", c.name, got, c.want)
-		}
 	}
 }
 
@@ -327,4 +259,38 @@ func TestTheLargestWindowListWithHermesWindowsFitsOneFrame(t *testing.T) {
 		t.Fatalf("instrument check: at %d bytes a window, even twice MaxWindows fits a frame — this test could not see an overrun", perWindow)
 	}
 	t.Logf("largest list with Hermes windows: %d windows in %d bytes (%.1f%% of MaxFrame)", mirror.MaxWindows, got, 100*float64(got)/float64(mirror.MaxFrame))
+}
+
+// TestTheHermesLocatorWalksNothingWithoutAHermesProcess: the listing reads the
+// proc table once for every runtime, and the Hermes locator walks no pane
+// when that table holds no process named "hermes" — the strict rule needs
+// that comm. Measured by a walk that would CLAIM: the same tree, with the
+// one process renamed, is claimed when it is "hermes" and not otherwise; and
+// a Hermes pane is still found through the shared table (the positive
+// control, by the same path Tmux.Windows takes).
+func TestTheHermesLocatorWalksNothingWithoutAHermesProcess(t *testing.T) {
+	build := func(comm string) (Tmux, []pane) {
+		proc := newFakeProc(t)
+		proc.add(10, 1, "zsh", "/w", "-zsh")
+		proc.stdin(10, "/dev/pts/1")
+		proc.add(11, 10, comm, "/w", "/usr/bin/python3", "/usr/local/bin/hermes", "chat")
+		proc.stdin(11, "/dev/pts/1")
+		return Tmux{Claude: ClaudeLocator{Proc: proc.root, Home: t.TempDir()}}, []pane{{Session: "s", ID: "%1", PID: 10}}
+	}
+	tm, panes := build("hermes")
+	procs, children := tm.Claude.table()
+	if !anyComm(procs, "hermes") {
+		t.Fatal("instrument check: the fixture's hermes process is not in the table")
+	}
+	if got := tm.hermesRuntime().LocatePanes(panes, procs, children); got["%1"].PID != 11 {
+		t.Fatalf("a Hermes pane through the shared table: %+v, want pid 11 claimed", got)
+	}
+	tm, panes = build("python3.14")
+	procs, children = tm.Claude.table()
+	if anyComm(procs, "hermes") {
+		t.Fatal("instrument check: a process named hermes in the renamed fixture")
+	}
+	if got := tm.hermesRuntime().LocatePanes(panes, procs, children); len(got) != 0 {
+		t.Fatalf("no process named hermes, yet claimed %+v", got)
+	}
 }

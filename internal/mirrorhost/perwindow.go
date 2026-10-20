@@ -146,8 +146,12 @@ func (t Tmux) Windows(ctx context.Context) ([]WindowInfo, error) {
 	windows := parseWindows(out.String())
 	// The runtimes claim panes in turn (runtime.go): Claude Code first, its
 	// lookup exactly as before the seam; then the others, for what is left.
-	attachClaude(windows, t.claudeRuntime().LocatePanes)
-	attachAgents(windows, t.runtimes()[1:])
+	// 🔴 ONE READ OF THE PROC TABLE FOR ALL OF THEM: a read is ~39 ms on a host
+	// of ~3,000 processes, and this runs every refresh (Config.Refresh).
+	procs, children := t.Claude.table()
+	claude := t.claudeRuntime()
+	attachClaude(windows, func(ps []pane) map[string]ClaudePane { return claude.LocatePanes(ps, procs, children) })
+	attachAgents(windows, procs, children, t.runtimes()[1:])
 	// Each window's working directory: one readlink per window — a syscall, no
 	// process (windowCwdPID says whose).
 	for i := range windows {

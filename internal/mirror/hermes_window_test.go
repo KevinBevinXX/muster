@@ -178,11 +178,16 @@ func TestAHermesWindowsStateIsItsOwnNotNotClaude(t *testing.T) {
 	}
 }
 
-// TestAHermesWindowThatStartsWaitingTellsTheAttentionQueue: the hub's waiting
+// TestAHermesWindowThatStartsWaitingFiresTheHubsWaitingHook: the hub's waiting
 // set is keyed by runtime, not by w.Claude — a Hermes window whose status
-// turns waiting fires the waiting hook, as a Claude Code window's does (the
-// control), and one that turns busy does not.
-func TestAHermesWindowThatStartsWaitingTellsTheAttentionQueue(t *testing.T) {
+// turns waiting fires the hub's waiting hook (SetWaitingNotify), as a Claude
+// Code window's does (the control), and one that turns busy does not.
+//
+// ⚠ IT CLAIMS THE HUB'S NOTIFICATION ONLY. The attention view that hook
+// re-reads (internal/api's attention.go) still skips every window that is not
+// Claude Code, so a waiting Hermes window draws no attention item until
+// Hermes Phase 4 gives it one.
+func TestAHermesWindowThatStartsWaitingFiresTheHubsWaitingHook(t *testing.T) {
 	r := newRig(t)
 	var mu sync.Mutex
 	fired := 0

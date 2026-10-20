@@ -178,7 +178,6 @@ Each setting is also a flag (`-url`, `-token-file`, …). See
 | `MUSTER_MIRROR_TOKEN` | none | this or the file | The mirror token itself. |
 | `MUSTER_MIRROR_HOST` | the short hostname | no | This host's name. It must match the name the token was minted for. |
 | `MUSTER_MIRROR_INTERACTIVE` | off | no | Allows typing and sending messages. The default is read-only. |
-| `MUSTER_MIRROR_HERMES_SEND` | off | no | Reserved for sending to [Hermes](design/hermes.md) windows. With `MUSTER_MIRROR_INTERACTIVE` it advertises that this host accepts such a send; muster refuses every send to a Hermes window of a host that does not. In this release nothing is sent to Hermes either way: the host refuses it until the gated send ships. |
 | `MUSTER_MIRROR_TMUX_SOCKET` | tmux's default | no | Uses a different tmux server: `tmux -L <name>`. |
 | `MUSTER_MIRROR_TMUX_SOCKET_PATH` | none | no | `tmux -S <path>`. It wins over the socket name. |
 | `MUSTER_MIRROR_LABELS_FILE` | none | no | A JSON object `{"<session>": "<codename>"}` of display labels. |

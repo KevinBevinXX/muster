@@ -78,7 +78,7 @@ func TestTmuxAHermesWindowIsListedAndNeverPastedInto(t *testing.T) {
 	d.run(t, b, nil, true)
 	hello := d.of(mirror.TypeHello)[0]
 	if hello.HermesSend {
-		t.Fatal("a host without -hermes-send advertised hermesSend")
+		t.Fatal("a host advertised hermesSend; no host does before the gated send (Phase 3)")
 	}
 	var hw *mirror.Window
 	for i, w := range hello.Windows {

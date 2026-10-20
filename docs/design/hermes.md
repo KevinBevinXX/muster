@@ -4,9 +4,11 @@
 [host paste guard](#every-paste-into-a-hermes-pane-is-gated-on-the-host)
 (Phase 1a, without its chrome check, moved to Phase 3), and the
 [runtime seam](#a-runtime-seam-instead-of-claude-only-code), the
-[server changes](#server-changes), the session-key migration and the strict
-mirroring identity rule (Phase 1b; what it built differently from this page is
-under [Phase 1 as built](#phase-1-as-built)). A Hermes window is detected and
+[server changes](#server-changes) and the session-key migration (Phase 1b;
+what it built differently from this page is under
+[Phase 1 as built](#phase-1-as-built)). The strict mirroring identity rule,
+moved to Phase 2 by operator decision, was pulled forward from Phase 2 into 1b
+by coordinator decision, to avoid churn; Phase 2 builds on it. A Hermes window is detected and
 listed, with no rendered view and no send path; nothing of Phases 2–5 is
 implemented. The
 version target is **decided** (below). Every other section describes the design
@@ -304,10 +306,12 @@ shows the same words when the browser posted the form without script.
 `HermesIdentity.InTree` walks the tree from `#{pane_pid}` (read by the pane's
 id at the moment of the paste) with `comm` and argv from `/proc`, following
 both the parent links and the kernel's own children lists, and `hermesShape`
-is the broad match below, which the strict rule sits beside (implemented in
-Phase 1b, `hermesCLIShape`). Deferred, by operator decision: the chrome check
-below moves to **Phase 3** (it needs the recorded fixtures, none of which are
-in the tree).
+is the broad match below, which Phase 2's strict rule builds on. Deferred, by
+operator decision: the chrome check below moves to **Phase 3** (it needs the
+recorded fixtures, none of which are in the tree), and the strict mirroring
+identity rule to **Phase 2**, where the locator needs it. (Later, the strict
+rule was pulled forward from Phase 2 into 1b by coordinator decision, to avoid
+churn: `hermesCLIShape`, beside this match. Phase 2 builds on it.)
 
 - 🔴 **The guard uses the broad match, not the mirroring rule, and fails
   closed.** It refuses when the pane's process tree holds **any** of:
@@ -367,8 +371,10 @@ in the tree).
   Claude Code pane is refused.
 
 - It ships in **Phase 1**, first, in the host binary, before any other Hermes
-  work, with the broad process identity. The chrome check moves to Phase 3
-  (operator decision); the strict mirroring rule shipped in Phase 1b.
+  work, with the broad process identity. The strict mirroring rule moves to
+  Phase 2 and the chrome check to Phase 3 (operator decision). The strict rule
+  was later pulled forward into Phase 1b (coordinator decision, see
+  [as built](#phase-1-as-built)).
 - From Phase 3 the rendered view's gated send exists. Every Hermes send goes
   through `Runtime.Submit`, and so through `CheckSend`; it is the one
   deliberate exception to this guard, added to the guard's ledger on purpose.
@@ -426,16 +432,21 @@ Phase 1b (`internal/mirrorhost/runtime.go`, `internal/mirror`, `internal/api`'s
 Send now, `internal/focus`, migration `0035`) differs from the sections above
 in these ways, each decided while building it:
 
-- **`mirrorhost.Runtime` has `LocatePanes`, `CheckSend` and `Submit` only.**
-  `Stream` and `Answer` stay Claude Code's own code until Hermes has an
-  implementation of them (Phases 2 and 4); a method whose second
-  implementation could only refuse would draw the seam on a guess.
-  `AgentPane` is `ClaudePane` with a `Runtime` field, `""` meaning Claude
-  Code, so every existing `ClaudePane` keeps its meaning. Claude Code's
-  `Submit` is the old paste, reached through `Tmux.Paste`; the host ledger
-  admits it by name. The Hermes runtime's `Submit` refuses without
-  `-hermes-send`, and with it refuses at `CheckSend`: there is no gated send
-  before Phase 3, so the flag cannot open a send path.
+- **`mirrorhost.Runtime` has `Name` and `LocatePanes` only** — what both
+  runtimes use today. `Submit` and `CheckSend` join in Phase 3, `Stream` in
+  Phase 2 and `Answer` in Phase 4, with the Hermes implementations that give
+  them a second user; until then Claude Code's paste, stream and answer are
+  its own code, byte-identical. `AgentPane` is `ClaudePane` with a `Runtime`
+  field, `""` meaning Claude Code, so every existing `ClaudePane` keeps its
+  meaning. The window listing reads the proc table **once** for every runtime
+  (measured on a host of ~3,100 processes: a read is ~39–45 ms, and `Windows()`
+  took ~81 ms with a second read for Hermes, ~45 ms with one), and the Hermes
+  locator walks nothing when no process is named `hermes`.
+- **No host `-hermes-send` flag.** The doc above has the flag arrive with the
+  gated send, so it does not exist before Phase 3. The server half does
+  exist: the `Msg.HermesSend` wire field and the gate in `Hub.PasteWindow`.
+  With no host advertising it, the gate refuses every window a host reports as
+  Hermes.
 - **`Window.Runtime` is `"hermes"` or `""`, never `"claude"`.** Claude Code is
   still `Window.Claude`, so a Claude window's bytes on the wire are unchanged
   (measured: the worst-case list is 1,030,215 bytes before and after).
@@ -453,18 +464,30 @@ in these ways, each decided while building it:
   four CHECKs. `attention_asks.answered_via_session` (0034, newer than this
   page) is left at 64: it names an MCP caller, which Hermes cannot be yet (see
   [listing](#listing-host-icons-and-the-rest-of-the-agents-list)).
-- **The strict mirroring identity rule is implemented** (`hermesCLIShape`,
-  `HermesIdentity.CLI`), beside the broad match, and the Hermes runtime's
-  locator uses it to detect a Hermes window. The pane's terminal is read from
-  its root process's fd 0, not `#{pane_tty}`, which the one window listing
-  does not read; Phase 2's breadcrumb locator reads `#{pane_tty}` for the
-  breadcrumb's file name. A test pins that the strict rule never claims a
-  process the broad guard admits.
+- **The strict mirroring identity rule landed here, not in Phase 2.** It had
+  been moved to Phase 2 by operator decision; it was pulled forward from
+  Phase 2 into 1b by coordinator decision, to avoid churn, together with the
+  Hermes `LocatePanes` and the `-list -windows` line. Phase 2 builds on it.
+  (`hermesCLIShape`, `HermesIdentity.CLI`, beside the broad match.) The
+  pane's terminal is read from its root process's fd 0, not `#{pane_tty}`,
+  which the one window listing does not read; Phase 2's breadcrumb locator
+  reads `#{pane_tty}` for the breadcrumb's file name. A root whose stdin is
+  not the pane's terminal (`exec </dev/null`) can make a child with the same
+  stdin a Hermes window, which only takes things away from it. A test pins
+  that the strict rule never claims a process the broad guard admits.
 - **The server switch's refusal** is a `PasteRefusedError` carrying the host
   guard's own words and kind (`PasteRefusedHermesText`, `hermes`), with
   `ErrHermesSendOff` as its cause, so a person sees one refusal whichever side
   made it. A host's `hermesSend` is believed only from an `-interactive` v2
   host.
+- 🔴 **The server gate covers only windows a host REPORTS as Hermes** — a
+  strict-rule match on a host of this release. A Hermes the strict rule does
+  not recognise (`hermes -p coder chat`), and every Hermes on an older host,
+  is not reported, so it is refused by the 1a host paste guard alone; a host
+  older than 1a has no guard at all. Upgrading the hosts is the only cure.
+- The hub's waiting set fires its hook for a waiting Hermes window, but the
+  attention view it re-reads (`internal/api`'s `attention.go`) still skips
+  every non-Claude window until Phase 4.
 - **Send now** refuses a Hermes window unless it is idle (busy, waiting,
   unknown and any unnamed status each say why). Claude Code keeps today's
   rule.
@@ -1573,8 +1596,8 @@ Efforts are rough engineer-days, including tests and docs. Phase 0 is done.
 | phase | what | effort | depends on |
 |---|---|---|---|
 | ~~0~~ | Spikes S1–S11 | done | — |
-| ~~1~~ | Runtime seam: `mirrorhost.Runtime` for Claude Code and Hermes, Claude behind it, `Window.Runtime`/`AgentSession` with the wider id bound. 🔴 **The host paste guard**, first, with the broad process identity (**done**, 1a). The chrome check moves to Phase 3 (operator decision). The strict mirroring identity rule (**done**, 1b). [Server changes](#server-changes): runtime-aware `AgentState` and waiting set, Send now refusing unknown and busy for Hermes, the `hermesSend` switch, the migration widening the session-key checks of 0020, 0021, 0022 and 0025 (**done**, 1b; see [as built](#phase-1-as-built)). No behaviour change for Claude Code. | done | — |
-| **2** | Read-only Hermes mirroring: breadcrumb locator with the end-reason staleness rule (no view, unknown status), SQLite reader (compaction, compression-only lineage), renderer, the `hermes-hook` command and its status files with lease and newest-row checks, the Home Manager declaration and the locking allowlist writer, mismatch diagnostics, listing and kind chip, secret-path ledger, `-list -hermes` | 6–8 | 1 |
+| ~~1~~ | Runtime seam: `mirrorhost.Runtime` for Claude Code and Hermes, Claude behind it, `Window.Runtime`/`AgentSession` with the wider id bound. 🔴 **The host paste guard**, first, with the broad process identity (**done**, 1a). The strict mirroring identity rule moves to Phase 2 and the chrome check to Phase 3 (operator decision); the strict rule was later pulled forward into 1b (coordinator decision, **done**). [Server changes](#server-changes): runtime-aware `AgentState` and waiting set, Send now refusing unknown and busy for Hermes, the `hermesSend` switch, the migration widening the session-key checks of 0020, 0021, 0022 and 0025 (**done**, 1b; see [as built](#phase-1-as-built)). No behaviour change for Claude Code. | done | — |
+| **2** | Read-only Hermes mirroring: the strict mirroring identity rule (moved from Phase 1; then pulled forward into 1b by coordinator decision, and landed there — Phase 2 builds on it), breadcrumb locator with the end-reason staleness rule (no view, unknown status), SQLite reader (compaction, compression-only lineage), renderer, the `hermes-hook` command and its status files with lease and newest-row checks, the Home Manager declaration and the locking allowlist writer, mismatch diagnostics, listing and kind chip, secret-path ledger, `-list -hermes` | 6–8 | 1 |
 | **3** | Gated pane send **and its live harness**. `make test-livehermes`: the pinned Hermes in a scratch tmux server and home; fixtures for every blocking state, and from them the paste guard's chrome check (moved from Phase 1), including the palette, model picker and stash; the overlay-state ledger; measuring the Escape sequence (with the abort rule and waits above `timeoutlen`) against every overlay at its non-default stages (filtered picker, reasoning stage, palette and stash together, the picker opened over a draft, vi mode); re-measuring under load the false-idle slack, the 150 ms Enter margin and the queue gap. Then the send: per-runtime server gates, host `CheckSend` with the image-region and input-line rules and the bounded Escape sequence, the `hermesSend` switch on both sides, the `/`, `!` and trailing-`\` refusals, collapse-aware post-paste check, database-confirmed submit with "may have been submitted", Queue and Send now for Hermes, host docs. Send stays off until these measurements are done and the harness is green; then the operator enables it per host, with the residual cases named in the host docs. | 10–12 | 2 |
 | **4** | Questions and approvals: clarify cards from the DB, approval and sudo attention items from the hooks, viewer discovery through `gateway.sock.path`, attach-to-answer, `approval.respond` with the stale-modal card, measuring the viewer's clarify answer (and wiring it if it passes), the hygiene filters; harness cases for each | 5–7 | 2, 3 |
 | **5** | `hermes` kind: `hermesd` (runs, events, exact approval body, relay timeout, a stable API key on the volume, intent-before-POST with the exact body and `Idempotency-Key`, 409 and retention handling, `resolve-unknown` recovery on every gateway start, SIGTERM handling), the Nix image without ffmpeg, `agentspec`, migration, config, smoke test like `cc-smoke`, a first run in a real pod | 10–12 | 1 |

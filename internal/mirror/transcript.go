@@ -47,7 +47,7 @@ var (
 	// was sent to the host. It is the Cause of a *PasteRefusedError carrying
 	// the host guard's own words (PasteRefusedHermesText, PasteRefusalHermes),
 	// so a person sees the same refusal whichever side made it.
-	ErrHermesSendOff = errors.New("mirror: muster did not send it: this window runs Hermes, and its host's muster-mirror does not accept a send to Hermes (-hermes-send)")
+	ErrHermesSendOff = errors.New("mirror: muster did not send it: this window runs Hermes, and its host's muster-mirror does not accept a send to Hermes")
 )
 
 // pasteTimeout bounds how long a paste waits for the host's confirmation.
@@ -327,9 +327,10 @@ func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, windo
 	// 🔴 THE hermesSend SWITCH, SERVER HALF. Every paste muster makes passes
 	// here (Paste delegates; the ledger in hermes_switch_test.go pins that no
 	// other function writes a paste), so Send, Send now, Queue, a routed
-	// message and any later caller are refused for a Hermes window of a host
-	// that did not advertise Msg.HermesSend — before anything reaches it. The
-	// host's Hermes runtime refuses on its own flag too, whatever this sends.
+	// message and any later caller are refused for a window the host REPORTS
+	// as Hermes unless it advertised Msg.HermesSend — before anything reaches
+	// it. No host advertises it before Phase 3. A Hermes the host does not
+	// report (see Msg.HermesSend) is the host paste guard's alone.
 	if err := hc.hermesSendGate(session, windowID); err != nil {
 		return err
 	}

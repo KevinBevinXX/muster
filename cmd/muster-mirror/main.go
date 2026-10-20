@@ -82,7 +82,6 @@ const (
 	envSocket      = "MUSTER_MIRROR_TMUX_SOCKET"
 	envSocketPath  = "MUSTER_MIRROR_TMUX_SOCKET_PATH"
 	envInteractive = "MUSTER_MIRROR_INTERACTIVE"
-	envHermesSend  = "MUSTER_MIRROR_HERMES_SEND"
 	envAllowHTTP   = "MUSTER_MIRROR_ALLOW_HTTP"
 	envLabelsFile  = "MUSTER_MIRROR_LABELS_FILE"
 	envPaneMapDir  = "MUSTER_MIRROR_PANE_MAP_DIR"
@@ -139,7 +138,6 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	socket := fs.String("tmux-socket", getenv(envSocket), "tmux -L socket name; empty = the default server ("+envSocket+")")
 	socketPath := fs.String("tmux-socket-path", getenv(envSocketPath), "tmux -S socket path ("+envSocketPath+")")
 	interactive := fs.Bool("interactive", envBool(envInteractive), "let muster open INTERACTIVE terminals on this host — effectively a SHELL here: an interactive tmux client can switch to any session or open a new window (default: read-only; muster then offers no Interactive switch) ("+envInteractive+")")
-	hermesSend := fs.Bool("hermes-send", envBool(envHermesSend), "RESERVED, default off: advertise that this host accepts a send into a Hermes window (with -interactive). In this release its Hermes runtime refuses every send anyway, flag or not — the gated send comes in a later release ("+envHermesSend+")")
 	allowHTTP := fs.Bool("allow-http", envBool(envAllowHTTP), "TESTS AND LOCAL DEVELOPMENT ONLY: permit a plain http:// muster URL, which sends the token in cleartext ("+envAllowHTTP+")")
 	labelsFile := fs.String("labels-file", getenv(envLabelsFile), "JSON object {\"<session>\": \"<codename>\"}: muster shows such a session as <codename>:<active window index> instead of its name; unreadable or invalid = no labels, logged, never fatal ("+envLabelsFile+")")
 	paneMapDir := fs.String("pane-map-dir", getenv(envPaneMapDir), "directory of per-pane Claude Code records (claude-p<N>.json for pane %N, written by a hook on every event) that the rendered view resolves a pane's transcript from FIRST, each validated against the process in the pane; empty = not consulted ("+envPaneMapDir+")")
@@ -163,7 +161,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return 0
 	}
 
-	backend := withHermesSend(newTmuxBackend(*socket, *socketPath, *paneMapDir), *hermesSend)
+	backend := newTmuxBackend(*socket, *socketPath, *paneMapDir)
 	if e2eBackend != nil {
 		backend = e2eBackend()
 	}
@@ -347,17 +345,6 @@ var newTmuxBackend = tmuxBackend
 func tmuxBackend(socket, socketPath, paneMapDir string) mirrorhost.Backend {
 	return mirrorhost.Tmux{Socket: socket, SocketPath: socketPath,
 		Claude: mirrorhost.ClaudeLocator{PaneMapDir: paneMapDir}}
-}
-
-// withHermesSend is b with -hermes-send applied: the tmux backend's Hermes
-// runtime reads it (and the hello advertises it from there, so the two cannot
-// disagree). Any other backend has no Hermes runtime and is returned as is.
-func withHermesSend(b mirrorhost.Backend, on bool) mirrorhost.Backend {
-	if t, ok := b.(mirrorhost.Tmux); ok {
-		t.HermesSend = on
-		return t
-	}
-	return b
 }
 
 // printWindows is `-list -windows`: every window this host would register — or,

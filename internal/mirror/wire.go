@@ -315,19 +315,23 @@ type Msg struct {
 	// one choice per question.
 	Ask *AskTyping `json:"ask,omitempty"`
 	// HermesSend (hello) is the host ADVERTISING that it accepts a paste into
-	// a Hermes window (Window.Runtime RuntimeHermes): muster-mirror's
-	// -hermes-send flag, OFF by default, on an -interactive v2 host. muster
-	// refuses EVERY paste into a Hermes window of a host that did not advertise
-	// it (Hub.PasteWindow), and the host's own Hermes runtime refuses a submit
-	// unless that flag is on, whatever muster sent (docs/design/hermes.md, the
-	// hermesSend switch). 🔴 Until the gated send exists (Hermes Phase 3) the
-	// host's Hermes runtime refuses every submit even with the flag on, so
-	// there is no Hermes send path at all.
+	// a Hermes window (Window.Runtime RuntimeHermes), on an -interactive v2
+	// host. 🔴 NO HOST SETS IT YET: the host's flag and its gated send arrive
+	// together in Hermes Phase 3 (docs/design/hermes.md, the hermesSend
+	// switch). muster refuses every paste into a window the host REPORTS as
+	// Hermes unless the host advertised this (Hub.PasteWindow), so today every
+	// such paste is refused before it reaches the host.
 	//
-	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS, like PanePaste: an older
+	// ⚠ WHAT THIS GATE DOES NOT COVER: a window the host does not report as
+	// Hermes. That is every window of a host older than this field, and any
+	// Hermes the strict mirroring rule does not recognise (a profile-launched
+	// `hermes -p coder chat`). Those rely on the host's own paste guard alone
+	// (Hermes Phase 1a, mirrorhost's typeInto), and a host older than that
+	// guard has none.
+	//
+	// NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS, like PanePaste: an older
 	// muster ignores it (and never sees a Hermes window: it does not read
-	// Window.Runtime); an older host never sets it, so muster refuses its Hermes
-	// windows — the failure direction is "not sent".
+	// Window.Runtime); an older host never sets it.
 	HermesSend bool `json:"hermesSend,omitempty"`
 
 	// ---- subagent cards (subagents.go) ----

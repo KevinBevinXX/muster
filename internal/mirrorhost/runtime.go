@@ -1,8 +1,6 @@
 package mirrorhost
 
 import (
-	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,11 +12,11 @@ import (
 // Claude-only code"): one implementation per agent CLI this host mirrors.
 //
 // 🔴 SIZED FOR EXACTLY TWO, Claude Code and Hermes, and for what both have
-// TODAY: which panes run the CLI, the at-the-moment-of-acting send gate, and
-// the submit. The rendered view's stream and an answer's keys stay Claude
-// Code's own code until Hermes has an implementation of them (Phase 2 and
-// Phase 4); a method with one real implementation and one stub that can only
-// refuse would be a seam drawn on a guess.
+// TODAY: which panes run the CLI. The send (CheckSend, Submit), the rendered
+// view's stream and an answer's keys stay Claude Code's own code, and join
+// this interface in the phases that give Hermes an implementation of them
+// (Phase 3, Phase 2 and Phase 4); a method whose second implementation could
+// only refuse would be a seam drawn on a guess.
 
 // Runtime is one agent CLI muster mirrors.
 type Runtime interface {
@@ -27,17 +25,11 @@ type Runtime interface {
 	Name() string
 	// LocatePanes maps each of panes that this runtime CLAIMS — by the
 	// process running in it, never by #{pane_current_command} — to the agent
-	// session in it, keyed by pane id. The tmux backend asks each runtime in
-	// turn, Claude Code first, and the first to claim a pane has it.
-	LocatePanes(panes []pane) map[string]AgentPane
-	// CheckSend is the send gate at the moment of acting, on the host: nil to
-	// type into p now, else why not. Claude Code's admits (it queues typed
-	// input itself), which is how the seam leaves its send unchanged.
-	CheckSend(ctx context.Context, p AgentPane) error
-	// Submit types text into p's pane and presses Enter — through CheckSend.
-	// It is reached only through hostSide.typeInto (the Hermes paste guard),
-	// via the backend's Paste.
-	Submit(ctx context.Context, pb PaneBackend, p AgentPane, text string) error
+	// session in it, keyed by pane id, reading the proc table procs/children
+	// (readProcTable), which the caller reads ONCE for every runtime. The
+	// tmux backend asks each runtime in turn, Claude Code first, and the first
+	// to claim a pane has it.
+	LocatePanes(panes []pane, procs map[int]procInfo, children map[int][]int) map[string]AgentPane
 }
 
 // AgentPane is one tmux pane running an agent CLI, of any runtime: ClaudePane
@@ -53,62 +45,35 @@ type claudeRuntime struct{ loc ClaudeLocator }
 
 func (claudeRuntime) Name() string { return mirror.RuntimeClaude }
 
-func (r claudeRuntime) LocatePanes(panes []pane) map[string]AgentPane {
-	return r.loc.LocatePanes(panes)
+func (r claudeRuntime) LocatePanes(panes []pane, procs map[int]procInfo, children map[int][]int) map[string]AgentPane {
+	return r.loc.locatePanesIn(panes, procs, children)
 }
-
-// CheckSend admits: Claude Code takes typed input while busy and queues it,
-// and the server's own gates (idle, waiting) are where its send is decided.
-func (claudeRuntime) CheckSend(context.Context, AgentPane) error { return nil }
-
-func (r claudeRuntime) Submit(ctx context.Context, pb PaneBackend, p AgentPane, text string) error {
-	if err := r.CheckSend(ctx, p); err != nil {
-		return err
-	}
-	return pb.PastePane(ctx, p.Pane, text)
-}
-
-// The Hermes runtime's own refusals of a submit.
-var (
-	// ErrHermesSendOff: this host was not started with -hermes-send, so its
-	// Hermes runtime refuses every submit whatever muster sent — the host
-	// half of the hermesSend switch.
-	ErrHermesSendOff = errors.New("this host does not send to Hermes (muster-mirror was not started with -hermes-send)")
-	// ErrHermesSendUnavailable: the gated send into Hermes (the status, screen
-	// and database checks of docs/design/hermes.md's "The send path") is not
-	// in this release, so nothing is ever typed into a Hermes pane, flag or
-	// no flag.
-	ErrHermesSendUnavailable = errors.New("this muster-mirror cannot send to Hermes yet: the gated send comes in a later release")
-)
 
 // hermesRuntime is Hermes behind the seam. In this release it DETECTS a Hermes
 // CLI in a pane (the strict mirroring rule, HermesIdentity.CLI) and nothing
-// more: no session id, no status (unknown), no rendered view, and a submit it
-// always refuses.
-type hermesRuntime struct {
-	id HermesIdentity
-	// send is the host's -hermes-send flag.
-	send bool
-}
+// more: no session id, no status (unknown), no rendered view, no send.
+type hermesRuntime struct{ id HermesIdentity }
 
 func (hermesRuntime) Name() string { return mirror.RuntimeHermes }
 
 // LocatePanes claims each pane whose process tree holds a Hermes CLI by the
 // strict rule, reading the pane's terminal from its root process's stdin.
 //
+// It walks nothing when the table holds no process named "hermes": the strict
+// rule requires that comm, and this runs on every listing.
+//
 // ⚠ THE PANE'S TERMINAL IS ITS ROOT PROCESS'S fd 0, NOT #{pane_tty}: the one
 // window listing (windowsFormat) does not read the tty, and this release only
-// needs to tell a Hermes window from another. A root whose stdin is not the
-// pane's terminal (a shell started `exec </dev/null`) simply has no Hermes
-// window; Phase 2's breadcrumb locator, which names the breadcrumb FILE by
-// #{pane_tty}, reads it from tmux.
-func (r hermesRuntime) LocatePanes(panes []pane) map[string]AgentPane {
+// needs to tell a Hermes window from another. A root whose stdin is NOT the
+// pane's terminal (`exec </dev/null`) passes that file as "the pane's
+// terminal", so a Hermes child with the SAME stdin is claimed — a window
+// listed as Hermes that is not quite one, which only takes things away from it
+// (no rendered view, every paste refused). A root whose stdin cannot be read
+// has no Hermes window. Phase 2's breadcrumb locator, which names the
+// breadcrumb FILE by #{pane_tty}, reads it from tmux.
+func (r hermesRuntime) LocatePanes(panes []pane, procs map[int]procInfo, children map[int][]int) map[string]AgentPane {
 	out := map[string]AgentPane{}
-	if len(panes) == 0 {
-		return out
-	}
-	procs, children, err := readProcTable(r.id.proc())
-	if err != nil {
+	if len(panes) == 0 || !anyComm(procs, "hermes") {
 		return out
 	}
 	for _, p := range panes {
@@ -123,17 +88,14 @@ func (r hermesRuntime) LocatePanes(panes []pane) map[string]AgentPane {
 	return out
 }
 
-// CheckSend refuses: the gated send is Phase 3's.
-func (hermesRuntime) CheckSend(context.Context, AgentPane) error { return ErrHermesSendUnavailable }
-
-// Submit refuses unless this host runs with -hermes-send, and then refuses
-// at CheckSend. 🔴 It never types: there is no Hermes send path in this
-// release, and the flag cannot open one.
-func (r hermesRuntime) Submit(ctx context.Context, _ PaneBackend, p AgentPane, _ string) error {
-	if !r.send {
-		return ErrHermesSendOff
+// anyComm reports whether any process in procs is named comm.
+func anyComm(procs map[int]procInfo, comm string) bool {
+	for _, p := range procs {
+		if p.comm == comm {
+			return true
+		}
 	}
-	return r.CheckSend(ctx, p)
+	return false
 }
 
 // SourceProcess: an AgentPane found by its process alone (the strict Hermes
@@ -149,22 +111,14 @@ func (t Tmux) runtimes() []Runtime {
 func (t Tmux) claudeRuntime() claudeRuntime { return claudeRuntime{loc: t.Claude} }
 
 func (t Tmux) hermesRuntime() hermesRuntime {
-	return hermesRuntime{id: HermesIdentity{Proc: t.Claude.Proc}, send: t.HermesSend}
-}
-
-// runtimeOf is the runtime p belongs to.
-func (t Tmux) runtimeOf(p AgentPane) Runtime {
-	if p.Runtime == mirror.RuntimeHermes {
-		return t.hermesRuntime()
-	}
-	return t.claudeRuntime()
+	return hermesRuntime{id: HermesIdentity{Proc: t.Claude.Proc}}
 }
 
 // attachAgents sets each window's Agent: the active pane's agent session of a
 // runtime other than Claude Code, for a window whose pane Claude Code did not
 // claim (attachClaude ran first). Each runtime is asked in turn for the panes
-// still unclaimed; the first claim wins.
-func attachAgents(windows []WindowInfo, others []Runtime) {
+// still unclaimed, over the one proc table read; the first claim wins.
+func attachAgents(windows []WindowInfo, procs map[int]procInfo, children map[int][]int, others []Runtime) {
 	for _, rt := range others {
 		var free []pane
 		for _, w := range windows {
@@ -175,7 +129,7 @@ func attachAgents(windows []WindowInfo, others []Runtime) {
 		if len(free) == 0 {
 			return
 		}
-		claimed := rt.LocatePanes(free)
+		claimed := rt.LocatePanes(free, procs, children)
 		for i := range windows {
 			if windows[i].Claude != nil || windows[i].Agent != nil {
 				continue
@@ -185,23 +139,4 @@ func attachAgents(windows []WindowInfo, others []Runtime) {
 			}
 		}
 	}
-}
-
-// HermesSendBackend is a backend that says whether it runs with -hermes-send:
-// what a hello's Msg.HermesSend advertises. Tmux is one.
-type HermesSendBackend interface {
-	HermesSendEnabled() bool
-}
-
-// HermesSendEnabled implements HermesSendBackend.
-func (t Tmux) HermesSendEnabled() bool { return t.HermesSend }
-
-// hermesSend is what this host advertises as Msg.HermesSend: only an
-// -interactive v2 host whose backend runs with -hermes-send.
-func (h *hostSide) hermesSend() bool {
-	if h.version < 2 || !h.c.cfg.Interactive {
-		return false
-	}
-	b, ok := capabilityOf[HermesSendBackend](h.c.cfg.Backend)
-	return ok && b.HermesSendEnabled()
 }
