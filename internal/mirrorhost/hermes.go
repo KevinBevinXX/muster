@@ -22,9 +22,10 @@ import (
 // CLOSED. It answers "could anything in this pane's process tree be Hermes",
 // so a paste is refused on any doubt. A false refusal is safe; a false admit
 // is not: paste+Enter on Hermes's approval modal APPROVES the command, whatever
-// the pasted text says (S11). The stricter rule that decides which pane a
-// rendered view follows (argv[2] == chat, no gateway, fd 0 on the pane's tty)
-// is Phase 2's, and is built on hermesShape, never instead of it.
+// the pasted text says (S11). The stricter rule that decides which pane is a
+// Hermes WINDOW (argv[2] == chat, no gateway, fd 0 on the pane's tty) is
+// hermesCLIShape and HermesIdentity.CLI below, beside this one, never instead
+// of it.
 //
 // It refuses a pane whose tree holds:
 //   - a Hermes-shaped process (hermesShape);
@@ -279,6 +280,88 @@ func hermesCheckout(script string, cwd func() string) bool {
 		return !errors.Is(err, os.ErrNotExist)
 	}
 	return fi.IsDir()
+}
+
+// THE STRICT MIRRORING RULE (docs/design/hermes.md, "Pane to session
+// resolution", S10): which process in a pane IS the Hermes CLI a rendered view
+// would follow. It sits beside the broad match above and never replaces it:
+//
+//   - hermesShape (broad) decides a REFUSAL, so it matches anything that could
+//     be Hermes and fails closed;
+//   - hermesCLIShape (strict) decides a CLAIM — the window is a Hermes window
+//     — so it matches only the interactive CLI's exact shape and, on any
+//     doubt, claims nothing: a window it misses is a plain terminal window,
+//     which the broad guard still refuses to paste into.
+//
+// A strict match is always a broad one (TestEveryStrictHermesCLIIsRefusedByTheBroadGuard),
+// so no pane can be a Hermes window and pasteable.
+
+// hermesCLIShape reports whether p is the Hermes CLI by its own identity:
+//
+//   - comm "hermes";
+//   - argv[0] a Python interpreter and basename(argv[1]) "hermes" (the Nix
+//     wrapper execs, leaving no shell; a pip/uv console script has the same
+//     shape);
+//   - argv[2] "chat", or absent (the bare form is UNVERIFIED upstream);
+//   - no argument "gateway": the gateway is comm=hermes too, long-lived, and
+//     outlives the panes.
+//
+// ⚠ A profile-launched CLI (`hermes -p coder chat`) does NOT match — its
+// argv[2] is "-p" — and so has no Hermes window. That is this rule failing
+// toward "no claim", which the broad guard's flat scan covers for pasting.
+func hermesCLIShape(p procInfo) bool {
+	if p.comm != "hermes" || len(p.argv) < 2 || !isPython(p.argv) || filepath.Base(p.argv[1]) != "hermes" {
+		return false
+	}
+	if len(p.argv) > 2 && p.argv[2] != "chat" {
+		return false
+	}
+	for _, a := range p.argv[1:] {
+		if a == "gateway" {
+			return false
+		}
+	}
+	return true
+}
+
+// CLI is the Hermes CLI in the tree at or below root (a pane's #{pane_pid}),
+// breadth-first and bounded: the nearest process that matches hermesCLIShape
+// AND whose stdin (fd 0) is tty, the pane's terminal. false when there is none
+// — or when anything needed cannot be read: this is a claim, so doubt claims
+// nothing.
+func (h HermesIdentity) CLI(root int, tty string) (int, bool) {
+	procs, children, err := readProcTable(h.proc())
+	if err != nil {
+		return 0, false
+	}
+	return h.cli(root, tty, procs, children)
+}
+
+// cli is CLI over a proc table already read.
+func (h HermesIdentity) cli(root int, tty string, procs map[int]procInfo, children map[int][]int) (int, bool) {
+	if tty == "" {
+		return 0, false
+	}
+	queue, seen := []int{root}, map[int]bool{}
+	for len(queue) > 0 && len(seen) < procWalkBound {
+		pid := queue[0]
+		queue = queue[1:]
+		if seen[pid] {
+			continue
+		}
+		seen[pid] = true
+		p, ok := procs[pid]
+		if !ok {
+			continue
+		}
+		if p.state != "Z" && hermesCLIShape(p) {
+			if fd0, err := os.Readlink(filepath.Join(h.proc(), strconv.Itoa(pid), "fd", "0")); err == nil && fd0 == tty {
+				return pid, true
+			}
+		}
+		queue = append(queue, children[pid]...)
+	}
+	return 0, false
 }
 
 // HermesGuardBackend is a backend that can tell what runs in a pane: the paste

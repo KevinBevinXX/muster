@@ -41,10 +41,20 @@ var (
 	// wrote it (an older muster-mirror, or a Claude Code whose sessions file has
 	// no statusUpdatedAt). Without it a turn cannot be told from no turn.
 	ErrNoStatusSince = errors.New("mirror: the host does not report since when this window's Claude Code session has been idle, so nothing queued for it is sent; upgrade muster-mirror (or Claude Code), or send by hand")
+	// ErrNoHermesStatus: the window runs Hermes and the host reports no status
+	// for it — every host before Hermes mirroring's status hook, and one
+	// whose hook wrote nothing. Unknown: nothing is sent to it.
+	ErrNoHermesStatus = errors.New("mirror: the host cannot read whether this window's Hermes session is busy, so nothing is sent to it")
 )
 
-// AgentState is what the hub knows of the Claude Code session in one window.
+// AgentState is what the hub knows of the agent session in one window.
 type AgentState struct {
+	// Runtime is the agent CLI in the window (Window.AgentRuntime):
+	// RuntimeClaude or RuntimeHermes — set whenever the hub knows it, ALSO when
+	// Status is unknown, because the rules differ by runtime (Send now refuses
+	// an unknown Hermes window, and pastes into an unknown Claude one). ""
+	// when the window runs no agent, or the hub cannot say.
+	Runtime string
 	// Status is StatusBusy, StatusIdle or StatusWaiting; "" when unknown.
 	Status string
 	// Since is when Claude Code wrote Status (its statusUpdatedAt), in Unix
@@ -60,10 +70,12 @@ type AgentState struct {
 	Unknown error
 }
 
-// AgentState is the state of the Claude Code session in owner's host's
-// (session, window) — window "" being the session's active window — or why it
-// is unknown. Another owner's host answers ErrHostOffline, like a host that
-// does not exist.
+// AgentState is the state of the agent session (Claude Code or Hermes) in
+// owner's host's (session, window) — window "" being the session's active
+// window — or why it is unknown. Another owner's host answers ErrHostOffline,
+// like a host that does not exist. A window that runs no agent answers
+// ErrNotClaude, as it always did; a Hermes window never does (its Runtime says
+// which it is, and its status is read like Claude Code's).
 func (h *Hub) AgentState(owner int64, host, session, window string) AgentState {
 	h.mu.Lock()
 	hc := h.hosts[hostKey{owner, host}]
@@ -71,16 +83,21 @@ func (h *Hub) AgentState(owner int64, host, session, window string) AgentState {
 	if hc == nil {
 		return AgentState{Unknown: fmt.Errorf("%w (host %q)", ErrHostOffline, host)}
 	}
-	id, claude, err := hc.target(session, window)
+	id, runtime, err := hc.targetRuntime(session, window)
 	if err != nil {
 		return AgentState{Unknown: err}
+	}
+	// noStatus is the "host cannot read it" refusal of this runtime.
+	noStatus := ErrNoStatus
+	if runtime == RuntimeHermes {
+		noStatus = ErrNoHermesStatus
 	}
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
 	switch {
 	case !hc.statusReport || hc.windows == nil:
-		return AgentState{Unknown: fmt.Errorf("%w (host %q)", ErrNoStatusReport, host)}
-	case !claude:
+		return AgentState{Runtime: runtime, Unknown: fmt.Errorf("%w (host %q)", ErrNoStatusReport, host)}
+	case runtime == "":
 		return AgentState{Unknown: fmt.Errorf("%w (host %q, session %q)", ErrNotClaude, host, session)}
 	}
 	for _, w := range hc.windows {
@@ -89,11 +106,11 @@ func (h *Hub) AgentState(owner int64, host, session, window string) AgentState {
 		}
 		switch {
 		case w.Status == "":
-			return AgentState{Unknown: fmt.Errorf("%w (host %q, session %q)", ErrNoStatus, host, session)}
+			return AgentState{Runtime: runtime, Unknown: fmt.Errorf("%w (host %q, session %q)", noStatus, host, session)}
 		case w.StatusSince <= 0:
-			return AgentState{Unknown: fmt.Errorf("%w (host %q, session %q)", ErrNoStatusSince, host, session)}
+			return AgentState{Runtime: runtime, Unknown: fmt.Errorf("%w (host %q, session %q)", ErrNoStatusSince, host, session)}
 		}
-		st := AgentState{Status: w.Status, Since: w.StatusSince}
+		st := AgentState{Runtime: runtime, Status: w.Status, Since: w.StatusSince}
 		t := h.turn(owner, host, session, id)
 		if t.since == w.StatusSince && t.status == w.Status {
 			st.Observed = t.observed
@@ -101,7 +118,7 @@ func (h *Hub) AgentState(owner int64, host, session, window string) AgentState {
 		st.Pasted = t.pasted
 		return st
 	}
-	return AgentState{Unknown: fmt.Errorf("%w (host %q, session %q)", ErrNoStatus, host, session)}
+	return AgentState{Runtime: runtime, Unknown: fmt.Errorf("%w (host %q, session %q)", noStatus, host, session)}
 }
 
 // AgentState is Hub.AgentState for the viewing principal's host.

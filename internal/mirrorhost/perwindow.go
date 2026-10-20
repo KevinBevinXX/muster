@@ -57,6 +57,10 @@ type WindowInfo struct {
 	Command string
 	// Claude is the Claude Code session in the active pane; nil for none.
 	Claude *ClaudePane
+	// Agent is the active pane's agent session of ANOTHER runtime (Hermes),
+	// for a window whose pane Claude Code did not claim; nil for none, and
+	// always nil when Claude is set (attachAgents).
+	Agent *AgentPane
 	// Cwd is the working directory of the window's active pane (its
 	// /proc/<pid>/cwd link, " (deleted)" and all): of its Claude Code process
 	// when it runs one, else of the pane's root process (the shell), "" when it
@@ -140,7 +144,14 @@ func (t Tmux) Windows(ctx context.Context) ([]WindowInfo, error) {
 		return nil, fmt.Errorf("tmux list-panes: %v: %s", err, strings.TrimSpace(msg))
 	}
 	windows := parseWindows(out.String())
-	attachClaude(windows, t.Claude.LocatePanes)
+	// The runtimes claim panes in turn (runtime.go): Claude Code first, its
+	// lookup exactly as before the seam; then the others, for what is left.
+	// 🔴 ONE READ OF THE PROC TABLE FOR ALL OF THEM: a read is ~39 ms on a host
+	// of ~3,000 processes, and this runs every refresh (Config.Refresh).
+	procs, children := t.Claude.table()
+	claude := t.claudeRuntime()
+	attachClaude(windows, func(ps []pane) map[string]ClaudePane { return claude.LocatePanes(ps, procs, children) })
+	attachAgents(windows, procs, children, t.runtimes()[1:])
 	// Each window's working directory: one readlink per window — a syscall, no
 	// process (windowCwdPID says whose).
 	for i := range windows {
@@ -159,6 +170,9 @@ func (t Tmux) Windows(ctx context.Context) ([]WindowInfo, error) {
 func windowCwdPID(w WindowInfo) int {
 	if w.Claude != nil && w.Claude.PID > 0 {
 		return w.Claude.PID
+	}
+	if w.Agent != nil && w.Agent.PID > 0 {
+		return w.Agent.PID
 	}
 	return w.PanePID
 }
@@ -272,6 +286,9 @@ func FindWindow(windows []WindowInfo, session, window string) (WindowInfo, bool)
 // ("<codename>:<index>" for a session that has one), with Claude — and the
 // Claude session's Status — kept only when claude is set (a tunnel that carries
 // no rendered view carries no claim of one), through mirror.NormalizeWindows.
+// A window of another runtime (Agent) carries its Runtime, AgentSession and
+// status under the same condition; a Claude window's fields are exactly what
+// they were before runtimes existed (mirror.Window.Runtime stays "").
 func WireWindows(windows []WindowInfo, codenames map[string]string, claude bool, now time.Time) []mirror.Window {
 	out := make([]mirror.Window, 0, len(windows))
 	for _, w := range windows {
@@ -279,6 +296,8 @@ func WireWindows(windows []WindowInfo, codenames map[string]string, claude bool,
 			Activity: w.Activity, Command: w.Command, Claude: claude && w.Claude != nil}
 		if m.Claude {
 			m.Status, m.StatusSince, m.ClaudeSession, m.Pending = w.Claude.Status, w.Claude.StatusSince, w.Claude.Gen, w.Claude.Pending
+		} else if claude && w.Agent != nil {
+			m.Runtime, m.AgentSession, m.Status, m.StatusSince = w.Agent.Runtime, w.Agent.Gen, w.Agent.Status, w.Agent.StatusSince
 		}
 		if claude {
 			for _, o := range w.Others {

@@ -26,7 +26,8 @@ type Tmux struct {
 	Socket     string
 	SocketPath string
 	// Claude finds Claude Code in a session's pane (the rendered view); its
-	// zero value reads /proc and the user's own ~/.claude.
+	// zero value reads /proc and the user's own ~/.claude. Its Proc is also
+	// the proc root the Hermes runtime and the Hermes paste guard read.
 	Claude ClaudeLocator
 }
 

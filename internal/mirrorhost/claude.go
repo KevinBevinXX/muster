@@ -70,8 +70,14 @@ func capabilityOf[T any](b Backend) (T, bool) {
 	return zero, false
 }
 
-// ClaudePane is one tmux pane running Claude Code.
+// ClaudePane is one tmux pane running Claude Code — or, with Runtime set,
+// another agent CLI: it is also the runtime seam's AgentPane (runtime.go).
 type ClaudePane struct {
+	// Runtime is the agent CLI in the pane: "" for Claude Code (so every
+	// ClaudePane means what it did before the seam), mirror.RuntimeHermes for
+	// Hermes. Only a Claude Code pane is ever sent to: a Hermes pane has no
+	// send path before Hermes Phase 3.
+	Runtime string
 	// Pane is the tmux pane id (%12): the only input target — never the session
 	// name, which resolves to whatever pane was focused last.
 	Pane string
@@ -550,11 +556,20 @@ func (l ClaudeLocator) Locate(panes []pane) map[string]ClaudePane {
 // composer that sends to the right pane — so a guess that any other pane also
 // resolves to is dropped, and that window opens in the Terminal instead.
 func (l ClaudeLocator) LocatePanes(panes []pane) map[string]ClaudePane {
+	if len(panes) == 0 {
+		return map[string]ClaudePane{}
+	}
+	procs, children := l.table()
+	return l.locatePanesIn(panes, procs, children)
+}
+
+// locatePanesIn is LocatePanes over a proc table already read (readProcTable):
+// what lets one listing read the table ONCE for every runtime (Tmux.Windows).
+func (l ClaudeLocator) locatePanesIn(panes []pane, procs map[int]procInfo, children map[int][]int) map[string]ClaudePane {
 	out := map[string]ClaudePane{}
 	if len(panes) == 0 {
 		return out
 	}
-	procs, children := l.table()
 	// Read every sessions file at most once per lookup, and only when a pane
 	// needs it (a parked job, or a pane-map session's busy flag).
 	var live *liveSessions

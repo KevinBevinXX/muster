@@ -314,6 +314,25 @@ type Msg struct {
 	// Ask (answer) is what to type: the questions as muster showed them, and
 	// one choice per question.
 	Ask *AskTyping `json:"ask,omitempty"`
+	// HermesSend (hello) is the host ADVERTISING that it accepts a paste into
+	// a Hermes window (Window.Runtime RuntimeHermes), on an -interactive v2
+	// host. 🔴 NO HOST SETS IT YET: the host's flag and its gated send arrive
+	// together in Hermes Phase 3 (docs/design/hermes.md, the hermesSend
+	// switch). muster refuses every paste into a window the host REPORTS as
+	// Hermes unless the host advertised this (Hub.PasteWindow), so today every
+	// such paste is refused before it reaches the host.
+	//
+	// ⚠ WHAT THIS GATE DOES NOT COVER: a window the host does not report as
+	// Hermes. That is every window of a host older than this field, and any
+	// Hermes the strict mirroring rule does not recognise (a profile-launched
+	// `hermes -p coder chat`). Those rely on the host's own paste guard alone
+	// (Hermes Phase 1a, mirrorhost's typeInto), and a host older than that
+	// guard has none.
+	//
+	// NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS, like PanePaste: an older
+	// muster ignores it (and never sees a Hermes window: it does not read
+	// Window.Runtime); an older host never sets it.
+	HermesSend bool `json:"hermesSend,omitempty"`
 
 	// ---- subagent cards (subagents.go) ----
 
@@ -445,7 +464,96 @@ type Window struct {
 	// unless Claude and StatusWaiting, and on at most MaxPendingWindows windows
 	// of a list. Backward-compatible both ways, like ClaudeSession.
 	Pending *Pending `json:"pending,omitempty"`
+	// Runtime names the agent CLI in the window's active pane when it is NOT
+	// Claude Code: RuntimeHermes, or "" (Claude Code, which Claude says, or
+	// no agent at all). AgentRuntime is the one way to read it.
+	//
+	// 🔴 "" FOR CLAUDE CODE, NOT "claude", ON PURPOSE: a Claude window's bytes
+	// on the wire stay exactly what they were before runtimes existed, and the
+	// worst-case window list stays inside MaxFrame
+	// (TestTheLargestWindowListFitsOneFrame and its Hermes twin measure both).
+	//
+	// 🔴 A HERMES WINDOW IS NEVER Claude (NormalizeWindows enforces it), so an
+	// older muster — which ignores this field — shows it as a plain terminal
+	// window, and its only way in, the Terminal view's paste, is refused by
+	// every current host's Hermes paste guard. Backward-compatible both ways,
+	// like ClaudeSession.
+	Runtime string `json:"runtime,omitempty"`
+	// AgentSession is the SESSION ID of the conversation in a non-Claude
+	// window's pane (a Hermes id: "local-<64 hex>", or a rotated child's bare
+	// 32-hex id), "" when the host does not say. Bounded by ValidAgentSession,
+	// which is wider than a Claude id's 64 bytes. A Claude window's id stays in
+	// ClaudeSession (never in both, so a list's worst case grows by one id per
+	// window at most). SessionKey is the runtime-qualified key it is stored by.
+	// Backward-compatible both ways, like ClaudeSession.
+	AgentSession string `json:"agentSession,omitempty"`
 }
+
+// The agent runtimes a window can run (Window.AgentRuntime), sized for exactly
+// the two muster mirrors (docs/design/hermes.md, the runtime seam).
+const (
+	// RuntimeClaude: Claude Code. On the wire it is Window.Claude, never
+	// Window.Runtime.
+	RuntimeClaude = "claude"
+	// RuntimeHermes: the Hermes CLI (`hermes chat`). No rendered view and no
+	// send path yet: the window is detected and listed, nothing more.
+	RuntimeHermes = "hermes"
+)
+
+// AgentRuntime is the agent CLI in w's active pane: RuntimeClaude,
+// RuntimeHermes, or "" for none. What the hub's waiting set, AgentState and
+// the hermesSend switch key on, instead of w.Claude.
+func (w Window) AgentRuntime() string {
+	switch {
+	case w.Claude:
+		return RuntimeClaude
+	case w.Runtime == RuntimeHermes:
+		return RuntimeHermes
+	}
+	return ""
+}
+
+// SessionKey is the key w's conversation is stored by (a focus, a route, an
+// ask): a Claude session id as itself — exactly the key it always was — and a
+// Hermes one runtime-qualified, "hermes:<id>" (ValidSessionKey); "" when w
+// names no conversation.
+func (w Window) SessionKey() string {
+	switch w.AgentRuntime() {
+	case RuntimeClaude:
+		return w.ClaudeSession
+	case RuntimeHermes:
+		if w.AgentSession != "" {
+			return HermesKeyPrefix + w.AgentSession
+		}
+	}
+	return ""
+}
+
+// HermesKeyPrefix starts a Hermes conversation's session key.
+const HermesKeyPrefix = RuntimeHermes + ":"
+
+// agentSessionPattern is a non-Claude session id as the wire carries one
+// (Window.AgentSession): 1-128 bytes. Hermes's are "local-<64 hex>" (70), or a
+// rotated child's bare 32 hex, so a Claude id's 64-byte bound cannot hold them.
+var agentSessionPattern = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z_-]{0,127}$`)
+
+// ValidAgentSession reports whether id is a non-Claude session id the wire
+// carries.
+func ValidAgentSession(id string) bool { return agentSessionPattern.MatchString(id) }
+
+// SessionKeyPattern is every session key muster stores (SessionKey): a Claude
+// session id as it always was (1-64 bytes), or "hermes:" and a Hermes one
+// (1-128 bytes). 🔴 IT IS SPELLED ONCE: internal/focus validates with it, and
+// migration 0036 writes the same expression into the CHECKs of
+// agent_focus.subject_key, agent_focus_history.subject_key,
+// session_routes.target_key and attention_asks.mirror_session — a test there
+// reads the migration and fails when the two differ.
+const SessionKeyPattern = `^([0-9A-Za-z][0-9A-Za-z_-]{0,63}|hermes:[0-9A-Za-z][0-9A-Za-z_-]{0,127})$`
+
+var sessionKeyPattern = regexp.MustCompile(SessionKeyPattern)
+
+// ValidSessionKey reports whether key is a session key muster stores.
+func ValidSessionKey(key string) bool { return sessionKeyPattern.MatchString(key) }
 
 // The OtherClaude bounds.
 const (
@@ -455,7 +563,8 @@ const (
 
 // claudeSessionPattern is a Claude Code session id as the wire carries one: a
 // UUID in practice, bounded so the window list's worst case stays inside
-// MaxFrame. internal/focus and migration 0020 apply the same pattern.
+// MaxFrame. It is the Claude half of SessionKeyPattern, which internal/focus
+// and the stored keys' CHECKs (migration 0036) apply.
 var claudeSessionPattern = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z_-]{0,63}$`)
 
 // ValidClaudeSession reports whether id is a Claude session id the wire carries.
@@ -775,8 +884,21 @@ func NormalizeWindows(in []Window, now int64) []Window {
 			w.Label = ""
 		}
 		w.Command = validCommand(w.Command)
-		// A status describes a Claude pane; a window without one has none.
-		if w.Status = NormalizeStatus(w.Status); !w.Claude {
+		// 🔴 A HERMES WINDOW IS NEVER A CLAUDE ONE: a host claiming both gets
+		// the more restrictive reading, Hermes (no rendered view, no Claude
+		// paste, the hermesSend switch). Any other runtime name is dropped —
+		// muster mirrors exactly two.
+		switch {
+		case w.Runtime == RuntimeHermes:
+			w.Claude, w.ClaudeSession, w.Pending = false, "", nil
+		default:
+			w.Runtime = ""
+		}
+		if w.Runtime != RuntimeHermes || !ValidAgentSession(w.AgentSession) {
+			w.AgentSession = ""
+		}
+		// A status describes an agent's pane; a window without one has none.
+		if w.Status = NormalizeStatus(w.Status); w.AgentRuntime() == "" {
 			w.Status = ""
 		}
 		// And so does its time: none without a status, none before 1970.
@@ -980,7 +1102,7 @@ func (w Window) Equal(o Window) bool {
 	return w.Session == o.Session && w.ID == o.ID && w.Index == o.Index && w.Active == o.Active && w.Label == o.Label &&
 		w.Activity == o.Activity && w.Claude == o.Claude && w.Command == o.Command && w.Status == o.Status &&
 		w.StatusSince == o.StatusSince && w.ClaudeSession == o.ClaudeSession && slices.Equal(w.OtherClaude, o.OtherClaude) &&
-		pendingEqual(w.Pending, o.Pending)
+		pendingEqual(w.Pending, o.Pending) && w.Runtime == o.Runtime && w.AgentSession == o.AgentSession
 }
 
 // AskTyping is an answer to type into an AskUserQuestion picker (Msg.Ask):
