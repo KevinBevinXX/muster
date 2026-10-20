@@ -34,8 +34,8 @@ import (
 //
 // ⚠ THE TOOL'S NAME, ITS REFUSALS AND THE RELEASE ACTION ARE STRING LITERALS
 // here, so the behaviour tests are red on the pre-feature tree for a
-// behavioural reason. (reopenBeforeWrite, the race hook, is new: the file
-// needs it to build.)
+// behavioural reason. (reopenTestHooks, the race hooks, are new: the file
+// needs them to build.)
 
 // destroyProv records each Destroy and deletes the row the way
 // agentprovision.Adapter.Destroy does on success, or fails and keeps it when
@@ -57,6 +57,14 @@ func (p *destroyProv) Destroy(_ context.Context, id int64) error {
 	}
 	_, err := p.pool.Exec(authz.System(context.Background()), `DELETE FROM agents WHERE id = $1`, id)
 	return err
+}
+
+// setFail sets fail under the lock Destroy reads it under: the teardown runs
+// in destroyAgent's background goroutine.
+func (p *destroyProv) setFail(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.fail = err
 }
 
 func (p *destroyProv) destroyedIDs() []int64 {
@@ -355,26 +363,53 @@ func TestADestroyByIDKeepsATaskAnotherAgentStillWorks(t *testing.T) {
 }
 
 // TestTheReopenIsConditionalOnTheTaskStillBeingInProgress: the owner moves
-// the task to ready_for_review BETWEEN the reopen's read and its write (the
-// race hook); the conditional write leaves it ready_for_review.
+// the task to ready_for_review BETWEEN the reopen's read and its write; the
+// conditional write moves nothing (notes.ErrStatusMoved) and the task stays
+// ready_for_review. The hooks hand control to the test goroutine through
+// channels, so the status change and the assertions run on it — no state is
+// shared with the teardown goroutine except through those channels.
 func TestTheReopenIsConditionalOnTheTaskStillBeingInProgress(t *testing.T) {
 	f := newDestroyFixture(t)
 	n := f.task(t, "raced", notes.StatusInProgress)
 	a := f.agentOn(t, 1, "adraced", &n.ID)
-	hooked := 0
-	reopenBeforeWrite = func(id int64) {
-		if id == n.ID {
-			hooked++
-			f.setStatus(t, id, notes.StatusReadyForReview)
-		}
-	}
-	t.Cleanup(func() { reopenBeforeWrite = nil })
+	hit := make(chan struct{}, 1)
+	proceed := make(chan struct{})
+	result := make(chan error, 1)
+	var release sync.Once
+	reopenTestHooks.Store(&reopenHooks{
+		beforeWrite: func(id int64) {
+			if id == n.ID {
+				hit <- struct{}{}
+				<-proceed
+			}
+		},
+		afterWrite: func(id int64, err error) {
+			if id == n.ID {
+				result <- err
+			}
+		},
+	})
+	t.Cleanup(func() {
+		release.Do(func() { close(proceed) }) // never leave the goroutine parked
+		reopenTestHooks.Store(nil)
+	})
 	if text, isErr := f.destroy(t, f.ws, focusSID, map[string]any{"id": a.ID}); isErr {
 		t.Fatal(text)
 	}
-	f.waitGone(t, a.ID)
-	if hooked != 1 {
-		t.Fatalf("the race hook ran %d time(s): the window was not exercised", hooked)
+	select {
+	case <-hit:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the reopen never reached its write: the window was not exercised")
+	}
+	f.setStatus(t, n.ID, notes.StatusReadyForReview)
+	release.Do(func() { close(proceed) })
+	select {
+	case err := <-result:
+		if !errors.Is(err, notes.ErrStatusMoved) {
+			t.Fatalf("the reopen's write answered %v; want notes.ErrStatusMoved", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the reopen's write never finished")
 	}
 	if st := f.status(t, n.ID); st != notes.StatusReadyForReview {
 		t.Fatalf("a status set between the reopen's read and write was overwritten: the task is %q", st)
@@ -479,7 +514,7 @@ func TestAFailedTeardownReleasesAndReopensNothing(t *testing.T) {
 	f := newDestroyFixture(t)
 	n := f.task(t, "teardown fails", notes.StatusOpen)
 	chiefs := f.mustStart(t, n.ID)
-	f.prov.fail = errors.New("the backend is unreachable")
+	f.prov.setFail(errors.New("the backend is unreachable"))
 	if text, isErr := f.destroy(t, f.ws, focusSID, map[string]any{"id": chiefs}); isErr {
 		t.Fatal(text)
 	}

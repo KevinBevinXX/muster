@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/jackc/pgx/v5"
 
@@ -201,16 +202,30 @@ func (s *Server) reopenTaskAfterDestroy(ctx context.Context, a agents.Agent) {
 			return
 		}
 	}
-	if reopenBeforeWrite != nil {
-		reopenBeforeWrite(n.ID)
+	hooks := reopenTestHooks.Load()
+	if hooks != nil && hooks.beforeWrite != nil {
+		hooks.beforeWrite(n.ID)
 	}
-	if _, err := s.setNoteStatus(notes.OnlyFrom(ctx, notes.StatusInProgress), writerDestroyReopen, n.ID, notes.StatusOpen); err != nil {
+	_, err = s.setNoteStatus(notes.OnlyFrom(ctx, notes.StatusInProgress), writerDestroyReopen, n.ID, notes.StatusOpen)
+	if hooks != nil && hooks.afterWrite != nil {
+		hooks.afterWrite(n.ID, err)
+	}
+	if err != nil {
 		s.logger.Printf("agent_destroy: reopen task %d: %v", n.ID, err)
 		return
 	}
 	s.broadcast(ctx, EventTaskChanged, strconv.FormatInt(n.ID, 10))
 }
 
-// reopenBeforeWrite, when set (tests only), runs between reopenTaskAfterDestroy's
-// read and its write: the window the conditional write closes.
-var reopenBeforeWrite func(taskID int64)
+// reopenHooks are test-only seams around reopenTaskAfterDestroy's write:
+// beforeWrite runs between its read and its write (the window the conditional
+// write closes), afterWrite with the write's result.
+type reopenHooks struct {
+	beforeWrite func(taskID int64)
+	afterWrite  func(taskID int64, err error)
+}
+
+// reopenTestHooks holds the hooks (nil in production). 🔴 ATOMIC, because it
+// is read by destroyAgent's background goroutine — possibly one a previous
+// test started — while a test stores or clears it.
+var reopenTestHooks atomic.Pointer[reopenHooks]
