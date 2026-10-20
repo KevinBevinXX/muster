@@ -74,7 +74,19 @@ const (
 	noticeSendingAnother = "sending-another"
 	noticeSendNowFailed  = "send-now-failed"
 	noticeWaitingNow     = "waiting-now"
+	// The host's Hermes paste guard (mirror.PasteRefusal*).
+	noticeHermes      = "hermes"
+	noticeMultiplexer = "multiplexer"
+	noticeUnchecked   = "unchecked"
 )
+
+// pasteGuardNotices is the notice for each kind of Hermes paste-guard refusal
+// a host names.
+var pasteGuardNotices = map[string]string{
+	mirror.PasteRefusalHermes:      noticeHermes,
+	mirror.PasteRefusalMultiplexer: noticeMultiplexer,
+	mirror.PasteRefusalUnchecked:   noticeUnchecked,
+}
 
 // ComposerNoticeAgain is what a send that came back as a GET is told: it was
 // not delivered (its body did not survive the sign-in it was sent through).
@@ -116,6 +128,9 @@ var composerNotices = map[string]struct {
 	noticeSendingAnother:    {SendQueueSendingAnother, false},
 	noticeWaitingNow:        {SendQueueWaitingNow, false},
 	noticeSendNowFailed:     {"Not sent: the message could not be delivered. Its row in the queue says why.", false},
+	noticeHermes:            {mirror.PasteRefusedHermesText, false},
+	noticeMultiplexer:       {mirror.PasteRefusedMultiplexerText, false},
+	noticeUnchecked:         {mirror.PasteRefusedUncheckedText, false},
 }
 
 // SendQueueCancelledAnsweredText is what a Cancel of a queued message that

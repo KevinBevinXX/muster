@@ -293,7 +293,8 @@ func (h *hostSide) askAnswer() bool {
 //
 // 🔴 REFUSED UNLESS THIS HOST OPTED IN (-interactive), whatever muster asks —
 // muster refuses it too — and only for a listed session, into a pane that
-// runs Claude Code NOW (re-resolved here, as for a paste to the rendered view).
+// runs Claude Code NOW (re-resolved here, as for a paste to the rendered view),
+// through typeInto and so the Hermes paste guard.
 // The driver itself refuses to touch a picker that is not this question,
 // untouched (internal/askdrive).
 func (h *hostSide) answer(m mirror.Msg) {
@@ -353,8 +354,7 @@ func (h *hostSide) answer(m mirror.Msg) {
 		reply(fmt.Errorf("%w: %v", askdrive.ErrNoPicker, errNotClaudeNow))
 		return
 	}
-	h.leaveCopyModeFor(p.Pane)
-	reply(ab.AnswerAsk(ctx, p.Pane, m.Ask.Questions, m.Ask.Choices))
+	reply(h.typeInto(ctx, p.Pane, func() error { return ab.AnswerAsk(ctx, p.Pane, m.Ask.Questions, m.Ask.Choices) }))
 }
 
 // errCannotAnswer marks a refusal that means this host cannot type answers at

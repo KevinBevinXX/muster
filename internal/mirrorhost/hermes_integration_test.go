@@ -4,6 +4,7 @@ package mirrorhost
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -87,5 +88,62 @@ func TestTmuxATerminalPasteIntoAHermesPaneReachesNothing(t *testing.T) {
 	}
 	if out := r.run("list-buffers"); strings.Contains(out, "muster-mirror-") {
 		t.Fatalf("a refused paste loaded a tmux buffer: %s", out)
+	}
+}
+
+// TestTmuxAPasteIntoANestedMultiplexerIsRefused is the bypass the guard's walk
+// alone cannot see, against REAL tmux on TWO private sockets: the rig's pane
+// runs a tmux CLIENT of another server (`TMUX= tmux -L <inner> new-session`),
+// and the fake hermes runs in THAT server's pane — a child of the inner
+// server, not of anything in the rig's pane. The paste is refused as a
+// multiplexer, and nothing reaches the inner hermes.
+func TestTmuxAPasteIntoANestedMultiplexerIsRefused(t *testing.T) {
+	r := newTmuxRig(t)
+	inner := r.sock + "-inner"
+	t.Cleanup(func() {
+		c := exec.Command("tmux", "-L", inner, "kill-server")
+		c.Env = tmuxEnv()
+		_ = c.Run()
+	})
+	got := filepath.Join(t.TempDir(), "hermes.got")
+	agent := fakeAgent(t, "hermes", got)
+	r.run("new-session", "-d", "-s", "outer", "-x", "120", "-y", "40",
+		"env", "-u", "TMUX", "tmux", "-f", "/dev/null", "-L", inner, "new-session", "-s", "inner", "'"+agent+"' chat")
+	innerPane := func() string {
+		c := exec.Command("tmux", "-L", inner, "capture-pane", "-p", "-J", "-t", "=inner:")
+		c.Env = tmuxEnv()
+		out, _ := c.CombinedOutput()
+		return string(out)
+	}
+	waitFor(t, "the inner hermes to start", func() bool { return strings.Contains(innerPane(), "HERMES-READY") })
+	// Instrument check: hermes is NOT in the outer pane's tree, so only the
+	// multiplexer rule can refuse this paste.
+	root := strings.TrimSpace(r.run("display-message", "-p", "-t", "=outer:", "#{pane_pid}"))
+	if comm, _ := os.ReadFile("/proc/" + root + "/comm"); !strings.HasPrefix(strings.TrimSpace(string(comm)), "tmux") {
+		t.Fatalf("instrument check: the outer pane's root is %q, not a tmux client", comm)
+	}
+
+	d := newDrivenMuster(t)
+	d.run(t, Tmux{Socket: r.sock}, nil, true)
+	d.send(t, mirror.Msg{Type: mirror.TypePaste, ID: 1, Session: "outer", Text: "4 deny-this-please", AnyPane: true})
+	var a mirror.Msg
+	waitUntil(t, "the paste's answer", func() bool {
+		for _, m := range d.of(mirror.TypePasted) {
+			if m.ID == 1 {
+				a = m
+				return true
+			}
+		}
+		return false
+	})
+	if a.Error != ErrMultiplexerPane.Error() || a.Refusal != mirror.PasteRefusalMultiplexer {
+		t.Fatalf("a paste into a pane running another tmux's client answered %q (kind %q); want the multiplexer refusal", a.Error, a.Refusal)
+	}
+	time.Sleep(400 * time.Millisecond)
+	if s := readFile(t, got); s != "" {
+		t.Fatalf("the inner hermes received %q", s)
+	}
+	if p := innerPane(); strings.Contains(p, "deny-this-please") {
+		t.Fatalf("the text reached the inner pane:\n%s", p)
 	}
 }

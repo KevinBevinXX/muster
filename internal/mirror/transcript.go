@@ -80,7 +80,7 @@ func (hc *hostConn) deliverEvents(m Msg) {
 	}
 }
 
-func (hc *hostConn) pasted(id uint32, why string) {
+func (hc *hostConn) pasted(id uint32, why, refusal string) {
 	hc.mu.Lock()
 	ch := hc.pastes[id]
 	delete(hc.pastes, id)
@@ -89,10 +89,34 @@ func (hc *hostConn) pasted(id uint32, why string) {
 		return
 	}
 	if why != "" {
-		ch <- fmt.Errorf("%w: %s", ErrPasteRefused, why)
+		ch <- &PasteRefusedError{Why: why, Refusal: refusal}
 		return
 	}
 	ch <- nil
+}
+
+// PasteRefusedError is ErrPasteRefused with the host's reason (Why, its prose,
+// never parsed) and the kind it named (Refusal, a PasteRefusal* or "").
+type PasteRefusedError struct {
+	Why     string
+	Refusal string
+}
+
+func (e *PasteRefusedError) Error() string { return ErrPasteRefused.Error() + ": " + e.Why }
+func (e *PasteRefusedError) Unwrap() error { return ErrPasteRefused }
+
+// PasteGuardRefusal is the host's paste-guard refusal err carries (one of the
+// PasteRefusal* kinds), or "" when it is not one.
+func PasteGuardRefusal(err error) string {
+	var pr *PasteRefusedError
+	if !errors.As(err, &pr) {
+		return ""
+	}
+	switch pr.Refusal {
+	case PasteRefusalHermes, PasteRefusalMultiplexer, PasteRefusalUnchecked:
+		return pr.Refusal
+	}
+	return ""
 }
 
 // lookupClaude is owner's host serving (session, window) as a Claude pane over

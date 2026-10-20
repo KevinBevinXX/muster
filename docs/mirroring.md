@@ -206,36 +206,54 @@ read-only viewer can see. It does not limit an attached interactive client.
 With `-interactive`, both views get a message box. Typing into one requires a
 recent sign-in. See [sending-and-step-up.md](sending-and-step-up.md).
 
-### The Terminal view never pastes into Hermes
+### muster never pastes into Hermes
 
-🔴 The host refuses a message from the Terminal view's box when the pane runs
+🔴 The host refuses to type into a pane that runs
 [Hermes](design/hermes.md). On Hermes's approval prompt, a pasted message
-followed by Enter **approves the command**, whatever the message says. The page
-shows "Not sent: Hermes runs in this pane…", and nothing reaches the pane. Type
-into Hermes in the terminal itself (Live keys, or the terminal on the host).
-Sending to Hermes from a rendered view is planned for a later release, with its
-own checks; until then, muster has no send path into Hermes.
+followed by Enter **approves the command**, whatever the message says. This
+covers every way muster types into a pane: the Terminal view's message box,
+the Rendered view's send, and an answer typed into Claude Code's question
+picker. Nothing reaches the pane, and the page says why, whether or not script
+ran: "Not sent: Hermes runs in this pane…". Type into Hermes in the terminal
+itself (Live keys, or the terminal on the host). Sending to Hermes from its
+own rendered view is planned for a later release, with its own checks; until
+then, muster has no send path into Hermes.
 
-The host decides this itself, by what runs in the pane at the moment of the
-paste. It does not depend on the server's version. It walks the pane's process
-tree from its root process and refuses when any process in it looks like
-Hermes:
+The host decides this itself, by what runs in the pane at the moment it
+types. It does not depend on the server's version. It walks the pane's process
+tree from its root process and refuses when any process in it is one of
+these:
 
 - a process named `hermes` whose second argument is a `hermes` launcher (the
   Nix wrapper, a pip or uv install), whatever follows: `chat`,
   `-p <profile> chat`, `gateway run`;
-- a Python interpreter running Hermes's code: `-m hermes_cli…`, a script under
-  `hermes_cli/`, a script named `hermes`, a `cli.py` beside a `hermes_cli/`
-  directory, or `-c` code that names `hermes_cli`.
+- a Python interpreter with any argument that names `hermes_cli` (`-m
+  hermes_cli…`, a script under `hermes_cli/`, `-c` code importing it) or a
+  script named `hermes`, or a `cli.py` beside a `hermes_cli/` directory;
+- a terminal multiplexer client: `tmux`, `screen`, `dtach`, `abduco` or
+  `zellij`. A tmux started inside the pane can show a session of another
+  server, whose programs the host cannot see from this pane, so the host
+  refuses rather than guess. The message says so.
 
-The gateway counts, so a pane running `hermes gateway run` is refused too. If
-the host cannot read the pane's processes, it refuses the message rather than
-assume. Shells, Claude Code and other programs are unaffected, and so is the
-rendered view's send into Claude Code.
+The gateway counts, so a pane running `hermes gateway run` is refused too. So
+is a Claude Code pane whose tree holds Hermes: one where Hermes was started in
+the foreground after Claude Code (`claude &`, then `hermes chat`), or one where
+Claude Code itself runs `hermes mcp serve` or `hermes acp`. If the host cannot
+read a process in the pane's tree, it refuses rather than assume.
+Shells, Claude Code and other programs are otherwise unaffected.
 
-Known gaps: a Hermes run over `ssh` or `docker exec` inside the pane, one
-started under a renamed interpreter or from a copied tree, and a host with no
-`/proc` (macOS), where the host cannot see processes at all.
+These refusals are accepted as safe even when no Hermes is there: a nested
+tmux, screen or zellij session, a hand-run gateway, and a Claude Code pane
+whose Claude started a Hermes subprocess.
+
+Known gaps:
+
+- a Hermes run over `ssh` or `docker exec` inside the pane;
+- a Hermes started under a renamed interpreter or from a copied tree;
+- a host with no `/proc`, which means macOS. There the host cannot see
+  processes, and it types as before. Refusing every message there would take
+  the message box away from every macOS user, and no deployment runs Hermes on
+  a macOS host.
 
 ## Answering Claude's questions
 

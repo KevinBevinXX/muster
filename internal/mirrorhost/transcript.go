@@ -383,9 +383,14 @@ func (h *hostSide) panePaste() bool {
 //     a prompt written for Claude is never typed into the shell it left behind;
 //   - with m.AnyPane (the Terminal view's composer): the session's active pane
 //     whatever runs in it — EXCEPT a pane whose process tree holds Hermes,
-//     which is refused (guardHermesPaste). Otherwise that is no more than this
-//     host already granted by -interactive, which lets the same person type
-//     into the same pane.
+//     which is refused. Otherwise that is no more than this host already
+//     granted by -interactive, which lets the same person type into the same
+//     pane.
+//
+// 🔴 EITHER WAY THE KEYS GO THROUGH typeInto (hermes.go), the one way this host
+// types into a pane: the Hermes paste guard refuses a pane whose process tree
+// holds Hermes, a multiplexer client or a process it cannot read — a Claude
+// Code pane too, when Hermes was started in it (`claude &`, then `hermes`).
 func (h *hostSide) paste(m mirror.Msg) {
 	reply := func(err error) {
 		msg := ""
@@ -395,7 +400,7 @@ func (h *hostSide) paste(m mirror.Msg) {
 		} else {
 			h.c.log.Printf("muster-mirror: pasted a message into %q%s", m.Session, windowSuffix(m.Window))
 		}
-		_ = h.send(mirror.Msg{Type: mirror.TypePasted, ID: m.ID, Error: msg})
+		_ = h.send(mirror.Msg{Type: mirror.TypePasted, ID: m.ID, Error: msg, Refusal: pasteRefusalOf(err)})
 	}
 	if !h.c.cfg.Interactive {
 		reply(errors.New("this host is read-only (muster-mirror was not started with -interactive)"))
@@ -437,21 +442,7 @@ func (h *hostSide) paste(m mirror.Msg) {
 			reply(fmt.Errorf("session %q has no active pane to send to", m.Session))
 			return
 		}
-		// 🔴 THE HERMES PASTE GUARD (hermes.go): never into a pane whose
-		// process tree holds a Hermes-shaped process — paste+Enter on its
-		// approval modal approves the command. Decided here, by what runs in
-		// the pane NOW, whatever muster sent; before copy-mode is touched, so a
-		// refused paste changes nothing in the pane.
-		if err := guardHermesPaste(ctx, h.c.cfg.Backend, pane); err != nil {
-			var hr *hermesRefusal
-			if errors.As(err, &hr) {
-				h.c.log.Printf("muster-mirror: pane %s runs Hermes (pid %d, %s)", pane, hr.proc.PID, hr.proc.Rule)
-			}
-			reply(err)
-			return
-		}
-		h.leaveCopyModeFor(pane)
-		reply(pb.PastePane(ctx, pane, text))
+		reply(h.typeInto(ctx, pane, func() error { return pb.PastePane(ctx, pane, text) }))
 		return
 	}
 	cb, ok := h.claudeBackend()
@@ -464,8 +455,7 @@ func (h *hostSide) paste(m mirror.Msg) {
 		reply(errNotClaudeNow)
 		return
 	}
-	h.leaveCopyModeFor(p.Pane)
-	reply(cb.Paste(ctx, p, text))
+	reply(h.typeInto(ctx, p.Pane, func() error { return cb.Paste(ctx, p, text) }))
 }
 
 // leaveCopyModeFor cancels the copy-mode a drag-to-scroll on THIS connection

@@ -22,9 +22,9 @@ Each box can also have a microphone; see [dictation.md](dictation.md).
   calls itself "read-only" while its box can send: with live keys off the status
   reads just "Connected". A read-only host says so once, in the box's disabled
   note.
-- On the Terminal view, the host refuses a message into a pane that runs
-  Hermes, and nothing is pasted
-  ([mirroring.md](mirroring.md#the-terminal-view-never-pastes-into-hermes)).
+- On either view, the host refuses a message into a pane that runs Hermes
+  (or a nested terminal multiplexer, or processes it cannot read), and nothing
+  is pasted ([mirroring.md](mirroring.md#muster-never-pastes-into-hermes)).
 - Only newline and tab are accepted as control characters. Several lines arrive
   as one bracketed paste, and the single Enter runs them in order. A program that
   did not ask for bracketed paste gets the text as typed, so each newline is an
