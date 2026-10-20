@@ -12,8 +12,9 @@ import (
 // THE SEND QUEUE in a mirrored window's Rendered view (internal/sendqueue): a
 // "Queue for when idle" item behind Send's caret (composer_menu.go), and the
 // window's queue under the status line — what is waiting, what
-// it is waiting for, a Cancel for each message not yet being sent, and the
-// last few outcomes, each with a Delete.
+// it is waiting for, a ⋯ menu for each message not yet being sent (Send now,
+// Copy message, Cancel: sendQueueRowMenu), and the last few outcomes, each
+// with a Delete.
 //
 // 🔴 THE QUEUE IS THE SERVER'S, NOT THE PAGE'S. Queue posts the message to
 // SendQueuePath and the server sends it when the target has been idle long
@@ -26,7 +27,9 @@ import (
 // browser opens itself, Queue in it is a submit button whose formaction is the
 // queue route (the browser posts the same form there and is
 // redirected back with a notice), the list is drawn into the page by the
-// server, and each Cancel, Retry and Delete is a form of its own.
+// server, each row's ⋯ menu is a popover too, and each Send now, Cancel, Retry
+// and Delete is a form of its own. (Copy message needs script, and is not
+// offered without it.)
 
 // SendQueuePath is the queue's route: POST queues a message, GET is a
 // target's list (SendQueueList), drawn as a fragment.
@@ -45,6 +48,11 @@ func SendQueueRetryPath(id int64) string {
 // SendQueueDeletePath is where message id's Delete posts.
 func SendQueueDeletePath(id int64) string {
 	return SendQueuePath + "/" + strconv.FormatInt(id, 10) + "/delete"
+}
+
+// SendQueueSendNowPath is where message id's Send now posts.
+func SendQueueSendNowPath(id int64) string {
+	return SendQueuePath + "/" + strconv.FormatInt(id, 10) + "/send-now"
 }
 
 // SendQueueDeleteLabel is a finished message's Delete, as a screen reader
@@ -75,6 +83,9 @@ type SendQueueItem struct {
 	State string
 	// Preview is the start of the message (the owner's own text).
 	Preview string
+	// Body is the whole message, for a queued one's Copy message; "" for the
+	// others, which have no Copy.
+	Body string
 	// Detail is the outcome in words, for a finished one.
 	Detail string
 	// Cancellable: still queued.
@@ -168,16 +179,7 @@ func SendQueueList(v SendQueueListView) g.Node {
 					Class("text-[11px] font-semibold text-st-error-fg [overflow-wrap:anywhere]"), g.Text(SendQueueMayHaveSentText))),
 			),
 			g.If(it.Retryable, sendQueueRetryForm(it)),
-			g.If(it.Cancellable, Form(
-				Method("post"),
-				Action(SendQueueCancelPath(it.ID)),
-				g.Attr("data-cancel", ""),
-				Class("shrink-0"),
-				Button(Type("submit"),
-					g.Attr("aria-label", "Cancel this queued message"),
-					Class("press min-h-[44px] rounded-lg px-3 text-xs font-semibold text-fg2 ring-1 ring-inset ring-line transition hover:bg-s2"),
-					g.Text("Cancel")),
-			)),
+			g.If(it.Cancellable, sendQueueRowMenu(it)),
 			g.If(it.Deletable, Form(
 				Method("post"),
 				Action(SendQueueDeletePath(it.ID)),
@@ -199,6 +201,70 @@ func SendQueueList(v SendQueueListView) g.Node {
 		g.If(v.Waiting != "", P(ID("mv-queue-waiting"), Class("text-[11px] text-muted [overflow-wrap:anywhere]"),
 			g.Text("Next: "+v.Waiting))),
 		Ul(Class("max-h-40 overflow-y-auto"), g.Group(rows)),
+	)
+}
+
+// The labels of a queued message's ⋯ menu.
+const (
+	SendQueueMenuLabel    = "More actions for this queued message"
+	SendQueueSendNowLabel = "Send now"
+	SendQueueCopyLabel    = "Copy message"
+	SendQueueCancelLabel  = "Cancel this queued message"
+)
+
+// sendQueueMenuItemClass is an item of a queued message's ⋯ menu: a full-width
+// 44px row, like the caret menu's Queue.
+const sendQueueMenuItemClass = "press flex min-h-[44px] w-full items-center rounded-lg px-3 text-left text-sm font-semibold transition hover:bg-s2 focus:bg-s2 focus:outline-none disabled:opacity-40"
+
+// sendQueueRowMenu is a QUEUED message's ⋯ menu: Send now, Copy message and
+// Cancel.
+//
+// IT WORKS WITHOUT SCRIPT, like the caret's menu: it is a POPOVER the ⋯ button
+// opens itself (popovertarget), which closes on Escape and on a tap outside
+// with no script at all, and Send now and Cancel are each a real form. Copy
+// message needs the clipboard, so it is drawn hidden and the list's script
+// shows it; the whole message rides in the row (a template), because the
+// preview is cut. sendQueueScript adds the menu-button keyboard pattern,
+// places the menu beside its button and keeps aria-expanded true.
+//
+// 🔴 OUT OF FLOW: the menu is in the top layer, so opening it moves nothing on
+// the page (no layout shift), and the list's poll does not redraw the rows
+// while one is open.
+func sendQueueRowMenu(it SendQueueItem) g.Node {
+	id := strconv.FormatInt(it.ID, 10)
+	menu := "mv-qm-" + id
+	return Div(
+		g.Attr("data-queue-menu", ""),
+		Class("shrink-0"),
+		Button(
+			Type("button"),
+			ID(menu+"-btn"),
+			g.Attr("popovertarget", menu),
+			g.Attr("aria-haspopup", "menu"),
+			g.Attr("aria-expanded", "false"),
+			g.Attr("aria-controls", menu),
+			g.Attr("aria-label", SendQueueMenuLabel),
+			g.Attr("title", SendQueueMenuLabel),
+			Class("press inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-fg2 ring-1 ring-inset ring-line transition hover:bg-s2"),
+			g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><circle cx="4" cy="10" r="1.75"/><circle cx="10" cy="10" r="1.75"/><circle cx="16" cy="10" r="1.75"/></svg>`),
+		),
+		Div(
+			ID(menu),
+			g.Attr("popover", ""),
+			g.Attr("role", "menu"),
+			g.Attr("aria-label", "Queued message"),
+			Class("m-0 min-w-[12rem] rounded-xl border-0 bg-s1 p-1 text-fg shadow-lg ring-1 ring-line"),
+			Form(Method("post"), Action(SendQueueSendNowPath(it.ID)), g.Attr("data-send-now", ""),
+				Button(Type("submit"), g.Attr("role", "menuitem"), g.Attr("title", "Send it now, without waiting for Claude Code to be idle"),
+					Class(sendQueueMenuItemClass+" text-fg"), g.Text(SendQueueSendNowLabel))),
+			Button(Type("button"), g.Attr("role", "menuitem"), g.Attr("data-queue-copy", ""), g.Attr("hidden", ""),
+				Class(sendQueueMenuItemClass+" text-fg"), g.Text(SendQueueCopyLabel)),
+			Form(Method("post"), Action(SendQueueCancelPath(it.ID)), g.Attr("data-cancel", ""),
+				Button(Type("submit"), g.Attr("role", "menuitem"), g.Attr("aria-label", SendQueueCancelLabel),
+					Class(sendQueueMenuItemClass+" text-st-error-fg"), g.Text("Cancel"))),
+		),
+		// The whole message, for Copy message: inert, never rendered.
+		Template(g.Attr("data-queue-body", ""), g.Text(it.Body)),
 	)
 }
 
@@ -315,8 +381,10 @@ func sendQueueBox(q *ComposerQueue, off bool) g.Node {
 
 // sendQueueScript keeps #mv-queue current: re-read every 3 s while anything is
 // open there, every 15 s otherwise, at once on a Queue (the composer's script
-// dispatches mv-queued) and when the page is shown again; and it sends each
-// Cancel, Retry and Delete without leaving the page.
+// dispatches mv-queued) and when the page is shown again — never while a row's
+// menu is open; it sends each Send now, Cancel, Retry and Delete without
+// leaving the page; it copies a queued message; and it drives the rows' ⋯
+// menus (sendQueueRowMenu).
 func sendQueueScript() g.Node {
 	return Script(g.Raw(`
 (function () {
@@ -328,19 +396,172 @@ func sendQueueScript() g.Node {
     clearTimeout(timer);
     timer = setTimeout(load, box.querySelector('[data-active]') ? 3000 : 15000);
   }
+  // menuOpen: a row's ⋯ menu is open. The list is not redrawn under it (a
+  // redraw would close it, and drop the focus inside it); the next load after
+  // it closes catches up.
+  function menuOpen() {
+    var ms = box.querySelectorAll('[data-queue-menu] [popover]');
+    for (var i = 0; i < ms.length; i++) {
+      try { if (ms[i].matches(':popover-open')) return true; } catch (e) { return false; }
+    }
+    return false;
+  }
+  // copyable: Copy message is shown only where the page can write the
+  // clipboard (it is drawn hidden: without script there is no Copy).
+  function copyable() {
+    var cs = box.querySelectorAll('[data-queue-copy]');
+    for (var i = 0; i < cs.length; i++) cs[i].hidden = false;
+  }
   function load() {
     if (typeof fetch !== 'function') return;
     if (loading) return;
-    if (document.hidden) { schedule(); return; }
+    if (document.hidden || menuOpen()) { schedule(); return; }
     loading = true;
     fetch(src, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
       .then(function (r) { return r.ok ? r.text() : null; })
-      .then(function (t) { loading = false; if (t !== null) box.innerHTML = t; schedule(); },
-            function () { loading = false; schedule(); });
+      .then(function (t) {
+        loading = false;
+        if (t !== null && !menuOpen()) { box.innerHTML = t; copyable(); }
+        schedule();
+      }, function () { loading = false; schedule(); });
   }
   function note(t) {
     var n = document.getElementById('mv-note');
     if (n && t) { n.textContent = t; n.hidden = false; n.removeAttribute('data-ok'); }
+  }
+  function noteOK(t) {
+    var n = document.getElementById('mv-note');
+    if (n && t) { n.textContent = t; n.hidden = false; n.setAttribute('data-ok', ''); }
+  }
+
+  // THE ROW MENUS (sendQueueRowMenu): the popover opens, light-dismisses and
+  // closes on Escape by itself; this adds the menu-button pattern. Delegated,
+  // because the rows are redrawn: toggle does not bubble, so it is taken in
+  // the capture phase.
+  function menuOf(btn) { return btn && document.getElementById(btn.getAttribute('aria-controls')); }
+  function items(menu) {
+    return Array.prototype.slice.call(menu.querySelectorAll('[role=menuitem]')).filter(function (b) { return !b.hidden; });
+  }
+  function focusItem(menu, i) {
+    var it = items(menu); if (!it.length) return;
+    it[(i + it.length) % it.length].focus();
+  }
+  // place puts the menu under its button, right-aligned to it — or above it
+  // when there is no room below. Done BEFORE it is shown (beforetoggle): a
+  // popover is painted in the middle of the screen first otherwise.
+  function place(menu) {
+    var btn = document.getElementById(menu.id + '-btn');
+    if (!btn) return;
+    var r = btn.getBoundingClientRect();
+    var vv = window.visualViewport;
+    var bottom = vv ? vv.height + vv.offsetTop : window.innerHeight;
+    menu.style.position = 'fixed';
+    menu.style.inset = 'auto';
+    menu.style.margin = '0';
+    menu.style.right = Math.max(8, Math.round(document.documentElement.clientWidth - r.right)) + 'px';
+    var h = 3 * 44 + 16;
+    if (r.bottom + 6 + h <= bottom) menu.style.top = Math.round(r.bottom + 6) + 'px';
+    else menu.style.bottom = Math.max(8, Math.round(window.innerHeight - r.top + 6)) + 'px';
+  }
+  var focusFirst = false;
+  box.addEventListener('beforetoggle', function (e) {
+    var m = e.target;
+    if (m && m.hasAttribute && m.hasAttribute('popover') && e.newState === 'open') { copyable(); place(m); }
+  }, true);
+  box.addEventListener('toggle', function (e) {
+    var m = e.target;
+    if (!m || !m.hasAttribute || !m.hasAttribute('popover')) return;
+    var open = e.newState ? e.newState === 'open' : m.matches(':popover-open');
+    var btn = document.getElementById(m.id + '-btn');
+    if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open && focusFirst) focusItem(m, 0);
+    focusFirst = false;
+    if (!open) schedule();
+  }, true);
+  box.addEventListener('click', function (e) {
+    var b = e.target && e.target.closest ? e.target.closest('[aria-haspopup=menu]') : null;
+    if (b) focusFirst = true;
+  });
+  box.addEventListener('keydown', function (e) {
+    var t = e.target;
+    if (!t || !t.closest) return;
+    var btn = t.closest('[aria-haspopup=menu]');
+    if (btn && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+      var m0 = menuOf(btn);
+      if (!m0 || typeof m0.showPopover !== 'function') return;
+      e.preventDefault();
+      focusFirst = true;
+      if (!m0.matches(':popover-open')) m0.showPopover(); else focusItem(m0, e.key === 'ArrowUp' ? -1 : 0);
+      return;
+    }
+    var m = t.closest('[data-queue-menu] [popover]');
+    if (!m) return;
+    var it = items(m), i = it.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown') { e.preventDefault(); focusItem(m, i + 1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); focusItem(m, i - 1); }
+    else if (e.key === 'Home') { e.preventDefault(); focusItem(m, 0); }
+    else if (e.key === 'End') { e.preventDefault(); focusItem(m, -1); }
+    else if (e.key === 'Escape') {
+      e.preventDefault();
+      try { m.hidePopover(); } catch (err) {}
+      var ob = document.getElementById(m.id + '-btn');
+      if (ob) ob.focus();
+    }
+    else if (e.key === 'Tab') { try { m.hidePopover(); } catch (err) {} }
+  });
+  function closeMenu(el) {
+    var m = el && el.closest ? el.closest('[data-queue-menu] [popover]') : null;
+    if (m) { try { m.hidePopover(); } catch (err) {} }
+  }
+
+  // Copy message: the WHOLE message (the row's template; the preview is cut),
+  // to the clipboard, then a brief "Copied." Where the async clipboard is
+  // refused (no secure context), a selected textarea and execCommand.
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText && window.isSecureContext) {
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise(function (ok, fail) {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed'; ta.style.top = '0'; ta.style.left = '0'; ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      var done = false;
+      try { done = document.execCommand('copy'); } catch (err) {}
+      document.body.removeChild(ta);
+      if (done) ok(); else fail(new Error('copy refused'));
+    });
+  }
+  box.addEventListener('click', function (e) {
+    var c = e.target && e.target.closest ? e.target.closest('[data-queue-copy]') : null;
+    if (!c) return;
+    var row = c.closest('[data-queue-id]');
+    var tpl = row ? row.querySelector('template[data-queue-body]') : null;
+    var text = tpl ? (tpl.content ? tpl.content.textContent : tpl.textContent) : '';
+    closeMenu(c);
+    copyText(text).then(function () { noteOK('Copied.'); }, function () { note('Not copied: this browser did not allow it.'); });
+  });
+
+  // Send now: sends a queued message at once, under this session's sign-in; a
+  // stale one asks "Confirm it's you" and sends.
+  function sendNow(f) {
+    var b = f.querySelector('button');
+    if (b) b.disabled = true;
+    return fetch(f.getAttribute('action'), { method: 'POST', credentials: 'same-origin',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      .then(function (r) {
+        if (r.ok) { noteOK('Sent.'); return; }
+        if (r.status === 403 && r.headers.get('X-Muster-Step-Up') && window.musterStepUp) {
+          window.musterStepUp.stale();
+          window.musterStepUp.ask('', function () { return sendNow(f); });
+          return;
+        }
+        if (b) b.disabled = false;
+        return r.text().then(function (t) { note(t.trim() || ('Not sent (HTTP ' + r.status + ')')); });
+      })
+      .then(load, load);
   }
   // Retry: queues a failed message again under this session's sign-in. One
   // that may already have been sent is asked about once (data-confirm), and the
@@ -365,6 +586,13 @@ func sendQueueScript() g.Node {
   }
   box.addEventListener('submit', function (e) {
     var f = e.target;
+    // An item of a row's menu: the menu has done its job.
+    closeMenu(f);
+    if (f && f.hasAttribute && f.hasAttribute('data-send-now') && typeof fetch === 'function') {
+      e.preventDefault();
+      sendNow(f);
+      return;
+    }
     if (f && f.hasAttribute && f.hasAttribute('data-retry') && typeof fetch === 'function' && typeof URLSearchParams === 'function') {
       e.preventDefault();
       var ask = f.getAttribute('data-confirm');
@@ -415,6 +643,7 @@ func sendQueueScript() g.Node {
   });
   document.addEventListener('mv-queued', load);
   document.addEventListener('visibilitychange', function () { if (!document.hidden) load(); });
+  copyable();
   schedule();
 })();
 `))

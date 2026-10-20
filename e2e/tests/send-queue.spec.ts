@@ -2,7 +2,7 @@ import { execFileSync, spawn, ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Browser, BrowserContext, Page } from '@playwright/test';
+import { Browser, BrowserContext, Locator, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { binDir, dsn, password, repoRoot, sendQueuePort, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
@@ -183,6 +183,24 @@ async function queue(page: Page, text: string, touch: boolean) {
 const sqfix = (...args: string[]) =>
   execFileSync('go', ['run', './e2e/sqfix', ...args], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } });
 
+// A queued row's ⋯ menu and its items (ui.sendQueueRowMenu): Send now, Copy
+// message and Cancel live behind it.
+const moreOf = (r: Locator) => r.getByRole('button', { name: 'More actions for this queued message' });
+const itemOf = (r: Locator, name: string) => r.getByRole('menuitem', { name });
+async function openMenu(r: Locator, touch = false) {
+  const more = moreOf(r);
+  if (touch) await more.tap();
+  else await more.click();
+  await expect(more).toHaveAttribute('aria-expanded', 'true');
+}
+// cancelRow is Cancel, through the row's menu.
+async function cancelRow(r: Locator, touch = false) {
+  await openMenu(r, touch);
+  const c = itemOf(r, 'Cancel this queued message');
+  if (touch) await c.tap();
+  else await c.click();
+}
+
 const rows = (page: Page) => page.locator('#mv-queue [data-queue-id]');
 const row = (page: Page, text: string) => page.locator('#mv-queue [data-queue-id]', { hasText: text });
 const rowIn = (page: Page, text: string, state: string) => page.locator(`#mv-queue [data-queue-state="${state}"]`, { hasText: text });
@@ -244,7 +262,7 @@ test.describe('phone 390×844 touch', () => {
     await openView(other.page, newHost);
     const r = row(other.page, 'cancel me please');
     await expect(r).toHaveAttribute('data-queue-state', 'queued');
-    await r.getByRole('button', { name: 'Cancel this queued message' }).tap();
+    await cancelRow(r, true);
     await expect(r).toHaveAttribute('data-queue-state', 'cancelled');
     // The first device's list follows (it polls while anything is open).
     await expect(row(page, 'cancel me please'), 'the first device sees the cancel').toHaveAttribute('data-queue-state', 'cancelled', { timeout: 20_000 });
@@ -303,7 +321,7 @@ test.describe('desktop 1280×800', () => {
     await expect(page.locator('#mv-input')).toHaveValue('');
     await expect.poll(pasted, { message: 'Send pastes at once, busy or not' }).toEqual([`${pane} desktop sent now`]);
     // Tidy: the queued one is cancelled, so no later run sees it sent.
-    await row(page, 'desktop queued').getByRole('button', { name: 'Cancel this queued message' }).click();
+    await cancelRow(row(page, 'desktop queued'));
     await expect(row(page, 'desktop queued')).toHaveAttribute('data-queue-state', 'cancelled');
     busy(false);
   });
@@ -531,7 +549,7 @@ test.describe('desktop 1280×800', () => {
     await expect(rowIn(page, text, 'queued'), 'an accepted Retry queues it again').toHaveCount(1, { timeout: 20_000 });
     expect(posts, 'CONTROL: the accepted Retry posted once, saying it was confirmed').toEqual(['confirm=1']);
     // Tidy: cancel the copy, so no later run sees it sent.
-    await rowIn(page, text, 'queued').getByRole('button', { name: 'Cancel this queued message' }).click();
+    await cancelRow(rowIn(page, text, 'queued'));
     await expect(rowIn(page, text, 'cancelled')).toHaveCount(1);
     busy(false);
   });
@@ -550,8 +568,216 @@ test.describe('desktop 1280×800', () => {
     await queue(page, 'queued without a submitter', false);
     await expect(row(page, 'queued without a submitter')).toHaveAttribute('data-queue-state', 'queued');
     expect(pasted(), 'nothing was sent now').toEqual([]);
-    await row(page, 'queued without a submitter').getByRole('button', { name: 'Cancel this queued message' }).click();
+    await cancelRow(row(page, 'queued without a submitter'));
     await expect(row(page, 'queued without a submitter')).toHaveAttribute('data-queue-state', 'cancelled');
     busy(false);
+  });
+});
+
+// 🔴 CLAUDE CODE'S "shell" IS IDLE (Claude Code 2.1.289 writes it instead of
+// "idle" while a run_in_background Bash task is still alive and no turn is):
+// the prompt is free, so a queued message is sent. On origin/main the server
+// read "shell" as unknown and held the message for as long as the background
+// shell ran, so this fails at the paste. A status muster does not know at all
+// still holds the queue, and the list NAMES it rather than saying "working".
+test.describe('statuses', () => {
+  test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false, storageState: { cookies: [], origins: [] } });
+
+  test('"shell" (idle with a background shell) sends the queued message; an unknown status holds it and is named', async ({ page }) => {
+    await busyAndSeen();
+    fs.rmSync(tr + '.pasted', { force: true });
+    await openView(page, newHost);
+    const unknownText = 'held on an unknown status ' + stamp;
+    await queue(page, unknownText, false);
+    setStatus('compacting');
+    const waiting = page.locator('#mv-queue-waiting');
+    await expect(waiting, `the unknown status is named (log:\n${mirrorLog})`).toContainText(
+      'Claude Code reports a status muster does not know: "compacting"',
+      { timeout: 20_000 },
+    );
+    await expect(waiting).not.toContainText('working');
+    await holdWindow();
+    expect(pasted(), 'nothing is sent on a status muster does not know').toEqual([]);
+    // The turn ends with a background shell still running: "shell", a newer time.
+    setStatus('shell');
+    await expect.poll(pasted, { message: `sent once Claude Code reports "shell" (log:\n${mirrorLog})`, timeout: 30_000 }).toEqual([
+      `${pane} ${unknownText}`,
+    ]);
+    await expect(rowIn(page, unknownText, 'sent')).toHaveCount(1, { timeout: 20_000 });
+    await busyAndSeen();
+  });
+});
+
+// THE QUEUED ROW'S ⋯ MENU (ui.sendQueueRowMenu): Send now, Copy message,
+// Cancel. On origin/main a queued row has a bare Cancel and no menu, so each
+// of these fails at the ⋯ button.
+test.describe('queued row menu, phone 390×844 touch', () => {
+  test.use({ ...phone, storageState: { cookies: [], origins: [] } });
+
+  // 🔴 SEND NOW SENDS WHILE BUSY, ONCE; THE OTHER WAITS FOR IDLE AS BEFORE.
+  test('Send now pastes a queued message at once while Claude Code is busy, and the other still waits', async ({ page }) => {
+    await busyAndSeen();
+    fs.rmSync(tr + '.pasted', { force: true });
+    await openView(page, newHost);
+    const first = 'send-now first ' + stamp;
+    const second = 'send-now second ' + stamp;
+    await queue(page, first, true);
+    await queue(page, second, true);
+    const r = rowIn(page, second, 'queued');
+    await openMenu(r, true);
+    await itemOf(r, 'Send now').tap();
+    await expect.poll(pasted, { message: `Send now pastes at once, busy or not (log:\n${mirrorLog})`, timeout: 15_000 }).toEqual([
+      `${pane} ${second}`,
+    ]);
+    await expect(page.locator('#mv-note')).toHaveText('Sent.');
+    await expect(rowIn(page, second, 'sent'), 'the row shows it sent').toHaveCount(1, { timeout: 20_000 });
+    await expect(rowIn(page, first, 'queued'), 'the other stays queued').toHaveCount(1);
+    await holdWindow();
+    expect(pasted(), 'the other is not sent while busy').toEqual([`${pane} ${second}`]);
+    // (That the next waits for the turn a Send now started, whatever the
+    // timing, is pinned in Go: TestSendNowSendsAQueuedMessageAtOnceAndTheNextStillWaitsForItsTurn.)
+    busy(false);
+    await expect.poll(pasted, { message: 'the other is sent once idle', timeout: 30_000 }).toEqual([`${pane} ${second}`, `${pane} ${first}`]);
+    await busyAndSeen();
+  });
+
+  test('Copy message copies the whole message, not the preview, and says so', async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin });
+    await busyAndSeen();
+    await openView(page, newHost);
+    // Longer than the 200-character preview, so a copy of the preview fails.
+    const text = 'copy me ' + stamp + ' ' + 'lorem ipsum dolor sit amet '.repeat(12) + 'THE END';
+    await queue(page, text, true);
+    const r = rowIn(page, 'copy me ' + stamp, 'queued');
+    await openMenu(r, true);
+    await itemOf(r, 'Copy message').tap();
+    await expect(page.locator('#mv-note')).toHaveText('Copied.');
+    expect(await page.evaluate(() => navigator.clipboard.readText()), 'the clipboard holds the whole message').toBe(text);
+    await expect(moreOf(r), 'the menu closed').toHaveAttribute('aria-expanded', 'false');
+    await cancelRow(r, true);
+    await expect(rowIn(page, 'copy me ' + stamp, 'cancelled')).toHaveCount(1);
+    expect(pasted().some((l) => l.includes('copy me ' + stamp)), 'a copy sends nothing').toBe(false);
+  });
+
+  test('the menu fits the phone, moves nothing, and closes on a tap outside', async ({ page }) => {
+    await busyAndSeen();
+    await openView(page, newHost);
+    const text = 'menu layout ' + stamp;
+    await queue(page, text, true);
+    const r = rowIn(page, text, 'queued');
+    // Every layout shift whose moved nodes are the queue's or the menu's —
+    // input or not: CLS leaves out shifts right after input, and a menu opened
+    // by a tap is exactly that. (Other parts of the view move on their own —
+    // the "Claude is working…" line — and are not this menu's.)
+    await page.evaluate(() => {
+      const w = window as unknown as { __shift: number; __shifts: string[] };
+      w.__shift = 0;
+      w.__shifts = [];
+      new PerformanceObserver((l) => {
+        for (const e of l.getEntries() as unknown as { value: number; sources: { node?: Node | null }[] }[]) {
+          const nodes = (e.sources || []).map((x) => x.node).filter((n): n is Node => !!n);
+          const ours = nodes.some((n) => {
+            const el = n instanceof Element ? n : n.parentElement;
+            return !!el && !!el.closest('#mv-queue, [data-queue-menu]');
+          });
+          if (ours) w.__shift += e.value;
+          w.__shifts.push(`${e.value.toFixed(4)} ours=${ours} ` + nodes.map((n) => (n instanceof Element ? n.id || n.tagName : n.nodeName)).join(','));
+        }
+      }).observe({ type: 'layout-shift', buffered: false });
+    });
+    const before = await r.boundingBox();
+    await openMenu(r, true);
+    const menu = r.getByRole('menu');
+    await expect(menu).toBeVisible();
+    const box = await menu.boundingBox();
+    const vw = page.viewportSize()!.width;
+    expect(box && box.x >= 0 && box.x + box.width <= vw, `the menu is on screen: ${JSON.stringify(box)}`).toBe(true);
+    for (const name of ['Send now', 'Copy message', 'Cancel this queued message']) {
+      const b = await itemOf(r, name).boundingBox();
+      expect(b && b.height >= 44, `${name} is a 44px target: ${JSON.stringify(b)}`).toBe(true);
+    }
+    const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+    expect(sw, 'no horizontal scroll').toBeLessThanOrEqual(cw);
+    // A tap outside the menu (the conversation) closes it.
+    await page.locator('#mv-log').tap({ position: { x: 20, y: 20 } });
+    await expect(menu).toBeHidden();
+    await expect(moreOf(r)).toHaveAttribute('aria-expanded', 'false');
+    expect(await r.boundingBox(), 'the row did not move').toEqual(before);
+    await page.waitForTimeout(300);
+    expect(await page.evaluate(() => (window as unknown as { __shift: number }).__shift), 'no layout shift opening or closing it: ' +
+      JSON.stringify(await page.evaluate(() => (window as unknown as { __shifts: string[] }).__shifts))).toBeLessThan(0.001);
+    await cancelRow(r, true);
+    await expect(rowIn(page, text, 'cancelled')).toHaveCount(1);
+  });
+});
+
+test.describe('queued row menu, desktop 1280×800 keyboard', () => {
+  test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false, storageState: { cookies: [], origins: [] } });
+
+  test('the menu is a keyboard menu button: Enter opens it on its first item, arrows move, Escape closes it back to the button', async ({ page }) => {
+    await busyAndSeen();
+    await openView(page, newHost);
+    const text = 'keyboard menu ' + stamp;
+    await queue(page, text, false);
+    const r = rowIn(page, text, 'queued');
+    const more = moreOf(r);
+    await expect(more).toHaveAttribute('aria-haspopup', 'menu');
+    await expect(more).toHaveAttribute('aria-expanded', 'false');
+    await more.focus();
+    await page.keyboard.press('Enter');
+    await expect(more).toHaveAttribute('aria-expanded', 'true');
+    await expect(itemOf(r, 'Send now')).toBeFocused();
+    await page.keyboard.press('ArrowDown');
+    await expect(itemOf(r, 'Copy message')).toBeFocused();
+    await page.keyboard.press('ArrowDown');
+    await expect(itemOf(r, 'Cancel this queued message')).toBeFocused();
+    await page.keyboard.press('ArrowDown');
+    await expect(itemOf(r, 'Send now'), 'it wraps').toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(r.getByRole('menu')).toBeHidden();
+    await expect(more).toHaveAttribute('aria-expanded', 'false');
+    await expect(more, 'focus is back on the button').toBeFocused();
+    // ArrowDown on the button opens it too; Cancel by keyboard cancels.
+    await page.keyboard.press('ArrowDown');
+    await expect(itemOf(r, 'Send now')).toBeFocused();
+    await page.keyboard.press('End');
+    await expect(itemOf(r, 'Cancel this queued message')).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(rowIn(page, text, 'cancelled')).toHaveCount(1, { timeout: 20_000 });
+    expect(pasted().some((l) => l.includes(text)), 'a cancelled message is not sent').toBe(false);
+  });
+
+  // 🔴 NO SCRIPT: the menu is the browser's own popover, and Send now and
+  // Cancel are real forms; Copy message, which needs script, is not drawn.
+  test('without JavaScript the menu opens, Send now and Cancel work as forms, and Copy is not offered', async ({ browser }) => {
+    await busyAndSeen();
+    fs.rmSync(tr + '.pasted', { force: true });
+    // Queued with script, in a page of its own.
+    const setup = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const sp = await setup.newPage();
+    await openView(sp, newHost);
+    const sendText = 'no-js send now ' + stamp;
+    const cancelText = 'no-js cancel ' + stamp;
+    await queue(sp, sendText, false);
+    await queue(sp, cancelText, false);
+    await setup.close();
+
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, javaScriptEnabled: false });
+    const page = await ctx.newPage();
+    await login(page);
+    await page.goto(origin + viewPath(newHost));
+    const r = rowIn(page, sendText, 'queued');
+    await moreOf(r).click();
+    await expect(r.getByRole('menu'), 'the popover opens with no script').toBeVisible();
+    await expect(itemOf(r, 'Copy message'), 'no Copy without script').toHaveCount(0);
+    await itemOf(r, 'Send now').click();
+    await expect(page.locator('#mv-note')).toHaveText('Sent.');
+    await expect.poll(pasted, { message: 'sent by the form', timeout: 15_000 }).toEqual([`${pane} ${sendText}`]);
+    const c = rowIn(page, cancelText, 'queued');
+    await moreOf(c).click();
+    await itemOf(c, 'Cancel this queued message').click();
+    await expect(page.locator('#mv-note')).toContainText('Cancelled');
+    await expect(rowIn(page, cancelText, 'cancelled')).toHaveCount(1);
+    await ctx.close();
   });
 });

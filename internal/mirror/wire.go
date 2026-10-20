@@ -388,8 +388,10 @@ type Window struct {
 	// "zsh", "opencode", "vim"), "" for unknown. Display and search only.
 	Command string `json:"command,omitempty"`
 	// Status is what the Claude Code session in the window's pane reports about
-	// itself (StatusBusy, StatusIdle, StatusWaiting), "" when unknown — no Claude
-	// pane, or one whose status the host cannot read. It is what decides when a
+	// itself (StatusBusy, StatusIdle, StatusWaiting — or a word NormalizeStatus
+	// kept because muster does not know it, which is never idle), "" when
+	// unknown — no Claude pane, or one whose status the host cannot read. It is
+	// what decides when a
 	// QUEUED message may be sent (internal/sendqueue), and only a host that
 	// advertised Msg.StatusReport is believed about it.
 	//
@@ -472,11 +474,35 @@ const (
 	StatusWaiting = "waiting"
 )
 
-// NormalizeStatus is status when it is one of the three Window.Status values,
-// else "" (unknown). Both halves apply it.
+// ClaudeStatusShell is what Claude Code's sessions file says INSTEAD of idle
+// while a background shell (a run_in_background Bash task) is still running
+// and no turn is (measured in Claude Code 2.1.289: an idle status with a live
+// local_bash task is written as "shell"). The prompt is free and takes input
+// exactly as when idle, so NormalizeStatus reads it as StatusIdle. Its
+// statusUpdatedAt is a real status time: a turn that ends with a background
+// shell still running writes "shell" with a newer time, which is what the send
+// queue's "newer than the paste" rule waits for.
+const ClaudeStatusShell = "shell"
+
+// unknownStatusPattern is a status this side does not know but keeps, so that
+// what holds a queued message can say what Claude Code reported: a short
+// lowercase word, bounded so the window list's worst case does not grow (a
+// waiting window's Pending is far larger).
+var unknownStatusPattern = regexp.MustCompile(`^[a-z][a-z_-]{0,23}$`)
+
+// NormalizeStatus is the Window.Status a sessions-file status is read as: busy,
+// idle and waiting as themselves; ClaudeStatusShell as StatusIdle; any other
+// short lowercase word KEPT as it is, so it can be named — a status that is
+// never idle (UNKNOWN IS NOT IDLE: only StatusIdle releases a queued message);
+// anything else "" (unknown). Both halves apply it.
 func NormalizeStatus(status string) string {
 	switch status {
 	case StatusBusy, StatusIdle, StatusWaiting:
+		return status
+	case ClaudeStatusShell:
+		return StatusIdle
+	}
+	if unknownStatusPattern.MatchString(status) {
 		return status
 	}
 	return ""

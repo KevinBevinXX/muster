@@ -238,6 +238,14 @@ func MirrorAsksLive(vs []MirrorAskLiveView) g.Node {
 
 // mirrorAsksRegion is the page's live region: empty and hidden until the poll
 // (askScript) fills it.
+//
+// 🔴 IT SHRINKS INTO THE ROOM ABOVE THE COMPOSER (min-h-0, never shrink-0). The
+// composer is pinned to the bottom of the screen and the column ends above it
+// (pinnedShellClass), so the room this region has is what the composer leaves —
+// and a queue drawn in the composer makes that much less. A region that
+// refused to shrink kept its full height and ran on under the pinned composer,
+// drawing the question's Submit under the queued messages, where it could not
+// be tapped. Shrunk, it scrolls within itself, and its Submit is in reach.
 func mirrorAsksRegion(ref MirrorRef) g.Node {
 	return Section(
 		ID("mv-asks"),
@@ -245,7 +253,7 @@ func mirrorAsksRegion(ref MirrorRef) g.Node {
 		g.Attr("aria-label", "Questions from Claude"),
 		g.Attr("aria-live", "polite"),
 		g.Attr("hidden", ""),
-		Class("flex max-h-[70vh] shrink-0 flex-col gap-2 overflow-y-auto border-t border-line px-3 py-2"),
+		Class("flex max-h-[70vh] min-h-0 flex-col gap-2 overflow-y-auto border-t border-line px-3 py-2"),
 	)
 }
 

@@ -95,6 +95,12 @@ func (f *fakeMirror) PasteWindow(ctx context.Context, host, session, window, tex
 	}
 	o := mirror.PasteOptionsOf(opts...)
 	f.mu.Lock()
+	in := f.inPaste
+	f.mu.Unlock()
+	if in != nil {
+		in()
+	}
+	f.mu.Lock()
 	f.asked = append(f.asked, window)
 	resolved := window
 	for _, w := range f.windows {

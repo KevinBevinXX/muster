@@ -181,7 +181,9 @@ const queued = (page: Page) => page.locator('#mv-queue [data-queue-state="queued
 // starts from an empty queue.
 async function cancelQueued(page: Page) {
   for (let i = 0; i < 10 && (await queued(page).count()) > 0; i++) {
-    await queued(page).first().getByRole('button', { name: 'Cancel this queued message' }).click();
+    // Cancel is in the row's ⋯ menu.
+    await queued(page).first().getByRole('button', { name: 'More actions for this queued message' }).click();
+    await queued(page).first().getByRole('menuitem', { name: 'Cancel this queued message' }).click();
     await page.waitForTimeout(300);
   }
   await expect(queued(page)).toHaveCount(0, { timeout: 10_000 });

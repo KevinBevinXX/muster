@@ -434,7 +434,11 @@ func TestTheProbeFailsClosed(t *testing.T) {
 		says string
 	}{
 		{nil, false, "does not report whether Claude Code is busy"},
-		{&mirror.AgentState{Status: mirror.StatusBusy, Since: since}, false, "working"},
+		{&mirror.AgentState{Status: mirror.StatusBusy, Since: since}, false, "Claude Code is working."},
+		// 🔴 A status muster does not know is NAMED and still holds — never
+		// called "working" (a queue once sat held for hours under that, behind
+		// a status that was really an idle prompt).
+		{&mirror.AgentState{Status: "compacting", Since: since}, false, `Claude Code reports a status muster does not know: "compacting"`},
 		{&mirror.AgentState{Status: mirror.StatusWaiting, Since: since}, false, "waiting for you"},
 		{&mirror.AgentState{Unknown: mirror.ErrNotClaude}, false, "no Claude Code session"},
 		{&mirror.AgentState{Unknown: mirror.ErrNoStatusSince}, false, "does not report since when"},
@@ -445,7 +449,7 @@ func TestTheProbeFailsClosed(t *testing.T) {
 		fm.mu.Unlock()
 		got := s.sendQueueProbe(user1, h)
 		if got.Idle != c.idle || (c.idle && (got.Since != since || !got.Observed.Equal(observed) || got.Pasted != pasted)) ||
-			!strings.Contains(got.Why, c.says) {
+			!strings.Contains(got.Why, c.says) || (c.st != nil && c.st.Status != mirror.StatusBusy && strings.Contains(got.Why, "working")) {
 			t.Errorf("host state %+v → probe %+v; want idle=%v saying %q", c.st, got, c.idle, c.says)
 		}
 	}

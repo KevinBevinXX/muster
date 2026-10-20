@@ -115,6 +115,9 @@ type fakeMirror struct {
 	// onPaste, when set, runs (under mu) after each paste the host accepted:
 	// a test's stand-in for the hub recording the paste (AgentState.Pasted).
 	onPaste func()
+	// inPaste, when set, runs at the start of each PasteWindow with NO lock
+	// held: a paste in flight, during which a test may race another sender.
+	inPaste func()
 }
 
 func (f *fakeMirror) ServeConnect(w http.ResponseWriter, _ *http.Request) {

@@ -86,9 +86,11 @@ type ClaudePane struct {
 	// Busy: Claude Code reports a turn running.
 	Busy bool
 	// Status is Claude Code's own session status, as its sessions file states
-	// it (mirror.StatusBusy, StatusIdle, StatusWaiting); "" when it states none
-	// this side recognises, and for a GUESSED transcript, which has no sessions
-	// file to read one from. Busy is Status == busy.
+	// it, read through mirror.NormalizeStatus (StatusBusy, StatusIdle,
+	// StatusWaiting; "shell" — idle with a background shell running — as
+	// StatusIdle; another short word kept so muster can name it); "" when it
+	// states none it can carry, and for a GUESSED transcript, which has no
+	// sessions file to read one from. Busy is Status == busy.
 	Status string
 	// StatusSince is when Claude Code wrote Status — its sessions file's
 	// statusUpdatedAt, Unix milliseconds — 0 when it states none (and whenever
@@ -410,7 +412,13 @@ type paneStatus struct {
 	since  int64
 }
 
-// statusOf is sf's status, normalised, and its time — none without a status.
+// statusOf is sf's status, normalised (mirror.NormalizeStatus: Claude Code's
+// "shell" is idle), and its time — none without a status.
+//
+// 🔴 THE MAPPING IS APPLIED HERE, ON THE HOST, BEFORE ANYTHING IS SENT: muster
+// only ever sees what this returns. So a muster-mirror older than the mapping
+// sends "" for "shell" (and for any status it did not know), and the send
+// queue holds that window as unknown whatever muster version runs.
 func statusOf(sf sessionFile) paneStatus {
 	st := paneStatus{status: mirror.NormalizeStatus(sf.Status)}
 	if st.status != "" && sf.StatusUpdatedAt > 0 {

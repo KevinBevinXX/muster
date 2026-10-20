@@ -229,6 +229,8 @@ POST /send-queue/{id}/cancel
 POST /send-queue/{id}/delete
 POST /send-queue/{id}/retry
 POST /send-queue/{id}/retry/confirm
+POST /send-queue/{id}/send-now
+POST /send-queue/{id}/send-now/confirm
 POST /tasks
 POST /tasks/merge
 POST /tasks/{id}/comments

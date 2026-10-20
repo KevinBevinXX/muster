@@ -45,7 +45,9 @@ var (
 
 // AgentState is what the hub knows of the Claude Code session in one window.
 type AgentState struct {
-	// Status is StatusBusy, StatusIdle or StatusWaiting; "" when unknown.
+	// Status is StatusBusy, StatusIdle or StatusWaiting, or a status muster
+	// does not know (NormalizeStatus keeps it, so it can be named; never idle);
+	// "" when unknown.
 	Status string
 	// Since is when Claude Code wrote Status (its statusUpdatedAt), in Unix
 	// milliseconds ON THE HOST'S CLOCK. 0 when unknown.

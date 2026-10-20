@@ -294,7 +294,7 @@ func (d *Dispatcher) Tick(ctx context.Context) (int, error) {
 		if !ok {
 			continue
 		}
-		o := d.sendRenewing(ctx, octx, it, st)
+		o := d.sendRenewing(ctx, octx, it, st, d.Send)
 		if o.Sent {
 			o.MayHaveDelivered = true
 		}
@@ -323,10 +323,10 @@ func (d *Dispatcher) Tick(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// sendRenewing is d.Send(octx, it, st), renewing it's claim every RenewEvery
+// sendRenewing is send(octx, it, st), renewing it's claim every RenewEvery
 // until the send returns, so that no other instance's Recover fails a live
 // send.
-func (d *Dispatcher) sendRenewing(ctx, octx context.Context, it Item, st AgentState) Outcome {
+func (d *Dispatcher) sendRenewing(ctx, octx context.Context, it Item, st AgentState, send Sender) Outcome {
 	stop, done := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(done)
@@ -346,10 +346,51 @@ func (d *Dispatcher) sendRenewing(ctx, octx context.Context, it Item, st AgentSt
 			}
 		}
 	}()
-	o := d.Send(octx, it, st)
+	o := send(octx, it, st)
 	close(stop)
 	<-done
 	return o
+}
+
+// ErrNotClaimed: SendNow could not claim the message — it is no longer queued
+// (sent, cancelled, or claimed by the dispatcher first), or its target already
+// has a message being sent. Nothing was sent.
+var ErrNotClaimed = errors.New("sendqueue: the message is no longer queued, or another message for its window is being sent")
+
+// SendNow is a person's "Send now" of queued message id: claimed (queued →
+// sending) under this dispatcher's instance, exactly as Tick claims a head, so
+// the dispatcher can never also send it, and sent through send — renewing the
+// claim while it runs — WITHOUT Decide: the person chose not to wait for idle.
+// since is the window's status time (host clock) now, recorded as the claim's
+// so the next message waits for the turn this one starts. The outcome is
+// recorded (Finish) and returned; ErrNotClaimed when the claim failed.
+//
+// 🔴 ONE CLAIM, ONE SEND. The claim is the same conditional UPDATE the
+// dispatcher's is (Store.Claim): whichever of the two claims first sends, the
+// other's claim finds the row no longer queued — and a target's one-sending
+// index refuses a claim while another of its rows is being sent.
+func (d *Dispatcher) SendNow(ctx, octx context.Context, id int64, since int64, send Sender) (Item, Outcome, error) {
+	it, ok, err := d.Store.Claim(ctx, id, d.now(), Claim{By: d.InstanceID(), Lease: d.lease(), Since: since})
+	if err != nil {
+		return Item{}, Outcome{}, err
+	}
+	if !ok {
+		return Item{}, Outcome{}, ErrNotClaimed
+	}
+	o := d.sendRenewing(ctx, octx, it, AgentState{Since: since}, send)
+	if o.Sent {
+		o.MayHaveDelivered = true
+	}
+	// Nothing here expects a turn, so nothing is superseded: the row is never
+	// put back to queued once it was claimed for a Send now.
+	o.Superseded = false
+	if !o.Sent && !o.MayHaveDelivered && o.Detail == "" {
+		o.Detail = "Not sent."
+	}
+	if err := d.Store.Finish(context.WithoutCancel(ctx), it.ID, d.InstanceID(), o, d.now()); err != nil {
+		d.logf("sendqueue: record message %d (%s): %v", it.ID, it.Target, err)
+	}
+	return it, o, nil
 }
 
 // Kick asks Run for a pass now (a message was queued). It never blocks.

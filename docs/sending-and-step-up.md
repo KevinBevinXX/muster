@@ -42,10 +42,10 @@ Each box can also have a microphone; see [dictation.md](dictation.md).
 Beside **Send**, a mirrored Claude Code window's **Rendered view** has
 **Queue**. A queued message is kept by the server (`send_queue`, migration
 `0019`) and sent there, so it is sent with the page closed, and every device of
-yours shows the same queue under the box, with a **Cancel** for each message not
-yet being sent. It is pasted into the window's Claude Code pane, the pane whose
-idle it waited on. The Terminal view, dispatched agents and the chief panel have
-no Queue.
+yours shows the same queue under the box. Each message not yet being sent has a **⋯**
+menu with **Send now**, **Copy message** and **Cancel**. It is pasted into the
+window's Claude Code pane, the pane whose idle it waited on. The Terminal view,
+dispatched agents and the chief panel have no Queue.
 
 - **When.** A message is sent once the window's Claude Code session has been
   idle for `MUSTER_SEND_QUEUE_IDLE` (default `30s`), through the same path as
@@ -55,6 +55,16 @@ no Queue.
   `muster-mirror` reports per window. "Idle for 30 s" is measured on
   muster's own clock, from when muster first saw that status. `busy` and
   `waiting` (a prompt or a question for you) both hold the queue.
+- **A background shell is idle.** While a `run_in_background` Bash task is
+  still running and no turn is, Claude Code writes `shell` instead of `idle`.
+  The prompt is free, so it counts as idle, and its time is the turn's end.
+  `muster-mirror` maps it before sending, so a host needs a `muster-mirror` with
+  the mapping; an older one reports it as unknown, which holds the queue. A
+  background subagent is different: Claude Code reports `busy` while one runs,
+  and the queue holds.
+- **A status muster does not know** holds the queue, and the list names it:
+  "Claude Code reports a status muster does not know: …". Only `busy` reads
+  "Claude Code is working."
 - **One at a time, after every paste.** Whenever anything is pasted into the
   window (a queued message, or your own Send), muster records the status time
   the window held then. The next queued message waits until Claude Code reports
@@ -89,6 +99,23 @@ no Queue.
   again. During a rolling update two muster pods overlap, and neither fails or
   finishes the other's send. The lease is kept on the database's clock, so pods
   whose clocks disagree still judge it the same way.
+
+**Send now** sends a queued message at once, without waiting for idle
+(`POST /send-queue/{id}/send-now`). It is pasted like a Send, so it goes in
+while Claude Code is busy, and it needs the same fresh sign-in (the dialog, or
+the plain confirm page). The message is claimed first, as the dispatcher claims
+one, so it is never sent twice. It ends sent, or failed saying why. The send
+checks the account, the sign-in that queued it and a routed message's route,
+as the dispatcher's send does. The paste is recorded like a Send's, so the next
+queued message still waits for its turn. It is refused, sending nothing, while
+another message for the window is being sent, when the host is offline or
+read-only, or when the message is no longer queued. **Copy message** copies the
+whole message, and is not offered without JavaScript. The menu works without
+JavaScript (Send now and Cancel are forms). The list is not redrawn while a
+menu is open.
+
+A background subagent holds the queue: Claude Code reports `busy` while one
+runs, with no turn running. To send a message anyway, use Send now.
 
 A plugin message your chief [routes to the window](plugins.md#routing-a-message-to-a-session) is queued the same way and waits on the same rules; it carries the route's own time instead of a sign-in (see there).
 
