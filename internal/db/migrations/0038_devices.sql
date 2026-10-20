@@ -1,4 +1,4 @@
--- muster 0037 — PAIRED PHONES: the native Android app's device credential and
+-- muster 0038 — PAIRED PHONES: the native Android app's device credential and
 -- its pairing codes (internal/devices; docs/design/android.md, server changes
 -- 5, 6 and 8).
 --

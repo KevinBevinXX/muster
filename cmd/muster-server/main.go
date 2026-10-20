@@ -288,7 +288,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.Users = users.NewPG(pool)
 		// Personal API tokens (accounts PR 6): mst_… on the machine tier.
 		ext.APITokens = apitokens.NewPG(pool)
-		// Paired phones (migration 0037): the Android app's mdv_ credential on
+		// Paired phones (migration 0038): the Android app's mdv_ credential on
 		// /api/device/*, and Account → Devices.
 		ext.Devices = devices.NewPG(pool)
 		// Browser flows (migration 0012): the owner-scoped job queue and the

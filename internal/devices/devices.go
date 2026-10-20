@@ -1,6 +1,6 @@
 // Package devices is muster's paired-phone store: the native Android app's
 // DEVICE CREDENTIAL (`mdv_…`) and the one-time PAIRING CODE that mints it
-// (migration 0037; docs/design/android.md, "The device credential").
+// (migration 0038; docs/design/android.md, "The device credential").
 //
 // The flow, in one line each:
 //
@@ -254,7 +254,7 @@ type Store interface {
 	Remove(ctx context.Context, id int64) (found bool, err error)
 }
 
-// PGStore is Store over Postgres (migration 0037).
+// PGStore is Store over Postgres (migration 0038).
 type PGStore struct {
 	pool *pgxpool.Pool
 	now  func() time.Time

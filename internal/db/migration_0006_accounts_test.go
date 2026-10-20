@@ -99,7 +99,7 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - agent_focus (0020, each session's focus).
 //   - uploads (0024, the composer's attached files).
 //   - jobs (0037, the machine job API's jobs).
-//   - devices, device_pairing_codes (0037, the Android app's paired phones).
+//   - devices, device_pairing_codes (0038, the Android app's paired phones).
 var ownedAfter0006 = []string{"agent_focus", "agent_focus_history", "attention_asks", "cc_account_marks", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
 	"jobs", "mirror_tokens", "pins", "plugin_messages", "plugin_reply_drafts", "plugins", "push_preferences",
 	"push_subscriptions", "recents", "send_queue", "session_routes", "uploads", "user_credentials"}
@@ -187,7 +187,7 @@ var wantForeignKeys = []string{
 	"plugins|plugins_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"push_preferences|push_preferences_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"push_subscriptions|push_subscriptions_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
-	// 0037: a native subscription names its device, and the composite key keeps
+	// 0038: a native subscription names its device, and the composite key keeps
 	// it to a device of the SAME owner.
 	"push_subscriptions|push_subscriptions_device_owner_fkey|FOREIGN KEY (device_id, owner_id) REFERENCES devices(id, owner_id) ON DELETE CASCADE",
 	"devices|devices_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
