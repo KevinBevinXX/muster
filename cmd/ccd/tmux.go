@@ -64,6 +64,24 @@ type tmuxTerminal struct {
 	// enterDelay separates the paste from the Enter, so the TUI has ingested the
 	// paste before the submit key arrives.
 	enterDelay time.Duration
+	// env is NAME=value pairs set in the environment of every CLI Start and
+	// Respawn run (`-e`): the hook socket and its credential (hook.go), which
+	// the CLI's `ccd hook` commands inherit. Set per pane rather than relying on
+	// the tmux server's global environment, which is only ccd's when ccd started
+	// that server. ⚠ So the credential is in the tmux client's argv for the
+	// moment it runs, and in the session's environment (`show-environment`):
+	// both readable only inside ccd's container — the same user that can read
+	// it from the CLI anyway (server.go hookHandler).
+	env []string
+}
+
+// envArgs is env as tmux `-e` flags.
+func (t tmuxTerminal) envArgs() []string {
+	var out []string
+	for _, e := range t.env {
+		out = append(out, "-e", e)
+	}
+	return out
 }
 
 func (t tmuxTerminal) run(ctx context.Context, stdin []byte, args ...string) error {
@@ -162,6 +180,9 @@ func (t tmuxTerminal) Paste(ctx context.Context, ref paneRef, text string) error
 	if err := t.live(ctx, ref); err != nil {
 		return err
 	}
+	if err := t.noDialog(ctx, ref); err != nil {
+		return err
+	}
 	var rnd [6]byte
 	_, _ = rand.Read(rnd[:])
 	buf := "ccd-" + hex.EncodeToString(rnd[:])
@@ -206,7 +227,25 @@ func (t tmuxTerminal) Enter(ctx context.Context, ref paneRef) error {
 	if err := t.live(ctx, ref); err != nil {
 		return err
 	}
+	if err := t.noDialog(ctx, ref); err != nil {
+		return err
+	}
 	return t.run(ctx, nil, "send-keys", "-t", ref.Pane, "Enter")
+}
+
+// noDialog refuses, with errDialogShown, a pane whose screen shows a dialog that
+// a key would answer (dialog.go) — before Paste types anything and before every
+// Enter. A screen that cannot be read is refused too, as errPaneNotLive: nothing
+// has been typed, so the caller may send the turn again.
+func (t tmuxTerminal) noDialog(ctx context.Context, ref paneRef) error {
+	screen, err := t.output(ctx, "capture-pane", "-p", "-J", "-t", ref.Pane)
+	if err != nil {
+		return fmt.Errorf("%w: reading the screen before typing: %v", errPaneNotLive, err)
+	}
+	if what, shown := dialogOnScreen(screen); shown {
+		return fmt.Errorf("%w: %s", errDialogShown, what)
+	}
+	return nil
 }
 
 // Start creates the detached session running argv in dir and returns its pane's
@@ -226,7 +265,8 @@ func (t tmuxTerminal) Enter(ctx context.Context, ref paneRef) error {
 // so a lone argv is run as `env <it>`: env execs it, in the pane's own process.
 func (t tmuxTerminal) Start(ctx context.Context, dir string, argv []string) (paneRef, error) {
 	args := append([]string{"new-session", "-d", "-P", "-F", serverFormat + " #{pane_id}", "-s", t.target,
-		"-x", "200", "-y", "50", "-c", dir}, execArgv(argv)...)
+		"-x", "200", "-y", "50", "-c", dir}, t.envArgs()...)
+	args = append(args, execArgv(argv)...)
 	args = append(args, ";", "set-option", "-w", "-t", t.target, "remain-on-exit", "on")
 	out, err := t.output(ctx, args...)
 	if err != nil {
@@ -247,7 +287,8 @@ func (t tmuxTerminal) Respawn(ctx context.Context, ref paneRef, dir string, argv
 	if _, err := t.state(ctx, ref); err != nil {
 		return err
 	}
-	return t.run(ctx, nil, append([]string{"respawn-pane", "-t", ref.Pane, "-c", dir}, execArgv(argv)...)...)
+	args := append([]string{"respawn-pane", "-t", ref.Pane, "-c", dir}, t.envArgs()...)
+	return t.run(ctx, nil, append(args, execArgv(argv)...)...)
 }
 
 // execArgv is argv as tmux must be given it: behind `env`, which execs it, so

@@ -170,7 +170,8 @@ const KickoffEmptyReplyReason = "kickoff turn returned an EMPTY reply, so it is 
 
 // KickoffResendSafe reports whether a failed kickoff's recorded cause PROVES no
 // turn is running for it, so re-sending the task cannot pay for it twice. Only
-// [KickoffNeverConnectedReason] and [KickoffNotAcceptedReason] prove that.
+// [KickoffNeverConnectedReason], [KickoffNotAcceptedReason] and
+// [KickoffBusyReason] prove that.
 //
 // 🔴 EVERY OTHER CAUSE ANSWERS false, AN EMPTY REPLY INCLUDED. A shutdown or a
 // timeout abandons a request the runtime already received and may still be running.
@@ -184,8 +185,17 @@ const KickoffEmptyReplyReason = "kickoff turn returned an EMPTY reply, so it is 
 // check before re-sending.
 func KickoffResendSafe(a Agent) bool {
 	return KickoffFailed(a) && (strings.HasPrefix(a.KickoffError, KickoffNeverConnectedReason) ||
-		strings.HasPrefix(a.KickoffError, KickoffNotAcceptedReason))
+		strings.HasPrefix(a.KickoffError, KickoffNotAcceptedReason) ||
+		strings.HasPrefix(a.KickoffError, KickoffBusyReason))
 }
+
+// KickoffBusyReason is [KickoffNotAcceptedReason]'s sibling for a typed `409
+// busy`: ccd's answer, before anything is pasted, when another turn holds the
+// session or (code awaiting_approval) its pane shows a dialog a paste would
+// answer. It proves nothing was sent, so a re-send is safe.
+const KickoffBusyReason = "kickoff turn NOT ACCEPTED by the agent runtime: it answered " +
+	"busy (another turn held the session, or a dialog was on its screen) for the whole delivery, so " +
+	"nothing was sent. The row was already marked delivered, so it is not retried automatically"
 
 // KickoffNotAcceptedReason opens agents.kickoff_error when the runtime was
 // reached but kept refusing the first turn with a typed `not_ready` — ccd's answer

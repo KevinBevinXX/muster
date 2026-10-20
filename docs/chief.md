@@ -135,10 +135,25 @@ readiness gates the pod's.
 `MUSTER_CHIEF_SESSION_RUNTIMES`
 naming `gateway` on a deployment with the `claude-code` kind needs that bundle
 configured (it refuses to boot otherwise). A running chief gains the sidecar on
-its next **Stop → Start** (Start re-applies its spec). The same goes for the
-runtime's own credential: a chief started before it existed gets
-`gateway` turns refused (`not_ready`, naming Stop → Start) once `ccd` is
-updated, until it is restarted that way. Claude Code sessions keep working.
+its next **Stop → Start** (Start re-applies its spec).
+
+**Upgrading a chief that already has the sidecar.** The sidecar shares `ccd`'s
+network, so it must hold nothing `ccd` accepts, and `ccd` must not be reachable
+from it. That takes a new spec (muster), a new `ccd` (the
+`MUSTER_AGENT_CC_IMAGE` image) and a restart, and each half alone leaves a hole:
+
+- **Old spec, new `ccd`:** the sidecar still holds `ccd`'s bearer, so it can
+  still send Claude Code turns. The chief stays exposed until it is restarted.
+- **New spec, old `ccd`:** `gateway` turns get 401, because the old `ccd`
+  forwards muster's bearer, which the runtime no longer accepts. And because the
+  old `ccd` hands that bearer to whatever listens on the runtime's port, a process
+  that binds the port first can capture it. The old `ccd`'s hook listener is
+  also still TCP on `127.0.0.1:18790`, which the sidecar can reach.
+
+So the `ccd` image bump **must land with or before** the server bump, and then
+each chief needs **Stop → Start**. A chief started before the runtime had its own
+credential gets `gateway` turns refused (`not_ready`, naming Stop → Start) until
+it is restarted that way; Claude Code sessions keep working.
 
 A `gateway` session's turn carries the chief's instructions for function tools,
 since that runtime has no standing file of the chief's.

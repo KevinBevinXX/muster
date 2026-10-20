@@ -700,7 +700,8 @@ func moduleRoot(t *testing.T) string {
 //
 //   - cmd/ccd: the in-pod supervisor of the claude-code-agent image. Its
 //     /v1/responses is muster's agent wire served FROM the pod, consumed by
-//     internal/agentgateway; /hook/{event} is served only on a loopback listener;
+//     internal/agentgateway; /hook/{event} is served only on ccd's hook socket (a
+//     unix socket, each hook authenticated with a credential only ccd's CLIs hold);
 //     GET /{$} is the same health check as /healthz, at muster's default agent
 //     health path ("/").
 var otherServerRoutes = map[string][]string{

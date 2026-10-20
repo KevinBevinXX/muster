@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -174,15 +173,10 @@ func TestALaneHookReachesItsLaneAndNoOther(t *testing.T) {
 	laneSrv := newServer(serverConfig{ConfigDir: cfg}, nil, newAuthTracker())
 	id := laneID("k")
 	primary.lanes = &lanes{set: map[string]*lane{id: {id: id, key: "k", srv: laneSrv}}}
-	hs := httptest.NewServer(primary.hookHandler())
-	t.Cleanup(hs.Close)
+	hp := hooks(t, primary)
 	post := func(q, body string) {
-		resp, err := http.Post(hs.URL+"/hook/SessionStart"+q, "application/json", strings.NewReader(body))
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		t.Helper()
+		hp.mustPost(t, "SessionStart"+q, body)
 	}
 	// A lane's SessionStart with an id that is NOT marked as a lane's — what a
 	// /clear in the lane's CLI starts — is still the lane's, and is not recorded.
@@ -210,11 +204,9 @@ func TestALaneHookReachesItsLaneAndNoOther(t *testing.T) {
 // lane; a malformed CCD_LANE is not put in the URL.
 func TestRunHookSendsItsLane(t *testing.T) {
 	var got []string
-	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	unixHookTarget(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got = append(got, r.URL.RequestURI())
 	}))
-	t.Cleanup(hs.Close)
-	t.Setenv("CCD_HOOK_URL", hs.URL)
 	for _, lane := range []string{laneID("k"), "../x?y=z", ""} {
 		t.Setenv("CCD_LANE", lane)
 		runHook([]string{"Stop"}, strings.NewReader(`{}`), io.Discard)

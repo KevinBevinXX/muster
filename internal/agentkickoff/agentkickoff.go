@@ -628,8 +628,14 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	// and that becomes an ordinary recorded kickoff failure, not a loop. (An
 	// earlier draft un-stamped and retried on the next tick; every retry moved
 	// updated_at, so the dwell bound could never fire.)
+	//
+	// A typed `409 busy` is re-sent the same way: ccd answers it before it types
+	// anything too — another turn holds the session, or (code awaiting_approval)
+	// its pane shows a dialog a paste would answer (cmd/ccd/dialog.go). Before,
+	// it fell through to turnFailure's "failed after it was handed to the
+	// gateway", which tells the operator a turn may be running when none is.
 	reply, err := d.gw.Send(ctx, target, sess.SessionKey, fresh.PendingNote, nil)
-	for waited := time.Duration(0); err != nil && runtimeNotReady(err) && waited < d.notReadyWait; waited += d.notReadyPoll {
+	for waited := time.Duration(0); err != nil && runtimeRefusedUnsent(err) && waited < d.notReadyWait; waited += d.notReadyPoll {
 		select {
 		case <-ctx.Done():
 		case <-time.After(d.notReadyPoll):
@@ -639,12 +645,16 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 		}
 		reply, err = d.gw.Send(ctx, target, sess.SessionKey, fresh.PendingNote, nil)
 	}
-	if err != nil && runtimeNotReady(err) {
-		// Still not_ready when the delivery ended — the bound, or a shutdown
+	if err != nil && runtimeRefusedUnsent(err) {
+		// Still refused when the delivery ended — the bound, or a shutdown
 		// mid-wait. Nothing was sent, which turnFailure's texts (shutdown, budget,
 		// "handed to the gateway") would deny; this one says so, and makes the
 		// card's remedy say a re-send is safe (agents.KickoffResendSafe).
-		d.recordError(parent, fresh, agents.KickoffNotAcceptedReason+": "+err.Error())
+		reason := agents.KickoffNotAcceptedReason
+		if !runtimeNotReady(err) {
+			reason = agents.KickoffBusyReason
+		}
+		d.recordError(parent, fresh, reason+": "+err.Error())
 		d.notify(fresh.Name)
 		return
 	}
@@ -761,6 +771,15 @@ const (
 func runtimeNotReady(err error) bool {
 	var rt *agents.RuntimeError
 	return errors.As(err, &rt) && rt.Status == http.StatusServiceUnavailable && rt.Type == "not_ready"
+}
+
+// runtimeRefusedUnsent reports a typed refusal ccd gives BEFORE it types
+// anything: `503 not_ready`, or `409 busy` (a turn already holds the session, or,
+// with code awaiting_approval, its pane shows a dialog). Typed bodies only, as
+// runtimeNotReady.
+func runtimeRefusedUnsent(err error) bool {
+	var rt *agents.RuntimeError
+	return runtimeNotReady(err) || errors.As(err, &rt) && rt.Status == http.StatusConflict && rt.Type == "busy"
 }
 
 // ShutdownCancelledReason opens agents.kickoff_error when a stamped first turn was

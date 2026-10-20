@@ -42,6 +42,10 @@ const (
 	failCapacity     = "capacity"      // 503: every Claude Code session ccd may run at once is mid-turn (lanes.go)
 )
 
+// codeAwaitingApproval is the `code` of a `busy` refusal for a pane showing a
+// dialog (server.go awaitingApproval).
+const codeAwaitingApproval = "awaiting_approval"
+
 type failure struct {
 	Status   int    `json:"-"`
 	Type     string `json:"type"`

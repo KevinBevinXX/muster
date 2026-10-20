@@ -18,8 +18,10 @@
 #   3. ccd's /healthz answers 200 with JSON, and GET / answers the same status;
 #   4. the TUI reached its prompt: /healthz reports session "started", which only a
 #      SessionStart hook can set — so this also proves the seeded hook wiring
-#      reaches ccd through `ccd hook`; and ccd's supervisor started it as a FRESH
-#      session (no transcript on a new volume);
+#      reaches ccd through `ccd hook`, over the hook socket and with the credential
+#      ccd put in the CLI's environment; and ccd's supervisor started it as a FRESH
+#      session (no transcript on a new volume); a hook WITHOUT the credential is
+#      refused 401, the socket is private, and nothing listens on 127.0.0.1:18790;
 #   5. `/exit` typed into the pane is followed by an in-pod restart that RESUMES:
 #      the supervisor's start count goes to 2 with `--resume <id>` (the CLI records
 #      the /exit itself in a transcript, measured, so there is now one to resume)
@@ -242,6 +244,18 @@ root="$(get /)"
 [[ "${root%% *}" == "200" && "${root#* }" == "{"* ]] || fail "GET / -> $root, expected 200 JSON like /healthz"
 echo "cc-smoke: session started (fresh); GET / ok"
 
+# 4b. The hook channel. The session started above only because the real CLI's
+# hooks reached ccd WITH the credential ccd put in its environment; here, a hook
+# WITHOUT it is refused, the socket is private to uid 1000, and nothing listens
+# on the old TCP port (which every container in a pod could reach).
+sock="$(tmux show-environment -t cc CCD_HOOK_SOCKET | cut -d= -f2-)"
+[[ -S "$sock" && "$(stat -c '%a' "$sock")" == 600 && "$(stat -c '%a' "$(dirname "$sock")")" == 700 ]] \
+  || fail "the hook socket '$sock' is not a 0600 socket in a 0700 directory"
+if (exec 3<>/dev/tcp/127.0.0.1/18790) 2>/dev/null; then fail "something listens on 127.0.0.1:18790"; fi
+code="$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$sock" -X POST -d '{}' http://ccd/hook/Stop)"
+[[ "$code" == 401 ]] || fail "a hook without the credential got $code, want 401"
+echo "cc-smoke: hook channel private ($sock); a hook without the credential is refused"
+
 # While the first CLI runs, plant env / apiKeyHelper in the persisted settings.json
 # (harmless values; every other key, the hooks included, kept as seeded).
 node -e '
@@ -277,7 +291,7 @@ tmux kill-server 2>/dev/null || true
 for v in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX ANTHROPIC_BASE_URL; do
   rc=0
   out="$(env "$v=fake-smoke-value" CLAUDE_CONFIG_DIR=/tmp/refuse-cfg CCD_WORKSPACE=/tmp/refuse-ws \
-    CCD_LISTEN=127.0.0.1:18799 CCD_HOOK_LISTEN=127.0.0.1:18798 CCD_TMUX_SOCKET=refuse \
+    CCD_LISTEN=127.0.0.1:18799 CCD_TMUX_SOCKET=refuse \
     timeout 15 /usr/local/bin/cc-entrypoint 2>&1)" || rc=$?
   [[ "$rc" == "1" && "$out" == *"$v is set"*"Refusing."* ]] \
     || fail "with $v set the entrypoint exited $rc, want 1 naming $v: $out"

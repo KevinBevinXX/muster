@@ -190,6 +190,23 @@ func fakeClaude() int {
 	fmt.Print("\x1b[?2004h> ")
 
 	exit := false
+	// dialog: the permission prompt is on screen (ASK-PERMISSION). Until it is
+	// answered, input goes to IT, not to the input box: Enter takes the
+	// highlighted "1. Yes", a digit takes its option — as the real CLI's select
+	// menu does. Pasted text is swallowed (what the real dialog does with a paste
+	// is not measured; what matters is the Enter after it). The answer is
+	// recorded in fake-dialog.log, so a test can see a dialog was answered.
+	dialog, dialogPID := false, ""
+	answerDialog := func(choice string) {
+		appendFile(filepath.Join(cfg, "fake-dialog.log"), "answered: "+choice+"\n")
+		dialog = false
+		if choice == "1. Yes" || choice == "2. Yes, and don't ask again" {
+			fire("PostToolUse", map[string]any{"tool_name": "Bash"})
+		}
+		fire("Stop", map[string]any{"prompt_id": dialogPID, "stop_hook_active": false, "last_assistant_message": "done"})
+		write(map[string]any{"type": "system", "subtype": "turn_duration", "durationMs": 1})
+		fmt.Print("\r\ndialog answered: " + choice + "\r\n> ")
+	}
 	submit := func(prompt string) {
 		if prompt == "/exit" {
 			fire("SessionEnd", map[string]any{"reason": "prompt_input_exit"})
@@ -230,10 +247,15 @@ func fakeClaude() int {
 		if strings.Contains(prompt, "ASK-PERMISSION") {
 			// A tool call that stops at the terminal's permission dialog: the
 			// Notification hook fires and NOTHING else until someone answers —
-			// no Stop, so the session stays busy.
+			// no Stop, so the session stays busy. The dialog is drawn as the real
+			// CLI draws it (internal/askdrive/testdata/not-picker-permission.txt,
+			// a capture of the real one), and input answers it (dialog, above).
 			fire("Notification", map[string]any{"notification_type": "permission_prompt",
 				"message": "Claude needs your permission to use Bash"})
-			fmt.Print("\r\nDo you want to proceed?\r\n")
+			fmt.Print("\r\n" + strings.Repeat("─", 80) + "\r\n Bash command\r\n\r\n   true\r\n\r\n" +
+				" Do you want to proceed?\r\n ❯ 1. Yes\r\n   2. Yes, and don't ask again for true commands in this project\r\n" +
+				"   3. No, and tell Claude what to do differently (esc)\r\n\r\n Esc to cancel · Tab to amend · ctrl+e to explain\r\n")
+			dialog, dialogPID = true, pid
 			return
 		}
 		if strings.Contains(prompt, "SLOW") {
@@ -282,6 +304,15 @@ func fakeClaude() int {
 				c := in[0]
 				in = in[1:]
 				switch {
+				case dialog && inPaste:
+					// Swallowed (see dialog above).
+				case dialog && (c == '\r' || c == '1'):
+					answerDialog("1. Yes")
+				case dialog && c == '2':
+					answerDialog("2. Yes, and don't ask again")
+				case dialog && c == '3':
+					answerDialog("3. No")
+				case dialog:
 				case inPaste && c == '\r':
 					cur = append(cur, '\n')
 				case inPaste:

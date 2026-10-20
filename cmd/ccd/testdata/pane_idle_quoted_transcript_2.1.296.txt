@@ -1,0 +1,50 @@
+ ▐▛███▛█   Claude Code v2.1.296
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   /data/workspace
+
+
+❯ QUOTE please                                                                                                                                                                                          
+
+● The picker's review screen reads:                                                                                                                                                                     
+                                                                                                                                                                                                      
+  Review your answers                                                                                                                                                                                   
+
+  ❯ 1. Submit answers                                                                                                                                                                                   
+    2. Cancel                                                                                                                                                                                         
+
+  and the permission prompt ends:
+
+  ❯ 1. Yes
+    2. No
+
+  Esc to cancel · Tab to amend
+
+✻ Sautéed for 0s · done 12:34 AM     
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯  
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents                                                                                                                                 ◐ medium · /effort
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

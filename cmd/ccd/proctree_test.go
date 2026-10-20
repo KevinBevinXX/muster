@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -107,20 +106,14 @@ func TestOnlyThePrimaryProcessSessionStartIsRecorded(t *testing.T) {
 		}
 		return pane, nil
 	}
-	hs := httptest.NewServer(primary.hookHandler())
-	t.Cleanup(hs.Close)
+	hp := hooks(t, primary)
 	record := func() string {
 		b, _ := os.ReadFile(filepath.Join(cfg, primaryRecordFile))
 		return strings.TrimSpace(string(b))
 	}
 	start := func(q, sid string) {
-		resp, err := http.Post(hs.URL+"/hook/SessionStart"+q, "application/json",
-			strings.NewReader(`{"hook_event_name":"SessionStart","session_id":"`+sid+`"}`))
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		t.Helper()
+		hp.mustPost(t, "SessionStart"+q, `{"hook_event_name":"SessionStart","session_id":"`+sid+`"}`)
 	}
 	const own, nested, other = "0f0e0d0c-0b0a-4908-8706-050403020100", "11111111-2222-4333-8444-555555555555", "22222222-3333-4444-8555-666666666666"
 	start("?pid=31", own)
@@ -165,11 +158,9 @@ func TestEveryArgvIsExecdWithoutAnInheritedEntrypoint(t *testing.T) {
 // `ccd hook` names its own pid, beside its lane.
 func TestRunHookSendsItsPID(t *testing.T) {
 	var got []string
-	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	unixHookTarget(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got = append(got, r.URL.Query().Get("pid")+"|"+r.URL.Query().Get("lane"))
 	}))
-	t.Cleanup(hs.Close)
-	t.Setenv("CCD_HOOK_URL", hs.URL)
 	t.Setenv("CCD_LANE", "")
 	runHook([]string{"SessionStart"}, strings.NewReader(`{}`), io.Discard)
 	t.Setenv("CCD_LANE", laneID("k"))
@@ -205,18 +196,12 @@ func TestThePrimarysSessionStartIsRecordedWhileItsFirstStartIsPending(t *testing
 	ran := make(chan struct{})
 	go func() { defer close(ran); _ = sup.run(ctx) }()
 	t.Cleanup(func() { cancel(); <-ran })
-	hs := httptest.NewServer(srv.hookHandler())
-	t.Cleanup(hs.Close)
+	hp := hooks(t, srv)
 
 	const own = "0f0e0d0c-0b0a-4908-8706-050403020100"
 	done := make(chan error, 1)
 	go func() {
-		resp, err := http.Post(hs.URL+"/hook/SessionStart?pid=31", "application/json",
-			strings.NewReader(`{"hook_event_name":"SessionStart","session_id":"`+own+`"}`))
-		if err == nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-		}
+		_, err := hp.post("SessionStart?pid=31", `{"hook_event_name":"SessionStart","session_id":"`+own+`"}`)
 		done <- err
 	}()
 	// The hook is in flight before the start lands.

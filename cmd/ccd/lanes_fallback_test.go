@@ -3,10 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
-	"io"
 	"log"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -190,16 +187,10 @@ func TestTheUnrecordedFallbackSkipsALanesClearedSession(t *testing.T) {
 	laneSrv := newServer(serverConfig{ConfigDir: cfg}, nil, newAuthTracker())
 	id := laneID("k")
 	primary.lanes = &lanes{set: map[string]*lane{id: {id: id, key: "k", srv: laneSrv}}}
-	hs := httptest.NewServer(primary.hookHandler())
-	t.Cleanup(hs.Close)
+	hp := hooks(t, primary)
 	post := func(q, body string) {
 		t.Helper()
-		resp, err := http.Post(hs.URL+"/hook/SessionStart"+q, "application/json", strings.NewReader(body))
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		hp.mustPost(t, "SessionStart"+q, body)
 	}
 	const own = "0f0e0d0c-0b0a-4908-8706-050403020100"
 	const cleared = "11111111-2222-4333-8444-555555555555"

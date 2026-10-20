@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -11,9 +13,29 @@ import (
 	"time"
 )
 
+// The hook channel: where `ccd hook` reports, and the credential it presents.
+// ccd puts both in the environment of every CLI it starts (tmux `-e`; main.go),
+// and nowhere else.
+const (
+	envHookSocket = "CCD_HOOK_SOCKET"
+	envHookSecret = "CCD_HOOK_SECRET"
+)
+
+// unixClient is an HTTP client whose every connection is to the unix socket at
+// path, whatever the URL's host.
+func unixClient(path string, timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout, Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", path)
+		},
+	}}
+}
+
 // runHook is `ccd hook <Event>`: the command the CLI's settings.json runs for each
-// hook. It forwards the hook's stdin payload to the running ccd's loopback
-// listener and exits.
+// hook. It forwards the hook's stdin payload to the running ccd's hook socket
+// ($CCD_HOOK_SOCKET), with the credential ccd gave the CLI ($CCD_HOOK_SECRET),
+// and exits.
 //
 // 🔴 IT ALWAYS EXITS 0 AND PRINTS NOTHING ON STDOUT, AND BOTH ARE SAFETY
 // PROPERTIES OF THE SESSION, NOT POLITENESS. For these events the CLI treats
@@ -34,11 +56,14 @@ func runHook(args []string, stdin io.Reader, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "ccd hook: read stdin:", err)
 		return 0
 	}
-	base := os.Getenv("CCD_HOOK_URL")
-	if base == "" {
-		base = defaultHookURL
+	sock, secret := os.Getenv(envHookSocket), os.Getenv(envHookSecret)
+	if sock == "" || secret == "" {
+		// Not run by a CLI ccd started (ccd hands both to the CLI's pane).
+		fmt.Fprintf(stderr, "ccd hook: %s or %s is not set; this hook is not reported\n", envHookSocket, envHookSecret)
+		return 0
 	}
-	url := strings.TrimSuffix(base, "/") + "/hook/" + args[0]
+	// The host is a placeholder: the connection is to the unix socket.
+	url := "http://ccd/hook/" + args[0]
 	// Its own pid: ccd walks up from it to the CLI that fired the hook, which is
 	// how a nested `claude` is told from the primary (proctree.go).
 	url += "?pid=" + strconv.Itoa(os.Getpid())
@@ -48,11 +73,20 @@ func runHook(args []string, stdin io.Reader, stderr io.Writer) int {
 	if lane := os.Getenv("CCD_LANE"); lane != "" && isLaneID(lane) {
 		url += "&lane=" + lane
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		fmt.Fprintln(stderr, "ccd hook:", err)
 		return 0
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+secret)
+	resp, err := unixClient(sock, 5*time.Second).Do(req)
+	if err != nil {
+		fmt.Fprintln(stderr, "ccd hook:", err)
+		return 0
+	}
+	if resp.StatusCode/100 != 2 {
+		fmt.Fprintf(stderr, "ccd hook: %s refused: %s\n", args[0], resp.Status)
 	}
 	resp.Body.Close()
 	return 0

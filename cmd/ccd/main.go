@@ -15,8 +15,11 @@
 //     was started in) is alive, and the CLI is neither crash-looping nor lost.
 //     Session and auth state are reported in the body and never gate it
 //     (server.go handleHealthz).
-//   - /hook/{event} on a LOOPBACK-ONLY listener — where `ccd hook <Event>`, the
-//     command the CLI's settings run for each hook, reports.
+//   - /hook/{event} on a UNIX SOCKET in a directory only ccd's user can enter,
+//     authenticated with a per-process credential — where `ccd hook <Event>`, the
+//     command the CLI's settings run for each hook, reports (server.go
+//     hookHandler). ccd hands the socket's path and the credential to each CLI it
+//     starts, in its environment (CCD_HOOK_SOCKET, CCD_HOOK_SECRET).
 //
 // Subcommands:
 //
@@ -34,7 +37,8 @@
 //	                       presents when it hands a gateway turn on (never its own)
 //	CLAUDE_CONFIG_DIR      the CLI's config dir; transcripts are read only under <it>/projects
 //	CCD_LISTEN             gateway address        (default :18789)
-//	CCD_HOOK_LISTEN        hook address, loopback (default 127.0.0.1:18790)
+//	                       (the hook listener is a unix socket ccd creates itself under
+//	                       $TMPDIR; CCD_HOOK_LISTEN, the old TCP address, is no longer read)
 //	CCD_TMUX_SOCKET        tmux -L socket name    (default: tmux's default server)
 //	CCD_TMUX_CONF          tmux -f config file    (default: tmux's default)
 //	CCD_TMUX_TARGET        tmux SESSION name      (default cc); never an input target:
@@ -63,6 +67,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -77,11 +83,7 @@ import (
 	"time"
 )
 
-const (
-	defaultListen     = ":18789"
-	defaultHookListen = "127.0.0.1:18790"
-	defaultHookURL    = "http://127.0.0.1:18790"
-)
+const defaultListen = ":18789"
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -151,18 +153,52 @@ func envDuration(name string, def time.Duration) (time.Duration, error) {
 	return d, nil
 }
 
-// loopbackOnly refuses a hook listen address that is reachable off-host.
-func loopbackOnly(addr string) error {
-	host, _, err := net.SplitHostPort(addr)
+// hookChannel is ccd's hook listener and the credential it accepts.
+//
+// 🔴 A UNIX SOCKET, NOT 127.0.0.1. Every container in a pod shares one network
+// namespace, so a TCP loopback listener is reachable from a sidecar — in a
+// chief's pod, the gateway runtime, which untrusted content can steer. A socket
+// bound to a path is reachable only through the filesystem, and the sidecar has
+// its own (agentspec's gateway sidecar mounts no volume of the chief's). The
+// directory is os.MkdirTemp's, mode 0700, owned by ccd's user. The credential is
+// per process: 32 random bytes, never written to disk, handed only to the CLIs
+// ccd starts (tmuxTerminal.env). It is defence in depth — it keeps the channel
+// authenticated if the socket's isolation ever fails (a shared volume, a shared
+// process namespace) — and it does NOT stop a process of ccd's own user, every
+// tool the CLI runs included, which inherits it (server.go hookHandler).
+type hookChannel struct {
+	dir, path, secret string
+}
+
+func newHookChannel() (*hookChannel, error) {
+	var rnd [32]byte
+	if _, err := rand.Read(rnd[:]); err != nil {
+		return nil, fmt.Errorf("ccd: hook credential: %w", err)
+	}
+	// MkdirTemp creates it mode 0700 (TestTheHookChannelIsAPrivateSocketWithAPerProcessCredential).
+	dir, err := os.MkdirTemp("", "ccd-hook-")
 	if err != nil {
-		return fmt.Errorf("ccd: CCD_HOOK_LISTEN=%q: %v", addr, err)
+		return nil, fmt.Errorf("ccd: hook socket directory: %w", err)
 	}
-	ip := net.ParseIP(host)
-	if host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-		return fmt.Errorf("ccd: CCD_HOOK_LISTEN=%q is not a loopback address; the hook endpoint is "+
-			"unauthenticated and must not be reachable from the network", addr)
+	return &hookChannel{dir: dir, path: filepath.Join(dir, "hook.sock"), secret: hex.EncodeToString(rnd[:])}, nil
+}
+
+// listen binds the socket, readable and writable by ccd's user only.
+func (h *hookChannel) listen() (net.Listener, error) {
+	ln, err := net.Listen("unix", h.path)
+	if err != nil {
+		return nil, fmt.Errorf("ccd: listen %s: %w", h.path, err)
 	}
-	return nil
+	if err := os.Chmod(h.path, 0o600); err != nil {
+		ln.Close()
+		return nil, fmt.Errorf("ccd: hook socket: %w", err)
+	}
+	return ln, nil
+}
+
+// cliEnv is what every CLI ccd starts gets in its environment.
+func (h *hookChannel) cliEnv() []string {
+	return []string{envHookSocket + "=" + h.path, envHookSecret + "=" + h.secret}
 }
 
 func serve() error {
@@ -175,10 +211,11 @@ func serve() error {
 		home, _ := os.UserHomeDir()
 		configDir = filepath.Join(home, ".claude")
 	}
-	hookAddr := envOr("CCD_HOOK_LISTEN", defaultHookListen)
-	if err := loopbackOnly(hookAddr); err != nil {
+	hooks, err := newHookChannel()
+	if err != nil {
 		return err
 	}
+	defer os.RemoveAll(hooks.dir)
 	var durs [2]time.Duration
 	for i, d := range []struct {
 		name string
@@ -201,10 +238,11 @@ func serve() error {
 	term := tmuxTerminal{
 		bin: "tmux", socket: os.Getenv("CCD_TMUX_SOCKET"), conf: os.Getenv("CCD_TMUX_CONF"),
 		target: envOr("CCD_TMUX_TARGET", defaultTmuxTarget), enterDelay: 150 * time.Millisecond,
+		env: hooks.cliEnv(),
 	}
 	auth := newAuthTracker()
 	srv := newServer(serverConfig{
-		Bearer: bearer, ConfigDir: configDir,
+		Bearer: bearer, HookSecret: hooks.secret, ConfigDir: configDir,
 		SubmitTimeout: durs[0], TurnTimeout: durs[1], HookLog: os.Getenv("CCD_HOOK_LOG"),
 		HasCredential: credentialVisible(configDir),
 	}, term, auth)
@@ -259,16 +297,24 @@ func serve() error {
 
 	gw := &http.Server{Addr: envOr("CCD_LISTEN", defaultListen), Handler: srv.gatewayHandler(),
 		ReadHeaderTimeout: 10 * time.Second}
-	hk := &http.Server{Addr: hookAddr, Handler: srv.hookHandler(), ReadHeaderTimeout: 5 * time.Second}
+	hk := &http.Server{Handler: srv.hookHandler(), ReadHeaderTimeout: 5 * time.Second}
 
 	errc := make(chan error, 2)
-	for _, s := range []*http.Server{gw, hk} {
-		ln, err := net.Listen("tcp", s.Addr)
-		if err != nil {
-			return fmt.Errorf("ccd: listen %s: %w", s.Addr, err)
-		}
-		log.Printf("ccd: listening on %s", ln.Addr())
-		go func(s *http.Server, ln net.Listener) { errc <- s.Serve(ln) }(s, ln)
+	gln, err := net.Listen("tcp", gw.Addr)
+	if err != nil {
+		return fmt.Errorf("ccd: listen %s: %w", gw.Addr, err)
+	}
+	hln, err := hooks.listen()
+	if err != nil {
+		gln.Close()
+		return err
+	}
+	for _, l := range []struct {
+		s  *http.Server
+		ln net.Listener
+	}{{gw, gln}, {hk, hln}} {
+		log.Printf("ccd: listening on %s", l.ln.Addr())
+		go func(s *http.Server, ln net.Listener) { errc <- s.Serve(ln) }(l.s, l.ln)
 	}
 	// 🔴 THE SESSION STARTS ONLY ONCE BOTH LISTENERS ARE BOUND. Its SessionStart
 	// hook, sent as the CLI starts, is ccd's one readiness signal for turns; a TUI

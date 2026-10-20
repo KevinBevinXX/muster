@@ -40,6 +40,7 @@ func (s *server) trackApprovalLocked(ev hookEvent) {
 		}
 	case "posttooluse", "stop", "stopfailure", "userpromptsubmit", "sessionstart", "sessionend":
 		s.awaitingApproval = false
+		s.setScreenBlockedLocked(false, "")
 	}
 	if s.awaitingApproval != was {
 		if s.awaitingApproval {
@@ -50,6 +51,38 @@ func (s *server) trackApprovalLocked(ev hookEvent) {
 		if s.blocked != nil {
 			s.blocked.setFrom(s.blockedSrc, s.awaitingApproval)
 		}
+	}
+}
+
+// screenSource is the badge source of src's screenBlocked: its own, so a hook
+// that clears awaitingApproval does not clear it and vice versa.
+func screenSource(src string) string { return src + "#screen" }
+
+// setScreenBlocked records whether the last turn was refused for a dialog on the
+// pane (server.screenBlocked) and reports a change on the badge.
+func (s *server) setScreenBlocked(blocked bool, why string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.setScreenBlockedLocked(blocked, why)
+}
+
+// setScreenBlockedLocked is setScreenBlocked with s.mu held.
+//
+// 🔴 A CLEAR ALWAYS REACHES THE REPORTER, even when this server's own
+// screenBlocked is already false. The reporter's sources are shared by every CLI
+// in the pod and keyed by source name, and a lane's name is laneID(key) — the
+// SAME for the next CLI started for that session. A lane whose CLI died while
+// its source was raised leaves it raised in the reporter; the next lane's server
+// starts with screenBlocked false, so an early return here would never withdraw
+// it and the badge would stay up until ccd restarted. setFrom is idempotent.
+func (s *server) setScreenBlockedLocked(blocked bool, why string) {
+	changed := s.screenBlocked != blocked
+	s.screenBlocked = blocked
+	if blocked && changed {
+		log.Printf("ccd: turns refused: %s; showing it on the agent's awaiting-approval badge", why)
+	}
+	if s.blocked != nil && (changed || !blocked) {
+		s.blocked.setFrom(screenSource(s.blockedSrc), blocked)
 	}
 }
 
