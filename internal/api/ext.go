@@ -14,6 +14,7 @@ import (
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/github"
+	"github.com/ZacxDev/muster/internal/jobs"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/pins"
@@ -252,6 +253,26 @@ type Extensions struct {
 	// longer gets a session of its own even with this empty. That is the
 	// operator's "one pinned default session" decision, not a leak of the flag.
 	SessionRuntimes []string
+
+	// Jobs is the machine job API's store (internal/jobs, migration 0037). nil
+	// (no database): POST /api/jobs and GET /api/jobs/{id} answer 503.
+	Jobs jobs.Store
+	// JobWorkspace runs a job's two in-instance steps: the sha checkout before
+	// its turn and the result_path read after it. nil (no provisioner): a job
+	// naming sha or result_path is refused 501 when it is submitted, never
+	// accepted and then failed.
+	JobWorkspace JobWorkspace
+}
+
+// JobWorkspace is the part of the agent lifecycle adapter the job runner uses
+// (*agentprovision.Adapter implements it). Both methods exec inside the
+// agent's live instance.
+type JobWorkspace interface {
+	// CheckoutCommit moves the agent's repository checkout to sha, detached.
+	CheckoutCommit(ctx context.Context, a agents.Agent, sha string) error
+	// ReadWorkspaceFile returns rel, relative to the agent's working directory,
+	// byte for byte, refusing a file over max bytes.
+	ReadWorkspaceFile(ctx context.Context, a agents.Agent, rel string, max int) ([]byte, error)
 }
 
 // MirrorTokenAuth resolves a presented mirror token to its row (ErrBadToken

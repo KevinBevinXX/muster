@@ -44,6 +44,10 @@
   public HTTPS host. A `gateway`-kind agent gets no NetworkPolicy at all. And a
   NetworkPolicy is only a declaration: the cluster's network plugin enforces it
   or does not, and muster cannot tell which.
+- **A machine job does not survive a restart, and its timeout does not stop the
+  agent's turn.** The job API runs each job's turn inside the server process; at
+  boot every unfinished job is failed (`interrupted`). See
+  [jobs.md](jobs.md#what-it-does-not-do).
 - **`MUSTER_TAG_AUTODISPATCH` dispatches nothing.** It only logs and counts
   eligible tasks. The one automatic start is the chief's `task_dispatch`
   ([task routing](plugins.md#task_dispatch-the-guards)), off by default.

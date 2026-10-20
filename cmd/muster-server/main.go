@@ -67,6 +67,7 @@ import (
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/gotrue"
+	"github.com/ZacxDev/muster/internal/jobs"
 	"github.com/ZacxDev/muster/internal/memorelay"
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -293,6 +294,17 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.Focus = focus.NewPG(pool)
 		// The attention queue's explicit asks (migration 0023); RunAttentionSweep expires them.
 		ext.Attention = attention.NewPG(pool)
+		// The machine job API (migration 0037). A job runs inside the process
+		// that accepted it, so whatever a previous process left queued or
+		// running can never finish: fail it now, saying so, rather than leave a
+		// caller polling a job nothing is running.
+		js := jobs.NewPG(pool)
+		if n, err := js.FailInterrupted(authz.System(ctx)); err != nil {
+			logger.Printf("jobs: could not fail the jobs a previous process left unfinished: %v", err)
+		} else if n > 0 {
+			logger.Printf("jobs: failed %d job(s) a previous process left unfinished (reason %q)", n, jobs.ReasonInterrupted)
+		}
+		ext.Jobs = js
 
 		if len(cfg.ConnectorEncKey) > 0 {
 			cs, err := connectors.NewPG(pool, cfg.ConnectorEncKey)
@@ -424,6 +436,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	}
 	if prov != nil {
 		ext.Provisioner = prov
+		// The job API's sha checkout and result_path read exec through the
+		// same adapter (internal/api jobs.go).
+		ext.JobWorkspace = prov
 	}
 	if gw != nil {
 		ext.Gateway = gw
