@@ -652,8 +652,11 @@ for (const vp of [
         await route.continue();
       });
       await page.locator('#mv-input').fill('echo first');
-      await page.locator('#mv-send').click();
-      await page.waitForURL((u) => u.searchParams.get('notice') === 'sent');
+      // Armed BEFORE the click: the page it lands on takes ?notice= out of its
+      // address as soon as its script runs, so a wait started after the click
+      // can miss it and wait for a navigation that never comes (the same race
+      // as agent-composer.spec.ts's form send).
+      await Promise.all([page.waitForURL((u) => u.searchParams.get('notice') === 'sent'), page.locator('#mv-send').click()]);
       await expect(page.locator('#mv-note')).toHaveText('Sent.');
       expect(aborted, 'the script tried its own way first').toBe(1);
       expect(read(pasteFile)).toBe('%e2e-scratch2-@4 echo first\n');
@@ -676,8 +679,7 @@ for (const vp of [
         await route.continue();
       });
       await page.locator('#mv-input').fill('echo second');
-      await page.locator('#mv-send').click();
-      await page.waitForURL((u) => u.searchParams.get('notice') === 'sent');
+      await Promise.all([page.waitForURL((u) => u.searchParams.get('notice') === 'sent'), page.locator('#mv-send').click()]);
       expect(delivered).toBe(1);
       expect(read(pasteFile), 'the message whose answer was lost was delivered ONCE').toBe('%e2e-scratch2-@4 echo first\n%e2e-scratch2-@4 echo second\n');
       await page.unroute('**/mirror/terminal/send?*');

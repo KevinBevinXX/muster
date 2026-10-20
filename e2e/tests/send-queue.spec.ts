@@ -655,6 +655,17 @@ test.describe('queued row menu, phone 390×844 touch', () => {
     const text = 'menu layout ' + stamp;
     await queue(page, text, true);
     const r = rowIn(page, text, 'queued');
+    // 🔴 THE ROW IS DRAWN AND PAINTED BEFORE THE SHIFTS ARE COUNTED. queue()
+    // returns on the "Queued." note, while the list's own re-fetch may still be
+    // drawing the new row; the row grows the composer, which moves it (and the
+    // "working" line above it) up. That shift is reported in the first frame
+    // AFTER the row is inserted — so an observer armed in between counted
+    // QUEUING as the menu's shift (CI, run 39502271983: 0.0314 on mv-compose;
+    // reproduced with the row inserted at 237.7 ms, the observer armed at
+    // 249.2 ms, the shift reported at 254.9 ms). The row visible, two frames
+    // later that frame has been rendered and its shift is behind us.
+    await expect(r).toBeVisible();
+    await page.evaluate(() => new Promise<void>((res) => requestAnimationFrame(() => requestAnimationFrame(() => res()))));
     // Every layout shift whose moved nodes are the composer's (the queue is in
     // it) or the menu's —
     // input or not: CLS leaves out shifts right after input, and a menu opened
