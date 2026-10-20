@@ -44,11 +44,32 @@ type CheckoutStatus struct {
 	Detail string `json:"detail,omitempty"`
 }
 
-// CheckoutWaitTimeout bounds how long a first turn waits for a checkout that is
-// coming (cloning, or waiting for the github grant). An owner may not see the
-// request for hours; a day is long enough to come back to it and short enough
-// that an agent nobody approves goes red rather than sitting owed for ever.
-const CheckoutWaitTimeout = 24 * time.Hour
+// DefaultCheckoutWaitTimeout bounds how long a first turn waits for a checkout
+// that is coming (cloning, or waiting for the github grant). An owner may not
+// see the request for hours; a day is long enough to come back to it and short
+// enough that an agent nobody approves goes red rather than sitting owed for
+// ever.
+const DefaultCheckoutWaitTimeout = 24 * time.Hour
+
+// CheckoutWaitTimeout is the bound in force: DefaultCheckoutWaitTimeout unless
+// cmd/muster-server set MUSTER_CHECKOUT_WAIT_TIMEOUT, which it applies with
+// SetCheckoutWaitTimeout once at boot, before any deliverer runs.
+//
+// ⚠ IT IS MEASURED FROM THE ROW'S updated_at — its last real transition — NOT
+// from when the wait was first recorded (DecideFirstTurn's dwell). Recording or
+// refreshing the wait marker (SetKickoffError) does not move updated_at, so a
+// raised bound applies to an agent ALREADY waiting the moment a server carrying
+// it starts: its deadline becomes updated_at + the new bound.
+var CheckoutWaitTimeout = DefaultCheckoutWaitTimeout
+
+// SetCheckoutWaitTimeout replaces CheckoutWaitTimeout; d <= 0 restores the
+// default. Call it at boot only: the deliverer reads the value unsynchronised.
+func SetCheckoutWaitTimeout(d time.Duration) {
+	if d <= 0 {
+		d = DefaultCheckoutWaitTimeout
+	}
+	CheckoutWaitTimeout = d
+}
 
 // KickoffAwaitingGrantReason / KickoffAwaitingCloneReason open agents.kickoff_error
 // while a first turn is held for its checkout. They are written by

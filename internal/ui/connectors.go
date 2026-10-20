@@ -38,6 +38,12 @@ type ConnectorView struct {
 	RotatedAt  *time.Time
 	LastUsedAt *time.Time
 	Grants     []ConnectorGrantView
+	// Managed, when non-empty, says the connector is provided by the server's
+	// configuration (a virtual connector: the GitHub App) and why it has no
+	// Rotate or Delete — the card shows it in their place.
+	Managed string
+	// Problem is a managed connector's current operator-facing failure, if any.
+	Problem string
 }
 
 // ConnectorGrantView is one agent's live grant on a connector.
@@ -59,6 +65,11 @@ type ConnectorRequestView struct {
 	// Exists is false when the agent asked for a connector nobody has configured:
 	// the operator's answer is then the form that creates it.
 	Exists bool
+	// Problem, when non-empty, is why the connector cannot currently serve this
+	// agent (a virtual connector's operator-facing failure, e.g. the GitHub App's
+	// credentials refused): approving still records the decision, but the agent's
+	// requests will fail until it is fixed.
+	Problem string
 }
 
 // ConnectorAuditView is one audit line.
@@ -247,6 +258,7 @@ func connectorRequestCard(r ConnectorRequestView) g.Node {
 			cardTime(r.RequestedAt),
 		),
 		g.If(!r.Exists, P(Class("mt-2 text-xs text-muted"), g.Text("No connector by that name exists yet. Enter a credential to create it and approve this request in one step."))),
+		g.If(r.Problem != "", connectorProblem(r.Problem)),
 		g.If(r.Reason != "", P(Class("mt-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-muted"), g.Text(r.Reason))),
 		actions,
 	)
@@ -418,17 +430,37 @@ func connectorCard(c ConnectorView) g.Node {
 		),
 		g.If(len(c.Grants) > 0, Div(Class("mt-2 flex flex-col gap-1"), g.Map(c.Grants, connectorGrantRow))),
 		g.If(len(c.Grants) == 0, P(Class("mt-2 text-xs text-muted"), g.Text("No agent holds a grant."))),
-		Div(
-			Class("mt-3 flex flex-wrap items-center gap-2"),
-			Button(Type("button"), Class(btnSecondary), g.Attr("data-rotate", c.Name),
-				hx("hx-get", "/ui/connectors/"+c.Name+"/rotate"), hx("hx-target", "#connector-editor"),
-				hx("hx-swap", "innerHTML show:#connector-editor:top"), g.Text("Rotate")),
-			Button(Type("button"), Class(btnDanger), g.Attr("data-delete", c.Name),
-				hx("hx-delete", "/connectors/"+c.Name), g.Group(panelTarget()),
-				hx("hx-confirm", "Delete connector "+c.Name+"? Its secret is destroyed and every agent's grant on it is removed."),
-				g.Text("Delete")),
-		),
+		g.If(c.Problem != "", connectorProblem(c.Problem)),
+		connectorCardActions(c),
 	)
+}
+
+// connectorCardActions is Rotate and Delete, or — for a connector the server's
+// configuration provides (ConnectorView.Managed) — the sentence saying why
+// there are none: the store refuses both for it (connectors.ErrManaged).
+func connectorCardActions(c ConnectorView) g.Node {
+	if c.Managed != "" {
+		return P(Class("mt-2 text-xs text-muted"), g.Attr("data-connector-managed", c.Name), g.Text(c.Managed))
+	}
+	return Div(
+		Class("mt-3 flex flex-wrap items-center gap-2"),
+		Button(Type("button"), Class(btnSecondary), g.Attr("data-rotate", c.Name),
+			hx("hx-get", "/ui/connectors/"+c.Name+"/rotate"), hx("hx-target", "#connector-editor"),
+			hx("hx-swap", "innerHTML show:#connector-editor:top"), g.Text("Rotate")),
+		Button(Type("button"), Class(btnDanger), g.Attr("data-delete", c.Name),
+			hx("hx-delete", "/connectors/"+c.Name), g.Group(panelTarget()),
+			hx("hx-confirm", "Delete connector "+c.Name+"? Its secret is destroyed and every agent's grant on it is removed."),
+			g.Text("Delete")),
+	)
+}
+
+// connectorProblem is a virtual connector's operator-facing failure, on a
+// request card or a connector card. The text is the server's own (githubapp's
+// wording, quoting at most GitHub's error message) and never carries a secret.
+func connectorProblem(msg string) g.Node {
+	return P(g.Attr("role", "alert"), g.Attr("data-connector-problem", ""),
+		Class("mt-2 break-words rounded-lg bg-st-error-bg px-3 py-2 text-xs text-st-error-fg ring-1 ring-inset ring-st-error-fg/40"),
+		g.Text(msg))
 }
 
 func connectorGrantRow(gv ConnectorGrantView) g.Node {

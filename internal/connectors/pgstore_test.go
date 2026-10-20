@@ -205,11 +205,11 @@ func TestGrantLifecycle(t *testing.T) {
 	if len(pending) != 1 {
 		t.Fatalf("pending = %d, want 1", len(pending))
 	}
-	d, err := s.DecideGrant(ctx, g.ID, true, "operator")
+	d, err := s.DecideGrant(ctx, g.ID, true, "operator", "")
 	if err != nil || d.Status != connectors.StatusApproved || !d.Usable() {
 		t.Fatalf("approve = %+v %v", d, err)
 	}
-	if _, err := s.DecideGrant(ctx, g.ID, false, "operator"); !errors.Is(err, connectors.ErrNotPending) {
+	if _, err := s.DecideGrant(ctx, g.ID, false, "operator", ""); !errors.Is(err, connectors.ErrNotPending) {
 		t.Fatalf("re-deciding = %v, want ErrNotPending", err)
 	}
 	r, err := s.RevokeGrant(ctx, g.ID, "operator")
@@ -229,7 +229,7 @@ func TestDeletingAConnectorDeletesItsGrants(t *testing.T) {
 	a := seedAgent(t, ctx, pool, "grant-agent-del", "tok-del-0123456789")
 	createGitHub(t, ctx, s)
 	g, _, _ := s.RequestGrant(ctx, a, "github", "")
-	if _, err := s.DecideGrant(ctx, g.ID, true, "operator"); err != nil {
+	if _, err := s.DecideGrant(ctx, g.ID, true, "operator", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.DeleteConnector(ctx, "github"); err != nil {

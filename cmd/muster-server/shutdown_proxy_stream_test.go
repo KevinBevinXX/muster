@@ -166,7 +166,7 @@ func proxyShutdownApp(t *testing.T, connectPort int, u *proxyUpstream) (a *app, 
 	if err != nil {
 		t.Fatalf("request grant: %v", err)
 	}
-	if _, err := store.DecideGrant(ctx, g.ID, true, "test-operator"); err != nil {
+	if _, err := store.DecideGrant(ctx, g.ID, true, "test-operator", ""); err != nil {
 		t.Fatalf("approve grant: %v", err)
 	}
 	return a, token, connector, store

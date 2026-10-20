@@ -14,6 +14,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/flows"
+	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/notes"
 )
 
@@ -658,16 +659,6 @@ func (s *Server) listAgentPullRequests(ctx context.Context, a agents.Agent, argu
 	if strings.TrimSpace(a.Repo) == "" {
 		return toolErr("agent has no repo")
 	}
-	if s.ext.GitHub == nil {
-		return toolErr("no GitHub connection")
-	}
-	conn, ok, err := s.ext.GitHub.Get(ctx)
-	if err != nil {
-		return toolErr("could not load GitHub connection: %v", err)
-	}
-	if !ok || conn.Token == "" {
-		return toolErr("no GitHub connection")
-	}
 	var in struct{ State string }
 	_ = json.Unmarshal([]byte(orEmptyJSON(arguments)), &in)
 	state := strings.TrimSpace(in.State)
@@ -676,7 +667,21 @@ func (s *Server) listAgentPullRequests(ctx context.Context, a agents.Agent, argu
 	default:
 		state = "open"
 	}
-	prs, err := s.listPullRequests(ctx, conn.Token, a.Repo, state)
+	var prs []github.PullRequest
+	var err error
+	if app := s.githubApp(ctx); app != nil {
+		// The App's token for THIS agent's repository (githubapp.App.ListPullRequests).
+		prs, err = app.ListPullRequests(ctx, a.ID, a.Repo, state)
+	} else {
+		token, terr := s.githubOAuthToken(ctx)
+		if errors.Is(terr, errNoGitHub) {
+			return toolErr("no GitHub connection")
+		}
+		if terr != nil {
+			return toolErr("could not load GitHub connection: %v", terr)
+		}
+		prs, err = s.listPullRequests(ctx, token, a.Repo, state)
+	}
 	if err != nil {
 		return toolErr("could not list pull requests: %v", err)
 	}

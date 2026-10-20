@@ -45,7 +45,12 @@ configured, that session links to its transcript.
 
 ## GitHub
 
-The Repos tab connects one GitHub account per user. It needs
+**With a GitHub App configured** ([github-app.md](github-app.md)), the App is
+muster's GitHub identity. The Repos tab lists its installation's repositories,
+and those are the "connected" repositories for every dispatch check. The OAuth
+connection below is then not used.
+
+**Without one (deprecated):** the Repos tab connects one GitHub account per user. It needs
 `MUSTER_GITHUB_ENCRYPTION_KEY`, because tokens are stored encrypted. You can
 connect an account in either of two ways:
 

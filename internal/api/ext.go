@@ -120,7 +120,17 @@ type Extensions struct {
 	Kinds AgentKinds
 
 	// GitHubOAuth configures the OAuth web flow for connecting an account.
+	//
+	// ⚠ DEPRECATED AS muster's GITHUB IDENTITY when GitHubApp is set: the App
+	// takes precedence everywhere a repository list is read (github_source.go),
+	// and the OAuth connection is only the fallback for a deployment without one.
 	GitHubOAuth GitHubOAuthConfig
+	// GitHubApp, when set, is muster's GitHub identity (internal/githubapp): the
+	// Repos tab and every connected-repository check list the App's installation
+	// repositories instead of the OAuth connection's. The same App backs the
+	// `github` connector (wired into Connectors by connectors.WithVirtual, so the
+	// two cannot disagree about whether it is configured). nil: OAuth, as before.
+	GitHubApp GitHubApp
 
 	// Push is muster's own Web Push (internal/push; push_routes.go). nil: no
 	// VAPID keys are configured — no Enable button is drawn, the key route
@@ -314,6 +324,17 @@ type Mirror interface {
 	// tmux copy-mode by lines (positive is back). No step-up: see
 	// mirror.Hub.ScrollWindow.
 	ScrollWindow(ctx context.Context, host, session, window string, lines int) error
+}
+
+// GitHubApp is what the API reads from a configured GitHub App
+// (*githubapp.App). An interface so a test can stand one in without a key.
+type GitHubApp interface {
+	Repos(ctx context.Context) ([]github.Repo, error)
+	Accounts(ctx context.Context) ([]string, error)
+	DefaultBranch(ctx context.Context, repo string) (string, error)
+	ListPullRequests(ctx context.Context, agentID int64, repo, state string) ([]github.PullRequest, error)
+	// Problem is the operator-facing reason the App cannot serve agentID now ("" if none).
+	Problem(agentID int64) string
 }
 
 // GitHubOAuthConfig holds the OAuth App credentials + the public base URL used

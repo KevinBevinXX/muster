@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rsa"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/focus"
+	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
@@ -79,6 +81,18 @@ const (
 	envPublicURL       = "MUSTER_PUBLIC_URL"
 	envGitHubClientID  = "GITHUB_CLIENT_ID"
 	envGitHubClientSec = "GITHUB_CLIENT_SECRET"
+
+	// The GitHub App (internal/githubapp): muster's GitHub identity (for admins)
+	// when set, taking precedence over the OAuth connection above (deprecated).
+	// The ID and the key are a pair, and the account allowlist is REQUIRED with
+	// them: the App is public, so anyone can install it.
+	envGitHubAppID       = "MUSTER_GITHUB_APP_ID"
+	envGitHubAppKey      = "MUSTER_GITHUB_APP_PRIVATE_KEY"
+	envGitHubAppAccounts = "MUSTER_GITHUB_APP_ACCOUNTS"
+
+	// How long a claude-code agent's first turn waits for its repository checkout
+	// (agents.CheckoutWaitTimeout) before the agent is marked error.
+	envCheckoutWaitTimeout = "MUSTER_CHECKOUT_WAIT_TIMEOUT"
 
 	// The secure connector store (internal/connectors). The KEY turns it on; the
 	// connect PORT is a second listener serving ONLY the agent-facing connector
@@ -429,6 +443,17 @@ type config struct {
 	PublicURL          string
 	GitHubClientID     string
 	GitHubClientSecret string
+
+	// GitHubAppID / GitHubAppKey configure the GitHub App (both or neither;
+	// loadConfig refuses half, and a key that does not parse).
+	// GitHubAppAccounts is the REQUIRED allowlist of installation accounts.
+	GitHubAppID       int64
+	GitHubAppKey      *rsa.PrivateKey
+	GitHubAppAccounts []string
+
+	// CheckoutWaitTimeout is agents.CheckoutWaitTimeout for this server: 0 means
+	// the default (agents.DefaultCheckoutWaitTimeout).
+	CheckoutWaitTimeout time.Duration
 
 	// ConnectorEncKey is the 32-byte AES key connector secrets are sealed with.
 	// Empty means the connector store is not built (the feature is off).
@@ -1051,6 +1076,18 @@ func loadConfig(getenv func(string) string) (config, error) {
 		c.GitHubEncKey = key
 	}
 
+	if err := c.loadGitHubApp(getenv); err != nil {
+		return config{}, err
+	}
+	if v := strings.TrimSpace(getenv(envCheckoutWaitTimeout)); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < time.Hour || d > 30*24*time.Hour {
+			return config{}, fmt.Errorf("invalid %s %q: a Go duration from 1h to 720h (unset means %s)",
+				envCheckoutWaitTimeout, v, agents.DefaultCheckoutWaitTimeout)
+		}
+		c.CheckoutWaitTimeout = d
+	}
+
 	if v := strings.TrimSpace(getenv(envConnectorEncKey)); v != "" {
 		key, err := decodeEncryptionKey(v)
 		if err != nil {
@@ -1187,6 +1224,11 @@ func (c config) validateAuthMode() error {
 //     stays true to what agents can actually do, with no second flag to keep in
 //     step with it.
 func (c config) validateConnectors() error {
+	if c.GitHubAppID != 0 && len(c.ConnectorEncKey) == 0 {
+		return fmt.Errorf("%s is set but %s is not: the GitHub App's tokens reach agents only through the "+
+			"connector proxy, whose grants live in the connector store. Set %s too", envGitHubAppID,
+			envConnectorEncKey, envConnectorEncKey)
+	}
 	if len(c.ConnectorEncKey) > 0 && len(c.GitHubEncKey) > 0 && string(c.ConnectorEncKey) == string(c.GitHubEncKey) {
 		return fmt.Errorf("%s is the same key as %s: generate a separate key for each store", envConnectorEncKey, envGitHubEncKey)
 	}
@@ -1212,6 +1254,54 @@ func (c config) validateConnectors() error {
 			return fmt.Errorf("invalid %s %q: want a base URL like http://muster.<namespace>.svc:<port>", envAgentConnectURL, c.AgentConnectURL)
 		}
 	}
+	return nil
+}
+
+// githubLoginRE is a GitHub user or organization login.
+var githubLoginRE = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
+
+// loadGitHubApp reads the GitHub App's three variables.
+//
+// 🔴 HALF A PAIR, AND A KEY THAT DOES NOT PARSE, REFUSE TO BOOT. Either would
+// boot a server whose `github` connector fails every token mint — visible only
+// hours later, as an agent whose clone never succeeds.
+func (c *config) loadGitHubApp(getenv func(string) string) error {
+	id := strings.TrimSpace(getenv(envGitHubAppID))
+	key := getenv(envGitHubAppKey)
+	accounts := splitList(getenv(envGitHubAppAccounts))
+	if id == "" && strings.TrimSpace(key) == "" {
+		if len(accounts) > 0 {
+			return fmt.Errorf("%s is set but %s is not: an account allowlist needs its App", envGitHubAppAccounts, envGitHubAppID)
+		}
+		return nil
+	}
+	if id == "" || strings.TrimSpace(key) == "" {
+		return fmt.Errorf("%s and %s are a pair and only one is set: set both (the App's numeric ID, and the "+
+			"PEM private key GitHub generated for it) or neither", envGitHubAppID, envGitHubAppKey)
+	}
+	n, err := strconv.ParseInt(id, 10, 64)
+	if err != nil || n <= 0 {
+		return fmt.Errorf("invalid %s %q: the App's numeric ID (the App's settings page, \"App ID\")", envGitHubAppID, id)
+	}
+	k, err := githubapp.ParsePrivateKey(key)
+	if err != nil {
+		// The error names the shape, never the value.
+		return fmt.Errorf("invalid %s: %v", envGitHubAppKey, err)
+	}
+	// 🔴 REQUIRED. The App must be installable on "Any account" to reach an
+	// organization its owner does not own, so a stranger can install it on their
+	// own repositories; without the list those would become "connected".
+	if len(accounts) == 0 {
+		return fmt.Errorf("%s is set but %s is empty: name the GitHub accounts (users or organizations, "+
+			"comma-separated) whose installations muster may use — anyone can install a public App",
+			envGitHubAppID, envGitHubAppAccounts)
+	}
+	for _, a := range accounts {
+		if !githubLoginRE.MatchString(a) {
+			return fmt.Errorf("invalid %s entry %q: a GitHub login", envGitHubAppAccounts, a)
+		}
+	}
+	c.GitHubAppID, c.GitHubAppKey, c.GitHubAppAccounts = n, k, accounts
 	return nil
 }
 

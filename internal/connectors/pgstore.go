@@ -253,14 +253,14 @@ func (s *PGStore) TouchConnector(ctx context.Context, name string) error {
 // --- grants -----------------------------------------------------------------------
 
 const grantCols = `g.id, g.agent_id, coalesce(a.name, ''), g.connector_name, g.status, g.reason, g.requested_at,
-	g.decided_at, g.decided_by, g.last_used_at`
+	g.decided_at, g.decided_by, g.last_used_at, g.source`
 
 const grantFrom = ` FROM connector_grants g LEFT JOIN agents a ON a.id = g.agent_id`
 
 func scanGrant(row pgx.Row) (Grant, error) {
 	var g Grant
 	err := row.Scan(&g.ID, &g.AgentID, &g.AgentName, &g.Connector, &g.Status, &g.Reason, &g.RequestedAt,
-		&g.DecidedAt, &g.DecidedBy, &g.LastUsedAt)
+		&g.DecidedAt, &g.DecidedBy, &g.LastUsedAt, &g.Source)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Grant{}, ErrNotFound
 	}
@@ -353,15 +353,19 @@ func (s *PGStore) GetGrant(ctx context.Context, id int64) (Grant, error) {
 	return scanGrant(s.pool.QueryRow(ctx, `SELECT `+grantCols+grantFrom+` WHERE g.id=$1`, id))
 }
 
-// DecideGrant approves or denies a pending grant.
-func (s *PGStore) DecideGrant(ctx context.Context, id int64, approve bool, by string) (Grant, error) {
+// DecideGrant approves or denies a pending grant, recording the credential
+// source the decision was about (SourceStored / SourceApp).
+func (s *PGStore) DecideGrant(ctx context.Context, id int64, approve bool, by, source string) (Grant, error) {
 	status := StatusDenied
 	if approve {
 		status = StatusApproved
 	}
+	if source == "" {
+		source = SourceStored
+	}
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE connector_grants SET status=$2, decided_by=$3, decided_at=now()
-		WHERE id=$1 AND status='pending'`, id, status, by)
+		UPDATE connector_grants SET status=$2, decided_by=$3, decided_at=now(), source=$4
+		WHERE id=$1 AND status='pending'`, id, status, by, source)
 	if err != nil {
 		return Grant{}, err
 	}
@@ -372,6 +376,19 @@ func (s *PGStore) DecideGrant(ctx context.Context, id int64, approve bool, by st
 		return Grant{}, ErrNotPending
 	}
 	return s.GetGrant(ctx, id)
+}
+
+// ReopenGrant puts an APPROVED grant back to pending (see ReconcileGrant). It
+// is conditional on the row still being approved: false, nil when it was not.
+func (s *PGStore) ReopenGrant(ctx context.Context, id int64) (Grant, bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE connector_grants SET status='pending', decided_by='', decided_at=NULL, source='stored'
+		WHERE id=$1 AND status='approved'`, id)
+	if err != nil {
+		return Grant{}, false, err
+	}
+	g, err := s.GetGrant(ctx, id)
+	return g, tag.RowsAffected() == 1, err
 }
 
 // RevokeGrant ends a pending or approved grant.

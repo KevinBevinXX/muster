@@ -131,7 +131,16 @@ type Grant struct {
 	DecidedAt   *time.Time `json:"decidedAt,omitempty"`
 	DecidedBy   string     `json:"decidedBy,omitempty"`
 	LastUsedAt  *time.Time `json:"lastUsedAt,omitempty"`
+	// Source is the credential the approval was about: SourceStored or
+	// SourceApp (migration 0033). See ReconcileGrant.
+	Source string `json:"source,omitempty"`
 }
+
+// Grant sources: which credential an approval was about.
+const (
+	SourceStored = "stored"
+	SourceApp    = "app"
+)
 
 // Usable reports whether the grant currently authorises use: it is approved.
 func (g Grant) Usable() bool { return g.Status == StatusApproved }
@@ -181,7 +190,10 @@ type Store interface {
 	LatestGrant(ctx context.Context, agentID int64, connector string) (Grant, error)
 	GetGrant(ctx context.Context, id int64) (Grant, error)
 	// DecideGrant approves or denies a PENDING grant; ErrNotPending otherwise.
-	DecideGrant(ctx context.Context, id int64, approve bool, by string) (Grant, error)
+	DecideGrant(ctx context.Context, id int64, approve bool, by, source string) (Grant, error)
+	// ReopenGrant puts an approved grant back to pending; reopened is false when
+	// it was no longer approved.
+	ReopenGrant(ctx context.Context, id int64) (g Grant, reopened bool, err error)
 	RevokeGrant(ctx context.Context, id int64, by string) (Grant, error)
 	ListPendingGrants(ctx context.Context) ([]Grant, error)
 	// ListGrants returns every pending and approved grant (the live set).

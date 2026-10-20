@@ -20,7 +20,6 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/focus"
-	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/provision"
@@ -337,14 +336,7 @@ func (s *Server) buildTaskDispatchView(ctx context.Context, n notes.Note) ui.Tas
 // and non-fatal — a miss just leaves the repo blank in the confirm. The match
 // itself is the pure matchRepoByDirectory (unit-tested).
 func (s *Server) inferRepoFromDirectory(ctx context.Context, directory string) string {
-	if s.ext.GitHub == nil {
-		return ""
-	}
-	conn, ok, err := s.ext.GitHub.Get(ctx)
-	if err != nil || !ok {
-		return ""
-	}
-	list, err := github.ListRepos(ctx, conn.Token)
+	list, err := s.githubRepos(ctx)
 	if err != nil {
 		return ""
 	}
@@ -382,13 +374,9 @@ func matchRepoByDirectory(directory string, repoFullNames []string) string {
 // (slow — hits the GitHub API), swapped in over the skeleton.
 func (s *Server) handleAgentRepoOptions(w http.ResponseWriter, r *http.Request) {
 	repos := make([]ui.RepoView, 0)
-	if s.ext.GitHub != nil {
-		if conn, ok, err := s.ext.GitHub.Get(r.Context()); err == nil && ok {
-			if list, err := github.ListRepos(r.Context(), conn.Token); err == nil {
-				for _, rp := range list {
-					repos = append(repos, ui.RepoView{FullName: rp.FullName, Private: rp.Private})
-				}
-			}
+	if list, err := s.githubRepos(r.Context()); err == nil {
+		for _, rp := range list {
+			repos = append(repos, ui.RepoView{FullName: rp.FullName, Private: rp.Private})
 		}
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -575,6 +563,7 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 		KickoffResendSafe: agents.KickoffResendSafe(a),
 		// Decided from kickoff_error's muster-written prefix too; the boolean crosses.
 		KickoffAwaitingGrant: agents.KickoffAwaitingGrant(a),
+		GitHubProblem:        s.githubAgentProblem(a),
 		Namespace:            a.Namespace,
 		NoteID:               a.NoteID, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
 		LastActiveAt: agents.LastActivity(a, lastMsg),
@@ -989,12 +978,8 @@ func (s *Server) resolveRepoBranch(ctx context.Context, repo, branch string) str
 	if repo == "" {
 		return ""
 	}
-	if s.ext.GitHub != nil {
-		if conn, ok, err := s.ext.GitHub.Get(ctx); err == nil && ok {
-			if b, err := github.DefaultBranch(ctx, conn.Token, repo); err == nil && b != "" {
-				return b
-			}
-		}
+	if b, err := s.githubDefaultBranch(ctx, repo); err == nil && b != "" {
+		return b
 	}
 	return "main"
 }

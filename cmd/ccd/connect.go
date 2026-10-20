@@ -26,10 +26,16 @@ import (
 //   - git routing through muster's proxy for every connector THIS agent holds
 //     an approved grant on: for each of the connector's hosts,
 //     `url.<proxy>.insteadOf https://<host>/`, plus — on proxy URLs only — the
-//     agent's own token as an extra header and redirects turned off. Without
-//     an approved grant the routing is REMOVED, so git talks to the platform
-//     directly (public clones keep working) rather than through a proxy that
-//     would refuse it. `ccd serve` keeps it in step with the grants by itself
+//     agent's own token as an extra header and redirects turned off. With an
+//     approved grant EVERY request git makes to those hosts goes through the
+//     proxy — every repository, not only the agent's. For a stored connector
+//     each carries its credential; for the GitHub-App-backed `github`
+//     connector, only the agent's OWN repository gets the App token and every
+//     other repository is forwarded anonymously (a public dependency or
+//     submodule clones as for anyone; a private one fails as for anyone).
+//     Without an approved grant the routing is REMOVED, so git talks to the
+//     platform directly (public clones keep working) rather than through a
+//     proxy that would refuse it. `ccd serve` keeps it in step with the grants by itself
 //     (syncGitRouting, every gitSyncInterval); `ccd connect-git [connector]`
 //     applies one connector at once. Neither ever ASKS for access: requesting
 //     a connector has one path, the connector_request tool.

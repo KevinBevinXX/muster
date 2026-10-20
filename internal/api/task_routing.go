@@ -19,7 +19,6 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/fence"
-	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
@@ -734,14 +733,10 @@ func (s *Server) connectedRepo(ctx context.Context, repo string) string {
 	if !repoNameRe.MatchString(repo) {
 		return "repo " + strconv.Quote(repo) + " is not owner/name"
 	}
-	if s.ext.GitHub == nil {
+	list, err := s.githubRepos(ctx)
+	if errors.Is(err, errNoGitHub) {
 		return chiefDispatchNoGitHub
 	}
-	conn, ok, err := s.ext.GitHub.Get(ctx)
-	if err != nil || !ok || conn.Token == "" {
-		return chiefDispatchNoGitHub
-	}
-	list, err := github.ListRepos(ctx, conn.Token)
 	if err != nil {
 		s.logger.Printf("task routing: list the owner's repositories: %v", err)
 		return "your owner's repositories could not be listed; try again later or use task_route_attention"

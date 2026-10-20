@@ -199,7 +199,7 @@ func TestCurlFollowingTheRecipeNeverSendsItsTokenOffHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	g, _, _ := f.store.RequestGrant(f.ctx, id, "svc", "")
-	if _, err := f.store.DecideGrant(f.ctx, g.ID, true, "operator"); err != nil {
+	if _, err := f.store.DecideGrant(f.ctx, g.ID, true, "operator", ""); err != nil {
 		t.Fatal(err)
 	}
 

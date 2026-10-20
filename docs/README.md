@@ -16,6 +16,7 @@ Start with the [project README](../README.md) for the pitch and a quickstart.
 - [chief.md](chief.md) — the chief on each agent kind, and replacing it (runbook)
 - [browser-flows.md](browser-flows.md) — the browser-job queue and its runner protocol
 - [connectors.md](connectors.md) — credentials agents use without seeing them
+- [github-app.md](github-app.md) — the GitHub App: muster's GitHub identity, and one-repository tokens for agents
 - [memo-relay.md](memo-relay.md) — cairn memos delivered to dispatched agents
 - [plugins.md](plugins.md) — out-of-process plugins that bring messages to your chief agent
 

@@ -54,6 +54,12 @@ type AgentCardView struct {
 	// github approval" line linking to Connectors — see kickoffAwaitingGrantNotice.
 	// Composed in internal/api's cardViewIndexed; only the boolean crosses.
 	KickoffAwaitingGrant bool
+	// GitHubProblem is why the GitHub App cannot currently serve this agent's
+	// repository (its credentials refused at the token mint, a rate limit, the
+	// repository outside the installation), "" when nothing is known to be wrong
+	// or no App is configured. Composed in internal/api's cardViewIndexed from
+	// githubapp's operator-facing text, which never carries a token.
+	GitHubProblem string
 	// Namespace is the agent's stored namespace, used only to spell the log command
 	// in the failed-kickoff remedy.
 	Namespace string
@@ -350,6 +356,7 @@ func agentCard(a AgentCardView) g.Node {
 			),
 			g.If(a.KickoffFailed, kickoffFailureDetail(a.KickoffFailure,
 				KickoffFailedRemedy(a.KickoffResendSafe, a.Namespace, a.Name))),
+			g.If(a.GitHubProblem != "", githubProblemDetail(a.GitHubProblem)),
 		),
 		// OUTSIDE the nav anchor: it carries a link (Connectors), and an anchor
 		// nested in the card's <a> is invalid markup whose taps open the card.
@@ -664,6 +671,19 @@ func kickoffAwaitingGrantNotice() g.Node {
 			"github connector request. "),
 		A(Href("/connectors"), Class("font-semibold underline"), g.Text("Open Connectors")),
 	))
+}
+
+// githubProblemDetail is the agent card's line for a GitHub App failure that
+// keeps this agent from reaching its repository (AgentCardView.GitHubProblem).
+// The same classes as kickoffFailureDetail, so it needs nothing new in the
+// committed stylesheet.
+func githubProblemDetail(msg string) g.Node {
+	return P(
+		g.Attr("data-github-problem", ""),
+		Class("break-words rounded-lg bg-st-error-bg px-3 py-2 text-xs text-st-error-fg ring-1 ring-inset ring-st-error-fg/40"),
+		Span(Class("font-semibold"), g.Text("GitHub: ")),
+		g.Text(msg),
+	)
 }
 
 // kickoffFailureDetail renders the recorded failure and the remedy under the

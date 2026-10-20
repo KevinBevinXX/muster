@@ -11,6 +11,15 @@ A claude-code agent dispatched with a repository that it cannot clone asks for
 grant lasts until the agent is destroyed, the grant is revoked, or the connector
 is deleted. Connectors handle HTTP only.
 
+**The `github` connector can come from a GitHub App.** When
+`MUSTER_GITHUB_APP_ID` and `MUSTER_GITHUB_APP_PRIVATE_KEY` are set, `github` is
+provided by the App for admins' agents and is not a stored secret: each
+approved agent's requests to its own repository carry a 1-hour installation
+token limited to that repository, and requests for other repositories go out
+anonymously. It replaces an admin's stored `github` connector while it is
+configured. Members' agents do not see it. Registration
+and setup are in [github-app.md](github-app.md).
+
 ## Configuration
 
 | variable | meaning |

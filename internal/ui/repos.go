@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"strings"
+
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
 )
@@ -95,6 +97,30 @@ func ReposConnected(login string, repos []RepoView) g.Node {
 				g.Text("Disconnect"),
 			),
 		),
+		reposList(repos),
+	}
+}
+
+// ReposViaApp lists the repositories a configured GitHub App's installation(s)
+// can access: muster's GitHub identity when the App is set. accounts are the
+// installation account logins; problem, when non-empty, is the App's current
+// operator-facing failure (its credentials refused, a rate limit, a listing
+// error) and is shown above the list. No Disconnect: the App is configured by
+// the deployment, not connected per user.
+func ReposViaApp(accounts []string, repos []RepoView, problem string) g.Node {
+	label := strings.Join(accounts, ", ")
+	if label == "" {
+		label = "no installation"
+	}
+	return g.Group{
+		Div(
+			Class("mb-3 flex items-center gap-2"),
+			g.Attr("data-github-app", ""),
+			chip("github app", label),
+		),
+		g.If(problem != "", P(g.Attr("role", "alert"), g.Attr("data-github-app-problem", ""),
+			Class("mb-3 break-words rounded-lg bg-st-error-bg px-3 py-2 text-xs text-st-error-fg ring-1 ring-inset ring-st-error-fg/40"),
+			g.Text(problem))),
 		reposList(repos),
 	}
 }

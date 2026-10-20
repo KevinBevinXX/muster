@@ -236,7 +236,7 @@ var (
 	// name — `var Everyone = System`, a helper wrapping WithPrincipal — is a
 	// new door until someone has decided it is not.
 	authzExports = []string{
-		"From", "MustFrom", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
+		"From", "IsAdmin", "MustFrom", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
 		"System", "Via", "ViaAgent", "ViaAsk", "ViaAttention", "ViaConnect", "ViaFocus", "ViaHook", "ViaMirrorHost", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
 		"ViaSession", "ViaSystem", "ViaToken", "WithPrincipal",
 	}

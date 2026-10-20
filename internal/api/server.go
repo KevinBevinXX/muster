@@ -609,7 +609,7 @@ func staticCacheControl(path, v string) string {
 // LINK only — requireAdmin is what refuses a member, whatever the nav drew.
 func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 	p, _ := authz.From(ctx)
-	return ui.Features{GitHub: s.ext.GitHub != nil, Connectors: s.ext.Connectors != nil,
+	return ui.Features{GitHub: s.ext.GitHub != nil || s.githubApp(ctx) != nil, Connectors: s.ext.Connectors != nil,
 		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed(), Push: s.pushServed(), Attention: s.ext.Attention != nil}
 }
 

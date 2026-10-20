@@ -142,7 +142,7 @@ func (f *fixture) approve(t *testing.T, c connectors.Caller) connectors.Grant {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err = f.store.DecideGrant(f.ctx, g.ID, true, "operator")
+	g, err = f.store.DecideGrant(f.ctx, g.ID, true, "operator", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +382,7 @@ func TestAnAgentWithoutAGrantIsRefusedAndARequestIsFiled(t *testing.T) {
 func TestADeniedAgentIsRefusedWithoutAFreshPrompt(t *testing.T) {
 	f := newFixture(t, connectors.SchemeBasic)
 	g, _, _ := f.store.RequestGrant(f.ctx, f.agentA.AgentID, "svc", "")
-	if _, err := f.store.DecideGrant(f.ctx, g.ID, false, "operator"); err != nil {
+	if _, err := f.store.DecideGrant(f.ctx, g.ID, false, "operator", ""); err != nil {
 		t.Fatal(err)
 	}
 	w := f.do(t, "GET", "/connect/svc/"+f.host+"/x", nil)

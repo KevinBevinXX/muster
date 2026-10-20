@@ -226,6 +226,14 @@ func From(ctx context.Context) (Principal, bool) {
 	return p, ok
 }
 
+// IsAdmin reports whether ctx carries an admin-role USER principal. A
+// scope-all (System) principal names no user and answers false, as does a
+// context with no principal: least privilege.
+func IsAdmin(ctx context.Context) bool {
+	p, ok := From(ctx)
+	return ok && !p.All() && p.UserID > 0 && p.Role == RoleAdmin
+}
+
 // MustFrom returns the principal ctx carries, panicking if there is none.
 // Use it where reaching the code without one is a wiring bug.
 func MustFrom(ctx context.Context) Principal {

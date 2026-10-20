@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -352,6 +353,12 @@ var bannerLedger = []string{
 	// told it is" with nothing in the log. One line names all three in each
 	// direction.
 	envConnectorEncKey,
+	// The GitHub App: the `github app:` line names all three in both directions
+	// (ON / OFF), and the `checkout wait:` line names its variable in both.
+	envGitHubAppID,
+	envGitHubAppKey,
+	envGitHubAppAccounts,
+	envCheckoutWaitTimeout,
 	envConnectPort,
 	envAgentConnectURL,
 	// 🔴 THE MIRROR PLUGIN IS LEDGERED: ON, it accepts host connections on a route
@@ -716,8 +723,14 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		ChiefDispatchOwners:    map[int64]bool{1: true},
 		// Chief session runtimes: the banner branches on ext.SessionRuntimes (below).
 		ChiefSessionRuntimes: []string{"claude-code", "gateway"},
+		// The GitHub App: the banner branches on ext.GitHubApp (below); the key
+		// itself is never printed, so the fixture needs none.
+		GitHubAppID:         12345,
+		GitHubAppAccounts:   []string{"example-org"},
+		CheckoutWaitTimeout: 48 * time.Hour,
 	}
 	onOut = renderBannerWithPool(t, on, api.Extensions{
+		GitHubApp:   bannerStubGitHubApp{},
 		Mirror:      mirror.NewService(nil, nil),
 		Push:        push.NewService(nil, nil, on.vapid(), nil),
 		Connectors:  bannerStubConnectorStore{},
@@ -765,6 +778,7 @@ func TestTheBannerWarnsWhenRoutingIsOnWithoutAHookToken(t *testing.T) {
 // bannerStubPlugins and bannerStubPluginGateway are present-but-inert: the
 // banner only asks whether they are wired.
 type bannerStubPlugins struct{ plugins.Store }
+type bannerStubGitHubApp struct{ api.GitHubApp }
 type bannerStubPluginGateway struct{ plugins.Gateway }
 type bannerStubRoutes struct{ plugins.RouteStore }
 

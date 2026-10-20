@@ -94,9 +94,13 @@ See [auth.md](auth.md).
 | `MUSTER_CONNECTOR_ENCRYPTION_KEY` | none | no | A 32-byte base64 key. Setting it turns on the [connector store](connectors.md), and with it members' own stored credentials. |
 | `MUSTER_CONNECT_PORT` | none | with connectors | A listener that serves only the agent-facing connector, approval and MCP routes. |
 | `MUSTER_AGENT_CONNECT_URL` | none | with connectors | The URL agents are given (as `MUSTER_CONNECT_URL`) for reaching the connect port. |
-| `MUSTER_GITHUB_ENCRYPTION_KEY` | none | no | A 32-byte base64 key for storing a GitHub token. Setting it enables the Repos tab. |
-| `MUSTER_GITHUB_TOKEN` | none | no | Connects this GitHub token at boot. |
-| `GITHUB_CLIENT_ID` | none | no | The GitHub OAuth app's client ID. Setting it and the secret enables `/github/connect`. |
+| `MUSTER_GITHUB_APP_ID` | none | with the key and the accounts | The numeric App ID of a [GitHub App](github-app.md). Setting it, the key and the accounts makes the App the GitHub identity of muster's **admins**: their Repos tab and connected-repository checks list its installation repositories, and the `github` connector gives each approved agent of theirs a 1-hour token limited to its own repository (other repositories are reached anonymously; an agent with no repository gets no github access). Members keep their own OAuth connection. It needs `MUSTER_CONNECTOR_ENCRYPTION_KEY`, and takes precedence over the OAuth connection below. |
+| `MUSTER_GITHUB_APP_PRIVATE_KEY` | none | with the ID | The App's private key: the PEM file GitHub generated, as the value (mount it from a Secret). A key that does not parse refuses to boot. |
+| `MUSTER_GITHUB_APP_ACCOUNTS` | none | with the App | Comma-separated GitHub logins (users or organizations, any case), e.g. `example-org,your-user`. Only the App's installations on these accounts are used; any other installation (anyone can install a public App) is ignored and logged once. Empty with the App set refuses to boot. |
+| `MUSTER_CHECKOUT_WAIT_TIMEOUT` | `24h` | no | How long a claude-code agent's first turn waits for its repository checkout (the owner's `github` approval) before the agent is marked error. A Go duration, `1h`–`720h`. It is measured from the agent's last status change, so raising it also extends agents already waiting. |
+| `MUSTER_GITHUB_ENCRYPTION_KEY` | none | no | A 32-byte base64 key for storing a GitHub token (the OAuth connection, deprecated when a GitHub App is configured). Setting it enables the Repos tab. |
+| `MUSTER_GITHUB_TOKEN` | none | no | Connects this GitHub token at boot (OAuth connection; deprecated when a GitHub App is configured). |
+| `GITHUB_CLIENT_ID` | none | no | The GitHub OAuth app's client ID. Setting it and the secret enables `/github/connect`. Deprecated: a [GitHub App](github-app.md) replaces it. |
 | `GITHUB_CLIENT_SECRET` | none | no | The GitHub OAuth app's client secret. |
 | `MUSTER_FARO_URL` | none | no | A Grafana Faro collector URL. Setting it turns on front-end real-user monitoring. |
 | `MUSTER_FARO_API_KEY` | none | no | The Faro API key. It is sent to the browser, so it is public. |

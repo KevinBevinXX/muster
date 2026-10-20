@@ -61,6 +61,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		Notes:           stubNotesStore{},
 		Agents:          stubAgentsStore{},
 		GitHub:          stubGitHubStore{},
+		GitHubApp:       stubGitHubApp{},
 		Users:           stubUsers{},
 		APITokens:       stubAPITokens{},
 		SessionLiveness: stubLiveness{},
@@ -370,6 +371,7 @@ type (
 	stubNotesStore  struct{ notes.Store }
 	stubAgentsStore struct{ agents.Store }
 	stubGitHubStore struct{ github.Store }
+	stubGitHubApp   struct{ GitHubApp }
 )
 
 // Compile-time proof each stub satisfies what Extensions asks for, and that the

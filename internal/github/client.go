@@ -22,6 +22,10 @@ var apiBaseURL = "https://api.github.com"
 // browser-test build calls it (its fake GitHub); a deployable binary never does.
 func UseAPIBaseURL(u string) { apiBaseURL = u }
 
+// APIBaseURL is the API base every GitHub call uses (UseAPIBaseURL's value), so
+// another client (internal/githubapp) follows the same override.
+func APIBaseURL() string { return apiBaseURL }
+
 // Repo is a repository as listed for the Repos tab and the dispatch modal.
 type Repo struct {
 	FullName string `json:"full_name"`
@@ -142,6 +146,11 @@ type PullRequest struct {
 // or unrecognized value defaults to "open". The token stays server-side — it is
 // never returned to the caller.
 func ListPullRequests(ctx context.Context, token, repo, state string) ([]PullRequest, error) {
+	return ListPullRequestsAt(ctx, apiBaseURL, token, repo, state)
+}
+
+// ListPullRequestsAt is ListPullRequests against the API base base.
+func ListPullRequestsAt(ctx context.Context, base, token, repo, state string) ([]PullRequest, error) {
 	switch state {
 	case "open", "closed", "all":
 	default:
@@ -170,7 +179,7 @@ func ListPullRequests(ctx context.Context, token, repo, state string) ([]PullReq
 	q.Set("per_page", "50")
 	q.Set("sort", "updated")
 	q.Set("direction", "desc")
-	u := apiBaseURL + "/repos/" + repo + "/pulls?" + q.Encode()
+	u := base + "/repos/" + repo + "/pulls?" + q.Encode()
 	if err := apiGet(ctx, token, u, &raw); err != nil {
 		return nil, err
 	}

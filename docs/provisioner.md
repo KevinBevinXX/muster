@@ -118,7 +118,8 @@ same `--continue` resume.
   as it is, never re-cloned or reset.
 - **Credentials.** Only through the `github` connector
   ([connectors.md](connectors.md)): git reaches GitHub through muster's proxy
-  once the agent holds an approved grant. No token is placed in the pod. A
+  once the agent holds an approved grant. With a [GitHub App](github-app.md)
+  the proxy injects a token limited to the agent's own repository. No token is placed in the pod. A
   public repository clones without one.
 - **Until the clone succeeds the CLI does not start.** Every turn answers
   `503 not_ready` with the reason (git's error, and what the `github` connector
@@ -134,7 +135,8 @@ same `--continue` resume.
   looks again every 10 seconds. The card reads "Waiting for your github
   approval" with a link to Connectors. Once the checkout is ready the kickoff
   is delivered as usual, exactly once — no re-send by hand. After 24 hours of
-  waiting the agent goes to `error`: "the github grant was not approved". Any
+  waiting (`MUSTER_CHECKOUT_WAIT_TIMEOUT`, measured from the agent's last status
+  change) the agent goes to `error`: "the github grant was not approved". Any
   other clone failure (`failed`: a denied or revoked grant, an approved grant
   git cannot use) is not
   waited on: the kickoff is sent, and its `not_ready` reason is recorded.
