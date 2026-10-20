@@ -45,11 +45,19 @@ page tells you this.
 A subscription's endpoint is a URL that muster later POSTs to, so muster accepts
 only endpoints on a known push service, on `https` and the default port:
 
-- the browser push services: FCM, Mozilla autopush, Apple, and Windows (WNS);
-- your own hosts, listed in `MUSTER_PUSH_EXTRA_HOSTS`. Each matches by its exact
-  name only, with no subdomains or wildcards. Use it for a self-hosted ntfy that
-  delivers UnifiedPush to the [Android app](design/android.md). It is empty by
-  default.
+- the browser push services: FCM, Mozilla autopush, Apple, and Windows (WNS).
+  These are the only hosts a **browser** subscription (Enable, in the header)
+  may name.
+- your own hosts, listed in `MUSTER_PUSH_EXTRA_HOSTS`, for **paired phones
+  only**: a self-hosted ntfy that delivers UnifiedPush to the
+  [Android app](design/android.md). Each matches by its exact name only, with no
+  subdomains or wildcards. It is empty by default. A browser can never subscribe
+  on one of these hosts.
+
+**The list is checked again at every send.** A device whose host is no longer
+allowed, for example because you took it out of `MUSTER_PUSH_EXTRA_HOSTS`, is
+sent nothing and removed, and the send is counted as
+`muster_push_delivery_total{result="disallowed"}`.
 
 **muster never follows a redirect on a push send.** A push service that answers
 with a 3xx counts as a failed send, and the device's failure count goes up. This
@@ -61,8 +69,8 @@ ntfy that resolves to a private address works.
 
 ⚠ If your ntfy host is behind a CDN, its bot filter may refuse requests with an
 unusual `User-Agent`. muster sends Go's default one (`Go-http-client/1.1`).
-Check that the CDN accepts it, for example with a test notification from
-Account → Notifications.
+A phone's registration fails with an error when muster's test push to it is
+refused, so a CDN rule that blocks muster shows up there.
 
 ## Installable app (PWA)
 

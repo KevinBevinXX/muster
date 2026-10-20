@@ -33,7 +33,7 @@ func (m *memPush) Claim(_ context.Context, owner int64, sub push.Subscription, u
 	if err := sub.Check(); err != nil {
 		return 0, err
 	}
-	if !push.AllowedPushService(sub.Endpoint) {
+	if !(push.Allowlist{}).AllowsBrowser(sub.Endpoint) {
 		return 0, push.ErrPushServiceNotAllowed
 	}
 	m.mu.Lock()
@@ -104,6 +104,8 @@ func (m *memPush) ForgetDevice(_ context.Context, owner int64, hash string) (boo
 	m.mu.Unlock()
 	return m.del(func(d push.Device) bool { return d.OwnerID == owner && push.EndpointHash(d.Sub.Endpoint) == hash }), nil
 }
+
+func (m *memPush) Allowlist() push.Allowlist { return push.Allowlist{} }
 
 func (m *memPush) Muted(_ context.Context, owner int64) ([]string, error) {
 	m.mu.Lock()

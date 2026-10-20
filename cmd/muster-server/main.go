@@ -196,6 +196,14 @@ type app struct {
 // ⚠ A config with no DSN is accepted here and refused by config.validate. See
 // the note there; the assembly path and the deployment policy are separate
 // claims and the boot test needs the first without the second.
+// buildPushService is muster's own Web Push over pool: the store carries the
+// ONE allowlist (the browser push services plus MUSTER_PUSH_EXTRA_HOSTS),
+// which the service re-checks at every send.
+func buildPushService(cfg config, pool *pgxpool.Pool, logger *log.Logger) *push.Service {
+	return push.NewService(push.NewPG(pool).WithAllowlist(cfg.pushAllowlist()), push.NewWebpushPusher(cfg.vapid()),
+		cfg.vapid(), logger)
+}
+
 func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error) {
 	if logger == nil {
 		logger = log.Default()
@@ -494,8 +502,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// muster-native Web Push: only with the VAPID triple AND a database (the
 	// subscriptions are rows; config.validate refuses a partial triple).
 	if cfg.pushConfigured() && a.pool != nil {
-		ext.Push = push.NewService(push.NewPG(a.pool).WithAllowlist(cfg.pushAllowlist()), push.NewWebpushPusher(cfg.vapid()),
-			cfg.vapid(), logger)
+		ext.Push = buildPushService(cfg, a.pool, logger)
 	}
 
 	// Dictation: the message box's microphone, only with MUSTER_STT_TOKEN.

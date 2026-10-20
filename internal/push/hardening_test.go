@@ -1,15 +1,21 @@
 package push
 
 import (
+	"bytes"
 	"context"
 	"errors"
-	"io"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
+	"github.com/ZacxDev/muster/internal/metrics"
 )
 
 // The push hardening for the Android app (docs/design/android.md, server
@@ -69,25 +75,34 @@ func overTLS(t *testing.T, p *WebpushPusher, ts *httptest.Server) *WebpushPusher
 	return p
 }
 
-// TestARedirectedSendIsSettledAsFailed: through the Service, a redirect is a
-// failed send — fail_count moves, the device is neither stamped delivered nor
-// pruned.
-func TestARedirectedSendIsSettledAsFailed(t *testing.T) {
-	listed := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "https://elsewhere.invalid/x", http.StatusTemporaryRedirect)
-	}))
-	defer listed.Close()
-	d := dev(1, 7, listed.URL+"/push/abc")
-	d.Sub = realSubscription(t, d.Sub.Endpoint)
-	store := &memStore{devs: []Device{d}}
-	svc := NewService(store, overTLS(t, NewWebpushPusher(realVAPID(t, "mailto:ops@example.com")), listed),
-		VAPIDConfig{}, log.New(io.Discard, "", 0))
-	rep := svc.SendTo(context.Background(), 7, Payload{Type: "notify", Tag: "t"})
-	if rep.Failed != 1 || rep.Delivered != 0 || rep.Expired != 0 {
-		t.Fatalf("report = %+v; want one failed send", rep)
+// TestADisallowedRowIsPrunedAtSendTimeAndSentNothing: SendTo re-checks every
+// row against the store's allowlist when it sends. A row on a host that is no
+// longer allowed — an operator host taken out of the configuration, or any
+// host a browser subscription may not name — is pruned and POSTed nothing,
+// while an allowed device on the same fan-out is delivered.
+func TestADisallowedRowIsPrunedAtSendTimeAndSentNothing(t *testing.T) {
+	const (
+		ok    = "https://fcm.googleapis.com/fcm/send/still-fine"
+		gone  = "https://ntfy.example.org/upRemovedHost"
+		never = "https://internal.example.org/anything"
+	)
+	store := &memStore{devs: []Device{dev(1, 7, ok), dev(2, 7, gone), dev(3, 7, never)}}
+	pusher := &scriptPusher{}
+	before := testutil.ToFloat64(metrics.PushDelivery.WithLabelValues(ResultDisallowed))
+	var logs bytes.Buffer
+	rep := NewService(store, pusher, VAPIDConfig{}, log.New(&logs, "", 0)).SendTo(context.Background(), 7, Payload{Type: "notify", Tag: "t"})
+	if len(pusher.asked) != 1 || pusher.asked[0] != ok {
+		t.Fatalf("the pusher was asked to reach %v; want only %s", pusher.asked, ok)
 	}
-	if len(store.failed) != 1 || len(store.delivered) != 0 || len(store.pruned) != 0 {
-		t.Fatalf("store: failed %v delivered %v pruned %v", store.failed, store.delivered, store.pruned)
+	sort.Slice(store.pruned, func(i, j int) bool { return store.pruned[i] < store.pruned[j] })
+	if fmt.Sprint(store.pruned) != "[2 3]" || rep.Delivered != 1 || rep.Expired != 2 {
+		t.Fatalf("pruned %v, report %+v; want [2 3] pruned and one delivery", store.pruned, rep)
+	}
+	if got := testutil.ToFloat64(metrics.PushDelivery.WithLabelValues(ResultDisallowed)) - before; got != 2 {
+		t.Errorf("muster_push_delivery_total{result=\"disallowed\"} moved %v, want 2", got)
+	}
+	if !strings.Contains(logs.String(), "no longer allowed") {
+		t.Errorf("the prune was not logged:\n%s", logs.String())
 	}
 }
 
@@ -121,8 +136,13 @@ func TestOperatorPushHostsMatchExactly(t *testing.T) {
 	}
 	// Unconfigured, an operator host is refused: nothing changes until the
 	// operator sets the variable.
-	if AllowedPushService("https://ntfy.example.org/upABC") || (Allowlist{}).Allows("https://ntfy.example.org/upABC") {
+	if (Allowlist{}).Allows("https://ntfy.example.org/upABC") {
 		t.Error("an operator host was admitted with no MUSTER_PUSH_EXTRA_HOSTS")
+	}
+	// A BROWSER subscription may never name an operator host, configured or
+	// not: only the paired phones' endpoints may (ClaimNative).
+	if a.AllowsBrowser("https://ntfy.example.org/upABC") || !a.AllowsBrowser("https://fcm.googleapis.com/fcm/send/x") {
+		t.Error("AllowsBrowser admits an operator host, or refuses a browser one")
 	}
 	if got := a.ExtraHosts(); len(got) != 2 || got[0] != "ntfy.example.org" || got[1] != "push.example.net" {
 		t.Errorf("ExtraHosts = %v", got)

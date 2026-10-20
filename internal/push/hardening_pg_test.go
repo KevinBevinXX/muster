@@ -5,10 +5,11 @@ import (
 	"testing"
 )
 
-// TestClaimAdmitsAnOperatorHostOnlyWhenConfigured: the store's Claim is where
-// the allowlist is enforced, so an ntfy endpoint is refused by the store with
-// no operator hosts and stored by one configured with that exact host.
-func TestClaimAdmitsAnOperatorHostOnlyWhenConfigured(t *testing.T) {
+// TestABrowserClaimNeverAdmitsAnOperatorHost: a BROWSER subscription
+// (/api/push/subscribe → Claim) may name only a browser push service. An
+// operator host is refused whether or not it is configured — it is for the
+// paired phones alone — and a browser host is stored either way (the control).
+func TestABrowserClaimNeverAdmitsAnOperatorHost(t *testing.T) {
 	s, _, _ := pgStore(t)
 	var ntfy Subscription
 	ntfy.Endpoint = "https://ntfy.example.org/upAbC123?up=1"
@@ -21,11 +22,14 @@ func TestClaimAdmitsAnOperatorHostOnlyWhenConfigured(t *testing.T) {
 		t.Fatalf("another operator host: Claim = %v; want ErrPushServiceNotAllowed", err)
 	}
 	s.WithAllowlist(NewAllowlist([]string{"ntfy.example.org"}))
-	if _, err := s.Claim(as(2), 2, ntfy, "phone"); err != nil {
-		t.Fatalf("the configured host: Claim = %v", err)
+	if _, err := s.Claim(as(2), 2, ntfy, "phone"); !errors.Is(err, ErrPushServiceNotAllowed) {
+		t.Fatalf("the configured operator host through a browser claim: %v; want ErrPushServiceNotAllowed", err)
+	}
+	if _, err := s.Claim(as(2), 2, sub("browser-ok"), "browser"); err != nil {
+		t.Fatalf("CONTROL: a browser host: %v", err)
 	}
 	devs, err := s.Devices(as(2))
-	if err != nil || len(devs) != 1 || devs[0].Sub.Endpoint != ntfy.Endpoint {
+	if err != nil || len(devs) != 1 || devs[0].Sub.Endpoint != sub("browser-ok").Endpoint {
 		t.Fatalf("devices = %v, %v", devs, err)
 	}
 }
