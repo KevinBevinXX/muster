@@ -113,8 +113,8 @@ Android Developers Blog. Each claim carries its source:
 - **UNVERIFIED** means no source confirmed the claim.
 
 Most pages were read through a summarising fetcher. Two summaries of the
-Live Update page disagreed; that conflict is a [Phase 0](#phase-0-spikes)
-spike. The full source list is at the [end](#sources).
+Live Update page disagreed; a later reading of the page settled it (spike S5,
+closed). The full source list is at the [end](#sources).
 
 ## Architecture
 
@@ -198,6 +198,27 @@ The reasons for the shell:
   embedded-FCM distributor exists as a fallback, but this design does not
   ship it: whether it needs a Firebase project is UNVERIFIED (S9).
 
+### 🔴 Only decrypted pushes are trusted
+
+ntfy's `up*` topics are written anonymously (the access rule UnifiedPush needs
+is `up*` write-only for everyone), so anyone who learns a phone's endpoint URL
+can publish to it. The connector hands the app every message as
+`PushMessage(content, decrypted)`, including ones it could not decrypt. So:
+
+- The app registers with muster's VAPID public key:
+  `UnifiedPush.register(…, vapid = <key>)`, where the key comes from
+  `GET /api/device/config`. The distributor can then tell muster's pushes
+  from others.
+- **The app drops every message with `decrypted == false`**, before it
+  parses anything. A message that decrypts was encrypted to this
+  subscription's keys (RFC 8291), which only the phone and muster hold.
+- **Widget and status deltas (`state`) are applied only from decrypted
+  messages**, like everything else in the payload. A forged push can therefore
+  neither draw a notification nor change a widget.
+- The app still treats a decrypted payload as a hint: an action's target is
+  re-read from muster before anything is shown as actionable, and muster
+  re-checks everything when the action arrives.
+
 ### What muster changes
 
 Today `AllowedPushService` (`internal/push/store.go`) admits only browser push
@@ -213,21 +234,30 @@ The change:
    names, no suffixes, no wildcards. Empty by default, so nothing changes until
    the operator sets it. The `https`-only, default-port rule stays, so the
    ntfy server must be served on 443.
-2. **No address check on the operator host.** UnifiedPush's server guidance
+2. **Push sends refuse redirects.** Today `NewWebpushPusher`
+   (`internal/push/push.go`) builds an `http.Client` with no `CheckRedirect`,
+   so a send follows up to 10 redirects to **any** host, and the host
+   allowlist checks only the first request. The change sets
+   `CheckRedirect` to return `http.ErrUseLastResponse` and counts any 3xx as
+   a failed send. This applies to every push, browser hosts included, and it
+   is what makes the allowlist bound what muster connects to.
+3. **No address check on the operator host.** UnifiedPush's server guidance
    says a server "should reject push endpoints that resolve to non-global IP
    addresses". That guards a server that accepts *any* host a member names.
-   Here the exact-host allowlist already bounds what muster can reach: a member
-   chooses only the path on a host the operator named. An address check would
-   also refuse an in-cluster ntfy whose name resolves to a private address
-   under split-horizon DNS, which is a reasonable deployment. So the operator
-   host is sent with today's client, like the browser hosts. Spike S10 checks
-   that muster and the phone reach ntfy by the same name.
-3. **A test push on registration.** As UnifiedPush recommends, a new device
+   Here, with redirects refused, the exact-host allowlist bounds where a push
+   can go: a member chooses only the path on a host the operator named. An
+   address check would also refuse an in-cluster ntfy whose name resolves to a
+   private address under split-horizon DNS, which is a reasonable deployment.
+   So the operator host uses the same client as the browser hosts. Spike S10
+   checks that muster and the phone reach ntfy by the same name.
+4. **A test push on registration.** As UnifiedPush recommends, a new device
    endpoint is accepted only after muster has sent it a VAPID test push and got
    a 2xx response.
-4. **A device kind** on each subscription (`browser` or `android`), so native
+5. **A device kind** on each subscription (`browser` or `android`), so native
    devices get payload v2, the native-only events, and the silent `resolved`
-   withdrawal that Safari subscriptions are spared today.
+   withdrawal that Safari subscriptions are spared today. Payload v2 for the
+   existing events, and the silent `resolved`, ship in Phase 1; the
+   native-only events come with the phases that use them.
 
 ### Payload v2
 
@@ -265,8 +295,10 @@ New event types, sent to `android` devices only:
 ### What muster has today
 
 - Browser sessions are HttpOnly, Secure cookies. In gotrue mode only the
-  browser listener serves them; machine tokens work on both listeners
-  ([auth.md](../auth.md)).
+  browser listener serves them ([auth.md](../auth.md)). The reverse holds too:
+  in gotrue mode the browser listener refuses the shared hook and service
+  tokens and admits only personal `mst_` tokens on the `/api/` tier
+  (`refuseSharedTokenOnBrowserListener` in `internal/api/auth.go`).
 - `mst_` personal tokens act as their user, are minted only in a browser, and
   cannot mint another token. Revocation and disable are read on every call.
 - Step-up freshness is the sign-in time of **the session presented**
@@ -287,6 +319,11 @@ A notification action has no browser session, so none of this applies as is.
 - **It is confined to `/api/device/*`.** Every other route refuses it, as
   every other route refuses a plugin's `mpl_` token. A stolen device
   credential therefore cannot use the rest of the API.
+- **Which listener.** The phone reaches muster through the public edge, which
+  is the browser listener in gotrue mode, and that listener admits only `mst_`
+  on `/api/` today. So the device tier is admitted on the browser listener
+  **for `/api/device/*` only** (server change 29); the shared tokens stay
+  refused there. In password mode there is one listener and nothing changes.
 - **Minted from a signed-in session.** A page in the WebView calls
   `POST /account/devices/pair` with its session cookie. That route needs a
   sign-in from the last five minutes, the rule for adding a passkey, because
@@ -301,7 +338,7 @@ A notification action has no browser session, so none of this applies as is.
   - the pairing session's sign-in is at or before the account's session
     cutoff (moved by a disable or a password reset);
   - the pairing session's sign-in is at or before the account's latest
-    **Sign out everywhere**. This one is a **recommendation** of this design,
+    **Sign out everywhere** (gotrue mode only). This one is a **recommendation** of this design,
     not an operator requirement: it is what that button is expected to mean.
     It is stricter than `mst_` tokens, which Sign out everywhere does not
     revoke today. A phone is a session-like thing, and "everywhere" should
@@ -317,8 +354,9 @@ A notification action has no browser session, so none of this applies as is.
 
 ### The step-up key
 
-At pairing the app generates a second key: an EC P-256 signing key in the
-Android Keystore with
+At pairing the app generates a second key, **in Phase 1**, so every paired
+phone has one before the signed actions of Phase 2 exist: an EC P-256 signing
+key in the Android Keystore with
 
 - `setUserAuthenticationRequired(true)`;
 - `setUserAuthenticationParameters(0, AUTH_BIOMETRIC_STRONG)`: a fresh
@@ -327,6 +365,9 @@ Android Keystore with
   face destroys the key.
 
 The public key is sent with the pairing request and stored on the device row.
+A phone without a strong biometric cannot create the key; it pairs read-only
+(notifications, widgets, no actions) until [open question](#open-questions) 3
+is settled.
 If the key is invalidated, the app shows "Re-confirm this phone", which sends
 the user to a fresh pairing in the WebView.
 
@@ -370,19 +411,30 @@ sequenceDiagram
   step-up time through the same context value the session routes use. This is
   stricter than the 12-hour window, and it is a **new freshness source**, which
   needs its own [decisions.md](../decisions.md) entry when it is built.
-- **Password mode** works the same way: pairing needs a fresh cookie, and the
-  signature is the freshness.
+- **Password mode** works the same way for step-up: pairing needs a fresh
+  cookie, and the signature is the freshness. Revocation differs: Sign out
+  everywhere exists only in gotrue mode, so in password mode a device is cut
+  off by removing it on Account → Devices.
 
 ### Inline reply
 
-RemoteInput delivers the text to a BroadcastReceiver, with no hook for a
-biometric. So:
+The design delivers the RemoteInput result to a BroadcastReceiver, so a
+reply does not open an activity over whatever the user is doing. (The reply
+PendingIntent could target an activity instead; that would allow a prompt at
+once but loses the inline experience.) There is no biometric on that path,
+and the text may not even have been typed by the user: a notification
+listener or a paired wearable can fill RemoteInput too. So:
 
 1. The app keeps the reply **on the phone**, encrypted, and replaces the
-   notification with "Reply held: confirm to send", with a **Confirm and send**
-   action and a **Discard** action.
+   notification with a held-reply notification that **shows the exact held
+   text** in its private (unlocked) version, with a **Confirm and send** action
+   and a **Discard** action. Its public (lock-screen) version says only
+   "Reply held for <WHO>".
 2. **Confirm and send** runs the gated flow above, with the text's sha256 in
-   the challenge.
+   the challenge, and **the BiometricPrompt's description repeats the exact
+   text** (truncated with a visible marker when long, with **Discard** offered
+   instead of sending a text the user cannot fully see). The hash binding means
+   something only because the user sees what they approve.
 3. The confirmed reply goes to the route its conversation uses: an agent's
    send, an ask's answer, or a mirrored window's **queue**. For a mirrored
    window it is queued, never pasted at once, so it waits for idle like any
@@ -511,9 +563,11 @@ free ones when each phase lands.
 **Push and UI**
 
 21. `AllowedPushService` also admits the operator hosts (item 1), by exact
-    name only; the sender is unchanged.
-22. Payload v2 and the `message`, `queue` and `status` events for `android`
-    devices; the silent `resolved` withdrawal for them.
+    name only; the sender refuses redirects and counts a 3xx as a failed send,
+    for every push (`CheckRedirect` returns `http.ErrUseLastResponse`).
+22. Payload v2 for `android` devices: (a) the existing events and the silent
+    `resolved` withdrawal (Phase 1); (b) the `message` and `queue` events
+    (Phase 2); (c) the `status` event (Phase 4, with item 28).
 23. A compact chat layout for a bubble (a query parameter on the existing
     agent and session pages: no header, no navigation).
 24. Inside the shell, the page hides **Enable notifications** and
@@ -531,6 +585,15 @@ free ones when each phase lands.
 27. A tier test: an `mdv_` credential is refused on every route outside
     `/api/device/*`, and a session cookie is refused on the `/api/device/*`
     routes.
+
+**Added after review**
+
+28. The `status` push, and `/api/device/state`, record **who started each
+    run**: the user through a session or the app, versus the chief, a plugin
+    or a machine token. Only a user-started run is promoted to a Live Update.
+29. The device tier on the browser listener: in gotrue mode, admit `mdv_` on
+    the browser listener for `/api/device/*` only. Shared hook and service
+    tokens stay refused there, and `mdv_` stays refused everywhere else.
 
 ### Reconciling the sw.js test
 
@@ -582,7 +645,8 @@ signed action) and its own [decisions.md](../decisions.md) entry (item 25).
 
   | event | actions |
   |---|---|
-  | `attention` (question) | up to two of the asker's options, and **Answer** (inline reply) |
+  | `attention` (agent question) | up to two of the asker's options, and **Answer** (inline reply) |
+  | `attention` (mirrored Claude Code question) | Open only. A session's `AskUserQuestion` has no `/attention/asks/{id}/answer` route; it is answered in the session's rendered view |
   | `attention` (session waiting) | Open |
   | `plugin` | **Approve and send**, **Reject** |
   | `queue` | **Send now** (the next message), **Cancel** |
@@ -690,10 +754,15 @@ the app's settings.
   notification for that run (`setRequestPromotedOngoing(true)`, a
   `contentTitle`, ProgressStyle with an indeterminate tracker, and points for
   "started", "waiting for you" and "ready for review"). It ends when the task is
-  ready for review or the agent stops. Android's guidance is that Live Updates
-  are for user-initiated journeys and not for chat or alerts. Whether
-  "activities triggered by other parties" are also excluded is disputed (S5),
-  so a run the chief or a machine started is never promoted.
+  ready for review or the agent stops. The app declares
+  `POST_PROMOTED_NOTIFICATIONS` (a normal, install-time permission), checks
+  `canPostPromotedNotifications()`, and offers
+  `ACTION_MANAGE_APP_PROMOTED_NOTIFICATIONS` when promotion is off. Android's
+  guidance is that Live Updates are for user-initiated journeys, and its
+  Live Update page says "Don't allow activities triggered by other parties"
+  and "Don't show ambient information". So a run the chief or a machine
+  started is never promoted, and fleet status is not a Live Update. Knowing
+  who started a run needs server change 28.
 - **Fleet status is a plain ongoing notification** on the low-importance
   channel: for example "3 running · 1 waiting". It is opt-in.
 - **No watcher service.** Android 15 caps `dataSync` foreground services at 6 h
@@ -724,10 +793,20 @@ the app's settings.
   sha256 **and** that the APK's signing certificate matches its own, and only
   then commits a PackageInstaller session. Android also refuses an update
   signed by another key.
-- `setRequireUserAction(USER_ACTION_NOT_REQUIRED)` (API 31+) installs without
-  a prompt when the app updates itself and its targetSdk is high enough for
-  the phone's Android version: 33+ on Android 15, 34+ on Android 16 (API 36),
-  35+ on API 37. The app must still handle `STATUS_PENDING_USER_ACTION`.
+- **Silent self-update** uses `setRequireUserAction(USER_ACTION_NOT_REQUIRED)`
+  (API 31+). Following that method's documentation, every one of these must
+  hold, or the install prompts the user:
+  - the app declares `REQUEST_INSTALL_PACKAGES` (required for any install) and
+    the user has turned on "install unknown apps" **for the muster app
+    itself** (not only for the browser that installed it the first time);
+  - the app is updating itself, or is the installer of record or the update
+    owner (or holds `UPDATE_PACKAGES_WITHOUT_USER_ACTION`, which the method's
+    documentation names as the permission for this; whether a sideloaded app
+    must declare it to be silent is checked when Phase 5 is built);
+  - its targetSdk is high enough for the phone's Android version: 33+ on
+    Android 15, 34+ on Android 16 (API 36), 35+ on API 37.
+  - If any is not met, **every** update shows the system install prompt. The
+    app must handle `STATUS_PENDING_USER_ACTION` either way.
 - The first install needs the "install unknown apps" permission for the
   browser or file manager used.
 - GitHub Releases on the app repo carry the same APKs, so Obtainium also works
@@ -812,16 +891,16 @@ in muster; **app** is work in the app repo.
 
 | phase | what | server | app | depends on |
 |---|---|---|---|---|
-| **0** | Spikes S3–S5 and S7–S12 ([below](#phase-0-spikes)) | 0.5 | 2–3 | — |
-| **1** | Shell and push. Server: items 1, 4, 5, 6, 8–14, 21, 24, 27; Account → Devices. App: project and modules, server-URL screen, hardened WebView with password sign-in, bridge, pairing, encrypted token store, UnifiedPush registration, channels, POST_NOTIFICATIONS, plain notifications from payload v2, the CI build and the offline signing script. | 5–6 | 7–9 | 0 |
-| **2** | Actionable notifications. Server: items 7, 16–19, 22 (`queue`, `message`), 25, 26. App: the step-up key, the invisible activity, the signed action client, inline reply with the held reply, MessagingStyle conversations and shortcuts, lock-screen public versions. | 6–8 | 7–9 | 1 |
+| **0** | Spikes S3, S4 and S7–S12 ([below](#phase-0-spikes)) | 0.5 | 2–3 | — |
+| **1** | Shell and push. Server: items 1, 4, 5, 6, 8–14, 21, 22a, 24, 27, 29; Account → Devices. App: project and modules, server-URL screen, hardened WebView with password sign-in, bridge, pairing with the step-up key, encrypted token store, UnifiedPush registration with the VAPID key and the decrypted-only filter, channels, POST_NOTIFICATIONS, payload v2 notifications for the existing events and `resolved` withdrawal, the CI build and the offline signing script. | 6–7 | 8–10 | 0 |
+| **2** | Actionable notifications. Server: items 7, 16–19, 22b, 25, 26. App: the invisible activity, the signed action client, inline reply with the held reply shown in the notification and the prompt, MessagingStyle conversations and shortcuts, lock-screen public versions. | 6–8 | 7–9 | 1 |
 | **3** | Bubbles. Server: item 23. App: bubble metadata, the expanded activity, per-conversation bubble settings. | 1–2 | 3–4 | 2 |
-| **4** | Widgets and live status. Server: item 15, the `status` event with coalescing. App: two Glance widgets, the fleet ongoing notification, the Live Update for user-started runs, the WorkManager catch-up. | 3–4 | 5–6 | 1 |
+| **4** | Widgets and live status. Server: items 15, 22c (the `status` event, coalesced) and 28. App: two Glance widgets, the fleet ongoing notification, the Live Update for user-started runs, the WorkManager catch-up. | 3.5–4.5 | 5–6 | 1 |
 | **5** | Updates and verification. Server: item 3. App: the in-app updater (manifest, sha256 and certificate checks, PackageInstaller, pending-user-action handling), the channel publishing script, developer verification registration. | 0.5–1 | 4–5 | 1 |
 | *6, later, opt-in* | The always-on overlay ([below](#phase-6-always-on-overlay-later-opt-in)), with spike S6. Server: a feature switch in `/api/device/config`. App: the overlay permission flow, the `specialUse` foreground service, the head and its expanded panel, restart handling, the battery measurement. | 0–0.5 | 6–8 | 3 |
 | *7, later, optional* | Asset links and passkeys in the shell ([below](#phase-7-asset-links-and-passkeys-in-the-shell-later-optional)), with spikes S1 and S2. Server: items 2 and 20, and the edge serving the file without a redirect. App: Credential Manager in the WebView. | 1–1.5 | 1–2 | 1 |
 
-Totals for Phases 0–5: **server 16–21.5 days**, **app 28–36 days**. The later
+Totals for Phases 0–5: **server 17.5–23 days**, **app 29–37 days**. The later
 Phases 6 and 7 add **server 1–2** and **app 7–10**. Phases 3, 4 and 5 are
 independent after their dependencies. The shortest useful slice is Phases 0–2:
 a paired phone with signed Send now, Approve and Cancel, and inline replies.
@@ -835,7 +914,7 @@ Phase 7, and S6 to Phase 6; the numbers are kept so references stay stable.
 |---|---|---|
 | S3 | Can BiometricPrompt sign with an EC P-256 key through a CryptoObject from a translucent, UI-less FragmentActivity started by a notification action, on the lock screen and unlocked? (And: is an activity really required?) | the step-up activity's shape |
 | S4 | Can a key use `AUTH_BIOMETRIC_STRONG \| AUTH_DEVICE_CREDENTIAL` with a timeout of 0, so a phone without a strong biometric can still sign? | [open question](#open-questions) 3 |
-| S5 | Does Android's Live Update policy exclude "activities triggered by other parties" and "ambient information"? Are promoted notifications available on a sideloaded app? | whether only user-started runs are promoted (the design assumes yes) |
+| ~~S5~~ | **Closed.** The Live Update page says "Don't allow activities triggered by other parties" and "Don't show ambient information", so only user-started runs are promoted. Whether promotion works on a sideloaded app is checked in Phase 4 itself. | — |
 | S7 | Developer verification: are browser and file-manager installs blocked in the enforcing countries; can limited-distribution devices be swapped; is "no commercial intent" binding; how do unattended updates of an unregistered app behave after the global rollout? | full or limited account, and the timing |
 | S8 | Obtainium's unattended-install mechanism; F-Droid index v2 client compatibility | whether Obtainium is a full alternative channel |
 | S9 | Does ntfy require VAPID on `up*` publishes; which foreground-service type does ntfy use; does the embedded-FCM distributor need a Firebase project? | ntfy's access config, battery claims, the fallback |
@@ -882,7 +961,8 @@ guidance; the Play fee.
 - **The push allowlist trusts the operator's host list.** With no address
   check, a wrong entry in `MUSTER_PUSH_EXTRA_HOSTS` lets members make muster
   POST to that host. The list is exact names, set only by the operator, and
-  empty by default.
+  empty by default, and with redirects refused (server change 21) a push
+  cannot be bounced from a listed host to an unlisted one.
 - **The overlay (Phase 6) cannot promise "always".** Under Android 15's
   gating it does not come back by itself after a reboot or a kill, and it costs
   a second ongoing notification and a resident process.
@@ -1021,7 +1101,7 @@ page was accessed 2026-10-20.
 **Developer verification**
 
 - Rolling out to all developers: <https://android-developers.googleblog.com/2026/03/android-developer-verification-rolling-out-to-all-developers.html> (posted 2026-03-30, updated 2026-09-29)
-- Earlier announcement: <https://android-developers.googleblog.com/2026/06/android-developer-verification.html> (2026-06-18)
+- Enforcement scope (participating stores, select regions, certified devices), a later post: <https://android-developers.googleblog.com/2026/06/android-developer-verification.html> (2026-06-18)
 - FAQ: <https://developer.android.com/developer-verification/guides/faq> (accessed 2026-10-20)
 - Limited distribution: <https://developer.android.com/developer-verification/guides/limited-distribution> (updated 2026-09-30)
 - F-Droid's open letter: <https://f-droid.org/2026/02/24/open-letter-opposing-developer-verification.html> (2026-02-24)
