@@ -33,4 +33,5 @@ Start with the [project README](../README.md) for the pitch and a quickstart.
 - [testing.md](testing.md) — the Go suite, the gates, the browser suite, screenshots
 - [limits.md](limits.md) — what it does not do, or has not proven
 - [decisions.md](decisions.md) — why things are the way they are
+- [design/android.md](design/android.md) — proposed: a native Android app (actionable notifications, bubbles, widgets, live status)
 - [../CONTRIBUTING.md](../CONTRIBUTING.md)
