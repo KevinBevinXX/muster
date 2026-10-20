@@ -74,6 +74,8 @@ var expectedStatusWriterLedger = map[string][]string{
 	"dispatchAgentTool": {"writerAgentTool"},
 	// The all-agents tool `task_set_status` (any of the owner's tasks, by id).
 	"toolTaskSetStatus": {"writerTaskTool"},
+	// The in_progress→open step after a mirrored session's agent_destroy.
+	"reopenTaskAfterDestroy": {"writerDestroyReopen"},
 }
 
 // TestEveryStatusWriterIsLabelled pins every caller of setNoteStatus to the

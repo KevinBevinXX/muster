@@ -18,13 +18,18 @@ import (
 // Starting an agent spends the owner's model credential and runs code against
 // the owner's repositories, on the say-so of an agent that is reading text an
 // outside party wrote. So the chief gets a small, fixed budget, and each task
-// at most ONE chief-started agent, ever:
+// at most ONE chief-started agent per owner's destroy:
 //
 //   - at most MaxChiefLiveAgents of the agents it started are live at once;
 //   - at most MaxChiefDispatchesPerDay starts in any GatedTaskWindow-long day;
 //   - a task it already started an agent for answers with that start again
-//     (idempotent per task), whatever happened to the agent since. A second
-//     agent on the same task is the owner's call, from the task's card.
+//     (idempotent per task), whatever happened to the agent since — UNTIL ITS
+//     OWNER DESTROYS THE AGENT THAT START MADE (the Agents page's Delete, or
+//     their mirrored session's agent_destroy): that destroy RELEASES the start
+//     (ActionChiefDispatchReleased) and the chief may start ONE new agent on
+//     the task again. Operator decision ("Owner's destroy resets the chief's
+//     allowance"); the chief re-dispatching on its own is still refused, and a
+//     second agent alongside a live one is still the owner's call.
 //
 // 🔴 THE LEDGER IS THE AUDIT LOG, AS THE GATED-TASK BUDGET'S IS (gated.go). A
 // reservation is one ActionChiefDispatch row naming the task; the agent it
@@ -40,6 +45,12 @@ const (
 	ActionChiefDispatch = "task.chief_dispatch"
 	// ActionChiefDispatchAgent records the agent a reservation started.
 	ActionChiefDispatchAgent = "task.chief_dispatch_agent"
+	// ActionChiefDispatchReleased records the owner destroying the agent the
+	// task's latest reservation started, which frees the task's one start
+	// (ReleaseChiefDispatch). Nothing is deleted: a task's start is spent while
+	// its latest ActionChiefDispatch row is newer (by id) than its latest
+	// release row.
+	ActionChiefDispatchReleased = "task.chief_dispatch_released"
 )
 
 var (
@@ -75,6 +86,11 @@ type DispatchStore interface {
 	ReserveChiefDispatch(ctx context.Context, taskID int64, detail map[string]any, check func() error) (ChiefDispatch, error)
 	// RecordChiefDispatchAgent records the agent a reservation for taskID started.
 	RecordChiefDispatchAgent(ctx context.Context, taskID, agentID int64) error
+	// ReleaseChiefDispatch records that the owner destroyed agentID, releasing
+	// taskID's one chief start when — and only when — agentID is the agent the
+	// task's latest, unreleased reservation started. It reports whether it
+	// wrote a release.
+	ReleaseChiefDispatch(ctx context.Context, taskID, agentID int64) (bool, error)
 	// RecordTaskRouted records the chief routing taskID with tool (an
 	// ActionTaskRouted row).
 	RecordTaskRouted(ctx context.Context, taskID int64, tool string) error
@@ -136,12 +152,13 @@ func (s *PGStore) ReserveChiefDispatch(ctx context.Context, taskID int64, detail
 		// not only row-level security: with RLS rolled back (db.RLSOff) another
 		// owner's start for the same task id read as this owner's, and its live
 		// agents and day's starts spent this owner's caps (audit round 1).
-		var prior int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE action = $1 AND object = $2 AND user_id = $3`,
-			ActionChiefDispatch, NoteObject(taskID), p.UserID).Scan(&prior); err != nil {
+		// The task's start is spent while its latest reservation is newer than
+		// its latest release (ReleaseChiefDispatch).
+		reserved, released, err := chiefStartRows(ctx, tx, p.UserID, taskID)
+		if err != nil {
 			return err
 		}
-		if prior > 0 {
+		if reserved > released {
 			out.Prior = true
 			var agentID int64
 			err := tx.QueryRow(ctx, `SELECT (detail->>'agent_id')::bigint FROM audit_log
@@ -170,7 +187,7 @@ func (s *PGStore) ReserveChiefDispatch(ctx context.Context, taskID int64, detail
 			      SELECT (detail->>'agent_id')::bigint FROM audit_log WHERE action = $1 AND user_id = $5))
 			+ (SELECT count(*) FROM audit_log r
 			    WHERE r.action = $3 AND r.user_id = $5 AND r.at > now() - make_interval(secs => $4)
-			      AND NOT EXISTS (SELECT 1 FROM audit_log g WHERE g.action = $1 AND g.user_id = $5 AND g.object = r.object))`,
+			      AND NOT EXISTS (SELECT 1 FROM audit_log g WHERE g.action = $1 AND g.user_id = $5 AND g.object = r.object AND g.id > r.id))`,
 			ActionChiefDispatchAgent, liveAgentStatuses, ActionChiefDispatch, pendingAgentWindow.Seconds(), p.UserID).Scan(&live); err != nil {
 			return err
 		}
@@ -202,6 +219,55 @@ func (s *PGStore) RecordChiefDispatchAgent(ctx context.Context, taskID, agentID 
 	return s.inTx(ctx, func(tx pgx.Tx) error {
 		return audit(ctx, tx, ActionChiefDispatchAgent, NoteObject(taskID), map[string]any{"agent_id": agentID})
 	})
+}
+
+// chiefStartRows is the ids of task taskID's latest reservation and latest
+// release by owner (0 for none). The start is spent while reserved > released.
+func chiefStartRows(ctx context.Context, tx pgx.Tx, owner, taskID int64) (reserved, released int64, err error) {
+	err = tx.QueryRow(ctx, `SELECT coalesce(max(id) FILTER (WHERE action = $1), 0), coalesce(max(id) FILTER (WHERE action = $2), 0)
+		FROM audit_log WHERE action IN ($1, $2) AND object = $3 AND user_id = $4`,
+		ActionChiefDispatch, ActionChiefDispatchReleased, NoteObject(taskID), owner).Scan(&reserved, &released)
+	return reserved, released, err
+}
+
+// ReleaseChiefDispatch: see DispatchStore. Under the owner's reservation lock,
+// so it is one decision with any reservation of the same owner's.
+func (s *PGStore) ReleaseChiefDispatch(ctx context.Context, taskID, agentID int64) (bool, error) {
+	p, ok := authz.From(ctx)
+	if !ok || p.UserID <= 0 {
+		return false, errors.New("plugins: a chief-dispatch release needs a user principal")
+	}
+	wrote := false
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('muster.chief_dispatch:' || $1::text, 0))`,
+			strconv.FormatInt(p.UserID, 10)); err != nil {
+			return err
+		}
+		reserved, released, err := chiefStartRows(ctx, tx, p.UserID, taskID)
+		if err != nil {
+			return err
+		}
+		if reserved == 0 || released > reserved {
+			return nil // no chief start on the task, or its latest is released already
+		}
+		// The agent the LATEST reservation started: its agent row is newer.
+		var started int64
+		err = tx.QueryRow(ctx, `SELECT (detail->>'agent_id')::bigint FROM audit_log
+			WHERE action = $1 AND object = $2 AND user_id = $3 AND id > $4 ORDER BY id DESC LIMIT 1`,
+			ActionChiefDispatchAgent, NoteObject(taskID), p.UserID, reserved).Scan(&started)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return nil // that start made no agent, so the owner destroyed someone else's
+		case err != nil:
+			return err
+		}
+		if started != agentID {
+			return nil // another agent on the task: the chief's start is still in use
+		}
+		wrote = true
+		return audit(ctx, tx, ActionChiefDispatchReleased, NoteObject(taskID), map[string]any{"agent_id": agentID})
+	})
+	return wrote, err
 }
 
 // RecordTaskRouted: see DispatchStore.

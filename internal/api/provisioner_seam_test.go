@@ -142,7 +142,7 @@ var provisionerDeps = []provisionerDep{
 		callers: []string{
 			"(*Server).createAndDispatchAgent", // Dispatch; reached from handleAgentCreate, handleChiefProvision
 			"(*Server).handleAgentCreate",      // KickoffUndeliverableReason, the synchronous pre-flight before the row
-			"(*Server).handleAgentDelete",      // Destroy
+			"(*Server).handleAgentDelete",      // Destroy (passed to destroyAgent)
 			"(*Server).handleAgentLogsStream",  // StreamLogs
 			"(*Server).handleAgentStart",       // Start
 			"(*Server).handleAgentStop",        // Stop

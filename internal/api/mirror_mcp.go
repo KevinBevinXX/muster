@@ -44,7 +44,9 @@ import (
 // row name the host it came from) — and 🔴 through connector_request_decide,
 // an APPROVAL AS THE OPERATOR of any of the owner's agents' pending connector
 // requests (operator decision "Build connector_approve MCP"; the grant and the
-// audit line name the host it came from). Never another task, another host's session, another owner's ask
+// audit line name the host it came from) — and 🔴 through agent_destroy
+// (agent_destroy_tool.go, operator decision), the teardown of any agent of
+// the owner's but the chief, with NO audit row (the server log names the host). Never another task, another host's session, another owner's ask
 // or request, a secret, or a chief tool. The SESSION a call names is the caller's claim (its pane);
 // only the HOST is proven, which is why attention_answer's rule is per host.
 //
@@ -177,13 +179,14 @@ func (s *Server) mirrorSessionOf(ctx context.Context, host, sid string) (mirror.
 // task tools, and attention_answer — the operator answering an ask through
 // their own session — with the attention store; and connector_requests_list /
 // connector_request_decide — the operator deciding a connector request through
-// their own session — with the connector store. No dispatched agent is offered
-// either operator tool, and their handlers refuse any caller but a mirrored
+// their own session — with the connector store; and agent_destroy — the
+// operator tearing down one of their agents — with the attention tools. No
+// dispatched agent is offered any operator tool, and their handlers refuse any caller but a mirrored
 // session.
 func (s *Server) mirrorTools() []agents.ToolDef {
 	var out []agents.ToolDef
 	if s.attentionToolsOn() {
-		out = append(append(append(out, attentionToolDefs()...), taskToolDefs()...), attentionAnswerToolDef())
+		out = append(append(append(append(out, attentionToolDefs()...), taskToolDefs()...), attentionAnswerToolDef()), agentDestroyToolDef())
 	}
 	if s.connectorDecideToolsOn() {
 		out = append(out, connectorDecideToolDefs()...)

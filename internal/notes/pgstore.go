@@ -570,11 +570,22 @@ func (s *PGStore) SetStatus(ctx context.Context, id int64, status string) (Note,
 		// An agent's write: never out of complete, decided by the row itself.
 		q += ` AND status <> '` + StatusComplete + `'`
 	}
-	tag, err := s.pool.Exec(ctx, q, id, status)
+	args := []any{id, status}
+	from, conditional := onlyFrom(ctx)
+	if conditional {
+		q += ` AND status = $3`
+		args = append(args, from)
+	}
+	tag, err := s.pool.Exec(ctx, q, args...)
 	if err != nil {
 		return Note{}, err
 	}
 	if tag.RowsAffected() == 0 {
+		if conditional {
+			if _, gerr := s.Get(ctx, id); gerr == nil {
+				return Note{}, ErrStatusMoved
+			}
+		}
 		if forAgent(ctx) {
 			if cur, gerr := s.Get(ctx, id); gerr == nil && cur.Status == StatusComplete {
 				return cur, ErrCompleteLocked

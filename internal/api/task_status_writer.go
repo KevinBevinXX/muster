@@ -59,6 +59,10 @@ const (
 	// writerTaskTool is the all-agents tool `task_set_status` (attention_tools.go):
 	// one of the calling agent's own tasks, by id, over the gateway or MCP.
 	writerTaskTool statusWriter = "task_set_status"
+	// writerDestroyReopen is the in_progress→open step after a mirrored
+	// session's agent_destroy tore down the last live agent on a task
+	// (agent_destroy_tool.go), so the chief can task_dispatch it again.
+	writerDestroyReopen statusWriter = "agent-destroy-reopen"
 	// 🔴 TWO LABELS WERE DELETED HERE (upstream task #653 phase two), and the
 	// deletion-tracking note matters more than usual because these are LOG VALUES:
 	//

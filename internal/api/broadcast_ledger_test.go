@@ -47,6 +47,10 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		// agent's (or mirrored session's) owner.
 		"(*Server).toolTaskComment → broadcast(ctx)",
 		"(*Server).toolTaskSetStatus → broadcast(ctx)",
+		// agent_destroy's task reopen (agent_destroy_tool.go): ctx is the
+		// teardown's WithoutCancel copy of the mirror request's, so its principal
+		// is the mirror token's owner, who owns the task.
+		"(*Server).reopenTaskAfterDestroy → broadcast(ctx)",
 		"(*Server).handleAPITaskComment → broadcast(r.Context())",
 		// The machine-path task create (moved out of handleAPITaskCreate so a
 		// second door cannot skip a side effect); ctx is the request's. Its
@@ -77,6 +81,10 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		"(*Server).createAndDispatchAgent → agentChangedFor(requestOwner(ctx))",
 		// a row read with its owner.
 		"(*Server).reapIdleTasks → broadcastTo(n.OwnerID)",
+		// The shared destroy's agent.changed (both doors): a is the agent row
+		// the chief check read under the caller's principal, so its owner is the
+		// caller's own.
+		"(*Server).destroyAgent → broadcastTo(a.OwnerID)",
 		// agent-named nudges: the owner is read from the agent row by name.
 		"(*Server).BroadcastAgentChanged → agentChangedFor(s.agentOwner(agentName))",
 		// the mirror plugin's host nudge: the hub names the host's owner.

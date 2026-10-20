@@ -104,6 +104,26 @@ func ForAgent(ctx context.Context) context.Context {
 
 func forAgent(ctx context.Context) bool { v, _ := ctx.Value(agentWriteKey{}).(bool); return v }
 
+// fromStatusKey carries OnlyFrom's required current status.
+type fromStatusKey struct{}
+
+// ErrStatusMoved: an OnlyFrom status write found the task no longer in the
+// required status, so it moved nothing.
+var ErrStatusMoved = errors.New("notes: the task is no longer in the status this write required")
+
+// OnlyFrom makes ctx's status writes CONDITIONAL: PGStore.SetStatus moves the
+// row only while its status is still from — in the UPDATE itself, so a status
+// change landing between a caller's read and its write is never overwritten —
+// and answers ErrStatusMoved when it is not. (agent_destroy's reopen uses it.)
+func OnlyFrom(ctx context.Context, from string) context.Context {
+	return context.WithValue(ctx, fromStatusKey{}, from)
+}
+
+func onlyFrom(ctx context.Context) (string, bool) {
+	v, ok := ctx.Value(fromStatusKey{}).(string)
+	return v, ok
+}
+
 // WithWriter returns ctx carrying label as the identity of whoever is about to
 // write a task status on it.
 //
