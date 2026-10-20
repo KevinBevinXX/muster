@@ -107,6 +107,7 @@ their host's `muster-mirror` — [below](#mirrored-claude-code-sessions)):
 | tool | does |
 |---|---|
 | `attention_answer {id \| task_id, answer}` | Answers one of the owner's OPEN asks as the operator: free text or one of its options, the same validation as the `/attention` form (blank refused, at most 8000 characters). The ask is named by **exactly one** of `id` (the ask's id) or `task_id` (the task it is about — the chief's *"Task #776 needs you"* is `{task_id: 776}`); `task_id` must have exactly one open ask of yours (*"task N has no open ask"* — also what another owner's task reads — or *"task N has K open asks (ids …): answer one by id"*). It takes the form's own answer path, so the notification is withdrawn, waiters wake and an agent's answer is [delivered](#delivery) exactly as a browser answer is. The row records where it came from (`answered_via = 'mcp'`, the calling host and the Claude session it named, migration 0034); `answered_by` is still `operator`. **It counts as your own words for `task_dispatch` instructions**, exactly as a browser answer does (operator decision; see the risk [below](#mirrored-claude-code-sessions)); the started agent's first message and the `task.chief_dispatch` audit row then say it came via MCP from `<host>`/`<session>` ([chief.md](chief.md)). Refused: an open ask raised by **any mirrored session on the calling host** (*"was raised by a mirrored session on this host"*), an ask that is no longer open (*"is no longer open (it is …)"* — also for a same-host ask once it has closed), and another owner's ask or a missing id (both *"no such ask: N"*). |
+| `agent_destroy {name \| id}` | Destroys one of the owner's agents through the Agents page's own teardown ([provisioner.md](provisioner.md#destroying-an-agent)), named by **exactly one** of `name` (its slug) or `id`. The pod and the row go in the background; its open asks go with the row; a running turn is cut off. **The task is kept**: once the agent is gone, a task still `in_progress` with no other live agent is back to `open`, so the chief can `task_dispatch` it — and if the chief started the destroyed agent, the chief may start **one** new agent on the task again (see [chief.md](chief.md); the browser's Delete releases it too). **No audit row** is written: where the call came from (the host the token proves, the session the caller named) is in muster's server log only. Find a name with `muster agent ls`. Refused: the chief (*"the chief agent cannot be deleted…; to replace the chief use `muster chief replace`"*), and another owner's agent, an unknown name or a missing id (all *"no such agent: X"*). Operator decision ("Build agent_destroy MCP": mirrored owner sessions only). |
 
 🔴 **Who can answer, and how that is enforced.** `attention_answer` is listed
 only on `POST /mirror/mcp`; no dispatched agent's tool list (gateway or `POST
@@ -191,7 +192,8 @@ too, through its host's `muster-mirror`:
    host's session, a session no window shows, or another owner's token gets a
    tool error and the tool does not run. The tool set is exactly
    `attention_ask`, `attention_wait`, `attention_cancel`, the task tools,
-   `attention_answer` (the operator answering an ask through this session) and,
+   `attention_answer` (the operator answering an ask through this session),
+   `agent_destroy` (the operator tearing down one of their agents) and,
    with a connector store, `connector_requests_list` / `connector_request_decide`
    (the operator deciding a connector request through this session —
    [connectors.md](connectors.md#deciding-a-request-from-your-own-session)); the
@@ -223,7 +225,20 @@ the operator's answer everywhere — **including as `task_dispatch`
 and, through `connector_request_decide`, **an approval as the operator of any
 of the owner's agents' pending connector requests** (recorded and shown as via
 MCP from that host; the accepted risk is in
-[connectors.md](connectors.md#deciding-a-request-from-your-own-session)).
+[connectors.md](connectors.md#deciding-a-request-from-your-own-session)) — and,
+through `agent_destroy`, it can **destroy any of the owner's agents but the
+chief** — with no audit row: the only record of which host did it is muster's
+server log.
+
+🔴 **Accepted risk: a mirror token can destroy agents.** The operator chose it
+("Build agent_destroy MCP", *"Mirrored owner sessions only, same pattern"*) so
+a stuck agent can be torn down without a browser. Concretely: a leaked token,
+or a mirrored session fed outside text, can tear down every non-chief agent of
+the owner (their running work and open asks go with them). The tasks survive
+and the chief is refused, but there is **no per-destroy audit trail** (operator
+decision): which host did it is in muster's server log only, and nothing
+restores a destroyed agent. A destroy of an agent the chief started also frees
+the chief to start one new agent on that task. Revoke a token you suspect (below).
 
 🔴 **Accepted risk: an MCP answer can become a dispatched agent's
 instructions.** The operator decided this explicitly after being told the risk

@@ -391,7 +391,7 @@ func (s *Server) ledgerControlNarrow() {
 			"about that shape", controls)
 	}
 	sort.Strings(names)
-	if got, want := strings.Join(names, ","), "dismissTask,handleAgentDelete,replaceChief"; got != want {
+	if got, want := strings.Join(names, ","), "dismissTask,handleAgentDelete,replaceChief,toolAgentDestroy"; got != want {
 		t.Fatalf("declarations that can reach the provisioner's Destroy = %s, want %s — a destroy "+
 			"path was added or removed; guard it with agentIsChief and add its route to the tests above", got, want)
 	}
@@ -400,6 +400,11 @@ func (s *Server) ledgerControlNarrow() {
 	// TestReplacingTheChiefNeedsConfirmAndDeletesOnlyThen pins the confirm). Every
 	// other destroy path must still ask agentIsChief.
 	bypass := map[string]bool{"replaceChief": true}
+	// destroyAgent counts as a guard for the doors that call it (destroyUsers),
+	// so it must itself ask agentIsChief.
+	if !funcMentions(t, "agents.go", "destroyAgent", "agentIsChief") {
+		t.Error("destroyAgent no longer mentions agentIsChief, but the doors that route through it are scored chief-guarded because of it")
+	}
 	for _, n := range names {
 		if !bypass[n] && !users[n] {
 			t.Errorf("%s can reach the provisioner's Destroy without mentioning agentIsChief", n)
@@ -475,7 +480,10 @@ func destroyUsers(t *testing.T, extra map[string]string) map[string]bool {
 				if isDestroy(info.Selections[sel]) {
 					uses = true
 				}
-				if sel.Sel.Name == "agentIsChief" {
+				// A door that routes its Destroy through destroyAgent — the one
+				// chief-guarded teardown — is guarded by it; that destroyAgent
+				// itself asks agentIsChief is pinned in the ledger test.
+				if sel.Sel.Name == "agentIsChief" || sel.Sel.Name == "destroyAgent" {
 					guarded = true
 				}
 				return true
@@ -507,4 +515,30 @@ func declName(d ast.Decl) string {
 		}
 	}
 	return "(unnamed declaration)"
+}
+
+// funcMentions reports whether func name, declared in file (this package),
+// contains a selector or identifier named ident.
+func funcMentions(t *testing.T, file, name, ident string) bool {
+	t.Helper()
+	f, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range f.Decls {
+		fn, ok := d.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != name || fn.Body == nil {
+			continue
+		}
+		found := false
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			if id, ok := n.(*ast.Ident); ok && id.Name == ident {
+				found = true
+			}
+			return true
+		})
+		return found
+	}
+	t.Fatalf("%s declares no func %s", file, name)
+	return false
 }

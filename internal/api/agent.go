@@ -372,7 +372,7 @@ func (s *Server) agentTools() []agentTool {
 	// attention_answer is NOT here: it is the mirrored sessions' alone
 	// (mirror_mcp.go's mirrorTools), and its handler refuses any agent. Nor are
 	// connector_requests_list / connector_request_decide, for the same reason
-	// (connector_decide_tools.go).
+	// (connector_decide_tools.go), nor agent_destroy (agent_destroy_tool.go).
 	if s.attentionToolsOn() {
 		for _, d := range attentionToolDefs() {
 			tools = append(tools, agentTool{def: d, mcp: true})

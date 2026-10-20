@@ -388,6 +388,10 @@ func (s *Server) dispatchCallerTool(ctx context.Context, c toolCaller, name, arg
 		return s.toolTaskComment(ctx, c, arguments), true
 	case taskSetStatusTool:
 		return s.toolTaskSetStatus(ctx, c, arguments), true
+	case agentDestroyTool:
+		// Mirrored sessions only, refused inside like attention_answer
+		// (agent_destroy_tool.go).
+		return s.toolAgentDestroy(ctx, c, arguments), true
 	case attentionListTool:
 		return s.toolAttentionList(ctx), true
 	case sessionTranscript:

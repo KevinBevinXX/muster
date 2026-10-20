@@ -164,6 +164,46 @@ When a gateway is configured, three routes are live:
 A `claude-code` agent has the same Rendered | Terminal switch as a mirrored
 session.
 
+## Destroying an agent
+
+Two doors take the same teardown (`destroyAgent` in `internal/api/agents.go`):
+
+- **Delete** on the Agents page (`DELETE /agents/{id}`, a signed-in session);
+- **`agent_destroy {name | id}`** from one of your own mirrored Claude Code
+  sessions (`POST /mirror/mcp` only — see
+  [attention.md](attention.md#the-agent-tools)), so a stuck agent can be torn
+  down without a browser. `muster agent ls` lists the names it takes.
+
+Both refuse the chief before anything starts (use `muster chief replace` for
+it; [chief.md](chief.md)), then run the provisioner's `Destroy` in the
+background: the instance, then the row — and the row is **kept** (status
+`error`) when the instance could not be removed (rule 2 below). What goes with
+the row is the same on both doors: the agent's attention asks are deleted
+(migration 0025's `ON DELETE CASCADE`; nothing on this path sends the
+"resolved" message that would clear a notification already on your phone), and
+a turn it is running is not stopped first — the pod's teardown ends it.
+
+After a **successful** teardown, on both doors:
+
+- if the agent was the one the chief's `task_dispatch` started on its task, the
+  chief's one start on that task is **released** (an
+  `task.chief_dispatch_released` row in the chief-dispatch ledger; nothing is
+  deleted), so the chief may start one new agent there — see
+  [chief.md](chief.md). ⚠ This is new for the Agents page's Delete too.
+- your open tabs re-fetch: `agent.changed` and `attention_queue.changed` are
+  broadcast to you.
+
+**The task is kept on both doors** (unlike deleting the task, which tears its
+agent down). Only `agent_destroy` also moves it back: a task still
+`in_progress` with no other live agent goes to `open` (status writer
+`agent-destroy-reopen`), which `task_dispatch` needs (open, ungated, no live
+agent). The write is conditional — it moves the task only while it is still
+`in_progress` — so a status you set meanwhile is kept. After the browser's
+Delete the task stays as it was; reopen it on its card.
+
+Neither door writes an audit row for the destroy: an `agent_destroy` call's
+host and session are in muster's server log only.
+
 ## The chief
 
 The **chief** is an ordinary agent row: your fleet agent. Its slug is `chief` for

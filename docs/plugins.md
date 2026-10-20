@@ -383,10 +383,17 @@ Each refusal has its own sentence, in this order:
    by an agent (`task_create_gated`), so either may only be one of your own.
    The task is re-read under the lock below, and a repository changed in
    between is refused.
-8. Under a per-owner lock: **one start per task, ever.** A task the chief
-   already started an agent for answers with that start
-   (`already_dispatched`) and starts nothing, whatever became of the agent.
-   A second agent on the task is yours to start, from its card.
+8. Under a per-owner lock: **one start per task** — until you destroy the
+   agent it made. A task the chief already started an agent for answers with
+   that start (`already_dispatched`) and starts nothing, whatever became of the
+   agent, **unless you destroyed that agent** (the Agents page's Delete, or
+   `agent_destroy` from your mirrored session): that destroy records a release
+   (`task.chief_dispatch_released`; nothing is deleted) and the chief may
+   start **one** new agent on the task (operator decision: *"Owner's destroy
+   resets the chief's allowance"*). The chief cannot release its own start,
+   destroying an agent it did not start releases nothing, and a failed
+   teardown releases nothing. A second agent alongside a live one is yours to
+   start, from its card.
 9. The task is not yours, is gated (`gate:` tag), names a different
    repository than `repo`, is not `open`, or already has a live agent (use
    `task_forward`).
@@ -404,6 +411,12 @@ spends the day's unit and the task's one start. That includes a claude-code
 start whose account pool has no usable account: the pool is asked only at the
 create. The agent's id is recorded beside it (`task.chief_dispatch_agent`); the
 caps are counted from those rows.
+
+Only a start whose agent was **recorded** (`task.chief_dispatch_agent`) can be
+released, by destroying that agent. ⚠ A start that failed before any agent
+existed stays spent for good — there is nothing to destroy — and
+`task_dispatch` answers `already_dispatched` with no `agent_id`: a new agent on
+that task is yours to start, from its card.
 
 The agent's first message is the chief's `instructions`, if any (control
 characters removed, fenced under a line saying the chief relayed them — and,

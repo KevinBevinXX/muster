@@ -1212,25 +1212,88 @@ func (s *Server) handleAgentDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	a, chief, err := s.agentIsChief(r.Context(), id)
-	if err != nil {
-		s.logger.Printf("agents: delete %d: chief check: %v", id, err)
+	var chief errDestroyChief
+	// The provisioner is called HERE, in this route's own closure: the route is
+	// behind requireLifecycleProvisioner, which is its nil barrier.
+	destroy := func(ctx context.Context, id int64) error { return s.ext.Provisioner.Destroy(ctx, id) }
+	switch _, err := s.destroyAgent(r.Context(), id, destroy, destroyHooks{}); {
+	case err == nil:
+	case errors.As(err, &chief):
+		http.Error(w, chief.Error(), http.StatusConflict)
+		return
+	default:
+		s.logger.Printf("agents: delete %d: %v", id, err)
 		http.Error(w, "could not check whether this is the chief agent; nothing was deleted", http.StatusInternalServerError)
 		return
 	}
-	if chief {
-		http.Error(w, chiefRefusal(a), http.StatusConflict)
-		return
-	}
-	opCtx := context.WithoutCancel(r.Context()) // keeps the principal; see Provisioner
-	safeGo(s.logger, "destroy", func() {
-		if err := s.ext.Provisioner.Destroy(opCtx, id); err != nil {
-			s.logger.Printf("agents: destroy %d: %v", id, err)
-		}
-	})
 	// Empty 200: htmx removes the targeted #agent-<id> card.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
+}
+
+// errDestroyChief is destroyAgent's refusal of the chief; its text is
+// chiefRefusal's.
+type errDestroyChief struct{ a agents.Agent }
+
+func (e errDestroyChief) Error() string { return chiefRefusal(e.a) }
+
+// destroyHooks are what a destroyAgent caller adds after the shared teardown.
+type destroyHooks struct {
+	// done runs in the teardown's goroutine after a SUCCESSFUL Destroy and the
+	// shared after-steps, on the same principal-keeping context. nil: nothing
+	// more.
+	done func(ctx context.Context, a agents.Agent)
+}
+
+// destroyAgent is THE agent teardown both doors take — the browser's DELETE
+// /agents/{id} (handleAgentDelete) and a mirrored session's agent_destroy
+// (agent_destroy_tool.go): the chief check, then the provisioner's Destroy in
+// the background (instance, then the row; see agentprovision.Adapter.Destroy),
+// exactly as the browser always did. It returns the agent row the chief check
+// read (zero when the id names no agent the caller can see — the browser's
+// path still starts the teardown then, as it always has, and Destroy's own
+// row read fails and is logged).
+//
+// destroy is the provisioner's Destroy, passed by each door rather than called
+// here, so that each door's own body is where the provisioner is reached and
+// nil-checked (provisioner_seam_test.go's walk is function-granular: the
+// browser's route is wrapped in requireLifecycleProvisioner, the MCP tool checks
+// in its body). TestEveryDestroyCallSiteIsChiefGuarded accepts a door that
+// routes through this function as chief-guarded, and pins that this one asks
+// agentIsChief.
+//
+// 🔴 THE CHIEF IS REFUSED HERE, BEFORE ANYTHING IS STARTED (errDestroyChief),
+// and a failed read of the agent table refuses too (agentIsChief fails closed).
+// The teardown is asynchronous, so a check inside it could only log.
+func (s *Server) destroyAgent(ctx context.Context, id int64, destroy func(context.Context, int64) error, h destroyHooks) (agents.Agent, error) {
+	a, chief, err := s.agentIsChief(ctx, id)
+	if err != nil {
+		return agents.Agent{}, fmt.Errorf("chief check: %w", err)
+	}
+	if chief {
+		return a, errDestroyChief{a}
+	}
+	opCtx := context.WithoutCancel(ctx) // keeps the principal; see Provisioner
+	safeGo(s.logger, "destroy", func() {
+		if err := destroy(opCtx, id); err != nil {
+			s.logger.Printf("agents: destroy %d: %v", id, err)
+			return
+		}
+		// After a SUCCESSFUL teardown, on both doors: the owner's destroy frees
+		// the chief's one start on the agent's task when the chief's start made
+		// this agent (operator decision), and the owner's open tabs re-fetch —
+		// the Agents views (agent.changed) and the attention queue, which lost
+		// the agent's asks with its row (attention_queue.changed).
+		s.releaseChiefStart(opCtx, a)
+		if a.ID != 0 {
+			s.broadcastTo(a.OwnerID, EventAgentChanged, a.Name)
+			s.attentionChanged(a.OwnerID, "agent-destroyed-"+strconv.FormatInt(a.ID, 10))
+		}
+		if h.done != nil {
+			h.done(opCtx, a)
+		}
+	})
+	return a, nil
 }
 
 // handleAgentDetail renders the full detail page (logs + chat).
