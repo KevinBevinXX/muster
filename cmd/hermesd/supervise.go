@@ -297,9 +297,15 @@ func (s *supervisor) stop(p gatewayProc, done <-chan struct{}) {
 // execProc is a gateway started as a real process, in its own process group.
 type execProc struct{ cmd *exec.Cmd }
 
+// gatewayArgs is the gateway's command line. `--external-supervisor` declares
+// hermesd the process manager that owns this foreground gateway: an in-chat
+// restart or update then exits back to hermesd instead of spawning a detached
+// replacement it would not supervise (P:hermes_cli/gateway.py, _cmd_run).
+var gatewayArgs = []string{"gateway", "run", "--external-supervisor"}
+
 // startGateway starts `hermes gateway run` with env.
 func startGateway(bin, dir string, env []string) (gatewayProc, error) {
-	cmd := exec.Command(bin, "gateway", "run")
+	cmd := exec.Command(bin, gatewayArgs...)
 	cmd.Env = env
 	cmd.Dir = dir
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
