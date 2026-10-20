@@ -11,17 +11,18 @@ date, or the Phase 0 results file. Claims nothing confirmed are marked
 **UNVERIFIED**. What Phase 0 could not measure (no physical phone) is listed
 under [risks](#risks).
 
-[p0]: https://github.com/ZacxDev/muster-android/blob/phase0/docs/phase0-results.md
-[p0-s3]: https://github.com/ZacxDev/muster-android/blob/phase0/docs/phase0-results.md#s3-step-up-from-a-notification-action
-[p0-s4]: https://github.com/ZacxDev/muster-android/blob/phase0/docs/phase0-results.md#s4-device-credential-as-the-step-up
-[p0-s7]: https://github.com/ZacxDev/muster-android/blob/phase0/docs/phase0-results.md#s7-android-developer-verification-docs
-[p0-s8]: https://github.com/ZacxDev/muster-android/blob/phase0/docs/phase0-results.md#s8-obtainium-and-f-droid-index-v2-source
-[p0-s9]: https://github.com/ZacxDev/muster-android/blob/phase0/docs/phase0-results.md#s9-ntfy-measured-locally--source
-[p0-s10]: https://github.com/ZacxDev/muster-android/blob/phase0/docs/phase0-results.md#s10-muster--the-operators-ntfy-measured
-[p0-s11]: https://github.com/ZacxDev/muster-android/blob/phase0/docs/phase0-results.md#s11-lock-screen-privacy-measured
-[p0-s12]: https://github.com/ZacxDev/muster-android/blob/phase0/docs/phase0-results.md#s12-css-safe-area-insets-in-an-edge-to-edge-webview-measured
-[p0-sum]: https://github.com/ZacxDev/muster-android/blob/phase0/docs/phase0-results.md#summary-of-changes-the-spikes-imply-for-docsdesignandroidmd
-[p0-limits]: https://github.com/ZacxDev/muster-android/blob/phase0/docs/phase0-results.md#what-did-not-run
+[p0]: https://github.com/ZacxDev/muster-android/blob/f652f3256bbe487e9babb467e5f509a41ef54068/docs/phase0-results.md
+[p0-s3]: https://github.com/ZacxDev/muster-android/blob/f652f3256bbe487e9babb467e5f509a41ef54068/docs/phase0-results.md#s3-step-up-from-a-notification-action
+[p0-s4]: https://github.com/ZacxDev/muster-android/blob/f652f3256bbe487e9babb467e5f509a41ef54068/docs/phase0-results.md#s4-device-credential-as-the-step-up
+[p0-s7]: https://github.com/ZacxDev/muster-android/blob/f652f3256bbe487e9babb467e5f509a41ef54068/docs/phase0-results.md#s7-android-developer-verification-docs
+[p0-s8]: https://github.com/ZacxDev/muster-android/blob/f652f3256bbe487e9babb467e5f509a41ef54068/docs/phase0-results.md#s8-obtainium-and-f-droid-index-v2-source
+[p0-s9]: https://github.com/ZacxDev/muster-android/blob/f652f3256bbe487e9babb467e5f509a41ef54068/docs/phase0-results.md#s9-ntfy-measured-locally--source
+[p0-s10]: https://github.com/ZacxDev/muster-android/blob/f652f3256bbe487e9babb467e5f509a41ef54068/docs/phase0-results.md#s10-muster--the-operators-ntfy-measured
+[p0-s11]: https://github.com/ZacxDev/muster-android/blob/f652f3256bbe487e9babb467e5f509a41ef54068/docs/phase0-results.md#s11-lock-screen-privacy-measured
+[p0-s12]: https://github.com/ZacxDev/muster-android/blob/f652f3256bbe487e9babb467e5f509a41ef54068/docs/phase0-results.md#s12-css-safe-area-insets-in-an-edge-to-edge-webview-measured
+[p0-sum]: https://github.com/ZacxDev/muster-android/blob/f652f3256bbe487e9babb467e5f509a41ef54068/docs/phase0-results.md#summary-of-changes-the-spikes-imply-for-docsdesignandroidmd
+[p0-app]: https://github.com/ZacxDev/muster-android/tree/f652f3256bbe487e9babb467e5f509a41ef54068
+[p0-limits]: https://github.com/ZacxDev/muster-android/blob/f652f3256bbe487e9babb467e5f509a41ef54068/docs/phase0-results.md#what-did-not-run
 
 ## Summary
 
@@ -186,11 +187,12 @@ The reasons for the shell:
   WebView history through `OnBackPressedCallback`. Edge-to-edge is mandatory at
   targetSdk 36. **The native shell pads for insets, not the page:** it applies
   the system-bar, display-cutout and IME insets as padding on the WebView's
-  container. Inside a WebView, CSS `env(safe-area-inset-*)` is defined but
+  container, and the container **consumes** the insets it pads for, so they
+  are not passed on to the WebView as well. Inside a WebView, CSS `env(safe-area-inset-*)` is defined but
   reads 0 px on every side (measured on WebView 124 and 133, where the real
   insets were 51.8 dp top and 24 dp bottom), so a page that pads itself draws
-  under the status bar. A newer WebView that does report `env()` reports 0
-  inside the padded view, so nothing is padded twice
+  under the status bar. A newer WebView that does report `env()` then reports
+  0 inside the padded, inset-consumed view, so nothing is padded twice
   ([Phase 0, S12][p0-s12]).
 
 ### What lives where
@@ -307,13 +309,17 @@ The change:
    a 2xx response. Phase 0 found one more reason to keep it: an edge in front
    of ntfy can block some client user agents (S10), and without a test push a
    rule change there would fail silently.
-5. **A size cap on Android pushes.** ntfy accepts an `up*` message over 4096
-   bytes with 200 and **silently truncates** it to 4096 bytes; the phone then
-   cannot decrypt it, and the message vanishes with no error anywhere
-   ([Phase 0, S9][p0-s9], measured). So muster **refuses to send an `android`
+5. **A size cap on Android pushes.** ntfy accepts an `up*` message over its
+   message-size limit with 200 and **silently truncates** it to the limit;
+   the phone then cannot decrypt it, and the message vanishes with no error
+   anywhere ([Phase 0, S9][p0-s9], measured at the default). That limit is
+   ntfy's `message-size-limit`, **4096 bytes by default and configurable**;
+   the deployed server's value was not measured. muster does not depend on
+   it: it uses a fixed 4096-byte cap, which holds under the default and under
+   any larger setting. So muster **refuses to send an `android`
    push whose encrypted body is over 4096 bytes**, with a test that an
-   over-budget payload is refused. The aes128gcm overhead (an 86-byte header and a 16-byte tag) leaves a
-   plaintext budget under about 3990 bytes, and payload v2 is sized well under
+   over-budget payload is refused. The aes128gcm overhead (an 86-byte header
+   and a 16-byte tag) leaves a plaintext budget under about 3990 bytes, and payload v2 is sized well under
    it. This is a Phase 1 server item (server change 30).
 6. **A device kind** on each subscription (`browser` or `android`), so native
    devices get payload v2, the native-only events, and the silent `resolved`
@@ -329,20 +335,23 @@ Native devices get a payload that carries **ids, not content**:
 {"v": 2, "type": "attention", "id": "…", "tag": "…",
  "conv": "agent:<name>",
  "title": "<WHO>", "body": "<WHERE>",
- "actions": ["answer", "cancel"],
+ "actions": ["ask_answer", "ask_dismiss"],
  "state": {"attention": 3, "review": 1}}
 ```
 
 - `title` and `body` obey WHO and WHERE, never WHAT, exactly as today.
-- `actions` names action ids. The app maps each id to a fixed button and a
+- `actions` names action ids, from the app's fixed table
+  ([action ids](#action-ids)). The app maps each id to a fixed button and a
   fixed `/api/device/actions/*` route, so the server cannot make the app POST
   to an arbitrary path.
 - `state` is a small delta for widgets and live status.
 - Anything longer (a question's text, a draft, the last messages of a
   conversation) is fetched after delivery with the device credential, and is
   shown only on an unlocked phone ([notifications](#notifications)).
-- **Size: a hard 4096-byte limit on the encrypted body, enforced by
-  truncation** (measured, [Phase 0, S9][p0-s9]). Payload v2 carries ids, a
+- **Size: a fixed 4096-byte cap on the encrypted body.** ntfy truncates a
+  body over its `message-size-limit` silently, with 200; that limit is 4096
+  bytes by default and configurable, and the deployed value was not measured
+  ([Phase 0, S9][p0-s9]). muster's cap is fixed at the default. Payload v2 carries ids, a
   short title and the `state` delta, which fits well under it; every detail is
   fetched. muster refuses a larger Android push rather than send one ntfy
   would truncate (server change 30).
@@ -445,7 +454,8 @@ the user to a fresh pairing in the WebView.
 **Phones without a strong biometric** ([open question](#open-questions) 3,
 now decided). Phase 0 measured the alternative, a key with
 `AUTH_BIOMETRIC_STRONG | AUTH_DEVICE_CREDENTIAL` and timeout 0
-([Phase 0, S4][p0-s4]). It works: a phone with a PIN and no biometric can
+([Phase 0, S4][p0-s4]; on the emulator's software keys only, hardware
+behaviour expected but not measured). It works: a phone with a PIN and no biometric can
 create it and sign with the PIN on every use. But it is weaker in two ways.
 Anyone who knows the PIN can sign. And it is **not invalidated when a new
 fingerprint is enrolled**: the platform reports `invalidatedByEnroll=false`
@@ -502,7 +512,8 @@ sequenceDiagram
   says it was blocked ([Phase 0, S3][p0-s3]). A receiver-based action would
   ship broken with no error, so **Phase 2 adds an instrumented test that every
   action PendingIntent is `getActivity` straight to the step-up activity.**
-- **From the lock screen, dismiss the keyguard first.** Phase 0 measured the
+- **From the lock screen, dismiss the keyguard first.** Phase 0 measured (on
+  software keys; hardware expected, not measured) the
   flow above failing on a locked phone: the system starts the activity behind
   the keyguard, and the prompt is cancelled (BiometricPrompt error 5,
   "Authentication canceled") within about 100–150 ms, so the finger only unlocks
@@ -590,6 +601,25 @@ than the web, where refusing (Cancel, Reject, Dismiss) needs no fresh sign-in
 because "refusing to send is never the risky direction". On a phone a lost
 device credential is the threat, and a single rule leaves nothing to get wrong
 per action.
+
+### Action ids
+
+**The app defines these wire ids, muster's payload v2 must use these exact
+strings, and server change 26's route-ledger test checks against this
+table.** Each id names exactly one route, so the same verb on two routes
+cannot clash. The app refuses the bare verbs (`cancel`, `answer`, `approve`)
+([app repo, merged at `f652f32`][p0-app]).
+
+| wire id | route |
+|---|---|
+| `queue_send_now` | `/api/device/actions/send-queue/{id}/send-now` |
+| `queue_cancel` | `/api/device/actions/send-queue/{id}/cancel` |
+| `session_queue` | `/api/device/actions/send-queue` |
+| `ask_answer` | `/api/device/actions/attention/asks/{id}/answer` |
+| `ask_dismiss` | `/api/device/actions/attention/asks/{id}/cancel` |
+| `draft_approve` | `/api/device/actions/plugins/drafts/{id}/approve` |
+| `draft_reject` | `/api/device/actions/plugins/drafts/{id}/reject` |
+| `agent_send` | `/api/device/actions/agents/{name}/send` |
 
 ### Native passkeys are not on the path
 
@@ -708,7 +738,8 @@ free ones when each phase lands.
     this design, recorded as the expected meaning of that button).
 26. A route ledger test: every action id payload v2 can name maps to a
     registered `/api/device/actions/*` route, and every such route is in the
-    ledger. This is the native counterpart of the service-worker test below.
+    ledger. The ledger is the app's id table ([action ids](#action-ids)),
+    exact strings. This is the native counterpart of the service-worker test below.
 27. A tier test: an `mdv_` credential is refused on every route outside
     `/api/device/*`, and a session cookie is refused on the `/api/device/*`
     routes.
@@ -1105,7 +1136,7 @@ and did not run; the numbers are kept so references stay stable.
 | ~~S5~~ | **Closed** before Phase 0. The Live Update page says "Don't allow activities triggered by other parties" and "Don't show ambient information", so only user-started runs are promoted. Whether promotion works on a sideloaded app is checked in Phase 4 itself. | — | — |
 | S7 | Developer verification details | Docs. Sideloading unaffected until the 2027 global rollout; then an unregistered app installs **and updates** only with the advanced flow on (7 days or indefinitely) or over ADB. Whether each update warns: **UNKNOWN**. ([S7][p0-s7]) | [developer verification](#-android-developer-verification); the updater reports a lapsed flow |
 | S8 | Obtainium's unattended installs; F-Droid index v2 | Source. Obtainium is silent only as installer of record (Android 12+, targetSdk ≥ device SDK − 3). fdroidserver still writes the v1 index. ([S8][p0-s8]) | [channel](#channel) |
-| S9 | ntfy and VAPID; ntfy's FGS type; embedded-FCM and Firebase | ntfy does **not** enforce VAPID on `up*`; it truncates an `up*` body over 4096 bytes with 200; ntfy uses `specialUse`; embedded FCM needs no Firebase project but needs Play services. ([S9][p0-s9]) | [decrypted-only](#-only-decrypted-pushes-are-trusted) is load-bearing; server change 30 |
+| S9 | ntfy and VAPID; ntfy's FGS type; embedded-FCM and Firebase | ntfy does **not** enforce VAPID on `up*`; it truncates an `up*` body over its size limit (default 4096 bytes, configurable; the deployed value not measured) with 200; ntfy uses `specialUse`; embedded FCM needs no Firebase project but needs Play services. ([S9][p0-s9]) | [decrypted-only](#-only-decrypted-pushes-are-trusted) is load-bearing; server change 30 |
 | S10 | Does muster reach ntfy by the exact name in the phone's endpoint? | Yes, by its public name on `https`/443; no split horizon. The endpoint's host is the ntfy app's default server, else ntfy's public server. A real phone's registration was not observed. ([S10][p0-s10]) | `MUSTER_PUSH_EXTRA_HOSTS`; the pairing push-host check |
 | S11 | Does the lock screen show only the public version of a `VISIBILITY_PRIVATE` notification? | **Only if the user's setting hides sensitive content.** ([S11][p0-s11]) | [WHAT only while unlocked](#notifications); open question 4, decided |
 | S12 | Do CSS `env(safe-area-inset-*)` values work in an edge-to-edge WebView? | **No** on WebView 124 and 133: 0 px on every side. ([S12][p0-s12]) | [the shell pads](#the-shell) |
@@ -1146,9 +1177,11 @@ guidance; the Play fee.
 - **What Phase 0 could not verify, with no physical phone**
   ([Phase 0][p0-limits]):
   - **Hardware-backed keys.** The emulator keystore is software, so every key
-    measured was `SOFTWARE`. The auth binding measured is enforced by the
-    framework on real phones too, but that real phones yield TEE or StrongBox
-    keys, and that the software-key refusal at pairing never trips on a
+    measured was `SOFTWARE`, and **S3 and S4 were measured on software keys
+    only**. The same auth-binding behaviour (per-use biometric, enrolment
+    invalidation, the PIN key surviving enrolment) is **expected** on TEE and
+    StrongBox keys, because the framework and keystore enforce it, but it is
+    not measured. That real phones yield TEE or StrongBox keys, and that the software-key refusal at pairing never trips on a
     phone that should pass, are unmeasured. Check `KeyInfo.securityLevel` on a
     real phone in Phase 1.
   - **OEM lock screens.** Lock-screen and biometric behaviour was measured on
@@ -1288,7 +1321,7 @@ page was accessed 2026-10-20.
 
 **Phase 0**
 
-- Phase 0 spike results (S3, S4, S7–S12; measured on emulators and against ntfy; app repo commit `013bd3b`): <https://github.com/ZacxDev/muster-android/blob/phase0/docs/phase0-results.md>
+- Phase 0 spike results (S3, S4, S7–S12; measured on emulators and against ntfy; app repo `main` at merge commit `f652f32`): <https://github.com/ZacxDev/muster-android/blob/f652f3256bbe487e9babb467e5f509a41ef54068/docs/phase0-results.md>
 - Developer verification terms (cited by S7): <https://developer.android.com/developer-verification/console/terms> (effective 2025-11-11)
 
 **Android platform**
