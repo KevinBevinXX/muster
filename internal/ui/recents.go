@@ -87,7 +87,14 @@ func recentStrip(items []recentItem, oob bool) g.Node {
 		// 🔴 MORPHED, NOT REPLACED: "true" is an outerHTML replace, which made
 		// the sideways scroller below a new element — at scrollLeft 0 — on every
 		// list render (agents_scroll.go).
-		g.If(oob, hx("hx-swap-oob", "morph:outerHTML")),
+		//
+		// 🔴 AND IT IS "morph", NEVER "morph:outerHTML". htmx 2 reads an OOB
+		// value "X:Y" as swap style X into the element matching the CSS
+		// SELECTOR Y: "morph:outerHTML" looked for an <outerHTML> element,
+		// matched nothing, and the copy was DROPPED — the strip never changed
+		// after its first paint (e2e/tests/host-icons.spec.ts, "a list refresh
+		// with no navigation changes what the strip shows").
+		g.If(oob, hx("hx-swap-oob", "morph")),
 		Class("mb-3 min-w-0"),
 		// A sideways swipe here is the strip's, not the sidebar edge-swipe's
 		// (appScript's ownsSideways): the strip starts inside the 28px edge zone.

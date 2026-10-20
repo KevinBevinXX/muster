@@ -159,6 +159,29 @@ test.describe('scroll positions', () => {
     }
   });
 
+  // 🔴 A REGRESSION TEST: the strip's out-of-band copy was sent as
+  // hx-swap-oob="morph:outerHTML", which htmx 2 reads as swap style "morph"
+  // into the element matching the SELECTOR "outerHTML" — nothing — so the copy
+  // was dropped and the strip never changed after the first paint. The case
+  // above could not see it (its content never changes). Here a window is opened
+  // WITHOUT navigating this page (a request on its session), and the list's
+  // refresh must bring it into the strip — while keeping the strip's offset.
+  test('a list refresh with no navigation changes what the strip shows, and keeps its offset', async ({ page }) => {
+    await open(page);
+    const hrefs = () => strip(page).locator('a[data-recent-entry]').evaluateAll((els) => els.map((e) => e.getAttribute('href')));
+    const before = await hrefs();
+    await scrollBoth(page);
+    // Opened in "another tab": the page itself stays where it is.
+    const r = await page.request.get(rig.origin + rig.terminalPath('alpha9'));
+    expect(r.status(), 'control: the visit was recorded by opening the window').toBe(200);
+    const visited = new URL(r.url()).pathname + new URL(r.url()).search;
+    expect(before, 'control: the visited window was not in the strip yet').not.toContain(visited);
+    await page.evaluate(() => document.body.dispatchEvent(new CustomEvent('agents:changed')));
+    await expect.poll(async () => (await hrefs())[0], 'the refresh put the visited window first in the strip').toBe(visited);
+    await page.waitForTimeout(300);
+    expect(await pos(page), 'the strip and the page kept their offsets').toEqual({ y: 700, x: 200 });
+  });
+
   for (const how of ['reload', 'back'] as const) {
     test(`a ${how} keeps both offsets, through a list load held 3 s`, async ({ page }) => {
       await open(page);

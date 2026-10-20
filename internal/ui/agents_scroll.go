@@ -31,7 +31,7 @@ import (
 // fresh copy of #agents-recent out of band, and `hx-swap-oob="true"` is an
 // outerHTML REPLACE: the sideways scroller was a new element each time, at
 // scrollLeft 0 — on the first load and on every refresh after it. The copy is
-// now morphed (recentStrip's `morph:outerHTML`), which keeps the scroller. Its
+// now morphed (recentStrip's `morph`), which keeps the scroller. Its
 // offset is also kept for the browser tab (sessionStorage) and put back on a
 // strip this document has not seen, so a reload or a Back keeps it too.
 

@@ -641,9 +641,11 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 // last message; the shell's first byte waited on both, and GET /agents then
 // built the whole list a second time for /ui/agents. The strip needs only
 // which agents exist, what they are called and which are pinned — one store
-// read — plus the mirror hub's cards, which are in memory. The live status
-// arrives with the list's own load, which replaces the strip out of band
-// moments later: an icon swap that moves nothing.
+// read — plus the mirror hub's cards, which are in memory, and their hosts'
+// icons, which are one mirror_tokens read (mirror.Service.HostRanks, uncached;
+// none when the viewer has no hosts). The live status arrives with the list's
+// own load, which MORPHS the strip out of band moments later
+// (ui.recentStrip): an icon swap that moves nothing.
 // TestTheAgentsShellReadsNoInstances counts the provisioner calls.
 //
 // ⚠ A FAILED READ DRAWS THE OLD WAY (an empty strip the list's own load fills),

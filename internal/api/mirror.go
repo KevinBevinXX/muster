@@ -101,6 +101,9 @@ func (s *Server) mirrorCards(ctx context.Context, pinned pins.Set, focused focus
 	}
 	var out []ui.MirrorCardView
 	hosts := s.ext.Mirror.Hosts(ctx)
+	if len(hosts) == 0 {
+		return nil
+	}
 	// Each host's icon, by its registration rank (ui.HostIconFor), read once.
 	ranks := s.ext.Mirror.HostRanks(ctx)
 	for _, m := range mirror.Ordered(hosts) {

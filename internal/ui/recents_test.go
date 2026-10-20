@@ -62,7 +62,7 @@ func TestTheStripIsAboveTheListAndOutsideIt(t *testing.T) {
 	// MORPHED, not replaced (`true`): a replace made the strip's sideways
 	// scroller a new element at scrollLeft 0 on every list render
 	// (agents_scroll.go; e2e/tests/host-icons.spec.ts measures the offset).
-	if !strings.Contains(part, `<nav id="agents-recent" aria-label="Recently viewed" hx-swap-oob="morph:outerHTML" class=`) {
+	if !strings.Contains(part, `<nav id="agents-recent" aria-label="Recently viewed" hx-swap-oob="morph" class=`) {
 		t.Errorf("the partial does not send the strip out of band, shown:\n%s", part)
 	}
 	if !strings.Contains(part, `data-recent-entry="agent"`) || !strings.Contains(part, "min-h-[44px]") {
@@ -70,7 +70,7 @@ func TestTheStripIsAboveTheListAndOutsideIt(t *testing.T) {
 	}
 	// Nothing to show: the target is still sent (so a stale strip is cleared), hidden.
 	empty := listPartial(t, nil, nil, []RecentRef{{AgentID: 1}})
-	if !strings.Contains(empty, `<nav id="agents-recent" aria-label="Recently viewed" hidden="" hx-swap-oob="morph:outerHTML"`) {
+	if !strings.Contains(empty, `<nav id="agents-recent" aria-label="Recently viewed" hidden="" hx-swap-oob="morph"`) {
 		t.Errorf("an empty strip is not sent hidden:\n%s", empty)
 	}
 }
