@@ -81,17 +81,31 @@ as **payload v2**:
 
 ```json
 {"v": 2, "type": "review", "id": "42", "tag": "task-42",
- "title": "<WHO>", "body": "<WHERE>", "url": "/tasks/42"}
+ "title": "<WHO>", "url": "/tasks/42"}
 ```
 
-- `title` and `body` are the browser notification's own text: WHO and WHERE,
-  never WHAT.
+- Payload v2 carries ids and a short title only. `title` is the browser
+  notification's WHO line, cut to 100 characters; the browser's second line is
+  not sent. The app fetches anything more itself.
+- **A phone's push is at most 4096 bytes.** A self-hosted ntfy accepts a larger
+  UnifiedPush message with HTTP 200 and silently cuts it to 4096 bytes, and the
+  phone can then not decrypt it. muster pads every encrypted push to one
+  4096-byte record, so a payload v2 may be at most 3993 bytes
+  (4096 − 86 header − 16 tag − 1 delimiter). A larger one is **refused, not
+  sent**: it is logged (`push: REFUSED …`) and counted as
+  `muster_push_delivery_total{result="oversize"}`.
 - A withdrawal is `{"v": 2, "type": "resolved", "id": …, "tag": …}` and shows
   nothing. Phones always get it; Safari browsers are still spared it.
 - Which payload a device gets depends on the kind recorded with its
   subscription, not on its push host.
 - There are no `actions`, `conv` or `state` fields yet. They come with the
   phases that add the routes and the widgets that use them.
+- ⚠ **ntfy does not check VAPID** on UnifiedPush (`up*`) topics, so anyone who
+  learns a phone's endpoint can publish to it. The app's rule of dropping every
+  message it cannot decrypt is the **only** check that a message came from
+  muster, and it is load-bearing.
+- muster sets no Web Push `Topic` header, and ntfy ignores one anyway, so a
+  push that was not delivered is not replaced by a newer one.
 
 ## Installable app (PWA)
 

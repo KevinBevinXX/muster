@@ -3,6 +3,7 @@ package push
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/url"
 	"strings"
@@ -26,11 +27,17 @@ type Payload struct {
 // PayloadV2 is what a NATIVE device (KindAndroid) receives in place of
 // Payload: the Android app's payload (docs/design/android.md, "Payload v2").
 //
-// 🔴 IDS, NOT CONTENT, AND THE SAME WHO/WHERE AS TODAY. Title and Body are the
-// browser payload's own, which every notification helper already writes as
-// WHO and WHERE, never WHAT (docs/attention.md); v2 adds nothing to them. URL
-// is where a tap opens, a path on muster. Anything longer is fetched by the
-// app after delivery with its device credential (a later phase).
+// 🔴 IDS AND A SHORT TITLE, NOTHING ELSE. Title is the browser payload's own
+// WHO line (every notification helper writes WHO and WHERE, never WHAT;
+// docs/attention.md), cut to MaxNativeTitle characters. The browser's Body
+// line is NOT carried, and URL is where a tap opens, a path on muster. The app
+// fetches anything more after delivery, with its device credential.
+//
+// 🔴 AND IT MUST FIT IN 4096 ENCRYPTED BYTES. A self-hosted ntfy accepts a
+// larger `up*` message with HTTP 200 and silently truncates it to 4096 bytes,
+// which the phone can then not decrypt (measured in the Phase 0 spikes,
+// ntfy 2.31). SendTo refuses a native payload over NativeMaxPlaintext
+// (nativeBody), loudly; see that constant for the arithmetic.
 //
 // ⚠ PHASE 1 CARRIES NO `actions`, `conv` OR `state`. An action id is a
 // promise that a signed /api/device/actions/* route exists (Phase 2, with
@@ -43,8 +50,48 @@ type PayloadV2 struct {
 	ID    string `json:"id,omitempty"`
 	Tag   string `json:"tag,omitempty"`
 	Title string `json:"title,omitempty"`
-	Body  string `json:"body,omitempty"`
 	URL   string `json:"url,omitempty"`
+}
+
+// MaxNativeTitle is the longest title payload v2 carries, in characters.
+const MaxNativeTitle = 100
+
+// The encrypted size of one native push, by RFC 8188 (aes128gcm) as webpush-go
+// builds it: ONE record of nativeRecordSize bytes — the header (salt, record
+// size, key-id length, the sender's P-256 public key), then the plaintext, its
+// padding delimiter and zero padding up to the record, then the GCM tag.
+// webpush-go pads every message to the full record, so EVERY native body is
+// exactly nativeRecordSize bytes and a plaintext over NativeMaxPlaintext cannot
+// be encrypted at all (TestTheEncryptedNativeBodyIsAtMost4096Bytes measures it).
+const (
+	// ntfyMaxBody is where ntfy truncates an up* message (Phase 0 spike).
+	ntfyMaxBody = 4096
+	// nativeRecordSize is the aes128gcm record size the pusher asks for. It is
+	// pinned (WebpushPusher.Send passes it) rather than left to the library's
+	// default, so a dependency upgrade cannot move it past ntfy's limit.
+	nativeRecordSize   = ntfyMaxBody
+	aes128gcmHeaderLen = 16 + 4 + 1 + 65 // salt, rs, idlen, keyid
+	aes128gcmTagLen    = 16
+	paddingDelimiter   = 1
+	// NativeMaxPlaintext is the largest payload v2, in bytes, that encrypts
+	// into nativeRecordSize: 4096 - 86 - 16 - 1 = 3993.
+	NativeMaxPlaintext = nativeRecordSize - aes128gcmHeaderLen - aes128gcmTagLen - paddingDelimiter
+)
+
+// ErrNativeTooLarge refuses a payload v2 that would not fit in one 4096-byte
+// encrypted body.
+var ErrNativeTooLarge = fmt.Errorf("push: a native payload is larger than %d bytes, so its encrypted body would exceed ntfy's %d bytes", NativeMaxPlaintext, ntfyMaxBody)
+
+// nativeBody is p's payload v2 as sent, or ErrNativeTooLarge.
+func nativeBody(p Payload) ([]byte, error) {
+	b, err := json.Marshal(p.V2())
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > NativeMaxPlaintext {
+		return nil, fmt.Errorf("%w (%d bytes)", ErrNativeTooLarge, len(b))
+	}
+	return b, nil
 }
 
 // V2 is p as a native device receives it. A "resolved" carries only its type,
@@ -54,7 +101,10 @@ func (p Payload) V2() PayloadV2 {
 	if p.Type == TypeResolved {
 		return v
 	}
-	v.Title, v.Body, v.URL = p.Title, p.Body, p.Data["url"]
+	v.Title, v.URL = p.Title, p.Data["url"]
+	if r := []rune(v.Title); len(r) > MaxNativeTitle {
+		v.Title = string(r[:MaxNativeTitle-1]) + "…"
+	}
 	return v
 }
 
@@ -74,6 +124,9 @@ const (
 	// ResultDisallowed is a device whose endpoint is no longer on an allowed
 	// push service: nothing is sent, and the row is pruned.
 	ResultDisallowed = "disallowed"
+	// ResultOversize is a native push refused before sending: its payload v2
+	// would not fit in one 4096-byte encrypted body (ErrNativeTooLarge).
+	ResultOversize = "oversize"
 )
 
 // Service sends one owner's notifications to that owner's devices.
@@ -163,11 +216,7 @@ func (s *Service) SendTo(ctx context.Context, owner int64, p Payload) Report {
 	// A native device gets payload v2; a browser the payload its service
 	// worker reads. Keyed on the subscription's recorded kind, never guessed
 	// from the endpoint.
-	native, err := json.Marshal(p.V2())
-	if err != nil {
-		s.logger.Printf("push: marshal payload v2 tag=%s: %v", p.Tag, err)
-		return rep
-	}
+	native, nativeErr := nativeBody(p)
 	var (
 		wg sync.WaitGroup
 		mu sync.Mutex
@@ -183,6 +232,11 @@ func (s *Service) SendTo(ctx context.Context, owner int64, p Payload) Report {
 			var result string
 			if !s.allowedNow(d) {
 				result = s.dropDisallowed(ctx, d)
+			} else if d.Kind == KindAndroid && nativeErr != nil {
+				// Refused, never sent: ntfy would accept it and truncate it into
+				// something the phone cannot decrypt.
+				s.logger.Printf("push: REFUSED tag=%s to %s (owner=%d): %v", p.Tag, Short(d.Sub.Endpoint), d.OwnerID, nativeErr)
+				result = ResultOversize
 			} else {
 				result = s.settle(ctx, d, s.pusher.Send(ctx, d.Sub, b))
 			}
@@ -194,7 +248,7 @@ func (s *Service) SendTo(ctx context.Context, owner int64, p Payload) Report {
 				rep.Delivered++
 			case ResultExpired, ResultDisallowed:
 				rep.Expired++
-			default:
+			default: // failed, oversize
 				rep.Failed++
 			}
 		}(d)

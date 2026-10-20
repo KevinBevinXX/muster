@@ -51,8 +51,8 @@ func fanOut(t *testing.T, p Payload) map[string]string {
 }
 
 // TestANativeDeviceGetsPayloadV2: for an existing event a native device gets
-// payload v2 — v:2, the same type, id and tag, the SAME title and body (WHO and
-// WHERE, nothing added) and the tap URL — while a browser on the same fan-out
+// payload v2 — v:2, the same type, id and tag, the browser's title (WHO) and
+// the tap URL, and NOT the body line — while a browser on the same fan-out
 // gets the payload its service worker reads, unchanged.
 func TestANativeDeviceGetsPayloadV2(t *testing.T) {
 	p := Payload{Type: "review", ID: "42", Title: "agent-7", Body: "repo/thing: ready for review", Tag: "task-42",
@@ -62,13 +62,13 @@ func TestANativeDeviceGetsPayloadV2(t *testing.T) {
 	if err := json.Unmarshal([]byte(sent[epNtfy]), &got); err != nil {
 		t.Fatalf("native body %q: %v", sent[epNtfy], err)
 	}
-	want := PayloadV2{V: 2, Type: "review", ID: "42", Tag: "task-42", Title: "agent-7", Body: "repo/thing: ready for review", URL: "/tasks/42"}
+	want := PayloadV2{V: 2, Type: "review", ID: "42", Tag: "task-42", Title: "agent-7", URL: "/tasks/42"}
 	if got != want {
 		t.Fatalf("native payload = %+v; want %+v", got, want)
 	}
 	var raw map[string]any
 	_ = json.Unmarshal([]byte(sent[epNtfy]), &raw)
-	for _, k := range []string{"actions", "state", "conv", "data"} {
+	for _, k := range []string{"actions", "state", "conv", "data", "body"} {
 		if _, ok := raw[k]; ok {
 			t.Errorf("the Phase 1 native payload carries %q", k)
 		}
