@@ -4,8 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"io"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -65,9 +64,6 @@ type hookPayload struct {
 	} `json:"extra"`
 }
 
-// maxHookPayload bounds what the hook reads from stdin.
-const maxHookPayload = 1 << 20
-
 // ErrIgnored: the event is not one the hook writes for, or names no valid
 // session; nothing was written, and that is not a failure.
 var ErrIgnored = errors.New("ignored")
@@ -83,17 +79,14 @@ type Writer struct {
 // now, recording writer. ErrIgnored for an event it does not handle or a
 // session id it does not accept (the gateway also fires hooks for API, cron
 // and bot sessions, whose ids are validated the same way).
-func HandleHook(payload []byte, dir StatusDir, now time.Time, writer Writer) error {
-	if len(payload) > maxHookPayload {
-		return fmt.Errorf("%w: the payload is larger than %d bytes", ErrIgnored, maxHookPayload)
-	}
-	var p hookPayload
-	if err := json.Unmarshal(payload, &p); err != nil {
-		return fmt.Errorf("the payload is not JSON: %w", err)
+func HandleHook(in io.Reader, dir StatusDir, now time.Time, writer Writer) error {
+	p, err := decodeHook(in)
+	if err != nil {
+		return err
 	}
 	status, ok := hookStatus[p.Event]
 	if !ok {
-		return fmt.Errorf("%w: event %q", ErrIgnored, p.Event)
+		return fmt.Errorf("%w: event %q", ErrIgnored, capField(p.Event))
 	}
 	// 🔴 THE SESSION ID BECOMES A FILE NAME: validated against the wire's
 	// session-id pattern, and anything else is ignored.
@@ -103,41 +96,132 @@ func HandleHook(payload []byte, dir StatusDir, now time.Time, writer Writer) err
 	f := StatusFile{SessionID: p.SessionID, Status: status, Since: now.UnixMilli(), WriterPID: writer.PID, WriterStart: writer.Start}
 	if status == mirror.StatusWaiting {
 		if !waitingKinds[p.Extra.Kind] {
-			return fmt.Errorf("%w: a request of kind %q", ErrIgnored, p.Extra.Kind)
+			return fmt.Errorf("%w: a request of kind %q", ErrIgnored, capField(p.Extra.Kind))
 		}
 		f.Kind = p.Extra.Kind
 		if requestIDPattern.MatchString(p.Extra.RequestID) {
 			f.RequestID = p.Extra.RequestID
 		}
 	}
-	err := dir.Write(f)
-	if err == nil && p.Event == EventSessionFinalize {
-		dir.prune(now)
+	return dir.Write(f)
+}
+
+// capField bounds a payload field quoted in an error.
+func capField(s string) string {
+	if len(s) > 64 {
+		return s[:64] + "…"
 	}
+	return s
+}
+
+// decodeHook reads the four fields the hook needs — hook_event_name,
+// session_id, extra.kind, extra.request_id — from a payload of ANY size,
+// streaming. 🔴 THERE IS NO SIZE CAP: Hermes's pre_llm_call payload carries
+// the whole conversation (megabytes on a long one), and a cap would drop
+// exactly the turns of long conversations, which then never show busy.
+// Every other value is skipped token by token (json.Decoder), so memory is
+// bounded by the largest single token, never by the payload; nothing skipped
+// is kept.
+func decodeHook(in io.Reader) (hookPayload, error) {
+	var p hookPayload
+	dec := json.NewDecoder(in)
+	bad := errors.New("the payload is not a JSON object")
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return p, bad
+	}
+	for dec.More() {
+		k, err := dec.Token()
+		if err != nil {
+			return p, bad
+		}
+		switch k {
+		case "hook_event_name":
+			p.Event, err = stringValue(dec)
+		case "session_id":
+			p.SessionID, err = stringValue(dec)
+		case "extra":
+			err = decodeExtra(dec, &p)
+		default:
+			err = skipValue(dec)
+		}
+		if err != nil {
+			return p, bad
+		}
+	}
+	return p, nil
+}
+
+// decodeExtra reads extra.kind and extra.request_id, skipping the rest (a
+// prompt, a conversation, …); a non-object extra is skipped whole.
+func decodeExtra(dec *json.Decoder, p *hookPayload) error {
+	t, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if t != json.Delim('{') {
+		return skipRest(dec, t)
+	}
+	for dec.More() {
+		k, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		switch k {
+		case "kind":
+			p.Extra.Kind, err = stringValue(dec)
+		case "request_id":
+			p.Extra.RequestID, err = stringValue(dec)
+		default:
+			err = skipValue(dec)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	_, err = dec.Token() // '}'
 	return err
 }
 
-// statusRetention: a status file untouched this long is removed when a
-// session is finalised (the gateway also runs API, cron and bot sessions, each
-// leaving a file).
-const statusRetention = 30 * 24 * time.Hour
-
-// prune removes status files older than statusRetention. Best-effort.
-func (d StatusDir) prune(now time.Time) {
-	ents, err := os.ReadDir(string(d))
+// stringValue is the next value when it is a string, "" for any other value
+// (skipped).
+func stringValue(dec *json.Decoder) (string, error) {
+	t, err := dec.Token()
 	if err != nil {
-		return
+		return "", err
 	}
-	for _, e := range ents {
-		name := e.Name()
-		if e.IsDir() || filepath.Ext(name) != ".json" {
-			continue
+	if s, ok := t.(string); ok {
+		return s, nil
+	}
+	return "", skipRest(dec, t)
+}
+
+// skipValue skips the next value.
+func skipValue(dec *json.Decoder) error {
+	t, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	return skipRest(dec, t)
+}
+
+// skipRest skips the rest of a value whose first token was t.
+func skipRest(dec *json.Decoder, t json.Token) error {
+	d, ok := t.(json.Delim)
+	if !ok || d == '}' || d == ']' {
+		return nil
+	}
+	for depth := 1; depth > 0; {
+		t, err := dec.Token()
+		if err != nil {
+			return err
 		}
-		if !mirror.ValidAgentSession(name[:len(name)-len(".json")]) {
-			continue
-		}
-		if fi, err := e.Info(); err == nil && now.Sub(fi.ModTime()) > statusRetention {
-			_ = os.Remove(filepath.Join(string(d), name))
+		if d, ok := t.(json.Delim); ok {
+			if d == '{' || d == '[' {
+				depth++
+			} else {
+				depth--
+			}
 		}
 	}
+	return nil
 }

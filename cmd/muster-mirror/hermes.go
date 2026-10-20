@@ -8,10 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/hermeshost"
+	"github.com/ZacxDev/muster/internal/procstat"
 )
 
 // HERMES (docs/design/hermes.md, Phase 2; docs/mirroring.md, "Hermes
@@ -44,12 +44,19 @@ func hermesHomeDefault(getenv func(string) string) string {
 }
 
 // hermesStatusDirDefault is the status files' directory:
-// MUSTER_MIRROR_HERMES_STATUS_DIR, else hermeshost.DefaultStatusDir.
+// MUSTER_MIRROR_HERMES_STATUS_DIR, else hermeshost.DefaultStatusDir; "" when
+// it names the home directory and there is none (the daemon then says so and
+// reads no status: every Hermes window is unknown).
 func hermesStatusDirDefault(getenv func(string) string) string {
-	if d := getenv(envHermesStatusDir); d != "" {
-		return expandHome(d)
+	d := getenv(envHermesStatusDir)
+	if d == "" {
+		d = hermeshost.DefaultStatusDir
 	}
-	return expandHome(hermeshost.DefaultStatusDir)
+	p, ok := homePath(d)
+	if !ok {
+		return ""
+	}
+	return p
 }
 
 // runHermesHook is `muster-mirror hermes-hook`.
@@ -77,20 +84,27 @@ func runHermesHook(getenv func(string) string, in io.Reader, stderr io.Writer, n
 			code = 0
 		}
 	}()
-	payload, err := io.ReadAll(io.LimitReader(in, 1<<20+1))
-	if err != nil {
-		logf("read stdin: %v; no status written", err)
-		return 0
+	dir := ""
+	if recPath, ok := homePath(hookConfigPathRaw(getenv)); ok {
+		if rec, err := readHookConfig(recPath); err == nil && rec.HermesStatusDir != "" {
+			dir = rec.HermesStatusDir
+		}
 	}
-	dir := expandHome(hermeshost.DefaultStatusDir)
-	if rec, err := readHookConfig(hookConfigPath(getenv)); err == nil && rec.HermesStatusDir != "" {
-		dir = rec.HermesStatusDir
+	if dir == "" {
+		var ok bool
+		if dir, ok = homePath(hermeshost.DefaultStatusDir); !ok {
+			// 🔴 Loudly, and nowhere: never a literal "~" directory under the
+			// gateway's working directory.
+			logf("HOME is not set and the daemon recorded no status directory: no status written")
+			return 0
+		}
 	}
-	err = hermeshost.HandleHook(payload, hermeshost.StatusDir(dir), now(), gatewayWriter())
+	// The payload is streamed: no size cap (hermeshost.HandleHook).
+	err := hermeshost.HandleHook(in, hermeshost.StatusDir(dir), now(), gatewayWriter())
 	switch {
-	case err == nil, errors.Is(err, hermeshost.ErrIgnored), errors.Is(err, hermeshost.ErrNotNewer):
+	case err == nil, errors.Is(err, hermeshost.ErrIgnored):
 	default:
-		logf("no status written: %v", err)
+		logf("no status written (the payload was dropped): %v", err)
 	}
 	return 0
 }
@@ -105,10 +119,8 @@ func gatewayWriter() hermeshost.Writer {
 	if err != nil {
 		return w
 	}
-	if i := strings.LastIndexByte(string(b), ')'); i >= 0 {
-		if f := strings.Fields(string(b[i+1:])); len(f) > 19 {
-			w.Start = f[19]
-		}
+	if st, ok := procstat.Parse(b); ok {
+		w.Start = st.Start
 	}
 	return w
 }

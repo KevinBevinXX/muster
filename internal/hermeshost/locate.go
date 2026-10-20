@@ -81,6 +81,9 @@ func (l *Locator) Locate(ctx context.Context, tty string, started time.Time) Pan
 		return ps
 	}
 	var ps PaneSession
+	if ctx.Err() != nil {
+		return noView(ps, "the listing's deadline passed")
+	}
 	bc, err := l.State.Home().ReadBreadcrumb(tty)
 	if err != nil {
 		if errors.Is(err, ErrNoBreadcrumb) {
@@ -108,7 +111,7 @@ func (l *Locator) Locate(ctx context.Context, tty string, started time.Time) Pan
 	if tip := snap.Lineage.Tip(); tip.Ended && tip.EndReason != EndReasonCompression {
 		return noView(ps, NoViewSwitched)
 	}
-	f, found := l.Status.Newest(snap.Lineage.IDs())
+	f, found := l.Status.Newest(ctx, snap.Lineage.IDs())
 	ps.Session = snap.Lineage.Root()
 	ps.Status = Believe(f, found, snap, l.now(), l.Alive)
 	return ps

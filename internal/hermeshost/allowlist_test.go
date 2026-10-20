@@ -83,8 +83,9 @@ func TestWriteAllowlistCreatesExactlyOurPairs(t *testing.T) {
 	}
 }
 
-// It keeps every other entry and key, drops an OLDER muster-mirror's entries
-// and a duplicate of ours.
+// It keeps every other APPROVAL, drops an OLDER muster-mirror's entries, a
+// duplicate of ours, and everything outside the approvals schema (another
+// key, an entry that is not an approval).
 func TestWriteAllowlistKeepsOthersAndReplacesAnOlderBinary(t *testing.T) {
 	dir := t.TempDir()
 	old := "/nix/store/old-muster-mirror/bin/muster-mirror hermes-hook"
@@ -106,10 +107,10 @@ func TestWriteAllowlistKeepsOthersAndReplacesAnOlderBinary(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, es := readEntries(t, dir)
-	if got["note"] != "someone's key" {
-		t.Fatalf("an unknown key was dropped: %v", got)
+	if _, ok := got["note"]; ok || len(got) != 1 {
+		t.Fatalf("a key outside the approvals schema was copied: %v", got)
 	}
-	want := append(ours(testCommand), "pre_tool_call ~/.hermes/agent-hooks/guard.sh && echo", " ")
+	want := append(ours(testCommand), "pre_tool_call ~/.hermes/agent-hooks/guard.sh && echo")
 	sort.Strings(want)
 	if p := pairs(es); !reflect.DeepEqual(p, want) {
 		t.Fatalf("pairs = %q\nwant %q", p, want)

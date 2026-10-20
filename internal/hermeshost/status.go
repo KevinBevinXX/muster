@@ -1,15 +1,19 @@
 package hermeshost
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/ZacxDev/muster/internal/atomicfile"
 
 	"github.com/ZacxDev/muster/internal/mirror"
 )
@@ -102,8 +106,9 @@ func (d StatusDir) Read(id string) (StatusFile, error) {
 		return StatusFile{}, err
 	}
 	var f StatusFile
-	if err := json.Unmarshal(b, &f); err != nil {
-		return StatusFile{}, fmt.Errorf("%s: %w", p, err)
+	if json.Unmarshal(b, &f) != nil {
+		// Never the decoder's error: it quotes the file's bytes.
+		return StatusFile{}, fmt.Errorf("%s is not JSON", p)
 	}
 	if !f.valid() || f.SessionID != id {
 		return StatusFile{}, fmt.Errorf("%s is not a valid status file for %s", p, id)
@@ -116,13 +121,16 @@ func (d StatusDir) Read(id string) (StatusFile, error) {
 // never block it.
 const lockWait = time.Second
 
-// ErrNotNewer: Write did nothing because the file already holds a status at
-// least as new.
-var ErrNotNewer = errors.New("the status file is already newer")
-
 // Write writes f as its session's status file — under the directory's lock,
-// only when f.Since is NEWER than the file's (monotonic), through a temp file
-// and a rename, mode 0600 in a 0700 directory.
+// through a temp file and a rename, mode 0600 in a 0700 directory.
+//
+// 🔴 THE LATER ARRIVAL WINS, AND since ONLY GOES UP. Hermes runs a session's
+// hooks synchronously, one after another, in its gateway, so the order writes
+// arrive in is the order the events happened in. Two in one millisecond (an
+// on_session_end then an on_session_finalize, or a resolve then a turn end)
+// would otherwise tie; and a clock stepped back would make an older status
+// look newer. So when the file already holds a since at or after f's, f is
+// written at that since + 1 ms: deterministic, and the newest event's.
 func (d StatusDir) Write(f StatusFile) error {
 	f.V = statusVersion
 	if !f.valid() {
@@ -141,19 +149,19 @@ func (d StatusDir) Write(f StatusFile) error {
 	}
 	defer unlock()
 	if old, err := d.Read(f.SessionID); err == nil && old.Since >= f.Since {
-		return ErrNotNewer
+		f.Since = old.Since + 1
 	}
 	b, err := json.Marshal(f)
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(p, append(b, '\n'))
+	return atomicfile.Write(p, append(b, '\n'))
 }
 
 // lockFile takes an exclusive flock on path (created 0600), waiting at most
 // wait; unlock releases it.
 func lockFile(path string, wait time.Duration) (unlock func(), err error) {
-	fh, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	fh, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -174,40 +182,17 @@ func lockFile(path string, wait time.Duration) (unlock func(), err error) {
 	}
 }
 
-// writeFileAtomic writes b to path through a temp file unique to this write
-// (0600 from creation) and a rename, so a reader never sees half a file.
-func writeFileAtomic(path string, b []byte) error {
-	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	_, werr := f.Write(b)
-	if werr == nil {
-		werr = f.Sync()
-	}
-	if cerr := f.Close(); werr == nil {
-		werr = cerr
-	}
-	if werr == nil {
-		werr = os.Chmod(tmp, 0o600)
-	}
-	if werr == nil {
-		werr = os.Rename(tmp, path)
-	}
-	if werr != nil {
-		_ = os.Remove(tmp)
-	}
-	return werr
-}
-
 // Newest is the newest valid status file among ids (a lineage: the hook
 // writes the PHYSICAL id, so a rotated conversation's status is in its
-// child's file), and false when none of them has one.
-func (d StatusDir) Newest(ids []string) (StatusFile, bool) {
+// child's file), and false when none of them has one — or when ctx ends
+// first (the listing's own deadline bounds every read).
+func (d StatusDir) Newest(ctx context.Context, ids []string) (StatusFile, bool) {
 	var best StatusFile
 	found := false
 	for _, id := range ids {
+		if ctx.Err() != nil {
+			return StatusFile{}, false
+		}
 		f, err := d.Read(id)
 		if err != nil {
 			continue

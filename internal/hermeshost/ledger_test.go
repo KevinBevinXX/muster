@@ -1,6 +1,7 @@
 package hermeshost
 
 import (
+	"encoding/json"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -9,6 +10,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 	"unsafe"
@@ -148,6 +150,18 @@ var exerciseReadPath = []func(t *testing.T, h *hermestest.Home, root string){
 			t.Fatal(err)
 		}
 	},
+	// The planted hostile breadcrumbs (TestTheHermesHomeLedger): a symlink to
+	// auth.json and a FIFO. Neither resolves; neither may open a secret.
+	func(t *testing.T, h *hermestest.Home, root string) {
+		st := NewHome(h.Dir).OpenState()
+		defer st.Close()
+		loc := &Locator{State: st, Status: StatusDir(t.TempDir()), Alive: func(int, string) bool { return true }}
+		for _, hostile := range []string{"/dev/pts/8", "/dev/pts/9"} {
+			if ps := loc.Locate(ctx(t), hostile, time.Now().Add(-time.Hour)); ps.Session != "" {
+				t.Fatalf("a hostile breadcrumb %s resolved: %+v", hostile, ps)
+			}
+		}
+	},
 }
 
 // TestTheHermesHomeLedger is the behavioural half: the whole read path runs
@@ -162,8 +176,26 @@ func TestTheHermesHomeLedger(t *testing.T) {
 	h.Session(root, hermestest.SessionOpts{})
 	h.Message(root, hermestest.Msg{Role: "user", Content: "hi"})
 	h.Breadcrumb(tty, root, hermestest.Now())
+	// Hostile breadcrumbs: tty-dev-pts-8 is a symlink to auth.json, and
+	// tty-dev-pts-9 a FIFO (which a blocking open would hang on).
+	crumbs := filepath.Join(h.Dir, "terminal-sessions")
+	if err := os.Symlink(filepath.Join(h.Dir, "auth.json"), filepath.Join(crumbs, "tty-dev-pts-8")); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(crumbs, "tty-dev-pts-9"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The allowlist-copy probe: an allowlist carrying a foreign key whose
+	// value is the decoy secret. The writer must not carry it over.
+	probe, _ := json.Marshal(map[string]any{"approvals": []any{}, "copied": hermestest.DecoyMarker})
+	if err := os.WriteFile(filepath.Join(h.Dir, "shell-hooks-allowlist.json"), probe, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := NewHome(h.Dir).WriteAllowlist(testCommand, time.Now()); err != nil {
 		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(h.Dir, "shell-hooks-allowlist.json")); strings.Contains(string(b), hermestest.DecoyMarker) {
+		t.Fatal("the allowlist writer copied foreign content")
 	}
 	stop := inotifyOpens(t, h.Dir)
 	for _, ex := range exerciseReadPath {
@@ -171,8 +203,11 @@ func TestTheHermesHomeLedger(t *testing.T) {
 	}
 	opened := stop()
 	for _, p := range opened {
-		if !allowed(p) {
-			t.Errorf("the read path opened %s, which is not on ReadPaths", p)
+		// (The FIFO, tty-dev-pts-9, IS opened — O_NONBLOCK, so the open
+		// returns at once — and refused unread as not a regular file; its open
+		// is harmless. The symlink is never opened, nor what it points at.)
+		if !allowed(p) || p == "terminal-sessions/tty-dev-pts-8" {
+			t.Errorf("the read path opened %s", p)
 		}
 	}
 	for _, must := range []string{"state.db", "terminal-sessions/tty-dev-pts-7", "shell-hooks-allowlist.json"} {

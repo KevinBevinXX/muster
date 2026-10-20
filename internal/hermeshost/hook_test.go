@@ -1,8 +1,11 @@
 package hermeshost
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +26,11 @@ func payload(event, session string, extra map[string]any) []byte {
 	return b
 }
 
+// pr is payload as the hook's stdin.
+func pr(event, session string, extra map[string]any) io.Reader {
+	return bytes.NewReader(payload(event, session, extra))
+}
+
 func TestHookWritesEachEventsStatus(t *testing.T) {
 	id := hermestest.LocalID()
 	for event, want := range map[string]string{
@@ -33,7 +41,7 @@ func TestHookWritesEachEventsStatus(t *testing.T) {
 	} {
 		dir := StatusDir(t.TempDir())
 		now := time.Now()
-		if err := HandleHook(payload(event, id, nil), dir, now, Writer{PID: 42, Start: "777"}); err != nil {
+		if err := HandleHook(pr(event, id, nil), dir, now, Writer{PID: 42, Start: "777"}); err != nil {
 			t.Fatalf("%s: %v", event, err)
 		}
 		f, err := dir.Read(id)
@@ -54,7 +62,7 @@ func TestHookRecordsAWaitAndNeverItsPrompt(t *testing.T) {
 	secret := "rm -rf ./victim SECRET-sk-or-v1-abc"
 	extra := map[string]any{"kind": "approval", "request_id": "0123456789abcdef0123456789abcdef", "prompt": secret,
 		"session_key": "agent:main:cli:" + secret, "platform": "cli"}
-	if err := HandleHook(payload(EventHumanInputRequest, id, extra), dir, time.Now(), Writer{PID: 1, Start: "1"}); err != nil {
+	if err := HandleHook(pr(EventHumanInputRequest, id, extra), dir, time.Now(), Writer{PID: 1, Start: "1"}); err != nil {
 		t.Fatal(err)
 	}
 	f, err := dir.Read(id)
@@ -69,7 +77,7 @@ func TestHookRecordsAWaitAndNeverItsPrompt(t *testing.T) {
 		t.Fatalf("the status file holds the prompt: %s", raw)
 	}
 	// An unknown kind writes nothing.
-	if err := HandleHook(payload(EventHumanInputRequest, id, map[string]any{"kind": "password"}), dir, time.Now().Add(time.Second), Writer{}); !errors.Is(err, ErrIgnored) {
+	if err := HandleHook(pr(EventHumanInputRequest, id, map[string]any{"kind": "password"}), dir, time.Now().Add(time.Second), Writer{}); !errors.Is(err, ErrIgnored) {
 		t.Fatalf("unknown kind: %v", err)
 	}
 }
@@ -81,7 +89,7 @@ func TestHookIgnoresAnInvalidSessionID(t *testing.T) {
 	dir := StatusDir(filepath.Join(parent, "status"))
 	for _, id := range []string{"", "../escape", "a/b", "..", ".hidden", "-x", "x y", "x\x00y",
 		strings.Repeat("a", 129), "local-é", "‮local"} {
-		err := HandleHook(payload(EventPreLLMCall, id, nil), dir, time.Now(), Writer{PID: 1, Start: "1"})
+		err := HandleHook(pr(EventPreLLMCall, id, nil), dir, time.Now(), Writer{PID: 1, Start: "1"})
 		if !errors.Is(err, ErrIgnored) {
 			t.Errorf("id %q: %v, want ErrIgnored", id, err)
 		}
@@ -93,7 +101,7 @@ func TestHookIgnoresAnInvalidSessionID(t *testing.T) {
 	}
 	// The longest valid id (128) is accepted: the bound is the wire's.
 	long := "a" + strings.Repeat("b", 127)
-	if err := HandleHook(payload(EventPreLLMCall, long, nil), dir, time.Now(), Writer{PID: 1, Start: "1"}); err != nil {
+	if err := HandleHook(pr(EventPreLLMCall, long, nil), dir, time.Now(), Writer{PID: 1, Start: "1"}); err != nil {
 		t.Fatalf("a 128-byte id: %v", err)
 	}
 }
@@ -121,7 +129,7 @@ func TestStatusDirRefusesAnIDThatIsNotOne(t *testing.T) {
 	if _, err := dir.Read("../outside"); err == nil || errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("Read(../outside) = %v, want a refusal of the id", err)
 	}
-	if _, ok := dir.Newest([]string{"../outside"}); ok {
+	if _, ok := dir.Newest(context.Background(), []string{"../outside"}); ok {
 		t.Fatal("Newest followed ../outside")
 	}
 	if _, err := dir.Read(valid); err != nil {
@@ -147,16 +155,17 @@ func TestStatusDirRefusesAnIDThatIsNotOne(t *testing.T) {
 func TestHookIgnoresOtherEvents(t *testing.T) {
 	dir := StatusDir(t.TempDir())
 	for _, ev := range []string{"pre_tool_call", "post_llm_call", "on_session_start", ""} {
-		if err := HandleHook(payload(ev, hermestest.LocalID(), nil), dir, time.Now(), Writer{}); !errors.Is(err, ErrIgnored) {
+		if err := HandleHook(pr(ev, hermestest.LocalID(), nil), dir, time.Now(), Writer{}); !errors.Is(err, ErrIgnored) {
 			t.Errorf("%q: %v", ev, err)
 		}
 	}
-	if err := HandleHook([]byte("not json"), dir, time.Now(), Writer{}); err == nil {
+	if err := HandleHook(strings.NewReader("not json"), dir, time.Now(), Writer{}); err == nil {
 		t.Error("a non-JSON payload was accepted")
 	}
 }
 
-// Monotonic: an older event landing after a newer one changes nothing.
+// Monotonic: since only goes up, and the later arrival is the file (a clock
+// stepped back cannot make the earlier status the newer one).
 func TestStatusWriteIsMonotonic(t *testing.T) {
 	dir := StatusDir(t.TempDir())
 	id := hermestest.LocalID()
@@ -164,12 +173,12 @@ func TestStatusWriteIsMonotonic(t *testing.T) {
 	if err := dir.Write(StatusFile{SessionID: id, Status: mirror.StatusIdle, Since: now.UnixMilli()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := dir.Write(StatusFile{SessionID: id, Status: mirror.StatusBusy, Since: now.Add(-time.Second).UnixMilli()}); !errors.Is(err, ErrNotNewer) {
-		t.Fatalf("an older write: %v, want ErrNotNewer", err)
+	if err := dir.Write(StatusFile{SessionID: id, Status: mirror.StatusBusy, Since: now.Add(-time.Second).UnixMilli()}); err != nil {
+		t.Fatal(err)
 	}
 	f, _ := dir.Read(id)
-	if f.Status != mirror.StatusIdle {
-		t.Fatalf("the older write landed: %+v", f)
+	if f.Status != mirror.StatusBusy || f.Since != now.UnixMilli()+1 {
+		t.Fatalf("a later arrival with an earlier clock: %+v, want busy at %d", f, now.UnixMilli()+1)
 	}
 	fi, err := os.Stat(filepath.Join(string(dir), id+".json"))
 	if err != nil || fi.Mode().Perm() != 0o600 {
@@ -213,11 +222,11 @@ func TestNewestKeepsTheNewestOfTheLineage(t *testing.T) {
 	now := time.Now()
 	_ = dir.Write(StatusFile{SessionID: a, Status: mirror.StatusIdle, Since: now.UnixMilli()})
 	_ = dir.Write(StatusFile{SessionID: b, Status: mirror.StatusBusy, Since: now.Add(time.Second).UnixMilli()})
-	f, ok := dir.Newest([]string{a, b, "missing"})
+	f, ok := dir.Newest(context.Background(), []string{a, b, "missing"})
 	if !ok || f.SessionID != b {
 		t.Fatalf("Newest = %+v %v", f, ok)
 	}
-	if _, ok := dir.Newest([]string{"missing"}); ok {
+	if _, ok := dir.Newest(context.Background(), []string{"missing"}); ok {
 		t.Fatal("found a status for a session with none")
 	}
 }

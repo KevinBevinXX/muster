@@ -3,7 +3,6 @@ package hermeshost
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"math"
 	"os"
 	"strings"
@@ -44,7 +43,8 @@ func (h Home) ReadBreadcrumb(tty string) (Breadcrumb, error) {
 		TS        any `json:"ts"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimPrefix(string(b), "\xef\xbb\xbf")), &raw); err != nil {
-		return Breadcrumb{}, fmt.Errorf("the breadcrumb is not JSON: %w", err)
+		// Never %w the decoder's error: it quotes the file's bytes.
+		return Breadcrumb{}, errors.New("the breadcrumb is not JSON")
 	}
 	id, _ := raw.SessionID.(string)
 	id = strings.TrimSpace(id)

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/atomicfile"
 )
 
 // THE SHELL-HOOK ALLOWLIST (docs/design/hermes.md, "Installation" and
@@ -62,6 +64,10 @@ func musterHookCommand(command string) bool {
 	return len(f) == 2 && filepath.Base(f[0]) == "muster-mirror" && f[1] == HookSubcommand
 }
 
+// nixStore is the Nix store prefix: an allowlist linked there (a Home
+// Manager file) is the one symlink the writer replaces.
+var nixStore = "/nix/store/"
+
 // allowlistLockWait bounds the wait for Hermes's lock.
 const allowlistLockWait = 10 * time.Second
 
@@ -70,11 +76,90 @@ const allowlistLockWait = 10 * time.Second
 // the person approved); Hermes itself treats it as empty.
 var ErrAllowlistUnreadable = errors.New("the shell-hook allowlist is not a JSON object with an approvals list; fix or remove it by hand")
 
+// approval is one allowlist entry — the ONLY shape the writer keeps
+// (Hermes's own: P:agent/shell_hooks.py, _record_approval). approved_at and
+// script_mtime_at_approval are a string or null.
+type approval struct {
+	Event       string `json:"event"`
+	Command     string `json:"command"`
+	ApprovedAt  any    `json:"approved_at"`
+	ScriptMtime any    `json:"script_mtime_at_approval"`
+}
+
+// parseApprovals reads an allowlist document: its approvals, each reduced to
+// the approval schema. dropped says something else was there (another key,
+// an entry of another shape, an unknown field) and is NOT carried over.
+// ErrAllowlistUnreadable for a document that is not an object with an
+// approvals list — never the decoder's own error, which quotes the file.
+func parseApprovals(b []byte) (out []approval, dropped bool, err error) {
+	var doc map[string]json.RawMessage
+	if json.Unmarshal(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), &doc) != nil || doc == nil {
+		return nil, false, ErrAllowlistUnreadable
+	}
+	raw, ok := doc["approvals"]
+	if !ok {
+		return nil, len(doc) > 0, nil
+	}
+	var entries []json.RawMessage
+	if json.Unmarshal(raw, &entries) != nil {
+		return nil, false, ErrAllowlistUnreadable
+	}
+	dropped = len(doc) > 1
+	for _, e := range entries {
+		var m map[string]any
+		if json.Unmarshal(e, &m) != nil {
+			dropped = true
+			continue
+		}
+		a := approval{}
+		ev, ok1 := m["event"].(string)
+		cmd, ok2 := m["command"].(string)
+		if !ok1 || !ok2 || ev == "" || cmd == "" {
+			dropped = true
+			continue
+		}
+		a.Event, a.Command = ev, cmd
+		for k, v := range m {
+			switch k {
+			case "event", "command":
+			case "approved_at", "script_mtime_at_approval":
+				if _, isStr := v.(string); !isStr && v != nil {
+					dropped = true
+					continue
+				}
+				if k == "approved_at" {
+					a.ApprovedAt = v
+				} else {
+					a.ScriptMtime = v
+				}
+			default:
+				dropped = true
+			}
+		}
+		out = append(out, a)
+	}
+	return out, dropped, nil
+}
+
 // WriteAllowlist makes muster's (event, command) pairs — every HookEvents
 // event with command — present in h's allowlist exactly once, removes
-// muster-mirror hermes-hook entries for any OTHER command (an older binary's
-// path), and keeps every other entry and key as it is. changed is false when
-// the file already said exactly that, and then it is not rewritten.
+// muster-mirror hermes-hook entries for any OTHER command, keeps every other
+// approval, and writes NOTHING ELSE: only the approvals schema is carried
+// over, so no foreign content (another key, another field) is ever copied
+// into the rewritten file. changed is false when the file already said
+// exactly that, and then it is not rewritten.
+//
+// 🔴 WHY OLDER muster-mirror ENTRIES ARE REMOVED: on Nix every upgrade
+// changes the binary's store path, so each Home Manager switch would leave
+// the previous path's five approvals behind — a growing list of consents for
+// binaries that no longer exist (and that a garbage collection lets a later
+// store path reuse). The command written is the one the host's Hermes config
+// declares, which the activation passes in.
+//
+// 🔴 THE TARGET IS NEVER A SYMLINK OUT OF THE NIX STORE. A link into the
+// store (a Home Manager file) is read and REPLACED by a real file — Hermes
+// writes the same file when someone answers [y/N], which a read-only link
+// would break. Any other symlink is refused, nothing written.
 func (h Home) WriteAllowlist(command string, now time.Time) (changed bool, err error) {
 	if err := ValidHookCommand(command); err != nil {
 		return false, err
@@ -89,45 +174,38 @@ func (h Home) WriteAllowlist(command string, now time.Time) (changed bool, err e
 	}
 	defer unlock()
 
-	doc := map[string]any{}
-	b, err := h.readAllowlist()
+	var approvals []approval
+	b, storeLink, err := h.readAllowlist()
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 	case err != nil:
 		return false, err
 	default:
-		if json.Unmarshal(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), &doc) != nil || doc == nil {
-			return false, ErrAllowlistUnreadable
+		var dropped bool
+		if approvals, dropped, err = parseApprovals(b); err != nil {
+			return false, err
 		}
-	}
-	var approvals []any
-	if raw, ok := doc["approvals"]; ok {
-		if approvals, ok = raw.([]any); !ok {
-			return false, ErrAllowlistUnreadable
-		}
+		changed = dropped || storeLink
 	}
 	want := map[string]bool{}
 	for _, e := range HookEvents {
 		want[e] = true
 	}
 	have := map[string]bool{}
-	var kept []any
-	for _, raw := range approvals {
-		e, ok := raw.(map[string]any)
-		event, _ := e["event"].(string)
-		cmd, _ := e["command"].(string)
+	var kept []approval
+	for _, a := range approvals {
 		switch {
-		case ok && want[event] && cmd == command:
-			if have[event] {
+		case want[a.Event] && a.Command == command:
+			if have[a.Event] {
 				changed = true // a duplicate of ours
 				continue
 			}
-			have[event] = true
-		case ok && musterHookCommand(cmd) && cmd != command:
-			changed = true // an older muster-mirror's
+			have[a.Event] = true
+		case musterHookCommand(a.Command) && a.Command != command:
+			changed = true // an older muster-mirror's (see above)
 			continue
 		}
-		kept = append(kept, raw)
+		kept = append(kept, a)
 	}
 	mtime := scriptMtime(command)
 	for _, ev := range HookEvents {
@@ -135,29 +213,26 @@ func (h Home) WriteAllowlist(command string, now time.Time) (changed bool, err e
 			continue
 		}
 		changed = true
-		kept = append(kept, map[string]any{"event": ev, "command": command,
-			"approved_at": now.UTC().Format("2006-01-02T15:04:05.000000Z"), "script_mtime_at_approval": mtime})
+		kept = append(kept, approval{Event: ev, Command: command,
+			ApprovedAt: now.UTC().Format("2006-01-02T15:04:05.000000Z"), ScriptMtime: mtime})
 	}
 	if !changed {
 		return false, nil
 	}
 	if kept == nil {
-		kept = []any{}
+		kept = []approval{}
 	}
-	doc["approvals"] = kept
-	// Keys sorted and indented by two, as Hermes writes it (json.dump with
-	// sort_keys, indent=2), and no HTML escaping: another entry's `&&` stays
-	// `&&`.
+	// Indented by two with no HTML escaping, as Hermes writes it (json.dump
+	// with indent=2): another entry's `&&` stays `&&`.
 	var out bytes.Buffer
 	enc := json.NewEncoder(&out)
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
-	if err := enc.Encode(doc); err != nil {
+	if err := enc.Encode(map[string]any{"approvals": kept}); err != nil {
 		return false, err
 	}
-	// Hermes's own temp-file prefix is ".shell-hooks-allowlist_"; any unique
-	// name in the same directory renames the same way.
-	return true, writeFileAtomic(filepath.Join(dir, filepath.Base(path)), out.Bytes())
+	// The rename replaces a store link with the file itself.
+	return true, atomicfile.Write(filepath.Join(dir, filepath.Base(path)), out.Bytes())
 }
 
 // scriptMtime is the hook binary's mtime as Hermes records it at approval
@@ -195,22 +270,17 @@ func (c AllowlistCheck) OK() bool { return len(c.Missing) == 0 }
 func (h Home) CheckAllowlist(command string) (AllowlistCheck, error) {
 	c := AllowlistCheck{Command: command}
 	have := map[string]bool{}
-	b, err := h.readAllowlist()
+	b, _, err := h.readAllowlist()
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 	case err != nil:
 		return c, err
 	default:
-		var doc struct {
-			Approvals []struct {
-				Event   string `json:"event"`
-				Command string `json:"command"`
-			} `json:"approvals"`
+		approvals, _, err := parseApprovals(b)
+		if err != nil {
+			return c, err
 		}
-		if json.Unmarshal(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), &doc) != nil {
-			return c, ErrAllowlistUnreadable
-		}
-		for _, e := range doc.Approvals {
+		for _, e := range approvals {
 			switch {
 			case e.Command == command:
 				have[e.Event] = true

@@ -174,6 +174,9 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return 0
 	}
 
+	if *hermesStatusDir == "" {
+		fmt.Fprintln(stderr, "muster-mirror: HOME is not set, so there is no Hermes status directory (set -hermes-status-dir): every Hermes window's status is unknown")
+	}
 	backend := newTmuxBackend(*socket, *socketPath, *paneMapDir, mirrorhost.NewHermesSource(*hermesHome, *hermesStatusDir))
 	if e2eBackend != nil {
 		backend = e2eBackend()
@@ -401,8 +404,8 @@ func printWindows(ctx context.Context, backend mirrorhost.Backend, codenames map
 			line += fmt.Sprintf("\tclaude\t%s\t%s\t%s\t%s\t%s", p.Pane, state, p.Gen, p.Transcript, p.Source)
 		} else if p := w.Agent; p != nil && !claudeOnly {
 			// A window of another runtime (Hermes): its pane, its state as the
-			// host reports it ("unknown" until Hermes mirroring reads one), and
-			// how it was found. No session id or transcript yet.
+			// host reports it ("unknown" when muster does not believe one), and
+			// how it was found.
 			state := p.Status
 			if state == "" {
 				state = "unknown"

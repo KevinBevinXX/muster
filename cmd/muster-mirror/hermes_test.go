@@ -30,6 +30,12 @@ func TestMain(m *testing.M) {
 // stdin, and returns its exit code, stdout and stderr.
 func hookProcess(t *testing.T, env []string, stdin string) (int, string, string) {
 	t.Helper()
+	return hookProcessIn(t, t.TempDir(), env, stdin)
+}
+
+// hookProcessIn is hookProcess run in the working directory dir.
+func hookProcessIn(t *testing.T, dir string, env []string, stdin string) (int, string, string) {
+	t.Helper()
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -37,6 +43,7 @@ func hookProcess(t *testing.T, env []string, stdin string) (int, string, string)
 	cmd := exec.Command(exe, "hermes-hook")
 	cmd.Env = append([]string{"MUSTER_MIRROR_TEST_AS_MAIN=1", "PATH=" + os.Getenv("PATH")}, env...)
 	cmd.Stdin = strings.NewReader(stdin)
+	cmd.Dir = dir
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	err = cmd.Run()
@@ -190,5 +197,46 @@ func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// 🔴 A long conversation still shows busy (round-1 audit, #189 🟡1): Hermes's
+// pre_llm_call payload carries the whole history, here 5 MB of it BEFORE the
+// session id; the hook still writes busy.
+func TestTheHermesHookWritesBusyForAFiveMegabyteHistory(t *testing.T) {
+	home := t.TempDir()
+	id := "local-" + strings.Repeat("f", 64)
+	history := make([]map[string]string, 0, 5300)
+	for len(history) < 5300 {
+		history = append(history, map[string]string{"role": "user", "content": strings.Repeat("x", 1000)})
+	}
+	b, _ := json.Marshal(map[string]any{"extra": map[string]any{"conversation_history": history, "kind": ""},
+		"hook_event_name": "pre_llm_call", "session_id": id, "tool_input": nil})
+	if len(b) < 5<<20 {
+		t.Fatalf("instrument check: the payload is %d bytes", len(b))
+	}
+	code, out, errs := hookProcess(t, []string{"HOME=" + home}, string(b))
+	if code != 0 || out != "" {
+		t.Fatalf("exit %d stdout %q", code, out)
+	}
+	f, err := hermeshost.StatusDir(filepath.Join(home, ".muster", "hermes-status")).Read(id)
+	if err != nil || f.Status != "busy" {
+		t.Fatalf("a 5 MB pre_llm_call wrote %+v (%v); stderr: %s", f, err, errs)
+	}
+}
+
+// With no HOME (and so no recorded config), the hook refuses loudly — on
+// stderr — and writes nothing anywhere, never a literal "~" directory.
+func TestTheHermesHookWithNoHomeWritesNothing(t *testing.T) {
+	cwd := t.TempDir()
+	code, out, errs := hookProcessIn(t, cwd, nil, hookPayload("pre_llm_call", "local-"+strings.Repeat("a", 64)))
+	if code != 0 || out != "" {
+		t.Fatalf("exit %d stdout %q", code, out)
+	}
+	if ents, _ := os.ReadDir(cwd); len(ents) != 0 {
+		t.Fatalf("wrote %v into the working directory", ents)
+	}
+	if !strings.Contains(errs, "HOME") {
+		t.Fatalf("no loud refusal on stderr: %q", errs)
 	}
 }

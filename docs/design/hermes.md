@@ -94,8 +94,9 @@ The design, in one line each:
   `hermes proxy`, `hermes mcp serve`.
 - Running Hermes's own docker/ssh/modal terminal backends, or its `hermes egress`
   credential-injecting proxy, inside an agent pod.
-- Writing Hermes's database or config. muster-mirror is read-only on every
-  Hermes file.
+- Writing Hermes's database or config. muster-mirror never writes Hermes
+  data (its read-only SQLite connection does create the `-wal`/`-shm` files a
+  WAL reader needs when they are missing, as any reader does).
 - Sending through the gateway viewer (refuted, S1).
 - A Terminal view for `hermes` agent pods in the first release.
 - Supporting more than one Hermes commit. There is one pinned sha.
@@ -520,8 +521,14 @@ below in these ways, each decided while building it:
   "<muster-mirror> hermes-hook"` rather than re-implementing the lock, the
   merge and the rename in shell. It is the one Hermes file muster ever writes,
   and the daemon never does. It refuses to replace an allowlist that is not
-  JSON, keeps every other entry, and removes entries for an older
-  `muster-mirror hermes-hook` path. Measured against the pin: Hermes's own
+  JSON, keeps every other APPROVAL and nothing else (only the approvals
+  schema is carried over: another key or field is dropped, so foreign content
+  is never copied), and removes entries for an older `muster-mirror
+  hermes-hook` path — on Nix every upgrade changes the binary's store path,
+  and each switch would otherwise leave a growing list of consents for
+  binaries that no longer exist. It writes through no symlink except a Home
+  Manager link into the Nix store, which it replaces with a real file.
+  Measured against the pin: Hermes's own
   `allowlisted_pairs()` reads the five pairs it writes, and a later
   `_record_approval` under the same lock keeps them.
 - **The status file's writer is the gateway.** The hook process exits at
@@ -547,8 +554,31 @@ below in these ways, each decided while building it:
 - **An `on_human_input_request` of an unknown kind writes nothing**, so the
   status stays what it was; a `request_id` that is not 1–64 of
   `[0-9A-Za-z_-]` is dropped from the file.
-- The hook prunes status files older than 30 days on `on_session_finalize`
-  (the gateway also runs API, cron and bot sessions, each leaving one).
+- **The status files are never pruned** (round-0 decision D1). The gateway
+  also runs API, cron and bot sessions, each leaving a ~200-byte file.
+- **The later hook ARRIVAL wins.** Hermes runs a session's hooks
+  synchronously, so arrival order is event order: a status written when the
+  file already holds a `since` at or after the new one is written at that
+  `since` + 1 ms (two events in one millisecond, or a clock stepped back),
+  never dropped.
+- **The hook decodes its payload streaming, with no size cap**:
+  `pre_llm_call` carries the whole conversation, and the earlier 1 MiB cap
+  made a long conversation never show busy. Only `hook_event_name`,
+  `session_id`, `extra.kind` and `extra.request_id` are kept; every other
+  value is skipped token by token. A payload it cannot read is dropped and
+  said on stderr. With no `HOME` (and no recorded directory) it writes
+  nothing, loudly, never a literal `~` directory.
+- **No read follows a symlink or waits on a FIFO.** Breadcrumbs, status
+  files and the allowlist are opened `O_NOFOLLOW|O_NONBLOCK|O_NOCTTY` and
+  must be regular files; a symlinked `state.db` is refused (it would point the
+  reader at another database); the listing's deadline bounds the reads; no
+  error quotes a file's content (a JSON decoder's error does: "invalid
+  character 'S'"). The ledger test plants a breadcrumb symlinked to
+  `auth.json` and a FIFO.
+- **A failed schema check is retried** once a minute, so a `state.db` that
+  was not yet the expected schema recovers without a restart.
+- **`state.db` replaced under the connection is reopened** (by inode): Hermes
+  keeps backups, and a restore replaces the file.
 
 ### Pane to session resolution
 

@@ -325,10 +325,12 @@ path of the `muster-mirror` binary, for example
    It writes the way Hermes does: under Hermes's lock
    (`shell-hooks-allowlist.json.lock`), as a real 0600 file through a temp file
    and a rename. Never link a read-only file there: Hermes writes the same file
-   when someone answers `[y/N]`. It keeps every other entry, removes entries
-   for an older `muster-mirror hermes-hook` path, and changes nothing when the
-   five pairs are already there. It refuses to replace an allowlist that is not
-   valid JSON.
+   when someone answers `[y/N]` (a Home Manager link into the Nix store is
+   replaced by a real file; any other symlink there is refused). It keeps every
+   other approval, removes entries for an older `muster-mirror hermes-hook`
+   path (every Nix upgrade changes it), carries nothing but approvals over,
+   and changes nothing when the five pairs are already there. It refuses to
+   replace an allowlist that is not valid JSON.
 
 3. **The daemon** must run with `-write-hook-config`
    (`MUSTER_MIRROR_WRITE_HOOK_CONFIG=1`), as for `muster-mirror ask`, so the hook

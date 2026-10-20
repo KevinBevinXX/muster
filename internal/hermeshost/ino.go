@@ -5,10 +5,11 @@ import (
 	"syscall"
 )
 
-// fileIno is path's inode, 0 when it does not exist (or cannot be stat'ed), 1
-// on a platform with no inode in its stat.
+// fileIno is path's inode — of the path itself, never a symlink's target —
+// 0 when it does not exist (or cannot be stat'ed), 1 on a platform with no
+// inode in its stat.
 func fileIno(path string) uint64 {
-	st, err := os.Stat(path)
+	st, err := os.Lstat(path)
 	if err != nil {
 		return 0
 	}

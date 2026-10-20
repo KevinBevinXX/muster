@@ -20,6 +20,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/hermeshost"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/procstat"
 )
 
 // ClaudeBackend is a Backend that can also see Claude Code in a session's pane:
@@ -250,21 +251,12 @@ func readProcTable(root string) (map[int]procInfo, map[int][]int, error) {
 		if err != nil {
 			continue
 		}
-		// stat is "pid (comm) state ppid …"; comm can hold spaces and ')', so
-		// the fields after it are found from the LAST ')'.
-		open, close := bytes.IndexByte(stat, '('), bytes.LastIndexByte(stat, ')')
-		if open < 0 || close < open {
+		st, ok := procstat.Parse(stat)
+		if !ok {
 			continue
 		}
-		rest := strings.Fields(string(stat[close+1:]))
-		if len(rest) < 2 {
-			continue
-		}
-		ppid, _ := strconv.Atoi(rest[1])
-		info := procInfo{ppid: ppid, comm: string(stat[open+1 : close]), state: rest[0]}
-		if len(rest) > 19 {
-			info.start = rest[19]
-		}
+		ppid := st.PPID
+		info := procInfo{ppid: ppid, comm: st.Comm, state: st.State, start: st.Start}
 		if cmd, err := os.ReadFile(filepath.Join(dir, "cmdline")); err == nil {
 			for _, a := range bytes.Split(bytes.TrimRight(cmd, "\x00"), []byte{0}) {
 				info.argv = append(info.argv, string(a))

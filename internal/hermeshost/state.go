@@ -35,10 +35,17 @@ type State struct {
 	mu sync.Mutex
 	db *sql.DB
 	// ino is state.db's inode when db was opened: a database REPLACED under it
-	// (a restore) is reopened.
+	// is reopened. Hermes keeps backups of state.db and a restore REPLACES the
+	// file (P:website/docs/getting-started/updating.md, "restoring a
+	// pre-update snapshot"): a connection kept on the old inode would go on
+	// reading the deleted database for the life of the host.
 	ino uint64
-	// cols is the feature detection's verdict for db.
-	cols error
+	// cols is the feature detection's verdict for db, checked at colsAt. A
+	// failure is checked again once schemaRetry has passed, so a state.db
+	// that was not (yet) the schema read — mid-migration, a table missing —
+	// recovers without a restart.
+	cols   error
+	colsAt time.Time
 }
 
 // OpenState is h's state.db, opened lazily on the first read.
@@ -71,6 +78,10 @@ var requiredColumns = map[string][]string{
 	"session_turn_leases": {"conversation_id", "expires_at"},
 }
 
+// schemaRetry is how long a failed column check is kept before it is
+// checked again.
+var schemaRetry = time.Minute
+
 // ErrSchema: state.db does not have a column this reader needs.
 var ErrSchema = errors.New("state.db is not the schema this muster-mirror reads")
 
@@ -85,12 +96,20 @@ func (s *State) conn() (*sql.DB, error) {
 		s.db = nil
 	}
 	if s.db != nil {
+		if s.cols != nil && time.Since(s.colsAt) >= schemaRetry {
+			s.cols, s.colsAt = s.checkColumns(s.db), time.Now()
+		}
 		return s.db, s.cols
 	}
 	if ino == 0 {
 		// Never create one: a read-only open of a missing file fails anyway,
 		// and the error should say what is missing.
 		return nil, fmt.Errorf("%s: %w", s.hermes.stateDBPath(), os.ErrNotExist)
+	}
+	// 🔴 A symlinked state.db is refused: it would point the reader at
+	// another database (fileIno does not follow one).
+	if err := s.hermes.stateDBRegular(); err != nil {
+		return nil, err
 	}
 	uri, err := s.hermes.stateDBURI()
 	if err != nil {
@@ -104,7 +123,7 @@ func (s *State) conn() (*sql.DB, error) {
 	db.SetMaxIdleConns(1)
 	db.SetConnMaxIdleTime(0)
 	s.db, s.ino = db, ino
-	s.cols = s.checkColumns(db)
+	s.cols, s.colsAt = s.checkColumns(db), time.Now()
 	return db, s.cols
 }
 
