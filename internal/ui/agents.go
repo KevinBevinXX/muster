@@ -337,6 +337,9 @@ func agentCard(a AgentCardView) g.Node {
 				g.If(a.KickoffOwed, kickoffOwedBadge()),
 				// Same placement, same reason: a sibling of the polling span.
 				g.If(a.KickoffFailed, kickoffFailedBadge()),
+				// Its host's icon, beside its name (host_icons.go): a dispatched
+				// agent's host is the cluster.
+				clusterMark(),
 				Span(
 					Class(cardNameClass(a.Focus)),
 					g.If(cardHasFocusTitle(a.Focus), g.Attr("data-card-subtitle", "")),

@@ -325,6 +325,10 @@ type Mirror interface {
 	// tmux copy-mode by lines (positive is back). No step-up: see
 	// mirror.Hub.ScrollWindow.
 	ScrollWindow(ctx context.Context, host, session, window string, lines int) error
+	// HostRanks is the viewing principal's hosts' registration ranks
+	// (mirror.RanksByRegistration): what picks each host's icon
+	// (ui.HostIconFor).
+	HostRanks(ctx context.Context) map[string]int
 }
 
 // GitHubApp is what the API reads from a configured GitHub App

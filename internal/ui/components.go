@@ -369,6 +369,9 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 					floatingMenuScript(),
 					// The Agents list's search box (agents_filter.go).
 					agentsFilterScript(),
+					// …and its scroll positions across hydration (agents_scroll.go):
+					// BEFORE appScript, whose restore needs the list's box reserved.
+					agentsScrollScript(),
 					// Refetch the list on focus / visibility / SSE reconnect so a
 					// closed-and-reopened app is never stale.
 					resyncScript(),

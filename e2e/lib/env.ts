@@ -181,6 +181,9 @@ export const attentionDeliveryFakePort = port + 98;
 // door), and one mirrored host with a Claude window and two other windows.
 export const cardsPort = port + 100;
 export const cardsConnectPort = port + 101;
+// Host icons and the Agents list's scroll positions (host-icons.spec.ts): its
+// own server (the e2eterm binary, mirror plugin on) and two mirrored hosts.
+export const hostIconsPort = port + 110;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

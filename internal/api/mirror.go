@@ -100,13 +100,28 @@ func (s *Server) mirrorCards(ctx context.Context, pinned pins.Set, focused focus
 		return nil
 	}
 	var out []ui.MirrorCardView
-	for _, m := range mirror.Ordered(s.ext.Mirror.Hosts(ctx)) {
+	hosts := s.ext.Mirror.Hosts(ctx)
+	if len(hosts) == 0 {
+		return nil
+	}
+	// Each host's icon, by its registration rank (ui.HostIconFor), read once.
+	ranks := s.ext.Mirror.HostRanks(ctx)
+	for _, m := range mirror.Ordered(hosts) {
 		out = append(out, ui.MirrorCardView{Host: m.Host, Session: m.Session, Window: m.Window, Title: mirrorTitle(m), Label: m.Label,
 			Qualifier: m.Qualifier, Kind: m.Kind(), Online: m.Online, Interactive: m.Interactive, Claude: m.Claude,
 			ActiveAt: m.ActiveAt(), Focus: focused.mirrorFocus(m.ClaudeSession), Repo: m.Repo,
-			Pinned: pinned.Mirror(pins.MirrorKey{Host: m.Host, Session: m.Session, Window: m.Window})})
+			Pinned:   pinned.Mirror(pins.MirrorKey{Host: m.Host, Session: m.Session, Window: m.Window}),
+			HostIcon: ui.HostIconFor(ranks, m.Host)})
 	}
 	return out
+}
+
+// mirrorHostIcon is one host's icon key — the one its cards draw (mirrorCards).
+func (s *Server) mirrorHostIcon(ctx context.Context, host string) string {
+	if s.ext.Mirror == nil {
+		return ui.HostIconFor(nil, host)
+	}
+	return ui.HostIconFor(s.ext.Mirror.HostRanks(ctx), host)
 }
 
 // mirrorTitle is what an entry with no label is called, for the ui views'
@@ -195,6 +210,8 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		RawName:        rawName,
 		BackHref:       "/agents",
 		Badge:          "Mirrored · " + h.Host,
+		BadgeHost:      h.Host,
+		BadgeHostIcon:  s.mirrorHostIcon(r.Context(), h.Host),
 		WSPath:         mirrorRef(e).TerminalWSPath(),
 		// 🔴 THE SWITCH IS OFFERED ONLY WHEN THE HOST ADVERTISED -interactive.
 		// The hub refuses a rw attach to a host that did not, regardless.

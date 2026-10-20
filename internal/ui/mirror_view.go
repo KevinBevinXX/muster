@@ -39,8 +39,10 @@ func MirrorViewWSPath(host, session string) string {
 
 // MirrorViewView is the data the rendered view's page renders.
 type MirrorViewView struct {
-	Host    string
-	Session string
+	Host string
+	// HostIcon is Host's icon key (HostIconFor), the one its cards draw.
+	HostIcon string
+	Session  string
 	// Window is the tmux window id the view is of; "" = the session's active
 	// window (a per-session host). With Session it is the page's ADDRESS: its
 	// socket and its composer name the same window.
@@ -127,7 +129,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 					Div(
 						Class("min-w-0 flex-1"),
 						H1(Class("truncate text-sm font-semibold"), mirrorEntryTitle(v.Label, v.Title, v.Session, v.Qualifier, ""),
-							Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge("Mirrored · "+v.Host))),
+							Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge("Mirrored · "+v.Host, v.Host, v.HostIcon))),
 						Div(
 							Class("flex min-w-0 items-center gap-2"),
 							P(ID("mv-status"), Class("truncate text-xs text-muted"), g.Attr("aria-live", "polite"), g.Text("Connecting…")),
