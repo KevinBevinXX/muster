@@ -81,19 +81,23 @@ as **payload v2**:
 
 ```json
 {"v": 2, "type": "review", "id": "42", "tag": "task-42",
- "title": "<WHO>", "url": "/tasks/42"}
+ "title": "<WHO>", "body": "<WHERE>", "url": "/tasks/42"}
 ```
 
-- Payload v2 carries ids and a short title only. `title` is the browser
-  notification's WHO line, cut to 100 characters; the browser's second line is
-  not sent. The app fetches anything more itself.
-- **A phone's push is at most 4096 bytes.** A self-hosted ntfy accepts a larger
-  UnifiedPush message with HTTP 200 and silently cuts it to 4096 bytes, and the
-  phone can then not decrypt it. muster pads every encrypted push to one
-  4096-byte record, so a payload v2 may be at most 3993 bytes
-  (4096 − 86 header − 16 tag − 1 delimiter). A larger one is **refused, not
-  sent**: it is logged (`push: REFUSED …`) and counted as
-  `muster_push_delivery_total{result="oversize"}`.
+- `title` and `body` are the browser notification's own lines, WHO and WHERE,
+  never WHAT. They are cut to 100 and 200 characters, and never in the middle
+  of a character a reader sees as one (an accent, an emoji, a flag). The app
+  fetches anything more itself.
+- **A phone's push is exactly 4096 bytes.** muster pads every encrypted push to
+  one 4096-byte record, so a payload v2 may be at most 3993 bytes
+  (4096 − 86 header − 16 tag − 1 delimiter); the encryption library itself
+  refuses anything larger. So muster never sends ntfy a message over its
+  default 4096-byte limit, which ntfy would accept with HTTP 200 and silently
+  cut short, leaving the phone unable to decrypt it (that matters for senders
+  that do not pad to one record). muster checks the size before sending, so an
+  over-budget payload is **refused, not sent**: it is logged
+  (`push: REFUSED …`), counted as `muster_push_delivery_total{result="oversize"}`,
+  and does not count as the phone failing.
 - A withdrawal is `{"v": 2, "type": "resolved", "id": …, "tag": …}` and shows
   nothing. Phones always get it; Safari browsers are still spared it.
 - Which payload a device gets depends on the kind recorded with its

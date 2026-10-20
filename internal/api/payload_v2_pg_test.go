@@ -30,7 +30,7 @@ func TestAnExistingEventReachesAPairedPhoneAsPayloadV2(t *testing.T) {
 	r.s.goNotify(r.uid, push.EventReview, RouterNotification{Type: "review", ID: "9", Title: "agent-9", Body: "repo: ready for review",
 		Tag: "task-9", Data: map[string]string{"url": "/tasks/9"}}, nil)
 	r.s.WaitForPushes()
-	if got, want := last(), `{"v":2,"type":"review","id":"9","tag":"task-9","title":"agent-9","url":"/tasks/9"}`; got != want {
+	if got, want := last(), `{"v":2,"type":"review","id":"9","tag":"task-9","title":"agent-9","body":"repo: ready for review","url":"/tasks/9"}`; got != want {
 		t.Fatalf("the phone got %s; want %s", got, want)
 	}
 	r.s.goNotify(r.uid, push.EventResolved, RouterNotification{Type: push.TypeResolved, ID: "9", Tag: "task-9"}, nil)

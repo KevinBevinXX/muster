@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/ZacxDev/muster/internal/metrics"
 )
@@ -27,44 +28,55 @@ type Payload struct {
 // PayloadV2 is what a NATIVE device (KindAndroid) receives in place of
 // Payload: the Android app's payload (docs/design/android.md, "Payload v2").
 //
-// 🔴 IDS AND A SHORT TITLE, NOTHING ELSE. Title is the browser payload's own
-// WHO line (every notification helper writes WHO and WHERE, never WHAT;
-// docs/attention.md), cut to MaxNativeTitle characters. The browser's Body
-// line is NOT carried, and URL is where a tap opens, a path on muster. The app
-// fetches anything more after delivery, with its device credential.
-//
-// 🔴 AND IT MUST FIT IN 4096 ENCRYPTED BYTES. A self-hosted ntfy accepts a
-// larger `up*` message with HTTP 200 and silently truncates it to 4096 bytes,
-// which the phone can then not decrypt (measured in the Phase 0 spikes,
-// ntfy 2.31). SendTo refuses a native payload over NativeMaxPlaintext
-// (nativeBody), loudly; see that constant for the arithmetic.
+// 🔴 IDS AND WHO/WHERE, NEVER WHAT. Title and Body are the browser payload's
+// own lines, which every notification helper writes as WHO and WHERE, never
+// WHAT (docs/attention.md); v2 adds nothing to them and cuts each, on a
+// character-cluster boundary, to MaxNativeTitle and MaxNativeBody. URL is
+// where a tap opens, a path on muster. The app fetches anything more after
+// delivery, with its device credential.
 //
 // ⚠ PHASE 1 CARRIES NO `actions`, `conv` OR `state`. An action id is a
-// promise that a signed /api/device/actions/* route exists (Phase 2, with
-// the route ledger that pins that promise), and the state delta feeds the
-// widgets (Phase 4). Sending either before its route or consumer exists would
-// be a field no code reads.
+// promise that a signed /api/device/actions/* route exists (Phase 2, with the
+// route ledger that pins it, and the app's wire ids: docs/design/android.md,
+// "Action ids"), and the state delta feeds the widgets (Phase 4). Sending
+// either before its route or consumer exists would be a field no code reads.
 type PayloadV2 struct {
 	V     int    `json:"v"`
 	Type  string `json:"type"`
 	ID    string `json:"id,omitempty"`
 	Tag   string `json:"tag,omitempty"`
 	Title string `json:"title,omitempty"`
+	Body  string `json:"body,omitempty"`
 	URL   string `json:"url,omitempty"`
 }
 
-// MaxNativeTitle is the longest title payload v2 carries, in characters.
-const MaxNativeTitle = 100
+// MaxNativeTitle and MaxNativeBody are the longest title and body payload v2
+// carries, in characters (runes). Even with every character JSON-escaped to
+// six bytes they total 1800 bytes, well inside NativeMaxPlaintext.
+const (
+	MaxNativeTitle = 100
+	MaxNativeBody  = 200
+)
 
-// The encrypted size of one native push, by RFC 8188 (aes128gcm) as webpush-go
-// builds it: ONE record of nativeRecordSize bytes — the header (salt, record
-// size, key-id length, the sender's P-256 public key), then the plaintext, its
+// The size of one native push, by RFC 8188 (aes128gcm) as webpush-go builds
+// it: ONE record of nativeRecordSize bytes — the header (salt, record size,
+// key-id length, the sender's P-256 public key), then the plaintext, its
 // padding delimiter and zero padding up to the record, then the GCM tag.
 // webpush-go pads every message to the full record, so EVERY native body is
-// exactly nativeRecordSize bytes and a plaintext over NativeMaxPlaintext cannot
-// be encrypted at all (TestTheEncryptedNativeBodyIsAtMost4096Bytes measures it).
+// exactly nativeRecordSize bytes, and it refuses a plaintext over
+// NativeMaxPlaintext itself (webpush.ErrMaxPadExceeded):
+// TestTheEncryptedNativeBodyIsAtMost4096Bytes measures both.
+//
+// ⚠ SO NTFY'S TRUNCATION CANNOT HAPPEN TO A PUSH FROM HERE. ntfy accepts an
+// `up*` message over its message-size-limit (4096 bytes by default) with 200
+// and silently truncates it (Phase 0, S9), which matters for a sender that
+// does not pad to one record; with the record pinned at 4096, muster's bodies
+// never exceed it. What the cap below adds is the ANSWER: an over-budget
+// payload is refused BEFORE the pusher, named `oversize` in the log and the
+// counter, and does not count against the device's fail_count as the
+// library's encryption error would.
 const (
-	// ntfyMaxBody is where ntfy truncates an up* message (Phase 0 spike).
+	// ntfyMaxBody is ntfy's default message-size-limit (Phase 0, S9).
 	ntfyMaxBody = 4096
 	// nativeRecordSize is the aes128gcm record size the pusher asks for. It is
 	// pinned (WebpushPusher.Send passes it) rather than left to the library's
@@ -79,8 +91,8 @@ const (
 )
 
 // ErrNativeTooLarge refuses a payload v2 that would not fit in one 4096-byte
-// encrypted body.
-var ErrNativeTooLarge = fmt.Errorf("push: a native payload is larger than %d bytes, so its encrypted body would exceed ntfy's %d bytes", NativeMaxPlaintext, ntfyMaxBody)
+// record.
+var ErrNativeTooLarge = fmt.Errorf("push: a native payload is larger than %d bytes, so it does not fit in one %d-byte record", NativeMaxPlaintext, nativeRecordSize)
 
 // nativeBody is p's payload v2 as sent, or ErrNativeTooLarge.
 func nativeBody(p Payload) ([]byte, error) {
@@ -101,12 +113,46 @@ func (p Payload) V2() PayloadV2 {
 	if p.Type == TypeResolved {
 		return v
 	}
-	v.Title, v.URL = p.Title, p.Data["url"]
-	if r := []rune(v.Title); len(r) > MaxNativeTitle {
-		v.Title = string(r[:MaxNativeTitle-1]) + "…"
-	}
+	v.Title, v.Body, v.URL = cutClusters(p.Title, MaxNativeTitle), cutClusters(p.Body, MaxNativeBody), p.Data["url"]
 	return v
 }
+
+// cutClusters cuts s to at most n runes, ending with "…" when it cut, without
+// splitting what a reader sees as one character: it backs off over combining
+// marks, variation selectors, skin-tone modifiers, emoji tag characters, a
+// zero-width joiner on either side of the cut, and half a regional-indicator
+// flag. A cheap approximation of Unicode grapheme clusters (no tables), for a
+// notification line, not a text engine.
+func cutClusters(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	cut := n - 1 // room for the ellipsis
+	for cut > 0 && (extends(r[cut]) || r[cut-1] == zwj) {
+		cut--
+	}
+	if cut > 0 && isRegional(r[cut]) && isRegional(r[cut-1]) {
+		ri := 0
+		for i := cut - 1; i >= 0 && isRegional(r[i]); i-- {
+			ri++
+		}
+		if ri%2 == 1 { // the rune at cut would pair with the one before it
+			cut--
+		}
+	}
+	return string(r[:cut]) + "…"
+}
+
+const zwj = '\u200d'
+
+// extends reports whether r attaches to the character before it.
+func extends(r rune) bool {
+	return unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) || r == zwj ||
+		(r >= 0xFE00 && r <= 0xFE0F) || (r >= 0x1F3FB && r <= 0x1F3FF) || (r >= 0xE0020 && r <= 0xE007F)
+}
+
+func isRegional(r rune) bool { return r >= 0x1F1E6 && r <= 0x1F1FF }
 
 // Report is what one SendTo did. Devices is how many the owner had.
 type Report struct {
