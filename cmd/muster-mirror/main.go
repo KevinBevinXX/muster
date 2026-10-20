@@ -159,7 +159,9 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	catalog := fs.Bool("catalog", false, "print the composer menu's catalog this host would report for a pane whose working directory is the current one — commands, skills (source and name) and snippet triggers — and exit")
 	list := fs.Bool("list", false, "print the sessions this host would register, and exit (a labelled session's line ends in a label=<label> column)")
 	listClaude := fs.Bool("claude", false, "with -list: print, for each WINDOW whose active pane runs Claude Code, what its rendered view would stream (one line each: session, window id, index, claude, pane, state, session id, transcript, source = pane-map|sessions|guessed, then label=<label>); per session on a backend that does not list windows")
-	listWindows := fs.Bool("windows", false, "with -list: print every WINDOW this host would register instead (one line each: session, window id, index, active|-, command, then claude <pane> <state> <session id> <transcript> <source> for a Claude Code window, or hermes <pane> <state> <source> for a Hermes one, then label=<label>)")
+	listWindows := fs.Bool("windows", false, "with -list: print every WINDOW this host would register instead (one line each: session, window id, index, active|-, command, then claude <pane> <state> <session id> <transcript> <source> for a Claude Code window, or hermes <pane> <state> <session id or -> <source> for a Hermes one, then label=<label>)")
+	listHermes := fs.Bool("hermes", false, "with -list: diagnose this host's Hermes windows — each window's breadcrumb, session, status file and why it has no rendered view or no status — and the hook's consent in the Hermes home's allowlist (see -hermes-hook-command)")
+	hermesHookCommand := fs.String("hermes-hook-command", "", "with -list -hermes: the hook command the host's Hermes config declares (default: `<this binary> hermes-hook`)")
 	hermesHome := fs.String("hermes-home", hermesHomeDefault(getenv), "the Hermes home whose sessions a Hermes window is resolved from — read-only, and only state.db, terminal-sessions/tty-* and shell-hooks-allowlist.json ("+envHermesHome+"; else $HERMES_HOME, else ~/.hermes)")
 	hermesStatusDir := fs.String("hermes-status-dir", hermesStatusDirDefault(getenv), "the directory `muster-mirror hermes-hook` writes Hermes status files in; recorded for the hook with -write-hook-config ("+envHermesStatusDir+")")
 	version := fs.Bool("version", false, "print the version and exit")
@@ -206,6 +208,11 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			fmt.Fprintln(stdout, "# truncated to the wire's bounds")
 		}
 		return 0
+	}
+	if *list && *listHermes {
+		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		return printHermes(lctx, backend, *hermesHome, *hermesStatusDir, *hermesHookCommand, stdout, stderr)
 	}
 	if *list && *listWindows {
 		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -404,13 +411,10 @@ func printWindows(ctx context.Context, backend mirrorhost.Backend, codenames map
 			line += fmt.Sprintf("\tclaude\t%s\t%s\t%s\t%s\t%s", p.Pane, state, p.Gen, p.Transcript, p.Source)
 		} else if p := w.Agent; p != nil && !claudeOnly {
 			// A window of another runtime (Hermes): its pane, its state as the
-			// host reports it ("unknown" when muster does not believe one), and
-			// how it was found.
-			state := p.Status
-			if state == "" {
-				state = "unknown"
-			}
-			line += fmt.Sprintf("\t%s\t%s\t%s\t%s", p.Runtime, p.Pane, state, p.Source)
+			// host reports it ("unknown" when muster does not believe one), its
+			// session id ("-" when it has no rendered view; -list -hermes says
+			// why) and how it was found.
+			line += fmt.Sprintf("\t%s\t%s\t%s\t%s\t%s", p.Runtime, p.Pane, stateOrUnknown(p.Status), orDash(p.Gen), p.Source)
 		}
 		if l := labels[w.Session+"\x00"+w.ID]; l != "" {
 			line += "\tlabel=" + l

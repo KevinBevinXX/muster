@@ -261,7 +261,9 @@ A window whose pane runs the Hermes CLI (`hermes chat`, or bare `hermes`) is
 listed as a **Hermes window**: a process named `hermes`, a Python running a
 `hermes` launcher, no `gateway` argument, reading the pane's terminal
 (`#{pane_tty}`). A profile-launched `hermes -p <name> chat` is not recognised
-as one; the paste refusal above still covers it. muster never sends into it:
+as one; the paste refusal above still covers it. Its card carries the kind
+chip **Hermes** (`kind:hermes` in the filter), whatever its pane's command
+reads. muster never sends into it:
 Send, Queue and Send now all refuse a Hermes window in this release.
 
 **Rendered view, read-only.** A Hermes window whose session the host can name
@@ -349,6 +351,27 @@ path of the `muster-mirror` binary, for example
 The hook prints nothing, always exits 0, and gives up after a second rather
 than hold Hermes up. If it cannot write, the window's status is unknown, never
 idle.
+
+#### Diagnosing a Hermes window
+
+`muster-mirror -list -windows` prints a Hermes window as
+`hermes <pane> <state> <session id> <source>`, with `-` for the session of a
+window that has no rendered view and `unknown` for a status muster does not
+believe. `muster-mirror -list -hermes` says why:
+
+- `hook-consent`: `ok`, or `MISSING` with the events whose `(event, command)`
+  pair is not in the allowlist, and the command to fix it. `hook-other` names
+  allowlisted entries for another `muster-mirror` path (a Hermes config that
+  names a different binary than this one; `-hermes-hook-command` sets the one
+  checked).
+- per Hermes window: its pane, CLI process, terminal, session and status; the
+  `breadcrumb` (its session and time, or `none`); the `lineage` and how its tip
+  ended; the newest `status-file`; and, when there is one, the `no-view` and
+  `unknown` reasons (no breadcrumb, a breadcrumb older than the CLI, a switched
+  session, no status file, a stale busy, an idle under a live turn).
+
+It does not check the Hermes gateway's version (`code_sha`): that needs the
+gateway connection a later release adds.
 
 muster also refuses every send into a window the host reports as Hermes on
 its own side, before anything reaches the host. A Hermes the host does not

@@ -18,9 +18,9 @@ const hermesSID = "local-0123456789abcdef0123456789abcdef0123456789abcdef0123456
 
 func hermesWindows() []mirror.Window {
 	return []mirror.Window{
-		{Session: "main", ID: "@1", Index: 0, Active: true, Runtime: mirror.RuntimeHermes, AgentSession: hermesSID, Status: mirror.StatusIdle, StatusSince: 7},
+		{Session: "main", ID: "@1", Index: 0, Active: true, Command: "python3.14", Runtime: mirror.RuntimeHermes, AgentSession: hermesSID, Status: mirror.StatusIdle, StatusSince: 7},
 		// A Hermes window whose breadcrumb is stale: no session, no view.
-		{Session: "main", ID: "@2", Index: 1, Runtime: mirror.RuntimeHermes},
+		{Session: "main", ID: "@2", Index: 1, Command: "python3.14", Runtime: mirror.RuntimeHermes},
 	}
 }
 
@@ -35,6 +35,16 @@ func TestAHermesWindowsCardOpensItsReadOnlyRenderedView(t *testing.T) {
 	}
 	if !strings.Contains(list, `href="`+amp(stale.TerminalPath())+`"`) {
 		t.Fatalf("the Hermes card with no session does not open its terminal")
+	}
+	// Both are Hermes cards: the kind chip, and the filter's kind field.
+	if n := strings.Count(list, `data-f-kind="hermes"`); n != 2 {
+		t.Errorf("%d cards filter as kind:hermes, want 2", n)
+	}
+	if n := strings.Count(list, `data-mirror-kind=""`); n < 2 || !strings.Contains(list, ">Hermes<") {
+		t.Errorf("the Hermes kind chip is missing (%d kind chips)", n)
+	}
+	if strings.Contains(list, "python3.14") {
+		t.Error("a Hermes card is named by its pane's command")
 	}
 
 	resp, page := mirrorGet(t, s, ts, view.ViewPath())
