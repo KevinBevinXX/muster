@@ -34,14 +34,17 @@ The design, in one line each:
   per physical session id, cross-checked against the turn lease and the
   newest message row before it is believed.
 - **Send:** a **pane paste** is the only send path. It is gated on idle and on
-  a screen check that admits exactly one state, an idle, empty input line, and
-  is re-checked on the host at the moment of acting, with the Enter as a
+  a structural screen check that admits only the recorded idle layout with an
+  empty input line, and is re-checked on the host at the moment of acting, with the Enter as a
   separate step. The viewer's `prompt.submit` was refuted: the CLI never draws
   the turn.
 - **Questions and approvals:** clarify cards from the database, approval and
   sudo items from the hooks. Approvals are answered through the gateway viewer's
   `approval.respond`; clarify through the viewer if Phase 4 measures it, else in
   the terminal; sudo is never answered from muster.
+- **Every** paste into a pane holding a Hermes CLI, from any view or server
+  version, is gated by the host on the pane's process identity. Until the gated
+  send exists, it is refused. This closes a hazard in shipped muster.
 - **Pod:** `hermes gateway run` with the API server on loopback, driven
   through `/v1/runs` and its SSE events by `hermesd`, which also resolves
   executions left unknown by a crash before it accepts turns.
@@ -138,7 +141,7 @@ Rules that follow:
 - **Move to a stable release only by tree.** When a `vX.Y.Z` ships, check by
   tree that it contains the gateway runtime (`hermes_cli/gateway_agent.py`
   present) and the P-only pieces this design uses, then run
-  `make test-livehermes` (Phase 6) against it before moving the pin.
+  `make test-livehermes` (Phase 3) against it before moving the pin.
 - **Refuse what it cannot read.** There is no multi-version design.
   muster-mirror checks the gateway's `identify` `code_sha` against the pin when
   it attaches, and the schema's columns with `PRAGMA table_info`; it refuses a
@@ -231,8 +234,9 @@ Proposed, in muster's existing terms:
 - **Wire**, with no version bump, in the established style (an older muster
   ignores unknown fields; an older host never sends them):
   - `Window.Runtime` (`"claude"`, `"hermes"`). `Window.Claude` stays true only
-    for Claude Code, so an older muster shows a Hermes window as a plain
-    terminal window and never treats it as Claude.
+    for Claude Code, so an older muster never treats a Hermes window as
+    Claude. 🔴 It does show it as a plain terminal window, and that is **not**
+    safe on its own: see the next section.
   - `Window.AgentSession`, the session id for any runtime.
     🔴 **A Hermes id does not fit today's field.** P's ids are
     `local-<64 hex>`, 70 characters; `claudeSessionPattern` (wire.go, also
@@ -246,8 +250,55 @@ Proposed, in muster's existing terms:
 - `cctranscript.Event` stays the render model. Hermes rows are translated into
   it on the host.
 
-Phase 1 is this refactor alone, with the Claude path byte-identical, gated by
-the existing suite.
+### Every paste into a Hermes pane is gated on the host
+
+🔴 **This hazard exists in shipped muster today.** The Terminal view's composer
+(`POST /mirror/terminal/send`) reaches the host as a paste with `AnyPane` set,
+which `lookupPaste` sets for any window on a pane-paste host
+(`internal/mirror/transcript.go`). The host's `PastePane` then pastes and
+presses Enter into whatever runs in the pane
+(`internal/mirrorhost/transcript.go`, `hostSide.paste`), with no runtime check.
+Into a Hermes approval modal, paste+Enter approves `once` (S11). Any muster
+server, old or new, offers this path.
+
+**The decision: the host refuses an `AnyPane` paste into a pane that holds a
+Hermes CLI**, decided at the host's paste entry by the pane's **process
+identity** (the [S10 rule](#pane-to-session-resolution): `comm=hermes` plus
+argv), never by `Msg.Runtime`, so the guard holds whatever the server sends.
+The refusal reads "Hermes runs in this pane; send from the rendered view".
+
+- It ships in **Phase 1**, first, in the host binary, before any other Hermes
+  work.
+- From Phase 3 the rendered view's gated send exists. Every Hermes send goes
+  through `Runtime.Submit`, and so through `CheckSend`. The Terminal
+  composer's refusal stays: one gated path, not two.
+- A Hermes CLI started by hand in a shell pane is caught the same way, because
+  the walk is over the pane's process tree, not its first command.
+
+### Server changes
+
+The server half needs changes too. Today:
+
+- `Hub.AgentState` answers `ErrNotClaude` for any window with `Claude=false`
+  (`internal/mirror/agentstate.go`);
+- the hub's waiting set keys on `w.Claude` (`internal/mirror/hub.go`,
+  `waitingWindows`);
+- Send now refuses only `waiting`, and pastes when the state is unknown
+  (`internal/api/send_queue_now.go`).
+
+Phase 1 changes:
+
+- `AgentState` and the waiting set become runtime-aware, keyed on
+  `Window.Runtime`;
+- for a Hermes window, Send now refuses `busy` and unknown as well as
+  `waiting`. Claude Code keeps today's rule.
+- **Migration** widening migration 0020's `agent_focus.subject_key` check,
+  which admits `^[0-9A-Za-z][0-9A-Za-z_-]{0,63}$` today, so a
+  runtime-qualified `hermes:<id>` key is accepted. `internal/focus` and the
+  wire pattern change with it.
+
+Phase 1 is this refactor plus the host paste guard, with the Claude path
+byte-identical, gated by the existing suite.
 
 ### Pane to session resolution
 
@@ -301,9 +352,12 @@ It is never deleted on exit (pruned after 30 days) and is gated by
    compression is stale.** If the tip has `ended_at` set and an `end_reason`
    other than `compression`, the terminal switched sessions (`/resume`,
    `/branch`; measured values `resumed_other`, `branched`, and `new_session`
-   transiently). The window gets **no rendered view**, with the reason "the
-   terminal switched sessions (`/resume` or `/branch`)" — never the old
-   session above a composer that sends to the pane.
+   transiently). The window gets **no rendered view and an unknown status**,
+   with the reason "the terminal switched sessions (`/resume` or `/branch`)".
+   Never the old session above a composer that sends to the pane, and never the
+   old tip's `idle` as this pane's status: after `/resume` the abandoned tip
+   reads idle while the pane is running another session. Unknown holds the
+   queue and refuses sends.
 6. `Source` reports `breadcrumb`; `muster-mirror -list -windows` prints it.
 
 There is no guess fallback, and no pane map: at P a hook cannot write one,
@@ -430,10 +484,36 @@ hooks (`hooks:` in `config.yaml`) receive JSON on stdin with
   file's.
 - **Contents.** Status, time, request kind and id. 🔴 Never the prompt text,
   never tool arguments.
-- **Installation.** The hook entries and their consent allowlist are declared
-  in the host's Home Manager configuration, through upstream's `hermes-agent`
-  Home Manager module. muster-mirror ships only the `hermes-hook` command and
-  never edits `~/.hermes/config.yaml`.
+- **The hook's own contract** (`P:agent/shell_hooks.py`):
+  - 🔴 it prints **nothing** to stdout. Hermes parses a hook's stdout as JSON
+    (`{"decision": "block"}`, `{"context": …}`), so output could block an
+    action or inject text into the prompt;
+  - it always exits 0, never the "block" exit code (`shell_hooks.py:41`);
+  - it never blocks: hooks run synchronously with a 60 s default timeout
+    (`DEFAULT_TIMEOUT_SECONDS`), so the lock wait is bounded (proposed 1 s) and
+    the declared `timeout` is short (proposed 5 s). On any failure it writes
+    nothing, which reads as unknown;
+  - it validates `session_id` against the session-id pattern before using it
+    as a file name, and ignores anything else. The gateway also fires hooks for
+    API, cron and bot sessions.
+- **Installation.** muster-mirror ships only the `hermes-hook` command and
+  never edits `~/.hermes/config.yaml`. The operator declares the rest in the
+  host's Home Manager configuration. Upstream's `hermes-agent` Home Manager
+  module (`P:nix/homeManagerModules.nix`, `P:nix/moduleCommon.nix`) has **no**
+  hook or allowlist option, so:
+  - the hook entries go through the module's generic `settings` (merged into
+    `config.yaml`, as `settings.hooks`);
+  - `shell-hooks-allowlist.json` needs its own writer: a Home Manager
+    activation script, ordered after the module's own activation, that writes a
+    **real file** (0600), never a read-only store symlink. Hermes writes the
+    same file itself (`save_allowlist`, when a person answers the `[y/N]`
+    prompt), so a symlink would break that path. The script makes muster's
+    `(event, command)` pairs present exactly and keeps any other entries.
+  - **On a mismatch** (a pair missing or with a different command): the gateway
+    skips that hook with a warning and every new foreground CLI stops on the
+    `[y/N]` prompt. muster-mirror's `-list -hermes` compares the declared hooks
+    with the allowlist and names the mismatch; the affected sessions read as
+    unknown; the next Home Manager switch rewrites the file.
 - **Consent** (S2). Pre-seeded allowlist entries hold in an auto-started
   gateway, with no prompt. 🔴 The declaration must allowlist **exactly** every
   `(event, command)` pair it configures: a configured hook that is not
@@ -444,9 +524,9 @@ hooks (`hooks:` in `config.yaml`) receive JSON on stdin with
   state.
 
 **How it feeds muster.** The locator sets `AgentPane.Status` and
-`StatusSince` from the file, as it does from Claude Code's sessions file. The
-server half needs no new rule: `Hub.AgentState`, the "status time newer than
-the paste" rule and the 30-second idle wait apply as written. The hook stamps a
+`StatusSince` from the file, as it does from Claude Code's sessions file. With
+Phase 1's [server changes](#server-changes), the "status time newer than the
+paste" rule and the 30-second idle wait apply as written. The hook stamps a
 fresh `since` at every turn end, so a short turn still moves it.
 
 🔴 **Believing a status file.**
@@ -462,8 +542,8 @@ fresh `since` at every turn end, so a short turn still moves it.
   `timestamp` newer than `since`. Slack is **0**: across 29 measured turns the
   final row preceded `on_session_end` by 19–33 ms, and a new turn's user row
   preceded its `pre_llm_call` by 36–182 ms (S2) — (b) is exactly what catches
-  that window. Measured once, on an idle host; re-measure under load in the
-  live test before relying on 0.
+  that window. Measured once, on an idle host; Phase 3 re-measures it under
+  load before the gated send ships.
 - **Unhooked states.** Some input-capturing states fire no hook at all: the
   `/new` confirm modal, the hook-consent prompt (S11). The status reads `idle`
   while they are up. The [screen check](#the-screen-check) is what refuses
@@ -511,6 +591,21 @@ paste, not `send-keys`: tmux refuses `send-keys` while muster's own read-only
 viewer is attached. Measured: it submits once, idle, at both busy modes, and a
 3,229-character paste arrives as one message.
 
+**Large pastes collapse.** A paste of at least 5 lines
+(`paste_collapse_threshold`) or 2000 characters
+(`paste_collapse_char_threshold`) is saved to a file under `~/.hermes/pastes/`
+and replaced in the input box by `[Pasted text #N: L lines → <file>]`
+(`P:hermes_cli/cli_tui_mixin.py:1677-1693,1698-1730`). On submit the
+placeholder is inlined back (`:1472`), which is why S11's 3,229-character paste
+arrived whole. Two consequences:
+
+- the screen cannot show muster's text after such a paste, so the post-paste
+  check accepts either the exact text (a short paste) or exactly one
+  placeholder whose line count `L` equals the message's, and the submit is
+  confirmed from the database, not the screen (step 6);
+- ⚠ the message is written to disk by Hermes, in `~/.hermes/pastes/`. muster
+  never reads that directory; the host docs say the copy exists.
+
 **The gated send**, for every Hermes path: Send, Queue, Send now, a routed
 message.
 
@@ -527,13 +622,15 @@ message.
    - the [screen check](#the-screen-check) passes.
 3. Paste the text, bracketed, with no Enter.
 4. Wait `enterDelay`, then re-check the status file and the screen. The input
-   line must now hold muster's text and nothing else may be drawn. If anything
-   moved, do not press Enter: report "pasted, not submitted; the text is in
-   Hermes's input box".
+   line must now hold muster's text, or its one collapse placeholder, and the
+   rest of the screen must still match the idle layout. If anything moved, do
+   not press Enter: report "pasted, not submitted; the text is in Hermes's input
+   box".
 5. Press Enter as today's pasted newline.
-6. After the Enter, if the input line still holds the text (a stalled event
-   loop turned the Enter into a newline, item 5), report "pasted, not
-   submitted". That direction is fail-safe.
+6. **Confirm by the database:** a new `user` row in the lineage whose content
+   equals the message (after `SanitizePaste`), within a bounded wait. If none
+   arrives (a stalled event loop turned the Enter into a newline, item 5), report
+   "pasted, not submitted". That direction is fail-safe.
 
 Text rules: `mirror.SanitizePaste` as today. A leading `/` is passed through, as
 for Claude Code; `/new` opens a confirm modal, which the screen check then
@@ -550,17 +647,33 @@ muster never writes Hermes's config.
 ### The screen check
 
 The screen is the only signal for states no hook reports, and the backstop for
-the ones the hook does. The host captures the pane (`capture-pane -p -e`, the
-bottom rows) and **admits exactly one state: an idle, empty `❯ ` input line
-with no modal marker on screen.** Everything else refuses. The blocking states,
-with their fixtures from S11:
+the ones the hook does.
+
+🔴 **The admit rule is structural, not a marker list.** A list of markers
+admits any state nobody listed, and some states keep the idle `❯ ` prefix while
+Enter acts: at the pin, `_get_tui_prompt_fragments`
+(`P:hermes_cli/cli_tui_mixin.py`) does not change the prefix for the command
+palette (Ctrl+P; Enter runs the highlighted command), the model picker or the
+prompt-stash panel (Ctrl+S). So the host captures the pane
+(`capture-pane -p -e`, with attributes) and admits a send only when:
+
+- the region between the status bar and the input line matches the **idle
+  layout exactly**, line for line, as recorded for the pinned commit; any extra
+  line is a refusal;
+- the input line is the idle prefix, `❯ `, optionally preceded by a profile
+  name (a non-default profile draws `<profile> ❯ `), followed by nothing or
+  only the **placeholder**. "Empty" is defined by style: the placeholder is
+  drawn in italic (`idle.ansi`), so any non-italic character after the prefix
+  is text in the box and refuses.
+
+Everything else refuses. The states known to block, with their S11 fixtures:
 
 | state | marker | input-line prefix | why it blocks |
 |---|---|---|---|
 | approval | `Dangerous Command`, `↑/↓ to select, Enter to confirm` | `⚠ ❯` | 🔴 Enter approves `once` |
 | confirm (`/new` and similar) | `destroys conversation state`, `Type 1/2/3` | `⚠ ❯ type 1/2/3, …` | Enter approves; **no hook fires** |
 | clarify, choices | `needs your input`, `Enter to lock, Tab next question` | `? ❯` | Enter locks the recommended choice |
-| clarify, free text | `needs your input`, `Type your answer in the prompt below` | `✎ ❯` | the paste becomes the answer (allowed only through the asks UI) |
+| clarify, free text | `needs your input`, `Type your answer in the prompt below` | `✎ ❯` | the paste becomes the answer; muster never answers by pasting |
 | sudo | `Sudo Password Required` | `type password (hidden), …` | 🔴 the paste becomes a password |
 | hook consent | `Allow this hook to run? [y/N]:`, before the UI | none | the CLI has not started |
 
@@ -569,9 +682,19 @@ Also refused: a busy screen (spinner; `☤ ❯` prefix), and an idle line that i
 drawn after the hook or viewer reported it resolved is still a modal: a
 viewer-answered approval leaves it on screen until a key is pressed (S1).
 
-Markers and prefixes are pinned per pin bump by `make test-livehermes` against
-the recorded fixtures. Skins or themes changing the glyphs are UNVERIFIED; an
-unrecognised screen refuses.
+States found in source and **not yet captured** (UNVERIFIED until Phase 3
+records a fixture for each): the command palette, the model picker, the
+prompt-stash panel, secret capture (🔑), the connection form (⚙), and the voice
+states. The structural rule refuses them already, because none matches the idle
+layout; the fixtures prove it.
+
+**A ledger of overlay states.** Phase 3 keeps a list of every overlay or modal
+state attribute the pinned `cli_tui_mixin.py` and `cli_modal_mixin.py` define,
+each with its fixture. On a pin bump, a test that extracts the attributes from
+the new source fails when the set grows or shrinks, so a new overlay cannot
+arrive unseen. The idle layout, the prefix and the fixtures are re-recorded by
+`make test-livehermes` on every pin bump. Skins or themes changing the glyphs
+are UNVERIFIED; an unrecognised screen refuses.
 
 ### The gateway viewer
 
@@ -632,10 +755,11 @@ dropped on receipt, `sudo` frames included.
   `{"questions":[{"question","choices"?,"multi_select"?}]}`, 1–5 questions, at
   most 4 choices each (`tools/clarify_tool.py:95-108`). The answer is the later
   `tool` row.
-- **A pending approval is in no row** (S5). The only sources are the hooks
-  (`on_human_input_request kind=approval`, `pre_approval_request` with the
-  command and description), the viewer (`approval.request`, `prompts` on
-  resume), and the screen. From the DB, an unmatched `terminal` call under a
+- **A pending approval is in no row** (S5). The hook says only that one is
+  pending (`on_human_input_request kind=approval`, with its `request_id`); it
+  records no command, by the hook's contract above. **The command and its
+  description come from the viewer only** (`approval.request`, `prompts` on
+  resume), which muster attaches on that `waiting`. From the DB, an unmatched `terminal` call under a
   live lease means "a tool is running **or** an approval is pending", nothing
   more.
 
@@ -647,9 +771,10 @@ dropped on receipt, `sudo` frames included.
   answer)". It follows the recorded answer from the `tool` row, as Claude
   Code's does.
 - A Hermes **approval** is a new attention item: the command (capped,
-  redacted), its description, the choices. `Pending` is `{Summary:
-  "terminal: <command>", Tool: "terminal", Last: <last assistant text>}`,
-  taken from the hook's `pre_approval_request` or the viewer.
+  redacted), its description, the choices, all from the viewer. `Pending` is
+  `{Summary: "terminal: <command>", Tool: "terminal", Last: <last assistant
+  text>}`. When the viewer cannot attach, the item says "Hermes is waiting for
+  an approval in the terminal", with no command.
 - **A `sudo` request** is shown as "Hermes is asking for a sudo password in
   the terminal", with nothing to answer in muster.
 
@@ -720,7 +845,9 @@ Questions and approvals live in muster's memory, as Claude Code's do.
 - muster's own `~/.muster/hermes-status/*.json`.
 
 **Never** `auth.json`, `.env`, `config.yaml` (it can hold inline keys),
-`profiles/*/.env`, `memories/`, `skills/`, `logs/`, `telemetry/`, or
+`profiles/*/.env`, `memories/`, `skills/`, `logs/`, `telemetry/`,
+`pastes/` (Hermes's on-disk copies of large pastes, muster's messages
+included), or
 `runtime/active_sessions.json` (no longer needed). Every Hermes path the host
 opens goes through one function holding that allowlist, and a ledger test fails
 when the set grows or shrinks.
@@ -821,10 +948,23 @@ No run resumes (S6).
   the unknown run is resolved, the queued run executes. A client that treats it
   as a failure and lets the person resend would run the turn **twice**.
   hermesd therefore:
-  - at start, before answering any turn, `GET`s the last run id of every
-    session in its map and calls `POST /v1/runs/{id}/resolve-unknown
-    {admission_id, execution_generation}` for each `unknown` one (outcome
-    `interrupted`), logging what it resolved;
+  - **records intent before it posts.** For each turn it writes the session,
+    a fresh idempotency key and "posting" to its map on the volume **before**
+    `POST /v1/runs`, sends the key as the `Idempotency-Key` header
+    (`P:gateway/platforms/api_server_runs.py:738`; P keeps the keys in the
+    durable `runs_idempotency.db`), and records the run id from the 202. A
+    crash between the POST and that record would otherwise leave a run hermesd
+    cannot name, parking the session for good. On recovery an intent with no
+    run id is re-posted with the **same** key, which should return the existing
+    run rather than start a second one. That replay across a gateway restart is
+    UNVERIFIED; Phase 5 measures it;
+  - **recovers on every gateway start, not only its own.** The likely SIGKILL is
+    the gateway alone being OOM-killed while hermesd lives on. So after every
+    start of the child (hermesd's own start, and each supervised restart), and
+    before it answers any turn (`/healthz` reports `recovering`), hermesd
+    `GET`s the last run of every session in its map and calls
+    `POST /v1/runs/{id}/resolve-unknown {admission_id, execution_generation}`
+    for each `unknown` one (outcome `interrupted`), logging what it resolved;
   - treats `run.failed` with `unknown_execution` as "queued behind an unknown
     run": it keeps streaming, resolves the predecessor, and never reports it as
     a failure.
@@ -941,7 +1081,10 @@ Measured (S9):
   run's system prompt, and leaves Hermes's identity and the repository's
   `AGENTS.md` intact (`P:gateway/platforms/api_server_runs.py:825`). It is
   **not** persisted: hermesd sends it on every run, so a change to muster's
-  instructions takes effect on the next turn. agentspec mounts the text as a
+  instructions takes effect on the next turn. agentspec places the text
+  **outside every volume**, at a fixed read-only path such as
+  `/etc/hermesd/instructions.md` (as `ClaudeCodeInstructionsPath` does for
+  `claude-code`), never in the workspace. It is a
   read-only file (`Options.Instructions`), which hermesd reads.
 - **Fallback: `SOUL.md`** = the seeded default + muster's text. SOUL.md replaces
   only the ~670-character identity paragraph; the seeded file *is* that
@@ -991,21 +1134,23 @@ Efforts are rough engineer-days, including tests and docs. Phase 0 is done.
 | phase | what | effort | depends on |
 |---|---|---|---|
 | ~~0~~ | Spikes S1–S11 | done | — |
-| **1** | Runtime seam: `mirrorhost.Runtime` for Claude Code and Hermes, Claude behind it, `Window.Runtime`/`AgentSession` with the wider id bound, runtime-neutral waiting set and queue reasons. No behaviour change for Claude Code. | 3–4 | — |
-| **2** | Read-only Hermes mirroring: process identity, breadcrumb locator with the end-reason staleness rule, SQLite reader (compaction, compression-only lineage), renderer, the `hermes-hook` command and its status files with lease and newest-row checks, consent diagnostics, listing and kind chip, secret-path ledger, `-list -hermes` | 6–8 | 1 |
-| **3** | Gated pane send: per-runtime server gates, host `CheckSend`, the six-state screen check against recorded fixtures, post-paste and post-Enter checks, Queue and Send now for Hermes, host docs (the Home Manager hook declaration, `/busy queue`) | 5–6 | 2 |
-| **4** | Questions and approvals: clarify cards from the DB, approval and sudo attention items from the hooks, viewer discovery through `gateway.sock.path`, attach-to-answer, `approval.respond` with the stale-modal card, measuring the viewer's clarify answer (and wiring it if it passes), the hygiene filters | 5–7 | 2, 3 |
-| **5** | `hermes` kind: `hermesd` (runs, events, exact approval body, relay timeout, start-up `resolve-unknown`, SIGTERM handling), the Nix image without ffmpeg, `agentspec`, migration, config, smoke test like `cc-smoke`, a first run in a real pod | 8–10 | 1 |
-| **6** | `make test-livehermes`: the pinned Hermes in a scratch tmux server and home, driving every screen-check state, the queue, the clarify picker, and the timings under load; re-run on every pin bump | 3–4 | 3, 4 |
+| **1** | Runtime seam: `mirrorhost.Runtime` for Claude Code and Hermes, Claude behind it, `Window.Runtime`/`AgentSession` with the wider id bound. 🔴 **The host paste guard** (refuse `AnyPane` into a pane holding a Hermes CLI), first. [Server changes](#server-changes): runtime-aware `AgentState` and waiting set, Send now refusing unknown and busy for Hermes, the migration widening 0020's `subject_key` check. No behaviour change for Claude Code. | 4–5 | — |
+| **2** | Read-only Hermes mirroring: process identity, breadcrumb locator with the end-reason staleness rule (no view, unknown status), SQLite reader (compaction, compression-only lineage), renderer, the `hermes-hook` command and its status files with lease and newest-row checks, the Home Manager declaration and allowlist writer, mismatch diagnostics, listing and kind chip, secret-path ledger, `-list -hermes` | 6–8 | 1 |
+| **3** | Gated pane send **and its live harness**. `make test-livehermes`: the pinned Hermes in a scratch tmux server and home; fixtures for every blocking state, including the six not yet captured; the overlay-state ledger; re-measuring under load the false-idle slack, the 150 ms Enter margin and the queue gap. Then the send: per-runtime server gates, host `CheckSend` with the structural screen check, collapse-aware post-paste check, database-confirmed submit, Queue and Send now for Hermes, host docs (`/busy queue`, the `~/.hermes/pastes/` copy). The send ships to hosts only once the harness is green. | 9–11 | 2 |
+| **4** | Questions and approvals: clarify cards from the DB, approval and sudo attention items from the hooks, viewer discovery through `gateway.sock.path`, attach-to-answer, `approval.respond` with the stale-modal card, measuring the viewer's clarify answer (and wiring it if it passes), the hygiene filters; harness cases for each | 5–7 | 2, 3 |
+| **5** | `hermes` kind: `hermesd` (runs, events, exact approval body, relay timeout, intent-before-POST with `Idempotency-Key`, `resolve-unknown` recovery on every gateway start, SIGTERM handling), the Nix image without ffmpeg, `agentspec`, migration, config, smoke test like `cc-smoke`, a first run in a real pod | 9–11 | 1 |
 
-Remaining: about 30–39 days. Each phase is released and shipped to the hosts as
+Remaining: about 33–42 days. Each phase is released and shipped to the hosts as
 it merges. Phases 2–4 and 5 are independent after Phase 1. The shortest useful
-slice is Phases 1–2: read-only Hermes windows with status.
+slice is Phases 1–2: read-only Hermes windows with status, with the paste
+guard already in place. `make test-livehermes` re-runs on every pin bump.
 
 ## Risks
 
 - 🔴 **A misplaced Enter approves, picks a choice, sends a password or
-  interrupts.** Mitigated by the one-state screen check, the status and DB
+  interrupts.** Shipped muster can do it today through the Terminal composer;
+  Phase 1's host paste guard closes that first. Mitigated afterwards by the
+  structural screen check, the status and DB
   checks, and the post-paste re-check; the residual window is named, and
   `/busy queue` narrows it.
 - **Upstream churn.** Main moves daily; the rendered view parses Hermes's
@@ -1028,6 +1173,9 @@ slice is Phases 1–2: read-only Hermes windows with status.
   - whether an attached viewer keeps an auto-started gateway alive past its
     idle exit;
   - skins or themes changing the input-line glyphs;
+  - the command palette, model picker, prompt-stash panel, secret capture,
+    connection form and voice states (found in source; fixtures in Phase 3);
+  - an `Idempotency-Key` replay across a gateway restart (Phase 5);
   - every timing under load: the false-idle slack, the Enter boundary, the
     ~0.3 s queue gap;
   - a Kubernetes pod: container detection, the NetworkPolicy and restricted
