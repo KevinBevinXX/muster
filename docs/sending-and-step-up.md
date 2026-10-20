@@ -5,7 +5,7 @@
 | view | message goes to | needs |
 |---|---|---|
 | A mirrored window's **Rendered** view (Claude Code) | the Claude Code pane, pasted as typed | the host's `-interactive`, plus a fresh sign-in |
-| A mirrored window's **Terminal** view (any program) | the window's active pane, followed by Enter | the host's `-interactive`, plus a fresh sign-in |
+| A mirrored window's **Terminal** view (any program except Hermes) | the window's active pane, followed by Enter | the host's `-interactive`, plus a fresh sign-in |
 | A dispatched agent's chat and **Terminal** view | `POST /agents/<name>/send`: one agent turn, run in the background | a running agent with chat wired ([provisioner.md](provisioner.md)) |
 | The chief panel | the chief agent | as above |
 
@@ -22,6 +22,9 @@ Each box can also have a microphone; see [dictation.md](dictation.md).
   calls itself "read-only" while its box can send: with live keys off the status
   reads just "Connected". A read-only host says so once, in the box's disabled
   note.
+- On the Terminal view, the host refuses a message into a pane that runs
+  Hermes, and nothing is pasted
+  ([mirroring.md](mirroring.md#the-terminal-view-never-pastes-into-hermes)).
 - Only newline and tab are accepted as control characters. Several lines arrive
   as one bracketed paste, and the single Enter runs them in order. A program that
   did not ask for bracketed paste gets the text as typed, so each newline is an

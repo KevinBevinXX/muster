@@ -206,6 +206,37 @@ read-only viewer can see. It does not limit an attached interactive client.
 With `-interactive`, both views get a message box. Typing into one requires a
 recent sign-in. See [sending-and-step-up.md](sending-and-step-up.md).
 
+### The Terminal view never pastes into Hermes
+
+🔴 The host refuses a message from the Terminal view's box when the pane runs
+[Hermes](design/hermes.md). On Hermes's approval prompt, a pasted message
+followed by Enter **approves the command**, whatever the message says. The page
+shows "Not sent: Hermes runs in this pane…", and nothing reaches the pane. Type
+into Hermes in the terminal itself (Live keys, or the terminal on the host).
+Sending to Hermes from a rendered view is planned for a later release, with its
+own checks; until then, muster has no send path into Hermes.
+
+The host decides this itself, by what runs in the pane at the moment of the
+paste. It does not depend on the server's version. It walks the pane's process
+tree from its root process and refuses when any process in it looks like
+Hermes:
+
+- a process named `hermes` whose second argument is a `hermes` launcher (the
+  Nix wrapper, a pip or uv install), whatever follows: `chat`,
+  `-p <profile> chat`, `gateway run`;
+- a Python interpreter running Hermes's code: `-m hermes_cli…`, a script under
+  `hermes_cli/`, a script named `hermes`, a `cli.py` beside a `hermes_cli/`
+  directory, or `-c` code that names `hermes_cli`.
+
+The gateway counts, so a pane running `hermes gateway run` is refused too. If
+the host cannot read the pane's processes, it refuses the message rather than
+assume. Shells, Claude Code and other programs are unaffected, and so is the
+rendered view's send into Claude Code.
+
+Known gaps: a Hermes run over `ssh` or `docker exec` inside the pane, one
+started under a renamed interpreter or from a copied tree, and a host with no
+`/proc` (macOS), where the host cannot see processes at all.
+
 ## Answering Claude's questions
 
 When Claude Code calls `AskUserQuestion`, the question shows in **both places

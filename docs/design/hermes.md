@@ -1,6 +1,8 @@
 # Design: Hermes mirroring and the `hermes` agent kind
 
-**Status: proposed, with Phase 0 done.** Nothing here is implemented. The
+**Status: proposed, with Phase 0 done.** Only the Terminal view's
+[host paste guard](#every-paste-into-a-hermes-pane-is-gated-on-the-host)
+(Phase 1's first item) is implemented; nothing else here is. The
 version target is **decided** (below). Every other section describes the design
 the Phase 0 spikes support; the [Phase 0 results](#phase-0-results) table names
 what each spike changed. Where this page states how muster works today, the
@@ -276,8 +278,26 @@ server, old or new, offers this path.
 
 **The decision: the host refuses an `AnyPane` paste into a pane that holds a
 Hermes CLI**, decided at the host's paste entry, never by `Msg.Runtime`, so the
-guard holds whatever the server sends. The refusal reads "Hermes runs in this
-pane; send from the rendered view".
+guard holds whatever the server sends. Until a Hermes rendered view exists
+(Phase 2) with its gated send (Phase 3), the refusal cannot point at it, so it
+reads: "Not sent: Hermes runs in this pane. muster never pastes into Hermes
+from the Terminal view, because Enter there can answer a prompt Hermes is
+showing, such as a command approval. Type it in the terminal; sending from a
+Hermes rendered view comes in a later release"
+(`mirrorhost.ErrHermesPane`). A pane whose processes cannot be read is refused
+too.
+
+**Implemented (Phase 1, first item):** `internal/mirrorhost/hermes.go`.
+`HermesIdentity.InTree` walks the tree from `#{pane_pid}` (read by the pane's
+id at the moment of the paste) with `comm` and argv from `/proc`, and
+`hermesShape` is the broad match below, which Phase 2's strict rule builds on.
+Two shapes were added to the list, both failing closed: a Python interpreter
+whose script is named `hermes` (the launcher run as `python …/bin/hermes`,
+where `comm` is `python`), and `python -c` code naming `hermes_cli`. The
+chrome check below is **not** implemented yet: no screen fixture is in the
+tree, and it is best-effort and fails open; it waits for Phase 3's recorded
+fixtures. On a host with no `/proc` (macOS) the guard sees no processes and
+admits.
 
 - 🔴 **The guard uses the broad match, not the mirroring rule, and fails
   closed.** It refuses when the pane's process tree holds **any** of:

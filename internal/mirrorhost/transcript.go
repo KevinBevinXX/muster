@@ -382,8 +382,10 @@ func (h *hostSide) panePaste() bool {
 //     muster sends): only a pane that runs Claude Code NOW, re-resolved here —
 //     a prompt written for Claude is never typed into the shell it left behind;
 //   - with m.AnyPane (the Terminal view's composer): the session's active pane
-//     whatever runs in it. That is no more than this host already granted by
-//     -interactive, which lets the same person type into the same pane.
+//     whatever runs in it — EXCEPT a pane whose process tree holds Hermes,
+//     which is refused (guardHermesPaste). Otherwise that is no more than this
+//     host already granted by -interactive, which lets the same person type
+//     into the same pane.
 func (h *hostSide) paste(m mirror.Msg) {
 	reply := func(err error) {
 		msg := ""
@@ -433,6 +435,19 @@ func (h *hostSide) paste(m mirror.Msg) {
 		}
 		if !ok {
 			reply(fmt.Errorf("session %q has no active pane to send to", m.Session))
+			return
+		}
+		// 🔴 THE HERMES PASTE GUARD (hermes.go): never into a pane whose
+		// process tree holds a Hermes-shaped process — paste+Enter on its
+		// approval modal approves the command. Decided here, by what runs in
+		// the pane NOW, whatever muster sent; before copy-mode is touched, so a
+		// refused paste changes nothing in the pane.
+		if err := guardHermesPaste(ctx, h.c.cfg.Backend, pane); err != nil {
+			var hr *hermesRefusal
+			if errors.As(err, &hr) {
+				h.c.log.Printf("muster-mirror: pane %s runs Hermes (pid %d, %s)", pane, hr.proc.PID, hr.proc.Rule)
+			}
+			reply(err)
 			return
 		}
 		h.leaveCopyModeFor(pane)

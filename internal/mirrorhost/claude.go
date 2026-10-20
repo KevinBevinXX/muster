@@ -200,18 +200,27 @@ type procInfo struct {
 
 // table reads every process's parent, name and argv once.
 func (l ClaudeLocator) table() (map[int]procInfo, map[int][]int) {
+	procs, children, _ := readProcTable(l.proc())
+	return procs, children
+}
+
+// readProcTable reads every process under the proc root once: parent, name,
+// argv and start time, and each process's children (sorted). The error is the
+// proc root's own (unreadable, absent); a process that vanishes mid-read is
+// skipped. Shared by ClaudeLocator and HermesIdentity.
+func readProcTable(root string) (map[int]procInfo, map[int][]int, error) {
 	procs := map[int]procInfo{}
 	children := map[int][]int{}
-	ents, err := os.ReadDir(l.proc())
+	ents, err := os.ReadDir(root)
 	if err != nil {
-		return procs, children
+		return procs, children, err
 	}
 	for _, e := range ents {
 		pid, err := strconv.Atoi(e.Name())
 		if err != nil || pid <= 0 {
 			continue
 		}
-		dir := filepath.Join(l.proc(), e.Name())
+		dir := filepath.Join(root, e.Name())
 		stat, err := os.ReadFile(filepath.Join(dir, "stat"))
 		if err != nil {
 			continue
@@ -242,7 +251,7 @@ func (l ClaudeLocator) table() (map[int]procInfo, map[int][]int) {
 	for _, c := range children {
 		sort.Ints(c)
 	}
-	return procs, children
+	return procs, children, nil
 }
 
 // isClaude reports whether a process is the Claude Code CLI: its name (the CLI
