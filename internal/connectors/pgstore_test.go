@@ -370,3 +370,52 @@ func TestAConnectorNameResolvesOnlyWithinItsOwner(t *testing.T) {
 		}
 	}
 }
+
+// TestReopeningOrRevokingAnMCPDecisionClearsItsProvenance (migration 0035): a
+// grant the operator approved from a mirrored session (its provenance set as
+// DecideGrantFrom sets it) can still be re-opened — the App configured over a
+// stored token, ReconcileGrant — and revoked: both statements clear the
+// provenance with the decision they replace, which 0035's CHECK requires of a
+// pending or revoked row. Provenance is written with SQL so the test also runs
+// (red) on a tree from before 0035.
+func TestReopeningOrRevokingAnMCPDecisionClearsItsProvenance(t *testing.T) {
+	ctx, pool := testPool(t)
+	s := newStore(t, pool, key(1))
+	a := seedAgent(t, ctx, pool, "grant-agent-via", "tok-via-0123456789")
+	createGitHub(t, ctx, s)
+	approveViaMCP := func() int64 {
+		t.Helper()
+		g, _, err := s.RequestGrant(ctx, a, "github", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.DecideGrant(ctx, g.ID, true, "operator", ""); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `UPDATE connector_grants SET decided_via = 'mcp', decided_via_host = 'ws',
+			decided_via_session = '0b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b' WHERE id = $1`, g.ID); err != nil {
+			t.Fatal(err)
+		}
+		return g.ID
+	}
+	via := func(id int64) string {
+		t.Helper()
+		var v string
+		if err := pool.QueryRow(ctx, `SELECT coalesce(decided_via, '') || coalesce(decided_via_host, '') || coalesce(decided_via_session, '')
+			FROM connector_grants WHERE id = $1`, id).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	id := approveViaMCP()
+	if g, reopened, err := s.ReopenGrant(ctx, id); err != nil || !reopened || g.Status != connectors.StatusPending || via(id) != "" {
+		t.Fatalf("re-open of an MCP approval: %+v %v %v, provenance %q", g, reopened, err, via(id))
+	}
+	if _, err := s.RevokeGrant(ctx, id, "operator"); err != nil {
+		t.Fatal(err)
+	}
+	id = approveViaMCP()
+	if g, err := s.RevokeGrant(ctx, id, "operator"); err != nil || g.Status != connectors.StatusRevoked || via(id) != "" {
+		t.Fatalf("revoke of an MCP approval: %+v %v, provenance %q", g, err, via(id))
+	}
+}

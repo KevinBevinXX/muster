@@ -110,7 +110,7 @@ func (s Subject) Valid() error {
 		return nil
 	case KindMirror:
 		// One pattern for every stored session key (mirror.SessionKeyPattern),
-		// the same one 0035 puts in the table's CHECK.
+		// the same one 0036 puts in the table's CHECK.
 		if !mirror.ValidSessionKey(s.Key) {
 			return ErrBadSubject
 		}

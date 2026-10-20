@@ -544,7 +544,7 @@ func ValidAgentSession(id string) bool { return agentSessionPattern.MatchString(
 // SessionKeyPattern is every session key muster stores (SessionKey): a Claude
 // session id as it always was (1-64 bytes), or "hermes:" and a Hermes one
 // (1-128 bytes). 🔴 IT IS SPELLED ONCE: internal/focus validates with it, and
-// migration 0035 writes the same expression into the CHECKs of
+// migration 0036 writes the same expression into the CHECKs of
 // agent_focus.subject_key, agent_focus_history.subject_key,
 // session_routes.target_key and attention_asks.mirror_session — a test there
 // reads the migration and fails when the two differ.
@@ -564,7 +564,7 @@ const (
 // claudeSessionPattern is a Claude Code session id as the wire carries one: a
 // UUID in practice, bounded so the window list's worst case stays inside
 // MaxFrame. It is the Claude half of SessionKeyPattern, which internal/focus
-// and the stored keys' CHECKs (migration 0035) apply.
+// and the stored keys' CHECKs (migration 0036) apply.
 var claudeSessionPattern = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z_-]{0,63}$`)
 
 // ValidClaudeSession reports whether id is a Claude session id the wire carries.

@@ -429,7 +429,7 @@ byte-identical, gated by the existing suite.
 ### Phase 1 as built
 
 Phase 1b (`internal/mirrorhost/runtime.go`, `internal/mirror`, `internal/api`'s
-Send now, `internal/focus`, migration `0035`) differs from the sections above
+Send now, `internal/focus`, migration `0036`) differs from the sections above
 in these ways, each decided while building it:
 
 - **`mirrorhost.Runtime` has `Name` and `LocatePanes` only** — what both
@@ -460,9 +460,10 @@ in these ways, each decided while building it:
 - **Stored session keys:** a Claude id as before (1–64), or `hermes:` and a
   Hermes id (1–128); a bare 70-character id is still refused, so a Hermes key
   can never be read as a Claude one. `mirror.SessionKeyPattern` is the one
-  spelling; `internal/focus` validates with it and 0035 writes it into the
-  four CHECKs. `attention_asks.answered_via_session` (0034, newer than this
-  page) is left at 64: it names an MCP caller, which Hermes cannot be yet (see
+  spelling; `internal/focus` validates with it and 0036 writes it into the
+  four CHECKs. `attention_asks.answered_via_session` (0034) and
+  `connector_grants.decided_via_session` (0035), both newer than this page,
+  are left at 64: each names an MCP caller, which Hermes cannot be yet (see
   [listing](#listing-host-icons-and-the-rest-of-the-agents-list)).
 - **The strict mirroring identity rule landed here, not in Phase 2.** It had
   been moved to Phase 2 by operator decision; it was pulled forward from

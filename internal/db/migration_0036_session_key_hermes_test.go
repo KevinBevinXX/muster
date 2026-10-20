@@ -6,17 +6,17 @@ import (
 	"testing"
 )
 
-// TestMigration0035AdmitsARuntimeQualifiedHermesKey: at version 34 a Hermes
+// TestMigration0036AdmitsARuntimeQualifiedHermesKey: at version 35 a Hermes
 // conversation's key — "hermes:local-<64 hex>", 77 characters — is refused by
 // each of the four session-key CHECKs (the control: the old 64-character
-// bound is real, in every table); after 0035 it is stored in all four, and so
+// bound is real, in every table); after 0036 it is stored in all four, and so
 // is a Claude Code id exactly as before. What the wider bound must STILL
 // refuse is checked in every table too: a bare Hermes id (only the qualified
 // form is wider), a bare id one past 64, an empty or over-long Hermes id,
 // another runtime's prefix, and plain junk.
-func TestMigration0035AdmitsARuntimeQualifiedHermesKey(t *testing.T) {
+func TestMigration0036AdmitsARuntimeQualifiedHermesKey(t *testing.T) {
 	ctx := ctx0006(t)
-	pool := freshAt(ctx, t, "ms_0035_session_key", 34)
+	pool := freshAt(ctx, t, "ms_0036_session_key", 35)
 	agent := scanID(ctx, t, pool, `INSERT INTO agents (owner_id, name, namespace) VALUES (1, 'key-agent', 'ns-key') RETURNING id`)
 	plugin := scanID(ctx, t, pool, `INSERT INTO plugins (owner_id, name, label, token_hash, data_scope)
 		VALUES (1, 'plugin-key', 'Example inbox', 'pluginhash-key', 'example') RETURNING id`)
@@ -66,14 +66,14 @@ func TestMigration0035AdmitsARuntimeQualifiedHermesKey(t *testing.T) {
 
 	for name := range tables {
 		if err := stored(name, hermes); !refusedBy(err, name) {
-			t.Fatalf("control: at version 34 %s stored a 77-character Hermes key (or refused it for another reason): %v", name, err)
+			t.Fatalf("control: at version 35 %s stored a 77-character Hermes key (or refused it for another reason): %v", name, err)
 		}
 		if err := stored(name, claude); err != nil {
-			t.Fatalf("control: at version 34 %s refused a Claude Code id: %v", name, err)
+			t.Fatalf("control: at version 35 %s refused a Claude Code id: %v", name, err)
 		}
 	}
 
-	applyThroughFrom(ctx, t, pool, 35)
+	applyThroughFrom(ctx, t, pool, 36)
 
 	admitted := []string{
 		hermes,
@@ -101,12 +101,12 @@ func TestMigration0035AdmitsARuntimeQualifiedHermesKey(t *testing.T) {
 	for name := range tables {
 		for _, key := range admitted {
 			if err := stored(name, key); err != nil {
-				t.Errorf("after 0035, %s refused %q (%d chars): %v", name, key, len(key), err)
+				t.Errorf("after 0036, %s refused %q (%d chars): %v", name, key, len(key), err)
 			}
 		}
 		for _, key := range refused {
 			if err := stored(name, key); !refusedBy(err, name) {
-				t.Errorf("after 0035, %s did not refuse %q (%d chars) by its key CHECK: %v", name, key, len(key), err)
+				t.Errorf("after 0036, %s did not refuse %q (%d chars) by its key CHECK: %v", name, key, len(key), err)
 			}
 		}
 	}

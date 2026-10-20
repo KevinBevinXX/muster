@@ -39,7 +39,7 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		"(*Server).advanceTaskToInProgress → broadcast(ctx)",
 		"(*Server).applyTaskStatus → broadcast(ctx)",
 		"(*Server).broadcastTaskLink → broadcast(ctx)",
-		"(*Server).decideConnectorRequest → broadcast(r.Context())",
+		"(*Server).decideConnectorGrant → broadcast(ctx)",
 		"(*Server).dismissTask → broadcast(ctx)",
 		"(*Server).dispatchAgentTool → broadcast(ctx)",
 		"(*Server).dispatchAgentTool → broadcast(ctx)",

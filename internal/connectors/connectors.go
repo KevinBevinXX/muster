@@ -134,6 +134,36 @@ type Grant struct {
 	// Source is the credential the approval was about: SourceStored or
 	// SourceApp (migration 0033). See ReconcileGrant.
 	Source string `json:"source,omitempty"`
+	// DecidedVia is where the operator decided it when that was NOT the
+	// Connectors tab (migration 0035): the zero value for the tab, for a grant
+	// not yet decided, a revoked one, and every decision recorded before 0035.
+	DecidedVia DecisionSource `json:"-"`
+}
+
+// DecidedViaMCP is decided_via for a decision made through
+// connector_request_decide, from one of the operator's own mirrored Claude
+// Code sessions (migration 0035).
+const DecidedViaMCP = "mcp"
+
+// DecisionSource is where the operator decided a request when it was NOT the
+// Connectors tab: Via (DecidedViaMCP) and the mirrored session it came from
+// (Host, the session's mirror host — proven by the host's token; Session, the
+// Claude session id the caller named — a claim). The zero value is the tab.
+type DecisionSource struct {
+	Via     string
+	Host    string
+	Session string
+}
+
+// ViaSession reports whether src names a mirrored session (an MCP decision).
+func (src DecisionSource) ViaSession() bool { return src.Via == DecidedViaMCP }
+
+// String is "<host>/<session>", "" for the tab.
+func (src DecisionSource) String() string {
+	if !src.ViaSession() {
+		return ""
+	}
+	return src.Host + "/" + src.Session
 }
 
 // Grant sources: which credential an approval was about.
@@ -191,6 +221,9 @@ type Store interface {
 	GetGrant(ctx context.Context, id int64) (Grant, error)
 	// DecideGrant approves or denies a PENDING grant; ErrNotPending otherwise.
 	DecideGrant(ctx context.Context, id int64, approve bool, by, source string) (Grant, error)
+	// DecideGrantFrom is DecideGrant recording where the decision was made
+	// (via; the zero value is the Connectors tab, exactly DecideGrant).
+	DecideGrantFrom(ctx context.Context, id int64, approve bool, by, source string, via DecisionSource) (Grant, error)
 	// ReopenGrant puts an approved grant back to pending; reopened is false when
 	// it was no longer approved.
 	ReopenGrant(ctx context.Context, id int64) (g Grant, reopened bool, err error)

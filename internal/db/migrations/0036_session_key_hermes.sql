@@ -1,4 +1,4 @@
--- muster 0035 — A STORED SESSION KEY MAY NAME A HERMES CONVERSATION
+-- muster 0036 — A STORED SESSION KEY MAY NAME A HERMES CONVERSATION
 -- (docs/design/hermes.md, "Server changes").
 --
 -- Every column that stores a mirrored session's key admitted a Claude Code
@@ -21,8 +21,9 @@
 --     alone would fail every Hermes write;
 --   - session_routes.target_key (0021): a routed message is a send path;
 --   - attention_asks.mirror_session (0025).
--- Deliberately NOT attention_asks.answered_via_session (0034): it names the
--- Claude Code session that answered through the host's MCP endpoint, which
+-- Deliberately NOT attention_asks.answered_via_session (0034) nor
+-- connector_grants.decided_via_session (0035): each names the Claude Code
+-- session that answered or decided through the host's MCP endpoint, which
 -- identifies a caller by its tmux pane — and at the Hermes pin MCP clients run
 -- in the gateway, whose pane is the wrong one (the design's "Listing" section).
 --
