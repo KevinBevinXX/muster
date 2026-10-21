@@ -2,66 +2,106 @@ package api
 
 import (
 	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/github"
+	"github.com/ZacxDev/muster/internal/notes"
 )
 
-// flippingProvisioner is recordingProvisioner whose deployment stops taking
-// kickoffs once undeliverableNow says so — here, once a reservation exists:
-// exactly the window between task_dispatch's reservation and its call.
-type flippingProvisioner struct {
-	*recordingProvisioner
-	undeliverableNow func() bool
-}
-
-func (p *flippingProvisioner) KickoffUndeliverableReason() string {
-	if p.undeliverableNow != nil && p.undeliverableNow() {
-		return "the fixture deployment stopped taking kickoffs"
-	}
-	return ""
-}
-
-// TestADeploymentRefusalAfterTheReservationReleasesTheStart (#152 r2): the
-// deployment's re-check AFTER the reservation refuses (it stopped taking
-// kickoffs while the reservation ran). Nothing was created, so the task's one
-// start is released: the next call, once the deployment takes kickoffs again,
-// STARTS an agent instead of answering already_dispatched with none.
-func TestADeploymentRefusalAfterTheReservationReleasesTheStart(t *testing.T) {
-	var fp *flippingProvisioner
-	f := newTaskRouteFixture(t, true, true, func(ext *Extensions) {
-		fp = &flippingProvisioner{recordingProvisioner: &recordingProvisioner{}}
-		ext.Provisioner = fp
-	})
-	f.prov = fp.recordingProvisioner
-	n := f.task(t, "flip after reserve")
-	fp.undeliverableNow = func() bool { return f.reservations(t, n.ID) > 0 }
-
+// refusedThenRetried drives one post-reservation refusal of task n through
+// task_dispatch: the call is refused, no agent exists, the one start is NOT
+// left spent; then, the cause fixed by fix, the next call starts an agent and
+// the one after answers already_dispatched (the release freed exactly one).
+func refusedThenRetried(t *testing.T, f *taskRouteFixture, n notes.Note, want string, fix func()) {
+	t.Helper()
 	text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID})
-	if !strings.Contains(text, `"error"`) || !strings.Contains(text, "stopped taking kickoffs") {
-		t.Fatalf("the refused start: %s", text)
+	if !strings.Contains(text, `"error"`) || !strings.Contains(text, "could not be started") || !strings.Contains(text, want) {
+		t.Fatalf("the refused start: %s; want a refusal naming %q", text, want)
 	}
 	if got := f.agentsOn(t, n.ID); len(got) != 0 {
 		t.Fatalf("a refused start created %d agent(s)", len(got))
 	}
-
-	// The deployment takes kickoffs again.
-	fp.undeliverableNow = nil
+	if r := f.reservations(t, n.ID); r != 1 {
+		t.Fatalf("reservations after the refusal: %d, want 1 (the unit is spent)", r)
+	}
+	fix()
 	text = f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID})
 	if strings.Contains(text, `"error"`) || strings.Contains(text, "already_dispatched") || !strings.Contains(text, `"agent_id"`) {
-		t.Fatalf("the call after the refusal: %s; want a started agent", text)
+		t.Fatalf("the call after the refusal: %s; want a started agent (the refused start released)", text)
 	}
 	if got := f.agentsOn(t, n.ID); len(got) != 1 {
 		t.Fatalf("agents on the task after the retry: %d, want 1", len(got))
 	}
-	// The released start does not free a SECOND one: the next call is the
-	// already_dispatched answer for the agent just started.
 	if again := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}); !strings.Contains(again, `"already_dispatched":true`) {
 		t.Fatalf("a third call: %s", again)
 	}
+}
+
+// TestAnUncredentialedModelRefusedAfterTheReservationReleasesTheStart (#209
+// audit 🟡3): the model check runs in createAndDispatchAgent, after the
+// reservation and before any agent row.
+func TestAnUncredentialedModelRefusedAfterTheReservationReleasesTheStart(t *testing.T) {
+	f := newTaskRouteFixture(t, true, true)
+	n := f.task(t, "uncredentialed model")
+	if _, err := f.pool.Exec(f.asOwner, `UPDATE notes SET model = 'anthropic/example-model' WHERE id = $1`, n.ID); err != nil {
+		t.Fatal(err)
+	}
+	refusedThenRetried(t, f, n, "", func() {
+		if _, err := f.pool.Exec(f.asOwner, `UPDATE notes SET model = '' WHERE id = $1`, n.ID); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// TestAnExhaustedAccountPoolRefusedAfterTheReservationReleasesTheStart: the
+// claude-code account is picked (SelectClaudeAccount) after the reservation.
+func TestAnExhaustedAccountPoolRefusedAfterTheReservationReleasesTheStart(t *testing.T) {
+	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
+	f.srv.ext.Kinds = stubKinds{err: errors.New("every pool account is at its session limit")}
+	n := f.task(t, "pool exhausted")
+	refusedThenRetried(t, f, n, "every pool account is at its session limit", func() {
+		f.srv.ext.Kinds = stubKinds{pick: "pool-acct-a"}
+	})
+}
+
+// TestARepositoryDisconnectedAfterTheReservationReleasesTheStart: the
+// connected-repository check runs before the reservation AND again in
+// createAndDispatchAgent; a repository that leaves the owner's list in
+// between is refused there.
+func TestARepositoryDisconnectedAfterTheReservationReleasesTheStart(t *testing.T) {
+	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
+	n, err := f.notes.Create(f.asOwner, notes.Note{Title: "repo goes away", Body: "b", Repo: "example/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	dropAfterReserve := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		drop := dropAfterReserve
+		mu.Unlock()
+		if r.URL.Path != "/user/repos" || r.URL.Query().Get("page") != "1" || (drop && f.reservations(t, n.ID) > 0) {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		_, _ = w.Write([]byte(`[{"full_name":"example/app"}]`))
+	}))
+	t.Cleanup(srv.Close)
+	github.UseAPIBaseURL(srv.URL)
+	t.Cleanup(func() { github.UseAPIBaseURL("https://api.github.com") })
+	f.srv.ext.GitHub = fakeGitHubConn{}
+	refusedThenRetried(t, f, n, chiefDispatchRepo, func() {
+		mu.Lock()
+		dropAfterReserve = false
+		mu.Unlock()
+	})
 }
 
 // TestAForwardToARunningAgentWhoseFirstTurnIsOwedRidesThatTurn (quiet-stoat):

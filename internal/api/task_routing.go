@@ -695,29 +695,27 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 	// chiefDispatchDeploymentRefusal answered these before the reservation; they
 	// are read again HERE, at the call, because the provisioner-seam walk
 	// (provisioner_seam_test.go) is function-granular — a body that calls the
-	// provisioner and nil-checks it is the barrier — and because the deployment
-	// can stop taking kickoffs while the reservation ran.
-	//
-	// 🔴 A REFUSAL HERE RELEASES THE START IT RESERVED. Nothing was created, so
-	// leaving the task's one start spent would answer every later call
-	// already_dispatched with no agent, and only the owner could start one.
-	refuse := func(msg string) string {
-		if _, err := s.ext.ChiefDispatch.ReleaseUnstartedChiefDispatch(ctx, taskID); err != nil {
-			s.logger.Printf("task routing: release the unused start for task %d: %v", taskID, err)
-		}
-		return toolErr("%s", msg)
-	}
+	// provisioner and nil-checks it is the barrier.
 	if s.ext.Provisioner == nil {
-		return refuse("this deployment cannot start agents")
+		return toolErr("this deployment cannot start agents")
 	}
 	if reason := s.ext.Provisioner.KickoffUndeliverableReason(); reason != "" {
-		return refuse("this deployment cannot start an agent now: " + reason)
+		return toolErr("this deployment cannot start an agent now: %s", reason)
 	}
 	rec, err := s.createAndDispatchAgent(ctx, p)
 	if err != nil {
-		// The unit stays spent (fail-closed, plugins.ReserveChiefDispatch).
 		s.logger.Printf("task routing: start an agent for task %d: %v", taskID, err)
 		if errors.Is(err, ErrDispatchRefused) || errors.Is(err, agents.ErrModelNotCredentialed) {
+			// 🔴 A REFUSAL RELEASES THE START IT RESERVED. These come only from
+			// createAndDispatchAgent's checks BEFORE Agents.Create (no pool
+			// account, an uncredentialed model, a repository no longer
+			// connected), so no agent exists; left spent, the task's one start
+			// would answer every later call already_dispatched with nobody on
+			// it. THIS reservation is named, never "the latest". Any other
+			// failure stays spent (fail-closed, plugins.ReserveChiefDispatch).
+			if _, rerr := s.ext.ChiefDispatch.ReleaseRefusedChiefDispatch(ctx, taskID, res.ReservationID); rerr != nil {
+				s.logger.Printf("task routing: release the refused start for task %d: %v", taskID, rerr)
+			}
 			return toolErr("the agent could not be started: %s; use task_route_attention", err.Error())
 		}
 		return toolErr("the agent could not be started; use task_route_attention")
