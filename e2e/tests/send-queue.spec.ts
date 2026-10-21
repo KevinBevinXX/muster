@@ -694,7 +694,7 @@ test.describe('queued row menu, phone 390×844 touch', () => {
     const box = await menu.boundingBox();
     const vw = page.viewportSize()!.width;
     expect(box && box.x >= 0 && box.x + box.width <= vw, `the menu is on screen: ${JSON.stringify(box)}`).toBe(true);
-    for (const name of ['Send now', 'Copy message', 'Cancel this queued message']) {
+    for (const name of ['Send now', 'Edit', 'Copy message', 'Cancel this queued message']) {
       const b = await itemOf(r, name).boundingBox();
       expect(b && b.height >= 44, `${name} is a 44px target: ${JSON.stringify(b)}`).toBe(true);
     }
@@ -729,6 +729,8 @@ test.describe('queued row menu, desktop 1280×800 keyboard', () => {
     await page.keyboard.press('Enter');
     await expect(more).toHaveAttribute('aria-expanded', 'true');
     await expect(itemOf(r, 'Send now')).toBeFocused();
+    await page.keyboard.press('ArrowDown');
+    await expect(itemOf(r, 'Edit')).toBeFocused();
     await page.keyboard.press('ArrowDown');
     await expect(itemOf(r, 'Copy message')).toBeFocused();
     await page.keyboard.press('ArrowDown');
@@ -783,3 +785,255 @@ test.describe('queued row menu, desktop 1280×800 keyboard', () => {
     await ctx.close();
   });
 });
+
+// EDITING A QUEUED MESSAGE (the operator's choice: edit in place, HELD while
+// editing). Edit, in the row's ⋯ menu, holds the message on the server and
+// opens its text in the row; while it is open nothing of the window's queue is
+// sent; Save keeps its place; Cancel leaves it as it was; an abandoned edit's
+// hold runs out and the message goes back to the queue with its original text.
+// On origin/main the menu has no Edit, so each of these fails at the menu item.
+const editing = (page: Page) => page.locator('#mv-queue [data-queue-editing]');
+const editBox = (page: Page) => editing(page).getByRole('textbox', { name: 'Edit this queued message' });
+async function openEdit(page: Page, r: Locator, touch: boolean) {
+  await openMenu(r, touch);
+  const e = itemOf(r, 'Edit');
+  if (touch) await e.tap();
+  else await e.click();
+  await expect(editBox(page), 'the row opens for editing').toBeVisible();
+}
+async function press(l: Locator, touch: boolean) {
+  if (touch) await l.tap();
+  else await l.click();
+}
+
+for (const vp of [
+  { name: 'phone 390×844 touch', touch: true, use: phone },
+  { name: 'desktop 1280×800', touch: false, use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
+]) {
+  test.describe(`edit a queued message, ${vp.name}`, () => {
+    test.use({ ...vp.use, storageState: { cookies: [], origins: [] } });
+
+    // 🔴 THE WHOLE CYCLE: held while open (the window idle, and nothing sent
+    // — neither it nor the one behind it), saved in place, and the NEW text is
+    // what is sent, still first.
+    test('an edited message is held while open, saved in place, and its new text is sent in its original order', async ({ page }) => {
+      await busyAndSeen();
+      fs.rmSync(tr + '.pasted', { force: true });
+      await openView(page, newHost);
+      const first = `edit me ${vp.touch ? 'p' : 'd'} ${stamp}`;
+      const second = `behind it ${vp.touch ? 'p' : 'd'} ${stamp}`;
+      const edited = `edited text ${vp.touch ? 'p' : 'd'} ${stamp}`;
+      await queue(page, first, vp.touch);
+      await queue(page, second, vp.touch);
+      await openEdit(page, rowIn(page, first, 'queued'), vp.touch);
+      await expect(editBox(page)).toHaveValue(first);
+      await expect(editBox(page), 'the box is focused to type in').toBeFocused();
+      const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+      expect(sw, 'no horizontal scroll with the edit open').toBeLessThanOrEqual(cw);
+      for (const name of ['Save', 'Cancel editing; keep the message as it was']) {
+        const b = await editing(page).getByRole('button', { name }).boundingBox();
+        expect(b && b.height >= 44, `${name} is a 44px target: ${JSON.stringify(b)}`).toBe(true);
+      }
+      await editBox(page).fill(edited);
+      // Idle: had the hold not held, the first message would be sent now.
+      busy(false);
+      await seen();
+      await holdWindow();
+      expect(pasted(), 'nothing is sent while the message is open for editing').toEqual([]);
+      // Another device sees it held.
+      await press(editing(page).getByRole('button', { name: 'Save' }), vp.touch);
+      await expect(page.locator('#mv-note')).toHaveText('Saved.');
+      await expect.poll(pasted, { message: `the EDITED text is sent first (log:\n${mirrorLog})`, timeout: 30_000 }).toEqual([`${pane} ${edited}`]);
+      // The second waits for the edited one's turn, then follows it.
+      setStatus('idle');
+      await expect.poll(pasted, { message: 'then the one behind it', timeout: 30_000 }).toEqual([`${pane} ${edited}`, `${pane} ${second}`]);
+      await expect(rowIn(page, edited, 'sent'), 'the list shows the edited text sent').toHaveCount(1, { timeout: 20_000 });
+      await busyAndSeen();
+    });
+
+    test('Cancel leaves the message as it was, and that is what is sent', async ({ page, browser }) => {
+      await busyAndSeen();
+      fs.rmSync(tr + '.pasted', { force: true });
+      await openView(page, newHost);
+      const text = `keep as is ${vp.touch ? 'p' : 'd'} ${stamp}`;
+      await queue(page, text, vp.touch);
+      await openEdit(page, rowIn(page, text, 'queued'), vp.touch);
+      await editBox(page).fill('typed and thrown away ' + stamp);
+      // Another device sees the message held while it is open.
+      const other = await otherDevice(browser);
+      await openView(other.page, newHost);
+      await expect(rowIn(other.page, text, 'queued').locator('[data-queue-held]'), 'held, on every device').toHaveCount(1);
+      await other.ctx.close();
+      await press(editing(page).getByRole('button', { name: 'Cancel editing; keep the message as it was' }), vp.touch);
+      await expect(page.locator('#mv-note')).toHaveText('Edit cancelled: the message is unchanged.');
+      await expect(editing(page)).toHaveCount(0);
+      await expect(rowIn(page, text, 'queued'), 'the original text, queued').toHaveCount(1);
+      busy(false);
+      await expect.poll(pasted, { message: `the original is sent (log:\n${mirrorLog})`, timeout: 30_000 }).toEqual([`${pane} ${text}`]);
+      expect(pasted().some((l) => l.includes('thrown away')), 'the cancelled edit is never sent').toBe(false);
+      await busyAndSeen();
+    });
+
+    // 🔴 AN ABANDONED EDIT CANNOT FREEZE THE QUEUE: its hold runs out (here
+    // made to, on the database's clock, by e2e/sqfix), the message is queued
+    // again with its ORIGINAL text, the late Save is refused saying so, and
+    // what was typed is not thrown away.
+    test('an edit whose hold ran out reverts to the original text, and its Save is refused', async ({ page }) => {
+      await busyAndSeen();
+      fs.rmSync(tr + '.pasted', { force: true });
+      await openView(page, newHost);
+      const text = `abandoned ${vp.touch ? 'p' : 'd'} ${stamp}`;
+      const late = `never saved ${vp.touch ? 'p' : 'd'} ${stamp}`;
+      await queue(page, text, vp.touch);
+      await openEdit(page, rowIn(page, text, 'queued'), vp.touch);
+      await editBox(page).fill(late);
+      sqfix('lapse', newHost, text);
+      await press(editing(page).getByRole('button', { name: 'Save' }), vp.touch);
+      await expect(page.locator('#mv-note')).toContainText('Not saved: the hold on that message ran out');
+      await expect(page.locator('#mv-note'), 'what was typed is kept').toContainText('Your edited text is in the message box.');
+      await expect(page.locator('#mv-input')).toHaveValue(late);
+      const r = rowIn(page, text, 'queued');
+      await expect(r, 'the original text, queued again').toHaveCount(1);
+      await expect(r.locator('[data-queue-lapsed]'), 'the row says the edit ran out').toContainText('kept its original text');
+      busy(false);
+      await expect.poll(pasted, { message: `the original is sent (log:\n${mirrorLog})`, timeout: 30_000 }).toEqual([`${pane} ${text}`]);
+      // Tidy: the kept text (and its draft) go.
+      await page.locator('#mv-input').fill('');
+      await busyAndSeen();
+    });
+  });
+}
+
+test.describe('edit a queued message without JavaScript, desktop 1280×800', () => {
+  test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false, storageState: { cookies: [], origins: [] } });
+
+  // 🔴 NO SCRIPT: Edit is a form (the server holds the message and redirects
+  // back with it open), Save is a form, and the saved text is what is sent.
+  test('Edit and Save work as forms, and the saved text is sent', async ({ browser }) => {
+    await busyAndSeen();
+    fs.rmSync(tr + '.pasted', { force: true });
+    const setup = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const sp = await setup.newPage();
+    await openView(sp, newHost);
+    const text = 'no-js edit ' + stamp;
+    const edited = 'no-js edited ' + stamp;
+    await queue(sp, text, false);
+    await setup.close();
+
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, javaScriptEnabled: false });
+    const page = await ctx.newPage();
+    await login(page);
+    await page.goto(origin + viewPath(newHost));
+    const r = rowIn(page, text, 'queued');
+    await moreOf(r).click();
+    await itemOf(r, 'Edit').click();
+    await expect(page.locator('#mv-note')).toContainText('Editing: the message is held');
+    await expect(editBox(page)).toHaveValue(text);
+    await editBox(page).fill(edited);
+    await editing(page).getByRole('button', { name: 'Save' }).click();
+    await expect(page.locator('#mv-note')).toHaveText('Saved: the message keeps its place in the queue.');
+    await expect(rowIn(page, edited, 'queued')).toHaveCount(1);
+    busy(false);
+    await expect.poll(pasted, { message: `the saved text is sent (log:\n${mirrorLog})`, timeout: 30_000 }).toEqual([`${pane} ${edited}`]);
+    await ctx.close();
+    await busyAndSeen();
+  });
+});
+
+// MESSAGE DRAFTS IN THE RENDERED VIEW, PER DEVICE (composer_draft.go): what is
+// typed is kept in this browser as it is typed, restored on coming back,
+// cleared once sent or queued — and never offered in another window, another
+// host, or the other view of the same window. On origin/main nothing is kept,
+// so each fails at the first restore.
+const tr2 = path.join(dir, 'eeeeeeee-0003.jsonl');
+const windowsFile = path.join(dir, newHost + '.windows');
+const viewOf = (host: string, w: string) => `/mirror/view?host=${encodeURIComponent(host)}&session=work&window=${encodeURIComponent(w)}`;
+
+for (const vp of [
+  { name: 'phone 390×844 touch', touch: true, use: phone },
+  { name: 'desktop 1280×800', touch: false, use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
+]) {
+  test.describe(`drafts, ${vp.name}`, () => {
+    test.use({ ...vp.use, storageState: { cookies: [], origins: [] } });
+
+    test('a draft survives navigating away and back, is cleared once sent, and is never restored into another window, host or view', async ({ page }) => {
+      await busyAndSeen();
+      fs.rmSync(tr + '.pasted', { force: true });
+      // A second Claude window in the same session of the same host.
+      const before = fs.readFileSync(windowsFile, 'utf8');
+      fs.writeFileSync(tr2, prompt('the second window'));
+      fs.writeFileSync(windowsFile, before + `work|@2|1|0|claude|${Math.floor(Date.now() / 1000) - 60}|${tr2}\n`);
+      try {
+        await openView(page, newHost);
+        const draft = `a draft, two lines ${vp.touch ? 'p' : 'd'} ${stamp}\nand its second line`;
+        await page.locator('#mv-input').fill(draft);
+        // Away (straight away: no wait for the debounce) and back.
+        await page.goto(origin + '/');
+        await page.goto(origin + viewPath(newHost));
+        await expect(page.locator('#mv-input'), 'the draft is back').toHaveValue(draft);
+        // Never into another window of the same session…
+        await page.goto(origin + viewOf(newHost, '@2'));
+        await expect(page.locator('#mv-input'), `the second window's view (log:\n${mirrorLog})`).toBeEnabled({ timeout: 20_000 });
+        await expect(page.locator('#mv-input'), 'another window starts empty').toHaveValue('');
+        // …another host with the same session and window names…
+        await page.goto(origin + viewPath(oldHost));
+        await expect(page.locator('#mv-input')).toBeEnabled({ timeout: 20_000 });
+        await expect(page.locator('#mv-input'), 'another host starts empty').toHaveValue('');
+        // …or the Terminal view of the same window, whose Send reaches another pane.
+        await page.goto(origin + `/mirror/terminal?host=${encodeURIComponent(newHost)}&session=work&window=%401`);
+        await expect(page.locator('#mv-input')).toBeVisible({ timeout: 20_000 });
+        await expect(page.locator('#mv-input'), 'the Terminal view starts empty').toHaveValue('');
+        // CONTROL: the window it was typed for still has it.
+        await page.goto(origin + viewPath(newHost));
+        await expect(page.locator('#mv-input')).toHaveValue(draft);
+
+        // Sent: cleared, and it stays cleared across a navigation.
+        await press(page.locator('#mv-send'), vp.touch);
+        await expect(page.locator('#mv-input')).toHaveValue('');
+        // (The fake records a paste as `<pane> <text>` per line it was given.)
+        await expect.poll(pasted, { message: 'Send pastes it, both lines' }).toEqual([`${pane} ${draft.split('\n')[0]}`, draft.split('\n')[1]]);
+        await page.goto(origin + '/');
+        await page.goto(origin + viewPath(newHost));
+        await expect(page.locator('#mv-input'), 'a sent draft is not restored').toHaveValue('');
+
+        // Queued: cleared too.
+        const queued = `a queued draft ${vp.touch ? 'p' : 'd'} ${stamp}`;
+        await queue(page, queued, vp.touch);
+        await page.goto(origin + '/');
+        await page.goto(origin + viewPath(newHost));
+        await expect(page.locator('#mv-input'), 'a queued draft is not restored').toHaveValue('');
+        await cancelRow(rowIn(page, queued, 'queued'), vp.touch);
+        await expect(rowIn(page, queued, 'cancelled')).toHaveCount(1);
+      } finally {
+        fs.writeFileSync(windowsFile, before);
+      }
+    });
+
+    // 🔴 THE SEND THE BROWSER MAKES ITSELF (the script hands the form over when
+    // its own request gets no answer): the draft is cleared by the page it
+    // comes back to, which says it was sent — not before, and not otherwise.
+    test('a send handed to the browser clears the draft only once the page it lands on says it was sent', async ({ page }) => {
+      await busyAndSeen();
+      fs.rmSync(tr + '.pasted', { force: true });
+      await openView(page, newHost);
+      const text = `handed over ${vp.touch ? 'p' : 'd'} ${stamp}`;
+      // The script's own request gets no answer: it hands the form to the browser.
+      await page.route(/\/mirror\/view\/send(\?|$)/, async (route) => {
+        if (route.request().headers()['x-requested-with']) await route.abort('connectionreset');
+        else await route.continue();
+      });
+      await page.locator('#mv-input').fill(text);
+      await Promise.all([
+        page.waitForURL((u) => u.pathname === '/mirror/view' && u.searchParams.get('notice') === 'sent'),
+        press(page.locator('#mv-send'), vp.touch),
+      ]);
+      await expect(page.locator('#mv-note')).toHaveText('Sent.');
+      await expect(page.locator('#mv-input'), 'the draft is not restored after the send').toHaveValue('');
+      await expect.poll(pasted).toEqual([`${pane} ${text}`]);
+      await page.unroute(/\/mirror\/view\/send(\?|$)/);
+      await page.goto(origin + '/');
+      await page.goto(origin + viewPath(newHost));
+      await expect(page.locator('#mv-input'), 'and it stays gone').toHaveValue('');
+    });
+  });
+}
