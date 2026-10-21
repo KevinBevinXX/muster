@@ -259,11 +259,124 @@ Known gaps:
 
 A window whose pane runs the Hermes CLI (`hermes chat`, or bare `hermes`) is
 listed as a **Hermes window**: a process named `hermes`, a Python running a
-`hermes` launcher, no `gateway` argument, reading the pane's terminal. It has
-no Rendered view yet and its status is unknown, so nothing queued is sent to
-it and Send now refuses it. `muster-mirror -list -windows` prints such a window
-as `hermes <pane> unknown process`. A profile-launched `hermes -p <name> chat`
-is not recognised as one; the paste refusal above still covers it.
+`hermes` launcher, no `gateway` argument, reading the pane's terminal
+(`#{pane_tty}`). A profile-launched `hermes -p <name> chat` is not recognised
+as one; the paste refusal above still covers it. Its card carries the kind
+chip **Hermes** (`kind:hermes` in the filter), whatever its pane's command
+reads. muster never sends into it:
+Send, Queue and Send now all refuse a Hermes window in this release.
+
+**Rendered view, read-only.** A Hermes window whose session the host can name
+(below) opens in a Rendered view of its conversation, read from Hermes's
+session store as it is written: the prompts, the replies, the tool calls and
+their results, and a compact row for what Hermes adds itself (a process
+finishing, a model switch). Thinking is never shown. Its message box is drawn
+disabled and says why: muster does not send to Hermes yet, because Enter there
+can answer a prompt Hermes is showing, such as a command approval. There is no
+send queue. Terminal is one tap away, as for Claude Code. A compression that
+rewrites the conversation redraws the view from the start.
+
+**Which session.** The host finds the window's Hermes session from the
+breadcrumb Hermes writes for its terminal,
+`~/.hermes/terminal-sessions/tty-<terminal>`, and looks it up in Hermes's
+session store, `~/.hermes/state.db`, read-only. A breadcrumb is believed only
+when it is newer than the Hermes process in the pane. A conversation that
+Hermes compressed into a new session is followed to its newest one. 🔴 **After
+`/resume` or `/branch` at the terminal, Hermes leaves the breadcrumb on the old
+session**, which Hermes marks as ended. The window then has no session and its
+status is unknown, until `/new` or a restart of the CLI writes a new
+breadcrumb. muster never shows the abandoned session's status as this window's.
+
+**Status.** Hermes reports no status of its own, so the host reads one that a
+Hermes shell hook writes: `muster-mirror hermes-hook`, one small file per
+session in `~/.muster/hermes-status/` (0700; it holds the status, its time and
+a request's kind and id, never a prompt or a command). `busy` is believed only
+while Hermes holds the conversation's turn lease and the gateway that wrote it
+is running; `idle` only while no lease is held and no message is newer than it.
+Anything else is **unknown**. An unknown window holds the send queue, and its
+card shows no status.
+
+The host reads only these Hermes files: `state.db` (and its `-wal` and `-shm`),
+`terminal-sessions/tty-*`, and `shell-hooks-allowlist.json`. It never opens
+`auth.json`, `.env`, `config.yaml`, `pastes/`, `memories/`, `logs/` or
+`runtime/active_sessions.json`. The Hermes home is `$HERMES_HOME`, else
+`~/.hermes` (`-hermes-home` overrides it).
+
+#### Installing the Hermes status hook
+
+The hook runs inside Hermes's gateway. Hermes runs a configured hook only when
+the exact `(event, command)` pair is in its allowlist,
+`~/.hermes/shell-hooks-allowlist.json`. A configured hook that is not
+allowlisted is skipped, and every new Hermes CLI then stops before its UI on
+`Allow this hook to run? [y/N]:`. So the host's configuration must declare both
+halves, with the same command string. `<muster-mirror>` below is the absolute
+path of the `muster-mirror` binary, for example
+`${pkgs.muster-mirror}/bin/muster-mirror` in Home Manager.
+
+1. **The hooks**, in Hermes's `config.yaml` (with Home Manager, through the
+   `hermes-agent` module's `settings`, as `settings.hooks`):
+
+   ```yaml
+   hooks:
+     pre_llm_call:            [{command: "<muster-mirror> hermes-hook", timeout: 5}]
+     on_human_input_request:  [{command: "<muster-mirror> hermes-hook", timeout: 5}]
+     on_human_input_resolved: [{command: "<muster-mirror> hermes-hook", timeout: 5}]
+     on_session_end:          [{command: "<muster-mirror> hermes-hook", timeout: 5}]
+     on_session_finalize:     [{command: "<muster-mirror> hermes-hook", timeout: 5}]
+   ```
+
+2. **The allowlist entries**: one `{event, command}` approval per hook above.
+   Write them with the allowlist writer, in a Home Manager activation step
+   ordered after the `hermes-agent` module's own:
+
+   ```sh
+   <muster-mirror> hermes-allowlist -command "<muster-mirror> hermes-hook"
+   ```
+
+   It writes the way Hermes does: under Hermes's lock
+   (`shell-hooks-allowlist.json.lock`), as a real 0600 file through a temp file
+   and a rename. Never link a read-only file there: Hermes writes the same file
+   when someone answers `[y/N]` (a Home Manager link into the Nix store is
+   replaced by a real file; any other symlink there is refused). It keeps every
+   other approval, removes entries for an older `muster-mirror hermes-hook`
+   path (every Nix upgrade changes it), carries nothing but approvals over,
+   and changes nothing when the five pairs are already there. It refuses to
+   replace an allowlist that is not valid JSON.
+
+3. **The daemon** must run with `-write-hook-config`
+   (`MUSTER_MIRROR_WRITE_HOOK_CONFIG=1`), as for `muster-mirror ask`, so the hook
+   writes where the daemon reads (`-hermes-status-dir`, default
+   `~/.muster/hermes-status`).
+
+The hook prints nothing, always exits 0, and gives up after a second rather
+than hold Hermes up. If it cannot write, the window's status is unknown, never
+idle.
+
+#### Diagnosing a Hermes window
+
+`muster-mirror -list -windows` prints a Hermes window as
+`hermes <pane> <state> <session id> <source>`, with `-` for the session of a
+window that has no rendered view and `unknown` for a status muster does not
+believe. `muster-mirror -list -hermes` says why:
+
+- `hook-declared`: each `muster-mirror hermes-hook` command Hermes's
+  `config.yaml` declares, per event (only its `hooks:` section is read).
+  `hook-config` says when it declares none, or several.
+- `hook-consent`, per declared command: `ok for <command>`, or `MISSING for
+  <command>` with the events whose `(event, command)` pair is not in the
+  allowlist, and the command that fixes it (`muster-mirror hermes-allowlist
+  -hermes-home … -command <the declared command>`; none when several are
+  declared). `hook-undeclared` names events the config does not hook;
+  `hook-other` names allowlisted entries of a command that is not declared
+  (an older binary's, which the next `hermes-allowlist` removes).
+- per Hermes window: its pane, CLI process, terminal, session and status; the
+  `breadcrumb` (its session and time, or `none`); the `lineage` and how its tip
+  ended; the newest `status-file`; and, when there is one, the `no-view` and
+  `unknown` reasons (no breadcrumb, a breadcrumb older than the CLI, a switched
+  session, no status file, a stale busy, an idle under a live turn).
+
+It does not check the Hermes gateway's version (`code_sha`): that needs the
+gateway connection a later release adds.
 
 muster also refuses every send into a window the host reports as Hermes on
 its own side, before anything reaches the host. A Hermes the host does not

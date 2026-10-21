@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/ZacxDev/muster/internal/atomicfile"
 )
 
 // WHERE `muster-mirror ask` FINDS MUSTER: the same token and URL the host
@@ -41,6 +43,19 @@ type hookConfig struct {
 	URL       string `json:"url"`
 	AllowHTTP bool   `json:"allowHttp,omitempty"`
 	TokenFile string `json:"tokenFile,omitempty"`
+	// HermesStatusDir is where the daemon reads Hermes status files from:
+	// where `muster-mirror hermes-hook`, run by Hermes's gateway with none of
+	// the service's environment, writes them (hermes.go).
+	HermesStatusDir string `json:"hermesStatusDir,omitempty"`
+}
+
+// hookConfigPathRaw is MUSTER_MIRROR_HOOK_CONFIG, else defaultHookConfig,
+// unexpanded.
+func hookConfigPathRaw(getenv func(string) string) string {
+	if p := getenv(envHookConfig); p != "" {
+		return p
+	}
+	return defaultHookConfig
 }
 
 // hookConfigPath is where the hook config lives: MUSTER_MIRROR_HOOK_CONFIG,
@@ -61,27 +76,10 @@ func writeHookConfig(path string, c hookConfig) error {
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp") // 0600
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	_, werr := f.Write(append(b, '\n'))
-	cerr := f.Close()
-	if werr == nil {
-		werr = cerr
-	}
-	if werr == nil {
-		werr = os.Rename(tmp, path)
-	}
-	if werr != nil {
-		_ = os.Remove(tmp)
-	}
-	return werr
+	return atomicfile.Write(path, append(b, '\n'))
 }
 
 // readHookConfig reads what the daemon recorded.
@@ -95,6 +93,20 @@ func readHookConfig(path string) (hookConfig, error) {
 		return c, fmt.Errorf("%s: %w", path, err)
 	}
 	return c, nil
+}
+
+// homePath expands a leading ~/ like expandHome, and says false when it
+// cannot: there is no home directory ($HOME unset). Never a literal "~"
+// path, which would land under the working directory.
+func homePath(p string) (string, bool) {
+	if rest, ok := strings.CutPrefix(p, "~/"); ok {
+		h, err := os.UserHomeDir()
+		if err != nil || h == "" {
+			return "", false
+		}
+		return filepath.Join(h, rest), true
+	}
+	return p, true
 }
 
 // expandHome expands a leading ~/ (a path from an environment variable or a

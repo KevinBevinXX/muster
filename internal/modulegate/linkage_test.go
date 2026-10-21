@@ -62,6 +62,10 @@ var notLinkedLedger = map[string]string{
 	"internal/gotrue/gotruetest": "the in-memory GoTrue the Go tests drive the session tier " +
 		"against. Imported only by _test.go files: a fake identity provider linked into the " +
 		"server would be a way to mint sessions.",
+	"internal/hermeshost/hermestest": "fake Hermes homes (a scratch state.db from the pinned schema, " +
+		"breadcrumbs, decoy secret files) for the Hermes mirroring tests. Imported only by _test.go files and " +
+		"the browser suite's build-tagged fake host (cmd/muster-mirror's e2emirror build, never shipped): " +
+		"a writer of Hermes's state.db linked into muster-mirror would break its read-only promise.",
 	"internal/uploads/uploadstest": "in-memory fakes of the upload row store and object store, for the " +
 		"route tests. Imported only by _test.go files: a row store with no row-level security linked " +
 		"into the server would be a way round the uploads table's owner isolation.",

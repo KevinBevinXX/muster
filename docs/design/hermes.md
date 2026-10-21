@@ -1,6 +1,6 @@
 # Design: Hermes mirroring and the `hermes` agent kind
 
-**Status: proposed, with Phases 0 and 1 done.** Phase 1 is implemented: the
+**Status: proposed, with Phases 0, 1 and 2 done.** Phase 1 is implemented: the
 [host paste guard](#every-paste-into-a-hermes-pane-is-gated-on-the-host)
 (Phase 1a, without its chrome check, moved to Phase 3), and the
 [runtime seam](#a-runtime-seam-instead-of-claude-only-code), the
@@ -8,9 +8,13 @@
 what it built differently from this page is under
 [Phase 1 as built](#phase-1-as-built)). The strict mirroring identity rule,
 moved to Phase 2 by operator decision, was pulled forward from Phase 2 into 1b
-by coordinator decision, to avoid churn; Phase 2 builds on it. A Hermes window is detected and
-listed, with no rendered view and no send path; nothing of Phases 2–5 is
-implemented. The
+by coordinator decision, to avoid churn; Phase 2 builds on it. Phase 2 is
+implemented (see [Phase 2 as built](#phase-2-as-built)): a Hermes window's
+session is resolved from its terminal's breadcrumb and its status from the
+`hermes-hook` status files; it has a read-only rendered view, the Hermes kind
+chip and `-list -hermes`; there is no send path. The Home Manager declaration
+of the hook and its allowlist entries is the host configuration's (devrc).
+Nothing of Phases 3–5 is implemented. The
 version target is **decided** (below). Every other section describes the design
 the Phase 0 spikes support; the [Phase 0 results](#phase-0-results) table names
 what each spike changed. Where this page states how muster works today, the
@@ -92,8 +96,9 @@ The design, in one line each:
   `hermes proxy`, `hermes mcp serve`.
 - Running Hermes's own docker/ssh/modal terminal backends, or its `hermes egress`
   credential-injecting proxy, inside an agent pod.
-- Writing Hermes's database or config. muster-mirror is read-only on every
-  Hermes file.
+- Writing Hermes's database or config. muster-mirror never writes Hermes
+  data (its read-only SQLite connection does create the `-wal`/`-shm` files a
+  WAL reader needs when they are missing, as any reader does).
 - Sending through the gateway viewer (refuted, S1).
 - A Terminal view for `hermes` agent pods in the first release.
 - Supporting more than one Hermes commit. There is one pinned sha.
@@ -496,6 +501,162 @@ in these ways, each decided while building it:
   Hermes message yet; Phase 3), the kind chip and listing (Phase 2), and
   focus refresh for Hermes windows (it needs the transcript, Phase 2).
 
+### Phase 2 as built
+
+Phase 2 (`internal/hermeshost`, `internal/mirrorhost`'s Hermes runtime,
+`muster-mirror hermes-hook` and `hermes-allowlist`) differs from the sections
+below in these ways, each decided while building it:
+
+- **One package holds every Hermes path.** `internal/hermeshost/home.go` is
+  the only code that names a path under the Hermes home
+  (`TestOnlyHomeGoReadsTheHermesHome`), and `TestTheHermesHomeLedger` runs the
+  whole read path under inotify against a home planted with every
+  secret-bearing file, failing on any open outside `ReadPaths`.
+  🔴 **`ReadPaths` adds `shell-hooks-allowlist.json`** to the list under
+  [secret hygiene](#secret-hygiene): `-list -hermes` reads it to name a
+  consent mismatch. It holds `(event, command)` pairs and timestamps, no
+  secret.
+- 🔴 **The allowlist writer is a muster-mirror verb, `hermes-allowlist`.** The
+  operator decision has muster-mirror ship only `hermes-hook`, with the
+  allowlist written by a Home Manager activation script. That script still
+  does the writing — but it runs `muster-mirror hermes-allowlist -command
+  "<muster-mirror> hermes-hook"` rather than re-implementing the lock, the
+  merge and the rename in shell. It is the one Hermes file muster ever writes,
+  and the daemon never does. It refuses to replace an allowlist that is not
+  JSON, keeps every other APPROVAL and nothing else (only the approvals
+  schema is carried over: another key or field is dropped, so foreign content
+  is never copied), and removes entries for an older `muster-mirror
+  hermes-hook` path — on Nix every upgrade changes the binary's store path,
+  and each switch would otherwise leave a growing list of consents for
+  binaries that no longer exist. It writes through no symlink except a Home
+  Manager link into the Nix store, which it replaces with a real file.
+  Measured against the pin: Hermes's own
+  `allowlisted_pairs()` reads the five pairs it writes, and a later
+  `_record_approval` under the same lock keeps them.
+- **The status file's writer is the gateway.** The hook process exits at
+  once, so `writer_pid`/`writer_start` record its parent, the gateway that
+  runs every hook (S2); a busy status whose gateway is gone is unknown.
+- **The driver is `modernc.org/sqlite` v1.59.0**, the newest release that
+  builds with Go 1.25 (v1.60 needs 1.26). The stripped `muster-mirror` grows
+  from 8,724,745 to 12,722,441 bytes (+46%) with it, and to 13,054,217
+  (+50%) with the YAML decoder `-list -hermes` reads `config.yaml`'s hooks
+  with.
+- **The lineage walk is Hermes's own chain step**
+  (`P:hermes_state_compression.py`, `_CHAIN_STEP_SQL`): a child continues a
+  parent only when the parent ended by compression AND the child carries no
+  `_branched_from`, `_delegate_from` or `_reset_from` marker and is not a
+  `tool` session. ⚠ Hermes also recognises a *legacy* reset child by its end
+  reason; this walk does not.
+- **The breadcrumb's `ts` is compared with the process's start** as boot time
+  (`btime`, 1 s resolution) plus its start ticks at 100 per second: up to a
+  second early, so a breadcrumb the previous CLI on the same terminal wrote in
+  that second could pass.
+- **`#{pane_tty}` joins the one window listing**, so the strict rule matches
+  the CLI's stdin against the pane's terminal as tmux reports it, and the
+  breadcrumb is named by it. A pane looked up without it falls back to the
+  root process's stdin, as in 1b.
+- **An `on_human_input_request` of an unknown kind writes nothing**, so the
+  status stays what it was; a `request_id` that is not 1–64 of
+  `[0-9A-Za-z_-]` is dropped from the file.
+- **The status files are never pruned** (round-0 decision D1). The gateway
+  also runs API, cron and bot sessions, each leaving a ~200-byte file.
+- **The later hook ARRIVAL wins.** Hermes runs a session's hooks
+  synchronously, so arrival order is event order: a status written when the
+  file already holds a `since` at or after the new one is written at that
+  `since` + 1 ms (two events in one millisecond, or a clock stepped back),
+  never dropped.
+- **The hook decodes its payload streaming, with no size cap**:
+  `pre_llm_call` carries the whole conversation, and the earlier 1 MiB cap
+  made a long conversation never show busy. Only `hook_event_name`,
+  `session_id`, `extra.kind` and `extra.request_id` are kept; every other
+  value is skipped token by token. A payload it cannot read is dropped and
+  said on stderr. With no `HOME` (and no recorded directory) it writes
+  nothing, loudly, never a literal `~` directory.
+- **No read follows a symlink or waits on a FIFO.** Breadcrumbs, status
+  files and the allowlist are opened `O_NOFOLLOW|O_NONBLOCK|O_NOCTTY` and
+  must be regular files; a symlinked `state.db` is refused (it would point the
+  reader at another database); the listing's deadline bounds the reads; no
+  error quotes a file's content (a JSON decoder's error does: "invalid
+  character 'S'"). The ledger test plants a breadcrumb symlinked to
+  `auth.json` and a FIFO.
+- **A failed schema check is retried** once a minute, so a `state.db` that
+  was not yet the expected schema recovers without a restart.
+- **`state.db` replaced under the connection is reopened** (by inode): Hermes
+  keeps backups, and a restore replaces the file.
+- **The rendered view is read-only and has no `Runtime.Stream` yet.** The host
+  routes a watch to the Hermes tail when the window it names runs Hermes NOW
+  (`mirrorhost`'s `hermesTail`), and the hub asks for one only for a Hermes
+  window whose host named its session (`Window.AgentSession`), so a Phase 1
+  host is never asked. The page's composer is drawn disabled with its reason
+  and no queue; every send is still refused at the hub (`hermesSend`) and on
+  the host (the paste guard). `Stream` joins the seam when Phase 3 gives the
+  rendered view a send to share it with.
+- 🔴 **A Hermes view never resumes.** A reconnect always gets a Reset backfill:
+  an in-place rewrite moves `transcript_revision` but no id, so a cursor the
+  page kept cannot prove the rows before it unchanged.
+- **The scrollback collapses compaction copies by `message_uid` ONLY**, the
+  live copy first, then the newest, in first-seen order: Hermes's own
+  `_dedupe_display_generations` without its removed-rows refinement (a rewound
+  message's older copy can still show until the next reset) and without its
+  display-identity key or `absorbed_message_uids` (a copy with a different
+  uid shows twice). ⚠ **Ordered by id, not `display_order`**: this matches
+  upstream's multi-segment projection (`display_order` is per segment and not
+  comparable across a lineage), and departs from its single-segment paging,
+  which groups by `display_order`.
+- **Rows nobody typed are never drawn**: a compaction summary
+  (`_compressed_summary=1`, a user-role row) and a model-only row
+  (`display_metadata.model_only`, a micro-compaction merge; decoded as Hermes
+  does, an object or a double-encoded string), as upstream never renders
+  them (`P:hermes_state_messages.py:1090`, `P:gateway/session_controls.py:106`).
+- 🔴 **A display kind stamped after a row was drawn is redrawn.** Hermes can
+  write an `auto_continue` or `process_complete` row and mark it afterwards;
+  no fingerprint column moves. The host re-reads the display keys
+  (`display_kind`, `display_metadata`, the summary flag) of the newest 64
+  drawn rows on every poll and starts the view over when one changed, so a
+  turn the model wrote never stays the person's bubble. (Holding user rows
+  back until the turn ends would delay every prompt, and a stamp can come
+  later than that.)
+- **One rendered-view loop** (`runView`) serves both streams; which one
+  serves a watch is decided in the watch's own goroutine, never on the
+  connection's read loop. The prompt index
+  covers every prompt of the conversation, from a light pass over the first
+  1,024 bytes of each row.
+- **A tail read that the fingerprint does not explain resets the view**, and so
+  does a lineage that changed (a rotation): reading a child's rows as appends
+  would draw the re-inserted context twice.
+- **`-list -hermes`** reports the hook's consent (the five pairs in the
+  allowlist, per command `config.yaml` declares, and entries for another
+  binary) and per window the breadcrumb,
+  lineage, newest status file and the no-view and unknown reasons. It does not
+  report the gateway's `code_sha`: that needs the viewer (Phase 4). The kind is
+  `Hermes` for every Hermes window, with a session or without.
+- **Measured once against the pin** (a scratch `HERMES_HOME` and tmux server,
+  the stub model, 2026-10-20): with the hooks and the allowlist written by
+  `hermes-allowlist`, a new CLI started with no `[y/N]` prompt; the window
+  read idle, busy through an 8 s turn, `waiting` (kind `approval`, no command
+  in the file) on the approval modal, idle after a typed deny; the real rows
+  rendered as prompts, replies, a `terminal` call and its failed result; and
+  after `/branch` the window had no session and an unknown status while the
+  abandoned session's file still said idle.
+- **Focus refresh for Hermes windows is built** (round-0 decision): keyed by
+  the runtime-qualified session id (`mirror:hermes:<id>`), refreshed from the
+  window's rendered-view backfill like a Claude Code window's, shown on its
+  card and in `fleet_list`/`focus_search`. Routing, the send queue and the
+  sessions overview stay Claude-only: each of those is a way to send.
+- **The gateway's `code_sha` is not checked by `-list -hermes`**: deferred to
+  Phase 4, which attaches the viewer that reports it (round-0 decision Q1).
+- **`-list -hermes` reads the hooks Hermes ACTUALLY declares** (round-1 audit):
+  `config.yaml`'s `hooks:` section only, decoded into a struct with no other
+  field, by the diagnostic alone (`DiagnosticReadPaths`; the daemon never
+  opens `config.yaml`). Consent is reported per declared muster-mirror
+  command — "ok for <command>" — and a fix (`hermes-allowlist -hermes-home …
+  -command <declared>`) is printed only for the one declared command: since
+  the writer removes other muster-mirror entries, a fix naming any other
+  command would remove the declared one's consent.
+- **Notices** are a new `cctranscript.NoticeHermes` source, drawn as the
+  harness's compact rows; a tool result is a failure only when its JSON says
+  so (`error`, or a non-zero `exit_code`), since Hermes records no `is_error`.
+
 ### Pane to session resolution
 
 **Recognising a Hermes CLI** (S10). A process is a Hermes CLI only if all hold:
@@ -636,6 +797,7 @@ Streaming deltas are not persisted.
 | `display_kind='failed_turn'`, or an error `finish_reason` | `error` |
 | `display_kind` `process_complete`, `async_delegation_complete`, `model_switch`, `steer`, `auto_continue`, `skill_invocation`, `personality_switch`, `internal_notification` | `notice`, naming the kind |
 | `display_kind='hidden'`, `role='system'`, `role='session_meta'` | nothing |
+| `_compressed_summary=1` (a compaction summary), `display_metadata.model_only` (a merged turn) | nothing |
 | a reasoning-only reply (empty `content`) | nothing |
 
 An unknown `display_kind` renders as a `notice` naming it, never as user text.
@@ -712,9 +874,11 @@ hooks (`hooks:` in `config.yaml`) receive JSON on stdin with
     without the rename a reader can see a half-written file.
   - **On a mismatch** (a pair missing or with a different command): the gateway
     skips that hook with a warning and every new foreground CLI stops on the
-    `[y/N]` prompt. muster-mirror's `-list -hermes` compares the declared hooks
-    with the allowlist and names the mismatch; the affected sessions read as
-    unknown; the next Home Manager switch rewrites the file.
+    `[y/N]` prompt. muster-mirror's `-list -hermes` reads the hooks
+    `config.yaml` declares (its `hooks:` section only), compares each declared
+    muster-mirror command with the allowlist and names the mismatch; the
+    affected sessions read as unknown; the next Home Manager switch rewrites
+    the file.
 - **Consent** (S2). Pre-seeded allowlist entries hold in an auto-started
   gateway, with no prompt. 🔴 The declaration must allowlist **exactly** every
   `(event, command)` pair it configures: a configured hook that is not
@@ -1598,7 +1762,7 @@ Efforts are rough engineer-days, including tests and docs. Phase 0 is done.
 |---|---|---|---|
 | ~~0~~ | Spikes S1–S11 | done | — |
 | ~~1~~ | Runtime seam: `mirrorhost.Runtime` for Claude Code and Hermes, Claude behind it, `Window.Runtime`/`AgentSession` with the wider id bound. 🔴 **The host paste guard**, first, with the broad process identity (**done**, 1a). The strict mirroring identity rule moves to Phase 2 and the chrome check to Phase 3 (operator decision); the strict rule was later pulled forward into 1b (coordinator decision, **done**). [Server changes](#server-changes): runtime-aware `AgentState` and waiting set, Send now refusing unknown and busy for Hermes, the `hermesSend` switch, the migration widening the session-key checks of 0020, 0021, 0022 and 0025 (**done**, 1b; see [as built](#phase-1-as-built)). No behaviour change for Claude Code. | done | — |
-| **2** | Read-only Hermes mirroring: the strict mirroring identity rule (moved from Phase 1; then pulled forward into 1b by coordinator decision, and landed there — Phase 2 builds on it), breadcrumb locator with the end-reason staleness rule (no view, unknown status), SQLite reader (compaction, compression-only lineage), renderer, the `hermes-hook` command and its status files with lease and newest-row checks, the Home Manager declaration and the locking allowlist writer, mismatch diagnostics, listing and kind chip, secret-path ledger, `-list -hermes` | 6–8 | 1 |
+| ~~2~~ | (**done**, see [as built](#phase-2-as-built)) Read-only Hermes mirroring: the strict mirroring identity rule (moved from Phase 1; then pulled forward into 1b by coordinator decision, and landed there — Phase 2 builds on it), breadcrumb locator with the end-reason staleness rule (no view, unknown status), SQLite reader (compaction, compression-only lineage), renderer, the `hermes-hook` command and its status files with lease and newest-row checks, the Home Manager declaration and the locking allowlist writer, mismatch diagnostics, listing and kind chip, secret-path ledger, `-list -hermes` | 6–8 | 1 |
 | **3** | Gated pane send **and its live harness**. `make test-livehermes`: the pinned Hermes in a scratch tmux server and home; fixtures for every blocking state, and from them the paste guard's chrome check (moved from Phase 1), including the palette, model picker and stash; the overlay-state ledger; measuring the Escape sequence (with the abort rule and waits above `timeoutlen`) against every overlay at its non-default stages (filtered picker, reasoning stage, palette and stash together, the picker opened over a draft, vi mode); re-measuring under load the false-idle slack, the 150 ms Enter margin and the queue gap. Then the send: per-runtime server gates, host `CheckSend` with the image-region and input-line rules and the bounded Escape sequence, the `hermesSend` switch on both sides, the `/`, `!` and trailing-`\` refusals, collapse-aware post-paste check, database-confirmed submit with "may have been submitted", Queue and Send now for Hermes, host docs. Send stays off until these measurements are done and the harness is green; then the operator enables it per host, with the residual cases named in the host docs. | 10–12 | 2 |
 | **4** | Questions and approvals: clarify cards from the DB, approval and sudo attention items from the hooks, viewer discovery through `gateway.sock.path`, attach-to-answer, `approval.respond` with the stale-modal card, measuring the viewer's clarify answer (and wiring it if it passes), the hygiene filters; harness cases for each | 5–7 | 2, 3 |
 | **5** | `hermes` kind: `hermesd` (runs, events, exact approval body, relay timeout, a stable API key on the volume, intent-before-POST with the exact body and `Idempotency-Key`, 409 and retention handling, `resolve-unknown` recovery on every gateway start, SIGTERM handling), the Nix image without ffmpeg, `agentspec`, migration, config, smoke test like `cc-smoke`, a first run in a real pod | 10–12 | 1 |

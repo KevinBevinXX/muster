@@ -32,31 +32,31 @@ func TestParseWindowsIsOneEntryPerWindowFromItsActivePane(t *testing.T) {
 	out := "" +
 		// session "scratch2": window @7 at index 3 (active), @4 at index 1, and a
 		// two-pane window @9 at index 8 whose SECOND pane is the active one.
-		"1\t@7\t3\t1\t%21\t4101\t1791903700\t1791903900\tclaude\tscratch2\n" +
-		"1\t@4\t1\t0\t%14\t4102\t1791903800\t1791903900\tzsh\tscratch2\n" +
-		"0\t@9\t8\t0\t%30\t4103\t1791903650\t1791903900\tzsh\tscratch2\n" +
-		"1\t@9\t8\t0\t%31\t4104\t1791903650\t1791903900\topencode\tscratch2\n" +
+		"1\t@7\t3\t1\t%21\t4101\t1791903700\t1791903900\tclaude\t/dev/pts/121\tscratch2\n" +
+		"1\t@4\t1\t0\t%14\t4102\t1791903800\t1791903900\tzsh\t/dev/pts/114\tscratch2\n" +
+		"0\t@9\t8\t0\t%30\t4103\t1791903650\t1791903900\tzsh\t/dev/pts/130\tscratch2\n" +
+		"1\t@9\t8\t0\t%31\t4104\t1791903650\t1791903900\topencode\t/dev/pts/131\tscratch2\n" +
 		// another session, one window, the session's activity OLDER than the window's.
-		"1\t@2\t0\t1\t%5\t4105\t1791903999\t1791903100\tvim\ta b: c\n" +
+		"1\t@2\t0\t1\t%5\t4105\t1791903999\t1791903100\tvim\t/dev/pts/105\ta b: c\n" +
 		// a viewer session's rows (it links scratch2's windows): never listed.
-		"1\t@7\t3\t0\t%21\t4101\t1791903700\t1791903000\tclaude\tmuster-view-0123456789ab\n" +
-		"1\t@4\t1\t1\t%14\t4102\t1791903800\t1791903000\tzsh\tmuster-view-0123456789ab\n" +
+		"1\t@7\t3\t0\t%21\t4101\t1791903700\t1791903000\tclaude\t/dev/pts/121\tmuster-view-0123456789ab\n" +
+		"1\t@4\t1\t1\t%14\t4102\t1791903800\t1791903000\tzsh\t/dev/pts/114\tmuster-view-0123456789ab\n" +
 		// junk: too few fields, a non-id window, a non-pane, a bad index, a bad pid,
 		// and a name tmux would never print (a control character).
-		"1\t@1\t0\t1\t%1\t1\t1\t1\tzsh\n" +
-		"1\t7\t0\t1\t%1\t10\t1\t1\tzsh\tbadid\n" +
-		"1\t@1\t0\t1\t1\t10\t1\t1\tzsh\tbadpane\n" +
-		"1\t@1\tx\t1\t%1\t10\t1\t1\tzsh\tbadindex\n" +
-		"1\t@1\t0\t1\t%1\t0\t1\t1\tzsh\tbadpid\n" +
-		"1\t@1\t0\t1\t%1\t10\t1\t1\tzsh\tbad\x07name\r\n"
+		"1\t@1\t0\t1\t%1\t1\t1\t1\tzsh\t/dev/pts/101\n" +
+		"1\t7\t0\t1\t%1\t10\t1\t1\tzsh\t/dev/pts/101\tbadid\n" +
+		"1\t@1\t0\t1\t1\t10\t1\t1\tzsh\t/dev/pts/999\tbadpane\n" +
+		"1\t@1\tx\t1\t%1\t10\t1\t1\tzsh\t/dev/pts/101\tbadindex\n" +
+		"1\t@1\t0\t1\t%1\t0\t1\t1\tzsh\t/dev/pts/101\tbadpid\n" +
+		"1\t@1\t0\t1\t%1\t10\t1\t1\tzsh\t/dev/pts/101\tbad\x07name\r\n"
 	got := parseWindows(out)
 	want := []WindowInfo{
-		{Session: "a b: c", ID: "@2", Index: 0, Active: true, Pane: "%5", PanePID: 4105, Activity: 1791903999, Command: "vim"},
-		{Session: "scratch2", ID: "@4", Index: 1, Pane: "%14", PanePID: 4102, Activity: 1791903800, Command: "zsh"},
+		{Session: "a b: c", ID: "@2", Index: 0, Active: true, Pane: "%5", PanePID: 4105, TTY: "/dev/pts/105", Activity: 1791903999, Command: "vim"},
+		{Session: "scratch2", ID: "@4", Index: 1, Pane: "%14", PanePID: 4102, TTY: "/dev/pts/114", Activity: 1791903800, Command: "zsh"},
 		// The ACTIVE window takes the session's activity when that is newer (a
 		// client switched to it); a background window never does.
-		{Session: "scratch2", ID: "@7", Index: 3, Active: true, Pane: "%21", PanePID: 4101, Activity: 1791903900, Command: "claude"},
-		{Session: "scratch2", ID: "@9", Index: 8, Pane: "%31", PanePID: 4104, Activity: 1791903650, Command: "opencode"},
+		{Session: "scratch2", ID: "@7", Index: 3, Active: true, Pane: "%21", PanePID: 4101, TTY: "/dev/pts/121", Activity: 1791903900, Command: "claude"},
+		{Session: "scratch2", ID: "@9", Index: 8, Pane: "%31", PanePID: 4104, TTY: "/dev/pts/131", Activity: 1791903650, Command: "opencode"},
 	}
 	// The non-active panes are checked by TestParseWindowsKeepsEveryPaneOfASplit.
 	strip := func(w WindowInfo) WindowInfo { w.panes = nil; return w }
@@ -759,18 +759,18 @@ func otherClaudeAtBound(i int) []ClaudePane {
 // beside its active one (what Windows locates Claude sessions in, so one in a
 // split resolves), each in its own window; a malformed one is dropped.
 func TestParseWindowsKeepsEveryPaneOfASplit(t *testing.T) {
-	out := "0\t@3\t1\t1\t%9\t5009\t1\t1\tclaude\twork\n" +
-		"1\t@3\t1\t1\t%7\t5007\t1\t1\tzsh\twork\n" +
-		"0\t@3\t1\t1\t%10\t5010\t1\t1\tvim\twork\n" +
-		"0\t@4\t2\t0\t%11\t5011\t1\t1\tzsh\twork\n" +
-		"1\t@4\t2\t0\t%12\t5012\t1\t1\tzsh\twork\n" +
-		"0\t@3\t1\t1\tnotapane\t5013\t1\t1\tzsh\twork\n"
+	out := "0\t@3\t1\t1\t%9\t5009\t1\t1\tclaude\t/dev/pts/109\twork\n" +
+		"1\t@3\t1\t1\t%7\t5007\t1\t1\tzsh\t/dev/pts/107\twork\n" +
+		"0\t@3\t1\t1\t%10\t5010\t1\t1\tvim\t/dev/pts/110\twork\n" +
+		"0\t@4\t2\t0\t%11\t5011\t1\t1\tzsh\t/dev/pts/111\twork\n" +
+		"1\t@4\t2\t0\t%12\t5012\t1\t1\tzsh\t/dev/pts/112\twork\n" +
+		"0\t@3\t1\t1\tnotapane\t5013\t1\t1\tzsh\t/dev/pts/999\twork\n"
 	got := parseWindows(out)
 	if len(got) != 2 || got[0].Pane != "%7" || got[1].Pane != "%12" {
 		t.Fatalf("%+v", got)
 	}
-	if !reflect.DeepEqual(got[0].panes, []pane{{Session: "work", ID: "%9", PID: 5009}, {Session: "work", ID: "%10", PID: 5010}}) ||
-		!reflect.DeepEqual(got[1].panes, []pane{{Session: "work", ID: "%11", PID: 5011}}) {
+	if !reflect.DeepEqual(got[0].panes, []pane{{Session: "work", ID: "%9", PID: 5009, TTY: "/dev/pts/109"}, {Session: "work", ID: "%10", PID: 5010, TTY: "/dev/pts/110"}}) ||
+		!reflect.DeepEqual(got[1].panes, []pane{{Session: "work", ID: "%11", PID: 5011, TTY: "/dev/pts/111"}}) {
 		t.Fatalf("other panes: %+v / %+v", got[0].panes, got[1].panes)
 	}
 }

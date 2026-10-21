@@ -43,6 +43,12 @@ type SessionView struct {
 	// entry's pane (Window.ClaudeSession), "" for none — always "" for a
 	// per-session host's entry. What its focus is keyed by.
 	ClaudeSession string
+	// Runtime is the window's non-Claude agent runtime (Window.Runtime:
+	// RuntimeHermes, or ""), and AgentSession that runtime's session id
+	// (Window.AgentSession), "" when the host names none — for Hermes, when
+	// the window has no rendered view.
+	Runtime      string
+	AgentSession string
 	// Qualifier is what the entry's Title needs beside it to be told apart from
 	// every OTHER entry listed with it ("" = its Title is already unique). Set
 	// by Ordered (qualify) and only there; a SessionView from HostView.Entries
@@ -155,8 +161,31 @@ func (s SessionView) Title() string {
 }
 
 // HasRenderedView reports whether the entry has a rendered view: a connected
-// v2 host reporting Claude Code in its pane.
-func (s SessionView) HasRenderedView() bool { return s.Online && s.Rendered && s.Claude }
+// v2 host reporting Claude Code in its pane — or Hermes, with the session it
+// shows (only a host that can stream a Hermes conversation names one).
+func (s SessionView) HasRenderedView() bool {
+	return s.Online && s.Rendered && (s.Claude || s.HermesView())
+}
+
+// SessionKey is the key the entry's conversation is stored by (a focus):
+// a Claude session id as itself, a Hermes one runtime-qualified
+// ("hermes:<id>", Window.SessionKey's rule); "" when the entry names none.
+func (s SessionView) SessionKey() string {
+	switch {
+	case s.Claude:
+		return s.ClaudeSession
+	case s.HermesView():
+		return HermesKeyPrefix + s.AgentSession
+	}
+	return ""
+}
+
+// HermesView reports whether the entry is a Hermes window whose host names
+// its conversation: one with a rendered view (read-only: muster sends nothing
+// into Hermes before Phase 3).
+func (s SessionView) HermesView() bool {
+	return !s.Claude && s.Runtime == RuntimeHermes && s.AgentSession != ""
+}
 
 // CanPaste reports whether a message can be sent into the entry's active pane
 // from the Terminal view (PasteActivePane): the host is connected and
@@ -181,18 +210,24 @@ var shells = []string{"ash", "bash", "csh", "dash", "fish", "ksh", "nu", "pwsh",
 // The kinds Kind names itself. Anything else it returns is the command.
 const (
 	KindClaudeCode = "Claude Code"
-	KindOpenCode   = "opencode"
-	KindShell      = "shell"
+	// KindHermes: the host reports a Hermes CLI in the pane
+	// (Window.Runtime), whether or not it names the session.
+	KindHermes   = "Hermes"
+	KindOpenCode = "opencode"
+	KindShell    = "shell"
 )
 
 // Kind is what runs in the entry's pane, as a list names it: KindClaudeCode
-// when the host resolved a Claude Code session there, KindOpenCode / KindShell
+// when the host resolved a Claude Code session there, KindHermes when it
+// reports a Hermes CLI (its command reads python3.14, S10), KindOpenCode / KindShell
 // from the pane's command, else the command itself; "" when the host said
 // nothing (a per-session host, which reports no command).
 func (s SessionView) Kind() string {
 	switch {
 	case s.Claude:
 		return KindClaudeCode
+	case s.Runtime == RuntimeHermes:
+		return KindHermes
 	case s.Command == "opencode":
 		return KindOpenCode
 	case slices.Contains(shells, s.Command):
@@ -225,6 +260,7 @@ func (h HostView) Entries() []SessionView {
 			e := base
 			e.Session, e.Window, e.Index, e.Active = w.Session, w.ID, w.Index, w.Active
 			e.Label, e.Command, e.Activity, e.Claude, e.ClaudeSession = w.Label, w.Command, w.Activity, w.Claude, w.ClaudeSession
+			e.Runtime, e.AgentSession = w.Runtime, w.AgentSession
 			e.Repo = h.Repos[w.ID]
 			out = append(out, e)
 		}

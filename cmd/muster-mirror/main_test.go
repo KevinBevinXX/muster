@@ -147,18 +147,18 @@ func TestListClaudeIsOneRowPerClaudeWINDOW(t *testing.T) {
 // TestThePaneMapDirReachesTheTmuxBackend: the flag/env is not decoration — the
 // backend the host runs reads the map from it.
 func TestThePaneMapDirReachesTheTmuxBackend(t *testing.T) {
-	b, ok := tmuxBackend("s", "", "/fx/ledger").(mirrorhost.Tmux)
+	b, ok := tmuxBackend("s", "", "/fx/ledger", nil).(mirrorhost.Tmux)
 	if !ok || b.Claude.PaneMapDir != "/fx/ledger" || b.Socket != "s" {
 		t.Fatalf("tmuxBackend = %+v, want PaneMapDir /fx/ledger", b)
 	}
-	if b := tmuxBackend("", "", "").(mirrorhost.Tmux); b.Claude.PaneMapDir != "" {
+	if b := tmuxBackend("", "", "", nil).(mirrorhost.Tmux); b.Claude.PaneMapDir != "" {
 		t.Fatalf("no pane map dir configured, yet the backend has %q", b.Claude.PaneMapDir)
 	}
 	// And run passes it: from the environment, and from the flag (which wins).
 	prev := newTmuxBackend
 	t.Cleanup(func() { newTmuxBackend = prev })
 	var got []string
-	newTmuxBackend = func(s, sp, dir string) mirrorhost.Backend {
+	newTmuxBackend = func(s, sp, dir string, _ *mirrorhost.HermesSource) mirrorhost.Backend {
 		got = append(got, dir)
 		return listBackend{}
 	}
@@ -237,7 +237,7 @@ func TestAnMCPSetupFailureDoesNotStopMirroring(t *testing.T) {
 	prevB, prevC := newTmuxBackend, runContext
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() { newTmuxBackend, runContext = prevB, prevC; cancel() })
-	newTmuxBackend = func(string, string, string) mirrorhost.Backend { return listBackend{} }
+	newTmuxBackend = func(string, string, string, *mirrorhost.HermesSource) mirrorhost.Backend { return listBackend{} }
 	runContext = func() (context.Context, context.CancelFunc) { return ctx, cancel }
 	type result struct {
 		rc        int
@@ -290,7 +290,7 @@ func TestADanglingSymlinkSecretNeverDelaysMirroring(t *testing.T) {
 	prevB, prevC := newTmuxBackend, runContext
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() { newTmuxBackend, runContext = prevB, prevC; cancel() })
-	newTmuxBackend = func(string, string, string) mirrorhost.Backend { return listBackend{} }
+	newTmuxBackend = func(string, string, string, *mirrorhost.HermesSource) mirrorhost.Backend { return listBackend{} }
 	runContext = func() (context.Context, context.CancelFunc) { return ctx, cancel }
 	done := make(chan string, 1)
 	go func() {

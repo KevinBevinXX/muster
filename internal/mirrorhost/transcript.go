@@ -23,6 +23,19 @@ const reresolveEvery = 3
 // readChunk bounds one poll's read of new transcript bytes.
 const readChunk = 1 << 20
 
+// hermesSource is the backend's HermesSource, when it has one AND this
+// connection speaks v2 (a rendered view does not exist on v1).
+func (h *hostSide) hermesSource() (*HermesSource, bool) {
+	if h.version < 2 {
+		return nil, false
+	}
+	hs, ok := capabilityOf[HermesSourcer](h.c.cfg.Backend)
+	if !ok || hs.HermesSource() == nil {
+		return nil, false
+	}
+	return hs.HermesSource(), true
+}
+
 // claudeBackend is the backend's ClaudeBackend, when it has one AND this
 // connection speaks v2.
 func (h *hostSide) claudeBackend() (ClaudeBackend, bool) {
@@ -112,14 +125,29 @@ func (h *hostSide) watch(m mirror.Msg) {
 		h.c.log.Printf("muster-mirror: watch %q: %v", m.Session, err)
 		_ = h.send(mirror.Msg{Type: mirror.TypeClosed, ID: m.ID, Error: err.Error()})
 	}
-	cb, ok := h.claudeBackend()
-	if !ok {
-		fail(errors.New("this host cannot read Claude Code transcripts"))
-		return
-	}
 	if err := h.allowed(m); err != nil {
 		fail(err)
 		return
+	}
+	cb, claudeOK := h.claudeBackend()
+	src, hermesOK := h.hermesSource()
+	if !claudeOK && !hermesOK {
+		fail(errors.New("this host cannot read Claude Code transcripts"))
+		return
+	}
+	// 🔴 WHICH STREAM SERVES THE WATCH IS DECIDED IN ITS OWN GOROUTINE, never
+	// here: this runs on the connection's read loop, and reading the window
+	// (a whole listing) here held every later message behind it.
+	serve := func(ctx context.Context) error {
+		if hermesOK {
+			if _, isHermes := h.hermesWindow(ctx, m); isHermes {
+				return h.hermesTail(ctx, src, m)
+			}
+		}
+		if !claudeOK {
+			return errNoHermesViewNow
+		}
+		return h.tail(ctx, h.claudePaneOf(cb, m), m)
 	}
 	ctx, cancel := context.WithCancel(h.ctx)
 	h.mu.Lock()
@@ -132,7 +160,7 @@ func (h *hostSide) watch(m mirror.Msg) {
 	h.watches[m.ID] = cancel
 	h.mu.Unlock()
 	go func() {
-		err := h.tail(ctx, h.claudePaneOf(cb, m), m)
+		err := serve(ctx)
 		h.unwatch(m.ID)
 		msg := ""
 		if err != nil && !errors.Is(err, context.Canceled) {
@@ -142,6 +170,79 @@ func (h *hostSide) watch(m mirror.Msg) {
 			_ = h.send(mirror.Msg{Type: mirror.TypeClosed, ID: m.ID, Error: msg})
 		}
 	}()
+}
+
+// THE RENDERED VIEW's LOOP, shared by both streams — Claude Code's
+// transcript file (tail) and Hermes's state.db (hermesTail): ONE send, ONE
+// ticker, ONE re-resolve cadence, ONE busy marker. Each stream supplies what
+// differs: how it (re)starts, how it re-resolves its pane, and how it polls.
+type renderedView struct {
+	// start sends the opening backfill (a Reset, or a resume marker).
+	start func() error
+	// reresolve re-reads the pane, every reresolveEvery polls; restarted
+	// says it started the view over (and this tick polls nothing more).
+	reresolve func(context.Context) (restarted bool, err error)
+	// poll reads and sends what is new.
+	poll func() error
+}
+
+// runView serves v until ctx ends (nil) or v fails.
+func (h *hostSide) runView(ctx context.Context, v renderedView) error {
+	if err := v.start(); err != nil {
+		return err
+	}
+	t := time.NewTicker(h.c.cfg.ViewPoll)
+	defer t.Stop()
+	for tick := 1; ; tick++ {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-t.C:
+		}
+		if tick%reresolveEvery == 0 {
+			restarted, err := v.reresolve(ctx)
+			if ctx.Err() != nil {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if restarted {
+				continue
+			}
+		}
+		if err := v.poll(); err != nil {
+			return err
+		}
+	}
+}
+
+// viewSend frames batches as watch m's events, Gen from gen (read at each
+// send: a stream that starts over on another conversation changes it).
+func (h *hostSide) viewSend(m mirror.Msg, gen func() string) func([]mirror.Msg) error {
+	return func(msgs []mirror.Msg) error {
+		for _, b := range msgs {
+			b.Type, b.ID, b.Gen = mirror.TypeEvents, m.ID, gen()
+			if h.c.cfg.NoPromptIndex {
+				for i := range b.Events {
+					b.Events[i].Line = 0 // an older host names no prompt's place
+				}
+			}
+			if err := h.send(b); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
+
+// sendBusy sends a busy marker at off when nb differs from *busy.
+func sendBusy(busy *bool, nb bool, off int64, send func([]mirror.Msg) error) error {
+	if nb == *busy {
+		return nil
+	}
+	*busy = nb
+	return send([]mirror.Msg{{Offset: off, Busy: nb}})
 }
 
 // errNotClaudeNow ends a view whose pane no longer runs Claude Code.
@@ -169,20 +270,7 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 			_ = f.Close()
 		}
 	}()
-	send := func(msgs []mirror.Msg) error {
-		for _, b := range msgs {
-			b.Type, b.ID, b.Gen = mirror.TypeEvents, m.ID, p.Gen
-			if h.c.cfg.NoPromptIndex {
-				for i := range b.Events {
-					b.Events[i].Line = 0 // an older host names no prompt's place
-				}
-			}
-			if err := h.send(b); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
+	send := h.viewSend(m, func() string { return p.Gen })
 	// sendSubs sends the view's subagent list when it changed since the last
 	// one sent (or none was): a message of its own, at the offset the view
 	// already has.
@@ -271,86 +359,65 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 		refs, more := mirror.BoundPrompts(refs)
 		return send([]mirror.Msg{{Offset: off, Busy: busy, PromptIndex: true, Prompts: refs, PromptsMore: more}})
 	}
-	if err := start(m.Gen, m.Offset); err != nil {
-		return err
-	}
-
-	t := time.NewTicker(h.c.cfg.ViewPoll)
-	defer t.Stop()
-	for tick := 1; ; tick++ {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-t.C:
-		}
-		if tick%reresolveEvery == 0 {
+	return h.runView(ctx, renderedView{
+		start: func() error { return start(m.Gen, m.Offset) },
+		reresolve: func(ctx context.Context) (bool, error) {
 			np, ok := pane(ctx)
 			if !ok {
-				if ctx.Err() != nil {
-					return nil
-				}
-				return errNotClaudeNow
+				return false, errNotClaudeNow
 			}
 			if np.Gen != p.Gen || np.Transcript != p.Transcript {
 				// /clear, a restart, a resumed session: a different transcript.
 				p, busy = np, np.Busy
-				if err := start("", 0); err != nil {
-					return err
-				}
-				continue
+				return true, start("", 0)
 			}
-			if np.Busy != busy {
-				busy = np.Busy
-				if err := send([]mirror.Msg{{Offset: off, Busy: busy}}); err != nil {
-					return err
-				}
+			if err := sendBusy(&busy, np.Busy, off, send); err != nil {
+				return false, err
 			}
 			// The subagents' own files move without the parent's: read them
 			// on the re-resolve cadence.
-			if err := sendSubs(); err != nil {
-				return err
-			}
-		}
-		st, err := f.Stat()
-		if err != nil {
-			return fmt.Errorf("stat the transcript: %w", err)
-		}
-		if st.Size() < off {
-			// Truncated or replaced in place: start over.
-			if err := start("", 0); err != nil {
-				return err
-			}
-			continue
-		}
-		for off < st.Size() {
-			lines, next, err := cctranscript.ReadLines(f, off, st.Size(), readChunk)
+			return false, sendSubs()
+		},
+		poll: func() error {
+			st, err := f.Stat()
 			if err != nil {
-				return fmt.Errorf("read the transcript: %w", err)
+				return fmt.Errorf("stat the transcript: %w", err)
 			}
-			if next == off {
-				break // a partial line: the rest arrives on a later poll
+			if st.Size() < off {
+				// Truncated or replaced in place: start over.
+				return start("", 0)
 			}
-			if subs != nil {
-				subs.observe(cctranscript.Flatten(lines))
+			for off < st.Size() {
+				lines, next, err := cctranscript.ReadLines(f, off, st.Size(), readChunk)
+				if err != nil {
+					return fmt.Errorf("read the transcript: %w", err)
+				}
+				if next == off {
+					break // a partial line: the rest arrives on a later poll
+				}
+				if subs != nil {
+					subs.observe(cctranscript.Flatten(lines))
+				}
+				// 🔴 Redacted before it is framed (redact_stream.go).
+				redactLines(lines)
+				batches := mirror.BatchLines(lines, off)
+				off = next
+				if len(batches) == 0 {
+					continue // lines with nothing to draw (attachments, hook records)
+				}
+				// The last batch's resume point is past every consumed line,
+				// including trailing ones that drew nothing.
+				batches[len(batches)-1].Offset = off
+				for i := range batches {
+					batches[i].Busy = busy
+				}
+				if err := send(batches); err != nil {
+					return err
+				}
 			}
-			// 🔴 Redacted before it is framed (redact_stream.go).
-			redactLines(lines)
-			batches := mirror.BatchLines(lines, off)
-			off = next
-			if len(batches) == 0 {
-				continue // lines with nothing to draw (attachments, hook records)
-			}
-			// The last batch's resume point is past every consumed line,
-			// including trailing ones that drew nothing.
-			batches[len(batches)-1].Offset = off
-			for i := range batches {
-				batches[i].Busy = busy
-			}
-			if err := send(batches); err != nil {
-				return err
-			}
-		}
-	}
+			return nil
+		},
+	})
 }
 
 // paneBackend is the backend's PaneBackend, when it has one AND this

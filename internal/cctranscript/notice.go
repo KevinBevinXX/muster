@@ -49,6 +49,10 @@ import (
 const (
 	NoticeTask          = "task"
 	NoticeCommandOutput = "command-output"
+	// NoticeHermes: a row Hermes wrote into the conversation that the person
+	// did not type (a process finishing, a model switch, …), named by its
+	// display kind in Text (internal/hermeshost's Render).
+	NoticeHermes = "hermes"
 )
 
 // noticeTags maps a leading tag to its source.

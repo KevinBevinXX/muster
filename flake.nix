@@ -198,7 +198,7 @@
       # here with the value nix printed for the first fetch that actually
       # succeeded, and the `nix` CI job added with this change is what will
       # contradict it next time.
-      goVendorHash = "sha256-BdvNqkBxxNc9IkFVs04maYlUj1EJVEcC46XwZ/Nw3ls=";
+      goVendorHash = "sha256-U8EbKTAeF4/I7DJtvt7aOBgOdf1ukOyHquJ9IC/pq8c=";
 
       # goCheckPhase builds a check phase for one of this flake's Go
       # derivations. `testPaths` is the package pattern `go test` is given.
@@ -535,7 +535,7 @@
 
         # The untagged tests only: the real-tmux suite (`-tags tmuxit`) runs in
         # CI's ccd-tmux job, and the nix sandbox has no tmux.
-        checkPhase = goCheckPhase "./cmd/muster-mirror/... ./internal/mirrorhost/...";
+        checkPhase = goCheckPhase "./cmd/muster-mirror/... ./internal/mirrorhost/... ./internal/hermeshost/...";
 
         meta = with pkgs.lib; {
           description = "Show this machine's tmux sessions in muster as mirrored sessions (dials out; no listener; read-only unless -interactive)";

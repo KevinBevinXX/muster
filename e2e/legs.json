@@ -6,6 +6,7 @@
   "measured_at": "4bd2013: median of 19 green ci.yml runs, 2026-10-16/17 (7 on main, 12 PR runs; every file n>=4) -- EXCEPT send-queue, gotrue-login, passkeys and invites, re-measured after their fixed waits were replaced: n=1, PR #120 run 39007261761",
   "seconds": {
     "tests/claude-code-polish.spec.ts": 41.4,
+    "tests/hermes-view.spec.ts": 15.0,
     "tests/provisioning-indicator.spec.ts": 20.5,
     "tests/update.spec.ts": 15.5,
     "tests/layout.spec.ts": 14.8,
@@ -117,7 +118,8 @@
       "tests/mirror-ask.spec.ts",
       "tests/attention-delivery.spec.ts",
       "tests/kickoff-wait.spec.ts",
-      "tests/host-icons.spec.ts"
+      "tests/host-icons.spec.ts",
+      "tests/hermes-view.spec.ts"
     ]
   }
 }
