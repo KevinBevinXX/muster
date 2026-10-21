@@ -92,9 +92,11 @@ func TestTheRepoLookupIsCachedPerCwd(t *testing.T) {
 
 	first := r.windowRepos(windows)
 	// The repo cwd stops at its 3rd level (tool, cmd, fixture-repo); the outside
-	// cwd walks every level to the root.
+	// cwd walks every level to the root. Each level is TWO stats: its .git, and
+	// the device of the directory it moves into (the cwd's own first) — the
+	// filesystem boundary (#151).
 	levels := strings.Count(filepath.Clean(outside), "/") + 1
-	if want := 3 + levels; stats != want {
+	if want := 2 * (3 + levels); stats != want {
 		t.Fatalf("the first read made %d stats, want %d (each cwd's levels once, not once per window)", stats, want)
 	}
 	if len(first) != 11 || first["@1"] != "fixture-repo" || first["@2"] != "inner" || first["@99"] != "fixture-repo" {
