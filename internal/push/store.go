@@ -14,6 +14,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/devices"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // Device is one stored subscription.
@@ -47,6 +48,10 @@ const MaxDevicesPerOwner = 20
 
 // ErrTooManyDevices refuses a claim past MaxDevicesPerOwner.
 var ErrTooManyDevices = fmt.Errorf("push: a user may have at most %d devices; remove one on the account page", MaxDevicesPerOwner)
+
+// ErrDeviceGone refuses a native claim for a device that is not (or no
+// longer) the owner's: removed, or revoked, between its request and the claim.
+var ErrDeviceGone = errors.New("push: the paired device is gone")
 
 // ErrNativeEndpoint refuses a browser claim of an endpoint a paired phone
 // holds.
@@ -478,15 +483,33 @@ func (s *PGStore) ClaimNative(ctx context.Context, owner, deviceID int64, sub Su
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	// 🔴 THE OWNER'S CREDENTIALS LOCK FIRST (users.LockCredentialsTx's order
+	// rule): every revocation that deletes phones takes it first and then
+	// locks the user's row (a disable's guardLastAdmin: FOR UPDATE) before
+	// deleting devices, while this claim's INSERT needs FOR KEY SHARE on that
+	// same users row (its owner_id foreign key) after locking the device —
+	// measured 40P01 in TestCredentialWritersNeverDeadlock without it.
+	if err := users.LockCredentialsTx(ctx, tx, owner); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('muster.push_subscriptions.owner', $1::bigint))`, owner); err != nil {
 		return err
 	}
-	var mine bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM devices WHERE id = $1 AND owner_id = $2)`, deviceID, owner).Scan(&mine); err != nil {
-		return err
+	// 🔴 THEN THE DEVICE ROW, BEFORE ANY PUSH ROW. One order for
+	// every writer of both: a revocation's DELETE FROM devices locks the device
+	// row and then (ON DELETE CASCADE) its push rows, so a claim that deleted
+	// or inserted a push row first and only then touched the device row (the
+	// INSERT's foreign-key check takes FOR KEY SHARE on it) deadlocked against
+	// it — measured 40P01 in a loop against sign-out, disable and reset
+	// (TestClaimNativeNeverDeadlocksARevocation). FOR KEY SHARE is enough: it
+	// is what the foreign key would take, and it blocks the DELETE.
+	var locked int64
+	err = tx.QueryRow(ctx, `SELECT id FROM devices WHERE id = $1 AND owner_id = $2 FOR KEY SHARE`, deviceID, owner).Scan(&locked)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%w: device %d (owner %d)", ErrDeviceGone, deviceID, owner)
 	}
-	if !mine {
-		return fmt.Errorf("push: device %d is not owner %d's", deviceID, owner)
+	if err != nil {
+		return err
 	}
 	// The device's previous endpoint, if it changed.
 	if _, err := tx.Exec(ctx, `DELETE FROM push_subscriptions WHERE device_id = $1 AND owner_id = $2 AND endpoint <> $3`,

@@ -284,10 +284,11 @@ func (s *PGStore) SetDisabledAs(ctx context.Context, by *Actor, id int64, disabl
 		if err := revokePendingInvitesOf(ctx, tx, actor, id, "creator disabled"); err != nil {
 			return User{}, err
 		}
-		// Accounts PR 6: every live personal API token, in THIS transaction.
+		// Every paired phone (0038), in THIS transaction.
 		if err := deleteDevicesTx(ctx, tx, id); err != nil {
 			return User{}, err
 		}
+		// Accounts PR 6: every live personal API token, in THIS transaction.
 		if err := revokeAPITokensTx(ctx, tx, id); err != nil {
 			return User{}, err
 		}
@@ -384,6 +385,9 @@ const credentialsLockClass int32 = 0x6d75746b // "mutk"
 //     code row FOR UPDATE → reads users → UPDATE code, INSERT devices,
 //     audit_log
 //   - devices.Remove        lock → DELETE devices → audit_log
+//   - push.ClaimNative      lock → the owner's push advisory lock → device row
+//     FOR KEY SHARE → DELETE/INSERT push rows (whose foreign keys take KEY
+//     SHARE on the device and the users row)
 //
 // NOT api_tokens writers, and deliberately outside the rule: the
 // bring-your-own-credentials writers (internal/credentials Put*/Delete). Each

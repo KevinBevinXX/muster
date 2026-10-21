@@ -72,13 +72,14 @@ const (
 	deviceWindow = time.Minute
 	// devicePairPerAddr: pairing attempts per client address.
 	devicePairPerAddr = 10
-	// deviceRoutePerAddr / deviceRoutePerDevice: any device-tier request, per
-	// client address (before the credential is looked up) and per device.
-	deviceRoutePerAddr   = 120
-	deviceRoutePerDevice = 60
-	// devicePushPerAddr / devicePushPerDevice: PUT /api/device/push, which
-	// makes an OUTBOUND test push, per address and per device.
-	devicePushPerAddr   = 10
+	// deviceRefusalsPerAddr: refused device-tier requests (no, a malformed or
+	// an unknown or revoked credential) per client address; past it, 429.
+	// deviceRoutePerDevice: requests with a valid credential, per device — the
+	// only budget a working phone is charged.
+	deviceRefusalsPerAddr = 120
+	deviceRoutePerDevice  = 60
+	// devicePushPerDevice: PUT /api/device/push registrations that reach the
+	// OUTBOUND test push, per device.
 	devicePushPerDevice = 5
 
 	// deviceProbeTimeout bounds the test push a registration must pass.
@@ -135,13 +136,24 @@ func (s *Server) requireDeviceToken(next http.HandlerFunc) http.HandlerFunc {
 			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": DevicesNotServed})
 			return
 		}
-		if !s.deviceLimits.addr.take(clientIP(r), s.now(), deviceWindow, deviceRoutePerAddr) {
-			s.refuseDeviceThrottled(w)
-			return
+		// 🔴 ONLY A REFUSED REQUEST IS CHARGED TO ITS ADDRESS. A request with a
+		// VALID credential is charged to its device alone, so junk sent from an
+		// address a phone shares (a carrier NAT, an office, the edge's own
+		// address on a misconfigured proxy) can exhaust only the address's
+		// refusal budget, never lock the phone out
+		// (TestTheDeviceRoutesAreThrottled). A malformed credential is refused
+		// before any database read; a well-formed unknown one costs one
+		// indexed lookup.
+		refuse := func() {
+			if !s.deviceLimits.addr.take(clientIP(r), s.now(), deviceWindow, deviceRefusalsPerAddr) {
+				s.refuseDeviceThrottled(w)
+				return
+			}
+			s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": DeviceTokenRefusal})
 		}
 		tok := hookTokenFromRequest(r)
 		if !devices.ShapeOK(tok) {
-			s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": DeviceTokenRefusal})
+			refuse()
 			return
 		}
 		d, err := s.ext.Devices.Authenticate(r.Context(), tok)
@@ -149,7 +161,7 @@ func (s *Server) requireDeviceToken(next http.HandlerFunc) http.HandlerFunc {
 		case err == nil:
 		case errors.Is(err, devices.ErrBadToken), errors.Is(err, devices.ErrUserDisabled),
 			errors.Is(err, devices.ErrSessionEnded), errors.Is(err, devices.ErrSignedOut):
-			s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": DeviceTokenRefusal})
+			refuse()
 			return
 		default:
 			// The lookup FAILED; nothing was judged. 503 so the app keeps a good
@@ -231,7 +243,7 @@ func (s *Server) handleDeviceRemove(w http.ResponseWriter, r *http.Request) {
 
 // deviceLimits are the device routes' throttles (see deviceWindow).
 type deviceLimits struct {
-	pair, addr, device, pushAddr, pushDevice boundedWindow
+	pair, addr, device, pushDevice boundedWindow
 }
 
 // DeviceThrottled is the 429 body for a throttled device-tier request.
@@ -373,8 +385,7 @@ func (s *Server) handleDevicePushPut(w http.ResponseWriter, r *http.Request) {
 	d := deviceFromContext(r.Context())
 	// The test push is an OUTBOUND request, so the registrations that reach it
 	// have their own, tighter throttle on top of the device tier's.
-	if !s.deviceLimits.pushAddr.take(clientIP(r), s.now(), deviceWindow, devicePushPerAddr) ||
-		!s.deviceLimits.pushDevice.take(strconv.FormatInt(d.ID, 10), s.now(), deviceWindow, devicePushPerDevice) {
+	if !s.deviceLimits.pushDevice.take(strconv.FormatInt(d.ID, 10), s.now(), deviceWindow, devicePushPerDevice) {
 		s.refuseDeviceThrottled(w)
 		return
 	}
@@ -398,6 +409,10 @@ func (s *Server) handleDevicePushPut(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, push.ErrTooManyDevices):
 		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+		return
+	case errors.Is(err, push.ErrDeviceGone):
+		// Revoked between authentication and the claim.
+		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": DeviceTokenRefusal})
 		return
 	default:
 		s.logger.Printf("devices: device %d push register %s: %s", d.ID, push.Short(sub.Endpoint), push.Redact(err, sub.Endpoint))
@@ -460,12 +475,14 @@ func (s *Server) accountDevicesSection(r *http.Request) string {
 			if d.LastSeenAt != nil {
 				seen = d.LastSeenAt.UTC().Format("2006-01-02 15:04 UTC")
 			}
+			// The type is the APP's report: until key attestation exists the
+			// server cannot verify it, and the label says so.
 			key := "step-up: none (read-only)"
 			switch d.KeyType {
 			case devices.KeyBiometric:
-				key = "step-up: biometric"
+				key = "step-up: biometric (reported)"
 			case devices.KeyBiometricOrCredential:
-				key = "step-up: biometric or PIN"
+				key = "step-up: biometric or PIN (reported)"
 			}
 			pushState := "push not registered"
 			if d.PushRegistered {

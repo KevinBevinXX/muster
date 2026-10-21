@@ -141,18 +141,19 @@ session cutoff or latest Sign out everywhere, or whose account is disabled, is
 refused, and is not sent notifications, even if its row somehow survived.
 
 **Throttles.** Pairing is limited to 10 attempts a minute per client address.
-Every device route is limited to 120 requests a minute per address (counted
-before the credential is checked) and 60 a minute per phone. Registering push,
-which makes muster send a test push, is limited to 10 a minute per address and
-5 per phone. The address is the one the edge reports: on the browser listener
-that is `CF-Connecting-IP` (or the first `X-Forwarded-For` entry), which only an
-edge in front of muster can be trusted to set. A client that reaches the browser
-port without passing the edge can choose its own address, so the per-phone
-limits are the ones that hold.
+A device route request with a valid credential is charged only to its phone:
+60 a minute. A refused request (no, a malformed, or an unknown or revoked
+credential) is charged to its address: 120 a minute, then 429. So junk sent
+from an address a phone shares cannot lock that phone out. Registering push,
+which makes muster send a test push, is limited to 5 a minute per phone. The
+address is the one the edge reports: on the browser listener that is
+`CF-Connecting-IP` (or the first `X-Forwarded-For` entry), which only an edge in
+front of muster can be trusted to set.
 
 **Account → Devices** (on `/account`) lists each phone: its name, app version,
 when it was paired, when it was last seen, whether push is registered, and its
-step-up key type (biometric, biometric or PIN, or none: read-only). Each
+step-up key type as the app reported it (biometric, biometric or PIN, or none:
+read-only), labelled "(reported)" until key attestation exists. Each
 has a **Remove** button. Removing a phone also removes its push registration. A
 user may pair at most 20 phones.
 

@@ -79,6 +79,13 @@ func installButton() g.Node {
 // reviewCountPath is the session-gated count the desktop app badge reads.
 const reviewCountPath = "/ui/tasks/review-count"
 
+// AppBridgeName is the JavaScript object the Android app's WebView injects
+// (WebViewCompat.addWebMessageListener), on muster's own origin only. Its
+// presence is how a page knows it is inside the app; the page posts the
+// pairing code and "open the app's notification settings" to it, and never
+// receives a credential from it. The app repository uses the same name.
+const AppBridgeName = "musterApp"
+
 // pwaScript is the ONE service-worker registration site, plus the three things
 // that hang off the registration: the update toast, the install button and the
 // app badge. It is idempotent per page load (a boosted navigation re-runs body
@@ -87,13 +94,6 @@ const reviewCountPath = "/ui/tasks/review-count"
 //
 // ⚠ ORDER: it publishes window.musterSWReady, which pushScript consumes, so it
 // renders before pushScript on the shell.
-// AppBridgeName is the JavaScript object the Android app's WebView injects
-// (WebViewCompat.addWebMessageListener), on muster's own origin only. Its
-// presence is how a page knows it is inside the app; the page posts the
-// pairing code and "open the app's notification settings" to it, and never
-// receives a credential from it. The app repository uses the same name.
-const AppBridgeName = "musterApp"
-
 func pwaScript() g.Node {
 	return Script(g.Raw(`
 (function () {

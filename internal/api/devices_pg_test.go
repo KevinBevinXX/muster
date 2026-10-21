@@ -460,82 +460,67 @@ func TestAPushRowThatOutlivedItsPhonesRevocationIsNotSent(t *testing.T) {
 	}
 }
 
-// TestTheDeviceRoutesAreThrottled: per device on the device tier, per address
-// before the credential is even looked up, and tighter on PUT /api/device/push
-// (it makes an outbound test push). Each answers 429 past its limit, and a
-// different device or address is unaffected (control).
+// TestTheDeviceRoutesAreThrottled: a valid phone is charged to its own
+// per-device budget only; refusals (junk or unknown credentials) are charged
+// to their address. So junk from the phone's own address is refused 429 once
+// it exhausts the address's refusal budget, while the phone, from that SAME
+// address, keeps working — until its own per-device budget runs out. And
+// PUT /api/device/push (which makes an outbound test push) has a tighter
+// per-device limit; a throttled registration sends no test push.
 func TestTheDeviceRoutesAreThrottled(t *testing.T) {
 	r := newDeviceRig(t)
 	at, rt := r.login()
 	tok, _ := r.pair(at, rt, "Pixel")
 	other, _ := r.pair(at, rt, "Pixel 2")
-	from := func(ip string) func(*http.Request) {
-		return func(q *http.Request) { q.Header.Set("CF-Connecting-IP", ip) }
-	}
 	call := func(method, path, bearer, body, ip string) int {
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer "+bearer)
-		from(ip)(req)
+		req.Header.Set("CF-Connecting-IP", ip)
 		w := httptest.NewRecorder()
 		r.edge.ServeHTTP(w, req)
 		return w.Code
 	}
-	// Per device: each call from a fresh address, so only the device's own
-	// counter can refuse.
+	const shared = "203.0.113.7"
+	junk := "mdv_" + strings.Repeat("A", 43) // well-formed, unknown
+	for i := 0; i < deviceRefusalsPerAddr; i++ {
+		bearer := junk
+		if i%2 == 1 {
+			bearer = "not-a-credential"
+		}
+		if c := call("GET", deviceConfigPath, bearer, "", shared); c != http.StatusUnauthorized {
+			t.Fatalf("junk %d: %d; want 401", i+1, c)
+		}
+	}
+	if c := call("GET", deviceConfigPath, junk, "", shared); c != http.StatusTooManyRequests {
+		t.Fatalf("junk past the address's refusal budget: %d; want 429", c)
+	}
+	// The phone, from the same address, still works: it is not charged there.
 	for i := 0; i < deviceRoutePerDevice; i++ {
-		if c := call("GET", deviceConfigPath, tok, "", "198.51.100."+strconv.Itoa(i%250+1)); c != http.StatusOK {
-			t.Fatalf("request %d: %d", i+1, c)
+		if c := call("GET", deviceConfigPath, tok, "", shared); c != http.StatusOK {
+			t.Fatalf("the phone's request %d from the junk's address: %d; want 200", i+1, c)
 		}
 	}
-	if c := call("GET", deviceConfigPath, tok, "", "203.0.113.200"); c != http.StatusTooManyRequests {
-		t.Fatalf("past the per-device limit: %d; want 429", c)
+	if c := call("GET", deviceConfigPath, tok, "", shared); c != http.StatusTooManyRequests {
+		t.Fatalf("past the phone's own per-device budget: %d; want 429", c)
 	}
-	if c := call("GET", deviceConfigPath, other, "", "203.0.113.201"); c != http.StatusOK {
-		t.Fatalf("CONTROL: another device: %d", c)
+	if c := call("GET", deviceConfigPath, other, "", shared); c != http.StatusOK {
+		t.Fatalf("CONTROL: another phone, same address: %d", c)
 	}
-	// Per address, before the credential: a bad credential from one address.
-	for i := 0; i < deviceRoutePerAddr; i++ {
-		if c := call("GET", deviceConfigPath, "mdv_bad", "", "203.0.113.7"); c != http.StatusUnauthorized {
-			t.Fatalf("bad credential %d: %d", i+1, c)
-		}
-	}
-	if c := call("GET", deviceConfigPath, other, "", "203.0.113.7"); c != http.StatusTooManyRequests {
-		t.Fatalf("past the per-address limit: %d; want 429", c)
-	}
-	// The push registration: tighter, per device.
+	// The push registration: tighter, per device, and a throttled one makes no
+	// outbound test push.
 	third, _ := r.pair(at, rt, "Pixel 3")
 	reg := `{"endpoint":"https://` + devNtfyHost + `/upThrottle","p256dh":"BPk","auth":"au"}`
 	for i := 0; i < devicePushPerDevice; i++ {
-		if c := call("PUT", devicePushPath, third, reg, "192.0.2."+strconv.Itoa(i+1)); c != http.StatusOK {
+		if c := call("PUT", devicePushPath, third, reg, shared); c != http.StatusOK {
 			t.Fatalf("push register %d: %d", i+1, c)
 		}
 	}
 	probes := r.sendCount("https://" + devNtfyHost + "/upThrottle")
-	if c := call("PUT", devicePushPath, third, reg, "192.0.2.99"); c != http.StatusTooManyRequests {
+	if c := call("PUT", devicePushPath, third, reg, shared); c != http.StatusTooManyRequests {
 		t.Fatalf("past the push-registration limit: %d; want 429", c)
 	}
 	if r.sendCount("https://"+devNtfyHost+"/upThrottle") != probes {
 		t.Fatal("a throttled registration still made its outbound test push")
-	}
-	// …and per address: two more phones from ONE address, each under its own
-	// limit, together reach the address's.
-	p4, _ := r.pair(at, rt, "Pixel 4")
-	p5, _ := r.pair(at, rt, "Pixel 5")
-	p6, _ := r.pair(at, rt, "Pixel 6")
-	n := 0
-	for _, dev := range []string{p4, p5} {
-		for i := 0; i < devicePushPerDevice; i++ {
-			if c := call("PUT", devicePushPath, dev, reg, "198.18.0.1"); c != http.StatusOK {
-				t.Fatalf("push register %d from one address: %d", n+1, c)
-			}
-			n++
-		}
-	}
-	if n != devicePushPerAddr {
-		t.Fatalf("fixture: %d registrations from one address; the limit is %d", n, devicePushPerAddr)
-	}
-	if c := call("PUT", devicePushPath, p6, reg, "198.18.0.1"); c != http.StatusTooManyRequests {
-		t.Fatalf("past the per-address push-registration limit: %d; want 429", c)
 	}
 }
 
@@ -568,7 +553,7 @@ func TestPairingRecordsTheStepUpKeyAndItsPolicy(t *testing.T) {
 		t.Fatalf("CONTROL: a biometric StrongBox key: %d", c)
 	}
 	page := do(r.edge, "GET", "/account", nil, withCookies(at, rt), asNavigation)
-	if !strings.Contains(page.Body.String(), "step-up: biometric") {
+	if !strings.Contains(page.Body.String(), "step-up: biometric (reported)") {
 		t.Fatalf("Account → Devices does not show the key type:\n%s", truncate(page.Body.String(), 400))
 	}
 }
