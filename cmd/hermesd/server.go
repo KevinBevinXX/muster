@@ -48,9 +48,14 @@ type server struct {
 
 	mu   sync.Mutex
 	live map[string]bool // muster session keys with a turn being served now
-	// recoveryFailures counts failed recoveries per session in this gateway
-	// life (sessionFailed); reset at every gateway start.
-	recoveryFailures map[string]int
+	// refusedSince is when each session's recovery was first DEFINITELY
+	// refused in this gateway life (sessionFailed); reset at every start.
+	refusedSince map[string]time.Time
+	// retireAfter is retireAfter (shorter in tests).
+	retireAfter time.Duration
+	// tombstones are idempotency keys Hermes refused whose close could not be
+	// written yet (closeRefused): never re-posted. Value: the close's notice.
+	tombstones map[string]string
 	// closing is set when hermesd is shutting down: turns are refused.
 	closing bool
 }
@@ -60,7 +65,7 @@ func newServer(cfg config, bearer, apiKey string, st *store) *server {
 		cfg: cfg, bearer: bearer, store: st, keyFP: keyFingerprint(apiKey),
 		api:   newHermesAPI(cfg.apiBase(), apiKey),
 		relay: newRelay(cfg), logf: log.Printf, now: time.Now, watchPoll: 2 * time.Second, turnTimeout: turnTimeout,
-		live: map[string]bool{}, recoveryFailures: map[string]int{},
+		live: map[string]bool{}, refusedSince: map[string]time.Time{}, retireAfter: retireAfter, tombstones: map[string]string{},
 	}
 }
 
@@ -182,12 +187,12 @@ func (s *server) isLive(key string) bool {
 	return s.live[key]
 }
 
-// resetRecovery starts a gateway life's recovery afresh: every session gets
-// its maxSessionRecoveryFailures again.
+// resetRecovery starts a gateway life's recovery afresh: every session's
+// retireAfter floor starts again.
 func (s *server) resetRecovery() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.recoveryFailures = map[string]int{}
+	s.refusedSince = map[string]time.Time{}
 }
 
 func (s *server) shutdown() {

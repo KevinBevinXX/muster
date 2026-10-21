@@ -310,14 +310,32 @@ func writeFileAtomic(path string, b []byte, mode os.FileMode) error {
 	}
 	// The rename is durable only once the directory is: a crash after a
 	// rename that only reached the page cache could bring the OLD map back,
-	// intent and all.
+	// intent and all. An error from here on is an errWrittenNotSynced: the
+	// file at path IS the new content.
 	d, err := os.Open(filepath.Dir(path))
 	if err != nil {
-		return err
+		return &errWrittenNotSynced{err}
 	}
 	defer d.Close()
-	return d.Sync()
+	if err := syncDir(d); err != nil {
+		return &errWrittenNotSynced{err}
+	}
+	return nil
 }
+
+// syncDir fsyncs a directory (a variable so a test can fail it).
+var syncDir = func(d *os.File) error { return d.Sync() }
+
+// errWrittenNotSynced is writeFileAtomic's error AFTER the rename succeeded:
+// the new content is in place (every later read of the path sees it); only the
+// directory's fsync — durability across a host crash — failed. A caller must
+// treat the content as written.
+type errWrittenNotSynced struct{ err error }
+
+func (e *errWrittenNotSynced) Error() string {
+	return "written, but its directory could not be synced: " + e.err.Error()
+}
+func (e *errWrittenNotSynced) Unwrap() error { return e.err }
 
 // gatewayEnv is the environment the gateway is started with: hermesd's own,
 // minus what is muster's business, plus the API server's settings.

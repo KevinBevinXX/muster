@@ -59,7 +59,11 @@ type fakeHermes struct {
 	// hangGets makes GET /v1/runs/{id} hang (a gateway that accepted the
 	// connection and never answers); failGets answers it 500.
 	hangGets, failGets bool
-	release            chan struct{}
+	// getStatus, when non-zero, answers GET /v1/runs/{id} with that status
+	// (getCode its error code): a definite refusal.
+	getStatus int
+	getCode   string
+	release   chan struct{}
 	// onPost runs for every POST /v1/runs before it is admitted.
 	onPost func(fakePost)
 	// dropAnswers drops the HTTP answer of the next N admitted POSTs (the run IS
@@ -369,6 +373,12 @@ func (f *fakeHermes) script(run *fakeRun, blocker *fakeRun) {
 		run.emit(map[string]any{"event": "message.delta", "delta": "working for ever"})
 		<-run.stopped
 		run.finish("cancelled", map[string]any{"error": "Stop requested via API"})
+	case in == "LATE":
+		// Completes just as it is stopped: the answer arrived between the turn
+		// budget running out and the stop reaching the run.
+		run.emit(map[string]any{"event": "message.delta", "delta": "almost"})
+		<-run.stopped
+		run.finish("completed", map[string]any{"output": "late answer"})
 	case strings.HasPrefix(in, "TOOLFAIL"):
 		run.emit(map[string]any{"event": "tool.started", "tool": "terminal", "preview": "false", "tool_call_id": "call_tf"})
 		run.emit(map[string]any{"event": "tool.failed", "tool": "terminal", "tool_call_id": "call_tf"})
@@ -413,6 +423,13 @@ func (f *fakeHermes) handleGet(w http.ResponseWriter, r *http.Request, id, scope
 	}
 	if fail {
 		f.jsonErr(w, http.StatusInternalServerError, "storage_unavailable", "storage_unavailable")
+		return
+	}
+	f.mu.Lock()
+	gs, gc := f.getStatus, f.getCode
+	f.mu.Unlock()
+	if gs != 0 {
+		f.jsonErr(w, gs, gc, "refused by the test")
 		return
 	}
 	run, ok := f.owned(id, scope)

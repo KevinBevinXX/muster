@@ -1499,7 +1499,7 @@ gateway.
 | sessions | lanes, one CLI per explicit session | a muster session key → Hermes `session_id` (and last run id) map on the volume; one gateway serves all |
 | readiness | the CLI's SessionStart hook | Hermes `GET /health` 200 (about 2 s after start, S8) **and** start-up recovery done |
 | repository | `CCD_REPO` clone before the CLI starts | the same checkout and `not_ready` reasons; the rendered `terminal.cwd` is the checkout |
-| seed | `ccd seed` | `hermesd seed` (see [volume](#volume-layout)) |
+| seed | `ccd seed` | done by `hermesd` itself on every start, before the gateway (see [volume](#volume-layout)); no subcommand |
 
 A muster message arriving while a run is live is a 409, never a steer, until
 muster has a steer concept.
@@ -1579,9 +1579,15 @@ No run resumes (S6).
     the gateway alone being OOM-killed while hermesd lives on. So after every
     start of the child (hermesd's own start, and each supervised restart), and
     before it answers any turn (`/healthz` reports `recovering`), hermesd
-    `GET`s the last run of every session in its map and calls
-    `POST /v1/runs/{id}/resolve-unknown {admission_id, execution_generation}`
-    for each `unknown` one (outcome `interrupted`), logging what it resolved;
+    settles every session with an OPEN intent: it `GET`s that intent's run and
+    calls `POST /v1/runs/{id}/resolve-unknown {admission_id,
+    execution_generation}` when it is `unknown` (outcome `interrupted`),
+    logging what it resolved. A session with no open intent is not called
+    about at all: a run becomes a session's last run only once it has ended.
+    A failure that may pass (transport, timeout, 5xx, 429) is retried and
+    never retires a session; if it persists, `/healthz` fails at the 5-minute
+    stuck bound. Only a definite 4xx refusal of an open intent's recovery,
+    persisting 5 minutes, retires that one session;
   - treats `run.failed` with `unknown_execution` as "queued behind an unknown
     run": it keeps streaming, resolves the predecessor, and never reports it as
     a failure.
@@ -1624,7 +1630,7 @@ One PVC at `/data`, as for `claude-code`:
 | path | what |
 |---|---|
 | `/data/hermes` | `HERMES_HOME`: `state.db` (+ `-wal`/`-shm`), `response_store.db`, `runs_idempotency.db`, `config.yaml` (rendered), `SOUL.md` (fallback only), `memories/`, `skills/`, `sessions/`, `logs/` |
-| `/data/hermes/home` | the agent shell's HOME; **created by `hermesd seed`**; git config lives here |
+| `/data/hermes/home` | the agent shell's HOME; **created by hermesd's start-up seed step**; git config lives here |
 | `/data/hermes/cache/scratch` | the agent shell's `TMPDIR`, set by Hermes, pruned after 24 h idle: on the volume |
 | `/data/workspace` | the agent's workspace and checkout |
 | `/data/hermesd` | hermesd's session map |
@@ -1634,15 +1640,15 @@ One PVC at `/data`, as for `claude-code`:
   requirement to document.
 - 🔴 **No `.env` on the volume, ever.** `$HERMES_HOME/.env` loads with
   `override=True`, beating pod environment, and **clears** known keys it does
-  not list (`P:hermes_cli/env_loader.py:510-518`). `hermesd seed` refuses to
-  start when one exists (naming it, deleting nothing it did not write), and the
+  not list (`P:hermes_cli/env_loader.py:510-518`). hermesd's start-up seed step
+  refuses to start when one exists (naming it, deleting nothing it did not write), and the
   supervisor checks again before every in-pod restart, because the agent can
   create one with `hermes config set`. The analogue of ccd's
   `settingsForbidden` strip.
 - **The agent shell's HOME** is `$HERMES_HOME/home` only if that directory
   exists **and** either container detection succeeds or
   `TERMINAL_HOME_MODE=profile` is set (`P:hermes_constants.py:743-768`). So
-  `hermesd seed` creates the directory and the spec sets
+  hermesd's start-up seed step creates the directory and the spec sets
   `TERMINAL_HOME_MODE=profile` explicitly rather than relying on detection.
 
 **The rendered `config.yaml`**, rewritten on every start so nothing the session
@@ -1689,8 +1695,8 @@ writes into it survives a restart:
   tokens into `auth.json`.
 - **GitHub: no token in the pod**, as for `claude-code`. git reaches GitHub
   through muster's connector proxy, which injects a GitHub App token limited to
-  the agent's repository ([github-app.md](../github-app.md)). `hermesd seed`
-  writes ccd's `url.<proxy>.insteadOf`, `followRedirects` and
+  the agent's repository ([github-app.md](../github-app.md)). hermesd's start-up
+  seed step writes ccd's `url.<proxy>.insteadOf`, `followRedirects` and
   `extraHeader = X-Muster-Token: …` lines with
   `HOME=$HERMES_HOME/home git config --global`. Measured: the agent's
   `git clone` went through a stand-in proxy with the token header (S8). The

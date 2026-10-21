@@ -152,29 +152,6 @@ func TestToolFailedIsDrawnFailed(t *testing.T) {
 	}
 }
 
-// 🟡4 RECOVERY IS BOUNDED: a session whose recovery keeps failing is retired
-// with the reason after maxSessionRecoveryFailures attempts, not retried for
-// ever.
-func TestASessionThatCannotBeRecoveredIsRetired(t *testing.T) {
-	fake := newFakeHermes(t, testAPIKey)
-	s := newTestServer(t, fake, testAPIKey)
-	sess, _ := s.store.ensure("sess-a", s.keyFP)
-	setLastRun(t, s, "sess-a", fake.admitUnknown(testAPIKey, sess.HermesID, "x"))
-	fake.failGets = true
-	for i := 1; i < maxSessionRecoveryFailures; i++ {
-		if err := s.recover(context.Background()); err == nil {
-			t.Fatalf("attempt %d: recovery reported success while every GET failed", i)
-		}
-	}
-	if err := s.recover(context.Background()); err != nil {
-		t.Fatalf("attempt %d should retire the session and finish: %v", maxSessionRecoveryFailures, err)
-	}
-	after, _ := s.store.get("sess-a")
-	if after.HermesID == sess.HermesID || after.LastRunID != "" || !strings.Contains(after.Notice, "could not be recovered (") {
-		t.Fatalf("not retired with its reason: %+v", after)
-	}
-}
-
 // 🟡4 Every recovery call has a deadline: a gateway that accepts and never
 // answers cannot hold recovery for ever.
 func TestARecoveryCallHasADeadline(t *testing.T) {
@@ -184,7 +161,7 @@ func TestARecoveryCallHasADeadline(t *testing.T) {
 	fake := newFakeHermes(t, testAPIKey)
 	s := newTestServer(t, fake, testAPIKey)
 	sess, _ := s.store.ensure("sess-a", s.keyFP)
-	setLastRun(t, s, "sess-a", fake.admitUnknown(testAPIKey, sess.HermesID, "x"))
+	setOpenIntent(t, s, "sess-a", fake.admitUnknown(testAPIKey, sess.HermesID, "x"), "x")
 	fake.hangGets = true
 	start := time.Now()
 	err := s.recover(context.Background())

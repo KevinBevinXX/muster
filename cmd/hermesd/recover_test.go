@@ -160,14 +160,16 @@ func TestAKeyChangeResolvesThenRetires(t *testing.T) {
 	}
 }
 
-// 🔴 RESOLVE-UNKNOWN AT RECOVERY: a session whose last run was left unknown by a
-// SIGKILL is resolved before any turn is accepted, with the exact body.
+// 🔴 RESOLVE-UNKNOWN AT RECOVERY: a session whose run was left unknown by a
+// SIGKILL is resolved before any turn is accepted, with the exact body. (A
+// run in flight at a kill has an OPEN intent with its run id recorded: a run
+// becomes a session's last run only once its intent closes, after it ended.)
 func TestRecoveryResolvesAnUnknownLastRun(t *testing.T) {
 	fake := newFakeHermes(t, testAPIKey)
 	s := newTestServer(t, fake, testAPIKey)
 	sess, _ := s.store.ensure("sess-a", s.keyFP)
 	prev := fake.admitUnknown(testAPIKey, sess.HermesID, "killed")
-	setLastRun(t, s, "sess-a", prev)
+	setOpenIntent(t, s, "sess-a", prev, "killed")
 	if err := s.recover(context.Background()); err != nil {
 		t.Fatal(err)
 	}

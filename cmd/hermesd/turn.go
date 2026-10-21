@@ -41,8 +41,9 @@ import (
 // and run the turn twice; so hermesd resolves the predecessor and follows the
 // queued run to its real end.
 
-// turnTimeout is one turn's budget (muster's own client gives up five minutes
-// later: agents.HermesTurnTimeout).
+// turnTimeout is one turn's budget. muster's own client waits five minutes
+// longer (the hermes kind's turn budget in internal/agents), so it hears
+// hermesd's turn_timeout rather than timing out first.
 const turnTimeout = 30 * time.Minute
 
 // stopWait bounds how long a stopped run is followed to its terminal status.
@@ -184,12 +185,20 @@ func (s *server) post(ctx context.Context, key string, in intent) (string, *fail
 			continue // ambiguous: the POST may have been admitted; replay it
 		}
 		if ae.Status == http.StatusConflict && ae.Code == "idempotency_key_conflict" {
-			_ = s.store.closeIntent(key, in.IdempotencyKey, "")
+			_ = s.closeRefused(key, in.IdempotencyKey, "")
 			return "", &failure{Status: http.StatusBadGateway, Type: failMayHaveRun, Code: ae.Code, Message: mayHaveRunText +
 				" (Hermes says this turn's idempotency key was already used with a different request)"}
 		}
 		// Any other 4xx refused the run: nothing was admitted.
-		_ = s.store.closeIntent(key, in.IdempotencyKey, "")
+		if err := s.closeRefused(key, in.IdempotencyKey, ""); err != nil {
+			// 🔴 "NOT SENT" IS PROMISED ONLY ONCE THE CLOSE IS ON DISK. The
+			// tombstone stops this process replaying the intent, but a crash
+			// before its retry lands would load the open intent and recovery
+			// would POST it — and Hermes, which never admitted the key, would
+			// run it. So the answer is may_have_run, which that outcome honours.
+			return "", &failure{Status: http.StatusBadGateway, Type: failMayHaveRun, Message: fmt.Sprintf(
+				"%s (Hermes refused it (%v), but hermesd could not record the refusal: %v)", mayHaveRunText, ae, err)}
+		}
 		if ae.Status == http.StatusTooManyRequests {
 			return "", notReady("the Hermes API server refused the run for its concurrency limit: " + ae.Message)
 		}
@@ -330,7 +339,8 @@ func (s *server) follow(ctx context.Context, key, runID string) runResult {
 
 // stop ends a run that outlasted the turn budget: POST /v1/runs/{id}/stop, then
 // its status followed (for stopWait) to the terminal one, so the intent closes.
-// The turn answers turn_timeout either way; a run that would not settle keeps
+// The turn answers turn_timeout — unless the run had completed with an answer
+// by then, which is the reply; a run that would not settle keeps
 // its intent open, and the session's next turn (or recovery) settles it.
 func (s *server) stop(key, runID string) runResult {
 	ctx, cancel := context.WithTimeout(context.Background(), stopWait)
@@ -340,9 +350,15 @@ func (s *server) stop(key, runID string) runResult {
 	if err := s.api.stopRun(ctx, runID); err != nil {
 		s.logf("hermesd: stop run %s at the turn budget: %v", runID, err)
 	}
-	if _, err := s.pollRun(ctx, runID, nil); err != nil {
+	st, err := s.pollRun(ctx, runID, nil)
+	if err != nil {
 		s.logf("hermesd: run %s did not settle within %s of its stop; its intent stays open", runID, stopWait)
 		return runResult{fail: timeout}
+	}
+	// The run may have COMPLETED between the budget running out and the stop
+	// reaching it: then its answer is the reply, not a timeout.
+	if st.Status == "completed" && strings.TrimSpace(st.Output) != "" {
+		return runResult{settled: true, items: []podagent.ReplyItem{{Text: st.Output}}}
 	}
 	return runResult{settled: true, fail: timeout}
 }

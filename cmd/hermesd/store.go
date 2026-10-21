@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"sync"
 	"time"
@@ -69,13 +70,14 @@ type storeFile struct {
 // turn muster had been told was not sent.
 type store struct {
 	path string
+	logf func(string, ...any)
 
 	mu       sync.Mutex
 	sessions map[string]*session
 }
 
 func openStore(path string) (*store, error) {
-	s := &store{path: path, sessions: map[string]*session{}}
+	s := &store{path: path, logf: log.Printf, sessions: map[string]*session{}}
 	b, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return s, nil
@@ -116,7 +118,15 @@ func (s *store) commit(mutate func(next map[string]*session) (changed bool, err 
 		return err
 	}
 	if err := writeFileAtomic(s.path, b, 0o600); err != nil {
-		return err
+		var written *errWrittenNotSynced
+		if !errors.As(err, &written) {
+			return err // not written: memory stays as the file is
+		}
+		// 🔴 WRITTEN IS WRITTEN. The rename succeeded, so the file — what a
+		// restart loads and recovery acts on — holds next; memory must too, or
+		// a turn answered "not sent" would leave an intent on disk that the next
+		// start POSTs. Only the host-crash durability is in doubt: logged.
+		s.logf("hermesd: the session map was written but its directory was not synced: %v", err)
 	}
 	s.sessions = next
 	return nil

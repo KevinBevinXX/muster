@@ -95,7 +95,7 @@ type supervisor struct {
 	exits    []time.Time
 	termSent bool // hermesd sent the current gateway SIGTERM
 	// epoch is cancelled when the current gateway exits: work tied to one
-	// gateway's life (recovery's watchers) stops with it.
+	// gateway's life (its bring-up and recovery) stops with it.
 	epoch context.Context
 }
 

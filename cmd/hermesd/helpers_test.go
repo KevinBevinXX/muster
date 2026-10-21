@@ -179,3 +179,19 @@ func setLastRun(t *testing.T, s *server, key, runID string) {
 		t.Fatal(err)
 	}
 }
+
+// setOpenIntent records an open intent on key, durably — as a crash after its
+// POST (runID set) or before its answer (runID "") would leave it.
+func setOpenIntent(t *testing.T, s *server, key, runID, input string) intent {
+	t.Helper()
+	sess, err := s.store.ensure(key, s.keyFP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(runRequest{Input: input, SessionID: sess.HermesID})
+	in := intent{IdempotencyKey: newIdempotencyKey(), Body: body, KeyFP: s.keyFP, At: s.now(), RunID: runID}
+	if err := s.store.beginIntent(key, in); err != nil {
+		t.Fatal(err)
+	}
+	return in
+}
