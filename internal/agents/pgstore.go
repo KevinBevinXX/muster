@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -224,33 +225,58 @@ func (s *PGStore) SetHooksToken(ctx context.Context, id int64, token string) err
 	return err
 }
 
+// FoldResult is what FoldIntoPendingNote did.
+type FoldResult int
+
+const (
+	// FoldNotOwed: the first message is no longer owed (stamped, or none);
+	// nothing was written and the caller delivers another way.
+	FoldNotOwed FoldResult = iota
+	// FoldAdded: the text was folded in.
+	FoldAdded
+	// FoldOverLimit: the text was NOT added — the first message is at its
+	// size bound; it says so (the over line, once). The text was not delivered.
+	FoldOverLimit
+)
+
+// jsonLen is s's length once JSON-encoded as a string, by encoding/json (what
+// the turn's request body uses): `<`, `>` and `&` become six bytes, a quote,
+// a backslash and a newline two.
+func jsonLen(s string) int {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return 6 * len(s) // worst case; Marshal of a string does not fail
+	}
+	return len(b) - 2
+}
+
 // FoldIntoPendingNote is AppendPendingNote for a message folded into an owed
 // first turn by someone other than its author (a forward): text goes BEFORE
 // last when the note ends with it (muster's rules stay the last word), else at
-// the end; and when the note would pass maxBytes, text is not added — over
-// (once) is, in the same place, so the first turn stays within what the
-// runtime reads. It reports whether the note was still owed (false: the caller
-// delivers another way).
-func (s *PGStore) FoldIntoPendingNote(ctx context.Context, id int64, text, last string, maxBytes int, over string) (bool, error) {
+// the end. 🔴 THE BOUND IS ON THE ENCODED SIZE: maxBytes is compared with the
+// note's JSON-encoded length (jsonLen), because the runtime's read limit
+// applies to the encoded request, and an HTML-heavy text grows up to six-fold.
+// Past it the text is not added and over is (once): FoldOverLimit.
+func (s *PGStore) FoldIntoPendingNote(ctx context.Context, id int64, text, last string, maxBytes int, over string) (FoldResult, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return false, err
+		return FoldNotOwed, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var note string
 	if err := tx.QueryRow(ctx, `SELECT pending_note FROM agents
 		WHERE id = $1 AND NOT kicked_off AND pending_note <> '' FOR UPDATE`, id).Scan(&note); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return false, nil
+			return FoldNotOwed, nil
 		}
-		return false, err
+		return FoldNotOwed, err
 	}
-	add := text
-	if len(note)+len(text) > maxBytes {
+	add, res := text, FoldAdded
+	if jsonLen(note)+jsonLen(text) > maxBytes {
 		if strings.Contains(note, over) {
-			return true, tx.Commit(ctx) // already says so
+			return FoldOverLimit, tx.Commit(ctx) // already says so
 		}
-		add = over
+		add, res = over, FoldOverLimit
 	}
 	if last != "" && strings.HasSuffix(note, last) {
 		note = strings.TrimSuffix(note, last) + add + last
@@ -258,9 +284,9 @@ func (s *PGStore) FoldIntoPendingNote(ctx context.Context, id int64, text, last 
 		note += add
 	}
 	if _, err := tx.Exec(ctx, `UPDATE agents SET pending_note = $2 WHERE id = $1`, id, note); err != nil {
-		return false, err
+		return FoldNotOwed, err
 	}
-	return true, tx.Commit(ctx)
+	return res, tx.Commit(ctx)
 }
 
 // AppendPendingNote appends text to agent id's first message while that

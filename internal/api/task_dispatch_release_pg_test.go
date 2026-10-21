@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/plugins"
 )
 
 // refusedThenRetried drives one post-reservation refusal of task n through
@@ -189,10 +190,28 @@ func TestForwardsFoldedIntoAHeldFirstTurnKeepTheRulesLastAndStayBounded(t *testi
 	saved := foldedForwardsMaxBytes
 	t.Cleanup(func() { foldedForwardsMaxBytes = saved })
 	foldedForwardsMaxBytes = len(got) + 200 // room for the marker, not for a forward
-	for _, c := range []string{"Second change " + strings.Repeat("x", 300), "Third change " + strings.Repeat("y", 300)} {
-		if text := f.call(f.chief, taskForwardTool, map[string]any{"task_id": n.ID, "note": c}); strings.Contains(text, `"error"`) {
-			t.Fatalf("a forward past the bound: %s", text)
+	routed := func() int {
+		var c int
+		if err := f.pool.QueryRow(f.asOwner, `SELECT count(*) FROM audit_log WHERE action = $1 AND object = $2`,
+			plugins.ActionTaskRouted, plugins.NoteObject(n.ID)).Scan(&c); err != nil {
+			t.Fatal(err)
 		}
+		return c
+	}
+	before := routed()
+	if before == 0 {
+		t.Fatal("instrument: the delivered forward recorded no routing")
+	}
+	// 🔴 (#209 round-2 🟢5) a forward past the bound was NOT delivered: the
+	// chief is told so, and the task is not recorded as routed.
+	for _, c := range []string{"Second change " + strings.Repeat("x", 300), "Third change " + strings.Repeat("y", 300)} {
+		text := f.call(f.chief, taskForwardTool, map[string]any{"task_id": n.ID, "note": c})
+		if !strings.Contains(text, `"error"`) || !strings.Contains(text, "not delivered") || strings.Contains(text, "Forwarded") {
+			t.Fatalf("a forward past the bound answered %s; want an error saying it was not delivered", text)
+		}
+	}
+	if after := routed(); after != before {
+		t.Fatalf("forwards that were not delivered recorded %d routing(s)", after-before)
 	}
 	got = note()
 	if strings.Contains(got, "Second change") || strings.Contains(got, "Third change") {

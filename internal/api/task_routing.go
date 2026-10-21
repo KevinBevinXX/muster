@@ -391,12 +391,20 @@ func renderTaskForward(n notes.Note, note, by string) string {
 // an agent that has not had its first turn rides that turn (agentkickoff
 // re-reads the note after its stamp).
 type pendingNoteAppender interface {
-	FoldIntoPendingNote(ctx context.Context, id int64, text, last string, maxBytes int, over string) (bool, error)
+	FoldIntoPendingNote(ctx context.Context, id int64, text, last string, maxBytes int, over string) (agents.FoldResult, error)
 }
+
+// errForwardOverLimit: the forward was NOT delivered — the agent's owed first
+// message is at its size bound (foldedForwardsMaxBytes), which now tells the
+// agent to re-read the task. The first word of its text is what task_forward
+// answers (no ":" before it).
+var errForwardOverLimit = errors.New("not delivered, the agent's first message is at its size limit; " +
+	"it already tells the agent to re-read the task, so do not forward again before it starts")
 
 // foldedForwardsMaxBytes bounds a first turn that forwards are folded into:
 // past it a forward is not added, and the turn says so once (foldedForwardsOver).
-// ccd reads a turn's body up to 1 MiB; half of it leaves room for the
+// It is measured JSON-ENCODED (agents.FoldIntoPendingNote), because ccd's
+// 1 MiB read applies to the encoded request; half of it leaves room for the
 // request's own framing. A var so a test can lower it.
 var foldedForwardsMaxBytes = 512 << 10
 
@@ -441,13 +449,16 @@ func (s *Server) forwardToTaskAgent(ctx context.Context, target agents.Agent, te
 			// 🔴 muster's rules stay LAST (a chief-started agent's first message
 			// ends with chiefDispatchRules: the forward goes before them), and
 			// the folded forwards are bounded (foldedForwardsMaxBytes).
-			appended, err := ap.FoldIntoPendingNote(ctx, target.ID, "\n\n"+text, chiefDispatchRules,
+			res, err := ap.FoldIntoPendingNote(ctx, target.ID, "\n\n"+text, chiefDispatchRules,
 				foldedForwardsMaxBytes, foldedForwardsOver)
 			if err != nil {
 				return false, fmt.Errorf("the forward could not be stored: %w", err)
 			}
-			if appended {
+			switch res {
+			case agents.FoldAdded:
 				return false, nil
+			case agents.FoldOverLimit:
+				return false, errForwardOverLimit
 			}
 		}
 	}
@@ -484,6 +495,11 @@ func (s *Server) toolTaskForward(ctx context.Context, a agents.Agent, taskID int
 	// 🔴 NOT askerAddressed: only the OWNER's own message answers an agent's
 	// open asks (docs/attention.md#answering); a forward is the chief's.
 	started, err := s.forwardToTaskAgent(ctx, *target, renderTaskForward(n, note, forwardByChief))
+	if errors.Is(err, errForwardOverLimit) {
+		// Not delivered: said so, and the task is NOT recorded as routed.
+		s.logger.Printf("task routing: forward to %s: %v", target.Name, err)
+		return toolErr("%s", err.Error())
+	}
 	if err != nil {
 		s.logger.Printf("task routing: forward to %s: %v", target.Name, err)
 		return toolErr("%s", strings.SplitN(err.Error(), ":", 2)[0])
@@ -1024,6 +1040,12 @@ const noticeRouteBookkeeping = 10 * time.Second
 func (s *Server) actOnMention(ctx context.Context, n notes.Note, target *agents.Agent, comment string) error {
 	if target != nil {
 		started, err := s.forwardToTaskAgent(ctx, *target, renderTaskForward(n, comment, forwardByMention))
+		if errors.Is(err, errForwardOverLimit) {
+			// The owed first turn already tells the agent to re-read the task;
+			// a retry of the mention could not add it either.
+			s.logger.Printf("task routing: a mention on task %d not added for %s: %v", n.ID, target.Name, err)
+			return nil
+		}
 		if err != nil {
 			return err
 		}
