@@ -89,32 +89,36 @@ const focusChevron = `<svg class="h-4 w-4 shrink-0 text-muted transition group-h
 // not navigate: a chevron, a hover and focus-visible surface, the press
 // feedback, a 44px tap target, and aria-haspopup / aria-expanded (kept in step
 // with the popover by floatingMenuScript's toggle listener).
+//
+// A focus title past cardTitleMax is CLAMPED like a long name, through the same
+// row (cardTitleRow): the heading shows the clamped words and is followed by
+// the same "…" button, which opens the same focus popover — where the whole
+// title is (data-focus-title). The aria-label always carries the whole title.
 func cardFocusTitle(cardID string, f *FocusView, reserve string) g.Node {
 	if !cardHasFocusTitle(f) {
 		return g.Text("")
 	}
 	pop := cardID + "-focus"
-	return Div(
-		cardSlot("focus"),
-		Class("px-4 pt-3 "+reserve),
-		Button(
-			Type("button"),
-			g.Attr("data-card-focus", ""),
-			g.If(f.Problem != "", g.Attr("data-focus-stale", "")),
-			g.Attr("popovertarget", pop),
-			g.Attr("aria-haspopup", "dialog"),
-			g.Attr("aria-controls", pop),
-			g.Attr("aria-expanded", "false"),
-			g.Attr("aria-label", "Focus: "+f.Title+" — show details"),
-			Class("press group/focus -ml-2 inline-flex min-h-[44px] max-w-full items-center gap-1.5 rounded-lg px-2 py-1 text-left text-base font-semibold leading-tight text-fg transition hover:bg-s2 hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus aria-expanded:bg-s2"),
-			Span(Class("min-w-0 break-words"), g.Text(f.Title)),
-			g.If(f.Problem != "", Span(g.Attr("data-focus-stale-mark", ""),
-				Class("shrink-0 rounded-full bg-s2 px-1.5 py-0.5 text-[11px] font-medium text-muted ring-1 ring-inset ring-line"),
-				g.Text("stale"))),
-			g.Raw(focusChevron),
-		),
-		focusPopover(pop, f),
-	)
+	return cardTitleRow("focus", pop, f.Title, "pt-3", reserve,
+		func(short string) g.Node {
+			return Button(
+				Type("button"),
+				g.Attr("data-card-focus", ""),
+				g.If(f.Problem != "", g.Attr("data-focus-stale", "")),
+				g.Attr("popovertarget", pop),
+				g.Attr("aria-haspopup", "dialog"),
+				g.Attr("aria-controls", pop),
+				g.Attr("aria-expanded", "false"),
+				g.Attr("aria-label", "Focus: "+f.Title+" — show details"),
+				Class("press group/focus -ml-2 inline-flex min-h-[44px] min-w-0 max-w-full items-center gap-1.5 rounded-lg px-2 py-1 text-left text-base font-semibold leading-tight text-fg transition hover:bg-s2 hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus aria-expanded:bg-s2"),
+				Span(Class("min-w-0 break-words"), g.Text(short)),
+				g.If(f.Problem != "", Span(g.Attr("data-focus-stale-mark", ""),
+					Class("shrink-0 rounded-full bg-s2 px-1.5 py-0.5 text-[11px] font-medium text-muted ring-1 ring-inset ring-line"),
+					g.Text("stale"))),
+				g.Raw(focusChevron),
+			)
+		},
+		focusPopover(pop, f))
 }
 
 // cardFocus is the card footer's focus chip for a session with NO focus but a

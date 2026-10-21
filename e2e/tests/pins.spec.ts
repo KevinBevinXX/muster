@@ -116,7 +116,10 @@ for (const vp of [
       const box = (await toggle.boundingBox())!;
       expect(box.width, 'the toggle is a 44px target').toBeGreaterThanOrEqual(44);
       await toggle.click();
-      const want = [last, 'win@2', ...agentsBefore.filter((x) => x !== last), 'win@1'];
+      // The pinned two by activity (the agent, seeded this run, is newer than
+      // the two-hour-old window), then the rest in the ONE flat order they had
+      // (agents and windows interleaved by activity).
+      const want = [last, 'win@2', ...before.filter((x) => x !== last && x !== 'win@2')];
       await expect.poll(() => order(page), { message: 'pinned agent, pinned window, then the rest in their order' }).toEqual(want);
       await expect(older.locator('[data-pin-toggle]')).toHaveAttribute('aria-pressed', 'true');
 

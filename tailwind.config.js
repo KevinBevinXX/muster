@@ -167,6 +167,18 @@ module.exports = {
           warning: { fg: role('st-warning-fg'), bg: role('st-warning-bg') },
           running: { fg: role('st-running-fg'), bg: role('st-running-bg') },
         },
+        // The recency dot's 8-step scale (internal/ui/list_signals.go): the
+        // operator's tmux idle-fade colours, freshest (0) to oldest (7).
+        idle: {
+          0: role('idle-0'),
+          1: role('idle-1'),
+          2: role('idle-2'),
+          3: role('idle-3'),
+          4: role('idle-4'),
+          5: role('idle-5'),
+          6: role('idle-6'),
+          7: role('idle-7'),
+        },
       },
     },
   },

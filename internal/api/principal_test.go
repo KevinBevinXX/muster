@@ -252,6 +252,7 @@ var routeVias = map[authz.Via][]string{
 		"POST /tasks",
 		"POST /tasks/merge",
 		"POST /tasks/{id}/comments",
+		"POST /tasks/{id}/complete",
 		"POST /tasks/{id}/edit",
 		"POST /tasks/{id}/tags",
 		"POST /ui/connector-requests/{id}/approve",

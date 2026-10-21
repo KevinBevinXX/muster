@@ -244,8 +244,8 @@ func TestThemeTokensMeetWCAG(t *testing.T) {
 // silently loses its colour.
 func TestThemeTokenSetsMatch(t *testing.T) {
 	dark, light := themes(t)
-	if len(dark) != 28 {
-		t.Errorf("the dark block has %d tokens, want 28 (14 roles + 7 status pairs)", len(dark))
+	if len(dark) != 36 {
+		t.Errorf("the dark block has %d tokens, want 36 (14 roles + 7 status pairs + the 8-step recency scale)", len(dark))
 	}
 	for k := range dark {
 		if _, ok := light[k]; !ok {

@@ -227,7 +227,8 @@ func (s *Server) agentsListCards(ctx context.Context) ([]ui.AgentCardView, []ui.
 
 	// The viewer's pins, read once: each card is marked, and the list draws the
 	// pinned ones first (ui.AgentsCardsWithMirrors — the one place that orders
-	// by pin, as a stable partition of the order above).
+	// by pin, and that interleaves these agents with the mirrored entries by
+	// activity; the order above decides ties among agents).
 	pinned := s.pinSet(ctx)
 	cards := make([]ui.AgentCardView, 0, len(list))
 	isChief := chiefPredicate(list)
@@ -236,8 +237,9 @@ func (s *Server) agentsListCards(ctx context.Context) ([]ui.AgentCardView, []ui.
 	for _, a := range list {
 		cards = append(cards, s.cardViewIndexed(a, instIdx, lastMsg[a.ID], isChief, pinned, focused))
 	}
-	// The viewer's mirrored sessions (internal/mirror), after the agents: from
-	// the plugin's in-memory hub, scoped to this request's principal.
+	// The viewer's mirrored sessions (internal/mirror), from the plugin's
+	// in-memory hub, scoped to this request's principal. The list interleaves
+	// them with the agents by activity (ui.AgentsCardsWithMirrors).
 	mirrors := s.mirrorCards(ctx, pinned, focused)
 	s.withCardAttention(ctx, cards, mirrors)
 	return cards, mirrors, nil
@@ -430,8 +432,14 @@ func (s *Server) handleAgentStatusIcon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status := s.liveStatus(ctx, a)
+	awaiting := s.AwaitingApproval(a.ID)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderStatusIcon(w, status, s.AwaitingApproval(a.ID)); err != nil {
+	// The card says what it was drawn with (ui.StatusPollPath); when that is no
+	// longer true its data-wait is stale, so the list is asked to re-render.
+	if drawn := r.URL.Query().Get("awaiting"); drawn != "" && (drawn == "1") != awaiting {
+		w.Header().Set("HX-Trigger", ui.AgentsAwaitingEvent)
+	}
+	if err := ui.RenderStatusIcon(w, status, awaiting); err != nil {
 		s.logger.Printf("agents: render status %d: %v", id, err)
 	}
 }
@@ -574,6 +582,9 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 		Pinned: pinned.Agent(a.ID),
 		// The agent's focus (internal/focus), read once per render by the caller.
 		Focus: focused.view(focus.AgentSubject(a.ID)),
+		// The polled badge's own answer (in memory), so "Waiting on ask" finds an
+		// agent blocked at a permission prompt.
+		AwaitingApproval: s.AwaitingApproval(a.ID),
 	}
 }
 

@@ -60,6 +60,9 @@ import (
 var expectedStatusWriterLedger = map[string][]string{
 	// PATCH /tasks/{id}/status — the human card control, via applyTaskStatus.
 	"handleNoteStatus": {"writerHumanUI"},
+	// POST /tasks/{id}/complete — the agent page's Mark-complete without
+	// JavaScript, via applyTaskStatus: the same human, so the same label.
+	"handleNoteComplete": {"writerHumanUI"},
 	// PATCH /api/tasks/{id}/status — the hook-token machine route, via applyTaskStatus.
 	"handleAPITaskStatus": {"writerMachineAPI"},
 	// The open→in_progress advance that follows a dispatch.

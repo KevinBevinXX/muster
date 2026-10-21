@@ -268,6 +268,7 @@ var isolationClasses = map[string]routeClass{
 	"POST /connectors/{name}/rotate":           classParam,
 	"POST /tasks/{id}/comments":                classParam,
 	"POST /tasks/{id}/edit":                    classParam,
+	"POST /tasks/{id}/complete":                classParam,
 	"POST /tasks/{id}/tags":                    classParam,
 	"POST /ui/connector-requests/{id}/approve": classParam,
 	"POST /ui/connector-requests/{id}/deny":    classParam,
