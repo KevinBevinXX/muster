@@ -197,10 +197,10 @@
  },
  {
   "name": "vi-hidden-after-resize",
-  "state": "vi mode within 0.35 s of a narrowing resize: the status bar hidden, tmux re-wrapping the input rules",
+  "state": "vi mode within 0.35 s of a narrowing resize: the status bar and rules hidden (NoLayout), or caught while tmux re-wraps them (Below) — a transient; either refuses",
   "how": "organic",
   "expect": "refuse",
-  "rule": "Below"
+  "rule": "NoLayout|Below"
  },
  {
   "name": "vi-insert-de",

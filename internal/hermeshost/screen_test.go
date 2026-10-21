@@ -49,14 +49,20 @@ func TestScreenFixtures(t *testing.T) {
 	counts := map[string]int{}
 	for name, e := range exp {
 		s := fixture(t, name)
-		want := e.Expect
+		// A rule may name alternatives ("NoLayout|Below") for a transient
+		// state; the recorded fixture must give one of them.
+		want, got := e.Expect, answer(CheckIdle(s))
+		ok := got == want
 		if want == "refuse" {
 			want += ": " + e.Rule
+			for _, alt := range strings.Split(e.Rule, "|") {
+				ok = ok || got == "refuse: "+alt
+			}
 		}
-		if got := answer(CheckIdle(s)); got != want {
+		if !ok {
 			t.Errorf("%s (%s): CheckIdle says %q, want %q", name, e.State, got, want)
 		}
-		counts[want]++
+		counts[e.Expect]++
 		if e.Pasted != "" {
 			if got := answer(CheckPasted(s, e.Pasted)); got != e.PastedExpect {
 				t.Errorf("%s: CheckPasted says %q, want %q", name, got, e.PastedExpect)
@@ -64,7 +70,7 @@ func TestScreenFixtures(t *testing.T) {
 		}
 	}
 	// The pair, never the zero: the admits and the refusals both counted.
-	if counts["admit"] < 3 || len(exp)-counts["admit"] < 20 {
+	if counts["admit"] < 3 || counts["refuse"] < 20 {
 		t.Fatalf("instrument check: %v", counts)
 	}
 	for _, blocking := range []string{"approval", "approval-de", "clarify-choices", "clarify-freetext", "sudo", "new-confirm", "hook-consent", "busy", "secret", "connection"} {

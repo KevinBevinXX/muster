@@ -257,11 +257,16 @@ func runScenario(t *testing.T, r *liveRun, sc liveScenario, e screenExpectation)
 			}
 		}
 	}
+	// A rule may name alternatives ("NoLayout|Below") for a transient state
+	// whose capture can land in either phase; every alternative refuses.
 	want := e.Expect
+	res.ok = res.gate == want
 	if e.Expect == "refuse" {
 		want = "refuse: " + e.Rule
+		for _, alt := range strings.Split(e.Rule, "|") {
+			res.ok = res.ok || res.gate == "refuse: "+alt
+		}
 	}
-	res.ok = res.gate == want
 	if !res.ok {
 		res.why = fmt.Sprintf("the check said %q, screens.json expects %q; screen:\n%s", res.gate, want, showScreen(res.raw, 14))
 	}
