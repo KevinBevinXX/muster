@@ -3,6 +3,7 @@ package mirrorhost
 import (
 	"bytes"
 	"encoding/json"
+	"net/url"
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/askq"
@@ -142,7 +143,8 @@ func redactPrompts(refs []cctranscript.PromptRef) {
 }
 
 // redactText is redact.Secrets over s except its attachment lines
-// (uploads.FindRefs), which are kept as they are.
+// (uploads.FindRefs) that are exactly muster's own (keptAttachment), which are
+// kept as they are.
 func redactText(s string) string {
 	refs := uploads.FindRefs(s)
 	if len(refs) == 0 {
@@ -152,9 +154,41 @@ func redactText(s string) string {
 	at := 0
 	for _, r := range refs {
 		b.WriteString(redact.Secrets(s[at:r.Start]))
-		b.WriteString(s[r.Start:r.End])
+		if line := s[r.Start:r.End]; keptAttachment(line, r) {
+			b.WriteString(line)
+		} else {
+			b.WriteString(redact.Secrets(line))
+		}
 		at = r.End
 	}
 	b.WriteString(redact.Secrets(s[at:]))
 	return b.String()
+}
+
+// keptAttachment reports whether an attachment line FindRefs matched is exempt
+// from redaction: the line AgentLine writes for its own fields, character for
+// character, and nothing in it the redactor would take except the link's sig.
+//
+// 🔴 THE PARSER'S PATTERN IS WIDER THAN MUSTER'S OWN LINE (#147). It accepts any
+// text in the curl command's quotes and any host and path before /f/, so a
+// line shaped like an attachment could carry a credential (in the quotes, in a
+// user:token@ or a path segment of the link) past the redactor. So the line
+// must be AgentLine's (the curl quotes hold the same link, the same name), the
+// link carries no userinfo, and with its sig removed the redactor changes
+// nothing. Anything else is redacted like the text around it.
+func keptAttachment(line string, r uploads.Ref) bool {
+	if line != "[attached: "+r.Name+" ("+r.ContentType+", "+r.Size+") "+r.URL+
+		" — download with curl -sSfo "+r.Name+" '"+r.URL+"']" {
+		return false
+	}
+	u, err := url.Parse(r.URL)
+	if err != nil || u.User != nil || u.Fragment != "" || u.Host == "" {
+		return false
+	}
+	sig := u.Query().Get("sig")
+	if sig == "" {
+		return false
+	}
+	masked := strings.ReplaceAll(line, "&sig="+sig, "")
+	return redact.Secrets(masked) == masked
 }

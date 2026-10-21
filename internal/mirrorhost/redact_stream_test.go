@@ -191,3 +191,37 @@ func TestAnAttachmentLineIsKeptForItsChip(t *testing.T) {
 		t.Fatalf("the index line: %q", refsIdx[0].Text)
 	}
 }
+
+// TestOnlyMustersOwnAttachmentLineIsExempt (#147): the attachment parser
+// accepts more than the line muster writes — any text in the curl command's
+// quotes, any userinfo or path before /f/ — so a line SHAPED like an
+// attachment could carry a credential past the redactor. Only AgentLine's
+// exact line, whose only redactable part is its sig, is kept; every other
+// shape is redacted, and the credential does not survive.
+func TestOnlyMustersOwnAttachmentLineIsExempt(t *testing.T) {
+	const tok = "ghp_0123456789abcdefABCDEF0123456789abcd"
+	id, q := strings.Repeat("A", 22), "?exp=946684800&sig="+strings.Repeat("b", 43)
+	good := "https://m.example.test/f/" + id + q
+	for _, c := range []struct{ name, line string }{
+		{"a credential in the curl quotes", "[attached: shot.png (image/png, 2 KB) " + good +
+			" — download with curl -sSfo shot.png '" + tok + "']"},
+		{"userinfo in the link", uploads.AgentLine("shot.png", "image/png", 2048, "https://u:"+tok+"@m.example.test/f/"+id+q)},
+		{"a credential in the link's path", uploads.AgentLine("shot.png", "image/png", 2048, "https://m.example.test/"+tok+"/f/"+id+q)},
+	} {
+		if len(uploads.FindRefs(c.line)) != 1 {
+			t.Fatalf("%s: the fixture is not an attachment line to the parser: %q", c.name, c.line)
+		}
+		ev := cctranscript.Event{Kind: cctranscript.KindPrompt, Text: "see\n" + c.line}
+		redactEvent(&ev)
+		if strings.Contains(ev.Text, tok) {
+			t.Errorf("%s: the credential survived: %q", c.name, ev.Text)
+		}
+	}
+	// The real line is still kept whole.
+	line := uploads.AgentLine("shot.png", "image/png", 2048, good)
+	ev := cctranscript.Event{Kind: cctranscript.KindPrompt, Text: line}
+	redactEvent(&ev)
+	if ev.Text != line {
+		t.Fatalf("muster's own line was changed: %q", ev.Text)
+	}
+}
