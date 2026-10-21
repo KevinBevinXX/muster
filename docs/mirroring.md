@@ -379,7 +379,7 @@ send goes through the host's **gated send**, in this order:
 3. the host checks again that Hermes is idle at exactly that time;
 4. it checks the screen: Hermes's status bar is there (it is blank while the
    command palette or the model picker is open), no stash panel (found by its
-   frame), no vi label,
+   header, even when a short pane cuts the rest of it), no vi label,
    no images attached, the idle prompt `❯ ` with an empty box, nothing below
    it. Any approval, question, password prompt, confirm or running turn
    changes that prompt, so it is refused here;

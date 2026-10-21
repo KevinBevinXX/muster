@@ -710,25 +710,41 @@ sections above in these ways, each decided while building it:
   is a signal of the pin's code, not a contract: the overlay ledger (which
   now pins the blanking condition itself) and the harness re-check it on
   every pin bump.
-- 🔴 **The stash panel is refused by its FRAME, not its status-bar mark**
-  (round-1 audit F1). Once the session has a title, Hermes right-aligns the
+- 🔴 **The stash panel is refused by its HEADER, not its status-bar mark**
+  (round-1 audit F1; round 2). Once the session has a title, Hermes right-aligns the
   title badge and CLIPS the bar's left side to make room
   (`_right_align_status_title_fragments`), and the `📌 N ▲` mark is the first
   thing cut: measured clipped at 100 and 120 columns, kept at 160 — so an
   open panel was ADMITTED, and Enter would have restored the stashed draft
-  over muster's message. The check now finds `╭─ 📌 …` with its `╰… ─╯`
-  footer above the bar (every bundled language starts the header so). That
-  also refuses the stash with the bar's stash field turned off, which had
-  been a residual case.
+  over muster's message. The check finds the header row `╭─ 📌 …` above
+  the bar (every bundled language starts the header so). Round 1 also
+  required its `╰… ─╯` footer, and round 2 measured why that was wrong: the
+  panel is an unbounded window drawn top-down, so on a short pane its
+  BOTTOM is cut, footer first, and the panel was ADMITTED at 100x12 with 7
+  drafts and at 100x24 and 80x24 with 20 (Hermes's cap). The harness varies
+  the pane's height for it (`stash-short-*`). This also refuses the stash
+  with the bar's stash field turned off, which had been a residual case. A
+  reply line that starts `╭─ 📌` is refused too, which is a false refusal
+  and so the safe way round.
 - **ONE Escape, not three** (round-0 audit D1). Every overlay a second or
   third Escape closed (the filtered picker, the reasoning stage, palette and
   stash together) is refused before any Escape, and the stash panel now is
   too; one Escape, 1.5 s, a re-capture that must pass, else refused. It
   stays for an overlay a future pin adds before the ledger catches it.
-- **The frame is the HIGHEST same-width rule within the box's rows**, and
-  rows are trimmed of every Unicode space (audit F2): a draft could type a
-  status bar, a full-width rule and `❯ ` ended by an NBSP or U+3000 on its
-  continuation rows and be read as an idle frame.
+- **The frame's upper rule is the HIGHEST same-width rule within the box's
+  rows whose row above is the real status bar**, and rows are trimmed of
+  every Unicode space (audit F2; round 2). A draft could type a status bar,
+  a full-width rule and `❯ ` ended by an NBSP or U+3000 on its continuation
+  rows and be read as an idle frame, so the closest rule is never taken. The
+  highest rule alone was not right either: a reply ending in a line of `─`
+  as wide as the pane landed in range above the bar, and every send was
+  refused until the next turn (measured at 100 and 130 wide). "The real
+  status bar" means its text AND its background (`class:status-bar`). A
+  draft draws no background at the pin, and a pasted escape is drawn as `^[`,
+  not obeyed. With the bar blank (palette, picker) no rule is anchored, the
+  highest is taken, and the screen is refused as before. A skin whose bar
+  has no background is never anchored, so the transcript-rule case is then
+  refused, never admitted.
 - **`mirrorhost.Runtime` keeps `Name` and `LocatePanes`.** The gated send is
   its own code (`runHermesSend` over injected steps; `Tmux.SendHermes` fills
   them), reached only through `hostSide.hermesPaste` for a paste with
