@@ -302,11 +302,47 @@ func (p *Pool) AuthFailure(ctx context.Context, owner int64, account string) (st
 		return "", fmt.Errorf("ccpool: read account marks: %w", err)
 	}
 	m := marks[account]
-	if m.AuthFailedAt.IsZero() || m.AuthFailedToken == "" || m.AuthFailedToken != Fingerprint(tok) {
+	if !authFailedNow(m, tok) {
 		return "", nil
 	}
 	return fmt.Sprintf("Claude account %q failed authentication at %s (%s); replace its token first",
 		account, m.AuthFailedAt.UTC().Format(time.RFC3339), m.AuthFailedDetail), nil
+}
+
+// AccountState is what selection knows about one of an owner's accounts.
+type AccountState struct {
+	// AuthFailed: the account's CURRENT token is marked auth_failed (the
+	// mark's fingerprint is that token's), exactly the case [Choose] skips.
+	AuthFailed bool
+	// RateLimitedAt is the account's latest rate_limited mark; zero for never.
+	RateLimitedAt time.Time
+}
+
+// States is AccountState for every one of owner's configured accounts, by
+// name. An account that is not configured for owner is absent. It is what the
+// job API's worker-pool selection reads (internal/api pickJobAgent): the same
+// marks, under the same "current token" rule, as [Choose].
+func (p *Pool) States(ctx context.Context, owner int64) (map[string]AccountState, error) {
+	tokens, names, err := p.accounts(ctx, owner)
+	if err != nil {
+		return nil, err
+	}
+	marks, err := p.store.Marks(ctx, owner)
+	if err != nil {
+		return nil, fmt.Errorf("ccpool: read account marks: %w", err)
+	}
+	out := make(map[string]AccountState, len(names))
+	for _, n := range names {
+		m := marks[n]
+		out[n] = AccountState{AuthFailed: authFailedNow(m, tokens[n]), RateLimitedAt: m.RateLimitedAt}
+	}
+	return out, nil
+}
+
+// authFailedNow reports whether m marks token — the account's current one —
+// as having failed authentication.
+func authFailedNow(m Mark, token string) bool {
+	return !m.AuthFailedAt.IsZero() && m.AuthFailedToken != "" && m.AuthFailedToken == Fingerprint(token)
 }
 
 // Choose is the selection algorithm (see the package doc), pure.
@@ -320,7 +356,7 @@ func Choose(names []string, tokens map[string]string, marks map[string]Mark, liv
 	var skipped []string
 	for _, n := range names {
 		m := marks[n]
-		if !m.AuthFailedAt.IsZero() && m.AuthFailedToken != "" && m.AuthFailedToken == Fingerprint(tokens[n]) {
+		if authFailedNow(m, tokens[n]) {
 			skipped = append(skipped, fmt.Sprintf("%s (auth failed %s: %s)", n, m.AuthFailedAt.UTC().Format(time.RFC3339), m.AuthFailedDetail))
 			continue
 		}

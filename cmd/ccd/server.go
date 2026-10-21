@@ -727,7 +727,7 @@ func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	// primary — every request without the header, as before (lanes.go).
 	target := s
 	if key := r.Header.Get(headerCCSession); key != "" {
-		ln, f := s.laneFor(r.Context(), key, r.Header.Get(headerCCModel))
+		ln, f := s.laneFor(r.Context(), key, r.Header.Get(headerCCModel), r.Header.Get(headerCCWorkdir))
 		if f != nil {
 			writeFailure(w, f)
 			return
@@ -1106,7 +1106,14 @@ func credentialVisible(configDir string) func() bool {
 // running, and waits for that CLI to reach its prompt. The lane it returns is
 // reserved (lanes.acquire) and the caller releases it; on failure nothing is
 // held.
-func (s *server) laneFor(ctx context.Context, key, model string) (*lane, *failure) {
+//
+// A non-empty workdir (X-Muster-CC-Workdir) starts the lane's CLI there instead
+// of in ccd's workspace: a machine job's worktree, which muster created and
+// overlaid before the turn (internal/agentprovision jobworkspace.go). It is
+// refused unless it is exactly a job worktree of THIS workspace
+// (agents.IsJobWorktreeDir) and an existing directory, not a symlink — so the
+// header cannot point a CLI anywhere else on the volume (checkJobDir).
+func (s *server) laneFor(ctx context.Context, key, model, workdir string) (*lane, *failure) {
 	if s.lanes == nil {
 		return nil, paneNotReady("this ccd runs one Claude Code session only (it does not supervise the CLI, " +
 			"or CCD_MAX_SESSIONS is 0), so it cannot run a session of its own for " + strconv.Quote(key))
@@ -1123,7 +1130,12 @@ func (s *server) laneFor(ctx context.Context, key, model string) (*lane, *failur
 	if s.checkout != nil && !s.checkout.ready() {
 		return nil, paneNotReady(s.checkout.notReady())
 	}
-	ln, f := s.lanes.acquire(ctx, key, model)
+	if workdir != "" {
+		if f := s.lanes.checkJobDir(workdir); f != nil {
+			return nil, f
+		}
+	}
+	ln, f := s.lanes.acquireIn(ctx, key, model, workdir)
 	if f != nil {
 		return nil, f
 	}

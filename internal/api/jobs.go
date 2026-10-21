@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/jobs"
 )
 
@@ -22,7 +24,7 @@ import (
 // submits a one-shot job — "run this prompt on this agent, optionally at this
 // commit, and give me the result" — and polls for its outcome.
 //
-//	POST /api/jobs       {agent, prompt, repo?, sha?, result_path?, timeout_s?, idempotency_key?}
+//	POST /api/jobs       {agent | worker_pool, prompt, repo?, sha?, result_path?, timeout_s?, idempotency_key?}
 //	                     → 202 {job_id, status: "queued", …}  (200 + deduplicated:true on a repeated key)
 //	GET  /api/jobs/{id}  → {job_id, status, result?, reason?, error?, started_at, finished_at, agent, cc_account, …}
 //
@@ -42,9 +44,21 @@ import (
 // tier acts as user 1, so a job can name only user 1's agents (row-level
 // security hides every other owner's).
 //
-// ⚠ WHAT A JOB DOES NOT HAVE IN THIS FIRST CUT, STATED SO IT IS NOT INFERRED:
-//   - worker-pool selection. A job names one existing, running claude-code agent;
-//     `worker_pool` is refused 501. pickJobAgent is the seam a pool goes behind.
+// 🔴 A sha JOB RUNS IN A WORKTREE OF ITS OWN, NOT IN THE AGENT'S CHECKOUT. Its
+// turn is a fresh Claude Code session (jobSession) whose CLI ccd starts in a
+// git worktree of the commit that this runner creates first, with the agent
+// configuration the commit carries (`.claude/` at any depth, the root
+// CLAUDE.md and AGENTS.md, and .mcp.json) replaced by the default
+// branch's (agentprovision.PrepareJobWorktree) — so the commit under review
+// cannot configure, hook or add MCP servers to its own reviewer — and removes
+// it after the job, whatever the outcome (removeJobWorktree). The agent's own
+// checkout is never moved.
+//
+// ⚠ WHAT A JOB DOES NOT HAVE, STATED SO IT IS NOT INFERRED:
+//   - isolation beyond the overlaid paths. The turn runs in the worker's pod,
+//     with the worker's Claude account, network and volume; any other file in
+//     the commit (a build script, a test) is the commit's, and the turn may run
+//     it.
 //   - survival across a restart. The turn runs in this process and nothing waits
 //     for it on shutdown. A graceful shutdown fails the jobs THIS process holds
 //     (FailOwnJobs), never another's. After a crash, the reaper (RunJobReaper
@@ -60,8 +74,11 @@ import (
 //     muster's request to ccd and the job ends timed_out, but ccd's turn may run
 //     on; a later job on the same agent can then be refused `busy` by ccd.
 //   - more than one job per agent at a time. Jobs on one agent run one after
-//     another in this process (jobLanes): a sha checkout moves the one working
-//     tree the agent has, so two jobs at once would race each other's commit.
+//     another in this process (jobLanes). Each has its own worktree and its own
+//     CLI, so nothing on disk is shared any more; but one worker's turns share
+//     its Claude account and its pod's memory (ccd runs at most
+//     CCD_MAX_SESSIONS CLIs), and parallel job turns on one worker have not
+//     been exercised.
 
 // registerJobRoutes wires the job API.
 //
@@ -118,6 +135,25 @@ func (s *Server) handleJobCreate(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, status, map[string]any{"error": msg})
 		return
 	}
+	// A key already used answers its job before anything is chosen: a retry of
+	// an accepted pool job must not be refused because its worker is now busy,
+	// or because the agent it named has gone since. Create answers it too
+	// (atomically, for a race between two first submissions); this read is
+	// what lets the answer come before the choice.
+	if n.IdempotencyKey != "" {
+		j, err := s.ext.Jobs.ByIdempotencyKey(ctx, n.IdempotencyKey)
+		if err == nil {
+			v := jobView(j)
+			v["deduplicated"] = true
+			s.writeJSON(w, http.StatusOK, v)
+			return
+		}
+		if !errors.Is(err, jobs.ErrNotFound) {
+			s.logger.Printf("jobs: read idempotency key: %v", err)
+			s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not read the job store"})
+			return
+		}
+	}
 	if (n.SHA != "" || n.ResultPath != "") && s.ext.JobWorkspace == nil {
 		s.writeJSON(w, http.StatusNotImplemented, map[string]any{
 			"error": "this deployment cannot reach inside an agent's instance (no provisioner wired), " +
@@ -142,7 +178,7 @@ func (s *Server) handleJobCreate(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	n.AgentID, n.Agent = a.ID, a.Name
+	n.AgentID, n.Agent, n.WorkerPool = a.ID, a.Name, strings.TrimSpace(req.WorkerPool)
 	n.RequestedBy, _ = serviceActorFromContext(ctx)
 
 	j, created, err := s.ext.Jobs.Create(ctx, n)
@@ -186,7 +222,16 @@ func validateJobRequest(req jobRequest) (jobs.NewJob, int, string) {
 		TimeoutSeconds: jobs.DefaultTimeoutSeconds,
 		IdempotencyKey: req.IdempotencyKey,
 	}
+	agent, pool := strings.TrimSpace(req.Agent), strings.TrimSpace(req.WorkerPool)
 	switch {
+	case agent != "" && pool != "":
+		return n, http.StatusBadRequest, "agent and worker_pool are mutually exclusive: name an agent, or a pool to choose one from"
+	case agent == "" && pool == "":
+		return n, http.StatusBadRequest, "agent or worker_pool is required"
+	case pool != "" && !agents.ValidWorkerPool(pool):
+		return n, http.StatusBadRequest, "worker_pool must be 1-63 of [a-z0-9-], not starting with '-'"
+	case pool != "" && n.SHA != "" && n.Repo == "":
+		return n, http.StatusBadRequest, "a worker_pool job with a sha must name its repo: the pool's workers may work on different repositories"
 	case strings.TrimSpace(req.Prompt) == "":
 		return n, http.StatusBadRequest, "prompt is required"
 	case len(req.Prompt) > jobs.MaxPromptBytes:
@@ -214,19 +259,14 @@ func validateJobRequest(req jobRequest) (jobs.NewJob, int, string) {
 	return n, 0, ""
 }
 
-// pickJobAgent resolves the agent a job runs on.
-//
-// 🔴 THIS IS THE SEAM WORKER POOLS GO BEHIND. Today a job names its agent and
-// this is a lookup; a pool would choose one here (by repository, by which
-// Claude account is rested) and everything after it is unchanged.
+// pickJobAgent resolves the agent a job runs on: the one it names, or a member
+// of the worker pool it names (pickWorker). validateJobRequest has made sure it
+// names exactly one of the two.
 func (s *Server) pickJobAgent(ctx context.Context, req jobRequest) (agents.Agent, int, string) {
+	if pool := strings.TrimSpace(req.WorkerPool); pool != "" {
+		return s.pickWorker(ctx, pool, strings.TrimSpace(req.Repo))
+	}
 	name := strings.TrimSpace(req.Agent)
-	if strings.TrimSpace(req.WorkerPool) != "" {
-		return agents.Agent{}, http.StatusNotImplemented, "worker_pool selection is not implemented yet; name an agent"
-	}
-	if name == "" {
-		return agents.Agent{}, http.StatusBadRequest, "agent is required"
-	}
 	a, err := s.ext.Agents.GetByName(ctx, name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return agents.Agent{}, http.StatusNotFound, "no agent by that name"
@@ -243,6 +283,129 @@ func (s *Server) pickJobAgent(ctx context.Context, req jobRequest) (agents.Agent
 			a.Name, agents.ResolveKind(a.Kind), agents.KindClaudeCode)
 	}
 	return a, 0, ""
+}
+
+// pickWorker chooses the member of pool a job runs on (chooseWorker), reading
+// the members, their Claude accounts' marks and their queues. 404: no agent is
+// a member of pool. 503: members exist and none is eligible, or this
+// deployment cannot read the account marks the choice needs.
+func (s *Server) pickWorker(ctx context.Context, pool, repo string) (agents.Agent, int, string) {
+	list, err := s.ext.Agents.List(ctx)
+	if err != nil {
+		s.logger.Printf("jobs: list agents for pool %q: %v", pool, err)
+		return agents.Agent{}, http.StatusInternalServerError, "could not read the agents"
+	}
+	var members []agents.Agent
+	var ids []int64
+	for _, a := range list {
+		if a.WorkerPool == pool {
+			members = append(members, a)
+			ids = append(ids, a.ID)
+		}
+	}
+	if len(members) == 0 {
+		return agents.Agent{}, http.StatusNotFound, fmt.Sprintf("no worker pool %q: no agent is a member of it", pool)
+	}
+	h, ok := s.ext.Kinds.(ClaudeAccountStates)
+	if !ok {
+		return agents.Agent{}, http.StatusServiceUnavailable, "this deployment cannot read its Claude accounts' marks, " +
+			"so it cannot choose a worker (a worker whose account failed authentication must be skipped)"
+	}
+	states, err := h.ClaudeAccountStates(ctx, callerID(ctx))
+	if err != nil {
+		s.logger.Printf("jobs: read Claude account marks for pool %q: %v", pool, err)
+		return agents.Agent{}, http.StatusServiceUnavailable, "could not read the Claude accounts' marks, so no worker was chosen"
+	}
+	active, err := s.ext.Jobs.ActiveCounts(ctx, ids)
+	if err != nil {
+		s.logger.Printf("jobs: count active jobs for pool %q: %v", pool, err)
+		return agents.Agent{}, http.StatusInternalServerError, "could not count the workers' jobs"
+	}
+	a, why := chooseWorker(pool, members, repo, states, active)
+	if why != "" {
+		return agents.Agent{}, http.StatusServiceUnavailable, why
+	}
+	return a, 0, ""
+}
+
+// maxWorkerSkipsNamed bounds how many skipped workers a refusal names.
+const maxWorkerSkipsNamed = 10
+
+// chooseWorker is the worker-pool selection, pure. Of pool's members, a worker
+// is ELIGIBLE when it is a claude-code agent whose stored status is running,
+// works on repo (when the job names one), runs on a Claude account that is
+// configured and whose current token is not marked auth_failed, and has fewer
+// than jobs.MaxActivePerAgent jobs queued or running. Of the eligible, it
+// prefers, in order:
+//
+//  1. a worker with no job queued or running;
+//  2. then the fewest jobs queued;
+//  3. then the account least recently rate_limited (never before any time,
+//     then the oldest);
+//  4. then the agent's name, so the answer is deterministic.
+//
+// With none eligible it returns a non-empty reason naming why each member was
+// skipped (at most maxWorkerSkipsNamed of them).
+func chooseWorker(pool string, members []agents.Agent, repo string, accounts map[string]ccpool.AccountState,
+	active map[int64]jobs.ActiveCount) (agents.Agent, string) {
+	type cand struct {
+		a  agents.Agent
+		c  jobs.ActiveCount
+		rl time.Time
+	}
+	sorted := append([]agents.Agent(nil), members...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+	var cands []cand
+	var skipped []string
+	for _, m := range sorted {
+		st, configured := accounts[m.CCAccount]
+		c := active[m.ID]
+		var why string
+		switch {
+		case agents.ResolveKind(m.Kind) != agents.KindClaudeCode:
+			why = "kind " + agents.ResolveKind(m.Kind)
+		case m.Status != agents.StatusRunning:
+			why = "status " + m.Status
+		case repo != "" && !strings.EqualFold(repo, strings.TrimSpace(m.Repo)):
+			why = fmt.Sprintf("works on repository %q", m.Repo)
+		case !configured:
+			why = fmt.Sprintf("its Claude account %q is not configured", m.CCAccount)
+		case st.AuthFailed:
+			why = fmt.Sprintf("its Claude account %q failed authentication", m.CCAccount)
+		case c.Active() >= jobs.MaxActivePerAgent:
+			why = fmt.Sprintf("already has %d jobs queued or running (the limit)", c.Active())
+		}
+		if why != "" {
+			skipped = append(skipped, m.Name+" ("+why+")")
+			continue
+		}
+		cands = append(cands, cand{a: m, c: c, rl: st.RateLimitedAt})
+	}
+	if len(cands) == 0 {
+		named := skipped
+		more := ""
+		if len(named) > maxWorkerSkipsNamed {
+			named, more = named[:maxWorkerSkipsNamed], fmt.Sprintf("; and %d more", len(skipped)-maxWorkerSkipsNamed)
+		}
+		return agents.Agent{}, fmt.Sprintf("no worker in pool %q can take the job: %s%s", pool, strings.Join(named, "; "), more)
+	}
+	sort.SliceStable(cands, func(i, j int) bool {
+		a, b := cands[i], cands[j]
+		if (a.c.Active() == 0) != (b.c.Active() == 0) {
+			return a.c.Active() == 0
+		}
+		if a.c.Queued != b.c.Queued {
+			return a.c.Queued < b.c.Queued
+		}
+		if !a.rl.Equal(b.rl) {
+			if a.rl.IsZero() || b.rl.IsZero() {
+				return a.rl.IsZero()
+			}
+			return a.rl.Before(b.rl)
+		}
+		return a.a.Name < b.a.Name
+	})
+	return cands[0].a, ""
 }
 
 func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
@@ -276,6 +439,7 @@ func jobView(j jobs.Job) map[string]any {
 		"job_id":      j.ID,
 		"status":      j.Status,
 		"agent":       j.Agent,
+		"worker_pool": j.WorkerPool,
 		"cc_account":  j.CCAccount,
 		"repo":        j.Repo,
 		"sha":         j.SHA,
@@ -581,32 +745,54 @@ func (s *Server) jobSession(ctx context.Context, a agents.Agent) (agents.ChatSes
 	return s.ext.Agents.CreateSession(ctx, a.ID, a.Name)
 }
 
-// runJobTurn is the job's work under its deadline: the checkout, the turn, the
-// result read-back.
-func (s *Server) runJobTurn(ctx context.Context, a agents.Agent, sess agents.ChatSession, j jobs.Job) jobs.Outcome {
+// runJobTurn is the job's work under its deadline: the worktree, the turn, the
+// result read-back — and, for a sha job, the worktree's removal after all of
+// them, whatever the outcome (a panic included: the deferred removal runs as
+// it unwinds).
+func (s *Server) runJobTurn(ctx context.Context, a agents.Agent, sess agents.ChatSession, j jobs.Job) (o jobs.Outcome) {
 	expired := func() bool { return errors.Is(ctx.Err(), context.DeadlineExceeded) }
+	turnCtx := withSessionRoute(ctx, a, sess)
+	// worktree is the job whose worktree the result is read from: 0 for a job
+	// without a sha, which runs in the agent's working directory.
+	var worktree int64
 	if j.SHA != "" {
-		if err := s.ext.JobWorkspace.CheckoutCommit(ctx, a, j.SHA); err != nil {
+		// 🔴 ONLY IN A SESSION OF ITS OWN. A turn with no explicit Claude Code
+		// session goes to the agent's primary CLI, which works in the agent's
+		// checkout — exactly where a commit's own configuration must not run.
+		if sess.Runtime != agents.SessionRuntimeClaudeCode {
+			return jobs.Failed(jobs.ReasonInternal, JobNoOwnSessionError)
+		}
+		// Registered BEFORE the worktree is made, so a half-made one goes too.
+		defer func() { o = s.removeJobWorktree(ctx, a, j, o) }()
+		dir, err := s.ext.JobWorkspace.PrepareJobWorktree(ctx, a, j.ID, j.SHA)
+		if err != nil {
 			if expired() {
-				return jobs.TimedOut("the job's timeout elapsed while checking out " + j.SHA + ": " + err.Error())
+				return jobs.TimedOut("the job's timeout elapsed while creating its worktree at " + j.SHA + ": " + err.Error())
 			}
 			return jobs.Failed(jobs.ReasonCheckoutFailed, err.Error())
 		}
+		worktree = j.ID
+		turnCtx = withJobWorkdir(turnCtx, dir)
 	}
 	// The transcript writes outlive the deadline: a timed-out job's prompt
 	// still belongs in the session it was sent to.
 	store := context.WithoutCancel(ctx)
 	_, _ = s.ext.Agents.AddChatMessage(store, agents.ChatMessage{AgentID: a.ID, SessionID: sess.ID, Role: "user", Content: j.Prompt})
-	reply, err := s.ext.Gateway.Chat(withSessionRoute(ctx, a, sess), a, sess.SessionKey, j.Prompt, nil)
+	reply, err := s.ext.Gateway.Chat(turnCtx, a, sess.SessionKey, j.Prompt, nil)
 	if reply != "" {
 		_, _ = s.ext.Agents.AddChatMessage(store, agents.ChatMessage{AgentID: a.ID, SessionID: sess.ID, Role: "assistant", Content: reply})
 	}
-	o := jobs.Classify(reply, err, expired())
+	o = jobs.Classify(reply, err, expired())
 	if o.Status != jobs.StatusSucceeded {
 		return o
 	}
 	if j.ResultPath != "" {
-		return s.removeJobResultFile(ctx, a, j, s.readJobResult(ctx, a, j))
+		o = s.readJobResult(ctx, a, worktree, j)
+		if worktree != 0 {
+			// The file goes with the worktree (removeJobWorktree, deferred).
+			return o
+		}
+		return s.removeJobResultFile(ctx, a, j, o)
 	}
 	if strings.TrimSpace(reply) == "" {
 		return jobs.Failed(jobs.ReasonEmptyReply, "the agent's turn ended with no reply text and the job named no result_path")
@@ -614,9 +800,53 @@ func (s *Server) runJobTurn(ctx context.Context, a agents.Agent, sess agents.Cha
 	return o
 }
 
-// readJobResult is the outcome of reading a job's result_path back.
-func (s *Server) readJobResult(ctx context.Context, a agents.Agent, j jobs.Job) jobs.Outcome {
-	data, err := s.ext.JobWorkspace.ReadWorkspaceFile(ctx, a, j.ResultPath, jobs.MaxResultBytes)
+// JobNoOwnSessionError is a sha job's error when the chat store cannot open a
+// Claude Code session of the job's own (agents.SessionRuntimeStore).
+const JobNoOwnSessionError = "this deployment's chat store cannot open a Claude Code session of the job's own, " +
+	"so the turn could not be kept out of the agent's checkout; nothing was run"
+
+// withJobWorkdir is ctx with the turn's route also naming dir as the working
+// directory of the session's CLI (agents.HeaderCCWorkdir).
+func withJobWorkdir(ctx context.Context, dir string) context.Context {
+	r, _ := agents.TurnRouteFrom(ctx)
+	h := r.Header.Clone()
+	if h == nil {
+		h = http.Header{}
+	}
+	h.Set(agents.HeaderCCWorkdir, dir)
+	r.Header = h
+	return agents.WithTurnRoute(ctx, r)
+}
+
+// jobWorktreeRemoveTimeout bounds the removal of a job's worktree, on a context
+// detached from the job's own (which has expired when the job timed out).
+const jobWorktreeRemoveTimeout = 30 * time.Second
+
+// removeJobWorktree removes job j's worktree and returns o, noting in its error
+// a worktree that could not be removed, without changing its status.
+func (s *Server) removeJobWorktree(ctx context.Context, a agents.Agent, j jobs.Job, o jobs.Outcome) jobs.Outcome {
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jobWorktreeRemoveTimeout)
+	defer cancel()
+	if err := s.ext.JobWorkspace.RemoveJobWorktree(rctx, a, j.ID); err != nil {
+		s.logger.Printf("jobs: %d: remove the job's worktree: %v", j.ID, err)
+		note := JobWorktreeRemoveFailedPrefix + err.Error()
+		if o.Error != "" {
+			o.Error += "; " + note
+		} else {
+			o.Error = note
+		}
+	}
+	return o
+}
+
+// JobWorktreeRemoveFailedPrefix opens the note a job's error carries when its
+// worktree could not be removed.
+const JobWorktreeRemoveFailedPrefix = "could not remove the job's worktree: "
+
+// readJobResult is the outcome of reading a job's result_path back, from job
+// worktree's worktree (0: the agent's working directory).
+func (s *Server) readJobResult(ctx context.Context, a agents.Agent, worktree int64, j jobs.Job) jobs.Outcome {
+	data, err := s.ext.JobWorkspace.ReadWorkspaceFile(ctx, a, worktree, j.ResultPath, jobs.MaxResultBytes)
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return jobs.TimedOut("the job's timeout elapsed while reading " + j.ResultPath + ": " + err.Error())
@@ -634,15 +864,17 @@ func (s *Server) readJobResult(ctx context.Context, a agents.Agent, j jobs.Job) 
 // job's deadline the read left.
 const jobResultRemoveTimeout = 10 * time.Second
 
-// removeJobResultFile deletes the job's result_path file when — and only when —
-// it was read successfully (o succeeded) and the repository does not track it,
-// and returns o, noting in its error a file left behind, without changing its
-// status.
+// removeJobResultFile deletes the result_path file of a job WITHOUT a sha (its
+// turn ran in the agent's own working directory) when — and only when — it was
+// read successfully (o succeeded) and the repository does not track it, and
+// returns o, noting in its error a file left behind, without changing its
+// status. A sha job's file goes with its worktree (removeJobWorktree).
 //
-// 🔴 WHY THE FILE IS DELETED: the working directory is the agent's repository
-// checkout, so a result file the turn writes there is untracked, and the next
-// sha job's checkout refuses a dirty tree. After a successful read its content
-// is in the job's result, byte for byte, so removing it hides nothing.
+// 🔴 WHY THE FILE IS DELETED: left in the agent's working directory, it would
+// be there for the next job naming the same result_path, and a turn of that
+// job that wrote none would return THIS job's output as its own. After a
+// successful read its content is in the job's result, byte for byte, so
+// removing it hides nothing.
 //
 // 🔴 AND WHY ONLY THEN: after a failed read (over the limit, not UTF-8, gone)
 // the file is the only copy of the agent's output, so it stays. A TRACKED file
@@ -659,10 +891,11 @@ func (s *Server) removeJobResultFile(ctx context.Context, a agents.Agent, j jobs
 	switch {
 	case err != nil:
 		s.logger.Printf("jobs: %d: remove result file %s: %v", j.ID, j.ResultPath, err)
-		note = JobResultRemoveFailedPrefix + j.ResultPath + " (the next sha job on this agent may be refused as dirty): " + err.Error()
+		note = JobResultRemoveFailedPrefix + j.ResultPath + " (a later job on this agent naming the same result_path " +
+			"could return it if its own turn writes none): " + err.Error()
 	case !removed:
-		note = JobResultTrackedNotePrefix + j.ResultPath + " is tracked by the repository, so it was left in place; " +
-			"if the turn modified it, the tree stays dirty and the next sha job on this agent fails checkout_failed"
+		note = JobResultTrackedNotePrefix + j.ResultPath + " is tracked by the repository, so it was left in place, " +
+			"as the turn left it, in the agent's checkout"
 	default:
 		return o
 	}

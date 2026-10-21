@@ -84,6 +84,9 @@ import (
 const (
 	headerCCSession = "X-Muster-CC-Session"
 	headerCCModel   = "X-Muster-CC-Model"
+	// headerCCWorkdir: the directory the lane's CLI works in, a machine job's
+	// worktree (laneFor). Absent: ccd's own workspace.
+	headerCCWorkdir = "X-Muster-CC-Workdir"
 )
 
 // laneModelPattern is what a lane's --model may be: an alias ("opus") or a model
@@ -350,12 +353,16 @@ type laneTerminal interface {
 // lane is one explicit session's CLI.
 type lane struct {
 	id, key, model string
-	srv            *server
-	sup            *supervisor
-	term           laneTerminal
-	cancel         context.CancelFunc
-	done           chan struct{} // closed when the supervisor's run returns
-	lastUsed       time.Time
+	// workdir is the directory the lane's CLI works in: a job's worktree
+	// (X-Muster-CC-Workdir), or "" for ccd's own workspace. Like the model it is
+	// fixed for the lane's life.
+	workdir  string
+	srv      *server
+	sup      *supervisor
+	term     laneTerminal
+	cancel   context.CancelFunc
+	done     chan struct{} // closed when the supervisor's run returns
+	lastUsed time.Time
 	// reserved counts the turns holding this lane, from acquire until their
 	// runTurn has returned (lanes.release). Guarded by lanes.mu.
 	//
@@ -394,6 +401,14 @@ type lanes struct {
 // errLanesFull: every lane is mid-turn and the cap is reached.
 var errLanesFull = errors.New("every Claude Code session ccd may run at once is mid-turn")
 
+// dir is the directory ln's CLI works in.
+func (l *lanes) dir(ln *lane) string {
+	if ln.workdir != "" {
+		return ln.workdir
+	}
+	return l.workspace
+}
+
 // get returns the running lane for id, if any (the hook path).
 func (l *lanes) get(id string) *lane {
 	l.mu.Lock()
@@ -401,11 +416,17 @@ func (l *lanes) get(id string) *lane {
 	return l.set[id]
 }
 
-// acquire returns key's lane, starting it (and stopping an idle, unreserved one
-// when at the cap) if it is not running. model must match a running lane's. The
-// lane comes back RESERVED (lane.reserved): the caller releases it once its turn
-// is over.
+// acquire is acquireIn in ccd's own workspace.
 func (l *lanes) acquire(ctx context.Context, key, model string) (*lane, *failure) {
+	return l.acquireIn(ctx, key, model, "")
+}
+
+// acquireIn returns key's lane, starting it in workdir ("" = ccd's workspace;
+// the caller has validated it, laneFor) — and stopping an idle, unreserved one
+// when at the cap — if it is not running. model and workdir must match a
+// running lane's. The lane comes back RESERVED (lane.reserved): the caller
+// releases it once its turn is over.
+func (l *lanes) acquireIn(ctx context.Context, key, model, workdir string) (*lane, *failure) {
 	id := laneID(key)
 	l.mu.Lock()
 	if ln, ok := l.set[id]; ok {
@@ -413,6 +434,11 @@ func (l *lanes) acquire(ctx context.Context, key, model string) (*lane, *failure
 			l.mu.Unlock()
 			return nil, &failure{Status: http.StatusBadRequest, Type: failBadRequest,
 				Message: fmt.Sprintf("session %q runs on model %q, not %q: a session's model is fixed", key, ln.model, model)}
+		}
+		if ln.workdir != workdir {
+			l.mu.Unlock()
+			return nil, &failure{Status: http.StatusBadRequest, Type: failBadRequest,
+				Message: fmt.Sprintf("session %q works in %q, not %q: a session's working directory is fixed", key, l.dir(ln), workdir)}
 		}
 		ln.reserved++
 		l.mu.Unlock()
@@ -429,7 +455,7 @@ func (l *lanes) acquire(ctx context.Context, key, model string) (*lane, *failure
 		}
 		delete(l.set, evict.id)
 	}
-	ln := l.newLane(id, key, model)
+	ln := l.newLane(id, key, model, workdir)
 	// Detached from the turn's request: the CLI outlives the turn that started it.
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	ln.cancel = cancel
@@ -510,9 +536,13 @@ func (l *lanes) release(ln *lane) {
 	l.mu.Unlock()
 }
 
-func (l *lanes) newLane(id, key, model string) *lane {
+func (l *lanes) newLane(id, key, model, workdir string) *lane {
+	dir := l.workspace
+	if workdir != "" {
+		dir = workdir
+	}
 	term := l.newTerm("cc-" + id)
-	sup := newSupervisor(term, l.bin, l.configDir, l.workspace)
+	sup := newSupervisor(term, l.bin, l.configDir, dir)
 	if l.tweak != nil {
 		l.tweak(sup)
 	}
@@ -522,7 +552,7 @@ func (l *lanes) newLane(id, key, model string) *lane {
 		if model != "" {
 			argv = append(argv, "--model", model)
 		}
-		if transcriptExists(l.configDir, l.workspace, uuid) {
+		if transcriptExists(l.configDir, dir, uuid) {
 			return append(argv, "--resume", uuid), modeContinue
 		}
 		return append(argv, "--session-id", uuid), modeFresh
@@ -530,7 +560,7 @@ func (l *lanes) newLane(id, key, model string) *lane {
 	srv := l.newServer(term)
 	srv.supervisedBy(sup)
 	srv.blockedSrc = id
-	return &lane{id: id, key: key, model: model, srv: srv, sup: sup, term: term,
+	return &lane{id: id, key: key, model: model, workdir: workdir, srv: srv, sup: sup, term: term,
 		done: make(chan struct{}), lastUsed: l.now()}
 }
 

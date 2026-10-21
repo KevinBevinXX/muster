@@ -17,8 +17,9 @@ import (
 // read by the two request builders here, rather than a parameter threaded
 // through every turn function between them.
 //
-// The header names are a wire contract with cmd/ccd, which spells them itself
-// (it imports nothing from here); cmd/ccd's contract test pins the two.
+// The header names are a wire contract with cmd/ccd, which spells them itself;
+// cmd/ccd's tests pin the two (TestTheLaneHeadersAreMustersHeaders,
+// TestTheWorkdirHeaderIsMusters).
 const (
 	// HeaderRuntime names the runtime a turn is for; absent is ccd's own.
 	// "gateway" is the only other value.
@@ -29,6 +30,13 @@ const (
 	HeaderCCSession = "X-Muster-CC-Session"
 	// HeaderCCModel is the model that CLI is started with (`--model`).
 	HeaderCCModel = "X-Muster-CC-Model"
+	// HeaderCCWorkdir is the working directory that CLI is started in: a job's
+	// own worktree ([JobWorktreeDir]). Absent: the agent's working directory,
+	// as for every session before jobs had worktrees. ccd accepts only a
+	// directory [IsJobWorktreeDir] admits, and only on a turn that also names
+	// an explicit session (HeaderCCSession), whose CLI it then fixes in that
+	// directory for the session's life.
+	HeaderCCWorkdir = "X-Muster-CC-Workdir"
 	// HeaderGatewayModel is the gateway runtime's per-request model override.
 	//
 	// ⚠ ITS SPELLING IS THE RUNTIME'S, LIKE sessionKeyHeader's: a third party's
@@ -68,7 +76,7 @@ func applyTurnRoute(req *http.Request) {
 	if !ok {
 		return
 	}
-	for _, name := range []string{HeaderRuntime, HeaderCCSession, HeaderCCModel, HeaderGatewayModel} {
+	for _, name := range []string{HeaderRuntime, HeaderCCSession, HeaderCCModel, HeaderCCWorkdir, HeaderGatewayModel} {
 		if v := r.Header.Get(name); v != "" {
 			req.Header.Set(name, v)
 		}

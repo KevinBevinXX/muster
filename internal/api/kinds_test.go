@@ -105,6 +105,34 @@ func TestAClaudeCodeDispatchStoresTheKindAndThePoolsAccount(t *testing.T) {
 	}
 }
 
+// TestADispatchCanMakeAClaudeCodeAgentAPoolWorker: worker_pool is stored on a
+// claude-code agent's row; on a gateway agent, or as a name the pattern
+// refuses, it is a 409 before any row exists.
+func TestADispatchCanMakeAClaudeCodeAgentAPoolWorker(t *testing.T) {
+	s, h, store := kindsServer(t, stubKinds{pick: "work"})
+	if rec := postDispatch(t, s, h, url.Values{"kind": {"claude-code"}, "worker_pool": {"reviewers"}}); rec.Code != http.StatusOK {
+		t.Fatalf("claude-code worker: %d %s", rec.Code, rec.Body)
+	}
+	if rows := store.rows(); len(rows) != 1 || rows[0].WorkerPool != "reviewers" || rows[0].Kind != agents.KindClaudeCode {
+		t.Fatalf("rows = %+v, want one claude-code row in pool reviewers", rows)
+	}
+	for _, tc := range []struct {
+		form url.Values
+		want string
+	}{
+		{url.Values{"worker_pool": {"reviewers"}}, `worker_pool "reviewers": only a claude-code agent can be a machine-job worker`},
+		{url.Values{"kind": {"claude-code"}, "worker_pool": {"-bad"}}, `worker_pool "-bad" is not 1-63 of [a-z0-9-], not starting with '-'`},
+	} {
+		rec := postDispatch(t, s, h, tc.form)
+		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), tc.want) {
+			t.Errorf("%v = %d %q, want 409 carrying %q", tc.form, rec.Code, rec.Body, tc.want)
+		}
+	}
+	if n := len(store.rows()); n != 1 {
+		t.Fatalf("%d rows, want 1 (the refusals created none)", n)
+	}
+}
+
 // TestAClaudeCodeDispatchKeepsItsRepository: a claude-code agent takes a
 // repository and branch, as a gateway agent does — stored on the row, which is
 // what agentspec turns into the pod's checkout. (Before repositories existed for

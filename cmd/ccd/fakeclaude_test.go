@@ -20,8 +20,9 @@ import (
 // depends on, as measured on the real CLI:
 //
 //   - it blocks on a first-run screen unless .claude.json has
-//     hasCompletedOnboarding, and on a trust screen unless projects[<cwd>] has
-//     hasTrustDialogAccepted — and fires NO hooks while blocked;
+//     hasCompletedOnboarding, and on a trust screen unless projects[<cwd>] —
+//     or, for a git worktree, projects[<its main checkout>] — has
+//     hasTrustDialogAccepted, and fires NO hooks while blocked;
 //   - it enables bracketed paste, treats CR inside a paste as a newline (tmux
 //     turns LF into CR on paste) and CR outside one as submit;
 //   - it runs the hook COMMANDS from $CLAUDE_CONFIG_DIR/settings.json with
@@ -47,6 +48,27 @@ import (
 // ⚠ WHAT IT DOES NOT IMITATE: the real CLI expands a TAB to four spaces; this
 // fake keeps it. That is a property of the CLI, not of ccd's paste, so the suite
 // sends no tabs and the PR records the real CLI's behaviour instead.
+// fakeWorktreeMain is the main checkout of the git worktree at dir ("" when dir
+// is not one): a worktree's .git is a FILE naming <main>/.git/worktrees/<name>.
+// The real CLI treats a worktree of a trusted checkout as trusted — measured on
+// the pinned CLI in the image (cmd/ccd jobdir.go checkJobDir) — and the fake
+// does the same.
+func fakeWorktreeMain(dir string) string {
+	b, err := os.ReadFile(filepath.Join(dir, ".git"))
+	if err != nil {
+		return ""
+	}
+	gitdir, ok := strings.CutPrefix(strings.TrimSpace(string(b)), "gitdir: ")
+	if !ok {
+		return ""
+	}
+	wts := filepath.Dir(gitdir)
+	if filepath.Base(wts) != "worktrees" || filepath.Base(filepath.Dir(wts)) != ".git" {
+		return ""
+	}
+	return filepath.Dir(filepath.Dir(wts))
+}
+
 // fakeLocalCommands are the slash commands the fake runs locally.
 var fakeLocalCommands = map[string]bool{"/compact": true, "/help": true, "/clear": true, "/model": true}
 
@@ -101,8 +123,11 @@ func fakeClaude() int {
 		blockForever()
 	}
 	projects, _ := st["projects"].(map[string]any)
-	proj, _ := projects[cwd].(map[string]any)
-	if proj == nil || proj["hasTrustDialogAccepted"] != true {
+	trusted := func(dir string) bool {
+		proj, _ := projects[dir].(map[string]any)
+		return proj != nil && proj["hasTrustDialogAccepted"] == true
+	}
+	if !trusted(cwd) && !trusted(fakeWorktreeMain(cwd)) {
 		fmt.Print("Quick safety check: Is this a project you created or one you trust?\r\n")
 		blockForever()
 	}

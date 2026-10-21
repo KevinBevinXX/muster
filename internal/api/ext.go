@@ -10,6 +10,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/apitokens"
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
@@ -257,10 +258,10 @@ type Extensions struct {
 	// Jobs is the machine job API's store (internal/jobs, migration 0037). nil
 	// (no database): POST /api/jobs and GET /api/jobs/{id} answer 503.
 	Jobs jobs.Store
-	// JobWorkspace runs a job's in-instance steps: the sha checkout before its
-	// turn, and the result_path read and delete after it. nil (no provisioner): a job
-	// naming sha or result_path is refused 501 when it is submitted, never
-	// accepted and then failed.
+	// JobWorkspace runs a job's in-instance steps: the worktree a sha job runs
+	// in (created before its turn, removed after it), and the result_path read
+	// and delete. nil (no provisioner): a job naming sha or result_path is
+	// refused 501 when it is submitted, never accepted and then failed.
 	JobWorkspace JobWorkspace
 }
 
@@ -268,11 +269,18 @@ type Extensions struct {
 // (*agentprovision.Adapter implements it). Every method execs inside the
 // agent's live instance.
 type JobWorkspace interface {
-	// CheckoutCommit moves the agent's repository checkout to sha, detached.
-	CheckoutCommit(ctx context.Context, a agents.Agent, sha string) error
-	// ReadWorkspaceFile returns rel, relative to the agent's working directory,
-	// byte for byte, refusing a file over max bytes.
-	ReadWorkspaceFile(ctx context.Context, a agents.Agent, rel string, max int) ([]byte, error)
+	// PrepareJobWorktree creates job jobID's own git worktree of the agent's
+	// repository at sha, outside the agent's checkout, with the agent
+	// configuration overlaid from the default branch, and returns its path.
+	// The agent's checkout is not moved.
+	PrepareJobWorktree(ctx context.Context, a agents.Agent, jobID int64, sha string) (string, error)
+	// RemoveJobWorktree removes that worktree; one that is not there is not an
+	// error.
+	RemoveJobWorktree(ctx context.Context, a agents.Agent, jobID int64) error
+	// ReadWorkspaceFile returns rel byte for byte, refusing a file over max
+	// bytes: relative to job jobID's worktree for a positive jobID, to the
+	// agent's working directory for zero.
+	ReadWorkspaceFile(ctx context.Context, a agents.Agent, jobID int64, rel string, max int) ([]byte, error)
 	// RemoveUntrackedWorkspaceFile deletes rel, relative to the agent's
 	// working directory, unless the repository there tracks it; a file that
 	// is not there is not an error. removed is false (with a nil error) for a
@@ -868,6 +876,16 @@ type AgentKinds interface {
 // cmd/muster-server's kindSet implements it (asserted there).
 type ClaudeAccountHealth interface {
 	ClaudeAccountAuthFailure(ctx context.Context, owner int64, account string) (string, error)
+}
+
+// ClaudeAccountStates is an optional extension of [AgentKinds]: what the
+// account pool knows about each of owner's Claude accounts (auth-failed under
+// its current token, last rate-limited). The job API's worker-pool selection
+// reads it (pickJobAgent); a deployment whose Kinds does not implement it
+// refuses a worker_pool job 503 rather than choose without it.
+// cmd/muster-server's kindSet implements it (asserted there).
+type ClaudeAccountStates interface {
+	ClaudeAccountStates(ctx context.Context, owner int64) (map[string]ccpool.AccountState, error)
 }
 
 // enabledKinds is Extensions.Kinds.Enabled with the nil case resolved.
