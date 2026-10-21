@@ -122,7 +122,7 @@ func draftPushBody(m plugins.Message, pluginLabel string) string {
 	if m.ID == 0 {
 		return DraftPushBody
 	}
-	who := "unverified sender"
+	who := unverifiedSender
 	if m.SenderVerified {
 		if name := senderDisplayName(m.Sender); name != "" {
 			who = name
@@ -145,6 +145,16 @@ func senderDisplayName(sender string) string {
 	}
 	return mirror.OneLine(sender, draftPushNameMax)
 }
+
+// unverifiedSender is how a one-line surface names a sender the plugin did not
+// verify: the draft push says it INSTEAD of the name, the attention item
+// (draftInboundText) AFTER it, as unverifiedSenderNote. The chief's turn and a
+// routed paste carry the longer plugins.UnverifiedSenderMark.
+const unverifiedSender = "unverified sender"
+
+// unverifiedSenderNote follows an unverified sender's name on a one-line
+// surface.
+const unverifiedSenderNote = "(" + unverifiedSender + ")"
 
 // draftPushNameMax bounds the sender's name in a draft notification.
 const draftPushNameMax = 60

@@ -80,6 +80,26 @@ func TestADraftsNotificationNamesWhoAndWhereOnly(t *testing.T) {
 	}
 }
 
+// TestADraftsAttentionLineMarksAnUnverifiedSender pins the WHOLE line a draft's
+// attention item shows — to the operator and, through attention_list, to the
+// chief: an unverified sender is followed by "(unverified sender)", the push's
+// wording; a verified one is not.
+func TestADraftsAttentionLineMarksAnUnverifiedSender(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		m    plugins.Message
+		want string
+	}{
+		{"verified", plugins.Message{ID: 7, Sender: "Ada <ada@example.test>", SenderVerified: true, Body: "lunch?"}, "Ada <ada@example.test>: lunch?"},
+		{"unverified", plugins.Message{ID: 7, Sender: "Your Bank <alerts@example.test>", Body: "reset now"}, "Your Bank <alerts@example.test> (unverified sender): reset now"},
+		{"unverified, no sender", plugins.Message{ID: 7, Subject: "s"}, "unknown sender (unverified sender): s"},
+	} {
+		if got := draftInboundText(c.m); got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
 // TestEveryAttentionPushBodyIsWhoAndWhereOnly: an ask's and a held question's
 // body is "<asker> is asking"; a waiting session's "Waiting: <tool> · <window
 // @ host>" (or without the tool) — never the question, the command, the path

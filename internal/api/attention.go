@@ -371,7 +371,9 @@ const (
 )
 
 // draftInboundText is a draft's inbound message as one line: who sent it and
-// the start of what they wrote (its subject when the body is empty).
+// the start of what they wrote (its subject when the body is empty). A sender
+// the plugin did not verify is followed by unverifiedSenderNote: this line
+// reaches the chief too (attention_list), not only the Attention view.
 func draftInboundText(m plugins.Message) string {
 	body := m.Body
 	if strings.TrimSpace(body) == "" {
@@ -380,6 +382,9 @@ func draftInboundText(m plugins.Message) string {
 	who := mirror.OneLine(m.Sender, 80)
 	if who == "" {
 		who = "unknown sender"
+	}
+	if !m.SenderVerified {
+		who += " " + unverifiedSenderNote
 	}
 	return who + ": " + mirror.OneLine(body, draftInboundMax)
 }

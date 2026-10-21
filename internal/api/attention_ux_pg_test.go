@@ -187,7 +187,7 @@ func TestADraftShowsTheMessageAndTheReply(t *testing.T) {
 			it = x
 		}
 	}
-	if it.Text != "s@example.test: hello" {
+	if it.Text != "s@example.test (unverified sender): hello" { // the fixture's sender is unverified
 		t.Fatalf("the draft's text: %q", it.Text)
 	}
 	if !strings.HasPrefix(it.Detail, "Draft reply: Sure — long long") || !strings.HasSuffix(it.Detail, "…") ||
