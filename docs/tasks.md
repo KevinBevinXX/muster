@@ -27,6 +27,11 @@ scripts write them through the JSON API and the [CLI](cli.md).
   takes you back to the Agents list. Without JavaScript the button is a plain
   form (`POST /tasks/{id}/complete`) that completes the task and redirects to
   the Agents list too.
+- **Completing stops the chief's agent:** when a task becomes `complete`, by
+  any path, the agent the chief's `task_dispatch` started on it is **stopped**
+  (not destroyed; Start brings it back), cutting off a turn it is running. An
+  agent you started yourself is left running, and `ready_for_review` stops
+  nothing. See [plugins.md](plugins.md) (the `task_dispatch` guards).
 - **The idle reaper:** a task idle longer than `MUSTER_TASK_REAP_AFTER` (default
   7 days) is tagged `stale`, with a system comment. The sweep runs every 30
   minutes.

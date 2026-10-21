@@ -80,13 +80,20 @@ const (
 
 // setNoteStatus is the ONE place in internal/api that calls Notes.SetStatus. It
 // stamps writer onto the context so the store-side choke point can name the
-// author of the write, then delegates unchanged.
+// author of the write, then delegates.
 //
-// It adds NO behaviour: same note, same error, same everything. Callers keep
-// their own validation, side effects and error mapping — this deliberately does
-// not become a second place where status policy lives, because
-// StatusAllowedForAgent (agents may not set `complete`) is a separate,
-// deliberate rule that differs per caller and must not be flattened here.
+// It returns the store's note and error unchanged. Callers keep their own
+// validation, side effects and error mapping — this deliberately does not become
+// a second place where status POLICY lives, because StatusAllowedForAgent
+// (agents may not set `complete`) is a separate, deliberate rule that differs per
+// caller and must not be flattened here.
+//
+// 🔴 ONE SIDE EFFECT LIVES HERE, AND ONLY ONE: a write that LANDED with status
+// `complete` stops the agent the chief started for the task
+// (stopChiefAgentOnComplete). It is here, not in the callers, because this is
+// the funnel every writer passes — four of them can set `complete`
+// (expectedCompleteWriters) — and a copy per caller is a place for the next
+// complete-writer to forget it. A failed write stops nothing.
 //
 // An empty writer is not silently accepted-as-fine: notes.WithWriter refuses to
 // store it, so the write logs `writer=UNLABELLED` rather than an empty field.
@@ -98,5 +105,9 @@ const (
 // UnlabelledWriter comment in internal/notes/statuslog.go, which used to claim
 // the opposite and is now consistent with this.
 func (s *Server) setNoteStatus(ctx context.Context, writer statusWriter, id int64, status string) (notes.Note, error) {
-	return s.ext.Notes.SetStatus(notes.WithWriter(ctx, string(writer)), id, status)
+	n, err := s.ext.Notes.SetStatus(notes.WithWriter(ctx, string(writer)), id, status)
+	if err == nil && status == notes.StatusComplete {
+		s.stopChiefAgentOnComplete(ctx, n)
+	}
+	return n, err
 }
