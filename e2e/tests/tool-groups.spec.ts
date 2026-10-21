@@ -200,11 +200,24 @@ test('a tap mid-way reverses the group, from where it is, both ways', async ({ p
   });
   const isOpen = () => g3.evaluate((d) => (d as HTMLDetailsElement).open);
 
+  // 🔴 THE PAGE'S ANIMATION CLOCK IS STOPPED ACROSS THE REVERSING TAP. The
+  // reversal is a NEW animation that runs in real time from the moment of the
+  // tap, and its easing is front-loaded, so reading the box a few
+  // milliseconds after the tap read it already well on its way (CI: 43 px off,
+  // under load; reproduced with a 120 ms wait between the tap and the read:
+  // 139 px). With the clock at rate 0 the new animation holds at its first
+  // frame — exactly the height it started from — however long the read takes.
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Animation.enable');
+  const clock = (playbackRate: number) => cdp.send('Animation.setPlaybackRate', { playbackRate });
+
   const closed = await height();
   await g3.locator(':scope > summary').tap(); // open…
   const mid = await pauseHalf();
+  await clock(0);
   await g3.locator(':scope > summary').tap(); // …reversed half-way
   const from = await g3.evaluate((d) => d.getBoundingClientRect().height);
+  await clock(1);
   expect(Math.abs(from - mid), 'the reversal starts from where the box was').toBeLessThanOrEqual(2);
   await finish();
   expect(await isOpen(), 'opening, reversed: it ends closed').toBe(false);
