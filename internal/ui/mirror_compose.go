@@ -370,6 +370,11 @@ func composerPinScript() g.Node {
 // Offline is the one failure it keeps for itself: it says so and keeps the
 // text, because the browser's answer to a submit with no network is an error
 // page in place of the conversation.
+// SendAgainHeader marks a send's answer that MAY have been delivered (the
+// host never confirmed it): the composer offers "Send again", which mints a
+// new nonce; the same nonce is never delivered again (internal/api).
+const SendAgainHeader = "X-Muster-Send-Again"
+
 func mirrorComposerScript() g.Node {
 	return Script(g.Raw(`
 (function () {
@@ -403,6 +408,25 @@ func mirrorComposerScript() g.Node {
       history.replaceState(history.state, '', here.pathname + here.search + here.hash);
     }
   } catch (e) {}
+  // 🔴 "SEND AGAIN" IS THE ONLY RETRY OF A SEND THAT MAY HAVE LANDED. When the
+  // host never confirmed a send (the answer carries X-Muster-Send-Again), the
+  // server keeps its nonce: the same message re-sent with it is refused,
+  // because it may be in the conversation already. This button is the
+  // person's explicit retry: it mints a NEW nonce, then sends.
+  var againBtn = null;
+  function offerAgain(sub) {
+    if (!againBtn) {
+      againBtn = document.createElement('button');
+      againBtn.type = 'button';
+      againBtn.id = 'mv-send-again';
+      againBtn.className = send.className;
+      againBtn.textContent = 'Send again';
+      note.parentNode.insertBefore(againBtn, note.nextSibling);
+    }
+    againBtn.hidden = false;
+    againBtn.onclick = function () { againBtn.hidden = true; renew(); say(''); post(sub); };
+  }
+  function dropAgain() { if (againBtn) againBtn.hidden = true; }
   // The Queue button (send_queue.go), when the composer has one: a submit
   // whose formaction is the queue route.
   var queueBtn = document.getElementById('mv-queue-send');
@@ -454,6 +478,7 @@ func mirrorComposerScript() g.Node {
     } catch (e) { native(sub); return; }
     return req.then(function (r) {
         if (r.ok) {
+          dropAgain();
           if (input.value === sent) { input.value = ''; if (window.musterComposerFit) window.musterComposerFit(input); }
           // Sent or queued: its draft goes (what was typed meanwhile is kept).
           if (window.musterDraft) window.musterDraft.sent(input);
@@ -469,7 +494,11 @@ func mirrorComposerScript() g.Node {
           stepUp.ask('', function () { return post(sub); });
           return;
         }
-        return r.text().then(function (t) { say(t.trim() || ((queued ? 'Not queued' : 'Not sent') + ' (HTTP ' + r.status + ')')); });
+        var again = !!r.headers.get('`+SendAgainHeader+`');
+        return r.text().then(function (t) {
+          say(t.trim() || ((queued ? 'Not queued' : 'Not sent') + ' (HTTP ' + r.status + ')'));
+          if (again) offerAgain(sub); else dropAgain();
+        });
       }, function () {
         if (navigator.onLine === false) { say(form.getAttribute('data-down')); return; }
         native(sub);

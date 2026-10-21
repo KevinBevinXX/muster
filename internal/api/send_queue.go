@@ -129,13 +129,20 @@ func (s *Server) resolveSendQueueTarget(w http.ResponseWriter, r *http.Request, 
 }
 
 // mirrorQueueOff is why a mirrored entry cannot be queued for, "" when it can:
-// the host must report Claude Code's status, and the window must run it.
+// the host must report the agent's status, and the window must run Claude
+// Code — or Hermes, on a host that advertised hermesSend (Hermes Phase 3;
+// the delivery then goes through the hub's idle gate and the host's gated
+// send).
 func mirrorQueueOff(h mirror.HostView, e mirror.SessionView) string {
 	switch {
 	case !h.Online:
 		return unprefixed(mirror.ErrHostOffline)
 	case !h.StatusReport || h.Windows == nil:
 		return unprefixed(mirror.ErrNoStatusReport)
+	case e.HermesView() && h.HermesSend:
+		return ""
+	case e.HermesView():
+		return unprefixed(mirror.ErrHermesSendOff)
 	case !e.Claude:
 		return SendQueueNotClaude
 	}
@@ -764,6 +771,10 @@ func (s *Server) sendQueueProbe(ctx context.Context, h sendqueue.Head) sendqueue
 		return sendqueue.AgentState{Why: unprefixed(st.Unknown)}
 	case st.Status == mirror.StatusIdle:
 		return sendqueue.AgentState{Idle: true, Since: st.Since, Observed: st.Observed, Pasted: st.Pasted}
+	case st.Runtime == mirror.RuntimeHermes && st.Status == mirror.StatusWaiting:
+		return sendqueue.AgentState{Why: "Hermes is waiting for you (an approval or a question)."}
+	case st.Runtime == mirror.RuntimeHermes:
+		return sendqueue.AgentState{Why: "Hermes is working."}
 	case st.Status == mirror.StatusWaiting:
 		return sendqueue.AgentState{Why: "Claude Code is waiting for you (a prompt or a question)."}
 	}
@@ -858,10 +869,32 @@ func (s *Server) sendQueueDeliver(ctx context.Context, it sendqueue.Item, opts .
 	case errors.As(err, &sup):
 		return sendqueue.Outcome{Superseded: true, AfterSince: sup.Pasted, Detail: unprefixed(err)}
 	case err != nil:
-		return sendqueue.Outcome{MayHaveDelivered: errors.Is(err, mirror.ErrPasteUnconfirmed),
-			Detail: "Not sent: " + unprefixed(err)}
+		return sendQueueFailure(err)
 	}
 	return sendqueue.Outcome{Sent: true, Detail: "Sent."}
+}
+
+// sendQueueFailure is a failed delivery's outcome, in the composer's words.
+// 🔴 A delivery that MAY have landed (the host never confirmed it; Hermes's
+// gated send pressed Enter and saw no row) or that sits pasted in Hermes's
+// box is NEVER "Not sent", which would invite a resend and a second turn.
+func sendQueueFailure(err error) sendqueue.Outcome {
+	may := errors.Is(err, mirror.ErrPasteUnconfirmed)
+	var pr *mirror.PasteRefusedError
+	if errors.As(err, &pr) {
+		switch pr.Refusal {
+		case mirror.PasteRefusalHermesUnconfirmed, mirror.PasteRefusalHermesPasted,
+			mirror.PasteRefusalHermesNotSubmitted, mirror.PasteRefusalHermesSuperseded:
+			// The host's gated send says it in full ("May have been
+			// submitted: …", "Pasted, not submitted: …", "Not sent: …").
+			return sendqueue.Outcome{MayHaveDelivered: may, Pasted: pr.Refusal == mirror.PasteRefusalHermesPasted, Detail: pr.Why}
+		}
+	}
+	if may {
+		return sendqueue.Outcome{MayHaveDelivered: true,
+			Detail: "May have been sent: muster handed it to the host, which did not confirm it (" + unprefixed(err) + "). Check the conversation before sending again."}
+	}
+	return sendqueue.Outcome{Detail: "Not sent: " + unprefixed(err)}
 }
 
 // Why a routed queued message is not sent (sendQueueRoutedGate).

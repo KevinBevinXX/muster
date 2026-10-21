@@ -26,7 +26,9 @@ box also keeps what you type as a draft on this device; see
   note.
 - On either view, the host refuses a message into a pane that runs Hermes
   (or a nested terminal multiplexer, or processes it cannot read), and nothing
-  is pasted ([mirroring.md](mirroring.md#muster-never-pastes-into-hermes)).
+  is pasted — except the rendered view's send to a Hermes window on a host
+  started with `-hermes-send`, which goes through Hermes's gated send
+  ([mirroring.md](mirroring.md#muster-pastes-into-hermes-only-through-its-gated-send)).
 - Only newline and tab are accepted as control characters. Several lines arrive
   as one bracketed paste, and the single Enter runs them in order. A program that
   did not ask for bracketed paste gets the text as typed, so each newline is an

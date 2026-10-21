@@ -181,7 +181,14 @@ func (s *Server) sendQueueSendNow(w http.ResponseWriter, r *http.Request, ctx co
 	if !o.Sent {
 		s.logger.Printf("sendqueue: send now: message %d (%d bytes) to %s failed (may have been delivered: %t): %s",
 			sent.ID, len(sent.Body), sent.Target, o.MayHaveDelivered, o.Detail)
-		refuse(http.StatusBadGateway, o.Detail, noticeSendNowFailed)
+		notice := noticeSendNowFailed
+		switch {
+		case o.Pasted:
+			notice = noticeSendNowPasted
+		case o.MayHaveDelivered:
+			notice = noticeSendNowUnconfirmed
+		}
+		refuse(http.StatusBadGateway, o.Detail, notice)
 		return
 	}
 	s.logger.Printf("sendqueue: sent message %d (%d bytes) to %s now, at its owner's request", sent.ID, len(sent.Body), sent.Target)
