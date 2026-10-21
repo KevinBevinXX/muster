@@ -136,8 +136,8 @@
   "name": "stash-indicator-hidden",
   "state": "the stash panel, with the status bar's stash field turned off",
   "how": "organic",
-  "expect": "admit",
-  "rule": ""
+  "expect": "refuse",
+  "rule": "Stash"
  },
  {
   "name": "secret",
@@ -311,5 +311,61 @@
   "rule": "Text",
   "pasted": "hello from muster",
   "pastedExpect": "refuse: NotPasted"
+ },
+ {
+  "name": "stash-titled-100",
+  "state": "the stash panel after a turn, the session title in the status bar, 100 columns",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "Stash"
+ },
+ {
+  "name": "stash-titled-120",
+  "state": "the stash panel after a turn, the session title in the status bar, 120 columns",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "Stash"
+ },
+ {
+  "name": "stash-titled-160",
+  "state": "the stash panel after a turn, the session title in the status bar, 160 columns",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "Stash"
+ },
+ {
+  "name": "palette-titled-100",
+  "state": "the command palette after a turn, 100 columns",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "NoStatusBar"
+ },
+ {
+  "name": "model-picker-titled-100",
+  "state": "the model picker after a turn, 100 columns",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "NoStatusBar"
+ },
+ {
+  "name": "palette-titled-160",
+  "state": "the command palette after a turn, 160 columns",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "NoStatusBar"
+ },
+ {
+  "name": "model-picker-titled-160",
+  "state": "the model picker after a turn, 160 columns",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "NoStatusBar"
+ },
+ {
+  "name": "vi-titled-100",
+  "state": "vi mode after a turn, 100 columns: the title trims the vi label off",
+  "how": "organic",
+  "expect": "admit",
+  "rule": ""
  }
 ]

@@ -157,13 +157,15 @@ func sgrItalic(params string, italic bool) bool {
 	return italic
 }
 
-// Text is a row's characters, trailing spaces trimmed.
+// rowText is a row's characters with trailing white space trimmed — EVERY
+// Unicode space (NBSP, U+3000, …), not just ASCII: a typed `❯ ` row ended by
+// an NBSP must not keep its prefix where a plain space would be trimmed.
 func rowText(row []Cell) string {
 	var b strings.Builder
 	for _, c := range row {
 		b.WriteRune(c.R)
 	}
-	return strings.TrimRight(b.String(), " ")
+	return strings.TrimRightFunc(b.String(), unicode.IsSpace)
 }
 
 // ScreenRefusal is why the screen check refused: Rule is one of the
@@ -253,11 +255,15 @@ func frameOf(s Screen) (frame, error) {
 		return frame{}, refuse(ScreenBelow)
 	}
 	w, _ := isRule(s.Rows[bot])
+	// 🔴 THE HIGHEST same-width rule within the box's rows, never the
+	// closest: a draft can type a full-width rule (and a status bar and an
+	// idle prompt under it) on its continuation rows; the real upper rule is
+	// above every row the draft can draw. A transcript rule that lands in
+	// range above the status bar is a false refusal, which is safe.
 	top := -1
 	for i := bot - 1; i >= 0 && i >= bot-1-maxInputRows; i-- {
 		if tw, ok := isRule(s.Rows[i]); ok && tw == w {
 			top = i
-			break
 		}
 	}
 	if top < 0 || top == bot-1 || top == 0 {
@@ -274,6 +280,36 @@ var statusBarRE = regexp.MustCompile(`^ (?:[^│]{1,24} │ )?☤ \S`)
 // stashOpenRE is the stash indicator while its panel is open.
 var stashOpenRE = regexp.MustCompile(`📌 \d+ ▲`)
 
+// stashPanelRows is how far above the status bar the stash panel's frame is
+// looked for: the panel (its rows are the stash, which Hermes bounds) and
+// the subagent dock, which sits between the panel and the bar.
+const stashPanelRows = 40
+
+// stashPanelOpen reports whether the stash panel's FRAME is drawn above the
+// status bar at row status: a header row `╭─ 📌 …` (every bundled language,
+// and the compact form, starts so: P:hermes_cli/cli_status_bar_mixin.py:1201,
+// :1209) with its footer `╰… ─╯` below it, before the bar.
+//
+// 🔴 THE FRAME, NOT THE STATUS-BAR MARK: once the session has a title,
+// Hermes right-aligns the title badge and CLIPS the bar's left side to make
+// room (_right_align_status_title_fragments), and the `📌 N ▲` mark is the
+// first thing cut — measured: clipped at 80, 100 and 120 columns.
+func stashPanelOpen(s Screen, status int) bool {
+	for i := status - 1; i >= 0 && i >= status-stashPanelRows; i-- {
+		t := strings.TrimLeftFunc(rowText(s.Rows[i]), unicode.IsSpace)
+		if !strings.HasPrefix(t, "╭─ ") || !strings.Contains(t, "📌") {
+			continue
+		}
+		for j := i + 1; j < status; j++ {
+			b := strings.TrimLeftFunc(rowText(s.Rows[j]), unicode.IsSpace)
+			if strings.HasPrefix(b, "╰") && strings.HasSuffix(b, "─╯") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // idlePromptRE is the idle prompt at the start of the first input row: the
 // skin's default `❯ `, after a profile name when the profile is not the
 // default (P:hermes_cli/cli_tui_mixin.py:272-288; profile names,
@@ -286,7 +322,7 @@ func statusChecks(s Screen, f frame) error {
 	if !statusBarRE.MatchString(sb) {
 		return refuse(ScreenNoStatusBar)
 	}
-	if stashOpenRE.MatchString(sb) {
+	if stashOpenRE.MatchString(sb) || stashPanelOpen(s, f.status) {
 		return refuse(ScreenStash)
 	}
 	if HasViLabel(sb) {

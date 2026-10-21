@@ -116,6 +116,71 @@ func TestOverlayLedgerMatchesThePinnedSource(t *testing.T) {
 	}
 }
 
+// TestScreenConditionsMatchThePinnedSource extracts, from the pinned source,
+// the conditions _get_tui_prompt_fragments branches on (in order), those
+// that blank the status bar, and the attributes the chrome's visibility
+// filters read, and fails when any list differs from the ledger.
+func TestScreenConditionsMatchThePinnedSource(t *testing.T) {
+	src, _ := pinnedSource(t)
+	read := func(f string) string {
+		b, err := os.ReadFile(filepath.Join(src, "hermes_cli", f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	between := func(body, from, to string) string {
+		i := strings.Index(body, from)
+		if i < 0 {
+			t.Fatalf("the pinned source has no %q", from)
+		}
+		j := strings.Index(body[i+len(from):], to)
+		if j < 0 {
+			t.Fatalf("the pinned source has no %q after %q", to, from)
+		}
+		return body[i : i+len(from)+j]
+	}
+	attr := regexp.MustCompile(`(?:self\.|getattr\(self, ")(_\w+)`)
+	tui := read("cli_tui_mixin.py")
+	var prompt []string
+	for _, line := range strings.Split(between(tui, "def _get_tui_prompt_fragments", "\n    def "), "\n") {
+		if l := strings.TrimSpace(line); strings.HasPrefix(l, "if ") {
+			for _, m := range attr.FindAllStringSubmatch(l, -1) {
+				prompt = append(prompt, m[1])
+			}
+		}
+	}
+	var want []string
+	for _, c := range promptConditions {
+		want = append(want, c.Attr)
+	}
+	if !slices.Equal(prompt, want) {
+		t.Errorf("the pinned prompt conditions are\n  %q\nthe ledger's\n  %q", prompt, want)
+	}
+	var blank []string
+	for _, m := range attr.FindAllStringSubmatch(between(read("cli_status_bar_mixin.py"), "def _get_status_bar_fragments", "return []"), -1) {
+		blank = append(blank, m[1])
+	}
+	if !slices.Equal(blank, statusBarBlanking) {
+		t.Errorf("the pinned status-bar blanking conditions are %q, the ledger's %q", blank, statusBarBlanking)
+	}
+	var filters []string
+	ref := regexp.MustCompile(`cli_ref\.(_\w+(?:\.\w+)?)|getattr\(cli_ref, "(_\w+)"`)
+	for _, m := range ref.FindAllStringSubmatch(between(tui, "voice_status_bar = ConditionalContainer(", "self._register_extra_tui_keybindings"), -1) {
+		name := m[1] + m[2]
+		if strings.HasPrefix(name, "_get_") {
+			continue // a renderer, not a condition
+		}
+		filters = append(filters, name)
+	}
+	if !slices.Equal(filters, chromeFilters) {
+		t.Errorf("the pinned chrome filters read %q, the ledger's %q", filters, chromeFilters)
+	}
+	if len(prompt) < 10 || len(blank) < 3 || len(filters) < 4 {
+		t.Fatalf("instrument check: extracted %d/%d/%d", len(prompt), len(blank), len(filters))
+	}
+}
+
 // TestViLabelsMatchThePinnedLocales re-extracts every bundled language's vi
 // labels (cli.status_bar.vim_*) and fails on any difference from ViLabels.
 func TestViLabelsMatchThePinnedLocales(t *testing.T) {

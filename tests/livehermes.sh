@@ -12,11 +12,16 @@
 #     lists, reached on the real CLI, the screen check measured on each and
 #     what Escape does there (MUSTER_LIVEHERMES_RECORD=1 re-records the
 #     fixtures into internal/hermeshost/testdata/screens/);
-#   - internal/mirrorhost TestLiveHermesTimings: the hook slack, the Enter
-#     margin and the queue gap, re-measured under CPU load;
+#   - internal/mirrorhost TestLiveHermesTimings — OPT-IN, with
+#     MUSTER_LIVEHERMES_TIMINGS=1: the hook slack, the Enter margin and the
+#     queue gap, re-measured under CPU load (about 4 minutes). 🔴 RUN IT ON
+#     EVERY PIN BUMP: `MUSTER_LIVEHERMES_TIMINGS=1 make test-livehermes`. It
+#     is a measurement for the design's numbers, not a gate on each run;
+#     with it set it is REQUIRED, so a failure is still RED;
 #   - internal/mirrorhost TestLiveHermesSend: the gated send end to end, and
 #     every blocking state refused with nothing pasted (when present);
-#   - internal/hermeshost TestOverlayLedgerMatchesThePinnedSource and
+#   - internal/hermeshost TestOverlayLedgerMatchesThePinnedSource,
+#     TestScreenConditionsMatchThePinnedSource and
 #     TestViLabelsMatchThePinnedLocales: the ledgers held against the pin.
 #
 # 🔴 ISOLATION. Each run makes its own HERMES_HOME and HOME under a fresh
@@ -35,9 +40,14 @@ command -v hermes >/dev/null || { echo "livehermes: no hermes on PATH" >&2; exit
 command -v tmux >/dev/null || { echo "livehermes: no tmux on PATH" >&2; exit 2; }
 rev="$(grep -o "HERMES_REVISION='[0-9a-f]*'" "$(readlink -f "$(command -v hermes)")" | cut -d"'" -f2 || true)"
 
-required=(TestLiveHermesScreens TestLiveHermesTimings TestOverlayLedgerMatchesThePinnedSource TestViLabelsMatchThePinnedLocales)
+required=(TestLiveHermesScreens TestOverlayLedgerMatchesThePinnedSource TestScreenConditionsMatchThePinnedSource TestViLabelsMatchThePinnedLocales)
 if grep -q 'func TestLiveHermesSend' internal/mirrorhost/*_test.go 2>/dev/null; then
   required+=(TestLiveHermesSend)
+fi
+live='TestLiveHermesScreens|TestLiveHermesSend'
+if [[ "${MUSTER_LIVEHERMES_TIMINGS:-}" == 1 ]]; then
+  required+=(TestLiveHermesTimings)
+  live+='|TestLiveHermesTimings'
 fi
 req=()
 for r in "${required[@]}"; do req+=(--require "$r"); done
@@ -45,7 +55,7 @@ for r in "${required[@]}"; do req+=(--require "$r"); done
 set +e
 set -o pipefail
 go test -tags livehermes -count=1 -timeout 60m -json \
-  -run '^(TestLiveHermes|TestOverlayLedgerMatchesThePinnedSource|TestViLabelsMatchThePinnedLocales)' \
+  -run "^(${live}|TestOverlayLedgerMatchesThePinnedSource|TestScreenConditionsMatchThePinnedSource|TestViLabelsMatchThePinnedLocales)\$" \
   ./internal/mirrorhost/ ./internal/hermeshost/ |
   python3 -u tests/verdict.py --echo all "${req[@]}"
 rc=$?

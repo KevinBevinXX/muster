@@ -461,7 +461,34 @@ func liveScenarios(base func() string, home func(string, homeOpts) string) []liv
 			return err == nil
 		}
 	}
-	stash := then(idle, key("draft one"), key("\x13"), key("draft two"), key("\x13"), key("\x13"), see("Stash (2 items)"))
+	stashKeys := []func(r *liveRun, home, pane string) bool{key("draft one"), key("\x13"), key("draft two"), key("\x13"), key("\x13"), see("Stash (2 items)")}
+	stash := then(append([]func(r *liveRun, home, pane string) bool{idle}, stashKeys...)...)
+	// titled: one turn, then idle with the session's title in the status bar.
+	// 🔴 The title badge is right-aligned and Hermes CLIPS the bar's left side
+	// to make room for it (_right_align_status_title_fragments), dropping the
+	// stash mark and the vi label first — so every overlay is also recorded
+	// after a turn, at more than one width.
+	titled := func(r *liveRun, _, pane string) bool {
+		if !r.waitIdle(pane, 60*time.Second) {
+			return false
+		}
+		// The title is generated in the background after a turn; it can take
+		// more than one.
+		for turn := 1; turn <= 3; turn++ {
+			typed(r, pane, fmt.Sprintf("hello %d", turn))
+			time.Sleep(time.Second)
+			if _, ok := r.waitScreen(pane, 20*time.Second, func(_ string, s hermeshost.Screen) bool {
+				return hermeshost.CheckIdle(s) == nil && strings.Contains(statusRow(s), "Stub")
+			}); ok {
+				return true
+			}
+			if !r.waitIdle(pane, 30*time.Second) {
+				return false
+			}
+		}
+		return false
+	}
+	stashTitled := then(append([]func(r *liveRun, home, pane string) bool{titled}, stashKeys...)...)
 	vi := func() string { return home("vi", homeOpts{display: map[string]any{"vim_mode": true}}) }
 	de := func() string { return home("de", homeOpts{display: map[string]any{"language": "de"}}) }
 	viDE := func() string {
@@ -495,6 +522,28 @@ func liveScenarios(base func() string, home func(string, homeOpts) string) []liv
 		// with the draft in the box.
 		{name: "model-picker-over-hidden-draft", marker: "Model Picker", homeOf: base, reach: then(idle, key("my hidden draft"), inject("model-picker"), see("Model Picker"))},
 		{name: "stash", marker: "Stash (2 items)", homeOf: base, reach: stash},
+		{name: "stash-titled-100", marker: "Stash (2 items)", homeOf: base, w: 100, h: 45, reach: stashTitled},
+		{name: "stash-titled-120", marker: "Stash (2 items)", homeOf: base, w: 120, h: 45, reach: stashTitled},
+		{name: "stash-titled-160", marker: "Stash (2 items)", homeOf: base, w: 160, h: 45, reach: stashTitled},
+		{name: "palette-titled-100", marker: "Command Palette", homeOf: base, w: 100, h: 45, reach: then(titled, key("\x10"))},
+		{name: "palette-titled-160", marker: "Command Palette", homeOf: base, w: 160, h: 45, reach: then(titled, key("\x10"))},
+		{name: "model-picker-titled-100", marker: "Model Picker", homeOf: base, w: 100, h: 45, reach: then(titled, typeLine("/model"), see("Model Picker"))},
+		{name: "model-picker-titled-160", marker: "Model Picker", homeOf: base, w: 160, h: 45, reach: then(titled, typeLine("/model"), see("Model Picker"))},
+		{name: "vi-titled-100", homeOf: vi, w: 100, h: 45, reach: then(func(r *liveRun, _, p string) bool {
+			if !shows(r, p, "INSERT", 60*time.Second) {
+				return false
+			}
+			for turn := 1; turn <= 3; turn++ {
+				typed(r, p, fmt.Sprintf("hello %d", turn))
+				time.Sleep(time.Second)
+				if _, ok := r.waitScreen(p, 25*time.Second, func(_ string, s hermeshost.Screen) bool {
+					return strings.HasPrefix(hermeshost.InputRow(s), "❯") && strings.Contains(statusRow(s), "Stub")
+				}); ok {
+					return true
+				}
+			}
+			return false
+		})},
 		{name: "palette-and-stash", marker: "Stash (2 items)", homeOf: base, reach: then(stash, key("\x10"))},
 		{name: "stash-indicator-hidden", marker: "Stash (2 items)", homeOf: noStash, reach: then(idle, key("draft one"), key("\x13"), key("draft two"), key("\x13"), key("\x13"), see("Stash (2 items)"))},
 		{name: "secret", homeOf: base, reach: then(idle, inject("secret"))},

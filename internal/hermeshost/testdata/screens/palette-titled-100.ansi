@@ -1,0 +1,34 @@
+[38;5;173m│ [38;5;136m  /retry  —  Retry the last message (resend to agent)                                   [38;5;173m │[39m
+[38;5;173m│ [38;5;136m  /prompt  —  Compose your next prompt in $EDITOR (markdown), then send it (usage:      [38;5;173m │[39m
+[38;5;173m│ [38;5;136m    /prompt [initial text])                                                             [38;5;173m │[39m
+[38;5;173m│ [38;5;136m  /compose  —  Compose your next prompt in $EDITOR (markdown), then send it (alias for  [38;5;173m │[39m
+[38;5;173m│ [38;5;136m    /prompt)                                                                            [38;5;173m │[39m
+[38;5;173m│ [38;5;136m  /undo  —  Back up N user turns and re-prompt (default 1) (usage: /undo [N])           [38;5;173m │[39m
+[38;5;173m│ [38;5;136m  /title  —  Set a title for the current session (usage: /title [name])                 [38;5;173m │[39m
+[38;5;173m│ [38;5;136m  /handoff  —  Hand off this session to a messaging platform (Telegram, Discord, etc.)  [38;5;173m │[39m
+[38;5;173m│ [38;5;136m    (usage: /handoff <platform>)                                                        [38;5;173m │[39m
+[38;5;173m│ [38;5;136m  /branch  —  Branch the current session (new thread on Discord/Telegram/Slack/Matrix;  [38;5;173m │[39m
+[38;5;173m│ [38;5;136m    --here stays here) (usage: /branch [--here] [name])                                 [38;5;173m │[39m
+[38;5;173m│ [38;5;136m  /fork  —  Branch the current session (new thread on Discord/Telegram/Slack/Matrix;    [38;5;173m │[39m
+[38;5;173m│ [38;5;136m    --here stays here) (alias for /branch)                                              [38;5;173m │[39m
+[38;5;173m│ [38;5;136m  /worktree  —  Show, list, create, or prune isolated git worktrees (usage: /worktree   [38;5;173m │[39m
+[38;5;173m│ [38;5;136m    [new [name]|list|prune [--dry-run]])                                                [38;5;173m │[39m
+[38;5;173m│ [38;5;136m  /compress  —  Compress conversation context (add 'here [N]' to keep recent N turns;   [38;5;173m │[39m
+[38;5;173m│ [38;5;136m    --preview shows what would happen) (usage: /compress [here [N] | focus topic |      [38;5;173m │[39m
+[38;5;173m│ [38;5;136m    --preview|--dry-run])                                                               [38;5;173m │[39m
+[38;5;173m│ [38;5;136m  /compact  —  Compress conversation context (add 'here [N]' to keep recent N turns;    [38;5;173m │[39m
+[38;5;173m│ [38;5;136m    --preview shows what would happen) (alias for /compress)                            [38;5;173m │[39m
+[38;5;173m│ [38;5;136m  /rollback  —  List or restore filesystem checkpoints (restores keep your hand-edits;  [38;5;173m │[39m
+[38;5;173m│ [38;5;136m    --all overrides) (usage: /rollback [number] [--all])                                [38;5;173m │[39m
+[38;5;173m│ [38;5;136m  /snapshot  —  Create or restore state snapshots of Hermes config/state (usage:        [38;5;173m │[39m
+[38;5;173m│ [38;5;136m    /snapshot [create|restore <id>|prune])                                              [38;5;173m │[39m
+[38;5;173m│ [38;5;136m  /snap  —  Create or restore state snapshots of Hermes config/state (alias for         [38;5;173m │[39m
+[38;5;173m│ [38;5;136m    /snapshot)                                                                          [38;5;173m │[39m
+[38;5;173m│ [38;5;136m  /stop  —  Kill all running background processes                                       [38;5;173m │[39m
+[38;5;173m│ [38;5;136m  /bg  —  Run a prompt in a separate background session (usage: /bg <prompt>)           [38;5;173m │[39m
+[38;5;173m│ [38;5;136m  /btw  —  Ask a side question about the current conversation without interrupting it   [38;5;173m │[39m
+[38;5;173m│ [38;5;136m    (usage: /btw <question>)                                                            [38;5;173m │[39m
+
+[38;5;173m────────────────────────────────────────────────────────────────────────────────────────────────────
+[38;5;230m❯ [3m[38;5;136mSet a reminder or schedule a recurring task[0m
+[38;5;173m────────────────────────────────────────────────────────────────────────────────────────────────────

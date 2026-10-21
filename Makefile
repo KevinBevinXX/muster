@@ -163,13 +163,15 @@ test-liveclaude:
 
 # Drive the PINNED Hermes CLI for real (docs/design/hermes.md, Phase 3): every
 # screen state the send's screen check must refuse, what Escape does in each,
-# the hook/Enter/queue timings under load, the gated send end to end, and the
+# the gated send end to end, (opt-in) the hook/Enter/queue timings, and the
 # overlay and vi-label ledgers against the pinned source. 🔴 RUN IT ON EVERY
 # HERMES PIN BUMP AND BEFORE ENABLING -hermes-send ON A HOST: it ends with
 # "HERMES HARNESS VERDICT: GREEN" or "RED". Isolated: a scratch HERMES_HOME, a
 # private tmux server, a local stub model, no credential. Needs `hermes` on
 # PATH at the pin and tmux >= 3.7. Never in CI. MUSTER_LIVEHERMES_RECORD=1
-# re-records the fixtures (internal/hermeshost/testdata/screens/).
+# re-records the fixtures (internal/hermeshost/testdata/screens/);
+# MUSTER_LIVEHERMES_TIMINGS=1 adds the load timings (hook slack, Enter margin,
+# queue gap) — run that on every pin bump.
 test-livehermes:
 	tests/livehermes.sh
 

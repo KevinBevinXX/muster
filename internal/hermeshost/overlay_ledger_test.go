@@ -9,10 +9,17 @@ import (
 
 // THE OVERLAY-STATE LEDGER (docs/design/hermes.md, "A ledger of overlay
 // states"): every overlay or modal state attribute the pinned
-// hermes_cli/cli_tui_mixin.py and cli_modal_mixin.py define (`self._*_state`),
-// and every child of the CLI's layout in its order
-// (_build_tui_layout_children), each with what it does to the screen the
-// check reads and the fixtures that show it.
+// hermes_cli/cli_tui_mixin.py and cli_modal_mixin.py define (`self._*_state`);
+// every child of the CLI's layout in its order (_build_tui_layout_children);
+// every condition the input line's prefix branches on
+// (_get_tui_prompt_fragments); every condition that blanks the status bar
+// (_get_status_bar_fragments); and every attribute the chrome's visibility
+// filters read — each with what it does to the screen the check reads and
+// the fixtures that show it.
+//
+// ⚠ What it does NOT pin: key bindings (which overlay Enter or Escape goes
+// to), skins and themes (the glyphs), and anything a plugin draws. Those are
+// the live harness's to catch, by its fixtures.
 //
 // 🔴 IT IS A RELATIONSHIP WITH THE PINNED SOURCE, AND THE LIVE HALF HOLDS IT:
 // TestOverlayLedgerMatchesThePinnedSource (build tag livehermes, `make
@@ -81,6 +88,41 @@ var layoutChildren = []layoutChild{
 	{"completions_menu", "below", []string{"completions-menu"}},
 }
 
+// promptConditions is every state _get_tui_prompt_fragments branches on, in
+// its order (P:hermes_cli/cli_tui_mixin.py:309-346): each changes the input
+// line's prefix, which the screen check refuses on (NotIdle; the voice
+// states also draw the voice bar below the input, Below).
+var promptConditions = []struct {
+	Attr, Prefix string
+	Fixtures     []string
+}{
+	{"_voice_recording", "●", []string{"voice-recording"}},
+	{"_voice_processing", "◉", []string{"voice-processing"}},
+	{"_sudo_state", "🔐", []string{"sudo"}},
+	{"_secret_state", "🔑", []string{"secret"}},
+	{"_connection_state", "⚙", []string{"connection"}},
+	{"_approval_state", "⚠", []string{"approval"}},
+	{"_slash_confirm_state", "⚠", []string{"new-confirm"}},
+	{"_clarify_freetext", "✎", []string{"clarify-freetext"}},
+	{"_clarify_state", "?", []string{"clarify-choices"}},
+	{"_command_running", "a spinner frame", nil},
+	{"_agent_running", "☤", []string{"busy"}},
+	{"_voice_mode", "🎤", []string{"voice"}},
+}
+
+// statusBarBlanking is every condition under which _get_status_bar_fragments
+// renders NOTHING (P:hermes_cli/cli_status_bar_mixin.py:1128-1133): the
+// screen check's NoStatusBar refusal of the palette and the model picker
+// rests on exactly these.
+var statusBarBlanking = []string{"_status_bar_visible", "_model_picker_state", "_command_palette_state"}
+
+// chromeFilters is every attribute the chrome's ConditionalContainer filters
+// read, from the voice bar to the stash panel (P:hermes_cli/cli_tui_mixin.py:
+// 2165-2184): the voice bar below the input (Below), the status bar's
+// visibility and its post-resize suppression (NoStatusBar / NoLayout), and
+// the stash panel's open flag (its frame: Stash).
+var chromeFilters = []string{"_voice_mode", "_status_bar_visible", "_status_bar_suppressed_after_resize", "_prompt_stash.panel_open", "_prompt_stash"}
+
 // TestOverlayLedgerNamesRecordedFixtures: every fixture the ledger names is
 // recorded (its .ansi) and expected (screens.json), and every overlay state
 // has at least one.
@@ -104,6 +146,9 @@ func TestOverlayLedgerNamesRecordedFixtures(t *testing.T) {
 	}
 	for _, c := range layoutChildren {
 		check(c.Name, c.Fixtures)
+	}
+	for _, c := range promptConditions {
+		check(c.Attr, c.Fixtures)
 	}
 }
 
