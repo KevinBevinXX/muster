@@ -147,13 +147,15 @@ each setting does and which combinations are valid.
 | `MUSTER_AGENT_ENDPOINT_TEMPLATE` | the driver's (`{{.Name}}.{{.Group}}.svc` on Kubernetes) | no | How muster builds an agent's address from its name and group. |
 | `MUSTER_AGENT_CAIRN_URL` | none | no | Cairn coordinates given to the chief only. Set it together with the token, or set neither. |
 | `MUSTER_AGENT_CAIRN_TOKEN` | none | no | The credential for that cairn. |
-| `MUSTER_AGENT_KINDS` | `gateway` | no | A comma list of the agent kinds a dispatch may ask for: `gateway`, `claude-code`. |
+| `MUSTER_AGENT_KINDS` | `gateway` | no | A comma list of the agent kinds a dispatch may ask for: `gateway`, `claude-code`, `hermes`. |
 | `MUSTER_AGENT_CC_IMAGE` | none | with `claude-code` | The pinned image for `claude-code` agents, built from `images/claude-code-agent`. |
 | `MUSTER_AGENT_CC_ACCOUNTS` | none | with `claude-code` | A comma list of Claude account names (`[a-z0-9-]`, 1–32 characters each). |
 | `MUSTER_AGENT_CC_TOKEN_<NAME>` | none | for each account | That account's `claude setup-token`. `<NAME>` is the account name upper-cased, with `-` written as `_`. |
 | `MUSTER_AGENT_CC_STORAGE_SIZE` | `10Gi` | no | The size of each `claude-code` agent's `/data` volume. |
-| `MUSTER_AGENT_NETPOL_FROM_NAMESPACE` | none | `claude-code` on Kubernetes | The namespace muster runs in. The agent's NetworkPolicy only admits muster. |
-| `MUSTER_AGENT_NETPOL_FROM_POD_LABELS` | none | `claude-code` on Kubernetes | Comma-separated `key=value` labels on muster's pods. |
+| `MUSTER_AGENT_HERMES_IMAGE` | none | with `hermes` | The pinned image for `hermes` agents, built from `images/hermes-agent` (`make hermes-image`). Its provider credential is the OpenRouter key (`MUSTER_AGENT_OPENROUTER_KEY`, or a member's own); it has none of its own. |
+| `MUSTER_AGENT_HERMES_STORAGE_SIZE` | `10Gi` | no | The size of each `hermes` agent's `/data` volume. 🔴 Its storage class must give a **local filesystem**, not NFS or virtiofs: Hermes's `state.db` is SQLite in WAL mode. The pod's root filesystem is read-only (a writable `/tmp` emptyDir is mounted). |
+| `MUSTER_AGENT_NETPOL_FROM_NAMESPACE` | none | `claude-code` or `hermes` on Kubernetes | The namespace muster runs in. The agent's NetworkPolicy only admits muster. |
+| `MUSTER_AGENT_NETPOL_FROM_POD_LABELS` | none | `claude-code` or `hermes` on Kubernetes | Comma-separated `key=value` labels on muster's pods. |
 
 The install script receives each `gateway`-kind agent's settings as JSON in
 `MUSTER_CONFIG`. It is the script's job to copy them into the runtime's own

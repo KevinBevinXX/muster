@@ -195,7 +195,7 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 			"configured (MUSTER_AGENT_CC_ACCOUNTS); an agent keeps its account for life, so restore that "+
 			"account's token rather than expecting a re-selection", a.Name, a.CCAccount)
 	}
-	repo, err := claudeCodeRepo(a)
+	repo, err := podRepo(a)
 	if err != nil {
 		return provision.Spec{}, err
 	}
@@ -285,7 +285,7 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 //
 // With a repository (repo.URL set), ccd is also told which one to check out and
 // where, and the CLI's working directory becomes that checkout (EnvCCDWorkspace
-// overrides the image's CCD_WORKSPACE): see claudeCodeRepo. Without one, none of
+// overrides the image's CCD_WORKSPACE): see podRepo. Without one, none of
 // the three is set and the pod is exactly what it was before repositories
 // existed for this kind (TestAClaudeCodeSpecWithoutARepoIsUnchanged).
 func claudeCodeEnv(cfg Config, gatewaySidecar bool, repo provision.Repo) []provision.EnvVar {
@@ -330,17 +330,17 @@ const (
 // no traversal.
 var ccRepoDirName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*$`)
 
-// claudeCodeRepo declares a claude-code agent's repository: the row's owner/name
-// and branch, checked out at ClaudeCodeWorkspacePath/<name>. No repository: the
-// zero Repo.
+// podRepo declares a claude-code or hermes agent's repository: the row's
+// owner/name and branch, checked out by the pod's supervisor (ccd, hermesd) at
+// ClaudeCodeWorkspacePath/<name>. No repository: the zero Repo.
 //
 // 🔴 THE CHECKOUT IS INSIDE THE WORKSPACE, ON THE AGENT'S VOLUME, so a pod
-// restart finds it (ccd never re-clones over an existing checkout) and the
-// conversation `claude --resume <id>` resumes is one of that directory's.
+// restart finds it (neither supervisor re-clones over an existing checkout) and
+// the conversation the agent resumes is one of that directory's.
 //
 // The name must be a plain directory name: a row naming "x/.." would otherwise
-// make the CLI's working directory somewhere else on the volume.
-func claudeCodeRepo(a agents.Agent) (provision.Repo, error) {
+// make the agent's working directory somewhere else on the volume.
+func podRepo(a agents.Agent) (provision.Repo, error) {
 	if a.Repo == "" {
 		// A branch alone means nothing without a repository, and was ignored
 		// before repositories existed for this kind; it still is.
@@ -349,7 +349,7 @@ func claudeCodeRepo(a agents.Agent) (provision.Repo, error) {
 	owner, name, ok := strings.Cut(strings.TrimSpace(a.Repo), "/")
 	if !ok || !ccRepoDirName.MatchString(owner) || !ccRepoDirName.MatchString(name) {
 		return provision.Repo{}, fmt.Errorf("agentspec: agent %q is kind %s and names repository %q, which is not "+
-			"owner/name", a.Name, agents.KindClaudeCode, a.Repo)
+			"owner/name", a.Name, agents.ResolveKind(a.Kind), a.Repo)
 	}
 	return provision.Repo{
 		URL:    owner + "/" + name,

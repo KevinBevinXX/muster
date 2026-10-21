@@ -15,6 +15,12 @@ import (
 	"github.com/ZacxDev/muster/internal/podagent"
 )
 
+// resolveBearerFromEnv is the bearer muster's wire must carry, from the pod's
+// environment (podagent.ResolveBearer, as ccd's).
+func resolveBearerFromEnv() (string, error) {
+	return podagent.ResolveBearer("hermesd", os.Getenv("HOOKS_TOKEN"), os.Getenv("MUSTER_GATEWAY_BEARER"))
+}
+
 // useAgentHome makes hermesd's own HOME the agent shell's (see serve).
 func useAgentHome(cfg config) error { return os.Setenv("HOME", cfg.agentHome()) }
 
@@ -26,7 +32,7 @@ func serve() error {
 	if err != nil {
 		return err
 	}
-	bearer, err := podagent.ResolveBearer("hermesd", os.Getenv("HOOKS_TOKEN"), os.Getenv("MUSTER_GATEWAY_BEARER"))
+	bearer, err := resolveBearerFromEnv()
 	if err != nil {
 		return err
 	}
