@@ -66,14 +66,6 @@ const kindToggleScript = "var f=this.closest('form'),cc=!!f.querySelector('input
 // POST /agents reads (internal/api handleAgentCreate).
 const workerPoolField = "worker_pool"
 
-// workerPoolPattern is agents.ValidWorkerPool's expression as an HTML pattern
-// attribute (which anchors it implicitly). The '-' in the second class is
-// ESCAPED on purpose: browsers compile `pattern` with the `v` flag, under which
-// an unescaped '-' at the end of a class is a syntax error, and a pattern that
-// does not compile is silently ignored — the field would accept anything.
-// TestTheWorkerPoolPatternMatchesTheServers pins it to the server's rule.
-const workerPoolPattern = `[a-z0-9][a-z0-9\-]{0,62}`
-
 // workerPoolHelp is the one sentence under the field: what joining a pool does,
 // and who it is safe for (docs/jobs.md, "Worker pools").
 const workerPoolHelp = "Optional. Joins a worker pool that the machine job API picks a worker from. " +
@@ -84,6 +76,10 @@ const workerPoolHelp = "Optional. Joins a worker pool that the machine job API p
 // DISABLED, like the account pin: kindToggleScript enables it only while Claude
 // Code is picked, so a dispatch of any other kind never carries the field (the
 // server refuses one with a pool regardless).
+//
+// The name is checked by the server only (agents.ValidWorkerPool, and migration
+// 0041's CHECKs): a name it refuses comes back as a 409 whose text the error
+// toast shows. The form keeps no copy of the rule.
 func workerPoolInput() g.Node {
 	return Div(
 		g.Attr("data-cc-only", ""),
@@ -95,14 +91,11 @@ func workerPoolInput() g.Node {
 			Name(workerPoolField),
 			Disabled(),
 			Placeholder("e.g. reviewers (optional)"),
-			g.Attr("pattern", workerPoolPattern),
-			g.Attr("maxlength", "63"),
 			g.Attr("autocapitalize", "off"),
 			g.Attr("autocomplete", "off"),
 			g.Attr("spellcheck", "false"),
-			g.Attr("title", "1-63 of a-z, 0-9 and -, not starting with -"),
 			g.Attr("aria-describedby", "worker-pool-help"),
-			Class("min-h-[44px] w-full rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus invalid:ring-st-error-fg"),
+			Class("min-h-[44px] w-full rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
 		),
 		P(ID("worker-pool-help"), Class("text-xs text-muted"), g.Text(workerPoolHelp)),
 	)

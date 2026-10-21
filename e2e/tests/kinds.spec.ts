@@ -113,37 +113,17 @@ test('the kind picker dispatches a Claude Code agent onto a pinned or pooled acc
   await sheet.locator('[data-kind-option="claude-code"]').click();
   const pooled = await save('e2e kinds: pool choice');
 
-  // 3b. Claude Code in a worker pool. A name the server's pattern refuses is
-  //     stopped by the browser first (the pattern compiles under the `v` flag —
-  //     an uncompilable one is silently ignored); with that check bypassed, the
-  //     server's own refusal is what the operator reads, and no row is made.
+  // 3b. Claude Code in a worker pool. The server is the only check on the
+  //     name: a name it refuses is a 409 whose sentence the operator reads in
+  //     the toast, and no row is made.
   await open();
   await sheet.locator('[data-kind-option="claude-code"]').click();
   await sheet.locator('textarea[name="note_text"]').fill('e2e kinds: bad pool');
   await pool.fill('-bad');
-  expect(await pool.evaluate((e: HTMLInputElement) => e.validity.patternMismatch)).toBe(true);
-  await pool.fill('Reviewers');
-  expect(await pool.evaluate((e: HTMLInputElement) => e.validity.patternMismatch)).toBe(true);
-  await pool.fill('reviewers');
-  expect(await pool.evaluate((e: HTMLInputElement) => e.validity.valid)).toBe(true);
-  await pool.fill('-bad');
   const beforeBad = (await agentRows()).length;
-  // The browser's check runs BEFORE the submit event, and htmx issues the POST
-  // from that event — so no submit event means no request. Counted on the
-  // form itself rather than waited for.
-  await sheet.evaluate((f: HTMLFormElement) => {
-    (window as unknown as { __poolSubmits: number }).__poolSubmits = 0;
-    f.addEventListener('submit', () => { (window as unknown as { __poolSubmits: number }).__poolSubmits++; });
-  });
-  await sheet.locator('button[value="save"]').click();
-  await expect(sheet.locator('input[name="worker_pool"]:invalid')).toHaveCount(1);
-  expect(await page.evaluate(() => (window as unknown as { __poolSubmits: number }).__poolSubmits), 'the browser blocks an invalid pool before any submit').toBe(0);
-  await sheet.evaluate((f: HTMLFormElement) => { f.noValidate = true; });
   const refused = page.waitForResponse((r) => r.url().endsWith('/agents') && r.request().method() === 'POST');
   await sheet.locator('button[value="save"]').click();
   expect((await refused).status()).toBe(409);
-  // The counter's positive control: the same click, unvalidated, IS one submit.
-  expect(await page.evaluate(() => (window as unknown as { __poolSubmits: number }).__poolSubmits)).toBe(1);
   await expect(page.locator('#action-toasts')).toContainText(`worker_pool "-bad" is not 1-63 of [a-z0-9-], not starting with '-'`);
   expect((await agentRows()).length, 'a refused pool creates no agent').toBe(beforeBad);
 

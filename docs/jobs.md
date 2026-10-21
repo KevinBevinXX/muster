@@ -125,8 +125,7 @@ while some agent carries its name (1-63 of `[a-z0-9-]`, not starting with `-`).
 1. Open the dispatch form (the Agents tab's **+**, or a task's **Dispatch**).
 2. Pick **Claude Code** as the agent kind. The **Worker pool** field appears
    under the Claude account; it is not shown for any other kind.
-3. Enter the pool's name, for example `reviewers`. The form refuses a name
-   outside the pattern before it is sent.
+3. Enter the pool's name, for example `reviewers`.
 4. Leave the Claude account on **Auto** unless you want to pin one; the account
    pool chooses as it does for any agent. Pick the repository the pool's jobs
    will name (with `repo`), which must be a **public** one (see below).

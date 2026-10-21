@@ -2,7 +2,6 @@ package ui
 
 import (
 	stdhtml "html"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -31,9 +30,15 @@ func TestBothDispatchFormsOfferAWorkerPoolOnlyForClaudeCode(t *testing.T) {
 		if tag == "" {
 			t.Fatalf("%s: no worker pool input", name)
 		}
-		for _, want := range []string{`name="worker_pool"`, " disabled", `pattern="[a-z0-9][a-z0-9\-]{0,62}"`, `maxlength="63"`} {
+		for _, want := range []string{`name="worker_pool"`, " disabled"} {
 			if !strings.Contains(tag, want) {
 				t.Errorf("%s: worker pool input lacks %s: %s", name, want, tag)
+			}
+		}
+		// The server is the one place the name is checked (D1): no client copy.
+		for _, absent := range []string{"pattern=", "maxlength=", "title="} {
+			if strings.Contains(tag, absent) {
+				t.Errorf("%s: worker pool input carries %s, a client-side copy of the server's rule: %s", name, absent, tag)
 			}
 		}
 		// Its container is one the toggle shows only for claude-code.
@@ -53,21 +58,6 @@ func TestBothDispatchFormsOfferAWorkerPoolOnlyForClaudeCode(t *testing.T) {
 	for _, k := range []KindChoices{{}, {Kinds: []string{agents.KindGateway}}} {
 		if html := renderString(t, DispatchModalBodyFor(k)); strings.Contains(html, `name="worker_pool"`) {
 			t.Errorf("kinds %v: a form without claude-code offers a worker pool", k.Kinds)
-		}
-	}
-}
-
-// TestTheWorkerPoolPatternMatchesTheServers: the form's pattern accepts exactly
-// what agents.ValidWorkerPool accepts, on both sides of every bound. (The
-// browser's own compile of it — the `v` flag — is the e2e kinds spec's.)
-func TestTheWorkerPoolPatternMatchesTheServers(t *testing.T) {
-	form := regexp.MustCompile(`^(?:` + workerPoolPattern + `)$`)
-	for _, name := range []string{
-		"", "a", "0", "reviewers", "a-b", "a-", "-a", "A", "Reviewers", "a_b", "a b", "a.b",
-		strings.Repeat("a", 62), strings.Repeat("a", 63), strings.Repeat("a", 64), "x" + strings.Repeat("-", 62),
-	} {
-		if got, want := form.MatchString(name), agents.ValidWorkerPool(name); got != want {
-			t.Errorf("%q: form pattern %v, server %v", name, got, want)
 		}
 	}
 }
