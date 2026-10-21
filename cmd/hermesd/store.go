@@ -20,7 +20,12 @@ import (
 // of the API key that session's runs were posted under, its last run, and — at
 // most one — an INTENT: a turn hermesd decided to post and has not seen settle.
 //
-// 🔴 THE INTENT IS WRITTEN, AND SYNCED, BEFORE `POST /v1/runs`. It holds the
+// 🔴 THE INTENT IS WRITTEN BEFORE `POST /v1/runs` — the file's data synced
+// and renamed into place, and, unless that fails, its directory synced. When
+// only the directory sync fails (errWrittenNotSynced) the intent counts as
+// written and the POST goes ahead: any later read, including the next start's,
+// sees it, but a HOST crash before the directory reaches the disk could bring
+// back the map from before it (logged by commit). It holds the
 // idempotency key the POST carries, the EXACT request body bytes and the key's
 // fingerprint. A crash between the POST and the record of its run id would
 // otherwise leave a run hermesd cannot name, parking the session behind it for

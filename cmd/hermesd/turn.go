@@ -41,9 +41,12 @@ import (
 // and run the turn twice; so hermesd resolves the predecessor and follows the
 // queued run to its real end.
 
-// turnTimeout is one turn's budget. muster's own client waits five minutes
-// longer (the hermes kind's turn budget in internal/agents), so it hears
-// hermesd's turn_timeout rather than timing out first.
+// turnTimeout is one turn's budget, fixed (no environment override). muster's
+// own client must wait longer, so it hears hermesd's turn_timeout rather than
+// timing out first: that is agents.HermesTurnTimeout (35 m,
+// internal/agents/kind.go), which arrives with the hermes agent kind itself
+// (Hermes Phase 5c); until a muster carries that kind it dispatches no turn
+// here.
 const turnTimeout = 30 * time.Minute
 
 // stopWait bounds how long a stopped run is followed to its terminal status.
