@@ -135,6 +135,23 @@ test('history: a run of calls is one row; text and a single call stay where they
   }
 });
 
+// stopAnimationClock sets the page's animation playback rate to 0 (CDP) for the
+// rest of the test: an animation a tap starts then holds at its first frame
+// until the test moves it (currentTime) or ends it (finish()).
+//
+// 🔴 WHY. These tests read a group's height animation at a chosen point, but
+// the animation a tap starts runs in REAL time, 220 ms, front-loaded easing —
+// so what they read depended on how long the next CDP round trip took. Under
+// CI load: the reversal read its starting height 43 px off, and the opening
+// animation could finish before the test reached it (`a.pause` on undefined;
+// half() -1). Both reproduced by a wait between the tap and the read (120 ms,
+// 400 ms), and both pass with that wait once the clock is stopped.
+async function stopAnimationClock(page: Page) {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Animation.enable');
+  await cdp.send('Animation.setPlaybackRate', { playbackRate: 0 });
+}
+
 // The group's HEIGHT animates, opening and closing (tool_groups.go). The
 // animation is paused half-way and the box measured there: strictly between
 // the closed and the open height — a snap would read one or the other.
@@ -155,6 +172,7 @@ test('a group grows and shrinks smoothly: half-way its height is between closed 
       a.finish();
       return h;
     });
+  await stopAnimationClock(page);
   const closed = await height();
   await g3.locator(':scope > summary').tap();
   const midOpen = await half();
@@ -200,24 +218,15 @@ test('a tap mid-way reverses the group, from where it is, both ways', async ({ p
   });
   const isOpen = () => g3.evaluate((d) => (d as HTMLDetailsElement).open);
 
-  // 🔴 THE PAGE'S ANIMATION CLOCK IS STOPPED ACROSS THE REVERSING TAP. The
-  // reversal is a NEW animation that runs in real time from the moment of the
-  // tap, and its easing is front-loaded, so reading the box a few
-  // milliseconds after the tap read it already well on its way (CI: 43 px off,
-  // under load; reproduced with a 120 ms wait between the tap and the read:
-  // 139 px). With the clock at rate 0 the new animation holds at its first
-  // frame — exactly the height it started from — however long the read takes.
-  const cdp = await page.context().newCDPSession(page);
-  await cdp.send('Animation.enable');
-  const clock = (playbackRate: number) => cdp.send('Animation.setPlaybackRate', { playbackRate });
-
+  // The clock is stopped (stopAnimationClock): the reversal, a NEW animation,
+  // holds at its first frame — the height it started from — however long the
+  // read after the tap takes.
+  await stopAnimationClock(page);
   const closed = await height();
   await g3.locator(':scope > summary').tap(); // open…
   const mid = await pauseHalf();
-  await clock(0);
   await g3.locator(':scope > summary').tap(); // …reversed half-way
   const from = await g3.evaluate((d) => d.getBoundingClientRect().height);
-  await clock(1);
   expect(Math.abs(from - mid), 'the reversal starts from where the box was').toBeLessThanOrEqual(2);
   await finish();
   expect(await isOpen(), 'opening, reversed: it ends closed').toBe(false);
