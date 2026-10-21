@@ -72,6 +72,23 @@ func waitLong(t *testing.T, what string, cond func() bool) {
 	}
 }
 
+// waitScreen is waitLong for want on a terminal's screen — failing AT ONCE, with
+// the attach's result and what the screen got, when the attach has ended: an
+// ended terminal never draws, and a 15 s timeout that names neither hid why
+// (it was the host hanging up on an open that beat its welcome; see
+// TestNothingIsSentAHostBeforeItsWelcome).
+func waitScreen(t *testing.T, what string, screen *syncBuf, res <-chan error, want string) {
+	t.Helper()
+	waitLong(t, what, func() bool {
+		select {
+		case err := <-res:
+			t.Fatalf("%s: the attach ended (%v) before the screen showed %q; it showed %q", what, err, want, screen.String())
+		default:
+		}
+		return strings.Contains(screen.String(), want)
+	})
+}
+
 func TestTmuxThroughTheTunnel(t *testing.T) {
 	for _, interactive := range []bool{false, true} {
 		sock, run := privateTmux(t)
@@ -84,7 +101,7 @@ func TestTmuxThroughTheTunnel(t *testing.T) {
 		r.online(t, 1, "workstation", "work")
 
 		stdin, screen, _, cancel, res := attach(t, asUser(1), r.svc, "workstation", "work", true)
-		waitLong(t, "the pane through the tunnel", func() bool { return strings.Contains(screen.String(), "TUNNEL-MARK-c41") })
+		waitScreen(t, "the pane through the tunnel", screen, res, "TUNNEL-MARK-c41")
 		_, _ = stdin.Write([]byte("ro-typed-via-tunnel\r"))
 		time.Sleep(400 * time.Millisecond)
 		if p := pane(); strings.Contains(p, "ro-typed-via-tunnel") {
@@ -106,7 +123,7 @@ func TestTmuxThroughTheTunnel(t *testing.T) {
 			}
 			continue
 		}
-		waitLong(t, "the pane on the interactive tunnel", func() bool { return strings.Contains(screen2.String(), "TUNNEL-MARK-c41") })
+		waitScreen(t, "the pane on the interactive tunnel", screen2, res2, "TUNNEL-MARK-c41")
 		_, _ = stdin2.Write([]byte("rw-typed-via-tunnel\r"))
 		waitLong(t, "interactive keys in the pane", func() bool { return strings.Contains(pane(), "rw-typed-via-tunnel") })
 		cancel2()
