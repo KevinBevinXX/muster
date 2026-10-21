@@ -69,7 +69,8 @@ const workerPoolField = "worker_pool"
 // workerPoolHelp is the one sentence under the field: what joining a pool does,
 // and who it is safe for (docs/jobs.md, "Worker pools").
 const workerPoolHelp = "Optional. Joins a worker pool that the machine job API picks a worker from. " +
-	"A pool worker never holds a GitHub grant, so it cannot push; use it only for commits by trusted members. " +
+	"A pool worker never holds a GitHub grant, so it cannot push, and it can only clone a public repository; " +
+	"use it only for commits by trusted members. " +
 	"Fixed for the agent's life. 1-63 of a-z, 0-9 and -, not starting with -."
 
 // workerPoolInput is the claude-code-only "Worker pool" field. It renders
