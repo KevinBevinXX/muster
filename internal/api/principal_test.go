@@ -287,9 +287,12 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/plugins/messages/{id}/retry",
 	},
 	authz.ViaService: {
+		// The machine job API (jobs.go): requireServiceToken, the service tier ONLY.
+		"GET /api/jobs/{id}",
 		"GET /api/tasks",
 		"GET /api/whoami",
 		"PATCH /api/tasks/{id}/status",
+		"POST /api/jobs",
 	},
 	// A PERSONAL token (accounts PR 6) opens every hook-tier route (each
 	// hook-tier wrapper takes one first) plus the token API, acting as its

@@ -142,6 +142,16 @@ type Server struct {
 	// attention is the attention queue's process state (attention.go): the
 	// waiters' wake-up and each owner's last-seen waiting sessions.
 	attention attentionState
+	// jobLanes runs one machine job per agent at a time (jobs.go); ownJobs is
+	// the jobs this process accepted and has not finished; jobSecond
+	// is a test seam for a job's timeout unit (zero: a real second); jobNow is
+	// the reaper's clock (nil: time.Now); jobFinishBackoff is the pause between
+	// outcome-write attempts (zero: jobFinishRetryPause).
+	jobLanes         jobLanes
+	ownJobs          ownJobs
+	jobSecond        time.Duration
+	jobNow           func() time.Time
+	jobFinishBackoff time.Duration
 	// mirrorMCPFails counts failed mirror-token checks on /mirror/mcp, per
 	// (address, token hash) (mirror_mcp.go).
 	mirrorMCPFails boundedWindow
@@ -476,6 +486,8 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerAdminRoutes(mux)
 	// Personal API tokens (accounts PR 6): /api/whoami, /api/tokens, /account/tokens.
 	s.registerAPITokenRoutes(mux)
+	// The machine job API (jobs.go): the service tier only.
+	s.registerJobRoutes(mux)
 
 	// --- The SPA shell. Each tab is a real route (deep-linking + back/forward);
 	// they all serve the shell with the matching tab active, derived from the
