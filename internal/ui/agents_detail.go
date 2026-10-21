@@ -83,7 +83,9 @@ type AgentDetailView struct {
 	// one), so a picker there would be a control that can only fail.
 	Kind      string
 	CCAccount string
-	Messages  []ChatLine
+	// WorkerPool is the agent's machine-job worker pool; "" for none.
+	WorkerPool string
+	Messages   []ChatLine
 	// Sessions are the agent's chat sessions for the switcher (most-recently-active
 	// first); ActiveSessionID is the one whose transcript Messages holds.
 	Sessions        []SessionView
@@ -309,6 +311,7 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 			// terminal has one view and no switch.
 			g.If(agents.ResolveKind(v.Kind) == agents.KindClaudeCode,
 				Div(Class("flex items-center gap-2"), chip("kind", agents.KindLabel(v.Kind)+" · "+v.CCAccount),
+					g.If(v.WorkerPool != "", workerPoolChip(v.WorkerPool)),
 					Div(Class("ml-auto"), viewToggle(true, "", AgentTerminalPath(v.Name))))),
 			// A hermes agent has no Terminal in this release (agents.TerminalCommand
 			// refuses the kind): its chip and nothing else.

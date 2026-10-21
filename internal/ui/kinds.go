@@ -59,7 +59,48 @@ const kindToggleScript = "var f=this.closest('form'),cc=!!f.querySelector('input
 	"this.querySelectorAll('[data-cc-only]').forEach(function(e){e.classList.toggle('hidden',!cc)});" +
 	"f.querySelectorAll('[" + gatewayOnlyAttr + "]').forEach(function(e){e.classList.toggle('hidden',cc)});" +
 	"var a=f.querySelector('select[name=cc_account]');if(a){a.disabled=!cc}" +
+	"var p=f.querySelector('input[name=" + workerPoolField + "]');if(p){p.disabled=!cc}" +
 	"f.querySelectorAll('input[name=model]').forEach(function(e){e.disabled=cc});"
+
+// workerPoolField is the dispatch form's worker-pool input name, the field
+// POST /agents reads (internal/api handleAgentCreate).
+const workerPoolField = "worker_pool"
+
+// workerPoolHelp is the one sentence under the field: what joining a pool does,
+// and who it is safe for (docs/jobs.md, "Worker pools").
+const workerPoolHelp = "Optional. Joins a worker pool that the machine job API picks a worker from. " +
+	"A pool worker never holds a GitHub grant, so it cannot push, and it can only clone a public repository; " +
+	"use it only for commits by trusted members. " +
+	"Fixed for the agent's life. 1-63 of a-z, 0-9 and -, not starting with -."
+
+// workerPoolInput is the claude-code-only "Worker pool" field. It renders
+// DISABLED, like the account pin: kindToggleScript enables it only while Claude
+// Code is picked, so a dispatch of any other kind never carries the field (the
+// server refuses one with a pool regardless).
+//
+// The name is checked by the server only (agents.ValidWorkerPool, and migration
+// 0041's CHECKs): a name it refuses comes back as a 409 whose text the error
+// toast shows. The form keeps no copy of the rule.
+func workerPoolInput() g.Node {
+	return Div(
+		g.Attr("data-cc-only", ""),
+		Class("hidden flex flex-col gap-1.5"),
+		Label(g.Attr("for", "worker-pool"), Class("text-xs font-medium text-muted"), g.Text("Worker pool")),
+		Input(
+			ID("worker-pool"),
+			Type("text"),
+			Name(workerPoolField),
+			Disabled(),
+			Placeholder("e.g. reviewers (optional)"),
+			g.Attr("autocapitalize", "off"),
+			g.Attr("autocomplete", "off"),
+			g.Attr("spellcheck", "false"),
+			g.Attr("aria-describedby", "worker-pool-help"),
+			Class("min-h-[44px] w-full rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
+		),
+		P(ID("worker-pool-help"), Class("text-xs text-muted"), g.Text(workerPoolHelp)),
+	)
+}
 
 // gatewayOnlyAttr marks a dispatch-form control that means nothing to a
 // claude-code agent — the model selector (OpenRouter-specific).
@@ -121,6 +162,7 @@ func kindPicker(k KindChoices) g.Node {
 			),
 			P(Class("text-xs text-muted"), g.Text("The agent keeps this account for life. The model is set by the Claude Code CLI.")),
 		)
+		account = g.Group{account, workerPoolInput()}
 	}
 	// 🔴 WHEN THE FIRST USABLE KIND IS NOT THE FIRST KIND (a member with a Claude
 	// token and no OpenRouter key), the form opens on Claude Code — and every
@@ -175,4 +217,10 @@ func unavailableNotice(k KindChoices) g.Node {
 		Ul(Class("flex flex-col gap-1"), g.Group(lines)),
 		A(Href(CredentialsPath), Class("inline-flex min-h-[44px] items-center font-semibold underline"), g.Text("Open Account → Credentials")),
 	)
+}
+
+// workerPoolChip marks a pool worker on its card and its detail page, so the
+// operator can see which agents the machine job API may pick.
+func workerPoolChip(pool string) g.Node {
+	return Span(g.Attr("data-worker-pool", pool), chip("pool", pool))
 }

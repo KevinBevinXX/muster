@@ -57,6 +57,9 @@ type agentJSON struct {
 	// claude-code agent runs on ("" otherwise). Never a token.
 	Kind      string `json:"kind"`
 	CCAccount string `json:"ccAccount"`
+	// WorkerPool is the machine-job worker pool the agent belongs to
+	// (agents.Agent.WorkerPool); "" for none.
+	WorkerPool string `json:"workerPool"`
 	// KickedOff reports whether the kickoff message was DELIVERED to the agent's
 	// gateway. NOT omitempty — `false` is the whole signal ("provisioned but never
 	// started"), and omitempty would erase exactly the case worth alerting on.
@@ -174,6 +177,7 @@ func newAgentJSON(a agents.Agent, lastMsg time.Time) agentJSON {
 		Model:           a.Model,
 		Kind:            agents.ResolveKind(a.Kind),
 		CCAccount:       a.CCAccount,
+		WorkerPool:      a.WorkerPool,
 		KickedOff:       a.KickedOff,
 		KickoffOwed:     agents.KickoffOwed(a),
 		KickoffFailed:   agents.KickoffFailed(a),

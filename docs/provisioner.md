@@ -74,6 +74,11 @@ defaults to `gateway`, and `gateway` must always be in it.
   to the admin; members use credentials they stored themselves
   ([auth.md](auth.md)).
 
+  **A worker pool.** The dispatch forms' **Worker pool** field, shown only
+  while Claude Code is picked, makes the new agent a member of that pool of
+  the machine job API ([jobs.md](jobs.md#worker-pools)). Leave it empty for an
+  ordinary agent.
+
   **The pod.** It runs as uid 1000 with no ServiceAccount token, and has a
   `/data` volume (`MUSTER_AGENT_CC_STORAGE_SIZE`, default `10Gi`). Its
   NetworkPolicy:
