@@ -67,6 +67,7 @@ func TestASpecIsBuiltFromItsOwnersCredentialsOnly(t *testing.T) {
 	cfg := fixtureSpecConfig()
 	cfg.OpenRouterAPIKey = envKey
 	cfg.ClaudeCode = &agentspec.ClaudeCodeConfig{Image: "ghcr.io/example-org/claude-code-agent:1", Accounts: map[string]string{"work": envTok, "spare": envTok + "-spare"}}
+	cfg.Hermes = &agentspec.HermesConfig{Image: "ghcr.io/example-org/hermes-agent:hermes-5fc490e2"}
 	a, err := New(Config{Driver: provision.MustNewNoop(), Store: &recordingStore{}, Spec: cfg, Credentials: creds, KickoffDeliverable: true})
 	if err != nil {
 		t.Fatal(err)
@@ -85,7 +86,7 @@ func TestASpecIsBuiltFromItsOwnersCredentialsOnly(t *testing.T) {
 		return secretsOf(spec), err
 	}
 
-	for _, kind := range []string{agents.KindClaudeCode, agents.KindGateway} {
+	for _, kind := range []string{agents.KindClaudeCode, agents.KindGateway, agents.KindHermes} {
 		got, err := build(41, kind)
 		if err != nil {
 			t.Fatalf("member %s: %v", kind, err)
@@ -94,13 +95,15 @@ func TestASpecIsBuiltFromItsOwnersCredentialsOnly(t *testing.T) {
 			t.Fatalf("a MEMBER's %s spec carries an environment credential:\n%s", kind, got)
 		}
 		want := map[string]string{agents.KindClaudeCode: agentspec.EnvClaudeOAuthToken + "=" + memberTok,
-			agents.KindGateway: agentspec.EnvOpenRouterKey + "=" + memberKey}[kind]
+			agents.KindGateway: agentspec.EnvOpenRouterKey + "=" + memberKey,
+			// The hermes kind runs on the OpenRouter credential the gateway kind uses.
+			agents.KindHermes: agentspec.EnvOpenRouterKey + "=" + memberKey}[kind]
 		if !strings.Contains(got, want) {
 			t.Fatalf("member %s spec lacks its own credential (%s):\n%s", kind, want, got)
 		}
 	}
 	// No credential: refused, and never the environment's.
-	for _, kind := range []string{agents.KindClaudeCode, agents.KindGateway} {
+	for _, kind := range []string{agents.KindClaudeCode, agents.KindGateway, agents.KindHermes} {
 		got, err := build(42, kind)
 		if err == nil {
 			t.Fatalf("member 42 (no credential) %s: built a spec:\n%s", kind, got)
@@ -115,6 +118,9 @@ func TestASpecIsBuiltFromItsOwnersCredentialsOnly(t *testing.T) {
 	}
 	if got, err := build(1, agents.KindGateway); err != nil || !strings.Contains(got, envKey) {
 		t.Fatalf("admin gateway: %v\n%s", err, got)
+	}
+	if got, err := build(1, agents.KindHermes); err != nil || !strings.Contains(got, envKey) {
+		t.Fatalf("admin hermes: %v\n%s", err, got)
 	}
 	// The CONFIG a member's spec is built from carries none of the
 	// environment's credentials either — replaced, not merged — so a kind that
