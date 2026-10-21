@@ -32,6 +32,8 @@ type fakeStore struct {
 	// provenanceErr makes RecordKickoffDelivery fail WITHOUT writing — and so
 	// without clearing kickoff_error, which is what that write normally does.
 	provenanceErr error
+	// stampErrs makes the next n SetKickedOff calls fail without writing.
+	stampErrs int
 	// listSkew makes List report updated_at this much EARLIER than the stored row:
 	// the row moved on after the list read, which MarkKickoffStuck must notice.
 	listSkew time.Duration
@@ -118,7 +120,16 @@ func (s *fakeStore) SetKickedOff(_ context.Context, id int64, v bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.rec("SetKickedOff(%d,%t)", id, v)
+	if s.stampErrs > 0 {
+		s.stampErrs--
+		return errors.New("fixture: the stamp write failed")
+	}
 	s.rows[id].KickedOff = v
+	// PGStore clears a checkout-wait marker in the stamp's own write.
+	if r := s.rows[id]; v && (strings.HasPrefix(r.KickoffError, agents.KickoffAwaitingGrantReason) ||
+		strings.HasPrefix(r.KickoffError, agents.KickoffAwaitingCloneReason)) {
+		r.KickoffError = ""
+	}
 	return nil
 }
 

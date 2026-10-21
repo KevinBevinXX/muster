@@ -110,9 +110,9 @@ func KickoffAwaitingGrant(a Agent) bool {
 }
 
 // WaitedForCheckout reports that the deliverer recorded a checkout wait on this
-// row and has not stamped it. The deliverer clears the marker before the stamp,
-// or the stamped row would read as a failed kickoff ([KickoffFailed]) until the
-// turn ends.
+// row and has not stamped it. The stamp clears the marker in the same write
+// (Store.SetKickedOff), or the stamped row would read as a failed kickoff
+// ([KickoffFailed]) until the turn ends.
 func WaitedForCheckout(a Agent) bool {
 	return !a.KickedOff && (strings.HasPrefix(a.KickoffError, KickoffAwaitingGrantReason) ||
 		strings.HasPrefix(a.KickoffError, KickoffAwaitingCloneReason))

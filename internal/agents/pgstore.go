@@ -241,7 +241,11 @@ func (s *PGStore) AppendPendingNote(ctx context.Context, id int64, text string) 
 }
 
 func (s *PGStore) SetKickedOff(ctx context.Context, id int64, v bool) error {
-	_, err := s.pool.Exec(ctx, `UPDATE agents SET kicked_off=$2, updated_at=now() WHERE id=$1`, id, v)
+	// The wait markers are cleared by the stamp itself (see Store.SetKickedOff).
+	_, err := s.pool.Exec(ctx, `UPDATE agents SET kicked_off=$2,
+		kickoff_error = CASE WHEN $2 AND (starts_with(kickoff_error, $3) OR starts_with(kickoff_error, $4))
+			THEN '' ELSE kickoff_error END,
+		updated_at=now() WHERE id=$1`, id, v, KickoffAwaitingGrantReason, KickoffAwaitingCloneReason)
 	return err
 }
 
