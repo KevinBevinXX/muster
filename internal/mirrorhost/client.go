@@ -110,6 +110,13 @@ type Config struct {
 	// refuses on is not reliable. muster cannot read Hermes's config.yaml, so
 	// this is the operator's responsibility.
 	HermesSend bool
+	// HermesAnswer lets muster answer a Hermes APPROVAL through Hermes's
+	// gateway viewer (muster-mirror's -hermes-answer,
+	// MUSTER_MIRROR_HERMES_ANSWER; Hermes Phase 4, docs/design/hermes.md):
+	// with -interactive, the host attaches a viewer to each session waiting
+	// on an approval, lists its command, and advertises Msg.HermesAnswer. OFF
+	// by default: an answer of "once" lets the command run.
+	HermesAnswer bool
 	// NoSubagents makes this host behave as one that predates the subagent
 	// cards (mirror.Msg.SubagentReport): no summaries on a view's stream, none
 	// advertised, no tail request answered. FOR THE OLDER-HOST TESTS ONLY
@@ -308,6 +315,12 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	conn := &hostSide{c: c, ws: ws, ctx: ctx, version: version, streams: map[uint32]*hostStream{},
 		listed: map[string]bool{}, listedWindows: map[windowKey]bool{}, watches: map[uint32]context.CancelFunc{},
 		kick: make(chan chan struct{})}
+	conn.hermes = newHermesAsks(ctx, conn.hermesAttacher(), conn.nudge, c.log.Printf)
+	if src, ok := conn.hermesSource(); ok {
+		conn.hermes.terminal = src.State().PendingTerminalCommands
+		conn.hermes.clarify = src.State().PendingClarify
+	}
+	defer conn.hermes.close()
 	if sb, ok := ScrollOf(c.cfg.Backend); ok {
 		conn.scroller = newScroller(sb, c.cfg.ScrollIdle, c.log)
 	}
@@ -327,6 +340,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	hello.CatalogReport = version >= 2 && !c.cfg.NoCatalog
 	hello.SubagentReport = conn.subagentReport()
 	hello.HermesSend = conn.hermesSend()
+	hello.HermesAnswer = conn.hermesAnswer()
 	if err := conn.send(hello); err != nil {
 		return err
 	}
@@ -487,6 +501,10 @@ type hostSide struct {
 	scroller *scroller
 	// pending reads what each waiting window waits on (pending.go).
 	pending pendingReader
+	// hermes is what each waiting Hermes window waits on, and the gateway
+	// viewers that answer its approvals (hermes_asks.go); nil in a test that
+	// builds a hostSide without one.
+	hermes *hermesAsks
 	// kick asks the refresh goroutine for a read-and-send now
 	// (Client.RefreshNow); it closes the channel it receives when done.
 	kick chan chan struct{}
@@ -555,6 +573,9 @@ func (h *hostSide) read() (listing, bool) {
 		return listing{}, false
 	}
 	h.pending.attachPending(raw)
+	if h.hermes != nil {
+		h.hermes.attachPending(raw)
+	}
 	windows := WireWindows(raw, h.c.cfg.Codenames, h.version >= 2, time.Now())
 	l := listing{windows: windows}
 	if h.sendsRepos() {

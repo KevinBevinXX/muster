@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/hermeshost"
 	"github.com/ZacxDev/muster/internal/hermeshost/hermestest"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/mirrorhost"
@@ -33,7 +34,16 @@ import (
 //   - MUSTER_MIRROR_E2E_HERMES_WINDOWS_FILE adds Hermes windows to the
 //     listing, one a line:
 //
-//     <session>|<window id>|<index>|<active 0/1>|<activity unix secs>|<hermes session id, or empty>|<status>
+//     <session>|<window id>|<index>|<active 0/1>|<activity unix secs>|<hermes session id, or empty>|<status>[|<waiting kind>]
+//
+//     (the waiting kind — approval, clarify, sudo — is what the hook recorded,
+//     Phase 4);
+//
+//   - Phase 4: the fake plays Hermes's GATEWAY VIEWER too (AttachHermesViewer):
+//     <home>/approval.json, {"prompt_id", "command", "description"}, is the
+//     approval pending in every session; an answer is appended to
+//     <home>/answers.jsonl ({"prompt_id", "choice"}) and settles it (the file
+//     is removed);
 //
 //     An empty session id is a window whose breadcrumb is stale: listed as
 //     Hermes, with no rendered view. The fake plays the locator here; the
@@ -132,7 +142,10 @@ func hermesWindowsE2E(context.Context) []mirrorhost.WindowInfo {
 	var out []mirrorhost.WindowInfo
 	for _, line := range strings.Split(string(b), "\n") {
 		f := strings.Split(strings.TrimSpace(line), "|")
-		if len(f) != 7 {
+		if len(f) == 7 {
+			f = append(f, "")
+		}
+		if len(f) != 8 {
 			continue
 		}
 		index, _ := strconv.Atoi(f[2])
@@ -146,7 +159,8 @@ func hermesWindowsE2E(context.Context) []mirrorhost.WindowInfo {
 		out = append(out, mirrorhost.WindowInfo{Session: f[0], ID: f[1], Index: index, Active: f[3] == "1", Command: "python3.14",
 			Activity: activity, Pane: pane, PanePID: 1,
 			Agent: &mirrorhost.AgentPane{Runtime: mirror.RuntimeHermes, Pane: pane, PID: 1, Gen: f[5], Status: status,
-				StatusSince: since, Busy: status == mirror.StatusBusy, Source: mirrorhost.SourceBreadcrumb}})
+				StatusSince: since, Busy: status == mirror.StatusBusy, Source: mirrorhost.SourceBreadcrumb,
+				Hermes: &hermeshost.PaneSession{Session: f[5], Status: hermeshost.Believed{Status: status, Since: since, Kind: kindIf(status, f[7])}}}})
 	}
 	return out
 }
@@ -195,3 +209,57 @@ func (w windowFake) SendHermes(ctx context.Context, req mirrorhost.HermesSendReq
 	_, _ = f.Write(append(b, '\n'))
 	return nil
 }
+
+// kindIf is a waiting status's kind, "" for any other status.
+func kindIf(status, kind string) string {
+	if status != mirror.StatusWaiting {
+		return ""
+	}
+	return kind
+}
+
+// AttachHermesViewer implements mirrorhost.HermesViewerAttacher for the
+// browser suite: the approval in <home>/approval.json, if any.
+func (w windowFake) AttachHermesViewer(ctx context.Context, session string) (mirrorhost.HermesViewer, []hermeshost.ApprovalPrompt, error) {
+	home := os.Getenv("MUSTER_MIRROR_E2E_HERMES_HOME")
+	v := &e2eViewer{dir: home, done: make(chan struct{}), events: make(chan hermeshost.ViewerEvent)}
+	b, err := os.ReadFile(filepath.Join(home, "approval.json"))
+	if err != nil {
+		return v, nil, nil
+	}
+	var a struct {
+		PromptID    string `json:"prompt_id"`
+		Command     string `json:"command"`
+		Description string `json:"description"`
+	}
+	if json.Unmarshal(b, &a) != nil {
+		return v, nil, nil
+	}
+	return v, []hermeshost.ApprovalPrompt{{PromptID: a.PromptID, Generation: 1, Command: a.Command, Description: a.Description,
+		Choices: []string{"once", "deny", "session", "always"}}}, nil
+}
+
+// e2eViewer is the fake's gateway viewer: an answer is written down.
+type e2eViewer struct {
+	dir    string
+	done   chan struct{}
+	events chan hermeshost.ViewerEvent
+	once   sync.Once
+}
+
+func (v *e2eViewer) Respond(_ context.Context, p hermeshost.ApprovalPrompt, choice string) error {
+	e2eHermes.mu.Lock()
+	defer e2eHermes.mu.Unlock()
+	b, _ := json.Marshal(map[string]string{"prompt_id": p.PromptID, "choice": choice})
+	f, err := os.OpenFile(filepath.Join(v.dir, "answers.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, _ = f.Write(append(b, '\n'))
+	_ = os.Remove(filepath.Join(v.dir, "approval.json"))
+	return nil
+}
+func (v *e2eViewer) Events() <-chan hermeshost.ViewerEvent { return v.events }
+func (v *e2eViewer) Done() <-chan struct{}                 { return v.done }
+func (v *e2eViewer) Close()                                { v.once.Do(func() { close(v.done) }) }

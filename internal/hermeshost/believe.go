@@ -17,6 +17,10 @@ type Believed struct {
 	Since int64
 	// Reason is why Status is unknown, "" when it is believed.
 	Reason string
+	// Kind is what a believed waiting status waits on — "approval",
+	// "clarify" or "sudo", as the hook recorded it (S2) — "" for any other
+	// status. It says which ask muster shows (Phase 4).
+	Kind string
 }
 
 // The reasons a status is unknown, as -list -hermes prints them.
@@ -53,7 +57,11 @@ func Believe(f StatusFile, found bool, snap Snapshot, now time.Time, alive func(
 		if !snap.LeaseLive(nowSec) {
 			return Believed{Reason: ReasonNoLease}
 		}
-		return Believed{Status: f.Status, Since: f.Since}
+		b := Believed{Status: f.Status, Since: f.Since}
+		if f.Status == mirror.StatusWaiting {
+			b.Kind = f.Kind
+		}
+		return b
 	case mirror.StatusIdle:
 		if snap.LeaseLive(nowSec) {
 			return Believed{Reason: ReasonLeaseLive}

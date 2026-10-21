@@ -425,6 +425,9 @@ var isolationClasses = map[string]routeClass{
 	// and the answers (address in the form, plus the call's tool id).
 	"GET /mirror/view/asks": classMirror,
 	"POST /mirror/view/ask": classMirror,
+	// A Hermes approval's answer (attention_hermes.go): addressed by the
+	// window's host and session in the form, like a send.
+	"POST /attention/hermes/approve": classMirror,
 	// The Rendered view composer's `/` and `:` menu data: the same address in
 	// the query; B asking for A's window's catalog must 404 before the plugin.
 	"GET /mirror/view/complete": classMirror,
@@ -1272,7 +1275,7 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		path = "/static/app.css"
 	}
 	if strings.HasPrefix(path, "/mirror/terminal") || strings.HasPrefix(path, "/mirror/view") || path == "/mirror/confirm-send" ||
-		path == "/send-queue" || path == "/send-queue/confirm" {
+		path == "/send-queue" || path == "/send-queue/confirm" || path == "/attention/hermes/approve" {
 		if method == http.MethodPost {
 			// `kind` and `password` are the plain confirm page's own fields.
 			return method, path, url.Values{"host": {o.mirrorHost}, "session": {o.mirrorSession}, "text": {"iso-write"},
@@ -1440,7 +1443,7 @@ func namesObject(route string) bool {
 	return paramRE.MatchString(route) || route == "POST /agents" || route == "POST /tasks/merge" ||
 		strings.HasPrefix(route, "GET /mirror/terminal") || strings.HasPrefix(route, "GET /mirror/view") ||
 		route == "POST /mirror/view/send" || route == "POST /mirror/terminal/send" || route == "POST /mirror/confirm-send" ||
-		route == "POST /mirror/terminal/scroll" || route == "POST /mirror/view/ask" ||
+		route == "POST /mirror/terminal/scroll" || route == "POST /mirror/view/ask" || route == "POST /attention/hermes/approve" ||
 		route == "GET /send-queue" || route == "POST /send-queue" || route == "POST /send-queue/confirm" ||
 		// Focus history (0022) names its session in the query (?subject=agent:<id>),
 		// so it is held to the object routes' rules: B's answer about A's agent
@@ -2010,6 +2013,15 @@ func (m *isoMirror) AttachWindow(ctx context.Context, host, _, _ string, _ bool,
 	}
 	_, err := io.WriteString(stdout, "mirrored "+m.host)
 	return err
+}
+
+// AnswerHermesApproval: A's own host has no such approval (a 409, which is
+// still A reaching the route); anyone else's request never gets this far.
+func (m *isoMirror) AnswerHermesApproval(ctx context.Context, host, _, _, _, _ string) error {
+	if !m.mine(ctx) || host != m.host {
+		return mirror.ErrHostOffline
+	}
+	return mirror.ErrHermesApprovalGone
 }
 
 // isoUpstream records the credentials the proxy injected.

@@ -28,7 +28,7 @@ import (
 // TestTheReadAllowlistIsExactly pins the allowlist itself: a path added or
 // removed is a design change, made here on purpose.
 func TestTheReadAllowlistIsExactly(t *testing.T) {
-	want := []string{"state.db", "state.db-wal", "state.db-shm", "terminal-sessions/tty-*", "shell-hooks-allowlist.json"}
+	want := []string{"state.db", "state.db-wal", "state.db-shm", "terminal-sessions/tty-*", "shell-hooks-allowlist.json", "gateway.sock", "gateway.sock.path"}
 	if !reflect.DeepEqual(ReadPaths, want) {
 		t.Fatalf("ReadPaths = %q\nwant %q — a change here is a change to docs/design/hermes.md's Secret hygiene", ReadPaths, want)
 	}
@@ -162,6 +162,23 @@ var exerciseReadPath = []func(t *testing.T, h *hermestest.Home, root string){
 			t.Fatal(err)
 		}
 	},
+	// The gateway viewer (Phase 4): discovery through the pointer, identify,
+	// a ticket, an attach and an answer. The fake gateway lives under its own
+	// home here (the ledger's home has a short path, so it would listen in
+	// it): what is watched is that the DISCOVERY of the ledger's home opens
+	// nothing but the pointer and the socket.
+	func(t *testing.T, h *hermestest.Home, root string) {
+		g := hermestest.NewGateway(t, h.Dir)
+		g.AddPrompt("p1", 1, "rm -r x", "")
+		v, ps, err := NewHome(h.Dir).Attach(ctx(t), root)
+		if err != nil {
+			t.Fatalf("the viewer exercise did not attach: %v", err)
+		}
+		defer v.Close()
+		if err := v.Respond(ctx(t), ps[0], "deny"); err != nil {
+			t.Fatal(err)
+		}
+	},
 	// The planted hostile breadcrumbs (TestTheHermesHomeLedger): a symlink to
 	// auth.json and a FIFO. Neither resolves; neither may open a secret.
 	func(t *testing.T, h *hermestest.Home, root string) {
@@ -291,5 +308,37 @@ func TestTheDiagnosticLedger(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(h.Dir, "config.yaml"), []byte("hooks: [\n"+hermestest.DecoyMarker), 0o600)
 	if _, err := NewHome(h.Dir).DeclaredHooks(); err == nil || strings.Contains(err.Error(), "DECOY") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// ONE RULE, ONE PLACE (audit #212 D2, D3): the answers muster sends a Hermes
+// approval and the shape of a Hermes request id are mirror's
+// (HermesApprovalChoices, ValidPromptID), never re-declared here.
+func TestTheApprovalRulesAreDeclaredOnce(t *testing.T) {
+	files, _ := filepath.Glob("*.go")
+	fset := token.NewFileSet()
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		af, err := parser.ParseFile(fset, f, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range af.Decls {
+			g, ok := d.(*ast.GenDecl)
+			if !ok {
+				continue
+			}
+			for _, sp := range g.Specs {
+				if vs, ok := sp.(*ast.ValueSpec); ok {
+					for _, n := range vs.Names {
+						if n.Name == "ApprovalChoices" || n.Name == "requestIDPattern" {
+							t.Errorf("%s re-declares %s: use mirror's", fset.Position(n.Pos()), n.Name)
+						}
+					}
+				}
+			}
+		}
 	}
 }

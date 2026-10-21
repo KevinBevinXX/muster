@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -29,6 +30,26 @@ func printViMode(h hermeshost.Home, stdout io.Writer) {
 	}
 }
 
+// printGateway is `-list -hermes`'s gateway line: the home's gateway as its
+// control socket's identify names it, checked as the viewer checks it before
+// attaching (hermeshost.Home.Identify) — the pin above all. It asks identify
+// only: no ticket, no WebSocket, nothing answered.
+func printGateway(ctx context.Context, h hermeshost.Home, stdout io.Writer) {
+	gctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	g, err := h.Identify(gctx)
+	switch {
+	case errors.Is(err, hermeshost.ErrNoGateway):
+		fmt.Fprintln(stdout, "gateway\tnone running (a Hermes CLI starts one; until then there is nothing to check)")
+	case errors.Is(err, hermeshost.ErrGatewayNotPin):
+		fmt.Fprintf(stdout, "gateway\tNOT THE PIN\t%v: muster attaches no viewer, so every Hermes approval is answered in the terminal\n", err)
+	case err != nil:
+		fmt.Fprintf(stdout, "gateway\trefused\t%v: muster attaches no viewer, so every Hermes approval is answered in the terminal\n", err)
+	default:
+		fmt.Fprintf(stdout, "gateway\tcode_sha %s (the pin)\tpid=%d\tinstance=%s\n", g.CodeSHA, g.PID, g.InstanceID)
+	}
+}
+
 // printHermes is `-list -hermes` (docs/design/hermes.md, "Listing"; docs/
 // mirroring.md): what this host knows about its Hermes windows, for a person
 // asking why one has no rendered view or no status.
@@ -44,8 +65,8 @@ func printViMode(h hermeshost.Home, stdout io.Writer) {
 // the session and its lineage; the newest status file; the status muster
 // reports, and why a window has no rendered view or an unknown status.
 //
-// Not reported: the gateway's code_sha, which needs the gateway viewer
-// (Phase 4).
+// And the home's GATEWAY (printGateway): whether one is running, and whether
+// it is the pinned commit muster's viewer attaches to.
 func printHermes(ctx context.Context, backend mirrorhost.Backend, home, statusDir string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "hermes-home\t%s\n", home)
 	fmt.Fprintf(stdout, "status-dir\t%s\n", orDash(statusDir))
@@ -54,7 +75,7 @@ func printHermes(ctx context.Context, backend mirrorhost.Backend, home, statusDi
 	}
 	printHookConsent(hermeshost.NewHome(home), home, stdout)
 	printViMode(hermeshost.NewHome(home), stdout)
-	fmt.Fprintln(stdout, "gateway\tcode_sha not checked (the gateway viewer is Phase 4)")
+	printGateway(ctx, hermeshost.NewHome(home), stdout)
 
 	wl, ok := mirrorhost.WindowListerOf(backend)
 	if !ok {

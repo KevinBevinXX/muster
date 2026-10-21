@@ -99,7 +99,7 @@ func HandleHook(in io.Reader, dir StatusDir, now time.Time, writer Writer) error
 			return fmt.Errorf("%w: a request of kind %q", ErrIgnored, capField(p.Extra.Kind))
 		}
 		f.Kind = p.Extra.Kind
-		if requestIDPattern.MatchString(p.Extra.RequestID) {
+		if mirror.ValidPromptID(p.Extra.RequestID) {
 			f.RequestID = p.Extra.RequestID
 		}
 	}

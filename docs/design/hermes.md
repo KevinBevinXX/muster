@@ -1,6 +1,6 @@
 # Design: Hermes mirroring and the `hermes` agent kind
 
-**Status: proposed, with Phases 0, 1, 2, 3 and 5 done.** Phase 5, the `hermes`
+**Status: Phases 0–5 done** (Phase 4 in three stacked parts, 4a–4c). Phase 5, the `hermes`
 agent kind, is implemented (`cmd/hermesd`, `images/hermes-agent`, the kind in
 `internal/agents` and `internal/agentspec`, migration `0038`); what it built
 differently from this page is under [Phase 5 as built](#phase-5-as-built).
@@ -24,8 +24,13 @@ database-confirmed submit — behind the `-hermes-send` switch on both sides,
 Send, Queue and Send now for Hermes windows, and its live harness,
 `make test-livehermes`, whose fixtures and measurements are recorded there.
 **Send ships OFF**: the operator enables it per host once the harness is
-green against that host's Hermes; the host refuses vi mode itself. Nothing of
-Phase 4 is implemented. The
+green against that host's Hermes; the host refuses vi mode itself. Phase 4
+is implemented (see [Phase 4 as built](#phase-4-as-built)): 4a, the gateway
+viewer itself — discovery, the pin check, attach, `approval.respond` and the
+hygiene filters — and `-list -hermes`'s gateway line; 4b, approval and sudo
+attention items and the approval's answer through the viewer, behind the
+host's `-hermes-answer`; 4c, clarify questions read from the database, answered
+in the terminal (the viewer's clarify answer was measured and is not wired). The
 version target is **decided** (below). Every other section describes the design
 the Phase 0 spikes support; the [Phase 0 results](#phase-0-results) table names
 what each spike changed. Where this page states how muster works today, the
@@ -933,6 +938,216 @@ show what more would do; the gated send sends one.)
   runs each: 305–1,915 ms, 364–506 ms, 433–543 ms — a residual window up to
   about 2 s under load, named below.
 
+### Phase 4 as built
+
+Phase 4 is stacked in pull requests. **4a** (`internal/hermeshost`'s
+`gateway.go` and `viewer.go`, `-list -hermes`'s `gateway` line, and
+`TestLiveHermesGateway` in `make test-livehermes`) differs from the sections
+above in these ways, each decided while building it:
+
+- **Measured against the pin** (a scratch home, the stub model, 2026-10-21):
+  `identify` answers `kind: hermes-gateway`, `code_sha` the full pin,
+  `state: ready`, `api_origin` `http://127.0.0.1:<port>`, `served_profiles`
+  naming the home, and the capabilities `session-authority-v1`,
+  `durable-admission-v1` and `event-replay-v1`; `session.resume` on a session
+  waiting on an approval lists it in `prompts` (`kind: approval`, a 32-hex
+  `prompt_id`, `execution_generation`, `command`, `description`, `choices`
+  `once, deny, session, always`, `timeout_s: 300`); a viewer's
+  `approval.respond` answers `{status: resolved, prompt_id}` and is
+  authoritative — `deny` and the command did not run, `once` and it ran (the
+  harness's victim directory) — while the CLI's modal stays drawn. 🔴 The
+  hook's `request_id` is **not** the approval's `prompt_id` (measured: two
+  different ids for one approval), so a card is keyed by the `prompt_id` the
+  viewer read, never by the status file.
+- 🔴 **`session.resume` carries the whole conversation**, `pending[].text`
+  (what the person typed) and `info` (tools, skills); the events after it
+  carry every delta and tool result, and `session.info` carries
+  `system_prompt` and `credential_hint`. The pin has no `omit_messages` on
+  the gateway's resume. So the hygiene filter is **structural**: a frame is
+  decoded only into the fields an approval needs (`promptWire`,
+  `resumeWire`, an event's `type`, `session_id` and payload); nothing else is
+  kept, logged or quoted in an error, and a server request (`sudo`,
+  `secret`, `clarify`) is dropped unanswered.
+  `TestTheViewerDropsEverySecretBearingFrame` feeds every such frame with a
+  canary; `TestTheViewerKeepsOnlyTheApprovalFields` pins the types' fields.
+  The live harness types a canary into the prompt and checks it never reaches
+  what the viewer hands out.
+- **Discovery is stricter than Hermes's own** in one place: a
+  group-writable home is refused outright (Hermes admits one whose group is
+  the owner's private group). The rest is upstream's `_socket_path`
+  (`gateway.sock`, else `gateway.sock.path` → `hermes-gw-<hash>/
+  control.sock`, each owned by this uid and private, the pointer never a
+  symlink or FIFO), then `SO_PEERCRED` on the connection. 🔴 On a platform
+  without `SO_PEERCRED` (macOS) the viewer is refused, not attached on the
+  path checks alone as Hermes's client does: every Hermes ask there is
+  answered in the terminal.
+- **Only a `ready` gateway is attached to.** Hermes's own client also attaches
+  to a gateway draining for a restart (`restart_wait`) to answer a parked
+  approval; muster does not, and answers in the terminal then (question for
+  the operator).
+- **`-list -hermes` asks `identify` only** — no ticket, no attach — and prints
+  `gateway none running`, `code_sha <sha> (the pin)`, `NOT THE PIN` or
+  `refused` with why.
+- `ReadPaths` adds `gateway.sock` (connected to, never opened) and
+  `gateway.sock.path` (read), as [secret hygiene](#secret-hygiene) listed
+  them; the pointed-at `hermes-gw-<hash>/` directory is outside the home.
+
+**4b** (`internal/mirrorhost`'s `hermes_asks.go`, `internal/mirror`'s
+`hermes_answer.go` and `Pending`'s Hermes fields, `internal/api`'s
+`attention_hermes.go`, `-hermes-answer`) differs from the sections above in
+these ways:
+
+- 🔴 **Answering is its own host switch, `-hermes-answer`
+  (`MUSTER_MIRROR_HERMES_ANSWER`), OFF by default, with `-interactive`**, and
+  the host advertises `hermesAnswer` in its hello; the hub believes it only
+  from an `-interactive` v2 host. The design names no switch for answers;
+  an answer of `once` lets a command run, so it ships off, like Send
+  (**operator decision: kept, off by default in muster; the operator turns it
+  on per host in the host configuration**). Its gates copy the Claude
+  AskUserQuestion answer path (`internal/api`'s `handleMirrorAskAnswer`): the
+  session's owner, same origin, an `-interactive` host that advertised the
+  capability, and a fresh sign-in. **Without it no viewer is ever
+  attached**: the card says "waiting for an approval in the terminal", with no
+  command — the conservative reading of "attach only to answer".
+- 🔴 **`once` only for a command the card shows whole.** The card's line is
+  `terminal: <command>`, cleaned and capped at 120 runes, with what looks like
+  a secret redacted. A command that does not survive that unchanged (several
+  lines, too long, a tab or doubled space, a redaction) is offered **deny
+  only**, and the card says to approve it in the terminal; the host checks it
+  again at answer time.
+- 🔴 **Round-1 audit (#212), built in:** `once` is never offered for a
+  command the GATEWAY's own redactor already masked
+  (`_redact_approval_command`, `P:gateway/run.py:577` →
+  `P:agent/redact.py`): a mask can swallow shell syntax (measured: `ls -H
+  X-Api-Key:a;rm -rf ~/work` arrives as `ls -H X-Api-Key:*** -rf ~/work`).
+  `hermeshost.GatewayMasks` lists the forms the pinned redactor emits (`***`,
+  `...`, `«redacted`, `[REDACTED`); the livehermes ledger
+  `TestTheGatewayMasksCoverAPinnedSample` pins `agent/redact.py`'s and
+  the wrapper's source and runs the real redactor over a corpus, and
+  `TestLiveHermesMaskedApprovalIsDenyOnly` drives the case end to end. An
+  approval carrying any field muster does not render (a file edit's `edit`
+  diff, `P:gateway/session_local_editor.py:46`) and a command holding
+  right-to-left text are deny only too; the card draws the command in a
+  left-to-right `<bdi>`. ⚠ The edit path is not reachable from a mirrored
+  CLI at the pin: the editor's approval requester is installed only for an
+  ACP session (`editor_scope`, `policy.source == 'acp'`), never a `hermes
+  chat` in a pane. The card never names why the gateway cannot be reached
+  (no path, no uid): that is the host's log. `TimeoutS` is gone from the
+  viewer's approval (nothing showed it).
+- 🔴 **Round-2 audit (#212): "once" is an ALLOWLIST.** The pin asks for
+  approval through more than one gate, and every one reaches the viewer with
+  the same fields: the terminal gate (`check_dangerous_command`,
+  `check_all_command_guards`), but also a file-write guard
+  (`P:tools/file_tools_write_guards.py:389`, "command" = the label `<write to
+  …/.ssh/config>`), a plugin's approval rule (`<tool> (plugin approval
+  rule)`), computer use and execute_code. Measured live before the fix: the
+  SSH-config write's card offered `once deny` (approving it writes a
+  `ProxyCommand` muster never showed). Now ONE predicate (`approvable`, used
+  by the listing and the answer check alike) offers "once" only when ALL hold:
+  the description is one the pinned **terminal** gate emits
+  (`hermeshost.TerminalDescriptions`, 111 descriptions re-extracted from
+  `P:tools/approval_detection.py` by the livehermes ledger
+  `TestTheTerminalGateLedgerMatchesThePin`, which also pins
+  `approval_detection.py` and `approval.py` by sha256); the command EQUALS a
+  pending `terminal` call's raw `command` in `state.db` (so it is what runs,
+  unredacted, unlabelled); it is printable ASCII (a value of only control or
+  zero-width characters the redactor drops without a mask, a homoglyph or a
+  combining mark, all refused); one line within the cap; nothing muster's
+  redactor would hide; none of the gateway's masks; no unrendered field.
+  Everything else is deny only. `TestLiveHermesLabelApprovalIsDenyOnly`
+  drives the SSH-config write live. ("arbitrary program execution via …",
+  built at run time, is not in the ledger: such approvals are deny only.)
+  The redactor sample (`TestTheGatewayMasksCoverAPinnedSample`) runs both
+  passes an approval takes (`P:tools/approval.py:855`, then the gateway's);
+  `[redacted` is no longer a listed mask (the pinned string redactor never
+  emits it).
+- 🔴 **Round-3 audit (#212): the allowlist alone could still be walked by a
+  plugin rule.** A plugin's approval rule (`P:tools/approval.py`
+  `request_tool_approval`, from `P:hermes_cli/plugins.py`'s
+  `pre_tool_call`) takes its description from the PLUGIN's reason — free
+  text that can equal a terminal description — and shows the label
+  `<tool> (plugin approval rule)`. An injected model issuing
+  `sql_query("DROP …")` and `terminal("<sql_query> (plugin approval rule)")`
+  in one batch passes both checks, and "once" would run SQL the card never
+  showed. So `approvable` also refuses "once" for any command shaped like a
+  pinned non-terminal gate's label (`hermeshost.NonTerminalLabel`:
+  `<…> (plugin approval rule)`, `<write to …>`, `computer_use: …`,
+  `execute_code <<…`). The livehermes ledger
+  `TestTheApprovalGatesMatchThePin` enumerates every approval site in the
+  pinned distribution (19, from its `RECORD`), requires each to be one this
+  was classified against, and evaluates each label's f-string in the pinned
+  Python through `NonTerminalLabel` — a new gate or a changed label is RED.
+  The remaining non-terminal gates (MCP elicitation, an untrusted MCP tool,
+  a payment-card fill) show free text under a fixed-format description no
+  terminal gate emits, so the description allowlist refuses them.
+- **The wire** (no version bump): `Pending` gains `kind`
+  (`approval`/`clarify`/`sudo`), `detail` (the description, 120 runes),
+  `promptId` and `choices` (a space-separated string, so `Pending` stays
+  comparable), on a waiting **Hermes** window only — a Claude window's Pending
+  is stripped of them, so its bytes are unchanged, and a Hermes Pending without
+  a kind is dropped. The worst-case window list with eight Hermes approvals at
+  every bound measures 1,023,474 bytes (97.6% of a frame), below the Claude
+  worst case (1,030,215, unchanged). An answer is `answer` with `runtime:
+  hermes` and `hermesApproval {promptId, choice}`; refusals `hermes-gone`,
+  `hermes-unreachable`, `hermes-unknown` ("may have been answered").
+- **Three checks of one answer**: the hub against the window it lists (still
+  waiting on that prompt, offering that choice), the host against what its
+  viewer holds now (re-resolving the window's pane), and the gateway itself.
+- **The attention queue lists every waiting Hermes window** (the Phase 1
+  carve-out is gone): an approval with Allow once / Deny when its host answers
+  and could read it, else "Answer it in the terminal"; sudo "muster never
+  answers a password prompt"; clarify "Answer it in the terminal" (4c adds its
+  questions). After an answer the page says the terminal will show a stale
+  prompt until a key is pressed there. Its focus is keyed `hermes:<id>`.
+- **The viewer is per session, per connection**: attached when a listed
+  window first waits on an approval, detached as soon as none does, retried no
+  sooner than 30 s after a refused attach (the card names why), re-attached
+  when the gateway hangs up. A new approval while attached arrives as
+  `approval.request` and replaces the shown one.
+- Not built: the approval card in the rendered view's live region (the queue
+  and the card badge show it); a push names the tool only ("terminal"), as
+  today.
+- **Measured against the pin** (`TestLiveHermesApprovalThroughTheHost`): the
+  real listing (Tmux with the home's source) lists the approval through the
+  host's viewer as `terminal: rm -r ./livehermes-victim-dir`, `once deny`,
+  `recursive delete`; the host's answer `deny` lets the turn finish with the
+  victim directory intact; the viewer is detached once the window stops
+  waiting.
+
+**4c** (`internal/hermeshost`'s `clarify.go`, the host's clarify listing):
+
+- 🔴 **The viewer's clarify answer, MEASURED against the pin, and NOT wired.**
+  A viewer attached BEFORE Hermes asks receives the `clarify` server request
+  (`{id: "srq-…", method: "clarify", params: {questions: [{qid, question,
+  choices, multi_select}]}}` — the recommended choice already suffixed
+  "(Recommended)") and its answer `{answers: {q0: "blue"}, outcome:
+  "submitted"}` is taken: the tool result records it, `request.cancel` releases
+  the CLI's picker, and the CLI returns to its idle prompt cleanly. But a
+  viewer attached AFTER — which is what attaching on the hook's `waiting` is —
+  gets nothing: `session.resume` lists approvals only (`prompts: []`), carries
+  no `open_requests` at the pin's gateway runtime, and `session.events.since`
+  answers `snapshot_required` with no events. So the design's
+  attach-to-answer cannot reach a clarify, and the card says to answer it in
+  the terminal. Wiring it would need a viewer attached to every session while
+  it is busy, before it asks — a standing attachment the design rules out
+  ("attach only to answer"); question for the operator. (Measured with a
+  scratch home, a private tmux server and the stub model, by a throwaway
+  Python viewer using the pin's own `websockets`; not committed.)
+- **The questions come from the database**, as the design says: the newest
+  `clarify` call in the conversation's last 64 rows that no `tool` row answers
+  (1–5 questions, at most 4 choices, as the tool bounds them), read once per
+  wait (keyed by the status time; a failed read is cached too and retried no
+  sooner than 30 s, so a failing read never rides every listing) with or
+  without `-hermes-answer` — it is the
+  read the rendered view already makes. The item shows the first question,
+  its choices and how many more there are ("red · blue — and 1 more question —
+  answer in the terminal"), each through the host's redaction and the wire's
+  caps. Not `askq.Question` cards: there is nothing muster can answer, and the
+  questions in full do not fit the window list's frame budget.
+- **Measured against the pin** (`TestLiveHermesClarifyThroughTheHost`): the
+  host lists "Which colour should it use?" with "red · blue" from the real
+  `state.db`, and the CLI's picker stays up.
+
 ### Pane to session resolution
 
 **Recognising a Hermes CLI** (S10). A process is a Hermes CLI only if all hold:
@@ -1653,7 +1868,7 @@ dropped on receipt, `sudo` frames included.
 | ask | answered by |
 |---|---|
 | approval | the viewer's `approval.respond` |
-| clarify | the viewer, if Phase 4 measures it; else the terminal |
+| clarify | the terminal (Phase 4 measured the viewer's answer: it reaches only a viewer attached before Hermes asks; see [4c](#phase-4-as-built)) |
 | sudo | never from muster |
 
 - **Approvals: the viewer's `approval.respond({session_id,
@@ -1680,8 +1895,9 @@ dropped on receipt, `sudo` frames included.
   approved (open question 1).
 - Approval defaults shape what muster ever sees: `approvals.mode: smart` lets
   an auxiliary model decide without prompting, and `timeout: 300` denies on
-  timeout (`P:hermes_cli/config_defaults.py:1670-1713`). The card says when it
-  timed out.
+  timeout (`P:hermes_cli/config_defaults.py:1670-1713`). (Phase 4 does not
+  show the timeout: an approval that timed out is simply gone from the card,
+  and an answer to it is refused as no longer pending.)
 
 Questions and approvals live in muster's memory, as Claude Code's do.
 
@@ -2201,10 +2417,10 @@ Efforts are rough engineer-days, including tests and docs. Phase 0 is done.
 | ~~1~~ | Runtime seam: `mirrorhost.Runtime` for Claude Code and Hermes, Claude behind it, `Window.Runtime`/`AgentSession` with the wider id bound. 🔴 **The host paste guard**, first, with the broad process identity (**done**, 1a). The strict mirroring identity rule moves to Phase 2 and the chrome check to Phase 3 (operator decision); the strict rule was later pulled forward into 1b (coordinator decision, **done**). [Server changes](#server-changes): runtime-aware `AgentState` and waiting set, Send now refusing unknown and busy for Hermes, the `hermesSend` switch, the migration widening the session-key checks of 0020, 0021, 0022 and 0025 (**done**, 1b; see [as built](#phase-1-as-built)). No behaviour change for Claude Code. | done | — |
 | ~~2~~ | (**done**, see [as built](#phase-2-as-built)) Read-only Hermes mirroring: the strict mirroring identity rule (moved from Phase 1; then pulled forward into 1b by coordinator decision, and landed there — Phase 2 builds on it), breadcrumb locator with the end-reason staleness rule (no view, unknown status), SQLite reader (compaction, compression-only lineage), renderer, the `hermes-hook` command and its status files with lease and newest-row checks, the Home Manager declaration and the locking allowlist writer, mismatch diagnostics, listing and kind chip, secret-path ledger, `-list -hermes` | 6–8 | 1 |
 | ~~3~~ | (**done**, see [as built](#phase-3-as-built)) Gated pane send **and its live harness**. `make test-livehermes`: the pinned Hermes in a scratch tmux server and home; fixtures for every blocking state, and from them the paste guard's chrome check (moved from Phase 1), including the palette, model picker and stash; the overlay-state ledger; measuring the Escape sequence (with the abort rule and waits above `timeoutlen`) against every overlay at its non-default stages (filtered picker, reasoning stage, palette and stash together, the picker opened over a draft, vi mode); re-measuring under load the false-idle slack, the 150 ms Enter margin and the queue gap. Then the send: per-runtime server gates, host `CheckSend` with the image-region and input-line rules and the bounded Escape sequence, the `hermesSend` switch on both sides, the `/`, `!` and trailing-`\` refusals, collapse-aware post-paste check, database-confirmed submit with "may have been submitted", Queue and Send now for Hermes, host docs. Send stays off until these measurements are done and the harness is green; then the operator enables it per host, with the residual cases named in the host docs. | done | 2 |
-| **4** | Questions and approvals: clarify cards from the DB, approval and sudo attention items from the hooks, viewer discovery through `gateway.sock.path`, attach-to-answer, `approval.respond` with the stale-modal card, measuring the viewer's clarify answer (and wiring it if it passes), the hygiene filters; harness cases for each | 5–7 | 2, 3 |
+| ~~4~~ | (**done**, see [as built](#phase-4-as-built)) Questions and approvals: clarify cards from the DB, approval and sudo attention items from the hooks, viewer discovery through `gateway.sock.path`, attach-to-answer, `approval.respond` with the stale-modal card, measuring the viewer's clarify answer (and wiring it if it passes), the hygiene filters; harness cases for each | 5–7 | 2, 3 |
 | ~~5~~ | `hermes` kind: `hermesd` (runs, events, exact approval body, relay timeout, a stable API key on the volume, intent-before-POST with the exact body and `Idempotency-Key`, 409 and retention handling, `resolve-unknown` recovery on every gateway start, SIGTERM handling), the Nix image without ffmpeg, `agentspec`, migration, config, smoke test like `cc-smoke` (**done**; see [as built](#phase-5-as-built)). A first run in a real pod is the release's (muster-ops), not this phase's code. | done | 1 |
 
-Remaining: about 5–7 days (Phase 4). Each phase is released and shipped to the hosts as
+Every phase is implemented. Each phase is released and shipped to the hosts as
 it merges. Phases 2–4 and 5 are independent after Phase 1. The shortest useful
 slice is Phases 1–2: read-only Hermes windows with status, with the paste
 guard already in place. `make test-livehermes` re-runs on every pin bump.
@@ -2235,7 +2451,8 @@ guard already in place. `make test-livehermes` re-runs on every pin bump.
     from the highlighted choice);
   - the `session` and `always` approval choices, and a viewer declaring
     `server_requests: true`;
-  - answering a clarify from the viewer (measured in Phase 4);
+  - ~~answering a clarify from the viewer~~ (measured in Phase 4: only a
+    viewer attached before the question can; not wired);
   - whether an attached viewer keeps an auto-started gateway alive past its
     idle exit;
   - skins or themes changing the input-line glyphs;

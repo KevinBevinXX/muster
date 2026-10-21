@@ -122,6 +122,7 @@ var routeVias = map[authz.Via][]string{
 		"POST /attention/asks/{id}/answer",
 		"POST /attention/asks/{id}/cancel",
 		"POST /attention/asks/{id}/redeliver",
+		"POST /attention/hermes/approve",
 		"GET /account",
 		// The step-up confirm (stepup.go): the SESSION's user, re-proven.
 		"POST /auth/confirm",

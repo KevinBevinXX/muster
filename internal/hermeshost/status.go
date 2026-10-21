@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"syscall"
 	"time"
 
@@ -59,9 +58,6 @@ const DefaultStatusDir = "~/.muster/hermes-status"
 // The waiting kinds the hook records (all three measured, S2).
 var waitingKinds = map[string]bool{"approval": true, "clarify": true, "sudo": true}
 
-// requestIDPattern bounds a request id: Hermes mints uuid4().hex.
-var requestIDPattern = regexp.MustCompile(`^[0-9A-Za-z_-]{1,64}$`)
-
 // valid: f is a status file this reader believes the shape of.
 func (f StatusFile) valid() bool {
 	if f.V != statusVersion || !mirror.ValidAgentSession(f.SessionID) || f.Since <= 0 {
@@ -71,7 +67,7 @@ func (f StatusFile) valid() bool {
 	case mirror.StatusBusy, mirror.StatusIdle:
 		return f.Kind == "" && f.RequestID == ""
 	case mirror.StatusWaiting:
-		return waitingKinds[f.Kind] && (f.RequestID == "" || requestIDPattern.MatchString(f.RequestID))
+		return waitingKinds[f.Kind] && (f.RequestID == "" || mirror.ValidPromptID(f.RequestID))
 	}
 	return false
 }

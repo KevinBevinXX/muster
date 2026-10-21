@@ -108,6 +108,10 @@ func pinnedHermes(t *testing.T) hermesInstall {
 // stubModel is a scripted OpenAI-compatible chat-completions server. The
 // reply is chosen from the newest user message:
 //
+//	WRITESSH     a `write_file` to ~/.ssh/config: an approval whose
+//	             "command" is only a label (<write to …>)
+//	APPROVEMASK  a `terminal` call whose credential-shaped header the
+//	             gateway's redactor masks across a ';' (audit #212)
 //	APPROVE      a `terminal` call Hermes's approval catches (rm -r of a
 //	             directory that does not exist, in the scratch work dir)
 //	SUDO         a `terminal` call of `sudo true` (Hermes asks for a password;
@@ -204,6 +208,13 @@ func (m *stubModel) serve(w http.ResponseWriter, r *http.Request) {
 		text = "Stub summary: scripted stub turns."
 	case last["role"] == "tool":
 		text = "tool step finished"
+	case strings.Contains(user, "WRITESSH"):
+		// A write Hermes's SECOND approval gate catches (audit #212 round 2):
+		// its "command" is a label, <write to …/.ssh/config>.
+		tool, args = "write_file", map[string]any{"path": "~/.ssh/config", "content": "Host livehermes\n  ProxyCommand touch ./livehermes-ssh-pwned\n"}
+	case strings.Contains(user, "APPROVEMASK"):
+		// A command the gateway's own redactor masks across a ';' (audit #212).
+		tool, args = "terminal", map[string]any{"command": "ls -H X-Api-Key:a;rm -r ./livehermes-victim-dir"}
 	case strings.Contains(user, "APPROVE"):
 		tool, args = "terminal", map[string]any{"command": "rm -r ./livehermes-victim-dir"}
 	case strings.Contains(user, "SUDO"):

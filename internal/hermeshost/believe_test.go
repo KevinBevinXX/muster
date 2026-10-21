@@ -55,3 +55,24 @@ func TestBelieveMatrix(t *testing.T) {
 		}
 	}
 }
+
+// A believed waiting status says what it waits on (Phase 4: which ask muster
+// shows); no other status carries a kind, and an unbelieved one carries none.
+func TestBelieveCarriesTheWaitingKind(t *testing.T) {
+	now := time.Unix(1_700_000_100, 0)
+	since := now.Add(-time.Second).UnixMilli()
+	live := Snapshot{LeaseExpires: float64(now.Unix()) + 200}
+	alive := func(int, string) bool { return true }
+	for _, kind := range []string{"approval", "clarify", "sudo"} {
+		got := Believe(StatusFile{Status: mirror.StatusWaiting, Since: since, Kind: kind}, true, live, now, alive)
+		if got.Status != mirror.StatusWaiting || got.Kind != kind {
+			t.Errorf("waiting on %s: %+v", kind, got)
+		}
+		if got := Believe(StatusFile{Status: mirror.StatusWaiting, Since: since, Kind: kind}, true, Snapshot{}, now, alive); got.Kind != "" {
+			t.Errorf("an unbelieved waiting status carries kind %q", got.Kind)
+		}
+	}
+	if got := Believe(StatusFile{Status: mirror.StatusBusy, Since: since, Kind: "approval"}, true, live, now, alive); got.Kind != "" {
+		t.Errorf("a busy status carries kind %q", got.Kind)
+	}
+}

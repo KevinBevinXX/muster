@@ -347,6 +347,19 @@ type Msg struct {
 	// muster ignores it (and never sees a Hermes window: it does not read
 	// Window.Runtime); an older host never sets it.
 	HermesSend bool `json:"hermesSend,omitempty"`
+	// HermesAnswer (hello) is the host ADVERTISING that it answers a Hermes
+	// approval through Hermes's gateway viewer (Hermes Phase 4,
+	// hermes_answer.go): an -interactive v2 host that runs with
+	// -hermes-answer. 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS: an
+	// older muster ignores it; an older host never sets it, so muster never
+	// sends it an answer, and every Hermes approval there is answered in the
+	// terminal.
+	HermesAnswer bool `json:"hermesAnswer,omitempty"`
+	// HermesApproval (answer, with Runtime "hermes") is the Hermes approval to
+	// answer and how: the PromptID muster showed (Pending.PromptID) and one of
+	// HermesApprovalChoices. An older host, which never advertised
+	// HermesAnswer, is never sent one.
+	HermesApproval *HermesApprovalAnswer `json:"hermesApproval,omitempty"`
 
 	// ---- subagent cards (subagents.go) ----
 
@@ -912,7 +925,8 @@ func NormalizeWindows(in []Window, now int64) []Window {
 		// muster mirrors exactly two.
 		switch {
 		case w.Runtime == RuntimeHermes:
-			w.Claude, w.ClaudeSession, w.Pending = false, "", nil
+			// Its Pending is the Hermes ask's (boundPending).
+			w.Claude, w.ClaudeSession = false, ""
 		default:
 			w.Runtime = ""
 		}

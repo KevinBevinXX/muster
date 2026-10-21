@@ -368,7 +368,7 @@ func WireWindows(windows []WindowInfo, codenames map[string]string, claude bool,
 		if m.Claude {
 			m.Status, m.StatusSince, m.ClaudeSession, m.Pending = w.Claude.Status, w.Claude.StatusSince, w.Claude.Gen, w.Claude.Pending
 		} else if claude && w.Agent != nil {
-			m.Runtime, m.AgentSession, m.Status, m.StatusSince = w.Agent.Runtime, w.Agent.Gen, w.Agent.Status, w.Agent.StatusSince
+			m.Runtime, m.AgentSession, m.Status, m.StatusSince, m.Pending = w.Agent.Runtime, w.Agent.Gen, w.Agent.Status, w.Agent.StatusSince, w.Agent.Pending
 		}
 		if claude {
 			for _, o := range w.Others {
