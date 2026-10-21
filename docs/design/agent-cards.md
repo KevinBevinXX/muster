@@ -37,7 +37,7 @@ content is reproduced here.
 | (a) dispatched `claude-code` agent (ccd) | **Yes**, the same code inside the pod | the same | `POST /agent/work` | (included above) |
 | (a) Hermes | **Partly**, and only after Hermes Phase 2 | `subagent_start`/`subagent_stop` hooks; the process checkpoint file | the same message | 1–1.5 days after Phase 2 |
 | (b) identity colour | **Yes**, but tmux does not hold the colour today: the host's tmux config must declare it | a tmux user option, `@muster-color`, read in the listing muster-mirror already runs | new `colors` message | 2.5–3 days, plus about 0.25 days of host config |
-| (c) send queue through background agents | **Yes, for mirrored windows**, failing closed | the transcript's `turn_duration` record and its `pendingBackgroundAgentCount`, re-checked by the host just before the paste | a new status value, `background`, in the existing `Window.Status` | 3–4 days |
+| (c) send queue through background agents | **Yes, for mirrored windows, with Send-now semantics** behind a default-off switch and a live ship gate | the transcript's `turn_duration` and queue records, a compaction marker, and the input line on screen, re-checked by the host before the paste and before the Enter | a new status value, `background`, in the existing `Window.Status` | 5–8 days |
 
 The full effort table, with totals, is under [Total effort](#total-effort).
 
@@ -62,10 +62,17 @@ on the sections below.
    background shell, so the card shows `1+ shell` until the Phase 0 stdin spike
    settles it. **Monitor tasks count as shells.**
 4. **New scope, section (c):** the send queue treats "busy only because
-   background agents are running" as idle. It uses the transcript to tell a real
-   turn from background-only busyness. It must never paste into a real running
-   turn, and when it is uncertain it stays busy (fails closed). This covers
-   mirrored windows and ccd where either is affected.
+   background agents are running" as idle, using the transcript to tell a real
+   turn from background-only busyness. This covers mirrored windows and ccd
+   where either is affected.
+   - **Amended after the round-1 audit:** (c) is reworked with **Send-now
+     semantics**. muster cannot rule out that a turn starts between its last
+     check and the Enter. The design states that worst case honestly instead of
+     claiming to prevent it.
+   - The worst case of a misread `background` is that the message behaves like
+     muster's **Send now**: Claude Code queues it natively behind the running
+     turn.
+   - (c) ships disabled, behind a switch, until a live gate passes.
 
 ## Background: what muster has today
 
@@ -197,14 +204,31 @@ A Bash that a **subagent** started in the background is still a descendant of
 the same CLI process, under the same task directory. So the process tree counts
 it under the window, as it should.
 
-Two limits, both measured on one sample each:
+Three limits, each measured on one sample only:
 
 - 🔴 **A foreground Bash call looks the same** (stdout on
   `tasks/b<8>.output`). The only difference seen was stdin: a socket for the
   foreground call, `/dev/null` for the background one. One sample is not a
   discriminator, and a command backgrounded with Ctrl+B keeps its socket. Phase 0
-  measures it. **Until then, while a turn runs, the card shows `1+ shell`
-  rather than a number** (operator decision 3).
+  measures it. **Until then, whenever a foreground call could be running, the
+  card shows `1+ shell` rather than a number** (operator decision 3). That
+  includes a running turn and also the `background` state of (c): a running
+  **subagent's** foreground Bash call looks exactly like a background shell (fd 1
+  on `tasks/b<8>.output`, stdin a socket), and subagents run in `background`.
+- 🔴 **A Monitor task has no task output file.** Measured on a live Monitor:
+  - Its shell wrapper is a direct child of the CLI. Its argv names the CLI's
+    shell snapshot (`<config>/shell-snapshots/snapshot-…`), as a Bash call's
+    wrapper does.
+  - Its fd 0 is `/dev/null`, and fds 1 and 2 are **sockets** to the CLI. There
+    is no `tasks/<id>.output`.
+  - The transcript records its start as a tool result whose `toolUseResult` is
+    `{taskId, timeoutMs, persistent}`. Stopping it returns
+    `task_type: "local_bash"`.
+
+  A count that looks only for task output files misses every Monitor.
+- **A process that outlives its task** (a daemon started with `nohup … &`) is
+  reparented away from the CLI. It is no longer a descendant, so it is not
+  counted. That is correct: Claude Code has marked the task done.
 - **A process that outlives its task** (a daemon started with `nohup … &`) is
   reparented away from the CLI. It is no longer a descendant, so it is not
   counted. That is correct: Claude Code has marked the task done.
@@ -252,7 +276,7 @@ The hook events of 2.1.289 (offset **200190615**) include `SubagentStart` and
 
 | | mirrored Claude Code | dispatched `claude-code` (ccd) | Hermes |
 |---|---|---|---|
-| shells, count | **exact** while the CLI lives (process tree); includes a foreground command during a turn | **exact**, same code in the pod | **UNVERIFIED**: `~/.hermes/processes.json` lists running background processes with `pid`, `host_start_time` and `session_key` (installed build: `tools/process_registry.py:44`, fields at `:653-658`) |
+| shells, count | **exact** while no foreground call can run (`idle`/`shell`, no Monitor); otherwise `1+` (process tree) | the same, same code in the pod | **UNVERIFIED**: `~/.hermes/processes.json` lists running background processes with `pid`, `host_start_time` and `session_key` (installed build: `tools/process_registry.py:44`, fields at `:653-658`) |
 | shells, yes/no | **exact** (`shell` status, or the count) | exact | as above |
 | subagents, count | **exact 0** when `idle`/`shell`; while `busy`/`waiting`, the transcript ledger (below) | same | **UNVERIFIED**: `subagent_start`/`subagent_stop` hooks exist and shell hooks may register them (installed build: `tools/delegate_tool.py:329`, `tools/delegate_tool_results.py:365`, allow-list `hermes_cli/plugins.py:135`). Needs the Phase 2 status hook, which is not built |
 | nested subagents (a subagent's own subagents) | **not counted**: their calls are in the subagent's transcript, as today's cards already say (`internal/mirrorhost/subagents.go:36-38`) | same | unknown |
@@ -271,15 +295,21 @@ that the two cannot disagree. Per Claude Code process it returns
 2. **Shells** = the number of distinct task ids matching `^b[0-9a-z]{8}$` among
    the CLI's **live descendants** whose fd 1 or fd 2 is a symlink ending in
    `/tasks/<id>.output`. Only the suffix is matched, never the root, so a
-   `CLAUDE_CODE_TMPDIR` override still works. **Monitor tasks are `local_bash`
-   processes and count as shells** (operator decision 3).
-   - When **no turn is running** (status `idle`, `shell` or `background` from
-     section (c)), the count is reported **exactly**.
-   - When **a turn is running** (`busy` or `waiting` and not `background`), a
-     count of 1 or more is reported as `Shells: 1, ShellsAtLeast: true`, which
-     the card shows as `1+ shell`. A foreground command may be among them. This
-     lasts until the Phase 0 stdin spike can tell foreground from background; if
-     it can, the count during a turn becomes exact too.
+   `CLAUDE_CODE_TMPDIR` override still works.
+   - **Monitors** (operator decision 3: they count as shells). A Monitor is a
+     **direct child** of the CLI whose argv names `<config>/shell-snapshots/`,
+     with fd 0 `/dev/null`, fds 1 and 2 sockets, and no task output file. Any
+     Monitor makes the result `ShellsAtLeast: true` (`1+ shell`), never an exact
+     number, because the signature rests on one sample. Phase 0 confirms it on
+     at least two Claude Code builds and on a Monitor started by a subagent;
+     only then may Monitors be counted exactly.
+   - **Exact** only when no foreground Bash call can be running: status `idle`
+     or `shell`, and no Monitor seen.
+   - **`1+ shell`** (`Shells: 1, ShellsAtLeast: true`) when the count is 1 or
+     more and a foreground call may be among them: status `busy`, `waiting` or
+     `background`. In `background`, running subagents make foreground calls of
+     their own, and those look exactly like background shells. This lasts until
+     the Phase 0 stdin spike can tell foreground from background.
    - If the status is `shell` and the count is 0 (the files are unreadable, or
      the layout changed), report `Shells: 1, ShellsAtLeast: true`. The card then
      says `1+ shell`, never `0`.
@@ -402,11 +432,22 @@ All counts in fixtures are pairwise distinct, for example 3 subagents and
     ledger, including `idle` with a stale ledger entry, which must report 0.
     Red/green: deleting the idle clamp turns that case red. Deleting the
     `ShellsAtLeast` fallback turns `shell` with 0 processes red.
-  - Decision 3: `busy` with 3 shell processes reports `1+`, not 3. `idle`
-    is impossible with processes, so `shell` with 3 reports exactly 3, and
-    `background` with 2 reports exactly 2. A mutant that reports the exact count
-    during a turn turns the first case red. A monitor task (`shell_kind`
-    `monitor`) counts as a shell.
+  - Decision 3, one case per state:
+    - `busy` with 3 shell processes reports `1+`, not 3.
+    - `background` with 2 reports `1+`, not 2.
+    - `shell` with 3 and no Monitor reports exactly 3.
+
+    A mutant that reports the exact count during a turn, or in `background`,
+    turns its case red.
+  - **Monitor, in its real layout:**
+    - A direct child whose argv holds `…/shell-snapshots/snapshot-zsh-…`, fd 0
+      `/dev/null`, fds 1 and 2 `socket:[…]`, and no task file: `shell` with that
+      alone reports `1+`.
+    - The same process beside one `tasks/b…` shell reports `1+`, not 1. That
+      catches a mutant that ignores Monitors.
+    - Negative controls, neither counted: a socket-stdout child **without** the
+      snapshot argv (an MCP server's shape), and a snapshot-argv child that is
+      a grandchild rather than a direct child.
   - The process fixture uses the `ClaudeLocator.Proc` fixture tree with `fd/1`
     symlinks: a background task counts, a reparented orphan does not, a
     subagent's shell counts, a non-`b` task file does not, and a duplicate task
@@ -442,7 +483,7 @@ All counts in fixtures are pairwise distinct, for example 3 subagents and
 
 | Piece | Days |
 |---|---|
-| Phase 0 spike: the stdin discriminator, a sandboxed Bash, one older Claude Code build | 0.5–1 |
+| Phase 0 spike: the stdin discriminator, a sandboxed Bash, the Monitor signature (two builds, and from a subagent), one older Claude Code build | 0.5–1 |
 | `internal/cctasks` (process count, ledger, rule) and unit tests | 2 |
 | Mirror wire, hub, card chip, rendered-view chip, e2e | 1.5–2 |
 | ccd reporter, `/agent/work`, agent-card chip, tests | 1–1.5 |
@@ -730,20 +771,57 @@ Other rules:
 
 ### The problem
 
-Claude Code reports `busy` while any background agent or workflow task is
-running, even when no turn is (`Cye`, offset **229767817**; see
+Claude Code reports `busy` while any background agent or workflow task runs,
+even when no turn does (`Cye`, offset **229767817**; see
 [(a)](#the-sessions-file-one-status-no-counts)). The prompt takes input then.
+
 muster's send queue sends only to an `idle` window
 (`internal/sendqueue/dispatcher.go:87-107`, fed by `Hub.AgentState`,
 `internal/mirror/agentstate.go:79-122`). So a queued message waits until every
-background agent has finished, which can take tens of minutes.
+background agent has finished, which can take tens of minutes. The current
+workaround is to press **Send now** by hand
+(`docs/sending-and-step-up.md:104-121` names this case).
 
 🔴 **The status time does not move either.** Claude Code writes the sessions
 file only when the status value changes. A turn that starts and ends while a
 background agent keeps the status at `busy` leaves `statusUpdatedAt` where it
 was. The queue's rule that the next message waits for "a status time newer than
-the last paste" (`internal/sendqueue/dispatcher.go:98-102`) would therefore wait
-for the agents too. The fix needs its own turn-end time.
+the last paste" (`internal/sendqueue/dispatcher.go:98-102`) therefore waits for
+the agents too. The fix needs its own turn-end time.
+
+### What (c) promises, and what it does not
+
+🔴 **(c) cannot guarantee that a queued message never meets a running turn.**
+Claude Code offers no atomic "submit only if no turn is running". Three gaps no
+check by muster can close:
+
+- **Transcript flush delay.** The CLI writes transcript records in batches every
+  100 ms (`FLUSH_INTERVAL_MS=100`, offset **211812153**), so a turn can be
+  running for up to about 100 ms before its first record is in the file.
+- **muster's own delay.** muster waits 150 ms between the paste and the Enter
+  (`enterDelay`, `internal/mirrorhost/claude.go:659`). A turn can start inside
+  that gap.
+- **Turns that start with no warning.** Some notification turns start with no
+  `queue-operation` enqueue before them.
+  - The round-1 audit measured **65 of 3,013** notification turn starts like
+    that. This is the canonical example.
+  - A re-measurement over a different window (the newest 60 transcripts on one
+    host) found **51 of 2,029**: 30 for `b` tasks (Bash and Monitor), 21 for
+    agents.
+  - The transcript gives no warning before such a turn, so no condition below
+    can see it coming.
+
+**So (c) has Send-now semantics.** Its worst case is exactly what muster's
+**Send now** does on purpose: the text is pasted and Entered while a turn runs.
+In Claude Code 2.1.289, Enter during a running turn **queues** the input
+natively, so the turn is not interrupted. The consequence of a misread
+`background` is that **the queued message joins that turn as queued input,
+usually the turn a notification started, instead of getting a turn of its
+own.**
+
+The conditions below make that rare. They do not make it impossible, and this
+page does not claim they do. Whether Claude Code really queues in each of these
+situations is not assumed: it is the [ship gate](#ship-gate-and-the-switch).
 
 ### Who is affected
 
@@ -752,198 +830,305 @@ for the agents too. The fix needs its own turn-end time.
   (`UserPromptSubmit` sets it, `Stop`/`StopFailure` clear it;
   `cmd/ccd/server.go:392-409`), not from the sessions file, and `Stop` fires
   when the turn ends whatever background agents still run.
-  - 🔴 **UNVERIFIED, the opposite hazard.** A turn that the CLI starts itself to
-    deliver a background agent's notification may fire no `UserPromptSubmit`.
-    ccd would then think the session idle while a real turn runs.
-  - Phase 0 measures this with a real CLI in a pod. If it is confirmed, ccd
-    adopts the same transcript check as a guard: no paste while the transcript
-    shows a turn open. That fails closed and costs at most 0.5 days more.
+  - 🔴 **UNVERIFIED, the opposite hazard.** A notification turn may fire no
+    `UserPromptSubmit`. ccd would then treat a running turn as idle and paste
+    into it. Under native queuing that also means Send-now semantics, and ccd
+    may also attribute the reply to the wrong prompt (it binds replies by
+    `prompt_id`).
+  - The (a) Phase 0 spike measures it. If it is confirmed, ccd refuses while the
+    transcript shows a turn open (condition 2 below).
 
-### The signal (decided)
+### The signal
 
-The host derives a new status value, `background`, which means "busy, but only
-because background agents run; no turn is open". It derives it per Claude window
-**only when every condition below holds**. If any condition fails, or cannot be
+The host derives a status value, `background`, which means "busy, and the
+transcript shows no turn open or about to start". It derives it per Claude
+window **only when every condition holds**. Otherwise, or when one cannot be
 read, the window stays `busy`.
 
 1. **Status.** The live sessions file says `busy`. Its PID and `procStart` match
-   a live process (the existing `liveSessions` check), it names no
-   `parkedJobId`, and its `sessionId` is the window's transcript (Gen).
-2. **The last boundary is a turn end.** The newest main-thread
-   (`isSidechain` false) boundary record in the transcript is a `system`
-   `turn_duration`. Boundaries are:
-   - turn starts: a `user` record that is not a tool result and not `isMeta`,
-     including `origin.kind` `human` and `task-notification`;
-   - turn ends: `turn_duration` records.
-
-   An interrupt usually writes no end record (see
-   [(a)](#the-turn-end-record-counts-background-agents)), so an interrupted turn
-   reads as **open**. That holds the queue (fails closed) until the next real
-   turn end.
+   a live process (`liveSessions`), it names no `parkedJobId`, its `sessionId`
+   is the window's Gen, and its `version` is on the
+   [switch's list](#ship-gate-and-the-switch).
+2. **The last boundary is a turn end.** The newest main-thread (`isSidechain`
+   false) boundary record is a `system` `turn_duration`.
+   - Turn starts: a `user` record that is not a tool result and not `isMeta`,
+     including `origin.kind` `human` and `task-notification`.
+   - Turn ends: `turn_duration`.
+   - An interrupt usually writes no end record (see
+     [(a)](#the-turn-end-record-counts-background-agents)), so the turn reads as
+     open and the window stays `busy` until the next real end.
 3. **That end left background work pending.** Its `pendingBackgroundAgentCount`
-   plus `pendingWorkflowCount` is **at least 1**. An absent field counts as 0.
-   With 0 pending, the `busy` has some other cause, such as a teammate, a remote
-   agent, or a status this rule does not understand, and the window stays
-   `busy`.
+   plus `pendingWorkflowCount` is at least 1. An absent field counts as 0.
+   🔴 **This condition is load-bearing.** The deferred `turn_duration` records
+   written for swarm and teammate turns carry **no** pending count. Without
+   this condition, a `busy` caused by a teammate would read as `background`.
 4. **Something is still running.** The (a) ledger has at least one background
    agent still running that was launched before that turn end.
-5. **Nothing is about to start a turn.** There is no `queue-operation` record
-   with `operation: enqueue` after that turn end. An enqueue is a finished task's
-   notification or a queued command, and the CLI delivers it as a new turn. The
-   enqueue is written when the task finishes; see
-   [(a)](#the-transcript-start-and-end-of-every-task-but-not-all-in-one-file).
+   `pendingBackgroundAgentCount` also counts agents that **finished but are not
+   yet delivered**, so a positive count alone does not mean anything runs.
+5. **Nothing is queued to start a turn.** Over the transcript's
+   `queue-operation` records, both hold:
+   - every `enqueue` has a matching later `dequeue` or `remove`, paired first in,
+     first out by count;
+   - there is **no `dequeue` after the last turn start**.
+
+   An unmatched enqueue is a finished task's notification or a queued command
+   that the CLI will deliver as a turn. A dequeue after the last start is a turn
+   being started from the queue.
 6. **No agent is about to finish.** No running background agent's own transcript
    ends in a final reply (rule 3 of `subagentState`,
-   `internal/mirrorhost/subagents.go:113-131`). An agent that has written its
-   final reply is moments away from a notification, and that notification starts
-   a turn.
-7. **The status has not moved since.** The sessions file's `statusUpdatedAt` is
-   no later than the `turn_duration`'s `timestamp`. A later status write (say
-   `waiting`, then `busy`) means something happened that this rule did not
-   explain.
+   `internal/mirrorhost/subagents.go:113-131`).
+7. **The status has not moved since.** `statusUpdatedAt` is no later than the
+   `turn_duration`'s `timestamp`.
+8. **No compaction can be running.** See below.
 
-With all seven true, the window reports `Status: "background"` and
+With all eight true, the window reports `Status: "background"` and
 `StatusSince` set to the `turn_duration`'s timestamp in Unix ms. That is the
-CLI's own clock, the same clock `statusUpdatedAt` uses, so the queue's two-clock
-rule is unchanged. The queue's "newer than the last paste" rule then works
-again: the turn a paste starts ends with a newer `turn_duration`.
+CLI's clock, the same one `statusUpdatedAt` uses, so the queue's next-message
+rule works on turn ends again.
 
-### Re-checked at the moment of acting
+#### Compaction
 
-The window list is up to one refresh (5 s) old, and `ExpectTurn`'s check runs on
-the server against that list (`internal/mirror/transcript.go:376-386`). For
-`background`, the **host** checks again:
+🔴 **A manual `/compact` writes nothing to the transcript until it finishes.**
+The round-1 audit measured 17–107 s, median 51 s. While background agents keep
+the status at `busy`, nothing in conditions 1 to 7 changes during it. The
+signals that do exist (2.1.289):
 
-- **The request.** A queued paste to a window decided on as `background` carries
-  `ExpectBackgroundSince` (Unix ms).
-- **The re-check.** Immediately before typing, the host re-reads the sessions
-  file and the transcript tail, re-derives the state, and compares.
-- **Refused if anything moved.** It types nothing unless the state is still
-  `background` (or has become `idle`) with that exact `StatusSince`. Otherwise
-  it answers `pasted` with `Refusal: "turn"`. muster treats that like
-  `ErrSuperseded`: the message is queued again and decided on afresh.
-- **Then the Enter.** The host re-checks once more between the paste and the
-  Enter, and if anything moved it clears the input instead of submitting, the
-  same two-step shape [hermes.md](hermes.md) uses for its gated send.
+| signal | when | reliable? |
+|---|---|---|
+| `PreCompact` hook (`trigger`: `manual`/`auto`), offset **209758278** | before it starts | fires on every compaction, but only if the hook is registered |
+| `PostCompact` hook, offset **209759464** | after it succeeds | 🔴 **success path only.** Its call sites follow the summary (offsets **209376892**, **209380039**), so a failed or cancelled compaction fires none |
+| spinner text `Compacting conversation`, set on `compact_start` (offset **217653599**); also `Running PreCompact hooks…` and `Running PostCompact hooks…` | while it runs | on screen, above the input box |
+| `system` `compact_boundary` record | when it finishes | after the fact |
+| sessions file | — | no field for it; status already `busy` |
 
-🔴 **Residual risk, stated plainly.** A background agent can finish, and Claude
-Code start a notification turn, in the milliseconds between the host's last
-check and the Enter. Conditions 5 and 6 shrink that window to an agent that ends
-without a final reply first, such as one killed or crashed. They cannot close
-it: Claude Code offers no atomic "submit only if idle".
+The design uses **two** of them, and both must agree that no compaction is
+running:
 
-If it happens, the CLI receives the message during a turn. It handles that as
-it handles any message typed mid-turn: it queues the message and does not
-interrupt the turn. The live-Claude test measures this. **If the test shows
-anything else, (c) ships disabled.**
+- **A marker from muster's own hook.** muster-mirror ships
+  `muster-mirror compact-hook`, registered for `PreCompact` and `PostCompact`.
+  - It follows `muster-mirror ask`'s contract (`docs/mirroring.md:280-325`):
+    nothing on stdout, always exit 0.
+  - On `PreCompact` it writes `<state>/compacting/<session-id>` holding the
+    hook's time.
+  - The marker is cleared by `PostCompact`, or by any main-thread transcript
+    record newer than it (`compact_boundary`, a turn start or a turn end).
+    **Never by time alone**, so a cancelled compaction holds the window until
+    the transcript moves.
+- **The screen.** The input-line check below refuses when the area above the
+  input box shows any of the three spinner texts.
+
+🔴 **A host whose hook is not registered never reports `background`.** The host
+reads Claude Code's settings files (user, then project) for a command matching
+`muster-mirror compact-hook` under **both** `PreCompact` and `PostCompact`. If
+either is missing, the host cannot see a compaction, so it reports `busy`, and
+`-list -windows` says why.
+
+What Claude Code does with a pasted Enter **during** `/compact` is not known.
+It is gate 3.
+
+### The input line, before the paste and before the Enter
+
+Like the Hermes gated send ([hermes.md](hermes.md)), the host reads the pane
+with `capture-pane` at two moments and acts only on what it sees.
+
+**The reader.** It reuses ccd's bottom-of-screen anchoring (`isRule` and
+`dialogOnScreen`, `cmd/ccd/dialog.go:49`, `:85`, read against real captures in
+`cmd/ccd/testdata/pane_*_2.1.296.txt`), moved to a shared package. The input box
+is the region between the screen's last two horizontal rules; the status line is
+below it, and the spinner line is above it.
+
+**Before the paste**, refuse (nothing typed, the message is queued again, and
+the reason is shown) unless all of these hold:
+
+- the box holds only the prompt glyph, with no draft (a half-typed draft is
+  never appended to);
+- `dialogOnScreen` is false;
+- the spinner line shows no compaction text.
+
+**Before the Enter**, after the paste and the 150 ms `enterDelay`:
+
+- the box must hold exactly the pasted text, after wrapping is normalised. A
+  long paste may show as Claude Code's `[Pasted text #N …]` placeholder, which
+  also counts as a match;
+- conditions 1 to 8 are re-derived from fresh reads and must still give the same
+  `StatusSince`.
+
+**If anything fails there:** a draft appeared, a person pressed Enter, the box
+vanished, or a turn started. Then the host **does not press Enter** and reports
+`pasted, not submitted: the text is in the input box`.
+
+- 🔴 The message is **not** queued again. It is in the box; queueing it again
+  would paste it twice.
+- The queue marks it `failed`, with that detail, and the owner finishes it in
+  the terminal.
+- 🔴 **The host sends no Escape and no Ctrl+C to clear the box.** In 2.1.289,
+  Escape is `chat:cancel` and Ctrl+C is `app:interrupt` (keybinding table,
+  offset **205387445**). Both interrupt a running turn, which is exactly the
+  situation in which the check failed.
+- `ctrl+l` is `chat:clearInput` in the same table. It is a candidate to measure
+  live, **not part of this design**.
+
+### Ship gate and the switch
+
+**The switch:** `-background-versions` / `MUSTER_MIRROR_BACKGROUND_VERSIONS` on
+muster-mirror.
+
+- It is a comma-separated list of exact Claude Code versions (as the sessions
+  file's `version` spells them) for which the host may report `background`.
+- **Default: empty, so (c) is off.** An empty list, or a version not on it,
+  means the host reports `busy` exactly as today.
+- **What flips it:** a version goes on the list only after the live gate suite
+  below passes, **every gate**, against that exact version, with the result
+  recorded in `docs/testing.md` (the version, the date and the outcome of each
+  gate).
+- **What unflips it:** a Claude Code upgrade is a new version, so it is off
+  again until the suite passes for it. A failed re-run removes the version.
+
+**The gates** (opt-in suite, `make test-liveclaude-background`, real CLI in a
+private tmux server). Each is pass or fail, and any failure keeps (c) disabled
+for that version:
+
+1. **Paste during a streaming turn.** Paste and Enter while the assistant is
+   streaming. Pass: the turn is not interrupted (its `turn_duration` is written
+   with no interrupt record), and the message is delivered after it, as queued
+   input.
+2. **Paste at a notification-turn start.** A background agent finishes, and the
+   paste lands in the first 0–300 ms of the notification turn, swept in 50 ms
+   steps. Pass: same as gate 1, and the notification is also processed.
+3. **Paste during manual `/compact`.** Pass: the compaction completes (a
+   `compact_boundary` is written) and the message is delivered after it, not
+   lost and not aborting the compaction. Also check that the marker and the
+   screen check both reported a compaction at the paste time; that is required
+   too.
+4. **Paste with a half-typed draft in the input line.** Pass: the host refuses
+   before typing anything, and the draft is byte-for-byte unchanged
+   (`capture-pane` before and after).
 
 ### Wire and server
 
-- **No new field.** `background` rides the existing `Window.Status` (4 to 10
-  bytes, +6 bytes per window; 3 KB at 512 windows, inside the 18 KB free).
+- **No new field.** `background` rides `Window.Status`: +6 bytes per window,
+  3 KB at 512 windows, inside the 18 KB free.
 - **Older muster.** muster's `welcome` gains `backgroundStatus: true`. A host
-  sends `background` only to a muster that advertised it. An older muster gets
-  `busy`, exactly as today. If it did receive `background`, `NormalizeStatus`
-  would map it to unknown, which also holds the queue, so either way it fails
-  closed.
-- **Older host.** It never sends `background`, so nothing changes.
-- **muster.** `NormalizeStatus` accepts `background`. `Hub.AgentState` returns
-  `Idle: true` for the queue only. Everything else (the status glyph, attention)
-  reads `background` as working, and the card says `working · background agents`.
-- **Pastes.** Only queued pastes use it. A person's own Send is unchanged; it
-  never waited on status.
+  sends `background` only to a muster that advertised it; an older muster gets
+  `busy`. If an older muster did receive `background`, `NormalizeStatus` would
+  read it as unknown, which holds the queue.
+- **Queued pastes.** A queued paste to a `background` window carries
+  `ExpectBackgroundSince`. The host re-derives everything before the paste and
+  before the Enter, as above. A refusal before typing answers `pasted` with
+  `Refusal: "turn"` and is queued again, like `ErrSuperseded`. A failure after
+  typing is `Refusal: "unsubmitted"` and ends the message `failed`.
+- **muster.** `Hub.AgentState` gives `Idle: true` for `background`, for the queue
+  only. The status glyph and attention read it as working, and the card says
+  `working · background agents`.
+- **A person's own Send** and **Send now** are unchanged.
 
 ### Failure modes
 
 | Failure | Effect | Handling |
 |---|---|---|
-| Interrupted turn with background agents running | no `turn_duration`, so the turn reads as open | stays `busy` (fails closed) until the next turn end |
-| Agent finishes between the host's check and the Enter | message arrives mid-turn | conditions 5 and 6 narrow it; Claude Code queues mid-turn input; the live test confirms |
-| Older build omits `pendingBackgroundAgentCount` | condition 3 reads 0 | stays `busy`, which is today's behaviour |
-| Teammate or remote agent keeps it busy | not counted in `turn_duration` | condition 3 fails, so it stays `busy` |
-| Transcript unreadable or torn | conditions unknown | stays `busy` |
-| CLI crash or resume | sessions file no longer live, or a new `startedAt` | condition 1 fails, or the ledger cutoff empties condition 4 |
-| `/clear` mid-way | the Gen changes | condition 1 fails until the new transcript has a turn end |
-| Host refreshes after a turn started | the window list still says `background` | the host's re-check refuses with `turn` |
-| Claude Code changes the record shapes | conditions stop matching | stays `busy` (fails closed); the live test catches it |
+| A turn starts in the flush delay, during `enterDelay`, or with no warning (65 of 3,013) | message joins that turn as queued input (Send-now semantics) | stated, not prevented. Gates 1 and 2 must show Claude Code queues |
+| Draft typed, or Enter pressed, between paste and Enter | — | no Enter; `pasted, not submitted`; not queued again |
+| Manual `/compact` in progress | — | marker plus screen check, both required; gate 3 |
+| Compact hook not registered | — | host never reports `background` |
+| Compaction cancelled or failed (no `PostCompact`) | marker stays | cleared only by a newer transcript record; holds until then |
+| Interrupt with background agents running | no `turn_duration` | turn reads as open; stays `busy` |
+| Teammate or swarm `busy` | no pending count | condition 3 fails, so stays `busy` |
+| Finished agent not yet delivered | its enqueue is unmatched | condition 5 fails, so stays `busy` |
+| Claude Code upgraded | new version | not on the list, so (c) is off until the gates pass |
+| Record shapes change | conditions stop matching | stays `busy`; the gate suite on the new version catches it |
+| Older host or older muster | — | `busy`, as today |
 
 ### Test plan
 
-Fixtures are synthetic records with the **real shapes** listed in (a). They
-contain no transcript text. Times are pairwise distinct, so a rule comparing the
-wrong two timestamps fails.
+Fixtures are synthetic records and screen captures in the **real shapes**
+described on this page. They contain no transcript text. Times are pairwise
+distinct.
 
 - **Unit, the derivation (`internal/cctasks`)**, as a table. Each row is red
   when its own condition is deleted:
-  - **Positive:** a turn start, then a `turn_duration` with
-    `pendingBackgroundAgentCount: 2`, two running agents in the ledger, status
-    `busy`, and `statusUpdatedAt` earlier than the end. Expect `background`
-    with `since` = the end's time.
-  - Turn open, meaning a later `user` start: `busy`.
-  - A later `origin.kind: task-notification` start: `busy`.
-  - An interrupt with no end record: `busy`.
-  - `turn_duration` with the field absent: `busy`. With 0: `busy`.
-  - A later `queue-operation` enqueue: `busy`.
-  - A running agent whose transcript ends in a final reply: `busy`.
+  - **Positive:** start, then `turn_duration` with
+    `pendingBackgroundAgentCount: 2`, one agent running in the ledger, every
+    enqueue matched, status `busy` with an earlier `statusUpdatedAt`, no marker,
+    version listed. Expect `background`.
+  - A later human start: `busy`. A later `task-notification` start: `busy`.
+  - An interrupt with no end: `busy`.
+  - Pending count absent: `busy`. Pending count 0: `busy`.
+  - A teammate-style `turn_duration` with no pending fields: `busy`.
+  - Pending 1 whose agent's notification is enqueued and not dequeued: `busy`.
+    This is the finished-but-undelivered case.
+  - An enqueue matched by `remove`: allowed. A `dequeue` after the last start:
+    `busy`.
+  - An agent whose transcript ends in a final reply: `busy`.
   - `statusUpdatedAt` later than the end: `busy`.
-  - A sidechain `turn_duration` ignored, and a sidechain start ignored.
-  - A parked job: `busy`. A dead PID: no state.
-  - A torn last line not read.
-- **Unit, the host re-check:**
-  - `ExpectBackgroundSince` equal to the state: the paste proceeds.
-  - A new start appended between decision and paste: refused with `turn` and
-    nothing typed (the fake backend records no keys).
-  - A start appended between the paste and the Enter: input cleared, no Enter.
-- **Unit, the queue:** `Decide` with `background` acts as idle, and the
-  next-message rule waits for a strictly newer `turn_duration`. The skew cases
-  are unchanged.
+  - A compaction marker present: `busy`. A marker older than a newer transcript
+    record: cleared.
+  - Version not listed: `busy`. Empty list: `busy`.
+  - Sidechain records ignored. A torn last line not read.
+- **Unit, the compact hook:** no stdout and exit 0 on every input; the marker
+  written on `PreCompact` and removed on `PostCompact`; an invalid session id
+  ignored. The settings check is red when either event's registration is
+  removed from a fixture settings file.
+- **Unit, the input-line reader**, against captured fixtures from 2.1.289 and
+  2.1.296 at 80 and 120 columns:
+  - the existing `pane_idle_*` captures: an empty box passes;
+  - `pane_idle_dialogwords_inputbox` and `pane_idle_quoted_inputbox`: a draft,
+    refused;
+  - new captures: a one-line draft, a multi-line draft, a streaming spinner,
+    `Compacting conversation`, `Running PreCompact hooks…`, a pasted text
+    wrapped, and the `[Pasted text #N …]` placeholder;
+  - each refusal is red when its check is deleted.
+- **Unit, the host send:**
+  - A start appended between decision and paste: refused, nothing typed (the
+    fake backend records no keys).
+  - A draft appearing between paste and Enter: no Enter key recorded,
+    `unsubmitted`, and the queue row `failed` and not requeued.
+  - A ledger asserts that the send path never emits Escape or `C-c`.
+- **Unit, the queue:** `Decide` treats `background` as idle; the next message
+  waits for a strictly newer `turn_duration`; `unsubmitted` ends the row
+  `failed`.
 - **Wire:**
   - Without `welcome.backgroundStatus`, the host sends `busy`.
-  - An older muster maps `background` to unknown and holds.
-  - The window-list size test re-measured with the longer status value.
-- **Real tmux, private socket.** A fake `claude` pane writes a sessions file and
-  appends records to a transcript.
-  - Driving the positive case shows `background` in `Windows()`.
-  - Appending a start makes a queued paste come back refused, with the pane's
-    input line unchanged (`capture-pane`).
-- **Live Claude (opt-in, every Claude Code upgrade):**
-  - A real CLI launches a background agent with a 60 s `sleep`, and its turn
-    ends. Expect `background`. A queued message is sent, and its turn ends.
-  - The agent's own completion then starts a notification turn, and the queue
-    holds through it.
-  - Then measure the residual: paste mid-turn on purpose, and confirm the CLI
-    queues the message rather than interrupting.
-- **ccd (Phase 0 spike):** a real CLI in a pod with a background agent that
-  finishes after the turn. Record whether `UserPromptSubmit` fires for the
-  notification turn. If it does not, add the guard and a test that a paste is
-  refused while the transcript shows that turn open.
+  - An older muster reads `background` as unknown.
+  - The window-list size test is re-measured.
+- **Real tmux, private socket:** a fake `claude` pane that draws an input box
+  from fixture text and appends transcript records.
+  - The positive case shows `background`.
+  - A draft typed into the pane is refused, and the pane is unchanged.
+  - A start appended mid-send: no Enter.
+- **Live gates:** the four gates above, and the switch is only flipped on their
+  record.
+- **ccd:** the Phase 0 measurement; if the hazard is confirmed, a refusal test
+  while the transcript shows a notification turn open.
 
 ### Effort
 
 | Piece | Days |
 |---|---|
-| Derivation in `internal/cctasks` (reuses the (a) ledger) and its table tests | 1 |
-| Host re-check, `turn` refusal, Enter guard, tests | 0.5–1 |
-| Wire (`background`, welcome flag), hub, queue, card text, tests | 0.5–1 |
-| Live-Claude test, including the residual-risk measurement | 0.5 |
-| ccd spike, and the guard if needed | 0.5–1 |
-| **Total** | **3–4** |
+| Derivation in `internal/cctasks` (reuses the (a) ledger), queue-record pairing, table tests | 1–1.5 |
+| `muster-mirror compact-hook`, marker, settings check, tests | 1 |
+| Shared input-line reader, new fixture captures, tests | 1–1.5 |
+| Host send: both re-checks, `turn`/`unsubmitted` outcomes, no-cancel-keys ledger | 0.5–1 |
+| Wire (`background`, welcome flag), hub, queue, card text, the version switch | 0.5–1 |
+| Live gate suite (four gates against a real CLI) and its record in `docs/testing.md` | 1–1.5 |
+| ccd guard, if the spike confirms the hazard (the spike is in (a)'s Phase 0) | 0–0.5 |
+| **Total** | **5–8** |
 
 ---
 
 ## Total effort
 
-Revised after the operator's decisions. (c) depends on the (a) ledger, so (a)
-lands first.
+Revised after the round-1 audit. (c) depends on the (a) ledger, so (a) lands
+first.
 
 | Piece | Days |
 |---|---|
-| (a) Phase 0 spike: stdin, sandboxed Bash, an older Claude Code build, and the ccd notification-turn check from (c) | 0.5–1 |
-| (a) `internal/cctasks`: process count, ledger, work rule (including `1+ shell` during a turn) | 2 |
+| (a) Phase 0 spike: stdin, sandboxed Bash, the Monitor signature on two builds and from a subagent, an older Claude Code, the ccd notification-turn check from (c) | 0.5–1 |
+| (a) `internal/cctasks`: process count (task files and Monitors), ledger, work rule (`1+ shell` whenever a foreground call may run) | 2 |
 | (a) mirror wire, hub, chips, e2e | 1.5–2 |
 | (a) ccd reporter, `/agent/work`, agent-card chip | 1–1.5 |
 | (b) host, wire, contrast variants, UI, tests | 2.5–3 |
-| (c) send queue through background agents (the ccd spike is counted in (a)'s Phase 0) | 2.5–3.5 |
-| **Total in muster** | **10–13** |
+| (c) send queue through background agents, with the compaction marker, the input-line checks and the live gate | 5–8 |
+| **Total in muster** | **12.5–17.5** |
 | Host tmux config: generate `@muster-color` from the slot table | about 0.25 |
 | Later, after Hermes Phase 2: Hermes work counts | 1–1.5 |
