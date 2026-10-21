@@ -61,7 +61,7 @@ func renderDigest(t *testing.T, spec provision.Spec) (fingerprint, deployment st
 // with this file's own fixtures.
 //
 // ⚠ THE claude-code PIN WAS RE-MEASURED ONCE, ON PURPOSE, by the change that gave
-// claude-code agents a turn credential of their own (migration 0041): its spec
+// claude-code agents a turn credential of their own (migration 0042): its spec
 // now ships MUSTER_GATEWAY_BEARER instead of HOOKS_TOKEN, so its fingerprint and
 // Deployment moved (it was a541b4a9…/fe83599a…). Still no ReadOnlyRoot: the
 // gateway pin, untouched by that change, still holds.

@@ -1,5 +1,8 @@
--- muster 0041 — A CLAUDE-CODE AGENT'S TURN CREDENTIAL OF ITS OWN
+-- muster 0042 — A CLAUDE-CODE AGENT'S TURN CREDENTIAL OF ITS OWN
 -- (agents.Agent.GatewaySecret, agents.TurnBearer).
+--
+-- Applies after 0041 (worker pools); it was numbered 0041 while that was
+-- still in review, and was renumbered when it merged first.
 --
 -- 🔴 IT IS RANDOM, MINTED BY THE PROVISIONER, AND NOT DERIVED FROM hooks_token.
 -- hooks_token is the agent's muster identity, which its session must hold, so a

@@ -101,6 +101,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agentprovision/scrubexec"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/provision"
@@ -381,7 +382,9 @@ type CredentialResolver interface {
 // — and internal/api's own TestTheLifecycleAdapterSatisfiesTheConsumerInterface
 // pins it from the side that owns the interface.
 type Adapter struct {
-	driver  provision.Provisioner
+	// driver is the ONLY handle on the backend: Config.Driver wrapped once, so
+	// every exec strips the turn credentials (agentexec.go, scrubexec).
+	driver  scrubexec.Driver
 	store   agents.Store
 	spec    agentspec.Config
 	log     *log.Logger
@@ -405,7 +408,7 @@ func New(cfg Config) (*Adapter, error) {
 			"an agent id through it, and every status this adapter reports is written to it)")
 	}
 	a := &Adapter{
-		driver:             cfg.Driver,
+		driver:             scrubexec.Wrap(cfg.Driver),
 		store:              cfg.Store,
 		spec:               cfg.Spec,
 		log:                cfg.Logger,
@@ -844,7 +847,7 @@ func (a *Adapter) AttachTerminal(ctx context.Context, ag agents.Agent, readOnly 
 	// TUI at its real width, scrolled, and the operator's later desktop attach
 	// is not met by a phone-narrow TUI. Unknown size = the old behaviour.
 	out, sized := noShrink(ctx, a.windowSize(ctx, ref), stdout, resize)
-	err = a.execTTY(ctx, ref, cmd, stdin, out, sized)
+	err = provision.ExecTTY(ctx, a.driver, ref, cmd, stdin, out, sized)
 	if terminalMayHaveStarted(err) {
 		a.releaseTerminal(ctx, ref, tag)
 	}
@@ -875,7 +878,7 @@ func (a *Adapter) releaseTerminal(ctx context.Context, ref provision.Ref, tag ag
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), TerminalReleaseTimeout)
 	defer cancel()
 	var out bytes.Buffer
-	err := a.exec(rctx, ref, agents.TerminalReleaseCommand(),
+	err := provision.Exec(rctx, a.driver, ref, agents.TerminalReleaseCommand(),
 		strings.NewReader(agents.TerminalReleaseInput(tag)), &out, &out)
 	if err != nil {
 		a.log.Printf("agents: terminal %s: release FAILED, its tmux client may still be attached: %v: %s",

@@ -143,7 +143,7 @@ type Agent struct {
 	// for the agent's life (migration 0003 enforces both halves).
 	CCAccount string `json:"ccAccount,omitempty"`
 	// WorkerPool is the named worker pool this claude-code agent serves machine
-	// jobs for (agents.worker_pool, migration 0041); "" for an agent in none.
+	// jobs for (agents.worker_pool, migration 0042); "" for an agent in none.
 	// Set at creation (dispatch's worker_pool) and never written after; a job
 	// naming the pool instead of an agent is given one of its members
 	// (internal/api pickJobAgent). See [ValidWorkerPool].
@@ -158,7 +158,7 @@ type Agent struct {
 	HooksToken string `json:"-"`
 	// GatewaySecret is the credential muster presents to a claude-code agent's
 	// turn API (ccd's /v1/responses), minted per agent at provision time
-	// (agents_gateway_secret, migration 0041). "" for every other kind, and for a
+	// (agents_gateway_secret, migration 0042). "" for every other kind, and for a
 	// claude-code row provisioned before it existed — see [TurnBearer].
 	//
 	// 🔴 IT IS RANDOM AND NOT DERIVED FROM HooksToken, AND THAT IS ITS WHOLE

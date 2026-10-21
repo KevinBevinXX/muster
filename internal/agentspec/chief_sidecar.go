@@ -77,7 +77,7 @@ const (
 // 🔴 NO PROCESS AN AGENT'S SESSION CAN REACH MAY HOLD ONE. ccd unsets them before
 // it starts the CLI (cmd/ccd/turncred.go, whose list a test holds equal to this
 // one); every exec muster runs into the container strips them
-// (internal/agentprovision's agentExecCommand), because an exec inherits the
+// (internal/agentprovision/scrubexec, the adapter's only driver), because an exec inherits the
 // container's environment, not ccd's.
 var TurnCredentialEnv = []string{EnvGatewayBearer, EnvCCDGatewayUpstreamBearer, EnvGatewayToken}
 

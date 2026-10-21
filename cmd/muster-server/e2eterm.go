@@ -121,7 +121,7 @@ func (fakeTerminalDriver) Exec(_ context.Context, _ provision.Ref, cmd []string,
 }
 
 // endsWith reports whether cmd ends with tail: muster prefixes every exec with
-// the turn-credential scrub (agentprovision's agentExecCommand).
+// the turn-credential scrub (internal/agentprovision/scrubexec.Command).
 func endsWith(cmd, tail []string) bool {
 	return len(cmd) >= len(tail) && slices.Equal(cmd[len(cmd)-len(tail):], tail)
 }

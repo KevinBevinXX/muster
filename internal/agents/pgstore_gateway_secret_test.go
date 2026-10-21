@@ -12,7 +12,7 @@ import (
 
 // TestSetGatewaySecretRoundTripsAndStaysOutOfTheJSON: on real Postgres, a new
 // row has no turn credential (”), SetGatewaySecret stores one that every read
-// path returns (Get, GetByName, GetByHooksToken, List), only for THAT row, and
+// path returns (Get, GetByName, GetByHooksToken), only for THAT row, and
 // the row's JSON never carries it.
 func TestSetGatewaySecretRoundTripsAndStaysOutOfTheJSON(t *testing.T) {
 	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)

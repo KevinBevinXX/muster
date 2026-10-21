@@ -12,6 +12,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/jobs"
+	"github.com/ZacxDev/muster/internal/provision"
 )
 
 // THE MACHINE JOB API'S WORKSPACE OPERATIONS (internal/api jobs.go): give a
@@ -42,44 +43,96 @@ import (
 var JobOverlayRootFiles = []string{"CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", ".mcp.json"}
 
 // gitRunsNoRepoCommands opens every script here that runs git in the agent's
-// workspace. That workspace is the SESSION's: a tool call can write its .git, and
-// git runs commands that config names. It is exported as GIT_CONFIG_* (git's
-// command-line-config channel, which outranks the repository's own config and
-// reaches every git the script's git starts) rather than as `-c` per call, so a
-// git added to a script later cannot miss it.
+// workspace. That workspace is the SESSION's: a tool call can write its .git
+// (and its $HOME/.gitconfig), and git runs commands that config names. The
+// overrides are exported as GIT_CONFIG_* — git's command-line-config channel,
+// which outranks the repository's own config and reaches every git the script's
+// git starts — rather than as `-c` per call, so a git added to a script later
+// cannot miss them.
 //
-// What is neutralised, and why each:
-//   - core.fsmonitor=false — `git status` / `checkout` / `ls-files` run it.
-//   - core.hooksPath=/dev/null — every hook: post-checkout, reference-transaction
-//     (checkout and fetch), pre-auto-gc (fetch's auto gc), and the rest.
-//   - protocol.ext.allow=never — an ext:: remote URL (or an insteadOf rewrite to
-//     one) runs an arbitrary command on fetch.
+// WHAT IS NEUTRALISED BY NAME (gitNeutralised; each row measured by
+// TestTheJobScriptsRunNoPlantedCommandAndShowNoneATurnCredential):
+//   - core.fsmonitor=false — status / checkout / ls-files run it.
+//   - core.hooksPath=/dev/null — every hook in a hooks directory.
+//   - hook.<event>.enabled=false, for every githooks(5) event — config-based
+//     hooks (hook.<name>.command / .event, newer git), which a hooks path does
+//     not govern. The image's git (2.39) predates them and ignores the keys.
+//   - core.alternateRefsCommand= — a fetch from a repository with alternates
+//     runs it.
+//   - protocol.ext.allow=never — an ext:: remote URL runs a command on fetch.
 //   - core.sshCommand=ssh — a repository-set ssh command runs on an ssh fetch.
-//   - remote.origin.uploadpack=git-upload-pack — for a local-path remote the
-//     upload-pack command runs LOCALLY.
+//   - remote.origin.uploadpack=git-upload-pack — for a local-path origin the
+//     upload-pack command runs LOCALLY (set-head --auto contacts origin).
 //   - credential.helper= — an empty value resets the helper list; a "!cmd"
-//     helper runs a shell on an https fetch that needs credentials.
-//   - core.askPass= — the askpass program the same fetch could run.
-//   - submodule.recurse=false, fetch.recurseSubmodules=false — no git in a
-//     submodule's directory, whose own .git config this list would not reach as
-//     reliably.
+//     helper would run when origin asks for credentials.
+//   - core.askPass= — the askpass program the same request could run.
+//   - submodule.recurse=false, fetch.recurseSubmodules=false.
 //
-// ⚠ NOT NEUTRALISED, AND NOT NEUTRALISABLE BY NAME: filter drivers
-// (filter.<any name>.smudge / process, selected by .gitattributes or
-// .git/info/attributes) run on checkout. That is why the exec's ENVIRONMENT is
-// stripped too (agentexec.go): whatever runs, it runs as the agent's own user —
-// which the session already is — and sees no turn credential.
-const gitRunsNoRepoCommands = `export GIT_CONFIG_COUNT=9 ` +
-	`GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false ` +
-	`GIT_CONFIG_KEY_1=core.hooksPath GIT_CONFIG_VALUE_1=/dev/null ` +
-	`GIT_CONFIG_KEY_2=protocol.ext.allow GIT_CONFIG_VALUE_2=never ` +
-	`GIT_CONFIG_KEY_3=core.sshCommand GIT_CONFIG_VALUE_3=ssh ` +
-	`GIT_CONFIG_KEY_4=remote.origin.uploadpack GIT_CONFIG_VALUE_4=git-upload-pack ` +
-	`GIT_CONFIG_KEY_5=credential.helper GIT_CONFIG_VALUE_5= ` +
-	`GIT_CONFIG_KEY_6=core.askPass GIT_CONFIG_VALUE_6= ` +
-	`GIT_CONFIG_KEY_7=submodule.recurse GIT_CONFIG_VALUE_7=false ` +
-	`GIT_CONFIG_KEY_8=fetch.recurseSubmodules GIT_CONFIG_VALUE_8=false
-`
+// And one by ENVIRONMENT, because config cannot do it: GIT_PROXY_COMMAND= (set,
+// empty). core.gitProxy is multi-valued and "the first match wins", so a value
+// planted in the repository's config would beat any override appended after it;
+// the environment variable replaces the config lookup entirely, and an empty one
+// means no proxy. (A git:// origin is reached by `git remote set-head --auto`.)
+//
+// 🔴 WHAT STILL RUNS, AND THE ONE THING STANDING BETWEEN IT AND THE CREDENTIALS:
+//   - filter drivers (filter.<any name>.smudge / .process, selected by
+//     .gitattributes or .git/info/attributes) — `git worktree add` and the
+//     overlay's checkouts run them; their names are the session's to choose, so
+//     no override can name them;
+//   - anything else git runs from config that this list does not name.
+//
+// They run as the agent's own user (which the session already is), and they see
+// no turn credential ONLY because every exec into the container is stripped of
+// them (the adapter's scrubexec driver). That prefix is THE credential guard for
+// these; weakening it re-opens the route this list cannot close.
+//
+// ⚠ uploadpack.packObjectsHook (honoured only from protected config: global,
+// system, command line) is NOT in the list: the pull-request fetch runs with
+// GIT_CONFIG_GLOBAL=/dev/null, which its upload-pack inherits, so a global hook
+// is not read there (measured: it does not fire), and an empty override would
+// make upload-pack run an empty command instead of pack-objects.
+var gitNeutralised = append([][2]string{
+	{"core.fsmonitor", "false"},
+	{"core.hooksPath", "/dev/null"},
+	{"core.alternateRefsCommand", ""},
+	{"protocol.ext.allow", "never"},
+	{"core.sshCommand", "ssh"},
+	{"remote.origin.uploadpack", "git-upload-pack"},
+	{"credential.helper", ""},
+	{"core.askPass", ""},
+	{"submodule.recurse", "false"},
+	{"fetch.recurseSubmodules", "false"},
+}, hookEventsDisabled()...)
+
+// gitHookEvents is githooks(5)'s list of hook events (git 2.55).
+var gitHookEvents = []string{
+	"applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit", "pre-merge-commit",
+	"prepare-commit-msg", "commit-msg", "post-commit", "pre-rebase", "post-checkout", "post-merge",
+	"pre-push", "pre-receive", "update", "proc-receive", "post-receive", "post-update",
+	"reference-transaction", "push-to-checkout", "pre-auto-gc", "post-rewrite", "sendemail-validate",
+	"fsmonitor-watchman", "post-index-change",
+}
+
+func hookEventsDisabled() [][2]string {
+	out := make([][2]string, 0, len(gitHookEvents))
+	for _, e := range gitHookEvents {
+		out = append(out, [2]string{"hook." + e + ".enabled", "false"})
+	}
+	return out
+}
+
+// gitRunsNoRepoCommands is gitNeutralised as a shell prelude (values are
+// literals without spaces or quotes, so they need no quoting).
+var gitRunsNoRepoCommands = func() string {
+	var b strings.Builder
+	b.WriteString("export GIT_PROXY_COMMAND= GIT_CONFIG_COUNT=" + strconv.Itoa(len(gitNeutralised)))
+	for i, kv := range gitNeutralised {
+		n := strconv.Itoa(i)
+		b.WriteString(" GIT_CONFIG_KEY_" + n + "=" + kv[0] + " GIT_CONFIG_VALUE_" + n + "=" + kv[1])
+	}
+	b.WriteString("\n")
+	return b.String()
+}()
 
 // jobOverlayScript prepares job worktree $2 of the checkout $1 at commit $3,
 // of pull request $5 of the repository at the anonymous URL $4, the remaining
@@ -144,7 +197,7 @@ const gitRunsNoRepoCommands = `export GIT_CONFIG_COUNT=9 ` +
 // chooses to run from the tree (a build script, a test). The overlay keeps the
 // COMMIT's configuration from configuring the reviewer; it does not make the
 // commit's code safe to execute.
-const jobOverlayScript = gitRunsNoRepoCommands + `export LC_ALL=C
+var jobOverlayScript = gitRunsNoRepoCommands + `export LC_ALL=C
 main=$1 wt=$2 sha=$3 url=$4 pr=$5
 shift 5
 cd "$main" || exit 1
@@ -154,7 +207,8 @@ def=$(git rev-parse --verify --quiet 'refs/remotes/origin/HEAD^{commit}') ||
 	{ echo "` + NoDefaultBranchMessage + `" >&2; exit 4; }
 ref=refs/muster-jobs/${wt##*/}
 got=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git ls-remote --get-url "$url") || exit 1
-creds=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git config --get-regexp '^(http\..*extraheader|credential\..*)$')
+creds=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git config --show-scope --get-regexp '^(http\..*extraheader|credential\..*)$' |
+	grep -v '^command')
 if [ "$got" != "$url" ] || [ -n "$creds" ]; then
 	echo "` + AnonymousFetchMessage + ` (git would fetch $got)" >&2
 	exit 7
@@ -225,7 +279,7 @@ const SymlinkOverlayMessage = "the repository's default branch has a symlink amo
 // itself if git left it (it was not a registered worktree, or git refused),
 // then `git worktree prune`, and the job's fetched pull-request ref. It fails
 // only when the directory is still there.
-const jobRemoveScript = gitRunsNoRepoCommands + `cd "$1" 2>/dev/null && git worktree remove --force --force "$2" >/dev/null 2>&1
+var jobRemoveScript = gitRunsNoRepoCommands + `cd "$1" 2>/dev/null && git worktree remove --force --force "$2" >/dev/null 2>&1
 rm -rf "$2"
 cd "$1" 2>/dev/null && git worktree prune >/dev/null 2>&1
 cd "$1" 2>/dev/null && git update-ref -d "refs/muster-jobs/${2##*/}" >/dev/null 2>&1
@@ -287,7 +341,7 @@ func (a *Adapter) PrepareJobWorktree(ctx context.Context, ag agents.Agent, jobID
 	var out bytes.Buffer
 	cmd := append([]string{"sh", "-c", jobOverlayScript, "muster-job-worktree", main, wt, sha,
 		AnonymousFetchURL(a.anonGitBase, repo), strconv.Itoa(pr)}, JobOverlayRootFiles...)
-	if err := a.exec(ctx, agents.RefOf(ag), cmd, nil, &out, &out); err != nil {
+	if err := provision.Exec(ctx, a.driver, agents.RefOf(ag), cmd, nil, &out, &out); err != nil {
 		return "", fmt.Errorf("create the worktree %s at %s: %w: %s", wt, sha, err, strings.TrimSpace(capString(out.String(), 1024)))
 	}
 	return wt, nil
@@ -302,7 +356,7 @@ func (a *Adapter) RemoveJobWorktree(ctx context.Context, ag agents.Agent, jobID 
 	}
 	var out bytes.Buffer
 	cmd := []string{"sh", "-c", jobRemoveScript, "muster-job-worktree-remove", main, wt}
-	if err := a.exec(ctx, agents.RefOf(ag), cmd, nil, &out, &out); err != nil {
+	if err := provision.Exec(ctx, a.driver, agents.RefOf(ag), cmd, nil, &out, &out); err != nil {
 		return fmt.Errorf("remove the worktree %s: %w: %s", wt, err, strings.TrimSpace(capString(out.String(), 1024)))
 	}
 	return nil
@@ -336,7 +390,7 @@ func (a *Adapter) ReadWorkspaceFile(ctx context.Context, ag agents.Agent, jobID 
 	var out, errb bytes.Buffer
 	// One byte past the limit: present means the file is over it.
 	cmd := []string{"sh", "-c", readScript, "muster-job-read", full, strconv.Itoa(max + 1)}
-	if err := a.exec(ctx, agents.RefOf(ag), cmd, nil, &out, &errb); err != nil {
+	if err := provision.Exec(ctx, a.driver, agents.RefOf(ag), cmd, nil, &out, &errb); err != nil {
 		return nil, fmt.Errorf("read %s: %w: %s", full, err, strings.TrimSpace(capString(errb.String(), 1024)))
 	}
 	if out.Len() > max {
@@ -361,7 +415,7 @@ func (a *Adapter) ReadWorkspaceFile(ctx context.Context, ag agents.Agent, jobID 
 // 🔴 --literal-pathspecs: a result_path is a file name, and without it a name
 // such as ":(top)…" or "*.md" would be read as pathspec magic or a glob and
 // could match a DIFFERENT, tracked file — or none.
-const removeScript = gitRunsNoRepoCommands + `if [ -e "$2/.git" ]; then
+var removeScript = gitRunsNoRepoCommands + `if [ -e "$2/.git" ]; then
 	git --literal-pathspecs -C "$2" ls-files --error-unmatch -- "$3" >/dev/null 2>&1
 	rc=$?
 	if [ "$rc" -eq 0 ]; then
@@ -396,7 +450,7 @@ func (a *Adapter) RemoveUntrackedWorkspaceFile(ctx context.Context, ag agents.Ag
 	full := path.Join(dir, rel)
 	var out bytes.Buffer
 	cmd := []string{"sh", "-c", removeScript, "muster-job-remove", full, dir, rel}
-	if err := a.exec(ctx, agents.RefOf(ag), cmd, nil, &out, &out); err != nil {
+	if err := provision.Exec(ctx, a.driver, agents.RefOf(ag), cmd, nil, &out, &out); err != nil {
 		return false, fmt.Errorf("remove %s: %w: %s", full, err, strings.TrimSpace(capString(out.String(), 1024)))
 	}
 	return strings.TrimSpace(out.String()) != RemoveTrackedMarker, nil

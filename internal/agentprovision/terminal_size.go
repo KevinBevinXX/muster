@@ -25,7 +25,7 @@ func (a *Adapter) windowSize(ctx context.Context, ref provision.Ref) termsize.Si
 	qctx, cancel := context.WithTimeout(ctx, TerminalSizeTimeout)
 	defer cancel()
 	var out bytes.Buffer
-	if err := a.exec(qctx, ref, agents.TerminalSizeCommand(termsize.TmuxWindowFormat), strings.NewReader(""), &out, io.Discard); err != nil {
+	if err := provision.Exec(qctx, a.driver, ref, agents.TerminalSizeCommand(termsize.TmuxWindowFormat), strings.NewReader(""), &out, io.Discard); err != nil {
 		a.log.Printf("agents: terminal %s: window size unknown (%v); the browser's size is used as asked", ref.Name, err)
 		return termsize.Size{}
 	}
