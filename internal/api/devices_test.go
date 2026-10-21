@@ -53,7 +53,7 @@ func TestADeviceCredentialIsRefusedOutsideTheDeviceTier(t *testing.T) {
 	for _, r := range routeVias[authz.ViaHook] {
 		hookish[r] = true
 	}
-	shapeRefused, driven, unarmed := 0, 0, 0
+	shapeRefused, driven, unarmed, unarmedHook := 0, 0, 0, 0
 	for _, pattern := range readGolden(t) {
 		if tier[pattern] {
 			continue
@@ -88,17 +88,26 @@ func TestADeviceCredentialIsRefusedOutsideTheDeviceTier(t *testing.T) {
 				shapeRefused++
 			} else if rec.Code == http.StatusServiceUnavailable && strings.Contains(rec.Body.String(), `"`+HookUnarmedField+`":true`) {
 				// The fail-closed hook routes (requireArmedHookToken) refuse an
-				// unarmed server before any credential is looked at.
+				// unarmed server before any credential is looked at, and so does
+				// the service tier (requireServiceToken: POST/GET /api/jobs).
 				unarmed++
+				if hookish[pattern] {
+					unarmedHook++
+				}
 			} else if session[pattern] || hookish[pattern] {
 				t.Fatalf("%s was refused (%d %s) by something other than the device shape check — on an unarmed "+
 					"hook tier or with a valid session, that check is the only wall", pattern, rec.Code, truncate(rec.Body.String(), 160))
 			}
 		})
 	}
-	if want := len(routeVias[authz.ViaSession]) + len(routeVias[authz.ViaHook]) - unarmed; shapeRefused < want || driven < 200 || unarmed > 4 {
-		t.Fatalf("CONTROL: the shape refusal answered %d of %d routes; want at least the %d session and hook routes",
-			shapeRefused, driven, want)
+	// Only an unarmed HOOK route is excused from the session-and-hook floor (the
+	// four requireArmedHookToken routes); an unarmed service route was never in
+	// it, and at most the service tier's own routes may answer that way.
+	if want := len(routeVias[authz.ViaSession]) + len(routeVias[authz.ViaHook]) - unarmedHook; shapeRefused < want || driven < 200 ||
+		unarmedHook > 4 || unarmed-unarmedHook > len(routeVias[authz.ViaService]) {
+		t.Fatalf("CONTROL: the shape refusal answered %d of %d routes; want at least the %d session and hook routes "+
+			"(unarmed: %d hook, %d other; at most 4 and %d)",
+			shapeRefused, driven, want, unarmedHook, unarmed-unarmedHook, len(routeVias[authz.ViaService]))
 	}
 	// Positive control: the device tier admits it, as user 1 through ViaDevice.
 	for pattern := range tier {
