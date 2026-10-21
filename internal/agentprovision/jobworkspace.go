@@ -107,28 +107,44 @@ func (a *Adapter) ReadWorkspaceFile(ctx context.Context, ag agents.Agent, rel st
 	return out.Bytes(), nil
 }
 
-// removeScript deletes the file $1; a missing file is not an error. rm removes a
-// symlink itself, never what it points to.
-const removeScript = `rm -f -- "$1"`
+// removeScript deletes the file $1 — the same file as $3, relative to the
+// checkout in $2 — unless the repository tracks it: then it prints
+// RemoveTrackedMarker and deletes nothing. A missing file is not an error; rm
+// removes a symlink itself, never its target. Outside a git repository
+// ls-files fails, so nothing counts as tracked.
+//
+// 🔴 --literal-pathspecs: a result_path is a file name, and without it a name
+// such as ":(top)…" or "*.md" would be read as pathspec magic or a glob and
+// could match a DIFFERENT, tracked file — or none.
+const removeScript = `if git --literal-pathspecs -C "$2" ls-files --error-unmatch -- "$3" >/dev/null 2>&1; then
+	echo ` + RemoveTrackedMarker + `
+	exit 0
+fi
+rm -f -- "$1"`
 
-// RemoveWorkspaceFile deletes rel — a path relative to the directory ag's CLI
-// works in, validated as ReadWorkspaceFile validates it. A file that is not
-// there is not an error.
-func (a *Adapter) RemoveWorkspaceFile(ctx context.Context, ag agents.Agent, rel string) error {
+// RemoveTrackedMarker is what removeScript prints when it leaves a tracked file.
+const RemoveTrackedMarker = "muster-job-remove:tracked"
+
+// RemoveUntrackedWorkspaceFile deletes rel — a path relative to the directory
+// ag's CLI works in, validated as ReadWorkspaceFile validates it — unless the
+// repository checked out there tracks it. removed reports whether it deleted
+// (or found nothing to delete); false with a nil error means the file is
+// tracked and was left in place.
+func (a *Adapter) RemoveUntrackedWorkspaceFile(ctx context.Context, ag agents.Agent, rel string) (removed bool, err error) {
 	if !jobs.ValidResultPath(rel) {
-		return fmt.Errorf("agentprovision: %q is not a relative path inside the workspace", rel)
+		return false, fmt.Errorf("agentprovision: %q is not a relative path inside the workspace", rel)
 	}
 	dir, err := agentspec.ClaudeCodeWorkingDir(ag)
 	if err != nil {
-		return err
+		return false, err
 	}
 	full := path.Join(dir, rel)
 	var out bytes.Buffer
-	cmd := []string{"sh", "-c", removeScript, "muster-job-remove", full}
+	cmd := []string{"sh", "-c", removeScript, "muster-job-remove", full, dir, rel}
 	if err := provision.Exec(ctx, a.driver, agents.RefOf(ag), cmd, nil, &out, &out); err != nil {
-		return fmt.Errorf("remove %s: %w: %s", full, err, strings.TrimSpace(capString(out.String(), 1024)))
+		return false, fmt.Errorf("remove %s: %w: %s", full, err, strings.TrimSpace(capString(out.String(), 1024)))
 	}
-	return nil
+	return strings.TrimSpace(out.String()) != RemoveTrackedMarker, nil
 }
 
 func capString(s string, n int) string {

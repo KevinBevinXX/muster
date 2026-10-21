@@ -45,10 +45,10 @@
   NetworkPolicy is only a declaration: the cluster's network plugin enforces it
   or does not, and muster cannot tell which.
 - **A machine job does not survive a restart, and its timeout does not stop the
-  agent's turn.** The job API runs each job's turn inside the server process; a
-  job left unfinished is failed (`interrupted`) by a reaper once it is past its
-  own deadline, so it can read `running` for up to `timeout_s` + 5 minutes after
-  its server died. At most 4 jobs per agent are queued or running. See
+  agent's turn.** The job API runs each job's turn inside the server process. A
+  graceful shutdown fails the jobs that server holds (`interrupted`); after a
+  crash a reaper fails them once they are past their own deadline, so a job can
+  read `running` for up to `timeout_s` + 5 minutes after its server died. At most 4 jobs per agent are queued or running. See
   [jobs.md](jobs.md#what-it-does-not-do).
 - **`MUSTER_TAG_AUTODISPATCH` dispatches nothing.** It only logs and counts
   eligible tasks. The one automatic start is the chief's `task_dispatch`

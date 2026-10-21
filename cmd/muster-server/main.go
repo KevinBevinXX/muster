@@ -873,6 +873,11 @@ func (a *app) shutdown() {
 			a.logger.Printf("browser listener drain did not complete within %s: %v", shutdownDrainTimeout, err)
 		}
 	}
+	// The machine jobs this process accepted and will now never finish: fail
+	// them, theirs only (api.FailOwnJobs), bounded. AFTER the HTTP drain, so no
+	// submission lands behind it. A crash skips this; the deadline reaper is
+	// the backstop.
+	a.srv.FailOwnJobs(api.JobShutdownTimeout)
 	if !<-terminalsEnded {
 		a.logger.Printf("agent terminals did not finish releasing within %s; exiting anyway "+
 			"(their tmux clients may stay attached in the agents' pods until those restart)", terminalDrainTimeout)

@@ -266,10 +266,11 @@ func TestCheckoutCommitRefusesADirtyTree(t *testing.T) {
 	}
 }
 
-// TestRemoveWorkspaceFileDeletesOnlyThatFile: the file goes, a missing file is
-// not an error, a symlink is removed without touching its target, and a path
-// that leaves the workspace never reaches the instance.
-func TestRemoveWorkspaceFileDeletesOnlyThatFile(t *testing.T) {
+// TestRemoveUntrackedWorkspaceFileDeletesOnlyThatFile: outside any git
+// repository (nothing is tracked) the file goes, a missing file is not an
+// error, a symlink is removed without touching its target, and a path that
+// leaves the workspace never reaches the instance.
+func TestRemoveUntrackedWorkspaceFileDeletesOnlyThatFile(t *testing.T) {
 	a, d := newWorkspaceAdapter(t)
 	dir := filepath.Join(d.root, "widgets", "out")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -281,8 +282,8 @@ func TestRemoveWorkspaceFileDeletesOnlyThatFile(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := a.RemoveWorkspaceFile(context.Background(), workspaceAgent, "out/review.md"); err != nil {
-		t.Fatalf("remove: %v", err)
+	if removed, err := a.RemoveUntrackedWorkspaceFile(context.Background(), workspaceAgent, "out/review.md"); err != nil || !removed {
+		t.Fatalf("remove = %v, %v", removed, err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "review.md")); !os.IsNotExist(err) {
 		t.Fatalf("out/review.md is still there (stat: %v)", err)
@@ -290,8 +291,8 @@ func TestRemoveWorkspaceFileDeletesOnlyThatFile(t *testing.T) {
 	if b, err := os.ReadFile(keep); err != nil || string(b) != "keep.md" {
 		t.Fatalf("a sibling was touched: %q %v", b, err)
 	}
-	if err := a.RemoveWorkspaceFile(context.Background(), workspaceAgent, "out/review.md"); err != nil {
-		t.Fatalf("removing a missing file = %v, want nil", err)
+	if removed, err := a.RemoveUntrackedWorkspaceFile(context.Background(), workspaceAgent, "out/review.md"); err != nil || !removed {
+		t.Fatalf("removing a missing file = %v, %v, want true, nil", removed, err)
 	}
 	outside := filepath.Join(t.TempDir(), "target")
 	if err := os.WriteFile(outside, []byte("t"), 0o644); err != nil {
@@ -300,8 +301,8 @@ func TestRemoveWorkspaceFileDeletesOnlyThatFile(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(dir, "link.md")); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.RemoveWorkspaceFile(context.Background(), workspaceAgent, "out/link.md"); err != nil {
-		t.Fatalf("remove link: %v", err)
+	if removed, err := a.RemoveUntrackedWorkspaceFile(context.Background(), workspaceAgent, "out/link.md"); err != nil || !removed {
+		t.Fatalf("remove link = %v, %v", removed, err)
 	}
 	if _, err := os.Lstat(filepath.Join(dir, "link.md")); !os.IsNotExist(err) {
 		t.Fatalf("the symlink is still there (lstat: %v)", err)
@@ -311,11 +312,46 @@ func TestRemoveWorkspaceFileDeletesOnlyThatFile(t *testing.T) {
 	}
 	before := d.count()
 	for _, p := range []string{"../etc/passwd", "/etc/passwd", "out/../../x"} {
-		if err := a.RemoveWorkspaceFile(context.Background(), workspaceAgent, p); err == nil {
+		if _, err := a.RemoveUntrackedWorkspaceFile(context.Background(), workspaceAgent, p); err == nil {
 			t.Errorf("%q was removed", p)
 		}
 	}
 	if d.count() != before {
 		t.Fatalf("a refused path ran %d exec(s)", d.count()-before)
+	}
+}
+
+// TestRemoveUntrackedWorkspaceFileLeavesATrackedFile: in a real checkout a file
+// the repository tracks is reported (false, nil) and left byte for byte; an
+// untracked one goes. Names are literal, not pathspecs: an untracked file
+// literally named "*.md" is deleted, and the tracked notes.md the glob would
+// match is not mistaken for it.
+func TestRemoveUntrackedWorkspaceFileLeavesATrackedFile(t *testing.T) {
+	a, d := newWorkspaceAdapter(t)
+	git, repo, _, _ := newCheckoutRepo(t, d)
+	if err := os.WriteFile(filepath.Join(repo, "notes.md"), []byte("tracked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "notes.md")
+	git("commit", "-q", "-m", "notes")
+	removed, err := a.RemoveUntrackedWorkspaceFile(context.Background(), workspaceAgent, "notes.md")
+	if err != nil || removed {
+		t.Fatalf("tracked notes.md = %v, %v; want false, nil", removed, err)
+	}
+	if b, err := os.ReadFile(filepath.Join(repo, "notes.md")); err != nil || string(b) != "tracked" {
+		t.Fatalf("a tracked file was touched: %q %v", b, err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "*.md"), []byte("out"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	removed, err = a.RemoveUntrackedWorkspaceFile(context.Background(), workspaceAgent, "*.md")
+	if err != nil || !removed {
+		t.Fatalf("untracked \"*.md\" = %v, %v; want true, nil", removed, err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "*.md")); !os.IsNotExist(err) {
+		t.Fatalf("the untracked file \"*.md\" is still there (stat: %v)", err)
+	}
+	if st := git("status", "--porcelain"); st != "" {
+		t.Fatalf("the tree is dirty: %q", st)
 	}
 }

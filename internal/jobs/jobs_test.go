@@ -68,7 +68,8 @@ func TestValidResultPath(t *testing.T) {
 	for p, want := range map[string]bool{
 		"review.md": true, "out/review.md": true, ".github/out.txt": true, "a..b/c": true,
 		"": false, "/etc/passwd": false, "../x": false, "a/../../x": false, "./x": false, "a/./b": false,
-		"a//b": false, "a/": false, "..": false, ".": false, "a\x00b": false, strings.Repeat("a", 513): false,
+		"a//b": false, "a/": false, "..": false, ".": false,
+		".git/config": false, "a/.git/HEAD": false, ".GIT/x": false, ".git": false, ".gitignore": true, "a/.gitkeep": true, "a\x00b": false, strings.Repeat("a", 513): false,
 	} {
 		if got := ValidResultPath(p); got != want {
 			t.Errorf("ValidResultPath(%q) = %v, want %v", p, got, want)

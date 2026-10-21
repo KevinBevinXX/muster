@@ -273,9 +273,11 @@ type JobWorkspace interface {
 	// ReadWorkspaceFile returns rel, relative to the agent's working directory,
 	// byte for byte, refusing a file over max bytes.
 	ReadWorkspaceFile(ctx context.Context, a agents.Agent, rel string, max int) ([]byte, error)
-	// RemoveWorkspaceFile deletes rel, relative to the agent's working
-	// directory; a file that is not there is not an error.
-	RemoveWorkspaceFile(ctx context.Context, a agents.Agent, rel string) error
+	// RemoveUntrackedWorkspaceFile deletes rel, relative to the agent's
+	// working directory, unless the repository there tracks it; a file that
+	// is not there is not an error. removed is false (with a nil error) for a
+	// tracked file, which is left in place.
+	RemoveUntrackedWorkspaceFile(ctx context.Context, a agents.Agent, rel string) (removed bool, err error)
 }
 
 // MirrorTokenAuth resolves a presented mirror token to its row (ErrBadToken

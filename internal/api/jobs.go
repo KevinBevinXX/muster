@@ -46,9 +46,11 @@ import (
 //   - worker-pool selection. A job names one existing, running claude-code agent;
 //     `worker_pool` is refused 501. pickJobAgent is the seam a pool goes behind.
 //   - survival across a restart. The turn runs in this process and nothing waits
-//     for it on shutdown. The reaper (RunJobReaper → jobs.Store.ReapOverdue, at
-//     boot and every JobReapInterval) fails a job only once it is past its own
-//     deadline, so a job a dying process left behind is failed `interrupted`
+//     for it on shutdown. A graceful shutdown fails the jobs THIS process holds
+//     (FailOwnJobs), never another's. After a crash, the reaper (RunJobReaper
+//     → jobs.Store.ReapOverdue, at boot and every JobReapInterval) fails a job
+//     only once it is past its own deadline, so a job a crashed process left
+//     behind is failed `interrupted`
 //     up to timeout_s + jobs.ReapSlack after it started (or jobs.MaxQueueWait
 //     after it was queued) — and a job the OTHER pod of a rolling update is
 //     still running is left alone.
@@ -166,6 +168,9 @@ func (s *Server) handleJobCreate(w http.ResponseWriter, r *http.Request) {
 	// principal (every store call below acts as the caller under row-level
 	// security).
 	runCtx := context.WithoutCancel(ctx)
+	// Registered BEFORE the goroutine starts, so a shutdown that begins right
+	// after this response cannot miss it (FailOwnJobs).
+	s.ownJobs.add(j.ID, runCtx)
 	safeGo(s.logger, "job "+strconv.FormatInt(j.ID, 10), func() { s.runJob(runCtx, j) })
 	s.writeJSON(w, http.StatusAccepted, jobView(j))
 }
@@ -194,7 +199,7 @@ func validateJobRequest(req jobRequest) (jobs.NewJob, int, string) {
 		return n, http.StatusBadRequest, "sha must be a full commit id: 40 lowercase hex characters (an abbreviated sha cannot be fetched)"
 	case n.ResultPath != "" && !jobs.ValidResultPath(n.ResultPath):
 		return n, http.StatusBadRequest, "result_path must be a clean relative path inside the agent's working directory " +
-			"(no leading /, no . or .. elements, at most 512 bytes)"
+			"(no leading /, no ., .. or .git elements, at most 512 bytes)"
 	case len(req.IdempotencyKey) > jobs.MaxIdempotencyKeyBytes:
 		return n, http.StatusBadRequest, fmt.Sprintf("idempotency_key is over %d bytes", jobs.MaxIdempotencyKeyBytes)
 	case req.IdempotencyKey != "" && strings.TrimSpace(req.IdempotencyKey) != req.IdempotencyKey:
@@ -307,6 +312,96 @@ func jobTime(t time.Time) any {
 	return t.UTC().Format(time.RFC3339Nano)
 }
 
+// ownJobs is the set of jobs THIS process accepted and has not finished, so a
+// graceful shutdown can fail them (FailOwnJobs): a job runs only in the process
+// that accepted it, so nothing else ever will.
+type ownJobs struct {
+	mu sync.Mutex
+	m  map[int64]*ownJob
+}
+
+type ownJob struct {
+	// ctx is the submitter's principal, detached from the request: every store
+	// call on a job runs under it (row-level security).
+	ctx     context.Context
+	started bool
+}
+
+func (o *ownJobs) add(id int64, ctx context.Context) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.m == nil {
+		o.m = make(map[int64]*ownJob)
+	}
+	o.m[id] = &ownJob{ctx: ctx}
+}
+
+func (o *ownJobs) markStarted(id int64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if j, ok := o.m[id]; ok {
+		j.started = true
+	}
+}
+
+func (o *ownJobs) drop(id int64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	delete(o.m, id)
+}
+
+// JobShutdownTimeout bounds FailOwnJobs at shutdown.
+const JobShutdownTimeout = 5 * time.Second
+
+// FailOwnJobs fails, with reason interrupted, every job this process accepted
+// and has not finished — queued ones (never sent to the agent) and running
+// ones (whose turn this process is about to abandon) — and returns how many it
+// failed. Called by cmd/muster-server on a graceful shutdown, AFTER the HTTP
+// drain, so no submission can arrive behind it; bounded by timeout overall.
+//
+// 🔴 ONLY THIS PROCESS'S OWN JOBS, NEVER A SWEEP. During a rolling update the
+// other pod is running ITS jobs; this touches none of them. Each write is the
+// store's conditional Finish, so a job whose runner records its real outcome
+// first keeps it. A crash skips this entirely, and the deadline reaper
+// (RunJobReaper) remains the backstop.
+func (s *Server) FailOwnJobs(timeout time.Duration) int {
+	if s.ext.Jobs == nil {
+		return 0
+	}
+	type pending struct {
+		id      int64
+		ctx     context.Context
+		started bool
+	}
+	s.ownJobs.mu.Lock()
+	var list []pending
+	for id, j := range s.ownJobs.m {
+		list = append(list, pending{id, j.ctx, j.started})
+	}
+	s.ownJobs.mu.Unlock()
+	deadline := time.Now().Add(timeout)
+	failed := 0
+	for _, p := range list {
+		msg := jobs.ShutdownQueuedError
+		if p.started {
+			msg = jobs.ShutdownRunningError
+		}
+		ctx, cancel := context.WithDeadline(context.WithoutCancel(p.ctx), deadline)
+		ok, err := s.ext.Jobs.Finish(ctx, p.id, jobs.Failed(jobs.ReasonInterrupted, msg))
+		cancel()
+		switch {
+		case err != nil:
+			s.logger.Printf("jobs: %d: fail on shutdown: %v (the deadline reaper will fail it)", p.id, err)
+		case ok:
+			failed++
+		}
+	}
+	if failed > 0 {
+		s.logger.Printf("jobs: failed %d job(s) this process held at shutdown (reason %q)", failed, jobs.ReasonInterrupted)
+	}
+	return failed
+}
+
 // jobLanes serialises jobs per agent within this process.
 type jobLanes struct {
 	mu sync.Mutex
@@ -407,6 +502,9 @@ func (s *Server) jobTimeout(j jobs.Job) time.Duration {
 // runJob runs one job to its end and records the outcome. ctx carries the
 // submitter's principal and no deadline.
 func (s *Server) runJob(ctx context.Context, j jobs.Job) {
+	// Deferred first, so it runs last: the job is this process's until its
+	// outcome is recorded.
+	defer s.ownJobs.drop(j.ID)
 	release := s.jobLanes.lock(j.AgentID)
 	defer release()
 	finish := func(o jobs.Outcome) {
@@ -453,6 +551,9 @@ func (s *Server) runJob(ctx context.Context, j jobs.Job) {
 		finish(jobs.Failed(jobs.ReasonInternal, "could not open a chat session on the agent"))
 		return
 	}
+	// Marked BEFORE the row moves, so a shutdown racing the move reports the
+	// cautious "the agent may have done the work", never "nothing was sent".
+	s.ownJobs.markStarted(j.ID)
 	started, err := s.ext.Jobs.Start(ctx, j.ID, a.CCAccount, sess.ID)
 	if err != nil {
 		s.logger.Printf("jobs: %d: start: %v", j.ID, err)
@@ -529,27 +630,41 @@ func (s *Server) readJobResult(ctx context.Context, a agents.Agent, j jobs.Job) 
 }
 
 // jobResultRemoveTimeout bounds the delete of a job's result file, on a context
-// detached from the job's own, so a job whose read hit the deadline still
-// cleans up.
+// detached from the job's own, so the delete does not depend on how much of the
+// job's deadline the read left.
 const jobResultRemoveTimeout = 10 * time.Second
 
-// removeJobResultFile deletes the job's result_path file once it has been read
-// — whether the read succeeded or failed — and returns o, noting a failed
-// delete in its error without changing its status.
+// removeJobResultFile deletes the job's result_path file when — and only when —
+// it was read successfully (o succeeded) and the repository does not track it,
+// and returns o, noting in its error a file left behind, without changing its
+// status.
 //
 // 🔴 WHY THE FILE IS DELETED: the working directory is the agent's repository
-// checkout, so the result file is an untracked file there, and the next sha
-// job's checkout refuses a dirty tree. The file is this job's own output, so
-// removing it hides nothing; its content is in the job's result.
+// checkout, so a result file the turn writes there is untracked, and the next
+// sha job's checkout refuses a dirty tree. After a successful read its content
+// is in the job's result, byte for byte, so removing it hides nothing.
+//
+// 🔴 AND WHY ONLY THEN: after a failed read (over the limit, not UTF-8, gone)
+// the file is the only copy of the agent's output, so it stays. A TRACKED file
+// (result_path naming e.g. CHANGELOG.md) is part of the repository: deleting it
+// would itself dirty the tree, so it stays too, with a note.
 func (s *Server) removeJobResultFile(ctx context.Context, a agents.Agent, j jobs.Job, o jobs.Outcome) jobs.Outcome {
-	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jobResultRemoveTimeout)
-	defer cancel()
-	err := s.ext.JobWorkspace.RemoveWorkspaceFile(rctx, a, j.ResultPath)
-	if err == nil {
+	if o.Status != jobs.StatusSucceeded {
 		return o
 	}
-	s.logger.Printf("jobs: %d: remove result file %s: %v", j.ID, j.ResultPath, err)
-	note := JobResultRemoveFailedPrefix + j.ResultPath + " (the next sha job on this agent may be refused as dirty): " + err.Error()
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jobResultRemoveTimeout)
+	defer cancel()
+	removed, err := s.ext.JobWorkspace.RemoveUntrackedWorkspaceFile(rctx, a, j.ResultPath)
+	var note string
+	switch {
+	case err != nil:
+		s.logger.Printf("jobs: %d: remove result file %s: %v", j.ID, j.ResultPath, err)
+		note = JobResultRemoveFailedPrefix + j.ResultPath + " (the next sha job on this agent may be refused as dirty): " + err.Error()
+	case !removed:
+		note = JobResultTrackedNotePrefix + j.ResultPath + " is tracked by the repository, so it was left in place"
+	default:
+		return o
+	}
 	if o.Error != "" {
 		o.Error += "; " + note
 	} else {
@@ -561,3 +676,7 @@ func (s *Server) removeJobResultFile(ctx context.Context, a agents.Agent, j jobs
 // JobResultRemoveFailedPrefix opens the note a job's error carries when its
 // result file could not be deleted.
 const JobResultRemoveFailedPrefix = "could not delete the result file "
+
+// JobResultTrackedNotePrefix opens the note a job's error carries when its
+// result file is tracked by the repository and so was not deleted.
+const JobResultTrackedNotePrefix = "the result file "

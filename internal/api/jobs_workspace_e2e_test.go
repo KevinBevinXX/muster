@@ -130,3 +130,74 @@ func TestAResultPathJobDoesNotLeaveTheTreeDirtyForTheNextSHAJob(t *testing.T) {
 		t.Fatalf("HEAD = %s, want %s", head, second)
 	}
 }
+
+// TestAResultFileIsKeptWhenTheReadFailsOrTheRepositoryTracksIt: through the
+// real adapter and a real git checkout. (1) A result file over the 1 MiB limit
+// fails the job result_read_failed, and the file — the only copy of the
+// agent's output — is still there. (2) A result_path naming a TRACKED file is
+// returned and left in place (deleting it would dirty the tree), with a note
+// in error; the tree stays clean.
+func TestAResultFileIsKeptWhenTheReadFailsOrTheRepositoryTracksIt(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git on PATH")
+	}
+	root := t.TempDir()
+	repo := filepath.Join(root, "widgets")
+	git := func(args ...string) string {
+		t.Helper()
+		var out bytes.Buffer
+		c := exec.Command("git", append([]string{"-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.test"}, args...)...)
+		c.Stdout, c.Stderr = &out, &out
+		if err := c.Run(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out.String())
+		}
+		return strings.TrimSpace(out.String())
+	}
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git("init", "-q")
+	const changelog = "# Changelog\n\n- one\n"
+	if err := os.WriteFile(filepath.Join(repo, "CHANGELOG.md"), []byte(changelog), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "CHANGELOG.md")
+	git("commit", "-q", "-m", "one")
+
+	adapter, err := agentprovision.New(agentprovision.Config{
+		Driver: &hostExecDriver{Noop: provision.MustNewNoop(), root: root},
+		Store:  stubAgentsStore{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newJobFixture(t, testServiceToken)
+	f.s.ext.JobWorkspace = adapter
+
+	// (1) Too large to return: the job fails, the file stays.
+	big := filepath.Join(repo, "out", "big.md")
+	f.s.ext.Gateway = &fileWritingGateway{path: big, body: strings.Repeat("x", jobs.MaxResultBytes+1)}
+	out := f.await(t, f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review", "result_path": "out/big.md"}))
+	if out["status"] != jobs.StatusFailed || out["reason"] != jobs.ReasonResultReadFailed {
+		t.Errorf("oversize job = %v/%v, want failed/%s", out["status"], out["reason"], jobs.ReasonResultReadFailed)
+	}
+	if st, err := os.Stat(big); err != nil || st.Size() != int64(jobs.MaxResultBytes+1) {
+		t.Errorf("after a failed read the result file is gone or changed (stat: %v, %v); it is the only copy", st, err)
+	}
+	if err := os.RemoveAll(filepath.Join(repo, "out")); err != nil {
+		t.Fatal(err)
+	}
+
+	// (2) A tracked file: returned, kept, the tree clean.
+	f.s.ext.Gateway = &fileWritingGateway{}
+	out = f.await(t, f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review", "result_path": "CHANGELOG.md"}))
+	if out["status"] != jobs.StatusSucceeded || out["result"] != changelog {
+		t.Errorf("tracked job = %v/%v %q (%v), want succeeded with the file", out["status"], out["reason"], out["result"], out["error"])
+	}
+	if b, err := os.ReadFile(filepath.Join(repo, "CHANGELOG.md")); err != nil || string(b) != changelog {
+		t.Errorf("the tracked result file was deleted or changed: %q %v", b, err)
+	}
+	if st := git("status", "--porcelain"); st != "" {
+		t.Errorf("the tree is dirty after a tracked result_path job: %q", st)
+	}
+}

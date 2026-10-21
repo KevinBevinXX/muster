@@ -262,20 +262,25 @@ type jobWorkspace struct {
 	mu        sync.Mutex
 	files     map[string]string
 	checkouts []string
-	// removes records each RemoveWorkspaceFile; removeErr fails it.
+	// removes records each RemoveUntrackedWorkspaceFile; removeErr fails it;
+	// tracked names the files the repository tracks (left in place).
 	removes   []string
 	removeErr error
+	tracked   map[string]bool
 }
 
-func (w *jobWorkspace) RemoveWorkspaceFile(_ context.Context, _ agents.Agent, rel string) error {
+func (w *jobWorkspace) RemoveUntrackedWorkspaceFile(_ context.Context, _ agents.Agent, rel string) (bool, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.removes = append(w.removes, rel)
 	if w.removeErr != nil {
-		return w.removeErr
+		return false, w.removeErr
+	}
+	if w.tracked[rel] {
+		return false, nil
 	}
 	delete(w.files, rel)
-	return nil
+	return true, nil
 }
 
 func (w *jobWorkspace) CheckoutCommit(_ context.Context, a agents.Agent, sha string) error {
@@ -569,6 +574,7 @@ func TestJobSubmissionsTheAPIRefuses(t *testing.T) {
 		{"39-hex sha", map[string]any{"agent": "keen-wren", "prompt": "x", "sha": testFullSHA[:39]}, http.StatusBadRequest},
 		{"escaping path", map[string]any{"agent": "keen-wren", "prompt": "x", "result_path": "../etc/passwd"}, http.StatusBadRequest},
 		{"absolute path", map[string]any{"agent": "keen-wren", "prompt": "x", "result_path": "/etc/passwd"}, http.StatusBadRequest},
+		{".git path", map[string]any{"agent": "keen-wren", "prompt": "x", "result_path": ".git/config"}, http.StatusBadRequest},
 		{"timeout too long", map[string]any{"agent": "keen-wren", "prompt": "x", "timeout_s": jobs.MaxTimeoutSeconds + 1}, http.StatusBadRequest},
 		{"worker pool", map[string]any{"worker_pool": "reviewers", "prompt": "x"}, http.StatusNotImplemented},
 		{"no such agent", map[string]any{"agent": "nobody", "prompt": "x"}, http.StatusNotFound},
@@ -786,8 +792,9 @@ func TestASubmissionPastTheAgentsCapacityIs429(t *testing.T) {
 }
 
 // TestAResultFileIsDeletedOnceRead: the runner deletes a job's result_path file
-// after reading it — on a successful read and on a failed one — and a delete
-// that fails is noted in the job's error without unmaking its success.
+// after a SUCCESSFUL read only — a failed read leaves the agent's only copy, and
+// is never even offered to the delete — and a tracked file or a delete that
+// fails is noted in the job's error without unmaking its success.
 func TestAResultFileIsDeletedOnceRead(t *testing.T) {
 	f := newJobFixture(t, testServiceToken)
 	f.gw.reply = "wrote it"
@@ -807,8 +814,7 @@ func TestAResultFileIsDeletedOnceRead(t *testing.T) {
 		t.Fatalf("after the job: file left %v, removes %q; want it deleted once", left, removes)
 	}
 
-	// A failed read deletes too (a file over the limit, or not UTF-8, is the
-	// job's own output all the same).
+	// A failed read keeps the file: it is the only copy of the agent's output.
 	f.ws.mu.Lock()
 	f.ws.files["out/bin.dat"] = "\xff\xfe"
 	f.ws.mu.Unlock()
@@ -818,9 +824,27 @@ func TestAResultFileIsDeletedOnceRead(t *testing.T) {
 	}
 	f.ws.mu.Lock()
 	_, left = f.ws.files["out/bin.dat"]
+	removes = append([]string(nil), f.ws.removes...)
 	f.ws.mu.Unlock()
-	if left {
-		t.Fatal("a file whose read failed was left in place")
+	if !left || len(removes) != 1 {
+		t.Fatalf("after a failed read: file left %v, removes %q; want it kept and no delete attempted", left, removes)
+	}
+
+	// A tracked file is left in place, with a note; the job still succeeds.
+	f.ws.mu.Lock()
+	f.ws.files["CHANGELOG.md"] = "# Changelog"
+	f.ws.tracked = map[string]bool{"CHANGELOG.md": true}
+	f.ws.mu.Unlock()
+	out = f.await(t, f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review", "result_path": "CHANGELOG.md"}))
+	const wantTracked = JobResultTrackedNotePrefix + "CHANGELOG.md is tracked by the repository, so it was left in place"
+	if out["status"] != jobs.StatusSucceeded || out["result"] != "# Changelog" || out["error"] != wantTracked {
+		t.Fatalf("tracked job = %v %q error %q; want succeeded with the note %q", out["status"], out["result"], out["error"], wantTracked)
+	}
+	f.ws.mu.Lock()
+	_, left = f.ws.files["CHANGELOG.md"]
+	f.ws.mu.Unlock()
+	if !left {
+		t.Fatal("a tracked result file was deleted")
 	}
 
 	// A delete that fails: the job still succeeds with its result, and error
@@ -836,5 +860,23 @@ func TestAResultFileIsDeletedOnceRead(t *testing.T) {
 	}
 	if _, ok := out["reason"]; ok {
 		t.Fatalf("a succeeded job carries reason %v", out["reason"])
+	}
+}
+
+// TestAResultPathUnderDotGitIsRefused: the result file is deleted after it is
+// read, so a path into a repository's own metadata is a 400 — at the top and
+// nested, in any case — and nothing is recorded.
+func TestAResultPathUnderDotGitIsRefused(t *testing.T) {
+	f := newJobFixture(t, testServiceToken)
+	for _, p := range []string{".git/config", "vendor/lib/.git/HEAD", ".GIT/index"} {
+		code, out := f.call(t, http.MethodPost, "/api/jobs", map[string]any{"agent": "keen-wren", "prompt": "x", "result_path": p}, true)
+		const want = "result_path must be a clean relative path inside the agent's working directory " +
+			"(no leading /, no ., .. or .git elements, at most 512 bytes)"
+		if code != http.StatusBadRequest || out["error"] != want {
+			t.Errorf("result_path %q = %d %v, want 400 %q", p, code, out, want)
+		}
+	}
+	if n := f.store.count(); n != 0 {
+		t.Fatalf("%d job(s) recorded", n)
 	}
 }

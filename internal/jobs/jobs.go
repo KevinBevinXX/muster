@@ -131,8 +131,8 @@ var shaPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 func ValidSHA(s string) bool { return shaPattern.MatchString(s) }
 
 // ValidResultPath reports whether p may be a job's result_path: a non-empty,
-// relative, already-clean path with no "." or ".." element, at most 512 bytes,
-// and no NUL. It is resolved against the agent's working directory.
+// relative, already-clean path with no ".", ".." or ".git" element, at most 512
+// bytes, and no NUL. It is resolved against the agent's working directory.
 //
 // ⚠ IT CHECKS THE PATH STRING ONLY. It keeps the lexical path inside the
 // working directory; it does not stop a symlink at or under that path from
@@ -142,7 +142,9 @@ func ValidResultPath(p string) bool {
 		return false
 	}
 	for _, el := range strings.Split(p, "/") {
-		if el == ".." || el == "." {
+		// .git anywhere: the result file is deleted after it is read, and a
+		// repository's own metadata is never a job's output.
+		if el == ".." || el == "." || strings.EqualFold(el, ".git") {
 			return false
 		}
 	}
@@ -480,6 +482,16 @@ const (
 	// AbandonedQueuedError is a queued job's.
 	AbandonedQueuedError = "this job never started within the longest a queued job can wait: the server holding " +
 		"it stopped or crashed before running it. Nothing was sent to the agent for it"
+)
+
+// The errors a graceful shutdown records on the jobs the stopping process held
+// (internal/api FailOwnJobs).
+const (
+	// ShutdownQueuedError is a queued job's.
+	ShutdownQueuedError = "the server holding this job shut down before starting it. Nothing was sent to the agent for it, so it is safe to re-submit"
+	// ShutdownRunningError is a running job's.
+	ShutdownRunningError = "the server running this job shut down before the agent's turn finished. The agent may have done some " +
+		"or all of the work, so re-submit it only if repeating that is safe"
 )
 
 // ReapOverdue fails every job past its own deadline at now, across every
