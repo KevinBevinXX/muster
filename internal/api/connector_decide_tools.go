@@ -209,6 +209,8 @@ func (s *Server) toolConnectorRequestDecide(ctx context.Context, c toolCaller, a
 			s.logger.Printf("connectors: %s %d from %s: %v", connectorRequestDecideTool, in.ID, via, err)
 		}
 		return toolErr("no such connector request: %d", in.ID)
+	case errors.As(err, new(errPoolWorkerGitHubGrant)):
+		return toolErr("%v", err)
 	case errors.As(err, &missing):
 		return toolErr("connector %s does not exist, so request %d cannot be approved over MCP: your owner enters its credential on muster's Connectors tab (which approves the request in the same step)", missing.name, in.ID)
 	case errors.Is(err, connectors.ErrNotPending):

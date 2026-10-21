@@ -200,6 +200,16 @@ same resume (`--resume` of its own conversation by id).
   (project settings: hooks, permissions, `env`). `ccd` strips `env` and
   `apiKeyHelper` only from the CLI's user settings, so dispatch only onto
   repositories you trust with the agent's subscription token.
+- **Machine jobs at a commit do not use the checkout.** A [job](jobs.md) with a
+  `sha` fetches its pull request's head anonymously from github.com (around any
+  proxy routing the pod has) and runs in a git worktree of its own at
+  `/data/workspace/.muster-jobs/<job id>` — beside the checkout, on the same
+  volume — with the commit's agent configuration replaced by the default
+  branch's, in a Claude Code session whose CLI `ccd` starts in that directory
+  (`X-Muster-CC-Workdir`). `ccd` accepts only that exact directory shape; the
+  CLI trusts it as a worktree of the trusted checkout. The worktree is removed
+  when the job ends. The checkout, its branch and its working tree are never
+  moved.
 
 To start one from the chief: connect the repository on the Repos tab (it
 must be one of your connected repositories), make sure a `github` connector

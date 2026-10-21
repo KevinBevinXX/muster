@@ -35,6 +35,10 @@ With the App configured:
   `github` connector existed) shows **Approve** once the App is configured.
   Approve it and the agent's next clone retry (every 30 s) succeeds, with no
   new dispatch.
+- **A machine-job pool worker is never approved.** Approving a `github` grant
+  (or one on any connector reaching github.com) for an agent in a worker pool
+  is refused, and a worker holding one is skipped for jobs: a pool worker holds
+  no GitHub credential ([jobs.md](jobs.md#worker-pools)).
 - **The Repos tab lists the installation's repositories** (for an admin). So do
   the dispatch pickers and the "connected repository" check that every
   claude-code dispatch and `task_dispatch` applies. The OAuth connection is not

@@ -65,6 +65,16 @@ func (k kindSet) ClaudeAccountAuthFailure(ctx context.Context, owner int64, acco
 	return k.pool.AuthFailure(ctx, owner, account)
 }
 
+// ClaudeAccountStates is api.AgentKinds': ccpool's marks for every one
+// of owner's accounts, for the job API's worker-pool selection. With no pool
+// there are no accounts.
+func (k kindSet) ClaudeAccountStates(ctx context.Context, owner int64) (map[string]ccpool.AccountState, error) {
+	if k.pool == nil {
+		return nil, ccpool.ErrNoUsableAccount
+	}
+	return k.pool.States(ctx, owner)
+}
+
 func (k kindSet) Unavailable(ctx context.Context, owner int64) map[string]string {
 	if k.plane == nil {
 		return map[string]string{}

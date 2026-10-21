@@ -310,6 +310,7 @@ func streamResponses(ctx context.Context, client *http.Client, url, token, sessi
 		return nil, fmt.Errorf("request: %w", err)
 	}
 	defer resp.Body.Close()
+	observeTurnRoute(req, resp)
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, ErrResponsesUnsupported
 	}

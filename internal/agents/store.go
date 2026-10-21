@@ -142,6 +142,12 @@ type Agent struct {
 	// NAME, never the token. Chosen once at dispatch by internal/ccpool and kept
 	// for the agent's life (migration 0003 enforces both halves).
 	CCAccount string `json:"ccAccount,omitempty"`
+	// WorkerPool is the named worker pool this claude-code agent serves machine
+	// jobs for (agents.worker_pool, migration 0041); "" for an agent in none.
+	// Set at creation (dispatch's worker_pool) and never written after; a job
+	// naming the pool instead of an agent is given one of its members
+	// (internal/api pickJobAgent). See [ValidWorkerPool].
+	WorkerPool string `json:"workerPool,omitempty"`
 	// OwnerID is the user this agent belongs to (agents.owner_id, migration
 	// 0006). A request authenticated by THIS agent's own token acts as this
 	// user (internal/api agentOwnerID). Not serialised: the JSON shape is

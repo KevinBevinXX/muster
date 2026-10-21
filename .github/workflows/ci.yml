@@ -452,6 +452,31 @@ jobs:
             sh -euc 'rm -rf /data/workspace && install -d -o 0 -g 1000 -m 2755 /data/workspace'
           docker run --rm -v cc-smoke-legacy:/data:nocopy -e CC_SMOKE_VOLUME=legacy-resume claude-code-agent:ci cc-smoke
 
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      # The machine job API's isolation, with the REAL CLI and ccd in this
+      # image: a commit whose .claude/settings.json defines a SessionStart hook
+      # (and auto-approves its .mcp.json server) runs neither in its job's
+      # worktree, while the same commit with no overlay runs both (the
+      # control). And the job's anonymous fetch of a public pull request from
+      # github.com bypasses the credentialed-proxy routing ccd writes for a
+      # granted agent (a plain fetch under the same routing reaches the proxy:
+      # the control). internal/agentprovision/realcli_test.go; it is behind the
+      # `realcli` build tag because it needs this image (and the network). A
+      # COUNT, not an exit code: each test must report PASS.
+      - name: real CLI - a job's commit runs none of its own hooks or MCP servers, and its fetch is anonymous
+        run: |
+          set -o pipefail
+          CGO_ENABLED=0 go test -c -tags realcli -o /tmp/realcli.test ./internal/agentprovision
+          docker run --rm --tmpfs /data:rw,exec,mode=2777,uid=0,gid=1000 \
+            -v /tmp/realcli.test:/usr/local/bin/realcli.test:ro claude-code-agent:ci \
+            realcli.test -test.run '^TestRealCLI' -test.v | tee /tmp/realcli.log
+          test "$(grep -c '^--- PASS: TestRealCLIRunsNoHookOrMCPServerFromAJobsCommit' /tmp/realcli.log)" = 1
+          test "$(grep -c '^--- PASS: TestRealCLIPullRequestFetchBypassesTheProxyRouting' /tmp/realcli.log)" = 1
+
   # Local: make e2e (after `npm ci && npx playwright install chromium` in e2e/,
   # with MUSTER_E2E_DATABASE_URL naming a database ending in _e2e). On NixOS set
   # PLAYWRIGHT_BROWSERS_PATH=$(nix build --print-out-paths

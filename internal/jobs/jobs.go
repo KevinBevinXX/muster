@@ -68,8 +68,16 @@ const (
 	// ReasonAgentUnavailable: the agent the job names could not be loaded when it
 	// was due to start (deleted since, or the store failed).
 	ReasonAgentUnavailable = "agent_unavailable"
-	// ReasonCheckoutFailed: moving the agent's checkout to the job's sha failed.
+	// ReasonCheckoutFailed: the job's worktree at its sha could not be made (the
+	// commit could not be fetched, the default branch could not be resolved or
+	// carries a symlink among the overlaid paths, or git failed). The token
+	// predates worktrees, when a sha job moved the agent's own checkout, and is
+	// kept so a caller branching on it sees no change.
 	ReasonCheckoutFailed = "checkout_failed"
+	// ReasonWorkdirUnconfirmed: a sha job's turn succeeded but the agent's
+	// runtime did not confirm it ran in the job's worktree — an agent image too
+	// old for sha jobs — so its output was discarded.
+	ReasonWorkdirUnconfirmed = "workdir_unconfirmed"
 	// ReasonResultReadFailed: the turn succeeded but result_path could not be read.
 	ReasonResultReadFailed = "result_read_failed"
 	// ReasonEmptyReply: the turn succeeded with no reply text and no result_path
@@ -130,6 +138,17 @@ var shaPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 // ValidSHA reports whether s is a commit id a job may name.
 func ValidSHA(s string) bool { return shaPattern.MatchString(s) }
 
+// repoPattern is a GitHub repository owner/name a sha job may name: it becomes
+// the anonymous fetch URL's path (agentprovision.AnonymousFetchURL), so each
+// half is one plain path element. The same shape as agentspec's checkout name.
+var repoPattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*/[A-Za-z0-9_][A-Za-z0-9._-]*$`)
+
+// ValidRepo reports whether s is a repository owner/name a sha job may name.
+func ValidRepo(s string) bool { return repoPattern.MatchString(s) && !strings.Contains(s, "..") }
+
+// MaxPR bounds a pull request number.
+const MaxPR = 1<<31 - 1
+
 // ValidResultPath reports whether p may be a job's result_path: a non-empty,
 // relative, already-clean path with no ".", ".." or ".git" element, at most 512
 // bytes, and no NUL. It is resolved against the agent's working directory.
@@ -153,12 +172,17 @@ func ValidResultPath(p string) bool {
 
 // Job is one row.
 type Job struct {
-	ID             int64
-	AgentID        int64 // 0 once the agent is deleted
-	Agent          string
-	Prompt         string
-	Repo           string
-	SHA            string
+	ID      int64
+	AgentID int64 // 0 once the agent is deleted
+	Agent   string
+	// WorkerPool is the pool the job was submitted to ("" when it named its
+	// agent); Agent is the member the pool chose.
+	WorkerPool string
+	Prompt     string
+	Repo       string
+	SHA        string
+	// PR is the pull request a sha job's commit is on (0 without a sha).
+	PR             int
 	ResultPath     string
 	TimeoutSeconds int
 	IdempotencyKey string
@@ -186,9 +210,11 @@ func (j Job) Terminal() bool {
 type NewJob struct {
 	AgentID        int64
 	Agent          string
+	WorkerPool     string
 	Prompt         string
 	Repo           string
 	SHA            string
+	PR             int
 	ResultPath     string
 	TimeoutSeconds int
 	IdempotencyKey string
@@ -223,6 +249,11 @@ type Store interface {
 	Create(ctx context.Context, n NewJob) (j Job, created bool, err error)
 	// Get is one of the caller's jobs, or ErrNotFound.
 	Get(ctx context.Context, id int64) (Job, error)
+	// ByIdempotencyKey is the caller's job recorded with key, or ErrNotFound.
+	ByIdempotencyKey(ctx context.Context, key string) (Job, error)
+	// ActiveCounts is, for each of agentIDs that has any, how many of its jobs
+	// are queued and how many running. An agent with none is absent.
+	ActiveCounts(ctx context.Context, agentIDs []int64) (map[int64]ActiveCount, error)
 	// Start moves a queued job to running, recording the Claude account and the
 	// chat session the turn runs on. It reports false when the job was not
 	// queued any more (the reaper failed it), and then the caller must not run
@@ -332,7 +363,7 @@ type PGStore struct{ pool *pgxpool.Pool }
 // NewPG returns a Store on pool.
 func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 
-const jobColumns = `id, coalesce(agent_id, 0), agent_name, prompt, repo, sha, result_path, timeout_s,
+const jobColumns = `id, coalesce(agent_id, 0), agent_name, worker_pool, prompt, repo, sha, pr, result_path, timeout_s,
 	coalesce(idempotency_key, ''), requested_by, status, result, reason, error, cc_account,
 	coalesce(session_id, 0), created_at, started_at, finished_at`
 
@@ -340,7 +371,7 @@ func scanJob(row pgx.Row) (Job, error) {
 	var j Job
 	var result *string
 	var started, finished *time.Time
-	if err := row.Scan(&j.ID, &j.AgentID, &j.Agent, &j.Prompt, &j.Repo, &j.SHA, &j.ResultPath, &j.TimeoutSeconds,
+	if err := row.Scan(&j.ID, &j.AgentID, &j.Agent, &j.WorkerPool, &j.Prompt, &j.Repo, &j.SHA, &j.PR, &j.ResultPath, &j.TimeoutSeconds,
 		&j.IdempotencyKey, &j.RequestedBy, &j.Status, &result, &j.Reason, &j.Error, &j.CCAccount,
 		&j.SessionID, &j.CreatedAt, &started, &finished); err != nil {
 		return Job{}, err
@@ -404,11 +435,11 @@ func (s *PGStore) Create(ctx context.Context, n NewJob) (Job, bool, error) {
 				ErrAgentAtCapacity, active, n.Agent, MaxActivePerAgent)
 		}
 	}
-	j, err := scanJob(tx.QueryRow(ctx, `INSERT INTO jobs (agent_id, agent_name, prompt, repo, sha, result_path,
-		timeout_s, idempotency_key, requested_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	j, err := scanJob(tx.QueryRow(ctx, `INSERT INTO jobs (agent_id, agent_name, worker_pool, prompt, repo, sha, pr, result_path,
+		timeout_s, idempotency_key, requested_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (owner_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
 		RETURNING `+jobColumns,
-		agentID, n.Agent, n.Prompt, n.Repo, n.SHA, n.ResultPath, n.TimeoutSeconds, key, n.RequestedBy))
+		agentID, n.Agent, n.WorkerPool, n.Prompt, n.Repo, n.SHA, n.PR, n.ResultPath, n.TimeoutSeconds, key, n.RequestedBy))
 	if err == nil {
 		if err := tx.Commit(ctx); err != nil {
 			return Job{}, false, fmt.Errorf("jobs: create: commit: %w", err)
@@ -437,6 +468,50 @@ func (s *PGStore) Get(ctx context.Context, id int64) (Job, error) {
 		return Job{}, fmt.Errorf("jobs: get %d: %w", id, err)
 	}
 	return j, nil
+}
+
+// ByIdempotencyKey is the caller's job recorded with key.
+func (s *PGStore) ByIdempotencyKey(ctx context.Context, key string) (Job, error) {
+	j, err := scanJob(s.pool.QueryRow(ctx, `SELECT `+jobColumns+` FROM jobs WHERE idempotency_key = $1`, key))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Job{}, ErrNotFound
+	}
+	if err != nil {
+		return Job{}, fmt.Errorf("jobs: get by idempotency key: %w", err)
+	}
+	return j, nil
+}
+
+// ActiveCount is how many of one agent's jobs are queued and running.
+type ActiveCount struct {
+	Queued, Running int
+}
+
+// Active is Queued + Running: what MaxActivePerAgent bounds.
+func (c ActiveCount) Active() int { return c.Queued + c.Running }
+
+// ActiveCounts counts the caller's queued and running jobs per agent.
+func (s *PGStore) ActiveCounts(ctx context.Context, agentIDs []int64) (map[int64]ActiveCount, error) {
+	out := map[int64]ActiveCount{}
+	if len(agentIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT agent_id, count(*) FILTER (WHERE status = 'queued'),
+		count(*) FILTER (WHERE status = 'running')
+		FROM jobs WHERE agent_id = ANY($1) AND status IN ('queued', 'running') GROUP BY agent_id`, agentIDs)
+	if err != nil {
+		return nil, fmt.Errorf("jobs: count active: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var c ActiveCount
+		if err := rows.Scan(&id, &c.Queued, &c.Running); err != nil {
+			return nil, fmt.Errorf("jobs: count active: %w", err)
+		}
+		out[id] = c
+	}
+	return out, rows.Err()
 }
 
 // Start moves a queued job to running.

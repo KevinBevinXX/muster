@@ -744,6 +744,7 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 	noteText := strings.TrimSpace(r.FormValue("note_text"))
 	kind := strings.TrimSpace(r.FormValue("kind"))
 	ccAccount := strings.TrimSpace(r.FormValue("cc_account"))
+	workerPool := strings.TrimSpace(r.FormValue("worker_pool"))
 
 	// Resolve the kickoff note: an existing note's body takes precedence.
 	var noteID *int64
@@ -768,7 +769,7 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.createAndDispatchAgent(ctx, dispatchParams{
 		Repo: repo, RepoBranch: branch, Model: model, NoteID: noteID, NoteText: noteText,
 		Kickoff: action == "dispatch",
-		Kind:    kind, CCAccount: ccAccount,
+		Kind:    kind, CCAccount: ccAccount, WorkerPool: workerPool,
 	}); err != nil {
 		s.logger.Printf("agents: create/dispatch: %v", err)
 		// A kind/account refusal is decided BEFORE the row exists and is the
@@ -910,6 +911,10 @@ type dispatchParams struct {
 	// CCAccount PINS a claude-code agent's Claude account; "" lets the pool
 	// choose. Refused for any other kind.
 	CCAccount string
+	// WorkerPool makes a claude-code agent a member of that machine-job worker
+	// pool (agents.Agent.WorkerPool); "" for none. Refused for any other kind
+	// and for a name agents.ValidWorkerPool refuses.
+	WorkerPool string
 }
 
 // claudeCodeNoModel is the one sentence both model writes refuse with.
@@ -1035,6 +1040,17 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	if err != nil {
 		return agents.Agent{}, err
 	}
+	// A worker pool is machine jobs', which run on claude-code agents only
+	// (migration 0041's agents_worker_pool_check refuses the row as well).
+	if p.WorkerPool != "" {
+		if kind != agents.KindClaudeCode {
+			return agents.Agent{}, fmt.Errorf("%w: worker_pool %q: only a %s agent can be a machine-job worker", ErrDispatchRefused,
+				p.WorkerPool, agents.KindClaudeCode)
+		}
+		if !agents.ValidWorkerPool(p.WorkerPool) {
+			return agents.Agent{}, fmt.Errorf("%w: worker_pool %q is not 1-63 of [a-z0-9-], not starting with '-'", ErrDispatchRefused, p.WorkerPool)
+		}
+	}
 	// 🔴 A CLAUDE-CODE AGENT'S REPOSITORY MUST BE A CONNECTED ONE, from every
 	// door (the forms, the API, task_dispatch): its session starts PRE-TRUSTED
 	// in the checkout (ccd seed), so the repository's .claude/settings.json
@@ -1094,6 +1110,7 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 		Status:      agents.StatusProvisioning,
 		Kind:        kind,
 		CCAccount:   account,
+		WorkerPool:  p.WorkerPool,
 	})
 	if err != nil {
 		return agents.Agent{}, err

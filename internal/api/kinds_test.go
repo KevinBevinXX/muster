@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/ccpool"
 )
 
 // stubKinds is AgentKinds for tests: both kinds enabled, a fixed account list,
@@ -36,6 +37,9 @@ func (k stubKinds) Enabled() []string {
 }
 func (k stubKinds) ClaudeAccounts(context.Context, int64) ([]string, error) { return k.accounts, nil }
 func (k stubKinds) Unavailable(context.Context, int64) map[string]string    { return k.unavailable }
+func (k stubKinds) ClaudeAccountStates(context.Context, int64) (map[string]ccpool.AccountState, error) {
+	return nil, nil
+}
 func (k stubKinds) SelectClaudeAccount(_ context.Context, owner int64, pin string) (string, error) {
 	if k.owners != nil {
 		*k.owners = append(*k.owners, owner)
@@ -102,6 +106,34 @@ func TestAClaudeCodeDispatchStoresTheKindAndThePoolsAccount(t *testing.T) {
 	}
 	if strings.Join(pins, ",") != ",personal" {
 		t.Fatalf("pool asked with pins %q, want auto then personal (and never for the gateway dispatch)", pins)
+	}
+}
+
+// TestADispatchCanMakeAClaudeCodeAgentAPoolWorker: worker_pool is stored on a
+// claude-code agent's row; on a gateway agent, or as a name the pattern
+// refuses, it is a 409 before any row exists.
+func TestADispatchCanMakeAClaudeCodeAgentAPoolWorker(t *testing.T) {
+	s, h, store := kindsServer(t, stubKinds{pick: "work"})
+	if rec := postDispatch(t, s, h, url.Values{"kind": {"claude-code"}, "worker_pool": {"reviewers"}}); rec.Code != http.StatusOK {
+		t.Fatalf("claude-code worker: %d %s", rec.Code, rec.Body)
+	}
+	if rows := store.rows(); len(rows) != 1 || rows[0].WorkerPool != "reviewers" || rows[0].Kind != agents.KindClaudeCode {
+		t.Fatalf("rows = %+v, want one claude-code row in pool reviewers", rows)
+	}
+	for _, tc := range []struct {
+		form url.Values
+		want string
+	}{
+		{url.Values{"worker_pool": {"reviewers"}}, `worker_pool "reviewers": only a claude-code agent can be a machine-job worker`},
+		{url.Values{"kind": {"claude-code"}, "worker_pool": {"-bad"}}, `worker_pool "-bad" is not 1-63 of [a-z0-9-], not starting with '-'`},
+	} {
+		rec := postDispatch(t, s, h, tc.form)
+		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), tc.want) {
+			t.Errorf("%v = %d %q, want 409 carrying %q", tc.form, rec.Code, rec.Body, tc.want)
+		}
+	}
+	if n := len(store.rows()); n != 1 {
+		t.Fatalf("%d rows, want 1 (the refusals created none)", n)
 	}
 }
 

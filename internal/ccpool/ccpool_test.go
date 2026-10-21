@@ -165,6 +165,39 @@ func newPool(t *testing.T, st Store) *Pool {
 	return p
 }
 
+// TestStatesReportsWhatChooseWouldSkip: per configured account, AuthFailed is
+// true exactly for a mark against the CURRENT token (alpha), not for one
+// against a replaced token (beta), and RateLimitedAt is the mark's; an account
+// with no mark (gamma) is present and clean; a marked name that is not
+// configured is absent. Read for the owner asked.
+func TestStatesReportsWhatChooseWouldSkip(t *testing.T) {
+	st := &fakeStore{marks: map[string]Mark{
+		"alpha":   {AuthFailedAt: t0, AuthFailedToken: Fingerprint(tokAlpha), RateLimitedAt: t0.Add(time.Hour)},
+		"beta":    {AuthFailedAt: t0, AuthFailedToken: Fingerprint("sk-ant-oat01-FAKE-old-token"), RateLimitedAt: t0},
+		"retired": {AuthFailedAt: t0, AuthFailedToken: "x"},
+	}}
+	got, err := newPool(t, st).States(context.Background(), opOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]AccountState{
+		"alpha": {AuthFailed: true, RateLimitedAt: t0.Add(time.Hour)},
+		"beta":  {RateLimitedAt: t0},
+		"gamma": {},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("States = %v, want %v", got, want)
+	}
+	for n, w := range want {
+		if g, ok := got[n]; !ok || g.AuthFailed != w.AuthFailed || !g.RateLimitedAt.Equal(w.RateLimitedAt) {
+			t.Errorf("States[%s] = %+v (present %v), want %+v", n, g, ok, w)
+		}
+	}
+	if len(st.asked) != 1 || st.asked[0] != opOwner {
+		t.Fatalf("marks read for owners %v, want [%d]", st.asked, opOwner)
+	}
+}
+
 func TestSelectHonoursAPinOverEverySelectionRule(t *testing.T) {
 	// gamma loses on every automatic rule — rate-limited most recently, most live
 	// agents, last by name, and its current token failed auth — and a pin still

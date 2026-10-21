@@ -35,6 +35,9 @@ func (k isoKinds) SelectClaudeAccount(ctx context.Context, owner int64, pin stri
 func (k isoKinds) Unavailable(ctx context.Context, owner int64) map[string]string {
 	return k.plane.Unavailable(ctx, owner, k.Enabled())
 }
+func (k isoKinds) ClaudeAccountStates(ctx context.Context, owner int64) (map[string]ccpool.AccountState, error) {
+	return k.pool.States(ctx, owner)
+}
 
 // isoCredPage is api.CredentialStore over the real store and plane.
 type isoCredPage struct {

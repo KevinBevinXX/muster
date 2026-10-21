@@ -738,24 +738,37 @@ func (s *Server) handleConnectorCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.auditGrant(ctx, connectors.Grant{Connector: c.Name}, "connector created by the operator")
 	notice := "Connector " + c.Name + " saved."
+	refused := ""
 	if f.RequestID != 0 {
 		src := connectors.SourceStored
-		if pg, gerr := s.ext.Connectors.GetGrant(ctx, f.RequestID); gerr == nil {
+		// 🔴 FAIL CLOSED: a request that cannot be read now is not approved —
+		// the pool-worker refusal needs its agent, and skipping the check on a
+		// read error would approve exactly what it exists to refuse.
+		var rerr error
+		if pg, gerr := s.ext.Connectors.GetGrant(ctx, f.RequestID); gerr != nil {
+			rerr = fmt.Errorf("the request could not be read (%v), so it was not approved; approve it below", gerr)
+		} else {
+			rerr = s.refusePoolWorkerGitHubGrant(ctx, pg)
 			src = connectors.SourceFor(ctx, s.ext.Connectors, pg.Connector)
 		}
-		g, err := s.ext.Connectors.DecideGrant(ctx, f.RequestID, true, "operator", src)
-		if err != nil {
-			s.logger.Printf("connectors: approve %d after create: %v", f.RequestID, err)
-			s.renderConnectorsContent(w, r, ui.ConnectorsContent{Notice: notice,
-				Error: "The connector was saved but the request could not be approved; approve it below."})
-			s.broadcast(r.Context(), EventConnectorChanged, c.Name)
-			return
+		if rerr != nil {
+			s.logger.Printf("connectors: approve %d after create: %v", f.RequestID, rerr)
+			refused = rerr.Error() + "."
+		} else {
+			g, err := s.ext.Connectors.DecideGrant(ctx, f.RequestID, true, "operator", src)
+			if err != nil {
+				s.logger.Printf("connectors: approve %d after create: %v", f.RequestID, err)
+				s.renderConnectorsContent(w, r, ui.ConnectorsContent{Notice: notice,
+					Error: "The connector was saved but the request could not be approved; approve it below."})
+				s.broadcast(r.Context(), EventConnectorChanged, c.Name)
+				return
+			}
+			s.auditGrant(ctx, g, "approved")
+			notice = "Connector " + c.Name + " saved and " + g.AgentName + " approved."
 		}
-		s.auditGrant(ctx, g, "approved")
-		notice = "Connector " + c.Name + " saved and " + g.AgentName + " approved."
 	}
 	s.broadcast(r.Context(), EventConnectorChanged, c.Name)
-	s.renderConnectorsContent(w, r, ui.ConnectorsContent{Notice: notice})
+	s.renderConnectorsContent(w, r, ui.ConnectorsContent{Notice: notice, Error: refused})
 }
 
 func (s *Server) auditGrant(ctx context.Context, g connectors.Grant, detail string) {
@@ -861,6 +874,9 @@ func (s *Server) decideConnectorGrant(ctx context.Context, id int64, approve boo
 		if _, err := s.ext.Connectors.GetConnector(ctx, g.Connector); err != nil {
 			return g, errConnectorMissing{name: g.Connector}
 		}
+		if err := s.refusePoolWorkerGitHubGrant(ctx, g); err != nil {
+			return g, err
+		}
 		src = connectors.SourceFor(ctx, s.ext.Connectors, g.Connector)
 	}
 	g, err := s.ext.Connectors.DecideGrantFrom(ctx, id, approve, "operator", src, via)
@@ -898,9 +914,13 @@ func (s *Server) decideConnectorRequest(w http.ResponseWriter, r *http.Request, 
 	}
 	g, err := s.decideConnectorGrant(r.Context(), id, approve, connectors.DecisionSource{})
 	var missing errConnectorMissing
+	var poolWorker errPoolWorkerGitHubGrant
 	switch {
 	case errors.Is(err, errGrantUnreadable):
 		s.renderConnectorsContent(w, r, ui.ConnectorsContent{Error: "That request no longer exists."})
+		return
+	case errors.As(err, &poolWorker):
+		s.renderConnectorsContent(w, r, ui.ConnectorsContent{Error: poolWorker.Error() + "."})
 		return
 	case errors.As(err, &missing):
 		s.renderConnectorsContent(w, r, ui.ConnectorsContent{Error: "Connector " + missing.name +
