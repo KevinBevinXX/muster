@@ -7,6 +7,14 @@ outcome. A job runs as one turn of an existing, running `claude-code` agent.
 This is a first cut. It targets one named agent; choosing an agent from a pool
 is not implemented yet (see [What it does not do](#what-it-does-not-do)).
 
+> **Not safe for untrusted commits yet.** A job with a `sha` checks that commit
+> out in the agent's own working tree, so nothing isolates the turn from the
+> `.claude/` (agent config, hooks) that commit carries. Whether a given turn
+> picks it up depends on when the CLI reads it, which has not been checked, so
+> assume a commit under review can change its own reviewer. A per-job worktree with `.claude/`
+> taken from the default branch comes with worker pools; do not point an
+> orchestrator at commits you do not trust until then.
+
 ## Auth
 
 Both routes are on the service tier: `MUSTER_SERVICE_TOKEN` as
@@ -122,6 +130,8 @@ The job's `timeout_s` covers steps 3–5, not the wait in step 1.
 ## What it does not do
 
 - **No worker pools.** A job names one agent.
+- **No `.claude/` overlay, no per-job worktree.** See the warning at the top:
+  a `sha` job is not isolated from that commit's own agent config and hooks.
 - **No survival across a restart.** The turn runs inside the server process. At
   boot, every job left `queued` or `running` is failed with `interrupted`. The
   agent may have done some of the work, so re-submitting is the caller's call.
