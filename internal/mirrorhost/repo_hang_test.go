@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -63,50 +62,4 @@ func TestAHungFilesystemDoesNotFreezeTheRepoLookup(t *testing.T) {
 		}
 	}
 	t.Fatal("the walk's late answer never replaced the fallback")
-}
-
-// devInfo is a FileInfo whose stat result names device dev.
-type devInfo struct {
-	os.FileInfo
-	dev uint64
-}
-
-func (d devInfo) Sys() any { return &syscall.Stat_t{Dev: d.dev} }
-
-// TestTheRepoWalkStopsAtAFilesystemBoundary (#151): a cwd on a filesystem
-// mounted inside a repository is not in that repository — git's own discovery
-// stops at the mount — so the walk does not climb out of it to the repository's
-// .git, and the window is named by its cwd.
-func TestTheRepoWalkStopsAtAFilesystemBoundary(t *testing.T) {
-	root := repoTree(t)
-	mount := filepath.Join(root, "src/fixture-repo/mnt")
-	cwd := filepath.Join(mount, "inner")
-	if err := os.MkdirAll(cwd, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	stat := func(p string) (os.FileInfo, error) {
-		fi, err := os.Stat(p)
-		if err != nil {
-			return nil, err
-		}
-		dev := uint64(41)
-		if p == mount || strings.HasPrefix(p, mount+string(filepath.Separator)) {
-			dev = 42 // the mounted filesystem
-		}
-		return devInfo{fi, dev}, nil
-	}
-	if got := repoName(cwd, stat); got != "inner" {
-		t.Fatalf("a cwd on a mount inside a repository was named %q, want %q", got, "inner")
-	}
-	// The same tree on ONE filesystem walks up to the repository, as before.
-	same := func(p string) (os.FileInfo, error) {
-		fi, err := os.Stat(p)
-		if err != nil {
-			return nil, err
-		}
-		return devInfo{fi, 41}, nil
-	}
-	if got := repoName(cwd, same); got != "fixture-repo" {
-		t.Fatalf("on one filesystem: %q, want fixture-repo", got)
-	}
 }

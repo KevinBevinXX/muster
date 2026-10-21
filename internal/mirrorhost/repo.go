@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -29,11 +28,6 @@ import (
 // alone (cached like any answer), and the walk — which cannot be cancelled —
 // is left to finish in the background, ONE per cwd at a time, its answer
 // replacing the fallback if it ever returns.
-//
-// 🔴 THE WALK STOPS AT A FILESYSTEM BOUNDARY, as git's own discovery does
-// (without GIT_DISCOVERY_ACROSS_FILESYSTEM): a cwd on a mount inside a
-// repository is not in that repository, and walking up out of a mount is how
-// a lookup reaches a filesystem it was never asked about.
 
 // repoCacheTTL is how long a cwd's answer is kept: a `git init` (or a deleted
 // .git) shows within this long.
@@ -152,16 +146,6 @@ func cwdName(cwd string) string {
 	return mirror.CleanRepoName(filepath.Base(start))
 }
 
-// deviceOf is the filesystem a stat result is on; false when the platform's
-// stat carries none.
-func deviceOf(fi os.FileInfo) (uint64, bool) {
-	st, ok := fi.Sys().(*syscall.Stat_t)
-	if !ok || st == nil {
-		return 0, false
-	}
-	return uint64(st.Dev), true //nolint:unconvert // int32 on darwin
-}
-
 // repoName is the name muster shows for a window working in cwd: the basename
 // of the nearest directory from cwd up holding a `.git` (git's own top level,
 // a worktree's included), else cwd's own basename; "" for no cwd, a relative
@@ -169,21 +153,12 @@ func deviceOf(fi os.FileInfo) (uint64, bool) {
 // " (deleted)" link) is looked up by its path without the suffix: a deleted
 // subdirectory of a repository still names the repository, and a deleted
 // directory outside one is named by itself. The name is CleanRepoName's.
-//
-// The walk does not leave cwd's filesystem: a parent on another device ends it
-// (git's discovery boundary). A cwd that cannot be stat'ed (deleted) has no
-// device to keep to, and walks as before.
 func repoName(cwd string, stat func(string) (os.FileInfo, error)) string {
 	cwd = strings.TrimSuffix(cwd, deletedSuffix)
 	if cwd == "" || !filepath.IsAbs(cwd) {
 		return ""
 	}
 	start := filepath.Clean(cwd)
-	var dev uint64
-	keepDev := false
-	if fi, err := stat(start); err == nil {
-		dev, keepDev = deviceOf(fi)
-	}
 	d := start
 	for i := 0; i < repoWalkMax; i++ {
 		if _, err := stat(filepath.Join(d, ".git")); err == nil {
@@ -195,17 +170,7 @@ func repoName(cwd string, stat func(string) (os.FileInfo, error)) string {
 		if d == filepath.Dir(d) {
 			break
 		}
-		parent := filepath.Dir(d)
-		if keepDev {
-			fi, err := stat(parent)
-			if err != nil {
-				break
-			}
-			if pd, ok := deviceOf(fi); ok && pd != dev {
-				break // a filesystem boundary: git stops here too
-			}
-		}
-		d = parent
+		d = filepath.Dir(d)
 	}
 	return cwdName(start)
 }
