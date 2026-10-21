@@ -5,6 +5,7 @@ import { test, expect } from '../lib/fixtures';
 import { workCardsPort } from '../lib/env';
 import { MirrorRig, cc } from '../lib/mirrorhost';
 import { clsInit, readCls, resetCls, settle } from '../lib/cls';
+import { writeFileAtomic } from '../lib/atomic';
 
 // LIVE WORK COUNTS AND THE TMUX IDENTITY COLOUR ON MIRRORED CARDS
 // (docs/design/agent-cards.md (a) and (b)), every hop real: a real
@@ -42,7 +43,7 @@ let trOld = '';
 // status writes a fake window's <transcript>.status: its RAW Claude Code
 // status and what the real host reads from /proc.
 function status(tr: string, s: string, shells: number) {
-  fs.writeFileSync(tr + '.status', JSON.stringify({ status: s, statusUpdatedAt: Date.now() - 5_000, startedAt: Date.now() - 3_600_000, shells }));
+  writeFileAtomic(tr + '.status', JSON.stringify({ status: s, statusUpdatedAt: Date.now() - 5_000, startedAt: Date.now() - 3_600_000, shells }));
 }
 
 // An Agent call at a time the ledger counts (after the CLI started).
@@ -66,7 +67,7 @@ test.beforeAll(async () => {
   status(trOld, 'busy', 2);
   const now = Math.floor(Date.now() / 1000);
   const windows = path.join(rig.dir, 'windows');
-  fs.writeFileSync(
+  writeFileAtomic(
     windows,
     [
       `fleet|@5|5|1|claude|${now - 60}|${trBusy}|||#d79921`,
@@ -77,7 +78,7 @@ test.beforeAll(async () => {
   );
   await rig.startHost({ MUSTER_MIRROR_E2E_WINDOWS_FILE: windows, MUSTER_MIRROR_E2E_REFRESH: '300ms' });
   const oldWindows = path.join(rig.dir, 'windows-old');
-  fs.writeFileSync(oldWindows, `relic|@9|0|1|claude|${now - 30}|${trOld}|||#d79921\n`);
+  writeFileAtomic(oldWindows, `relic|@9|0|1|claude|${now - 30}|${trOld}|||#d79921\n`);
   stopOld = rig.extraHost(oldHost, { MUSTER_MIRROR_E2E_WINDOWS_FILE: oldWindows, MUSTER_MIRROR_E2E_REFRESH: '300ms', MUSTER_MIRROR_E2E_NO_WORK: '1' });
 });
 

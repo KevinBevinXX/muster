@@ -7,6 +7,7 @@ import { test, expect } from '../lib/fixtures';
 import { binDir, dsn, focusPort, password, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { clsInit, readCls, resetCls, settle } from '../lib/cls';
+import { writeFileAtomic } from '../lib/atomic';
 
 // SESSION FOCUS ON THE CARDS, in a real browser, against a real muster-server
 // (MUSTER_MIRROR=1, its own port) and a real muster-mirror over the tunnel (the
@@ -80,7 +81,7 @@ test.beforeAll(async () => {
   fs.writeFileSync(transcript2, '');
   const now = Math.floor(Date.now() / 1000);
   // session|id|index|active|command|activity|claude-transcript
-  fs.writeFileSync(windowsFile, `focuswin|@1|1|1|claude|${now - 60}|${transcript}\nfocuswin|@2|2|0|zsh|${now - 120}|\nfocuswin|@3|3|0|claude|${now - 180}|${transcript2}\nreconciling|@4|1|1|zsh|${now - 240}|\n`);
+  writeFileAtomic(windowsFile, `focuswin|@1|1|1|claude|${now - 60}|${transcript}\nfocuswin|@2|2|0|zsh|${now - 120}|\nfocuswin|@3|3|0|claude|${now - 180}|${transcript2}\nreconciling|@4|1|1|zsh|${now - 240}|\n`);
   mirrorProc = spawn(mirrorBin, [], {
     env: {
       ...process.env,

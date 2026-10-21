@@ -3,6 +3,7 @@ import { Page } from '@playwright/test';
 import { test, expect, takeNew } from '../lib/fixtures';
 import { hostIconsPort } from '../lib/env';
 import { MirrorRig } from '../lib/mirrorhost';
+import { writeFileAtomic } from '../lib/atomic';
 
 // THE AGENTS TAB, ON A REAL SERVER WITH TWO MIRRORED HOSTS (the e2eterm binary,
 // mirror plugin on, two real muster-mirror processes; only tmux is faked), plus
@@ -40,8 +41,8 @@ test.beforeAll(async () => {
   await rig.start();
   const fa = rig.transcript('', 'windows-a');
   const fb = rig.transcript('', 'windows-b');
-  fs.writeFileSync(fa, windowsA.join('\n') + '\n');
-  fs.writeFileSync(fb, windowsB.join('\n') + '\n');
+  writeFileAtomic(fa, windowsA.join('\n') + '\n');
+  writeFileAtomic(fb, windowsB.join('\n') + '\n');
   await rig.startHost({ MUSTER_MIRROR_E2E_WINDOWS_FILE: fa });
   rig.extraHost(hostB, { MUSTER_MIRROR_E2E_WINDOWS_FILE: fb });
 });

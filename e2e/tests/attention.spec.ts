@@ -5,6 +5,7 @@ import path from 'node:path';
 import { test, expect } from '../lib/fixtures';
 import { attentionConnectPort, attentionMirrorMCPPort, attentionPort, binDir, dsn, password, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
+import { writeFileAtomic } from '../lib/atomic';
 
 // THE ATTENTION QUEUE, the operator's click path, every hop real:
 //
@@ -89,10 +90,10 @@ test.beforeAll(async () => {
       .join('\n') + '\n',
   );
   // Claude Code waiting on the person, as its sessions file says it.
-  fs.writeFileSync(tr + '.status', JSON.stringify({ status: 'waiting', statusUpdatedAt: Date.now() - 30_000 }));
+  writeFileAtomic(tr + '.status', JSON.stringify({ status: 'waiting', statusUpdatedAt: Date.now() - 30_000 }));
   const windows = path.join(dir, 'windows');
   fs.writeFileSync(trSplit, JSON.stringify({ type: 'user', message: { role: 'user', content: 'in the split' } }) + '\n');
-  fs.writeFileSync(windows, `work|@1|0|1|claude|${Math.floor(Date.now() / 1000) - 60}|${tr}|${trSplit}\n`);
+  writeFileAtomic(windows, `work|@1|0|1|claude|${Math.floor(Date.now() / 1000) - 60}|${tr}|${trSplit}\n`);
   mirrorProc = spawn(mirrorBin, [], {
     env: {
       ...process.env,
@@ -330,7 +331,7 @@ test('a message sent to the asking session answers its ask, live', async ({ page
   // takes the item out of the open queue — measured, not assumed.
   const session = page.locator('[data-attention-item][data-kind="session"]');
   await expect(session).toHaveCount(1);
-  fs.writeFileSync(tr + '.status', JSON.stringify({ status: 'busy', statusUpdatedAt: Date.now() }));
+  writeFileAtomic(tr + '.status', JSON.stringify({ status: 'busy', statusUpdatedAt: Date.now() }));
   const flipped = Date.now();
   await expect(session).toHaveCount(0, { timeout: 15_000 });
   const took = Date.now() - flipped;

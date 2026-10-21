@@ -72,6 +72,48 @@ const checkForUpdate = async () => {
   await reg!.update();
 };
 
+// Signs the browser out UNDER the open page, without the page reloading itself.
+//
+// 🔴 THE PAGE IS STILL A SIGNED-IN DOCUMENT THAT POLLS. Its htmx fragments ask
+// on timers, on SSE (re)open and on muster:resync, and the app's auth gate
+// (components.go, htmx:beforeSwap) turns any 401 into location.reload(). With
+// the cookies cleared, one such request landing before the test's own steps
+// reloads the page: onto /login while a server answers (no toast), or — when
+// its 401 lands while deployB has the port closed — onto
+// chrome-error://chromewebdata/, where navigator.serviceWorker is undefined
+// and checkForUpdate throws "Cannot read properties of undefined (reading
+// 'getRegistration')". That was this spec's flake (CI, 655 ms).
+//
+// So the page's own XHR/fetch traffic is aborted from here on (an abort is a
+// sendError, which only toasts), and a resync is provoked at once so the
+// hazard is exercised on every run rather than when a timer happens to land
+// in the window. Navigations, the worker's own fetches (page.route never sees
+// them) and the update check are untouched.
+//
+// ⚠ THIS GUARD DELIBERATELY MASKS A REAL PRODUCT PATH. A signed-out tab's 401
+// goes to the auth gate's location.reload() (internal/ui/components.go,
+// htmx:beforeSwap), and during a deploy's restart window that reload lands on
+// chrome-error:// — a dead tab. These tests are about the worker's update, not
+// that path, so they keep it out; NO spec covers it. It is tracked as a
+// separate product defect.
+async function signOutUnderPage(page: Page): Promise<void> {
+  let stopped = 0;
+  await page.route('**/*', (route) => {
+    const type = route.request().resourceType();
+    if (type === 'xhr' || type === 'fetch') {
+      stopped++;
+      return route.abort();
+    }
+    return route.continue();
+  });
+  const url = page.url();
+  await page.context().clearCookies();
+  await page.evaluate(() => document.body.dispatchEvent(new CustomEvent('muster:resync')));
+  await expect.poll(() => stopped, { message: 'CONTROL: the page really asked for its fragments after the sign-out' }).toBeGreaterThan(0);
+  await deployB();
+  expect(page.url(), 'the sign-out did not reload the page').toBe(url);
+}
+
 test('a new build is offered, waits for Reload, and Reload takes it exactly once', async ({ page }) => {
   server = await startServer(versionA, updatePort);
   const origin = `http://localhost:${updatePort}`;
@@ -159,7 +201,7 @@ test('the update toast survives an in-app navigation while the update waits', as
 // F2: a deploy installed while the page has NO session. The new worker's
 // precache of "/" is refused (401 to a worker fetch), and that must not cost
 // the offline shell the previous build cached.
-test('an update installed while signed out keeps the offline shell', async ({ page, context }) => {
+test('an update installed while signed out keeps the offline shell', async ({ page }) => {
   server = await startServer(versionA, updatePort);
   const origin = `http://localhost:${updatePort}`;
   await page.goto(origin + '/tasks');
@@ -167,8 +209,7 @@ test('an update installed while signed out keeps the offline shell', async ({ pa
   // Per-build naming, and a real shell, from a signed-in install.
   await expect.poll(() => page.evaluate(shellCaches)).toEqual({ ['muster-shell-' + versionA]: goodShell });
 
-  await context.clearCookies();
-  await deployB();
+  await signOutUnderPage(page);
   // Positive control on the premise: signed out, "/" really is refused.
   expect((await page.request.get(origin + '/', { maxRedirects: 0 })).status()).not.toBe(200);
   await page.evaluate(checkForUpdate);
@@ -227,8 +268,7 @@ test('an update installed while signed out keeps the offline shell styled', asyn
     )
     .toBe(true);
 
-  await context.clearCookies();
-  await deployB();
+  await signOutUnderPage(page);
   await page.evaluate(checkForUpdate);
   await expect(page.locator('#sw-update-toast')).toBeVisible();
   await page.locator('[data-sw-reload]').click();

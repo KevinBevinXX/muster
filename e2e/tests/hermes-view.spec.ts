@@ -4,6 +4,7 @@ import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { hermesViewPort } from '../lib/env';
 import { MirrorRig } from '../lib/mirrorhost';
+import { writeFileAtomic } from '../lib/atomic';
 
 // A HERMES WINDOW, ON A REAL SERVER (the e2eterm binary, mirror plugin on) AND
 // A REAL muster-mirror whose only fake is tmux (docs/design/hermes.md,
@@ -41,10 +42,10 @@ test.beforeAll(async () => {
   });
   row({ role: 'tool', tool_call_id: 'call_e2e_1', content: JSON.stringify({ output: 'a.txt\nb.txt', exit_code: 0 }) });
   const windows = path.join(rig.dir, 'windows');
-  fs.writeFileSync(windows, `plain|@1|0|1|zsh|${t0 - 50}|\n`);
+  writeFileAtomic(windows, `plain|@1|0|1|zsh|${t0 - 50}|\n`);
   const hermesWindows = path.join(rig.dir, 'hermes-windows');
   // sess|id|index|active|activity|hermes session (empty: a stale breadcrumb)|status
-  fs.writeFileSync(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@3|1|0|${t0 - 20}||\n`);
+  writeFileAtomic(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@3|1|0|${t0 - 20}||\n`);
   hostEnv = {
     MUSTER_MIRROR_E2E_WINDOWS_FILE: windows,
     MUSTER_MIRROR_E2E_HERMES_WINDOWS_FILE: hermesWindows,
@@ -156,7 +157,7 @@ test('on a host with -hermes-send, a Hermes window sends from its rendered view,
   // Every refused attempt's text must never reach Hermes; the loop ends at
   // the hub's own refusal.
   const hermesWindows = path.join(rig.dir, 'hermes-windows');
-  fs.writeFileSync(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|busy\nherm|@3|1|0|${t0 - 20}||\n`);
+  writeFileAtomic(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|busy\nherm|@3|1|0|${t0 - 20}||\n`);
   const refused: string[] = [];
   let hubRefused = false;
   for (let i = 0; i < 30 && !hubRefused; i++) {
@@ -183,7 +184,7 @@ test('on a host with -hermes-send, a Hermes window sends from its rendered view,
   expect(hubRefused, 'the hub never refused the busy window').toBe(true);
   const written = fs.readFileSync(path.join(home, 'rows.jsonl'), 'utf8');
   for (const text of refused) expect(written).not.toContain(text);
-  fs.writeFileSync(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@3|1|0|${t0 - 20}||\n`);
+  writeFileAtomic(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@3|1|0|${t0 - 20}||\n`);
 });
 
 // 🔴 A SEND THAT MAY HAVE LANDED IS NEVER REPEATED BY ITS NONCE. The fake
@@ -200,7 +201,7 @@ test('a send that may have been submitted offers Send again, and the same nonce 
     }, { message: `the Hermes view (mirror log:\n${rig.log})`, timeout: 30_000 })
     .toBe(true);
   const hermesWindows = path.join(rig.dir, 'hermes-windows');
-  fs.writeFileSync(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@3|1|0|${t0 - 20}||\n`);
+  writeFileAtomic(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@3|1|0|${t0 - 20}||\n`);
   const input = page.locator('#mv-input');
   const text = 'please, UNCONFIRMED-ONCE';
   // Until the host's refresh reports idle, the hub refuses as busy (nothing
@@ -261,15 +262,15 @@ test('a Hermes approval is answered from the attention queue; a sudo prompt is o
     tool_calls: JSON.stringify([{ id: 'call_build_rm', type: 'function', function: { name: 'terminal', arguments: JSON.stringify({ command: 'rm -r ./build' }) } }]),
   });
   const hermesWindows = path.join(rig.dir, 'hermes-windows');
-  fs.writeFileSync(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|waiting|approval\nherm|@3|1|0|${t0 - 20}||waiting|sudo\n`);
+  writeFileAtomic(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|waiting|approval\nherm|@3|1|0|${t0 - 20}||waiting|sudo\n`);
   await rig.startHost({ ...hostEnv, MUSTER_MIRROR_E2E_HERMES_HOME: home, MUSTER_MIRROR_INTERACTIVE: '1', MUSTER_MIRROR_HERMES_ANSWER: '1' });
   await rig.login(page);
   const answers = path.join(home, 'answers.jsonl');
   for (const vp of [{ width: 390, height: 844 }, { width: 1280, height: 800 }]) {
     await page.setViewportSize(vp);
     const promptId = `p${vp.width}`;
-    fs.writeFileSync(path.join(home, 'approval.json'), JSON.stringify({ prompt_id: promptId, command: 'rm -r ./build', description: 'recursive delete' }));
-    fs.writeFileSync(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|waiting|approval\nherm|@3|1|0|${t0 - 20}||waiting|sudo\n`);
+    writeFileAtomic(path.join(home, 'approval.json'), JSON.stringify({ prompt_id: promptId, command: 'rm -r ./build', description: 'recursive delete' }));
+    writeFileAtomic(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|waiting|approval\nherm|@3|1|0|${t0 - 20}||waiting|sudo\n`);
     const approval = page.locator('[data-attention-item]').filter({ has: page.locator('[data-hermes-approval]') });
     // The host lists the approval once its viewer has attached (a refresh or two).
     await expect
@@ -301,13 +302,13 @@ test('a Hermes approval is answered from the attention queue; a sudo prompt is o
     expect(written).not.toContain('"once"');
     // The turn goes on (busy): the host detaches its viewer, and the next
     // approval is a new wait.
-    fs.writeFileSync(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|busy\nherm|@3|1|0|${t0 - 20}||waiting|sudo\n`);
+    writeFileAtomic(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|busy\nherm|@3|1|0|${t0 - 20}||waiting|sudo\n`);
     await expect.poll(async () => {
       await page.goto(rig.origin + '/attention');
       return page.locator('[data-attention-item]').filter({ hasText: 'herm:0' }).count();
     }, { timeout: 20_000 }).toBe(0);
   }
-  fs.writeFileSync(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@3|1|0|${t0 - 20}||\n`);
+  writeFileAtomic(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@3|1|0|${t0 - 20}||\n`);
 });
 
 // HERMES PHASE 4c: a window waiting on a CLARIFY question lists the question
@@ -328,7 +329,7 @@ test('a Hermes clarify question is listed in the attention queue with its choice
     ] }) } }]),
   });
   const hermesWindows = path.join(rig.dir, 'hermes-windows');
-  fs.writeFileSync(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@4|2|0|${t0 - 30}|${sid2}|waiting|clarify\n`);
+  writeFileAtomic(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@4|2|0|${t0 - 30}|${sid2}|waiting|clarify\n`);
   await rig.login(page);
   for (const vp of [{ width: 390, height: 844 }, { width: 1280, height: 800 }]) {
     await page.setViewportSize(vp);
@@ -345,5 +346,5 @@ test('a Hermes clarify question is listed in the attention queue with its choice
     await expect(item.locator('form')).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   }
-  fs.writeFileSync(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@3|1|0|${t0 - 20}||\n`);
+  writeFileAtomic(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@3|1|0|${t0 - 20}||\n`);
 });

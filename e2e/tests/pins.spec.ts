@@ -4,6 +4,7 @@ import { BrowserContext, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { password, pinsPort } from '../lib/env';
 import { MirrorRig } from '../lib/mirrorhost';
+import { writeFileAtomic } from '../lib/atomic';
 
 // PINNED ENTRIES COME FIRST, in a real browser, against a real muster-server
 // (MUSTER_MIRROR=1, its own port) and a real muster-mirror over the tunnel
@@ -34,7 +35,7 @@ const olderHref = `/mirror/terminal?host=${host}&session=pinme&window=%402`;
 
 test.beforeAll(async () => {
   await rig.start();
-  fs.writeFileSync(windowsFile, windows.join('\n') + '\n');
+  writeFileAtomic(windowsFile, windows.join('\n') + '\n');
   await rig.startHost({ MUSTER_MIRROR_E2E_WINDOWS_FILE: windowsFile });
 });
 

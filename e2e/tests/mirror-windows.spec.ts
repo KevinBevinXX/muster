@@ -6,6 +6,7 @@ import { BrowserContext, Page } from '@playwright/test';
 import { test, expect, takeNew } from '../lib/fixtures';
 import { binDir, dsn, password, repoRoot, versionTerm, windowsPort } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
+import { writeFileAtomic } from '../lib/atomic';
 
 // EVERY WINDOW IS MIRRORED, in a real browser, against a REAL muster-server
 // (MUSTER_MIRROR=1) and a REAL muster-mirror dialling it over the tunnel. Only
@@ -53,9 +54,7 @@ const elevenWin: Win = { session: 'scratch2', id: '@9', index: 11, active: false
 const soloWin: Win = { session: 'solo', id: '@2', index: 3, active: true, command: 'opencode', activity: now - 900 };
 
 function writeWindows(ws: Win[]) {
-  const tmp = windowsFile + '.tmp';
-  fs.writeFileSync(tmp, ws.map((w) => [w.session, w.id, w.index, w.active ? 1 : 0, w.command, w.activity, w.claude ?? ''].join('|')).join('\n') + '\n');
-  fs.renameSync(tmp, windowsFile); // atomic: the host never reads half a list
+  writeFileAtomic(windowsFile, ws.map((w) => [w.session, w.id, w.index, w.active ? 1 : 0, w.command, w.activity, w.claude ?? ''].join('|')).join('\n') + '\n');
 }
 
 const q = (w: Win) => `host=${encodeURIComponent(host)}&session=${encodeURIComponent(w.session)}&window=${encodeURIComponent(w.id)}`;
@@ -80,7 +79,7 @@ test.beforeAll(async () => {
   expect(token.startsWith('mmt_'), 'a mirror token was minted').toBe(true);
   fs.writeFileSync(trEight, prompt('the prompt of window EIGHT'));
   fs.writeFileSync(trEleven, prompt('the prompt of window ELEVEN'));
-  fs.writeFileSync(path.join(dir, 'labels.json'), JSON.stringify({ scratch2: 'Gold' }));
+  writeFileAtomic(path.join(dir, 'labels.json'), JSON.stringify({ scratch2: 'Gold' }));
   writeWindows([shellWin, eightWin, elevenWin, soloWin]);
   mirrorProc = spawn(mirrorBin, [], {
     env: {

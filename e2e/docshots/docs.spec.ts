@@ -8,6 +8,7 @@ import { test, expect } from '../lib/fixtures';
 import { binDir, docsBrowserPort, docsGotruePort, docsMainPort, dsn, e2eRoot, gotrueSecret, repoRoot, versionA } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { authenticator } from '../lib/webauthn';
+import { writeFileAtomic } from '../lib/atomic';
 
 // THE DOCS SCREENSHOTS (docs/img/*.png), generated rather than hand-made, so
 // they can be re-taken after any UI change and can never show real data.
@@ -107,7 +108,7 @@ test.beforeAll(async () => {
     MUSTER_STT_TOKEN: 'e2e-docs-stt-token-not-a-real-one',
   });
   writeTranscripts();
-  fs.writeFileSync(windowsFile, windows.map((w) => w.join('|')).join('\n') + '\n');
+  writeFileAtomic(windowsFile, windows.map((w) => w.join('|')).join('\n') + '\n');
   const token = execFileSync(serverBinary(versionA), ['mirror', 'token', 'create', host], { env: serverEnv() }).toString().trim();
   expect(token.startsWith('mmt_'), 'a mirror token was minted').toBe(true);
   mirrorProc = spawn(mirrorBin, [], {

@@ -6,6 +6,7 @@ import { Browser, BrowserContext, Locator, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { binDir, dsn, password, repoRoot, sendQueuePort, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
+import { writeFileAtomic } from '../lib/atomic';
 
 // THE SERVER-SIDE SEND QUEUE, in a real browser, against a real muster-server
 // (MUSTER_MIRROR=1, MUSTER_SEND_QUEUE_IDLE=1s, its own port) and two real
@@ -64,7 +65,7 @@ const holdWindow = () => sleep(refreshMs + idleMs + 2 * dispatchEveryMs + 500);
 const prompt = (text: string) => JSON.stringify({ type: 'user', promptId: 'p-' + text.length, message: { role: 'user', content: text } }) + '\n';
 const read = (f: string) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '');
 // setStatus is Claude Code writing its status: the status and NOW as its time.
-const setStatus = (status: string) => fs.writeFileSync(tr + '.status', JSON.stringify({ status, statusUpdatedAt: Date.now() }));
+const setStatus = (status: string) => writeFileAtomic(tr + '.status', JSON.stringify({ status, statusUpdatedAt: Date.now() }));
 const busy = (on: boolean) => setStatus(on ? 'busy' : 'idle');
 const viewPath = (host: string) => `/mirror/view?host=${encodeURIComponent(host)}&session=work&window=%401`;
 // busyAndSeen makes Claude busy and waits until the server has seen it, before
@@ -83,7 +84,7 @@ function startMirror(host: string, transcript: string, extra: Record<string, str
     .trim();
   expect(token.startsWith('mmt_'), 'a mirror token was minted').toBe(true);
   const windows = path.join(dir, host + '.windows');
-  fs.writeFileSync(windows, `work|@1|0|1|claude|${Math.floor(Date.now() / 1000) - 60}|${transcript}\n`);
+  writeFileAtomic(windows, `work|@1|0|1|claude|${Math.floor(Date.now() / 1000) - 60}|${transcript}\n`);
   const p = spawn(mirrorBin, [], {
     env: {
       ...process.env,
@@ -1021,7 +1022,7 @@ for (const vp of [
       // A second Claude window in the same session of the same host.
       const before = fs.readFileSync(windowsFile, 'utf8');
       fs.writeFileSync(tr2, prompt('the second window'));
-      fs.writeFileSync(windowsFile, before + `work|@2|1|0|claude|${Math.floor(Date.now() / 1000) - 60}|${tr2}\n`);
+      writeFileAtomic(windowsFile, before + `work|@2|1|0|claude|${Math.floor(Date.now() / 1000) - 60}|${tr2}\n`);
       try {
         await openView(page, newHost);
         const draft = `a draft, two lines ${vp.touch ? 'p' : 'd'} ${stamp}\nand its second line`;
@@ -1064,7 +1065,7 @@ for (const vp of [
         await cancelRow(rowIn(page, queued, 'queued'), vp.touch);
         await expect(rowIn(page, queued, 'cancelled')).toHaveCount(1);
       } finally {
-        fs.writeFileSync(windowsFile, before);
+        writeFileAtomic(windowsFile, before);
       }
     });
 

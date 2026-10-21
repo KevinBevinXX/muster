@@ -7,6 +7,7 @@ import { BrowserContext, Page, request as pwRequest } from '@playwright/test';
 import { test, expect, expectAgentsDestroyed } from '../lib/fixtures';
 import { authState, baseURL, binDir, dictationPort, dsn, fakeSttPort, hookToken, password, repoRoot, sttToken, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
+import { writeFileAtomic } from '../lib/atomic';
 
 // DICTATION: the microphone on every message box, in a real Chromium with its
 // FAKE microphone (--use-fake-device-for-media-stream, which records a tone),
@@ -116,7 +117,7 @@ test.beforeAll(async () => {
     .trim();
   expect(token.startsWith('mmt_'), 'a mirror token was minted').toBe(true);
   fs.writeFileSync(transcript, JSON.stringify({ type: 'user', promptId: 'p-1', message: { role: 'user', content: 'the dictation window' } }) + '\n');
-  fs.writeFileSync(windowsFile, [claudeWin, shellWin].map((w) => [w.session, w.id, w.index, w.active ? 1 : 0, w.command, w.activity, w.claude ?? ''].join('|')).join('\n') + '\n');
+  writeFileAtomic(windowsFile, [claudeWin, shellWin].map((w) => [w.session, w.id, w.index, w.active ? 1 : 0, w.command, w.activity, w.claude ?? ''].join('|')).join('\n') + '\n');
   mirrorProc = spawn(mirrorBin, [], {
     env: {
       ...process.env,

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { test, expect } from '../lib/fixtures';
 import { binDir, cardsConnectPort, cardsPort, dsn, password, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
+import { writeFileAtomic } from '../lib/atomic';
 
 // THE AGENTS LIST'S CARDS, the operator's click path, every hop real:
 //
@@ -75,10 +76,10 @@ test.beforeAll(async () => {
   fs.writeFileSync(tr, JSON.stringify({ type: 'user', message: { role: 'user', content: 'rolling the fleet' } }) + '\n');
   // Claude Code idle at first; the first test puts it waiting while the list
   // is open.
-  fs.writeFileSync(tr + '.status', JSON.stringify({ status: 'idle', statusUpdatedAt: Date.now() - 60_000 }));
+  writeFileAtomic(tr + '.status', JSON.stringify({ status: 'idle', statusUpdatedAt: Date.now() - 60_000 }));
   const now = Math.floor(Date.now() / 1000);
   const windows = path.join(dir, 'windows');
-  fs.writeFileSync(
+  writeFileAtomic(
     windows,
     [
       `fleet|@5|5|1|claude|${now - 60}|${tr}||${path.join(repoDir, 'deploy', 'scripts')}`,
@@ -157,7 +158,7 @@ test('each card shows its attention badge, live, and tapping it opens the item i
   // The window goes waiting at a prompt while the list is open: its card's
   // badge appears LIVE. Nothing but the queue's own event says so — a status
   // change draws no card, so no list nudge carries it.
-  fs.writeFileSync(tr + '.status', JSON.stringify({ status: 'waiting', statusUpdatedAt: Date.now() - 1_000 }));
+  writeFileAtomic(tr + '.status', JSON.stringify({ status: 'waiting', statusUpdatedAt: Date.now() - 1_000 }));
   await expect(winBadge, mirrorLog).toHaveAttribute('data-kind', 'session', { timeout: 30_000 });
   await expect(winBadge).toHaveAttribute('data-count', '1');
   await expect(winBadge).toContainText('🔒');

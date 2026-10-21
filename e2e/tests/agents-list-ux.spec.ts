@@ -7,6 +7,7 @@ import { test, expect, takeNew } from '../lib/fixtures';
 import { binDir, dsn, hookToken, listUxPort, password, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { mkchat } from '../lib/mirrorhost';
+import { writeFileAtomic } from '../lib/atomic';
 
 // THE AGENTS LIST UX BATCH, in a real browser at a phone (390×844, touch) and
 // a desktop (1280×800), against a real muster-server (its own port, the
@@ -106,11 +107,11 @@ test.beforeAll(async () => {
   }
 
   fs.writeFileSync(trNow, prompt('roll the fleet'));
-  fs.writeFileSync(trNow + '.status', JSON.stringify({ status: 'waiting', statusUpdatedAt: Date.now() - 30_000 }));
+  writeFileAtomic(trNow + '.status', JSON.stringify({ status: 'waiting', statusUpdatedAt: Date.now() - 30_000 }));
   fs.writeFileSync(trQ, prompt('set the replica up'));
-  fs.writeFileSync(trQ + '.status', JSON.stringify({ status: 'idle', statusUpdatedAt: Date.now() - 60_000 }));
+  writeFileAtomic(trQ + '.status', JSON.stringify({ status: 'idle', statusUpdatedAt: Date.now() - 60_000 }));
   const windows = path.join(dir, 'windows');
-  fs.writeFileSync(
+  writeFileAtomic(
     windows,
     [
       `luxnow|@1|1|1|claude|${now - 60}|${trNow}`,
@@ -140,7 +141,7 @@ test.beforeAll(async () => {
 // askQuestion registers luxq's AskUserQuestion through the REAL hook, as
 // Claude Code would run it (the payload on stdin, the host's token).
 async function askQuestion() {
-  fs.writeFileSync(trQ + '.picker.json', JSON.stringify({ toolUseId: 'toolu_lux_' + stamp, questions: [question] }));
+  writeFileAtomic(trQ + '.picker.json', JSON.stringify({ toolUseId: 'toolu_lux_' + stamp, questions: [question] }));
   const h = spawn(mirrorBin, ['ask'], {
     env: { ...process.env, MUSTER_MIRROR_URL: origin, MUSTER_MIRROR_ALLOW_HTTP: '1', MUSTER_MIRROR_TOKEN: token },
     stdio: ['pipe', 'pipe', 'pipe'],

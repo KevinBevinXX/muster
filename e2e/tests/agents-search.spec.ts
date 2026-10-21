@@ -4,6 +4,7 @@ import { test, expect, takeNew } from '../lib/fixtures';
 import { agentsSearchPort, baseURL, password } from '../lib/env';
 import { MirrorRig, mkchat } from '../lib/mirrorhost';
 import { clsInit, readCls, resetCls } from '../lib/cls';
+import { writeFileAtomic } from '../lib/atomic';
 
 // THE AGENTS FILTER RANKS WHILE TYPING (internal/ui/agents_filter.go rankAttrs):
 // a one-letter query already filters, and the cards it shows are REORDERED —
@@ -37,7 +38,7 @@ test.beforeAll(async () => {
   const now = t0;
   windowsFile = rig.transcript('', 'windows');
   // session|id|index|active|command|activity|claude-transcript — newest first by activity.
-  fs.writeFileSync(
+  writeFileAtomic(
     windowsFile,
     [`qbase|@1|1|1|zsh|${now - 3000}|`, `old-qdock|@2|1|1|zsh|${now - 2000}|`, `mqtail|@3|1|1|zsh|${now - 1000}|`].join('\n') + '\n',
   );
@@ -238,7 +239,7 @@ test.describe('held behind the pill', () => {
     await resetCls(page);
 
     // qbase becomes the most recently active, and its command changes.
-    fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', 'vim', 0), windowLine('old-qdock', '@2', 'zsh', 2040), windowLine('mqtail', '@3', 'zsh', 1020)].join('\n') + '\n');
+    writeFileAtomic(windowsFile, [windowLine('qbase', '@1', 'vim', 0), windowLine('old-qdock', '@2', 'zsh', 2040), windowLine('mqtail', '@3', 'zsh', 1020)].join('\n') + '\n');
     await expect(pill, 'the change waits behind the pill').toHaveText('1 new ↑', { timeout: 30_000 });
     expect(await domOrder(), 'held: no card moved').toEqual(['mqtail', 'old-qdock', 'qbase']);
     await expect(page.locator('#agents-list > article[data-f-session="qbase"]'), 'its content updated in place').toHaveAttribute('data-f-kind', 'vim');
@@ -247,7 +248,7 @@ test.describe('held behind the pill', () => {
     // its host's tab while it is held: a tab counts what is drawn.
     const hostCount = page.locator(`#agents-hosts [role="tab"][data-host="${rig.host}"] [data-tab-count]`);
     await expect(hostCount, 'positive control: the host tab counts its drawn cards').toHaveText('3');
-    fs.appendFileSync(windowsFile, windowLine('qzest', '@4', 'qtool', 0) + '\n');
+    writeFileAtomic(windowsFile, fs.readFileSync(windowsFile, 'utf8') + windowLine('qzest', '@4', 'qtool', 0) + '\n');
     await expect(pill).toHaveText('2 new ↑', { timeout: 30_000 });
     await expect(page.locator('#agents-list > article[data-f-session="qzest"]')).toBeHidden();
     await expect(hostCount, 'a held arrival is not counted by its host tab').toHaveText('3');
@@ -278,7 +279,7 @@ const sessionsOrder = (page: Page) =>
     els.map((e) => e.getAttribute('data-f-session') || '').filter((n) => (ns as string[]).includes(n)), names);
 
 async function freshList(page: Page, lines: string[], want: string[]) {
-  fs.writeFileSync(windowsFile, lines.join('\n') + '\n');
+  writeFileAtomic(windowsFile, lines.join('\n') + '\n');
   await rig.login(page);
   await page.goto(rig.origin + '/agents');
   await expect
@@ -338,7 +339,7 @@ for (const leg of [
       await box.fill('q');
       await expect.poll(() => sessionsOrder(page)).toEqual(['qbase', 'old-qdock', 'mqtail']);
       await tabInto('mqtail');
-      fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', 'vim', 0), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000)].join('\n') + '\n');
+      writeFileAtomic(windowsFile, [windowLine('qbase', '@1', 'vim', 0), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000)].join('\n') + '\n');
       await expect(page.locator('#agents-list > article[data-f-session="qbase"]'), 'the refresh landed').toHaveAttribute('data-f-kind', 'vim', { timeout: 30_000 });
       await expect(pill).toBeVisible();
       expect(await stillFocused(), 'focus survived the refresh').toMatchObject({ same: true, connected: true });
@@ -352,7 +353,7 @@ for (const leg of [
       await box.fill('');
       await expect.poll(() => sessionsOrder(page)).toEqual(['qbase', 'mqtail', 'old-qdock']);
       await tabInto('old-qdock');
-      fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', 'vim', 600), windowLine('old-qdock', '@2', 'zsh', 0), windowLine('mqtail', '@3', 'zsh', 1000)].join('\n') + '\n');
+      writeFileAtomic(windowsFile, [windowLine('qbase', '@1', 'vim', 600), windowLine('old-qdock', '@2', 'zsh', 0), windowLine('mqtail', '@3', 'zsh', 1000)].join('\n') + '\n');
       await expect(pill, 'the re-order waits').toBeVisible({ timeout: 30_000 });
       expect(await stillFocused(), 'focus survived the second refresh').toMatchObject({ same: true, connected: true });
       await pill.click();
@@ -388,7 +389,7 @@ test.describe('held behind the pill: off screen', () => {
     });
     expect(await page.evaluate(() => document.getElementById('agents-list')!.getBoundingClientRect().top), 'the list is below the screen').toBeGreaterThan(800);
     await resetCls(page);
-    fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', 'vim', 0), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000)].join('\n') + '\n');
+    writeFileAtomic(windowsFile, [windowLine('qbase', '@1', 'vim', 0), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000)].join('\n') + '\n');
     await expect(page.locator('#agents-list > article[data-f-session="qbase"]'), 'the refresh landed').toHaveAttribute('data-f-kind', 'vim', { timeout: 30_000 });
     await expect.poll(() => sessionsOrder(page), { message: 'applied at once' }).toEqual(['qbase', 'mqtail', 'old-qdock']);
     await expect(page.locator('#agents-new-pill')).toBeHidden();
@@ -417,7 +418,7 @@ test.describe('held behind the pill: across navigations', () => {
     await agentsLink.click();
     await expect(page, 'first entry').toHaveURL(/\/agents$/);
     await expect.poll(() => sessionsOrder(page), { message: 'first entry' }).toEqual(['mqtail', 'old-qdock', 'qbase']);
-    fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', 'vim', 0), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000)].join('\n') + '\n');
+    writeFileAtomic(windowsFile, [windowLine('qbase', '@1', 'vim', 0), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000)].join('\n') + '\n');
     await expect(pill, 'the first entry made its pill').toHaveText('1 new ↑', { timeout: 30_000 });
     await pill.click();
     await expect.poll(() => sessionsOrder(page)).toEqual(['qbase', 'mqtail', 'old-qdock']);
@@ -429,7 +430,7 @@ test.describe('held behind the pill: across navigations', () => {
     await expect(page, 'second entry').toHaveURL(/\/agents$/);
     await expect.poll(() => sessionsOrder(page), { message: 'second entry' }).toEqual(['qbase', 'mqtail', 'old-qdock']);
     // An arrival and a re-order, from the host: held, with ONE pill to tap.
-    fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', 'vim', 600), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 0), windowLine('qzest', '@4', 'zsh', 5)].join('\n') + '\n');
+    writeFileAtomic(windowsFile, [windowLine('qbase', '@1', 'vim', 600), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 0), windowLine('qzest', '@4', 'zsh', 5)].join('\n') + '\n');
     const zest = page.locator('#agents-list > article[data-f-session="qzest"]');
     await expect(zest, 'the arrival reached the list').toHaveCount(1, { timeout: 30_000 });
     await expect(zest, 'held').toBeHidden();
@@ -452,7 +453,7 @@ test.describe('held behind the pill: other tabs', () => {
     test.setTimeout(120_000);
     await freshList(page, [windowLine('qbase', '@1', 'zsh', 3000), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000)], ['mqtail', 'old-qdock', 'qbase']);
     const pill = page.locator('#agents-new-pill');
-    fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', 'zsh', 3000), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000), windowLine('qzest', '@4', 'zsh', 5)].join('\n') + '\n');
+    writeFileAtomic(windowsFile, [windowLine('qbase', '@1', 'zsh', 3000), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000), windowLine('qzest', '@4', 'zsh', 5)].join('\n') + '\n');
     await expect(pill, 'the arrival waits').toHaveText('1 new ↑', { timeout: 30_000 });
     await expect(pill).toBeVisible();
 
@@ -499,7 +500,7 @@ for (const leg of [
       const pill = page.locator('#agents-new-pill');
       const card = (s: string) => page.locator(`#agents-list > article[data-f-session="${s}"]`);
       const write = (qbaseCmd: string, mqtailCmd: string) =>
-        fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', qbaseCmd, 0), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', mqtailCmd, 1000)].join('\n') + '\n');
+        writeFileAtomic(windowsFile, [windowLine('qbase', '@1', qbaseCmd, 0), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', mqtailCmd, 1000)].join('\n') + '\n');
 
       // Held: qbase becomes the newest, and waits behind the pill.
       write('zsh', 'zsh');
@@ -523,7 +524,7 @@ for (const leg of [
       const pill = page.locator('#agents-new-pill');
       const card = (s: string) => page.locator(`#agents-list > article[data-f-session="${s}"]`);
       const write = (qbaseCmd: string, mqtailCmd: string) =>
-        fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', qbaseCmd, 0), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', mqtailCmd, 1000)].join('\n') + '\n');
+        writeFileAtomic(windowsFile, [windowLine('qbase', '@1', qbaseCmd, 0), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', mqtailCmd, 1000)].join('\n') + '\n');
       write('zsh', 'vim');
       await expect(pill).toHaveText('1 new ↑', { timeout: 30_000 });
       await expect(card('mqtail')).toHaveAttribute('data-f-kind', 'vim', { timeout: 30_000 });
@@ -560,7 +561,7 @@ for (const leg of [
       const pill = page.locator('#agents-new-pill');
       const card = (s: string) => page.locator(`#agents-list > article[data-f-session="${s}"]`);
       // A held state first (qbase becomes the newest), then the filter.
-      fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', 'zsh', 10), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000)].join('\n') + '\n');
+      writeFileAtomic(windowsFile, [windowLine('qbase', '@1', 'zsh', 10), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000)].join('\n') + '\n');
       await expect(pill).toHaveText('1 new ↑', { timeout: 30_000 });
       await page.locator('#agents-search').fill('q');
       await expect.poll(() => sessionsOrder(page)).toEqual(['qbase', 'old-qdock', 'mqtail']);
@@ -575,7 +576,7 @@ for (const leg of [
           .observe(document.getElementById('agents-list')!, { childList: true });
       });
       // The arrival: "qzest" STARTS with q, the best rank there is — held.
-      fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', 'zsh', 10), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000), windowLine('qzest', '@4', 'zsh', 0)].join('\n') + '\n');
+      writeFileAtomic(windowsFile, [windowLine('qbase', '@1', 'zsh', 10), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000), windowLine('qzest', '@4', 'zsh', 0)].join('\n') + '\n');
       await expect(card('qzest'), 'the arrival reached the list').toHaveCount(1, { timeout: 30_000 });
       await expect(card('qzest'), 'held').toBeHidden();
       await expect(pill).toHaveText('2 new ↑');

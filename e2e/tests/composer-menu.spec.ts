@@ -8,6 +8,7 @@ import { test, expect } from '../lib/fixtures';
 import { binDir, composerMenuPort, dsn, password, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { clsInit, readCls, settle } from '../lib/cls';
+import { writeFileAtomic } from '../lib/atomic';
 
 // THE RENDERED VIEW COMPOSER'S SPLIT SEND/QUEUE BUTTON AND ITS `/` AND `:` MENU,
 // in a real browser, against a real muster-server (MUSTER_MIRROR=1, password
@@ -55,7 +56,7 @@ const prompt = (text: string) => JSON.stringify({ type: 'user', promptId: 'p-' +
 const read = (f: string) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '');
 const pasted = () => read(tr + '.pasted').split('\n').filter((l) => l !== '');
 const viewPath = (host: string) => `/mirror/view?host=${encodeURIComponent(host)}&session=work&window=%401`;
-const setBusy = (f: string) => fs.writeFileSync(f + '.status', JSON.stringify({ status: 'busy', statusUpdatedAt: Date.now() }));
+const setBusy = (f: string) => writeFileAtomic(f + '.status', JSON.stringify({ status: 'busy', statusUpdatedAt: Date.now() }));
 
 function fixtures() {
   w(path.join(cfg, 'skills', 'handoff', 'SKILL.md'), skillMd('handoff', 'Write a canonical session-handoff doc'));
@@ -84,7 +85,7 @@ function startMirror(host: string, transcript: string, extra: Record<string, str
     .trim();
   expect(token.startsWith('mmt_'), 'a mirror token was minted').toBe(true);
   const windows = path.join(dir, host + '.windows');
-  fs.writeFileSync(windows, `work|@1|0|1|claude|${Math.floor(Date.now() / 1000) - 60}|${transcript}\n`);
+  writeFileAtomic(windows, `work|@1|0|1|claude|${Math.floor(Date.now() / 1000) - 60}|${transcript}\n`);
   const p = spawn(mirrorBin, [], {
     env: {
       ...process.env,

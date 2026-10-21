@@ -8,6 +8,7 @@ import { BrowserContext, Page, request as pwRequest } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { binDir, dsn, fakeS3Port, password, repoRoot, uploadsOffPort, uploadsPort, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
+import { writeFileAtomic } from '../lib/atomic';
 
 // FILE ATTACHMENTS in the Rendered view's composer, in a real browser, against
 // a real muster-server (MUSTER_MIRROR=1, password mode) whose MUSTER_S3_* point
@@ -133,7 +134,7 @@ function startMirror(h: string, at: string, transcript: string) {
     .trim();
   expect(token.startsWith('mmt_'), 'a mirror token was minted').toBe(true);
   const windows = path.join(dir, h + '.windows');
-  fs.writeFileSync(windows, `work|@1|0|1|claude|${Math.floor(Date.now() / 1000) - 60}|${transcript}\n`);
+  writeFileAtomic(windows, `work|@1|0|1|claude|${Math.floor(Date.now() / 1000) - 60}|${transcript}\n`);
   const p = spawn(mirrorBin, [], {
     env: {
       ...process.env,

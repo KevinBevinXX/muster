@@ -6,6 +6,7 @@ import { test, expect } from '../lib/fixtures';
 import { hookToken, mirrorPort, password } from '../lib/env';
 import { MirrorRig } from '../lib/mirrorhost';
 import { touchDrag } from '../lib/touch';
+import { writeFileAtomic } from '../lib/atomic';
 
 // MIRRORED sessions at a phone's width (412×915), against a REAL muster-server
 // with MUSTER_MIRROR=1 and a REAL muster-mirror binary dialling it over the
@@ -141,8 +142,8 @@ test('a labelled session shows its pretty name, follows the active window, and s
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mirror-labels-'));
   const labelsFile = path.join(dir, 'labels.json');
   const activeFile = path.join(dir, 'active');
-  fs.writeFileSync(labelsFile, JSON.stringify({ main: 'Mango' }));
-  fs.writeFileSync(activeFile, 'main=1\nscratch=4\n');
+  writeFileAtomic(labelsFile, JSON.stringify({ main: 'Mango' }));
+  writeFileAtomic(activeFile, 'main=1\nscratch=4\n');
   try {
     await startMirror(false, undefined, { MUSTER_MIRROR_LABELS_FILE: labelsFile, MUSTER_MIRROR_E2E_ACTIVE_FILE: activeFile });
     await login(page);
@@ -159,7 +160,7 @@ test('a labelled session shows its pretty name, follows the active window, and s
 
     // The operator moves main to window 3; the session SET is unchanged. The
     // open page follows without a reload.
-    fs.writeFileSync(activeFile, 'main=3\nscratch=4\n');
+    writeFileAtomic(activeFile, 'main=3\nscratch=4\n');
     await expect(main.locator('[data-mirror-label]'), `the card follows the window (muster-mirror log:\n${rig.log})`).toHaveText('Mango:3', { timeout: 20_000 });
     await noHorizontalScroll(page);
 
@@ -192,7 +193,7 @@ test('mirrored sessions are listed most recently active first, and the open list
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mirror-activity-'));
   const activityFile = path.join(dir, 'activity');
   const t0 = Math.floor(Date.now() / 1000);
-  fs.writeFileSync(activityFile, `scratch=${t0 - 120}\nmain=${t0 - 3600}\n`);
+  writeFileAtomic(activityFile, `scratch=${t0 - 120}\nmain=${t0 - 3600}\n`);
   try {
     await stopMirror();
     await startMirror(false, undefined, { MUSTER_MIRROR_E2E_ACTIVITY_FILE: activityFile });
@@ -210,7 +211,7 @@ test('mirrored sessions are listed most recently active first, and the open list
     // moves nothing the reader sees and is applied at once (no pill), and how
     // far down they sit depends on how many cards this shared server holds.
     await page.locator('#agents-list article[data-mirror-card]').filter({ hasText: 'scratch' }).first().scrollIntoViewIfNeeded();
-    fs.writeFileSync(activityFile, `scratch=${t0 - 120}\nmain=${Math.floor(Date.now() / 1000) - 5}\n`);
+    writeFileAtomic(activityFile, `scratch=${t0 - 120}\nmain=${Math.floor(Date.now() / 1000) - 5}\n`);
     const pill = page.locator('#agents-new-pill');
     await expect(pill, `the new order waits behind the pill (muster-mirror log:\n${rig.log})`).toBeVisible({ timeout: 20_000 });
     expect(await order(), 'held: the open list did not move').toEqual(['scratch', 'main']);
@@ -235,7 +236,7 @@ test('an agent card and a mirrored card share one layout: no preview, the last a
   const activityFile = path.join(dir, 'activity');
   const t0 = Math.floor(Date.now() / 1000);
   const mainAt = t0 - 300;
-  fs.writeFileSync(activityFile, `main=${mainAt}\nscratch=${t0 - 7200}\n`);
+  writeFileAtomic(activityFile, `main=${mainAt}\nscratch=${t0 - 7200}\n`);
   const previews: string[] = [];
   page.on('request', (r) => {
     if (/^\/ui\/agents\/\d+\/recent$/.test(new URL(r.url()).pathname)) previews.push(r.url());

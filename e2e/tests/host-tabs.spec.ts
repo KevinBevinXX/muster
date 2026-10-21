@@ -3,6 +3,7 @@ import { Locator, Page } from '@playwright/test';
 import { test, expect, takeNew } from '../lib/fixtures';
 import { hostTabsPort } from '../lib/env';
 import { MirrorRig, mkchat } from '../lib/mirrorhost';
+import { writeFileAtomic } from '../lib/atomic';
 
 // THE AGENTS LIST'S HOST TABS (internal/ui/agents_filter.go agentsHostTabs), in
 // a real browser, against a real muster-server with the mirror plugin on and
@@ -50,8 +51,7 @@ let filesC = '';
 let filesD = '';
 let filesAB = '';
 const writeTo = (f: string, lines: string[]) => {
-  fs.writeFileSync(f + '.tmp', lines.length ? lines.join('\n') + '\n' : '');
-  fs.renameSync(f + '.tmp', f); // atomic: the host never reads half a list
+  writeFileAtomic(f, lines.length ? lines.join('\n') + '\n' : '');
 };
 // Each of A and B has a window called "zebrafish", which the search finds on both.
 const windowsA = () => [line('alpha', '@1', 100), line('zebrafish', '@2', 200)];

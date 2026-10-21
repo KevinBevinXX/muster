@@ -6,6 +6,7 @@ import { BrowserContext, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { binDir, dsn, mirrorAskPort, password, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
+import { writeFileAtomic } from '../lib/atomic';
 
 // ASKUSERQUESTION IN BOTH PLACES AT ONCE, in a real browser at phone width,
 // against a real muster-server (MUSTER_MIRROR=1, its own port), a real
@@ -126,7 +127,7 @@ interface Hook {
 const pickerFile = () => tr + '.picker.json';
 const touchedFile = () => tr + '.picker.touched';
 function picker(toolUseId: string, touched = false, shown: Question[] = questions) {
-  fs.writeFileSync(pickerFile(), JSON.stringify({ toolUseId, questions: shown }));
+  writeFileAtomic(pickerFile(), JSON.stringify({ toolUseId, questions: shown }));
   if (touched) fs.writeFileSync(touchedFile(), '');
   else fs.rmSync(touchedFile(), { force: true });
 }
@@ -177,7 +178,7 @@ test.beforeAll(async () => {
   expect(token.startsWith('mmt_'), 'a mirror token was minted').toBe(true);
   fs.writeFileSync(tr, prompt('help me set the project up'));
   const windows = path.join(dir, 'windows');
-  fs.writeFileSync(windows, `work|@1|0|1|claude|${Math.floor(Date.now() / 1000) - 60}|${tr}\n`);
+  writeFileAtomic(windows, `work|@1|0|1|claude|${Math.floor(Date.now() / 1000) - 60}|${tr}\n`);
   const p = spawn(mirrorBin, [], {
     env: {
       ...process.env,

@@ -6,6 +6,7 @@ import { Locator, Page } from '@playwright/test';
 import { test, expect, takeNew } from '../lib/fixtures';
 import { binDir, dsn, dupLabelsPort, password, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
+import { writeFileAtomic } from '../lib/atomic';
 
 // SAME LABEL, TWO HOSTS. A host labels its windows "<codename>:<index>", so two
 // machines that each run a `mango` session both list "mango:1". Measured on
@@ -58,8 +59,7 @@ const cFig: Win = { session: 'fig', id: '@2', index: 1, active: true, command: '
 const windowsFile = (host: string) => path.join(dir, host + '.windows');
 function writeWindows(host: string, ws: Win[]) {
   const f = windowsFile(host);
-  fs.writeFileSync(f + '.tmp', ws.map((w) => [w.session, w.id, w.index, w.active ? 1 : 0, w.command, w.activity, w.claude ?? ''].join('|')).join('\n') + '\n');
-  fs.renameSync(f + '.tmp', f); // atomic: the host never reads half a list
+  writeFileAtomic(f, ws.map((w) => [w.session, w.id, w.index, w.active ? 1 : 0, w.command, w.activity, w.claude ?? ''].join('|')).join('\n') + '\n');
 }
 
 function mint(host: string): string {
@@ -101,7 +101,7 @@ test.beforeAll(async () => {
   });
   fs.writeFileSync(transcript, JSON.stringify({ type: 'user', promptId: 'p-1', message: { role: 'user', content: 'the prompt on host A' } }) + '\n');
   // BOTH hosts call their `mango` session by the same codename.
-  fs.writeFileSync(path.join(dir, 'labels.json'), JSON.stringify({ mango: 'mango' }));
+  writeFileAtomic(path.join(dir, 'labels.json'), JSON.stringify({ mango: 'mango' }));
   writeWindows(hostA, [aMango, aKiwi]);
   writeWindows(hostB, [bMango]);
   startHost(hostA, mint(hostA));

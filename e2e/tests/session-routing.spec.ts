@@ -6,6 +6,7 @@ import { APIRequestContext, request as pwRequest } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { binDir, dsn, hookToken, password, repoRoot, routingConnectPort, routingPort, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
+import { writeFileAtomic } from '../lib/atomic';
 
 // ONE ROUTED-MAIL ROUND TRIP, end to end, every hop a real route:
 //
@@ -67,9 +68,9 @@ test.beforeAll(async () => {
   expect(token.startsWith('mmt_'), 'a mirror token was minted').toBe(true);
   fs.writeFileSync(tr, JSON.stringify({ type: 'user', message: { role: 'user', content: 'working on the calendar' } }) + '\n');
   // Claude Code idle, as its sessions file says it — written a minute ago.
-  fs.writeFileSync(tr + '.status', JSON.stringify({ status: 'idle', statusUpdatedAt: Date.now() - 60_000 }));
+  writeFileAtomic(tr + '.status', JSON.stringify({ status: 'idle', statusUpdatedAt: Date.now() - 60_000 }));
   const windows = path.join(dir, 'windows');
-  fs.writeFileSync(windows, `work|@1|0|1|claude|${Math.floor(Date.now() / 1000) - 60}|${tr}\n`);
+  writeFileAtomic(windows, `work|@1|0|1|claude|${Math.floor(Date.now() / 1000) - 60}|${tr}\n`);
   mirrorProc = spawn(mirrorBin, [], {
     env: {
       ...process.env,
