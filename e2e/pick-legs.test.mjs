@@ -1,6 +1,6 @@
 // node --test e2e/pick-legs.test.mjs — pick-legs.mjs's choice and refusals,
 // each on a synthetic artifact directory.
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -12,8 +12,12 @@ const RUN = { id: '4242', attempt: 3, sha: 'c0ffee1' };
 // fixture builds a legs.json root and an artifact dir. Each artifact is
 // [dirName, provenance | null, hasResults]; its results.json names the
 // artifact, so the chosen path is checked by CONTENT, not just by name.
+// Every fixture's temp dir is removed when the file's tests are done.
+const roots = [];
+after(() => roots.forEach((r) => fs.rmSync(r, { recursive: true, force: true })));
 function fixture(artifacts) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pick-legs-'));
+  roots.push(root);
   fs.writeFileSync(path.join(root, 'legs.json'), JSON.stringify({ legs: { 1: ['tests/a.spec.ts'], 2: ['tests/b.spec.ts'] } }));
   const dir = path.join(root, 'legs');
   fs.mkdirSync(dir);
@@ -70,4 +74,25 @@ test('a missing provenance or report is refused', () => {
   assert.throws(() => pick(a.dir, RUN, a.root), /NO PROVENANCE: e2e-results-leg-2-attempt-2\/provenance.json/);
   const b = fixture([art(1, 1), ['e2e-results-leg-2-attempt-2', prov(2, 2), false]]);
   assert.throws(() => pick(b.dir, RUN, b.root), /NO REPORT: e2e-results-leg-2-attempt-2\/results.json is missing/);
+});
+
+test('a stale older attempt with no report (a leg that died before Playwright wrote one) does not block a complete newer attempt', () => {
+  // Leg 2's attempt 1 failed in `npm ci` / `playwright install`: its upload
+  // ran (if: always()) with provenance.json and no results.json. Attempt 2 is
+  // complete. Only the newest attempt is the leg's verdict.
+  const { root, dir } = fixture([art(1, 1), ['e2e-results-leg-2-attempt-1', prov(2, 1), false], art(2, 2)]);
+  const { paths } = pick(dir, RUN, root);
+  assert.deepEqual(chosen(paths), ['e2e-results-leg-1-attempt-1', 'e2e-results-leg-2-attempt-2']);
+});
+
+test('a stale older attempt with a bad or missing provenance does not block a complete newer attempt', () => {
+  const { root, dir } = fixture([art(1, 1), ['e2e-results-leg-2-attempt-1', null, false], art(2, 2)]);
+  assert.deepEqual(chosen(pick(dir, RUN, root).paths), ['e2e-results-leg-1-attempt-1', 'e2e-results-leg-2-attempt-2']);
+  const b = fixture([art(1, 1), art(2, 1, { sha: 'deadbee' }), art(2, 2)]);
+  assert.deepEqual(chosen(pick(b.dir, RUN, b.root).paths), ['e2e-results-leg-1-attempt-1', 'e2e-results-leg-2-attempt-2']);
+});
+
+test('the NEWEST attempt is still checked: one with no report is refused, whatever an older one held', () => {
+  const { root, dir } = fixture([art(1, 1), art(2, 1), ['e2e-results-leg-2-attempt-2', prov(2, 2), false]]);
+  assert.throws(() => pick(dir, RUN, root), /NO REPORT: e2e-results-leg-2-attempt-2\/results.json is missing/);
 });

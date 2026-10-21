@@ -142,6 +142,16 @@ jobs:
       - name: verdict.py can refuse
         run: python3 tests/verdict_test.py
 
+      # The e2e aggregate's leg binder (e2e/pick-legs.mjs) is an instrument
+      # too: its choice and its refusals, each on a synthetic artifact tree.
+      # Here, on every PR, rather than in the aggregate itself, so a red here
+      # never stands in for the suite's own verdict. Node only, < 1 s.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: pick-legs.mjs can choose and refuse
+        run: node --test e2e/pick-legs.test.mjs
+
       # 🔴 A COUNT, NOT AN EXIT CODE. `go test` exits 0 with skipped tests, so
       # its exit status cannot tell "everything ran" from "everything skipped".
       # MUSTER_TEST_REQUIRE_DB should make a skip impossible — verdict.py is the
@@ -632,16 +642,12 @@ jobs:
           pattern: e2e-results-leg-*
           path: e2e-legs
 
-      # The binder's own refusals, before it is believed (node only, < 1 s).
-      - name: the leg binder's tests
-        working-directory: e2e
-        run: node --test pick-legs.test.mjs
-
       # 🔴 BOUND TO THIS RUN'S LATEST ATTEMPT OF EACH LEG: pick-legs.mjs takes
-      # each leg's highest-attempt report and FAILS on a leg with none, on an
-      # artifact it cannot date (no attempt in its name), and on a provenance
-      # that disagrees with its name, this run or this commit. It prints which
-      # attempt each leg was read from.
+      # each leg's highest-attempt artifact and FAILS on a leg with none and on
+      # an artifact it cannot date (no attempt in its name); the CHOSEN one must
+      # have a report and a provenance that agrees with its name, this run and
+      # this commit (an older attempt is never read). It prints which attempt
+      # each leg was read from. Its tests run in the `test` job.
       #
       # 🔴 THE SEAM GUARD, ON WHAT RAN: every leg's report summed against the
       # 31-test floor and the skip cap; every spec file on disk present with a
