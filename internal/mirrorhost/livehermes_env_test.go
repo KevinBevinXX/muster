@@ -521,7 +521,18 @@ func (r *liveRun) close() {
 		r.t.Errorf("livehermes: processes of this run survived teardown: %v", left)
 	}
 	if os.Getenv("MUSTER_LIVEHERMES_KEEP") == "" {
-		_ = os.RemoveAll(r.dir)
+		// Hermes seeds its home's skills/ from the Nix store, READ-ONLY, so a
+		// plain RemoveAll fails on them (measured: every run's directory was
+		// left behind). Make the tree writable first, and say if it stays.
+		_ = filepath.WalkDir(r.dir, func(p string, d os.DirEntry, err error) error {
+			if err == nil && d.IsDir() {
+				_ = os.Chmod(p, 0o700)
+			}
+			return nil
+		})
+		if err := os.RemoveAll(r.dir); err != nil {
+			r.t.Errorf("livehermes: remove the run's directory: %v", err)
+		}
 	} else {
 		r.t.Logf("livehermes: kept %s", r.dir)
 	}
