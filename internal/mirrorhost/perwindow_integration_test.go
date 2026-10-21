@@ -157,6 +157,14 @@ func TestTmuxWindowsListsEveryWindowByIDThroughRenumberingAndAClose(t *testing.T
 func TestTmuxWindowActivityIsEachWindowsOwn(t *testing.T) {
 	r := newTmuxRig(t)
 	r.session("work", "QUIET")
+	// 🔴 THE QUIET WINDOW MUST HAVE FINISHED PRINTING BEFORE ITS TIME IS READ.
+	// new-session returns before the pane's shell has run, and the marker it
+	// prints is activity: read `before` first and the marker can land after it,
+	// in the next second under load — a "moved" time that is the fixture's own
+	// output, not the clock or the neighbour (CI job 118961513333; reproduced
+	// every time by delaying the marker 1.1 s). Waiting here, before the noisy
+	// window exists, also keeps its output two seconds after the quiet one's.
+	waitFor(t, "the quiet window to print its marker", func() bool { return strings.Contains(r.pane("work"), "QUIET") })
 	noisy := strings.TrimSpace(r.run("new-window", "-d", "-P", "-F", "#{window_id}", "-t", "=work:",
 		"sh", "-c", "sleep 2; printf 'late output\\n'; exec cat"))
 	b := Tmux{Socket: r.sock}
