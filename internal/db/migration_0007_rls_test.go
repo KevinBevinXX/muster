@@ -91,6 +91,8 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO cc_account_marks (account, rate_limited_detail) VALUES ($1, 'x')`, func() []any { return []any{"acct-" + tag} }, nil},
 		{`INSERT INTO push_subscriptions (endpoint, p256dh, auth) VALUES ($1, 'k', 'a')`, func() []any { return []any{"https://fcm.googleapis.com/fcm/send/" + tag} }, nil},
 		{`INSERT INTO push_preferences (muted) VALUES ('{}')`, func() []any { return nil }, nil},
+		{`INSERT INTO devices (name, token_sha256, paired_signin_at) VALUES ($1, sha256(convert_to($1, 'UTF8')), now())`, func() []any { return []any{"phone-" + tag} }, nil},
+		{`INSERT INTO device_pairing_codes (code_sha256, signin_at, expires_at) VALUES (sha256(convert_to($1, 'UTF8')), now(), now() + interval '1 minute')`, func() []any { return []any{"code-" + tag} }, nil},
 		{`INSERT INTO plugins (name, label, token_hash, data_scope) VALUES ($1, 'Example inbox', $2, 'example') RETURNING id`, func() []any { return []any{"plugin-" + strings.ToLower(tag), "pluginhash-" + tag} }, &plugin},
 		{`INSERT INTO plugin_messages (plugin_id, external_id, body, status, agent_id) VALUES ($1, $2, 'hello', 'delivering', $3) RETURNING id`, func() []any { return []any{plugin, "ext-" + tag, agent} }, &message},
 		{`INSERT INTO plugin_reply_drafts (message_id, agent_id, agent_name, body, expires_at) VALUES ($1, $2, 'a', 'reply', now() + interval '1 day')`, func() []any { return []any{message, agent} }, nil},

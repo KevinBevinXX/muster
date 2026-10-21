@@ -64,12 +64,14 @@ var (
 	//   disallowed — the device's push service is no longer allowed (its host
 	//             left MUSTER_PUSH_EXTRA_HOSTS); nothing was sent and the
 	//             device was pruned
+	//   oversize — a paired phone's payload v2 was refused before sending: it
+	//             would not fit in ntfy's 4096-byte message (push.ErrNativeTooLarge)
 	// A notification to an owner with no devices counts nothing. The owner is
 	// deliberately NOT a label (an identifier — see the cardinality rule); the
 	// per-owner line is in the log (`push: delivered … owner=<id>`).
 	PushDelivery = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "muster_push_delivery_total",
-		Help: "Web Push delivery attempts by result (ok|expired|failed|disallowed).",
+		Help: "Web Push delivery attempts by result (ok|expired|failed|disallowed|oversize).",
 	}, []string{"result"})
 
 	// PushSuppressed counts notifications NOT sent, one per notification (not

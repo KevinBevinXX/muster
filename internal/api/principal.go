@@ -148,6 +148,10 @@ func (s *Server) admit(w http.ResponseWriter, r *http.Request, next http.Handler
 	if s.refusePluginTokenElsewhere(w, r, p.Via) {
 		return
 	}
+	// A device credential opens the device tier and nothing else (devices.go).
+	if s.refuseDeviceTokenElsewhere(w, r, p.Via) {
+		return
+	}
 	r = r.WithContext(authz.WithPrincipal(r.Context(), p))
 	if s.principalProbe != nil {
 		s.principalProbe(r)

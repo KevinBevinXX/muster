@@ -235,6 +235,8 @@ func (p *WebpushPusher) Send(ctx context.Context, sub Subscription, payload []by
 		VAPIDPrivateKey: p.vapid.PrivateKey,
 		TTL:             p.ttl,
 		Urgency:         webpush.UrgencyHigh,
+		// Pinned: every body is exactly this many bytes (see NativeMaxPlaintext).
+		RecordSize: nativeRecordSize,
 	})
 	if err != nil {
 		return SendResult{Err: err}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/apitokens"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/devices"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
 
@@ -102,6 +103,9 @@ func (c AuthConfig) SharedSecretPrefixRefusal() string {
 		}
 		if plugins.LooksLikeToken(v.val) {
 			return v.name + " begins with " + plugins.TokenPrefix + ", the plugin token prefix: every route but the plugin door would refuse it. Generate a new random value."
+		}
+		if devices.LooksLike(v.val) {
+			return v.name + " begins with " + devices.TokenPrefix + ", the device credential prefix: every route but the device tier would refuse it. Generate a new random value."
 		}
 	}
 	return ""

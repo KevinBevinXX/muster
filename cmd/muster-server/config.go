@@ -219,6 +219,10 @@ const (
 	// the browser push services an endpoint may be on — a self-hosted ntfy for
 	// the Android app (internal/push.Allowlist). Empty: browser hosts only.
 	envPushExtraHosts = "MUSTER_PUSH_EXTRA_HOSTS"
+	// The Android app's PIN-key policy (docs/design/android.md, "The step-up
+	// key"): set, a phone with no strong biometric may pair with a
+	// biometric-or-PIN step-up key; unset, it pairs read-only.
+	envAndroidAllowPINKeys = "MUSTER_ANDROID_ALLOW_PIN_KEYS"
 
 	// --- agent provisioning (see provisioner.go) ---
 	envAgentProvisioner  = "MUSTER_AGENT_PROVISIONER"
@@ -586,6 +590,8 @@ type config struct {
 	// PushExtraHosts is MUSTER_PUSH_EXTRA_HOSTS as read; validate parses it
 	// (push.ParseExtraHosts) and pushExtraHosts returns the clean list.
 	PushExtraHosts string
+	// AndroidAllowPINKeys is MUSTER_ANDROID_ALLOW_PIN_KEYS.
+	AndroidAllowPINKeys bool
 
 	// AgentProvisioner names the provisioning backend: one of
 	// provisionerChoices. Default provisionerNone, which leaves
@@ -947,6 +953,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		VAPIDPrivateKey:      strings.TrimSpace(getenv(envVAPIDPrivateKey)),
 		VAPIDSubject:         strings.TrimSpace(getenv(envVAPIDSubject)),
 		PushExtraHosts:       strings.TrimSpace(getenv(envPushExtraHosts)),
+		AndroidAllowPINKeys:  envFlag(getenv, envAndroidAllowPINKeys),
 
 		AgentProvisioner:  strings.ToLower(strings.TrimSpace(getenv(envAgentProvisioner))),
 		AgentGateway:      strings.ToLower(strings.TrimSpace(getenv(envAgentGateway))),

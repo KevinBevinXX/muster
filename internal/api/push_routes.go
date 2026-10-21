@@ -63,6 +63,11 @@ type PushService interface {
 	PublicKey() string
 	Store() push.Store
 	SendTo(ctx context.Context, owner int64, p push.Payload) push.Report
+	// The paired-device half (devices.go): the ONE allowlist (the store's),
+	// for /api/device/config's push hosts and the check a registration passes
+	// before its test push, and that test push.
+	Allowlist() push.Allowlist
+	Probe(ctx context.Context, sub push.Subscription, payload []byte) push.SendResult
 }
 
 func (s *Server) registerPushRoutes(mux Mux) {
@@ -131,7 +136,7 @@ func (s *Server) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, push.ErrBadSubscription), errors.Is(err, push.ErrPushServiceNotAllowed):
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
-	case errors.Is(err, push.ErrTooManyDevices):
+	case errors.Is(err, push.ErrTooManyDevices), errors.Is(err, push.ErrNativeEndpoint):
 		s.writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
 	case err != nil:
