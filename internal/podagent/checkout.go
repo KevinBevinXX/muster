@@ -425,20 +425,31 @@ func moveCheckout(scratch, dir string) error {
 
 // verifyCheckout reports whether dir is a checkout: its HEAD names a commit,
 // or it is a marked clone of an empty repository (emptyCloneKey) whose HEAD is
-// still an unborn branch. Refs may exist by then — the agent fetched — and it
-// is still the checkout this supervisor made: refusing it would tell the
-// operator to delete a .git holding the agent's staged work.
+// still a genuinely UNBORN branch — a symbolic ref to a branch that does not
+// exist yet. Other refs may exist by then (the agent fetched), and it is still
+// the checkout this supervisor made: refusing it would tell the operator to
+// delete a .git holding the agent's staged work. A HEAD whose branch EXISTS but
+// names no readable commit (a missing object: corruption) is refused.
 func verifyCheckout(ctx context.Context, dir string) error {
 	err := verifyHEAD(ctx, dir)
 	if err == nil {
 		return nil
 	}
 	out, cerr := exec.CommandContext(ctx, "git", "-C", dir, "config", "--local", "--get", emptyCloneKey).Output()
-	if cerr == nil && strings.TrimSpace(string(out)) == "true" &&
-		exec.CommandContext(ctx, "git", "-C", dir, "symbolic-ref", "-q", "HEAD").Run() == nil {
-		return nil
+	if cerr != nil || strings.TrimSpace(string(out)) != "true" {
+		return err
 	}
-	return err
+	ref, serr := exec.CommandContext(ctx, "git", "-C", dir, "symbolic-ref", "-q", "HEAD").Output()
+	if serr != nil {
+		return err
+	}
+	// The branch must not exist: `rev-parse --verify <ref>` reads the ref
+	// without checking its object, so it succeeds for a branch pointing at a
+	// missing commit — which is not unborn.
+	if exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "-q", "--verify", strings.TrimSpace(string(ref))).Run() == nil {
+		return err
+	}
+	return nil
 }
 
 // emptyRepo reports whether dir is a repository with no refs at all whose HEAD

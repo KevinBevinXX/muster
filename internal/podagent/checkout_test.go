@@ -336,3 +336,26 @@ func TestAnInterruptedMoveIsRefusedNamingTheScratchClone(t *testing.T) {
 		t.Fatalf("after removing both: %v", err)
 	}
 }
+
+// TestAMarkedCheckoutWhoseBranchLostItsCommitIsRefused (#209 round-2 🟢2): the
+// empty-repository exception is for an UNBORN HEAD only. A marked checkout
+// whose branch exists but names a commit whose object is gone (corruption) is
+// not unborn, and is refused like any .git with no commit checked out.
+func TestAMarkedCheckoutWhoseBranchLostItsCommitIsRefused(t *testing.T) {
+	gh := localGitHub(t)
+	publish(t, gh, "example-org/blank-slate", nil)
+	dir := filepath.Join(t.TempDir(), "ws", "blank-slate")
+	c := newBranchCheckout(t, "example-org/blank-slate", "trunk", dir, "")
+	if err := c.Attempt(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	gitT(t, dir, "commit", "-q", "--allow-empty", "-m", "first")
+	head := gitT(t, dir, "rev-parse", "HEAD")
+	if err := os.Remove(filepath.Join(dir, ".git", "objects", head[:2], head[2:])); err != nil {
+		t.Fatal(err)
+	}
+	err := newBranchCheckout(t, "example-org/blank-slate", "trunk", dir, "").Attempt(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "no commit checked out") {
+		t.Fatalf("a marked checkout whose branch names a missing commit: err = %v; want refused", err)
+	}
+}
