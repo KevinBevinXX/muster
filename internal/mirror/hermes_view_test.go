@@ -85,3 +85,21 @@ func TestAV1HostsHermesWindowHasNoRenderedView(t *testing.T) {
 		t.Fatalf("a v1 host's Hermes window has a view: %+v", e)
 	}
 }
+
+// The kind a list names a Hermes window by is "Hermes" — with a session or
+// without — never its pane's command (python3.14, S10).
+func TestAHermesWindowsKindIsHermes(t *testing.T) {
+	for _, w := range []mirror.Window{
+		{Session: "s", ID: "@1", Runtime: mirror.RuntimeHermes, AgentSession: "local-x", Command: "python3.14"},
+		{Session: "s", ID: "@2", Runtime: mirror.RuntimeHermes, Command: "python3.14"},
+	} {
+		h := mirror.HostView{Host: "h", Online: true, Rendered: true, Windows: []mirror.Window{w}}
+		if k := h.Entries()[0].Kind(); k != mirror.KindHermes {
+			t.Errorf("%s: Kind = %q, want %q", w.ID, k, mirror.KindHermes)
+		}
+	}
+	h := mirror.HostView{Host: "h", Windows: []mirror.Window{{Session: "s", ID: "@3", Command: "python3.14"}}}
+	if k := h.Entries()[0].Kind(); k != "python3.14" {
+		t.Errorf("a plain python window's Kind = %q", k)
+	}
+}

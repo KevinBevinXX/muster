@@ -120,7 +120,7 @@ func (s *Server) focusHistoryVisible(ctx context.Context, sub focus.Subject) (bo
 		if p, err := s.ext.Focus.History(ctx, sub, "", 1); err != nil || len(p.Entries) > 0 {
 			return len(p.Entries) > 0, err
 		}
-		_, live := s.mirrorEntryForSession(ctx, sub.Key)
+		_, live := s.mirrorFocusEntryFor(ctx, sub.Key)
 		return live, nil
 	}
 	return false, nil

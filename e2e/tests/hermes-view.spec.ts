@@ -59,7 +59,9 @@ test.use({ storageState: { cookies: [], origins: [] } });
 
 const viewOf = (window: string) => `${rig.viewPath('herm')}&window=${encodeURIComponent(window)}`;
 const card = (page: Page, window: string) =>
-  page.locator('#agents-list > article[data-mirror-card]').filter({ has: page.locator(`a[href*="session=herm"][href*="window=${encodeURIComponent(window)}"]`) });
+  page
+    .locator('#agents-list > article[data-mirror-card]')
+    .filter({ has: page.locator(`a[href*="session=${window === '@1' ? 'plain' : 'herm'}"][href*="window=${encodeURIComponent(window)}"]`) });
 
 test('a Hermes window opens a read-only rendered view of its conversation, live', async ({ page }) => {
   await rig.login(page);
@@ -69,6 +71,16 @@ test('a Hermes window opens a read-only rendered view of its conversation, live'
   // The card with a session opens the rendered view; the stale one, the Terminal.
   await expect(card(page, '@2').locator('a[href*="/mirror/view?"]')).toHaveCount(1);
   await expect(card(page, '@3').locator('a[href*="/mirror/terminal?"]')).toHaveCount(1);
+  // Both are Hermes cards — the kind chip, never the pane's command — and the
+  // filter finds them by kind.
+  // This host lists exactly three windows: the plain shell and the two Hermes.
+  const hostCards = page.locator(`#agents-list > article[data-mirror-card][data-f-host="${rig.host}"]`);
+  await expect(hostCards).toHaveCount(3);
+  await expect(card(page, '@1').locator('[data-mirror-kind]')).toContainText('shell');
+  for (const w of ['@2', '@3']) await expect(card(page, w).locator('[data-mirror-kind]')).toContainText('Hermes');
+  await page.locator('#agents-search').fill('kind:hermes');
+  await expect(page.locator(`#agents-list > article[data-mirror-card][data-f-host="${rig.host}"]:visible`)).toHaveCount(2);
+  await page.locator('#agents-search').fill('');
 
   await page.goto(rig.origin + viewOf('@2'));
   await expect(page).toHaveURL(/\/mirror\/view\?/);

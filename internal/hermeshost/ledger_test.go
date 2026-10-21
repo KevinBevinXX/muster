@@ -2,6 +2,7 @@ package hermeshost
 
 import (
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -248,5 +249,47 @@ func TestTheLedgerSeesAStrayRead(t *testing.T) {
 	}
 	if allowed("auth.json") || allowed("pastes/paste-1.txt") || allowed("runtime/active_sessions.json") || allowed(".env") {
 		t.Fatal("a secret path matches ReadPaths")
+	}
+}
+
+// TestTheDiagnosticLedger: `-list -hermes` may open config.yaml besides the
+// daemon's ReadPaths — and nothing else — and keeps only its hooks: section.
+// (The daemon's own exercises above fail on config.yaml: it is not on
+// ReadPaths.)
+func TestTheDiagnosticLedger(t *testing.T) {
+	if want := append(append([]string(nil), ReadPaths...), "config.yaml"); !reflect.DeepEqual(DiagnosticReadPaths, want) {
+		t.Fatalf("DiagnosticReadPaths = %q", DiagnosticReadPaths)
+	}
+	h := hermestest.New(t)
+	h.Decoy()
+	cfg := "model:\n  api_key: " + hermestest.DecoyMarker + "\nhooks:\n  pre_llm_call:\n    - command: \"" + testCommand + "\"\n"
+	if err := os.WriteFile(filepath.Join(h.Dir, "config.yaml"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stop := inotifyOpens(t, h.Dir)
+	hooks, err := NewHome(h.Dir).DeclaredHooks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = NewHome(h.Dir).CheckAllowlist(testCommand)
+	opened := stop()
+	for _, p := range opened {
+		ok := false
+		for _, g := range DiagnosticReadPaths {
+			if m, _ := filepath.Match(g, p); m {
+				ok = true
+			}
+		}
+		if !ok {
+			t.Errorf("the diagnostic opened %s", p)
+		}
+	}
+	if len(hooks) != 1 || hooks[0].Command != testCommand || strings.Contains(fmt.Sprint(hooks), "DECOY") {
+		t.Fatalf("hooks = %+v", hooks)
+	}
+	// A config.yaml that is not YAML: the error quotes none of it.
+	_ = os.WriteFile(filepath.Join(h.Dir, "config.yaml"), []byte("hooks: [\n"+hermestest.DecoyMarker), 0o600)
+	if _, err := NewHome(h.Dir).DeclaredHooks(); err == nil || strings.Contains(err.Error(), "DECOY") {
+		t.Fatalf("err = %v", err)
 	}
 }
