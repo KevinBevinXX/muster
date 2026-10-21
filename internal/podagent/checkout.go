@@ -199,10 +199,20 @@ func (c *Checkout) Run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		detail, awaiting := c.Explain(ctx, err)
 		state := CheckoutFailed
-		if awaiting {
-			state = CheckoutAwaitingGrant
+		var detail string
+		var local *localError
+		if errors.As(err, &local) {
+			// Not git failing to reach GitHub: nothing the github connector can
+			// change, so it is neither explained as a clone failure nor answered
+			// with a request for the connector.
+			detail = fmt.Sprintf("the checkout in %s could not be made: %v; %s retries every %s", c.dir, local.err, c.voice.Who, c.Retry)
+		} else {
+			var awaiting bool
+			detail, awaiting = c.Explain(ctx, err)
+			if awaiting {
+				state = CheckoutAwaitingGrant
+			}
 		}
 		c.mu.Lock()
 		c.st.State, c.st.Detail = state, detail
@@ -216,9 +226,34 @@ func (c *Checkout) Run(ctx context.Context) {
 	}
 }
 
+// localError is a failure of the checkout's own files — not of git reaching
+// GitHub — so Run neither explains it as a clone failure nor files a github
+// connector request for it: no grant changes a full disk or a refused directory.
+type localError struct{ err error }
+
+func (e *localError) Error() string { return e.err.Error() }
+func (e *localError) Unwrap() error { return e.err }
+
+func local(err error) error { return &localError{err} }
+
+// The git config key marking a clone of an EMPTY repository (no commit, so no
+// HEAD to verify). It is set in the scratch clone before the move, so it is in
+// <dir>/.git iff the whole clone was verified and moved — what tells an empty
+// repository's checkout from a .git an interrupted clone left.
+const emptyCloneKey = "muster.emptyclone"
+
+// The file in the scratch clone's .git listing the entries moveCheckout moves,
+// written before the first one moves. An interrupted move leaves it in the
+// scratch .git, and the next attempt finishes that move instead of refusing the
+// files it already moved as "not a git checkout".
+const moveManifest = "muster-move-manifest"
+
 // Attempt makes the checkout exist: an existing one is used as it is; an empty
 // (or absent) directory is cloned into; a directory holding anything else is
-// refused rather than cloned over.
+// refused rather than cloned over — unless it is exactly what an interrupted
+// move of this checkout left, which is finished.
+//
+// A failure of anything but the clone command itself is a *localError.
 //
 // 🔴 A CHECKOUT IS A .git WITH A COMMIT CHECKED OUT, NOT A .git. A clone that is
 // killed (the timeout, the supervisor shutting down, the pod evicted) leaves a
@@ -233,24 +268,32 @@ func (c *Checkout) Run(ctx context.Context) {
 func (c *Checkout) Attempt(ctx context.Context) error {
 	who := c.voice.Who
 	if _, err := os.Lstat(filepath.Join(c.dir, ".git")); err == nil {
-		if err := verifyHEAD(ctx, c.dir); err != nil {
-			return fmt.Errorf("%s holds a .git with no commit checked out (an interrupted clone?); %s does not "+
-				"clone over it — remove %s to let it clone again", c.dir, who, filepath.Join(c.dir, ".git"))
+		if err := verifyCheckout(ctx, c.dir); err != nil {
+			return local(fmt.Errorf("%s holds a .git with no commit checked out (an interrupted clone?); %s does not "+
+				"clone over it — remove %s to let it clone again", c.dir, who, filepath.Join(c.dir, ".git")))
 		}
 		c.Logf("%s: checkout: using the existing checkout of %s in %s", who, c.repo, c.dir)
 		return nil
 	}
+	scratch := filepath.Join(filepath.Dir(c.dir), "."+filepath.Base(c.dir)+"."+who+"-clone")
 	entries, err := os.ReadDir(c.dir)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 	case err != nil:
-		return err
+		return local(err)
 	case len(entries) > 0:
-		return fmt.Errorf("%s holds files but is not a git checkout; %s does not clone over them", c.dir, who)
+		resumed, rerr := resumeMove(ctx, scratch, c.dir, entries)
+		if rerr != nil {
+			return local(fmt.Errorf("finishing the interrupted move of the clone into %s: %w", c.dir, rerr))
+		}
+		if resumed {
+			c.Logf("%s: checkout: finished the interrupted move of %s into %s", who, c.repo, c.dir)
+			return nil
+		}
+		return local(fmt.Errorf("%s holds files but is not a git checkout; %s does not clone over them", c.dir, who))
 	}
-	scratch := filepath.Join(filepath.Dir(c.dir), "."+filepath.Base(c.dir)+"."+who+"-clone")
 	if err := os.RemoveAll(scratch); err != nil {
-		return err
+		return local(err)
 	}
 	args := []string{"clone", "--quiet"}
 	if c.branch != "" {
@@ -276,10 +319,18 @@ func (c *Checkout) Attempt(ctx context.Context) error {
 		return err
 	}
 	if err := verifyHEAD(ctx, scratch); err != nil {
-		return fmt.Errorf("the clone of %s finished with no commit checked out: %v", c.repo, err)
+		// git exited 0, so the clone is complete; one with no commit at all is an
+		// EMPTY repository, which is a checkout (the agent makes the first commit).
+		if !emptyRepo(ctx, scratch) {
+			return local(fmt.Errorf("the clone of %s finished with no commit checked out: %v", c.repo, err))
+		}
+		if out, err := exec.CommandContext(ctx, "git", "-C", scratch, "config", emptyCloneKey, "true").CombinedOutput(); err != nil {
+			return local(fmt.Errorf("marking the empty clone of %s: %v %s", c.repo, err, strings.TrimSpace(string(out))))
+		}
+		c.Logf("%s: checkout: %s is an empty repository", who, c.repo)
 	}
 	if err := moveCheckout(scratch, c.dir); err != nil {
-		return fmt.Errorf("moving the clone into %s: %w", c.dir, err)
+		return local(fmt.Errorf("moving the clone into %s: %w", c.dir, err))
 	}
 	c.Logf("%s: checkout: cloned %s into %s", who, c.repo, c.dir)
 	return nil
@@ -293,6 +344,10 @@ func (c *Checkout) Attempt(ctx context.Context) error {
 // every git it runs — in a deleted directory. Each entry's rename is atomic,
 // and because .git moves last, an interruption leaves files with no .git:
 // refused as "not a git checkout", never mistaken for one.
+//
+// Before the first entry moves, the names it will move are written to
+// <scratch>/.git/muster-move-manifest, so an interrupted move is finished by
+// the next attempt (resumeMove) rather than left as files it refuses.
 func moveCheckout(scratch, dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -301,18 +356,98 @@ func moveCheckout(scratch, dir string) error {
 	if err != nil {
 		return err
 	}
+	var names []string
 	for _, e := range entries {
-		if e.Name() == ".git" {
-			continue
+		if e.Name() != ".git" {
+			names = append(names, e.Name())
 		}
-		if err := os.Rename(filepath.Join(scratch, e.Name()), filepath.Join(dir, e.Name())); err != nil {
+	}
+	if err := os.WriteFile(filepath.Join(scratch, ".git", moveManifest), []byte(strings.Join(names, "\n")), 0o600); err != nil {
+		return err
+	}
+	return finishMove(scratch, dir, names)
+}
+
+// moveEntry renames one entry; a test replaces it to interrupt a move.
+var moveEntry = os.Rename
+
+// finishMove moves those of names still in scratch into dir, then .git, then
+// removes the manifest and scratch.
+func finishMove(scratch, dir string, names []string) error {
+	for _, n := range names {
+		from := filepath.Join(scratch, n)
+		if _, err := os.Lstat(from); errors.Is(err, os.ErrNotExist) {
+			continue // moved before the interruption
+		}
+		if err := moveEntry(from, filepath.Join(dir, n)); err != nil {
 			return err
 		}
 	}
 	if err := os.Rename(filepath.Join(scratch, ".git"), filepath.Join(dir, ".git")); err != nil {
 		return err
 	}
+	// Removed only once the .git is in place: removed before it, an
+	// interruption between the two would leave nothing to resume from.
+	if err := os.Remove(filepath.Join(dir, ".git", moveManifest)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	return os.Remove(scratch)
+}
+
+// resumeMove finishes an interrupted move of scratch into dir: dir (no .git)
+// holds only entries the manifest names, and scratch still holds the verified
+// clone's .git with the manifest. For anything else it reports false and
+// touches nothing; Attempt then refuses the files as not a checkout.
+func resumeMove(ctx context.Context, scratch, dir string, inDir []os.DirEntry) (bool, error) {
+	b, err := os.ReadFile(filepath.Join(scratch, ".git", moveManifest))
+	if err != nil {
+		return false, nil
+	}
+	var names []string
+	if len(b) > 0 {
+		names = strings.Split(string(b), "\n")
+	}
+	listed := make(map[string]bool, len(names))
+	for _, n := range names {
+		if n == "" || n == "." || n == ".." || n == ".git" || strings.ContainsAny(n, "/\\") {
+			return false, nil
+		}
+		listed[n] = true
+	}
+	for _, e := range inDir {
+		if !listed[e.Name()] {
+			return false, nil
+		}
+	}
+	if verifyCheckout(ctx, scratch) != nil {
+		return false, nil
+	}
+	return true, finishMove(scratch, dir, names)
+}
+
+// verifyCheckout reports whether dir is a checkout: its HEAD names a commit,
+// or it is a clone of an empty repository (marked emptyCloneKey) still without
+// one.
+func verifyCheckout(ctx context.Context, dir string) error {
+	err := verifyHEAD(ctx, dir)
+	if err == nil {
+		return nil
+	}
+	out, cerr := exec.CommandContext(ctx, "git", "-C", dir, "config", "--local", "--get", emptyCloneKey).Output()
+	if cerr == nil && strings.TrimSpace(string(out)) == "true" && emptyRepo(ctx, dir) {
+		return nil
+	}
+	return err
+}
+
+// emptyRepo reports whether dir is a repository with no refs at all whose HEAD
+// names an unborn branch: what a complete clone of an empty repository is.
+func emptyRepo(ctx context.Context, dir string) bool {
+	if exec.CommandContext(ctx, "git", "-C", dir, "symbolic-ref", "-q", "HEAD").Run() != nil {
+		return false
+	}
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "for-each-ref", "--count=1").Output()
+	return err == nil && len(bytes.TrimSpace(out)) == 0
 }
 
 // verifyHEAD reports whether dir's HEAD names a commit.
