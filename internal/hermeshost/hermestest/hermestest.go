@@ -5,8 +5,9 @@
 // mode with a writer connection held open the way a running gateway holds
 // one, plus breadcrumbs and decoy secret files.
 //
-// It is imported by tests only. 🔴 NEVER POINT IT AT A REAL ~/.hermes: every
-// home it makes is a t.TempDir().
+// It is imported by tests only, and by the browser suite's fake host (a
+// build-tagged fixture, never a shipped binary). 🔴 NEVER POINT IT AT A REAL
+// ~/.hermes: every home New makes is a t.TempDir(), and Create is given one.
 package hermestest
 
 import (
@@ -42,20 +43,31 @@ type Home struct {
 func New(t testing.TB) *Home {
 	t.Helper()
 	dir := t.TempDir()
-	h := &Home{Dir: dir, t: t}
-	u := url.URL{Scheme: "file", Path: filepath.Join(dir, "state.db")}
-	db, err := sql.Open("sqlite", u.String()+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(0)&_pragma=synchronous(OFF)")
+	db, err := Create(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
+	return &Home{Dir: dir, t: t, db: db}
+}
+
+// Create makes dir/state.db from the pinned schema, in WAL mode, and returns
+// its WRITER connection (one connection: the gateway's). It is for a browser
+// test's fake host too (cmd/muster-mirror's e2emirror build), which has no
+// testing.TB.
+func Create(dir string) (*sql.DB, error) {
+	u := url.URL{Scheme: "file", Path: filepath.Join(dir, "state.db")}
+	db, err := sql.Open("sqlite", u.String()+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(0)&_pragma=synchronous(OFF)")
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
 	// One transaction: statement by statement, the ~80 commits cost a second.
 	if _, err := db.Exec("BEGIN;\n" + Schema + "\nCOMMIT;"); err != nil {
-		t.Fatalf("create the pinned schema: %v", err)
+		_ = db.Close()
+		return nil, fmt.Errorf("create the pinned schema: %w", err)
 	}
-	h.db = db
-	return h
+	return db, nil
 }
 
 // DB is the home's WRITER connection: what plays Hermes's gateway.
@@ -133,6 +145,10 @@ type Msg struct {
 	Inactive  bool
 	Compacted bool
 	UID       string
+	// DisplayMetadata is the display_metadata column (JSON text);
+	// CompressedSummary sets _compressed_summary=1 (a compaction summary).
+	DisplayMetadata   string
+	CompressedSummary bool
 }
 
 func nullable(s string) any {
@@ -149,9 +165,11 @@ func (h *Home) Message(session string, m Msg) int64 {
 		m.Timestamp = Now()
 	}
 	r := h.Exec(`INSERT INTO messages (session_id, role, content, tool_call_id, tool_calls, tool_name, finish_reason,
-display_kind, reasoning, timestamp, active, compacted, message_uid) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+display_kind, reasoning, timestamp, active, compacted, message_uid, display_metadata, _compressed_summary)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		session, m.Role, nullable(m.Content), nullable(m.ToolCallID), nullable(m.ToolCalls), nullable(m.ToolName),
-		nullable(m.FinishReason), nullable(m.DisplayKind), nullable(m.Reasoning), m.Timestamp, !m.Inactive, m.Compacted, nullable(m.UID))
+		nullable(m.FinishReason), nullable(m.DisplayKind), nullable(m.Reasoning), m.Timestamp, !m.Inactive, m.Compacted, nullable(m.UID),
+		nullable(m.DisplayMetadata), m.CompressedSummary)
 	id, err := r.LastInsertId()
 	if err != nil {
 		h.t.Fatal(err)

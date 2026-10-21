@@ -261,9 +261,20 @@ A window whose pane runs the Hermes CLI (`hermes chat`, or bare `hermes`) is
 listed as a **Hermes window**: a process named `hermes`, a Python running a
 `hermes` launcher, no `gateway` argument, reading the pane's terminal
 (`#{pane_tty}`). A profile-launched `hermes -p <name> chat` is not recognised
-as one; the paste refusal above still covers it. It has no Rendered view yet.
-muster never sends into it: Send, Queue and Send now all refuse a Hermes
-window in this release.
+as one; the paste refusal above still covers it. Its card carries the kind
+chip **Hermes** (`kind:hermes` in the filter), whatever its pane's command
+reads. muster never sends into it:
+Send, Queue and Send now all refuse a Hermes window in this release.
+
+**Rendered view, read-only.** A Hermes window whose session the host can name
+(below) opens in a Rendered view of its conversation, read from Hermes's
+session store as it is written: the prompts, the replies, the tool calls and
+their results, and a compact row for what Hermes adds itself (a process
+finishing, a model switch). Thinking is never shown. Its message box is drawn
+disabled and says why: muster does not send to Hermes yet, because Enter there
+can answer a prompt Hermes is showing, such as a command approval. There is no
+send queue. Terminal is one tap away, as for Claude Code. A compression that
+rewrites the conversation redraws the view from the start.
 
 **Which session.** The host finds the window's Hermes session from the
 breadcrumb Hermes writes for its terminal,
@@ -340,6 +351,32 @@ path of the `muster-mirror` binary, for example
 The hook prints nothing, always exits 0, and gives up after a second rather
 than hold Hermes up. If it cannot write, the window's status is unknown, never
 idle.
+
+#### Diagnosing a Hermes window
+
+`muster-mirror -list -windows` prints a Hermes window as
+`hermes <pane> <state> <session id> <source>`, with `-` for the session of a
+window that has no rendered view and `unknown` for a status muster does not
+believe. `muster-mirror -list -hermes` says why:
+
+- `hook-declared`: each `muster-mirror hermes-hook` command Hermes's
+  `config.yaml` declares, per event (only its `hooks:` section is read).
+  `hook-config` says when it declares none, or several.
+- `hook-consent`, per declared command: `ok for <command>`, or `MISSING for
+  <command>` with the events whose `(event, command)` pair is not in the
+  allowlist, and the command that fixes it (`muster-mirror hermes-allowlist
+  -hermes-home … -command <the declared command>`; none when several are
+  declared). `hook-undeclared` names events the config does not hook;
+  `hook-other` names allowlisted entries of a command that is not declared
+  (an older binary's, which the next `hermes-allowlist` removes).
+- per Hermes window: its pane, CLI process, terminal, session and status; the
+  `breadcrumb` (its session and time, or `none`); the `lineage` and how its tip
+  ended; the newest `status-file`; and, when there is one, the `no-view` and
+  `unknown` reasons (no breadcrumb, a breadcrumb older than the CLI, a switched
+  session, no status file, a stale busy, an idle under a live turn).
+
+It does not check the Hermes gateway's version (`code_sha`): that needs the
+gateway connection a later release adds.
 
 muster also refuses every send into a window the host reports as Hermes on
 its own side, before anything reaches the host. A Hermes the host does not

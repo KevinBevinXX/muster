@@ -24,12 +24,14 @@ row per session, owned and under row-level security. Its history is in
 |---|---|---|
 | `agent` | the agent's id | deleted with the agent |
 | `mirror` | the **Claude Code session id** of the conversation in the window | not the tmux window id |
+| `mirror` | `hermes:` and the **Hermes session id** (the conversation's lineage root) of a Hermes window | only a Hermes window whose host names its session |
 
 A mirrored session is keyed by the conversation, not the window, so its focus
 survives tmux reissuing window ids and follows a conversation into another
 window. `muster-mirror` reports the id per window (`claudeSession` in its
 window list). An older `muster-mirror` does not, and its windows simply have no
-focus. Only Claude Code windows have one.
+focus. Only Claude Code windows, and Hermes windows whose host names their
+session, have one.
 
 The transcript **path** is not sent to the server. The window list is one
 WebSocket message, and its largest case already fills 96% of a frame; muster

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -130,14 +131,46 @@ func (f focusSessions) Candidates(ctx context.Context) ([]focus.Candidate, error
 		}
 	}
 	seen := map[string]bool{}
-	for _, e := range f.s.mirrorClaudeEntries(ctx) {
-		if seen[e.ClaudeSession] {
+	for _, e := range f.s.mirrorFocusEntries(ctx) {
+		if seen[e.SessionKey()] {
 			continue
 		}
-		seen[e.ClaudeSession] = true
-		out = append(out, focus.Candidate{Subject: focus.MirrorSubject(e.ClaudeSession), ActiveAt: e.ActiveAt()})
+		seen[e.SessionKey()] = true
+		out = append(out, focus.Candidate{Subject: focus.MirrorSubject(e.SessionKey()), ActiveAt: e.ActiveAt()})
 	}
 	return out, nil
+}
+
+// mirrorFocusEntries is every ONLINE mirrored window of ctx's principal whose
+// conversation focus can describe: a Claude Code window with its session id,
+// or a Hermes window whose host names its session (keyed "hermes:<id>",
+// mirror.SessionView.SessionKey), most recently active first.
+//
+// 🔴 FOCUS ONLY. Routing, the send queue and the sessions overview stay on
+// mirrorClaudeEntries: each of those is a way to SEND, and nothing sends to
+// Hermes before Phase 3.
+func (s *Server) mirrorFocusEntries(ctx context.Context) []mirror.SessionView {
+	if s.ext.Mirror == nil {
+		return nil
+	}
+	var out []mirror.SessionView
+	for _, e := range mirror.Ordered(s.ext.Mirror.Hosts(ctx)) {
+		if e.Online && e.SessionKey() != "" {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// mirrorFocusEntryFor is the online window whose conversation's key is key
+// (mirrorFocusEntries), and whether there is one.
+func (s *Server) mirrorFocusEntryFor(ctx context.Context, key string) (mirror.SessionView, bool) {
+	for _, e := range s.mirrorFocusEntries(ctx) {
+		if e.SessionKey() == key {
+			return e, true
+		}
+	}
+	return mirror.SessionView{}, false
 }
 
 // mirrorClaudeEntries is every ONLINE mirrored window of ctx's principal whose
@@ -184,7 +217,7 @@ func (f focusSessions) Visible(ctx context.Context, sub focus.Subject) error {
 		}
 		return nil
 	case focus.KindMirror:
-		if _, ok := f.s.mirrorEntryForSession(ctx, sub.Key); !ok {
+		if _, ok := f.s.mirrorFocusEntryFor(ctx, sub.Key); !ok {
 			return errNoSession
 		}
 		return nil
@@ -198,11 +231,13 @@ func (f focusSessions) Tail(ctx context.Context, sub focus.Subject) ([]focus.Ent
 	case focus.KindAgent:
 		return f.s.agentTail(ctx, sub.AgentID())
 	case focus.KindMirror:
-		e, ok := f.s.mirrorEntryForSession(ctx, sub.Key)
+		e, ok := f.s.mirrorFocusEntryFor(ctx, sub.Key)
 		if !ok {
 			return nil, errNoSession
 		}
-		return f.s.mirrorTail(ctx, e, sub.Key)
+		// The stream names its conversation by the bare id (Msg.Gen): a
+		// Hermes key is "hermes:<id>".
+		return f.s.mirrorTail(ctx, e, strings.TrimPrefix(sub.Key, mirror.HermesKeyPrefix))
 	}
 	return nil, focus.ErrBadSubject
 }

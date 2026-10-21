@@ -54,6 +54,10 @@ type MirrorCardView struct {
 	// opens the RENDERED view by default (MirrorViewPath); otherwise it opens the
 	// terminal.
 	Claude bool
+	// HermesView: the host reports Hermes in the pane AND names the
+	// conversation it shows (mirror.SessionView.HermesView), so the card opens
+	// its read-only rendered view by default, as a Claude Code card does.
+	HermesView bool
 	// Pinned: the viewing user pinned this entry's address (internal/pins). The
 	// list draws pinned entries first (AgentsCardsWithMirrors); the card shows a
 	// pin glyph and its pin toggle pressed.
@@ -76,10 +80,11 @@ type MirrorCardView struct {
 }
 
 // MirrorCardHref is where a mirrored card opens: the rendered view for a
-// Claude Code pane, the terminal for anything else.
+// Claude Code pane or a Hermes one with a known session, the terminal for
+// anything else.
 func MirrorCardHref(m MirrorCardView) string {
 	ref := MirrorRef{Host: m.Host, Session: m.Session, Window: m.Window}
-	if m.Claude {
+	if m.Claude || m.HermesView {
 		return ref.ViewPath()
 	}
 	return ref.TerminalPath()

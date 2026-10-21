@@ -202,6 +202,24 @@ func (h Home) readAllowlist() (b []byte, storeLink bool, err error) {
 	return readStoreLinkOrRegular(filepath.Join(h.dir, allowlistName), maxAllowlist)
 }
 
+// configName is Hermes's config file, which only the diagnostic opens
+// (config.go).
+const configName = "config.yaml"
+
+// readConfig is config.yaml, read whole (bounded; a Home Manager link into
+// the Nix store is followed, any other symlink refused); nil and no error when
+// there is none. Never the daemon's: only `-list -hermes` calls it.
+func (h Home) readConfig() ([]byte, error) {
+	if err := h.valid(); err != nil {
+		return nil, err
+	}
+	b, _, err := readStoreLinkOrRegular(filepath.Join(h.dir, configName), maxConfig)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return b, err
+}
+
 // allowlistPaths are the allowlist writer's three paths: the lock, the file,
 // and the directory its temp file is made in.
 func (h Home) allowlistPaths() (lock, file, dir string, err error) {

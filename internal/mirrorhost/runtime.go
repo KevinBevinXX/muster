@@ -12,11 +12,13 @@ import (
 // Claude-only code"): one implementation per agent CLI this host mirrors.
 //
 // 🔴 SIZED FOR EXACTLY TWO, Claude Code and Hermes, and for what both have
-// TODAY: which panes run the CLI. The send (CheckSend, Submit), the rendered
-// view's stream and an answer's keys stay Claude Code's own code, and join
-// this interface in the phases that give Hermes an implementation of them
-// (Phase 3, Phase 2 and Phase 4); a method whose second implementation could
-// only refuse would be a seam drawn on a guess.
+// TODAY: which panes run the CLI. The send (CheckSend, Submit) and an
+// answer's keys stay Claude Code's own code, and join this interface in the
+// phases that give Hermes an implementation of them (Phase 3 and Phase 4); a
+// method whose second implementation could only refuse would be a seam drawn
+// on a guess. The rendered view's stream has two implementations since
+// Phase 2 (transcript.go's tail, hermes_stream.go's hermesTail), chosen by the
+// window a watch names; it joins the interface with the send in Phase 3.
 
 // Runtime is one agent CLI muster mirrors.
 type Runtime interface {
