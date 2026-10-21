@@ -134,6 +134,17 @@ var shaPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 // ValidSHA reports whether s is a commit id a job may name.
 func ValidSHA(s string) bool { return shaPattern.MatchString(s) }
 
+// repoPattern is a GitHub repository owner/name a sha job may name: it becomes
+// the anonymous fetch URL's path (agentprovision.AnonymousFetchURL), so each
+// half is one plain path element. The same shape as agentspec's checkout name.
+var repoPattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*/[A-Za-z0-9_][A-Za-z0-9._-]*$`)
+
+// ValidRepo reports whether s is a repository owner/name a sha job may name.
+func ValidRepo(s string) bool { return repoPattern.MatchString(s) && !strings.Contains(s, "..") }
+
+// MaxPR bounds a pull request number.
+const MaxPR = 1<<31 - 1
+
 // ValidResultPath reports whether p may be a job's result_path: a non-empty,
 // relative, already-clean path with no ".", ".." or ".git" element, at most 512
 // bytes, and no NUL. It is resolved against the agent's working directory.
@@ -162,10 +173,12 @@ type Job struct {
 	Agent   string
 	// WorkerPool is the pool the job was submitted to ("" when it named its
 	// agent); Agent is the member the pool chose.
-	WorkerPool     string
-	Prompt         string
-	Repo           string
-	SHA            string
+	WorkerPool string
+	Prompt     string
+	Repo       string
+	SHA        string
+	// PR is the pull request a sha job's commit is on (0 without a sha).
+	PR             int
 	ResultPath     string
 	TimeoutSeconds int
 	IdempotencyKey string
@@ -197,6 +210,7 @@ type NewJob struct {
 	Prompt         string
 	Repo           string
 	SHA            string
+	PR             int
 	ResultPath     string
 	TimeoutSeconds int
 	IdempotencyKey string
@@ -345,7 +359,7 @@ type PGStore struct{ pool *pgxpool.Pool }
 // NewPG returns a Store on pool.
 func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 
-const jobColumns = `id, coalesce(agent_id, 0), agent_name, worker_pool, prompt, repo, sha, result_path, timeout_s,
+const jobColumns = `id, coalesce(agent_id, 0), agent_name, worker_pool, prompt, repo, sha, pr, result_path, timeout_s,
 	coalesce(idempotency_key, ''), requested_by, status, result, reason, error, cc_account,
 	coalesce(session_id, 0), created_at, started_at, finished_at`
 
@@ -353,7 +367,7 @@ func scanJob(row pgx.Row) (Job, error) {
 	var j Job
 	var result *string
 	var started, finished *time.Time
-	if err := row.Scan(&j.ID, &j.AgentID, &j.Agent, &j.WorkerPool, &j.Prompt, &j.Repo, &j.SHA, &j.ResultPath, &j.TimeoutSeconds,
+	if err := row.Scan(&j.ID, &j.AgentID, &j.Agent, &j.WorkerPool, &j.Prompt, &j.Repo, &j.SHA, &j.PR, &j.ResultPath, &j.TimeoutSeconds,
 		&j.IdempotencyKey, &j.RequestedBy, &j.Status, &result, &j.Reason, &j.Error, &j.CCAccount,
 		&j.SessionID, &j.CreatedAt, &started, &finished); err != nil {
 		return Job{}, err
@@ -417,11 +431,11 @@ func (s *PGStore) Create(ctx context.Context, n NewJob) (Job, bool, error) {
 				ErrAgentAtCapacity, active, n.Agent, MaxActivePerAgent)
 		}
 	}
-	j, err := scanJob(tx.QueryRow(ctx, `INSERT INTO jobs (agent_id, agent_name, worker_pool, prompt, repo, sha, result_path,
-		timeout_s, idempotency_key, requested_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	j, err := scanJob(tx.QueryRow(ctx, `INSERT INTO jobs (agent_id, agent_name, worker_pool, prompt, repo, sha, pr, result_path,
+		timeout_s, idempotency_key, requested_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (owner_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
 		RETURNING `+jobColumns,
-		agentID, n.Agent, n.WorkerPool, n.Prompt, n.Repo, n.SHA, n.ResultPath, n.TimeoutSeconds, key, n.RequestedBy))
+		agentID, n.Agent, n.WorkerPool, n.Prompt, n.Repo, n.SHA, n.PR, n.ResultPath, n.TimeoutSeconds, key, n.RequestedBy))
 	if err == nil {
 		if err := tx.Commit(ctx); err != nil {
 			return Job{}, false, fmt.Errorf("jobs: create: commit: %w", err)

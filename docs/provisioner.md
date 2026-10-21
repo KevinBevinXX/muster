@@ -201,7 +201,8 @@ same resume (`--resume` of its own conversation by id).
   `apiKeyHelper` only from the CLI's user settings, so dispatch only onto
   repositories you trust with the agent's subscription token.
 - **Machine jobs at a commit do not use the checkout.** A [job](jobs.md) with a
-  `sha` runs in a git worktree of its own at
+  `sha` fetches its pull request's head anonymously from github.com (around any
+  proxy routing the pod has) and runs in a git worktree of its own at
   `/data/workspace/.muster-jobs/<job id>` — beside the checkout, on the same
   volume — with the commit's agent configuration replaced by the default
   branch's, in a Claude Code session whose CLI `ccd` starts in that directory

@@ -63,7 +63,7 @@ func (m *memJobs) Create(_ context.Context, n jobs.NewJob) (jobs.Job, bool, erro
 		return jobs.Job{}, false, jobs.ErrAgentAtCapacity
 	}
 	m.next++
-	j := jobs.Job{ID: m.next, AgentID: n.AgentID, Agent: n.Agent, WorkerPool: n.WorkerPool, Prompt: n.Prompt, Repo: n.Repo, SHA: n.SHA,
+	j := jobs.Job{ID: m.next, AgentID: n.AgentID, Agent: n.Agent, WorkerPool: n.WorkerPool, Prompt: n.Prompt, Repo: n.Repo, SHA: n.SHA, PR: n.PR,
 		ResultPath: n.ResultPath, TimeoutSeconds: n.TimeoutSeconds, IdempotencyKey: n.IdempotencyKey,
 		RequestedBy: n.RequestedBy, Status: jobs.StatusQueued, CreatedAt: time.Now()}
 	m.rows[j.ID] = j
@@ -336,10 +336,10 @@ func (w *jobWorkspace) RemoveUntrackedWorkspaceFile(_ context.Context, _ agents.
 	return true, nil
 }
 
-func (w *jobWorkspace) PrepareJobWorktree(_ context.Context, a agents.Agent, jobID int64, sha string) (string, error) {
+func (w *jobWorkspace) PrepareJobWorktree(_ context.Context, a agents.Agent, jobID int64, repo string, pr int, sha string) (string, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.worktrees = append(w.worktrees, a.Name+"#"+strconv.FormatInt(jobID, 10)+"@"+sha)
+	w.worktrees = append(w.worktrees, a.Name+"#"+strconv.FormatInt(jobID, 10)+" "+repo+"#"+strconv.Itoa(pr)+"@"+sha)
 	if w.prepareErr != nil {
 		return "", w.prepareErr
 	}
@@ -616,13 +616,13 @@ func TestAResultPathReturnsTheFileNotTheReply(t *testing.T) {
 	f.ws.files["1/out/review.md"] = file
 	f.ws.files["out/review.md"] = "the agent's checkout's copy, which a sha job must not read"
 	out := f.await(t, f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review", "result_path": "out/review.md",
-		"repo": "acme/widgets", "sha": testFullSHA}))
+		"repo": "acme/widgets", "sha": testFullSHA, "pr": 7}))
 	if out["status"] != jobs.StatusSucceeded || out["result"] != file {
 		t.Fatalf("job = %v result %q, want succeeded with the file %q", out["status"], out["result"], file)
 	}
 	made, removed := f.ws.snapshot()
-	if len(made) != 1 || made[0] != "keen-wren#1@"+testFullSHA {
-		t.Fatalf("worktrees made = %q, want [keen-wren#1@%s]", made, testFullSHA)
+	if len(made) != 1 || made[0] != "keen-wren#1 acme/widgets#7@"+testFullSHA {
+		t.Fatalf("worktrees made = %q, want [keen-wren#1 acme/widgets#7@%s]", made, testFullSHA)
 	}
 	if len(removed) != 1 || removed[0] != "keen-wren#1" {
 		t.Fatalf("worktrees removed = %q, want [keen-wren#1]", removed)
@@ -666,6 +666,10 @@ func TestJobSubmissionsTheAPIRefuses(t *testing.T) {
 		{"bad pool name", map[string]any{"worker_pool": "Reviewers!", "prompt": "x"}, http.StatusBadRequest},
 		{"pool sha without repo", map[string]any{"worker_pool": "reviewers", "prompt": "x", "sha": testFullSHA}, http.StatusBadRequest},
 		{"no such pool", map[string]any{"worker_pool": "nobody-here", "prompt": "x"}, http.StatusNotFound},
+		{"sha without pr", map[string]any{"agent": "keen-wren", "prompt": "x", "sha": testFullSHA}, http.StatusBadRequest},
+		{"pr without sha", map[string]any{"agent": "keen-wren", "prompt": "x", "pr": 7}, http.StatusBadRequest},
+		{"pr zero", map[string]any{"agent": "keen-wren", "prompt": "x", "sha": testFullSHA, "pr": 0}, http.StatusBadRequest},
+		{"repo not owner/name", map[string]any{"agent": "keen-wren", "prompt": "x", "repo": "acme/../x"}, http.StatusBadRequest},
 		{"no such agent", map[string]any{"agent": "nobody", "prompt": "x"}, http.StatusNotFound},
 		{"gateway-kind agent", map[string]any{"agent": "plain-otter", "prompt": "x"}, http.StatusConflict},
 		{"another repo", map[string]any{"agent": "keen-wren", "prompt": "x", "repo": "acme/other"}, http.StatusConflict},
@@ -965,7 +969,7 @@ func TestAShaJobNeverRunsInTheAgentsOwnSession(t *testing.T) {
 	f := newJobFixture(t, testServiceToken)
 	f.s.ext.Agents = legacyJobAgents{f.ags}
 	f.gw.reply = "done"
-	out := f.await(t, f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review", "repo": "acme/widgets", "sha": testFullSHA}))
+	out := f.await(t, f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review", "repo": "acme/widgets", "sha": testFullSHA, "pr": 7}))
 	if out["status"] != jobs.StatusFailed || out["reason"] != jobs.ReasonInternal || out["error"] != JobNoOwnSessionError {
 		t.Fatalf("job = %v/%v %q, want failed/internal %q", out["status"], out["reason"], out["error"], JobNoOwnSessionError)
 	}
@@ -987,7 +991,7 @@ func TestAShaJobNeverRunsInTheAgentsOwnSession(t *testing.T) {
 func TestAWorktreeThatFailsToPrepareIsStillRemoved(t *testing.T) {
 	f := newJobFixture(t, testServiceToken)
 	f.ws.prepareErr = errors.New("git worktree add: fatal: invalid reference")
-	out := f.await(t, f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review", "repo": "acme/widgets", "sha": testFullSHA}))
+	out := f.await(t, f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review", "repo": "acme/widgets", "sha": testFullSHA, "pr": 7}))
 	if out["status"] != jobs.StatusFailed || out["reason"] != jobs.ReasonCheckoutFailed {
 		t.Fatalf("job = %v/%v, want failed/%s", out["status"], out["reason"], jobs.ReasonCheckoutFailed)
 	}
@@ -999,7 +1003,7 @@ func TestAWorktreeThatFailsToPrepareIsStillRemoved(t *testing.T) {
 	f.ws.prepareErr, f.ws.removeWTErr = nil, errors.New("rm: cannot remove: Device or resource busy")
 	f.ws.mu.Unlock()
 	f.gw.reply = "LGTM"
-	out = f.await(t, f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review", "repo": "acme/widgets", "sha": testFullSHA}))
+	out = f.await(t, f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review", "repo": "acme/widgets", "sha": testFullSHA, "pr": 7}))
 	const want = JobWorktreeRemoveFailedPrefix + "rm: cannot remove: Device or resource busy"
 	if out["status"] != jobs.StatusSucceeded || out["result"] != "LGTM" || out["error"] != want {
 		t.Fatalf("job = %v %q error %q, want succeeded LGTM with the note %q", out["status"], out["result"], out["error"], want)

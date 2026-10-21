@@ -50,14 +50,16 @@
   crash a reaper fails them once they are past their own deadline, so a job can
   read `running` for up to `timeout_s` + 5 minutes after its server died. At most 4 jobs per agent are queued or running. See
   [jobs.md](jobs.md#what-it-does-not-do).
-- **A job at a commit is kept from that commit's agent configuration, not from
-  its code.** It runs in a worktree of its own whose `.claude/` directories, root
-  `CLAUDE.md`, `AGENTS.md` and `.mcp.json` are the default
-  branch's, so the commit cannot hook, configure or add MCP servers to its
-  reviewer. The turn still runs in the worker's pod with the worker's Claude
-  account, network and volume, and any other file in the commit (a build
-  script, a test, a nested `CLAUDE.md`) is the commit's. See
-  [jobs.md](jobs.md).
+- **A job at a commit is for commits by trusted members only.** It runs in a
+  worktree of its own whose `.claude/` directories, root `CLAUDE.md`,
+  `AGENTS.md` and `.mcp.json` are the default branch's, fetched anonymously as
+  a pull request's head by a pool worker that holds no GitHub credential — so
+  the commit cannot configure its reviewer or write to the repository. It is
+  not isolated from the commit's code: the turn runs in the worker's pod with
+  the worker's Claude account, network and volume. Keep a third party's commit
+  (a pull request from a fork) away from it until workers get execution
+  isolation, such as an egress policy. Pool workers serve public repositories
+  only. See [jobs.md](jobs.md).
 - **`MUSTER_TAG_AUTODISPATCH` dispatches nothing.** It only logs and counts
   eligible tasks. The one automatic start is the chief's `task_dispatch`
   ([task routing](plugins.md#task_dispatch-the-guards)), off by default.

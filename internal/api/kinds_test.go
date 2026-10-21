@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/ccpool"
 )
 
 // stubKinds is AgentKinds for tests: both kinds enabled, a fixed account list,
@@ -36,6 +37,9 @@ func (k stubKinds) Enabled() []string {
 }
 func (k stubKinds) ClaudeAccounts(context.Context, int64) ([]string, error) { return k.accounts, nil }
 func (k stubKinds) Unavailable(context.Context, int64) map[string]string    { return k.unavailable }
+func (k stubKinds) ClaudeAccountStates(context.Context, int64) (map[string]ccpool.AccountState, error) {
+	return nil, nil
+}
 func (k stubKinds) SelectClaudeAccount(_ context.Context, owner int64, pin string) (string, error) {
 	if k.owners != nil {
 		*k.owners = append(*k.owners, owner)

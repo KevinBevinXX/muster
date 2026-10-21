@@ -24,7 +24,7 @@ import (
 // submits a one-shot job — "run this prompt on this agent, optionally at this
 // commit, and give me the result" — and polls for its outcome.
 //
-//	POST /api/jobs       {agent | worker_pool, prompt, repo?, sha?, result_path?, timeout_s?, idempotency_key?}
+//	POST /api/jobs       {agent | worker_pool, prompt, repo?, sha?, pr?, result_path?, timeout_s?, idempotency_key?}
 //	                     → 202 {job_id, status: "queued", …}  (200 + deduplicated:true on a repeated key)
 //	GET  /api/jobs/{id}  → {job_id, status, result?, reason?, error?, started_at, finished_at, agent, cc_account, …}
 //
@@ -54,11 +54,16 @@ import (
 // it after the job, whatever the outcome (removeJobWorktree). The agent's own
 // checkout is never moved.
 //
+// 🔴 AND IT RUNS WITHOUT A WRITE CREDENTIAL. The commit is fetched anonymously
+// as pull request `pr`'s head from the repository's public URL, around any
+// proxy routing the pod has, and the job runs only at that head or an ancestor;
+// a pool worker holds no grant reaching github.com (jobs_grants.go).
+//
 // ⚠ WHAT A JOB DOES NOT HAVE, STATED SO IT IS NOT INFERRED:
-//   - isolation beyond the overlaid paths. The turn runs in the worker's pod,
-//     with the worker's Claude account, network and volume; any other file in
-//     the commit (a build script, a test) is the commit's, and the turn may run
-//     it.
+//   - isolation from the commit's code. The turn runs in the worker's pod, with
+//     the worker's Claude account, network and volume; any other file in the
+//     commit (a build script, a test) is the commit's, and the turn may run it.
+//     So it is for commits by trusted members only (docs/jobs.md).
 //   - survival across a restart. The turn runs in this process and nothing waits
 //     for it on shutdown. A graceful shutdown fails the jobs THIS process holds
 //     (FailOwnJobs), never another's. After a crash, the reaper (RunJobReaper
@@ -99,6 +104,7 @@ type jobRequest struct {
 	Prompt         string `json:"prompt"`
 	Repo           string `json:"repo"`
 	SHA            string `json:"sha"`
+	PR             *int   `json:"pr"`
 	ResultPath     string `json:"result_path"`
 	TimeoutS       *int   `json:"timeout_s"`
 	IdempotencyKey string `json:"idempotency_key"`
@@ -179,6 +185,11 @@ func (s *Server) handleJobCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	n.AgentID, n.Agent, n.WorkerPool = a.ID, a.Name, strings.TrimSpace(req.WorkerPool)
+	// A sha job's commit is fetched from its repository's public URL, so the
+	// job records the repository it ran on, the agent's when it named none.
+	if n.SHA != "" && n.Repo == "" {
+		n.Repo = strings.TrimSpace(a.Repo)
+	}
 	n.RequestedBy, _ = serviceActorFromContext(ctx)
 
 	j, created, err := s.ext.Jobs.Create(ctx, n)
@@ -242,6 +253,14 @@ func validateJobRequest(req jobRequest) (jobs.NewJob, int, string) {
 		return n, http.StatusBadRequest, "repo is over 256 bytes"
 	case n.SHA != "" && !jobs.ValidSHA(n.SHA):
 		return n, http.StatusBadRequest, "sha must be a full commit id: 40 lowercase hex characters (an abbreviated sha cannot be fetched)"
+	case n.SHA != "" && req.PR == nil:
+		return n, http.StatusBadRequest, "a job with a sha must name its pull request (pr): the commit is fetched as that pull request's head"
+	case n.SHA == "" && req.PR != nil:
+		return n, http.StatusBadRequest, "pr is only for a job with a sha"
+	case req.PR != nil && (*req.PR < 1 || *req.PR > jobs.MaxPR):
+		return n, http.StatusBadRequest, "pr must be a positive pull request number"
+	case n.Repo != "" && !jobs.ValidRepo(n.Repo):
+		return n, http.StatusBadRequest, "repo must be owner/name"
 	case n.ResultPath != "" && !jobs.ValidResultPath(n.ResultPath):
 		return n, http.StatusBadRequest, "result_path must be a clean relative path inside the agent's working directory " +
 			"(no leading /, no ., .. or .git elements, at most 512 bytes)"
@@ -249,6 +268,9 @@ func validateJobRequest(req jobRequest) (jobs.NewJob, int, string) {
 		return n, http.StatusBadRequest, fmt.Sprintf("idempotency_key is over %d bytes", jobs.MaxIdempotencyKeyBytes)
 	case req.IdempotencyKey != "" && strings.TrimSpace(req.IdempotencyKey) != req.IdempotencyKey:
 		return n, http.StatusBadRequest, "idempotency_key has leading or trailing whitespace"
+	}
+	if req.PR != nil {
+		n.PR = *req.PR
 	}
 	if req.TimeoutS != nil {
 		if *req.TimeoutS < 1 || *req.TimeoutS > jobs.MaxTimeoutSeconds {
@@ -306,22 +328,27 @@ func (s *Server) pickWorker(ctx context.Context, pool, repo string) (agents.Agen
 	if len(members) == 0 {
 		return agents.Agent{}, http.StatusNotFound, fmt.Sprintf("no worker pool %q: no agent is a member of it", pool)
 	}
-	h, ok := s.ext.Kinds.(ClaudeAccountStates)
-	if !ok {
-		return agents.Agent{}, http.StatusServiceUnavailable, "this deployment cannot read its Claude accounts' marks, " +
-			"so it cannot choose a worker (a worker whose account failed authentication must be skipped)"
+	// No kinds configured: no Claude account, so every member is skipped as
+	// "not configured" below.
+	states := map[string]ccpool.AccountState{}
+	if s.ext.Kinds != nil {
+		states, err = s.ext.Kinds.ClaudeAccountStates(ctx, callerID(ctx))
+		if err != nil {
+			s.logger.Printf("jobs: read Claude account marks for pool %q: %v", pool, err)
+			return agents.Agent{}, http.StatusServiceUnavailable, "could not read the Claude accounts' marks, so no worker was chosen"
+		}
 	}
-	states, err := h.ClaudeAccountStates(ctx, callerID(ctx))
+	github, err := s.gitHubGrants(ctx, ids)
 	if err != nil {
-		s.logger.Printf("jobs: read Claude account marks for pool %q: %v", pool, err)
-		return agents.Agent{}, http.StatusServiceUnavailable, "could not read the Claude accounts' marks, so no worker was chosen"
+		s.logger.Printf("jobs: read connector grants for pool %q: %v", pool, err)
+		return agents.Agent{}, http.StatusInternalServerError, "could not read the workers' connector grants"
 	}
 	active, err := s.ext.Jobs.ActiveCounts(ctx, ids)
 	if err != nil {
 		s.logger.Printf("jobs: count active jobs for pool %q: %v", pool, err)
 		return agents.Agent{}, http.StatusInternalServerError, "could not count the workers' jobs"
 	}
-	a, why := chooseWorker(pool, members, repo, states, active)
+	a, why := chooseWorker(pool, members, repo, states, active, github)
 	if why != "" {
 		return agents.Agent{}, http.StatusServiceUnavailable, why
 	}
@@ -333,9 +360,11 @@ const maxWorkerSkipsNamed = 10
 
 // chooseWorker is the worker-pool selection, pure. Of pool's members, a worker
 // is ELIGIBLE when it is a claude-code agent whose stored status is running,
-// works on repo (when the job names one), runs on a Claude account that is
-// configured and whose current token is not marked auth_failed, and has fewer
-// than jobs.MaxActivePerAgent jobs queued or running. Of the eligible, it
+// works on repo (when the job names one), holds no live grant reaching GitHub
+// (github: worker id → that grant's connector; jobs_grants.go), runs on a
+// Claude account that is configured and whose current token is not marked
+// auth_failed, and has fewer than jobs.MaxActivePerAgent jobs queued or
+// running. Of the eligible, it
 // prefers, in order:
 //
 //  1. a worker with no job queued or running;
@@ -347,7 +376,7 @@ const maxWorkerSkipsNamed = 10
 // With none eligible it returns a non-empty reason naming why each member was
 // skipped (at most maxWorkerSkipsNamed of them).
 func chooseWorker(pool string, members []agents.Agent, repo string, accounts map[string]ccpool.AccountState,
-	active map[int64]jobs.ActiveCount) (agents.Agent, string) {
+	active map[int64]jobs.ActiveCount, github map[int64]string) (agents.Agent, string) {
 	type cand struct {
 		a  agents.Agent
 		c  jobs.ActiveCount
@@ -368,6 +397,8 @@ func chooseWorker(pool string, members []agents.Agent, repo string, accounts map
 			why = "status " + m.Status
 		case repo != "" && !strings.EqualFold(repo, strings.TrimSpace(m.Repo)):
 			why = fmt.Sprintf("works on repository %q", m.Repo)
+		case github[m.ID] != "":
+			why = fmt.Sprintf("holds a grant on connector %q, which reaches github.com: a pool worker holds no GitHub credential", github[m.ID])
 		case !configured:
 			why = fmt.Sprintf("its Claude account %q is not configured", m.CCAccount)
 		case st.AuthFailed:
@@ -443,6 +474,7 @@ func jobView(j jobs.Job) map[string]any {
 		"cc_account":  j.CCAccount,
 		"repo":        j.Repo,
 		"sha":         j.SHA,
+		"pr":          j.PR,
 		"result_path": j.ResultPath,
 		"timeout_s":   j.TimeoutSeconds,
 		"created_at":  jobTime(j.CreatedAt),
@@ -764,7 +796,7 @@ func (s *Server) runJobTurn(ctx context.Context, a agents.Agent, sess agents.Cha
 		}
 		// Registered BEFORE the worktree is made, so a half-made one goes too.
 		defer func() { o = s.removeJobWorktree(ctx, a, j, o) }()
-		dir, err := s.ext.JobWorkspace.PrepareJobWorktree(ctx, a, j.ID, j.SHA)
+		dir, err := s.ext.JobWorkspace.PrepareJobWorktree(ctx, a, j.ID, j.Repo, j.PR, j.SHA)
 		if err != nil {
 			if expired() {
 				return jobs.TimedOut("the job's timeout elapsed while creating its worktree at " + j.SHA + ": " + err.Error())

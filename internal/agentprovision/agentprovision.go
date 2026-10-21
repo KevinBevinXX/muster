@@ -352,6 +352,11 @@ type Config struct {
 	// every pre-accounts test builds; cmd/muster-server always sets it
 	// (TestTheAgentPlaneResolvesCredentialsPerOwner).
 	Credentials CredentialResolver
+	// AnonymousGitBase is where a commit job's pull request is fetched from,
+	// anonymously: the repository is AnonymousGitBase + "owner/name".
+	// Empty is [DefaultAnonymousGitBase], the only production value; tests
+	// point it at a local directory (file://…/).
+	AnonymousGitBase string
 }
 
 // CredentialResolver answers which credentials an OWNER's agent is built with.
@@ -385,6 +390,7 @@ type Adapter struct {
 	// zero value refuses.
 	kickoffDeliverable bool
 	creds              CredentialResolver
+	anonGitBase        string
 }
 
 // New validates the configuration and builds the adapter.
@@ -406,6 +412,10 @@ func New(cfg Config) (*Adapter, error) {
 		timeout:            cfg.OpTimeout,
 		kickoffDeliverable: cfg.KickoffDeliverable,
 		creds:              cfg.Credentials,
+		anonGitBase:        cfg.AnonymousGitBase,
+	}
+	if a.anonGitBase == "" {
+		a.anonGitBase = DefaultAnonymousGitBase
 	}
 	if a.log == nil {
 		a.log = log.New(io.Discard, "", 0)

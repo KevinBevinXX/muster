@@ -25,10 +25,6 @@ type kindSet struct {
 // interface; losing it here would silently drop that refusal.
 var _ api.ClaudeAccountHealth = kindSet{}
 
-// The job API's worker-pool selection skips auth-failed accounts only through
-// this optional interface; without it a pool job is refused 503.
-var _ api.ClaudeAccountStates = kindSet{}
-
 // Enabled is in agents.Kinds order — gateway first — whatever order
 // MUSTER_AGENT_KINDS was written in: the picker checks its first option, and
 // the default must be the kind every deployment had before kinds existed.
@@ -69,7 +65,7 @@ func (k kindSet) ClaudeAccountAuthFailure(ctx context.Context, owner int64, acco
 	return k.pool.AuthFailure(ctx, owner, account)
 }
 
-// ClaudeAccountStates is api.ClaudeAccountStates: ccpool's marks for every one
+// ClaudeAccountStates is api.AgentKinds': ccpool's marks for every one
 // of owner's accounts, for the job API's worker-pool selection. With no pool
 // there are no accounts.
 func (k kindSet) ClaudeAccountStates(ctx context.Context, owner int64) (map[string]ccpool.AccountState, error) {

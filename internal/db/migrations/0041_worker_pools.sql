@@ -17,9 +17,15 @@
 --
 -- Both names are internal/agents.ValidWorkerPool's expression.
 --
--- Rollback: an image from before 0041 never reads either column. To remove
+-- jobs.pr is the pull request a sha job's commit is on (0 for a job without a
+-- sha): the job fetches refs/pull/<pr>/head anonymously and runs only at that
+-- head or an ancestor of it. The API requires it with a sha; the CHECK keeps
+-- it a positive number when set, and does not pair it with sha so that a sha
+-- job recorded before this migration (pr 0) stays valid.
+--
+-- Rollback: an image from before 0041 never reads these columns. To remove
 -- them: ALTER TABLE public.agents DROP COLUMN worker_pool; ALTER TABLE
--- public.jobs DROP COLUMN worker_pool; DELETE FROM schema_migrations WHERE
+-- public.jobs DROP COLUMN worker_pool, DROP COLUMN pr; DELETE FROM schema_migrations WHERE
 -- version = 41.
 
 SET LOCAL lock_timeout = '3s';
@@ -34,3 +40,7 @@ ALTER TABLE public.jobs ADD COLUMN IF NOT EXISTS worker_pool TEXT NOT NULL DEFAU
 ALTER TABLE public.jobs DROP CONSTRAINT IF EXISTS jobs_worker_pool_check;
 ALTER TABLE public.jobs ADD CONSTRAINT jobs_worker_pool_check
     CHECK (worker_pool = '' OR worker_pool ~ '^[a-z0-9][a-z0-9-]{0,62}$');
+
+ALTER TABLE public.jobs ADD COLUMN IF NOT EXISTS pr INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE public.jobs DROP CONSTRAINT IF EXISTS jobs_pr_check;
+ALTER TABLE public.jobs ADD CONSTRAINT jobs_pr_check CHECK (pr >= 0);

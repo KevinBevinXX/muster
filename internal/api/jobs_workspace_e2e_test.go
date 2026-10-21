@@ -174,8 +174,9 @@ func newE2EJobs(t *testing.T) (*jobFixture, worktreetest.Repo, string) {
 	root := t.TempDir()
 	r := worktreetest.New(t, filepath.Join(root, "widgets"), filepath.Join(root, "markers"))
 	adapter, err := agentprovision.New(agentprovision.Config{
-		Driver: &hostExecDriver{Noop: provision.MustNewNoop(), root: root},
-		Store:  stubAgentsStore{},
+		Driver:           &hostExecDriver{Noop: provision.MustNewNoop(), root: root},
+		Store:            stubAgentsStore{},
+		AnonymousGitBase: r.AnonBase,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -209,7 +210,7 @@ func TestACommitsOwnHooksAndMCPServersDoNotRunInItsJob(t *testing.T) {
 	cli := &cliGateway{t: t, root: root, resultPath: "out/review.md", body: "# Review\n"}
 	f.s.ext.Gateway = cli
 	out := f.await(t, f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review", "repo": "acme/widgets",
-		"sha": r.Commit, "result_path": "out/review.md"}))
+		"sha": r.Commit, "pr": worktreetest.PR, "result_path": "out/review.md"}))
 	if out["status"] != jobs.StatusSucceeded || out["result"] != "# Review\n" {
 		t.Fatalf("job = %v/%v %q (%v), want succeeded with the file", out["status"], out["reason"], out["result"], out["error"])
 	}
@@ -292,7 +293,7 @@ func TestAJobsWorktreeIsRemovedHoweverTheJobEnds(t *testing.T) {
 				sha = tc.sha(r)
 			}
 			out := f.await(t, f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review", "repo": "acme/widgets",
-				"sha": sha, "timeout_s": 5}))
+				"sha": sha, "pr": worktreetest.PR, "timeout_s": 5}))
 			if out["status"] != tc.wantStatus || out["reason"] != tc.wantReason {
 				t.Fatalf("job = %v/%v (%v), want %s/%s", out["status"], out["reason"], out["error"], tc.wantStatus, tc.wantReason)
 			}

@@ -13,7 +13,7 @@ import (
 // finished, an agent not asked about, and another owner's agent are all absent
 // (row-level security). ByIdempotencyKey answers the caller's job, ErrNotFound
 // for another owner's key or none. The worker_pool a job was submitted to is
-// read back.
+// read back, and so is a sha job's pull request; a negative one is refused.
 func TestThePGStoreCountsActiveJobsAndFindsAKey(t *testing.T) {
 	s, pool := pgStore(t)
 	a, b, c := mustAgent(t, pool, 1, "job-count-a"), mustAgent(t, pool, 1, "job-count-b"), mustAgent(t, pool, 1, "job-count-c")
@@ -28,6 +28,18 @@ func TestThePGStoreCountsActiveJobsAndFindsAKey(t *testing.T) {
 		return j
 	}
 	a1 := mk(1, a, "count-a1", "reviewers")
+	withPR, _, err := s.Create(as(1), NewJob{AgentID: c.ID, Agent: c.Name, Prompt: "p", Repo: "acme/widgets", SHA: fullSHA,
+		PR: 7, TimeoutSeconds: 60, IdempotencyKey: "count-pr"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Get(as(1), withPR.ID); err != nil || got.PR != 7 || got.SHA != fullSHA {
+		t.Fatalf("a sha job read back with pr %d (sha %q), %v; want 7", got.PR, got.SHA, err)
+	}
+	if _, _, err := s.Create(as(1), NewJob{AgentID: c.ID, Agent: c.Name, Prompt: "p", PR: -1, TimeoutSeconds: 60}); err == nil ||
+		!strings.Contains(err.Error(), "jobs_pr_check") {
+		t.Fatalf("pr -1: %v, want jobs_pr_check", err)
+	}
 	mk(1, a, "", "")
 	a3 := mk(1, a, "", "")
 	b1 := mk(1, b, "", "")
@@ -44,6 +56,7 @@ func TestThePGStoreCountsActiveJobsAndFindsAKey(t *testing.T) {
 		}
 	}
 	got, err := s.ActiveCounts(as(1), []int64{a.ID, b.ID, m.ID})
+	// (c's jobs, the pr one included, are not asked about.)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -42,13 +42,16 @@ import (
 var JobOverlayRootFiles = []string{"CLAUDE.md", "AGENTS.md", ".mcp.json"}
 
 // jobOverlayScript prepares job worktree $2 of the checkout $1 at commit $3,
-// the remaining arguments being JobOverlayRootFiles:
+// of pull request $5 of the repository at the anonymous URL $4, the remaining
+// arguments being JobOverlayRootFiles:
 //
 //  1. resolve the default branch, refs/remotes/origin/HEAD (asking origin with
 //     `git remote set-head --auto` only when the ref is missing), and fail
 //     with NoDefaultBranchMessage when it cannot be resolved: there is then
 //     no trusted configuration to give the job;
-//  2. fetch the commit from origin only when it is not already present;
+//  2. fetch refs/pull/$5/head ANONYMOUSLY from $4 into refs/muster-jobs/<job
+//     id> (see below), and refuse (NotOnPullRequestMessage) unless $3 is that
+//     head or an ancestor of it;
 //  3. refuse (SymlinkOverlayMessage) when the default branch carries a symlink
 //     among the overlaid paths: a symlink restored from it could point at a
 //     file the commit controls;
@@ -67,20 +70,48 @@ var JobOverlayRootFiles = []string{"CLAUDE.md", "AGENTS.md", ".mcp.json"}
 // an agent's frontmatter can declare hooks. Replacing only the root would let
 // a commit add `sub/.claude/…` and have it loaded.
 //
+// 🔴 THE FETCH IS ANONYMOUS, AND THE SCRIPT ENFORCES IT RATHER THAN ASSUMING IT.
+// An agent holding an approved grant on a connector that reaches github.com has
+// git's GLOBAL config routing every https://github.com/ URL through muster's
+// credentialed proxy (internal/podagent gitroute.go: url.<proxy>.insteadOf and
+// http.<proxy>.extraHeader, written with `git config --global`). The fetch runs
+// with GIT_CONFIG_GLOBAL=/dev/null and GIT_CONFIG_NOSYSTEM=1, so that routing is
+// not read, with `credential.helper=` (no helper) and `http.extraHeader=` (no
+// header), and it refuses (AnonymousFetchMessage) when what git would still use
+// differs: the URL `git ls-remote --get-url` resolves is not $4 (an insteadOf
+// in the checkout's own config), or that config names an extra header or a
+// credential setting. So the bytes come from $4 itself, with no credential.
+// Pool workers hold no GitHub grant at all (internal/api pickWorker) — this is
+// what makes the fetch anonymous for any agent.
+//
 // ⚠ NOT OVERLAID, AND SO THE COMMIT'S: every other file — including
 // CLAUDE.md / AGENTS.md files below the root (instructions the CLI reads as it
 // works in those directories; text, not commands) and anything the turn
 // chooses to run from the tree (a build script, a test). The overlay keeps the
 // COMMIT's configuration from configuring the reviewer; it does not make the
 // commit's code safe to execute.
-const jobOverlayScript = `main=$1 wt=$2 sha=$3
-shift 3
+const jobOverlayScript = `main=$1 wt=$2 sha=$3 url=$4 pr=$5
+shift 5
 cd "$main" || exit 1
 def=$(git rev-parse --verify --quiet 'refs/remotes/origin/HEAD^{commit}') ||
 	{ git remote set-head origin --auto >/dev/null 2>&1 &&
 		def=$(git rev-parse --verify --quiet 'refs/remotes/origin/HEAD^{commit}'); } ||
 	{ echo "` + NoDefaultBranchMessage + `" >&2; exit 4; }
-git cat-file -e "$sha^{commit}" 2>/dev/null || git fetch --quiet origin "$sha" || exit 1
+ref=refs/muster-jobs/${wt##*/}
+got=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git ls-remote --get-url "$url") || exit 1
+creds=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git config --get-regexp '^(http\..*extraheader|credential\..*)$')
+if [ "$got" != "$url" ] || [ -n "$creds" ]; then
+	echo "` + AnonymousFetchMessage + ` (git would fetch $got)" >&2
+	exit 7
+fi
+GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
+	git -c credential.helper= -c http.extraHeader= fetch --quiet --no-tags "$url" "+refs/pull/$pr/head:$ref" ||
+	{ echo "` + PullFetchMessage + `" >&2; exit 8; }
+head=$(git rev-parse --verify --quiet "$ref^{commit}") || exit 1
+if [ "$sha" != "$head" ] && ! git merge-base --is-ancestor "$sha" "$head" 2>/dev/null; then
+	echo "` + NotOnPullRequestMessage + ` (pull request $pr's head is $head)" >&2
+	exit 6
+fi
 links=$(git ls-tree -r "$def" | awk -F '\t' '$1 ~ /^120000 / {print $2}' | grep -E '(^|/)\.claude(/|$)')
 for p in "$@"; do
 	case $(git ls-tree "$def" -- "$p") in
@@ -115,6 +146,22 @@ done`
 // branch could not be resolved.
 const NoDefaultBranchMessage = "the repository's default branch (origin/HEAD) could not be resolved, so there is no trusted agent configuration to give the job's worktree; nothing was run"
 
+// AnonymousFetchMessage opens the error of a job whose checkout's own git
+// configuration would rewrite the anonymous fetch URL or add a header or a
+// credential to it.
+const AnonymousFetchMessage = "the checkout's git configuration rewrites the anonymous fetch URL or adds a header or credential to it, so the pull request was not fetched; nothing was run"
+
+// PullFetchMessage opens the error of a job whose pull request could not be
+// fetched anonymously.
+const PullFetchMessage = "the pull request's head could not be fetched anonymously (a private repository, no such pull request, or no network); nothing was run"
+
+// NotOnPullRequestMessage opens the error of a job whose sha is not on its pull
+// request; the pull request's head follows it.
+const NotOnPullRequestMessage = "the job's sha is neither the pull request's head nor an ancestor of it, so it was not checked out; nothing was run"
+
+// DefaultAnonymousGitBase is the anonymous fetch base: the public GitHub.
+const DefaultAnonymousGitBase = "https://github.com/"
+
 // SymlinkOverlayMessage opens the error of a job refused because the default
 // branch carries a symlink among the overlaid paths; the paths follow it.
 const SymlinkOverlayMessage = "the repository's default branch has a symlink among the agent-configuration paths a job's worktree takes from it, which could point at a file the job's commit controls; nothing was run"
@@ -122,10 +169,12 @@ const SymlinkOverlayMessage = "the repository's default branch has a symlink amo
 // jobRemoveScript removes job worktree $2 of the checkout $1: `git worktree
 // remove --force --force` (twice: a locked worktree too), then the directory
 // itself if git left it (it was not a registered worktree, or git refused),
-// then `git worktree prune`. It fails only when the directory is still there.
+// then `git worktree prune`, and the job's fetched pull-request ref. It fails
+// only when the directory is still there.
 const jobRemoveScript = `cd "$1" 2>/dev/null && git worktree remove --force --force "$2" >/dev/null 2>&1
 rm -rf "$2"
 cd "$1" 2>/dev/null && git worktree prune >/dev/null 2>&1
+cd "$1" 2>/dev/null && git update-ref -d "refs/muster-jobs/${2##*/}" >/dev/null 2>&1
 if [ -e "$2" ] || [ -L "$2" ]; then
 	echo "the job's worktree $2 could not be removed" >&2
 	exit 1
@@ -152,20 +201,38 @@ func jobDirs(ag agents.Agent, jobID int64) (main, wt string, err error) {
 	return main, agents.JobWorktreeDir(main, jobID), nil
 }
 
+// AnonymousFetchURL is the URL a commit job's pull request is fetched from for
+// repository owner/name: base + owner/name (base empty: DefaultAnonymousGitBase).
+func AnonymousFetchURL(base, repo string) string {
+	if base == "" {
+		base = DefaultAnonymousGitBase
+	}
+	return base + repo
+}
+
 // PrepareJobWorktree creates job jobID's worktree of ag's repository at sha,
-// with the overlay (jobOverlayScript), and returns its absolute path in the
-// instance. ag's own checkout is not moved. On an error a partly made
-// worktree may be left; RemoveJobWorktree removes it either way.
-func (a *Adapter) PrepareJobWorktree(ctx context.Context, ag agents.Agent, jobID int64, sha string) (string, error) {
+// which must be pull request pr's head of repo (owner/name) or an ancestor of
+// it — fetched anonymously (jobOverlayScript) — with the overlay, and returns
+// its absolute path in the instance. ag's own checkout is not moved. On an
+// error a partly made worktree may be left; RemoveJobWorktree removes it
+// either way.
+func (a *Adapter) PrepareJobWorktree(ctx context.Context, ag agents.Agent, jobID int64, repo string, pr int, sha string) (string, error) {
 	if !jobs.ValidSHA(sha) {
 		return "", fmt.Errorf("agentprovision: %q is not a full commit id (40 lowercase hex)", sha)
+	}
+	if pr <= 0 {
+		return "", fmt.Errorf("agentprovision: pull request %d is not positive", pr)
+	}
+	if !jobs.ValidRepo(repo) {
+		return "", fmt.Errorf("agentprovision: %q is not a repository owner/name", repo)
 	}
 	main, wt, err := jobDirs(ag, jobID)
 	if err != nil {
 		return "", err
 	}
 	var out bytes.Buffer
-	cmd := append([]string{"sh", "-c", jobOverlayScript, "muster-job-worktree", main, wt, sha}, JobOverlayRootFiles...)
+	cmd := append([]string{"sh", "-c", jobOverlayScript, "muster-job-worktree", main, wt, sha,
+		AnonymousFetchURL(a.anonGitBase, repo), strconv.Itoa(pr)}, JobOverlayRootFiles...)
 	if err := provision.Exec(ctx, a.driver, agents.RefOf(ag), cmd, nil, &out, &out); err != nil {
 		return "", fmt.Errorf("create the worktree %s at %s: %w: %s", wt, sha, err, strings.TrimSpace(capString(out.String(), 1024)))
 	}

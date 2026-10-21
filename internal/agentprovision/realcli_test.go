@@ -23,16 +23,19 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agentprovision/worktreetest"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
+	"github.com/ZacxDev/muster/internal/podagent"
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
@@ -60,7 +63,7 @@ func TestRealCLIRunsNoHookOrMCPServerFromAJobsCommit(t *testing.T) {
 	markers := "/tmp/realcli-markers"
 	r := worktreetest.New(t, ws, markers)
 	a, err := New(Config{Driver: &localExecDriver{Noop: provision.MustNewNoop(), root: agentspec.ClaudeCodeWorkspacePath},
-		Store: &recordingStore{agent: fixtureAgent()}, Spec: fixtureSpecConfig()})
+		Store: &recordingStore{agent: fixtureAgent()}, Spec: fixtureSpecConfig(), AnonymousGitBase: r.AnonBase})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +71,7 @@ func TestRealCLIRunsNoHookOrMCPServerFromAJobsCommit(t *testing.T) {
 
 	control := agents.JobWorktreeDir(ws, 1)
 	r.PlainWorktree(t, control)
-	job, err := a.PrepareJobWorktree(context.Background(), ag, 2, r.Commit)
+	job, err := a.PrepareJobWorktree(context.Background(), ag, 2, worktreetest.RepoName, worktreetest.PR, r.Commit)
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
@@ -104,6 +107,87 @@ func TestRealCLIRunsNoHookOrMCPServerFromAJobsCommit(t *testing.T) {
 			"start there, trusted, with project hooks", job)
 	}
 	t.Logf("markers at the end: %q", r.MarkerFiles(t))
+}
+
+// The public pull request the proxy test fetches: this repository's own
+// PR 182, merged, whose head is publicSHA.
+const (
+	publicRepo = "ZacxDev/muster"
+	publicPR   = 182
+	publicSHA  = "6b60e1cc9c580d7bd162bae5ed2831840588cda9"
+)
+
+// TestRealCLIPullRequestFetchBypassesTheProxyRouting: in the image, with the
+// routing ccd writes for an agent holding an approved grant on the `github`
+// connector (podagent.ApplyGitRouting: every https://github.com/ URL rewritten
+// to muster's proxy, with the agent's token as a header) pointed at a local
+// recorder standing in for the proxy:
+//
+//   - CONTROL: a plain `git ls-remote` of the public repository goes to the
+//     recorder, token header and all — the routing is live;
+//   - THE JOB: PrepareJobWorktree with the production base fetches pull
+//     request 182 of the public repository from github.com itself — the
+//     recorder sees NOTHING — and the worktree is at the pull request's head.
+//
+// It needs the network (github.com over HTTPS), as an agent's pod has it.
+func TestRealCLIPullRequestFetchBypassesTheProxyRouting(t *testing.T) {
+	var mu sync.Mutex
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.URL.Path+" token="+r.Header.Get("X-Muster-Token"))
+		mu.Unlock()
+		http.Error(w, "the recorder serves nothing", http.StatusForbidden)
+	}))
+	defer srv.Close()
+	conn := podagent.AgentConnector{Name: "github", Exists: true, Hosts: []string{"github.com"}, Grant: "approved"}
+	if _, err := podagent.ApplyGitRouting(srv.URL, "realcli-agent-token", conn); err != nil {
+		t.Fatalf("write the proxy routing: %v", err)
+	}
+	t.Cleanup(func() {
+		conn.Grant = ""
+		_, _ = podagent.ApplyGitRouting(srv.URL, "realcli-agent-token", conn)
+	})
+	count := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), seen...)
+	}
+
+	_ = exec.Command("git", "ls-remote", "https://github.com/"+publicRepo, fmt.Sprintf("refs/pull/%d/head", publicPR)).Run()
+	ctl := count()
+	if len(ctl) == 0 || !strings.Contains(ctl[0], "/connect/github/github.com/"+publicRepo) || !strings.Contains(ctl[0], "token=realcli-agent-token") {
+		t.Fatalf("control: the proxy routing did not catch a plain fetch of github.com: recorder saw %q", ctl)
+	}
+	t.Logf("control: a plain git ls-remote went to the proxy: %q", ctl)
+
+	main := filepath.Join(agentspec.ClaudeCodeWorkspacePath, "muster")
+	worktreetest.Git(t, "", "init", "-q", "-b", "main", main)
+	if err := os.WriteFile(filepath.Join(main, "CLAUDE.md"), []byte("# default\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	worktreetest.Git(t, main, "add", "--", "CLAUDE.md")
+	worktreetest.Git(t, main, "commit", "-q", "-m", "default")
+	worktreetest.Git(t, main, "update-ref", "refs/remotes/origin/main", "HEAD")
+	worktreetest.Git(t, main, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+	a, err := New(Config{Driver: &localExecDriver{Noop: provision.MustNewNoop(), root: agentspec.ClaudeCodeWorkspacePath},
+		Store: &recordingStore{agent: fixtureAgent()}, Spec: fixtureSpecConfig()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ag := agents.Agent{ID: 8, Name: "keen-wren", Kind: agents.KindClaudeCode, Repo: publicRepo}
+	dir, err := a.PrepareJobWorktree(context.Background(), ag, 3, publicRepo, publicPR, publicSHA)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if got := count(); len(got) != len(ctl) {
+		t.Fatalf("the job's fetch reached the proxy: recorder saw %q after the control's %q", got[len(ctl):], ctl)
+	}
+	if head := worktreetest.Git(t, dir, "rev-parse", "HEAD"); head != publicSHA {
+		t.Fatalf("worktree HEAD = %s, want the pull request's head %s", head, publicSHA)
+	}
+	t.Logf("the job fetched pull request %d of %s from github.com directly (recorder: %d request(s), all the control's); worktree at %s",
+		publicPR, publicRepo, len(count()), publicSHA)
 }
 
 func run(t *testing.T, name string, args ...string) {

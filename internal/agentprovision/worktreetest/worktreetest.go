@@ -35,12 +35,24 @@ const (
 	CommitMCPMarker = "commit-mcp"
 )
 
-// Repo is the fixture: Checkout is the agent's clone of Origin, on the default
-// branch; Commit is the commit under review, pushed to Origin on a branch the
-// clone has NOT fetched (so a job must fetch it).
+// The fixture's repository and pull request, as a job names them.
+const (
+	// RepoName is the job's `repo`.
+	RepoName = "acme/widgets"
+	// PR is the pull request whose head is Commit: refs/pull/7/head on Origin,
+	// the ONLY ref Commit is reachable from.
+	PR = 7
+)
+
+// Repo is the fixture. Origin is a bare repository at <AnonBase>acme/widgets —
+// so a job's anonymous fetch URL is AnonBase + RepoName — and Checkout is the
+// agent's clone of it, on the default branch. Commit, the commit under review,
+// is on Origin only as refs/pull/7/head, which the clone has NOT fetched (so a
+// job must fetch the pull ref). Stray is a commit on another branch, not
+// reachable from the pull request's head.
 type Repo struct {
-	Origin, Checkout, Markers string
-	Default, Commit           string
+	Origin, Checkout, Markers, AnonBase string
+	Default, Commit, Stray              string
 }
 
 // hookSettings is a project settings file whose SessionStart hook appends the
@@ -92,8 +104,12 @@ func New(t *testing.T, checkout, markers string) Repo {
 		t.Fatal(err)
 	}
 	base := t.TempDir()
-	r := Repo{Origin: filepath.Join(base, "origin.git"), Checkout: checkout, Markers: markers}
+	r := Repo{Origin: filepath.Join(base, "anon", RepoName), Checkout: checkout, Markers: markers,
+		AnonBase: "file://" + filepath.Join(base, "anon") + "/"}
 	src := filepath.Join(base, "src")
+	if err := os.MkdirAll(filepath.Dir(r.Origin), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	Git(t, "", "init", "-q", "--bare", "-b", "main", r.Origin)
 	// GitHub serves any reachable commit by id; a bare repository does so only
 	// with this set.
@@ -111,7 +127,12 @@ func New(t *testing.T, checkout, markers string) Repo {
 	write(t, src, CommitFiles(markers))
 	Git(t, src, "commit", "-q", "-m", "under review")
 	r.Commit = Git(t, src, "rev-parse", "HEAD")
-	Git(t, src, "push", "-q", r.Origin, "pr")
+	Git(t, src, "push", "-q", r.Origin, "HEAD:refs/pull/7/head")
+	Git(t, src, "checkout", "-q", "-b", "stray", r.Default)
+	write(t, src, map[string]string{"f": "stray\n"})
+	Git(t, src, "commit", "-q", "-m", "not on the pull request")
+	r.Stray = Git(t, src, "rev-parse", "HEAD")
+	Git(t, src, "push", "-q", r.Origin, "stray")
 	return r
 }
 
@@ -151,7 +172,7 @@ func Git(t *testing.T, dir string, args ...string) string {
 // at dir with NO overlay — what a job's directory would hold without it.
 func (r Repo) PlainWorktree(t *testing.T, dir string) {
 	t.Helper()
-	Git(t, r.Checkout, "fetch", "-q", "origin", r.Commit)
+	Git(t, r.Checkout, "fetch", "-q", "origin", "refs/pull/7/head")
 	Git(t, r.Checkout, "worktree", "add", "-q", "--detach", dir, r.Commit)
 }
 

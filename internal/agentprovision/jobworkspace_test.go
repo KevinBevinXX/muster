@@ -29,6 +29,7 @@ type localExecDriver struct {
 
 	mu    sync.Mutex
 	execs int
+	cmds  [][]string // each exec's command, as the adapter sent it
 }
 
 func (d *localExecDriver) Capabilities() provision.Capabilities {
@@ -40,6 +41,7 @@ func (d *localExecDriver) Capabilities() provision.Capabilities {
 func (d *localExecDriver) Exec(ctx context.Context, _ provision.Ref, cmd []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	d.mu.Lock()
 	d.execs++
+	d.cmds = append(d.cmds, append([]string(nil), cmd...))
 	d.mu.Unlock()
 	args := make([]string, len(cmd))
 	for i, a := range cmd {
@@ -101,8 +103,15 @@ func TestReadWorkspaceFileReturnsTheBytesVerbatim(t *testing.T) {
 	}
 }
 
-// overlayAgent is workspaceAgent, whose checkout is <root>/widgets.
+// overlayJobID is the job every worktree test prepares.
 const overlayJobID = 41
+
+// prepareJob prepares job overlayJobID of workspaceAgent at sha on the
+// fixture's pull request, fetched from the fixture's origin.
+func prepareJob(a *Adapter, r worktreetest.Repo, sha string) (string, error) {
+	a.anonGitBase = r.AnonBase
+	return a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, worktreetest.PR, sha)
+}
 
 // overlayPaths are every path the overlay decides, as the fixture lays them
 // out: present in the worktree with the DEFAULT branch's bytes when the
@@ -134,7 +143,7 @@ func TestAJobWorktreeIsTheCommitWithTheDefaultBranchsAgentConfig(t *testing.T) {
 	}
 	headBefore := worktreetest.Git(t, r.Checkout, "rev-parse", "HEAD")
 
-	dir, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, r.Commit)
+	dir, err := prepareJob(a, r, r.Commit)
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
@@ -197,7 +206,7 @@ func TestAJobWorktreeIsTheCommitWithTheDefaultBranchsAgentConfig(t *testing.T) {
 func TestAJobWorktreeIsRemovedWhateverItsState(t *testing.T) {
 	a, d := newWorkspaceAdapter(t)
 	r := worktreetest.New(t, filepath.Join(d.root, "widgets"), filepath.Join(d.root, "markers"))
-	if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, r.Commit); err != nil {
+	if _, err := prepareJob(a, r, r.Commit); err != nil {
 		t.Fatal(err)
 	}
 	wt := filepath.Join(d.root, ".muster-jobs", "41")
@@ -245,7 +254,7 @@ func TestAJobWorktreeIsRefusedWithoutATrustedDefaultBranch(t *testing.T) {
 		r := worktreetest.New(t, filepath.Join(d.root, "widgets"), filepath.Join(d.root, "markers"))
 		worktreetest.Git(t, r.Checkout, "remote", "set-head", "origin", "--delete")
 		worktreetest.Git(t, r.Checkout, "remote", "set-url", "origin", filepath.Join(d.root, "nowhere.git"))
-		_, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, r.Commit)
+		_, err := prepareJob(a, r, r.Commit)
 		if err == nil || !strings.Contains(err.Error(), NoDefaultBranchMessage) {
 			t.Fatalf("prepare = %v, want an error carrying %q", err, NoDefaultBranchMessage)
 		}
@@ -257,7 +266,7 @@ func TestAJobWorktreeIsRefusedWithoutATrustedDefaultBranch(t *testing.T) {
 		a, d := newWorkspaceAdapter(t)
 		r := worktreetest.New(t, filepath.Join(d.root, "widgets"), filepath.Join(d.root, "markers"))
 		worktreetest.Git(t, r.Checkout, "remote", "set-head", "origin", "--delete")
-		if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, r.Commit); err != nil {
+		if _, err := prepareJob(a, r, r.Commit); err != nil {
 			t.Fatalf("prepare = %v, want origin/HEAD re-learnt from origin", err)
 		}
 		if b, _ := os.ReadFile(filepath.Join(d.root, ".muster-jobs", "41", "CLAUDE.md")); string(b) != "# default instructions\n" {
@@ -283,7 +292,7 @@ func TestAJobWorktreeIsRefusedWithoutATrustedDefaultBranch(t *testing.T) {
 			worktreetest.Git(t, src, "commit", "-q", "-m", "link")
 			worktreetest.Git(t, src, "push", "-q", "origin", "main")
 			worktreetest.Git(t, r.Checkout, "fetch", "-q", "origin")
-			_, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, r.Commit)
+			_, err := prepareJob(a, r, r.Commit)
 			if err == nil || !strings.Contains(err.Error(), SymlinkOverlayMessage) || !strings.Contains(err.Error(), tc.path) {
 				t.Fatalf("prepare = %v, want an error carrying %q naming %s", err, SymlinkOverlayMessage, tc.path)
 			}
@@ -296,17 +305,27 @@ func TestAJobWorktreeIsRefusedWithoutATrustedDefaultBranch(t *testing.T) {
 		a, d := newWorkspaceAdapter(t)
 		before := d.count()
 		sha := strings.Repeat("a", 40)
-		if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, "HEAD~1"); err == nil {
+		if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, 7, "HEAD~1"); err == nil {
 			t.Error("a non-hex sha was accepted")
 		}
-		if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, sha[:8]); err == nil {
+		if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, 7, sha[:8]); err == nil {
 			t.Error("an abbreviated sha was accepted")
 		}
-		if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, 0, sha); err == nil {
+		if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, 0, worktreetest.RepoName, 7, sha); err == nil {
 			t.Error("job id 0 was accepted")
 		}
-		if _, err := a.PrepareJobWorktree(context.Background(), agents.Agent{Name: "no-repo", Kind: agents.KindClaudeCode}, overlayJobID, sha); err == nil {
+		if _, err := a.PrepareJobWorktree(context.Background(), agents.Agent{Name: "no-repo", Kind: agents.KindClaudeCode}, overlayJobID, worktreetest.RepoName, 7, sha); err == nil {
 			t.Error("an agent with no repository was given a worktree")
+		}
+		for _, pr := range []int{0, -1} {
+			if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, pr, sha); err == nil {
+				t.Errorf("pull request %d was accepted", pr)
+			}
+		}
+		for _, repo := range []string{"", "acme", "acme/widgets/x", "../widgets", "acme/..", "-x/y y"} {
+			if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, repo, 7, sha); err == nil {
+				t.Errorf("repository %q was accepted", repo)
+			}
 		}
 		if err := a.RemoveJobWorktree(context.Background(), workspaceAgent, -1); err == nil {
 			t.Error("a negative job id was removed")
@@ -315,6 +334,119 @@ func TestAJobWorktreeIsRefusedWithoutATrustedDefaultBranch(t *testing.T) {
 			t.Fatalf("refusals ran %d exec(s)", d.count()-before)
 		}
 	})
+}
+
+// TestTheFetchNamesThePublicURLAndThePullRequest: in production the worktree
+// script is handed exactly https://github.com/<repo> and the pull request's
+// number (the script fetches +refs/pull/<pr>/head from that URL). Asserted on
+// the command the adapter sends, with the default base; the instance here has
+// no checkout, so the script stops at its first line and nothing is fetched.
+func TestTheFetchNamesThePublicURLAndThePullRequest(t *testing.T) {
+	if got := AnonymousFetchURL("", "acme/widgets"); got != "https://github.com/acme/widgets" {
+		t.Fatalf("AnonymousFetchURL = %q", got)
+	}
+	a, d := newWorkspaceAdapter(t)
+	sha := strings.Repeat("c", 40)
+	if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, "acme/widgets", 7, sha); err == nil {
+		t.Fatal("prepare with no checkout succeeded")
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.cmds) != 1 {
+		t.Fatalf("%d execs, want 1", len(d.cmds))
+	}
+	want := []string{"muster-job-worktree", "/data/workspace/widgets", "/data/workspace/.muster-jobs/41", sha,
+		"https://github.com/acme/widgets", "7", "CLAUDE.md", "AGENTS.md", ".mcp.json"}
+	if got := d.cmds[0][3:]; strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("worktree command args = %q\nwant                    %q", got, want)
+	}
+	if !strings.Contains(d.cmds[0][2], `"+refs/pull/$pr/head:$ref"`) {
+		t.Fatal("the worktree script does not fetch the pull request's head ref")
+	}
+}
+
+// TestThePullRequestFetchIgnoresTheProxyRouting: ccd's proxy routing lives in
+// git's GLOBAL config (internal/podagent gitroute.go). With such a config in
+// force — an insteadOf sending the repository's URL elsewhere, and an extra
+// header carrying a token — the job's fetch still reaches the URL it names and
+// the job is made at the commit, which is on the origin ONLY as
+// refs/pull/7/head. The positive control shows that config is live: git
+// resolves the same URL to the rewrite. The checkout's OWN config doing the same
+// is refused, naming what git would fetch; so is an extra header there.
+func TestThePullRequestFetchIgnoresTheProxyRouting(t *testing.T) {
+	a, d := newWorkspaceAdapter(t)
+	r := worktreetest.New(t, filepath.Join(d.root, "widgets"), filepath.Join(d.root, "markers"))
+	url := r.AnonBase + worktreetest.RepoName
+	global := filepath.Join(t.TempDir(), "gitconfig")
+	routing := "[url \"file:///nowhere/proxy/\"]\n\tinsteadOf = " + r.AnonBase + "\n" +
+		"[http]\n\textraHeader = X-Muster-Token: not-a-real-token\n"
+	if err := os.WriteFile(global, []byte(routing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", global)
+	if got := worktreetest.Git(t, r.Checkout, "ls-remote", "--get-url", url); got != "file:///nowhere/proxy/"+worktreetest.RepoName {
+		t.Fatalf("control: with the routing in force git resolves %q, want the rewrite", got)
+	}
+	if _, err := prepareJob(a, r, r.Commit); err != nil {
+		t.Fatalf("prepare under the proxy routing: %v", err)
+	}
+	wt := filepath.Join(d.root, ".muster-jobs", "41")
+	if got := worktreetest.Git(t, wt, "rev-parse", "HEAD"); got != r.Commit {
+		t.Fatalf("worktree HEAD = %s, want the pull request's head %s", got, r.Commit)
+	}
+	if err := a.RemoveJobWorktree(context.Background(), workspaceAgent, overlayJobID); err != nil {
+		t.Fatal(err)
+	}
+	if refs := worktreetest.Git(t, r.Checkout, "for-each-ref", "refs/muster-jobs/"); refs != "" {
+		t.Fatalf("the job's pull-request ref outlived it: %s", refs)
+	}
+
+	for _, local := range [][]string{
+		{"url.file:///elsewhere/.insteadOf", r.AnonBase},
+		{"http.extraHeader", "Authorization: token not-a-real-token"},
+	} {
+		worktreetest.Git(t, r.Checkout, "config", local[0], local[1])
+		_, err := prepareJob(a, r, r.Commit)
+		if err == nil || !strings.Contains(err.Error(), AnonymousFetchMessage) {
+			t.Errorf("checkout config %s: prepare = %v, want an error carrying %q", local[0], err, AnonymousFetchMessage)
+		}
+		if _, err := os.Lstat(wt); !os.IsNotExist(err) {
+			t.Errorf("checkout config %s: a worktree was created (lstat: %v)", local[0], err)
+		}
+		worktreetest.Git(t, r.Checkout, "config", "--unset-all", local[0])
+	}
+}
+
+// TestAShaNotOnThePullRequestIsRefused: the job's sha must be the pull
+// request's head or an ancestor of it. The default branch's commit (an
+// ancestor) is accepted; a commit on another branch — present in the checkout,
+// so it is the ancestry that refuses it, not a missing object — is refused,
+// naming the head; so is a pull request that does not exist.
+func TestAShaNotOnThePullRequestIsRefused(t *testing.T) {
+	a, d := newWorkspaceAdapter(t)
+	r := worktreetest.New(t, filepath.Join(d.root, "widgets"), filepath.Join(d.root, "markers"))
+	wt := filepath.Join(d.root, ".muster-jobs", "41")
+	worktreetest.Git(t, r.Checkout, "fetch", "-q", "origin", "stray")
+	_, err := prepareJob(a, r, r.Stray)
+	if err == nil || !strings.Contains(err.Error(), NotOnPullRequestMessage) || !strings.Contains(err.Error(), r.Commit) {
+		t.Fatalf("a sha off the pull request: prepare = %v, want an error carrying %q and the head %s", err, NotOnPullRequestMessage, r.Commit)
+	}
+	if _, err := os.Lstat(wt); !os.IsNotExist(err) {
+		t.Fatalf("a worktree was created for a sha off the pull request (lstat: %v)", err)
+	}
+
+	a.anonGitBase = r.AnonBase
+	if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, 8, r.Commit); err == nil ||
+		!strings.Contains(err.Error(), PullFetchMessage) {
+		t.Fatalf("pull request 8 (none): prepare = %v, want an error carrying %q", err, PullFetchMessage)
+	}
+
+	if _, err := prepareJob(a, r, r.Default); err != nil {
+		t.Fatalf("an ancestor of the head: prepare = %v", err)
+	}
+	if got := worktreetest.Git(t, wt, "rev-parse", "HEAD"); got != r.Default {
+		t.Fatalf("worktree HEAD = %s, want the ancestor %s", got, r.Default)
+	}
 }
 
 // TestReadWorkspaceFileReadsTheJobsWorktree: with a job id, rel is resolved in

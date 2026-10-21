@@ -2,13 +2,17 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/ccpool"
+	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/jobs"
 )
 
@@ -37,42 +41,47 @@ func TestChooseWorkerPrefersTheIdleThenTheLeastQueuedThenTheMostRested(t *testin
 		members  []agents.Agent
 		accounts map[string]ccpool.AccountState
 		active   map[int64]jobs.ActiveCount
+		github   map[int64]string
 		want     string
 	}{
 		{"an idle worker beats a busy one that is better on every later rule",
 			[]agents.Agent{worker(1, "a-busy", "alpha"), worker(2, "b-idle", "beta")},
 			map[string]ccpool.AccountState{"alpha": {}, "beta": {RateLimitedAt: t1000}},
-			map[int64]jobs.ActiveCount{1: {Running: 1}}, "b-idle"},
+			map[int64]jobs.ActiveCount{1: {Running: 1}}, nil, "b-idle"},
 		{"of two busy workers, the fewer queued",
 			[]agents.Agent{worker(1, "a-two", "alpha"), worker(2, "b-one", "beta")},
 			map[string]ccpool.AccountState{"alpha": {}, "beta": {RateLimitedAt: t1000}},
-			map[int64]jobs.ActiveCount{1: {Running: 1, Queued: 2}, 2: {Running: 1, Queued: 1}}, "b-one"},
+			map[int64]jobs.ActiveCount{1: {Running: 1, Queued: 2}, 2: {Running: 1, Queued: 1}}, nil, "b-one"},
 		{"a queued-only worker is not idle",
 			[]agents.Agent{worker(1, "a-queued", "alpha"), worker(2, "b-idle", "beta")},
 			map[string]ccpool.AccountState{"alpha": {}, "beta": {RateLimitedAt: t1000}},
-			map[int64]jobs.ActiveCount{1: {Queued: 1}}, "b-idle"},
+			map[int64]jobs.ActiveCount{1: {Queued: 1}}, nil, "b-idle"},
 		{"of two idle workers, the never rate-limited account",
 			[]agents.Agent{worker(1, "a-limited", "alpha"), worker(2, "b-never", "beta")},
 			map[string]ccpool.AccountState{"alpha": {RateLimitedAt: t0900}, "beta": {}},
-			nil, "b-never"},
+			nil, nil, "b-never"},
 		{"of two rate-limited accounts, the longer ago",
 			[]agents.Agent{worker(1, "a-recent", "alpha"), worker(2, "b-older", "beta")},
 			map[string]ccpool.AccountState{"alpha": {RateLimitedAt: t1000}, "beta": {RateLimitedAt: t0900}},
-			nil, "b-older"},
+			nil, nil, "b-older"},
 		{"otherwise the name, whatever the input order",
 			[]agents.Agent{worker(2, "z-last", "beta"), worker(1, "a-first", "alpha"), worker(3, "m-mid", "gamma")},
-			healthy, nil, "a-first"},
+			healthy, nil, nil, "a-first"},
 		{"an auth-failed account is skipped, though it would win every rule",
 			[]agents.Agent{worker(1, "a-dead", "alpha"), worker(2, "b-ok", "beta")},
 			map[string]ccpool.AccountState{"alpha": {AuthFailed: true}, "beta": {RateLimitedAt: t1000}},
-			map[int64]jobs.ActiveCount{2: {Running: 1, Queued: 2}}, "b-ok"},
+			map[int64]jobs.ActiveCount{2: {Running: 1, Queued: 2}}, nil, "b-ok"},
+		{"a worker holding a GitHub grant is skipped, though it would win every rule",
+			[]agents.Agent{worker(1, "a-granted", "alpha"), worker(2, "b-clean", "beta")},
+			map[string]ccpool.AccountState{"alpha": {}, "beta": {RateLimitedAt: t1000}},
+			map[int64]jobs.ActiveCount{2: {Running: 1, Queued: 2}}, map[int64]string{1: "github"}, "b-clean"},
 		{"a worker at its limit is skipped",
 			[]agents.Agent{worker(1, "a-full", "alpha"), worker(2, "b-room", "beta")},
 			// a-full, with none queued, would win on "fewest queued".
-			healthy, map[int64]jobs.ActiveCount{1: {Running: 4}, 2: {Running: 1, Queued: 1}}, "b-room"},
+			healthy, map[int64]jobs.ActiveCount{1: {Running: 4}, 2: {Running: 1, Queued: 1}}, nil, "b-room"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, why := chooseWorker("reviewers", tc.members, "", tc.accounts, tc.active)
+			got, why := chooseWorker("reviewers", tc.members, "", tc.accounts, tc.active, tc.github)
 			if why != "" || got.Name != tc.want {
 				t.Fatalf("chose %q (%q), want %q", got.Name, why, tc.want)
 			}
@@ -91,10 +100,13 @@ func TestChooseWorkerSaysWhyNoWorkerIsEligible(t *testing.T) {
 	other.Repo = "acme/other"
 	members := []agents.Agent{worker(6, "f-full", "beta"), other, gw, stopped, worker(1, "a-dead", "alpha"), worker(5, "e-unknown", "zeta")}
 	accounts := map[string]ccpool.AccountState{"alpha": {AuthFailed: true}, "beta": {}}
-	_, why := chooseWorker("reviewers", members, "acme/widgets", accounts, map[int64]jobs.ActiveCount{6: {Running: 1, Queued: 3}})
+	members = append(members, worker(7, "g-granted", "beta"))
+	_, why := chooseWorker("reviewers", members, "acme/widgets", accounts, map[int64]jobs.ActiveCount{6: {Running: 1, Queued: 3}},
+		map[int64]string{7: "github"})
 	const want = `no worker in pool "reviewers" can take the job: a-dead (its Claude account "alpha" failed authentication); ` +
 		`b-stopped (status stopped); c-gateway (kind gateway); d-other (works on repository "acme/other"); ` +
-		`e-unknown (its Claude account "zeta" is not configured); f-full (already has 4 jobs queued or running (the limit))`
+		`e-unknown (its Claude account "zeta" is not configured); f-full (already has 4 jobs queued or running (the limit)); ` +
+		`g-granted (holds a grant on connector "github", which reaches github.com: a pool worker holds no GitHub credential)`
 	if why != want {
 		t.Fatalf("reason = %q\nwant      %q", why, want)
 	}
@@ -148,23 +160,19 @@ func TestAPoolJobRunsOnTheChosenWorkerAndRecordsIt(t *testing.T) {
 }
 
 // TestAPoolJobIsRefusedWhenNoWorkerCanTakeIt: every member's account
-// auth-failed is 503 with the reason, recording nothing; a deployment that
-// cannot read account marks is 503 too; a REPEATED key is still answered
-// with its first job, though its pool now has no eligible worker.
+// auth-failed is 503 with the reason, recording nothing; a REPEATED key is
+// still answered with its first job, though its pool now has no eligible
+// worker.
 func TestAPoolJobIsRefusedWhenNoWorkerCanTakeIt(t *testing.T) {
 	f := newJobFixture(t, testServiceToken)
 	f.gw.reply = "done"
-	code, out := f.call(t, http.MethodPost, "/api/jobs", map[string]any{"worker_pool": "reviewers", "prompt": "x"}, true)
-	if code != http.StatusServiceUnavailable || !strings.Contains(out["error"].(string), "cannot read its Claude accounts' marks") {
-		t.Fatalf("with no account marks = %d %v, want 503", code, out)
-	}
 	kinds := &poolKinds{states: map[string]ccpool.AccountState{"alpha": {}, "beta": {}}}
 	f.s.ext.Kinds = kinds
 	first := f.submit(t, map[string]any{"worker_pool": "reviewers", "prompt": "x", "idempotency_key": "pool-1"})
 	f.await(t, first)
 
 	kinds.states = map[string]ccpool.AccountState{"alpha": {AuthFailed: true}, "beta": {AuthFailed: true}}
-	code, out = f.call(t, http.MethodPost, "/api/jobs", map[string]any{"worker_pool": "reviewers", "prompt": "x"}, true)
+	code, out := f.call(t, http.MethodPost, "/api/jobs", map[string]any{"worker_pool": "reviewers", "prompt": "x"}, true)
 	const want = `no worker in pool "reviewers" can take the job: rev-a (its Claude account "alpha" failed authentication); ` +
 		`rev-b (its Claude account "beta" failed authentication)`
 	if code != http.StatusServiceUnavailable || out["error"] != want {
@@ -197,4 +205,157 @@ func TestAgentAndWorkerPoolAreMutuallyExclusive(t *testing.T) {
 	}
 	f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "x"})
 	f.submit(t, map[string]any{"worker_pool": "reviewers", "prompt": "x"})
+}
+
+// grantStore is connectors.Store with the reads the GitHub-grant rule makes —
+// the live grants, the connectors' hosts, one grant — and a recorded decision.
+type grantStore struct {
+	connectors.Store
+	grants  []connectors.Grant
+	conns   []connectors.Connector
+	decided []int64
+}
+
+func (g *grantStore) ListGrants(context.Context) ([]connectors.Grant, error) { return g.grants, nil }
+func (g *grantStore) ListConnectors(context.Context) ([]connectors.Connector, error) {
+	return g.conns, nil
+}
+func (g *grantStore) GetGrant(_ context.Context, id int64) (connectors.Grant, error) {
+	for _, gr := range g.grants {
+		if gr.ID == id {
+			return gr, nil
+		}
+	}
+	return connectors.Grant{}, connectors.ErrNotFound
+}
+func (g *grantStore) GetConnector(_ context.Context, name string) (connectors.Connector, error) {
+	for _, c := range g.conns {
+		if c.Name == name {
+			return c, nil
+		}
+	}
+	return connectors.Connector{}, connectors.ErrNotFound
+}
+func (g *grantStore) DecideGrantFrom(_ context.Context, id int64, approve bool, _, _ string, _ connectors.DecisionSource) (connectors.Grant, error) {
+	g.decided = append(g.decided, id)
+	gr, err := g.GetGrant(context.Background(), id)
+	if approve {
+		gr.Status = connectors.StatusApproved
+	}
+	return gr, err
+}
+func (g *grantStore) Audit(context.Context, connectors.AuditEntry) error { return nil }
+func (g *grantStore) DecideGrant(ctx context.Context, id int64, approve bool, by, src string) (connectors.Grant, error) {
+	return g.DecideGrantFrom(ctx, id, approve, by, src, connectors.DecisionSource{})
+}
+func (g *grantStore) CreateConnector(_ context.Context, nc connectors.NewConnector) (connectors.Connector, error) {
+	c := connectors.Connector{Name: nc.Name, Hosts: nc.Hosts}
+	g.conns = append(g.conns, c)
+	return c, nil
+}
+func (g *grantStore) ListPendingGrants(context.Context) ([]connectors.Grant, error) { return nil, nil }
+func (g *grantStore) ListAudit(context.Context, int) ([]connectors.AuditEntry, error) {
+	return nil, nil
+}
+
+// testConnectors: the App-backed github connector, a stored one with a
+// github.com host, and one that reaches somewhere else.
+var testConnectors = []connectors.Connector{
+	{Name: "github", Hosts: []string{"api.github.com", "github.com"}},
+	{Name: "gh-token", Hosts: []string{"github.com"}},
+	{Name: "chat", Hosts: []string{"chat.example.com"}},
+}
+
+// TestAPoolWorkerHoldingAGitHubGrantIsSkipped: through the real handler, rev-a
+// — first by name, otherwise winning — holds a pending grant on a stored
+// connector reaching github.com, so the job runs on rev-b; a grant on a
+// connector reaching elsewhere does not disqualify it.
+func TestAPoolWorkerHoldingAGitHubGrantIsSkipped(t *testing.T) {
+	f := newJobFixture(t, testServiceToken)
+	f.s.ext.Kinds = &poolKinds{states: map[string]ccpool.AccountState{"alpha": {}, "beta": {}}}
+	st := &grantStore{conns: testConnectors,
+		grants: []connectors.Grant{{ID: 1, AgentID: 20, AgentName: "rev-a", Connector: "gh-token", Status: connectors.StatusPending}}}
+	f.s.ext.Connectors = st
+	f.gw.reply = "done"
+	if out := f.await(t, f.submit(t, map[string]any{"worker_pool": "reviewers", "prompt": "review"})); out["agent"] != "rev-b" {
+		t.Fatalf("with rev-a holding a GitHub grant the job ran on %v, want rev-b", out["agent"])
+	}
+	st.grants[0].Connector = "chat"
+	if out := f.await(t, f.submit(t, map[string]any{"worker_pool": "reviewers", "prompt": "review"})); out["agent"] != "rev-a" {
+		t.Fatalf("with rev-a holding only a non-GitHub grant the job ran on %v, want rev-a", out["agent"])
+	}
+}
+
+// TestAGitHubGrantIsNeverApprovedForAPoolWorker: the one decision every
+// approval door takes (decideConnectorGrant: the Connectors tab and a mirrored
+// session's connector_request_decide) refuses to approve a pool worker's grant
+// on any connector reaching github.com — nothing is decided — while denying it,
+// or approving a non-GitHub one, or approving a GitHub one for an agent in no
+// pool, goes through. The rule fails closed on a connector it cannot see.
+func TestAGitHubGrantIsNeverApprovedForAPoolWorker(t *testing.T) {
+	f := newJobFixture(t, testServiceToken)
+	st := &grantStore{conns: testConnectors, grants: []connectors.Grant{
+		{ID: 1, AgentID: 20, Connector: "github", Status: connectors.StatusPending},
+		{ID: 2, AgentID: 20, Connector: "gh-token", Status: connectors.StatusPending},
+		{ID: 3, AgentID: 20, Connector: "chat", Status: connectors.StatusPending},
+		{ID: 4, AgentID: 7, Connector: "github", Status: connectors.StatusPending},
+	}}
+	f.s.ext.Connectors = st
+	ctx := context.Background()
+	for _, id := range []int64{1, 2} {
+		_, err := f.s.decideConnectorGrant(ctx, id, true, connectors.DecisionSource{})
+		var refused errPoolWorkerGitHubGrant
+		if !errors.As(err, &refused) {
+			t.Errorf("approving grant %d of pool worker rev-a = %v, want errPoolWorkerGitHubGrant", id, err)
+		}
+	}
+	if len(st.decided) != 0 {
+		t.Fatalf("refused approvals reached the store: %v", st.decided)
+	}
+	for _, c := range []struct {
+		id      int64
+		approve bool
+	}{{1, false}, {3, true}, {4, true}} {
+		if _, err := f.s.decideConnectorGrant(ctx, c.id, c.approve, connectors.DecisionSource{}); err != nil {
+			t.Errorf("grant %d approve=%v: %v", c.id, c.approve, err)
+		}
+	}
+	if got := st.decided; len(got) != 3 {
+		t.Fatalf("decided %v, want grants 1 (denied), 3 and 4", got)
+	}
+	if !grantReachesGitHub("vanished", map[string][]string{"chat": {"chat.example.com"}}) {
+		t.Fatal("a connector whose hosts are unknown is not treated as reaching GitHub")
+	}
+}
+
+// TestEnteringACredentialDoesNotApproveAPoolWorkersGitHubGrant: the third
+// approval door — entering a credential for a pending request approves it in
+// the same step — saves the connector (it reaches github.com) but does not
+// approve the pool worker's request, and says why; the same form for an agent
+// in no pool approves it.
+func TestEnteringACredentialDoesNotApproveAPoolWorkersGitHubGrant(t *testing.T) {
+	f := newJobFixture(t, testServiceToken)
+	st := &grantStore{grants: []connectors.Grant{
+		{ID: 5, AgentID: 20, AgentName: "rev-a", Connector: "gh-token", Status: connectors.StatusPending},
+		{ID: 6, AgentID: 7, AgentName: "keen-wren", Connector: "gh-token2", Status: connectors.StatusPending},
+	}}
+	f.s.ext.Connectors = st
+	for _, tc := range []struct {
+		id      string
+		decided bool
+	}{{"5", false}, {"6", true}} {
+		st.decided = nil
+		form := url.Values{"request_id": {tc.id}, "preset": {"custom"}, "hosts": {"github.com"}, "scheme": {"bearer"},
+			"secret": {"not-a-real-token"}}
+		req := httptest.NewRequest(http.MethodPost, "/connectors", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		w := httptest.NewRecorder()
+		f.s.handleConnectorCreate(w, req)
+		if got := len(st.decided) == 1; got != tc.decided {
+			t.Errorf("request %s: approved=%v, want %v (body %q)", tc.id, got, tc.decided, w.Body.String())
+		}
+		if !tc.decided && !strings.Contains(w.Body.String(), "a member of worker pool reviewers") {
+			t.Errorf("request %s: the refusal does not say why: %q", tc.id, w.Body.String())
+		}
+	}
 }

@@ -278,10 +278,11 @@ type Extensions struct {
 // agent's live instance.
 type JobWorkspace interface {
 	// PrepareJobWorktree creates job jobID's own git worktree of the agent's
-	// repository at sha, outside the agent's checkout, with the agent
-	// configuration overlaid from the default branch, and returns its path.
-	// The agent's checkout is not moved.
-	PrepareJobWorktree(ctx context.Context, a agents.Agent, jobID int64, sha string) (string, error)
+	// repository at sha — which must be pull request pr's head of repo, or an
+	// ancestor of it, fetched anonymously — outside the agent's checkout, with
+	// the agent configuration overlaid from the default branch, and returns its
+	// path. The agent's checkout is not moved.
+	PrepareJobWorktree(ctx context.Context, a agents.Agent, jobID int64, repo string, pr int, sha string) (string, error)
 	// RemoveJobWorktree removes that worktree; one that is not there is not an
 	// error.
 	RemoveJobWorktree(ctx context.Context, a agents.Agent, jobID int64) error
@@ -880,6 +881,10 @@ type AgentKinds interface {
 	// Unavailable maps each enabled kind owner has NO credential for to the
 	// sentence telling them what to add. Absent = usable.
 	Unavailable(ctx context.Context, owner int64) map[string]string
+	// ClaudeAccountStates is what the account pool knows about each of
+	// owner's Claude accounts (auth-failed under its current token, last
+	// rate-limited), for the job API's worker-pool selection (pickWorker).
+	ClaudeAccountStates(ctx context.Context, owner int64) (map[string]ccpool.AccountState, error)
 }
 
 // ClaudeAccountHealth is an optional extension of [AgentKinds]: whether one of
@@ -889,16 +894,6 @@ type AgentKinds interface {
 // cmd/muster-server's kindSet implements it (asserted there).
 type ClaudeAccountHealth interface {
 	ClaudeAccountAuthFailure(ctx context.Context, owner int64, account string) (string, error)
-}
-
-// ClaudeAccountStates is an optional extension of [AgentKinds]: what the
-// account pool knows about each of owner's Claude accounts (auth-failed under
-// its current token, last rate-limited). The job API's worker-pool selection
-// reads it (pickJobAgent); a deployment whose Kinds does not implement it
-// refuses a worker_pool job 503 rather than choose without it.
-// cmd/muster-server's kindSet implements it (asserted there).
-type ClaudeAccountStates interface {
-	ClaudeAccountStates(ctx context.Context, owner int64) (map[string]ccpool.AccountState, error)
 }
 
 // enabledKinds is Extensions.Kinds.Enabled with the nil case resolved.
