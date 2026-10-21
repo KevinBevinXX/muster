@@ -66,6 +66,8 @@ func TestADraftsNotificationNamesWhoAndWhereOnly(t *testing.T) {
 	}{
 		{"verified, display name", plugins.Message{ID: 7, Sender: "Justin <justin@example.test>", SenderVerified: true, Body: "the secret plan"}, "Discord DMs", "Reply draft: Justin (Discord DMs)"},
 		{"verified, bare handle", plugins.Message{ID: 7, Sender: "justin#0420", SenderVerified: true, Body: "hi"}, "Discord DMs", "Reply draft: justin#0420 (Discord DMs)"},
+		{"verified, agent-mail address", plugins.Message{ID: 7, Sender: "example-owner/agent-infra", SenderVerified: true, Body: "hi"}, "Agent mail", "Reply draft: example-owner/agent-infra (Agent mail)"},
+		{"UNVERIFIED agent-mail address: not shown", plugins.Message{ID: 7, Sender: "example-owner/agent-infra", Body: "hi"}, "Agent mail", "Reply draft: unverified sender (Agent mail)"},
 		{"verified, quoted name", plugins.Message{ID: 7, Sender: `"Ada L" <ada@example.test>`, SenderVerified: true}, "Mail", "Reply draft: Ada L (Mail)"},
 		{"UNVERIFIED: the claimed name is not shown", plugins.Message{ID: 7, Sender: "Your Bank <alerts@example.test>", Body: "reset now"}, "Mail", "Reply draft: unverified sender (Mail)"},
 		{"control characters in a name", plugins.Message{ID: 7, Sender: "Ev\x1b[2Jil\u202E", SenderVerified: true}, "Mail", "Reply draft: Ev [2Jil (Mail)"},

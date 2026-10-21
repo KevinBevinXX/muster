@@ -28,8 +28,33 @@ import (
 type RelayAllowlist map[int64][]relayEntry
 
 type relayEntry struct {
-	plugin  string // the plugin's name (a slug)
-	address string // a lower-case ASCII address, or "*@<domain>"
+	plugin string // the plugin's name (a slug)
+	// address is a lower-case ASCII mail address or "*@<domain>" (both always
+	// contain "@"), or an agent-mail address "<owner>/<handle>" or "<owner>/*"
+	// (never containing "@"). The two kinds are disjoint by construction, so
+	// a mail entry never matches an agent-mail sender, nor the reverse.
+	// A verified agent-mail sender proves only the OWNER (the signature is
+	// checked against any of the owner's published keys); the handle is the
+	// owner's gateway's assertion, so "<owner>/<handle>" trusts no less than
+	// "<owner>/*" against a compromised key of that owner.
+	address string
+}
+
+// Agent-mail addresses ("<owner>/<handle>", e.g. "hq/tasks") are the agent-mail
+// protocol's own grammar, exactly as its plugin validates the signed "from":
+// lower-case ASCII letters, digits and hyphens, the owner starting with a
+// letter or digit, the handle with a letter. Nothing is case-folded: an address
+// outside this shape (an upper-case letter, a look-alike, a space) is not an
+// agent-mail address at all, so it never matches.
+var (
+	agentMailOwner  = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,38}$`)
+	agentMailHandle = regexp.MustCompile(`^[a-z][a-z0-9-]{1,31}$`)
+)
+
+// isAgentMailAddress reports whether s is exactly "<owner>/<handle>".
+func isAgentMailAddress(s string) bool {
+	owner, handle, ok := strings.Cut(s, "/")
+	return ok && agentMailOwner.MatchString(owner) && agentMailHandle.MatchString(handle)
 }
 
 // asciiAddress is the shape of an address the allowlist compares: printable
@@ -55,8 +80,10 @@ func asciiLower(s string) string {
 }
 
 // ParseRelayAllowlist reads "<user id>:<plugin>:<sender>,…", where a sender is
-// an ASCII address or "*@<domain>" (every address at exactly that domain).
-// Whitespace around entries is ignored; "" is an empty list.
+// an ASCII address, "*@<domain>" (every address at exactly that domain), an
+// agent-mail address "<owner>/<handle>", or "<owner>/*" (every handle of
+// exactly that owner). Whitespace around entries is ignored; "" is an empty
+// list.
 func ParseRelayAllowlist(raw string) (RelayAllowlist, error) {
 	out := RelayAllowlist{}
 	for _, entry := range strings.Split(raw, ",") {
@@ -77,6 +104,16 @@ func ParseRelayAllowlist(raw string) (RelayAllowlist, error) {
 		if !nameRE.MatchString(plugin) {
 			return nil, fmt.Errorf("%q: %q is not a plugin name", entry, plugin)
 		}
+		if !strings.Contains(pat, "@") {
+			// An agent-mail entry: never lower-cased, so "Ada/x" is refused
+			// rather than silently read as "ada/x".
+			mailOwner, handle, ok := strings.Cut(pat, "/")
+			if !ok || !agentMailOwner.MatchString(mailOwner) || (handle != "*" && !agentMailHandle.MatchString(handle)) {
+				return nil, fmt.Errorf("%q: the sender is an ASCII address, *@<domain>, <owner>/<handle> or <owner>/* (agent mail: lower-case letters, digits and hyphens)", entry)
+			}
+			out[owner] = append(out[owner], relayEntry{plugin: plugin, address: pat})
+			continue
+		}
 		if !isASCIIAddress(pat) {
 			return nil, fmt.Errorf("%q: the sender is an ASCII address or *@<domain>", entry)
 		}
@@ -91,10 +128,14 @@ func ParseRelayAllowlist(raw string) (RelayAllowlist, error) {
 }
 
 // senderAddress is the ASCII address in a plugin message's sender ("Ada
-// <ada@x>", "ada@x"), ASCII-lower-cased; "" when there is none or it is not
-// ASCII.
+// <ada@x>", "ada@x"), ASCII-lower-cased, or the sender itself when it is
+// exactly an agent-mail address ("owner/handle", never folded); "" when there
+// is none or it is not ASCII.
 func senderAddress(sender string) string {
 	addr := strings.TrimSpace(sender)
+	if isAgentMailAddress(addr) {
+		return addr
+	}
 	if a, err := mail.ParseAddress(sender); err == nil {
 		addr = a.Address
 	}
@@ -115,9 +156,19 @@ func (l RelayAllowlist) Allows(owner int64, pluginName, sender string, verified 
 	if addr == "" {
 		return false
 	}
-	_, domain, _ := strings.Cut(addr, "@")
+	// The wildcard this sender would match: "*@<domain>" for mail,
+	// "<owner>/*" for agent mail. An agent-mail address has no "@", and a mail
+	// address is never cut at "/", so neither kind's wildcard is the other's.
+	var wildcard string
+	if isAgentMailAddress(addr) {
+		mailOwner, _, _ := strings.Cut(addr, "/")
+		wildcard = mailOwner + "/*"
+	} else {
+		_, domain, _ := strings.Cut(addr, "@")
+		wildcard = "*@" + domain
+	}
 	for _, e := range l[owner] {
-		if e.plugin == pluginName && (e.address == addr || e.address == "*@"+domain) {
+		if e.plugin == pluginName && (e.address == addr || e.address == wildcard) {
 			return true
 		}
 	}

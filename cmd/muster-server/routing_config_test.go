@@ -21,6 +21,20 @@ func TestTheRelayAllowlistNeedsAPluginAndAnASCIIAddress(t *testing.T) {
 	if err != nil || cfg.RouteRelayAllow.Owners() != 2 {
 		t.Fatalf("the plugin-bound form: %v, %d owners", err, cfg.RouteRelayAllow.Owners())
 	}
+	// An agent-mail owner wildcard (and an exact agent address) boots beside a
+	// mail entry, and is read as an entry rather than refused.
+	cfg, err = load("1:agent-mail:example-owner/*, 1:agent-mail:hq/tasks, 1:example-inbox:ada@example.invalid")
+	if err != nil {
+		t.Fatalf("the agent-mail form: %v", err)
+	}
+	if !cfg.RouteRelayAllow.Allows(1, "agent-mail", "example-owner/agent-infra", true) || !cfg.RouteRelayAllow.Allows(1, "agent-mail", "hq/tasks", true) {
+		t.Fatal("the agent-mail entries parsed but match nothing")
+	}
+	for _, bad := range []string{"1:agent-mail:Example-owner/*", "1:agent-mail:*/*", "1:agent-mail:example-owner"} {
+		if _, err := load(bad); err == nil || !strings.Contains(err.Error(), envRouteRelayAllow) {
+			t.Errorf("%q: booted (%v)", bad, err)
+		}
+	}
 	for _, bad := range []string{"1:ada@example.invalid", "1:example-inbox:Kate@example.invalid"} {
 		if _, err := load(bad); err == nil || !strings.Contains(err.Error(), envRouteRelayAllow) {
 			t.Errorf("%q: booted (%v)", bad, err)
