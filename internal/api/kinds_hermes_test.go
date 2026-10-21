@@ -3,9 +3,13 @@ package api
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
 )
@@ -62,7 +66,8 @@ func TestAHermesChiefIsRefusedBeforeAnythingChanges(t *testing.T) {
 	}
 }
 
-// task_dispatch offers the hermes kind in its schema, and the delivery lease
+// task_dispatch does NOT offer the hermes kind (it is refused there until
+// Hermes's MCP client against muster is verified), and the delivery lease
 // outlasts the longest kind's turn (the hermes budget among them).
 //
 // ⚠ THE LEASE HALF IS AN INVARIANT GUARD, NOT REGRESSION COVERAGE: hermes's
@@ -70,8 +75,7 @@ func TestAHermesChiefIsRefusedBeforeAnythingChanges(t *testing.T) {
 // claude-code's and gateway's) already outlasts it — the mutation sweep
 // confirmed that formula passes here. It reddens only if a kind's budget ever
 // outgrows the others' without the lease following.
-func TestTaskDispatchOffersHermesAndTheLeaseOutlastsItsTurn(t *testing.T) {
-	var found bool
+func TestTaskDispatchDoesNotOfferHermesAndTheLeaseOutlastsItsTurn(t *testing.T) {
 	for _, d := range taskRoutingToolDefs(true) {
 		if d.Name != taskDispatchTool {
 			continue
@@ -80,13 +84,67 @@ func TestTaskDispatchOffersHermesAndTheLeaseOutlastsItsTurn(t *testing.T) {
 		kind, _ := props["kind"].(map[string]any)
 		enum, _ := kind["enum"].([]string)
 		for _, k := range enum {
-			found = found || k == agents.KindHermes
+			if k == agents.KindHermes {
+				t.Fatal("task_dispatch's kind enum offers hermes")
+			}
 		}
-	}
-	if !found {
-		t.Fatal("task_dispatch's kind enum does not offer hermes")
 	}
 	if attentionDeliveryLease() <= agentTurnBudget(agents.KindHermes) {
 		t.Fatalf("the delivery lease %s does not outlast a hermes turn %s", attentionDeliveryLease(), agentTurnBudget(agents.KindHermes))
 	}
+}
+
+// 🟡2 THE HERMES MODEL RULE AT DISPATCH AND AT A MODEL CHANGE: a model a hermes
+// pod cannot run (not openrouter/<vendor>/<model>, case-sensitive) is refused
+// before a row is created or a model stored.
+func TestAHermesModelIsCheckedAtDispatchAndAtAModelChange(t *testing.T) {
+	s, h, store := kindsServer(t, hermesKinds())
+	for _, bad := range []string{"anthropic/claude-x", "OpenRouter/vendor/model", "openrouter/", "openrouter/a/b/c"} {
+		rec := postDispatch(t, s, h, url.Values{"kind": {"hermes"}, "note_text": {"t"}, "model": {bad}})
+		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "not an OpenRouter model") || len(store.rows()) != 0 {
+			t.Fatalf("dispatch with model %q: %d %s, %d row(s)", bad, rec.Code, rec.Body, len(store.rows()))
+		}
+	}
+	if rec := postDispatch(t, s, h, url.Values{"kind": {"hermes"}, "note_text": {"t"}, "model": {"openrouter/x/y"}}); rec.Code != http.StatusOK {
+		t.Fatalf("control: a good model: %d %s", rec.Code, rec.Body)
+	}
+	id := store.rows()[0].ID
+	// The model route reads and writes the row: a store that does both.
+	s.ext.Agents = &hermesModelStore{preflightStore: store}
+	form := url.Values{"model": {"openrouter/a/b/c"}} // past ValidateModelCredential, not a hermes model
+	req := httptest.NewRequest(http.MethodPost, "/agents/"+strconv.FormatInt(id, 10)+"/model", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	admit(s, req)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "not an OpenRouter model") || store.rows()[0].Model != "openrouter/x/y" {
+		t.Fatalf("model change to a non-OpenRouter model: %d %s, stored %q", rec.Code, rec.Body, store.rows()[0].Model)
+	}
+}
+
+// hermesModelStore is preflightStore with the row read and model write the model
+// route uses.
+type hermesModelStore struct {
+	*preflightStore
+}
+
+func (m *hermesModelStore) Get(_ context.Context, id int64) (agents.Agent, error) {
+	for _, a := range m.rows() {
+		if a.ID == id {
+			return a, nil
+		}
+	}
+	return agents.Agent{}, pgx.ErrNoRows
+}
+
+func (m *hermesModelStore) SetModel(_ context.Context, id int64, model string) (agents.Agent, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.created {
+		if m.created[i].ID == id {
+			m.created[i].Model = model
+			return m.created[i], nil
+		}
+	}
+	return agents.Agent{}, pgx.ErrNoRows
 }

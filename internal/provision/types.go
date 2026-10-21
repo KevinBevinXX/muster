@@ -308,6 +308,12 @@ type Security struct {
 	// NoServiceAccountToken keeps the backend's own API credential out of the
 	// instance (Kubernetes: automountServiceAccountToken false).
 	NoServiceAccountToken bool
+	// ReadOnlyRoot makes the instance's root filesystem read-only, with a
+	// writable, empty /tmp of its own (Kubernetes: readOnlyRootFilesystem and an
+	// emptyDir at /tmp); the workspace stays writable. The hermes kind declares
+	// it. ⚠ It enters the fingerprint on a line of its own, only when set, so no
+	// spec that does not declare it moves.
+	ReadOnlyRoot bool `json:",omitempty"`
 }
 
 // IsZero reports whether nothing is declared.

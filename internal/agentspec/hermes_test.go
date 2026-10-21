@@ -57,6 +57,13 @@ func TestTheHermesSpecPinsItsProfile(t *testing.T) {
 	if len(env) != len(want) {
 		t.Fatalf("env %v, want exactly %v", env, want)
 	}
+	// 🔴 HERMESD_MODEL_BASE_URL is hermesd's TEST-ONLY override (D5): a
+	// provisioned pod never carries it, whatever the config.
+	for _, vars := range [][]provision.EnvVar{spec.Env, spec.Secrets} {
+		if _, ok := hermesEnv(t, vars)["HERMESD_MODEL_BASE_URL"]; ok {
+			t.Fatal("agentspec set the test-only HERMESD_MODEL_BASE_URL")
+		}
+	}
 	for k, v := range want {
 		if env[k] != v {
 			t.Fatalf("env %s=%q, want %q", k, env[k], v)
@@ -77,7 +84,7 @@ func TestTheHermesSpecPinsItsProfile(t *testing.T) {
 		spec.Health != (provision.Health{HTTPGetPath: "/", PortName: provision.DefaultPortName}) {
 		t.Fatalf("ports %+v health %+v", spec.Ports, spec.Health)
 	}
-	if spec.Security != (provision.Security{RunAsUser: 1000, RunAsGroup: 1000, FSGroup: 1000, RunAsNonRoot: true, Restricted: true, NoServiceAccountToken: true}) {
+	if spec.Security != (provision.Security{RunAsUser: 1000, RunAsGroup: 1000, FSGroup: 1000, RunAsNonRoot: true, Restricted: true, NoServiceAccountToken: true, ReadOnlyRoot: true}) {
 		t.Fatalf("security %+v", spec.Security)
 	}
 	if !spec.Network.Isolate || len(spec.Network.PublicEgressTCPPorts) != 1 || spec.Network.PublicEgressTCPPorts[0] != 443 ||
@@ -131,6 +138,25 @@ func TestHermesModels(t *testing.T) {
 		cfg.Model = tc.deployment
 		if got := hermesEnv(t, mustBuild(t, a, cfg, Options{}).Env)["HERMESD_MODEL"]; got != tc.want {
 			t.Fatalf("agent %q deployment %q: HERMESD_MODEL=%q, want %q", tc.agent, tc.deployment, got, tc.want)
+		}
+	}
+}
+
+// HermesModelID is THE model rule (build, dispatch, model change): exactly
+// openrouter/<vendor>/<model>, case-sensitive, or a one-part OpenRouter id.
+func TestHermesModelID(t *testing.T) {
+	for slug, want := range map[string]string{
+		"openrouter/vendor-c/model-three": "vendor-c/model-three",
+		"openrouter/router-x":             "openrouter/router-x",
+	} {
+		if got, err := HermesModelID(slug); err != nil || got != want {
+			t.Fatalf("%q: %q, %v; want %q", slug, got, err, want)
+		}
+	}
+	for _, bad := range []string{"", "openrouter/", "OpenRouter/vendor-c/model-three", "OPENROUTER/router-x",
+		"openrouter//model-three", "openrouter/vendor-c/", "openrouter/vendor-c/model-three/extra", "anthropic/claude-x"} {
+		if got, err := HermesModelID(bad); err == nil || !strings.Contains(err.Error(), "not an OpenRouter model") {
+			t.Fatalf("%q: %q, %v; want a refusal", bad, got, err)
 		}
 	}
 }

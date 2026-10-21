@@ -64,6 +64,18 @@ const (
 	EnvTerminalHomeMode = "TERMINAL_HOME_MODE"
 )
 
+// HermesSecurity is the claude-code kind's isolation plus a READ-ONLY ROOT with
+// a writable /tmp (provision.Security.ReadOnlyRoot): the design's pod profile.
+// Everything Hermes and the agent write is on the volume (HERMES_HOME, TMPDIR
+// under it, the workspace) — the image smoke test runs it with a read-only
+// root. claude-code does not declare it, so its pods render and fingerprint
+// exactly as before.
+var HermesSecurity = func() provision.Security {
+	s := ClaudeCodeSecurity
+	s.ReadOnlyRoot = true
+	return s
+}()
+
 // HermesResources is the hermes kind's compute budget.
 var HermesResources = provision.Resources{CPURequest: "250m", MemoryRequest: "512Mi", MemoryLimit: "3Gi"}
 
@@ -177,7 +189,7 @@ func buildHermes(a agents.Agent, cfg Config, opts Options) (provision.Spec, erro
 		Workspace:               provision.Workspace{Path: ClaudeCodeDataPath, Size: size, Persist: true},
 		Ports:                   []provision.Port{{Name: provision.DefaultPortName, Port: DefaultGatewayPort}},
 		Health:                  provision.Health{HTTPGetPath: DefaultGatewayHealthPath, PortName: provision.DefaultPortName},
-		Security:                ClaudeCodeSecurity,
+		Security:                HermesSecurity,
 		Network:                 claudeCodeNetworkFor(cfg),
 		Labels:                  labels,
 		Repo:                    repo,
@@ -193,20 +205,30 @@ func buildHermes(a agents.Agent, cfg Config, opts Options) (provision.Spec, erro
 }
 
 // hermesModel is the OpenRouter model id a hermes agent runs: the agent's own
-// model, else the deployment's, else the built-in (agents.ResolveModel) —
-// muster's slugs name the provider first ("openrouter/<vendor>/<model>"), and
-// Hermes, configured for the openrouter provider, takes the OpenRouter id
-// after it.
+// model, else the deployment's, else the built-in (agents.ResolveModel), by
+// HermesModelID's rule.
+func hermesModel(a agents.Agent, cfg Config) (string, error) {
+	slug := agents.ResolveModel(a.Model, cfg.Model)
+	id, err := HermesModelID(slug)
+	if err != nil {
+		return "", fmt.Errorf("agentspec: agent %q is kind %s: %w", a.Name, agents.KindHermes, err)
+	}
+	return id, nil
+}
+
+// HermesModelID is THE rule for a hermes agent's model, applied at build, at
+// dispatch and at a model change (internal/api), so a model the pod could not
+// run is refused before anything is created or stored. muster's slugs name the
+// provider first ("openrouter/<vendor>/<model>", CASE-SENSITIVE); Hermes,
+// configured for the openrouter provider, takes the OpenRouter id after it.
 //
 // ⚠ AN OpenRouter ID IS vendor/model, SO ONE WITHOUT A SLASH IS OpenRouter's
 // OWN: muster's "openrouter/auto" names OpenRouter's "openrouter/auto" router,
 // and stripping the prefix there would ask for a model called "auto".
-func hermesModel(a agents.Agent, cfg Config) (string, error) {
-	slug := agents.ResolveModel(a.Model, cfg.Model)
+func HermesModelID(slug string) (string, error) {
 	id, ok := strings.CutPrefix(slug, "openrouter/")
-	if !ok || id == "" {
-		return "", fmt.Errorf("agentspec: agent %q is kind %s, which runs on OpenRouter, and its model %q is not an "+
-			"OpenRouter model (openrouter/<vendor>/<model>)", a.Name, agents.KindHermes, slug)
+	if !ok || id == "" || strings.HasPrefix(id, "/") || strings.HasSuffix(id, "/") || strings.Count(id, "/") > 1 {
+		return "", fmt.Errorf("its model %q is not an OpenRouter model (openrouter/<vendor>/<model>), which is all it runs on", slug)
 	}
 	if !strings.Contains(id, "/") {
 		id = "openrouter/" + id

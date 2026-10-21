@@ -153,7 +153,7 @@ each setting does and which combinations are valid.
 | `MUSTER_AGENT_CC_TOKEN_<NAME>` | none | for each account | That account's `claude setup-token`. `<NAME>` is the account name upper-cased, with `-` written as `_`. |
 | `MUSTER_AGENT_CC_STORAGE_SIZE` | `10Gi` | no | The size of each `claude-code` agent's `/data` volume. |
 | `MUSTER_AGENT_HERMES_IMAGE` | none | with `hermes` | The pinned image for `hermes` agents, built from `images/hermes-agent` (`make hermes-image`). Its provider credential is the OpenRouter key (`MUSTER_AGENT_OPENROUTER_KEY`, or a member's own); it has none of its own. |
-| `MUSTER_AGENT_HERMES_STORAGE_SIZE` | `10Gi` | no | The size of each `hermes` agent's `/data` volume. |
+| `MUSTER_AGENT_HERMES_STORAGE_SIZE` | `10Gi` | no | The size of each `hermes` agent's `/data` volume. 🔴 Its storage class must give a **local filesystem**, not NFS or virtiofs: Hermes's `state.db` is SQLite in WAL mode. The pod's root filesystem is read-only (a writable `/tmp` emptyDir is mounted). |
 | `MUSTER_AGENT_NETPOL_FROM_NAMESPACE` | none | `claude-code` or `hermes` on Kubernetes | The namespace muster runs in. The agent's NetworkPolicy only admits muster. |
 | `MUSTER_AGENT_NETPOL_FROM_POD_LABELS` | none | `claude-code` or `hermes` on Kubernetes | Comma-separated `key=value` labels on muster's pods. |
 

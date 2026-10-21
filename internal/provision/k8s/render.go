@@ -599,6 +599,9 @@ func (d *Driver) renderDeployment(spec provision.Spec, ns string) (*appsv1.Deplo
 	// the same objects; renderSidecar mounts those).
 	mounts := fileMounts(spec.Files)
 	mounts = append(mounts, corev1.VolumeMount{Name: workspaceVolumeName, MountPath: wsPath})
+	if spec.Security.ReadOnlyRoot {
+		mounts = append(mounts, corev1.VolumeMount{Name: tmpVolumeName, MountPath: "/tmp"})
+	}
 
 	ports := make([]corev1.ContainerPort, 0, len(spec.Ports))
 	for _, p := range spec.Ports {
@@ -777,15 +780,24 @@ func podSecurity(sec provision.Security) *corev1.PodSecurityContext {
 }
 
 func containerSecurity(sec provision.Security) *corev1.SecurityContext {
-	if !sec.Restricted {
+	if !sec.Restricted && !sec.ReadOnlyRoot {
 		return nil
 	}
-	no := false
-	return &corev1.SecurityContext{
-		AllowPrivilegeEscalation: &no,
-		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+	sc := &corev1.SecurityContext{}
+	if sec.Restricted {
+		no := false
+		sc.AllowPrivilegeEscalation = &no
+		sc.Capabilities = &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}
 	}
+	if sec.ReadOnlyRoot {
+		yes := true
+		sc.ReadOnlyRootFilesystem = &yes
+	}
+	return sc
 }
+
+// tmpVolumeName is the writable /tmp of an instance whose root is read-only.
+const tmpVolumeName = "tmp"
 
 // renderInitContainer runs Spec.Init before the application container.
 //
@@ -931,6 +943,9 @@ func (d *Driver) renderVolumes(spec provision.Spec) []corev1.Volume {
 		ws.VolumeSource = corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
 	}
 	volumes = append(volumes, ws)
+	if spec.Security.ReadOnlyRoot {
+		volumes = append(volumes, corev1.Volume{Name: tmpVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
+	}
 
 	return volumes
 }

@@ -376,6 +376,11 @@ func Fingerprint(s Spec) string {
 		w("security", strconv.FormatInt(sec.RunAsUser, 10), strconv.FormatInt(sec.RunAsGroup, 10),
 			strconv.FormatInt(sec.FSGroup, 10), strconv.FormatBool(sec.RunAsNonRoot),
 			strconv.FormatBool(sec.Restricted), strconv.FormatBool(sec.NoServiceAccountToken))
+		// Its own line, only when declared: the line above is positional, and a
+		// field added to it would move every confined spec's fingerprint.
+		if sec.ReadOnlyRoot {
+			w("security-read-only-root")
+		}
 	}
 
 	// 🔴 NETWORK COUNTS, AND ONLY WHEN DECLARED — the rule and the reason are

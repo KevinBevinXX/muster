@@ -109,6 +109,8 @@ const chiefInstructionsMarker = "chief-instructions"
 // The kind and instructions refusals (task_dispatch).
 const (
 	chiefDispatchInstructionsCap = "instructions are over 1 KiB: shorten them"
+	chiefDispatchNoHermes        = "task_dispatch does not start hermes agents yet: an agent it starts reports through muster's " +
+		"MCP tools, and Hermes's MCP client against muster has not been verified; use claude-code or gateway"
 )
 
 // chiefDefaultKind is the kind task_dispatch starts when the chief names none:
@@ -205,16 +207,14 @@ func taskRoutingToolDefs(dispatch bool) []agents.ToolDef {
 				strconv.Itoa(plugins.MaxChiefLiveAgents) + " of the agents you start live at once and " +
 				strconv.Itoa(plugins.MaxChiefDispatchesPerDay) + " a day; once per task (calling it again answers with that start), until your owner destroys the agent you started there. " +
 				"The agent opens a DRAFT pull request at most and never marks the task complete. " +
-				"It starts a claude-code agent (a Claude Code pod) unless you pass kind \"gateway\" or \"hermes\" (a Hermes pod, " +
-				"when this deployment enables it) or this deployment has no claude-code. Every kind works in the task's repository, " +
-				"or the one you pass: a claude-code agent's session starts inside a checkout of it, so the repository's CLAUDE.md " +
-				"and project skills (.claude/skills) load; a hermes agent's inside a checkout too, loading its AGENTS.md.",
+				"It starts a claude-code agent (a Claude Code pod) unless you pass kind \"gateway\" or this deployment has no " +
+				"claude-code. Either kind works in the task's repository, or the one you pass: a claude-code agent's session " +
+				"starts inside a checkout of it, so the repository's CLAUDE.md and project skills (.claude/skills) load.",
 			Parameters: objSchema(map[string]any{"task_id": id,
 				"repo": strProp("The repository to work in (owner/name), only when the task names none: it must be one of " +
 					"your owner's connected GitHub repositories. Without a repository the agent cannot open a pull request."),
-				"kind": map[string]any{"type": "string", "enum": []string{agents.KindClaudeCode, agents.KindGateway, agents.KindHermes},
-					"description": "The agent to start: \"claude-code\" (the default when this deployment enables it), \"gateway\", " +
-						"or \"hermes\" (only when this deployment enables it)."},
+				"kind": map[string]any{"type": "string", "enum": []string{agents.KindClaudeCode, agents.KindGateway},
+					"description": "The agent to start: \"claude-code\" (the default when this deployment enables it) or \"gateway\"."},
 				"instructions": map[string]any{"type": "string", "maxLength": chiefInstructionsMax,
 					"description": "Optional, at most 1 KiB: how to work the task, placed before the task in the agent's first message. " +
 						"ONLY your owner's own answer to an attention ask about THIS task (task_route_attention), copied VERBATIM: " +
@@ -535,6 +535,15 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 	kind, err := s.resolveKind(ctx, kindArg)
 	if err != nil {
 		return toolErr("%s", err.Error())
+	}
+	// 🔴 THE CHIEF DOES NOT START A HERMES AGENT, YET: the rules its kickoff
+	// carries (draft PR, comment the URL, set ready_for_review) are done with
+	// muster's MCP tools, and Hermes's MCP client against muster's /mcp is
+	// unverified — the same reason a hermes chief is refused. Refused here,
+	// before the reservation, so no unit is spent. A person may still dispatch
+	// one from the forms or the API.
+	if kind == agents.KindHermes {
+		return toolErr("%s", chiefDispatchNoHermes)
 	}
 	cc := kind == agents.KindClaudeCode
 	// 🔴 THE REPOSITORY THE AGENT WILL WORK IN MUST BE ONE THE OWNER CONNECTED —

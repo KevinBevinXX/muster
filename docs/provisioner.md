@@ -109,14 +109,27 @@ defaults to `gateway`, and `gateway` must always be in it.
     Hermes run (`POST /v1/runs`, its SSE events); the reply is the run's output.
   - It runs on the **OpenRouter key** the `gateway` kind uses
     (`MUSTER_AGENT_OPENROUTER_KEY`, or a member's own), placed only in the
-    agent's own Secret as `OPENROUTER_API_KEY`; Hermes strips it from the
-    agent's shell. The model is the agent's (or `MUSTER_AGENT_MODEL`), an
-    OpenRouter model.
+    agent's own Secret as `OPENROUTER_API_KEY`. Hermes strips it from the
+    agent shell's own environment, but that is not a boundary: the agent runs
+    as the gateway's uid and **can read the key** from the gateway's
+    environment in `/proc` — accepted, as a `claude-code` agent can read its
+    own token. The model is the agent's (or `MUSTER_AGENT_MODEL`), and must be
+    an OpenRouter model, `openrouter/<vendor>/<model>` (case-sensitive) or a
+    one-part id such as `openrouter/auto`: a dispatch or a model change naming
+    anything else is refused before anything is created or stored.
   - It requires `MUSTER_AGENT_HERMES_IMAGE`, pinned to a tag or digest, and on
     Kubernetes both `MUSTER_AGENT_NETPOL_FROM_*` variables. The pod is the
     `claude-code` pod's profile: uid 1000, no ServiceAccount token, a `/data`
     volume (`MUSTER_AGENT_HERMES_STORAGE_SIZE`, default `10Gi`), the same
-    NetworkPolicy — and a termination grace of 60 s, over Hermes's 30 s drain.
+    NetworkPolicy — and a termination grace of 60 s, over Hermes's 30 s drain,
+    and a **read-only root filesystem** with a writable emptyDir at `/tmp`
+    (`hermes` only; the `gateway` and `claude-code` pods render unchanged).
+  - 🔴 **The `/data` volume must be a local filesystem** (local-path, OpenEBS
+    hostpath, a block device), **not NFS or virtiofs**: Hermes keeps its
+    sessions in SQLite (`state.db`, WAL mode), whose locking a network or
+    shared filesystem does not honour reliably.
+  - **Off unless enabled:** the kind is offered only when `MUSTER_AGENT_KINDS`
+    includes `hermes` and `MUSTER_AGENT_HERMES_IMAGE` is set.
   - **Instructions** are sent on every run (Hermes's `instructions`), from
     `/etc/hermesd/instructions.md`, outside every volume. A worker gets none,
     as a `claude-code` worker gets none.
@@ -128,11 +141,14 @@ defaults to `gateway`, and `gateway` must always be in it.
     after every start of the gateway, resolves what a crash left unsettled
     before it takes a turn (`/healthz` reports `recovering` meanwhile; turns are
     `not_ready`). A turn whose outcome it cannot know is answered `may_have_run`,
-    never re-sent; a run that outlived its request is reported at the start of
-    the session's next reply.
+    never re-sent. A turn still running at its 30-minute budget is stopped
+    (`POST /v1/runs/{id}/stop`) and answered `turn_timeout`; nothing is
+    followed in the background. A recovery decision about a turn nobody waits
+    for any more is reported at the start of the session's next reply.
   - Not in this release: a Terminal view (`agents.terminal` refuses the kind), a
-    `hermes` chief (refused: its MCP client against muster's tools is
-    unverified), questions from the agent (`clarify`, off for API-server turns).
+    `hermes` chief, or a `hermes` agent started by the chief's `task_dispatch`
+    (both refused: its MCP client against muster's tools is unverified),
+    questions from the agent (`clarify`, off for API-server turns).
   - A repository is checked out as for `claude-code` (next section), by
     `hermesd` (`HERMESD_REPO`, `HERMESD_REPO_BRANCH`, `HERMESD_WORKSPACE`), and
     Hermes runs in it, loading its `AGENTS.md`. Only a connected repository is
