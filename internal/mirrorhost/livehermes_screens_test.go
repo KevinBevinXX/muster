@@ -489,6 +489,23 @@ func liveScenarios(base func() string, home func(string, homeOpts) string) []liv
 		return false
 	}
 	stashTitled := then(append([]func(r *liveRun, home, pane string) bool{titled}, stashKeys...)...)
+	// viTitled: vi mode, then turns until the title fills the bar (the vi
+	// label refuses the plain idle wait, so it has its own).
+	viTitled := then(func(r *liveRun, _, p string) bool {
+		if !shows(r, p, "INSERT", 60*time.Second) {
+			return false
+		}
+		for turn := 1; turn <= 3; turn++ {
+			typed(r, p, fmt.Sprintf("hello %d", turn))
+			time.Sleep(time.Second)
+			if _, ok := r.waitScreen(p, 25*time.Second, func(_ string, s hermeshost.Screen) bool {
+				return strings.HasPrefix(hermeshost.InputRow(s), "❯") && strings.Contains(statusRow(s), "Stub")
+			}); ok {
+				return true
+			}
+		}
+		return false
+	})
 	vi := func() string { return home("vi", homeOpts{display: map[string]any{"vim_mode": true}}) }
 	de := func() string { return home("de", homeOpts{display: map[string]any{"language": "de"}}) }
 	viDE := func() string {
@@ -529,21 +546,7 @@ func liveScenarios(base func() string, home func(string, homeOpts) string) []liv
 		{name: "palette-titled-160", marker: "Command Palette", homeOf: base, w: 160, h: 45, reach: then(titled, key("\x10"))},
 		{name: "model-picker-titled-100", marker: "Model Picker", homeOf: base, w: 100, h: 45, reach: then(titled, typeLine("/model"), see("Model Picker"))},
 		{name: "model-picker-titled-160", marker: "Model Picker", homeOf: base, w: 160, h: 45, reach: then(titled, typeLine("/model"), see("Model Picker"))},
-		{name: "vi-titled-100", homeOf: vi, w: 100, h: 45, reach: then(func(r *liveRun, _, p string) bool {
-			if !shows(r, p, "INSERT", 60*time.Second) {
-				return false
-			}
-			for turn := 1; turn <= 3; turn++ {
-				typed(r, p, fmt.Sprintf("hello %d", turn))
-				time.Sleep(time.Second)
-				if _, ok := r.waitScreen(p, 25*time.Second, func(_ string, s hermeshost.Screen) bool {
-					return strings.HasPrefix(hermeshost.InputRow(s), "❯") && strings.Contains(statusRow(s), "Stub")
-				}); ok {
-					return true
-				}
-			}
-			return false
-		})},
+		{name: "vi-titled-100", homeOf: vi, w: 100, h: 45, reach: viTitled},
 		{name: "palette-and-stash", marker: "Stash (2 items)", homeOf: base, reach: then(stash, key("\x10"))},
 		{name: "stash-indicator-hidden", marker: "Stash (2 items)", homeOf: noStash, reach: then(idle, key("draft one"), key("\x13"), key("draft two"), key("\x13"), key("\x13"), see("Stash (2 items)"))},
 		{name: "secret", homeOf: base, reach: then(idle, inject("secret"))},
@@ -555,11 +558,7 @@ func liveScenarios(base func() string, home func(string, homeOpts) string) []liv
 		{name: "vi-normal", homeOf: vi, reach: then(func(r *liveRun, _, p string) bool { return shows(r, p, "INSERT", 60*time.Second) }, key("\x1b"), see("NORMAL"))},
 		// A turn gives the session a title, right-aligned in the bar: the vi
 		// label is then the first thing the trim drops.
-		{name: "vi-trimmed", homeOf: vi, reach: then(func(r *liveRun, _, p string) bool { return shows(r, p, "INSERT", 60*time.Second) }, typeLine("hello"), func(r *liveRun, _, p string) bool {
-			time.Sleep(2 * time.Second)
-			_, ok := r.waitScreen(p, 40*time.Second, func(_ string, s hermeshost.Screen) bool { return hermeshost.InputRow(s) != "" && !strings.Contains(statusRow(s), "INSERT") })
-			return ok
-		})},
+		{name: "vi-trimmed", homeOf: vi, reach: viTitled},
 		// After a resize Hermes hides its status bar and both input rules
 		// until a 0.35 s debounce clears it (P:hermes_cli/cli_terminal_mixin.py:
 		// 395, 436-452): captured within that window.
