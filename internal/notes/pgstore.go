@@ -564,23 +564,45 @@ func (s *PGStore) listCommentsForNotes(ctx context.Context, ids []int64) ([]Comm
 // SetStatus updates a task's lifecycle status (and bumps updated_at) and returns
 // the refreshed note. The caller is responsible for authorizing the transition
 // (e.g. only the operator/human may set StatusComplete).
+//
+// 🔴 THE CTE'S ROW LOCK IS LOAD-BEARING TWICE. The write's conditions — not
+// deleted, an agent never out of complete (ForAgent), OnlyFrom's required
+// status — sit in a CTE that selects the row FOR NO KEY UPDATE, and the outer
+// UPDATE's only condition is the id. The lock is what applies those conditions
+// to the NEWEST row version: when another transaction is writing the row, the
+// CTE waits for it and re-checks them against what it committed. Without the
+// lock the CTE judges the older version and the UPDATE writes over the newer
+// one — measured: an agent's write reopened a task an operator completed
+// concurrently (TestAnAgentCannotReopenATaskCompletedConcurrently,
+// TestAnOnlyFromWriteLosesToAConcurrentMove). The UPDATE then returns that
+// locked version's status, which is the previous status WithPreviousStatus
+// reports: exactly the value this write replaced, never a separate read.
+//
+// NO KEY UPDATE, not UPDATE: it is the row lock a plain UPDATE of non-key
+// columns takes (what this statement took before the CTE), and it does not
+// conflict with the key-share locks a child-row insert's foreign key takes.
 func (s *PGStore) SetStatus(ctx context.Context, id int64, status string) (Note, error) {
-	q := `UPDATE notes SET status=$2, updated_at=now() WHERE id=$1 AND ` + liveOnly
+	sel := `SELECT id, status FROM notes WHERE id=$1 AND ` + liveOnly
 	if forAgent(ctx) {
 		// An agent's write: never out of complete, decided by the row itself.
-		q += ` AND status <> '` + StatusComplete + `'`
+		sel += ` AND status <> '` + StatusComplete + `'`
 	}
 	args := []any{id, status}
 	from, conditional := onlyFrom(ctx)
 	if conditional {
-		q += ` AND status = $3`
+		sel += ` AND status = $3`
 		args = append(args, from)
 	}
-	tag, err := s.pool.Exec(ctx, q, args...)
-	if err != nil {
+	q := `WITH old AS (` + sel + ` FOR NO KEY UPDATE)
+		UPDATE notes SET status=$2, updated_at=now() FROM old WHERE notes.id = old.id RETURNING old.status`
+	var prev string
+	err := s.pool.QueryRow(ctx, q, args...).Scan(&prev)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return Note{}, err
 	}
-	if tag.RowsAffected() == 0 {
+	if err == nil {
+		recordPreviousStatus(ctx, prev)
+	} else {
 		if conditional {
 			if _, gerr := s.Get(ctx, id); gerr == nil {
 				return Note{}, ErrStatusMoved

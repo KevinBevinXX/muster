@@ -384,3 +384,26 @@ func exprText(e ast.Expr) string {
 		return fmt.Sprintf("%T", e)
 	}
 }
+
+// TestTheCompleteStopIsOnTheStatusFunnel: a task becoming `complete` stops the
+// agent the chief started for it (stopChiefAgentOnComplete), and the call sits
+// in setNoteStatus — so, with
+// TestSetNoteStatusIsTheOnlyPlaceThisPackageCallsTheStoresSetStatus above,
+// every status writer reaches it by construction. It fails when anything ELSE
+// in the package calls it too: a second call site means the stop has started to
+// move out to the writers, where the next one forgets it.
+func TestTheCompleteStopIsOnTheStatusFunnel(t *testing.T) {
+	fset := token.NewFileSet()
+	files := parsePackageSources(t, fset)
+	var callers []string
+	for _, f := range files {
+		forEachCallTo(f, "stopChiefAgentOnComplete", func(enclosing string, _ *ast.CallExpr) {
+			callers = append(callers, enclosing)
+		})
+	}
+	sort.Strings(callers)
+	if got := strings.Join(callers, ","); got != "setNoteStatus" {
+		t.Errorf("stopChiefAgentOnComplete is called from [%s], want exactly [setNoteStatus]: "+
+			"the funnel every status writer passes, so no writer of `complete` can skip it", got)
+	}
+}

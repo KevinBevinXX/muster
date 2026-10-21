@@ -80,13 +80,24 @@ const (
 
 // setNoteStatus is the ONE place in internal/api that calls Notes.SetStatus. It
 // stamps writer onto the context so the store-side choke point can name the
-// author of the write, then delegates unchanged.
+// author of the write, then delegates.
 //
-// It adds NO behaviour: same note, same error, same everything. Callers keep
-// their own validation, side effects and error mapping — this deliberately does
-// not become a second place where status policy lives, because
-// StatusAllowedForAgent (agents may not set `complete`) is a separate,
-// deliberate rule that differs per caller and must not be flattened here.
+// It returns the store's note and error unchanged. Callers keep their own
+// validation, side effects and error mapping — this deliberately does not become
+// a second place where status POLICY lives, because StatusAllowedForAgent
+// (agents may not set `complete`) is a separate, deliberate rule that differs per
+// caller and must not be flattened here.
+//
+// 🔴 ONE SIDE EFFECT LIVES HERE, AND ONLY ONE: a write that moved the task
+// INTO `complete` from another status stops the agent the chief started for it
+// (stopChiefAgentOnComplete). The previous status is the one the store's own
+// UPDATE replaced (notes.WithPreviousStatus), so a re-save of a task already
+// complete — after the owner Started the agent again, say — stops nothing, and
+// no read can race the write. A store that does not report the previous status
+// stops nothing either. It is here, not in the callers, because this is
+// the funnel every writer passes — four of them can set `complete` — and a copy
+// per caller is a place for the next complete-writer to forget it. A failed
+// write stops nothing. TestTheCompleteStopIsOnTheStatusFunnel pins the call here.
 //
 // An empty writer is not silently accepted-as-fine: notes.WithWriter refuses to
 // store it, so the write logs `writer=UNLABELLED` rather than an empty field.
@@ -98,5 +109,10 @@ const (
 // UnlabelledWriter comment in internal/notes/statuslog.go, which used to claim
 // the opposite and is now consistent with this.
 func (s *Server) setNoteStatus(ctx context.Context, writer statusWriter, id int64, status string) (notes.Note, error) {
-	return s.ext.Notes.SetStatus(notes.WithWriter(ctx, string(writer)), id, status)
+	wctx, previous := notes.WithPreviousStatus(notes.WithWriter(ctx, string(writer)))
+	n, err := s.ext.Notes.SetStatus(wctx, id, status)
+	if prev, ok := previous(); err == nil && status == notes.StatusComplete && ok && prev != notes.StatusComplete {
+		s.stopChiefAgentOnComplete(ctx, n)
+	}
+	return n, err
 }

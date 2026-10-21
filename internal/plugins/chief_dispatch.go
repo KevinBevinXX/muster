@@ -30,6 +30,12 @@ import (
 //     the task again. Operator decision ("Owner's destroy resets the chief's
 //     allowance"); the chief re-dispatching on its own is still refused, and a
 //     second agent alongside a live one is still the owner's call.
+//   - when the task becomes `complete`, the agent the task's latest, unreleased
+//     start made is STOPPED, not destroyed (api's stopChiefAgentOnComplete, via
+//     ChiefStartedAgent): a stopped agent is not in liveAgentStatuses, so it
+//     stops holding one of the MaxChiefLiveAgents slots. The start stays SPENT
+//     — a stop writes no release — so the chief answers already_dispatched for
+//     the task as before. `ready_for_review` stops nothing.
 //
 // 🔴 THE LEDGER IS THE AUDIT LOG, AS THE GATED-TASK BUDGET'S IS (gated.go). A
 // reservation is one ActionChiefDispatch row naming the task; the agent it
@@ -91,6 +97,12 @@ type DispatchStore interface {
 	// task's latest, unreleased reservation started. It reports whether it
 	// wrote a release.
 	ReleaseChiefDispatch(ctx context.Context, taskID, agentID int64) (bool, error)
+	// ChiefStartedAgent is the agent the task's latest, unreleased chief start
+	// made, for the principal (the task's owner). ok is false when the task has
+	// no chief start, its latest start is released, or that start recorded no
+	// agent. It is what a task becoming complete stops (api's
+	// stopChiefAgentOnComplete).
+	ChiefStartedAgent(ctx context.Context, taskID int64) (agentID int64, ok bool, err error)
 	// RecordTaskRouted records the chief routing taskID with tool (an
 	// ActionTaskRouted row).
 	RecordTaskRouted(ctx context.Context, taskID int64, tool string) error
@@ -164,15 +176,12 @@ func (s *PGStore) ReserveChiefDispatch(ctx context.Context, taskID int64, detail
 			// than the reservation. An older agent row is a start that was
 			// released (its agent destroyed), and naming it would answer with an
 			// agent that no longer exists (audit round 2).
-			var agentID int64
-			err := tx.QueryRow(ctx, `SELECT (detail->>'agent_id')::bigint FROM audit_log
-				WHERE action = $1 AND object = $2 AND user_id = $3 AND id > $4 ORDER BY id DESC LIMIT 1`,
-				ActionChiefDispatchAgent, NoteObject(taskID), p.UserID, reserved).Scan(&agentID)
-			switch {
-			case err == nil:
-				out.AgentID = &agentID
-			case !errors.Is(err, pgx.ErrNoRows):
+			agentID, ok, err := latestStartAgent(ctx, tx, p.UserID, taskID, reserved)
+			if err != nil {
 				return err
+			}
+			if ok {
+				out.AgentID = &agentID
 			}
 			return nil
 		}
@@ -234,6 +243,60 @@ func chiefStartRows(ctx context.Context, tx pgx.Tx, owner, taskID int64) (reserv
 	return reserved, released, err
 }
 
+// latestStartAgent is the agent recorded for owner's reservation row reserved
+// on task taskID: the newest ActionChiefDispatchAgent row for the task that is
+// newer than that reservation. ok is false when that start recorded no agent
+// (it failed before one existed). An agent row OLDER than the reservation
+// belongs to an earlier, released start and is never answered.
+//
+// The one reading of "the agent the chief's start made", shared by
+// ReserveChiefDispatch (the already_dispatched answer), ReleaseChiefDispatch
+// (whose destroy frees the start) and ChiefStartedAgent (whose agent a
+// completed task stops).
+func latestStartAgent(ctx context.Context, tx pgx.Tx, owner, taskID, reserved int64) (int64, bool, error) {
+	var agentID int64
+	err := tx.QueryRow(ctx, `SELECT (detail->>'agent_id')::bigint FROM audit_log
+		WHERE action = $1 AND object = $2 AND user_id = $3 AND id > $4 ORDER BY id DESC LIMIT 1`,
+		ActionChiefDispatchAgent, NoteObject(taskID), owner, reserved).Scan(&agentID)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return 0, false, nil
+	case err != nil:
+		return 0, false, err
+	}
+	return agentID, true, nil
+}
+
+// ChiefStartedAgent: see DispatchStore. A read: it writes nothing, and it takes
+// no reservation lock — a reservation racing it is for ANOTHER start (this
+// task's is spent while it is unreleased), and a release racing it means the
+// owner is destroying the agent, which a Stop of it cannot make worse.
+func (s *PGStore) ChiefStartedAgent(ctx context.Context, taskID int64) (int64, bool, error) {
+	p, ok := authz.From(ctx)
+	if !ok || p.UserID <= 0 {
+		return 0, false, errors.New("plugins: reading a chief start needs a user principal")
+	}
+	var (
+		agentID int64
+		found   bool
+	)
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		reserved, released, err := chiefStartRows(ctx, tx, p.UserID, taskID)
+		if err != nil {
+			return err
+		}
+		if reserved == 0 || released > reserved {
+			return nil // no chief start on the task, or its latest is released
+		}
+		agentID, found, err = latestStartAgent(ctx, tx, p.UserID, taskID, reserved)
+		return err
+	})
+	if err != nil || !found {
+		return 0, false, err
+	}
+	return agentID, true, nil
+}
+
 // ReleaseChiefDispatch: see DispatchStore. Under the owner's reservation lock,
 // so it is one decision with any reservation of the same owner's.
 func (s *PGStore) ReleaseChiefDispatch(ctx context.Context, taskID, agentID int64) (bool, error) {
@@ -255,15 +318,12 @@ func (s *PGStore) ReleaseChiefDispatch(ctx context.Context, taskID, agentID int6
 			return nil // no chief start on the task, or its latest is released already
 		}
 		// The agent the LATEST reservation started: its agent row is newer.
-		var started int64
-		err = tx.QueryRow(ctx, `SELECT (detail->>'agent_id')::bigint FROM audit_log
-			WHERE action = $1 AND object = $2 AND user_id = $3 AND id > $4 ORDER BY id DESC LIMIT 1`,
-			ActionChiefDispatchAgent, NoteObject(taskID), p.UserID, reserved).Scan(&started)
-		switch {
-		case errors.Is(err, pgx.ErrNoRows):
-			return nil // that start made no agent, so the owner destroyed someone else's
-		case err != nil:
+		started, ok, err := latestStartAgent(ctx, tx, p.UserID, taskID, reserved)
+		if err != nil {
 			return err
+		}
+		if !ok {
+			return nil // that start made no agent, so the owner destroyed someone else's
 		}
 		if started != agentID {
 			return nil // another agent on the task: the chief's start is still in use

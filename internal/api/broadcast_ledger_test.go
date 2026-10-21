@@ -85,6 +85,10 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		// the chief check read under the caller's principal, so its owner is the
 		// caller's own.
 		"(*Server).destroyAgent → broadcastTo(a.OwnerID)",
+		// A completed task's stop of the chief's agent (task_complete_stop.go):
+		// a is the agent row read under the status writer's principal and checked
+		// against the task's owner (a.OwnerID == n.OwnerID), so it is theirs.
+		"(*Server).stopChiefAgentOnComplete → agentChangedFor(a.OwnerID)",
 		// agent-named nudges: the owner is read from the agent row by name.
 		"(*Server).BroadcastAgentChanged → agentChangedFor(s.agentOwner(agentName))",
 		// the mirror plugin's host nudge: the hub names the host's owner.
