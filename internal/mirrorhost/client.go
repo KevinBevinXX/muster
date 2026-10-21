@@ -99,6 +99,17 @@ type Config struct {
 	// FOR THE BROWSER SUITE'S OLDER-HOST CASE ONLY (cmd/muster-mirror's
 	// e2emirror build); no flag sets it.
 	NoCatalog bool
+	// HermesSend turns on the gated send into Hermes windows (muster-mirror's
+	// -hermes-send, MUSTER_MIRROR_HERMES_SEND; Hermes Phase 3,
+	// docs/design/hermes.md): the host advertises Msg.HermesSend, and a paste
+	// for a Hermes window goes through hermes_send.go. OFF by default.
+	//
+	// 🔴 NEVER ON A HOST WHOSE HERMES USES VI MODE (display.vim_mode): one
+	// Escape on an idle line enters vi navigation, where the paste's
+	// characters can be read as commands, and the vi label the screen check
+	// refuses on is not reliable. muster cannot read Hermes's config.yaml, so
+	// this is the operator's responsibility.
+	HermesSend bool
 	// NoSubagents makes this host behave as one that predates the subagent
 	// cards (mirror.Msg.SubagentReport): no summaries on a view's stream, none
 	// advertised, no tail request answered. FOR THE OLDER-HOST TESTS ONLY
@@ -306,6 +317,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	hello.StatusReport = reportsStatus(c.cfg.Backend)
 	hello.CatalogReport = version >= 2 && !c.cfg.NoCatalog
 	hello.SubagentReport = conn.subagentReport()
+	hello.HermesSend = conn.hermesSend()
 	if err := conn.send(hello); err != nil {
 		return err
 	}

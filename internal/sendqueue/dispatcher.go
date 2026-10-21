@@ -99,7 +99,7 @@ func Decide(h Head, st AgentState, now time.Time, idleFor time.Duration) Decisio
 	}
 	if st.Since <= 0 || st.Observed.IsZero() {
 		// Idle since an unknown time is not idle for any time.
-		return Decision{Why: "Claude Code's idle time is unknown"}
+		return Decision{Why: "the session's idle time is unknown"}
 	}
 	if after := max(h.TurnAfter, st.Pasted); after > 0 && st.Since <= after {
 		// The status is no newer than the one held at the last paste: the

@@ -691,28 +691,7 @@ func (t Tmux) ActivePane(ctx context.Context, session string) (string, bool) {
 // The text must already be mirror.SanitizePaste'd: a control character inside
 // a bracketed paste can end it, and what follows is then TYPED.
 func (t Tmux) PastePane(ctx context.Context, paneID, text string) error {
-	if !strings.HasPrefix(paneID, "%") {
-		return fmt.Errorf("muster-mirror: %q is not a tmux pane id", paneID)
-	}
-	var rnd [6]byte
-	_, _ = rand.Read(rnd[:])
-	buf := "muster-mirror-" + hex.EncodeToString(rnd[:])
-	run := func(stdin []byte, args ...string) error {
-		cmd := exec.CommandContext(ctx, t.bin(), append(t.server(), args...)...)
-		cmd.Env = tmuxEnv()
-		if stdin != nil {
-			cmd.Stdin = bytes.NewReader(stdin)
-		}
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("tmux %s: %v: %s", args[0], err, strings.TrimSpace(string(out)))
-		}
-		return nil
-	}
-	if err := run([]byte(text), "load-buffer", "-b", buf, "-"); err != nil {
-		return err
-	}
-	if err := run(nil, "paste-buffer", "-p", "-d", "-b", buf, "-t", paneID); err != nil {
-		_ = run(nil, "delete-buffer", "-b", buf)
+	if err := t.pasteBracketed(ctx, paneID, text); err != nil {
 		return err
 	}
 	select {
@@ -720,19 +699,71 @@ func (t Tmux) PastePane(ctx context.Context, paneID, text string) error {
 	case <-ctx.Done():
 		return errors.New("muster-mirror: the message was pasted but not submitted (cancelled)")
 	}
-	// 🔴 THE ENTER IS A PASTED NEWLINE, NOT `send-keys`. tmux refuses
-	// `send-keys` with "client is read-only" when the client it resolves for
-	// the target is a read-only one — and muster's own Terminal view attaches
-	// exactly that (`attach -r`), so with that page open the text landed and
-	// the Enter never did. `paste-buffer` has no such check. Without `-p` the
-	// buffer is written unbracketed and tmux turns its LF into CR: the same
-	// byte the Enter key sends.
-	if err := run([]byte("\n"), "load-buffer", "-b", buf, "-"); err != nil {
+	if err := t.pasteEnter(ctx, paneID); err != nil {
 		return fmt.Errorf("muster-mirror: the message was pasted but not submitted: %w", err)
 	}
-	if err := run(nil, "paste-buffer", "-d", "-b", buf, "-t", paneID); err != nil {
-		_ = run(nil, "delete-buffer", "-b", buf)
-		return fmt.Errorf("muster-mirror: the message was pasted but not submitted: %w", err)
+	return nil
+}
+
+// pasteBracketed is PastePane's first half, and the Hermes send's paste
+// (hermes_send.go): text into paneID as one bracketed paste, with no Enter.
+// `load-buffer` from STDIN into a uniquely named buffer (never argv),
+// `paste-buffer -p -d` into the PANE id (the buffer deleted after).
+func (t Tmux) pasteBracketed(ctx context.Context, paneID, text string) error {
+	if !strings.HasPrefix(paneID, "%") {
+		return fmt.Errorf("muster-mirror: %q is not a tmux pane id", paneID)
+	}
+	buf := pasteBufferName()
+	if err := t.runStdin(ctx, []byte(text), "load-buffer", "-b", buf, "-"); err != nil {
+		return err
+	}
+	if err := t.runStdin(ctx, nil, "paste-buffer", "-p", "-d", "-b", buf, "-t", paneID); err != nil {
+		_ = t.runStdin(ctx, nil, "delete-buffer", "-b", buf)
+		return err
+	}
+	return nil
+}
+
+// pasteEnter is PastePane's Enter, and the Hermes send's.
+//
+// 🔴 THE ENTER IS A PASTED NEWLINE, NOT `send-keys`. tmux refuses
+// `send-keys` with "client is read-only" when the client it resolves for
+// the target is a read-only one — and muster's own Terminal view attaches
+// exactly that (`attach -r`), so with that page open the text landed and
+// the Enter never did. `paste-buffer` has no such check. Without `-p` the
+// buffer is written unbracketed and tmux turns its LF into CR: the same
+// byte the Enter key sends.
+func (t Tmux) pasteEnter(ctx context.Context, paneID string) error {
+	if !strings.HasPrefix(paneID, "%") {
+		return fmt.Errorf("muster-mirror: %q is not a tmux pane id", paneID)
+	}
+	buf := pasteBufferName()
+	if err := t.runStdin(ctx, []byte("\n"), "load-buffer", "-b", buf, "-"); err != nil {
+		return err
+	}
+	if err := t.runStdin(ctx, nil, "paste-buffer", "-d", "-b", buf, "-t", paneID); err != nil {
+		_ = t.runStdin(ctx, nil, "delete-buffer", "-b", buf)
+		return err
+	}
+	return nil
+}
+
+// pasteBufferName is a fresh tmux buffer name for one paste.
+func pasteBufferName() string {
+	var rnd [6]byte
+	_, _ = rand.Read(rnd[:])
+	return "muster-mirror-" + hex.EncodeToString(rnd[:])
+}
+
+// runStdin runs a tmux command on this server with stdin (nil: none).
+func (t Tmux) runStdin(ctx context.Context, stdin []byte, args ...string) error {
+	cmd := exec.CommandContext(ctx, t.bin(), append(t.server(), args...)...)
+	cmd.Env = tmuxEnv()
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("tmux %s: %v: %s", args[0], err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

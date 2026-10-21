@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ZacxDev/muster/internal/hermeshost"
 	"github.com/ZacxDev/muster/internal/mirror"
 )
 
@@ -99,6 +100,10 @@ const (
 	// hermesRuleMultiplexer: a terminal multiplexer client, which can show a
 	// Hermes this walk cannot see.
 	hermesRuleMultiplexer = "multiplexer client"
+	// hermesRuleChrome: no process matched, but the pane's screen shows
+	// Hermes's input area (hermeshost.LooksLikeHermes) — a Hermes run over
+	// ssh or docker exec, say. Best effort; see Tmux.PaneHermes.
+	hermesRuleChrome = "screen shows Hermes"
 )
 
 // multiplexers are the terminal multiplexers whose client, in a pane, shows
@@ -138,15 +143,49 @@ var procWalkBound = 4096
 // nothing to walk, so it answers false — a ratified gap, not a check that
 // passed.
 func (h HermesIdentity) InTree(root int) (HermesProc, bool, error) {
+	var hit HermesProc
+	found := false
+	err := h.walk(root, false, func(p HermesProc) bool { hit, found = p, true; return true })
+	if err != nil {
+		return HermesProc{}, false, err
+	}
+	return hit, found, nil
+}
+
+// MultiplexerInTree is the first terminal multiplexer client anywhere in
+// root's tree — below a Hermes process too, which InTree stops at — and true;
+// false when there is none. Its error is InTree's fail-closed case. The gated
+// send into a Hermes pane (hermes_send.go) refuses on either.
+func (h HermesIdentity) MultiplexerInTree(root int) (HermesProc, bool, error) {
+	var hit HermesProc
+	found := false
+	err := h.walk(root, true, func(p HermesProc) bool {
+		if p.Rule == hermesRuleMultiplexer {
+			hit, found = p, true
+			return true
+		}
+		return false
+	})
+	if err != nil {
+		return HermesProc{}, false, err
+	}
+	return hit, found, nil
+}
+
+// walk visits, breadth-first from root, every process in the tree that
+// matches the broad rule (hermesShape), until visit returns true. A matching
+// process's own children are walked only with through. Its error is the
+// fail-closed case InTree documents.
+func (h HermesIdentity) walk(root int, through bool, visit func(HermesProc) bool) error {
 	procs, children, err := readProcTable(h.proc())
 	if err != nil {
 		if h.Proc == "" && runtime.GOOS != "linux" && errors.Is(err, os.ErrNotExist) {
-			return HermesProc{}, false, nil
+			return nil
 		}
-		return HermesProc{}, false, fmt.Errorf("read %s: %w", h.proc(), err)
+		return fmt.Errorf("read %s: %w", h.proc(), err)
 	}
 	if _, ok := procs[root]; !ok {
-		return HermesProc{}, false, fmt.Errorf("process %d is not in %s", root, h.proc())
+		return fmt.Errorf("process %d is not in %s", root, h.proc())
 	}
 	queue, seen := []int{root}, map[int]bool{}
 	for len(queue) > 0 {
@@ -156,7 +195,7 @@ func (h HermesIdentity) InTree(root int) (HermesProc, bool, error) {
 			continue
 		}
 		if len(seen) >= procWalkBound {
-			return HermesProc{}, false, fmt.Errorf("the process tree of %d is larger than %d processes", root, procWalkBound)
+			return fmt.Errorf("the process tree of %d is larger than %d processes", root, procWalkBound)
 		}
 		seen[pid] = true
 		p, ok := procs[pid]
@@ -166,21 +205,26 @@ func (h HermesIdentity) InTree(root int) (HermesProc, bool, error) {
 			if _, err := os.Lstat(filepath.Join(h.proc(), strconv.Itoa(pid))); errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			return HermesProc{}, false, fmt.Errorf("process %d in the tree of %d could not be read", pid, root)
+			return fmt.Errorf("process %d in the tree of %d could not be read", pid, root)
 		}
 		if p.state == "Z" {
 			continue
 		}
 		if p.argvUnread || len(strings.Join(p.argv, "")) == 0 {
-			return HermesProc{}, false, fmt.Errorf("the command line of process %d in the tree of %d could not be read", pid, root)
+			return fmt.Errorf("the command line of process %d in the tree of %d could not be read", pid, root)
 		}
 		if rule, ok := hermesShape(p, h.cwdOf(pid)); ok {
-			return HermesProc{PID: pid, Rule: rule}, true, nil
+			if visit(HermesProc{PID: pid, Rule: rule}) {
+				return nil
+			}
+			if !through {
+				continue
+			}
 		}
 		queue = append(queue, children[pid]...)
 		queue = append(queue, h.kernelChildren(pid)...)
 	}
-	return HermesProc{}, false, nil
+	return nil
 }
 
 // kernelChildren is pid's children as the kernel lists them, per thread
@@ -385,7 +429,35 @@ func (t Tmux) PaneHermes(ctx context.Context, paneID string) (HermesProc, bool, 
 	if err != nil {
 		return HermesProc{}, false, err
 	}
-	return HermesIdentity{Proc: t.Claude.Proc}.InTree(pid)
+	hp, found, err := HermesIdentity{Proc: t.Claude.Proc}.InTree(pid)
+	if err != nil || found {
+		return hp, found, err
+	}
+	// 🔴 THE CHROME CHECK (moved here from Phase 1 to Phase 3, docs/design/
+	// hermes.md): a pane whose SCREEN shows Hermes's input area — two rules
+	// of one width around a `❯` line, as the recorded fixtures do — is
+	// refused too, for a Hermes the process walk cannot see (over ssh or
+	// docker exec). ⚠ Best effort, and it FAILS OPEN: a capture that fails,
+	// a resized pane (its chrome hidden for 0.35 s), a narrow pane's compact
+	// chrome or a turned-off status bar are not seen.
+	if raw, cerr := t.capturePane(ctx, paneID); cerr == nil && hermeshost.LooksLikeHermes(hermeshost.ParseScreen(raw)) {
+		return HermesProc{PID: pid, Rule: hermesRuleChrome}, true, nil
+	}
+	return HermesProc{}, false, nil
+}
+
+// capturePane is pane's screen with its styles (capture-pane -p -e), by id.
+func (t Tmux) capturePane(ctx context.Context, paneID string) (string, error) {
+	if !strings.HasPrefix(paneID, "%") {
+		return "", fmt.Errorf("%q is not a tmux pane id", paneID)
+	}
+	cmd := exec.CommandContext(ctx, t.bin(), t.query("capture-pane", "-p", "-e", "-t", paneID)...)
+	cmd.Env = tmuxEnv()
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("tmux capture-pane: %w", err)
+	}
+	return string(out), nil
 }
 
 // panePID is pane's #{pane_pid}, by its id.

@@ -103,6 +103,9 @@ type fakeMirror struct {
 	scroll    bool
 	scrolls   []string
 	scrollErr error
+	// hermesSend: the host advertised hermesSend (HostView.HermesSend, when
+	// online and interactive).
+	hermesSend bool
 	// agentState is what AgentState answers (send_queue_fakes_test.go); nil =
 	// a host that reports no status. statusReport is HostView.StatusReport.
 	agentState   *mirror.AgentState
@@ -160,6 +163,7 @@ func (f *fakeMirror) Hosts(ctx context.Context) []mirror.HostView {
 		hv.PanePaste = f.online && f.interactive && !f.oldMirror
 	}
 	hv.PaneScroll = f.online && f.interactive && f.scroll
+	hv.HermesSend = f.online && f.interactive && f.hermesSend
 	if f.windows != nil {
 		// A per-window host: its per-session view is derived from its windows,
 		// exactly as the hub derives it.

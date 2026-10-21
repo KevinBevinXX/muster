@@ -15,6 +15,20 @@ import (
 	"github.com/ZacxDev/muster/internal/mirrorhost"
 )
 
+// printViMode is `-list -hermes`'s vi-mode line: whether this host's Hermes
+// runs in vi mode (display.vim_mode), in which case the host never sends to
+// it, -hermes-send or not.
+func printViMode(h hermeshost.Home, stdout io.Writer) {
+	switch on, err := h.ViMode(); {
+	case err != nil:
+		fmt.Fprintf(stdout, "vi-mode\tunreadable (%v): muster sends nothing to this Hermes\n", err)
+	case on:
+		fmt.Fprintln(stdout, "vi-mode\ton (display.vim_mode): muster never sends to this Hermes, -hermes-send or not")
+	default:
+		fmt.Fprintln(stdout, "vi-mode\toff")
+	}
+}
+
 // printHermes is `-list -hermes` (docs/design/hermes.md, "Listing"; docs/
 // mirroring.md): what this host knows about its Hermes windows, for a person
 // asking why one has no rendered view or no status.
@@ -39,6 +53,7 @@ func printHermes(ctx context.Context, backend mirrorhost.Backend, home, statusDi
 		fmt.Fprintf(stdout, "this-binary\t%s\n", hermeshost.HookCommand(bin))
 	}
 	printHookConsent(hermeshost.NewHome(home), home, stdout)
+	printViMode(hermeshost.NewHome(home), stdout)
 	fmt.Fprintln(stdout, "gateway\tcode_sha not checked (the gateway viewer is Phase 4)")
 
 	wl, ok := mirrorhost.WindowListerOf(backend)
