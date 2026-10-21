@@ -1,13 +1,19 @@
 # Design: live work counts and tmux identity colours on agent cards
 
-**Status: proposed. Nothing on this page is implemented.** It scopes two
-additions to the Agents view's cards:
+**Status: decided, not implemented.** The operator settled every open question;
+the decisions are recorded under [Operator decisions](#operator-decisions), and
+the sections below describe the design as decided. Nothing on this page is
+implemented yet. It covers two additions to the Agents view's cards and one
+send-queue fix found while scoping them:
 
 - **(a) Live work counts.** A card shows how many subagents and background
   shells its session has running now, for example `2 subagents · 1 shell`.
 - **(b) The tmux identity colour.** A mirrored card's border and title are
   tinted with the colour the operator's tmux setup gives that window, so the
   card and the terminal look like the same thing.
+- **(c) The send queue and background agents.** A session that is busy only
+  because background agents are running is treated as idle by the send queue,
+  never at the cost of pasting into a real turn.
 
 A separate change, built elsewhere, adds a small dot showing recency. This page
 does not cover it, except to say where (b) must not overlap with it.
@@ -27,10 +33,39 @@ content is reproduced here.
 | | Feasible? | Recommended source | Wire | Effort |
 |---|---|---|---|---|
 | (a) shells, mirrored Claude Code | **Yes, exact** while the CLI is alive | the CLI's own process tree: live task processes whose stdout is a task output file | new `work` message | |
-| (a) subagents, mirrored Claude Code | **Yes.** Exact when the session is idle; inferred from the transcript while busy | the sessions file's status, plus a transcript ledger of Agent calls | same message | 5–6.5 days for (a) in all |
+| (a) subagents, mirrored Claude Code | **Yes.** Exact when the session is idle; inferred from the transcript while busy | the sessions file's status, plus a transcript ledger of Agent calls and turn ends | same message | 5–6.5 days for (a) in all |
 | (a) dispatched `claude-code` agent (ccd) | **Yes**, the same code inside the pod | the same | `POST /agent/work` | (included above) |
 | (a) Hermes | **Partly**, and only after Hermes Phase 2 | `subagent_start`/`subagent_stop` hooks; the process checkpoint file | the same message | 1–1.5 days after Phase 2 |
-| (b) identity colour | **Yes**, but tmux does not hold the colour today: the host's tmux config must declare it | a tmux user option, `@muster-color`, read in the listing muster-mirror already runs | new `colors` message | 2.5–3 days, plus about 2 hours of host config |
+| (b) identity colour | **Yes**, but tmux does not hold the colour today: the host's tmux config must declare it | a tmux user option, `@muster-color`, read in the listing muster-mirror already runs | new `colors` message | 2.5–3 days, plus about 0.25 days of host config |
+| (c) send queue through background agents | **Yes, for mirrored windows**, failing closed | the transcript's `turn_duration` record and its `pendingBackgroundAgentCount`, re-checked by the host just before the paste | a new status value, `background`, in the existing `Window.Status` | 3–4 days |
+
+The full effort table, with totals, is under [Total effort](#total-effort).
+
+## Operator decisions
+
+The operator decided every open question on the first draft. They are binding
+on the sections below.
+
+1. **The tmux colour comes from a tmux user option, `@muster-color`.** The
+   host's tmux config generates it from its slot table. Every window of a slot's
+   session gets that slot's colour. Windows outside any slot stay neutral, with
+   no invented colour. A colour field in the labels file was **not chosen**; it
+   is kept only as a rejected alternative.
+2. **Contrast: tint the border and the title.** The border meets 3:1 and the
+   title meets 4.5:1 against the card surface, in both themes, by adjusting
+   lightness per theme. **In the light theme, 12 of the 16 distinct slot colours
+   visibly darken** (the largest shift is 0.33 in OKLCH lightness), so pale
+   colours such as cream, light yellow and light green no longer look like
+   their terminal colour there. The operator accepts that.
+3. **Shell counts: exact when idle, `1+ shell` during a running turn.** While a
+   turn runs, the process tree cannot yet tell a foreground command from a
+   background shell, so the card shows `1+ shell` until the Phase 0 stdin spike
+   settles it. **Monitor tasks count as shells.**
+4. **New scope, section (c):** the send queue treats "busy only because
+   background agents are running" as idle. It uses the transcript to tell a real
+   turn from background-only busyness. It must never paste into a real running
+   turn, and when it is uncertain it stays busy (fails closed). This covers
+   mirrored windows and ccd where either is affected.
 
 ## Background: what muster has today
 
@@ -53,8 +88,9 @@ content is reproduced here.
   bounded by `MaxFrame` (1 MiB). Its worst case measures **1,030,215 bytes, 98%
   of the frame**. Only 18,361 bytes are free
   (`go test ./internal/mirrorhost/ -run TestTheLargestWindowListFitsOneFrame -v`).
-  The comment at `internal/mirror/wire.go:446` still says 96%, which is out of
-  date. The repo chip met the same limit and added a message of its own,
+  🔴 **The comment at `internal/mirror/wire.go:446` is stale:** it says 96%
+  (1,012,575 bytes), but the list now measures 98%. This page does not change
+  code; the first implementation PR updates that comment to the measured figure. The repo chip met the same limit and added a message of its own,
   `repos`, sent only when the names change (`internal/mirror/repos.go:14-22`,
   `internal/mirrorhost/client.go:873`). Both features on this page follow that
   pattern.
@@ -105,11 +141,38 @@ The status therefore gives these facts for free:
 | `busy` | unknown: a turn, or a running subagent, or both | unknown |
 | `waiting` | unknown | unknown |
 
-🔴 **Side finding, outside this design's scope.** `busy` also covers a
-**background subagent running while no turn is.** muster's send queue waits for
-`idle` (`internal/mirror/wire.go:410-420`). A queued message therefore waits for
-every background agent to finish, even though the prompt would take it. This
-should be filed separately.
+🔴 `busy` also covers a **background subagent running while no turn is.**
+muster's send queue waits for `idle` (`internal/mirror/wire.go:410-420`), so a
+queued message waits for every background agent to finish, even though the
+prompt would take it. The operator brought this into scope; section
+[(c)](#c-the-send-queue-and-background-agents) fixes it.
+
+#### The turn-end record counts background agents
+
+Claude Code writes a `system` record with subtype `turn_duration` when a turn
+ends. Its constructor in 2.1.289 is
+`function lpt(e,n,r,s,g){return{type:"system",subtype:"turn_duration",durationMs:e,…,messageCount:r,pendingBackgroundAgentCount:s,pendingWorkflowCount:g,timestamp:…}}`,
+at offset **211750728**. Measured over the newest 60 transcripts on one host:
+
+- Of the 2,738 `turn_duration` records written by 2.1.289, 1,549 carry
+  `pendingBackgroundAgentCount` with values 1 to 12. The rest omit it. **No
+  record carries 0**, so an absent field reads as "no background agents pending"
+  (the constructor passes `undefined`, which JSON drops). This is an inference
+  from those 1,189 records with no value, to be confirmed by the live-Claude
+  test.
+- An older build, 2.1.232, wrote the field on 1 of 18 records. **A missing field
+  on an older build is not proof of zero**, which is why (c) also requires the
+  ledger to agree.
+- Turn starts: a user record that is not a tool result and not `isMeta`, with
+  `origin.kind` of `human` (826), `task-notification` (2,016) or none (116). A
+  background agent's completion therefore starts a turn of its own. 178 starts
+  came while a turn was already open; these are messages that join the running
+  turn, which ends once.
+- 🔴 **Interrupted turns usually write no `turn_duration`.** Of 22 interrupts, 19
+  were followed by a new turn start with no end record between them.
+
+The record gives (a) an exact anchor: the number of background agents pending
+when the last turn ended. It gives (c) its signal.
 
 #### Task ids name their kind
 
@@ -140,8 +203,8 @@ Two limits, both measured on one sample each:
   `tasks/b<8>.output`). The only difference seen was stdin: a socket for the
   foreground call, `/dev/null` for the background one. One sample is not a
   discriminator, and a command backgrounded with Ctrl+B keeps its socket. Phase 0
-  measures it. Until then the count covers **all** running shell tasks, and while
-  a turn runs that includes the command in the foreground.
+  measures it. **Until then, while a turn runs, the card shows `1+ shell`
+  rather than a number** (operator decision 3).
 - **A process that outlives its task** (a daemon started with `nohup … &`) is
   reparented away from the CLI. It is no longer a descendant, so it is not
   counted. That is correct: Claude Code has marked the task done.
@@ -208,11 +271,21 @@ that the two cannot disagree. Per Claude Code process it returns
 2. **Shells** = the number of distinct task ids matching `^b[0-9a-z]{8}$` among
    the CLI's **live descendants** whose fd 1 or fd 2 is a symlink ending in
    `/tasks/<id>.output`. Only the suffix is matched, never the root, so a
-   `CLAUDE_CODE_TMPDIR` override still works. If the status is `shell` and the
-   count is 0 (the files are unreadable, or the layout changed), report
-   `Shells: 1, ShellsAtLeast: true`. The card then says `1+ shell`, never `0`.
-3. **Subagents:** 0 when the status is `idle` or `shell`. When it is `busy` or
-   `waiting`, use the count of **running** entries in the transcript ledger.
+   `CLAUDE_CODE_TMPDIR` override still works. **Monitor tasks are `local_bash`
+   processes and count as shells** (operator decision 3).
+   - When **no turn is running** (status `idle`, `shell` or `background` from
+     section (c)), the count is reported **exactly**.
+   - When **a turn is running** (`busy` or `waiting` and not `background`), a
+     count of 1 or more is reported as `Shells: 1, ShellsAtLeast: true`, which
+     the card shows as `1+ shell`. A foreground command may be among them. This
+     lasts until the Phase 0 stdin spike can tell foreground from background; if
+     it can, the count during a turn becomes exact too.
+   - If the status is `shell` and the count is 0 (the files are unreadable, or
+     the layout changed), report `Shells: 1, ShellsAtLeast: true`. The card then
+     says `1+ shell`, never `0`.
+3. **Subagents:** 0 when the status is `idle` or `shell`. When it is `busy`,
+   `waiting` or `background`, use the count of **running** entries in the
+   transcript ledger.
 4. **The transcript ledger** follows the parent transcript incrementally from a
    per-transcript byte cursor, the way the watch tailer does. It tracks Agent
    calls by `tool_use` id and applies **today's state rule unchanged**
@@ -220,8 +293,11 @@ that the two cannot disagree. Per Claude Code process it returns
    whose `tool_use` time is earlier than the sessions file's `startedAt`: a
    resumed CLI cannot host the previous process's in-process agents. A Gen change
    (`/clear`, a rotation) resets the ledger. The first read is bounded by the
-   existing `BackfillWindow` (4 MiB tail). 🔴 **The ledger is read only while the
-   status is `busy` or `waiting`.** An idle window costs no transcript read.
+   existing `BackfillWindow` (4 MiB tail). The ledger also records the newest
+   main-thread turn boundary (a start, or a `turn_duration` with its
+   `pendingBackgroundAgentCount`), which section (c) reads. 🔴 **The ledger is
+   read only while the status is `busy` or `waiting`.** An idle window costs no
+   transcript read.
 
 #### Wire: a `work` message, not a field on Window
 
@@ -297,7 +373,7 @@ loses its chip within the TTL.
 | Agent killed, notification missing | ledger over-counts while busy | kill records (`TaskStop` result, `agents_killed`) close entries, and the next `idle` clamps to 0. The over-count lasts at most until the turn ends |
 | Agent launched before the 4 MiB backfill window | ledger under-counts | documented. The `idle` clamp is still exact |
 | Claude Code changes its task layout or id prefix | process count goes to 0 | rule 2 keeps `1+ shell` from the status. The live-Claude test catches it on upgrade |
-| A foreground command during a turn | `shells` includes it | documented. Phase 0 decides whether stdin can tell them apart |
+| A foreground command during a turn | it would be counted | while a turn runs the card shows `1+ shell`, never a number. Phase 0 decides whether stdin can tell them apart |
 | Sandboxed Bash | descendants may live in another PID or mount namespace | Phase 0 measures it. If it fails, fall back to the status's yes/no |
 | Host older than this | no `work` messages | no chip |
 | ccd stops reporting | report goes stale | TTL expiry removes the chip |
@@ -326,6 +402,11 @@ All counts in fixtures are pairwise distinct, for example 3 subagents and
     ledger, including `idle` with a stale ledger entry, which must report 0.
     Red/green: deleting the idle clamp turns that case red. Deleting the
     `ShellsAtLeast` fallback turns `shell` with 0 processes red.
+  - Decision 3: `busy` with 3 shell processes reports `1+`, not 3. `idle`
+    is impossible with processes, so `shell` with 3 reports exactly 3, and
+    `background` with 2 reports exactly 2. A mutant that reports the exact count
+    during a turn turns the first case red. A monitor task (`shell_kind`
+    `monitor`) counts as a shell.
   - The process fixture uses the `ClaudeLocator.Proc` fixture tree with `fd/1`
     symlinks: a background task counts, a reparented orphan does not, a
     subagent's shell counts, a non-`b` task file does not, and a duplicate task
@@ -402,7 +483,7 @@ The measured slot table has **20 slots but 16 distinct colours**. Four colours
 are used twice. A colour is therefore **not unique**, and the card's title text
 stays the identity.
 
-### Recommended design: a tmux user option, `@muster-color`
+### Design (decided): a tmux user option, `@muster-color`
 
 muster-mirror reads a user option per window through the listing it already
 runs. tmux resolves user options window, then session, then global. So one
@@ -437,24 +518,76 @@ first that is a valid colour:
   `list-panes -a` per refresh.
 - **Freshness:** within one refresh (5 s) of a `set-option`, with no restart.
 
-#### What a host's tmux config adds
+#### What a host's tmux config must add (exact spec)
 
-A host whose tmux config gives each scratch slot a colour declares that colour
-once more, as the option. It should be generated from the same slot table that
-generates the popup bindings, so the two cannot drift:
+This is written generically for any host whose tmux config is generated from a
+**slot table**: rows of (tmux session name, colour, codename) that already
+generate the slot popup bindings. The operator's host is one such host.
+
+**The output.** The generator emits exactly **one** line into the generated
+tmux config, after the popup bindings:
 
 ```tmux
-# One global option: tmux evaluates it per window (#{E:…}), so it needs no hook,
-# survives a server restart and a session restore, and holds no runtime state.
-# Write each colour with '##' (a literal '#') and lowercase hex.
-set -g @muster-color '#{?#{==:#{session_name},<slot-1-session>},##<hex1>,#{?#{==:#{session_name},<slot-2-session>},##<hex2>,…}}'
+set -g @muster-color '<F>'
 ```
 
-An alternative is `set-option -t <session> @muster-color '<hex>'` per slot
-session, from a `session-created` hook. It works, but it is runtime state that a
-missed hook loses. The single global option is preferred. A host with no slot
-table needs nothing: its cards stay neutral. One window can be tinted by hand
-with `tmux set -w @muster-color '#3a7bd5'`.
+**How `<F>` is built.** `<F>` is a right-nested tmux conditional folded over the
+table's rows **in table order**, ending in the empty string:
+
+```text
+F(rows)          = ""                                  when rows is empty
+F([r, rest...])  = "#{?#{==:#{session_name}," + r.session + "},##" + lower(hex(r.colour)) + "," + F(rest) + "}"
+```
+
+- `hex(c)` is the colour's 6 hex digits without the `#`. `lower` lowercases it.
+  `##` is tmux's escaped `#`.
+- For a two-row table, (`alpha`, `#AABBCC`) and (`beta`, `#ddeeff`), the line is
+  exactly:
+
+  ```tmux
+  set -g @muster-color '#{?#{==:#{session_name},alpha},##aabbcc,#{?#{==:#{session_name},beta},##ddeeff,}}'
+  ```
+
+  The generator's own test pins this string.
+
+**What the generator refuses.** It stops the build instead of emitting a line
+that could mis-tint a window:
+
+- a session name containing `,`, `}`, `{`, `#` or `'` (format syntax, or the
+  shell quote that wraps the line);
+- a session name that appears twice;
+- a colour that is not exactly 6 hex digits after the `#`. The 3-, 9- and
+  12-digit forms that some table readers accept are refused: muster accepts only
+  `#rrggbb`. If the table allows the short form, the generator may expand `#abc`
+  to `#aabbcc` instead of refusing.
+
+**Why this form:**
+
+- It holds **no runtime state**. tmux evaluates it per window when muster-mirror
+  lists panes, so it needs no `session-created` hook.
+- It is correct for a session that does not exist yet, and after a server
+  restart or a session restore.
+- The colour and the popup binding come from one table, so they cannot drift.
+- Only exact session names match. A window in any other session gets an empty
+  value, which leaves it neutral.
+
+**Applying it.** It takes effect when the generated config is sourced (a new
+server, or `tmux source-file`). muster-mirror sees it on its next 5 s refresh,
+with no restart.
+
+**Checking it.** For each slot session,
+`tmux list-panes -a -F '#{session_name} #{E:@muster-color}'` prints its
+lowercase colour. A session outside the table prints an empty colour.
+
+**Not part of the spec:**
+
+- a per-session `set-option -t <session> @muster-color …` from a
+  `session-created` hook. It works, but it is runtime state that a missed hook
+  loses.
+- per-window overrides. A user may still set one by hand with
+  `tmux set -w @muster-color '#3a7bd5'`, and muster honours it.
+
+A host with no slot table adds nothing, and its cards stay neutral.
 
 #### Wire: a `colors` message
 
@@ -493,10 +626,16 @@ gamut-mapped):
 | border 3:1 | 2 of 16, 0.04 | 7 of 16, 0.23 |
 | title 4.5:1 | 6 of 16, 0.13 | 12 of 16, 0.33 |
 
-In the dark theme the tint stays close to the terminal's colour. In the light
-theme, pale colours (cream, light yellow, light green) darken a lot, and the
-title more than the border. That is the cost of readable text, and is decision 3
-below.
+**Decided (operator decision 2):** tint the border and the title, at 3:1 and
+4.5:1, in both themes.
+
+- In the dark theme, the tint stays close to the terminal's colour.
+- 🔴 **In the light theme, 12 of the 16 colours visibly darken.**
+  - Pale colours (cream, light yellow, light green) shift by up to 0.33 in OKLCH
+    lightness.
+  - They no longer look like their terminal colour there.
+  - The title shifts more than the border.
+- The operator accepts this as the price of readable titles.
 
 Other rules:
 
@@ -529,10 +668,9 @@ Other rules:
 
 - **Extending the labels file** (`-labels-file`, `internal/mirrorhost/labels.go:24`)
   to `{"<session>":{"label":…,"color":…}}`. It is static, read once per
-  muster-mirror start, and per session only. It is a reasonable second choice,
-  since the host already generates that file from the same table. Rejected as
-  the primary because a tmux option is the generic, live mechanism any tmux user
-  can set by hand.
+  muster-mirror start, and per session only. **Rejected by the operator**
+  (decision 1). A tmux option is the generic, live mechanism any tmux user can
+  set by hand.
 - **Parsing `list-keys`.** Rejected: it is bound to one config's binding shape.
 - **Reading `window-status-format`.** Rejected: that is the idle fade, which is
   recency.
@@ -548,6 +686,11 @@ Other rules:
     session name must stay the last field: a session named with a tab still
     parses (`parseWindows`).
   - The `-color-option` name is validated.
+- **Host-config generator** (in the host's own repository, not in muster):
+  - The two-row example above, as an exact-string test.
+  - Each refusal case (a name with `,`, a duplicated name, a 7-digit colour)
+    fails the build.
+  - Uppercase hex is lowercased.
 - **Real tmux, private socket:** the measured table above, as a test. A global
   conditional; a session literal; a window override; a positive control (a
   colour is reported) and a negative control (no option, "").
@@ -582,24 +725,225 @@ Other rules:
 
 ---
 
-## Decisions for the operator
 
-1. **(b) Mechanism:** the tmux user option (recommended), or a colour field in
-   the labels file?
-2. **(b) Scope:** the slot colour tints **every window** of that slot's session.
-   Windows outside any slot stay neutral, with no hash colour. Is that right?
-3. **(b) Fidelity versus readability:** may muster shift lightness so the
-   border meets 3:1 and the title meets 4.5:1? In the light theme this darkens
-   pale colours by up to 0.33 L. The alternative is to tint the border only and
-   keep the title in the normal text colour, which needs a shift of at most 0.23
-   L in the light theme.
-4. **(a) Foreground commands:** count every running shell task (recommended
-   until Phase 0 shows stdin can tell them apart), or show only `1+ shell` from
-   the status while a turn runs?
-5. **(a) Monitors:** the bundle classifies a `local_bash` task with
-   `shell_kind === "monitor"` as a monitor, not a shell (`function BT`, offset
-   **226476532**). Such a task still runs as a shell process with a task output
-   file, so the process count includes it unless the ledger excludes it. Count
-   it as a shell (recommended, simpler), or separately?
-6. **Side finding:** the send queue waits through background subagents, because
-   their activity reads as `busy`. Should this be filed as its own issue?
+## (c) The send queue and background agents
+
+### The problem
+
+Claude Code reports `busy` while any background agent or workflow task is
+running, even when no turn is (`Cye`, offset **229767817**; see
+[(a)](#the-sessions-file-one-status-no-counts)). The prompt takes input then.
+muster's send queue sends only to an `idle` window
+(`internal/sendqueue/dispatcher.go:87-107`, fed by `Hub.AgentState`,
+`internal/mirror/agentstate.go:79-122`). So a queued message waits until every
+background agent has finished, which can take tens of minutes.
+
+🔴 **The status time does not move either.** Claude Code writes the sessions
+file only when the status value changes. A turn that starts and ends while a
+background agent keeps the status at `busy` leaves `statusUpdatedAt` where it
+was. The queue's rule that the next message waits for "a status time newer than
+the last paste" (`internal/sendqueue/dispatcher.go:98-102`) would therefore wait
+for the agents too. The fix needs its own turn-end time.
+
+### Who is affected
+
+- **Mirrored Claude Code windows: affected.** This is the case above.
+- **ccd: not affected by the over-hold.** Its `busy` comes from hooks
+  (`UserPromptSubmit` sets it, `Stop`/`StopFailure` clear it;
+  `cmd/ccd/server.go:392-409`), not from the sessions file, and `Stop` fires
+  when the turn ends whatever background agents still run.
+  - 🔴 **UNVERIFIED, the opposite hazard.** A turn that the CLI starts itself to
+    deliver a background agent's notification may fire no `UserPromptSubmit`.
+    ccd would then think the session idle while a real turn runs.
+  - Phase 0 measures this with a real CLI in a pod. If it is confirmed, ccd
+    adopts the same transcript check as a guard: no paste while the transcript
+    shows a turn open. That fails closed and costs at most 0.5 days more.
+
+### The signal (decided)
+
+The host derives a new status value, `background`, which means "busy, but only
+because background agents run; no turn is open". It derives it per Claude window
+**only when every condition below holds**. If any condition fails, or cannot be
+read, the window stays `busy`.
+
+1. **Status.** The live sessions file says `busy`. Its PID and `procStart` match
+   a live process (the existing `liveSessions` check), it names no
+   `parkedJobId`, and its `sessionId` is the window's transcript (Gen).
+2. **The last boundary is a turn end.** The newest main-thread
+   (`isSidechain` false) boundary record in the transcript is a `system`
+   `turn_duration`. Boundaries are:
+   - turn starts: a `user` record that is not a tool result and not `isMeta`,
+     including `origin.kind` `human` and `task-notification`;
+   - turn ends: `turn_duration` records.
+
+   An interrupt usually writes no end record (see
+   [(a)](#the-turn-end-record-counts-background-agents)), so an interrupted turn
+   reads as **open**. That holds the queue (fails closed) until the next real
+   turn end.
+3. **That end left background work pending.** Its `pendingBackgroundAgentCount`
+   plus `pendingWorkflowCount` is **at least 1**. An absent field counts as 0.
+   With 0 pending, the `busy` has some other cause, such as a teammate, a remote
+   agent, or a status this rule does not understand, and the window stays
+   `busy`.
+4. **Something is still running.** The (a) ledger has at least one background
+   agent still running that was launched before that turn end.
+5. **Nothing is about to start a turn.** There is no `queue-operation` record
+   with `operation: enqueue` after that turn end. An enqueue is a finished task's
+   notification or a queued command, and the CLI delivers it as a new turn. The
+   enqueue is written when the task finishes; see
+   [(a)](#the-transcript-start-and-end-of-every-task-but-not-all-in-one-file).
+6. **No agent is about to finish.** No running background agent's own transcript
+   ends in a final reply (rule 3 of `subagentState`,
+   `internal/mirrorhost/subagents.go:113-131`). An agent that has written its
+   final reply is moments away from a notification, and that notification starts
+   a turn.
+7. **The status has not moved since.** The sessions file's `statusUpdatedAt` is
+   no later than the `turn_duration`'s `timestamp`. A later status write (say
+   `waiting`, then `busy`) means something happened that this rule did not
+   explain.
+
+With all seven true, the window reports `Status: "background"` and
+`StatusSince` set to the `turn_duration`'s timestamp in Unix ms. That is the
+CLI's own clock, the same clock `statusUpdatedAt` uses, so the queue's two-clock
+rule is unchanged. The queue's "newer than the last paste" rule then works
+again: the turn a paste starts ends with a newer `turn_duration`.
+
+### Re-checked at the moment of acting
+
+The window list is up to one refresh (5 s) old, and `ExpectTurn`'s check runs on
+the server against that list (`internal/mirror/transcript.go:376-386`). For
+`background`, the **host** checks again:
+
+- **The request.** A queued paste to a window decided on as `background` carries
+  `ExpectBackgroundSince` (Unix ms).
+- **The re-check.** Immediately before typing, the host re-reads the sessions
+  file and the transcript tail, re-derives the state, and compares.
+- **Refused if anything moved.** It types nothing unless the state is still
+  `background` (or has become `idle`) with that exact `StatusSince`. Otherwise
+  it answers `pasted` with `Refusal: "turn"`. muster treats that like
+  `ErrSuperseded`: the message is queued again and decided on afresh.
+- **Then the Enter.** The host re-checks once more between the paste and the
+  Enter, and if anything moved it clears the input instead of submitting, the
+  same two-step shape [hermes.md](hermes.md) uses for its gated send.
+
+🔴 **Residual risk, stated plainly.** A background agent can finish, and Claude
+Code start a notification turn, in the milliseconds between the host's last
+check and the Enter. Conditions 5 and 6 shrink that window to an agent that ends
+without a final reply first, such as one killed or crashed. They cannot close
+it: Claude Code offers no atomic "submit only if idle".
+
+If it happens, the CLI receives the message during a turn. It handles that as
+it handles any message typed mid-turn: it queues the message and does not
+interrupt the turn. The live-Claude test measures this. **If the test shows
+anything else, (c) ships disabled.**
+
+### Wire and server
+
+- **No new field.** `background` rides the existing `Window.Status` (4 to 10
+  bytes, +6 bytes per window; 3 KB at 512 windows, inside the 18 KB free).
+- **Older muster.** muster's `welcome` gains `backgroundStatus: true`. A host
+  sends `background` only to a muster that advertised it. An older muster gets
+  `busy`, exactly as today. If it did receive `background`, `NormalizeStatus`
+  would map it to unknown, which also holds the queue, so either way it fails
+  closed.
+- **Older host.** It never sends `background`, so nothing changes.
+- **muster.** `NormalizeStatus` accepts `background`. `Hub.AgentState` returns
+  `Idle: true` for the queue only. Everything else (the status glyph, attention)
+  reads `background` as working, and the card says `working · background agents`.
+- **Pastes.** Only queued pastes use it. A person's own Send is unchanged; it
+  never waited on status.
+
+### Failure modes
+
+| Failure | Effect | Handling |
+|---|---|---|
+| Interrupted turn with background agents running | no `turn_duration`, so the turn reads as open | stays `busy` (fails closed) until the next turn end |
+| Agent finishes between the host's check and the Enter | message arrives mid-turn | conditions 5 and 6 narrow it; Claude Code queues mid-turn input; the live test confirms |
+| Older build omits `pendingBackgroundAgentCount` | condition 3 reads 0 | stays `busy`, which is today's behaviour |
+| Teammate or remote agent keeps it busy | not counted in `turn_duration` | condition 3 fails, so it stays `busy` |
+| Transcript unreadable or torn | conditions unknown | stays `busy` |
+| CLI crash or resume | sessions file no longer live, or a new `startedAt` | condition 1 fails, or the ledger cutoff empties condition 4 |
+| `/clear` mid-way | the Gen changes | condition 1 fails until the new transcript has a turn end |
+| Host refreshes after a turn started | the window list still says `background` | the host's re-check refuses with `turn` |
+| Claude Code changes the record shapes | conditions stop matching | stays `busy` (fails closed); the live test catches it |
+
+### Test plan
+
+Fixtures are synthetic records with the **real shapes** listed in (a). They
+contain no transcript text. Times are pairwise distinct, so a rule comparing the
+wrong two timestamps fails.
+
+- **Unit, the derivation (`internal/cctasks`)**, as a table. Each row is red
+  when its own condition is deleted:
+  - **Positive:** a turn start, then a `turn_duration` with
+    `pendingBackgroundAgentCount: 2`, two running agents in the ledger, status
+    `busy`, and `statusUpdatedAt` earlier than the end. Expect `background`
+    with `since` = the end's time.
+  - Turn open, meaning a later `user` start: `busy`.
+  - A later `origin.kind: task-notification` start: `busy`.
+  - An interrupt with no end record: `busy`.
+  - `turn_duration` with the field absent: `busy`. With 0: `busy`.
+  - A later `queue-operation` enqueue: `busy`.
+  - A running agent whose transcript ends in a final reply: `busy`.
+  - `statusUpdatedAt` later than the end: `busy`.
+  - A sidechain `turn_duration` ignored, and a sidechain start ignored.
+  - A parked job: `busy`. A dead PID: no state.
+  - A torn last line not read.
+- **Unit, the host re-check:**
+  - `ExpectBackgroundSince` equal to the state: the paste proceeds.
+  - A new start appended between decision and paste: refused with `turn` and
+    nothing typed (the fake backend records no keys).
+  - A start appended between the paste and the Enter: input cleared, no Enter.
+- **Unit, the queue:** `Decide` with `background` acts as idle, and the
+  next-message rule waits for a strictly newer `turn_duration`. The skew cases
+  are unchanged.
+- **Wire:**
+  - Without `welcome.backgroundStatus`, the host sends `busy`.
+  - An older muster maps `background` to unknown and holds.
+  - The window-list size test re-measured with the longer status value.
+- **Real tmux, private socket.** A fake `claude` pane writes a sessions file and
+  appends records to a transcript.
+  - Driving the positive case shows `background` in `Windows()`.
+  - Appending a start makes a queued paste come back refused, with the pane's
+    input line unchanged (`capture-pane`).
+- **Live Claude (opt-in, every Claude Code upgrade):**
+  - A real CLI launches a background agent with a 60 s `sleep`, and its turn
+    ends. Expect `background`. A queued message is sent, and its turn ends.
+  - The agent's own completion then starts a notification turn, and the queue
+    holds through it.
+  - Then measure the residual: paste mid-turn on purpose, and confirm the CLI
+    queues the message rather than interrupting.
+- **ccd (Phase 0 spike):** a real CLI in a pod with a background agent that
+  finishes after the turn. Record whether `UserPromptSubmit` fires for the
+  notification turn. If it does not, add the guard and a test that a paste is
+  refused while the transcript shows that turn open.
+
+### Effort
+
+| Piece | Days |
+|---|---|
+| Derivation in `internal/cctasks` (reuses the (a) ledger) and its table tests | 1 |
+| Host re-check, `turn` refusal, Enter guard, tests | 0.5–1 |
+| Wire (`background`, welcome flag), hub, queue, card text, tests | 0.5–1 |
+| Live-Claude test, including the residual-risk measurement | 0.5 |
+| ccd spike, and the guard if needed | 0.5–1 |
+| **Total** | **3–4** |
+
+---
+
+## Total effort
+
+Revised after the operator's decisions. (c) depends on the (a) ledger, so (a)
+lands first.
+
+| Piece | Days |
+|---|---|
+| (a) Phase 0 spike: stdin, sandboxed Bash, an older Claude Code build, and the ccd notification-turn check from (c) | 0.5–1 |
+| (a) `internal/cctasks`: process count, ledger, work rule (including `1+ shell` during a turn) | 2 |
+| (a) mirror wire, hub, chips, e2e | 1.5–2 |
+| (a) ccd reporter, `/agent/work`, agent-card chip | 1–1.5 |
+| (b) host, wire, contrast variants, UI, tests | 2.5–3 |
+| (c) send queue through background agents (the ccd spike is counted in (a)'s Phase 0) | 2.5–3.5 |
+| **Total in muster** | **10–13** |
+| Host tmux config: generate `@muster-color` from the slot table | about 0.25 |
+| Later, after Hermes Phase 2: Hermes work counts | 1–1.5 |
