@@ -844,7 +844,7 @@ func (a *Adapter) AttachTerminal(ctx context.Context, ag agents.Agent, readOnly 
 	// TUI at its real width, scrolled, and the operator's later desktop attach
 	// is not met by a phone-narrow TUI. Unknown size = the old behaviour.
 	out, sized := noShrink(ctx, a.windowSize(ctx, ref), stdout, resize)
-	err = provision.ExecTTY(ctx, a.driver, ref, cmd, stdin, out, sized)
+	err = a.execTTY(ctx, ref, cmd, stdin, out, sized)
 	if terminalMayHaveStarted(err) {
 		a.releaseTerminal(ctx, ref, tag)
 	}
@@ -875,7 +875,7 @@ func (a *Adapter) releaseTerminal(ctx context.Context, ref provision.Ref, tag ag
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), TerminalReleaseTimeout)
 	defer cancel()
 	var out bytes.Buffer
-	err := provision.Exec(rctx, a.driver, ref, agents.TerminalReleaseCommand(),
+	err := a.exec(rctx, ref, agents.TerminalReleaseCommand(),
 		strings.NewReader(agents.TerminalReleaseInput(tag)), &out, &out)
 	if err != nil {
 		a.log.Printf("agents: terminal %s: release FAILED, its tmux client may still be attached: %v: %s",

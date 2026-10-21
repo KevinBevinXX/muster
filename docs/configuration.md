@@ -250,18 +250,42 @@ variables when it provisions an agent, so you normally never set them yourself.
 | `CCD_APPROVAL_DEADLINE` | `170s` | no | How long `ccd approve` waits for a relayed decision before falling back to the terminal prompt. |
 | `CCD_LIVECHECK_HOOKS_TOKEN` | none | for `livecheck` | The token for `cmd/ccd/livecheck`, a manual probe of a live agent. |
 
-**Turn credentials never reach the CLI.** `ccd` reads `MUSTER_GATEWAY_BEARER`,
-`HOOKS_TOKEN` and `CCD_GATEWAY_UPSTREAM_BEARER`, then unsets all three before it
-starts anything, so neither the Claude Code CLI nor any tool it runs inherits
-them. It also marks itself non-dumpable, so a process of its own user cannot read
-them back from `/proc/<ccd>/environ`. It refuses to start when its bearer equals,
-or is the `sha256("gw-"+…)` derivation of, a value the CLI keeps
-(`MUSTER_HOOK_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`): a pod provisioned before
+**Turn credentials and the processes an agent's session can reach.** The turn
+credentials are `MUSTER_GATEWAY_BEARER`, `HOOKS_TOKEN` and
+`CCD_GATEWAY_UPSTREAM_BEARER` (`agentspec.TurnCredentialEnv`). They are kept out
+of every process the session can reach, by four routes:
+
+- `ccd` reads all three, then unsets them before it starts anything, so the
+  Claude Code CLI, its hooks and every tool it runs start without them.
+- `ccd` marks itself non-dumpable, so a process of its own user cannot read them
+  back from `/proc/<ccd>/environ`.
+- Every exec muster runs into the container starts as
+  `env -u MUSTER_GATEWAY_BEARER -u CCD_GATEWAY_UPSTREAM_BEARER -u HOOKS_TOKEN …`.
+  An exec inherits the CONTAINER's environment, not `ccd`'s, so without this the
+  terminal's long-lived `tmux attach` client (readable at `/proc/<pid>/environ`)
+  and anything a job checkout's git ran would hold them. The execs covered are
+  the job checkout, read and remove, and the terminal attach, size query and
+  release. A ledger test fails any new exec that bypasses the helper.
+- The job checkout's git runs with repository-configured commands neutralised:
+  `core.fsmonitor`, every hook (`core.hooksPath=/dev/null`), `ext::` remotes,
+  `core.sshCommand`, `remote.origin.uploadpack`, `credential.helper`,
+  `core.askPass` and submodule recursion. Filter drivers cannot be neutralised
+  by name, so they still run, but without the credentials.
+
+`ccd` also refuses to start when its bearer equals, or is the
+`sha256("gw-"+…)` derivation of, `MUSTER_HOOK_TOKEN`. A pod provisioned before
 muster minted the turn credential is in that state, and Stop then Start fixes it.
-What the CLI keeps is `MUSTER_HOOK_TOKEN` (its muster identity),
-`CLAUDE_CODE_OAUTH_TOKEN` and `CCD_HOOK_SECRET`, and none of them is accepted by
-`/v1/responses`. A process of `ccd`'s user can still type into the CLI's pane with
-`tmux send-keys`.
+
+**What is still open:**
+
+- A process of the agent's user can type into the CLI's pane with
+  `tmux send-keys`.
+- `CCD_HOOK_SECRET` stays in the CLI's environment, because `ccd hook` needs it.
+  It authenticates the hook channel only; `/v1/responses` refuses it.
+- `MUSTER_HOOK_TOKEN` stays, because it is the agent's muster identity.
+- A command planted in the workspace can still run during a job checkout
+  (a filter driver, for example). It runs as the agent's own user and holds
+  none of the turn credentials.
 
 ## hermesd (inside the hermes agent image)
 

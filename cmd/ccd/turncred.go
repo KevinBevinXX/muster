@@ -29,7 +29,7 @@ import (
 //     so it is NOT derivable from this token — and serve refuses to start when the
 //     bearer it was given is (exposedTurnCredential).
 //   - CLAUDE_CODE_OAUTH_TOKEN: the model credential, which the CLI itself needs.
-var turnCredentialEnv = []string{envHooksToken, envGatewayBearer, envGatewayUpstreamBearer}
+var turnCredentialEnv = []string{envGatewayBearer, envGatewayUpstreamBearer, envHooksToken}
 
 const (
 	envHooksToken    = "HOOKS_TOKEN"
@@ -60,8 +60,11 @@ func takeTurnCredentials() turnCredentials {
 }
 
 // cliKeeps are the credential-carrying variables that stay in the CLI's
-// environment because the session needs them (see turnCredentialEnv's note).
-var cliKeeps = []string{envAgentToken, envClaudeOAuthToken}
+// environment because the session needs them (see turnCredentialEnv's note) and
+// from which a turn credential could be had. Only the agent's muster token:
+// the model token is a different secret muster never derives a bearer from, so
+// a check against it could not fire.
+var cliKeeps = []string{envAgentToken}
 
 // exposedTurnCredential names the variable the CLI keeps from which bearer can be
 // had — the value itself, or muster's legacy hooks-sha256 derivation of it — or

@@ -37,7 +37,7 @@
 //	                       presents when it hands a gateway turn on (never its own)
 //	                       🔴 ccd unsets all three before it starts anything, and
 //	                       refuses a bearer the CLI could derive from what it keeps
-//	                       (MUSTER_HOOK_TOKEN, CLAUDE_CODE_OAUTH_TOKEN): turncred.go
+//	                       (MUSTER_HOOK_TOKEN): turncred.go
 //	CLAUDE_CONFIG_DIR      the CLI's config dir; transcripts are read only under <it>/projects
 //	CCD_LISTEN             gateway address        (default :18789)
 //	                       (the hook listener is a unix socket ccd creates itself under

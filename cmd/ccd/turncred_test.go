@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -143,8 +144,7 @@ func TestExposedTurnCredentialNamesWhatTheCLIKeeps(t *testing.T) {
 	for _, c := range []struct{ name, bearer, want string }{
 		{"a spec that predates the turn credential: hooks-sha256 of the agent's token", agentgateway.HooksSHA256().Bearer(tok), envAgentToken},
 		{"the agent's token itself", tok, envAgentToken},
-		{"the model token itself", oauth, envClaudeOAuthToken},
-		{"hooks-sha256 of the model token", agentgateway.HooksSHA256().Bearer(oauth), envClaudeOAuthToken},
+		{"the model token is not checked: muster derives no bearer from it", oauth, ""},
 		{"a turn credential of its own", own, ""},
 	} {
 		if got := exposedTurnCredential(c.bearer, env); got != c.want {
@@ -152,6 +152,18 @@ func TestExposedTurnCredentialNamesWhatTheCLIKeeps(t *testing.T) {
 		}
 	}
 	if got := exposedTurnCredential(own, func(string) string { return "" }); got != "" {
+		t.Errorf("nothing kept: %q", got)
+	}
+}
+
+// TestCcdScrubsExactlyWhatMusterStrips: ccd's list of turn credentials is
+// agentspec's, the one muster's every exec into the container strips; two lists
+// that drifted would leave a credential in one of the two routes.
+func TestCcdScrubsExactlyWhatMusterStrips(t *testing.T) {
+	if !reflect.DeepEqual(turnCredentialEnv, agentspec.TurnCredentialEnv) {
+		t.Fatalf("ccd scrubs %v; muster's execs strip %v", turnCredentialEnv, agentspec.TurnCredentialEnv)
+	}
+	if got := exposedTurnCredential("", func(string) string { return "" }); got != "" {
 		t.Errorf("nothing kept: %q", got)
 	}
 }

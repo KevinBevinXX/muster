@@ -70,6 +70,17 @@ const (
 	EnvCCDGatewayUpstreamBearer = "CCD_GATEWAY_UPSTREAM_BEARER"
 )
 
+// TurnCredentialEnv names every variable a claude-code container may carry that
+// drives a TURN API — ccd's (EnvGatewayBearer, or EnvGatewayToken it can be
+// derived from) or the gateway sidecar's (EnvCCDGatewayUpstreamBearer).
+//
+// 🔴 NO PROCESS AN AGENT'S SESSION CAN REACH MAY HOLD ONE. ccd unsets them before
+// it starts the CLI (cmd/ccd/turncred.go, whose list a test holds equal to this
+// one); every exec muster runs into the container strips them
+// (internal/agentprovision's agentExecCommand), because an exec inherits the
+// container's environment, not ccd's.
+var TurnCredentialEnv = []string{EnvGatewayBearer, EnvCCDGatewayUpstreamBearer, EnvGatewayToken}
+
 // 🔴 THE SIDECAR HOLDS NO CREDENTIAL ccd ACCEPTS, BECAUSE IT SHARES ccd'S
 // LOOPBACK. Containers in one pod share a network namespace, so anything the
 // gateway runtime can be talked into doing — a tool call or a fetch, steered by

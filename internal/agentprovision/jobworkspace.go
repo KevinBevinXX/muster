@@ -12,7 +12,6 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/jobs"
-	"github.com/ZacxDev/muster/internal/provision"
 )
 
 // THE MACHINE JOB API'S WORKSPACE OPERATIONS (internal/api jobs.go): give a
@@ -41,6 +40,46 @@ import (
 //   - .mcp.json: the project's MCP servers. The CLI STARTS each server's
 //     command, so it is code the commit would otherwise run.
 var JobOverlayRootFiles = []string{"CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", ".mcp.json"}
+
+// gitRunsNoRepoCommands opens every script here that runs git in the agent's
+// workspace. That workspace is the SESSION's: a tool call can write its .git, and
+// git runs commands that config names. It is exported as GIT_CONFIG_* (git's
+// command-line-config channel, which outranks the repository's own config and
+// reaches every git the script's git starts) rather than as `-c` per call, so a
+// git added to a script later cannot miss it.
+//
+// What is neutralised, and why each:
+//   - core.fsmonitor=false — `git status` / `checkout` / `ls-files` run it.
+//   - core.hooksPath=/dev/null — every hook: post-checkout, reference-transaction
+//     (checkout and fetch), pre-auto-gc (fetch's auto gc), and the rest.
+//   - protocol.ext.allow=never — an ext:: remote URL (or an insteadOf rewrite to
+//     one) runs an arbitrary command on fetch.
+//   - core.sshCommand=ssh — a repository-set ssh command runs on an ssh fetch.
+//   - remote.origin.uploadpack=git-upload-pack — for a local-path remote the
+//     upload-pack command runs LOCALLY.
+//   - credential.helper= — an empty value resets the helper list; a "!cmd"
+//     helper runs a shell on an https fetch that needs credentials.
+//   - core.askPass= — the askpass program the same fetch could run.
+//   - submodule.recurse=false, fetch.recurseSubmodules=false — no git in a
+//     submodule's directory, whose own .git config this list would not reach as
+//     reliably.
+//
+// ⚠ NOT NEUTRALISED, AND NOT NEUTRALISABLE BY NAME: filter drivers
+// (filter.<any name>.smudge / process, selected by .gitattributes or
+// .git/info/attributes) run on checkout. That is why the exec's ENVIRONMENT is
+// stripped too (agentexec.go): whatever runs, it runs as the agent's own user —
+// which the session already is — and sees no turn credential.
+const gitRunsNoRepoCommands = `export GIT_CONFIG_COUNT=9 ` +
+	`GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false ` +
+	`GIT_CONFIG_KEY_1=core.hooksPath GIT_CONFIG_VALUE_1=/dev/null ` +
+	`GIT_CONFIG_KEY_2=protocol.ext.allow GIT_CONFIG_VALUE_2=never ` +
+	`GIT_CONFIG_KEY_3=core.sshCommand GIT_CONFIG_VALUE_3=ssh ` +
+	`GIT_CONFIG_KEY_4=remote.origin.uploadpack GIT_CONFIG_VALUE_4=git-upload-pack ` +
+	`GIT_CONFIG_KEY_5=credential.helper GIT_CONFIG_VALUE_5= ` +
+	`GIT_CONFIG_KEY_6=core.askPass GIT_CONFIG_VALUE_6= ` +
+	`GIT_CONFIG_KEY_7=submodule.recurse GIT_CONFIG_VALUE_7=false ` +
+	`GIT_CONFIG_KEY_8=fetch.recurseSubmodules GIT_CONFIG_VALUE_8=false
+`
 
 // jobOverlayScript prepares job worktree $2 of the checkout $1 at commit $3,
 // of pull request $5 of the repository at the anonymous URL $4, the remaining
@@ -105,7 +144,7 @@ var JobOverlayRootFiles = []string{"CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", 
 // chooses to run from the tree (a build script, a test). The overlay keeps the
 // COMMIT's configuration from configuring the reviewer; it does not make the
 // commit's code safe to execute.
-const jobOverlayScript = `export LC_ALL=C
+const jobOverlayScript = gitRunsNoRepoCommands + `export LC_ALL=C
 main=$1 wt=$2 sha=$3 url=$4 pr=$5
 shift 5
 cd "$main" || exit 1
@@ -186,7 +225,7 @@ const SymlinkOverlayMessage = "the repository's default branch has a symlink amo
 // itself if git left it (it was not a registered worktree, or git refused),
 // then `git worktree prune`, and the job's fetched pull-request ref. It fails
 // only when the directory is still there.
-const jobRemoveScript = `cd "$1" 2>/dev/null && git worktree remove --force --force "$2" >/dev/null 2>&1
+const jobRemoveScript = gitRunsNoRepoCommands + `cd "$1" 2>/dev/null && git worktree remove --force --force "$2" >/dev/null 2>&1
 rm -rf "$2"
 cd "$1" 2>/dev/null && git worktree prune >/dev/null 2>&1
 cd "$1" 2>/dev/null && git update-ref -d "refs/muster-jobs/${2##*/}" >/dev/null 2>&1
@@ -248,7 +287,7 @@ func (a *Adapter) PrepareJobWorktree(ctx context.Context, ag agents.Agent, jobID
 	var out bytes.Buffer
 	cmd := append([]string{"sh", "-c", jobOverlayScript, "muster-job-worktree", main, wt, sha,
 		AnonymousFetchURL(a.anonGitBase, repo), strconv.Itoa(pr)}, JobOverlayRootFiles...)
-	if err := provision.Exec(ctx, a.driver, agents.RefOf(ag), cmd, nil, &out, &out); err != nil {
+	if err := a.exec(ctx, agents.RefOf(ag), cmd, nil, &out, &out); err != nil {
 		return "", fmt.Errorf("create the worktree %s at %s: %w: %s", wt, sha, err, strings.TrimSpace(capString(out.String(), 1024)))
 	}
 	return wt, nil
@@ -263,7 +302,7 @@ func (a *Adapter) RemoveJobWorktree(ctx context.Context, ag agents.Agent, jobID 
 	}
 	var out bytes.Buffer
 	cmd := []string{"sh", "-c", jobRemoveScript, "muster-job-worktree-remove", main, wt}
-	if err := provision.Exec(ctx, a.driver, agents.RefOf(ag), cmd, nil, &out, &out); err != nil {
+	if err := a.exec(ctx, agents.RefOf(ag), cmd, nil, &out, &out); err != nil {
 		return fmt.Errorf("remove the worktree %s: %w: %s", wt, err, strings.TrimSpace(capString(out.String(), 1024)))
 	}
 	return nil
@@ -297,7 +336,7 @@ func (a *Adapter) ReadWorkspaceFile(ctx context.Context, ag agents.Agent, jobID 
 	var out, errb bytes.Buffer
 	// One byte past the limit: present means the file is over it.
 	cmd := []string{"sh", "-c", readScript, "muster-job-read", full, strconv.Itoa(max + 1)}
-	if err := provision.Exec(ctx, a.driver, agents.RefOf(ag), cmd, nil, &out, &errb); err != nil {
+	if err := a.exec(ctx, agents.RefOf(ag), cmd, nil, &out, &errb); err != nil {
 		return nil, fmt.Errorf("read %s: %w: %s", full, err, strings.TrimSpace(capString(errb.String(), 1024)))
 	}
 	if out.Len() > max {
@@ -322,7 +361,7 @@ func (a *Adapter) ReadWorkspaceFile(ctx context.Context, ag agents.Agent, jobID 
 // 🔴 --literal-pathspecs: a result_path is a file name, and without it a name
 // such as ":(top)…" or "*.md" would be read as pathspec magic or a glob and
 // could match a DIFFERENT, tracked file — or none.
-const removeScript = `if [ -e "$2/.git" ]; then
+const removeScript = gitRunsNoRepoCommands + `if [ -e "$2/.git" ]; then
 	git --literal-pathspecs -C "$2" ls-files --error-unmatch -- "$3" >/dev/null 2>&1
 	rc=$?
 	if [ "$rc" -eq 0 ]; then
@@ -357,7 +396,7 @@ func (a *Adapter) RemoveUntrackedWorkspaceFile(ctx context.Context, ag agents.Ag
 	full := path.Join(dir, rel)
 	var out bytes.Buffer
 	cmd := []string{"sh", "-c", removeScript, "muster-job-remove", full, dir, rel}
-	if err := provision.Exec(ctx, a.driver, agents.RefOf(ag), cmd, nil, &out, &out); err != nil {
+	if err := a.exec(ctx, agents.RefOf(ag), cmd, nil, &out, &out); err != nil {
 		return false, fmt.Errorf("remove %s: %w: %s", full, err, strings.TrimSpace(capString(out.String(), 1024)))
 	}
 	return strings.TrimSpace(out.String()) != RemoveTrackedMarker, nil

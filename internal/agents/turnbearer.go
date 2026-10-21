@@ -14,7 +14,9 @@ package agents
 // claude-code row whose pod predates the secret, keeps the derived bearer its pod
 // was built with. Such a claude-code pod's session can derive that bearer from
 // its own MUSTER_HOOK_TOKEN, and its ccd (from this change on) refuses to start
-// on it; the next apply (Start, a model change) mints the secret and ships it.
+// on it. Stop then Start is the one route that moves such an agent over: Start
+// re-applies a claude-code spec, which mints the secret and ships it (a
+// claude-code model change is refused 409, so it is not a route).
 func TurnBearer(a Agent, derive func(hooksToken string) string) string {
 	if a.GatewaySecret != "" {
 		return a.GatewaySecret
