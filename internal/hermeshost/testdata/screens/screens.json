@@ -404,8 +404,8 @@
   "rule": ""
  },
  {
-  "name": "reply-rule-130",
-  "state": "idle after a reply whose last line is a 130-wide rule (wrapped), on a 100-column pane",
+  "name": "reply-rule-130-wrapped-on-100",
+  "state": "idle after a reply whose last line is a rule 130 long, wrapped on the 100-column pane",
   "how": "organic",
   "expect": "admit",
   "rule": ""
@@ -423,5 +423,19 @@
   "how": "injected",
   "expect": "refuse",
   "rule": "NotIdle"
+ },
+ {
+  "name": "stash-short-100x4-20",
+  "state": "the stash panel open (20 drafts, titled session), the pane shrunk to 100x4: no row above the status bar, so nothing of the panel is visible",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "TooShort"
+ },
+ {
+  "name": "idle-100x4",
+  "state": "the idle prompt on a pane shrunk to 100x4: no row above the status bar (refused: an open stash panel could not be seen)",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "TooShort"
  }
 ]

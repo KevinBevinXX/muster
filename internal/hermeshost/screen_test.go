@@ -9,7 +9,7 @@ import (
 
 // screenRuleNames names the screen check's refusals as screens.json does.
 var screenRuleNames = map[string]string{
-	"NoLayout": ScreenNoLayout, "Below": ScreenBelow, "NoStatusBar": ScreenNoStatusBar, "Stash": ScreenStash,
+	"NoLayout": ScreenNoLayout, "Below": ScreenBelow, "NoStatusBar": ScreenNoStatusBar, "Stash": ScreenStash, "TooShort": ScreenTooShort,
 	"Vi": ScreenVi, "Images": ScreenImages, "NotIdle": ScreenNotIdle, "Text": ScreenText, "NotPasted": ScreenNotPasted,
 }
 

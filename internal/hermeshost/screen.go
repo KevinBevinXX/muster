@@ -32,8 +32,11 @@ import (
 //     the same width at most 9 rows above — the highest one with the real
 //     status bar (its text and its background) directly above it — and that
 //     status bar;
-//   - 🔴 THE STATUS BAR IS REQUIRED, and must be Hermes's (its "☤ " model
-//     marker). At the pin it renders NOTHING while the command palette or the
+//   - 🔴 THE STATUS BAR IS REQUIRED, and must be Hermes's: its start (" ☤ ",
+//     or the battery label then " │ ☤ ") on its background (statusBarAt), so
+//     neither a draft nor the subagent dock passes for it; and a row above it,
+//     where an open stash panel would show (a 4-row pane has none: refused).
+//     At the pin the bar renders NOTHING while the command palette or the
 //     model picker is open (P:hermes_cli/cli_status_bar_mixin.py:1128-1133),
 //     so those two overlays — the ones that leave the input line untouched —
 //     are refused here, before any Escape. A status bar Hermes hides (after a
@@ -201,6 +204,7 @@ const (
 	ScreenBelow       = "something is drawn below Hermes's input area (a completions menu or the voice bar), or its lower rule is missing (a narrow pane's compact chrome)"
 	ScreenNoStatusBar = "Hermes's status bar is blank or hidden: it is blank while the command palette or the model picker is open (and hidden after a resize, until a key is pressed, or when it is turned off)"
 	ScreenStash       = "Hermes's prompt-stash panel is open"
+	ScreenTooShort    = "the pane is too short to show anything above Hermes's status bar, where an open stash panel would be (make the pane taller)"
 	ScreenVi          = "Hermes's status bar shows a vi-mode label, and muster never sends to Hermes in vi mode"
 	ScreenImages      = "images are attached in Hermes's input box, and Enter would send them with the message"
 	ScreenNotIdle     = "Hermes's input line is not its idle prompt (a question, an approval, a password prompt or a turn is on screen)"
@@ -313,16 +317,30 @@ func frameOf(s Screen) (frame, error) {
 // 1162-1166). The trimmed form of a narrow pane keeps it.
 var statusBarRE = regexp.MustCompile(`^ (?:[^│]{1,24} │ )?☤ \S`)
 
+// realBarRE is the status bar's start EXACTLY as the pin draws it: ` ☤ `,
+// or the battery label first — format_battery's `🔋 N%` or `⚡ N%`
+// (P:agent/battery.py:93-102), then ` │ ` (P:hermes_cli/cli_status_bar_mixin.py:
+// 1162-1166). statusBarRE's looser prefix stays for recognising Hermes's
+// chrome (the paste guard), where matching more is the safe way.
+var realBarRE = regexp.MustCompile(`^ (?:(?:\x{1F50B}|\x{26A1}) \d{1,3}(?:\.\d+)?% │ )?☤ \S`)
+
 // statusBarAt reports whether row i is Hermes's status bar: its text
-// (statusBarRE) and its style — the bar is drawn on a background
+// (realBarRE) and its style — the bar is drawn on a background
 // (class:status-bar), which no row of the input box has. A skin whose bar has
 // no background is never anchored, so the frame falls back to the highest
 // rule: a transcript rule in range is then refused, never admitted.
+//
+// 🔴 THE SUBAGENT DOCK HAS THE BAR'S OWN BACKGROUND (skin: subagent-dock is
+// bg:{status_bg}) and can show a goal a model wrote, so the background alone
+// does not tell them apart: its rows start with two spaces (a goal, a
+// process, a queued prompt) or with a localised heading
+// (P:hermes_cli/cli_subagent_monitor.py:178-247), never ` ☤ ` or a battery
+// label.
 func statusBarAt(s Screen, i int) bool {
 	if i < 0 || len(s.Rows[i]) == 0 || !s.Rows[i][0].Bg {
 		return false
 	}
-	return statusBarRE.MatchString(rowText(s.Rows[i]))
+	return realBarRE.MatchString(rowText(s.Rows[i]))
 }
 
 // stashOpenRE is the stash indicator while its panel is open.
@@ -347,7 +365,9 @@ const stashPanelRows = 40
 // short for it the rows that do not fit are cut from its BOTTOM — the footer
 // first; measured in titled sessions with the footer gone at 100x12 (7
 // drafts), 100x24 and 80x24 (20, Hermes's cap) — while the header stays on
-// the panel's first row. (Requiring the footer added nothing besides: a
+// the panel's first row, AS LONG AS THE PANEL HAS A ROW: with no row above
+// the bar (a 4-row pane) it has none, nothing here can see it, and
+// statusChecks refuses that pane before asking (ScreenTooShort). (Requiring the footer added nothing besides: a
 // reply box's own `╰─╯` matches it.) A reply line that starts `╭─ 📌` is
 // refused too: a false refusal, the safe way.
 func stashPanelOpen(s Screen, status int) bool {
@@ -369,8 +389,20 @@ var idlePromptRE = regexp.MustCompile(`^(?:[a-z0-9][a-z0-9_-]{0,63} )?❯ `)
 // statusChecks are the rules on the status bar row.
 func statusChecks(s Screen, f frame) error {
 	sb := rowText(s.Rows[f.status])
-	if !statusBarRE.MatchString(sb) {
+	// 🔴 THE REAL BAR, by its text AND its background (statusBarAt), never
+	// its text alone: when Hermes hides the bar (display.statusbar off, just
+	// after a resize) the row above the upper rule is whatever is drawn
+	// there, and the subagent dock is drawn on a background with a goal a
+	// model wrote, which can read ` x │ ☤ m`.
+	if !statusBarAt(s, f.status) {
 		return refuse(ScreenNoStatusBar)
+	}
+	// 🔴 NOTHING ABOVE THE BAR IS VISIBLE on a pane exactly as tall as the
+	// input chrome (bar, rules, the input row): an open stash panel there has
+	// no row at all (measured: 100x4, 20 drafts, admitted; at 100x14 with no
+	// key pressed its header is back). Refused, as every other unseen state.
+	if f.status == 0 {
+		return refuse(ScreenTooShort)
 	}
 	if stashOpenRE.MatchString(sb) || stashPanelOpen(s, f.status) {
 		return refuse(ScreenStash)

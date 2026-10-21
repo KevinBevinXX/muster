@@ -196,3 +196,82 @@ func TestEvenAnAnchoredDraftIsNotTheFrame(t *testing.T) {
 		t.Errorf("refused %q, want %q (the real frame, holding the draft)", rule, ScreenText)
 	}
 }
+
+// withStatusRow is the idle fixture with its status bar row replaced by row
+// (raw, with its own SGR).
+func withStatusRow(t *testing.T, row string) Screen {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", "screens", "idle.ansi"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := frameOf(ParseScreen(string(b)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	lines[f.status] = row
+	return ParseScreen(strings.Join(lines, "\n"))
+}
+
+// TestTheSubagentDockIsNotTheStatusBar: with the bar hidden
+// (display.statusbar off, or just after a resize) the row above the upper
+// rule can be the subagent dock, which Hermes draws on the BAR'S OWN
+// background (skin: subagent-dock is bg:{status_bg}) with a goal a model
+// wrote. A dock row whose text reads like a bar must not be taken for it:
+// the bar starts ` ☤ ` or with the battery label (`🔋 82%`/`⚡ 82%`, then
+// ` │ `), and a dock row starts with two spaces (a goal, a process, a queued
+// prompt) or a localised heading. Refused NoStatusBar; the real bar with and
+// without a battery label is still the bar.
+func TestTheSubagentDockIsNotTheStatusBar(t *testing.T) {
+	const bg = "\x1b[38;5;250m\x1b[48;5;234m"
+	for _, row := range []string{
+		bg + "  x │ ☤ m" + "\x1b[0m",
+		bg + " 1 live · │ ☤ m" + "\x1b[0m",
+		bg + " Subagents │ ☤ m" + "\x1b[0m",
+		bg + "   1. x │ ☤ m" + "\x1b[0m",
+	} {
+		s := withStatusRow(t, row)
+		err := CheckIdle(s)
+		if err == nil {
+			t.Errorf("%q: a dock row reading like the bar is ADMITTED as the bar", row)
+			continue
+		}
+		if rule, _ := IsScreenRefusal(err); rule != ScreenNoStatusBar {
+			t.Errorf("%q: refused %q, want %q", row, rule, ScreenNoStatusBar)
+		}
+	}
+	for _, row := range []string{
+		bg + " ☤ stub-model │ ctx --" + "\x1b[0m",
+		bg + " 🔋 82% │ ☤ stub-model │ ctx --" + "\x1b[0m",
+		bg + " ⚡ 7% │ ☤ stub-model" + "\x1b[0m",
+	} {
+		if err := CheckIdle(withStatusRow(t, row)); err != nil {
+			t.Errorf("%q: the real bar is refused: %v", row, err)
+		}
+	}
+}
+
+// TestAPaneWithNoRowAboveTheBarIsRefused: on a pane exactly as tall as the
+// input chrome there is no row above the bar, so an open stash panel has no
+// visible row at all (measured live: 100x4, 20 drafts, admitted). Refused
+// as too short; one row more and the check reads that row again.
+func TestAPaneWithNoRowAboveTheBarIsRefused(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("testdata", "screens", "idle.ansi"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := frameOf(ParseScreen(string(b)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	if err := CheckIdle(ParseScreen(strings.Join(lines[f.status:], "\n"))); err == nil {
+		t.Error("no row above the status bar: ADMITTED")
+	} else if rule, _ := IsScreenRefusal(err); rule != ScreenTooShort {
+		t.Errorf("no row above the status bar: refused %q, want %q", rule, ScreenTooShort)
+	}
+	if err := CheckIdle(ParseScreen(strings.Join(lines[f.status-1:], "\n"))); err != nil {
+		t.Errorf("one row above the status bar: %v", err)
+	}
+}

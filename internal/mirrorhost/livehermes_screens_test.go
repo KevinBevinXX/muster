@@ -114,7 +114,7 @@ type screenExpectation struct {
 // screenRules names the screen check's refusals in screens.json.
 var screenRules = map[string]string{
 	"NoLayout": hermeshost.ScreenNoLayout, "Below": hermeshost.ScreenBelow, "NoStatusBar": hermeshost.ScreenNoStatusBar,
-	"Stash": hermeshost.ScreenStash, "Vi": hermeshost.ScreenVi, "Images": hermeshost.ScreenImages,
+	"Stash": hermeshost.ScreenStash, "Vi": hermeshost.ScreenVi, "Images": hermeshost.ScreenImages, "TooShort": hermeshost.ScreenTooShort,
 	"NotIdle": hermeshost.ScreenNotIdle, "Text": hermeshost.ScreenText, "NotPasted": hermeshost.ScreenNotPasted,
 }
 
@@ -517,8 +517,19 @@ func liveScenarios(base func() string, home func(string, homeOpts) string) []liv
 		})
 		return then(steps...)
 	}
-	// replyRule: a turn whose reply ENDS with a line of n `─` (wrapped when
-	// wider than the pane), then idle. Waited for by its text, not by the
+	// shrink: the pane resized to w x h with no key pressed, then settled
+	// past Hermes's post-resize suppression (0.35 s).
+	shrink := func(w, h int) func(r *liveRun, home, pane string) bool {
+		return func(r *liveRun, _, p string) bool {
+			if _, err := r.tmuxRun("resize-window", "-t", p, "-x", strconv.Itoa(w), "-y", strconv.Itoa(h)); err != nil {
+				return false
+			}
+			time.Sleep(2 * time.Second)
+			return true
+		}
+	}
+	// replyRule: a turn whose reply ENDS with a line of n `─` (n is the
+	// rule's length, not the pane's: wider than the pane it wraps), then idle. Waited for by its text, not by the
 	// screen check, which is what it measures.
 	replyRule := func(n int) func(r *liveRun, home, pane string) bool {
 		return then(idle, typeLine(fmt.Sprintf("RULE%d", n)), see("RULEREPLY"), func(r *liveRun, _, p string) bool {
@@ -583,8 +594,13 @@ func liveScenarios(base func() string, home func(string, homeOpts) string) []liv
 		{name: "stash-short-100x12-7", marker: "► [", homeOf: base, w: 100, h: 12, reach: stashOf(7)},
 		{name: "stash-short-100x24-20", marker: "► [", homeOf: base, w: 100, h: 24, reach: stashOf(20)},
 		{name: "stash-short-80x24-20", marker: "► [", homeOf: base, w: 80, h: 24, reach: stashOf(20)},
+		// 🔴 A pane of exactly the input chrome (bar, rules, one input row) has
+		// NO row above the bar: an open stash panel there has no visible row
+		// at all. Reached at 100x24 and shrunk, as a person would.
+		{name: "stash-short-100x4-20", homeOf: base, w: 100, h: 24, reach: then(stashOf(20), shrink(100, 4))},
+		{name: "idle-100x4", homeOf: base, w: 100, h: 24, reach: then(idle, shrink(100, 4))},
 		{name: "reply-rule-100", homeOf: base, w: 100, h: 45, reach: replyRule(100)},
-		{name: "reply-rule-130", homeOf: base, w: 100, h: 45, reach: replyRule(130)},
+		{name: "reply-rule-130-wrapped-on-100", homeOf: base, w: 100, h: 45, reach: replyRule(130)},
 		{name: "reply-rule-100x12", homeOf: base, w: 100, h: 12, reach: replyRule(100)},
 		{name: "command-running", homeOf: base, reach: then(idle, inject("command-running"), see("livehermes slow command"))},
 		{name: "palette-titled-100", marker: "Command Palette", homeOf: base, w: 100, h: 45, reach: then(titled, key("\x10"))},
