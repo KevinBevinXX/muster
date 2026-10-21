@@ -387,12 +387,24 @@ func renderTaskForward(n notes.Note, note, by string) string {
 	return fence.Block{Preface: pre, Marker: taskForwardMarker, Count: 1, Lines: lines}.Render(fence.NewNonce())
 }
 
-// pendingNoteAppender is the agents store's AppendPendingNote: a forward to an
-// agent that has not had its first turn rides that turn (agentkickoff re-reads
-// the note after its stamp).
+// pendingNoteAppender is the agents store's FoldIntoPendingNote: a forward to
+// an agent that has not had its first turn rides that turn (agentkickoff
+// re-reads the note after its stamp).
 type pendingNoteAppender interface {
-	AppendPendingNote(ctx context.Context, id int64, text string) (bool, error)
+	FoldIntoPendingNote(ctx context.Context, id int64, text, last string, maxBytes int, over string) (bool, error)
 }
+
+// foldedForwardsMaxBytes bounds a first turn that forwards are folded into:
+// past it a forward is not added, and the turn says so once (foldedForwardsOver).
+// ccd reads a turn's body up to 1 MiB; half of it leaves room for the
+// request's own framing. A var so a test can lower it.
+var foldedForwardsMaxBytes = 512 << 10
+
+// foldedForwardsOver is what a first turn says, once, in place of the forwards
+// that would pass foldedForwardsMaxBytes.
+const foldedForwardsOver = "\n\nmuster: more changes to this task were forwarded while you waited to start; " +
+	"they were not added here (this first message is at its size limit). Re-read the task with agent_get_task " +
+	"(or task_get) before you begin."
 
 // The production agents store has it; forwardToTaskAgent finds it by assertion.
 var _ pendingNoteAppender = (*agents.PGStore)(nil)
@@ -416,7 +428,8 @@ func forwardReachable(a agents.Agent) bool {
 //     chief included (a chief bound to a task is a target like any other).
 //   - First turn still owed — not running, OR running with its first turn
 //     not yet stamped (a claude-code agent whose first turn is held while its
-//     repository is cloned): appended to that first turn (AppendPendingNote),
+//     repository is cloned): folded into that first turn (FoldIntoPendingNote:
+//     before muster's rules, within a size bound),
 //     never a chat row or a turn of its own before the kickoff. A turn sent
 //     then is refused not_ready by the runtime and nothing re-sends it (the
 //     quiet-stoat forward, 2026-10-19).
@@ -425,7 +438,11 @@ func forwardReachable(a agents.Agent) bool {
 func (s *Server) forwardToTaskAgent(ctx context.Context, target agents.Agent, text string) (bool, error) {
 	if !agentCanBeSent(target.Status) || !target.KickedOff {
 		if ap, ok := s.ext.Agents.(pendingNoteAppender); ok {
-			appended, err := ap.AppendPendingNote(ctx, target.ID, "\n\n"+text)
+			// 🔴 muster's rules stay LAST (a chief-started agent's first message
+			// ends with chiefDispatchRules: the forward goes before them), and
+			// the folded forwards are bounded (foldedForwardsMaxBytes).
+			appended, err := ap.FoldIntoPendingNote(ctx, target.ID, "\n\n"+text, chiefDispatchRules,
+				foldedForwardsMaxBytes, foldedForwardsOver)
 			if err != nil {
 				return false, fmt.Errorf("the forward could not be stored: %w", err)
 			}

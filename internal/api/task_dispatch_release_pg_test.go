@@ -153,3 +153,52 @@ func TestAForwardToARunningAgentWhoseFirstTurnIsOwedRidesThatTurn(t *testing.T) 
 		t.Fatalf("turns after the stamp: %d, want 1", turnCount())
 	}
 }
+
+// TestForwardsFoldedIntoAHeldFirstTurnKeepTheRulesLastAndStayBounded (#209
+// audit 🟢6): a forward folded into a chief-started agent's owed first turn
+// goes BEFORE muster's rules, which stay the message's last word; and past the
+// size bound a forward is not added — the turn says so, once — so the first
+// turn stays within what ccd reads (1 MiB).
+func TestForwardsFoldedIntoAHeldFirstTurnKeepTheRulesLastAndStayBounded(t *testing.T) {
+	f := newTaskRouteFixture(t, false, false)
+	n := f.task(t, "held, rules last")
+	store := agents.NewPG(f.pool)
+	first := "Work the held task." + chiefDispatchRules
+	a, err := store.Create(f.asOwner, agents.Agent{Name: "trrules-" + strconv.FormatInt(f.owner, 10),
+		Namespace: "ns-trrules", Status: agents.StatusRunning, NoteID: &n.ID, PendingNote: first})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.srv.taskForwardTurn = func(_ context.Context, x agents.Agent, _ agents.ChatSession, _ string) { f.srv.turns.leave(x.ID) }
+	note := func() string {
+		cur, err := store.Get(f.asOwner, a.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cur.PendingNote
+	}
+	if text := f.call(f.chief, taskForwardTool, map[string]any{"task_id": n.ID, "note": "First change upstream"}); !strings.Contains(text, `"turn_started":false`) {
+		t.Fatalf("the forward: %s", text)
+	}
+	got := note()
+	if !strings.HasSuffix(got, chiefDispatchRules) || !strings.Contains(got, "First change upstream") ||
+		strings.Index(got, "First change upstream") > strings.Index(got, chiefDispatchRules) {
+		t.Fatalf("first turn %q: want the forward folded in BEFORE muster's rules, which stay last", got)
+	}
+
+	saved := foldedForwardsMaxBytes
+	t.Cleanup(func() { foldedForwardsMaxBytes = saved })
+	foldedForwardsMaxBytes = len(got) + 200 // room for the marker, not for a forward
+	for _, c := range []string{"Second change " + strings.Repeat("x", 300), "Third change " + strings.Repeat("y", 300)} {
+		if text := f.call(f.chief, taskForwardTool, map[string]any{"task_id": n.ID, "note": c}); strings.Contains(text, `"error"`) {
+			t.Fatalf("a forward past the bound: %s", text)
+		}
+	}
+	got = note()
+	if strings.Contains(got, "Second change") || strings.Contains(got, "Third change") {
+		t.Fatalf("a forward past the bound was added: %d bytes", len(got))
+	}
+	if strings.Count(got, "were not added here") != 1 || !strings.HasSuffix(got, chiefDispatchRules) {
+		t.Fatalf("first turn %q: want the size-limit line once, and muster's rules still last", got)
+	}
+}

@@ -224,6 +224,45 @@ func (s *PGStore) SetHooksToken(ctx context.Context, id int64, token string) err
 	return err
 }
 
+// FoldIntoPendingNote is AppendPendingNote for a message folded into an owed
+// first turn by someone other than its author (a forward): text goes BEFORE
+// last when the note ends with it (muster's rules stay the last word), else at
+// the end; and when the note would pass maxBytes, text is not added — over
+// (once) is, in the same place, so the first turn stays within what the
+// runtime reads. It reports whether the note was still owed (false: the caller
+// delivers another way).
+func (s *PGStore) FoldIntoPendingNote(ctx context.Context, id int64, text, last string, maxBytes int, over string) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var note string
+	if err := tx.QueryRow(ctx, `SELECT pending_note FROM agents
+		WHERE id = $1 AND NOT kicked_off AND pending_note <> '' FOR UPDATE`, id).Scan(&note); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	add := text
+	if len(note)+len(text) > maxBytes {
+		if strings.Contains(note, over) {
+			return true, tx.Commit(ctx) // already says so
+		}
+		add = over
+	}
+	if last != "" && strings.HasSuffix(note, last) {
+		note = strings.TrimSuffix(note, last) + add + last
+	} else {
+		note += add
+	}
+	if _, err := tx.Exec(ctx, `UPDATE agents SET pending_note = $2 WHERE id = $1`, id, note); err != nil {
+		return false, err
+	}
+	return true, tx.Commit(ctx)
+}
+
 // AppendPendingNote appends text to agent id's first message while that
 // message is still owed — not kicked off, and non-empty — and reports whether
 // it did. The kickoff re-reads the note AFTER stamping kicked_off
