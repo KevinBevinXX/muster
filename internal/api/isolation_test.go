@@ -385,8 +385,15 @@ var isolationClasses = map[string]routeClass{
 	// Send now of a queued message, and its plain confirm page's form.
 	"POST /send-queue/{id}/send-now":         classParam,
 	"POST /send-queue/{id}/send-now/confirm": classParam,
-	"POST /send-queue/confirm":               classMirror,
-	"POST /plugin/v1/messages":               classPlugin,
+	// Edit of a queued message (it holds A's message), its Save and Cancel,
+	// and the plain confirm pages' forms for a stale Edit and Save.
+	"POST /send-queue/{id}/edit":              classParam,
+	"POST /send-queue/{id}/edit/confirm":      classParam,
+	"POST /send-queue/{id}/edit/save":         classParam,
+	"POST /send-queue/{id}/edit/save/confirm": classParam,
+	"POST /send-queue/{id}/edit/cancel":       classParam,
+	"POST /send-queue/confirm":                classMirror,
+	"POST /plugin/v1/messages":                classPlugin,
 	// Reply drafts (PR C): the owner's decisions name A's draft by id; the
 	// plugin's claim names nothing (it leases the token owner's own drafts) and
 	// its result names A's draft — which B's plugin must not settle.

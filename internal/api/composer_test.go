@@ -120,7 +120,8 @@ func TestANoticeIsACodeThePageTranslatesNeverTextFromTheLink(t *testing.T) {
 	}
 	// Every code has a sentence, and exactly these are good news: a message
 	// sent, queued (send_queue.go), a queued one cancelled, or a finished one
-	// deleted.
+	// deleted; a queued one opened for editing, its edit saved, or its edit
+	// cancelled (send_queue_edit.go).
 	var good []string
 	for code, n := range composerNotices {
 		if strings.TrimSpace(n.text) == "" {
@@ -131,7 +132,7 @@ func TestANoticeIsACodeThePageTranslatesNeverTextFromTheLink(t *testing.T) {
 		}
 	}
 	sort.Strings(good)
-	if want := []string{noticeCancelled, noticeDeleted, noticeQueued, noticeSent}; !slices.Equal(good, want) {
+	if want := []string{noticeCancelled, noticeDeleted, noticeEditCancelled, noticeEdited, noticeEditing, noticeQueued, noticeSent}; !slices.Equal(good, want) {
 		t.Errorf("the notices marked as good news are %q; want exactly %q", good, want)
 	}
 }

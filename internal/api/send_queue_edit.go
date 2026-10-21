@@ -206,7 +206,9 @@ func (s *Server) handleSendQueueEditSave(w http.ResponseWriter, r *http.Request)
 // handleSendQueueEditSaveConfirm is the plain confirm page's form for a
 // stale Save: the password again, then the Save under that sign-in.
 func (s *Server) handleSendQueueEditSaveConfirm(w http.ResponseWriter, r *http.Request) {
-	s.sendQueueEditStepUp(w, r, func(w http.ResponseWriter, r *http.Request, ctx context.Context) { s.sendQueueEditSave(w, r, ctx, true) },
+	s.sendQueueEditStepUp(w, r, func(w http.ResponseWriter, r *http.Request, ctx context.Context) {
+		s.sendQueueEditSave(w, r, ctx, true)
+	},
 		func(id int64) string { return ui.SendQueueEditSavePath(id) + "/confirm" }, sendQueueEditFields)
 }
 
