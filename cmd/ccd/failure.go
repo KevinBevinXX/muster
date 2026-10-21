@@ -1,8 +1,9 @@
 package main
 
 import (
-	"encoding/json"
 	"net/http"
+
+	"github.com/ZacxDev/muster/internal/podagent"
 )
 
 // A failed turn is ALWAYS a non-200 with a JSON body naming a stable type.
@@ -46,21 +47,10 @@ const (
 // dialog (server.go awaitingApproval).
 const codeAwaitingApproval = "awaiting_approval"
 
-type failure struct {
-	Status   int    `json:"-"`
-	Type     string `json:"type"`
-	Code     string `json:"code,omitempty"`            // the CLI's own error code, when there is one
-	Upstream int    `json:"upstream_status,omitempty"` // the API's HTTP status, when known
-	Message  string `json:"message"`
-}
+// failure is internal/podagent's typed failure (one wire, shared with hermesd).
+type failure = podagent.Failure
 
-func (f *failure) Error() string { return f.Type + ": " + f.Message }
-
-func writeFailure(w http.ResponseWriter, f *failure) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(f.Status)
-	_ = json.NewEncoder(w).Encode(map[string]*failure{"error": f})
-}
+func writeFailure(w http.ResponseWriter, f *failure) { podagent.WriteFailure(w, f) }
 
 // classifyAPIError maps the CLI's error code and the upstream status to a failure.
 //

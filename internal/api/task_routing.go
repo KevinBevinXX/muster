@@ -109,6 +109,8 @@ const chiefInstructionsMarker = "chief-instructions"
 // The kind and instructions refusals (task_dispatch).
 const (
 	chiefDispatchInstructionsCap = "instructions are over 1 KiB: shorten them"
+	chiefDispatchNoHermes        = "task_dispatch does not start hermes agents yet: an agent it starts reports through muster's " +
+		"MCP tools, and Hermes's MCP client against muster has not been verified; use claude-code or gateway"
 )
 
 // chiefDefaultKind is the kind task_dispatch starts when the chief names none:
@@ -533,6 +535,15 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 	kind, err := s.resolveKind(ctx, kindArg)
 	if err != nil {
 		return toolErr("%s", err.Error())
+	}
+	// 🔴 THE CHIEF DOES NOT START A HERMES AGENT, YET: the rules its kickoff
+	// carries (draft PR, comment the URL, set ready_for_review) are done with
+	// muster's MCP tools, and Hermes's MCP client against muster's /mcp is
+	// unverified — the same reason a hermes chief is refused. Refused here,
+	// before the reservation, so no unit is spent. A person may still dispatch
+	// one from the forms or the API.
+	if kind == agents.KindHermes {
+		return toolErr("%s", chiefDispatchNoHermes)
 	}
 	cc := kind == agents.KindClaudeCode
 	// 🔴 THE REPOSITORY THE AGENT WILL WORK IN MUST BE ONE THE OWNER CONNECTED —

@@ -92,7 +92,11 @@ const attentionDeliveryMarker = "attention-answer"
 // attentionDeliveryLease is a delivery's lease: past the longest turn budget
 // any kind has, so it cannot lapse while the turn still runs.
 func attentionDeliveryLease() time.Duration {
-	return max(agentTurnBudget(agents.KindClaudeCode), agentTurnBudget(agents.KindGateway)) + 2*time.Minute
+	longest := time.Duration(0)
+	for _, k := range agents.Kinds {
+		longest = max(longest, agentTurnBudget(k))
+	}
+	return longest + 2*time.Minute
 }
 
 // deliveryOwner names this process in a delivery's lease and the agent's

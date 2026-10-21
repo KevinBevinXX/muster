@@ -1,6 +1,10 @@
 # Design: Hermes mirroring and the `hermes` agent kind
 
-**Status: proposed, with Phases 0, 1 and 2 done.** Phase 1 is implemented: the
+**Status: proposed, with Phases 0, 1, 2 and 5 done.** Phase 5, the `hermes`
+agent kind, is implemented (`cmd/hermesd`, `images/hermes-agent`, the kind in
+`internal/agents` and `internal/agentspec`, migration `0038`); what it built
+differently from this page is under [Phase 5 as built](#phase-5-as-built).
+Phase 1 is implemented: the
 [host paste guard](#every-paste-into-a-hermes-pane-is-gated-on-the-host)
 (Phase 1a, without its chrome check, moved to Phase 3), and the
 [runtime seam](#a-runtime-seam-instead-of-claude-only-code), the
@@ -14,7 +18,7 @@ session is resolved from its terminal's breadcrumb and its status from the
 `hermes-hook` status files; it has a read-only rendered view, the Hermes kind
 chip and `-list -hermes`; there is no send path. The Home Manager declaration
 of the hook and its allowlist entries is the host configuration's (devrc).
-Nothing of Phases 3–5 is implemented. The
+Nothing of Phases 3–4 is implemented. The
 version target is **decided** (below). Every other section describes the design
 the Phase 0 spikes support; the [Phase 0 results](#phase-0-results) table names
 what each spike changed. Where this page states how muster works today, the
@@ -115,6 +119,16 @@ The design, in one line each:
   merges.
 - **Pod credentials:** `hermes` pods use the OpenRouter credential muster's
   gateway runtime already uses.
+- **The provider key is readable by the agent (accepted, "same as
+  claude-code"):** a `hermes` pod's agent can read the OpenRouter key from the
+  gateway's environment in `/proc`. Hermes strips it from the shell's own
+  environment, which is not a boundary; the exposure is accepted as parity
+  with `claude-code` pods, and the smoke test claims only the shell's own
+  environment.
+- **The kind merges dormant:** `hermes` is off unless `MUSTER_AGENT_KINDS`
+  includes it **and** `MUSTER_AGENT_HERMES_IMAGE` is set. It is enabled only
+  after a run in a real pod passes, which also measures the NetworkPolicy, the
+  restricted admission and the `Idempotency-Key` replay live.
 - **Send with a residual overlay risk (accepted):** Send and Queue for Hermes
   windows stay **off** until Phase 3's measurements are done. Then they are
   enabled with every mitigation in place, **even if** Phase 3 cannot prove the
@@ -1499,7 +1513,7 @@ gateway.
 | sessions | lanes, one CLI per explicit session | a muster session key → Hermes `session_id` (and last run id) map on the volume; one gateway serves all |
 | readiness | the CLI's SessionStart hook | Hermes `GET /health` 200 (about 2 s after start, S8) **and** start-up recovery done |
 | repository | `CCD_REPO` clone before the CLI starts | the same checkout and `not_ready` reasons; the rendered `terminal.cwd` is the checkout |
-| seed | `ccd seed` | `hermesd seed` (see [volume](#volume-layout)) |
+| seed | `ccd seed` | done by `hermesd` itself on every start, before the gateway (see [volume](#volume-layout)); no subcommand |
 
 A muster message arriving while a run is live is a 409, never a steer, until
 muster has a steer concept.
@@ -1579,9 +1593,18 @@ No run resumes (S6).
     the gateway alone being OOM-killed while hermesd lives on. So after every
     start of the child (hermesd's own start, and each supervised restart), and
     before it answers any turn (`/healthz` reports `recovering`), hermesd
-    `GET`s the last run of every session in its map and calls
-    `POST /v1/runs/{id}/resolve-unknown {admission_id, execution_generation}`
-    for each `unknown` one (outcome `interrupted`), logging what it resolved;
+    settles every session with an OPEN intent: it `GET`s that intent's run and
+    calls `POST /v1/runs/{id}/resolve-unknown {admission_id,
+    execution_generation}` when it is `unknown` (outcome `interrupted`),
+    logging what it resolved. A session with no open intent is not called
+    about at all: a run becomes a session's last run only once it has ended.
+    A failure that may pass (transport, timeout, 5xx, 429) — and a 401 or
+    403, which refuses the API key and so every session alike — is retried
+    and never retires a session; if it persists, `/healthz` fails at the
+    7-minute stuck bound. Only a definite 4xx refusal of an open intent's
+    recovery, persisting 5 minutes with no other outcome between, retires that
+    one session — 2 minutes before the stuck bound, more than the liveness
+    probe's 90 s, so the pod is never restarted for a session it would retire;
   - treats `run.failed` with `unknown_execution` as "queued behind an unknown
     run": it keeps streaming, resolves the predecessor, and never reports it as
     a failure.
@@ -1624,7 +1647,7 @@ One PVC at `/data`, as for `claude-code`:
 | path | what |
 |---|---|
 | `/data/hermes` | `HERMES_HOME`: `state.db` (+ `-wal`/`-shm`), `response_store.db`, `runs_idempotency.db`, `config.yaml` (rendered), `SOUL.md` (fallback only), `memories/`, `skills/`, `sessions/`, `logs/` |
-| `/data/hermes/home` | the agent shell's HOME; **created by `hermesd seed`**; git config lives here |
+| `/data/hermes/home` | the agent shell's HOME; **created by hermesd's start-up seed step**; git config lives here |
 | `/data/hermes/cache/scratch` | the agent shell's `TMPDIR`, set by Hermes, pruned after 24 h idle: on the volume |
 | `/data/workspace` | the agent's workspace and checkout |
 | `/data/hermesd` | hermesd's session map |
@@ -1634,15 +1657,15 @@ One PVC at `/data`, as for `claude-code`:
   requirement to document.
 - 🔴 **No `.env` on the volume, ever.** `$HERMES_HOME/.env` loads with
   `override=True`, beating pod environment, and **clears** known keys it does
-  not list (`P:hermes_cli/env_loader.py:510-518`). `hermesd seed` refuses to
-  start when one exists (naming it, deleting nothing it did not write), and the
+  not list (`P:hermes_cli/env_loader.py:510-518`). hermesd's start-up seed step
+  refuses to start when one exists (naming it, deleting nothing it did not write), and the
   supervisor checks again before every in-pod restart, because the agent can
   create one with `hermes config set`. The analogue of ccd's
   `settingsForbidden` strip.
 - **The agent shell's HOME** is `$HERMES_HOME/home` only if that directory
   exists **and** either container detection succeeds or
   `TERMINAL_HOME_MODE=profile` is set (`P:hermes_constants.py:743-768`). So
-  `hermesd seed` creates the directory and the spec sets
+  hermesd's start-up seed step creates the directory and the spec sets
   `TERMINAL_HOME_MODE=profile` explicitly rather than relying on detection.
 
 **The rendered `config.yaml`**, rewritten on every start so nothing the session
@@ -1668,11 +1691,15 @@ writes into it survives a restart:
   It goes into the agent's own Secret as `OPENROUTER_API_KEY`, consumed by
   `envFrom`, as `CLAUDE_CODE_OAUTH_TOKEN` does for `claude-code`, with the same
   seam-ledger test holding the name to that one place.
-- **The agent's shell never sees it** (S8): provider keys (`OPENAI_API_KEY`,
-  `ANTHROPIC_API_KEY` measured), `GH_TOKEN`, `GITHUB_TOKEN` and every `API_SERVER_*`
-  variable are stripped from terminal subprocesses
-  (`P:tools/environments/local_env_policy.py:38,380`). So the agent cannot call
-  Hermes's own API.
+- **The agent's shell environment does not carry it** (S8): provider keys
+  (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY` measured), `GH_TOKEN`, `GITHUB_TOKEN`
+  and every `API_SERVER_*` variable are stripped from terminal subprocesses
+  (`P:tools/environments/local_env_policy.py:38,380`). 🔴 **That is a claim
+  about the shell's own environment only, NOT a boundary:** the agent runs as
+  the gateway's uid and can read the gateway's environment, provider key
+  included, from `/proc/<pid>/environ`. This exposure is **accepted** (operator
+  decision, [above](#operator-decisions)) as parity with `claude-code` pods,
+  whose agent can read its own OAuth token the same way.
 - **The in-pod API key** (`/data/hermesd/api-server-key`, 0600) grants the
   loopback API server: starting runs on any session, reading them, and
   answering their approvals. The agent runs as the same uid and **can read
@@ -1689,8 +1716,8 @@ writes into it survives a restart:
   tokens into `auth.json`.
 - **GitHub: no token in the pod**, as for `claude-code`. git reaches GitHub
   through muster's connector proxy, which injects a GitHub App token limited to
-  the agent's repository ([github-app.md](../github-app.md)). `hermesd seed`
-  writes ccd's `url.<proxy>.insteadOf`, `followRedirects` and
+  the agent's repository ([github-app.md](../github-app.md)). hermesd's start-up
+  seed step writes ccd's `url.<proxy>.insteadOf`, `followRedirects` and
   `extraHeader = X-Muster-Token: …` lines with
   `HOME=$HERMES_HOME/home git config --global`. Measured: the agent's
   `git clone` went through a stand-in proxy with the token header (S8). The
@@ -1754,6 +1781,131 @@ on 443" is not "the provider and GitHub".
 - No Terminal view for `hermes` agents in the first release: `agents.terminal`
   refuses kinds other than `claude-code`.
 
+### Phase 5 as built
+
+`cmd/hermesd`, `images/hermes-agent` (the image flake and `smoke/`), the kind
+(`agents.KindHermes`, migration `0038`, `agentspec.buildHermes`, the
+`MUSTER_AGENT_HERMES_*` variables) differ from the sections above in these
+ways, each decided while building it:
+
+- **The kind ships dormant** (operator decision): off unless
+  `MUSTER_AGENT_KINDS` includes `hermes` and `MUSTER_AGENT_HERMES_IMAGE` is
+  set; enabled only after a real-pod run passes (NetworkPolicy, restricted
+  admission, a live `Idempotency-Key` replay).
+- **The pieces ccd and hermesd share moved to `internal/podagent`** — git
+  routing through the connector proxy, the repository checkout (with its
+  self-filed `github` request), the bearer, the `/v1/responses` wire (failure
+  shape, native tool items, the response writer, the prompt reader), the
+  approval-queue client (`ApprovalRelay`: post, poll, fallback on timeout or
+  no relay) and the crash latch with its backoff (`RecordExit`) — unchanged in
+  behaviour; ccd keeps its names as thin delegations, and its untagged and
+  tmux suites pass unchanged. One rule, one implementation.
+- **The turn budget STOPS the run** (`POST /v1/runs/{id}/stop`) and the turn
+  answers a typed `turn_timeout`. Chosen over following the run in the
+  background and storing its outcome for the next reply: a run nobody follows
+  can still ask for approvals nobody sees, spend provider credit unbounded, and
+  hold its session busy with no deadline; a stop ends all three, and the
+  person resends knowing the turn did not finish. 🔴 **Nothing is followed in
+  the background**: the watcher and its stored outcome notice are gone. A run
+  recovery finds still going keeps its intent open (the session answers busy)
+  until the session's next turn settles it under the same rules.
+- **Recovery is bounded, and never forgets a flaky API**: a deadline on every
+  recovery call (15 s); only sessions with an open intent are recovered (an
+  idle session makes no call); a failure that may pass (transport, timeout,
+  5xx, 429, and a 401/403, which refuses the API key and so every session
+  alike) is retried and never retires a session, so a persistent one turns
+  `/healthz` non-200 at the 7-minute stuck bound and the liveness probe acts;
+  only a definite 4xx refusal of a session's recovery, persisting 5 minutes
+  with no other outcome between, retires that session — before the stuck
+  bound by more than the probe's 90 s, so no restart loop. The
+  Hermes API client has a 30 s timeout (the run's event stream has its own
+  client, bounded by the turn budget).
+- **The store writes before it changes memory**: a failed write leaves no
+  intent behind (no phantom `busy`). **Written is written**: once the rename
+  has put the new map in place, memory takes it too, even when the
+  directory's fsync then fails (logged) — memory and disk never disagree on
+  whether an intent exists.
+- **A definite refusal is never replayed**: when Hermes refuses a run (a 4xx)
+  and the intent's close cannot be written, the key is tombstoned in memory
+  (never re-posted), the close is retried until it lands, and the turn answers
+  `may_have_run` — a crash before the close lands would replay it.
+- **A run that completed as the budget ran out is the reply**, not
+  `turn_timeout`.
+- **Approvals are relayed from both paths**: the SSE `approval.request` and
+  the run's `pending_controls` when the status is polled (field names from
+  `P:gateway/session_pending_controls.py`); `tool.failed` ends a native tool
+  row as failed.
+- **Fixed, not configurable** (D6–D8): no `HERMESD_TURN_TIMEOUT`,
+  `HERMESD_HERMES_BIN` or `HERMESD_STATE_DIR`; no separate seed subcommand (`serve`
+  seeds the volume itself on every start); no
+  flake `checks.hermesd` (its tests run in `go test ./...`).
+  `HERMESD_MODEL_BASE_URL` stays as a **test-only** override (the smoke test's
+  fake model), logged at boot when set; `agentspec` never sets it, and a test
+  holds it to that.
+- **The pod's root filesystem is read-only**, with an emptyDir at `/tmp`;
+  hermes only. The field renders nothing for other kinds, and a test pins the
+  gateway and `claude-code` fingerprints and rendered Deployments to their
+  bytes before the field existed, so no existing pod rolls.
+- **`/data` must be a local filesystem**, not NFS or virtiofs: Hermes's sessions and
+  its run records are SQLite (`state.db` in WAL mode; documented in
+  [provisioner.md](../provisioner.md) and [configuration.md](../configuration.md)).
+- **The model is checked where it is set**: a hermes agent's model must be a
+  case-sensitive `openrouter/<vendor>/<model>` slug (or a one-part OpenRouter
+  id such as `openrouter/auto`), at
+  dispatch and at a model change, refused before anything is created or
+  stored.
+- **`task_dispatch` does not dispatch `hermes`** yet: the chief's tool refuses
+  the kind until Hermes's MCP client against muster's `/mcp` is verified.
+- **tini is PID 1, not hermesd.** The gateway's terminal tool leaves processes
+  behind when the gateway is killed; they are reparented to PID 1, which must
+  reap them, and a Go process that also `exec`s git cannot safely reap all
+  children. tini forwards SIGTERM to hermesd, which forwards it to the gateway.
+- **`gateway run --external-supervisor`**: hermesd is the process manager that
+  owns the foreground gateway, so an in-chat restart or update exits back to it
+  rather than spawning a detached replacement (read from the pin's
+  `gateway run --help` and `P:hermes_cli/gateway.py`).
+- **The termination grace is 60 s, not 45 s.** The smoke test measured a stop
+  during a run at 34 s on an idle host and 53 s under load (the 30 s drain, the
+  interrupt, hermesd's own shutdown).
+- **A recovery decision about a turn nobody waits for any more is said on the
+  session's next reply** (a notice): an old-key intent resolved from the
+  messages, an intent past the key retention, a key conflict, a retired
+  session. A timed-out turn is not one of them: it was stopped and answered
+  `turn_timeout`.
+- **No relay, an unreachable relay or a dismissed card is a `deny` too**, not
+  only the relay timeout: there is no terminal prompt to fall back to in a pod,
+  and an unanswered prompt would end `run.completed` at Hermes's 300 s.
+- **Busy is one rule**: a session with an open intent (a live turn, or a run
+  recovery is still following) answers `409 busy`; `beginIntent` is the one
+  place it is checked.
+- **`config.yaml` is written as JSON** (which YAML reads), rewritten before every
+  start of the gateway; `agent.disabled_toolsets` removes browser, computer use
+  and TTS; `${OPENROUTER_API_KEY}` and `${MUSTER_HOOK_TOKEN}` are expanded by
+  Hermes, so no credential is written to the volume.
+- **The model** is muster's slug with its `openrouter/` provider prefix removed
+  (Hermes runs the openrouter provider); `openrouter/auto` keeps its id.
+- **SOUL.md is not written.** The per-run `instructions` path is measured (S9)
+  and is the only one used; the SOUL.md fallback has no caller.
+- **Not in this release**, each refused rather than half-built: a `hermes`
+  chief (every chief tool is an MCP tool, and Hermes's MCP client against
+  muster's `/mcp` is unverified — the smoke test's fake `/mcp` answered 404 and
+  Hermes parked the server and carried on), the Terminal view, and `clarify`
+  (open question 3). The memo relay still skips the kind
+  (`ResultKindUnsupported`), although hermesd answers a second turn with the
+  typed `409 busy` that rule waits for.
+- **Measured by the smoke test (34 checks), against the real pin in a
+  container** (uid 1000, read-only root, no capabilities): the exact approval
+  body, approved and denied through the relay, each with an effect that can
+  fail (the approved command's directory, the denied one's `blocked` status);
+  the agent shell's OWN environment (no bearer, hooks token, provider or API
+  key there — `/proc` exposure is accepted, see the operator decisions; `HOME`
+  and `TMPDIR` on the volume); a real `git ls-remote` through muster's proxy
+  (the fake muster records the `/connect/` path and the bearer); a SIGKILL mid-turn (the turn ends `interrupted`,
+  recovery's `resolve-unknown` with the exact body releases the session); the
+  `Idempotency-Key` replay across a restart (above); SIGTERM during a run; a
+  container restart on the same volume (same API key, history kept). Not
+  measured: a Kubernetes pod, a real provider, a cold image build.
+
 ## Phased plan
 
 Efforts are rough engineer-days, including tests and docs. Phase 0 is done.
@@ -1765,7 +1917,7 @@ Efforts are rough engineer-days, including tests and docs. Phase 0 is done.
 | ~~2~~ | (**done**, see [as built](#phase-2-as-built)) Read-only Hermes mirroring: the strict mirroring identity rule (moved from Phase 1; then pulled forward into 1b by coordinator decision, and landed there — Phase 2 builds on it), breadcrumb locator with the end-reason staleness rule (no view, unknown status), SQLite reader (compaction, compression-only lineage), renderer, the `hermes-hook` command and its status files with lease and newest-row checks, the Home Manager declaration and the locking allowlist writer, mismatch diagnostics, listing and kind chip, secret-path ledger, `-list -hermes` | 6–8 | 1 |
 | **3** | Gated pane send **and its live harness**. `make test-livehermes`: the pinned Hermes in a scratch tmux server and home; fixtures for every blocking state, and from them the paste guard's chrome check (moved from Phase 1), including the palette, model picker and stash; the overlay-state ledger; measuring the Escape sequence (with the abort rule and waits above `timeoutlen`) against every overlay at its non-default stages (filtered picker, reasoning stage, palette and stash together, the picker opened over a draft, vi mode); re-measuring under load the false-idle slack, the 150 ms Enter margin and the queue gap. Then the send: per-runtime server gates, host `CheckSend` with the image-region and input-line rules and the bounded Escape sequence, the `hermesSend` switch on both sides, the `/`, `!` and trailing-`\` refusals, collapse-aware post-paste check, database-confirmed submit with "may have been submitted", Queue and Send now for Hermes, host docs. Send stays off until these measurements are done and the harness is green; then the operator enables it per host, with the residual cases named in the host docs. | 10–12 | 2 |
 | **4** | Questions and approvals: clarify cards from the DB, approval and sudo attention items from the hooks, viewer discovery through `gateway.sock.path`, attach-to-answer, `approval.respond` with the stale-modal card, measuring the viewer's clarify answer (and wiring it if it passes), the hygiene filters; harness cases for each | 5–7 | 2, 3 |
-| **5** | `hermes` kind: `hermesd` (runs, events, exact approval body, relay timeout, a stable API key on the volume, intent-before-POST with the exact body and `Idempotency-Key`, 409 and retention handling, `resolve-unknown` recovery on every gateway start, SIGTERM handling), the Nix image without ffmpeg, `agentspec`, migration, config, smoke test like `cc-smoke`, a first run in a real pod | 10–12 | 1 |
+| ~~5~~ | `hermes` kind: `hermesd` (runs, events, exact approval body, relay timeout, a stable API key on the volume, intent-before-POST with the exact body and `Idempotency-Key`, 409 and retention handling, `resolve-unknown` recovery on every gateway start, SIGTERM handling), the Nix image without ffmpeg, `agentspec`, migration, config, smoke test like `cc-smoke` (**done**; see [as built](#phase-5-as-built)). A first run in a real pod is the release's (muster-ops), not this phase's code. | done | 1 |
 
 Remaining: about 31–39 days. Each phase is released and shipped to the hosts as
 it merges. Phases 2–4 and 5 are independent after Phase 1. The shortest useful
@@ -1804,7 +1956,11 @@ guard already in place. `make test-livehermes` re-runs on every pin bump.
   - skins or themes changing the input-line glyphs;
   - the command palette, model picker, prompt-stash panel, secret capture,
     connection form and voice states (found in source; fixtures in Phase 3);
-  - an `Idempotency-Key` replay across a gateway restart (Phase 5);
+  - ~~an `Idempotency-Key` replay across a gateway restart~~: **measured** in
+    Phase 5's image smoke test: the same key and bytes after a SIGKILL and
+    restart answer `202` with the ORIGINAL run id and `replayed: true`; another
+    key with the same body admits a new run (the control); the same key with
+    another body is `409 idempotency_key_conflict`;
   - the Escape sequence against the palette, model picker and stash at their
     non-default stages (Phase 3); Send stays off until it is measured;
   - a Hermes CLI run over `ssh` or `docker exec` in a pane, covered only by the

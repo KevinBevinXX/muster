@@ -170,7 +170,7 @@ fi
 
 # 0 (continued). A repository (CCD_REPO) — an agent's FIRST start, on that volume,
 # at the production paths: CCD_WORKSPACE=/data/workspace/<name> (agentspec
-# claudeCodeRepo). This ran as the old step 11 against a /tmp workspace and
+# podRepo). This ran as the old step 11 against a /tmp workspace and
 # passed while every real agent with a repository crash-looped on
 # `ccd seed: mkdir /data/workspace/<repo>: permission denied`.
 #

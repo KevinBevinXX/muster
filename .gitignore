@@ -24,3 +24,6 @@ __pycache__/
 # Editor / OS droppings.
 *.swp
 .DS_Store
+
+# `make hermes-image`'s stream-script link, removed after the load.
+/.hermes-image

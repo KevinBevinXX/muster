@@ -16,14 +16,35 @@ import "time"
 // the pinned CLI) authenticated by one `claude setup-token` drawn from muster's
 // per-account pool (internal/ccpool). Its spec profile is in
 // internal/agentspec/claudecode.go.
+//
+// KindHermes is the Hermes pod: the hermes-agent image (cmd/hermesd + Hermes at
+// one pinned upstream sha, images/hermes-agent) on the OpenRouter credential
+// the gateway kind uses (docs/design/hermes.md, "The hermes agent kind"). Its
+// spec profile is in internal/agentspec/hermes.go.
 const (
 	KindGateway    = "gateway"
 	KindClaudeCode = "claude-code"
+	KindHermes     = "hermes"
 )
 
 // Kinds is every kind this build knows, in the order a picker shows them. It is
-// the same set migration 0003's agents_kind_check admits; a test pins the two.
-var Kinds = []string{KindGateway, KindClaudeCode}
+// the same set the latest agents_kind_check admits (migration 0038); a test
+// pins the two.
+var Kinds = []string{KindGateway, KindClaudeCode, KindHermes}
+
+// RunsPodSupervisor reports whether kind's image runs one of muster's OWN
+// in-pod supervisors — ccd (claude-code) or hermesd (hermes) — rather than the
+// operator's gateway runtime. Those kinds share a pod profile: a persistent
+// /data volume, the repository checked out by the supervisor before the agent
+// starts (and, so, the first turn held for it), a connected repository only,
+// and the spec re-applied on every Start.
+func RunsPodSupervisor(kind string) bool {
+	switch ResolveKind(kind) {
+	case KindClaudeCode, KindHermes:
+		return true
+	}
+	return false
+}
 
 // ResolveKind maps the unset kind to [KindGateway] — the one place that default
 // is spelled. A row read from the database always carries a kind; an Agent
@@ -51,6 +72,8 @@ func KindLabel(kind string) string {
 	switch ResolveKind(kind) {
 	case KindClaudeCode:
 		return "Claude Code"
+	case KindHermes:
+		return "Hermes"
 	case KindGateway:
 		return "Standard"
 	}
@@ -73,12 +96,22 @@ func KindLabel(kind string) string {
 // THE CALLER; the work keeps going in the TUI and is visible in the transcript.
 const ClaudeCodeTurnTimeout = 35 * time.Minute
 
+// HermesTurnTimeout bounds ONE request to a hermes agent's hermesd, for
+// ClaudeCodeTurnTimeout's reason: it outlasts hermesd's own turn budget
+// (turnTimeout, a fixed 30m, cmd/hermesd/turn.go), so hermesd's typed
+// `504 turn_timeout` — which says the run is still going and that its outcome
+// comes with the session's next reply — always arrives before muster gives up.
+const HermesTurnTimeout = 35 * time.Minute
+
 // KindTurnTimeout is the per-request budget a kind's turns need, or ZERO for "use
 // the gateway's configured client unchanged" — which is what the gateway kind
 // gets, so its behaviour is byte-identical to before kinds existed.
 func KindTurnTimeout(kind string) time.Duration {
-	if ResolveKind(kind) == KindClaudeCode {
+	switch ResolveKind(kind) {
+	case KindClaudeCode:
 		return ClaudeCodeTurnTimeout
+	case KindHermes:
+		return HermesTurnTimeout
 	}
 	return 0
 }

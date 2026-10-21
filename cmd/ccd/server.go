@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 	"unicode"
+
+	"github.com/ZacxDev/muster/internal/podagent"
 )
 
 // terminal is the input side: how a prompt reaches the interactive session.
@@ -432,46 +434,9 @@ type responsesRequest struct {
 	Stream *bool           `json:"stream"`
 }
 
-type inputItem struct {
-	Type    string          `json:"type"`
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"`
-}
-
-// promptFrom extracts the LAST user message's text from `input`, which may be a
-// bare string or an array of items whose content is a string or an array of
-// {type: input_text|text, text} parts.
-func promptFrom(raw json.RawMessage) (string, error) {
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		return s, nil
-	}
-	var items []inputItem
-	if err := json.Unmarshal(raw, &items); err != nil {
-		return "", errors.New("`input` is neither a string nor an array of items")
-	}
-	for i := len(items) - 1; i >= 0; i-- {
-		it := items[i]
-		if it.Role != "user" || (it.Type != "" && it.Type != "message") {
-			continue
-		}
-		if json.Unmarshal(it.Content, &s) == nil {
-			return s, nil
-		}
-		var parts []contentBlock
-		if json.Unmarshal(it.Content, &parts) != nil {
-			return "", errors.New("user message content is neither a string nor an array of parts")
-		}
-		var b strings.Builder
-		for _, p := range parts {
-			if p.Type == "input_text" || p.Type == "text" {
-				b.WriteString(p.Text)
-			}
-		}
-		return b.String(), nil
-	}
-	return "", errors.New("`input` carries no user message")
-}
+// promptFrom extracts the LAST user message's text from `input`
+// (internal/podagent.PromptFrom, shared with hermesd).
+func promptFrom(raw json.RawMessage) (string, error) { return podagent.PromptFrom(raw) }
 
 // sanitizePrompt folds line endings and refuses control characters; handleResponses
 // runs it BEFORE neutralizeInputMode, so the `!` check sees the text that will
@@ -768,8 +733,8 @@ func (s *server) runTurn(ctx context.Context, prompt string) (turnOutcome, *fail
 	}
 	pane, ok := s.inputPane()
 	if !ok {
-		if s.checkout != nil && !s.checkout.ready() {
-			return turnOutcome{}, paneNotReady(s.checkout.notReady())
+		if s.checkout != nil && !s.checkout.Ready() {
+			return turnOutcome{}, paneNotReady(s.checkout.NotReady())
 		}
 		return turnOutcome{}, paneNotReady("the supervisor reports no running CLI in its pane (starting, " +
 			"restarting, crash_loop or terminal_lost — see /healthz)")
@@ -1045,7 +1010,7 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	// here would restart-loop the pod for that whole wait.
 	waitingCheckout := false
 	if s.checkout != nil {
-		st := s.checkout.state()
+		st := s.checkout.State()
 		h.Repo = &st
 		waitingCheckout = st.State != checkoutReady && ref == (paneRef{})
 	}
@@ -1120,8 +1085,8 @@ func (s *server) laneFor(ctx context.Context, key, model string) (*lane, *failur
 	// would run without the repository's CLAUDE.md and .claude/, and a file it
 	// wrote there would make every later clone refuse the directory, so the
 	// primary would never start (TestNoLaneStartsBeforeTheCheckoutExists).
-	if s.checkout != nil && !s.checkout.ready() {
-		return nil, paneNotReady(s.checkout.notReady())
+	if s.checkout != nil && !s.checkout.Ready() {
+		return nil, paneNotReady(s.checkout.NotReady())
 	}
 	ln, f := s.lanes.acquire(ctx, key, model)
 	if f != nil {

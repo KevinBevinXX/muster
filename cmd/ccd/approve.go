@@ -7,12 +7,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/podagent"
 )
 
 // `ccd approve` is the claude-code pod's PermissionRequest hook: it files the
@@ -119,17 +120,12 @@ func runApprove(args []string, stdin io.Reader, stdout, stderr io.Writer) (code 
 	return 0
 }
 
-// approvalResponse maps the router's decision vocabulary onto the hook's.
-// 🔴 ONLY THE TWO SPELLINGS A HUMAN'S APPROVE CAN PRODUCE MAP TO ALLOW. Anything
-// else, including "ignore" (a dismissed card) and an empty value, defers.
+// approvalResponse maps the router's decision vocabulary onto the hook's,
+// through podagent.ApprovalResponse: 🔴 only the two spellings a human's approve
+// can produce map to allow; anything else, including "ignore" (a dismissed card)
+// and an empty value, defers.
 func approvalResponse(resp string) approvalDecision {
-	switch strings.ToLower(strings.TrimSpace(resp)) {
-	case "approve", "allow":
-		return decisionAllow
-	case "reject", "deny":
-		return decisionDeny
-	}
-	return decisionDefer
+	return fromRelay(podagent.ApprovalResponse(resp))
 }
 
 // decide files the request and waits for the answer.
@@ -168,101 +164,21 @@ func (a approver) decide(ctx context.Context, ev permissionEvent) approvalDecisi
 		req["context"] = []string{in.Description}
 	}
 
-	var created struct {
-		RequestID string `json:"requestId"`
-	}
-	if status, err := a.call(ctx, http.MethodPost, "/agent/approvals", req, &created); err != nil || status != http.StatusCreated || created.RequestID == "" {
-		a.logf("filing the request failed (status %d, err %v); deferring", status, err)
-		return decisionDefer
-	}
-	id := created.RequestID
-	decided := false
-	defer func() {
-		if decided {
-			return
-		}
-		// Clear the card on every non-decision exit, including a signal: the
-		// prompt was answered in the terminal, or the session ended.
-		cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_, _ = a.call(cctx, http.MethodDelete, "/agent/approvals/"+url.PathEscape(id), nil, nil)
-	}()
-
-	stopAt := time.Now().Add(a.deadline)
-	for {
-		if ctx.Err() != nil {
-			a.logf("interrupted; deferring")
-			return decisionDefer
-		}
-		if time.Now().After(stopAt) {
-			a.logf("no answer within %s; deferring to the terminal prompt", a.deadline)
-			return decisionDefer
-		}
-		var st struct {
-			State    string `json:"state"`
-			Response string `json:"response"`
-		}
-		status, err := a.call(ctx, http.MethodGet, "/agent/approvals/"+url.PathEscape(id), nil, &st)
-		switch {
-		case err != nil || status == http.StatusBadGateway || status == http.StatusServiceUnavailable:
-			// transient: keep polling until the deadline
-		case status == http.StatusNotFound:
-			a.logf("muster no longer tracks %s; deferring", id)
-			return decisionDefer
-		case status != http.StatusOK:
-			a.logf("unexpected status %d reading %s; deferring", status, id)
-			return decisionDefer
-		case st.State == "decided":
-			decided = true
-			d := approvalResponse(st.Response)
-			a.logf("%s decided %q", id, st.Response)
-			return d
-		case st.State == "gone":
-			// No DELETE: muster answers "gone" only after it has confirmed the card
-			// over several reads, forgotten the id and cleared the card itself, so a
-			// DELETE from here could only 404.
-			decided = true
-			a.logf("%s is gone; deferring", id)
-			return decisionDefer
-		case st.State != "pending":
-			a.logf("unknown state %q for %s; deferring", st.State, id)
-			return decisionDefer
-		}
-		select {
-		case <-ctx.Done():
-		case <-time.After(a.poll):
-		}
-	}
+	// The file → poll → clear-on-non-decision core is podagent's, shared with
+	// hermesd; ccd's fallback for everything undecided is the terminal prompt.
+	return fromRelay(podagent.ApprovalRelay{
+		Base: a.base, Token: a.token, Deadline: a.deadline, Poll: a.poll, Client: a.client, Logf: a.logf,
+		Fallback: "deferring", TimeoutFallback: "deferring to the terminal prompt",
+	}.Decide(ctx, req))
 }
 
-// call sends one request to muster with this agent's own token.
-func (a approver) call(ctx context.Context, method, path string, in, out any) (int, error) {
-	var rd io.Reader
-	if in != nil {
-		b, err := json.Marshal(in)
-		if err != nil {
-			return 0, err
-		}
-		rd = bytes.NewReader(b)
+// fromRelay maps the core's decision onto the hook's: undecided defers.
+func fromRelay(d podagent.ApprovalDecision) approvalDecision {
+	switch d {
+	case podagent.ApprovalApproved:
+		return decisionAllow
+	case podagent.ApprovalRejected:
+		return decisionDeny
 	}
-	req, err := http.NewRequestWithContext(ctx, method, a.base+path, rd)
-	if err != nil {
-		return 0, err
-	}
-	req.Header.Set("X-Muster-Token", a.token)
-	if in != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := a.client.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-	if out != nil && resp.StatusCode/100 == 2 {
-		if err := json.Unmarshal(raw, out); err != nil {
-			return resp.StatusCode, fmt.Errorf("muster's answer is not JSON: %w", err)
-		}
-	}
-	return resp.StatusCode, nil
+	return decisionDefer
 }
