@@ -52,7 +52,7 @@ func TestAReleaseFreesOneStartAndOnlyForTheChiefsAgent(t *testing.T) {
 // TestAReleasedTasksNewStartCountsAsLiveUntilItsAgentIsRecorded: after a
 // release, the task's NEW reservation (its agent not recorded yet) counts
 // toward the live cap even though the task already has an older agent row —
-// so two in-flight starts refuse a third.
+// so a full cap of in-flight starts refuses one more.
 func TestAReleasedTasksNewStartCountsAsLiveUntilItsAgentIsRecorded(t *testing.T) {
 	s, _, dsn := pgStore(t)
 	dbtest.OwnerExec(t, dsn, `DELETE FROM audit_log WHERE action LIKE 'task.chief_%'`)
@@ -66,13 +66,14 @@ func TestAReleasedTasksNewStartCountsAsLiveUntilItsAgentIsRecorded(t *testing.T)
 	if wrote, err := s.ReleaseChiefDispatch(session(2), task, chiefs); err != nil || !wrote {
 		t.Fatalf("release: %v %v", wrote, err)
 	}
-	for _, id := range []int64{task, 661} {
+	// Fill the cap, the released task's new start first.
+	for id := int64(task); id < task+MaxChiefLiveAgents; id++ {
 		if r, err := s.ReserveChiefDispatch(session(2), id, nil, nil); err != nil || r.Prior {
 			t.Fatalf("reserve %d: %+v %v", id, r, err)
 		}
 	}
-	if _, err := s.ReserveChiefDispatch(session(2), 662, nil, nil); !errors.Is(err, ErrChiefLiveCap) {
-		t.Fatalf("a third start with two in flight (one on the released task): %v; want ErrChiefLiveCap", err)
+	if _, err := s.ReserveChiefDispatch(session(2), task+MaxChiefLiveAgents, nil, nil); !errors.Is(err, ErrChiefLiveCap) {
+		t.Fatalf("one more start with the cap in flight (one on the released task): %v; want ErrChiefLiveCap", err)
 	}
 }
 

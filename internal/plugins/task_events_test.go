@@ -241,12 +241,14 @@ func TestAChiefDispatchCheckRefusalWritesNothing(t *testing.T) {
 func TestAPendingStartCountsAsLive(t *testing.T) {
 	s, _, _ := pgStore(t)
 	dbtest.OwnerExec(t, dbtest.DSN(t), `DELETE FROM audit_log WHERE action LIKE 'task.chief_%'`)
-	for _, task := range []int64{501, 502} {
+	// The cap is the operator's number (5, raised from 2 on 2026-10-21), pinned
+	// as a literal so a change to MaxChiefLiveAgents has to change this too.
+	for _, task := range []int64{501, 502, 503, 504, 505} {
 		if r, err := s.ReserveChiefDispatch(session(2), task, nil, nil); err != nil || r.Prior {
 			t.Fatalf("reserve %d: %+v %v", task, r, err)
 		}
 	}
-	if _, err := s.ReserveChiefDispatch(session(2), 503, nil, nil); !errors.Is(err, ErrChiefLiveCap) {
-		t.Fatalf("a third start with two in flight: %v, want ErrChiefLiveCap", err)
+	if _, err := s.ReserveChiefDispatch(session(2), 506, nil, nil); !errors.Is(err, ErrChiefLiveCap) {
+		t.Fatalf("a sixth start with five in flight: %v, want ErrChiefLiveCap", err)
 	}
 }

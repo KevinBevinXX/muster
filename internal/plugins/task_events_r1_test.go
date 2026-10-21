@@ -192,13 +192,14 @@ func TestAnotherOwnersStartedAgentDoesNotFreeTheCallersPendingSlot(t *testing.T)
 		t.Fatal(err)
 	}
 	rlsOffForTest(t, pool, dsn, true)
-	for _, task := range []int64{620, 621} {
+	// Fill the caller's cap, 620 (the task the other owner's agent shares) first.
+	for task := int64(620); task < 620+MaxChiefLiveAgents; task++ {
 		if r, err := s.ReserveChiefDispatch(session(2), task, nil, nil); err != nil || r.Prior {
 			t.Fatalf("reserve %d: %+v %v", task, r, err)
 		}
 	}
-	if _, err := s.ReserveChiefDispatch(session(2), 622, nil, nil); !errors.Is(err, ErrChiefLiveCap) {
-		t.Fatalf("a third start with two of the caller's in flight: %v; want ErrChiefLiveCap", err)
+	if _, err := s.ReserveChiefDispatch(session(2), 620+MaxChiefLiveAgents, nil, nil); !errors.Is(err, ErrChiefLiveCap) {
+		t.Fatalf("one more start with the caller's cap in flight: %v; want ErrChiefLiveCap", err)
 	}
 }
 

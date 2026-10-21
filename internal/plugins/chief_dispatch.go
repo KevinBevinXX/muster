@@ -37,7 +37,7 @@ import (
 // rows, so the audit trail and the caps cannot disagree, and no new table is
 // needed.
 const (
-	MaxChiefLiveAgents       = 2
+	MaxChiefLiveAgents       = 5
 	MaxChiefDispatchesPerDay = 10
 	ChiefDispatchWindow      = 24 * time.Hour
 
