@@ -170,14 +170,13 @@ func mirrorCard(m MirrorCardView) g.Node {
 	// with a "…" button that opens it whole (cardLongTitle). The qualifier
 	// and the raw session name stay beside it, as in mirrorEntryTitle.
 	name := displayOr(m.Label, displayOr(m.Title, m.Session))
-	short, long := clampTitle(name)
+	_, long := clampTitle(name)
 	reserve := cardReserve(m.Attention)
 	bodyClass := cardBodyClass(m.Focus, reserve)
 	var titleRow g.Node
 	if long {
 		bodyClass = titledBodyClass(reserve)
-		full := mirrorQualified(name, m.Qualifier)
-		titleRow = cardLongTitle(id, MirrorCardHref(m), full, short, cardHasFocusTitle(m.Focus), reserve,
+		titleRow = cardLongTitle(id, MirrorCardHref(m), name, cardHasFocusTitle(m.Focus), reserve,
 			g.If(m.Qualifier != "", Span(g.Attr("data-mirror-qualifier", ""), g.Text(mirrorQualifierSep+m.Qualifier))),
 			g.If(m.Label != "" && m.Label != m.Session, Span(g.Attr("data-mirror-session", ""), Class("ml-1.5 text-xs text-muted"), g.Text(m.Session))))
 	}
@@ -187,7 +186,7 @@ func mirrorCard(m MirrorCardView) g.Node {
 		g.If(m.Pinned, g.Attr("data-pinned", "")),
 		// What the list's recency and waiting filter chips read (list_signals.go).
 		cardActivityAttrs(time.Now(), m.ActiveAt),
-		g.If(waitTokens(m.Attention) != "", g.Attr("data-wait", waitTokens(m.Attention))),
+		g.If(waitTokens(m.Attention, false) != "", g.Attr("data-wait", waitTokens(m.Attention, false))),
 		// What the list's filter finds this card by (agents_filter.go): its title
 		// ("Gold:8"), the title as shown — with its qualifier ("Gold:8 · laptop")
 		// — its raw tmux session name, its host, and what runs in it.

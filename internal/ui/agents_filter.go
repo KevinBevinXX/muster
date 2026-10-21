@@ -379,20 +379,62 @@ func agentsFilterScript() g.Node {
       var p = String(cs.indexOf(b.getAttribute('data-chip')) >= 0);
       if (b.getAttribute('aria-pressed') !== p) b.setAttribute('aria-pressed', p);
     });
+    // Clear is offered only while a chip is on: a remembered chip cannot
+    // hide cards without a visible way out.
+    var clr = el('agents-chips-clear');
+    if (clr && clr.hidden !== !cs.length) clr.hidden = !cs.length;
+  }
+  function clearChips() {
+    chips = [];
+    try { localStorage.removeItem(CHIPS_KEY); } catch (e) {}
   }
   // RECENCY AS TIME PASSES (list_signals.go): a card's data-idle and its
   // dot's tint are derived from its data-active-ts, and the server's copy is
   // only true when it rendered. restamp re-derives both against this clock,
   // on every apply and every 30s, with the same tables the server used.
+  //
+  // 🔴 TIME IS NOT INPUT. A card crossing an idle threshold while an idle chip
+  // (or any filter) is on would appear or vanish by itself and move every card
+  // below it. So unless the restamp is the reader's own (live: typing, a tap,
+  // the pill), a card whose VISIBILITY its new data-idle would change keeps its
+  // old one: it is put in pendingIdle, counted on the "N new ↑" pill
+  // (recountPill), and applied on the tap (applyLive). A change that shows or
+  // hides nothing is written at once.
   var SCALE = ` + recencyScaleJSON() + `;
   var IDLE = ` + idleThresholdsJSON() + `;
-  function restamp(list) {
+  var pendingIdle = {};
+  function setIdle(a, v) { if (v) a.setAttribute('data-idle', v); else a.removeAttribute('data-idle'); }
+  // idleWouldMove: whether giving card a the data-idle v would show or hide it
+  // under the filter as last applied (curSel). It leaves a as it found it.
+  function idleWouldMove(a, v) {
+    if (!curSel) return false;
+    var was = a.getAttribute('data-idle') || '';
+    if (was === v) return false;
+    var before = a.matches(curSel);
+    setIdle(a, v);
+    var after = a.matches(curSel);
+    setIdle(a, was);
+    return before !== after;
+  }
+  function idleOf(a, now) {
+    var d = now - (+a.getAttribute('data-active-ts')), ts = [];
+    IDLE.forEach(function (t) { if (d > t.ms) ts.push(t.t); });
+    return ts.join(' ');
+  }
+  function pendingCount() {
+    var n = 0;
+    Object.keys(pendingIdle).forEach(function (id) { if (document.getElementById(id)) n++; else delete pendingIdle[id]; });
+    return n;
+  }
+  function restamp(list, live) {
     var now = Date.now();
+    if (live) pendingIdle = {};
     [].forEach.call(list.querySelectorAll(':scope > article[data-active-ts]'), function (a) {
-      var d = now - (+a.getAttribute('data-active-ts')), ts = [];
-      IDLE.forEach(function (t) { if (d > t.ms) ts.push(t.t); });
-      var v = ts.join(' ');
-      if ((a.getAttribute('data-idle') || '') !== v) { if (v) a.setAttribute('data-idle', v); else a.removeAttribute('data-idle'); }
+      var v = idleOf(a, now);
+      if ((a.getAttribute('data-idle') || '') === v) { delete pendingIdle[a.id]; return; }
+      if (!live && idleWouldMove(a, v)) { pendingIdle[a.id] = v; return; }
+      delete pendingIdle[a.id];
+      setIdle(a, v);
     });
     [].forEach.call(list.querySelectorAll('[data-recency-ts]'), function (dot) {
       var d = now - (+dot.getAttribute('data-recency-ts')), b = SCALE.length - 1;
@@ -665,12 +707,15 @@ func agentsFilterScript() g.Node {
   // the refresh changed (another client renamed it while a filter is typed).
   // The rank is applied with everything else on the tap (applyLive), and on
   // the reader's own typing.
+  // apply(held): held is undefined for the READER's own change (typing, a
+  // tap, a load) — which applies everything, held recency included — and a
+  // boolean for a refresh or the clock (see restamp).
   function apply(held) {
     var input = el('agents-search'), list = el('agents-list');
     if (!input || !list) return;
     var q = input.value;
     var ts = terms(q);
-    restamp(list);
+    restamp(list, held === undefined);
     syncChips();
     // The chips are one more compound term, ANDed with the box's.
     var cs = chipSel();
@@ -747,7 +792,8 @@ func agentsFilterScript() g.Node {
     var tab = t.closest('#agents-hosts [role="tab"]');
     if (tab) { chooseHost(tab.getAttribute('data-host') || ''); apply(); return; }
     var chip = t.closest('#agents-chips [data-chip]');
-    if (chip) { toggleChip(chip); apply(); }
+    if (chip) { toggleChip(chip); apply(); return; }
+    if (t.closest('#agents-chips-clear')) { clearChips(); apply(); }
   });
   // The host tabs' keys, as tabs.go's: Left/Right (wrapping), Home and End
   // move to a tab AND choose it.
@@ -799,7 +845,7 @@ func agentsFilterScript() g.Node {
   function background(e) {
     var cfg = e.detail && e.detail.requestConfig, t = cfg && cfg.triggeringEvent;
     var type = t && t.type || '';
-    return type.indexOf('sse:') === 0 || type === 'muster:resync';
+    return type.indexOf('sse:') === 0 || type === 'muster:resync' || type === '` + AgentsAwaitingEvent + `';
   }
   // 🔴 THE PILL IS LOOKED UP, NEVER CACHED. A boosted navigation swaps the
   // body and an htmx history restore puts back a SNAPSHOT of it, so a node
@@ -856,6 +902,7 @@ func agentsFilterScript() g.Node {
     });
   }
   function applyLive() {
+    pendingIdle = {};
     var list = el('agents-list');
     if (list && liveOrder) {
       heldOrder = liveOrder.slice();
@@ -957,7 +1004,10 @@ func agentsFilterScript() g.Node {
   // the shown tab (wouldShow) waits too: at least one.
   function recountPill() {
     var list = el('agents-list');
-    if (!list || !heldOrder || !liveOrder) return;
+    if (!list) return;
+    // Cards whose crossing an idle threshold is held (restamp) wait too.
+    var pend = pendingCount();
+    if (!heldOrder || !liveOrder) { showPill(pend); return; }
     var shown = function (id) { return shows(domById(id)); };
     var arrived = cardsOf(list).filter(function (c) { return c.hasAttribute('data-held') && shows(c); }).length;
     var inHeld = {};
@@ -967,7 +1017,7 @@ func agentsFilterScript() g.Node {
     var risen = 0;
     liveKnown.forEach(function (id, i) { if (i < heldShown.indexOf(id)) risen++; });
     var n = arrived + risen, w = wouldShow(liveOrder, domById);
-    showPill(w && w !== shownHost && !n ? 1 : n);
+    showPill((w && w !== shownHost && !n ? 1 : n) + pend);
   }
   // keepDrawnOrder rewrites a held refresh's markup so its cards come in the
   // order they are DRAWN (cards it no longer has dropped, arrivals after), and
@@ -1010,6 +1060,21 @@ func agentsFilterScript() g.Node {
     var byId = {};
     arts.forEach(function (c) { byId[c.id] = c; });
     var live = arts.map(function (c) { return c.id; });
+    // A background refresh carries the server's data-idle: where that would
+    // show or hide a drawn card, the drawn value is kept and the change held,
+    // exactly as the clock's is (restamp).
+    if (background(e) && curSel) {
+      var changed = false;
+      arts.forEach(function (c) {
+        var d = document.getElementById(c.id);
+        if (!d || d.parentNode !== e.target) return;
+        var drawnIdle = d.getAttribute('data-idle') || '', srv = c.getAttribute('data-idle') || '';
+        if (drawnIdle === srv) return;
+        setIdle(c, drawnIdle);
+        if (idleWouldMove(c, srv)) { pendingIdle[c.id] = srv; changed = true; } else setIdle(c, srv);
+      });
+      if (changed) e.detail.serverResponse = tpl.innerHTML;
+    }
     swapPlan = { live: live, apply: decide(e, live, function (id) { return byId[id]; }) };
     if (!swapPlan.apply) keepDrawnOrder(e, drawn.map(function (c) { return c.id; }));
   });

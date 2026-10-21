@@ -177,66 +177,40 @@ func TestIdleTokensAreStrictlyPastEachThreshold(t *testing.T) {
 }
 
 // TestWaitTokensFileEachAttentionKind: an agent's attention_ask and a session
-// stopped at a prompt are "ask"; an AskUserQuestion picker is "question"; a
-// reply draft is neither.
+// stopped at a prompt are "ask", and so is a dispatched agent awaiting approval
+// (a permission prompt, carried beside the badge); an AskUserQuestion picker is
+// "question"; a reply draft is neither.
 func TestWaitTokensFileEachAttentionKind(t *testing.T) {
 	for _, c := range []struct {
-		kinds []string
-		want  string
+		kinds    []string
+		awaiting bool
+		want     string
 	}{
-		{nil, ""},
-		{[]string{"ask"}, "ask"},
-		{[]string{"session"}, "ask"},
-		{[]string{"question"}, "question"},
-		{[]string{"plugin"}, ""},
-		{[]string{"question", "plugin", "session"}, "ask question"},
-		{[]string{"ask", "session"}, "ask"},
+		{nil, false, ""},
+		{[]string{"ask"}, false, "ask"},
+		{[]string{"session"}, false, "ask"},
+		{[]string{"question"}, false, "question"},
+		{[]string{"plugin"}, false, ""},
+		{[]string{"question", "plugin", "session"}, false, "ask question"},
+		{[]string{"ask", "session"}, false, "ask"},
+		{nil, true, "ask"},
+		{[]string{"question"}, true, "ask question"},
+		{[]string{"plugin"}, true, "ask"},
 	} {
-		a := &CardAttention{Count: len(c.kinds), Kinds: c.kinds}
-		if got := waitTokens(a); got != c.want {
-			t.Errorf("kinds %v: %q, want %q", c.kinds, got, c.want)
+		var a *CardAttention
+		if c.kinds != nil {
+			a = &CardAttention{Count: len(c.kinds), Kinds: c.kinds}
 		}
-	}
-	if got := waitTokens(nil); got != "" {
-		t.Errorf("no badge: %q", got)
-	}
-}
-
-// TestTheChipSemantics pins the combining rule with literal cases: the wait
-// chips OR, an idle chip ANDs, no chip filters nothing.
-func TestTheChipSemantics(t *testing.T) {
-	for _, c := range []struct {
-		chips      []string
-		wait, idle string
-		want       bool
-	}{
-		{nil, "", "", true},
-		{[]string{"ask"}, "ask", "", true},
-		{[]string{"ask"}, "question", "", false},
-		{[]string{"ask"}, "", "15m 1h 1d", false},
-		{[]string{"question"}, "ask question", "", true},
-		{[]string{"ask", "question"}, "question", "", true},
-		{[]string{"ask", "question"}, "", "", false},
-		{[]string{"idle-1h"}, "", "15m 1h", true},
-		{[]string{"idle-1h"}, "", "15m", false},
-		{[]string{"idle-1d"}, "ask", "15m 1h 1d", true},
-		{[]string{"ask", "idle-15m"}, "ask", "15m", true},
-		{[]string{"ask", "idle-15m"}, "ask", "", false},
-		{[]string{"ask", "idle-15m"}, "", "15m", false},
-		{[]string{"ask", "question", "idle-1h"}, "question", "15m 1h", true},
-		{[]string{"ask", "question", "idle-1h"}, "question", "15m", false},
-		{[]string{"nonsense"}, "", "", true},
-	} {
-		if got := chipPasses(c.chips, c.wait, c.idle); got != c.want {
-			t.Errorf("chips %v on a card wait=%q idle=%q: %v, want %v", c.chips, c.wait, c.idle, got, c.want)
+		if got := waitTokens(a, c.awaiting); got != c.want {
+			t.Errorf("kinds %v awaiting=%v: %q, want %q", c.kinds, c.awaiting, got, c.want)
 		}
 	}
 }
 
-// matchesChipSelector evaluates the selector grammar chipSelector writes —
-// an optional `:is([…],[…])` then `[data-<g>~="<t>"]` parts — against a card's
-// data-wait and data-idle. An independent reading of the CSS, so the
-// predicate and the selector the browser runs are held to each other.
+// matchesChipSelector evaluates the selector grammar chipSelector writes — one
+// `[data-<g>~="<t>"]` test, or several ORed in `:is(…)` — against a card's
+// data-wait and data-idle. An independent reading of the CSS the browser
+// runs; any other shape fails the test rather than being guessed at.
 func matchesChipSelector(t *testing.T, sel, wait, idle string) bool {
 	t.Helper()
 	attr := map[string][]string{"wait": strings.Fields(wait), "idle": strings.Fields(idle)}
@@ -252,32 +226,24 @@ func matchesChipSelector(t *testing.T, sel, wait, idle string) bool {
 		}
 		return false
 	}
-	if strings.HasPrefix(sel, ":is(") {
-		end := strings.Index(sel, ")")
-		any := false
-		for _, p := range strings.Split(sel[4:end], ",") {
-			any = any || has(p)
+	if strings.HasPrefix(sel, ":is(") && strings.HasSuffix(sel, ")") {
+		for _, p := range strings.Split(sel[4:len(sel)-1], ",") {
+			if has(p) {
+				return true
+			}
 		}
-		if !any {
-			return false
-		}
-		sel = sel[end+1:]
+		return false
 	}
-	for _, p := range regexp.MustCompile(`\[[^\]]+\]`).FindAllString(sel, -1) {
-		if !has(p) {
-			return false
-		}
-	}
-	return true
+	return has(sel)
 }
 
-// TestTheChipSelectorIsThePredicate: over EVERY selection the script can look
-// up and every kind of card, the CSS selector the browser hides by and
-// chipPasses agree. Positive control: the evaluator reads a hand-written
-// selector both ways.
-func TestTheChipSelectorIsThePredicate(t *testing.T) {
-	if !matchesChipSelector(t, `:is([data-wait~="ask"],[data-wait~="question"])[data-idle~="1h"]`, "question", "15m 1h") ||
-		matchesChipSelector(t, `:is([data-wait~="ask"],[data-wait~="question"])[data-idle~="1h"]`, "question", "15m") {
+// TestTheChipSelectorsOrTheChosenChips: the coordinator's rule — a card is
+// shown when it matches ANY chosen chip — pinned on the SELECTORS the script
+// looks up (chipSelectorsJSON, the rule's only statement), with literal cases.
+// Positive control: the evaluator reads a hand-written selector both ways.
+func TestTheChipSelectorsOrTheChosenChips(t *testing.T) {
+	if !matchesChipSelector(t, `:is([data-wait~="ask"],[data-idle~="1h"])`, "", "15m 1h") ||
+		matchesChipSelector(t, `:is([data-wait~="ask"],[data-idle~="1h"])`, "question", "15m") {
 		t.Fatal("instrument check FAILED: the selector evaluator misreads a known selector")
 	}
 	var sels map[string]string
@@ -288,22 +254,46 @@ func TestTheChipSelectorIsThePredicate(t *testing.T) {
 	if len(sels) != 15 {
 		t.Fatalf("%d selections, want 15: %v", len(sels), sels)
 	}
-	if got := sels["ask,question,idle-1h"]; got != `:is([data-wait~="ask"],[data-wait~="question"])[data-idle~="1h"]` {
-		t.Errorf("the selector for ask+question+idle-1h = %s", got)
-	}
-	n := 0
-	for key, sel := range sels {
-		for _, wait := range []string{"", "ask", "question", "ask question"} {
-			for _, idle := range []string{"", "15m", "15m 1h", "15m 1h 1d"} {
-				n++
-				if p, s := chipPasses(strings.Split(key, ","), wait, idle), matchesChipSelector(t, sel, wait, idle); p != s {
-					t.Errorf("selection %s on wait=%q idle=%q: the predicate says %v, the selector %q says %v", key, wait, idle, p, sel, s)
-				}
-			}
+	for key, want := range map[string]string{
+		"ask":                  `[data-wait~="ask"]`,
+		"idle-1d":              `[data-idle~="1d"]`,
+		"ask,question,idle-1h": `:is([data-wait~="ask"],[data-wait~="question"],[data-idle~="1h"])`,
+	} {
+		if got := sels[key]; got != want {
+			t.Errorf("selector for %s = %s, want %s", key, got, want)
 		}
 	}
-	if n != 15*16 {
-		t.Fatalf("instrument check FAILED: compared %d cases, want %d", n, 15*16)
+	for _, c := range []struct {
+		key, wait, idle string
+		want            bool
+	}{
+		{"ask", "ask", "", true},
+		{"ask", "question", "15m 1h 1d", false},
+		{"question", "ask question", "", true},
+		{"ask,question", "question", "", true},
+		{"ask,question", "", "15m 1h 1d", false},
+		{"idle-1h", "", "15m 1h", true},
+		{"idle-1h", "", "15m", false},
+		{"idle-1d", "ask", "15m", false},
+		// OR across groups: waiting OR idle, either is enough.
+		{"ask,idle-15m", "ask", "", true},
+		{"ask,idle-15m", "", "15m", true},
+		{"ask,idle-15m", "question", "", false},
+		{"question,idle-1d", "", "15m 1h 1d", true},
+		{"ask,question,idle-1h", "", "15m", false},
+		{"ask,question,idle-1h", "", "15m 1h", true},
+	} {
+		sel, ok := sels[c.key]
+		if !ok {
+			t.Fatalf("no selector for %s", c.key)
+		}
+		if got := matchesChipSelector(t, sel, c.wait, c.idle); got != c.want {
+			t.Errorf("chips %s on a card wait=%q idle=%q: shown=%v, want %v (selector %s)", c.key, c.wait, c.idle, got, c.want, sel)
+		}
+	}
+	// Two idle chips are never a selection (they are exclusive).
+	if _, ok := sels["idle-15m,idle-1h"]; ok {
+		t.Error("two idle chips have a selector; they are exclusive")
 	}
 }
 

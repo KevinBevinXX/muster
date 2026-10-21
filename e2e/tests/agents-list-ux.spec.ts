@@ -45,6 +45,8 @@ let mirrorLog = '';
 const freshAgent = 'lux-fresh-' + stamp;
 const oldAgent = 'lux-old-' + stamp;
 const LONG = 'Untangle the reconnect backoff so a flapping tunnel stops resetting its retry window every time';
+// The old agent's focus title, past the same clamp.
+const FOCUS = 'Sweeping the stale notes into the archive bucket and re-linking every task that still points at them';
 // The agents whose task each test completes: one per viewport and path.
 const doneAgent = (vp: string, js: boolean) => `lux-done-${vp}-${js ? 'js' : 'nojs'}-${stamp}`;
 const doneTask = (vp: string, js: boolean) => `Lux task ${vp} ${js ? 'js' : 'nojs'} ${stamp}`;
@@ -90,7 +92,10 @@ test.beforeAll(async () => {
   expect(LONG.length, 'the fixture title is past the 60-character clamp').toBeGreaterThan(60);
 
   mkchat(freshAgent, [{ role: 'user', content: 'Fix the tunnel backoff.' }], { MUSTER_E2E_DISPLAY_NAME: LONG, MUSTER_E2E_ACTIVE_MINUTES_AGO: '5' });
-  mkchat(oldAgent, [{ role: 'user', content: 'Tidy the notes.' }], { MUSTER_E2E_ACTIVE_MINUTES_AGO: String(3 * 24 * 60) });
+  mkchat(oldAgent, [{ role: 'user', content: 'Tidy the notes.' }], {
+    MUSTER_E2E_ACTIVE_MINUTES_AGO: String(3 * 24 * 60),
+    MUSTER_E2E_FOCUS: JSON.stringify([{ subject: 'self', title: FOCUS, description: 'Two buckets left.' }]),
+  });
   for (const vp of VPS) {
     for (const js of [true, false]) {
       mkchat(doneAgent(vp, js), [{ role: 'user', content: 'Ship the fix.' }], {
@@ -327,11 +332,10 @@ for (const vp of [
         [['idle-15m'], ['luxq', 'luxorange', 'luxancient', oldAgent]],
         [['idle-1h'], ['luxorange', 'luxancient', oldAgent]],
         [['idle-1d'], ['luxancient', oldAgent]],
-        // Waiting chips OR.
+        // The chips OR: a card matching ANY chosen chip is shown.
         [['ask', 'question'], ['luxnow', 'luxq']],
-        // An idle chip ANDs with them.
-        [['question', 'idle-15m'], ['luxq']],
-        [['ask', 'question', 'idle-1h'], []],
+        [['ask', 'idle-1d'], ['luxnow', 'luxancient', oldAgent]],
+        [['ask', 'question', 'idle-1h'], ['luxnow', 'luxq', 'luxorange', 'luxancient', oldAgent]],
       ];
       for (const [chips, want] of cases) {
         for (const id of chips) await press(chip(page, id));
@@ -348,26 +352,97 @@ for (const vp of [
       await press(chip(page, 'idle-1d'));
 
       // Remembered: choose two, refresh the list in the background, then reload.
+      const kept = ['luxq', 'luxancient', oldAgent];
       await press(chip(page, 'question'));
-      await press(chip(page, 'idle-15m'));
-      await expect.poll(() => shown(page)).toEqual(['luxq']);
+      await press(chip(page, 'idle-1d'));
+      await expect.poll(() => shown(page)).toEqual(kept);
       const swapped = page.waitForResponse((r) => new URL(r.url()).pathname === '/ui/agents');
       await page.evaluate(() => document.body.dispatchEvent(new Event('muster:resync', { bubbles: true })));
       await swapped;
       await page.waitForTimeout(300);
       await expect(chip(page, 'question'), 'a list refresh keeps the chips').toHaveAttribute('aria-pressed', 'true');
-      expect(await shown(page), 'a list refresh keeps the filter').toEqual(['luxq']);
-      expect(JSON.parse((await page.evaluate(() => localStorage.getItem('muster:agents:chips'))) || '[]')).toEqual(['question', 'idle-15m']);
+      expect(await shown(page), 'a list refresh keeps the filter').toEqual(kept);
+      expect(JSON.parse((await page.evaluate(() => localStorage.getItem('muster:agents:chips'))) || '[]')).toEqual(['question', 'idle-1d']);
       await page.reload();
       await expect(chip(page, 'question')).toHaveAttribute('aria-pressed', 'true');
-      await expect(chip(page, 'idle-15m')).toHaveAttribute('aria-pressed', 'true');
-      await expect.poll(() => shown(page), { timeout: 20_000 }).toEqual(['luxq']);
+      await expect(chip(page, 'idle-1d')).toHaveAttribute('aria-pressed', 'true');
+      await expect.poll(() => shown(page), { timeout: 20_000 }).toEqual(kept);
       await press(chip(page, 'question'));
-      await press(chip(page, 'idle-15m'));
+      await press(chip(page, 'idle-1d'));
       await expect.poll(() => page.evaluate(() => localStorage.getItem('muster:agents:chips'))).toBeNull();
       // The chip row never scrolls the page sideways.
       const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
       expect(sw).toBeLessThanOrEqual(cw);
+    });
+
+    test('Clear turns every chip off, and is shown only while a chip is on', async ({ page }) => {
+      await openList(page);
+      const clear = page.locator('#agents-chips-clear');
+      await expect(clear, 'no chip on: no Clear').toBeHidden();
+      await press(chip(page, 'ask'));
+      await press(chip(page, 'idle-1h'));
+      await expect.poll(() => shown(page)).toEqual(['luxnow', 'luxorange', 'luxancient', oldAgent]);
+      await expect(clear).toBeVisible();
+      const box = (await clear.boundingBox())!;
+      expect(box.height, 'a 44px target').toBeGreaterThanOrEqual(44);
+      await press(clear);
+      await expect(chip(page, 'ask')).toHaveAttribute('aria-pressed', 'false');
+      await expect(chip(page, 'idle-1h')).toHaveAttribute('aria-pressed', 'false');
+      await expect.poll(() => shown(page)).toEqual(ORDER);
+      await expect(clear).toBeHidden();
+      expect(await page.evaluate(() => localStorage.getItem('muster:agents:chips'))).toBeNull();
+      await page.reload();
+      await expect(clear, 'still cleared after a reload').toBeHidden();
+    });
+
+    test('a long focus title is clamped too; its "…" opens the whole title and never opens the agent', async ({ page }) => {
+      await openList(page);
+      const c = card(page, oldAgent);
+      const heading = c.locator('[data-card-focus]');
+      await expect(heading.locator('span').first()).toHaveText(FOCUS.slice(0, 60).trimEnd());
+      const more = c.locator('[data-card-slot="focus"] button[data-title-more]');
+      const box = (await more.boundingBox())!;
+      expect(box.height).toBeGreaterThanOrEqual(44);
+      expect(box.width).toBeGreaterThanOrEqual(44);
+      const before = page.url();
+      await press(more);
+      const pop = c.locator('[data-focus-popover]');
+      await expect(pop).toBeVisible();
+      await expect(pop.locator('[data-focus-title]')).toHaveText(FOCUS);
+      await expect(more).toHaveAttribute('aria-expanded', 'true');
+      await page.waitForTimeout(300);
+      expect(page.url(), 'the tap did not navigate').toBe(before);
+      await page.keyboard.press('Escape');
+      await expect(pop).toBeHidden();
+    });
+
+    test('a card crossing an idle threshold under an idle chip waits behind the pill: nothing visible moves', async ({ page }) => {
+      // The page's clock is installed at the real time, so the server's
+      // activity times and the script's agree; then fifteen minutes pass with
+      // no input, carrying luxnow (1 min) and the fresh agent (5 min) past 15.
+      await page.clock.install({ time: new Date() });
+      await openList(page);
+      await press(chip(page, 'idle-15m'));
+      const visible = ['luxq', 'luxorange', 'luxancient', oldAgent];
+      await expect.poll(() => shown(page)).toEqual(visible);
+      const tops = async () => {
+        const out: number[] = [];
+        for (const k of visible) out.push(Math.round((await card(page, k).boundingBox())!.y));
+        return out;
+      };
+      const before = await tops();
+      await page.clock.fastForward('16:00');
+      await page.waitForTimeout(200);
+      expect(await tops(), 'no visible card moved').toEqual(before);
+      expect(await shown(page), 'the cards that crossed are not shown yet').toEqual(visible);
+      const pill = page.locator('#agents-new-pill');
+      await expect(pill).toBeVisible();
+      expect(Number(await pill.getAttribute('data-count')), 'both crossings wait on the pill').toBeGreaterThanOrEqual(2);
+      // The tap is input: what crossed is applied.
+      await pill.click();
+      await expect.poll(() => shown(page)).toEqual(ORDER);
+      await expect(pill).toBeHidden();
+      await press(chip(page, 'idle-15m'));
     });
 
     test('Mark complete on an agent page goes back out to the Agents list (with JavaScript)', async ({ page }) => {

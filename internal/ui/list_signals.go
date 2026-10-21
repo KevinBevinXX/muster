@@ -2,7 +2,6 @@ package ui
 
 import (
 	"encoding/json"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -192,9 +191,10 @@ func cardActivityAttrs(now, t time.Time) g.Node {
 //	          session (the queue's "Session question"): it is asking YOU a
 //	          question with options, answered in the session.
 //
-// A reply draft (kind "plugin") is neither: nothing is blocked on it. A
-// dispatched agent's "awaiting approval" badge is not an attention item and
-// is not counted either.
+// A dispatched agent blocked at a permission prompt (the "awaiting approval"
+// badge, AgentCardView.AwaitingApproval) is an ask too — the same kind of
+// block as a mirrored session's prompt — though it is not an attention item.
+// A reply draft (kind "plugin") is neither: nothing is blocked on it.
 
 // waitKinds maps each attention kind a card can count to the wait word it
 // files under ("" = none).
@@ -206,15 +206,15 @@ var waitKinds = map[string]string{
 }
 
 // waitTokens is a card's `data-wait`: the wait words of its attention items'
-// kinds, in a fixed order ("ask question"), "" for none.
-func waitTokens(a *CardAttention) string {
-	if a == nil || a.Count <= 0 {
-		return ""
-	}
-	has := map[string]bool{}
-	for _, k := range a.Kinds {
-		if w := waitKinds[k]; w != "" {
-			has[w] = true
+// kinds — and "ask" for an agent awaiting approval — in a fixed order ("ask
+// question"), "" for none.
+func waitTokens(a *CardAttention, awaitingApproval bool) string {
+	has := map[string]bool{"ask": awaitingApproval}
+	if a != nil && a.Count > 0 {
+		for _, k := range a.Kinds {
+			if w := waitKinds[k]; w != "" {
+				has[w] = true
+			}
 		}
 	}
 	var out []string
@@ -229,12 +229,17 @@ func waitTokens(a *CardAttention) string {
 // ---------------------------------------------------------------------------
 // THE FILTER CHIPS: presets above the list.
 //
-// SEMANTICS, stated once: the WAITING chips are ORed with each other (a card
-// waiting on an ask OR a question); an IDLE chip is ANDed with them (waiting
-// AND idle past the threshold); the idle chips are exclusive (choosing one
-// clears the others — they are nested, so two would AND to the larger). No
-// chip chosen: no filter. The chips AND with the search box and the host tab
-// like any other term.
+// SEMANTICS, stated once: the chips are ORed — a card is shown when it
+// matches ANY chosen chip (the operator's own words: "waiting on an ask,
+// waiting on a user question, OR have been idle for a certain period"). The
+// idle chips are exclusive with each other (choosing one clears the others:
+// they are nested thresholds, so two ORed would just be the smaller). No chip
+// chosen: no filter. The chips as a whole AND with the search box and the host
+// tab, like any other term.
+//
+// chipSelector is the ONLY statement of that rule: the script looks each
+// selection's selector up (chipSelectorsJSON), and the tests evaluate the
+// selectors themselves.
 
 // listChip is one chip.
 type listChip struct {
@@ -245,7 +250,7 @@ type listChip struct {
 }
 
 var listChips = []listChip{
-	{"ask", "Waiting on ask", "An agent or a session asked you something with attention_ask, or a Claude Code session is stopped at a permission prompt", "wait", "ask"},
+	{"ask", "Waiting on ask", "An agent or a session asked you something with attention_ask, or a Claude Code session or a dispatched agent is stopped at a permission prompt", "wait", "ask"},
 	{"question", "Waiting on question", "A Claude Code session is holding an AskUserQuestion picker open for you", "wait", "question"},
 	{"idle-15m", "Idle >15m", "No activity for more than 15 minutes", "idle", "15m"},
 	{"idle-1h", "Idle >1h", "No activity for more than an hour", "idle", "1h"},
@@ -278,59 +283,23 @@ func chipKey(ids []string) string {
 	return strings.Join(out, ",")
 }
 
-// chipPasses is THE predicate: whether a card whose data-wait is wait and
-// whose data-idle is idle (space-separated words) is shown under the chips
-// ids. chipSelector is the same rule as a CSS selector; a test holds the two
-// to each other over every selection.
-func chipPasses(ids []string, wait, idle string) bool {
-	waits, idles := strings.Fields(wait), strings.Fields(idle)
-	wantWait, anyWait := false, false
-	for _, id := range ids {
-		c, ok := chipByID(id)
-		if !ok {
-			continue
-		}
-		switch c.Group {
-		case "wait":
-			wantWait = true
-			if slices.Contains(waits, c.Token) {
-				anyWait = true
-			}
-		case "idle":
-			if !slices.Contains(idles, c.Token) {
-				return false
-			}
-		}
-	}
-	return !wantWait || anyWait
-}
-
-// chipSelector is the selector a SHOWN card matches under the chips ids
-// ("" = no chip, nothing to match): the wait chips as one :is() list, each
-// idle chip one more compound part.
+// chipSelector is the selector a SHOWN card matches under the chips ids ("" =
+// no chip, nothing to match): every chosen chip's attribute test, ORed in one
+// :is() — or the test alone when only one chip is chosen.
 func chipSelector(ids []string) string {
-	var waits, idles []string
+	var parts []string
 	for _, id := range strings.Split(chipKey(ids), ",") {
-		c, ok := chipByID(id)
-		if !ok {
-			continue
-		}
-		part := `[data-` + c.Group + `~="` + c.Token + `"]`
-		if c.Group == "wait" {
-			waits = append(waits, part)
-		} else {
-			idles = append(idles, part)
+		if c, ok := chipByID(id); ok {
+			parts = append(parts, `[data-`+c.Group+`~="`+c.Token+`"]`)
 		}
 	}
-	sel := ""
-	switch len(waits) {
+	switch len(parts) {
 	case 0:
+		return ""
 	case 1:
-		sel = waits[0]
-	default:
-		sel = ":is(" + strings.Join(waits, ",") + ")"
+		return parts[0]
 	}
-	return sel + strings.Join(idles, "")
+	return ":is(" + strings.Join(parts, ",") + ")"
 }
 
 // chipSelectorsJSON is every selection the chips can make — any set of wait
@@ -394,22 +363,32 @@ func agentsFilterChips() g.Node {
 				g.Text(c.Label),
 			)
 		})),
+		// Clear: every chip off at once, shown only while one is on (the
+		// script toggles the `hidden` ATTRIBUTE — no display utility here, which
+		// would beat it). At the END of the row, so its appearing moves nothing.
+		Button(
+			ID("agents-chips-clear"),
+			Type("button"),
+			g.Attr("hidden", ""),
+			g.Attr("aria-label", "Clear the quick filters"),
+			Class("press min-h-[44px] shrink-0 whitespace-nowrap rounded-full px-3 text-sm font-medium text-muted underline transition hover:text-fg"),
+			g.Text("Clear"),
+		),
 	)
 }
 
 // ---------------------------------------------------------------------------
-// LONG TITLES: a card's name is clamped to cardTitleMax characters; past that
-// it ends in a "…" BUTTON that opens the whole title in a popover. The button
-// sits OUTSIDE the card's nav anchor (a button inside an <a> is invalid and its
-// tap would open the card), so a card with a long name draws its name in a
-// title row of its own above the anchor — cardLongTitle — exactly as a focus
-// title does (cardFocusTitle). A short name is drawn as it always was.
+// LONG TITLES: what heads a card — its NAME, or its FOCUS title when it has one
+// (focus.go) — is clamped to cardTitleMax characters; past that it ends in a
+// "…" BUTTON that opens the whole title in a popover. Both go through ONE
+// mechanism, cardTitleRow: the row, the clamp, the "…" control and the popover.
 //
-// ⚠ ONLY THE NAME. A focus title is shown whole by design (its card heading is
-// already the button that opens its popover); this clamps what the card is
-// CALLED.
+// The row sits OUTSIDE the card's nav anchor (a button inside an <a> is
+// invalid and its tap would open the card), so a card with a long name draws
+// its name in a title row of its own above the anchor — the place its focus
+// row already had. A short name is drawn inside the anchor as it always was.
 
-// cardTitleMax is the most characters (runes) of a name a card draws.
+// cardTitleMax is the most characters (runes) of a title a card draws.
 const cardTitleMax = 60
 
 // clampTitle is s as a card draws it: whole when it fits, else its first
@@ -422,34 +401,23 @@ func clampTitle(s string) (string, bool) {
 	return strings.TrimRight(string(r[:cardTitleMax]), " \t"), true
 }
 
-// cardLongTitle is a long name's title row: the clamped name, itself a link to
-// the card's page (so tapping the words still opens the card), and the "…"
-// button that opens the full name in a popover instead. The popover is the
-// focus popover's: native popover="auto" (an outside tap or Escape closes it),
-// placed by floatingMenuScript, which also keeps the button's aria-expanded in
-// step. title= on the link is the desktop's hover tooltip.
+// cardTitleRow is a card's title row: heading(short) — the title clamped by
+// clampTitle, drawn by the caller (a link to the card for a name, the popover
+// trigger for a focus title) — then, when the title was clamped, the "…"
+// button, then the popover both open.
 //
-// subtitle draws it as a subtitle (a card headed by its focus); extra is drawn
-// after the name inside the link (a mirrored window's qualifier and session).
-func cardLongTitle(cardID, href, full, short string, subtitle bool, reserve string, extra ...g.Node) g.Node {
-	pop := cardID + "-title"
-	class, pad := cardTitleClass, "pt-3"
-	if subtitle {
-		class, pad = cardSubtitleClass, "pt-1"
-	}
+// The "…" is the SAME control on every card: a real <button> (keyboard
+// operable), a 44px target, aria-haspopup/aria-controls/aria-expanded, opening
+// pop — a native popover="auto" (an outside tap or Escape closes it) placed by
+// floatingMenuScript, which also keeps every trigger's aria-expanded in step.
+// It never navigates: it is not inside any link.
+func cardTitleRow(slot, pop, full, pad, reserve string, heading func(short string) g.Node, popover g.Node) g.Node {
+	short, clamped := clampTitle(full)
 	return Div(
-		cardSlot("title"),
+		cardSlot(slot),
 		Class("flex items-start gap-0.5 px-4 "+pad+" "+reserve),
-		A(
-			Href(href),
-			hx("hx-boost", "false"),
-			g.Attr("data-card-title", ""),
-			g.Attr("title", full),
-			Class(strings.Replace(class, "mr-auto ", "min-w-0 py-1 ", 1)),
-			g.Text(short),
-			g.Group(extra),
-		),
-		Button(
+		heading(short),
+		g.If(clamped, Button(
 			Type("button"),
 			g.Attr("data-title-more", ""),
 			g.Attr("popovertarget", pop),
@@ -459,7 +427,36 @@ func cardLongTitle(cardID, href, full, short string, subtitle bool, reserve stri
 			g.Attr("aria-label", "Show the full title"),
 			Class("press -my-1.5 inline-flex h-11 min-w-[44px] shrink-0 items-start justify-center rounded-lg pt-1.5 text-base font-semibold leading-tight text-muted transition hover:bg-s2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus aria-expanded:bg-s2"),
 			g.Text("…"),
-		),
+		)),
+		popover,
+	)
+}
+
+// cardLongTitle is a long NAME's title row (cardTitleRow): the clamped name,
+// itself a link to the card's page (so tapping the words still opens the
+// card), title= the whole name (the desktop's hover tooltip), and a popover
+// holding the whole name.
+//
+// subtitle draws it as a subtitle (a card headed by its focus); extra is drawn
+// after the name inside the link (a mirrored window's qualifier and session).
+func cardLongTitle(cardID, href, full string, subtitle bool, reserve string, extra ...g.Node) g.Node {
+	pop := cardID + "-title"
+	class, pad := cardTitleClass, "pt-3"
+	if subtitle {
+		class, pad = cardSubtitleClass, "pt-1"
+	}
+	return cardTitleRow("title", pop, full, pad, reserve,
+		func(short string) g.Node {
+			return A(
+				Href(href),
+				hx("hx-boost", "false"),
+				g.Attr("data-card-title", ""),
+				g.Attr("title", full),
+				Class(strings.Replace(class, "mr-auto ", "min-w-0 py-1 ", 1)),
+				g.Text(short),
+				g.Group(extra),
+			)
+		},
 		Div(
 			ID(pop),
 			g.Attr("popover", "auto"),
@@ -469,8 +466,7 @@ func cardLongTitle(cardID, href, full, short string, subtitle bool, reserve stri
 			g.Attr("data-title-full", ""),
 			Class("invisible hidden [&:popover-open]:flex m-0 w-72 max-w-[calc(100vw-16px)] flex-col gap-1.5 rounded-xl border border-line bg-s1 p-3 text-fg shadow-2xl ring-1 ring-black/20"),
 			Span(Class("break-words text-sm font-semibold"), g.Text(full)),
-		),
-	)
+		))
 }
 
 // titledBodyClass is the nav anchor's box under a title row: like a focus

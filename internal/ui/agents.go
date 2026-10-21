@@ -93,6 +93,13 @@ type AgentCardView struct {
 	// Attention is the card's attention badge (cards_attention.go), nil for
 	// none. Composed in internal/api from the attention queue's own read.
 	Attention *CardAttention
+	// AwaitingApproval: the agent is blocked on a permission prompt (or has a
+	// request open on the approval queue) — internal/api's AwaitingApproval,
+	// the same answer the polled "awaiting approval" badge shows. It is NOT an
+	// attention item, so it is carried here: the "Waiting on ask" chip reads it
+	// (waitTokens), and the status poll asks for a list refresh when it changes
+	// (cardStatusIcon).
+	AwaitingApproval bool
 }
 
 // lastActive is the card's "active" time: LastActiveAt, or UpdatedAt when the
@@ -301,7 +308,7 @@ func agentCard(a AgentCardView) g.Node {
 	name := markdownPlain(displayOr(a.DisplayName, a.Name))
 	// A name past cardTitleMax is drawn in a title row of its own, clamped,
 	// with a "…" button that opens it whole (cardLongTitle).
-	short, long := clampTitle(name)
+	_, long := clampTitle(name)
 	reserve := cardReserve(a.Attention)
 	bodyClass := cardBodyClass(a.Focus, reserve)
 	if long {
@@ -312,7 +319,7 @@ func agentCard(a AgentCardView) g.Node {
 		g.If(a.Pinned, g.Attr("data-pinned", "")),
 		// What the list's recency filter chips read (list_signals.go).
 		cardActivityAttrs(time.Now(), a.lastActive()),
-		g.If(waitTokens(a.Attention) != "", g.Attr("data-wait", waitTokens(a.Attention))),
+		g.If(waitTokens(a.Attention, a.AwaitingApproval) != "", g.Attr("data-wait", waitTokens(a.Attention, a.AwaitingApproval))),
 		// What the list's filter finds this card by (agents_filter.go).
 		cardFilterAttrs(agentFields(a), append([]string{
 			displayOr(a.DisplayName, a.Name), a.Name, a.Repo, agents.KindLabel(a.Kind), a.CCAccount, a.Status, "agent"},
@@ -328,7 +335,7 @@ func agentCard(a AgentCardView) g.Node {
 		// With a focus, it heads the card (cardFocusTitle): a popover trigger
 		// OUTSIDE the nav anchor, and the name below becomes its subtitle.
 		cardFocusTitle("agent-"+ids, a.Focus, reserve),
-		g.If(long, cardLongTitle("agent-"+ids, "/agents/"+a.Name, name, short, cardHasFocusTitle(a.Focus), reserve)),
+		g.If(long, cardLongTitle("agent-"+ids, "/agents/"+a.Name, name, cardHasFocusTitle(a.Focus), reserve)),
 		// The card body is the navigation surface: a REAL-load link to the detail
 		// page (hx-boost="false"). The card sits inside #agents-list, which carries
 		// hx-get/hx-target="#agents-list"/hx-swap; htmx attrs are INHERITED by
@@ -791,15 +798,37 @@ func AwaitingApprovalBadge() g.Node {
 // agent card keeps its status live (every 10s) on its own — without the list
 // re-rendering on a timer. No shared id (hx-target=this) so it's safe once per
 // card; the icon swaps in from GET /ui/agents/{id}/status.
+//
+// The poll carries what the CARD says about awaiting approval
+// (StatusPollPath's awaiting=): the card's data-wait was decided from it at
+// render time, and the poll is the first to see it change. When the server's
+// answer differs, the response raises AgentsAwaitingEvent and the list
+// re-renders — as a background refresh, so the hold and the "N new ↑" pill
+// apply to whatever the change moves.
 func cardStatusIcon(a AgentCardView) g.Node {
 	return Span(
-		hx("hx-get", "/ui/agents/"+strconv.FormatInt(a.ID, 10)+"/status"),
+		hx("hx-get", StatusPollPath(a.ID, a.AwaitingApproval)),
 		hx("hx-trigger", "load, every 10s"),
 		hx("hx-target", "this"),
 		hx("hx-swap", "innerHTML"),
 		statusIcon(a.Status),
 	)
 }
+
+// StatusPollPath is an agent card's status poll: GET /ui/agents/{id}/status,
+// with awaiting=1|0 saying whether the card was drawn awaiting approval.
+func StatusPollPath(id int64, awaiting bool) string {
+	v := "0"
+	if awaiting {
+		v = "1"
+	}
+	return "/ui/agents/" + strconv.FormatInt(id, 10) + "/status?awaiting=" + v
+}
+
+// AgentsAwaitingEvent is the HX-Trigger the status poll answers with when an
+// agent's awaiting-approval state differs from what its card was drawn with;
+// the Agents list re-renders on it (agentsListTrigger).
+const AgentsAwaitingEvent = "agents:awaiting"
 
 // statusLabel is the agent-facing word for a stored agent status.
 func statusLabel(status string) string {
@@ -820,7 +849,7 @@ func statusLabel(status string) string {
 // live: the queue moved, so the cards' counts may have. It is debounced
 // (delay:50ms) for the reason attentionBadgeTrigger gives: the sidebar badge
 // listens for the same event, so each one reaches this list twice.
-const agentsListTrigger = "load, agents:changed from:body, sse:agent.changed from:body, sse:chat.reply from:body, sse:attention_queue.changed from:body delay:50ms, muster:resync from:body"
+const agentsListTrigger = "load, agents:changed from:body, sse:agent.changed from:body, sse:chat.reply from:body, sse:attention_queue.changed from:body delay:50ms, muster:resync from:body, agents:awaiting from:body"
 
 // agentModalShell is the static (always-present, hidden) dispatch modal. Its
 // body is loaded on demand by the FAB so it stays out of the 4s poll cycle.

@@ -432,8 +432,14 @@ func (s *Server) handleAgentStatusIcon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status := s.liveStatus(ctx, a)
+	awaiting := s.AwaitingApproval(a.ID)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderStatusIcon(w, status, s.AwaitingApproval(a.ID)); err != nil {
+	// The card says what it was drawn with (ui.StatusPollPath); when that is no
+	// longer true its data-wait is stale, so the list is asked to re-render.
+	if drawn := r.URL.Query().Get("awaiting"); drawn != "" && (drawn == "1") != awaiting {
+		w.Header().Set("HX-Trigger", ui.AgentsAwaitingEvent)
+	}
+	if err := ui.RenderStatusIcon(w, status, awaiting); err != nil {
 		s.logger.Printf("agents: render status %d: %v", id, err)
 	}
 }
@@ -576,6 +582,9 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 		Pinned: pinned.Agent(a.ID),
 		// The agent's focus (internal/focus), read once per render by the caller.
 		Focus: focused.view(focus.AgentSubject(a.ID)),
+		// The polled badge's own answer (in memory), so "Waiting on ask" finds an
+		// agent blocked at a permission prompt.
+		AwaitingApproval: s.AwaitingApproval(a.ID),
 	}
 }
 

@@ -1,8 +1,9 @@
 # Session focus
 
 Every session on the Agents list — a dispatched agent or a mirrored Claude Code
-window — can carry a **focus**: a short title (shown whole, wrapped — never cut with an
-ellipsis) and one to three sentences saying what it is working on now. A card with a focus is
+window — can carry a **focus**: a short title (stored whole; a card heading longer than 60 characters
+shows its first 60 and a **…** button that opens the whole title in the popover,
+like a long card name) and one to three sentences saying what it is working on now. A card with a focus is
 headed by its focus title, with the card's usual name (the agent's name, or the
 mirrored window's title and session) as a subtitle under it. The title is a
 button, marked with a chevron: a tap opens a popover with the description and

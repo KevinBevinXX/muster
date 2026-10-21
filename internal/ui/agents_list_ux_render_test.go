@@ -242,3 +242,88 @@ func TestTheAgentsFilterHasThePresetChips(t *testing.T) {
 		}
 	}
 }
+
+// TestALongFocusTitleIsClampedThroughTheSameRow: a focus title past 60
+// characters heads the card clamped, followed by the SAME "…" control a long
+// name gets (cardTitleRow), which opens the focus popover holding the whole
+// title. The heading keeps the whole title as its accessible name.
+func TestALongFocusTitleIsClampedThroughTheSameRow(t *testing.T) {
+	long := "Untangling the reconnect backoff so a flapping tunnel stops resetting its retry window, then proving it with a soak test"
+	html := renderNode(t, agentCard(AgentCardView{ID: 5, Name: "focused", Status: "running", Focus: &FocusView{Title: long}}))
+	heading := openTag(t, html, "data-card-focus")
+	if !strings.Contains(heading, `aria-label="Focus: `+long) {
+		t.Errorf("the focus heading lost the whole title from its name: %s", heading)
+	}
+	text := html[strings.Index(html, heading)+len(heading):]
+	text = text[strings.Index(text, ">")+1:]
+	text = text[:strings.Index(text, "<")]
+	if want := string([]rune(long)[:60]); strings.TrimSpace(text) != strings.TrimSpace(want) {
+		t.Errorf("the focus heading reads %q, want the first 60 characters %q", text, want)
+	}
+	btn := openTag(t, html, "data-title-more")
+	if !strings.Contains(btn, `aria-controls="agent-5-focus"`) || !strings.Contains(btn, `aria-expanded="false"`) || !strings.Contains(btn, "min-w-[44px]") {
+		t.Errorf("the focus title's ellipsis is not the shared control opening the focus popover: %s", btn)
+	}
+	pop := html[strings.Index(html, `id="agent-5-focus"`):]
+	if !strings.Contains(pop[:strings.Index(pop, "</div>")], long) {
+		t.Errorf("the focus popover does not hold the whole title")
+	}
+	// A short focus title draws no ellipsis.
+	short := renderNode(t, agentCard(AgentCardView{ID: 6, Name: "f2", Status: "running", Focus: &FocusView{Title: "Fix the login"}}))
+	if strings.Contains(short, "data-title-more") {
+		t.Errorf("a short focus title has an ellipsis")
+	}
+}
+
+// TestAnAgentAwaitingApprovalIsWaitingOnAnAsk: a dispatched agent blocked at a
+// permission prompt carries data-wait="ask" — what the "Waiting on ask" chip
+// selects — and its status poll says what the card was drawn with, so the
+// server can ask for a re-render when that changes.
+func TestAnAgentAwaitingApprovalIsWaitingOnAnAsk(t *testing.T) {
+	blocked := renderNode(t, agentCard(AgentCardView{ID: 7, Name: "blocked", Status: "running", AwaitingApproval: true}))
+	if !strings.Contains(openTag(t, blocked, `id="agent-7"`), `data-wait="ask"`) {
+		t.Errorf("an agent awaiting approval is not waiting on an ask: %s", openTag(t, blocked, `id="agent-7"`))
+	}
+	if !strings.Contains(blocked, `hx-get="/ui/agents/7/status?awaiting=1"`) {
+		t.Errorf("the status poll does not carry the card's awaiting state")
+	}
+	free := renderNode(t, agentCard(AgentCardView{ID: 8, Name: "free", Status: "running"}))
+	if strings.Contains(openTag(t, free, `id="agent-8"`), "data-wait") || !strings.Contains(free, `hx-get="/ui/agents/8/status?awaiting=0"`) {
+		t.Errorf("a free agent is waiting on something, or its poll lacks awaiting=0")
+	}
+	if !strings.Contains(agentsListTrigger, AgentsAwaitingEvent+" from:body") {
+		t.Errorf("the list does not re-render on %s", AgentsAwaitingEvent)
+	}
+}
+
+// TestTheChipBarHasAClearControl: one Clear button at the END of the chip row,
+// hidden until a chip is on (the script shows it), with no display utility
+// that would beat its hidden attribute.
+func TestTheChipBarHasAClearControl(t *testing.T) {
+	page := renderString(t, Page("agents", featuresAllOn))
+	at := strings.Index(page, `id="agents-chips"`)
+	if at < 0 {
+		t.Fatal("no chip row")
+	}
+	row := page[at:]
+	row = row[:strings.Index(row, "</div>")]
+	clr := strings.Index(row, `id="agents-chips-clear"`)
+	if clr < 0 || clr < strings.LastIndex(row, "data-chip=") {
+		t.Fatalf("no Clear control at the end of the chip row: %s", row)
+	}
+	tag := openTag(t, row, `id="agents-chips-clear"`)
+	for _, want := range []string{` hidden=""`, `type="button"`, "min-h-[44px]"} {
+		if !strings.Contains(tag, want) {
+			t.Errorf("Clear lacks %s: %s", want, tag)
+		}
+	}
+	for _, display := range []string{"inline-flex", " flex ", " block "} {
+		if strings.Contains(tag, display) {
+			t.Errorf("Clear carries %q, which beats its hidden attribute", display)
+		}
+	}
+	script := scriptWith(t, page, "__musterAgentsFilter")
+	if !strings.Contains(script, "clr.hidden = !cs.length") || !strings.Contains(script, "clearChips(); apply();") {
+		t.Errorf("the script does not show Clear with the chips or clear them on a tap")
+	}
+}
