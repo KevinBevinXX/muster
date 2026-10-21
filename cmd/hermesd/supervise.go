@@ -71,6 +71,15 @@ func (s supervisorState) failed() bool {
 	return s.State == stCrashLoop || s.State == stEnvForbidden || s.State == stRecoveryStuck
 }
 
+// recoveryStuckAfter is how long start-up recovery may stay unfinished before
+// /healthz fails. 🔴 IT OUTLASTS retireAfter BY MORE THAN THE LIVENESS PROBE'S
+// 90 s (3 failures 30 s apart, internal/provision/k8s/render.go): a session
+// definitely refused from the start is then retired, and recovery finishes,
+// before the pod can be restarted for it. The other way round, the restart
+// would reset that session's refusal clock and the pod would restart for it
+// for ever.
+const recoveryStuckAfter = retireAfter + 2*time.Minute
+
 type supervisor struct {
 	start   func() (gatewayProc, error)
 	prepare func() error                    // before every start: the .env check and the rendered config
@@ -104,7 +113,7 @@ func newSupervisor(start func() (gatewayProc, error), prepare func() error,
 	return &supervisor{
 		start: start, prepare: prepare, healthy: healthy, recover: recover, logf: logf,
 		healthTimeout: 2 * time.Minute, healthPoll: 250 * time.Millisecond, recoverRetry: 2 * time.Second,
-		recoveryStuckAfter: 5 * time.Minute,
+		recoveryStuckAfter: recoveryStuckAfter,
 		stopGrace:          40 * time.Second, backoffMin: time.Second, backoffMax: 30 * time.Second,
 		crashExits: 5, crashWindow: 2 * time.Minute, now: time.Now,
 		st: supervisorState{State: stStarting}, epoch: context.Background(),

@@ -47,9 +47,12 @@ import (
 // may pass — transport, timeout, 5xx, 429, a store write — is retried, never
 // retired: when it persists, recovery as a whole stays unfinished and, past
 // recoveryStuckAfter, /healthz fails (supervise.go) so the liveness probe
-// restarts the pod. Only a DEFINITE refusal of that session's recovery (any
-// other 4xx) that has persisted for retireAfter RETIRES the session, with the
-// reason — so one poisoned session cannot wedge the pod for ever.
+// restarts the pod. So is a 401 or 403: it refuses the API KEY, every session
+// alike, and retiring sessions over it would only make a broken API report
+// healthy. Only a DEFINITE refusal of that session's recovery (any other 4xx)
+// that has persisted, with no other outcome between, for retireAfter RETIRES
+// the session, with the reason — so one poisoned session cannot wedge the pod
+// for ever.
 //
 // A recovery decision about a turn nobody waits for any more (an old-key
 // intent, an intent past retention, a key conflict, a retired session) is a
@@ -64,7 +67,9 @@ const intentRetention = 24 * time.Hour
 var recoveryCallTimeout = 15 * time.Second
 
 // retireAfter is how long a session's recovery must have been DEFINITELY
-// refused before the session is retired (the stuck bound's 5 minutes).
+// refused, continuously, before the session is retired. recoveryStuckAfter
+// (supervise.go) outlasts it by more than the liveness probe's 90 s, so a
+// session refused from the start is retired before the pod is restarted for it.
 const retireAfter = 5 * time.Minute
 
 const retiredNotice = "The previous Hermes session could not be recovered after the agent's API key changed; " +
@@ -86,6 +91,8 @@ func (s *server) recover(ctx context.Context) error {
 		}
 		if err != nil {
 			failed = append(failed, s.sessionFailed(key, err))
+		} else {
+			s.clearRefused(key)
 		}
 	}
 	// 2. Sessions posted under another key are retired.
@@ -112,6 +119,8 @@ func (s *server) recover(ctx context.Context) error {
 		}
 		if err := s.recoverSession(ctx, key); err != nil {
 			failed = append(failed, s.sessionFailed(key, err))
+		} else {
+			s.clearRefused(key)
 		}
 	}
 	var pending []string
@@ -129,11 +138,14 @@ func (s *server) recover(ctx context.Context) error {
 // sessionFailed records one failed recovery of key and returns the reason,
 // for the retry — or retires the session and returns "" (nothing left to
 // retry) when it holds an open intent whose recovery Hermes has DEFINITELY
-// refused for retireAfter. Anything that may pass is only ever retried.
+// refused, at every attempt, for retireAfter. Anything that may pass is only
+// ever retried, and restarts that clock: two refusals with a 5xx between them
+// are not a refusal that persisted.
 func (s *server) sessionFailed(key string, cause error) string {
 	reason := fmt.Sprintf("%q: %v", key, cause)
 	sess, ok := s.store.get(key)
 	if !ok || sess.Intent == nil || !definiteRefusal(cause) {
+		s.clearRefused(key)
 		return reason
 	}
 	s.mu.Lock()
@@ -152,14 +164,20 @@ func (s *server) sessionFailed(key string, cause error) string {
 		return reason + " (retiring it also failed: " + err.Error() + ")"
 	}
 	s.logf("hermesd: recovery: RETIRED session %q, its recovery refused for %s: %v", key, s.now().Sub(since).Round(time.Second), cause)
-	s.mu.Lock()
-	delete(s.refusedSince, key)
-	s.mu.Unlock()
+	s.clearRefused(key)
 	return ""
 }
 
+// clearRefused ends key's run of definite refusals (refusedSince).
+func (s *server) clearRefused(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.refusedSince, key)
+}
+
 // definiteRefusal: Hermes answered the recovery call with a 4xx that retrying
-// will not change (not 404, which recovery handles, nor 408 or 429).
+// will not change (not 404, which recovery handles, nor 408 or 429), and that
+// refuses THIS call rather than the API key (refusesTheKey).
 func definiteRefusal(err error) bool {
 	var ae *apiError
 	if !errors.As(err, &ae) {
@@ -170,8 +188,18 @@ func definiteRefusal(err error) bool {
 		return false
 	case ae.Status == http.StatusNotFound, ae.Status == http.StatusRequestTimeout, ae.Status == http.StatusTooManyRequests:
 		return false
+	case refusesTheKey(ae.Status):
+		return false
 	}
 	return true
+}
+
+// refusesTheKey: a 401 or 403 refuses hermesd's API key, and so every call
+// alike. It says nothing about the session or run the call named, nor — the
+// key being checked before Hermes's idempotency store — about whether an
+// earlier POST was admitted. It may pass (the key is put right): retried.
+func refusesTheKey(status int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusForbidden
 }
 
 // recoverSession settles key's open intent (resolving its run when Hermes
@@ -254,8 +282,10 @@ func (s *server) replay(ctx context.Context, key string, in intent) error {
 			"Your previous message "+mayHaveRunText+" (Hermes says its idempotency key was used with a different request).")
 	case err != nil:
 		var ae *apiError
-		if errors.As(err, &ae) && ae.Status < 500 && ae.Status != http.StatusTooManyRequests {
-			// Refused outright: it never ran.
+		if errors.As(err, &ae) && ae.Status < 500 && ae.Status != http.StatusTooManyRequests && !refusesTheKey(ae.Status) {
+			// Refused outright: it never ran. (Not a 401/403: the key was
+			// refused before the idempotency store was read, so an earlier POST
+			// of this intent may have been admitted.)
 			return s.closeRefused(key, in.IdempotencyKey, "Your previous message was not run: Hermes refused it ("+ae.Error()+").")
 		}
 		return fmt.Errorf("replay the intent on %s: %w", key, err)

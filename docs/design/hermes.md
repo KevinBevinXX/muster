@@ -1584,10 +1584,13 @@ No run resumes (S6).
     execution_generation}` when it is `unknown` (outcome `interrupted`),
     logging what it resolved. A session with no open intent is not called
     about at all: a run becomes a session's last run only once it has ended.
-    A failure that may pass (transport, timeout, 5xx, 429) is retried and
-    never retires a session; if it persists, `/healthz` fails at the 5-minute
-    stuck bound. Only a definite 4xx refusal of an open intent's recovery,
-    persisting 5 minutes, retires that one session;
+    A failure that may pass (transport, timeout, 5xx, 429) — and a 401 or
+    403, which refuses the API key and so every session alike — is retried
+    and never retires a session; if it persists, `/healthz` fails at the
+    7-minute stuck bound. Only a definite 4xx refusal of an open intent's
+    recovery, persisting 5 minutes with no other outcome between, retires that
+    one session — 2 minutes before the stuck bound, more than the liveness
+    probe's 90 s, so the pod is never restarted for a session it would retire;
   - treats `run.failed` with `unknown_execution` as "queued behind an unknown
     run": it keeps streaming, resolves the predecessor, and never reports it as
     a failure.
