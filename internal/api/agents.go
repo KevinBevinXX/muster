@@ -1376,7 +1376,7 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, Status: status, Repo: a.Repo, Model: a.Model,
 		Kind: agents.ResolveKind(a.Kind), CCAccount: a.CCAccount,
 		Messages: lines, Sessions: sessions, ActiveSessionID: active.ID,
-		NoteID: noteID, TaskStatus: taskStatus,
+		NoteID: noteID, TaskStatus: taskStatus, DraftUser: draftUser(ctx),
 		// The chat form's fallback when its socket cannot carry a message
 		// (agent_send.go): its nonce, and the outcome of such a send.
 		SendNonce: newSendNonce(),

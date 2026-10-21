@@ -201,11 +201,20 @@ for (const vp of [
       });
       const text = `please build it (${vp.name})`;
       await input.fill(text);
+      // 🔴 ITS DRAFT IS KEPT (composer_draft.go): away to the Rendered view and
+      // back, the text is still in the box.
+      await page.locator('#view-rendered').click();
+      await page.waitForURL((u) => u.pathname === '/agents/' + agent.name);
+      await page.goto(`${origin}/agents/${agent.name}/terminal`);
+      await expect(input, 'the Terminal box restores its draft').toHaveValue(text);
       await page.locator('#mv-send').click();
       await expect(input).toHaveValue('');
       await expect(page.locator('#mv-note')).toBeHidden();
       expect(sends, 'one send, accepted, with no navigation').toEqual([204]);
       expect(new URL(page.url()).pathname).toBe(`/agents/${agent.name}/terminal`);
+      // Sent: its draft is gone.
+      await page.goto(`${origin}/agents/${agent.name}/terminal`);
+      await expect(page.locator('#mv-input'), 'a sent draft is not restored').toHaveValue('');
 
       // The rendered view has the message — and, since no pod exists to answer
       // it here, the stored note that it was not answered (which is what shows
@@ -241,9 +250,39 @@ for (const vp of [
         page.locator('#chat-send').click(),
       ]);
       await expect(page.locator('#chat-note')).toHaveText('Sent.');
+      // The browser sent it, and the page it came back to says so: its draft
+      // is not put back in the box.
+      await expect(page.locator('#chat-input'), 'a sent draft is not restored').toHaveValue('');
       // …and the notice is taken out of the address once shown.
       await expect.poll(() => new URL(page.url()).searchParams.get('notice')).toBeNull();
       await expect(page.locator('#chat-log')).toContainText(viaForm);
+    });
+
+    // 🔴 A CHAT DRAFT, PER DEVICE (composer_draft.go): what is typed into an
+    // agent's chat box is kept as it is typed, restored on coming back, and
+    // never offered in ANOTHER agent's chat. On origin/main nothing is kept.
+    test('the chat box keeps its draft across navigation, for that agent only', async ({ page }) => {
+      await login(page);
+      const a = await saveAgent(page, 'gateway');
+      const b = await saveAgent(page, 'gateway');
+      await page.goto(`${origin}/agents/${a.name}`);
+      const draft = `a chat draft (${vp.name})\nwith a second line`;
+      await page.locator('#chat-input').fill(draft);
+      // Away straight away (no wait for the debounce), and back.
+      await page.goto(`${origin}/agents`);
+      await page.goto(`${origin}/agents/${a.name}`);
+      await expect(page.locator('#chat-input'), 'the draft is back').toHaveValue(draft);
+      await page.goto(`${origin}/agents/${b.name}`);
+      await expect(page.locator('#chat-input')).toBeVisible();
+      await expect(page.locator('#chat-input'), "another agent's chat starts empty").toHaveValue('');
+      // CONTROL: the agent it was typed for still has it; emptied, it is gone.
+      await page.goto(`${origin}/agents/${a.name}`);
+      await expect(page.locator('#chat-input')).toHaveValue(draft);
+      await page.locator('#chat-input').fill('');
+      await page.goto(`${origin}/agents`);
+      await page.goto(`${origin}/agents/${a.name}`);
+      await expect(page.locator('#chat-input'), 'an emptied box keeps no draft').toHaveValue('');
+      await noHorizontalScroll(page);
     });
 
     // 🔴 A REPLY THAT LANDS BEFORE THE PAGE'S EVENT STREAM IS CONNECTED IS

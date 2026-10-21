@@ -9,7 +9,9 @@
 | A dispatched agent's chat and **Terminal** view | `POST /agents/<name>/send`: one agent turn, run in the background | a running agent with chat wired ([provisioner.md](provisioner.md)) |
 | The chief panel | the chief agent | as above |
 
-Each box can also have a microphone; see [dictation.md](dictation.md).
+Each box can also have a microphone; see [dictation.md](dictation.md). Each
+box also keeps what you type as a draft on this device; see
+[Drafts](#drafts-kept-on-this-device).
 
 **Mirrored sends:**
 
@@ -46,7 +48,8 @@ Beside **Send**, a mirrored Claude Code window's **Rendered view** has
 **Queue**. A queued message is kept by the server (`send_queue`, migration
 `0019`) and sent there, so it is sent with the page closed, and every device of
 yours shows the same queue under the box. Each message not yet being sent has a **⋯**
-menu with **Send now**, **Copy message** and **Cancel**. It is pasted into the
+menu with **Send now**, **Edit** (not on a message your chief routed), **Copy message**
+and **Cancel**. It is pasted into the
 window's Claude Code pane, the pane whose idle it waited on. The Terminal view,
 dispatched agents and the chief panel have no Queue.
 
@@ -99,7 +102,8 @@ dispatched agents and the chief panel have no Queue.
   or may not have been delivered") once the lease has run out, and is not sent
   again. During a rolling update two muster pods overlap, and neither fails or
   finishes the other's send. The lease is kept on the database's clock, so pods
-  whose clocks disagree still judge it the same way.
+  whose clocks disagree still judge it the same way. A message held for an
+  edit is never claimed ([Editing a queued message](#editing-a-queued-message)).
 
 **Send now** sends a queued message at once, without waiting for idle
 (`POST /send-queue/{id}/send-now`). It is pasted like a Send, so it goes in
@@ -112,10 +116,56 @@ queued message still waits for its turn. It is refused, sending nothing, while
 Claude Code is waiting for you (a prompt or a question: the paste's Enter would
 answer it), while another message for the window is being sent, when the host
 is offline or read-only, or when the message is no longer queued. Once it is
-claimed, it is sent even if the page goes away. **Copy message** copies the
-whole message, and is not offered without JavaScript. The menu works without
-JavaScript (Send now and Cancel are forms). The list is not redrawn while a
-menu is open.
+claimed, it is sent even if the page goes away. It is also refused while the
+message is being edited. **Copy message** copies the whole message, and is not
+offered without JavaScript. The menu works without JavaScript (Send now, Edit
+and Cancel are forms). The list is not redrawn while a menu is open, or while a
+message is open for editing.
+
+### Editing a queued message
+
+**Edit** opens the message's text in its row, with **Save** and **Cancel**.
+
+- 🔴 **It is held first.** Edit asks the server to hold the message
+  (`POST /send-queue/{id}/edit`), and only then is its text shown for editing.
+  While it is held, the server never sends it, and nothing queued after it for
+  the same window is sent either: it keeps its place, and the queue waits behind
+  it. Every device of yours shows it as being edited. The dispatcher's claim
+  skips a held message in the same database update that claims it, so a hold
+  and a send cannot both win. What you type stays in the browser until Save, so
+  half an edit is never pasted.
+- **Save** replaces the text and releases the hold. The message keeps its place
+  in the queue and its queued time, so the 7-day limit still counts from when it
+  was queued.
+- **Cancel** releases the hold. The message is unchanged.
+- **A hold runs out after 10 minutes** (on the database's clock), so a page
+  closed in the middle of an edit cannot stop the window's queue for long. The
+  message is then queued again with its **original** text, and its row says the
+  edit ran out. A Save after that is refused, saying so, and the text you typed
+  is put in the message box if the box is empty. If the message was sent in the
+  meantime, the refusal says it was sent with its original text. The server
+  takes a hold that ran out off the message on its next pass (every few
+  seconds), so a message carries a hold only while someone is editing it.
+- Editing a message on a second device takes it over: the first device's Save
+  is then refused. 🔴 The edit form is drawn only under the hold that device's
+  own Edit was given (it rides in the page's address, `&hold=…`, without
+  JavaScript), so reloading the first device's page does not pick up the
+  second device's hold: the row says it is being edited on another device.
+- **A message that already answered a question** (it answers its session's
+  question when it is queued; see [attention.md](attention.md)) can be edited,
+  but the answer is not: it was delivered as first written. The edit form says
+  so before you type, and Save says so again. Cancel says the same thing.
+- Edit is refused for a message being sent, or one that has finished.
+- **A message your chief routed has no Edit**, and the server refuses one: its
+  text is the chief's, and it is gated by its route, not by your sign-in.
+- 🔴 **Edit and Save need the same fresh sign-in a Queue needs** (the dialog,
+  or the plain confirm page). Save records its own sign-in time on the message,
+  as a Queue does. When the message is sent, the server checks that this
+  sign-in was inside the step-up window when the edit was saved, and holds it to
+  the account's cutoffs below, as it does the sign-in that queued it. Cancel
+  needs no sign-in: it changes nothing that will be pasted.
+- It works without JavaScript: Edit is a form, and the page comes back with the
+  message open for editing; Save and Cancel are a form.
 
 A background subagent holds the queue: Claude Code reports `busy` while one
 runs, with no turn running. To send a message anyway, use Send now.
@@ -150,15 +200,46 @@ to the chief.
 
 🔴 **A queued message does not outlive the account that queued it.** When a
 message is sent, the server checks the account again, from the database: if it
-is disabled, or the sign-in that queued the message is at or before the
-account's session cutoff (moved by a disable or a password reset) or its latest
-**Sign out everywhere** (recorded on the account), the message fails, saying
-why, and nothing is pasted. That check is what holds on every server, after a
+is disabled, or the sign-in that queued the message (or that saved an edit of
+it) is at or before the account's session cutoff (moved by a disable or a
+password reset) or its latest **Sign out everywhere** (recorded on the
+account), the message fails, saying why, and nothing is pasted. That check is what holds on every server, after a
 restart, and for a message whose queue request was still in flight. Disabling
 the account (on the admin page or with `muster-server user disable`), or Sign
 out everywhere, also cancels every message it has queued ("Cancelled: …").
 Signing out of just the one session that queued it does not withdraw it;
 Cancel the message instead.
+
+## Drafts, kept on this device
+
+What you type into a message box is kept in this browser as you type
+(`localStorage`), and put back when you come back to the same box: after a
+navigation away, a reload, or a closed tab. It is removed once the message is
+sent or queued, and when you empty the box. It is kept per device: another
+device, or another browser, does not see it.
+
+| box | kept for |
+|---|---|
+| A mirrored window's **Rendered** view | your account, that host, tmux session and window |
+| A mirrored window's **Terminal** view | your account, that host, tmux session and window (apart from its Rendered view) |
+| A dispatched agent's chat, and the chief panel | your account, that agent and chat session |
+| A dispatched agent's **Terminal** view | your account, that agent |
+
+- 🔴 **A draft is only ever put back into the box it was typed in, for the
+  account that typed it.** Its key is the signed-in account and the whole
+  address the box sends to, so a draft for one window never appears in another
+  window, session or host, or in the other view of the same window — nor for
+  another account signed in to the same browser.
+- A send the browser makes itself (when the page's script cannot) clears the
+  draft only when the page it comes back to says the message was sent.
+- Up to 16,384 characters are kept (what a message can hold), for up to 50 boxes. A draft not touched for 7
+  days is removed. A box that cannot send (a read-only host, an agent that is
+  not running) keeps no draft.
+- Drafts kept before the account was part of the key (`muster.draft.v1:`) are
+  removed on the first page load, not restored: whose they were is unknown.
+  The server never sees a draft.
+- A browser that refuses storage (some private windows) keeps no drafts, and the
+  box works as before.
 
 ## It works without JavaScript, and a message is delivered once
 

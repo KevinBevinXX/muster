@@ -39,7 +39,10 @@ func MirrorViewWSPath(host, session string) string {
 
 // MirrorViewView is the data the rendered view's page renders.
 type MirrorViewView struct {
-	Host string
+	// DraftUser is the signed-in user, the first part of the message box's
+	// draft key (composer_draft.go).
+	DraftUser int64
+	Host      string
 	// HostIcon is Host's icon key (HostIconFor), the one its cards draw.
 	HostIcon string
 	Session  string
@@ -103,6 +106,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 	composer := ComposerView{SendPath: MirrorSendPath, Host: v.Host, Session: v.Session, Window: v.Window,
 		Placeholder: "Message Claude…", Aria: "Message Claude in this session", DisabledPlaceholder: "Read-only host",
 		Notice: v.Notice, NoticeOK: v.NoticeOK, Nonce: v.Nonce, Dictate: v.Dictate, Upload: v.Upload, Queue: v.Queue,
+		DraftKey: MirrorDraftKey(v.DraftUser, "view", v.Host, v.Session, v.Window),
 		// Pinned to the visible viewport, not in flow at the bottom of the body:
 		// on a phone the body's bottom can be under the browser's chrome, and
 		// this page cannot be scrolled to bring it back (composerPinScript).

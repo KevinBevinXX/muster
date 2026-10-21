@@ -118,9 +118,11 @@ func TestEveryMessageBoxIsOneComposer(t *testing.T) {
 	pages := map[string]string{
 		"a mirrored session's rendered view": renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main", Interactive: true, StepUp: stepUpFixture()})),
 		"a mirrored session's terminal": renderString(t, AgentTerminalPage(AgentTerminalView{Name: "main", StepUp: stepUpFixture(),
-			Composer: &ComposerView{SendPath: MirrorTerminalSendPath, Host: "host-a", Session: "main"}})),
+			Composer: &ComposerView{SendPath: MirrorTerminalSendPath, Host: "host-a", Session: "main",
+				DraftKey: MirrorDraftKey(1, "terminal", "host-a", "main", "")}})),
 		"an agent's terminal": renderString(t, AgentTerminalPage(AgentTerminalView{Name: "keen-wren", RenderedHref: AgentPath("keen-wren"),
-			Composer: &ComposerView{SendPath: AgentSendPath("keen-wren"), Extra: []ComposerField{{Name: "from", Value: AgentSendFromTerminal}}}})),
+			Composer: &ComposerView{SendPath: AgentSendPath("keen-wren"), Extra: []ComposerField{{Name: "from", Value: AgentSendFromTerminal}},
+				DraftKey: AgentTerminalDraftKey(1, "keen-wren")}})),
 	}
 	var script, shape string
 	for name, page := range pages {
@@ -141,6 +143,9 @@ func TestEveryMessageBoxIsOneComposer(t *testing.T) {
 		form = regexp.MustCompile(` action="[^"]*"`).ReplaceAllString(form, "")
 		form = regexp.MustCompile(`<input( id="[^"]*")? type="hidden"[^>]*>`).ReplaceAllString(form, "")
 		form = regexp.MustCompile(` (placeholder|aria-label)="[^"]*"`).ReplaceAllString(form, "")
+		// The draft's key is the address too (composer_draft.go); that the box
+		// HAS one is part of the shape.
+		form = regexp.MustCompile(` data-draft-key="[^"]+"`).ReplaceAllString(form, ` data-draft-key="…"`)
 		if shape == "" {
 			shape = form
 		} else if form != shape {

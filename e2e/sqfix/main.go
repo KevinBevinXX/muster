@@ -6,6 +6,7 @@
 //		DATABASE_URL=…_e2e go run ./e2e/sqfix age <host> <body> <seconds>
 //		DATABASE_URL=…_e2e go run ./e2e/sqfix strand <host> <body>
 //		DATABASE_URL=…_e2e go run ./e2e/sqfix route <host> <body>
+//		DATABASE_URL=…_e2e go run ./e2e/sqfix lapse <host> <body>
 //
 //	  - age: moves the QUEUED message <body> for <host> back by <seconds> — its
 //	    created_at and the sign-in time it was queued under, together, so it was
@@ -17,6 +18,9 @@
 //	  - route: marks the QUEUED message <body> for <host> as ROUTED, to a route
 //	    that does not exist (routeFixture). The dispatcher's own route gate then
 //	    fails it as "its route could not be read" — a failed routed row.
+//	  - lapse: runs the edit hold on the HELD message <body> for <host> out now
+//	    (held_until a second ago, on the database's clock) — what ten minutes of
+//	    an abandoned edit does.
 //
 // Each refuses unless exactly one row matched: a fixture that silently moved
 // nothing would let the spec test a state it never built.
@@ -54,7 +58,7 @@ func run(args []string) error {
 		return err
 	}
 	if len(args) < 3 {
-		return fmt.Errorf("usage: sqfix age <host> <body> <seconds> | strand <host> <body> | route <host> <body>")
+		return fmt.Errorf("usage: sqfix age <host> <body> <seconds> | strand <host> <body> | route <host> <body> | lapse <host> <body>")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -88,6 +92,10 @@ func run(args []string) error {
 	case "route":
 		q = `UPDATE send_queue SET route_id = $3 WHERE mirror_host = $1 AND body = $2 AND state = 'queued'`
 		qargs = []any{host, body, routeFixture}
+	case "lapse":
+		q = `UPDATE send_queue SET held_until = now() - interval '1 second'
+			WHERE mirror_host = $1 AND body = $2 AND state = 'queued' AND held_until > now()`
+		qargs = []any{host, body}
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}

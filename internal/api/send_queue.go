@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"github.com/ZacxDev/muster/internal/plugins"
@@ -87,6 +88,7 @@ func (s *Server) registerSendQueueRoutes(mux Mux) {
 	mux.HandleFunc("POST /send-queue/{id}/send-now", s.requireOperatorWrite(s.handleSendQueueSendNow))
 	// The plain confirm page's form for a stale Send now the BROWSER submitted.
 	mux.HandleFunc("POST /send-queue/{id}/send-now/confirm", s.requireOperatorWrite(s.handleSendQueueSendNowConfirm))
+	s.registerSendQueueEditRoutes(mux)
 }
 
 // sendQueueConfirmPath is the plain confirm page's route for a queue post.
@@ -314,7 +316,7 @@ func (s *Server) handleSendQueueList(w http.ResponseWriter, r *http.Request) {
 	}
 	noStore(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.SendQueueList(s.sendQueueListView(r.Context(), q.t)).Render(w); err != nil {
+	if err := ui.SendQueueList(s.sendQueueListView(r.Context(), q.t, sendQueueEditing(r))).Render(w); err != nil {
 		s.logger.Printf("sendqueue: render list: %v", err)
 	}
 }
@@ -322,10 +324,36 @@ func (s *Server) handleSendQueueList(w http.ResponseWriter, r *http.Request) {
 // sendQueuePreview bounds how much of a message the list shows.
 const sendQueuePreview = 200
 
+// sendQueueEditRef is the message a page asks to draw open for editing
+// (?edit=<id>, ui.SendQueueEditParam) and the hold ITS Edit was given
+// (&hold=<token>, ui.SendQueueHoldParam); id 0 for none.
+type sendQueueEditRef struct {
+	id   int64
+	hold string
+}
+
+// sendQueueEditing is r's edit reference.
+//
+// 🔴 THE FORM IS DRAWN ONLY UNDER THE HOLD THIS DEVICE'S EDIT WAS GIVEN, never
+// under whatever hold the row has now (sendQueueListView): a reload on a device
+// whose edit another device took over would otherwise carry the OTHER device's
+// hold, and its stale Save would win.
+func sendQueueEditing(r *http.Request) sendQueueEditRef {
+	q := r.URL.Query()
+	id, err := strconv.ParseInt(q.Get(ui.SendQueueEditParam), 10, 64)
+	if err != nil || id <= 0 {
+		return sendQueueEditRef{}
+	}
+	return sendQueueEditRef{id: id, hold: q.Get(ui.SendQueueHoldParam)}
+}
+
 // sendQueueListView is t's queue as the composer draws it, with what the next
 // message is waiting for — all read as ctx's principal: the REQUEST's own,
 // never one minted here (only the dispatcher acts as a message's owner).
-func (s *Server) sendQueueListView(ctx context.Context, t sendqueue.Target) ui.SendQueueListView {
+// editing is the row to draw as its edit form (id 0: none): only a row whose
+// LIVE hold is the one editing names is drawn so; a held row named under any
+// other hold is drawn as being edited on another device.
+func (s *Server) sendQueueListView(ctx context.Context, t sendqueue.Target, editing sendQueueEditRef) ui.SendQueueListView {
 	items, err := s.ext.SendQueue.List(ctx, t)
 	if err != nil {
 		s.logger.Printf("sendqueue: list for %s: %v", t, err)
@@ -343,9 +371,20 @@ func (s *Server) sendQueueListView(ctx context.Context, t sendqueue.Target) ui.S
 		if it.State == sendqueue.Queued {
 			body = it.Body // Copy message copies all of it, not the preview.
 		}
-		v.Items = append(v.Items, ui.SendQueueItem{ID: it.ID, State: string(it.State), Preview: preview, Body: body,
+		row := ui.SendQueueItem{ID: it.ID, State: string(it.State), Preview: preview, Body: body,
 			Detail: it.Detail, Cancellable: it.State == sendqueue.Queued, Answered: answered[it.ID],
-			Retryable: sendQueueRetryable(it), Deletable: it.State.Finished(), MayHaveDelivered: it.MayHaveDelivered})
+			Retryable: sendQueueRetryable(it), Deletable: it.State.Finished(), MayHaveDelivered: it.MayHaveDelivered,
+			Editable: it.State == sendqueue.Queued && it.RouteID == "", Held: it.State == sendqueue.Queued && it.Held,
+			HoldLapsed: it.State == sendqueue.Queued && it.HoldLapsed, Edited: !it.EditedAt.IsZero()}
+		if row.Held && it.ID == editing.id {
+			if editing.hold != "" && subtle.ConstantTimeCompare([]byte(editing.hold), []byte(it.HoldToken)) == 1 {
+				row.Editing, row.HoldToken = true, it.HoldToken
+				row.HoldLeftMS = it.HeldUntil.Sub(s.sendQueueNow()).Milliseconds()
+			} else {
+				row.HeldElsewhere = true
+			}
+		}
+		v.Items = append(v.Items, row)
 	}
 	if h, ok, err := s.ext.SendQueue.HeadOf(ctx, t); err == nil && ok {
 		if d := s.sendQueueDecide(h, s.sendQueueProbe(ctx, h)); !d.Send {
@@ -661,7 +700,9 @@ func (s *Server) sendQueueRetry(w http.ResponseWriter, r *http.Request, ctx cont
 
 // mirrorComposerQueue is the Queue of a mirrored entry's Rendered view, nil
 // when there is no queue to draw.
-func (s *Server) mirrorComposerQueue(ctx context.Context, h mirror.HostView, e mirror.SessionView) *ui.ComposerQueue {
+//
+// editing is the row a no-script Edit came back to draw open (?edit=<id>).
+func (s *Server) mirrorComposerQueue(ctx context.Context, h mirror.HostView, e mirror.SessionView, editing sendQueueEditRef) *ui.ComposerQueue {
 	if s.ext.SendQueue == nil {
 		return nil
 	}
@@ -672,7 +713,7 @@ func (s *Server) mirrorComposerQueue(ctx context.Context, h mirror.HostView, e m
 	}
 	t := sendqueue.Target{Host: h.Host, Session: e.Session, Window: e.Window}
 	return &ui.ComposerQueue{Src: ui.SendQueuePath + "?" + q.Encode(),
-		List: s.sendQueueListView(ctx, t), Disabled: mirrorQueueOff(h, e)}
+		List: s.sendQueueListView(ctx, t, editing), Disabled: mirrorQueueOff(h, e)}
 }
 
 // ---------------------------------------------------------------------------
@@ -903,6 +944,10 @@ func (s *Server) sendQueueOwnerRefusal(ctx context.Context, it sendqueue.Item) s
 	// the same way, and amr is GoTrue-signed, so no client can move it.
 	case atOrBefore(it.StepUpAt, u.SessionsNotBefore), atOrBefore(it.StepUpAt, u.SignedOutAt):
 		return SendQueueOwnerCutoff
+	// An edited message: the sign-in that SAVED its text is held to the same
+	// cutoffs (it can be another device's, older than the one that queued it).
+	case !it.EditStepUpAt.IsZero() && (atOrBefore(it.EditStepUpAt, u.SessionsNotBefore) || atOrBefore(it.EditStepUpAt, u.SignedOutAt)):
+		return SendQueueOwnerCutoff
 	}
 	return ""
 }
@@ -987,6 +1032,7 @@ var (
 	// records (sendqueue.PGStore.Expire).
 	SendQueueExpired            = sendqueue.ExpiredDetail
 	SendQueueNotFreshWhenQueued = "Not sent: the sign-in that queued it was not a recent one when it was queued. Retry it to queue it again."
+	SendQueueNotFreshWhenEdited = "Not sent: the sign-in that edited it was not a recent one when the edit was saved. Retry it to queue it again."
 )
 
 // sendQueueAuthorization is why the sign-in that queued person's message it no
@@ -999,6 +1045,10 @@ func sendQueueAuthorization(it sendqueue.Item, now time.Time) string {
 	switch {
 	case it.CreatedAt.Sub(it.StepUpAt) > stepup.Window():
 		return SendQueueNotFreshWhenQueued
+	// An EDITED message's text was written by its Save, under the Save's own
+	// sign-in (edit_stepup_at): that one must have been fresh when it saved.
+	case !it.EditedAt.IsZero() && it.EditedAt.Sub(it.EditStepUpAt) > stepup.Window():
+		return SendQueueNotFreshWhenEdited
 	case now.Sub(it.CreatedAt) > sendqueue.AuthorizedFor:
 		return SendQueueExpired
 	}

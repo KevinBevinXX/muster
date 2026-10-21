@@ -154,6 +154,24 @@ type Item struct {
 	// RetriedAs is, on a failed row that was retried, the row its Retry queued
 	// (0: not retried). A row is retried at most once (Retry).
 	RetriedAs int64
+	// HeldUntil is the end of the row's edit hold (Hold), on Postgres's clock;
+	// zero for none. Once it has passed, the dispatcher's next pass (or a
+	// claim) takes it off the row (ClearLapsedHolds).
+	HeldUntil time.Time
+	// Held: an edit hold that has not run out yet (held_until > now(), read on
+	// Postgres's clock). The dispatcher never claims a held row.
+	Held bool
+	// HoldLapsed: the row had an edit hold that ran out before it was saved or
+	// cancelled, so the row is queued again with its original text — whether
+	// or not the dispatcher has cleared the lapsed hold yet (hold_lapsed_at).
+	HoldLapsed bool
+	// HoldToken names the live hold: what a Save or a release must present.
+	HoldToken string
+	// EditedAt and EditStepUpAt are the latest saved edit: when, and the
+	// sign-in time of the request that saved it (zero: never edited). The
+	// delivery checks EditStepUpAt as it checks StepUpAt.
+	EditedAt     time.Time
+	EditStepUpAt time.Time
 }
 
 // AuthorizedFor is how long a person's queued message stays authorized by the
@@ -206,6 +224,8 @@ type PGStore struct {
 	// afterCount, when set (a test), runs inside Enqueue's transaction after the
 	// bound's count and before the commit: where two concurrent Enqueues race.
 	afterCount func()
+	// hold, when set (a test), replaces EditHold.
+	hold time.Duration
 }
 
 // NewPG returns a store on pool.
@@ -215,20 +235,23 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 const cols = `id, owner_id, mirror_host, mirror_session, mirror_window, body, stepup_at, state, detail,
 	may_have_delivered, created_at, coalesce(claimed_at, 'epoch'::timestamptz), coalesce(finished_at, 'epoch'::timestamptz),
 	after_since, coalesce(claimed_by, ''), coalesce(lease_until, 'epoch'::timestamptz), claim_since, coalesce(route_id, ''),
-	coalesce(retried_as, 0)`
+	coalesce(retried_as, 0), coalesce(held_until, 'epoch'::timestamptz), coalesce(held_until > now(), false),
+	(hold_lapsed_at IS NOT NULL OR coalesce(held_until <= now(), false)), coalesce(hold_token, ''), coalesce(edited_at, 'epoch'::timestamptz),
+	coalesce(edit_stepup_at, 'epoch'::timestamptz)`
 
 // itemDests is where cols scan into it, with its state into state.
 func itemDests(it *Item, state *string) []any {
 	return []any{&it.ID, &it.Owner, &it.Target.Host, &it.Target.Session, &it.Target.Window,
 		&it.Body, &it.StepUpAt, state, &it.Detail, &it.MayHaveDelivered, &it.CreatedAt, &it.ClaimedAt, &it.FinishedAt,
-		&it.AfterSince, &it.ClaimedBy, &it.LeaseUntil, &it.ClaimSince, &it.RouteID, &it.RetriedAs}
+		&it.AfterSince, &it.ClaimedBy, &it.LeaseUntil, &it.ClaimSince, &it.RouteID, &it.RetriedAs,
+		&it.HeldUntil, &it.Held, &it.HoldLapsed, &it.HoldToken, &it.EditedAt, &it.EditStepUpAt}
 }
 
 // settle finishes a scanned item: its state, and the epoch placeholders back to
 // zero times.
 func settle(it *Item, state string, more ...*time.Time) {
 	it.State = State(state)
-	for _, t := range append([]*time.Time{&it.ClaimedAt, &it.FinishedAt, &it.LeaseUntil}, more...) {
+	for _, t := range append([]*time.Time{&it.ClaimedAt, &it.FinishedAt, &it.LeaseUntil, &it.HeldUntil, &it.EditedAt, &it.EditStepUpAt}, more...) {
 		if t.Unix() == 0 {
 			*t = time.Time{}
 		}
@@ -417,7 +440,7 @@ func (s *PGStore) Get(ctx context.Context, id int64) (Item, error) {
 // found.
 func (s *PGStore) Cancel(ctx context.Context, id int64, now time.Time) (Item, error) {
 	it, err := scanItem(s.pool.QueryRow(ctx, `UPDATE send_queue SET state = 'cancelled', finished_at = $2,
-		detail = 'cancelled' WHERE id = $1 AND state = 'queued' RETURNING `+cols, id, now))
+		detail = 'cancelled', `+clearHold+` WHERE id = $1 AND state = 'queued' RETURNING `+cols, id, now))
 	if err == nil {
 		return it, nil
 	}
@@ -511,7 +534,7 @@ func (s *PGStore) NotePaste(ctx context.Context, t Target, since int64) error {
 // already being sent is past cancelling; its delivery re-checks the account.
 // Under the system scope: an admin disables another user.
 func (s *PGStore) CancelOwner(ctx context.Context, owner int64, now time.Time, detail string) (int, error) {
-	tag, err := s.pool.Exec(sys(ctx), `UPDATE send_queue SET state = 'cancelled', finished_at = $2, detail = $3
+	tag, err := s.pool.Exec(sys(ctx), `UPDATE send_queue SET state = 'cancelled', finished_at = $2, detail = $3, `+clearHold+`
 		WHERE owner_id = $1 AND state = 'queued'`, owner, now, clampDetail(detail))
 	if err != nil {
 		return 0, fmt.Errorf("sendqueue: cancel owner: %w", err)
@@ -584,7 +607,7 @@ var authorizedText = fmt.Sprintf("%d days", int(AuthorizedFor/(24*time.Hour)))
 // processed it.
 func (s *PGStore) Expire(ctx context.Context, now time.Time) (int, error) {
 	tag, err := s.pool.Exec(sys(ctx), `UPDATE send_queue SET state = 'failed', detail = $1, finished_at = $2,
-		claimed_at = $2, may_have_delivered = false
+		claimed_at = $2, may_have_delivered = false, `+clearHold+`
 		WHERE state = 'queued' AND route_id IS NULL AND created_at < $3`, clampDetail(ExpiredDetail), now, now.Add(-AuthorizedFor))
 	if err != nil {
 		return 0, fmt.Errorf("sendqueue: expire: %w", err)
@@ -668,7 +691,9 @@ func leaseMicros(d time.Duration) int64 { return d.Microseconds() }
 
 // Claim moves message id from queued to sending at now under claim c, and
 // returns it — or false when it is no longer queued (cancelled, or claimed by
-// another dispatcher) or its target already has a message being sent. c.Since
+// another dispatcher), it is HELD for an edit (Hold; notHeld, in the same
+// conditional UPDATE, so a hold and a claim cannot both win), or its target
+// already has a message being sent. A lapsed hold is cleared by the claim. c.Since
 // is recorded as the row's ClaimSince, which becomes its AfterSince when the
 // row finishes or is recovered — so a sender that dies mid-paste still leaves
 // the next message waiting for a newer status — and is dropped if the send is
@@ -678,8 +703,8 @@ func (s *PGStore) Claim(ctx context.Context, id int64, now time.Time, c Claim) (
 		return Item{}, false, errors.New("sendqueue: a claim needs its instance and a lease")
 	}
 	it, err := scanItem(s.pool.QueryRow(sys(ctx), `UPDATE send_queue SET state = 'sending', claimed_at = $2,
-		claimed_by = $3, lease_until = now() + $4 * interval '1 microsecond', claim_since = $5
-		WHERE id = $1 AND state = 'queued' RETURNING `+cols, id, now, c.By, leaseMicros(c.Lease), max(c.Since, 0)))
+		claimed_by = $3, lease_until = now() + $4 * interval '1 microsecond', claim_since = $5, `+clearHold+`
+		WHERE id = $1 AND state = 'queued' AND `+notHeld+` RETURNING `+cols, id, now, c.By, leaseMicros(c.Lease), max(c.Since, 0)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Item{}, false, nil
 	}

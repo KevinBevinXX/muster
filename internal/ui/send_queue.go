@@ -55,6 +55,28 @@ func SendQueueSendNowPath(id int64) string {
 	return SendQueuePath + "/" + strconv.FormatInt(id, 10) + "/send-now"
 }
 
+// SendQueueEditPath is where message id's Edit posts: it HOLDS the message
+// (the dispatcher sends nothing of its window while it is held), and then the
+// row is drawn as its edit form (sendQueueEditRow).
+func SendQueueEditPath(id int64) string {
+	return SendQueuePath + "/" + strconv.FormatInt(id, 10) + "/edit"
+}
+
+// SendQueueEditSavePath is where an edit's Save posts (hold, text).
+func SendQueueEditSavePath(id int64) string { return SendQueueEditPath(id) + "/save" }
+
+// SendQueueEditCancelPath is where an edit's Cancel posts (hold).
+func SendQueueEditCancelPath(id int64) string { return SendQueueEditPath(id) + "/cancel" }
+
+// SendQueueEditParam is the query parameter that draws a held row open as its
+// edit form, on the view (a no-script Edit's redirect) and on the list (the
+// script's re-read after an Edit).
+const SendQueueEditParam = "edit"
+
+// SendQueueHoldParam is the hold an Edit gave this device: the form is drawn
+// only under it (a held row named under any other is being edited elsewhere).
+const SendQueueHoldParam = "hold"
+
 // SendQueueDeleteLabel is a finished message's Delete, as a screen reader
 // names it.
 const SendQueueDeleteLabel = "Delete this message"
@@ -102,6 +124,50 @@ type SendQueueItem struct {
 	// MayHaveDelivered: muster stopped while sending it, so it may have
 	// reached the window. Its Retry warns, and asks once before it queues it.
 	MayHaveDelivered bool
+	// Editable: queued, and a person's own (a routed message's text is the
+	// chief's); its menu has Edit.
+	Editable bool
+	// Held: held for an edit right now (here or on another device); nothing of
+	// the window's queue is sent until it is saved, cancelled or runs out.
+	Held bool
+	// HoldLapsed: an edit was opened and not saved in time; it kept its text.
+	HoldLapsed bool
+	// Edited: its text was changed by a saved edit.
+	Edited bool
+	// HeldElsewhere: this page asked for the row open, but its hold is not the
+	// one this page's Edit was given — another device took the edit over.
+	HeldElsewhere bool
+	// Editing: draw the row as its edit form (sendQueueEditRow), under
+	// HoldToken, the hold its Save and Cancel present. HoldLeftMS is how long
+	// the hold has left, which the list's script counts down.
+	Editing    bool
+	HoldToken  string
+	HoldLeftMS int64
+}
+
+// What a held, a lapsed and an edited message say under their preview.
+const (
+	SendQueueHeldText          = "Being edited: held, and nothing queued for this window is sent until the edit is saved or cancelled."
+	SendQueueHeldElsewhereText = "Being edited on another device: held, and nothing queued for this window is sent until that edit is saved or cancelled. Edit it here to take it over."
+	SendQueueLapsedText        = "An edit was not saved in time, so its hold ran out and the message kept its original text."
+	SendQueueEditedText        = "Edited."
+)
+
+// What the list's script says when an edit is saved, and cancelled.
+const (
+	SendQueueSavedNote         = "Saved."
+	SendQueueEditCancelledNote = "Edit cancelled: the message is unchanged."
+)
+
+// SendQueueEditHoldMinutes is how long an edit holds its message, in minutes
+// (sendqueue.EditHold; a test in internal/api holds the two together).
+const SendQueueEditHoldMinutes = 10
+
+// SendQueueEditAnsweredText is what the edit form of a message that answered
+// asker's question when it was queued says before anything is typed: the
+// answer stands, whatever the edit.
+func SendQueueEditAnsweredText(asker string) string {
+	return "This message already answered " + asker + "'s question when it was queued, and that answer was delivered: a Save changes what is pasted into the session, not the answer."
 }
 
 // SendQueueAnsweredText is what a queued message that answered asker's
@@ -141,6 +207,8 @@ func sendQueueStateLabel(state string) (label, class string) {
 		return "Failed", "bg-st-error-bg text-st-error-fg"
 	case "cancelled":
 		return "Cancelled", "bg-s2 text-muted"
+	case "editing":
+		return "Editing", "bg-st-review-bg text-st-review-fg"
 	}
 	return state, "bg-s2 text-muted"
 }
@@ -163,7 +231,15 @@ func SendQueueList(v SendQueueListView) g.Node {
 		if it.State == "queued" || it.State == "sending" {
 			open++
 		}
-		label, tone := sendQueueStateLabel(it.State)
+		if it.Editing {
+			rows = append(rows, sendQueueEditRow(it))
+			continue
+		}
+		shown := it.State
+		if it.Held {
+			shown = "editing"
+		}
+		label, tone := sendQueueStateLabel(shown)
 		rows = append(rows, Li(
 			g.Attr("data-queue-id", strconv.FormatInt(it.ID, 10)),
 			g.Attr("data-queue-state", it.State),
@@ -177,6 +253,13 @@ func SendQueueList(v SendQueueListView) g.Node {
 					g.Text(SendQueueAnsweredText(it.Answered)))),
 				g.If(it.Retryable && it.MayHaveDelivered, P(g.Attr("data-queue-may-have-sent", ""),
 					Class("text-[11px] font-semibold text-st-error-fg [overflow-wrap:anywhere]"), g.Text(SendQueueMayHaveSentText))),
+				g.If(it.Held && !it.HeldElsewhere, P(g.Attr("data-queue-held", ""), Class("text-[11px] text-muted [overflow-wrap:anywhere]"), g.Text(SendQueueHeldText))),
+				g.If(it.HeldElsewhere, P(g.Attr("data-queue-held", ""), g.Attr("data-queue-held-elsewhere", ""),
+					Class("text-[11px] font-semibold text-st-warning-fg [overflow-wrap:anywhere]"), g.Text(SendQueueHeldElsewhereText))),
+				g.If(it.HoldLapsed && !it.Held, P(g.Attr("data-queue-lapsed", ""), Class("text-[11px] font-semibold text-st-warning-fg [overflow-wrap:anywhere]"),
+					g.Text(SendQueueLapsedText))),
+				g.If(it.Edited && it.State == "queued" && !it.Held && !it.HoldLapsed,
+					P(g.Attr("data-queue-edited", ""), Class("text-[11px] text-muted"), g.Text(SendQueueEditedText))),
 			),
 			g.If(it.Retryable, sendQueueRetryForm(it)),
 			g.If(it.Cancellable, sendQueueRowMenu(it)),
@@ -208,16 +291,80 @@ func SendQueueList(v SendQueueListView) g.Node {
 const (
 	SendQueueMenuLabel    = "More actions for this queued message"
 	SendQueueSendNowLabel = "Send now"
+	SendQueueEditLabel    = "Edit"
 	SendQueueCopyLabel    = "Copy message"
 	SendQueueCancelLabel  = "Cancel this queued message"
 )
+
+// The edit form's labels.
+const (
+	SendQueueEditTextLabel   = "Edit this queued message"
+	SendQueueEditSaveLabel   = "Save"
+	SendQueueEditCancelLabel = "Cancel editing; keep the message as it was"
+)
+
+// sendQueueEditRow is a HELD message drawn open for editing, in place of its
+// row: its whole text in a box, Save and Cancel. It is a real form (Save posts
+// to SendQueueEditSavePath; Cancel is a submit whose formaction is
+// SendQueueEditCancelPath), so it works without script, and it carries the
+// hold it was opened under — a Save under any other hold is refused.
+//
+// The row says, while it is open, that the message and everything queued after
+// it are held, and for how long at most; the list's script counts the hold down
+// (data-hold-left-ms) and says when it has run out.
+func sendQueueEditRow(it SendQueueItem) g.Node {
+	id := strconv.FormatInt(it.ID, 10)
+	label, tone := sendQueueStateLabel("editing")
+	return Li(
+		g.Attr("data-queue-id", id),
+		g.Attr("data-queue-state", it.State),
+		g.Attr("data-queue-editing", ""),
+		Class("py-1"),
+		Form(
+			ID("mv-qe-"+id),
+			Method("post"),
+			Action(SendQueueEditSavePath(it.ID)),
+			g.Attr("data-queue-edit-form", ""),
+			g.Attr("data-hold-left-ms", strconv.FormatInt(max(it.HoldLeftMS, 0), 10)),
+			g.Attr("novalidate", ""),
+			Class("flex flex-col gap-2"),
+			Input(Type("hidden"), Name("hold"), Value(it.HoldToken)),
+			Div(Class("flex items-center gap-2"),
+				Span(Class("shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold "+tone), g.Text(label)),
+				P(g.Attr("data-queue-edit-note", ""), g.Attr("role", "status"), Class("min-w-0 flex-1 text-[11px] text-muted [overflow-wrap:anywhere]"),
+					g.Text("Held while you edit: nothing queued for this window is sent until you Save or Cancel. "+
+						"Left open, the hold runs out after "+strconv.Itoa(SendQueueEditHoldMinutes)+" minutes and the message keeps its original text.")),
+			),
+			g.If(it.Answered != "", P(g.Attr("data-queue-edit-answered", ""),
+				Class("text-[11px] font-semibold text-st-warning-fg [overflow-wrap:anywhere]"), g.Text(SendQueueEditAnsweredText(it.Answered)))),
+			Textarea(
+				ID("mv-qe-text-"+id),
+				Name("text"),
+				Rows("3"),
+				g.Attr("aria-label", SendQueueEditTextLabel),
+				// 16px, like every message box: iOS zooms on a smaller one.
+				Class("min-h-[44px] w-full resize-y rounded-xl border-0 bg-s2 px-3 py-2 text-base text-fg ring-1 ring-inset ring-line focus:outline-none focus:ring-2 focus:ring-focus"),
+				g.Text(it.Body),
+			),
+			Div(Class("flex justify-end gap-2"),
+				Button(Type("submit"), g.Attr("formaction", SendQueueEditCancelPath(it.ID)), g.Attr("data-queue-edit-cancel", ""),
+					g.Attr("aria-label", SendQueueEditCancelLabel),
+					Class("press min-h-[44px] rounded-lg px-3 text-sm font-semibold text-fg2 ring-1 ring-inset ring-line transition hover:bg-s2"),
+					g.Text("Cancel")),
+				Button(Type("submit"), g.Attr("data-queue-edit-save", ""),
+					Class("press min-h-[44px] rounded-lg bg-accent px-4 text-sm font-semibold text-on-accent transition disabled:opacity-40"),
+					g.Text(SendQueueEditSaveLabel)),
+			),
+		),
+	)
+}
 
 // sendQueueMenuItemClass is an item of a queued message's ⋯ menu: a full-width
 // 44px row, like the caret menu's Queue.
 const sendQueueMenuItemClass = "press flex min-h-[44px] w-full items-center rounded-lg px-3 text-left text-sm font-semibold transition hover:bg-s2 focus:bg-s2 focus:outline-none disabled:opacity-40"
 
-// sendQueueRowMenu is a QUEUED message's ⋯ menu: Send now, Copy message and
-// Cancel.
+// sendQueueRowMenu is a QUEUED message's ⋯ menu: Send now, Edit (a person's
+// own message only: never a routed one), Copy message and Cancel.
 //
 // IT WORKS WITHOUT SCRIPT, like the caret's menu: it is a POPOVER the ⋯ button
 // opens itself (popovertarget), which closes on Escape and on a tap outside
@@ -257,6 +404,12 @@ func sendQueueRowMenu(it SendQueueItem) g.Node {
 			Form(Method("post"), Action(SendQueueSendNowPath(it.ID)), g.Attr("data-send-now", ""),
 				Button(Type("submit"), g.Attr("role", "menuitem"), g.Attr("title", "Send it now, without waiting for Claude Code to be idle"),
 					Class(sendQueueMenuItemClass+" text-fg"), g.Text(SendQueueSendNowLabel))),
+			// Edit HOLDS the message first (the server), and only then is its text
+			// drawn for editing: a form, so it works without script.
+			g.If(it.Editable, Form(Method("post"), Action(SendQueueEditPath(it.ID)), g.Attr("data-edit", ""),
+				Button(Type("submit"), g.Attr("role", "menuitem"),
+					g.Attr("title", "Change its text; it is held (not sent) while you edit, and keeps its place"),
+					Class(sendQueueMenuItemClass+" text-fg"), g.Text(SendQueueEditLabel)))),
 			Button(Type("button"), g.Attr("role", "menuitem"), g.Attr("data-queue-copy", ""), g.Attr("hidden", ""),
 				Class(sendQueueMenuItemClass+" text-fg"), g.Text(SendQueueCopyLabel)),
 			Form(Method("post"), Action(SendQueueCancelPath(it.ID)), g.Attr("data-cancel", ""),
@@ -412,18 +565,68 @@ func sendQueueScript() g.Node {
     var cs = box.querySelectorAll('[data-queue-copy]');
     for (var i = 0; i < cs.length; i++) cs[i].hidden = false;
   }
+  // editing: a row is open for editing (sendQueueEditRow). The list is not
+  // redrawn under it either — that would throw away what is being typed; the
+  // edit's own Save, Cancel or running out redraws it (show).
+  function editing() { return box.querySelector('[data-queue-edit-form]'); }
   function load() {
     if (typeof fetch !== 'function') return;
     if (loading) return;
-    if (document.hidden || menuOpen()) { schedule(); return; }
+    if (document.hidden || menuOpen() || editing()) { schedule(); return; }
     loading = true;
     fetch(src, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
       .then(function (r) { return r.ok ? r.text() : null; })
       .then(function (t) {
         loading = false;
-        if (t !== null && !menuOpen()) { box.innerHTML = t; copyable(); }
+        if (t !== null && !menuOpen() && !editing()) { box.innerHTML = t; copyable(); }
         schedule();
       }, function () { loading = false; schedule(); });
+  }
+  // show re-reads the list and draws it whatever is open — with row id open
+  // for editing when id is given (the server draws it open only while it is
+  // held) — then arms the open edit's hold timer.
+  var holdTimer = null;
+  // hold is the hold THIS page's Edit was given: the server draws the form
+  // only under it.
+  function show(id, hold) {
+    if (typeof fetch !== 'function') return Promise.resolve();
+    var u = src + (id ? '&` + SendQueueEditParam + `=' + encodeURIComponent(id) + '&` + SendQueueHoldParam + `=' + encodeURIComponent(hold || '') : '');
+    return fetch(u, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      .then(function (r) { return r.ok ? r.text() : null; })
+      .then(function (t) {
+        if (t === null) return;
+        box.innerHTML = t;
+        copyable();
+        armHold();
+        var ta = id ? box.querySelector('[data-queue-edit-form] textarea') : null;
+        if (ta) { ta.focus(); try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch (e) {} }
+        schedule();
+      }, function () { schedule(); });
+  }
+  // keepText puts an edit that could not be saved into the message box, when
+  // the box is empty, so nothing typed is thrown away; it says where it went.
+  function keepText(f) {
+    var ta = f && f.querySelector('textarea');
+    var input = document.getElementById('mv-input');
+    if (!ta || !input || input.value.trim() || !ta.value.trim()) return '';
+    input.value = ta.value;
+    try { input.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) {}
+    return ' Your edited text is in the message box.';
+  }
+  // armHold counts the open edit's hold down (data-hold-left-ms, the server's
+  // reading): when it runs out the server has already let the message go back
+  // to the queue with its original text, so the row says so and is redrawn.
+  function armHold() {
+    clearTimeout(holdTimer);
+    var f = editing();
+    if (!f) return;
+    var left = parseInt(f.getAttribute('data-hold-left-ms') || '0', 10);
+    holdTimer = setTimeout(function () {
+      var open = editing();
+      if (!open) return;
+      note(` + strconv.Quote(SendQueueLapsedText) + ` + keepText(open));
+      show();
+    }, Math.max(0, left) + 250);
   }
   function note(t) {
     var n = document.getElementById('mv-note');
@@ -459,7 +662,7 @@ func sendQueueScript() g.Node {
     menu.style.inset = 'auto';
     menu.style.margin = '0';
     menu.style.right = Math.max(8, Math.round(document.documentElement.clientWidth - r.right)) + 'px';
-    var h = 3 * 44 + 16;
+    var h = menu.querySelectorAll('[role=menuitem]').length * 44 + 16;
     if (r.bottom + 6 + h <= bottom) menu.style.top = Math.round(r.bottom + 6) + 'px';
     else menu.style.bottom = Math.max(8, Math.round(window.innerHeight - r.top + 6)) + 'px';
   }
@@ -584,10 +787,85 @@ func sendQueueScript() g.Node {
       })
       .then(load, load);
   }
+  // Edit: HOLD the message (the server), then draw it open. A stale sign-in
+  // asks "Confirm it's you" and edits.
+  function edit(f) {
+    var b = f.querySelector('button');
+    if (b) b.disabled = true;
+    var id = (f.closest('[data-queue-id]') || {}).getAttribute ? f.closest('[data-queue-id]').getAttribute('data-queue-id') : '';
+    return fetch(f.getAttribute('action'), { method: 'POST', credentials: 'same-origin',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      .then(function (r) {
+        // The answer is the hold this Edit was given.
+        if (r.ok) return r.text().then(function (hold) { return show(id, hold.trim()); });
+        if (r.status === 403 && r.headers.get('X-Muster-Step-Up') && window.musterStepUp) {
+          window.musterStepUp.stale();
+          window.musterStepUp.ask('', function () { return edit(f); });
+          return;
+        }
+        if (b) b.disabled = false;
+        return r.text().then(function (t) { note(t.trim() || ('Not editable (HTTP ' + r.status + ')')); show(); });
+      }, function () { if (b) b.disabled = false; });
+  }
+  // Save or Cancel of an open edit. Save needs a fresh sign-in, like a queue
+  // post; a hold that ran out is refused, and says so.
+  var editSub = null;
+  function finishEdit(f, cancel) {
+    var bs = f.querySelectorAll('button');
+    for (var i = 0; i < bs.length; i++) bs[i].disabled = true;
+    var body = new URLSearchParams();
+    body.append('hold', (f.querySelector('input[name=hold]') || {}).value || '');
+    if (!cancel) body.append('text', (f.querySelector('textarea') || {}).value || '');
+    var to = cancel ? f.querySelector('[data-queue-edit-cancel]').getAttribute('formaction') : f.getAttribute('action');
+    return fetch(to, { method: 'POST', body: body, credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' } })
+      .then(function (r) {
+        if (r.ok) {
+          clearTimeout(holdTimer);
+          // 200 with words: saved, with a warning (an answer it already gave).
+          if (r.status === 200) return r.text().then(function (t) { if (t.trim()) note(t.trim()); else noteOK(` + strconv.Quote(SendQueueSavedNote) + `); return show(); });
+          noteOK(cancel ? ` + strconv.Quote(SendQueueEditCancelledNote) + ` : ` + strconv.Quote(SendQueueSavedNote) + `);
+          return show();
+        }
+        if (r.status === 403 && r.headers.get('X-Muster-Step-Up') && window.musterStepUp) {
+          for (var j = 0; j < bs.length; j++) bs[j].disabled = false;
+          window.musterStepUp.stale();
+          window.musterStepUp.ask('', function () { return finishEdit(f, cancel); });
+          return;
+        }
+        return r.text().then(function (t) {
+          if (r.status === 400) {
+            // Something the person can fix (an empty text): the edit stays open.
+            for (var k = 0; k < bs.length; k++) bs[k].disabled = false;
+            note(t.trim());
+            return;
+          }
+          clearTimeout(holdTimer);
+          note((t.trim() || ('Not saved (HTTP ' + r.status + ')')) + keepText(f));
+          return show();
+        });
+      }, function () { for (var j = 0; j < bs.length; j++) bs[j].disabled = false; note('Not saved: you are offline.'); });
+  }
+  box.addEventListener('click', function (e) {
+    var b = e.target && e.target.closest ? e.target.closest('[data-queue-edit-form] button') : null;
+    if (b) editSub = b;
+  });
   box.addEventListener('submit', function (e) {
     var f = e.target;
     // An item of a row's menu: the menu has done its job.
     closeMenu(f);
+    if (f && f.hasAttribute && f.hasAttribute('data-edit') && typeof fetch === 'function') {
+      e.preventDefault();
+      edit(f);
+      return;
+    }
+    if (f && f.hasAttribute && f.hasAttribute('data-queue-edit-form') && typeof fetch === 'function' && typeof URLSearchParams === 'function') {
+      e.preventDefault();
+      var sub = ('submitter' in e && e.submitter) ? e.submitter : editSub;
+      editSub = null;
+      finishEdit(f, !!(sub && sub.hasAttribute('data-queue-edit-cancel')));
+      return;
+    }
     if (f && f.hasAttribute && f.hasAttribute('data-send-now') && typeof fetch === 'function') {
       e.preventDefault();
       sendNow(f);
@@ -644,6 +922,9 @@ func sendQueueScript() g.Node {
   document.addEventListener('mv-queued', load);
   document.addEventListener('visibilitychange', function () { if (!document.hidden) load(); });
   copyable();
+  // A page drawn with a row open for editing (a no-script Edit came back here,
+  // and script runs after all): count its hold down too.
+  armHold();
   schedule();
 })();
 `))
