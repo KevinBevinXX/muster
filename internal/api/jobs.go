@@ -661,7 +661,8 @@ func (s *Server) removeJobResultFile(ctx context.Context, a agents.Agent, j jobs
 		s.logger.Printf("jobs: %d: remove result file %s: %v", j.ID, j.ResultPath, err)
 		note = JobResultRemoveFailedPrefix + j.ResultPath + " (the next sha job on this agent may be refused as dirty): " + err.Error()
 	case !removed:
-		note = JobResultTrackedNotePrefix + j.ResultPath + " is tracked by the repository, so it was left in place"
+		note = JobResultTrackedNotePrefix + j.ResultPath + " is tracked by the repository, so it was left in place; " +
+			"if the turn modified it, the tree stays dirty and the next sha job on this agent fails checkout_failed"
 	default:
 		return o
 	}

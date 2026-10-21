@@ -111,9 +111,14 @@ It is **kept** in two cases:
   that agent fails `checkout_failed` until it is removed.
 - **The repository tracks it** (a `result_path` such as `CHANGELOG.md`):
   deleting it would itself dirty the tree. The job succeeds, and `error` notes
-  `the result file <path> is tracked by the repository, so it was left in place`.
+  `the result file <path> is tracked by the repository, so it was left in place; …`.
+  **If the turn modified that tracked file, keeping it leaves the tree dirty**,
+  and the next `sha` job on that agent fails `checkout_failed` until the change
+  is reverted; the note says so.
 
-If the delete itself fails, the job keeps its status and `error` says
+If the delete itself fails — including when git cannot say whether the file is
+tracked (git missing, or it refuses the repository), in which case the file is
+kept — the job keeps its status and `error` says
 `could not delete the result file <path> …`.
 
 **`reason`** is a stable token a caller can branch on:

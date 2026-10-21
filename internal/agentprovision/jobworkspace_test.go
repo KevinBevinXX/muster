@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -353,5 +354,39 @@ func TestRemoveUntrackedWorkspaceFileLeavesATrackedFile(t *testing.T) {
 	}
 	if st := git("status", "--porcelain"); st != "" {
 		t.Fatalf("the tree is dirty: %q", st)
+	}
+}
+
+// TestRemoveUntrackedWorkspaceFileFailsClosedWhenGitCannotAnswer: in a real
+// checkout with a TRACKED file, a git that cannot answer — exiting 128 (a
+// "dubious ownership" refusal, a fatal error) or 127 (git missing) — must not
+// be read as "untracked". The file stays, byte for byte, and the call fails
+// saying so. Only an exit of exactly 1 ("did not match") deletes.
+func TestRemoveUntrackedWorkspaceFileFailsClosedWhenGitCannotAnswer(t *testing.T) {
+	for _, rc := range []int{128, 127, 2} {
+		t.Run(strconv.Itoa(rc), func(t *testing.T) {
+			a, d := newWorkspaceAdapter(t)
+			git, repo, _, _ := newCheckoutRepo(t, d)
+			if err := os.WriteFile(filepath.Join(repo, "notes.md"), []byte("tracked"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			git("add", "notes.md")
+			git("commit", "-q", "-m", "notes")
+			// A git that cannot answer, first on PATH for the script's shell.
+			bin := t.TempDir()
+			fake := "#!/bin/sh\necho 'fatal: detected dubious ownership in repository' >&2\nexit " + strconv.Itoa(rc) + "\n"
+			if err := os.WriteFile(filepath.Join(bin, "git"), []byte(fake), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			removed, err := a.RemoveUntrackedWorkspaceFile(context.Background(), workspaceAgent, "notes.md")
+			want := "could not tell whether notes.md is tracked (git ls-files exited " + strconv.Itoa(rc) + "), so it was left in place"
+			if err == nil || removed || !strings.Contains(err.Error(), want) {
+				t.Fatalf("with git exiting %d = %v, %v; want false and an error carrying %q", rc, removed, err, want)
+			}
+			if b, err := os.ReadFile(filepath.Join(repo, "notes.md")); err != nil || string(b) != "tracked" {
+				t.Fatalf("the tracked file was deleted or changed: %q %v", b, err)
+			}
+		})
 	}
 }

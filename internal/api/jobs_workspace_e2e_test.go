@@ -194,6 +194,11 @@ func TestAResultFileIsKeptWhenTheReadFailsOrTheRepositoryTracksIt(t *testing.T) 
 	if out["status"] != jobs.StatusSucceeded || out["result"] != changelog {
 		t.Errorf("tracked job = %v/%v %q (%v), want succeeded with the file", out["status"], out["reason"], out["result"], out["error"])
 	}
+	// The note says what was left and why, through the real adapter's script.
+	const wantNote = "the result file CHANGELOG.md is tracked by the repository, so it was left in place; if the turn modified it, the tree stays dirty and the next sha job on this agent fails checkout_failed"
+	if out["error"] != wantNote {
+		t.Errorf("tracked job error = %q, want the note %q", out["error"], wantNote)
+	}
 	if b, err := os.ReadFile(filepath.Join(repo, "CHANGELOG.md")); err != nil || string(b) != changelog {
 		t.Errorf("the tracked result file was deleted or changed: %q %v", b, err)
 	}

@@ -836,7 +836,7 @@ func TestAResultFileIsDeletedOnceRead(t *testing.T) {
 	f.ws.tracked = map[string]bool{"CHANGELOG.md": true}
 	f.ws.mu.Unlock()
 	out = f.await(t, f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review", "result_path": "CHANGELOG.md"}))
-	const wantTracked = JobResultTrackedNotePrefix + "CHANGELOG.md is tracked by the repository, so it was left in place"
+	const wantTracked = "the result file CHANGELOG.md is tracked by the repository, so it was left in place; if the turn modified it, the tree stays dirty and the next sha job on this agent fails checkout_failed"
 	if out["status"] != jobs.StatusSucceeded || out["result"] != "# Changelog" || out["error"] != wantTracked {
 		t.Fatalf("tracked job = %v %q error %q; want succeeded with the note %q", out["status"], out["result"], out["error"], wantTracked)
 	}

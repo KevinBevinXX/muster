@@ -108,17 +108,32 @@ func (a *Adapter) ReadWorkspaceFile(ctx context.Context, ag agents.Agent, rel st
 }
 
 // removeScript deletes the file $1 — the same file as $3, relative to the
-// checkout in $2 — unless the repository tracks it: then it prints
-// RemoveTrackedMarker and deletes nothing. A missing file is not an error; rm
-// removes a symlink itself, never its target. Outside a git repository
-// ls-files fails, so nothing counts as tracked.
+// checkout in $2 — only when it is certain the repository does not track it.
+// A missing file is not an error; rm removes a symlink itself, never its target.
+//
+// 🔴 FAIL CLOSED: ONLY `ls-files --error-unmatch` EXITING EXACTLY 1 ("did not
+// match") MEANS UNTRACKED. Exit 0 means tracked: it prints RemoveTrackedMarker
+// and deletes nothing. ANY other status — git missing (127), a refusal such as
+// "dubious ownership" or another fatal error (128) — leaves the file in place
+// and fails with a message, which the runner records as a note: treating "git
+// could not answer" as "untracked" would delete a tracked file. The one case
+// that skips git is a working directory with no .git at all (an agent with no
+// repository), where nothing can be tracked.
 //
 // 🔴 --literal-pathspecs: a result_path is a file name, and without it a name
 // such as ":(top)…" or "*.md" would be read as pathspec magic or a glob and
 // could match a DIFFERENT, tracked file — or none.
-const removeScript = `if git --literal-pathspecs -C "$2" ls-files --error-unmatch -- "$3" >/dev/null 2>&1; then
-	echo ` + RemoveTrackedMarker + `
-	exit 0
+const removeScript = `if [ -e "$2/.git" ]; then
+	git --literal-pathspecs -C "$2" ls-files --error-unmatch -- "$3" >/dev/null 2>&1
+	rc=$?
+	if [ "$rc" -eq 0 ]; then
+		echo ` + RemoveTrackedMarker + `
+		exit 0
+	fi
+	if [ "$rc" -ne 1 ]; then
+		echo "could not tell whether $3 is tracked (git ls-files exited $rc), so it was left in place" >&2
+		exit 3
+	fi
 fi
 rm -f -- "$1"`
 
