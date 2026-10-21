@@ -122,11 +122,41 @@ func ServeAs(contentType string) Serving {
 }
 
 // Disposition is the Content-Disposition for a file named name served as s:
-// `inline` or `attachment`, with the SafeName as the filename.
+// `inline` or `attachment`, with the SafeName as the ASCII `filename=` and,
+// when that lost anything, the original name (CleanFilename) as an RFC 5987
+// `filename*=UTF-8”…`, which every current browser prefers.
+//
+// 🔴 THE ENCODED VALUE IS PERCENT-ENCODED BYTE BY BYTE: only RFC 5987
+// attr-chars pass through, so no quote, backslash, `;`, space, CR or LF from a
+// name can reach the header. The stored name is capped (CleanFilename), so the
+// value is at most 3×255 bytes.
 func Disposition(s Serving, name string) string {
 	kind := "attachment"
 	if s.Inline {
 		kind = "inline"
 	}
-	return kind + `; filename="` + SafeName(name) + `"`
+	ascii := SafeName(name)
+	d := kind + `; filename="` + ascii + `"`
+	if orig := CleanFilename(name); orig != ascii {
+		d += "; filename*=UTF-8''" + encodeRFC5987(orig)
+	}
+	return d
+}
+
+// encodeRFC5987 percent-encodes every byte of v that is not an RFC 5987
+// attr-char (ALPHA / DIGIT / "!#$&+-.^_`|~").
+func encodeRFC5987(v string) string {
+	const hex = "0123456789ABCDEF"
+	var b strings.Builder
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || strings.IndexByte("!#$&+-.^_`|~", c) >= 0 {
+			b.WriteByte(c)
+			continue
+		}
+		b.WriteByte('%')
+		b.WriteByte(hex[c>>4])
+		b.WriteByte(hex[c&15])
+	}
+	return b.String()
 }

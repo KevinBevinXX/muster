@@ -135,7 +135,8 @@ const maxSafeName = 80
 // SafeName is a filename reduced to what is safe to put anywhere an agent or a
 // shell will read it: [A-Za-z0-9._-] only (every other run becomes one "_"),
 // never starting with "." or "-" (a hidden file, a flag), capped at 80
-// characters with the extension kept. "" becomes "file".
+// characters with the extension kept. "" becomes "file"; a stem with nothing
+// left in it becomes "file" ahead of its extension ("報告.pdf" → "file.pdf").
 //
 // 🔴 IT IS WHAT MAKES THE curl LINE SAFE TO PASTE. The name is written
 // unquoted after `-o` in the line the agent is handed (AgentLine); a name
@@ -157,6 +158,17 @@ func SafeName(name string) string {
 		}
 	}
 	out := strings.TrimLeft(b.String(), ".-_")
+	// A stem that was all non-ASCII reduces to nothing, and the trim above
+	// would then leave the bare extension ("報告.pdf" → "pdf"). Keep the
+	// extension behind a placeholder stem instead. Only when the ORIGINAL had a
+	// stem: ".bashrc" is a name with no stem, and stays "bashrc".
+	if ext := path.Ext(b.String()); len(ext) > 1 {
+		origExt := path.Ext(name)
+		origStem := strings.TrimSpace(strings.TrimSuffix(name, origExt))
+		if origStem != "" && strings.Trim(strings.TrimSuffix(b.String(), ext), "._-") == "" {
+			out = "file" + ext
+		}
+	}
 	if len(out) > maxSafeName {
 		ext := path.Ext(out)
 		if len(ext) > 16 || len(ext) >= maxSafeName {

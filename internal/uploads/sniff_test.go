@@ -1,6 +1,7 @@
 package uploads
 
 import (
+	"mime"
 	"net/http"
 	"strings"
 	"testing"
@@ -139,6 +140,83 @@ func TestSetServeHeadersAloneMakesAFileInert(t *testing.T) {
 		}
 		if h.Get("Cache-Control") != "private, no-store" || h.Get("Content-Length") != "42" {
 			t.Errorf("%s: Cache-Control %q, Content-Length %q", sniffed, h.Get("Cache-Control"), h.Get("Content-Length"))
+		}
+	}
+}
+
+// TestANonASCIIFilenameKeepsItsNameAndExtension: the ASCII `filename=` is the
+// fallback (it keeps the extension even when the whole stem was non-ASCII), and
+// `filename*=UTF-8”…` (RFC 5987) carries the original name, which a real
+// header parser recovers. Literal expected values, written out by hand.
+func TestANonASCIIFilenameKeepsItsNameAndExtension(t *testing.T) {
+	for name, want := range map[string]string{
+		"報告.pdf":     `attachment; filename="file.pdf"; filename*=UTF-8''%E5%A0%B1%E5%91%8A.pdf`,
+		"отчёт.docx": `attachment; filename="file.docx"; filename*=UTF-8''%D0%BE%D1%82%D1%87%D1%91%D1%82.docx`,
+		"résumé.pdf": `attachment; filename="r_sum_.pdf"; filename*=UTF-8''r%C3%A9sum%C3%A9.pdf`,
+		// The control: a name the fallback already carries whole gets no second
+		// parameter, so every existing header for an ASCII name is unchanged.
+		"report.pdf": `attachment; filename="report.pdf"`,
+	} {
+		got := Disposition(ServeAs("application/pdf"), name)
+		if got != want {
+			t.Errorf("Disposition(%q)\n got  %s\n want %s", name, got, want)
+		}
+		_, params, err := mime.ParseMediaType(got)
+		if err != nil {
+			t.Errorf("%q: the header does not parse: %v", name, err)
+			continue
+		}
+		// mime decodes filename* and prefers it, as a browser does.
+		if params["filename"] != name {
+			t.Errorf("%q: a header parser recovers %q", name, params["filename"])
+		}
+	}
+}
+
+// TestTheEncodedFilenameCannotInject: whatever the name holds, the header has
+// exactly the parameters Disposition writes — no line break, no extra quote,
+// no extra `;` — and the encoded value is attr-chars and %XX escapes only.
+func TestTheEncodedFilenameCannotInject(t *testing.T) {
+	for label, name := range map[string]string{
+		"crlf":        "é\r\nSet-Cookie: x=1.png",
+		"lf only":     "é\nX-Injected: 1.png",
+		"quote":       `é"; filename="evil.html`,
+		"backslash":   `é\"\\.png`,
+		"semicolon":   "é; filename*=UTF-8''evil.html",
+		"percent":     "é%0d%0aX: 1.png",
+		"very long":   strings.Repeat("é", 2000) + ".pdf",
+		"long ascii":  strings.Repeat("a;\"", 500) + "é.txt",
+		"only spaces": "  é  ",
+	} {
+		d := Disposition(ServeAs("image/png"), name)
+		if strings.ContainsAny(d, "\r\n\\") {
+			t.Errorf("%s: %q carries a line break or backslash", label, d)
+		}
+		if strings.Count(d, `"`) != 2 || strings.Count(d, ";") != 2 {
+			t.Errorf("%s: %q has extra quotes or parameters", label, d)
+		}
+		i := strings.Index(d, "; filename*=UTF-8''")
+		if i < 0 {
+			t.Errorf("%s: %q has no filename*", label, d)
+			continue
+		}
+		enc := d[i+len("; filename*=UTF-8''"):]
+		for j := 0; j < len(enc); j++ {
+			c := enc[j]
+			alnum := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+			if !alnum && !strings.ContainsRune("!#$&+-.^_`|~%", rune(c)) {
+				t.Errorf("%s: encoded value holds %q: %s", label, c, enc)
+				break
+			}
+		}
+		if len(enc) > 3*maxFilenameBytes {
+			t.Errorf("%s: encoded value is %d bytes; the stored name is capped at %d", label, len(enc), maxFilenameBytes)
+		}
+		_, params, err := mime.ParseMediaType(d)
+		if err != nil {
+			t.Errorf("%s: %q does not parse: %v", label, d, err)
+		} else if params["filename"] != CleanFilename(name) {
+			t.Errorf("%s: parsed name %q; want the cleaned original %q", label, params["filename"], CleanFilename(name))
 		}
 	}
 }

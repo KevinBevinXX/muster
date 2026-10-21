@@ -21,6 +21,9 @@ func TestSafeNameIsShellAndHeaderSafe(t *testing.T) {
 		"":                                "file",
 		"...":                             "file",
 		"日本語":                             "file",
+		// A stem that was ALL non-ASCII keeps its extension.
+		"報告.pdf":     "file.pdf",
+		"отчёт.docx": "file.docx",
 	} {
 		if got := SafeName(in); got != want {
 			t.Errorf("SafeName(%q) = %q; want %q", in, got, want)

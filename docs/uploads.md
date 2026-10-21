@@ -141,8 +141,14 @@ response carries all of:
   as muster. It replaces the app's own page CSP, which allows inline script.
 - `Cache-Control: private, no-store`.
 
-A task attachment is also **stored** with the type it is served as, so the task
-JSON's `contentType` never reports a markup type.
+A task attachment's stored `contentType` is the uploader's **label**, kept as
+given so the UI can show it; it never decides how the file is served.
+
+The `filename=` parameter is an ASCII fallback (`[A-Za-z0-9._-]`; a stem with
+nothing ASCII left keeps its extension, so `報告.pdf` is `file.pdf`). When that
+lost anything, an RFC 5987 `filename*=UTF-8''…` carries the original name,
+percent-encoded byte by byte, so no quote, `;`, backslash or line break in a
+name can reach the header.
 
 muster never hands out a presigned object-store URL: every download is
 streamed through muster, so these headers cannot be skipped by fetching the

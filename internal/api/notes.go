@@ -394,11 +394,14 @@ func (s *Server) handleNoteCreate(w http.ResponseWriter, r *http.Request) {
 				s.logger.Printf("notes: read attachment %q: %v", fh.Filename, err)
 				continue
 			}
-			// The type comes from the BYTES, never the part's claimed
-			// Content-Type: that is the attacker's to choose. It is stored as
-			// the type it is SERVED as, so the task's JSON never reports a
-			// markup type either.
-			ct := uploads.ServeAs(uploads.Sniff(data)).ContentType
+			// content_type is the uploader's LABEL, stored as given and shown as
+			// such. It never decides how the bytes are served:
+			// handleNoteAttachment sniffs the bytes on every request, and that
+			// is the only authority (uploads.SetServeHeaders).
+			ct := fh.Header.Get("Content-Type")
+			if ct == "" {
+				ct = "application/octet-stream"
+			}
 			if _, err := s.ext.Notes.AddAttachment(ctx, note.ID, notes.Attachment{
 				Filename:    fh.Filename,
 				ContentType: ct,

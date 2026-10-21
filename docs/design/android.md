@@ -1241,14 +1241,17 @@ guidance; the Play fee.
 - **Android policy churn:** background starts were tightened in Android 14, 15
   and 17; Live Update rules are new. Each targetSdk bump needs a pass over the
   step-up activity, bubbles and the Live Update.
-- **Note attachments are served inline, scripts included** (found by the
-  Phase 1 audit; it predates this design). `GET /tasks/{id}/attachments/{aid}`
-  answers with the stored content type and `Content-Disposition: inline` under
-  the app's ordinary CSP, so an HTML attachment's inline script runs on
-  muster's origin. In the shell, that origin is where the bridge listener
-  answers. **Sandbox note
-  attachments before the app ships** (for example a `sandbox` CSP or a
-  separate origin).
+- ~~**Note attachments are served inline, scripts included**~~ **Closed by
+  #207.** `GET /tasks/{id}/attachments/{aid}` used to answer with the stored
+  content type and `Content-Disposition: inline` under the app's ordinary CSP,
+  so an HTML attachment's inline script ran on muster's origin (where, in the
+  shell, the bridge listener answers). Every route that serves uploaded bytes
+  now sniffs the bytes and sends `attachment` (except PNG/JPEG/GIF/WebP),
+  `nosniff` and a `sandbox` CSP; see [uploads](../uploads.md#serving-uploaded-files).
+- **The shell needs a `DownloadListener` (or equivalent) before its gate
+  opens:** non-image attachments are now `Content-Disposition: attachment`,
+  and a WebView does nothing on one without a listener to hand it to the
+  system download manager.
 - **The WebView is Chromium's, updated separately.** A WebView regression can
   break the shell without an APK change.
 - **Two UIs for one conversation.** A notification and a bubble can show stale

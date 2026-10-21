@@ -208,19 +208,23 @@ func TestTaskAttachmentStillServesAPNGInline(t *testing.T) {
 	assertNotExecutable(t, "png via task attachment", rec.Header())
 }
 
-// The write side: a task created with an attachment stores the type its BYTES
-// have, never the multipart part's claimed Content-Type (which is also what
-// the task JSON reports as the attachment's contentType).
-func TestTaskCreateStoresTheSniffedTypeNotTheClaimedOne(t *testing.T) {
+// The write side, end to end: a task created with an attachment stores the
+// uploader's LABEL as given (content_type has one meaning: what the uploader
+// said), and the bytes are still SERVED as what they are — serve-time sniffing
+// is the only authority. Create, then fetch through the real route.
+func TestTaskCreateKeepsTheLabelAndServesTheSniffedType(t *testing.T) {
 	cases := []struct {
 		name, claimed, want string
 		data                []byte
 	}{
 		{"html claimed as an image", "image/png", "application/octet-stream", hostileFixtures[0].data},
 		{"svg claimed as svg", "image/svg+xml", "application/octet-stream", hostileFixtures[1].data},
-		// The control: the type is derived, not defaulted — a PNG claimed as HTML
-		// is stored as the image/png it is.
+		{"html claimed as html", "text/html", "application/octet-stream", hostileFixtures[0].data},
+		// The control: the served type is derived from the bytes, not defaulted —
+		// a PNG claimed as HTML is served as the image/png it is.
 		{"png claimed as html", "text/html", "image/png", pngBytes},
+		// A correctly labelled PDF keeps its label for the UI.
+		{"pdf labelled pdf", "application/pdf", "application/pdf", hostileFixtures[3].data},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -239,15 +243,26 @@ func TestTaskCreateStoresTheSniffedTypeNotTheClaimedOne(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/tasks", &buf)
 			req.Header.Set("Content-Type", mw.FormDataContentType())
 
-			store := &attachCaptureStore{}
+			store := &attachServeStore{byID: map[int64]notes.Attachment{}}
+			s := newTaskAttachmentServer(store)
 			rec := httptest.NewRecorder()
-			newAttachmentTestServer(store).handleNoteCreate(rec, req)
+			s.handleNoteCreate(rec, req)
 			if rec.Code != http.StatusOK || len(store.attached) != 1 {
 				t.Fatalf("create: %d, %d attachment(s)", rec.Code, len(store.attached))
 			}
-			if got := store.attached[0].ContentType; got != tc.want {
-				t.Errorf("stored ContentType %q; want %q (claimed %q)", got, tc.want, tc.claimed)
+			att := store.attached[0]
+			if att.ContentType != tc.claimed {
+				t.Errorf("stored ContentType %q; want the uploader's label %q", att.ContentType, tc.claimed)
 			}
+			store.byID[att.ID] = att
+			got := getTaskAttachment(t, s, att.NoteID, att.ID)
+			if got.Code != http.StatusOK || !bytes.Equal(got.Body.Bytes(), tc.data) {
+				t.Fatalf("serve: %d", got.Code)
+			}
+			if ct := got.Header().Get("Content-Type"); ct != tc.want {
+				t.Errorf("served Content-Type %q; want %q (labelled %q)", ct, tc.want, tc.claimed)
+			}
+			assertNotExecutable(t, tc.name, got.Header())
 		})
 	}
 }
