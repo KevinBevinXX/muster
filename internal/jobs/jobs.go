@@ -194,7 +194,9 @@ type NewJob struct {
 }
 
 // Outcome is how a job ended: a terminal status, and either a result
-// (succeeded) or a reason and an error message (failed, timed_out).
+// (succeeded) or a reason and an error message (failed, timed_out). A
+// succeeded outcome may also carry an error: a note that does not change the
+// status (its result file could not be deleted).
 type Outcome struct {
 	Status string
 	Result string
@@ -293,7 +295,10 @@ func normalize(o Outcome) Outcome {
 		if strings.ContainsRune(o.Result, 0) {
 			return Failed(ReasonInternal, "the result contains a NUL byte, which cannot be stored as text")
 		}
-		return Outcome{Status: StatusSucceeded, Result: o.Result}
+		// A succeeded job carries no reason, but may carry an error: a note
+		// about something that went wrong after the result was in hand (its
+		// result file could not be deleted), which does not unmake the result.
+		return Outcome{Status: StatusSucceeded, Result: o.Result, Error: truncateUTF8(strings.ReplaceAll(o.Error, "\x00", ""), MaxErrorBytes)}
 	case StatusFailed, StatusTimedOut:
 		if o.Reason == "" {
 			o.Reason = ReasonInternal

@@ -89,13 +89,23 @@ GET /api/jobs/{id}
 | `failed` | `reason` and `error` say why |
 | `timed_out` | the job's `timeout_s` elapsed (or ccd's own turn budget did); `reason`, `error` |
 
-`result` is present only on `succeeded`, and `reason` / `error` only on
-`failed` and `timed_out`.
+`result` is present only on `succeeded`, and `reason` only on `failed` and
+`timed_out`. `error` is on every `failed` and `timed_out` job; on a
+`succeeded` one it appears only as a note that does not change the outcome,
+when the job's result file could not be deleted (see below).
 
 **The result** is the agent's final reply text. With `result_path`, it is
 instead that file's contents, read from the agent's workspace after the turn,
 byte for byte. A file over 1 MiB, or one that is not UTF-8 text, fails the job
 (`result_read_failed`) rather than being cut or altered.
+
+**The result file is deleted once it has been read**, whether the read
+succeeded or failed: it is the job's own output, and left in the agent's
+checkout it would be an untracked file that makes the next `sha` job's
+checkout refuse the tree as dirty. Its content is in `result`. If the delete
+fails, the job keeps its status and `error` says
+`could not delete the result file <path> …`; the next `sha` job on that agent
+may then fail `checkout_failed`.
 
 **`reason`** is a stable token a caller can branch on:
 
@@ -127,7 +137,8 @@ byte for byte. A file over 1 MiB, or one that is not UTF-8 text, fails the job
    those changes onto the job's commit. Nothing is discarded.
 4. The prompt is sent as one turn — the same synchronous call `chief ask` makes
    to ccd's `/v1/responses`. The turn is done when ccd answers.
-5. With `result_path`, the file is read back through the provisioner's exec.
+5. With `result_path`, the file is read back through the provisioner's exec,
+   then deleted the same way.
 
 The job's `timeout_s` covers steps 3–5, not the wait in step 1.
 
@@ -153,10 +164,11 @@ The job's `timeout_s` covers steps 3–5, not the wait in step 1.
 - **`result_path` is checked as a string, not resolved.** No `..`, no absolute
   path — but a symlink in the workspace is followed, so the file read can be
   outside the working directory.
-- **A `result_path` inside the repository dirties it.** The working directory
-  is the agent's checkout, so a result file the turn writes there is an
-  untracked file, and the next `sha` job on that agent fails `checkout_failed`
-  until it is removed. Point `result_path` at a path the repository ignores.
+- **Only the job's own `result_path` file is cleaned up.** Anything else the
+  turn leaves in the checkout (another file it wrote, an edit) stays, and the
+  next `sha` job on that agent fails `checkout_failed` until it is removed. A
+  turn that fails (or times out) never reaches the read, so its result file,
+  if it wrote one, is not deleted either.
 - **A timeout does not stop the agent's turn.** It aborts muster's request to
   ccd and ends the job `timed_out`, but the CLI's turn may run on, and the next
   job on that agent can be refused `busy`.

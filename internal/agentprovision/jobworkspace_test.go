@@ -265,3 +265,57 @@ func TestCheckoutCommitRefusesADirtyTree(t *testing.T) {
 		t.Fatalf("HEAD = %s, want %s", head, first)
 	}
 }
+
+// TestRemoveWorkspaceFileDeletesOnlyThatFile: the file goes, a missing file is
+// not an error, a symlink is removed without touching its target, and a path
+// that leaves the workspace never reaches the instance.
+func TestRemoveWorkspaceFileDeletesOnlyThatFile(t *testing.T) {
+	a, d := newWorkspaceAdapter(t)
+	dir := filepath.Join(d.root, "widgets", "out")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	keep := filepath.Join(dir, "keep.md")
+	for _, f := range []string{"review.md", "keep.md"} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte(f), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := a.RemoveWorkspaceFile(context.Background(), workspaceAgent, "out/review.md"); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "review.md")); !os.IsNotExist(err) {
+		t.Fatalf("out/review.md is still there (stat: %v)", err)
+	}
+	if b, err := os.ReadFile(keep); err != nil || string(b) != "keep.md" {
+		t.Fatalf("a sibling was touched: %q %v", b, err)
+	}
+	if err := a.RemoveWorkspaceFile(context.Background(), workspaceAgent, "out/review.md"); err != nil {
+		t.Fatalf("removing a missing file = %v, want nil", err)
+	}
+	outside := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(outside, []byte("t"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "link.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.RemoveWorkspaceFile(context.Background(), workspaceAgent, "out/link.md"); err != nil {
+		t.Fatalf("remove link: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "link.md")); !os.IsNotExist(err) {
+		t.Fatalf("the symlink is still there (lstat: %v)", err)
+	}
+	if b, err := os.ReadFile(outside); err != nil || string(b) != "t" {
+		t.Fatalf("the symlink's target was touched: %q %v", b, err)
+	}
+	before := d.count()
+	for _, p := range []string{"../etc/passwd", "/etc/passwd", "out/../../x"} {
+		if err := a.RemoveWorkspaceFile(context.Background(), workspaceAgent, p); err == nil {
+			t.Errorf("%q was removed", p)
+		}
+	}
+	if d.count() != before {
+		t.Fatalf("a refused path ran %d exec(s)", d.count()-before)
+	}
+}

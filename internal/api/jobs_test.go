@@ -262,6 +262,20 @@ type jobWorkspace struct {
 	mu        sync.Mutex
 	files     map[string]string
 	checkouts []string
+	// removes records each RemoveWorkspaceFile; removeErr fails it.
+	removes   []string
+	removeErr error
+}
+
+func (w *jobWorkspace) RemoveWorkspaceFile(_ context.Context, _ agents.Agent, rel string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.removes = append(w.removes, rel)
+	if w.removeErr != nil {
+		return w.removeErr
+	}
+	delete(w.files, rel)
+	return nil
 }
 
 func (w *jobWorkspace) CheckoutCommit(_ context.Context, a agents.Agent, sha string) error {
@@ -768,5 +782,59 @@ func TestASubmissionPastTheAgentsCapacityIs429(t *testing.T) {
 	}
 	if code, out := f.call(t, http.MethodPost, "/api/jobs", map[string]any{"agent": "keen-wren", "prompt": "p", "idempotency_key": "k0"}, true); code != http.StatusOK || out["deduplicated"] != true {
 		t.Fatalf("a repeated key at capacity = %d %v, want 200 deduplicated", code, out)
+	}
+}
+
+// TestAResultFileIsDeletedOnceRead: the runner deletes a job's result_path file
+// after reading it — on a successful read and on a failed one — and a delete
+// that fails is noted in the job's error without unmaking its success.
+func TestAResultFileIsDeletedOnceRead(t *testing.T) {
+	f := newJobFixture(t, testServiceToken)
+	f.gw.reply = "wrote it"
+	f.ws.files["out/review.md"] = "# Review"
+	out := f.await(t, f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review", "result_path": "out/review.md"}))
+	if out["status"] != jobs.StatusSucceeded || out["result"] != "# Review" {
+		t.Fatalf("job = %v %q", out["status"], out["result"])
+	}
+	if _, ok := out["error"]; ok {
+		t.Fatalf("a clean success carries error %v", out["error"])
+	}
+	f.ws.mu.Lock()
+	_, left := f.ws.files["out/review.md"]
+	removes := append([]string(nil), f.ws.removes...)
+	f.ws.mu.Unlock()
+	if left || len(removes) != 1 || removes[0] != "out/review.md" {
+		t.Fatalf("after the job: file left %v, removes %q; want it deleted once", left, removes)
+	}
+
+	// A failed read deletes too (a file over the limit, or not UTF-8, is the
+	// job's own output all the same).
+	f.ws.mu.Lock()
+	f.ws.files["out/bin.dat"] = "\xff\xfe"
+	f.ws.mu.Unlock()
+	out = f.await(t, f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review", "result_path": "out/bin.dat"}))
+	if out["status"] != jobs.StatusFailed || out["reason"] != jobs.ReasonResultReadFailed {
+		t.Fatalf("non-UTF-8 job = %v/%v", out["status"], out["reason"])
+	}
+	f.ws.mu.Lock()
+	_, left = f.ws.files["out/bin.dat"]
+	f.ws.mu.Unlock()
+	if left {
+		t.Fatal("a file whose read failed was left in place")
+	}
+
+	// A delete that fails: the job still succeeds with its result, and error
+	// says what was left behind.
+	f.ws.mu.Lock()
+	f.ws.files["out/review.md"] = "# Again"
+	f.ws.removeErr = errors.New("rm: cannot remove: Read-only file system")
+	f.ws.mu.Unlock()
+	out = f.await(t, f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review", "result_path": "out/review.md"}))
+	const wantErr = JobResultRemoveFailedPrefix + "out/review.md (the next sha job on this agent may be refused as dirty): rm: cannot remove: Read-only file system"
+	if out["status"] != jobs.StatusSucceeded || out["result"] != "# Again" || out["error"] != wantErr {
+		t.Fatalf("job = %v %q error %q; want succeeded with the note %q", out["status"], out["result"], out["error"], wantErr)
+	}
+	if _, ok := out["reason"]; ok {
+		t.Fatalf("a succeeded job carries reason %v", out["reason"])
 	}
 }

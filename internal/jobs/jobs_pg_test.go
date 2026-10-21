@@ -90,6 +90,20 @@ func TestThePGStoreRoundTripsAJob(t *testing.T) {
 		got.Reason != "" || got.StartedAt.IsZero() || got.FinishedAt.IsZero() {
 		t.Fatalf("read back %+v", got)
 	}
+	// A succeeded job may carry a note in error; the CHECKs accept it.
+	j2, _, err := s.Create(ctx, NewJob{AgentID: a.ID, Agent: a.Name, Prompt: "again", TimeoutSeconds: 90})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.Start(ctx, j2.ID, "alpha", 0); !ok || err != nil {
+		t.Fatalf("start = %v, %v", ok, err)
+	}
+	if ok, err := s.Finish(ctx, j2.ID, Outcome{Status: StatusSucceeded, Result: "r", Error: "could not delete the result file"}); !ok || err != nil {
+		t.Fatalf("finish with a note = %v, %v", ok, err)
+	}
+	if got, _ := s.Get(ctx, j2.ID); got.Status != StatusSucceeded || got.Result != "r" || got.Error != "could not delete the result file" || got.Reason != "" {
+		t.Fatalf("read back %s/%q error %q reason %q", got.Status, got.Result, got.Error, got.Reason)
+	}
 	// A finished job does not finish again.
 	if ok, _ := s.Finish(ctx, j.ID, Failed("x", "y")); ok {
 		t.Fatal("a succeeded job was overwritten")

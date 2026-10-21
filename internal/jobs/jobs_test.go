@@ -94,6 +94,11 @@ func TestNormalizeKeepsARowTheDatabaseAccepts(t *testing.T) {
 	if len(got.Error) > MaxErrorBytes || !strings.HasPrefix(long, got.Error) || !utf8Valid(got.Error) {
 		t.Fatalf("a long error normalized to %d bytes (valid UTF-8: %v)", len(got.Error), utf8Valid(got.Error))
 	}
+	// A succeeded outcome keeps a note in Error (its result file could not be
+	// deleted), cut like any error, and stays succeeded.
+	if got := normalize(Outcome{Status: StatusSucceeded, Result: "r", Error: "could not delete"}); got != (Outcome{Status: StatusSucceeded, Result: "r", Error: "could not delete"}) {
+		t.Fatalf("a succeeded outcome with a note normalized to %#v", got)
+	}
 	if got := normalize(Outcome{Status: StatusRunning}); got.Status != StatusFailed {
 		t.Fatalf("a non-terminal outcome normalized to %s, want failed", got.Status)
 	}

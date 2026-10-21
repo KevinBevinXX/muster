@@ -15,15 +15,16 @@ import (
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
-// THE MACHINE JOB API'S TWO WORKSPACE OPERATIONS (internal/api jobs.go): move a
-// claude-code agent's checkout to a commit before a job's turn, and read a file
-// back out of its workspace after it. Both run a command inside the agent's
-// live instance through the driver's exec, exactly as the terminal does, so a
-// driver that cannot exec refuses them with provision.ErrUnsupported.
+// THE MACHINE JOB API'S WORKSPACE OPERATIONS (internal/api jobs.go): move a
+// claude-code agent's checkout to a commit before a job's turn, read a file
+// back out of its workspace after it, and delete that file once read. Each runs
+// a command inside the agent's live instance through the driver's exec, exactly
+// as the terminal does, so a driver that cannot exec refuses them with
+// provision.ErrUnsupported.
 //
-// 🔴 NEITHER COMMAND INTERPOLATES A VALUE INTO SHELL TEXT. The script is a
+// 🔴 NO COMMAND INTERPOLATES A VALUE INTO SHELL TEXT. The script is a
 // constant and every caller-supplied value travels as a positional argument
-// ($1, $2), so a sha or a path cannot become shell syntax. Both values are also
+// ($1, $2), so a sha or a path cannot become shell syntax. Every value is also
 // validated here (jobs.ValidSHA, jobs.ValidResultPath — the same predicates
 // the HTTP handler applies), before any exec.
 
@@ -104,6 +105,30 @@ func (a *Adapter) ReadWorkspaceFile(ctx context.Context, ag agents.Agent, rel st
 		return nil, fmt.Errorf("read %s: %w (%d bytes)", full, ErrFileTooLarge, max)
 	}
 	return out.Bytes(), nil
+}
+
+// removeScript deletes the file $1; a missing file is not an error. rm removes a
+// symlink itself, never what it points to.
+const removeScript = `rm -f -- "$1"`
+
+// RemoveWorkspaceFile deletes rel — a path relative to the directory ag's CLI
+// works in, validated as ReadWorkspaceFile validates it. A file that is not
+// there is not an error.
+func (a *Adapter) RemoveWorkspaceFile(ctx context.Context, ag agents.Agent, rel string) error {
+	if !jobs.ValidResultPath(rel) {
+		return fmt.Errorf("agentprovision: %q is not a relative path inside the workspace", rel)
+	}
+	dir, err := agentspec.ClaudeCodeWorkingDir(ag)
+	if err != nil {
+		return err
+	}
+	full := path.Join(dir, rel)
+	var out bytes.Buffer
+	cmd := []string{"sh", "-c", removeScript, "muster-job-remove", full}
+	if err := provision.Exec(ctx, a.driver, agents.RefOf(ag), cmd, nil, &out, &out); err != nil {
+		return fmt.Errorf("remove %s: %w: %s", full, err, strings.TrimSpace(capString(out.String(), 1024)))
+	}
+	return nil
 }
 
 func capString(s string, n int) string {

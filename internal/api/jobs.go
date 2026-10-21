@@ -263,8 +263,9 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 }
 
 // jobView is a job as the API answers it. `result` is present only on a
-// succeeded job and `reason`/`error` only on an unsuccessful one, so a caller
-// can branch on presence; the timestamps are RFC 3339 or null.
+// succeeded job and `reason` only on an unsuccessful one, so a caller can
+// branch on presence; `error` is on every unsuccessful job and on a succeeded
+// one only as a note. The timestamps are RFC 3339 or null.
 func jobView(j jobs.Job) map[string]any {
 	v := map[string]any{
 		"job_id":      j.ID,
@@ -290,6 +291,10 @@ func jobView(j jobs.Job) map[string]any {
 	}
 	if j.Reason != "" {
 		v["reason"] = j.Reason
+	}
+	// error is on every unsuccessful job, and on a succeeded one only as a note
+	// (its result file could not be deleted).
+	if j.Reason != "" || j.Error != "" {
 		v["error"] = j.Error
 	}
 	return v
@@ -500,20 +505,59 @@ func (s *Server) runJobTurn(ctx context.Context, a agents.Agent, sess agents.Cha
 		return o
 	}
 	if j.ResultPath != "" {
-		data, err := s.ext.JobWorkspace.ReadWorkspaceFile(ctx, a, j.ResultPath, jobs.MaxResultBytes)
-		if err != nil {
-			if expired() {
-				return jobs.TimedOut("the job's timeout elapsed while reading " + j.ResultPath + ": " + err.Error())
-			}
-			return jobs.Failed(jobs.ReasonResultReadFailed, err.Error())
-		}
-		if !utf8.Valid(data) {
-			return jobs.Failed(jobs.ReasonResultReadFailed, j.ResultPath+" is not UTF-8 text, so it cannot be returned verbatim")
-		}
-		return jobs.Outcome{Status: jobs.StatusSucceeded, Result: string(data)}
+		return s.removeJobResultFile(ctx, a, j, s.readJobResult(ctx, a, j))
 	}
 	if strings.TrimSpace(reply) == "" {
 		return jobs.Failed(jobs.ReasonEmptyReply, "the agent's turn ended with no reply text and the job named no result_path")
 	}
 	return o
 }
+
+// readJobResult is the outcome of reading a job's result_path back.
+func (s *Server) readJobResult(ctx context.Context, a agents.Agent, j jobs.Job) jobs.Outcome {
+	data, err := s.ext.JobWorkspace.ReadWorkspaceFile(ctx, a, j.ResultPath, jobs.MaxResultBytes)
+	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return jobs.TimedOut("the job's timeout elapsed while reading " + j.ResultPath + ": " + err.Error())
+		}
+		return jobs.Failed(jobs.ReasonResultReadFailed, err.Error())
+	}
+	if !utf8.Valid(data) {
+		return jobs.Failed(jobs.ReasonResultReadFailed, j.ResultPath+" is not UTF-8 text, so it cannot be returned verbatim")
+	}
+	return jobs.Outcome{Status: jobs.StatusSucceeded, Result: string(data)}
+}
+
+// jobResultRemoveTimeout bounds the delete of a job's result file, on a context
+// detached from the job's own, so a job whose read hit the deadline still
+// cleans up.
+const jobResultRemoveTimeout = 10 * time.Second
+
+// removeJobResultFile deletes the job's result_path file once it has been read
+// — whether the read succeeded or failed — and returns o, noting a failed
+// delete in its error without changing its status.
+//
+// 🔴 WHY THE FILE IS DELETED: the working directory is the agent's repository
+// checkout, so the result file is an untracked file there, and the next sha
+// job's checkout refuses a dirty tree. The file is this job's own output, so
+// removing it hides nothing; its content is in the job's result.
+func (s *Server) removeJobResultFile(ctx context.Context, a agents.Agent, j jobs.Job, o jobs.Outcome) jobs.Outcome {
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jobResultRemoveTimeout)
+	defer cancel()
+	err := s.ext.JobWorkspace.RemoveWorkspaceFile(rctx, a, j.ResultPath)
+	if err == nil {
+		return o
+	}
+	s.logger.Printf("jobs: %d: remove result file %s: %v", j.ID, j.ResultPath, err)
+	note := JobResultRemoveFailedPrefix + j.ResultPath + " (the next sha job on this agent may be refused as dirty): " + err.Error()
+	if o.Error != "" {
+		o.Error += "; " + note
+	} else {
+		o.Error = note
+	}
+	return o
+}
+
+// JobResultRemoveFailedPrefix opens the note a job's error carries when its
+// result file could not be deleted.
+const JobResultRemoveFailedPrefix = "could not delete the result file "
