@@ -344,8 +344,9 @@ Anything else is **unknown**. An unknown window holds the send queue, and its
 card shows no status.
 
 The host reads only these Hermes files: `state.db` (and its `-wal` and `-shm`),
-`terminal-sessions/tty-*`, and `shell-hooks-allowlist.json`. It never opens
-`auth.json`, `.env`, `config.yaml`, `pastes/`, `memories/`, `logs/` or
+`terminal-sessions/tty-*`, and `shell-hooks-allowlist.json` — and, only with
+`-hermes-send`, `config.yaml`'s `display.vim_mode` (that key alone). It never
+opens `auth.json`, `.env`, `pastes/`, `memories/`, `logs/` or
 `runtime/active_sessions.json`. The Hermes home is `$HERMES_HOME`, else
 `~/.hermes` (`-hermes-home` overrides it).
 
@@ -357,11 +358,13 @@ the status hook (below). Turn it on per host, and only:
 
 - after `make test-livehermes` has ended with `HERMES HARNESS VERDICT: GREEN`
   against the Hermes commit that host runs;
-- 🔴 **never on a host whose Hermes uses vi mode** (`display.vim_mode`). One
-  Escape there enters vi navigation, where the message's characters would be
-  read as commands. muster cannot read Hermes's `config.yaml`, so this is yours
-  to check. The host refuses when it sees a vi label in the status bar, but the
-  label is trimmed off once a session title fills the bar, so that is no gate.
+- 🔴 **never in vi mode**, and the host enforces it: it reads
+  `display.vim_mode` from the Hermes home's `config.yaml` (that one section
+  and key) on every connect and every send, and while it is on — or the file
+  cannot be read — advertises nothing and sends nothing. One Escape there
+  would enter vi navigation, where the message's characters would be read as
+  commands. The startup log and `muster-mirror -list -hermes` (`vi-mode`)
+  say which.
 
 With it on, the window's rendered view offers Send, Queue and Send now. Every
 send goes through the host's **gated send**, in this order:
@@ -369,17 +372,18 @@ send goes through the host's **gated send**, in this order:
 1. muster refuses unless the window is **idle** (busy, waiting and unknown are
    refused, saying why), and sends the status time it decided on;
 2. the host refuses a message whose text starts with `/` or `!` (Hermes would
-   run it as a command) or ends with `\` (Enter would continue the line), and
+   run it as a command), ends with `\` (Enter would continue the line), or is
+   only a number (after `/resume` Hermes takes it as a session to switch to), and
    one so long, on one line, that Hermes's input box could not show it whole
    (about 8 rows: shorten it, or send six or more lines, which Hermes collapses);
 3. the host checks again that Hermes is idle at exactly that time;
 4. it checks the screen: Hermes's status bar is there (it is blank while the
-   command palette or the model picker is open), no stash panel, no vi label,
+   command palette or the model picker is open), no stash panel (found by its
+   frame), no vi label,
    no images attached, the idle prompt `❯ ` with an empty box, nothing below
    it. Any approval, question, password prompt, confirm or running turn
    changes that prompt, so it is refused here;
-5. it types three Escapes, 1.5 s apart, checking the screen after each, and
-   stops at the first that does not pass;
+5. it types one Escape, waits 1.5 s and checks the screen again;
 6. it pastes the message, waits 150 ms, checks the status again and that the
    box shows exactly the message (or Hermes's `[Pasted text #N: L lines → …]`
    placeholder), then presses Enter;
@@ -390,17 +394,18 @@ Nothing was pasted** (refused at steps 1–5, possibly after some Escapes);
 **Pasted, not submitted** (the text is in Hermes's input box and Enter was not
 pressed: check the terminal); or **May have been submitted: check the
 conversation before sending again** (Enter was pressed and Hermes recorded no
-message in time). A send takes about five seconds. Right after a turn ends,
+message in time). After a "may have been submitted", muster will not send the
+same message again by itself: sending it again is refused, and the message
+box offers **Send again** for when you have checked. Queued messages and Send
+now say the same words, never "Not sent". A send takes about five seconds. Right after a turn ends,
 Hermes can say it is idle while its screen still shows the turn finishing; a
 send in that moment is refused, and a queued message waits its idle time
 anyway.
 
 ⚠ **Accepted residual risk** ([design](design/hermes.md#residual-cases-accepted)):
 a person opening an overlay at the terminal in the second before muster's
-Enter; an overlay a future Hermes adds before the harness is re-run; the stash
-panel with the status bar's stash field turned off or trimmed (the Escapes
-close it); and a turn Hermes starts on its own between the last check and
-Enter. Hermes's `/busy queue` (it saves `display.busy_input_mode: queue`)
+Enter; an overlay a future Hermes adds before the harness is re-run; and a
+turn Hermes starts on its own between the last check and Enter. Hermes's `/busy queue` (it saves `display.busy_input_mode: queue`)
 turns the last one into a queued message instead of an interrupted turn; with
 it, Hermes can still submit a queued message up to about 2 s after it says
 idle, under load. A pasted message of 2,000 characters or more is saved by
