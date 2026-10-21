@@ -34,18 +34,22 @@ func TestEveryDocumentCarriesTheManifestAndTheWorker(t *testing.T) {
 	}
 }
 
-// TestTheUpdateToastSitsAtTheTop: the toast is anchored to the top of the
-// viewport (under the safe-area inset), never to the bottom, where the phone's
+// TestTheUpdateToastSitsAtTheTop: the update pill is anchored to the top-RIGHT
+// corner (under the safe-area insets), never to the bottom, where the phone's
 // composer, Send, the FAB and the chat button live; and it can be dismissed.
-// (Where it lands under each page's header is e2e/tests/update.spec.ts.)
+// (Where it lands on each page, clear of every control, is
+// e2e/tests/update.spec.ts.)
 func TestTheUpdateToastSitsAtTheTop(t *testing.T) {
 	h := renderString(t, Page("tasks", Features{}))
 	toast := between(h, `<div id="sw-update-toast"`, ">")
 	if !strings.Contains(toast, "top-[calc(env(safe-area-inset-top)+0.5rem)]") {
 		t.Errorf("the update toast is not anchored under the top safe-area inset: %q", toast)
 	}
-	if regexp.MustCompile(`\bbottom-`).MatchString(toast) {
-		t.Errorf("the update toast is anchored to the bottom: %q", toast)
+	if !strings.Contains(toast, "right-[calc(env(safe-area-inset-right)+0.75rem)]") {
+		t.Errorf("the update pill is not anchored to the right safe-area inset: %q", toast)
+	}
+	if regexp.MustCompile(`\b(bottom-|inset-x-)`).MatchString(toast) {
+		t.Errorf("the update toast is a bottom-anchored or full-width bar, not a corner pill: %q", toast)
 	}
 	if !strings.Contains(h, `data-sw-dismiss=""`) {
 		t.Error("the update toast has no dismiss control")

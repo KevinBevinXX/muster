@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { hookToken, updatePort, versionA, versionB } from '../lib/env';
+import { hookToken, updatePort, versionA, versionB, versionC } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 
 // A deploy, end to end: build A serves the page, build B replaces it on the
@@ -105,13 +105,16 @@ test('a new build is offered, waits for Reload, and Reload takes it exactly once
   expect(await page.evaluate(controllerBuild)).toBe(versionA);
 
   const loadsBefore = Number(await page.evaluate(() => sessionStorage.getItem('loads')));
+  // 🔴 THE LOAD EVENT IS ARMED BEFORE THE CLICK. Polling the controller and
+  // then waitForLoadState('load') raced: the controller turns B in the OLD
+  // document (controllerchange fires before location.reload() navigates), the
+  // old document is already "loaded", and the next evaluate then ran into the
+  // navigation — "Execution context was destroyed". Waiting for the NEW
+  // document's load event cannot see the old one.
+  const reloaded = page.waitForEvent('load', { timeout: 15_000 });
   await page.locator('[data-sw-reload]').click();
-  // The reload this click causes destroys the page's context mid-evaluate;
-  // that is the expected event, so a destroyed context reads as "not yet".
-  await expect
-    .poll(() => page.evaluate(controllerBuild).catch(() => null), { timeout: 15_000 })
-    .toBe(versionB);
-  await page.waitForLoadState('load');
+  await reloaded;
+  expect(await page.evaluate(controllerBuild)).toBe(versionB);
   // No sleep to "let a second reload happen": once the page is controlled by B
   // with NOTHING waiting, no reload source is left (the fallback timer died
   // with the old document, and no further controllerchange can come).
@@ -455,67 +458,154 @@ test('Reload still reloads when the waiting worker never takes control', async (
   expect(Number(await page.evaluate(() => sessionStorage.getItem('loads'))), 'the fallback reloaded once').toBe(before + 1);
 });
 
-// PLACEMENT (operator report: "it's blocking the UI, move it higher up"). On a
-// phone the toast sits at the TOP, under the sticky header — never on the
-// header, the composer, Send, or any other fixed/sticky control. Offered for
-// real (a deploy), so it is placed by the code that places it in production.
-test.describe('placement at phone width', () => {
+// PLACEMENT (operator report: "it's blocking the UI, move it higher up"; the
+// operator then chose "a compact pill in the top corner"). The pill sits in
+// the top-right corner and covers NO control — on every page,
+// at a phone in both orientations and on a desktop, and with the sidebar open.
+// Offered for real (a deploy), so it is placed by the code that places it in
+// production.
+//
+// 🔴 "COVERS" IS ASKED OF THE BROWSER, NOT COMPUTED FROM BOXES. Every
+// interactive element whose box intersects the pill is probed with
+// elementFromPoint across the intersection: if the pill (or its child) is what
+// a tap there would hit, the control is covered. An open sidebar that slides
+// OVER the pill therefore passes — its links are what the tap reaches — and a
+// pill stacked over them fails. (This used to check only fixed/sticky elements
+// and the composer, while its title said "covers no control".)
+const coverageJS = `(() => {
+  const t = document.getElementById('sw-update-toast');
+  const tb = t.getBoundingClientRect();
+  const header = document.querySelector('header');
+  const sel = 'a, button, input, select, textarea, [role=button], [tabindex]';
+  const covered = [];
+  let intersecting = 0;
+  for (const e of document.querySelectorAll(sel)) {
+    if (e === t || t.contains(e) || e.contains(t)) continue;
+    const b = e.getBoundingClientRect();
+    const l = Math.max(b.left, tb.left), r = Math.min(b.right, tb.right);
+    const top = Math.max(b.top, tb.top), bot = Math.min(b.bottom, tb.bottom);
+    if (r - l < 1 || bot - top < 1) continue;
+    intersecting++;
+    let hitPill = false;
+    for (const fx of [0.1, 0.5, 0.9]) for (const fy of [0.1, 0.5, 0.9]) {
+      const h = document.elementFromPoint(l + (r - l) * fx, top + (bot - top) * fy);
+      if (h && (h === t || t.contains(h))) hitPill = true;
+    }
+    if (hitPill) covered.push(e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') + ' "' + (e.textContent || '').trim().slice(0, 24) + '"');
+  }
+  return { top: tb.top, right: tb.right, width: tb.width, height: tb.height, vw: innerWidth, vh: innerHeight,
+    headerBottom: header ? header.getBoundingClientRect().bottom : 0, intersecting, covered };
+})()`;
+
+const placements = [
+  { name: 'phone 390×844', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true }, sidebar: true, sidebarReachesPill: true },
+  // At 844 wide the 18rem sidebar ends far left of a right-anchored pill.
+  { name: 'phone landscape 844×390', use: { viewport: { width: 844, height: 390 }, hasTouch: true, isMobile: true }, sidebar: true, sidebarReachesPill: false },
+  // The desktop sidebar is always open (lg:), so every page above already had it.
+  { name: 'desktop 1280×800', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false }, sidebar: false, sidebarReachesPill: false },
+];
+for (const vp of placements) {
+  test.describe(`placement ${vp.name}`, () => {
+    test.use(vp.use);
+
+    test('the update pill sits in the top-right corner and covers no control', async ({ page }) => {
+      server = await startServer(versionA, updatePort);
+      const origin = `http://localhost:${updatePort}`;
+      await page.goto(origin + '/tasks');
+      await waitControlled(page);
+      await deployB();
+      await page.evaluate(checkForUpdate);
+      const pill = page.locator('#sw-update-toast');
+      let sidebarIntersections = 0;
+      for (const path of ['/', '/tasks', '/agents', '/agents/docs-sweeper']) {
+        // A full load re-offers the waiting update from the registration check.
+        await page.goto(origin + path);
+        await expect(pill).toBeVisible();
+        await page.waitForLoadState('networkidle');
+        const r = await page.evaluate(coverageJS);
+        expect(r.height, `CONTROL on ${path}: the pill was really laid out`).toBeGreaterThan(20);
+        expect(r.width, `on ${path}: a compact pill, not a bar`).toBeLessThan(220);
+        expect(r.right, `on ${path}: anchored to the right edge`).toBeGreaterThan(r.vw - 32);
+        // In the top corner: under the safe-area inset (0 here), in the top
+        // half. Whether that is IN the header's empty right end or below the
+        // header is the placement's choice; covering a control never is.
+        expect(r.top, `on ${path}: under the safe-area inset`).toBeGreaterThanOrEqual(0);
+        expect(r.top + r.height, `on ${path}: in the top half`).toBeLessThan(r.vh / 2);
+        console.log(`placement ${vp.name} ${path}: top=${r.top} headerBottom=${r.headerBottom} width=${r.width}`);
+        expect(r.covered, `on ${path}: covers no control`).toEqual([]);
+        if (vp.sidebar) {
+          await page.click('#sidebar-open');
+          await expect(page.locator('#sidebar a[data-tab="tasks"]')).toBeVisible();
+          // Let the slide-in finish: the probe reads where things ARE.
+          await page.locator('#sidebar').evaluate((el) => Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished)));
+          const s = await page.evaluate(coverageJS);
+          sidebarIntersections += s.intersecting;
+          expect(s.covered, `on ${path} with the sidebar open: covers no control`).toEqual([]);
+          await page.keyboard.press('Escape');
+        }
+      }
+      if (vp.sidebarReachesPill) {
+        // CONTROL: the open sidebar really overlaps the pill somewhere, so the
+        // "slides over it" case was exercised rather than vacuously passed.
+        expect(sidebarIntersections, 'CONTROL: the open sidebar overlapped the pill').toBeGreaterThan(0);
+      }
+      // The chat page really had its composer.
+      await expect(page.locator('#chat-input')).toBeVisible();
+    });
+  });
+}
+
+test.describe('the pill, on a phone', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
-  test('the update toast sits under the header and covers no control', async ({ page }) => {
+  // Showing the pill moves nothing: it is placed while invisible, then shown.
+  test('offering the update causes no layout shift', async ({ page }) => {
     server = await startServer(versionA, updatePort);
     const origin = `http://localhost:${updatePort}`;
     await page.goto(origin + '/tasks');
     await waitControlled(page);
     await deployB();
     await page.evaluate(checkForUpdate);
-    for (const path of ['/tasks', '/agents', '/agents/docs-sweeper']) {
-      // A full load re-offers the waiting update from the registration check.
-      await page.goto(origin + path);
-      const toast = page.locator('#sw-update-toast');
-      await expect(toast).toBeVisible();
-      const r = await page.evaluate(() => {
-        const t = document.getElementById('sw-update-toast')!;
-        const tb = t.getBoundingClientRect();
-        const hit = (b: DOMRect) => !(tb.right <= b.left || tb.left >= b.right || tb.bottom <= b.top || tb.top >= b.bottom);
-        const header = document.querySelector('header')!.getBoundingClientRect();
-        // Every visible fixed/sticky element that is not the toast: the header,
-        // the composer bar, the FAB, the chat button.
-        const covered: string[] = [];
-        let checked = 0;
-        for (const e of Array.from(document.querySelectorAll('body *'))) {
-          if (e === t || t.contains(e) || e.contains(t)) continue;
-          const cs = getComputedStyle(e);
-          if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
-          // A closed overlay (the sidebar's backdrop) spans the screen but is
-          // neither seen nor tapped.
-          if (cs.visibility === 'hidden' || cs.opacity === '0' || cs.pointerEvents === 'none') continue;
-          const b = e.getBoundingClientRect();
-          if (b.width === 0 || b.height === 0) continue;
-          checked++;
-          if (hit(b)) covered.push(e.tagName.toLowerCase() + (e.id ? '#' + e.id : ''));
-        }
-        for (const id of ['chat-input', 'chat-send']) {
-          const e = document.getElementById(id);
-          if (e && hit(e.getBoundingClientRect())) covered.push('#' + id);
-        }
-        return { top: tb.top, bottom: tb.bottom, height: tb.height, headerBottom: header.bottom, vh: innerHeight, checked, covered };
-      });
-      expect(r.height, `CONTROL on ${path}: the toast was really laid out`).toBeGreaterThan(20);
-      expect(r.checked, `CONTROL on ${path}: fixed/sticky controls were found to compare against`).toBeGreaterThan(0);
-      expect(r.top, `on ${path}: under the header`).toBeGreaterThanOrEqual(r.headerBottom);
-      expect(r.bottom, `on ${path}: in the top half of the screen`).toBeLessThan(r.vh / 2);
-      expect(r.covered, `on ${path}: covers nothing`).toEqual([]);
-    }
-    // The chat composer page really has its composer (the overlap check above is
-    // only as good as this).
-    await expect(page.locator('#chat-input')).toBeVisible();
+    const pill = page.locator('#sw-update-toast');
+    await expect(pill).toBeVisible();
+    await page.waitForLoadState('networkidle');
+    const shift = await page.evaluate(async () => {
+      const t = document.getElementById('sw-update-toast')!;
+      t.hidden = true;
+      let total = 0;
+      const po = new PerformanceObserver((l) => { for (const e of l.getEntries()) total += (e as unknown as { value: number }).value; });
+      po.observe({ type: 'layout-shift', buffered: false });
+      // htmx:load is what re-offers a waiting update after a swap.
+      document.body.dispatchEvent(new Event('htmx:load', { bubbles: true }));
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      await new Promise((r) => setTimeout(r, 0));
+      po.disconnect();
+      return { total, shown: !t.hidden };
+    });
+    expect(shift.shown, 'CONTROL: the pill was offered again').toBe(true);
+    expect(shift.total).toBe(0);
+  });
 
-    // Dismissible: the × hides it, and an in-app navigation does not re-offer
-    // the update that was dismissed.
+  // Dismissible, and a dismissal is for THAT update: an in-app navigation does
+  // not re-offer it, but a NEWER build (a third deploy) is offered again.
+  test('a dismissed update stays dismissed, and a newer build is offered again', async ({ page }) => {
+    server = await startServer(versionA, updatePort);
+    const origin = `http://localhost:${updatePort}`;
+    await page.goto(origin + '/tasks');
+    await waitControlled(page);
+    await deployB();
+    await page.evaluate(checkForUpdate);
+    const pill = page.locator('#sw-update-toast');
+    await expect(pill).toBeVisible();
     await page.locator('[data-sw-dismiss]').tap();
-    await expect(page.locator('#sw-update-toast')).toBeHidden();
+    await expect(pill).toBeHidden();
     await page.evaluate(() => document.body.dispatchEvent(new Event('htmx:load', { bubbles: true })));
-    await expect(page.locator('#sw-update-toast')).toBeHidden();
+    await expect(pill, 'the dismissed update is not re-offered by an in-app navigation').toBeHidden();
+
+    // A third build: B is replaced in the waiting slot by C, which is offered.
+    await server!.stop();
+    server = await startServer(versionC, updatePort);
+    await page.evaluate(checkForUpdate);
+    await expect(pill, 'a newer build is offered after a dismissal').toBeVisible();
   });
 });

@@ -44,33 +44,36 @@ func pwaChrome() g.Node {
 // at install, so an open page is never silently switched to a worker whose
 // inline scripts it does not have. Reload is the operator's decision.
 //
-// 🔴 IT SITS AT THE TOP, UNDER THE STICKY HEADER — NOT AT THE BOTTOM. It used
-// to float 5.5rem above the bottom edge, which on a phone is exactly where the
-// composer, Send, the FAB and the chat button live: the operator reported it
-// "blocking the UI". The class below is the fallback (just under the safe-area
-// inset); pwaScript's placeToast moves it under whatever header the page has
-// before it is shown, so it never covers the header's controls either. It is
-// `fixed`, so it takes no layout space and showing it shifts nothing.
+// 🔴 IT IS A COMPACT PILL IN THE TOP-RIGHT CORNER — NOT A BAR AT THE BOTTOM. It used to float 5.5rem above the bottom edge, which
+// on a phone is exactly where the composer, Send, the FAB and the chat button
+// live: the operator reported it "blocking the UI", and chose this shape
+// ("Updated · Reload ×", top-right). The classes below put it in the corner
+// under the safe-area insets; pwaScript's placeToast slides it DOWN past any
+// control it would sit on (a header icon, a filter chip) before it is shown. It is `fixed` and sized to its content, so it takes no layout space,
+// showing it shifts nothing, and it blocks taps only inside its own box.
+//
+// ⚠ z-[35] IS BETWEEN THE FAB/BACKDROP (z-30) AND THE SIDEBAR PANEL (z-40): an
+// open sidebar slides OVER the pill, so the pill never covers its links.
 func updateToast() g.Node {
 	return Div(
 		ID("sw-update-toast"),
 		g.Attr("role", "status"),
 		g.Attr("aria-live", "polite"),
 		g.Attr("hidden", ""),
-		Class("fixed inset-x-0 top-[calc(env(safe-area-inset-top)+0.5rem)] z-50 mx-auto flex w-[calc(100%-2rem)] max-w-sm items-center gap-2 rounded-xl bg-s3 py-1.5 pl-4 pr-1.5 text-sm text-fg shadow-xl shadow-black/40 ring-1 ring-inset ring-edge"),
-		Span(Class("flex-1"), g.Text("muster has been updated.")),
+		Class("fixed right-[calc(env(safe-area-inset-right)+0.75rem)] top-[calc(env(safe-area-inset-top)+0.5rem)] z-[35] flex items-center rounded-full bg-s3 pl-3 text-xs text-fg shadow-lg shadow-black/40 ring-1 ring-inset ring-edge"),
+		Span(Class("whitespace-nowrap"), g.Text("Updated ·")),
 		Button(
 			Type("button"),
 			g.Attr("data-sw-reload", ""),
-			Class("press inline-flex min-h-[44px] items-center justify-center rounded-lg bg-accent px-4 text-sm font-semibold text-on-accent transition hover:bg-accent/90"),
+			Class("press inline-flex min-h-[44px] items-center px-2 text-xs font-semibold text-accent transition hover:underline"),
 			g.Text("Reload"),
 		),
 		Button(
 			Type("button"),
 			g.Attr("data-sw-dismiss", ""),
 			g.Attr("aria-label", "Dismiss"),
-			Class("press inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-muted transition hover:bg-s2"),
-			g.Raw(`<svg class="h-4 w-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>`),
+			Class("press inline-flex min-h-[44px] min-w-[36px] items-center justify-center rounded-r-full pr-1 text-muted transition hover:text-fg"),
+			g.Raw(`<svg class="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>`),
 		),
 	)
 }
@@ -126,25 +129,97 @@ func pwaScript() g.Node {
   // --- update toast -----------------------------------------------------------
   var wantReload = false;
   var dismissed = null; // the waiting worker the operator dismissed the toast for
-  // placeToast puts the toast just under the page's sticky header (or the
-  // safe-area inset, when there is none). It runs BEFORE the toast is unhidden,
-  // so the toast appears in its final place and nothing moves.
+  // placeToast puts the pill in the top-right corner, under the safe-area
+  // inset — and then, if a control sits there (a header icon, a filter chip),
+  // slides it DOWN the right edge to the first spot where it covers no visible
+  // control. On the shell pages (/, /tasks, /agents) the header's right end is
+  // empty, so the pill sits there; on an agent chat page the header's icons push
+  // it below the header. (Measured at 390 wide: BELOW the header on /tasks the
+  // right column has no free 44px slot at all — chips, status filters, Select,
+  // then the cards — so "always under the header" would always cover a control.)
+  // With no free spot anywhere, the spot covering the least is used. It runs
+  // while the pill is laid out but invisible (visibility:hidden), BEFORE it is
+  // shown, so the pill appears in its final place and nothing moves.
+  var CONTROLS = 'a[href], button, input, select, textarea, [role=button], [tabindex]';
+  // controlBoxes: the boxes of visible controls in the pill's column.
+  function controlBoxes(t, pill) {
+    var boxes = [];
+    var all = document.querySelectorAll(CONTROLS);
+    for (var i = 0; i < all.length; i++) {
+      var e = all[i];
+      if (t.contains(e)) continue;
+      var r = e.getBoundingClientRect();
+      if (!r.width || !r.height || r.right <= pill.left || r.left >= pill.right) continue;
+      if (getComputedStyle(e).visibility === 'hidden') continue;
+      boxes.push(r);
+    }
+    return boxes;
+  }
+  // overlap: how much of the controls' area a pill at [top, top+height) would
+  // cover (with a 4px margin), 0 when it covers none.
+  function overlap(boxes, pill, top, height) {
+    var sum = 0;
+    for (var j = 0; j < boxes.length; j++) {
+      var b = boxes[j];
+      var dy = Math.min(b.bottom + 4, top + height) - Math.max(b.top - 4, top);
+      if (dy <= 0) continue;
+      sum += dy * (Math.min(b.right, pill.right) - Math.max(b.left, pill.left));
+    }
+    return sum;
+  }
   function placeToast(t) {
-    var h = document.querySelector('header');
-    var below = h ? Math.max(0, Math.round(h.getBoundingClientRect().bottom)) : 0;
-    t.style.top = below > 0 ? 'max(calc(env(safe-area-inset-top) + 0.5rem), ' + (below + 8) + 'px)' : '';
+    var vis = t.style.visibility;
+    var wasHidden = t.hidden;
+    t.style.top = '';
+    t.style.visibility = 'hidden';
+    t.hidden = false;
+    var pill = t.getBoundingClientRect();
+    var boxes = controlBoxes(t, pill);
+    var best = pill.top, bestCost = Infinity, limit = window.innerHeight - pill.height - 8;
+    for (var top = pill.top; top <= limit; top += 4) {
+      var cost = overlap(boxes, pill, top, pill.height);
+      if (cost < bestCost) { best = top; bestCost = cost; }
+      if (cost === 0) break;
+    }
+    t.style.top = best + 'px';
+    t.hidden = wasHidden;
+    t.style.visibility = vis;
+  }
+  // 🔴 THE PILL IS PLACED ONCE THE PAGE HAS SETTLED, NOT AT REGISTRATION. The
+  // registration resolves before the page's htmx "load" fragments (the task
+  // list, its label chips) have arrived; a pill placed then sat on a chip that
+  // landed a moment later. So the first show waits for the document's load
+  // event and for no htmx request in flight (at most ~3 s, then shows anyway).
+  function whenSettled(fn) {
+    var tries = 0;
+    (function check() {
+      var busy = document.readyState !== 'complete' || document.querySelector('.htmx-request');
+      if (busy && ++tries < 30) { setTimeout(check, 100); return; }
+      fn();
+    })();
   }
   function offerUpdate(w) {
     if (w && w === dismissed) return;
     var t = document.getElementById('sw-update-toast');
-    if (!t) return;
-    if (t.hidden) placeToast(t);
-    t.hidden = false;
+    if (!t || !t.hidden) return;
+    whenSettled(function () {
+      var t2 = document.getElementById('sw-update-toast');
+      if (!t2 || !t2.hidden || (w && w === dismissed)) return;
+      placeToast(t2);
+      t2.hidden = false;
+    });
   }
-  window.addEventListener('resize', function () {
+  // A swap that lands a control UNDER a visible pill (a list refresh) moves the
+  // pill off it. Only then: an unprompted move is a layout shift, so a pill
+  // that covers nothing is never touched.
+  function replaceIfCovering() {
     var t = document.getElementById('sw-update-toast');
-    if (t && !t.hidden) placeToast(t);
-  });
+    if (!t || t.hidden) return;
+    var pill = t.getBoundingClientRect();
+    if (overlap(controlBoxes(t, pill), pill, pill.top, pill.height) > 0) placeToast(t);
+  }
+  document.addEventListener('htmx:afterSettle', replaceIfCovering);
+  window.addEventListener('resize', replaceIfCovering);
   registered.then(function (reg) {
     if (reg.waiting && navigator.serviceWorker.controller) offerUpdate(reg.waiting);
     // A boosted navigation swaps the body, and the toast with it: the new one
