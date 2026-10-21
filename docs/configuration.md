@@ -182,6 +182,7 @@ Each setting is also a flag (`-url`, `-token-file`, …). See
 | `MUSTER_MIRROR_TOKEN` | none | this or the file | The mirror token itself. |
 | `MUSTER_MIRROR_HOST` | the short hostname | no | This host's name. It must match the name the token was minted for. |
 | `MUSTER_MIRROR_INTERACTIVE` | off | no | Allows typing and sending messages. The default is read-only. |
+| `MUSTER_MIRROR_HERMES_SEND` | off | no | With `MUSTER_MIRROR_INTERACTIVE`: lets muster send to Hermes windows, through the gated send (screen check, Escapes, a database-confirmed submit; [hermes.md](design/hermes.md)). Turn it on per host only after `make test-livehermes` is green against that host's Hermes, and **never** on a host whose Hermes uses vi mode (`display.vim_mode`). |
 | `MUSTER_MIRROR_TMUX_SOCKET` | tmux's default | no | Uses a different tmux server: `tmux -L <name>`. |
 | `MUSTER_MIRROR_TMUX_SOCKET_PATH` | none | no | `tmux -S <path>`. It wins over the socket name. |
 | `MUSTER_MIRROR_LABELS_FILE` | none | no | A JSON object `{"<session>": "<codename>"}` of display labels. |
