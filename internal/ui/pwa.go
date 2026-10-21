@@ -43,19 +43,34 @@ func pwaChrome() g.Node {
 // 🔴 THE NEW WORKER WAITS FOR THIS BUTTON. sw.js no longer calls skipWaiting()
 // at install, so an open page is never silently switched to a worker whose
 // inline scripts it does not have. Reload is the operator's decision.
+//
+// 🔴 IT SITS AT THE TOP, UNDER THE STICKY HEADER — NOT AT THE BOTTOM. It used
+// to float 5.5rem above the bottom edge, which on a phone is exactly where the
+// composer, Send, the FAB and the chat button live: the operator reported it
+// "blocking the UI". The class below is the fallback (just under the safe-area
+// inset); pwaScript's placeToast moves it under whatever header the page has
+// before it is shown, so it never covers the header's controls either. It is
+// `fixed`, so it takes no layout space and showing it shifts nothing.
 func updateToast() g.Node {
 	return Div(
 		ID("sw-update-toast"),
 		g.Attr("role", "status"),
 		g.Attr("aria-live", "polite"),
 		g.Attr("hidden", ""),
-		Class("fixed inset-x-0 bottom-[calc(5.5rem+env(safe-area-inset-bottom))] z-50 mx-auto flex w-[calc(100%-2rem)] max-w-sm items-center gap-3 rounded-xl bg-s3 px-4 py-2 text-sm text-fg shadow-xl shadow-black/40 ring-1 ring-inset ring-edge"),
+		Class("fixed inset-x-0 top-[calc(env(safe-area-inset-top)+0.5rem)] z-50 mx-auto flex w-[calc(100%-2rem)] max-w-sm items-center gap-2 rounded-xl bg-s3 py-1.5 pl-4 pr-1.5 text-sm text-fg shadow-xl shadow-black/40 ring-1 ring-inset ring-edge"),
 		Span(Class("flex-1"), g.Text("muster has been updated.")),
 		Button(
 			Type("button"),
 			g.Attr("data-sw-reload", ""),
 			Class("press inline-flex min-h-[44px] items-center justify-center rounded-lg bg-accent px-4 text-sm font-semibold text-on-accent transition hover:bg-accent/90"),
 			g.Text("Reload"),
+		),
+		Button(
+			Type("button"),
+			g.Attr("data-sw-dismiss", ""),
+			g.Attr("aria-label", "Dismiss"),
+			Class("press inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-muted transition hover:bg-s2"),
+			g.Raw(`<svg class="h-4 w-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>`),
 		),
 	)
 }
@@ -109,13 +124,27 @@ func pwaScript() g.Node {
   window.musterSWReady = registered;
 
   // --- update toast -----------------------------------------------------------
-  var waiting = null;
   var wantReload = false;
-  function offerUpdate(w) {
-    waiting = w;
-    var t = document.getElementById('sw-update-toast');
-    if (t) t.hidden = false;
+  var dismissed = null; // the waiting worker the operator dismissed the toast for
+  // placeToast puts the toast just under the page's sticky header (or the
+  // safe-area inset, when there is none). It runs BEFORE the toast is unhidden,
+  // so the toast appears in its final place and nothing moves.
+  function placeToast(t) {
+    var h = document.querySelector('header');
+    var below = h ? Math.max(0, Math.round(h.getBoundingClientRect().bottom)) : 0;
+    t.style.top = below > 0 ? 'max(calc(env(safe-area-inset-top) + 0.5rem), ' + (below + 8) + 'px)' : '';
   }
+  function offerUpdate(w) {
+    if (w && w === dismissed) return;
+    var t = document.getElementById('sw-update-toast');
+    if (!t) return;
+    if (t.hidden) placeToast(t);
+    t.hidden = false;
+  }
+  window.addEventListener('resize', function () {
+    var t = document.getElementById('sw-update-toast');
+    if (t && !t.hidden) placeToast(t);
+  });
   registered.then(function (reg) {
     if (reg.waiting && navigator.serviceWorker.controller) offerUpdate(reg.waiting);
     // A boosted navigation swaps the body, and the toast with it: the new one
@@ -145,17 +174,41 @@ func pwaScript() g.Node {
   }).catch(function () {});
   // ONE reload, and only one the operator asked for: the first install's
   // clients.claim() also fires controllerchange, and must not reload the page.
-  navigator.serviceWorker.addEventListener('controllerchange', function () {
+  function reloadOnce() {
     if (!wantReload) return;
     wantReload = false;
     location.reload();
-  });
+  }
+  navigator.serviceWorker.addEventListener('controllerchange', reloadOnce);
+  // 🔴 RELOAD ASKS THE REGISTRATION WHAT IS WAITING *NOW*, AND ALWAYS RELOADS.
+  // This used to post SKIP_WAITING to the worker captured when the toast was
+  // shown, and then wait for a controllerchange. When ANOTHER client — a second
+  // tab, the installed app beside a browser tab — took the update first, that
+  // worker was already the active one: skipWaiting() did nothing, no
+  // controllerchange came, and the tap disabled the button and reloaded
+  // nothing (e2e/tests/update.spec.ts, "another client took the update"). So:
+  // nothing waiting -> reload straight away (the page is an old document under
+  // the new worker); something waiting -> SKIP_WAITING and reload on
+  // controllerchange, with a timed fallback so a worker that never activates
+  // cannot leave the tap dead.
+  var RELOAD_FALLBACK_MS = 3000;
   document.addEventListener('click', function (e) {
     var b = e.target && e.target.closest && e.target.closest('[data-sw-reload]');
-    if (!b || !waiting) return;
+    if (!b || wantReload) return;
     wantReload = true;
     b.disabled = true;
-    waiting.postMessage({ type: 'SKIP_WAITING' });
+    setTimeout(reloadOnce, RELOAD_FALLBACK_MS);
+    registered.then(function (reg) {
+      if (!reg.waiting) return reloadOnce();
+      reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+    }, reloadOnce);
+  });
+  document.addEventListener('click', function (e) {
+    var b = e.target && e.target.closest && e.target.closest('[data-sw-dismiss]');
+    if (!b) return;
+    var t = document.getElementById('sw-update-toast');
+    if (t) t.hidden = true;
+    registered.then(function (reg) { dismissed = reg.waiting; }, function () {});
   });
 
   // --- install button -------------------------------------------------------

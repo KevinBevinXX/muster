@@ -728,8 +728,9 @@ for (const vp of [
     });
 
     // THE UPDATE TOAST AND THE COMPOSER. "muster has been updated — Reload" is a
-    // fixed overlay near the bottom of every page; it must never sit on the
-    // message box or on Send.
+    // fixed overlay at the TOP of every page (it was near the bottom until the
+    // operator reported it blocking the UI); it must never sit on the message
+    // box or on Send.
     test('the update toast does not cover the composer', async ({ page }) => {
       await openList(page, 4);
       for (const p of [termPath(shellWin), viewPath(elevenWin)]) {

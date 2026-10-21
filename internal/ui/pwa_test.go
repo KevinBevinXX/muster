@@ -34,6 +34,24 @@ func TestEveryDocumentCarriesTheManifestAndTheWorker(t *testing.T) {
 	}
 }
 
+// TestTheUpdateToastSitsAtTheTop: the toast is anchored to the top of the
+// viewport (under the safe-area inset), never to the bottom, where the phone's
+// composer, Send, the FAB and the chat button live; and it can be dismissed.
+// (Where it lands under each page's header is e2e/tests/update.spec.ts.)
+func TestTheUpdateToastSitsAtTheTop(t *testing.T) {
+	h := renderString(t, Page("tasks", Features{}))
+	toast := between(h, `<div id="sw-update-toast"`, ">")
+	if !strings.Contains(toast, "top-[calc(env(safe-area-inset-top)+0.5rem)]") {
+		t.Errorf("the update toast is not anchored under the top safe-area inset: %q", toast)
+	}
+	if regexp.MustCompile(`\bbottom-`).MatchString(toast) {
+		t.Errorf("the update toast is anchored to the bottom: %q", toast)
+	}
+	if !strings.Contains(h, `data-sw-dismiss=""`) {
+		t.Error("the update toast has no dismiss control")
+	}
+}
+
 // TestPWAScriptRegistersBeforeThePushScript: pushScript consumes the
 // registration pwaScript publishes, so the order on the shell is load-bearing.
 func TestPWAScriptRegistersBeforeThePushScript(t *testing.T) {
