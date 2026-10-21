@@ -91,6 +91,11 @@ func (s *dispatchRecorder) SetHooksToken(_ context.Context, _ int64, _ string) e
 	return nil
 }
 
+func (s *dispatchRecorder) SetGatewaySecret(_ context.Context, _ int64, _ string) error {
+	s.record("SetGatewaySecret")
+	return nil
+}
+
 func (s *dispatchRecorder) SetKickoffError(_ context.Context, _ int64, _ string) error {
 	s.record("SetKickoffError")
 	return nil

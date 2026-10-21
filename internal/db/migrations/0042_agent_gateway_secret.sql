@@ -1,0 +1,29 @@
+-- muster 0042 — A CLAUDE-CODE AGENT'S TURN CREDENTIAL OF ITS OWN
+-- (agents.Agent.GatewaySecret, agents.TurnBearer).
+--
+-- Applies after 0041 (worker pools); it was numbered 0041 while that was
+-- still in review, and was renumbered when it merged first.
+--
+-- 🔴 IT IS RANDOM, MINTED BY THE PROVISIONER, AND NOT DERIVED FROM hooks_token.
+-- hooks_token is the agent's muster identity, which its session must hold, so a
+-- turn credential computable from it (the hooks-sha256 scheme) let any tool call
+-- the session made drive the agent's own turn API (ccd's /v1/responses).
+--
+-- '' = none yet: every non-claude-code row, and a claude-code row provisioned
+-- before this column existed. Such a row keeps the hooks-sha256 bearer its pod
+-- was built with until the agent is Stopped and Started: Start re-applies a
+-- claude-code spec, which mints this and ships it in the same apply. (A
+-- claude-code model change is refused 409; Stop then Start is the only route.)
+--
+-- ⚠ ROLLING BACK, THEN FORWARD AGAIN, IS A 401 TRAP — both directions need a
+-- Stop then Start of every claude-code agent:
+--   - BACK: older muster ignores this column and sends the hooks-sha256 bearer,
+--     but a pod applied by THIS version holds only the minted secret
+--     (MUSTER_GATEWAY_BEARER, no HOOKS_TOKEN), so every turn is 401 until the
+--     agent is re-applied by the older code.
+--   - FORWARD AGAIN: the column still holds the secret, so muster sends it, but
+--     a pod the older code applied in between holds the hooks-sha256 bearer: 401
+--     until the next Stop then Start.
+-- The column is left in place on rollback (it is additive), which is what makes
+-- the second half bite.
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS gateway_secret TEXT NOT NULL DEFAULT '';

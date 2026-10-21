@@ -223,8 +223,8 @@ variables when it provisions an agent, so you normally never set them yourself.
 
 | variable | default | required | what it does |
 |---|---|---|---|
-| `MUSTER_GATEWAY_BEARER` | none | this or `HOOKS_TOKEN` | The bearer token `ccd`'s `/v1/responses` accepts. |
-| `HOOKS_TOKEN` | none | this or the bearer | The token the bearer is derived from. If both are set, they must agree. |
+| `MUSTER_GATEWAY_BEARER` | none | this or `HOOKS_TOKEN` | The bearer token `ccd`'s `/v1/responses` accepts. muster mints it per `claude-code` agent at random (`agents.gateway_secret`, migration 0042); it is not derived from `MUSTER_HOOK_TOKEN`. |
+| `HOOKS_TOKEN` | none | this or the bearer | A token the bearer is derived from (`sha256("gw-"+token)`). If both are set, they must agree. muster no longer ships it to `claude-code` agents. |
 | `CCD_GATEWAY_UPSTREAM` | none | no | The gateway runtime beside `ccd` (a `claude-code` chief's sidecar), on loopback. |
 | `CCD_GATEWAY_UPSTREAM_BEARER` | none | with `CCD_GATEWAY_UPSTREAM` | That runtime's own credential, which `ccd` presents when it hands a gateway turn on. It is never `ccd`'s bearer. Without it, `ccd` refuses gateway turns. |
 | `MUSTER_CONNECT_URL` | none | no | muster's connect listener. `ccd approve` and `ccd connect-git` use it. |
@@ -249,6 +249,64 @@ variables when it provisions an agent, so you normally never set them yourself.
 | `CCD_TURN_TIMEOUT` | `30m` | no | The deadline for a whole turn. |
 | `CCD_APPROVAL_DEADLINE` | `170s` | no | How long `ccd approve` waits for a relayed decision before falling back to the terminal prompt. |
 | `CCD_LIVECHECK_HOOKS_TOKEN` | none | for `livecheck` | The token for `cmd/ccd/livecheck`, a manual probe of a live agent. |
+
+**Turn credentials and the processes an agent's session can reach.** The turn
+credentials are `MUSTER_GATEWAY_BEARER`, `HOOKS_TOKEN` and
+`CCD_GATEWAY_UPSTREAM_BEARER` (`agentspec.TurnCredentialEnv`). They are kept out
+of every process the session can reach, by four routes:
+
+- `ccd` reads all three, then unsets them before it starts anything, so the
+  Claude Code CLI, its hooks and every tool it runs start without them.
+- `ccd` marks itself non-dumpable, so a process of its own user cannot read them
+  back from `/proc/<ccd>/environ`.
+- Every exec muster runs into the container starts as
+  `env -u MUSTER_GATEWAY_BEARER -u CCD_GATEWAY_UPSTREAM_BEARER -u HOOKS_TOKEN …`.
+  An exec inherits the CONTAINER's environment, not `ccd`'s, so without this the
+  terminal's long-lived `tmux attach` client (readable at `/proc/<pid>/environ`)
+  and anything a job's git ran would hold them. This is structural: the
+  provisioning adapter holds the driver only as a wrapper
+  (`internal/agentprovision/scrubexec`) that adds the prefix to every exec, and
+  the raw driver is unreachable from the adapter. Two go/types tests pin this.
+  One checks the structure. The other resolves every exec entry in the module.
+- The job scripts' git (job worktree prepare and remove, untracked result
+  removal) runs with repository-configured commands neutralised by name:
+  - `core.fsmonitor`;
+  - every hook in a hooks directory (`core.hooksPath=/dev/null`);
+  - config-based hooks (`hook.<event>.enabled=false` for every event; the image's
+    git 2.39 predates them);
+  - `core.alternateRefsCommand`;
+  - `ext::` remotes;
+  - `core.sshCommand`;
+  - `remote.origin.uploadpack`;
+  - `credential.helper`;
+  - `core.askPass`;
+  - submodule recursion;
+  - and `core.gitProxy`, by setting `GIT_PROXY_COMMAND` empty.
+
+`ccd` also refuses to start when its bearer equals, or is the
+`sha256("gw-"+…)` derivation of, `MUSTER_HOOK_TOKEN`. A pod provisioned before
+muster minted the turn credential is in that state, and Stop then Start fixes it.
+
+**What can still run during a job's git, and what guards it.**
+
+- Filter drivers (`filter.<name>.smudge` / `.process`, selected by
+  `.gitattributes` or `.git/info/attributes`) still run: the session chooses
+  their names, so no override can name them.
+- Anything else git runs from configuration that the list above does not name
+  can also still run.
+
+These run as the agent's own user, which the session already is. They see no
+turn credential **only because of the `env -u` prefix**. That prefix is THE
+credential guard for them; weakening it re-opens a route the git overrides
+cannot close.
+
+**What is still open:**
+
+- A process of the agent's user can type into the CLI's pane with
+  `tmux send-keys`.
+- `CCD_HOOK_SECRET` stays in the CLI's environment, because `ccd hook` needs it.
+  It authenticates the hook channel only; `/v1/responses` refuses it.
+- `MUSTER_HOOK_TOKEN` stays, because it is the agent's muster identity.
 
 ## hermesd (inside the hermes agent image)
 

@@ -21,7 +21,7 @@ const fakeCCToken = "sk-ant-oat01-FAKE-k8s-render-91c2"
 func ccSpec(t *testing.T) provision.Spec {
 	t.Helper()
 	spec, err := agentspec.Build(agents.Agent{
-		ID: 7, Name: "quiet-heron", Namespace: "agents", HooksToken: "fixture-hooks-token-k8s",
+		ID: 7, Name: "quiet-heron", Namespace: "agents", HooksToken: "fixture-hooks-token-k8s", GatewaySecret: "fixture-turn-credential-k8s",
 		Kind: agents.KindClaudeCode, CCAccount: "work",
 	}, agentspec.Config{
 		ImageRepo: "registry.example.test/unused", APIBaseURL: "http://muster.example.test:8105",

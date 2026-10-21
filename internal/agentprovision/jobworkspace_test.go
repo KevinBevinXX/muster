@@ -26,10 +26,18 @@ import (
 type localExecDriver struct {
 	*provision.Noop
 	root string
+	// env is the CONTAINER's environment beyond this process's: what every exec
+	// inherits in a real pod (execscrub_test.go sets the turn credentials here).
+	env []string
+	// unlayered runs each command WITHOUT both credential layers — the exec's
+	// `env -u` prefix and the scripts' GIT_CONFIG_* export — so a test can show a
+	// plant fires and sees the credentials when they are gone (the control).
+	unlayered bool
 
 	mu    sync.Mutex
 	execs int
-	cmds  [][]string // each exec's command, as the adapter sent it
+	cmds  [][]string // each exec's command, as the adapter sent it, without the scrub prefix
+	bare  int        // execs that arrived WITHOUT the turn-credential scrub prefix
 }
 
 func (d *localExecDriver) Capabilities() provision.Capabilities {
@@ -41,15 +49,42 @@ func (d *localExecDriver) Capabilities() provision.Capabilities {
 func (d *localExecDriver) Exec(ctx context.Context, _ provision.Ref, cmd []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	d.mu.Lock()
 	d.execs++
-	d.cmds = append(d.cmds, append([]string(nil), cmd...))
+	// Recorded WITHOUT the credential scrub's prefix, which every exec must
+	// carry (bare counts the ones that did not).
+	inner, scrubbed := unscrub(cmd)
+	if !scrubbed {
+		d.bare++
+	}
+	d.cmds = append(d.cmds, append([]string(nil), inner...))
 	d.mu.Unlock()
+	if d.unlayered {
+		cmd = inner
+	}
 	args := make([]string, len(cmd))
 	for i, a := range cmd {
+		if d.unlayered {
+			a = strings.Replace(a, gitRunsNoRepoCommands, "", 1)
+		}
 		args[i] = strings.Replace(a, agentspec.ClaudeCodeWorkspacePath, d.root, 1)
 	}
+	// The terminal release scans EVERY process's environ for its tag and kills
+	// the matches: on this machine that is the host, so it is not run here.
+	for _, a := range args {
+		if a == "muster-terminal-release" {
+			_, err := io.WriteString(stdout, "released 0 (not run by the local driver)\n")
+			return err
+		}
+	}
 	c := exec.CommandContext(ctx, args[0], args[1:]...)
+	c.Env = append(os.Environ(), d.env...)
 	c.Stdin, c.Stdout, c.Stderr = stdin, stdout, stderr
 	return c.Run()
+}
+
+// ExecTTY runs the command as Exec does, without a terminal: what is tested is
+// the command and the environment it gets.
+func (d *localExecDriver) ExecTTY(ctx context.Context, ref provision.Ref, cmd []string, stdin io.Reader, stdout io.Writer, _ <-chan provision.TermSize) error {
+	return d.Exec(ctx, ref, cmd, stdin, stdout, stdout)
 }
 
 func (d *localExecDriver) count() int {

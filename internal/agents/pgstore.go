@@ -47,7 +47,7 @@ func NewPGTx(tx pgx.Tx) *PGStore { return &PGStore{pool: tx} }
 
 const agentCols = `id, name, namespace, display_name, repo, repo_branch, note_id, note_text,
 	pending_note, model, status, hooks_token, kicked_off, last_output, error_message, created_at, updated_at,
-	kickoff_pod, kickoff_restarts, kickoff_attempts, kickoff_error, kind, cc_account, owner_id, worker_pool`
+	kickoff_pod, kickoff_restarts, kickoff_attempts, kickoff_error, kind, cc_account, owner_id, worker_pool, gateway_secret`
 
 func scanAgent(row interface {
 	Scan(dest ...any) error
@@ -56,7 +56,8 @@ func scanAgent(row interface {
 	err := row.Scan(&a.ID, &a.Name, &a.Namespace, &a.DisplayName, &a.Repo, &a.RepoBranch,
 		&a.NoteID, &a.NoteText, &a.PendingNote, &a.Model, &a.Status, &a.HooksToken, &a.KickedOff,
 		&a.LastOutput, &a.ErrorMessage, &a.CreatedAt, &a.UpdatedAt,
-		&a.KickoffPod, &a.KickoffRestarts, &a.KickoffAttempts, &a.KickoffError, &a.Kind, &a.CCAccount, &a.OwnerID, &a.WorkerPool)
+		&a.KickoffPod, &a.KickoffRestarts, &a.KickoffAttempts, &a.KickoffError, &a.Kind, &a.CCAccount, &a.OwnerID, &a.WorkerPool,
+		&a.GatewaySecret)
 	return a, err
 }
 
@@ -287,6 +288,11 @@ func (s *PGStore) FoldIntoPendingNote(ctx context.Context, id int64, text, last 
 		return FoldNotOwed, err
 	}
 	return res, tx.Commit(ctx)
+}
+
+func (s *PGStore) SetGatewaySecret(ctx context.Context, id int64, secret string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE agents SET gateway_secret=$2, updated_at=now() WHERE id=$1`, id, secret)
+	return err
 }
 
 // AppendPendingNote appends text to agent id's first message while that

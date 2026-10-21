@@ -70,19 +70,32 @@ const (
 	EnvCCDGatewayUpstreamBearer = "CCD_GATEWAY_UPSTREAM_BEARER"
 )
 
+// TurnCredentialEnv names every variable a claude-code container may carry that
+// drives a TURN API — ccd's (EnvGatewayBearer, or EnvGatewayToken it can be
+// derived from) or the gateway sidecar's (EnvCCDGatewayUpstreamBearer).
+//
+// 🔴 NO PROCESS AN AGENT'S SESSION CAN REACH MAY HOLD ONE. ccd unsets them before
+// it starts the CLI (cmd/ccd/turncred.go, whose list a test holds equal to this
+// one); every exec muster runs into the container strips them
+// (internal/agentprovision/scrubexec, the adapter's only driver), because an exec inherits the
+// container's environment, not ccd's.
+var TurnCredentialEnv = []string{EnvGatewayBearer, EnvCCDGatewayUpstreamBearer, EnvGatewayToken}
+
 // 🔴 THE SIDECAR HOLDS NO CREDENTIAL ccd ACCEPTS, BECAUSE IT SHARES ccd'S
 // LOOPBACK. Containers in one pod share a network namespace, so anything the
 // gateway runtime can be talked into doing — a tool call or a fetch, steered by
 // model output that untrusted content influences — can reach ccd on 127.0.0.1.
-// ccd's network port accepts one bearer (sha256("gw-" + hooks token), or the
-// same value as MUSTER_GATEWAY_BEARER), and a holder of it drives the Claude
-// Code chief: its turns, its tools, its account. Until this was fixed the
+// ccd's network port accepts one bearer (the chief's turn credential,
+// MUSTER_GATEWAY_BEARER; agents.Agent.GatewaySecret), and a holder of it drives
+// the Claude Code chief: its turns, its tools, its account. Until this was fixed the
 // sidecar was built from the chief's own row and so held exactly that: the raw
 // hooks token under two names and the derived bearer.
 //
 // So the sidecar is built from a token of its OWN, [sidecarHooksToken]: a
-// one-way, domain-separated derivation of the chief's, from which neither the
-// chief's token nor ccd's bearer can be computed. The gateway kind's own Build
+// one-way, domain-separated derivation of the chief's TURN CREDENTIAL, from which
+// ccd's bearer cannot be computed. 🔴 Not of the chief's hooks token, as it once
+// was: the chief's session holds that (MUSTER_HOOK_TOKEN), so every tool call
+// could compute the sidecar's credential from it and drive the runtime directly. The gateway kind's own Build
 // then derives the sidecar's gateway credential from it as it would for any
 // gateway agent, and ccd is handed that credential
 // ([EnvCCDGatewayUpstreamBearer]) to present when it hands a turn on. muster
@@ -97,14 +110,14 @@ const (
 // called muster with it.
 
 // sidecarTokenDomain separates the sidecar's token from every other use of the
-// chief's hooks token.
+// chief's turn credential.
 const sidecarTokenDomain = "muster/chief-gateway-sidecar/v1\x00"
 
-// sidecarHooksToken is the gateway sidecar's own token, derived from the
-// chief's: sha256 over a domain prefix, lower-case hex. One-way, so the sidecar
-// cannot recover the chief's token (and from it ccd's bearer).
-func sidecarHooksToken(hooksToken string) string {
-	sum := sha256.Sum256([]byte(sidecarTokenDomain + hooksToken))
+// sidecarHooksToken is the gateway sidecar's own token, derived from the chief's
+// turn credential: sha256 over a domain prefix, lower-case hex. One-way, so the
+// sidecar cannot recover ccd's bearer from it.
+func sidecarHooksToken(chiefTurnCredential string) string {
+	sum := sha256.Sum256([]byte(sidecarTokenDomain + chiefTurnCredential))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -182,12 +195,18 @@ func buildGatewaySidecar(a agents.Agent, cfg Config) (*provision.Sidecar, error)
 			"gateway in MUSTER_CHIEF_SESSION_RUNTIMES", a.Name, GatewaySidecarPortEnv, DefaultGatewayPort,
 			GatewaySidecarPortEnv)
 	}
-	if a.HooksToken == "" {
-		return nil, fmt.Errorf("agentspec: agent %q has no hooks token to derive its gateway runtime's own from", a.Name)
+	// 🔴 DERIVED FROM THE CHIEF'S TURN CREDENTIAL, NOT ITS HOOKS TOKEN. The chief's
+	// session holds the hooks token (MUSTER_HOOK_TOKEN), so a sidecar token derived
+	// from it would let any tool call compute the sidecar's credential and drive
+	// the gateway runtime directly. The turn credential is one the session never
+	// sees (ccd unsets it; cmd/ccd/turncred.go).
+	if a.GatewaySecret == "" {
+		return nil, fmt.Errorf("agentspec: agent %q has no turn credential to derive its gateway runtime's own from", a.Name)
 	}
 	ga := a
 	ga.Kind, ga.CCAccount, ga.Repo, ga.RepoBranch = agents.KindGateway, "", "", ""
-	ga.HooksToken = sidecarHooksToken(a.HooksToken)
+	ga.HooksToken = sidecarHooksToken(a.GatewaySecret)
+	ga.GatewaySecret = ""
 	gcfg := cfg
 	gcfg.WorkspacePersist = false
 	gw, err := Build(ga, gcfg, Options{})

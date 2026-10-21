@@ -46,6 +46,8 @@ type termDriver struct {
 	// tty, when set, is the attach's body in place of attach: it sees the
 	// writer and the size channel the adapter hands the exec.
 	tty func(ctx context.Context, stdout io.Writer, resize <-chan provision.TermSize) error
+	// bare counts execs that arrived WITHOUT agentExecCommand's credential scrub.
+	bare int
 }
 
 func (d *termDriver) Capabilities() provision.Capabilities {
@@ -54,8 +56,22 @@ func (d *termDriver) Capabilities() provision.Capabilities {
 	return c
 }
 
+// unscrub returns cmd without agentExecCommand's prefix, and false when the
+// prefix is missing (an exec that did not strip the turn credentials).
+func unscrub(cmd []string) ([]string, bool) {
+	prefix := agentExecCommand(nil)
+	if len(cmd) < len(prefix) || strings.Join(cmd[:len(prefix)], "\x00") != strings.Join(prefix, "\x00") {
+		return cmd, false
+	}
+	return cmd[len(prefix):], true
+}
+
 func (d *termDriver) ExecTTY(ctx context.Context, _ provision.Ref, cmd []string, _ io.Reader, stdout io.Writer, resize <-chan provision.TermSize) error {
+	cmd, ok := unscrub(cmd)
 	d.mu.Lock()
+	if !ok {
+		d.bare++
+	}
 	d.ttyCmd = cmd
 	tty := d.tty
 	d.mu.Unlock()
@@ -67,8 +83,12 @@ func (d *termDriver) ExecTTY(ctx context.Context, _ provision.Ref, cmd []string,
 
 func (d *termDriver) Exec(ctx context.Context, _ provision.Ref, cmd []string, stdin io.Reader, stdout, _ io.Writer) error {
 	in, _ := io.ReadAll(stdin)
+	cmd, ok := unscrub(cmd)
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if !ok {
+		d.bare++
+	}
 	if strings.Join(cmd, "\x00") == strings.Join(agents.TerminalSizeCommand(termsize.TmuxWindowFormat), "\x00") {
 		d.sizeQueries++
 		if d.window == "" {
@@ -126,6 +146,9 @@ func checkReleased(t *testing.T, d *termDriver) {
 	defer d.mu.Unlock()
 	if d.releases != 1 {
 		t.Fatalf("want exactly 1 release, got %d", d.releases)
+	}
+	if d.bare != 0 {
+		t.Fatalf("%d exec(s) reached the pod without the turn-credential scrub", d.bare)
 	}
 	if strings.Join(d.releaseCmd, "\x00") != strings.Join(agents.TerminalReleaseCommand(), "\x00") {
 		t.Fatalf("the release ran %q, not the release command", d.releaseCmd)

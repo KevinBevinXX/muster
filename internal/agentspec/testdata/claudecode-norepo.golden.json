@@ -30,7 +30,7 @@
         "Value": "«redacted in the golden; see goldenView»"
       },
       {
-        "Name": "HOOKS_TOKEN",
+        "Name": "MUSTER_GATEWAY_BEARER",
         "Value": "«redacted in the golden; see goldenView»"
       },
       {
@@ -147,11 +147,11 @@
       "Secrets": [
         {
           "Name": "HOOKS_TOKEN",
-          "Value": "588121da36f719bd9da276c4aaba848d5f73b4e6d5ea83d42204d5522c8acc21"
+          "Value": "1ab06910bd6b9f32ddb0aa2ecd6e50791ab67718693692a8cc62077e80a6fc7b"
         },
         {
           "Name": "MUSTER_GATEWAY_BEARER",
-          "Value": "fixture-derived-bearer\u003c588121da36f719bd9da276c4aaba848d5f73b4e6d5ea83d42204d5522c8acc21\u003e"
+          "Value": "fixture-derived-bearer\u003c1ab06910bd6b9f32ddb0aa2ecd6e50791ab67718693692a8cc62077e80a6fc7b\u003e"
         },
         {
           "Name": "OPENROUTER_API_KEY",
@@ -207,7 +207,7 @@
         "Value": "«redacted in the golden; see goldenView»"
       },
       {
-        "Name": "HOOKS_TOKEN",
+        "Name": "MUSTER_GATEWAY_BEARER",
         "Value": "«redacted in the golden; see goldenView»"
       },
       {

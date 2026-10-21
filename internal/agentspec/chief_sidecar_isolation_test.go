@@ -1,10 +1,12 @@
 package agentspec
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
@@ -70,7 +72,7 @@ func TestTheGatewaySidecarHoldsNoCredentialCcdAccepts(t *testing.T) {
 	accepts := ccdAcceptsFrom(spec)
 	// Positive control: the instance does hold the token ccd derives from, so
 	// the scan below has something to find.
-	if len(accepts) == 0 || accepts["ccd's bearer, derived from "+EnvGatewayToken] != agentgateway.HooksSHA256().Bearer(a.HooksToken) {
+	if len(accepts) == 0 || accepts["ccd's bearer ("+EnvGatewayBearer+")"] != a.GatewaySecret {
 		t.Fatalf("the instance carries no credential ccd accepts (%d found); the scan would prove nothing", len(accepts))
 	}
 	for where, v := range sidecarValues(spec.Sidecar) {
@@ -95,10 +97,56 @@ func TestTheGatewaySidecarHoldsNoCredentialCcdAccepts(t *testing.T) {
 	// chief gets another one.
 	b := ccAgent()
 	b.HooksToken = "fixture-other-agent-token-51d0"
+	b.GatewaySecret = "fixture-other-agent-turn-credential-77ae"
 	other := mustBuild(t, b, cfg, Options{GatewaySidecar: &GatewaySidecar{}})
 	if secretMap(other.Sidecar.Secrets)[EnvGatewayBearer] == own {
 		t.Error("two agents' sidecars share one credential")
 	}
+}
+
+// 🔴 TestTheSidecarsCredentialIsNotAFunctionOfTheChiefsHooksToken: the chief's
+// SESSION holds its hooks token (MUSTER_HOOK_TOKEN), so whatever is computable
+// from it is computable by every tool call the session makes. The sidecar's
+// credentials must therefore move with the chief's turn credential — which ccd
+// keeps from the session — and NOT with its hooks token. Both halves are
+// asserted: changing only the hooks token leaves every sidecar secret as it was,
+// and changing only the turn credential changes the sidecar's bearer (the
+// control that the comparison can see a change at all).
+func TestTheSidecarsCredentialIsNotAFunctionOfTheChiefsHooksToken(t *testing.T) {
+	cfg := sidecarConfig()
+	cfg.RuntimeConfig.DeriveBearer = agentgateway.HooksSHA256().Bearer
+	sidecarSecrets := func(a agents.Agent) map[string]string {
+		spec := mustBuild(t, a, cfg, Options{GatewaySidecar: &GatewaySidecar{}})
+		m := secretMap(spec.Sidecar.Secrets)
+		delete(m, EnvOpenRouterKey) // the owner's model key, not a derived credential
+		return m
+	}
+	base := ccAgent()
+	before := sidecarSecrets(base)
+	if before[EnvGatewayBearer] == "" || before[EnvGatewayToken] == "" {
+		t.Fatalf("instrument check: the sidecar holds no credential to compare: %v", keysOf(before))
+	}
+
+	hooks := base
+	hooks.HooksToken = "fixture-rotated-hooks-token-0c4f"
+	if got := sidecarSecrets(hooks); !reflect.DeepEqual(got, before) {
+		t.Errorf("changing ONLY the chief's hooks token changed the sidecar's credentials (%v): the session, "+
+			"which holds that token, could compute them", keysOf(got))
+	}
+
+	turn := base
+	turn.GatewaySecret = "fixture-rotated-turn-credential-6d21"
+	if got := sidecarSecrets(turn); got[EnvGatewayBearer] == before[EnvGatewayBearer] {
+		t.Error("control: changing the chief's turn credential did not change the sidecar's bearer")
+	}
+}
+
+func keysOf(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
 
 func secretMap(env []provision.EnvVar) map[string]string {

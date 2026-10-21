@@ -53,7 +53,9 @@ func (d *heldTerminalDriver) ExecTTY(ctx context.Context, _ provision.Ref, _ []s
 func (d *heldTerminalDriver) Exec(ctx context.Context, _ provision.Ref, cmd []string, _ io.Reader, stdout, _ io.Writer) error {
 	// The window-size query that precedes an attach is not a release; this
 	// pod has no session to size ("unknown" — the attach proceeds as asked).
-	if slices.Equal(cmd, agents.TerminalSizeCommand(termsize.TmuxWindowFormat)) {
+	// (Matched as the command's TAIL: muster prefixes every exec with the
+	// turn-credential scrub, agentprovision's agentExecCommand.)
+	if size := agents.TerminalSizeCommand(termsize.TmuxWindowFormat); len(cmd) >= len(size) && slices.Equal(cmd[len(cmd)-len(size):], size) {
 		return errors.New("can't find session: cc")
 	}
 	select {

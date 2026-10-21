@@ -60,10 +60,11 @@ func TestAClaudeCodeChiefRunsTheGatewayRuntimeBesideCcd(t *testing.T) {
 	}
 	sec := envMap(sc.Secrets)
 	// The sidecar's OWN token: sha256("muster/chief-gateway-sidecar/v1\x00" +
-	// the fixture's token), computed outside Go with sha256sum. Never the chief's.
-	const sidecarToken = "588121da36f719bd9da276c4aaba848d5f73b4e6d5ea83d42204d5522c8acc21"
-	if a.HooksToken != "fixture-per-agent-token-9f31c7" {
-		t.Fatalf("the fixture's token moved (%q); recompute sidecarToken", a.HooksToken)
+	// the fixture's TURN CREDENTIAL — never its hooks token, which the chief's
+	// session holds), computed outside Go with sha256sum. Never the chief's.
+	const sidecarToken = "1ab06910bd6b9f32ddb0aa2ecd6e50791ab67718693692a8cc62077e80a6fc7b"
+	if a.GatewaySecret != "fixture-turn-credential-not-a-real-one" {
+		t.Fatalf("the fixture's turn credential moved (%q); recompute sidecarToken", a.GatewaySecret)
 	}
 	if sec["MUSTER_GATEWAY_BEARER"] != fixtureDeriveBearer(sidecarToken) || sec["HOOKS_TOKEN"] != sidecarToken ||
 		sec["OPENROUTER_API_KEY"] != cfg.OpenRouterAPIKey || cfg.OpenRouterAPIKey == "" || len(sec) != 3 {
@@ -90,7 +91,7 @@ func TestAClaudeCodeChiefRunsTheGatewayRuntimeBesideCcd(t *testing.T) {
 		t.Errorf("ccd is not told where the sidecar is: %v", names(spec.Env))
 	}
 	for _, e := range spec.Secrets {
-		if e.Name == "OPENROUTER_API_KEY" || e.Name == "MUSTER_GATEWAY_BEARER" {
+		if e.Name == "OPENROUTER_API_KEY" || (e.Name == "MUSTER_GATEWAY_BEARER" && e.Value == sec["MUSTER_GATEWAY_BEARER"]) {
 			t.Errorf("the instance's own Secrets hold the sidecar's %s", e.Name)
 		}
 	}

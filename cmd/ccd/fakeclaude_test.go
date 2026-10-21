@@ -79,6 +79,13 @@ func fakeClaude() int {
 	}
 	cfg := os.Getenv("CLAUDE_CONFIG_DIR")
 	cwd, _ := os.Getwd()
+	// What a tool call can see: the environment this CLI was started with, and
+	// the one a process IT spawns gets (TestTmuxTheCLIHoldsNoTurnCredential).
+	_ = os.WriteFile(filepath.Join(cfg, fmt.Sprintf("fake-env.%d", os.Getpid())),
+		[]byte(strings.Join(os.Environ(), "\n")+"\n"), 0o600)
+	if out, err := exec.Command("env").Output(); err == nil {
+		_ = os.WriteFile(filepath.Join(cfg, fmt.Sprintf("fake-child-env.%d", os.Getpid())), out, 0o600)
+	}
 	// The flags ccd passes: --continue (the primary, before lanes), --resume
 	// <id> (the primary once recorded, a lane once its transcript exists),
 	// --session-id <id> (a lane's first start) and --model <m> (a lane's).

@@ -32,7 +32,8 @@ func chiefSpecWithSidecar(t *testing.T) provision.Spec {
 		},
 		OpenRouterAPIKey: "sk-or-v1-FAKE-fixture",
 	}
-	a := agents.Agent{ID: 7, Name: "chief", Kind: agents.KindClaudeCode, CCAccount: "acct", HooksToken: knownHooksToken}
+	a := agents.Agent{ID: 7, Name: "chief", Kind: agents.KindClaudeCode, CCAccount: "acct", HooksToken: knownHooksToken,
+		GatewaySecret: "fixture-turn-credential-chief-4be1"}
 	spec, err := agentspec.Build(a, cfg, agentspec.Options{GatewaySidecar: &agentspec.GatewaySidecar{}})
 	if err != nil {
 		t.Fatal(err)

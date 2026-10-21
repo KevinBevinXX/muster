@@ -31,10 +31,13 @@
 //
 // Environment (serve):
 //
-//	MUSTER_GATEWAY_BEARER  the bearer /v1/responses accepts (muster derives it)
-//	HOOKS_TOKEN            alternatively, the token it is derived from (both: must agree)
+//	MUSTER_GATEWAY_BEARER  the bearer /v1/responses accepts (muster mints it per agent)
+//	HOOKS_TOKEN            alternatively, a token it is derived from (both: must agree)
 //	CCD_GATEWAY_UPSTREAM_BEARER  the gateway runtime's OWN credential, which ccd
 //	                       presents when it hands a gateway turn on (never its own)
+//	                       🔴 ccd unsets all three before it starts anything, and
+//	                       refuses a bearer the CLI could derive from what it keeps
+//	                       (MUSTER_HOOK_TOKEN): turncred.go
 //	CLAUDE_CONFIG_DIR      the CLI's config dir; transcripts are read only under <it>/projects
 //	CCD_LISTEN             gateway address        (default :18789)
 //	                       (the hook listener is a unix socket ccd creates itself under
@@ -202,9 +205,23 @@ func (h *hookChannel) cliEnv() []string {
 }
 
 func serve() error {
-	bearer, err := resolveBearer(os.Getenv("HOOKS_TOKEN"), os.Getenv("MUSTER_GATEWAY_BEARER"))
+	// 🔴 FIRST, BEFORE ccd STARTS ANY PROCESS: take the turn-API credentials out of
+	// the environment every child inherits, and make ccd's own /proc unreadable to
+	// its user (turncred.go). The CLI and its tool calls then hold nothing that
+	// drives ccd's turn API or the gateway runtime's.
+	creds := takeTurnCredentials()
+	if err := hideFromSameUser(); err != nil {
+		return err
+	}
+	bearer, err := resolveBearer(creds.hooksToken, creds.gatewayBearer)
 	if err != nil {
 		return err
+	}
+	if name := exposedTurnCredential(bearer, os.Getenv); name != "" {
+		// Names only, never a value.
+		return fmt.Errorf("ccd: the turn credential is derivable from %s, which the CLI keeps in its environment, "+
+			"so any tool call could drive this turn API; muster must ship %s as a credential of its own "+
+			"(this pod's spec predates it: Stop → Start the agent)", name, envGatewayBearer)
 	}
 	configDir := os.Getenv("CLAUDE_CONFIG_DIR")
 	if configDir == "" {
@@ -254,7 +271,7 @@ func serve() error {
 	if up := os.Getenv("CCD_GATEWAY_UPSTREAM"); up != "" {
 		// A missing or reused runtime credential refuses gateway turns only;
 		// failing the process would take the Claude Code sessions down with it.
-		gwBearer := os.Getenv(envGatewayUpstreamBearer)
+		gwBearer := creds.upstreamBearer
 		if why := gatewayBearerProblem(gwBearer, bearer); why != "" {
 			log.Printf("ccd: gateway turns refused: %s", why)
 			srv.gatewayOff = why

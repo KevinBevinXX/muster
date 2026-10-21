@@ -66,6 +66,7 @@ func seamSpecConfig() agentspec.Config {
 func seamRow() agents.Agent {
 	row := fixtureAgent()
 	row.Kind, row.CCAccount, row.HooksToken, row.Repo, row.RepoBranch, row.Model = agents.KindClaudeCode, "work", "fixture-hooks-seam", "", "", ""
+	row.GatewaySecret = "fixture-turn-credential-seam"
 	return row
 }
 

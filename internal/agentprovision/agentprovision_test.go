@@ -136,6 +136,16 @@ func (s *recordingStore) SetHooksToken(ctx context.Context, id int64, token stri
 	return nil
 }
 
+func (s *recordingStore) SetGatewaySecret(ctx context.Context, id int64, secret string) error {
+	if err := s.refuse(ctx, fmt.Sprintf("SetGatewaySecret(%d)", id)); err != nil {
+		return err
+	}
+	// The value is a secret: only its length is recorded.
+	s.record("SetGatewaySecret(%d,len=%d)", id, len(secret))
+	s.agent.GatewaySecret = secret
+	return nil
+}
+
 func (s *recordingStore) SetKickedOff(ctx context.Context, id int64, v bool) error {
 	if err := s.refuse(ctx, fmt.Sprintf("SetKickedOff(%d)", id)); err != nil {
 		return err

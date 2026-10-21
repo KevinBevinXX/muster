@@ -42,6 +42,98 @@ import (
 //     command, so it is code the commit would otherwise run.
 var JobOverlayRootFiles = []string{"CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", ".mcp.json"}
 
+// gitRunsNoRepoCommands opens every script here that runs git in the agent's
+// workspace. That workspace is the SESSION's: a tool call can write its .git
+// (and its $HOME/.gitconfig), and git runs commands that config names. The
+// overrides are exported as GIT_CONFIG_* — git's command-line-config channel,
+// which outranks the repository's own config and reaches every git the script's
+// git starts — rather than as `-c` per call, so a git added to a script later
+// cannot miss them.
+//
+// WHAT IS NEUTRALISED BY NAME (gitNeutralised; each row measured by
+// TestTheJobScriptsRunNoPlantedCommandAndShowNoneATurnCredential):
+//   - core.fsmonitor=false — status / checkout / ls-files run it.
+//   - core.hooksPath=/dev/null — every hook in a hooks directory.
+//   - hook.<event>.enabled=false, for every githooks(5) event — config-based
+//     hooks (hook.<name>.command / .event, newer git), which a hooks path does
+//     not govern. The image's git (2.39) predates them and ignores the keys.
+//   - core.alternateRefsCommand= — a fetch from a repository with alternates
+//     runs it.
+//   - protocol.ext.allow=never — an ext:: remote URL runs a command on fetch.
+//   - core.sshCommand=ssh — a repository-set ssh command runs on an ssh fetch.
+//   - remote.origin.uploadpack=git-upload-pack — for a local-path origin the
+//     upload-pack command runs LOCALLY (set-head --auto contacts origin).
+//   - credential.helper= — an empty value resets the helper list; a "!cmd"
+//     helper would run when origin asks for credentials.
+//   - core.askPass= — the askpass program the same request could run.
+//   - submodule.recurse=false, fetch.recurseSubmodules=false.
+//
+// And one by ENVIRONMENT, because config cannot do it: GIT_PROXY_COMMAND= (set,
+// empty). core.gitProxy is multi-valued and "the first match wins", so a value
+// planted in the repository's config would beat any override appended after it;
+// the environment variable replaces the config lookup entirely, and an empty one
+// means no proxy. (A git:// origin is reached by `git remote set-head --auto`.)
+//
+// 🔴 WHAT STILL RUNS, AND THE ONE THING STANDING BETWEEN IT AND THE CREDENTIALS:
+//   - filter drivers (filter.<any name>.smudge / .process, selected by
+//     .gitattributes or .git/info/attributes) — `git worktree add` and the
+//     overlay's checkouts run them; their names are the session's to choose, so
+//     no override can name them;
+//   - anything else git runs from config that this list does not name.
+//
+// They run as the agent's own user (which the session already is), and they see
+// no turn credential ONLY because every exec into the container is stripped of
+// them (the adapter's scrubexec driver). That prefix is THE credential guard for
+// these; weakening it re-opens the route this list cannot close.
+//
+// ⚠ uploadpack.packObjectsHook (honoured only from protected config: global,
+// system, command line) is NOT in the list: the pull-request fetch runs with
+// GIT_CONFIG_GLOBAL=/dev/null, which its upload-pack inherits, so a global hook
+// is not read there (measured: it does not fire), and an empty override would
+// make upload-pack run an empty command instead of pack-objects.
+var gitNeutralised = append([][2]string{
+	{"core.fsmonitor", "false"},
+	{"core.hooksPath", "/dev/null"},
+	{"core.alternateRefsCommand", ""},
+	{"protocol.ext.allow", "never"},
+	{"core.sshCommand", "ssh"},
+	{"remote.origin.uploadpack", "git-upload-pack"},
+	{"credential.helper", ""},
+	{"core.askPass", ""},
+	{"submodule.recurse", "false"},
+	{"fetch.recurseSubmodules", "false"},
+}, hookEventsDisabled()...)
+
+// gitHookEvents is githooks(5)'s list of hook events (git 2.55).
+var gitHookEvents = []string{
+	"applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit", "pre-merge-commit",
+	"prepare-commit-msg", "commit-msg", "post-commit", "pre-rebase", "post-checkout", "post-merge",
+	"pre-push", "pre-receive", "update", "proc-receive", "post-receive", "post-update",
+	"reference-transaction", "push-to-checkout", "pre-auto-gc", "post-rewrite", "sendemail-validate",
+	"fsmonitor-watchman", "post-index-change",
+}
+
+func hookEventsDisabled() [][2]string {
+	out := make([][2]string, 0, len(gitHookEvents))
+	for _, e := range gitHookEvents {
+		out = append(out, [2]string{"hook." + e + ".enabled", "false"})
+	}
+	return out
+}
+
+// gitRunsNoRepoCommands is gitNeutralised as a shell prelude (values are
+// literals without spaces or quotes, so they need no quoting).
+var gitRunsNoRepoCommands = func() string {
+	var b strings.Builder
+	b.WriteString("export GIT_PROXY_COMMAND= GIT_CONFIG_COUNT=" + strconv.Itoa(len(gitNeutralised)))
+	for i, kv := range gitNeutralised {
+		n := strconv.Itoa(i)
+		b.WriteString(" GIT_CONFIG_KEY_" + n + "=" + kv[0] + " GIT_CONFIG_VALUE_" + n + "=" + kv[1])
+	}
+	b.WriteString("\n")
+	return b.String()
+}()
+
 // jobOverlayScript prepares job worktree $2 of the checkout $1 at commit $3,
 // of pull request $5 of the repository at the anonymous URL $4, the remaining
 // arguments being JobOverlayRootFiles:
@@ -105,7 +197,7 @@ var JobOverlayRootFiles = []string{"CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", 
 // chooses to run from the tree (a build script, a test). The overlay keeps the
 // COMMIT's configuration from configuring the reviewer; it does not make the
 // commit's code safe to execute.
-const jobOverlayScript = `export LC_ALL=C
+var jobOverlayScript = gitRunsNoRepoCommands + `export LC_ALL=C
 main=$1 wt=$2 sha=$3 url=$4 pr=$5
 shift 5
 cd "$main" || exit 1
@@ -115,7 +207,8 @@ def=$(git rev-parse --verify --quiet 'refs/remotes/origin/HEAD^{commit}') ||
 	{ echo "` + NoDefaultBranchMessage + `" >&2; exit 4; }
 ref=refs/muster-jobs/${wt##*/}
 got=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git ls-remote --get-url "$url") || exit 1
-creds=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git config --get-regexp '^(http\..*extraheader|credential\..*)$')
+creds=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git config --show-scope --get-regexp '^(http\..*extraheader|credential\..*)$' |
+	grep -v '^command')
 if [ "$got" != "$url" ] || [ -n "$creds" ]; then
 	echo "` + AnonymousFetchMessage + ` (git would fetch $got)" >&2
 	exit 7
@@ -186,7 +279,7 @@ const SymlinkOverlayMessage = "the repository's default branch has a symlink amo
 // itself if git left it (it was not a registered worktree, or git refused),
 // then `git worktree prune`, and the job's fetched pull-request ref. It fails
 // only when the directory is still there.
-const jobRemoveScript = `cd "$1" 2>/dev/null && git worktree remove --force --force "$2" >/dev/null 2>&1
+var jobRemoveScript = gitRunsNoRepoCommands + `cd "$1" 2>/dev/null && git worktree remove --force --force "$2" >/dev/null 2>&1
 rm -rf "$2"
 cd "$1" 2>/dev/null && git worktree prune >/dev/null 2>&1
 cd "$1" 2>/dev/null && git update-ref -d "refs/muster-jobs/${2##*/}" >/dev/null 2>&1
@@ -322,7 +415,7 @@ func (a *Adapter) ReadWorkspaceFile(ctx context.Context, ag agents.Agent, jobID 
 // 🔴 --literal-pathspecs: a result_path is a file name, and without it a name
 // such as ":(top)…" or "*.md" would be read as pathspec magic or a glob and
 // could match a DIFFERENT, tracked file — or none.
-const removeScript = `if [ -e "$2/.git" ]; then
+var removeScript = gitRunsNoRepoCommands + `if [ -e "$2/.git" ]; then
 	git --literal-pathspecs -C "$2" ls-files --error-unmatch -- "$3" >/dev/null 2>&1
 	rc=$?
 	if [ "$rc" -eq 0 ]; then
