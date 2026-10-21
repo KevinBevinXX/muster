@@ -832,7 +832,7 @@ still drawn after them):
 | voice mode, recording (`●`), processing (`◉`) | injected | Below (the voice bar) | Below ×3 | – |
 | vi mode, `INSERT`; after one Escape, `NORMAL`; German `EINFÜGEN` | real | Vi | Vi ×3 | – |
 | vi mode after a turn: the session title trims the label off | real | **admit** | admit ×3 | – |
-| vi mode within 0.35 s of a narrowing resize | real | Below (bar hidden, rules re-wrapped) | Vi ×3 | – |
+| vi mode within 0.35 s of a narrowing resize | real | NoLayout (bar and rules hidden) or Below (tmux re-wrapping them), by when the capture lands | Vi ×3 | – |
 | 60-column pane (compact chrome) | real | Below | Below ×3 | – |
 | text typed in the box | real | Text | Text ×3 | – |
 | an image attached | injected | Images | Images ×3 (one earlier run: admit after Escape 2) | – |
@@ -847,16 +847,16 @@ operator rule and the residual list name — vi mode with its label trimmed
 status-bar field off (closed by Escape 1) — and **no paste ever reached an
 approval, clarify, sudo, `/new` or consent screen** in any run.
 
-**Timings under load** (48 busy loops on 24 CPUs; two runs):
+**Timings under load** (48 busy loops on 24 CPUs; three runs):
 
-- hook slack, 12 turns: user row → `pre_llm_call` 61–963 ms; final row →
-  `on_session_end` 23–839 ms. Every gap positive: the false-idle rule's slack
-  0 holds.
+- hook slack, 12 turns each: user row → `pre_llm_call` 45–963 ms; final row
+  → `on_session_end` 16–839 ms. Every gap positive: the false-idle rule's
+  slack 0 holds.
 - the Enter margin, 5 tries each: Enter 0 ms after the paste submitted 0/5,
-  20 ms 1–2/5, 50 ms 5/5, 100 ms 5/5, **150 ms (muster's) 5/5**.
+  20 ms 0–2/5, 50 ms 5/5, 100 ms 5/5, **150 ms (muster's) 5/5** every run.
 - the queue gap (queue mode: idle written → the queued message's row), 6
-  runs: 305–1,915 ms in one run, 364–506 ms in the other — a residual window
-  up to about 2 s under load, named below.
+  runs each: 305–1,915 ms, 364–506 ms, 433–543 ms — a residual window up to
+  about 2 s under load, named below.
 
 ### Pane to session resolution
 
