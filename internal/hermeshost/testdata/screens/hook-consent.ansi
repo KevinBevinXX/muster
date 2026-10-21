@@ -1,0 +1,34 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+⚠ Hermes is about to register a shell hook that will run a
+  command on your behalf.
+
+    Event:   on_session_start
+    Command: /bin/true livehermes-not-allowlisted
+
+  Commands run with your full user credentials.  Only approve
+  commands you trust.
+Allow this hook to run? [y/N]:

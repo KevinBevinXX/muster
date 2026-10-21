@@ -1,0 +1,34 @@
+│[39m  [38;5;214mstub-model[39m [2m[38;5;136m·[0m [2m[38;5;136mNous Research[0m      [2m[38;5;136mnote-taking:[0m [38;5;230mobsidian[39m                                                                                                       [38;5;173m│
+│[39m  [2m[38;5;136m<SCRATCH>/w[0m            [2m[38;5;136mproductivity:[0m [38;5;230mairtable, box, document-to-action-items, docx, google-workspace, +9 more[39m                                      [38;5;173m│
+│[39m  [2m[38;5;244mSession: f83fb62f[0m               [2m[38;5;136mresearch:[0m [38;5;230marxiv, competitor-news-monitor, grounded-citations, llm-wiki[39m                                                      [38;5;173m│
+│[39m                                  [2m[38;5;136msocial-media:[0m [38;5;230mxurl[39m                                                                                                          [38;5;173m│
+│[39m                                  [2m[38;5;136msoftware-development:[0m [38;5;230mcodebase-inspection, dogfood, github, +9 more[39m                                                         [38;5;173m│
+│[39m                                  [2m[38;5;136mweb:[0m [38;5;230mblocked-page-recovery[39m                                                                                                  [38;5;173m│
+│[39m                                                                                                                                                              [38;5;173m│
+│[39m                                  [2m[38;5;136m21 tools · 54 skills · /help for commands[0m                                                                                   [38;5;173m│
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+[38;5;230mWelcome to Hermes Agent! Type your message or /help for commands.[39m
+[2m[38;5;136m✦ Tipp: Beim Einfügen von [1m5[0;2m[38;5;136m+ Zeilen wird der Text automatisch in eine Datei gespeichert und stattdessen eine kompakte Referenz eingefügt.[0m
+
+
+[38;5;214m────────────────────────────────────────
+[1m●[0m [1mCLARIFY[0m
+[2;3mAgent wird initialisiert...[0m
+[38;5;214m────────────────────────────────────────
+
+[39m  ┊ ❓ bereite clarify vor…
+[38;5;173m╭─ [1m[38;5;220mHermes Agent benötigt Ihre Eingabe[0m[38;5;173m ───────────╮[39m
+[38;5;173m│ [1m[38;5;230m1 Frage                                       [0m[38;5;173m │[39m
+[38;5;173m│ [1m[38;5;220m▸ Which colour should it use?                 [0m[38;5;173m │[39m
+[38;5;173m│ [1m[38;5;220m  ❯ 1. red (Recommended)                      [0m[38;5;173m │[39m
+[38;5;173m│ [38;5;136m    2. blue                                   [38;5;173m │[39m
+[38;5;173m│ [38;5;136m    3. Sonstiges (eigene Antwort eingeben)    [38;5;173m │[39m
+[38;5;173m╰────────────────────────────────────────────────╯[39m
+
+[3m[38;5;136m  ❓ Which colour should it use?  (  1.2s · ↓ 10 tok)[0m
+[3m[38;5;136m  ↑/↓ zum Auswählen, Enter zum Festlegen, Tab nächste Frage[0m[38;5;173m  (3598s)[39m
+[38;5;250m[48;5;234m ☤ [1m[38;5;220mstub-model[0m[38;5;101m[48;5;234m │ 200/65.5K │ [1m[38;5;108m[░░░░░░░░░░][0m[38;5;101m[48;5;234m [1m[38;5;108m0%[0m[38;5;101m[48;5;234m │ ◷ 0.0s │ ↑ 1456 t/s │ 4s │ ⏱ 1s[38;5;250m [38;5;101m                                                                        ─[1m[38;5;234m[48;5;220m CLARIFY
+[0m[38;5;173m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[3m[38;5;136m? ❯ [0m
+[38;5;173m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

@@ -1,0 +1,315 @@
+[
+ {
+  "name": "idle",
+  "state": "the idle prompt, an empty input box",
+  "how": "organic",
+  "expect": "admit",
+  "rule": ""
+ },
+ {
+  "name": "idle-profile",
+  "state": "the idle prompt of a named profile (coder ❯)",
+  "how": "organic",
+  "expect": "admit",
+  "rule": ""
+ },
+ {
+  "name": "busy",
+  "state": "a turn running (☤)",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "NotIdle"
+ },
+ {
+  "name": "approval",
+  "state": "the dangerous-command approval modal (⚠)",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "NotIdle"
+ },
+ {
+  "name": "clarify-choices",
+  "state": "a clarify question with choices (?)",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "NotIdle"
+ },
+ {
+  "name": "clarify-freetext",
+  "state": "a free-text clarify question (✎)",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "NotIdle"
+ },
+ {
+  "name": "sudo",
+  "state": "the sudo password prompt (🔐)",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "NotIdle"
+ },
+ {
+  "name": "new-confirm",
+  "state": "the /new confirm modal (⚠; no hook fires)",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "NotIdle"
+ },
+ {
+  "name": "hook-consent",
+  "state": "the hook-consent [y/N] prompt, before the UI",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "NoLayout"
+ },
+ {
+  "name": "palette",
+  "state": "the command palette (Ctrl+P)",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "NoStatusBar"
+ },
+ {
+  "name": "palette-filtered",
+  "state": "the command palette with a typed filter",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "NoStatusBar"
+ },
+ {
+  "name": "palette-over-draft",
+  "state": "the command palette opened over a draft",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "NoStatusBar"
+ },
+ {
+  "name": "model-picker",
+  "state": "the model picker (/model), provider stage",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "NoStatusBar"
+ },
+ {
+  "name": "model-picker-filtered",
+  "state": "the model picker, model stage with a typed filter",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "NoStatusBar"
+ },
+ {
+  "name": "model-picker-reasoning",
+  "state": "the model picker, reasoning stage",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "NoStatusBar"
+ },
+ {
+  "name": "model-picker-during-turn",
+  "state": "the model picker opened by /model during a turn, a draft typed after it (interrupt mode)",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "NoStatusBar"
+ },
+ {
+  "name": "model-picker-over-hidden-draft",
+  "state": "the model picker opened over a draft it hides (the /model handler called with a draft in the box)",
+  "how": "injected",
+  "expect": "refuse",
+  "rule": "NoStatusBar"
+ },
+ {
+  "name": "stash",
+  "state": "the prompt-stash panel (Ctrl+S, two drafts)",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "Stash"
+ },
+ {
+  "name": "palette-and-stash",
+  "state": "the command palette and the stash panel together",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "NoStatusBar"
+ },
+ {
+  "name": "stash-indicator-hidden",
+  "state": "the stash panel, with the status bar's stash field turned off",
+  "how": "organic",
+  "expect": "admit",
+  "rule": ""
+ },
+ {
+  "name": "secret",
+  "state": "secret capture (🔑)",
+  "how": "injected",
+  "expect": "refuse",
+  "rule": "NotIdle"
+ },
+ {
+  "name": "connection",
+  "state": "the connection form (⚙)",
+  "how": "injected",
+  "expect": "refuse",
+  "rule": "NotIdle"
+ },
+ {
+  "name": "voice",
+  "state": "voice mode on (🎤, the voice bar below the input)",
+  "how": "injected",
+  "expect": "refuse",
+  "rule": "Below"
+ },
+ {
+  "name": "voice-recording",
+  "state": "voice recording (●)",
+  "how": "injected",
+  "expect": "refuse",
+  "rule": "Below"
+ },
+ {
+  "name": "voice-processing",
+  "state": "voice processing (◉)",
+  "how": "injected",
+  "expect": "refuse",
+  "rule": "Below"
+ },
+ {
+  "name": "vi-insert",
+  "state": "vi mode, INSERT label shown",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "Vi"
+ },
+ {
+  "name": "vi-normal",
+  "state": "vi mode after one Escape, NORMAL label shown",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "Vi"
+ },
+ {
+  "name": "vi-trimmed",
+  "state": "vi mode after a turn: the session title fills the status bar and the vi label is trimmed off",
+  "how": "organic",
+  "expect": "admit",
+  "rule": ""
+ },
+ {
+  "name": "vi-hidden-after-resize",
+  "state": "vi mode within 0.35 s of a narrowing resize: the status bar hidden, tmux re-wrapping the input rules",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "Below"
+ },
+ {
+  "name": "vi-insert-de",
+  "state": "vi mode in German, EINFÜGEN label shown",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "Vi"
+ },
+ {
+  "name": "idle-de",
+  "state": "the idle prompt in German",
+  "how": "organic",
+  "expect": "admit",
+  "rule": ""
+ },
+ {
+  "name": "approval-de",
+  "state": "the approval modal in German",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "NotIdle"
+ },
+ {
+  "name": "clarify-choices-de",
+  "state": "a clarify question with choices in German",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "NotIdle"
+ },
+ {
+  "name": "narrow",
+  "state": "a 60-column pane: compact chrome, no lower rule",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "Below"
+ },
+ {
+  "name": "text-in-box",
+  "state": "typed text in the input box",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "Text"
+ },
+ {
+  "name": "completions-menu",
+  "state": "the slash completions menu below the input",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "Below"
+ },
+ {
+  "name": "image-attached",
+  "state": "an image attached (the image bar above the prompt)",
+  "how": "injected",
+  "expect": "refuse",
+  "rule": "Images"
+ },
+ {
+  "name": "pasted-short",
+  "state": "after a paste of a short line",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "Text",
+  "pasted": "hello from muster",
+  "pastedExpect": "admit"
+ },
+ {
+  "name": "pasted-multiline",
+  "state": "after a paste of three lines (not collapsed)",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "Text",
+  "pasted": "line one\nline two\nline three",
+  "pastedExpect": "admit"
+ },
+ {
+  "name": "pasted-wrapped",
+  "state": "after a paste of one 400-character line (wrapped over three rows)",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "Text",
+  "pasted": "w000 w001 w002 w003 w004 w005 w006 w007 w008 w009 w010 w011 w012 w013 w014 w015 w016 w017 w018 w019 w020 w021 w022 w023 w024 w025 w026 w027 w028 w029 w030 w031 w032 w033 w034 w035 w036 w037 w038 w039 w040 w041 w042 w043 w044 w045 w046 w047 w048 w049 w050 w051 w052 w053 w054 w055 w056 w057 w058 w059 w060 w061 w062 w063 w064 w065 w066 w067 w068 w069 w070 w071 w072 w073 w074 w075 w076 w077 w078 w079",
+  "pastedExpect": "admit"
+ },
+ {
+  "name": "pasted-collapsed",
+  "state": "after a paste of eight lines: Hermes collapses it to a placeholder",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "Text",
+  "pasted": "collapsed line 1\ncollapsed line 2\ncollapsed line 3\ncollapsed line 4\ncollapsed line 5\ncollapsed line 6\ncollapsed line 7\ncollapsed line 8",
+  "pastedExpect": "admit"
+ },
+ {
+  "name": "pasted-scrolled",
+  "state": "after a paste of 1,599 characters on one line: more than the box's 8 rows, its prompt row scrolled away",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "NotIdle",
+  "pasted": "word000 word001 word002 word003 word004 word005 word006 word007 word008 word009 word010 word011 word012 word013 word014 word015 word016 word017 word018 word019 word020 word021 word022 word023 word024 word025 word026 word027 word028 word029 word030 word031 word032 word033 word034 word035 word036 word037 word038 word039 word040 word041 word042 word043 word044 word045 word046 word047 word048 word049 word050 word051 word052 word053 word054 word055 word056 word057 word058 word059 word060 word061 word062 word063 word064 word065 word066 word067 word068 word069 word070 word071 word072 word073 word074 word075 word076 word077 word078 word079 word080 word081 word082 word083 word084 word085 word086 word087 word088 word089 word090 word091 word092 word093 word094 word095 word096 word097 word098 word099 word100 word101 word102 word103 word104 word105 word106 word107 word108 word109 word110 word111 word112 word113 word114 word115 word116 word117 word118 word119 word120 word121 word122 word123 word124 word125 word126 word127 word128 word129 word130 word131 word132 word133 word134 word135 word136 word137 word138 word139 word140 word141 word142 word143 word144 word145 word146 word147 word148 word149 word150 word151 word152 word153 word154 word155 word156 word157 word158 word159 word160 word161 word162 word163 word164 word165 word166 word167 word168 word169 word170 word171 word172 word173 word174 word175 word176 word177 word178 word179 word180 word181 word182 word183 word184 word185 word186 word187 word188 word189 word190 word191 word192 word193 word194 word195 word196 word197 word198 word199",
+  "pastedExpect": "refuse: NotIdle"
+ },
+ {
+  "name": "pasted-after-draft",
+  "state": "a paste after a typed draft: the box holds more than the message",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "Text",
+  "pasted": "hello from muster",
+  "pastedExpect": "refuse: NotPasted"
+ }
+]

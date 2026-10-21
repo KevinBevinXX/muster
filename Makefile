@@ -34,7 +34,7 @@ export MUSTER_TEST_PG_PORT
 # database, which is the specific failure that file's header is about.
 TEST_DSN := postgres://muster:muster@127.0.0.1:$(MUSTER_TEST_PG_PORT)/muster_test?sslmode=disable
 
-.PHONY: build vet run image hermes-image hermes-smoke test test-db test-db-down test-liveclaude leakscan css css-check check help verb-ledger icons e2e screenshots
+.PHONY: build vet run image hermes-image hermes-smoke test test-db test-db-down test-liveclaude test-livehermes leakscan css css-check check help verb-ledger icons e2e screenshots
 
 # The stylesheet the UI serves, and the classes that prove each Tailwind content
 # entry is still matching something. See css-check.
@@ -109,6 +109,7 @@ help:
 	@echo "  make screenshots  regenerate docs/img/*.png from fixture data (same database, plus Docker)"
 	@echo "  make test-db-down stop and remove the throwaway Postgres"
 	@echo "  make test-liveclaude  answer a REAL Claude Code's AskUserQuestion pickers (run on every Claude Code upgrade)"
+	@echo "  make test-livehermes  drive the PINNED Hermes CLI: screen check, Escape, timings, gated send (every pin bump; before -hermes-send)"
 
 build:
 	go build ./...
@@ -159,6 +160,18 @@ test:
 # logged-in `claude` on PATH; spends a few model turns. Never in CI.
 test-liveclaude:
 	tests/liveclaude.sh
+
+# Drive the PINNED Hermes CLI for real (docs/design/hermes.md, Phase 3): every
+# screen state the send's screen check must refuse, what Escape does in each,
+# the hook/Enter/queue timings under load, the gated send end to end, and the
+# overlay and vi-label ledgers against the pinned source. 🔴 RUN IT ON EVERY
+# HERMES PIN BUMP AND BEFORE ENABLING -hermes-send ON A HOST: it ends with
+# "HERMES HARNESS VERDICT: GREEN" or "RED". Isolated: a scratch HERMES_HOME, a
+# private tmux server, a local stub model, no credential. Needs `hermes` on
+# PATH at the pin and tmux >= 3.7. Never in CI. MUSTER_LIVEHERMES_RECORD=1
+# re-records the fixtures (internal/hermeshost/testdata/screens/).
+test-livehermes:
+	tests/livehermes.sh
 
 # Start the throwaway Postgres, wait for it, and migrate the TEMPLATE once.
 #
