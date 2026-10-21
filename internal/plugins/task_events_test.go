@@ -235,9 +235,10 @@ func TestAChiefDispatchCheckRefusalWritesNothing(t *testing.T) {
 	}
 }
 
-// TestAPendingStartCountsAsLive: two reservations whose agents are not recorded
-// yet (in flight in parallel calls) hold both live slots, so a third start for
-// another task is refused — the race the agent row alone let through (audit r1).
+// TestAPendingStartCountsAsLive: a full cap of reservations whose agents are
+// not recorded yet (in flight in parallel calls) holds every live slot, so one
+// more start for another task is refused — the race the agent row alone let
+// through (audit r1).
 func TestAPendingStartCountsAsLive(t *testing.T) {
 	s, _, _ := pgStore(t)
 	dbtest.OwnerExec(t, dbtest.DSN(t), `DELETE FROM audit_log WHERE action LIKE 'task.chief_%'`)

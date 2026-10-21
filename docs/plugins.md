@@ -397,7 +397,7 @@ Each refusal has its own sentence, in this order:
 9. The task is not yours, is gated (`gate:` tag), names a different
    repository than `repo`, is not `open`, or already has a live agent (use
    `task_forward`).
-10. **2** of the agents the chief started are still live (pending,
+10. **5** of the agents the chief started are still live (pending,
    provisioning or running), counting a start from the last 10 minutes whose
    agent is not recorded yet.
 11. The chief started **10** agents in the last 24 hours.
