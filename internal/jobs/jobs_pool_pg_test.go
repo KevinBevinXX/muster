@@ -64,7 +64,7 @@ func TestThePGStoreCountsActiveJobsAndFindsAKey(t *testing.T) {
 	}
 }
 
-// TestAWorkerPoolIsAClaudeCodeAgentsOnly: migration 0038 stores a claude-code
+// TestAWorkerPoolIsAClaudeCodeAgentsOnly: migration 0040 stores a claude-code
 // agent's worker_pool and refuses one on a gateway agent or outside the
 // pattern; a job's worker_pool outside the pattern is refused too.
 func TestAWorkerPoolIsAClaudeCodeAgentsOnly(t *testing.T) {

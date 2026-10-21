@@ -160,6 +160,18 @@ BEGIN
         ALTER TABLE public.jobs DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.jobs ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0039 (devices, device_pairing_codes), when this schema has them; same
+    -- reason as 0011.
+    IF to_regclass('public.devices') IS NOT NULL THEN
+        ALTER TABLE public.devices NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.devices DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.devices ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    IF to_regclass('public.device_pairing_codes') IS NOT NULL THEN
+        ALTER TABLE public.device_pairing_codes NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.device_pairing_codes DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.device_pairing_codes ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
 END
 $$;
 

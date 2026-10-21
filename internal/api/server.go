@@ -219,6 +219,9 @@ type Server struct {
 
 	// pushLimit is the per-owner notification rate cap (push_routes.go).
 	pushLimit ownerRateLimit
+	// deviceLimits throttle the pairing route and the device tier
+	// (devices.go).
+	deviceLimits deviceLimits
 
 	taskProvisionedMu       sync.Mutex
 	taskProvisionedNotified map[int64]bool
@@ -488,6 +491,9 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerAPITokenRoutes(mux)
 	// The machine job API (jobs.go): the service tier only.
 	s.registerJobRoutes(mux)
+	// Paired devices (the Android app, Phase 1): the pairing code, Account →
+	// Devices, and the /api/device/* tier (devices.go).
+	s.registerDeviceRoutes(mux)
 
 	// --- The SPA shell. Each tab is a real route (deep-linking + back/forward);
 	// they all serve the shell with the matching tab active, derived from the

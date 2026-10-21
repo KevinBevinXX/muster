@@ -34,7 +34,7 @@ export MUSTER_TEST_PG_PORT
 # database, which is the specific failure that file's header is about.
 TEST_DSN := postgres://muster:muster@127.0.0.1:$(MUSTER_TEST_PG_PORT)/muster_test?sslmode=disable
 
-.PHONY: build vet run image test test-db test-db-down test-liveclaude leakscan css css-check check help verb-ledger icons e2e screenshots
+.PHONY: build vet run image hermes-image hermes-smoke test test-db test-db-down test-liveclaude leakscan css css-check check help verb-ledger icons e2e screenshots
 
 # The stylesheet the UI serves, and the classes that prove each Tailwind content
 # entry is still matching something. See css-check.
@@ -94,6 +94,8 @@ help:
 	@echo "  make build        go build ./... (muster-server, muster, muster-migrate)"
 	@echo "  make run          the server, against \$$DATABASE_URL (see README)"
 	@echo "  make image        the container image, css-check included"
+	@echo "  make hermes-image the hermes agent image (Nix; loads it into Docker)"
+	@echo "  make hermes-smoke the hermes image smoke test: a stub model, a full turn, approvals, crash and restart"
 	@echo "  make vet          go vet ./..."
 	@echo "  make test-db      start the throwaway Postgres, migrate it, print the exports"
 	@echo "                    (MUSTER_TEST_PG_PORT=55433 make test-db for a second checkout)"
@@ -328,3 +330,31 @@ screenshots:
 	  test "$$s" -le 204800 || { echo "screenshots: $$f is over 200 KB"; exit 1; }; done
 
 check: vet test leakscan css-check verb-ledger
+
+# The `hermes` agent kind's image (images/hermes-agent/flake.nix): upstream
+# Hermes at its pinned sha, ffmpeg overridden out, behind hermesd. The flake's
+# output is a stream script, so the image is assembled as Docker loads it.
+#
+# 🔴 THE hermesd IN THE IMAGE MUST BE THE ONE muster's OWN FLAKE BUILDS. The
+# image flake takes muster through a relative `path:` input; the target refuses
+# to build when the two derivations differ (a stale or diverged input), rather
+# than ship an image whose hermesd is not this tree's.
+#
+# The tag names Hermes's pin AND hermesd's revision (the flake's `imageTag`).
+HERMES_IMAGE_TAG = $(shell nix eval --raw ./images/hermes-agent\#imageTag 2>/dev/null)
+hermes-image:
+	@root=$$(nix eval --raw .#packages.x86_64-linux.hermesd.drvPath) && \
+	img=$$(nix eval --raw ./images/hermes-agent#packages.x86_64-linux.hermesd.drvPath) && \
+	if [ "$$root" != "$$img" ]; then \
+		echo "hermes-image: the image's hermesd ($$img) is not muster's ($$root): refresh the image flake's muster input (nix flake update --flake ./images/hermes-agent muster)" >&2; exit 1; \
+	else echo "hermes-image: hermesd $$root"; fi
+	nix build -o .hermes-image ./images/hermes-agent#image
+	./.hermes-image | docker load
+	rm -f .hermes-image
+
+# The image smoke test: the real image under Docker with pod-like restrictions,
+# a stub OpenAI-compatible model and a fake muster relay, driven by muster's own
+# client (images/hermes-agent/smoke). It builds and loads the image first, so it
+# never tests a stale one. No real model, no Kubernetes.
+hermes-smoke: hermes-image
+	go run ./images/hermes-agent/smoke -image hermes-agent:$(HERMES_IMAGE_TAG)

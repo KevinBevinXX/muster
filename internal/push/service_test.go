@@ -28,15 +28,17 @@ type memStore struct {
 	allow     Allowlist
 }
 
-func (m *memStore) Claim(context.Context, int64, Subscription, string) (int64, error) { return 0, nil }
-func (m *memStore) Devices(context.Context) ([]Device, error)                         { return nil, nil }
-func (m *memStore) Remove(context.Context, int64) (bool, error)                       { return false, nil }
-func (m *memStore) Unsubscribe(context.Context, string) (bool, error)                 { return false, nil }
-func (m *memStore) ForgetDevice(context.Context, int64, string) (bool, error)         { return false, nil }
-func (m *memStore) Muted(context.Context, int64) ([]string, error)                    { return nil, nil }
-func (m *memStore) MyMuted(context.Context) ([]string, error)                         { return nil, nil }
-func (m *memStore) SetMuted(context.Context, []string) error                          { return nil }
-func (m *memStore) Allowlist() Allowlist                                              { return m.allow }
+func (m *memStore) Claim(context.Context, int64, Subscription, string) (int64, error)     { return 0, nil }
+func (m *memStore) Devices(context.Context) ([]Device, error)                             { return nil, nil }
+func (m *memStore) Remove(context.Context, int64) (bool, error)                           { return false, nil }
+func (m *memStore) Unsubscribe(context.Context, string) (bool, error)                     { return false, nil }
+func (m *memStore) ForgetDevice(context.Context, int64, string) (bool, error)             { return false, nil }
+func (m *memStore) ClaimNative(context.Context, int64, int64, Subscription, string) error { return nil }
+func (m *memStore) ForgetNative(context.Context, int64, int64) (bool, error)              { return false, nil }
+func (m *memStore) Muted(context.Context, int64) ([]string, error)                        { return nil, nil }
+func (m *memStore) MyMuted(context.Context) ([]string, error)                             { return nil, nil }
+func (m *memStore) SetMuted(context.Context, []string) error                              { return nil }
+func (m *memStore) Allowlist() Allowlist                                                  { return m.allow }
 
 func (m *memStore) ForOwner(_ context.Context, owner int64) ([]Device, error) {
 	m.mu.Lock()

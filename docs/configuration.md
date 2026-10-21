@@ -87,6 +87,7 @@ See [auth.md](auth.md).
 | `MUSTER_VAPID_PUBLIC_KEY` | none | no | [Web push](push.md). The three VAPID variables are all-or-none. Generate a keypair with `muster-server vapid generate`. |
 | `MUSTER_VAPID_PRIVATE_KEY` | none | no | The private half of that keypair. It must match the public key. |
 | `MUSTER_VAPID_SUBJECT` | none | no | A `mailto:` or `https:` contact address that is sent to push services. |
+| `MUSTER_ANDROID_ALLOW_PIN_KEYS` | off | no | `1` lets a phone with no strong biometric pair the [Android app](design/android.md#the-step-up-key) with a biometric-or-PIN step-up key. Off, such a phone pairs read-only. A biometric-or-PIN key survives a new fingerprint being enrolled, so anyone who knows the PIN can use it. |
 | `MUSTER_PUSH_EXTRA_HOSTS` | none | no | Your own push hosts, such as a self-hosted ntfy for the [Android app](design/android.md). Paired phones may register on them; browsers may not. Exact host names, separated by commas or spaces: no scheme, port, path or wildcard. Each is reached on `https` and the default port only. A bad entry stops the server from starting. See [push.md](push.md#which-push-services). |
 | `MUSTER_MEMO_URL` | none | with the token | The base URL of the cairn memo listener, for the [memo relay](memo-relay.md). |
 | `MUSTER_MEMO_TOKEN` | none | no | A read-only cairn credential. The relay runs only while it is set, and also needs a database and an agent gateway. |
@@ -147,13 +148,15 @@ each setting does and which combinations are valid.
 | `MUSTER_AGENT_ENDPOINT_TEMPLATE` | the driver's (`{{.Name}}.{{.Group}}.svc` on Kubernetes) | no | How muster builds an agent's address from its name and group. |
 | `MUSTER_AGENT_CAIRN_URL` | none | no | Cairn coordinates given to the chief only. Set it together with the token, or set neither. |
 | `MUSTER_AGENT_CAIRN_TOKEN` | none | no | The credential for that cairn. |
-| `MUSTER_AGENT_KINDS` | `gateway` | no | A comma list of the agent kinds a dispatch may ask for: `gateway`, `claude-code`. |
+| `MUSTER_AGENT_KINDS` | `gateway` | no | A comma list of the agent kinds a dispatch may ask for: `gateway`, `claude-code`, `hermes`. |
 | `MUSTER_AGENT_CC_IMAGE` | none | with `claude-code` | The pinned image for `claude-code` agents, built from `images/claude-code-agent`. |
 | `MUSTER_AGENT_CC_ACCOUNTS` | none | with `claude-code` | A comma list of Claude account names (`[a-z0-9-]`, 1–32 characters each). |
 | `MUSTER_AGENT_CC_TOKEN_<NAME>` | none | for each account | That account's `claude setup-token`. `<NAME>` is the account name upper-cased, with `-` written as `_`. |
 | `MUSTER_AGENT_CC_STORAGE_SIZE` | `10Gi` | no | The size of each `claude-code` agent's `/data` volume. |
-| `MUSTER_AGENT_NETPOL_FROM_NAMESPACE` | none | `claude-code` on Kubernetes | The namespace muster runs in. The agent's NetworkPolicy only admits muster. |
-| `MUSTER_AGENT_NETPOL_FROM_POD_LABELS` | none | `claude-code` on Kubernetes | Comma-separated `key=value` labels on muster's pods. |
+| `MUSTER_AGENT_HERMES_IMAGE` | none | with `hermes` | The pinned image for `hermes` agents, built from `images/hermes-agent` (`make hermes-image`). Its provider credential is the OpenRouter key (`MUSTER_AGENT_OPENROUTER_KEY`, or a member's own); it has none of its own. |
+| `MUSTER_AGENT_HERMES_STORAGE_SIZE` | `10Gi` | no | The size of each `hermes` agent's `/data` volume. 🔴 Its storage class must give a **local filesystem**, not NFS or virtiofs: Hermes's `state.db` is SQLite in WAL mode. The pod's root filesystem is read-only (a writable `/tmp` emptyDir is mounted). |
+| `MUSTER_AGENT_NETPOL_FROM_NAMESPACE` | none | `claude-code` or `hermes` on Kubernetes | The namespace muster runs in. The agent's NetworkPolicy only admits muster. |
+| `MUSTER_AGENT_NETPOL_FROM_POD_LABELS` | none | `claude-code` or `hermes` on Kubernetes | Comma-separated `key=value` labels on muster's pods. |
 
 The install script receives each `gateway`-kind agent's settings as JSON in
 `MUSTER_CONFIG`. It is the script's job to copy them into the runtime's own
@@ -245,6 +248,32 @@ variables when it provisions an agent, so you normally never set them yourself.
 | `CCD_TURN_TIMEOUT` | `30m` | no | The deadline for a whole turn. |
 | `CCD_APPROVAL_DEADLINE` | `170s` | no | How long `ccd approve` waits for a relayed decision before falling back to the terminal prompt. |
 | `CCD_LIVECHECK_HOOKS_TOKEN` | none | for `livecheck` | The token for `cmd/ccd/livecheck`, a manual probe of a live agent. |
+
+## hermesd (inside the hermes agent image)
+
+`hermesd` runs inside the `hermes` agent container, in front of one `hermes
+gateway run` ([design](design/hermes.md#the-hermes-agent-kind)). muster sets these
+variables when it provisions a `hermes` agent, so you normally never set them
+yourself. `MUSTER_GATEWAY_BEARER` and `HOOKS_TOKEN` are read as `ccd` reads
+them (above), and are not passed on to Hermes.
+
+| variable | default | required | what it does |
+|---|---|---|---|
+| `HERMES_HOME` | `/data/hermes` | no | Hermes's home on the volume. `hermesd` creates it, the agent shell's HOME (`$HERMES_HOME/home`) and `TMPDIR` (`$HERMES_HOME/cache/tmp`), renders `config.yaml` there on every start, and refuses to start Hermes while a `.env` exists there. |
+| `HERMESD_WORKSPACE` | `/data/workspace` | no | The agent's working directory: the rendered `terminal.cwd`. muster sets it to the checkout (`/data/workspace/<name>`) for an agent dispatched with a repository. |
+| `HERMESD_REPO` | none | no | `owner/name`. `hermesd` clones `https://github.com/<it>` into `HERMESD_WORKSPACE` before it starts Hermes, as `ccd` does with `CCD_REPO`. |
+| `HERMESD_REPO_BRANCH` | the remote's default | no | The branch `hermesd` clones. |
+| `HERMESD_INSTRUCTIONS` | `/etc/hermesd/instructions.md` | no | muster's instructions, sent as `instructions` on every Hermes run. muster places the file outside every volume. An absent file is no instructions. |
+| `HERMESD_MODEL` | none | no | The OpenRouter model slug Hermes runs. muster sets it from the agent's model or `MUSTER_AGENT_MODEL`. |
+| `HERMESD_MODEL_BASE_URL` | none | no | **Test-only.** An OpenAI-compatible base URL used instead of OpenRouter, so the image smoke test runs the production image against a stub model. Its key is still `${OPENROUTER_API_KEY}`, expanded by Hermes. muster never sets it, and `hermesd` logs it at boot whenever it is set. |
+| `HERMESD_LISTEN` | `:18789` | no | muster's agent wire. |
+| `HERMESD_API_PORT` | `8642` | no | Hermes's API server, bound to `127.0.0.1` only. |
+| `HERMESD_RELAY_TIMEOUT` | `240s` | no | How long an approval waits for muster's relay before `hermesd` answers `deny` itself. It must be shorter than the rendered `approvals.timeout` (300 s); `hermesd` refuses to start otherwise. |
+
+Fixed, not configurable: `hermesd`'s own state is `/data/hermesd` (the API server
+key, generated once, mode 0600, and the session map with its intents); the
+gateway is the image's `hermes`; a turn's budget is 30 minutes, after which
+`hermesd` stops the run (`POST /v1/runs/{id}/stop`) and answers `turn_timeout`.
 
 ## Test and e2e harness
 

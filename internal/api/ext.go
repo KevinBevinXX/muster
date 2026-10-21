@@ -12,6 +12,7 @@ import (
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/devices"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/github"
@@ -58,6 +59,13 @@ type Extensions struct {
 	// APITokens is the personal API token store (accounts PR 6;
 	// api_tokens.go). Nil: no personal token is admitted anywhere (503).
 	APITokens apitokens.Store
+	// Devices is the paired-device store (the Android app; devices.go). Nil:
+	// no device is paired or admitted anywhere (503).
+	Devices devices.Store
+	// AllowPINKeys is MUSTER_ANDROID_ALLOW_PIN_KEYS: a phone with no strong
+	// biometric may pair with a biometric-or-PIN step-up key. False (the
+	// default): such a phone pairs read-only.
+	AllowPINKeys bool
 
 	// AgentNamespacePrefix is the prefix [Extensions.AgentNamespace] builds a new
 	// agent's stored namespace from. It is the DEPLOYMENT's prefix — the same

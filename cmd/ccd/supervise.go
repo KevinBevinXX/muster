@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/podagent"
 )
 
 // The supervisor keeps the interactive CLI running in its tmux pane, IN THE POD:
@@ -337,14 +339,8 @@ func (s *supervisor) setDetail(d string) {
 func (s *supervisor) recordExit(e paneExit) (delay time.Duration, crash bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := s.now()
-	kept := s.exits[:0]
-	for _, t := range s.exits {
-		if now.Sub(t) < s.crashWindow {
-			kept = append(kept, t)
-		}
-	}
-	s.exits = append(kept, now)
+	var latched bool
+	s.exits, delay, latched = podagent.RecordExit(s.exits, s.now(), s.crashWindow, s.crashExits, s.backoffMin, s.backoffMax)
 	status := e.Status
 	if !e.Known {
 		status = exitUnknown
@@ -352,7 +348,7 @@ func (s *supervisor) recordExit(e paneExit) (delay time.Duration, crash bool) {
 	s.st.LastExit = &status
 	s.lastExit = e.describe()
 	k := len(s.exits)
-	if k >= s.crashExits {
+	if latched {
 		s.st.CLI = cliCrashLoop
 		s.st.Detail = fmt.Sprintf("the CLI exited %d times within %s (last: %s); not restarting it — "+
 			"/healthz now fails so Kubernetes restarts the pod", k, s.crashWindow, s.lastExit)
@@ -361,11 +357,6 @@ func (s *supervisor) recordExit(e paneExit) (delay time.Duration, crash bool) {
 		}
 		return 0, true
 	}
-	delay = s.backoffMin
-	for i := 1; i < k && delay < s.backoffMax; i++ {
-		delay *= 2
-	}
-	delay = min(delay, s.backoffMax)
 	s.st.CLI = cliRestarting
 	s.st.Detail = fmt.Sprintf("the CLI %s; restarting in %s", s.lastExit, delay)
 	return delay, false

@@ -143,7 +143,7 @@ type Agent struct {
 	// for the agent's life (migration 0003 enforces both halves).
 	CCAccount string `json:"ccAccount,omitempty"`
 	// WorkerPool is the named worker pool this claude-code agent serves machine
-	// jobs for (agents.worker_pool, migration 0038); "" for an agent in none.
+	// jobs for (agents.worker_pool, migration 0040); "" for an agent in none.
 	// Set at creation (dispatch's worker_pool) and never written after; a job
 	// naming the pool instead of an agent is given one of its members
 	// (internal/api pickJobAgent). See [ValidWorkerPool].

@@ -376,6 +376,11 @@ func Fingerprint(s Spec) string {
 		w("security", strconv.FormatInt(sec.RunAsUser, 10), strconv.FormatInt(sec.RunAsGroup, 10),
 			strconv.FormatInt(sec.FSGroup, 10), strconv.FormatBool(sec.RunAsNonRoot),
 			strconv.FormatBool(sec.Restricted), strconv.FormatBool(sec.NoServiceAccountToken))
+		// Its own line, only when declared: the line above is positional, and a
+		// field added to it would move every confined spec's fingerprint.
+		if sec.ReadOnlyRoot {
+			w("security-read-only-root")
+		}
 	}
 
 	// 🔴 NETWORK COUNTS, AND ONLY WHEN DECLARED — the rule and the reason are
@@ -418,6 +423,13 @@ func Fingerprint(s Spec) string {
 		w("sidecar", sc.Name, sc.Runtime.Image, strings.Join(sc.Runtime.Command, "\x1f"), strings.Join(sc.Runtime.Args, "\x1f"),
 			sc.Runtime.WorkingDir, strings.Join(sortedEnvPairs(sc.Env), "\x1f"), strings.Join(sortedEnvPairs(sc.Secrets), "\x1f"),
 			strings.Join(files, "\x1f"), sc.Resources.CPURequest, sc.Resources.CPULimit, sc.Resources.MemoryRequest, sc.Resources.MemoryLimit)
+	}
+
+	// 🔴 THE TERMINATION GRACE COUNTS, AND ONLY WHEN DECLARED — Security's rule,
+	// for Security's reason: it is rendered into the pod template, and a spec that
+	// declares none keeps the fingerprint it had before the field existed.
+	if s.TerminationGraceSeconds > 0 {
+		w("termination-grace", strconv.Itoa(s.TerminationGraceSeconds))
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

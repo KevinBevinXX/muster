@@ -105,6 +105,11 @@ const attentionAsksMigrationVersion = 25
 // same row-level security; same treatment again.
 const jobsMigrationVersion = 37
 
+// devicesMigrationVersion is 0039: devices and device_pairing_codes (the
+// Android app's paired phones), owned and under the same row-level security;
+// same treatment again.
+const devicesMigrationVersion = 39
+
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the
 // principal, the role and its grants — and 0008's for mirror_tokens when that
@@ -115,7 +120,7 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		return err
 	}
 	ctx = asMigrator(ctx)
-	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasPushSubscriptions, hasFlowRequests, hasPlugins, hasPluginReplies, hasPins, hasRecents, hasSendQueue, hasAgentFocus, hasSessionRoutes, hasAgentFocusHistory, hasUploads, hasAttentionAsks, hasJobs bool
+	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasPushSubscriptions, hasFlowRequests, hasPlugins, hasPluginReplies, hasPins, hasRecents, hasSendQueue, hasAgentFocus, hasSessionRoutes, hasAgentFocusHistory, hasUploads, hasAttentionAsks, hasJobs, hasDevices bool
 	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.mirror_tokens') IS NOT NULL,
 		to_regclass('public.user_credentials') IS NOT NULL,
 		to_regclass('public.flow_jobs') IS NOT NULL,
@@ -131,8 +136,9 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		to_regclass('public.agent_focus_history') IS NOT NULL,
 		to_regclass('public.uploads') IS NOT NULL,
 		to_regclass('public.attention_asks') IS NOT NULL,
-		to_regclass('public.jobs') IS NOT NULL`).Scan(&hasMirrorTokens, &hasUserCredentials,
-		&hasFlowJobs, &hasPushSubscriptions, &hasFlowRequests, &hasPlugins, &hasPluginReplies, &hasPins, &hasRecents, &hasSendQueue, &hasAgentFocus, &hasSessionRoutes, &hasAgentFocusHistory, &hasUploads, &hasAttentionAsks, &hasJobs); err != nil {
+		to_regclass('public.jobs') IS NOT NULL,
+		to_regclass('public.devices') IS NOT NULL`).Scan(&hasMirrorTokens, &hasUserCredentials,
+		&hasFlowJobs, &hasPushSubscriptions, &hasFlowRequests, &hasPlugins, &hasPluginReplies, &hasPins, &hasRecents, &hasSendQueue, &hasAgentFocus, &hasSessionRoutes, &hasAgentFocusHistory, &hasUploads, &hasAttentionAsks, &hasJobs, &hasDevices); err != nil {
 		return fmt.Errorf("rls on: %w", err)
 	}
 	applied := false
@@ -152,7 +158,8 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 			!(m.version == agentFocusHistoryMigrationVersion && hasAgentFocusHistory) &&
 			!(m.version == uploadsMigrationVersion && hasUploads) &&
 			!(m.version == attentionAsksMigrationVersion && hasAttentionAsks) &&
-			!(m.version == jobsMigrationVersion && hasJobs) {
+			!(m.version == jobsMigrationVersion && hasJobs) &&
+			!(m.version == devicesMigrationVersion && hasDevices) {
 			continue
 		}
 		tx, err := pool.Begin(ctx)

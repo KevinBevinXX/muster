@@ -41,6 +41,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -62,6 +63,7 @@ import (
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/db"
+	"github.com/ZacxDev/muster/internal/devices"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/github"
@@ -286,6 +288,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.Users = users.NewPG(pool)
 		// Personal API tokens (accounts PR 6): mst_… on the machine tier.
 		ext.APITokens = apitokens.NewPG(pool)
+		// Paired phones (migration 0039): the Android app's mdv_ credential on
+		// /api/device/*, and Account → Devices.
+		ext.Devices = devices.NewPG(pool)
+		ext.AllowPINKeys = cfg.AndroidAllowPINKeys
 		// Browser flows (migration 0012): the owner-scoped job queue and the
 		// per-host runner tokens. Always on with a database: with no runner
 		// token minted, nothing ever claims a job and each one expires.
@@ -1111,6 +1117,16 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			envVAPIDPublicKey, envVAPIDPrivateKey, envVAPIDSubject, "/api/push/vapid-public-key", envPushExtraHosts)
 	}
 
+	// The Android app's pairing policy, in both directions: whether a phone with
+	// no strong biometric gets actions at all is a security decision.
+	if a.cfg.AndroidAllowPINKeys {
+		l.Printf("android pairing: %s is SET, so a phone with no strong biometric may pair with a biometric-or-PIN "+
+			"step-up key (anyone who knows its PIN can use it)", envAndroidAllowPINKeys)
+	} else {
+		l.Printf("android pairing: %s is unset, so a phone with no strong biometric pairs read-only "+
+			"(a biometric-or-PIN step-up key is refused)", envAndroidAllowPINKeys)
+	}
+
 	if ext.Connectors != nil {
 		listener := "no dedicated listener (" + envConnectPort + " unset): the connector routes are on the main port only"
 		if a.cfg.ConnectPort != 0 {
@@ -1368,14 +1384,31 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"(%s): %s",
 			wiredWord(ext.Provisioner == nil), envAgentProvisioner, a.cfg.agentProvisioner(),
 			a.cfg.agentGatewayPort(), envAgentGatewayPort, svcNote)
-		// Agent kinds. The claude-code line names ACCOUNTS, never a token: those are
+		// Agent kinds. The claude-code arm names ACCOUNTS, never a token: those are
 		// subscription credentials and a boot log is read by whoever reads logs.
-		if a.cfg.claudeCodeEnabled() {
-			l.Printf("agent kinds: %s (%s). %s: image %s (%s), Claude accounts [%s] (%s; tokens from %s<NAME>, "+
-				"never logged), per-agent PVC at /data, no ServiceAccount token, turn budget %s",
-				strings.Join(a.cfg.agentKinds(), ", "), envAgentKinds, agents.KindClaudeCode,
-				a.cfg.AgentCCImage, envAgentCCImage, strings.Join(a.cfg.AgentCCAccountNames, ", "),
-				envAgentCCAccounts, envAgentCCTokenPrefix, agents.ClaudeCodeTurnTimeout)
+		if a.cfg.confinedKindsEnabled() {
+			line := fmt.Sprintf("agent kinds: %s (%s).", strings.Join(a.cfg.agentKinds(), ", "), envAgentKinds)
+			if a.cfg.claudeCodeEnabled() {
+				line += fmt.Sprintf(" %s: image %s (%s), Claude accounts [%s] (%s; tokens from %s<NAME>, "+
+					"never logged), per-agent PVC at /data, no ServiceAccount token, turn budget %s.",
+					agents.KindClaudeCode, a.cfg.AgentCCImage, envAgentCCImage, strings.Join(a.cfg.AgentCCAccountNames, ", "),
+					envAgentCCAccounts, envAgentCCTokenPrefix, agents.ClaudeCodeTurnTimeout)
+			}
+			if a.cfg.hermesEnabled() {
+				line += fmt.Sprintf(" %s: image %s (%s), on the OpenRouter key (%s, or each member's own), "+
+					"per-agent PVC at /data, no ServiceAccount token, termination grace %ds, turn budget %s.",
+					agents.KindHermes, a.cfg.AgentHermesImage, envAgentHermesImage, envAgentOpenRouterKey,
+					agentspec.HermesTerminationGraceSeconds, agents.HermesTurnTimeout)
+			}
+			l.Print(line)
+			// The confined kinds' network line, labelled with the ones enabled.
+			var confined []string
+			for _, k := range []string{agents.KindClaudeCode, agents.KindHermes} {
+				if slices.Contains(a.cfg.agentKinds(), k) {
+					confined = append(confined, k)
+				}
+			}
+			label := strings.Join(confined, "/")
 			// ⚠ "WRITTEN", NOT "ENFORCED". This process writes a NetworkPolicy object;
 			// the cluster's network plugin is what enforces one, and nothing here can
 			// observe that. The line says what a NEW or RE-APPLIED agent gets — an
@@ -1383,7 +1416,7 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			// it is next applied, which for an operator means stop then start. It
 			// also names the RBAC rule, because on this configuration DESTROYING ANY
 			// agent needs it (doc_seams.go entry 5).
-			if a.cfg.claudeCodeNetworkPolicy() {
+			if a.cfg.agentNetworkPolicy() {
 				l.Printf("%s network: a NetworkPolicy is WRITTEN per agent before its pod, and the agent is "+
 					"refused if it cannot be — ingress only from pods labelled [%s] (%s) in namespace %s (%s), "+
 					"egress only DNS and TCP %d to public IPv4 addresses. Enforcement is the cluster network "+
@@ -1391,13 +1424,13 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 					"agent created before this build has NO policy, and an existing policy keeps its old "+
 					"selector, until that agent is stopped and started. This server's ServiceAccount needs "+
 					"%s on networkpolicies.networking.k8s.io — to create a %s agent, and to DESTROY ANY agent",
-					agents.KindClaudeCode, a.cfg.AgentNetpolFromLabels, envAgentNetpolFromLabels,
+					label, a.cfg.AgentNetpolFromLabels, envAgentNetpolFromLabels,
 					a.cfg.AgentNetpolFromNS, envAgentNetpolFromNS, agentspec.ClaudeCodePublicEgressPort,
-					strings.Join(networkPolicyVerbs(), "/"), agents.KindClaudeCode)
+					strings.Join(networkPolicyVerbs(), "/"), strings.Join(confined, " or "))
 			} else {
 				l.Printf("%s network: NOT CONFINED — %s=%s writes no NetworkPolicy (%s and %s apply to the %s "+
 					"driver only)",
-					agents.KindClaudeCode, envAgentProvisioner, a.cfg.agentProvisioner(),
+					label, envAgentProvisioner, a.cfg.agentProvisioner(),
 					envAgentNetpolFromNS, envAgentNetpolFromLabels, provisionerK8s)
 			}
 		} else {

@@ -1,4 +1,4 @@
--- muster 0038 — WORKER POOLS for the machine job API (internal/api jobs.go).
+-- muster 0040 — WORKER POOLS for the machine job API (internal/api jobs.go).
 --
 -- A worker pool is a NAME carried by long-lived claude-code agents: an agent
 -- created with worker_pool = 'reviewers' is a member of the pool 'reviewers'.
@@ -17,10 +17,10 @@
 --
 -- Both names are internal/agents.ValidWorkerPool's expression.
 --
--- Rollback: an image from before 0038 never reads either column. To remove
+-- Rollback: an image from before 0040 never reads either column. To remove
 -- them: ALTER TABLE public.agents DROP COLUMN worker_pool; ALTER TABLE
 -- public.jobs DROP COLUMN worker_pool; DELETE FROM schema_migrations WHERE
--- version = 38.
+-- version = 40.
 
 SET LOCAL lock_timeout = '3s';
 

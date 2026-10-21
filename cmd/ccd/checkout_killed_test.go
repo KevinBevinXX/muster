@@ -39,11 +39,11 @@ func TestAKilledCloneIsNeverACheckout(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := newTestCheckout(t, "example-org/tide-charts", "", dir, "")
-	c.timeout = 700 * time.Millisecond
-	if err := c.attempt(context.Background()); err == nil {
+	c.Timeout = 700 * time.Millisecond
+	if err := c.Attempt(context.Background()); err == nil {
 		t.Fatal("a killed clone reported success")
 	}
-	if err := c.attempt(context.Background()); err == nil {
+	if err := c.Attempt(context.Background()); err == nil {
 		t.Fatal("the attempt after a killed clone took what it left for a checkout")
 	}
 	if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
@@ -53,8 +53,8 @@ func TestAKilledCloneIsNeverACheckout(t *testing.T) {
 	if err := os.WriteFile(gh.gitconfig, plain, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	c.timeout = 0
-	if err := c.attempt(context.Background()); err != nil {
+	c.Timeout = 0
+	if err := c.Attempt(context.Background()); err != nil {
 		t.Fatalf("after the kill: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "README.md")); err != nil {
@@ -79,7 +79,7 @@ func TestAGitDirectoryWithNoCommitIsRefused(t *testing.T) {
 	}
 	gitRun(t, nil, dir, "init", "-q")
 	c := newTestCheckout(t, "example-org/tide-charts", "", dir, "")
-	err := c.attempt(context.Background())
+	err := c.Attempt(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "no commit checked out") {
 		t.Fatalf("err = %v", err)
 	}

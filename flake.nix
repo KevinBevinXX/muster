@@ -546,6 +546,35 @@
         };
       };
 
+      # hermesd: the in-pod supervisor of the `hermes` agent kind (cmd/hermesd).
+      # It is built HERE, from this module and `goVendorHash`, and the image that
+      # carries it is a separate flake (images/hermes-agent/flake.nix) that takes
+      # this package through a relative `path:` input: the image needs upstream
+      # Hermes's flake at a pinned sha, and that input — with its own nixpkgs,
+      # uv2nix and the rest — stays out of THIS flake's lock, so nothing that
+      # builds muster fetches it.
+      mkHermesd = pkgs: (buildGoPinned pkgs) {
+        pname = "hermesd";
+        inherit version;
+        src = onlyGo pkgs;
+        vendorHash = goVendorHash;
+
+        subPackages = [ "cmd/hermesd" ];
+
+        doCheck = true;
+        # hermesd's tests write git routing with the real `git`.
+        nativeCheckInputs = [ pkgs.git ];
+        checkPhase = goCheckPhase "./cmd/hermesd/... ./internal/podagent/...";
+
+        meta = with pkgs.lib; {
+          description = "The in-pod supervisor that makes Hermes a muster agent runtime (the hermes agent kind)";
+          homepage = "https://github.com/ZacxDev/muster";
+          license = licenses.mit;
+          mainProgram = "hermesd";
+          platforms = platforms.linux;
+        };
+      };
+
       # 🔴 THE IMAGE CARRIES BUSYBOX AND DECLARES `PATH`, AND NEITHER IS
       # DECORATION. `buildLayeredImage` with `contents` set to the binary alone
       # produces an image with NO `PATH` and no `sh` — so `kubectl exec … -- sh`
@@ -601,6 +630,7 @@
           (builtins.elem pkgs.stdenv.hostPlatform.system linuxSystems)
           {
             migrate-image = mkMigrateImage pkgs;
+            hermesd = mkHermesd pkgs;
           });
 
       # 🔴 `apps.default` AND `packages.default` MOVE TOGETHER OR NOT AT ALL.

@@ -155,8 +155,8 @@ func newTestCheckout(t *testing.T, repo, branch, dir, base string) *checkout {
 	if err != nil || c == nil {
 		t.Fatalf("checkoutFromEnv: %v %v", c, err)
 	}
-	c.retry = 20 * time.Millisecond
-	c.logf = t.Logf
+	c.Retry = 20 * time.Millisecond
+	c.Logf = t.Logf
 	return c
 }
 
@@ -165,7 +165,7 @@ func waitState(t *testing.T, c *checkout, ok func(checkoutState) bool) checkoutS
 	t.Helper()
 	var st checkoutState
 	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-		if st = c.state(); ok(st) {
+		if st = c.State(); ok(st) {
 			return st
 		}
 	}
@@ -194,13 +194,13 @@ func TestTheCheckoutClonesTheBranchIntoTheWorkspace(t *testing.T) {
 		}
 		c := newTestCheckout(t, "example-org/tide-charts", "feature", dir, "")
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		go c.run(ctx)
-		if !c.wait(ctx) {
+		go c.Run(ctx)
+		if !c.Wait(ctx) {
 			cancel()
-			t.Fatalf("pre-existing=%v: never ready: %+v", pre, c.state())
+			t.Fatalf("pre-existing=%v: never ready: %+v", pre, c.State())
 		}
 		cancel()
-		if st := c.state(); st.State != checkoutReady || st.Dir != dir || st.Branch != "feature" {
+		if st := c.State(); st.State != checkoutReady || st.Dir != dir || st.Branch != "feature" {
 			t.Fatalf("state %+v", st)
 		}
 		if head := gitRun(t, nil, dir, "rev-parse", "--abbrev-ref", "HEAD"); head != "feature" {
@@ -237,7 +237,7 @@ func TestAnExistingCheckoutIsUsedAsItIs(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := newTestCheckout(t, "example-org/tide-charts", "trunk", dir, "")
-	if err := c.attempt(context.Background()); err != nil {
+	if err := c.Attempt(context.Background()); err != nil {
 		t.Fatalf("an existing checkout was not used: %v", err)
 	}
 	if b, err := os.ReadFile(filepath.Join(dir, "wip.txt")); err != nil || string(b) != "uncommitted\n" {
@@ -266,7 +266,7 @@ func TestADirectoryThatIsNotACheckoutIsNotClonedOver(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := newTestCheckout(t, "example-org/tide-charts", "", dir, "")
-	err := c.attempt(context.Background())
+	err := c.Attempt(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "holds files but is not a git checkout") {
 		t.Fatalf("err = %v", err)
 	}
@@ -294,7 +294,7 @@ func TestAFailedCloneFilesOneGithubRequestAndSaysWhatToDo(t *testing.T) {
 	c := newTestCheckout(t, "example-org/private-app", "", dir, srv.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go c.run(ctx)
+	go c.Run(ctx)
 
 	// 🔴 awaiting_grant, NOT failed: muster's kickoff deliverer holds the first
 	// turn on exactly this state (agents.CheckoutAwaitingGrant), so a request ccd
@@ -318,10 +318,8 @@ func TestAFailedCloneFilesOneGithubRequestAndSaysWhatToDo(t *testing.T) {
 	if n := len(fc.filed()); n != 1 {
 		t.Fatalf("requests filed after the pending retry: %d", n)
 	}
-	select {
-	case <-c.done:
+	if c.Ready() {
 		t.Fatal("the gate opened with no checkout")
-	default:
 	}
 	fc.mu.Lock()
 	for _, tok := range fc.tokens {
@@ -337,13 +335,13 @@ func TestAFailedCloneFilesOneGithubRequestAndSaysWhatToDo(t *testing.T) {
 	fc.set(true, "approved")
 	wctx, wcancel := context.WithTimeout(ctx, 15*time.Second)
 	defer wcancel()
-	if !c.wait(wctx) {
-		t.Fatalf("never cloned after the approval: %+v", c.state())
+	if !c.Wait(wctx) {
+		t.Fatalf("never cloned after the approval: %+v", c.State())
 	}
 	if len(fc.filed()) != 1 {
 		t.Fatalf("requests filed: %+v", fc.filed())
 	}
-	if st := c.state(); st.State != checkoutReady {
+	if st := c.State(); st.State != checkoutReady {
 		t.Fatalf("after the clone: state %q, want ready", st.State)
 	}
 }
@@ -361,11 +359,11 @@ func TestADeniedGrantIsNotAskedAgain(t *testing.T) {
 		fc := &fakeConnectors{exists: true, grant: grant}
 		srv := fc.server(t)
 		c := newTestCheckout(t, "example-org/private-app", "", filepath.Join(root, grant, "private-app"), srv.URL)
-		err := c.attempt(context.Background())
+		err := c.Attempt(context.Background())
 		if err == nil {
 			t.Fatal("cloned a repository that does not exist")
 		}
-		d, awaiting := c.explain(context.Background(), err)
+		d, awaiting := c.Explain(context.Background(), err)
 		if !strings.Contains(d, "grant was "+grant+", and ccd does not ask again") || len(fc.filed()) != 0 {
 			t.Fatalf("%s: detail %q, filed %+v", grant, d, fc.filed())
 		}
@@ -386,11 +384,11 @@ func TestAPodWithoutTheConnectorStoreSaysOnlyPublicReposClone(t *testing.T) {
 		t.Setenv(k, v)
 	}
 	c := newTestCheckout(t, "example-org/private-app", "", filepath.Join(root, "ws", "private-app"), "")
-	err := c.attempt(context.Background())
+	err := c.Attempt(context.Background())
 	if err == nil {
 		t.Fatal("cloned a repository that does not exist")
 	}
-	if d, awaiting := c.explain(context.Background(), err); !strings.Contains(d, "only a public repository can be cloned") || awaiting {
+	if d, awaiting := c.Explain(context.Background(), err); !strings.Contains(d, "only a public repository can be cloned") || awaiting {
 		t.Fatalf("detail %q awaiting %t", d, awaiting)
 	}
 }
@@ -430,7 +428,7 @@ func TestARequestIsFiledOnceEvenIfTheGrantStaysNone(t *testing.T) {
 	c := newTestCheckout(t, "example-org/private-app", "", filepath.Join(root, "ws", "private-app"), srv.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go c.run(ctx)
+	go c.Run(ctx)
 	st := waitState(t, c, func(s checkoutState) bool { return strings.Contains(s.Detail, "no longer pending") })
 	time.Sleep(200 * time.Millisecond)
 	if n := len(fc.filed()); n != 1 {

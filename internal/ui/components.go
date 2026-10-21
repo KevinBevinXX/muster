@@ -3183,6 +3183,11 @@ func pushScript() g.Node {
     else { hideEnable(); hideOn(); } // 'off'
   }
 
+  // Inside the Android app's WebView the app owns notifications (UnifiedPush,
+  // its own settings); the page offers no Enable and says nothing about
+  // browser support (docs/design/android.md, server change 24).
+  if (window.` + AppBridgeName + `) { status(''); applyState('off'); return; }
+
   var supported = ('serviceWorker' in navigator) &&
                   ('PushManager' in window) &&
                   ('Notification' in window);

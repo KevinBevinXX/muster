@@ -98,6 +98,20 @@ async function serverKey(page: Page): Promise<number[]> {
 
 const pushState = (page: Page) => page.evaluate(() => (window as unknown as { __push: StubState }).__push);
 
+// Inside the Android app's WebView (the app injects window.musterApp) the app
+// owns notifications: the page draws no Enable and no "not supported" line,
+// on a server that serves push to a browser that could subscribe. The control
+// is the test below, where the same page without the bridge shows Enable.
+test('inside the Android app shell the page offers no Enable', async ({ page }) => {
+  await stubPush(page);
+  await page.addInitScript(() => { (window as unknown as { musterApp: { postMessage(m: string): void } }).musterApp = { postMessage: () => {} }; });
+  await signIn(page);
+  await page.goto(origin + '/tasks');
+  await expect(page.locator('#push-status')).toBeHidden();
+  await expect(page.locator('#enable-push')).toBeHidden();
+  await expect(page.locator('#push-on')).toBeHidden();
+});
+
 test('Enable subscribes with the server key and the device appears on the account page', async ({ page }) => {
   await stubPush(page);
   await signIn(page);

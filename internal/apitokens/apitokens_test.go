@@ -19,6 +19,8 @@ import (
 	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/dbtest"
+	"github.com/ZacxDev/muster/internal/devices"
+	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -623,7 +625,8 @@ func TestAMintQueuedBehindAResetIsRefused(t *testing.T) {
 type stressResult struct {
 	deadlocks int
 	firstDead string
-	ok        map[string]int // per op: calls that returned no error
+	ok        map[string]int // per op: calls that returned no error (or were refused by their own rule)
+	attempts  map[string]int // per op: calls made
 	rounds    int
 }
 
@@ -633,6 +636,10 @@ type stressResult struct {
 // with a second admin (w.b) minting beside it, for up to `rounds` rounds each
 // or `budget`. It counts SQLSTATE 40P01. The invite create/revoke by the
 // target are here because a disable also revokes its target's pending invites.
+// errRefusedNotFailed is a writer that ran and was REFUSED by the rule it
+// enforces (a pairing after a disable): neither a success nor a deadlock.
+var errRefusedNotFailed = errors.New("refused by its own rule")
+
 func stressCredentialWriters(t *testing.T, w world, rounds int, budget time.Duration) stressResult {
 	t.Helper()
 	ctx := context.Background()
@@ -716,17 +723,88 @@ func stressCredentialWriters(t *testing.T, w world, rounds int, budget time.Dura
 			return nil
 		}
 	}
+	// Paired phones (0039): pairing (an UNLOCKED read of the code's owner, then
+	// the credentials lock, then the code row) and removing take the
+	// credentials lock first; a disable, a reset and a sign-out everywhere
+	// delete the user's phones under it.
+	ds := devices.NewPG(w.pool)
+	t.Cleanup(func() {
+		_, _ = w.pool.Exec(sysCtx(), `DELETE FROM device_pairing_codes WHERE owner_id = ANY($1)`, []int64{w.a, w.b})
+		_, _ = w.pool.Exec(sysCtx(), `DELETE FROM devices WHERE owner_id = ANY($1)`, []int64{w.a, w.b})
+	})
+	ops["device-pair"] = func(int) error {
+		// A sign-in an hour ahead, so the stress's constant resets and
+		// sign-outs never refuse it by the rule: what is measured here is the
+		// lock order, and a pairing that is always refused takes no lock past
+		// the code row.
+		code, _, err := ds.CreatePairingCode(asX, time.Now().Add(time.Hour))
+		if err != nil {
+			return err
+		}
+		_, _, err = ds.Redeem(ctx, code, devices.PairIn{Name: "stress"})
+		if errors.Is(err, devices.ErrSessionEnded) || errors.Is(err, devices.ErrUserDisabled) ||
+			errors.Is(err, devices.ErrSignedOut) || errors.Is(err, devices.ErrBadCode) || errors.Is(err, devices.ErrTooMany) {
+			return errRefusedNotFailed
+		}
+		return err
+	}
+	ops["device-remove"] = func(int) error {
+		list, err := ds.List(asX)
+		if err != nil || len(list) == 0 {
+			return err
+		}
+		_, err = ds.Remove(asX, list[0].ID)
+		return err
+	}
+	ops["sign-out-everywhere"] = func(int) error { _, err := us.RecordSignOutEverywhere(ctx, w.a); return err }
+	// A phone registering its push endpoint (push.PGStore.ClaimNative): it
+	// locks the device row and then writes push rows, the order a revocation's
+	// DELETE FROM devices (cascading to push rows) takes.
+	ps := push.NewPG(w.pool).WithAllowlist(push.NewAllowlist([]string{"ntfy.example.org"}))
+	t.Cleanup(func() {
+		_, _ = w.pool.Exec(sysCtx(), `DELETE FROM push_subscriptions WHERE owner_id = ANY($1)`, []int64{w.a, w.b})
+	})
+	ops["claim-native"] = func(i int) error {
+		// Its own phone, paired just now, so most rounds have one to claim for
+		// (the other writers remove and revoke them all the time).
+		code, _, err := ds.CreatePairingCode(asX, time.Now().Add(time.Hour))
+		if err != nil {
+			return err
+		}
+		_, d, err := ds.Redeem(ctx, code, devices.PairIn{Name: "claimer"})
+		if err != nil {
+			return errRefusedNotFailed
+		}
+		list := []devices.Device{d}
+		var sub push.Subscription
+		sub.Endpoint = fmt.Sprintf("https://ntfy.example.org/upStress%d", i)
+		sub.Keys.P256dh, sub.Keys.Auth = "k", "a"
+		err = ps.ClaimNative(ctx, w.a, list[0].ID, sub, "stress")
+		if errors.Is(err, push.ErrDeviceGone) {
+			return errRefusedNotFailed
+		}
+		return err
+	}
 	var mu sync.Mutex
-	res := stressResult{ok: map[string]int{}}
+	res := stressResult{ok: map[string]int{}, attempts: map[string]int{}}
+	// 🔴 LOCKSTEP, NOT A FREE-FOR-ALL. Each round starts EVERY writer at once,
+	// one operation each, and the next round waits for all of them. Every
+	// writer therefore makes exactly one attempt per round however slow it is —
+	// the free-running version let the fast writers flood the user's row and
+	// starve the demote's SELECT … FOR UPDATE, so its progress controls
+	// collapsed intermittently (a fact about the test's flood, not a demote
+	// stuck in production: here every writer completes every round). Starting
+	// them together is also what makes the rounds collide.
 	deadline := time.Now().Add(budget)
-	var wg sync.WaitGroup
-	for name, fn := range ops {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < rounds && time.Now().Before(deadline); i++ {
+	for i := 0; i < rounds && time.Now().Before(deadline); i++ {
+		var wg sync.WaitGroup
+		for name, fn := range ops {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
 				err := fn(i)
 				mu.Lock()
+				defer mu.Unlock()
 				var pg *pgconn.PgError
 				switch {
 				case err == nil:
@@ -734,23 +812,70 @@ func stressCredentialWriters(t *testing.T, w world, rounds int, budget time.Dura
 				case errors.As(err, &pg) && pg.Code == "40P01":
 					res.deadlocks++
 					if res.firstDead == "" {
-						res.firstDead = name + ": " + pg.Message
+						res.firstDead = name + ": " + pg.Message + " — " + pg.Detail
 					}
 				}
-				if name == "disable" {
-					res.rounds++
-				}
-				stop := res.deadlocks > 0
-				mu.Unlock()
-				if stop {
-					return // one deadlock is the verdict; do not spend the budget on more
-				}
-			}
-		}()
+				res.attempts[name]++
+			}()
+		}
+		wg.Wait()
+		res.rounds++
+		if res.deadlocks > 0 {
+			return res // one deadlock is the verdict; each costs deadlock_timeout
+		}
 	}
-	wg.Wait()
+	// THEN FREE-RUNNING PHASES, for the verdict only. Lockstep starts every
+	// writer together but lets each finish before the next round, so a window
+	// between two statements of ONE writer rarely meets another writer's —
+	// measured: Revoke with its credentials lock removed deadlocked in 0 of 5
+	// lockstep-only runs. Free-running writers overlap at every offset. Two
+	// phases: every writer, and then the writers that predate the paired
+	// phones on their own — the phone writers all take the credentials lock and
+	// serialise the rest, which dropped that Revoke mutant's catch rate to 0 of
+	// 5 when they ran in the only free phase. Progress is NOT asserted here
+	// (that is what starved the old controls), only that no deadlock occurs.
+	phoneWriters := map[string]bool{"device-pair": true, "device-remove": true, "sign-out-everywhere": true, "claim-native": true}
+	for _, onlyOld := range []bool{false, true} {
+		freeDeadline := time.Now().Add(freeBudget)
+		var wg sync.WaitGroup
+		for name, fn := range ops {
+			if onlyOld && phoneWriters[name] {
+				continue
+			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := 0; i < freeRounds && time.Now().Before(freeDeadline); i++ {
+					err := fn(rounds + i)
+					var pg *pgconn.PgError
+					mu.Lock()
+					if errors.As(err, &pg) && pg.Code == "40P01" {
+						res.deadlocks++
+						if res.firstDead == "" {
+							res.firstDead = name + " (free-running): " + pg.Message + " — " + pg.Detail
+						}
+					}
+					stop := res.deadlocks > 0
+					mu.Unlock()
+					if stop {
+						return
+					}
+				}
+			}()
+		}
+		wg.Wait()
+		if res.deadlocks > 0 {
+			return res
+		}
+	}
 	return res
 }
+
+// freeRounds and freeBudget bound stressCredentialWriters' free-running phase.
+const (
+	freeRounds = 700
+	freeBudget = 8 * time.Second
+)
 
 // TestCredentialWritersNeverDeadlock (review round 5) is the guard on the
 // ORDER RULE (users.LockCredentialsTx, users' account-writers lock): mint, mint
@@ -765,29 +890,36 @@ func stressCredentialWriters(t *testing.T, w world, rounds int, budget time.Dura
 // with the account-writers lock removed from SetDisabledAs, SetRole or
 // RevokeInvite, every choreographed test stays green and this one goes red.
 //
-// ⚠ BOUNDED: up to stressRounds rounds per writer or 8 s, and it stops at the
-// first deadlock (each costs Postgres's 1 s deadlock_timeout). The round count
-// is set by the WEAKEST measured mutant (Revoke's lock removed): caught 2 runs
-// in 3 at 60 rounds, 8 in 10 at 250 once the credential writers joined, and
-// 20 in 20 at 700 — about 1.5 s when green. The controls keep a
-// run that did nothing from passing: every writer must have succeeded at
-// least once and the disable must have run at least 20 times.
-const stressRounds = 700
+// ⚠ BOUNDED: stressRounds LOCKSTEP rounds (every writer once per round, all
+// started together; see stressCredentialWriters), with a generous time budget
+// only as a backstop, and it stops at the first deadlock (each costs
+// Postgres's 1 s deadlock_timeout). The controls are about PROGRESS, per
+// writer, not about time: every round must have completed, every writer must
+// have attempted every round, and every writer must have succeeded at least
+// once — so a run that did nothing, or that starved one writer, fails.
+// A free-running phase follows, asserting only the verdict (no 40P01); the
+// two mutants re-measured on this shape — Revoke's credentials lock removed,
+// and ClaimNative's — are each caught (see stressCredentialWriters).
+const stressRounds = 150
 
 func TestCredentialWritersNeverDeadlock(t *testing.T) {
 	w := newWorld(t)
-	res := stressCredentialWriters(t, w, stressRounds, 8*time.Second)
+	res := stressCredentialWriters(t, w, stressRounds, 120*time.Second)
 	if res.deadlocks != 0 {
 		t.Fatalf("%d deadlock(s) (SQLSTATE 40P01) among the credential writers; first: %s", res.deadlocks, res.firstDead)
 	}
 	for _, name := range []string{"mint", "mint-by-another-admin", "revoke-one", "list", "disable", "enable", "reset", "demote",
-		"invite-create", "invite-revoke", "credential-save", "credential-delete"} {
+		"invite-create", "invite-revoke", "credential-save", "credential-delete", "device-pair", "device-remove", "sign-out-everywhere",
+		"claim-native"} {
 		if res.ok[name] == 0 {
 			t.Errorf("CONTROL: %q never succeeded, so its absence of deadlocks proves nothing (ok counts %v)", name, res.ok)
 		}
+		if res.attempts[name] != stressRounds {
+			t.Errorf("CONTROL: %q attempted %d of %d rounds", name, res.attempts[name], stressRounds)
+		}
 	}
-	if res.rounds < 20 {
-		t.Errorf("CONTROL: only %d disable rounds ran inside the budget", res.rounds)
+	if res.rounds != stressRounds {
+		t.Errorf("CONTROL: %d of %d rounds completed inside the budget", res.rounds, stressRounds)
 	}
-	t.Logf("%d disable rounds, 0 deadlocks; successes per writer: %v", res.rounds, res.ok)
+	t.Logf("%d lockstep rounds, 0 deadlocks; successes per writer: %v", res.rounds, res.ok)
 }

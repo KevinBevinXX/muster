@@ -139,6 +139,13 @@ var (
 		// ended its session. Every query through it filters on an explicit owner
 		// (or a row handle carrying one) — see internal/push.Store.
 		"internal/push.sys",
+		// Paired devices (migration 0039): the device store's one helper. Two
+		// lookups run through it, each how a request's owner is LEARNED by a
+		// hash — redeeming a pairing code (the public pairing route, no
+		// principal) and authenticating a device credential (devices and
+		// device_pairing_codes are under FORCE RLS). Only the row's owner and
+		// the device record are handed on.
+		"internal/devices.sys",
 		// Session focus (migration 0020): which owners have anything to refresh
 		// (focus.PGStore.Owners — owner ids only; the refresher and the retention
 		// sweep then act as each owner, withPrincipalLedger's focusPrincipal), and
@@ -233,6 +240,7 @@ var (
 		"internal/api.(*Server).requireRelayAgent",
 		"internal/api.(*Server).requireMirrorHostToken", // mirror host tokens: POST /mirror/mcp
 		"internal/api.(*Server).requirePluginToken",     // plugin tokens (0015): /plugin/v1/*
+		"internal/api.(*Server).requireDeviceToken",     // paired device credentials (0039): /api/device/*
 		"internal/api.(*Server).requireRunnerToken",     // browser-flow runner tokens (0012): /runner/flows/*
 		"internal/api.(*Server).requireSession",
 	}
@@ -241,7 +249,7 @@ var (
 	// new door until someone has decided it is not.
 	authzExports = []string{
 		"From", "IsAdmin", "MustFrom", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
-		"System", "Via", "ViaAgent", "ViaAsk", "ViaAttention", "ViaConnect", "ViaFocus", "ViaHook", "ViaMirrorHost", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
+		"System", "Via", "ViaAgent", "ViaAsk", "ViaAttention", "ViaConnect", "ViaDevice", "ViaFocus", "ViaHook", "ViaMirrorHost", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
 		"ViaSession", "ViaSystem", "ViaToken", "WithPrincipal",
 	}
 )
