@@ -8,11 +8,21 @@
 // agent gateway and the chat store, which this package deliberately does not
 // import.
 //
-// 🔴 EVERY METHOD EXCEPT FailInterrupted RUNS UNDER THE CALLER'S PRINCIPAL.
+// 🔴 EVERY METHOD EXCEPT ReapOverdue RUNS UNDER THE CALLER'S PRINCIPAL.
 // jobs is under FORCE row-level security, so a caller reads and writes only its
 // own user's rows; the owner of a row is the principal's user (owner_id's
-// default), never a parameter. FailInterrupted is the boot sweep across every
-// owner and runs under the system principal itself (sys).
+// default), never a parameter. ReapOverdue is the reaper across every owner and
+// runs under the system principal itself (sys).
+//
+// 🔴 A JOB IS FAILED BY THE REAPER ONLY WHEN IT IS PAST ITS OWN DEADLINE, NEVER
+// BECAUSE A PROCESS STARTED. During a rolling update the new process boots while
+// the old one is still running jobs, so "fail whatever is unfinished at boot"
+// would fail a live job and drop its real result. The reaper instead fails a
+// running job only once started_at + timeout_s + ReapSlack has passed, and a
+// queued one only once created_at + MaxQueueWait has — points no live runner can
+// still be before (see each constant). The same pass covers every other way a
+// job can be left unfinished: a process that exited mid-job, a recovered panic,
+// an outcome write that kept failing.
 package jobs
 
 import (
@@ -50,7 +60,10 @@ const (
 const (
 	// ReasonTimeout: the job's own timeout_s elapsed.
 	ReasonTimeout = "timeout"
-	// ReasonInterrupted: the server stopped while the job was queued or running.
+	// ReasonInterrupted: nothing finished the job by its deadline, so the reaper
+	// (ReapOverdue) failed it — the process running it stopped, panicked or could
+	// not record the outcome. The token predates the reaper and is kept so a
+	// caller branching on it sees no change.
 	ReasonInterrupted = "interrupted"
 	// ReasonAgentUnavailable: the agent the job names could not be loaded when it
 	// was due to start (deleted since, or the store failed).
@@ -84,19 +97,46 @@ const (
 	MaxTimeoutSeconds = int(agents.ClaudeCodeTurnTimeout / time.Second)
 	// MaxIdempotencyKeyBytes bounds an idempotency key.
 	MaxIdempotencyKeyBytes = 128
+	// MaxActivePerAgent is how many of one agent's jobs may be queued or running
+	// at once; a submission past it is refused (ErrAgentAtCapacity). Jobs on one
+	// agent run one at a time, so this is also what bounds a queued job's wait
+	// (MaxQueueWait).
+	MaxActivePerAgent = 4
 )
 
-// shaPattern is a commit id a job may name: 7–40 lowercase hex. Migration
-// 0037's jobs_sha_check spells the same expression.
-var shaPattern = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
+// The reaper's deadlines (ReapOverdue).
+const (
+	// ReapSlack is how long past a running job's own deadline (started_at +
+	// timeout_s) the reaper waits before failing it. A live runner is done by
+	// then: the job's context ends the checkout, the turn and the read at the
+	// deadline, and recording the outcome is a few bounded write attempts
+	// (internal/api's jobFinishAttempts × jobFinishTimeout, well under a minute).
+	// The rest is margin for clock skew between the processes and the database.
+	ReapSlack = 5 * time.Minute
+	// MaxQueueWait is how long a job may stay queued (from created_at) before the
+	// reaper fails it. A queued job waits for the jobs ahead of it on the same
+	// agent, at most MaxActivePerAgent−1 of them, each running for at most
+	// MaxTimeoutSeconds + ReapSlack; one job's worth more is margin. With the
+	// values above it is 2h40m.
+	MaxQueueWait = MaxActivePerAgent * (time.Duration(MaxTimeoutSeconds)*time.Second + ReapSlack)
+)
+
+// shaPattern is a commit id a job may name: a full 40-character lowercase hex
+// object id. An abbreviated one is refused because `git fetch origin <sha>`
+// fetches only a full id (an abbreviation is "couldn't find remote ref").
+// Migration 0037's jobs_sha_check spells the same expression.
+var shaPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 // ValidSHA reports whether s is a commit id a job may name.
 func ValidSHA(s string) bool { return shaPattern.MatchString(s) }
 
 // ValidResultPath reports whether p may be a job's result_path: a non-empty,
 // relative, already-clean path with no "." or ".." element, at most 512 bytes,
-// and no NUL. It is resolved against the agent's working directory, and this
-// is what keeps it there.
+// and no NUL. It is resolved against the agent's working directory.
+//
+// ⚠ IT CHECKS THE PATH STRING ONLY. It keeps the lexical path inside the
+// working directory; it does not stop a symlink at or under that path from
+// pointing outside it, and the read follows symlinks.
 func ValidResultPath(p string) bool {
 	if p == "" || len(p) > 512 || strings.ContainsRune(p, 0) || path.IsAbs(p) || path.Clean(p) != p {
 		return false
@@ -165,26 +205,36 @@ type Outcome struct {
 // ErrNotFound is Get's answer for an id the caller cannot see.
 var ErrNotFound = errors.New("jobs: no such job")
 
+// ErrAgentAtCapacity is Create's answer when the agent already has
+// MaxActivePerAgent jobs queued or running.
+var ErrAgentAtCapacity = errors.New("jobs: the agent has too many jobs queued or running")
+
 // Store is the jobs persistence.
 type Store interface {
 	// Create records a queued job. With an idempotency key the caller already
-	// used, it records nothing and returns that job with created == false.
+	// used, it records nothing and returns that job with created == false. It
+	// refuses with ErrAgentAtCapacity when the agent already has
+	// MaxActivePerAgent jobs queued or running (a repeated key is answered
+	// first, so a retry of an accepted job is never refused).
 	Create(ctx context.Context, n NewJob) (j Job, created bool, err error)
 	// Get is one of the caller's jobs, or ErrNotFound.
 	Get(ctx context.Context, id int64) (Job, error)
 	// Start moves a queued job to running, recording the Claude account and the
 	// chat session the turn runs on. It reports false when the job was not
-	// queued any more (the boot sweep failed it), and then the caller must not
-	// run it.
+	// queued any more (the reaper failed it), and then the caller must not run
+	// it.
 	Start(ctx context.Context, id int64, ccAccount string, sessionID int64) (bool, error)
 	// Finish moves a queued or running job to o's terminal status. It reports
 	// false when the job had already finished, and changes nothing then.
 	Finish(ctx context.Context, id int64, o Outcome) (bool, error)
-	// FailInterrupted fails every queued or running job with
-	// ReasonInterrupted, across every owner, returning how many. It is the boot
-	// sweep: no job survives a restart of the process that was running it. It
-	// runs under the system principal whatever ctx carries.
-	FailInterrupted(ctx context.Context) (int64, error)
+	// ReapOverdue fails, with ReasonInterrupted and across every owner, each
+	// job that is past its own deadline at now: running with started_at +
+	// timeout_s + ReapSlack before now, or queued with created_at +
+	// MaxQueueWait before now. It returns how many. A job inside its deadline
+	// is never touched, so it is safe while another process is still running
+	// jobs (a rolling update). It runs under the system principal whatever ctx
+	// carries.
+	ReapOverdue(ctx context.Context, now time.Time) (int64, error)
 }
 
 // Classify turns a finished turn into a job outcome. reply and err are the
@@ -302,6 +352,11 @@ func scanJob(row pgx.Row) (Job, error) {
 
 // Create records a queued job, or answers the caller's existing job for the
 // same idempotency key.
+//
+// 🔴 THE CAPACITY COUNT AND THE INSERT ARE ONE TRANSACTION UNDER A PER-AGENT
+// ADVISORY LOCK, so two concurrent submissions cannot both see room for one.
+// MaxQueueWait is derived from the cap, so a cap that could be overshot would
+// let the reaper fail a job that was legitimately still waiting.
 func (s *PGStore) Create(ctx context.Context, n NewJob) (Job, bool, error) {
 	var key *string
 	if n.IdempotencyKey != "" {
@@ -311,19 +366,54 @@ func (s *PGStore) Create(ctx context.Context, n NewJob) (Job, bool, error) {
 	if n.AgentID != 0 {
 		agentID = &n.AgentID
 	}
-	j, err := scanJob(s.pool.QueryRow(ctx, `INSERT INTO jobs (agent_id, agent_name, prompt, repo, sha, result_path,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Job{}, false, fmt.Errorf("jobs: create: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('jobs.create'), $1::int)`, int32(n.AgentID)); err != nil {
+		return Job{}, false, fmt.Errorf("jobs: create: lock: %w", err)
+	}
+	// A key already used answers its job first: a retry of an accepted
+	// submission is never refused for capacity. Under RLS this reads the
+	// caller's own rows only.
+	if key != nil {
+		j, err := scanJob(tx.QueryRow(ctx, `SELECT `+jobColumns+` FROM jobs WHERE idempotency_key = $1`, *key))
+		if err == nil {
+			return j, false, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return Job{}, false, fmt.Errorf("jobs: read job for idempotency key: %w", err)
+		}
+	}
+	if agentID != nil {
+		var active int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE agent_id = $1 AND status IN ('queued', 'running')`,
+			*agentID).Scan(&active); err != nil {
+			return Job{}, false, fmt.Errorf("jobs: create: count active: %w", err)
+		}
+		if active >= MaxActivePerAgent {
+			return Job{}, false, fmt.Errorf("%w: %d queued or running on agent %q (the limit is %d)",
+				ErrAgentAtCapacity, active, n.Agent, MaxActivePerAgent)
+		}
+	}
+	j, err := scanJob(tx.QueryRow(ctx, `INSERT INTO jobs (agent_id, agent_name, prompt, repo, sha, result_path,
 		timeout_s, idempotency_key, requested_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (owner_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
 		RETURNING `+jobColumns,
 		agentID, n.Agent, n.Prompt, n.Repo, n.SHA, n.ResultPath, n.TimeoutSeconds, key, n.RequestedBy))
 	if err == nil {
+		if err := tx.Commit(ctx); err != nil {
+			return Job{}, false, fmt.Errorf("jobs: create: commit: %w", err)
+		}
 		return j, true, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) || key == nil {
 		return Job{}, false, fmt.Errorf("jobs: create: %w", err)
 	}
-	// The key was taken: under RLS this reads the caller's own row only.
-	j, err = scanJob(s.pool.QueryRow(ctx, `SELECT `+jobColumns+` FROM jobs WHERE idempotency_key = $1`, *key))
+	// The key was taken since the read above, by a submission on another agent
+	// (the lock is per agent): answer that job.
+	j, err = scanJob(tx.QueryRow(ctx, `SELECT `+jobColumns+` FROM jobs WHERE idempotency_key = $1`, *key))
 	if err != nil {
 		return Job{}, false, fmt.Errorf("jobs: read job for idempotency key: %w", err)
 	}
@@ -371,21 +461,33 @@ func (s *PGStore) Finish(ctx context.Context, id int64, o Outcome) (bool, error)
 	return tag.RowsAffected() == 1, nil
 }
 
-// sys is ctx under the system principal: the boot sweep's one UPDATE, which
-// spans every owner's jobs and returns only a count. It is internal/authz's
-// System ledger entry for this package.
+// sys is ctx under the system principal: the reaper's one UPDATE, which spans
+// every owner's jobs and returns only a count. It is internal/authz's System
+// ledger entry for this package.
 func sys(ctx context.Context) context.Context { return authz.System(ctx) }
 
-// InterruptedError is the error FailInterrupted records.
-const InterruptedError = "the server stopped before this job finished; the agent may have done some or all of the work, so re-submit it only if repeating that is safe"
+// The errors ReapOverdue records.
+const (
+	// AbandonedRunningError is a running job's.
+	AbandonedRunningError = "nothing recorded this job's outcome by its deadline (timeout_s plus a grace period): " +
+		"the server running it stopped, crashed or could not record the outcome. The agent may have done some " +
+		"or all of the work, so re-submit it only if repeating that is safe"
+	// AbandonedQueuedError is a queued job's.
+	AbandonedQueuedError = "this job never started within the longest a queued job can wait: the server holding " +
+		"it stopped or crashed before running it. Nothing was sent to the agent for it"
+)
 
-// FailInterrupted fails every unfinished job, across every owner, under the
-// system principal (sys) whatever ctx carries.
-func (s *PGStore) FailInterrupted(ctx context.Context) (int64, error) {
-	tag, err := s.pool.Exec(sys(ctx), `UPDATE jobs SET status = 'failed', reason = $1, error = $2, finished_at = now()
-		WHERE status IN ('queued', 'running')`, ReasonInterrupted, InterruptedError)
+// ReapOverdue fails every job past its own deadline at now, across every
+// owner, under the system principal (sys) whatever ctx carries.
+func (s *PGStore) ReapOverdue(ctx context.Context, now time.Time) (int64, error) {
+	tag, err := s.pool.Exec(sys(ctx), `UPDATE jobs SET status = 'failed', reason = $1, finished_at = now(),
+		error = CASE WHEN status = 'running' THEN $2 ELSE $3 END
+		WHERE (status = 'running' AND started_at + make_interval(secs => timeout_s + $4::double precision) < $5)
+		   OR (status = 'queued' AND created_at + make_interval(secs => $6::double precision) < $5)`,
+		ReasonInterrupted, AbandonedRunningError, AbandonedQueuedError,
+		ReapSlack.Seconds(), now, MaxQueueWait.Seconds())
 	if err != nil {
-		return 0, fmt.Errorf("jobs: fail interrupted: %w", err)
+		return 0, fmt.Errorf("jobs: reap overdue: %w", err)
 	}
 	return tag.RowsAffected(), nil
 }

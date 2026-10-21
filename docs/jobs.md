@@ -35,7 +35,7 @@ POST /api/jobs
   "agent": "keen-wren",            // required: an existing claude-code agent
   "prompt": "Review the change …", // required, at most 64 KiB
   "repo": "owner/name",            // optional: must be the agent's repository
-  "sha": "0123abc",                // optional: 7-40 lowercase hex
+  "sha": "0123456789abcdef0123456789abcdef01234567", // optional: a full 40-hex commit id
   "result_path": "out/review.md",  // optional: relative to the agent's working directory
   "timeout_s": 1800,               // optional: 1-2100, default 1800
   "idempotency_key": "review-42"   // optional, at most 128 bytes
@@ -49,9 +49,10 @@ job that returns the wrong thing.
 
 | answer | when |
 |---|---|
-| 400 | a missing or malformed field |
+| 400 | a missing or malformed field — including an abbreviated `sha`: only a full 40-character id is accepted, because `git fetch origin <sha>` cannot fetch an abbreviation |
 | 404 | no agent by that name |
 | 409 | the agent is not `claude-code`; `repo` is not the agent's repository; `sha` on an agent with no repository |
+| 429 | the agent already has 4 jobs queued or running (the per-agent limit); submit again once one finishes |
 | 501 | `worker_pool` was given; or `sha` / `result_path` on a deployment with no provisioner |
 | 503 | no database, no agent gateway, or the service tier is unarmed |
 
@@ -104,11 +105,11 @@ byte for byte. A file over 1 MiB, or one that is not UTF-8 text, fails the job
 | other ccd types | `busy`, `capacity`, `not_ready`, `empty_reply`, `turn_failed`, … — ccd's vocabulary, passed through unchanged |
 | `timeout` | the job's `timeout_s` elapsed (status `timed_out`) |
 | `turn_timeout` | ccd's own turn budget elapsed (status `timed_out`) |
-| `checkout_failed` | moving the agent's checkout to `sha` failed |
+| `checkout_failed` | moving the agent's checkout to `sha` failed — including a dirty working tree, which `error` says |
 | `result_read_failed` | the turn succeeded but `result_path` could not be returned |
 | `empty_reply` | the turn produced no reply text and no `result_path` was asked for |
 | `agent_unavailable` | the agent could not be loaded when the job was due to start |
-| `interrupted` | the server stopped while the job was queued or running |
+| `interrupted` | nothing finished the job by its deadline, so the reaper failed it: the server running it stopped, crashed or could not record the outcome (see [restarts](#what-it-does-not-do)) |
 | `internal` | muster failed around the turn |
 
 ## How a job runs
@@ -118,9 +119,12 @@ byte for byte. A file over 1 MiB, or one that is not UTF-8 text, fails the job
    ccd runs the job in a Claude Code session of its own rather than the
    agent's main conversation. The prompt and the reply are stored in it, so
    the job is readable on the agent's page (`session_id`).
-3. With `sha`, the agent's checkout is moved to that commit (detached), after
-   fetching it from `origin` if it is not already present. A checkout with
-   local changes the move would overwrite fails the job; nothing is discarded.
+3. With `sha`, the agent's checkout is moved to that commit, after fetching it
+   from `origin` if it is not already present. It is a **detached HEAD**, and
+   it stays one after the job. A working tree with any uncommitted change or
+   untracked (not ignored) file fails the job `checkout_failed`, with an `error`
+   saying the tree is dirty, before anything moves: git would otherwise carry
+   those changes onto the job's commit. Nothing is discarded.
 4. The prompt is sent as one turn — the same synchronous call `chief ask` makes
    to ccd's `/v1/responses`. The turn is done when ccd answers.
 5. With `result_path`, the file is read back through the provisioner's exec.
@@ -132,14 +136,32 @@ The job's `timeout_s` covers steps 3–5, not the wait in step 1.
 - **No worker pools.** A job names one agent.
 - **No `.claude/` overlay, no per-job worktree.** See the warning at the top:
   a `sha` job is not isolated from that commit's own agent config and hooks.
-- **No survival across a restart.** The turn runs inside the server process. At
-  boot, every job left `queued` or `running` is failed with `interrupted`. The
-  agent may have done some of the work, so re-submitting is the caller's call.
+- **No survival across a restart.** The turn runs inside the server process,
+  and nothing waits for it on shutdown. A job the process leaves unfinished is
+  failed `interrupted` by the reaper, which runs at boot and every minute and
+  fails a job only once it is past its own deadline: a `running` job at
+  `started_at` + `timeout_s` + 5 minutes, a `queued` one at `created_at` + 2h40m
+  (the longest a queued job can wait: 4 jobs × (2100 s + 5 minutes)). So a job
+  can read `running` for up to that long after its server died, and a job the
+  other server of a rolling update is still running is never failed by the new
+  one. The same pass ends a job orphaned by a crash in muster or by an outcome
+  it could not record (the write is retried 3 times first). The agent may have
+  done some of the work, so re-submitting is the caller's call.
+- **At most 4 jobs queued or running per agent.** A fifth submission is a 429.
+  A repeated `idempotency_key` is still answered. A job orphaned by a dead
+  server counts toward the 4 until the reaper fails it.
+- **`result_path` is checked as a string, not resolved.** No `..`, no absolute
+  path — but a symlink in the workspace is followed, so the file read can be
+  outside the working directory.
+- **A `result_path` inside the repository dirties it.** The working directory
+  is the agent's checkout, so a result file the turn writes there is an
+  untracked file, and the next `sha` job on that agent fails `checkout_failed`
+  until it is removed. Point `result_path` at a path the repository ignores.
 - **A timeout does not stop the agent's turn.** It aborts muster's request to
   ccd and ends the job `timed_out`, but the CLI's turn may run on, and the next
   job on that agent can be refused `busy`.
 - **A `sha` checkout is left in place.** The agent's checkout stays at that
-  commit after the job.
+  commit, on a detached HEAD, after the job.
 - **Not verified end to end against a live ccd from this tree.** The handler
   tests run the runner against fakes of the gateway, the chat store and the
   workspace; the checkout and file read have not run inside a real agent

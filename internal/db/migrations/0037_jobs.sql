@@ -18,14 +18,18 @@
 -- one of succeeded / failed / timed_out, or queued → failed (a job that never
 -- started). The store's UPDATEs are conditional on the current status, so a
 -- late finish cannot overwrite a terminal state written by someone else (the
--- boot sweep that fails interrupted jobs, below). finished_at is set exactly
--- on a terminal row; started_at on every row that ran.
+-- reaper that fails abandoned jobs, below). finished_at is set exactly on a
+-- terminal row; started_at on every row that ran.
 --
--- 🔴 A JOB INTERRUPTED BY A RESTART IS FAILED, NEVER RE-RUN. The turn runs in
--- the server process; a process that dies mid-job leaves its row queued or
--- running, and the next boot moves every such row to failed with reason
--- 'interrupted' (jobs.Store.FailInterrupted). The agent may already have done
--- the work, so re-running it is the caller's decision, not the server's.
+-- 🔴 AN ABANDONED JOB IS FAILED, NEVER RE-RUN — AND ONLY ONCE IT IS PAST ITS
+-- OWN DEADLINE. The turn runs in the server process; a process that dies
+-- mid-job leaves its row queued or running. The reaper (jobs.Store.ReapOverdue,
+-- at boot and periodically) moves such a row to failed with reason
+-- 'interrupted' only once it is past started_at + timeout_s + a grace period
+-- (running) or created_at + the longest queue wait (queued), so a job another
+-- process is still running during a rolling update is never touched. The agent
+-- may already have done the work, so re-running it is the caller's decision,
+-- not the server's.
 --
 -- 🔴 idempotency_key IS UNIQUE PER OWNER. A second POST with the same key
 -- answers the first job instead of creating another.
@@ -75,7 +79,8 @@ CREATE TABLE IF NOT EXISTS public.jobs (
     -- jobs.MaxPromptBytes.
     CONSTRAINT jobs_prompt_cap CHECK (octet_length(prompt) BETWEEN 1 AND 65536),
     CONSTRAINT jobs_repo_cap CHECK (octet_length(repo) <= 256),
-    CONSTRAINT jobs_sha_check CHECK (sha = '' OR sha ~ '^[0-9a-f]{7,40}$'),
+    -- jobs.ValidSHA: a full object id; `git fetch origin <sha>` fetches no abbreviation.
+    CONSTRAINT jobs_sha_check CHECK (sha = '' OR sha ~ '^[0-9a-f]{40}$'),
     CONSTRAINT jobs_result_path_cap CHECK (octet_length(result_path) <= 512),
     -- jobs.MaxTimeoutSeconds.
     CONSTRAINT jobs_timeout_check CHECK (timeout_s BETWEEN 1 AND 2100),
@@ -96,7 +101,7 @@ CREATE TABLE IF NOT EXISTS public.jobs (
 -- One job per (owner, idempotency key).
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_owner_idempotency_key
     ON public.jobs (owner_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
--- The boot sweep's scan: every unfinished row.
+-- The reaper's scan: every unfinished row.
 CREATE INDEX IF NOT EXISTS idx_jobs_unfinished ON public.jobs (id) WHERE status IN ('queued', 'running');
 -- The SET NULL from agents looks rows up by agent.
 CREATE INDEX IF NOT EXISTS idx_jobs_agent ON public.jobs (agent_id) WHERE agent_id IS NOT NULL;

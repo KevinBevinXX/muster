@@ -166,9 +166,9 @@ var (
 		// deadlines; no body), read once per process so a notification shown
 		// before a restart is still withdrawn when its draft expires.
 		"internal/plugins.(*PGStore).PendingDrafts",
-		// The machine job API (migration 0037): the boot sweep that fails every
-		// owner's job a dead process left queued or running
-		// (jobs.PGStore.FailInterrupted — one UPDATE that returns only a count).
+		// The machine job API (migration 0037): the reaper that fails every
+		// owner's job left queued or running past its own deadline
+		// (jobs.PGStore.ReapOverdue — one UPDATE that returns only a count).
 		"internal/jobs.sys",
 	}
 	// operatorLedger: work done as the OPERATOR (user 1) with no request —

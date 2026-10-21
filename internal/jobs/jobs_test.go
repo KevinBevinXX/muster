@@ -46,11 +46,17 @@ func TestClassify(t *testing.T) {
 	}
 }
 
+// TestValidSHA: only a full 40-hex object id is a sha a job may name — `git
+// fetch origin <sha>` cannot fetch an abbreviation, so a short one is refused
+// at submission rather than failing the job at checkout.
 func TestValidSHA(t *testing.T) {
 	for s, want := range map[string]bool{
-		"0123abc": true, "0123456789abcdef0123456789abcdef01234567": true,
+		"0123456789abcdef0123456789abcdef01234567": true,
+		// Abbreviations, the shortest and the longest.
+		"0123abc": false, "0123456789abcdef0123456789abcdef0123456": false,
 		"": false, "0123ab": false, "0123456789abcdef0123456789abcdef012345678": false,
-		"0123ABC": false, "HEAD": false, "main": false, "0123abc;rm": false, "-0123abc": false,
+		"0123456789ABCDEF0123456789abcdef01234567": false, "HEAD": false, "main": false,
+		"0123456789abcdef0123456789abcdef01234;rm": false, "-123456789abcdef0123456789abcdef01234567": false,
 	} {
 		if got := ValidSHA(s); got != want {
 			t.Errorf("ValidSHA(%q) = %v, want %v", s, got, want)

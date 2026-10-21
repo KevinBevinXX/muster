@@ -143,9 +143,13 @@ type Server struct {
 	// waiters' wake-up and each owner's last-seen waiting sessions.
 	attention attentionState
 	// jobLanes runs one machine job per agent at a time (jobs.go); jobSecond
-	// is a test seam for a job's timeout unit (zero: a real second).
-	jobLanes  jobLanes
-	jobSecond time.Duration
+	// is a test seam for a job's timeout unit (zero: a real second); jobNow is
+	// the reaper's clock (nil: time.Now); jobFinishBackoff is the pause between
+	// outcome-write attempts (zero: jobFinishRetryPause).
+	jobLanes         jobLanes
+	jobSecond        time.Duration
+	jobNow           func() time.Time
+	jobFinishBackoff time.Duration
 	// mirrorMCPFails counts failed mirror-token checks on /mirror/mcp, per
 	// (address, token hash) (mirror_mcp.go).
 	mirrorMCPFails boundedWindow

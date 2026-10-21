@@ -45,8 +45,15 @@ import (
 // ⚠ WHAT A JOB DOES NOT HAVE IN THIS FIRST CUT, STATED SO IT IS NOT INFERRED:
 //   - worker-pool selection. A job names one existing, running claude-code agent;
 //     `worker_pool` is refused 501. pickJobAgent is the seam a pool goes behind.
-//   - survival across a restart. The turn runs in this process; the boot sweep
-//     (jobs.Store.FailInterrupted) fails every job a dead process left unfinished.
+//   - survival across a restart. The turn runs in this process and nothing waits
+//     for it on shutdown. The reaper (RunJobReaper → jobs.Store.ReapOverdue, at
+//     boot and every JobReapInterval) fails a job only once it is past its own
+//     deadline, so a job a dying process left behind is failed `interrupted`
+//     up to timeout_s + jobs.ReapSlack after it started (or jobs.MaxQueueWait
+//     after it was queued) — and a job the OTHER pod of a rolling update is
+//     still running is left alone.
+//   - more than jobs.MaxActivePerAgent jobs queued or running on one agent: a
+//     submission past that is refused 429.
 //   - cancellation of the agent's turn on timeout. The job's deadline aborts
 //     muster's request to ccd and the job ends timed_out, but ccd's turn may run
 //     on; a later job on the same agent can then be refused `busy` by ccd.
@@ -137,6 +144,13 @@ func (s *Server) handleJobCreate(w http.ResponseWriter, r *http.Request) {
 	n.RequestedBy, _ = serviceActorFromContext(ctx)
 
 	j, created, err := s.ext.Jobs.Create(ctx, n)
+	if errors.Is(err, jobs.ErrAgentAtCapacity) {
+		s.writeJSON(w, http.StatusTooManyRequests, map[string]any{
+			"error": fmt.Sprintf("agent %q already has %d jobs queued or running (the limit); submit again once one finishes",
+				a.Name, jobs.MaxActivePerAgent),
+		})
+		return
+	}
 	if err != nil {
 		s.logger.Printf("jobs: create for agent %q: %v", a.Name, err)
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not record the job"})
@@ -177,7 +191,7 @@ func validateJobRequest(req jobRequest) (jobs.NewJob, int, string) {
 	case len(n.Repo) > 256:
 		return n, http.StatusBadRequest, "repo is over 256 bytes"
 	case n.SHA != "" && !jobs.ValidSHA(n.SHA):
-		return n, http.StatusBadRequest, "sha must be a commit id: 7-40 lowercase hex characters"
+		return n, http.StatusBadRequest, "sha must be a full commit id: 40 lowercase hex characters (an abbreviated sha cannot be fetched)"
 	case n.ResultPath != "" && !jobs.ValidResultPath(n.ResultPath):
 		return n, http.StatusBadRequest, "result_path must be a clean relative path inside the agent's working directory " +
 			"(no leading /, no . or .. elements, at most 512 bytes)"
@@ -311,9 +325,69 @@ func (l *jobLanes) lock(agentID int64) func() {
 	return lane.Unlock
 }
 
-// jobFinishTimeout bounds the write of a job's outcome, on a context detached
-// from the job's own (which has usually just expired when a job times out).
-const jobFinishTimeout = 10 * time.Second
+// Recording a job's outcome: each attempt is bounded by jobFinishTimeout, on a
+// context detached from the job's own (which has usually just expired when a
+// job times out), and the write is attempted up to jobFinishAttempts times,
+// jobFinishRetryPause apart. The worst case (about 32s) is far inside
+// jobs.ReapSlack, so the reaper never races a runner that is still retrying;
+// when every attempt fails, the reaper is what ends the job.
+const (
+	jobFinishTimeout    = 10 * time.Second
+	jobFinishAttempts   = 3
+	jobFinishRetryPause = time.Second
+)
+
+// JobReapInterval is how often RunJobReaper runs after its first pass at boot.
+// A job is reaped at most this long after its deadline (jobs.ReapOverdue).
+const JobReapInterval = time.Minute
+
+// RunJobReaper fails abandoned jobs — each past its own deadline
+// (jobs.Store.ReapOverdue) — once immediately, then every interval until ctx ends.
+// It does nothing with no job store. Started by cmd/muster-server.
+//
+// 🔴 IT REPLACES A BOOT SWEEP THAT FAILED EVERY UNFINISHED JOB, which was wrong
+// under a rolling update: the new pod boots while the old one still runs jobs,
+// so the sweep failed live jobs (whose real result the old pod's conditional
+// Finish then dropped), and a job the old pod accepted after the sweep was never
+// failed by anything. A deadline is a fact about the job, not about which
+// process is alive, so this pass is right from any pod at any time, and running
+// it on every replica is duplicated work, not duplicated effect.
+func (s *Server) RunJobReaper(ctx context.Context, interval time.Duration) {
+	if s.ext.Jobs == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = JobReapInterval
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		s.reapJobsOnce(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// reapJobsOnce is one reaper pass at the reaper's clock.
+func (s *Server) reapJobsOnce(ctx context.Context) {
+	now := time.Now
+	if s.jobNow != nil {
+		now = s.jobNow
+	}
+	n, err := s.ext.Jobs.ReapOverdue(ctx, now())
+	if err != nil {
+		if ctx.Err() == nil {
+			s.logger.Printf("jobs: reap overdue jobs: %v", err)
+		}
+		return
+	}
+	if n > 0 {
+		s.logger.Printf("jobs: failed %d job(s) past their deadline with nothing running them (reason %q)", n, jobs.ReasonInterrupted)
+	}
+}
 
 // jobTimeout is a job's timeout_s as a duration. jobSecond is a test seam (zero
 // is a real second), so a timeout test does not have to sleep for one.
@@ -331,12 +405,36 @@ func (s *Server) runJob(ctx context.Context, j jobs.Job) {
 	release := s.jobLanes.lock(j.AgentID)
 	defer release()
 	finish := func(o jobs.Outcome) {
-		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jobFinishTimeout)
-		defer cancel()
-		if _, err := s.ext.Jobs.Finish(fctx, j.ID, o); err != nil {
-			s.logger.Printf("jobs: %d: record outcome %s/%s: %v", j.ID, o.Status, o.Reason, err)
+		pause := s.jobFinishBackoff
+		if pause <= 0 {
+			pause = jobFinishRetryPause
+		}
+		for attempt := 1; ; attempt++ {
+			fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jobFinishTimeout)
+			_, err := s.ext.Jobs.Finish(fctx, j.ID, o)
+			cancel()
+			if err == nil {
+				return
+			}
+			if attempt >= jobFinishAttempts {
+				s.logger.Printf("jobs: %d: could not record outcome %s/%s after %d attempts, the reaper will fail it "+
+					"once it is past its deadline: %v", j.ID, o.Status, o.Reason, attempt, err)
+				return
+			}
+			s.logger.Printf("jobs: %d: record outcome %s/%s (attempt %d of %d): %v", j.ID, o.Status, o.Reason,
+				attempt, jobFinishAttempts, err)
+			time.Sleep(pause)
 		}
 	}
+	// A panic below would otherwise leave the row queued or running until the
+	// reaper's deadline: record it as a failure now, then let it propagate to
+	// safeGo, which logs it with the stack.
+	defer func() {
+		if rec := recover(); rec != nil {
+			finish(jobs.Failed(jobs.ReasonInternal, "muster failed while running the job (a recovered panic)"))
+			panic(rec)
+		}
+	}()
 	// Re-read the agent: it may have been deleted, or moved to another Claude
 	// account, while the job waited for its lane.
 	a, err := s.ext.Agents.Get(ctx, j.AgentID)

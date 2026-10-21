@@ -130,7 +130,7 @@ func TestCheckoutCommitDetachesAtTheCommit(t *testing.T) {
 	}
 	git("commit", "-q", "-am", "two")
 
-	if err := a.CheckoutCommit(context.Background(), workspaceAgent, first[:8]); err != nil {
+	if err := a.CheckoutCommit(context.Background(), workspaceAgent, first); err != nil {
 		t.Fatalf("checkout: %v", err)
 	}
 	if head := git("rev-parse", "HEAD"); head != first {
@@ -141,7 +141,7 @@ func TestCheckoutCommitDetachesAtTheCommit(t *testing.T) {
 	}
 
 	// A commit that is nowhere (no origin to fetch it from) fails, saying so.
-	if err := a.CheckoutCommit(context.Background(), workspaceAgent, "0000000"); err == nil {
+	if err := a.CheckoutCommit(context.Background(), workspaceAgent, strings.Repeat("0", 40)); err == nil {
 		t.Fatal("a checkout of an absent commit succeeded")
 	}
 	// Refusals that never reach the instance.
@@ -149,10 +149,119 @@ func TestCheckoutCommitDetachesAtTheCommit(t *testing.T) {
 	if err := a.CheckoutCommit(context.Background(), workspaceAgent, "HEAD~1"); err == nil {
 		t.Error("a non-hex sha was accepted")
 	}
+	// An abbreviation, though it names a present commit: `git fetch origin`
+	// could not fetch it on an agent that lacks it.
+	if err := a.CheckoutCommit(context.Background(), workspaceAgent, first[:8]); err == nil {
+		t.Error("an abbreviated sha was accepted")
+	}
 	if err := a.CheckoutCommit(context.Background(), agents.Agent{Name: "no-repo", Kind: agents.KindClaudeCode}, first); err == nil {
 		t.Error("an agent with no repository was checked out")
 	}
 	if d.count() != before {
 		t.Fatalf("refused checkouts ran %d exec(s)", d.count()-before)
+	}
+}
+
+// newCheckoutRepo is a repository at the agent's working directory with two
+// commits; it returns the git runner and the two commit ids.
+func newCheckoutRepo(t *testing.T, d *localExecDriver) (git func(args ...string) string, repo, first, second string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git on PATH")
+	}
+	repo = filepath.Join(d.root, "widgets")
+	git = func(args ...string) string {
+		t.Helper()
+		var out bytes.Buffer
+		c := exec.Command("git", append([]string{"-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.test"}, args...)...)
+		c.Stdout, c.Stderr = &out, &out
+		if err := c.Run(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out.String())
+		}
+		return strings.TrimSpace(out.String())
+	}
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git("init", "-q")
+	if err := os.WriteFile(filepath.Join(repo, "f"), []byte("one"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "g"), []byte("g"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "f", "g")
+	git("commit", "-q", "-m", "one")
+	first = git("rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(repo, "f"), []byte("two"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("commit", "-q", "-am", "two")
+	second = git("rev-parse", "HEAD")
+	return git, repo, first, second
+}
+
+// TestCheckoutCommitRefusesADirtyTree: an uncommitted edit that does NOT
+// conflict with the move, or an untracked file, would be carried onto the
+// job's commit by `git checkout --detach`. Either refuses the checkout with
+// DirtyTreeMessage, HEAD does not move, and nothing is discarded. An ignored
+// file is not dirt.
+func TestCheckoutCommitRefusesADirtyTree(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		dirty func(t *testing.T, repo string)
+		check func(t *testing.T, repo string)
+	}{
+		{"a non-conflicting edit", func(t *testing.T, repo string) {
+			// g is the same in both commits, so git would carry this edit over.
+			if err := os.WriteFile(filepath.Join(repo, "g"), []byte("wip"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, func(t *testing.T, repo string) {
+			if b, _ := os.ReadFile(filepath.Join(repo, "g")); string(b) != "wip" {
+				t.Fatalf("the edit was discarded: g = %q", b)
+			}
+		}},
+		{"an untracked file", func(t *testing.T, repo string) {
+			if err := os.WriteFile(filepath.Join(repo, "notes.txt"), []byte("n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, func(t *testing.T, repo string) {
+			if b, _ := os.ReadFile(filepath.Join(repo, "notes.txt")); string(b) != "n" {
+				t.Fatalf("the untracked file was discarded: %q", b)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, d := newWorkspaceAdapter(t)
+			git, repo, first, second := newCheckoutRepo(t, d)
+			tc.dirty(t, repo)
+			err := a.CheckoutCommit(context.Background(), workspaceAgent, first)
+			if err == nil || !strings.Contains(err.Error(), DirtyTreeMessage) {
+				t.Fatalf("checkout of a dirty tree = %v, want an error carrying %q", err, DirtyTreeMessage)
+			}
+			if head := git("rev-parse", "HEAD"); head != second {
+				t.Fatalf("HEAD moved to %s on a refused checkout, want %s", head, second)
+			}
+			tc.check(t, repo)
+		})
+	}
+	// An ignored file is not dirt: the checkout proceeds.
+	a, d := newWorkspaceAdapter(t)
+	git, repo, first, _ := newCheckoutRepo(t, d)
+	if err := os.WriteFile(filepath.Join(repo, ".git", "info", "exclude"), []byte("out/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "out"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "out", "review.md"), []byte("r"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.CheckoutCommit(context.Background(), workspaceAgent, first); err != nil {
+		t.Fatalf("a tree with only an ignored file was refused: %v", err)
+	}
+	if head := git("rev-parse", "HEAD"); head != first {
+		t.Fatalf("HEAD = %s, want %s", head, first)
 	}
 }

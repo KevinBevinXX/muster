@@ -295,16 +295,11 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// The attention queue's explicit asks (migration 0023); RunAttentionSweep expires them.
 		ext.Attention = attention.NewPG(pool)
 		// The machine job API (migration 0037). A job runs inside the process
-		// that accepted it, so whatever a previous process left queued or
-		// running can never finish: fail it now, saying so, rather than leave a
-		// caller polling a job nothing is running.
-		js := jobs.NewPG(pool)
-		if n, err := js.FailInterrupted(ctx); err != nil {
-			logger.Printf("jobs: could not fail the jobs a previous process left unfinished: %v", err)
-		} else if n > 0 {
-			logger.Printf("jobs: failed %d job(s) a previous process left unfinished (reason %q)", n, jobs.ReasonInterrupted)
-		}
-		ext.Jobs = js
+		// that accepted it; what a dead process left unfinished is failed by
+		// the reaper (startBackgroundLoops → RunJobReaper), and only once it is
+		// past its own deadline. NOT here at boot: during a rolling update the
+		// old pod is still running its jobs while this one boots.
+		ext.Jobs = jobs.NewPG(pool)
 
 		if len(cfg.ConnectorEncKey) > 0 {
 			cs, err := connectors.NewPG(pool, cfg.ConnectorEncKey)
@@ -609,6 +604,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 // (askq.SweepEvery; a test shortens it).
 var askSweepEvery = askq.SweepEvery
 
+// jobReapEvery is how often the job reaper runs after its boot pass
+// (api.JobReapInterval; a test shortens it).
+var jobReapEvery = api.JobReapInterval
+
 // approvalGateFor builds the gate the claude-code approval relay files through:
 // a client for MUSTER_APPROVAL_GATE_URL + _TOKEN, asserting RouterActor, or nil
 // when they are unset (the relay then answers 503 and prompts fall back to the
@@ -797,6 +796,14 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	// database.
 	if a.srv != nil {
 		go a.srv.RunAskSweep(ctx, askSweepEvery)
+	}
+	// The machine job API's reaper: a pass now (boot) and every
+	// jobReapEvery, failing only jobs past their own deadline, so it is safe
+	// while the other pod of a rolling update still runs jobs. Before the pool
+	// guard because it keys on the job store, not the pool: it returns at once
+	// when there is none.
+	if a.srv != nil {
+		go a.srv.RunJobReaper(ctx, jobReapEvery)
 	}
 	if a.pool == nil {
 		return

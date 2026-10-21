@@ -34,6 +34,11 @@ type memJobs struct {
 	mu   sync.Mutex
 	rows map[int64]jobs.Job
 	next int64
+	// finishFailures is how many Finish calls fail before one succeeds.
+	finishFailures int
+	finishCalls    int
+	// reapedAt records each ReapOverdue's clock.
+	reapedAt []time.Time
 }
 
 func newMemJobs() *memJobs { return &memJobs{rows: map[int64]jobs.Job{}} }
@@ -47,6 +52,15 @@ func (m *memJobs) Create(_ context.Context, n jobs.NewJob) (jobs.Job, bool, erro
 				return j, false, nil
 			}
 		}
+	}
+	active := 0
+	for _, j := range m.rows {
+		if j.AgentID == n.AgentID && !j.Terminal() {
+			active++
+		}
+	}
+	if active >= jobs.MaxActivePerAgent {
+		return jobs.Job{}, false, jobs.ErrAgentAtCapacity
 	}
 	m.next++
 	j := jobs.Job{ID: m.next, AgentID: n.AgentID, Agent: n.Agent, Prompt: n.Prompt, Repo: n.Repo, SHA: n.SHA,
@@ -81,6 +95,11 @@ func (m *memJobs) Start(_ context.Context, id int64, acct string, sess int64) (b
 func (m *memJobs) Finish(_ context.Context, id int64, o jobs.Outcome) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.finishCalls++
+	if m.finishFailures > 0 {
+		m.finishFailures--
+		return false, errors.New("memJobs: the database is unreachable")
+	}
 	j := m.rows[id]
 	if j.Terminal() {
 		return false, nil
@@ -93,7 +112,23 @@ func (m *memJobs) Finish(_ context.Context, id int64, o jobs.Outcome) (bool, err
 	return true, nil
 }
 
-func (m *memJobs) FailInterrupted(context.Context) (int64, error) { return 0, nil }
+// ReapOverdue applies the PG store's rule (jobs_pg_test.go pins it there).
+func (m *memJobs) ReapOverdue(_ context.Context, now time.Time) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.reapedAt = append(m.reapedAt, now)
+	var n int64
+	for id, j := range m.rows {
+		overdue := (j.Status == jobs.StatusRunning && j.StartedAt.Add(time.Duration(j.TimeoutSeconds)*time.Second+jobs.ReapSlack).Before(now)) ||
+			(j.Status == jobs.StatusQueued && j.CreatedAt.Add(jobs.MaxQueueWait).Before(now))
+		if overdue {
+			j.Status, j.Reason, j.Error, j.FinishedAt = jobs.StatusFailed, jobs.ReasonInterrupted, jobs.AbandonedRunningError, now
+			m.rows[id] = j
+			n++
+		}
+	}
+	return n, nil
+}
 
 func (m *memJobs) count() int {
 	m.mu.Lock()
@@ -182,15 +217,29 @@ type jobGateway struct {
 	reply string
 	err   error
 	block bool
-	turns []string
+	// release, when set, holds each turn until it is closed (or ctx ends).
+	release chan struct{}
+	// panics makes the turn panic.
+	panics bool
+	turns  []string
 }
 
 func (g *jobGateway) Chat(ctx context.Context, a agents.Agent, key, msg string, _ func(string)) (string, error) {
 	route, _ := agents.TurnRouteFrom(ctx)
 	g.mu.Lock()
 	g.turns = append(g.turns, a.Name+" "+key+" cc-session="+route.Header.Get(agents.HeaderCCSession)+" "+msg)
-	reply, err, block := g.reply, g.err, g.block
+	reply, err, block, release, panics := g.reply, g.err, g.block, g.release, g.panics
 	g.mu.Unlock()
+	if panics {
+		panic("jobGateway: a bug in the turn")
+	}
+	if release != nil {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
 	if block {
 		<-ctx.Done()
 		return "", ctx.Err()
@@ -472,15 +521,15 @@ func TestAResultPathReturnsTheFileNotTheReply(t *testing.T) {
 	const file = "# Review\n\n1. ok\r\n2. \"quoted\" <tag> & é\n"
 	f.ws.files["out/review.md"] = file
 	out := f.await(t, f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review", "result_path": "out/review.md",
-		"repo": "acme/widgets", "sha": "0123abcd"}))
+		"repo": "acme/widgets", "sha": testFullSHA}))
 	if out["status"] != jobs.StatusSucceeded || out["result"] != file {
 		t.Fatalf("job = %v result %q, want succeeded with the file %q", out["status"], out["result"], file)
 	}
 	f.ws.mu.Lock()
 	got := append([]string(nil), f.ws.checkouts...)
 	f.ws.mu.Unlock()
-	if len(got) != 1 || got[0] != "keen-wren@0123abcd" {
-		t.Fatalf("checkouts = %q, want [keen-wren@0123abcd]", got)
+	if len(got) != 1 || got[0] != "keen-wren@"+testFullSHA {
+		t.Fatalf("checkouts = %q, want [keen-wren@%s]", got, testFullSHA)
 	}
 
 	out = f.await(t, f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review", "result_path": "out/missing.md"}))
@@ -502,6 +551,8 @@ func TestJobSubmissionsTheAPIRefuses(t *testing.T) {
 		{"no agent", map[string]any{"prompt": "x"}, http.StatusBadRequest},
 		{"unknown field", map[string]any{"agent": "keen-wren", "prompt": "x", "results_path": "a"}, http.StatusBadRequest},
 		{"bad sha", map[string]any{"agent": "keen-wren", "prompt": "x", "sha": "HEAD~1"}, http.StatusBadRequest},
+		{"abbreviated sha", map[string]any{"agent": "keen-wren", "prompt": "x", "sha": "0123abc"}, http.StatusBadRequest},
+		{"39-hex sha", map[string]any{"agent": "keen-wren", "prompt": "x", "sha": testFullSHA[:39]}, http.StatusBadRequest},
 		{"escaping path", map[string]any{"agent": "keen-wren", "prompt": "x", "result_path": "../etc/passwd"}, http.StatusBadRequest},
 		{"absolute path", map[string]any{"agent": "keen-wren", "prompt": "x", "result_path": "/etc/passwd"}, http.StatusBadRequest},
 		{"timeout too long", map[string]any{"agent": "keen-wren", "prompt": "x", "timeout_s": jobs.MaxTimeoutSeconds + 1}, http.StatusBadRequest},
@@ -568,4 +619,154 @@ func (g *overlapGateway) Chat(context.Context, agents.Agent, string, string, fun
 
 func (g *overlapGateway) ChatWithTools(context.Context, agents.Agent, string, string, string, []agents.ToolDef, agents.ToolDispatch, agents.StreamEmit) (string, error) {
 	return "", errors.New("not expected")
+}
+
+// testFullSHA is a sha a job may name.
+const testFullSHA = "0123456789abcdef0123456789abcdef01234567"
+
+// TestAnAbbreviatedSHAIsRefusedWithWhy: git cannot fetch an abbreviation, so a
+// short sha is a 400 that says so, and nothing is recorded or checked out.
+func TestAnAbbreviatedSHAIsRefusedWithWhy(t *testing.T) {
+	f := newJobFixture(t, testServiceToken)
+	code, out := f.call(t, http.MethodPost, "/api/jobs", map[string]any{"agent": "keen-wren", "prompt": "x", "sha": "0123abc"}, true)
+	const want = "sha must be a full commit id: 40 lowercase hex characters (an abbreviated sha cannot be fetched)"
+	if code != http.StatusBadRequest || out["error"] != want {
+		t.Fatalf("POST with a 7-hex sha = %d %v, want 400 %q", code, out, want)
+	}
+	if n := f.store.count(); n != 0 {
+		t.Fatalf("%d job(s) recorded", n)
+	}
+}
+
+// TestAFailedOutcomeWriteIsRetried: the first two writes of the outcome fail
+// (the database blipped); the third lands, so the job does not stay running.
+func TestAFailedOutcomeWriteIsRetried(t *testing.T) {
+	f := newJobFixture(t, testServiceToken)
+	f.s.jobFinishBackoff = time.Millisecond
+	f.gw.reply = "done"
+	f.store.mu.Lock()
+	f.store.finishFailures = 2
+	f.store.mu.Unlock()
+	out := f.await(t, f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review"}))
+	if out["status"] != jobs.StatusSucceeded || out["result"] != "done" {
+		t.Fatalf("job = %v/%v, want succeeded/done", out["status"], out["result"])
+	}
+	f.store.mu.Lock()
+	defer f.store.mu.Unlock()
+	if f.store.finishCalls != 3 {
+		t.Fatalf("%d outcome writes, want 3 (two failed, one landed)", f.store.finishCalls)
+	}
+}
+
+// TestAPanicInTheTurnFailsTheJob: a panic while running a job is recovered by
+// safeGo, and the job is recorded failed/internal instead of staying running
+// until the reaper.
+func TestAPanicInTheTurnFailsTheJob(t *testing.T) {
+	f := newJobFixture(t, testServiceToken)
+	f.gw.panics = true
+	out := f.await(t, f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review"}))
+	if out["status"] != jobs.StatusFailed || out["reason"] != jobs.ReasonInternal ||
+		out["error"] != "muster failed while running the job (a recovered panic)" {
+		t.Fatalf("job = %v/%v %q, want failed/internal", out["status"], out["reason"], out["error"])
+	}
+	// The lane was released: the next job on the agent runs.
+	f.gw.mu.Lock()
+	f.gw.panics, f.gw.reply = false, "ok"
+	f.gw.mu.Unlock()
+	if out := f.await(t, f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "again"})); out["status"] != jobs.StatusSucceeded {
+		t.Fatalf("the next job = %v", out)
+	}
+}
+
+// TestTheReaperLeavesALiveJobAndItsResultLands: rolling update, scenario A. A
+// job is running here when a reaper pass runs (as the new pod's boot pass
+// would); it is inside its deadline, so it stays running, and when the turn
+// ends its real result is recorded. The reaper reads its injected clock.
+func TestTheReaperLeavesALiveJobAndItsResultLands(t *testing.T) {
+	f := newJobFixture(t, testServiceToken)
+	f.gw.reply = "the real review"
+	f.gw.release = make(chan struct{})
+	id := f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review", "timeout_s": 60})
+	deadline := time.Now().Add(5 * time.Second)
+	for f.store.row(id).Status != jobs.StatusRunning {
+		if time.Now().After(deadline) {
+			t.Fatal("the job never started")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	clock := time.Now()
+	f.s.jobNow = func() time.Time { return clock }
+	f.s.reapJobsOnce(context.Background())
+	if got := f.store.row(id).Status; got != jobs.StatusRunning {
+		t.Fatalf("a job inside its deadline was reaped: %s", got)
+	}
+	close(f.gw.release)
+	if out := f.await(t, id); out["status"] != jobs.StatusSucceeded || out["result"] != "the real review" {
+		t.Fatalf("job = %v/%v, want the real result", out["status"], out["result"])
+	}
+	f.store.mu.Lock()
+	defer f.store.mu.Unlock()
+	if len(f.store.reapedAt) != 1 || !f.store.reapedAt[0].Equal(clock) {
+		t.Fatalf("ReapOverdue clocks = %v, want [%v] (the injected clock)", f.store.reapedAt, clock)
+	}
+}
+
+// TestTheReaperRunsAtOnceAndOnItsInterval: RunJobReaper's first pass is
+// immediate (the boot pass) and it keeps passing until its context ends; with
+// no job store it returns at once.
+func TestTheReaperRunsAtOnceAndOnItsInterval(t *testing.T) {
+	f := newJobFixture(t, testServiceToken)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); f.s.RunJobReaper(ctx, 5*time.Millisecond) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		f.store.mu.Lock()
+		n := len(f.store.reapedAt)
+		f.store.mu.Unlock()
+		if n >= 3 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d reaper passes in 5s, want at least 3", n)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunJobReaper did not return when its context ended")
+	}
+	bare := New(nil, AuthConfig{}, log.New(io.Discard, "", 0))
+	returned := make(chan struct{})
+	go func() { defer close(returned); bare.RunJobReaper(context.Background(), time.Millisecond) }()
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunJobReaper with no job store did not return")
+	}
+}
+
+// TestASubmissionPastTheAgentsCapacityIs429: with MaxActivePerAgent jobs
+// queued or running on the agent, the next submission is refused 429 and
+// recorded nowhere; a repeated key is still answered.
+func TestASubmissionPastTheAgentsCapacityIs429(t *testing.T) {
+	f := newJobFixture(t, testServiceToken)
+	f.gw.release = make(chan struct{})
+	defer close(f.gw.release)
+	for i := 0; i < 4; i++ {
+		f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "p", "idempotency_key": "k" + strconv.Itoa(i)})
+	}
+	code, out := f.call(t, http.MethodPost, "/api/jobs", map[string]any{"agent": "keen-wren", "prompt": "p"}, true)
+	const want = `agent "keen-wren" already has 4 jobs queued or running (the limit); submit again once one finishes`
+	if code != http.StatusTooManyRequests || out["error"] != want {
+		t.Fatalf("the 5th submission = %d %v, want 429 %q", code, out, want)
+	}
+	if n := f.store.count(); n != 4 {
+		t.Fatalf("%d jobs recorded, want 4", n)
+	}
+	if code, out := f.call(t, http.MethodPost, "/api/jobs", map[string]any{"agent": "keen-wren", "prompt": "p", "idempotency_key": "k0"}, true); code != http.StatusOK || out["deduplicated"] != true {
+		t.Fatalf("a repeated key at capacity = %d %v, want 200 deduplicated", code, out)
+	}
 }

@@ -28,19 +28,37 @@ import (
 // the HTTP handler applies), before any exec.
 
 // checkoutScript moves the checkout in $1 to commit $2, detached: fetched from
-// origin first only when the commit is not already present. A dirty checkout
-// that the move would clobber makes `git checkout` refuse, and that refusal is
-// the job's failure — nothing is reset or discarded.
-const checkoutScript = `cd "$1" && { git cat-file -e "$2^{commit}" 2>/dev/null || git fetch --quiet origin "$2"; } && git checkout --quiet --detach "$2"`
+// origin first only when the commit is not already present.
+//
+// 🔴 A DIRTY TREE IS REFUSED BEFORE ANYTHING MOVES. `git checkout --detach`
+// carries uncommitted edits and untracked files that do not conflict onto the
+// new commit, silently, so a job would run on "sha + whatever was lying
+// around". Any `git status --porcelain` output (modified, staged or untracked,
+// not ignored) fails the job with DirtyTreeMessage; nothing is reset, cleaned or
+// discarded. A refusal by `git checkout` itself still fails the job the same way.
+const checkoutScript = `cd "$1" || exit 1
+dirty=$(git status --porcelain) || exit 1
+if [ -n "$dirty" ]; then
+	printf '%s\n' "` + DirtyTreeMessage + `" >&2
+	printf '%s\n' "$dirty" | head -n 20 >&2
+	exit 3
+fi
+{ git cat-file -e "$2^{commit}" 2>/dev/null || git fetch --quiet origin "$2"; } && git checkout --quiet --detach "$2"`
 
-// readScript prints at most $2 bytes of the file $1.
+// DirtyTreeMessage opens the error of a checkout refused for a dirty tree; the
+// first lines of `git status --porcelain` follow it.
+const DirtyTreeMessage = "the agent's working tree is dirty (uncommitted changes or untracked files), so it was not moved to the job's commit; nothing was discarded"
+
+// readScript prints at most $2 bytes of the file $1. It follows symlinks: the
+// path is checked lexically (jobs.ValidResultPath), not resolved, so a symlink
+// in the workspace can point the read elsewhere in the instance.
 const readScript = `head -c "$2" -- "$1"`
 
 // CheckoutCommit moves ag's repository checkout to sha (detached HEAD). It
 // refuses an agent with no repository, since there is no checkout to move.
 func (a *Adapter) CheckoutCommit(ctx context.Context, ag agents.Agent, sha string) error {
 	if !jobs.ValidSHA(sha) {
-		return fmt.Errorf("agentprovision: %q is not a commit id (7-40 lowercase hex)", sha)
+		return fmt.Errorf("agentprovision: %q is not a full commit id (40 lowercase hex)", sha)
 	}
 	if strings.TrimSpace(ag.Repo) == "" {
 		return fmt.Errorf("agentprovision: agent %q has no repository, so there is no checkout to move to %s", ag.Name, sha)
