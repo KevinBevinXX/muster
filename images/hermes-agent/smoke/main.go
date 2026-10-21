@@ -245,23 +245,53 @@ func (s *smoke) turnChecks() {
 	// Presence as digits, not NAME=value lines: Hermes redacts secret-shaped
 	// `…_TOKEN=…` output before the model sees it.
 	reply, err = s.chat("smoke-env", "RUN: for v in HOOKS_TOKEN MUSTER_GATEWAY_BEARER OPENROUTER_API_KEY API_SERVER_KEY MUSTER_HOOK_TOKEN; "+
-		"do printenv $v >/dev/null && printf 1 || printf 0; done; echo; echo HOME=$HOME TMPDIR=$TMPDIR PWD=$(pwd); "+
-		"git config --global --get-regexp 'url[.].*[.]insteadof'", 3*time.Minute)
+		"do printenv $v >/dev/null && printf 1 || printf 0; done; echo; echo HOME=$HOME TMPDIR=$TMPDIR PWD=$(pwd)", 3*time.Minute)
 	for _, want := range []struct{ what, text string }{
-		{"of HOOKS_TOKEN, MUSTER_GATEWAY_BEARER, OPENROUTER_API_KEY, API_SERVER_KEY and MUSTER_HOOK_TOKEN only the last is set", "00001"},
+		{"its OWN environment holds none of HOOKS_TOKEN, MUSTER_GATEWAY_BEARER, OPENROUTER_API_KEY and API_SERVER_KEY, " +
+			"and holds MUSTER_HOOK_TOKEN", "00001"},
 		{"HOME is $HERMES_HOME/home", "HOME=/data/hermes/home"},
 		{"TMPDIR is on the volume", "TMPDIR=/data/"},
 		{"the working directory is the workspace (terminal.cwd)", "PWD=/data/workspace"},
-		{"git reaches GitHub through muster's proxy", "url." + s.musterURL + "/connect/github/github.com/.insteadof https://github.com/"},
 	} {
 		s.check("the agent's shell: "+want.what, err == nil && strings.Contains(reply, want.text), "")
 	}
+	// ⚠ WHAT THIS DOES NOT CLAIM: the shell runs as the gateway's uid, so the
+	// gateway's environment — the provider key and the API server key among it —
+	// is readable through /proc/<gateway pid>/environ. Accepted by operator
+	// decision, as for claude-code pods (docs/design/hermes.md, "Operator
+	// decisions"): this check measures the shell's own environment only.
+	fmt.Println("     note: /proc exposure of the gateway's environment to the same uid is accepted (operator decision); not measured here")
 	if s.failed > 0 {
 		fmt.Printf("     (the tool result: %q)\n", reply)
 	}
 
+	fmt.Println("\n== git through muster's connector proxy ==")
+	reply, err = s.chat("smoke-env", "RUN: git ls-remote https://github.com/o/r; git config --global --get-regexp '^(url|http)[.]'", 3*time.Minute)
+	proxy := s.musterURL + "/connect/github/"
+	for _, want := range []struct{ what, text string }{
+		{"https://github.com/ is rewritten to muster's proxy", "url." + proxy + "github.com/.insteadof https://github.com/"},
+		{"the agent's token is the proxy's extra header", "http." + proxy + ".extraheader X-Muster-Token: " + s.agentToken},
+		{"redirects are off on the proxy", "http." + proxy + ".followredirects false"},
+	} {
+		s.check("git: "+want.what, err == nil && strings.Contains(reply, want.text), "")
+	}
+	s.muster.mu.Lock()
+	connects := append([]connectRequest(nil), s.muster.connects...)
+	s.muster.mu.Unlock()
+	reached := false
+	for _, c := range connects {
+		reached = reached || (strings.HasPrefix(c.Path, "/connect/github/github.com/o/r") && c.Token == s.agentToken)
+	}
+	s.check("git: `git ls-remote https://github.com/o/r` reached muster's /connect/ with the agent's token", reached, "%+v", connects)
+
 	fmt.Println("\n== an approval, approved through muster's relay ==")
-	reply, err = s.chat("smoke-main", "RUN: mkdir -p /data/workspace/smoke-dir && rm -r /data/workspace/smoke-dir && echo removed-ok", 3*time.Minute)
+	// The directory exists BEFORE the turn, made from outside: only the
+	// approved command can remove it.
+	if out, err := dockerExec(s.name, "sh", "-c", "mkdir -p /data/workspace/smoke-dir && touch /data/workspace/smoke-dir/f && echo made"); err != nil ||
+		strings.TrimSpace(out) != "made" {
+		s.check("the directory to remove was made", false, "%q %v", out, err)
+	}
+	reply, err = s.chat("smoke-main", "RUN: rm -r /data/workspace/smoke-dir && echo removed-ok", 3*time.Minute)
 	s.check("the approved command ran", err == nil && strings.Contains(reply, "removed-ok"), "%q %v", reply, err)
 	s.muster.mu.Lock()
 	filed := append([]map[string]any(nil), s.muster.filed...)
@@ -269,14 +299,18 @@ func (s *smoke) turnChecks() {
 	s.check("the approval was filed with muster, naming the command", len(filed) == 1 && strings.Contains(fmt.Sprint(filed[0]["command"]), "rm -r"),
 		"%v", filed)
 	out, _ := dockerExec(s.name, "sh", "-c", "test -e /data/workspace/smoke-dir && echo present || echo absent")
-	s.check("the directory is gone", strings.TrimSpace(out) == "absent", "%s", out)
+	s.check("the directory that existed is gone", strings.TrimSpace(out) == "absent", "%s", out)
 
 	fmt.Println("\n== an approval, denied through muster's relay ==")
-	reply, err = s.chat("smoke-main", "RUN: mkdir -p /data/workspace/keep-dir && rm -r /data/workspace/keep-dir && echo should-not-run", 3*time.Minute)
-	out, _ = dockerExec(s.name, "sh", "-c", "test -e /data/workspace/keep-dir && echo present || echo absent")
-	s.check("the denied command did not run", err == nil && !strings.Contains(reply, `should-not-run\n`) && strings.TrimSpace(out) == "absent",
+	if out, err := dockerExec(s.name, "sh", "-c", "mkdir -p /data/workspace/keep-dir && touch /data/workspace/keep-dir/f && echo made"); err != nil ||
+		strings.TrimSpace(out) != "made" {
+		s.check("the directory to keep was made", false, "%q %v", out, err)
+	}
+	reply, err = s.chat("smoke-main", "RUN: rm -r /data/workspace/keep-dir && echo should-not-run", 3*time.Minute)
+	out, _ = dockerExec(s.name, "sh", "-c", "test -e /data/workspace/keep-dir/f && echo present || echo absent")
+	s.check("the denied command did not run: the directory is still there", err == nil && strings.TrimSpace(out) == "present",
 		"reply %q, err %v, dir %s", reply, err, strings.TrimSpace(out))
-	fmt.Printf("     (the tool result the model saw: %q)\n", reply)
+	s.check("the tool result says the command was blocked", strings.Contains(reply, `"status": "blocked"`), "%q", reply)
 }
 
 func systemPrompt(req map[string]any) string {
@@ -389,7 +423,7 @@ func jsonField(out, field string) string {
 
 func (s *smoke) stopAndRestartChecks() {
 	fmt.Println("\n== SIGTERM, then a restart on the same volume ==")
-	keyBefore, _ := dockerExec(s.name, "sha256sum", "/data/hermesd/api-server-key")
+	keyBefore, errBefore := dockerExec(s.name, "sha256sum", "/data/hermesd/api-server-key")
 	before := len(s.stub.requests())
 	type res struct {
 		reply string
@@ -420,8 +454,9 @@ func (s *smoke) stopAndRestartChecks() {
 	}
 	h, err := s.waitReady(3*time.Minute, 1)
 	s.check("after the restart the gateway recovers and is ready", err == nil, "%+v %v", h, err)
-	keyAfter, _ := dockerExec(s.name, "sha256sum", "/data/hermesd/api-server-key")
-	s.check("the API key on the volume is the same key", keyBefore != "" && keyBefore == keyAfter, "")
+	keyAfter, errAfter := dockerExec(s.name, "sha256sum", "/data/hermesd/api-server-key")
+	s.check("the API key on the volume is the same key", errBefore == nil && errAfter == nil && isSHA256Line(keyBefore) && keyBefore == keyAfter,
+		"before %q (%v), after %q (%v)", strings.TrimSpace(keyBefore), errBefore, strings.TrimSpace(keyAfter), errAfter)
 	before = len(s.stub.requests())
 	reply, err := s.chat("smoke-main", "remember me", 3*time.Minute)
 	reqs := s.stub.requests()
@@ -475,4 +510,19 @@ type staticEndpoint provision.Endpoint
 
 func (e staticEndpoint) Endpoint(context.Context, provision.Ref) (provision.Endpoint, error) {
 	return provision.Endpoint(e), nil
+}
+
+// isSHA256Line reports whether out is a sha256sum line: 64 hex digits first.
+// A missing file's error text is not one, so it cannot compare equal to itself.
+func isSHA256Line(out string) bool {
+	f := strings.Fields(out)
+	if len(f) < 2 || len(f[0]) != 64 {
+		return false
+	}
+	for _, c := range f[0] {
+		if !strings.ContainsRune("0123456789abcdef", c) {
+			return false
+		}
+	}
+	return true
 }

@@ -15,6 +15,12 @@
   # home-manager, …) live in THIS lock, not in muster's: nothing that builds
   # muster fetches them. hermesd itself comes from muster's flake through the
   # relative `path:` input, built there from the one `goVendorHash`.
+  #
+  # ⚠ IT BUILDS ONLY FROM A GIT CHECKOUT OF muster (a `git+file` flake): the
+  # relative input resolves inside that checkout, and — like every flake in a git
+  # tree — files git does not track are invisible to it. Commit (or `git add`)
+  # a change before building it into an image. `make hermes-image` also checks
+  # that the hermesd it builds is the one muster's own flake builds.
   description = "muster's hermes agent image: Hermes at a pinned sha behind hermesd";
 
   inputs = {
@@ -27,7 +33,11 @@
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
-      pin = "5fc490e2b34123212d73ef316086f939567a725a";
+      # The pin, written once (the input's URL) and read back from the lock.
+      pin = hermes-agent.rev;
+      # The image's tag names both of what it carries: Hermes's pin and hermesd's
+      # revision (muster's commit, `-dirty` from a modified tree).
+      imageTag = "hermes-${builtins.substring 0 8 pin}-muster-${hermesd.version}";
 
       # 🔴 UPSTREAM `minimal` WITH ffmpeg OVERRIDDEN OUT. ffmpeg (even
       # ffmpeg-headless) drags in a C toolchain: upstream `minimal` is a 3,278 MiB
@@ -54,6 +64,8 @@
       pinFile = pkgs.writeTextDir "etc/hermesd/hermes-pin" "${pin}\n";
     in
     {
+      # The tag `make hermes-image` loads and `make hermes-smoke` tests.
+      inherit imageTag;
       packages.${system} = {
         inherit hermes hermesd;
 
@@ -61,9 +73,7 @@
         # assembled as it is loaded, never written to the store whole.
         image = pkgs.dockerTools.streamLayeredImage {
           name = "hermes-agent";
-          # The pin names the tag; hermesd's own revision is the deploy's to record (it
-          # pushes and pins the image by digest, MUSTER_AGENT_HERMES_IMAGE).
-          tag = "hermes-${builtins.substring 0 8 pin}";
+          tag = imageTag;
           contents = [
             hermesd hermes passwd group pinFile
             # 🔴 tini IS PID 1, NOT hermesd. The gateway's terminal tool starts
@@ -97,6 +107,7 @@
             Labels = {
               "org.opencontainers.image.source" = "https://github.com/ZacxDev/muster";
               "dev.muster.hermes.pin" = pin;
+              "dev.muster.hermesd.version" = hermesd.version;
             };
           };
         };

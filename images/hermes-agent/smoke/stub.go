@@ -213,13 +213,28 @@ type fakeMuster struct {
 	token string
 
 	mu        sync.Mutex
-	decisions []string // answered in order, then "approve"
+	connects  []connectRequest // every request git made to /connect/
+	decisions []string         // answered in order, then "approve"
 	filed     []map[string]any
 	deleted   int
 	answered  map[string]string
 }
 
+// connectRequest is one request git made to muster's connector proxy.
+type connectRequest struct {
+	Path, Token string
+}
+
 func (m *fakeMuster) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/connect/") {
+		// The proxy itself is not faked: what matters is that git came HERE,
+		// on the proxy's path, carrying the agent's token.
+		m.mu.Lock()
+		m.connects = append(m.connects, connectRequest{Path: r.URL.Path, Token: r.Header.Get("X-Muster-Token")})
+		m.mu.Unlock()
+		http.NotFound(w, r)
+		return
+	}
 	if r.Header.Get("X-Muster-Token") != m.token {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return

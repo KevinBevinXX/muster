@@ -671,11 +671,7 @@
         # the substance; this attribute is only how they get collected.
         muster-cli = mkCLI pkgs;
         muster-mirror = mkMirror pkgs;
-      } // nixpkgs.lib.optionalAttrs
-        (builtins.elem pkgs.stdenv.hostPlatform.system linuxSystems)
-        {
-          hermesd = mkHermesd pkgs;
-        });
+      });
 
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {

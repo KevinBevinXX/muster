@@ -334,14 +334,27 @@ check: vet test leakscan css-check verb-ledger
 # The `hermes` agent kind's image (images/hermes-agent/flake.nix): upstream
 # Hermes at its pinned sha, ffmpeg overridden out, behind hermesd. The flake's
 # output is a stream script, so the image is assembled as Docker loads it.
-HERMES_IMAGE ?= hermes-agent:hermes-5fc490e2
+#
+# 🔴 THE hermesd IN THE IMAGE MUST BE THE ONE muster's OWN FLAKE BUILDS. The
+# image flake takes muster through a relative `path:` input; the target refuses
+# to build when the two derivations differ (a stale or diverged input), rather
+# than ship an image whose hermesd is not this tree's.
+#
+# The tag names Hermes's pin AND hermesd's revision (the flake's `imageTag`).
+HERMES_IMAGE_TAG = $(shell nix eval --raw ./images/hermes-agent\#imageTag 2>/dev/null)
 hermes-image:
+	@root=$$(nix eval --raw .#packages.x86_64-linux.hermesd.drvPath) && \
+	img=$$(nix eval --raw ./images/hermes-agent#packages.x86_64-linux.hermesd.drvPath) && \
+	if [ "$$root" != "$$img" ]; then \
+		echo "hermes-image: the image's hermesd ($$img) is not muster's ($$root): refresh the image flake's muster input (nix flake update --flake ./images/hermes-agent muster)" >&2; exit 1; \
+	else echo "hermes-image: hermesd $$root"; fi
 	nix build -o .hermes-image ./images/hermes-agent#image
 	./.hermes-image | docker load
 	rm -f .hermes-image
 
 # The image smoke test: the real image under Docker with pod-like restrictions,
 # a stub OpenAI-compatible model and a fake muster relay, driven by muster's own
-# client (images/hermes-agent/smoke). No real model, no Kubernetes.
-hermes-smoke:
-	go run ./images/hermes-agent/smoke -image $(HERMES_IMAGE)
+# client (images/hermes-agent/smoke). It builds and loads the image first, so it
+# never tests a stale one. No real model, no Kubernetes.
+hermes-smoke: hermes-image
+	go run ./images/hermes-agent/smoke -image hermes-agent:$(HERMES_IMAGE_TAG)
