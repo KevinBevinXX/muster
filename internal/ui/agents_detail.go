@@ -1132,6 +1132,14 @@ func chatProvisioningIndicator(status string) g.Node {
 	)
 }
 
+// AgentsListPath is where marking a task complete from an agent's page lands:
+// the Agents list, on both the htmx and the no-JS path.
+const AgentsListPath = "/agents"
+
+// TaskCompletePath is the no-JS Mark-complete form's action: a POST that
+// completes the task and redirects to AgentsListPath.
+func TaskCompletePath(id int64) string { return "/tasks/" + strconv.FormatInt(id, 10) + "/complete" }
+
 // agentTaskBanner renders the completion banner for a TASK-LINKED agent whose
 // work is done — so the user isn't left staring at a still-"running" pod with no
 // next step. It appears only when NoteID is set AND the task's status is
@@ -1168,13 +1176,18 @@ func agentTaskBanner(v AgentDetailView) g.Node {
 	// Mark-complete: hidden once the task is already complete.
 	if !complete {
 		children = append(children, Form(
+			// THE NO-JS PATH: a plain POST to TaskCompletePath, which completes
+			// the task and answers 303 → AgentsListPath. htmx's hx-patch below
+			// takes precedence over method/action whenever the script runs.
+			Method("post"),
+			Action(TaskCompletePath(*v.NoteID)),
 			hx("hx-patch", "/tasks/"+id+"/status"),
 			hx("hx-swap", "none"),
-			// On success re-fetch #chat-log so the banner reflects complete (and the
-			// button disappears). task:changed is caught by #chat-log's from:body trigger.
-			// On success, leave the agent chat and go back to the Tasks view (the task is
-			// done — the user shouldn't be left staring at the agent). Full nav to /tasks.
-			hx("hx-on::after-request", "if(event.detail.successful){window.location.href='/tasks'}"),
+			// On success, leave the agent and go back OUT to the Agents list (operator
+			// ask: "after marking a task complete, it should just redirect back out of
+			// the agent instead of to another page" — it used to open /tasks). Full
+			// navigation, the same place the no-JS path's redirect lands.
+			hx("hx-on::after-request", "if(event.detail.successful){window.location.href='"+AgentsListPath+"'}"),
 			Class("contents"),
 			Input(Type("hidden"), Name("status"), Value(notes.StatusComplete)),
 			Button(

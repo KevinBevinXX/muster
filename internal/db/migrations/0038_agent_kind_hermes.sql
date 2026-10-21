@@ -1,4 +1,4 @@
--- muster 0037 — the `hermes` agent KIND (docs/design/hermes.md, "The hermes
+-- muster 0038 — the `hermes` agent KIND (docs/design/hermes.md, "The hermes
 -- agent kind"): a Hermes pod behind hermesd, on the OpenRouter credential the
 -- gateway kind uses.
 --

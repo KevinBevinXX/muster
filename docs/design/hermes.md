@@ -2,7 +2,7 @@
 
 **Status: proposed, with Phases 0, 1, 2 and 5 done.** Phase 5, the `hermes`
 agent kind, is implemented (`cmd/hermesd`, `images/hermes-agent`, the kind in
-`internal/agents` and `internal/agentspec`, migration `0037`); what it built
+`internal/agents` and `internal/agentspec`, migration `0038`); what it built
 differently from this page is under [Phase 5 as built](#phase-5-as-built).
 Phase 1 is implemented: the
 [host paste guard](#every-paste-into-a-hermes-pane-is-gated-on-the-host)
@@ -1784,7 +1784,7 @@ on 443" is not "the provider and GitHub".
 ### Phase 5 as built
 
 `cmd/hermesd`, `images/hermes-agent` (the image flake and `smoke/`), the kind
-(`agents.KindHermes`, migration `0037`, `agentspec.buildHermes`, the
+(`agents.KindHermes`, migration `0038`, `agentspec.buildHermes`, the
 `MUSTER_AGENT_HERMES_*` variables) differ from the sections above in these
 ways, each decided while building it:
 

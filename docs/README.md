@@ -19,6 +19,7 @@ Start with the [project README](../README.md) for the pitch and a quickstart.
 - [github-app.md](github-app.md) — the GitHub App: muster's GitHub identity, and one-repository tokens for agents
 - [memo-relay.md](memo-relay.md) — cairn memos delivered to dispatched agents
 - [plugins.md](plugins.md) — out-of-process plugins that bring messages to your chief agent
+- [jobs.md](jobs.md) — the machine job API: an external orchestrator runs one prompt on a claude-code agent and reads the result back
 
 **Running it**
 
@@ -35,4 +36,5 @@ Start with the [project README](../README.md) for the pitch and a quickstart.
 - [decisions.md](decisions.md) — why things are the way they are
 - [design/android.md](design/android.md) — proposed: a native Android app (actionable notifications, bubbles, widgets, live status)
 - [design/hermes.md](design/hermes.md) — proposed: Hermes mirroring and the `hermes` agent kind
+- [design/agent-cards.md](design/agent-cards.md) — proposed: live subagent and shell counts, and tmux identity colours, on agent cards
 - [../CONTRIBUTING.md](../CONTRIBUTING.md)

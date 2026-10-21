@@ -162,9 +162,11 @@ func TestTheChiefDispatchLedgerIsTheCallersWithoutRLS(t *testing.T) {
 	s, pool, dsn := pgStore(t)
 	dbtest.OwnerExec(t, dsn, `DELETE FROM audit_log WHERE action LIKE 'task.chief_%'`)
 	const shared = 610
-	// Owner 3: a start for task 610 with a live agent, another live start, and
-	// a full day of starts.
-	for i, task := range []int64{shared, 611} {
+	// Owner 3: a full cap of live started agents, the first on task 610, and a
+	// full day of starts. A full cap is what makes "counts for nothing" able to
+	// fail: fewer would leave the caller a slot even if they were counted.
+	for i := 0; i < MaxChiefLiveAgents; i++ {
+		task := shared + int64(i)
 		if _, err := s.ReserveChiefDispatch(session(3), task, nil, nil); err != nil {
 			t.Fatal(err)
 		}
@@ -192,13 +194,14 @@ func TestAnotherOwnersStartedAgentDoesNotFreeTheCallersPendingSlot(t *testing.T)
 		t.Fatal(err)
 	}
 	rlsOffForTest(t, pool, dsn, true)
-	for _, task := range []int64{620, 621} {
+	// Fill the caller's cap, 620 (the task the other owner's agent shares) first.
+	for task := int64(620); task < 620+MaxChiefLiveAgents; task++ {
 		if r, err := s.ReserveChiefDispatch(session(2), task, nil, nil); err != nil || r.Prior {
 			t.Fatalf("reserve %d: %+v %v", task, r, err)
 		}
 	}
-	if _, err := s.ReserveChiefDispatch(session(2), 622, nil, nil); !errors.Is(err, ErrChiefLiveCap) {
-		t.Fatalf("a third start with two of the caller's in flight: %v; want ErrChiefLiveCap", err)
+	if _, err := s.ReserveChiefDispatch(session(2), 620+MaxChiefLiveAgents, nil, nil); !errors.Is(err, ErrChiefLiveCap) {
+		t.Fatalf("one more start with the caller's cap in flight: %v; want ErrChiefLiveCap", err)
 	}
 }
 

@@ -22,6 +22,7 @@ import (
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/github"
+	"github.com/ZacxDev/muster/internal/jobs"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/plugins"
@@ -108,6 +109,8 @@ func fullyWiredServer(t *testing.T) *Server {
 		PluginGateway: stubPluginGateway{},
 		Push:          stubPush{},
 		Transcriber:   stubTranscriber{},
+		Jobs:          stubJobs{},
+		JobWorkspace:  stubJobWorkspace{},
 		Uploads:       &uploads.Service{},
 	})
 	s.UseRouter(stubRouter{})
@@ -368,10 +371,12 @@ func (stubProvisioner) KickoffUndeliverableReason() string { return "" }
 // 150 methods; hand-writing them would be 150 places for a typo to become a
 // silently wrong fixture.
 type (
-	stubNotesStore  struct{ notes.Store }
-	stubAgentsStore struct{ agents.Store }
-	stubGitHubStore struct{ github.Store }
-	stubGitHubApp   struct{ GitHubApp }
+	stubNotesStore   struct{ notes.Store }
+	stubAgentsStore  struct{ agents.Store }
+	stubJobs         struct{ jobs.Store }
+	stubJobWorkspace struct{ JobWorkspace }
+	stubGitHubStore  struct{ github.Store }
+	stubGitHubApp    struct{ GitHubApp }
 )
 
 // Compile-time proof each stub satisfies what Extensions asks for, and that the

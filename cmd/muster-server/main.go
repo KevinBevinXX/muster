@@ -68,6 +68,7 @@ import (
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/gotrue"
+	"github.com/ZacxDev/muster/internal/jobs"
 	"github.com/ZacxDev/muster/internal/memorelay"
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -302,6 +303,12 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.Focus = focus.NewPG(pool)
 		// The attention queue's explicit asks (migration 0023); RunAttentionSweep expires them.
 		ext.Attention = attention.NewPG(pool)
+		// The machine job API (migration 0037). A job runs inside the process
+		// that accepted it; what a dead process left unfinished is failed by
+		// the reaper (startBackgroundLoops → RunJobReaper), and only once it is
+		// past its own deadline. NOT here at boot: during a rolling update the
+		// old pod is still running its jobs while this one boots.
+		ext.Jobs = jobs.NewPG(pool)
 
 		if len(cfg.ConnectorEncKey) > 0 {
 			cs, err := connectors.NewPG(pool, cfg.ConnectorEncKey)
@@ -433,6 +440,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	}
 	if prov != nil {
 		ext.Provisioner = prov
+		// The job API's sha checkout and result_path read exec through the
+		// same adapter (internal/api jobs.go).
+		ext.JobWorkspace = prov
 	}
 	if gw != nil {
 		ext.Gateway = gw
@@ -602,6 +612,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 // askSweepEvery is how often the question store's expiry runs
 // (askq.SweepEvery; a test shortens it).
 var askSweepEvery = askq.SweepEvery
+
+// jobReapEvery is how often the job reaper runs after its boot pass
+// (api.JobReapInterval; a test shortens it).
+var jobReapEvery = api.JobReapInterval
 
 // approvalGateFor builds the gate the claude-code approval relay files through:
 // a client for MUSTER_APPROVAL_GATE_URL + _TOKEN, asserting RouterActor, or nil
@@ -792,6 +806,14 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	if a.srv != nil {
 		go a.srv.RunAskSweep(ctx, askSweepEvery)
 	}
+	// The machine job API's reaper: a pass now (boot) and every
+	// jobReapEvery, failing only jobs past their own deadline, so it is safe
+	// while the other pod of a rolling update still runs jobs. Before the pool
+	// guard because it keys on the job store, not the pool: it returns at once
+	// when there is none.
+	if a.srv != nil {
+		go a.srv.RunJobReaper(ctx, jobReapEvery)
+	}
 	if a.pool == nil {
 		return
 	}
@@ -860,6 +882,11 @@ func (a *app) shutdown() {
 			a.logger.Printf("browser listener drain did not complete within %s: %v", shutdownDrainTimeout, err)
 		}
 	}
+	// The machine jobs this process accepted and will now never finish: fail
+	// them, theirs only (api.FailOwnJobs), bounded. AFTER the HTTP drain, so no
+	// submission lands behind it. A crash skips this; the deadline reaper is
+	// the backstop.
+	a.srv.FailOwnJobs(api.JobShutdownTimeout)
 	if !<-terminalsEnded {
 		a.logger.Printf("agent terminals did not finish releasing within %s; exiting anyway "+
 			"(their tmux clients may stay attached in the agents' pods until those restart)", terminalDrainTimeout)

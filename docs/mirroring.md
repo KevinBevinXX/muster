@@ -58,10 +58,25 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   its host (`mango:1 · <host>`); when it repeats on one host (two sessions given
   one codename), each also carries its tmux address (`mango:1 · <session>:<index>`).
   The card, both view headers and the page title always agree.
-- **Most recently active first.** One list across all your hosts, ordered by each
-  window's last activity, to the minute. Output in a pane counts as activity, not
-  only keystrokes. Ties keep a stable order (host, session, index). An open list
-  reorders only when the order actually changes.
+- **Most recently active first.** One flat list across all your hosts AND your
+  dispatched agents, ordered by last activity, newest first. A window's last
+  activity is when its host last saw it active, to the minute; output in a pane
+  counts as activity, not only keystrokes. A dispatched agent's is the newer of
+  its last chat message and its last change (a status write, a rename). The
+  host is not a section: it is the icon on each card. A window whose host did
+  not report activity comes last. Ties keep a stable order: agents first, then
+  windows by host, session and index. An open list reorders only when the order
+  actually changes.
+- **How recent, at a glance.** Beside "active 3m ago" each card draws a small
+  dot tinted on the same 8-step Gruvbox scale as tmux's idle-fade window colours:
+  bright green under 10 minutes, green to 30, aqua to an hour, yellow to 2
+  hours, orange to 4, red to 8, purple to a day, grey past it. It re-tints as
+  time passes, without a refresh. The card's border is not used for this.
+- **Long titles.** A card's title longer than 60 characters is cut and ends
+  in a **…** button — its name, and its focus title when it has one
+  ([focus.md](focus.md)). Tap it (or press Enter on it) to see the whole title
+  in a popover; it never opens the card. On a desktop, hovering a long name
+  shows it too.
 - **Not an agent, and not stored.** muster keeps each connected host's window
   list in memory, under the token owner's account. A mirrored window cannot be
   dispatched, deleted, or mistaken for a muster agent. A disconnected host stays
@@ -86,6 +101,29 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   of those fields is plain text, so `gold:8` still finds a window called
   `Gold:8`. `field=value` matches the whole field instead of a substring. The
   filter is kept in the page's `?q=`, so a link reproduces it.
+- **Quick filters.** Under the box, five chips:
+  - **Waiting on ask**: something on the card asked you to decide. Either an
+    agent or a Claude Code session called `attention_ask` and waits for your
+    answer, or a mirrored Claude Code session is stopped at a prompt (a
+    permission prompt: the session asking to go on) — the
+    [attention queue](attention.md)'s **Question** and **Session waiting**
+    items — or a dispatched agent is blocked at a permission prompt (its
+    **awaiting approval** badge).
+  - **Waiting on question**: a mirrored Claude Code session holds an
+    `AskUserQuestion` picker open for you (the queue's **Session question**).
+  - **Idle >15m**, **Idle >1h**, **Idle >1d**: no activity for more than that
+    long (the same activity time the list is ordered by). A window with no
+    reported activity is never counted as idle.
+
+  The chips combine with OR: a card is shown when it matches ANY chosen chip
+  (waiting on an ask, or on a question, or idle that long). Only one idle chip
+  is on at a time. The chips together, the box and the host tab must all match.
+  A reply draft counts as neither waiting chip. The chosen chips are remembered
+  on this device, and a list refresh never resets them; **Clear**, shown while
+  any chip is on, turns them all off. A card that crosses an idle threshold
+  while the list is open is not shown or hidden by itself — that would move
+  the cards around it — it waits behind the **N new ↑** pill like an arrival,
+  and is applied on the tap.
 - **Host tabs.** Above the box: **All**, then one tab per host on the list
   (dispatched pod agents under **cluster**), each counting its cards that match
   the box. A tab narrows the list to that host exactly, together with the box.

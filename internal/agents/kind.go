@@ -28,7 +28,7 @@ const (
 )
 
 // Kinds is every kind this build knows, in the order a picker shows them. It is
-// the same set the latest agents_kind_check admits (migration 0037); a test
+// the same set the latest agents_kind_check admits (migration 0038); a test
 // pins the two.
 var Kinds = []string{KindGateway, KindClaudeCode, KindHermes}
 

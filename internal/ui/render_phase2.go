@@ -62,7 +62,8 @@ func RenderAgentsCards(w io.Writer, list []AgentCardView) error {
 }
 
 // RenderAgentsList writes the /ui/agents partial: the agent cards and, when the
-// mirror plugin is on, the viewer's mirrored sessions after them — plus, out of
+// mirror plugin is on, the viewer's mirrored sessions, as ONE list by activity
+// (AgentsCardsWithMirrors) — plus, out of
 // band, the recently-viewed strip resolved against those same cards
 // (recentStrip). recent is the viewer's recently opened entries, newest first.
 func RenderAgentsList(w io.Writer, list []AgentCardView, mirrors []MirrorCardView, recent []RecentRef) error {

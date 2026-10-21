@@ -159,10 +159,12 @@ var provisionerDeps = []provisionerDep{
 			"GET /agents/{name}/ws",
 			"POST /agents/{name}/send",
 			"POST /api/agents/{name}/messages",
+			"POST /api/jobs",
 		},
 		callers: []string{
-			"(*Server).askTurn",  // Chat, or ChatWithTools + Chat for the gateway sidecar; reached from handleAPIAgentSendMessage
-			"(*Server).chatTurn", // ChatWithTools + Chat; reached from runUserTurn (handleAgentWS, handleAgentSend)
+			"(*Server).askTurn",    // Chat, or ChatWithTools + Chat for the gateway sidecar; reached from handleAPIAgentSendMessage
+			"(*Server).chatTurn",   // ChatWithTools + Chat; reached from runUserTurn (handleAgentWS, handleAgentSend)
+			"(*Server).runJobTurn", // Chat; reached from runJob, started only by handleJobCreate (POST /api/jobs)
 		},
 	},
 }
@@ -237,8 +239,9 @@ func unwiredProvisionerServer(t *testing.T) (*Server, http.Handler) {
 func provisionerServer(t *testing.T, prov Provisioner, gw Gateway) (*Server, http.Handler) {
 	t.Helper()
 	s := New(nil, AuthConfig{
-		UIPassword: testUIPassword,
-		HookToken:  testHookToken,
+		UIPassword:   testUIPassword,
+		HookToken:    testHookToken,
+		ServiceToken: testServiceToken,
 	}, log.New(os.Stderr, "", 0))
 	s.UseExtensions(Extensions{
 		Notes:           stubNotesStore{},
@@ -335,13 +338,22 @@ func (stubGateway) ChatWithTools(context.Context, agents.Agent, string, string, 
 	return "", nil
 }
 
-// admit presents BOTH credentials this fixture holds, so a route is measured at
-// its provisioner door regardless of which auth door it sits behind.
+// admit presents the credentials this fixture holds, so a route is measured at
+// its provisioner door regardless of which auth door it sits behind: the session
+// cookie always, and the ONE machine credential the route's tier takes. The hook
+// and service tiers read the same header (hookTokenFromRequest), so they cannot
+// both be presented; the job API (jobs.go) is the service tier's, every other
+// machine route here the hook tier's.
 func admit(s *Server, r *http.Request) {
 	r.AddCookie(&http.Cookie{
 		Name:  sessionCookieName,
 		Value: auth.SignSession(s.auth.uiSessionSecret(), time.Now(), sessionTTL),
 	})
+	if strings.HasPrefix(r.URL.Path, "/api/jobs") && s.auth.ServiceToken != "" {
+		r.Header.Set("Authorization", "Bearer "+testServiceToken)
+		r.Header.Set(ActorHeader, "provisioner-seam-test")
+		return
+	}
 	r.Header.Set("X-Muster-Token", testHookToken)
 }
 

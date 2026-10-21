@@ -17,9 +17,13 @@ import { MirrorRig, mkchat } from '../lib/mirrorhost';
 // remembered across a reload (localStorage, not ?q=), falls back to All when its
 // host is gone, and a host that connects gets a tab.
 //
-// And THE FOCUS TITLE IS SHOWN WHOLE: this spec's agent carries a 120-character
-// focus title, which the card, its popover and the agent page's focus history
-// show untruncated and wrapped — never an ellipsis, never sideways overflow.
+// And THE FOCUS TITLE IS STORED AND SHOWN WHOLE WHERE IT IS READ: this spec's
+// agent carries a 120-character focus title, which the card's popover and the
+// agent page's focus history show untruncated and wrapped. The CARD's heading
+// clamps it to 60 characters and ends in the "…" button that opens that
+// popover (operator ask: long card titles are truncated, the ellipsis tapped to
+// open the full title — agents-list-ux.spec.ts owns the clamp); never sideways
+// overflow anywhere.
 //
 // 🔴 REGRESSION TESTS. On the commit before: there is no #agents-hosts (every
 // tab test fails at its first locator), and the focus title is stored cut to
@@ -123,13 +127,15 @@ for (const vp of [
     test.use(vp.use);
     const press = (l: Locator) => (vp.use.hasTouch ? l.tap() : l.click());
 
-    test('the agent card shows its 120-character focus title whole, wrapped, in the card and its popover', async ({ page }) => {
+    test('the agent card clamps its 120-character focus title; the "…" opens it whole, wrapped, in the popover', async ({ page }) => {
       await openList(page);
       const card = agentCard(page);
       const btn = card.locator('[data-card-focus]');
       const title = btn.locator('span').first();
-      await expect(title).toHaveText(LONG);
-      expect(await title.textContent(), 'no ellipsis').not.toContain('…');
+      await expect(title).toHaveText(LONG.slice(0, 60).trimEnd());
+      await expect(btn).toHaveAttribute('aria-label', `Focus: ${LONG} — show details`);
+      const more = card.locator('[data-card-slot="focus"] [data-title-more]');
+      await expect(more).toBeVisible();
       // Wrapped, not clipped: on a phone it takes several lines, and nothing
       // overflows the button or the card sideways.
       const [tsw, tcw, th, lh] = await title.evaluate((e) => [e.scrollWidth, e.clientWidth, e.getBoundingClientRect().height, parseFloat(getComputedStyle(e).lineHeight)]);
@@ -141,7 +147,9 @@ for (const vp of [
       expect(cb.x + cb.width, 'the card fits the viewport').toBeLessThanOrEqual(vp.use.viewport.width);
       await noPageOverflow(page);
 
-      await press(btn);
+      const before = page.url();
+      await press(more);
+      expect(page.url(), 'the "…" does not navigate').toBe(before);
       const pop = card.locator('[data-focus-popover]');
       await expect(pop).toBeVisible();
       await expect(pop.locator('[data-focus-title]')).toHaveText(LONG);

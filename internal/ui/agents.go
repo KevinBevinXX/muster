@@ -93,6 +93,13 @@ type AgentCardView struct {
 	// Attention is the card's attention badge (cards_attention.go), nil for
 	// none. Composed in internal/api from the attention queue's own read.
 	Attention *CardAttention
+	// AwaitingApproval: the agent is blocked on a permission prompt (or has a
+	// request open on the approval queue) — internal/api's AwaitingApproval,
+	// the same answer the polled "awaiting approval" badge shows. It is NOT an
+	// attention item, so it is carried here: the "Waiting on ask" chip reads it
+	// (waitTokens), and the status poll asks for a list refresh when it changes
+	// (cardStatusIcon).
+	AwaitingApproval bool
 }
 
 // lastActive is the card's "active" time: LastActiveAt, or UpdatedAt when the
@@ -292,9 +299,27 @@ func agentRenameForm(a AgentCardView) g.Node {
 // kinds of card cannot drift into two layouts again.
 func agentCard(a AgentCardView) g.Node {
 	ids := strconv.FormatInt(a.ID, 10)
+	// markdownPlain, exactly as agentTitle on the detail page does. A
+	// task-derived display name routinely carries `**bold**` and `code`, and
+	// this rendered it RAW while the detail header rendered it as markup — one
+	// string, two answers, from the same click. Stripping on both surfaces is
+	// what makes them agree; see markdownPlain for why stripping was chosen over
+	// rendering markup here.
+	name := markdownPlain(displayOr(a.DisplayName, a.Name))
+	// A name past cardTitleMax is drawn in a title row of its own, clamped,
+	// with a "…" button that opens it whole (cardLongTitle).
+	_, long := clampTitle(name)
+	reserve := cardReserve(a.Attention)
+	bodyClass := cardBodyClass(a.Focus, reserve)
+	if long {
+		bodyClass = titledBodyClass(reserve)
+	}
 	return Article(
 		ID("agent-"+ids),
 		g.If(a.Pinned, g.Attr("data-pinned", "")),
+		// What the list's recency filter chips read (list_signals.go).
+		cardActivityAttrs(time.Now(), a.lastActive()),
+		g.If(waitTokens(a.Attention, a.AwaitingApproval) != "", g.Attr("data-wait", waitTokens(a.Attention, a.AwaitingApproval))),
 		// What the list's filter finds this card by (agents_filter.go).
 		cardFilterAttrs(agentFields(a), append([]string{
 			displayOr(a.DisplayName, a.Name), a.Name, a.Repo, agents.KindLabel(a.Kind), a.CCAccount, a.Status, "agent"},
@@ -309,7 +334,8 @@ func agentCard(a AgentCardView) g.Node {
 		),
 		// With a focus, it heads the card (cardFocusTitle): a popover trigger
 		// OUTSIDE the nav anchor, and the name below becomes its subtitle.
-		cardFocusTitle("agent-"+ids, a.Focus, cardReserve(a.Attention)),
+		cardFocusTitle("agent-"+ids, a.Focus, reserve),
+		g.If(long, cardLongTitle("agent-"+ids, "/agents/"+a.Name, name, cardHasFocusTitle(a.Focus), reserve)),
 		// The card body is the navigation surface: a REAL-load link to the detail
 		// page (hx-boost="false"). The card sits inside #agents-list, which carries
 		// hx-get/hx-target="#agents-list"/hx-swap; htmx attrs are INHERITED by
@@ -323,7 +349,9 @@ func agentCard(a AgentCardView) g.Node {
 			Href("/agents/"+a.Name),
 			hx("hx-boost", "false"),
 			cardSlot("body"),
-			Class(cardBodyClass(a.Focus, cardReserve(a.Attention))),
+			// A long name is in the title row above, so the anchor is named here.
+			g.If(long, g.Attr("aria-label", name)),
+			Class(bodyClass),
 			Div(
 				cardSlot("header"),
 				Class("flex flex-wrap items-center gap-2"),
@@ -340,17 +368,11 @@ func agentCard(a AgentCardView) g.Node {
 				// Its host's icon, beside its name (host_icons.go): a dispatched
 				// agent's host is the cluster.
 				clusterMark(),
-				Span(
+				g.If(!long, Span(
 					Class(cardNameClass(a.Focus)),
 					g.If(cardHasFocusTitle(a.Focus), g.Attr("data-card-subtitle", "")),
-					// markdownPlain, exactly as agentTitle on the detail page does. A
-					// task-derived display name routinely carries `**bold**` and `code`,
-					// and this rendered it RAW while the detail header rendered it as
-					// markup — one string, two answers, from the same click. Stripping on
-					// both surfaces is what makes them agree; see markdownPlain for why
-					// stripping was chosen over rendering markup here.
-					g.Text(markdownPlain(displayOr(a.DisplayName, a.Name))),
-				),
+					g.Text(name),
+				)),
 				g.If(a.Repo != "", chip("repo", a.Repo)),
 				// Only a non-default kind is labelled, so a gateway-only deployment's
 				// cards are unchanged. The account is a NAME, never a token.
@@ -445,6 +467,10 @@ func cardActivity(t time.Time) g.Node {
 	return Span(
 		g.Attr("data-card-active", ""),
 		Class("inline-flex items-center gap-1"),
+		// The recency dot, tinted on the operator's tmux idle-fade scale
+		// (list_signals.go). Its box is fixed (h-2 w-2), drawn with the label,
+		// so it never shifts anything in.
+		recencyDot(time.Now(), t),
 		Span(Class("text-muted"), g.Text("active")),
 		cardTime(t),
 		Span(Class("text-muted"), g.Text("ago")),
@@ -773,15 +799,37 @@ func AwaitingApprovalBadge() g.Node {
 // agent card keeps its status live (every 10s) on its own — without the list
 // re-rendering on a timer. No shared id (hx-target=this) so it's safe once per
 // card; the icon swaps in from GET /ui/agents/{id}/status.
+//
+// The poll carries what the CARD says about awaiting approval
+// (StatusPollPath's awaiting=): the card's data-wait was decided from it at
+// render time, and the poll is the first to see it change. When the server's
+// answer differs, the response raises AgentsAwaitingEvent and the list
+// re-renders — as a background refresh, so the hold and the "N new ↑" pill
+// apply to whatever the change moves.
 func cardStatusIcon(a AgentCardView) g.Node {
 	return Span(
-		hx("hx-get", "/ui/agents/"+strconv.FormatInt(a.ID, 10)+"/status"),
+		hx("hx-get", StatusPollPath(a.ID, a.AwaitingApproval)),
 		hx("hx-trigger", "load, every 10s"),
 		hx("hx-target", "this"),
 		hx("hx-swap", "innerHTML"),
 		statusIcon(a.Status),
 	)
 }
+
+// StatusPollPath is an agent card's status poll: GET /ui/agents/{id}/status,
+// with awaiting=1|0 saying whether the card was drawn awaiting approval.
+func StatusPollPath(id int64, awaiting bool) string {
+	v := "0"
+	if awaiting {
+		v = "1"
+	}
+	return "/ui/agents/" + strconv.FormatInt(id, 10) + "/status?awaiting=" + v
+}
+
+// AgentsAwaitingEvent is the HX-Trigger the status poll answers with when an
+// agent's awaiting-approval state differs from what its card was drawn with;
+// the Agents list re-renders on it (agentsListTrigger).
+const AgentsAwaitingEvent = "agents:awaiting"
 
 // statusLabel is the agent-facing word for a stored agent status.
 func statusLabel(status string) string {
@@ -802,7 +850,7 @@ func statusLabel(status string) string {
 // live: the queue moved, so the cards' counts may have. It is debounced
 // (delay:50ms) for the reason attentionBadgeTrigger gives: the sidebar badge
 // listens for the same event, so each one reaches this list twice.
-const agentsListTrigger = "load, agents:changed from:body, sse:agent.changed from:body, sse:chat.reply from:body, sse:attention_queue.changed from:body delay:50ms, muster:resync from:body"
+const agentsListTrigger = "load, agents:changed from:body, sse:agent.changed from:body, sse:chat.reply from:body, sse:attention_queue.changed from:body delay:50ms, muster:resync from:body, agents:awaiting from:body"
 
 // agentModalShell is the static (always-present, hidden) dispatch modal. Its
 // body is loaded on demand by the FAB so it stays out of the 4s poll cycle.

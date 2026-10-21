@@ -166,10 +166,27 @@ func mirrorCard(m MirrorCardView) g.Node {
 	f := mirrorFields(m)
 	status, kind, mode, state := f.Status, f.Kind, f.Mode, f.State
 	id := mirrorCardID(m)
+	// A name past cardTitleMax is drawn in a title row of its own, clamped,
+	// with a "…" button that opens it whole (cardLongTitle). The qualifier
+	// and the raw session name stay beside it, as in mirrorEntryTitle.
+	name := displayOr(m.Label, displayOr(m.Title, m.Session))
+	_, long := clampTitle(name)
+	reserve := cardReserve(m.Attention)
+	bodyClass := cardBodyClass(m.Focus, reserve)
+	var titleRow g.Node
+	if long {
+		bodyClass = titledBodyClass(reserve)
+		titleRow = cardLongTitle(id, MirrorCardHref(m), name, cardHasFocusTitle(m.Focus), reserve,
+			g.If(m.Qualifier != "", Span(g.Attr("data-mirror-qualifier", ""), g.Text(mirrorQualifierSep+m.Qualifier))),
+			g.If(m.Label != "" && m.Label != m.Session, Span(g.Attr("data-mirror-session", ""), Class("ml-1.5 text-xs text-muted"), g.Text(m.Session))))
+	}
 	return Article(
 		ID(id),
 		g.Attr("data-mirror-card", ""),
 		g.If(m.Pinned, g.Attr("data-pinned", "")),
+		// What the list's recency and waiting filter chips read (list_signals.go).
+		cardActivityAttrs(time.Now(), m.ActiveAt),
+		g.If(waitTokens(m.Attention, false) != "", g.Attr("data-wait", waitTokens(m.Attention, false))),
 		// What the list's filter finds this card by (agents_filter.go): its title
 		// ("Gold:8"), the title as shown — with its qualifier ("Gold:8 · laptop")
 		// — its raw tmux session name, its host, and what runs in it.
@@ -188,12 +205,15 @@ func mirrorCard(m MirrorCardView) g.Node {
 		// With a focus, it heads the card (cardFocusTitle): a popover trigger
 		// OUTSIDE the nav anchor, and the window's title below — with its muted
 		// session line — becomes its subtitle.
-		cardFocusTitle(id, m.Focus, cardReserve(m.Attention)),
+		cardFocusTitle(id, m.Focus, reserve),
+		titleRow,
 		A(
 			Href(MirrorCardHref(m)),
 			hx("hx-boost", "false"),
 			cardSlot("body"),
-			Class(cardBodyClass(m.Focus, cardReserve(m.Attention))),
+			// A long name is in the title row above, so the anchor is named here.
+			g.If(long, g.Attr("aria-label", mirrorQualified(name, m.Qualifier))),
+			Class(bodyClass),
 			Div(
 				cardSlot("header"),
 				Class("flex flex-wrap items-center gap-2"),
@@ -201,8 +221,8 @@ func mirrorCard(m MirrorCardView) g.Node {
 				g.If(m.Pinned, pinnedGlyph()),
 				// Its host's icon, beside its name (host_icons.go).
 				hostMark(m.Host, m.HostIcon),
-				g.If(!cardHasFocusTitle(m.Focus), mirrorEntryTitle(m.Label, m.Title, m.Session, m.Qualifier, cardTitleClass)),
-				g.If(cardHasFocusTitle(m.Focus), Span(g.Attr("data-card-subtitle", ""), Class("contents"),
+				g.If(!long && !cardHasFocusTitle(m.Focus), mirrorEntryTitle(m.Label, m.Title, m.Session, m.Qualifier, cardTitleClass)),
+				g.If(!long && cardHasFocusTitle(m.Focus), Span(g.Attr("data-card-subtitle", ""), Class("contents"),
 					mirrorEntryTitle(m.Label, m.Title, m.Session, m.Qualifier, cardSubtitleClass))),
 				g.If(m.Claude, Span(g.Attr("data-mirror-claude", ""), chip("kind", "Claude Code"))),
 				// What else runs there (a shell, opencode, another TUI): the
@@ -281,44 +301,24 @@ func mirroredMark(cardID, host string) g.Node {
 // mirroredIcon is the mirrored mark's screen glyph: mirrorBadge's, one size up.
 const mirroredIcon = `<svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>`
 
-// AgentsCardsWithMirrors is the Agents list: the viewer's PINNED entries
-// first, then the rest — and within each group the order the list already had:
-// agent cards (most recently active first, agents.SortByLastActivity), then
-// mirrored entries (mirror.Ordered). The empty state shows only when there
-// are neither.
+// AgentsCardsWithMirrors is the Agents list: ONE flat list of agent cards and
+// mirrored entries — the viewer's PINNED entries first, then the rest, each
+// group most recently active first (orderList, which states the whole rule).
+// The empty state shows only when there are neither.
 //
-// 🔴 A STABLE PARTITION, NOT A SORT, AND THIS IS THE ONE PLACE IT HAPPENS. It
-// moves pinned cards ahead without re-deciding anyone's order, so the
-// activity order GET /api/agents publishes and the hub's mirror.Ordered (whose
-// order is also its change detection) stay per-viewer-free. Every card stays a
-// direct <article> child of #agents-list — no wrapper, no divider article — so
-// the filter's `#agents-list > article` rule and its count still see each one
-// (agents_filter.go): a pinned card that does not match is hidden like any
-// other.
+// 🔴 THE PER-KIND ORDERS ARE INPUTS, NOT RE-DECIDED. agents.SortByLastActivity
+// (what GET /api/agents publishes) and the hub's mirror.Ordered (whose order is
+// also its change detection) stay per-viewer-free and keep deciding ties within
+// their own kind; orderList only interleaves them by activity and lifts pins.
+// Every card stays a direct <article> child of #agents-list — no wrapper, no
+// divider article — so the filter's `#agents-list > article` rule and its count
+// still see each one (agents_filter.go): a pinned card that does not match is
+// hidden like any other.
 func AgentsCardsWithMirrors(list []AgentCardView, mirrors []MirrorCardView) g.Node {
 	if len(list) == 0 && len(mirrors) == 0 {
 		return AgentsCards(nil)
 	}
-	var pinnedAgents, rest []AgentCardView
-	for _, a := range list {
-		if a.Pinned {
-			pinnedAgents = append(pinnedAgents, a)
-		} else {
-			rest = append(rest, a)
-		}
-	}
-	var pinnedMirrors, others []MirrorCardView
-	for _, m := range mirrors {
-		if m.Pinned {
-			pinnedMirrors = append(pinnedMirrors, m)
-		} else {
-			others = append(others, m)
-		}
-	}
-	return g.Group{
-		g.Group(g.Map(pinnedAgents, agentCard)), g.Group(g.Map(pinnedMirrors, mirrorCard)),
-		g.Group(g.Map(rest, agentCard)), g.Group(g.Map(others, mirrorCard)),
-	}
+	return g.Group(g.Map(orderList(list, mirrors), listCard))
 }
 
 // mirrorSessionTitle is a mirrored session's name as a list or page title: the

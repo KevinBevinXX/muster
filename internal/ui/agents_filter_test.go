@@ -115,13 +115,14 @@ func TestTheFilterHidesWithOneRulePerWordAndCountsWithTheSameSelector(t *testing
 	page := renderString(t, Page("agents", featuresAllOn))
 	script := scriptWith(t, page, "__musterAgentsFilter")
 	for name, want := range map[string]string{
-		"the rule hides a card lacking the term": `'#agents-list > article:not(' + sel(t) + '){display:none !important}'`,
-		"the count uses the same selector":       `list.querySelectorAll(':scope > article:not([data-held])' + ts.map(sel).join(''))`,
-		"a held arrival is hidden and uncounted": `'#agents-list > article[data-held]{display:none !important}'`,
-		"the terms are lower-cased and parsed":   `tokens(String(q || '').toLowerCase()).forEach(`,
-		"typing replaces the URL, never pushes":  `history.replaceState(history.state, '', next)`,
-		"it re-counts when the list settles":     `if (e.target && e.target.id === 'agents-list') settled();`,
-		"it remembers the text for the session":  `sessionStorage.setItem(KEY, q)`,
+		"the rule hides a card lacking the term":  `'#agents-list > article:not(' + sel(t) + '){display:none !important}'`,
+		"the count uses the same selector":        `list.querySelectorAll(':scope > article:not([data-held])' + curSel)`,
+		"the selector is the terms and the chips": `curSel = all_.map(sel).join('') + cs;`,
+		"a held arrival is hidden and uncounted":  `'#agents-list > article[data-held]{display:none !important}'`,
+		"the terms are lower-cased and parsed":    `tokens(String(q || '').toLowerCase()).forEach(`,
+		"typing replaces the URL, never pushes":   `history.replaceState(history.state, '', next)`,
+		"it re-counts when the list settles":      `if (e.target && e.target.id === 'agents-list') settled();`,
+		"it remembers the text for the session":   `sessionStorage.setItem(KEY, q)`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("%s: the filter script no longer contains %s", name, want)

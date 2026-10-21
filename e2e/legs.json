@@ -59,7 +59,8 @@
     "chief-runtimes.spec.ts": 12.0,
     "tests/agent-cards.spec.ts": 25.0,
     "tests/attention-delivery.spec.ts": 10.0,
-    "tests/host-icons.spec.ts": 20.0
+    "tests/host-icons.spec.ts": 20.0,
+    "tests/agents-list-ux.spec.ts": 60.0
   },
   "legs": {
     "1": [
@@ -85,7 +86,8 @@
       "tests/composer-menu.spec.ts",
       "tests/attention.spec.ts",
       "chief-runtimes.spec.ts",
-      "tests/agent-cards.spec.ts"
+      "tests/agent-cards.spec.ts",
+      "tests/agents-list-ux.spec.ts"
     ],
     "2": [
       "tests/provisioning-indicator.spec.ts",

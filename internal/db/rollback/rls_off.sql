@@ -154,6 +154,12 @@ BEGIN
         ALTER TABLE public.attention_asks DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.attention_asks ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0037 (jobs), when this schema has it; same reason as 0011.
+    IF to_regclass('public.jobs') IS NOT NULL THEN
+        ALTER TABLE public.jobs NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.jobs DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.jobs ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
 END
 $$;
 

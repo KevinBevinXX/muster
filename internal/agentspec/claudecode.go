@@ -357,3 +357,19 @@ func podRepo(a agents.Agent) (provision.Repo, error) {
 		Path:   path.Join(ClaudeCodeWorkspacePath, name),
 	}, nil
 }
+
+// ClaudeCodeWorkingDir is the directory a claude-code agent's CLI works in: its
+// repository's checkout when the row names one, else the bare workspace. With a
+// repository it is the CCD_WORKSPACE claudeCodeEnv writes, derived by the same
+// function, so a caller resolving a path "in the agent's workspace" cannot land
+// somewhere the CLI is not.
+func ClaudeCodeWorkingDir(a agents.Agent) (string, error) {
+	repo, err := podRepo(a)
+	if err != nil {
+		return "", err
+	}
+	if repo.Path == "" {
+		return ClaudeCodeWorkspacePath, nil
+	}
+	return repo.Path, nil
+}

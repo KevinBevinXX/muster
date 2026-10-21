@@ -98,8 +98,9 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - attention_asks (0025, the attention queue's explicit asks).
 //   - agent_focus (0020, each session's focus).
 //   - uploads (0024, the composer's attached files).
+//   - jobs (0037, the machine job API's jobs).
 var ownedAfter0006 = []string{"agent_focus", "agent_focus_history", "attention_asks", "cc_account_marks", "flow_jobs", "flow_requests", "flow_runner_tokens",
-	"mirror_tokens", "pins", "plugin_messages", "plugin_reply_drafts", "plugins", "push_preferences",
+	"jobs", "mirror_tokens", "pins", "plugin_messages", "plugin_reply_drafts", "plugins", "push_preferences",
 	"push_subscriptions", "recents", "send_queue", "session_routes", "uploads", "user_credentials"}
 
 // rlsTables is every owned table today: ownedTables plus ownedAfter0006.
@@ -152,6 +153,8 @@ var wantForeignKeys = []string{
 	"flow_requests|flow_requests_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL",
 	"flow_requests|flow_requests_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"flow_runner_tokens|flow_runner_tokens_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"jobs|jobs_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL",
+	"jobs|jobs_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"mirror_tokens|mirror_tokens_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"note_attachments|note_attachments_note_owner_fkey|FOREIGN KEY (note_id, owner_id) REFERENCES notes(id, owner_id) ON DELETE CASCADE",
 	"note_attachments|note_attachments_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",

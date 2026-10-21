@@ -268,6 +268,7 @@ var isolationClasses = map[string]routeClass{
 	"POST /connectors/{name}/rotate":           classParam,
 	"POST /tasks/{id}/comments":                classParam,
 	"POST /tasks/{id}/edit":                    classParam,
+	"POST /tasks/{id}/complete":                classParam,
 	"POST /tasks/{id}/tags":                    classParam,
 	"POST /ui/connector-requests/{id}/approve": classParam,
 	"POST /ui/connector-requests/{id}/deny":    classParam,
@@ -293,6 +294,9 @@ var isolationClasses = map[string]routeClass{
 	// Retrying an unconfirmed plugin message (plugin_retry.go), hook tier, as its owner.
 	"POST /api/plugins/messages/{id}/retry": classAdmin,
 	"POST /api/tasks/{id}/comments":         classAdmin,
+	// The machine job API (jobs.go): the service tier, acting as user 1.
+	"GET /api/jobs/{id}": classAdmin,
+	"POST /api/jobs":     classAdmin,
 
 	"DELETE /agent/approvals/{id}": classAgentToken,
 	"GET /agent/approvals/{id}":    classAgentToken,
@@ -1293,7 +1297,7 @@ func (w *isoWorld) snapshot() map[string]string {
 	for _, tbl := range []string{"notes", "note_comments", "note_attachments", "task_sessions", "agents",
 		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "github_connection", "mirror_tokens",
 		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens", "push_subscriptions", "push_preferences", "flow_requests",
-		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "recents", "send_queue", "agent_focus", "agent_focus_history", "session_routes", "uploads", "attention_asks"} {
+		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "recents", "send_queue", "agent_focus", "agent_focus_history", "session_routes", "uploads", "attention_asks", "jobs"} {
 		var js string
 		if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t.id)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
 			// task_sessions/github_connection have no `id` ordering column in every
@@ -1431,7 +1435,14 @@ var sideEffectControlled = map[string]string{
 	// TestTheSignedLinkServesTheFileAndNothingElse (uploads_test.go): the SAME
 	// route with A's valid signature serves A's bytes, and unsigned, tampered,
 	// expired or revoked it is that 404.
-	"GET /f/{id}":                           "a signed link (uploads.go): its credential is the HMAC no walker holds; controlled in uploads_test.go",
+	"GET /f/{id}": "a signed link (uploads.go): its credential is the HMAC no walker holds; controlled in uploads_test.go",
+	// 🔴 A DOOR NO WALKER HOLDS, AS GET /f/{id}: the job API is the SERVICE tier
+	// only (requireServiceToken), which acts as user 1, so no credential of a
+	// member — A's included — opens it, and A's answer is the ghost's 401. Its
+	// owner isolation is pinned at the store, where it is enforced:
+	// TestThePGStoreDedupsAnIdempotencyKeyPerOwner (internal/jobs) reads another
+	// owner's job as ErrNotFound and refuses a job on another owner's agent.
+	"GET /api/jobs/{id}":                    "the service tier only (user 1); per-owner isolation controlled in internal/jobs's pg tests",
 	"POST /agents/{id}/stop":                "as start",
 	"DELETE /agents/{id}":                   "as start (Destroy)",
 	"POST /agents/sessions/{sid}/read":      "A's chat_sessions.read_at moved; the mutation leg shows B's did not",

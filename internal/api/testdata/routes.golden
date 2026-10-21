@@ -59,6 +59,7 @@ GET /api/agents/{name}/messages
 GET /api/directories
 GET /api/flows/jobs
 GET /api/flows/jobs/{id}
+GET /api/jobs/{id}
 GET /api/openrouter/models
 GET /api/projects
 GET /api/push/vapid-public-key
@@ -174,6 +175,7 @@ POST /agents/{name}/send
 POST /api/agents/{name}/messages
 POST /api/chief/replace
 POST /api/flows/jobs
+POST /api/jobs
 POST /api/plugins/messages/{id}/retry
 POST /api/push/subscribe
 POST /api/push/unsubscribe
@@ -234,6 +236,7 @@ POST /send-queue/{id}/send-now/confirm
 POST /tasks
 POST /tasks/merge
 POST /tasks/{id}/comments
+POST /tasks/{id}/complete
 POST /tasks/{id}/edit
 POST /tasks/{id}/tags
 POST /transcribe

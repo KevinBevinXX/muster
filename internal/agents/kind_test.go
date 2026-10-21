@@ -15,7 +15,7 @@ import (
 )
 
 // TestKindsMatchTheMigrationsCheck pins Kinds to the set the NEWEST migration
-// that re-creates agents_kind_check admits (0003 created it, 0037 widened it for
+// that re-creates agents_kind_check admits (0003 created it, 0038 widened it for
 // hermes), so a kind added in Go and not in the schema (or the reverse) reddens
 // here instead of as a CHECK violation at a dispatch.
 func TestKindsMatchTheMigrationsCheck(t *testing.T) {
@@ -39,7 +39,7 @@ func TestKindsMatchTheMigrationsCheck(t *testing.T) {
 	if m == nil {
 		t.Fatal("instrument check: no migration re-creates agents_kind_check with an IN-list")
 	}
-	if !strings.HasSuffix(newest, "0037_agent_kind_hermes.sql") {
+	if !strings.HasSuffix(newest, "0038_agent_kind_hermes.sql") {
 		t.Fatalf("the newest agents_kind_check is in %s; update this test's expectation with the migration that moved it", newest)
 	}
 	var sqlKinds []string
@@ -129,7 +129,7 @@ func TestPGStoreKindAndAccountRoundTrip(t *testing.T) {
 		t.Fatalf("kindless round trip: kind %q account %q, %v", got.Kind, got.CCAccount, err)
 	}
 
-	// The hermes kind (0037): stored with no account, and refused WITH one
+	// The hermes kind (0038): stored with no account, and refused WITH one
 	// (0003's agents_cc_account_matches_kind holds for it as for gateway).
 	hermes, err := store.Create(ctx, Agent{Name: "kind-hermes-" + stamp, Namespace: "ns", Status: StatusProvisioning, Kind: KindHermes})
 	if err != nil {
