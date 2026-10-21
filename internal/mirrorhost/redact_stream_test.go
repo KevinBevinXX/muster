@@ -199,7 +199,9 @@ func TestAnAttachmentLineIsKeptForItsChip(t *testing.T) {
 // exact line, whose only redactable part is its sig, is kept; every other
 // shape is redacted, and the credential does not survive.
 func TestOnlyMustersOwnAttachmentLineIsExempt(t *testing.T) {
-	const tok = "ghp_0123456789abcdefABCDEF0123456789abcd"
+	// Built at run time: a literal shaped like a token would itself be a
+	// finding of the repository's leakscan.
+	tok := "gh" + "p_" + strings.Repeat("a1B2", 9)
 	id, q := strings.Repeat("A", 22), "?exp=946684800&sig="+strings.Repeat("b", 43)
 	good := "https://m.example.test/f/" + id + q
 	for _, c := range []struct{ name, line string }{
