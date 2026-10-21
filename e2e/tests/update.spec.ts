@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { hookToken, updatePort, versionA, versionB } from '../lib/env';
+import { hookToken, updatePort, versionA, versionB, versionC } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 
 // A deploy, end to end: build A serves the page, build B replaces it on the
@@ -61,6 +61,12 @@ async function deployB(): Promise<void> {
   server = await startServer(versionB, updatePort);
 }
 
+// The waiting worker's state, or null when nothing waits.
+const waitingState = `(async () => {
+  const reg = await navigator.serviceWorker.getRegistration();
+  return reg && reg.waiting ? reg.waiting.state : null;
+})()`;
+
 const checkForUpdate = async () => {
   const reg = await navigator.serviceWorker.getRegistration();
   await reg!.update();
@@ -92,20 +98,27 @@ test('a new build is offered, waits for Reload, and Reload takes it exactly once
   });
 
   await expect(page.locator('#sw-update-toast')).toBeVisible();
-  // 🔴 The new worker WAITS: the page is still controlled by build A. (A worker
-  // that called skipWaiting() at install would already be in control here.)
-  await page.waitForTimeout(500);
+  // 🔴 The new worker WAITS: the page is still controlled by build A, and the
+  // registration still holds B as an installed, waiting worker. (A worker that
+  // called skipWaiting() at install would be activating, not waiting.)
+  expect(await page.evaluate(waitingState)).toBe('installed');
   expect(await page.evaluate(controllerBuild)).toBe(versionA);
 
   const loadsBefore = Number(await page.evaluate(() => sessionStorage.getItem('loads')));
+  // 🔴 THE LOAD EVENT IS ARMED BEFORE THE CLICK. Polling the controller and
+  // then waitForLoadState('load') raced: the controller turns B in the OLD
+  // document (controllerchange fires before location.reload() navigates), the
+  // old document is already "loaded", and the next evaluate then ran into the
+  // navigation — "Execution context was destroyed". Waiting for the NEW
+  // document's load event cannot see the old one.
+  const reloaded = page.waitForEvent('load', { timeout: 15_000 });
   await page.locator('[data-sw-reload]').click();
-  // The reload this click causes destroys the page's context mid-evaluate;
-  // that is the expected event, so a destroyed context reads as "not yet".
-  await expect
-    .poll(() => page.evaluate(controllerBuild).catch(() => null), { timeout: 15_000 })
-    .toBe(versionB);
-  await page.waitForLoadState('load');
-  await page.waitForTimeout(1500);
+  await reloaded;
+  expect(await page.evaluate(controllerBuild)).toBe(versionB);
+  // No sleep to "let a second reload happen": once the page is controlled by B
+  // with NOTHING waiting, no reload source is left (the fallback timer died
+  // with the old document, and no further controllerchange can come).
+  expect(await page.evaluate(waitingState)).toBeNull();
   expect(Number(await page.evaluate(() => sessionStorage.getItem('loads'))), 'exactly one reload').toBe(loadsBefore + 1);
   await expect(page.locator('#sw-update-toast')).toBeHidden();
   // Per-build cache naming: the new build's shell cache replaced the old one.
@@ -301,26 +314,298 @@ test('the first resume after a load checks for an update', async ({ page }) => {
 
 // N1, the throttle: after a check that ran, resumes are ignored for a minute,
 // and an ignored resume does not push the next check back.
+//
+// ⚠ COUNTED, NOT SLEPT ON. This used to prove "throttled" by waiting 1–3 s and
+// seeing no toast — a sleep standing in for an absence. The resume handler
+// calls reg.update() synchronously, so wrapping update() and reading the count
+// right after the dispatch answers "did this resume check?" exactly.
 test('a resume checks for an update at most once a minute', async ({ page }) => {
   await page.clock.install();
+  await page.addInitScript(() => {
+    const w = window as unknown as { __updates: number; __lastUpdate: Promise<unknown> };
+    w.__updates = 0;
+    w.__lastUpdate = Promise.resolve();
+    const orig = ServiceWorkerRegistration.prototype.update;
+    ServiceWorkerRegistration.prototype.update = function (this: ServiceWorkerRegistration) {
+      w.__updates++;
+      const p = orig.call(this);
+      w.__lastUpdate = p.catch(() => undefined);
+      return p;
+    };
+  });
   server = await startServer(versionA, updatePort);
   const origin = `http://localhost:${updatePort}`;
   await page.goto(origin + '/tasks');
   await waitControlled(page);
   const toast = page.locator('#sw-update-toast');
-  const resume = () => page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  // Dispatches a resume and returns how many checks have run, once the last
+  // one has settled.
+  const resume = () =>
+    page.evaluate(async () => {
+      const w = window as unknown as { __updates: number; __lastUpdate: Promise<unknown> };
+      document.dispatchEvent(new Event('visibilitychange'));
+      await w.__lastUpdate;
+      return w.__updates;
+    });
 
-  await resume(); // a check runs (against A: nothing new)
-  await page.waitForTimeout(1000);
+  expect(await resume(), 'the first resume checks (against A: nothing new)').toBe(1);
   await deployB();
-  await resume(); // under a minute since that check: throttled
-  await page.waitForTimeout(3000);
-  await expect(toast).toBeHidden();
+  expect(await resume(), 'under a minute since that check: throttled').toBe(1);
   await page.clock.fastForward(40_000);
-  await resume(); // still under a minute: throttled, and must NOT reset the clock
-  await page.waitForTimeout(1000);
+  expect(await resume(), 'still under a minute: throttled, and must NOT reset the clock').toBe(1);
   await expect(toast).toBeHidden();
   await page.clock.fastForward(25_000);
-  await resume(); // over a minute since the last check that RAN
+  expect(await resume(), 'over a minute since the last check that RAN').toBe(2);
   await expect(toast).toBeVisible();
+});
+
+// 🔴 A REGRESSION TEST (operator report: "the reload button is showing but
+// doesn't reload on click"). Two clients of one origin — a second tab, or the
+// installed app beside a browser tab — both offer the update. The first one's
+// Reload activates B for EVERY client. The second page is then an old document
+// under the new worker, with its toast still up; its Reload used to post
+// SKIP_WAITING to the worker it captured (now the ACTIVE one, so a no-op), wait
+// for a controllerchange that never came, and disable itself: a dead tap.
+// It must load the new build instead. Run on the real input of each viewport:
+// a touch tap on the phone, a mouse click on the desktop.
+const viewports = [
+  { name: 'phone 390×844', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true }, tap: true },
+  { name: 'desktop 1280×800', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false }, tap: false },
+];
+for (const vp of viewports) {
+  test.describe(vp.name, () => {
+    test.use(vp.use);
+
+    test('another client took the update: Reload here still lands on the new build', async ({ context }) => {
+      server = await startServer(versionA, updatePort);
+      const origin = `http://localhost:${updatePort}`;
+      await context.addInitScript(() => {
+        sessionStorage.setItem('loads', String(Number(sessionStorage.getItem('loads') || '0') + 1));
+      });
+      const first = await context.newPage();
+      const second = await context.newPage();
+      await first.goto(origin + '/tasks');
+      await waitControlled(first);
+      await second.goto(origin + '/agents');
+      await waitControlled(second);
+      await deployB();
+      await first.evaluate(checkForUpdate);
+      await expect(first.locator('#sw-update-toast')).toBeVisible();
+      await expect(second.locator('#sw-update-toast')).toBeVisible();
+
+      // The first client takes the update.
+      await first.locator('[data-sw-reload]').click();
+      await expect.poll(() => first.evaluate(controllerBuild).catch(() => null), { timeout: 15_000 }).toBe(versionB);
+      // Premise: the second page is now controlled by B, nothing waits, and its
+      // toast is still offering a reload (it IS still build A's document).
+      await expect.poll(() => second.evaluate(controllerBuild)).toBe(versionB);
+      expect(await second.evaluate(waitingState)).toBeNull();
+      await expect(second.locator('#sw-update-toast')).toBeVisible();
+
+      const before = Number(await second.evaluate(() => sessionStorage.getItem('loads')));
+      // 🔴 THE PAGE CLOCK IS PAUSED, so Reload's timed fallback cannot fire:
+      // the reload below must come from Reload seeing that nothing waits. (The
+      // fallback has a test of its own, next.)
+      await second.clock.install();
+      await second.clock.pauseAt(Date.now() + 1000);
+      const reloaded = second.waitForEvent('load', { timeout: 10_000 });
+      const button = second.locator('[data-sw-reload]');
+      if (vp.tap) await button.tap();
+      else await button.click();
+      await reloaded;
+      expect(Number(await second.evaluate(() => sessionStorage.getItem('loads'))), 'the tap reloaded the page').toBe(before + 1);
+      expect(await second.evaluate(controllerBuild)).toBe(versionB);
+      await expect(second.locator('#sw-update-toast')).toBeHidden();
+    });
+  });
+}
+
+// The fallback: a waiting worker that is told SKIP_WAITING but never takes
+// control (here the message is dropped, so no controllerchange can come) must
+// not leave Reload dead. The page clock is paused, so it is the fallback timer
+// — and nothing else — that reloads, and only once the clock passes it.
+test('Reload still reloads when the waiting worker never takes control', async ({ page }) => {
+  server = await startServer(versionA, updatePort);
+  const origin = `http://localhost:${updatePort}`;
+  await page.addInitScript(() => {
+    sessionStorage.setItem('loads', String(Number(sessionStorage.getItem('loads') || '0') + 1));
+    const orig = ServiceWorker.prototype.postMessage;
+    ServiceWorker.prototype.postMessage = function (this: ServiceWorker, msg: unknown, ...rest: unknown[]) {
+      if (msg && (msg as { type?: string }).type === 'SKIP_WAITING') {
+        (window as unknown as { __skipDropped: number }).__skipDropped = ((window as unknown as { __skipDropped: number }).__skipDropped || 0) + 1;
+        return;
+      }
+      return (orig as (...a: unknown[]) => void).call(this, msg, ...rest);
+    };
+  });
+  await page.goto(origin + '/tasks');
+  await waitControlled(page);
+  await deployB();
+  await page.evaluate(checkForUpdate);
+  await expect(page.locator('#sw-update-toast')).toBeVisible();
+  expect(await page.evaluate(waitingState)).toBe('installed');
+
+  await page.clock.install();
+  await page.clock.pauseAt(Date.now() + 1000);
+  const before = Number(await page.evaluate(() => sessionStorage.getItem('loads')));
+  await page.locator('[data-sw-reload]').click();
+  // CONTROL: Reload really asked the waiting worker (and the ask was dropped).
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __skipDropped?: number }).__skipDropped ?? 0)).toBe(1);
+  expect(Number(await page.evaluate(() => sessionStorage.getItem('loads'))), 'nothing reloads while the clock stands still').toBe(before);
+  const reloaded = page.waitForEvent('load', { timeout: 10_000 });
+  await page.clock.runFor(3_000);
+  await reloaded;
+  expect(Number(await page.evaluate(() => sessionStorage.getItem('loads'))), 'the fallback reloaded once').toBe(before + 1);
+});
+
+// PLACEMENT (operator report: "it's blocking the UI, move it higher up"; the
+// operator then chose "a compact pill in the top corner"). The pill sits in
+// the top-right corner and covers NO control — on every page,
+// at a phone in both orientations and on a desktop, and with the sidebar open.
+// Offered for real (a deploy), so it is placed by the code that places it in
+// production.
+//
+// 🔴 "COVERS" IS ASKED OF THE BROWSER, NOT COMPUTED FROM BOXES. Every
+// interactive element whose box intersects the pill is probed with
+// elementFromPoint across the intersection: if the pill (or its child) is what
+// a tap there would hit, the control is covered. An open sidebar that slides
+// OVER the pill therefore passes — its links are what the tap reaches — and a
+// pill stacked over them fails. (This used to check only fixed/sticky elements
+// and the composer, while its title said "covers no control".)
+const coverageJS = `(() => {
+  const t = document.getElementById('sw-update-toast');
+  const tb = t.getBoundingClientRect();
+  const header = document.querySelector('header');
+  const sel = 'a, button, input, select, textarea, [role=button], [tabindex]';
+  const covered = [];
+  let intersecting = 0;
+  for (const e of document.querySelectorAll(sel)) {
+    if (e === t || t.contains(e) || e.contains(t)) continue;
+    const b = e.getBoundingClientRect();
+    const l = Math.max(b.left, tb.left), r = Math.min(b.right, tb.right);
+    const top = Math.max(b.top, tb.top), bot = Math.min(b.bottom, tb.bottom);
+    if (r - l < 1 || bot - top < 1) continue;
+    intersecting++;
+    let hitPill = false;
+    for (const fx of [0.1, 0.5, 0.9]) for (const fy of [0.1, 0.5, 0.9]) {
+      const h = document.elementFromPoint(l + (r - l) * fx, top + (bot - top) * fy);
+      if (h && (h === t || t.contains(h))) hitPill = true;
+    }
+    if (hitPill) covered.push(e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') + ' "' + (e.textContent || '').trim().slice(0, 24) + '"');
+  }
+  return { top: tb.top, right: tb.right, width: tb.width, height: tb.height, vw: innerWidth, vh: innerHeight,
+    headerBottom: header ? header.getBoundingClientRect().bottom : 0, intersecting, covered };
+})()`;
+
+const placements = [
+  { name: 'phone 390×844', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true }, sidebar: true, sidebarReachesPill: true },
+  // At 844 wide the 18rem sidebar ends far left of a right-anchored pill.
+  { name: 'phone landscape 844×390', use: { viewport: { width: 844, height: 390 }, hasTouch: true, isMobile: true }, sidebar: true, sidebarReachesPill: false },
+  // The desktop sidebar is always open (lg:), so every page above already had it.
+  { name: 'desktop 1280×800', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false }, sidebar: false, sidebarReachesPill: false },
+];
+for (const vp of placements) {
+  test.describe(`placement ${vp.name}`, () => {
+    test.use(vp.use);
+
+    test('the update pill sits in the top-right corner and covers no control', async ({ page }) => {
+      server = await startServer(versionA, updatePort);
+      const origin = `http://localhost:${updatePort}`;
+      await page.goto(origin + '/tasks');
+      await waitControlled(page);
+      await deployB();
+      await page.evaluate(checkForUpdate);
+      const pill = page.locator('#sw-update-toast');
+      let sidebarIntersections = 0;
+      for (const path of ['/', '/tasks', '/agents', '/agents/docs-sweeper']) {
+        // A full load re-offers the waiting update from the registration check.
+        await page.goto(origin + path);
+        await expect(pill).toBeVisible();
+        await page.waitForLoadState('networkidle');
+        const r = await page.evaluate(coverageJS);
+        expect(r.height, `CONTROL on ${path}: the pill was really laid out`).toBeGreaterThan(20);
+        expect(r.width, `on ${path}: a compact pill, not a bar`).toBeLessThan(220);
+        expect(r.right, `on ${path}: anchored to the right edge`).toBeGreaterThan(r.vw - 32);
+        // In the top corner: under the safe-area inset (0 here), in the top
+        // half. Whether that is IN the header's empty right end or below the
+        // header is the placement's choice; covering a control never is.
+        expect(r.top, `on ${path}: under the safe-area inset`).toBeGreaterThanOrEqual(0);
+        expect(r.top + r.height, `on ${path}: in the top half`).toBeLessThan(r.vh / 2);
+        console.log(`placement ${vp.name} ${path}: top=${r.top} headerBottom=${r.headerBottom} width=${r.width}`);
+        expect(r.covered, `on ${path}: covers no control`).toEqual([]);
+        if (vp.sidebar) {
+          await page.click('#sidebar-open');
+          await expect(page.locator('#sidebar a[data-tab="tasks"]')).toBeVisible();
+          // Let the slide-in finish: the probe reads where things ARE.
+          await page.locator('#sidebar').evaluate((el) => Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished)));
+          const s = await page.evaluate(coverageJS);
+          sidebarIntersections += s.intersecting;
+          expect(s.covered, `on ${path} with the sidebar open: covers no control`).toEqual([]);
+          await page.keyboard.press('Escape');
+        }
+      }
+      if (vp.sidebarReachesPill) {
+        // CONTROL: the open sidebar really overlaps the pill somewhere, so the
+        // "slides over it" case was exercised rather than vacuously passed.
+        expect(sidebarIntersections, 'CONTROL: the open sidebar overlapped the pill').toBeGreaterThan(0);
+      }
+      // The chat page really had its composer.
+      await expect(page.locator('#chat-input')).toBeVisible();
+    });
+  });
+}
+
+test.describe('the pill, on a phone', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  // Showing the pill moves nothing: it is placed while invisible, then shown.
+  test('offering the update causes no layout shift', async ({ page }) => {
+    server = await startServer(versionA, updatePort);
+    const origin = `http://localhost:${updatePort}`;
+    await page.goto(origin + '/tasks');
+    await waitControlled(page);
+    await deployB();
+    await page.evaluate(checkForUpdate);
+    const pill = page.locator('#sw-update-toast');
+    await expect(pill).toBeVisible();
+    await page.waitForLoadState('networkidle');
+    const shift = await page.evaluate(async () => {
+      const t = document.getElementById('sw-update-toast')!;
+      t.hidden = true;
+      let total = 0;
+      const po = new PerformanceObserver((l) => { for (const e of l.getEntries()) total += (e as unknown as { value: number }).value; });
+      po.observe({ type: 'layout-shift', buffered: false });
+      // htmx:load is what re-offers a waiting update after a swap.
+      document.body.dispatchEvent(new Event('htmx:load', { bubbles: true }));
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      await new Promise((r) => setTimeout(r, 0));
+      po.disconnect();
+      return { total, shown: !t.hidden };
+    });
+    expect(shift.shown, 'CONTROL: the pill was offered again').toBe(true);
+    expect(shift.total).toBe(0);
+  });
+
+  // Dismissible, and a dismissal is for THAT update: an in-app navigation does
+  // not re-offer it, but a NEWER build (a third deploy) is offered again.
+  test('a dismissed update stays dismissed, and a newer build is offered again', async ({ page }) => {
+    server = await startServer(versionA, updatePort);
+    const origin = `http://localhost:${updatePort}`;
+    await page.goto(origin + '/tasks');
+    await waitControlled(page);
+    await deployB();
+    await page.evaluate(checkForUpdate);
+    const pill = page.locator('#sw-update-toast');
+    await expect(pill).toBeVisible();
+    await page.locator('[data-sw-dismiss]').tap();
+    await expect(pill).toBeHidden();
+    await page.evaluate(() => document.body.dispatchEvent(new Event('htmx:load', { bubbles: true })));
+    await expect(pill, 'the dismissed update is not re-offered by an in-app navigation').toBeHidden();
+
+    // A third build: B is replaced in the waiting slot by C, which is offered.
+    await server!.stop();
+    server = await startServer(versionC, updatePort);
+    await page.evaluate(checkForUpdate);
+    await expect(pill, 'a newer build is offered after a dismissal').toBeVisible();
+  });
 });

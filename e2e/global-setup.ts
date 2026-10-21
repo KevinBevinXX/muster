@@ -2,7 +2,7 @@
 // shared server, and saves a signed-in browser state. Returns the teardown.
 import { chromium, FullConfig } from '@playwright/test';
 import fs from 'node:fs';
-import { authState, baseURL, dsn, password, port, requireFull, stateDir, versionA, versionB, versionTerm } from './lib/env';
+import { authState, baseURL, dsn, password, port, requireFull, stateDir, versionA, versionB, versionC, versionTerm } from './lib/env';
 import { buildServer, goRun, startServer } from './lib/server';
 
 export default async function globalSetup(_config: FullConfig) {
@@ -20,6 +20,7 @@ export default async function globalSetup(_config: FullConfig) {
 
   buildServer(versionA);
   buildServer(versionB);
+  buildServer(versionC);
   buildServer(versionTerm, ['e2eterm']);
   goRun('./cmd/muster-migrate', { DATABASE_URL: dsn });
   goRun('./e2e/seed', { DATABASE_URL: dsn });

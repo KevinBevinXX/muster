@@ -194,4 +194,6 @@ export const listUxPort = port + 137;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
+// A third build: the update spec's "a newer build after a dismissal" case.
+export const versionC = 'e2e-c';
 export const versionTerm = 'e2e-term';
