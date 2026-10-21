@@ -107,9 +107,11 @@ func draftAttrs(key, note string) g.Node {
 // window.musterDraft once; every copy then binds the boxes it finds that are
 // not bound yet, so a box swapped in later is covered.
 //
-// 🔴 IT RUNS RIGHT AFTER THE BOX'S FORM, BEFORE THE PAGE PAINTS IT EMPTY: a
-// restored text sizes the box (composer_fit.go) in the same task that draws
-// it, so restoring is not a layout shift (e2e/tests/cls.spec.ts measures it).
+// 🔴 RESTORING IS NOT A LAYOUT SHIFT: a restored text is put in the box at the
+// height the box already has (it scrolls inside), and the box grows to it only
+// on the person's first focus or keystroke — input, which CLS excludes. That
+// holds whether or not the browser painted the box before this script ran
+// (e2e/tests/cls.spec.ts measures it).
 //
 // A send clears the draft through window.musterDraft.sent(box), which the
 // senders (mirrorComposerScript, agentChatScript) call once the server — or
@@ -212,9 +214,25 @@ func composerDraftScript() g.Node {
       if (!el.value) {
         var d = read(key);
         if (d && d.t) {
+          // 🔴 A RESTORED DRAFT DOES NOT GROW THE BOX UNTIL IT IS TOUCHED. The box
+          // is held at the height it has now (it scrolls inside), and let grow
+          // on its first focus or keystroke — the person's own input, so the
+          // growth is not a layout shift. Growing it here, at load, shifted the
+          // page whenever the browser had already painted the box: a race with
+          // the first paint (measured 0.0104 on the Terminal view and 0.0131
+          // on an agent's chat at 1280×800, under load; 0 otherwise).
+          var h = el.offsetHeight;
+          if (h > 0) el.style.maxHeight = h + 'px';
           el.value = d.t;
           el.setAttribute('data-draft-restored', '');
-          if (window.musterComposerFit) window.musterComposerFit(el);
+          var grow = function () {
+            el.removeEventListener('focus', grow);
+            el.removeEventListener('input', grow);
+            el.style.maxHeight = '';
+            if (window.musterComposerFit) window.musterComposerFit(el);
+          };
+          el.addEventListener('focus', grow);
+          el.addEventListener('input', grow);
         }
       }
       el.addEventListener('input', function () { later(el); });
