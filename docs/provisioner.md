@@ -258,14 +258,7 @@ Delete the task stays as it was; reopen it on its card.
 Neither door writes an audit row for the destroy: an `agent_destroy` call's
 host and session are in muster's server log only.
 
-**A task becoming `complete` STOPS the chief's agent on it** — the provisioner's
-`Stop`, the same call as the Agents page's Stop, never `Destroy`. Only the agent
-the task's latest, unreleased chief start made, only while its stored status is
-live (pending, provisioning, running), and only when its row is still bound to
-the task; agents you started yourself are left alone, and `ready_for_review`
-stops nothing. It runs in the background after the status write, and a failed
-stop is logged and leaves the write standing. A stop releases nothing: the
-chief's one start on the task stays spent (unlike the destroy above).
+A task becoming `complete` **stops** (never destroys) the agent the chief started for it: see [plugins.md](plugins.md#completing-a-task-stops-the-chiefs-agent).
 
 ## The chief
 

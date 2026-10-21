@@ -91,9 +91,9 @@ const (
 // 🔴 ONE SIDE EFFECT LIVES HERE, AND ONLY ONE: a write that LANDED with status
 // `complete` stops the agent the chief started for the task
 // (stopChiefAgentOnComplete). It is here, not in the callers, because this is
-// the funnel every writer passes — four of them can set `complete`
-// (expectedCompleteWriters) — and a copy per caller is a place for the next
-// complete-writer to forget it. A failed write stops nothing.
+// the funnel every writer passes — four of them can set `complete` — and a copy
+// per caller is a place for the next complete-writer to forget it. A failed
+// write stops nothing. TestTheCompleteStopIsOnTheStatusFunnel pins the call here.
 //
 // An empty writer is not silently accepted-as-fine: notes.WithWriter refuses to
 // store it, so the write logs `writer=UNLABELLED` rather than an empty field.

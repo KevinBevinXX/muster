@@ -31,8 +31,9 @@ import (
 //
 // 🔴 IT RUNS FROM setNoteStatus, THE ONE PLACE IN THIS PACKAGE A TASK STATUS IS
 // WRITTEN (task_status_ledger_test.go pins that), so no writer of `complete` can
-// bypass it. TestTheCompleteStopIsOnTheStatusFunnel pins the call's position;
-// expectedCompleteWriters names which writers can set `complete` at all.
+// bypass it. TestTheCompleteStopIsOnTheStatusFunnel pins the call's position,
+// and TestEveryCompleteWriterStopsTheChiefsAgent drives each writer that can
+// set `complete` through its own handler.
 // ---------------------------------------------------------------------------
 
 // stopChiefAgentOnComplete stops the agent the chief's latest, unreleased start

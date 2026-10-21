@@ -400,8 +400,8 @@ Each refusal has its own sentence, in this order:
 10. **5** of the agents the chief started are still live (pending,
    provisioning or running), counting a start from the last 10 minutes whose
    agent is not recorded yet. Live is the agent row's **stored** status; a
-   stopped agent does not count. **Completing a task stops the agent the
-   chief started for it** (see below), so it frees its slot.
+   stopped agent does not count, and completing a task stops the chief's
+   agent on it ([below](#completing-a-task-stops-the-chiefs-agent)).
 11. The chief started **10** agents in the last 24 hours.
 
 A start that passed every check is recorded (a `task.chief_dispatch` audit row,
@@ -413,21 +413,6 @@ spends the day's unit and the task's one start. That includes a claude-code
 start whose account pool has no usable account: the pool is asked only at the
 create. The agent's id is recorded beside it (`task.chief_dispatch_agent`); the
 caps are counted from those rows.
-
-**A task that becomes `complete` stops the chief's agent on it.** Whichever
-path sets it — the task card, **Mark complete**, `PATCH /api/tasks/{id}/status`,
-or a merge retiring the loser — muster **stops** (not destroys) the agent the
-task's latest, unreleased chief start made, at once: its instance is scaled to
-zero, so a turn it is running is cut off. It is the Agents page's Stop, and
-**Start** brings it back. What it leaves alone: an agent you started yourself
-on the task, an agent already stopped or in `error`, and every agent of a task
-set to `ready_for_review` (it must stay reachable through `task_forward`). The
-task's one start stays **spent**: a stop is not a destroy and records no
-release, so `task_dispatch` on the task still answers `already_dispatched`.
-
-⚠ The live cap reads the stored status, so an agent whose instance died while
-its row still says `running` keeps its slot until something writes the row
-(a Stop, a Start, or that task being completed).
 
 Only a start whose agent was **recorded** (`task.chief_dispatch_agent`) can be
 released, by destroying that agent. ⚠ A start that failed before any agent
@@ -445,6 +430,29 @@ open any pull request as a **draft**, never merge, never mark the task complete
 task complete is refused to every agent anyway. ⚠ The draft rule is an
 instruction, not enforced by muster: pushing and opening the pull request go
 through the `github` connector, which you approve per agent.
+
+#### Completing a task stops the chief's agent
+
+When a task becomes `complete` — by any path: the task card, **Mark complete**,
+`PATCH /api/tasks/{id}/status`, or a merge retiring the loser — muster
+**stops** (never destroys) the agent the task's latest, unreleased chief start
+made, at once: the provisioner's `Stop`, the same call as the Agents page's
+Stop, scales its instance to zero, so a turn it is running is cut off.
+**Start** brings it back. It runs in the background after the status write; a
+failed stop is logged and the write stands.
+
+Only that agent, only while its stored status is live (pending, provisioning,
+running), and only while its row is still bound to the task. Left alone: an
+agent you started yourself, an agent already stopped or in `error`, and every
+agent of a task set to `ready_for_review` (it must stay reachable through
+`task_forward`). The task's one start stays **spent**: a stop is not a destroy
+and records no release, so `task_dispatch` on the task still answers
+`already_dispatched`. A stopped agent is not live, so it frees its slot under
+guard 10.
+
+⚠ The live cap reads the stored status, so an agent whose instance died while
+its row still says `running` keeps its slot until something writes the row (a
+Stop, a Start, or that task being completed).
 
 ## Delivery to your chief
 

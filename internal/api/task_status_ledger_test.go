@@ -385,59 +385,13 @@ func exprText(e ast.Expr) string {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// THE COMPLETE-WRITER LEDGER, AND THE STOP ON THE FUNNEL.
-//
-// A task becoming `complete` stops the agent the chief started for it
-// (stopChiefAgentOnComplete). It is called from setNoteStatus, so every writer
-// above reaches it by construction; these two tests pin the two halves of that
-// claim:
-//
-//   - TestTheCompleteStopIsOnTheStatusFunnel: setNoteStatus calls it, and
-//     NOTHING ELSE in the package does — a second call site would mean the stop
-//     had started to move out to the writers, where the next one forgets it.
-//   - TestEveryStatusWriterIsClassifiedForComplete: every writer on
-//     expectedStatusWriterLedger is classified as able to set `complete` or not,
-//     and the set FAILS WHEN IT GROWS OR SHRINKS — a new writer must be
-//     classified, and the ones that can set it are each driven end to end by
-//     TestEveryCompleteWriterStopsTheChiefsAgent (task_complete_stop_pg_test.go).
-//
-// ⚠ The false entries are claims read from the code, not checked here: the
-// three agent paths refuse `complete` (agentStatusRefusal, notes.ForAgent), and
-// the dispatch advance and destroy reopen write in_progress and open.
-// ---------------------------------------------------------------------------
-
-// expectedCompleteWriters: every status writer, and whether it can set complete.
-var expectedCompleteWriters = map[string]bool{
-	"handleNoteStatus":        true,  // the human card control: any status
-	"handleNoteComplete":      true,  // Mark complete
-	"handleAPITaskStatus":     true,  // the machine route: any status, unless an agent calls it
-	"handleTaskMerge":         true,  // retires the merge's loser to complete
-	"advanceTaskToInProgress": false, // open → in_progress
-	"handleAgentTaskStatus":   false, // an agent: never complete
-	"dispatchAgentTool":       false, // agent_set_task_status: never complete
-	"toolTaskSetStatus":       false, // task_set_status (agents): never complete
-	"reopenTaskAfterDestroy":  false, // in_progress → open
-}
-
-func TestEveryStatusWriterIsClassifiedForComplete(t *testing.T) {
-	if len(expectedStatusWriterLedger) == 0 {
-		t.Fatal("positive control FAILED: the status-writer ledger is empty")
-	}
-	for fn := range expectedStatusWriterLedger {
-		if _, ok := expectedCompleteWriters[fn]; !ok {
-			t.Errorf("status writer %s is not classified in expectedCompleteWriters: "+
-				"say whether it can set `complete` (and if it can, drive it in "+
-				"TestEveryCompleteWriterStopsTheChiefsAgent)", fn)
-		}
-	}
-	for fn := range expectedCompleteWriters {
-		if _, ok := expectedStatusWriterLedger[fn]; !ok {
-			t.Errorf("expectedCompleteWriters names %s, which is not a status writer any more", fn)
-		}
-	}
-}
-
+// TestTheCompleteStopIsOnTheStatusFunnel: a task becoming `complete` stops the
+// agent the chief started for it (stopChiefAgentOnComplete), and the call sits
+// in setNoteStatus — so, with
+// TestSetNoteStatusIsTheOnlyPlaceThisPackageCallsTheStoresSetStatus above,
+// every status writer reaches it by construction. It fails when anything ELSE
+// in the package calls it too: a second call site means the stop has started to
+// move out to the writers, where the next one forgets it.
 func TestTheCompleteStopIsOnTheStatusFunnel(t *testing.T) {
 	fset := token.NewFileSet()
 	files := parsePackageSources(t, fset)

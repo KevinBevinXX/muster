@@ -43,10 +43,12 @@ type stopProv struct {
 }
 
 func (p *stopProv) Stop(_ context.Context, id int64) error {
+	// The row is written BEFORE the call is recorded, so a test that saw the
+	// call (stops) also sees the row Stop wrote.
+	_, err := p.pool.Exec(authz.System(context.Background()), `UPDATE agents SET status = 'stopped' WHERE id = $1`, id)
 	p.smu.Lock()
 	p.stopped = append(p.stopped, id)
 	p.smu.Unlock()
-	_, err := p.pool.Exec(authz.System(context.Background()), `UPDATE agents SET status = 'stopped' WHERE id = $1`, id)
 	return err
 }
 
@@ -306,9 +308,12 @@ func TestAnAlreadyStoppedChiefAgentIsANoOp(t *testing.T) {
 	}
 }
 
-// TestEveryCompleteWriterStopsTheChiefsAgent (case 6): each writer on
-// expectedCompleteWriters that can set `complete`, driven through its own
-// handler.
+// TestEveryCompleteWriterStopsTheChiefsAgent (case 6): each of the four
+// status writers that can set `complete` (the card control, Mark complete, the
+// machine route, a merge's loser), driven through its own handler. That no
+// writer can bypass the stop is structural — TestTheCompleteStopIsOnTheStatusFunnel
+// plus TestSetNoteStatusIsTheOnlyPlaceThisPackageCallsTheStoresSetStatus; this
+// is the behaviour through each real door.
 func TestEveryCompleteWriterStopsTheChiefsAgent(t *testing.T) {
 	f := newCompleteStopFixture(t)
 	drive := map[string]func(t *testing.T, n notes.Note){
@@ -321,15 +326,7 @@ func TestEveryCompleteWriterStopsTheChiefsAgent(t *testing.T) {
 			f.merge(t, f.task(t, "merge winner").ID, n.ID)
 		},
 	}
-	for writer, can := range expectedCompleteWriters {
-		if !can {
-			continue
-		}
-		run, ok := drive[writer]
-		if !ok {
-			t.Errorf("%s can set complete but this test does not drive it", writer)
-			continue
-		}
+	for writer, run := range drive {
 		t.Run(writer, func(t *testing.T) {
 			n := f.task(t, "via "+writer)
 			a := f.dispatch(t, n)
@@ -342,19 +339,6 @@ func TestEveryCompleteWriterStopsTheChiefsAgent(t *testing.T) {
 			}
 		})
 	}
-	if len(drive) != countTrue(expectedCompleteWriters) {
-		t.Errorf("this test drives %d writers; expectedCompleteWriters names %d that can set complete", len(drive), countTrue(expectedCompleteWriters))
-	}
-}
-
-func countTrue(m map[string]bool) int {
-	n := 0
-	for _, v := range m {
-		if v {
-			n++
-		}
-	}
-	return n
 }
 
 // TestALedgerAgentNoLongerOnTheTaskIsNotStopped: the ledger names the agent the
