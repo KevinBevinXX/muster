@@ -25,9 +25,9 @@ import (
 //  2. measures the screen check on it: refused (and by which rule) or
 //     admitted — against screens.json's expectation, written by hand;
 //  3. measures what Escape does there: three Escapes, each followed by a wait
-//     above prompt_toolkit's timeoutlen and a re-capture, as the gated send
-//     sends them — the check's verdict after each — and what the REAL
-//     sequence (abort at the first refused capture) would have done.
+//     above prompt_toolkit's timeoutlen and a re-capture — the check's verdict
+//     after each — and what the gated send (ONE Escape, refused if the
+//     re-capture is) would have done.
 //
 // Its table is the measurement the design's residual list records.
 func TestLiveHermesScreens(t *testing.T) {
@@ -245,17 +245,15 @@ func runScenario(t *testing.T, r *liveRun, sc liveScenario, e screenExpectation)
 			res.after = "open"
 		}
 	}
+	// The gated send sends ONE Escape (hermes_send.go); the table still
+	// measures three, to show what more would do.
 	switch {
 	case res.gate != "admit":
 		res.sequence = "refused before any Escape"
+	case res.esc[0] != "admit":
+		res.sequence = "aborted after the Escape (" + res.esc[0] + ")"
 	default:
-		res.sequence = "admitted after 3 Escapes"
-		for i, v := range res.esc {
-			if v != "admit" {
-				res.sequence = fmt.Sprintf("aborted after Escape %d (%s)", i+1, v)
-				break
-			}
-		}
+		res.sequence = "admitted after the Escape"
 	}
 	// A rule may name alternatives ("NoLayout|Below") for a transient state
 	// whose capture can land in either phase; every alternative refuses.
