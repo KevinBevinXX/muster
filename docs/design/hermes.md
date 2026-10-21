@@ -745,6 +745,22 @@ sections above in these ways, each decided while building it:
   highest is taken, and the screen is refused as before. A skin whose bar
   has no background is never anchored, so the transcript-rule case is then
   refused, never admitted.
+- **The bar is read by its exact start on its background, everywhere**
+  (round 3). That means ` ☤ `, or the battery label (`🔋 N%`/`⚡ N%`) then
+  ` │ ☤ `. This applies to the anchor and to the status-row check alike. The
+  background alone is not enough: the subagent dock is drawn on the bar's own
+  background and can show a goal a model wrote, such as ` x │ ☤ m`. With the
+  bar hidden (`display.statusbar` off, or just after a resize), that row sits
+  above the rule. The dock's rows start with two spaces or a localised
+  heading, never so. The paste guard's recognition of Hermes keeps the
+  looser form, where matching more is the safe way.
+- 🟡 **A pane with no row above the bar is refused** (round 3, "the pane is
+  too short …"). On a pane exactly as tall as the input chrome (4 rows), an
+  open stash panel has no visible row. It was measured admitted at 100x4
+  with 20 drafts, and at 100x14 with no key pressed its header was back. The
+  harness shrinks a stash and an idle pane to 100x4
+  (`stash-short-100x4-20`, `idle-100x4`). This refuses every 4-row pane,
+  which costs only those.
 - **`mirrorhost.Runtime` keeps `Name` and `LocatePanes`.** The gated send is
   its own code (`runHermesSend` over injected steps; `Tmux.SendHermes` fills
   them), reached only through `hostSide.hermesPaste` for a paste with

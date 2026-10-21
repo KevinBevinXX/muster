@@ -378,7 +378,8 @@ send goes through the host's **gated send**, in this order:
    (about 8 rows: shorten it, or send six or more lines, which Hermes collapses);
 3. the host checks again that Hermes is idle at exactly that time;
 4. it checks the screen: Hermes's status bar is there (it is blank while the
-   command palette or the model picker is open), no stash panel (found by its
+   command palette or the model picker is open) with at least one row above
+   it (a pane of 4 rows is refused as too short), no stash panel (found by its
    header, even when a short pane cuts the rest of it), no vi label,
    no images attached, the idle prompt `❯ ` with an empty box, nothing below
    it. Any approval, question, password prompt, confirm or running turn
