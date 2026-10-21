@@ -147,14 +147,41 @@ test('on a host with -hermes-send, a Hermes window sends from its rendered view,
   await expect(log.locator('[data-bubble="user"]').last()).toContainText('hello Hermes, from muster', { timeout: 20_000 });
   expect(sends).toEqual([204]);
 
-  // Busy: refused at the hub, saying why; nothing reaches Hermes.
+  // Busy: refused, saying why; nothing reaches Hermes. The host reports the
+  // new status on its next refresh, so each attempt waits for its own answer:
+  //   204 — the hub still listed idle AND the host saw idle: rightly sent;
+  //   409 "status changed" — the hub still listed idle, the HOST's own
+  //     re-check at the moment of acting saw busy (the gated send's step 2);
+  //   409 "Hermes is working" — the hub's idle gate, once it has the status.
+  // Every refused attempt's text must never reach Hermes; the loop ends at
+  // the hub's own refusal.
   const hermesWindows = path.join(rig.dir, 'hermes-windows');
   fs.writeFileSync(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|busy\nherm|@3|1|0|${t0 - 20}||\n`);
-  await expect.poll(async () => {
-    await input.fill('while Hermes works');
-    await page.locator('#mv-send').click();
-    return (await page.locator('#mv-note').textContent()) ?? '';
-  }, { timeout: 15_000 }).toContain('Hermes is working');
-  expect(fs.readFileSync(path.join(home, 'rows.jsonl'), 'utf8')).not.toContain('while Hermes works');
+  const refused: string[] = [];
+  let hubRefused = false;
+  for (let i = 0; i < 30 && !hubRefused; i++) {
+    const text = `while Hermes works ${i}`;
+    await input.fill(text);
+    const [resp] = await Promise.all([
+      page.waitForResponse((r) => new URL(r.url()).pathname === '/mirror/view/send'),
+      page.locator('#mv-send').click(),
+    ]);
+    if (resp.status() === 204) {
+      await page.waitForTimeout(200);
+      continue;
+    }
+    expect(resp.status()).toBe(409);
+    const body = await resp.text();
+    refused.push(text);
+    if (body.includes('Hermes is working')) {
+      hubRefused = true;
+      await expect(page.locator('#mv-note')).toContainText('Hermes is working');
+    } else {
+      expect(body).toContain("Hermes's status changed after muster decided to send. Nothing was pasted.");
+    }
+  }
+  expect(hubRefused, 'the hub never refused the busy window').toBe(true);
+  const written = fs.readFileSync(path.join(home, 'rows.jsonl'), 'utf8');
+  for (const text of refused) expect(written).not.toContain(text);
   fs.writeFileSync(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@3|1|0|${t0 - 20}||\n`);
 });
