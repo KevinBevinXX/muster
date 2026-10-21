@@ -83,10 +83,10 @@ func TestLiveHermesScreens(t *testing.T) {
 
 // liveScenario is one screen state and how to reach it.
 type liveScenario struct {
-	name string
+	name   string
 	homeOf func() string
-	w, h int
-	args []string
+	w, h   int
+	args   []string
 	// reach drives a fresh CLI on pane into the state and reports whether
 	// it got there; settle is extra time before the capture.
 	reach func(r *liveRun, home, pane string) bool
@@ -393,7 +393,11 @@ func writeFixture(t *testing.T, r *liveRun, name, raw string) {
 // ------------------------------------------------------------- the states
 
 // typed is keys a person types: text, then Enter.
-func typed(r *liveRun, pane, s string) { r.keys(pane, s); time.Sleep(300 * time.Millisecond); r.keys(pane, "\r") }
+func typed(r *liveRun, pane, s string) {
+	r.keys(pane, s)
+	time.Sleep(300 * time.Millisecond)
+	r.keys(pane, "\r")
+}
 
 // inputStarts waits until the input area's first row starts with prefix.
 func inputStarts(r *liveRun, pane, prefix string, d time.Duration) bool {
@@ -433,7 +437,11 @@ func liveScenarios(base func() string, home func(string, homeOpts) string) []liv
 		}
 	}
 	key := func(k string) func(r *liveRun, _, pane string) bool {
-		return func(r *liveRun, _, pane string) bool { r.keys(pane, k); time.Sleep(500 * time.Millisecond); return true }
+		return func(r *liveRun, _, pane string) bool {
+			r.keys(pane, k)
+			time.Sleep(500 * time.Millisecond)
+			return true
+		}
 	}
 	typeLine := func(s string) func(r *liveRun, _, pane string) bool {
 		return func(r *liveRun, _, pane string) bool { typed(r, pane, s); return true }
@@ -489,6 +497,35 @@ func liveScenarios(base func() string, home func(string, homeOpts) string) []liv
 		return false
 	}
 	stashTitled := then(append([]func(r *liveRun, home, pane string) bool{titled}, stashKeys...)...)
+	// stashOf: n drafts stashed in a titled session, then the panel opened.
+	// 🔴 The panel is an UNBOUNDED window just above the status bar
+	// (P:hermes_cli/cli_tui_mixin.py:2181-2184), drawn top-down: on a pane too
+	// short for it the rows that do not fit are cut from its BOTTOM — the
+	// footer goes first — and in a titled session the bar's `📌 N ▲` is
+	// clipped too. So these vary the pane's HEIGHT, not only its width.
+	stashOf := func(n int) func(r *liveRun, home, pane string) bool {
+		steps := []func(r *liveRun, home, pane string) bool{titled}
+		for k := 1; k <= n; k++ {
+			steps = append(steps, key(fmt.Sprintf("draft %d", k)), key("\x13"))
+		}
+		steps = append(steps, key("\x13"), func(r *liveRun, _, p string) bool {
+			_, ok := r.waitScreen(p, 30*time.Second, func(raw string, _ hermeshost.Screen) bool {
+				t := stripSGR(raw)
+				return strings.Contains(t, "Stash (") || strings.Contains(t, "► [")
+			})
+			return ok
+		})
+		return then(steps...)
+	}
+	// replyRule: a turn whose reply ENDS with a line of n `─` (wrapped when
+	// wider than the pane), then idle. Waited for by its text, not by the
+	// screen check, which is what it measures.
+	replyRule := func(n int) func(r *liveRun, home, pane string) bool {
+		return then(idle, typeLine(fmt.Sprintf("RULE%d", n)), see("RULEREPLY"), func(r *liveRun, _, p string) bool {
+			time.Sleep(3 * time.Second)
+			return true
+		})
+	}
 	// viTitled: vi mode, then turns until the title fills the bar (the vi
 	// label refuses the plain idle wait, so it has its own).
 	viTitled := then(func(r *liveRun, _, p string) bool {
@@ -542,6 +579,14 @@ func liveScenarios(base func() string, home func(string, homeOpts) string) []liv
 		{name: "stash-titled-100", marker: "Stash (2 items)", homeOf: base, w: 100, h: 45, reach: stashTitled},
 		{name: "stash-titled-120", marker: "Stash (2 items)", homeOf: base, w: 120, h: 45, reach: stashTitled},
 		{name: "stash-titled-160", marker: "Stash (2 items)", homeOf: base, w: 160, h: 45, reach: stashTitled},
+		{name: "stash-short-100x12-6", marker: "► [", homeOf: base, w: 100, h: 12, reach: stashOf(6)},
+		{name: "stash-short-100x12-7", marker: "► [", homeOf: base, w: 100, h: 12, reach: stashOf(7)},
+		{name: "stash-short-100x24-20", marker: "► [", homeOf: base, w: 100, h: 24, reach: stashOf(20)},
+		{name: "stash-short-80x24-20", marker: "► [", homeOf: base, w: 80, h: 24, reach: stashOf(20)},
+		{name: "reply-rule-100", homeOf: base, w: 100, h: 45, reach: replyRule(100)},
+		{name: "reply-rule-130", homeOf: base, w: 100, h: 45, reach: replyRule(130)},
+		{name: "reply-rule-100x12", homeOf: base, w: 100, h: 12, reach: replyRule(100)},
+		{name: "command-running", homeOf: base, reach: then(idle, inject("command-running"), see("livehermes slow command"))},
 		{name: "palette-titled-100", marker: "Command Palette", homeOf: base, w: 100, h: 45, reach: then(titled, key("\x10"))},
 		{name: "palette-titled-160", marker: "Command Palette", homeOf: base, w: 160, h: 45, reach: then(titled, key("\x10"))},
 		{name: "model-picker-titled-100", marker: "Model Picker", homeOf: base, w: 100, h: 45, reach: then(titled, typeLine("/model"), see("Model Picker"))},

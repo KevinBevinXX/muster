@@ -367,5 +367,61 @@
   "how": "organic",
   "expect": "admit",
   "rule": ""
+ },
+ {
+  "name": "stash-short-100x12-6",
+  "state": "the stash panel with 6 drafts in a titled session on a 100x12 pane (it fits: the control)",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "Stash"
+ },
+ {
+  "name": "stash-short-100x12-7",
+  "state": "the stash panel with 7 drafts in a titled session on a 100x12 pane: its footer is cut, the bar's mark clipped",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "Stash"
+ },
+ {
+  "name": "stash-short-100x24-20",
+  "state": "the stash panel with 20 drafts (Hermes's cap) in a titled session on a 100x24 pane: its footer is cut",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "Stash"
+ },
+ {
+  "name": "stash-short-80x24-20",
+  "state": "the stash panel with 20 drafts in a titled session on an 80x24 pane: its footer is cut",
+  "how": "organic",
+  "expect": "refuse",
+  "rule": "Stash"
+ },
+ {
+  "name": "reply-rule-100",
+  "state": "idle after a reply whose last line is a 100-wide rule, on a 100-column pane",
+  "how": "organic",
+  "expect": "admit",
+  "rule": ""
+ },
+ {
+  "name": "reply-rule-130",
+  "state": "idle after a reply whose last line is a 130-wide rule (wrapped), on a 100-column pane",
+  "how": "organic",
+  "expect": "admit",
+  "rule": ""
+ },
+ {
+  "name": "reply-rule-100x12",
+  "state": "idle after a reply whose last line is a 100-wide rule, on a 100x12 pane",
+  "how": "organic",
+  "expect": "admit",
+  "rule": ""
+ },
+ {
+  "name": "command-running",
+  "state": "a slow slash command running (_busy_command): the prompt's prefix is a spinner frame",
+  "how": "injected",
+  "expect": "refuse",
+  "rule": "NotIdle"
  }
 ]

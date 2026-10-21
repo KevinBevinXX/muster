@@ -115,6 +115,8 @@ func pinnedHermes(t *testing.T) hermesInstall {
 //	CLARIFYFREE  a `clarify` call, one open question
 //	CLARIFY      a `clarify` call, one question with two choices
 //	SLOW<n>      a plain reply after n seconds
+//	RULE<n>      a reply whose LAST line is n `─` (a transcript rule the
+//	             screen check must not take for the input frame)
 //	anything     "stub reply #<n>"
 //
 // After a tool result the turn ends with "tool step finished". A request
@@ -154,7 +156,10 @@ func textOf(c any) string {
 	return ""
 }
 
-var slowRE = regexp.MustCompile(`SLOW(\d+)`)
+var (
+	slowRE = regexp.MustCompile(`SLOW(\d+)`)
+	ruleRE = regexp.MustCompile(`RULE(\d+)`)
+)
 
 func (m *stubModel) serve(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
@@ -207,6 +212,9 @@ func (m *stubModel) serve(w http.ResponseWriter, r *http.Request) {
 		tool, args = "clarify", map[string]any{"questions": []any{map[string]any{"question": "What name should the file get?"}}}
 	case strings.Contains(user, "CLARIFY"):
 		tool, args = "clarify", map[string]any{"questions": []any{map[string]any{"question": "Which colour should it use?", "choices": []string{"red", "blue"}}}}
+	case ruleRE.MatchString(user):
+		n, _ := strconv.Atoi(ruleRE.FindStringSubmatch(user)[1])
+		text = "RULEREPLY: the line below is a rule\n\n" + strings.Repeat("─", n)
 	default:
 		if mm := slowRE.FindStringSubmatch(user); mm != nil {
 			n, _ := strconv.Atoi(mm[1])
@@ -582,7 +590,8 @@ func (r *liveRun) isOurs(pid int) bool {
 // a state name into $MUSTER_LIVEHERMES_INJECT, then sets that overlay state
 // on the running CLI exactly as Hermes's own callbacks do, and redraws. The
 // REAL renderer draws it. Used only for states a stub-model turn cannot
-// reach at the pin: secret capture, the connection form and voice.
+// reach at the pin: secret capture, the connection form, voice, and a slow
+// slash command (_busy_command: a stub model answers every command at once).
 const stateInjection = `
 import os, sys, threading, time
 
@@ -634,6 +643,14 @@ def _livehermes_inject():
                                                   "1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082"))
                     cli._attached_images.append(img)
                     cli._image_counter = getattr(cli, "_image_counter", 0) + 1
+                elif what == "command-running":
+                    # A slow slash command, as _busy_command runs one: the
+                    # prompt's prefix becomes a spinner frame.
+                    def hold():
+                        with cli._busy_command("livehermes slow command"):
+                            time.sleep(30)
+                    threading.Thread(target=hold, daemon=True).start()
+                    time.sleep(0.5)
                 elif what == "voice":
                     cli._voice_mode = True
                 elif what == "voice-recording":

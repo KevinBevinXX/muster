@@ -29,15 +29,17 @@ import (
 //
 //   - the input area's frame: a lower input rule as the last row drawn
 //     (nothing below it: no voice bar, no completions menu), an upper rule of
-//     the same width at most 9 rows above, and the status bar directly above
-//     the upper rule;
+//     the same width at most 9 rows above — the highest one with the real
+//     status bar (its text and its background) directly above it — and that
+//     status bar;
 //   - 🔴 THE STATUS BAR IS REQUIRED, and must be Hermes's (its "☤ " model
 //     marker). At the pin it renders NOTHING while the command palette or the
 //     model picker is open (P:hermes_cli/cli_status_bar_mixin.py:1128-1133),
 //     so those two overlays — the ones that leave the input line untouched —
 //     are refused here, before any Escape. A status bar Hermes hides (after a
 //     resize, until the next key; with display.statusbar off) is refused too;
-//   - the stash panel's status-bar mark, "📌 N ▲" (P:hermes_cli/prompt_stash.py:68-71);
+//   - the stash panel: its status-bar mark, "📌 N ▲" (P:hermes_cli/prompt_stash.py:68-71),
+//     or its header row above the bar (the mark is clipped in a titled session);
 //   - a vi-mode label in the status bar, in any bundled language (ViLabels):
 //     defence in depth only, see the design;
 //   - the first input row: the idle prompt, `❯ ` optionally after a profile
@@ -53,10 +55,15 @@ import (
 // It reads no word Hermes localises except the vi label: the prefixes are
 // the skin's glyphs, the placeholder is matched by its italic style.
 
-// Cell is one character of a captured screen and whether it is italic.
+// Cell is one character of a captured screen, whether it is italic, and
+// whether it has a background colour (Bg). A draft typed in Hermes's input
+// box is drawn in the input's style, which has none at the pin (and an escape
+// sequence typed or pasted into the box is drawn as text, `^[`, never
+// obeyed), so a background is something a draft cannot draw.
 type Cell struct {
 	R      rune
 	Italic bool
+	Bg     bool
 }
 
 // Screen is a pane as `tmux capture-pane -p -e` prints it: its rows, top to
@@ -65,27 +72,32 @@ type Screen struct {
 	Rows [][]Cell
 }
 
-// ParseScreen reads a `capture-pane -p -e` capture. Only SGR's italic is
-// kept (3 on; 23, 0 or an empty SGR off); every other escape sequence is
-// dropped. A sequence it cannot read ends at the next letter, never later.
+// ParseScreen reads a `capture-pane -p -e` capture. Of SGR only italic (3
+// on; 23, 0 or an empty SGR off) and whether a background colour is set (40-47,
+// 100-107, 48;…; 49, 0 or an empty SGR off) are kept; every other escape
+// sequence is dropped. A sequence it cannot read ends at the next letter,
+// never later.
 func ParseScreen(capture string) Screen {
 	var s Screen
 	// 🔴 THE STYLE IS CARRIED ACROSS ROWS: tmux's capture states an
 	// attribute where it CHANGES (cmd-capture-pane.c keeps its last cell
 	// across lines), so a row that continues an italic run starts with no
 	// escape at all.
-	italic := false
+	var st style
 	for _, line := range strings.Split(strings.TrimRight(capture, "\n"), "\n") {
 		var row []Cell
-		row, italic = parseRow(line, italic)
+		row, st = parseRow(line, st)
 		s.Rows = append(s.Rows, row)
 	}
 	return s
 }
 
-// parseRow is one captured line's cells, starting with italic and returning
-// the style it ends with.
-func parseRow(line string, italic bool) ([]Cell, bool) {
+// style is the SGR state ParseScreen keeps.
+type style struct{ italic, bg bool }
+
+// parseRow is one captured line's cells, starting with st and returning the
+// style it ends with.
+func parseRow(line string, st style) ([]Cell, style) {
 	var row []Cell
 	rs := []rune(strings.TrimRight(line, "\r"))
 	for i := 0; i < len(rs); i++ {
@@ -94,7 +106,7 @@ func parseRow(line string, italic bool) ([]Cell, bool) {
 			if r == '\t' {
 				r = ' '
 			}
-			row = append(row, Cell{R: r, Italic: italic})
+			row = append(row, Cell{R: r, Italic: st.italic, Bg: st.bg})
 			continue
 		}
 		if i+1 >= len(rs) {
@@ -107,7 +119,7 @@ func parseRow(line string, italic bool) ([]Cell, bool) {
 				j++
 			}
 			if j < len(rs) && rs[j] == 'm' {
-				italic = sgrItalic(string(rs[i+2:j]), italic)
+				st = sgrStyle(string(rs[i+2:j]), st)
 			}
 			i = j
 		case ']':
@@ -124,13 +136,13 @@ func parseRow(line string, italic bool) ([]Cell, bool) {
 			i++
 		}
 	}
-	return row, italic
+	return row, st
 }
 
-// sgrItalic applies one SGR's parameters to italic.
-func sgrItalic(params string, italic bool) bool {
+// sgrStyle applies one SGR's parameters to st.
+func sgrStyle(params string, st style) style {
 	if params == "" {
-		return false
+		return style{}
 	}
 	ps := strings.Split(params, ";")
 	for k := 0; k < len(ps); k++ {
@@ -138,12 +150,21 @@ func sgrItalic(params string, italic bool) bool {
 		if err != nil {
 			continue
 		}
-		switch n {
-		case 0, 23:
-			italic = false
-		case 3:
-			italic = true
-		case 38, 48, 58:
+		switch {
+		case n == 0:
+			st = style{}
+		case n == 23:
+			st.italic = false
+		case n == 3:
+			st.italic = true
+		case n == 49:
+			st.bg = false
+		case n >= 40 && n <= 47, n >= 100 && n <= 107:
+			st.bg = true
+		case n == 38, n == 48, n == 58:
+			if n == 48 {
+				st.bg = true
+			}
 			// An extended colour: skip its arguments (5;n or 2;r;g;b).
 			if k+1 < len(ps) {
 				if ps[k+1] == "5" {
@@ -154,7 +175,7 @@ func sgrItalic(params string, italic bool) bool {
 			}
 		}
 	}
-	return italic
+	return st
 }
 
 // rowText is a row's characters with trailing white space trimmed — EVERY
@@ -255,16 +276,31 @@ func frameOf(s Screen) (frame, error) {
 		return frame{}, refuse(ScreenBelow)
 	}
 	w, _ := isRule(s.Rows[bot])
-	// 🔴 THE HIGHEST same-width rule within the box's rows, never the
-	// closest: a draft can type a full-width rule (and a status bar and an
-	// idle prompt under it) on its continuation rows; the real upper rule is
-	// above every row the draft can draw. A transcript rule that lands in
-	// range above the status bar is a false refusal, which is safe.
-	top := -1
+	// The upper rule is the HIGHEST same-width rule within the box's rows
+	// whose row above is the REAL status bar (statusBarAt: its text AND its
+	// background), and only when there is none the highest same-width rule.
+	//
+	// 🔴 Never the closest: a draft can type a full-width rule (and a status
+	// bar's text and an idle prompt under it) on its continuation rows, and
+	// the real upper rule is above every row a draft can draw. 🔴 Never just
+	// the highest either: a reply whose last line is a rule as wide as the
+	// pane lands within the box's rows ABOVE the status bar (the reply box's
+	// `╰─╯` and the bar between them), and every send was refused until the
+	// next turn. A draft cannot fake the anchor — it draws no background —
+	// so with the bar drawn the real rule wins, and with it blank or hidden
+	// (the palette, the picker, after a resize) no rule is anchored, the
+	// highest is taken, and its status row is refused.
+	top, anchored := -1, -1
 	for i := bot - 1; i >= 0 && i >= bot-1-maxInputRows; i-- {
 		if tw, ok := isRule(s.Rows[i]); ok && tw == w {
 			top = i
+			if statusBarAt(s, i-1) {
+				anchored = i
+			}
 		}
+	}
+	if anchored >= 0 {
+		top = anchored
 	}
 	if top < 0 || top == bot-1 || top == 0 {
 		return frame{}, refuse(ScreenNoLayout)
@@ -277,34 +313,48 @@ func frameOf(s Screen) (frame, error) {
 // 1162-1166). The trimmed form of a narrow pane keeps it.
 var statusBarRE = regexp.MustCompile(`^ (?:[^│]{1,24} │ )?☤ \S`)
 
+// statusBarAt reports whether row i is Hermes's status bar: its text
+// (statusBarRE) and its style — the bar is drawn on a background
+// (class:status-bar), which no row of the input box has. A skin whose bar has
+// no background is never anchored, so the frame falls back to the highest
+// rule: a transcript rule in range is then refused, never admitted.
+func statusBarAt(s Screen, i int) bool {
+	if i < 0 || len(s.Rows[i]) == 0 || !s.Rows[i][0].Bg {
+		return false
+	}
+	return statusBarRE.MatchString(rowText(s.Rows[i]))
+}
+
 // stashOpenRE is the stash indicator while its panel is open.
 var stashOpenRE = regexp.MustCompile(`📌 \d+ ▲`)
 
-// stashPanelRows is how far above the status bar the stash panel's frame is
+// stashPanelRows is how far above the status bar the stash panel's header is
 // looked for: the panel (its rows are the stash, which Hermes bounds) and
 // the subagent dock, which sits between the panel and the bar.
 const stashPanelRows = 40
 
-// stashPanelOpen reports whether the stash panel's FRAME is drawn above the
-// status bar at row status: a header row `╭─ 📌 …` (every bundled language,
-// and the compact form, starts so: P:hermes_cli/cli_status_bar_mixin.py:1201,
-// :1209) with its footer `╰… ─╯` below it, before the bar.
+// stashPanelOpen reports whether the stash panel's HEADER is drawn above the
+// status bar at row status: a row `╭─ 📌 …` (every bundled language, and the
+// compact form, starts so: P:hermes_cli/cli_status_bar_mixin.py:1201, :1209).
 //
-// 🔴 THE FRAME, NOT THE STATUS-BAR MARK: once the session has a title,
+// 🔴 THE PANEL, NOT THE STATUS-BAR MARK: once the session has a title,
 // Hermes right-aligns the title badge and CLIPS the bar's left side to make
 // room (_right_align_status_title_fragments), and the `📌 N ▲` mark is the
 // first thing cut — measured: clipped at 80, 100 and 120 columns.
+//
+// 🔴 THE HEADER ALONE, NEVER ITS FOOTER TOO: the panel is an unbounded window
+// drawn top-down (P:hermes_cli/cli_tui_mixin.py:2181-2184), so on a pane too
+// short for it the rows that do not fit are cut from its BOTTOM — the footer
+// first; measured in titled sessions with the footer gone at 100x12 (7
+// drafts), 100x24 and 80x24 (20, Hermes's cap) — while the header stays on
+// the panel's first row. (Requiring the footer added nothing besides: a
+// reply box's own `╰─╯` matches it.) A reply line that starts `╭─ 📌` is
+// refused too: a false refusal, the safe way.
 func stashPanelOpen(s Screen, status int) bool {
 	for i := status - 1; i >= 0 && i >= status-stashPanelRows; i-- {
 		t := strings.TrimLeftFunc(rowText(s.Rows[i]), unicode.IsSpace)
-		if !strings.HasPrefix(t, "╭─ ") || !strings.Contains(t, "📌") {
-			continue
-		}
-		for j := i + 1; j < status; j++ {
-			b := strings.TrimLeftFunc(rowText(s.Rows[j]), unicode.IsSpace)
-			if strings.HasPrefix(b, "╰") && strings.HasSuffix(b, "─╯") {
-				return true
-			}
+		if strings.HasPrefix(t, "╭─ ") && strings.Contains(t, "📌") {
+			return true
 		}
 	}
 	return false

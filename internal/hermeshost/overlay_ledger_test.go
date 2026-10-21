@@ -77,9 +77,9 @@ var layoutChildren = []layoutChild{
 	{"spacer", "above", []string{"approval"}},
 	{"_get_extra_tui_widgets", "above", nil},
 	{"_pet_widget", "above", nil},
-	{"_stash_panel_widget", "above", []string{"stash", "stash-indicator-hidden"}},
+	{"_stash_panel_widget", "above", []string{"stash", "stash-indicator-hidden", "stash-short-100x12-7", "stash-short-80x24-20"}},
 	{"_subagent_dock_widget", "above", nil},
-	{"status_bar", "status", []string{"idle", "vi-insert", "vi-trimmed"}},
+	{"status_bar", "status", []string{"idle", "vi-insert", "vi-trimmed", "reply-rule-100"}},
 	{"input_rule_top", "rule", []string{"idle"}},
 	{"image_bar", "image", []string{"image-attached"}},
 	{"input_area", "input", []string{"idle", "text-in-box"}},
@@ -105,7 +105,7 @@ var promptConditions = []struct {
 	{"_slash_confirm_state", "⚠", []string{"new-confirm"}},
 	{"_clarify_freetext", "✎", []string{"clarify-freetext"}},
 	{"_clarify_state", "?", []string{"clarify-choices"}},
-	{"_command_running", "a spinner frame", nil},
+	{"_command_running", "a spinner frame", []string{"command-running"}},
 	{"_agent_running", "☤", []string{"busy"}},
 	{"_voice_mode", "🎤", []string{"voice"}},
 }
@@ -120,12 +120,14 @@ var statusBarBlanking = []string{"_status_bar_visible", "_model_picker_state", "
 // read, from the voice bar to the stash panel (P:hermes_cli/cli_tui_mixin.py:
 // 2165-2184): the voice bar below the input (Below), the status bar's
 // visibility and its post-resize suppression (NoStatusBar / NoLayout), and
-// the stash panel's open flag (its frame: Stash).
+// the stash panel's open flag (its header: Stash).
 var chromeFilters = []string{"_voice_mode", "_status_bar_visible", "_status_bar_suppressed_after_resize", "_prompt_stash.panel_open", "_prompt_stash"}
 
 // TestOverlayLedgerNamesRecordedFixtures: every fixture the ledger names is
 // recorded (its .ansi) and expected (screens.json), and every overlay state
-// has at least one.
+// and every prompt condition has at least one. (A layout child may have none:
+// _get_extra_tui_widgets, the pet and the subagent dock draw nothing at the pin
+// without a plugin or subagents.)
 func TestOverlayLedgerNamesRecordedFixtures(t *testing.T) {
 	exp := screenExpectations(t)
 	check := func(owner string, names []string) {
@@ -148,6 +150,9 @@ func TestOverlayLedgerNamesRecordedFixtures(t *testing.T) {
 		check(c.Name, c.Fixtures)
 	}
 	for _, c := range promptConditions {
+		if len(c.Fixtures) == 0 {
+			t.Errorf("prompt condition %s has no fixture", c.Attr)
+		}
 		check(c.Attr, c.Fixtures)
 	}
 }
