@@ -142,16 +142,6 @@ jobs:
       - name: verdict.py can refuse
         run: python3 tests/verdict_test.py
 
-      # The e2e aggregate's leg binder (e2e/pick-legs.mjs) is an instrument
-      # too: its choice and its refusals, each on a synthetic artifact tree.
-      # Here, on every PR, rather than in the aggregate itself, so a red here
-      # never stands in for the suite's own verdict. Node only, < 1 s.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: pick-legs.mjs can choose and refuse
-        run: node --test e2e/pick-legs.test.mjs
-
       # 🔴 A COUNT, NOT AN EXIT CODE. `go test` exits 0 with skipped tests, so
       # its exit status cannot tell "everything ran" from "everything skipped".
       # MUSTER_TEST_REQUIRE_DB should make a skip impossible — verdict.py is the
@@ -195,6 +185,20 @@ jobs:
         run: |
           set -o pipefail
           go test -race -cover -json ./... | python3 -u tests/verdict.py --echo summary --require TestEveryRouteIsClassifiedForIsolation --require TestNoRouteLetsOneUserReachAnothersData --require TestAnotherUsersWritesNeverReachYourEventStream
+
+      # The e2e aggregate's leg binder (e2e/pick-legs.mjs) is an instrument
+      # too: its choice and its refusals, each on a synthetic artifact tree.
+      # Here, on every PR, rather than in the aggregate itself, so a red here
+      # never stands in for the suite's own verdict. AFTER the Go suite, so a
+      # binder failure never skips it, and `!cancelled()` so a red Go suite
+      # never skips this. Node only, < 1 s.
+      - uses: actions/setup-node@v4
+        if: ${{ !cancelled() }}
+        with:
+          node-version: 22
+      - name: pick-legs.mjs can choose and refuse
+        if: ${{ !cancelled() }}
+        run: node --test e2e/pick-legs.test.mjs
 
   # Local: make leakscan
   #

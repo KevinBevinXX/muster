@@ -96,3 +96,16 @@ test('the NEWEST attempt is still checked: one with no report is refused, whatev
   const { root, dir } = fixture([art(1, 1), art(2, 1), ['e2e-results-leg-2-attempt-2', prov(2, 2), false]]);
   assert.throws(() => pick(dir, RUN, root), /NO REPORT: e2e-results-leg-2-attempt-2\/results.json is missing/);
 });
+
+// A partial rerun: leg 1 was not rerun, so its chosen artifact is from an
+// OLDER attempt than the run's newest. It is still the leg's verdict and is
+// checked like any other chosen artifact.
+test('a leg chosen from an older attempt than the newest is still checked: no report is refused', () => {
+  const { root, dir } = fixture([['e2e-results-leg-1-attempt-1', prov(1, 1), false], art(2, 2)]);
+  assert.throws(() => pick(dir, RUN, root), /NO REPORT: e2e-results-leg-1-attempt-1\/results.json is missing/);
+});
+
+test('a leg chosen from an older attempt than the newest is still checked: a foreign sha is refused', () => {
+  const { root, dir } = fixture([art(1, 1, { sha: 'deadbee' }), art(2, 2)]);
+  assert.throws(() => pick(dir, RUN, root), /PROVENANCE MISMATCH: e2e-results-leg-1-attempt-1 says sha="deadbee"/);
+});

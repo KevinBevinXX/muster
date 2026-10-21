@@ -868,8 +868,11 @@ func (h *Hub) leaveJoining(key hostKey) {
 
 // drop removes hc (if it is still the host's current connection), remembers its
 // last list as offline (unless its token was revoked), and ends every stream on it with ErrHostDisconnected.
-// It runs for EVERY ending of ServeConn — read error, revocation, replacement —
-// so it is the one place a disconnect ends a terminal.
+// It runs for every ending of a connection that was REGISTERED — read error,
+// revocation, replacement — so it is the one place a disconnect ends a
+// terminal. A connection that never registered (refused at the cap, a failed
+// welcome, or superseded by a newer arrival: ErrSupersededJoin) has no
+// streams and no listing of its own, and does not reach it.
 func (h *Hub) drop(hc *hostConn) {
 	revoked := errors.Is(context.Cause(hc.ctx), ErrTokenRevoked)
 	h.mu.Lock()
