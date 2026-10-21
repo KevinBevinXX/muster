@@ -72,6 +72,45 @@ unusual `User-Agent`. muster sends Go's default one (`Go-http-client/1.1`).
 A phone's registration fails with an error when muster's test push to it is
 refused, so a CDN rule that blocks muster shows up there.
 
+### Paired phones (payload v2)
+
+A phone paired with the [Android app](design/android.md) registers its
+UnifiedPush endpoint through the device routes ([auth.md](auth.md#paired-devices)).
+It receives the same events as a browser, under the same toggles and rate cap,
+as **payload v2**:
+
+```json
+{"v": 2, "type": "review", "id": "42", "tag": "task-42",
+ "title": "<WHO>", "body": "<WHERE>", "url": "/tasks/42"}
+```
+
+- `title` and `body` are the browser notification's own lines, WHO and WHERE,
+  never WHAT. They are cut to 100 and 200 characters, and never in the middle
+  of a character a reader sees as one (an accent, an emoji, a flag). The app
+  fetches anything more itself.
+- **A phone's push is exactly 4096 bytes.** muster pads every encrypted push to
+  one 4096-byte record, so a payload v2 may be at most 3993 bytes
+  (4096 − 86 header − 16 tag − 1 delimiter); the encryption library itself
+  refuses anything larger. So muster never sends ntfy a message over its
+  default 4096-byte limit, which ntfy would accept with HTTP 200 and silently
+  cut short, leaving the phone unable to decrypt it (that matters for senders
+  that do not pad to one record). muster checks the size before sending, so an
+  over-budget payload is **refused, not sent**: it is logged
+  (`push: REFUSED …`), counted as `muster_push_delivery_total{result="oversize"}`,
+  and does not count as the phone failing.
+- A withdrawal is `{"v": 2, "type": "resolved", "id": …, "tag": …}` and shows
+  nothing. Phones always get it; Safari browsers are still spared it.
+- Which payload a device gets depends on the kind recorded with its
+  subscription, not on its push host.
+- There are no `actions`, `conv` or `state` fields yet. They come with the
+  phases that add the routes and the widgets that use them.
+- ⚠ **ntfy does not check VAPID** on UnifiedPush (`up*`) topics, so anyone who
+  learns a phone's endpoint can publish to it. The app's rule of dropping every
+  message it cannot decrypt is the **only** check that a message came from
+  muster, and it is load-bearing.
+- muster sets no Web Push `Topic` header, and ntfy ignores one anyway, so a
+  push that was not delivered is not replaced by a newer one.
+
 ## Installable app (PWA)
 
 - **The manifest** (`/manifest.webmanifest`) declares a standalone display, any
