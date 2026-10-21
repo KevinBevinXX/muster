@@ -102,7 +102,7 @@ test('the kind picker dispatches a Claude Code agent onto a pinned or pooled acc
   await expect(account.locator('option')).toHaveText(['Auto (least rate-limited)', 'alpha', 'beta']);
   await expect(pool).toBeVisible();
   await expect(pool).toBeEnabled();
-  await expect(sheet.locator('#worker-pool-help')).toContainText('no GitHub grant');
+  await expect(sheet.locator('#worker-pool-help')).toContainText('never holds a GitHub grant');
   await account.selectOption('beta');
   const pinned = await save('e2e kinds: pinned to beta');
 
