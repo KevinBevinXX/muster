@@ -183,6 +183,20 @@ type attentionItem struct {
 	// card is the Agents-list card the item is counted on (its attention badge,
 	// cards_attention.go); zero for none.
 	card attentionCard
+	// hermes is a waiting HERMES window's ask (Hermes Phase 4): what it waits
+	// on, and the approval muster can answer; nil for any other item.
+	hermes *hermesAsk
+}
+
+// hermesAsk is a waiting Hermes window's ask as an attention item shows it.
+type hermesAsk struct {
+	// kind is mirror.PendingApproval, PendingClarify or PendingSudo.
+	kind string
+	// promptID and choices: the approval muster can answer here, "" and nil
+	// when it cannot (the host does not answer approvals, or could not read
+	// this one) — the item then says to answer in the terminal.
+	promptID string
+	choices  []string
 }
 
 // attentionCard is the card an attention item belongs to: an agent's (an
@@ -241,6 +255,10 @@ func askItem(a attention.Ask) attentionItem {
 	return it
 }
 
+// hermesWaitingText is a waiting Hermes window's text when its host says
+// nothing of what it waits on (a host older than Hermes Phase 4).
+const hermesWaitingText = "Hermes is waiting on you in the terminal: an approval, a question or a password."
+
 // sessionWaitingText is a waiting session's text when its host says nothing
 // of what it waits on (an older muster-mirror, a transcript it could not read):
 // muster's own words — the prompt itself is in the session, one tap away.
@@ -292,6 +310,8 @@ func (s *Server) waitingSessions(ctx context.Context) []attentionItem {
 		q       *askq.Entry
 		pending *mirror.Pending
 		offline bool
+		// hermes: a Hermes window; answers: its host answers approvals now.
+		hermes, answers bool
 	}
 	now := s.now()
 	waiting := map[string]wait{}
@@ -300,10 +320,19 @@ func (s *Server) waitingSessions(ctx context.Context) []attentionItem {
 			continue
 		}
 		for _, w := range h.Windows {
+			k := sessionKey(h.Host, w.Session, w.ID)
+			if w.AgentRuntime() == mirror.RuntimeHermes {
+				// A waiting Hermes window: what its hook says it waits on
+				// (Hermes Phase 4). Its Pending names the ask; a host that
+				// names none (older) still lists it as waiting.
+				if w.Status == mirror.StatusWaiting {
+					waiting[k] = wait{since: w.StatusSince, pending: w.Pending, offline: !h.Online, hermes: true, answers: h.Online && h.HermesAnswer}
+				}
+				continue
+			}
 			if !w.Claude {
 				continue
 			}
-			k := sessionKey(h.Host, w.Session, w.ID)
 			if e, ok := held[h.Host+"\x00"+w.ClaudeSession]; ok && w.ClaudeSession != "" {
 				waiting[k] = wait{since: e.Created.UnixMilli(), q: &e, offline: !h.Online}
 			} else if w.Status == mirror.StatusWaiting {
@@ -323,6 +352,26 @@ func (s *Server) waitingSessions(ctx context.Context) []attentionItem {
 			claudeSession: e.ClaudeSession, Offline: wt.offline, Link: ref.ViewPath(), card: attentionCard{ref: ref}}
 		if e.ClaudeSession != "" {
 			it.subject = focus.MirrorSubject(e.ClaudeSession)
+		}
+		if wt.hermes {
+			it.claudeSession = ""
+			if key := e.SessionKey(); key != "" {
+				// Its focus is keyed runtime-qualified (focus.HermesSubject).
+				it.claudeSession, it.subject = key, focus.MirrorSubject(key)
+			}
+			it.Text, it.hermes = hermesWaitingText, &hermesAsk{}
+			if p := wt.pending; p != nil && p.Kind != "" {
+				it.hermes.kind = p.Kind
+				it.Text, it.Detail, it.tool = p.Summary, p.Detail, p.Tool
+				if p.Kind == mirror.PendingApproval && p.PromptID != "" && wt.answers {
+					it.hermes.promptID, it.hermes.choices = p.PromptID, strings.Fields(p.Choices)
+				}
+			}
+			if wt.since > 0 {
+				it.Since = time.UnixMilli(wt.since)
+			}
+			out = append(out, it)
+			continue
 		}
 		switch {
 		case wt.q != nil:
@@ -717,6 +766,7 @@ func (s *Server) registerAttentionRoutes(mux Mux) {
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/answer", s.requireOperatorWrite(s.handleAttentionAnswerForm))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/cancel", s.requireOperatorWrite(s.handleAttentionCancelForm))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/redeliver", s.requireOperatorWrite(s.handleAttentionRedeliverForm))
+	mux.HandleFunc("POST "+attentionHermesPath, s.requireOperatorWrite(s.handleAttentionHermesApprove))
 }
 
 func (s *Server) handleAttentionPage(w http.ResponseWriter, r *http.Request) {
@@ -742,6 +792,7 @@ func (s *Server) renderAttentionPage(w http.ResponseWriter, r *http.Request, cod
 <p class="text-sm text-fg2">Everything waiting on you: questions your agents asked, sessions waiting at a prompt, and reply drafts awaiting approval.</p>
 `)
 	b.WriteString(problemNode(problem))
+	b.WriteString(attentionNotice(r))
 	b.WriteString(`<ul id="attention-items" class="flex flex-col gap-2" data-testid="attention-items" aria-live="polite">`)
 	b.WriteString(attentionItemsHTML(items, time.Now()))
 	b.WriteString(answeredAsksHTML(s.recentAnswers(r.Context()), time.Now()))
@@ -839,10 +890,17 @@ func attentionItemsHTML(items []attentionItem, now time.Time) string {
 			b.WriteString(`<span class="break-words text-xs font-semibold text-fg2" data-attention-focus>` + esc(it.Focus) + `</span>
 `)
 		}
-		b.WriteString(`<p class="whitespace-pre-wrap break-words text-sm text-fg" data-attention-text>` + esc(it.Text) + `</p>
+		text, detail := esc(it.Text), esc(it.Detail)
+		if it.hermes != nil {
+			// A Hermes ask quotes a command: drawn left to right and isolated
+			// (<bdi>), so right-to-left text in it cannot reorder what the
+			// person reads around it.
+			text, detail = `<bdi dir="ltr">`+text+`</bdi>`, `<bdi dir="ltr">`+detail+`</bdi>`
+		}
+		b.WriteString(`<p class="whitespace-pre-wrap break-words text-sm text-fg" data-attention-text>` + text + `</p>
 `)
 		if it.Detail != "" {
-			b.WriteString(`<p class="break-words text-sm text-fg2" data-attention-detail>` + esc(it.Detail) + `</p>
+			b.WriteString(`<p class="break-words text-sm text-fg2" data-attention-detail>` + detail + `</p>
 `)
 		}
 		switch it.Kind {
@@ -864,6 +922,7 @@ func attentionItemsHTML(items []attentionItem, now time.Time) string {
 <form method="POST" action="` + attentionPath + `/asks/` + id + `/cancel"><button type="submit" class="` + flowsQuietButton + `">Dismiss without answering</button></form>
 `)
 		case attentionKindSession:
+			b.WriteString(hermesAskHTML(it))
 			b.WriteString(`<a href="` + esc(it.Link) + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Open the session</a>
 `)
 		case attentionKindQuestion:

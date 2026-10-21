@@ -191,6 +191,7 @@ POST /api/tasks/{id}/comments
 POST /attention/asks/{id}/answer
 POST /attention/asks/{id}/cancel
 POST /attention/asks/{id}/redeliver
+POST /attention/hermes/approve
 POST /auth/claim
 POST /auth/confirm
 POST /auth/confirm/passkey/options

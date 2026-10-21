@@ -298,6 +298,12 @@ func (h *hostSide) askAnswer() bool {
 // The driver itself refuses to touch a picker that is not this question,
 // untouched (internal/askdrive).
 func (h *hostSide) answer(m mirror.Msg) {
+	if m.Runtime == mirror.RuntimeHermes {
+		// A Hermes approval: answered through Hermes's gateway, never by
+		// keys (hermes_asks.go).
+		h.answerHermes(m)
+		return
+	}
 	reply := func(err error) {
 		ans := mirror.Msg{Type: mirror.TypeAnswered, ID: m.ID}
 		if err != nil {

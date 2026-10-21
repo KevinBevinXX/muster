@@ -20,6 +20,27 @@
 #     with it set it is REQUIRED, so a failure is still RED;
 #   - internal/mirrorhost TestLiveHermesSend: the gated send end to end, and
 #     every blocking state refused with nothing pasted;
+#   - internal/mirrorhost TestLiveHermesGateway: the gateway viewer (Phase 4)
+#     — identify names the pin (in the home, and through gateway.sock.path),
+#     an approval answered deny and once from the viewer (each with an effect
+#     that can fail), the CLI's modal left drawn, a sudo prompt never answered;
+#   - internal/mirrorhost TestLiveHermesApprovalThroughTheHost: the host's own
+#     listing lists the approval (command, once and deny) through its viewer,
+#     answers it deny (the command does not run), and detaches after;
+#   - internal/mirrorhost TestLiveHermesMaskedApprovalIsDenyOnly: a command
+#     the gateway's own redactor masks across a ';' is deny only;
+#   - internal/mirrorhost TestLiveHermesLabelApprovalIsDenyOnly: an approval
+#     whose "command" is a label (a write to ~/.ssh/config) is deny only;
+#   - internal/hermeshost TestTheGatewayMasksCoverAPinnedSample: the masks
+#     muster refuses are the pinned redactor's (its source pinned, and a
+#     sample run through both of its passes);
+#   - internal/hermeshost TestTheTerminalGateLedgerMatchesThePin: the terminal
+#     gate's descriptions, re-extracted from the pin, and its sources pinned;
+#   - internal/hermeshost TestTheApprovalGatesMatchThePin: every approval
+#     site in the pin classified, and each non-terminal gate's label caught
+#     by NonTerminalLabel (never offered "once");
+#   - internal/mirrorhost TestLiveHermesClarifyThroughTheHost: a clarify's
+#     question and choices listed from the real state.db, nothing answered;
 #   - internal/hermeshost TestOverlayLedgerMatchesThePinnedSource,
 #     TestScreenConditionsMatchThePinnedSource and
 #     TestViLabelsMatchThePinnedLocales: the ledgers held against the pin.
@@ -40,8 +61,8 @@ command -v hermes >/dev/null || { echo "livehermes: no hermes on PATH" >&2; exit
 command -v tmux >/dev/null || { echo "livehermes: no tmux on PATH" >&2; exit 2; }
 rev="$(grep -o "HERMES_REVISION='[0-9a-f]*'" "$(readlink -f "$(command -v hermes)")" | cut -d"'" -f2 || true)"
 
-required=(TestLiveHermesScreens TestLiveHermesSend TestOverlayLedgerMatchesThePinnedSource TestScreenConditionsMatchThePinnedSource TestViLabelsMatchThePinnedLocales)
-live='TestLiveHermesScreens|TestLiveHermesSend'
+required=(TestLiveHermesScreens TestLiveHermesSend TestLiveHermesGateway TestLiveHermesApprovalThroughTheHost TestLiveHermesMaskedApprovalIsDenyOnly TestLiveHermesLabelApprovalIsDenyOnly TestLiveHermesClarifyThroughTheHost TestTheGatewayMasksCoverAPinnedSample TestTheTerminalGateLedgerMatchesThePin TestTheApprovalGatesMatchThePin TestOverlayLedgerMatchesThePinnedSource TestScreenConditionsMatchThePinnedSource TestViLabelsMatchThePinnedLocales)
+live='TestLiveHermesScreens|TestLiveHermesSend|TestLiveHermesGateway|TestLiveHermesApprovalThroughTheHost|TestLiveHermesMaskedApprovalIsDenyOnly|TestLiveHermesLabelApprovalIsDenyOnly|TestLiveHermesClarifyThroughTheHost'
 if [[ "${MUSTER_LIVEHERMES_TIMINGS:-}" == 1 ]]; then
   required+=(TestLiveHermesTimings)
   live+='|TestLiveHermesTimings'
@@ -52,7 +73,7 @@ for r in "${required[@]}"; do req+=(--require "$r"); done
 set +e
 set -o pipefail
 go test -tags livehermes -count=1 -timeout 60m -json \
-  -run "^(${live}|TestOverlayLedgerMatchesThePinnedSource|TestScreenConditionsMatchThePinnedSource|TestViLabelsMatchThePinnedLocales)\$" \
+  -run "^(${live}|TestOverlayLedgerMatchesThePinnedSource|TestTheGatewayMasksCoverAPinnedSample|TestTheTerminalGateLedgerMatchesThePin|TestTheApprovalGatesMatchThePin|TestScreenConditionsMatchThePinnedSource|TestViLabelsMatchThePinnedLocales)\$" \
   ./internal/mirrorhost/ ./internal/hermeshost/ |
   python3 -u tests/verdict.py --echo all "${req[@]}"
 rc=$?

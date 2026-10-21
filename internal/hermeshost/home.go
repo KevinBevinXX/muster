@@ -30,14 +30,18 @@
 package hermeshost
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
+	"unicode/utf8"
 )
 
 // Home is one Hermes home ($HERMES_HOME, else ~/.hermes).
@@ -89,6 +93,11 @@ var ReadPaths = []string{
 	"state.db-shm",
 	"terminal-sessions/tty-*",
 	"shell-hooks-allowlist.json",
+	// The gateway's control socket, or the pointer to it when the socket's
+	// path would not fit sun_path (gateway.go; Phase 4). The socket is
+	// connected to, never opened as a file; the pointer is read.
+	"gateway.sock",
+	"gateway.sock.path",
 }
 
 // WritePaths is every path under a Hermes home the allowlist WRITER (not the
@@ -227,6 +236,160 @@ func (h Home) allowlistPaths() (lock, file, dir string, err error) {
 		return "", "", "", err
 	}
 	return filepath.Join(h.dir, allowlistLockName), filepath.Join(h.dir, allowlistName), h.dir, nil
+}
+
+// The gateway's control socket under the home, and the pointer Hermes writes
+// instead when that path would not fit sun_path (P:gateway/control_socket.py,
+// _MAX_UNIX_PATH = 100).
+const (
+	gatewaySocketName  = "gateway.sock"
+	gatewayPointerName = "gateway.sock.path"
+	// maxGatewayPointer bounds the pointer, as Hermes's own reader does
+	// (4,096 bytes; more is refused).
+	maxGatewayPointer = 4096
+	// gatewaySocketLeaf is the pointed-at socket's own name, in a directory
+	// named gatewayDirPrefix + the home's hash.
+	gatewaySocketLeaf = "control.sock"
+	gatewayDirPrefix  = "hermes-gw-"
+)
+
+// gatewaySocketPath is where this home's gateway listens, found and checked
+// exactly as Hermes's own clients find it (P:hermes_cli/
+// gateway_runtime_discovery.py, _socket_path) — and stricter where noted:
+//
+//   - the home, resolved through its symlinks as Hermes resolves it, is a
+//     directory this uid owns that no other user can write. 🔴 STRICTER:
+//     group-writable is refused outright (Hermes admits it for a private
+//     user group); a false refusal only means "answer in the terminal";
+//   - gateway.sock, when it exists, is a socket this uid owns, mode 0600 or
+//     tighter;
+//   - else gateway.sock.path is a regular file (never a symlink, never a
+//     FIFO: O_NOFOLLOW|O_NONBLOCK) this uid owns, 0600 or tighter, at most
+//     4,096 bytes, naming an absolute <dir>/hermes-gw-<hash of the home>/
+//     control.sock whose directory (0700) and socket (0600) this uid owns.
+//
+// resolved is the home as resolved, which the gateway's identify names.
+// errNoGateway when neither the socket nor the pointer exists.
+func (h Home) gatewaySocketPath() (sock, resolved string, err error) {
+	if err := h.valid(); err != nil {
+		return "", "", err
+	}
+	resolved, err = filepath.EvalSymlinks(h.dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", "", errNoGateway
+		}
+		return "", "", err
+	}
+	if resolved, err = filepath.Abs(resolved); err != nil {
+		return "", "", err
+	}
+	if err := privateNode(resolved, os.ModeDir, true); err != nil {
+		return "", "", err
+	}
+	direct := filepath.Join(resolved, gatewaySocketName)
+	if _, err := os.Lstat(direct); err == nil {
+		if err := privateNode(direct, os.ModeSocket, false); err != nil {
+			return "", "", err
+		}
+		return direct, resolved, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", "", err
+	}
+	f, err := openRegular(filepath.Join(resolved, gatewayPointerName))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", "", errNoGateway
+		}
+		return "", "", fmt.Errorf("%w: the pointer %s: %w", errGatewayUnsafe, gatewayPointerName, err)
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return "", "", err
+	}
+	if err := ownedPrivate(st, false); err != nil {
+		return "", "", fmt.Errorf("%w: the pointer %s %w", errGatewayUnsafe, gatewayPointerName, err)
+	}
+	buf := make([]byte, maxGatewayPointer+1)
+	n, err := f.ReadAt(buf, 0)
+	if err != nil && n == 0 && !errors.Is(err, io.EOF) {
+		return "", "", err
+	}
+	if n > maxGatewayPointer {
+		return "", "", fmt.Errorf("%w: the pointer %s is larger than %d bytes", errGatewayUnsafe, gatewayPointerName, maxGatewayPointer)
+	}
+	raw := buf[:n]
+	if !utf8.Valid(raw) {
+		return "", "", fmt.Errorf("%w: the pointer %s is not UTF-8", errGatewayUnsafe, gatewayPointerName)
+	}
+	target := strings.TrimSpace(string(raw))
+	if !filepath.IsAbs(target) {
+		return "", "", fmt.Errorf("%w: the pointer %s does not name an absolute path", errGatewayUnsafe, gatewayPointerName)
+	}
+	target = filepath.Clean(target)
+	dir := filepath.Dir(target)
+	if filepath.Base(target) != gatewaySocketLeaf || filepath.Base(dir) != gatewayDirPrefix+gatewayHomeHash(resolved) {
+		return "", "", fmt.Errorf("%w: the pointer %s names a socket that is not this home's", errGatewayUnsafe, gatewayPointerName)
+	}
+	if err := privateNode(dir, os.ModeDir, false); err != nil {
+		return "", "", err
+	}
+	if err := privateNode(target, os.ModeSocket, false); err != nil {
+		return "", "", err
+	}
+	return target, resolved, nil
+}
+
+// gatewayHomeHash is Hermes's _home_hash (P:gateway/control_socket.py): the
+// first 16 hex digits of the SHA-256 of the resolved home's path.
+func gatewayHomeHash(resolved string) string {
+	sum := sha256.Sum256([]byte(resolved))
+	return hex.EncodeToString(sum[:])[:16]
+}
+
+// privateNode lstats path (never following a symlink) and requires it to be
+// of type kind (os.ModeDir or os.ModeSocket), owned by this uid, and private:
+// for the home (home true) writable by no other user and no group; otherwise
+// no group or other bit at all.
+func privateNode(path string, kind os.FileMode, home bool) error {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return errNoGateway
+		}
+		return err
+	}
+	if fi.Mode().Type() != kind {
+		return fmt.Errorf("%w: %s is %s, not a %s", errGatewayUnsafe, path, fi.Mode().Type(), kindName(kind))
+	}
+	if err := ownedPrivate(fi, home); err != nil {
+		return fmt.Errorf("%w: %s %w", errGatewayUnsafe, path, err)
+	}
+	return nil
+}
+
+// ownedPrivate is privateNode's owner and mode rule on fi.
+func ownedPrivate(fi os.FileInfo, home bool) error {
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return errors.New("has no owner this platform can read")
+	}
+	if int(st.Uid) != os.Getuid() {
+		return fmt.Errorf("is owned by uid %d, not this user's %d", st.Uid, os.Getuid())
+	}
+	perm := fi.Mode().Perm()
+	if home && perm&0o022 != 0 || !home && perm&0o077 != 0 {
+		return fmt.Errorf("has mode %04o, which another user could use", perm)
+	}
+	return nil
+}
+
+func kindName(kind os.FileMode) string {
+	if kind == os.ModeDir {
+		return "directory"
+	}
+	return "socket"
 }
 
 // errNotRegular: a path is a symlink, a FIFO, a device or a directory.
