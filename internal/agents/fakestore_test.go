@@ -330,6 +330,9 @@ func (f *fakeStore) SetDisplayName(ctx context.Context, id int64, name string) (
 	return a, nil
 }
 func (f *fakeStore) SetHooksToken(ctx context.Context, id int64, token string) error { return nil }
+func (f *fakeStore) SetGatewaySecret(ctx context.Context, id int64, secret string) error {
+	return nil
+}
 func (f *fakeStore) Delete(ctx context.Context, id int64) error {
 	f.mu.Lock()
 	f.deleted = append(f.deleted, id)

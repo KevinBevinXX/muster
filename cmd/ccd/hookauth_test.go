@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net"
 	"net/http"
@@ -67,6 +70,11 @@ func (p *hookPoster) mustPost(t *testing.T, pathAndQuery, body string) {
 // what it tests. The exceptions are this file (the helper, and the test that
 // posts WITHOUT the credential on purpose) and the tmux suite's rig, which
 // serves it over the socket to the real `ccd hook`.
+//
+// 🔴 IT READS THE SYNTAX TREE, NOT THE SPELLING. It used to count the text
+// ".hookHandler()", which `(*server).hookHandler(srv)`, a method value
+// `h := srv.hookHandler`, or a line break before the parentheses all walk past.
+// Every selector naming hookHandler is a site, however it is reached.
 func TestOnlyTheHookHelperServesTheHookHandler(t *testing.T) {
 	files, err := filepath.Glob("*_test.go")
 	if err != nil || len(files) == 0 {
@@ -75,11 +83,7 @@ func TestOnlyTheHookHelperServesTheHookHandler(t *testing.T) {
 	allowed := map[string]bool{"hookauth_test.go": true, "tmux_integration_test.go": true}
 	seen := 0
 	for _, f := range files {
-		b, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		n := strings.Count(string(b), ".hookHandler()")
+		n := hookHandlerSites(t, f)
 		seen += n
 		if n > 0 && !allowed[f] {
 			t.Errorf("%s serves hookHandler itself (%d site(s)); post hooks with hooks(t, srv).post / mustPost, "+
@@ -87,7 +91,48 @@ func TestOnlyTheHookHelperServesTheHookHandler(t *testing.T) {
 		}
 	}
 	if seen == 0 {
-		t.Fatal("instrument check: no .hookHandler() site found at all; the scan is reading nothing")
+		t.Fatal("instrument check: no hookHandler site found at all; the scan is reading nothing")
+	}
+}
+
+// hookHandlerSites counts the selectors naming hookHandler in the Go file at
+// path: x.hookHandler, (*server).hookHandler, called or not.
+func hookHandlerSites(t *testing.T, path string) int {
+	t.Helper()
+	f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
+	n := 0
+	ast.Inspect(f, func(node ast.Node) bool {
+		if sel, ok := node.(*ast.SelectorExpr); ok && sel.Sel.Name == "hookHandler" {
+			n++
+		}
+		return true
+	})
+	return n
+}
+
+// TestTheHookHandlerScanSeesEverySpelling is the scan's own control: each way of
+// reaching hookHandler is one site, and the identifier in a string or a comment
+// is none.
+func TestTheHookHandlerScanSeesEverySpelling(t *testing.T) {
+	src := `package main
+
+func a(srv *server) { _ = srv.hookHandler() }
+func b(srv *server) { _ = (*server).hookHandler(srv) }
+func c(srv *server) { h := srv.hookHandler; _ = h() }
+func d(srv *server) { _ = srv.
+	hookHandler() }
+// srv.hookHandler() in a comment is not a site
+var e = "srv.hookHandler()"
+`
+	path := filepath.Join(t.TempDir(), "x_test.go")
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if n := hookHandlerSites(t, path); n != 4 {
+		t.Fatalf("the scan found %d sites, want 4 (a call, a method expression, a method value, a split call)", n)
 	}
 }
 

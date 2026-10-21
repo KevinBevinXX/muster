@@ -376,4 +376,9 @@ func (s *seamStore) SetHooksToken(_ context.Context, _ int64, token string) erro
 	return nil
 }
 
+func (s *seamStore) SetGatewaySecret(_ context.Context, _ int64, secret string) error {
+	s.agent.GatewaySecret = secret
+	return nil
+}
+
 func (s *seamStore) SetKickoffError(context.Context, int64, string) error { return nil }

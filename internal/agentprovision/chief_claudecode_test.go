@@ -30,6 +30,7 @@ func ccRow(name string) agents.Agent {
 	ag := fixtureAgent()
 	ag.Name = name
 	ag.Kind, ag.CCAccount, ag.HooksToken = agents.KindClaudeCode, "acct-x", "fixture-hooks-chiefcc"
+	ag.GatewaySecret = "fixture-turn-credential-chiefcc"
 	ag.Model, ag.Repo, ag.RepoBranch = "", "", ""
 	return ag
 }

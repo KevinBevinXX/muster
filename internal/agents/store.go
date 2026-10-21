@@ -153,14 +153,26 @@ type Agent struct {
 	// user (internal/api agentOwnerID). Not serialised: the JSON shape is
 	// unchanged, and an owner id is not something an agent or a page needs.
 	// Zero only for an Agent that never came from the database (a fake store).
-	OwnerID      int64     `json:"-"`
-	Status       string    `json:"status"`
-	HooksToken   string    `json:"-"`
-	KickedOff    bool      `json:"kickedOff"`
-	LastOutput   string    `json:"lastOutput,omitempty"`
-	ErrorMessage string    `json:"errorMessage,omitempty"`
-	CreatedAt    time.Time `json:"createdAt"`
-	UpdatedAt    time.Time `json:"updatedAt"`
+	OwnerID    int64  `json:"-"`
+	Status     string `json:"status"`
+	HooksToken string `json:"-"`
+	// GatewaySecret is the credential muster presents to a claude-code agent's
+	// turn API (ccd's /v1/responses), minted per agent at provision time
+	// (agents_gateway_secret, migration 0041). "" for every other kind, and for a
+	// claude-code row provisioned before it existed — see [TurnBearer].
+	//
+	// 🔴 IT IS RANDOM AND NOT DERIVED FROM HooksToken, AND THAT IS ITS WHOLE
+	// PURPOSE. HooksToken is the agent's muster identity, which its session must
+	// hold (MUSTER_HOOK_TOKEN: the approval hook, the MCP entry, git routing), so
+	// every tool call the session makes can read it. A turn credential computable
+	// from it — muster's hooks-sha256 derivation — let any tool call drive the
+	// agent's own turn API. Never serialised, never logged.
+	GatewaySecret string    `json:"-"`
+	KickedOff     bool      `json:"kickedOff"`
+	LastOutput    string    `json:"lastOutput,omitempty"`
+	ErrorMessage  string    `json:"errorMessage,omitempty"`
+	CreatedAt     time.Time `json:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
 
 	// --- kickoff DELIVERY provenance (internal/db/migrations/0001_init.sql) ---
 	//
@@ -308,6 +320,8 @@ type Store interface {
 	// name falls back to the slug Name so the card is never label-less.
 	SetDisplayName(ctx context.Context, id int64, name string) (Agent, error)
 	SetHooksToken(ctx context.Context, id int64, token string) error
+	// SetGatewaySecret stores the agent's turn credential ([Agent.GatewaySecret]).
+	SetGatewaySecret(ctx context.Context, id int64, secret string) error
 	// SetKickedOff stamps (or un-stamps) the first turn. Stamping also clears a
 	// checkout-wait marker (WaitedForCheckout's kickoff_error) in the SAME write:
 	// on a kicked-off row the marker would read as a failed kickoff, and cleared

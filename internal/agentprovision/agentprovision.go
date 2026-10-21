@@ -982,19 +982,47 @@ func (a *Adapter) create(ctx context.Context, ag agents.Agent) (agents.Agent, er
 // into an audit-fix round already carrying a behaviour change.
 // WHO CHECKS IT: the reviewer of that PR, against a test that runs two mints
 // concurrently and asserts one row value and one winner.
+//
+// It also gives a claude-code agent its turn credential (ensureGatewaySecret):
+// every path that builds a spec comes through here first, so no claude-code spec
+// is built without one.
 func (a *Adapter) ensureHooksToken(ctx context.Context, ag agents.Agent) (agents.Agent, error) {
-	if ag.HooksToken != "" {
+	if ag.HooksToken == "" {
+		buf := make([]byte, hooksTokenBytes)
+		if _, err := rand.Read(buf); err != nil {
+			return ag, a.fail(ctx, ag, "mint hooks token", err)
+		}
+		token := hex.EncodeToString(buf)
+		if err := a.store.SetHooksToken(ctx, ag.ID, token); err != nil {
+			return ag, a.fail(ctx, ag, "store hooks token", err)
+		}
+		ag.HooksToken = token
+	}
+	return a.ensureGatewaySecret(ctx, ag)
+}
+
+// ensureGatewaySecret gives a claude-code agent its own turn credential
+// (agents.Agent.GatewaySecret) if it has none: random, and NOT derived from its
+// hooks token, which its session holds (see that field). Other kinds get none
+// and keep the derived bearer (agents.TurnBearer).
+//
+// ⚠ THE MINT LANDS BEFORE THE APPLY. If the driver then fails, muster sends the
+// new secret to a pod still built with the old bearer, and its turns are 401
+// until an apply succeeds (the next Start) — a loud failure, not a silent one.
+// The same non-atomic-mint note as ensureHooksToken's applies.
+func (a *Adapter) ensureGatewaySecret(ctx context.Context, ag agents.Agent) (agents.Agent, error) {
+	if agents.ResolveKind(ag.Kind) != agents.KindClaudeCode || ag.GatewaySecret != "" {
 		return ag, nil
 	}
 	buf := make([]byte, hooksTokenBytes)
 	if _, err := rand.Read(buf); err != nil {
-		return ag, a.fail(ctx, ag, "mint hooks token", err)
+		return ag, a.fail(ctx, ag, "mint turn credential", err)
 	}
-	token := hex.EncodeToString(buf)
-	if err := a.store.SetHooksToken(ctx, ag.ID, token); err != nil {
-		return ag, a.fail(ctx, ag, "store hooks token", err)
+	secret := hex.EncodeToString(buf)
+	if err := a.store.SetGatewaySecret(ctx, ag.ID, secret); err != nil {
+		return ag, a.fail(ctx, ag, "store turn credential", err)
 	}
-	ag.HooksToken = token
+	ag.GatewaySecret = secret
 	return ag, nil
 }
 

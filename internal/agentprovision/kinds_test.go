@@ -48,6 +48,7 @@ func TestAClaudeCodeStartReappliesTheSpecWithTheAccountsCurrentToken(t *testing.
 	const oldTok, newTok = "sk-ant-oat01-FAKE-old-6b1d", "sk-ant-oat01-FAKE-new-90ce"
 	row := fixtureAgent()
 	row.Kind, row.CCAccount, row.HooksToken, row.Repo, row.RepoBranch, row.Model = agents.KindClaudeCode, "work", "fixture-hooks-ccprov", "", "", ""
+	row.GatewaySecret = "fixture-turn-credential-ccprov"
 	store := &recordingStore{agent: row}
 	driver := &specCapture{Noop: provision.MustNewNoop()}
 

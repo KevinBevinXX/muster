@@ -200,8 +200,17 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		return provision.Spec{}, err
 	}
 	if a.HooksToken == "" {
-		return provision.Spec{}, fmt.Errorf("agentspec: agent %q has no hooks token; ccd refuses to start "+
-			"without one (it derives the bearer muster sends from it)", a.Name)
+		return provision.Spec{}, fmt.Errorf("agentspec: agent %q has no hooks token, which is its muster "+
+			"identity (%s)", a.Name, EnvToken)
+	}
+	// 🔴 THE TURN CREDENTIAL IS THE AGENT'S OWN RANDOM SECRET, NEVER THE hooks-sha256
+	// DERIVATION. The session holds the hooks token (MUSTER_HOOK_TOKEN), so a
+	// bearer derived from it could be computed by any tool call and used to drive
+	// ccd's turn API; and ccd refuses to start on one (cmd/ccd/turncred.go).
+	if a.GatewaySecret == "" {
+		return provision.Spec{}, fmt.Errorf("agentspec: agent %q has no turn credential of its own "+
+			"(agents.Agent.GatewaySecret, minted by the provisioner); ccd refuses a bearer its session "+
+			"could derive from %s", a.Name, EnvToken)
 	}
 	if cfg.ConnectURL != "" && (cfg.ConnectPort < 1 || cfg.ConnectPort > 65535) {
 		return provision.Spec{}, fmt.Errorf("agentspec: Config.ConnectURL is set but Config.ConnectPort (%d) is not a "+
@@ -237,9 +246,15 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		Runtime: provision.Runtime{Image: cc.Image},
 		Env:     claudeCodeEnv(cfg, sidecar != nil, repo),
 		// 🔴 THE ONLY PLACE EnvClaudeOAuthToken IS EVER WRITTEN.
+		//
+		// 🔴 NO EnvGatewayToken (HOOKS_TOKEN): ccd takes its bearer from
+		// EnvGatewayBearer, the agent's own secret, and nothing in the pod derives
+		// one from the hooks token any more. EnvToken stays: it is the session's
+		// muster identity. ccd unsets EnvGatewayBearer (and the sidecar's
+		// credential) before it starts the CLI (cmd/ccd/turncred.go).
 		Secrets: []provision.EnvVar{
 			{Name: EnvToken, Value: a.HooksToken},
-			{Name: EnvGatewayToken, Value: a.HooksToken},
+			{Name: EnvGatewayBearer, Value: a.GatewaySecret},
 			{Name: EnvClaudeOAuthToken, Value: token},
 		},
 		Resources: ClaudeCodeResources,
@@ -269,7 +284,7 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 				"of its own (%s)", a.Name, EnvGatewayBearer)
 		}
 		spec.Secrets = append(spec.Secrets, provision.EnvVar{Name: EnvCCDGatewayUpstreamBearer, Value: own})
-		if err := checkSidecarIsolation(spec, cfg.RuntimeConfig.DeriveBearer(a.HooksToken)); err != nil {
+		if err := checkSidecarIsolation(spec, a.GatewaySecret); err != nil {
 			return provision.Spec{}, err
 		}
 	}

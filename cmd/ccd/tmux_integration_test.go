@@ -300,6 +300,7 @@ type serveRig struct {
 	gwAddr        string
 	root, cfg, ws string
 	logs          *syncBuffer
+	pid           int // ccd's (the shim exec's it, so the shim's pid is ccd's)
 }
 
 // startServe runs `ccd serve`; extra is more NAME=value environment.
@@ -368,7 +369,8 @@ func startServeAt(t *testing.T, wsRel string, env func(root string) []string, ex
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
-	return &serveRig{tmuxBin: tmuxBin, sock: sock, gwAddr: gwAddr, root: root, cfg: cfg, ws: ws, logs: logs}
+	return &serveRig{tmuxBin: tmuxBin, sock: sock, gwAddr: gwAddr, root: root, cfg: cfg, ws: ws, logs: logs,
+		pid: cmd.Process.Pid}
 }
 
 func (r *serveRig) waitHealth(t *testing.T, label string, ok func(health) bool) health {

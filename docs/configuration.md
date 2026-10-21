@@ -223,8 +223,8 @@ variables when it provisions an agent, so you normally never set them yourself.
 
 | variable | default | required | what it does |
 |---|---|---|---|
-| `MUSTER_GATEWAY_BEARER` | none | this or `HOOKS_TOKEN` | The bearer token `ccd`'s `/v1/responses` accepts. |
-| `HOOKS_TOKEN` | none | this or the bearer | The token the bearer is derived from. If both are set, they must agree. |
+| `MUSTER_GATEWAY_BEARER` | none | this or `HOOKS_TOKEN` | The bearer token `ccd`'s `/v1/responses` accepts. muster mints it per `claude-code` agent at random (`agents.gateway_secret`, migration 0041); it is not derived from `MUSTER_HOOK_TOKEN`. |
+| `HOOKS_TOKEN` | none | this or the bearer | A token the bearer is derived from (`sha256("gw-"+token)`). If both are set, they must agree. muster no longer ships it to `claude-code` agents. |
 | `CCD_GATEWAY_UPSTREAM` | none | no | The gateway runtime beside `ccd` (a `claude-code` chief's sidecar), on loopback. |
 | `CCD_GATEWAY_UPSTREAM_BEARER` | none | with `CCD_GATEWAY_UPSTREAM` | That runtime's own credential, which `ccd` presents when it hands a gateway turn on. It is never `ccd`'s bearer. Without it, `ccd` refuses gateway turns. |
 | `MUSTER_CONNECT_URL` | none | no | muster's connect listener. `ccd approve` and `ccd connect-git` use it. |
@@ -249,6 +249,19 @@ variables when it provisions an agent, so you normally never set them yourself.
 | `CCD_TURN_TIMEOUT` | `30m` | no | The deadline for a whole turn. |
 | `CCD_APPROVAL_DEADLINE` | `170s` | no | How long `ccd approve` waits for a relayed decision before falling back to the terminal prompt. |
 | `CCD_LIVECHECK_HOOKS_TOKEN` | none | for `livecheck` | The token for `cmd/ccd/livecheck`, a manual probe of a live agent. |
+
+**Turn credentials never reach the CLI.** `ccd` reads `MUSTER_GATEWAY_BEARER`,
+`HOOKS_TOKEN` and `CCD_GATEWAY_UPSTREAM_BEARER`, then unsets all three before it
+starts anything, so neither the Claude Code CLI nor any tool it runs inherits
+them. It also marks itself non-dumpable, so a process of its own user cannot read
+them back from `/proc/<ccd>/environ`. It refuses to start when its bearer equals,
+or is the `sha256("gw-"+…)` derivation of, a value the CLI keeps
+(`MUSTER_HOOK_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`): a pod provisioned before
+muster minted the turn credential is in that state, and Stop then Start fixes it.
+What the CLI keeps is `MUSTER_HOOK_TOKEN` (its muster identity),
+`CLAUDE_CODE_OAUTH_TOKEN` and `CCD_HOOK_SECRET`, and none of them is accepted by
+`/v1/responses`. A process of `ccd`'s user can still type into the CLI's pane with
+`tmux send-keys`.
 
 ## hermesd (inside the hermes agent image)
 

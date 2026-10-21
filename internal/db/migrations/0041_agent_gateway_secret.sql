@@ -1,0 +1,13 @@
+-- muster 0041 — A CLAUDE-CODE AGENT'S TURN CREDENTIAL OF ITS OWN
+-- (agents.Agent.GatewaySecret, agents.TurnBearer).
+--
+-- 🔴 IT IS RANDOM, MINTED BY THE PROVISIONER, AND NOT DERIVED FROM hooks_token.
+-- hooks_token is the agent's muster identity, which its session must hold, so a
+-- turn credential computable from it (the hooks-sha256 scheme) let any tool call
+-- the session made drive the agent's own turn API (ccd's /v1/responses).
+--
+-- '' = none yet: every non-claude-code row, and a claude-code row provisioned
+-- before this column existed. Such a row keeps the hooks-sha256 bearer its pod
+-- was built with until its spec is next applied (Start, a model change), which
+-- mints this and ships it in the same apply.
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS gateway_secret TEXT NOT NULL DEFAULT '';

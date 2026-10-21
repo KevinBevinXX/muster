@@ -1055,6 +1055,10 @@ func (s *server) sessionState(started, ended bool) string {
 	return sessionNotStarted
 }
 
+// envClaudeOAuthToken is agentspec.EnvClaudeOAuthToken, the CLI's model
+// credential: ccd's one spelling of it.
+const envClaudeOAuthToken = "CLAUDE_CODE_OAUTH_TOKEN"
+
 // credentialVisible is the production HasCredential: CLAUDE_CODE_OAUTH_TOKEN in
 // the environment ccd (and so the tmux server it starts) runs with, or the file
 // an interactive /login writes, <CLAUDE_CONFIG_DIR>/.credentials.json. The file
@@ -1062,7 +1066,7 @@ func (s *server) sessionState(started, ended bool) string {
 // observed (that needs a real account).
 func credentialVisible(configDir string) func() bool {
 	return func() bool {
-		if os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") != "" {
+		if os.Getenv(envClaudeOAuthToken) != "" {
 			return true
 		}
 		_, err := os.Stat(filepath.Join(configDir, ".credentials.json"))

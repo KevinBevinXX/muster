@@ -35,6 +35,7 @@ func ccAgent() agents.Agent {
 	a := fixtureAgent()
 	a.Kind = agents.KindClaudeCode
 	a.CCAccount = "beta"
+	a.GatewaySecret = "fixture-turn-credential-not-a-real-one"
 	a.Model = ""
 	a.Repo, a.RepoBranch = "", ""
 	return a
@@ -86,7 +87,9 @@ func TestTheClaudeCodeSpecPinsItsProfile(t *testing.T) {
 	}
 	wantSecrets := []provision.EnvVar{
 		{Name: "MUSTER_HOOK_TOKEN", Value: a.HooksToken},
-		{Name: "HOOKS_TOKEN", Value: a.HooksToken},
+		// ccd's turn credential: the row's own random secret, never a derivation
+		// of the hooks token above (which the session holds); no HOOKS_TOKEN.
+		{Name: "MUSTER_GATEWAY_BEARER", Value: "fixture-turn-credential-not-a-real-one"},
 		{Name: "CLAUDE_CODE_OAUTH_TOKEN", Value: ccTokenBeta},
 	}
 	if !reflect.DeepEqual(spec.Secrets, wantSecrets) {

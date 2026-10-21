@@ -388,5 +388,5 @@ func (g *Gateway) reach(ctx context.Context, a agents.Agent) (provision.Endpoint
 		return provision.Endpoint{}, "", fmt.Errorf("resolve gateway endpoint for agent %q (id %d): %w",
 			a.Name, a.ID, err)
 	}
-	return ep, g.runtime.Bearer(a.HooksToken), nil
+	return ep, agents.TurnBearer(a, g.runtime.Bearer), nil
 }

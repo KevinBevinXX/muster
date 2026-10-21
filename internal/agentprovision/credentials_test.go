@@ -78,6 +78,7 @@ func TestASpecIsBuiltFromItsOwnersCredentialsOnly(t *testing.T) {
 		r.OwnerID, r.Kind, r.HooksToken = owner, kind, "fixture-hooks-owner"
 		if kind == agents.KindClaudeCode {
 			r.CCAccount = "work"
+			r.GatewaySecret = "fixture-turn-credential-owner"
 		}
 		return r
 	}
