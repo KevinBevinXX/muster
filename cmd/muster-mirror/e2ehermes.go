@@ -151,6 +151,10 @@ func hermesWindowsE2E(context.Context) []mirrorhost.WindowInfo {
 	return out
 }
 
+// e2eUnconfirmedSeen is the UNCONFIRMED-ONCE messages already answered
+// "may have been submitted" (under e2eHermes.mu).
+var e2eUnconfirmedSeen = map[string]bool{}
+
 // SendHermes implements mirrorhost.HermesSender for the browser suite: the
 // host's gated send with the fake playing Hermes. The REAL host side runs
 // first (the -hermes-send switch, the window re-resolved through the real
@@ -169,6 +173,17 @@ func (w windowFake) SendHermes(ctx context.Context, req mirrorhost.HermesSendReq
 	}
 	if why := mirrorhost.HermesTextRefusal(req.Text); why != "" {
 		return &mirrorhost.HermesSendError{Kind: mirrorhost.HermesNotSubmitted, Why: why}
+	}
+	// A message holding UNCONFIRMED-ONCE plays an Enter whose row never came,
+	// the first time it is sent: "may have been submitted", nothing written.
+	if strings.Contains(req.Text, "UNCONFIRMED-ONCE") {
+		e2eHermes.mu.Lock()
+		first := !e2eUnconfirmedSeen[req.Text]
+		e2eUnconfirmedSeen[req.Text] = true
+		e2eHermes.mu.Unlock()
+		if first {
+			return &mirrorhost.HermesSendError{Kind: mirrorhost.HermesUnconfirmed, Why: "Hermes recorded no new message within 8s of the Enter"}
+		}
 	}
 	home := os.Getenv("MUSTER_MIRROR_E2E_HERMES_HOME")
 	b, _ := json.Marshal(map[string]string{"session": ap.Gen, "role": "user", "content": strings.TrimSpace(req.Text)})

@@ -88,6 +88,12 @@ const (
 	noticeHermesNotSent     = "hermes-not-sent"
 	noticeHermesPasted      = "hermes-pasted"
 	noticeHermesUnconfirmed = "hermes-unconfirmed"
+	// Any send the host never confirmed, and its repeat with the same nonce.
+	noticeUnconfirmed       = "unconfirmed"
+	noticeUnconfirmedRepeat = "unconfirmed-repeat"
+	// Send now: the message may have landed, or sits pasted in Hermes's box.
+	noticeSendNowUnconfirmed = "send-now-unconfirmed"
+	noticeSendNowPasted      = "send-now-pasted"
 	// The host's Hermes paste guard (mirror.PasteRefusal*).
 	noticeHermes      = "hermes"
 	noticeMultiplexer = "multiplexer"
@@ -122,6 +128,8 @@ var hermesNotIdleNotices = map[string]string{
 	mirror.StatusBusy:    noticeHermesBusy,
 	mirror.StatusWaiting: noticeHermesWaiting,
 	"":                   noticeHermesUnknown,
+	// idle with no status time: the host could not check it, so unknown.
+	mirror.StatusIdle: noticeHermesUnknown,
 }
 
 // hermesSendNotices is the notice for each way the host's gated send into
@@ -182,6 +190,10 @@ var composerNotices = map[string]struct {
 	noticeHermesNotSent:     {"Not sent: Hermes's screen or status was not safe to send into. Nothing was pasted.", false},
 	noticeHermesPasted:      {"Pasted, not submitted: the text is in Hermes's input box, and Enter was not pressed. Check the terminal.", false},
 	noticeHermesUnconfirmed: {"May have been submitted: check the conversation before sending again.", false},
+	noticeUnconfirmed:        {MirrorSendUnconfirmed, false},
+	noticeUnconfirmedRepeat:  {MirrorSendUnconfirmedRepeat, false},
+	noticeSendNowUnconfirmed: {"May have been sent: check the conversation before sending again. Its row in the queue says more.", false},
+	noticeSendNowPasted:      {"Pasted, not submitted: the text is in Hermes's input box. Check the terminal. Its row in the queue says more.", false},
 	noticeHermes:            {mirror.PasteRefusedHermesText, false},
 	noticeMultiplexer:       {mirror.PasteRefusedMultiplexerText, false},
 	noticeUnchecked:         {mirror.PasteRefusedUncheckedText, false},
@@ -339,7 +351,11 @@ type sendNonces struct {
 }
 
 // sendNonce is one claimed message: when it was claimed, or delivered.
-type sendNonce struct{ at time.Time }
+type sendNonce struct {
+	at time.Time
+	// unconfirmed: handed to the host, never confirmed (claim).
+	unconfirmed bool
+}
 
 func (n *sendNonces) clock() time.Time {
 	if n.now != nil {
@@ -356,6 +372,64 @@ func sendNonceKey(owner int64, nonce, text string) string {
 	return strconv.FormatInt(owner, 10) + "|" + nonce + "|" + hex.EncodeToString(sum[:])
 }
 
+// nonceState is what a claim found (claim).
+type nonceState int
+
+const (
+	// nonceNew: not seen — deliver it.
+	nonceNew nonceState = iota
+	// nonceRepeat: delivered, or being delivered now — answer "sent".
+	nonceRepeat
+	// nonceUnconfirmed: handed to the host and never confirmed — it may be
+	// in the conversation. 🔴 NEVER DELIVERED AGAIN under this nonce: a retry
+	// is the person's explicit "Send again", which mints a new one.
+	nonceUnconfirmed
+)
+
+// nonceResult is how a claimed delivery ended (claim's finish).
+type nonceResult int
+
+const (
+	nonceFailed nonceResult = iota // not delivered: the claim is released
+	nonceDelivered
+	nonceMaybe // the host never confirmed: kept, as unconfirmed
+)
+
+// claim is begin with the states a mirrored send needs: a repeat of an
+// UNCONFIRMED delivery is told apart from a repeat of a delivered one.
+func (n *sendNonces) claim(owner int64, nonce, text string) (nonceState, func(nonceResult)) {
+	key := sendNonceKey(owner, nonce, text)
+	if key == "" {
+		return nonceNew, func(nonceResult) {}
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	now := n.clock()
+	if n.seen == nil {
+		n.seen = map[string]sendNonce{}
+	}
+	if e, ok := n.seen[key]; ok && now.Sub(e.at) < sendNonceTTL {
+		if e.unconfirmed {
+			return nonceUnconfirmed, func(nonceResult) {}
+		}
+		return nonceRepeat, func(nonceResult) {}
+	}
+	n.evict(now)
+	n.seen[key] = sendNonce{at: now}
+	return nonceNew, func(r nonceResult) {
+		n.mu.Lock()
+		defer n.mu.Unlock()
+		switch r {
+		case nonceFailed:
+			delete(n.seen, key)
+		case nonceMaybe:
+			n.seen[key] = sendNonce{at: n.clock(), unconfirmed: true}
+		default:
+			n.seen[key] = sendNonce{at: n.clock()}
+		}
+	}
+}
+
 // begin claims a message for delivery. repeat is true when the same message
 // was already delivered, or is being delivered right now: the caller answers
 // "sent" and delivers nothing. Otherwise the caller delivers it and calls
@@ -365,40 +439,31 @@ func sendNonceKey(owner int64, nonce, text string) string {
 // A request with no usable nonce (an older page, a hand-made request) is never
 // a repeat and claims nothing.
 func (n *sendNonces) begin(owner int64, nonce, text string) (repeat bool, finish func(delivered bool)) {
-	key := sendNonceKey(owner, nonce, text)
-	if key == "" {
-		return false, func(bool) {}
-	}
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	now := n.clock()
-	if n.seen == nil {
-		n.seen = map[string]sendNonce{}
-	}
-	if e, ok := n.seen[key]; ok && now.Sub(e.at) < sendNonceTTL {
-		return true, func(bool) {}
-	}
-	if len(n.seen) >= sendNonceMax {
-		oldest, oldestAt := "", now
-		for k, e := range n.seen {
-			if now.Sub(e.at) >= sendNonceTTL {
-				delete(n.seen, k)
-			} else if !e.at.After(oldestAt) {
-				oldest, oldestAt = k, e.at
-			}
-		}
-		if len(n.seen) >= sendNonceMax && oldest != "" {
-			delete(n.seen, oldest)
+	st, fin := n.claim(owner, nonce, text)
+	return st != nonceNew, func(delivered bool) {
+		if delivered {
+			fin(nonceDelivered)
+		} else {
+			fin(nonceFailed)
 		}
 	}
-	n.seen[key] = sendNonce{at: now}
-	return false, func(delivered bool) {
-		n.mu.Lock()
-		defer n.mu.Unlock()
-		if !delivered {
-			delete(n.seen, key)
-			return
+}
+
+// evict makes room for one more claim: expired ones go, and at the cap the
+// oldest. n.mu is held.
+func (n *sendNonces) evict(now time.Time) {
+	if len(n.seen) < sendNonceMax {
+		return
+	}
+	oldest, oldestAt := "", now
+	for k, e := range n.seen {
+		if now.Sub(e.at) >= sendNonceTTL {
+			delete(n.seen, k)
+		} else if !e.at.After(oldestAt) {
+			oldest, oldestAt = k, e.at
 		}
-		n.seen[key] = sendNonce{at: n.clock()}
+	}
+	if len(n.seen) >= sendNonceMax && oldest != "" {
+		delete(n.seen, oldest)
 	}
 }

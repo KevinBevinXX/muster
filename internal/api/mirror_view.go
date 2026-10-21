@@ -227,6 +227,22 @@ func (s *Server) handleMirrorTerminalSend(w http.ResponseWriter, r *http.Request
 	s.mirrorSend(w, r, mirror.PasteActivePane)
 }
 
+// SendAgainHeader is ui.SendAgainHeader: one spelling, which the composer's
+// script reads.
+const SendAgainHeader = ui.SendAgainHeader
+
+// MirrorSendUnconfirmedRepeat answers a send whose nonce was already handed
+// to the host and never confirmed: it may be in the conversation already.
+const MirrorSendUnconfirmedRepeat = "Not sent again: the first try may already have been submitted, and muster never repeats it on its own. Check the conversation; to send it anyway, use Send again."
+
+// MirrorSendUnconfirmed answers a send the host never confirmed (a Claude Code
+// window's; a Hermes window's says it in the host's own words).
+const MirrorSendUnconfirmed = "May have been sent: muster handed it to the host, which did not confirm it. Check the conversation before sending again; to send it anyway, use Send again."
+
+// errUnconfirmedRepeat: the same message, by its nonce, after a delivery the
+// host never confirmed (MirrorSendUnconfirmedRepeat). Nothing was sent.
+var errUnconfirmedRepeat = errors.New(MirrorSendUnconfirmedRepeat)
+
 // MirrorSendEmpty answers a send with no text: 400, said rather than dropped.
 const MirrorSendEmpty = "nothing to send: type a message first"
 
@@ -462,7 +478,14 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 		status, notice, msg := http.StatusBadGateway, noticeFailed, err.Error()
 		var notIdle *mirror.HermesNotIdleError
 		var pr *mirror.PasteRefusedError
+		// 🔴 A send that MAY have landed offers "Send again" (a new nonce): the
+		// same nonce is never delivered again (claim's nonceUnconfirmed).
+		if errors.Is(err, errUnconfirmedRepeat) || errors.Is(err, mirror.ErrPasteUnconfirmed) {
+			w.Header().Set(SendAgainHeader, "1")
+		}
 		switch {
+		case errors.Is(err, errUnconfirmedRepeat):
+			status, notice, msg = http.StatusConflict, noticeUnconfirmedRepeat, MirrorSendUnconfirmedRepeat
 		case errors.As(err, &notIdle):
 			// The hub's idle gate for a Hermes window: nothing was sent.
 			status, notice, msg = http.StatusConflict, hermesNotIdleNotices[notIdle.Status], notIdle.Error()
@@ -471,6 +494,8 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 			// same when the browser posted the form. Pasted-not-submitted and
 			// may-have-been-submitted are said as such, never as "not sent".
 			status, notice, msg = http.StatusConflict, hermesSendNotices[pr.Refusal], pr.Why
+		case errors.Is(err, mirror.ErrPasteUnconfirmed):
+			status, notice, msg = http.StatusBadGateway, noticeUnconfirmed, MirrorSendUnconfirmed
 		case mirror.PasteGuardRefusal(err) != "":
 			// The host's Hermes paste guard: its own words, without this
 			// side's "the host refused the message:" in front, and a notice
@@ -534,17 +559,26 @@ func (s *Server) mirrorPaste(ctx context.Context, host, session, window, text, n
 }
 
 func (s *Server) mirrorPasteOnce(ctx context.Context, host, session, window, text, nonce string, target mirror.PasteTarget, opts ...mirror.PasteOption) (repeat bool, err error) {
-	repeat, finish := s.sends.begin(requestOwner(ctx), nonce, text)
-	if repeat {
+	st, finish := s.sends.claim(requestOwner(ctx), nonce, text)
+	switch st {
+	case nonceRepeat:
 		return true, nil
+	case nonceUnconfirmed:
+		return false, errUnconfirmedRepeat
 	}
 	pctx, cancel := context.WithTimeout(ctx, mirrorSendTimeout)
 	defer cancel()
 	// window == "" is the session's active window (mirror.Hub.PasteWindow).
-	if err := s.ext.Mirror.PasteWindow(pctx, host, session, window, text, target, opts...); err != nil {
-		finish(false)
-		return false, err
+	err = s.ext.Mirror.PasteWindow(pctx, host, session, window, text, target, opts...)
+	switch {
+	case err == nil:
+		finish(nonceDelivered)
+	case errors.Is(err, mirror.ErrPasteUnconfirmed):
+		// 🔴 KEPT, NOT RELEASED: it may be in the conversation already, and
+		// the composer keeps this nonce until the person asks to Send again.
+		finish(nonceMaybe)
+	default:
+		finish(nonceFailed)
 	}
-	finish(true)
-	return false, nil
+	return false, err
 }

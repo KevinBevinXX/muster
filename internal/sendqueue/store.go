@@ -736,6 +736,9 @@ type Outcome struct {
 	// back — waiting behind AfterSince (the window's Pasted at the refusal).
 	Superseded bool
 	AfterSince int64
+	// Pasted: the text was pasted into Hermes's input box and Enter withheld
+	// (the host's gated send): not submitted, and not to be resent blindly.
+	Pasted bool
 }
 
 // Renew extends instance by's claim on message id to lease from Postgres's

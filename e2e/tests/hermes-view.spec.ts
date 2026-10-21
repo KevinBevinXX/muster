@@ -185,3 +185,53 @@ test('on a host with -hermes-send, a Hermes window sends from its rendered view,
   for (const text of refused) expect(written).not.toContain(text);
   fs.writeFileSync(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@3|1|0|${t0 - 20}||\n`);
 });
+
+// 🔴 A SEND THAT MAY HAVE LANDED IS NEVER REPEATED BY ITS NONCE. The fake
+// answers the first try of an UNCONFIRMED-ONCE message "may have been
+// submitted" (an Enter whose row never came). Pressing Send again with the
+// same message (the same nonce) is refused and delivers nothing; the
+// explicit "Send again" mints a new nonce and is delivered.
+test('a send that may have been submitted offers Send again, and the same nonce is refused', async ({ page }) => {
+  await rig.login(page);
+  await expect
+    .poll(async () => {
+      await page.goto(rig.origin + viewOf('@2'));
+      return page.locator('#mv-input').isEnabled();
+    }, { message: `the Hermes view (mirror log:\n${rig.log})`, timeout: 30_000 })
+    .toBe(true);
+  const hermesWindows = path.join(rig.dir, 'hermes-windows');
+  fs.writeFileSync(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@3|1|0|${t0 - 20}||\n`);
+  const input = page.locator('#mv-input');
+  const text = 'please, UNCONFIRMED-ONCE';
+  // Until the host's refresh reports idle, the hub refuses as busy (nothing
+  // delivered, the nonce released): wait for each answer, as above.
+  let first = '';
+  for (let i = 0; i < 30; i++) {
+    await input.fill(text);
+    const [resp] = await Promise.all([
+      page.waitForResponse((r) => new URL(r.url()).pathname === '/mirror/view/send'),
+      page.locator('#mv-send').click(),
+    ]);
+    first = await resp.text();
+    if (!first.includes('Hermes is working')) break;
+    await page.waitForTimeout(200);
+  }
+  expect(first).toContain('May have been submitted');
+  await expect(page.locator('#mv-note')).toContainText('May have been submitted');
+  const again = page.locator('#mv-send-again');
+  await expect(again).toBeVisible();
+  await expect(input).toHaveValue(text);
+
+  // The same message, the same nonce: refused, nothing delivered.
+  await page.locator('#mv-send').click();
+  await expect(page.locator('#mv-note')).toContainText('Not sent again: the first try may already have been submitted');
+  expect(fs.readFileSync(path.join(home, 'rows.jsonl'), 'utf8')).not.toContain(text);
+
+  // The explicit retry: a new nonce, delivered once.
+  await again.click();
+  await expect(input).toHaveValue('');
+  await expect(again).toBeHidden();
+  await expect(page.locator('#mv-log [data-bubble="user"]').last()).toContainText(text, { timeout: 20_000 });
+  const written = fs.readFileSync(path.join(home, 'rows.jsonl'), 'utf8');
+  expect(written.split(text).length - 1).toBe(1);
+});

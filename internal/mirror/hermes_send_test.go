@@ -177,3 +177,57 @@ func TestTheGatedSendsOutcomesReachTheCaller(t *testing.T) {
 		})
 	}
 }
+
+// TestAQueuedSendToAHermesWindowThatTurnedBusyIsSuperseded: a QUEUED paste
+// (ExpectTurn) into a Hermes window that is no longer idle is refused as
+// SUPERSEDED — the queue puts the row back and decides on it afresh, as for
+// Claude Code — never as the person-facing "not idle" refusal, which the queue
+// would finish as a failure. A person's own Send (no turn) still gets the
+// not-idle words. Nothing reaches the host either way.
+func TestAQueuedSendToAHermesWindowThatTurnedBusyIsSuperseded(t *testing.T) {
+	r := newRig(t)
+	ctx, cancel := context.WithTimeout(asUser(1), 5*time.Second)
+	defer cancel()
+	tok, _ := r.store.mint(t, 1, "on")
+	h := connectScripted(t, r, tok, hermesHello("on", "busy", `,"hermesSend":true`), okReply)
+	r.online(t, 1, "on", "work")
+	err := r.svc.PasteWindow(ctx, "on", "work", "@1", "queued", mirror.PasteClaude, mirror.ExpectTurn(mirror.Turn{Since: 1792000000000}))
+	var sup *mirror.SupersededError
+	var ni *mirror.HermesNotIdleError
+	if !errors.As(err, &sup) || !errors.Is(err, mirror.ErrSuperseded) || errors.As(err, &ni) {
+		t.Fatalf("a queued paste into a busy Hermes window = %v (%T); want superseded, not the not-idle refusal", err, err)
+	}
+	if err := r.svc.PasteWindow(ctx, "on", "work", "@1", "a person's", mirror.PasteClaude); !errors.As(err, &ni) {
+		t.Fatalf("a person's send into a busy Hermes window = %v; want HermesNotIdleError", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := h.got(); len(got) != 0 {
+		t.Fatalf("the host received %+v", got)
+	}
+}
+
+// TestAnIdleHermesWindowWithNoStatusTimeIsNotSentTo: "idle" with no since
+// (statusSince 0) cannot be checked by the host's gated send (it re-checks
+// idle AT that time), so the hub refuses it as unknown.
+func TestAnIdleHermesWindowWithNoStatusTimeIsNotSentTo(t *testing.T) {
+	r := newRig(t)
+	ctx, cancel := context.WithTimeout(asUser(1), 5*time.Second)
+	defer cancel()
+	tok, _ := r.store.mint(t, 1, "on")
+	hello := strings.Replace(hermesHello("on", "idle", `,"hermesSend":true`), `"status":"idle","statusSince":1792000001111`, `"status":"idle","statusSince":0`, 1)
+	if hello == hermesHello("on", "idle", `,"hermesSend":true`) {
+		t.Fatal("instrument check: the hello was not rewritten")
+	}
+	h := connectScripted(t, r, tok, hello, okReply)
+	r.online(t, 1, "on", "work")
+	st := r.svc.AgentState(asUser(1), "on", "work", "@1")
+	err := r.svc.PasteWindow(ctx, "on", "work", "@1", "hello", mirror.PasteClaude)
+	var ni *mirror.HermesNotIdleError
+	if !errors.As(err, &ni) || err.Error() != mirror.HermesUnknownText {
+		t.Fatalf("idle with no since (agent state %+v) = %v; want the unknown refusal", st, err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := h.got(); len(got) != 0 {
+		t.Fatalf("the host received %+v", got)
+	}
+}

@@ -413,6 +413,13 @@ func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, windo
 	if !anyPane {
 		if st, s, ok := hc.hermesStatus(session, windowID); ok {
 			if st != StatusIdle || s <= 0 {
+				// 🔴 A QUEUED paste (ExpectTurn) is SUPERSEDED, as on Claude Code:
+				// the window moved after the queue decided, nothing was sent, and
+				// the row is decided on again. Only a person's own Send gets the
+				// not-idle words.
+				if o.Expect != nil {
+					return &SupersededError{Pasted: h.turn(owner, host, session, windowID).pasted}
+				}
 				return &HermesNotIdleError{Status: st}
 			}
 			hermes, since = true, s
