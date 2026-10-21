@@ -124,6 +124,37 @@ func onlyFrom(ctx context.Context) (string, bool) {
 	return v, ok
 }
 
+// prevStatusKey carries WithPreviousStatus's slot.
+type prevStatusKey struct{}
+
+type prevStatusSlot struct {
+	status string
+	ok     bool
+}
+
+// WithPreviousStatus returns ctx for ONE status write, and a function that,
+// after the write, answers the status the row had immediately before it and
+// whether the store reported one. PGStore.SetStatus reports it from the same
+// statement as the write (the version it locked and replaced); a write that
+// moved nothing, a failed write, or a store that does not report leaves ok
+// false. It is how a caller tells a TRANSITION into a status from a re-save of
+// the status the task already had (api.setNoteStatus: a task BECOMING complete).
+//
+// A context, not a new return value, so the write still goes through
+// Store.SetStatus and every decorator around it (WithStatusLogging, the api's
+// liveNotes) — a second method would have bypassed them.
+func WithPreviousStatus(ctx context.Context) (context.Context, func() (string, bool)) {
+	slot := &prevStatusSlot{}
+	return context.WithValue(ctx, prevStatusKey{}, slot), func() (string, bool) { return slot.status, slot.ok }
+}
+
+// recordPreviousStatus fills ctx's WithPreviousStatus slot, if it has one.
+func recordPreviousStatus(ctx context.Context, status string) {
+	if slot, ok := ctx.Value(prevStatusKey{}).(*prevStatusSlot); ok {
+		slot.status, slot.ok = status, true
+	}
+}
+
 // WithWriter returns ctx carrying label as the identity of whoever is about to
 // write a task status on it.
 //

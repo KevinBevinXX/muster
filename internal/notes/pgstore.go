@@ -564,23 +564,34 @@ func (s *PGStore) listCommentsForNotes(ctx context.Context, ids []int64) ([]Comm
 // SetStatus updates a task's lifecycle status (and bumps updated_at) and returns
 // the refreshed note. The caller is responsible for authorizing the transition
 // (e.g. only the operator/human may set StatusComplete).
+//
+// 🔴 THE PREVIOUS STATUS COMES FROM THE SAME STATEMENT (WithPreviousStatus).
+// The row is selected FOR UPDATE in a CTE with every condition of the write,
+// and the UPDATE returns that locked version's status — so "what it was" is
+// exactly the value this write replaced, never a separate read another writer
+// could slip in front of.
 func (s *PGStore) SetStatus(ctx context.Context, id int64, status string) (Note, error) {
-	q := `UPDATE notes SET status=$2, updated_at=now() WHERE id=$1 AND ` + liveOnly
+	sel := `SELECT id, status FROM notes WHERE id=$1 AND ` + liveOnly
 	if forAgent(ctx) {
 		// An agent's write: never out of complete, decided by the row itself.
-		q += ` AND status <> '` + StatusComplete + `'`
+		sel += ` AND status <> '` + StatusComplete + `'`
 	}
 	args := []any{id, status}
 	from, conditional := onlyFrom(ctx)
 	if conditional {
-		q += ` AND status = $3`
+		sel += ` AND status = $3`
 		args = append(args, from)
 	}
-	tag, err := s.pool.Exec(ctx, q, args...)
-	if err != nil {
+	q := `WITH old AS (` + sel + ` FOR UPDATE)
+		UPDATE notes SET status=$2, updated_at=now() FROM old WHERE notes.id = old.id RETURNING old.status`
+	var prev string
+	err := s.pool.QueryRow(ctx, q, args...).Scan(&prev)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return Note{}, err
 	}
-	if tag.RowsAffected() == 0 {
+	if err == nil {
+		recordPreviousStatus(ctx, prev)
+	} else {
 		if conditional {
 			if _, gerr := s.Get(ctx, id); gerr == nil {
 				return Note{}, ErrStatusMoved

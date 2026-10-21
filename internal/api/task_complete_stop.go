@@ -36,8 +36,9 @@ import (
 // set `complete` through its own handler.
 // ---------------------------------------------------------------------------
 
-// stopChiefAgentOnComplete stops the agent the chief's latest, unreleased start
-// on task n made (plugins.DispatchStore.ChiefStartedAgent), when that agent
+// stopChiefAgentOnComplete runs once per transition of task n INTO complete
+// (setNoteStatus decides that). It stops the agent the chief's latest,
+// unreleased start on task n made (plugins.DispatchStore.ChiefStartedAgent), when that agent
 // belongs to n's owner, is bound to n, and its stored status is live
 // (agentLive — exactly the statuses the cap counts). Anything else is a no-op:
 // no chief start, an agent the owner started by hand, one already stopped or in

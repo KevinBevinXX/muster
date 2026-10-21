@@ -439,7 +439,9 @@ When a task becomes `complete` — by any path: the task card, **Mark complete**
 made, at once: the provisioner's `Stop`, the same call as the Agents page's
 Stop, scales its instance to zero, so a turn it is running is cut off.
 **Start** brings it back. It runs in the background after the status write; a
-failed stop is logged and the write stands.
+failed stop is logged and the write stands. Only the move **into** `complete`
+stops: saving `complete` again on a task that already is (after you Started its
+agent again, say) stops nothing.
 
 Only that agent, only while its stored status is live (pending, provisioning,
 running), and only while its row is still bound to the task. Left alone: an
@@ -453,6 +455,10 @@ guard 10.
 ⚠ The live cap reads the stored status, so an agent whose instance died while
 its row still says `running` keeps its slot until something writes the row (a
 Stop, a Start, or that task being completed).
+
+⚠ Known residual: a task completed within seconds of the chief's dispatch —
+before the agent's instance is created, or before the agent is recorded — can
+leave that agent running. Stop it by hand.
 
 ## Delivery to your chief
 

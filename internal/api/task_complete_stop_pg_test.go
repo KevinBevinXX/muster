@@ -364,3 +364,30 @@ func TestALedgerAgentNoLongerOnTheTaskIsNotStopped(t *testing.T) {
 		t.Fatalf("positive control: agent %d stopped %d time(s), want 1", b.ID, got)
 	}
 }
+
+// TestOnlyATransitionIntoCompleteStops: the stop fires when a task BECOMES
+// complete, not on every write that lands as complete. The owner Starts the
+// chief's agent again on a completed task; saving `complete` again (the card,
+// the machine route) must not stop it a second time.
+func TestOnlyATransitionIntoCompleteStops(t *testing.T) {
+	f := newCompleteStopFixture(t)
+	n := f.task(t, "restarted after completion")
+	a := f.dispatch(t, n)
+	f.humanPatch(t, n.ID, notes.StatusComplete)
+	if got := f.sp.stops(a.ID, 1); got != 1 {
+		t.Fatalf("positive control: the transition into complete stopped agent %d %d time(s), want 1", a.ID, got)
+	}
+	// The owner's Start (the fake's row back to running).
+	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE agents SET status = 'running' WHERE id = $1`, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.humanPatch(t, n.ID, notes.StatusComplete)
+	f.machinePatch(t, n.ID, notes.StatusComplete)
+	time.Sleep(noStopWait)
+	if got := f.sp.stops(a.ID, 1); got != 1 {
+		t.Fatalf("a re-save of an already complete task stopped the restarted agent: %d stop(s) in all, want 1", got)
+	}
+	if got := f.agentStatus(t, a.ID); got != agents.StatusRunning {
+		t.Errorf("the restarted agent reads %q, want running", got)
+	}
+}
