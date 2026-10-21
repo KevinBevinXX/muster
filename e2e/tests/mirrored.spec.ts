@@ -508,13 +508,29 @@ function newTranscript(): string {
   return p;
 }
 
-async function waitForClaude(page: Page) {
+// waitForClaude waits until the list shows main as a Claude pane of a host that
+// is ONLINE in the given mode.
+//
+// 🔴 ONLINE, AND IN THE MODE THE NEW HOST WAS STARTED IN — not just "a Claude
+// card". A stopped host's card stays listed OFFLINE with its Claude chip, so a
+// wait for the chip alone returned while the restarted host had not connected
+// yet, and the page it then opened was the offline one, with no composer
+// (CI: "#mv-input … element(s) not found"; reproduced by starting the host two
+// seconds late). Where a test restarts a read-only host as an interactive one,
+// the mode is what tells the NEW connection from the old.
+async function waitForClaude(page: Page, mode: 'interactive' | 'read-only') {
   await expect
-    .poll(async () => (await (await page.request.get(origin + '/ui/agents')).text()).includes('data-mirror-claude'), {
-      message: `main reported as a Claude pane (muster-mirror log:\n${rig.log})`,
-      timeout: 20_000,
-    })
-    .toBe(true);
+    .poll(
+      async () => {
+        const html = await (await page.request.get(origin + '/ui/agents')).text();
+        const cards = html.split('<article').filter((a) => a.includes('data-mirror-claude'));
+        if (cards.length !== 1) return `${cards.length} Claude cards`;
+        if (cards[0].includes('data-mirror-offline')) return 'offline';
+        return cards[0].includes('data-f-mode="interactive"') ? 'interactive' : 'read-only';
+      },
+      { message: `main reported as a Claude pane of an online ${mode} host (muster-mirror log:\n${rig.log})`, timeout: 20_000 },
+    )
+    .toBe(mode);
 }
 
 const viewCard = (page: Page, session: string) => page.locator(`#agents-list article[data-mirror-card]:has(a[href="${viewPath(session)}"])`);
@@ -524,7 +540,7 @@ test('a mirrored Claude pane opens in the rendered view: collapsed tool rows, li
   const tr = newTranscript();
   await startMirror(false, tr);
   await login(page);
-  await waitForClaude(page);
+  await waitForClaude(page, 'read-only');
 
   // The card for the Claude pane opens the rendered view; the other the terminal.
   await page.goto(origin + '/agents');
@@ -599,7 +615,7 @@ test('an interactive host offers the composer: a fresh sign-in sends into the pa
   const tr = newTranscript();
   await startMirror(true, tr);
   await login(page);
-  await waitForClaude(page);
+  await waitForClaude(page, 'interactive');
   await page.goto(origin + viewPath('main'));
   await expect(page.locator('#mv-log [data-tool-row]')).toHaveCount(1);
   await expect(page.locator('#mv-input')).toBeEnabled();
@@ -704,7 +720,7 @@ test('the Rendered composer stays on screen at a phone size: pinned to the viewp
   }
 
   await login(page);
-  await waitForClaude(page);
+  await waitForClaude(page, 'interactive');
   // The real path: the Agents list, scrolled (as a phone collapses its toolbar
   // on), then the card.
   await page.goto(origin + '/agents');
@@ -835,7 +851,7 @@ for (const size of [
       const act = (l: ReturnType<Page['locator']>) => (size.touch ? l.tap() : l.click());
       try {
         await login(page);
-        await waitForClaude(page);
+        await waitForClaude(page, 'interactive');
 
         // The card of a session with no Claude pane opens its TERMINAL.
         await page.goto(origin + '/agents');
@@ -937,7 +953,7 @@ test('a read-only host’s Terminal view draws its composer disabled and says wh
   // box, disabled, with the reason under it (it used to have none at all).
   await startMirror(false, tr);
   await login(page);
-  await waitForClaude(page);
+  await waitForClaude(page, 'read-only');
   for (const session of ['scratch', 'main']) {
     await page.goto(origin + termPath(session));
     await expect(screen(page)).toContainText(`FAKE-MIRROR session=${session} mode=ro`);
@@ -951,7 +967,7 @@ test('a read-only host’s Terminal view draws its composer disabled and says wh
   // (it used to do nothing at all, silently).
   await stopMirror();
   await startMirror(true, tr);
-  await waitForClaude(page);
+  await waitForClaude(page, 'interactive');
   await page.goto(origin + viewPath('main'));
   await expect(page.locator('#mv-input')).toBeEnabled();
   const sends: number[] = [];
