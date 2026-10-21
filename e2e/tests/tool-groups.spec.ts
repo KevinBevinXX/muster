@@ -323,15 +323,30 @@ test('mirror: the pane transcript groups the same way, and a notice ends a run',
 test('mirror: a socket that drops and resumes keeps the run in place, with no duplicate ids', async ({ page }) => {
   const tr = rig.transcript(cc.prompt('resume me') + cc.toolUse('ra', 'Bash', { command: cmd('ra') }) +
     cc.toolUse('rb', 'Bash', { command: cmd('rb') }) + cc.toolUse('rc', 'Bash', { command: cmd('rc') }), 'resume');
-  await rig.startHost({ MUSTER_MIRROR_E2E_SESSIONS: 'main', MUSTER_MIRROR_E2E_CLAUDE: 'main=' + tr });
+  // 🔴 A SESSION OF ITS OWN ('resume', not 'main'): the host started before
+  // this test listed a Claude 'main', and its card stays listed (offline)
+  // after it stops, so waiting for "a Claude card" returned before THIS host
+  // had connected and the page opened was the old one (CI: the shape poll
+  // timed out; reproduced by starting this host 2 s late). A card for
+  // 'resume', online, can only be this host's.
+  await rig.startHost({ MUSTER_MIRROR_E2E_SESSIONS: 'resume', MUSTER_MIRROR_E2E_CLAUDE: 'resume=' + tr });
   const sockets: { close: () => Promise<void> }[] = [];
   await page.routeWebSocket(/\/mirror\/view\/ws/, (ws) => {
     ws.connectToServer();
     sockets.push(ws);
   });
   await rig.login(page);
-  await rig.waitListed(page, 'data-mirror-claude');
-  await page.goto(rig.origin + rig.viewPath('main'));
+  await expect
+    .poll(
+      async () => {
+        const html = await (await page.request.get(rig.origin + '/ui/agents')).text();
+        const card = html.split('<article').find((a) => a.includes('data-f-session="resume"'));
+        return !!card && card.includes('data-mirror-claude') && !card.includes('data-mirror-offline');
+      },
+      { message: `this host's 'resume' card, online, as Claude Code (muster-mirror log:\n${rig.log})`, timeout: 20_000 },
+    )
+    .toBe(true);
+  await page.goto(rig.origin + rig.viewPath('resume'));
   const log = page.locator('#mv-log');
   await expect.poll(() => log.evaluate(shapeJS), { timeout: 15_000 }).toBe('T G3[running](ra,rb,rc)');
 
