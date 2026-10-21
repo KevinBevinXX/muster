@@ -73,7 +73,12 @@ func publish(t *testing.T, gh, repo string, files map[string]string) {
 
 func newTestCheckout(t *testing.T, repo, dir, base string) *Checkout {
 	t.Helper()
-	cfg := CheckoutConfig{Repo: repo, Dir: dir, Voice: Voice{Who: "fixd", Agent: "the fixture agent", AgentOf: "its fixture agent"}}
+	return newBranchCheckout(t, repo, "", dir, base)
+}
+
+func newBranchCheckout(t *testing.T, repo, branch, dir, base string) *Checkout {
+	t.Helper()
+	cfg := CheckoutConfig{Repo: repo, Branch: branch, Dir: dir, Voice: Voice{Who: "fixd", Agent: "the fixture agent", AgentOf: "its fixture agent"}}
 	if base != "" {
 		cfg.ConnectBase, cfg.Token = base, "fixture-agent-token-81d0"
 	}
@@ -178,71 +183,156 @@ func TestALocalFailureIsNotACloneFailure(t *testing.T) {
 	}
 }
 
-// TestAnInterruptedMoveIsFinished: a move of the verified clone into the
-// workspace interrupted after some entries leaves those entries and no .git.
-// The next attempt finishes that move — it does not refuse the workspace
-// forever as "holds files" — and leaves no manifest or scratch behind. Files
-// the move did not put there still make it refuse.
-func TestAnInterruptedMoveIsFinished(t *testing.T) {
+// TestAnEmptyRepositoryWithABranchIsACheckout (#209 audit 🔴1): muster always
+// names a branch (resolveRepoBranch: the repo's default, else "main"), and
+// `git clone --branch=X` of an empty repository fails "Remote branch X not
+// found". An empty remote (no refs) is cloned without --branch, its unborn
+// HEAD pointed at the branch asked for.
+func TestAnEmptyRepositoryWithABranchIsACheckout(t *testing.T) {
 	gh := localGitHub(t)
-	publish(t, gh, "example-org/tide-charts", map[string]string{"a.txt": "a\n", "b.txt": "b\n", "c.txt": "c\n"})
-	base := t.TempDir()
-	dir := filepath.Join(base, "tide-charts")
-	moved := 0
-	moveEntry = func(from, to string) error {
-		if moved == 1 {
-			return errors.New("fixture: interrupted")
-		}
-		moved++
-		return os.Rename(from, to)
-	}
-	t.Cleanup(func() { moveEntry = os.Rename })
-	c := newTestCheckout(t, "example-org/tide-charts", dir, "")
-	if err := c.Attempt(context.Background()); err == nil || !strings.Contains(err.Error(), "fixture: interrupted") {
-		t.Fatalf("the interrupted move: err = %v", err)
-	}
-	if ents, _ := os.ReadDir(dir); len(ents) != 1 {
-		t.Fatalf("after the interruption the workspace holds %d entries, want 1", len(ents))
-	}
-	moveEntry = os.Rename
+	publish(t, gh, "example-org/blank-slate", nil)
+	dir := filepath.Join(t.TempDir(), "ws", "blank-slate")
+	c := newBranchCheckout(t, "example-org/blank-slate", "trunk", dir, "")
 	if err := c.Attempt(context.Background()); err != nil {
-		t.Fatalf("the attempt after an interrupted move: %v", err)
+		t.Fatalf("the clone of an empty repository on a named branch: %v", err)
 	}
-	for _, f := range []string{"a.txt", "b.txt", "c.txt"} {
-		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
-			t.Fatalf("%s missing after the resumed move", f)
-		}
+	if head := gitT(t, dir, "symbolic-ref", "HEAD"); head != "refs/heads/trunk" {
+		t.Fatalf("HEAD = %q, want the branch asked for (refs/heads/trunk)", head)
 	}
-	if gitT(t, dir, "rev-parse", "--abbrev-ref", "HEAD") != "trunk" || gitT(t, dir, "status", "--porcelain") != "" {
-		t.Fatal("the resumed checkout is not a clean trunk checkout")
+	if err := c.Attempt(context.Background()); err != nil {
+		t.Fatalf("the existing checkout: %v", err)
 	}
-	if _, err := os.Lstat(filepath.Join(dir, ".git", moveManifest)); err == nil {
-		t.Fatal("the move manifest was left in the checkout")
-	}
-	if ents, _ := os.ReadDir(base); len(ents) != 1 {
-		t.Fatalf("the scratch clone was left behind: %d entries", len(ents))
-	}
+}
 
-	// A file the move did not put there: refused, as before.
-	dir2 := filepath.Join(base, "second")
-	moved = 0
-	moveEntry = func(from, to string) error {
-		if moved == 1 {
-			return errors.New("fixture: interrupted")
-		}
-		moved++
-		return os.Rename(from, to)
+// TestAMissingBranchOfARealRepositoryStillFails: the empty-repository fallback
+// is for a remote with NO refs. A repository with commits whose branch does
+// not exist fails as before — git's own error, not a local one, and nothing is
+// checked out.
+func TestAMissingBranchOfARealRepositoryStillFails(t *testing.T) {
+	gh := localGitHub(t)
+	publish(t, gh, "example-org/tide-charts", map[string]string{"README.md": "r\n"})
+	dir := filepath.Join(t.TempDir(), "ws", "tide-charts")
+	err := newBranchCheckout(t, "example-org/tide-charts", "no-such-branch", dir, "").Attempt(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "no-such-branch") {
+		t.Fatalf("err = %v; want git's missing-branch error", err)
 	}
-	c2 := newTestCheckout(t, "example-org/tide-charts", dir2, "")
-	_ = c2.Attempt(context.Background())
-	moveEntry = os.Rename
-	if err := os.WriteFile(filepath.Join(dir2, "stranger.txt"), []byte("x\n"), 0o644); err != nil {
+	var le *localError
+	if errors.As(err, &le) {
+		t.Fatalf("a missing branch was classed local: %v", err)
+	}
+	if _, serr := os.Lstat(filepath.Join(dir, ".git")); serr == nil {
+		t.Fatal("a missing branch left a checkout")
+	}
+}
+
+// TestAnEmptyCheckoutTheAgentFetchedIntoIsStillACheckout (#209 audit 🟡2):
+// after the agent fetched (refs exist) and staged work, still with no commit
+// of its own, a restart must use the checkout — not refuse it and tell the
+// operator to delete the .git holding that work.
+func TestAnEmptyCheckoutTheAgentFetchedIntoIsStillACheckout(t *testing.T) {
+	gh := localGitHub(t)
+	publish(t, gh, "example-org/blank-slate", nil)
+	dir := filepath.Join(t.TempDir(), "ws", "blank-slate")
+	c := newBranchCheckout(t, "example-org/blank-slate", "trunk", dir, "")
+	if err := c.Attempt(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := c2.Attempt(context.Background()); err == nil || !strings.Contains(err.Error(), "holds files but is not a git checkout") {
-		t.Fatalf("a stranger file: err = %v", err)
+	// Someone pushes to the remote; the agent fetches and stages a file.
+	other := t.TempDir()
+	gitT(t, other, "init", "-q")
+	if err := os.WriteFile(filepath.Join(other, "x.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Lstat(filepath.Join(dir2, ".git")); err == nil {
-		t.Fatal("a move was finished over a file it did not put there")
+	gitT(t, other, "add", "x.txt")
+	gitT(t, other, "commit", "-q", "-m", "elsewhere")
+	gitT(t, other, "push", "-q", filepath.Join(gh, "example-org", "blank-slate.git"), "trunk:refs/heads/elsewhere")
+	gitT(t, dir, "fetch", "-q", "origin")
+	if err := os.WriteFile(filepath.Join(dir, "work.txt"), []byte("staged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitT(t, dir, "add", "work.txt")
+	if refs := gitT(t, dir, "for-each-ref"); refs == "" {
+		t.Fatal("instrument: the fetch left no refs")
+	}
+	if err := newBranchCheckout(t, "example-org/blank-slate", "trunk", dir, "").Attempt(context.Background()); err != nil {
+		t.Fatalf("a restart after the agent fetched: %v", err)
+	}
+}
+
+// TestALocalCloneFailureFilesNoGithubRequest (#209 audit 🟢5): the clone
+// command failing on THIS side (here: a parent it cannot write) is local — no
+// github grant fixes it — so no connector request is filed.
+func TestALocalCloneFailureFilesNoGithubRequest(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes anywhere: no unwritable parent to fail on")
+	}
+	gh := localGitHub(t)
+	publish(t, gh, "example-org/tide-charts", map[string]string{"README.md": "r\n"})
+	parent := filepath.Join(t.TempDir(), "ro")
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+	dir := filepath.Join(parent, "tide-charts")
+	stub := &githubStub{}
+	c := newTestCheckout(t, "example-org/tide-charts", dir, stub.server(t).URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+	var st CheckoutState
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if st = c.State(); st.State != CheckoutCloning {
+			break
+		}
+	}
+	time.Sleep(150 * time.Millisecond)
+	st = c.State()
+	if st.State != CheckoutFailed || !strings.Contains(st.Detail, "failed on this pod") || strings.Contains(st.Detail, "could not be cloned") {
+		t.Fatalf("state %+v", st)
+	}
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	if stub.filed != 0 {
+		t.Fatalf("a local clone failure filed %d github connector request(s)", stub.filed)
+	}
+}
+
+// TestAnInterruptedMoveIsRefusedNamingTheScratchClone (#209 audit D2): a move
+// of the clone into place that was cut short leaves files in the workspace
+// and the clone's .git in the scratch directory. It is refused — not finished —
+// and the refusal names the scratch directory to remove; once both are
+// removed the next attempt clones.
+func TestAnInterruptedMoveIsRefusedNamingTheScratchClone(t *testing.T) {
+	gh := localGitHub(t)
+	publish(t, gh, "example-org/tide-charts", map[string]string{"a.txt": "a\n", "b.txt": "b\n"})
+	base := t.TempDir()
+	dir := filepath.Join(base, "tide-charts")
+	scratch := filepath.Join(base, ".tide-charts.fixd-clone")
+	gitT(t, base, "clone", "-q", "https://github.com/example-org/tide-charts.git", scratch)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(scratch, "a.txt"), filepath.Join(dir, "a.txt")); err != nil {
+		t.Fatal(err)
+	}
+	c := newTestCheckout(t, "example-org/tide-charts", dir, "")
+	err := c.Attempt(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "interrupted") || !strings.Contains(err.Error(), scratch) {
+		t.Fatalf("err = %v; want a refusal naming the scratch clone %s", err, scratch)
+	}
+	if _, serr := os.Lstat(filepath.Join(dir, ".git")); serr == nil {
+		t.Fatal("the interrupted move was finished")
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(scratch); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Attempt(context.Background()); err != nil {
+		t.Fatalf("after removing both: %v", err)
 	}
 }
