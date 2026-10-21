@@ -2,10 +2,8 @@
 -- ReleaseEdit): the ⋯ menu's Edit opens a queued message's text in its row,
 -- and while it is open the row is HELD — the dispatcher never sends it.
 --
--- ⚠ NUMBERED 0040 AHEAD OF ITS PREDECESSORS: 0038 (the Hermes agent kind, #192)
--- and 0039 (Android devices, #186) are in open pull requests and merge first
--- (or this is renumbered to the next free number);
--- TestEmbeddedMigrationsAreContiguousFrom0001 refuses a tree with a gap.
+-- Applies after 0039 (paired devices); it was numbered while 0038 and 0039 were
+-- still in review, and they merged first.
 --
 -- 🔴 A HOLD IS A LEASE ON THE DATABASE'S CLOCK, LIKE A CLAIM. held_until is
 -- written as now() + the hold (sendqueue.EditHold, 10 minutes) and compared
