@@ -172,10 +172,13 @@ func redactText(s string) string {
 // 🔴 THE PARSER'S PATTERN IS WIDER THAN MUSTER'S OWN LINE (#147). It accepts any
 // text in the curl command's quotes and any host and path before /f/, so a
 // line shaped like an attachment could carry a credential (in the quotes, in a
-// user:token@ or a path segment of the link) past the redactor. So the line
-// must be AgentLine's (the curl quotes hold the same link, the same name), the
-// link carries no userinfo, and with its sig removed the redactor changes
-// nothing. Anything else is redacted like the text around it.
+// user:token@ or a path segment of the link, the sig slot itself) past the
+// redactor. So the line must be AgentLine's (the curl quotes hold the same
+// link, the same name), the link carries no userinfo, its sig is nothing the
+// redactor takes, and with the sig removed the redactor changes nothing.
+// Anything else is redacted like the text around it. ⚠ The link's HOST is not
+// matched against muster's: the redaction runs in the stream functions, which
+// are not handed the muster URL.
 func keptAttachment(line string, r uploads.Ref) bool {
 	if line != "[attached: "+r.Name+" ("+r.ContentType+", "+r.Size+") "+r.URL+
 		" — download with curl -sSfo "+r.Name+" '"+r.URL+"']" {
@@ -186,7 +189,11 @@ func keptAttachment(line string, r uploads.Ref) bool {
 		return false
 	}
 	sig := u.Query().Get("sig")
-	if sig == "" {
+	// 🔴 THE sig SLOT IS CHECKED TOO (#209 audit): a line shaped like an
+	// attachment, from any host, could carry a credential there — the slot is
+	// 43 characters of a token alphabet, a GitHub token's own shape. muster's
+	// signature is an HMAC, which the redactor leaves alone.
+	if sig == "" || redact.Secrets(sig) != sig {
 		return false
 	}
 	masked := strings.ReplaceAll(line, "&sig="+sig, "")

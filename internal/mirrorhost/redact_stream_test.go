@@ -227,3 +227,32 @@ func TestOnlyMustersOwnAttachmentLineIsExempt(t *testing.T) {
 		t.Fatalf("muster's own line was changed: %q", ev.Text)
 	}
 }
+
+// TestACredentialInTheSigSlotIsRedacted (#209 audit): an attachment-shaped
+// line from any host with a GitHub token where muster's signature goes is not
+// muster's line; the token does not survive. Control: muster's own line, whose
+// sig is an HMAC-shaped value, is kept whole.
+func TestACredentialInTheSigSlotIsRedacted(t *testing.T) {
+	// Built at run time: a literal shaped like a token would itself be a
+	// leakscan finding. 43 characters, the sig slot's length.
+	tok := "gh" + "p_" + strings.Repeat("a1B2", 9) + "c3D"
+	if len(tok) != 43 {
+		t.Fatalf("instrument: the token is %d characters, the sig slot takes 43", len(tok))
+	}
+	id := strings.Repeat("A", 22)
+	evil := uploads.AgentLine("shot.png", "image/png", 2048, "https://elsewhere.example.test/f/"+id+"?exp=946684800&sig="+tok)
+	if len(uploads.FindRefs(evil)) != 1 {
+		t.Fatalf("instrument: the fixture is not an attachment line to the parser: %q", evil)
+	}
+	ev := cctranscript.Event{Kind: cctranscript.KindPrompt, Text: evil}
+	redactEvent(&ev)
+	if strings.Contains(ev.Text, tok) {
+		t.Fatalf("a credential in the sig slot survived: %q", ev.Text)
+	}
+	good := uploads.AgentLine("shot.png", "image/png", 2048, "https://m.example.test/f/"+id+"?exp=946684800&sig="+strings.Repeat("b", 43))
+	ev = cctranscript.Event{Kind: cctranscript.KindPrompt, Text: good}
+	redactEvent(&ev)
+	if ev.Text != good {
+		t.Fatalf("control: muster's own line was changed: %q", ev.Text)
+	}
+}
