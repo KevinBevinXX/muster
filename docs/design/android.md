@@ -1,8 +1,12 @@
 # Design: a native Android app for muster
 
-**Status: proposed; Phase 0 done.** The [Phase 0](#phase-0-spikes) spikes
-have run, on emulators and against a server, and their results are folded in
-below ([Phase 0 results][p0]). Nothing else is implemented. The operator
+**Status: proposed; Phase 0 done; Phase 1 server in progress.** The
+[Phase 0](#phase-0-spikes) spikes have run, on emulators and against a server,
+and their results are folded in below ([Phase 0 results][p0]). Implemented in
+muster so far: the push hardening (server change 21 and item 1: push sends
+refuse redirects, and `MUSTER_PUSH_EXTRA_HOSTS` admits the operator's exact
+push hosts, for paired phones only, re-checked at every send). Nothing else is
+implemented. The operator
 decisions below are **decided**. Every other section is the recommended
 design. Where this page states how muster works today, the code is the
 authority (see [decisions.md](../decisions.md)). Where it states how Android,

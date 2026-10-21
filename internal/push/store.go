@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -33,8 +34,9 @@ const MaxDevicesPerOwner = 20
 var ErrTooManyDevices = fmt.Errorf("push: a user may have at most %d devices; remove one on the account page", MaxDevicesPerOwner)
 
 // ErrPushServiceNotAllowed refuses an endpoint on a host that is not a known
-// browser push service.
-var ErrPushServiceNotAllowed = errors.New("push: the endpoint is not on a known browser push service")
+// browser push service or a push host the operator named
+// (MUSTER_PUSH_EXTRA_HOSTS).
+var ErrPushServiceNotAllowed = errors.New("push: the endpoint is not on a known push service")
 
 // pushServiceHosts is every host a browser's push service lives on: exact
 // names, and suffixes (a leading dot).
@@ -54,20 +56,116 @@ var pushServiceHosts = []string{
 	".notify.windows.com",
 }
 
-// AllowedPushService reports whether endpoint's host is a browser push
-// service, on the default port.
-func AllowedPushService(endpoint string) bool {
+// Allowlist is the set of hosts muster will POST a push to: the browser push
+// services (pushServiceHosts) and the operator's own push hosts
+// (MUSTER_PUSH_EXTRA_HOSTS), such as a self-hosted ntfy that serves
+// UnifiedPush to the Android app (docs/design/android.md).
+//
+// 🔴 TWO QUESTIONS, TWO METHODS. AllowsBrowser is the browser push services
+// alone: the only hosts a BROWSER subscription (Claim, /api/push/subscribe)
+// may name, so a session can never point muster at an operator host. Allows
+// adds the operator hosts: the paired phones' UnifiedPush endpoints
+// (ClaimNative). SendTo re-checks every row with the method for its kind at
+// send time, so removing a host from the configuration stops every POST to
+// it on the next notification.
+//
+// 🔴 AN OPERATOR HOST MATCHES BY EXACT NAME ONLY. No suffix, no wildcard, no
+// port: a member chooses only the PATH on a host the operator named. The
+// https-only, default-port rule applies to it as to the browser hosts, and
+// with redirects refused (pushHTTPClient) a send cannot be bounced from a
+// listed host to an unlisted one. There is deliberately no check of the
+// address the name resolves to: an in-cluster ntfy whose name resolves to a
+// private address is a reasonable deployment (design doc, server change 21).
+type Allowlist struct{ extra []string }
+
+// NewAllowlist is the browser push services plus extra, which must already be
+// clean (ParseExtraHosts).
+func NewAllowlist(extra []string) Allowlist {
+	return Allowlist{extra: slices.Clone(extra)}
+}
+
+// ExtraHosts is the operator's hosts, in the order configured.
+func (a Allowlist) ExtraHosts() []string { return slices.Clone(a.extra) }
+
+// Allows reports whether endpoint is an https URL on the default port whose
+// host is a browser push service or, exactly, one of the operator's hosts.
+func (a Allowlist) Allows(endpoint string) bool { return a.allows(endpoint, true) }
+
+// AllowsBrowser reports whether endpoint is an https URL on the default port
+// on a browser push service. The operator's hosts do not count.
+func (a Allowlist) AllowsBrowser(endpoint string) bool { return a.allows(endpoint, false) }
+
+func (a Allowlist) allows(endpoint string, extra bool) bool {
 	u, err := url.Parse(endpoint)
 	if err != nil || u.Scheme != "https" || u.Port() != "" {
 		return false
 	}
 	h := strings.ToLower(u.Hostname())
-	for _, a := range pushServiceHosts {
-		if h == a || (strings.HasPrefix(a, ".") && strings.HasSuffix(h, a) && len(h) > len(a)) {
+	if extra {
+		for _, x := range a.extra {
+			if h == x {
+				return true
+			}
+		}
+	}
+	for _, s := range pushServiceHosts {
+		if h == s || (strings.HasPrefix(s, ".") && strings.HasSuffix(h, s) && len(h) > len(s)) {
 			return true
 		}
 	}
 	return false
+}
+
+// ErrBadExtraHost refuses a MUSTER_PUSH_EXTRA_HOSTS entry that is not a bare
+// host name.
+var ErrBadExtraHost = errors.New("push: an extra push host must be a bare DNS host name")
+
+// ParseExtraHosts reads MUSTER_PUSH_EXTRA_HOSTS: host names separated by
+// commas or white space. Each must be a bare DNS name — no scheme, port,
+// path, wildcard, leading dot or IP literal — and is lower-cased. Empty is no
+// hosts. A deployment that typed the variable wrong must fail to start rather
+// than run with an allowlist it did not choose.
+func ParseExtraHosts(v string) ([]string, error) {
+	var out []string
+	for _, f := range strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' || r == '\n' }) {
+		h := strings.ToLower(f)
+		if !validHostName(h) {
+			return nil, fmt.Errorf("%w: %q", ErrBadExtraHost, f)
+		}
+		if !slices.Contains(out, h) {
+			out = append(out, h)
+		}
+	}
+	return out, nil
+}
+
+// validHostName reports whether h is a lower-case DNS name of at least two
+// labels: letters, digits and inner hyphens, each label 1–63 characters. A
+// name made only of digits and dots (an IPv4 literal) is refused.
+func validHostName(h string) bool {
+	if len(h) == 0 || len(h) > 253 {
+		return false
+	}
+	labels := strings.Split(h, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	allDigits := true
+	for _, l := range labels {
+		if len(l) == 0 || len(l) > 63 || l[0] == '-' || l[len(l)-1] == '-' {
+			return false
+		}
+		for _, c := range l {
+			switch {
+			case c >= 'a' && c <= 'z', c == '-':
+				allDigits = false
+			case c >= '0' && c <= '9':
+			default:
+				return false
+			}
+		}
+	}
+	return !allDigits
 }
 
 // Store is the subscription persistence.
@@ -99,6 +197,10 @@ type Store interface {
 
 	// Muted is owner's muted events, for a send (System, filtered by owner).
 	Muted(ctx context.Context, owner int64) ([]string, error)
+	// Allowlist is the hosts a subscription may be on: the ONE allowlist,
+	// which Claim enforces when a row is stored and push.Service re-checks at
+	// every send.
+	Allowlist() Allowlist
 	// MyMuted / SetMuted are the CALLER's preferences (row-level security).
 	MyMuted(ctx context.Context) ([]string, error)
 	SetMuted(ctx context.Context, muted []string) error
@@ -108,10 +210,23 @@ type Store interface {
 func sys(ctx context.Context) context.Context { return authz.System(ctx) }
 
 // PGStore is Store over Postgres (migration 0013).
-type PGStore struct{ pool *pgxpool.Pool }
+type PGStore struct {
+	pool  *pgxpool.Pool
+	allow Allowlist
+}
 
-// NewPG builds the Postgres store.
+// NewPG builds the Postgres store. It admits the browser push services only;
+// WithAllowlist adds the operator's hosts.
 func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
+
+// WithAllowlist sets the hosts a claimed endpoint may be on.
+func (s *PGStore) WithAllowlist(a Allowlist) *PGStore {
+	s.allow = a
+	return s
+}
+
+// Allowlist implements Store.
+func (s *PGStore) Allowlist() Allowlist { return s.allow }
 
 const deviceCols = `id, owner_id, endpoint, p256dh, auth, user_agent, created_at, last_ok_at, fail_count`
 
@@ -156,7 +271,7 @@ func (s *PGStore) Claim(ctx context.Context, owner int64, sub Subscription, user
 	if err := sub.Check(); err != nil {
 		return 0, err
 	}
-	if !AllowedPushService(sub.Endpoint) {
+	if !s.allow.AllowsBrowser(sub.Endpoint) {
 		return 0, ErrPushServiceNotAllowed
 	}
 	if r := []rune(userAgent); len(r) > maxUserAgent {

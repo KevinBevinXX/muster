@@ -215,6 +215,10 @@ const (
 	envVAPIDPublicKey  = "MUSTER_VAPID_PUBLIC_KEY"
 	envVAPIDPrivateKey = "MUSTER_VAPID_PRIVATE_KEY"
 	envVAPIDSubject    = "MUSTER_VAPID_SUBJECT"
+	// The operator's own push hosts (exact names, https, default port), added to
+	// the browser push services an endpoint may be on — a self-hosted ntfy for
+	// the Android app (internal/push.Allowlist). Empty: browser hosts only.
+	envPushExtraHosts = "MUSTER_PUSH_EXTRA_HOSTS"
 
 	// --- agent provisioning (see provisioner.go) ---
 	envAgentProvisioner  = "MUSTER_AGENT_PROVISIONER"
@@ -572,6 +576,9 @@ type config struct {
 	VAPIDPublicKey  string
 	VAPIDPrivateKey string
 	VAPIDSubject    string
+	// PushExtraHosts is MUSTER_PUSH_EXTRA_HOSTS as read; validate parses it
+	// (push.ParseExtraHosts) and pushExtraHosts returns the clean list.
+	PushExtraHosts string
 
 	// AgentProvisioner names the provisioning backend: one of
 	// provisionerChoices. Default provisionerNone, which leaves
@@ -908,6 +915,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		VAPIDPublicKey:       strings.TrimSpace(getenv(envVAPIDPublicKey)),
 		VAPIDPrivateKey:      strings.TrimSpace(getenv(envVAPIDPrivateKey)),
 		VAPIDSubject:         strings.TrimSpace(getenv(envVAPIDSubject)),
+		PushExtraHosts:       strings.TrimSpace(getenv(envPushExtraHosts)),
 
 		AgentProvisioner:  strings.ToLower(strings.TrimSpace(getenv(envAgentProvisioner))),
 		AgentGateway:      strings.ToLower(strings.TrimSpace(getenv(envAgentGateway))),
@@ -1409,6 +1417,9 @@ func (c config) validate() error {
 	if err := c.validateVAPID(); err != nil {
 		return err
 	}
+	if _, err := push.ParseExtraHosts(c.PushExtraHosts); err != nil {
+		return fmt.Errorf("%s: %v", envPushExtraHosts, err)
+	}
 	if err := c.validateSTT(); err != nil {
 		return err
 	}
@@ -1433,6 +1444,14 @@ func (c config) pushConfigured() bool {
 // vapid is the configured identity.
 func (c config) vapid() push.VAPIDConfig {
 	return push.VAPIDConfig{PublicKey: c.VAPIDPublicKey, PrivateKey: c.VAPIDPrivateKey, Subject: c.VAPIDSubject}
+}
+
+// pushAllowlist is the hosts a push endpoint may be on: the browser push
+// services and MUSTER_PUSH_EXTRA_HOSTS (validate has already refused a bad
+// entry, so a parse error here cannot happen and reads as no extra hosts).
+func (c config) pushAllowlist() push.Allowlist {
+	hosts, _ := push.ParseExtraHosts(c.PushExtraHosts)
+	return push.NewAllowlist(hosts)
 }
 
 // validateVAPID refuses a partial VAPID triple, and a complete one that is not

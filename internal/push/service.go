@@ -36,6 +36,9 @@ const (
 	ResultOK      = "ok"
 	ResultExpired = "expired"
 	ResultFailed  = "failed"
+	// ResultDisallowed is a device whose endpoint is no longer on an allowed
+	// push service: nothing is sent, and the row is pruned.
+	ResultDisallowed = "disallowed"
 )
 
 // Service sends one owner's notifications to that owner's devices.
@@ -59,6 +62,32 @@ func (s *Service) PublicKey() string { return s.vapid.PublicKey }
 
 // Store is the subscription store (the HTTP handlers' reads and writes).
 func (s *Service) Store() Store { return s.store }
+
+// Allowlist is the store's allowlist: the one source for what may be stored
+// and what may be sent to.
+func (s *Service) Allowlist() Allowlist { return s.store.Allowlist() }
+
+// allowedNow reports whether d's endpoint is still on an allowed push service
+// for its kind, judged NOW rather than when it was stored.
+//
+// 🔴 THE ALLOWLIST IS RE-CHECKED AT SEND TIME, NOT ONLY AT CLAIM. A host taken
+// out of MUSTER_PUSH_EXTRA_HOSTS (or a row stored before a rule tightened)
+// would otherwise keep receiving a POST per notification, forever.
+func (s *Service) allowedNow(d Device) bool {
+	return s.store.Allowlist().AllowsBrowser(d.Sub.Endpoint)
+}
+
+// dropDisallowed prunes a device whose endpoint is no longer allowed, sending
+// it nothing, and names the result.
+func (s *Service) dropDisallowed(ctx context.Context, d Device) string {
+	ep := d.Sub.Endpoint
+	if _, err := s.store.Prune(ctx, d); err != nil {
+		s.logger.Printf("push: prune disallowed %s (owner=%d) failed: %s", Short(ep), d.OwnerID, Redact(err, ep))
+	} else {
+		s.logger.Printf("push: pruned %s (owner=%d): its push service is no longer allowed; nothing was sent", Short(ep), d.OwnerID)
+	}
+	return ResultDisallowed
+}
 
 // SendTo delivers p to every device OWNER holds — and to nobody else's — in
 // parallel, pruning devices the push service reports gone (404/410) and
@@ -93,15 +122,19 @@ func (s *Service) SendTo(ctx context.Context, owner int64, p Payload) Report {
 		wg.Add(1)
 		go func(d Device) {
 			defer wg.Done()
-			res := s.pusher.Send(ctx, d.Sub, body)
-			result := s.settle(ctx, d, res)
+			var result string
+			if !s.allowedNow(d) {
+				result = s.dropDisallowed(ctx, d)
+			} else {
+				result = s.settle(ctx, d, s.pusher.Send(ctx, d.Sub, body))
+			}
 			metrics.PushDelivery.WithLabelValues(result).Inc()
 			mu.Lock()
 			defer mu.Unlock()
 			switch result {
 			case ResultOK:
 				rep.Delivered++
-			case ResultExpired:
+			case ResultExpired, ResultDisallowed:
 				rep.Expired++
 			default:
 				rep.Failed++

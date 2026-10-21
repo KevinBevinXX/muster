@@ -316,6 +316,10 @@ var bannerLedger = []string{
 	envVAPIDPublicKey,
 	envVAPIDPrivateKey,
 	envVAPIDSubject,
+	// The operator push hosts: with push ENABLED the banner names this variable
+	// whether it is set (the hosts it adds) or unset (browser hosts only). With
+	// push OFF nothing is sent anywhere, so the hosts are moot.
+	envPushExtraHosts,
 	envGitHubEncKey,
 	envAgentProvisioner,
 	// The chat tier is its own axis with its own two lines — the fully-off arm names

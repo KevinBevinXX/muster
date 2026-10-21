@@ -201,8 +201,8 @@ func TestSubscriptionCheckAndPushServiceAllowlist(t *testing.T) {
 		"https://169.254.169.254/latest/meta-data/":            false,
 		"https://muster.example/api/push/vapid-public-key":     false,
 	} {
-		if got := AllowedPushService(ep); got != want {
-			t.Errorf("AllowedPushService(%q) = %v, want %v", ep, got, want)
+		if got := (Allowlist{}).AllowsBrowser(ep); got != want {
+			t.Errorf("AllowsBrowser(%q) = %v, want %v", ep, got, want)
 		}
 	}
 }

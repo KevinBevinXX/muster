@@ -87,6 +87,7 @@ See [auth.md](auth.md).
 | `MUSTER_VAPID_PUBLIC_KEY` | none | no | [Web push](push.md). The three VAPID variables are all-or-none. Generate a keypair with `muster-server vapid generate`. |
 | `MUSTER_VAPID_PRIVATE_KEY` | none | no | The private half of that keypair. It must match the public key. |
 | `MUSTER_VAPID_SUBJECT` | none | no | A `mailto:` or `https:` contact address that is sent to push services. |
+| `MUSTER_PUSH_EXTRA_HOSTS` | none | no | Your own push hosts, such as a self-hosted ntfy for the [Android app](design/android.md). Paired phones may register on them; browsers may not. Exact host names, separated by commas or spaces: no scheme, port, path or wildcard. Each is reached on `https` and the default port only. A bad entry stops the server from starting. See [push.md](push.md#which-push-services). |
 | `MUSTER_MEMO_URL` | none | with the token | The base URL of the cairn memo listener, for the [memo relay](memo-relay.md). |
 | `MUSTER_MEMO_TOKEN` | none | no | A read-only cairn credential. The relay runs only while it is set, and also needs a database and an agent gateway. |
 | `MUSTER_MEMO_SCOPE_MAP` | none | no | `repo=scope,scope;…`. Use it when a repository's memos are filed under other scope names. |

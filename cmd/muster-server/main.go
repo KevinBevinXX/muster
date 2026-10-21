@@ -196,6 +196,14 @@ type app struct {
 // ⚠ A config with no DSN is accepted here and refused by config.validate. See
 // the note there; the assembly path and the deployment policy are separate
 // claims and the boot test needs the first without the second.
+// buildPushService is muster's own Web Push over pool: the store carries the
+// ONE allowlist (the browser push services plus MUSTER_PUSH_EXTRA_HOSTS),
+// which the service re-checks at every send.
+func buildPushService(cfg config, pool *pgxpool.Pool, logger *log.Logger) *push.Service {
+	return push.NewService(push.NewPG(pool).WithAllowlist(cfg.pushAllowlist()), push.NewWebpushPusher(cfg.vapid()),
+		cfg.vapid(), logger)
+}
+
 func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error) {
 	if logger == nil {
 		logger = log.Default()
@@ -494,7 +502,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// muster-native Web Push: only with the VAPID triple AND a database (the
 	// subscriptions are rows; config.validate refuses a partial triple).
 	if cfg.pushConfigured() && a.pool != nil {
-		ext.Push = push.NewService(push.NewPG(a.pool), push.NewWebpushPusher(cfg.vapid()), cfg.vapid(), logger)
+		ext.Push = buildPushService(cfg, a.pool, logger)
 	}
 
 	// Dictation: the message box's microphone, only with MUSTER_STT_TOKEN.
@@ -1064,10 +1072,16 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("web push: ENABLED — %s/%s/%s are set (subject %q); devices subscribe on the session "+
 			"tier and each notification reaches only its owner's devices", envVAPIDPublicKey, envVAPIDPrivateKey,
 			envVAPIDSubject, a.cfg.VAPIDSubject)
+		if hosts := a.cfg.pushAllowlist().ExtraHosts(); len(hosts) > 0 {
+			l.Printf("web push: %s adds %d operator push host(s) to the browser push services, by exact name "+
+				"(https, default port, redirects refused): %s", envPushExtraHosts, len(hosts), strings.Join(hosts, ", "))
+		} else {
+			l.Printf("web push: %s is unset, so only the browser push services are accepted", envPushExtraHosts)
+		}
 	} else {
 		l.Printf("web push: OFF — %s/%s/%s are unset (or there is no database), so no Enable button is drawn, "+
-			"%s answers 503 and nothing is sent. Mint a keypair with `muster-server vapid generate`",
-			envVAPIDPublicKey, envVAPIDPrivateKey, envVAPIDSubject, "/api/push/vapid-public-key")
+			"%s answers 503 and nothing is sent (%s is not read). Mint a keypair with `muster-server vapid generate`",
+			envVAPIDPublicKey, envVAPIDPrivateKey, envVAPIDSubject, "/api/push/vapid-public-key", envPushExtraHosts)
 	}
 
 	if ext.Connectors != nil {
