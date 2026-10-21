@@ -545,6 +545,10 @@ func sendQueueScript() g.Node {
   if (!box) return;
   var src = box.getAttribute('data-src');
   var timer = null, loading = false;
+  // gen moves when the page removes a row itself (Delete). A load that was
+  // already in flight then read the list BEFORE the removal, so its answer is
+  // dropped and the list read again: drawn, it would put the deleted row back.
+  var gen = 0;
   function schedule() {
     clearTimeout(timer);
     timer = setTimeout(load, box.querySelector('[data-active]') ? 3000 : 15000);
@@ -574,10 +578,12 @@ func sendQueueScript() g.Node {
     if (loading) return;
     if (document.hidden || menuOpen() || editing()) { schedule(); return; }
     loading = true;
+    var g = gen;
     fetch(src, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
       .then(function (r) { return r.ok ? r.text() : null; })
       .then(function (t) {
         loading = false;
+        if (g !== gen) { load(); return; }
         if (t !== null && !menuOpen() && !editing()) { box.innerHTML = t; copyable(); }
         schedule();
       }, function () { loading = false; schedule(); });
@@ -891,6 +897,7 @@ func sendQueueScript() g.Node {
             // 404: already gone (deleted from another device).
             var li = f.closest ? f.closest('[data-queue-id]') : null;
             if (li && li.parentNode) li.parentNode.removeChild(li);
+            gen++;
             return;
           }
           if (db) db.disabled = false;
