@@ -215,8 +215,11 @@ func (s *PGStore) ReserveChiefDispatch(ctx context.Context, taskID int64, detail
 			      SELECT (detail->>'agent_id')::bigint FROM audit_log WHERE action = $1 AND user_id = $5))
 			+ (SELECT count(*) FROM audit_log r
 			    WHERE r.action = $3 AND r.user_id = $5 AND r.at > now() - make_interval(secs => $4)
-			      AND NOT EXISTS (SELECT 1 FROM audit_log g WHERE g.action = $1 AND g.user_id = $5 AND g.object = r.object AND g.id > r.id))`,
-			ActionChiefDispatchAgent, liveAgentStatuses, ActionChiefDispatch, pendingAgentWindow.Seconds(), p.UserID).Scan(&live); err != nil {
+			      AND NOT EXISTS (SELECT 1 FROM audit_log g WHERE g.action = $1 AND g.user_id = $5 AND g.object = r.object AND g.id > r.id)
+			      -- a start released after a refused create made no agent: it holds no slot
+			      AND NOT EXISTS (SELECT 1 FROM audit_log x WHERE x.action = $6 AND x.user_id = $5 AND x.object = r.object AND x.id > r.id))`,
+			ActionChiefDispatchAgent, liveAgentStatuses, ActionChiefDispatch, pendingAgentWindow.Seconds(), p.UserID,
+			ActionChiefDispatchReleased).Scan(&live); err != nil {
 			return err
 		}
 		if live >= MaxChiefLiveAgents {

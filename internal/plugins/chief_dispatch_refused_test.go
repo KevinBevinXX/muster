@@ -49,3 +49,26 @@ func TestARefusedReleaseFreesOnlyTheReservationItNames(t *testing.T) {
 		t.Fatalf("after the release: %+v %v; want a fresh reservation", r, err)
 	}
 }
+
+// TestRefusedAndReleasedStartsDoNotHoldLiveSlots (#209 round-2 🟡1): a start
+// released after its create was refused made no agent, so it must stop
+// counting toward MaxChiefLiveAgents at once — not hold a slot for the
+// pending-agent window. The audit's probe: MaxChiefLiveAgents refused cycles
+// on as many tasks, then another task still reserves.
+func TestRefusedAndReleasedStartsDoNotHoldLiveSlots(t *testing.T) {
+	s, _, dsn := pgStore(t)
+	dbtest.OwnerExec(t, dsn, `DELETE FROM audit_log WHERE action LIKE 'task.chief_%'`)
+	const task = 700
+	for i := int64(0); i < MaxChiefLiveAgents; i++ {
+		r, err := s.ReserveChiefDispatch(session(2), task+i, nil, nil)
+		if err != nil || r.Prior {
+			t.Fatalf("cycle %d: reserve: %+v %v", i, r, err)
+		}
+		if wrote, err := s.ReleaseRefusedChiefDispatch(session(2), task+i, r.ReservationID); err != nil || !wrote {
+			t.Fatalf("cycle %d: release: %v %v", i, wrote, err)
+		}
+	}
+	if r, err := s.ReserveChiefDispatch(session(2), task+MaxChiefLiveAgents, nil, nil); err != nil || r.Prior {
+		t.Fatalf("a start after %d refused-and-released ones (no live agent): %+v %v", MaxChiefLiveAgents, r, err)
+	}
+}
