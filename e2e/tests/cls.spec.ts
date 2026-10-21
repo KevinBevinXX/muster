@@ -128,6 +128,21 @@ async function measure(page: Page, url: string, ready?: string): Promise<ClsResu
   return r;
 }
 
+// measureWithDraft is measure() of url with a three-line draft stored for its
+// message box (box: the textarea), and checks the draft WAS restored — the
+// state measured — then removes it.
+const draftText = 'a restored draft\nwith a second line\nand a third';
+async function measureWithDraft(page: Page, url: string, box: string): Promise<ClsResult> {
+  await page.goto(url);
+  const key = await page.locator(box).getAttribute('data-draft-key');
+  expect(key, `${url}: its box keeps a draft`).toBeTruthy();
+  await page.evaluate(([k, t]) => localStorage.setItem(k, JSON.stringify({ t, at: Date.now() })), [key!, draftText]);
+  const r = await measure(page, url, box);
+  await expect(page.locator(box), `${url}: the draft was restored (the state measured)`).toHaveValue(draftText);
+  await page.evaluate((k) => localStorage.removeItem(k), key!);
+  return r;
+}
+
 // A chief agent with threads, so the panel's open state is a real one (intro,
 // thread list), not the "no chief" notice. Its own agent, removed afterwards.
 const chiefName = 'e2e-cls-chief-' + Date.now().toString(36);
@@ -183,6 +198,12 @@ for (const vp of viewports) {
       }
       console.log(`[cls ${vp.name}] ` + seen.join(' | '));
       expect(bad).toEqual([]);
+    });
+
+    test(`an agent's chat with a restored draft shifts less than ${BAR}`, async ({ page }) => {
+      const r = await measureWithDraft(page, '/agents/docs-sweeper', '#chat-input');
+      console.log(`[cls ${vp.name}] GET /agents/{name} with a restored draft ${r.total}`);
+      expect(r.total, report('/agents/docs-sweeper with a restored draft', r)).toBeLessThan(BAR);
     });
 
     test(`the sign-in page shifts less than ${BAR}`, async ({ browser }) => {
@@ -448,6 +469,14 @@ test.describe('the full server', () => {
         // The view really drew its transcript (a blank page shifts nothing).
         await page.goto(morigin + view);
         await expect(page.locator('#mv-log [data-tool-row]')).toHaveCount(1, { timeout: 15_000 });
+        // 🔴 A RESTORED DRAFT IS NOT A SHIFT (composer_draft.go): the mirrored
+        // views loaded with a three-line draft waiting for their box — it is put
+        // in, and the box grown to it, before the box is painted.
+        for (const [label, url] of [['VIEW', view], ['TERMINAL', term]] as const) {
+          const r = await measureWithDraft(page, morigin + url, '#mv-input');
+          console.log(`[cls ${vp.name}] ${label} with a restored draft ${r.total}`);
+          if (r.total >= BAR) bad.push(report(`${vp.name} ${label} with a restored draft`, r));
+        }
       } finally {
         await ctx.close();
       }

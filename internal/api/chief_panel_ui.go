@@ -130,7 +130,7 @@ func (s *Server) writeChiefPanelBodyFor(ctx context.Context, w http.ResponseWrit
 			ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, Status: status,
 			Repo: a.Repo, Model: a.Model,
 			Messages: lines, Sessions: sessions, ActiveSessionID: active.ID,
-			NoteID: noteID, TaskStatus: taskStatus,
+			NoteID: noteID, TaskStatus: taskStatus, DraftUser: draftUser(ctx),
 			// 🔴 THE SURFACE IS WHAT ROUTES AROUND THE CONTAINING-BLOCK HAZARD.
 			// agentChatPane's sessionDrawer is `position: fixed`, and ChiefPanel's
 			// transform makes the panel its containing block — so inside the panel it

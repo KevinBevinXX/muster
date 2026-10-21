@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -82,6 +84,20 @@ const (
 	noticeHermes      = "hermes"
 	noticeMultiplexer = "multiplexer"
 	noticeUnchecked   = "unchecked"
+	// A queued message's Edit (send_queue_edit.go).
+	noticeEditing           = "editing"
+	noticeEdited            = "edited"
+	noticeEditCancelled     = "edit-cancelled"
+	noticeEditLapsed        = "edit-lapsed"
+	noticeEditTooLate       = "edit-too-late"
+	noticeEditTooLateSent   = "edit-too-late-sent"
+	noticeNotEditable       = "not-editable"
+	noticeEditSending       = "edit-sending"
+	noticeRoutedNotEditable = "routed-not-editable"
+	noticeHeldNow           = "held-now"
+	// noticeEditedAnswered: saved, but the message had already answered a
+	// question in its session when it was queued — that answer stands.
+	noticeEditedAnswered = "edited-answered"
 )
 
 // pasteGuardNotices is the notice for each kind of Hermes paste-guard refusal
@@ -138,7 +154,37 @@ var composerNotices = map[string]struct {
 	noticeHermes:            {mirror.PasteRefusedHermesText, false},
 	noticeMultiplexer:       {mirror.PasteRefusedMultiplexerText, false},
 	noticeUnchecked:         {mirror.PasteRefusedUncheckedText, false},
+	noticeEditing:           {SendQueueEditingText, true},
+	noticeEdited:            {SendQueueEditedText, true},
+	noticeEditCancelled:     {SendQueueEditCancelledText, true},
+	noticeEditLapsed:        {SendQueueEditLapsed, false},
+	noticeEditTooLate:       {SendQueueEditTooLate, false},
+	noticeEditTooLateSent:   {SendQueueEditTooLateSent, false},
+	noticeNotEditable:       {SendQueueNotEditable, false},
+	noticeEditSending:       {SendQueueEditSending, false},
+	noticeRoutedNotEditable: {SendQueueRoutedNotEditable, false},
+	noticeHeldNow:           {SendQueueHeldNow, false},
+	noticeEditedAnswered:    {SendQueueEditedAnsweredText(""), false},
 }
+
+// SendQueueEditedAnsweredText is what a Save of a queued message that had
+// already answered asker's question when it was queued says ("" = the asker
+// unnamed): the text that will be pasted changed, the answer did not.
+// (Cancel's twin: SendQueueCancelledAnsweredText.)
+func SendQueueEditedAnsweredText(asker string) string {
+	whose := "a question in that session"
+	if asker != "" {
+		whose = asker + "'s question"
+	}
+	return "Saved — but this message had already answered " + whose + ", and that answer was delivered as first written: the edit does not change it."
+}
+
+// What an edit's own notices say.
+var (
+	SendQueueEditingText       = "Editing: the message is held, and nothing queued for this window is sent until you Save or Cancel (at most " + editHoldText + ")."
+	SendQueueEditedText        = "Saved: the message keeps its place in the queue."
+	SendQueueEditCancelledText = "Edit cancelled: the message is unchanged."
+)
 
 // SendQueueCancelledAnsweredText is what a Cancel of a queued message that
 // had already answered asker's question says ("" = the asker unnamed): the
@@ -215,6 +261,13 @@ func noStore(w http.ResponseWriter) { w.Header().Set("Cache-Control", "no-store"
 func formDocument(w http.ResponseWriter) {
 	noStore(w)
 	w.Header().Set("Referrer-Policy", "same-origin")
+}
+
+// draftUser is the user a message box's draft key is made for
+// (ui.MirrorDraftKey and the rest): the request's own principal.
+func draftUser(ctx context.Context) int64 {
+	p, _ := authz.From(ctx)
+	return p.UserID
 }
 
 // newSendNonce mints a composer's nonce (ui.ComposerView.Nonce).

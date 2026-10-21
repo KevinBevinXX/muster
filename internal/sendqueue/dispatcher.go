@@ -88,6 +88,12 @@ func Decide(h Head, st AgentState, now time.Time, idleFor time.Duration) Decisio
 	if h.State == Sending {
 		return Decision{Why: "sending now"}
 	}
+	if h.Held {
+		// Held for an edit (Hold): it keeps its place, and the window's queue
+		// waits behind it. The claim refuses a held row too (notHeld); this is
+		// what the composer shows, and what keeps the dispatcher from trying.
+		return Decision{Why: HeldWhy}
+	}
 	if !st.Idle {
 		return Decision{Why: st.Why}
 	}
@@ -117,6 +123,7 @@ func roundSecond(d time.Duration) time.Duration {
 type DispatchStore interface {
 	Recover(ctx context.Context, now time.Time) (int, error)
 	Expire(ctx context.Context, now time.Time) (int, error)
+	ClearLapsedHolds(ctx context.Context) (int, error)
 	Heads(ctx context.Context) ([]Head, error)
 	Claim(ctx context.Context, id int64, now time.Time, c Claim) (Item, bool, error)
 	Renew(ctx context.Context, id int64, by string, lease time.Duration) (bool, error)
@@ -271,6 +278,13 @@ func (d *Dispatcher) Tick(ctx context.Context) (int, error) {
 	if err := d.expire(ctx); err != nil {
 		// The delivery refuses an expired row anyway; carry on sending.
 		d.logf("sendqueue: %v", err)
+	}
+	// An edit hold that ran out comes off its row (the claim ignores it
+	// anyway; this keeps the hold columns to live holds only).
+	if n, err := d.Store.ClearLapsedHolds(ctx); err != nil {
+		d.logf("sendqueue: %v", err)
+	} else if n > 0 {
+		d.logf("sendqueue: %d edit hold(s) ran out unsaved; the message(s) keep their original text", n)
 	}
 	heads, err := d.Store.Heads(ctx)
 	if err != nil {

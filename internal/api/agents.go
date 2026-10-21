@@ -1041,7 +1041,7 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 		return agents.Agent{}, err
 	}
 	// A worker pool is machine jobs', which run on claude-code agents only
-	// (migration 0040's agents_worker_pool_check refuses the row as well).
+	// (migration 0041's agents_worker_pool_check refuses the row as well).
 	if p.WorkerPool != "" {
 		if kind != agents.KindClaudeCode {
 			return agents.Agent{}, fmt.Errorf("%w: worker_pool %q: only a %s agent can be a machine-job worker", ErrDispatchRefused,
@@ -1393,7 +1393,7 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, Status: status, Repo: a.Repo, Model: a.Model,
 		Kind: agents.ResolveKind(a.Kind), CCAccount: a.CCAccount,
 		Messages: lines, Sessions: sessions, ActiveSessionID: active.ID,
-		NoteID: noteID, TaskStatus: taskStatus,
+		NoteID: noteID, TaskStatus: taskStatus, DraftUser: draftUser(ctx),
 		// The chat form's fallback when its socket cannot carry a message
 		// (agent_send.go): its nonce, and the outcome of such a send.
 		SendNonce: newSendNonce(),
