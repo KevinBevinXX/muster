@@ -572,3 +572,36 @@ func testP256SPKI(t *testing.T) string {
 	}
 	return base64.StdEncoding.EncodeToString(der)
 }
+
+// TestARefusedKeyCanRetryOnTheSameCode is an INVARIANT GUARD over the public
+// route (see devices.TestARefusedKeyDoesNotSpendThePairingCode for the store):
+// a pairing refused 403 for its key — a PIN key with the policy off — leaves the
+// code redeemable, so the app's retry with a biometric key on the SAME code is
+// 201; a third use of that code is 401 (the success spent it).
+func TestARefusedKeyCanRetryOnTheSameCode(t *testing.T) {
+	r := newDeviceRig(t)
+	at, rt := r.login()
+	key := testP256SPKI(t)
+	w := do(r.edge, "POST", accountDevicesPairPath, nil, withCookies(at, rt))
+	var code struct {
+		Code string `json:"code"`
+	}
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &code) != nil {
+		t.Fatalf("code: %d %s", w.Code, w.Body.String())
+	}
+	redeem := func(typ string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]string{"code": code.Code, "name": "retry " + typ, "app_version": "0.1.0",
+			"stepup_pubkey": key, "stepup_key_type": typ, "stepup_key_level": devices.LevelStrongBox})
+		return r.call(r.edge, "POST", devicePairPath, "", string(body))
+	}
+	if w := redeem(devices.KeyBiometricOrCredential); w.Code != http.StatusForbidden {
+		t.Fatalf("a PIN key with the policy off: %d %s; want 403", w.Code, w.Body.String())
+	}
+	if w := redeem(devices.KeyBiometric); w.Code != http.StatusCreated {
+		t.Fatalf("the retry with a biometric key on the same code: %d %s; want 201 (the refusal must not spend the code)",
+			w.Code, w.Body.String())
+	}
+	if w := redeem(devices.KeyBiometric); w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), DevicePairRefusal) {
+		t.Fatalf("CONTROL: a third use of the spent code: %d %s; want 401", w.Code, w.Body.String())
+	}
+}

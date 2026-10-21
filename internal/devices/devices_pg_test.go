@@ -497,3 +497,92 @@ func TestTheStepUpKeyMustBeP256(t *testing.T) {
 		}
 	}
 }
+
+// TestARefusedKeyDoesNotSpendThePairingCode is an INVARIANT GUARD, not a
+// regression test: Redeem has validated the labels and the step-up key BEFORE
+// its transaction since 0039, so no refusal below has ever spent a code. It
+// pins that order. A phone whose key the server refuses (a biometric-or-PIN key
+// while the PIN-key policy is off, a software key, a malformed key) must be
+// able to retry with an acceptable key on the SAME code — the code lives one
+// minute and the app cannot mint another one by itself.
+//
+// For each refusal: the refusal carries its own error, the code's row is still
+// unspent (used_at IS NULL), nothing is paired, and the same code then pairs
+// with an acceptable key. The inverse holds too: that successful pairing spends
+// the code (a third use is ErrBadCode), and an expired code is refused even
+// with an acceptable key.
+func TestARefusedKeyDoesNotSpendThePairingCode(t *testing.T) {
+	key := p256SPKI(t)
+	good := PairIn{Name: "retry", StepUpKey: key, KeyType: KeyBiometric, KeyLevel: LevelStrongBox}
+	sys := authz.System(context.Background())
+	usedAt := func(t *testing.T, r rig, code string) *time.Time {
+		t.Helper()
+		var used *time.Time
+		if err := r.pool.QueryRow(sys, `SELECT used_at FROM device_pairing_codes WHERE code_sha256 = $1`, hash(code)).Scan(&used); err != nil {
+			t.Fatalf("the code's row: %v", err)
+		}
+		return used
+	}
+	for _, c := range []struct {
+		name string
+		in   PairIn
+		want error
+	}{
+		{"PIN key, policy off", PairIn{Name: "pin", StepUpKey: key, KeyType: KeyBiometricOrCredential, KeyLevel: LevelStrongBox}, ErrKeyNotAllowed},
+		{"software level", PairIn{Name: "sw", StepUpKey: key, KeyType: KeyBiometric, KeyLevel: LevelSoftware}, ErrKeyNotAllowed},
+		{"unknown level", PairIn{Name: "lvl", StepUpKey: key, KeyType: KeyBiometric, KeyLevel: "tee"}, ErrInvalid},
+		{"not a P-256 key", PairIn{Name: "junk", StepUpKey: "not base64 !!", KeyType: KeyBiometric, KeyLevel: LevelStrongBox}, ErrInvalid},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newRig(t)
+			code, _, err := r.s.CreatePairingCode(as(r.a), time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := r.s.Redeem(context.Background(), code, c.in); !errors.Is(err, c.want) {
+				t.Fatalf("the refused key: %v; want %v", err, c.want)
+			}
+			if used := usedAt(t, r, code); used != nil {
+				t.Fatalf("a refused key SPENT the pairing code (used_at = %s); the phone cannot retry", used)
+			}
+			if list, err := r.s.List(as(r.a)); err != nil || len(list) != 0 {
+				t.Fatalf("the refused key paired something: %v, %v", list, err)
+			}
+			tok, d, err := r.s.Redeem(context.Background(), code, good)
+			if err != nil {
+				t.Fatalf("the same code with an acceptable key after a refusal: %v; want it to pair", err)
+			}
+			if got, err := r.s.Authenticate(context.Background(), tok); err != nil || got.ID != d.ID || !got.HasStepUpKey {
+				t.Fatalf("the retried pairing's credential: %+v, %v", got, err)
+			}
+			// The inverse: the successful pairing spent it.
+			if used := usedAt(t, r, code); used == nil {
+				t.Fatal("CONTROL: a successful pairing left the code unspent")
+			}
+			if _, _, err := r.s.Redeem(context.Background(), code, good); !errors.Is(err, ErrBadCode) {
+				t.Fatalf("CONTROL: a spent code redeemed again: %v; want ErrBadCode", err)
+			}
+		})
+	}
+	t.Run("expired code, even after a refusal", func(t *testing.T) {
+		r := newRig(t)
+		code, _, err := r.s.CreatePairingCode(as(r.a), time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := r.s.Redeem(context.Background(), code, PairIn{StepUpKey: key, KeyType: KeyBiometricOrCredential,
+			KeyLevel: LevelStrongBox}); !errors.Is(err, ErrKeyNotAllowed) {
+			t.Fatalf("the refused key: %v; want ErrKeyNotAllowed", err)
+		}
+		if _, err := r.pool.Exec(sys, `UPDATE device_pairing_codes SET expires_at = now() - interval '1 second' WHERE code_sha256 = $1`,
+			hash(code)); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := r.s.Redeem(context.Background(), code, good); !errors.Is(err, ErrBadCode) {
+			t.Fatalf("an expired code with an acceptable key: %v; want ErrBadCode", err)
+		}
+		if list, err := r.s.List(as(r.a)); err != nil || len(list) != 0 {
+			t.Fatalf("an expired code paired something: %v, %v", list, err)
+		}
+	})
+}
