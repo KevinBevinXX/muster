@@ -1809,22 +1809,33 @@ ways, each decided while building it:
   the background**: the watcher and its stored outcome notice are gone. A run
   recovery finds still going keeps its intent open (the session answers busy)
   until the session's next turn settles it under the same rules.
-- **Recovery is bounded**: a deadline on every recovery call (15 s), a session
-  retired after 3 failed recoveries in one gateway life, and `/healthz`
-  non-200 once recovery as a whole has not finished within 5 minutes. The
+- **Recovery is bounded, and never forgets a flaky API**: a deadline on every
+  recovery call (15 s); only sessions with an open intent are recovered (an
+  idle session makes no call); a failure that may pass (transport, timeout,
+  5xx, 429) is retried and never retires a session, so a persistent one turns
+  `/healthz` non-200 at the 5-minute stuck bound and the liveness probe acts;
+  only a definite 4xx refusal of a session's recovery, persisting 5 minutes,
+  retires that session. The
   Hermes API client has a 30 s timeout (the run's event stream has its own
   client, bounded by the turn budget).
 - **The store writes before it changes memory**: a failed write leaves no
-  intent behind (no phantom `busy`), and the directory fsync's error is
-  returned.
+  intent behind (no phantom `busy`). **Written is written**: once the rename
+  has put the new map in place, memory takes it too, even when the
+  directory's fsync then fails (logged) — memory and disk never disagree on
+  whether an intent exists.
+- **A definite refusal is never replayed**: when Hermes refuses a run (a 4xx)
+  and the intent's close cannot be written, the key is tombstoned in memory
+  (never re-posted), the close is retried until it lands, and the turn answers
+  `may_have_run` — a crash before the close lands would replay it.
+- **A run that completed as the budget ran out is the reply**, not
+  `turn_timeout`.
 - **Approvals are relayed from both paths**: the SSE `approval.request` and
   the run's `pending_controls` when the status is polled (field names from
   `P:gateway/session_pending_controls.py`); `tool.failed` ends a native tool
   row as failed.
 - **Fixed, not configurable** (D6–D8): no `HERMESD_TURN_TIMEOUT`,
-  `HERMESD_HERMES_BIN` or `HERMESD_STATE_DIR`; no `hermesd seed` subcommand (`serve`
-  seeds the volume itself on every start, so the sections above that name
-  `hermesd seed` describe that step); no
+  `HERMESD_HERMES_BIN` or `HERMESD_STATE_DIR`; no separate seed subcommand (`serve`
+  seeds the volume itself on every start); no
   flake `checks.hermesd` (its tests run in `go test ./...`).
   `HERMESD_MODEL_BASE_URL` stays as a **test-only** override (the smoke test's
   fake model), logged at boot when set; `agentspec` never sets it, and a test
