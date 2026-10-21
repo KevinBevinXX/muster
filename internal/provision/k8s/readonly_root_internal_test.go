@@ -28,7 +28,7 @@ func byteIdentitySpecs(t *testing.T) map[string]provision.Spec {
 	t.Helper()
 	cfg := byteIdentityConfig()
 	gw := agents.Agent{ID: 41, Name: "byte-gateway", HooksToken: "fixture-hooks-gw-1", Repo: "example-org/tide", RepoBranch: "trunk"}
-	cc := agents.Agent{ID: 42, Name: "byte-claude", Kind: agents.KindClaudeCode, CCAccount: "work", HooksToken: "fixture-hooks-cc-2",
+	cc := agents.Agent{ID: 42, Name: "byte-claude", Kind: agents.KindClaudeCode, CCAccount: "work", HooksToken: "fixture-hooks-cc-2", GatewaySecret: "fixture-turn-credential-cc-2",
 		Repo: "example-org/tide", RepoBranch: "trunk"}
 	out := map[string]provision.Spec{}
 	for name, a := range map[string]agents.Agent{"gateway": gw, "claude-code": cc} {
@@ -59,9 +59,15 @@ func renderDigest(t *testing.T, spec provision.Spec) (fingerprint, deployment st
 // byteIdentityPins are the gateway and claude-code fingerprints and rendered
 // Deployments, MEASURED ON origin/main (d879a50, before ReadOnlyRoot existed)
 // with this file's own fixtures.
+//
+// ⚠ THE claude-code PIN WAS RE-MEASURED ONCE, ON PURPOSE, by the change that gave
+// claude-code agents a turn credential of their own (migration 0041): its spec
+// now ships MUSTER_GATEWAY_BEARER instead of HOOKS_TOKEN, so its fingerprint and
+// Deployment moved (it was a541b4a9…/fe83599a…). Still no ReadOnlyRoot: the
+// gateway pin, untouched by that change, still holds.
 var byteIdentityPins = map[string][2]string{
 	"gateway":     {"3aa6916b48b9f9342d0ca9b04cfc49aa4488f0058a78730cec139f72fd7acbba", "2d218a005f2d1d1c146a1c33ec381880c3f2dfb1e335a3e65b7a9994f34dfc35"},
-	"claude-code": {"a541b4a947a4f0fcd5e50a7990e033152ca28ea5897a5d8b392272bfc7f3c188", "fe83599a1cacfbd67efcedccb368a031295a9eafd0e34cd5957f56a03f8e965e"},
+	"claude-code": {"c83a3cca4802f5dc70363e4d1d7e3f7294346787b1ad0ae4fd2cb414297fb856", "56cc6be7393232495e5cd989049743941af72dde2b506421dcdb4fd52be1af4d"},
 }
 
 // 🔴 THE READ-ONLY ROOT IS RENDERED FOR HERMES ONLY: a gateway and a
