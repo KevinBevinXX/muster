@@ -1,19 +1,21 @@
 # Design: live work counts and tmux identity colours on agent cards
 
-**Status: decided, not implemented.** The operator settled every open question;
-the decisions are recorded under [Operator decisions](#operator-decisions), and
-the sections below describe the design as decided. Nothing on this page is
-implemented yet. It covers two additions to the Agents view's cards and one
-send-queue fix found while scoping them:
+**Status: (a) and (b) decided, not implemented; (c) deferred.** The operator
+settled every open question. The decisions are recorded under
+[Operator decisions](#operator-decisions), and the sections on (a) and (b)
+describe the design as decided. Nothing on this page is implemented yet. It
+covers two additions to the Agents view's cards, plus one send-queue change that
+was scoped and then **deferred**:
 
 - **(a) Live work counts.** A card shows how many subagents and background
   shells its session has running now, for example `2 subagents · 1 shell`.
 - **(b) The tmux identity colour.** A mirrored card's border and title are
   tinted with the colour the operator's tmux setup gives that window, so the
   card and the terminal look like the same thing.
-- **(c) The send queue and background agents.** A session that is busy only
-  because background agents are running is treated as idle by the send queue,
-  never at the cost of pasting into a real turn.
+- **(c) The send queue and background agents. DEFERRED.** This would have let
+  the send queue treat a session that is busy only because background agents
+  run as idle. The operator deferred it after the round-2 audit; the analysis
+  is kept under [Deferred](#deferred-c-the-send-queue-and-background-agents).
 
 A separate change, built elsewhere, adds a small dot showing recency. This page
 does not cover it, except to say where (b) must not overlap with it.
@@ -37,7 +39,7 @@ content is reproduced here.
 | (a) dispatched `claude-code` agent (ccd) | **Yes**, the same code inside the pod | the same | `POST /agent/work` | (included above) |
 | (a) Hermes | **Partly**, and only after Hermes Phase 2 | `subagent_start`/`subagent_stop` hooks; the process checkpoint file | the same message | 1–1.5 days after Phase 2 |
 | (b) identity colour | **Yes**, but tmux does not hold the colour today: the host's tmux config must declare it | a tmux user option, `@muster-color`, read in the listing muster-mirror already runs | new `colors` message | 2.5–3 days, plus about 0.25 days of host config |
-| (c) send queue through background agents | **Yes, for mirrored windows, with Send-now semantics** behind a default-off switch and a live ship gate | the transcript's `turn_duration` and queue records, a compaction marker, and the input line on screen, re-checked by the host before the paste and before the Enter | a new status value, `background`, in the existing `Window.Status` | 5–8 days |
+| (c) send queue through background agents | **Deferred.** A background agent's permission prompt can meet muster's automatic Enter, a race that cannot be closed | — | — | not scheduled |
 
 The full effort table, with totals, is under [Total effort](#total-effort).
 
@@ -73,6 +75,12 @@ on the sections below.
      muster's **Send now**: Claude Code queues it natively behind the running
      turn.
    - (c) ships disabled, behind a switch, until a live gate passes.
+5. **(c) is deferred (after the round-2 audit).** A background agent can open a
+   permission prompt on the main screen at any moment. muster's automatic Enter
+   could then approve it with nobody watching, and the gap between the last
+   screen check and the Enter can be narrowed but never closed. Queued messages
+   keep waiting while background agents run, and **Send now** stays the manual
+   path. See [Deferred](#deferred-c-the-send-queue-and-background-agents).
 
 ## Background: what muster has today
 
@@ -151,8 +159,9 @@ The status therefore gives these facts for free:
 🔴 `busy` also covers a **background subagent running while no turn is.**
 muster's send queue waits for `idle` (`internal/mirror/wire.go:410-420`), so a
 queued message waits for every background agent to finish, even though the
-prompt would take it. The operator brought this into scope; section
-[(c)](#c-the-send-queue-and-background-agents) fixes it.
+prompt would take it. Section (c) was scoped to fix this and is **deferred**
+(see [Deferred](#deferred-c-the-send-queue-and-background-agents)). Until
+then, **Send now** is the manual path.
 
 #### The turn-end record counts background agents
 
@@ -168,8 +177,7 @@ at offset **211750728**. Measured over the newest 60 transcripts on one host:
   from those 1,189 records with no value, to be confirmed by the live-Claude
   test.
 - An older build, 2.1.232, wrote the field on 1 of 18 records. **A missing field
-  on an older build is not proof of zero**, which is why (c) also requires the
-  ledger to agree.
+  on an older build is not proof of zero**, so (a) never treats it as one.
 - Turn starts: a user record that is not a tool result and not `isMeta`, with
   `origin.kind` of `human` (826), `task-notification` (2,016) or none (116). A
   background agent's completion therefore starts a turn of its own. 178 starts
@@ -179,7 +187,7 @@ at offset **211750728**. Measured over the newest 60 transcripts on one host:
   were followed by a new turn start with no end record between them.
 
 The record gives (a) an exact anchor: the number of background agents pending
-when the last turn ended. It gives (c) its signal.
+when the last turn ended. It was also the signal of the deferred (c).
 
 #### Task ids name their kind
 
@@ -212,9 +220,9 @@ Three limits, each measured on one sample only:
   discriminator, and a command backgrounded with Ctrl+B keeps its socket. Phase 0
   measures it. **Until then, whenever a foreground call could be running, the
   card shows `1+ shell` rather than a number** (operator decision 3). That
-  includes a running turn and also the `background` state of (c): a running
-  **subagent's** foreground Bash call looks exactly like a background shell (fd 1
-  on `tasks/b<8>.output`, stdin a socket), and subagents run in `background`.
+  includes a running turn, and also a `busy` caused only by background agents:
+  a running **subagent's** foreground Bash call looks exactly like a background
+  shell (fd 1 on `tasks/b<8>.output`, stdin a socket).
 - 🔴 **A Monitor task has no task output file.** Measured on a live Monitor:
   - Its shell wrapper is a direct child of the CLI. Its argv names the CLI's
     shell snapshot (`<config>/shell-snapshots/snapshot-…`), as a Bash call's
@@ -306,16 +314,16 @@ that the two cannot disagree. Per Claude Code process it returns
    - **Exact** only when no foreground Bash call can be running: status `idle`
      or `shell`, and no Monitor seen.
    - **`1+ shell`** (`Shells: 1, ShellsAtLeast: true`) when the count is 1 or
-     more and a foreground call may be among them: status `busy`, `waiting` or
-     `background`. In `background`, running subagents make foreground calls of
-     their own, and those look exactly like background shells. This lasts until
-     the Phase 0 stdin spike can tell foreground from background.
+     more and a foreground call may be among them: status `busy` or `waiting`.
+     This includes a `busy` caused only by background agents: running subagents
+     make foreground calls of their own, and those look exactly like background
+     shells. This lasts until the Phase 0 stdin spike can tell foreground from
+     background.
    - If the status is `shell` and the count is 0 (the files are unreadable, or
      the layout changed), report `Shells: 1, ShellsAtLeast: true`. The card then
      says `1+ shell`, never `0`.
-3. **Subagents:** 0 when the status is `idle` or `shell`. When it is `busy`,
-   `waiting` or `background`, use the count of **running** entries in the
-   transcript ledger.
+3. **Subagents:** 0 when the status is `idle` or `shell`. When it is `busy` or
+   `waiting`, use the count of **running** entries in the transcript ledger.
 4. **The transcript ledger** follows the parent transcript incrementally from a
    per-transcript byte cursor, the way the watch tailer does. It tracks Agent
    calls by `tool_use` id and applies **today's state rule unchanged**
@@ -323,9 +331,7 @@ that the two cannot disagree. Per Claude Code process it returns
    whose `tool_use` time is earlier than the sessions file's `startedAt`: a
    resumed CLI cannot host the previous process's in-process agents. A Gen change
    (`/clear`, a rotation) resets the ledger. The first read is bounded by the
-   existing `BackfillWindow` (4 MiB tail). The ledger also records the newest
-   main-thread turn boundary (a start, or a `turn_duration` with its
-   `pendingBackgroundAgentCount`), which section (c) reads. 🔴 **The ledger is
+   existing `BackfillWindow` (4 MiB tail). 🔴 **The ledger is
    read only while the status is `busy` or `waiting`.** An idle window costs no
    transcript read.
 
@@ -434,11 +440,11 @@ All counts in fixtures are pairwise distinct, for example 3 subagents and
     `ShellsAtLeast` fallback turns `shell` with 0 processes red.
   - Decision 3, one case per state:
     - `busy` with 3 shell processes reports `1+`, not 3.
-    - `background` with 2 reports `1+`, not 2.
+    - `busy` with no turn open, one background agent running and 2 shell
+      processes reports `1+`, not 2.
     - `shell` with 3 and no Monitor reports exactly 3.
 
-    A mutant that reports the exact count during a turn, or in `background`,
-    turns its case red.
+    A mutant that reports the exact count while `busy` turns its case red.
   - **Monitor, in its real layout:**
     - A direct child whose argv holds `…/shell-snapshots/snapshot-zsh-…`, fd 0
       `/dev/null`, fds 1 and 2 `socket:[…]`, and no task file: `shell` with that
@@ -767,7 +773,96 @@ Other rules:
 ---
 
 
-## (c) The send queue and background agents
+## Total effort
+
+Revised after the round-2 audit. (c) is deferred and not counted.
+
+| Piece | Days |
+|---|---|
+| (a) Phase 0 spike: stdin, sandboxed Bash, the Monitor signature on two builds and from a subagent, an older Claude Code, and whether ccd sees notification turns (below) | 0.5–1 |
+| (a) `internal/cctasks`: process count (task files and Monitors), ledger, work rule (`1+ shell` whenever a foreground call may run) | 2 |
+| (a) mirror wire, hub, chips, e2e | 1.5–2 |
+| (a) ccd reporter, `/agent/work`, agent-card chip | 1–1.5 |
+| (b) host, wire, contrast variants, UI, tests | 2.5–3 |
+| **Total in muster: (a) + (b)** | **7.5–9.5** |
+| Host tmux config: generate `@muster-color` from the slot table | about 0.25 |
+| Later, after Hermes Phase 2: Hermes work counts | 1–1.5 |
+
+The ccd item in the spike concerns a possible existing ccd hazard, described in
+the deferred section under "Who is affected": a notification turn may fire no
+`UserPromptSubmit`. The spike only measures it. Any fix is separate work.
+
+---
+
+## Deferred: (c) The send queue and background agents
+
+**Operator decision: DEFERRED (after the round-2 audit).** (c) is not built.
+
+**Why: a dialog race that cannot be closed.**
+
+- A background agent can open a **permission prompt on the main screen at any
+  moment** while a window would read as `background`. Evidence:
+  - the agent setup in 2.1.289 around offset **215162609**
+    (`awaitAutomatedChecksBeforeDialog`);
+  - the prompt opens with the cursor on `❯ 1. Yes`
+    (`cmd/ccd/testdata/pane_permission_2.1.296.txt`).
+- muster's automatic Enter could therefore **approve a permission prompt with
+  nobody watching**.
+- The screen checks below can make the gap between the last check and the
+  Enter smaller. They cannot close it: Claude Code has no "submit only if idle".
+- That breaks the premise of the round-1 rework, that the worst case of a
+  misread `background` is Send-now behaviour. Send now's worst case is queued
+  input. This one's is an approval.
+
+**What stays true meanwhile:**
+
+- Queued messages **keep waiting** while background agents run, as they do
+  today.
+- **Send now** is the manual path (`docs/sending-and-step-up.md:104-121`). A
+  person pressing it is looking at the window.
+
+**When to revisit:** only if Claude Code adds either of these:
+
+- a submit-only-if-idle mechanism (an atomic way to submit input that is
+  refused when a turn or a dialog is active);
+- a permission mode in which background agents cannot raise prompts on the main
+  screen.
+
+The analysis below is kept as it stood after round 1, for that day. Its claims
+about Send-now semantics are **superseded** by the race above.
+
+### Open problems for any future attempt (round-2 audit)
+
+These were found against the round-1 design and are not resolved:
+
+- **Pairing drift over the whole transcript, and `popAll`.** Condition 5 pairs
+  every `enqueue` with a later `dequeue` or `remove` by count, from the start of
+  the transcript. A single unpaired or mis-ordered record, or a bulk drain (the
+  CLI's `popAll`, which empties the queue without one record per item), shifts
+  the count for the rest of the session.
+  - The count can be wrong in either direction.
+  - A future design must pair by an identifier, or reset the count at a known
+    boundary, and must handle bulk drains explicitly.
+- **A registered hook is not proof that the hook fires.** The compaction guard
+  trusted that a `muster-mirror compact-hook` entry in the settings files means
+  `PreCompact` reaches it. Things that break that:
+  - hooks disabled (`settingsHooksOff`);
+  - managed-only hook policy;
+  - a hook timeout;
+  - a settings layer the host did not read;
+  - an untrusted workspace.
+
+  A future design needs evidence that the hook **fired**, such as a heartbeat
+  the hook writes on every event, checked against the transcript, not evidence
+  that it is registered.
+- **The gates must accept `absorbed_mid_turn`.** A message pasted during a turn
+  can be absorbed into that turn as queued input instead of being delivered
+  after it. The round-1 gates' pass criteria ("delivered after it") would score
+  that outcome wrongly. A future gate must:
+  - recognise `absorbed_mid_turn` as its own outcome;
+  - decide in advance whether it passes;
+  - assert on it explicitly.
+
 
 ### The problem
 
@@ -1101,7 +1196,7 @@ distinct.
 - **ccd:** the Phase 0 measurement; if the hazard is confirmed, a refusal test
   while the transcript shows a notification turn open.
 
-### Effort
+### Effort (as estimated before the deferral; not scheduled)
 
 | Piece | Days |
 |---|---|
@@ -1113,22 +1208,3 @@ distinct.
 | Live gate suite (four gates against a real CLI) and its record in `docs/testing.md` | 1–1.5 |
 | ccd guard, if the spike confirms the hazard (the spike is in (a)'s Phase 0) | 0–0.5 |
 | **Total** | **5–8** |
-
----
-
-## Total effort
-
-Revised after the round-1 audit. (c) depends on the (a) ledger, so (a) lands
-first.
-
-| Piece | Days |
-|---|---|
-| (a) Phase 0 spike: stdin, sandboxed Bash, the Monitor signature on two builds and from a subagent, an older Claude Code, the ccd notification-turn check from (c) | 0.5–1 |
-| (a) `internal/cctasks`: process count (task files and Monitors), ledger, work rule (`1+ shell` whenever a foreground call may run) | 2 |
-| (a) mirror wire, hub, chips, e2e | 1.5–2 |
-| (a) ccd reporter, `/agent/work`, agent-card chip | 1–1.5 |
-| (b) host, wire, contrast variants, UI, tests | 2.5–3 |
-| (c) send queue through background agents, with the compaction marker, the input-line checks and the live gate | 5–8 |
-| **Total in muster** | **12.5–17.5** |
-| Host tmux config: generate `@muster-color` from the slot table | about 0.25 |
-| Later, after Hermes Phase 2: Hermes work counts | 1–1.5 |
