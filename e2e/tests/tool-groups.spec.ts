@@ -135,6 +135,23 @@ test('history: a run of calls is one row; text and a single call stay where they
   }
 });
 
+// stopAnimationClock sets the page's animation playback rate to 0 (CDP) for the
+// rest of the test: an animation a tap starts then holds at its first frame
+// until the test moves it (currentTime) or ends it (finish()).
+//
+// 🔴 WHY. These tests read a group's height animation at a chosen point, but
+// the animation a tap starts runs in REAL time, 220 ms, front-loaded easing —
+// so what they read depended on how long the next CDP round trip took. Under
+// CI load: the reversal read its starting height 43 px off, and the opening
+// animation could finish before the test reached it (`a.pause` on undefined;
+// half() -1). Both reproduced by a wait between the tap and the read (120 ms,
+// 400 ms), and both pass with that wait once the clock is stopped.
+async function stopAnimationClock(page: Page) {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Animation.enable');
+  await cdp.send('Animation.setPlaybackRate', { playbackRate: 0 });
+}
+
 // The group's HEIGHT animates, opening and closing (tool_groups.go). The
 // animation is paused half-way and the box measured there: strictly between
 // the closed and the open height — a snap would read one or the other.
@@ -155,6 +172,7 @@ test('a group grows and shrinks smoothly: half-way its height is between closed 
       a.finish();
       return h;
     });
+  await stopAnimationClock(page);
   const closed = await height();
   await g3.locator(':scope > summary').tap();
   const midOpen = await half();
@@ -200,6 +218,10 @@ test('a tap mid-way reverses the group, from where it is, both ways', async ({ p
   });
   const isOpen = () => g3.evaluate((d) => (d as HTMLDetailsElement).open);
 
+  // The clock is stopped (stopAnimationClock): the reversal, a NEW animation,
+  // holds at its first frame — the height it started from — however long the
+  // read after the tap takes.
+  await stopAnimationClock(page);
   const closed = await height();
   await g3.locator(':scope > summary').tap(); // open…
   const mid = await pauseHalf();
@@ -301,15 +323,30 @@ test('mirror: the pane transcript groups the same way, and a notice ends a run',
 test('mirror: a socket that drops and resumes keeps the run in place, with no duplicate ids', async ({ page }) => {
   const tr = rig.transcript(cc.prompt('resume me') + cc.toolUse('ra', 'Bash', { command: cmd('ra') }) +
     cc.toolUse('rb', 'Bash', { command: cmd('rb') }) + cc.toolUse('rc', 'Bash', { command: cmd('rc') }), 'resume');
-  await rig.startHost({ MUSTER_MIRROR_E2E_SESSIONS: 'main', MUSTER_MIRROR_E2E_CLAUDE: 'main=' + tr });
+  // 🔴 A SESSION OF ITS OWN ('resume', not 'main'): the host started before
+  // this test listed a Claude 'main', and its card stays listed (offline)
+  // after it stops, so waiting for "a Claude card" returned before THIS host
+  // had connected and the page opened was the old one (CI: the shape poll
+  // timed out; reproduced by starting this host 2 s late). A card for
+  // 'resume', online, can only be this host's.
+  await rig.startHost({ MUSTER_MIRROR_E2E_SESSIONS: 'resume', MUSTER_MIRROR_E2E_CLAUDE: 'resume=' + tr });
   const sockets: { close: () => Promise<void> }[] = [];
   await page.routeWebSocket(/\/mirror\/view\/ws/, (ws) => {
     ws.connectToServer();
     sockets.push(ws);
   });
   await rig.login(page);
-  await rig.waitListed(page, 'data-mirror-claude');
-  await page.goto(rig.origin + rig.viewPath('main'));
+  await expect
+    .poll(
+      async () => {
+        const html = await (await page.request.get(rig.origin + '/ui/agents')).text();
+        const card = html.split('<article').find((a) => a.includes('data-f-session="resume"'));
+        return !!card && card.includes('data-mirror-claude') && !card.includes('data-mirror-offline');
+      },
+      { message: `this host's 'resume' card, online, as Claude Code (muster-mirror log:\n${rig.log})`, timeout: 20_000 },
+    )
+    .toBe(true);
+  await page.goto(rig.origin + rig.viewPath('resume'));
   const log = page.locator('#mv-log');
   await expect.poll(() => log.evaluate(shapeJS), { timeout: 15_000 }).toBe('T G3[running](ra,rb,rc)');
 

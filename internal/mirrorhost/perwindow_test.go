@@ -365,15 +365,22 @@ func newDrivenMuster(t *testing.T) *drivenMuster {
 			if json.Unmarshal(data, &m) != nil {
 				continue
 			}
-			d.mu.Lock()
-			d.msgs = append(d.msgs, m)
-			d.mu.Unlock()
+			// 🔴 A HELLO IS RECORDED ONLY ONCE ITS WELCOME IS WRITTEN. Tests
+			// wait for the hello (d.of) and then send the host a request; the
+			// host reads its first frame as the welcome and hangs up on anything
+			// else, so a hello recorded before the welcome let a request race it
+			// onto the socket first (TestAnAnswerIsTypedIntoTheClaudePaneOnly
+			// timed out "waiting for the answered" in CI). muster does the same
+			// (Hub.ServeConn registers a host only after its welcome).
 			if m.Type == mirror.TypeHello {
 				b, _ := json.Marshal(mirror.Msg{Type: mirror.TypeWelcome, Version: m.Version, Host: m.Host})
 				if ws.Write(r.Context(), websocket.MessageText, b) != nil {
 					return
 				}
 			}
+			d.mu.Lock()
+			d.msgs = append(d.msgs, m)
+			d.mu.Unlock()
 		}
 	}))
 	t.Cleanup(d.srv.Close)

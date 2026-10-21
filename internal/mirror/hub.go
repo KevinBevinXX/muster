@@ -144,7 +144,17 @@ type Hub struct {
 	mu      sync.Mutex
 	hosts   map[hostKey]*hostConn
 	offline map[hostKey]offlineHost
-	notify  func(owner int64)
+	// joining is the hosts whose hello was accepted and whose welcome is being
+	// written: not in hosts yet (nothing may be sent them before the welcome,
+	// see ServeConn), but holding their place under maxHosts.
+	joining map[hostKey]int
+	// arrivals numbers every join in the order its hello was accepted
+	// (hostConn.arrival); under mu.
+	arrivals uint64
+	// beforeWelcome, when set, runs just before a host's welcome is written
+	// (a test holds the welcome there).
+	beforeWelcome func()
+	notify        func(owner int64)
 	// waitingNotify is called with a host's owner whenever the set of its
 	// windows whose Claude Code waits on the person changes (SetWaitingNotify).
 	waitingNotify func(owner int64)
@@ -195,6 +205,10 @@ const notifyDebounce = time.Second
 // re-render it 64 times a minute.
 const activityNudgeEvery = ActivityBucket * time.Second
 
+// ErrSupersededJoin ends a connection whose join finished after a NEWER
+// connection of the same host had already taken its place.
+var ErrSupersededJoin = errors.New("mirror: a newer connection from the same host already holds it")
+
 // ErrTokenRevoked is the cause a connection ends with when its token is
 // revoked. Such a host is dropped from the view at once — not kept as offline.
 var ErrTokenRevoked = errors.New("mirror: the host's token was revoked")
@@ -215,7 +229,7 @@ func NewHub(logger *log.Logger) *Hub {
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &Hub{logger: logger, hosts: map[hostKey]*hostConn{}, offline: map[hostKey]offlineHost{}, now: time.Now, maxHosts: MaxHosts, debounce: notifyDebounce,
+	return &Hub{logger: logger, hosts: map[hostKey]*hostConn{}, offline: map[hostKey]offlineHost{}, joining: map[hostKey]int{}, now: time.Now, maxHosts: MaxHosts, debounce: notifyDebounce,
 		activityEvery: activityNudgeEvery, activity: map[int64]*activityThrottle{}, activityAfter: time.AfterFunc}
 }
 
@@ -287,7 +301,10 @@ func (h *Hub) changed(owner int64) {
 }
 
 type hostConn struct {
-	key         hostKey
+	key hostKey
+	// arrival orders this connection's join among its host's (Hub.arrivals):
+	// a later arrival is a NEWER connection, whichever welcome finishes first.
+	arrival     uint64
 	ws          *websocket.Conn
 	ctx         context.Context
 	cancel      context.CancelCauseFunc
@@ -634,12 +651,55 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		// the pane like any other, so -interactive hosts only.
 		hc.hermesSend = hello.HermesSend && hello.Interactive
 	}
+	// 🔴 THE WELCOME IS THE FIRST FRAME THE HOST READS, SO hc IS NOT IN h.hosts
+	// UNTIL IT HAS BEEN WRITTEN. Everything that sends a host a request (an
+	// open, a watch, a paste…) finds it in h.hosts and writes on this same
+	// socket; registered before the welcome, an attach that raced it put its
+	// open FIRST, the host read that as "muster's first message was not a
+	// welcome" and hung up — the terminal ended before it showed anything (the
+	// tmuxit TestTmuxThroughTheTunnel flake). The place under maxHosts is held
+	// meanwhile (joining), so the cap is decided BEFORE the welcome, as before.
 	h.mu.Lock()
-	old := h.hosts[key]
-	if old == nil && len(h.hosts) >= h.maxHosts {
+	if h.hosts[key] == nil && h.joining[key] == 0 && len(h.hosts)+h.joiningNew() >= h.maxHosts {
 		h.mu.Unlock()
 		refuse(ctx, ws, ErrTooManyHosts)
 		return ErrTooManyHosts
+	}
+	h.joining[key]++
+	h.arrivals++
+	hc.arrival = h.arrivals
+	h.mu.Unlock()
+	joined := false
+	defer func() {
+		if !joined {
+			h.mu.Lock()
+			h.leaveJoining(key)
+			h.mu.Unlock()
+		}
+	}()
+
+	if h.beforeWelcome != nil {
+		h.beforeWelcome()
+	}
+	// The welcome names the version this connection SPEAKS: the host's own,
+	// which readHello accepted. A v1 host is never sent anything newer.
+	if err := writeJSON(ctx, ws, Msg{Type: TypeWelcome, Version: hc.version, Host: host}); err != nil {
+		return err
+	}
+
+	// 🔴 ONLY A NEWER ARRIVAL REPLACES. Two connections of one host can join
+	// at once (a reconnect racing a slow welcome); the one whose welcome
+	// finishes LAST is not necessarily the newer, and it used to win — ending
+	// the newer connection with a false "replaced by a newer connection". An
+	// older arrival finding a newer one registered is ended instead.
+	h.mu.Lock()
+	old := h.hosts[key]
+	h.leaveJoining(key)
+	joined = true
+	if old != nil && old.arrival > hc.arrival {
+		h.mu.Unlock()
+		_ = ws.Close(websocket.StatusPolicyViolation, ErrSupersededJoin.Error())
+		return ErrSupersededJoin
 	}
 	h.hosts[key] = hc
 	delete(h.offline, key)
@@ -648,12 +708,6 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		old.cancel(errors.New("mirror: replaced by a newer connection from the same host"))
 	}
 	defer h.drop(hc)
-
-	// The welcome names the version this connection SPEAKS: the host's own,
-	// which readHello accepted. A v1 host is never sent anything newer.
-	if err := writeJSON(ctx, ws, Msg{Type: TypeWelcome, Version: hc.version, Host: host}); err != nil {
-		return err
-	}
 	mode := "read-only"
 	if hc.interactive {
 		mode = "interactive"
@@ -793,10 +847,32 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 	}
 }
 
+// joiningNew is how many hosts are joining that are not registered already (a
+// reconnect holds no new place). Under h.mu.
+func (h *Hub) joiningNew() int {
+	n := 0
+	for k := range h.joining {
+		if h.hosts[k] == nil {
+			n++
+		}
+	}
+	return n
+}
+
+// leaveJoining ends one joining connection of key. Under h.mu.
+func (h *Hub) leaveJoining(key hostKey) {
+	if h.joining[key]--; h.joining[key] <= 0 {
+		delete(h.joining, key)
+	}
+}
+
 // drop removes hc (if it is still the host's current connection), remembers its
 // last list as offline (unless its token was revoked), and ends every stream on it with ErrHostDisconnected.
-// It runs for EVERY ending of ServeConn — read error, revocation, replacement —
-// so it is the one place a disconnect ends a terminal.
+// It runs for every ending of a connection that was REGISTERED — read error,
+// revocation, replacement — so it is the one place a disconnect ends a
+// terminal. A connection that never registered (refused at the cap, a failed
+// welcome, or superseded by a newer arrival: ErrSupersededJoin) has no
+// streams and no listing of its own, and does not reach it.
 func (h *Hub) drop(hc *hostConn) {
 	revoked := errors.Is(context.Cause(hc.ctx), ErrTokenRevoked)
 	h.mu.Lock()
