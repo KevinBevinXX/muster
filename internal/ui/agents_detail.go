@@ -88,6 +88,9 @@ type AgentDetailView struct {
 	// first); ActiveSessionID is the one whose transcript Messages holds.
 	Sessions        []SessionView
 	ActiveSessionID int64
+	// DraftUser is the signed-in user, the first part of the chat box's draft
+	// key (composer_draft.go).
+	DraftUser int64
 	// Surface is where this pane is being rendered. See ChatSurface.
 	Surface ChatSurface
 
@@ -728,7 +731,7 @@ func agentChatPane(v AgentDetailView) g.Node {
 					g.Attr("enterkeyhint", "send"),
 					// Its draft, kept per device under this agent and chat session
 					// (composer_draft.go).
-					draftAttrs(AgentChatDraftKey(v.Name, v.ActiveSessionID), "chat-note"),
+					draftAttrs(AgentChatDraftKey(v.DraftUser, v.Name, v.ActiveSessionID), "chat-note"),
 					Placeholder("Message the agent…"),
 					Class(composerInputClass),
 				),

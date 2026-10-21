@@ -155,14 +155,15 @@ type Item struct {
 	// (0: not retried). A row is retried at most once (Retry).
 	RetriedAs int64
 	// HeldUntil is the end of the row's edit hold (Hold), on Postgres's clock;
-	// zero for none. It stays set after it has passed (HoldLapsed) until the row
-	// is edited again, released or claimed.
+	// zero for none. Once it has passed, the dispatcher's next pass (or a
+	// claim) takes it off the row (ClearLapsedHolds).
 	HeldUntil time.Time
 	// Held: an edit hold that has not run out yet (held_until > now(), read on
 	// Postgres's clock). The dispatcher never claims a held row.
 	Held bool
 	// HoldLapsed: the row had an edit hold that ran out before it was saved or
-	// cancelled, so the row is queued again with its original text.
+	// cancelled, so the row is queued again with its original text — whether
+	// or not the dispatcher has cleared the lapsed hold yet (hold_lapsed_at).
 	HoldLapsed bool
 	// HoldToken names the live hold: what a Save or a release must present.
 	HoldToken string
@@ -235,7 +236,7 @@ const cols = `id, owner_id, mirror_host, mirror_session, mirror_window, body, st
 	may_have_delivered, created_at, coalesce(claimed_at, 'epoch'::timestamptz), coalesce(finished_at, 'epoch'::timestamptz),
 	after_since, coalesce(claimed_by, ''), coalesce(lease_until, 'epoch'::timestamptz), claim_since, coalesce(route_id, ''),
 	coalesce(retried_as, 0), coalesce(held_until, 'epoch'::timestamptz), coalesce(held_until > now(), false),
-	coalesce(held_until <= now(), false), coalesce(hold_token, ''), coalesce(edited_at, 'epoch'::timestamptz),
+	(hold_lapsed_at IS NOT NULL OR coalesce(held_until <= now(), false)), coalesce(hold_token, ''), coalesce(edited_at, 'epoch'::timestamptz),
 	coalesce(edit_stepup_at, 'epoch'::timestamptz)`
 
 // itemDests is where cols scan into it, with its state into state.

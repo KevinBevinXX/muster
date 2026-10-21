@@ -239,7 +239,7 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		c := ui.ComposerView{SendPath: ui.MirrorTerminalSendPath, Host: h.Host, Session: session, Window: e.Window,
 			Placeholder: "Message…", Aria: "Send a message into this session", DisabledPlaceholder: "Update muster-mirror to send",
 			Nonce: newSendNonce(), Dictate: s.dictatePath(), Upload: s.uploadPath(),
-			DraftKey: ui.MirrorDraftKey("terminal", h.Host, session, e.Window)}
+			DraftKey: ui.MirrorDraftKey(draftUser(r.Context()), "terminal", h.Host, session, e.Window)}
 		// The outcome of a send the browser submitted, which was answered with a
 		// redirect back here (composer.go).
 		c.Notice, c.NoticeOK = composerNotice(r)

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"github.com/ZacxDev/muster/internal/plugins"
@@ -323,23 +324,36 @@ func (s *Server) handleSendQueueList(w http.ResponseWriter, r *http.Request) {
 // sendQueuePreview bounds how much of a message the list shows.
 const sendQueuePreview = 200
 
-// sendQueueEditing is the message a page asks to draw open for editing
-// (?edit=<id>, ui.SendQueueEditParam), 0 for none. It opens only a row that is
-// HELD (sendQueueListView): the hold is what an Edit request took first.
-func sendQueueEditing(r *http.Request) int64 {
-	id, err := strconv.ParseInt(r.URL.Query().Get(ui.SendQueueEditParam), 10, 64)
+// sendQueueEditRef is the message a page asks to draw open for editing
+// (?edit=<id>, ui.SendQueueEditParam) and the hold ITS Edit was given
+// (&hold=<token>, ui.SendQueueHoldParam); id 0 for none.
+type sendQueueEditRef struct {
+	id   int64
+	hold string
+}
+
+// sendQueueEditing is r's edit reference.
+//
+// 🔴 THE FORM IS DRAWN ONLY UNDER THE HOLD THIS DEVICE'S EDIT WAS GIVEN, never
+// under whatever hold the row has now (sendQueueListView): a reload on a device
+// whose edit another device took over would otherwise carry the OTHER device's
+// hold, and its stale Save would win.
+func sendQueueEditing(r *http.Request) sendQueueEditRef {
+	q := r.URL.Query()
+	id, err := strconv.ParseInt(q.Get(ui.SendQueueEditParam), 10, 64)
 	if err != nil || id <= 0 {
-		return 0
+		return sendQueueEditRef{}
 	}
-	return id
+	return sendQueueEditRef{id: id, hold: q.Get(ui.SendQueueHoldParam)}
 }
 
 // sendQueueListView is t's queue as the composer draws it, with what the next
 // message is waiting for — all read as ctx's principal: the REQUEST's own,
 // never one minted here (only the dispatcher acts as a message's owner).
-// editing is the row to draw as its edit form (0: none); only a row with a
-// LIVE hold is drawn so.
-func (s *Server) sendQueueListView(ctx context.Context, t sendqueue.Target, editing int64) ui.SendQueueListView {
+// editing is the row to draw as its edit form (id 0: none): only a row whose
+// LIVE hold is the one editing names is drawn so; a held row named under any
+// other hold is drawn as being edited on another device.
+func (s *Server) sendQueueListView(ctx context.Context, t sendqueue.Target, editing sendQueueEditRef) ui.SendQueueListView {
 	items, err := s.ext.SendQueue.List(ctx, t)
 	if err != nil {
 		s.logger.Printf("sendqueue: list for %s: %v", t, err)
@@ -362,9 +376,13 @@ func (s *Server) sendQueueListView(ctx context.Context, t sendqueue.Target, edit
 			Retryable: sendQueueRetryable(it), Deletable: it.State.Finished(), MayHaveDelivered: it.MayHaveDelivered,
 			Editable: it.State == sendqueue.Queued && it.RouteID == "", Held: it.State == sendqueue.Queued && it.Held,
 			HoldLapsed: it.State == sendqueue.Queued && it.HoldLapsed, Edited: !it.EditedAt.IsZero()}
-		if row.Held && it.ID == editing {
-			row.Editing, row.HoldToken = true, it.HoldToken
-			row.HoldLeftMS = it.HeldUntil.Sub(s.sendQueueNow()).Milliseconds()
+		if row.Held && it.ID == editing.id {
+			if editing.hold != "" && subtle.ConstantTimeCompare([]byte(editing.hold), []byte(it.HoldToken)) == 1 {
+				row.Editing, row.HoldToken = true, it.HoldToken
+				row.HoldLeftMS = it.HeldUntil.Sub(s.sendQueueNow()).Milliseconds()
+			} else {
+				row.HeldElsewhere = true
+			}
 		}
 		v.Items = append(v.Items, row)
 	}
@@ -684,7 +702,7 @@ func (s *Server) sendQueueRetry(w http.ResponseWriter, r *http.Request, ctx cont
 // when there is no queue to draw.
 //
 // editing is the row a no-script Edit came back to draw open (?edit=<id>).
-func (s *Server) mirrorComposerQueue(ctx context.Context, h mirror.HostView, e mirror.SessionView, editing int64) *ui.ComposerQueue {
+func (s *Server) mirrorComposerQueue(ctx context.Context, h mirror.HostView, e mirror.SessionView, editing sendQueueEditRef) *ui.ComposerQueue {
 	if s.ext.SendQueue == nil {
 		return nil
 	}

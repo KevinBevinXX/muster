@@ -14,13 +14,13 @@ import (
 // is sent or queued.
 //
 // Every message box that sends somewhere has one (ComposerView.DraftKey, and
-// the agent chat's #chat-input):
+// the agent chat's #chat-input), each keyed by the signed-in user first:
 //
-//   - a mirrored window's Rendered view (#mv-input): MirrorDraftKey("view", …)
-//   - a mirrored window's Terminal view (#mv-input): MirrorDraftKey("terminal", …)
+//   - a mirrored window's Rendered view (#mv-input): MirrorDraftKey(user, "view", …)
+//   - a mirrored window's Terminal view (#mv-input): MirrorDraftKey(user, "terminal", …)
 //   - a dispatched agent's chat, and the chief panel that draws the same pane
-//     (#chat-input): AgentChatDraftKey(agent, chat session)
-//   - a dispatched agent's Terminal view (#mv-input): AgentTerminalDraftKey(agent)
+//     (#chat-input): AgentChatDraftKey(user, agent, chat session)
+//   - a dispatched agent's Terminal view (#mv-input): AgentTerminalDraftKey(user, agent)
 //
 // 🔴 THE KEY IS THE ADDRESS THE BOX SENDS TO, EVERY PART OF IT, AND IT IS MADE
 // HERE, ONCE. A draft is restored only into a box whose key is the same string,
@@ -30,10 +30,12 @@ import (
 // spelled to look like another's (a host named "a|b" is not host "a", session
 // "b").
 //
-// ⚠ PER DEVICE AND PER BROWSER, NOT PER ACCOUNT: localStorage belongs to the
-// origin, so two accounts signed in one after the other in the same browser
-// share it. A draft is the person's own unsent text and never leaves the
-// browser; the server never sees it.
+// 🔴 THE USER IS THE FIRST PART OF EVERY KEY (v2). localStorage belongs to the
+// origin, not to an account, so two accounts signed in one after the other in
+// the same browser share the store: without the user in the key, one account's
+// unsent text was offered to the other on the same address. A v1 key (no user)
+// is DROPPED by the script on its first run, never migrated: whose it was is
+// unknowable. A draft never leaves the browser; the server never sees it.
 //
 // Bounds: at most DraftMaxChars characters are kept (a longer text is not
 // stored, and an older draft of it is removed rather than restored stale), at
@@ -42,7 +44,10 @@ import (
 // storage (a private window, a full quota) just has no drafts.
 
 // DraftKeyPrefix starts every draft's localStorage key.
-const DraftKeyPrefix = "muster.draft.v1:"
+const DraftKeyPrefix = "muster.draft.v2:"
+
+// draftKeyLegacyPrefix is v1's prefix (keys with no user), dropped on sight.
+const draftKeyLegacyPrefix = "muster.draft.v1:"
 
 // The drafts' bounds.
 const (
@@ -53,33 +58,38 @@ const (
 	DraftTTLDays  = 7
 )
 
-// draftKey is the storage key for an address: the prefix and its parts as a
-// JSON array.
-func draftKey(parts ...string) string {
-	b, err := json.Marshal(parts)
+// draftKey is the storage key for user's box at an address: the prefix, then
+// the user and the address's parts as one JSON array.
+func draftKey(user int64, parts ...string) string {
+	all := make([]any, 0, len(parts)+1)
+	all = append(all, user)
+	for _, p := range parts {
+		all = append(all, p)
+	}
+	b, err := json.Marshal(all)
 	if err != nil {
 		return ""
 	}
 	return DraftKeyPrefix + string(b)
 }
 
-// MirrorDraftKey is the draft key of a mirrored window's message box: view is
+// MirrorDraftKey is user's draft key of a mirrored window's message box: view is
 // "view" (Rendered) or "terminal", then the host, the tmux session and the
 // window id ("" for a per-session host's session).
-func MirrorDraftKey(view, host, session, window string) string {
-	return draftKey("mirror", view, host, session, window)
+func MirrorDraftKey(user int64, view, host, session, window string) string {
+	return draftKey(user, "mirror", view, host, session, window)
 }
 
 // AgentChatDraftKey is the draft key of a dispatched agent's chat box, in
 // chat session id.
-func AgentChatDraftKey(agent string, session int64) string {
-	return draftKey("agent", agent, strconv.FormatInt(session, 10))
+func AgentChatDraftKey(user int64, agent string, session int64) string {
+	return draftKey(user, "agent", agent, strconv.FormatInt(session, 10))
 }
 
 // AgentTerminalDraftKey is the draft key of a dispatched agent's Terminal view
 // message box (it sends to the agent's current chat session).
-func AgentTerminalDraftKey(agent string) string {
-	return draftKey("agent-terminal", agent)
+func AgentTerminalDraftKey(user int64, agent string) string {
+	return draftKey(user, "agent-terminal", agent)
 }
 
 // draftAttrs are a message box's draft attributes: its key, and the id of the
@@ -112,7 +122,7 @@ func composerDraftScript() g.Node {
 	return Script(g.Raw(`
 (function () {
   if (!window.musterDraft) {
-    var PREFIX = ` + strconv.Quote(DraftKeyPrefix) + `;
+    var PREFIX = ` + strconv.Quote(DraftKeyPrefix) + `, LEGACY = ` + strconv.Quote(draftKeyLegacyPrefix) + `;
     var MAX = ` + strconv.Itoa(DraftMaxChars) + `, MAXN = ` + strconv.Itoa(DraftMaxCount) + `;
     var TTL = ` + strconv.Itoa(DraftTTLDays) + ` * 24 * 3600 * 1000;
     var PENDING = 'muster.draft.pending';
@@ -137,12 +147,14 @@ func composerDraftScript() g.Node {
         for (var i = 0; i < s.length; i++) {
           var k = s.key(i);
           if (k && k.indexOf(PREFIX) === 0) all.push(k);
+          else if (k && k.indexOf(LEGACY) === 0) all.push(k);
         }
         var live = [];
         all.forEach(function (k) {
           var d = null;
           try { d = JSON.parse(s.getItem(k) || 'null'); } catch (e) {}
-          if (!d || typeof d.t !== 'string' || typeof d.at !== 'number' || Date.now() - d.at > TTL) s.removeItem(k);
+          // A v1 draft (no user in its key) is dropped: whose it was is unknowable.
+          if (k.indexOf(LEGACY) === 0 || !d || typeof d.t !== 'string' || typeof d.at !== 'number' || Date.now() - d.at > TTL) s.removeItem(k);
           else live.push({ k: k, at: d.at });
         });
         live.sort(function (a, b) { return a.at - b.at; });

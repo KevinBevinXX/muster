@@ -1009,6 +1009,35 @@ for (const vp of [
       }
     });
 
+    // 🔴 ANOTHER ACCOUNT'S DRAFT IS NEVER OFFERED (the user is the first part of
+    // every key): a draft stored for this window under ANOTHER account, and one
+    // left by the old key format (no account in it — whoever typed it), are not
+    // restored, and the old one is dropped. On origin/main the old-format draft
+    // is restored to whoever opens the window, so this fails there.
+    test("another account's draft is not restored on the same window, and an old-format draft is dropped", async ({ page }) => {
+      await openView(page, newHost);
+      const key = (await page.locator('#mv-input').getAttribute('data-draft-key')) ?? '';
+      const legacy = 'muster.draft.v1:' + JSON.stringify(['mirror', 'view', newHost, 'work', '@1']);
+      const theirs = 'muster.draft.v2:' + JSON.stringify([99, 'mirror', 'view', newHost, 'work', '@1']);
+      expect(theirs, 'instrument: the other account’s key differs from this one’s').not.toBe(key);
+      await page.evaluate(([l, o]) => {
+        const at = Date.now();
+        localStorage.setItem(l, JSON.stringify({ t: 'typed under the old key format', at }));
+        localStorage.setItem(o, JSON.stringify({ t: "another account's draft", at }));
+      }, [legacy, theirs]);
+      await page.goto(origin + '/');
+      await page.goto(origin + viewPath(newHost));
+      await expect(page.locator('#mv-input')).toBeEnabled({ timeout: 20_000 });
+      await expect(page.locator('#mv-input'), 'neither draft is restored for this account').toHaveValue('');
+      expect(await page.evaluate((l) => localStorage.getItem(l), legacy), 'the old-format draft is dropped').toBeNull();
+      // CONTROL: this account's own draft, under its own key, is restored.
+      await page.evaluate((k) => localStorage.setItem(k, JSON.stringify({ t: 'my own draft', at: Date.now() })), key);
+      await page.goto(origin + viewPath(newHost));
+      await expect(page.locator('#mv-input')).toHaveValue('my own draft');
+      await page.locator('#mv-input').fill('');
+      await page.evaluate((o) => localStorage.removeItem(o), theirs);
+    });
+
     // 🔴 THE SEND THE BROWSER MAKES ITSELF (the script hands the form over when
     // its own request gets no answer): the draft is cleared by the page it
     // comes back to, which says it was sent — not before, and not otherwise.

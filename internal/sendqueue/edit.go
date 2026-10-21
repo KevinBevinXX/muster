@@ -34,8 +34,9 @@ import (
 // cannot freeze a window's queue. After that the row is queued again with its
 // ORIGINAL text — nothing was written — and a Save under the lapsed hold is
 // refused (ErrHoldLapsed, or ErrEditTooLate once the row has moved on). The
-// lapsed hold stays on the row (Item.HoldLapsed) so the list can say so, until
-// the row is edited again, released or claimed.
+// dispatcher's next pass takes the lapsed hold off the row (ClearLapsedHolds),
+// recording that it ran out (hold_lapsed_at, Item.HoldLapsed) so the list can
+// say so: a row carries a hold only while it is live.
 //
 // ROUTED messages are not editable (ErrRoutedNotEditable): their text is the
 // chief's, and their delivery is gated on the route, not on a person's sign-in.
@@ -93,8 +94,8 @@ func (s *PGStore) Hold(ctx context.Context, id int64) (Item, error) {
 	if err != nil {
 		return Item{}, err
 	}
-	it, err := scanItem(s.pool.QueryRow(ctx, `UPDATE send_queue SET held_until = now() + $2 * interval '1 microsecond', hold_token = $3
-		WHERE id = $1 AND state = 'queued' AND route_id IS NULL RETURNING `+cols, id, leaseMicros(s.editHold()), tok))
+	it, err := scanItem(s.pool.QueryRow(ctx, `UPDATE send_queue SET held_until = now() + $2 * interval '1 microsecond', hold_token = $3,
+		hold_lapsed_at = NULL WHERE id = $1 AND state = 'queued' AND route_id IS NULL RETURNING `+cols, id, leaseMicros(s.editHold()), tok))
 	if err == nil {
 		return it, nil
 	}
@@ -135,7 +136,7 @@ func (s *PGStore) SaveEdit(ctx context.Context, id int64, token, body string, st
 	if token == "" {
 		return Item{}, ErrHoldLapsed
 	}
-	it, err := scanItem(s.pool.QueryRow(ctx, `UPDATE send_queue SET body = $3, edited_at = now(), edit_stepup_at = $4, `+clearHold+`
+	it, err := scanItem(s.pool.QueryRow(ctx, `UPDATE send_queue SET body = $3, edited_at = now(), edit_stepup_at = $4, hold_lapsed_at = NULL, `+clearHold+`
 		WHERE id = $1 AND state = 'queued' AND hold_token = $2 AND held_until > now() RETURNING `+cols, id, token, text, stepUpAt))
 	if err == nil {
 		return it, nil
@@ -173,6 +174,21 @@ func (s *PGStore) ReleaseEdit(ctx context.Context, id int64, token string) (it I
 		return Item{}, false, gerr
 	}
 	return cur, false, nil
+}
+
+// ClearLapsedHolds takes every hold that has run out off its row, across every
+// owner (the system scope), recording that it ran out (hold_lapsed_at), and
+// returns how many. The dispatcher runs it on every pass: a row then carries
+// held_until and hold_token only while its hold is live, which bounds what an
+// older image (whose statements do not clear them, and so trip 0039's
+// send_queue_hold_check on a held row) can meet during a rollout or rollback.
+func (s *PGStore) ClearLapsedHolds(ctx context.Context) (int, error) {
+	tag, err := s.pool.Exec(sys(ctx), `UPDATE send_queue SET hold_lapsed_at = held_until, `+clearHold+`
+		WHERE held_until IS NOT NULL AND held_until <= now()`)
+	if err != nil {
+		return 0, fmt.Errorf("sendqueue: clear lapsed holds: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
 }
 
 // clearHold is the SET clause that ends a row's hold: every transition out of

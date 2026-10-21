@@ -73,6 +73,10 @@ func SendQueueEditCancelPath(id int64) string { return SendQueueEditPath(id) + "
 // script's re-read after an Edit).
 const SendQueueEditParam = "edit"
 
+// SendQueueHoldParam is the hold an Edit gave this device: the form is drawn
+// only under it (a held row named under any other is being edited elsewhere).
+const SendQueueHoldParam = "hold"
+
 // SendQueueDeleteLabel is a finished message's Delete, as a screen reader
 // names it.
 const SendQueueDeleteLabel = "Delete this message"
@@ -130,6 +134,9 @@ type SendQueueItem struct {
 	HoldLapsed bool
 	// Edited: its text was changed by a saved edit.
 	Edited bool
+	// HeldElsewhere: this page asked for the row open, but its hold is not the
+	// one this page's Edit was given — another device took the edit over.
+	HeldElsewhere bool
 	// Editing: draw the row as its edit form (sendQueueEditRow), under
 	// HoldToken, the hold its Save and Cancel present. HoldLeftMS is how long
 	// the hold has left, which the list's script counts down.
@@ -140,9 +147,10 @@ type SendQueueItem struct {
 
 // What a held, a lapsed and an edited message say under their preview.
 const (
-	SendQueueHeldText   = "Being edited: held, and nothing queued for this window is sent until the edit is saved or cancelled."
-	SendQueueLapsedText = "An edit was not saved in time, so its hold ran out and the message kept its original text."
-	SendQueueEditedText = "Edited."
+	SendQueueHeldText          = "Being edited: held, and nothing queued for this window is sent until the edit is saved or cancelled."
+	SendQueueHeldElsewhereText = "Being edited on another device: held, and nothing queued for this window is sent until that edit is saved or cancelled. Edit it here to take it over."
+	SendQueueLapsedText        = "An edit was not saved in time, so its hold ran out and the message kept its original text."
+	SendQueueEditedText        = "Edited."
 )
 
 // What the list's script says when an edit is saved, and cancelled.
@@ -154,6 +162,13 @@ const (
 // SendQueueEditHoldMinutes is how long an edit holds its message, in minutes
 // (sendqueue.EditHold; a test in internal/api holds the two together).
 const SendQueueEditHoldMinutes = 10
+
+// SendQueueEditAnsweredText is what the edit form of a message that answered
+// asker's question when it was queued says before anything is typed: the
+// answer stands, whatever the edit.
+func SendQueueEditAnsweredText(asker string) string {
+	return "This message already answered " + asker + "'s question when it was queued, and that answer was delivered: a Save changes what is pasted into the session, not the answer."
+}
 
 // SendQueueAnsweredText is what a queued message that answered asker's
 // question when it was queued says under its preview.
@@ -238,7 +253,9 @@ func SendQueueList(v SendQueueListView) g.Node {
 					g.Text(SendQueueAnsweredText(it.Answered)))),
 				g.If(it.Retryable && it.MayHaveDelivered, P(g.Attr("data-queue-may-have-sent", ""),
 					Class("text-[11px] font-semibold text-st-error-fg [overflow-wrap:anywhere]"), g.Text(SendQueueMayHaveSentText))),
-				g.If(it.Held, P(g.Attr("data-queue-held", ""), Class("text-[11px] text-muted [overflow-wrap:anywhere]"), g.Text(SendQueueHeldText))),
+				g.If(it.Held && !it.HeldElsewhere, P(g.Attr("data-queue-held", ""), Class("text-[11px] text-muted [overflow-wrap:anywhere]"), g.Text(SendQueueHeldText))),
+				g.If(it.HeldElsewhere, P(g.Attr("data-queue-held", ""), g.Attr("data-queue-held-elsewhere", ""),
+					Class("text-[11px] font-semibold text-st-warning-fg [overflow-wrap:anywhere]"), g.Text(SendQueueHeldElsewhereText))),
 				g.If(it.HoldLapsed && !it.Held, P(g.Attr("data-queue-lapsed", ""), Class("text-[11px] font-semibold text-st-warning-fg [overflow-wrap:anywhere]"),
 					g.Text(SendQueueLapsedText))),
 				g.If(it.Edited && it.State == "queued" && !it.Held && !it.HoldLapsed,
@@ -318,6 +335,8 @@ func sendQueueEditRow(it SendQueueItem) g.Node {
 					g.Text("Held while you edit: nothing queued for this window is sent until you Save or Cancel. "+
 						"Left open, the hold runs out after "+strconv.Itoa(SendQueueEditHoldMinutes)+" minutes and the message keeps its original text.")),
 			),
+			g.If(it.Answered != "", P(g.Attr("data-queue-edit-answered", ""),
+				Class("text-[11px] font-semibold text-st-warning-fg [overflow-wrap:anywhere]"), g.Text(SendQueueEditAnsweredText(it.Answered)))),
 			Textarea(
 				ID("mv-qe-text-"+id),
 				Name("text"),
@@ -567,9 +586,11 @@ func sendQueueScript() g.Node {
   // for editing when id is given (the server draws it open only while it is
   // held) — then arms the open edit's hold timer.
   var holdTimer = null;
-  function show(id) {
+  // hold is the hold THIS page's Edit was given: the server draws the form
+  // only under it.
+  function show(id, hold) {
     if (typeof fetch !== 'function') return Promise.resolve();
-    var u = src + (id ? '&` + SendQueueEditParam + `=' + encodeURIComponent(id) : '');
+    var u = src + (id ? '&` + SendQueueEditParam + `=' + encodeURIComponent(id) + '&` + SendQueueHoldParam + `=' + encodeURIComponent(hold || '') : '');
     return fetch(u, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
       .then(function (r) { return r.ok ? r.text() : null; })
       .then(function (t) {
@@ -775,7 +796,8 @@ func sendQueueScript() g.Node {
     return fetch(f.getAttribute('action'), { method: 'POST', credentials: 'same-origin',
       headers: { 'X-Requested-With': 'XMLHttpRequest' } })
       .then(function (r) {
-        if (r.ok) return show(id);
+        // The answer is the hold this Edit was given.
+        if (r.ok) return r.text().then(function (hold) { return show(id, hold.trim()); });
         if (r.status === 403 && r.headers.get('X-Muster-Step-Up') && window.musterStepUp) {
           window.musterStepUp.stale();
           window.musterStepUp.ask('', function () { return edit(f); });
@@ -800,6 +822,8 @@ func sendQueueScript() g.Node {
       .then(function (r) {
         if (r.ok) {
           clearTimeout(holdTimer);
+          // 200 with words: saved, with a warning (an answer it already gave).
+          if (r.status === 200) return r.text().then(function (t) { if (t.trim()) note(t.trim()); else noteOK(` + strconv.Quote(SendQueueSavedNote) + `); return show(); });
           noteOK(cancel ? ` + strconv.Quote(SendQueueEditCancelledNote) + ` : ` + strconv.Quote(SendQueueSavedNote) + `);
           return show();
         }

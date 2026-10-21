@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -64,12 +65,14 @@ var (
 var editHoldText = strconv.Itoa(int(sendqueue.EditHold.Minutes())) + " minutes"
 
 // sendQueueEditBack is where an edit route sends a browser back to: the view,
-// drawing the row's edit form when editing is set.
-func sendQueueEditBack(back string, id int64, editing bool) string {
-	if !editing {
+// drawing the row's edit form under hold when hold is set ("" draws no form).
+// The hold rides in the address because the form is drawn only under the hold
+// THIS device's Edit was given (sendQueueEditing).
+func sendQueueEditBack(back string, id int64, hold string) string {
+	if hold == "" {
 		return back
 	}
-	return back + "&" + ui.SendQueueEditParam + "=" + strconv.FormatInt(id, 10)
+	return back + "&" + ui.SendQueueEditParam + "=" + strconv.FormatInt(id, 10) + "&" + ui.SendQueueHoldParam + "=" + url.QueryEscape(hold)
 }
 
 // handleSendQueueEdit is POST /send-queue/{id}/edit: hold the principal's
@@ -177,10 +180,13 @@ func (s *Server) sendQueueEdit(w http.ResponseWriter, r *http.Request, ctx conte
 	}
 	s.logger.Printf("sendqueue: message %d for %s held for an edit until %s", id, q.t, held.HeldUntil.Format("15:04:05"))
 	if nav {
-		http.Redirect(w, r, withNotice(sendQueueEditBack(q.back, id, true), noticeEditing), http.StatusSeeOther)
+		http.Redirect(w, r, withNotice(sendQueueEditBack(q.back, id, held.HoldToken), noticeEditing), http.StatusSeeOther)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	// To the list's script: the hold, which it re-reads the list under.
+	noStore(w)
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write([]byte(held.HoldToken))
 }
 
 // sendQueueEditRefusal is why it cannot be held for an edit, and its notice;
@@ -238,9 +244,15 @@ func (s *Server) sendQueueEditSave(w http.ResponseWriter, r *http.Request, ctx c
 	}
 	nav := confirmed || isDocumentNavigation(r)
 	text, hold := r.PostFormValue("text"), r.PostFormValue("hold")
+	// editing: come back with the form still open, under the hold this
+	// device presented — only for what the person can fix.
 	refuse := func(status int, msg, notice string, editing bool) {
+		back := ""
+		if editing {
+			back = hold
+		}
 		if nav {
-			http.Redirect(w, r, withNotice(sendQueueEditBack(q.back, id, editing), notice), http.StatusSeeOther)
+			http.Redirect(w, r, withNotice(sendQueueEditBack(q.back, id, back), notice), http.StatusSeeOther)
 			return
 		}
 		http.Error(w, msg, status)
@@ -289,6 +301,19 @@ func (s *Server) sendQueueEditSave(w http.ResponseWriter, r *http.Request, ctx c
 	}
 	s.logger.Printf("sendqueue: message %d for %s edited (%d bytes)", id, q.t, len(saved.Body))
 	s.kickSendQueue()
+	// 🔴 AN EDIT DOES NOT REWRITE AN ANSWER: a queued message answers its
+	// session's asks when it is QUEUED (attention.go's mirrorAddressed), and
+	// that answer was delivered as first written. It is left as it is, and the
+	// Save says so — as Cancel does.
+	if asker, ok := s.queueAnswered(ctx, []sendqueue.Item{saved})[id]; ok {
+		if nav {
+			http.Redirect(w, r, withNotice(q.back, noticeEditedAnswered), http.StatusSeeOther)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte(SendQueueEditedAnsweredText(asker)))
+		return
+	}
 	if nav {
 		http.Redirect(w, r, withNotice(q.back, noticeEdited), http.StatusSeeOther)
 		return

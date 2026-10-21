@@ -10,9 +10,15 @@
 -- written as now() + the hold (sendqueue.EditHold, 10 minutes) and compared
 -- with now(), so a tab that was closed mid-edit cannot freeze the window's queue:
 -- once held_until has passed the row is queued again with its ORIGINAL text
--- (the body is only ever replaced by a Save, under a live hold), and the next
--- claim clears the hold. A lapsed hold is left on the row (held_until in the
--- past) so the list can say the edit ran out.
+-- (the body is only ever replaced by a Save, under a live hold).
+--
+-- 🔴 A LAPSED HOLD IS TAKEN OFF THE ROW by the dispatcher's next pass
+-- (sendqueue ClearLapsedHolds) and by a claim: held_until and hold_token go
+-- back to NULL and hold_lapsed_at records that the edit ran out, for the list
+-- to say so. So a row carries the hold columns only while its hold is LIVE
+-- (at most 10 minutes and a pass): an older image, whose claim, cancel and
+-- sweeps do not clear them and so trip send_queue_hold_check, meets them only
+-- on a row someone is editing right now. hold_lapsed_at has no CHECK.
 --
 -- 🔴 THE CLAIM SKIPS A HELD ROW IN THE SAME CONDITIONAL UPDATE. Hold (state
 -- 'queued' → held) and Claim (queued and not held → 'sending') are each one
@@ -37,6 +43,7 @@ ALTER TABLE public.send_queue ADD COLUMN IF NOT EXISTS held_until TIMESTAMPTZ;
 ALTER TABLE public.send_queue ADD COLUMN IF NOT EXISTS hold_token TEXT;
 ALTER TABLE public.send_queue ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ;
 ALTER TABLE public.send_queue ADD COLUMN IF NOT EXISTS edit_stepup_at TIMESTAMPTZ;
+ALTER TABLE public.send_queue ADD COLUMN IF NOT EXISTS hold_lapsed_at TIMESTAMPTZ;
 
 -- A hold and its token come and go together, and only a QUEUED row has one:
 -- every transition out of 'queued' (claim, cancel, expiry) clears it.

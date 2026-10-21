@@ -123,3 +123,46 @@ func TestTheDispatcherNeverSendsDuringAnEdit(t *testing.T) {
 	}
 	t.Logf("%d messages: %d held, edited and sent edited; %d claimed by the dispatcher before the hold", n, edits, n-edits)
 }
+
+// TestALapsedHoldIsClearedByTheDispatchersPass: once a hold has run out, the
+// dispatcher's next pass takes it off the row (held_until and hold_token back
+// to NULL) even while the window never goes idle — so a row keeps hold
+// columns only while its hold is LIVE, which is what bounds what an older
+// image (whose statements trip 0039's send_queue_hold_check on a held row)
+// can meet during a rollout or a rollback. The row still says its edit ran out.
+// The control is a live hold on another row, which the same pass leaves alone.
+func TestALapsedHoldIsClearedByTheDispatchersPass(t *testing.T) {
+	s, pool := pgStore(t)
+	f, c := &fakeTarget{}, &clock{t: time.Now()}
+	f.set(AgentState{Why: "Claude Code is working."})
+	d := newDispatcher(s, f, c)
+	live := mustEnqueue(t, s, 2, mirrorItem("held for ten minutes"))
+	if _, err := s.Hold(as(2), live.ID); err != nil {
+		t.Fatal(err)
+	}
+	shortHold(s, 50*time.Millisecond)
+	lapsing := mustEnqueue(t, s, 2, mirrorItem("held briefly"))
+	if _, err := s.Hold(as(2), lapsing.ID); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	tick(t, d)
+	held := func(id int64) bool {
+		var h bool
+		if err := pool.QueryRow(authzAll(), `SELECT held_until IS NOT NULL OR hold_token IS NOT NULL FROM send_queue WHERE id = $1`, id).Scan(&h); err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	if held(lapsing.ID) {
+		t.Fatal("a lapsed hold is still on the row after the dispatcher's pass")
+	}
+	if got, _ := s.Get(as(2), lapsing.ID); !got.HoldLapsed || got.Held || got.State != Queued || got.Body != "held briefly" {
+		t.Fatalf("the cleared row: lapsed %t held %t state %s body %q; want it still saying the edit ran out, queued, unchanged",
+			got.HoldLapsed, got.Held, got.State, got.Body)
+	}
+	if !held(live.ID) {
+		t.Fatal("CONTROL: the pass cleared a LIVE hold")
+	}
+	wantSent(t, f, "while busy")
+}

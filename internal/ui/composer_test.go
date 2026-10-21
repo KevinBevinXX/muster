@@ -119,10 +119,10 @@ func TestEveryMessageBoxIsOneComposer(t *testing.T) {
 		"a mirrored session's rendered view": renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main", Interactive: true, StepUp: stepUpFixture()})),
 		"a mirrored session's terminal": renderString(t, AgentTerminalPage(AgentTerminalView{Name: "main", StepUp: stepUpFixture(),
 			Composer: &ComposerView{SendPath: MirrorTerminalSendPath, Host: "host-a", Session: "main",
-				DraftKey: MirrorDraftKey("terminal", "host-a", "main", "")}})),
+				DraftKey: MirrorDraftKey(1, "terminal", "host-a", "main", "")}})),
 		"an agent's terminal": renderString(t, AgentTerminalPage(AgentTerminalView{Name: "keen-wren", RenderedHref: AgentPath("keen-wren"),
 			Composer: &ComposerView{SendPath: AgentSendPath("keen-wren"), Extra: []ComposerField{{Name: "from", Value: AgentSendFromTerminal}},
-				DraftKey: AgentTerminalDraftKey("keen-wren")}})),
+				DraftKey: AgentTerminalDraftKey(1, "keen-wren")}})),
 	}
 	var script, shape string
 	for name, page := range pages {

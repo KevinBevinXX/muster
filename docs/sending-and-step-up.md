@@ -143,9 +143,18 @@ message is open for editing.
   message is then queued again with its **original** text, and its row says the
   edit ran out. A Save after that is refused, saying so, and the text you typed
   is put in the message box if the box is empty. If the message was sent in the
-  meantime, the refusal says it was sent with its original text.
+  meantime, the refusal says it was sent with its original text. The server
+  takes a hold that ran out off the message on its next pass (every few
+  seconds), so a message carries a hold only while someone is editing it.
 - Editing a message on a second device takes it over: the first device's Save
-  is then refused.
+  is then refused. 🔴 The edit form is drawn only under the hold that device's
+  own Edit was given (it rides in the page's address, `&hold=…`, without
+  JavaScript), so reloading the first device's page does not pick up the
+  second device's hold: the row says it is being edited on another device.
+- **A message that already answered a question** (it answers its session's
+  question when it is queued; see [attention.md](attention.md)) can be edited,
+  but the answer is not: it was delivered as first written. The edit form says
+  so before you type, and Save says so again. Cancel says the same thing.
 - Edit is refused for a message being sent, or one that has finished.
 - **A message your chief routed has no Edit**, and the server refuses one: its
   text is the chief's, and it is gated by its route, not by your sign-in.
@@ -211,21 +220,24 @@ device, or another browser, does not see it.
 
 | box | kept for |
 |---|---|
-| A mirrored window's **Rendered** view | that host, tmux session and window |
-| A mirrored window's **Terminal** view | that host, tmux session and window (apart from its Rendered view) |
-| A dispatched agent's chat, and the chief panel | that agent and chat session |
-| A dispatched agent's **Terminal** view | that agent |
+| A mirrored window's **Rendered** view | your account, that host, tmux session and window |
+| A mirrored window's **Terminal** view | your account, that host, tmux session and window (apart from its Rendered view) |
+| A dispatched agent's chat, and the chief panel | your account, that agent and chat session |
+| A dispatched agent's **Terminal** view | your account, that agent |
 
-- 🔴 **A draft is only ever put back into the box it was typed in.** Its key is
-  the whole address the box sends to, so a draft for one window never appears in
-  another window, session or host, or in the other view of the same window.
+- 🔴 **A draft is only ever put back into the box it was typed in, for the
+  account that typed it.** Its key is the signed-in account and the whole
+  address the box sends to, so a draft for one window never appears in another
+  window, session or host, or in the other view of the same window — nor for
+  another account signed in to the same browser.
 - A send the browser makes itself (when the page's script cannot) clears the
   draft only when the page it comes back to says the message was sent.
 - Up to 16,384 characters are kept (what a message can hold), for up to 50 boxes. A draft not touched for 7
   days is removed. A box that cannot send (a read-only host, an agent that is
   not running) keeps no draft.
-- Drafts are per browser, not per account: two accounts signed in, one after
-  the other, in the same browser share them. The server never sees a draft.
+- Drafts kept before the account was part of the key (`muster.draft.v1:`) are
+  removed on the first page load, not restored: whose they were is unknown.
+  The server never sees a draft.
 - A browser that refuses storage (some private windows) keeps no drafts, and the
   box works as before.
 

@@ -43,12 +43,15 @@ func TestAnEditHoldsTheRowSavesInPlaceAndTheNewTextIsSent(t *testing.T) {
 	cookie := sessionCookieFor(f.srv)
 
 	resp, body := f.retry(t, ui.SendQueueEditPath(first.ID), cookie, true, nil)
-	if resp.StatusCode != http.StatusNoContent {
+	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("Edit: %d %q", resp.StatusCode, body)
 	}
 	held := f.row(t, first.ID)
 	if !held.Held || held.HoldToken == "" || held.Body != "first, as queued" {
 		t.Fatalf("after Edit the row is held %t, token %q, body %q", held.Held, held.HoldToken, held.Body)
+	}
+	if body != held.HoldToken {
+		t.Fatalf("Edit answered %q to the script; want the hold it took, %q", body, held.HoldToken)
 	}
 	f.tick(t)
 	f.tick(t)
@@ -61,12 +64,12 @@ func TestAnEditHoldsTheRowSavesInPlaceAndTheNewTextIsSent(t *testing.T) {
 	if strings.Contains(list, `data-queue-edit-form`) || !strings.Contains(list, ui.SendQueueHeldText) {
 		t.Fatalf("the plain list draws an edit form, or does not say the row is held: %s", list)
 	}
-	_, list = mirrorGet(t, f.srv, f.ts, queueListPath(first.ID))
+	_, list = mirrorGet(t, f.srv, f.ts, queueListPath(first.ID)+"&hold="+url.QueryEscape(held.HoldToken))
 	if !strings.Contains(list, `action="`+ui.SendQueueEditSavePath(first.ID)+`"`) || !strings.Contains(list, `value="`+held.HoldToken+`"`) ||
 		!strings.Contains(list, ">first, as queued</textarea>") {
 		t.Fatalf("?edit= does not draw the held row open with its hold and its text: %s", list)
 	}
-	_, list = mirrorGet(t, f.srv, f.ts, queueListPath(second.ID))
+	_, list = mirrorGet(t, f.srv, f.ts, queueListPath(second.ID)+"&hold="+url.QueryEscape(held.HoldToken))
 	if strings.Contains(list, `data-queue-edit-form`) {
 		t.Fatalf("?edit= drew a row that is NOT held open: %s", list)
 	}
@@ -180,7 +183,7 @@ func TestEditAndSaveNeedAFreshSignIn(t *testing.T) {
 		t.Fatalf("after the confirm: body %q, held %t, edit sign-in %s", got.Body, got.Held, got.EditStepUpAt)
 	}
 	// CONTROL: a fresh session's Edit is not asked to confirm.
-	if resp, body := f.retry(t, ui.SendQueueEditPath(it.ID), fresh, true, nil); resp.StatusCode != http.StatusNoContent {
+	if resp, body := f.retry(t, ui.SendQueueEditPath(it.ID), fresh, true, nil); resp.StatusCode != http.StatusOK {
 		t.Fatalf("CONTROL: a fresh Edit: %d %q", resp.StatusCode, body)
 	}
 }
@@ -226,7 +229,7 @@ func TestEditRefusals(t *testing.T) {
 	}
 
 	// A hold that ran out (moved into the past on the database's clock).
-	if resp, body := f.retry(t, ui.SendQueueEditPath(own.ID), cookie, true, nil); resp.StatusCode != http.StatusNoContent {
+	if resp, body := f.retry(t, ui.SendQueueEditPath(own.ID), cookie, true, nil); resp.StatusCode != http.StatusOK {
 		t.Fatalf("Edit: %d %q", resp.StatusCode, body)
 	}
 	tok := f.row(t, own.ID).HoldToken
@@ -312,5 +315,58 @@ func TestADeliveryRefusesAnEditSavedAtOrBeforeTheCutoff(t *testing.T) {
 func TestTheEditHoldIsOneNumber(t *testing.T) {
 	if time.Duration(ui.SendQueueEditHoldMinutes)*time.Minute != sendqueue.EditHold {
 		t.Fatalf("ui.SendQueueEditHoldMinutes = %d, sendqueue.EditHold = %s", ui.SendQueueEditHoldMinutes, sendqueue.EditHold)
+	}
+}
+
+// TestAReloadAfterATakeoverDoesNotCarryTheOtherDevicesHold: device A opens a
+// message for editing (a browser form: it comes back to the view with the row
+// open), device B opens it too and so takes it over, and A reloads the page it
+// was sent to. A's page must not draw the form with B's hold — it says the
+// message is being edited on another device — and neither may a bare ?edit=;
+// A's Save, under the hold A was given, is refused and changes nothing. The
+// control is B's own page, which draws B's form, and B's Save, which saves.
+func TestAReloadAfterATakeoverDoesNotCarryTheOtherDevicesHold(t *testing.T) {
+	f := newSQFixture(t)
+	f.mirror.agentState = &mirror.AgentState{Status: mirror.StatusBusy, Since: time.Now().UnixMilli()}
+	it := f.enqueue(t, "contested text", 0, 0)
+	cookie := sessionCookieFor(f.srv)
+
+	resp, body := f.retry(t, ui.SendQueueEditPath(it.ID), cookie, false, nil)
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("A's Edit: %d %q", resp.StatusCode, body)
+	}
+	pageA := resp.Header.Get("Location")
+	tokA := f.row(t, it.ID).HoldToken
+	if resp, body := f.retry(t, ui.SendQueueEditPath(it.ID), cookie, true, nil); resp.StatusCode >= 300 {
+		t.Fatalf("B's Edit: %d %q", resp.StatusCode, body)
+	}
+	tokB := f.row(t, it.ID).HoldToken
+	if tokB == "" || tokB == tokA {
+		t.Fatalf("B's Edit did not take the row over: %q, %q", tokA, tokB)
+	}
+
+	_, reloaded := mirrorGet(t, f.srv, f.ts, pageA)
+	if strings.Contains(reloaded, tokB) {
+		t.Fatalf("A's reloaded page carries B's hold %q: %s", tokB, reloaded)
+	}
+	if strings.Contains(reloaded, `action="`+ui.SendQueueEditSavePath(it.ID)+`"`) || !strings.Contains(reloaded, "Being edited on another device") {
+		t.Fatalf("A's reloaded page draws an edit form, or does not say another device is editing: %s", reloaded)
+	}
+	if _, bare := mirrorGet(t, f.srv, f.ts, queueListPath(it.ID)); strings.Contains(bare, tokB) {
+		t.Fatalf("a bare ?edit= carries B's hold: %s", bare)
+	}
+	resp, body = f.retry(t, ui.SendQueueEditSavePath(it.ID), cookie, true, url.Values{"hold": {tokA}, "text": {"A's stale edit"}})
+	if resp.StatusCode != http.StatusConflict || f.row(t, it.ID).Body != "contested text" {
+		t.Fatalf("A's Save after the takeover: %d %q, body %q", resp.StatusCode, body, f.row(t, it.ID).Body)
+	}
+
+	// CONTROL: B's own page draws B's form, and B's Save saves.
+	_, pageB := mirrorGet(t, f.srv, f.ts, queueListPath(it.ID)+"&hold="+url.QueryEscape(tokB))
+	if !strings.Contains(pageB, `value="`+tokB+`"`) || !strings.Contains(pageB, `data-queue-edit-form`) {
+		t.Fatalf("CONTROL: B's page does not draw B's form: %s", pageB)
+	}
+	if resp, body := f.retry(t, ui.SendQueueEditSavePath(it.ID), cookie, true, url.Values{"hold": {tokB}, "text": {"B's edit"}}); resp.StatusCode >= 300 ||
+		f.row(t, it.ID).Body != "B's edit" {
+		t.Fatalf("CONTROL: B's Save: %d %q, body %q", resp.StatusCode, body, f.row(t, it.ID).Body)
 	}
 }
