@@ -88,6 +88,12 @@ func Decide(h Head, st AgentState, now time.Time, idleFor time.Duration) Decisio
 	if h.State == Sending {
 		return Decision{Why: "sending now"}
 	}
+	if h.Held {
+		// Held for an edit (Hold): it keeps its place, and the window's queue
+		// waits behind it. The claim refuses a held row too (notHeld); this is
+		// what the composer shows, and what keeps the dispatcher from trying.
+		return Decision{Why: HeldWhy}
+	}
 	if !st.Idle {
 		return Decision{Why: st.Why}
 	}

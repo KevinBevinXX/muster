@@ -82,6 +82,17 @@ const (
 	noticeHermes      = "hermes"
 	noticeMultiplexer = "multiplexer"
 	noticeUnchecked   = "unchecked"
+	// A queued message's Edit (send_queue_edit.go).
+	noticeEditing           = "editing"
+	noticeEdited            = "edited"
+	noticeEditCancelled     = "edit-cancelled"
+	noticeEditLapsed        = "edit-lapsed"
+	noticeEditTooLate       = "edit-too-late"
+	noticeEditTooLateSent   = "edit-too-late-sent"
+	noticeNotEditable       = "not-editable"
+	noticeEditSending       = "edit-sending"
+	noticeRoutedNotEditable = "routed-not-editable"
+	noticeHeldNow           = "held-now"
 )
 
 // pasteGuardNotices is the notice for each kind of Hermes paste-guard refusal
@@ -138,7 +149,24 @@ var composerNotices = map[string]struct {
 	noticeHermes:            {mirror.PasteRefusedHermesText, false},
 	noticeMultiplexer:       {mirror.PasteRefusedMultiplexerText, false},
 	noticeUnchecked:         {mirror.PasteRefusedUncheckedText, false},
+	noticeEditing:           {SendQueueEditingText, true},
+	noticeEdited:            {SendQueueEditedText, true},
+	noticeEditCancelled:     {SendQueueEditCancelledText, true},
+	noticeEditLapsed:        {SendQueueEditLapsed, false},
+	noticeEditTooLate:       {SendQueueEditTooLate, false},
+	noticeEditTooLateSent:   {SendQueueEditTooLateSent, false},
+	noticeNotEditable:       {SendQueueNotEditable, false},
+	noticeEditSending:       {SendQueueEditSending, false},
+	noticeRoutedNotEditable: {SendQueueRoutedNotEditable, false},
+	noticeHeldNow:           {SendQueueHeldNow, false},
 }
+
+// What an edit's own notices say.
+var (
+	SendQueueEditingText       = "Editing: the message is held, and nothing queued for this window is sent until you Save or Cancel (at most " + editHoldText + ")."
+	SendQueueEditedText        = "Saved: the message keeps its place in the queue."
+	SendQueueEditCancelledText = "Edit cancelled: the message is unchanged."
+)
 
 // SendQueueCancelledAnsweredText is what a Cancel of a queued message that
 // had already answered asker's question says ("" = the asker unnamed): the

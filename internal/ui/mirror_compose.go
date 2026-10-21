@@ -117,6 +117,10 @@ type ComposerView struct {
 	// Rendered view sets it; nil — no database, or any other composer — draws
 	// neither. A disabled composer draws neither either.
 	Queue *ComposerQueue
+	// DraftKey is the localStorage key its text is kept under as it is typed
+	// (composer_draft.go: MirrorDraftKey, AgentTerminalDraftKey); "" keeps no
+	// draft. A disabled composer keeps none either way.
+	DraftKey string
 }
 
 // MirrorComposerView is ComposerView under the name it had while only mirrored
@@ -246,6 +250,7 @@ func mirrorComposer(v ComposerView) g.Node {
 				g.Attr("enterkeyhint", "send"),
 				g.If(off, g.Attr("disabled", "")),
 				g.If(off, g.Attr("title", v.Disabled)),
+				g.If(!off, draftAttrs(v.DraftKey, "mv-note")),
 				Placeholder(placeholder),
 				Class(composerInputClass),
 			),
@@ -256,12 +261,14 @@ func mirrorComposer(v ComposerView) g.Node {
 		// 🔴 EVERY SCRIPT OF THE COMPOSER IS AFTER ITS FORM. One inside it lets
 		// the browser paint the composer half-parsed, and the height it then
 		// grows by is a layout shift (measured: 0.006–0.014 at 390×844 with the
-		// queue's script before the form).
+		// queue's script before the form). The draft's is FIRST among them: it
+		// puts a restored text in the box before anything else measures it.
+		composerFitScript(),
+		g.If(v.DraftKey != "" && !off, composerDraftScript()),
 		g.If(v.Queue != nil && !off, sendQueueScript()),
 		g.If(v.Queue != nil && !off, sendMenuScript()),
 		dictateScript(dictate),
 		attachScript(upload),
-		composerFitScript(),
 		composerMenuScript(menu),
 		g.If(v.Pinned, composerPinScript()),
 	)
@@ -414,6 +421,9 @@ func mirrorComposerScript() g.Node {
   // submitter, so its route is put on the form here.
   function native(sub) {
     if (sub && sub.getAttribute('formaction')) form.setAttribute('action', sub.getAttribute('formaction'));
+    // The draft (composer_draft.go) is cleared by the page this comes back to,
+    // if it says the message went.
+    if (window.musterDraft) window.musterDraft.pending(input);
     // Attachments (attach.go) ride in the text: the browser's own submit
     // carries only the form's fields.
     if (window.musterAttach) input.value = window.musterAttach.compose(input.value);
@@ -445,6 +455,8 @@ func mirrorComposerScript() g.Node {
     return req.then(function (r) {
         if (r.ok) {
           if (input.value === sent) { input.value = ''; if (window.musterComposerFit) window.musterComposerFit(input); }
+          // Sent or queued: its draft goes (what was typed meanwhile is kept).
+          if (window.musterDraft) window.musterDraft.sent(input);
           if (window.musterAttach) window.musterAttach.sent();
           renew();
           if (queued) { sayOK('Queued.'); document.dispatchEvent(new Event('mv-queued')); } else { say(''); }

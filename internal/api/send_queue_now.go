@@ -122,6 +122,12 @@ func (s *Server) sendQueueSendNow(w http.ResponseWriter, r *http.Request, ctx co
 		refuse(http.StatusConflict, SendQueueNotQueuedNow, noticeNotQueuedNow)
 		return
 	}
+	// Held for an edit: the claim would refuse it too (and say only "no longer
+	// queued"); this says why.
+	if it.Held {
+		refuse(http.StatusConflict, SendQueueHeldNow, noticeHeldNow)
+		return
+	}
 	// A Send's gates, in mirrorSend's order.
 	switch {
 	case !q.h.Online:
@@ -159,7 +165,9 @@ func (s *Server) sendQueueSendNow(w http.ResponseWriter, r *http.Request, ctx co
 	switch {
 	case errors.Is(err, sendqueue.ErrNotClaimed):
 		// Which of the two: the row moved on, or another row is being sent.
-		if now, gerr := s.ext.SendQueue.Get(ctx, id); gerr == nil && now.State == sendqueue.Queued {
+		if now, gerr := s.ext.SendQueue.Get(ctx, id); gerr == nil && now.State == sendqueue.Queued && now.Held {
+			refuse(http.StatusConflict, SendQueueHeldNow, noticeHeldNow)
+		} else if gerr == nil && now.State == sendqueue.Queued {
 			refuse(http.StatusConflict, SendQueueSendingAnother, noticeSendingAnother)
 		} else {
 			refuse(http.StatusConflict, SendQueueNotQueuedNow, noticeNotQueuedNow)

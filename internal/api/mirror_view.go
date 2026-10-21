@@ -84,7 +84,7 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	if e.HermesView() {
 		v.Hermes = true
 	} else {
-		v.Queue = s.mirrorComposerQueue(r.Context(), h, e)
+		v.Queue = s.mirrorComposerQueue(r.Context(), h, e, sendQueueEditing(r))
 	}
 	v.Notice, v.NoticeOK = composerNotice(r)
 	v.HostIcon = s.mirrorHostIcon(r.Context(), h.Host)

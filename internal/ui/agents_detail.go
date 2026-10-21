@@ -726,6 +726,9 @@ func agentChatPane(v AgentDetailView) g.Node {
 					Name("text"),
 					Rows("1"),
 					g.Attr("enterkeyhint", "send"),
+					// Its draft, kept per device under this agent and chat session
+					// (composer_draft.go).
+					draftAttrs(AgentChatDraftKey(v.Name, v.ActiveSessionID), "chat-note"),
 					Placeholder("Message the agent…"),
 					Class(composerInputClass),
 				),
@@ -738,13 +741,16 @@ func agentChatPane(v AgentDetailView) g.Node {
 				),
 			),
 		),
+		// The box grows with its text (composer_fit.go), the same one script as
+		// the mirrored composer's — it travels with the pane for the chief panel.
+		// First after the form, with the draft's (composer_draft.go), so a
+		// restored draft is in the box, sized, before the pane is painted.
+		composerFitScript(),
+		composerDraftScript(),
 		// The microphone's script travels WITH the pane, so the chief panel —
 		// which renders this pane into another page — gets it too. It is built
 		// to run again on every swap (dictate.go).
 		dictateScript(v.Dictate),
-		// The box grows with its text (composer_fit.go), the same one script as
-		// the mirrored composer's — it travels with the pane for the chief panel.
-		composerFitScript(),
 		// The live stream's tool-call grouping (tool_groups.go): with the pane, so
 		// the chief panel's copy of it groups too.
 		toolGroupScript(),
@@ -1859,7 +1865,12 @@ func agentChatScript(name string) g.Node {
   // the form itself (POST, a redirect back here): the same turn, by the door
   // that needs no socket. The form's nonce is renewed after a socket send, so
   // that message and the next are never taken for one.
-  function nativeSend() { HTMLFormElement.prototype.submit.call(form); }
+  function nativeSend() {
+    // The draft (composer_draft.go) is cleared by the page this comes back to,
+    // if it says the message went.
+    if (window.musterDraft) window.musterDraft.pending(input);
+    HTMLFormElement.prototype.submit.call(form);
+  }
   function renewNonce() {
     var n = document.getElementById('chat-nonce');
     if (!n) return;
@@ -1880,6 +1891,8 @@ func agentChatScript(name string) g.Node {
     try { window.cgTrack('chat.sent', { agent: (form.getAttribute('data-agent') || '') }); } catch (e) {}
     input.value = '';
     if (window.musterComposerFit) window.musterComposerFit(input);
+    // Taken by the socket: its draft goes.
+    if (window.musterDraft) window.musterDraft.sent(input);
     renewNonce();
     sendBtn.disabled = true;
     session.streaming = true;
