@@ -16,8 +16,11 @@ import (
 type AgentCardView struct {
 	ID int64
 	// Kind and CCAccount are the agent's kind and Claude account name.
-	Kind        string
-	CCAccount   string
+	Kind      string
+	CCAccount string
+	// WorkerPool is the machine-job worker pool the agent belongs to
+	// (agents.Agent.WorkerPool); "" for none. Rendered as a "pool" chip.
+	WorkerPool  string
 	Name        string
 	DisplayName string
 	Repo        string
@@ -379,6 +382,7 @@ func agentCard(a AgentCardView) g.Node {
 				g.If(agents.ResolveKind(a.Kind) == agents.KindClaudeCode,
 					chip("kind", agents.KindLabel(a.Kind)+" · "+a.CCAccount)),
 				g.If(agents.ResolveKind(a.Kind) == agents.KindHermes, chip("kind", agents.KindLabel(a.Kind))),
+				g.If(a.WorkerPool != "", workerPoolChip(a.WorkerPool)),
 			),
 			g.If(a.KickoffFailed, kickoffFailureDetail(a.KickoffFailure,
 				KickoffFailedRemedy(a.KickoffResendSafe, a.Namespace, a.Name))),

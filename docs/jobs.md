@@ -116,11 +116,31 @@ compared with the rest of the body.
 ## Worker pools
 
 A worker pool is a name carried by long-lived `claude-code` agents. An agent
-becomes a member when it is created with `worker_pool` set (the dispatch form's
-`worker_pool` field on `POST /agents`, with `kind=claude-code`; any other kind
-is refused). Membership is fixed at creation; there is no pool table and no
-other configuration — a pool exists while some agent carries its name (1-63 of
-`[a-z0-9-]`, not starting with `-`).
+becomes a member when it is created with `worker_pool` set. Membership is fixed
+at creation; there is no pool table and no other configuration — a pool exists
+while some agent carries its name (1-63 of `[a-z0-9-]`, not starting with `-`).
+
+### Creating a pool worker
+
+1. Open the dispatch form (the Agents tab's **+**, or a task's **Dispatch**).
+2. Pick **Claude Code** as the agent kind. The **Worker pool** field appears
+   under the Claude account; it is not shown for any other kind.
+3. Enter the pool's name, for example `reviewers`. The form refuses a name
+   outside the pattern before it is sent.
+4. Leave the Claude account on **Auto** unless you want to pin one; the account
+   pool chooses as it does for any agent. Pick the repository the pool's jobs
+   will name (with `repo`), which must be a **public** one (see below).
+5. **Dispatch** (or **Save for later** and Start it). A pool job can run only on
+   a `running` worker.
+
+The agent's card and page show a **pool** chip, and `GET /api/agents` reports
+it as `workerPool`. Repeat with the same name for more workers; each takes its
+own account from the pool unless pinned.
+
+The form posts `worker_pool` to `POST /agents` with `kind=claude-code`. With any
+other kind, or a name outside the pattern, the server refuses the dispatch with
+**409** and the reason, and creates nothing. Neither the `muster` CLI nor the
+chief's `task_dispatch` can create an agent in a pool.
 
 **A pool worker holds no GitHub credential.** The one way an agent gets one is
 a grant on a connector that reaches github.com — the `github` connector (the

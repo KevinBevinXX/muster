@@ -556,7 +556,7 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 	status := liveStatusIndexed(a, idx)
 	return ui.AgentCardView{
 		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName,
-		Kind: agents.ResolveKind(a.Kind), CCAccount: a.CCAccount,
+		Kind: agents.ResolveKind(a.Kind), CCAccount: a.CCAccount, WorkerPool: a.WorkerPool,
 		Repo: a.Repo, Status: status, KickedOff: a.KickedOff, Model: a.Model,
 		// 🔴 THE BOOLEAN, NEVER a.PendingNote. agents.KickoffOwed reads the note to
 		// answer whether one is outstanding; what crosses into the view layer is its
@@ -1391,7 +1391,7 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	noteID, taskStatus := s.agentTaskStatus(ctx, a)
 	view := ui.AgentDetailView{
 		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, Status: status, Repo: a.Repo, Model: a.Model,
-		Kind: agents.ResolveKind(a.Kind), CCAccount: a.CCAccount,
+		Kind: agents.ResolveKind(a.Kind), CCAccount: a.CCAccount, WorkerPool: a.WorkerPool,
 		Messages: lines, Sessions: sessions, ActiveSessionID: active.ID,
 		NoteID: noteID, TaskStatus: taskStatus, DraftUser: draftUser(ctx),
 		// The chat form's fallback when its socket cannot carry a message
