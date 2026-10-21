@@ -1812,10 +1812,12 @@ ways, each decided while building it:
 - **Recovery is bounded, and never forgets a flaky API**: a deadline on every
   recovery call (15 s); only sessions with an open intent are recovered (an
   idle session makes no call); a failure that may pass (transport, timeout,
-  5xx, 429) is retried and never retires a session, so a persistent one turns
-  `/healthz` non-200 at the 5-minute stuck bound and the liveness probe acts;
-  only a definite 4xx refusal of a session's recovery, persisting 5 minutes,
-  retires that session. The
+  5xx, 429, and a 401/403, which refuses the API key and so every session
+  alike) is retried and never retires a session, so a persistent one turns
+  `/healthz` non-200 at the 7-minute stuck bound and the liveness probe acts;
+  only a definite 4xx refusal of a session's recovery, persisting 5 minutes
+  with no other outcome between, retires that session — before the stuck
+  bound by more than the probe's 90 s, so no restart loop. The
   Hermes API client has a 30 s timeout (the run's event stream has its own
   client, bounded by the turn budget).
 - **The store writes before it changes memory**: a failed write leaves no

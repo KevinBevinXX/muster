@@ -107,8 +107,8 @@ type Config struct {
 	// Client is the HTTP client for gateway calls. Optional; a client with
 	// [DefaultTurnTimeout] is built when nil.
 	//
-	// ⚠ A KIND WITH ITS OWN TURN BUDGET (agents.KindTurnTimeout — today only
-	// claude-code) gets a COPY of this client with that Timeout; the transport is
+	// ⚠ A KIND WITH ITS OWN TURN BUDGET (agents.KindTurnTimeout — today
+	// claude-code and hermes) gets a COPY of this client with that Timeout; the transport is
 	// shared. The gateway kind uses this client exactly as given.
 	Client *http.Client
 	// Accounts records a claude-code agent's typed `rate_limited` / `auth_failed`

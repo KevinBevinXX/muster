@@ -66,7 +66,8 @@ func TestKindResolutionAndTurnBudgets(t *testing.T) {
 	if KindTurnTimeout("claude-code") != 35*time.Minute {
 		t.Fatalf("claude-code turn budget = %s, want 35m", KindTurnTimeout("claude-code"))
 	}
-	// Likewise five minutes past hermesd's own HERMESD_TURN_TIMEOUT default.
+	// Likewise five minutes past hermesd's own fixed 30m turnTimeout
+	// (cmd/hermesd/turn.go).
 	if KindTurnTimeout("hermes") != 35*time.Minute || KindLabel("hermes") != "Hermes" || !ValidKind("hermes") {
 		t.Fatalf("hermes: turn budget %s, label %q, valid %t", KindTurnTimeout("hermes"), KindLabel("hermes"), ValidKind("hermes"))
 	}

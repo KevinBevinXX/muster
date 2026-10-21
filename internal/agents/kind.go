@@ -98,7 +98,7 @@ const ClaudeCodeTurnTimeout = 35 * time.Minute
 
 // HermesTurnTimeout bounds ONE request to a hermes agent's hermesd, for
 // ClaudeCodeTurnTimeout's reason: it outlasts hermesd's own turn budget
-// (HERMESD_TURN_TIMEOUT, default 30m, cmd/hermesd), so hermesd's typed
+// (turnTimeout, a fixed 30m, cmd/hermesd/turn.go), so hermesd's typed
 // `504 turn_timeout` — which says the run is still going and that its outcome
 // comes with the session's next reply — always arrives before muster gives up.
 const HermesTurnTimeout = 35 * time.Minute
