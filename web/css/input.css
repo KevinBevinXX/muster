@@ -72,7 +72,19 @@
     --mu-st-warning-fg: 255 174 94; /* #FFAE5E */
     --mu-st-warning-bg: 58 38 21; /* #3A2615 */
     --mu-st-running-fg: 95 224 192; /* #5FE0C0 */
-    --mu-st-running-bg: 18 51 47; /* #12332F */
+    --mu-st-running-bg: 18 51 47; /* #12332F */    /* The recency dot's scale (internal/ui/list_signals.go recencySteps): the
+       operator's tmux idle-fade window colours, Gruvbox, freshest first —
+       tmux-idle-update.sh's 8 buckets. The SAME in both themes, so a window
+       reads the same colour here as in tmux; the dot is decoration beside
+       words that carry the fact, so it is not in the contrast table. */
+    --mu-idle-0: 184 187 38; /* #B8BB26 */
+    --mu-idle-1: 152 151 26; /* #98971A */
+    --mu-idle-2: 104 157 106; /* #689D6A */
+    --mu-idle-3: 215 153 33; /* #D79921 */
+    --mu-idle-4: 214 93 14; /* #D65D0E */
+    --mu-idle-5: 204 36 29; /* #CC241D */
+    --mu-idle-6: 177 98 134; /* #B16286 */
+    --mu-idle-7: 102 92 84; /* #665C54 */
   }
 
   :root:not(.dark) {
@@ -104,7 +116,14 @@
     --mu-st-warning-fg: 154 75 0; /* #9A4B00 */
     --mu-st-warning-bg: 255 238 219; /* #FFEEDB */
     --mu-st-running-fg: 13 107 90; /* #0D6B5A */
-    --mu-st-running-bg: 221 245 239; /* #DDF5EF */
+    --mu-st-running-bg: 221 245 239; /* #DDF5EF */    --mu-idle-0: 184 187 38; /* #B8BB26 */
+    --mu-idle-1: 152 151 26; /* #98971A */
+    --mu-idle-2: 104 157 106; /* #689D6A */
+    --mu-idle-3: 215 153 33; /* #D79921 */
+    --mu-idle-4: 214 93 14; /* #D65D0E */
+    --mu-idle-5: 204 36 29; /* #CC241D */
+    --mu-idle-6: 177 98 134; /* #B16286 */
+    --mu-idle-7: 102 92 84; /* #665C54 */
   }
 
   /*

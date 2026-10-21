@@ -227,7 +227,8 @@ func (s *Server) agentsListCards(ctx context.Context) ([]ui.AgentCardView, []ui.
 
 	// The viewer's pins, read once: each card is marked, and the list draws the
 	// pinned ones first (ui.AgentsCardsWithMirrors — the one place that orders
-	// by pin, as a stable partition of the order above).
+	// by pin, and that interleaves these agents with the mirrored entries by
+	// activity; the order above decides ties among agents).
 	pinned := s.pinSet(ctx)
 	cards := make([]ui.AgentCardView, 0, len(list))
 	isChief := chiefPredicate(list)
@@ -236,8 +237,9 @@ func (s *Server) agentsListCards(ctx context.Context) ([]ui.AgentCardView, []ui.
 	for _, a := range list {
 		cards = append(cards, s.cardViewIndexed(a, instIdx, lastMsg[a.ID], isChief, pinned, focused))
 	}
-	// The viewer's mirrored sessions (internal/mirror), after the agents: from
-	// the plugin's in-memory hub, scoped to this request's principal.
+	// The viewer's mirrored sessions (internal/mirror), from the plugin's
+	// in-memory hub, scoped to this request's principal. The list interleaves
+	// them with the agents by activity (ui.AgentsCardsWithMirrors).
 	mirrors := s.mirrorCards(ctx, pinned, focused)
 	s.withCardAttention(ctx, cards, mirrors)
 	return cards, mirrors, nil

@@ -91,13 +91,15 @@ func (m *memPins) pinFor(uid int64) *pins.Set {
 	return m.set(authz.WithPrincipal(context.Background(), authz.Principal{UserID: uid, Role: authz.RoleAdmin, Via: authz.ViaSession}))
 }
 
-// pinWindows is a per-window host "ws": two windows, main:@1 the most recently
-// active and chief:@2 the least. Activity times are pairwise distinct and
-// distinct from the agents' (activityFixture).
+// pinWindows is a per-window host "ws": two windows whose activity INTERLEAVES
+// with the agents' (activityFixture, t0 = 2026-05-06T07:08:09Z = 1778051289):
+// main:@1 at t0+8h30m, between agent 5 (t0+9h) and agent 6 (t0+8h); chief:@2
+// at t0+2h, below agent 7 (t0+5h). Times are pairwise distinct, distinct from
+// the agents', and whole minutes (the host's bucket).
 func pinWindows() []mirror.Window {
 	return []mirror.Window{
-		{Session: "main", ID: "@1", Index: 1, Active: true, Activity: 1_800_009_000},
-		{Session: "chief", ID: "@2", Index: 1, Active: true, Activity: 1_800_001_000},
+		{Session: "main", ID: "@1", Index: 1, Active: true, Activity: 1_778_081_880},
+		{Session: "chief", ID: "@2", Index: 1, Active: true, Activity: 1_778_058_480},
 	}
 }
 
@@ -153,6 +155,11 @@ func pinnedList(t *testing.T, s *Server, h http.Handler) (string, []string) {
 // active of each kind (agent 7, window chief@2), so pinned-first cannot pass by
 // accident of the activity order; the rest keep that order. Red before pins
 // existed: the list was 5,6,7 then main@1, chief@2 whatever was pinned.
+//
+// And THE LIST IS ONE FLAT LIST BY ACTIVITY (operator ask: "sort agents by most
+// recently active — flat, not separated by host"): agents and windows
+// interleave, inside the pinned group and out of it. Red before ui.orderList,
+// which drew every agent ahead of every window: 5,6,7,main@1,chief@2.
 func TestPinnedCardsRenderFirstInTheirOriginalOrder(t *testing.T) {
 	fm := &fakeMirror{online: true, windows: pinWindows()}
 	mp := &memPins{}
@@ -160,20 +167,20 @@ func TestPinnedCardsRenderFirstInTheirOriginalOrder(t *testing.T) {
 
 	// Control: nothing pinned — the order the list always had.
 	_, got := pinnedList(t, s, h)
-	if want := "agent-5,agent-6,agent-7,main@1,chief@2"; strings.Join(got, ",") != want {
-		t.Fatalf("unpinned order = %s, want %s (the instrument or the fixture moved)", strings.Join(got, ","), want)
+	if want := "agent-5,main@1,agent-6,agent-7,chief@2"; strings.Join(got, ",") != want {
+		t.Fatalf("unpinned order = %s, want %s (one list, most recently active first)", strings.Join(got, ","), want)
 	}
 
 	set := mp.pinFor(authz.OperatorUserID)
 	set.Agents[7] = true
 	set.Mirrors[pins.MirrorKey{Host: "ws", Session: "chief", Window: "@2"}] = true
 	body, got := pinnedList(t, s, h)
-	if want := "agent-7,chief@2,agent-5,agent-6,main@1"; strings.Join(got, ",") != want {
-		t.Fatalf("pinned order = %s, want %s: the pinned agent and the pinned window first (each "+
-			"kind in its existing order), then the unpinned ones in theirs", strings.Join(got, ","), want)
+	if want := "agent-7,chief@2,agent-5,main@1,agent-6"; strings.Join(got, ",") != want {
+		t.Fatalf("pinned order = %s, want %s: the pinned agent and the pinned window first (most "+
+			"recently active first), then the unpinned ones in the same order", strings.Join(got, ","), want)
 	}
-	// Two pinned agents keep THEIR activity order between them (a stable
-	// partition, not a re-sort): 6 before 7.
+	// Two pinned agents keep THEIR activity order between them: 6 before 7,
+	// and the pinned window after both.
 	set.Agents[6] = true
 	_, got = pinnedList(t, s, h)
 	if want := "agent-6,agent-7,chief@2,agent-5,main@1"; strings.Join(got, ",") != want {
@@ -207,7 +214,7 @@ func TestADormantMirrorPinReappearsWithItsWindow(t *testing.T) {
 	mp.pinFor(authz.OperatorUserID).Mirrors[pins.MirrorKey{Host: "ws", Session: "chief", Window: "@9"}] = true
 
 	body, got := pinnedList(t, s, h)
-	if want := "agent-5,agent-6,agent-7,main@1,chief@2"; strings.Join(got, ",") != want {
+	if want := "agent-5,main@1,agent-6,agent-7,chief@2"; strings.Join(got, ",") != want {
 		t.Fatalf("with a dormant pin the list = %s, want the unpinned %s", strings.Join(got, ","), want)
 	}
 	if strings.Contains(body, "data-pinned") {
@@ -215,10 +222,10 @@ func TestADormantMirrorPinReappearsWithItsWindow(t *testing.T) {
 	}
 
 	fm.mu.Lock()
-	fm.windows = append(pinWindows(), mirror.Window{Session: "chief", ID: "@9", Index: 2, Activity: 1_800_000_100})
+	fm.windows = append(pinWindows(), mirror.Window{Session: "chief", ID: "@9", Index: 2, Activity: 1_778_054_880})
 	fm.mu.Unlock()
 	_, got = pinnedList(t, s, h)
-	if want := "chief@9,agent-5,agent-6,agent-7,main@1,chief@2"; strings.Join(got, ",") != want {
+	if want := "chief@9,agent-5,main@1,agent-6,agent-7,chief@2"; strings.Join(got, ",") != want {
 		t.Fatalf("after its window came back the list = %s, want %s", strings.Join(got, ","), want)
 	}
 }
@@ -262,7 +269,7 @@ func TestThePinRoutesPinAndUnpinIdempotently(t *testing.T) {
 			t.Fatalf("plain pin #%d = %d → %q, want 303 → /agents", i, rec.Code, rec.Header().Get("Location"))
 		}
 	}
-	if _, got := pinnedList(t, s, h); strings.Join(got, ",") != "agent-7,chief@2,agent-5,agent-6,main@1" {
+	if _, got := pinnedList(t, s, h); strings.Join(got, ",") != "agent-7,chief@2,agent-5,main@1,agent-6" {
 		t.Fatalf("after pinning = %v", got)
 	}
 	for i := 0; i < 2; i++ {
@@ -272,7 +279,7 @@ func TestThePinRoutesPinAndUnpinIdempotently(t *testing.T) {
 			}
 		}
 	}
-	if _, got := pinnedList(t, s, h); strings.Join(got, ",") != "agent-5,agent-6,agent-7,main@1,chief@2" {
+	if _, got := pinnedList(t, s, h); strings.Join(got, ",") != "agent-5,main@1,agent-6,agent-7,chief@2" {
 		t.Fatalf("after unpinning = %v", got)
 	}
 

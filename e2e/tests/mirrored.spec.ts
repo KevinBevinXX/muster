@@ -324,7 +324,11 @@ test('an agent card and a mirrored card share one layout: no preview, the last a
 // At an iPhone's 390 px, on BOTH card kinds, a title long enough to wrap must
 // end left of the first control.
 test('at 390 px a long title wraps before the card controls, on both card kinds', async ({ page }) => {
-  const long = 'a-long-session-name-that-runs-well-past-the-width-of-a-phone-card';
+  // 60 characters: the longest name a card draws whole (longer ones are
+  // clamped behind a "…" button, agents-list-ux.spec.ts), and still far wider
+  // than a phone card, so it wraps.
+  const long = 'a-long-session-name-that-runs-past-the-width-of-a-phone-card';
+  expect(long.length, 'the fixture is at the clamp, not past it').toBe(60);
   try {
     await stopMirror();
     await startMirror(false, undefined, { MUSTER_MIRROR_E2E_SESSIONS: `main,${long}` });

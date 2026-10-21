@@ -27,6 +27,10 @@ type CardAttention struct {
 	// Keys are the card's items' keys, newest first: what a test compares
 	// with the queue's.
 	Keys []string
+	// Kinds is every kind among the card's items, each once, in the order
+	// first seen: what the list's "Waiting on …" filter chips read
+	// (waitTokens). Kind alone is only the most urgent one.
+	Kinds []string
 }
 
 // AttentionKindIcons is each attention kind's badge icon and the words a screen

@@ -40,6 +40,9 @@ type cardAttentionIndex struct {
 func (x *cardAttentionIndex) add(at *ui.CardAttention, it attentionItem) {
 	at.Count++
 	at.Keys = append(at.Keys, it.Key)
+	if !slices.Contains(at.Kinds, it.Kind) {
+		at.Kinds = append(at.Kinds, it.Kind)
+	}
 	cur := slices.Index(attentionUrgency, at.Kind)
 	if at.Kind == "" || slices.Index(attentionUrgency, it.Kind) < cur {
 		at.Kind, at.Href = it.Kind, attentionPath+"#"+it.Key

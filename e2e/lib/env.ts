@@ -188,6 +188,9 @@ export const hostIconsPort = port + 110;
 // its own server (the e2eterm binary, mirror plugin on) and one mirrored host
 // whose Hermes conversation is a real state.db the fake host writes.
 export const hermesViewPort = port + 120;
+// The Agents list UX batch (agents-list-ux.spec.ts): its own server (the
+// e2eterm binary, mirror plugin on) and one mirrored host with four windows.
+export const listUxPort = port + 137;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

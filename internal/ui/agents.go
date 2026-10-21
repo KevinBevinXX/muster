@@ -292,9 +292,27 @@ func agentRenameForm(a AgentCardView) g.Node {
 // kinds of card cannot drift into two layouts again.
 func agentCard(a AgentCardView) g.Node {
 	ids := strconv.FormatInt(a.ID, 10)
+	// markdownPlain, exactly as agentTitle on the detail page does. A
+	// task-derived display name routinely carries `**bold**` and `code`, and
+	// this rendered it RAW while the detail header rendered it as markup — one
+	// string, two answers, from the same click. Stripping on both surfaces is
+	// what makes them agree; see markdownPlain for why stripping was chosen over
+	// rendering markup here.
+	name := markdownPlain(displayOr(a.DisplayName, a.Name))
+	// A name past cardTitleMax is drawn in a title row of its own, clamped,
+	// with a "…" button that opens it whole (cardLongTitle).
+	short, long := clampTitle(name)
+	reserve := cardReserve(a.Attention)
+	bodyClass := cardBodyClass(a.Focus, reserve)
+	if long {
+		bodyClass = titledBodyClass(reserve)
+	}
 	return Article(
 		ID("agent-"+ids),
 		g.If(a.Pinned, g.Attr("data-pinned", "")),
+		// What the list's recency filter chips read (list_signals.go).
+		cardActivityAttrs(time.Now(), a.lastActive()),
+		g.If(waitTokens(a.Attention) != "", g.Attr("data-wait", waitTokens(a.Attention))),
 		// What the list's filter finds this card by (agents_filter.go).
 		cardFilterAttrs(agentFields(a), append([]string{
 			displayOr(a.DisplayName, a.Name), a.Name, a.Repo, agents.KindLabel(a.Kind), a.CCAccount, a.Status, "agent"},
@@ -309,7 +327,8 @@ func agentCard(a AgentCardView) g.Node {
 		),
 		// With a focus, it heads the card (cardFocusTitle): a popover trigger
 		// OUTSIDE the nav anchor, and the name below becomes its subtitle.
-		cardFocusTitle("agent-"+ids, a.Focus, cardReserve(a.Attention)),
+		cardFocusTitle("agent-"+ids, a.Focus, reserve),
+		g.If(long, cardLongTitle("agent-"+ids, "/agents/"+a.Name, name, short, cardHasFocusTitle(a.Focus), reserve)),
 		// The card body is the navigation surface: a REAL-load link to the detail
 		// page (hx-boost="false"). The card sits inside #agents-list, which carries
 		// hx-get/hx-target="#agents-list"/hx-swap; htmx attrs are INHERITED by
@@ -323,7 +342,9 @@ func agentCard(a AgentCardView) g.Node {
 			Href("/agents/"+a.Name),
 			hx("hx-boost", "false"),
 			cardSlot("body"),
-			Class(cardBodyClass(a.Focus, cardReserve(a.Attention))),
+			// A long name is in the title row above, so the anchor is named here.
+			g.If(long, g.Attr("aria-label", name)),
+			Class(bodyClass),
 			Div(
 				cardSlot("header"),
 				Class("flex flex-wrap items-center gap-2"),
@@ -340,17 +361,11 @@ func agentCard(a AgentCardView) g.Node {
 				// Its host's icon, beside its name (host_icons.go): a dispatched
 				// agent's host is the cluster.
 				clusterMark(),
-				Span(
+				g.If(!long, Span(
 					Class(cardNameClass(a.Focus)),
 					g.If(cardHasFocusTitle(a.Focus), g.Attr("data-card-subtitle", "")),
-					// markdownPlain, exactly as agentTitle on the detail page does. A
-					// task-derived display name routinely carries `**bold**` and `code`,
-					// and this rendered it RAW while the detail header rendered it as
-					// markup — one string, two answers, from the same click. Stripping on
-					// both surfaces is what makes them agree; see markdownPlain for why
-					// stripping was chosen over rendering markup here.
-					g.Text(markdownPlain(displayOr(a.DisplayName, a.Name))),
-				),
+					g.Text(name),
+				)),
 				g.If(a.Repo != "", chip("repo", a.Repo)),
 				// Only a non-default kind is labelled, so a gateway-only deployment's
 				// cards are unchanged. The account is a NAME, never a token.
@@ -444,6 +459,10 @@ func cardActivity(t time.Time) g.Node {
 	return Span(
 		g.Attr("data-card-active", ""),
 		Class("inline-flex items-center gap-1"),
+		// The recency dot, tinted on the operator's tmux idle-fade scale
+		// (list_signals.go). Its box is fixed (h-2 w-2), drawn with the label,
+		// so it never shifts anything in.
+		recencyDot(time.Now(), t),
 		Span(Class("text-muted"), g.Text("active")),
 		cardTime(t),
 		Span(Class("text-muted"), g.Text("ago")),

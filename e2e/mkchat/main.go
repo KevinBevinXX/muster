@@ -26,6 +26,16 @@
 //
 //	DATABASE_URL=…_e2e MUSTER_E2E_AGENT=<name> MUSTER_E2E_DISPLAY_NAME=chief MUSTER_E2E_THREADS=1 go run ./e2e/mkchat < threads.json
 //
+// MUSTER_E2E_ACTIVE_MINUTES_AGO=<n> backdates the agent's whole activity — its
+// row's created_at and updated_at and every message it was given — to n
+// minutes ago, so a spec can place it in the Agents list's activity order
+// (agents.LastActivity) at a time it knows.
+//
+// MUSTER_E2E_TASK=<title> also creates a task with that title, in
+// ready_for_review, and makes it the agent's source task (agents.note_id), so
+// the agent's page draws the completion banner's Mark complete. Deleting with
+// MUSTER_E2E_TASK set deletes that task too.
+//
 // MUSTER_E2E_KIND=claude-code with MUSTER_E2E_CC_ACCOUNT=<name> makes the agent
 // that kind (its account is only a name: nothing is provisioned).
 //
@@ -93,7 +103,15 @@ func run() error {
 		if err := deleteMirrorFocus(ctx, pool); err != nil {
 			return err
 		}
-		return as.Delete(ctx, a.ID)
+		if err := as.Delete(ctx, a.ID); err != nil {
+			return err
+		}
+		if title := os.Getenv("MUSTER_E2E_TASK"); title != "" {
+			if _, err := pool.Exec(ctx, `DELETE FROM notes WHERE title = $1`, title); err != nil {
+				return fmt.Errorf("delete task: %w", err)
+			}
+		}
+		return nil
 	}
 
 	display := os.Getenv("MUSTER_E2E_DISPLAY_NAME")
@@ -219,10 +237,19 @@ func create(ctx context.Context, pool *pgxpool.Pool, name string, msgs []agents.
 func createThreads(ctx context.Context, pool *pgxpool.Pool, name, display string, threads []thread) error {
 	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		as := agents.NewPGTx(tx)
+		var noteID *int64
+		if title := os.Getenv("MUSTER_E2E_TASK"); title != "" {
+			var id int64
+			if err := tx.QueryRow(ctx, `INSERT INTO notes (directory, title, body, status) VALUES ('', $1, $1, 'ready_for_review') RETURNING id`,
+				title).Scan(&id); err != nil {
+				return fmt.Errorf("create task: %w", err)
+			}
+			noteID = &id
+		}
 		// MUSTER_E2E_KIND / MUSTER_E2E_CC_ACCOUNT make it a claude-code agent (the
 		// chief-runtimes spec's chief); unset, the default kind as before.
 		a, err := as.Create(ctx, agents.Agent{Name: name, DisplayName: display, Namespace: "agents", Status: "running", KickedOff: true,
-			Kind: os.Getenv("MUSTER_E2E_KIND"), CCAccount: os.Getenv("MUSTER_E2E_CC_ACCOUNT")})
+			Kind: os.Getenv("MUSTER_E2E_KIND"), CCAccount: os.Getenv("MUSTER_E2E_CC_ACCOUNT"), NoteID: noteID})
 		if err != nil {
 			return fmt.Errorf("create agent: %w", err)
 		}
@@ -247,11 +274,23 @@ func createThreads(ctx context.Context, pool *pgxpool.Pool, name, display string
 					return fmt.Errorf("title thread %d: %w", ti, err)
 				}
 			}
+			if mins := os.Getenv("MUSTER_E2E_ACTIVE_MINUTES_AGO"); mins != "" {
+				if _, err := tx.Exec(ctx, `UPDATE chat_messages SET created_at = now() - make_interval(mins => $1::int) WHERE agent_id = $2`,
+					mins, a.ID); err != nil {
+					return fmt.Errorf("backdate messages: %w", err)
+				}
+			}
 			if th.HoursAgo > 0 {
 				if _, err := tx.Exec(ctx, `UPDATE chat_sessions SET updated_at = now() - make_interval(hours => $1) WHERE id=$2`,
 					th.HoursAgo, sess.ID); err != nil {
 					return fmt.Errorf("age thread %d: %w", ti, err)
 				}
+			}
+		}
+		if mins := os.Getenv("MUSTER_E2E_ACTIVE_MINUTES_AGO"); mins != "" {
+			if _, err := tx.Exec(ctx, `UPDATE agents SET created_at = now() - make_interval(mins => $1::int), updated_at = now() - make_interval(mins => $1::int) WHERE id = $2`,
+				mins, a.ID); err != nil {
+				return fmt.Errorf("backdate agent: %w", err)
 			}
 		}
 		return nil
