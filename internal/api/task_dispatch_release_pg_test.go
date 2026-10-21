@@ -1,8 +1,13 @@
 package api
 
 import (
+	"context"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/ZacxDev/muster/internal/agents"
 )
 
 // flippingProvisioner is recordingProvisioner whose deployment stops taking
@@ -56,5 +61,55 @@ func TestADeploymentRefusalAfterTheReservationReleasesTheStart(t *testing.T) {
 	// already_dispatched answer for the agent just started.
 	if again := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}); !strings.Contains(again, `"already_dispatched":true`) {
 		t.Fatalf("a third call: %s", again)
+	}
+}
+
+// TestAForwardToARunningAgentWhoseFirstTurnIsOwedRidesThatTurn (quiet-stoat):
+// a claude-code agent is RUNNING while its first turn is held (its repository
+// is still being cloned; the turn is unstamped). A forward sent then as a turn
+// of its own reached a runtime that answered not_ready, and nothing re-sent
+// it. It is appended to the owed first turn instead — no turn of its own —
+// and once that turn is stamped, a forward is a turn again.
+func TestAForwardToARunningAgentWhoseFirstTurnIsOwedRidesThatTurn(t *testing.T) {
+	f := newTaskRouteFixture(t, false, false)
+	n := f.task(t, "held first turn")
+	store := agents.NewPG(f.pool)
+	const first = "Work the held task."
+	a, err := store.Create(f.asOwner, agents.Agent{Name: "trheld-" + strconv.FormatInt(f.owner, 10),
+		Namespace: "ns-trheld", Status: agents.StatusRunning, NoteID: &n.ID, PendingNote: first})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var turns []string
+	f.srv.taskForwardTurn = func(_ context.Context, x agents.Agent, _ agents.ChatSession, text string) {
+		mu.Lock()
+		defer mu.Unlock()
+		turns = append(turns, text)
+		f.srv.turns.leave(x.ID)
+	}
+	turnCount := func() int { mu.Lock(); defer mu.Unlock(); return len(turns) }
+
+	text := f.call(f.chief, taskForwardTool, map[string]any{"task_id": n.ID, "note": "Scope changed upstream"})
+	if strings.Contains(text, `"error"`) || !strings.Contains(text, `"turn_started":false`) {
+		t.Fatalf("the forward: %s", text)
+	}
+	cur, err := store.Get(f.asOwner, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(cur.PendingNote, first) || !strings.Contains(cur.PendingNote, "Scope changed upstream") || turnCount() != 0 {
+		t.Fatalf("first turn %q, %d turn(s); want the forward appended to the held first turn and no turn", cur.PendingNote, turnCount())
+	}
+
+	// Stamped: the next forward is a turn.
+	if _, err := f.pool.Exec(f.asOwner, `UPDATE agents SET kicked_off = true WHERE id = $1`, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if text := f.call(f.chief, taskForwardTool, map[string]any{"task_id": n.ID, "note": "And again"}); !strings.Contains(text, `"turn_started":true`) {
+		t.Fatalf("a forward after the stamp: %s", text)
+	}
+	if turnCount() != 1 {
+		t.Fatalf("turns after the stamp: %d, want 1", turnCount())
 	}
 }

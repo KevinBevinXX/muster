@@ -88,7 +88,9 @@ type DispatchStore interface {
 	// check), or ErrChiefLiveCap / ErrChiefDailyCap. Only a reservation that
 	// passed all of them writes anything. detail (nil-safe) is written into the
 	// reservation's audit row: what the chief asked for (the kind, its relayed
-	// instructions), for the owner to read.
+	// instructions), as a ledger. ⚠ No muster page or route reads it back (#149):
+	// it is read with SQL (docs/chief.md); what the agent was told is also its
+	// first message, in its transcript.
 	ReserveChiefDispatch(ctx context.Context, taskID int64, detail map[string]any, check func() error) (ChiefDispatch, error)
 	// RecordChiefDispatchAgent records the agent a reservation for taskID started.
 	RecordChiefDispatchAgent(ctx context.Context, taskID, agentID int64) error

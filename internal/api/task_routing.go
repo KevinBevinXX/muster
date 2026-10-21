@@ -414,12 +414,16 @@ func forwardReachable(a agents.Agent) bool {
 //     itself; storing it here as well wrote every forward twice (audit round 2).
 //     startAgentTurn leaves the gate, so it is entered here, for any target the
 //     chief included (a chief bound to a task is a target like any other).
-//   - Not running, first turn still owed: appended to that first turn
-//     (AppendPendingNote), never a chat row of its own before the kickoff.
+//   - First turn still owed — not running, OR running with its first turn
+//     not yet stamped (a claude-code agent whose first turn is held while its
+//     repository is cloned): appended to that first turn (AppendPendingNote),
+//     never a chat row or a turn of its own before the kickoff. A turn sent
+//     then is refused not_ready by the runtime and nothing re-sends it (the
+//     quiet-stoat forward, 2026-10-19).
 //   - Otherwise (no gateway, the gate closed for a replacement, or the kickoff
 //     stamped in between): stored in its conversation, no turn.
 func (s *Server) forwardToTaskAgent(ctx context.Context, target agents.Agent, text string) (bool, error) {
-	if !agentCanBeSent(target.Status) {
+	if !agentCanBeSent(target.Status) || !target.KickedOff {
 		if ap, ok := s.ext.Agents.(pendingNoteAppender); ok {
 			appended, err := ap.AppendPendingNote(ctx, target.ID, "\n\n"+text)
 			if err != nil {
@@ -587,8 +591,9 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 		task = n
 		return nil
 	}
-	// The reservation's audit row records what the chief asked for, so the owner
-	// can read what it told the agent.
+	// The reservation's audit row records what the chief asked for. No muster
+	// page reads it back (#149); the agent's first message, in its transcript,
+	// carries the same instructions.
 	detail := map[string]any{"kind": kind}
 	if instructions != "" {
 		detail["instructions"] = instructions
