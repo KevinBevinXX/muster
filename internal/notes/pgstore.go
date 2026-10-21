@@ -565,11 +565,22 @@ func (s *PGStore) listCommentsForNotes(ctx context.Context, ids []int64) ([]Comm
 // the refreshed note. The caller is responsible for authorizing the transition
 // (e.g. only the operator/human may set StatusComplete).
 //
-// 🔴 THE PREVIOUS STATUS COMES FROM THE SAME STATEMENT (WithPreviousStatus).
-// The row is selected FOR UPDATE in a CTE with every condition of the write,
-// and the UPDATE returns that locked version's status — so "what it was" is
-// exactly the value this write replaced, never a separate read another writer
-// could slip in front of.
+// 🔴 THE CTE'S ROW LOCK IS LOAD-BEARING TWICE. The write's conditions — not
+// deleted, an agent never out of complete (ForAgent), OnlyFrom's required
+// status — sit in a CTE that selects the row FOR NO KEY UPDATE, and the outer
+// UPDATE's only condition is the id. The lock is what applies those conditions
+// to the NEWEST row version: when another transaction is writing the row, the
+// CTE waits for it and re-checks them against what it committed. Without the
+// lock the CTE judges the older version and the UPDATE writes over the newer
+// one — measured: an agent's write reopened a task an operator completed
+// concurrently (TestAnAgentCannotReopenATaskCompletedConcurrently,
+// TestAnOnlyFromWriteLosesToAConcurrentMove). The UPDATE then returns that
+// locked version's status, which is the previous status WithPreviousStatus
+// reports: exactly the value this write replaced, never a separate read.
+//
+// NO KEY UPDATE, not UPDATE: it is the row lock a plain UPDATE of non-key
+// columns takes (what this statement took before the CTE), and it does not
+// conflict with the key-share locks a child-row insert's foreign key takes.
 func (s *PGStore) SetStatus(ctx context.Context, id int64, status string) (Note, error) {
 	sel := `SELECT id, status FROM notes WHERE id=$1 AND ` + liveOnly
 	if forAgent(ctx) {
@@ -582,7 +593,7 @@ func (s *PGStore) SetStatus(ctx context.Context, id int64, status string) (Note,
 		sel += ` AND status = $3`
 		args = append(args, from)
 	}
-	q := `WITH old AS (` + sel + ` FOR UPDATE)
+	q := `WITH old AS (` + sel + ` FOR NO KEY UPDATE)
 		UPDATE notes SET status=$2, updated_at=now() FROM old WHERE notes.id = old.id RETURNING old.status`
 	var prev string
 	err := s.pool.QueryRow(ctx, q, args...).Scan(&prev)
