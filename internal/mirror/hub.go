@@ -148,6 +148,9 @@ type Hub struct {
 	// written: not in hosts yet (nothing may be sent them before the welcome,
 	// see ServeConn), but holding their place under maxHosts.
 	joining map[hostKey]int
+	// arrivals numbers every join in the order its hello was accepted
+	// (hostConn.arrival); under mu.
+	arrivals uint64
 	// beforeWelcome, when set, runs just before a host's welcome is written
 	// (a test holds the welcome there).
 	beforeWelcome func()
@@ -201,6 +204,10 @@ const notifyDebounce = time.Second
 // lists every host of its owner, so a per-host throttle would let 64 busy hosts
 // re-render it 64 times a minute.
 const activityNudgeEvery = ActivityBucket * time.Second
+
+// ErrSupersededJoin ends a connection whose join finished after a NEWER
+// connection of the same host had already taken its place.
+var ErrSupersededJoin = errors.New("mirror: a newer connection from the same host already holds it")
 
 // ErrTokenRevoked is the cause a connection ends with when its token is
 // revoked. Such a host is dropped from the view at once — not kept as offline.
@@ -294,7 +301,10 @@ func (h *Hub) changed(owner int64) {
 }
 
 type hostConn struct {
-	key         hostKey
+	key hostKey
+	// arrival orders this connection's join among its host's (Hub.arrivals):
+	// a later arrival is a NEWER connection, whichever welcome finishes first.
+	arrival     uint64
 	ws          *websocket.Conn
 	ctx         context.Context
 	cancel      context.CancelCauseFunc
@@ -656,6 +666,8 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		return ErrTooManyHosts
 	}
 	h.joining[key]++
+	h.arrivals++
+	hc.arrival = h.arrivals
 	h.mu.Unlock()
 	joined := false
 	defer func() {
@@ -675,12 +687,22 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		return err
 	}
 
+	// 🔴 ONLY A NEWER ARRIVAL REPLACES. Two connections of one host can join
+	// at once (a reconnect racing a slow welcome); the one whose welcome
+	// finishes LAST is not necessarily the newer, and it used to win — ending
+	// the newer connection with a false "replaced by a newer connection". An
+	// older arrival finding a newer one registered is ended instead.
 	h.mu.Lock()
 	old := h.hosts[key]
-	h.hosts[key] = hc
-	delete(h.offline, key)
 	h.leaveJoining(key)
 	joined = true
+	if old != nil && old.arrival > hc.arrival {
+		h.mu.Unlock()
+		_ = ws.Close(websocket.StatusPolicyViolation, ErrSupersededJoin.Error())
+		return ErrSupersededJoin
+	}
+	h.hosts[key] = hc
+	delete(h.offline, key)
 	h.mu.Unlock()
 	if old != nil {
 		old.cancel(errors.New("mirror: replaced by a newer connection from the same host"))

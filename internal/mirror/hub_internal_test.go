@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -140,5 +141,74 @@ func eventuallyInternal(t *testing.T, what string, cond func() bool) {
 			t.Fatalf("timed out waiting for: %s", what)
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestAnOlderJoinNeverEvictsANewerConnection: two connections of ONE host join
+// at once; the OLDER one's welcome is held (beforeWelcome) while the newer one
+// joins all the way. Released, the older one must not take the host's place —
+// it used to: the last welcome to finish won, and the NEWER connection was
+// ended "replaced by a newer connection", which was false. The older one is
+// refused instead, and the newer one is still the host.
+func TestAnOlderJoinNeverEvictsANewerConnection(t *testing.T) {
+	h := NewHub(log.New(io.Discard, "", 0))
+	firstHeld, release := make(chan struct{}), make(chan struct{})
+	var calls int
+	var mu sync.Mutex
+	h.beforeWelcome = func() {
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		if n == 1 {
+			close(firstHeld)
+			<-release
+		}
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer ws.CloseNow()
+		_ = h.ServeConn(r.Context(), 1, "alpha", ws)
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	dial := func(session string) *websocket.Conn {
+		ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := json.Marshal(Msg{Type: TypeHello, Version: ProtocolVersion, Host: "alpha", Sessions: []string{session}})
+		if err := ws.Write(ctx, websocket.MessageText, b); err != nil {
+			t.Fatal(err)
+		}
+		return ws
+	}
+	older := dial("older")
+	defer older.CloseNow()
+	<-firstHeld
+	newer := dial("newer")
+	defer newer.CloseNow()
+	if _, data, err := newer.Read(ctx); err != nil || !strings.Contains(string(data), `"welcome"`) {
+		t.Fatalf("the newer connection's first frame: %s, %v", data, err)
+	}
+	eventuallyInternal(t, "the newer connection registered", func() bool { return h.Online(1, "alpha", "newer") })
+
+	close(release)
+	// The older connection is ended: its welcome, then the close.
+	_, _, _ = older.Read(ctx)
+	_, _, err := older.Read(ctx)
+	if err == nil {
+		t.Fatal("the older connection was not ended")
+	}
+	if !strings.Contains(err.Error(), "newer connection") {
+		t.Errorf("the older connection ended with %v, want it told a newer connection holds the host", err)
+	}
+	if h.Online(1, "alpha", "older") || !h.Online(1, "alpha", "newer") {
+		t.Fatalf("after the older join finished: older online=%v, newer online=%v; want the newer connection to keep the host",
+			h.Online(1, "alpha", "older"), h.Online(1, "alpha", "newer"))
 	}
 }
