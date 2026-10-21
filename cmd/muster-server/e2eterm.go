@@ -101,7 +101,7 @@ func (d fakeTerminalDriver) Capabilities() provision.Capabilities {
 // (agents.TerminalReleaseCommand): the played terminal holds no process, so
 // there is nothing to release.
 func (fakeTerminalDriver) Exec(_ context.Context, _ provision.Ref, cmd []string, _ io.Reader, stdout, _ io.Writer) error {
-	if slices.Equal(cmd, agents.TerminalReleaseCommand()) {
+	if endsWith(cmd, agents.TerminalReleaseCommand()) {
 		_, err := io.WriteString(stdout, "released 0 (e2e fake terminal)\n")
 		return err
 	}
@@ -109,7 +109,7 @@ func (fakeTerminalDriver) Exec(_ context.Context, _ provision.Ref, cmd []string,
 	// window of envE2ETermWindow ("CxR", the CLIENT size that shows it),
 	// answered in tmux's own format with the status line off. Unset, the query
 	// fails as it does on a pod with no session — the pre-termsize behaviour.
-	if slices.Equal(cmd, agents.TerminalSizeCommand(termsize.TmuxWindowFormat)) {
+	if endsWith(cmd, agents.TerminalSizeCommand(termsize.TmuxWindowFormat)) {
 		var c, r int
 		if _, err := fmt.Sscanf(os.Getenv(envE2ETermWindow), "%dx%d", &c, &r); err != nil || c <= 0 || r <= 0 {
 			return fmt.Errorf("e2e fake terminal: no session window (no window configured)")
@@ -118,6 +118,12 @@ func (fakeTerminalDriver) Exec(_ context.Context, _ provision.Ref, cmd []string,
 		return err
 	}
 	return fmt.Errorf("%w: the e2e fake driver only plays a terminal", provision.ErrUnsupported)
+}
+
+// endsWith reports whether cmd ends with tail: muster prefixes every exec with
+// the turn-credential scrub (agentprovision's agentExecCommand).
+func endsWith(cmd, tail []string) bool {
+	return len(cmd) >= len(tail) && slices.Equal(cmd[len(cmd)-len(tail):], tail)
 }
 
 func (fakeTerminalDriver) ExecTTY(ctx context.Context, ref provision.Ref, cmd []string, stdin io.Reader, stdout io.Writer, resize <-chan provision.TermSize) error {
