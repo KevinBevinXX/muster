@@ -573,13 +573,30 @@ jobs:
         working-directory: e2e
         run: node verdict.mjs --leg ${{ matrix.leg }} test-results/results.json
 
+      # What the `e2e` job checks this report against (e2e/pick-legs.mjs): the
+      # leg, run and attempt that wrote it, and the commit it ran.
+      - name: stamp the report's provenance
+        if: always()
+        run: |
+          mkdir -p e2e/test-results
+          printf '{"leg":"%s","run_id":"%s","run_attempt":"%s","sha":"%s"}\n' \
+            "${{ matrix.leg }}" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" > e2e/test-results/provenance.json
+          cat e2e/test-results/provenance.json
+
       # ALWAYS, not only on failure: the `e2e` job reads results.json from here.
       # Traces are only written for failures (trace: retain-on-failure).
+      #
+      # 🔴 ONE ARTIFACT PER LEG PER ATTEMPT. A partial rerun (`gh run rerun
+      # --failed`) keeps the passing legs' earlier artifacts; with one name per
+      # leg the run then held two same-named artifacts, both extracted into one
+      # directory, and the aggregate read whichever landed last — a stale
+      # failure or a stale pass. The attempt in the name lets the `e2e` job
+      # take each leg's latest (e2e/pick-legs.mjs).
       - name: keep the report (and traces of failures)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-results-leg-${{ matrix.leg }}
+          name: e2e-results-leg-${{ matrix.leg }}-attempt-${{ github.run_attempt }}
           path: e2e/test-results/
           retention-days: 7
 
@@ -608,15 +625,31 @@ jobs:
           echo "e2e-leg result: ${{ needs.e2e-leg.result }}"
           test "${{ needs.e2e-leg.result }}" = success
 
+      # Every attempt's leg artifacts, each in a directory of its own (they are
+      # named by attempt, so none overwrites another).
       - uses: actions/download-artifact@v4
         with:
           pattern: e2e-results-leg-*
           path: e2e-legs
 
+      # The binder's own refusals, before it is believed (node only, < 1 s).
+      - name: the leg binder's tests
+        working-directory: e2e
+        run: node --test pick-legs.test.mjs
+
+      # 🔴 BOUND TO THIS RUN'S LATEST ATTEMPT OF EACH LEG: pick-legs.mjs takes
+      # each leg's highest-attempt report and FAILS on a leg with none, on an
+      # artifact it cannot date (no attempt in its name), and on a provenance
+      # that disagrees with its name, this run or this commit. It prints which
+      # attempt each leg was read from.
+      #
       # 🔴 THE SEAM GUARD, ON WHAT RAN: every leg's report summed against the
       # 31-test floor and the skip cap; every spec file on disk present with a
       # passing test (NOT RUN: a spec in no leg, or a misspelled legs.json
       # entry), none in two reports (RAN TWICE: a spec in two legs).
       - name: verdict — the pass floor and the skip cap, over every leg
         working-directory: e2e
-        run: node verdict.mjs --all ../e2e-legs/e2e-results-leg-*/results.json
+        run: |
+          node pick-legs.mjs ../e2e-legs > ../e2e-legs-picked.txt
+          mapfile -t picked < ../e2e-legs-picked.txt
+          node verdict.mjs --all "${picked[@]}"
