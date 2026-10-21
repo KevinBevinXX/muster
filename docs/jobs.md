@@ -27,8 +27,10 @@ it names, or one muster chooses from a named **worker pool**.
 >   subdirectories); the root `CLAUDE.md`, `CLAUDE.local.md` and `AGENTS.md`
 >   (the instructions it loads at launch, `CLAUDE.local.md` being its personal
 >   memory file); the root `.mcp.json` (MCP servers, whose commands it starts).
->   Every path list is read NUL-separated, so a non-ASCII name is handled like
->   any other. With the real CLI, a commit whose `.claude/settings.json` defines a
+>   The script reads every path list NUL-separated and as bytes (in the C
+>   locale), so a name with bytes outside ASCII — valid UTF-8 or not — is
+>   checked and restored like any other, whatever locale the agent's instance
+>   runs with. With the real CLI, a commit whose `.claude/settings.json` defines a
 >   SessionStart hook and whose `.mcp.json` defines a server runs neither in its
 >   job, and runs both without this step
 >   ([`realcli_test.go`](../internal/agentprovision/realcli_test.go), in CI's

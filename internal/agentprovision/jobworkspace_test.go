@@ -281,8 +281,14 @@ func TestAJobWorktreeIsRefusedWithoutATrustedDefaultBranch(t *testing.T) {
 		{"AGENTS.md", "f"},
 		// A non-ASCII path, which git C-quotes when it is not read with -z.
 		{".claude/skills/é/SKILL.md", "../../../f"},
+		// A name that is not valid UTF-8, which grep under a UTF-8 locale
+		// drops from -z output as "binary".
+		{".claude/x\xe9", "../f"},
 	} {
 		t.Run("a symlink on the default branch at "+tc.path, func(t *testing.T) {
+			// The instance's exec may carry a UTF-8 locale; the script must not
+			// depend on it.
+			t.Setenv("LC_ALL", "C.UTF-8")
 			a, d := newWorkspaceAdapter(t)
 			r := worktreetest.New(t, filepath.Join(d.root, "widgets"), filepath.Join(d.root, "markers"))
 			src := filepath.Join(t.TempDir(), "src")
@@ -455,31 +461,62 @@ func TestAShaNotOnThePullRequestIsRefused(t *testing.T) {
 }
 
 // TestANonASCIIPathInANestedClaudeIsRestored: the default branch carries a
-// nested .claude/ whose path has a byte outside ASCII. The job is made, and
-// that file in the worktree is the default branch's, byte for byte (read
-// without -z, git quoted the path and the restore checked out one that does
-// not exist, failing the job).
+// nested .claude/ whose path has a byte outside ASCII — UTF-8 (ü), or not
+// valid UTF-8 at all (0xE9 alone) — and the instance's exec carries a UTF-8
+// locale. The job is made, and that file in the worktree is the default
+// branch's, byte for byte. (Read without -z, git quoted the path and the
+// restore checked out one that does not exist; read by grep under a UTF-8
+// locale, the invalid name was dropped and never restored.)
 func TestANonASCIIPathInANestedClaudeIsRestored(t *testing.T) {
+	for _, rel := range []string{"sub/.claude/skills/ü/SKILL.md", "sub\xe9/.claude/skills/x/SKILL.md"} {
+		t.Run(rel, func(t *testing.T) {
+			t.Setenv("LC_ALL", "C.UTF-8")
+			a, d := newWorkspaceAdapter(t)
+			r := worktreetest.New(t, filepath.Join(d.root, "widgets"), filepath.Join(d.root, "markers"))
+			src := filepath.Join(t.TempDir(), "src")
+			worktreetest.Git(t, "", "clone", "-q", "file://"+r.Origin, src)
+			const body = "---\nname: odd\ndescription: default\n---\nnon-ascii\n"
+			if err := os.MkdirAll(filepath.Join(src, filepath.Dir(rel)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(src, rel), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			worktreetest.Git(t, src, "add", "--", rel)
+			worktreetest.Git(t, src, "commit", "-q", "-m", "a non-ascii skill")
+			worktreetest.Git(t, src, "push", "-q", "origin", "main")
+			worktreetest.Git(t, r.Checkout, "fetch", "-q", "origin")
+			if _, err := prepareJob(a, r, r.Commit); err != nil {
+				t.Fatalf("prepare with a non-ASCII nested .claude path on the default branch: %v", err)
+			}
+			if b, err := os.ReadFile(filepath.Join(d.root, ".muster-jobs", "41", rel)); err != nil || string(b) != body {
+				t.Fatalf("%q = %q (%v), want the default branch's %q", rel, b, err, body)
+			}
+		})
+	}
+}
+
+// TestAFailedRestoreFailsTheJob: when git cannot restore one of the default
+// branch's .claude directories, the worktree is not handed out with that
+// directory missing — the preparation fails. A git that refuses exactly that
+// checkout stands first on PATH (everything else goes to the real git).
+func TestAFailedRestoreFailsTheJob(t *testing.T) {
 	a, d := newWorkspaceAdapter(t)
 	r := worktreetest.New(t, filepath.Join(d.root, "widgets"), filepath.Join(d.root, "markers"))
-	src := filepath.Join(t.TempDir(), "src")
-	worktreetest.Git(t, "", "clone", "-q", "file://"+r.Origin, src)
-	const rel, body = "sub/.claude/skills/ü/SKILL.md", "---\nname: ü\ndescription: default\n---\nnon-ascii\n"
-	if err := os.MkdirAll(filepath.Join(src, filepath.Dir(rel)), 0o755); err != nil {
+	real, err := exec.LookPath("git")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(src, rel), []byte(body), 0o644); err != nil {
+	bin := t.TempDir()
+	wrapper := "#!/bin/sh\nlast=\nfor a; do last=$a; done\n" +
+		"case \"$*\" in *\"checkout --quiet\"*) case \"$last\" in *.claude) echo 'forced: cannot restore' >&2; exit 1;; esac;; esac\n" +
+		"exec " + real + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(wrapper), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	worktreetest.Git(t, src, "add", "--", rel)
-	worktreetest.Git(t, src, "commit", "-q", "-m", "a non-ascii skill")
-	worktreetest.Git(t, src, "push", "-q", "origin", "main")
-	worktreetest.Git(t, r.Checkout, "fetch", "-q", "origin")
-	if _, err := prepareJob(a, r, r.Commit); err != nil {
-		t.Fatalf("prepare with a non-ASCII nested .claude path on the default branch: %v", err)
-	}
-	if b, err := os.ReadFile(filepath.Join(d.root, ".muster-jobs", "41", rel)); err != nil || string(b) != body {
-		t.Fatalf("%s = %q (%v), want the default branch's %q", rel, b, err, body)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if _, err := prepareJob(a, r, r.Commit); err == nil || !strings.Contains(err.Error(), "forced: cannot restore") {
+		t.Fatalf("prepare with a failing .claude restore = %v, want the restore's failure", err)
 	}
 }
 

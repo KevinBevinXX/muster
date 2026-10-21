@@ -317,10 +317,13 @@ RULES: list[tuple[str, str, str]] = [
         # CLI's personal memory file, which the machine job API names because
         # it replaces it (internal/agentprovision jobworkspace.go). It is a
         # FILE NAME, not a host, and both alternatives below would read it as
-        # one. The lookahead excuses only a match that STARTS at that exact
-        # spelling with a word boundary after it; any other `*.local.md`, or
-        # that name with anything more after it, is still refused (pinned by
-        # NEGATIVE_CONTROLS and ALLOWED_CONTROLS).
+        # one. The lookahead excuses a match only where it STARTS at that exact
+        # spelling AND a word boundary follows the `md`: so any other
+        # `*.local.md` is still refused, and so is the name run on into more
+        # word characters (`…mdx…`). A non-word character after the `md` — a
+        # dot or a hyphen, as in `….md.example` or `….md-x` — IS a word
+        # boundary, so those spellings are excused too. (Pinned by
+        # NEGATIVE_CONTROLS and ALLOWED_CONTROLS.)
         r"\b(?!CLAUDE\.local\.md\b)[A-Za-z0-9][A-Za-z0-9-]*\.(?:lan|local|internal|home(?:lab)?)\b"
         r"|\b(?!CLAUDE\.local\.md\b)[A-Za-z0-9][A-Za-z0-9-]*\.(?:lan|local|internal)\.[A-Za-z]{2,}\b",
         "a private or lab hostname — it names real infrastructure. Use "

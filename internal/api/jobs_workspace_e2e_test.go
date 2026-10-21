@@ -314,6 +314,40 @@ func TestAJobsWorktreeIsRemovedHoweverTheJobEnds(t *testing.T) {
 	}
 }
 
+// TestAJobWhoseRestoreFailsEndsCheckoutFailed: through the runner and the real
+// adapter, a git that refuses to restore a .claude directory (first on PATH;
+// everything else goes to the real git) ends the job checkout_failed, with no
+// turn sent and no worktree left.
+func TestAJobWhoseRestoreFailsEndsCheckoutFailed(t *testing.T) {
+	f, r, root := newE2EJobs(t)
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	wrapper := "#!/bin/sh\nlast=\nfor a; do last=$a; done\n" +
+		"case \"$*\" in *\"checkout --quiet\"*) case \"$last\" in *.claude) echo 'forced: cannot restore' >&2; exit 1;; esac;; esac\n" +
+		"exec " + real + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(wrapper), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cli := &cliGateway{t: t, root: root}
+	f.s.ext.Gateway = cli
+	out := f.await(t, f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review", "repo": "acme/widgets",
+		"sha": r.Commit, "pr": worktreetest.PR}))
+	if out["status"] != jobs.StatusFailed || out["reason"] != jobs.ReasonCheckoutFailed ||
+		!strings.Contains(out["error"].(string), "forced: cannot restore") {
+		t.Fatalf("job = %v/%v %q, want failed/%s carrying the restore's failure", out["status"], out["reason"], out["error"], jobs.ReasonCheckoutFailed)
+	}
+	if len(cli.dirs) != 0 {
+		t.Fatalf("a turn ran in %q after the restore failed", cli.dirs)
+	}
+	if _, err := os.Lstat(filepath.Join(root, ".muster-jobs", "1")); !os.IsNotExist(err) {
+		t.Fatalf("the job's worktree is still there (lstat: %v)", err)
+	}
+}
+
 // TestAResultFileIsKeptWhenTheReadFailsOrTheRepositoryTracksIt: a job WITHOUT
 // a sha runs in the agent's checkout, through the real adapter and a real git
 // checkout. (1) A result file over the 1 MiB limit fails the job

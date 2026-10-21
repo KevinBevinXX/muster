@@ -79,6 +79,12 @@ var JobOverlayRootFiles = []string{"CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", 
 // out a quoted path that does not exist — failing every sha job on the
 // repository.
 //
+// 🔴 AND IN THE C LOCALE, WITH grep -a. Under a UTF-8 locale GNU grep treats a
+// record whose name is not valid UTF-8 as binary and DROPS it from -z output
+// (exit 0, "binary file matches"), so a symlink at .claude/x<0xE9> passed the
+// check and a nested sub<0xE9>/.claude/ was not restored. LC_ALL=C makes every
+// tool here work on bytes, whatever locale the instance's exec carries.
+//
 // 🔴 THE FETCH IS ANONYMOUS, AND THE SCRIPT ENFORCES IT RATHER THAN ASSUMING IT.
 // An agent holding an approved grant on a connector that reaches github.com has
 // git's GLOBAL config routing every https://github.com/ URL through muster's
@@ -99,7 +105,8 @@ var JobOverlayRootFiles = []string{"CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", 
 // chooses to run from the tree (a build script, a test). The overlay keeps the
 // COMMIT's configuration from configuring the reviewer; it does not make the
 // commit's code safe to execute.
-const jobOverlayScript = `main=$1 wt=$2 sha=$3 url=$4 pr=$5
+const jobOverlayScript = `export LC_ALL=C
+main=$1 wt=$2 sha=$3 url=$4 pr=$5
 shift 5
 cd "$main" || exit 1
 def=$(git rev-parse --verify --quiet 'refs/remotes/origin/HEAD^{commit}') ||
@@ -122,7 +129,7 @@ if [ "$sha" != "$head" ] && ! git merge-base --is-ancestor "$sha" "$head" 2>/dev
 	exit 6
 fi
 tab=$(printf '\t')
-links=$(git ls-tree -r -z "$def" | grep -zE "^120000 [^$tab]*$tab(.*/)?\.claude(/|\$)" | tr '\0' '\n')
+links=$(git ls-tree -r -z "$def" | grep -azE "^120000 [^$tab]*$tab(.*/)?\.claude(/|\$)" | tr '\0' '\n')
 for p in "$@"; do
 	case $(git ls-tree "$def" -- "$p") in
 	120000\ *) links="$links
@@ -141,7 +148,7 @@ find . -name .git -prune -o -name .claude -prune -exec rm -rf {} + || exit 1
 for p in "$@"; do
 	rm -rf ./"$p" || exit 1
 done
-git ls-tree -r -z --name-only "$def" | grep -zE '(^|/)\.claude(/|$)' |
+git ls-tree -r -z --name-only "$def" | grep -azE '(^|/)\.claude(/|$)' |
 	sed -zE 's#^((.*/)?\.claude)(/.*)?$#\1#' | sort -zu |
 	xargs -0r -n1 sh -c 'git --literal-pathspecs checkout --quiet "$1" -- "$2" || exit 255' sh "$def" || exit 1
 for p in "$@"; do
