@@ -30,10 +30,20 @@ func TestClaimNativeNeverDeadlocksARevocation(t *testing.T) {
 	s.WithAllowlist(NewAllowlist([]string{"ntfy.example.org"}))
 	us := users.NewPG(pool)
 	ctx := context.Background()
-	const owner = 2
+	// A user of its own: the revocations below move this user's cutoffs, which
+	// would hide the shared fixture users' phones from the other tests.
+	// (An explicit id: the fixture inserts users 2 and 3 with explicit ids
+	// too, so the identity sequence would collide with them.)
+	const owner = 9001
+	if _, err := pool.Exec(sys(ctx), `INSERT INTO users (id, role, display_name) OVERRIDING SYSTEM VALUE VALUES ($1, 'member', 'deadlock')
+		ON CONFLICT (id) DO UPDATE SET disabled_at = NULL, sessions_not_before = NULL, signed_out_at = NULL`, owner); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
-		_, _ = pool.Exec(sys(ctx), `DELETE FROM devices WHERE owner_id = $1`, owner)
-		_, _ = pool.Exec(sys(ctx), `UPDATE users SET disabled_at = NULL WHERE id = $1`, owner)
+		for _, q := range []string{`DELETE FROM push_subscriptions WHERE owner_id = $1`, `DELETE FROM devices WHERE owner_id = $1`,
+			`DELETE FROM audit_log WHERE user_id = $1`, `DELETE FROM users WHERE id = $1`} {
+			_, _ = pool.Exec(sys(ctx), q, owner)
+		}
 	})
 	var (
 		deadlocks, claims, revocations atomic.Int64
